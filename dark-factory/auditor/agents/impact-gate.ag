@@ -1,0 +1,106 @@
+cb 300000;
+// #1522 — IMPACT-SUBSTANTIATION / VALIDITY GATE, in the SUBSTRATE. The gate AFTER scope-gate (#1511) and
+// BEFORE human submit. scope-gate closes the SCOPE wall (in-scope asset + eligible-impact SET + not carved-out);
+// it is necessary but NOT sufficient. A live Immunefi submission (Enzyme Onyx, SyncDepositHandler front-running)
+// that PASSED all three scope-gate barriers was still CLOSED on an IMPACT-VALIDITY ground: the PoC used a
+// SIMULATED price increase (a hand-fed admin `updateShareValue` / `harness_set*`) and described front-running of
+// a PRIVILEGED admin action, not extraction of an on-chain-provable claim the victims already held. So a finding
+// is only PAYABLE if its PoC SUBSTANTIATES the claimed impact through the protocol's OWN mechanism.
+//
+// Both live rejections this arc were CLASSIFICATION failures, not engine failures (DEVISE finds real bugs):
+// Lombard = out-of-scope asset (scope-gate); Onyx = impact not substantiated (this gate). This gate NEVER submits.
+//
+// The PoC-smell check is DETERMINISTIC (grep — the muscle: a `harness_set*` / `mock` / admin-pranked state-write
+// that fabricates the critical transition is a review-killer); the three-barrier validity judgement is the LLM's.
+//
+// Env:
+//   FINDING_IMPACT   one-line description of the finding's impact + claimed class (e.g. "unprivileged front-run
+//                    of a NAV update steals pre-update holders' unclaimed yield").
+//   POC_FILE         path to the PoC test the gate reasons over (foundry/hardhat). The muscle greps it for
+//                    simulation smells; the LLM reads it to judge whether the critical state change is driven by
+//                    the protocol's OWN mechanism or hand-fed.
+//   MECHANISM_NOTES  a one-line description of HOW value accrues in the target (e.g. "share price is the stored
+//                    lastShareValue, written only by onlyAdmin updateShareValue — no permissionless accrual").
+// Stdout: exactly one line
+//   IMPACT-GATE|<SUBSTANTIATED|SIMULATED-STATE|PRIVILEGED-TRIGGER|NO-PROVABLE-CLAIM>|<one-line rationale>
+//   Only SUBSTANTIATED should proceed to human submit; the other three are wasted-effort / would-be-rejected.
+
+// --- PoC evidence (the muscle; dynamic paths -> safe-exec-concat, per scope-gate.ag / dup-scout.ag) ----------
+fn poc_text(pocFile: string) -> string {
+    if len(pocFile) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "sed -n '1,4000p' ${pocFile} 2>/dev/null || true";
+}
+
+// Count simulation smells: a fabricated critical transition (harness_set*, a mock, a price/value SETTER) is the
+// strongest SIMULATED-STATE signal. grep -c prints "0" AND exits 1 on no match, so capture-then-fallback.
+fn sim_smells(pocFile: string) -> string {
+    if len(pocFile) == 0 { return "0"; }
+    // colony-lint: safe-exec-concat
+    return exec sh "c=$(grep -c -E -i 'harness_set|\\.mock|mock[A-Z]|setPrice|setLastShareValue|setSharePrice|setRate' ${pocFile} 2>/dev/null); [ -n \"$c\" ] && echo \"$c\" || echo 0";
+}
+
+// Count admin/owner-pranked calls: a loss the PoC can only produce by pranking a privileged role is a strong
+// PRIVILEGED-TRIGGER signal (the harm needs a trusted action to materialize).
+fn priv_pranks(pocFile: string) -> string {
+    if len(pocFile) == 0 { return "0"; }
+    // colony-lint: safe-exec-concat
+    return exec sh "c=$(grep -c -E -i 'prank\\(admin|prank\\(owner|startPrank\\(admin|startPrank\\(owner|onlyAdmin|onlyOwner' ${pocFile} 2>/dev/null); [ -n \"$c\" ] && echo \"$c\" || echo 0";
+}
+
+let pocFile = getenv("POC_FILE");
+let impact = getenv("FINDING_IMPACT");
+let mechanism = getenv("MECHANISM_NOTES");
+
+let poc = poc_text(pocFile);
+let smells = sim_smells(pocFile);
+let pranks = priv_pranks(pocFile);
+
+let evidence =
+    "FINDING_IMPACT: " + impact + "\n"
+  + "MECHANISM_NOTES (how value accrues in the target): " + mechanism + "\n"
+  + "SIMULATION-SMELL count in the PoC (harness_set*/mock/price-setter — a fabricated critical transition): " + smells + "\n"
+  + "PRIVILEGED-PRANK count in the PoC (prank(admin/owner) / onlyAdmin — the loss needs a trusted action): " + pranks + "\n"
+  + "=== PROOF OF CONCEPT (the test the impact rests on) ===\n" + poc;
+
+// The gate: classify against the three validity barriers, hardest first. This mirrors an adversarial platform
+// review — prefer a wasted-effort verdict over a false SUBSTANTIATED, because a rejected submit costs fee +
+// reputation (and spam-flags a new account).
+let instruction =
+    "You are the IMPACT-SUBSTANTIATION / VALIDITY gate for a bug-bounty submission, applied AFTER a scope+asset "
+  + "gate already passed. Judge whether the PoC actually SUBSTANTIATES the claimed impact the way an adversarial "
+  + "platform reviewer would. A finding is only SUBSTANTIATED if ALL THREE hold:\n"
+  + "1) OWN-MECHANISM: the PoC drives the critical state change through the protocol's OWN mechanism, NOT a "
+  + "hand-fed / simulated transition. A high SIMULATION-SMELL count (a `harness_set*`, a `mock` value, a price/"
+  + "value setter) that FABRICATES the very state the impact depends on (e.g. simulating a price increase instead "
+  + "of producing it through the protocol) is a review-killer -> SIMULATED-STATE. (A mock used only for an "
+  + "irrelevant external token, while the impact-critical transition IS produced by the real contract, is fine.)\n"
+  + "2) NO-PRIVILEGED-TRIGGER: the loss must NOT require a PRIVILEGED action to materialize. If the harm only "
+  + "appears because a trusted role acts (an admin posts a NAV, an owner sets a value) — i.e. the attacker is "
+  + "front-running or depending on a privileged action — reclassify as PRIVILEGED-TRIGGER (front-run/griefing of a "
+  + "privileged action is usually NOT payable), even if a real bug exists. A high PRIVILEGED-PRANK count is a "
+  + "signal, not proof — weigh whether the LOSS hinges on that trusted action.\n"
+  + "3) PROVABLE-PRE-EXISTING-CLAIM: there must be an on-chain-provable, ISOLATED, pre-existing victim claim BEFORE "
+  + "the attack, per the protocol's OWN accounting — not an off-chain truth the protocol has not yet acknowledged. "
+  + "If, by the protocol's own on-chain state, the victims did not yet hold the value that is 'stolen' (it only "
+  + "materializes later via a privileged post), answer NO-PROVABLE-CLAIM.\n\n"
+  + "=== EVIDENCE ===\n" + evidence + "\n"
+  + "=== HOW TO ANSWER ===\nReason briefly, then write exactly ONE final line:\n"
+  + "IMPACT-GATE|<SUBSTANTIATED|SIMULATED-STATE|PRIVILEGED-TRIGGER|NO-PROVABLE-CLAIM>|<one-line rationale citing "
+  + "the specific smell / privileged trigger / missing-claim that decided it>\n"
+  + "SUBSTANTIATED only if all three barriers pass. Prefer a wasted-effort verdict over a false SUBSTANTIATED. "
+  + "Only the final IMPACT-GATE| line is parsed.";
+
+let verdict = prompt(instruction, evidence) -> string;
+
+print(verdict);
+let gate = if index_of(verdict, "IMPACT-GATE|SUBSTANTIATED") >= 0 { "substantiated" }
+           else { if index_of(verdict, "SIMULATED-STATE") >= 0 { "simulated-state" }
+           else { if index_of(verdict, "PRIVILEGED-TRIGGER") >= 0 { "privileged-trigger" }
+           else { "no-provable-claim" } } };
+// A SUBSTANTIATED gate is the productive outcome (proceed to human submit) -> success; any block -> failure
+// (a would-be rejection caught before the fee/reputation spend).
+let outcome = if gate == "substantiated" { "success" } else { "failure" };
+emit("dark-factory:impact_verdict", "{\"impact\":\"" + impact + "\",\"gate\":\"" + gate + "\"}");
+learn("impact-gate", impact, "impact-substantiation gate for finding (" + gate + ")", outcome, ["impact-gate", gate]);
+memo_write("impact-gate:last_check", "done");
