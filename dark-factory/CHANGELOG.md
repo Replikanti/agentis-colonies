@@ -53,6 +53,46 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   - `demo-report-writer.sh` source-guards the wiring (CI-safe: env contract, PoC muscle, 4-section scaffolding,
     output marker, never-submits, emit/learn/memo tail) and runs the agent live over a fixture finding + PoC +
     upstream verdict lines when agentis is present; wired into `tools/colony-lint.sh`.
+- **Concrete-exploit-sequence PoC generation for hardhat / non-invariant bug classes** (#1507). The SECOND PoC
+  class alongside the forge/invariant machinery (`invariant-prover.ag` + `forge-invariant.sh`). Where the
+  invariant path writes a stateful-invariant HANDLER and lets the fuzzer JUDGE over randomized SEQUENCES, this
+  path writes ONE hand-driven CONCRETE attack-SEQUENCE test that reproduces a specific bug HYPOTHESIS end-to-end
+  (set the pre-state, run the exact attack steps, ASSERT the exploit succeeded), covering the classes the
+  invariant path does not — HARDHAT projects (a mocha/ethers exploit test) and hand-driven single-`forge test`
+  foundry PoCs.
+  - `auditor/agents/poc-writer.ag` — NEW standalone-dispatched agent mirroring `invariant-prover.ag` (env
+    contract, `verdict_of`/`outcome_of`/`rc_of`, the #1073-shape bounded compile-repair loop, the emit/learn/memo
+    tail). Env: `TARGET_FN`, `TARGET_CLASS`, `BUG_HYPOTHESIS`, `POC_KIND` (hardhat|foundry), `POC_REPO`,
+    `POC_OUT`, `POC_HARNESS`, `CODE_PATH`, `TARGET_FIXTURES_DIR`, `POC_FIXTURE`, `POC_MATCH`, `POC_REPAIR_ROUNDS`.
+    Emits `POC|<target>|<FINDING|CLEAN|HARNESS_ERROR>` + a `POC-FILE|<path>` line on a FINDING (the runnable PoC
+    a human executes) and `dark-factory:poc_verdict`. The verdict is the gate's exit code — never the LLM's
+    opinion.
+  - **INVERTED verdict polarity** — a concrete-exploit PoC is written to PASS iff the exploit works, so the gate
+    maps test-passed -> FINDING (exit 1), test-ran-but-failed -> CLEAN (exit 0), compile/tooling error / no test
+    ran / linkage reject -> HARNESS_ERROR (exit 2). The inversion lives ENTIRELY in the gates (documented in each
+    header, pinned on CI against captured mocha JSON), so `poc-writer.ag`'s `verdict_of(rc)` stays byte-identical
+    to `invariant-prover.ag`'s.
+  - `evm-harness/hardhat-poc.sh` — NEW hardhat verdict gate: `--repo`/`--target`/`--require-import`/
+    `--require-contract` + a `--classify <reporter-json>` parse-only mode; `npm ci` (lockfile) else
+    `npm install --legacy-peer-deps`, `npx hardhat compile`, then `npx hardhat test` through a generated wrapper
+    config that forces mocha's `json` reporter; classifies the reporter stats with the inverted polarity. Exit
+    codes 0/1/2 match `forge-invariant.sh`.
+  - `evm-harness/forge-poc.sh` — NEW foundry CONCRETE-exploit gate (thin sibling of `forge-invariant.sh` for a
+    single hand-driven `forge test --match-test test`, NOT `invariant`): same #1471 linkage gate + `--skip`
+    harness isolation, same inverted-polarity classify (a matched test with status Success -> FINDING).
+  - `evm-harness/detect-toolchain.sh` — NEW file-presence helper: `hardhat` (hardhat.config.*) / `foundry`
+    (foundry.toml) / `unknown`; the single point where a caller picks hardhat-vs-forge.
+  - **Anti-fabrication #1471 linkage gate** for BOTH gates: the generated PoC must reference the REAL target (an
+    import/require path ending in the target basename, or — hardhat — a `getContractFactory("<Name>")`/
+    `getContractAt("<Name>"` call) AND must NOT shadow it with a same-named toy contract. A miss is
+    HARNESS_ERROR, never a verdict, and (hardhat) runs BEFORE any npm spend.
+  - `run-poc.sh` — NEW lean operator runner mirroring `run-invariant-hunt.sh`'s rundir staging + `exec.env_passthrough`;
+    auto-detects the toolchain and drives `poc-writer.ag` on the substrate. `evm-harness/hardhat-poc-fixture/` —
+    NEW committed offline fixture (a real re-entrancy bug + a PoC that reproduces it + a substituted negative + a
+    captured pass/fail/empty mocha JSON) exercising the gate's linkage + verdict-parse paths with NO node.
+  - `demo-poc-gen.sh` — NEW CI-safe demo (source-guard + `--classify` verdict-parse + linkage-reject on CI; the
+    full npm + LLM live paths toolchain-gated and SKIP on CI); wired into `tools/colony-lint.sh`. A confirmed PoC
+    is a LEAD a human triages — this colony NEVER auto-submits.
 - **Impact-substantiation / validity gate in the substrate** (#1522). The gate AFTER scope-gate (#1511) and
   BEFORE human submit. scope-gate closes the SCOPE wall (in-scope asset + eligible-impact set + not carved-out);
   it is necessary but NOT sufficient. A live Immunefi submission (Enzyme Onyx, `SyncDepositHandler`

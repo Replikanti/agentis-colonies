@@ -950,6 +950,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-linkage.sh" ]; then
     fi
 fi
 
+# --- dark-factory concrete-exploit PoC-gen (hardhat / non-invariant foundry) (#1507) ---
+# The SECOND PoC class alongside the invariant machinery: poc-writer.ag writes ONE concrete attack-SEQUENCE test
+# (not a property-fuzz handler) and the toolchain-parametric gate (evm-harness/hardhat-poc.sh /
+# evm-harness/forge-poc.sh) JUDGES it. A concrete PoC is written to PASS iff the exploit works, so the gate
+# INVERTS the runner's polarity — a PASSING test is a FINDING, a FAILING test is CLEAN, and a compile/tooling
+# error or a #1471 linkage reject is HARNESS_ERROR. demo-poc-gen.sh source-guards the wiring + exercises the
+# verdict-parse over captured mocha JSON + the #1471 linkage-reject (all CI-safe, no toolchain); the full npm /
+# LLM live paths are toolchain-gated and SKIP on CI.
+if [ -x "$REPO_ROOT/dark-factory/demo-poc-gen.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-poc-gen.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: PoC-gen for hardhat/non-invariant classes (concrete-exploit gates, linkage, verdict-parse) (#1507)"
+    else
+        fail "dark-factory: PoC-gen for hardhat/non-invariant classes regressed (#1507)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- tier-branch double learn() guard (#636) ---
 # Every `_publish_<role>(...)` / `_submitter_<phase>(...)` helper in
 # research-foundry/ must gate its top-level `learn(..., ["emitted", ...])`

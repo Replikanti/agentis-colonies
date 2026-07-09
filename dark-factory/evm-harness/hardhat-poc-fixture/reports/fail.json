@@ -1,0 +1,34 @@
+{
+  "stats": {
+    "suites": 1,
+    "tests": 1,
+    "passes": 0,
+    "pending": 0,
+    "failures": 1,
+    "start": "2026-07-09T00:00:00.000Z",
+    "end": "2026-07-09T00:00:01.000Z",
+    "duration": 1000
+  },
+  "tests": [
+    {
+      "title": "attacker drains the pool for more than it deposited",
+      "fullTitle": "Vuln re-entrancy PoC attacker drains the pool for more than it deposited",
+      "state": "failed",
+      "duration": 900,
+      "err": {
+        "message": "expected balance to be greater than deposit but the exploit did not reproduce"
+      }
+    }
+  ],
+  "passes": [],
+  "pending": [],
+  "failures": [
+    {
+      "title": "attacker drains the pool for more than it deposited",
+      "fullTitle": "Vuln re-entrancy PoC attacker drains the pool for more than it deposited",
+      "err": {
+        "message": "expected balance to be greater than deposit but the exploit did not reproduce"
+      }
+    }
+  ]
+}
