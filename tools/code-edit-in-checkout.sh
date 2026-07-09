@@ -472,7 +472,9 @@ record_pushed_sha() {
     printf '%s\n' "$1" > "$PUSHED_SHA_FILE" 2>/dev/null || true
 }
 read_pushed_sha() {
-    [ -f "$PUSHED_SHA_FILE" ] && tr -d ' \t\r\n' < "$PUSHED_SHA_FILE" || true
+    if [ -f "$PUSHED_SHA_FILE" ]; then
+        tr -d ' \t\r\n' < "$PUSHED_SHA_FILE" || true
+    fi
 }
 
 # post_yield_note: post an at-most-once generic issue note explaining the
