@@ -747,13 +747,13 @@ if grep -q "$FAKE_TOKEN" "$BOT_B_ERR"; then bad "(b) the token leaked in the ok:
 DROP6F="$WORK/drop-bot-f"
 SLACK_LOG_F="$WORK/slack-f.log"
 BOT_F_ERR="$WORK/bot-f-stderr.log"
-STAGED6F="$(env -u DARK_FACTORY_SLACK_BOT_TOKEN -u DARK_FACTORY_SLACK_WEBHOOK -u MONITOR_WEBHOOK_URL \
+env -u DARK_FACTORY_SLACK_BOT_TOKEN -u DARK_FACTORY_SLACK_WEBHOOK -u MONITOR_WEBHOOK_URL \
   SLACK_LOG="$SLACK_LOG_F" SLACK_POST_BODY="$WORK/slack-post-f.json" SLACK_COMPLETE="$WORK/slack-complete-f.jsonl" \
   SLACK_GETURL="$WORK/slack-geturl-f.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-f" SLACK_UPCNT="$WORK/slack-upcnt-f" \
   DARK_FACTORY_SLACK_CHANNEL=C0BASE \
   PATH="$FAKEBIN6:$FAKEBIN:$PATH" \
   bash "$DELIVER" --id "enzyme-onyx@a1b2c3d:botmode-f" --draft-file "$DRAFT" --severity Low \
-    --drop-dir "$DROP6F" 2>"$BOT_F_ERR")"; RC=$?
+    --drop-dir "$DROP6F" >/dev/null 2>"$BOT_F_ERR"; RC=$?
 [ "$RC" -eq 0 ] && ok "(f) with the bot TOKEN unset the stage still exits 0" || bad "(f) no-token stage exited $RC (expected 0)"
 if [ -f "$SLACK_LOG_F" ] && grep -q 'chat.postMessage' "$SLACK_LOG_F"; then
   bad "(f) the bot sender was invoked despite the missing token"

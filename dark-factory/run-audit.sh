@@ -214,7 +214,7 @@ case "$VERDICT" in
     cp "$TARGET" "$PKG/$TGT_NAME" 2>/dev/null || true
     [ -f "$SANDBOX_DIR/report.md" ] && cp "$SANDBOX_DIR/report.md" "$PKG/report.md"
     # the harness-generated PoC (anchor or native) or the std-only standalone PoC
-    for p in "$SANDBOX_DIR/poc_standalone.rs"; do [ -f "$p" ] && cp "$p" "$PKG/poc.rs"; done
+    p="$SANDBOX_DIR/poc_standalone.rs"; [ -f "$p" ] && cp "$p" "$PKG/poc.rs"
     [ -n "$ANCHOR_HARNESS" ] && [ -f "$ANCHOR_HARNESS/src/bin/poc.rs" ] && cp "$ANCHOR_HARNESS/src/bin/poc.rs" "$PKG/poc.rs"
     [ -z "$ANCHOR_HARNESS" ] && [ -n "$HARNESS" ] && [ -f "$HARNESS/src/bin/poc.rs" ] && cp "$HARNESS/src/bin/poc.rs" "$PKG/poc.rs"
     # EVM: the revm PoC the LLM wrote + the generic reentrancy attacker it was compiled against,

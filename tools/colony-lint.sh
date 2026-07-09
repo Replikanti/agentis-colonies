@@ -1202,6 +1202,43 @@ if command -v shellcheck &>/dev/null; then
     fi
 fi
 
+# --- Lint federation-root scripts (#1554) ---
+# Federation-root `*.sh` (e.g. dark-factory/run-audit.sh) sit outside any
+# colony's `config/`-having subdirectory, so the per-colony shellcheck block
+# above never sees them. Lint them here at `-S warning` (error + warning
+# only), NOT the default severity used by the per-colony/tools blocks above:
+# at default severity these 82 previously-unlinted scripts across 6
+# federations carry ~242 findings, almost all cosmetic info/style nits — a
+# separate follow-up cleanup, out of scope for #1554. `-S warning` still
+# catches the class of regression #1554 asks for (unquoted expansions,
+# fragile heredocs, unused vars, loop/glob footguns) without demanding a
+# style-only rewrite of scripts nobody had linted before.
+if command -v shellcheck &>/dev/null; then
+    for fed in "${federations[@]}"; do
+        fed_path="$REPO_ROOT/$fed"
+        fed_root_scripts=()
+        while IFS= read -r -d '' f; do
+            fed_root_scripts+=("$f")
+        done < <(find "$fed_path" -maxdepth 1 -name "*.sh" -print0 2>/dev/null)
+
+        if [ ${#fed_root_scripts[@]} -gt 0 ]; then
+            if shellcheck -S warning "${fed_root_scripts[@]}" &>/dev/null; then
+                pass "$fed: shellcheck OK (root, -S warning)"
+            else
+                fail "$fed: shellcheck errors"
+                # Display-only re-run (see the per-colony shellcheck block):
+                # `|| true` keeps set -e/pipefail from aborting the lint
+                # before the summary line.
+                shellcheck -S warning "${fed_root_scripts[@]}" 2>&1 | head -30 || true
+            fi
+        fi
+    done
+else
+    # CI installs shellcheck unconditionally (see .github/workflows/ci.yml),
+    # so this skip only applies to local runs without shellcheck installed.
+    skip "federation-root: shellcheck not installed"
+fi
+
 # --- Tools unit tests ---
 test_scripts=()
 while IFS= read -r -d '' f; do
