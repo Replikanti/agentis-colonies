@@ -259,7 +259,11 @@ AGENTS=(
 # transient error never overwrites a good snapshot with `[]`.
 #
 # #1466: the two memo writes are COUPLED. The snapshot `memo set` enforces the
-# runtime's value-size cap (~10240 bytes); an oversize value fails. Previously
+# runtime's value-size cap (default 10240 bytes; operator-configurable via
+# `memo.max_value_bytes` in `.agentis/config` since agentis-core v1.22.0, so a
+# federation can raise the runtime ceiling instead of relying only on the
+# compressor's SNAPSHOT_MEMO_MAX_BYTES envelope truncation); an oversize value
+# fails. Previously
 # both writes ran under `|| true`, so an oversize snapshot write failed silently
 # while the tiny `:ts` write always succeeded — agents then trusted a "fresh" ts
 # pointing at a STALE snapshot and never took the documented direct-fetch

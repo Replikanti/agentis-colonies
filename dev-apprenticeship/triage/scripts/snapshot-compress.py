@@ -56,8 +56,12 @@ FORMAT_VERSION = 1
 # oversize `memo set` failed under `|| true` while the freshness ts kept
 # refreshing, so agents trusted a stale snapshot forever. We now bound the
 # envelope BEFORE it can exceed the cap, here in the compressor, via a single
-# knob. This is the one place the default ceiling lives; keep it in sync with
-# the `SNAPSHOT_MEMO_MAX_BYTES` default documented in start-colony.sh.
+# knob. This is the one place the compressor's default ceiling lives; keep it in
+# sync with the `SNAPSHOT_MEMO_MAX_BYTES` default documented in start-colony.sh.
+# NOTE: the runtime memo cap this mirrors is itself operator-configurable via
+# `memo.max_value_bytes` (agentis-core v1.22.0+, default 10240); when an operator
+# raises it, also raise SNAPSHOT_MEMO_MAX_BYTES here so the compressor stops
+# truncating below the new ceiling.
 DEFAULT_MEMO_MAX_BYTES = 10240
 
 # Descending per-issue `description` length ladder tried when the full envelope
