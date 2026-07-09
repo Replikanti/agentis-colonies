@@ -46,7 +46,7 @@ Every federation directory in this repo follows the same platform contract ([ADR
 | [tribes-bench](./tribes-bench/) | unreleased | Tribal-emergence harness — five seed colonies hunt CVE-grade memory safety bugs in vendored Rust crates via a deterministic verifier. Stage 2 M3 reached: 5-tribe ecosystem vs 1-tribe baseline verdict apparatus + N=3 paired pilot results. | 5 | Experimental |
 | [trading-binance](./trading-binance/) | unreleased | Emergence-driven crypto futures strategy discovery on Binance USDT-margined perpetuals. Multi-agent population evolves price-action / volume-profile / CME-gap / fibo / market-structure / volume-divergence-fade setups against historical and live OHLCV feeds (no indicators, no oscillators). Backtest-only in Phase 1. | 6 | Alpha |
 | [research-foundry](./research-foundry/) | [`0.3.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/research-foundry-v0.3.0) | End-to-end research pipeline: compute-first novelty discovery (6 colonies), literature audit across arXiv / OEIS / groupprops / Semantic Scholar (6 colonies), and arXiv preprint generation with LaTeX + reproducibility scripts (6 colonies). Single orchestrator + single container; the 18 colonies share one in-container `.agentis/` so each consumer reads its upstream colleague's memo directly. The arXiv email-gateway dispatch is gated on an explicit human-in-the-loop approval; the federation never auto-submits. Consolidates the retired math-foundry / claim-auditor / preprint-foundry federations (#638). See [ADR-0008](./doc/adr/ADR-0008-compute-first-novelty.md). | 18 | Experimental |
-| [dark-factory](./dark-factory/) | [`0.2.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dark-factory-v0.2.0) | Autonomous smart-contract security research across three colonies: `auditor` runs the bug-finding pipeline (reconn → guard → tracker → synthesis — detect a finding, synthesize a two-sided proof-of-concept, validate it offline against the real VM, write a standardized report), `prospector` qualifies live on-chain targets, and `monitor` derives and watches read-only protocol invariants. Submission and paging stay human-gated — no colony ever auto-posts to a bounty platform. | 27 | Experimental |
+| [dark-factory](./dark-factory/) | [`0.2.0`](https://github.com/Replikanti/agentis-colonies/releases/tag/dark-factory-v0.2.0) | EVM + Solana/Anchor smart-contract security research across three colonies: `auditor` runs an end-to-end **gated bounty-hunt chain** (discover → scope → devise the residual surface → PoC + verify → impact → dup-risk → report → human-gated submit) with a feedback loop into learning and optional Slack alerting, self-orchestrated by `coordinator.ag`; `prospector` qualifies live on-chain targets; `monitor` derives and watches read-only protocol invariants. Submission and paging stay human-gated throughout — no colony ever auto-posts to a bounty platform. | 34 | Experimental |
 
 To start a new federation, see [`tools/new-federation.sh`](./tools/new-federation.sh) and [`doc/federation-patterns.md`](./doc/federation-patterns.md). The contract every federation must satisfy is [ADR-0003](./doc/adr/ADR-0003-federation-portability-contract.md).
 
@@ -131,7 +131,7 @@ Prerequisites are per-federation; each federation README states its exact runtim
 - **All federations** — the [Agentis](https://github.com/Replikanti/agentis) runtime at or above the federation's pinned floor, and an LLM backend (Claude CLI, Ollama, or any OpenAI-compatible API).
 - **dev-apprenticeship** — a GitLab or GitHub project the agents can reach with an API token.
 - **tribes-bench, research-foundry, trading-binance** — a container runtime (Docker or Podman); they run hermetically from their own orchestrator scripts.
-- **dark-factory** — the Solana/Anchor toolchain pieces documented in its README.
+- **dark-factory** — the EVM (Foundry/Hardhat) and Solana/Anchor toolchain pieces documented in its README.
 
 ## Repository structure
 
@@ -140,7 +140,7 @@ dev-apprenticeship/    # Coder-workflow federation: GitLab/GitHub (22 agents, Be
 tribes-bench/          # Memory-safety bug-hunt harness, 5 tribes (Experimental)
 trading-binance/       # Futures strategy-discovery federation (Experimental)
 research-foundry/      # Research pipeline: novelty -> audit -> preprint (Experimental)
-dark-factory/          # Solana/Anchor bounty-audit federation (Experimental)
+dark-factory/          # EVM + Solana/Anchor gated bounty-hunt federation (Experimental)
 federation-dashboard/  # Standalone, separately-versioned dashboard component (#252)
 tools/                 # Shared platform tooling (lint, auto-promote, kill, scaffolders)
 templates/             # Copy-pasteable starter agents for any ADR-0003 colony

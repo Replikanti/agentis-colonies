@@ -1,24 +1,42 @@
 # Dark Factory
 
-![Version: 0.1.0](https://img.shields.io/badge/version-0.1.0-blue) ![Status: Experimental](https://img.shields.io/badge/status-experimental-purple)
+![Version: 0.2.0](https://img.shields.io/badge/version-0.2.0-blue) ![Status: Experimental](https://img.shields.io/badge/status-experimental-purple)
 
-**Version:** `0.1.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.18.0` · **Status:** Experimental
+**Version:** `0.2.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.18.0` · **Status:** Experimental
 
-> An autonomous Solana/Anchor bounty auditor built as a colony federation on
-> the agentis substrate. It ingests a program, detects an access-control /
-> signer-authorization vulnerability, synthesizes a two-sided proof-of-concept,
-> validates it through the real Solana SVM offline, and writes a standardized
-> Immunefi-shaped report. Submission is human-gated — the colony never posts to
-> a bounty platform.
+> An EVM + Solana/Anchor **bounty-hunt** federation on the agentis substrate. Three
+> colonies cooperate: `auditor` runs an end-to-end **gated bounty-hunt chain**
+> (discover → scope → devise → PoC → impact → dup → report → human-gated submit),
+> `prospector` qualifies live on-chain targets worth watching, and `monitor` derives
+> and watches read-only protocol invariants. Submission and paging are human-gated
+> throughout — no colony ever posts to a bounty platform.
 
 This federation conforms to
 [ADR-0003](../doc/adr/ADR-0003-federation-portability-contract.md). The agent
 contract follows [ADR-0001](../doc/adr/ADR-0001-confidence-tiers.md) end-to-end.
 
+## The three colonies
+
+- **[`auditor/`](./auditor/)** — the bounty-hunt colony (22 agents). It runs the full
+  gated chain: **discovery** (custom-code hunter + DAG fork-matcher), audit-aware
+  **DEVISE** of the residual attack surface, several **generate-and-verify** PoC engines,
+  the hard **gates** (scope → impact → dup) that spend effort only on payable surface, a
+  platform-shaped **report**, and a **human-gated submit** with a feedback loop back into
+  learning. Self-orchestrated by `coordinator.ag`. See the
+  [auditor colony README](./auditor/README.md) for the full agent inventory + the gated
+  submission-pass mermaid.
+- **[`prospector/`](./prospector/)** — a read-only monitoring-target qualifier (4 agents):
+  takes candidate EVM protocols and decides which are worth standing up the `monitor` colony
+  on, and why. Never signs a transaction.
+- **[`monitor/`](./monitor/)** — a continuous, non-custodial protocol monitor (8 agents):
+  watchers read on-chain state (`cast`/RPC) and emit reasoned anomaly alerts; the `notifier`
+  bridges the bus to a configured webhook. Read-only — no agent ever touches funds.
+
 ## What the auditor does
 
-The `auditor` colony runs a one-shot `agentis go` pipeline. Four cooperating
-agents are wired by the substrate emit/listen bus (no polling):
+At its core the `auditor` colony still carries the original **DAG fork-matcher** pipeline
+([`auditor/agents/auditor.ag`](./auditor/agents/auditor.ag)) — a one-shot `agentis go`
+pipeline of four cooperating agents wired by the substrate emit/listen bus (no polling):
 
 ```mermaid
 flowchart LR
@@ -48,6 +66,15 @@ When `SOLANA_HARNESS_DIR` is set, synthesis drives the program through the
 real `solana-runtime` SVM via `solana-program-test` + `BanksClient` (real
 account model, signer/owner checks, lamport conservation); otherwise it uses
 a std-only `rustc` harness (offline-deterministic).
+
+That matcher fires only where in-scope code **recurs a known-bug pattern**. On bespoke,
+never-forked protocols the colony runs the **gated bounty-hunt chain** instead —
+discovery, DEVISE, PoC verification, the scope/impact/dup gates, report rendering, and a
+human-gated submission pass — all self-orchestrated by
+[`auditor/agents/coordinator.ag`](./auditor/agents/coordinator.ag). The complete agent
+inventory and the gated submission-pass diagram live in the
+[auditor colony README](./auditor/README.md); the operator entrypoints that drive it
+(`run-audit.sh`, `run-discovery.sh`, `run-audit-pass.sh`, …) are documented below.
 
 ## Offline toolchain setup (one-time)
 
@@ -561,6 +588,26 @@ dark-factory/state-export.sh import state.tar.gz <dest>     # overlay memo + DAG
 checksum is **not** a signature: it authenticates integrity, not the source. **Sign the manifest
 out-of-band** before distributing a trained federation to a third party.
 
+## Operator config knobs
+
+The bounty-hunt chain adds a few operator-facing knobs (all optional; every one degrades to
+a safe no-op or a documented default). Env knobs read by an `.ag` agent must also be on the
+`.agentis/config` `exec.env_passthrough` allowlist.
+
+| Knob | Read by | Meaning |
+|------|---------|---------|
+| `PASS_ENABLED` | `coordinator.ag` (`run-audit-pass.sh`) | Selects the fixed-order submission pass (scope → devise → poc → impact → dup → report → HALT). Absent = the free-choice coordinator mode. |
+| `PASS_FIXTURE` | `coordinator.ag` | Offline-deterministic stage verdicts (`scope=payable;devise=residual;poc=finding;impact=…`) for the CI path — no network, no real LLM. |
+| `PROJECT_NAME` / `FINDING_ASSET` | `report-writer.ag` | The bounty-platform project name and the specific in-scope asset for the rendered report; default to `<unknown>` when blank. |
+| `--bounty-url` / `--drop-dir` (`$DROP_DIR`) | `deliver-submission.sh` | The bounty link embedded in the staged package, and the operator DROP-DIRECTORY exchange point (default `${DARK_FACTORY_DIR:-$HOME/.dark-factory}/drop`). |
+| `DARK_FACTORY_SLACK_BOT_TOKEN` | `deliver-submission.sh` → `notify-submission.sh` | Slack **bot-mode** delivery of the complete submission package (`xoxb-…`, a `secret://…` URI or raw; Slack app scopes `chat:write` + `files:write`, optional `chat:write.public`). Takes precedence over the webhook when set. |
+| `DARK_FACTORY_SLACK_CHANNEL` (`_WARN` / `_HIGH`) | `notify-submission.sh` | The base channel id (`C0…`) for bot mode, with optional per-severity overrides (Critical/High → `_HIGH`, Medium → `_WARN`). |
+| `DARK_FACTORY_SLACK_WEBHOOK` | `deliver-submission.sh` | The webhook **fallback** finding-ready alert (`secret://…` URI or a raw webhook URL); falls back to `MONITOR_WEBHOOK_URL`. No webhook = a no-op. |
+| `GITHUB_TOKEN` / logged-in `gh` | `deliver-submission.sh` | Enables the best-effort **secret-gist** auto-create (`gh gist create --secret`) for the PoC-form "secret Gist environment"; with no token it degrades to bundling the exact command in `poc/GIST_COMMAND.txt`. Egress is to the operator's OWN GitHub, never a bounty platform. |
+
+Every alert/gist path is a page to the operator's own channel — the never-submit /
+no-bounty-platform-egress invariant is unchanged.
+
 ## Layout
 
 ```
@@ -584,6 +631,10 @@ dark-factory/
   audit-delta.sh                # post-audit-delta detector: `git diff <since>..HEAD` (--repo/--since, optional --paths in-scope filter) -> ONE JSON object with the files changed since the audit + latest-change-days + DELTA/NO-DELTA verdict; the residual surface an audited protocol's rewardable bug lives in (#1506, epic #1505); exit 3 on not-a-git-repo / unresolvable --since; no network, never submits
   fetch-audits.sh               # audit-aware residual hunt (#1485): download a target's public audit reports + pdftotext each PDF -> text + index.tsv (the operator's one network step, like snapshot-rpc.sh); SKIPs cleanly offline; read-only, never submits
   novelty-gate.sh               # audit-aware residual hunt (#1485): reject a finding that RESTATES a known issue (exit 1; matched by shared target function/identifier + salient-term overlap vs the audits' exclusion set) vs pass a genuinely-novel one (exit 0); errs toward flagging for human review
+  run-audit-pass.sh             # bootstrap for the coordinator SUBMISSION PASS (#1509, epic #1505 capstone): one `agentis go coordinator.ag` with PASS_ENABLED sequences scope -> devise -> poc -> impact -> dup -> report -> HALT, hard-halting on a blocking gate; never submits
+  run-poc.sh                    # concrete-exploit PoC entrypoint (#1507): runs poc-writer.ag once to GENERATE one hand-driven attack-SEQUENCE test, then VERIFIES it through the toolchain-parametric gate (hardhat-poc.sh / forge-poc.sh chosen by detect-toolchain.sh); never submits
+  deliver-submission.sh         # delivery muscle (#1526, epic #1505): STAGES report-writer.ag's SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW draft into an operator DROP-DIRECTORY (manifest + OUTCOME.md + PoC + best-effort secret gist); refuses (exit 3) any draft missing the human-gate marker; never contacts a bounty platform
+  notify-submission.sh          # rich Slack BOT-MODE sender (#1541): posts the complete copy-paste-ready submission package to a Slack Bot App (form metadata as a main message + threaded Description/PoC/REPRODUCE file snippets); operator page on the operator's OWN workspace, never a platform submission
   demo-audit-hunter.sh          # offline, deterministic proof of the #1485 audit-aware foundation: novelty-gate flags restated known issues (value-leak/cursor-drift) + passes novel, fetch-audits SKIPs offline + ingests over localhost, exit 0
   demo-coordinator.sh           # offline, deterministic proof of the #1014 fact-driven + evolving-policy loop
   demo-dispatch.sh              # offline, deterministic proof of the #1014 M2 substrate DISPATCH (every action type)
@@ -608,29 +659,56 @@ dark-factory/
   demo-prospector-queue.sh      # offline, deterministic proof of the #1459 bounty-ranked queue: fixture dossiers -> ranked bounty desc, non-qualifying excluded (gates are the floor), scope_hint carries addr+commit, run-batch consumes highest-first, no egress, exit 0
   demo-immunefi-intake.sh       # offline, deterministic proof of #1506 BOTH primitives: audit-delta over a throwaway git fixture (DELTA/NO-DELTA/--paths/bad-repo+since exit3), run-immunefi-intake over an operator-programs fixture (paused dropped, delta-boost > NO-DELTA-big-reward > bounty-only, file==stdout), exit 0
   demo-owner-assert.sh          # proof of the #1457 snapshot owner-rebind hard assert: harness reads the real on-chain owner + emits OWNER REBIND/MATCH/MISMATCH; EXPECT_PROGRAM_OWNER mismatch -> INCONCLUSIVE (exit 3) before the exploit; source-guard (CI-safe) + live 3-mode run when the toolchain is present
+  demo-audit-pass.sh            # offline, deterministic proof of the #1509 coordinator submission pass: scope -> devise -> poc -> impact -> dup -> report -> HALT with hard early-exit gates and a human-gated halt
+  demo-scope-gate.sh            # offline proof of the #1511 scope + eligibility gate scope-gate.ag (in-scope asset + eligible impact -> PAYABLE; carve-out/out-of-scope -> BLOCKED)
+  demo-impact-gate.sh           # offline proof of the #1522 impact-substantiation gate impact-gate.ag (own-mechanism impact -> SUBSTANTIATED; hand-fed/privileged -> rejected)
+  demo-dup-scout.sh             # offline proof of the #1503 dup-risk estimator dup-scout.ag (git freshness/patch-status/audit-coverage -> heuristic already-reported probability)
+  demo-poc-gen.sh               # offline proof of the #1507 concrete-exploit PoC class (hardhat + non-invariant foundry): poc-writer.ag + the polarity-inverting toolchain gate
+  demo-audit-scout.sh           # offline proof of the #1487 audit-aware DEVISE stage audit-scout.ag (ingest a target's audits -> RESIDUAL attack surface + exclusion boundary)
+  demo-report-writer.sh         # offline proof of the #1508 report formatter report-writer.ag (confirmed finding + PoC + gate verdicts -> Immunefi-shaped 4-section SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW)
+  demo-feedback-loop.sh         # offline proof of the #1526 human<->federation feedback loop: deliver-submission.sh drop-dir + feedback-intake.ag folding OUTCOME.md back into learning (no platform API/scrape)
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
   sealevel-scorecard.md         # calibration results (3/3 true-positive, 0 false-VERIFIED)
-  auditor/                      # the single colony
+  auditor/                      # the bounty-hunt colony (22 agents)
     agents/auditor.ag           # the DAG-match pipeline (reconn → guard → tracker → synthesis)
-    agents/hunter.ag            # the custom-code discovery agent (taxonomy-driven adversarial hunt)
-    agents/poc-screener.ag      # substrate-native lead pre-screen via eval_ag (sandboxed PoC harness)
-    agents/refuter.ag           # the adversarial-refutation agent (independent skeptic; default REFUTED)
-    agents/symbolic-prover.ag   # generate-and-verify: LLM writes a Halmos spec, Halmos returns the sound verdict (#1015 M2)
-    agents/invariant-prover.ag  # stateful-fuzzing generate-and-verify: LLM writes a handler+deep invariants, the fuzzer returns the verdict + shrunk exploit sequence (#1035); RECALLs a prior winning pattern before GENERATE + PERSISTs one on a FINDING to the invpat:* DAG memory (Int M3, #1037)
-    agents/fitness-driver.ag    # one fitness-loop cell: hunter.ag's exact learn() over a ground-truth verdict
-    agents/method-inventor.ag   # the meta-loop inventor: proposes a new audit method for a known gap (#998)
-    agents/coordinator.ag       # self-orchestrating decider: fact+policy-driven actions (#1014); gated in-substrate dispatch for every action type (M2); gated in-substrate MULTI-STEP loop (M3)
+    agents/coordinator.ag       # self-orchestrating decider: fact+policy-driven actions (#1014); in-substrate dispatch (M2) + MULTI-STEP loop (M3); PASS_ENABLED submission-pass mode (#1509)
     agents/dispatcher.ag        # the substrate action-DISPATCH agent fn (emit/listen + durable verdict memo; #1014 M2); standalone sync-guard copy (fixture + symbolic-prove); invariant-hunt/auto-harness live routes coordinator-only (#1049)
+    agents/hunter.ag            # the custom-code discovery agent (taxonomy-driven adversarial hunt)
+    agents/audit-scout.ag       # audit-aware DEVISE (#1487): ingest a target's audits -> the RESIDUAL surface prior auditors missed + the exclusion boundary
+    agents/scope-gate.ag        # scope + eligibility gate (#1511): PAYABLE only if in-scope asset + eligible, non-excluded impact
+    agents/impact-gate.ag       # impact-substantiation gate (#1522): SUBSTANTIATED only if the PoC drives the impact through the protocol's own mechanism
+    agents/dup-scout.ag         # dup-risk estimator (#1503): heuristic already-reported probability from git freshness/patch-status/audit-coverage (advisory)
+    agents/poc-writer.ag        # concrete-exploit-sequence PoC writer (#1507): one hand-driven attack test, verdict = the toolchain gate's exit code
+    agents/poc-screener.ag      # substrate-native lead pre-screen via eval_ag (sandboxed PoC harness; #997)
+    agents/refuter.ag           # the adversarial-refutation agent (independent skeptic; default REFUTED; #999)
+    agents/symbolic-prover.ag   # generate-and-verify: LLM writes a Halmos spec, Halmos returns the sound verdict (#1015 M2)
+    agents/invariant-prover.ag  # stateful-fuzzing generate-and-verify: LLM writes a handler+deep invariants, the fuzzer returns the verdict + shrunk exploit sequence (#1035); RECALLs/PERSISTs winning patterns to the invpat:* DAG (Int M3, #1037)
     agents/stateful-invariant-fuzz.ag  # generated by gen-agent.sh from the like-named method (#1000)
+    agents/report-writer.ag     # submission report formatter (#1508): confirmed finding + PoC + gate verdicts -> Immunefi-shaped 4-section SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW
+    agents/feedback-intake.ag   # feedback loop (#1526): reads the operator's OUTCOME.md and folds the platform response back into learning, attributed to the responsible gate
+    agents/method-inventor.ag   # the meta-loop inventor: proposes a new audit method for a known gap (#998)
+    agents/fitness-driver.ag    # one fitness-loop cell: hunter.ag's exact learn() over a ground-truth verdict (#996)
+    agents/seed-patterns.ag     # seed one known-bug pattern into the bugpat:* DAG memo (#861)
+    agents/recall-match.ag      # match one held-out target against the seeded bugpat DAG (the recall harness; #861 M3)
+    agents/share-patterns.ag    # publish locally-seeded patterns to the knowledge market (knowledge_sell; #861)
+    agents/pattern-evolver.ag   # evolve the fuzzy matcher's granularity genome against the fork-pair recall oracle (#861 M4)
     methods/registry.md         # the method registry gen-agent.sh reads (METHOD| lines; #998 loop, #1000 generator)
     methods/gap-stateful.md     # a documented gap the current method-set misses (the #998 invent trigger)
     method-discovery/controls/  # paired Buggy/Safe control corpus (the two-sided adoption gate)
     bug-taxonomy.md             # 14 DeFi bug classes + per-class hunt lens (the discovery knowledge)
     slice-fns.sh                # Solidity function-slicer (scope `file@fn1+fn2` -> header + named fns)
     config/colony.example.toml  # forge.type = "none"; cb_budget
-    scripts/start-colony.sh     # thin `agentis go` launcher
+    scripts/start-colony.sh     # thin `agentis go` launcher (the legacy auditor.ag pipeline)
+    scripts/run-gate-agent.sh   # thin LIVE runner for a single-verdict-line gate .ag, used by the coordinator submission pass (#1509)
+    README.md                   # full agent inventory + the gated submission-pass mermaid
+  prospector/                   # monitoring-target qualifier colony (4 agents; read-only)
+    agents/{coordinator,intake,source-classifier,value-scorer}.ag
+    README.md
+  monitor/                      # continuous non-custodial protocol monitor (8 agents; read-only)
+    agents/{coordinator,flow-watcher,governance-watcher,invariant-watcher,liquidity-watcher,oracle-watcher,pause-state-watcher,notifier}.ag
+    scripts/notify.sh           # bus->webhook finding-ready alert (reused by deliver-submission.sh)
     README.md
   solana-harness/               # offline solana-program-test crate (real SVM, native)
   solana-harness-anchor/        # offline anchor-lang 0.31 harness (real SVM, Anchor) (V6)
@@ -638,6 +716,9 @@ dark-factory/
     forge-verify.sh             # multi-contract custom-protocol PoC gate (real Foundry deploy+exploit)
     halmos-verify.sh            # sound symbolic gate: PROVES an invariant or returns a counterexample (Halmos+z3; #1015)
     forge-invariant.sh          # stateful-fuzzing gate: drives Foundry invariant fuzzing -> FINDING (+ shrunk sequence) / CLEAN / HARNESS_ERROR (#1035)
+    forge-poc.sh                # concrete-exploit verdict gate for FOUNDRY projects: a PASSING attack test is a FINDING (#1507)
+    hardhat-poc.sh              # concrete-exploit verdict gate for HARDHAT projects: a PASSING mocha/ethers exploit test is a FINDING (#1507)
+    detect-toolchain.sh         # pick hardhat-vs-forge for a target by file presence, set POC_KIND/POC_HARNESS/POC_OUT (#1507)
     halmos-specs/               # self-contained Foundry specs: one Halmos PROVES, one it REFUTES (demo fixtures)
   docs/halmos.md                # the Halmos gate's verdict/exit contract, toolchain install, epic fit (#1015)
   docs/generate-verify.md       # the #1015 M2 generate-and-verify loop: LLM hypothesizes, Halmos proves; verdict-source contract
