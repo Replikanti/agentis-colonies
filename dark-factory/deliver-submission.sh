@@ -27,6 +27,17 @@
 # MONITOR_WEBHOOK_URL. With no webhook configured this is a no-op (notify.sh's own stdout no-op fallback,
 # redirected to stderr here) — no network, no behaviour change.
 #
+# Slack BOT-MODE full package (#1541, opt-in, takes precedence over the webhook): when a Slack Bot App is
+# configured — DARK_FACTORY_SLACK_BOT_TOKEN (an `xoxb-…`, a `secret://...` URI or raw; scopes chat:write +
+# files:write, optional chat:write.public) AND DARK_FACTORY_SLACK_CHANNEL (`C0…`, optional per-severity
+# DARK_FACTORY_SLACK_CHANNEL_WARN/_HIGH) — this hands the COMPLETE submission package to dark-factory/
+# notify-submission.sh, which posts the form metadata as a main message and threads the Description + PoC
+# snippets beneath it (chat.postMessage + the modern external file-upload flow). The resolved token is passed to
+# that sender via the ENVIRONMENT (never argv, never echoed) and the whole call is `>&2 || true` so a Slack
+# outage can never fail a good stage nor corrupt the one-line staged-path stdout contract. Like the webhook, this
+# is an operator page on the operator's OWN workspace — NOT a bounty-platform submission; it adds no
+# bounty-platform egress and the never-submit invariant is unchanged.
+#
 # Correlation (load-bearing): the stable submission id is `<target>@<in-scope-commit>:<finding-slug>` (e.g.
 # `enzyme-onyx@a1b2c3d:sync-deposit-nav-frontrun`). It is written VERBATIM into manifest.json (the authoritative
 # correlation record) and echoed as a comment header in OUTCOME.md. The on-disk subdir name is a filesystem-safe
@@ -49,7 +60,7 @@
 #          [--target T] [--commit C] [--finding-slug S] [--title T] [--location L] [--impact I] \
 #          [--impact-class K] [--severity B] [--scope-verdict L] [--impact-verdict L] [--dup-risk L] \
 #          [--drop-dir DIR] [--poc-file P ...] [--poc-run P] [--poc-kind foundry|hardhat] \
-#          [--poc-target C.sol[:Name]] [--poc-match PREFIX]
+#          [--poc-target C.sol[:Name]] [--poc-match PREFIX] [--bounty-url URL]
 # Requires: bash + python3 (gh optional, for the secret gist). Exit: 0 staged, 2 bad/missing args, 3 draft
 # missing the human-gate marker.
 set -u
@@ -64,7 +75,7 @@ nv() { [ "$1" -ge 2 ] || { echo "deliver-submission.sh: $2 requires a value" >&2
 
 ID="" ; DRAFT_FILE="" ; TARGET="" ; COMMIT="" ; FINDING_SLUG="" ; TITLE="" ; LOCATION="" ; IMPACT=""
 IMPACT_CLASS="" ; SEVERITY="" ; SCOPE_VERDICT="" ; IMPACT_VERDICT="" ; DUP_RISK=""
-POC_FILES=() ; POC_RUN="" ; POC_KIND="" ; POC_TARGET="" ; POC_MATCH="test"
+POC_FILES=() ; POC_RUN="" ; POC_KIND="" ; POC_TARGET="" ; POC_MATCH="test" ; BOUNTY_URL=""
 while [ $# -gt 0 ]; do case "$1" in
   --id)             nv "$#" "$1"; ID="$2"; shift 2;;
   --draft-file)     nv "$#" "$1"; DRAFT_FILE="$2"; shift 2;;
@@ -85,6 +96,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --poc-kind)       nv "$#" "$1"; POC_KIND="$2"; shift 2;;
   --poc-target)     nv "$#" "$1"; POC_TARGET="$2"; shift 2;;
   --poc-match)      nv "$#" "$1"; POC_MATCH="$2"; shift 2;;
+  --bounty-url)     nv "$#" "$1"; BOUNTY_URL="$2"; shift 2;;
   -h|--help)        sed -n '2,54p' "$0"; exit 0;;
   *) echo "deliver-submission.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
@@ -262,7 +274,7 @@ SUBMISSION_ID="$ID" TARGET="$TARGET" IN_SCOPE_COMMIT="$COMMIT" FINDING_SLUG="$FI
 FINDING_TITLE="$TITLE" FINDING_LOCATION="$LOCATION" FINDING_IMPACT="$IMPACT" IMPACT_CLASS="$IMPACT_CLASS" \
 SEVERITY_BAND="$SEVERITY" SCOPE_VERDICT="$SCOPE_VERDICT" IMPACT_VERDICT="$IMPACT_VERDICT" DUP_RISK="$DUP_RISK" \
 DRAFT_TEXT="$DRAFT" POC_FILES_JOINED="$POC_FILES_JOINED" POC_RUN_REL="$POC_RUN_REL" \
-REPRODUCE_REL="$REPRODUCE_REL" GIST_URL="$GIST_URL" \
+REPRODUCE_REL="$REPRODUCE_REL" GIST_URL="$GIST_URL" BOUNTY_URL="$BOUNTY_URL" \
 python3 - > "$STAGE/manifest.json" <<'PY'
 import json, os, datetime
 # Extract the five FIELD|<label>|<value> lines the report-writer draft carries into a nested immunefi_fields dict
@@ -292,6 +304,7 @@ d = {
     "poc_run":         os.environ.get("POC_RUN_REL", ""),
     "reproduce":       os.environ.get("REPRODUCE_REL", ""),
     "gist_url":        os.environ.get("GIST_URL", ""),
+    "bounty_url":      os.environ.get("BOUNTY_URL", ""),
     "created_at":      datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "status":          "delivered",
 }
@@ -318,11 +331,39 @@ printf '%s\n' "$DRAFT" > "$STAGE/submission-draft.md"
 
 echo "deliver-submission.sh: staged $ID -> $STAGE (PENDING HUMAN REVIEW — NOT SUBMITTED)" >&2
 
-# --- Slack/Discord finding-ready alert (#1538, opt-in, best-effort, additive) ---------------------------------
-# An operator PAGE on the operator's OWN webhook — NOT a platform submission; the never-submit invariant above
-# is unchanged. Gated purely on a configured webhook (resolved below); with none configured this degrades to
-# notify.sh's own stdout no-op fallback, redirected to stderr so it can never corrupt this script's documented
-# stdout contract (the staged path, printed below) — the single most load-bearing detail of this wiring.
+# --- operator alert on a successful stage (opt-in, best-effort, additive) -------------------------------------
+# Three mutually-exclusive paths, ALL operator-OWN channels (NOT a platform submission; the never-submit
+# invariant above is unchanged) and ALL redirected to stderr so THIS script's documented one-line staged-path
+# stdout contract (printed below) can never be corrupted — the single most load-bearing detail of this wiring:
+#   1. BOT MODE (#1541): DARK_FACTORY_SLACK_BOT_TOKEN + DARK_FACTORY_SLACK_CHANNEL configured -> the RICH full
+#      submission package via notify-submission.sh (chat.postMessage + threaded Description/PoC snippets).
+#   2. WEBHOOK MODE (#1538): DARK_FACTORY_SLACK_WEBHOOK / MONITOR_WEBHOOK_URL -> the single finding-ready alert.
+#   3. neither -> notify.sh's own stdout no-op fallback (redirected to stderr) — no network, no behaviour change.
+#
+# Resolve the bot token FIRST (secret:// -> plaintext; a raw `xoxb-…` is returned verbatim, the
+# DARK_FACTORY_SLACK_WEBHOOK precedent). The resolved token lives ONLY in RESOLVED_BOT_TOKEN and is handed to
+# notify-submission.sh via the ENVIRONMENT — never argv, never echoed.
+RESOLVED_BOT_TOKEN=""
+if [ -n "${DARK_FACTORY_SLACK_BOT_TOKEN:-}" ]; then
+  if [ -f "$SCRIPT_DIR/../tools/parse-toml-secret.py" ]; then
+    RESOLVED_BOT_TOKEN="$(python3 "$SCRIPT_DIR/../tools/parse-toml-secret.py" --resolve "$DARK_FACTORY_SLACK_BOT_TOKEN" 2>/dev/null)"
+  else
+    RESOLVED_BOT_TOKEN="$DARK_FACTORY_SLACK_BOT_TOKEN"
+  fi
+fi
+
+if [ -n "$RESOLVED_BOT_TOKEN" ] && [ -n "${DARK_FACTORY_SLACK_CHANNEL:-}" ] && [ -f "$SCRIPT_DIR/notify-submission.sh" ]; then
+  # BOT MODE — the rich full package. Token/channel via env (never argv); `>&2 || true` keeps the one-line stdout
+  # contract and best-effort non-fatality (a Slack outage never fails a stage that already succeeded).
+  DARK_FACTORY_SLACK_BOT_TOKEN="$RESOLVED_BOT_TOKEN" \
+  DARK_FACTORY_SLACK_CHANNEL="$DARK_FACTORY_SLACK_CHANNEL" \
+  DARK_FACTORY_SLACK_CHANNEL_WARN="${DARK_FACTORY_SLACK_CHANNEL_WARN:-}" \
+  DARK_FACTORY_SLACK_CHANNEL_HIGH="${DARK_FACTORY_SLACK_CHANNEL_HIGH:-}" \
+    bash "$SCRIPT_DIR/notify-submission.sh" --stage "$STAGE" >&2 || true
+else
+# WEBHOOK MODE / no-op (#1538, opt-in, best-effort, unchanged) — the finding-ready alert on the operator's OWN
+# webhook. Gated purely on a configured webhook (resolved below); with none configured this degrades to notify.sh's
+# own stdout no-op fallback, redirected to stderr.
 RESOLVED_WEBHOOK="${MONITOR_WEBHOOK_URL:-}"
 if [ -n "${DARK_FACTORY_SLACK_WEBHOOK:-}" ]; then
   if [ -f "$SCRIPT_DIR/../tools/parse-toml-secret.py" ]; then
@@ -378,6 +419,7 @@ print(json.dumps({
 # stdout contract. `|| true`: a broken/bogus webhook (notify.sh exit 3/4) must never fail a stage that already
 # succeeded — delivery is pure best-effort muscle.
 MONITOR_WEBHOOK_URL="$RESOLVED_WEBHOOK" bash "$SCRIPT_DIR/monitor/scripts/notify.sh" "$ALERT" >&2 || true
+fi
 
 printf '%s\n' "$STAGE"
 exit 0

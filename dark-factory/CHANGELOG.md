@@ -15,6 +15,35 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Slack BOT-MODE delivery of the COMPLETE submission package** (#1541, epic #1505). A configured Slack Bot App
+  now receives the whole copy-paste-ready Immunefi package on a successful stage — not a one-line alert. Opt-in,
+  best-effort, and additive: every existing invariant stays byte-intact (the exit-3 marker guard, the #1540 gist/
+  PoC staging, the #1538 webhook alert as the fallback, the never-submit / no-bounty-platform-egress contract, and
+  the one-line staged-path stdout relied on by `demo-feedback-loop.sh` + `feedback-intake.ag`).
+  - **New `dark-factory/notify-submission.sh`** (bash) — the rich full-package sender. Posts the five form-metadata
+    fields (Project/Asset/Impact/Severity/Title) + the bounty link + the secret-gist link as a main
+    `chat.postMessage` (mrkdwn), captures its `ts`, then threads the Description (the marker/`FIELD|`-stripped
+    4-section body), each PoC source, `REPRODUCE.md`, and the run-evidence beneath it as file snippets via the
+    MODERN external file-upload flow (`files.getUploadURLExternal` + `files.completeUploadExternal`, scope
+    `files:write` — NOT the deprecated `files.upload`). SUCCESS is HTTP 2xx **AND** `ok==true` (python3 parse — a
+    `200 {"ok":false}` is a FAILURE); a transient 5xx/transport error retries with bounded backoff, a hard
+    `ok:false` is a loud non-retry warning printing only the Slack error code. The channel is chosen by severity
+    (Critical/High→`_HIGH`, Medium→`_WARN`, else base). Every upload is best-effort (warn + skip, never fatal).
+  - **`monitor/scripts/notify.sh` gains a single-post bot-mode** (POSIX-sh, dash-safe) — when
+    `MONITOR_SLACK_BOT_TOKEN` (`xoxb-…`) + `MONITOR_SLACK_CHANNEL` (`C0…`) are set it delivers one
+    `chat.postMessage` (Bearer, `{channel,text}`, 2xx AND `ok==true`, `ok:false`→exit 4) instead of the webhook,
+    with optional `MONITOR_SLACK_CHANNEL_WARN/_HIGH` per-severity routing, reusing the existing retry/backoff +
+    dedup. Bot vars UNSET → the webhook path + stdout no-op are byte-identical to before.
+  - **`deliver-submission.sh`** grows a `--bounty-url <url>` flag (new `bounty_url` manifest key, empty default,
+    every existing key preserved) and routes on a successful stage: bot creds resolve → the rich
+    `notify-submission.sh` package (token/channel via ENV, never argv; `>&2 || true`); else the #1538 webhook alert
+    (unchanged); else the stdout no-op (unchanged). The resolved token appears only in the `Authorization` header,
+    never echoed.
+  - **Config the operator sets**: `DARK_FACTORY_SLACK_BOT_TOKEN` (an `xoxb-…`, a `secret://…` URI or raw) +
+    `DARK_FACTORY_SLACK_CHANNEL` (`C0…`, optional `…_WARN`/`…_HIGH`); Slack app scopes `chat:write` + `files:write`
+    (+ optional `chat:write.public`). A bot post to the operator's OWN workspace is NOT a bounty-platform
+    submission — the never-submit invariant is unchanged. Proven offline by `demo-feedback-loop.sh` part 6 (a smart
+    stubbed `curl`, a fake token, no network).
 - **Complete Immunefi PoC-form artifact set + auto secret-gist in the submission package** (#1540, epic #1505).
   `deliver-submission.sh` grows from staging the prose draft into staging the COMPLETE PoC-form bundle a human
   files out-of-band — additively, keeping every existing invariant byte-intact (the exit-3 marker guard, the
