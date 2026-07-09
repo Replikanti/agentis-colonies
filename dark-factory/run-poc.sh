@@ -206,11 +206,28 @@ case "$VERD" in
 esac
 POC_FILE_LINE="$(grep '^POC-FILE|' "$CELL_LOG" | tail -1 | sed 's/^POC-FILE|//' || true)"
 
+# --- Durable run-evidence capture (#1540, best-effort, FINDING-gated) ---------------------------------------
+# On a FINDING, re-invoke the gate DIRECTLY against the warm rundir (deps/build cached from the run just done) to
+# capture a human-readable passing run-log for the submission package (deliver-submission.sh --poc-run). The
+# verdict is ALREADY fixed above, so this can NEVER regress the classify — it only writes poc-run.txt. bash,
+# never sh (the #1507/#1534 dash lesson); `|| true` so a warm-re-run hiccup never fails the run.
+POC_RUN_TXT="$OUT/poc-run.txt"
+if [ "$VERD" = "FINDING" ]; then
+  bash "$GATE_IN_RUN" --repo "$REPO_IN_RUN" --target "$POC_OUT" --match "$MATCH" >"$POC_RUN_TXT" 2>&1 || true
+fi
+
 # Machine-readable verdict line on our OWN stdout, in the same `PREFIX|VALUE` shape the five .ag gates emit, so
 # a caller that scrapes run-poc.sh directly (coordinator.ag::run_poc_live -> poc_class()) can grep the verdict
 # without reaching into the throwaway per-run cell log. ADDITIVE (#1535): it does NOT replace the human-facing
 # `================ POC: $TARGET -> $VERD ================` banner below (pinned by demo-poc-gen.sh's e2e grep).
 echo "POC|$TARGET|$VERD"
+
+# #1540: on a FINDING, surface the runnable PoC path + the captured run-log on our OWN stdout (additive to the
+# POC| line), so a caller (the coordinator hand-off / deliver-submission --poc-file/--poc-run) can bundle them.
+if [ "$VERD" = "FINDING" ]; then
+  echo "POC-FILE|$POC_OUT"
+  echo "POC-RUN|$POC_RUN_TXT"
+fi
 
 GEN_KIND="generated(LLM)"; [ -n "$FIXTURE_IN_RUN" ] && GEN_KIND="fixture"
 
@@ -234,6 +251,10 @@ REPORT="$OUT/poc-report.md"
     echo
     echo "\`$POC_FILE_LINE\`"
     echo
+    if [ -f "$POC_RUN_TXT" ]; then
+      echo "Captured run-evidence (a passing PoC run-log): \`$POC_RUN_TXT\`"
+      echo
+    fi
     echo "A human triages + runs this candidate before any submission. This colony never posts."
   fi
 } > "$REPORT"

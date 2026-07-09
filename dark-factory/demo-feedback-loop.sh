@@ -5,7 +5,7 @@
 # dark-factory demos (demo-report-writer.sh / demo-immunefi-intake.sh): assert-based PASS/FAIL lines, a temp
 # drop-dir trap-cleaned, exit non-zero on regression, exit 3 if a component is missing.
 #
-# FOUR parts:
+# FIVE parts:
 #   1) DELIVERY (offline, real): run deliver-submission.sh over a fixture report-writer draft carrying the
 #      SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW marker + fixture gate verdicts + a stable id -> assert the drop-dir
 #      has manifest.json + submission-draft.md + OUTCOME.md, that manifest.json carries the canonical
@@ -28,6 +28,14 @@
 #      `bash`, never `sh`, for the notify.sh invocation; and — the single most load-bearing check in this file —
 #      that deliver-submission.sh's documented stdout contract (the staged path, ONE line, nothing else) still
 #      holds with a webhook configured, proving the notify subprocess's stdout is correctly redirected to stderr.
+#   5) POC ARTIFACT SET (offline, #1540): the complete Immunefi PoC-form bundle deliver-submission.sh now stages
+#      when a PoC is supplied — the verbatim PoC source under poc/, a captured passing run-log (poc-run.txt), a
+#      generated REPRODUCE.md, the FIELD->immunefi_fields manifest extraction, and the operator's-OWN-GitHub
+#      secret gist auto-created via `gh gist create --secret`. A `gh` STUB on PATH (mirroring the part-4 curl
+#      stub) proves the gist command shape + the graceful no-token fallback (bundled command + placeholder) with
+#      NO network. Asserts: byte-identical poc/run-log, REPRODUCE.md content, nested immunefi_fields, the stubbed
+#      gist URL in the manifest, the one-line stdout contract WITH the gist stub active, the marker guard running
+#      BEFORE any poc staging/gist, writeup-only degradation, and the no-FIELD default-to-"" case.
 #
 # All shell sub-scripts are invoked with `bash` (never `sh`) per the #1507 dash lesson.
 #
@@ -355,13 +363,194 @@ EXPECT_E="$DROP_E/$(printf '%s' "$NID_E" | sed 's/[^A-Za-z0-9._@-]/-/g')"
   || bad "stdout did not equal the staged path: [$STDOUT_E]"
 
 # ----------------------------------------------------------------------------------------------------------
+# 5) POC ARTIFACT SET — the complete Immunefi PoC-form bundle (#1540): poc/<source> + poc-run.txt + REPRODUCE.md
+#    + the FIELD->immunefi_fields manifest extraction + the operator's-OWN-GitHub secret gist. A `gh` STUB on
+#    PATH proves the gist command shape offline + the no-token fallback. No network anywhere.
+# ----------------------------------------------------------------------------------------------------------
+note "5) complete PoC-form artifact set + secret-gist auto-create (offline, gh stubbed) ..."
+
+# Restore the script's documented `set -uo pipefail` (NO -e) mode: part 3's optional agentis live-run block flips
+# `set -e` on and leaves it on when the runtime is present, which would otherwise abort this section on the
+# INTENTIONAL exit-3 marker-guard probe below (assertions here gate on explicit RC / && ok || bad, not on -e).
+set +e
+
+# jget_nested: read a nested field (immunefi_fields.<k>) from a JSON file, deterministic, no jq.
+jget_nested() { python3 -c 'import sys,json; print(json.load(open(sys.argv[1])).get(sys.argv[2],{}).get(sys.argv[3],""))' "$1" "$2" "$3"; }
+
+# A `gh` STUB on PATH (mirrors the part-4 curl stub): logs every invocation to $GH_LOG, prints a fixed fake URL
+# for `gist create`, and exits per GH_STUB_MODE for `auth status` (authed->0, notoken->1). No real network.
+FAKE_GIST_URL="https://gist.github.com/local-demo/0000000000000000000000000000dead"
+{
+  printf '%s\n' "#!/bin/sh"
+  printf '%s\n' 'echo "$*" >> "$GH_LOG"'
+  printf '%s\n' 'case "$1" in'
+  printf '%s\n' "  gist) echo \"$FAKE_GIST_URL\"; exit 0 ;;"
+  printf '%s\n' '  auth) [ "${GH_STUB_MODE:-authed}" = notoken ] && exit 1; exit 0 ;;'
+  printf '%s\n' 'esac'
+  printf '%s\n' 'exit 0'
+} > "$FAKEBIN/gh"
+chmod +x "$FAKEBIN/gh"
+
+# Fixtures: a marked draft carrying the five FIELD| lines, a tiny foundry PoC, a fixture passing run-log.
+PID="enzyme-onyx@a1b2c3d:sync-deposit-nav-frontrun-poc"
+PDRAFT="$WORK/poc-draft.md"
+{
+  printf '%s\n' "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW"
+  printf '%s\n' "FIELD|project|Enzyme Onyx"
+  printf '%s\n' "FIELD|asset|SyncDepositHandler.sol"
+  printf '%s\n' "FIELD|impact|Theft of pre-update holders unclaimed yield"
+  printf '%s\n' "FIELD|severity|Critical"
+  printf '%s\n' "FIELD|title|SyncDepositHandler NAV front-running"
+  printf '%s\n' ""
+  printf '%s\n' "## Brief/Intro"
+  printf '%s\n' "A NAV front-running finding. DRAFT for human review; never auto-submitted."
+  printf '%s\n' "## References"
+  printf '%s\n' "$SCOPE_V"
+} > "$PDRAFT"
+
+PPOC="$WORK/Poc_frontrun.t.sol"
+{
+  printf '%s\n' "// SPDX-License-Identifier: MIT"
+  printf '%s\n' "pragma solidity ^0.8.20;"
+  printf '%s\n' "contract PocFrontrun {"
+  printf '%s\n' "  function test_frontrun() external pure {"
+  printf '%s\n' "    require(true, \"exploit reproduced\");"
+  printf '%s\n' "  }"
+  printf '%s\n' "}"
+} > "$PPOC"
+POC_BASENAME="$(basename "$PPOC")"
+
+PRUN="$WORK/poc-run-fixture.txt"
+{
+  printf '%s\n' "Running 1 test for test/Poc_frontrun.t.sol:PocFrontrun"
+  printf '%s\n' "[PASS] test_frontrun() (gas: 21000)"
+  printf '%s\n' "Suite result: ok. 1 passed; 0 failed; 0 skipped"
+} > "$PRUN"
+
+pid_slug() { printf '%s' "$1" | sed 's/[^A-Za-z0-9._@-]/-/g'; }
+
+# --- (a) full artifact set + gh authed: byte-identical poc, run-log, REPRODUCE.md, nested fields, gist URL. ----
+DROP5A="$WORK/drop-poc-a"; GH_LOG_A="$WORK/gh-a.log"
+STAGED5A="$(env GH_STUB_MODE=authed GITHUB_TOKEN=fake GH_LOG="$GH_LOG_A" PATH="$FAKEBIN:$PATH" \
+  bash "$DELIVER" --id "$PID" --draft-file "$PDRAFT" --target enzyme-onyx --severity Critical \
+    --poc-file "$PPOC" --poc-run "$PRUN" --poc-kind foundry --poc-match test \
+    --drop-dir "$DROP5A" 2>/dev/null)"; RC=$?
+[ "$RC" -eq 0 ] && ok "(a) stage with --poc-file/--poc-run/--poc-kind + gh authed exits 0" || bad "(a) exited $RC (expected 0)"
+LINES_5A="$(printf '%s\n' "$STAGED5A" | wc -l | tr -d ' ')"
+if [ "$LINES_5A" = "1" ] && [ "$STAGED5A" = "$DROP5A/$(pid_slug "$PID")" ]; then
+  ok "(a) stdout is exactly ONE line == the staged path (gh stub active — the gist URL never leaks to stdout)"
+else
+  bad "(a) stdout not a one-line staged path: [$STAGED5A]"
+fi
+cmp -s "$PPOC" "$STAGED5A/poc/$POC_BASENAME" \
+  && ok "(a) poc/$POC_BASENAME is byte-identical to the fixture PoC (cmp)" || bad "(a) poc source not byte-identical"
+cmp -s "$PRUN" "$STAGED5A/poc-run.txt" \
+  && ok "(a) poc-run.txt equals the fixture run-log (cmp)" || bad "(a) poc-run.txt mismatch"
+if grep -q 'forge test' "$STAGED5A/REPRODUCE.md" && grep -q -- '--match' "$STAGED5A/REPRODUCE.md" \
+   && grep -q "$POC_BASENAME" "$STAGED5A/REPRODUCE.md" && grep -q '\[PASS\]' "$STAGED5A/REPRODUCE.md"; then
+  ok "(a) REPRODUCE.md carries the forge command + --match + the poc basename + [PASS]"
+else
+  bad "(a) REPRODUCE.md missing forge/--match/basename/[PASS]"
+fi
+[ "$(jget_nested "$STAGED5A/manifest.json" immunefi_fields project)"  = "Enzyme Onyx" ]                        && ok "(a) manifest immunefi_fields.project == the FIELD value"  || bad "(a) immunefi_fields.project mismatch"
+[ "$(jget_nested "$STAGED5A/manifest.json" immunefi_fields asset)"    = "SyncDepositHandler.sol" ]             && ok "(a) manifest immunefi_fields.asset == the FIELD value"    || bad "(a) immunefi_fields.asset mismatch"
+[ "$(jget_nested "$STAGED5A/manifest.json" immunefi_fields impact)"   = "Theft of pre-update holders unclaimed yield" ] && ok "(a) manifest immunefi_fields.impact == the FIELD value" || bad "(a) immunefi_fields.impact mismatch"
+[ "$(jget_nested "$STAGED5A/manifest.json" immunefi_fields severity)" = "Critical" ]                          && ok "(a) manifest immunefi_fields.severity == the FIELD value" || bad "(a) immunefi_fields.severity mismatch"
+[ "$(jget_nested "$STAGED5A/manifest.json" immunefi_fields title)"    = "SyncDepositHandler NAV front-running" ] && ok "(a) manifest immunefi_fields.title == the FIELD value"  || bad "(a) immunefi_fields.title mismatch"
+[ "$(jget "$STAGED5A/manifest.json" gist_url)" = "$FAKE_GIST_URL" ] \
+  && ok "(a) manifest gist_url == the stubbed gist URL" || bad "(a) gist_url mismatch: $(jget "$STAGED5A/manifest.json" gist_url)"
+[ "$(python3 -c 'import sys,json; print(",".join(json.load(open(sys.argv[1])).get("poc_files",[])))' "$STAGED5A/manifest.json")" = "$POC_BASENAME" ] \
+  && ok "(a) manifest poc_files lists the staged basename" || bad "(a) manifest poc_files mismatch"
+if grep -q 'gist create' "$GH_LOG_A" && grep -q -- '--secret' "$GH_LOG_A" && grep -q "poc/$POC_BASENAME" "$GH_LOG_A"; then
+  ok "(a) the gh log shows 'gist create --secret ... poc/<file>'"
+else
+  bad "(a) gh log missing gist create/--secret/poc file: $(cat "$GH_LOG_A" 2>/dev/null)"
+fi
+
+# --- (b) no-token fallback: gist_url == placeholder, GIST_COMMAND.txt bundled, gh never runs `gist create`. -----
+DROP5B="$WORK/drop-poc-b"; GH_LOG_B="$WORK/gh-b.log"
+STAGED5B="$(env -u GITHUB_TOKEN -u GH_TOKEN GH_STUB_MODE=notoken GH_LOG="$GH_LOG_B" PATH="$FAKEBIN:$PATH" \
+  bash "$DELIVER" --id "$PID" --draft-file "$PDRAFT" --target enzyme-onyx --severity Critical \
+    --poc-file "$PPOC" --poc-run "$PRUN" --poc-kind foundry --drop-dir "$DROP5B" 2>/dev/null)"; RC=$?
+[ "$RC" -eq 0 ] && ok "(b) no-token stage still exits 0 (graceful degradation)" || bad "(b) exited $RC (expected 0)"
+GIST_URL_B="$(jget "$STAGED5B/manifest.json" gist_url)"
+printf '%s' "$GIST_URL_B" | grep -q 'PENDING' \
+  && ok "(b) manifest gist_url is the PENDING placeholder" || bad "(b) gist_url not a placeholder: $GIST_URL_B"
+[ -f "$STAGED5B/poc/GIST_COMMAND.txt" ] && grep -q 'gh gist create --secret' "$STAGED5B/poc/GIST_COMMAND.txt" \
+  && ok "(b) poc/GIST_COMMAND.txt exists + carries the exact 'gh gist create --secret' command" || bad "(b) GIST_COMMAND.txt missing/incomplete"
+if grep -q 'auth status' "$GH_LOG_B" && ! grep -q 'gist create' "$GH_LOG_B"; then
+  ok "(b) gh log shows only 'auth status', never 'gist create' (no egress without a token)"
+else
+  bad "(b) gh log unexpected (expected auth status, no gist create): $(cat "$GH_LOG_B" 2>/dev/null)"
+fi
+
+# --- (c) writeup-only: no poc flags, no gh -> stages cleanly, poc fields empty, no poc/ dir. -------------------
+DROP5C="$WORK/drop-poc-c"
+STAGED5C="$(env -u GITHUB_TOKEN -u GH_TOKEN \
+  bash "$DELIVER" --id "$PID" --draft-file "$PDRAFT" --target enzyme-onyx --severity Critical \
+    --drop-dir "$DROP5C" 2>/dev/null)"; RC=$?
+[ "$RC" -eq 0 ] && ok "(c) writeup-only stage (no poc flags) exits 0" || bad "(c) exited $RC (expected 0)"
+[ -f "$STAGED5C/manifest.json" ] && [ -f "$STAGED5C/submission-draft.md" ] && [ -f "$STAGED5C/OUTCOME.md" ] \
+  && ok "(c) draft + manifest + OUTCOME present in writeup-only mode" || bad "(c) missing core artifacts"
+if [ "$(python3 -c 'import sys,json; d=json.load(open(sys.argv[1])); print(len(d.get("poc_files",[])), repr(d.get("poc_run","")), repr(d.get("reproduce","")))' "$STAGED5C/manifest.json")" = "0 '' ''" ]; then
+  ok "(c) poc_files/poc_run/reproduce are empty in writeup-only mode (clean degradation)"
+else
+  bad "(c) writeup-only manifest has unexpected poc fields"
+fi
+[ ! -d "$STAGED5C/poc" ] && ok "(c) no poc/ dir created in writeup-only mode" || bad "(c) poc/ dir leaked in writeup-only mode"
+
+# --- (d) marker guard FIRST: an UNMARKED draft + --poc-file exits 3 and stages NOTHING (no poc/ leaked, no gh). -
+DROP5D="$WORK/drop-poc-d"; GH_LOG_D="$WORK/gh-d.log"
+UNMARKED5="$WORK/unmarked-poc.md"
+printf '%s\n' "## Brief/Intro" "no marker here" > "$UNMARKED5"
+UID5="unmarked-poc@dead:no-marker"
+env GH_STUB_MODE=authed GITHUB_TOKEN=fake GH_LOG="$GH_LOG_D" PATH="$FAKEBIN:$PATH" \
+  bash "$DELIVER" --id "$UID5" --draft-file "$UNMARKED5" --poc-file "$PPOC" --drop-dir "$DROP5D" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 3 ] && ok "(d) an unmarked draft WITH --poc-file exits 3 (marker guard runs FIRST)" || bad "(d) did not exit 3 (rc=$RC)"
+[ ! -e "$DROP5D/$(pid_slug "$UID5")" ] && ok "(d) the unmarked+poc draft staged NOTHING (no poc/ dir leaked)" || bad "(d) unmarked draft leaked a stage"
+[ ! -f "$GH_LOG_D" ] && ok "(d) gh was never invoked for a refused draft (guard before gist)" || bad "(d) gh invoked despite the marker guard: $(cat "$GH_LOG_D" 2>/dev/null)"
+
+# --- (e) no-FIELD draft: a marked draft without any FIELD| lines -> immunefi_fields all default to "". ---------
+DROP5E="$WORK/drop-poc-e"
+NOFIELD="$WORK/nofield-draft.md"
+{
+  printf '%s\n' "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW"
+  printf '%s\n' "## Brief/Intro"
+  printf '%s\n' "A finding with no FIELD lines. DRAFT; never auto-submitted."
+} > "$NOFIELD"
+EID5="nofield@dead:no-fields"
+STAGED5E="$(env -u GITHUB_TOKEN -u GH_TOKEN \
+  bash "$DELIVER" --id "$EID5" --draft-file "$NOFIELD" --drop-dir "$DROP5E" 2>/dev/null)"; RC=$?
+[ "$RC" -eq 0 ] && ok "(e) a marked draft without FIELD| lines exits 0 (graceful)" || bad "(e) exited $RC (expected 0)"
+if [ "$(python3 -c 'import sys,json; f=json.load(open(sys.argv[1])).get("immunefi_fields",{}); print("".join(f.get(k,"x") for k in ["project","asset","impact","severity","title"]))' "$STAGED5E/manifest.json")" = "" ]; then
+  ok "(e) immunefi_fields values all default to \"\" on a no-FIELD draft"
+else
+  bad "(e) immunefi_fields not all-empty on a no-FIELD draft"
+fi
+
+# --- source guards: gist_ready gate, best-effort gh call, the operator's-own-GitHub / not-a-submission header. --
+grep -q 'gist_ready()' "$DELIVER" \
+  && ok "(guard) deliver-submission.sh defines the gist_ready() capability gate" || bad "(guard) gist_ready() helper missing"
+grep -q 'gh gist create --secret' "$DELIVER" \
+  && ok "(guard) the gist auto-create uses 'gh gist create --secret'" || bad "(guard) secret-gist create call missing"
+grep -qE 'gh gist create --secret.*\|\| true' "$DELIVER" \
+  && ok "(guard) the live gist create is best-effort (|| true — never fails a good stage)" || bad "(guard) gist create is not || true guarded"
+grep -qi "operator's OWN GitHub" "$DELIVER" \
+  && ok "(guard) the header documents the gist as the operator's OWN GitHub" || bad "(guard) missing the operator's-own-GitHub gist note"
+grep -qi 'NOT a bounty-platform submission' "$DELIVER" \
+  && ok "(guard) the header keeps the not-a-platform-submission invariant explicit" || bad "(guard) missing the not-a-platform-submission note"
+
+# ----------------------------------------------------------------------------------------------------------
 echo
 if [ "$FAIL" -eq 0 ]; then
   note "PASS — deliver-submission.sh staged a marked draft (canonical id + raw gate verdicts in manifest.json),"
   note "       refused an unmarked draft (exit 3), the closed-Onyx outcome maps deterministically to failure,"
   note "       feedback-intake.ag encodes the four arms + attributes via the gate topics, neither component has"
   note "       platform egress, and the finding-ready Slack/Discord alert (#1538) is offline-safe by default and"
-  note "       never corrupts the staged-path stdout contract even with a webhook configured. Never submits."
+  note "       never corrupts the staged-path stdout contract even with a webhook configured. And (#1540) the"
+  note "       complete PoC-form artifact set stages byte-intact (poc/ source + poc-run.txt + REPRODUCE.md +"
+  note "       FIELD->immunefi_fields), the operator's-own-GitHub secret gist auto-creates (gh stubbed) with a"
+  note "       graceful no-token fallback, and the marker guard still runs BEFORE any poc staging/gist. Never submits."
   exit 0
 fi
 note "FAIL — a feedback-loop assertion regressed (see above)." >&2

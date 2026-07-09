@@ -15,6 +15,45 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Complete Immunefi PoC-form artifact set + auto secret-gist in the submission package** (#1540, epic #1505).
+  `deliver-submission.sh` grows from staging the prose draft into staging the COMPLETE PoC-form bundle a human
+  files out-of-band — additively, keeping every existing invariant byte-intact (the exit-3 marker guard, the
+  never-submit / no-bounty-platform-egress contract, the #1538 Slack notify, and the one-line staged-path stdout
+  relied on by `demo-feedback-loop.sh` + `feedback-intake.ag`).
+  - **New optional inputs** `--poc-file <path>` (REPEATABLE), `--poc-run <path>`, `--poc-kind <foundry|hardhat>`
+    (else inferred from the poc-file extension), `--poc-target <C.sol[:Name]>`, `--poc-match <prefix>` bundle the
+    verbatim PoC source under `poc/<basename>`, a captured passing run-log as `poc-run.txt`, and a generated
+    dash-safe `REPRODUCE.md` (toolchain + the concrete `forge test --match-path …` / `npx hardhat test …` command +
+    the expected `[PASS]` line + the inverted-polarity note: a PASSING PoC = the exploit reproduced). A missing
+    input warns to stderr and is skipped — the package still stages (writeup-only degradation), exit 0.
+  - **FIELD→manifest extraction (folds in #1542's deferred wiring):** the five `FIELD|project|…`/`asset`/`impact`/
+    `severity`/`title` lines `report-writer.ag` (#1543) now emits are extracted from the in-memory draft into a
+    nested `immunefi_fields` object in `manifest.json` (draft-synced, so the form metadata can never drift — this
+    is why the fields are extracted rather than re-declared as `--project`/`--asset` flags). A missing label
+    defaults to `""`; every existing manifest key (`submission_id` etc.) is preserved, so `feedback-intake.ag` is
+    unaffected. New manifest keys: `immunefi_fields`, `poc_files`, `poc_run`, `reproduce`, `gist_url`.
+  - **Secret Gist auto-create** (best-effort, gated by `gist_ready()` = `gh` present AND a token/auth). When a PoC
+    is staged, `gh gist create --secret` publishes the PoC source + `REPRODUCE.md` + a generated `GIST_README.md`
+    to the operator's OWN GitHub and records the URL into the manifest. The Immunefi PoC form asks for a "secret
+    Gist environment to support your PoC"; this gist is a SECOND egress but to the operator's own GitHub — NOT a
+    bounty-platform submission; the human-gated-submit + never-submit invariants are unchanged. Best-effort and
+    wrapped so it can NEVER fail a stage that already succeeded, with gh's stdout captured (`$(...)`) and all
+    chatter routed to stderr so the one-line stdout contract holds. On no token / any failure it degrades to a
+    loud stderr warning + `poc/GIST_COMMAND.txt` (the exact `gh gist create --secret` command to run by hand) + a
+    `gist_url` placeholder.
+  - **`run-poc.sh` run-evidence capture:** on a `FINDING` only, best-effort re-invokes the gate against the warm
+    rundir to write a durable passing run-log (`poc-run.txt`) — AFTER the verdict is fixed, so it can NEVER regress
+    the classify — and surfaces the runnable-PoC path + run-log on its OWN stdout as additive `POC-FILE|`/`POC-RUN|`
+    lines (the coordinator hand-off / `deliver-submission --poc-file/--poc-run` source). All sub-invocations use
+    `bash`, never `sh` (the #1507/#1534/#1535 dash lesson); `REPRODUCE.md`/`GIST_README.md`/`GIST_COMMAND.txt` are
+    generated via `{ printf …; }` blocks (no heredoc).
+  - `demo-feedback-loop.sh` gains an offline `5) POC ARTIFACT SET` section with a `gh` STUB on PATH (mirrors the
+    part-4 curl stub): full artifact set + authed gist (byte-identical poc/run-log, REPRODUCE.md content, nested
+    `immunefi_fields`, the stubbed gist URL, one-line stdout WITH the stub active), the no-token fallback (placeholder
+    + `GIST_COMMAND.txt`, gh never runs `gist create`), writeup-only degradation, the marker guard running BEFORE any
+    poc staging/gist, and the no-FIELD default-to-`""` case — no network anywhere. `demo-poc-gen.sh`'s source-guard
+    gains the `run-poc.sh` run-evidence / `POC-FILE|`/`POC-RUN|` wiring assertion. **Out of scope (follow-up):**
+    threading `run-poc.sh`'s new `POC-FILE|`/`POC-RUN|` stdout into `coordinator.ag`'s submission pass.
 - **`report-writer.ag` emits discrete Immunefi form-metadata fields** (#1542). Between the
   `SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW` marker and the existing 4-section markdown Description, the agent now
   renders exactly five machine-extractable `FIELD|<label>|<value>` lines — `FIELD|project|`, `FIELD|asset|`,

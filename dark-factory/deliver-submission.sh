@@ -5,13 +5,21 @@
 # file it on the platform out-of-band, and later write the platform's outcome back for feedback-intake.ag to
 # fold into learning. It is pure muscle: writing a file into a directory needs no LLM.
 #
-# DESIGN DECISION (baked in): a LOCAL DROP-DIRECTORY is the exchange point — no platform API, no gist, no scrape.
+# DESIGN DECISION (baked in): a LOCAL DROP-DIRECTORY is the exchange point — no bounty-platform API, no scrape.
 # Offline-testable, operator-mediated, human-gated. This script never submits: it NEVER contacts any bounty
-# platform (no network fetch/egress primitive) and REFUSES (exit 3) to stage any draft that does not carry the
-# human-gate marker SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW — the never-submit invariant is baked into the muscle.
-# The finding-ready alert below (via `monitor/scripts/notify.sh`) is an operator page on the operator's OWN
-# channel — not a platform submission; it adds no egress to any bounty platform and the never-submit invariant
-# is unchanged.
+# platform (no network fetch/egress primitive to a platform) and REFUSES (exit 3) to stage any draft that does
+# not carry the human-gate marker SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW — the never-submit invariant is baked
+# into the muscle. The finding-ready alert below (via `monitor/scripts/notify.sh`) is an operator page on the
+# operator's OWN channel — not a platform submission; it adds no egress to any bounty platform and the
+# never-submit invariant is unchanged.
+#
+# Secret Gist (#1540, best-effort, opt-in on the operator's `gh`/token): the Immunefi PoC form wants a "secret
+# Gist environment to support your PoC", so when a PoC source is staged this can auto-create a SECRET gist via
+# `gh gist create --secret` carrying the PoC source + REPRODUCE.md + a README. That gist is a SECOND egress —
+# but to the operator's OWN GitHub, NOT a bounty-platform submission; the human-gated submit + never-submit
+# (no bounty-platform egress) invariants are UNCHANGED. It is capability-gated (`gist_ready()`: `gh` present AND
+# a token/auth) and best-effort: on no token / any failure it degrades to bundling the exact `gh gist create
+# --secret` command (poc/GIST_COMMAND.txt) + a gist-URL placeholder, and can NEVER fail a stage that succeeded.
 #
 # Slack/Discord alert (#1538, opt-in): after a successful stage this reuses dark-factory/monitor/scripts/notify.sh
 # to page the operator with a finding-ready JSON alert. Configure DARK_FACTORY_SLACK_WEBHOOK (a `secret://...`
@@ -28,14 +36,22 @@
 # Drop-dir layout ($DROP_DIR default ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/drop, override --drop-dir/$DROP_DIR):
 #   $DROP_DIR/<slug>/
 #     manifest.json         # canonical submission_id + the three raw gate verdicts + severity + finding metadata
+#                           #   + immunefi_fields (project/asset/impact/severity/title, extracted from the draft)
+#                           #   + poc_files/poc_run/reproduce/gist_url (the #1540 PoC-form artifact set)
 #     submission-draft.md   # report-writer.ag's SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW draft, verbatim
 #     OUTCOME.md            # the outcome TEMPLATE the operator fills IN-PLACE, then feeds to feedback-intake.ag
+#     REPRODUCE.md          # (#1540, when a PoC is staged) the toolchain + concrete run command + expected [PASS]
+#     poc-run.txt           # (#1540, optional) a captured passing PoC run-log (from run-poc.sh's warm re-run)
+#     poc/                  # (#1540, when a PoC is staged) the verbatim PoC source + GIST_README.md; and, with no
+#                           #   token, GIST_COMMAND.txt (the exact `gh gist create --secret` command to run by hand)
 #
 # Usage: deliver-submission.sh --id <submission_id> (--draft-file <path> | draft on stdin) \
 #          [--target T] [--commit C] [--finding-slug S] [--title T] [--location L] [--impact I] \
 #          [--impact-class K] [--severity B] [--scope-verdict L] [--impact-verdict L] [--dup-risk L] \
-#          [--drop-dir DIR]
-# Requires: bash + python3. Exit: 0 staged, 2 bad/missing args, 3 draft missing the human-gate marker.
+#          [--drop-dir DIR] [--poc-file P ...] [--poc-run P] [--poc-kind foundry|hardhat] \
+#          [--poc-target C.sol[:Name]] [--poc-match PREFIX]
+# Requires: bash + python3 (gh optional, for the secret gist). Exit: 0 staged, 2 bad/missing args, 3 draft
+# missing the human-gate marker.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -48,6 +64,7 @@ nv() { [ "$1" -ge 2 ] || { echo "deliver-submission.sh: $2 requires a value" >&2
 
 ID="" ; DRAFT_FILE="" ; TARGET="" ; COMMIT="" ; FINDING_SLUG="" ; TITLE="" ; LOCATION="" ; IMPACT=""
 IMPACT_CLASS="" ; SEVERITY="" ; SCOPE_VERDICT="" ; IMPACT_VERDICT="" ; DUP_RISK=""
+POC_FILES=() ; POC_RUN="" ; POC_KIND="" ; POC_TARGET="" ; POC_MATCH="test"
 while [ $# -gt 0 ]; do case "$1" in
   --id)             nv "$#" "$1"; ID="$2"; shift 2;;
   --draft-file)     nv "$#" "$1"; DRAFT_FILE="$2"; shift 2;;
@@ -63,7 +80,12 @@ while [ $# -gt 0 ]; do case "$1" in
   --impact-verdict) nv "$#" "$1"; IMPACT_VERDICT="$2"; shift 2;;
   --dup-risk)       nv "$#" "$1"; DUP_RISK="$2"; shift 2;;
   --drop-dir)       nv "$#" "$1"; DROP_DIR="$2"; shift 2;;
-  -h|--help)        sed -n '2,47p' "$0"; exit 0;;
+  --poc-file)       nv "$#" "$1"; POC_FILES+=("$2"); shift 2;;
+  --poc-run)        nv "$#" "$1"; POC_RUN="$2"; shift 2;;
+  --poc-kind)       nv "$#" "$1"; POC_KIND="$2"; shift 2;;
+  --poc-target)     nv "$#" "$1"; POC_TARGET="$2"; shift 2;;
+  --poc-match)      nv "$#" "$1"; POC_MATCH="$2"; shift 2;;
+  -h|--help)        sed -n '2,54p' "$0"; exit 0;;
   *) echo "deliver-submission.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
 
@@ -92,13 +114,166 @@ SLUG="$(printf '%s' "$ID" | sed 's/[^A-Za-z0-9._@-]/-/g')"
 STAGE="$DROP_DIR/$SLUG"
 mkdir -p "$STAGE"
 
+# --- PoC-form artifact set (#1540, additive; the marker guard above already ran, so an unmarked draft stages ---
+# NOTHING — no poc/ dir is ever created for a refused draft). Stage the complete Immunefi PoC-form bundle:
+# the verbatim PoC source, a captured passing run-log, a generated REPRODUCE.md, and (best-effort) a secret gist.
+# Every step is graceful: a missing input warns to stderr and is skipped, never fatal (writeup-only degradation).
+
+# infer_kind: derive the toolchain from a poc-file basename when --poc-kind is absent (.t.sol -> foundry,
+# .js/.ts -> hardhat, else unknown -> handled by the caller).
+infer_kind() {
+  case "$1" in
+    *.t.sol) echo foundry ;;
+    *.js|*.ts) echo hardhat ;;
+    *) echo "" ;;
+  esac
+}
+
+# Stage the verbatim PoC source(s). Record the staged basenames (for the manifest + the gist file list).
+POC_STAGED=()
+if [ "${#POC_FILES[@]}" -gt 0 ]; then
+  mkdir -p "$STAGE/poc"
+  for _p in "${POC_FILES[@]}"; do
+    if [ -f "$_p" ]; then
+      _b="$(basename "$_p")"
+      cp "$_p" "$STAGE/poc/$_b"
+      POC_STAGED+=("$_b")
+    else
+      echo "deliver-submission.sh: WARNING --poc-file not found, skipping: $_p" >&2
+    fi
+  done
+fi
+
+# The primary PoC basename + the resolved toolchain kind drive REPRODUCE.md and the gist.
+PRIMARY_POC=""
+[ "${#POC_STAGED[@]}" -gt 0 ] && PRIMARY_POC="${POC_STAGED[0]}"
+RESOLVED_KIND="$POC_KIND"
+[ -z "$RESOLVED_KIND" ] && [ -n "$PRIMARY_POC" ] && RESOLVED_KIND="$(infer_kind "$PRIMARY_POC")"
+
+# Stage the (optional) captured run-evidence -> poc-run.txt. Given-but-missing warns + skips; absent = no file.
+POC_RUN_REL=""
+if [ -n "$POC_RUN" ]; then
+  if [ -f "$POC_RUN" ]; then
+    cp "$POC_RUN" "$STAGE/poc-run.txt"
+    POC_RUN_REL="poc-run.txt"
+  else
+    echo "deliver-submission.sh: WARNING --poc-run not found, skipping: $POC_RUN" >&2
+  fi
+fi
+
+# Generate REPRODUCE.md whenever a PoC source OR an explicit --poc-kind is known (skipped in pure writeup-only
+# mode). Dash-safe { printf ...; } block (NO heredoc; the OUTCOME.md style). INVERTED POLARITY: a PASSING PoC
+# means the exploit reproduced (this is the finding).
+REPRODUCE_REL=""
+if [ -n "$PRIMARY_POC" ] || [ -n "$POC_KIND" ]; then
+  _basename="${PRIMARY_POC:-<poc-test-file>}"
+  if [ "$RESOLVED_KIND" = "hardhat" ]; then
+    _tool="Hardhat (npx hardhat)"
+    _cmd="npx hardhat test test/$_basename"
+  else
+    _tool="Foundry (forge)"
+    _cmd="forge test --match-path test/$_basename --match-test $POC_MATCH -vvv"
+  fi
+  {
+    printf '%s\n' "# REPRODUCE — run this PoC against the in-scope target"
+    printf '%s\n' ""
+    printf '%s\n' "Toolchain: $_tool"
+    [ -n "$POC_TARGET" ] && printf '%s\n' "Target: $POC_TARGET"
+    printf '%s\n' ""
+    printf '%s\n' "1. Copy poc/$_basename into the target repository's test/ directory."
+    printf '%s\n' "2. Run: $_cmd"
+    printf '%s\n' "3. Expect a PASSING test, e.g. \`[PASS] test_frontrun() (gas: ...)\`."
+    printf '%s\n' ""
+    printf '%s\n' "INVERTED POLARITY: a PASSING PoC means the exploit REPRODUCED — that is the finding; a failing"
+    printf '%s\n' "PoC would mean the exploit did not reproduce."
+    printf '%s\n' ""
+    printf '%s\n' "A captured passing run-log is bundled at poc-run.txt when present."
+    printf '%s\n' ""
+    printf '%s\n' "This PoC is a human-triaged LEAD — it is NEVER auto-submitted to any bounty platform."
+  } > "$STAGE/REPRODUCE.md"
+  REPRODUCE_REL="REPRODUCE.md"
+fi
+
+# The form title, extracted from the draft's FIELD|title| line (for the gist desc + README). The full FIELD set
+# is extracted into immunefi_fields inside the manifest builder below.
+FIELD_TITLE="$(printf '%s\n' "$DRAFT" | sed -n 's/^FIELD|title|//p' | head -1)"
+
+# --- Secret Gist (#1540, best-effort, gated by gist_ready) --------------------------------------------------
+# gist_ready: gh present AND (a token is set OR `gh auth status` succeeds). The whole block is wrapped so it can
+# NEVER fail a stage that already succeeded, and gh's stdout (the URL) is captured via $(...) with chatter routed
+# to stderr, so the one-line staged-path stdout contract holds.
+gist_ready() {
+  command -v gh >/dev/null 2>&1 || return 1
+  if [ -n "${GITHUB_TOKEN:-}" ] || [ -n "${GH_TOKEN:-}" ]; then
+    return 0
+  fi
+  gh auth status >/dev/null 2>&1
+}
+
+GIST_URL=""
+GIST_PLACEHOLDER="<gist URL: PENDING — create the secret gist for the Immunefi PoC form (see poc/GIST_COMMAND.txt)>"
+if [ "${#POC_STAGED[@]}" -gt 0 ]; then
+  GIST_DESC="dark-factory PoC${FIELD_TITLE:+ for $FIELD_TITLE} (human-gated; NOT a bounty-platform submission)"
+  # A README the operator can read inside the gist (title + repro summary + the human-gated / not-a-submission note).
+  {
+    printf '%s\n' "# ${FIELD_TITLE:-dark-factory PoC}"
+    printf '%s\n' ""
+    printf '%s\n' "A runnable PoC supporting an Immunefi submission. See REPRODUCE.md for the exact toolchain +"
+    printf '%s\n' "command; the PoC PASSES iff the exploit reproduces (inverted polarity)."
+    printf '%s\n' ""
+    printf '%s\n' "This gist lives on the operator's OWN GitHub and is human-gated: it is NOT a bounty-platform"
+    printf '%s\n' "submission. The dark-factory pipeline never submits."
+  } > "$STAGE/poc/GIST_README.md"
+
+  # The exact `gh gist create --secret ...` file list (relative to $STAGE), reused for both the live create and
+  # the no-token GIST_COMMAND.txt fallback.
+  GIST_FILES=()
+  for _b in "${POC_STAGED[@]}"; do GIST_FILES+=("poc/$_b"); done
+  [ -n "$REPRODUCE_REL" ] && GIST_FILES+=("$REPRODUCE_REL")
+  GIST_FILES+=("poc/GIST_README.md")
+
+  if gist_ready; then
+    GIST_URL="$(cd "$STAGE" && gh gist create --secret --desc "$GIST_DESC" "${GIST_FILES[@]}" 2>"$STAGE/.gist-err" || true)"
+    GIST_URL="$(printf '%s' "$GIST_URL" | tr -d '\r' | tail -1)"
+  fi
+
+  if [ -z "$GIST_URL" ]; then
+    # No token OR the create failed/returned empty: bundle the exact command + a placeholder, so the operator can
+    # still create the gist by hand for the form. A LOUD stderr warning — the operator NEEDS the gist for the form.
+    echo "deliver-submission.sh: WARNING secret gist not created (no gh/token or gh error) — bundling poc/GIST_COMMAND.txt for a manual create; the Immunefi PoC form needs a secret gist" >&2
+    _cmd="gh gist create --secret --desc \"$GIST_DESC\""
+    for _f in "${GIST_FILES[@]}"; do _cmd="$_cmd $_f"; done
+    {
+      printf '%s\n' "# Run this from inside the staged dir to create the secret gist for the Immunefi PoC form:"
+      printf '%s\n' "#   cd $STAGE"
+      printf '%s\n' "$_cmd"
+    } > "$STAGE/poc/GIST_COMMAND.txt"
+    GIST_URL="$GIST_PLACEHOLDER"
+  fi
+fi
+
 # manifest.json — the authoritative correlation record (python3 json.dumps, repo convention). Carries the
-# canonical submission_id + the three RAW gate verdict lines (verbatim) so intake never re-parses prose.
+# canonical submission_id + the three RAW gate verdict lines (verbatim) so intake never re-parses prose, plus the
+# #1540 immunefi_fields (FIELD|<label>|<value> extracted from the in-memory draft) + the PoC-form artifact refs.
+# Built AFTER the PoC staging + REPRODUCE.md + gist so poc_files/poc_run/reproduce/gist_url are all resolved.
+POC_FILES_JOINED=""
+[ "${#POC_STAGED[@]}" -gt 0 ] && POC_FILES_JOINED="$(printf '%s\n' "${POC_STAGED[@]}")"
 SUBMISSION_ID="$ID" TARGET="$TARGET" IN_SCOPE_COMMIT="$COMMIT" FINDING_SLUG="$FINDING_SLUG" \
 FINDING_TITLE="$TITLE" FINDING_LOCATION="$LOCATION" FINDING_IMPACT="$IMPACT" IMPACT_CLASS="$IMPACT_CLASS" \
 SEVERITY_BAND="$SEVERITY" SCOPE_VERDICT="$SCOPE_VERDICT" IMPACT_VERDICT="$IMPACT_VERDICT" DUP_RISK="$DUP_RISK" \
+DRAFT_TEXT="$DRAFT" POC_FILES_JOINED="$POC_FILES_JOINED" POC_RUN_REL="$POC_RUN_REL" \
+REPRODUCE_REL="$REPRODUCE_REL" GIST_URL="$GIST_URL" \
 python3 - > "$STAGE/manifest.json" <<'PY'
 import json, os, datetime
+# Extract the five FIELD|<label>|<value> lines the report-writer draft carries into a nested immunefi_fields dict
+# (value = everything after the 2nd '|'). A missing label defaults to "". json.dumps handles all escaping.
+fields = {"project": "", "asset": "", "impact": "", "severity": "", "title": ""}
+for line in os.environ.get("DRAFT_TEXT", "").splitlines():
+    if line.startswith("FIELD|"):
+        parts = line.split("|", 2)
+        if len(parts) == 3 and parts[1] in fields:
+            fields[parts[1]] = parts[2]
+poc_files = [x for x in os.environ.get("POC_FILES_JOINED", "").splitlines() if x]
 d = {
     "submission_id":   os.environ.get("SUBMISSION_ID", ""),
     "target":          os.environ.get("TARGET", ""),
@@ -112,6 +287,11 @@ d = {
     "scope_verdict":   os.environ.get("SCOPE_VERDICT", ""),
     "impact_verdict":  os.environ.get("IMPACT_VERDICT", ""),
     "dup_risk":        os.environ.get("DUP_RISK", ""),
+    "immunefi_fields": fields,
+    "poc_files":       poc_files,
+    "poc_run":         os.environ.get("POC_RUN_REL", ""),
+    "reproduce":       os.environ.get("REPRODUCE_REL", ""),
+    "gist_url":        os.environ.get("GIST_URL", ""),
     "created_at":      datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "status":          "delivered",
 }
