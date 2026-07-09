@@ -59,6 +59,13 @@
 # expanded onto a command line, never echoed, and never written to the job dir.
 # The orchestrator's own GIT_ASKPASS path keeps it out of argv / the remote URL.
 #
+# #1422 M1 — the --decompose-only stand-alone decomposition primitive. When
+# code_writer.ag drives the AG-driven decompose loop, it forks ONE detached
+# --decompose-only drive: the orchestrator runs only the decomposition step and
+# writes the ordered NUL-delimited subtask list to --subtasks-out; its subtask
+# count is surfaced on the poll as STATUS=decomposed with a SUBTASKS=<n> token
+# (spliced the same way --one-attempt's ATTEMPT_EXIT/CHURN/VERIFY tokens are).
+#
 # Usage (identical identifying args to code-edit-in-checkout.sh):
 #   code-edit-job.sh --owner <o> --repo <r> --issue <iid> \
 #       --branch <name> --title <t> --task <text>
@@ -106,9 +113,17 @@ ONE_ATTEMPT=0
 REUSE=0
 FINALIZE=0
 CONTINUATION=""
+# #1422 M1 — the stand-alone decomposition primitive. --decompose-only runs ONLY
+# the decompose drive in the detached orchestrator and its subtask count is
+# surfaced on the poll as STATUS=decomposed with a SUBTASKS token; the ordered
+# NUL-delimited subtask records land in the caller-named --subtasks-out file
+# (which the orchestrator writes OUTSIDE the job dir). Both flags ride through to
+# the orchestrator verbatim.
+DECOMPOSE_ONLY=0
+SUBTASKS_OUT=""
 
 usage() {
-    echo "usage: code-edit-job.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--recover] [--one-attempt] [--reuse] [--finalize] [--continuation <file>]" >&2
+    echo "usage: code-edit-job.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--decompose-only --subtasks-out <file>] [--recover] [--one-attempt] [--reuse] [--finalize] [--continuation <file>]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -126,6 +141,8 @@ while [ $# -gt 0 ]; do
         --reuse) REUSE=1; shift ;;
         --finalize) FINALIZE=1; shift ;;
         --continuation) CONTINUATION="${2:-}"; shift 2 ;;
+        --decompose-only) DECOMPOSE_ONLY=1; shift ;;
+        --subtasks-out) SUBTASKS_OUT="${2:-}"; shift 2 ;;
         *) echo "code-edit-job.sh: unknown flag: $1" >&2; usage; exit 2 ;;
     esac
 done
@@ -228,8 +245,11 @@ if [ -d "$JOBDIR" ]; then
     # (ATTEMPT_EXIT/CHURN/VERIFY) in the `attempt` file. Splice them in BEFORE the
     # trailing RESULT= token so RESULT stays last + space-free and the default
     # poll line is byte-identical when no attempt file is present.
+    # #1422 M1: a --decompose-only job records its subtask count the same way
+    # (SUBTASKS=<n> in the `attempt` file, STATUS=decomposed), so the same splice
+    # surfaces `STATUS=decomposed PID_ALIVE=0 SUBTASKS=<n> RESULT=`.
     ATTEMPT=""
-    if [ "$STATUS" = "attempt_done" ] && [ -f "$JOBDIR/attempt" ]; then
+    if { [ "$STATUS" = "attempt_done" ] || [ "$STATUS" = "decomposed" ]; } && [ -f "$JOBDIR/attempt" ]; then
         ATTEMPT="$(cat "$JOBDIR/attempt" 2>/dev/null || true)"
     fi
     if [ -n "$ATTEMPT" ]; then
@@ -287,6 +307,8 @@ export CEJ_ONE_ATTEMPT="$ONE_ATTEMPT"
 export CEJ_REUSE="$REUSE"
 export CEJ_FINALIZE="$FINALIZE"
 export CEJ_CONTINUATION="$CONT_FWD"
+export CEJ_DECOMPOSE_ONLY="$DECOMPOSE_ONLY"
+export CEJ_SUBTASKS_OUT="$SUBTASKS_OUT"
 
 # SC2016: the $CEJ_* refs are deliberately INSIDE single quotes — they must
 # expand in the DETACHED child from its inherited env, NOT in this launcher.
@@ -302,6 +324,8 @@ setsid bash -c '
     [ "$CEJ_REUSE" = "1" ] && set -- "$@" --reuse
     [ "$CEJ_FINALIZE" = "1" ] && set -- "$@" --finalize
     [ -n "$CEJ_CONTINUATION" ] && set -- "$@" --continuation "$CEJ_CONTINUATION"
+    [ "$CEJ_DECOMPOSE_ONLY" = "1" ] && set -- "$@" --decompose-only
+    [ -n "$CEJ_SUBTASKS_OUT" ] && set -- "$@" --subtasks-out "$CEJ_SUBTASKS_OUT"
     "$CEJ_ORCH" "$@" > "$CEJ_JOBDIR/out" 2> "$CEJ_JOBDIR/log"
     rc=$?
     if [ "$CEJ_ONE_ATTEMPT" = "1" ]; then
@@ -321,6 +345,22 @@ setsid bash -c '
                 > "$CEJ_JOBDIR/attempt.tmp"
             mv -f "$CEJ_JOBDIR/attempt.tmp" "$CEJ_JOBDIR/attempt"
             printf "attempt_done" > "$CEJ_JOBDIR/status.tmp"
+        else
+            printf "error" > "$CEJ_JOBDIR/status.tmp"
+        fi
+    elif [ "$CEJ_DECOMPOSE_ONLY" = "1" ]; then
+        # #1422 M1: a --decompose-only drive prints exactly ONE line
+        # `DECOMPOSED count=<n>` and exits 0; the subtask records were written to
+        # --subtasks-out. Re-key count= into a SUBTASKS= poll token (single
+        # space-free word) and surface it as STATUS=decomposed. A missing/garbled
+        # line or non-zero exit is a genuine failure of the primitive itself.
+        line="$(grep "^DECOMPOSED " "$CEJ_JOBDIR/out" 2>/dev/null | tail -n 1)"
+        if [ "$rc" -eq 0 ] && [ -n "$line" ]; then
+            printf "%s" "${line#DECOMPOSED }" \
+                | sed "s/count=/SUBTASKS=/" \
+                > "$CEJ_JOBDIR/attempt.tmp"
+            mv -f "$CEJ_JOBDIR/attempt.tmp" "$CEJ_JOBDIR/attempt"
+            printf "decomposed" > "$CEJ_JOBDIR/status.tmp"
         else
             printf "error" > "$CEJ_JOBDIR/status.tmp"
         fi

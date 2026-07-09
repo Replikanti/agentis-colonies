@@ -71,10 +71,14 @@ if [ -n "${STUB_MARKER:-}" ]; then echo "start $$ token=${GITHUB_TOKEN:-MISSING}
 sleep "${STUB_SLEEP:-2}"
 if [ "${STUB_EXIT:-0}" -eq 0 ]; then
     # #1354 step 2b: a --one-attempt drive prints ONE structured outcome line
-    # (not a URL); every other drive (default / --finalize) prints the PR URL.
+    # (not a URL); #1422 M1: a --decompose-only drive prints ONE `DECOMPOSED
+    # count=<n>` line; every other drive (default / --finalize) prints the PR URL.
     case " $* " in
         *" --one-attempt "*)
             printf 'ONE_ATTEMPT exit=0 churn=%s verify=%s\n' "${STUB_CHURN:-1}" "${STUB_VERIFY:-pass}"
+            ;;
+        *" --decompose-only "*)
+            printf 'DECOMPOSED count=%s\n' "${STUB_SUBTASKS:-3}"
             ;;
         *)
             printf '%s\n' "${STUB_URL:-https://example.test/pr/1}"
@@ -414,7 +418,7 @@ wait_terminal() {  # $1=jobdir — wait until a terminal status file settles
     for i in $(seq 1 60); do
         if [ -f "$jd/status" ]; then
             case "$(cat "$jd/status" 2>/dev/null)" in
-                attempt_done|done|no_edits|error) return 0 ;;
+                attempt_done|decomposed|done|no_edits|error) return 0 ;;
             esac
         fi
         sleep 0.1
@@ -490,6 +494,34 @@ if grep -q -- '--reuse' "$J_MARKER" && grep -q -- '--continuation' "$J_MARKER"; 
     pass "J (#1354): launcher forwards --reuse + --continuation to the orchestrator"
 else
     fail "J (#1354): reuse/continuation not forwarded" "marker=$(cat "$J_MARKER" 2>/dev/null)"
+fi
+
+# K (#1422 M1): --decompose-only -> poll STATUS=decomposed with the re-keyed
+# SUBTASKS token spliced BEFORE RESULT (which stays last + empty), and
+# --decompose-only + --subtasks-out are forwarded to the orchestrator verbatim.
+K_MARKER="$WORK/k-marker"; : > "$K_MARKER"
+K_SUBOUT="$WORK/subtasks-953.txt"
+env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    STUB_SLEEP=0 STUB_EXIT=0 STUB_SUBTASKS=4 STUB_MARKER="$K_MARKER" \
+    bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue 953 \
+        --branch "fix/issue-953" --title "epic" --task "do it" \
+        --decompose-only --subtasks-out "$K_SUBOUT" >/dev/null 2>&1
+wait_terminal "$(job_dir_for 953)" || true
+K_POLL="$(env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue 953 \
+        --branch "fix/issue-953" --title "epic" --task "do it" \
+        --decompose-only --subtasks-out "$K_SUBOUT" 2>/dev/null)"
+if [ "$K_POLL" = "STATUS=decomposed PID_ALIVE=0 SUBTASKS=4 RESULT=" ]; then
+    pass "K (#1422 M1): --decompose-only poll surfaces STATUS=decomposed + SUBTASKS token"
+else
+    fail "K (#1422 M1): decomposed poll token" "poll=[$K_POLL]"
+fi
+if grep -q -- '--decompose-only' "$K_MARKER" && grep -q -- '--subtasks-out' "$K_MARKER"; then
+    pass "K (#1422 M1): launcher forwards --decompose-only + --subtasks-out to the orchestrator"
+else
+    fail "K (#1422 M1): decompose-only/subtasks-out not forwarded" "marker=$(cat "$K_MARKER" 2>/dev/null)"
 fi
 
 echo ""

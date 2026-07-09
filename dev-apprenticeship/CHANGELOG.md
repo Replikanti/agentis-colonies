@@ -15,6 +15,25 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- **AG-driven decompose loop for epics, opt-in behind `AG_DECOMPOSE_LOOP`
+  (default OFF)** ([#1422](https://github.com/Replikanti/agentis-colonies/issues/1422)
+  M1+M2): `tools/code-edit-in-checkout.sh` gains a `--decompose-only
+  --subtasks-out <file>` primitive that runs ONLY the decomposition drive,
+  writes the ordered NUL-delimited subtask list to a caller-named file (outside
+  the per-issue job dir), and surfaces `STATUS=decomposed SUBTASKS=<n>` on the
+  poll — the in-shell `--decompose` path is byte-untouched. `code_writer.ag`
+  gains `ag_decompose_step`, a cross-tick memo-threaded state machine that
+  consumes that primitive and drives the per-subtask `--one-attempt`/`--reuse`
+  sequence onto one branch closed by one `--finalize` → one PR (shared launch +
+  poll helpers with `ag_edit_step`). Gated by the new getenv-read knob
+  `AG_DECOMPOSE_LOOP` (registered on the `install.sh` `exec.env_passthrough`
+  allowlist; **existing installs must re-run `install.sh` to migrate**).
+  **Default OFF**: epics keep flowing through the untouched in-shell
+  `--decompose` path until a live burn-in (a separate follow-up) flips the
+  default and retires the in-shell loop.
+
 ### Fixed
 
 - **Divergent `<colony>/.agentis` warning now distinguishes inert residue from real state**
