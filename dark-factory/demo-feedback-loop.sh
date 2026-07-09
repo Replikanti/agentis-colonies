@@ -98,18 +98,20 @@ DROP="$WORK/drop"
 # jget: read a field from a JSON file (deterministic, no jq).
 jget() { python3 -c 'import sys,json; print(json.load(open(sys.argv[1])).get(sys.argv[2],""))' "$1" "$2"; }
 
-# signal_of: the DETERMINISTIC verdict->signal map, mirroring feedback-intake.ag exactly. Proves the map over a
-# real fixture verdict token the same way the agent derives it (grep the ^verdict: line).
-signal_of() {  # $1 = verdict token
+# disp_signal_of: the DETERMINISTIC disposition->signal map (#1561), mirroring feedback-intake.ag's .ag-code map
+# exactly. The signal is computed from the CLASSIFIED disposition, never the LLM's output; unclear -> hold.
+disp_signal_of() {  # $1 = disposition token
   case "$1" in
-    accepted)   echo success ;;
-    closed)     echo failure ;;
-    duplicate)  echo failure ;;
-    needs-info) echo partial ;;
-    *)          echo partial ;;
+    accepted)     echo success ;;
+    rejected)     echo failure ;;
+    duplicate)    echo failure ;;
+    out-of-scope) echo failure ;;
+    needs-info)   echo partial ;;
+    *)            echo hold ;;
   esac
 }
 # verdict_of: grep the ^verdict: token out of an OUTCOME.md, exactly as the agent's outcome_verdict() muscle does.
+# In the #1561 schema this matches ONLY an uncommented operator OVERRIDE line ("" == the classifier path).
 verdict_of() { grep -iE '^verdict:' "$1" 2>/dev/null | head -1 | awk '{print $2}'; }
 
 # ----------------------------------------------------------------------------------------------------------
@@ -181,40 +183,86 @@ bash "$DELIVER" --draft-file "$DRAFT" --drop-dir "$DROP" >/dev/null 2>&1; RC=$?
 [ "$RC" -eq 2 ] && ok "a missing --id exits 2 (bad-args band)" || bad "missing --id did not exit 2 (rc=$RC)"
 
 # ----------------------------------------------------------------------------------------------------------
-# 2) SIGNAL — the deterministic verdict->signal map + the feedback-intake.ag source contract.
+# 2) CLASSIFY + SIGNAL — the deterministic disposition->signal map + the CONFIDENCE GATE + the OVERRIDE
+#    precedence + the feedback-intake.ag classifier source contract (#1561).
 # ----------------------------------------------------------------------------------------------------------
-note "2) deterministic verdict->signal map + feedback-intake.ag source contract ..."
+note "2) deterministic disposition->signal map + confidence gate + override + classifier source contract ..."
 
-# The operator fills OUTCOME.md IN-PLACE — here, the real Enzyme Onyx rejection (closed, privileged-action
-# front-run / simulated price increase). Overwrite the staged template with the filled outcome.
+# The deterministic disposition->signal map (mirrors the .ag code EXACTLY). The signal is computed from the
+# CLASSIFIED disposition, never the LLM's output; a low-confidence / unclear classification resolves to hold.
+[ "$(disp_signal_of accepted)"     = "success" ] && ok "disposition 'accepted' -> 'success'"       || bad "accepted did not map to success"
+[ "$(disp_signal_of rejected)"     = "failure" ] && ok "disposition 'rejected' -> 'failure'"       || bad "rejected did not map to failure"
+[ "$(disp_signal_of duplicate)"    = "failure" ] && ok "disposition 'duplicate' -> 'failure'"      || bad "duplicate did not map to failure"
+[ "$(disp_signal_of out-of-scope)" = "failure" ] && ok "disposition 'out-of-scope' -> 'failure'"   || bad "out-of-scope did not map to failure"
+[ "$(disp_signal_of needs-info)"   = "partial" ] && ok "disposition 'needs-info' -> 'partial'"     || bad "needs-info did not map to partial"
+[ "$(disp_signal_of unclear)"      = "hold" ]    && ok "disposition 'unclear' -> 'hold' (the confidence gate default)" || bad "unclear did not map to hold"
+
+# --- (2a) DEFAULT path: a `platform_response:`-only OUTCOME.md (the real Enzyme Onyx rejection, pasted VERBATIM) ---
+# has NO active `verdict:` line -> the classifier owns the disposition (no operator override).
 {
-  printf '%s\n' "# OUTCOME — filled by the operator after the platform responded."
+  printf '%s\n' "# OUTCOME — paste the platform's response verbatim, then run feedback-intake.ag over this dir."
   printf '%s\n' "# submission_id: $ID   (do NOT edit — correlation key; authoritative copy in manifest.json)"
-  printf '%s\n' "verdict:        closed"
-  printf '%s\n' "severity:       "
-  printf '%s\n' "payout:         "
-  printf '%s\n' "reason:         front-run of a privileged NAV post / simulated price increase, not an on-chain-provable claim"
-  printf '%s\n' "reviewer_notes: |"
-  printf '%s\n' "  The PoC hand-fed the share value via an admin path and described front-running a privileged"
-  printf '%s\n' "  action rather than extracting a claim the victims already held on-chain."
+  printf '%s\n' "platform_response: |"
+  printf '%s\n' "  We are closing this as invalid. The PoC hand-fed the share value via an admin path and describes"
+  printf '%s\n' "  front-running a privileged NAV post / a simulated price increase, not an on-chain-provable claim"
+  printf '%s\n' "  the victims already held."
 } > "$STAGED/OUTCOME.md"
-
 ONYX_VERDICT="$(verdict_of "$STAGED/OUTCOME.md")"
-[ "$ONYX_VERDICT" = "closed" ] && ok "the Onyx OUTCOME.md verdict token reads 'closed'" || bad "Onyx verdict token was '$ONYX_VERDICT' (expected closed)"
-[ "$(signal_of "$ONYX_VERDICT")" = "failure" ] \
-  && ok "verdict 'closed' -> deterministic signal 'failure'" || bad "closed did not map to failure"
-[ "$(signal_of accepted)" = "success" ]  && ok "verdict 'accepted' -> 'success'"   || bad "accepted did not map to success"
-[ "$(signal_of duplicate)" = "failure" ] && ok "verdict 'duplicate' -> 'failure'"  || bad "duplicate did not map to failure"
-[ "$(signal_of needs-info)" = "partial" ] && ok "verdict 'needs-info' -> 'partial'" || bad "needs-info did not map to partial"
+[ -z "$ONYX_VERDICT" ] \
+  && ok "(2a) the platform_response-only Onyx OUTCOME.md has NO active verdict: line (classifier path)" || bad "(2a) an unexpected active verdict: line '$ONYX_VERDICT' (should be classifier-only)"
+grep -q '^platform_response: |' "$STAGED/OUTCOME.md" \
+  && ok "(2a) OUTCOME.md carries the platform_response: | verbatim block" || bad "(2a) OUTCOME.md missing the platform_response: | block"
 
-# SOURCE-GUARD feedback-intake.ag: it must encode the SAME four arms + use the deterministic signal for learn().
-if grep -q 'index_of(verdict, "accepted")' "$INTAKE" && grep -q 'index_of(verdict, "closed")' "$INTAKE" \
-   && grep -q 'index_of(verdict, "duplicate")' "$INTAKE" && grep -q 'index_of(verdict, "needs-info")' "$INTAKE"; then
-  ok "feedback-intake.ag encodes the four verdict->signal arms deterministically"
+# --- (2b) OVERRIDE path: an OUTCOME.md WITH an uncommented `verdict: accepted` line -> the deterministic map wins. -
+{
+  printf '%s\n' "# OUTCOME — paste the platform's response verbatim, then run feedback-intake.ag over this dir."
+  printf '%s\n' "# submission_id: $ID   (do NOT edit — correlation key; authoritative copy in manifest.json)"
+  printf '%s\n' "platform_response: |"
+  printf '%s\n' "  Triaged as a valid Critical; reward to follow."
+  printf '%s\n' "verdict:        accepted   # operator override"
+  printf '%s\n' "payout:         25000 USDC   # operator override"
+} > "$WORK/outcome-override.md"
+OV_VERDICT="$(verdict_of "$WORK/outcome-override.md")"
+[ "$OV_VERDICT" = "accepted" ] \
+  && ok "(2b) an uncommented 'verdict: accepted' override line is read as the operator disposition" || bad "(2b) override verdict token was '$OV_VERDICT' (expected accepted)"
+[ "$(disp_signal_of "$OV_VERDICT")" = "success" ] \
+  && ok "(2b) the operator override 'accepted' -> deterministic 'success' (override wins over the classifier)" || bad "(2b) override accepted did not map to success"
+
+# SOURCE-GUARD feedback-intake.ag: the CLASSIFY contract + the classified fields present.
+if grep -q 'CLASSIFY|' "$INTAKE" && grep -q 'platform_response' "$INTAKE" \
+   && grep -q 'disposition' "$INTAKE" && grep -q 'confidence' "$INTAKE"; then
+  ok "feedback-intake.ag classifies the platform_response into disposition + confidence (the CLASSIFY contract)"
 else
-  bad "feedback-intake.ag is missing one of the four deterministic verdict arms"
+  bad "feedback-intake.ag missing the CLASSIFY contract / platform_response / disposition / confidence"
 fi
-# The learn() 4th arg must be the deterministic `signal`, NOT anything parsed from the LLM's feedback line.
+# The six deterministic disposition->signal arms (accepted/rejected/duplicate/out-of-scope/needs-info + hold fallback).
+if grep -q 'disposition == "accepted"' "$INTAKE" && grep -q 'disposition == "rejected"' "$INTAKE" \
+   && grep -q 'disposition == "duplicate"' "$INTAKE" && grep -q 'disposition == "out-of-scope"' "$INTAKE" \
+   && grep -q 'disposition == "needs-info"' "$INTAKE" && grep -q '"hold"' "$INTAKE"; then
+  ok "feedback-intake.ag encodes the six disposition->signal arms deterministically (unclear/else -> hold)"
+else
+  bad "feedback-intake.ag is missing one of the six deterministic disposition arms"
+fi
+# The CONFIDENCE GATE: a low-confidence classification resolves to hold.
+if grep -q 'confidence == "low"' "$INTAKE" && grep -q '"hold"' "$INTAKE"; then
+  ok "feedback-intake.ag applies the confidence gate (low-confidence -> hold, no learn)"
+else
+  bad "feedback-intake.ag missing the confidence gate"
+fi
+# The OVERRIDE precedence: outcome_verdict is checked first, and legacy closed normalizes to rejected.
+if grep -q 'verdict != "unknown"' "$INTAKE" && grep -q 'index_of(verdict, "closed")' "$INTAKE" \
+   && grep -q 'outcome_verdict(dir)' "$INTAKE"; then
+  ok "feedback-intake.ag honours the operator override first (verdict != unknown; closed -> rejected normalize)"
+else
+  bad "feedback-intake.ag missing the operator-override precedence / closed->rejected normalize"
+fi
+# HOLD-guards-learn: a statement `if signal == "hold"` guards the side effects; learn() lives only in the else branch.
+if grep -q 'if signal == "hold"' "$INTAKE"; then
+  ok "feedback-intake.ag guards the side effects with 'if signal == \"hold\"' (HOLD never learns)"
+else
+  bad "feedback-intake.ag does not guard learn() behind the hold branch"
+fi
+# The learn() 4th arg must be the deterministic `signal`, NOT anything parsed from the LLM's classify line.
 if grep -qE 'learn\(topic, submissionId,.*, signal, \[submissionId' "$INTAKE"; then
   ok "feedback-intake.ag uses the DETERMINISTIC signal (not the LLM's) for learn()"
 else
@@ -234,7 +282,7 @@ else
 fi
 # The FEEDBACK output contract + the emit/learn/memo tail.
 if grep -q 'FEEDBACK|' "$INTAKE"; then
-  ok "feedback-intake.ag emits the FEEDBACK|<SIGNAL>|<stage>|<rationale> line"
+  ok "feedback-intake.ag prints the authoritative FEEDBACK|<disp>|<conf>|<stage>|<SIGNAL>|<root_cause>|<rationale> line"
 else
   bad "feedback-intake.ag missing the FEEDBACK output contract"
 fi
@@ -710,13 +758,15 @@ if threaded is None:
 t = threaded.get("text", "")
 checks = [
     threaded.get("channel") == "C0HIGH",
-    "verdict:" in t, "severity:" in t, "payout:" in t, "reason:" in t, "notes:" in t,
-    ("accepted" in t and "closed" in t and "duplicate" in t and "needs-info" in t),
+    "outcome:" in t,
+    "verbatim" in t.lower(),
+    "verdict:" in t, "payout:" in t,
+    ("accepted" in t and "rejected" in t and "duplicate" in t and "needs-info" in t and "out-of-scope" in t),
 ]
 print("ok" if all(checks) else "prompt-mismatch:" + json.dumps(threaded))
 ')"
 [ "$PROMPT_OK" = "ok" ] \
-  && ok "(i) a SECOND threaded post carries the reply-with-outcome template (thread_ts==main ts, exact field names)" \
+  && ok "(i) a SECOND threaded post carries the reply-with-outcome template (thread_ts==main ts, outcome: + verbatim-paste + override tokens)" \
   || bad "(i) reply-with-outcome prompt shape mismatch: $PROMPT_OK"
 
 # --- (c) modern uploads fire for the Description AND the PoC, threaded under the main ts + channel_id. ----------
@@ -934,137 +984,218 @@ grep -qi 'UNVERIFIED' "$RENDER_SH" \
 #    threaded confirmation, and is idempotent. Reuses part 6's smart curl stub (extended with auth.test +
 #    conversations.replies branches) + a small `agentis` STUB. Fake token, no network.
 # ----------------------------------------------------------------------------------------------------------
-note "8) ingest-slack-outcome.sh reads the operator's outcome reply from the thread -> OUTCOME.md -> learning ..."
+note "8) ingest-slack-outcome.sh reads the operator's outcome reply from the thread -> classify -> learning ..."
 set +e
 
 INGEST="$HERE/ingest-slack-outcome.sh"
 [ -x "$INGEST" ] || bad "(pre) ingest-slack-outcome.sh not found / not executable: $INGEST"
 
-# A small `agentis` STUB (mirrors the gh/curl stubs): `init` -> exit 0; `go … feedback-intake.ag` -> print a canned
-# FEEDBACK line + exit 0, so the intake invocation / confirmation / marker path run DETERMINISTICALLY on CI.
+# A small `agentis` STUB (mirrors the gh/curl stubs): `init` -> exit 0; `go … feedback-intake.ag` -> echo the
+# per-test AGENTIS_STUB_FEEDBACK line (the .ag-COMPUTED authoritative FEEDBACK contract) + exit 0, so the intake
+# invocation / confidence-gate / confirmation / marker path run DETERMINISTICALLY on CI without a real backend.
 FAKEBIN8="$WORK/fakebin8"; mkdir -p "$FAKEBIN8"
 {
   printf '%s\n' "#!/bin/sh"
   printf '%s\n' 'echo "$*" >> "${AGENTIS_LOG:-/dev/null}"'
   printf '%s\n' 'case "$1" in init) exit 0 ;; esac'
-  printf '%s\n' 'case "$*" in *feedback-intake.ag*) echo "FEEDBACK|FAILURE|impact-gate|stub attribution"; exit 0 ;; esac'
+  printf '%s\n' 'case "$*" in *feedback-intake.ag*) echo "${AGENTIS_STUB_FEEDBACK:-FEEDBACK|rejected|high|impact-gate|FAILURE|impact-not-substantiated|stub}"; exit 0 ;; esac'
   printf '%s\n' 'exit 0'
 } > "$FAKEBIN8/agentis"
 chmod +x "$FAKEBIN8/agentis"
 
-# The fixture thread: a BOT snippet (bot_id+subtype file_share — must be dropped) + an OPERATOR reply (user=U_OP,
-# text carrying verdict: closed + reason + notes). json.dumps writes the JSON so the multi-line text is escaped
-# correctly (the operator writes one field per line, like the notify prompt).
-SLACK_REPLIES_FIXTURE="$WORK/replies-8.json"
-python3 -c '
-import json, sys
-body = {"ok": True, "messages": [
-    {"bot_id": "B0", "subtype": "file_share", "user": "U_BOT", "ts": "1700000000.000200", "text": "uploaded Description.md"},
-    {"user": "U_OP", "ts": "1700000000.000300", "text": "verdict: closed\nseverity: \npayout: \nreason: front-run of a privileged action, not on-chain-provable\nnotes: reviewer said the PoC used simulated state"},
-]}
-open(sys.argv[1], "w").write(json.dumps(body))
-' "$SLACK_REPLIES_FIXTURE"
+FAKE_TOKEN_8="xoxb-DEMO-INGEST-SHOULD-NOT-LEAK"
 
-# A hand-crafted fixture stage whose manifest carries slack_thread_ts + slack_channel + submission_id (as
-# notify-submission.sh would have recorded on delivery).
-STAGE8="$WORK/stage-outcome-8"; mkdir -p "$STAGE8"
-python3 -c '
-import json, sys
+# mk_manifest <stage> <submission_id>: a fixture stage manifest carrying slack_thread_ts/slack_channel (as
+# notify-submission.sh records on delivery); thread_ts+channel are fixed so the confirmation checks below key on them.
+mk_manifest() {
+  mkdir -p "$1"
+  MF_SID="$2" python3 -c '
+import json, os, sys
 open(sys.argv[1], "w").write(json.dumps({
-    "submission_id": "enzyme-onyx@a1b2c3d:botmode",
+    "submission_id": os.environ["MF_SID"],
     "slack_thread_ts": "1700000000.000100",
     "slack_channel": "C0HIGH",
     "impact_class": "theft",
 }, indent=2, sort_keys=True) + "\n")
-' "$STAGE8/manifest.json"
-
-FAKE_TOKEN_8="xoxb-DEMO-INGEST-SHOULD-NOT-LEAK"
-AGENTIS_LOG8="$WORK/agentis-8.log"
-SLACK_POST_BODY8="$WORK/slack-post-8.jsonl"
-ING_OUT="$WORK/ingest-8.out"; ING_ERR="$WORK/ingest-8.err"
-
-env \
-  SLACK_LOG="$WORK/slack-8.log" SLACK_POST_BODY="$SLACK_POST_BODY8" SLACK_COMPLETE="$WORK/slack-complete-8.jsonl" \
-  SLACK_GETURL="$WORK/slack-geturl-8.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-8" SLACK_UPCNT="$WORK/slack-upcnt-8" \
-  SLACK_REPLIES_FIXTURE="$SLACK_REPLIES_FIXTURE" AGENTIS_LOG="$AGENTIS_LOG8" \
-  DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-8" \
-  PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
-  bash "$INGEST" --stage "$STAGE8" >"$ING_OUT" 2>"$ING_ERR"; RC=$?
-
-[ "$RC" -eq 0 ] && ok "(8) ingest-slack-outcome.sh exits 0 over a fixture thread" || bad "(8) ingest exited $RC (expected 0)"
-
-# --- OPERATOR reply (not the bot snippet) selected -> OUTCOME.md in the exact schema. ---------------------------
-OUT8="$STAGE8/OUTCOME.md"
-[ -f "$OUT8" ] && ok "(8) OUTCOME.md was written" || bad "(8) OUTCOME.md missing"
-V8="$(verdict_of "$OUT8")"
-[ "$V8" = "closed" ] \
-  && ok "(8) the OPERATOR reply was selected (verdict==closed) — the bot snippet was dropped" || bad "(8) OUTCOME.md verdict was '$V8' (expected closed — wrong message selected?)"
-grep -qiE '^reason:[[:space:]]+front-run of a privileged action' "$OUT8" \
-  && ok "(8) OUTCOME.md reason: matches the operator reply" || bad "(8) OUTCOME.md reason mismatch: $(grep -iE '^reason:' "$OUT8")"
-grep -q 'reviewer said the PoC used simulated state' "$OUT8" \
-  && ok "(8) the reply's notes: carried into OUTCOME.md reviewer_notes:" || bad "(8) reviewer_notes did not carry the reply notes"
-grep -q '^reviewer_notes: |' "$OUT8" \
-  && ok "(8) OUTCOME.md keeps the exact reviewer_notes: | schema (feedback-intake reads it unchanged)" || bad "(8) OUTCOME.md missing the reviewer_notes: | line"
-
-# --- feedback-intake.ag invoked (the agentis stub ran) + deterministic closed->failure. ------------------------
-grep -q 'feedback-intake.ag' "$AGENTIS_LOG8" \
-  && ok "(8) feedback-intake.ag was invoked (agentis stub ran)" || bad "(8) feedback-intake.ag was never invoked"
-[ "$(signal_of "$V8")" = "failure" ] \
-  && ok "(8) verdict 'closed' -> deterministic signal 'failure' (reused from part 2)" || bad "(8) closed did not map to failure"
-
-# --- threaded confirmation posted with thread_ts + 'outcome recorded' + the deterministic FAILURE signal. ------
-CONF_OK="$(SLACK_POST_BODY="$SLACK_POST_BODY8" python3 -c '
+' "$1/manifest.json"
+}
+# mk_reply <fixture-file> <reply_text>: a BOT snippet (bot_id+subtype file_share — must be dropped) + the OPERATOR
+# reply (user=U_OP). json.dumps escapes the multi-line text correctly.
+mk_reply() {
+  MR_TX="$2" python3 -c '
+import json, os, sys
+body = {"ok": True, "messages": [
+    {"bot_id": "B0", "subtype": "file_share", "user": "U_BOT", "ts": "1700000000.000200", "text": "uploaded Description.md"},
+    {"user": "U_OP", "ts": "1700000000.000300", "text": os.environ["MR_TX"]},
+]}
+open(sys.argv[1], "w").write(json.dumps(body))
+' "$1"
+}
+# conf_has <post-body-jsonl> <needle>: prints "ok" if a threaded chat.postMessage to thread 1700000000.000100
+# carries <needle> in its text, else "missing".
+conf_has() {
+  CH_PB="$1" CH_NEED="$2" python3 -c '
 import json, os, sys
 try:
-    lines = [l for l in open(os.environ["SLACK_POST_BODY"]).read().splitlines() if l.strip()]
-except Exception as e:
-    print("read-error:" + str(e)); sys.exit(0)
-conf = None
+    lines = [l for l in open(os.environ["CH_PB"]).read().splitlines() if l.strip()]
+except Exception:
+    print("missing"); sys.exit(0)
+need = os.environ["CH_NEED"]
 for l in lines:
     try:
         o = json.loads(l)
     except Exception:
         continue
-    if o.get("thread_ts") == "1700000000.000100" and "outcome recorded" in o.get("text", ""):
-        conf = o
-if conf is None:
-    print("no-confirmation:" + repr(lines)); sys.exit(0)
-t = conf.get("text", "")
-checks = [conf.get("channel") == "C0HIGH", "learned FAILURE" in t, "impact-gate" in t]
-print("ok" if all(checks) else "confirmation-mismatch:" + json.dumps(conf))
-')"
-[ "$CONF_OK" = "ok" ] \
-  && ok "(8) a threaded confirmation was posted (thread_ts==main ts, 'outcome recorded -- learned FAILURE on impact-gate')" \
-  || bad "(8) confirmation post shape mismatch: $CONF_OK"
+    if o.get("thread_ts") == "1700000000.000100" and need in o.get("text", ""):
+        print("ok"); sys.exit(0)
+print("missing")
+'
+}
 
-# --- idempotency marker written. -------------------------------------------------------------------------------
-[ -f "$STAGE8/.outcome-ingested" ] \
-  && ok "(8) the .outcome-ingested marker was written after a successful capture+intake" || bad "(8) .outcome-ingested marker missing"
-
-# --- fake token never leaks into ingest's OWN stdout/stderr. ---------------------------------------------------
-if { cat "$ING_OUT" "$ING_ERR"; } | grep -q "$FAKE_TOKEN_8"; then
-  bad "(8) the raw bot token LEAKED into ingest-slack-outcome.sh stdout/stderr"
-else
-  ok "(8) the raw bot token never appears in ingest-slack-outcome.sh's own stdout/stderr"
-fi
-
-# --- SECOND run is a NO-OP: marker present -> no conversations.replies, no confirmation, OUTCOME.md unchanged. --
-OUT8_SUM1="$(cksum "$OUT8")"
-SLACK_POST_BODY8B="$WORK/slack-post-8b.jsonl"
-ING_ERR_B="$WORK/ingest-8b.err"
+# --- (8a) a rejection outcome: reply -> classified FAILURE (impact-not-substantiated), learned, .outcome-ingested. -
+STAGE8A="$WORK/stage-8a"; mk_manifest "$STAGE8A" "enzyme-onyx@a1b2c3d:rej"
+REPL8A="$WORK/replies-8a.json"
+mk_reply "$REPL8A" "outcome: We are closing this as invalid.
+The PoC front-ran a privileged NAV post and the impact is not substantiated on-chain."
+POST8A="$WORK/slack-post-8a.jsonl"; ALOG8A="$WORK/agentis-8a.log"
+ING_OUT="$WORK/ingest-8a.out"; ING_ERR="$WORK/ingest-8a.err"
 env \
-  SLACK_LOG="$WORK/slack-8b.log" SLACK_POST_BODY="$SLACK_POST_BODY8B" SLACK_COMPLETE="$WORK/slack-complete-8b.jsonl" \
-  SLACK_GETURL="$WORK/slack-geturl-8b.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-8b" SLACK_UPCNT="$WORK/slack-upcnt-8b" \
-  SLACK_REPLIES_FIXTURE="$SLACK_REPLIES_FIXTURE" AGENTIS_LOG="$WORK/agentis-8b.log" \
+  SLACK_LOG="$WORK/slack-8a.log" SLACK_POST_BODY="$POST8A" SLACK_COMPLETE="$WORK/slack-complete-8a.jsonl" \
+  SLACK_GETURL="$WORK/slack-geturl-8a.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-8a" SLACK_UPCNT="$WORK/slack-upcnt-8a" \
+  SLACK_REPLIES_FIXTURE="$REPL8A" AGENTIS_LOG="$ALOG8A" \
+  AGENTIS_STUB_FEEDBACK="FEEDBACK|rejected|high|impact-gate|FAILURE|impact-not-substantiated|stub reject" \
   DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-8" \
   PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
-  bash "$INGEST" --stage "$STAGE8" >"$WORK/ingest-8b.out" 2>"$ING_ERR_B"; RC=$?
-[ "$RC" -eq 0 ] && ok "(8) a second ingest run over the marked stage exits 0" || bad "(8) second run exited $RC (expected 0)"
-[ ! -s "$SLACK_POST_BODY8B" ] \
-  && ok "(8) the second run posts NOTHING (no confirmation — marker short-circuits before any Slack call)" || bad "(8) second run made Slack calls despite the marker"
-[ "$(cksum "$OUT8")" = "$OUT8_SUM1" ] \
+  bash "$INGEST" --stage "$STAGE8A" >"$ING_OUT" 2>"$ING_ERR"; RC=$?
+[ "$RC" -eq 0 ] && ok "(8a) ingest exits 0 over a rejection outcome: reply" || bad "(8a) ingest exited $RC (expected 0)"
+OUT8A="$STAGE8A/OUTCOME.md"
+grep -q '^platform_response: |' "$OUT8A" \
+  && ok "(8a) OUTCOME.md carries the platform_response: | verbatim block" || bad "(8a) OUTCOME.md missing the platform_response: | block"
+grep -q 'impact is not substantiated on-chain' "$OUT8A" \
+  && ok "(8a) the operator's verbatim platform text is captured into OUTCOME.md" || bad "(8a) verbatim platform text not captured"
+[ -z "$(verdict_of "$OUT8A")" ] \
+  && ok "(8a) NO active verdict: line (classifier path — the operator pasted no override)" || bad "(8a) an unexpected active verdict: line ($(verdict_of "$OUT8A"))"
+grep -q 'feedback-intake.ag' "$ALOG8A" \
+  && ok "(8a) feedback-intake.ag was invoked (agentis stub ran)" || bad "(8a) feedback-intake.ag was never invoked"
+[ "$(conf_has "$POST8A" "outcome recorded -- learned FAILURE on impact-gate")" = "ok" ] \
+  && ok "(8a) threaded confirmation 'outcome recorded -- learned FAILURE on impact-gate' (signal from the FEEDBACK line)" || bad "(8a) FAILURE confirmation missing/mismatched"
+[ -f "$STAGE8A/.outcome-ingested" ] \
+  && ok "(8a) the .outcome-ingested marker was written after a learned capture" || bad "(8a) .outcome-ingested marker missing"
+[ ! -f "$STAGE8A/.pending-confirmation" ] \
+  && ok "(8a) no .pending-confirmation marker on a confidently-learned outcome" || bad "(8a) unexpected .pending-confirmation marker"
+if { cat "$ING_OUT" "$ING_ERR"; } | grep -q "$FAKE_TOKEN_8"; then
+  bad "(8a) the raw bot token LEAKED into ingest-slack-outcome.sh stdout/stderr"
+else
+  ok "(8a) the raw bot token never appears in ingest-slack-outcome.sh's own stdout/stderr"
+fi
+
+# --- (8b) a LOW-confidence classification -> HOLD: NO learn, NO .outcome-ingested, a .pending-confirmation marker,
+#          a CONFIRMATION-REQUEST post (distinct text, no "learned"); a SECOND run posts nothing + stays unmarked. ---
+STAGE8B="$WORK/stage-8b"; mk_manifest "$STAGE8B" "enzyme-onyx@a1b2c3d:hold"
+REPL8B="$WORK/replies-8b.json"
+mk_reply "$REPL8B" "outcome: hmm, they wrote back something ambiguous, not sure what they decided"
+POST8B="$WORK/slack-post-8b.jsonl"
+env \
+  SLACK_LOG="$WORK/slack-8b.log" SLACK_POST_BODY="$POST8B" SLACK_COMPLETE="$WORK/slack-complete-8b.jsonl" \
+  SLACK_GETURL="$WORK/slack-geturl-8b.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-8b" SLACK_UPCNT="$WORK/slack-upcnt-8b" \
+  SLACK_REPLIES_FIXTURE="$REPL8B" AGENTIS_LOG="$WORK/agentis-8b.log" \
+  AGENTIS_STUB_FEEDBACK="FEEDBACK|unclear|low|report-writer|HOLD|none|stub unclear" \
+  DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-8" \
+  PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+  bash "$INGEST" --stage "$STAGE8B" >"$WORK/ingest-8b.out" 2>"$WORK/ingest-8b.err"; RC=$?
+[ "$RC" -eq 0 ] && ok "(8b) ingest exits 0 over a low-confidence reply" || bad "(8b) ingest exited $RC (expected 0)"
+[ ! -f "$STAGE8B/.outcome-ingested" ] \
+  && ok "(8b) HOLD wrote NO .outcome-ingested marker (nothing was learned)" || bad "(8b) HOLD unexpectedly wrote .outcome-ingested"
+[ -f "$STAGE8B/.pending-confirmation" ] \
+  && ok "(8b) HOLD wrote a .pending-confirmation marker" || bad "(8b) .pending-confirmation marker missing"
+grep -q 'reply_ts=1700000000.000300' "$STAGE8B/.pending-confirmation" \
+  && ok "(8b) the .pending-confirmation marker records the selected reply ts" || bad "(8b) .pending-confirmation missing the reply ts"
+[ "$(conf_has "$POST8B" "couldn't classify this outcome confidently")" = "ok" ] \
+  && ok "(8b) a CONFIRMATION-REQUEST was posted into the thread (distinct 'couldn't classify' text)" || bad "(8b) no confirmation-request posted"
+[ "$(conf_has "$POST8B" "learned")" = "missing" ] \
+  && ok "(8b) the HOLD post is NOT a 'learned' confirmation (no false learn signalled)" || bad "(8b) a 'learned' confirmation leaked on HOLD"
+# SECOND run over the unchanged reply: same reply ts already flagged -> no new post, stage stays unmarked.
+POST8B2="$WORK/slack-post-8b2.jsonl"; ING_ERR_B2="$WORK/ingest-8b2.err"
+env \
+  SLACK_LOG="$WORK/slack-8b2.log" SLACK_POST_BODY="$POST8B2" SLACK_COMPLETE="$WORK/slack-complete-8b2.jsonl" \
+  SLACK_GETURL="$WORK/slack-geturl-8b2.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-8b2" SLACK_UPCNT="$WORK/slack-upcnt-8b2" \
+  SLACK_REPLIES_FIXTURE="$REPL8B" AGENTIS_LOG="$WORK/agentis-8b2.log" \
+  AGENTIS_STUB_FEEDBACK="FEEDBACK|unclear|low|report-writer|HOLD|none|stub unclear" \
+  DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-8" \
+  PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+  bash "$INGEST" --stage "$STAGE8B" >"$WORK/ingest-8b2.out" 2>"$ING_ERR_B2"; RC=$?
+[ "$RC" -eq 0 ] && ok "(8b) a second run over the same unclear reply exits 0" || bad "(8b) second HOLD run exited $RC (expected 0)"
+[ "$(conf_has "$POST8B2" "couldn't classify this outcome confidently")" = "missing" ] \
+  && ok "(8b) the second run does NOT re-post the confirmation-request (a cron never spams the same reply)" || bad "(8b) second run re-posted the confirmation-request"
+[ ! -f "$STAGE8B/.outcome-ingested" ] \
+  && ok "(8b) the stage is STILL unmarked after the second HOLD run (awaiting a clearer reply)" || bad "(8b) second HOLD run marked the stage"
+
+# --- (8c) an OPERATOR OVERRIDE reply (verdict: accepted + payout) -> deterministic SUCCESS; override lines written. -
+STAGE8C="$WORK/stage-8c"; mk_manifest "$STAGE8C" "enzyme-onyx@a1b2c3d:override"
+REPL8C="$WORK/replies-8c.json"
+mk_reply "$REPL8C" "verdict: accepted
+payout: 25000 USDC"
+POST8C="$WORK/slack-post-8c.jsonl"
+env \
+  SLACK_LOG="$WORK/slack-8c.log" SLACK_POST_BODY="$POST8C" SLACK_COMPLETE="$WORK/slack-complete-8c.jsonl" \
+  SLACK_GETURL="$WORK/slack-geturl-8c.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-8c" SLACK_UPCNT="$WORK/slack-upcnt-8c" \
+  SLACK_REPLIES_FIXTURE="$REPL8C" AGENTIS_LOG="$WORK/agentis-8c.log" \
+  AGENTIS_STUB_FEEDBACK="FEEDBACK|accepted|operator|impact-gate|SUCCESS|none|override" \
+  DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-8" \
+  PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+  bash "$INGEST" --stage "$STAGE8C" >"$WORK/ingest-8c.out" 2>"$WORK/ingest-8c.err"; RC=$?
+[ "$RC" -eq 0 ] && ok "(8c) ingest exits 0 over an operator-override reply" || bad "(8c) ingest exited $RC (expected 0)"
+OUT8C="$STAGE8C/OUTCOME.md"
+[ "$(verdict_of "$OUT8C")" = "accepted" ] \
+  && ok "(8c) OUTCOME.md carries the aligned 'verdict: accepted' operator override line" || bad "(8c) override verdict line missing/wrong ($(verdict_of "$OUT8C"))"
+grep -qF 'payout:         25000 USDC' "$OUT8C" \
+  && ok "(8c) OUTCOME.md carries the aligned 'payout:' operator override line" || bad "(8c) override payout line missing"
+[ "$(conf_has "$POST8C" "outcome recorded -- learned SUCCESS on impact-gate")" = "ok" ] \
+  && ok "(8c) threaded confirmation 'learned SUCCESS on impact-gate' (operator override wins)" || bad "(8c) SUCCESS confirmation missing/mismatched"
+[ -f "$STAGE8C/.outcome-ingested" ] \
+  && ok "(8c) the .outcome-ingested marker was written on the override path" || bad "(8c) .outcome-ingested marker missing"
+
+# --- (8d) an accepted outcome: reply with a stated reward -> SUCCESS; the payout survives verbatim into the block. -
+STAGE8D="$WORK/stage-8d"; mk_manifest "$STAGE8D" "enzyme-onyx@a1b2c3d:accept"
+REPL8D="$WORK/replies-8d.json"
+mk_reply "$REPL8D" "outcome: Nice find! Triaged as Critical. A reward of 25000 USDC will be sent shortly."
+POST8D="$WORK/slack-post-8d.jsonl"
+env \
+  SLACK_LOG="$WORK/slack-8d.log" SLACK_POST_BODY="$POST8D" SLACK_COMPLETE="$WORK/slack-complete-8d.jsonl" \
+  SLACK_GETURL="$WORK/slack-geturl-8d.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-8d" SLACK_UPCNT="$WORK/slack-upcnt-8d" \
+  SLACK_REPLIES_FIXTURE="$REPL8D" AGENTIS_LOG="$WORK/agentis-8d.log" \
+  AGENTIS_STUB_FEEDBACK="FEEDBACK|accepted|high|impact-gate|SUCCESS|none|severity=Critical; payout=25000 USDC" \
+  DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-8" \
+  PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+  bash "$INGEST" --stage "$STAGE8D" >"$WORK/ingest-8d.out" 2>"$WORK/ingest-8d.err"; RC=$?
+[ "$RC" -eq 0 ] && ok "(8d) ingest exits 0 over an accepted outcome: reply" || bad "(8d) ingest exited $RC (expected 0)"
+OUT8D="$STAGE8D/OUTCOME.md"
+[ -z "$(verdict_of "$OUT8D")" ] \
+  && ok "(8d) NO active verdict: line (classifier path — the reward was pasted as prose, not an override)" || bad "(8d) unexpected active verdict: line ($(verdict_of "$OUT8D"))"
+grep -q '25000 USDC' "$OUT8D" \
+  && ok "(8d) the stated reward survives VERBATIM into the platform_response block" || bad "(8d) the payout string was lost from platform_response"
+[ "$(conf_has "$POST8D" "outcome recorded -- learned SUCCESS on impact-gate")" = "ok" ] \
+  && ok "(8d) threaded confirmation 'learned SUCCESS on impact-gate' (accepted -> success)" || bad "(8d) SUCCESS confirmation missing/mismatched"
+[ -f "$STAGE8D/.outcome-ingested" ] \
+  && ok "(8d) the .outcome-ingested marker was written after a learned accepted outcome" || bad "(8d) .outcome-ingested marker missing"
+
+# --- SECOND run over a marked stage is a NO-OP (idempotency): no post, OUTCOME.md byte-unchanged. ---------------
+OUT8A_SUM1="$(cksum "$OUT8A")"
+POST8A2="$WORK/slack-post-8a2.jsonl"; ING_ERR_A2="$WORK/ingest-8a2.err"
+env \
+  SLACK_LOG="$WORK/slack-8a2.log" SLACK_POST_BODY="$POST8A2" SLACK_COMPLETE="$WORK/slack-complete-8a2.jsonl" \
+  SLACK_GETURL="$WORK/slack-geturl-8a2.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-8a2" SLACK_UPCNT="$WORK/slack-upcnt-8a2" \
+  SLACK_REPLIES_FIXTURE="$REPL8A" AGENTIS_LOG="$WORK/agentis-8a2.log" \
+  AGENTIS_STUB_FEEDBACK="FEEDBACK|rejected|high|impact-gate|FAILURE|impact-not-substantiated|stub reject" \
+  DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-8" \
+  PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+  bash "$INGEST" --stage "$STAGE8A" >"$WORK/ingest-8a2.out" 2>"$ING_ERR_A2"; RC=$?
+[ "$RC" -eq 0 ] && ok "(8) a second ingest run over a marked stage exits 0" || bad "(8) second run exited $RC (expected 0)"
+[ ! -s "$POST8A2" ] \
+  && ok "(8) the second run posts NOTHING (the .outcome-ingested marker short-circuits before any Slack call)" || bad "(8) second run made Slack calls despite the marker"
+[ "$(cksum "$OUT8A")" = "$OUT8A_SUM1" ] \
   && ok "(8) OUTCOME.md is byte-unchanged on the second run" || bad "(8) OUTCOME.md changed on the second run"
-grep -qi 'already ingested' "$ING_ERR_B" \
+grep -qi 'already ingested' "$ING_ERR_A2" \
   && ok "(8) the second run reports 'already ingested, skipping'" || bad "(8) second run did not report the idempotent skip"
 
 # --- no-token = a clean no-op (before touching any stage or writing OUTCOME.md). -------------------------------
@@ -1082,7 +1213,7 @@ env -u DARK_FACTORY_SLACK_BOT_TOKEN bash "$INGEST" >/dev/null 2>&1; RC=$?
 env -u DARK_FACTORY_SLACK_BOT_TOKEN bash "$INGEST" --bogus >/dev/null 2>&1; RC=$?
 [ "$RC" -eq 2 ] && ok "(8) an unknown arg exits 2" || bad "(8) unknown arg did not exit 2 (rc=$RC)"
 
-# --- source guards: bash never sh; no bounty-platform egress; parses verdict the same way; channels:history docd. -
+# --- source guards: bash never sh; no bounty-platform egress; the platform_response schema; channels:history docd. -
 head -1 "$INGEST" | grep -q 'bash' \
   && ok "(8/guard) ingest-slack-outcome.sh has a bash shebang (never sh)" || bad "(8/guard) ingest-slack-outcome.sh is not a bash script"
 if grep -qiE 'immunefi|code4rena|sherlock|hackerone|submit\(' "$INGEST"; then
@@ -1102,12 +1233,14 @@ grep -qi 'channels:history' "$INGEST" \
   && ok "(8/guard) ingest documents the channels:history scope requirement" || bad "(8/guard) ingest missing the channels:history note"
 grep -qiE 'never.submit|NOT a bounty-platform submission|never submits' "$INGEST" \
   && ok "(8/guard) ingest documents the never-submit invariant" || bad "(8/guard) ingest missing the never-submit note"
-grep -qF 'verdict:        ' "$INGEST" \
-  && ok "(8/guard) ingest writes the aligned 'verdict:' OUTCOME line feedback-intake greps for unchanged" || bad "(8/guard) ingest verdict OUTCOME line not aligned"
-grep -q 'reviewer_notes' "$INGEST" \
-  && ok "(8/guard) ingest reuses the OUTCOME.md reviewer_notes schema" || bad "(8/guard) ingest does not write reviewer_notes"
+grep -q 'platform_response: |' "$INGEST" \
+  && ok "(8/guard) ingest writes the platform_response: | block feedback-intake classifies (#1561 schema)" || bad "(8/guard) ingest does not write the platform_response: | block"
+grep -q 'operator override' "$INGEST" \
+  && ok "(8/guard) ingest writes the aligned operator verdict:/payout: override lines (conditionally, backward-compat)" || bad "(8/guard) ingest does not write the operator override lines"
 grep -q '.outcome-ingested' "$INGEST" \
   && ok "(8/guard) ingest is idempotent via the .outcome-ingested marker" || bad "(8/guard) ingest missing the idempotency marker"
+grep -q '.pending-confirmation' "$INGEST" \
+  && ok "(8/guard) ingest defers a HOLD via the .pending-confirmation marker (no double-post, no learn)" || bad "(8/guard) ingest missing the .pending-confirmation marker"
 # LEARN PERSISTENCE: feedback-intake runs from the auditor colony dir (cd "$INTAKE_DIR"), NOT a throwaway mktemp
 # run dir (an actual `mktemp` command invocation — the header mention in prose does not count).
 if grep -qE '(=|\()[[:space:]]*.?\$\(mktemp|[[:space:]]mktemp[[:space:]]+-d' "$INGEST"; then
@@ -1122,8 +1255,9 @@ fi
 echo
 if [ "$FAIL" -eq 0 ]; then
   note "PASS — deliver-submission.sh staged a marked draft (canonical id + raw gate verdicts in manifest.json),"
-  note "       refused an unmarked draft (exit 3), the closed-Onyx outcome maps deterministically to failure,"
-  note "       feedback-intake.ag encodes the four arms + attributes via the gate topics, neither component has"
+  note "       refused an unmarked draft (exit 3), the classified Onyx rejection maps deterministically to failure,"
+  note "       feedback-intake.ag CLASSIFIES the platform_response into a disposition + confidence and .ag-computes"
+  note "       the signal (never the LLM's) with a confidence gate + operator-override precedence, neither component has"
   note "       platform egress, and the finding-ready Slack/Discord alert (#1538) is offline-safe by default and"
   note "       never corrupts the staged-path stdout contract even with a webhook configured. And (#1540) the"
   note "       complete PoC-form artifact set stages byte-intact (poc/ source + poc-run.txt + REPRODUCE.md +"
@@ -1136,11 +1270,12 @@ if [ "$FAIL" -eq 0 ]; then
   note "       ->skip, honesty-gated on the real --poc-run file), records manifest poc_screenshot, and notify attaches"
   note "       it to the Slack thread byte-identically — degrading text-only (no png, empty key, stage exit 0) when no"
   note "       renderer is present, proven both host-dependently and deterministically via a python3 stub. And (#1557)"
-  note "       notify-submission.sh records slack_thread_ts/slack_channel + threads a reply-with-outcome prompt, and"
-  note "       ingest-slack-outcome.sh reads the operator's reply back from the thread (conversations.replies), selects"
-  note "       the operator reply over the bot snippet, writes OUTCOME.md in the exact schema, folds it into learning"
-  note "       via feedback-intake.ag (closed->FAILURE), posts a threaded confirmation, and is idempotent (second run"
-  note "       a no-op) — no-token no-op, no token leak, no bounty-platform egress. Never submits."
+  note "       notify-submission.sh records slack_thread_ts/slack_channel + threads an outcome: reply-with-verbatim"
+  note "       prompt, and ingest-slack-outcome.sh reads the operator's reply back (conversations.replies), captures the"
+  note "       platform_response verbatim into OUTCOME.md, runs feedback-intake.ag (rejection->FAILURE, accepted->SUCCESS),"
+  note "       HOLDS a low-confidence classification (a .pending-confirmation marker + a confirmation-request, no learn,"
+  note "       no re-spam), honours an operator verdict: override (->SUCCESS), posts a threaded confirmation, and is"
+  note "       idempotent (second run a no-op) — no-token no-op, no token leak, no bounty-platform egress. Never submits."
   exit 0
 fi
 note "FAIL — a feedback-loop assertion regressed (see above)." >&2

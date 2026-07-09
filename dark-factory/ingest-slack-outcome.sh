@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# ingest-slack-outcome.sh — the READER half of the human<->federation feedback loop over a Slack THREAD (#1557,
-# epic #1505). notify-submission.sh (#1541) delivers the submission package to a Slack thread and prompts the
-# operator to REPLY IN THAT THREAD with the platform outcome; this script reads that reply back
-# (`conversations.replies`), writes `OUTCOME.md` in the EXACT existing schema, runs `feedback-intake.ag` (the
-# #1526 learn path, UNCHANGED — only the INPUT source changes: a Slack thread reply instead of a hand-edited
-# local file), posts a confirmation, and is idempotent via a per-stage marker.
+# ingest-slack-outcome.sh — the READER half of the human<->federation feedback loop over a Slack THREAD (#1557 /
+# #1561, epic #1505). notify-submission.sh (#1541) delivers the submission package to a Slack thread and prompts the
+# operator to REPLY IN THAT THREAD starting with `outcome:` then the platform's RAW response VERBATIM; this script
+# reads that reply back (`conversations.replies`), captures the response into `OUTCOME.md`'s `platform_response:`
+# block (plus the OPTIONAL operator `verdict:`/`payout:` override lines), runs `feedback-intake.ag` (the #1526 learn
+# path — now a CLASSIFIER, #1561), posts a confirmation, and is idempotent via a per-stage marker.
+#
+# CONFIDENCE GATE (#1561): feedback-intake.ag's AUTHORITATIVE `FEEDBACK|<disp>|<conf>|<stage>|<SIGNAL>|...` line
+# carries an .ag-COMPUTED signal. A `HOLD` (a low-confidence / unclear classification) is NOT learned: this reader
+# posts a threaded CONFIRMATION REQUEST, writes a `.pending-confirmation` marker (keyed on the selected reply ts so a
+# cron never re-spams), and does NOT write `.outcome-ingested` — a later, clearer operator reply can still be learned.
+# An operator `verdict:` override always wins (bypasses the gate). Learned outcomes get the `.outcome-ingested` marker.
 #
 # TRIGGER MODEL (honest): the dark-factory federation is SERVERLESS / one-shot — there is NO always-on Slack
 # socket/events listener. This reader is OPERATOR- or CRON-triggered: run it (`--stage <dir>` or `--all`) after the
@@ -80,14 +86,16 @@ fi
 
 INTAKE_DIR="${DARK_FACTORY_AUDITOR_DIR:-$SCRIPT_DIR/auditor}"
 
-# signal_upper <verdict> -> the DETERMINISTIC signal (uppercase, for the confirmation text), the SAME verdict->signal
-# map feedback-intake.ag pins: accepted->SUCCESS, closed/duplicate->FAILURE, needs-info/else->PARTIAL.
+# signal_upper <disposition> -> the DETERMINISTIC signal (uppercase), the SAME disposition->signal map
+# feedback-intake.ag pins: accepted->SUCCESS, rejected/closed/duplicate/out-of-scope->FAILURE, needs-info->PARTIAL.
+# Runtime-absent fallback ONLY: when agentis is on PATH the confirmation signal is taken from the FEEDBACK line's
+# .ag-computed field, never from here (#1561).
 signal_upper() {
   case "$1" in
-    accepted)          echo SUCCESS ;;
-    closed|duplicate)  echo FAILURE ;;
-    needs-info)        echo PARTIAL ;;
-    *)                 echo PARTIAL ;;
+    accepted)                              echo SUCCESS ;;
+    rejected|closed|duplicate|out-of-scope) echo FAILURE ;;
+    needs-info)                            echo PARTIAL ;;
+    *)                                     echo PARTIAL ;;
   esac
 }
 
@@ -158,8 +166,8 @@ BOT_USER_ID="$(_slack_get_bot_user)"
 # best-effort; a per-stage failure returns 0 (warn + skip) so `--all` never crashes a batch.
 process_stage() {
   local stage="$1"
-  local mf thread_ts channel replies sel verdict severity payout reason notes submissionId
-  local signal intake_out intake_stage ran_intake cfg
+  local mf thread_ts channel replies sel reply_ts platform_response verdict payout submissionId
+  local intake_out intake_line fbk_disp fbk_conf fbk_stage fbk_signal cfg pend
 
   [ -d "$stage" ] || { echo "ingest-slack-outcome.sh: not a directory, skipping: $stage" >&2; return 0; }
   mf="$stage/manifest.json"
@@ -185,8 +193,10 @@ process_stage() {
   fi
 
   # SELECT the operator reply: drop bot messages (bot_id present OR a subtype OR user==our auth.test id), keep those
-  # whose text has a `verdict:` line, take the LATEST by ts; then PARSE the five fields (tolerating reviewer_notes:
-  # as an alias for notes:). Prints a one-line JSON of the parsed fields, or nothing when no qualifying reply exists.
+  # whose text has a `^outcome:` line (the #1561 default) OR a `^verdict:` line (an operator override, backward-compat),
+  # take the LATEST by ts; then CAPTURE `platform_response` (everything after the `outcome:` marker, VERBATIM,
+  # multi-line — the classifier reads it) + the OPTIONAL override `verdict:`/`payout:` lines. Prints a one-line JSON
+  # {reply_ts, platform_response, verdict, payout}, or nothing when no qualifying reply exists.
   sel="$(SLACK_BODY="$replies" BOT_UID="${BOT_USER_ID:-}" python3 -c '
 import json, os, re, sys
 try:
@@ -206,7 +216,7 @@ for m in msgs:
     text = m.get("text", "")
     if not isinstance(text, str):
         continue
-    if not re.search(r"(?im)^\s*verdict\s*:", text):
+    if not re.search(r"(?im)^\s*(outcome|verdict)\s*:", text):
         continue
     cands.append((str(m.get("ts", "")), text))
 if not cands:
@@ -217,59 +227,75 @@ def tskey(c):
     except Exception:
         return 0.0
 cands.sort(key=tskey)
-text = cands[-1][1]
-def field(name, aliases=()):
-    for nm in (name,) + tuple(aliases):
-        m = re.search(r"(?im)^\s*" + re.escape(nm) + r"\s*:\s*(.*?)\s*$", text)
-        if m:
-            return m.group(1).strip()
-    return ""
+reply_ts, text = cands[-1]
+# platform_response = everything from the `outcome:` marker to the end of the reply, VERBATIM (multi-line).
+pr_lines = []
+capturing = False
+for ln in text.splitlines():
+    mo = re.match(r"(?i)^\s*outcome\s*:[ \t]*(.*)$", ln)
+    if mo is not None:
+        capturing = True
+        rest = mo.group(1)
+        if rest.strip() != "":
+            pr_lines.append(rest)
+        continue
+    if capturing:
+        pr_lines.append(ln)
+platform_response = "\n".join(pr_lines).strip("\n")
+def field(name):
+    m = re.search(r"(?im)^\s*" + re.escape(name) + r"\s*:\s*(.*?)\s*$", text)
+    return m.group(1).strip() if m else ""
 d = {
-    "verdict":  field("verdict"),
-    "severity": field("severity"),
-    "payout":   field("payout"),
-    "reason":   field("reason"),
-    "notes":    field("notes", ("reviewer_notes",)),
+    "reply_ts":          reply_ts,
+    "platform_response": platform_response,
+    "verdict":           field("verdict"),
+    "payout":            field("payout"),
 }
 sys.stdout.write(json.dumps(d))
 ' 2>/dev/null)"
 
   if [ -z "$sel" ]; then
-    echo "ingest-slack-outcome.sh: no operator reply with a verdict: line in the $stage thread yet — will retry" >&2
+    echo "ingest-slack-outcome.sh: no operator reply with an outcome: (or override verdict:) line in the $stage thread yet — will retry" >&2
     return 0
   fi
 
-  verdict="$(SEL="$sel"  python3 -c 'import json,os,sys; print(json.loads(os.environ["SEL"]).get("verdict",""))'  2>/dev/null || true)"
-  severity="$(SEL="$sel" python3 -c 'import json,os,sys; print(json.loads(os.environ["SEL"]).get("severity",""))' 2>/dev/null || true)"
-  payout="$(SEL="$sel"   python3 -c 'import json,os,sys; print(json.loads(os.environ["SEL"]).get("payout",""))'   2>/dev/null || true)"
-  reason="$(SEL="$sel"   python3 -c 'import json,os,sys; print(json.loads(os.environ["SEL"]).get("reason",""))'   2>/dev/null || true)"
-  notes="$(SEL="$sel"    python3 -c 'import json,os,sys; print(json.loads(os.environ["SEL"]).get("notes",""))'    2>/dev/null || true)"
+  reply_ts="$(SEL="$sel"          python3 -c 'import json,os; print(json.loads(os.environ["SEL"]).get("reply_ts",""))'          2>/dev/null || true)"
+  platform_response="$(SEL="$sel" python3 -c 'import json,os; print(json.loads(os.environ["SEL"]).get("platform_response",""))' 2>/dev/null || true)"
+  verdict="$(SEL="$sel"           python3 -c 'import json,os; print(json.loads(os.environ["SEL"]).get("verdict",""))'           2>/dev/null || true)"
+  payout="$(SEL="$sel"            python3 -c 'import json,os; print(json.loads(os.environ["SEL"]).get("payout",""))'            2>/dev/null || true)"
 
   # The canonical submission_id comes from manifest.json (never the reply) — the correlation key.
   submissionId="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("submission_id",""))' "$mf" 2>/dev/null || true)"
 
-  # WRITE OUTCOME.md in the EXACT existing deliver-submission.sh schema, column-aligned so feedback-intake.ag's
-  # `grep -iE '^verdict:'` / `^reason:` match unchanged. Dash-safe { printf ...; } block (NO heredoc). The reply's
-  # notes: maps to OUTCOME.md's reviewer_notes:.
-  {
-    printf '%s\n' "# OUTCOME — captured from the Slack thread by ingest-slack-outcome.sh (#1557); folded into learning."
-    printf '%s\n' "# submission_id: $submissionId   (do NOT edit — correlation key; authoritative copy in manifest.json)"
-    printf '%s\n' "verdict:        $verdict"
-    printf '%s\n' "severity:       $severity"
-    printf '%s\n' "payout:         $payout"
-    printf '%s\n' "reason:         $reason"
-    printf '%s\n' "reviewer_notes: |"
-    printf '%s\n' "  $notes"
-  } > "$stage/OUTCOME.md"
+  # WRITE OUTCOME.md in the #1561 schema (a `platform_response: |` block, 2-space indented via python3 — avoids
+  # sed/awk indent subtleties), plus the aligned `verdict:`/`payout:` override lines ONLY when the operator supplied
+  # an override (so feedback-intake.ag's `^verdict:` grep stays inert on the classifier path). Values passed via ENV.
+  OUT_SID="$submissionId" OUT_PR="$platform_response" OUT_V="$verdict" OUT_P="$payout" \
+  python3 -c '
+import os, sys
+sid = os.environ.get("OUT_SID", "")
+pr  = os.environ.get("OUT_PR", "")
+v   = os.environ.get("OUT_V", "").strip()
+p   = os.environ.get("OUT_P", "").strip()
+out = []
+out.append("# OUTCOME — captured from the Slack thread by ingest-slack-outcome.sh (#1561); classified into learning.")
+out.append("# submission_id: %s   (do NOT edit — correlation key; authoritative copy in manifest.json)" % sid)
+out.append("platform_response: |")
+body = pr if pr != "" else "(no platform_response pasted — see the operator override below)"
+for ln in body.splitlines():
+    out.append("  " + ln)
+if v:
+    out.append("verdict:        %s   # operator override" % v)
+if p:
+    out.append("payout:         %s   # operator override" % p)
+sys.stdout.write("\n".join(out) + "\n")
+' > "$stage/OUTCOME.md"
 
-  signal="$(signal_upper "$verdict")"
-  intake_stage="(stage n/a)"
-  ran_intake=0
+  fbk_disp=""; fbk_conf=""; fbk_stage="(stage n/a)"; fbk_signal=""
 
   # RUN feedback-intake.ag FROM the auditor colony dir (durable store) so learn() PERSISTS. Ensure .agentis + the
   # three config keys (append ONLY the missing ones, each grep-guarded so re-runs never dup a line). If agentis is
-  # not on PATH we still wrote OUTCOME.md + will confirm, but WARN and do NOT mark the stage (operator/cron re-runs
-  # once the runtime is installed).
+  # not on PATH we still wrote OUTCOME.md, but WARN and do NOT mark the stage (operator/cron re-runs once installed).
   if command -v agentis >/dev/null 2>&1; then
     mkdir -p "$INTAKE_DIR"
     if [ ! -d "$INTAKE_DIR/.agentis" ]; then
@@ -281,26 +307,45 @@ sys.stdout.write(json.dumps(d))
     grep -q '^learning.enabled'   "$cfg" 2>/dev/null || echo "learning.enabled = true"   >> "$cfg"
     grep -q '^experience.enabled' "$cfg" 2>/dev/null || echo "experience.enabled = true" >> "$cfg"
     grep -q 'SUBMISSION_DIR'      "$cfg" 2>/dev/null || echo "exec.env_passthrough = SUBMISSION_DIR" >> "$cfg"
-    # --grant-pii: the outcome/reason text can carry addresses/identifiers that trip the PII heuristic; benign.
+    # --grant-pii: the platform_response text can carry addresses/identifiers that trip the PII heuristic; benign.
     intake_out="$( cd "$INTAKE_DIR" && env SUBMISSION_DIR="$stage" agentis go agents/feedback-intake.ag --enable-exec --enable-messaging --grant-pii 2>&1 )" || true
-    # The stage feedback-intake ATTRIBUTED the outcome to (its FEEDBACK|<sig>|<stage>|<rationale> line, 3rd field).
-    intake_stage="$(printf '%s\n' "$intake_out" | grep -E '^FEEDBACK\|' | head -1 | awk -F'|' '{print $3}')"
-    [ -n "$intake_stage" ] || intake_stage="(stage n/a)"
-    ran_intake=1
+    # The AUTHORITATIVE FEEDBACK|<disp>|<conf>|<stage>|<SIGNAL>|<root_cause>|<rationale> line (signal is .ag-computed).
+    intake_line="$(printf '%s\n' "$intake_out" | grep -E '^FEEDBACK\|' | head -1)"
+    fbk_disp="$(printf '%s\n'   "$intake_line" | awk -F'|' '{print $2}')"
+    fbk_conf="$(printf '%s\n'   "$intake_line" | awk -F'|' '{print $3}')"
+    fbk_stage="$(printf '%s\n'  "$intake_line" | awk -F'|' '{print $4}')"
+    fbk_signal="$(printf '%s\n' "$intake_line" | awk -F'|' '{print $5}')"
+    [ -n "$fbk_stage" ] || fbk_stage="(stage n/a)"
   else
     echo "ingest-slack-outcome.sh: agentis not on PATH — wrote OUTCOME.md for $stage but deferring learn(); NOT marking ingested (re-run once the runtime is installed)" >&2
+    return 0
   fi
 
-  # CONFIRMATION: a threaded reply in the same thread (best-effort). SIGNAL is deterministic from the verdict; stage
-  # is feedback-intake's attribution (or (stage n/a) when the runtime was absent).
-  _slack_confirm "$channel" "$thread_ts" "outcome recorded -- learned $signal on $intake_stage" \
+  # CONFIDENCE GATE result. HOLD (a low-confidence / unclear classification, .ag-computed) is NOT a learn: ask a
+  # human to confirm and DEFER — no `.outcome-ingested`. A `.pending-confirmation` marker keyed on the selected reply
+  # ts stops a `--all` cron from re-posting the same request every sweep (post ONCE per distinct operator reply).
+  pend="$stage/.pending-confirmation"
+  if [ "$fbk_signal" = "HOLD" ]; then
+    if [ -f "$pend" ] && grep -q "reply_ts=$reply_ts" "$pend" 2>/dev/null; then
+      echo "ingest-slack-outcome.sh: HOLD already flagged for $stage (reply_ts=$reply_ts) — not re-posting (awaiting a clearer operator reply)" >&2
+      return 0
+    fi
+    _slack_confirm "$channel" "$thread_ts" \
+      "couldn't classify this outcome confidently ($fbk_disp/$fbk_conf) — reply again with a clearer 'outcome:' paste, or an explicit 'verdict: <accepted|rejected|duplicate|needs-info|out-of-scope>' to override" \
+      || echo "ingest-slack-outcome.sh: confirmation-request post failed for $stage (best-effort)" >&2
+    printf '%s\n' "held $(date -u +%Y-%m-%dT%H:%M:%SZ) reply_ts=$reply_ts disposition=$fbk_disp confidence=$fbk_conf" > "$pend"
+    return 0
+  fi
+
+  # LEARNED: a threaded confirmation (best-effort). The SIGNAL is the .ag-computed FEEDBACK field; the stage is
+  # feedback-intake's attribution.
+  _slack_confirm "$channel" "$thread_ts" "outcome recorded -- learned $fbk_signal on $fbk_stage" \
     || echo "ingest-slack-outcome.sh: confirmation post failed for $stage (best-effort) — outcome already captured" >&2
 
-  # IDEMPOTENCY: mark the stage ONLY after a successful capture+intake (never double-learn). When the runtime was
-  # absent we intentionally leave the stage unmarked so a later run completes the learn().
-  if [ "$ran_intake" -eq 1 ]; then
-    printf '%s\n' "ingested $(date -u +%Y-%m-%dT%H:%M:%SZ) verdict=$verdict signal=$signal stage=$intake_stage" > "$stage/.outcome-ingested"
-  fi
+  # IDEMPOTENCY: mark the stage ONLY after a learned capture+intake (never double-learn). A HOLD returns above WITHOUT
+  # a marker so a later, clearer reply can still be learned.
+  printf '%s\n' "ingested $(date -u +%Y-%m-%dT%H:%M:%SZ) disposition=$fbk_disp signal=$fbk_signal stage=$fbk_stage" > "$stage/.outcome-ingested"
+  rm -f "$pend"
   return 0
 }
 

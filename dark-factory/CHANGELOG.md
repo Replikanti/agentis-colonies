@@ -14,6 +14,26 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+- **Feedback intake classifies the raw platform response instead of a rigid `verdict:` enum** (#1561, revises
+  #1526/#1557). The operator no longer hand-picks a `verdict:` token — they paste the platform's response
+  **verbatim** into `OUTCOME.md`'s new `platform_response: |` block (or reply in the Slack thread starting with
+  `outcome:` then the verbatim paste), and `feedback-intake.ag`'s LLM step becomes a **classifier** that maps the
+  raw text to a `disposition` (`accepted`/`rejected`/`duplicate`/`needs-info`/`out-of-scope`/`unclear`) +
+  `confidence` + stage + root_cause. **The learn signal stays DETERMINISTIC**: it is computed in `.ag` code from the
+  classified disposition (`accepted → success`; `rejected`/`duplicate`/`out-of-scope → failure`;
+  `needs-info → partial`; else → hold), never by the LLM — a mis-classification can never flip a payout into a
+  failure. A **confidence gate** holds a low-confidence or `unclear` classification: `feedback-intake.ag` emits a
+  `HOLD` signal (no `learn()`), and `ingest-slack-outcome.sh` posts a Slack **confirmation request** into the thread
+  + writes a `.pending-confirmation` marker (keyed on the operator's reply ts, so a cron never re-spams) instead of
+  `.outcome-ingested` — a later, clearer reply can still be learned. First-class `rejected` and `out-of-scope`
+  dispositions replace the overloaded `closed`. An explicit operator `verdict:`/`payout:` **override** (now a
+  commented-out placeholder in the `OUTCOME.md` template, inert until uncommented) always wins and bypasses the gate;
+  the legacy `closed` token normalizes to `rejected`, so an in-flight `verdict:`-style `OUTCOME.md` or Slack reply
+  keeps working (backward-compat). `deliver-submission.sh`'s template, `notify-submission.sh`'s reply prompt,
+  `ingest-slack-outcome.sh`'s capture/write/confirm path, and `demo-feedback-loop.sh` (parts 2/6/8) all move to the
+  new contract; the never-submit invariant is unchanged.
+
 ### Fixed
 - **`colony-lint.sh` never shellchecked federation-root scripts** (#1554). `run-audit.sh`,
   `demo-feedback-loop.sh`, `demo-pattern-memory.sh`, and 69 other `dark-factory/*.sh` scripts live outside any

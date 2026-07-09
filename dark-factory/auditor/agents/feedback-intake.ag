@@ -1,24 +1,34 @@
 cb 300000;
-// #1526 — FEEDBACK INTAKE, in the SUBSTRATE. The human->federation half of the loop (epic #1505). deliver-
-// submission.sh (#1526) stages a report-writer (#1508) draft into an operator DROP-DIRECTORY; a human files it
-// on the platform out-of-band, then writes the platform's response into that dir's OUTCOME.md. This agent reads
-// the filled-in outcome and folds it back into learning, ATTRIBUTED to the gate that should own the lesson — so
-// the next hunt's scope-gate / impact-gate / dup-scout / report-writer is calibrated by real platform outcomes.
+// #1526 / #1561 — FEEDBACK INTAKE, in the SUBSTRATE. The human->federation half of the loop (epic #1505). deliver-
+// submission.sh (#1526) stages a report-writer (#1508) draft into an operator DROP-DIRECTORY; a human files it on
+// the platform out-of-band, then pastes the platform's RAW response into that dir's OUTCOME.md `platform_response:`
+// block. This agent CLASSIFIES that raw response and folds the outcome back into learning, ATTRIBUTED to the gate
+// that should own the lesson — so the next hunt's scope-gate / impact-gate / dup-scout / report-writer is
+// calibrated by real platform outcomes.
 //
 // It NEVER submits and only ever reads the drop-dir (no platform egress, no curl/wget/submit). The success/
-// failure/partial SIGNAL is DETERMINISTIC from the operator verdict enum (accepted->success, closed->failure,
-// duplicate->failure, needs-info->partial) — a mis-reasoning backend can never flip a payout into a failure
-// signal. The LLM's ONLY job is to ATTRIBUTE the outcome to the responsible stage (which gate should have caught
-// a rejection / is confirmed by an acceptance); the learn() signal itself is pinned to the enum.
+// failure/partial/HOLD SIGNAL is DETERMINISTIC, computed IN THIS .ag CODE from the classified disposition
+// (accepted->success, rejected/duplicate/out-of-scope->failure, needs-info->partial, else->hold) — a mis-reasoning
+// backend can NEVER flip a payout into a failure signal. The LLM's ONLY job is to CLASSIFY the raw response into a
+// disposition + confidence + stage + root_cause; it never sets the learn() signal.
+//
+// THREE precedence layers, most-authoritative first:
+//   1. an explicit operator `verdict:`/`payout:` OVERRIDE in OUTCOME.md (outcome_verdict != "unknown") -> the
+//      disposition is taken from the operator verdict (legacy `closed` normalized to `rejected`), confidence
+//      "operator", and the signal is the deterministic map — the classifier is bypassed for the signal.
+//   2. a HIGH-confidence classifier -> disposition-derived signal + auto-learn.
+//   3. a LOW-confidence OR `unclear` classifier -> the CONFIDENCE GATE resolves the signal to `hold`: NO learn(),
+//      only an emit + memo so ingest-slack-outcome.sh posts a confirmation request and a human confirms.
 //
 // The verdict read is DETERMINISTIC (grep/python3 — the muscle, capture-then-fallback per the dup-scout/impact-
-// gate `grep`-exits-1 lesson); the stage attribution is the LLM's, over the manifest verdicts + the full outcome.
+// gate `grep`-exits-1 lesson); the classification is the LLM's, over the manifest verdicts + the raw response.
 //
 // Env:
 //   SUBMISSION_DIR   the $DROP_DIR/<slug>/ dir deliver-submission.sh staged (manifest.json + OUTCOME.md).
-// Stdout: exactly one line
-//   FEEDBACK|<SUCCESS|FAILURE|PARTIAL>|<scope-gate|impact-gate|dup-scout|report-writer>|<rationale>
-// Then ONE learn() attributed to the responsible gate's OWN topic, with the DETERMINISTIC signal.
+// Stdout: exactly one AUTHORITATIVE line (the signal is .ag-computed, never the LLM's)
+//   FEEDBACK|<disposition>|<confidence>|<stage>|<SUCCESS|FAILURE|PARTIAL|HOLD>|<root_cause>|<rationale>
+// Then, UNLESS the signal is HOLD, ONE learn() attributed to the responsible gate's OWN topic, with the
+// DETERMINISTIC signal. On HOLD there is NO learn() — only an emit + memo (the human is asked to confirm).
 
 // --- drop-dir evidence (the muscle; dynamic paths -> safe-exec-concat, per scope-gate.ag / report-writer.ag) --
 fn manifest_text(dir: string) -> string {
@@ -33,8 +43,10 @@ fn outcome_text(dir: string) -> string {
     return exec sh "sed -n '1,4000p' ${dir}/OUTCOME.md 2>/dev/null || true";
 }
 
-// The DETERMINISTIC verdict token from OUTCOME.md (accepted|closed|duplicate|needs-info). grep prints nothing
-// AND exits 1 on no match, so capture-then-fallback (the dup-scout/impact-gate lesson).
+// The OPTIONAL operator OVERRIDE token from OUTCOME.md (an uncommented `verdict:` line —
+// accepted|rejected|duplicate|needs-info|out-of-scope, or legacy closed). The DEFAULT template line is COMMENTED
+// (`# verdict:`), so `^verdict:` stays inert until the operator uncomments one; grep prints nothing AND exits 1 on
+// no match, so capture-then-fallback (the dup-scout/impact-gate lesson). "unknown" == no override (classifier path).
 fn outcome_verdict(dir: string) -> string {
     if len(dir) == 0 { return "unknown"; }
     // colony-lint: safe-exec-concat
@@ -48,11 +60,42 @@ fn manifest_field(dir: string, key: string) -> string {
     return exec sh "python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],\"\"))' ${dir}/manifest.json '${key}' 2>/dev/null || true";
 }
 
-// The one-line reason the operator recorded (freeform), used in the learn() description. Capture-then-fallback.
+// The one-line reason the operator MAY have recorded (freeform, optional override passthrough). Capture-then-fallback.
 fn outcome_reason(dir: string) -> string {
     if len(dir) == 0 { return ""; }
     // colony-lint: safe-exec-concat
     return exec sh "r=$(grep -iE '^reason:' ${dir}/OUTCOME.md 2>/dev/null | head -1 | sed 's/^[Rr]eason:[[:space:]]*//'); [ -n \"$r\" ] && echo \"$r\" || echo ''";
+}
+
+// --- CLASSIFY-line parsing (string muscle; no LLM) -----------------------------------------------------------
+// The classifier prints ONE `CLASSIFY|<disposition>|<confidence>|<stage>|<root_cause>|<details>` line amid its
+// reasoning. first_line + a pipe-field reduce (the coordinator.ag/dispatcher.ag idiom) pull the free-text details
+// field out; the four token fields are captured with the robust index_of("|<token>|") idiom below.
+fn first_line(s: string) -> string {
+    let at = index_of(s, "\n");
+    if at < 0 { return s; }
+    return substring(s, 0, at);
+}
+
+// The CLASSIFY| line from the classifier output ("" when the LLM printed none -> unclear/HOLD, never a bad learn).
+fn classify_line(feedback: string) -> string {
+    let at = index_of(feedback, "CLASSIFY|");
+    if at < 0 { return ""; }
+    return first_line(substring(feedback, at, len(feedback)));
+}
+
+// The Nth pipe-delimited field (0-indexed) of a single line — the payload_field reduce idiom (leaf builtins only,
+// shallow on the native call stack). Field 5 of a CLASSIFY line is the free-text details.
+fn pipe_field(s: string, n: int) -> string {
+    let segs = regex_split("\\|", s);
+    let acc = reduce(segs, |a: string, seg: string| -> string {
+        let bar = index_of(a, "\t");
+        let idx = parse_int(substring(a, 0, bar));
+        let cap = substring(a, bar + 1, len(a));
+        if idx == n { return to_string(idx + 1) + "\t" + seg; }
+        return to_string(idx + 1) + "\t" + cap;
+    }, "0\t");
+    return substring(acc, index_of(acc, "\t") + 1, len(acc));
 }
 
 let dir = getenv("SUBMISSION_DIR");
@@ -63,59 +106,126 @@ let submissionId = manifest_field(dir, "submission_id");
 let impactClass = manifest_field(dir, "impact_class");
 let reason = outcome_reason(dir);
 
-// DETERMINISTIC signal from the verdict enum — authoritative for learn(). The LLM never touches this.
-let signal = if index_of(verdict, "accepted") >= 0 { "success" }
-             else { if index_of(verdict, "closed") >= 0 { "failure" }
-             else { if index_of(verdict, "duplicate") >= 0 { "failure" }
-             else { if index_of(verdict, "needs-info") >= 0 { "partial" }
-             else { "partial" } } } };
-
 let evidence =
     "SUBMISSION_ID: " + submissionId + "\n"
   + "IMPACT_CLASS: " + impactClass + "\n"
-  + "OPERATOR_VERDICT (deterministic): " + verdict + "  -> signal " + signal + "\n"
+  + "OPERATOR_OVERRIDE (deterministic, \"unknown\" == none): " + verdict + "\n"
   + "=== MANIFEST (canonical id + the three raw gate verdicts, verbatim) ===\n" + manifest + "\n"
-  + "=== OUTCOME (the operator-filled platform response) ===\n" + outcome;
+  + "=== platform_response (the operator-pasted RAW platform reply — classify THIS) ===\n" + outcome;
 
-// The attributor: pick WHICH gate owns this outcome. The signal is already decided; the LLM only names the stage.
+// The CLASSIFIER: read the RAW platform_response and classify it. It does NOT decide the learn() signal — that is
+// computed deterministically below from the disposition. It ONLY classifies + attributes the stage.
 let instruction =
-    "You are the FEEDBACK INTAKE for a bug-bounty pipeline. A confirmed finding passed the scope gate, the "
-  + "impact-substantiation gate and the dup-risk check, a human filed it on the platform, and the platform has "
-  + "now RESPONDED (the OUTCOME below). Your job is to ATTRIBUTE the outcome to the ONE pipeline stage that owns "
-  + "the lesson, so its learning is calibrated by the real result. You do NOT decide success/failure — that is "
-  + "already fixed deterministically from the verdict enum. You ONLY choose the stage.\n\n"
-  + "Map the outcome to a stage using the manifest verdicts + the reviewer's reason:\n"
-  + "- accepted (a payout)                                  -> impact-gate (validity confirmed).\n"
-  + "- closed, front-run of a PRIVILEGED action / a SIMULATED price increase / no on-chain-provable claim "
-  + "-> impact-gate (reinforce its PRIVILEGED-TRIGGER / SIMULATED-STATE / NO-PROVABLE-CLAIM discriminator). This "
-  + "is the real Enzyme Onyx rejection: a front-run of a privileged NAV post / simulated price increase is an "
+    "You are the FEEDBACK INTAKE CLASSIFIER for a bug-bounty pipeline. A confirmed finding passed the scope gate, "
+  + "the impact-substantiation gate and the dup-risk check, a human filed it on the platform, and the platform has "
+  + "now RESPONDED. The RAW platform reply is pasted into the `platform_response` block below. CLASSIFY it. You do "
+  + "NOT decide success/failure — that is fixed deterministically from your disposition. You ONLY classify.\n\n"
+  + "Choose a DISPOSITION (what the platform decided) from exactly:\n"
+  + "- accepted     : the finding is valid / rewarded / triaged as a real bug.\n"
+  + "- rejected     : the finding is closed as invalid / not-a-bug / not-in-impact.\n"
+  + "- duplicate    : already reported / a known issue.\n"
+  + "- needs-info   : the report is unclear / missing a repro / more info requested.\n"
+  + "- out-of-scope : the asset or impact is outside the program scope / an excluded carve-out.\n"
+  + "- unclear      : the response does not clearly say (or is empty) — say unclear rather than guess.\n\n"
+  + "Choose a CONFIDENCE: `high` only when the disposition is unambiguous in the text; else `low` (a low or unclear "
+  + "classification will be HELD for a human to confirm — it is SAFE to say low).\n\n"
+  + "Choose the STAGE that OWNS the lesson (which gate should learn from this), using the reply + the manifest "
+  + "verdicts:\n"
+  + "- accepted (validity confirmed)                        -> impact-gate.\n"
+  + "- rejected: front-run of a PRIVILEGED action / a SIMULATED price increase / no on-chain-provable claim "
+  + "-> impact-gate (reinforce its PRIVILEGED-TRIGGER / SIMULATED-STATE / NO-PROVABLE-CLAIM discriminator). This is "
+  + "the real Enzyme Onyx rejection: a front-run of a privileged NAV post / simulated price increase is an "
   + "impact-gate lesson, NOT a scope lesson.\n"
-  + "- closed, OUT-OF-SCOPE asset / an excluded carve-out   -> scope-gate.\n"
+  + "- out-of-scope: an out-of-scope asset / an excluded carve-out -> scope-gate.\n"
   + "- duplicate (already reported)                         -> dup-scout.\n"
   + "- needs-info (report unclear / missing repro)          -> report-writer.\n\n"
+  + "Choose a ROOT_CAUSE from: impact-not-substantiated | out-of-scope-asset | known-issue | insufficient-poc | "
+  + "duplicate | none.\n\n"
   + "=== EVIDENCE ===\n" + evidence + "\n"
   + "=== HOW TO ANSWER ===\nReason briefly, then write exactly ONE final line:\n"
-  + "FEEDBACK|<SUCCESS|FAILURE|PARTIAL>|<scope-gate|impact-gate|dup-scout|report-writer>|<one-line rationale "
-  + "naming the stage that owns this outcome and why>\n"
-  + "Use the deterministic signal (accepted->SUCCESS, closed/duplicate->FAILURE, needs-info->PARTIAL) in the "
-  + "first field; the stage in the second field is your judgement. Only the final FEEDBACK| line is parsed.";
+  + "CLASSIFY|<accepted|rejected|duplicate|needs-info|out-of-scope|unclear>|<high|low>|"
+  + "<impact-gate|scope-gate|dup-scout|report-writer>|<root_cause>|<details: extracted severity=...; payout=...; "
+  + "reason=... free-text, verbatim from the reply>\n"
+  + "Only the final CLASSIFY| line is parsed. The learn signal is computed from your disposition, not written by you.";
 
 let feedback = prompt(instruction, evidence) -> string;
-
 print(feedback);
-// Parse the ATTRIBUTED stage from the printed line (the LLM's only decision). Default report-writer if unclear.
+
+// --- parse the classifier line (capture-then-default; a garbled/absent line -> unclear -> HOLD, never a bad learn) --
+let dispParsed = if index_of(feedback, "|accepted|") >= 0 { "accepted" }
+                 else { if index_of(feedback, "|rejected|") >= 0 { "rejected" }
+                 else { if index_of(feedback, "|duplicate|") >= 0 { "duplicate" }
+                 else { if index_of(feedback, "|needs-info|") >= 0 { "needs-info" }
+                 else { if index_of(feedback, "|out-of-scope|") >= 0 { "out-of-scope" }
+                 else { "unclear" } } } } };
+let confParsed = if index_of(feedback, "|high|") >= 0 { "high" }
+                 else { if index_of(feedback, "|low|") >= 0 { "low" }
+                 else { "low" } };
 let stage = if index_of(feedback, "|impact-gate|") >= 0 { "impact-gate" }
             else { if index_of(feedback, "|scope-gate|") >= 0 { "scope-gate" }
             else { if index_of(feedback, "|dup-scout|") >= 0 { "dup-scout" }
             else { "report-writer" } } };
+let rootCause = if index_of(feedback, "|impact-not-substantiated|") >= 0 { "impact-not-substantiated" }
+                else { if index_of(feedback, "|out-of-scope-asset|") >= 0 { "out-of-scope-asset" }
+                else { if index_of(feedback, "|known-issue|") >= 0 { "known-issue" }
+                else { if index_of(feedback, "|insufficient-poc|") >= 0 { "insufficient-poc" }
+                else { if index_of(feedback, "|duplicate|") >= 0 { "duplicate" }
+                else { "none" } } } } };
+// The free-text details field (severity/payout/reason the classifier extracted), for the learn() description. Fall
+// back to any operator `reason:` override line when the classifier printed no details.
+let classifyLine = classify_line(feedback);
+let detailsRaw = pipe_field(classifyLine, 5);
+let details = if len(detailsRaw) > 0 { detailsRaw } else { reason };
+
+// OVERRIDE precedence: an uncommented operator `verdict:` line wins over the classifier for the signal. Legacy
+// `closed` normalizes to `rejected`; the five new tokens pass through. An override is always confident.
+let overridden = verdict != "unknown";
+let overrideDisp = if index_of(verdict, "closed") >= 0 { "rejected" } else { verdict };
+let disposition = if overridden { overrideDisp } else { dispParsed };
+let confidence = if overridden { "operator" } else { confParsed };
+
+// DETERMINISTIC disposition->signal map, in .ag CODE (the LLM never touches this). unclear -> hold.
+let dispSignal = if disposition == "accepted" { "success" }
+                 else { if disposition == "rejected" { "failure" }
+                 else { if disposition == "duplicate" { "failure" }
+                 else { if disposition == "out-of-scope" { "failure" }
+                 else { if disposition == "needs-info" { "partial" }
+                 else { "hold" } } } } };
+
+// CONFIDENCE GATE: an override bypasses it (always confident); otherwise a LOW-confidence (or unclear) classify
+// resolves to `hold` — NO learn, a human is asked to confirm.
+let signal = if overridden { dispSignal }
+             else { if confidence == "low" { "hold" } else { dispSignal } };
+
+let signalUpper = if signal == "success" { "SUCCESS" }
+                  else { if signal == "failure" { "FAILURE" }
+                  else { if signal == "partial" { "PARTIAL" }
+                  else { "HOLD" } } };
+
 // Map the stage to the gate's OWN learn() topic so the ground-truth signal lands on the exact dimension the gate
 // learns under — critically dup-scout learns under "dup-risk", NOT "dup-scout".
 let topic = if stage == "dup-scout" { "dup-risk" }
             else { if stage == "scope-gate" { "scope-gate" }
             else { if stage == "impact-gate" { "impact-gate" }
             else { "report-writer" } } };
-// ONE learn() per intake (mirrors the gates). The DETERMINISTIC signal is authoritative; the LLM only chose the
-// stage. Attributes carry the correlation id + impact class + stage + verdict for later slicing.
-learn(topic, submissionId, "platform outcome " + verdict + " for " + submissionId + " (" + impactClass + "): " + reason, signal, [submissionId, impactClass, stage, verdict]);
-emit("dark-factory:feedback_outcome", "{\"submission_id\":\"" + submissionId + "\",\"verdict\":\"" + verdict + "\",\"signal\":\"" + signal + "\",\"stage\":\"" + stage + "\"}");
-memo_write("feedback-intake:last_check", "done");
+
+let rationale = "classified " + disposition + " (" + confidence + ") -> " + signalUpper + ", attributed to " + stage;
+
+// The AUTHORITATIVE line — the signal is .ag-computed, never the LLM's.
+print("FEEDBACK|" + disposition + "|" + confidence + "|" + stage + "|" + signalUpper + "|" + rootCause + "|" + rationale);
+
+let emitJson =
+    "{\"submission_id\":\"" + submissionId + "\",\"disposition\":\"" + disposition + "\",\"confidence\":\""
+  + confidence + "\",\"signal\":\"" + signal + "\",\"stage\":\"" + stage + "\",\"root_cause\":\"" + rootCause + "\"}";
+
+// GUARD the side effects (the monitor/agents/coordinator.ag statement-`if` idiom): on HOLD do NOT learn() — only
+// emit + memo, so ingest-slack-outcome.sh posts a confirmation request and a human confirms. Otherwise the ONE
+// learn() per intake (mirrors the gates) with the DETERMINISTIC signal + emit/memo tail.
+if signal == "hold" {
+    emit("dark-factory:feedback_outcome", emitJson);
+    memo_write("feedback-intake:last_check", "hold");
+} else {
+    learn(topic, submissionId, "platform outcome " + disposition + " for " + submissionId + " (" + impactClass + "): " + details, signal, [submissionId, impactClass, stage, disposition, rootCause]);
+    emit("dark-factory:feedback_outcome", emitJson);
+    memo_write("feedback-intake:last_check", "done");
+}
