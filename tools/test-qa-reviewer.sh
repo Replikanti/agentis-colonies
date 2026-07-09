@@ -194,6 +194,36 @@ if [ "$(link_iid 'fix/issue-1512' 'Fixes #1500')" = "1512" ]; then
 else
     fail "(#1514) branch precedence" "fix/issue-1512 branch must resolve to 1512"
 fi
+# Runtime-truth check: the fixtures above run a hand-kept COPY of the resolver
+# one-liner, so they cannot catch a divergence between that copy and the string
+# `qa_reviewer.ag` actually builds (shell_escape + the doubled-backslash regex
+# through `exec sh`). Execute the REAL .ag `linked_issue_iid` via `agentis go`
+# and assert the same anchors. Skipped when agentis is absent (CI runners).
+if command -v agentis >/dev/null 2>&1; then
+    AG_TMP="$(mktemp -d)"
+    cat > "$AG_TMP/probe.ag" <<AGPROBE
+$LINK_FN
+let a = linked_issue_iid("sdlc/x", "context #1500 then Fixes #1512");
+print("A=", a);
+let b = linked_issue_iid("sdlc/x", "Implements #1512");
+print("B=", b);
+let c = linked_issue_iid("fix/issue-1512", "Fixes #1500");
+print("C=", c);
+AGPROBE
+    (cd "$AG_TMP" && agentis init) >/dev/null 2>&1
+    AG_OUT="$( (cd "$AG_TMP" && agentis go probe.ag --enable-exec) 2>/dev/null )"
+    a_real="$(printf '%s\n' "$AG_OUT" | sed -n 's/^A= //p')"
+    b_real="$(printf '%s\n' "$AG_OUT" | sed -n 's/^B= //p')"
+    c_real="$(printf '%s\n' "$AG_OUT" | sed -n 's/^C= //p')"
+    if [ "$a_real" = "1512" ] && [ "$b_real" = "0" ] && [ "$c_real" = "1512" ]; then
+        pass "(#1514) the REAL .ag linked_issue_iid (agentis exec) anchors on the closing keyword, not a context #N"
+    else
+        fail "(#1514) real .ag resolver" "expected 1512/0/1512 from agentis exec, got '$a_real'/'$b_real'/'$c_real'"
+    fi
+    rm -rf "$AG_TMP"
+else
+    echo "[SKIP] (#1514) real .ag resolver — agentis not on PATH"
+fi
 
 # ---------------------------------------------------------------------------
 # (c) Clean MR -> both pass (single header line, no reason lines)
