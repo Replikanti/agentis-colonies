@@ -1,0 +1,399 @@
+cb 300000;
+// #1507 — substrate-native CONCRETE-EXPLOIT-SEQUENCE PoC writer. The SECOND PoC class alongside
+// invariant-prover.ag: where the invariant prover writes a Foundry stateful-invariant HANDLER and lets the
+// fuzzer JUDGE over randomized SEQUENCES, this agent writes ONE concrete, hand-driven attack-SEQUENCE test that
+// reproduces a specific bug hypothesis end-to-end (set the pre-state, run the exact attack steps, ASSERT the
+// attacker gained / the victim lost / the protocol is DoS'd). It covers the classes the invariant path does not:
+// HARDHAT projects (a mocha/ethers exploit test) and hand-driven single-`forge test` foundry PoCs.
+//
+// The verdict NEVER comes from the LLM's opinion — it is the exit code of the toolchain-parametric gate
+// (evm-harness/hardhat-poc.sh for hardhat, evm-harness/forge-poc.sh for foundry) over the just-written test.
+// A concrete-exploit PoC is written to PASS iff the exploit works, so the gate INVERTS the runner's natural
+// polarity: a test that RAN + PASSED is a FINDING (the exploit reproduced — a CANDIDATE); a test that RAN +
+// FAILED is CLEAN (the exploit assertion did not hold — refuted); nothing ran / compile / tooling error / a
+// #1471 linkage-gate reject is HARNESS_ERROR (not a verdict). The inversion lives ENTIRELY in the gate, so
+// verdict_of(rc) below stays BYTE-IDENTICAL to invariant-prover.ag (1->FINDING, 0->CLEAN, else->HARNESS_ERROR).
+//
+// A FINDING here is a CANDIDATE the PoC reproduced — still a LEAD a human triages, never a finding and NEVER
+// auto-submitted. CLEAN means the concrete exploit did NOT reproduce in this harness (not a proof of safety).
+// HARNESS_ERROR (the generated/fixture test did not compile, no test ran, the toolchain is absent, or it failed
+// the #1471 target-linkage gate) is NOT a verdict. Submission stays an explicit, human-gated action and this
+// agent never posts to a bounty platform.
+//
+// Env:
+//   TARGET_FN     the target location, "path/to/Contract.sol[:Name]" (free-form label; the lens).
+//   TARGET_CLASS  the bug class id the target is filed under, e.g. "C-erc4626" (optional; "" if unknown).
+//   BUG_HYPOTHESIS the concrete attack-SEQUENCE hypothesis to reproduce (free-form prose from audit-scout.ag /
+//                 the operator, e.g. "reconciliation underflow -> DoS -> overpayment"). The concrete-PoC analog
+//                 of the invariant lens; UNTRUSTED, flows ONLY into the generation prompt.
+//   POC_KIND      "hardhat" | "foundry"; selects the generation-prompt shape (a mocha/ethers JS test vs a
+//                 forge-std-free Solidity `test_*` contract) — the caller also sets POC_HARNESS to the matching
+//                 gate. Anything else defaults to "foundry".
+//   POC_REPO      absolute path to the staged project root (holds hardhat.config.* for hardhat / foundry.toml
+//                 for foundry). The exec sandbox cannot read $HOME — pass a rundir path (run-poc.sh stages it).
+//   POC_OUT       absolute path the generated/fixture test is written to (under POC_REPO/test/...).
+//   POC_HARNESS   absolute path to the verdict gate (hardhat-poc.sh or forge-poc.sh; the analog of FORGE_INVARIANT).
+//   CODE_PATH     optional target contract source the LLM reads; "" to skip. Arms the #1471 linkage gate.
+//   TARGET_FIXTURES_DIR optional path to the target's OWN test fixtures/deploy helpers; when set the prompt
+//                 instructs reuse of the target's deploy setup. A short listing + one representative fixture are
+//                 read through the sandboxed reader and injected as prompt context. UNTRUSTED, prompt-only.
+//   POC_FIXTURE   optional ready-made PoC test used VERBATIM, NO LLM (offline/deterministic path; analog of
+//                 HANDLER_FIXTURE).
+//   POC_MATCH     foundry test-fn prefix (default "test"); ignored by the hardhat gate.
+//   POC_REPAIR_ROUNDS bounded EXTRA compile-repair rounds (default 2; analog of INV_REPAIR_ROUNDS).
+// Stdout: exactly one verdict marker line —
+//   POC|<target>|<FINDING|CLEAN|HARNESS_ERROR>
+// followed, on a FINDING, by a `POC-FILE|<POC_OUT>` line (the runnable PoC a human executes).
+
+// --- file reader (dynamic path -> safe-exec-concat, per invariant-prover.ag precedent) ---
+fn cat_file(path: string) -> string {
+    if len(path) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "sed -n '1,4000p' ${path} 2>/dev/null || true";
+}
+
+// Map the gate's exit code to the colony verdict token. This is the ONLY source of the verdict — the LLM never
+// decides it. The gate's exit contract mirrors evm-harness/{hardhat,forge}-poc.sh (which INVERT the runner's
+// pass/fail so a passing exploit test = FINDING); this mapping is byte-identical to invariant-prover.ag:
+//   1 -> FINDING        (the concrete exploit test RAN and PASSED -> the exploit reproduced -> a CANDIDATE)
+//   0 -> CLEAN          (the test RAN and FAILED -> the exploit assertion did not hold -> refuted, no finding)
+//   else (2, etc.) -> HARNESS_ERROR (compile/tooling error / no test ran / repo not the right kind / linkage reject)
+fn verdict_of(rc: int) -> string {
+    if rc == 1 { return "FINDING"; }
+    if rc == 0 { return "CLEAN"; }
+    return "HARNESS_ERROR";
+}
+
+// learn() outcome must be one of {success,failure,partial,timeout,error}. A FINDING (a reproduced concrete
+// exploit) = success; a CLEAN consumed the hypothesis without reproducing = failure; a harness error = error.
+fn outcome_of(verdict: string) -> string {
+    if verdict == "FINDING" { return "success"; }
+    if verdict == "CLEAN" { return "failure"; }
+    return "error";
+}
+
+// Parse the `__rc=<n>` marker the gate is wrapped to print as its LAST line (the auditor.ag exec convention).
+// A missing marker would wrongly read as 0/CLEAN, so a "no marker" case is forced to a harness error (2).
+fn rc_of(out: string) -> int {
+    if index_of(out, "__rc=") < 0 { return 2; }
+    return parse_int(regex_capture("__rc=([0-9]+)", out, 1));
+}
+
+let targetFn = getenv("TARGET_FN");
+let targetClass = getenv("TARGET_CLASS");
+let bugHypothesis = getenv("BUG_HYPOTHESIS");
+let pocRepo = getenv("POC_REPO");
+let pocOut = getenv("POC_OUT");
+let gate = getenv("POC_HARNESS");
+let codePath = getenv("CODE_PATH");
+let code = cat_file(codePath);
+let fixturePath = getenv("POC_FIXTURE");
+let fixture = cat_file(fixturePath);
+let fixturesDir = getenv("TARGET_FIXTURES_DIR");
+
+// POC_KIND selects the generation-prompt shape + which gate is invoked (the runner sets the matching
+// POC_HARNESS). Anything other than "hardhat" defaults to "foundry" so a missing/typo'd value never invents a
+// third path — it falls to the forge-std-free Solidity build the forge-poc.sh gate understands.
+fn poc_kind(raw: string) -> string {
+    if raw == "hardhat" { return "hardhat"; }
+    return "foundry";
+}
+let pocKind = poc_kind(getenv("POC_KIND"));
+let isHardhat = pocKind == "hardhat";
+
+// forge-poc.sh's own default match prefix is `test`; default to it when POC_MATCH is unset (ignored by hardhat).
+fn match_prefix(raw: string) -> string {
+    if len(raw) == 0 { return "test"; }
+    return raw;
+}
+let pocMatch = match_prefix(getenv("POC_MATCH"));
+
+// #1070-B1 style — drive the REAL target. The generated test is written under POC_REPO/test and the target
+// source is CODE_PATH; the model needs the CORRECT reference so it exercises the real contract, not an inlined
+// toy of it. targetName = the `*.sol:Name` label's Name (empty when only the FILE is known). For the foundry
+// build the import directive is the realpath-relative import (verbatim reuse of invariant-prover.ag's helpers);
+// for the hardhat build the model references the contract by its ARTIFACT NAME via getContractFactory("<Name>").
+fn target_name(label: string) -> string {
+    let c = index_of(label, ":");
+    if c < 0 { return ""; }
+    return substring(label, c + 1, len(label));
+}
+let targetName = target_name(targetFn);
+fn deploy_name(name: string) -> string {
+    if len(name) == 0 { return "<Target>"; }
+    return name;
+}
+let deployName = deploy_name(targetName);
+fn rel_import_path(out: string, src: string) -> string {
+    if len(src) == 0 { return ""; }
+    if len(out) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "realpath --relative-to \"$(dirname " + shell_escape(out) + ")\" " + shell_escape(src) + " 2>/dev/null | tr -d '\\n' || true";
+}
+let relImport = rel_import_path(pocOut, codePath);
+// The reference-directive line the model reads. hardhat: name the artifact for getContractFactory / getContractAt
+// (the anti-fabrication gate keys on that same name). foundry: the realpath-relative `import {Name} from "..."`.
+// Empty when there is no target source to reference.
+fn ref_line(hardhat: bool, name: string, rel: string) -> string {
+    if hardhat {
+        if len(name) == 0 { return ""; }
+        return "  - Drive the REAL in-scope target by its artifact name: `await ethers.getContractFactory(\"" + name + "\")` (or `getContractAt(\"" + name + "\", addr)`). Do NOT define or deploy a toy contract of the same name.\n";
+    }
+    if len(rel) == 0 { return ""; }
+    if len(name) > 0 {
+        return "  - Import the target with: import {" + name + "} from \"" + rel + "\";\n";
+    }
+    return "  - Import the target from \"" + rel + "\" — import the contract you see DECLARED in the source below.\n";
+}
+let refLine = ref_line(isHardhat, targetName, relImport);
+
+// Optional TARGET_FIXTURES_DIR context: a short listing + one representative fixture, read through the sandboxed
+// reader, so the model can reuse the target's OWN deploy setup instead of re-deriving it. UNTRUSTED, prompt-only.
+fn fixtures_listing(dir: string) -> string {
+    if len(dir) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "ls -1 " + shell_escape(dir) + " 2>/dev/null | head -n 40 || true";
+}
+fn first_fixture(dir: string) -> string {
+    if len(dir) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "f=$(ls -1 " + shell_escape(dir) + " 2>/dev/null | head -n 1); [ -n \"$f\" ] && sed -n '1,400p' " + shell_escape(dir) + "/\"$f\" 2>/dev/null || true";
+}
+fn fixtures_context(dir: string) -> string {
+    let listing = fixtures_listing(dir);
+    if len(listing) == 0 { return ""; }
+    return "=== TARGET FIXTURES (its own deploy/test helpers — REUSE this deploy setup) ===\n"
+         + "files:\n" + listing + "\n\nrepresentative fixture:\n" + first_fixture(dir) + "\n\n";
+}
+let fixturesBlock = fixtures_context(fixturesDir);
+
+// --- GENERATE the concrete exploit PoC -----------------------------------------------------------
+// Offline / deterministic path: a POC_FIXTURE is a ready-made PoC test used VERBATIM, no LLM (the path the demo
+// + a `--backend mock` wiring smoke take, so the target->PoC->gate->verdict loop is provable with zero LLM cost).
+//
+// Live path: the LLM is the ATTACK-SEQUENCE author. It reads CODE_PATH + BUG_HYPOTHESIS (+ optional fixtures
+// context) and writes ONE self-contained concrete exploit test that (a) drives the REAL target (never an inline
+// toy of it), (b) sets up the specific pre-state, runs the exact ATTACK SEQUENCE from the hypothesis, and (c)
+// ASSERTS the exploit succeeded so the test PASSES iff the vuln is real (the inverted-polarity convention the
+// gate scores). Cold path, one target in / one test out -> the prompt carries an explicit prompt-gate-ok marker.
+fn hardhat_prompt(klass: string, hypothesis: string, refLine: string, fixturesBlock: string) -> string {
+    return "You are an exploit engineer writing a CONCRETE proof-of-concept for a Hardhat project. Write ONE "
+         + "self-contained mocha test (JavaScript, `require(\"hardhat\")` + `ethers`, plus `chai`'s `expect`) "
+         + "that REPRODUCES the specific attack below end-to-end. Requirements:\n"
+         + "  - This is a concrete ATTACK-SEQUENCE PoC, NOT property fuzzing: set up the exact pre-state, run the "
+         + "precise sequence of transactions the exploit needs (in order, with the right actors/signers), then "
+         + "ASSERT the exploit SUCCEEDED — the attacker gained value, the victim lost it, or the protocol is "
+         + "DoS'd. The test MUST be written so it PASSES iff the vulnerability is real (a passing test is the "
+         + "positive PoC result).\n"
+         + refLine
+         + "  - Use `describe(...)`/`it(...)`; get signers via `await ethers.getSigners()`; deploy via "
+         + "`await ethers.getContractFactory(...)` and `.deploy(...)` (await `.waitForDeployment()` on ethers v6). "
+         + "Reuse the target's OWN deploy fixtures/helpers when provided below.\n"
+         + "  - Output ONLY the test source (a `*.test.js` body) — no markdown fences, no prose before or after.\n\n"
+         + fixturesBlock
+         + "=== BUG CLASS (lens) ===\n" + klass + "\n\n"
+         + "=== CONCRETE ATTACK HYPOTHESIS TO REPRODUCE ===\n" + hypothesis + "\n\n"
+         + "=== HOW TO ANSWER ===\n"
+         + "Output ONLY the JavaScript mocha test source. It must define at least one `it(...)` whose body drives "
+         + "the real target through the attack sequence and asserts the exploit succeeded.";
+}
+fn foundry_prompt(klass: string, hypothesis: string, matchPrefix: string, deployName: string, refLine: string, fixturesBlock: string) -> string {
+    return "You are an exploit engineer writing a CONCRETE proof-of-concept for a Foundry project. Write ONE "
+         + "self-contained Solidity test (`pragma solidity ^0.8.20;`) that REPRODUCES the specific attack below "
+         + "end-to-end. Requirements:\n"
+         + "  - This is a concrete ATTACK-SEQUENCE PoC, NOT invariant/property fuzzing: a single `" + matchPrefix
+         + "_*` function that sets up the exact pre-state, runs the precise sequence of calls the exploit needs "
+         + "(in order), then ASSERTS with plain `require(...)`/`assert(...)` that the exploit SUCCEEDED (attacker "
+         + "gain / victim loss / DoS). The test MUST be written so it PASSES iff the vulnerability is real.\n"
+         + "  - IMPORT and DEPLOY the REAL target contract under test — do NOT inline a mock copy of it. A minimal "
+         + "mock of an EXTERNAL dependency it needs (an ERC20 asset, an oracle) is fine, but the unit under test "
+         + "MUST be the real imported contract. Do NOT import forge-std — this test must compile with ZERO library "
+         + "remappings (no `Test`/`vm` cheatcodes unless you define the minimal interface yourself).\n"
+         + refLine
+         + "  - In `setUp()` (or at the top of the test) deploy the real target: for a normal `constructor(args)` "
+         + "use `new " + deployName + "(args)`; read the constructor/initializer signature from the source below "
+         + "to wire the arguments. Keep the whole test bounded (~120 lines).\n"
+         + "  - Output ONLY the Solidity source — no markdown fences, no prose before or after.\n\n"
+         + fixturesBlock
+         + "=== BUG CLASS (lens) ===\n" + klass + "\n\n"
+         + "=== CONCRETE ATTACK HYPOTHESIS TO REPRODUCE ===\n" + hypothesis + "\n\n"
+         + "=== HOW TO ANSWER ===\n"
+         + "Output ONLY the Solidity source of the `*.t.sol` test — it must compile and define at least one "
+         + "`contract` and one `" + matchPrefix + "_*` function.";
+}
+fn generate_test(hardhat: bool, klass: string, src: string, hypothesis: string, matchPrefix: string, deployName: string, refLine: string, fixturesBlock: string) -> string {
+    let instruction = if hardhat {
+        hardhat_prompt(klass, hypothesis, refLine, fixturesBlock)
+    } else {
+        foundry_prompt(klass, hypothesis, matchPrefix, deployName, refLine, fixturesBlock)
+    };
+    // colony-lint: prompt-gate-ok
+    return prompt(instruction, src) -> string;
+}
+
+// Single-assignment .ag: pick the FIRST test source ONCE. A non-empty POC_FIXTURE wins (offline/deterministic,
+// verbatim, no LLM); otherwise the LLM generates it (live path). On the live path this is only the FIRST attempt
+// — the bounded compile-repair loop below may regenerate it.
+let usedFixture = len(fixture) > 0;
+fn choose_test(usedFix: bool, fix: string, hardhat: bool, klass: string, src: string, hypothesis: string, matchPrefix: string, deployName: string, refLine: string, fixturesBlock: string) -> string {
+    if usedFix { return fix; }
+    return generate_test(hardhat, klass, src, hypothesis, matchPrefix, deployName, refLine, fixturesBlock);
+}
+let test = choose_test(usedFixture, fixture, isHardhat, targetClass, code, bugHypothesis, pocMatch, deployName, refLine, fixturesBlock);
+
+// --- VERIFY with the toolchain-parametric gate ---------------------------------------------------
+// The gate is POC_HARNESS (hardhat-poc.sh or forge-poc.sh). We write the test to POC_OUT then run the gate
+// against it and capture its exit code via the `__rc=$?` marker convention. The verdict is THIS exit code —
+// nothing else (the gate INVERTS the runner's polarity so a passing exploit test is a FINDING).
+
+// #1471 — TARGET-LINKAGE GATE args, threaded into the gate ONLY when a real CODE_PATH is known. When the target
+// is referenced by SOURCE the gate must assert the generated PoC actually references that source AND does not
+// SHADOW the in-scope contract with a self-authored toy of the same name — the #1471 false FINDING. Simplified
+// vs invariant-prover.ag (no fork/composability branches): empty CODE_PATH -> "" (the gate is inert). Each value
+// is shell_escape()d here / in opt_flag.
+fn opt_flag(flag: string, val: string) -> string {
+    if len(val) == 0 { return ""; }
+    return " " + flag + " " + shell_escape(val);
+}
+fn link_args(cPath: string, tName: string) -> string {
+    if len(cPath) == 0 { return ""; }
+    return " --require-import " + shell_escape(cPath) + opt_flag("--require-contract", tName);
+}
+let linkArgs = link_args(codePath, targetName);
+
+// Write the generated/fixture test to POC_OUT. The test content is UNTRUSTED (an LLM completion or an operator
+// fixture) so it MUST go through shell_escape(), never a heredoc. Wrapped in a fn so the repair loop reuses the
+// SAME write mechanism.
+fn write_test(src: string, out: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "printf '%s' " + shell_escape(src) + " > " + shell_escape(out) + "; echo __wrote=$?";
+}
+// Run the gate over the just-written POC_OUT and capture its `__rc=<n>` marker. `--match` is passed uniformly
+// (forge-poc.sh uses it; hardhat-poc.sh accepts + ignores it). Wrapped in a fn so the repair loop reuses the
+// EXACT invocation every attempt.
+fn run_gate(gateSh: string, repo: string, out: string, matchPrefix: string, extraArgs: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "set +e; sh " + shell_escape(gateSh) + " --repo " + shell_escape(repo) + " --target " + shell_escape(out) + " --match " + shell_escape(matchPrefix) + extraArgs + " 2>&1; echo __rc=$?";
+}
+
+// --- BOUNDED COMPILE-REPAIR LOOP (#1073 shape, simplified) ---------------------------------------
+// On a HARNESS_ERROR (rc not in {0,1}) on the LLM path OUR PoC failed to compile / no test ran — a recoverable
+// fault. So we feed the compiler/tooling error back to the model and regenerate, up to N EXTRA rounds. The loop
+// runs ONLY on the LLM-generated path; the verbatim POC_FIXTURE path is NEVER LLM-repaired (an operator fixture
+// is authoritative). The FINAL verdict stays the gate's exit code on the LAST attempt. (No FM1/FM2/both-real
+// branches — a concrete exploit is a single deploy, so only the compile/run-error path exists.)
+fn repair_rounds(raw: string) -> int {
+    if len(raw) == 0 { return 2; }
+    if len(regex_find_all("[^0-9]", raw)) > 0 { return 2; }
+    return parse_int(raw);
+}
+let repairRounds = repair_rounds(getenv("POC_REPAIR_ROUNDS"));
+
+// Extract a useful error excerpt from the gate's captured output (solc/npx/mocha diagnostics) so the repair
+// prompt stays focused, capped to a few KB. UNTRUSTED: flows ONLY into the plain-string repair prompt.
+fn error_excerpt(out: string) -> string {
+    // colony-lint: safe-exec-concat
+    let filtered = exec sh "printf '%s' " + shell_escape(out) + " | grep -iE 'error|error\\[|[-][-]>|compil|SyntaxError|TypeError|cannot|not found|revert' | head -n 80 || true";
+    if len(filtered) > 4000 { return substring(filtered, 0, 4000); }
+    return filtered;
+}
+// The repair instruction: hand the model the error + its PRIOR test source with the SAME hard constraints as the
+// first generation (kind-aware). prevSrc/excerpt are UNTRUSTED — plain-string prompt only, never a shell.
+fn repair_instruction(hardhat: bool, excerpt: string, prevSrc: string, matchPrefix: string) -> string {
+    let head = if hardhat {
+        "The Hardhat PoC test you wrote did NOT compile / did not run. Toolchain output:\n"
+    } else {
+        "The Foundry PoC test you wrote did NOT compile (or matched no `" + matchPrefix + "_*`). Compiler output:\n"
+    };
+    let tail = if hardhat {
+        "\nFix it and output ONLY the corrected JavaScript mocha test — same constraints (require(\"hardhat\") + "
+      + "ethers + chai expect, drive the REAL target via getContractFactory/getContractAt, one it() that runs the "
+      + "attack sequence and asserts the exploit SUCCEEDED so the test PASSES iff the vuln is real, output-only)."
+    } else {
+        "\nFix it and output ONLY the corrected Solidity — same constraints (pragma ^0.8.20, NO forge-std, "
+      + "import+deploy the REAL target, one `" + matchPrefix + "_*` that runs the attack sequence and asserts the "
+      + "exploit SUCCEEDED with plain require()/assert() so the test PASSES iff the vuln is real, output-only)."
+    };
+    return head + excerpt + "\nYour previous test was:\n" + prevSrc + tail;
+}
+fn repair_test(hardhat: bool, excerpt: string, prevSrc: string, matchPrefix: string) -> string {
+    // colony-lint: prompt-gate-ok
+    return prompt(repair_instruction(hardhat, excerpt, prevSrc, matchPrefix), "") -> string;
+}
+
+// STATE ENCODING for the repair loop: 3 NAMED fields joined by the 5-char sentinel `@@F@@` (it cannot occur in
+// Solidity/JS source or gate output). Fields: 0 stopped ("1" once a FINDING/CLEAN verdict ended the loop, else
+// "0"), 1 testSrc (the CURRENT test source), 2 runOut (the gate's captured output for the latest attempt).
+fn rstate_field(s: string, n: int) -> string {
+    let segs = regex_split("@@F@@", s);
+    let acc = reduce(segs, |a: string, seg: string| -> string {
+        let bar = index_of(a, "\t");
+        let idx = parse_int(substring(a, 0, bar));
+        let cap = substring(a, bar + 1, len(a));
+        if idx == n { return to_string(idx + 1) + "\t" + seg; }
+        return to_string(idx + 1) + "\t" + cap;
+    }, "0\t");
+    return substring(acc, index_of(acc, "\t") + 1, len(acc));
+}
+fn rstate(stopped: string, testSrc: string, runOut: string) -> string {
+    return stopped + "@@F@@" + testSrc + "@@F@@" + runOut;
+}
+// Flip `stopped` to "1" iff the gate produced a TERMINAL verdict (rc 1 FINDING / rc 0 CLEAN); a HARNESS_ERROR
+// (any other rc) leaves it "0" so the loop keeps repairing.
+fn stop_flag(rc: int) -> string {
+    if rc == 1 { return "1"; }
+    if rc == 0 { return "1"; }
+    return "0";
+}
+// One repair round over the carried state. A no-op once stopped. Else the PRIOR attempt was a HARNESS_ERROR
+// (compile/tooling/no-test): re-prompt with the error, rewrite, re-run the gate, STOP on a verdict. The
+// gate-invocation pieces + hardhat/matchPrefix are carried in as params (the .ag pass-everything convention).
+fn repair_step(acc: string, hardhat: bool, gateSh: string, repo: string, out: string, matchPrefix: string, extraArgs: string) -> string {
+    if rstate_field(acc, 0) == "1" { return acc; }
+    let prevSrc = rstate_field(acc, 1);
+    let prevOut = rstate_field(acc, 2);
+    let fixed = repair_test(hardhat, error_excerpt(prevOut), prevSrc, matchPrefix);
+    let _wr = write_test(fixed, out);
+    let newOut = run_gate(gateSh, repo, out, matchPrefix, extraArgs);
+    return rstate(stop_flag(rc_of(newOut)), fixed, newOut);
+}
+// BOUNDED RECURSION: drive `repair_step` at most `remaining` times, decrementing per round. `remaining <= 0` is
+// a true no-op, so POC_REPAIR_ROUNDS=0 — and the fixture path, which seeds stopped="1" — make ZERO extra
+// prompt()/gate calls. `repair_step` short-circuits once stopped, so a FINDING/CLEAN ends the recursion early.
+fn repair_loop(acc: string, remaining: int, hardhat: bool, gateSh: string, repo: string, out: string, matchPrefix: string, extraArgs: string) -> string {
+    if remaining <= 0 { return acc; }
+    if rstate_field(acc, 0) == "1" { return acc; }
+    let next = repair_step(acc, hardhat, gateSh, repo, out, matchPrefix, extraArgs);
+    return repair_loop(next, remaining - 1, hardhat, gateSh, repo, out, matchPrefix, extraArgs);
+}
+
+// FIRST attempt: write the chosen test + run the gate ONCE (today's one-shot — byte-identical for the fixture
+// path and for POC_REPAIR_ROUNDS=0). The fixture path seeds the loop ALREADY-stopped so it can never be repaired.
+let wrote = write_test(test, pocOut);
+let firstOut = run_gate(gate, pocRepo, pocOut, pocMatch, linkArgs);
+let initStopped = if usedFixture { "1" } else { stop_flag(rc_of(firstOut)) };
+let initState = rstate(initStopped, test, firstOut);
+let finalState = repair_loop(initState, repairRounds, isHardhat, gate, pocRepo, pocOut, pocMatch, linkArgs);
+
+// The verdict is the gate's exit code on the LAST attempt — NEVER the LLM's opinion.
+let runOut = rstate_field(finalState, 2);
+let rc = rc_of(runOut);
+let verdict = verdict_of(rc);
+
+// --- EMIT the gate's verdict ---------------------------------------------------------------------
+// Surface the marker (stdout, parsed by run-poc.sh), then on a FINDING a `POC-FILE|<path>` line (the runnable
+// PoC a human executes), record it on the bus, and learn() the attribution (FINDING=success, CLEAN=failure,
+// harness=error). memo_write the last_check per the agent convention.
+print("POC|" + targetFn + "|" + verdict);
+if verdict == "FINDING" {
+    print("POC-FILE|" + pocOut);
+}
+let outcome = outcome_of(verdict);
+fn gen_mode(usedFix: bool) -> string {
+    if usedFix { return "fixture"; }
+    return "llm";
+}
+let genMode = gen_mode(usedFixture);
+emit("dark-factory:poc_verdict", "{\"target\":\"" + targetFn + "\",\"class\":\"" + targetClass + "\",\"kind\":\"" + pocKind + "\",\"verdict\":\"" + verdict + "\",\"gen\":\"" + genMode + "\",\"outcome\":\"" + outcome + "\"}");
+learn("poc-write", targetClass + ":" + targetFn, "concrete-exploit PoC (" + pocKind + ") generate-and-verify of " + targetFn + " (" + targetClass + ") -> " + verdict, outcome, [targetClass, verdict, pocKind, outcome]);
+memo_write("poc-writer:last_check", "done");

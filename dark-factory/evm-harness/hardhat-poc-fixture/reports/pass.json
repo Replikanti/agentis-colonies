@@ -1,0 +1,28 @@
+{
+  "stats": {
+    "suites": 1,
+    "tests": 1,
+    "passes": 1,
+    "pending": 0,
+    "failures": 0,
+    "start": "2026-07-09T00:00:00.000Z",
+    "end": "2026-07-09T00:00:01.000Z",
+    "duration": 1000
+  },
+  "tests": [
+    {
+      "title": "attacker drains the pool for more than it deposited",
+      "fullTitle": "Vuln re-entrancy PoC attacker drains the pool for more than it deposited",
+      "state": "passed",
+      "duration": 900
+    }
+  ],
+  "passes": [
+    {
+      "title": "attacker drains the pool for more than it deposited",
+      "fullTitle": "Vuln re-entrancy PoC attacker drains the pool for more than it deposited"
+    }
+  ],
+  "pending": [],
+  "failures": []
+}

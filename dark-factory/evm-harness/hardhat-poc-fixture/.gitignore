@@ -1,0 +1,6 @@
+# Toolchain artifacts — the fixture ships SOURCE only; the live e2e installs/builds locally (#1507).
+node_modules/
+package-lock.json
+cache/
+artifacts/
+.hardhat-poc.reporter.cjs
