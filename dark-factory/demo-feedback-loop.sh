@@ -5,7 +5,7 @@
 # dark-factory demos (demo-report-writer.sh / demo-immunefi-intake.sh): assert-based PASS/FAIL lines, a temp
 # drop-dir trap-cleaned, exit non-zero on regression, exit 3 if a component is missing.
 #
-# THREE parts:
+# FOUR parts:
 #   1) DELIVERY (offline, real): run deliver-submission.sh over a fixture report-writer draft carrying the
 #      SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW marker + fixture gate verdicts + a stable id -> assert the drop-dir
 #      has manifest.json + submission-draft.md + OUTCOME.md, that manifest.json carries the canonical
@@ -20,6 +20,14 @@
 #      document the never-submit invariant; when agentis is on PATH, run feedback-intake.ag end-to-end over the
 #      staged drop-dir asserting exit 0 (the mock backend can't reason, so only clean execution is asserted —
 #      the demo-report-writer.sh precedent), else [SKIP].
+#   4) NOTIFY (offline, #1538): the finding-ready Slack/Discord alert deliver-submission.sh pages on a successful
+#      stage, reusing monitor/scripts/notify.sh. A `curl` STUB on PATH proves no real network is ever reached.
+#      Asserts: no-webhook = offline no-op (exit 0, alert on STDERR only, curl never invoked); the alert payload
+#      shape (submission_id/severity/gate verdicts/draft_path/message); a bad webhook value never flips
+#      deliver-submission.sh's own exit code (retries forced to 0 so no real sleep is reached); the source pins
+#      `bash`, never `sh`, for the notify.sh invocation; and — the single most load-bearing check in this file —
+#      that deliver-submission.sh's documented stdout contract (the staged path, ONE line, nothing else) still
+#      holds with a webhook configured, proving the notify subprocess's stdout is correctly redirected to stderr.
 #
 # All shell sub-scripts are invoked with `bash` (never `sh`) per the #1507 dash lesson.
 #
@@ -249,12 +257,111 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# 4) NOTIFY — the finding-ready Slack/Discord alert deliver-submission.sh pages on a successful stage (#1538).
+# ----------------------------------------------------------------------------------------------------------
+note "4) finding-ready Slack/Discord alert (deliver-submission.sh -> monitor/scripts/notify.sh) ..."
+
+# A curl STUB on PATH: logs every invocation (to $CURL_LOG) and always fails fast (exit 1, no real I/O) — proves
+# no real network is ever reached, and would fail loudly if a gate here were wrong.
+FAKEBIN="$WORK/fakebin"
+mkdir -p "$FAKEBIN"
+{
+  printf '%s\n' "#!/bin/sh"
+  printf '%s\n' 'echo "$*" >> "$CURL_LOG"'
+  printf '%s\n' "exit 1"
+} > "$FAKEBIN/curl"
+chmod +x "$FAKEBIN/curl"
+
+NID="notify-fixture@dead:beef"
+NSCOPE="SCOPE-GATE|PAYABLE|fixture"
+NIMPACT="IMPACT-GATE|SUBSTANTIATED|fixture"
+NDUP="DUP-RISK|LOW|~5%|fixture"
+
+# --- (a) no webhook configured = an offline no-op: exit 0, alert on STDERR only, curl never reached. ----------
+NOTIFY_ERR="$WORK/notify-stderr.log"
+CURL_LOG="$WORK/curl-calls.log"
+env -u DARK_FACTORY_SLACK_WEBHOOK -u MONITOR_WEBHOOK_URL -u MONITOR_WEBHOOK_URL_WARN -u MONITOR_WEBHOOK_URL_HIGH \
+  CURL_LOG="$CURL_LOG" PATH="$FAKEBIN:$PATH" \
+  bash "$DELIVER" --id "$NID" --draft-file "$DRAFT" --scope-verdict "$NSCOPE" --impact-verdict "$NIMPACT" \
+    --dup-risk "$NDUP" --severity Critical --drop-dir "$WORK/drop-notify-a" \
+  >"$WORK/notify-stdout-a.log" 2>"$NOTIFY_ERR"; RC=$?
+[ "$RC" -eq 0 ] && ok "no-webhook stage still exits 0" || bad "no-webhook stage exited $RC (expected 0)"
+grep -q '\[monitor:alert\]' "$NOTIFY_ERR" \
+  && ok "the finding-ready alert reached notify.sh's no-op fallback on STDERR" || bad "no [monitor:alert] line found on stderr"
+[ ! -e "$CURL_LOG" ] && ok "curl was never invoked (no network reached)" || bad "curl was invoked with no webhook configured: $(cat "$CURL_LOG")"
+
+# --- (b) payload shape: submission_id + severity + gate verdicts + draft_path + message. -----------------------
+ALERT_JSON="$(grep '\[monitor:alert\]' "$NOTIFY_ERR" | head -1 | sed 's/^\[monitor:alert\] //')"
+PAYLOAD_OK="$(ALERT_JSON="$ALERT_JSON" NID="$NID" NSCOPE="$NSCOPE" NIMPACT="$NIMPACT" NDUP="$NDUP" python3 -c '
+import json, os
+try:
+    obj = json.loads(os.environ["ALERT_JSON"])
+except Exception as e:
+    print("parse-error:" + str(e))
+else:
+    ok = (
+        obj.get("submission_id") == os.environ["NID"]
+        and obj.get("severity") == "high"
+        and obj.get("scope_verdict") == os.environ["NSCOPE"]
+        and obj.get("impact_verdict") == os.environ["NIMPACT"]
+        and obj.get("dup_risk") == os.environ["NDUP"]
+        and str(obj.get("draft_path", "")).endswith("/submission-draft.md")
+        and "relay to the platform" in obj.get("message", "")
+        and "feedback-intake.ag" in obj.get("message", "")
+    )
+    print("ok" if ok else "shape-mismatch:" + json.dumps(obj))
+')"
+[ "$PAYLOAD_OK" = "ok" ] \
+  && ok "the finding-ready alert carries submission_id/severity(high)/gate verdicts/draft_path/message" \
+  || bad "alert payload shape mismatch: $PAYLOAD_OK"
+
+# --- (c) a bad/bogus webhook must never flip deliver-submission.sh's own exit code (retries=0, no real sleep). --
+DROP_C="$WORK/drop-notify-c"
+NID_C="notify-fixture@dead:c0de"
+CURL_LOG_C="$WORK/curl-calls-c.log"
+DARK_FACTORY_SLACK_WEBHOOK="not-a-real-webhook" MONITOR_NOTIFY_MAX_RETRIES=0 \
+  CURL_LOG="$CURL_LOG_C" PATH="$FAKEBIN:$PATH" \
+  bash "$DELIVER" --id "$NID_C" --draft-file "$DRAFT" --severity Medium --drop-dir "$DROP_C" \
+  >/dev/null 2>"$WORK/notify-stderr-c.log"; RC=$?
+[ "$RC" -eq 0 ] && ok "a bogus webhook never flips deliver-submission.sh's own exit code" || bad "bogus webhook flipped exit to $RC (expected 0)"
+BADSLUG_C="$(printf '%s' "$NID_C" | sed 's/[^A-Za-z0-9._@-]/-/g')"
+[ -f "$DROP_C/$BADSLUG_C/manifest.json" ] && [ -f "$DROP_C/$BADSLUG_C/submission-draft.md" ] && [ -f "$DROP_C/$BADSLUG_C/OUTCOME.md" ] \
+  && ok "staging still completed cleanly despite the bogus webhook" || bad "staging was corrupted by the bogus webhook path"
+
+# --- (d) source guard: bash, never sh/dot-source, for the notify.sh invocation (#1507/#1534 dash lesson). ------
+grep -q 'bash "\$SCRIPT_DIR/monitor/scripts/notify.sh"' "$DELIVER" \
+  && ok "deliver-submission.sh invokes notify.sh via bash (source-pinned)" || bad "deliver-submission.sh does not bash-invoke notify.sh as expected"
+if grep -qE '(^|[^a-zA-Z])sh[[:space:]]+"?\$SCRIPT_DIR/monitor/scripts/notify\.sh"?' "$DELIVER" \
+   || grep -qE '\.[[:space:]]+"?\$SCRIPT_DIR/monitor/scripts/notify\.sh"?' "$DELIVER"; then
+  bad "deliver-submission.sh invokes notify.sh via sh/dot-source (dash-safety regression)"
+else
+  ok "deliver-submission.sh does not invoke notify.sh via sh/dot-source"
+fi
+
+# --- (e) STDOUT-CONTRACT regression guard (load-bearing): with a webhook CONFIGURED, stdout is STILL exactly ---
+# the staged path — the one assertion that would catch a missing `>&2` on the notify invocation.
+DROP_E="$WORK/drop-notify-e"
+NID_E="notify-fixture@dead:c0ffee"
+CURL_LOG_E="$WORK/curl-calls-e.log"
+STDOUT_E="$(DARK_FACTORY_SLACK_WEBHOOK="not-a-real-webhook" MONITOR_NOTIFY_MAX_RETRIES=0 \
+  CURL_LOG="$CURL_LOG_E" PATH="$FAKEBIN:$PATH" \
+  bash "$DELIVER" --id "$NID_E" --draft-file "$DRAFT" --severity Low --drop-dir "$DROP_E" 2>/dev/null)"
+LINES_E="$(printf '%s\n' "$STDOUT_E" | wc -l | tr -d ' ')"
+[ "$LINES_E" = "1" ] && ok "deliver-submission.sh's stdout is exactly ONE line with a webhook configured" \
+  || bad "stdout had $LINES_E lines (expected 1) — the notify subprocess's stdout may be leaking"
+EXPECT_E="$DROP_E/$(printf '%s' "$NID_E" | sed 's/[^A-Za-z0-9._@-]/-/g')"
+[ "$STDOUT_E" = "$EXPECT_E" ] \
+  && ok "stdout is exactly the staged path — no [monitor:alert] leakage into stdout" \
+  || bad "stdout did not equal the staged path: [$STDOUT_E]"
+
+# ----------------------------------------------------------------------------------------------------------
 echo
 if [ "$FAIL" -eq 0 ]; then
   note "PASS — deliver-submission.sh staged a marked draft (canonical id + raw gate verdicts in manifest.json),"
   note "       refused an unmarked draft (exit 3), the closed-Onyx outcome maps deterministically to failure,"
-  note "       feedback-intake.ag encodes the four arms + attributes via the gate topics, and neither component"
-  note "       has platform egress. Offline + human-gated; never submits."
+  note "       feedback-intake.ag encodes the four arms + attributes via the gate topics, neither component has"
+  note "       platform egress, and the finding-ready Slack/Discord alert (#1538) is offline-safe by default and"
+  note "       never corrupts the staged-path stdout contract even with a webhook configured. Never submits."
   exit 0
 fi
 note "FAIL — a feedback-loop assertion regressed (see above)." >&2

@@ -15,6 +15,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Finding-ready Slack/Discord alert on `deliver-submission.sh` staging** (#1538, follow-up to #1526). After a
+  successful stage, `deliver-submission.sh` now pages the operator with a finding-ready alert, reusing
+  `monitor/scripts/notify.sh` (#1092) unconditionally — the same JSON-alert-to-`notify.sh` pattern as
+  `monitor/scripts/check-drift.sh`. Opt-in on a configured webhook (`DARK_FACTORY_SLACK_WEBHOOK`, a
+  `secret://...` URI resolved via `tools/parse-toml-secret.py --resolve`, falling back to
+  `MONITOR_WEBHOOK_URL`); with no webhook configured this is an offline no-op (`notify.sh`'s own stdout
+  no-op fallback) — no network, no behaviour change. The notify subprocess's stdout is redirected to stderr
+  (`>&2`) so `notify.sh`'s no-webhook fallback line can never corrupt `deliver-submission.sh`'s documented
+  stdout contract (the staged path) relied on by `demo-feedback-loop.sh` and `feedback-intake.ag`; the alert
+  send is best-effort (`|| true`) so a broken/bogus webhook can never fail a stage that already succeeded.
+  The alert is an operator PAGE on the operator's own channel — not a platform submission; the never-submit
+  invariant is unchanged. `demo-feedback-loop.sh` gains a new offline `4) NOTIFY` section covering the
+  no-webhook no-op, the alert payload shape, a bogus-webhook exit-code regression, the `bash`-not-`sh` source
+  guard, and the stdout-contract regression guard.
 - **Coordinator submission-pass integration — the epic #1505 CAPSTONE** (#1509, epic #1505). Wires the shipped
   submission stages (scope-gate #1511, audit-scout DEVISE, poc-writer #1507, impact-gate #1522, dup-scout #1503,
   report-writer #1508) into `coordinator.ag` as ONE fixed-order autonomous pass — `discover -> scope -> devise ->
