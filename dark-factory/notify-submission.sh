@@ -44,10 +44,11 @@
 # THREAD OUTCOME LOOP (#1557, epic #1505): on a successful main post this ALSO closes the human->federation loop
 # IN THE SAME THREAD. It records two new keys into the already-staged manifest.json — `slack_thread_ts` (the main
 # message ts) + `slack_channel` (the routed channel id) — and then posts ONE final threaded "reply-with-outcome"
-# prompt showing the operator the EXACT field names the reader parses (`verdict:` / `severity:` / `payout:` /
-# `reason:` / `notes:`). The operator replies IN the thread with the platform outcome; the sibling reader
-# dark-factory/ingest-slack-outcome.sh reads that reply back (conversations.replies), writes OUTCOME.md, and folds
-# it into learning. Both the writeback and the prompt are best-effort (warn on failure, never abort the uploads)
+# prompt asking the operator to reply starting with `outcome:` then paste the platform's response VERBATIM (#1561:
+# feedback-intake.ag CLASSIFIES the raw response — there is no verdict enum to pick), plus the OPTIONAL operator
+# override lines (`verdict:` / `payout:`). The operator replies IN the thread with the platform outcome; the sibling
+# reader dark-factory/ingest-slack-outcome.sh reads that reply back (conversations.replies), writes OUTCOME.md, and
+# folds it into learning. Both the writeback and the prompt are best-effort (warn on failure, never abort the uploads)
 # and route no bytes onto stdout. Reading a thread + prompting is NOT a bounty-platform submission — the
 # never-submit invariant is unchanged.
 #
@@ -405,13 +406,13 @@ fi
 PROMPT_TEXT="$(python3 -c '
 import sys
 lines = [
-    "*When the platform responds, reply in THIS thread with the outcome* (use these exact field names):",
+    "*When the platform responds, reply in THIS thread starting with* `outcome:` *then paste the platform response VERBATIM* — the classifier reads it (no verdict enum to pick):",
     "",
-    "verdict: <accepted|closed|duplicate|needs-info>",
-    "severity: <Critical|High|Medium|Low|>        # accepted only",
-    "payout: <amount+currency, e.g. 25000 USDC>   # accepted only",
-    "reason: <one line>",
-    "notes: <optional reviewer text>",
+    "outcome: <paste exactly what the platform wrote>",
+    "",
+    "Optional — force a disposition (wins over the classifier):",
+    "verdict: <accepted|rejected|duplicate|needs-info|out-of-scope>",
+    "payout: <amount+currency, e.g. 25000 USDC>   # accepted override only",
     "",
     "ingest-slack-outcome.sh reads this reply back and folds it into learning. Reading a thread is NOT a bounty-platform submission.",
 ]

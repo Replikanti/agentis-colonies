@@ -339,16 +339,18 @@ printf '%s\n' "$DRAFT" > "$STAGE/submission-draft.md"
 # OUTCOME.md — the template the operator fills IN-PLACE after the platform responds, then feeds to
 # feedback-intake.ag. Generated with a { printf ...; } block (NO heredoc — dash-safe, no \xHH escapes; the
 # run-batch.sh style). The three gate-verdict lines are NOT in the template (they live uneditable in
-# manifest.json) so the operator cannot corrupt attribution; only verdict/severity/payout/reason are filled in.
+# manifest.json) so the operator cannot corrupt attribution. DEFAULT PATH (#1561): the operator pastes the
+# platform's RAW response VERBATIM into the `platform_response:` block and feedback-intake.ag CLASSIFIES it — no
+# hand-picked verdict enum. The optional operator OVERRIDE lines are COMMENTED OUT (`# verdict:` / `# payout:`) so
+# feedback-intake.ag's `^verdict:` grep stays inert until the operator uncomments one to FORCE a disposition.
 {
-  printf '%s\n' "# OUTCOME — fill after the platform responds, then run feedback-intake.ag over this dir."
+  printf '%s\n' "# OUTCOME — paste the platform's response verbatim, then run feedback-intake.ag over this dir."
   printf '%s\n' "# submission_id: $ID   (do NOT edit — correlation key; authoritative copy in manifest.json)"
-  printf '%s\n' "verdict:        <accepted|closed|duplicate|needs-info>"
-  printf '%s\n' "severity:       <Critical|High|Medium|Low|>         # accepted only"
-  printf '%s\n' "payout:         <amount+currency, e.g. 25000 USDC>   # accepted only"
-  printf '%s\n' "reason:         <one line, e.g. \"front-run of a privileged action, not an on-chain-provable claim\">"
-  printf '%s\n' "reviewer_notes: |"
-  printf '%s\n' "  <freeform multi-line reviewer reasoning, verbatim from the platform>"
+  printf '%s\n' "platform_response: |"
+  printf '%s\n' "  <paste the platform's response VERBATIM here — the classifier reads this>"
+  printf '%s\n' "# --- optional operator override (uncomment to FORCE a disposition; wins over the classifier) ---"
+  printf '%s\n' "# verdict:        <accepted|rejected|duplicate|needs-info|out-of-scope>"
+  printf '%s\n' "# payout:         <amount+currency, e.g. 25000 USDC>   # accepted override only"
 } > "$STAGE/OUTCOME.md"
 
 echo "deliver-submission.sh: staged $ID -> $STAGE (PENDING HUMAN REVIEW — NOT SUBMITTED)" >&2
