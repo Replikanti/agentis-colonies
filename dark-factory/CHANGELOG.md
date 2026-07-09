@@ -30,6 +30,32 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   part-6 curl-stub assertion now checks for the bold label form.
 
 ### Added
+- **Auto-rendered PoC run-evidence screenshot attached to Slack** (#1550, epic #1505). The captured `poc-run.txt`
+  (#1540) is now auto-rendered into a terminal-styled `poc-run.png` and threaded to the Slack submission package
+  (bot mode, #1541) as the Immunefi Attachments artifact — a scannable screenshot of the REAL passing run beside
+  the raw text log. Opt-in, best-effort, additive; every existing invariant (the exit-3 marker guard, the #1540
+  PoC/gist staging, the one-line staged-path stdout contract, the never-submit contract) stays byte-intact.
+  - **New `dark-factory/render-run-evidence.sh`** (bash) + **`render-run-evidence.py`** (python3/Pillow) — the
+    renderer. `.sh` chooses `freeze` (charmbracelet, on PATH) → the bundled PIL renderer → SKIP, in that order;
+    `freeze` is OPTIONAL and UNVERIFIED (not on the dev host — flags source-guarded, falls through to PIL on any
+    failure), the PIL path is verified (Pillow 11.3.0). `.py` strips ANSI, styles a dark terminal with a mac-style
+    titlebar, colourizes `[PASS]`→green / `[FAIL]`→red / else light-gray, tries a candidate list of system
+    monospace TTFs (Noto Sans Mono / Liberation Mono / DejaVu, each guarded, ending in `load_default()`), sizes
+    the canvas from measured line widths, and saves a PNG. **HONESTY GUARD:** the renderer draws the input
+    verbatim (only recolouring lines the log already contains) — it can NEVER synthesize a `[PASS]`.
+  - **`deliver-submission.sh`** grows a best-effort render step wired to the new `poc_screenshot` manifest key
+    (empty default; every existing key preserved). The render call sits INSIDE the existing `[ -n "$POC_RUN_REL" ]`
+    guard (which is set only when `--poc-run` pointed at a real, existing file), so a screenshot can only ever be
+    rendered from a REAL captured run-log. No renderer / any render failure → `poc_screenshot` stays empty, the
+    stage still exits 0, text-only `poc-run.txt` is bundled — no new REQUIRED dependency (exactly like the gh-gist
+    step). Location: `poc-run.png` at the drop-dir root, alongside `poc-run.txt`.
+  - **`notify-submission.sh`** attaches `poc-run.png` to the Slack thread on a new `slack_upload` call site (bot
+    mode only; `slack_upload()`'s raw `--data-binary "@file"` POST is already binary-safe — no change to it). The
+    plain WEBHOOK mode (#1538) has no file-upload primitive and stays screenshot-less (an existing capability gap).
+  - **`demo-feedback-loop.sh` part 7** proves it offline: a real PNG (magic-byte check) + the manifest key when
+    Pillow is present, graceful text-only degradation both host-dependently and DETERMINISTICALLY (a python3 stub
+    intercepting only `import PIL`), a byte-identical thread attach through part 6's curl stub, and source guards
+    (the honesty guard, the nested render call, the notify wiring, freeze-unverified).
 - **Slack BOT-MODE delivery of the COMPLETE submission package** (#1541, epic #1505). A configured Slack Bot App
   now receives the whole copy-paste-ready Immunefi package on a successful stage — not a one-line alert. Opt-in,
   best-effort, and additive: every existing invariant stays byte-intact (the exit-3 marker guard, the #1540 gist/

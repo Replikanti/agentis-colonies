@@ -5,7 +5,7 @@
 # dark-factory demos (demo-report-writer.sh / demo-immunefi-intake.sh): assert-based PASS/FAIL lines, a temp
 # drop-dir trap-cleaned, exit non-zero on regression, exit 3 if a component is missing.
 #
-# SIX parts:
+# SEVEN parts:
 #   1) DELIVERY (offline, real): run deliver-submission.sh over a fixture report-writer draft carrying the
 #      SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW marker + fixture gate verdicts + a stable id -> assert the drop-dir
 #      has manifest.json + submission-draft.md + OUTCOME.md, that manifest.json carries the canonical
@@ -50,6 +50,16 @@
 #      fallback (bot vars unset -> the #1538 path, bot sender not invoked); token non-leakage into
 #      deliver-submission.sh's own stdout/stderr; and the source guards (bash never sh, never-submit, python
 #      json.dumps, the modern upload flow not the deprecated files.upload).
+#   7) POC RUN-EVIDENCE SCREENSHOT (offline, #1550): deliver-submission.sh renders the REAL captured poc-run.txt
+#      into a terminal-styled poc-run.png (best-effort: freeze -> PIL -> skip), records it as manifest
+#      poc_screenshot, and notify-submission.sh attaches it to the Slack thread. Stays CI-green whether or not
+#      the runner has Pillow: (a) a host-dependent render assertion (PIL present -> real PNG magic bytes + the
+#      manifest key; PIL absent -> no png + empty key + poc-run.txt intact + exit 0), (b) a DETERMINISTIC degrade
+#      forced by a python3 stub that intercepts ONLY `import PIL` (exit 1) and exec's the real python3 for all
+#      else (so the manifest builder is unaffected), (c) a notify attach over a hand-crafted fixture stage (part
+#      6's curl stub -> a getUploadURLExternal call logged filename=poc-run.png + the uploaded bytes cmp-identical
+#      to the fixture PNG), and (d) source guards (the honesty guard, the render call nested inside the
+#      [ -n $POC_RUN_REL ] guard, the notify _mf/file-existence wiring, freeze documented unverified).
 #
 # All shell sub-scripts are invoked with `bash` (never `sh`) per the #1507 dash lesson.
 #
@@ -775,6 +785,102 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# 7) POC RUN-EVIDENCE SCREENSHOT (#1550) — deliver-submission.sh renders the REAL captured poc-run.txt into a
+#    terminal-styled poc-run.png (best-effort: freeze -> PIL -> skip), records manifest poc_screenshot, and
+#    notify-submission.sh attaches it to the Slack thread. CI-green with or without Pillow (7a host-dependent,
+#    7b deterministic-via-stub).
+# ----------------------------------------------------------------------------------------------------------
+note "7) PoC run-evidence screenshot render + attach (#1550) ..."
+set +e
+
+RENDER_SH="$HERE/render-run-evidence.sh"
+RENDER_PY="$HERE/render-run-evidence.py"
+[ -f "$RENDER_PY" ] || bad "(pre) render-run-evidence.py not found: $RENDER_PY"
+
+PIL_OK=1; python3 -c "import PIL" >/dev/null 2>&1 || PIL_OK=0
+
+# --- (a) host-dependent render assertion: PIL present -> a real PNG + manifest key; PIL absent -> text-only. ---
+DROP7A="$WORK/drop-shot-a"
+STAGED7A="$(bash "$DELIVER" --id "shot@a1b2c3d:render-a" --draft-file "$PDRAFT" --target enzyme-onyx \
+  --severity Critical --poc-run "$PRUN" --drop-dir "$DROP7A" 2>/dev/null)"; RC=$?
+[ "$RC" -eq 0 ] && ok "(a) a stage with --poc-run exits 0" || bad "(a) exited $RC (expected 0)"
+cmp -s "$PRUN" "$STAGED7A/poc-run.txt" \
+  && ok "(a) poc-run.txt staged byte-identical to the captured fixture (REAL output, never synthesized)" || bad "(a) poc-run.txt mismatch"
+if [ "$PIL_OK" = 1 ]; then
+  [ -f "$STAGED7A/poc-run.png" ] && ok "(a/PIL) poc-run.png was rendered" || bad "(a/PIL) poc-run.png missing despite Pillow present"
+  MAGIC7A="$(python3 -c 'import sys; d=open(sys.argv[1],"rb").read(8); sys.stdout.write("ok" if d==b"\x89PNG\r\n\x1a\n" else "bad")' "$STAGED7A/poc-run.png" 2>/dev/null)"
+  [ "$MAGIC7A" = ok ] && ok "(a/PIL) poc-run.png carries the PNG magic bytes" || bad "(a/PIL) poc-run.png not a valid PNG (magic=$MAGIC7A)"
+  [ "$(jget "$STAGED7A/manifest.json" poc_screenshot)" = "poc-run.png" ] \
+    && ok "(a/PIL) manifest poc_screenshot == poc-run.png" || bad "(a/PIL) manifest poc_screenshot wrong"
+else
+  [ ! -e "$STAGED7A/poc-run.png" ] && ok "(a/no-PIL) no poc-run.png produced (graceful text-only degradation)" || bad "(a/no-PIL) poc-run.png unexpectedly present"
+  [ "$(jget "$STAGED7A/manifest.json" poc_screenshot)" = "" ] \
+    && ok "(a/no-PIL) manifest poc_screenshot == \"\" (degraded, stage still exit 0)" || bad "(a/no-PIL) manifest poc_screenshot not empty"
+fi
+
+# --- (b) deterministic degrade via a targeted python3 STUB intercepting ONLY `import PIL` (exit 1), exec-ing ---
+# the real python3 for everything else (so the manifest builder is unaffected). Proves "no renderer" is always a
+# graceful path, independent of the host's Pillow.
+FAKEBIN7="$WORK/fakebin7"; mkdir -p "$FAKEBIN7"
+REAL_PYTHON3="$(command -v python3)"
+{
+  printf '%s\n' "#!/bin/sh"
+  printf '%s\n' '# intercept ONLY `python3 -c "import PIL"` (render-run-evidence.sh capability probe); pass all else through'
+  printf '%s\n' 'if [ "$1" = "-c" ] && [ "$2" = "import PIL" ]; then exit 1; fi'
+  printf '%s\n' 'exec "$REAL_PYTHON3" "$@"'
+} > "$FAKEBIN7/python3"
+chmod +x "$FAKEBIN7/python3"
+
+DROP7B="$WORK/drop-shot-b"
+STAGED7B="$(env REAL_PYTHON3="$REAL_PYTHON3" PATH="$FAKEBIN7:$PATH" \
+  bash "$DELIVER" --id "shot@a1b2c3d:render-b" --draft-file "$PDRAFT" --target enzyme-onyx \
+    --severity Critical --poc-run "$PRUN" --drop-dir "$DROP7B" 2>/dev/null)"; RC=$?
+[ "$RC" -eq 0 ] && ok "(b) stage still exits 0 under the no-PIL stub (deterministic degrade)" || bad "(b) exited $RC (expected 0)"
+[ ! -e "$STAGED7B/poc-run.png" ] && ok "(b) no poc-run.png rendered when PIL import fails (deterministic)" || bad "(b) poc-run.png produced despite the PIL stub"
+[ "$(jget "$STAGED7B/manifest.json" poc_screenshot)" = "" ] \
+  && ok "(b) manifest poc_screenshot == \"\" under the stub (never a synthesized screenshot)" || bad "(b) poc_screenshot not empty under the stub"
+cmp -s "$PRUN" "$STAGED7B/poc-run.txt" \
+  && ok "(b) poc-run.txt still staged byte-identical under the degrade path" || bad "(b) poc-run.txt mismatch under the stub"
+
+# --- (c) notify-submission.sh attaches poc-run.png to the thread. Hand-craft a tiny fixture stage (no dependency
+# on 7a/7b's render outcome): a small PNG-magic byte fixture + a minimal manifest whose only load-bearing key is
+# poc_screenshot. Reuse part 6's smart curl stub + fake bot creds.
+STAGE7C="$WORK/stage-shot-c"; mkdir -p "$STAGE7C"
+FIXTURE_PNG="$STAGE7C/poc-run.png"
+python3 -c 'import sys; open(sys.argv[1],"wb").write(b"\x89PNG\r\n\x1a\n\x00\x01\x02demo-fixture-bytes")' "$FIXTURE_PNG"
+python3 -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps({"poc_screenshot":"poc-run.png","severity_band":"Critical"}))' "$STAGE7C/manifest.json"
+
+SLACK_LOG_C="$WORK/slack-shot-c.log"; SLACK_UPLOAD_DIR_C="$WORK/slack-uploads-shot-c"; SLACK_UPCNT_C="$WORK/slack-upcnt-shot-c"
+mkdir -p "$SLACK_UPLOAD_DIR_C"
+env \
+  SLACK_LOG="$SLACK_LOG_C" SLACK_POST_BODY="$WORK/slack-post-shot-c.json" SLACK_COMPLETE="$WORK/slack-complete-shot-c.jsonl" \
+  SLACK_GETURL="$WORK/slack-geturl-shot-c.log" SLACK_UPLOAD_DIR="$SLACK_UPLOAD_DIR_C" SLACK_UPCNT="$SLACK_UPCNT_C" \
+  DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN" DARK_FACTORY_SLACK_CHANNEL=C0BASE \
+  PATH="$FAKEBIN6:$PATH" \
+  bash "$NOTIFY_SUB" --stage "$STAGE7C" >/dev/null 2>"$WORK/notify-shot-c.err"; RC=$?
+[ "$RC" -eq 0 ] && ok "(c) notify-submission.sh exits 0 attaching the screenshot" || bad "(c) notify exited $RC (expected 0)"
+grep -q 'filename=poc-run.png' "$SLACK_LOG_C" \
+  && ok "(c) a getUploadURLExternal call logged filename=poc-run.png" || bad "(c) no getUploadURLExternal for poc-run.png logged"
+SHOT_MATCH=0
+for cf in "$SLACK_UPLOAD_DIR_C"/content-*; do
+  [ -f "$cf" ] || continue
+  cmp -s "$cf" "$FIXTURE_PNG" && SHOT_MATCH=1
+done
+[ "$SHOT_MATCH" = 1 ] \
+  && ok "(c) the uploaded bytes are cmp-identical to the fixture poc-run.png (binary-safe upload)" || bad "(c) uploaded screenshot bytes not identical to the fixture"
+
+# --- (d) source guards (CI-safe, no execution): honesty guard, nested render call, notify wiring, freeze note. --
+[ -x "$RENDER_SH" ] && ok "(d) render-run-evidence.sh exists and is executable" || bad "(d) render-run-evidence.sh missing / not executable"
+grep -qi 'HONESTY GUARD' "$RENDER_SH" && grep -qi 'never' "$RENDER_SH" \
+  && ok "(d) render-run-evidence.sh documents the honesty guard (real captured output only, never synthesize)" || bad "(d) render-run-evidence.sh missing the honesty-guard note"
+grep -qF 'if [ -n "$POC_RUN_REL" ] && [ -x "$SCRIPT_DIR/render-run-evidence.sh" ]' "$DELIVER" \
+  && ok "(d) deliver-submission.sh calls the renderer ONLY inside the [ -n \$POC_RUN_REL ] guard (never unconditional)" || bad "(d) render call is not nested inside the POC_RUN_REL guard"
+grep -qF '_mf poc_screenshot' "$NOTIFY_SUB" && grep -qF '[ -f "$STAGE/$POC_SCREENSHOT_REL" ]' "$NOTIFY_SUB" \
+  && ok "(d) notify-submission.sh reads poc_screenshot via _mf and guards on the file existing" || bad "(d) notify-submission.sh screenshot wiring missing"
+grep -qi 'UNVERIFIED' "$RENDER_SH" \
+  && ok "(d) render-run-evidence.sh documents the freeze path as optional/unverified" || bad "(d) render-run-evidence.sh missing the freeze-unverified note"
+
+# ----------------------------------------------------------------------------------------------------------
 echo
 if [ "$FAIL" -eq 0 ]; then
   note "PASS — deliver-submission.sh staged a marked draft (canonical id + raw gate verdicts in manifest.json),"
@@ -787,7 +893,11 @@ if [ "$FAIL" -eq 0 ]; then
   note "       graceful no-token fallback, and the marker guard still runs BEFORE any poc staging/gist. And (#1541)"
   note "       bot-mode delivers the COMPLETE package (chat.postMessage + threaded Description/PoC snippets via the"
   note "       modern external-upload flow), treats ok:false as failure, masks the token, and holds the one-line"
-  note "       stdout contract — all offline (curl stubbed), degrading to the #1538 path with no bot creds. Never submits."
+  note "       stdout contract — all offline (curl stubbed), degrading to the #1538 path with no bot creds. And (#1550)"
+  note "       deliver renders the REAL captured poc-run.txt into a terminal-styled poc-run.png (best-effort freeze->PIL"
+  note "       ->skip, honesty-gated on the real --poc-run file), records manifest poc_screenshot, and notify attaches"
+  note "       it to the Slack thread byte-identically — degrading text-only (no png, empty key, stage exit 0) when no"
+  note "       renderer is present, proven both host-dependently and deterministically via a python3 stub. Never submits."
   exit 0
 fi
 note "FAIL — a feedback-loop assertion regressed (see above)." >&2
