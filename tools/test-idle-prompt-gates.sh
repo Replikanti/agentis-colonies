@@ -244,13 +244,16 @@ else
       "no memo_write of code_writer:last_seen_iid found"
   fi
 
-  # C4. the #1363 has_mr_for_branch re-draft path is still intact (the
-  # needs_draft computation still falls back to !has_mr_for_branch).
-  if grep -F -q -- '!has_mr_for_branch(owner, repo, first_iid_str)' "$CW"; then
-    pass "code_writer: #1363 needs_draft fallback (!has_mr_for_branch) preserved"
+  # C4. the #1363 MR-less re-draft path is still intact. Since #1516 the gate is
+  # `mr_exists = has_mr_for_branch(...)` + `needs_draft = !mr_exists`, so an
+  # issue with NO MR still gets a fresh draft (the rescue), while an existing MR
+  # is terminal (never re-drafted over — the #1516 fix). Assert both halves.
+  if grep -F -q -- 'let mr_exists = has_mr_for_branch(owner, repo, first_iid_str);' "$CW" \
+     && grep -F -q -- 'let needs_draft = !mr_exists;' "$CW"; then
+    pass "code_writer: #1363 MR-less rescue preserved via needs_draft = !mr_exists (#1516)"
   else
     fail "code_writer: #1363 re-draft preserved" \
-      "needs_draft no longer falls back to !has_mr_for_branch (regression)"
+      "needs_draft is no longer derived from !has_mr_for_branch via mr_exists (regression)"
   fi
 fi
 

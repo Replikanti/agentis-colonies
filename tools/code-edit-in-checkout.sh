@@ -76,6 +76,12 @@
 #      outcome line was printed (its exit= field carries the session's code)
 #   3  NO_EDITS — claude made no change to the tree (caller retries later; this
 #      is NOT an error and must NOT open an empty PR)
+#   5  OWNERSHIP_YIELD (#1516) — the branch carries commits this agent did not
+#      create (foreign/operator commits, or a fail-closed ambiguity: ls-remote
+#      error / missing own-sha record); the force-push was REFUSED and the
+#      PR/branch left intact for the operator. code-edit-job.sh folds any
+#      non-0/non-3 exit into STATUS=error, which code_writer.ag treats as a
+#      non-destructive retry.
 #   other  failure (clone/branch/edit/commit/push/PR-open)
 #
 # Knobs (env vars):
@@ -448,6 +454,108 @@ git_capture() {
 # own tree. A retry of the SAME issue still reuses its own dir (fetch+reset);
 # different issues are fully isolated.
 WS="$FED_DIR/.agentis/workspaces/$COLONY_NAME/$OWNER-$REPO/issue-$ISSUE"
+
+# ---------------------------------------------------------------------------
+# #1516: own-sha record for the fail-closed force-push ownership gate.
+# The record lives under the already-gitignored .agentis/ runtime tree (NOT in
+# the checkout, NOT in the agentis memo store), keyed per issue exactly like
+# $WS, so it SURVIVES the `rm -rf "$WS"` success-cleanup below and is available
+# on the next attempt of the same issue. record_pushed_sha stamps the local
+# head we just pushed; read_pushed_sha reads it back (whitespace-stripped).
+# $OWNER/$REPO/$ISSUE/$BRANCH are validated non-empty at lines 199-203.
+# ---------------------------------------------------------------------------
+PUSHED_SHA_DIR="$FED_DIR/.agentis/code-edit-pushed/$COLONY_NAME/$OWNER-$REPO"
+PUSHED_SHA_FILE="$PUSHED_SHA_DIR/issue-$ISSUE.sha"
+YIELDED_FLAG="$PUSHED_SHA_DIR/issue-$ISSUE.yielded"
+record_pushed_sha() {
+    mkdir -p "$PUSHED_SHA_DIR" 2>/dev/null || true
+    printf '%s\n' "$1" > "$PUSHED_SHA_FILE" 2>/dev/null || true
+}
+read_pushed_sha() {
+    [ -f "$PUSHED_SHA_FILE" ] && tr -d ' \t\r\n' < "$PUSHED_SHA_FILE" || true
+}
+
+# post_yield_note: post an at-most-once generic issue note explaining the
+# ownership refusal, guarded by the per-issue .yielded flag so the retry loop
+# never spams the thread. FORGE_API is resolved (hoisted) before the push site,
+# so it is set by call time. A failed note must NOT change the refusal outcome
+# (we still exit 5), so every step is `|| true`.
+post_yield_note() {
+    if [ -f "$YIELDED_FLAG" ]; then
+        echo "[code-edit] ownership gate: yield note already posted for #$ISSUE — not re-posting" >&2
+        return 0
+    fi
+    _yn="code_writer declined to force-push branch \`$BRANCH\`: it carries commits not created by this agent — yielding to the operator; the automated push was skipped to preserve those commits."
+    if [ -n "${FORGE_API:-}" ] && [ -x "${FORGE_API:-/nonexistent}" ]; then
+        if [ "$FORGE_TYPE" = "gitlab" ]; then
+            env GITLAB_URL="$API_BASE" GITLAB_PROJECT="$OWNER%2F$REPO" \
+                "$FORGE_API" add-note "$ISSUE" --body "$_yn" >/dev/null 2>&1 || true
+        else
+            env GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" GITHUB_URL="$GITHUB_URL" \
+                "$FORGE_API" add-note "$ISSUE" --body "$_yn" >/dev/null 2>&1 || true
+        fi
+    fi
+    mkdir -p "$PUSHED_SHA_DIR" 2>/dev/null || true
+    : > "$YIELDED_FLAG" 2>/dev/null || true
+}
+
+# guarded_push: the SINGLE force-push chokepoint (#1516). All three push paths
+# (normal-loop finalize, --finalize, --recover) funnel through it. The prior
+# `push --force-with-lease` guarded only against a CONCURRENT push racing ours
+# (the lease matches a freshly-fetched ref) — it did NOTHING against foreign
+# commits already at the remote head, which is exactly how the incident lost 4
+# operator commits. Distinguishing "foreign commits I must not clobber" from "my
+# own prior attempt I am legitimately replacing" (#1363 MR-less rescue) needs the
+# explicit own-sha record above.
+#
+# Decision (fail CLOSED — a false refuse only leaves the PR for a human; a false
+# allow destroys work):
+#   * ls-remote error                            -> REFUSE (never read as "no branch")
+#   * remote branch absent (exit 0, empty head)  -> first push, proceed + record
+#   * remote head is an ANCESTOR of our local head -> fast-forward, proceed + record
+#   * remote head == our own recorded sha          -> replacing our own attempt, proceed
+#   * otherwise (foreign commits) / empty own-sha  -> REFUSE, post note once, exit 5
+guarded_push() {
+    _local="$(git_capture -C "$WS" rev-parse HEAD 2>/dev/null || true)"
+    if [ -z "$_local" ]; then
+        echo "[code-edit] ownership gate: cannot resolve local HEAD in $WS — refusing to push (fail-closed)" >&2
+        exit 5
+    fi
+    set +e
+    _lsr="$(git_capture -C "$WS" ls-remote origin "refs/heads/$BRANCH" 2>/dev/null)"
+    _lsr_rc=$?
+    set -e
+    if [ "$_lsr_rc" -ne 0 ]; then
+        echo "[code-edit] ownership gate: ls-remote for $BRANCH failed (exit $_lsr_rc) — refusing to force-push (fail-closed, a network/auth error is NOT 'no remote branch')" >&2
+        exit 5
+    fi
+    _remote="$(printf '%s\n' "$_lsr" | awk 'NR==1{print $1}')"
+    if [ -z "$_remote" ]; then
+        # Branch genuinely absent on the remote: the first push for this branch.
+        run_git -C "$WS" push --force-with-lease origin "$BRANCH"
+        record_pushed_sha "$_local"
+        return 0
+    fi
+    # Fast-forward: the remote head is already an ancestor of what we push, so no
+    # remote commit is dropped. Safe regardless of who authored the remote head.
+    if git_capture -C "$WS" merge-base --is-ancestor "$_remote" "$_local" >/dev/null 2>&1; then
+        run_git -C "$WS" push --force-with-lease origin "$BRANCH"
+        record_pushed_sha "$_local"
+        return 0
+    fi
+    # Non-fast-forward: the push WOULD drop remote commits. Allow ONLY when the
+    # remote head is exactly our own recorded last-pushed sha (we are replacing
+    # our own prior attempt). Fail closed on an empty or mismatched record.
+    _own="$(read_pushed_sha)"
+    if [ -n "$_own" ] && [ "$_own" = "$_remote" ]; then
+        run_git -C "$WS" push --force-with-lease origin "$BRANCH"
+        record_pushed_sha "$_local"
+        return 0
+    fi
+    echo "[code-edit] ownership gate: remote head $_remote of $BRANCH is neither an ancestor of our push nor our own recorded sha (${_own:-none}) — refusing to force-push, yielding to the operator" >&2
+    post_yield_note
+    exit 5
+}
 
 if [ -d "$WS/.git" ]; then
     echo "[code-edit] reusing workspace $WS" >&2
@@ -1031,8 +1139,22 @@ if [ "$FC_RC" -ne 0 ]; then
     echo "[code-edit] last attempt exited non-zero (exit $FC_RC, likely idle/timeout) but edits were produced — committing the diff" >&2
 fi
 
+# Resolve the forge API wrapper BEFORE the push (#1516): the ownership-gate
+# refuse path posts a yield note through it, and it is needed later for create-mr
+# anyway. Resolution has no dependency on the push, so hoisting it is inert for
+# every success path.
+if [ "$FORGE_TYPE" = "gitlab" ]; then
+    FORGE_API="$FED_DIR/$COLONY_NAME/scripts/gitlab-api.sh"
+else
+    FORGE_API="$FED_DIR/$COLONY_NAME/scripts/github-api.sh"
+fi
+if [ ! -x "$FORGE_API" ]; then
+    echo "[code-edit] $FORGE_TYPE-api.sh not found/executable at $FORGE_API" >&2
+    exit 1
+fi
+
 run_git -C "$WS" commit -m "$TITLE (#$ISSUE)"
-run_git -C "$WS" push --force-with-lease origin "$BRANCH"
+guarded_push
 
 # Recover mode (#1332): the PR already exists, so we ONLY push the fix — we do
 # NOT open a second PR. A new commit landed (the diff check above proved it), so
@@ -1072,15 +1194,7 @@ else
     DESCRIPTION="$STATIC_DESCRIPTION"
 fi
 
-if [ "$FORGE_TYPE" = "gitlab" ]; then
-    FORGE_API="$FED_DIR/$COLONY_NAME/scripts/gitlab-api.sh"
-else
-    FORGE_API="$FED_DIR/$COLONY_NAME/scripts/github-api.sh"
-fi
-if [ ! -x "$FORGE_API" ]; then
-    echo "[code-edit] $FORGE_TYPE-api.sh not found/executable at $FORGE_API" >&2
-    exit 1
-fi
+# FORGE_API is resolved above (hoisted before the push for the #1516 yield note).
 
 # `env` (not a plain VAR=val prefix on the assignment) so the wrapper subprocess
 # inherits OWNER/REPO/PROJECT/URL/default-branch cleanly. The token (GITHUB_TOKEN
