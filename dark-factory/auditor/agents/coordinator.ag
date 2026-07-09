@@ -1149,6 +1149,20 @@ fn stage_prefix(stage: string) -> string {
     return "";
 }
 
+// The stage's NEGATIVE verdict token — a bare (non-piped) token the gate may print to signal "productive
+// outcome absent" WITHOUT a `PREFIX|VALUE` line. Only devise needs one today: audit-scout.ag emits a bare
+// `NO-RESIDUAL` (no pipe) when it finds no residual attack surface. It is threaded to run-gate-agent.sh as
+// VERDICT_NEGATIVE so its single-prefix `grep -F "$PREFIX|"` extraction ALSO surfaces the bare token (else it
+// is dropped before the coordinator ever sees it, and the stage normalizes to `incomplete` instead of the
+// informative `no-residual`). "" for every other stage -> the extraction stays byte-identical (see #1535). It
+// is deliberately NOT piped into the gate as `NO-RESIDUAL|<reason>`: both audit-scout.ag::outcome_of() and
+// devise_class() do UNANCHORED substring checks for `"RESIDUAL|"`, which `"NO-RESIDUAL|reason"` matches at
+// offset 3 — piping the token would silently flip a genuine NO-RESIDUAL into success/residual.
+fn stage_negative_token(stage: string) -> string {
+    if stage == "devise" { return "NO-RESIDUAL"; }
+    return "";
+}
+
 // The LIVE per-stage runner path (its *_RUN env fact). "" when unset -> the honest-stub in run_stage_live.
 fn stage_runner(stage: string) -> string {
     if stage == "scope" { return getenv("SCOPE_GATE_RUN"); }
@@ -1160,17 +1174,38 @@ fn stage_runner(stage: string) -> string {
     return "";
 }
 
+// The POC stage's LIVE runner is run-poc.sh, which — unlike the five .ag gates driven by run-gate-agent.sh —
+// takes its inputs as CLI FLAGS, not env (--repo/--target/--hypothesis/--class), each read from the POC_*
+// finding facts via getenv() (all four are on the caller's exec.env_passthrough — see run-audit-pass.sh). Its
+// verdict line is the `POC|<target>|<verdict>` marker run-poc.sh prints on stdout (#1535); poc_class() parses
+// the `|FINDING`/`|CLEAN`/`|HARNESS_ERROR` tail. Mirrors run_symbolic_live's exec-sh shape; each value
+// shell_escape()d. Invoked via `bash` (never `sh` — run-poc.sh is bash-shebang; the #1507 dash anti-pattern).
+fn run_poc_live(runner: string) -> string {
+    // colony-lint: safe-exec-concat
+    let out = exec sh "set +e; bash " + shell_escape(runner)
+            + " --repo " + shell_escape(getenv("POC_REPO"))
+            + " --target " + shell_escape(getenv("POC_TARGET"))
+            + " --hypothesis " + shell_escape(getenv("POC_HYPOTHESIS"))
+            + " --class " + shell_escape(getenv("POC_CLASS"))
+            + " 2>&1";
+    return normalize_class("poc", out);
+}
+
 // Run the stage's LIVE runner and normalize its verdict line — mirrors run_symbolic_live's exec-sh muscle.
 // The finding facts + the threaded verdicts are forwarded as shell_escape()d env (the `getenv` sanitized-env
 // invariant: each var must be on exec.env_passthrough). An ABSENT runner is the honest-stub: it prints what
-// wiring the stage needs and returns `incomplete` so the pass HALTS — never a false-proceed. This LIVE path
-// is operator-gated (run-audit-pass.sh wires the runners); the CI/offline path uses PASS_FIXTURE and never
-// reaches here.
+// wiring the stage needs and returns `incomplete` so the pass HALTS — never a false-proceed. Two dispatch
+// shapes: the POC stage exec-shs run-poc.sh with CLI flags built from the POC_* facts (run_poc_live); the
+// five .ag gates share one env-only run-gate-agent.sh call carrying VERDICT_PREFIX (which gate) + VERDICT_
+// NEGATIVE (the stage's bare non-piped token, "" for all but devise — #1535). This LIVE path is operator-
+// gated (run-audit-pass.sh wires the runners); the CI/offline path uses PASS_FIXTURE and never reaches here.
 fn run_stage_live(stage: string, runner: string) -> string {
     if len(runner) == 0 {
         print("coordinator: PASS stage '" + stage + "' has no live runner (set the stage's *_RUN, or PASS_FIXTURE for the offline path) -> incomplete; the pass HALTS (fail-safe, never a false-proceed).");
         return "incomplete";
     }
+    // The POC stage's runner (run-poc.sh) is CLI-flag driven, not env-only — dispatch it separately.
+    if stage == "poc" { return run_poc_live(runner); }
     let env = "FINDING_LOCATION=" + shell_escape(getenv("FINDING_LOCATION"))
             + " FINDING_IMPACT=" + shell_escape(getenv("FINDING_IMPACT"))
             + " SCOPE_FILE=" + shell_escape(getenv("SCOPE_FILE"))
@@ -1186,7 +1221,8 @@ fn run_stage_live(stage: string, runner: string) -> string {
             + " SCOPE_VERDICT=" + shell_escape(getenv("SCOPE_VERDICT"))
             + " IMPACT_VERDICT=" + shell_escape(getenv("IMPACT_VERDICT"))
             + " DUP_RISK=" + shell_escape(getenv("DUP_RISK"))
-            + " VERDICT_PREFIX=" + shell_escape(stage_prefix(stage));
+            + " VERDICT_PREFIX=" + shell_escape(stage_prefix(stage))
+            + " VERDICT_NEGATIVE=" + shell_escape(stage_negative_token(stage));
     // colony-lint: safe-exec-concat
     // #1507 dash-safety: invoke via `bash`, never `sh` — the runners (run-gate-agent.sh, run-poc.sh) are
     // bash-shebang scripts; explicit `sh <script>` ignores the shebang and runs under dash on CI, which

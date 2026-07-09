@@ -198,6 +198,30 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     hypothesis step (analyst) remains a follow-up `.ag` colony layer. Submission stays strictly human-gated.
 
 ### Fixed
+- **Coordinator submission-pass LIVE-dispatch wiring** (#1535, follow-up from #1534 QA of the #1509 capstone).
+  Three gaps that only bit the operator-gated LIVE path (`run-audit-pass.sh`; the CI/offline path uses
+  `PASS_FIXTURE` and never reaches the runners), so they were CI-untested and silently normalized the poc and
+  devise stages to `incomplete`:
+  - **poc CLI args.** `run_stage_live()` invoked every runner env-only, but `run-poc.sh` is CLI-flag driven
+    (`--repo`/`--target`/`--hypothesis`/`--class`), not env. Added a poc-specific `run_poc_live()` branch that
+    builds the CLI from `POC_REPO`/`POC_TARGET`/`POC_HYPOTHESIS`/`POC_CLASS` via `getenv()`, each `shell_escape()`d
+    (already on `run-audit-pass.sh`'s `exec.env_passthrough`); the five `.ag` gates keep the generic env-only call.
+  - **`run-poc.sh` `POC|` emit.** `run-poc.sh` only printed the human-facing `POC: <target> -> <verdict>` arrow
+    banner (pinned by `demo-poc-gen.sh`), never the machine-readable `POC|<target>|<verdict>` line the coordinator
+    scrapes. Added one additive `echo "POC|$TARGET|$VERD"` on stdout; the arrow banner is untouched.
+  - **devise `NO-RESIDUAL` extraction.** `run-gate-agent.sh`'s single-prefix `grep -F "$PREFIX|"` dropped
+    audit-scout's bare (non-piped) `NO-RESIDUAL` token before the coordinator ever saw it, so a genuine
+    no-residual determination normalized to `incomplete`. Fixed at the root by threading a per-stage
+    `VERDICT_NEGATIVE` (`NO-RESIDUAL` for devise, `""` elsewhere) into a new `--negative-token` extraction, plus a
+    `--classify-log` pure-shell mode for CI. **`audit-scout.ag` is deliberately left UNTOUCHED** — piping the
+    token as `NO-RESIDUAL|<reason>` (the alternative the issue sketched) would be a WORSE, silent regression: both
+    `audit-scout.ag::outcome_of()` and `coordinator.ag::devise_class()` do UNANCHORED substring checks for
+    `"RESIDUAL|"`, which `"NO-RESIDUAL|reason"` matches at offset 3, flipping a true NO-RESIDUAL into
+    success/residual.
+  - CI coverage: `demo-audit-pass.sh` gains an always-on offline round-trip through `run-gate-agent.sh
+    --classify-log` (bare `NO-RESIDUAL` now surfaced, piped `RESIDUAL|` unchanged, omit-the-flag byte-identical)
+    and an agentis-gated stub-runner LIVE dispatch (asserts the poc CLI-arg construction + `POC|...|FINDING`
+    parsing); `demo-poc-gen.sh` pins the additive `POC|` emit (always-on source-guard + the gated hardhat e2e).
 - **hardhat-poc.sh / forge-poc.sh relative-`--repo`/`--target` path doubling** (#1531, follow-up from #1507 /
   #1529). Hand-invoking either gate with a RELATIVE `--repo`/`--target` produced a doubled path
   (`.../hardhat-poc-fixture/hardhat-poc-fixture/...`) and a false `HARNESS_ERROR` — not reachable via the real
