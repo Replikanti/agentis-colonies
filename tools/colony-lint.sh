@@ -789,6 +789,22 @@ if [ -x "$REPO_ROOT/dark-factory/demo-prospector-queue.sh" ]; then
     fi
 fi
 
+# --- dark-factory Immunefi intake + post-audit-delta discovery (#1506) ---
+# audit-delta.sh is a pure git-diff detector that surfaces the files a target changed SINCE the audit it froze
+# on — the post-audit residual is where an audited protocol's rewardable bug lives. run-immunefi-intake.sh ranks
+# an OPERATOR-SUPPLIED programs JSON (no live Immunefi fetch, ever) by bounty + that delta term, emitting the
+# same run-batch-consumable TSV. demo-immunefi-intake.sh is pure bash/git/python3 (a throwaway `git init`
+# fixture, no network / no agentis) so it runs on CI runners.
+if [ -x "$REPO_ROOT/dark-factory/demo-immunefi-intake.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-immunefi-intake.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: Immunefi intake + post-audit-delta discovery (audit-delta + run-immunefi-intake) (#1506)"
+    else
+        fail "dark-factory: Immunefi intake + post-audit-delta discovery regressed (#1506)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory snapshot owner-rebind hard assert (#1457) ---
 # The snapshot-replay harness reads the account's real on-chain owner and emits an explicit
 # OWNER REBIND / MATCH / MISMATCH marker; with EXPECT_PROGRAM_OWNER (run-audit --expect-owner) it
