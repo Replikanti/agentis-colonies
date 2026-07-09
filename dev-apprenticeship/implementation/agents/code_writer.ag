@@ -580,16 +580,22 @@ fn ag_edit_reset(owner: string, repo: string, iid: string) -> void {
     };
 }
 
-fn ag_edit_step(owner: string, repo: string, iid: string, branch: string, title: string, task: string, description: string) -> string {
-    let phase = recall_latest(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid));
+// #1422 M2: shared primitive-launch, factored out of ag_edit_step so both the
+// ordinary AG loop (ag_edit_step) and the AG-driven decompose loop
+// (ag_decompose_step) build and fire the --one-attempt / --reuse / --finalize
+// drive through ONE code path — shrinking the regression surface of the
+// migration. Builds the exact flags ag_edit_step used inline before:
+//   is_finalize  => " --description <d> --finalize" (the no-edit terminal drive)
+//   is_continue  => " --one-attempt --reuse --continuation <file>"
+//   else         => " --one-attempt"
+// where is_continue = force_reuse OR attempts>0 (`.ag` has no `||`, so nest).
+// force_reuse lets the decompose loop force --reuse for subtasks >= 2 (which must
+// accumulate on subtask 1's fresh branch) even though their per-subtask attempts
+// counter is 0. Returns the raw launcher poll line for ag_attempt_poll to read.
+fn ag_attempt_launch(owner: string, repo: string, iid: string, branch: string, title: string, task: string, description: string, is_finalize: bool, force_reuse: bool) -> string {
     let attempts_s = recall_latest(scoped_memo(owner, repo, "code_edit_loop:attempts:" + iid));
     let attempts = if len(attempts_s) > 0 { parse_int(attempts_s); } else { 0; };
-    let max_attempts = ag_loop_max_attempts();
-
-    // Launch flags for a FRESH launch (the launcher ignores them and just polls
-    // when a job dir already exists for this iid).
-    let is_finalize = phase == "finalize";
-    let is_continue = if is_finalize { false; } else { attempts > 0; };
+    let is_continue = if is_finalize { false; } else { if force_reuse { true; } else { attempts > 0; }; };
     let contpath = "$COLONY_DIR/../.agentis/code-edit-cont/issue-" + iid + ".txt";
     if is_continue {
         let cont = "Continue implementing this issue in the CURRENT working checkout. Some changes may already be present from a previous attempt — build on them, finish anything incomplete, and fix anything that does not yet work so the implementation is complete and correct. Do NOT revert existing progress.\n\n" + task;
@@ -612,83 +618,305 @@ fn ag_edit_step(owner: string, repo: string, iid: string, branch: string, title:
         print("[code_writer] ag-loop launcher failed for issue", iid, ":", e);
         "";
     };
+    return job_out;
+}
 
-    // Interpret the poll. Bare LAUNCHED/RUNNING = fresh launch / cap-deferred.
-    let w = job_word(job_out);
+// #1422 M2: normalize a raw launcher poll into a stateless micro-verdict, the
+// second helper both AG loops share. It reads ONLY the poll — the attempt-cap /
+// phase-memo threading stays in the CALLER (ag_edit_step counts drives against
+// max_attempts; ag_decompose_step drives once per subtask), so this stays a pure
+// classifier. Vocabulary (a superset of the plan's four — VERIFY_FAIL and DONE
+// are kept distinct because ag_edit_step's verify-retry and finalize-URL paths
+// need them; job-died folds into ERROR, which both callers treat identically):
+//   "RUNNING"      fresh launch / cap-deferred / orchestrator still alive
+//   "READY"        --one-attempt produced a diff that passes/skips verify
+//   "VERIFY_FAIL"  --one-attempt produced a diff that FAILS verify
+//   "NO_EDITS"     --one-attempt made no edits, OR --finalize found nothing staged
+//   "DONE"         --finalize opened the PR (caller reads the RESULT= URL)
+//   "ERROR"        job-died / done-without-url / stale / garbled
+fn ag_attempt_poll(poll: string) -> string {
+    let w = job_word(poll);
     if w == "LAUNCHED" { return "RUNNING"; };
     if w == "RUNNING" { return "RUNNING"; };
-    let status = pr_check_token(job_out, "STATUS");
+    let status = pr_check_token(poll, "STATUS");
     if status == "running" {
         // Alive => still driving; pid gone without a terminal status => it died.
-        if pr_check_token(job_out, "PID_ALIVE") == "1" { return "RUNNING"; };
+        if pr_check_token(poll, "PID_ALIVE") == "1" { return "RUNNING"; };
+        return "ERROR";
+    };
+    if status == "attempt_done" {
+        let churn = parse_int(pr_check_token(poll, "CHURN"));
+        if churn <= 0 { return "NO_EDITS"; };
+        if pr_check_token(poll, "VERIFY") == "fail" { return "VERIFY_FAIL"; };
+        return "READY";
+    };
+    if status == "done" {
+        // A done status with an EMPTY RESULT= (finalize succeeded but no URL
+        // parsed) is a failure, not a success — mirror job_decide's
+        // done-without-url => ERROR so no issue is marked drafted on a URL-less
+        // finalize.
+        if len(pr_check_token(poll, "RESULT")) > 0 { return "DONE"; };
+        return "ERROR";
+    };
+    if status == "no_edits" { return "NO_EDITS"; };
+    return "ERROR";
+}
+
+fn ag_edit_step(owner: string, repo: string, iid: string, branch: string, title: string, task: string, description: string) -> string {
+    let phase = recall_latest(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid));
+    let attempts_s = recall_latest(scoped_memo(owner, repo, "code_edit_loop:attempts:" + iid));
+    let attempts = if len(attempts_s) > 0 { parse_int(attempts_s); } else { 0; };
+    let max_attempts = ag_loop_max_attempts();
+
+    // A FRESH launch (the launcher ignores flags and just polls when a job dir
+    // already exists for this iid). ag_edit_step never force-reuses — its
+    // continuation is driven by the attempts counter, not a subtask boundary.
+    let is_finalize = phase == "finalize";
+    let poll = ag_attempt_launch(owner, repo, iid, branch, title, task, description, is_finalize, false);
+    let mv = ag_attempt_poll(poll);
+
+    // in flight / cap-deferred => re-poll, leave state untouched.
+    if mv == "RUNNING" { return "RUNNING"; };
+    // job-died / stale / done-without-url => clear + reset so the next tick restarts.
+    if mv == "ERROR" {
         ag_edit_reset(owner, repo, iid);
         clear_job_dir(iid);
         return "ERROR";
     };
-    if status == "attempt_done" {
-        let churn = parse_int(pr_check_token(job_out, "CHURN"));
-        let verify = pr_check_token(job_out, "VERIFY");
-        // Consume this attempt's dir; the next launch is a fresh primitive.
-        clear_job_dir(iid);
-        if churn <= 0 {
-            // No edits this attempt. attempts is the value the just-completed
-            // drive launched with (drive #N has attempts == N-1), so the drive
-            // that just finished was #(attempts+1). Cap TOTAL drives at
-            // max_attempts to match the in-shell loop's CODE_EDIT_MAX_ATTEMPTS
-            // (which counts total attempts, not retries).
-            if attempts + 1 >= max_attempts {
-                print("[code_writer] ag-loop issue", iid, "made no edits after", to_string(attempts + 1), "attempts — giving up");
-                ag_edit_reset(owner, repo, iid);
-                return "NO_EDITS";
-            };
-            memo_write(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid), "attempt");
-            memo_write(scoped_memo(owner, repo, "code_edit_loop:attempts:" + iid), to_string(attempts + 1));
-            print("[code_writer] ag-loop issue", iid, "attempt", to_string(attempts), "produced no edits — re-driving");
-            return "RUNNING";
-        };
-        // churn > 0: there is a diff to keep.
-        if verify == "fail" {
-            // Re-drive only if a FURTHER drive stays within the total-drives cap
-            // (the just-finished drive was #(attempts+1)); otherwise finalize the
-            // diff we have. Matches CODE_EDIT_MAX_ATTEMPTS as a total count.
-            if attempts + 1 < max_attempts {
-                memo_write(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid), "attempt");
-                memo_write(scoped_memo(owner, repo, "code_edit_loop:attempts:" + iid), to_string(attempts + 1));
-                print("[code_writer] ag-loop issue", iid, "verify=fail — re-driving to fix (attempt", to_string(attempts + 1), ")");
-                return "RUNNING";
-            };
-            // Out of attempts but we HAVE a diff: commit it rather than discard
-            // the work (the in-shell loop commits the last diff regardless of the
-            // final verify outcome — a timeout/fail that still produced edits is
-            // a success, not a discard).
-            print("[code_writer] ag-loop issue", iid, "verify=fail but out of attempts — finalizing the diff anyway");
-        };
-        // pass / skipped / unverifiable / (fail-out-of-attempts) => finalize.
-        memo_write(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid), "finalize");
-        return "RUNNING";
-    };
-    if status == "done" {
-        // The finalize drive opened the PR. A done status with an EMPTY RESULT=
-        // (finalize succeeded but no URL parsed) is a failure, not a success —
-        // mirror job_decide's done-without-url => ERROR so we never mark an issue
-        // drafted + emit mr_ready on a URL-less finalize.
-        let url = pr_check_token(job_out, "RESULT");
-        if len(url) == 0 {
-            ag_edit_reset(owner, repo, iid);
-            clear_job_dir(iid);
-            return "ERROR";
-        };
+    if mv == "DONE" {
+        // The finalize drive opened the PR (ag_attempt_poll guarantees a
+        // non-empty RESULT= for the DONE verdict).
+        let url = pr_check_token(poll, "RESULT");
         ag_edit_reset(owner, repo, iid);
         clear_job_dir(iid);
         return "DONE:" + url;
     };
-    if status == "no_edits" {
-        ag_edit_reset(owner, repo, iid);
+    if mv == "NO_EDITS" {
+        // is_finalize disambiguates the two NO_EDITS sources: a --finalize that
+        // found nothing staged is TERMINAL; a --one-attempt that made no edits is
+        // a candidate for a bounded re-drive.
+        if is_finalize {
+            ag_edit_reset(owner, repo, iid);
+            clear_job_dir(iid);
+            return "NO_EDITS";
+        };
+        // Consume this attempt's dir; the next launch is a fresh primitive.
+        clear_job_dir(iid);
+        // No edits this attempt. attempts is the value the just-completed drive
+        // launched with (drive #N has attempts == N-1), so the drive that just
+        // finished was #(attempts+1). Cap TOTAL drives at max_attempts to match
+        // the in-shell loop's CODE_EDIT_MAX_ATTEMPTS (total attempts, not retries).
+        if attempts + 1 >= max_attempts {
+            print("[code_writer] ag-loop issue", iid, "made no edits after", to_string(attempts + 1), "attempts — giving up");
+            ag_edit_reset(owner, repo, iid);
+            return "NO_EDITS";
+        };
+        memo_write(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid), "attempt");
+        memo_write(scoped_memo(owner, repo, "code_edit_loop:attempts:" + iid), to_string(attempts + 1));
+        print("[code_writer] ag-loop issue", iid, "attempt", to_string(attempts), "produced no edits — re-driving");
+        return "RUNNING";
+    };
+    if mv == "VERIFY_FAIL" {
+        // churn > 0 but the verify gate failed. Consume the dir first.
+        clear_job_dir(iid);
+        // Re-drive only if a FURTHER drive stays within the total-drives cap (the
+        // just-finished drive was #(attempts+1)); otherwise finalize the diff we
+        // have. Matches CODE_EDIT_MAX_ATTEMPTS as a total count.
+        if attempts + 1 < max_attempts {
+            memo_write(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid), "attempt");
+            memo_write(scoped_memo(owner, repo, "code_edit_loop:attempts:" + iid), to_string(attempts + 1));
+            print("[code_writer] ag-loop issue", iid, "verify=fail — re-driving to fix (attempt", to_string(attempts + 1), ")");
+            return "RUNNING";
+        };
+        // Out of attempts but we HAVE a diff: commit it rather than discard the
+        // work (the in-shell loop commits the last diff regardless of the final
+        // verify outcome — a timeout/fail that still produced edits is a success,
+        // not a discard).
+        print("[code_writer] ag-loop issue", iid, "verify=fail but out of attempts — finalizing the diff anyway");
+        memo_write(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid), "finalize");
+        return "RUNNING";
+    };
+    // mv == "READY": churn > 0 and verify pass/skipped/unverifiable => finalize.
+    clear_job_dir(iid);
+    memo_write(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid), "finalize");
+    return "RUNNING";
+}
+
+// ---------------------------------------------------------------------------
+// #1422 M2 — the AG-driven decompose loop. When AG_DECOMPOSE_LOOP=1, an
+// epic-class issue is decomposed and driven ENTIRELY from code_writer.ag,
+// consuming the --decompose-only primitive (M1) instead of the in-shell
+// --decompose orchestration. It is a cross-tick, memo-threaded FSM that mirrors
+// ag_edit_step (at most ONE launch per tick; its "recursion" is the memo state
+// machine, not a call stack) and drives the per-subtask --one-attempt / --reuse
+// sequence onto ONE branch, closed by exactly ONE --finalize => ONE PR.
+//
+// DEFAULT OFF: epics keep flowing through the untouched in-shell --decompose
+// path unless an operator sets AG_DECOMPOSE_LOOP=1 (M1+M2 land the capability;
+// flipping the default, deleting the in-shell loop, and retiring the opt-out are
+// the burn-in-gated M3 follow-up).
+//
+// State memos (all under the existing code_edit_loop: namespace, per iid):
+//   code_edit_loop:decomp:<iid>          "" | "decomposing" | "editing" | "finalize"
+//   code_edit_loop:subtask_count:<iid>   N (from the M1 poll's SUBTASKS= token)
+//   code_edit_loop:subtask_idx:<iid>     current subtask, 1-based
+//   code_edit_loop:phase:<iid>           per-subtask attempt sub-state (reused,
+//   code_edit_loop:attempts:<iid>        reset to "" at each subtask boundary)
+//
+// Same verdict contract as ag_edit_step: "RUNNING" | "DONE:<url>" | "NO_EDITS" |
+// "ERROR", so the draft-poll terminal handling is shared unchanged.
+// ---------------------------------------------------------------------------
+
+// The stable subtasks file — mirrors the code-edit-cont convention: keyed by
+// iid, lives OUTSIDE the per-issue job dir so clear_job_dir cannot reap it, and
+// passed UNescaped so $COLONY_DIR expands in the shell (like contpath).
+fn ag_subtasks_path(iid: string) -> string {
+    return "$COLONY_DIR/../.agentis/code-edit-subtasks/issue-" + iid + ".txt";
+}
+
+// Launch the M1 --decompose-only primitive (the launcher polls the existing job
+// dir on later ticks). Returns the raw poll line.
+fn ag_decompose_launch(owner: string, repo: string, iid: string, branch: string, title: string, task: string) -> string {
+    // colony-lint: safe-exec-concat
+    let launch_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(iid) + " --branch " + shell_escape(branch) + " --title " + shell_escape(title) + " --task " + shell_escape(task) + " --decompose-only --subtasks-out " + ag_subtasks_path(iid);
+    let job_out = try { exec sh launch_cmd; } catch e {
+        print("[code_writer] ag-decompose launcher failed for issue", iid, ":", e);
+        "";
+    };
+    return job_out;
+}
+
+// Read subtask record `idx` (1-based) from the stable NUL-delimited subtasks
+// file. RS="\0" splits on the NUL delimiter the M1 writer used; the escaping of
+// `"` and `\0` through the `.ag` string is the one dialect trap here — validated
+// by the agentis-commit parse test.
+fn read_subtask(iid: string, idx: int) -> string {
+    // colony-lint: safe-exec-concat
+    let cmd = "awk -v n=" + shell_escape(to_string(idx)) + " 'BEGIN{RS=\"\\0\"} NR==n{printf \"%s\",$0}' " + ag_subtasks_path(iid);
+    let out = try { exec sh cmd; } catch e {
+        print("[code_writer] read_subtask failed for issue", iid, "idx", to_string(idx), ":", e);
+        "";
+    };
+    return out;
+}
+
+// Clear every decompose memo + the per-subtask attempt sub-state + the caller
+// continuation file + the stable subtasks file, so the next tick restarts clean.
+fn ag_decompose_reset(owner: string, repo: string, iid: string) -> void {
+    memo_write(scoped_memo(owner, repo, "code_edit_loop:decomp:" + iid), "");
+    memo_write(scoped_memo(owner, repo, "code_edit_loop:subtask_count:" + iid), "");
+    memo_write(scoped_memo(owner, repo, "code_edit_loop:subtask_idx:" + iid), "");
+    memo_write(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid), "");
+    memo_write(scoped_memo(owner, repo, "code_edit_loop:attempts:" + iid), "");
+    // Same off-argv IID + rm -f pattern clear_job_dir()/ag_edit_reset() use; rm -f
+    // is total on a missing file, so the catch is effectively dead.
+    // colony-lint: safe-exec-concat
+    let cmd = "IID=" + shell_escape(iid) +
+        "; rm -f \"$COLONY_DIR/../.agentis/code-edit-cont/issue-$IID.txt\" \"$COLONY_DIR/../.agentis/code-edit-subtasks/issue-$IID.txt\"";
+    try { exec sh cmd; } catch e {
+        print("[code_writer] ag-decompose cleanup failed for issue", iid, ":", e);
+    };
+}
+
+fn ag_decompose_step(owner: string, repo: string, iid: string, branch: string, title: string, task: string, description: string) -> string {
+    let decomp = recall_latest(scoped_memo(owner, repo, "code_edit_loop:decomp:" + iid));
+
+    // State "" — kick off the decompose-only drive, advance to "decomposing".
+    if len(decomp) == 0 {
+        ag_decompose_launch(owner, repo, iid, branch, title, task);
+        memo_write(scoped_memo(owner, repo, "code_edit_loop:decomp:" + iid), "decomposing");
+        return "RUNNING";
+    };
+
+    // State "decomposing" — poll the decompose-only drive.
+    if decomp == "decomposing" {
+        let poll = ag_decompose_launch(owner, repo, iid, branch, title, task);
+        let w = job_word(poll);
+        // Fresh launch (cap-deferred earlier) / still alive => keep polling.
+        if w == "LAUNCHED" { return "RUNNING"; };
+        if w == "RUNNING" { return "RUNNING"; };
+        let status = pr_check_token(poll, "STATUS");
+        if status == "running" {
+            if pr_check_token(poll, "PID_ALIVE") == "1" { return "RUNNING"; };
+            // pid gone without a terminal status => the drive died.
+            ag_decompose_reset(owner, repo, iid);
+            clear_job_dir(iid);
+            return "ERROR";
+        };
+        if status == "decomposed" {
+            let n = parse_int(pr_check_token(poll, "SUBTASKS"));
+            let count = if n < 1 { 1; } else { n; };
+            memo_write(scoped_memo(owner, repo, "code_edit_loop:subtask_count:" + iid), to_string(count));
+            memo_write(scoped_memo(owner, repo, "code_edit_loop:subtask_idx:" + iid), "1");
+            memo_write(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid), "");
+            memo_write(scoped_memo(owner, repo, "code_edit_loop:attempts:" + iid), "");
+            // Consume the decompose job dir so the first subtask launch is fresh.
+            clear_job_dir(iid);
+            memo_write(scoped_memo(owner, repo, "code_edit_loop:decomp:" + iid), "editing");
+            print("[code_writer] ag-decompose issue", iid, "decomposed into", to_string(count), "subtask(s) — editing");
+            return "RUNNING";
+        };
+        // error / none / stale — clear + reset so the next tick restarts.
+        ag_decompose_reset(owner, repo, iid);
+        clear_job_dir(iid);
+        return "ERROR";
+    };
+
+    // State "editing" — one --one-attempt drive per subtask on ONE branch.
+    if decomp == "editing" {
+        let idx_s = recall_latest(scoped_memo(owner, repo, "code_edit_loop:subtask_idx:" + iid));
+        let count_s = recall_latest(scoped_memo(owner, repo, "code_edit_loop:subtask_count:" + iid));
+        let i = if len(idx_s) > 0 { parse_int(idx_s); } else { 1; };
+        let n = if len(count_s) > 0 { parse_int(count_s); } else { 1; };
+        // Subtask >= 2 MUST accumulate on subtask 1's fresh branch => force --reuse.
+        let force_reuse = i > 1;
+        let subtask_text = read_subtask(iid, i);
+        let poll = ag_attempt_launch(owner, repo, iid, branch, title, subtask_text, description, false, force_reuse);
+        let mv = ag_attempt_poll(poll);
+        if mv == "RUNNING" { return "RUNNING"; };
+        if mv == "ERROR" {
+            ag_decompose_reset(owner, repo, iid);
+            clear_job_dir(iid);
+            return "ERROR";
+        };
+        // READY / VERIFY_FAIL / NO_EDITS all ADVANCE the subtask cursor: a
+        // zero-churn or verify-failing subtask is skipped, not fatal (matches the
+        // in-shell loop, which never aborts an epic on one empty subtask and
+        // commits whatever accumulated). Consume this subtask's job dir first.
+        clear_job_dir(iid);
+        // Base case: subtask_idx grows ONLY while i < N; i == N is the SOLE
+        // transition into finalize — the one-PR invariant.
+        if i < n {
+            memo_write(scoped_memo(owner, repo, "code_edit_loop:subtask_idx:" + iid), to_string(i + 1));
+            memo_write(scoped_memo(owner, repo, "code_edit_loop:phase:" + iid), "");
+            memo_write(scoped_memo(owner, repo, "code_edit_loop:attempts:" + iid), "");
+            print("[code_writer] ag-decompose issue", iid, "subtask", to_string(i), "of", to_string(n), "done — next");
+            return "RUNNING";
+        };
+        memo_write(scoped_memo(owner, repo, "code_edit_loop:decomp:" + iid), "finalize");
+        print("[code_writer] ag-decompose issue", iid, "all", to_string(n), "subtask(s) done — finalizing");
+        return "RUNNING";
+    };
+
+    // State "finalize" — the SINGLE --finalize drive commits the accumulated
+    // diff and opens ONE PR.
+    let poll = ag_attempt_launch(owner, repo, iid, branch, title, task, description, true, false);
+    let mv = ag_attempt_poll(poll);
+    if mv == "RUNNING" { return "RUNNING"; };
+    if mv == "DONE" {
+        let url = pr_check_token(poll, "RESULT");
+        ag_decompose_reset(owner, repo, iid);
+        clear_job_dir(iid);
+        return "DONE:" + url;
+    };
+    if mv == "NO_EDITS" {
+        // Nothing accumulated across the subtasks — terminal, not an error.
+        ag_decompose_reset(owner, repo, iid);
         clear_job_dir(iid);
         return "NO_EDITS";
     };
-    // error / none / stale / unknown — clear + reset so the next tick restarts.
-    ag_edit_reset(owner, repo, iid);
+    // ERROR (incl. done-without-url) — clear + reset so the next tick restarts.
+    ag_decompose_reset(owner, repo, iid);
     clear_job_dir(iid);
     return "ERROR";
 }
@@ -1239,7 +1467,12 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // the same vocab whole into an LLM prompt that can split it.
                 let is_epic = is_epic_match(issue_detail, epic_vocab_or_default);
                 if is_epic { print("[code_writer] issue", issue_iid, "is epic-class — auto-decomposing (#1257)"); };
-                let decompose_flag = if is_epic { " --decompose"; } else { ""; };
+                // #1422 M2: an epic opts into the AG-driven decompose loop only
+                // when AG_DECOMPOSE_LOOP=1 (DEFAULT OFF); otherwise it stays on
+                // the untouched in-shell --decompose path. A non-epic never
+                // decomposes (decompose_flag=""), so the flag is epic-scoped.
+                let ag_decompose_on = if is_epic { getenv("AG_DECOMPOSE_LOOP") == "1"; } else { false; };
+                let decompose_flag = if is_epic { if ag_decompose_on { ""; } else { " --decompose"; }; } else { ""; };
                 // #1349: thread the agent's OWN drafted summary through as the
                 // PR/MR body (--description). draft.summary is the "2-3 sentences
                 // for the PR body" the prompt() above already produced; without
@@ -1256,36 +1489,41 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // "DONE:<url>" / "RUNNING" / "NO_EDITS" / "ERROR" — so the
                 // terminal handling below is shared. For the default path the PR
                 // URL is folded into DONE via job_rest (the RESULT= token).
-                // #1354 step 3: the AG-driven loop becomes the default for
-                // ordinary issues, but EPICS stay on the in-shell path: epic
-                // decomposition (--decompose) is orchestrated inside
-                // code-edit-in-checkout.sh's in-shell loop and is NOT yet
-                // migrated into ag_edit_step, so routing an epic through the AG
-                // loop would silently drop decomposition (one monolithic drive
-                // instead of per-subtask edits). Carve epics out until the
-                // decompose migration lands (tracked on #1353). A non-epic issue
-                // uses the AG loop whenever AG_DRIVEN_EDIT_LOOP is on (now the
-                // default 1; set [implementation] ag_driven_edit_loop = false to
-                // fall back to the in-shell loop for everything).
+                // #1354 step 3: the AG-driven loop is the default for ORDINARY
+                // issues. #1422 M2: EPICS now have TWO routes — the AG-driven
+                // decompose loop (ag_decompose_step, opt-in via AG_DECOMPOSE_LOOP,
+                // DEFAULT OFF) or the untouched in-shell --decompose path (the
+                // working default until the M3 burn-in). ag_loop_on (the ordinary
+                // AG loop, ag_edit_step) is only ever on for NON-epics — an epic
+                // routes through ag_decompose_step or the in-shell path, never
+                // ag_edit_step, so decomposition is never silently dropped.
                 let ag_loop_on = if is_epic { false; } else { getenv("AG_DRIVEN_EDIT_LOOP") == "1"; };
                 // Default path launches the in-shell loop HERE so its raw poll
                 // line (STATUS=.. PID_ALIVE=.. RESULT=..) stays in scope for the
                 // ERROR diagnostic below; job_cmd is built either way but only
-                // exec'd on the default path. The AG path drives + logs its own
-                // detail inside ag_edit_step, so job_raw is "" there.
+                // exec'd on the default (neither-AG-path) route. Both AG paths
+                // drive + log their own detail, so job_raw is "" there.
                 // colony-lint: safe-exec-concat
                 let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(issue_iid) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(draft.title) + " --description " + shell_escape(draft.summary) + " --task " + shell_escape(task_text) + decompose_flag;
+                // Exec the in-shell launcher only when NEITHER AG path is active
+                // (`.ag` has no `||`, so nest the two off-checks).
                 let job_raw = if ag_loop_on { ""; } else {
-                    try { exec sh job_cmd; } catch e {
-                        print("[code_writer] code-edit-job launcher failed — not marking drafted, will retry:", e);
-                        "";
+                    if ag_decompose_on { ""; } else {
+                        try { exec sh job_cmd; } catch e {
+                            print("[code_writer] code-edit-job launcher failed — not marking drafted, will retry:", e);
+                            "";
+                        };
                     };
                 };
-                let verdict = if ag_loop_on {
-                    ag_edit_step(owner, repo, issue_iid, branch_name, draft.title, task_text, draft.summary);
+                let verdict = if ag_decompose_on {
+                    ag_decompose_step(owner, repo, issue_iid, branch_name, draft.title, task_text, draft.summary);
                 } else {
-                    let d = job_decide(job_raw);
-                    if d == "DONE" { "DONE:" + job_rest(job_raw); } else { d; };
+                    if ag_loop_on {
+                        ag_edit_step(owner, repo, issue_iid, branch_name, draft.title, task_text, draft.summary);
+                    } else {
+                        let d = job_decide(job_raw);
+                        if d == "DONE" { "DONE:" + job_rest(job_raw); } else { d; };
+                    };
                 };
                 // Split the verdict into a bare state + the PR URL (empty unless
                 // DONE) so the branches below read a stable job_state / pr_url.

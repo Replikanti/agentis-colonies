@@ -2416,6 +2416,199 @@ else
     fail "run 27 (#1444 CODE_EDIT_EFFORT): missing default literal or allowlist validation in source"
 fi
 
+# ===========================================================================
+# Run 28 (#1422 M1 --decompose-only): the stand-alone decomposition primitive
+# runs ONLY the decompose drive, writes the ordered NUL-delimited subtask list
+# to --subtasks-out, prints exactly `DECOMPOSED count=3`, and exits 0 BEFORE the
+# per-subtask edit loop — ZERO edit invocations, NO commit, NO PR. The records
+# must be byte-identical to the in-shell --decompose split (Run 14 pins that the
+# split itself is untouched).
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+{ echo "create-mr called"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/28"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+# Same stateful decompose-aware stub as Run 14: the Decompose drive writes a
+# 3-line list; any EDIT drive bumps a counter (must stay 0 under --decompose-only).
+EDIT_CNT_FILE28="$WORK/fc-edit-count-28"; rm -f "$EDIT_CNT_FILE28"
+cat > "$STUB_BIN/flat-cyborg" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "\$*" >> "$FC_FLAGS_LOG"
+CWD=""; CMDFILE=""
+while [ \$# -gt 0 ]; do
+    case "\$1" in
+        --cwd) CWD="\$2"; shift 2 ;;
+        --cmd-file) CMDFILE="\$2"; shift 2 ;;
+        --) shift; break ;;
+        *) shift ;;
+    esac
+done
+if [ -n "\$CMDFILE" ] && grep -q "Decompose" "\$CMDFILE" 2>/dev/null; then
+    TARGET="\$(grep "this exact file" "\$CMDFILE" | grep -oE '/[^ ]+' | head -n1)"
+    if [ -n "\$TARGET" ]; then
+        printf 'subtask one\nsubtask two\nsubtask three\n' > "\$TARGET"
+    fi
+    exit 0
+fi
+n=\$(cat "$EDIT_CNT_FILE28" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s' "\$n" > "$EDIT_CNT_FILE28"
+[ -n "\$CWD" ] && printf 'edit %s\n' "\$n" > "\$CWD/SUB_\$n.txt"
+exit 0
+STUB_EOF
+chmod +x "$STUB_BIN/flat-cyborg"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+SUBTASKS_OUT28="$WORK/subtasks-28.txt"; rm -f "$SUBTASKS_OUT28"
+OUT28_FILE="$WORK/out28.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 280 \
+        --branch "fix/issue-280" --title "epic task" \
+        --task "Do a big multi-part change." \
+        --decompose-only --subtasks-out "$SUBTASKS_OUT28" >"$OUT28_FILE" 2>"$WORK/err28.txt"
+RC28=$?
+EDIT_CALLS28="$(cat "$EDIT_CNT_FILE28" 2>/dev/null || echo 0)"
+
+if [ "$RC28" -eq 0 ] && [ "$(cat "$OUT28_FILE")" = "DECOMPOSED count=3" ]; then
+    pass "run 28 (--decompose-only): exit 0 + prints exactly 'DECOMPOSED count=3'"
+else
+    fail "run 28 (--decompose-only): exit 0 + DECOMPOSED count=3" "rc=$RC28 out=$(cat "$OUT28_FILE" 2>/dev/null) err=$(tail -4 "$WORK/err28.txt" 2>/dev/null)"
+fi
+# The subtasks-out file must carry exactly 3 NUL records, byte-identical to the
+# in-shell --decompose split (tr '\n' '\0' on the 3 parsed lines).
+NUL_RECS28="$(tr -cd '\0' < "$SUBTASKS_OUT28" 2>/dev/null | wc -c | tr -d ' ')"
+EXPECT28="$(printf 'subtask one\0subtask two\0subtask three\0')"
+if [ -f "$SUBTASKS_OUT28" ] && [ "$NUL_RECS28" = "3" ] && [ "$(cat "$SUBTASKS_OUT28")" = "$EXPECT28" ]; then
+    pass "run 28 (--decompose-only): wrote 3 NUL records to --subtasks-out (byte-identical to the split)"
+else
+    fail "run 28 (--decompose-only): 3 NUL records in --subtasks-out" "recs=$NUL_RECS28 file=$SUBTASKS_OUT28"
+fi
+if [ "$EDIT_CALLS28" = "0" ]; then
+    pass "run 28 (--decompose-only): ran ZERO edit invocations (did not enter the per-subtask loop)"
+else
+    fail "run 28 (--decompose-only): expected 0 edit invocations" "got $EDIT_CALLS28"
+fi
+if [ ! -f "$CREATE_MR_LOG" ]; then
+    pass "run 28 (--decompose-only): opened NO PR (no create-mr call)"
+else
+    fail "run 28 (--decompose-only): must not open a PR" "create-mr log present: $(cat "$CREATE_MR_LOG" 2>/dev/null)"
+fi
+
+# ===========================================================================
+# Run 29 (#1422 M1 --decompose-only monolithic fallback): when the decompose
+# drive yields NOTHING, fill_subtasks_file falls back to the whole task as ONE
+# record, so --decompose-only still emits `DECOMPOSED count=1` (never count=0)
+# and writes a single NUL record — the caller always gets >=1 subtask.
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+{ echo "create-mr called"; } >> "$CREATE_MR_LOG"
+printf '%s\n' '{"html_url": "https://example.test/pr/29"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+# Decompose stub that writes NOTHING to the target -> empty list -> fallback.
+cat > "$STUB_BIN/flat-cyborg" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "\$*" >> "$FC_FLAGS_LOG"
+exit 0
+STUB_EOF
+chmod +x "$STUB_BIN/flat-cyborg"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+SUBTASKS_OUT29="$WORK/subtasks-29.txt"; rm -f "$SUBTASKS_OUT29"
+OUT29_FILE="$WORK/out29.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 290 \
+        --branch "fix/issue-290" --title "epic task" \
+        --task "The whole indivisible task." \
+        --decompose-only --subtasks-out "$SUBTASKS_OUT29" >"$OUT29_FILE" 2>"$WORK/err29.txt"
+RC29=$?
+NUL_RECS29="$(tr -cd '\0' < "$SUBTASKS_OUT29" 2>/dev/null | wc -c | tr -d ' ')"
+if [ "$RC29" -eq 0 ] && [ "$(cat "$OUT29_FILE")" = "DECOMPOSED count=1" ] && [ "$NUL_RECS29" = "1" ]; then
+    pass "run 29 (--decompose-only fallback): empty decomposition => DECOMPOSED count=1 + 1 NUL record"
+else
+    fail "run 29 (--decompose-only fallback): count=1 monolithic fallback" "rc=$RC29 out=$(cat "$OUT29_FILE" 2>/dev/null) recs=$NUL_RECS29"
+fi
+EXPECT29="$(printf 'The whole indivisible task.\0')"
+if [ "$(cat "$SUBTASKS_OUT29" 2>/dev/null)" = "$EXPECT29" ]; then
+    pass "run 29 (--decompose-only fallback): the single record is the WHOLE task"
+else
+    fail "run 29 (--decompose-only fallback): single record = whole task" "got=$(cat "$SUBTASKS_OUT29" 2>/dev/null)"
+fi
+
+# ===========================================================================
+# Run 30 (#1422 M1 arg validation): --decompose-only without --subtasks-out is a
+# caller error (exit 2); combining it with an editing primitive is rejected too.
+# ===========================================================================
+env PATH="$STUB_BIN:$PATH" COLONY_DIR="$COLONY_DIR" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" GITHUB_TOKEN="$FAKE_TOKEN" \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue 300 \
+        --branch "fix/issue-300" --title "t" --task "x" --decompose-only \
+        >/dev/null 2>"$WORK/err30a.txt"
+RC30A=$?
+env PATH="$STUB_BIN:$PATH" COLONY_DIR="$COLONY_DIR" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" GITHUB_TOKEN="$FAKE_TOKEN" \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue 300 \
+        --branch "fix/issue-300" --title "t" --task "x" \
+        --decompose-only --subtasks-out "$WORK/s30.txt" --one-attempt \
+        >/dev/null 2>"$WORK/err30b.txt"
+RC30B=$?
+if [ "$RC30A" -eq 2 ] && [ "$RC30B" -eq 2 ]; then
+    pass "run 30 (--decompose-only validation): missing --subtasks-out and editing-primitive combo both exit 2"
+else
+    fail "run 30 (--decompose-only validation): expected exit 2 for both" "rc_missing=$RC30A rc_combo=$RC30B"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

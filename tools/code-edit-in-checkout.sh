@@ -22,6 +22,17 @@
 #   Set FORGE_TYPE=gitlab to run the same clone -> edit -> verify -> commit ->
 #   MR loop against GitLab (GITHUB_* / GITLAB_* env supplies the host + token).
 #
+#   --decompose-only --subtasks-out <file> (#1422 M1) runs ONLY the
+#   decomposition drive (implies --decompose) and writes the ordered
+#   NUL-delimited subtask list to <file>, then prints a single line
+#       DECOMPOSED count=<n>
+#   and exits 0 BEFORE the per-subtask loop — no edit, no commit, no PR. It
+#   surfaces decomposition as a stand-alone primitive so code_writer.ag can
+#   drive the per-subtask edit sequence itself (the AG-driven decompose loop),
+#   exactly as --one-attempt surfaced the single edit drive. The monolithic
+#   fallback guarantees count>=1. <file> must live OUTSIDE the per-issue job dir
+#   so the caller's job-dir cleanup cannot reap it.
+#
 #   --recover (#1332) re-drives an EXISTING PR's branch whose CI went red.
 #   Instead of cutting a fresh branch off the default branch, it checks OUT the
 #   existing remote head branch (which already carries the prior commit), FORCES
@@ -113,6 +124,17 @@ TASK=""
 # at create-mr time. The LLM reasoning lives in the .ag prompt(), NOT here.
 DESCRIPTION_ARG=""
 DECOMPOSE=0
+# --decompose-only (#1422 M1): run ONLY the decomposition drive (the same drive
+# --decompose runs first) and write the ordered NUL-delimited subtask list to
+# the caller-named --subtasks-out file, then print `DECOMPOSED count=<n>` and
+# exit 0 BEFORE the per-subtask edit loop. It runs NO edits, NO commit, NO PR.
+# This surfaces the decomposition as a stand-alone primitive so code_writer.ag
+# can drive the per-subtask sequence itself (the AG-driven decompose loop),
+# exactly as --one-attempt surfaced the single edit drive. --decompose-only
+# implies --decompose (the drive must actually run to yield >1 subtask). The
+# default --decompose path (no --decompose-only) is byte-untouched.
+DECOMPOSE_ONLY=0
+SUBTASKS_OUT=""
 RECOVER=0
 # --one-attempt (#1406): the single-attempt primitive for the #1354
 # caller-driven loop. --continuation names a file whose contents replace the
@@ -131,7 +153,7 @@ REUSE=0
 FINALIZE=0
 
 usage() {
-    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--recover] [--one-attempt] [--continuation <file>] [--reuse] [--finalize]" >&2
+    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--decompose-only --subtasks-out <file>] [--recover] [--one-attempt] [--continuation <file>] [--reuse] [--finalize]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -144,6 +166,8 @@ while [ $# -gt 0 ]; do
         --task)   TASK="${2:-}";   shift 2 ;;
         --description) DESCRIPTION_ARG="${2:-}"; shift 2 ;;
         --decompose) DECOMPOSE=1; shift ;;
+        --decompose-only) DECOMPOSE_ONLY=1; DECOMPOSE=1; shift ;;
+        --subtasks-out) SUBTASKS_OUT="${2:-}"; shift 2 ;;
         --recover) RECOVER=1; shift ;;
         --one-attempt) ONE_ATTEMPT=1; shift ;;
         --continuation) CONTINUATION_FILE="${2:-}"; shift 2 ;;
@@ -214,6 +238,24 @@ if [ "$REUSE" -eq 1 ] && [ "$ONE_ATTEMPT" -ne 1 ] && [ "$FINALIZE" -ne 1 ]; then
     echo "code-edit-in-checkout.sh: --reuse requires --one-attempt or --finalize" >&2
     usage
     exit 2
+fi
+
+# --decompose-only (#1422 M1) is the stand-alone decomposition primitive: it
+# runs ONLY the decompose drive and needs a caller-named --subtasks-out file to
+# write the ordered subtask list to. It is mutually exclusive with the editing
+# primitives (--one-attempt/--reuse/--finalize) and --recover — it makes no edit
+# and opens no PR, so combining it with a path that does would be a caller bug.
+if [ "$DECOMPOSE_ONLY" -eq 1 ]; then
+    if [ -z "$SUBTASKS_OUT" ]; then
+        echo "code-edit-in-checkout.sh: --decompose-only requires --subtasks-out <file>" >&2
+        usage
+        exit 2
+    fi
+    if [ "$ONE_ATTEMPT" -eq 1 ] || [ "$REUSE" -eq 1 ] || [ "$FINALIZE" -eq 1 ] || [ "$RECOVER" -eq 1 ]; then
+        echo "code-edit-in-checkout.sh: --decompose-only cannot be combined with --one-attempt/--reuse/--finalize/--recover" >&2
+        usage
+        exit 2
+    fi
 fi
 
 # Normalise the title into a clean Conventional Commits subject, reused for both
@@ -770,41 +812,70 @@ if [ "$FINALIZE" -ne 1 ]; then
 # small sub-edits and run the edit loop once per subtask on the SAME branch,
 # accumulating into ONE commit/PR. Without --decompose (or if decomposition
 # yields nothing) the whole task is the single "subtask" -> identical to M1/M2.
-SUBTASKS_FILE="$(mktemp)"
-if [ "$DECOMPOSE" -eq 1 ]; then
-    SUBTASKS_LIST="$(mktemp)"
-    : > "$SUBTASKS_LIST"
-    {
-        printf 'Decompose issue #%s (%s) into an ORDERED list of small, self-contained sub-edits, each about the size of one focused change.\n\n' "$ISSUE" "$TITLE"
-        printf 'Base the list SOLELY on the task description below. Do NOT read, search, or explore repository files in this step, and do NOT edit any files — just produce the list immediately.\n'
-        printf 'Write ONLY the list to this exact file with your file-writing tool: %s\n' "$SUBTASKS_LIST"
-        printf 'One sub-edit per line, plain text, no numbering and no markdown.\n\nIssue task:\n%s\n' "$TASK"
-    } > "$TASKFILE"
-    echo "[code-edit] decomposing issue #$ISSUE into subtasks" >&2
-    set +e
-    acquire_llm_slot
-    flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
-        --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" --timeout-ms "$PER_ATTEMPT_MS" \
-        --cmd-file "$TASKFILE" -- claude --model "${CODE_EDIT_MODEL:-opus}" --settings "$EFFORT_SETTINGS" >&2
-    set -e
-    reap_editing_strays
-    release_llm_slot
-    # discard any stray edits the decomposition step made; the subtask loop owns edits.
-    run_git -C "$WS" reset --hard >/dev/null 2>&1 || true
-    run_git -C "$WS" clean -fd >/dev/null 2>&1 || true
-    # Each parsed line becomes a NUL-separated record. NUL (not newline) is the
-    # subtask delimiter so the no-decompose fallback below can hold the WHOLE
-    # multi-line $TASK as a SINGLE record — the production caller's task_text is
-    # always multi-line, and splitting it per line would feed claude fragments.
-    awk 'NF' "$SUBTASKS_LIST" 2>/dev/null | sed 's/^[[:space:]]*[-*0-9.)]\{0,4\}[[:space:]]*//' | head -n "$MAX_SUBTASKS" | tr '\n' '\0' > "$SUBTASKS_FILE"
+#
+# #1422 M1: the decomposition drive + parse + monolithic fallback + count are
+# factored into fill_subtasks_file() so --decompose-only can reuse them VERBATIM
+# without entering the per-subtask edit loop. The default --decompose path calls
+# it and falls straight through to the loop below, so its behaviour stays
+# byte-identical. The function sets the globals SUBTASKS_FILE / SUBTASK_COUNT
+# (and SUBTASKS_LIST, cleaned up by the EXIT trap). The monolithic fallback
+# guarantees SUBTASK_COUNT >= 1.
+fill_subtasks_file() {
+    SUBTASKS_FILE="$(mktemp)"
+    if [ "$DECOMPOSE" -eq 1 ]; then
+        SUBTASKS_LIST="$(mktemp)"
+        : > "$SUBTASKS_LIST"
+        {
+            printf 'Decompose issue #%s (%s) into an ORDERED list of small, self-contained sub-edits, each about the size of one focused change.\n\n' "$ISSUE" "$TITLE"
+            printf 'Base the list SOLELY on the task description below. Do NOT read, search, or explore repository files in this step, and do NOT edit any files — just produce the list immediately.\n'
+            printf 'Write ONLY the list to this exact file with your file-writing tool: %s\n' "$SUBTASKS_LIST"
+            printf 'One sub-edit per line, plain text, no numbering and no markdown.\n\nIssue task:\n%s\n' "$TASK"
+        } > "$TASKFILE"
+        echo "[code-edit] decomposing issue #$ISSUE into subtasks" >&2
+        set +e
+        acquire_llm_slot
+        flat-cyborg --extract --extract-structural --no-jitter --auto-approve --wrap-input 72 --cwd "$WS" \
+            --idle-ms "${FLAT_CYBORG_IDLE_MS:-45000}" --timeout-ms "$PER_ATTEMPT_MS" \
+            --cmd-file "$TASKFILE" -- claude --model "${CODE_EDIT_MODEL:-opus}" --settings "$EFFORT_SETTINGS" >&2
+        set -e
+        reap_editing_strays
+        release_llm_slot
+        # discard any stray edits the decomposition step made; the subtask loop owns edits.
+        run_git -C "$WS" reset --hard >/dev/null 2>&1 || true
+        run_git -C "$WS" clean -fd >/dev/null 2>&1 || true
+        # Each parsed line becomes a NUL-separated record. NUL (not newline) is the
+        # subtask delimiter so the no-decompose fallback below can hold the WHOLE
+        # multi-line $TASK as a SINGLE record — the production caller's task_text is
+        # always multi-line, and splitting it per line would feed claude fragments.
+        awk 'NF' "$SUBTASKS_LIST" 2>/dev/null | sed 's/^[[:space:]]*[-*0-9.)]\{0,4\}[[:space:]]*//' | head -n "$MAX_SUBTASKS" | tr '\n' '\0' > "$SUBTASKS_FILE"
+    fi
+    if [ ! -s "$SUBTASKS_FILE" ]; then
+        # Single record = the whole task (newlines preserved) -> one subtask -> M1/M2.
+        [ "$DECOMPOSE" -eq 1 ] && echo "[code-edit] decomposition produced no subtasks — running the whole task as one (monolithic fallback)" >&2
+        printf '%s\0' "$TASK" > "$SUBTASKS_FILE"
+    fi
+    SUBTASK_COUNT="$(tr -cd '\0' < "$SUBTASKS_FILE" | wc -c | tr -d ' ')"
+    [ "$SUBTASK_COUNT" -gt 1 ] && echo "[code-edit] decomposed issue #$ISSUE into $SUBTASK_COUNT subtasks" >&2
+    # Explicit success: the trailing `[ -gt ] &&` above returns non-zero when
+    # SUBTASK_COUNT==1, which — as this function's last command called under
+    # `set -e` — would abort the script before the loop / --decompose-only exit.
+    return 0
+}
+fill_subtasks_file
+
+# #1422 M1: --decompose-only surfaces the ordered subtask list as a stand-alone
+# primitive and STOPS here — it runs NO per-subtask edit, NO commit, NO PR. Copy
+# the NUL-delimited records to the caller-named --subtasks-out file (which lives
+# OUTSIDE the per-issue job dir, so a caller's clear_job_dir cannot reap it) and
+# print the poll token the launcher re-keys onto the poll line. The monolithic
+# fallback guarantees count>=1, so the caller always gets at least one record.
+if [ "$DECOMPOSE_ONLY" -eq 1 ]; then
+    mkdir -p "$(dirname "$SUBTASKS_OUT")"
+    cp "$SUBTASKS_FILE" "$SUBTASKS_OUT"
+    echo "[code-edit] decompose-only: wrote $SUBTASK_COUNT subtask(s) for issue #$ISSUE to $SUBTASKS_OUT" >&2
+    echo "DECOMPOSED count=$SUBTASK_COUNT"
+    exit 0
 fi
-if [ ! -s "$SUBTASKS_FILE" ]; then
-    # Single record = the whole task (newlines preserved) -> one subtask -> M1/M2.
-    [ "$DECOMPOSE" -eq 1 ] && echo "[code-edit] decomposition produced no subtasks — running the whole task as one (monolithic fallback)" >&2
-    printf '%s\0' "$TASK" > "$SUBTASKS_FILE"
-fi
-SUBTASK_COUNT="$(tr -cd '\0' < "$SUBTASKS_FILE" | wc -c | tr -d ' ')"
-[ "$SUBTASK_COUNT" -gt 1 ] && echo "[code-edit] decomposed issue #$ISSUE into $SUBTASK_COUNT subtasks" >&2
 
 subtask_idx=0
 while IFS= read -r -d '' CUR_TASK <&3; do
