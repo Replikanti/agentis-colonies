@@ -164,11 +164,86 @@ else
   fail "subtasks-out path outside job dir" "expected code-edit-subtasks/ path + --decompose-only --subtasks-out launch"
 fi
 
+# 11 (#1422 review finding 1 — decompose-collapse). "reuse the branch" and
+#     "continuation framing" MUST be decoupled in ag_attempt_launch: a decompose
+#     subtask >= 2 must --reuse (accumulate on the one branch) but get a FRESH
+#     tightly-scoped per-subtask prompt on its first attempt, NOT the whole-issue
+#     continuation preamble ("finish anything incomplete … complete and correct")
+#     which is a within-attempt RETRY device. Feeding that preamble to a fresh
+#     subtask can collapse decomposition back to monolithic.
+LAUNCH_BODY="$(awk '/^fn ag_attempt_launch\(/{c=1} c{print} c&&/^}/{exit}' "$AG")"
+# (a) want_continuation is gated on attempts>0 ONLY (never force_reuse).
+if printf '%s\n' "$LAUNCH_BODY" | grep -F -q -- 'let want_continuation = if is_finalize { false; } else { attempts > 0; };'; then
+  pass "finding 1: want_continuation = attempts>0 only (continuation framing is a retry device, not force_reuse)"
+else
+  fail "finding 1: want_continuation decoupled from force_reuse" "expected 'let want_continuation = if is_finalize { false; } else { attempts > 0; };'"
+fi
+# (b) want_reuse still accumulates on force_reuse OR attempts>0.
+if printf '%s\n' "$LAUNCH_BODY" | grep -F -q -- 'let want_reuse = if is_finalize { false; } else { if force_reuse { true; } else { attempts > 0; }; };'; then
+  pass "finding 1: want_reuse = force_reuse OR attempts>0 (subtask >= 2 still --reuse, accumulation preserved)"
+else
+  fail "finding 1: want_reuse preserves accumulation" "expected want_reuse = force_reuse OR attempts>0"
+fi
+# (c) the reuse-WITHOUT-continuation flag branch (fresh scoped prompt) is reachable.
+if printf '%s\n' "$LAUNCH_BODY" | grep -F -q -- '" --one-attempt --reuse";'; then
+  pass "finding 1: '--one-attempt --reuse' (reuse without --continuation) branch reachable — fresh scoped subtask prompt"
+else
+  fail "finding 1: reuse-without-continuation flag branch" "expected a bare '\" --one-attempt --reuse\";' flag branch"
+fi
+# (d) the whole-issue continuation preamble is guarded ONLY by want_continuation:
+#     the preamble write (the 'if want_continuation {' block) must be the sole
+#     gate, so a fresh subtask (want_continuation=false) never writes it.
+cont_guard_line="$(printf '%s\n' "$LAUNCH_BODY" | grep -n -F -- 'if want_continuation {' | head -1 | cut -d: -f1)"
+preamble_line="$(printf '%s\n' "$LAUNCH_BODY" | grep -n -F -- 'Continue implementing this issue in the CURRENT working checkout' | head -1 | cut -d: -f1)"
+if [ -n "$cont_guard_line" ] && [ -n "$preamble_line" ] && [ "$cont_guard_line" -lt "$preamble_line" ]; then
+  pass "finding 1: whole-issue continuation preamble is written ONLY inside the 'if want_continuation' guard"
+else
+  fail "finding 1: continuation preamble guarded by want_continuation" "guard_line=$cont_guard_line preamble_line=$preamble_line"
+fi
+
+# 12 (#1422 review finding 2 — portability). read_subtask must NOT use
+#     gawk-specific `RS="\0"` (BSD/busybox awk return the wrong record); it must
+#     split on NUL with the portable bash `read -r -d ""` mechanism the in-shell
+#     reference uses.
+READSUB_BODY="$(awk '/^fn read_subtask\(/{c=1} c{print} c&&/^}/{exit}' "$AG")"
+if printf '%s\n' "$READSUB_BODY" | grep -F -q -- 'read -r -d' \
+  && ! printf '%s\n' "$READSUB_BODY" | grep -F -q -- 'RS=' \
+  && ! printf '%s\n' "$READSUB_BODY" | grep -F -q -- 'awk'; then
+  pass "finding 2: read_subtask splits NUL via portable 'read -r -d' (no gawk RS=\"\\0\")"
+else
+  fail "finding 2: read_subtask portability" "expected 'read -r -d' and NO awk/RS= in read_subtask body"
+fi
+
+# 12b (#1422 review finding 2 — behavioural). The exact extraction mechanism
+#     read_subtask emits must return records BYTE-IDENTICAL to the orchestrator's
+#     own in-shell `read -r -d ''` loop, for: a 3-record list, a multi-line
+#     monolithic-fallback single record, and UTF-8 content.
+RS_WORK="$(mktemp -d)"
+printf 'subtask one\0subtask twö — café ☕\0subtask three\0' > "$RS_WORK/three.txt"
+printf 'Line one.\nLine two — ünïcode.\nLine three.\0' > "$RS_WORK/mono.txt"
+# read_subtask's emitted bash -c body (kept in lockstep with the .ag).
+rs_extract() { n="$2" f="$1" bash -c 'i=0; while IFS= read -r -d "" rec; do i=$((i+1)); if [ "$i" = "$n" ]; then printf "%s" "$rec"; break; fi; done < "$f"'; }
+# The orchestrator reference: read -r -d '' fd loop (code-edit-in-checkout.sh).
+rs_ref() { _i=0; while IFS= read -r -d '' _c <&9; do _i=$((_i + 1)); if [ "$_i" = "$2" ]; then printf '%s' "$_c"; break; fi; done 9< "$1"; }
+rs_fail=0
+for spec in "three.txt:1" "three.txt:2" "three.txt:3" "mono.txt:1"; do
+  fn="${spec%:*}"; idx="${spec#*:}"
+  g="$(rs_extract "$RS_WORK/$fn" "$idx")"; r="$(rs_ref "$RS_WORK/$fn" "$idx")"
+  [ "$g" = "$r" ] || { rs_fail=1; echo "  [diff] $fn rec $idx: extract=[$g] ref=[$r]"; }
+done
+rm -rf "$RS_WORK"
+if [ "$rs_fail" = 0 ]; then
+  pass "finding 2: read_subtask extraction is byte-identical to the in-shell read -r -d '' reference (3-record, multi-line, UTF-8)"
+else
+  fail "finding 2: extraction byte-identity vs in-shell reference"
+fi
+
 # -----------------------------------------------------------------------------
 # Parse check: the agent commits cleanly under `agentis commit`, same as the
 # per-agent syntax pass in colony-lint.sh. Skipped (not failed) when agentis is
 # not installed, matching the CI runner contract. This is the guard for the
-# read_subtask awk `RS="\0"` string escaping (the one dialect trap).
+# read_subtask `read -r -d ""` escaping through the `.ag` string (the one dialect
+# trap) and the decoupled ag_attempt_launch flag logic.
 # -----------------------------------------------------------------------------
 if command -v agentis >/dev/null 2>&1; then
   LINT_TMP="$(mktemp -d)"

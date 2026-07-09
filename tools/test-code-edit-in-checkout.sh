@@ -2609,6 +2609,84 @@ else
     fail "run 30 (--decompose-only validation): expected exit 2 for both" "rc_missing=$RC30A rc_combo=$RC30B"
 fi
 
+# ===========================================================================
+# Run 31 (#1422 review finding 1 — reuse WITHOUT continuation ⇒ fresh scoped
+# prompt): the crux the AG decompose loop depends on. A `--one-attempt --reuse`
+# drive that carries NO --continuation must edit with the DEFAULT tightly-scoped
+# per-subtask template ("Implement issue #N … <task> … Make the change and
+# stop"), NOT the interrupted/verify CONTINUATION prompt. This is what lets a
+# decompose subtask >= 2 accumulate on the one branch (--reuse) while still being
+# scoped to its own subtask text — the fix that prevents decomposition collapse.
+# ===========================================================================
+rm -rf "$FED_DIR" "$REMOTE_BASE" "$SEED" "$CREATE_MR_LOG" "$FC_FLAGS_LOG"
+mkdir -p "$COLONY_DIR/scripts"
+cat > "$COLONY_DIR/scripts/github-api.sh" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' '{"html_url": "https://example.test/pr/31"}'
+STUB_EOF
+chmod +x "$COLONY_DIR/scripts/github-api.sh"
+
+# Capturing stub: overwrite CMD_CAP with the cmd-file it receives each call, and
+# write a unique file so churn>0 on both attempts.
+CMD_CAP31="$WORK/cmdcap31.txt"; rm -f "$CMD_CAP31"
+CNT31="$WORK/cnt31"; rm -f "$CNT31"
+cat > "$STUB_BIN/flat-cyborg" <<STUB_EOF
+#!/usr/bin/env bash
+set -eu
+CWD=""; CMDF=""
+while [ \$# -gt 0 ]; do case "\$1" in --cwd) CWD="\$2"; shift 2 ;; --cmd-file) CMDF="\$2"; shift 2 ;; --) shift; break ;; *) shift ;; esac; done
+[ -n "\$CMDF" ] && cat "\$CMDF" > "$CMD_CAP31"
+n=\$(cat "$CNT31" 2>/dev/null || echo 0); n=\$((n + 1)); printf '%s' "\$n" > "$CNT31"
+[ -n "\$CWD" ] && printf 'edit %s\n' "\$n" > "\$CWD/F_\$n.txt"
+exit 0
+STUB_EOF
+chmod +x "$STUB_BIN/flat-cyborg"
+
+mkdir -p "$BARE"
+git init --quiet --bare --initial-branch=main "$BARE" 2>/dev/null || git init --quiet --bare "$BARE"
+git init --quiet --initial-branch=main "$SEED" 2>/dev/null || git init --quiet "$SEED"
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf 'hello\n' > README.md
+    git add -A
+    git commit --quiet -m "seed: initial commit"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+)
+git --git-dir="$BARE" symbolic-ref HEAD refs/heads/main
+
+# Attempt 1 (subtask 1): fresh --one-attempt, creates the branch.
+env PATH="$STUB_BIN:$PATH" COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" CODE_EDIT_VERIFY_CMD=true \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue 310 \
+        --branch "fix/issue-310" --title "epic" \
+        --task "Subtask one: add module A." --one-attempt >/dev/null 2>"$WORK/err31a.txt"
+# Attempt 2 (subtask 2): --one-attempt --reuse, NO --continuation.
+env PATH="$STUB_BIN:$PATH" COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" CODE_EDIT_VERIFY_CMD=true \
+    bash "$ORCH" --owner "$OWNER" --repo "$REPO" --issue 310 \
+        --branch "fix/issue-310" --title "epic" \
+        --task "Subtask two: add module B." --one-attempt --reuse >/dev/null 2>"$WORK/err31b.txt"
+RC31B=$?
+
+# The captured attempt-2 prompt must be the FRESH scoped template for subtask 2,
+# NOT a continuation prompt.
+if [ "$RC31B" -eq 0 ] \
+    && grep -q "Implement issue #310" "$CMD_CAP31" 2>/dev/null \
+    && grep -q "Subtask two: add module B" "$CMD_CAP31" 2>/dev/null \
+    && grep -q "Make the change and stop" "$CMD_CAP31" 2>/dev/null \
+    && ! grep -q "You are CONTINUING" "$CMD_CAP31" 2>/dev/null \
+    && ! grep -q "Continue implementing this issue" "$CMD_CAP31" 2>/dev/null; then
+    pass "run 31 (finding 1): --one-attempt --reuse WITHOUT --continuation uses the fresh scoped subtask template (no continuation preamble)"
+else
+    fail "run 31 (finding 1): reuse-without-continuation prompt shape" "rc=$RC31B cap=[$(cat "$CMD_CAP31" 2>/dev/null | head -c 300)]"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

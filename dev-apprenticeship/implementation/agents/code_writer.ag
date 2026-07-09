@@ -584,20 +584,34 @@ fn ag_edit_reset(owner: string, repo: string, iid: string) -> void {
 // ordinary AG loop (ag_edit_step) and the AG-driven decompose loop
 // (ag_decompose_step) build and fire the --one-attempt / --reuse / --finalize
 // drive through ONE code path — shrinking the regression surface of the
-// migration. Builds the exact flags ag_edit_step used inline before:
-//   is_finalize  => " --description <d> --finalize" (the no-edit terminal drive)
-//   is_continue  => " --one-attempt --reuse --continuation <file>"
-//   else         => " --one-attempt"
-// where is_continue = force_reuse OR attempts>0 (`.ag` has no `||`, so nest).
-// force_reuse lets the decompose loop force --reuse for subtasks >= 2 (which must
-// accumulate on subtask 1's fresh branch) even though their per-subtask attempts
-// counter is 0. Returns the raw launcher poll line for ag_attempt_poll to read.
+// migration. Flags:
+//   is_finalize      => " --description <d> --finalize" (the no-edit terminal drive)
+//   want_continuation => " --one-attempt --reuse --continuation <file>"
+//   want_reuse only   => " --one-attempt --reuse"  (fresh scoped prompt on branch)
+//   else             => " --one-attempt"
+//
+// #1422 review finding 1: "reuse the branch" and "continuation framing" are two
+// DIFFERENT things and MUST be decoupled. --reuse accumulates edits on the one
+// branch (needed for decompose subtask >= 2, force_reuse). The whole-issue
+// continuation preamble ("Continue implementing … finish anything incomplete …
+// so the implementation is complete and correct") is a WITHIN-attempt RETRY
+// device (attempts>0) — feeding it to a FRESH subtask tells a capable editor to
+// attempt the whole remaining scope in one drive, collapsing decomposition back
+// to monolithic (the exact failure this migration exists to prevent). So:
+//   want_reuse        = force_reuse OR attempts>0   (accumulate on the branch)
+//   want_continuation = attempts>0                  (retry framing ONLY)
+// (`.ag` has no `||`, so nest.) For ag_edit_step (force_reuse always false) the
+// two are equal, so its behaviour is unchanged; a decompose subtask >= 2 first
+// attempt gets --reuse WITHOUT --continuation, so code-edit-in-checkout.sh's
+// --one-attempt path uses its default tightly-scoped per-subtask template with
+// the subtask text as the task. Returns the raw launcher poll for ag_attempt_poll.
 fn ag_attempt_launch(owner: string, repo: string, iid: string, branch: string, title: string, task: string, description: string, is_finalize: bool, force_reuse: bool) -> string {
     let attempts_s = recall_latest(scoped_memo(owner, repo, "code_edit_loop:attempts:" + iid));
     let attempts = if len(attempts_s) > 0 { parse_int(attempts_s); } else { 0; };
-    let is_continue = if is_finalize { false; } else { if force_reuse { true; } else { attempts > 0; }; };
+    let want_reuse = if is_finalize { false; } else { if force_reuse { true; } else { attempts > 0; }; };
+    let want_continuation = if is_finalize { false; } else { attempts > 0; };
     let contpath = "$COLONY_DIR/../.agentis/code-edit-cont/issue-" + iid + ".txt";
-    if is_continue {
+    if want_continuation {
         let cont = "Continue implementing this issue in the CURRENT working checkout. Some changes may already be present from a previous attempt — build on them, finish anything incomplete, and fix anything that does not yet work so the implementation is complete and correct. Do NOT revert existing progress.\n\n" + task;
         // colony-lint: safe-exec-concat
         let writecmd = "mkdir -p \"$COLONY_DIR/../.agentis/code-edit-cont\" && printf '%s' " + shell_escape(cont) + " > " + contpath;
@@ -606,10 +620,14 @@ fn ag_attempt_launch(owner: string, repo: string, iid: string, branch: string, t
     let flags = if is_finalize {
         " --description " + shell_escape(description) + " --finalize";
     } else {
-        if is_continue {
+        if want_continuation {
             " --one-attempt --reuse --continuation " + contpath;
         } else {
-            " --one-attempt";
+            if want_reuse {
+                " --one-attempt --reuse";
+            } else {
+                " --one-attempt";
+            };
         };
     };
     // colony-lint: safe-exec-concat
@@ -787,12 +805,20 @@ fn ag_decompose_launch(owner: string, repo: string, iid: string, branch: string,
 }
 
 // Read subtask record `idx` (1-based) from the stable NUL-delimited subtasks
-// file. RS="\0" splits on the NUL delimiter the M1 writer used; the escaping of
-// `"` and `\0` through the `.ag` string is the one dialect trap here — validated
-// by the agentis-commit parse test.
+// file. #1422 review finding 2: split on NUL with the SAME portable mechanism
+// the in-shell reference uses — bash `read -r -d ""` (NUL delimiter), NOT
+// gawk-specific `RS="\0"` (BSD/busybox awk treat RS="\0" as empty-string RS =
+// paragraph mode and return the wrong record, and the bundle ships to operator
+// machines). The record can contain newlines (the monolithic fallback holds the
+// whole multi-line task as one record), which `read -r -d ""` + `IFS=` + `printf
+// "%s"` preserves byte-for-byte, identical to the orchestrator's own loop. We
+// delegate to `bash -c` because `/bin/sh` may be dash/busybox (no `read -d`);
+// the OUTER exec-sh string stays dash-safe (only env-assignments + a
+// single-quoted bash script, no bashisms). n/f ride in as env (index is
+// shell-escaped; path expands $COLONY_DIR, passed unescaped like contpath).
 fn read_subtask(iid: string, idx: int) -> string {
     // colony-lint: safe-exec-concat
-    let cmd = "awk -v n=" + shell_escape(to_string(idx)) + " 'BEGIN{RS=\"\\0\"} NR==n{printf \"%s\",$0}' " + ag_subtasks_path(iid);
+    let cmd = "n=" + shell_escape(to_string(idx)) + " f=" + ag_subtasks_path(iid) + " bash -c 'i=0; while IFS= read -r -d \"\" rec; do i=$((i+1)); if [ \"$i\" = \"$n\" ]; then printf \"%s\" \"$rec\"; break; fi; done < \"$f\"'";
     let out = try { exec sh cmd; } catch e {
         print("[code_writer] read_subtask failed for issue", iid, "idx", to_string(idx), ":", e);
         "";
