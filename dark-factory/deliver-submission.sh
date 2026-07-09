@@ -9,6 +9,15 @@
 # Offline-testable, operator-mediated, human-gated. This script never submits: it NEVER contacts any bounty
 # platform (no network fetch/egress primitive) and REFUSES (exit 3) to stage any draft that does not carry the
 # human-gate marker SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW — the never-submit invariant is baked into the muscle.
+# The finding-ready alert below (via `monitor/scripts/notify.sh`) is an operator page on the operator's OWN
+# channel — not a platform submission; it adds no egress to any bounty platform and the never-submit invariant
+# is unchanged.
+#
+# Slack/Discord alert (#1538, opt-in): after a successful stage this reuses dark-factory/monitor/scripts/notify.sh
+# to page the operator with a finding-ready JSON alert. Configure DARK_FACTORY_SLACK_WEBHOOK (a `secret://...`
+# URI per tools/parse-toml-secret.py's grammar, or a raw webhook URL) to opt in; falls back to
+# MONITOR_WEBHOOK_URL. With no webhook configured this is a no-op (notify.sh's own stdout no-op fallback,
+# redirected to stderr here) — no network, no behaviour change.
 #
 # Correlation (load-bearing): the stable submission id is `<target>@<in-scope-commit>:<finding-slug>` (e.g.
 # `enzyme-onyx@a1b2c3d:sync-deposit-nav-frontrun`). It is written VERBATIM into manifest.json (the authoritative
@@ -29,6 +38,7 @@
 # Requires: bash + python3. Exit: 0 staged, 2 bad/missing args, 3 draft missing the human-gate marker.
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DIR="${DARK_FACTORY_DIR:-$HOME/.dark-factory}"
 DROP_DIR="${DROP_DIR:-$DIR/drop}"
 
@@ -53,7 +63,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --impact-verdict) nv "$#" "$1"; IMPACT_VERDICT="$2"; shift 2;;
   --dup-risk)       nv "$#" "$1"; DUP_RISK="$2"; shift 2;;
   --drop-dir)       nv "$#" "$1"; DROP_DIR="$2"; shift 2;;
-  -h|--help)        sed -n '2,44p' "$0"; exit 0;;
+  -h|--help)        sed -n '2,47p' "$0"; exit 0;;
   *) echo "deliver-submission.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
 
@@ -127,5 +137,67 @@ printf '%s\n' "$DRAFT" > "$STAGE/submission-draft.md"
 } > "$STAGE/OUTCOME.md"
 
 echo "deliver-submission.sh: staged $ID -> $STAGE (PENDING HUMAN REVIEW — NOT SUBMITTED)" >&2
+
+# --- Slack/Discord finding-ready alert (#1538, opt-in, best-effort, additive) ---------------------------------
+# An operator PAGE on the operator's OWN webhook — NOT a platform submission; the never-submit invariant above
+# is unchanged. Gated purely on a configured webhook (resolved below); with none configured this degrades to
+# notify.sh's own stdout no-op fallback, redirected to stderr so it can never corrupt this script's documented
+# stdout contract (the staged path, printed below) — the single most load-bearing detail of this wiring.
+RESOLVED_WEBHOOK="${MONITOR_WEBHOOK_URL:-}"
+if [ -n "${DARK_FACTORY_SLACK_WEBHOOK:-}" ]; then
+  if [ -f "$SCRIPT_DIR/../tools/parse-toml-secret.py" ]; then
+    RESOLVED_WEBHOOK="$(python3 "$SCRIPT_DIR/../tools/parse-toml-secret.py" --resolve "$DARK_FACTORY_SLACK_WEBHOOK" 2>/dev/null)"
+  else
+    # Defensive fallback (should never happen in a checked-out repo): a missing resolver must never turn a
+    # successful stage into a failure — use the configured value verbatim.
+    RESOLVED_WEBHOOK="$DARK_FACTORY_SLACK_WEBHOOK"
+  fi
+fi
+
+# Map the severity band to notify.sh's own routing vocabulary (high|warn|<anything else> -> base URL).
+case "$SEVERITY" in
+  Critical|High) NOTIFY_SEVERITY=high ;;
+  Medium)        NOTIFY_SEVERITY=warn ;;
+  *)             NOTIFY_SEVERITY=low ;;
+esac
+
+# Build the finding-ready alert as a JSON OBJECT (python3, args passed via env — no untrusted interpolation),
+# mirroring the monitor/scripts/check-drift.sh convention. `severity` is the field notify.sh's own routing reads.
+ALERT="$(SUBMISSION_ID="$ID" TARGET="$TARGET" NOTIFY_SEVERITY="$NOTIFY_SEVERITY" SEVERITY_BAND="$SEVERITY" \
+  SCOPE_VERDICT="$SCOPE_VERDICT" IMPACT_VERDICT="$IMPACT_VERDICT" DUP_RISK="$DUP_RISK" \
+  DRAFT_PATH="$STAGE/submission-draft.md" \
+  python3 -c '
+import json, os
+band = os.environ.get("SEVERITY_BAND", "") or "(unspecified)"
+draft_path = os.environ["DRAFT_PATH"]
+message = (
+    "dark-factory finding ready for human review: " + os.environ["SUBMISSION_ID"] +
+    " | severity " + band +
+    " | scope=" + os.environ.get("SCOPE_VERDICT", "") +
+    " impact=" + os.environ.get("IMPACT_VERDICT", "") +
+    " dup=" + os.environ.get("DUP_RISK", "") +
+    " | draft: " + draft_path +
+    " -- relay to the platform, then fill OUTCOME.md and run feedback-intake.ag."
+)
+print(json.dumps({
+    "kind": "finding-ready",
+    "verdict": "pending-human-review",
+    "severity": os.environ["NOTIFY_SEVERITY"],
+    "submission_id": os.environ["SUBMISSION_ID"],
+    "target": os.environ.get("TARGET", ""),
+    "scope_verdict": os.environ.get("SCOPE_VERDICT", ""),
+    "impact_verdict": os.environ.get("IMPACT_VERDICT", ""),
+    "dup_risk": os.environ.get("DUP_RISK", ""),
+    "draft_path": draft_path,
+    "message": message,
+}))
+')"
+
+# Invoke via `bash` (never `sh`/dot-source — the #1507/#1534 dash-safety lesson). Notify's stdout is redirected
+# to stderr (>&2) so its no-webhook fallback (`[monitor:alert] ...` on stdout) never leaks into THIS script's
+# stdout contract. `|| true`: a broken/bogus webhook (notify.sh exit 3/4) must never fail a stage that already
+# succeeded — delivery is pure best-effort muscle.
+MONITOR_WEBHOOK_URL="$RESOLVED_WEBHOOK" bash "$SCRIPT_DIR/monitor/scripts/notify.sh" "$ALERT" >&2 || true
+
 printf '%s\n' "$STAGE"
 exit 0
