@@ -918,6 +918,23 @@ if [ -x "$REPO_ROOT/dark-factory/demo-report-writer.sh" ]; then
     fi
 fi
 
+# --- dark-factory human<->federation feedback loop (#1526) ---
+# deliver-submission.sh stages a report-writer draft into an operator DROP-DIRECTORY under a stable submission id
+# (refusing any draft lacking the SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW human-gate marker), and feedback-intake.ag
+# reads the operator-filled outcome back into learning — the platform outcome's success/failure signal is
+# DETERMINISTIC from the verdict enum, attributed to the responsible gate's own learn() topic. Neither submits.
+# demo-feedback-loop.sh proves delivery + the deterministic signal offline (source-guarded) + runs the agent live
+# when agentis is present.
+if [ -x "$REPO_ROOT/dark-factory/demo-feedback-loop.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-feedback-loop.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: human<->federation feedback loop (deliver + intake) (#1526)"
+    else
+        fail "dark-factory: human<->federation feedback loop regressed (#1526)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory capability bench — deterministic safety stage (#1490) ---
 # run-capability-bench.sh measures whether the discover->devise->attack->novelty pipeline surfaces an
 # audit-SURVIVING bug and never re-surfaces a known one, scored against a fixture's ground truth. Its

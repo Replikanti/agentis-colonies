@@ -15,6 +15,33 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Human<->federation feedback loop — deliver drafts + intake outcomes into learning** (#1526, epic #1505).
+  Closes both ends of the loop through a single operator DROP-DIRECTORY (design decision baked in: a LOCAL
+  exchange point — no platform API, no gist, no scrape; offline-testable, operator-mediated, human-gated). A
+  confirmed finding's report-writer (#1508) draft is staged for a human to file out-of-band; the platform's
+  response is written back into the drop-dir and folded into learning, attributed to the gate that owns the
+  lesson. Neither component ever submits.
+  - `deliver-submission.sh` — the delivery muscle. Stages a report-writer draft under a stable submission id
+    `<target>@<in-scope-commit>:<finding-slug>` into `$DROP_DIR/<slug>/` (default
+    `${DARK_FACTORY_DIR:-$HOME/.dark-factory}/drop`) with `manifest.json` (canonical `submission_id` + the three
+    RAW gate verdict lines + severity + finding metadata + `created_at` + `status`, via `python3 json.dumps`),
+    `submission-draft.md` (verbatim), and an `OUTCOME.md` template the operator fills IN-PLACE. It REFUSES
+    (exit 3) any draft lacking the `SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW` marker — the human-gate invariant baked
+    into the muscle — and has no platform egress (exit 0 staged / 2 bad-args / 3 missing-marker). The canonical id
+    lives in `manifest.json`, not the editable template or the dirname, so an operator can never break correlation.
+  - `auditor/agents/feedback-intake.ag` — the reasoning half (standalone batch agent, mirrors `scope-gate.ag` /
+    `impact-gate.ag` / `report-writer.ag`). Env `SUBMISSION_DIR`. A deterministic muscle reads `manifest.json` +
+    `OUTCOME.md`; the success/failure/partial signal is DETERMINISTIC from the operator verdict enum
+    (`accepted`->success, `closed`->failure, `duplicate`->failure, `needs-info`->partial) so a mis-reasoning
+    backend can never flip a payout into a failure. The LLM's only job is to ATTRIBUTE the outcome to the
+    responsible stage; it prints `FEEDBACK|<SIGNAL>|<stage>|<rationale>`, then one `learn()` under that gate's OWN
+    topic (`dup-scout`->`dup-risk`, others 1:1) with the deterministic signal, plus a
+    `dark-factory:feedback_outcome` emit. Reads only the drop-dir; never submits.
+  - `demo-feedback-loop.sh` — offline (bash/python3): DELIVERY (real stage + canonical id + raw verdicts + the
+    exit-3 marker guard), SIGNAL (the deterministic verdict->signal map over an Enzyme Onyx `closed` fixture +
+    a source-guard of the four arms / deterministic-signal `learn()` / impact-gate attribution / emit-learn-memo
+    tail), and INVARIANT+LIVE (no platform egress in either component; runs the agent when agentis is present).
+    Wired into `tools/colony-lint.sh`.
 - **Immunefi intake + post-audit-delta discovery** (#1506, epic #1505). Two independent, offline-testable shell
   primitives that widen the intake funnel toward Immunefi bounties — the residual-surface half of discovery,
   built on the observation (borne out by the confirmed Lombard finding) that an audited protocol's rewardable
