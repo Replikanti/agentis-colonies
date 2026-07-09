@@ -51,7 +51,7 @@ When a new merge request appears, all four advisory reviewers analyze it in para
 
 `qa_reviewer` is a QA pass **distinct from** the advisory logic/security/style/test notes. For each open, non-draft MR it judges three dimensions:
 
-1. **completeness** — does the committed diff actually address the whole linked issue (resolved from the `fix/issue-<n>` branch name, else the first `#<n>` in the description) and every site/test the MR description claims to touch? Partial or claim-only changes fail.
+1. **completeness** — does the committed diff actually address the whole linked issue (resolved from the `fix/issue-<n>` branch name, else a closing-keyword reference — `Fixes`/`Closes`/`Resolves #<n>` — in the description, [#1514](https://github.com/Replikanti/agentis-colonies/issues/1514); a bare `#<n>` context mention is no longer used) and every site/test the MR description claims to touch? Partial or claim-only changes fail.
 2. **description-vs-diff** — is every claim in the MR description backed by the committed diff? Overstatements fail (e.g. "audits every X" / "adds a regression test" with no such test in the diff — cross-ref #1349).
 3. **adversarial** (#1405) — an independent, **default-skeptical** second opinion that actively tries to **refute** the change: given the MR diff and the linked issue it hunts for one concrete input/state/sequence where the change is wrong, incomplete, or breaks an adjacent consumer. It is framed to refute, never to summarize; a concrete refutation fails the dimension with a one-line reason.
 

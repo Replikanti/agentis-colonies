@@ -75,7 +75,7 @@ colony-name/
 
 ## Agent conventions (.ag files)
 
-- `cb <N>;` at the top must match the `cb_budget` in colony.example.toml.
+- `cb <N>;` at the top must match the `cb_budget` in colony.example.toml. **The runtime-enforced per-tick cap is separate**: `start-colony.sh` splices `--cb-per-tick <n>` onto each daemon from the per-agent `cb_per_tick` key (or the `[colony]` default, else 2000) — `cb_budget`/`cb` and `cb_per_tick` are independent, so raising one does NOT raise the other. A heavy tick (e.g. `code_writer`'s draft + plan-post + launch) that outgrows the runtime cap fails with `remaining budget: 0` every tick until `cb_per_tick` is raised too ([#1512](https://github.com/Replikanti/agentis-colonies/issues/1512)).
 - **Gate behaviour on tiers, not raw thresholds.** Call `tier("<agent_name>")` and compare against the five name strings; never inline `confidence >= 0.X` literals. `colony-lint` enforces this.
 - The four-tier confidence contract in [`doc/adr/ADR-0001-confidence-tiers.md`](./doc/adr/ADR-0001-confidence-tiers.md) is **normative** for every `.ag` scenario:
 
