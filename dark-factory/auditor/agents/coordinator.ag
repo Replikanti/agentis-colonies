@@ -1011,9 +1011,306 @@ fn step_fn(state: string, stepLabel: string) -> string {
          + "@@F@@" + to_string(pj) + "@@F@@" + bool_flag(sj);
 }
 
+// === #1509 (epic #1505 CAPSTONE): the FIXED-ORDER SUBMISSION PASS. ==================================
+// A THIRD coordinator mode, gated on PASS_ENABLED, that drives the shipped submission stages as ONE
+// autonomous pass in a MANDATORY partial order — discover -> scope -> devise -> poc -> impact -> dup ->
+// report -> HALT — threading each stage's single-line verdict into the next and HARD-halting on a blocking
+// gate. This is DELIBERATELY NOT modelled as scored argmax ACTIONS in decide_once (the hunt/verify engine
+// choice above): the submission stages are NOT interchangeable bandit arms — scope MUST precede any DEVISE/
+// PoC spend, impact MUST run after PoC, report is last — so a policy weight must never be able to reorder or
+// skip them. A fixed pipeline with early-exit is the honest model; the argmax loop stays untouched for the
+// engine choice it already governs. The pass NEVER emits a submit and never contacts a platform: its terminal
+// best case is the report-writer's own SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW — permanently human-gated.
+//
+// Offline determinism (the CI path): a PASS_FIXTURE fact (`scope=payable;devise=residual;poc=finding;impact=
+// substantiated;dup=low;report=drafted`) gives each stage its verdict WITHOUT any LLM/network, exactly as
+// DISPATCH_FIXTURE gives the argmax loop offline verdicts. An ABSENT stage key defaults to that stage's
+// PRODUCTIVE token, so a partial fixture short-circuits at the divergent stage (e.g. `scope=out-of-scope-
+// asset` alone halts at scope). The LIVE path exec-shs a per-stage runner (mirroring run_symbolic_live) with
+// an honest-stub fallback: an absent runner -> `incomplete` -> the pass halts, NEVER a false-proceed.
+
+// PASS_FIXTURE lookup — the `stage=verdict` value in the `scope=payable;devise=residual;...` fixture string.
+// Identical shape to the fitness table fit_lookup parses, so we delegate to it. "" when the stage is absent.
+fn fixture_stage_verdict(fixture: string, stage: string) -> string {
+    return fit_lookup(fixture, stage);
+}
+
+// The PRODUCTIVE verdict token for a stage (the one that lets the pass PROCEED). An absent PASS_FIXTURE key
+// defaults to this so a partial fixture only needs to name the stages that DIVERGE from a clean pass.
+fn stage_default(stage: string) -> string {
+    if stage == "scope" { return "payable"; }
+    if stage == "devise" { return "residual"; }
+    if stage == "poc" { return "finding"; }
+    if stage == "impact" { return "substantiated"; }
+    if stage == "dup" { return "low"; }
+    if stage == "report" { return "drafted"; }
+    return "incomplete";
+}
+
+// Is `tok` in the stage's legal verdict set? A non-empty fixture token that is NOT legal is treated as
+// `incomplete` (fail-safe: a malformed fixture cell never proceeds), never silently coerced to productive.
+fn stage_legal(stage: string, tok: string) -> bool {
+    if stage == "scope" {
+        if tok == "payable" { return true; }
+        if tok == "out-of-scope-asset" { return true; }
+        if tok == "excluded-carveout" { return true; }
+        if tok == "ineligible-impact" { return true; }
+        return false;
+    }
+    if stage == "devise" {
+        if tok == "residual" { return true; }
+        if tok == "no-residual" { return true; }
+        return false;
+    }
+    if stage == "poc" {
+        if tok == "finding" { return true; }
+        if tok == "clean" { return true; }
+        if tok == "harness-error" { return true; }
+        return false;
+    }
+    if stage == "impact" {
+        if tok == "substantiated" { return true; }
+        if tok == "simulated-state" { return true; }
+        if tok == "privileged-trigger" { return true; }
+        if tok == "no-provable-claim" { return true; }
+        return false;
+    }
+    if stage == "dup" {
+        if tok == "low" { return true; }
+        if tok == "moderate" { return true; }
+        if tok == "high" { return true; }
+        return false;
+    }
+    if stage == "report" {
+        if tok == "drafted" { return true; }
+        if tok == "failed" { return true; }
+        return false;
+    }
+    return false;
+}
+
+// --- per-stage verdict NORMALIZERS: map each gate's own raw single-line verdict to the pass token, reusing
+// the gate's own token strings (index_of, exactly as the gates classify their own output). Any line that
+// matches none of a stage's tokens (incl. an empty line from an absent/failed runner) -> `incomplete`. -----
+fn scope_class(line: string) -> string {
+    if index_of(line, "SCOPE-GATE|PAYABLE") >= 0 { return "payable"; }
+    if index_of(line, "SCOPE-GATE|OUT-OF-SCOPE-ASSET") >= 0 { return "out-of-scope-asset"; }
+    if index_of(line, "SCOPE-GATE|EXCLUDED-CARVEOUT") >= 0 { return "excluded-carveout"; }
+    if index_of(line, "SCOPE-GATE|INELIGIBLE-IMPACT") >= 0 { return "ineligible-impact"; }
+    return "incomplete";
+}
+fn impact_class(line: string) -> string {
+    if index_of(line, "IMPACT-GATE|SUBSTANTIATED") >= 0 { return "substantiated"; }
+    if index_of(line, "IMPACT-GATE|SIMULATED-STATE") >= 0 { return "simulated-state"; }
+    if index_of(line, "IMPACT-GATE|PRIVILEGED-TRIGGER") >= 0 { return "privileged-trigger"; }
+    if index_of(line, "IMPACT-GATE|NO-PROVABLE-CLAIM") >= 0 { return "no-provable-claim"; }
+    return "incomplete";
+}
+fn poc_class(line: string) -> string {
+    if index_of(line, "|FINDING") >= 0 { return "finding"; }
+    if index_of(line, "|CLEAN") >= 0 { return "clean"; }
+    if index_of(line, "|HARNESS_ERROR") >= 0 { return "harness-error"; }
+    return "incomplete";
+}
+fn dup_class(line: string) -> string {
+    if index_of(line, "DUP-RISK|LOW") >= 0 { return "low"; }
+    if index_of(line, "DUP-RISK|HIGH") >= 0 { return "high"; }
+    if index_of(line, "DUP-RISK|MODERATE") >= 0 { return "moderate"; }
+    return "incomplete";
+}
+fn devise_class(line: string) -> string {
+    if index_of(line, "RESIDUAL|") >= 0 { return "residual"; }
+    if index_of(line, "NO-RESIDUAL") >= 0 { return "no-residual"; }
+    return "incomplete";
+}
+fn report_class(line: string) -> string {
+    if index_of(line, "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW") >= 0 { return "drafted"; }
+    if index_of(line, "SUBMISSION-DRAFT") >= 0 { return "failed"; }
+    return "incomplete";
+}
+fn normalize_class(stage: string, line: string) -> string {
+    if stage == "scope" { return scope_class(line); }
+    if stage == "devise" { return devise_class(line); }
+    if stage == "poc" { return poc_class(line); }
+    if stage == "impact" { return impact_class(line); }
+    if stage == "dup" { return dup_class(line); }
+    if stage == "report" { return report_class(line); }
+    return "incomplete";
+}
+
+// The stage's verdict-line grep prefix (passed to the live runner so it knows which gate to run + parse).
+fn stage_prefix(stage: string) -> string {
+    if stage == "scope" { return "SCOPE-GATE"; }
+    if stage == "impact" { return "IMPACT-GATE"; }
+    if stage == "poc" { return "POC"; }
+    if stage == "dup" { return "DUP-RISK"; }
+    if stage == "devise" { return "RESIDUAL"; }
+    if stage == "report" { return "SUBMISSION-DRAFT"; }
+    return "";
+}
+
+// The LIVE per-stage runner path (its *_RUN env fact). "" when unset -> the honest-stub in run_stage_live.
+fn stage_runner(stage: string) -> string {
+    if stage == "scope" { return getenv("SCOPE_GATE_RUN"); }
+    if stage == "devise" { return getenv("DEVISE_RUN"); }
+    if stage == "poc" { return getenv("POC_RUN"); }
+    if stage == "impact" { return getenv("IMPACT_GATE_RUN"); }
+    if stage == "dup" { return getenv("DUP_RUN"); }
+    if stage == "report" { return getenv("REPORT_RUN"); }
+    return "";
+}
+
+// Run the stage's LIVE runner and normalize its verdict line — mirrors run_symbolic_live's exec-sh muscle.
+// The finding facts + the threaded verdicts are forwarded as shell_escape()d env (the `getenv` sanitized-env
+// invariant: each var must be on exec.env_passthrough). An ABSENT runner is the honest-stub: it prints what
+// wiring the stage needs and returns `incomplete` so the pass HALTS — never a false-proceed. This LIVE path
+// is operator-gated (run-audit-pass.sh wires the runners); the CI/offline path uses PASS_FIXTURE and never
+// reaches here.
+fn run_stage_live(stage: string, runner: string) -> string {
+    if len(runner) == 0 {
+        print("coordinator: PASS stage '" + stage + "' has no live runner (set the stage's *_RUN, or PASS_FIXTURE for the offline path) -> incomplete; the pass HALTS (fail-safe, never a false-proceed).");
+        return "incomplete";
+    }
+    let env = "FINDING_LOCATION=" + shell_escape(getenv("FINDING_LOCATION"))
+            + " FINDING_IMPACT=" + shell_escape(getenv("FINDING_IMPACT"))
+            + " SCOPE_FILE=" + shell_escape(getenv("SCOPE_FILE"))
+            + " TARGET_DIR=" + shell_escape(getenv("TARGET_DIR"))
+            + " IN_SCOPE=" + shell_escape(getenv("IN_SCOPE"))
+            + " AUDIT_DIR=" + shell_escape(getenv("AUDIT_DIR"))
+            + " MECHANISM_NOTES=" + shell_escape(getenv("MECHANISM_NOTES"))
+            + " POC_FILE=" + shell_escape(getenv("POC_FILE"))
+            + " FINDING_FILE=" + shell_escape(getenv("FINDING_FILE"))
+            + " FINDING_ANCHOR=" + shell_escape(getenv("FINDING_ANCHOR"))
+            + " FINDING_TITLE=" + shell_escape(getenv("FINDING_TITLE"))
+            + " SEVERITY_BAND=" + shell_escape(getenv("SEVERITY_BAND"))
+            + " SCOPE_VERDICT=" + shell_escape(getenv("SCOPE_VERDICT"))
+            + " IMPACT_VERDICT=" + shell_escape(getenv("IMPACT_VERDICT"))
+            + " DUP_RISK=" + shell_escape(getenv("DUP_RISK"))
+            + " VERDICT_PREFIX=" + shell_escape(stage_prefix(stage));
+    // colony-lint: safe-exec-concat
+    // #1507 dash-safety: invoke via `bash`, never `sh` — the runners (run-gate-agent.sh, run-poc.sh) are
+    // bash-shebang scripts; explicit `sh <script>` ignores the shebang and runs under dash on CI, which
+    // does not error today (these two scripts avoid `set -o pipefail`) but is the exact anti-pattern #1507
+    // fixed in poc-writer.ag::run_gate() for this same class of live-dispatch call.
+    let out = exec sh "set +e; env " + env + " bash " + shell_escape(runner) + " 2>&1";
+    return normalize_class(stage, out);
+}
+
+// Resolve a stage's verdict: OFFLINE (PASS_FIXTURE set) -> the fixture token validated against the stage's
+// legal set (absent key -> the productive default; malformed cell -> `incomplete`), no LLM. Else the LIVE
+// runner (honest-stub -> `incomplete` when its *_RUN is unset).
+fn stage_verdict(stage: string) -> string {
+    let fixture = getenv("PASS_FIXTURE");
+    if len(fixture) > 0 {
+        let raw = fixture_stage_verdict(fixture, stage);
+        if len(raw) == 0 { return stage_default(stage); }
+        if stage_legal(stage, raw) { return raw; }
+        return "incomplete";
+    }
+    return run_stage_live(stage, stage_runner(stage));
+}
+
+// The HARD gate predicates: require the EXACT productive token. Anything else — a real non-productive verdict
+// OR the stub `incomplete` — fails the gate and halts the pass (fail-safe toward NOT submitting).
+fn scope_proceeds(v: string) -> bool { return v == "payable"; }
+fn impact_proceeds(v: string) -> bool { return v == "substantiated"; }
+
+// One PASS STEP over an `@@F@@`-joined carried accumulator (the same idiom step_fn uses). Fields:
+//   0 halted ("1" once a gate halted -> a no-op thereafter), 1 reason (the pass RESULT once halted, "" while
+//   running), 2 SCOPE_VERDICT, 3 IMPACT_VERDICT, 4 DUP_RISK (threaded forward), 5 trace (rows joined by \n),
+//   6 count (stages executed). A no-op once halted; else resolve the verdict, append a trace row + emit
+//   dark-factory:pass_stage + learn("coordinator-pass", stage, ..., success|failure) so per-stage outcome
+//   still evolves by result, thread the verdict forward, and set halted+reason on a blocking gate:
+//     scope not payable -> BLOCKED-SCOPE ; devise no-residual -> NO-RESIDUAL ; poc not finding -> NO-POC ;
+//     impact not substantiated -> BLOCKED-IMPACT ; a stub `incomplete` on any of them -> INCOMPLETE.
+//   dup HIGH is ADVISORY (threaded into DUP_RISK, never halts — the human decides). report is TERMINAL:
+//   drafted -> PENDING-HUMAN-REVIEW (the human-gate), anything else -> INCOMPLETE.
+fn pass_step(state: string, stage: string) -> string {
+    if state_field(state, 0) == "1" { return state; }
+    let scopeV = state_field(state, 2);
+    let impactV = state_field(state, 3);
+    let dupV = state_field(state, 4);
+    let trace = state_field(state, 5);
+    let count = state_int(state, 6);
+
+    let v = stage_verdict(stage);
+
+    // Trace row + bus emit + learn — every executed stage records an outcome (the pass evolves by result).
+    let row = "stage=" + stage + "\tverdict=" + v;
+    let trace2 = append_line(trace, row);
+    emit("dark-factory:pass_stage", "{\"stage\":\"" + stage + "\",\"verdict\":\"" + v + "\"}");
+
+    // Does this stage let the pass PROCEED? The four hard gates require their productive token; dup always
+    // proceeds (advisory); report proceeds only on a drafted human-gate artifact.
+    let proceeds =
+        if stage == "scope" { scope_proceeds(v) }
+        else { if stage == "devise" { v == "residual" }
+        else { if stage == "poc" { v == "finding" }
+        else { if stage == "impact" { impact_proceeds(v) }
+        else { if stage == "dup" { true }
+        else { if stage == "report" { v == "drafted" }
+        else { false } } } } } };
+
+    let signal = if proceeds { "success" } else { "failure" };
+    learn("coordinator-pass", stage, "pass stage " + stage + " verdict " + v, signal, [stage, signal]);
+
+    let scopeV2 = if stage == "scope" { v } else { scopeV };
+    let impactV2 = if stage == "impact" { v } else { impactV };
+    let dupV2 = if stage == "dup" { v } else { dupV };
+
+    // The gate-specific block reason (a stub `incomplete` on any hard gate -> INCOMPLETE, distinct from a
+    // real non-productive determination so the operator can tell a missing runner from a genuine block).
+    let blockReason =
+        if stage == "scope" { if v == "incomplete" { "INCOMPLETE" } else { "BLOCKED-SCOPE" } }
+        else { if stage == "devise" { if v == "incomplete" { "INCOMPLETE" } else { "NO-RESIDUAL" } }
+        else { if stage == "poc" { if v == "incomplete" { "INCOMPLETE" } else { "NO-POC" } }
+        else { if stage == "impact" { if v == "incomplete" { "INCOMPLETE" } else { "BLOCKED-IMPACT" } }
+        else { "INCOMPLETE" } } } };
+
+    // report is TERMINAL (always halts); dup is ADVISORY (never halts); the hard gates halt iff they did not
+    // proceed.
+    let halted2 =
+        if stage == "report" { "1" }
+        else { if stage == "dup" { "0" }
+        else { if proceeds { "0" } else { "1" } } };
+
+    let reason2 =
+        if stage == "report" { if v == "drafted" { "PENDING-HUMAN-REVIEW" } else { "INCOMPLETE" } }
+        else { if halted2 == "1" { blockReason } else { "" } };
+
+    let count2 = count + 1;
+    return halted2 + "@@F@@" + reason2 + "@@F@@" + scopeV2 + "@@F@@" + impactV2 + "@@F@@" + dupV2
+         + "@@F@@" + trace2 + "@@F@@" + to_string(count2);
+}
+
+// The PASS_ENABLED branch: reduce pass_step over the fixed STAGES order (the coordinator OWNS the order — the
+// STAGES fact defaults to the canonical partial order; a caller may seed it but the gate semantics are
+// name-keyed, never positional). Publish the trace + result to durable memos the bootstrap reads back and
+// print the terminal marker. The result is one of {PENDING-HUMAN-REVIEW, BLOCKED-SCOPE, NO-RESIDUAL, NO-POC,
+// BLOCKED-IMPACT, INCOMPLETE}. NEVER a submit.
+fn submission_pass() -> string {
+    let stages = if len(getenv("STAGES")) > 0 { getenv("STAGES") } else { "scope\ndevise\npoc\nimpact\ndup\nreport" };
+    let init = "0@@F@@@@F@@@@F@@@@F@@@@F@@@@F@@0";
+    let passFinal = reduce(regex_split("\n", stages), |acc: string, st: string| -> string {
+        if len(st) == 0 { return acc; }
+        return pass_step(acc, st);
+    }, init);
+    let reason = state_field(passFinal, 1);
+    let result = if len(reason) == 0 { "INCOMPLETE" } else { reason };
+    let n = state_int(passFinal, 6);
+    memo_write("coordinator:pass_trace", state_field(passFinal, 5));
+    memo_write("coordinator:pass_result", result);
+    print("PASS|" + result + "|stages=" + to_string(n));
+    return result;
+}
+
 // === TOP LEVEL ===
-// GATE: with ORCHESTRATE_ENABLED set, run the whole audit loop in-process; absent, do EXACTLY ONE
-// decide_once() with byte-identical output to v1 (demo-coordinator.sh's regression guard).
+// GATE ORDER: PASS_ENABLED selects the #1509 fixed-order submission pass; absent, the existing two-mode
+// top-level runs BYTE-IDENTICAL (the #1014 ORCHESTRATE_ENABLED reduce loop, or a single decide_once) — the
+// demo-coordinator.sh no-flag regression guard.
+if len(getenv("PASS_ENABLED")) > 0 {
+    let _pass = submission_pass();
+} else {
 if len(getenv("ORCHESTRATE_ENABLED")) > 0 {
     // BOOTSTRAP FACTS (from the bootstrap shell): the same facts the v1 loop seeded, plus a STEPS budget
     // list. The blackboard is re-read fresh inside each step. DRY_CAP defaults to 3 (the shell's default);
@@ -1096,4 +1393,5 @@ if len(getenv("ORCHESTRATE_ENABLED")) > 0 {
     let _chosen = decide_once(getenv("SCOPE"), getenv("CLASS_FITNESS"), getenv("POLICY"), getenv("PENDING"),
                               budget, dryStreak, dryCap, getenv("PREV_ACTION"), getenv("PREV_KEY"),
                               getenv("LAST_OUTCOME"), board, len(getenv("DISPATCH_ENABLED")) > 0);
+}
 }
