@@ -142,6 +142,17 @@ else
   bad "run-poc.sh missing the additive POC|<target>|<verdict> line or the arrow-form banner regressed"
 fi
 
+# #1540: on a FINDING, run-poc.sh best-effort re-invokes the gate against the warm rundir to capture durable
+# run-evidence (poc-run.txt) and surfaces the runnable-PoC path + run-log on its OWN stdout (POC-FILE|/POC-RUN|),
+# additive to the POC|<target>|<verdict> line — the coordinator hand-off / deliver-submission --poc-run source.
+if grep -q 'POC_RUN_TXT="$OUT/poc-run.txt"' "$RUNNER" \
+   && grep -q 'bash "$GATE_IN_RUN" --repo "$REPO_IN_RUN" --target "$POC_OUT" --match "$MATCH" >"$POC_RUN_TXT" 2>&1 || true' "$RUNNER" \
+   && grep -q 'echo "POC-FILE|$POC_OUT"' "$RUNNER" && grep -q 'echo "POC-RUN|$POC_RUN_TXT"' "$RUNNER"; then
+  ok "run-poc.sh captures poc-run.txt on a FINDING + emits the additive POC-FILE|/POC-RUN| stdout lines (#1540)"
+else
+  bad "run-poc.sh missing the #1540 run-evidence capture / POC-FILE|/POC-RUN| stdout wiring"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # 2) CI-SAFE MECHANICAL — detect-toolchain + the --classify verdict-parse + the linkage-reject (no toolchain).
 # ----------------------------------------------------------------------------------------------------------
