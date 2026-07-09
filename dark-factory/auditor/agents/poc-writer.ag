@@ -273,7 +273,7 @@ fn write_test(src: string, out: string) -> string {
 // EXACT invocation every attempt.
 fn run_gate(gateSh: string, repo: string, out: string, matchPrefix: string, extraArgs: string) -> string {
     // colony-lint: safe-exec-concat
-    return exec sh "set +e; sh " + shell_escape(gateSh) + " --repo " + shell_escape(repo) + " --target " + shell_escape(out) + " --match " + shell_escape(matchPrefix) + extraArgs + " 2>&1; echo __rc=$?";
+    return exec sh "set +e; bash " + shell_escape(gateSh) + " --repo " + shell_escape(repo) + " --target " + shell_escape(out) + " --match " + shell_escape(matchPrefix) + extraArgs + " 2>&1; echo __rc=$?";
 }
 
 // --- BOUNDED COMPILE-REPAIR LOOP (#1073 shape, simplified) ---------------------------------------

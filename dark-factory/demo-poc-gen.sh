@@ -139,7 +139,7 @@ fi
 note "exercising the CI-safe mechanical paths (no toolchain) ..."
 
 # detect-toolchain over the hardhat fixture -> "hardhat" (no `|| true` — we assert the exit code too).
-dt_hh="$(sh "$DETECT" "$FIX" 2>/dev/null)"; dt_hh_rc=$?
+dt_hh="$(bash "$DETECT" "$FIX" 2>/dev/null)"; dt_hh_rc=$?
 if [ "$dt_hh" = "hardhat" ] && [ "$dt_hh_rc" -eq 0 ]; then
   ok "detect-toolchain over the hardhat fixture -> hardhat (rc 0)"
 else
@@ -147,7 +147,7 @@ else
 fi
 # detect-toolchain over a throwaway foundry.toml -> "foundry".
 FT="$(mktemp -d)"; printf '[profile.default]\nsrc = "src"\n' > "$FT/foundry.toml"
-dt_fg="$(sh "$DETECT" "$FT" 2>/dev/null)"; dt_fg_rc=$?
+dt_fg="$(bash "$DETECT" "$FT" 2>/dev/null)"; dt_fg_rc=$?
 rm -rf "$FT"
 if [ "$dt_fg" = "foundry" ] && [ "$dt_fg_rc" -eq 0 ]; then
   ok "detect-toolchain over a throwaway foundry.toml -> foundry (rc 0)"
@@ -156,7 +156,7 @@ else
 fi
 # detect-toolchain over an empty dir -> "unknown" (rc 3).
 ED="$(mktemp -d)"
-dt_un="$(sh "$DETECT" "$ED" 2>/dev/null)"; dt_un_rc=$?
+dt_un="$(bash "$DETECT" "$ED" 2>/dev/null)"; dt_un_rc=$?
 rm -rf "$ED"
 if [ "$dt_un" = "unknown" ] && [ "$dt_un_rc" -eq 3 ]; then
   ok "detect-toolchain over an empty dir -> unknown (rc 3)"
@@ -165,9 +165,9 @@ else
 fi
 
 # hardhat-poc.sh --classify over the three captured mocha reporter JSONs -> the INVERTED-polarity verdict codes.
-sh "$HH_GATE" --classify "$FIX/reports/pass.json"  >/dev/null 2>&1; cls_pass=$?
-sh "$HH_GATE" --classify "$FIX/reports/fail.json"  >/dev/null 2>&1; cls_fail=$?
-sh "$HH_GATE" --classify "$FIX/reports/empty.json" >/dev/null 2>&1; cls_empty=$?
+bash "$HH_GATE" --classify "$FIX/reports/pass.json"  >/dev/null 2>&1; cls_pass=$?
+bash "$HH_GATE" --classify "$FIX/reports/fail.json"  >/dev/null 2>&1; cls_fail=$?
+bash "$HH_GATE" --classify "$FIX/reports/empty.json" >/dev/null 2>&1; cls_empty=$?
 if [ "$cls_pass" -eq 1 ]; then ok "hardhat-poc.sh --classify pass.json -> FINDING (exit 1) — a PASSING PoC is the finding"; else bad "classify pass.json should be exit 1 (FINDING), got $cls_pass"; fi
 if [ "$cls_fail" -eq 0 ]; then ok "hardhat-poc.sh --classify fail.json -> CLEAN (exit 0) — a FAILING PoC is refuted"; else bad "classify fail.json should be exit 0 (CLEAN), got $cls_fail"; fi
 if [ "$cls_empty" -eq 2 ]; then ok "hardhat-poc.sh --classify empty.json -> HARNESS_ERROR (exit 2) — no test ran"; else bad "classify empty.json should be exit 2 (HARNESS_ERROR), got $cls_empty"; fi
@@ -176,7 +176,7 @@ if [ "$cls_empty" -eq 2 ]; then ok "hardhat-poc.sh --classify empty.json -> HARN
 # and NO npm install pollutes the tree (the reject exits at linkage with rc 2). This is the CI-safe anti-
 # fabrication assertion; the genuinely-linked POSITIVE case is exercised by the LIVE hardhat e2e in part 3 (which
 # is toolchain-gated), so we deliberately do NOT run the linked gate here — it would trigger an npm install.
-sub_out="$(sh "$HH_GATE" --repo "$FIX" --target test/substituted.poc.test.js \
+sub_out="$(bash "$HH_GATE" --repo "$FIX" --target test/substituted.poc.test.js \
             --require-import contracts/Vuln.sol --require-contract Vuln 2>&1)"; sub_rc=$?
 if [ "$sub_rc" -eq 2 ] && printf '%s' "$sub_out" | grep -q '#1471 target-linkage'; then
   ok "substituted PoC (drives a non-target) -> HARNESS_ERROR (2) + #1471 reason, BEFORE any node/npm spend"
@@ -200,7 +200,7 @@ elif [ ! -d "$FIX/node_modules" ]; then
   skip "hardhat deps not installed (run 'npm install --legacy-peer-deps' in evm-harness/hardhat-poc-fixture/) — CI boundary: the live hardhat e2e needs the toolchain"
 else
   HH_OUT="$(mktemp -d)"
-  hh_run="$(sh "$RUNNER" --repo "$FIX" --target "contracts/Vuln.sol:Vuln" --class "C-reentrancy" \
+  hh_run="$(bash "$RUNNER" --repo "$FIX" --target "contracts/Vuln.sol:Vuln" --class "C-reentrancy" \
              --poc-fixture "$FIX/test/exploit.poc.test.js" --code "$FIX/contracts/Vuln.sol" \
              --backend mock --out "$HH_OUT" 2>&1)"; hh_rc=$?
   if printf '%s' "$hh_run" | grep -q 'POC: contracts/Vuln.sol:Vuln -> FINDING'; then
@@ -240,7 +240,7 @@ contract PocBank {
   }
 }
 SOL
-  fg_find="$(sh "$FG_GATE" --repo "$WORK" --target test/Poc_Bank.t.sol --require-import src/Bank.sol --require-contract Bank 2>&1)"; fg_find_rc=$?
+  fg_find="$(bash "$FG_GATE" --repo "$WORK" --target test/Poc_Bank.t.sol --require-import src/Bank.sol --require-contract Bank 2>&1)"; fg_find_rc=$?
   if [ "$fg_find_rc" -eq 1 ]; then ok "forge-poc.sh: a passing exploit PoC -> FINDING (exit 1)"; else bad "forge-poc.sh passing PoC should be FINDING (1), got $fg_find_rc"; printf '%s\n' "$fg_find" | sed 's/^/        | /' | tail -4; fi
   # (b) a PoC that FAILS -> CLEAN.
   cat > "$WORK/test/Poc_Bank.t.sol" <<'SOL'
@@ -255,7 +255,7 @@ contract PocBank {
   }
 }
 SOL
-  fg_clean="$(sh "$FG_GATE" --repo "$WORK" --target test/Poc_Bank.t.sol --require-import src/Bank.sol --require-contract Bank 2>&1)"; fg_clean_rc=$?
+  fg_clean="$(bash "$FG_GATE" --repo "$WORK" --target test/Poc_Bank.t.sol --require-import src/Bank.sol --require-contract Bank 2>&1)"; fg_clean_rc=$?
   if [ "$fg_clean_rc" -eq 0 ]; then ok "forge-poc.sh: a failing exploit PoC -> CLEAN (exit 0)"; else bad "forge-poc.sh failing PoC should be CLEAN (0), got $fg_clean_rc"; printf '%s\n' "$fg_clean" | sed 's/^/        | /' | tail -4; fi
   # (c) a substituted toy of the same name -> #1471 linkage reject.
   cat > "$WORK/test/Poc_Toy.t.sol" <<'SOL'
@@ -264,7 +264,7 @@ pragma solidity ^0.8.20;
 contract Bank { function bal(address) external pure returns (uint) { return 0; } }
 contract PocToy { function test_x() external pure { require(true, "x"); } }
 SOL
-  fg_lnk="$(sh "$FG_GATE" --repo "$WORK" --target test/Poc_Toy.t.sol --require-import src/Bank.sol --require-contract Bank 2>&1)"; fg_lnk_rc=$?
+  fg_lnk="$(bash "$FG_GATE" --repo "$WORK" --target test/Poc_Toy.t.sol --require-import src/Bank.sol --require-contract Bank 2>&1)"; fg_lnk_rc=$?
   if [ "$fg_lnk_rc" -eq 2 ] && printf '%s' "$fg_lnk" | grep -q '#1471 target-linkage'; then
     ok "forge-poc.sh: a substituted same-named toy -> HARNESS_ERROR (2) + #1471 reason"
   else

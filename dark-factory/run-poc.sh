@@ -82,7 +82,7 @@ REPO="$(cd "$REPO" && pwd)"
 
 # Choose the toolchain: an explicit --kind wins; otherwise detect-toolchain.sh over --repo.
 if [ -z "$KIND" ]; then
-  KIND="$(sh "$DETECT" "$REPO" 2>/dev/null || true)"
+  KIND="$(bash "$DETECT" "$REPO" 2>/dev/null || true)"
 fi
 case "$KIND" in
   hardhat) GATE="$HERE/evm-harness/hardhat-poc.sh" ;;
