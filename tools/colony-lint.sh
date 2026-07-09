@@ -887,6 +887,21 @@ if [ -x "$REPO_ROOT/dark-factory/demo-impact-gate.sh" ]; then
     fi
 fi
 
+# --- dark-factory submission report formatter (#1508) ---
+# report-writer.ag renders a confirmed finding + its PoC + the scope-gate/impact-gate/dup-scout verdicts into
+# an Immunefi-shaped 4-section submission draft (Brief/Intro, Vulnerability Details, Impact Details,
+# References) — the last human-gated artifact before submit. It never submits. demo-report-writer.sh
+# source-guards the wiring (CI-safe) + runs the agent live over a fixture finding+PoC when agentis is present.
+if [ -x "$REPO_ROOT/dark-factory/demo-report-writer.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-report-writer.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: submission report formatter (report-writer.ag) (#1508)"
+    else
+        fail "dark-factory: submission report formatter regressed (#1508)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory capability bench — deterministic safety stage (#1490) ---
 # run-capability-bench.sh measures whether the discover->devise->attack->novelty pipeline surfaces an
 # audit-SURVIVING bug and never re-surfaces a known one, scored against a fixture's ground truth. Its
