@@ -2684,7 +2684,7 @@ if [ "$RC31B" -eq 0 ] \
     && ! grep -q "Continue implementing this issue" "$CMD_CAP31" 2>/dev/null; then
     pass "run 31 (finding 1): --one-attempt --reuse WITHOUT --continuation uses the fresh scoped subtask template (no continuation preamble)"
 else
-    fail "run 31 (finding 1): reuse-without-continuation prompt shape" "rc=$RC31B cap=[$(cat "$CMD_CAP31" 2>/dev/null | head -c 300)]"
+    fail "run 31 (finding 1): reuse-without-continuation prompt shape" "rc=$RC31B cap=[$(head -c 300 "$CMD_CAP31" 2>/dev/null)]"
 fi
 
 echo ""
