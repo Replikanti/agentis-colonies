@@ -19,6 +19,9 @@ cb 300000;
 //   AUDIT_URLS   comma-separated audit URLs to fetch when AUDIT_DIR is empty (fetch-audits.sh is called)
 //   FETCH_AUDITS path to fetch-audits.sh (default: sibling ../../fetch-audits.sh; the ingest muscle)
 //   SCOPE_BRIEF  path to the invariants + trust-model brief (optional; "" -> code-only reasoning)
+//   REVIEWER_FEEDBACK  #1567: a prior submission's rejection reason on THIS target — when set, the devise is
+//                asked to hunt a residual AROUND that failure mode (guarded; empty -> byte-identical prompt).
+//                PROMPT-ONLY: it flows solely into prompt() below, NEVER onto an exec sh line.
 // Stdout: first every known finding as a `BOUNDARY|<known finding summary>` line (the exclusion set that
 //   novelty-gate later rejects restatements against), then every residual lead as
 //   `RESIDUAL|<subsystem>|<class>|<why the audits missed or downgraded it>|<concrete attack sketch>`,
@@ -90,6 +93,13 @@ let audits = audit_corpus(getenv("AUDIT_DIR"), fetch, getenv("AUDIT_URLS"));
 let brief = cat_file(getenv("SCOPE_BRIEF"));
 let code = scoped_code(dir, files);
 
+// #1567 feedback-informed DEVISE. When a prior submission on THIS target was rejected, the reviewer's reason is
+// threaded in via REVIEWER_FEEDBACK so the devise aims a residual AROUND the failure mode rather than re-deriving
+// the rejected finding. GUARDED: empty feedback -> feedbackClause is "" and the instruction concat is
+// byte-identical to the pre-#1567 prompt. SAFE: `feedback` flows ONLY into prompt(instruction, code) below.
+let feedback = getenv("REVIEWER_FEEDBACK");
+let feedbackClause = if len(feedback) == 0 { "" } else { "\n\n=== PRIOR SUBMISSION REJECTED — reviewer feedback (devise AROUND this) ===\n" + "A prior submission on THIS target was REJECTED by the platform. Reason: " + feedback + "\n" + "Devise a residual that AVOIDS that failure mode / addresses the gap the reviewer identified; do NOT re-surface the same rejected finding.\n" };
+
 // The DEVISE instruction: the audits carry what the prior auditors ALREADY found (and where they
 // DOWNGRADED / disputed a finding); the residual is everything they did NOT cover. The model must first
 // restate the known findings as the BOUNDARY (so the exclusion set is explicit and novelty-gate can reject
@@ -103,6 +113,7 @@ let instruction =
   + "that may be wrong. On an audited target this is the whole game: a bug already written in these audits "
   + "is KNOWN and pays NOTHING; only what N professional auditors MISSED is rewardable. Do NOT re-derive a "
   + "known finding — map it, then hunt the gaps around it.\n\n"
+  + feedbackClause
   + "=== THE TARGET'S PRIOR AUDITS (what is already KNOWN — the exclusion boundary) ===\n" + audits + "\n\n"
   + "=== PROTOCOL BRIEF (invariants + trust model; may be empty) ===\n" + brief + "\n\n"
   + "=== HOW TO ANSWER ===\n"

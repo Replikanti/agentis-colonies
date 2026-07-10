@@ -26,6 +26,7 @@
 #   GATE_AGENT, VERDICT_PREFIX, VERDICT_NEGATIVE   fallbacks for the flag inputs
 #   FINDING_LOCATION FINDING_IMPACT SCOPE_FILE TARGET_DIR IN_SCOPE AUDIT_DIR MECHANISM_NOTES POC_FILE
 #   FINDING_FILE FINDING_ANCHOR FINDING_TITLE SEVERITY_BAND SCOPE_VERDICT IMPACT_VERDICT DUP_RISK
+#   REVIEWER_FEEDBACK   #1567: a prior submission's rejection reason, read by audit-scout.ag (devise) only
 #
 # Exit: 0 when a verdict line was printed (or the run completed); 2 usage; 3 missing prerequisite.
 set -eu
@@ -100,7 +101,7 @@ cp "$AGENT" "$RUN/$(basename "$AGENT")"
   echo "llm.backend = $BACKEND"
   echo "trace.level = normal"
   # The gates read the finding facts + threaded verdicts via getenv; each must be on the passthrough allowlist.
-  echo "exec.env_passthrough = FINDING_LOCATION,FINDING_IMPACT,SCOPE_FILE,TARGET_DIR,IN_SCOPE,AUDIT_DIR,MECHANISM_NOTES,POC_FILE,FINDING_FILE,FINDING_ANCHOR,FINDING_TITLE,SEVERITY_BAND,SCOPE_VERDICT,IMPACT_VERDICT,DUP_RISK,DUP_RISK_LINE"
+  echo "exec.env_passthrough = FINDING_LOCATION,FINDING_IMPACT,SCOPE_FILE,TARGET_DIR,IN_SCOPE,AUDIT_DIR,MECHANISM_NOTES,POC_FILE,FINDING_FILE,FINDING_ANCHOR,FINDING_TITLE,SEVERITY_BAND,SCOPE_VERDICT,IMPACT_VERDICT,DUP_RISK,DUP_RISK_LINE,REVIEWER_FEEDBACK"
   echo "exec.default_timeout_ms = 600000"
   echo "learning.enabled = true"
   echo "experience.enabled = true"

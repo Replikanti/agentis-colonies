@@ -15,6 +15,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Feedback-informed re-hunt + router greenlight AUTO-INVOKE** (#1567, closing the #1562 seam, epic #1505).
+  Two threaded halves, each riding an existing path. **(1) Feedback-informed DEVISE.** `run-audit-pass.sh` gains
+  `--reviewer-feedback <text>` / `--reviewer-feedback-file <path>` (inline wins; a set-but-unreadable file →
+  `exit 3`), surfaced as a `REVIEWER_FEEDBACK` env var that threads through the coordinator SUBMISSION PASS's
+  per-stage passthrough (`run_stage_live` → `run-gate-agent.sh`) into `audit-scout.ag`'s DEVISE prompt — the model
+  is asked to hunt a residual **around** the rejection reason instead of re-surfacing the rejected finding.
+  **Guarded + byte-identical when empty** (`if len(feedback) == 0 { "" }`), and **prompt-only**: the feedback flows
+  solely into `prompt()`, is `shell_escape()`d at the coordinator hop, and never reaches an `exec sh` command line.
+  **(2) Router greenlight auto-invoke.** `ingest-slack-outcome.sh` gains a `--target-dir <dir>` flag and, on an
+  operator `go`, resolves a target dir (the override, else a manifest `local_repo`/`target_dir`); when it resolves
+  AND `run-audit-pass.sh` (`DARK_FACTORY_RUN_AUDIT_PASS`-overridable) + `setsid` are present, it **AUTO-INVOKES** the
+  feedback-informed re-hunt **detached** (the `code-edit-job.sh` setsid convention, `--reviewer-feedback` + the
+  finding facts) and posts `re-hunt launched (pid …)`; otherwise the **unchanged** `RE-HUNT.md` command HAND-OFF.
+  **Never submits** (the re-hunt's terminal best case is a `PENDING-HUMAN-REVIEW` draft; no bounty-platform egress)
+  and **idempotent** (the `.route-greenlit` gate prevents a double-launch on `--all` cron sweeps). The feedback
+  rides the #1535 honest-stub live-dispatch path — fully wired when the DEVISE runner + a backend are present, and
+  never falsely proceeds when a stage stubs. `demo-feedback-loop.sh` gains sub-parts 9i-9n (per-hop env threading +
+  the guarded/prompt-only DEVISE, auto-invoke vs hand-off, idempotency, never-submit, router source guards).
 - **Outcome → action ROUTER in `ingest-slack-outcome.sh`** (#1562, epic #1505). Once an outcome is CLASSIFIED
   (the #1561 `FEEDBACK|<disp>|<conf>|<stage>|<SIGNAL>|<root_cause>|…` line), a **deterministic** bash `case`
   (`route_actions`, never an LLM, no new `.ag`) turns `disposition + root_cause` into the next action(s). CHEAP
