@@ -104,6 +104,25 @@ is asserted until multi-version CI is in place.
   [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
   mechanical-rewrite phase; slices 4-5 (CSV helpers, native-twin ports) land
   as separate follow-up PRs.
+- **Substrate purity Phase 0, slice 5 — `open_pr_field`/`pr_check_token`
+  `python3 -c` sites replaced with their existing native twins**
+  ([#1588](https://github.com/Replikanti/agentis-colonies/issues/1588)): the
+  2 remaining embedded-python sites in `code-review/approval_decider.ag` —
+  `open_pr_field` (scalar `[idx].<field>` read off the open-PR list JSON) and
+  `pr_check_token` (`KEY=<value>` token read off a `STATUS=<x> REF=<y>`
+  status line) — were pure copy-paste of helpers `implementation/code_writer`
+  had already natively ported under
+  [#1358](https://github.com/Replikanti/agentis-colonies/issues/1358)
+  (`open_pr_field` = `to_string(json_get(raw, "[" + to_string(idx) + "]." +
+  field))` collapsing `"void"` to `""`; `pr_check_token` = an
+  `index_of`/`substring` token scan). This slice ports both bodies verbatim
+  from `code_writer.ag` (verified byte-identical via `md5sum` of the
+  extracted function bodies) rather than re-deriving them, so there is zero
+  new logic — just deleting the last duplicate python path in this agent.
+  The [#1484](https://github.com/Replikanti/agentis-colonies/issues/1484)
+  review-gate code (`note_verdict` and friends) is untouched. Part of the
+  [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
+  mechanical-rewrite phase; this is the last slice of the #1588 inventory.
 
 ### Fixed
 
