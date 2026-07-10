@@ -164,7 +164,8 @@ multi-agent audit pass.
 The operator supplies three inputs and the colony fans out one substrate agent per cell:
 
 - `--repo <dir>` — the cloned target (use `fetch-target.sh`).
-- `--scope <scope.tsv>` — `subsystem | classid,… | file,…` per line (files relative to the repo). A
+- `--scope <scope.tsv>` — `subsystem | classid,… | file,…` per line (files relative to the repo). Write it
+  by hand, or **auto-generate it** with [`map-zones.sh`](#auto-derive-the-scope-manifest-map-zonessh) below. A
   file may be written `file@fn1+fn2` to feed the hunter **only those functions** (+ the contract header)
   — slice big/complex contracts this way so a deep liquidation/redemption read fits the LLM budget.
 - `--brief <brief.md>` — the protocol's invariants-to-break, **known issues to exclude**, and trust model.
@@ -208,6 +209,27 @@ step, see [`run-symbolic.sh`](#generate-and-verify-a-candidate-run-symbolicsh) b
 
 A clean sweep (no candidate survives) is a **rigorous negative** — a valid outcome on audited code;
 nothing is submitted. As with `run-audit.sh`, the colony never posts to a platform.
+
+### Auto-derive the scope manifest (`map-zones.sh`)
+
+Writing `scope.tsv` by hand means reading the repo, grouping contracts into subsystems, and guessing which
+bug classes apply. [`map-zones.sh`](./map-zones.sh) (#1612, epic #1611 M1) automates that first pass:
+shell plumbing locates in-scope Solidity/Anchor sources, groups them into **zones** by directory, counts
+LOC, computes an advisory `hardening_score` (post-audit churn + git file age — **never a gate**), and
+function-slices big contracts; the substrate agent [`auditor/agents/zone-mapper.ag`](./auditor/agents/zone-mapper.ag)
+does the ONE semantic step — subsystem name × applicable bug classes × description — once per zone.
+
+```bash
+dark-factory/map-zones.sh --repo "$PWD/target" --out "$PWD/zonemap" --since <audit-ref>
+# emits zonemap/zones.json (structured model) + zonemap/scope.tsv (pipe-delimited, run-discovery-ready)
+dark-factory/run-discovery.sh --repo "$PWD/target" --scope "$PWD/zonemap/scope.tsv" --list-cells
+# DRY RUN: prints one CELL|<subsystem>|<class>|<files> per cell it WOULD hunt (no --brief, no agentis needed)
+```
+
+`scope.tsv` is the **identical, operator-editable** manifest `run-discovery.sh --scope` reads today — M1 is
+a starting point, not an authority; fix a mis-clustered zone in one line. `map-zones.sh` is read-only and
+never submits. Offline/CI determinism comes from `--fixture` (canned classification, no live LLM). Model,
+schema, and the M1..M5 map: [`docs/zone-split-orchestration.md`](./docs/zone-split-orchestration.md).
 
 ### Inter-agent coordination (shared blackboard, #1001)
 
@@ -791,7 +813,8 @@ dark-factory/
   README.md                     # this file
   VERSION  CHANGELOG.md  BUNDLE.manifest  install.sh
   run-audit.sh                  # operator entrypoint: DAG fork-matcher audit -> human-gated package
-  run-discovery.sh              # operator entrypoint: custom-code discovery (hunter fan-out) -> leads
+  run-discovery.sh              # operator entrypoint: custom-code discovery (hunter fan-out) -> leads; --list-cells (-n) DRY-RUNs the (subsystem x class) cells a scope.tsv would hunt (no --brief/agentis; hunt path byte-identical) (#1612)
+  map-zones.sh                  # auto-derive the discovery manifest (#1612, epic #1611 M1): locate/group in-scope sources into ZONES, LOC + advisory hardening_score (audit-delta churn + git age, never a gate), function-slice big contracts, and delegate subsystem x bug-class classification to zone-mapper.ag -> zones.json + scope.tsv (run-discovery --scope reads it verbatim); --fixture stubs the substrate offline; read-only, never submits
   screen-leads.sh               # cheap substrate-native lead pre-screen (eval_ag) before forge-verify
   run-summary.sh                # one-shot run -> monitor-/dashboard-consumable run-summary.json (#995)
   run-refute.sh                 # operator entrypoint: adversarial refutation (refuter fan-out) -> verdicts
@@ -840,6 +863,7 @@ dark-factory/
   demo-immunefi-intake.sh       # offline, deterministic proof of #1506 BOTH primitives: audit-delta over a throwaway git fixture (DELTA/NO-DELTA/--paths/bad-repo+since exit3), run-immunefi-intake over an operator-programs fixture (paused dropped, delta-boost > NO-DELTA-big-reward > bounty-only, file==stdout), exit 0
   demo-immunefi-live.sh         # offline, deterministic proof of the #1592 --live discovery mode: a canned bounties.json fixture via --bounties -> EVM/Solidity survives, Solana/Rust+Move+inviteOnly+past-endDate+below-floor dropped, kyc:true surfaced (kyc:yes) but not filtered, survivors ranked by discovery-bonus score DESC as a 5-column TSV (file==stdout), and an unreachable --live -> [SKIP]+exit 0 with the queue untouched; no network, exit 0
   demo-audit-history-probe.sh   # offline, deterministic proof of #1609: a `git init` hardened fixture (fix-audit-N commits/branch, Cantina/Sherlock finding refs) -> heavily_audited=true above the density threshold; a clean fixture -> heavily_audited=false with 0 density; --bounty with no resolvable repo, an unreachable URL, and a single-segment github ORG url each -> [SKIP]+exit 0 with no stdout JSON; missing args -> exit 2; no network, exit 0
+  demo-map-zones.sh             # offline, deterministic proof of #1612 zone-mapping (epic #1611 M1): over a throwaway git fixture (audited baseline + post-audit churn), map-zones.sh --since + --fixture -> zones.json (7 keys) + scope.tsv (pipe-delimited, oversized contract sliced, no |/newline/backtick), run-discovery --list-cells ROUND-TRIP matches the manifest, hardening_score monotone + never a gate, no network/submit; source-guards zone-mapper.ag + runs it live via --backend mock when agentis is present
   demo-owner-assert.sh          # proof of the #1457 snapshot owner-rebind hard assert: harness reads the real on-chain owner + emits OWNER REBIND/MATCH/MISMATCH; EXPECT_PROGRAM_OWNER mismatch -> INCONCLUSIVE (exit 3) before the exploit; source-guard (CI-safe) + live 3-mode run when the toolchain is present
   demo-audit-pass.sh            # offline, deterministic proof of the #1509 coordinator submission pass: scope -> devise -> poc -> impact -> dup -> report -> HALT with hard early-exit gates and a human-gated halt
   demo-scope-gate.sh            # offline proof of the #1511 scope + eligibility gate scope-gate.ag (in-scope asset + eligible impact -> PAYABLE; carve-out/out-of-scope -> BLOCKED)
