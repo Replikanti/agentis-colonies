@@ -123,6 +123,40 @@ is asserted until multi-version CI is in place.
   review-gate code (`note_verdict` and friends) is untouched. Part of the
   [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
   mechanical-rewrite phase; this is the last slice of the #1588 inventory.
+- **Substrate purity Phase 0, slice 4 — CSV-helper `python3 -c` sites
+  replaced with native `regex_split`/`filter`/`reduce`/`trim`/`nth_field`**
+  ([#1588](https://github.com/Replikanti/agentis-colonies/issues/1588)): all
+  8 CSV-helper `exec sh` sites across the 3 triage agents
+  (`router`/`labeler`/`prioritizer`) now call native builtins directly. The
+  dedup+append trio (`append_verdict_index`/`append_autonomous_index` —
+  append an iid to a per-repo CSV index without duplicating it) and the
+  position trio (`eval_route_verdicts_at`/`eval_priority_verdicts_at`/
+  `eval_autonomous_at`'s p-th non-empty CSV token read) each gain a shared
+  per-agent helper (`dedup_append_csv`, `nth_nonempty_csv`) built from
+  `regex_split(",", s)` + `filter` + `trim` + `reduce`. `router`'s
+  `normalize_assignee` becomes `strip_leading_at(trim(name))` — a small
+  recursive walker mirroring `.lstrip("@")`'s "strip ALL leading `@`s"
+  semantics (no `strip_prefix`/`trim_start_matches` builtin exists).
+  `prioritizer`'s `normalize_priority_label` becomes
+  `trim(nth_field(s, ",", 0))` (first comma-token, trimmed; `nth_field`
+  already landed per-agent in slice 2). Zero semantic change, verified
+  case-by-case against the python originals: `regex_split` on a literal
+  `,` produces the same empty-string tokens on leading/trailing/consecutive
+  commas as python's `str.split(",")`; the dedup filter compares `trim(p)`
+  against the target but keeps the ORIGINAL untrimmed token in the kept
+  list, matching the python comprehension's `if p.strip() ...` filter /
+  `p` (not `p.strip()`) output exactly. Explicitly OUT of scope (Phase
+  3-blocked on the upstream `sort_strings` builtin, sitting adjacent in the
+  same files): `normalize_labels_csv` and the `canonical_*_context` trio —
+  untouched. `tools/test-labeler-autonomous-verdict.sh`'s catch-branch
+  peer-preservation assertion is updated to check for the native
+  `dedup_append_csv(existing, iid_str)` call instead of a python-subprocess
+  catch fallback — the new helper is a total, pure function with no
+  subprocess failure mode left to fall back from, so peer-preservation now
+  holds by construction. Part of the
+  [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
+  mechanical-rewrite phase; slice 5 (native-twin ports) lands as a separate
+  follow-up PR.
 
 ### Fixed
 
