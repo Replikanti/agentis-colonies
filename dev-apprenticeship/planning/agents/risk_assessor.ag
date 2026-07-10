@@ -81,7 +81,7 @@ fn repo_field(line: string, idx: int) -> string {
 // (handled upstream); this helper only governs the colony-side forge calls.
 
 fn rl_now_epoch() -> int {
-    let raw = try { exec sh "date -u +%s"; } catch e { ""; };
+    let raw = to_string(now_ms() / 1000);
     if len(raw) == 0 { return 0; };
     return parse_int(raw);
 }
@@ -191,7 +191,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     // never be read. Skip the observe prompt unless the last successful
     // observe was >= OBSERVE_MIN_INTERVAL_SEC ago. 1 800 s (30 min) keeps
     // the library fresh without the heartbeat-LLM pathology.
-    let now_epoch = try { exec sh "date -u +%s"; } catch e { ""; };
+    let now_epoch = to_string(now_ms() / 1000);
     let last_obs = recall_latest(scoped_memo(owner, repo, "risk_assessor:observe_last_ts"));
     let observe_stale = if len(last_obs) > 0 {
         if len(now_epoch) > 0 {
@@ -452,7 +452,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         };
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write(scoped_memo(owner, repo, "risk_assessor:last_check"), now);
     };

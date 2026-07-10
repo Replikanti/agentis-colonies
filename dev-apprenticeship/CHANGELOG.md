@@ -39,6 +39,23 @@ is asserted until multi-version CI is in place.
   the epic; the remaining agents and a `check-reality-check.sh` guard-rail lint
   are follow-ups.
 
+### Changed
+
+- **Substrate purity Phase 0, slice 1 — `date` shell escapes replaced with
+  native builtins**
+  ([#1588](https://github.com/Replikanti/agentis-colonies/issues/1588)): all
+  86 `try { exec sh "date ..."; } catch e { ... };` sites across all 22
+  agents now call the native runtime directly — the 53
+  `date -u +%Y-%m-%dT%H:%M:%SZ` timestamp sites become `now_iso()` (confirmed
+  byte-format-identical), and the 33 `date +%s` / `date -u +%s` epoch-seconds
+  sites become `to_string(now_ms() / 1000)` (`Int / Int` truncating division
+  matches `date`'s integer-seconds output). Zero semantic change: same
+  values, same memo keys, same `learn()` calls — purely removes a
+  subprocess round-trip per timestamp read. Part of the
+  [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
+  mechanical-rewrite phase; slices 2-5 (TSV/nth-line, sha256, CSV helpers,
+  native-twin ports) land as separate follow-up PRs.
+
 ### Fixed
 
 - **Invalid `"fail"` `learn()` outcome literal purged federation-wide**

@@ -119,7 +119,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     // for rationale. 1 800 s = 30 min between observe prompts keeps
     // the decomposition-pattern library fresh without a heartbeat-LLM
     // pathology on idle projects where the act branch rarely fires.
-    let now_epoch = try { exec sh "date -u +%s"; } catch e { ""; };
+    let now_epoch = to_string(now_ms() / 1000);
     let last_obs = recall_latest(scoped_memo(owner, repo, "task_decomposer:observe_last_ts"));
     let observe_stale = if len(last_obs) > 0 {
         if len(now_epoch) > 0 {
@@ -357,7 +357,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         };
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write(scoped_memo(owner, repo, "task_decomposer:last_check"), now);
     };

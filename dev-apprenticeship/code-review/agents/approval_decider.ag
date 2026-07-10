@@ -85,7 +85,7 @@ fn repo_field(line: string, idx: int) -> string {
 // this helper only governs the colony-side forge calls.
 
 fn rl_now_epoch() -> int {
-    let raw = try { exec sh "date -u +%s"; } catch e { ""; };
+    let raw = to_string(now_ms() / 1000);
     if len(raw) == 0 { return 0; };
     return parse_int(raw);
 }
@@ -556,7 +556,7 @@ fn signal_to_outcome(signal: int) -> string {
 // #1453 Wave 1: reality-check — age (seconds) of a pending-verdict blob.
 fn verdict_age_seconds(blob: string) -> int {
     let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
-    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now_raw = to_string(now_ms() / 1000);
     let now = parse_int(now_raw);
     return now - emit_ts;
 }
@@ -567,7 +567,7 @@ fn verdict_age_seconds(blob: string) -> int {
 // naive concatenation is sufficient and we skip a JSON encoder (the
 // single-slot idiom from triage/labeler.ag record_label_verdict).
 fn record_approval_verdict(owner: string, repo: string, mr_iid: int, action: string) -> void {
-    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let ts_raw = to_string(now_ms() / 1000);
     let blob = "[" + ts_raw + "," + to_string(mr_iid) + ",\"" + action + "\"]";
     memo_write(scoped_memo(owner, repo, "approval_decider:pending_verdict"), blob);
     print("[approval_decider] verdict recorded: MR", mr_iid, "action", action);
@@ -675,7 +675,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     // last_check and return — one merge action per tick. The bus-based
     // findings -> decision path below stays intact for the no-merge ticks.
     if merge_ready_prs(owner, repo) == 1 {
-        let now_m = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        let now_m = now_iso();
         if len(now_m) > 0 {
             memo_write(scoped_memo(owner, repo, "approval_decider:last_check"), now_m);
         };
@@ -702,7 +702,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     // Only proceed if at least one reviewer reported
     let total_len = len(style_str) + len(logic_str) + len(security_str) + len(tests_str);
     if total_len < 24 {
-        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        let now_e = now_iso();
         if len(now_e) > 0 {
             memo_write(scoped_memo(owner, repo, "approval_decider:last_check"), now_e);
         };
@@ -715,7 +715,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     // just postponed) until the jittered backoff window elapses.
     if rl_active("approval_decider", owner, repo) == 1 {
         print("[approval_decider] in rate-limit backoff; deferring this tick");
-        let now_g = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        let now_g = now_iso();
         if len(now_g) > 0 {
             memo_write(scoped_memo(owner, repo, "approval_decider:last_check"), now_g);
         };
@@ -916,7 +916,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         print("[approval_decider] Implementation colony created a new MR, reviewers will pick it up on next tick");
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write(scoped_memo(owner, repo, "approval_decider:last_check"), now);
     };

@@ -112,7 +112,7 @@ fn should_handle_refactor(owner: string, repo: string, iid_str: string) -> bool 
     if len(last_ts_str) == 0 {
         return true;
     };
-    let now_str = try { exec sh "date +%s"; } catch e { ""; };
+    let now_str = to_string(now_ms() / 1000);
     if len(now_str) == 0 {
         return true;
     };
@@ -210,7 +210,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         let incoming_iid = to_string(json_get(draft_str, "issue_id"));
         if should_handle_refactor(owner, repo, incoming_iid) {
             memo_write(scoped_memo(owner, repo, "refactorer:last_handled_iid"), incoming_iid);
-            let ts_now = try { exec sh "date +%s"; } catch e { ""; };
+            let ts_now = to_string(now_ms() / 1000);
             if len(ts_now) > 0 {
                 memo_write(scoped_memo(owner, repo, "refactorer:last_handled_ts"), ts_now);
             };
@@ -288,7 +288,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         };
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write(scoped_memo(owner, repo, "refactorer:last_check"), now);
     };

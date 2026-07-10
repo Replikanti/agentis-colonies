@@ -157,7 +157,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     };
 
     if len(raw) < 3 {
-        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        let now_e = now_iso();
         if len(now_e) > 0 {
             memo_write(scoped_memo(owner, repo, "style_reviewer:last_check"), now_e);
         };
@@ -183,7 +183,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     // own review post bumps the MR updated_at, the next tick re-enters
     // this block and re-summarizes identical notes. Gate the observe
     // prompt on a 1800s window aligned with the #187 planning gate.
-    let now_epoch_s = try { exec sh "date -u +%s"; } catch e { ""; };
+    let now_epoch_s = to_string(now_ms() / 1000);
     let last_learn = recall_latest(scoped_memo(owner, repo, "style_reviewer:last_pattern_learn_ts"));
     let should_learn = if len(last_learn) > 0 {
         if len(now_epoch_s) > 0 {
@@ -350,7 +350,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         memo_write(scoped_memo(owner, repo, "style_reviewer:reviewed_head:" + to_string(mr_iid)), head);
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write(scoped_memo(owner, repo, "style_reviewer:last_check"), now);
     };

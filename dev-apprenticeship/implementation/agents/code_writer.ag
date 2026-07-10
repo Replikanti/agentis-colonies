@@ -1700,7 +1700,7 @@ fn signal_to_outcome(signal: int) -> string {
 // autonomous DONE overwrites; evaluate_code_verdict scores it against the
 // fate of the deterministic fix/issue-<iid> branch.
 fn record_code_verdict(owner: string, repo: string, issue_id: int) -> void {
-    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let ts_raw = to_string(now_ms() / 1000);
     let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"\"]";
     memo_write(scoped_memo(owner, repo, "code_writer:pending_verdict"), blob);
     print("[code_writer] verdict recorded: issue", issue_id);
@@ -1709,7 +1709,7 @@ fn record_code_verdict(owner: string, repo: string, issue_id: int) -> void {
 // #1453 Wave 1: reality-check — age of the pending verdict in seconds.
 fn verdict_age_seconds(blob: string) -> int {
     let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
-    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now_raw = to_string(now_ms() / 1000);
     let now = parse_int(now_raw);
     return now - emit_ts;
 }
@@ -1807,7 +1807,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     // run first to PRODUCE a CI run. One code-edit job per tick: a launch returns
     // without drafting.
     if rebase_conflicting_prs(owner, repo) == 1 {
-        let now_b = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        let now_b = now_iso();
         if len(now_b) > 0 {
             memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now_b);
         };
@@ -1818,7 +1818,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     // If a red PR we own is re-driven this tick, return without drafting — one
     // code-edit job per tick.
     if recover_red_prs(owner, repo) == 1 {
-        let now_r = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        let now_r = now_iso();
         if len(now_r) > 0 {
             memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now_r);
         };
@@ -1830,7 +1830,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     // a GREEN own-PR carrying an actionable review note (the durable forge note,
     // not the ephemeral bus). One job per tick: a launch returns without drafting.
     if resolve_review_prs(owner, repo) == 1 {
-        let now_v = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        let now_v = now_iso();
         if len(now_v) > 0 {
             memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now_v);
         };
@@ -1847,7 +1847,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     // stale verdict marker and re-stamps the #1484 wait clock for the gate to
     // re-judge (this sweep does NOT touch the gate).
     if recover_qa_block_prs(owner, repo) == 1 {
-        let now_q = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        let now_q = now_iso();
         if len(now_q) > 0 {
             memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now_q);
         };
@@ -1975,7 +1975,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             // an external edit/re-assignment bumps updated_at and re-triggers.
             if input_unchanged(owner, repo, first_iid_str, first_upd) {
                 if has_mr_for_branch(owner, repo, first_iid_str) {
-                    let now_s = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+                    let now_s = now_iso();
                     if len(now_s) > 0 {
                         memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now_s);
                     };
@@ -2277,7 +2277,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         print("[code_writer] Received routing suggestion, will check assigned issues on next tick");
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now);
     };

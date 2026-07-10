@@ -98,7 +98,7 @@ fn repo_field(line: string, idx: int) -> string {
 // (handled upstream); this helper only governs the colony-side forge calls.
 
 fn rl_now_epoch() -> int {
-    let raw = try { exec sh "date -u +%s"; } catch e { ""; };
+    let raw = to_string(now_ms() / 1000);
     if len(raw) == 0 { return 0; };
     return parse_int(raw);
 }
@@ -233,7 +233,7 @@ fn signal_to_outcome(signal: int) -> string {
 // the next autonomous promotion overwrites; evaluate_plan_verdict scores it
 // against the issue's current labels.
 fn record_plan_verdict(owner: string, repo: string, issue_id: int, labels_csv: string) -> void {
-    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let ts_raw = to_string(now_ms() / 1000);
     let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"" + labels_csv + "\"]";
     memo_write(scoped_memo(owner, repo, "plan_reviewer:pending_verdict"), blob);
     print("[plan_reviewer] verdict recorded: issue", issue_id, "labels", labels_csv);
@@ -242,7 +242,7 @@ fn record_plan_verdict(owner: string, repo: string, issue_id: int, labels_csv: s
 // #1453 Wave 1: reality-check — age of the pending verdict in seconds.
 fn verdict_age_seconds(blob: string) -> int {
     let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
-    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now_raw = to_string(now_ms() / 1000);
     let now = parse_int(now_raw);
     return now - emit_ts;
 }
@@ -380,7 +380,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     };
 
     if len(issues_raw) < 3 {
-        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        let now_e = now_iso();
         if len(now_e) > 0 {
             memo_write(scoped_memo(owner, repo, "plan_reviewer:last_check"), now_e);
         };
@@ -397,7 +397,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     // branches, so the reviewer re-prompted every tick at sub-autonomous tiers).
     let target_iid = first_unhandled_iid(owner, repo, issues_raw, 0);
     if target_iid <= 0 {
-        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        let now_e = now_iso();
         if len(now_e) > 0 {
             memo_write(scoped_memo(owner, repo, "plan_reviewer:last_check"), now_e);
         };
@@ -691,7 +691,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         };
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write(scoped_memo(owner, repo, "plan_reviewer:last_check"), now);
     };

@@ -173,7 +173,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         let pending = recall_latest(scoped_memo(owner, repo, "implementation:pending_mr"));
         if len(pending) < 3 {
             // No durable handoff pending either — nothing to compose.
-            let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            let now = now_iso();
             if len(now) > 0 {
                 memo_write(scoped_memo(owner, repo, "commit_composer:last_check"), now);
             };
@@ -187,7 +187,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         // Idempotency: skip if we already opened the MR for this issue.
         let last_mr = recall_latest(scoped_memo(owner, repo, "commit_composer:last_mr_issue"));
         if last_mr == pending_issue {
-            let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            let now = now_iso();
             if len(now) > 0 {
                 memo_write(scoped_memo(owner, repo, "commit_composer:last_check"), now);
             };
@@ -226,7 +226,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         // a higher tier can still open the MR. The terminal write is gated to
         // the autonomous tier only.
 
-        let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        let now = now_iso();
         if len(now) > 0 {
             memo_write(scoped_memo(owner, repo, "commit_composer:last_check"), now);
         };
@@ -309,7 +309,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         };
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write(scoped_memo(owner, repo, "commit_composer:last_check"), now);
     };
