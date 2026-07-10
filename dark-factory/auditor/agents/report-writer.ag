@@ -120,6 +120,10 @@ let instruction =
 let verdict = prompt(instruction, evidence) -> string;
 
 print(verdict);
+// #1580: closing sentinel so the gate wrapper can slice a BOUNDED body (marker..sentinel) and never
+// capture trailing substrate trace. Distinct token — contains no "SUBMISSION-DRAFT|" substring, so the
+// coordinator's extract_verdict (grep -F "SUBMISSION-DRAFT|") is unaffected.
+print("DARK-FACTORY:DRAFT-BODY-END");
 // The productive outcome is a rendered draft that carries the human-gate marker; anything else is a failure to
 // render (mirrors the gates' outcome derivation from their own leading verdict line).
 let outcome = if index_of(verdict, "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW") >= 0 { "success" } else { "failure" };

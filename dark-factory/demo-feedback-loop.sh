@@ -111,17 +111,20 @@
 #      terminal artifact (re-hunt-out/pass-result.txt) OVERRIDING kill -0 (reused-pid conservatism). Asserts: (10a)
 #      a DEAD pid + PENDING-HUMAN-REVIEW + a submission-draft.md fixture -> the draft uploads (getUploadURLExternal
 #      fired, a content-* copy byte-identical to the draft) + a 'new draft ready' post + .re-hunt-reported; (10a2)
-#      the same with pass.tsv ONLY (no submission-draft.md) -> the trace fallback uploads (today's real production
-#      path, since run-audit-pass persists no verbatim report body); (10b) NO-RESIDUAL -> a 'no new submittable
+#      the same with pass.tsv ONLY (no submission-draft.md) -> the trace fallback uploads; (10a3, #1580) the REAL
+#      producer (run-gate-agent.sh persist_draft, via --classify-log over a canned report gate.log) writes the
+#      verbatim draft to re-hunt-out/submission-draft.md — a BOUNDED marker..sentinel slice that EXCLUDES the
+#      trailing trace + the DARK-FACTORY:DRAFT-BODY-END sentinel — and the callback uploads THAT produced file
+#      byte-identically (the real draft, not the trace fallback); (10b) NO-RESIDUAL -> a 'no new submittable
 #      finding (NO-RESIDUAL)' line + NO upload + .re-hunt-reported; (10c) an ALIVE pid (no artifact) posts nothing +
 #      writes no marker (kill -0 gate); (10d) a pre-existing .re-hunt-reported suppresses any second post
 #      (idempotent); (10e) a DEAD pid + only re-hunt.log carrying a `(see /path)` pointer -> a 'finished with an
 #      error' line PATH-STRIPPED (no slash, no log filename, no work-dir path leaks into the post). Plus source
 #      guards: the completion-check precedes the .outcome-ingested short-circuit + gates on .re-hunt-pid /
-#      .re-hunt-reported, and no completion post carries a submit / bounty-platform token (never-submit). HONEST
-#      SCOPE: run-audit-pass.sh persists no verbatim report-writer BODY (the report stage runs in a mktemp
-#      throwaway), so PENDING-HUMAN-REVIEW uploads submission-draft.md if present else the pass.tsv trace — never a
-#      fabricated finding; persisting the verbatim report body is a flagged out-of-scope follow-up.
+#      .re-hunt-reported, and no completion post carries a submit / bounty-platform token (never-submit). Plus four
+#      #1580 static wiring pins (the offline path can't run the LIVE coordinator/agent env-thread): coordinator.ag
+#      threads SUBMISSION_DRAFT_OUT in run_stage_live, run-audit-pass.sh allowlists + passes it, report-writer.ag
+#      prints the sentinel, and run-gate-agent.sh's persist_draft keys on the SUBMISSION-DRAFT prefix + the sentinel.
 #
 # All shell sub-scripts are invoked with `bash` (never `sh`) per the #1507 dash lesson.
 #
@@ -1857,6 +1860,58 @@ run_completion "$STAGE10A2" "$POST10A2" "$GETURL10A2" "$UPDIR10A2" "$UPCNT10A2"
 [ "$(conf_has "$POST10A2" "new draft ready")" = "ok" ] \
   && ok "(10a2) the 'new draft ready' post landed on the trace fallback" || bad "(10a2) no 'new draft ready' post on the pass.tsv fallback"
 
+# --- (10a3) #1580: the REAL producer (run-gate-agent.sh persist_draft) writes the verbatim draft, then the callback
+#     uploads that produced file byte-for-byte. Build a canned report gate.log (marker + five FIELD| lines + the four
+#     ## sections + the DARK-FACTORY:DRAFT-BODY-END sentinel + a TRAILING no-slash trace line the wrapper must NOT
+#     capture), run the wrapper via bash --classify-log with SUBMISSION_DRAFT_OUT pointed at re-hunt-out/, and assert
+#     the bounded (marker..sentinel-exclusive) slice; then wire the completion callback to that produced file.
+STAGE10A3="$WORK/stage-10a3"; seed_completion_stage "$STAGE10A3" "enzyme-onyx@a1b2c3d:done-a3"
+CANNED10A3="$WORK/canned-report-gate-10a3.log"
+{
+  printf '%s\n' "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW"
+  printf '%s\n' "FIELD|project|enzyme-onyx"
+  printf '%s\n' "FIELD|asset|programs/vault"
+  printf '%s\n' "FIELD|impact|attacker drains vault share accounting"
+  printf '%s\n' "FIELD|severity|High"
+  printf '%s\n' "FIELD|title|share-price rounding lets an attacker mint excess shares"
+  printf '%s\n' "## Brief/Intro"
+  printf '%s\n' "a strengthened re-hunt draft; DRAFT prepared for human review, never auto-submitted"
+  printf '%s\n' "## Vulnerability Details"
+  printf '%s\n' "root cause reproduced by forge test --match-test test_share_rounding"
+  printf '%s\n' "## Impact Details"
+  printf '%s\n' "an attacker mints excess shares; High severity band"
+  printf '%s\n' "## References"
+  printf '%s\n' "scope in-scope; impact substantiated; dup-risk low"
+  printf '%s\n' "DARK-FACTORY:DRAFT-BODY-END"
+  printf '%s\n' "<<trace>> throwaway store torn down"
+} > "$CANNED10A3"
+DRAFT10A3="$STAGE10A3/re-hunt-out/submission-draft.md"
+env SUBMISSION_DRAFT_OUT="$DRAFT10A3" bash "$HERE/auditor/scripts/run-gate-agent.sh" \
+  --classify-log "$CANNED10A3" --verdict-prefix SUBMISSION-DRAFT >/dev/null 2>&1
+[ -s "$DRAFT10A3" ] \
+  && ok "(10a3) run-gate-agent.sh persist_draft produced a non-empty submission-draft.md" || bad "(10a3) no submission-draft.md produced by the wrapper"
+[ "$(head -1 "$DRAFT10A3")" = "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW" ] \
+  && ok "(10a3) the produced draft's first line is the human-gate marker verbatim" || bad "(10a3) produced draft does not lead with the marker"
+MISS10A3=0
+for h in "## Brief/Intro" "## Vulnerability Details" "## Impact Details" "## References"; do
+  grep -qF "$h" "$DRAFT10A3" || MISS10A3=1
+done
+[ "$MISS10A3" = "0" ] \
+  && ok "(10a3) the produced draft carries all four ## sections verbatim" || bad "(10a3) a ## section is missing from the produced draft"
+grep -qF '<<trace>> throwaway store torn down' "$DRAFT10A3" \
+  && bad "(10a3) the produced draft captured the trailing trace line (unbounded slice / path-leak risk)" || ok "(10a3) the produced draft EXCLUDES the trailing trace line (bounded slice)"
+grep -qF 'DARK-FACTORY:DRAFT-BODY-END' "$DRAFT10A3" \
+  && bad "(10a3) the produced draft captured the sentinel line" || ok "(10a3) the produced draft EXCLUDES the DARK-FACTORY:DRAFT-BODY-END sentinel"
+printf '%s' "$(deadpid)" > "$STAGE10A3/.re-hunt-pid"
+printf '%s\n' "PENDING-HUMAN-REVIEW" > "$STAGE10A3/re-hunt-out/pass-result.txt"
+POST10A3="$WORK/slack-post-10a3.jsonl"; GETURL10A3="$WORK/slack-geturl-10a3.log"; UPDIR10A3="$WORK/slack-uploads-10a3"; UPCNT10A3="$WORK/slack-upcnt-10a3"
+run_completion "$STAGE10A3" "$POST10A3" "$GETURL10A3" "$UPDIR10A3" "$UPCNT10A3"
+[ -s "$GETURL10A3" ] \
+  && ok "(10a3) the draft upload fired on the producer-written submission-draft.md" || bad "(10a3) no upload for the produced submission-draft.md"
+UPMATCH_A3=0; for cf in "$UPDIR10A3"/content-*; do [ -f "$cf" ] && cmp -s "$cf" "$DRAFT10A3" && UPMATCH_A3=1; done
+[ "$UPMATCH_A3" = "1" ] \
+  && ok "(10a3) an uploaded content-* copy is byte-identical to the PRODUCED draft (callback prefers the real draft over pass.tsv)" || bad "(10a3) no uploaded copy matched the produced draft"
+
 # --- (10b) DEAD pid + pass-result.txt=NO-RESIDUAL -> a 'no new submittable finding' line, NO upload. --------------
 STAGE10B="$WORK/stage-10b"; seed_completion_stage "$STAGE10B" "enzyme-onyx@a1b2c3d:done-b"
 printf '%s' "$(deadpid)" > "$STAGE10B/.re-hunt-pid"
@@ -1937,6 +1992,17 @@ done
 [ "$LEAK10" = "0" ] \
   && ok "(10/guard) no completion post carries a submit / bounty-platform token (never-submit; 'submittable' is not a whole-word 'submit')" || bad "(10/guard) a completion post carries a submit/bounty-platform token"
 
+# --- (10/#1580 wiring) the offline path can't execute the LIVE coordinator/agent env-thread; grep-pin it (as part-9
+#     pins the REVIEWER_FEEDBACK passthrough) so a broken thread fails lint even though it can't run offline.
+awk '/fn run_stage_live\(/{f=1} f && /SUBMISSION_DRAFT_OUT=/{print; exit}' "$HERE/auditor/agents/coordinator.ag" | grep -q 'SUBMISSION_DRAFT_OUT=' \
+  && ok "(10/#1580) coordinator.ag run_stage_live threads SUBMISSION_DRAFT_OUT into the gate-runner env" || bad "(10/#1580) coordinator.ag run_stage_live does not thread SUBMISSION_DRAFT_OUT"
+grep -q 'exec.env_passthrough.*SUBMISSION_DRAFT_OUT' "$HERE/run-audit-pass.sh" && grep -q 'SUBMISSION_DRAFT_OUT="\$DRAFT_OUT"' "$HERE/run-audit-pass.sh" \
+  && ok "(10/#1580) run-audit-pass.sh allowlists SUBMISSION_DRAFT_OUT AND passes it as \$DRAFT_OUT to the coordinator" || bad "(10/#1580) run-audit-pass.sh does not wire SUBMISSION_DRAFT_OUT"
+grep -qF 'DARK-FACTORY:DRAFT-BODY-END' "$HERE/auditor/agents/report-writer.ag" \
+  && ok "(10/#1580) report-writer.ag prints the DARK-FACTORY:DRAFT-BODY-END closing sentinel" || bad "(10/#1580) report-writer.ag is missing the closing sentinel"
+grep -q 'PREFIX" = "SUBMISSION-DRAFT"' "$HERE/auditor/scripts/run-gate-agent.sh" && grep -qF 'DARK-FACTORY:DRAFT-BODY-END' "$HERE/auditor/scripts/run-gate-agent.sh" \
+  && ok "(10/#1580) run-gate-agent.sh persist_draft keys on the SUBMISSION-DRAFT prefix + the sentinel" || bad "(10/#1580) run-gate-agent.sh persist_draft is not keyed on prefix + sentinel"
+
 # ----------------------------------------------------------------------------------------------------------
 echo
 if [ "$FAIL" -eq 0 ]; then
@@ -1980,7 +2046,9 @@ if [ "$FAIL" -eq 0 ]; then
   note "       (pass-result.txt) over kill -0 decides FINISHED, an ALIVE pid posts nothing: PENDING-HUMAN-REVIEW"
   note "       uploads the durable draft (submission-draft.md if present else the pass.tsv trace — no fabricated body),"
   note "       a no-finding token posts one line, an error is PATH-STRIPPED (no internal path leaks), idempotent,"
-  note "       never submits. Persisting the verbatim report-writer body is a flagged out-of-scope follow-up."
+  note "       never submits. And (#1580) the LIVE report gate now PERSISTS the report-writer's verbatim 4-section body"
+  note "       to <--out>/submission-draft.md via run-gate-agent.sh's persist_draft (bounded marker..sentinel slice,"
+  note "       byte-neutral on non-PASS), so that PENDING-HUMAN-REVIEW upload is the REAL draft, not the trace fallback."
   exit 0
 fi
 note "FAIL — a feedback-loop assertion regressed (see above)." >&2

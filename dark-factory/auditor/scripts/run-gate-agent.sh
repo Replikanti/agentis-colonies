@@ -66,12 +66,30 @@ extract_verdict() {
   fi
 }
 
+# #1580: persist the report-writer's verbatim draft body (the marker line up to but EXCLUDING the
+# DARK-FACTORY:DRAFT-BODY-END sentinel) before the throwaway store is torn down by the EXIT trap. No-op unless
+# SUBMISSION_DRAFT_OUT is set AND this is the report gate AND BOTH the marker and the closing sentinel are
+# present — a truncated/failed render writes NOTHING (never a run-to-EOF slice over trailing substrate trace,
+# which could bake an internal store path into a Slack-bound file).
+persist_draft() {
+  _plog="$1"
+  [ -n "${SUBMISSION_DRAFT_OUT:-}" ] || return 0
+  [ "$PREFIX" = "SUBMISSION-DRAFT" ] || return 0
+  grep -qF 'SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW' "$_plog" || return 0
+  grep -qF 'DARK-FACTORY:DRAFT-BODY-END' "$_plog" || return 0
+  _body="$(awk '/^SUBMISSION-DRAFT[|]PENDING-HUMAN-REVIEW/{f=1} /^DARK-FACTORY:DRAFT-BODY-END$/{f=0} f' "$_plog")"
+  [ -n "$_body" ] || return 0
+  mkdir -p "$(dirname "$SUBMISSION_DRAFT_OUT")" 2>/dev/null || true
+  printf '%s\n' "$_body" > "$SUBMISSION_DRAFT_OUT"
+}
+
 # --classify-log: pure-shell verdict extraction over an existing log. Needs neither the agent nor agentis, so
 # short-circuit BEFORE resolving either — this is the CI-safe, no-toolchain pin of the extraction contract.
 if [ -n "$CLASSIFY_LOG" ]; then
   [ -n "$PREFIX" ] || { echo "run-gate-agent.sh: --classify-log requires --verdict-prefix <PREFIX>" >&2; exit 2; }
   [ -f "$CLASSIFY_LOG" ] || { echo "run-gate-agent.sh: --classify-log file not found: $CLASSIFY_LOG" >&2; exit 3; }
   extract_verdict "$CLASSIFY_LOG"
+  persist_draft "$CLASSIFY_LOG"
   exit 0
 fi
 
@@ -114,3 +132,5 @@ LOG="$RUN/gate.log"
 # Echo ONLY the gate's verdict line (the LAST productive-prefix line, or the negative token when configured).
 # Nothing else reaches stdout.
 extract_verdict "$LOG"
+# #1580: persist the verbatim draft while still in-process, BEFORE the EXIT trap deletes $RUN.
+persist_draft "$LOG"
