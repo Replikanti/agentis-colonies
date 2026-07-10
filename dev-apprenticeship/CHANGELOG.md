@@ -15,6 +15,10 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-07-10
+
+**Requires:** agentis >= 1.20.0
+
 ### Added
 
 - **Reality-check feedback loop — Wave 1 (4 agents)**
@@ -2879,7 +2883,12 @@ permissible per semver §4.
 - All dynamic values flowing into `exec sh` are required to pass through `shell_escape()`;
   `check-exec-sh.sh` enforces this grep-level contract.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.6.1...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.10.0...HEAD
+[2.10.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.9.0...dev-apprenticeship-v2.10.0
+[2.9.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.8.0...dev-apprenticeship-v2.9.0
+[2.8.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.7.1...dev-apprenticeship-v2.8.0
+[2.7.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.7.0...dev-apprenticeship-v2.7.1
+[2.7.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.6.0...dev-apprenticeship-v2.7.0
 [2.6.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.6.0...dev-apprenticeship-v2.6.1
 [2.6.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.5.0...dev-apprenticeship-v2.6.0
 [2.5.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.4.0...dev-apprenticeship-v2.5.0
