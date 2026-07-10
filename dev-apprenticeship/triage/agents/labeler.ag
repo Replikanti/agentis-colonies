@@ -207,22 +207,30 @@ fn normalize_labels_csv(csv: string) -> string {
 // a crystallized rule via distill() and would replay forever. Drops any
 // token matching the same case-insensitive heuristic prioritizer's
 // is_pri() uses: startswith "priority", ^P<digits>$, or "urgent".
-// Total-on-failure returns "" (matches normalize_labels_csv's convention --
-// fail CLOSED, not open, so a transient python error can never leak a
-// priority token instead of just skipping this tick's label write).
+// #1597 P1 slice 2: native rewrite (was an embedded `python3 -c` one-liner).
+// `to_lower` + `trim` mirror `.lower()`/`.strip()`; `index_of(t2, "priority")
+// == 0` is the `.ag` `startswith` idiom (no native builtin); `regex_match` on
+// the anchored `^p[0-9]+$` reproduces python's `re.fullmatch(r"p\d+", ...)`.
+// Total: an all-priority or empty csv collapses `kept` to [] -> reduce over
+// [] with "" init -> "" (matches python's ",".join([])), and the pure builtin
+// pipeline has no exec/shell failure mode left to fall back on.
+fn is_pri_like(t2: string) -> bool {
+    if len(t2) == 0 { return false; };
+    if index_of(t2, "priority") == 0 { return true; };
+    if regex_match("^p[0-9]+$", t2) { return true; };
+    return t2 == "urgent";
+}
 fn strip_priority_like_labels(csv: string) -> string {
-    let cmd = "CSV=" + shell_escape(csv) +
-        " python3 -c 'import os, re\n" +
-        "def is_pri(t):\n" +
-        "    t2=t.strip().lower()\n" +
-        "    if not t2: return False\n" +
-        "    if t2.startswith(\"priority\"): return True\n" +
-        "    if re.fullmatch(r\"p\\d+\", t2): return True\n" +
-        "    if t2==\"urgent\": return True\n" +
-        "    return False\n" +
-        "toks=[t.strip() for t in os.environ[\"CSV\"].split(\",\") if t.strip() and not is_pri(t)]\n" +
-        "print(\",\".join(toks))'";
-    return try { exec sh cmd; } catch e { ""; };
+    let kept = filter(regex_split(",", csv), |t: string| -> bool {
+        let tt = trim(t);
+        if len(tt) == 0 { return false; };
+        return !is_pri_like(to_lower(tt));
+    });
+    return reduce(kept, |acc: string, t: string| -> string {
+        let tt = trim(t);
+        if len(acc) > 0 { return acc + "," + tt; };
+        return tt;
+    }, "");
 }
 
 // #1429 Stage 1b: walk the BM25 candidate list (JSON strings from

@@ -58,6 +58,7 @@ is asserted until multi-version CI is in place.
   `pow_int`: `5*2^6=320` already exceeds the `min(300, ...)` cap, so the
   clamp is output-identical for every `count` where it matters and
   removes the overflow path entirely.
+- **`qa_reviewer`/`labeler` semantic substrate-purity rewrites (#1597)**: `linked_issue_iid`, `adv_parse`, `strip_priority_like_labels` moved off embedded python onto native `regex_capture`/`regex_match`/`regex_split`/`json_get` builtins. Part of the #1587 Phase 1 ratchet.
 
 ## [2.10.0] - 2026-07-10
 
