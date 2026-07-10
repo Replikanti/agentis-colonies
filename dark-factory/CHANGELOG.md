@@ -30,6 +30,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   consolidated cheap post (9b/9d), and source guards that the old `see RE-HUNT.md` pointer is gone (9g).
 
 ### Added
+- **Re-hunt completion callback — the FINISHED result posts into the Slack thread** (#1577, closing the #1567
+  seam, epic #1505). When the auto-invoked DETACHED re-hunt (#1567) FINISHES, a later `ingest-slack-outcome.sh`
+  sweep (which re-enters an already-ingested stage BEFORE the `.outcome-ingested` short-circuit) posts its RESULT
+  into the manifest thread ONCE (self-contained, #1574), keyed on `.re-hunt-pid` + a new `.re-hunt-reported`
+  marker. A new `_rehunt_completion_check` decides FINISHED from a terminal artifact (`re-hunt-out/pass-result.txt`)
+  that OVERRIDES `kill -0` (reused-pid conservatism); an ALIVE pid posts nothing and writes no marker, so a later
+  sweep re-checks. Three outcome posts: `PENDING-HUMAN-REVIEW` uploads the durable draft artifact that IS present
+  (via the ported `slack_upload`) + a `new draft ready` one-liner; a no-finding token
+  (`BLOCKED-SCOPE`/`NO-RESIDUAL`/`NO-POC`/`BLOCKED-IMPACT`/`INCOMPLETE`) posts `no new submittable finding (<token>)`;
+  an absent/empty result posts a `finished with an error (<reason>)` line whose reason is PATH-STRIPPED by
+  `_rehunt_error_reason` (drops a trailing ` (see …)` pointer + any slash-bearing token, so no internal path ever
+  reaches Slack). **HONEST scope:** `run-audit-pass.sh` persists no verbatim report-writer BODY (the report stage
+  runs in a `mktemp` throwaway), so the `PENDING-HUMAN-REVIEW` upload prefers `submission-draft.md` if present and
+  falls back to the `pass.tsv` trace — it never fabricates a finding; persisting the verbatim report body to
+  `submission-draft.md` is a LIVE-substrate change to `run-gate-agent.sh`/the coordinator report stage and remains
+  an **out-of-scope follow-up**. Never-submit is untouched; `demo-feedback-loop.sh` part 10 asserts the draft
+  upload + snippet fallback (10a/10a2), the no-finding line (10b), the ALIVE no-op (10c), idempotency (10d), the
+  path-stripped error (10e), and source guards (ordering before the short-circuit, the pid/reported gate,
+  no submit/bounty-platform token in any post).
 - **`deliver-submission.sh --target-dir` → manifest `local_repo`** (#1571, closing the #1567 seam). Mirrors the
   existing `--bounty-url` wiring exactly: a new `--target-dir <dir>` flag threads verbatim into `manifest.json` as
   `local_repo` — the exact key the #1567 router reads first at greenlight time. Additive, no path validation (the

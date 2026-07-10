@@ -5,7 +5,7 @@
 # dark-factory demos (demo-report-writer.sh / demo-immunefi-intake.sh): assert-based PASS/FAIL lines, a temp
 # drop-dir trap-cleaned, exit non-zero on regression, exit 3 if a component is missing.
 #
-# NINE parts:
+# TEN parts:
 #   1) DELIVERY (offline, real): run deliver-submission.sh over a fixture report-writer draft carrying the
 #      SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW marker + fixture gate verdicts + a stable id -> assert the drop-dir
 #      has manifest.json + submission-draft.md + OUTCOME.md, that manifest.json carries the canonical
@@ -105,6 +105,23 @@
 #      consolidated `applied — …` confirmation (marked dead / tightened, self-contained); (9g) source guards pin
 #      that the old `see RE-HUNT.md` pointer is gone and slack_upload was ported. The durable files (RE-HUNT.md,
 #      FOLLOWUP.md, dead-targets.txt, gate-tuning/*) are unchanged silent records.
+#  10) RE-HUNT COMPLETION CALLBACK (offline, #1577): when the auto-invoked DETACHED re-hunt (#1567) FINISHES, a later
+#      ingest sweep (which re-enters BEFORE the .outcome-ingested short-circuit) posts its RESULT into the manifest
+#      thread ONCE (self-contained, #1574) keyed on .re-hunt-pid + .re-hunt-reported. FINISHED is decided by a
+#      terminal artifact (re-hunt-out/pass-result.txt) OVERRIDING kill -0 (reused-pid conservatism). Asserts: (10a)
+#      a DEAD pid + PENDING-HUMAN-REVIEW + a submission-draft.md fixture -> the draft uploads (getUploadURLExternal
+#      fired, a content-* copy byte-identical to the draft) + a 'new draft ready' post + .re-hunt-reported; (10a2)
+#      the same with pass.tsv ONLY (no submission-draft.md) -> the trace fallback uploads (today's real production
+#      path, since run-audit-pass persists no verbatim report body); (10b) NO-RESIDUAL -> a 'no new submittable
+#      finding (NO-RESIDUAL)' line + NO upload + .re-hunt-reported; (10c) an ALIVE pid (no artifact) posts nothing +
+#      writes no marker (kill -0 gate); (10d) a pre-existing .re-hunt-reported suppresses any second post
+#      (idempotent); (10e) a DEAD pid + only re-hunt.log carrying a `(see /path)` pointer -> a 'finished with an
+#      error' line PATH-STRIPPED (no slash, no log filename, no work-dir path leaks into the post). Plus source
+#      guards: the completion-check precedes the .outcome-ingested short-circuit + gates on .re-hunt-pid /
+#      .re-hunt-reported, and no completion post carries a submit / bounty-platform token (never-submit). HONEST
+#      SCOPE: run-audit-pass.sh persists no verbatim report-writer BODY (the report stage runs in a mktemp
+#      throwaway), so PENDING-HUMAN-REVIEW uploads submission-draft.md if present else the pass.tsv trace — never a
+#      fabricated finding; persisting the verbatim report body is a flagged out-of-scope follow-up.
 #
 # All shell sub-scripts are invoked with `bash` (never `sh`) per the #1507 dash lesson.
 #
@@ -1775,6 +1792,152 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# 10) RE-HUNT COMPLETION CALLBACK (#1577): a --all/--stage sweep re-enters an already-ingested stage and, when the
+#     DETACHED re-hunt (#1567) has FINISHED, posts its RESULT into the manifest thread ONCE (self-contained, #1574).
+#     Reuses part 9's harness (mk_manifest9, the curl stub FAKEBIN6, the agentis stub FAKEBIN8, conf_has). Each stage
+#     is seeded post-greenlight (.route-proposed + .route-greenlit + .outcome-ingested) so ONLY the completion-check
+#     acts; FINISHED is decided by a terminal artifact (re-hunt-out/pass-result.txt) over kill -0, so an ALIVE pid
+#     posts nothing and writes no marker. HONEST: for PENDING-HUMAN-REVIEW the callback uploads the durable draft
+#     artifact that IS present (submission-draft.md if any, else the pass.tsv trace) — it never fabricates a body.
+# ----------------------------------------------------------------------------------------------------------
+note "10) re-hunt completion callback: FINISHED -> one self-contained result post, idempotent, path-stripped ..."
+set +e
+
+# seed_completion_stage <stage> <submission_id>: a post-greenlight stage (all three markers) whose only pending work
+# is the re-hunt completion check. re-hunt-out/ is created empty; each case populates the pid + artifacts itself.
+seed_completion_stage() {
+  mk_manifest9 "$1" "$2" "enzyme-onyx" "a1b2c3d"
+  printf '%s\n' "action=spendy:re-devise" "reason=impact-not-substantiated" "outcome_reply_ts=1700000000.000300" > "$1/.route-proposed"
+  printf '%s\n' "greenlit 2020-01-01T00:00:00Z action=spendy:re-devise target=enzyme-onyx@a1b2c3d" > "$1/.route-greenlit"
+  printf '%s\n' "ingested 2020-01-01T00:00:00Z disposition=rejected signal=FAILURE stage=impact-gate" > "$1/.outcome-ingested"
+  mkdir -p "$1/re-hunt-out"
+}
+# run_completion <stage> <post-body> <geturl> <upload-dir> <upcnt>: one sweep over the seeded stage, fresh Slack sinks.
+run_completion() {
+  mkdir -p "$4"
+  env \
+    SLACK_LOG="$WORK/slack-10.log" SLACK_POST_BODY="$2" SLACK_COMPLETE="$WORK/slack-complete-10.jsonl" \
+    SLACK_GETURL="$3" SLACK_UPLOAD_DIR="$4" SLACK_UPCNT="$5" \
+    AGENTIS_LOG="$WORK/agentis-10.log" \
+    DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_DIR="$DF9" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-10" \
+    PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+    bash "$INGEST" --stage "$1" >/dev/null 2>&1
+}
+# deadpid: spawn a trivial child and reap it, so its pid is gone (kill -0 fails) — the "finished" happy path.
+deadpid() { sleep 0 & d=$!; wait "$d" 2>/dev/null; printf '%s' "$d"; }
+
+# --- (10a) DEAD pid + pass-result.txt=PENDING-HUMAN-REVIEW + a submission-draft.md fixture -> upload + draft post. --
+STAGE10A="$WORK/stage-10a"; seed_completion_stage "$STAGE10A" "enzyme-onyx@a1b2c3d:done-a"
+printf '%s' "$(deadpid)" > "$STAGE10A/.re-hunt-pid"
+printf '%s\n' "PENDING-HUMAN-REVIEW" > "$STAGE10A/re-hunt-out/pass-result.txt"
+DRAFT10A="$STAGE10A/re-hunt-out/submission-draft.md"
+{ printf '%s\n' "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW"; printf '%s\n' "## Brief"; printf '%s\n' "a strengthened re-hunt draft"; } > "$DRAFT10A"
+POST10A="$WORK/slack-post-10a.jsonl"; GETURL10A="$WORK/slack-geturl-10a.log"; UPDIR10A="$WORK/slack-uploads-10a"; UPCNT10A="$WORK/slack-upcnt-10a"
+run_completion "$STAGE10A" "$POST10A" "$GETURL10A" "$UPDIR10A" "$UPCNT10A"; RC=$?
+[ "$RC" -eq 0 ] && ok "(10a) completion sweep exits 0 on a PENDING-HUMAN-REVIEW re-hunt" || bad "(10a) sweep exited $RC (expected 0)"
+[ -s "$GETURL10A" ] \
+  && ok "(10a) the draft upload fired (getUploadURLExternal called) on PENDING-HUMAN-REVIEW" || bad "(10a) no upload for the submission-draft.md draft"
+UPMATCH_A=0; for cf in "$UPDIR10A"/content-*; do [ -f "$cf" ] && cmp -s "$cf" "$DRAFT10A" && UPMATCH_A=1; done
+[ "$UPMATCH_A" = "1" ] \
+  && ok "(10a) an uploaded content-* copy is byte-identical to the submission-draft.md fixture" || bad "(10a) no uploaded copy matched the draft"
+[ "$(conf_has "$POST10A" "new draft ready")" = "ok" ] \
+  && ok "(10a) a self-contained 'new draft ready' post landed in the thread" || bad "(10a) no 'new draft ready' post"
+[ -f "$STAGE10A/.re-hunt-reported" ] \
+  && ok "(10a) the .re-hunt-reported idempotency marker was written after the post" || bad "(10a) .re-hunt-reported marker missing"
+
+# --- (10a2) DEAD pid + PENDING-HUMAN-REVIEW + pass.tsv ONLY (no submission-draft.md) -> the trace fallback uploads.
+STAGE10A2="$WORK/stage-10a2"; seed_completion_stage "$STAGE10A2" "enzyme-onyx@a1b2c3d:done-a2"
+printf '%s' "$(deadpid)" > "$STAGE10A2/.re-hunt-pid"
+printf '%s\n' "PENDING-HUMAN-REVIEW" > "$STAGE10A2/re-hunt-out/pass-result.txt"
+{ printf '%s\n' "report-writer PENDING-HUMAN-REVIEW"; printf '%s\n' "the human-gate was reached (trace)"; } > "$STAGE10A2/re-hunt-out/pass.tsv"
+POST10A2="$WORK/slack-post-10a2.jsonl"; GETURL10A2="$WORK/slack-geturl-10a2.log"; UPDIR10A2="$WORK/slack-uploads-10a2"; UPCNT10A2="$WORK/slack-upcnt-10a2"
+run_completion "$STAGE10A2" "$POST10A2" "$GETURL10A2" "$UPDIR10A2" "$UPCNT10A2"
+[ -s "$GETURL10A2" ] \
+  && ok "(10a2) the pass.tsv trace fallback upload fired (no submission-draft.md — today's real production path)" || bad "(10a2) no upload on the pass.tsv fallback"
+[ "$(conf_has "$POST10A2" "new draft ready")" = "ok" ] \
+  && ok "(10a2) the 'new draft ready' post landed on the trace fallback" || bad "(10a2) no 'new draft ready' post on the pass.tsv fallback"
+
+# --- (10b) DEAD pid + pass-result.txt=NO-RESIDUAL -> a 'no new submittable finding' line, NO upload. --------------
+STAGE10B="$WORK/stage-10b"; seed_completion_stage "$STAGE10B" "enzyme-onyx@a1b2c3d:done-b"
+printf '%s' "$(deadpid)" > "$STAGE10B/.re-hunt-pid"
+printf '%s\n' "NO-RESIDUAL" > "$STAGE10B/re-hunt-out/pass-result.txt"
+POST10B="$WORK/slack-post-10b.jsonl"; GETURL10B="$WORK/slack-geturl-10b.log"
+run_completion "$STAGE10B" "$POST10B" "$GETURL10B" "$WORK/slack-uploads-10b" "$WORK/slack-upcnt-10b"
+[ "$(conf_has "$POST10B" "no new submittable finding (NO-RESIDUAL)")" = "ok" ] \
+  && ok "(10b) a NO-RESIDUAL result posts 'no new submittable finding (NO-RESIDUAL)'" || bad "(10b) no 'no new submittable finding' post for NO-RESIDUAL"
+[ ! -s "$GETURL10B" ] \
+  && ok "(10b) NO upload fires on a no-finding result" || bad "(10b) an upload fired on a no-finding result"
+[ -f "$STAGE10B/.re-hunt-reported" ] \
+  && ok "(10b) the .re-hunt-reported marker was written on the no-finding post" || bad "(10b) .re-hunt-reported marker missing on the no-finding post"
+
+# --- (10c) ALIVE pid (no pass-result.txt) -> nothing posted, NO .re-hunt-reported (the kill -0 gate holds). --------
+STAGE10C="$WORK/stage-10c"; seed_completion_stage "$STAGE10C" "enzyme-onyx@a1b2c3d:alive-c"
+sleep 30 & AC=$!
+printf '%s' "$AC" > "$STAGE10C/.re-hunt-pid"
+POST10C="$WORK/slack-post-10c.jsonl"
+run_completion "$STAGE10C" "$POST10C" "$WORK/slack-geturl-10c.log" "$WORK/slack-uploads-10c" "$WORK/slack-upcnt-10c"
+[ "$(conf_has "$POST10C" "re-hunt finished")" = "missing" ] \
+  && ok "(10c) an ALIVE re-hunt (kill -0 succeeds, no terminal artifact) posts nothing" || bad "(10c) a post landed while the re-hunt was still alive"
+[ ! -f "$STAGE10C/.re-hunt-reported" ] \
+  && ok "(10c) no .re-hunt-reported marker is written while the re-hunt is alive (a later sweep re-checks)" || bad "(10c) .re-hunt-reported written despite the re-hunt being alive"
+kill "$AC" 2>/dev/null; wait "$AC" 2>/dev/null
+
+# --- (10d) a pre-existing .re-hunt-reported -> a second sweep posts nothing new (idempotent). --------------------
+STAGE10D="$WORK/stage-10d"; seed_completion_stage "$STAGE10D" "enzyme-onyx@a1b2c3d:done-d"
+printf '%s' "$(deadpid)" > "$STAGE10D/.re-hunt-pid"
+printf '%s\n' "PENDING-HUMAN-REVIEW" > "$STAGE10D/re-hunt-out/pass-result.txt"
+printf '%s\n' "reported 2020-01-01T00:00:00Z result=PENDING-HUMAN-REVIEW" > "$STAGE10D/.re-hunt-reported"
+POST10D="$WORK/slack-post-10d.jsonl"
+run_completion "$STAGE10D" "$POST10D" "$WORK/slack-geturl-10d.log" "$WORK/slack-uploads-10d" "$WORK/slack-upcnt-10d"
+[ "$(conf_has "$POST10D" "re-hunt finished")" = "missing" ] \
+  && ok "(10d) a pre-existing .re-hunt-reported suppresses any second post (idempotent)" || bad "(10d) a second post landed despite .re-hunt-reported"
+
+# --- (10e) DEAD pid + only re-hunt.log (no pass-result.txt) -> an error line, PATH-STRIPPED (no internal path). ---
+STAGE10E="$WORK/stage-10e"; seed_completion_stage "$STAGE10E" "enzyme-onyx@a1b2c3d:err-e"
+printf '%s' "$(deadpid)" > "$STAGE10E/.re-hunt-pid"
+printf '%s\n' "run-audit-pass.sh: submission pass failed (see /tmp/x/run/pass.log)" > "$STAGE10E/re-hunt-out/re-hunt.log"
+POST10E="$WORK/slack-post-10e.jsonl"
+run_completion "$STAGE10E" "$POST10E" "$WORK/slack-geturl-10e.log" "$WORK/slack-uploads-10e" "$WORK/slack-upcnt-10e"
+[ "$(conf_has "$POST10E" "finished with an error")" = "ok" ] \
+  && ok "(10e) a finished-with-no-result re-hunt posts a 'finished with an error' line" || bad "(10e) no 'finished with an error' post"
+ERRTXT10="$(CH_PB="$POST10E" python3 -c '
+import json, os, sys
+for l in open(os.environ["CH_PB"]):
+    l = l.strip()
+    if not l:
+        continue
+    try:
+        o = json.loads(l)
+    except Exception:
+        continue
+    if o.get("thread_ts") == "1700000000.000100" and "finished with an error" in o.get("text", ""):
+        sys.stdout.write(o.get("text", "")); break
+')"
+case "$ERRTXT10" in
+  */*) bad "(10e) the error post leaks a slash-bearing token (internal path): $ERRTXT10" ;;
+  *)   ok "(10e) the error post carries NO slash (no internal path leak)" ;;
+esac
+if printf '%s' "$ERRTXT10" | grep -qE 're-hunt\.log|pass\.log' || { [ -n "$WORK" ] && printf '%s' "$ERRTXT10" | grep -qF "$WORK"; }; then
+  bad "(10e) the error post names a log file / the work-dir path: $ERRTXT10"
+else
+  ok "(10e) the error post names no re-hunt.log/pass.log and no work-dir path (self-contained)"
+fi
+
+# --- (10/guards) the completion-check precedes the .outcome-ingested short-circuit + gates on the pid/reported markers.
+CC_LINE10="$(grep -n '_rehunt_completion_check "\$stage"' "$INGEST" | head -1 | cut -d: -f1)"
+OI_LINE10="$(grep -n 'if \[ -e "\$stage/.outcome-ingested" \]' "$INGEST" | head -1 | cut -d: -f1)"
+{ [ -n "$CC_LINE10" ] && [ -n "$OI_LINE10" ] && [ "$CC_LINE10" -lt "$OI_LINE10" ]; } \
+  && ok "(10/guard) the completion-check runs BEFORE the .outcome-ingested short-circuit (a sweep re-enters an ingested stage)" || bad "(10/guard) completion-check is not ordered before the .outcome-ingested short-circuit"
+grep -q '\.re-hunt-pid' "$INGEST" && grep -q '\.re-hunt-reported' "$INGEST" \
+  && ok "(10/guard) the completion-check gates on .re-hunt-pid + .re-hunt-reported" || bad "(10/guard) missing the .re-hunt-pid/.re-hunt-reported gate"
+LEAK10=0
+for pb in "$POST10A" "$POST10A2" "$POST10B" "$POST10D" "$POST10E"; do
+  [ -f "$pb" ] && grep -qiwE 'submit|submitted|submitting|immunefi|code4rena|sherlock|hackerone|cantina' "$pb" && LEAK10=1
+done
+[ "$LEAK10" = "0" ] \
+  && ok "(10/guard) no completion post carries a submit / bounty-platform token (never-submit; 'submittable' is not a whole-word 'submit')" || bad "(10/guard) a completion post carries a submit/bounty-platform token"
+
+# ----------------------------------------------------------------------------------------------------------
 echo
 if [ "$FAIL" -eq 0 ]; then
   note "PASS — deliver-submission.sh staged a marked draft (canonical id + raw gate verdicts in manifest.json),"
@@ -1812,6 +1975,12 @@ if [ "$FAIL" -eq 0 ]; then
   note "       SELF-CONTAINED — the greenlit hand-off carries the ready-to-run command as an in-thread code block,"
   note "       the needs-info follow-up is a thread snippet + one-liner, the cheap actions are one consolidated"
   note "       confirmation — no post references an internal file (durable files stay as silent records). Never submits."
+  note "       And (#1577) when the auto-invoked DETACHED re-hunt FINISHES, a later ingest sweep posts its RESULT into"
+  note "       the thread ONCE (self-contained) keyed on .re-hunt-pid + .re-hunt-reported — a terminal artifact"
+  note "       (pass-result.txt) over kill -0 decides FINISHED, an ALIVE pid posts nothing: PENDING-HUMAN-REVIEW"
+  note "       uploads the durable draft (submission-draft.md if present else the pass.tsv trace — no fabricated body),"
+  note "       a no-finding token posts one line, an error is PATH-STRIPPED (no internal path leaks), idempotent,"
+  note "       never submits. Persisting the verbatim report-writer body is a flagged out-of-scope follow-up."
   exit 0
 fi
 note "FAIL — a feedback-loop assertion regressed (see above)." >&2
