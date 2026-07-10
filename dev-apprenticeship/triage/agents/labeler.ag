@@ -591,16 +591,11 @@ fn append_autonomous_index(owner: string, repo: string, iid: int) -> void {
     let key = scoped_memo(owner, repo, "labeler:autonomous_verdict_index");
     let existing = recall_latest(key);
     let iid_str = to_string(iid);
-    let append_cmd = "EX=" + shell_escape(existing) + " N=" + shell_escape(iid_str) +
-        " python3 -c 'import os; ex=os.environ[\"EX\"]; n=os.environ[\"N\"]; parts=[p for p in ex.split(\",\") if p.strip() and p.strip()!=n]; parts.append(n); print(\",\".join(parts))'";
-    // Catch-branch fallback preserves previously-queued peers: if the
-    // dedup+append subprocess itself fails (python3 missing, OOM,
-    // exec_foreign revoked mid-tick), we still want the current iid in
-    // the index, but falling back to `iid_str` alone would silently
-    // drop any peer iids that were already soaking. `append_csv`
-    // tolerates an already-present iid (the next successful scan
-    // naturally normalizes a brief duplicate on the next tick).
-    let next = try { exec sh append_cmd; } catch e { append_csv(existing, iid_str); };
+    // #1588 slice 4: native dedup_append_csv (was an inline python3 -c
+    // pipeline, wrapped in a try/catch for subprocess failure). regex_split
+    // + filter + trim + reduce are total, pure builtins with no exec/shell
+    // round-trip, so there is no failure mode left to catch.
+    let next = dedup_append_csv(existing, iid_str);
     memo_write(key, next);
 }
 
@@ -707,6 +702,44 @@ fn append_csv(acc: string, iid_raw: string) -> string {
     return iid_raw;
 }
 
+// #1588 slice 4: native dedup-append, was an inline python3 -c pipeline
+// (`parts=[p for p in ex.split(",") if p.strip() and p.strip()!=n];
+// parts.append(n); print(",".join(parts))`). regex_split(",", ...) on the
+// literal separator produces the same empty-string tokens on
+// leading/trailing/consecutive commas as python's str.split(","); the
+// filter predicate compares `trim(p)` (matching `.strip()`) against `n`
+// but keeps the ORIGINAL untrimmed token `p` in the output — exactly what
+// the python comprehension does (`if p.strip() ... ` filters, but the
+// list holds `p`, not `p.strip()`). `n` itself is always a bare digit
+// string (to_string(int)), so no trim is needed on the appended tail.
+fn dedup_append_csv(existing: string, n: string) -> string {
+    let kept = filter(regex_split(",", existing), |p: string| -> bool {
+        if len(trim(p)) > 0 {
+            if trim(p) != n { true; } else { false; };
+        } else { false; };
+    });
+    let joined = reduce(kept, |acc: string, p: string| -> string {
+        if len(acc) > 0 { acc + "," + p; } else { p; };
+    }, "");
+    if len(joined) > 0 { return joined + "," + n; };
+    return n;
+}
+
+// #1588 slice 4: native p-th non-empty CSV token, was an inline python3 -c
+// pipeline (`parts=[p for p in os.environ["CSV"].split(",") if p.strip()];
+// p=int(os.environ["POS"]); print(parts[p] if 0<=p<len(parts) else "")`).
+// Empty/whitespace-only tokens are dropped from `parts` (matching the
+// python `if p.strip()` filter) before indexing; out-of-range/negative pos
+// -> "" (matching the python bounds check).
+fn nth_nonempty_csv(csv: string, pos: int) -> string {
+    let parts = filter(regex_split(",", csv), |p: string| -> bool {
+        if len(trim(p)) > 0 { true; } else { false; };
+    });
+    if pos < 0 { return ""; };
+    if pos >= len(parts) { return ""; };
+    return to_string(get(parts, pos));
+}
+
 // Recursive iterator over `index_csv`. `.ag` has no loops, so we
 // substitute a tail-recursive function per the runtime convention
 // (agentis-core src/runtime.rs:2077 "Use recursive function as loop
@@ -715,15 +748,12 @@ fn append_csv(acc: string, iid_raw: string) -> string {
 // "keep" (iid still soaking — carry forward to next tick).
 //
 // The CB budget per tick (400) bounds the recursion depth implicitly:
-// each hop costs ~50 CB (one exec sh + one memo read + optional
-// GitLab query + optional learn()). At worst ~8 iids evaluated per
+// each hop costs one native CSV-token read + one memo read + optional
+// GitLab query + optional learn(). At worst ~8 iids evaluated per
 // tick; the rest stay in the carried-over index and get picked up on
 // subsequent ticks.
 fn eval_autonomous_at(owner: string, repo: string, index_csv: string, pos: int, acc: string) -> string {
-    let iid_raw = try {
-        exec sh "CSV=" + shell_escape(index_csv) + " POS=" + to_string(pos) +
-            " python3 -c 'import os; parts=[p for p in os.environ[\"CSV\"].split(\",\") if p.strip()]; p=int(os.environ[\"POS\"]); print(parts[p] if 0<=p<len(parts) else \"\")'";
-    } catch e { ""; };
+    let iid_raw = nth_nonempty_csv(index_csv, pos);
     if len(iid_raw) < 1 {
         return acc;
     };

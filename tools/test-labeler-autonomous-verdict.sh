@@ -185,13 +185,18 @@ fi
 
 # -- (8) hardening asserts (QA PR #243 round 2) ------------------------------
 
-# Append catch-branch must preserve peer iids when the subprocess fails.
-# A refactor that falls back to plain `iid_str` (or `""`) silently discards
-# any previously-queued autonomous writes.
-if awk '/^fn append_autonomous_index\(/,/^}/' "$LABELER" | grep -Eq "catch e \{ append_csv\(existing, iid_str\); \}"; then
-    ok "append_autonomous_index catch-branch preserves peers via append_csv(existing, iid_str)"
+# Append must preserve peer iids. #1588 slice 4: the dedup+append body is
+# now native (dedup_append_csv — regex_split/filter/trim/reduce, all total,
+# pure builtins), not a python3 subprocess wrapped in a try/catch, so there
+# is no failure mode left that could silently discard previously-queued
+# iids — peer-preservation holds by construction instead of via a
+# catch-branch fallback. A refactor that reintroduces a subprocess call
+# without carrying `existing` through would be a regression; guard against
+# that by requiring the native helper call to stay the whole function body.
+if awk '/^fn append_autonomous_index\(/,/^}/' "$LABELER" | grep -Fq "dedup_append_csv(existing, iid_str)"; then
+    ok "append_autonomous_index preserves peers via native dedup_append_csv(existing, iid_str)"
 else
-    bad "append_autonomous_index catch-branch does NOT preserve peers — silently clobbers the index on subprocess failure"
+    bad "append_autonomous_index does NOT preserve peers — dedup_append_csv(existing, iid_str) call missing"
 fi
 
 # End-of-scan index rewrite: evaluate_autonomous_verdicts MUST write the
