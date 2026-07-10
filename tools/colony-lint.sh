@@ -624,6 +624,28 @@ if [ -x "$REPO_ROOT/tools/check-getenv-allowlist.sh" ]; then
     fi
 fi
 
+# --- Check substrate purity: no NEW embedded interpreter in .ag (#1587/#1608) ---
+# Agent logic belongs in `.ag`, not inside an embedded `python3 -c` / awk / sed
+# one-liner shelled out through `exec sh`. Phase 0 (#1588) purged ~148 legacy
+# escapes; the rest are inventoried on the #1587 epic. This is the ratchet's
+# regression-prevention half (#1608): a NEW embedded interpreter in a
+# dev-apprenticeship agent that is neither on the script's file:function:phase
+# allowlist nor annotated `// substrate-purity: deferred (<reason>)` fails the
+# lint ([NEW-ESCAPE]); a completed rewrite that leaves its allowlist row behind
+# fails too ([STALE-ALLOWLIST]) — so the debt can only shrink.
+if [ -x "$REPO_ROOT/tools/check-substrate-purity.sh" ]; then
+    check_out="$("$REPO_ROOT/tools/check-substrate-purity.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "check-substrate-purity: no NEW embedded interpreter in dev-apprenticeship exec sh (#1587)"
+    elif [ "$check_rc" -eq 2 ]; then
+        fail "check-substrate-purity: infra/usage error (exit 2 — not a purity finding)"
+        printf '%s\n' "$check_out"
+    else
+        fail "check-substrate-purity: NEW embedded interpreter or stale allowlist entry (#1587)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- Check LLM prompt strings for bare push() examples (#943) ---
 # `push(list, x)` in agentis is PURE — it returns a new list and does
 # NOT mutate the input. Several research-foundry agents embed `.ag`

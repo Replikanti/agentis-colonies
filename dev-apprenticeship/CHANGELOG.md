@@ -15,6 +15,27 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- **Substrate-purity guard-rail lint**
+  ([#1608](https://github.com/Replikanti/agentis-colonies/issues/1608)):
+  `tools/check-substrate-purity.sh` (wired into `colony-lint.sh`) is the
+  regression-prevention half of the
+  [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
+  ratchet. It fails the lint when a NEW embedded `python3 -c`/awk/sed
+  one-liner appears in a `dev-apprenticeship/*/agents/*.ag` `exec sh`
+  string that is neither on the inline `file:function:phase` allowlist
+  (the 15 sites still awaiting Phases 2-3) nor annotated
+  `// substrate-purity: deferred (<reason>)` — comment-stripping first, so
+  the ~70 prose mentions of the pattern don't trip it, and script-path
+  invocations (`python3 tools/apply-edits.py`) are exempt by construction.
+  Two finding classes give the "shrinking-debt" property: `[NEW-ESCAPE]`
+  (a new site slipped in) and `[STALE-ALLOWLIST]` (a rewritten site's
+  allowlist row was left behind — pruning it is forced, so the debt can
+  only shrink). Non-flagging on the current corpus (15 allowlisted + 2
+  waived Phase-1 sites, zero findings); `tools/test-check-substrate-purity.sh`
+  covers 11 cases.
+
 ### Changed
 
 - **Substrate purity Phase 1, slice 3 — rate-limit jitter backoff goes
