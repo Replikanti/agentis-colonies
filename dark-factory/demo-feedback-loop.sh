@@ -5,7 +5,7 @@
 # dark-factory demos (demo-report-writer.sh / demo-immunefi-intake.sh): assert-based PASS/FAIL lines, a temp
 # drop-dir trap-cleaned, exit non-zero on regression, exit 3 if a component is missing.
 #
-# EIGHT parts:
+# NINE parts:
 #   1) DELIVERY (offline, real): run deliver-submission.sh over a fixture report-writer draft carrying the
 #      SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW marker + fixture gate verdicts + a stable id -> assert the drop-dir
 #      has manifest.json + submission-draft.md + OUTCOME.md, that manifest.json carries the canonical
@@ -70,6 +70,20 @@
 #      closed->failure, the threaded confirmation, the .outcome-ingested marker, a NO-OP second run, the no-token
 #      no-op, bad-args exit 2, the fake token never leaking, and source guards (bash never sh, no bounty-platform
 #      egress, channels:history documented, learn runs from the colony dir not a mktemp). Fake token, no network.
+#   9) OUTCOME->ACTION ROUTER (offline, #1562): ingest-slack-outcome.sh now turns a CLASSIFIED outcome into the next
+#      action via a DETERMINISTIC bash `case` (route_actions, never an LLM), propose-then-greenlight, human-gated for
+#      spend. Reuses part 8's harness (agentis stub, curl stub, mk_reply, conf_has). Asserts: the deterministic map
+#      per disposition+root_cause (via the pure `--route-preview` mode); CHEAP actions auto-apply end-to-end
+#      (out-of-scope -> a dead-targets.txt `target@commit` line + a gate-tuning/<stage>.md note + `.route-applied`, NO
+#      `.route-proposed`, no dup on a second run; needs-info -> a marked FOLLOWUP.md carrying the reviewer question,
+#      no proposal); SPENDY actions are PROPOSED not executed (rejected/impact-not-substantiated -> a `propose:`
+#      thread post + `.route-proposed` + the tune note, and crucially NO RE-HUNT.md / NO `.route-greenlit`);
+#      GREENLIGHT runs the hand-off ONLY on a later operator `go` reply (-> RE-HUNT.md with a ready-to-run
+#      run-audit-pass.sh command + a `greenlit` post + `.route-greenlit`; the agentis stub log shows ONLY
+#      feedback-intake.ag — no coordinator/hunt auto-invoke) and is idempotent (a THIRD run posts no second greenlit,
+#      RE-HUNT.md byte-unchanged). Plus source guards (the router is deterministic — no prompt() in the block; every
+#      https URL still targets slack.com; RE-HUNT.md carries no submit/egress primitive) and the
+#      run-immunefi-intake.sh --dead-targets skip (a router-marked-dead program is dropped from the ranked queue).
 #
 # All shell sub-scripts are invoked with `bash` (never `sh`) per the #1507 dash lesson.
 #
@@ -1252,6 +1266,235 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# 9) OUTCOME->ACTION ROUTER (#1562) — ingest-slack-outcome.sh turns a CLASSIFIED outcome into the next action via a
+#    DETERMINISTIC bash case, propose-then-greenlight (human-gated for spend). Reuses part 8's agentis + curl stubs,
+#    mk_reply, conf_has. Fake token, no network.
+# ----------------------------------------------------------------------------------------------------------
+note "9) outcome->action router: deterministic map + cheap auto-apply + spendy propose-then-greenlight hand-off ..."
+set +e
+
+IMMUNEFI="$HERE/run-immunefi-intake.sh"
+
+# The router writes dead-targets.txt / gate-tuning/ under DARK_FACTORY_DIR; point it at a throwaway under $WORK.
+DF9="$WORK/df9"
+mkdir -p "$DF9"
+
+# mk_manifest9 <stage> <submission_id> <target> <commit>: part 8's manifest + the router-relevant target/commit/
+# finding fields (deliver-submission.sh records these; the router reads them for mark-dead + the RE-HUNT command).
+mk_manifest9() {
+  mkdir -p "$1"
+  MF_SID="$2" MF_T="$3" MF_C="$4" python3 -c '
+import json, os, sys
+open(sys.argv[1], "w").write(json.dumps({
+    "submission_id": os.environ["MF_SID"],
+    "slack_thread_ts": "1700000000.000100",
+    "slack_channel": "C0HIGH",
+    "target": os.environ["MF_T"],
+    "in_scope_commit": os.environ["MF_C"],
+    "finding_slug": "sync-deposit-nav-frontrun",
+    "finding_title": "SyncDepositHandler NAV front-running",
+    "finding_location": "src/SyncDepositHandler.sol",
+    "finding_impact": "theft of pre-update holders unclaimed yield",
+    "severity_band": "Critical",
+    "impact_class": "theft",
+}, indent=2, sort_keys=True) + "\n")
+' "$1/manifest.json"
+}
+# mk_reply_go <fixture-file> <outcome_text>: part 8's bot snippet + operator outcome reply + a LATER operator `go`
+# reply (ts 1700000000.000400 > the outcome reply ts) that greenlights the proposed spendy action.
+mk_reply_go() {
+  MR_TX="$2" python3 -c '
+import json, os, sys
+body = {"ok": True, "messages": [
+    {"bot_id": "B0", "subtype": "file_share", "user": "U_BOT", "ts": "1700000000.000200", "text": "uploaded Description.md"},
+    {"user": "U_OP", "ts": "1700000000.000300", "text": os.environ["MR_TX"]},
+    {"user": "U_OP", "ts": "1700000000.000400", "text": "go"},
+]}
+open(sys.argv[1], "w").write(json.dumps(body))
+' "$1"
+}
+
+# --- (9a) DETERMINISTIC MAP via the pure --route-preview mode (no token, no Slack): one assert per table row. ------
+rp() { bash "$INGEST" --route-preview "$1" "$2"; }
+[ "$(rp accepted none)" = "cheap:reinforce spendy:hunt-deeper" ] \
+  && ok "(9a) map: accepted/* -> reinforce + hunt-deeper" || bad "(9a) accepted map wrong: $(rp accepted none)"
+[ "$(rp needs-info none)" = "cheap:needs-info-draft" ] \
+  && ok "(9a) map: needs-info/* -> needs-info-draft" || bad "(9a) needs-info map wrong: $(rp needs-info none)"
+[ "$(rp rejected impact-not-substantiated)" = "cheap:tune-gate spendy:re-devise" ] \
+  && ok "(9a) map: rejected/impact-not-substantiated -> tune-gate + re-devise" || bad "(9a) rejected/impact map wrong: $(rp rejected impact-not-substantiated)"
+[ "$(rp rejected insufficient-poc)" = "cheap:tune-gate spendy:re-devise" ] \
+  && ok "(9a) map: rejected/insufficient-poc -> tune-gate + re-devise" || bad "(9a) rejected/insufficient-poc map wrong: $(rp rejected insufficient-poc)"
+[ "$(rp rejected out-of-scope-asset)" = "cheap:mark-dead cheap:tune-gate" ] \
+  && ok "(9a) map: rejected/out-of-scope-asset -> mark-dead + tune-gate" || bad "(9a) rejected/oos-asset map wrong: $(rp rejected out-of-scope-asset)"
+[ "$(rp rejected none)" = "cheap:tune-gate" ] \
+  && ok "(9a) map: rejected/none -> tune-gate only (no spend without guidance)" || bad "(9a) rejected/none map wrong: $(rp rejected none)"
+[ "$(rp out-of-scope any)" = "cheap:mark-dead cheap:tune-gate" ] \
+  && ok "(9a) map: out-of-scope/* -> mark-dead + tune-gate" || bad "(9a) out-of-scope map wrong: $(rp out-of-scope any)"
+[ "$(rp duplicate any)" = "cheap:mark-dead cheap:tune-gate" ] \
+  && ok "(9a) map: duplicate/* -> mark-dead + tune-gate" || bad "(9a) duplicate map wrong: $(rp duplicate any)"
+[ -z "$(rp unclear any)" ] \
+  && ok "(9a) map: unclear/* -> empty (a HOLD returns before routing)" || bad "(9a) unclear map not empty: $(rp unclear any)"
+
+# --- (9b) CHEAP auto-apply: an out-of-scope outcome -> a dead-targets line + a gate-tuning note + .route-applied,
+#          NO .route-proposed; a second run does not dup the dead line. -------------------------------------------
+STAGE9B="$WORK/stage-9b"; mk_manifest9 "$STAGE9B" "enzyme-onyx@a1b2c3d:oos" "enzyme-onyx" "a1b2c3d"
+REPL9B="$WORK/replies-9b.json"
+mk_reply "$REPL9B" "outcome: This asset is not in scope for the program."
+run9b() {
+  env \
+    SLACK_LOG="$WORK/slack-9b.log" SLACK_POST_BODY="$1" SLACK_COMPLETE="$WORK/slack-complete-9b.jsonl" \
+    SLACK_GETURL="$WORK/slack-geturl-9b.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-9b" SLACK_UPCNT="$WORK/slack-upcnt-9b" \
+    SLACK_REPLIES_FIXTURE="$REPL9B" AGENTIS_LOG="$WORK/agentis-9b.log" \
+    AGENTIS_STUB_FEEDBACK="FEEDBACK|out-of-scope|high|scope-gate|FAILURE|out-of-scope-asset|stub oos" \
+    DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_DIR="$DF9" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-9" \
+    PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+    bash "$INGEST" --stage "$STAGE9B" >/dev/null 2>&1
+}
+POST9B="$WORK/slack-post-9b.jsonl"; run9b "$POST9B"; RC=$?
+[ "$RC" -eq 0 ] && ok "(9b) ingest exits 0 over an out-of-scope outcome" || bad "(9b) ingest exited $RC (expected 0)"
+DEADF="$DF9/dead-targets.txt"
+grep -q "^enzyme-onyx@a1b2c3d	" "$DEADF" 2>/dev/null \
+  && ok "(9b) dead-targets.txt gained the target@commit key (enzyme-onyx@a1b2c3d)" || bad "(9b) dead-targets.txt missing the key"
+[ -f "$DF9/gate-tuning/scope-gate.md" ] \
+  && ok "(9b) a gate-tuning/scope-gate.md calibration note was written (recorded hook, no re-learn)" || bad "(9b) gate-tuning/scope-gate.md missing"
+[ -f "$STAGE9B/.route-applied" ] \
+  && ok "(9b) the .route-applied marker was written" || bad "(9b) .route-applied marker missing"
+[ ! -f "$STAGE9B/.route-proposed" ] \
+  && ok "(9b) NO .route-proposed on an all-cheap outcome (no spend proposed)" || bad "(9b) unexpected .route-proposed on a cheap outcome"
+DEAD_N1="$(grep -c '^enzyme-onyx@a1b2c3d	' "$DEADF" 2>/dev/null || echo 0)"
+POST9B2="$WORK/slack-post-9b2.jsonl"; run9b "$POST9B2" >/dev/null
+DEAD_N2="$(grep -c '^enzyme-onyx@a1b2c3d	' "$DEADF" 2>/dev/null || echo 0)"
+[ "$DEAD_N1" = "1" ] && [ "$DEAD_N2" = "1" ] \
+  && ok "(9b) the dead-targets line is not duplicated on a second run (grep-guarded, idempotent)" || bad "(9b) dead-targets duped (n1=$DEAD_N1 n2=$DEAD_N2)"
+
+# --- (9c) CHEAP auto-apply: a needs-info outcome -> a marked FOLLOWUP.md carrying the reviewer question, no proposal.
+STAGE9C="$WORK/stage-9c"; mk_manifest9 "$STAGE9C" "enzyme-onyx@a1b2c3d:ni" "enzyme-onyx" "a1b2c3d"
+REPL9C="$WORK/replies-9c.json"
+mk_reply "$REPL9C" "outcome: We need more information before triaging — can you provide a runnable PoC?"
+env \
+  SLACK_LOG="$WORK/slack-9c.log" SLACK_POST_BODY="$WORK/slack-post-9c.jsonl" SLACK_COMPLETE="$WORK/slack-complete-9c.jsonl" \
+  SLACK_GETURL="$WORK/slack-geturl-9c.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-9c" SLACK_UPCNT="$WORK/slack-upcnt-9c" \
+  SLACK_REPLIES_FIXTURE="$REPL9C" AGENTIS_LOG="$WORK/agentis-9c.log" \
+  AGENTIS_STUB_FEEDBACK="FEEDBACK|needs-info|high|report-writer|PARTIAL|none|stub needs-info" \
+  DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_DIR="$DF9" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-9" \
+  PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+  bash "$INGEST" --stage "$STAGE9C" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 0 ] && ok "(9c) ingest exits 0 over a needs-info outcome" || bad "(9c) ingest exited $RC (expected 0)"
+FUP="$STAGE9C/FOLLOWUP.md"
+grep -q 'SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW' "$FUP" 2>/dev/null \
+  && ok "(9c) FOLLOWUP.md carries the human-gate marker (a draft, never auto-submitted)" || bad "(9c) FOLLOWUP.md missing the marker"
+grep -q 'provide a runnable PoC' "$FUP" 2>/dev/null \
+  && ok "(9c) FOLLOWUP.md carries the reviewer's question verbatim" || bad "(9c) FOLLOWUP.md missing the reviewer question"
+[ ! -f "$STAGE9C/.route-proposed" ] \
+  && ok "(9c) NO .route-proposed on needs-info (a draft, not a spend)" || bad "(9c) unexpected .route-proposed on needs-info"
+
+# --- (9d) SPENDY PROPOSE (not executed): a rejected/impact-not-substantiated outcome -> a `propose:` post +
+#          .route-proposed + the tune note, and crucially NO RE-HUNT.md and NO .route-greenlit. --------------------
+STAGE9D="$WORK/stage-9d"; mk_manifest9 "$STAGE9D" "enzyme-onyx@a1b2c3d:reprop" "enzyme-onyx" "a1b2c3d"
+REPL9D="$WORK/replies-9d.json"
+mk_reply "$REPL9D" "outcome: Closing as invalid — the impact is not substantiated on-chain."
+POST9D="$WORK/slack-post-9d.jsonl"; ALOG9D="$WORK/agentis-9d.log"
+run9d() {  # $1 = replies fixture, $2 = post body
+  env \
+    SLACK_LOG="$WORK/slack-9d.log" SLACK_POST_BODY="$2" SLACK_COMPLETE="$WORK/slack-complete-9d.jsonl" \
+    SLACK_GETURL="$WORK/slack-geturl-9d.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-9d" SLACK_UPCNT="$WORK/slack-upcnt-9d" \
+    SLACK_REPLIES_FIXTURE="$1" AGENTIS_LOG="$ALOG9D" \
+    AGENTIS_STUB_FEEDBACK="FEEDBACK|rejected|high|impact-gate|FAILURE|impact-not-substantiated|stub reject" \
+    DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_DIR="$DF9" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-9" \
+    PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+    bash "$INGEST" --stage "$STAGE9D" >/dev/null 2>&1
+}
+run9d "$REPL9D" "$POST9D"; RC=$?
+[ "$RC" -eq 0 ] && ok "(9d) ingest exits 0 over a rejected/impact-not-substantiated outcome" || bad "(9d) ingest exited $RC (expected 0)"
+[ "$(conf_has "$POST9D" "propose:")" = "ok" ] && [ "$(conf_has "$POST9D" "re-hunt")" = "ok" ] \
+  && ok "(9d) a 'propose: re-hunt' message was posted into the thread (ASCII substrings, not the glyph)" || bad "(9d) no propose:/re-hunt post"
+[ -f "$STAGE9D/.route-proposed" ] \
+  && ok "(9d) the .route-proposed marker was written (a spend is outstanding)" || bad "(9d) .route-proposed marker missing"
+grep -q 'outcome_reply_ts=1700000000.000300' "$STAGE9D/.route-proposed" 2>/dev/null \
+  && ok "(9d) .route-proposed records the outcome reply ts (the greenlight `go` must land later)" || bad "(9d) .route-proposed missing the outcome reply ts"
+[ -f "$DF9/gate-tuning/impact-gate.md" ] \
+  && ok "(9d) the tune-gate note was written to gate-tuning/impact-gate.md" || bad "(9d) impact-gate.md tune note missing"
+[ ! -f "$STAGE9D/RE-HUNT.md" ] \
+  && ok "(9d) NO RE-HUNT.md — the spend is PROPOSED, not executed (human-gated)" || bad "(9d) RE-HUNT.md leaked before a go reply"
+[ ! -f "$STAGE9D/.route-greenlit" ] \
+  && ok "(9d) NO .route-greenlit before an operator go reply" || bad "(9d) .route-greenlit leaked before a go reply"
+
+# --- (9e) GREENLIGHT: a later operator `go` reply -> the RE-HUNT.md hand-off + a greenlit post + .route-greenlit;
+#          the agentis stub log shows ONLY feedback-intake.ag (no coordinator/hunt auto-invoke). ------------------
+REPL9D_GO="$WORK/replies-9d-go.json"
+mk_reply_go "$REPL9D_GO" "outcome: Closing as invalid — the impact is not substantiated on-chain."
+POST9E="$WORK/slack-post-9e.jsonl"; run9d "$REPL9D_GO" "$POST9E"; RC=$?
+[ "$RC" -eq 0 ] && ok "(9e) a re-run with a later `go` reply exits 0" || bad "(9e) greenlight run exited $RC (expected 0)"
+REHUNT="$STAGE9D/RE-HUNT.md"
+[ -f "$REHUNT" ] \
+  && ok "(9e) RE-HUNT.md was written on the greenlight" || bad "(9e) RE-HUNT.md missing after the go reply"
+grep -q 'run-audit-pass.sh' "$REHUNT" 2>/dev/null && grep -q 'enzyme-onyx@a1b2c3d' "$REHUNT" 2>/dev/null \
+  && grep -q 'impact-not-substantiated' "$REHUNT" 2>/dev/null \
+  && ok "(9e) RE-HUNT.md carries the ready-to-run run-audit-pass.sh command + target@commit + reviewer guidance" || bad "(9e) RE-HUNT.md missing command/target/guidance"
+grep -q 'OPERATOR_CLONE_PATH' "$REHUNT" 2>/dev/null \
+  && ok "(9e) the RE-HUNT.md command leaves the operator clone path as the one placeholder" || bad "(9e) RE-HUNT.md missing the clone-path placeholder"
+[ "$(conf_has "$POST9E" "greenlit")" = "ok" ] \
+  && ok "(9e) a 'greenlit' hand-off confirmation was posted into the thread" || bad "(9e) no greenlit post"
+[ -f "$STAGE9D/.route-greenlit" ] \
+  && ok "(9e) the .route-greenlit marker was written" || bad "(9e) .route-greenlit marker missing"
+grep -q 'feedback-intake.ag' "$ALOG9D" 2>/dev/null \
+  && ok "(9e) the agentis stub log shows feedback-intake.ag ran (the classifier)" || bad "(9e) feedback-intake.ag never ran"
+if grep -qE 'coordinator|audit-scout|hunt|run-audit-pass|audit-pass' "$ALOG9D" 2>/dev/null; then
+  bad "(9e) the agentis stub log shows a hunt auto-invoke — the greenlit action must be a HAND-OFF, not an auto-invoke"
+else
+  ok "(9e) the agentis stub log shows ONLY feedback-intake.ag — no coordinator/hunt auto-invoke (honest hand-off)"
+fi
+# RE-HUNT.md must carry NO submit / bounty-platform egress primitive (a documentation artifact only).
+if grep -qiE 'curl |wget |immunefi|code4rena|sherlock|hackerone|submit\(' "$REHUNT" 2>/dev/null; then
+  bad "(9e) RE-HUNT.md carries a submit / bounty-platform egress primitive"
+else
+  ok "(9e) RE-HUNT.md carries no submit / bounty-platform egress primitive (never submits)"
+fi
+
+# --- (9f) IDEMPOTENCY: a THIRD run (go still present) posts no second greenlit; RE-HUNT.md is byte-unchanged. ----
+REHUNT_SUM1="$(cksum "$REHUNT")"
+POST9F="$WORK/slack-post-9f.jsonl"; run9d "$REPL9D_GO" "$POST9F" >/dev/null
+[ "$(conf_has "$POST9F" "greenlit")" = "missing" ] \
+  && ok "(9f) a third run posts NO second greenlit (the .route-greenlit marker short-circuits)" || bad "(9f) a second greenlit was posted"
+[ "$(cksum "$REHUNT")" = "$REHUNT_SUM1" ] \
+  && ok "(9f) RE-HUNT.md is byte-unchanged on the third run (idempotent hand-off)" || bad "(9f) RE-HUNT.md changed on the third run"
+
+# --- (9g) SOURCE GUARDS: the router is DETERMINISTIC (a bash case, no prompt()); Slack-only egress; no new .ag. ---
+grep -q 'route_actions()' "$INGEST" \
+  && ok "(9g) ingest defines route_actions() (the deterministic bash-case router)" || bad "(9g) route_actions() missing"
+if grep -q 'prompt(' "$INGEST"; then
+  bad "(9g) the router calls prompt() — routing must be deterministic, never an LLM"
+else
+  ok "(9g) the router calls no prompt() (deterministic routing, no new .ag / re-classification)"
+fi
+grep -q '.route-proposed' "$INGEST" && grep -q '.route-greenlit' "$INGEST" && grep -q '.route-applied' "$INGEST" \
+  && ok "(9g) the three idempotency markers (.route-applied/.route-proposed/.route-greenlit) are present" || bad "(9g) a router idempotency marker is missing"
+grep -qi 'HAND-OFF' "$INGEST" && grep -qi 'not a coordinator' "$INGEST" \
+  && ok "(9g) ingest documents the greenlit action as a HAND-OFF, not a coordinator auto-invoke (honest)" || bad "(9g) ingest missing the honest hand-off note"
+
+# --- (9h) run-immunefi-intake.sh --dead-targets: a router-marked-dead program is dropped from the ranked queue. ---
+PROGS9="$WORK/programs-9.json"
+python3 -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps([
+  {"id":"enzyme-onyx","name":"Enzyme Onyx","url":"https://immunefi.com/bug-bounty/enzyme/","in_scope_commit":"a1b2c3d","reward_max_usd":100000,"status":"active"},
+  {"id":"lombard","name":"Lombard","url":"https://immunefi.com/bug-bounty/lombard/","in_scope_commit":"deadbee","reward_max_usd":50000,"status":"active"}
+]))' "$PROGS9"
+DEAD9="$WORK/dead-9.txt"
+printf 'enzyme-onyx@a1b2c3d\tout-of-scope-asset\tenzyme-onyx@a1b2c3d:oos\t2026-01-01T00:00:00Z\n' > "$DEAD9"
+Q9="$WORK/immunefi-9.queue"
+bash "$IMMUNEFI" --programs "$PROGS9" --out "$Q9" --dead-targets "$DEAD9" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 0 ] && ok "(9h) run-immunefi-intake.sh exits 0 with --dead-targets" || bad "(9h) run-immunefi-intake exited $RC (expected 0)"
+if grep -q 'immunefi:lombard' "$Q9" 2>/dev/null && ! grep -q 'immunefi:enzyme-onyx' "$Q9" 2>/dev/null; then
+  ok "(9h) the router-marked-dead program (enzyme-onyx@a1b2c3d) is dropped; lombard survives (loop closed)"
+else
+  bad "(9h) dead-targets skip wrong: $(cat "$Q9" 2>/dev/null)"
+fi
+# Without --dead-targets pointing at the ledger, both programs are queued (proves the skip is the ledger's doing).
+Q9B="$WORK/immunefi-9b.queue"
+bash "$IMMUNEFI" --programs "$PROGS9" --out "$Q9B" --dead-targets "$WORK/no-such-ledger.txt" >/dev/null 2>&1
+grep -q 'immunefi:enzyme-onyx' "$Q9B" 2>/dev/null \
+  && ok "(9h) with no dead-targets ledger enzyme-onyx is queued (a missing ledger drops nothing)" || bad "(9h) enzyme-onyx dropped even without a ledger"
+
+# ----------------------------------------------------------------------------------------------------------
 echo
 if [ "$FAIL" -eq 0 ]; then
   note "PASS — deliver-submission.sh staged a marked draft (canonical id + raw gate verdicts in manifest.json),"
@@ -1275,7 +1518,13 @@ if [ "$FAIL" -eq 0 ]; then
   note "       platform_response verbatim into OUTCOME.md, runs feedback-intake.ag (rejection->FAILURE, accepted->SUCCESS),"
   note "       HOLDS a low-confidence classification (a .pending-confirmation marker + a confirmation-request, no learn,"
   note "       no re-spam), honours an operator verdict: override (->SUCCESS), posts a threaded confirmation, and is"
-  note "       idempotent (second run a no-op) — no-token no-op, no token leak, no bounty-platform egress. Never submits."
+  note "       idempotent (second run a no-op) — no-token no-op, no token leak, no bounty-platform egress. And (#1562)"
+  note "       the outcome->action ROUTER turns a classified outcome into the next action via a DETERMINISTIC bash"
+  note "       case: cheap actions auto-apply (mark-dead -> dead-targets.txt, tune-gate -> a gate-tuning note,"
+  note "       needs-info -> a marked FOLLOWUP.md), spendy actions are PROPOSED then run ONLY on a later operator go"
+  note "       reply as a ready-to-run RE-HUNT.md command HAND-OFF (never a coordinator/hunt auto-invoke), idempotent"
+  note "       via .route-applied/.route-proposed/.route-greenlit, and run-immunefi-intake.sh --dead-targets drops a"
+  note "       router-marked-dead target from the next queue. Never submits."
   exit 0
 fi
 note "FAIL — a feedback-loop assertion regressed (see above)." >&2

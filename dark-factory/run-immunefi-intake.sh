@@ -7,7 +7,7 @@
 # consumes it with ZERO changes to run-batch.sh. Read-only: never contacts a platform, never submits.
 #
 # Usage: run-immunefi-intake.sh --programs <file> [--min-score N] [--limit N] [--out <file>]
-#                               [--audit-delta <path>] [-h]
+#                               [--audit-delta <path>] [--dead-targets <file>] [-h]
 #   --programs    : REQUIRED — a JSON array of program objects (schema below). No live fallback; missing /
 #                   unreadable -> exit 2 (there is nothing to skip to, unlike run-funnel.sh's optional --from).
 #   --min-score   : drop programs scoring below N after ranking (default 0 = keep all).
@@ -15,6 +15,13 @@
 #   --out         : queue output path (default ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/immunefi.queue). A name
 #                   distinct from targets.queue / prospector.queue so the three intake paths never clobber.
 #   --audit-delta : path to audit-delta.sh (default: the sibling next to this script).
+#   --dead-targets: path to the router's dead-targets ledger (default ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/
+#                   dead-targets.txt, written by ingest-slack-outcome.sh's #1562 mark-dead action). A FRESHNESS-style
+#                   skip (mirrors the status!=active drop): any program whose `<id>@<in_scope_commit>` key matches a
+#                   dead-targets line's first (tab-separated) column is dropped, so a target the platform rejected
+#                   out-of-scope / as a known-issue is never re-queued. The `target@commit` key contract holds when
+#                   the operator's program `id` equals the `--target` passed to deliver-submission.sh (the fixture
+#                   convention, e.g. `enzyme-onyx`); a missing / unreadable ledger drops nothing (no crash).
 #
 # Programs-file schema (a JSON array; all fields OPTIONAL except `id`):
 #   {"id":"lombard","name":"Lombard Finance","url":"https://immunefi.com/bug-bounty/lombard/",
@@ -25,7 +32,8 @@
 #   `local_repo` is OPTIONAL and used ONLY to compute the delta term via audit-delta.sh (never a network fetch —
 #   the operator points it at a checkout they already have); absent / erroring -> delta term 0, never a crash.
 #
-# FRESHNESS : keep only programs whose `status` is case-insensitively "active" (mirrors run-funnel.sh's RUNNING).
+# FRESHNESS : keep only programs whose `status` is case-insensitively "active" (mirrors run-funnel.sh's RUNNING),
+#             AND whose `<id>@<in_scope_commit>` key is NOT in the --dead-targets ledger (the #1562 loop closer).
 # SCORE (integers, max 100; documented here so it is auditable, computed in the python block below):
 #   bounty_term (0..70) : 70 * min(1, log10(1+reward_max_usd)/7) — log-scaled (so a $50M bounty does not swamp
 #                         every other lever), reweighted UP since bounty is the dominant intake lever here.
@@ -53,13 +61,15 @@ DIR="${DARK_FACTORY_DIR:-$HOME/.dark-factory}"
 # on $2 (unbound) instead of the promised exit 2. $1 = remaining argc ($#), $2 = the flag name.
 nv() { [ "$1" -ge 2 ] || { echo "run-immunefi-intake.sh: $2 requires a value" >&2; exit 2; }; }
 PROGRAMS="" ; MIN_SCORE="0" ; LIMIT="0" ; OUT="$DIR/immunefi.queue" ; AUDIT_DELTA="$HERE/audit-delta.sh"
+DEAD_TARGETS="$DIR/dead-targets.txt"
 while [ $# -gt 0 ]; do case "$1" in
-  --programs)    nv "$#" "$1"; PROGRAMS="$2"; shift 2;;
-  --min-score)   nv "$#" "$1"; MIN_SCORE="$2"; shift 2;;
-  --limit)       nv "$#" "$1"; LIMIT="$2"; shift 2;;
-  --out)         nv "$#" "$1"; OUT="$2"; shift 2;;
-  --audit-delta) nv "$#" "$1"; AUDIT_DELTA="$2"; shift 2;;
-  -h|--help)     sed -n '2,53p' "$0"; exit 0;;
+  --programs)     nv "$#" "$1"; PROGRAMS="$2"; shift 2;;
+  --min-score)    nv "$#" "$1"; MIN_SCORE="$2"; shift 2;;
+  --limit)        nv "$#" "$1"; LIMIT="$2"; shift 2;;
+  --out)          nv "$#" "$1"; OUT="$2"; shift 2;;
+  --audit-delta)  nv "$#" "$1"; AUDIT_DELTA="$2"; shift 2;;
+  --dead-targets) nv "$#" "$1"; DEAD_TARGETS="$2"; shift 2;;
+  -h|--help)      sed -n '2,54p' "$0"; exit 0;;
   *) echo "run-immunefi-intake.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
 
@@ -75,11 +85,32 @@ mkdir -p "$(dirname "$OUT")" 2>/dev/null || true
 # per program that carries a local_repo (git diff, no network). A malformed program contributes nothing; a
 # missing/garbled field ranks at the appropriate lever's 0 (never crashes the rank).
 # ----------------------------------------------------------------------------------------------------------
-PROGRAMS="$PROGRAMS" MIN_SCORE="$MIN_SCORE" LIMIT="$LIMIT" AUDIT_DELTA="$AUDIT_DELTA" python3 - > "$OUT" <<'PY'
+PROGRAMS="$PROGRAMS" MIN_SCORE="$MIN_SCORE" LIMIT="$LIMIT" AUDIT_DELTA="$AUDIT_DELTA" DEAD_TARGETS="$DEAD_TARGETS" python3 - > "$OUT" <<'PY'
 import os, json, math, re, subprocess
 
 programs_path = os.environ["PROGRAMS"]
 audit_delta = os.environ.get("AUDIT_DELTA", "")
+dead_targets_path = os.environ.get("DEAD_TARGETS", "")
+
+
+def load_dead_keys(path):
+    """The set of `target@commit` keys the #1562 router marked dead (first tab-separated column of each line).
+    Missing / unreadable ledger -> an empty set (drops nothing, never crashes)."""
+    keys = set()
+    if not path or not os.path.exists(path):
+        return keys
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                key = line.split("\t", 1)[0].strip()
+                if key:
+                    keys.add(key.lower())
+    except Exception:
+        return set()
+    return keys
+
+
+dead_keys = load_dead_keys(dead_targets_path)
 try:
     min_score = int(os.environ.get("MIN_SCORE", "0"))
 except ValueError:
@@ -157,6 +188,9 @@ for p in progs:
         continue
     pid = clean(p.get("id", ""))
     if not pid:
+        continue
+    commit_key = clean(p.get("in_scope_commit", ""))
+    if ("%s@%s" % (pid, commit_key)).lower() in dead_keys:        # FRESHNESS: skip router-marked-dead targets
         continue
     files, days = delta_of(p)
     s = score_of(p, files, days)

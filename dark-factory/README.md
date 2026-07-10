@@ -671,6 +671,58 @@ always-on Slack listener**. Ingestion is operator- or **cron-triggered**. A sugg
 Reading a thread + posting a confirmation is an operator-workspace action — **NOT** a
 bounty-platform submission; the never-submit invariant is unchanged.
 
+### Self-improving router (outcome → next action)
+
+Once an outcome is **classified**, `ingest-slack-outcome.sh` turns it into the next
+action with a **deterministic** bash `case` (`route_actions`, never an LLM), keyed on
+`disposition + root_cause`. The `tune-gate`/`reinforce` **target gate** is the
+classifier's own `stage` attribution.
+
+| Disposition / root cause | Actions |
+|--------------------------|---------|
+| `accepted` (any) | `reinforce` + `hunt-deeper` (find more on a paying target) |
+| `needs-info` (any) | `needs-info-draft` (a `FOLLOWUP.md` stub for the operator) |
+| `rejected` / `impact-not-substantiated`, `insufficient-poc` | `tune-gate` + `re-devise` |
+| `rejected` / `out-of-scope-asset`, `known-issue`, `duplicate` | `mark-dead` + `tune-gate` |
+| `rejected` / `none`, `other` | `tune-gate` (record only; no spend without guidance) |
+| `out-of-scope` (any) | `mark-dead` + `tune-gate` |
+| `duplicate` (any) | `mark-dead` + `tune-gate` |
+| `unclear` | (none — a HOLD returns before routing) |
+
+**Autonomy split.** CHEAP actions are local, reversible writes applied immediately;
+SPENDY actions are **propose-then-greenlight**, human-gated for spend:
+
+- **`mark-dead`** appends a `target@<commit>` line to `dead-targets.txt` (grep-guarded,
+  no dups). `run-immunefi-intake.sh --dead-targets <file>` (default
+  `$DARK_FACTORY_DIR/dead-targets.txt`) **consults** it: any program whose
+  `<id>@<in_scope_commit>` key is dead is dropped from the next ranked queue — a
+  freshness-style skip, so a rejected target is never re-queued.
+- **`tune-gate`** appends a durable, attributed **calibration note** to
+  `gate-tuning/<stage>.md`. Honest scope: `feedback-intake.ag` already `learn()`s the
+  deterministic signal on the gate's own topic — the router does **not** call `learn()`
+  again (no double-count), and the gates do not `recall()` this note into their prompts
+  yet. It is a recorded **hook**, not a behavior change.
+- **`needs-info-draft`** writes `FOLLOWUP.md` — a `SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW`
+  stub carrying the reviewer's question verbatim + a pointer to `submission-draft.md`
+  (best-effort enriched by `report-writer.ag` when `agentis` is present; the deterministic
+  stub is the guaranteed artifact).
+- **`reinforce`** appends a winning-path note on `accepted` (no re-`learn()`).
+- **SPENDY** (`re-devise` / `hunt-deeper`) posts a `propose:` message into the thread and
+  writes `.route-proposed`. The spend runs **only** after the operator replies **`go`** in
+  the thread: the greenlight pass then writes `RE-HUNT.md` — the reviewer reason as
+  guidance + a **ready-to-run `run-audit-pass.sh …` command** pre-filled from the manifest
+  (operator clone path the one placeholder) — posts a `greenlit` confirmation, and writes
+  `.route-greenlit`.
+
+**Honest hand-off.** The greenlit action is a **command hand-off** the operator runs, not
+a coordinator auto-invoke: no hunt entry point accepts a reviewer-guidance input yet.
+Threading the guidance into `run-audit-pass.sh` (e.g. a `--reviewer-feedback` flag folded
+into the devise/impact prompts) is the documented **follow-up seam**. Three per-outcome
+markers keep it idempotent: `.route-applied`, `.route-proposed`, `.route-greenlit`; the
+greenlight pass runs before the `.outcome-ingested` short-circuit so a `--all` cron
+re-enters to catch a later `go`. Routing does only local writes + operator-workspace Slack
+posts — no bounty-platform egress, `RE-HUNT.md` carries no submit primitive, never submits.
+
 ## Layout
 
 ```
