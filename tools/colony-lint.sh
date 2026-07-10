@@ -892,6 +892,17 @@ if [ -x "$REPO_ROOT/dark-factory/demo-gen-briefs.sh" ]; then
     fi
 fi
 
+# --- dark-factory new-listing watcher: freshness-first Immunefi target selection (#1623) ---
+if [ -x "$REPO_ROOT/dark-factory/demo-watch-new-listings.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-watch-new-listings.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: new-listing watcher (launch-window + first-seen freshness, ledger dedup) (#1623)"
+    else
+        fail "dark-factory: new-listing watcher regressed (#1623)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory snapshot owner-rebind hard assert (#1457) ---
 # The snapshot-replay harness reads the account's real on-chain owner and emits an explicit
 # OWNER REBIND / MATCH / MISMATCH marker; with EXPECT_PROGRAM_OWNER (run-audit --expect-owner) it
