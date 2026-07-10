@@ -9,7 +9,7 @@
 #   * lone CHANGELOG.md [Unreleased] two-sided    -> deterministic union-merge; REBASED; exit 0
 #   * conflict touching a RELEASED heading        -> git rebase --abort + one-time note; exit 6
 #   * a non-CHANGELOG code conflict               -> abort + one-time note; exit 6
-#   * a foreign commit at the remote head         -> guarded_push REFUSES; #1516 note; exit 5
+#   * a foreign commit at the remote head         -> guarded_push REFUSES; #1516 note; exit 7 (#1560)
 #
 # The ONLY write is guarded_push (#1516). A rebase rewrites history, so the new
 # head is never an ancestor of the old remote — guarded_push then force-pushes
@@ -22,7 +22,7 @@
 #   B2. CHANGELOG [Unreleased] two-sided insert union-merges (both bullets, main first)
 #   B3. conflict touching a RELEASED `## [x.y.z]` heading is NOT auto-resolved (abort+note, exit 6)
 #   B4. a real code conflict (non-CHANGELOG file) -> note + no push (abort, exit 6)
-#   B5. ownership: a foreign commit at remote head -> guarded_push refuses -> note, no destructive push (exit 5)
+#   B5. ownership: a foreign commit at remote head -> guarded_push refuses -> note, no destructive push (exit 7, #1560)
 #   B6. a CHANGELOG conflict where one side EDITS/DELETES a base [Unreleased] bullet
 #       (both sides bullet-shaped) is NOT auto-resolved: the zdiff3 base region is
 #       non-empty -> abort + note + exit 6, no corrupting union pushed
@@ -338,9 +338,10 @@ fi
 # ===========================================================================
 # B5: ownership composition. A CONFLICTING PR whose remote head carries a FOREIGN
 # commit (NOT code_writer's recorded own sha) — a clean rebase succeeds locally
-# but guarded_push REFUSES (exit 5) and posts the #1516 yield note; the remote
-# head is NOT clobbered. Same clean-rebase shape as B1, but the own-sha record is
-# set to a DIFFERENT sha (an operator pushed over our branch).
+# but guarded_push REFUSES (exit 7, #1560 — the true foreign-commit refusal) and
+# posts the #1516 yield note; the remote head is NOT clobbered. Same
+# clean-rebase shape as B1, but the own-sha record is set to a DIFFERENT sha (an
+# operator pushed over our branch).
 # ===========================================================================
 IID=74
 fresh_remote
@@ -371,10 +372,10 @@ install_note_stub
 # foreign) — guarded_push must refuse.
 record_own_sha "$IID" "0000000000000000000000000000000000000000"
 run_rebase "$IID"
-if [ "$RC" -eq 5 ]; then
-    pass "B5: foreign commit at remote head -> guarded_push REFUSES (exit 5)"
+if [ "$RC" -eq 7 ]; then
+    pass "B5: foreign commit at remote head -> guarded_push REFUSES (exit 7, #1560)"
 else
-    fail "B5: exit 5" "rc=$RC out=[$OUT] err=$(tail -6 "$WORK/err.txt")"
+    fail "B5: exit 7" "rc=$RC out=[$OUT] err=$(tail -6 "$WORK/err.txt")"
 fi
 NEW_TIP="$(git --git-dir="$BARE" rev-parse "refs/heads/fix/issue-$IID")"
 if [ "$NEW_TIP" = "$FOREIGN_TIP" ]; then

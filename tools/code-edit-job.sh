@@ -383,6 +383,11 @@ setsid bash -c '
         printf "done" > "$CEJ_JOBDIR/status.tmp"
     elif [ "$rc" -eq 3 ]; then
         printf "no_edits" > "$CEJ_JOBDIR/status.tmp"
+    elif [ "$rc" -eq 7 ]; then
+        # #1560: guarded_push refused a genuine foreign commit at the remote
+        # head — distinct from the generic exit-5 transient/infra refusals,
+        # which stay STATUS=error below so they keep retrying blindly.
+        printf "ownership_refused" > "$CEJ_JOBDIR/status.tmp"
     else
         printf "error" > "$CEJ_JOBDIR/status.tmp"
     fi

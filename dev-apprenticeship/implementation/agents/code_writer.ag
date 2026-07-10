@@ -389,6 +389,58 @@ fn has_mr_for_branch(owner: string, repo: string, iid_str: string) -> bool {
     return raw_list_has_branch(merged_raw, branch);
 }
 
+// #1560: cheap, clone-free probe of a branch's remote state, via
+// code-edit-in-checkout.sh's read-only --probe-remote-head mode (a single
+// `git ls-remote`, no workspace, no LLM). Returns the RAW two-token line
+// `PROBE_STATUS=ok|unreachable REMOTE_HEAD=<sha-or-empty>` for the caller to
+// parse with pr_check_token; any exec failure -> "" (which parses as
+// PROBE_STATUS="" -> treated as unreachable = fail-safe keep-hold).
+fn ownership_probe(owner: string, repo: string, branch: string) -> string {
+    // colony-lint: safe-exec-concat
+    let probe_cmd = "$COLONY_DIR/../../tools/code-edit-in-checkout.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue x --branch " + shell_escape(branch) + " --title x --task x --probe-remote-head";
+    return try { exec sh probe_cmd; } catch e { ""; };
+}
+
+// #1560: is issue `iid_str`'s branch currently under an ownership hold (the
+// operator carries commits on it, no MR yet)? Reads the sha recorded at
+// refusal time and re-probes the remote every call. Three outcomes, keyed on
+// the probe's PROBE_STATUS (which reflects ls-remote's own exit code):
+//   * unreachable (or exec failed) -> KEEP the hold (fail-safe transient; the
+//     ONLY "keep on ambiguity" path, bounded by the unconditional mr_exists
+//     escape the caller checks first + a later reachable probe releasing it);
+//   * reachable + branch GONE (empty head) -> RELEASE — the operator deleted
+//     the WIP branch we were protecting; nothing left to clobber, and a plain
+//     `len(probe)==0` check used to treat this identically to "unreachable" and
+//     wedge the hold forever (no MR can open for a deleted branch);
+//   * reachable + head == recorded -> KEEP; head != recorded -> RELEASE.
+fn ownership_held(owner: string, repo: string, iid_str: string) -> bool {
+    let recorded = recall_latest(scoped_memo(owner, repo, "code_edit_loop:ownership_hold:" + iid_str));
+    if len(recorded) == 0 { return false; };
+    let branch = "fix/issue-" + iid_str;
+    let raw = ownership_probe(owner, repo, branch);
+    let status = pr_check_token(raw, "PROBE_STATUS");
+    if status != "ok" {
+        // Remote unreachable or probe exec failed — fail SAFE, keep the hold.
+        return true;
+    };
+    let probe_head = pr_check_token(raw, "REMOTE_HEAD");
+    if len(probe_head) == 0 {
+        // Reachable AND the branch is gone (deleted) — release so the fed can
+        // re-attempt (guarded_push proceeds on an absent remote branch).
+        memo_write(scoped_memo(owner, repo, "code_edit_loop:ownership_hold:" + iid_str), "");
+        print("[code_writer] issue", iid_str, "ownership hold released — branch deleted");
+        return false;
+    };
+    if probe_head == recorded {
+        // Situation unchanged since the refusal — still held.
+        return true;
+    };
+    // Reachable and the head moved to a different sha — release the hold.
+    memo_write(scoped_memo(owner, repo, "code_edit_loop:ownership_hold:" + iid_str), "");
+    print("[code_writer] issue", iid_str, "ownership hold released — remote head moved");
+    return false;
+}
+
 // #239: learn from each merged MR at most once per daemon lifetime.
 // Without this gate, the `merge-requests --since <last_check>` query
 // keeps returning the same MR at index [0] as long as its `updated_at`
@@ -677,6 +729,10 @@ fn ag_attempt_poll(poll: string) -> string {
         return "ERROR";
     };
     if status == "no_edits" { return "NO_EDITS"; };
+    // #1560: a genuine foreign-commit guarded_push refusal (exit 7) — distinct
+    // from the generic ERROR verdict so ag_edit_step can set an ownership hold
+    // instead of retrying the expensive draft cycle every tick.
+    if status == "ownership_refused" { return "OWNERSHIP_REFUSED"; };
     return "ERROR";
 }
 
@@ -695,6 +751,24 @@ fn ag_edit_step(owner: string, repo: string, iid: string, branch: string, title:
 
     // in flight / cap-deferred => re-poll, leave state untouched.
     if mv == "RUNNING" { return "RUNNING"; };
+    // #1560: guarded_push genuinely refused a foreign (operator-owned) commit
+    // on this branch. Record a hold keyed to the remote head observed right
+    // now so the needs-draft gate can skip re-drafting on subsequent ticks —
+    // but only when the probe actually returns a sha; an empty probe here has
+    // no baseline to compare against later, so setting a hold would be an
+    // unreleasable one (fail SAFE: no hold, fall through as a plain error).
+    if mv == "OWNERSHIP_REFUSED" {
+        let probe_head = pr_check_token(ownership_probe(owner, repo, branch), "REMOTE_HEAD");
+        if len(probe_head) > 0 {
+            memo_write(scoped_memo(owner, repo, "code_edit_loop:ownership_hold:" + iid), probe_head);
+            print("[code_writer] ag-loop issue", iid, "ownership hold set at remote head", probe_head);
+        } else {
+            print("[code_writer] ag-loop issue", iid, "ownership-refused but probe returned no head (unreachable/absent) — not setting a hold, treating as plain error");
+        };
+        ag_edit_reset(owner, repo, iid);
+        clear_job_dir(iid);
+        return "ERROR";
+    };
     // job-died / stale / done-without-url => clear + reset so the next tick restarts.
     if mv == "ERROR" {
         ag_edit_reset(owner, repo, iid);
@@ -1758,6 +1832,15 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         };
         let needs_draft = !mr_exists;
         if needs_draft {
+            // #1560: an ownership hold (operator commits on the branch, no MR)
+            // set by a prior ag_edit_step refusal. Checked FIRST — before the
+            // input_unchanged early-return and before the expensive draft
+            // prompt() below — so a held issue costs one cheap `git ls-remote`
+            // per tick instead of a full draft+edit+finalize cycle.
+            if ownership_held(owner, repo, first_iid_str) {
+                print("[code_writer] issue", first_iid_str, "has an ownership hold (operator commits on the branch, no MR) — skipping draft this tick");
+                return;
+            };
             // #1370 (B3): tier-independent input-unchanged early-return BEFORE
             // the draft prompt(). If the top assigned issue's (iid, updated_at)
             // fingerprint is unchanged since the last tick we saw it AND an

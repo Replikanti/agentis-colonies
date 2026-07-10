@@ -15,7 +15,11 @@
 #   3. after the stub finishes:
 #        exit 0 -> STATUS=done PID_ALIVE=0 RESULT=<url> (url from the stub stdout)
 #        exit 3 -> STATUS=no_edits PID_ALIVE=0 RESULT=
-#        exit 7 -> STATUS=error PID_ALIVE=0 RESULT=
+#        exit 1 -> STATUS=error PID_ALIVE=0 RESULT= (generic non-0/3/7 code)
+#        exit 7 -> STATUS=ownership_refused PID_ALIVE=0 RESULT= (#1560: the
+#          guarded_push true foreign-commit refusal, distinct from generic
+#          error so code_writer.ag can set an ownership hold instead of
+#          retrying the expensive draft cycle every tick)
 #      and the launcher leaves the job dir INTACT (cleanup is code_writer's job)
 #   4. dead-pid-with-running-status -> STATUS=running PID_ALIVE=0 (no hang), dir
 #      left intact
@@ -219,11 +223,11 @@ else
 fi
 
 # ===========================================================================
-# Scenario C (exit 7 -> ERROR).
+# Scenario C (exit 1, a generic non-0/3/7 code -> ERROR).
 # ===========================================================================
 IID=44
 MARKER_C="$WORK/marker-c.log"
-export STUB_SLEEP=0.5 STUB_EXIT=7 STUB_MARKER="$MARKER_C"
+export STUB_SLEEP=0.5 STUB_EXIT=1 STUB_MARKER="$MARKER_C"
 run_launcher "$IID" >/dev/null 2>&1
 JD="$(job_dir_for "$IID")"
 JPID="$(cat "$JD/pid" 2>/dev/null || echo '')"
@@ -232,9 +236,30 @@ while kill -0 "$JPID" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1))
 sleep 0.2
 C="$(run_launcher "$IID" 2>/dev/null)"
 if [ "$C" = "STATUS=error PID_ALIVE=0 RESULT=" ]; then
-    pass "C: non-0/non-3 orchestrator exit reports STATUS=error"
+    pass "C: generic non-0/3/7 orchestrator exit reports STATUS=error"
 else
-    fail "C: error raw status on exit 7" "stdout=[$C]"
+    fail "C: error raw status on exit 1" "stdout=[$C]"
+fi
+
+# ===========================================================================
+# Scenario C2 (#1560: exit 7 -> STATUS=ownership_refused, distinct from the
+# generic STATUS=error of scenario C — the guarded_push true foreign-commit
+# refusal).
+# ===========================================================================
+IID=441
+MARKER_C2="$WORK/marker-c2.log"
+export STUB_SLEEP=0.5 STUB_EXIT=7 STUB_MARKER="$MARKER_C2"
+run_launcher "$IID" >/dev/null 2>&1
+JD="$(job_dir_for "$IID")"
+JPID="$(cat "$JD/pid" 2>/dev/null || echo '')"
+i=0
+while kill -0 "$JPID" 2>/dev/null && [ "$i" -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+sleep 0.2
+C2="$(run_launcher "$IID" 2>/dev/null)"
+if [ "$C2" = "STATUS=ownership_refused PID_ALIVE=0 RESULT=" ]; then
+    pass "C2 (#1560): exit-7 orchestrator reports STATUS=ownership_refused"
+else
+    fail "C2 (#1560): ownership_refused raw status on exit 7" "stdout=[$C2]"
 fi
 
 # ===========================================================================

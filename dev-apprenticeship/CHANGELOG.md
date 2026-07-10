@@ -15,6 +15,29 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`code_writer` no longer re-drafts + refuses every tick on an
+  ownership-refused branch (operator commits, no MR)**
+  ([#1560](https://github.com/Replikanti/agentis-colonies/issues/1560)): the
+  #1516 `guarded_push` foreign-commit refusal was indistinguishable from two
+  unrelated transient exit-5 refusals, so `ag_edit_step` treated it as a plain
+  `ERROR` and retried forever — one full `prompt()` + edit-job launch + fetch
+  per tick. The true foreign-commit refusal now exits `7` (the two
+  ambiguous/transient sites stay `exit 5`); `code-edit-in-checkout.sh` gains a
+  read-only, clone-free `--probe-remote-head` mode (a single `git ls-remote`,
+  no workspace, no LLM) that reports both `PROBE_STATUS=ok|unreachable` (from
+  `ls-remote`'s own exit code) and `REMOTE_HEAD=<sha>`; and `code_writer.ag`
+  records an ownership hold keyed to the remote head observed at refusal time.
+  The hold releases the moment a fresh probe diverges — the head moved to a
+  different sha, OR the branch was **deleted** (reachable remote, empty head:
+  the operator abandoned the WIP, nothing left to protect). An **unreachable**
+  probe (network/auth) keeps the hold (fail-safe transient), never conflating a
+  deleted branch with an outage — the distinction ls-remote's exit code makes,
+  without which a deleted branch wedged the hold forever. The hold is also
+  independently bypassed whenever an MR opens (the pre-existing, unconditional
+  `mr_exists` gate).
+
 ## [2.9.0] - 2026-07-10
 
 **Requires:** agentis >= 1.20.0
