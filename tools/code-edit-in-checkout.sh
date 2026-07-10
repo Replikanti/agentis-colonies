@@ -481,14 +481,27 @@ git_capture() {
 # --probe-remote-head (#1560): a read-only, clone-free fact-reporter for the
 # ownership-hold gate in code_writer.ag. It only needs $CLONE_URL (resolved
 # above) and git_capture — it never touches $WS, never clones, never runs an
-# LLM session. An ls-remote failure or an absent branch both print an empty
-# value; the caller decides what "ambiguous" means, this tool stays neutral.
+# LLM session. Emits TWO space-separated tokens on ONE line (the pr-checks verb
+# convention, parseable by code_writer.ag's pr_check_token):
+#   PROBE_STATUS=ok         REMOTE_HEAD=<sha>   ls-remote succeeded, branch present
+#   PROBE_STATUS=ok         REMOTE_HEAD=        ls-remote succeeded, branch ABSENT (deleted)
+#   PROBE_STATUS=unreachable REMOTE_HEAD=       ls-remote FAILED (network/auth)
+# The two empty-REMOTE_HEAD cases are DIFFERENT — a reachable-but-absent branch
+# is a determinate deletion (the caller releases the hold), an unreachable remote
+# is transient (the caller keeps the hold). ls-remote's own exit code is the ONLY
+# thing that tells them apart (both print no ref), so it MUST be captured here —
+# discarding it (the pre-fix behaviour) made a deleted branch's hold unreleasable.
 if [ "$PROBE_REMOTE_HEAD" -eq 1 ]; then
     set +e
     _probe_lsr="$(git_capture ls-remote "$CLONE_URL" "refs/heads/$BRANCH" 2>/dev/null)"
+    _probe_rc=$?
     set -e
-    _probe_head="$(printf '%s\n' "$_probe_lsr" | awk 'NR==1{print $1}')"
-    echo "REMOTE_HEAD=$_probe_head"
+    if [ "$_probe_rc" -eq 0 ]; then
+        _probe_head="$(printf '%s\n' "$_probe_lsr" | awk 'NR==1{print $1}')"
+        echo "PROBE_STATUS=ok REMOTE_HEAD=$_probe_head"
+    else
+        echo "PROBE_STATUS=unreachable REMOTE_HEAD="
+    fi
     exit 0
 fi
 

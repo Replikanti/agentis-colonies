@@ -239,11 +239,56 @@ env \
         --branch "fix/issue-$IID" --title x --task x \
         --probe-remote-head >"$PROBE_OUT" 2>"$WORK/probe1_err.txt"
 PROBE_RC=$?
-PROBE_LINE="$(grep '^REMOTE_HEAD=' "$PROBE_OUT" || true)"
-if [ "$PROBE_RC" -eq 0 ] && [ "$PROBE_LINE" = "REMOTE_HEAD=$FOREIGN_TIP" ]; then
-    pass "O1: --probe-remote-head reports the foreign tip, exit 0"
+PROBE_LINE="$(grep '^PROBE_STATUS=' "$PROBE_OUT" || true)"
+# #1560: two space-separated tokens on one line; branch present => ok + the tip.
+if [ "$PROBE_RC" -eq 0 ] && [ "$PROBE_LINE" = "PROBE_STATUS=ok REMOTE_HEAD=$FOREIGN_TIP" ]; then
+    pass "O1: --probe-remote-head reports ok + the foreign tip, exit 0"
 else
-    fail "O1: --probe-remote-head must report REMOTE_HEAD=\$FOREIGN_TIP" "rc=$PROBE_RC out=$PROBE_LINE want=REMOTE_HEAD=$FOREIGN_TIP"
+    fail "O1: --probe-remote-head must report PROBE_STATUS=ok REMOTE_HEAD=\$FOREIGN_TIP" "rc=$PROBE_RC out=$PROBE_LINE want=PROBE_STATUS=ok REMOTE_HEAD=$FOREIGN_TIP"
+fi
+
+# O1c (#1560): a REACHABLE remote where the branch is ABSENT (deleted) — ls-remote
+# succeeds with no ref, so PROBE_STATUS=ok + an EMPTY head. This is the case the
+# ownership-hold RELEASE path keys on (deleted branch != transient outage).
+PROBE_OUT_C="$WORK/probe_absent.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue 999999 \
+        --branch "fix/issue-999999" --title x --task x \
+        --probe-remote-head >"$PROBE_OUT_C" 2>/dev/null
+PROBE_RC_C=$?
+PROBE_LINE_C="$(grep '^PROBE_STATUS=' "$PROBE_OUT_C" || true)"
+if [ "$PROBE_RC_C" -eq 0 ] && [ "$PROBE_LINE_C" = "PROBE_STATUS=ok REMOTE_HEAD=" ]; then
+    pass "O1c: --probe-remote-head on a reachable-but-absent branch => ok + empty head"
+else
+    fail "O1c: reachable-absent must report PROBE_STATUS=ok REMOTE_HEAD= (empty)" "rc=$PROBE_RC_C out=$PROBE_LINE_C"
+fi
+
+# O1d (#1560): an UNREACHABLE remote — ls-remote itself fails, so
+# PROBE_STATUS=unreachable (NOT ok). This is what keeps the hold on a transient
+# outage instead of mis-releasing it as a deletion.
+PROBE_OUT_D="$WORK/probe_unreachable.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$WORK/no-such-remote-base" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue "$IID" \
+        --branch "fix/issue-$IID" --title x --task x \
+        --probe-remote-head >"$PROBE_OUT_D" 2>/dev/null
+PROBE_RC_D=$?
+PROBE_LINE_D="$(grep '^PROBE_STATUS=' "$PROBE_OUT_D" || true)"
+if [ "$PROBE_RC_D" -eq 0 ] && [ "$PROBE_LINE_D" = "PROBE_STATUS=unreachable REMOTE_HEAD=" ]; then
+    pass "O1d: --probe-remote-head on an unreachable remote => unreachable (exit 0, distinct from absent)"
+else
+    fail "O1d: unreachable remote must report PROBE_STATUS=unreachable REMOTE_HEAD=" "rc=$PROBE_RC_D out=$PROBE_LINE_D"
 fi
 
 # O1b: a RETRY of the same issue (workspace + .yielded flag survive the exit 7)

@@ -11,12 +11,13 @@
 #
 #   1. ag_attempt_poll maps STATUS=ownership_refused to a DISTINCT verdict
 #      (OWNERSHIP_REFUSED), never folded into the generic ERROR string.
-#   2. ag_edit_step's OWNERSHIP_REFUSED branch calls ownership_probe_remote_head
-#      and writes the ownership_hold memo ONLY when the probe is non-empty.
-#   3. ownership_held compares the probed sha for EQUALITY, not presence — the
-#      "probe differs" and "probe empty" branches must NOT collapse together
-#      (the fail-safe-vs-bogus-hold distinction #1560's acceptance criteria
-#      call out).
+#   2. ag_edit_step's OWNERSHIP_REFUSED branch calls ownership_probe + parses the
+#      head, and writes the ownership_hold memo ONLY when that head is non-empty.
+#   3. ownership_held branches on the probe's PROBE_STATUS: an UNREACHABLE remote
+#      KEEPS the hold (transient, fail-safe), a REACHABLE-but-absent branch
+#      (empty head) RELEASES it (deletion), and a moved head RELEASES it. The
+#      two empty-head cases (unreachable vs deleted) must NOT collapse together —
+#      that collapse was the never-releasing-hold bug #1560's review caught.
 #   4. The needs-draft gate calls ownership_held(...) BEFORE the `let draft =
 #      prompt(` line (line-order assertion, mirrors rebase-sweep's
 #      reb_line < rec_line technique).
@@ -48,7 +49,7 @@ fi
 ATTEMPT_POLL="$(awk '/^fn ag_attempt_poll\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 EDIT_STEP="$(awk '/^fn ag_edit_step\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 OWNERSHIP_HELD="$(awk '/^fn ownership_held\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
-PROBE_FN="$(awk '/^fn ownership_probe_remote_head\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+PROBE_FN="$(awk '/^fn ownership_probe\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 
 # 1. ag_attempt_poll: STATUS=ownership_refused -> a DISTINCT OWNERSHIP_REFUSED
 # verdict, not folded into ERROR.
@@ -81,23 +82,24 @@ else
     fail "branch order" "own_line=$own_line err_line=$err_line"
 fi
 OWN_BLOCK="$(printf '%s' "$EDIT_STEP" | awk '/if mv == "OWNERSHIP_REFUSED"/{f=1} f{print} /^    };$/{if(f){exit}}')"
-if printf '%s' "$OWN_BLOCK" | grep -q 'ownership_probe_remote_head(owner, repo, branch)'; then
-    pass "the OWNERSHIP_REFUSED branch probes the remote head via ownership_probe_remote_head"
+if printf '%s' "$OWN_BLOCK" | grep -q 'ownership_probe(owner, repo, branch)' \
+   && printf '%s' "$OWN_BLOCK" | grep -q 'pr_check_token(ownership_probe(owner, repo, branch), "REMOTE_HEAD")'; then
+    pass "the OWNERSHIP_REFUSED branch probes the remote head via ownership_probe + pr_check_token(REMOTE_HEAD)"
 else
-    fail "probe call" "the OWNERSHIP_REFUSED branch must call ownership_probe_remote_head"
+    fail "probe call" "the OWNERSHIP_REFUSED branch must parse the head from ownership_probe via pr_check_token"
 fi
-if printf '%s' "$OWN_BLOCK" | grep -q 'if len(probe) > 0' \
+if printf '%s' "$OWN_BLOCK" | grep -q 'if len(probe_head) > 0' \
    && printf '%s' "$OWN_BLOCK" | grep -q 'code_edit_loop:ownership_hold:'; then
-    pass "the ownership_hold memo is written only inside a non-empty-probe guard"
+    pass "the ownership_hold memo is written only inside a non-empty-head guard"
 else
-    fail "guarded memo write" "the OWNERSHIP_REFUSED branch must guard the ownership_hold memo_write on len(probe) > 0"
+    fail "guarded memo write" "the OWNERSHIP_REFUSED branch must guard the ownership_hold memo_write on len(probe_head) > 0"
 fi
 # The memo_write call itself must sit inside that guard (not unconditional).
-GUARD_BLOCK="$(printf '%s' "$OWN_BLOCK" | awk '/if len\(probe\) > 0/{f=1} f{print} /};/{if(f){exit}}')"
-if printf '%s' "$GUARD_BLOCK" | grep -q 'memo_write(scoped_memo(owner, repo, "code_edit_loop:ownership_hold:" + iid), probe)'; then
-    pass "memo_write(ownership_hold, probe) sits inside the non-empty-probe guard"
+GUARD_BLOCK="$(printf '%s' "$OWN_BLOCK" | awk '/if len\(probe_head\) > 0/{f=1} f{print} /};/{if(f){exit}}')"
+if printf '%s' "$GUARD_BLOCK" | grep -q 'memo_write(scoped_memo(owner, repo, "code_edit_loop:ownership_hold:" + iid), probe_head)'; then
+    pass "memo_write(ownership_hold, probe_head) sits inside the non-empty-head guard"
 else
-    fail "memo_write placement" "memo_write for ownership_hold must be inside the len(probe) > 0 guard"
+    fail "memo_write placement" "memo_write for ownership_hold must be inside the len(probe_head) > 0 guard"
 fi
 # Cleanup + return value match the existing ERROR branch (ag_edit_reset + clear_job_dir + return "ERROR").
 if printf '%s' "$OWN_BLOCK" | grep -q 'ag_edit_reset(owner, repo, iid);' \
@@ -108,29 +110,45 @@ else
     fail "cleanup+return parity" "the OWNERSHIP_REFUSED branch must ag_edit_reset + clear_job_dir + return \"ERROR\""
 fi
 
-# 3. ownership_held: equality comparison, not presence. The "differs" branch
-# (release) must be reachable independent of "is empty" (handled separately,
-# above, as the fail-safe keep-hold case).
-if printf '%s' "$OWNERSHIP_HELD" | grep -q 'if len(probe) == 0'; then
-    pass "ownership_held has a dedicated len(probe) == 0 (ambiguous) branch"
+# 3. ownership_held: branches on PROBE_STATUS to tell an UNREACHABLE remote
+# (keep the hold — transient) apart from a REACHABLE-but-deleted branch (release
+# — the never-releasing-hold bug the review caught). A moved head also releases.
+if printf '%s' "$OWNERSHIP_HELD" | grep -q 'pr_check_token(raw, "PROBE_STATUS")'; then
+    pass "ownership_held reads PROBE_STATUS (tells unreachable from deleted)"
 else
-    fail "ambiguous branch" "ownership_held must check len(probe) == 0 separately"
+    fail "PROBE_STATUS read" "ownership_held must parse PROBE_STATUS, not just len(probe) == 0"
 fi
-if printf '%s' "$OWNERSHIP_HELD" | grep -q 'if probe == recorded'; then
-    pass "ownership_held compares probe == recorded for EQUALITY (not presence)"
+# The unreachable branch KEEPS the hold: return true, and NO memo clear.
+UNREACH_BLOCK="$(printf '%s' "$OWNERSHIP_HELD" | awk '/if status != "ok"/{f=1} f{print} /};/{if(f){exit}}')"
+if printf '%s' "$UNREACH_BLOCK" | grep -q 'return true;' \
+   && ! printf '%s' "$UNREACH_BLOCK" | grep -q 'memo_write'; then
+    pass "unreachable (status != \"ok\") KEEPS the hold — return true, no memo clear"
 else
-    fail "equality compare" "ownership_held must compare probe == recorded, not just len(probe) > 0"
+    fail "unreachable keeps hold" "the status != \"ok\" branch must return true without clearing the memo"
 fi
-# The release path (memo_write("", ...)) must be reached only via the
-# fall-through AFTER both the empty-probe and equal-probe branches return.
-release_line="$(printf '%s' "$OWNERSHIP_HELD" | grep -n 'code_edit_loop:ownership_hold:.*"")' | head -n1 | cut -d: -f1)"
-empty_line="$(printf '%s' "$OWNERSHIP_HELD" | grep -n 'if len(probe) == 0' | head -n1 | cut -d: -f1)"
-equal_line="$(printf '%s' "$OWNERSHIP_HELD" | grep -n 'if probe == recorded' | head -n1 | cut -d: -f1)"
-if [ -n "$release_line" ] && [ -n "$empty_line" ] && [ -n "$equal_line" ] \
-   && [ "$empty_line" -lt "$release_line" ] && [ "$equal_line" -lt "$release_line" ]; then
-    pass "the release (memo_write \"\") path is textually AFTER both the empty-probe and equal-probe branches"
+# The reachable-but-absent branch RELEASES the hold (deletion): clears the memo + return false.
+DELETED_BLOCK="$(printf '%s' "$OWNERSHIP_HELD" | awk '/if len\(probe_head\) == 0/{f=1} f{print} /};/{if(f){exit}}')"
+if printf '%s' "$DELETED_BLOCK" | grep -q 'code_edit_loop:ownership_hold:.*"")' \
+   && printf '%s' "$DELETED_BLOCK" | grep -q 'return false;'; then
+    pass "reachable-but-absent (len(probe_head) == 0) RELEASES the hold — this is the deleted-branch fix"
 else
-    fail "release ordering" "empty_line=$empty_line equal_line=$equal_line release_line=$release_line"
+    fail "deleted releases" "len(probe_head) == 0 (reachable + gone) must clear the memo and return false"
+fi
+# The moved-head case compares for EQUALITY.
+if printf '%s' "$OWNERSHIP_HELD" | grep -q 'if probe_head == recorded'; then
+    pass "ownership_held compares probe_head == recorded for EQUALITY"
+else
+    fail "equality compare" "ownership_held must compare probe_head == recorded"
+fi
+# Ordering: PROBE_STATUS check -> deleted-release -> equality-keep -> moved-release.
+status_line="$(printf '%s' "$OWNERSHIP_HELD" | grep -n 'if status != "ok"' | head -n1 | cut -d: -f1)"
+deleted_line="$(printf '%s' "$OWNERSHIP_HELD" | grep -n 'if len(probe_head) == 0' | head -n1 | cut -d: -f1)"
+equal_line="$(printf '%s' "$OWNERSHIP_HELD" | grep -n 'if probe_head == recorded' | head -n1 | cut -d: -f1)"
+if [ -n "$status_line" ] && [ -n "$deleted_line" ] && [ -n "$equal_line" ] \
+   && [ "$status_line" -lt "$deleted_line" ] && [ "$deleted_line" -lt "$equal_line" ]; then
+    pass "ownership_held ordering: status-check < deleted-release < equality-keep"
+else
+    fail "held ordering" "status_line=$status_line deleted_line=$deleted_line equal_line=$equal_line"
 fi
 
 # 4. Needs-draft gate: ownership_held(...) is called BEFORE `let draft = prompt(`.
@@ -163,9 +181,9 @@ fi
 if printf '%s' "$PROBE_FN" | grep -q 'shell_escape(owner)' \
    && printf '%s' "$PROBE_FN" | grep -q 'shell_escape(repo)' \
    && printf '%s' "$PROBE_FN" | grep -q 'shell_escape(branch)'; then
-    pass "ownership_probe_remote_head shell_escapes owner/repo/branch"
+    pass "ownership_probe shell_escapes owner/repo/branch"
 else
-    fail "probe exec-sh safety" "ownership_probe_remote_head must shell_escape owner/repo/branch"
+    fail "probe exec-sh safety" "ownership_probe must shell_escape owner/repo/branch"
 fi
 if grep -B1 'code-edit-in-checkout.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue x --branch " + shell_escape(branch)' "$AG" | grep -q 'colony-lint: safe-exec-concat'; then
     pass "the probe exec-sh command line carries the safe-exec-concat lint pragma"
@@ -173,9 +191,9 @@ else
     fail "safe-exec-concat pragma" "the probe exec-sh command line needs the lint pragma"
 fi
 if printf '%s' "$PROBE_FN" | grep -q -- '--probe-remote-head'; then
-    pass "ownership_probe_remote_head invokes code-edit-in-checkout.sh --probe-remote-head"
+    pass "ownership_probe invokes code-edit-in-checkout.sh --probe-remote-head"
 else
-    fail "probe flag" "ownership_probe_remote_head must pass --probe-remote-head"
+    fail "probe flag" "ownership_probe must pass --probe-remote-head"
 fi
 
 # 6. mr_exists / has_mr_for_branch precedes ownership_held in source order (the

@@ -389,41 +389,53 @@ fn has_mr_for_branch(owner: string, repo: string, iid_str: string) -> bool {
     return raw_list_has_branch(merged_raw, branch);
 }
 
-// #1560: cheap, clone-free probe of a branch's current remote head sha, via
+// #1560: cheap, clone-free probe of a branch's remote state, via
 // code-edit-in-checkout.sh's read-only --probe-remote-head mode (a single
-// `git ls-remote`, no workspace, no LLM). Total: any exec/parse failure ->
-// "" (empty), the same "ambiguous" contract --probe-remote-head itself uses.
-fn ownership_probe_remote_head(owner: string, repo: string, branch: string) -> string {
+// `git ls-remote`, no workspace, no LLM). Returns the RAW two-token line
+// `PROBE_STATUS=ok|unreachable REMOTE_HEAD=<sha-or-empty>` for the caller to
+// parse with pr_check_token; any exec failure -> "" (which parses as
+// PROBE_STATUS="" -> treated as unreachable = fail-safe keep-hold).
+fn ownership_probe(owner: string, repo: string, branch: string) -> string {
     // colony-lint: safe-exec-concat
     let probe_cmd = "$COLONY_DIR/../../tools/code-edit-in-checkout.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue x --branch " + shell_escape(branch) + " --title x --task x --probe-remote-head";
-    let out = try { exec sh probe_cmd; } catch e { ""; };
-    return pr_check_token(out, "REMOTE_HEAD");
+    return try { exec sh probe_cmd; } catch e { ""; };
 }
 
 // #1560: is issue `iid_str`'s branch currently under an ownership hold (the
 // operator carries commits on it, no MR yet)? Reads the sha recorded at
-// refusal time and re-probes the remote head every call — the hold releases
-// the moment the two diverge (operator pushed something new, or the branch
-// was force-cleared) and is otherwise independently bypassed by the
-// unconditional mr_exists/has_mr_for_branch check the caller runs first.
+// refusal time and re-probes the remote every call. Three outcomes, keyed on
+// the probe's PROBE_STATUS (which reflects ls-remote's own exit code):
+//   * unreachable (or exec failed) -> KEEP the hold (fail-safe transient; the
+//     ONLY "keep on ambiguity" path, bounded by the unconditional mr_exists
+//     escape the caller checks first + a later reachable probe releasing it);
+//   * reachable + branch GONE (empty head) -> RELEASE — the operator deleted
+//     the WIP branch we were protecting; nothing left to clobber, and a plain
+//     `len(probe)==0` check used to treat this identically to "unreachable" and
+//     wedge the hold forever (no MR can open for a deleted branch);
+//   * reachable + head == recorded -> KEEP; head != recorded -> RELEASE.
 fn ownership_held(owner: string, repo: string, iid_str: string) -> bool {
     let recorded = recall_latest(scoped_memo(owner, repo, "code_edit_loop:ownership_hold:" + iid_str));
     if len(recorded) == 0 { return false; };
     let branch = "fix/issue-" + iid_str;
-    let probe = ownership_probe_remote_head(owner, repo, branch);
-    if len(probe) == 0 {
-        // Ambiguous (network/auth hiccup) — fail SAFE toward the cheap outcome:
-        // keep the hold. mr_exists remains an independent, unconditional escape
-        // hatch checked every tick regardless of this probe's health.
+    let raw = ownership_probe(owner, repo, branch);
+    let status = pr_check_token(raw, "PROBE_STATUS");
+    if status != "ok" {
+        // Remote unreachable or probe exec failed — fail SAFE, keep the hold.
         return true;
     };
-    if probe == recorded {
+    let probe_head = pr_check_token(raw, "REMOTE_HEAD");
+    if len(probe_head) == 0 {
+        // Reachable AND the branch is gone (deleted) — release so the fed can
+        // re-attempt (guarded_push proceeds on an absent remote branch).
+        memo_write(scoped_memo(owner, repo, "code_edit_loop:ownership_hold:" + iid_str), "");
+        print("[code_writer] issue", iid_str, "ownership hold released — branch deleted");
+        return false;
+    };
+    if probe_head == recorded {
         // Situation unchanged since the refusal — still held.
         return true;
     };
-    // Probe differs from the recorded sha (branch moved, or was force-cleared)
-    // — release the hold. Compare for EQUALITY, not "is empty": an empty probe
-    // is handled above and must NOT be conflated with "confirmed different".
+    // Reachable and the head moved to a different sha — release the hold.
     memo_write(scoped_memo(owner, repo, "code_edit_loop:ownership_hold:" + iid_str), "");
     print("[code_writer] issue", iid_str, "ownership hold released — remote head moved");
     return false;
@@ -746,12 +758,12 @@ fn ag_edit_step(owner: string, repo: string, iid: string, branch: string, title:
     // no baseline to compare against later, so setting a hold would be an
     // unreleasable one (fail SAFE: no hold, fall through as a plain error).
     if mv == "OWNERSHIP_REFUSED" {
-        let probe = ownership_probe_remote_head(owner, repo, branch);
-        if len(probe) > 0 {
-            memo_write(scoped_memo(owner, repo, "code_edit_loop:ownership_hold:" + iid), probe);
-            print("[code_writer] ag-loop issue", iid, "ownership hold set at remote head", probe);
+        let probe_head = pr_check_token(ownership_probe(owner, repo, branch), "REMOTE_HEAD");
+        if len(probe_head) > 0 {
+            memo_write(scoped_memo(owner, repo, "code_edit_loop:ownership_hold:" + iid), probe_head);
+            print("[code_writer] ag-loop issue", iid, "ownership hold set at remote head", probe_head);
         } else {
-            print("[code_writer] ag-loop issue", iid, "ownership-refused but probe came back empty — not setting a hold, treating as plain error");
+            print("[code_writer] ag-loop issue", iid, "ownership-refused but probe returned no head (unreachable/absent) — not setting a hold, treating as plain error");
         };
         ag_edit_reset(owner, repo, iid);
         clear_job_dir(iid);

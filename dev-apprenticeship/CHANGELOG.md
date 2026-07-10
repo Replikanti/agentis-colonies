@@ -26,10 +26,17 @@ is asserted until multi-version CI is in place.
   per tick. The true foreign-commit refusal now exits `7` (the two
   ambiguous/transient sites stay `exit 5`); `code-edit-in-checkout.sh` gains a
   read-only, clone-free `--probe-remote-head` mode (a single `git ls-remote`,
-  no workspace, no LLM); and `code_writer.ag` records an ownership hold keyed
-  to the remote head observed at refusal time, releasing it the moment a fresh
-  probe of that sha diverges. The hold is independently bypassed whenever an
-  MR opens (the pre-existing, unconditional `mr_exists` gate).
+  no workspace, no LLM) that reports both `PROBE_STATUS=ok|unreachable` (from
+  `ls-remote`'s own exit code) and `REMOTE_HEAD=<sha>`; and `code_writer.ag`
+  records an ownership hold keyed to the remote head observed at refusal time.
+  The hold releases the moment a fresh probe diverges — the head moved to a
+  different sha, OR the branch was **deleted** (reachable remote, empty head:
+  the operator abandoned the WIP, nothing left to protect). An **unreachable**
+  probe (network/auth) keeps the hold (fail-safe transient), never conflating a
+  deleted branch with an outage — the distinction ls-remote's exit code makes,
+  without which a deleted branch wedged the hold forever. The hold is also
+  independently bypassed whenever an MR opens (the pre-existing, unconditional
+  `mr_exists` gate).
 
 ## [2.9.0] - 2026-07-10
 
