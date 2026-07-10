@@ -14,6 +14,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Documentation
+- **Doc sweep for the target-selection front-end** (#1609/#1612, epic #1611). Reflected the intake funnel
+  (`run-immunefi-intake.sh --live` + `audit-history-probe.sh`) and zone-mapping (`map-zones.sh` +
+  `zone-mapper.ag`) in the top-level `README.md` federation row and the repo `CLAUDE.md` project overview
+  (dark-factory is EVM + Solana/Anchor, not Solana-only); added the `zone-mapper.ag` row to the auditor
+  colony `README.md` agent table and corrected the auditor agent count (22 → 23 agents).
+
 ### Added
 - **Zone-mapping — auto-derive `scope.tsv` from a target** (#1612, epic #1611 milestone M1). New
   `map-zones.sh` (shell plumbing) + `auditor/agents/zone-mapper.ag` (substrate classification) auto-derive a
