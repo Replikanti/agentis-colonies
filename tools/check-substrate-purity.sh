@@ -132,16 +132,27 @@ EOF
 # Emits `relpath:line:function:waived` per positive-pattern match. `waived` is
 # 1 when a `// substrate-purity: deferred (` annotation covers the finding.
 # The single-quote patterns are built in the shell (awk regex literals cannot
-# hold a bare `'` under single-quoted shell) and passed via -v; none of the
-# patterns contain a backslash, so -v escape processing is a no-op.
+# hold a bare `'` under single-quoted shell) and passed via exported env vars
+# read through ENVIRON[] — NOT -v, because -v performs backslash escape
+# processing and PY_PAT needs a literal `\\?` (optional backslash) to catch
+# the `python3 \-c` evasion; ENVIRON delivers the strings verbatim.
+#
+# PY_PAT catches: `python3 -c`, `python3 -` (stdin script), `python3 \-c`
+# (backslash-escaped dash), and a bare `python3 <<EOF` heredoc (program on
+# stdin). It deliberately does NOT match `python3 <script.py> <<EOF` — a
+# heredoc feeding DATA to a script file (the apply-edits shape) is a
+# mechanical tool invocation, not embedded logic.
+# AWK_PAT/SED_PAT tolerate any number of flag tokens (`awk -F: '...'`,
+# `sed -n -e '...'`) before the quoted inline program.
 SQ="'"
-PY_PAT='python3[[:space:]]+-(c([^A-Za-z0-9_]|$)|[[:space:]]|<)'
-AWK_PAT="awk[[:space:]]+$SQ"
-SED_PAT="sed[[:space:]]+(-[A-Za-z]+[[:space:]]+)?$SQ"
+PY_PAT='python3[[:space:]]+(\\?-(c([^A-Za-z0-9_]|$)|[[:space:]]|<)|<<)'
+AWK_PAT="awk[[:space:]]+(-[^[:space:]$SQ]+[[:space:]]+)*$SQ"
+SED_PAT="sed[[:space:]]+(-[^[:space:]$SQ]+[[:space:]]+)*$SQ"
 
 scan_file() {
     local ag_file="$1" rel="$2"
-    awk -v rel="$rel" -v pypat="$PY_PAT" -v awkpat="$AWK_PAT" -v sedpat="$SED_PAT" '
+    PY_PAT="$PY_PAT" AWK_PAT="$AWK_PAT" SED_PAT="$SED_PAT" \
+    awk -v rel="$rel" '
     BEGIN { depth = 0; in_fn = 0; fn_name = ""; fn_block_waiver = 0; block_accum = 0; prev_deferred = 0 }
     {
         clean = $0
@@ -163,7 +174,7 @@ scan_file() {
         }
 
         # Finding detection on the comment-stripped line.
-        if (clean ~ pypat || clean ~ awkpat || clean ~ sedpat) {
+        if (clean ~ ENVIRON["PY_PAT"] || clean ~ ENVIRON["AWK_PAT"] || clean ~ ENVIRON["SED_PAT"]) {
             waived = 0
             # Rule (a): waiver on the finding line itself or the line above.
             if (has_deferred || prev_deferred) waived = 1

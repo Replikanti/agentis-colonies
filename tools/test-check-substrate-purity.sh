@@ -21,6 +21,13 @@
 #   Test 10: allowlist entry whose file no longer reproduces the finding ->
 #            [STALE-ALLOWLIST], exit 1 (shrinking-debt direction)
 #   Test 11: the REAL repo passes clean under the baked-in 15-entry allowlist
+#   Test 12: flagged awk (`awk -F: '...'`) is caught — flag-tolerant AWK_PAT
+#            (a QA-found evasion of the original quote-adjacent pattern)
+#   Test 13: bare `python3 <<EOF` heredoc (program on stdin) is caught, while
+#            `python3 script.py <<EOF` (heredoc feeding DATA to a script file)
+#            passes — the QA-found heredoc evasion + its legitimate twin
+#   Test 14: backslash-escaped `python3 \-c` is caught (QA-found evasion;
+#            needs ENVIRON pattern delivery, -v would mangle the backslash)
 #            (end-to-end; the concrete acceptance bar)
 #
 # Fixture tests drive the allowlist via SUBSTRATE_PURITY_ALLOWLIST_FILE so a
@@ -229,6 +236,63 @@ if [ "$T10_RC" -eq 1 ] && printf '%s' "$T10_OUT" | grep -q '\[STALE-ALLOWLIST\].
     pass "rewritten-but-still-allowlisted site fails with [STALE-ALLOWLIST]"
 else
     fail "stale allowlist — expected exit 1 + [STALE-ALLOWLIST], got rc=$T10_RC: $T10_OUT"
+fi
+
+# ----- Test 12: flagged awk evasion (QA finding) -----
+T12="$FAKE_ROOT/t12"; make_tree "$T12"
+cat > "$T12/dev-apprenticeship/triage/agents/a.ag" <<'EOF'
+fn awk_flagged() -> string {
+    let cmd = "printf %s " + shell_escape(v) + " | awk -F: '{print $2}'";
+    return exec_sh(cmd);
+}
+EOF
+T12_OUT="$(run_check "$T12")" && T12_RC=0 || T12_RC=$?
+if [ "$T12_RC" -eq 1 ] && printf '%s' "$T12_OUT" | grep -q '\[NEW-ESCAPE\].*awk_flagged'; then
+    pass "flag-carrying awk one-liner (awk -F: '...') is caught"
+else
+    fail "awk-flag evasion — expected exit 1 + [NEW-ESCAPE], got rc=$T12_RC: $T12_OUT"
+fi
+
+# ----- Test 13: bare python3 heredoc caught; script-file heredoc passes (QA finding) -----
+T13="$FAKE_ROOT/t13"; make_tree "$T13"
+cat > "$T13/dev-apprenticeship/triage/agents/a.ag" <<'EOF'
+fn heredoc_prog() -> string {
+    let cmd = "python3 <<PYEOF
+print(1)
+PYEOF";
+    return exec_sh(cmd);
+}
+EOF
+cat > "$T13/dev-apprenticeship/triage/agents/b.ag" <<'EOF'
+fn heredoc_data() -> string {
+    let cmd = "python3 \"$COLONY_DIR/../../tools/apply-edits.py\" <<DATA
+payload
+DATA";
+    return exec_sh(cmd);
+}
+EOF
+T13_OUT="$(run_check "$T13")" && T13_RC=0 || T13_RC=$?
+if [ "$T13_RC" -eq 1 ] \
+   && printf '%s' "$T13_OUT" | grep -q '\[NEW-ESCAPE\].*heredoc_prog' \
+   && ! printf '%s' "$T13_OUT" | grep -q 'heredoc_data'; then
+    pass "bare python3 heredoc caught; script-file heredoc (data) passes"
+else
+    fail "heredoc pair — expected only heredoc_prog flagged, got rc=$T13_RC: $T13_OUT"
+fi
+
+# ----- Test 14: backslash-escaped dash evasion (QA finding) -----
+T14="$FAKE_ROOT/t14"; make_tree "$T14"
+cat > "$T14/dev-apprenticeship/triage/agents/a.ag" <<'EOF'
+fn backslash_dash() -> string {
+    let cmd = "python3 \-c 'print(2)'";
+    return exec_sh(cmd);
+}
+EOF
+T14_OUT="$(run_check "$T14")" && T14_RC=0 || T14_RC=$?
+if [ "$T14_RC" -eq 1 ] && printf '%s' "$T14_OUT" | grep -q '\[NEW-ESCAPE\].*backslash_dash'; then
+    pass "backslash-escaped python3 \\-c is caught"
+else
+    fail "backslash-dash evasion — expected exit 1 + [NEW-ESCAPE], got rc=$T14_RC: $T14_OUT"
 fi
 
 # ----- Test 11: real repo passes clean (baked allowlist, no override) -----
