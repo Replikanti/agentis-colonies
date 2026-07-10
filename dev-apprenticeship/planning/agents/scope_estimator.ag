@@ -266,7 +266,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     "scope_estimate",
                     "issue " + to_string(estimate.issue_id),
                     "post-failed: " + to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points",
-                    "fail",
+                    "failure",
                     ["acted", "planning", repo_tag(owner, repo)]
                 );
             } else {
@@ -274,7 +274,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     "scope_estimate",
                     "issue " + to_string(estimate.issue_id),
                     "post-failed: " + to_string(estimate.phases) + " phases, " + to_string(estimate.points) + " points",
-                    "fail",
+                    "failure",
                     ["acted", "planning"]
                 );
             };

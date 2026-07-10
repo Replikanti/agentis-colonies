@@ -129,6 +129,12 @@ fn verdict_age_seconds(blob: string) -> int {
 // distinct from "query failed" (must not be stashed or compared: a
 // failed stash-time query in a tagged repo would otherwise make any
 // pre-existing tag look like a fresh release = false success).
+// #1453: the ship reality-check scores whether a release was cut after our
+// ship decision. agentis-colonies tags TWO component namespaces in one repo
+// (dev-apprenticeship-v*, federation-dashboard-v*), so the tag set MUST be
+// filtered to THIS federation's release prefix — otherwise a federation-dashboard
+// tag (or any human tag) after our verdict would false-credit the ship decision
+// with a success it did not cause.
 fn tag_set_csv(owner: string, repo: string) -> string {
     // colony-lint: safe-exec-concat
     let tags_cmd = "$COLONY_DIR/scripts/forge-api.sh tags --per-page 50" + repo_arg(owner, repo);
@@ -140,7 +146,7 @@ fn tag_set_csv(owner: string, repo: string) -> string {
         "\n    d=json.loads(os.environ[\"RAW\"])" +
         "\nexcept Exception:" +
         "\n    print(\"__QUERY_FAILED__\"); raise SystemExit" +
-        "\nnames=sorted({str(x.get(\"name\",\"\")).replace(\",\",\"\").replace(chr(34),\"\").replace(chr(92),\"\") for x in d if isinstance(x,dict)} - {\"\"})" +
+        "\nnames=sorted({n for n in (str(x.get(\"name\",\"\")).replace(\",\",\"\").replace(chr(34),\"\").replace(chr(92),\"\") for x in d if isinstance(x,dict)) if n.startswith(\"dev-apprenticeship-v\")})" +
         "\nprint(\",\".join(names))'";
     let out = try { exec sh csv_cmd; } catch e { "__QUERY_FAILED__"; };
     return out;

@@ -33,19 +33,26 @@ is asserted until multi-version CI is in place.
   it scores a `ship` verdict against whether a new tag was actually cut (a
   sanitized tag-name SET baseline, since GitHub `/tags` is unordered), and the
   24 h ageout drops the verdict UNSCORED rather than emitting a `partial` that
-  would reward ignored ship calls. This is Wave 1 of the epic; the remaining
-  agents and a `check-reality-check.sh` guard-rail lint are follow-ups.
+  would reward ignored ship calls. The tag set is filtered to this federation's
+  `dev-apprenticeship-v*` release prefix so a `federation-dashboard-v*` or human
+  tag in the same repo cannot false-credit the ship decision. This is Wave 1 of
+  the epic; the remaining agents and a `check-reality-check.sh` guard-rail lint
+  are follow-ups.
 
 ### Fixed
 
-- **Invalid `"fail"` `learn()` outcome literal in 7 agents**
+- **Invalid `"fail"` `learn()` outcome literal purged federation-wide**
   ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)): the
   experience-store outcome enum is exactly
   `success`/`partial`/`failure`/`timeout`/`error`; a bare `"fail"` raises a
   runtime error BEFORE the pending verdict clears, re-erroring every tick for
   up to 24 h. Corrected the four pre-existing `plan_reviewer` post-failed
-  literals plus the three triage pilots (`labeler`, `prioritizer`, `router`)
-  whose negative path the reality-check loop now makes reachable.
+  literals, the three triage pilots (`labeler`, `prioritizer`, `router`) whose
+  negative path the reality-check loop now makes reachable, AND three sibling
+  planning agents an adversarial review surfaced (`risk_assessor`,
+  `task_decomposer`, `scope_estimator` — same acting-tier post-failed shape).
+  The guard test now sweeps EVERY dev-apprenticeship agent (not just the
+  reality-check set) so the whole bug class stays eradicated.
 - **`reject_rate_acting` could never move off zero from honest `learn()` rows**
   ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)):
   `tools/auto-promote-decisions.py` now counts an `outcome == "failure"` acting

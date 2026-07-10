@@ -268,7 +268,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     "task_decomposition",
                     "issue " + to_string(breakdown.issue_id),
                     "post-failed: " + to_string(breakdown.count) + " subtasks",
-                    "fail",
+                    "failure",
                     ["acted", "planning", repo_tag(owner, repo)]
                 );
             } else {
@@ -276,7 +276,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     "task_decomposition",
                     "issue " + to_string(breakdown.issue_id),
                     "post-failed: " + to_string(breakdown.count) + " subtasks",
-                    "fail",
+                    "failure",
                     ["acted", "planning"]
                 );
             };

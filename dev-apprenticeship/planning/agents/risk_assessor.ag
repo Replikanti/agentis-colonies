@@ -361,7 +361,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     "risk_assessment",
                     "issue " + to_string(assessment.issue_id),
                     "post-failed: " + assessment.severity,
-                    "fail",
+                    "failure",
                     ["acted", "planning", repo_tag(owner, repo)]
                 );
             } else {
@@ -369,7 +369,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     "risk_assessment",
                     "issue " + to_string(assessment.issue_id),
                     "post-failed: " + assessment.severity,
-                    "fail",
+                    "failure",
                     ["acted", "planning"]
                 );
             };

@@ -172,23 +172,22 @@ check_agent \
 # Outcome enum: "fail" is not a valid learn() outcome (core enforces
 # success/failure/partial/timeout/error); a single surviving literal
 # would runtime-error on the first negative signal and starve the tick
-# for up to 24h. Covers Wave 1 AND the triage pilot.
+# for up to 24h. Swept across EVERY dev-apprenticeship agent (not just the
+# Wave-1 set) so the guard catches the whole bug class — a #1453 adversarial
+# review found the invalid literal surviving in two sibling planning agents
+# (risk_assessor, task_decomposer) that the original narrow sweep missed.
 ENUM_FAIL=0
-for f in \
-    "$FED/code-review/agents/approval_decider.ag" \
-    "$FED/release/agents/ship_decider.ag" \
-    "$FED/implementation/agents/code_writer.ag" \
-    "$FED/planning/agents/plan_reviewer.ag" \
-    "$FED/triage/agents/labeler.ag" \
-    "$FED/triage/agents/router.ag" \
-    "$FED/triage/agents/prioritizer.ag"; do
-    if grep -q 'return "fail";' "$f"; then
+for f in "$FED"/*/agents/*.ag; do
+    # Match the learn()-outcome forms — a bare `"fail",` positional arg or a
+    # helper `return "fail";` — but NOT a job-status compare like `== "fail"`
+    # (a legitimate poll-token comparison, e.g. code_writer's VERIFY gate).
+    if grep -qE '"fail",|return "fail";' "$f"; then
         fail "$(basename "$f"): invalid outcome literal \"fail\" survives"
         ENUM_FAIL=1
     fi
 done
 if [ "$ENUM_FAIL" -eq 0 ]; then
-    pass "outcome enum: no invalid \"fail\" literal in Wave 1 or the pilot"
+    pass "outcome enum: no invalid \"fail\" literal in ANY dev-apprenticeship agent"
 fi
 
 # plan_reviewer: 30 min soak before scoring its own promotion write.
