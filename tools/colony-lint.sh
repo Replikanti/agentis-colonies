@@ -805,6 +805,22 @@ if [ -x "$REPO_ROOT/dark-factory/demo-immunefi-intake.sh" ]; then
     fi
 fi
 
+# --- dark-factory Immunefi --live discovery mapper + audit-density penalty (#1592/#1599) ---
+# run-immunefi-intake.sh --live/--bounties MAPS the public bounties.json into the operator-programs schema and
+# folds a live-only discovery_bonus (freshness + audit-scarcity + accounting-fit MINUS a competition/named-firm
+# audit-density penalty, clamped >=0) into the score, surfacing kyc/aud/comp markers inside scope_hint col 5.
+# demo-immunefi-live.sh is pure bash/python3 over a canned fixture (via the --bounties offline hatch, no network)
+# so it runs on CI runners; its fixture-pair assertions gate the #1599 penalty.
+if [ -x "$REPO_ROOT/dark-factory/demo-immunefi-live.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-immunefi-live.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: Immunefi --live discovery mapper + audit-density penalty (#1592/#1599)"
+    else
+        fail "dark-factory: Immunefi --live discovery mapper + audit-density penalty regressed (#1592/#1599)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory snapshot owner-rebind hard assert (#1457) ---
 # The snapshot-replay harness reads the account's real on-chain owner and emits an explicit
 # OWNER REBIND / MATCH / MISMATCH marker; with EXPECT_PROGRAM_OWNER (run-audit --expect-owner) it

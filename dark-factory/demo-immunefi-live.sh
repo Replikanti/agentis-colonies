@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # demo-immunefi-live.sh — OFFLINE, DETERMINISTIC proof (#1592) of run-immunefi-intake.sh's --live DISCOVERY mode:
-# the public-bounties MAPPER + the two backward-compatible ranking hooks (discovery_bonus + the kyc scope carry).
-# No network: the fixture is a tiny canned bounties.json array (single-quoted heredoc), fed via the --bounties
-# offline hatch; the SKIP assertion drives --live at an unreachable --url so no real endpoint is ever contacted.
+# the public-bounties MAPPER + the backward-compatible ranking hooks (discovery_bonus, the kyc scope carry, and
+# the #1599 audit-density penalty). No network: the fixture is a tiny canned bounties.json array (single-quoted
+# heredoc), fed via the --bounties offline hatch; the SKIP assertion drives --live at an unreachable --url so no
+# real endpoint is ever contacted.
 #
 # It asserts the mapper's live filter (EVM/Solidity survives; Solana/Rust, Move, inviteOnly, past-endDate and
 # below-floor are dropped — each a strong absence assertion), that a kyc:true high-bounty program is SURFACED as
 # `kyc:yes` in the scope_hint but NOT filtered out, that survivors rank by score DESC in an exact key order, that
 # the emit is a clean 5-column TSV, that the --out file equals the stdout view, and that an unreachable --live
-# fetch degrades to `[SKIP]` + exit 0 with the queue file UNTOUCHED. Mirrors the other dark-factory demo-*.sh
-# (assert-based PASS/FAIL lines, a trap-cleaned temp dir, exit non-zero on failure). Dash-safe: runs under `sh`.
+# fetch degrades to `[SKIP]` + exit 0 with the queue file UNTOUCHED. Section 3 (#1599) adds a controlled PAIR —
+# two EVM Solidity programs with EQUAL bounty + EQUAL freshness, one clean and one citing a finished audit
+# competition + Sherlock/Cantina reviews — and asserts the competition-hardened one ranks BELOW the clean one and
+# surfaces `comp:yes`/`aud:<n>` while the clean one surfaces `comp:no`/`aud:0`. Mirrors the other dark-factory
+# demo-*.sh (assert-based PASS/FAIL lines, a trap-cleaned temp dir, exit non-zero on failure). Dash-safe: `sh`.
 #
 # Usage:  dark-factory/demo-immunefi-live.sh
 # Requires: python3 (the mapper's floor). Exit: 0 = all assertions held; non-zero = a failure.
@@ -150,11 +154,82 @@ else
   bad "the queue file was modified on the SKIP path"
 fi
 
+# ----------------------------------------------------------------------------------------------------------
+# 3) AUDIT-DENSITY penalty (#1599): a controlled PAIR — two EVM Solidity programs with EQUAL maxBounty and EQUAL
+#    freshness (no launchDate/updatedDate anywhere -> freshness 0 for both), same "vault" accounting keyword and
+#    an EMPTY structured `audits` array on both, so the ONLY score gap is the folded competition/firm penalty:
+#      clean-fresh    : knownIssues has no competition/firm text            -> audit_penalty 0
+#      comp-hardened  : knownIssues cites a finished audit competition +    -> comp_hits>=2 -> audit_penalty 15
+#                       Sherlock + Cantina reviews (competition-hardened)
+#    Asserts the clean program ranks strictly ABOVE the competition-hardened one, and the surfaced markers.
+# ----------------------------------------------------------------------------------------------------------
+note "3) audit-density penalty ranks a competition-hardened target BELOW an equal-bounty clean one (#1599) ..."
+PAIR="$WORK/pair.json"
+cat > "$PAIR" <<'JSON'
+[
+  {"slug":"clean-fresh","project":"Clean Vault","language":["Solidity"],"ecosystem":["Ethereum"],"maxBounty":200000,"audits":[],"impacts":["vault"],"knownIssues":"No known issues at this time."},
+  {"slug":"comp-hardened","project":"Hardened Vault","language":["Solidity"],"ecosystem":["Ethereum"],"maxBounty":200000,"audits":[],"impacts":["vault"],"knownIssues":"See the finished audit competition at https://immunefi.com/audit-competition/foo and the Sherlock + Cantina reviews."}
+]
+JSON
+PQUEUE="$DFD/pair.queue"
+POUT="$(DARK_FACTORY_DIR="$DFD" "$INTAKE" --bounties "$PAIR" --floor 10000 --out "$PQUEUE" 2>/dev/null)"; RC=$?
+echo "----- pair queue -----"
+printf '%s\n' "$POUT" | sed 's/^/    /'
+echo "----------------------"
+[ "$RC" -eq 0 ] && ok "intake exits 0 on the audit-density pair" || bad "intake exited $RC on the pair (expected 0)"
+
+PKEYS="$(printf '%s\n' "$POUT" | awk -F'\t' 'NF>=2{print $2}')"
+# Both survive the EVM filter.
+PSURV=1
+for k in immunefi:clean-fresh immunefi:comp-hardened; do
+  printf '%s\n' "$PKEYS" | grep -qxF "$k" || { bad "pair survivor '$k' missing from the queue"; PSURV=0; }
+done
+[ "$PSURV" -eq 1 ] && ok "both EVM Solidity programs survive the filter"
+
+# clean-fresh ranks STRICTLY ABOVE comp-hardened (equal bounty + equal freshness -> only the folded penalty differs).
+CLEAN_SCORE="$(printf '%s\n' "$POUT" | awk -F'\t' '$2=="immunefi:clean-fresh"{print $1}')"
+COMP_SCORE="$(printf '%s\n' "$POUT" | awk -F'\t' '$2=="immunefi:comp-hardened"{print $1}')"
+PEXPECTED="$(printf '%s\n%s' immunefi:clean-fresh immunefi:comp-hardened)"
+if [ "$PKEYS" = "$PEXPECTED" ] && [ -n "$CLEAN_SCORE" ] && [ -n "$COMP_SCORE" ] && [ "$CLEAN_SCORE" -gt "$COMP_SCORE" ]; then
+  ok "the clean program outranks the competition-hardened one ($CLEAN_SCORE > $COMP_SCORE) at equal bounty+freshness"
+else
+  bad "expected clean-fresh > comp-hardened; got clean=$CLEAN_SCORE comp=$COMP_SCORE order=[$(printf '%s' "$PKEYS" | tr '\n' ' ')]"
+fi
+
+# The competition-hardened row surfaces comp:yes and aud:>=1; the clean row surfaces comp:no and aud:0.
+COMP_SCOPE="$(printf '%s\n' "$POUT" | awk -F'\t' '$2=="immunefi:comp-hardened"{print $5}')"
+case "$COMP_SCOPE" in
+  *"comp:yes"*) ok "the competition-hardened row surfaces comp:yes in scope_hint";;
+  *) bad "comp-hardened row did not surface comp:yes: [$COMP_SCOPE]";;
+esac
+case "$COMP_SCOPE" in
+  *"aud:0"*) bad "comp-hardened row shows aud:0 (expected aud:>=1): [$COMP_SCOPE]";;
+  *"aud:"*) ok "the competition-hardened row surfaces a non-zero aud:<n> density";;
+  *) bad "comp-hardened row carries no aud:<n> marker: [$COMP_SCOPE]";;
+esac
+CLEAN_SCOPE="$(printf '%s\n' "$POUT" | awk -F'\t' '$2=="immunefi:clean-fresh"{print $5}')"
+case "$CLEAN_SCOPE" in
+  *"comp:no"*) ok "the clean row surfaces comp:no in scope_hint";;
+  *) bad "clean-fresh row did not surface comp:no: [$CLEAN_SCOPE]";;
+esac
+case "$CLEAN_SCOPE" in
+  *"aud:0"*) ok "the clean row surfaces aud:0 (no competition/firm hits)";;
+  *) bad "clean-fresh row did not surface aud:0: [$CLEAN_SCOPE]";;
+esac
+
+# The pair emit is still a clean 5-column TSV.
+if [ -n "$POUT" ] && printf '%s\n' "$POUT" | awk -F'\t' 'NF!=5{exit 1}'; then
+  ok "every pair row is a 5-column TSV (marker rides inside scope_hint col 5)"
+else
+  bad "a pair row is not exactly 5 tab-separated columns"
+fi
+
 echo
 if [ "$FAILS" -eq 0 ]; then
   note "PASS: the --live/--bounties mapper kept only EVM programs (dropping Solana/Rust, Move, inviteOnly, a"
-  note "      past-endDate and a below-floor one), surfaced kyc without filtering it, ranked survivors by the"
-  note "      discovery-bonus-adjusted score DESC as a 5-column TSV with file==stdout parity, and degraded an"
+  note "      past-endDate and a below-floor one), surfaced kyc without filtering it, penalized a competition-"
+  note "      hardened target below an equal-bounty clean one (aud:/comp: surfaced, #1599), ranked survivors by"
+  note "      the discovery-bonus-adjusted score DESC as a 5-column TSV with file==stdout parity, and degraded an"
   note "      unreachable --live to a clean [SKIP] + exit 0 with the queue untouched. Offline; never submits."
   exit 0
 fi

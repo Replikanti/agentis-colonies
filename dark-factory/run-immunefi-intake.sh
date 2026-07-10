@@ -49,8 +49,9 @@
 #   optimism/base/polygon/bsc/avalanche/…) ] AND not `inviteOnly` AND (no `endDate` OR endDate >= today) AND
 #   maxBounty >= --floor. Each survivor maps to the programs schema above: slug->id, project->name, a constructed
 #   bug-bounty url, ecosystem[0] (else language[0])->chain, a repo-looking assets[].url (else "-")->asset_repo,
-#   maxBounty->reward_max_usd, status:"active"; plus two live-only carries — `kyc` (bool, surfaced NOT filtered)
-#   and a precomputed `discovery_bonus` (int 0..30). The mapper writes the mapped array to a temp file and points
+#   maxBounty->reward_max_usd, status:"active"; plus live-only carries — `kyc` (bool, surfaced NOT filtered), a
+#   precomputed `discovery_bonus` (int 0..30, net of the #1599 audit-density penalty) and the surfaced
+#   `audit_density`/`competition_audited` signals. The mapper writes the mapped array to a temp file and points
 #   PROGRAMS at it, so the SAME require/readable checks and ranking block run verbatim. A missing/garbled field
 #   ranks at its lever's 0, never a crash (matches the operator path's rule).
 #
@@ -66,9 +67,16 @@
 #   discovery_bonus (0..30) : live-only, PRECOMPUTED by the mapper (absent -> 0 on operator programs, so operator
 #                         ranks are byte-identical). = freshness (0..15, linear decay from the most-recent of
 #                         launchDate/updatedDate) + audit_scarcity (0..8 = 8*max(0,1-n_audits/4)) + accounting_fit
-#                         (0..7, a keyword hit vault/lending/stablecoin/swap/amm/yield/staking/collateral). delta_
-#                         term and discovery_bonus are mutually exclusive in practice (live carries no local_repo)
-#                         so the per-path ceiling stays 100.
+#                         (0..7, a keyword hit vault/lending/stablecoin/swap/amm/yield/staking/collateral)
+#                         MINUS audit_penalty, clamped >=0. audit_penalty (#1599): each competition/contest
+#                         reference (immunefi audit-competition, sherlock/cantina/code4rena/codehawks/hats) found
+#                         in knownIssues/programOverview/description/rewardsBody = -15; each named auditor firm
+#                         (spearbit, trail of bits, certora, halborn, cyfrin, zellic, ...) = -3,
+#                         capped -9. So a competition-hardened target ranks BELOW a genuinely-unaudited one of
+#                         equal bounty: a fresh launch date and an empty `audits` array do NOT mean unaudited — a
+#                         prior audit competition / heavy auditor coverage = hardened, low-EV. delta_term and
+#                         discovery_bonus are mutually exclusive in practice (live carries no local_repo) so the
+#                         per-path ceiling stays 100.
 #   The levers SUM (never multiply) — consistent with run-funnel.sh / prospector-queue.sh's additive scoring; a
 #   product would zero a strong bounty whenever local_repo is absent (the common case) and make the ranking
 #   degenerate to "has a local clone or not". The score is advisory ranking only — it NEVER gates a submission.
@@ -76,7 +84,9 @@
 # EMIT   : `score<TAB>immunefi:<id><TAB>url<TAB>name<TAB>scope_hint`, score DESC then key ASC. scope_hint packs
 #          `chain:<chain> repo:<asset_repo> commit:<in_scope_commit> delta:<files>f/<days>d fee:<fee>
 #          vault:<vault>` (preserves the fee/vault EV-gating data for a future evaluate stage without a 6th
-#          column). Written to stdout AND --out.
+#          column). On the live path col 5 also carries `kyc:<yes|no> aud:<n> comp:<yes|no>` (n = audit_density =
+#          competition + named-firm hits) — the flags ride INSIDE scope_hint, so the row stays exactly 5 columns.
+#          Written to stdout AND --out.
 #
 # Requires: python3; curl only on the --live path (a read-only public GET); git only reached indirectly via
 # audit-delta.sh when a program carries a local_repo. Exit 0 on success or a clean [SKIP] (no network on --live);
@@ -103,7 +113,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --out)          nv "$#" "$1"; OUT="$2"; shift 2;;
   --audit-delta)  nv "$#" "$1"; AUDIT_DELTA="$2"; shift 2;;
   --dead-targets) nv "$#" "$1"; DEAD_TARGETS="$2"; shift 2;;
-  -h|--help)      sed -n '2,82p' "$0"; exit 0;;
+  -h|--help)      sed -n '2,92p' "$0"; exit 0;;
   *) echo "run-immunefi-intake.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
 
@@ -138,6 +148,20 @@ EVM = {"ethereum", "arbitrum", "optimism", "base", "polygon", "matic", "bsc", "b
        "aurora", "metis", "fraxtal", "manta", "opbnb", "kava", "canto", "core", "sonic", "berachain"}
 LANGS = {"solidity", "vyper", "yul"}
 ACCT = ("vault", "lending", "stablecoin", "swap", "amm", "yield", "staking", "collateral")
+# AUDIT-DENSITY penalty (#1599): a fresh launchDate + an empty structured `audits` array can hide a heavily-
+# hardened codebase — a prior audit COMPETITION and/or named-firm reviews whose evidence lives in the program's
+# TEXT (knownIssues/programOverview/description), not the `audits` count. COMP = high-precision contest-platform /
+# audit-competition signals; FIRMS = named auditor firms. Deliberately NO short/ambiguous tokens (no bare `c4`,
+# `macro`, `hats`, `oak`, or the bare word `audit`) NOR library/tooling names that aren't audit attribution
+# (`openzeppelin`/`consensys` are ubiquitous Solidity library/tooling mentions, not evidence of an audit —
+# excluded per #1606; the audit arm `consensys diligence` is kept) so common prose never false-hits. Generic
+# public firm / contest-platform names only — no client or sensitive names.
+COMP = ("audit-competition", "audit competition", "audit contest", "sherlock", "cantina", "code4rena",
+        "code-423n4", "codehawks", "hats.finance", "hats finance")
+FIRMS = ("spearbit", "trail of bits", "trailofbits", "yaudit", "yacademy",
+         "certora", "halborn", "cyfrin", "zellic", "consensys diligence", "quantstamp",
+         "sigma prime", "sigmaprime", "dedaub", "chainsecurity", "pashov", "guardian audits", "hexens",
+         "0xmacro", "peckshield", "slowmist", "oak security", "ackee")
 today = datetime.date.today()
 
 
@@ -223,9 +247,23 @@ for b in raw:
         freshness = 0.0
     n_audits = len(as_list(b.get("audits")))
     audit_scarcity = 8.0 * max(0.0, 1.0 - n_audits / 4.0)
-    blob = (str(b.get("project") or "") + " " + " ".join(str(x) for x in as_list(b.get("impacts")))).lower()
-    accounting_fit = 7.0 if any(k in blob for k in ACCT) else 0.0
-    discovery_bonus = int(round(freshness + audit_scarcity + accounting_fit))
+    acct_blob = (str(b.get("project") or "") + " " + " ".join(str(x) for x in as_list(b.get("impacts")))).lower()
+    accounting_fit = 7.0 if any(k in acct_blob for k in ACCT) else 0.0
+    # AUDIT-DENSITY penalty (#1599): scan the TEXT fields (never the structured `audits` count) for competition /
+    # named-firm evidence. json.dumps(..., default=str) flattens nested lists/dicts/URLs into one lowercase
+    # substring-searchable blob and never crashes on absent fields (they serialize as `null`).
+    audit_blob = json.dumps(
+        [b.get(k) for k in ("knownIssues", "programOverview", "description", "rewardsBody", "audits", "impacts")],
+        default=str, ensure_ascii=False).lower()
+    comp_hits = sum(1 for k in COMP if k in audit_blob)
+    firm_hits = sum(1 for k in FIRMS if k in audit_blob)
+    competition_audited = comp_hits > 0
+    audit_density = comp_hits + firm_hits
+    penalty = (15 if comp_hits else 0) + min(9, 3 * firm_hits)
+    # Fold the penalty into the live-only bonus and clamp at 0 so it is a BOUNDED reduction, never negative (a
+    # negative bonus would corrupt the additive score / DESC sort). score_of is untouched: absent on operator
+    # programs -> +0, so the operator-path score stays byte-identical.
+    discovery_bonus = int(round(max(0.0, freshness + audit_scarcity + accounting_fit - penalty)))
     out.append({
         "id": slug,
         "name": str(b.get("project") or slug),
@@ -237,6 +275,8 @@ for b in raw:
         "status": "active",
         "kyc": bool(b.get("kyc")),
         "discovery_bonus": discovery_bonus,
+        "audit_density": audit_density,
+        "competition_audited": competition_audited,
     })
 
 json.dump(out, open(mapped_path, "w", encoding="utf-8"))
@@ -385,6 +425,12 @@ for p in progs:
     # scope_hint is unchanged (still 5 columns; the flag rides inside the scope_hint field).
     if "kyc" in p:
         scope += " kyc:%s" % ("yes" if p.get("kyc") else "no")
+    # audit-density (#1599): live-only carries from the mapper, surfaced inside scope_hint col 5 (never a filter;
+    # keeps the TSV at 5 columns). Absent on operator programs -> scope_hint unchanged (byte-identical operator TSV).
+    if "audit_density" in p:
+        scope += " aud:%d" % int(p.get("audit_density", 0) or 0)
+    if "competition_audited" in p:
+        scope += " comp:%s" % ("yes" if p.get("competition_audited") else "no")
     rows.append((s, key, url, name, scope))
 
 # RANK: score DESC, then key ASC (deterministic tie-break). run-batch consumes highest first.
