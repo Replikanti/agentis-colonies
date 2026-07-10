@@ -15,6 +15,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **`--live` Immunefi target discovery** (#1592, epic #1505). `run-immunefi-intake.sh` gains a discovery mode that
+  fetches the public `bounties.json` (read-only unauthenticated GET; `--url` overridable, `--bounties <file>` the
+  offline hatch), MAPS each surviving program — EVM/Solidity/Vyper/Yul, not `inviteOnly`, in-window `endDate`,
+  `maxBounty >= --floor` (default 10000) — into the existing operator-programs schema, then flows it through the
+  UNCHANGED ranking / dedup / 5-column-TSV path (so `run-batch.sh` consumes it verbatim). Two backward-compatible
+  ranking hooks carry the live-only signals: a precomputed `discovery_bonus` (freshness + audit-scarcity +
+  accounting-fit, 0..30) added to the score, and a `kyc` flag surfaced in the scope_hint — both absent on
+  operator-supplied programs, so their ranks stay byte-identical. Offline / no network -> `[SKIP]` + exit 0 with
+  the queue untouched (mirrors `run-funnel.sh`). Read-only, never submits. `demo-immunefi-live.sh` is the offline
+  deterministic proof over a canned fixture; `demo-immunefi-intake.sh` re-passes unchanged as the regression guard.
 
 ### Changed
 
