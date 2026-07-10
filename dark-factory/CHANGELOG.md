@@ -14,6 +14,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+## [0.3.0] - 2026-07-10
+
+**Requires:** agentis >= `1.18.0`
+
 ### Changed
 - **Self-contained Slack router/ingest posts** (#1574, epic #1505, following #1562/#1567/#1541). Every
   operator-facing post `ingest-slack-outcome.sh` makes now carries its payload INLINE so the operator acts from
@@ -2227,6 +2237,7 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   with a `pending_human_review` marker. The colony NEVER auto-posts to a
   bounty platform — submission is always an explicit human action.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.2.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.3.0...HEAD
+[0.3.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.2.0...dark-factory-v0.3.0
 [0.2.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/dark-factory-v0.2.0
 [0.1.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/dark-factory-v0.1.0
