@@ -51,6 +51,8 @@
 #     manifest.json         # canonical submission_id + the three raw gate verdicts + severity + finding metadata
 #                           #   + immunefi_fields (project/asset/impact/severity/title, extracted from the draft)
 #                           #   + poc_files/poc_run/poc_screenshot/reproduce/gist_url (the #1540/#1550 artifact set)
+#                           #   + local_repo (#1571, the operator's local clone path when staged with --target-dir;
+#                           #   the #1567 router's greenlit re-hunt auto-invoke reads this key first)
 #     submission-draft.md   # report-writer.ag's SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW draft, verbatim
 #     OUTCOME.md            # the outcome TEMPLATE the operator fills IN-PLACE, then feeds to feedback-intake.ag
 #     REPRODUCE.md          # (#1540, when a PoC is staged) the toolchain + concrete run command + expected [PASS]
@@ -64,7 +66,7 @@
 #          [--target T] [--commit C] [--finding-slug S] [--title T] [--location L] [--impact I] \
 #          [--impact-class K] [--severity B] [--scope-verdict L] [--impact-verdict L] [--dup-risk L] \
 #          [--drop-dir DIR] [--poc-file P ...] [--poc-run P] [--poc-kind foundry|hardhat] \
-#          [--poc-target C.sol[:Name]] [--poc-match PREFIX] [--bounty-url URL]
+#          [--poc-target C.sol[:Name]] [--poc-match PREFIX] [--bounty-url URL] [--target-dir DIR]
 # Requires: bash + python3 (gh optional, for the secret gist). Exit: 0 staged, 2 bad/missing args, 3 draft
 # missing the human-gate marker.
 set -u
@@ -79,7 +81,7 @@ nv() { [ "$1" -ge 2 ] || { echo "deliver-submission.sh: $2 requires a value" >&2
 
 ID="" ; DRAFT_FILE="" ; TARGET="" ; COMMIT="" ; FINDING_SLUG="" ; TITLE="" ; LOCATION="" ; IMPACT=""
 IMPACT_CLASS="" ; SEVERITY="" ; SCOPE_VERDICT="" ; IMPACT_VERDICT="" ; DUP_RISK=""
-POC_FILES=() ; POC_RUN="" ; POC_KIND="" ; POC_TARGET="" ; POC_MATCH="test" ; BOUNTY_URL=""
+POC_FILES=() ; POC_RUN="" ; POC_KIND="" ; POC_TARGET="" ; POC_MATCH="test" ; BOUNTY_URL="" ; TARGET_DIR=""
 while [ $# -gt 0 ]; do case "$1" in
   --id)             nv "$#" "$1"; ID="$2"; shift 2;;
   --draft-file)     nv "$#" "$1"; DRAFT_FILE="$2"; shift 2;;
@@ -101,6 +103,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --poc-target)     nv "$#" "$1"; POC_TARGET="$2"; shift 2;;
   --poc-match)      nv "$#" "$1"; POC_MATCH="$2"; shift 2;;
   --bounty-url)     nv "$#" "$1"; BOUNTY_URL="$2"; shift 2;;
+  --target-dir)     nv "$#" "$1"; TARGET_DIR="$2"; shift 2;;
   -h|--help)        sed -n '2,54p' "$0"; exit 0;;
   *) echo "deliver-submission.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
@@ -295,7 +298,7 @@ FINDING_TITLE="$TITLE" FINDING_LOCATION="$LOCATION" FINDING_IMPACT="$IMPACT" IMP
 SEVERITY_BAND="$SEVERITY" SCOPE_VERDICT="$SCOPE_VERDICT" IMPACT_VERDICT="$IMPACT_VERDICT" DUP_RISK="$DUP_RISK" \
 DRAFT_TEXT="$DRAFT" POC_FILES_JOINED="$POC_FILES_JOINED" POC_RUN_REL="$POC_RUN_REL" \
 POC_SCREENSHOT_REL="$POC_SCREENSHOT_REL" \
-REPRODUCE_REL="$REPRODUCE_REL" GIST_URL="$GIST_URL" BOUNTY_URL="$BOUNTY_URL" \
+REPRODUCE_REL="$REPRODUCE_REL" GIST_URL="$GIST_URL" BOUNTY_URL="$BOUNTY_URL" TARGET_DIR="$TARGET_DIR" \
 python3 - > "$STAGE/manifest.json" <<'PY'
 import json, os, datetime
 # Extract the five FIELD|<label>|<value> lines the report-writer draft carries into a nested immunefi_fields dict
@@ -310,6 +313,7 @@ poc_files = [x for x in os.environ.get("POC_FILES_JOINED", "").splitlines() if x
 d = {
     "submission_id":   os.environ.get("SUBMISSION_ID", ""),
     "target":          os.environ.get("TARGET", ""),
+    "local_repo":      os.environ.get("TARGET_DIR", ""),
     "in_scope_commit": os.environ.get("IN_SCOPE_COMMIT", ""),
     "finding_slug":    os.environ.get("FINDING_SLUG", ""),
     "finding_title":   os.environ.get("FINDING_TITLE", ""),
