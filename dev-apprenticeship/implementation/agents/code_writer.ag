@@ -1680,7 +1680,127 @@ fn recover_qa_block_prs(owner: string, repo: string) -> int {
     return recover_qa_block_scan(owner, repo, raw, 0);
 }
 
+// #1453 Wave 1: reality-check — map the reality-check signal to the
+// experience-store outcome enum. Signal 0 ("no signal yet") is handled by the
+// caller via an early return and never reaches this function.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    if signal == 2 {
+        return "partial";
+    };
+    return "failure";
+}
+
+// #1453 Wave 1: reality-check — record a pending verdict for an autonomously
+// opened MR. Stored as JSON array [t, iid, ""] — the fields are ASCII-safe
+// (epoch int, iid int, empty payload) so naive concatenation is sufficient
+// and we skip a JSON encoder. Single-slot idiom from labeler.ag: the next
+// autonomous DONE overwrites; evaluate_code_verdict scores it against the
+// fate of the deterministic fix/issue-<iid> branch.
+fn record_code_verdict(owner: string, repo: string, issue_id: int) -> void {
+    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"\"]";
+    memo_write(scoped_memo(owner, repo, "code_writer:pending_verdict"), blob);
+    print("[code_writer] verdict recorded: issue", issue_id);
+}
+
+// #1453 Wave 1: reality-check — age of the pending verdict in seconds.
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// #1453 Wave 1: reality-check — score the pending verdict against the fate of
+// the MR we opened on the deterministic fix/issue-<iid> branch. Mechanical
+// compare via the raw merge-requests lists (raw_list_has_branch — the raw
+// GitLab shape carries source_branch, same reason recover_red_prs reads raw),
+// NEVER a prompt(). merged => success (1); closed unmerged and not re-opened
+// => fail (3); still opened or not found => no signal yet (leave pending).
+// The merged list is checked FIRST so a GitHub backend (whose closed list
+// includes merged PRs) can never misread a merged PR as closed-unmerged.
+// 24h ageout drops the verdict without scoring. Runs at the TOP of
+// tick_for_repo, BEFORE recover_red_prs and any other early-returning work.
+fn evaluate_code_verdict(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "code_writer:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let timeout_s = 86400;
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[code_writer] verdict aged out without signal");
+        memo_write(key, "");
+        return;
+    };
+    let issue_id = parse_int(to_string(json_get(blob, "[1]")));
+    let branch = "fix/issue-" + to_string(issue_id);
+    // colony-lint: safe-exec-concat
+    let merged_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged" + repo_arg(owner, repo);
+    let merged_raw = try { exec sh merged_cmd; } catch e { ""; };
+    // A transient merged-query failure must never let GitHub's
+    // closed-superset-of-merged list misread a merged MR as
+    // closed-unmerged: score ONLY when the merged list parsed as a JSON
+    // array (index 0 = leading "["); anything else leaves the verdict
+    // pending for a later tick.
+    if index_of(merged_raw, "[") != 0 {
+        return;
+    };
+    let signal = if raw_list_has_branch(merged_raw, branch) {
+        1;
+    } else {
+        // colony-lint: safe-exec-concat
+        let closed_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state closed" + repo_arg(owner, repo);
+        let closed_raw = try { exec sh closed_cmd; } catch e { ""; };
+        if raw_list_has_branch(closed_raw, branch) {
+            // colony-lint: safe-exec-concat
+            let opened_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state opened" + repo_arg(owner, repo);
+            let opened_raw = try { exec sh opened_cmd; } catch e { ""; };
+            // Same rule for the reopened check: an unparseable opened
+            // list must not be read as "not reopened" (a false fail).
+            if index_of(opened_raw, "[") != 0 {
+                0;
+            } else {
+                if raw_list_has_branch(opened_raw, branch) { 0; } else { 3; };
+            };
+        } else {
+            0;
+        };
+    };
+    if signal == 0 {
+        return;
+    };
+    let outcome = signal_to_outcome(signal);
+    if len(owner) > 0 {
+        learn(
+            "code_write",
+            "issue " + to_string(issue_id) + " reality-check",
+            "branch " + branch + " | signal: " + to_string(signal),
+            outcome,
+            ["acted", "implementation", repo_tag(owner, repo)]
+        );
+    } else {
+        learn(
+            "code_write",
+            "issue " + to_string(issue_id) + " reality-check",
+            "branch " + branch + " | signal: " + to_string(signal),
+            outcome,
+            ["acted", "implementation"]
+        );
+    };
+    print("[code_writer] reality-check: issue", issue_id, "signal", signal, "->", outcome);
+    memo_write(key, "");
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1453 Wave 1: reality-check — score the previous autonomous MR verdict
+    // FIRST, before red-PR recovery and the draft path, so a recovery launch's
+    // early return can never starve the feedback loop.
+    evaluate_code_verdict(owner, repo);
+
     // #1518: auto-rebase of our own CONFLICTING PRs runs FIRST — BEFORE red-CI
     // recovery. A CONFLICTING PR has NO fresh CI run (GitHub skips workflows on
     // an unmergeable head), so recover_red_prs cannot help it; the rebase must
@@ -2057,6 +2177,11 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     } else {
                         learn("code_write", "issue " + to_string(draft.issue_id), draft.summary, "success", ["acted", "implementation"]);
                     };
+                    // #1453 Wave 1: reality-check — stash the pending verdict
+                    // now that the detached edit job confirmed an MR opened;
+                    // evaluate_code_verdict (top of tick_for_repo) scores the
+                    // fix/issue-<iid> branch's fate on later ticks.
+                    record_code_verdict(owner, repo, draft.issue_id);
                 } else {
                     if job_state == "LAUNCHED" {
                         print("[code_writer] Launched detached checkout-edit for issue", draft.issue_id, "— will poll next tick");

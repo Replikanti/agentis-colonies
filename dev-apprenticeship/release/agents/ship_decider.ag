@@ -88,7 +88,147 @@ fn mr_delta_cmd_for(owner: string, repo: string, ts: string) -> string {
     return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 1" + repo_arg(owner, repo);
 }
 
+// --- #1453 Wave 1: reality-check feedback loop ---
+//
+// Single-slot pending-verdict idiom from the triage/labeler pilot
+// (#106/#195). ship_decide has no per-decision artefact id (the decision is
+// about the release as a whole, not one MR/issue), so the verdict stores a
+// TAG BASELINE instead: a "ship" call held up if the repo's latest tag
+// moved past the baseline (a release was actually cut). No prompt()
+// anywhere on this path.
+
+// #1453 Wave 1: reality-check — map the reality-check signal to the
+// experience-store outcome enum.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    if signal == 2 {
+        return "partial";
+    };
+    return "failure";
+}
+
+// #1453 Wave 1: reality-check — age (seconds) of a pending-verdict blob.
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// #1453 Wave 1: reality-check — sanitized CSV of up to 50 tag names, or
+// the sentinel "__QUERY_FAILED__" when the tags query failed/unparseable.
+// A SET of names (not "[0].name") because GitHub's /tags endpoint is not
+// chronologically ordered — the newest tag is not guaranteed first, so
+// "latest tag changed" is unsound there; "a tag exists that was not in
+// the baseline set" is sound on both backends. Names are sanitized
+// (quotes/backslashes/commas stripped) so the naive-concat JSON blob and
+// the CSV separator stay valid even for exotic-but-legal git tag names.
+// The sentinel keeps "repo has no tags" ("" — legitimate baseline)
+// distinct from "query failed" (must not be stashed or compared: a
+// failed stash-time query in a tagged repo would otherwise make any
+// pre-existing tag look like a fresh release = false success).
+fn tag_set_csv(owner: string, repo: string) -> string {
+    // colony-lint: safe-exec-concat
+    let tags_cmd = "$COLONY_DIR/scripts/forge-api.sh tags --per-page 50" + repo_arg(owner, repo);
+    let raw = try { exec sh tags_cmd; } catch e { ""; };
+    if index_of(raw, "[") != 0 { return "__QUERY_FAILED__"; };
+    let csv_cmd = "RAW=" + shell_escape(raw) +
+        " python3 -c 'import os,json" +
+        "\ntry:" +
+        "\n    d=json.loads(os.environ[\"RAW\"])" +
+        "\nexcept Exception:" +
+        "\n    print(\"__QUERY_FAILED__\"); raise SystemExit" +
+        "\nnames=sorted({str(x.get(\"name\",\"\")).replace(\",\",\"\").replace(chr(34),\"\").replace(chr(92),\"\") for x in d if isinstance(x,dict)} - {\"\"})" +
+        "\nprint(\",\".join(names))'";
+    let out = try { exec sh csv_cmd; } catch e { "__QUERY_FAILED__"; };
+    return out;
+}
+
+// #1453 Wave 1: reality-check — record a pending ship verdict. Stored as
+// JSON array [ts, 0, "baseline_csv"] (id slot fixed at 0 — no artefact
+// id; see block comment above). baseline_csv is the sanitized tag-name
+// set at decision time ("" when the repo has no tags yet). A failed
+// tags query (sentinel) skips the stash entirely — never stash a
+// baseline the evaluator could misread.
+fn record_ship_verdict(owner: string, repo: string, baseline_csv: string) -> void {
+    if baseline_csv == "__QUERY_FAILED__" {
+        print("[ship_decider] tags query failed — skipping ship verdict stash");
+        return;
+    };
+    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let blob = "[" + ts_raw + ",0,\"" + baseline_csv + "\"]";
+    memo_write(scoped_memo(owner, repo, "ship_decider:pending_verdict"), blob);
+    print("[ship_decider] ship verdict recorded: baseline tags", baseline_csv);
+}
+
+// #1453 Wave 1: reality-check — score the pending ship verdict against the
+// repo's tag set. A tag present now that was NOT in the stashed baseline
+// set means a release was actually cut after our ship verdict — signal 1,
+// success. While the set is unchanged the verdict stays pending, and the
+// 24h ageout drops it WITHOUT scoring (pilot semantics): "operator did
+// not release within a day" is too ambiguous to score — release batching
+// is a normal workflow, and learn("partial") carries a positive delta,
+// so scoring it would quietly reward ignored ship calls. The signal is
+// therefore success-only; see doc/feedback-loop.md for the closed-loop
+// caveat (an autonomous version_bumper cuts tags itself, so this measures
+// the pipeline's follow-through, operator validation only at
+// sub-autonomous version_bumper tiers). Mechanical compare — never a
+// prompt().
+fn evaluate_ship_verdict(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "ship_decider:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    if emit_ts <= 0 {
+        // Corrupt blob or failed stash-time clock — nothing scorable.
+        memo_write(key, "");
+        return;
+    };
+    let baseline = to_string(json_get(blob, "[2]"));
+    if baseline == "void" {
+        memo_write(key, "");
+        return;
+    };
+    let cur = tag_set_csv(owner, repo);
+    if cur != "__QUERY_FAILED__" {
+        let diff_cmd = "BASE=" + shell_escape(baseline) + " CUR=" + shell_escape(cur) +
+            " python3 -c 'import os" +
+            "\nsplit=lambda s:{x for x in s.split(\",\") if x}" +
+            "\nprint(1 if split(os.environ[\"CUR\"]) - split(os.environ[\"BASE\"]) else 0)'";
+        let signal_raw = try { exec sh diff_cmd; } catch e { "0"; };
+        if parse_int(signal_raw) == 1 {
+            // A release was cut after our ship verdict — the call held up.
+            let outcome_s = signal_to_outcome(1);
+            if len(owner) > 0 {
+                learn("ship_decide", "ship reality-check", "new tag beyond baseline [" + baseline + "] | signal: 1", outcome_s, ["acted", "release", repo_tag(owner, repo)]);
+            } else {
+                learn("ship_decide", "ship reality-check", "new tag beyond baseline [" + baseline + "] | signal: 1", outcome_s, ["acted", "release"]);
+            };
+            print("[ship_decider] reality-check: new tag after ship verdict ->", outcome_s);
+            memo_write(key, "");
+            return;
+        };
+    };
+    let timeout_s = 86400;
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[ship_decider] ship verdict aged out without a release — dropped unscored");
+        memo_write(key, "");
+        return;
+    };
+    // Tag set unchanged (or query failed) and still inside the 24h
+    // window — leave pending.
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1453 Wave 1: reality-check — score any pending ship verdict from a
+    // previous tick FIRST, before the delta gate's early-exit below. Cheap
+    // no-op when nothing is pending.
+    evaluate_ship_verdict(owner, repo);
+
     // #147: cheap delta-check BEFORE any prompt(). ship_decider's work
     // is reactive: decide ship/no-ship when `release:check_result`
     // arrives, and re-learn release cadence when new merged MRs show
@@ -195,6 +335,13 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 print("[ship_decider] Failed to post note:", e);
             };
         };
+        // #1453 Wave 1: reality-check — a "ship" verdict is scored against
+        // whether a release (new tag) actually follows; stash the current
+        // tag baseline now. no-ship verdicts have no mechanical ground
+        // truth here and are not stashed.
+        if decision.decision == "ship" {
+            record_ship_verdict(owner, repo, tag_set_csv(owner, repo));
+        };
         emit("release:ship_decision", decision);
         if len(owner) > 0 {
             learn("ship_decide", "decision: " + decision.decision, decision.reasoning, "success", ["acted", "release", repo_tag(owner, repo)]);
@@ -214,6 +361,12 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 try { exec sh post_cmd; } catch e {
                     print("[ship_decider] Failed to post draft note:", e);
                 };
+            };
+            // #1453 Wave 1: reality-check — stash the tag baseline for a
+            // drafted "ship" verdict too (the operator acting on the draft
+            // by cutting a release is the ground-truth signal).
+            if decision.decision == "ship" {
+                record_ship_verdict(owner, repo, tag_set_csv(owner, repo));
             };
             emit("release:ship_decision", decision);
             if len(owner) > 0 {

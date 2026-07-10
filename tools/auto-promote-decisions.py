@@ -805,9 +805,13 @@ def main():
         # Reject rate on acting rows only. Observe rows are hardcoded to
         # outcome="success" by the canonical .ag pattern, so including them
         # biases the rate toward zero regardless of actual acting quality.
+        # #1453: an honest reality-check `failure` outcome (the loop's whole
+        # point — a merged MR the agent voted to close, a reverted promotion)
+        # counts as a reject here alongside the explicit `reject` verdict.
+        # `timeout`/`error` stay excluded as infra noise, not decision quality.
         reject_count = sum(1 for e in acting_entries_list
                            if e.get('verdict') == 'reject'
-                           or e.get('outcome') == 'reject'
+                           or e.get('outcome') in ('reject', 'failure')
                            or e.get('rejected', False))
         reject_rate_acting = reject_count / acting_count if acting_count > 0 else 0.0
 

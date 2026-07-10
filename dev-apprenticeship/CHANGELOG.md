@@ -15,8 +15,43 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Added
+
+- **Reality-check feedback loop — Wave 1 (4 agents)**
+  ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)): the
+  four agents closest to terminal actions — `code-review/approval_decider`,
+  `implementation/code_writer`, `planning/plan_reviewer`,
+  `release/ship_decider` — now carry the triage pilot's 4-step idiom (stash a
+  single-slot `<agent>:pending_verdict` memo at the acting/emitting tick →
+  re-query the forge on a later tick → mechanically compare, never a
+  `prompt()` → `learn()` the honest outcome with the `"acted"` tag). Each
+  `evaluate_<x>_verdict` runs FIRST in `tick_for_repo` (read-only, no early
+  return) and the pending-verdict memo is disjoint from every
+  security-critical namespace (`merge_sweep:*`, `code_edit_loop:*`,
+  `qa_fix:*`, `ownership_hold:*`). A 24 h ageout drops unsignalled verdicts
+  without scoring. `ship_decider`'s signal is deliberately **success-only** —
+  it scores a `ship` verdict against whether a new tag was actually cut (a
+  sanitized tag-name SET baseline, since GitHub `/tags` is unordered), and the
+  24 h ageout drops the verdict UNSCORED rather than emitting a `partial` that
+  would reward ignored ship calls. This is Wave 1 of the epic; the remaining
+  agents and a `check-reality-check.sh` guard-rail lint are follow-ups.
+
 ### Fixed
 
+- **Invalid `"fail"` `learn()` outcome literal in 7 agents**
+  ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)): the
+  experience-store outcome enum is exactly
+  `success`/`partial`/`failure`/`timeout`/`error`; a bare `"fail"` raises a
+  runtime error BEFORE the pending verdict clears, re-erroring every tick for
+  up to 24 h. Corrected the four pre-existing `plan_reviewer` post-failed
+  literals plus the three triage pilots (`labeler`, `prioritizer`, `router`)
+  whose negative path the reality-check loop now makes reachable.
+- **`reject_rate_acting` could never move off zero from honest `learn()` rows**
+  ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)):
+  `tools/auto-promote-decisions.py` now counts an `outcome == "failure"` acting
+  row as a reject alongside the explicit `reject` verdict, so the reality-check
+  loop's honest failures actually feed the auto-promote fitness brake
+  (`timeout`/`error` stay excluded as infra noise).
 - **`code_writer` no longer re-drafts + refuses every tick on an
   ownership-refused branch (operator commits, no MR)**
   ([#1560](https://github.com/Replikanti/agentis-colonies/issues/1560)): the
