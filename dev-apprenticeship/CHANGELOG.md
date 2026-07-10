@@ -55,6 +55,25 @@ is asserted until multi-version CI is in place.
   [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
   mechanical-rewrite phase; slices 2-5 (TSV/nth-line, sha256, CSV helpers,
   native-twin ports) land as separate follow-up PRs.
+- **Substrate purity Phase 0, slice 2 — TSV-field/nth-line `python3 -c`
+  sites replaced with native `nth_field` recursion**
+  ([#1588](https://github.com/Replikanti/agentis-colonies/issues/1588)): all
+  42 `repo_field` (tab-split) and `tick_at` (newline-split) inline
+  `python3 -c` one-liners across the 21 agents that hadn't yet migrated
+  (every agent except `implementation/code_writer`, which underwent this
+  exact transformation under
+  [#1358](https://github.com/Replikanti/agentis-colonies/issues/1358)) now
+  call a per-agent `nth_field(s, sep, n)` copy — a recursive
+  `index_of`/`substring` walk, byte-identical across all 22 agents — instead
+  of shelling out. `repo_field(line, idx)` becomes
+  `nth_field(line, "\t", idx)`; `tick_at`'s inline spool-line read becomes
+  `nth_field(spool, "\n", line_no)`. Zero semantic change: both the old
+  bounds-checked python and the new recursion are total, returning `""` on
+  a missing/out-of-range index. Also drops the stale "Delegates to python3
+  — `.ag` has no split builtin" comment in `triage/router.ag`. Part of the
+  [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
+  mechanical-rewrite phase; slices 3-5 (sha256, CSV helpers, native-twin
+  ports) land as separate follow-up PRs.
 
 ### Fixed
 
