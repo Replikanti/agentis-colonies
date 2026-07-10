@@ -60,11 +60,29 @@ fn repo_tier(agent_name: string, owner: string, repo: string) -> string {
     return "dormant";
 }
 
+// #1358: nth 0-based sep-delimited field of `s`, walked natively with
+// index_of/substring — `.ag` v1.7 has no split(s, sep) builtin, so this
+// recursive walk is the workaround (a general split(s, sep) -> list<string>
+// builtin is a candidate upstream agentis-core language ask). Serves both the
+// tab-separated iter-repos records (repo_field) and tick_at's newline-split
+// spool reader. Total: out-of-range / negative n -> "", mirroring the
+// bounds-checked python one-liner it replaces.
+fn nth_field(s: string, sep: string, n: int) -> string {
+    if n < 0 { return ""; };
+    if len(s) == 0 { return ""; };
+    let p = index_of(s, sep);
+    if n == 0 {
+        if p < 0 { return s; };
+        return substring(s, 0, p);
+    };
+    if p < 0 { return ""; };
+    return nth_field(substring(s, p + len(sep), len(s)), sep, n - 1);
+}
+
+// #1358: tab-separated field read, now native via nth_field (was an inline
+// python3 -c split). Total: missing field / out-of-range idx -> "".
 fn repo_field(line: string, idx: int) -> string {
-    let cmd = "L=" + shell_escape(line) + " I=" + to_string(idx) +
-        " python3 -c 'import os; parts=os.environ[\"L\"].split(\"\t\"); i=int(os.environ[\"I\"]); print(parts[i] if 0<=i<len(parts) else \"\")'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    return nth_field(line, "\t", idx);
 }
 
 // --- Forge rate-limit backoff observability (#1115) ---
@@ -461,9 +479,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
 // Recursive iterator over `iter-repos.sh` output. See router.ag for the
 // empty-owner sentinel rationale.
 fn tick_at(spool: string, line_no: int) -> void {
-    let line_cmd = "SP=" + shell_escape(spool) + " N=" + to_string(line_no) +
-        " python3 -c 'import os; lines=os.environ[\"SP\"].splitlines(); n=int(os.environ[\"N\"]); print(lines[n] if 0<=n<len(lines) else \"\")'";
-    let line = try { exec sh line_cmd; } catch e { ""; };
+    // #1358: nth-line read via nth_field (newline sep) — was an inline
+    // python3 -c splitlines() one-liner. Out-of-range line_no -> "", which
+    // ends the recursion exactly like the old bounds-checked print.
+    let line = nth_field(spool, "\n", line_no);
     if len(line) == 0 { return; };
     let owner = repo_field(line, 0);
     let repo = repo_field(line, 1);
