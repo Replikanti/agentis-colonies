@@ -276,7 +276,7 @@ fn snapshot_fresh() -> bool {
     if len(ts_raw) == 0 { return false; };
     let ts = parse_int(ts_raw);
     if ts == 0 { return false; };
-    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now_raw = to_string(now_ms() / 1000);
     let now = parse_int(now_raw);
     if now == 0 { return false; };
     return (now - ts) <= 600;
@@ -454,7 +454,7 @@ fn apply_feedback(delta: float, owner: string, repo: string) -> void {
 // after the reality-check signal settles (kept labels reinforce, changed
 // labels demote).
 fn record_label_verdict(owner: string, repo: string, issue_id: int, labels_csv: string, rule_id: string) -> void {
-    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let ts_raw = to_string(now_ms() / 1000);
     let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"" + labels_csv + "\",\"" + rule_id + "\"]";
     memo_write(scoped_memo(owner, repo, "labeler:pending_verdict"), blob);
     print("[labeler] verdict recorded: issue", issue_id, "suggested", labels_csv);
@@ -462,7 +462,7 @@ fn record_label_verdict(owner: string, repo: string, issue_id: int, labels_csv: 
 
 fn verdict_age_seconds(blob: string) -> int {
     let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
-    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now_raw = to_string(now_ms() / 1000);
     let now = parse_int(now_raw);
     return now - emit_ts;
 }
@@ -593,7 +593,7 @@ fn append_autonomous_index(owner: string, repo: string, iid: int) -> void {
 // is unreachable from the scanner and gets GC'd on drift-cleanup when
 // it eventually expires.
 fn record_autonomous_verdict(owner: string, repo: string, issue_id: int, labels_csv: string, rule_id: string) -> void {
-    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let ts_raw = to_string(now_ms() / 1000);
     let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"" + labels_csv + "\",\"" + rule_id + "\"]";
     memo_write(scoped_memo(owner, repo, "labeler:autonomous_verdict:" + to_string(issue_id)), blob);
     append_autonomous_index(owner, repo, issue_id);
@@ -870,7 +870,7 @@ fn fire_label_rule(owner: string, repo: string, my_tier: string, issue_id: int, 
     if len(cur_hash) > 0 {
         memo_write(scoped_memo(owner, repo, "labeler:snapshot_hash"), cur_hash);
     };
-    let now_s1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now_s1 = now_iso();
     if len(now_s1) > 0 {
         memo_write(scoped_memo(owner, repo, "labeler:last_check"), now_s1);
     };
@@ -911,7 +911,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     let prev_hash = recall_latest(scoped_memo(owner, repo, "labeler:snapshot_hash"));
     if len(cur_hash) > 0 {
         if cur_hash == prev_hash {
-            let now_h = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            let now_h = now_iso();
             if len(now_h) > 0 {
                 memo_write(scoped_memo(owner, repo, "labeler:last_check"), now_h);
             };
@@ -1234,7 +1234,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         memo_write(scoped_memo(owner, repo, "labeler:snapshot_hash"), cur_hash);
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write(scoped_memo(owner, repo, "labeler:last_check"), now);
     };

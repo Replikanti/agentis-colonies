@@ -84,7 +84,7 @@ fn snapshot_fresh() -> bool {
     if len(ts_raw) == 0 { return false; };
     let ts = parse_int(ts_raw);
     if ts == 0 { return false; };
-    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now_raw = to_string(now_ms() / 1000);
     let now = parse_int(now_raw);
     if now == 0 { return false; };
     return (now - ts) <= 600;
@@ -234,7 +234,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         };
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write(scoped_memo(owner, repo, "issue_creator:last_check"), now);
     };

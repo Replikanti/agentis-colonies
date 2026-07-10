@@ -112,7 +112,7 @@ fn signal_to_outcome(signal: int) -> string {
 // #1453 Wave 1: reality-check — age (seconds) of a pending-verdict blob.
 fn verdict_age_seconds(blob: string) -> int {
     let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
-    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now_raw = to_string(now_ms() / 1000);
     let now = parse_int(now_raw);
     return now - emit_ts;
 }
@@ -163,7 +163,7 @@ fn record_ship_verdict(owner: string, repo: string, baseline_csv: string) -> voi
         print("[ship_decider] tags query failed — skipping ship verdict stash");
         return;
     };
-    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let ts_raw = to_string(now_ms() / 1000);
     let blob = "[" + ts_raw + ",0,\"" + baseline_csv + "\"]";
     memo_write(scoped_memo(owner, repo, "ship_decider:pending_verdict"), blob);
     print("[ship_decider] ship verdict recorded: baseline tags", baseline_csv);
@@ -250,7 +250,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
 
     if !has_event {
         if !has_new_mr {
-            let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            let now_e = now_iso();
             if len(now_e) > 0 {
                 memo_write(scoped_memo(owner, repo, "ship_decider:last_check"), now_e);
             };
@@ -306,7 +306,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     //    this tick (the MR-delta branch re-learns patterns but has no
     //    pending check to decide on).
     if !has_event {
-        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        let now_e = now_iso();
         if len(now_e) > 0 {
             memo_write(scoped_memo(owner, repo, "ship_decider:last_check"), now_e);
         };
@@ -399,7 +399,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         };
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+    let now = now_iso();
     if len(now) > 0 {
         memo_write(scoped_memo(owner, repo, "ship_decider:last_check"), now);
     };
