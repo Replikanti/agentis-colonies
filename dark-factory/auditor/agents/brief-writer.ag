@@ -1,0 +1,131 @@
+cb 300000;
+// #1619 (epic #1611 milestone M2) — BRIEF-WRITER. Given ONE zone (a subsystem's in-scope contracts) plus
+// the bug classes M1's map picked for it, the taxonomy, and (optionally) the zone's audit RESIDUAL/BOUNDARY,
+// author the DEPTH body of a per-zone hunt brief: the concrete invariants an external attacker would try to
+// BREAK per class, the residual attack surface the prior auditors missed, and prior-pattern hints. This is
+// the ONE SEMANTIC step of gen-briefs.sh's brief generation — the shell does the mechanical plumbing (read
+// zones.json/scope.tsv, gather the code, match the residual, assemble the scaffold + scope boundaries +
+// honesty mandate), the substrate turns a bug-class LIST into invariants-to-break. It mirrors how
+// run-discovery.sh delegates the per-cell hunt to hunter.ag: gen-briefs.sh runs this once per zone and
+// awk-slices the single BRIEF-BEGIN|..|BRIEF-END block (the report-writer.ag block idiom, since a multi-line
+// body cannot ride a single PREFIX|value line).
+//
+// The emitted body is fed VERBATIM into hunter.ag:169-170 (the `=== PROTOCOL BRIEF ... ===` section, via
+// run-discovery.sh --brief -> SCOPE_BRIEF), so it is plain-text markdown — it must never carry a bare
+// CANDIDATE| / BLACKBOARD- token (which run-discovery.sh's scraper reads) nor a NUL; gen-briefs.sh sanitises
+// defensively, but keep the body clean.
+//
+// Env:
+//   TARGET_DIR      repo root of the cloned target
+//   ZONE_ID         stable id for this zone (echoed back verbatim in the BRIEF-BEGIN| line)
+//   ZONE_NAME       human subsystem name for this zone
+//   ZONE_FILES      newline-separated in-scope contract paths (relative to TARGET_DIR); a path may be
+//                   function-sliced as `file@fn1+fn2` (slice-fns.sh format) for a big contract.
+//   ZONE_CLASSES    comma-separated bug class ids for this zone (e.g. "C1,C6,C11") — the lens set to brief.
+//   TAXONOMY        path to bug-taxonomy.md (the class menu C1..C14 whose sections carry the hunt lens).
+//   AUDIT_RESIDUAL  (optional) matched `RESIDUAL|<subsystem>|<class>|<why-missed>|<sketch>` lines from
+//                   audit-scout.ag for this zone — the surface the prior auditors missed. PROMPT-ONLY.
+//   AUDIT_BOUNDARY  (optional) the `BOUNDARY|<known>` exclusion set from audit-scout.ag. PROMPT-ONLY.
+//   SLICER          path to slice-fns.sh (the function-level slicer for `file@fn` scope entries).
+// Stdout: the block `DARK-FACTORY:BRIEF-BEGIN|<zone_id>` (first line) .. `DARK-FACTORY:BRIEF-END` (last line)
+//   whose interior is the verbatim markdown body, OR the single token `SKIP` (nothing worth briefing / degrade).
+
+// --- file readers (dynamic paths -> safe-exec-concat per hunter.ag precedent) ---
+fn cat_file(path: string) -> string {
+    let at = index_of(path, "@");
+    if at < 0 {
+        // colony-lint: safe-exec-concat
+        return exec sh "sed -n '1,2000p' ${path} 2>/dev/null || true";
+    }
+    // Function-level slice: a scope entry `path@fn1+fn2` feeds ONLY those functions (+ the contract header)
+    // so a big contract fits the brief prompt's budget (matches hunter.ag::cat_file).
+    let file = substring(path, 0, at);
+    let funcs = substring(path, at + 1, len(path));
+    let slicer = getenv("SLICER");
+    // colony-lint: safe-exec-concat
+    return exec sh "sh ${slicer} ${file} '${funcs}' 2>/dev/null || true";
+}
+
+// Concatenate every in-scope contract in the zone into one labelled blob (matches hunter.ag::scoped_code).
+fn scoped_code(dir: string, files: string) -> string {
+    return reduce(regex_split("\n", files), |acc: string, rel: string| -> string {
+        if len(rel) == 0 { return acc; }
+        return acc + "\n\n// ========== " + rel + " ==========\n" + cat_file(dir + "/" + rel);
+    }, "");
+}
+
+// Extract the `## <cls> ...` section from the taxonomy (until the next `## `) — the class hunt lens.
+fn class_section(taxo: string, cls: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "awk -v c=\"${cls}\" 'index($0,\"## \"c\" \")==1{f=1} f&&index($0,\"## \")==1&&index($0,\"## \"c\" \")!=1{exit} f{print}' ${taxo} 2>/dev/null || true";
+}
+
+// Build the lens for this zone: the taxonomy section of each of its bug classes, concatenated. ZONE_CLASSES
+// arrives space-free comma-separated (gen-briefs.sh cleans it), so a plain split feeds class_section clean ids.
+fn classes_doc(taxo: string, classesCsv: string) -> string {
+    return reduce(regex_split(",", classesCsv), |acc: string, cls: string| -> string {
+        if len(cls) == 0 { return acc; }
+        return acc + "\n\n" + class_section(taxo, cls);
+    }, "");
+}
+
+// learn() outcome enum {success,failure,partial,timeout,error}: a brief that authored a real body = success;
+// a bare SKIP (nothing worth briefing / degrade) = failure. Mirrors hunter.ag/zone-mapper.ag's split.
+fn outcome_of(verdict: string) -> string {
+    if index_of(verdict, "DARK-FACTORY:BRIEF-BEGIN|") >= 0 { return "success"; }
+    return "failure";
+}
+
+let dir = getenv("TARGET_DIR");
+let zoneId = getenv("ZONE_ID");
+let zoneName = getenv("ZONE_NAME");
+let files = getenv("ZONE_FILES");
+let classesCsv = getenv("ZONE_CLASSES");
+let code = scoped_code(dir, files);
+let lens = classes_doc(getenv("TAXONOMY"), classesCsv);
+
+// The audit residual + exclusion boundary are OPTIONAL and PROMPT-ONLY (they flow solely into prompt()
+// below, never onto an exec sh line — the audit-scout.ag::REVIEWER_FEEDBACK precedent). Empty -> the
+// clauses are "" and the instruction concat is byte-identical to the no-residual prompt.
+let residual = getenv("AUDIT_RESIDUAL");
+let boundary = getenv("AUDIT_BOUNDARY");
+let residualClause = if len(residual) == 0 { "" } else { "\n\n=== AUDIT RESIDUAL — surface the prior auditors MISSED (fold these in, hunt AROUND them) ===\n" + residual + "\n" };
+let boundaryClause = if len(boundary) == 0 { "" } else { "\n\n=== KNOWN ISSUES — already documented in the audits; NEVER brief a hunt to re-report these ===\n" + boundary + "\n" };
+
+// The instruction carries the class lens (taxonomy sections), the zone identity, and the optional audit
+// residual/boundary; the zone's concatenated code is the prompt payload (matches hunter.ag / audit-scout.ag's
+// prompt(instruction, code) shape). The output is the brief BODY only — gen-briefs.sh wraps it in the
+// deterministic scaffold (header, class list, in/out-of-scope, honesty mandate).
+let instruction =
+    "You are an elite adversarial smart-contract auditor writing a focused HUNT BRIEF for ONE zone of a "
+  + "target — a subsystem of in-scope contracts an external attacker (holding NO privileged role) would "
+  + "probe as a unit. Your brief PRIMES a deeper hunt: turn this zone's bug-class list into the CONCRETE "
+  + "invariants an attacker would try to BREAK here, grounded in the zone's actual functions — not a restate "
+  + "of the class titles.\n\n"
+  + "=== ZONE ===\n" + zoneName + " (id: " + zoneId + ")\nBug classes to brief: " + classesCsv + "\n\n"
+  + "=== THE BUG-CLASS LENS (the taxonomy sections for this zone's classes) ===\n" + lens + "\n"
+  + residualClause
+  + boundaryClause
+  + "=== HOW TO ANSWER ===\n"
+  + "FIRST reason step by step: read the zone's contracts and, for EACH bug class, name the specific "
+  + "invariant this zone's functions could violate and the attack that would break it; where an audit "
+  + "residual is given, fold in the surface it missed and any prior-pattern hint. THEN write the brief body "
+  + "as markdown between EXACTLY these two sentinel lines (nothing else on those lines):\n"
+  + "DARK-FACTORY:BRIEF-BEGIN|" + zoneId + "\n"
+  + "<the markdown body: per-class invariants-to-break + attack surface + folded residual + prior-pattern hints>\n"
+  + "DARK-FACTORY:BRIEF-END\n"
+  + "The body is injected VERBATIM into a hunter's prompt, so keep it plain markdown; do NOT write any line "
+  + "beginning `CANDIDATE|` or containing `BLACKBOARD-` (those are reserved hunter-output tokens). If this "
+  + "zone genuinely has no attackable invariant worth briefing, write the single token: SKIP\n"
+  + "Reason for as long as you need first; ONLY the BRIEF-BEGIN..BRIEF-END block (or the final SKIP token) is "
+  + "parsed, so your analysis above it is free.";
+
+let verdict = prompt(instruction, code) -> string;
+
+// Surface the brief to gen-briefs.sh (stdout) and record the attempt so brief authoring reweights over time
+// (mirrors hunter.ag / zone-mapper.ag / audit-scout.ag's print/emit/learn/memo tail).
+print(verdict);
+let outcome = outcome_of(verdict);
+emit("dark-factory:brief_written", "{\"zone\":\"" + zoneId + "\",\"outcome\":\"" + outcome + "\"}");
+learn("brief", zoneId, "per-zone hunt brief for zone " + zoneId, outcome, ["brief", zoneId, outcome]);
+memo_write("brief-writer:last_check", "done");

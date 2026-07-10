@@ -88,21 +88,93 @@ hunt, then exits — BEFORE any `agentis init` / config / report side-effect, ne
 an agentis binary. It is the offline round-trip that proves `map-zones.sh`'s `scope.tsv` enumerates the
 intended cells. With no `--list-cells` every guard is inert and the shipped hunt path is byte-identical.
 
+## M2: per-zone brief generation (#1619)
+
+M1 produces the *manifest* (which subsystems, which bug classes). **M2 (#1619)** produces the *depth* — a
+per-zone **hunt brief** that primes the discovery hunt. `gen-briefs.sh` (shell plumbing) + `brief-writer.ag`
+(substrate authoring) read M1's `zones.json` + `scope.tsv` and emit one `briefs/brief_<zone_id>.md` per zone,
+plus a `briefs/zone_briefs.json` index (`zone_id → {brief, classes}`).
+
+### The `SCOPE_BRIEF` contract (locked)
+
+A brief is fed VERBATIM to the hunter: `run-discovery.sh --brief <file>` resolves it to an absolute path and
+passes it as env `SCOPE_BRIEF` to every `(subsystem × class)` cell; `hunter.ag` reads it
+(`cat_file(getenv("SCOPE_BRIEF"))`) and injects it into the prompt as the `=== PROTOCOL BRIEF … ===` section,
+AFTER the taxonomy-class lens and BEFORE `=== RULES ===`. So a brief is **plain-text markdown, ONE per run**.
+Per-zone briefing therefore needs no new hunt-path wiring — the M3 fan-out will run
+`run-discovery.sh --only <zone> --brief brief_<zone>.md` once per zone on the *existing* single-`--brief` flag.
+
+### Emitted brief schema
+
+Fixed shell-authored scaffold, in order; only the attack-surface **body** is substrate-authored:
+
+```
+# <zone name> — hunt brief   (zone: <zone_id>)
+In-scope files: <files / @fn-slices from scope.tsv>
+Bug classes to hunt: <Cn (taxonomy title), …>
+
+## Invariants to break / attack surface
+<SUBSTRATE BODY: brief-writer.ag's per-class invariants-to-break + folded audit residual + prior-pattern
+ hints; a mechanical fallback of the class titles when the substrate SKIPs / is unavailable / --fixture absent>
+### Audit-residual leads (surface prior auditors missed)   ← only when --audit-residuals matched this zone
+
+## In scope — a valid finding        <Medium/High only; the external-attacker impact language>
+## Out of scope — NEVER report        <the audit BOUNDARY set when present, else the generic exclusion>
+## Honesty mandate                    <trace the code; write + run a real Foundry PoC; a rigorous SAFE is valid>
+```
+
+The whole brief is markdown-safe: no NUL, ≤ 2000 lines (the `sed -n '1,2000p'` window `hunter.ag` reads), and
+no bare `CANDIDATE|` / `BLACKBOARD-` token (defensive — a brief must never masquerade as a hunter output line
+`run-discovery.sh`'s scraper reads). `gen-briefs.sh` sanitises the substrate body to guarantee this.
+
+### `.ag` vs shell split
+
+| Layer | Owns |
+|-------|------|
+| **shell** (`gen-briefs.sh`) | MECHANICAL: read `zones.json`/`scope.tsv`, gather the code refs, match the audit residual, invoke `brief-writer.ag` (or slice the `--fixture` body), assemble the deterministic scaffold + scope boundaries + honesty mandate, write `brief_<id>.md` + `zone_briefs.json`. |
+| **`.ag`** (`brief-writer.ag`) | SEMANTIC: given ONE zone's concatenated in-scope code + its bug classes + the taxonomy + (optional) audit residual/boundary, author the DEPTH body — concrete invariants-to-break per class, the residual surface the audits missed, prior-pattern hints. |
+
+`brief-writer.ag`'s output is a block delimited by `DARK-FACTORY:BRIEF-BEGIN|<zone_id>` … `DARK-FACTORY:BRIEF-END`
+(the `report-writer.ag` sentinel-block idiom — a multi-line body cannot ride a single `PREFIX|value` line), or
+the single token `SKIP`. `gen-briefs.sh` awk-slices the same block from a live `agentis go` log or from
+`--fixture` (the `run-gate-agent.sh --classify-log` precedent: identical extraction over a canned log).
+
+### Residual sourcing (degrade-gracefully)
+
+`gen-briefs.sh --audit-residuals <file>` CONSUMES `audit-scout.ag`'s output — its `BOUNDARY|<known>` +
+`RESIDUAL|<subsystem>|<class>|<why-missed>|<sketch>` lines. Per zone, a `RESIDUAL|` line is matched by bug-class
+membership or a subsystem-name match, folded into the body, and its `BOUNDARY|` set seeds the out-of-scope
+section. M2 does NOT itself fetch or run `audit-scout.ag` — it only consumes its output *if present*; absent
+`--audit-residuals`, briefs still emit (residual folding is optional enrichment).
+
+### Round-trip: `run-discovery.sh --brief … --list-cells`
+
+M2's ONLY `run-discovery.sh` edit is an ADDITIVE, opt-in, byte-identical-default extension of M1's
+`--list-cells` dry-run: when `--brief` is ALSO given, it validates the brief, resolves it to an absolute path,
+and prints `BRIEF|<abs>|<line-count>` BEFORE the cell enumeration — the offline (no-agentis) proof that a
+generated brief resolves and is what would be handed to every cell as `SCOPE_BRIEF`. With no `--brief`,
+`BRIEF=""` so the block is skipped and the M1 `--list-cells` output is unchanged; the shipped hunt path is
+byte-identical. `demo-gen-briefs.sh` pins the whole chain (map → brief → round-trip → residual fold) offline.
+
 ## The M1..M5 map
 
 | Milestone | Scope |
 |-----------|-------|
-| **M1 (#1612)** | zone mapping: `map-zones.sh` + `zone-mapper.ag` → `zones.json` + `scope.tsv`; the `--list-cells` round-trip. **(this)** |
-| M2 | per-zone brief generation (invariants-to-break / known-issues) feeding `run-discovery.sh --brief`. |
+| **M1 (#1612)** | zone mapping: `map-zones.sh` + `zone-mapper.ag` → `zones.json` + `scope.tsv`; the `--list-cells` round-trip. |
+| **M2 (#1619)** | per-zone brief generation: `gen-briefs.sh` + `brief-writer.ag` → `brief_<zone>.md`, fed to `run-discovery.sh --brief`. **(this)** |
 | M3 | parallel fan-out across zones + a concurrency cap + result collection. |
 | M4 | verify integration — route each surfaced lead into the forge/Halmos gate. |
 | M5 | gate + deliver — the human-gated packaging capstone. |
 
 ## Three honest caveats
 
-1. **Classification depth is LLM-backend-gated.** `zone-mapper.ag` reasons only as well as the backend
-   behind `prompt()`; a `mock` run does not reason (the demo asserts execution, never a specific class).
-   `--fixture` stubs the output for deterministic, offline CI.
+1. **Classification AND brief depth are LLM-backend-gated.** `zone-mapper.ag` and `brief-writer.ag` reason
+   only as well as the backend behind `prompt()`; a `mock` run does not reason (the demos assert execution and
+   format, never a specific class or a specific invariant). M2 ships the MACHINERY — the deterministic
+   scaffold + substrate authoring + a fixture-proven format that round-trips into `hunter.ag` — but the LIVE
+   brief quality (the decisive depth lever) is only as good as that backend and is a research risk measured
+   against the manual baselines, not something the plumbing can guarantee. `--fixture` stubs the output for
+   deterministic, offline CI; it proves wiring + format, never live quality.
 2. **M3 needs a concurrency cap.** Fanning `zone-mapper.ag` / the hunt across many zones without a cap
    would bunch `prompt()` sessions; M3 owns that. M1 runs zones sequentially.
 3. **READ-ONLY, NEVER-SUBMIT.** `map-zones.sh` touches no network and has no submission path. Surfacing a

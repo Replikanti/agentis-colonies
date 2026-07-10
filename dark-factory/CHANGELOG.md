@@ -22,6 +22,27 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   colony `README.md` agent table and corrected the auditor agent count (22 → 23 agents).
 
 ### Added
+- **Brief-generation — per-zone hunt briefs that prime the discovery hunt** (#1619, epic #1611 milestone M2).
+  New `gen-briefs.sh` (shell plumbing) + `auditor/agents/brief-writer.ag` (substrate authoring) turn M1's
+  `zones.json` + `scope.tsv` into a per-zone `briefs/brief_<zone_id>.md` (plus a `briefs/zone_briefs.json`
+  index) in the EXACT plain-markdown format `hunter.ag` consumes via `SCOPE_BRIEF`: a header + the zone's
+  bug-class list, the DEPTH body (`brief-writer.ag`'s per-class invariants-to-break + folded audit residual +
+  prior-pattern hints), the in/out-of-scope boundaries, and the honesty mandate. The shell does only mechanical
+  plumbing (read the M1 model, gather code refs, match the audit residual, assemble the deterministic scaffold);
+  the substrate authors the depth, invoked once per zone with `agentis go` (exactly as `run-discovery.sh`
+  invokes `hunter.ag`), emitting a `DARK-FACTORY:BRIEF-BEGIN|…`/`…:BRIEF-END` block that `gen-briefs.sh`
+  awk-slices — the `report-writer.ag` sentinel-block idiom. `--audit-residuals` (optional) CONSUMES
+  `audit-scout.ag`'s `BOUNDARY|`/`RESIDUAL|` output: matched RESIDUAL leads fold into the body and the BOUNDARY
+  set seeds the out-of-scope section; absent, briefs still emit (residual folding is optional enrichment).
+  `run-discovery.sh` gains an ADDITIVE, opt-in, byte-identical-default extension of M1's `--list-cells` dry-run:
+  when `--brief` is also given it validates + resolves it and prints `BRIEF|<abs>|<lines>` before the cell
+  enumeration — the offline round-trip proof that a generated brief resolves and is what would be handed to the
+  hunter as `SCOPE_BRIEF`; with no `--brief` the M1 output and the shipped hunt path are byte-identical. Every
+  brief is markdown-safe (no NUL, ≤ 2000 lines, no bare `CANDIDATE|`/`BLACKBOARD-` token). Offline/CI
+  determinism comes from `--fixture` (canned brief bodies, no live LLM); `fixtures/zone-map/briefs.fixture.txt`
+  + `residuals.fixture.txt` + `demo-gen-briefs.sh` are the deterministic proof (wired into `colony-lint`). Brief
+  QUALITY is the decisive depth lever and is LLM-backend-gated — M2 ships the machinery + a fixture-proven
+  format; live depth is backend-dependent. Read-only, never submits. See `docs/zone-split-orchestration.md`.
 - **Zone-mapping — auto-derive `scope.tsv` from a target** (#1612, epic #1611 milestone M1). New
   `map-zones.sh` (shell plumbing) + `auditor/agents/zone-mapper.ag` (substrate classification) auto-derive a
   target's DISCOVERY manifest from the code itself: locate in-scope Solidity/Anchor sources, group them into

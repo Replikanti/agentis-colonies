@@ -40,6 +40,9 @@
 #                       manifest WOULD hunt, then exit 0 — BEFORE any agentis init / config / report side
 #                       effect. Needs neither --brief nor an agentis binary; the round-trip check for
 #                       map-zones.sh's auto-generated scope.tsv. The shipped hunt path is byte-identical.
+#                       #1619: when --brief is ALSO given, --list-cells first validates it, resolves it to an
+#                       absolute path, and prints `BRIEF|<abs>|<line-count>` — the offline proof that a
+#                       generated brief resolves + is what would be handed to the hunter as SCOPE_BRIEF.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -80,6 +83,17 @@ fi
 # byte-for-byte. Needs neither --brief nor an agentis binary — the offline round-trip for map-zones.sh's
 # auto-generated scope.tsv. With no --list-cells every guard above is inert and the hunt path is unchanged.
 if [ -n "$LIST_CELLS" ]; then
+  # #1619 (epic #1611 M2): opt-in, byte-identical-default brief acknowledgement. When --brief is ALSO given,
+  # validate + resolve it to absolute (the same idiom as the hunt path's line ~111) and print BRIEF|<abs>|<lines>
+  # BEFORE the cell enumeration — the offline (no-agentis) proof that a generated brief resolves and is what
+  # would be handed to every cell as SCOPE_BRIEF. With no --brief, BRIEF="" so this block is skipped and the
+  # M1 --list-cells output is unchanged.
+  if [ -n "$BRIEF" ]; then
+    [ -f "$BRIEF" ] || { echo "run-discovery.sh: --brief file not found: $BRIEF" >&2; exit 2; }
+    BRIEF_ABS="$(cd "$(dirname "$BRIEF")" && pwd)/$(basename "$BRIEF")"
+    BRIEF_LINES="$(wc -l < "$BRIEF" | tr -d ' ')"
+    printf 'BRIEF|%s|%s\n' "$BRIEF_ABS" "$BRIEF_LINES"
+  fi
   while IFS='|' read -r SUBSYS CLS_CSV FILES_CSV || [ -n "${SUBSYS:-}" ]; do
     SUBSYS="$(printf '%s' "$SUBSYS" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     case "$SUBSYS" in ''|\#*) continue ;; esac

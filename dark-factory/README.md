@@ -17,7 +17,7 @@ contract follows [ADR-0001](../doc/adr/ADR-0001-confidence-tiers.md) end-to-end.
 
 ## The three colonies
 
-- **[`auditor/`](./auditor/)** — the bounty-hunt colony (23 agents). It runs the full
+- **[`auditor/`](./auditor/)** — the bounty-hunt colony (24 agents). It runs the full
   gated chain: **discovery** (custom-code hunter + DAG fork-matcher), audit-aware
   **DEVISE** of the residual attack surface, several **generate-and-verify** PoC engines,
   the hard **gates** (scope → impact → dup) that spend effort only on payable surface, a
@@ -230,6 +230,31 @@ dark-factory/run-discovery.sh --repo "$PWD/target" --scope "$PWD/zonemap/scope.t
 a starting point, not an authority; fix a mis-clustered zone in one line. `map-zones.sh` is read-only and
 never submits. Offline/CI determinism comes from `--fixture` (canned classification, no live LLM). Model,
 schema, and the M1..M5 map: [`docs/zone-split-orchestration.md`](./docs/zone-split-orchestration.md).
+
+### Prime the hunt with per-zone briefs (`gen-briefs.sh`)
+
+M1 produces the *manifest*; **M2 (#1619, epic #1611)** produces the *depth*. [`gen-briefs.sh`](./gen-briefs.sh)
+(shell plumbing) + the substrate agent [`auditor/agents/brief-writer.ag`](./auditor/agents/brief-writer.ag)
+turn `zones.json` + `scope.tsv` into a per-zone **hunt brief** in the EXACT plain-markdown format `hunter.ag`
+consumes via `SCOPE_BRIEF`: a header + the zone's bug-class list, the DEPTH body (per-class
+invariants-to-break + folded audit residual + prior-pattern hints), the in/out-of-scope boundaries, and the
+honesty mandate. The shell assembles the deterministic scaffold; the substrate authors the depth, once per zone.
+
+```bash
+dark-factory/gen-briefs.sh --zones "$PWD/zonemap/zones.json" --scope "$PWD/zonemap/scope.tsv" \
+  --out "$PWD/zonemap" --repo "$PWD/target"        # optional: --audit-residuals <audit-scout output>
+# emits zonemap/briefs/brief_<zone_id>.md per zone + zonemap/briefs/zone_briefs.json (the index)
+dark-factory/run-discovery.sh --repo "$PWD/target" --scope "$PWD/zonemap/scope.tsv" \
+  --only <subsystem> --brief "$PWD/zonemap/briefs/brief_<zone_id>.md" --list-cells
+# DRY RUN: prints BRIEF|<abs>|<lines> (the brief resolved) + the zone's CELL| line(s), offline, no agentis
+```
+
+The M3 fan-out will run one `run-discovery.sh --only <zone> --brief brief_<zone>.md` per zone on the *existing*
+single-`--brief` flag — per-zone briefing needs no new hunt-path wiring. `gen-briefs.sh` is read-only and never
+submits; offline/CI determinism comes from `--fixture` (canned brief bodies, no live LLM). Brief **quality is
+the decisive depth lever and is LLM-backend-gated** — M2 ships the machinery + a fixture-proven format; live
+depth is backend-dependent. Schema, the `SCOPE_BRIEF` contract, and residual sourcing:
+[`docs/zone-split-orchestration.md`](./docs/zone-split-orchestration.md).
 
 ### Inter-agent coordination (shared blackboard, #1001)
 
@@ -815,6 +840,7 @@ dark-factory/
   run-audit.sh                  # operator entrypoint: DAG fork-matcher audit -> human-gated package
   run-discovery.sh              # operator entrypoint: custom-code discovery (hunter fan-out) -> leads; --list-cells (-n) DRY-RUNs the (subsystem x class) cells a scope.tsv would hunt (no --brief/agentis; hunt path byte-identical) (#1612)
   map-zones.sh                  # auto-derive the discovery manifest (#1612, epic #1611 M1): locate/group in-scope sources into ZONES, LOC + advisory hardening_score (audit-delta churn + git age, never a gate), function-slice big contracts, and delegate subsystem x bug-class classification to zone-mapper.ag -> zones.json + scope.tsv (run-discovery --scope reads it verbatim); --fixture stubs the substrate offline; read-only, never submits
+  gen-briefs.sh                 # per-zone brief generation (#1619, epic #1611 M2): turn M1's zones.json + scope.tsv into briefs/brief_<zone_id>.md (+ zone_briefs.json index) in the EXACT format hunter.ag consumes via SCOPE_BRIEF -> header + bug-class list, the substrate DEPTH body (brief-writer.ag: invariants-to-break + folded audit residual + prior-pattern hints), in/out-of-scope, honesty mandate; --audit-residuals consumes audit-scout.ag's BOUNDARY|/RESIDUAL| output; --fixture stubs the substrate offline; read-only, never submits
   screen-leads.sh               # cheap substrate-native lead pre-screen (eval_ag) before forge-verify
   run-summary.sh                # one-shot run -> monitor-/dashboard-consumable run-summary.json (#995)
   run-refute.sh                 # operator entrypoint: adversarial refutation (refuter fan-out) -> verdicts
@@ -864,6 +890,7 @@ dark-factory/
   demo-immunefi-live.sh         # offline, deterministic proof of the #1592 --live discovery mode: a canned bounties.json fixture via --bounties -> EVM/Solidity survives, Solana/Rust+Move+inviteOnly+past-endDate+below-floor dropped, kyc:true surfaced (kyc:yes) but not filtered, survivors ranked by discovery-bonus score DESC as a 5-column TSV (file==stdout), and an unreachable --live -> [SKIP]+exit 0 with the queue untouched; no network, exit 0
   demo-audit-history-probe.sh   # offline, deterministic proof of #1609: a `git init` hardened fixture (fix-audit-N commits/branch, Cantina/Sherlock finding refs) -> heavily_audited=true above the density threshold; a clean fixture -> heavily_audited=false with 0 density; --bounty with no resolvable repo, an unreachable URL, and a single-segment github ORG url each -> [SKIP]+exit 0 with no stdout JSON; missing args -> exit 2; no network, exit 0
   demo-map-zones.sh             # offline, deterministic proof of #1612 zone-mapping (epic #1611 M1): over a throwaway git fixture (audited baseline + post-audit churn), map-zones.sh --since + --fixture -> zones.json (7 keys) + scope.tsv (pipe-delimited, oversized contract sliced, no |/newline/backtick), run-discovery --list-cells ROUND-TRIP matches the manifest, hardening_score monotone + never a gate, no network/submit; source-guards zone-mapper.ag + runs it live via --backend mock when agentis is present
+  demo-gen-briefs.sh            # offline, deterministic proof of #1619 brief-generation (epic #1611 M2): chains map-zones.sh --fixture into gen-briefs.sh --fixture over a throwaway git fixture -> one non-empty brief_<zone_id>.md per zone + zone_briefs.json; each brief carries >=1 scope.tsv class + in/out-of-scope + honesty mandate; brief-safety (no NUL, <=2000 lines, no bare CANDIDATE|/BLACKBOARD- token, no leaked sentinel); run-discovery --brief --list-cells ROUND-TRIP (BRIEF| + CELL|); --audit-residuals folds RESIDUAL leads + seeds out-of-scope from BOUNDARY; no network/submit; source-guards brief-writer.ag + runs it live via --backend mock when agentis is present
   demo-owner-assert.sh          # proof of the #1457 snapshot owner-rebind hard assert: harness reads the real on-chain owner + emits OWNER REBIND/MATCH/MISMATCH; EXPECT_PROGRAM_OWNER mismatch -> INCONCLUSIVE (exit 3) before the exploit; source-guard (CI-safe) + live 3-mode run when the toolchain is present
   demo-audit-pass.sh            # offline, deterministic proof of the #1509 coordinator submission pass: scope -> devise -> poc -> impact -> dup -> report -> HALT with hard early-exit gates and a human-gated halt
   demo-scope-gate.sh            # offline proof of the #1511 scope + eligibility gate scope-gate.ag (in-scope asset + eligible impact -> PAYABLE; carve-out/out-of-scope -> BLOCKED)
@@ -877,12 +904,13 @@ dark-factory/
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
   sealevel-scorecard.md         # calibration results (3/3 true-positive, 0 false-VERIFIED)
-  auditor/                      # the bounty-hunt colony (23 agents)
+  auditor/                      # the bounty-hunt colony (24 agents)
     agents/auditor.ag           # the DAG-match pipeline (reconn → guard → tracker → synthesis)
     agents/coordinator.ag       # self-orchestrating decider: fact+policy-driven actions (#1014); in-substrate dispatch (M2) + MULTI-STEP loop (M3); PASS_ENABLED submission-pass mode (#1509)
     agents/dispatcher.ag        # the substrate action-DISPATCH agent fn (emit/listen + durable verdict memo; #1014 M2); standalone sync-guard copy (fixture + symbolic-prove); invariant-hunt/auto-harness live routes coordinator-only (#1049)
     agents/hunter.ag            # the custom-code discovery agent (taxonomy-driven adversarial hunt)
     agents/audit-scout.ag       # audit-aware DEVISE (#1487): ingest a target's audits -> the RESIDUAL surface prior auditors missed + the exclusion boundary
+    agents/brief-writer.ag      # per-zone brief authoring (#1619, epic #1611 M2): given ONE zone's code + bug classes + taxonomy + (optional) audit residual/boundary -> the DEPTH body (invariants-to-break + folded residual + prior-pattern hints) as a DARK-FACTORY:BRIEF-BEGIN|..|BRIEF-END block or SKIP; gen-briefs.sh slices it into brief_<zone_id>.md
     agents/scope-gate.ag        # scope + eligibility gate (#1511): PAYABLE only if in-scope asset + eligible, non-excluded impact
     agents/impact-gate.ag       # impact-substantiation gate (#1522): SUBSTANTIATED only if the PoC drives the impact through the protocol's own mechanism
     agents/dup-scout.ag         # dup-risk estimator (#1503): heuristic already-reported probability from git freshness/patch-status/audit-coverage (advisory)
