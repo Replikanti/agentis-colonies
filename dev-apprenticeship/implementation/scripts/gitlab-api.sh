@@ -346,13 +346,24 @@ case "$CMD" in
 
     mr-pipeline-status)
         # #1355: thin CI read for the bounded red-PR recovery loop (code_writer
-        # re-drives its OWN red MRs). Prints exactly two space-separated tokens on
-        # stdout: `STATUS=<raw-pipeline-status> REF=<source-branch>`. The
-        # head-pipeline `status` is forwarded VERBATIM (empty string when the MR
-        # has no pipeline yet); the red/green/pending classification that used to
-        # live here — the reasoning the recovery loop branches on — now lives in
-        # the consuming .ag as `ci_state()`, so this wrapper stays a thin
-        # single-endpoint read (#1353).
+        # re-drives its OWN red MRs). Prints three space-separated tokens on
+        # stdout: `STATUS=<raw-pipeline-status> REF=<source-branch>
+        # MERGEABLE=<signal>` (tokens are order-independent, read via the .ag
+        # pr_check_token() KEY= splitter). The head-pipeline `status` is
+        # forwarded VERBATIM (empty string when the MR has no pipeline yet); the
+        # red/green/pending classification that used to live here — the
+        # reasoning the recovery loop branches on — now lives in the consuming
+        # .ag as `ci_state()`, so this wrapper stays a thin single-endpoint read
+        # (#1353). #1518 adds the trailing MERGEABLE token for GitHub parity so
+        # the forge-agnostic rebase-recovery loop reads the same
+        # `true|false|conflicting|unknown` vocabulary on both forges. GitLab
+        # exposes git-mergeability via `detailed_merge_status` (the modern
+        # replacement for the deprecated `merge_status`): `conflict` (or the
+        # legacy `has_conflicts=true`) => conflicting; `mergeable`/`can_be_merged`
+        # => true; `checking`/`unchecked` (GitLab still computing) => unknown;
+        # the field absent entirely (older GitLab) => unknown; any other
+        # documented blocker (e.g. `ci_still_running`, `not_approved`,
+        # `discussions_not_resolved`) => false (git-mergeable, blocked by policy).
         IID="${1:?Usage: gitlab-api.sh mr-pipeline-status <iid>}"
         case "$IID" in
             ''|*[!0-9]*) emit_error "iid must be numeric: $IID"; exit 2 ;;
@@ -364,7 +375,24 @@ d = json.loads(sys.stdin.read())
 ref = d.get("source_branch") or ""
 pipeline = d.get("head_pipeline") or d.get("pipeline") or {}
 pstatus = pipeline.get("status") or ""
-print("STATUS=%s REF=%s" % (pstatus, ref))
+# #1518: map GitLab mergeability to the forge-agnostic vocabulary.
+dms = d.get("detailed_merge_status")
+has_conflicts = d.get("has_conflicts")
+if dms is None and has_conflicts is None:
+    mergeable = "unknown"
+elif dms == "conflict" or has_conflicts is True:
+    mergeable = "conflicting"
+elif dms in ("mergeable", "can_be_merged"):
+    mergeable = "true"
+elif dms in ("checking", "unchecked"):
+    mergeable = "unknown"
+elif dms is None:
+    # detailed_merge_status absent but a has_conflicts=False signal present:
+    # git-mergeable, no conflict.
+    mergeable = "true"
+else:
+    mergeable = "false"
+print("STATUS=%s REF=%s MERGEABLE=%s" % (pstatus, ref, mergeable))
 ')" || { emit_error "MR !$IID: failed to parse pipeline metadata"; exit 4; }
         printf '%s\n' "$VERDICT"
         ;;

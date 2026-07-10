@@ -598,8 +598,9 @@ print("GREEN")
         # (total_count > fetched, where a red check could hide on a later page).
         # The red/green/pending classification the recovery loop branches on moved
         # to the consuming .ag (#1353); this wrapper only normalizes the forge's
-        # multi-check shape to one status token. MERGEABLE (true|false|conflicting)
-        # feeds the #1374 rebase-recovery loop for git-conflicting own PRs.
+        # multi-check shape to one status token. MERGEABLE
+        # (true|false|conflicting|unknown) feeds the #1518 rebase-recovery loop
+        # for git-conflicting own PRs (`unknown` = GitHub still computing it).
         NUM="${1:?Usage: github-api.sh mr-pipeline-status <number>}"
         case "$NUM" in
             ''|*[!0-9]*) emit_error "pr number must be numeric: $NUM"; exit 2 ;;
@@ -611,19 +612,23 @@ import sys, json
 d = json.loads(sys.stdin.read())
 print("HEAD_SHA=" + str((d.get("head") or {}).get("sha") or ""))
 print("HEAD_REF=" + str((d.get("head") or {}).get("ref") or ""))
-# #1374: mergeability signal for the bounded rebase-recovery loop (code_writer
-# re-bases its OWN git-conflicting PRs onto the current base). GitHub computes
-# mergeability asynchronously, so "mergeable" is null until ready and a
-# "mergeable_state" of "dirty" is its git-conflict marker: dirty => conflicting;
-# mergeable True => true; anything else (null/not-yet-computed/blocked/behind)
-# => false. The .ag only re-bases on conflicting, so a not-yet-computed null
-# never triggers a spurious re-base (the next poll re-reads it).
+# #1374/#1518: mergeability signal for the bounded rebase-recovery loop
+# (code_writer re-bases its OWN git-conflicting PRs onto the current base).
+# GitHub computes mergeability asynchronously, so "mergeable" is null until
+# ready and a "mergeable_state" of "dirty" is its git-conflict marker:
+# dirty => conflicting; mergeable True => true; mergeable None (GitHub still
+# computing) => unknown; anything else (blocked/behind/False) => false. #1518
+# split the not-yet-computed null out to its own "unknown" value so the .ag can
+# poll-retry instead of misreading it: the .ag re-bases ONLY on conflicting,
+# and treats unknown as retry-later (never clean, never conflicting).
 mstate = d.get("mergeable_state") or ""
 mergeable = d.get("mergeable")
 if mstate == "dirty":
     print("MERGEABLE=conflicting")
 elif mergeable is True:
     print("MERGEABLE=true")
+elif mergeable is None:
+    print("MERGEABLE=unknown")
 else:
     print("MERGEABLE=false")
 ')" || { emit_error "PR #$NUM: failed to parse pull metadata"; exit 4; }

@@ -4,9 +4,18 @@
 # (github-api.sh / gitlab-api.sh).
 #
 # mr-pipeline-status is the THIN read-only CI read the bounded red-PR recovery
-# loop / auto-merge sweep uses. It prints exactly two space-separated tokens on
-# stdout:
-#     STATUS=<raw-status> REF=<head-branch>
+# loop / auto-merge sweep / auto-rebase sweep uses. It prints space-separated
+# tokens on stdout:
+#     STATUS=<raw-status> REF=<head-branch> MERGEABLE=<signal>
+# (tokens are order-independent; the .ag reads them via pr_check_token's KEY=
+# splitter). #1518 added the trailing MERGEABLE token on BOTH forges with the
+# forge-agnostic vocabulary `conflicting|true|false|unknown`:
+#   - GitHub: mergeable_state=="dirty" => conflicting; mergeable is True => true;
+#     mergeable is None (still computing) => unknown; else (blocked/behind/False)
+#     => false.
+#   - GitLab: detailed_merge_status=="conflict" (or has_conflicts) => conflicting;
+#     "mergeable"/"can_be_merged" => true; "checking"/"unchecked" => unknown; the
+#     field absent entirely (older GitLab) => unknown; any other blocker => false.
 # The red/green/pending CLASSIFICATION that used to live in the old `pr-checks`
 # verb moved OUT of the forge wrapper into the consuming .ag (`ci_state()`) under
 # #1355, so this verb no longer maps statuses — it forwards a single raw status
@@ -171,7 +180,12 @@ run_gitlab() {
 # GitHub scenarios, run against BOTH the code-review and implementation
 # colony github-api.sh (the verb must be byte-equivalent in both).
 # ===========================================================================
-GH_PULL='{"head": {"sha": "abc123", "ref": "fix/issue-7"}}'
+# Base pull fixture: clean-mergeable so the CI-status cases assert MERGEABLE=true.
+# The mergeability-specific cases below vary the mergeable/mergeable_state fields.
+GH_PULL='{"head": {"sha": "abc123", "ref": "fix/issue-7"}, "mergeable": true, "mergeable_state": "clean"}'
+GH_PULL_DIRTY='{"head": {"sha": "abc123", "ref": "fix/issue-7"}, "mergeable": false, "mergeable_state": "dirty"}'
+GH_PULL_NULL='{"head": {"sha": "abc123", "ref": "fix/issue-7"}, "mergeable": null, "mergeable_state": "unknown"}'
+GH_PULL_BLOCKED='{"head": {"sha": "abc123", "ref": "fix/issue-7"}, "mergeable": false, "mergeable_state": "blocked"}'
 GH_GREEN='{"check_runs": [{"name": "ci", "status": "completed", "conclusion": "success"}, {"name": "lint", "status": "completed", "conclusion": "skipped"}]}'
 GH_RED='{"check_runs": [{"name": "ci", "status": "completed", "conclusion": "failure"}]}'
 GH_PENDING='{"check_runs": [{"name": "ci", "status": "completed", "conclusion": "success"}, {"name": "e2e", "status": "in_progress", "conclusion": null}]}'
@@ -191,7 +205,7 @@ for SCRIPT in \
     # failed
     D="$TMPDIR_SHIM/$label-red"; mk_gh_fixture "$D" "$GH_PULL" "$GH_RED"
     out="$(run_github "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS=failed REF=fix/issue-7 MERGEABLE=false" ]; then
+    if [ "$out" = "STATUS=failed REF=fix/issue-7 MERGEABLE=true" ]; then
         pass "github/$label: failing check ⇒ STATUS=failed (REF echoed)"
     else
         fail "github/$label: failed" "got [$out]"
@@ -200,7 +214,7 @@ for SCRIPT in \
     # pending (in_progress)
     D="$TMPDIR_SHIM/$label-pending"; mk_gh_fixture "$D" "$GH_PULL" "$GH_PENDING"
     out="$(run_github "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS=pending REF=fix/issue-7 MERGEABLE=false" ]; then
+    if [ "$out" = "STATUS=pending REF=fix/issue-7 MERGEABLE=true" ]; then
         pass "github/$label: in_progress check ⇒ STATUS=pending"
     else
         fail "github/$label: pending (in_progress)" "got [$out]"
@@ -209,7 +223,7 @@ for SCRIPT in \
     # pending (empty check_runs)
     D="$TMPDIR_SHIM/$label-empty"; mk_gh_fixture "$D" "$GH_PULL" "$GH_EMPTY"
     out="$(run_github "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS=pending REF=fix/issue-7 MERGEABLE=false" ]; then
+    if [ "$out" = "STATUS=pending REF=fix/issue-7 MERGEABLE=true" ]; then
         pass "github/$label: empty check_runs ⇒ STATUS=pending (CI not verified)"
     else
         fail "github/$label: pending (empty)" "got [$out]"
@@ -218,7 +232,7 @@ for SCRIPT in \
     # success
     D="$TMPDIR_SHIM/$label-green"; mk_gh_fixture "$D" "$GH_PULL" "$GH_GREEN"
     out="$(run_github "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS=success REF=fix/issue-7 MERGEABLE=false" ]; then
+    if [ "$out" = "STATUS=success REF=fix/issue-7 MERGEABLE=true" ]; then
         pass "github/$label: all success/skipped ⇒ STATUS=success"
     else
         fail "github/$label: success" "got [$out]"
@@ -227,7 +241,7 @@ for SCRIPT in \
     # pagination (total_count > fetched, all green) ⇒ pending (never success)
     D="$TMPDIR_SHIM/$label-page"; mk_gh_fixture "$D" "$GH_PULL" "$GH_PAGINATED"
     out="$(run_github "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS=pending REF=fix/issue-7 MERGEABLE=false" ]; then
+    if [ "$out" = "STATUS=pending REF=fix/issue-7 MERGEABLE=true" ]; then
         pass "github/$label: pagination (total_count 31 > 2 fetched) ⇒ STATUS=pending (fail-safe)"
     else
         fail "github/$label: pagination fail-safe" "got [$out]"
@@ -247,16 +261,51 @@ for SCRIPT in \
     else
         fail "github/$label: non-numeric" "rc=$rc out=$out"
     fi
+
+    # #1518 mergeability signal (CI status held green; only the pull's mergeable
+    # fields vary). dirty => conflicting; null (still computing) => unknown;
+    # blocked (mergeable false) => false; the base clean pull already asserted
+    # MERGEABLE=true above.
+    D="$TMPDIR_SHIM/$label-mrg-dirty"; mk_gh_fixture "$D" "$GH_PULL_DIRTY" "$GH_GREEN"
+    out="$(run_github "$SCRIPT" "$D")"
+    if [ "$out" = "STATUS=success REF=fix/issue-7 MERGEABLE=conflicting" ]; then
+        pass "github/$label: mergeable_state=dirty ⇒ MERGEABLE=conflicting"
+    else
+        fail "github/$label: dirty⇒conflicting" "got [$out]"
+    fi
+
+    D="$TMPDIR_SHIM/$label-mrg-null"; mk_gh_fixture "$D" "$GH_PULL_NULL" "$GH_GREEN"
+    out="$(run_github "$SCRIPT" "$D")"
+    if [ "$out" = "STATUS=success REF=fix/issue-7 MERGEABLE=unknown" ]; then
+        pass "github/$label: mergeable=null (still computing) ⇒ MERGEABLE=unknown"
+    else
+        fail "github/$label: null⇒unknown" "got [$out]"
+    fi
+
+    D="$TMPDIR_SHIM/$label-mrg-blocked"; mk_gh_fixture "$D" "$GH_PULL_BLOCKED" "$GH_GREEN"
+    out="$(run_github "$SCRIPT" "$D")"
+    if [ "$out" = "STATUS=success REF=fix/issue-7 MERGEABLE=false" ]; then
+        pass "github/$label: mergeable=false, state=blocked ⇒ MERGEABLE=false"
+    else
+        fail "github/$label: blocked⇒false" "got [$out]"
+    fi
 done
 
 # ===========================================================================
 # GitLab scenarios (code-review + implementation gitlab-api.sh). The raw
 # head-pipeline status is forwarded VERBATIM (no red/green/pending mapping).
 # ===========================================================================
+# Base fixtures carry NO detailed_merge_status/has_conflicts (older GitLab shape)
+# ⇒ MERGEABLE=unknown. The mergeability-specific cases below set the field.
 GL_FAILED='{"source_branch": "fix/issue-7", "head_pipeline": {"status": "failed"}}'
 GL_RUNNING='{"source_branch": "fix/issue-7", "head_pipeline": {"status": "running"}}'
 GL_SUCCESS='{"source_branch": "fix/issue-7", "head_pipeline": {"status": "success"}}'
 GL_MISSING='{"source_branch": "fix/issue-7"}'
+GL_CONFLICT='{"source_branch": "fix/issue-7", "head_pipeline": {"status": "success"}, "detailed_merge_status": "conflict"}'
+GL_HASCONFLICTS='{"source_branch": "fix/issue-7", "head_pipeline": {"status": "success"}, "has_conflicts": true}'
+GL_MERGEABLE='{"source_branch": "fix/issue-7", "head_pipeline": {"status": "success"}, "detailed_merge_status": "mergeable"}'
+GL_CHECKING='{"source_branch": "fix/issue-7", "head_pipeline": {"status": "success"}, "detailed_merge_status": "checking"}'
+GL_BLOCKED='{"source_branch": "fix/issue-7", "head_pipeline": {"status": "success"}, "detailed_merge_status": "ci_still_running"}'
 
 for SCRIPT in \
     "$REPO_ROOT/dev-apprenticeship/code-review/scripts/gitlab-api.sh" \
@@ -270,7 +319,7 @@ for SCRIPT in \
 
     D="$TMPDIR_SHIM/$label-gl-failed"; mk_gl_fixture "$D" "$GL_FAILED"
     out="$(run_gitlab "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS=failed REF=fix/issue-7" ]; then
+    if [ "$out" = "STATUS=failed REF=fix/issue-7 MERGEABLE=unknown" ]; then
         pass "gitlab/$label: pipeline failed ⇒ STATUS=failed (REF echoed)"
     else
         fail "gitlab/$label: failed" "got [$out]"
@@ -278,7 +327,7 @@ for SCRIPT in \
 
     D="$TMPDIR_SHIM/$label-gl-running"; mk_gl_fixture "$D" "$GL_RUNNING"
     out="$(run_gitlab "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS=running REF=fix/issue-7" ]; then
+    if [ "$out" = "STATUS=running REF=fix/issue-7 MERGEABLE=unknown" ]; then
         pass "gitlab/$label: pipeline running ⇒ STATUS=running (verbatim)"
     else
         fail "gitlab/$label: running" "got [$out]"
@@ -286,7 +335,7 @@ for SCRIPT in \
 
     D="$TMPDIR_SHIM/$label-gl-success"; mk_gl_fixture "$D" "$GL_SUCCESS"
     out="$(run_gitlab "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS=success REF=fix/issue-7" ]; then
+    if [ "$out" = "STATUS=success REF=fix/issue-7 MERGEABLE=unknown" ]; then
         pass "gitlab/$label: pipeline success ⇒ STATUS=success"
     else
         fail "gitlab/$label: success" "got [$out]"
@@ -294,10 +343,51 @@ for SCRIPT in \
 
     D="$TMPDIR_SHIM/$label-gl-missing"; mk_gl_fixture "$D" "$GL_MISSING"
     out="$(run_gitlab "$SCRIPT" "$D")"
-    if [ "$out" = "STATUS= REF=fix/issue-7" ]; then
+    if [ "$out" = "STATUS= REF=fix/issue-7 MERGEABLE=unknown" ]; then
         pass "gitlab/$label: missing pipeline ⇒ empty STATUS (CI not verified)"
     else
         fail "gitlab/$label: empty (missing)" "got [$out]"
+    fi
+
+    # #1518 mergeability signal (GitLab detailed_merge_status / has_conflicts).
+    D="$TMPDIR_SHIM/$label-gl-conflict"; mk_gl_fixture "$D" "$GL_CONFLICT"
+    out="$(run_gitlab "$SCRIPT" "$D")"
+    if [ "$out" = "STATUS=success REF=fix/issue-7 MERGEABLE=conflicting" ]; then
+        pass "gitlab/$label: detailed_merge_status=conflict ⇒ MERGEABLE=conflicting"
+    else
+        fail "gitlab/$label: conflict⇒conflicting" "got [$out]"
+    fi
+
+    D="$TMPDIR_SHIM/$label-gl-hasconf"; mk_gl_fixture "$D" "$GL_HASCONFLICTS"
+    out="$(run_gitlab "$SCRIPT" "$D")"
+    if [ "$out" = "STATUS=success REF=fix/issue-7 MERGEABLE=conflicting" ]; then
+        pass "gitlab/$label: has_conflicts=true ⇒ MERGEABLE=conflicting"
+    else
+        fail "gitlab/$label: has_conflicts⇒conflicting" "got [$out]"
+    fi
+
+    D="$TMPDIR_SHIM/$label-gl-mergeable"; mk_gl_fixture "$D" "$GL_MERGEABLE"
+    out="$(run_gitlab "$SCRIPT" "$D")"
+    if [ "$out" = "STATUS=success REF=fix/issue-7 MERGEABLE=true" ]; then
+        pass "gitlab/$label: detailed_merge_status=mergeable ⇒ MERGEABLE=true"
+    else
+        fail "gitlab/$label: mergeable⇒true" "got [$out]"
+    fi
+
+    D="$TMPDIR_SHIM/$label-gl-checking"; mk_gl_fixture "$D" "$GL_CHECKING"
+    out="$(run_gitlab "$SCRIPT" "$D")"
+    if [ "$out" = "STATUS=success REF=fix/issue-7 MERGEABLE=unknown" ]; then
+        pass "gitlab/$label: detailed_merge_status=checking ⇒ MERGEABLE=unknown"
+    else
+        fail "gitlab/$label: checking⇒unknown" "got [$out]"
+    fi
+
+    D="$TMPDIR_SHIM/$label-gl-mblocked"; mk_gl_fixture "$D" "$GL_BLOCKED"
+    out="$(run_gitlab "$SCRIPT" "$D")"
+    if [ "$out" = "STATUS=success REF=fix/issue-7 MERGEABLE=false" ]; then
+        pass "gitlab/$label: detailed_merge_status=ci_still_running ⇒ MERGEABLE=false"
+    else
+        fail "gitlab/$label: other-blocker⇒false" "got [$out]"
     fi
 
     make_curl gitlab

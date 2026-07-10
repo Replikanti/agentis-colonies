@@ -101,6 +101,14 @@ TASK=""
 DESCRIPTION=""
 DECOMPOSE=0
 RECOVER=0
+# #1518 — the standalone pure-git conflict-recovery primitive. --rebase forks a
+# detached orchestrator drive that rebases our OWN CONFLICTING PR branch onto the
+# default branch (no edit, no LLM); it surfaces on the poll as the ordinary
+# done/no_edits/error the default rc mapping already reports (rc 0 -> done with
+# result `REBASED <branch>`; rc 3 -> no_edits when already current; rc 5/6 ->
+# error, a bounded non-destructive retry). Rides through to the orchestrator
+# verbatim.
+REBASE=0
 # #1354 step 2b — the caller-driven-loop primitives. When AG_DRIVEN_EDIT_LOOP is
 # on, code_writer.ag drives the attempt/budget/continuation/verify state machine
 # itself and uses this launcher only to fork ONE detached primitive drive per
@@ -123,7 +131,7 @@ DECOMPOSE_ONLY=0
 SUBTASKS_OUT=""
 
 usage() {
-    echo "usage: code-edit-job.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--decompose-only --subtasks-out <file>] [--recover] [--one-attempt] [--reuse] [--finalize] [--continuation <file>]" >&2
+    echo "usage: code-edit-job.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--decompose-only --subtasks-out <file>] [--recover] [--rebase] [--one-attempt] [--reuse] [--finalize] [--continuation <file>]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -137,6 +145,7 @@ while [ $# -gt 0 ]; do
         --description) DESCRIPTION="${2:-}"; shift 2 ;;
         --decompose) DECOMPOSE=1; shift ;;
         --recover) RECOVER=1; shift ;;
+        --rebase) REBASE=1; shift ;;
         --one-attempt) ONE_ATTEMPT=1; shift ;;
         --reuse) REUSE=1; shift ;;
         --finalize) FINALIZE=1; shift ;;
@@ -303,6 +312,7 @@ export CEJ_BRANCH="$BRANCH" CEJ_TITLE="$TITLE" CEJ_TASK="$TASK"
 export CEJ_DESCRIPTION="$DESCRIPTION"
 export CEJ_DECOMPOSE="$DECOMPOSE"
 export CEJ_RECOVER="$RECOVER"
+export CEJ_REBASE="$REBASE"
 export CEJ_ONE_ATTEMPT="$ONE_ATTEMPT"
 export CEJ_REUSE="$REUSE"
 export CEJ_FINALIZE="$FINALIZE"
@@ -320,6 +330,7 @@ setsid bash -c '
     [ -n "$CEJ_DESCRIPTION" ] && set -- "$@" --description "$CEJ_DESCRIPTION"
     [ "$CEJ_DECOMPOSE" = "1" ] && set -- "$@" --decompose
     [ "$CEJ_RECOVER" = "1" ] && set -- "$@" --recover
+    [ "$CEJ_REBASE" = "1" ] && set -- "$@" --rebase
     [ "$CEJ_ONE_ATTEMPT" = "1" ] && set -- "$@" --one-attempt
     [ "$CEJ_REUSE" = "1" ] && set -- "$@" --reuse
     [ "$CEJ_FINALIZE" = "1" ] && set -- "$@" --finalize

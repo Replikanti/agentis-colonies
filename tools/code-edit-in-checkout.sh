@@ -142,6 +142,13 @@ DECOMPOSE=0
 DECOMPOSE_ONLY=0
 SUBTASKS_OUT=""
 RECOVER=0
+# --rebase (#1518): the standalone pure-git conflict-recovery mode for our OWN
+# CONFLICTING PRs. It runs NO editing engine and NO prompt(): it rebases the
+# existing PR branch onto the current default branch, deterministically
+# union-merges the one proven-safe conflict class (two-sided additive inserts
+# under CHANGELOG.md `## [Unreleased]`), and fail-closes every other shape to a
+# one-time human note. Its ONLY write is through guarded_push (#1516).
+REBASE=0
 # --one-attempt (#1406): the single-attempt primitive for the #1354
 # caller-driven loop. --continuation names a file whose contents replace the
 # default task prompt for that one drive.
@@ -159,7 +166,7 @@ REUSE=0
 FINALIZE=0
 
 usage() {
-    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--decompose-only --subtasks-out <file>] [--recover] [--one-attempt] [--continuation <file>] [--reuse] [--finalize]" >&2
+    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--decompose-only --subtasks-out <file>] [--recover] [--rebase] [--one-attempt] [--continuation <file>] [--reuse] [--finalize]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -175,6 +182,7 @@ while [ $# -gt 0 ]; do
         --decompose-only) DECOMPOSE_ONLY=1; DECOMPOSE=1; shift ;;
         --subtasks-out) SUBTASKS_OUT="${2:-}"; shift 2 ;;
         --recover) RECOVER=1; shift ;;
+        --rebase) REBASE=1; shift ;;
         --one-attempt) ONE_ATTEMPT=1; shift ;;
         --continuation) CONTINUATION_FILE="${2:-}"; shift 2 ;;
         --reuse) REUSE=1; shift ;;
@@ -259,6 +267,18 @@ if [ "$DECOMPOSE_ONLY" -eq 1 ]; then
     fi
     if [ "$ONE_ATTEMPT" -eq 1 ] || [ "$REUSE" -eq 1 ] || [ "$FINALIZE" -eq 1 ] || [ "$RECOVER" -eq 1 ]; then
         echo "code-edit-in-checkout.sh: --decompose-only cannot be combined with --one-attempt/--reuse/--finalize/--recover" >&2
+        usage
+        exit 2
+    fi
+fi
+
+# --rebase (#1518) is the standalone pure-git conflict-recovery op: it makes no
+# edit, drives no LLM, and reuses the branch's existing remote head. Combining it
+# with ANY editing/decompose primitive or --recover is a caller bug — fail loudly
+# (exit 2) rather than half-running two conflicting state machines on one branch.
+if [ "$REBASE" -eq 1 ]; then
+    if [ "$ONE_ATTEMPT" -eq 1 ] || [ "$REUSE" -eq 1 ] || [ "$FINALIZE" -eq 1 ] || [ "$DECOMPOSE" -eq 1 ] || [ "$DECOMPOSE_ONLY" -eq 1 ] || [ "$RECOVER" -eq 1 ]; then
+        echo "code-edit-in-checkout.sh: --rebase cannot be combined with --one-attempt/--reuse/--finalize/--decompose/--decompose-only/--recover" >&2
         usage
         exit 2
     fi
@@ -578,6 +598,22 @@ if [ -z "$DEFAULT_BRANCH" ]; then
     DEFAULT_BRANCH="${GITLAB_DEFAULT_BRANCH:-main}"
 fi
 
+# Resolve the forge API wrapper here (#1516 hoisted it before the push so the
+# ownership-gate yield note can reach it; #1518 needs it EARLIER still, before
+# the --rebase handler below, whose own human-note path and guarded_push both
+# post through it). Resolution has no dependency on the checkout state, so
+# hoisting it up here is inert for every existing path (create-mr reuses it far
+# below).
+if [ "$FORGE_TYPE" = "gitlab" ]; then
+    FORGE_API="$FED_DIR/$COLONY_NAME/scripts/gitlab-api.sh"
+else
+    FORGE_API="$FED_DIR/$COLONY_NAME/scripts/github-api.sh"
+fi
+if [ ! -x "$FORGE_API" ]; then
+    echo "[code-edit] $FORGE_TYPE-api.sh not found/executable at $FORGE_API" >&2
+    exit 1
+fi
+
 if [ "$REUSE" -eq 1 ]; then
     # Caller-driven continuation/finalize (#1354 step 2a): the diff accumulated
     # by prior --one-attempt drives lives on the existing per-issue branch in
@@ -606,13 +642,171 @@ else
     #                  build the fix ON TOP of it rather than off a clean default.
     #                  Reset hard to origin/<branch> so the local tree matches the
     #                  pushed state (idempotent across recovery re-drives).
+    #   rebase mode (#1518): same as recover — check OUT the existing remote head
+    #                  branch (idempotent across re-drives), because the whole op
+    #                  is "replay THIS branch onto the moved default branch".
     # -----------------------------------------------------------------------
-    if [ "$RECOVER" -eq 1 ]; then
+    if [ "$RECOVER" -eq 1 ] || [ "$REBASE" -eq 1 ]; then
         run_git -C "$WS" checkout -B "$BRANCH" "origin/$BRANCH"
         run_git -C "$WS" reset --hard "origin/$BRANCH"
     else
         run_git -C "$WS" checkout -B "$BRANCH" "origin/$DEFAULT_BRANCH"
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# --rebase (#1518): standalone pure-git conflict recovery for our OWN
+# CONFLICTING PRs. Runs NO editing engine and NO prompt() — it exits here before
+# any of the flat-cyborg machinery below. Fetch, rebase the branch onto the
+# current default branch, and:
+#   * clean rebase (no conflict, head moved)      -> guarded_push; REBASED; exit 0
+#   * already current (nothing replayed)          -> NO_REBASE_NEEDED; exit 3
+#   * conflict, lone CHANGELOG.md [Unreleased]     -> deterministic union-merge
+#                                                     (changelog-union-resolve.py),
+#                                                     rebase --continue, then
+#                                                     guarded_push; exit 0
+#   * ANY other conflict shape / guard miss / parse error / >1 conflicted file
+#                                                 -> git rebase --abort + one-time
+#                                                    human note; exit 6
+# The ONLY write is guarded_push (#1516): a rebase rewrites history so the new
+# head is NEVER an ancestor of the old remote, which forces guarded_push onto its
+# own-sha branch — it force-pushes only when the remote head equals code_writer's
+# recorded own sha (we own the branch) and REFUSES (exit 5 + at-most-once yield
+# note) on a foreign/operator commit. So an auto-rebase over an operator-carrying
+# branch degrades to the yield note and NEVER loops or clobbers.
+# ---------------------------------------------------------------------------
+if [ "$REBASE" -eq 1 ]; then
+    REBASE_NOTED_FLAG="$PUSHED_SHA_DIR/issue-$ISSUE.rebase-noted"
+    # post_rebase_note: at-most-once human note keyed to the CONFLICTING remote
+    # head (mirrors post_yield_note + the #1516 at-most-once pattern). A guard
+    # miss is not a retry-blindly error: one note, then wait for a human. The
+    # flag stores the head sha, so a genuinely NEW conflicting head (main moved
+    # again) is allowed exactly one fresh note.
+    post_rebase_note() {
+        _rn_head="$(git_capture -C "$WS" rev-parse "origin/$BRANCH" 2>/dev/null || true)"
+        if [ -f "$REBASE_NOTED_FLAG" ] && [ "$(tr -d ' \t\r\n' < "$REBASE_NOTED_FLAG" 2>/dev/null)" = "$_rn_head" ]; then
+            echo "[code-edit] rebase: human note already posted for #$ISSUE head ${_rn_head:-none} — not re-posting" >&2
+            return 0
+        fi
+        _rn="code_writer could not auto-rebase branch \`$BRANCH\` onto \`$DEFAULT_BRANCH\`: the conflict is outside the auto-resolvable class (two-sided additive \`CHANGELOG.md\` \`[Unreleased]\` inserts) — the branch was left untouched (\`git rebase --abort\`) and needs a human rebase."
+        if [ -n "${FORGE_API:-}" ] && [ -x "${FORGE_API:-/nonexistent}" ]; then
+            if [ "$FORGE_TYPE" = "gitlab" ]; then
+                env GITLAB_URL="$API_BASE" GITLAB_PROJECT="$OWNER%2F$REPO" \
+                    "$FORGE_API" add-note "$ISSUE" --body "$_rn" >/dev/null 2>&1 || true
+            else
+                env GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" GITHUB_URL="$GITHUB_URL" \
+                    "$FORGE_API" add-note "$ISSUE" --body "$_rn" >/dev/null 2>&1 || true
+            fi
+        fi
+        mkdir -p "$PUSHED_SHA_DIR" 2>/dev/null || true
+        printf '%s\n' "$_rn_head" > "$REBASE_NOTED_FLAG" 2>/dev/null || true
+    }
+    # rebase_abort_note: byte-restore the branch (abort restores the pre-rebase
+    # state), post one note, exit 6. code-edit-job.sh maps rc 6 -> error, which
+    # the .ag treats as a bounded, NON-destructive retry (no push happened).
+    rebase_abort_note() {
+        git_capture -C "$WS" rebase --abort >/dev/null 2>&1 || true
+        post_rebase_note
+        echo "[code-edit] rebase: aborted, branch $BRANCH left for a human (#$ISSUE)" >&2
+        exit 6
+    }
+
+    CHANGELOG_RESOLVER="$SCRIPT_DIR/changelog-union-resolve.py"
+
+    run_git -C "$WS" fetch origin
+
+    # Force zdiff3 conflict style (#1518 adversarial-review fix): it materializes
+    # the merge-BASE region inside every conflict hunk (`||||||| ... =======`), so
+    # changelog-union-resolve.py can distinguish a safe two-sided ADD (empty base)
+    # from an edit/delete of a base bullet (non-empty base) — which line-shape
+    # alone cannot see, and which a naive union would silently CORRUPT. Passed
+    # per-invocation via `-c` (not a persisted repo config) on BOTH the initial
+    # rebase and every `rebase --continue`, since each is a separate git process
+    # and the style is chosen at merge-materialization time.
+    set +e
+    git -C "$WS" -c merge.conflictStyle=zdiff3 rebase "origin/$DEFAULT_BRANCH" >/dev/null 2>&1
+    _rb_rc=$?
+    set -e
+
+    if [ "$_rb_rc" -eq 0 ]; then
+        # Clean rebase (no conflict). If nothing was replayed the head is still
+        # origin/BRANCH and there is nothing to push — return NO_REBASE_NEEDED so
+        # the .ag counts it distinctly from a real rebase push.
+        _rb_new="$(git_capture -C "$WS" rev-parse HEAD 2>/dev/null || true)"
+        _rb_old="$(git_capture -C "$WS" rev-parse "origin/$BRANCH" 2>/dev/null || true)"
+        if [ -n "$_rb_new" ] && [ "$_rb_new" = "$_rb_old" ]; then
+            echo "[code-edit] rebase: $BRANCH already current on $DEFAULT_BRANCH — nothing to push" >&2
+            echo "NO_REBASE_NEEDED"
+            exit 3
+        fi
+        guarded_push
+        echo "[code-edit] rebase: clean rebase of $BRANCH onto $DEFAULT_BRANCH pushed" >&2
+        echo "REBASED $BRANCH"
+        exit 0
+    fi
+
+    # Conflict path. Bounded loop over the replayed commit stack (a rebase may
+    # stop on a conflict at each replayed commit). ONLY the lone CHANGELOG.md
+    # [Unreleased] two-sided-additive class is auto-resolved; every other shape
+    # -> abort + one note. The step cap is a belt-and-braces guard against a
+    # pathological non-terminating stack.
+    _rb_step=0
+    while [ -d "$WS/.git/rebase-merge" ] || [ -d "$WS/.git/rebase-apply" ]; do
+        _rb_step=$(( _rb_step + 1 ))
+        if [ "$_rb_step" -gt 100 ]; then
+            echo "[code-edit] rebase: exceeded conflict-step cap (100) — aborting" >&2
+            rebase_abort_note
+        fi
+        _rb_conf="$(git_capture -C "$WS" diff --name-only --diff-filter=U 2>/dev/null || true)"
+        _rb_confn="$(printf '%s\n' "$_rb_conf" | grep -c . 2>/dev/null || true)"
+        if [ "$_rb_confn" != "1" ]; then
+            echo "[code-edit] rebase: $_rb_confn conflicted files (expected exactly 1 CHANGELOG.md) — not auto-resolvable" >&2
+            rebase_abort_note
+        fi
+        case "$_rb_conf" in
+            CHANGELOG.md|*/CHANGELOG.md) : ;;
+            *)
+                echo "[code-edit] rebase: conflicted file '$_rb_conf' is not CHANGELOG.md — not auto-resolvable" >&2
+                rebase_abort_note
+                ;;
+        esac
+        if [ ! -f "$CHANGELOG_RESOLVER" ]; then
+            echo "[code-edit] rebase: changelog-union-resolve.py missing at $CHANGELOG_RESOLVER" >&2
+            rebase_abort_note
+        fi
+        set +e
+        python3 "$CHANGELOG_RESOLVER" "$WS/$_rb_conf"
+        _rb_cl_rc=$?
+        set -e
+        if [ "$_rb_cl_rc" -ne 0 ]; then
+            echo "[code-edit] rebase: CHANGELOG union resolver refused (exit $_rb_cl_rc) — not auto-resolvable" >&2
+            rebase_abort_note
+        fi
+        run_git -C "$WS" add "$_rb_conf"
+        set +e
+        GIT_EDITOR=true git -C "$WS" -c merge.conflictStyle=zdiff3 rebase --continue >/dev/null 2>&1
+        _rb_cont_rc=$?
+        set -e
+        # A non-zero --continue with NO pending rebase state is a hard failure
+        # (not a further conflict the loop-top would re-handle) -> fail closed.
+        if [ "$_rb_cont_rc" -ne 0 ] && [ ! -d "$WS/.git/rebase-merge" ] && [ ! -d "$WS/.git/rebase-apply" ]; then
+            echo "[code-edit] rebase: 'git rebase --continue' failed (exit $_rb_cont_rc) with no pending conflict — aborting" >&2
+            rebase_abort_note
+        fi
+    done
+
+    # Rebase completed via one or more union-merges. Push through the gate.
+    _rb_new="$(git_capture -C "$WS" rev-parse HEAD 2>/dev/null || true)"
+    _rb_old="$(git_capture -C "$WS" rev-parse "origin/$BRANCH" 2>/dev/null || true)"
+    if [ -n "$_rb_new" ] && [ "$_rb_new" = "$_rb_old" ]; then
+        echo "[code-edit] rebase: no net change after resolve — nothing to push" >&2
+        echo "NO_REBASE_NEEDED"
+        exit 3
+    fi
+    guarded_push
+    echo "[code-edit] rebase: resolved CHANGELOG [Unreleased] conflict, pushed $BRANCH onto $DEFAULT_BRANCH" >&2
+    echo "REBASED $BRANCH"
+    exit 0
 fi
 
 # Reap any process still rooted in THIS job's per-issue workspace (#1249).
@@ -1139,20 +1333,6 @@ fi
 
 if [ "$FC_RC" -ne 0 ]; then
     echo "[code-edit] last attempt exited non-zero (exit $FC_RC, likely idle/timeout) but edits were produced — committing the diff" >&2
-fi
-
-# Resolve the forge API wrapper BEFORE the push (#1516): the ownership-gate
-# refuse path posts a yield note through it, and it is needed later for create-mr
-# anyway. Resolution has no dependency on the push, so hoisting it is inert for
-# every success path.
-if [ "$FORGE_TYPE" = "gitlab" ]; then
-    FORGE_API="$FED_DIR/$COLONY_NAME/scripts/gitlab-api.sh"
-else
-    FORGE_API="$FED_DIR/$COLONY_NAME/scripts/github-api.sh"
-fi
-if [ ! -x "$FORGE_API" ]; then
-    echo "[code-edit] $FORGE_TYPE-api.sh not found/executable at $FORGE_API" >&2
-    exit 1
 fi
 
 run_git -C "$WS" commit -m "$TITLE (#$ISSUE)"
