@@ -15,6 +15,10 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-07-10
+
+**Requires:** agentis >= 1.20.0
+
 ### Added
 
 - **QA-block recovery loop (fix-if-qa-block, default OFF)**
@@ -244,7 +248,8 @@ is asserted until multi-version CI is in place.
   the default HOLD, auto-merge pauses until a human merges (set
   `merge_review_timeout_action = merge` for bounded-wait-then-merge).
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.8.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.9.0...HEAD
+[2.9.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.8.0...dev-apprenticeship-v2.9.0
 [2.8.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.7.1...dev-apprenticeship-v2.8.0
 [2.7.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.7.0...dev-apprenticeship-v2.7.1
 [2.7.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.6.0...dev-apprenticeship-v2.7.0
