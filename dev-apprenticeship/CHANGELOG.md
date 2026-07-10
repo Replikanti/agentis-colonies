@@ -42,6 +42,19 @@ is asserted until multi-version CI is in place.
   already native (Phase 0 slice 4). Part of the
   [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
   semantic-rewrite phase.
+- **`code_writer` semantic substrate-purity rewrites — Phase 1 slice A**
+  ([#1597](https://github.com/Replikanti/agentis-colonies/issues/1597)):
+  `primary_file_path`, the `apply_edits_to_actions`/
+  `apply_line_edits_to_actions` JSON envelope, and `is_epic_match` moved off
+  embedded `python3 -c` onto native `regex_capture`/`regex_split`/`filter`/
+  `json_escape_string` + recursion, per the
+  [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587) ratchet.
+  `apply-edits.py`/`apply-line-edits.py` themselves are untouched (stay class
+  C, invoked via a plain `sh -c 'printf ... | python3 ...'` pipeline instead
+  of a wrapper script). `numbered_view` is explicitly deferred (CB cost
+  analysis on the issue: native per-line recursion is ~46 CB/line vs the
+  current flat ~10-25 CB `exec sh`) — still python, now annotated
+  `// substrate-purity: deferred`.
 
 ### Fixed
 
@@ -59,6 +72,18 @@ is asserted until multi-version CI is in place.
   clamp is output-identical for every `count` where it matters and
   removes the overflow path entirely.
 - **`qa_reviewer`/`labeler` semantic substrate-purity rewrites (#1597)**: `linked_issue_iid`, `adv_parse`, `strip_priority_like_labels` moved off embedded python onto native `regex_capture`/`regex_match`/`regex_split`/`json_get` builtins. Part of the #1587 Phase 1 ratchet.
+- **`raw_list_has_branch` latent empty-branch false-match**
+  ([#1597](https://github.com/Replikanti/agentis-colonies/issues/1597)): the
+  substrate-purity rewrite of `code_writer.ag`'s `raw_list_has_branch` onto
+  `json_array_object_field_values` surfaced a divergence from the python it
+  replaced — when a merge-request object in the raw JSON lacks
+  `source_branch`, the native builtin returns `""` for that entry (so callers
+  can distinguish field-absent from object-absent), which would have
+  wrongly matched an empty-string `branch` argument (`"" == ""`) where the
+  original python's `it.get("source_branch") == br` never matches on `None
+  != ""`. Closed with a `len(branch) == 0` guard; every current caller
+  always passes a computed `fix/issue-<iid>` string, so this is
+  belt-and-braces on the live call graph, not an active bug.
 
 ## [2.10.0] - 2026-07-10
 
