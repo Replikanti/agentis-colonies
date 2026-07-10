@@ -873,6 +873,25 @@ if [ -x "$REPO_ROOT/dark-factory/demo-map-zones.sh" ]; then
     fi
 fi
 
+# --- dark-factory brief-generation: per-zone hunt briefs that prime the discovery hunt (#1619, epic #1611 M2) ---
+# gen-briefs.sh (shell plumbing) + auditor/agents/brief-writer.ag (substrate authoring) turn M1's zones.json +
+# scope.tsv into a per-zone brief in the EXACT format hunter.ag consumes via SCOPE_BRIEF: header + bug-class
+# list, the substrate DEPTH body (invariants-to-break + folded audit residual + prior-pattern hints), the
+# in/out-of-scope boundaries, and the honesty mandate. run-discovery.sh gains an additive, opt-in --brief
+# acknowledgement inside its --list-cells dry-run (prints BRIEF|<abs>|<lines>) so the round-trip proves a
+# generated brief resolves offline; the shipped hunt path stays byte-identical. demo-gen-briefs.sh is pure
+# bash/git/python3 over a throwaway git fixture with a --fixture body stub (no network / no LLM) so it runs on
+# CI runners; it also source-guards brief-writer.ag and runs it live via --backend mock when agentis is present.
+if [ -x "$REPO_ROOT/dark-factory/demo-gen-briefs.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-gen-briefs.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: brief-generation (gen-briefs.sh + brief-writer.ag -> per-zone briefs, --brief round-trip) (#1619)"
+    else
+        fail "dark-factory: brief-generation regressed (#1619)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory snapshot owner-rebind hard assert (#1457) ---
 # The snapshot-replay harness reads the account's real on-chain owner and emits an explicit
 # OWNER REBIND / MATCH / MISMATCH marker; with EXPECT_PROGRAM_OWNER (run-audit --expect-owner) it

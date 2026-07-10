@@ -1,0 +1,40 @@
+# briefs.fixture.txt — canned substrate brief bodies for the M2 gen-briefs demo (gen-briefs.sh --fixture).
+# One DARK-FACTORY:BRIEF-BEGIN|<zone_id> .. DARK-FACTORY:BRIEF-END block per zone id map-zones.sh derives from
+# fixtures/zone-map/ (the slug of each contracts/ subdirectory), mirroring brief-writer.ag's stdout contract:
+# the interior lines are the verbatim DEPTH body gen-briefs.sh drops under `## Invariants to break / attack
+# surface`. This stubs the LLM step so demo-gen-briefs.sh is deterministic and never calls a live backend on CI.
+# Public-safe, generic protocol mechanics only.
+DARK-FACTORY:BRIEF-BEGIN|contracts_vault
+Attack the share-price accounting as an external depositor holding no privileged role:
+- C1: can totalAssets/totalSupply ever DECREASE outside rounding dust? Trace every write to the assets
+  numerator; a raw balanceOf donation must not inflate the price (want a virtual/tracked balance).
+- C6: is every division rounded AGAINST the user on deposit and FOR the vault on withdraw? A single
+  mis-rounded path lets a depositor mint free shares.
+- C11: is the first-depositor inflation guarded (virtual shares / dead shares)? Seed the pool with 1 wei
+  and front-run the first real deposit to steal it via a donated-asset price spike.
+Break invariant: "share price monotonic non-decreasing" and "totalAssets == tracked deposits + vested rewards".
+DARK-FACTORY:BRIEF-END
+DARK-FACTORY:BRIEF-BEGIN|contracts_oracle
+Attack the price feed as an external actor:
+- C2: is the staleness + deviation check applied on EVERY read path (mint AND withdraw AND liquidation), or
+  does one path skip it? Is a zero/negative answer treated as healthy instead of reverting?
+- C9: is the token/feed/stable decimal conversion exact, or does a scaling error systematically over-mint or
+  over-withdraw? Trace the 6/8/18 decimal boundaries end to end.
+Break invariant: "price used == fair price on every path"; "no over-mint/over-withdraw via mispricing".
+DARK-FACTORY:BRIEF-END
+DARK-FACTORY:BRIEF-BEGIN|contracts_liquidation
+Attack the CDP liquidation/redemption path:
+- C10: can a position be liquidated for more collateral than the debt covers, or health-factor accounting be
+  gamed across a liquidate/seize/redeem sequence? Check the order value moves vs state updates.
+- C8: is the external token transfer in seize/redeem CEI-ordered, or can a malicious collateral token re-enter
+  liquidate before the health factor updates and double-seize?
+Break invariant: "seized value <= debt repaid + bonus"; "no state read after an external call decides solvency".
+DARK-FACTORY:BRIEF-END
+DARK-FACTORY:BRIEF-BEGIN|contracts_governance
+Attack the role model and pause consistency:
+- C5: can an unprivileged caller reach an owner/guardian-only entrypoint (missing modifier, wrong check, an
+  init left unguarded), or a role EXCEED its documented permissions?
+- C13: is the pause/freeze state consistent across every value-moving path, or can a frozen address still
+  transfer/redeem through an unpaused sibling function?
+Break invariant: "only the documented role can call a privileged path"; "pause halts EVERY value-moving path".
+DARK-FACTORY:BRIEF-END

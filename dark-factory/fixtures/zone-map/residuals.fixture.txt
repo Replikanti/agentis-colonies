@@ -1,0 +1,10 @@
+# residuals.fixture.txt — canned audit-scout.ag output for the M2 gen-briefs demo
+# (gen-briefs.sh --audit-residuals). Mirrors audit-scout.ag's stdout contract: BOUNDARY|<known finding> lines
+# (the global exclusion set that seeds every brief's out-of-scope section) followed by
+# RESIDUAL|<subsystem>|<class>|<why the audits missed it>|<attack sketch> leads whose subsystem/class match the
+# fixture zones, so demo-gen-briefs.sh exercises residual folding + the boundary-derived out-of-scope offline.
+# Public-safe, generic protocol mechanics only.
+BOUNDARY|Known: first-depositor inflation on Vault.deposit acknowledged by the audit and fixed with virtual shares
+BOUNDARY|Known: oracle staleness check missing on the liquidation path was reported and patched pre-launch
+RESIDUAL|vault deposits|C6|the audit checked deposit rounding but never traced the withdraw-path rounding direction|deploy the vault, deposit dust and withdraw repeatedly, assert totalAssets drifts below tracked deposits
+RESIDUAL|liquidation engine|C8|the reentrancy review covered seize() but not the redeem() token-callback ordering|deploy a malicious collateral token, trigger redeem, re-enter liquidate before the health factor updates
