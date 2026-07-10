@@ -33,7 +33,11 @@ is asserted until multi-version CI is in place.
   additive bullet inserts under `CHANGELOG.md` `## [Unreleased]`, via the new
   `tools/changelog-union-resolve.py` behind a strict containment guard (lone
   `CHANGELOG.md`, hunks strictly inside `[Unreleased]`, both sides
-  additive-bullet-only); every other conflict shape, a released-heading touch, a
+  additive-bullet-only). Because line shape alone does not prove additivity, the
+  rebase runs under `merge.conflictStyle=zdiff3` and the resolver REFUSES any
+  hunk whose merge-base region is non-empty — so a side that edited or deleted a
+  base bullet (still bullet-shaped) can never union into a corrupted CHANGELOG.
+  Every other conflict shape, a released-heading touch, a non-empty base, a
   guard/parse failure, or `MERGEABLE == unknown` fail-closes to a `git rebase
   --abort` plus an at-most-once human note (never an LLM freeform resolve). The
   `mr-pipeline-status` verb now emits an explicit `MERGEABLE=unknown` value on

@@ -715,8 +715,16 @@ if [ "$REBASE" -eq 1 ]; then
 
     run_git -C "$WS" fetch origin
 
+    # Force zdiff3 conflict style (#1518 adversarial-review fix): it materializes
+    # the merge-BASE region inside every conflict hunk (`||||||| ... =======`), so
+    # changelog-union-resolve.py can distinguish a safe two-sided ADD (empty base)
+    # from an edit/delete of a base bullet (non-empty base) — which line-shape
+    # alone cannot see, and which a naive union would silently CORRUPT. Passed
+    # per-invocation via `-c` (not a persisted repo config) on BOTH the initial
+    # rebase and every `rebase --continue`, since each is a separate git process
+    # and the style is chosen at merge-materialization time.
     set +e
-    git -C "$WS" rebase "origin/$DEFAULT_BRANCH" >/dev/null 2>&1
+    git -C "$WS" -c merge.conflictStyle=zdiff3 rebase "origin/$DEFAULT_BRANCH" >/dev/null 2>&1
     _rb_rc=$?
     set -e
 
@@ -776,7 +784,7 @@ if [ "$REBASE" -eq 1 ]; then
         fi
         run_git -C "$WS" add "$_rb_conf"
         set +e
-        GIT_EDITOR=true git -C "$WS" rebase --continue >/dev/null 2>&1
+        GIT_EDITOR=true git -C "$WS" -c merge.conflictStyle=zdiff3 rebase --continue >/dev/null 2>&1
         _rb_cont_rc=$?
         set -e
         # A non-zero --continue with NO pending rebase state is a hard failure

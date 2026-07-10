@@ -23,6 +23,12 @@
 #   B3. conflict touching a RELEASED `## [x.y.z]` heading is NOT auto-resolved (abort+note, exit 6)
 #   B4. a real code conflict (non-CHANGELOG file) -> note + no push (abort, exit 6)
 #   B5. ownership: a foreign commit at remote head -> guarded_push refuses -> note, no destructive push (exit 5)
+#   B6. a CHANGELOG conflict where one side EDITS/DELETES a base [Unreleased] bullet
+#       (both sides bullet-shaped) is NOT auto-resolved: the zdiff3 base region is
+#       non-empty -> abort + note + exit 6, no corrupting union pushed
+#       (adversarial-review corruption regression guard).
+#   Z1. the --rebase mode forces merge.conflictStyle=zdiff3 (source-grep, so a
+#       future refactor can't silently drop it and re-open the corruption hole).
 #   J1. code-edit-job.sh forwards --rebase; a normal run does NOT
 #
 # Auto-discovered by tools/colony-lint.sh's tools-test loop. Exit 0 if all pass.
@@ -380,6 +386,77 @@ if grep -q 'add-note' "$NOTE_LOG" 2>/dev/null; then
     pass "B5: the #1516 yield note posted (yielded to the operator)"
 else
     fail "B5: yield note expected" "log=$(cat "$NOTE_LOG" 2>/dev/null)"
+fi
+
+# ===========================================================================
+# B6: a CHANGELOG [Unreleased] conflict where OUR side EDITS a base bullet AND
+# DELETES another (both sides all-`- `-bullet-shaped) must NOT auto-resolve. Under
+# the forced zdiff3 style the merge-base region is non-empty, so the resolver
+# refuses -> abort + one note + exit 6, branch tip unchanged. Without zdiff3 +
+# the base-region guard this unioned to a corrupted CHANGELOG (resurrected the
+# deleted bullet, duplicated the edited one) — the adversarial-review finding.
+# ===========================================================================
+IID=75
+fresh_remote
+(
+    cd "$SEED" || exit 1
+    git symbolic-ref HEAD refs/heads/main 2>/dev/null || true
+    printf '# Changelog\n\n## [Unreleased]\n- alpha\n- beta\n- gamma\n\n## [1.0.0] - 2024-01-01\n- Initial\n' > CHANGELOG.md
+    git add -A; git commit --quiet -m "seed"
+    git branch -M main 2>/dev/null || true
+    git remote add origin "$BARE"
+    git push --quiet origin main
+    # ours: edit alpha + DELETE beta (both lines still `- ` bullets).
+    git checkout --quiet -b "fix/issue-$IID"
+    printf '# Changelog\n\n## [Unreleased]\n- alpha our-edit\n- gamma\n\n## [1.0.0] - 2024-01-01\n- Initial\n' > CHANGELOG.md
+    git add -A; git commit --quiet -m "docs: our edit+delete (#$IID)"
+    git push --quiet origin "fix/issue-$IID"
+    # main: edit alpha differently.
+    git checkout --quiet main
+    printf '# Changelog\n\n## [Unreleased]\n- alpha main-edit\n- beta\n- gamma\n\n## [1.0.0] - 2024-01-01\n- Initial\n' > CHANGELOG.md
+    git add -A; git commit --quiet -m "docs: main edit"
+    git push --quiet origin main
+)
+BRANCH_TIP="$(git --git-dir="$BARE" rev-parse "refs/heads/fix/issue-$IID")"
+rm -f "$NOTE_LOG"
+install_note_stub
+record_own_sha "$IID" "$BRANCH_TIP"
+run_rebase "$IID"
+if [ "$RC" -eq 6 ]; then
+    pass "B6: edit/delete of a base [Unreleased] bullet NOT auto-resolved (exit 6)"
+else
+    fail "B6: exit 6" "rc=$RC out=[$OUT] err=$(tail -8 "$WORK/err.txt")"
+fi
+NEW_TIP="$(git --git-dir="$BARE" rev-parse "refs/heads/fix/issue-$IID")"
+if [ "$NEW_TIP" = "$BRANCH_TIP" ]; then
+    pass "B6: branch tip unchanged (no corrupting union pushed)"
+else
+    fail "B6: tip must be unchanged" "before=$BRANCH_TIP after=$NEW_TIP"
+fi
+# Belt-and-braces: whatever the pushed tip is, it must NOT contain the corruption
+# signature (both alpha edits AND a resurrected beta all present at once).
+PUSHED_CL="$(git --git-dir="$BARE" show "refs/heads/fix/issue-$IID:CHANGELOG.md" 2>/dev/null)"
+if printf '%s' "$PUSHED_CL" | grep -q '^- alpha main-edit$' \
+   && printf '%s' "$PUSHED_CL" | grep -q '^- alpha our-edit$'; then
+    fail "B6: corrupted union reached the remote" "pushed=[$PUSHED_CL]"
+else
+    pass "B6: no corrupted union on the remote (both alpha edits are not both present)"
+fi
+if grep -q 'add-note' "$NOTE_LOG" 2>/dev/null; then
+    pass "B6: one human note posted"
+else
+    fail "B6: human note expected" "log=$(cat "$NOTE_LOG" 2>/dev/null)"
+fi
+
+# ===========================================================================
+# Z1: the --rebase mode forces merge.conflictStyle=zdiff3 on BOTH the initial
+# rebase and the rebase --continue (source-grep regression guard).
+# ===========================================================================
+ZD_COUNT="$(grep -c 'merge.conflictStyle=zdiff3' "$ORCH" 2>/dev/null || echo 0)"
+if [ "$ZD_COUNT" -ge 2 ]; then
+    pass "Z1: --rebase forces merge.conflictStyle=zdiff3 on both rebase + rebase --continue"
+else
+    fail "Z1: zdiff3 forced" "expected >=2 merge.conflictStyle=zdiff3 in ORCH, got $ZD_COUNT"
 fi
 
 # ===========================================================================

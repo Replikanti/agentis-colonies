@@ -18,6 +18,10 @@
 #   U6. no `## [Unreleased]` heading -> guard fail (exit 3)
 #   U7. a file with no conflict markers -> parse error (exit 2)
 #   U8. wrong argv count -> usage error (exit 2)
+#   U9. zdiff3 hunk with a NON-EMPTY base region (a side edited/deleted a base
+#       bullet — both sides still bullet-shaped) is NOT unioned (exit 3). This is
+#       the adversarial-review corruption case: line shape is not additivity.
+#   U10. zdiff3 hunk with an EMPTY base region (pure two-sided add) still unions (exit 0)
 #
 # Auto-discovered by tools/colony-lint.sh's tools-test loop. Exit 0 if all pass.
 set -u
@@ -243,6 +247,83 @@ if [ "$?" -eq 2 ]; then
     pass "U8: no argument -> usage error (exit 2)"
 else
     fail "U8: exit 2 on no arg"
+fi
+
+# ---------------------------------------------------------------------------
+# U9: zdiff3 hunk with a NON-EMPTY base region — one side edited a base bullet
+# and deleted another; BOTH sides are still all-`- `-bullet-shaped, so the old
+# shape-only guard would have unioned (resurrecting the deleted bullet +
+# duplicating the edited one — a valid-markdown CORRUPTED CHANGELOG). The base
+# region makes the non-additivity visible -> REFUSE (exit 3).
+# ---------------------------------------------------------------------------
+F9="$WORK/CHANGELOG.md"
+cat > "$F9" <<'EOF'
+# Changelog
+
+## [Unreleased]
+<<<<<<< HEAD
+- alpha main-edit
+- beta
+||||||| parent of abc123 (ours)
+- alpha
+- beta
+=======
+- alpha our-edit
+>>>>>>> abc123 (ours)
+- gamma
+
+## [1.0.0] - 2024-01-01
+- Initial
+EOF
+run_resolver "$F9"
+if [ "$RC" -eq 3 ]; then
+    pass "U9: non-empty zdiff3 base (edit/delete of a base bullet) refused (exit 3)"
+else
+    fail "U9: exit 3" "rc=$RC out=$(cat "$WORK/out.txt") err=$(cat "$WORK/err.txt")"
+fi
+if grep -qE '^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)' "$F9"; then
+    pass "U9: file left untouched (markers still present, no corrupting union)"
+else
+    fail "U9: file must be left untouched"
+fi
+
+# ---------------------------------------------------------------------------
+# U10: zdiff3 hunk with an EMPTY base region (pure two-sided add — nothing
+# pre-existed at the conflict point) still unions, main bullet first (exit 0).
+# ---------------------------------------------------------------------------
+F10="$WORK/CHANGELOG.md"
+cat > "$F10" <<'EOF'
+# Changelog
+
+## [Unreleased]
+<<<<<<< HEAD
+- Main bullet X
+||||||| parent of def456 (ours)
+=======
+- Our bullet Y
+>>>>>>> def456 (ours)
+
+## [1.0.0] - 2024-01-01
+- Initial
+EOF
+run_resolver "$F10"
+if [ "$RC" -eq 0 ]; then
+    pass "U10: empty zdiff3 base (pure two-sided add) unions (exit 0)"
+else
+    fail "U10: exit 0" "rc=$RC err=$(cat "$WORK/err.txt")"
+fi
+if grep -q '^- Main bullet X$' "$F10" && grep -q '^- Our bullet Y$' "$F10" \
+   && ! grep -qE '^(<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)' "$F10"; then
+    pass "U10: both bullets kept, all markers (incl. base) dropped"
+else
+    fail "U10: union output" "$(cat "$F10")"
+fi
+M10="$(grep -n '^- Main bullet X$' "$F10" | head -1 | cut -d: -f1)"
+O10="$(grep -n '^- Our bullet Y$' "$F10" | head -1 | cut -d: -f1)"
+if [ -n "$M10" ] && [ -n "$O10" ] && [ "$M10" -lt "$O10" ]; then
+    pass "U10: HEAD (main) bullet ordered before ours"
+else
+    fail "U10: main-first order" "main=$M10 our=$O10"
 fi
 
 echo ""
