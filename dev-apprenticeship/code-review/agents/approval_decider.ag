@@ -188,38 +188,41 @@ fn rl_is_limited(owner: string, repo: string) -> int {
 // contract are all unchanged. This path adds NO prompt().
 
 // open_pr_field: extract [idx].<field> (a scalar string) from the open-PR list
-// JSON. The raw JSON rides $J (env var, off-argv) so ARG_MAX never bites. Total:
-// missing index / field / malformed JSON all collapse to "". Mirrors the helper
-// of the same name in implementation/code_writer.ag (#1332).
+// JSON — native json_get since #1588 slice 5 (was an inline python3 -c). Total:
+// missing index / field / malformed JSON all collapse to "". Ported verbatim
+// (byte-identical body) from the helper of the same name in
+// implementation/code_writer.ag (#1332, natively ported at #1358).
 fn open_pr_field(raw: string, idx: int, field: string) -> string {
-    let cmd = "J=" + shell_escape(raw) + " I=" + to_string(idx) + " F=" + shell_escape(field) +
-        " python3 -c 'import os,json,sys" +
-        "\ntry:" +
-        "\n    d=json.loads(os.environ[\"J\"])" +
-        "\nexcept Exception:" +
-        "\n    print(\"\"); sys.exit(0)" +
-        "\ni=int(os.environ[\"I\"]); f=os.environ[\"F\"]" +
-        "\nif not isinstance(d,list) or not (0<=i<len(d)):" +
-        "\n    print(\"\"); sys.exit(0)" +
-        "\nv=d[i].get(f) if isinstance(d[i],dict) else None" +
-        "\nprint(v if isinstance(v,str) else (\"\" if v is None else str(v)))'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let v = to_string(json_get(raw, "[" + to_string(idx) + "]." + field));
+    if v == "void" { return ""; };
+    return v;
 }
 
 // pr_check_token: pull the value of KEY out of a `STATUS=<x> REF=<y>` line (the
-// forge mr-pipeline-status verb output). Value rides $L (env var, off-argv).
-// Total: "". Mirrors the helper of the same name in implementation/code_writer.ag.
+// forge mr-pipeline-status verb output) — native index_of/substring scan since
+// #1588 slice 5 (was an inline python3 -c). The KEY= marker must sit at a token
+// start (position 0 or right after a space) so a key that is a suffix of
+// another token (XRESULT= vs RESULT=) can't false-match — the startswith
+// property of the old per-token loop. The value runs to the next space (or
+// newline, for a garbled multi-line blob). Total: "". Ported verbatim
+// (byte-identical body) from the helper of the same name in
+// implementation/code_writer.ag (natively ported at #1358).
 fn pr_check_token(out: string, key: string) -> string {
-    let cmd = "L=" + shell_escape(out) + " K=" + shell_escape(key) +
-        " python3 -c 'import os,sys" +
-        "\ns=os.environ[\"L\"].strip(); k=os.environ[\"K\"]+\"=\"" +
-        "\nfor tok in s.split():" +
-        "\n    if tok.startswith(k):" +
-        "\n        print(tok[len(k):]); sys.exit(0)" +
-        "\nprint(\"\")'";
-    let res = try { exec sh cmd; } catch e { ""; };
-    return res;
+    let marker = key + "=";
+    // len(out) is the not-found sentinel (avoids a negative literal).
+    let at = if index_of(out, marker) == 0 {
+        0;
+    } else {
+        let mid = index_of(out, " " + marker);
+        if mid < 0 { len(out); } else { mid + 1; };
+    };
+    if at >= len(out) { return ""; };
+    let rest = substring(out, at + len(marker), len(out));
+    let sp = index_of(rest, " ");
+    let tok = if sp < 0 { rest; } else { substring(rest, 0, sp); };
+    let nl = index_of(tok, "\n");
+    if nl < 0 { return tok; };
+    return substring(tok, 0, nl);
 }
 
 // ci_state: classify a raw CI status word (the mr-pipeline-status verb's STATUS
