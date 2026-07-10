@@ -22,6 +22,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   colony `README.md` agent table and corrected the auditor agent count (22 → 23 agents).
 
 ### Added
+- **New-listing watcher — freshness-first Immunefi target selection** (#1623). New standalone
+  `watch-new-listings.sh` (does NOT source, and makes NO edit to, `run-immunefi-intake.sh` — that file's ranking
+  output stays regression-critical and byte-identical) duplicates the #1592 EVM/Solidity/Vyper/Yul, not-
+  `inviteOnly`, in-window-`endDate`, `maxBounty >= --floor` survivor filter verbatim, then layers ONE new signal:
+  a program is FRESH — and gets surfaced — iff it launched within `--max-age-days` (default 21, via
+  `launchDate`) OR its key is absent from a NEW self-dedup ledger, `seen-listings.txt` (distinct from
+  `run-batch.sh`'s `funnel-ledger.txt`) — the honest first-seen proxy for "new" when `launchDate` is
+  stale/absent. Every current survivor's key is recorded to the ledger after each run, so the *next* run's
+  first-seen check narrows to genuinely-new programs (idempotent on the ledger-only signal; a still-in-window
+  program legitimately keeps re-surfacing every run, which is the intended freshness behaviour, not a dedup
+  bug). Emits the SAME 5-column `score<TAB>key<TAB>url<TAB>name<TAB>scope_hint` TSV `run-batch.sh --queue`
+  already consumes, using the SAME `immunefi:<id>` key namespace `run-immunefi-intake.sh` uses (a separate
+  queue file, `new-listings.queue`, so the two tools' outputs never clobber). `[SKIP]` + exit 0 with both
+  `--out` and `--ledger` untouched on no network / no `--bounties` / missing python3. Read-only, never
+  submits — the operator wires the recurring cron/schedule. `demo-watch-new-listings.sh` is the offline
+  deterministic proof (fixture launchDate values computed relative to "today" so the assertions never rot).
 - **Brief-generation — per-zone hunt briefs that prime the discovery hunt** (#1619, epic #1611 milestone M2).
   New `gen-briefs.sh` (shell plumbing) + `auditor/agents/brief-writer.ag` (substrate authoring) turn M1's
   `zones.json` + `scope.tsv` into a per-zone `briefs/brief_<zone_id>.md` (plus a `briefs/zone_briefs.json`
