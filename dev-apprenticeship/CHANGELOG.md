@@ -15,6 +15,22 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`code_writer` no longer re-drafts + refuses every tick on an
+  ownership-refused branch (operator commits, no MR)**
+  ([#1560](https://github.com/Replikanti/agentis-colonies/issues/1560)): the
+  #1516 `guarded_push` foreign-commit refusal was indistinguishable from two
+  unrelated transient exit-5 refusals, so `ag_edit_step` treated it as a plain
+  `ERROR` and retried forever — one full `prompt()` + edit-job launch + fetch
+  per tick. The true foreign-commit refusal now exits `7` (the two
+  ambiguous/transient sites stay `exit 5`); `code-edit-in-checkout.sh` gains a
+  read-only, clone-free `--probe-remote-head` mode (a single `git ls-remote`,
+  no workspace, no LLM); and `code_writer.ag` records an ownership hold keyed
+  to the remote head observed at refusal time, releasing it the moment a fresh
+  probe of that sha diverges. The hold is independently bypassed whenever an
+  MR opens (the pre-existing, unconditional `mr_exists` gate).
+
 ## [2.9.0] - 2026-07-10
 
 **Requires:** agentis >= 1.20.0

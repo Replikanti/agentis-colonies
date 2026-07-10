@@ -14,9 +14,13 @@
 #
 # Asserts:
 #   O1. refuse-foreign — remote fix branch carries a commit the local rebuild
-#       (off main) does not descend from, and no own-sha record exists ⇒ exit 5,
-#       remote head UNCHANGED, create-mr NEVER called, the yield note posted
-#       exactly ONCE (and a retry does not re-post — the .yielded flag caps it).
+#       (off main) does not descend from, and no own-sha record exists ⇒ exit 7
+#       (#1560: the true foreign-commit refusal, split off exit 5 so
+#       code-edit-job.sh/code_writer.ag can tell it apart from the two
+#       transient exit-5 sites below), remote head UNCHANGED, create-mr NEVER
+#       called, the yield note posted exactly ONCE (and a retry does not
+#       re-post — the .yielded flag caps it), and --probe-remote-head reports
+#       the unchanged foreign tip.
 #   O2. allow-own-sha — the remote head is recorded as the agent's own sha (the
 #       #1363 self-replace) ⇒ push succeeds, remote head ADVANCES, exit 0.
 #   O3. allow-ancestor — remote head is an ancestor of the local head (the
@@ -197,10 +201,10 @@ env \
         --task "Implement." >"$OUT1" 2>"$WORK/err1.txt"
 RC1=$?
 
-if [ "$RC1" -eq 5 ]; then
-    pass "O1: foreign remote head ⇒ exit 5 (ownership refused)"
+if [ "$RC1" -eq 7 ]; then
+    pass "O1: foreign remote head ⇒ exit 7 (true ownership refusal, #1560)"
 else
-    fail "O1: exit 5 on foreign remote head" "rc=$RC1 err=$(tail -5 "$WORK/err1.txt")"
+    fail "O1: exit 7 on foreign remote head" "rc=$RC1 err=$(tail -5 "$WORK/err1.txt")"
 fi
 NOW_TIP="$(git --git-dir="$BARE" rev-parse "refs/heads/fix/issue-$IID")"
 if [ "$NOW_TIP" = "$FOREIGN_TIP" ]; then
@@ -220,7 +224,29 @@ else
     fail "O1: exactly one yield note" "count=$NOTE_COUNT"
 fi
 
-# O1b: a RETRY of the same issue (workspace + .yielded flag survive the exit 5)
+# #1560: --probe-remote-head is a read-only, clone-free fact-reporter — reuse
+# this O1 fixture (a real bare repo with a known foreign tip) to assert it
+# reports the exact same head the refusal just observed, with no side effects.
+PROBE_OUT="$WORK/probe1.txt"
+env \
+    PATH="$STUB_BIN:$PATH" \
+    COLONY_DIR="$COLONY_DIR" \
+    GITHUB_URL="file://$REMOTE_BASE" \
+    GITHUB_TOKEN="$FAKE_TOKEN" \
+    GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
+    bash "$ORCH" \
+        --owner "$OWNER" --repo "$REPO" --issue "$IID" \
+        --branch "fix/issue-$IID" --title x --task x \
+        --probe-remote-head >"$PROBE_OUT" 2>"$WORK/probe1_err.txt"
+PROBE_RC=$?
+PROBE_LINE="$(grep '^REMOTE_HEAD=' "$PROBE_OUT" || true)"
+if [ "$PROBE_RC" -eq 0 ] && [ "$PROBE_LINE" = "REMOTE_HEAD=$FOREIGN_TIP" ]; then
+    pass "O1: --probe-remote-head reports the foreign tip, exit 0"
+else
+    fail "O1: --probe-remote-head must report REMOTE_HEAD=\$FOREIGN_TIP" "rc=$PROBE_RC out=$PROBE_LINE want=REMOTE_HEAD=$FOREIGN_TIP"
+fi
+
+# O1b: a RETRY of the same issue (workspace + .yielded flag survive the exit 7)
 # must NOT re-post the note — the .yielded flag caps it.
 env \
     PATH="$STUB_BIN:$PATH" \
@@ -236,8 +262,8 @@ env \
         --task "Implement." >/dev/null 2>>"$WORK/err1.txt"
 RC1B=$?
 NOTE_COUNT2="$( [ -f "$ADD_NOTE_LOG" ] && wc -l < "$ADD_NOTE_LOG" || echo 0)"
-if [ "$RC1B" -eq 5 ] && [ "$NOTE_COUNT2" -eq 1 ]; then
-    pass "O1b: retry still refuses (exit 5) and does NOT re-post the yield note (.yielded caps it)"
+if [ "$RC1B" -eq 7 ] && [ "$NOTE_COUNT2" -eq 1 ]; then
+    pass "O1b: retry still refuses (exit 7) and does NOT re-post the yield note (.yielded caps it)"
 else
     fail "O1b: retry caps the yield note" "rc=$RC1B notes=$NOTE_COUNT2"
 fi
@@ -341,7 +367,9 @@ fi
 # O4: fail-closed-lsremote — the remote is broken AFTER the clone (the edit stub
 # renames the bare repo), so ls-remote errors at the gate ⇒ exit 5, no push, no
 # yield note. Distinguishes a network/auth failure (fail-closed, silent) from a
-# foreign-commit refusal (fail-closed, yields with a note).
+# foreign-commit refusal (fail-closed, yields with a note). #1560: this site is
+# deliberately UNCHANGED — it stays the generic, transient/retryable exit 5,
+# not the new exit 7 reserved for the true foreign-commit refusal (O1/O1b).
 # ===========================================================================
 IID=73
 FIXFILE="FIX_73.txt"

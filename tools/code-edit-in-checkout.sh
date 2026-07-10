@@ -164,9 +164,13 @@ CONTINUATION_FILE=""
 # not reset away the diff it is about to commit).
 REUSE=0
 FINALIZE=0
+# --probe-remote-head (#1560): a standalone read-only mode for the ownership-
+# hold gate. It runs a single `git ls-remote`, prints `REMOTE_HEAD=<sha-or-
+# empty>`, and exits 0 — no clone, no workspace, no editing engine, no LLM.
+PROBE_REMOTE_HEAD=0
 
 usage() {
-    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--decompose-only --subtasks-out <file>] [--recover] [--rebase] [--one-attempt] [--continuation <file>] [--reuse] [--finalize]" >&2
+    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--decompose-only --subtasks-out <file>] [--recover] [--rebase] [--one-attempt] [--continuation <file>] [--reuse] [--finalize] [--probe-remote-head]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -187,6 +191,7 @@ while [ $# -gt 0 ]; do
         --continuation) CONTINUATION_FILE="${2:-}"; shift 2 ;;
         --reuse) REUSE=1; shift ;;
         --finalize) FINALIZE=1; REUSE=1; shift ;;
+        --probe-remote-head) PROBE_REMOTE_HEAD=1; shift ;;
         *) echo "code-edit-in-checkout.sh: unknown flag: $1" >&2; usage; exit 2 ;;
     esac
 done
@@ -279,6 +284,17 @@ fi
 if [ "$REBASE" -eq 1 ]; then
     if [ "$ONE_ATTEMPT" -eq 1 ] || [ "$REUSE" -eq 1 ] || [ "$FINALIZE" -eq 1 ] || [ "$DECOMPOSE" -eq 1 ] || [ "$DECOMPOSE_ONLY" -eq 1 ] || [ "$RECOVER" -eq 1 ]; then
         echo "code-edit-in-checkout.sh: --rebase cannot be combined with --one-attempt/--reuse/--finalize/--decompose/--decompose-only/--recover" >&2
+        usage
+        exit 2
+    fi
+fi
+
+# --probe-remote-head (#1560) is a standalone read-only fact-reporter: it makes
+# no edit, drives no LLM, and never clones. Combining it with ANY other mode
+# flag is a caller bug — fail loudly (exit 2), same convention as --rebase.
+if [ "$PROBE_REMOTE_HEAD" -eq 1 ]; then
+    if [ "$ONE_ATTEMPT" -eq 1 ] || [ "$REUSE" -eq 1 ] || [ "$FINALIZE" -eq 1 ] || [ "$DECOMPOSE" -eq 1 ] || [ "$DECOMPOSE_ONLY" -eq 1 ] || [ "$RECOVER" -eq 1 ] || [ "$REBASE" -eq 1 ]; then
+        echo "code-edit-in-checkout.sh: --probe-remote-head cannot be combined with --one-attempt/--reuse/--finalize/--decompose/--decompose-only/--recover/--rebase" >&2
         usage
         exit 2
     fi
@@ -462,6 +478,20 @@ git_capture() {
     GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0 git "$@"
 }
 
+# --probe-remote-head (#1560): a read-only, clone-free fact-reporter for the
+# ownership-hold gate in code_writer.ag. It only needs $CLONE_URL (resolved
+# above) and git_capture — it never touches $WS, never clones, never runs an
+# LLM session. An ls-remote failure or an absent branch both print an empty
+# value; the caller decides what "ambiguous" means, this tool stays neutral.
+if [ "$PROBE_REMOTE_HEAD" -eq 1 ]; then
+    set +e
+    _probe_lsr="$(git_capture ls-remote "$CLONE_URL" "refs/heads/$BRANCH" 2>/dev/null)"
+    set -e
+    _probe_head="$(printf '%s\n' "$_probe_lsr" | awk 'NR==1{print $1}')"
+    echo "REMOTE_HEAD=$_probe_head"
+    exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # 1. Workspace: idempotent fresh clone/reset, ISOLATED PER JOB (#1248).
 # ---------------------------------------------------------------------------
@@ -536,7 +566,14 @@ post_yield_note() {
 #   * remote branch absent (exit 0, empty head)  -> first push, proceed + record
 #   * remote head is an ANCESTOR of our local head -> fast-forward, proceed + record
 #   * remote head == our own recorded sha          -> replacing our own attempt, proceed
-#   * otherwise (foreign commits) / empty own-sha  -> REFUSE, post note once, exit 5
+#   * otherwise (foreign commits) / empty own-sha  -> REFUSE, post note once, exit 7
+#
+# #1560: exit 5 vs exit 7 — the two sites above (unresolvable local HEAD,
+# ls-remote failure) are AMBIGUOUS/transient infra faults, fail-closed but safe
+# to keep retrying blindly every tick (stay exit 5, unchanged). The one true
+# foreign-commit refusal below is a POSITIVE ownership signal — code_writer.ag
+# needs to tell it apart to stop re-drafting on a branch it must not touch, so
+# it gets its own exit 7.
 guarded_push() {
     _local="$(git_capture -C "$WS" rev-parse HEAD 2>/dev/null || true)"
     if [ -z "$_local" ]; then
@@ -576,7 +613,7 @@ guarded_push() {
     fi
     echo "[code-edit] ownership gate: remote head $_remote of $BRANCH is neither an ancestor of our push nor our own recorded sha (${_own:-none}) — refusing to force-push, yielding to the operator" >&2
     post_yield_note
-    exit 5
+    exit 7
 }
 
 if [ -d "$WS/.git" ]; then
@@ -671,7 +708,7 @@ fi
 # The ONLY write is guarded_push (#1516): a rebase rewrites history so the new
 # head is NEVER an ancestor of the old remote, which forces guarded_push onto its
 # own-sha branch — it force-pushes only when the remote head equals code_writer's
-# recorded own sha (we own the branch) and REFUSES (exit 5 + at-most-once yield
+# recorded own sha (we own the branch) and REFUSES (exit 7 + at-most-once yield
 # note) on a foreign/operator commit. So an auto-rebase over an operator-carrying
 # branch degrades to the yield note and NEVER loops or clobbers.
 # ---------------------------------------------------------------------------
