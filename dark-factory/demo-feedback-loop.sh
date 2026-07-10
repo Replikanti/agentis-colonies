@@ -94,6 +94,8 @@
 #      greenlit gate); (9m) never-submit (the argv carries no submit/platform token); (9n) router source guards
 #      (setsid, the DARK_FACTORY_RUN_AUDIT_PASS override, the [ -d ] guard, the detached </dev/null … & … disown,
 #      SC2016 discipline, slack.com-only egress). The feedback rides the #1535 honest-stub live-dispatch path.
+#      (9j2, #1571) the auto-invoke also fires from manifest.json's local_repo ALONE (deliver-submission.sh's
+#      --target-dir wiring), with no ingest-side --target-dir override — the last operator-friction seam.
 #
 # All shell sub-scripts are invoked with `bash` (never `sh`) per the #1507 dash lesson.
 #
@@ -186,6 +188,25 @@ STAGED="$(bash "$DELIVER" --id "$ID" --draft-file "$DRAFT" \
   && ok "manifest.json carries the raw IMPACT-GATE verdict line" || bad "impact_verdict mismatch in manifest"
 [ "$(jget "$STAGED/manifest.json" dup_risk)" = "$DUP_V" ] \
   && ok "manifest.json carries the raw DUP-RISK verdict line" || bad "dup_risk mismatch in manifest"
+# (#1571) --target-dir omitted -> manifest.json local_repo is empty (graceful fallback, no #1567 auto-invoke source).
+[ "$(jget "$STAGED/manifest.json" local_repo)" = "" ] \
+  && ok "manifest.json local_repo is empty when --target-dir is omitted (graceful fallback)" || bad "local_repo not empty despite no --target-dir"
+
+# (#1571) --target-dir IS passed -> manifest.json local_repo == the exact clone path, recorded verbatim.
+CLONE_TD="$WORK/clone-1-td"
+mkdir -p "$CLONE_TD"
+STAGED_TD="$(bash "$DELIVER" --id "$ID:td" --draft-file "$DRAFT" \
+  --target "enzyme-onyx" --commit "a1b2c3d" --finding-slug "sync-deposit-nav-frontrun" \
+  --title "SyncDepositHandler NAV front-running" --location "src/.../SyncDepositHandler.sol" \
+  --impact "front-run of a NAV update steals pre-update holders' unclaimed yield" \
+  --impact-class "theft" --severity "Critical" \
+  --scope-verdict "$SCOPE_V" --impact-verdict "$IMPACT_V" --dup-risk "$DUP_V" \
+  --target-dir "$CLONE_TD" \
+  --drop-dir "$DROP" 2>/dev/null)"; RC=$?
+[ "$RC" -eq 0 ] && ok "(#1571) deliver-submission.sh --target-dir stages successfully" || bad "(#1571) --target-dir stage exited $RC (expected 0)"
+[ "$(jget "$STAGED_TD/manifest.json" local_repo)" = "$CLONE_TD" ] \
+  && ok "(#1571) manifest.json local_repo == the --target-dir clone path verbatim" || bad "(#1571) local_repo mismatch: $(jget "$STAGED_TD/manifest.json" local_repo)"
+
 # The draft is staged verbatim (the human-gate marker survives).
 grep -q 'SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW' "$STAGED/submission-draft.md" \
   && ok "submission-draft.md preserves the human-gate marker verbatim" || bad "draft marker lost on stage"
@@ -1565,7 +1586,7 @@ run9j() {  # $1 = replies fixture, $2 = post body
     bash "$INGEST" --target-dir "$CLONE9J" --stage "$STAGE9J" >/dev/null 2>&1
 }
 if ! command -v setsid >/dev/null 2>&1; then
-  skip "(9j/9l/9m) setsid not present on this host — the detached auto-invoke path is not exercised"
+  skip "(9j/9l/9m/9j2) setsid not present on this host — the detached auto-invoke path is not exercised"
 else
   run9j "$REPL9J"    "$WORK/slack-post-9j-propose.jsonl"          # propose (no go yet)
   POST9J="$WORK/slack-post-9j.jsonl"; run9j "$REPL9J_GO" "$POST9J"  # a later go greenlights -> detached auto-invoke
@@ -1603,6 +1624,52 @@ else
     && ok "(9l) a third run does NOT re-launch the re-hunt (stub count stays 1; .route-greenlit gate)" || bad "(9l) re-hunt re-launched on the third run (count=$N9L)"
   [ "$(conf_has "$POST9L" "re-hunt launched")" = "missing" ] \
     && ok "(9l) a third run posts no second 're-hunt launched' (idempotent)" || bad "(9l) a second 're-hunt launched' was posted"
+
+  # --- (9j2) #1571: manifest-only local_repo (no target_dir key, no ingest --target-dir override) drives the
+  #          detached auto-invoke — proving deliver-submission.sh's --target-dir -> manifest.json local_repo
+  #          wiring is, on its own, sufficient for the #1567 router to resolve the target dir hands-free. -------
+  STAGE9J2="$WORK/stage-9j2"; mk_manifest9 "$STAGE9J2" "enzyme-onyx@a1b2c3d:auto2" "enzyme-onyx" "a1b2c3d"
+  CLONE9J2="$WORK/clone-9j2"; mkdir -p "$CLONE9J2"
+  # Patch local_repo into the manifest exactly as deliver-submission.sh's --target-dir writes it (#1571) — the
+  # router-harness's synthetic manifest (mk_manifest9) predates that key, so add it here rather than widen the
+  # shared helper's signature for every other 9x case.
+  MF9J2_LR="$CLONE9J2" python3 -c '
+import json, os, sys
+mf = json.load(open(sys.argv[1]))
+mf["local_repo"] = os.environ["MF9J2_LR"]
+json.dump(mf, open(sys.argv[1], "w"), indent=2, sort_keys=True)
+' "$STAGE9J2/manifest.json"
+  RUN_AUDIT_STUB_LOG_9J2="$WORK/run-audit-stub-9j2.log"
+  REPL9J2="$WORK/replies-9j2.json";       mk_reply    "$REPL9J2"    "outcome: Closing as invalid -- the impact is not substantiated on-chain."
+  REPL9J2_GO="$WORK/replies-9j2-go.json"; mk_reply_go "$REPL9J2_GO" "outcome: Closing as invalid -- the impact is not substantiated on-chain."
+  run9j2() {  # $1 = replies fixture, $2 = post body — NO --target-dir passed to ingest-slack-outcome.sh; manifest local_repo is the ONLY source.
+    env \
+      SLACK_LOG="$WORK/slack-9j2.log" SLACK_POST_BODY="$2" SLACK_COMPLETE="$WORK/slack-complete-9j2.jsonl" \
+      SLACK_GETURL="$WORK/slack-geturl-9j2.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-9j2" SLACK_UPCNT="$WORK/slack-upcnt-9j2" \
+      SLACK_REPLIES_FIXTURE="$1" AGENTIS_LOG="$WORK/agentis-9j2.log" \
+      AGENTIS_STUB_FEEDBACK="FEEDBACK|rejected|high|impact-gate|FAILURE|impact-not-substantiated|stub reject" \
+      DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_DIR="$DF9" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-9" \
+      DARK_FACTORY_RUN_AUDIT_PASS="$RUN_AUDIT_STUB" RUN_AUDIT_STUB_LOG="$RUN_AUDIT_STUB_LOG_9J2" \
+      PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+      bash "$INGEST" --stage "$STAGE9J2" >/dev/null 2>&1
+  }
+  run9j2 "$REPL9J2"    "$WORK/slack-post-9j2-propose.jsonl"             # propose (no go yet)
+  POST9J2="$WORK/slack-post-9j2.jsonl"; run9j2 "$REPL9J2_GO" "$POST9J2"  # a later go greenlights -> detached auto-invoke, manifest-only resolution
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$RUN_AUDIT_STUB_LOG_9J2" ]; do sleep 0.1; i=$((i+1)); done
+  [ -s "$RUN_AUDIT_STUB_LOG_9J2" ] \
+    && ok "(9j2) manifest-only local_repo (no ingest --target-dir) still auto-invokes the detached re-hunt" || bad "(9j2) run-audit-pass stub never invoked (manifest-only local_repo did not drive auto-invoke)"
+  N9J2="$(wc -l < "$RUN_AUDIT_STUB_LOG_9J2" 2>/dev/null | tr -d ' ')"
+  [ "$N9J2" = "1" ] \
+    && ok "(9j2) the re-hunt was invoked exactly once" || bad "(9j2) re-hunt invoked $N9J2 times (expected 1)"
+  grep -q -- '--reviewer-feedback' "$RUN_AUDIT_STUB_LOG_9J2" 2>/dev/null \
+    && ok "(9j2) the re-hunt argv carries --reviewer-feedback" || bad "(9j2) re-hunt argv missing --reviewer-feedback"
+  grep -q -- '--target-dir' "$RUN_AUDIT_STUB_LOG_9J2" 2>/dev/null && grep -qF "$CLONE9J2" "$RUN_AUDIT_STUB_LOG_9J2" 2>/dev/null \
+    && ok "(9j2) the re-hunt argv carries --target-dir <the manifest-resolved clone> (deliver-submission.sh's local_repo, no ingest override)" || bad "(9j2) re-hunt argv missing --target-dir $CLONE9J2 (manifest-only resolution failed)"
+  [ -f "$STAGE9J2/RE-HUNT.md" ] \
+    && ok "(9j2) RE-HUNT.md was still written (durable record) alongside the manifest-only auto-invoke" || bad "(9j2) RE-HUNT.md missing on the manifest-only auto-invoke"
+  [ -f "$STAGE9J2/.route-greenlit" ] \
+    && ok "(9j2) .route-greenlit was written on the manifest-only auto-invoke greenlight" || bad "(9j2) .route-greenlit missing on the manifest-only auto-invoke"
 fi
 
 # --- (9k) FALLBACK when NO target dir resolves: no auto-invoke, the RE-HUNT.md command HAND-OFF instead. ---------

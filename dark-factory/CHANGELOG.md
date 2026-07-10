@@ -15,6 +15,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **`deliver-submission.sh --target-dir` → manifest `local_repo`** (#1571, closing the #1567 seam). Mirrors the
+  existing `--bounty-url` wiring exactly: a new `--target-dir <dir>` flag threads verbatim into `manifest.json` as
+  `local_repo` — the exact key the #1567 router reads first at greenlight time. Additive, no path validation (the
+  router does its own `[ -d ]` check); empty when the flag is omitted (graceful). Closes the last operator-friction
+  seam so the greenlit re-hunt auto-invokes hands-free, with no `--target-dir` needed on the ingest side.
 - **Feedback-informed re-hunt + router greenlight AUTO-INVOKE** (#1567, closing the #1562 seam, epic #1505).
   Two threaded halves, each riding an existing path. **(1) Feedback-informed DEVISE.** `run-audit-pass.sh` gains
   `--reviewer-feedback <text>` / `--reviewer-feedback-file <path>` (inline wins; a set-but-unreadable file →
