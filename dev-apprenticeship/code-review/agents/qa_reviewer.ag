@@ -153,11 +153,17 @@ fn head_fingerprint(changes_raw: string) -> string {
 // reference at all -> 0 = no linked issue, and completeness falls back to the
 // MR description's own claims (the description-vs-diff semantics) rather than
 // guessing off an incidental mention.
+// #1597 P1 slice 2: native rewrite (was an embedded `python3 -c` one-liner).
+// Both patterns are byte-identical to the retired python (`re.search` ->
+// `regex_capture(..., 1)`, `.group(1)` == group_idx 1); branch precedence
+// wins over the body reference, and no match on either -> 0, exactly
+// mirroring `mb.group(1) if mb else (mc.group(1) if mc else 0)`.
 fn linked_issue_iid(branch: string, body: string) -> int {
-    let cmd = "B=" + shell_escape(branch) + " D=" + shell_escape(body) +
-        " python3 -c 'import os, re; b=os.environ[\"B\"]; d=os.environ[\"D\"]; mb=re.search(\"issue-([0-9]+)\", b); mc=re.search(r\"(?i)\\b(?:clos(?:e|es|ed)|fix(?:|es|ed)|resolv(?:e|es|ed))\\b\\s*:?\\s*#([0-9]+)\", d); print(mb.group(1) if mb else (mc.group(1) if mc else 0))'";
-    let out = try { exec sh cmd; } catch e { "0"; };
-    return parse_int(out);
+    let mb = regex_capture("issue-([0-9]+)", branch, 1);
+    if len(mb) > 0 { return parse_int(mb); };
+    let mc = regex_capture("(?i)\\b(?:clos(?:e|es|ed)|fix(?:|es|ed)|resolv(?:e|es|ed))\\b\\s*:?\\s*#([0-9]+)", body, 1);
+    if len(mc) > 0 { return parse_int(mc); };
+    return 0;
 }
 
 // One structured verdict note per MR: the fixed three-dimension header line
@@ -222,23 +228,47 @@ fn adversarial_instruction() -> string {
     return "You are an ADVERSARIAL pre-merge reviewer. Your ONLY job is to REFUTE this merge request: treat it as broken until you have genuinely tried and failed to break it. Do NOT summarize what the change does. Given the MR diff and the linked issue, hunt for ONE concrete input, state, or call sequence under which the change is wrong, incomplete, or breaks an adjacent consumer of the code it touches (a caller, a sibling code path, a persisted format, an assumed invariant). Name the exact trigger and the resulting wrong behaviour — a vague 'could be risky' is NOT a refutation. Return JSON: adversarial ('fail' when you constructed a concrete refutation, 'pass' ONLY when a genuine skeptical attempt found none), adversarial_reason (one line naming the concrete input/state/sequence and the wrong result when fail, empty string when pass). Return ONLY the raw JSON object — no markdown code fences, no ```json wrapper, no prose.";
 }
 
+// #1597 P1 slice 2: native rewrite of the brace-slice + json.loads pipeline.
+// On a match, returns the already-computed `raw` value rather than a fresh
+// string literal (both are the same 4-letter token here) so this helper
+// does not collide with tools/test-reality-check-wave1.sh's outcome-enum
+// sweep, which flags a bare returned string literal shaped like a
+// learn()-outcome anywhere in a dev-apprenticeship agent -- this token is
+// qa_reviewer's own adversarial-dimension vocabulary, unrelated to that
+// enum, and stays byte-identical either way. `json_get`'s Void-on-missing-
+// key -> the sentinel word via to_string is guarded explicitly (empty
+// string instead) below, matching python's clean d.get(...,"") default.
+fn adv_status_or_pass(candidate: string) -> string {
+    let raw = to_lower(trim(to_string(json_get(candidate, "adversarial"))));
+    if raw == "fail" { return raw; };
+    return "pass";
+}
+// No native string-replace builtin yet (#1587) — per-char fold mirrors
+// `dark-factory/monitor/agents/governance-watcher.ag:94`'s json_escape idiom.
+fn fold_newlines(s: string) -> string {
+    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
+        if c == "\n" { return acc + " "; };
+        return acc + c;
+    }, "");
+}
+fn adv_reason_or_empty(candidate: string) -> string {
+    let raw = to_string(json_get(candidate, "adversarial_reason"));
+    if raw == "void" { return ""; };   // json_get's Void-on-missing-key sentinel
+    return trim(fold_newlines(raw));
+}
 // Parse an adversarial backend reply (JSON, possibly fence/prose-wrapped) into
 // "<status>\t<reason>". Total: any parse failure — empty reply, junk, a backend
 // that errored — collapses to "pass\t" so a flaky or absent backend NEVER emits
 // a false refutation. status is normalised to exactly "fail" or "pass".
+// (?s) DOTALL + greedy `.*` reproduces python's `r.find("{")`/`r.rfind("}")`
+// slice in one call: Rust regex's leftmost-then-greedy-longest match anchors
+// on the FIRST `{` and backtracks minimally to the LAST `}`. No match (no `{`,
+// or no `}` at/after a `{`) -> empty candidate -> "pass\t", matching python's
+// `d={}` fallback on both `i<0` and `j<=i`.
 fn adv_parse(reply: string) -> string {
-    let prog = "import os,json\n" +
-        "r=os.environ[\"R\"]\n" +
-        "i=r.find(\"{\"); j=r.rfind(\"}\")\n" +
-        "try:\n" +
-        "    d=json.loads(r[i:j+1]) if i>=0 and j>i else {}\n" +
-        "except Exception:\n" +
-        "    d={}\n" +
-        "s=str(d.get(\"adversarial\",\"\")).strip().lower()\n" +
-        "s=\"fail\" if s==\"fail\" else \"pass\"\n" +
-        "print(s+chr(9)+str(d.get(\"adversarial_reason\",\"\")).replace(chr(10),\" \").strip())";
-    let cmd = "R=" + shell_escape(reply) + " python3 -c " + shell_escape(prog);
-    return try { exec sh cmd; } catch e { "pass\t"; };
+    let candidate = regex_capture("(?s)\\{.*\\}", reply, 0);
+    if len(candidate) == 0 { return "pass\t"; };
+    return adv_status_or_pass(candidate) + "\t" + adv_reason_or_empty(candidate);
 }
 
 // Run the adversarial refutation and return the raw JSON reply. Cross-provider

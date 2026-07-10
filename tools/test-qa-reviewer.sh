@@ -85,6 +85,12 @@ NOTE_FN="$(awk '/^fn verdict_note\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 ADV_PROMPT="$(awk '/^fn adversarial_instruction\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 ADV_REPLY="$(awk '/^fn adversarial_reply\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 ADV_PARSE="$(awk '/^fn adv_parse\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+# #1597 P1 slice 2: adv_parse's status normalisation now lives in a helper
+# (native rewrite, was inline in the embedded python one-liner) -- extract it
+# separately so the (adv-b) total-parse assertion can see the native shape.
+ADV_STATUS_FN="$(awk '/^fn adv_status_or_pass\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+ADV_FOLD_FN="$(awk '/^fn fold_newlines\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+ADV_REASON_FN="$(awk '/^fn adv_reason_or_empty\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
 
 # ---------------------------------------------------------------------------
 # (a) Overstated description -> description-vs-diff=fail
@@ -339,8 +345,13 @@ if printf '%s' "$ADV_PROMPT" | grep -q "'pass' ONLY when a genuine skeptical att
 else
     fail "(adv-b) pass framing" "prompt must pass only when no concrete refutation was found"
 fi
-if printf '%s' "$ADV_PARSE" | grep -F -q 'catch e { "pass' \
-   && printf '%s' "$ADV_PARSE" | grep -F -q 's=\"fail\" if s==\"fail\" else \"pass\"'; then
+# #1597 P1 slice 2: adv_parse is now a native regex_capture + json_get
+# pipeline (was an embedded `python3 -c` one-liner) -- assert the native
+# shape: no-brace-match short-circuits to "pass\t" in adv_parse itself, and
+# the status is normalised to exactly "fail"/"pass" in adv_status_or_pass.
+if printf '%s' "$ADV_PARSE" | grep -F -q 'if len(candidate) == 0 { return "pass\t"; }' \
+   && printf '%s' "$ADV_STATUS_FN" | grep -F -q 'if raw == "fail" { return raw; }' \
+   && printf '%s' "$ADV_STATUS_FN" | grep -F -q 'return "pass";'; then
     pass "(adv-b) adv_parse is total: empty/junk/errored reply -> pass (never a false fail), status normalised"
 else
     fail "(adv-b) total parse" "adv_parse must default to pass on any parse failure and normalise the status"
@@ -367,8 +378,7 @@ fi
 # Behavioural fixture: exercise the override dispatch shape end-to-end. A fake
 # backend (standing in for QA_ADVERSARIAL_LLM_CMD) that emits a fence/prose-
 # wrapped refutation JSON, driven through the exact `printf '%s' <prompt> | <cmd>`
-# pipeline the override branch execs, then through the SAME adv_parse python
-# program the agent runs, must yield fail + a non-empty reason.
+# pipeline the override branch execs.
 FAKE_BACKEND="$(mktemp)"
 cat > "$FAKE_BACKEND" <<'FAKEEOF'
 #!/usr/bin/env bash
@@ -383,34 +393,57 @@ Sure -- here is my adversarial verdict:
 JSON
 FAKEEOF
 chmod +x "$FAKE_BACKEND"
-# The exact parser program from adv_parse() in the .ag (kept byte-aligned).
-ADV_PARSE_PY='import os,json
-r=os.environ["R"]
-i=r.find("{"); j=r.rfind("}")
-try:
-    d=json.loads(r[i:j+1]) if i>=0 and j>i else {}
-except Exception:
-    d={}
-s=str(d.get("adversarial","")).strip().lower()
-s="fail" if s=="fail" else "pass"
-print(s+chr(9)+str(d.get("adversarial_reason","")).replace(chr(10)," ").strip())'
 adv_reply_fx="$(printf '%s' "REFUTE THIS CHANGE" | "$FAKE_BACKEND")"
-adv_line_fx="$(R="$adv_reply_fx" python3 -c "$ADV_PARSE_PY")"
-adv_status_fx="$(printf '%s' "$adv_line_fx" | cut -f1)"
-adv_reason_fx="$(printf '%s' "$adv_line_fx" | cut -f2)"
-if [ "$adv_status_fx" = "fail" ] && [ -n "$adv_reason_fx" ]; then
-    pass "(adv-c) override backend dispatch + adv_parse: fence/prose-wrapped refutation -> fail with reason"
-else
-    fail "(adv-c) override fixture" "status=$adv_status_fx reason=$adv_reason_fx"
-fi
-# Same parser on an empty backend reply collapses to pass (total-on-failure).
-adv_empty_fx="$(R="" python3 -c "$ADV_PARSE_PY")"
-if [ "$(printf '%s' "$adv_empty_fx" | cut -f1)" = "pass" ]; then
-    pass "(adv-c) adv_parse fixture: empty backend reply -> pass (flaky/absent backend never false-fails)"
-else
-    fail "(adv-c) empty-reply fixture" "empty reply did not collapse to pass: $adv_empty_fx"
-fi
 rm -f "$FAKE_BACKEND"
+# #1597 P1 slice 2: adv_parse is now native (regex_capture + json_get), so
+# there is no python one-liner left to run as a hand-kept "byte-aligned"
+# copy -- the ONLY honest equivalence check left is executing the REAL .ag
+# functions via `agentis go` (mirrors the linked_issue_iid probe above).
+# Three scenarios pin the gaps the equivalence argument found: fence/prose-
+# wrapped JSON -> fail+reason, empty reply -> "pass\t", and a reply whose
+# JSON is missing adversarial_reason -> "pass\t" with an EMPTY reason (not
+# the literal string "void" that a naive to_string(json_get(...)) port would
+# leak on a missing key).
+if command -v agentis >/dev/null 2>&1; then
+    AG_TMP="$(mktemp -d)"
+    {
+        printf '%s\n' "$ADV_STATUS_FN"
+        printf '%s\n' "$ADV_FOLD_FN"
+        printf '%s\n' "$ADV_REASON_FN"
+        printf '%s\n' "$ADV_PARSE"
+        printf 'let r1 = adv_parse(%s);\n' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$adv_reply_fx")"
+        printf 'print("R1=[", r1, "]");\n'
+        printf 'let r2 = adv_parse("");\n'
+        printf 'print("R2=[", r2, "]");\n'
+        printf 'let r3 = adv_parse("{\\"adversarial\\": \\"pass\\"}");\n'
+        printf 'print("R3=[", r3, "]");\n'
+    } > "$AG_TMP/probe.ag"
+    (cd "$AG_TMP" && agentis init) >/dev/null 2>&1
+    AG_OUT="$( (cd "$AG_TMP" && agentis go probe.ag) 2>/dev/null )"
+    r1_real="$(printf '%s\n' "$AG_OUT" | sed -n 's/^R1=\[ \(.*\) \]$/\1/p')"
+    r2_real="$(printf '%s\n' "$AG_OUT" | sed -n 's/^R2=\[ \(.*\) \]$/\1/p')"
+    r3_real="$(printf '%s\n' "$AG_OUT" | sed -n 's/^R3=\[ \(.*\) \]$/\1/p')"
+    r1_status="$(printf '%s' "$r1_real" | cut -f1)"
+    r1_reason="$(printf '%s' "$r1_real" | cut -f2)"
+    if [ "$r1_status" = "fail" ] && [ -n "$r1_reason" ]; then
+        pass "(adv-c) the REAL .ag adv_parse: fence/prose-wrapped refutation -> fail with reason"
+    else
+        fail "(adv-c) real .ag adv_parse (fenced)" "expected fail+reason, got '$r1_real'"
+    fi
+    if [ "$r2_real" = "pass	" ]; then
+        pass "(adv-c) the REAL .ag adv_parse: empty backend reply -> pass\\t (flaky/absent backend never false-fails)"
+    else
+        fail "(adv-c) real .ag adv_parse (empty)" "expected 'pass\\t', got '$r2_real'"
+    fi
+    if [ "$r3_real" = "pass	" ]; then
+        pass "(adv-c) the REAL .ag adv_parse: JSON missing adversarial_reason -> pass\\t\"\" (not the void sentinel)"
+    else
+        fail "(adv-c) real .ag adv_parse (missing reason)" "expected 'pass\\t' (empty reason, not literal 'void'), got '$r3_real'"
+    fi
+    rm -rf "$AG_TMP"
+else
+    echo "[SKIP] (adv-c) real .ag adv_parse probe — agentis not on PATH"
+fi
 
 # (adv-d) the posted verdict note carries ALL THREE dimensions on one header
 # line, and qa_one_mr threads the adversarial status + reason into verdict_note.
