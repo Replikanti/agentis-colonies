@@ -17,7 +17,7 @@ contract follows [ADR-0001](../doc/adr/ADR-0001-confidence-tiers.md) end-to-end.
 
 ## The three colonies
 
-- **[`auditor/`](./auditor/)** — the bounty-hunt colony (22 agents). It runs the full
+- **[`auditor/`](./auditor/)** — the bounty-hunt colony (23 agents). It runs the full
   gated chain: **discovery** (custom-code hunter + DAG fork-matcher), audit-aware
   **DEVISE** of the residual attack surface, several **generate-and-verify** PoC engines,
   the hard **gates** (scope → impact → dup) that spend effort only on payable surface, a
@@ -877,7 +877,7 @@ dark-factory/
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
   sealevel-scorecard.md         # calibration results (3/3 true-positive, 0 false-VERIFIED)
-  auditor/                      # the bounty-hunt colony (22 agents)
+  auditor/                      # the bounty-hunt colony (23 agents)
     agents/auditor.ag           # the DAG-match pipeline (reconn → guard → tracker → synthesis)
     agents/coordinator.ag       # self-orchestrating decider: fact+policy-driven actions (#1014); in-substrate dispatch (M2) + MULTI-STEP loop (M3); PASS_ENABLED submission-pass mode (#1509)
     agents/dispatcher.ag        # the substrate action-DISPATCH agent fn (emit/listen + durable verdict memo; #1014 M2); standalone sync-guard copy (fixture + symbolic-prove); invariant-hunt/auto-harness live routes coordinator-only (#1049)
