@@ -225,8 +225,10 @@ _sanitize() { printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/-/g'; }
 
 # ==========================================================================================================
 # OUTCOME->ACTION ROUTER (#1562). CHEAP helpers are local, reversible writes; SPENDY helpers are
-# propose-then-greenlight. None call learn() (feedback-intake.ag already learned the deterministic signal), none
-# egress to a bounty platform, and none auto-invoke a hunt (the greenlit action is a command HAND-OFF).
+# propose-then-greenlight. None call learn() (feedback-intake.ag already learned the deterministic signal) and none
+# egress to a bounty platform. On greenlight, the spendy hand-off (#1567) AUTO-INVOKES the feedback-informed re-hunt
+# DETACHED when a target dir resolves (else the RE-HUNT.md command HAND-OFF the operator runs) — either way it is a
+# LOCAL run-audit-pass.sh invocation, never a submission.
 # ==========================================================================================================
 
 # _apply_mark_dead <stage> <manifest> <root_cause> <submission_id> -> append `target@<commit>\treason\tsid\tts` to
@@ -488,7 +490,8 @@ process_stage() {
 
   # GREENLIGHT PASS (#1562), BEFORE the `.outcome-ingested` short-circuit so a `--all` cron re-enters to catch a
   # later operator `go` reply on an already-PROPOSED spendy action. No proposal outstanding / already greenlit ->
-  # a cheap no-op. A `go` reply fires the RE-HUNT.md hand-off (never a hunt auto-invoke).
+  # a cheap no-op. A `go` reply fires the GREENLIT action (#1567): the feedback-informed re-hunt AUTO-INVOKED
+  # detached when a target dir resolves, else the RE-HUNT.md command hand-off.
   if [ -f "$stage/.route-proposed" ] && [ ! -f "$stage/.route-greenlit" ]; then
     gl_thread="$(_mf_field "$mf" slack_thread_ts)"
     gl_channel="$(_mf_field "$mf" slack_channel)"
