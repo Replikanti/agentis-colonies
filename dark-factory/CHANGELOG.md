@@ -27,6 +27,7 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   deterministic proof over a canned fixture; `demo-immunefi-intake.sh` re-passes unchanged as the regression guard.
 
 ### Changed
+- **Audit-density penalty precision** (#1606): dropped the ambiguous bare `openzeppelin`/`consensys` tokens from the FIRMS list (they match ubiquitous Solidity library/tooling mentions, not audit attribution); the `consensys diligence` audit-arm name is kept. A genuinely-fresh program that merely uses OpenZeppelin no longer eats an undeserved penalty.
 - **Audit-density penalty in `--live` discovery ranking** (#1599, epic #1505). The `--live`/`--bounties` MAPPER
   now scans each program's TEXT fields (`knownIssues`/`programOverview`/`description`/`rewardsBody`/`audits`/
   `impacts`, never the structured `audits` count) for audit-COMPETITION references (immunefi audit-competition

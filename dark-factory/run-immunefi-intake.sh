@@ -71,7 +71,7 @@
 #                         MINUS audit_penalty, clamped >=0. audit_penalty (#1599): each competition/contest
 #                         reference (immunefi audit-competition, sherlock/cantina/code4rena/codehawks/hats) found
 #                         in knownIssues/programOverview/description/rewardsBody = -15; each named auditor firm
-#                         (spearbit, trail of bits, openzeppelin, certora, halborn, cyfrin, zellic, ...) = -3,
+#                         (spearbit, trail of bits, certora, halborn, cyfrin, zellic, ...) = -3,
 #                         capped -9. So a competition-hardened target ranks BELOW a genuinely-unaudited one of
 #                         equal bounty: a fresh launch date and an empty `audits` array do NOT mean unaudited — a
 #                         prior audit competition / heavy auditor coverage = hardened, low-EV. delta_term and
@@ -152,12 +152,14 @@ ACCT = ("vault", "lending", "stablecoin", "swap", "amm", "yield", "staking", "co
 # hardened codebase — a prior audit COMPETITION and/or named-firm reviews whose evidence lives in the program's
 # TEXT (knownIssues/programOverview/description), not the `audits` count. COMP = high-precision contest-platform /
 # audit-competition signals; FIRMS = named auditor firms. Deliberately NO short/ambiguous tokens (no bare `c4`,
-# `macro`, `hats`, `oak`, or the bare word `audit`) so common prose never false-hits. Generic public
-# firm / contest-platform names only — no client or sensitive names.
+# `macro`, `hats`, `oak`, or the bare word `audit`) NOR library/tooling names that aren't audit attribution
+# (`openzeppelin`/`consensys` are ubiquitous Solidity library/tooling mentions, not evidence of an audit —
+# excluded per #1606; the audit arm `consensys diligence` is kept) so common prose never false-hits. Generic
+# public firm / contest-platform names only — no client or sensitive names.
 COMP = ("audit-competition", "audit competition", "audit contest", "sherlock", "cantina", "code4rena",
         "code-423n4", "codehawks", "hats.finance", "hats finance")
-FIRMS = ("spearbit", "trail of bits", "trailofbits", "openzeppelin", "open zeppelin", "yaudit", "yacademy",
-         "certora", "halborn", "cyfrin", "zellic", "consensys diligence", "consensys", "quantstamp",
+FIRMS = ("spearbit", "trail of bits", "trailofbits", "yaudit", "yacademy",
+         "certora", "halborn", "cyfrin", "zellic", "consensys diligence", "quantstamp",
          "sigma prime", "sigmaprime", "dedaub", "chainsecurity", "pashov", "guardian audits", "hexens",
          "0xmacro", "peckshield", "slowmist", "oak security", "ackee")
 today = datetime.date.today()
