@@ -1,15 +1,27 @@
 #!/usr/bin/env bash
-# run-immunefi-intake.sh — Immunefi bounty INTAKE + ranking over an OPERATOR-SUPPLIED programs file (#1506,
-# epic #1505). Unlike run-funnel.sh (live Sherlock/Cantina/C4 probe, --from is the test escape hatch), Immunefi
-# has NO live fetch path at all, ever: WebFetch is proven unreliable against Immunefi's SPA, and submission is
-# human-gated anyway, so the operator maintains a small static programs JSON out-of-band and this tool ranks it.
+# run-immunefi-intake.sh — Immunefi bounty INTAKE + ranking (#1506, epic #1505). Two front doors into ONE shared
+# ranking path: an OPERATOR-SUPPLIED programs file (--programs), OR public-API DISCOVERY (--live / --bounties,
+# #1592). The discovery path fetches the read-only public bounties.json, MAPS each surviving program into the
+# same operator-programs schema the ranking block below already consumes, then falls through the UNCHANGED
+# freshness / dedup / TSV path — so --live is a fetch + schema-map in front of the proven ranker, not a fork.
 # It emits the SAME 5-column TSV run-funnel.sh / prospector-queue.sh emit, so `run-batch.sh --queue <this>`
-# consumes it with ZERO changes to run-batch.sh. Read-only: never contacts a platform, never submits.
+# consumes it with ZERO changes to run-batch.sh. Read-only: a plain unauthenticated public GET, never a write,
+# never a submission.
 #
-# Usage: run-immunefi-intake.sh --programs <file> [--min-score N] [--limit N] [--out <file>]
-#                               [--audit-delta <path>] [--dead-targets <file>] [-h]
-#   --programs    : REQUIRED — a JSON array of program objects (schema below). No live fallback; missing /
-#                   unreadable -> exit 2 (there is nothing to skip to, unlike run-funnel.sh's optional --from).
+# Usage: run-immunefi-intake.sh (--programs <file> | --live | --bounties <file>) [--url <endpoint>] [--floor <usd>]
+#                               [--min-score N] [--limit N] [--out <file>] [--audit-delta <path>]
+#                               [--dead-targets <file>] [-h]
+#   --programs    : an OPERATOR-SUPPLIED JSON array of program objects (schema below). Missing / unreadable and
+#                   no --live/--bounties -> exit 2. Mutually complementary with the discovery flags below.
+#   --live        : DISCOVERY — fetch the public bounties.json from --url, MAP it into the programs schema, then
+#                   rank it exactly like --programs. On ANY fetch failure / empty body -> `[SKIP]` + exit 0 with
+#                   the queue UNTOUCHED (mirrors run-funnel.sh's no-network SKIP). Read-only GET; never submits.
+#   --bounties    : the offline/test hatch for --live (mirrors run-funnel.sh's --from): read the raw bounties.json
+#                   array from <file> instead of fetching, then map + rank identically. No network.
+#   --url         : the bounties endpoint --live fetches (default https://immunefi.com/public-api/bounties.json);
+#                   overridable for a mirror, or an unreachable host to exercise the offline SKIP.
+#   --floor       : drop discovered programs whose maxBounty is below <usd> (default 10000) — prunes low-EV
+#                   programs from the 6 MB feed before ranking. Applies to the discovery path only.
 #   --min-score   : drop programs scoring below N after ranking (default 0 = keep all).
 #   --limit       : keep at most N top-ranked programs (default 0 = no cap).
 #   --out         : queue output path (default ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/immunefi.queue). A name
@@ -32,6 +44,16 @@
 #   `local_repo` is OPTIONAL and used ONLY to compute the delta term via audit-delta.sh (never a network fetch —
 #   the operator points it at a checkout they already have); absent / erroring -> delta term 0, never a crash.
 #
+# DISCOVERY (--live / --bounties, #1592): the inline python MAPPER below reads the raw bounties.json array and
+#   keeps a program iff [ (language ∩ {Solidity,Vyper,Yul}) OR (ecosystem ∩ EVM chains: ethereum/arbitrum/
+#   optimism/base/polygon/bsc/avalanche/…) ] AND not `inviteOnly` AND (no `endDate` OR endDate >= today) AND
+#   maxBounty >= --floor. Each survivor maps to the programs schema above: slug->id, project->name, a constructed
+#   bug-bounty url, ecosystem[0] (else language[0])->chain, a repo-looking assets[].url (else "-")->asset_repo,
+#   maxBounty->reward_max_usd, status:"active"; plus two live-only carries — `kyc` (bool, surfaced NOT filtered)
+#   and a precomputed `discovery_bonus` (int 0..30). The mapper writes the mapped array to a temp file and points
+#   PROGRAMS at it, so the SAME require/readable checks and ranking block run verbatim. A missing/garbled field
+#   ranks at its lever's 0, never a crash (matches the operator path's rule).
+#
 # FRESHNESS : keep only programs whose `status` is case-insensitively "active" (mirrors run-funnel.sh's RUNNING),
 #             AND whose `<id>@<in_scope_commit>` key is NOT in the --dead-targets ledger (the #1562 loop closer).
 # SCORE (integers, max 100; documented here so it is auditable, computed in the python block below):
@@ -41,6 +63,12 @@
 #                         nothing changed post-audit = no residual bonus). Else
 #                         freshness (0..20) = 20 * max(0, 1 - latest_change_days_ago/60)
 #                       + breadth   (0..10) = 10 * min(1, files_changed/10).
+#   discovery_bonus (0..30) : live-only, PRECOMPUTED by the mapper (absent -> 0 on operator programs, so operator
+#                         ranks are byte-identical). = freshness (0..15, linear decay from the most-recent of
+#                         launchDate/updatedDate) + audit_scarcity (0..8 = 8*max(0,1-n_audits/4)) + accounting_fit
+#                         (0..7, a keyword hit vault/lending/stablecoin/swap/amm/yield/staking/collateral). delta_
+#                         term and discovery_bonus are mutually exclusive in practice (live carries no local_repo)
+#                         so the per-path ceiling stays 100.
 #   The levers SUM (never multiply) — consistent with run-funnel.sh / prospector-queue.sh's additive scoring; a
 #   product would zero a strong bounty whenever local_repo is absent (the common case) and make the ranking
 #   degenerate to "has a local clone or not". The score is advisory ranking only — it NEVER gates a submission.
@@ -50,8 +78,9 @@
 #          vault:<vault>` (preserves the fee/vault EV-gating data for a future evaluate stage without a 6th
 #          column). Written to stdout AND --out.
 #
-# Requires: python3; git only reached indirectly via audit-delta.sh when a program carries a local_repo. No
-# network, ever. Exit 0 on success; 2 on bad/missing args (including a missing --programs).
+# Requires: python3; curl only on the --live path (a read-only public GET); git only reached indirectly via
+# audit-delta.sh when a program carries a local_repo. Exit 0 on success or a clean [SKIP] (no network on --live);
+# 2 on bad/missing args (none of --programs / --live / --bounties).
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -62,18 +91,160 @@ DIR="${DARK_FACTORY_DIR:-$HOME/.dark-factory}"
 nv() { [ "$1" -ge 2 ] || { echo "run-immunefi-intake.sh: $2 requires a value" >&2; exit 2; }; }
 PROGRAMS="" ; MIN_SCORE="0" ; LIMIT="0" ; OUT="$DIR/immunefi.queue" ; AUDIT_DELTA="$HERE/audit-delta.sh"
 DEAD_TARGETS="$DIR/dead-targets.txt"
+LIVE="" ; BOUNTIES="" ; URL="https://immunefi.com/public-api/bounties.json" ; FLOOR="10000" ; MAX_TIME="30"
 while [ $# -gt 0 ]; do case "$1" in
   --programs)     nv "$#" "$1"; PROGRAMS="$2"; shift 2;;
+  --live)         LIVE="1"; shift;;
+  --bounties)     nv "$#" "$1"; BOUNTIES="$2"; shift 2;;
+  --url)          nv "$#" "$1"; URL="$2"; shift 2;;
+  --floor)        nv "$#" "$1"; FLOOR="$2"; shift 2;;
   --min-score)    nv "$#" "$1"; MIN_SCORE="$2"; shift 2;;
   --limit)        nv "$#" "$1"; LIMIT="$2"; shift 2;;
   --out)          nv "$#" "$1"; OUT="$2"; shift 2;;
   --audit-delta)  nv "$#" "$1"; AUDIT_DELTA="$2"; shift 2;;
   --dead-targets) nv "$#" "$1"; DEAD_TARGETS="$2"; shift 2;;
-  -h|--help)      sed -n '2,54p' "$0"; exit 0;;
+  -h|--help)      sed -n '2,82p' "$0"; exit 0;;
   *) echo "run-immunefi-intake.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
 
-[ -n "$PROGRAMS" ] || { echo "run-immunefi-intake.sh: --programs <file> is required (no live Immunefi fetch)" >&2; exit 2; }
+# DISCOVERY (#1592): --live fetches the public bounties.json, --bounties reads a raw array from a file (the
+# offline/test hatch). Either way the MAPPER transforms the raw array into the operator-programs schema, writes
+# it to a temp file, and points PROGRAMS at it — so the require/readable checks + the whole ranking block below
+# run VERBATIM. A fetch failure / empty body -> [SKIP] + exit 0 with the queue untouched (no ranking block runs).
+if [ -n "$LIVE" ] || [ -n "$BOUNTIES" ]; then
+  command -v python3 >/dev/null || { echo "[SKIP] python3 not installed" >&2; exit 0; }
+  RAW="$(mktemp "${TMPDIR:-/tmp}/immunefi-raw.XXXXXX")"
+  MAPPED="$(mktemp "${TMPDIR:-/tmp}/immunefi-mapped.XXXXXX")"
+  trap 'rm -f "$RAW" "$MAPPED"' EXIT
+  if [ -n "$BOUNTIES" ]; then
+    [ -r "$BOUNTIES" ] || { echo "run-immunefi-intake.sh: --bounties <file> not readable: $BOUNTIES" >&2; exit 2; }
+    cp "$BOUNTIES" "$RAW"
+  else
+    curl -sS --max-time "$MAX_TIME" "$URL" -o "$RAW" 2>/dev/null || :
+    [ -s "$RAW" ] || { echo "[SKIP] --live: no network / empty response from $URL — nothing to discover" >&2; exit 0; }
+  fi
+  # MAPPER: raw bounties.json array -> filtered + mapped operator-programs array (JSON only, never shell parsing).
+  FLOOR="$FLOOR" python3 - "$RAW" "$MAPPED" <<'PY'
+import sys, json, re, datetime
+
+raw_path, mapped_path = sys.argv[1], sys.argv[2]
+try:
+    floor = float(__import__("os").environ.get("FLOOR", "10000") or 0)
+except ValueError:
+    floor = 10000.0
+
+EVM = {"ethereum", "arbitrum", "optimism", "base", "polygon", "matic", "bsc", "binance", "avalanche", "avax",
+       "fantom", "gnosis", "xdai", "scroll", "linea", "zksync", "mantle", "blast", "mode", "celo", "moonbeam",
+       "aurora", "metis", "fraxtal", "manta", "opbnb", "kava", "canto", "core", "sonic", "berachain"}
+LANGS = {"solidity", "vyper", "yul"}
+ACCT = ("vault", "lending", "stablecoin", "swap", "amm", "yield", "staking", "collateral")
+today = datetime.date.today()
+
+
+def as_list(v):
+    if isinstance(v, list):
+        return v
+    if v in (None, ""):
+        return []
+    return [v]
+
+
+def usd(v):
+    if isinstance(v, (int, float)):
+        return float(v)
+    if not v:
+        return 0.0
+    m = re.match(r"^\s*\$?([0-9]*\.?[0-9]+)\s*([kmb]?)", str(v).strip().lower().replace(",", ""))
+    if not m:
+        return 0.0
+    return float(m.group(1)) * {"": 1, "k": 1e3, "m": 1e6, "b": 1e9}[m.group(2)]
+
+
+def parse_date(v):
+    if not v:
+        return None
+    try:
+        return datetime.date.fromisoformat(str(v)[:10])
+    except Exception:
+        return None
+
+
+def looks_like_repo(u):
+    u = str(u or "").lower()
+    return any(h in u for h in ("github.com", "bitbucket.org", "sourcehut.org", "sr.ht", "git."))
+
+
+try:
+    raw = json.load(open(raw_path, encoding="utf-8", errors="ignore"))
+except Exception:
+    raw = []
+if isinstance(raw, dict):                       # some feeds wrap the array under a top-level key
+    for k in ("bounties", "data", "programs", "results"):
+        if isinstance(raw.get(k), list):
+            raw = raw[k]
+            break
+if not isinstance(raw, list):
+    raw = []
+
+out = []
+for b in raw:
+    if not isinstance(b, dict):
+        continue
+    langs = [str(x).strip().lower() for x in as_list(b.get("language"))]
+    ecos = [str(x).strip().lower() for x in as_list(b.get("ecosystem"))]
+    is_evm = any(l in LANGS for l in langs) or any(any(e == k or k in e for k in EVM) for e in ecos)
+    if not is_evm:
+        continue
+    if b.get("inviteOnly"):
+        continue
+    end = parse_date(b.get("endDate"))
+    if end is not None and end < today:
+        continue
+    reward = usd(b.get("maxBounty"))
+    if reward < floor:
+        continue
+    slug = str(b.get("slug") or b.get("id") or "").strip()
+    if not slug:
+        continue
+    # asset_repo: first assets[].url that looks like a code host, else "-".
+    repo = "-"
+    for a in as_list(b.get("assets")):
+        u = a.get("url") if isinstance(a, dict) else a
+        if looks_like_repo(u):
+            repo = str(u)
+            break
+    chain = (ecos[0] if ecos else (langs[0] if langs else "")) or "?"
+    # discovery_bonus = freshness (0..15) + audit_scarcity (0..8) + accounting_fit (0..7).
+    dates = [d for d in (parse_date(b.get("launchDate")), parse_date(b.get("updatedDate"))) if d is not None]
+    if dates:
+        days_ago = (today - max(dates)).days
+        freshness = 15.0 * max(0.0, 1.0 - days_ago / 180.0)
+    else:
+        freshness = 0.0
+    n_audits = len(as_list(b.get("audits")))
+    audit_scarcity = 8.0 * max(0.0, 1.0 - n_audits / 4.0)
+    blob = (str(b.get("project") or "") + " " + " ".join(str(x) for x in as_list(b.get("impacts")))).lower()
+    accounting_fit = 7.0 if any(k in blob for k in ACCT) else 0.0
+    discovery_bonus = int(round(freshness + audit_scarcity + accounting_fit))
+    out.append({
+        "id": slug,
+        "name": str(b.get("project") or slug),
+        "url": "https://immunefi.com/bug-bounty/%s/" % slug,
+        "chain": chain,
+        "asset_repo": repo,
+        "in_scope_commit": "",
+        "reward_max_usd": reward,
+        "status": "active",
+        "kyc": bool(b.get("kyc")),
+        "discovery_bonus": discovery_bonus,
+    })
+
+json.dump(out, open(mapped_path, "w", encoding="utf-8"))
+PY
+  PROGRAMS="$MAPPED"
+fi
+
+[ -n "$PROGRAMS" ] || { echo "run-immunefi-intake.sh: one of --programs <file> / --live / --bounties <file> is required" >&2; exit 2; }
 [ -r "$PROGRAMS" ] || { echo "run-immunefi-intake.sh: --programs <file> not readable: $PROGRAMS" >&2; exit 2; }
 
 command -v python3 >/dev/null || { echo "[SKIP] python3 not installed" >&2; exit 0; }
@@ -170,7 +341,9 @@ def score_of(p, files, days):
         delta_term = freshness + breadth
     else:
         delta_term = 0.0
-    return int(round(bounty_term + delta_term))
+    # discovery_bonus: live-only, precomputed by the #1592 mapper; absent on operator programs -> +0 (so the
+    # operator-path score is byte-identical to before this hook existed).
+    return int(round(bounty_term + delta_term + int(p.get("discovery_bonus", 0) or 0)))
 
 
 try:
@@ -208,6 +381,10 @@ for p in progs:
     scope = "chain:%s repo:%s commit:%s delta:%df/%s fee:%s vault:%s" % (
         chain, repo, commit, files, daystr,
         ("%d" % fee) if fee else "-", ("%d" % vault) if vault else "-")
+    # kyc: live-only carry from the #1592 mapper; surfaced (never a filter). Absent on operator programs -> the
+    # scope_hint is unchanged (still 5 columns; the flag rides inside the scope_hint field).
+    if "kyc" in p:
+        scope += " kyc:%s" % ("yes" if p.get("kyc") else "no")
     rows.append((s, key, url, name, scope))
 
 # RANK: score DESC, then key ASC (deterministic tie-break). run-batch consumes highest first.
