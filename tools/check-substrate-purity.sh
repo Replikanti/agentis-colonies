@@ -79,7 +79,7 @@ fi
 # SUBSTRATE_PURITY_ALLOWLIST_FILE (test-only override): when set to a readable
 # file, the allowlist is loaded from it (one `relpath:function` per line, blank
 # and `#`-comment lines ignored) instead of the baked-in literal, and the
-# fixed-count assertion is derived rather than pinned to 15. The self-test uses
+# fixed-count assertion is derived rather than pinned to 13. The self-test uses
 # this to drive small mktemp fixtures — exactly as check-getenv-allowlist.sh's
 # tests drive their allowlist through a fixture install.sh. Unset in production;
 # the baked-in literal is the single source of truth for the real corpus.
@@ -93,8 +93,6 @@ if [ -n "${SUBSTRATE_PURITY_ALLOWLIST_FILE:-}" ]; then
 else
     ALLOWLIST="\
 implementation/agents/code_writer.ag:actionable_note
-implementation/agents/code_writer.ag:block_reason_for_head
-code-review/agents/approval_decider.ag:note_verdict
 triage/agents/labeler.ag:canonical_label_context
 triage/agents/prioritizer.ag:canonical_priority_context
 triage/agents/router.ag:canonical_route_context
@@ -107,7 +105,7 @@ code-review/agents/approval_decider.ag:evaluate_approval_verdict
 planning/agents/plan_reviewer.ag:evaluate_plan_verdict
 release/agents/ship_decider.ag:evaluate_ship_verdict
 release/agents/ship_decider.ag:tag_set_csv"
-    ALLOWLIST_COUNT_EXPECTED=15
+    ALLOWLIST_COUNT_EXPECTED=13
 fi
 
 # Guard against an accidental edit silently changing the debt size.

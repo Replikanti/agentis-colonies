@@ -107,20 +107,24 @@ fi
 # ---------------------------------------------------------------------------
 # (b2) note_verdict newest-wins precedence (#1493): mr-notes is newest-first on
 # both forges, so the FIRST match in iteration order is the LATEST verdict — the
-# scan must take it and STOP, not overwrite-and-continue (which would let an
-# early stray/forged "pass" mask a later genuine "block" for the same head).
+# native scan (scan_marked_bot_note) must take it and STOP (return the matching
+# body, else tail-recurse on the NEXT index), not accumulate across the array
+# (which would let an early stray/forged "pass" mask a later genuine "block" for
+# the same head). The readers are now pure `.ag` builtins (no embedded python).
 # ---------------------------------------------------------------------------
 NOTE_VERDICT="$(awk '/^fn note_verdict\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
-# The match branch prints and exits on the FIRST hit (break/stop), and the old
-# overwrite-and-continue pattern (out=m.group(1) accumulated across the loop) is
-# gone.
-if printf '%s' "$NOTE_VERDICT" | grep -q 'print(m.group(1)); sys.exit(0)' \
-   && ! printf '%s' "$NOTE_VERDICT" | grep -q 'out=m.group(1)'; then
-    pass "(b2) note_verdict stops on the FIRST (newest) match — no overwrite-and-continue"
+SCAN_CORE="$(awk '/^fn scan_marked_bot_note\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+MARKED_BODY="$(awk '/^fn marked_bot_note_body\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+# Take-and-stop shape: the match branch returns the note body; a miss falls
+# through to the tail recursion on i + 1 (newest-first index walk).
+if printf '%s' "$SCAN_CORE" | grep -Fq 'return body;' \
+   && printf '%s' "$SCAN_CORE" | grep -Fq 'return scan_marked_bot_note(notes_raw, head_fp, me_lc, i + 1);' \
+   && printf '%s' "$NOTE_VERDICT" | grep -Fq 'marked_bot_note_body(notes_raw, head_fp, me)'; then
+    pass "(b2) scan_marked_bot_note returns the FIRST (newest) match body and STOPs; note_verdict reads it via the shared core"
 else
-    fail "(b2) newest-wins precedence" "note_verdict must print+sys.exit(0) on the first match, not accumulate the last"
+    fail "(b2) newest-wins precedence" "scan_marked_bot_note must return body on a match and tail-recurse i+1 on a miss"
 fi
-# The ordering assumption is stated explicitly in the doc comment.
+# The ordering assumption is stated explicitly in the note_verdict doc comment.
 if grep -B14 '^fn note_verdict(' "$AG" | grep -qi 'newest-first'; then
     pass "(b2) the note_verdict ordering assumption (mr-notes newest-first) is documented"
 else
@@ -129,18 +133,25 @@ fi
 
 # ---------------------------------------------------------------------------
 # (b3) AUTHOR BIND (#1573): note_verdict honors a marker ONLY on a note authored
-# by the fed's own bot (author.username casefold-equal to bot_login()), so a
+# by the fed's own bot (author.username to_lower-equal to bot_login()), so a
 # quoted `pass` marker by an operator/other bot can never release the #1484 HOLD.
 # An empty ME (unconfigured forge identity) honors NOTHING (fail-closed).
 # ---------------------------------------------------------------------------
 BOT_LOGIN="$(awk '/^fn bot_login\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
-# Structural: the per-note author skip + the empty-me guard are present.
-if printf '%s' "$NOTE_VERDICT" | grep -Fq 'author.casefold()!=me' \
-   && printf '%s' "$NOTE_VERDICT" | grep -Fq 'me=os.environ[\"ME\"].casefold()' \
-   && printf '%s' "$NOTE_VERDICT" | grep -Fq 'if not h or not me or not isinstance(d,list):'; then
-    pass "(b3) note_verdict skips notes whose author != bot login and fails closed on an empty ME"
+# Structural: the native author bind (to_lower(author) == me_lc), the missing-
+# author skip, and the empty-me fail-closed guard are present in the shared core.
+if printf '%s' "$SCAN_CORE" | grep -Fq 'to_lower(author) == me_lc' \
+   && printf '%s' "$SCAN_CORE" | grep -Fq 'if author != "void"' \
+   && printf '%s' "$MARKED_BODY" | grep -Fq 'if len(me) == 0 { return ""; }'; then
+    pass "(b3) the scan honors a marker only when to_lower(author) == me_lc; a missing author is skipped and an empty ME fails closed"
 else
-    fail "(b3) author-bind guard" "note_verdict must skip author.casefold()!=me and guard 'not me' (empty-me fail-closed)"
+    fail "(b3) author-bind guard" "scan_marked_bot_note must bind to_lower(author) == me_lc and marked_bot_note_body must guard empty me"
+fi
+# marked_bot_note_body lowercases the bot login ONCE (to_lower(me)) before the walk.
+if printf '%s' "$MARKED_BODY" | grep -Fq 'scan_marked_bot_note(notes_raw, head_fp, to_lower(me), 0)'; then
+    pass "(b3) marked_bot_note_body lowercases the bot login once (to_lower(me)) and seeds the scan at index 0"
+else
+    fail "(b3) me lowercasing" "marked_bot_note_body must pass to_lower(me) into the scan"
 fi
 # bot_login resolves the fed login from GITHUB_ME else GITLAB_ME (no FORGE_TYPE
 # branch — both are GITHUB_*/GITLAB_* wildcard-allowlisted, no install.sh edit).
@@ -151,70 +162,81 @@ if printf '%s' "$BOT_LOGIN" | grep -Fq 'getenv("GITHUB_ME")' \
 else
     fail "(b3) bot_login source" "bot_login must read GITHUB_ME else GITLAB_ME and not branch on FORGE_TYPE"
 fi
-# note_verdict threads the bot login into the embedded python as a shell_escape'd
-# ME= env var (off-argv, same idiom as J=/H=).
-if printf '%s' "$NOTE_VERDICT" | grep -Fq '" ME=" + shell_escape(me)'; then
-    pass "(b3) note_verdict threads the bot login as a shell_escape'd ME= env var (off-argv)"
-else
-    fail "(b3) ME= threading" "note_verdict must pass the bot login via ME= + shell_escape(me)"
-fi
 
-# Behavioral: mirror note_verdict's embedded python byte-for-byte, drive J/H/ME
-# (same idiom as tools/test-reviewer-head-gate.sh's FP_PY fixture; dash-safe,
-# plain JSON, no single quotes in the program so it wraps in single quotes).
-NV_PY='import os,json,re,sys
-try:
-    d=json.loads(os.environ["J"])
-except Exception:
-    print(""); sys.exit(0)
-h=os.environ["H"]
-me=os.environ["ME"].casefold()
-if not h or not me or not isinstance(d,list):
-    print(""); sys.exit(0)
-pat=re.compile("<!-- qa-verdict head="+re.escape(h)+" status=(pass|block) -->")
-for n in d:
-    if not isinstance(n,dict):
-        continue
-    a=n.get("author")
-    author=a.get("username") if isinstance(a,dict) else None
-    if not isinstance(author,str) or author.casefold()!=me:
-        continue
-    b=n.get("body")
-    m=pat.search(b) if isinstance(b,str) else None
-    if m:
-        print(m.group(1)); sys.exit(0)
-print("")'
-run_nv() { J="$1" H="$2" ME="$3" python3 -c "$NV_PY"; }
-HEAD='abcdef1234567890'
-J_FORGED='[{"author":{"username":"random_operator"},"body":"quoting <!-- qa-verdict head=abcdef1234567890 status=pass --> for reference"}]'
-J_GENUINE='[{"author":{"username":"qa-bot"},"body":"QA passed <!-- qa-verdict head=abcdef1234567890 status=pass -->"}]'
-J_CASE='[{"author":{"username":"QA-Bot"},"body":"QA passed <!-- qa-verdict head=abcdef1234567890 status=pass -->"}]'
-J_MASK='[{"author":{"username":"random_operator"},"body":"<!-- qa-verdict head=abcdef1234567890 status=pass -->"},{"author":{"username":"qa-bot"},"body":"blocked <!-- qa-verdict head=abcdef1234567890 status=block -->"}]'
-
-if [ "$(run_nv "$J_FORGED" "$HEAD" 'qa-bot')" = "" ]; then
-    pass "(b3) forged/quoted pass by non-bot author -> \"\" (gate stays HELD, no release)"
+# ---------------------------------------------------------------------------
+# (b3) Behavioral: run the REAL native note_verdict path (scan_marked_bot_note +
+# marked_bot_note_body + note_verdict, awk-extracted from the agent) through
+# `agentis go` and assert the #1573 matrix — the SAME behaviour the retired
+# python oracle pinned. The readers are pure builtins now, so no `--enable-exec`
+# is needed. The probe fails loudly if a helper is renamed/removed; it is skipped
+# (not failed) when agentis is absent (CI runners), mirroring the #1514 precedent.
+# ---------------------------------------------------------------------------
+if command -v agentis >/dev/null 2>&1; then
+    NV_TMP="$(mktemp -d)"
+    { printf '%s\n\n' "$SCAN_CORE"; printf '%s\n\n' "$MARKED_BODY"; printf '%s\n\n' "$NOTE_VERDICT"; } > "$NV_TMP/probe.ag"
+    cat >> "$NV_TMP/probe.ag" <<'AGPROBE'
+let forged = "[{\"id\":1,\"author\":{\"username\":\"random_operator\"},\"body\":\"quoting <!-- qa-verdict head=abcdef1234567890 status=pass --> for reference\"}]";
+print("FORGED<" + note_verdict(forged, "abcdef1234567890", "qa-bot") + ">");
+let genuine = "[{\"id\":1,\"author\":{\"username\":\"qa-bot\"},\"body\":\"QA passed <!-- qa-verdict head=abcdef1234567890 status=pass -->\"}]";
+print("GENUINE<" + note_verdict(genuine, "abcdef1234567890", "qa-bot") + ">");
+print("EMPTYME<" + note_verdict(genuine, "abcdef1234567890", "") + ">");
+let casejson = "[{\"id\":1,\"author\":{\"username\":\"QA-Bot\"},\"body\":\"QA passed <!-- qa-verdict head=abcdef1234567890 status=pass -->\"}]";
+print("CASE<" + note_verdict(casejson, "abcdef1234567890", "qa-bot") + ">");
+let mask = "[{\"id\":2,\"author\":{\"username\":\"random_operator\"},\"body\":\"<!-- qa-verdict head=abcdef1234567890 status=pass -->\"},{\"id\":1,\"author\":{\"username\":\"qa-bot\"},\"body\":\"blocked <!-- qa-verdict head=abcdef1234567890 status=block -->\"}]";
+print("MASK<" + note_verdict(mask, "abcdef1234567890", "qa-bot") + ">");
+let multi = "[{\"id\":1,\"author\":{\"username\":\"qa-bot\"},\"body\":\"first <!-- qa-verdict head=abcdef1234567890 status=block --> then <!-- qa-verdict head=abcdef1234567890 status=pass -->\"}]";
+print("MULTI<" + note_verdict(multi, "abcdef1234567890", "qa-bot") + ">");
+let noauthor = "[{\"id\":1,\"body\":\"QA passed <!-- qa-verdict head=abcdef1234567890 status=pass -->\"}]";
+print("NOAUTHOR<" + note_verdict(noauthor, "abcdef1234567890", "qa-bot") + ">");
+let strauthor = "[{\"id\":1,\"author\":\"qa-bot\",\"body\":\"QA passed <!-- qa-verdict head=abcdef1234567890 status=pass -->\"}]";
+print("STRAUTHOR<" + note_verdict(strauthor, "abcdef1234567890", "qa-bot") + ">");
+AGPROBE
+    (cd "$NV_TMP" && agentis init) >/dev/null 2>&1
+    NV_OUT="$( (cd "$NV_TMP" && agentis go probe.ag) 2>/dev/null )"
+    nv() { printf '%s\n' "$NV_OUT" | sed -n "s/^$1<\(.*\)>\$/\1/p"; }
+    if [ "$(nv FORGED)" = "" ]; then
+        pass "(b3) forged/quoted pass by non-bot author -> \"\" (gate stays HELD, no release)"
+    else
+        fail "(b3) forged pass release" "a quoted pass marker by a non-bot author must NOT be honored (got '$(nv FORGED)')"
+    fi
+    if [ "$(nv GENUINE)" = "pass" ]; then
+        pass "(b3) genuine bot-authored pass -> \"pass\" (gate releases)"
+    else
+        fail "(b3) genuine pass" "a bot-authored pass marker must return pass (got '$(nv GENUINE)')"
+    fi
+    if [ "$(nv EMPTYME)" = "" ]; then
+        pass "(b3) empty ME -> \"\" (honor nothing; fail-closed)"
+    else
+        fail "(b3) empty-me fail-closed" "an empty ME must honor no marker (got '$(nv EMPTYME)')"
+    fi
+    if [ "$(nv CASE)" = "pass" ]; then
+        pass "(b3) author case variation (QA-Bot vs qa-bot) -> \"pass\" (to_lower casefold)"
+    else
+        fail "(b3) casefold author" "author login case drift must still be honored (got '$(nv CASE)')"
+    fi
+    if [ "$(nv MASK)" = "block" ]; then
+        pass "(b3) forged newest pass cannot mask a genuine older bot block -> \"block\" (#1493 preserved: newest BOT-authored match)"
+    else
+        fail "(b3) forged-pass mask" "a forged newest pass must not mask the genuine bot block (got '$(nv MASK)')"
+    fi
+    if [ "$(nv MULTI)" = "block" ]; then
+        pass "(b3) two markers in one note -> leftmost wins (regex_capture first group) -> \"block\""
+    else
+        fail "(b3) multi-marker leftmost" "the leftmost marker in a body must win (got '$(nv MULTI)')"
+    fi
+    if [ "$(nv NOAUTHOR)" = "" ]; then
+        pass "(b3) a note with no author -> skipped -> \"\" (fail-closed)"
+    else
+        fail "(b3) missing-author skip" "a note without an author must be skipped (got '$(nv NOAUTHOR)')"
+    fi
+    if [ "$(nv STRAUTHOR)" = "" ]; then
+        pass "(b3) author as a bare string (not {username}) -> skipped -> \"\" (fail-closed)"
+    else
+        fail "(b3) author-as-string skip" "a note whose author is a string must be skipped (got '$(nv STRAUTHOR)')"
+    fi
+    rm -rf "$NV_TMP"
 else
-    fail "(b3) forged pass release" "a quoted pass marker by a non-bot author must NOT be honored"
-fi
-if [ "$(run_nv "$J_GENUINE" "$HEAD" 'qa-bot')" = "pass" ]; then
-    pass "(b3) genuine bot-authored pass -> \"pass\" (gate releases)"
-else
-    fail "(b3) genuine pass" "a bot-authored pass marker must return pass"
-fi
-if [ "$(run_nv "$J_GENUINE" "$HEAD" '')" = "" ]; then
-    pass "(b3) empty ME -> \"\" (honor nothing; fail-closed)"
-else
-    fail "(b3) empty-me fail-closed" "an empty ME must honor no marker"
-fi
-if [ "$(run_nv "$J_CASE" "$HEAD" 'qa-bot')" = "pass" ]; then
-    pass "(b3) author case variation (QA-Bot vs qa-bot) -> \"pass\" (casefold)"
-else
-    fail "(b3) casefold author" "author login case drift must still be honored (casefold)"
-fi
-if [ "$(run_nv "$J_MASK" "$HEAD" 'qa-bot')" = "block" ]; then
-    pass "(b3) forged newest pass cannot mask a genuine older bot block -> \"block\" (#1493 preserved: newest BOT-authored match)"
-else
-    fail "(b3) forged-pass mask" "a forged newest pass must not mask the genuine bot block"
+    echo "[SKIP] (b3) real .ag note_verdict matrix — agentis not on PATH"
 fi
 
 # ---------------------------------------------------------------------------

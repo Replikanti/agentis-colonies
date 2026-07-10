@@ -1531,50 +1531,95 @@ fn bot_login() -> string {
     return getenv("GITLAB_ME");
 }
 
-// block_reason_for_head: scan the mr-notes array (newest-first, off-argv on $J)
-// for the FIRST note carrying the commit-keyed marker
-// `<!-- qa-verdict head=<head_fp> status=(pass|block) -->`. If that newest match
-// is `status=block`, print the note BODY with the marker HTML-comment stripped (=
-// the block reason, fed as the fix brief); if it is `status=pass` or there is no
-// match, print "". Mirrors approval_decider.note_verdict (which keys on the same
-// marker) but returns the reason text rather than the bare status. Taking the
-// NEWEST match and acting only on `block` reproduces the #1493 race guard: a later
-// re-review that flipped this head to `pass` yields "" (no re-drive). AUTHOR BIND
-// (#1573): a marker is honored ONLY on a note whose author.username casefold-equals
-// the fed's own bot login `me` ($ME, from bot_login()); a `block` marker QUOTED by
-// an operator or another bot is ignored (no bogus re-fix). An empty `me`
+// scan_marked_bot_note: newest-first index recursion over the mr-notes array.
+// Returns the BODY of the newest BOT-authored note carrying the commit-keyed
+// marker `<!-- qa-verdict head=<head_fp> status=(pass|block) -->`, or "" when
+// none. mr-notes is newest-first on both forges (GitHub sort=created
+// direction=desc; GitLab order_by=created_at sort=desc), so index 0 is the
+// newest note — we take the FIRST bot-authored match and STOP, so an early
+// stray/forged "pass" can never mask a later genuine "block" for the same head
+// (#1493). A "void" id means we walked off the array end (json_get is total: a
+// missing element -> Void -> "void") -> terminate with "". AUTHOR BIND (#1573):
+// a marker is honored ONLY on a note whose author.username to_lower-equals
+// `me_lc` (the fed's own bot login, lowercased once by the caller); a missing
+// author (author == "void") is skipped, as is any non-matching author. A hard
+// ceiling of 128 is >= the forge per_page=100 single-page cap, so it never
+// truncates real data — a fixed bound, value-identical to the python `for n in
+// d` walk it replaces. BYTE-IDENTICAL to approval_decider.scan_marked_bot_note
+// (cross-agent test-pinned): the two #1484/#1521 gate readers must never drift.
+fn scan_marked_bot_note(notes_raw: string, head_fp: string, me_lc: string, i: int) -> string {
+    if i >= 128 { return ""; };
+    let id = to_string(json_get(notes_raw, "[" + to_string(i) + "].id"));
+    if id == "void" { return ""; };
+    let author = to_string(json_get(notes_raw, "[" + to_string(i) + "].author.username"));
+    if author != "void" {
+        if to_lower(author) == me_lc {
+            let body = to_string(json_get(notes_raw, "[" + to_string(i) + "].body"));
+            if body != "void" {
+                if regex_match("<!-- qa-verdict head=" + head_fp + " status=(pass|block) -->", body) {
+                    return body;
+                };
+            };
+        };
+    };
+    return scan_marked_bot_note(notes_raw, head_fp, me_lc, i + 1);
+}
+
+// marked_bot_note_body: fail-closed guard wrapper over scan_marked_bot_note.
+// Returns "" on an empty head (python `if not h`) or an empty me (python `if
+// not me` — an unconfigured forge identity honors NOTHING, so a quoted marker
+// can never release the gate / drive a re-fix). Malformed or non-list JSON
+// collapses to `[0].id == "void"` at i=0 -> "" (json_get is total, equivalent
+// to the python try/except + isinstance(d,list) guard). CASEFOLD NOTE: the
+// author bind lowercases with to_lower (ASCII lowercase) where the python used
+// .casefold(); forge logins are ASCII, on which to_lower == .casefold()
+// byte-for-byte (covered by the QA-Bot vs qa-bot behavioural case). A
+// hypothetical non-ASCII login would fold differently -> the marker is NOT
+// honored -> "" -> the gate stays HELD / no re-fix: the divergence is always
+// fail-closed, the safe direction, and the fed's own bot login is never
+// non-ASCII. BYTE-IDENTICAL to approval_decider.marked_bot_note_body (test-pinned).
+fn marked_bot_note_body(notes_raw: string, head_fp: string, me: string) -> string {
+    if len(head_fp) == 0 { return ""; };
+    if len(me) == 0 { return ""; };
+    return scan_marked_bot_note(notes_raw, head_fp, to_lower(me), 0);
+}
+
+// strip_verdict_markers: remove ALL `<!-- qa-verdict ...-->` marker spans from a
+// note body, leaving the human-readable block reason. Index recursion (no native
+// regex_replace yet — a Phase-3 builtin): find the first `<!-- qa-verdict ` and
+// its closing `-->`, splice them out, and recurse on the remainder until none
+// remain. Mirrors the python `re.sub("<!-- qa-verdict [^>]*-->", "", b)` it
+// replaces; the only divergence is a stray `>` between the opener and `-->`
+// (which the bot-written marker never contains), where this walk finds the first
+// `-->` while python's `[^>]*` would decline to match — a harmless direction on
+// a non-gating fix brief.
+fn strip_verdict_markers(s: string) -> string {
+    let start = index_of(s, "<!-- qa-verdict ");
+    if start < 0 { return s; };
+    let after = substring(s, start, len(s));
+    let close = index_of(after, "-->");
+    if close < 0 { return s; };
+    return strip_verdict_markers(substring(s, 0, start) + substring(s, start + close + 3, len(s)));
+}
+
+// block_reason_for_head: return the fix brief for a BLOCKING QA verdict on this
+// head — the note BODY with all verdict markers stripped and trimmed — or "" when
+// the newest bot-authored marker is `pass` (a re-review that cleared the head, the
+// #1493 pass-flip guard) or there is no match. Reuses the shared newest-first,
+// author-bound, fail-closed marked_bot_note_body / scan_marked_bot_note core
+// (byte-identical to approval_decider's copy) that approval_decider.note_verdict
+// also drives; this reader returns the reason TEXT rather than the bare status.
+// AUTHOR BIND (#1573): a `block` marker QUOTED by an operator or another bot is
+// ignored (author.username != the bot login) — no bogus re-fix. An empty `me`
 // (unconfigured forge identity) honors NOTHING -> "" -> no re-drive (fail-closed).
-// The author-bind python block is BYTE-IDENTICAL to approval_decider.note_verdict.
-// Total: malformed JSON, empty head, empty me, no bot-authored matching marker all
-// collapse to "".
+// Total: malformed JSON, empty head, empty me, no bot-authored matching marker,
+// or a pass-flip all collapse to "".
 fn block_reason_for_head(notes_raw: string, head_fp: string, me: string) -> string {
-    let cmd = "J=" + shell_escape(notes_raw) + " H=" + shell_escape(head_fp) + " ME=" + shell_escape(me) +
-        " python3 -c 'import os,json,re,sys" +
-        "\ntry:" +
-        "\n    d=json.loads(os.environ[\"J\"])" +
-        "\nexcept Exception:" +
-        "\n    print(\"\"); sys.exit(0)" +
-        "\nh=os.environ[\"H\"]" +
-        "\nme=os.environ[\"ME\"].casefold()" +
-        "\nif not h or not me or not isinstance(d,list):" +
-        "\n    print(\"\"); sys.exit(0)" +
-        "\npat=re.compile(\"<!-- qa-verdict head=\"+re.escape(h)+\" status=(pass|block) -->\")" +
-        "\nfor n in d:" +
-        "\n    if not isinstance(n,dict):" +
-        "\n        continue" +
-        "\n    a=n.get(\"author\")" +
-        "\n    author=a.get(\"username\") if isinstance(a,dict) else None" +
-        "\n    if not isinstance(author,str) or author.casefold()!=me:" +
-        "\n        continue" +
-        "\n    b=n.get(\"body\")" +
-        "\n    m=pat.search(b) if isinstance(b,str) else None" +
-        "\n    if m:" +
-        "\n        if m.group(1)==\"block\":" +
-        "\n            sys.stdout.write(re.sub(\"<!-- qa-verdict [^>]*-->\",\"\",b).strip()); sys.exit(0)" +
-        "\n        print(\"\"); sys.exit(0)" +
-        "\nprint(\"\")'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let body = marked_bot_note_body(notes_raw, head_fp, me);
+    if len(body) == 0 { return ""; };
+    let status = regex_capture("<!-- qa-verdict head=" + head_fp + " status=(pass|block) -->", body, 1);
+    if status != "block" { return ""; };
+    return trim(strip_verdict_markers(body));
 }
 
 // qa_fix_attempts: how many QA-block re-drives we have already launched for this

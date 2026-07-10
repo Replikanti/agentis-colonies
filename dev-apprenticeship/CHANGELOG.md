@@ -38,6 +38,30 @@ is asserted until multi-version CI is in place.
 
 ### Changed
 
+- **Substrate purity Phase 2 — merge-gate verdict readers go native**
+  ([#1613](https://github.com/Replikanti/agentis-colonies/issues/1613)):
+  `approval_decider.note_verdict` (the #1484 head-keyed review gate) and
+  `code_writer.block_reason_for_head` (the #1521 QA-block recovery reader)
+  move off their embedded `python3 -c` one-liners onto native `.ag`
+  builtins — an index-recursion `json_get` walk of the `mr-notes` array
+  plus `regex_match`/`regex_capture`/`to_lower`/`trim`. Both readers share a
+  **byte-identical** `scan_marked_bot_note` / `marked_bot_note_body` core
+  duplicated across the two agents (`.ag` has no cross-file import;
+  "shared" = identical bodies, cross-agent `md5sum`-pinned), so the
+  author-bind logic can never drift. **Value-identical** on every
+  gate-relevant input: same commit-keyed `<!-- qa-verdict head=<fp16>
+  status=<pass|block> -->` marker, same newest-first take-and-stop
+  (`#1493`), same author bind (a marker is honored only on a note whose
+  `author.username` matches the fed's own bot login), same empty-head /
+  empty-me / malformed-JSON fail-closed collapse to `""`. The one
+  declared divergence is `to_lower` (ASCII) vs python `.casefold()` — a
+  no-op on the ASCII-only forge logins, and fail-closed (marker not
+  honored → gate stays HELD) in the hypothetical non-ASCII case. A
+  mid-flight deploy changes nothing for any open PR carrying an existing
+  marker. Prunes the two `note_verdict` / `block_reason_for_head`
+  allowlist rows from `tools/check-substrate-purity.sh` (15 → 13). Part
+  of the [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
+  ratchet.
 - **Substrate purity Phase 1, slice 3 — rate-limit jitter backoff goes
   native**
   ([#1597](https://github.com/Replikanti/agentis-colonies/issues/1597)):

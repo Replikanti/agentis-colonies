@@ -97,42 +97,48 @@ fi
 # ---------------------------------------------------------------------------
 # 2. stale-block-on-old-head-not-redriven
 # ---------------------------------------------------------------------------
-# Detection keys on the RECOMPUTED head_fp; block_reason_for_head only matches a
-# marker whose head= equals it (re.escape(h)), so a stale block on an old head
-# yields "" and the empty-reason guard early-returns (no launch).
-if printf '%s' "$QA_REASON" | grep -Fq 'head=\"+re.escape(h)+\" status=(pass|block) -->'; then
-    pass "stale-block: block_reason_for_head matches ONLY the marker for the recomputed head_fp"
+# Detection keys on the RECOMPUTED head_fp; the shared newest-first scan only
+# matches a marker whose head= equals it, so a stale block on an old head yields
+# "" and the empty-reason guard early-returns (no launch). The readers are pure
+# `.ag` builtins now (no embedded python).
+QA_SCAN="$(awk '/^fn scan_marked_bot_note\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+QA_MARKED="$(awk '/^fn marked_bot_note_body\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+QA_STRIP="$(awk '/^fn strip_verdict_markers\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+if printf '%s' "$QA_SCAN" | grep -Fq 'regex_match("<!-- qa-verdict head=" + head_fp + " status=(pass|block) -->", body)' \
+   && printf '%s' "$QA_REASON" | grep -Fq 'regex_capture("<!-- qa-verdict head=" + head_fp + " status=(pass|block) -->", body, 1)'; then
+    pass "stale-block: the scan matches ONLY the marker for the recomputed head_fp (head interpolated into the regex)"
 else
-    fail "head-keyed reason" "block_reason_for_head must key the marker on the passed head_fp"
+    fail "head-keyed reason" "the scan + block_reason_for_head must key the marker on the passed head_fp"
 fi
 if printf '%s' "$QA_AT" | grep -Fq 'if len(reason) == 0 { return 0; }'; then
     pass "stale-block: an empty reason (no block for the CURRENT head) early-returns (no re-drive)"
 else
     fail "empty-reason guard" "recover_qa_block_at must return 0 when block_reason_for_head is empty"
 fi
-# block_reason_for_head prints "" when the newest matching marker is status=pass
-# (a re-review that cleared the head) — the #1493 newest-first race guard.
-if printf '%s' "$QA_REASON" | grep -Fq 'if m.group(1)==\"block\":' \
-   && printf '%s' "$QA_REASON" | grep -Fq 'print(\"\"); sys.exit(0)'; then
-    pass "stale-block: a newest status=pass marker yields \"\" (flipped-to-pass = no re-drive)"
+# block_reason_for_head returns "" when the newest matching marker is status=pass
+# (a re-review that cleared the head) — the #1493 newest-first race guard — and
+# only a `block` yields the stripped, trimmed reason text.
+if printf '%s' "$QA_REASON" | grep -Fq 'if status != "block" { return ""; }' \
+   && printf '%s' "$QA_REASON" | grep -Fq 'return trim(strip_verdict_markers(body));'; then
+    pass "stale-block: a newest status=pass marker yields \"\" (flipped-to-pass = no re-drive); a block returns the stripped reason"
 else
-    fail "pass-flip guard" "block_reason_for_head must return \"\" when the newest match is status=pass"
+    fail "pass-flip guard" "block_reason_for_head must return \"\" unless status == block, else trim(strip_verdict_markers(body))"
 fi
 
 # ---------------------------------------------------------------------------
 # 2b. AUTHOR BIND (#1573): block_reason_for_head honors a marker ONLY on a note
-# authored by the fed's own bot (author.username casefold-equal to bot_login()),
+# authored by the fed's own bot (author.username to_lower-equal to bot_login()),
 # so a `block` marker QUOTED by an operator/other bot cannot drive a bogus re-fix.
 # An empty ME (unconfigured forge identity) honors NOTHING (fail-closed -> "").
-# The author-bind python block is byte-identical to approval_decider.note_verdict.
+# The shared scan core is byte-identical to approval_decider's copy.
 # ---------------------------------------------------------------------------
 CW_BOT_LOGIN="$(awk '/^fn bot_login\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
-if printf '%s' "$QA_REASON" | grep -Fq 'author.casefold()!=me' \
-   && printf '%s' "$QA_REASON" | grep -Fq 'me=os.environ[\"ME\"].casefold()' \
-   && printf '%s' "$QA_REASON" | grep -Fq 'if not h or not me or not isinstance(d,list):'; then
-    pass "author-bind: block_reason_for_head skips author != bot and fails closed on an empty ME"
+if printf '%s' "$QA_SCAN" | grep -Fq 'to_lower(author) == me_lc' \
+   && printf '%s' "$QA_SCAN" | grep -Fq 'if author != "void"' \
+   && printf '%s' "$QA_MARKED" | grep -Fq 'if len(me) == 0 { return ""; }'; then
+    pass "author-bind: the scan honors a marker only when to_lower(author) == me_lc; a missing author is skipped and an empty ME fails closed"
 else
-    fail "author-bind guard" "block_reason_for_head must skip author.casefold()!=me and guard 'not me'"
+    fail "author-bind guard" "scan_marked_bot_note must bind to_lower(author) == me_lc and marked_bot_note_body must guard empty me"
 fi
 if printf '%s' "$CW_BOT_LOGIN" | grep -Fq 'getenv("GITHUB_ME")' \
    && printf '%s' "$CW_BOT_LOGIN" | grep -Fq 'getenv("GITLAB_ME")' \
@@ -141,79 +147,81 @@ if printf '%s' "$CW_BOT_LOGIN" | grep -Fq 'getenv("GITHUB_ME")' \
 else
     fail "bot_login source" "bot_login must read GITHUB_ME else GITLAB_ME and not branch on FORGE_TYPE"
 fi
-if printf '%s' "$QA_REASON" | grep -Fq '" ME=" + shell_escape(me)'; then
-    pass "author-bind: block_reason_for_head threads the bot login as a shell_escape'd ME= env var (off-argv)"
+# The shared scan core is byte-identical across the two readers (the drift risk
+# the plan calls out): compare BOTH scan_marked_bot_note AND marked_bot_note_body
+# extracted from block_reason_for_head's agent and approval_decider.note_verdict's.
+AD_SCAN="$(awk '/^fn scan_marked_bot_note\(/{f=1} f{print} /^}/{if(f) f=0}' "$AD_AG")"
+AD_MARKED="$(awk '/^fn marked_bot_note_body\(/{f=1} f{print} /^}/{if(f) f=0}' "$AD_AG")"
+if [ -n "$QA_SCAN" ] && [ "$QA_SCAN" = "$AD_SCAN" ]; then
+    pass "author-bind: code_writer.scan_marked_bot_note is byte-identical to approval_decider.scan_marked_bot_note"
 else
-    fail "ME= threading" "block_reason_for_head must pass the bot login via ME= + shell_escape(me)"
+    fail "scan byte-identity" "the two scan_marked_bot_note bodies diverged (the plan's drift risk)"
 fi
-# The author-bind python is byte-identical across the two readers (the drift risk
-# the plan calls out): compare the shared segment (me=...casefold() .. `if m:`).
-AD_SEG="$(awk '/^fn note_verdict\(/{f=1} f && /me=os.environ\[\\"ME\\"\].casefold/{g=1} g{print} g && /if m:"/{exit}' "$AD_AG")"
-CW_SEG="$(awk '/^fn block_reason_for_head\(/{f=1} f && /me=os.environ\[\\"ME\\"\].casefold/{g=1} g{print} g && /if m:"/{exit}' "$AG")"
-if [ -n "$AD_SEG" ] && [ "$AD_SEG" = "$CW_SEG" ]; then
-    pass "author-bind: the author-match python block is byte-identical to approval_decider.note_verdict"
+if [ -n "$QA_MARKED" ] && [ "$QA_MARKED" = "$AD_MARKED" ]; then
+    pass "author-bind: code_writer.marked_bot_note_body is byte-identical to approval_decider.marked_bot_note_body"
 else
-    fail "author-bind byte-identity" "the two author-match python blocks diverged (the plan's drift risk)"
+    fail "marked byte-identity" "the two marked_bot_note_body bodies diverged (the plan's drift risk)"
 fi
 
-# Behavioral: mirror block_reason_for_head's embedded python byte-for-byte, drive
-# J/H/ME (same idiom as tools/test-reviewer-head-gate.sh's FP_PY fixture;
-# dash-safe, plain JSON, no single quotes in the program).
-BR_PY='import os,json,re,sys
-try:
-    d=json.loads(os.environ["J"])
-except Exception:
-    print(""); sys.exit(0)
-h=os.environ["H"]
-me=os.environ["ME"].casefold()
-if not h or not me or not isinstance(d,list):
-    print(""); sys.exit(0)
-pat=re.compile("<!-- qa-verdict head="+re.escape(h)+" status=(pass|block) -->")
-for n in d:
-    if not isinstance(n,dict):
-        continue
-    a=n.get("author")
-    author=a.get("username") if isinstance(a,dict) else None
-    if not isinstance(author,str) or author.casefold()!=me:
-        continue
-    b=n.get("body")
-    m=pat.search(b) if isinstance(b,str) else None
-    if m:
-        if m.group(1)=="block":
-            sys.stdout.write(re.sub("<!-- qa-verdict [^>]*-->","",b).strip()); sys.exit(0)
-        print(""); sys.exit(0)
-print("")'
-run_br() { J="$1" H="$2" ME="$3" python3 -c "$BR_PY"; }
-HEAD='abcdef1234567890'
-J_FORGED='[{"author":{"username":"random_operator"},"body":"unsafe eval detected <!-- qa-verdict head=abcdef1234567890 status=block -->"}]'
-J_GENUINE='[{"author":{"username":"qa-bot"},"body":"unsafe eval detected <!-- qa-verdict head=abcdef1234567890 status=block -->"}]'
-J_CASE='[{"author":{"username":"QA-Bot"},"body":"unsafe eval detected <!-- qa-verdict head=abcdef1234567890 status=block -->"}]'
-J_PASSFLIP='[{"author":{"username":"qa-bot"},"body":"cleared <!-- qa-verdict head=abcdef1234567890 status=pass -->"}]'
-
-if [ "$(run_br "$J_FORGED" "$HEAD" 'qa-bot')" = "" ]; then
-    pass "author-bind: forged/quoted block by non-bot author -> \"\" (no re-fix)"
+# ---------------------------------------------------------------------------
+# 2c. Behavioral: run the REAL native block_reason_for_head path (the shared core
+# + strip_verdict_markers + block_reason_for_head, awk-extracted from the agent)
+# through `agentis go` and assert the #1573 matrix — the SAME behaviour the
+# retired python oracle pinned. Pure builtins, so no `--enable-exec`. Skipped
+# (not failed) when agentis is absent (CI runners), mirroring the #1514 precedent.
+# ---------------------------------------------------------------------------
+if command -v agentis >/dev/null 2>&1; then
+    BR_TMP="$(mktemp -d)"
+    { printf '%s\n\n' "$QA_SCAN"; printf '%s\n\n' "$QA_MARKED"; printf '%s\n\n' "$QA_STRIP"; printf '%s\n\n' "$QA_REASON"; } > "$BR_TMP/probe.ag"
+    cat >> "$BR_TMP/probe.ag" <<'AGPROBE'
+let forged = "[{\"id\":1,\"author\":{\"username\":\"random_operator\"},\"body\":\"unsafe eval detected <!-- qa-verdict head=abcdef1234567890 status=block -->\"}]";
+print("FORGED<" + block_reason_for_head(forged, "abcdef1234567890", "qa-bot") + ">");
+let genuine = "[{\"id\":1,\"author\":{\"username\":\"qa-bot\"},\"body\":\"unsafe eval detected <!-- qa-verdict head=abcdef1234567890 status=block -->\"}]";
+print("GENUINE<" + block_reason_for_head(genuine, "abcdef1234567890", "qa-bot") + ">");
+print("EMPTYME<" + block_reason_for_head(genuine, "abcdef1234567890", "") + ">");
+let casejson = "[{\"id\":1,\"author\":{\"username\":\"QA-Bot\"},\"body\":\"unsafe eval detected <!-- qa-verdict head=abcdef1234567890 status=block -->\"}]";
+print("CASE<" + block_reason_for_head(casejson, "abcdef1234567890", "qa-bot") + ">");
+let passflip = "[{\"id\":1,\"author\":{\"username\":\"qa-bot\"},\"body\":\"cleared <!-- qa-verdict head=abcdef1234567890 status=pass -->\"}]";
+print("PASSFLIP<" + block_reason_for_head(passflip, "abcdef1234567890", "qa-bot") + ">");
+let multi = "[{\"id\":1,\"author\":{\"username\":\"qa-bot\"},\"body\":\"needs a guard <!-- qa-verdict head=abcdef1234567890 status=block --> and a test <!-- qa-verdict head=abcdef1234567890 status=block -->\"}]";
+print("MULTI<" + block_reason_for_head(multi, "abcdef1234567890", "qa-bot") + ">");
+AGPROBE
+    (cd "$BR_TMP" && agentis init) >/dev/null 2>&1
+    BR_OUT="$( (cd "$BR_TMP" && agentis go probe.ag) 2>/dev/null )"
+    br() { printf '%s\n' "$BR_OUT" | sed -n "s/^$1<\(.*\)>\$/\1/p"; }
+    if [ "$(br FORGED)" = "" ]; then
+        pass "author-bind: forged/quoted block by non-bot author -> \"\" (no re-fix)"
+    else
+        fail "forged block re-fix" "a quoted block marker by a non-bot author must NOT drive a re-fix (got '$(br FORGED)')"
+    fi
+    if [ "$(br GENUINE)" = "unsafe eval detected" ]; then
+        pass "author-bind: genuine bot-authored block -> reason text (marker stripped + trimmed)"
+    else
+        fail "genuine block reason" "a bot-authored block marker must return the stripped reason (got '$(br GENUINE)')"
+    fi
+    if [ "$(br EMPTYME)" = "" ]; then
+        pass "author-bind: empty ME -> \"\" (no re-fix; fail-closed)"
+    else
+        fail "empty-me fail-closed" "an empty ME must drive no re-fix (got '$(br EMPTYME)')"
+    fi
+    if [ "$(br CASE)" = "unsafe eval detected" ]; then
+        pass "author-bind: author case variation (QA-Bot vs qa-bot) -> reason text (to_lower casefold)"
+    else
+        fail "casefold author" "author login case drift must still be honored (got '$(br CASE)')"
+    fi
+    if [ "$(br PASSFLIP)" = "" ]; then
+        pass "author-bind: genuine bot pass-flip newest -> \"\" (pass-flip guard preserved)"
+    else
+        fail "pass-flip preserved" "a bot-authored newest pass marker must yield no re-fix (got '$(br PASSFLIP)')"
+    fi
+    if [ "$(br MULTI)" = "needs a guard  and a test" ]; then
+        pass "author-bind: two block markers in one note -> ALL stripped, reason text preserved"
+    else
+        fail "multi-marker strip" "strip_verdict_markers must remove every marker span (got '$(br MULTI)')"
+    fi
+    rm -rf "$BR_TMP"
 else
-    fail "forged block re-fix" "a quoted block marker by a non-bot author must NOT drive a re-fix"
-fi
-if [ "$(run_br "$J_GENUINE" "$HEAD" 'qa-bot')" = "unsafe eval detected" ]; then
-    pass "author-bind: genuine bot-authored block -> reason text (marker stripped)"
-else
-    fail "genuine block reason" "a bot-authored block marker must return the stripped reason text"
-fi
-if [ "$(run_br "$J_GENUINE" "$HEAD" '')" = "" ]; then
-    pass "author-bind: empty ME -> \"\" (no re-fix; fail-closed)"
-else
-    fail "empty-me fail-closed" "an empty ME must drive no re-fix"
-fi
-if [ "$(run_br "$J_CASE" "$HEAD" 'qa-bot')" = "unsafe eval detected" ]; then
-    pass "author-bind: author case variation (QA-Bot vs qa-bot) -> reason text (casefold)"
-else
-    fail "casefold author" "author login case drift must still be honored (casefold)"
-fi
-if [ "$(run_br "$J_PASSFLIP" "$HEAD" 'qa-bot')" = "" ]; then
-    pass "author-bind: genuine bot pass-flip newest -> \"\" (pass-flip guard preserved)"
-else
-    fail "pass-flip preserved" "a bot-authored newest pass marker must yield no re-fix"
+    echo "[SKIP] 2c real .ag block_reason_for_head matrix — agentis not on PATH"
 fi
 
 # ---------------------------------------------------------------------------
