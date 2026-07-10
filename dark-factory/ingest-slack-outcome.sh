@@ -602,6 +602,78 @@ for m in msgs:
   _run_spendy_handoff "$stage" "$channel" "$thread_ts" "$mf" "$action" "$reason"
 }
 
+# _rehunt_error_reason <logfile> -> a SAFE one-line reason for the error post: the LAST non-empty line of the
+# re-hunt log, minus a trailing ` (see …)` pointer and ANY slash-bearing token. NO internal file path ever reaches
+# a Slack post (#1574 self-contained + the public-repo path-leak guard); an absent/empty log -> a generic fallback.
+_rehunt_error_reason() {
+  local log="$1" line
+  if [ -f "$log" ]; then
+    line="$(grep -v '^[[:space:]]*$' "$log" 2>/dev/null | tail -1)"
+  else
+    line=""
+  fi
+  # Strip a trailing ` (see …)` pointer, drop any slash-bearing token (internal paths), collapse whitespace.
+  line="$(printf '%s' "$line" | sed -E 's/ \(see [^)]*\)//g; s#[^[:space:]]*/[^[:space:]]*##g; s/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  [ -n "$line" ] || line="run-audit-pass exited without a result"
+  printf '%s' "$line"
+}
+
+# _rehunt_completion_check <stage> <channel> <thread_ts> -> when a DETACHED re-hunt (#1567) has FINISHED, post its
+# RESULT once into the manifest thread (#1574 self-contained). GATE: a cheap no-op unless a `.re-hunt-pid` exists,
+# `.re-hunt-reported` is absent, and channel+thread_ts are non-empty. FINISHED DETECTION (dash-safe): a terminal
+# artifact (re-hunt-out/pass-result.txt) OVERRIDES `kill -0` (a REUSED pid could read alive); otherwise a live pid
+# -> ALIVE -> return 0 (no post, no marker; a later sweep re-checks); else finished (dead, no result -> error).
+# CLASSIFY from re-hunt-out/ (the artifacts run-audit-pass.sh actually writes): PENDING-HUMAN-REVIEW -> upload the
+# durable draft artifact that IS present (submission-draft.md if any, else the pass.tsv trace — the report-writer
+# BODY is not persisted upstream, so this NEVER fabricates a finding) + a `new draft ready` one-liner; another
+# non-empty token -> a `no new submittable finding (<token>)` one-liner; empty/absent -> a path-stripped
+# `finished with an error (<reason>)` one-liner. Writes `.re-hunt-reported` ONLY after a finished post (idempotency;
+# never double-posts on a cron). Never submits — it consumes the re-hunt's outcome, it does not run the substrate.
+_rehunt_completion_check() {
+  local stage="$1" channel="$2" thread_ts="$3"
+  local rh_out pid result draft reason
+  [ -f "$stage/.re-hunt-pid" ] || return 0
+  [ -f "$stage/.re-hunt-reported" ] && return 0
+  [ -n "$channel" ] && [ -n "$thread_ts" ] || return 0
+
+  rh_out="$stage/re-hunt-out"
+  pid="$(head -1 "$stage/.re-hunt-pid" 2>/dev/null | tr -d '[:space:]')"
+  # FINISHED DETECTION: a terminal artifact wins over `kill -0` (reused-pid conservatism). No terminal artifact and
+  # a live pid -> ALIVE -> no post, no marker. Else finished (dead + no result surfaces as the error line below).
+  if [ -f "$rh_out/pass-result.txt" ]; then
+    :  # finished — terminal artifact present
+  elif [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    return 0  # still running
+  fi
+
+  result=""
+  [ -f "$rh_out/pass-result.txt" ] && result="$(head -1 "$rh_out/pass-result.txt" 2>/dev/null | tr -d '[:space:]')"
+  case "$result" in
+    PENDING-HUMAN-REVIEW)
+      # HONEST: upload the durable draft artifact that IS present — prefer submission-draft.md (forward-compatible),
+      # else the pass.tsv trace (today's real production path; the report-writer prose is not persisted upstream).
+      draft=""
+      if [ -s "$rh_out/submission-draft.md" ]; then
+        draft="$rh_out/submission-draft.md"
+      elif [ -s "$rh_out/pass.tsv" ]; then
+        draft="$rh_out/pass.tsv"
+      fi
+      if [ -n "$draft" ]; then
+        slack_upload "$draft" "submission-draft.md" "$channel" "$thread_ts" || true
+      fi
+      _slack_confirm "$channel" "$thread_ts" "🔁 re-hunt finished — new draft ready (in thread)" || true
+      ;;
+    "")
+      reason="$(_rehunt_error_reason "$rh_out/re-hunt.log")"
+      _slack_confirm "$channel" "$thread_ts" "🔁 re-hunt finished with an error ($reason)" || true
+      ;;
+    *)
+      _slack_confirm "$channel" "$thread_ts" "🔁 re-hunt finished — no new submittable finding ($result)" || true
+      ;;
+  esac
+  printf 'reported %s result=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${result:-error}" > "$stage/.re-hunt-reported"
+}
+
 # _route_apply <stage> <manifest> <disposition> <root_cause> <stage-field> <submission_id> <channel> <thread_ts>
 #              <outcome_reply_ts> <question> -> run every cheap:* action for the classified outcome and, if any
 # spendy:* action is mapped, PROPOSE it (no execute). Writes .route-applied (routed once per outcome).
@@ -640,7 +712,7 @@ process_stage() {
   local stage="$1"
   local mf thread_ts channel replies sel reply_ts platform_response verdict payout submissionId
   local intake_out intake_line fbk_disp fbk_conf fbk_stage fbk_signal fbk_root cfg pend
-  local gl_thread gl_channel
+  local gl_thread gl_channel rc_thread rc_channel
 
   [ -d "$stage" ] || { echo "ingest-slack-outcome.sh: not a directory, skipping: $stage" >&2; return 0; }
   mf="$stage/manifest.json"
@@ -657,6 +729,15 @@ process_stage() {
       _greenlight_check "$stage" "$gl_channel" "$gl_thread" "$mf"
     fi
   fi
+
+  # RE-HUNT COMPLETION PASS (#1577), BEFORE the `.outcome-ingested` short-circuit so a `--all` sweep re-enters an
+  # already-ingested stage to catch a DETACHED re-hunt (#1567) that has since FINISHED. A cheap no-op unless a
+  # `.re-hunt-pid` exists; when the re-hunt is done it posts the RESULT into the thread ONCE (`.re-hunt-reported`),
+  # self-contained (#1574): a `new draft ready` snippet, a `no new submittable finding` line, or a path-stripped
+  # error line. The ALIVE path posts nothing and writes no marker, so the next sweep re-checks.
+  rc_thread="$(_mf_field "$mf" slack_thread_ts)"
+  rc_channel="$(_mf_field "$mf" slack_channel)"
+  _rehunt_completion_check "$stage" "$rc_channel" "$rc_thread"
 
   if [ -e "$stage/.outcome-ingested" ]; then
     echo "ingest-slack-outcome.sh: already ingested, skipping: $stage" >&2
