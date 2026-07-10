@@ -67,8 +67,8 @@ QA_REASON="$(awk '/^fn block_reason_for_head\(/{f=1} f{print} /^}/{if(f) f=0}' "
 # 1. block-on-current-head-detected-and-redriven
 # ---------------------------------------------------------------------------
 if printf '%s' "$QA_AT" | grep -Fq 'let head_fp = head_fingerprint(changes_raw)' \
-   && printf '%s' "$QA_AT" | grep -Fq 'let reason = block_reason_for_head(notes_raw, head_fp)'; then
-    pass "detection: head_fingerprint(mr-changes) + block_reason_for_head(mr-notes, head_fp)"
+   && printf '%s' "$QA_AT" | grep -Fq 'let reason = block_reason_for_head(notes_raw, head_fp, bot_login())'; then
+    pass "detection: head_fingerprint(mr-changes) + block_reason_for_head(mr-notes, head_fp, bot_login())"
 else
     fail "detection helpers" "recover_qa_block_at must compute head_fp and block_reason_for_head"
 fi
@@ -117,6 +117,103 @@ if printf '%s' "$QA_REASON" | grep -Fq 'if m.group(1)==\"block\":' \
     pass "stale-block: a newest status=pass marker yields \"\" (flipped-to-pass = no re-drive)"
 else
     fail "pass-flip guard" "block_reason_for_head must return \"\" when the newest match is status=pass"
+fi
+
+# ---------------------------------------------------------------------------
+# 2b. AUTHOR BIND (#1573): block_reason_for_head honors a marker ONLY on a note
+# authored by the fed's own bot (author.username casefold-equal to bot_login()),
+# so a `block` marker QUOTED by an operator/other bot cannot drive a bogus re-fix.
+# An empty ME (unconfigured forge identity) honors NOTHING (fail-closed -> "").
+# The author-bind python block is byte-identical to approval_decider.note_verdict.
+# ---------------------------------------------------------------------------
+CW_BOT_LOGIN="$(awk '/^fn bot_login\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+if printf '%s' "$QA_REASON" | grep -Fq 'author.casefold()!=me' \
+   && printf '%s' "$QA_REASON" | grep -Fq 'me=os.environ[\"ME\"].casefold()' \
+   && printf '%s' "$QA_REASON" | grep -Fq 'if not h or not me or not isinstance(d,list):'; then
+    pass "author-bind: block_reason_for_head skips author != bot and fails closed on an empty ME"
+else
+    fail "author-bind guard" "block_reason_for_head must skip author.casefold()!=me and guard 'not me'"
+fi
+if printf '%s' "$CW_BOT_LOGIN" | grep -Fq 'getenv("GITHUB_ME")' \
+   && printf '%s' "$CW_BOT_LOGIN" | grep -Fq 'getenv("GITLAB_ME")' \
+   && ! printf '%s' "$CW_BOT_LOGIN" | grep -Fq 'FORGE_TYPE'; then
+    pass "author-bind: bot_login reads GITHUB_ME else GITLAB_ME (first-non-empty, no FORGE_TYPE branch)"
+else
+    fail "bot_login source" "bot_login must read GITHUB_ME else GITLAB_ME and not branch on FORGE_TYPE"
+fi
+if printf '%s' "$QA_REASON" | grep -Fq '" ME=" + shell_escape(me)'; then
+    pass "author-bind: block_reason_for_head threads the bot login as a shell_escape'd ME= env var (off-argv)"
+else
+    fail "ME= threading" "block_reason_for_head must pass the bot login via ME= + shell_escape(me)"
+fi
+# The author-bind python is byte-identical across the two readers (the drift risk
+# the plan calls out): compare the shared segment (me=...casefold() .. `if m:`).
+AD_SEG="$(awk '/^fn note_verdict\(/{f=1} f && /me=os.environ\[\\"ME\\"\].casefold/{g=1} g{print} g && /if m:"/{exit}' "$AD_AG")"
+CW_SEG="$(awk '/^fn block_reason_for_head\(/{f=1} f && /me=os.environ\[\\"ME\\"\].casefold/{g=1} g{print} g && /if m:"/{exit}' "$AG")"
+if [ -n "$AD_SEG" ] && [ "$AD_SEG" = "$CW_SEG" ]; then
+    pass "author-bind: the author-match python block is byte-identical to approval_decider.note_verdict"
+else
+    fail "author-bind byte-identity" "the two author-match python blocks diverged (the plan's drift risk)"
+fi
+
+# Behavioral: mirror block_reason_for_head's embedded python byte-for-byte, drive
+# J/H/ME (same idiom as tools/test-reviewer-head-gate.sh's FP_PY fixture;
+# dash-safe, plain JSON, no single quotes in the program).
+BR_PY='import os,json,re,sys
+try:
+    d=json.loads(os.environ["J"])
+except Exception:
+    print(""); sys.exit(0)
+h=os.environ["H"]
+me=os.environ["ME"].casefold()
+if not h or not me or not isinstance(d,list):
+    print(""); sys.exit(0)
+pat=re.compile("<!-- qa-verdict head="+re.escape(h)+" status=(pass|block) -->")
+for n in d:
+    if not isinstance(n,dict):
+        continue
+    a=n.get("author")
+    author=a.get("username") if isinstance(a,dict) else None
+    if not isinstance(author,str) or author.casefold()!=me:
+        continue
+    b=n.get("body")
+    m=pat.search(b) if isinstance(b,str) else None
+    if m:
+        if m.group(1)=="block":
+            sys.stdout.write(re.sub("<!-- qa-verdict [^>]*-->","",b).strip()); sys.exit(0)
+        print(""); sys.exit(0)
+print("")'
+run_br() { J="$1" H="$2" ME="$3" python3 -c "$BR_PY"; }
+HEAD='abcdef1234567890'
+J_FORGED='[{"author":{"username":"random_operator"},"body":"unsafe eval detected <!-- qa-verdict head=abcdef1234567890 status=block -->"}]'
+J_GENUINE='[{"author":{"username":"qa-bot"},"body":"unsafe eval detected <!-- qa-verdict head=abcdef1234567890 status=block -->"}]'
+J_CASE='[{"author":{"username":"QA-Bot"},"body":"unsafe eval detected <!-- qa-verdict head=abcdef1234567890 status=block -->"}]'
+J_PASSFLIP='[{"author":{"username":"qa-bot"},"body":"cleared <!-- qa-verdict head=abcdef1234567890 status=pass -->"}]'
+
+if [ "$(run_br "$J_FORGED" "$HEAD" 'qa-bot')" = "" ]; then
+    pass "author-bind: forged/quoted block by non-bot author -> \"\" (no re-fix)"
+else
+    fail "forged block re-fix" "a quoted block marker by a non-bot author must NOT drive a re-fix"
+fi
+if [ "$(run_br "$J_GENUINE" "$HEAD" 'qa-bot')" = "unsafe eval detected" ]; then
+    pass "author-bind: genuine bot-authored block -> reason text (marker stripped)"
+else
+    fail "genuine block reason" "a bot-authored block marker must return the stripped reason text"
+fi
+if [ "$(run_br "$J_GENUINE" "$HEAD" '')" = "" ]; then
+    pass "author-bind: empty ME -> \"\" (no re-fix; fail-closed)"
+else
+    fail "empty-me fail-closed" "an empty ME must drive no re-fix"
+fi
+if [ "$(run_br "$J_CASE" "$HEAD" 'qa-bot')" = "unsafe eval detected" ]; then
+    pass "author-bind: author case variation (QA-Bot vs qa-bot) -> reason text (casefold)"
+else
+    fail "casefold author" "author login case drift must still be honored (casefold)"
+fi
+if [ "$(run_br "$J_PASSFLIP" "$HEAD" 'qa-bot')" = "" ]; then
+    pass "author-bind: genuine bot pass-flip newest -> \"\" (pass-flip guard preserved)"
+else
+    fail "pass-flip preserved" "a bot-authored newest pass marker must yield no re-fix"
 fi
 
 # ---------------------------------------------------------------------------

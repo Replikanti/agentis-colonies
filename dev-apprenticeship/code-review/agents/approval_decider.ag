@@ -266,6 +266,19 @@ fn review_timeout_action() -> string {
     return "hold";
 }
 
+// bot_login: the federation's own forge login, read from the sanitized env
+// (GITHUB_ME on GitHub, GITLAB_ME on GitLab — both covered by the GITHUB_*/
+// GITLAB_* wildcards on the install.sh exec.env_passthrough allowlist, so no
+// allowlist entry is added; start-colony.sh exports exactly one, so
+// first-non-empty is unambiguous). Empty when unconfigured -> the author bind
+// (note_verdict / block_reason_for_head) honors NOTHING: the gate stays HELD
+// and no re-fix drives (fail-closed, never a spurious release/clobber).
+fn bot_login() -> string {
+    let gh = getenv("GITHUB_ME");
+    if len(gh) > 0 { return gh; };
+    return getenv("GITLAB_ME");
+}
+
 // head_fingerprint: fingerprint of the MR head — sha256 of the mr-changes
 // payload, first 16 hex chars. BYTE-IDENTICAL to qa_reviewer.head_fingerprint
 // (pinned by tools/test-approval-decider-review-gate.sh): the gate matches only
@@ -281,26 +294,40 @@ fn head_fingerprint(changes_raw: string) -> string {
 // note_verdict: scan the mr-notes array for a body carrying the commit-keyed
 // marker `<!-- qa-verdict head=<head_fp> status=<s> -->` and print `s`
 // ("pass"|"block"). The raw notes JSON rides $J (env var, off-argv, like
-// open_pr_field) and head_fp rides $H so ARG_MAX never bites. Total: malformed
-// JSON, empty head, no matching marker all collapse to "" ( = none/stale, which
-// the caller treats as "no verdict yet"). ORDERING: mr-notes is newest-first on
+// open_pr_field), head_fp rides $H, and the fed's own bot login rides $ME so
+// ARG_MAX never bites. AUTHOR BIND (#1573): a marker is honored ONLY on a note
+// whose author.username casefold-equals the bot login `me` (from bot_login());
+// a marker QUOTED by an operator or another bot is ignored — a quoted `pass`
+// can never release the #1484 HOLD. An empty `me` (unconfigured forge identity)
+// honors NOTHING: note_verdict returns "" and the gate stays HELD (fail-closed,
+// never a spurious release). Total: malformed JSON, empty head, empty me, no
+// bot-authored matching marker all collapse to "" ( = none/stale, which the
+// caller treats as "no verdict yet"). ORDERING: mr-notes is newest-first on
 // both forges (GitHub sort=created direction=desc; GitLab order_by=created_at
-// sort=desc), so the FIRST match in iteration order is the LATEST verdict for
-// this head — we take it and STOP. This prevents an early stray/forged "pass"
-// from masking a later genuine "block" for the same commit (#1493).
-fn note_verdict(notes_raw: string, head_fp: string) -> string {
-    let cmd = "J=" + shell_escape(notes_raw) + " H=" + shell_escape(head_fp) +
+// sort=desc), so the FIRST bot-authored match in iteration order is the LATEST
+// verdict for this head — we take it and STOP. This prevents an early
+// stray/forged "pass" from masking a later genuine "block" for the same commit
+// (#1493 — now "newest BOT-authored match").
+fn note_verdict(notes_raw: string, head_fp: string, me: string) -> string {
+    let cmd = "J=" + shell_escape(notes_raw) + " H=" + shell_escape(head_fp) + " ME=" + shell_escape(me) +
         " python3 -c 'import os,json,re,sys" +
         "\ntry:" +
         "\n    d=json.loads(os.environ[\"J\"])" +
         "\nexcept Exception:" +
         "\n    print(\"\"); sys.exit(0)" +
         "\nh=os.environ[\"H\"]" +
-        "\nif not h or not isinstance(d,list):" +
+        "\nme=os.environ[\"ME\"].casefold()" +
+        "\nif not h or not me or not isinstance(d,list):" +
         "\n    print(\"\"); sys.exit(0)" +
         "\npat=re.compile(\"<!-- qa-verdict head=\"+re.escape(h)+\" status=(pass|block) -->\")" +
         "\nfor n in d:" +
-        "\n    b=n.get(\"body\") if isinstance(n,dict) else None" +
+        "\n    if not isinstance(n,dict):" +
+        "\n        continue" +
+        "\n    a=n.get(\"author\")" +
+        "\n    author=a.get(\"username\") if isinstance(a,dict) else None" +
+        "\n    if not isinstance(author,str) or author.casefold()!=me:" +
+        "\n        continue" +
+        "\n    b=n.get(\"body\")" +
         "\n    m=pat.search(b) if isinstance(b,str) else None" +
         "\n    if m:" +
         "\n        print(m.group(1)); sys.exit(0)" +
@@ -344,7 +371,7 @@ fn review_gate(owner: string, repo: string, iid_str: string) -> string {
     // colony-lint: safe-exec-concat
     let notes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-notes " + shell_escape(iid_str) + repo_arg(owner, repo);
     let notes_raw = try { exec sh notes_cmd; } catch e { ""; };
-    let status = note_verdict(notes_raw, head_fp);
+    let status = note_verdict(notes_raw, head_fp, bot_login());
 
     if status == "pass" {
         return "merge";
