@@ -41,7 +41,7 @@ If a PR adds a runtime dependency under `tools/` that `dev-apprenticeship/` invo
 bash -n scripts/gitlab-api.sh   # Bash syntax check on any script
 ```
 
-Colony lint must pass with 0 failures before merge. CI baseline: 318 passed, 0 failed, 7 skipped (no agentis binary on runners). Local runs add ~42 per-agent `.ag` passes when `agentis` is installed.
+Colony lint must pass with 0 failures before merge. Counts drift as tests are added — as of v2.10.0 the CI baseline is 357 passed, 0 failed, 7 skipped (no agentis binary on runners) and a local run with `agentis` installed reports 505 passed, 0 failed, 6 skipped (adds per-agent `.ag` parse/type passes plus binary-dependent tests). The invariant is the 0 failures, not the exact counts.
 
 ## LLM backend
 
@@ -111,6 +111,7 @@ colony-name/
 - **Per-issue handled marker + idle gate ([#1370](https://github.com/Replikanti/agentis-colonies/issues/1370)).** An agent acting on the top issue of a snapshot MUST: mark it handled at **every** tier it acts at (`memo_write("<agent>:<iid>:handled", <tier>)` in the autonomous, review-gated, propose, AND shadow branches), FILTER already-handled issues BEFORE indexing (`first_unhandled_iid(...)`), `return` before `prompt()` when none remain, and PIN the prompt to that `target_iid`. Otherwise the staleness gate stays empty at sub-autonomous tiers and `prompt()` re-fires on the same issue forever. `code_writer` uses the tier-independent `input_unchanged()` fingerprint variant. Source-asserted by `tools/test-idle-prompt-gates.sh`; full pattern: [doc/tooling-reference.md](./doc/tooling-reference.md).
 - All dynamic values in `exec sh` calls must be wrapped in `shell_escape()`.
 - If the grep-based linter cannot see through nested `shell_escape()`, add `// colony-lint: safe-exec-concat` on the line above.
+- **Substrate purity ([#1587](https://github.com/Replikanti/agentis-colonies/issues/1587) ratchet).** Agent logic lives in `.ag`, not in embedded interpreters: never inline a NEW `python3 -c` (or awk/sed logic, or a bare `exec sh "date ..."`) inside an `.ag` `exec sh` string — the native builtins cover the common needs (`now_iso`/`now_ms` for timestamps, `sha256_hex` for hashing, `nth_field`-style `index_of`/`substring` recursion for field/line extraction, the `regex_*` family for matching/splitting, `json_get`/`json_array_*` for JSON). Phase 0 ([#1588](https://github.com/Replikanti/agentis-colonies/issues/1588)) purged ~148 legacy escapes; the remaining embedded-python sites are inventoried on the #1587 epic (Phases 1–3, two blocked upstream) — do not add to them. Where a rewrite is genuinely blocked (missing builtin, prohibitive CB cost), keep the escape and annotate it `// substrate-purity: deferred (<reason>)`. `exec sh` calls to forge verbs, tools/ scripts, and git remain fine — the rule is about LOGIC embedded as interpreter one-liners, not about invoking mechanical tooling.
 - Emit events use `"<colony_name>:<event_name>"` format.
 - For mechanical JSON field extraction from `exec sh` output, prefer `parse_int(to_string(json_get(raw, "[0].iid")))` over `prompt(...) -> list<T>` / `-> map<K,V>` — total on every failure mode (`Void → "void" → 0`) and saves one LLM round-trip per tick.
 
