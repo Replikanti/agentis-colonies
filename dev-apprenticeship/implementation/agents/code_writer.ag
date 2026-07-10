@@ -1388,6 +1388,19 @@ fn head_fingerprint(changes_raw: string) -> string {
     return try { exec sh cmd; } catch e { ""; };
 }
 
+// bot_login: the federation's own forge login, read from the sanitized env
+// (GITHUB_ME on GitHub, GITLAB_ME on GitLab — both covered by the GITHUB_*/
+// GITLAB_* wildcards on the install.sh exec.env_passthrough allowlist, so no
+// allowlist entry is added; start-colony.sh exports exactly one, so
+// first-non-empty is unambiguous). Empty when unconfigured -> the author bind
+// (note_verdict / block_reason_for_head) honors NOTHING: the gate stays HELD
+// and no re-fix drives (fail-closed, never a spurious release/clobber).
+fn bot_login() -> string {
+    let gh = getenv("GITHUB_ME");
+    if len(gh) > 0 { return gh; };
+    return getenv("GITLAB_ME");
+}
+
 // block_reason_for_head: scan the mr-notes array (newest-first, off-argv on $J)
 // for the FIRST note carrying the commit-keyed marker
 // `<!-- qa-verdict head=<head_fp> status=(pass|block) -->`. If that newest match
@@ -1396,21 +1409,34 @@ fn head_fingerprint(changes_raw: string) -> string {
 // match, print "". Mirrors approval_decider.note_verdict (which keys on the same
 // marker) but returns the reason text rather than the bare status. Taking the
 // NEWEST match and acting only on `block` reproduces the #1493 race guard: a later
-// re-review that flipped this head to `pass` yields "" (no re-drive). Total:
-// malformed JSON, empty head, no matching marker all collapse to "".
-fn block_reason_for_head(notes_raw: string, head_fp: string) -> string {
-    let cmd = "J=" + shell_escape(notes_raw) + " H=" + shell_escape(head_fp) +
+// re-review that flipped this head to `pass` yields "" (no re-drive). AUTHOR BIND
+// (#1573): a marker is honored ONLY on a note whose author.username casefold-equals
+// the fed's own bot login `me` ($ME, from bot_login()); a `block` marker QUOTED by
+// an operator or another bot is ignored (no bogus re-fix). An empty `me`
+// (unconfigured forge identity) honors NOTHING -> "" -> no re-drive (fail-closed).
+// The author-bind python block is BYTE-IDENTICAL to approval_decider.note_verdict.
+// Total: malformed JSON, empty head, empty me, no bot-authored matching marker all
+// collapse to "".
+fn block_reason_for_head(notes_raw: string, head_fp: string, me: string) -> string {
+    let cmd = "J=" + shell_escape(notes_raw) + " H=" + shell_escape(head_fp) + " ME=" + shell_escape(me) +
         " python3 -c 'import os,json,re,sys" +
         "\ntry:" +
         "\n    d=json.loads(os.environ[\"J\"])" +
         "\nexcept Exception:" +
         "\n    print(\"\"); sys.exit(0)" +
         "\nh=os.environ[\"H\"]" +
-        "\nif not h or not isinstance(d,list):" +
+        "\nme=os.environ[\"ME\"].casefold()" +
+        "\nif not h or not me or not isinstance(d,list):" +
         "\n    print(\"\"); sys.exit(0)" +
         "\npat=re.compile(\"<!-- qa-verdict head=\"+re.escape(h)+\" status=(pass|block) -->\")" +
         "\nfor n in d:" +
-        "\n    b=n.get(\"body\") if isinstance(n,dict) else None" +
+        "\n    if not isinstance(n,dict):" +
+        "\n        continue" +
+        "\n    a=n.get(\"author\")" +
+        "\n    author=a.get(\"username\") if isinstance(a,dict) else None" +
+        "\n    if not isinstance(author,str) or author.casefold()!=me:" +
+        "\n        continue" +
+        "\n    b=n.get(\"body\")" +
         "\n    m=pat.search(b) if isinstance(b,str) else None" +
         "\n    if m:" +
         "\n        if m.group(1)==\"block\":" +
@@ -1474,7 +1500,7 @@ fn recover_qa_block_at(owner: string, repo: string, raw: string, idx: int) -> in
     // colony-lint: safe-exec-concat
     let notes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-notes " + shell_escape(iid_str) + repo_arg(owner, repo);
     let notes_raw = try { exec sh notes_cmd; } catch e { ""; };
-    let reason = block_reason_for_head(notes_raw, head_fp);
+    let reason = block_reason_for_head(notes_raw, head_fp, bot_login());
     // Empty = no blocking verdict for the CURRENT head (none / stale / flipped to
     // pass) — nothing to recover.
     if len(reason) == 0 { return 0; };

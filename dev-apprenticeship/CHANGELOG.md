@@ -95,6 +95,34 @@ is asserted until multi-version CI is in place.
   draft→edit→finalize cycle over an existing PR; the MR-less-branch rescue is
   preserved.
 
+### Security
+
+- **QA-verdict marker bound to the bot author in both body-only readers**
+  ([#1573](https://github.com/Replikanti/agentis-colonies/issues/1573)): the
+  commit-keyed marker `<!-- qa-verdict head=<fp16> status=<pass|block> -->` was
+  read off `mr-notes` WITHOUT verifying the note's author, so a note that merely
+  QUOTES a marker for the current head was honoured as authoritative. The sharp
+  edge: a quoted `pass` marker by an operator or another bot could release the
+  #1484 merge HOLD — a gate bypass by a non-reviewer comment; the `block`
+  direction could likewise drive a bogus #1521 re-fix. Both readers —
+  `code-review/approval_decider.ag` `note_verdict()` (the #1484 gate) and
+  `implementation/code_writer.ag` `block_reason_for_head()` (the #1521 qa-fix
+  recovery) — now resolve the federation's own forge login from the sanitized env
+  via a new `bot_login()` helper (`GITHUB_ME` else `GITLAB_ME`, both already
+  covered by the `GITHUB_*`/`GITLAB_*` `exec.env_passthrough` wildcards — no
+  allowlist change) and honour a marker ONLY on a note whose `author.username`
+  casefold-equals that login. The author-match python block is **byte-identical**
+  across the two agents. An unconfigured `me` (blank `[forge].<type>.me`)
+  honours NOTHING (**fail-closed**): the #1484 gate stays HELD and the #1521
+  re-fix never drives — trust widens to nothing, never to everything. Casefold is
+  safe because neither forge lets two accounts differ only in case, so it can
+  never admit an impostor while it tolerates operator-config case drift. The
+  head-fingerprint exact-match, the newest-first first-match (#1493, now "newest
+  BOT-authored match"), and the marker regex are unchanged. **Migration:** the
+  gate now RELEASES only when `me` is configured; a blank `me` holds every green
+  PR (fail-safe, same direction as a missing verdict) — operators who left it
+  blank should set it to resume auto-merge.
+
 ## [2.8.0] — 2026-07-09
 
 **Requires:** agentis >= 1.20.0

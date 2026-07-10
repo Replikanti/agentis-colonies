@@ -90,7 +90,7 @@ fi
 if printf '%s' "$REVIEW_GATE" | grep -q 'forge-api.sh mr-changes ' \
    && printf '%s' "$REVIEW_GATE" | grep -q 'head_fingerprint(changes_raw)' \
    && printf '%s' "$REVIEW_GATE" | grep -q 'forge-api.sh mr-notes ' \
-   && printf '%s' "$REVIEW_GATE" | grep -q 'note_verdict(notes_raw, head_fp)'; then
+   && printf '%s' "$REVIEW_GATE" | grep -q 'note_verdict(notes_raw, head_fp, bot_login())'; then
     pass "(b) review_gate recomputes head_fingerprint from mr-changes and reads the marker off mr-notes"
 else
     fail "(b) review_gate reads" "review_gate must fingerprint mr-changes and scan mr-notes via note_verdict"
@@ -125,6 +125,96 @@ if grep -B14 '^fn note_verdict(' "$AG" | grep -qi 'newest-first'; then
     pass "(b2) the note_verdict ordering assumption (mr-notes newest-first) is documented"
 else
     fail "(b2) ordering comment" "the note_verdict doc comment must state the newest-first ordering assumption"
+fi
+
+# ---------------------------------------------------------------------------
+# (b3) AUTHOR BIND (#1573): note_verdict honors a marker ONLY on a note authored
+# by the fed's own bot (author.username casefold-equal to bot_login()), so a
+# quoted `pass` marker by an operator/other bot can never release the #1484 HOLD.
+# An empty ME (unconfigured forge identity) honors NOTHING (fail-closed).
+# ---------------------------------------------------------------------------
+BOT_LOGIN="$(awk '/^fn bot_login\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+# Structural: the per-note author skip + the empty-me guard are present.
+if printf '%s' "$NOTE_VERDICT" | grep -Fq 'author.casefold()!=me' \
+   && printf '%s' "$NOTE_VERDICT" | grep -Fq 'me=os.environ[\"ME\"].casefold()' \
+   && printf '%s' "$NOTE_VERDICT" | grep -Fq 'if not h or not me or not isinstance(d,list):'; then
+    pass "(b3) note_verdict skips notes whose author != bot login and fails closed on an empty ME"
+else
+    fail "(b3) author-bind guard" "note_verdict must skip author.casefold()!=me and guard 'not me' (empty-me fail-closed)"
+fi
+# bot_login resolves the fed login from GITHUB_ME else GITLAB_ME (no FORGE_TYPE
+# branch — both are GITHUB_*/GITLAB_* wildcard-allowlisted, no install.sh edit).
+if printf '%s' "$BOT_LOGIN" | grep -Fq 'getenv("GITHUB_ME")' \
+   && printf '%s' "$BOT_LOGIN" | grep -Fq 'getenv("GITLAB_ME")' \
+   && ! printf '%s' "$BOT_LOGIN" | grep -Fq 'FORGE_TYPE'; then
+    pass "(b3) bot_login reads GITHUB_ME else GITLAB_ME (first-non-empty, no FORGE_TYPE branch)"
+else
+    fail "(b3) bot_login source" "bot_login must read GITHUB_ME else GITLAB_ME and not branch on FORGE_TYPE"
+fi
+# note_verdict threads the bot login into the embedded python as a shell_escape'd
+# ME= env var (off-argv, same idiom as J=/H=).
+if printf '%s' "$NOTE_VERDICT" | grep -Fq '" ME=" + shell_escape(me)'; then
+    pass "(b3) note_verdict threads the bot login as a shell_escape'd ME= env var (off-argv)"
+else
+    fail "(b3) ME= threading" "note_verdict must pass the bot login via ME= + shell_escape(me)"
+fi
+
+# Behavioral: mirror note_verdict's embedded python byte-for-byte, drive J/H/ME
+# (same idiom as tools/test-reviewer-head-gate.sh's FP_PY fixture; dash-safe,
+# plain JSON, no single quotes in the program so it wraps in single quotes).
+NV_PY='import os,json,re,sys
+try:
+    d=json.loads(os.environ["J"])
+except Exception:
+    print(""); sys.exit(0)
+h=os.environ["H"]
+me=os.environ["ME"].casefold()
+if not h or not me or not isinstance(d,list):
+    print(""); sys.exit(0)
+pat=re.compile("<!-- qa-verdict head="+re.escape(h)+" status=(pass|block) -->")
+for n in d:
+    if not isinstance(n,dict):
+        continue
+    a=n.get("author")
+    author=a.get("username") if isinstance(a,dict) else None
+    if not isinstance(author,str) or author.casefold()!=me:
+        continue
+    b=n.get("body")
+    m=pat.search(b) if isinstance(b,str) else None
+    if m:
+        print(m.group(1)); sys.exit(0)
+print("")'
+run_nv() { J="$1" H="$2" ME="$3" python3 -c "$NV_PY"; }
+HEAD='abcdef1234567890'
+J_FORGED='[{"author":{"username":"random_operator"},"body":"quoting <!-- qa-verdict head=abcdef1234567890 status=pass --> for reference"}]'
+J_GENUINE='[{"author":{"username":"qa-bot"},"body":"QA passed <!-- qa-verdict head=abcdef1234567890 status=pass -->"}]'
+J_CASE='[{"author":{"username":"QA-Bot"},"body":"QA passed <!-- qa-verdict head=abcdef1234567890 status=pass -->"}]'
+J_MASK='[{"author":{"username":"random_operator"},"body":"<!-- qa-verdict head=abcdef1234567890 status=pass -->"},{"author":{"username":"qa-bot"},"body":"blocked <!-- qa-verdict head=abcdef1234567890 status=block -->"}]'
+
+if [ "$(run_nv "$J_FORGED" "$HEAD" 'qa-bot')" = "" ]; then
+    pass "(b3) forged/quoted pass by non-bot author -> \"\" (gate stays HELD, no release)"
+else
+    fail "(b3) forged pass release" "a quoted pass marker by a non-bot author must NOT be honored"
+fi
+if [ "$(run_nv "$J_GENUINE" "$HEAD" 'qa-bot')" = "pass" ]; then
+    pass "(b3) genuine bot-authored pass -> \"pass\" (gate releases)"
+else
+    fail "(b3) genuine pass" "a bot-authored pass marker must return pass"
+fi
+if [ "$(run_nv "$J_GENUINE" "$HEAD" '')" = "" ]; then
+    pass "(b3) empty ME -> \"\" (honor nothing; fail-closed)"
+else
+    fail "(b3) empty-me fail-closed" "an empty ME must honor no marker"
+fi
+if [ "$(run_nv "$J_CASE" "$HEAD" 'qa-bot')" = "pass" ]; then
+    pass "(b3) author case variation (QA-Bot vs qa-bot) -> \"pass\" (casefold)"
+else
+    fail "(b3) casefold author" "author login case drift must still be honored (casefold)"
+fi
+if [ "$(run_nv "$J_MASK" "$HEAD" 'qa-bot')" = "block" ]; then
+    pass "(b3) forged newest pass cannot mask a genuine older bot block -> \"block\" (#1493 preserved: newest BOT-authored match)"
+else
+    fail "(b3) forged-pass mask" "a forged newest pass must not mask the genuine bot block"
 fi
 
 # ---------------------------------------------------------------------------
