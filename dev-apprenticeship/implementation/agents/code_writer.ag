@@ -1358,6 +1358,228 @@ fn resolve_review_prs(owner: string, repo: string) -> int {
     return resolve_review_scan(owner, repo, raw, 0);
 }
 
+// #1521: QA-block recovery helpers (the fix-if-qa-block pattern — the adversarial
+// analog of recover_red_prs). A GREEN own-PR that carries a BLOCKING #1484 QA
+// verdict for its CURRENT head just sat HELD forever: the gate is fail-safe, but
+// nothing consumed the block to revise the code. These helpers add the missing
+// review->fix->re-review edge, a near-exact structural mirror of the review-resolver
+// (#1360), but triggered by the durable commit-keyed marker
+// `<!-- qa-verdict head=<fp16> status=block -->` (the SAME marker approval_decider's
+// review gate reads) instead of a request_changes note. The whole path is behind a
+// default-OFF operator flag (QA_FIX_RECOVERY_ENABLED) so it ships dormant until the
+// qa_reviewer verdict precision is proven live (the #1568 burn-in). Idempotency is
+// the head-fp watermark (qa_fix:last_block:<iid>) plus a MONOTONIC PER-ISSUE cap
+// (qa_fix:attempts:<iid>, cap 2, NEVER reset per head): the adversarial ratchet can
+// raise a DIFFERENT block on each re-review, so a per-head cap would reset exactly
+// when a new block appears and never terminate the chase — only a per-issue counter
+// bounds it. On exhaustion a one-time human note (qa_fix:escalated:<iid>) and stop.
+
+// head_fingerprint: fingerprint of the MR head — sha256 of the mr-changes payload,
+// first 16 hex chars. BYTE-IDENTICAL to qa_reviewer.head_fingerprint /
+// approval_decider.head_fingerprint (pinned by
+// tools/test-code-writer-qa-fix-recovery.sh): the block marker keys on the fp
+// qa_reviewer embedded, so recomputing it here with the same bytes is what makes a
+// STALE block on an OLD head a no-op (a force-push changed the diff => a different
+// fp => the marker no longer matches). code_writer cannot call another agent's
+// function, so it carries its own byte-identical copy.
+fn head_fingerprint(changes_raw: string) -> string {
+    let cmd = "printf '%s' " + shell_escape(changes_raw) +
+        " | python3 -c 'import sys, hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])'";
+    return try { exec sh cmd; } catch e { ""; };
+}
+
+// block_reason_for_head: scan the mr-notes array (newest-first, off-argv on $J)
+// for the FIRST note carrying the commit-keyed marker
+// `<!-- qa-verdict head=<head_fp> status=(pass|block) -->`. If that newest match
+// is `status=block`, print the note BODY with the marker HTML-comment stripped (=
+// the block reason, fed as the fix brief); if it is `status=pass` or there is no
+// match, print "". Mirrors approval_decider.note_verdict (which keys on the same
+// marker) but returns the reason text rather than the bare status. Taking the
+// NEWEST match and acting only on `block` reproduces the #1493 race guard: a later
+// re-review that flipped this head to `pass` yields "" (no re-drive). Total:
+// malformed JSON, empty head, no matching marker all collapse to "".
+fn block_reason_for_head(notes_raw: string, head_fp: string) -> string {
+    let cmd = "J=" + shell_escape(notes_raw) + " H=" + shell_escape(head_fp) +
+        " python3 -c 'import os,json,re,sys" +
+        "\ntry:" +
+        "\n    d=json.loads(os.environ[\"J\"])" +
+        "\nexcept Exception:" +
+        "\n    print(\"\"); sys.exit(0)" +
+        "\nh=os.environ[\"H\"]" +
+        "\nif not h or not isinstance(d,list):" +
+        "\n    print(\"\"); sys.exit(0)" +
+        "\npat=re.compile(\"<!-- qa-verdict head=\"+re.escape(h)+\" status=(pass|block) -->\")" +
+        "\nfor n in d:" +
+        "\n    b=n.get(\"body\") if isinstance(n,dict) else None" +
+        "\n    m=pat.search(b) if isinstance(b,str) else None" +
+        "\n    if m:" +
+        "\n        if m.group(1)==\"block\":" +
+        "\n            sys.stdout.write(re.sub(\"<!-- qa-verdict [^>]*-->\",\"\",b).strip()); sys.exit(0)" +
+        "\n        print(\"\"); sys.exit(0)" +
+        "\nprint(\"\")'";
+    let out = try { exec sh cmd; } catch e { ""; };
+    return out;
+}
+
+// qa_fix_attempts: how many QA-block re-drives we have already launched for this
+// ISSUE (from the qa_fix:attempts:<iid> memo). Missing => 0. Monotonic per issue —
+// NEVER reset per head, so the adversarial ratchet cannot chase forever. Mirrors
+// recover_attempts / review_fix_attempts.
+fn qa_fix_attempts(owner: string, repo: string, iid_str: string) -> int {
+    let raw = recall_latest(scoped_memo(owner, repo, "qa_fix:attempts:" + iid_str));
+    if len(raw) == 0 { return 0; };
+    return parse_int(raw);
+}
+
+// recover_qa_block_at: process the open PR at index `idx`. Returns 1 if it LAUNCHED
+// a QA-block re-drive (caller returns for this tick — one job per tick, do not also
+// draft), 0 otherwise. Routes each PR to EXACTLY ONE recovery path: own PRs only
+// (head starts fix/issue-); STATE=green (red -> recover_red_prs, pending -> don't
+// race CI); MERGEABLE!=conflicting (conflicting -> rebase_conflicting_prs); AND a
+// `block` verdict for the RECOMPUTED CURRENT head_fp (a stale block on an OLD head
+// yields "" => no re-drive). Idempotent on the head-fp watermark
+// (qa_fix:last_block:<iid>). Cap 2 per ISSUE via qa_fix:attempts:<iid> (bumped
+// AFTER launch, skipped on a RUNNING cap-defer); on exhaustion a one-time human
+// note (qa_fix:escalated:<iid>) and no further pushes. Mirrors resolve_review_at.
+fn recover_qa_block_at(owner: string, repo: string, raw: string, idx: int) -> int {
+    let iid_str = open_pr_field(raw, idx, "iid");
+    if len(iid_str) == 0 { return 0; };
+    if iid_str == "void" { return 0; };
+    let src = open_pr_field(raw, idx, "source_branch");
+    // Own PRs only: never touch a PR we did not open.
+    if index_of(src, "fix/issue-") != 0 { return 0; };
+
+    // colony-lint: safe-exec-concat
+    let checks_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-pipeline-status " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let checks_out = try { exec sh checks_cmd; } catch e { ""; };
+    // Classify the raw pipeline status (see recover_at / #1355).
+    let state = ci_state(pr_check_token(checks_out, "STATUS"));
+    // Act ONLY on green: red is owned by recover_red_prs (no race), pending => don't
+    // race CI. Same green-only guard as resolve_review_at.
+    if state != "green" { return 0; };
+    // Conflicting is owned by rebase_conflicting_prs — never re-drive a conflicting
+    // head (it has no fresh CI and a fix would rebase-conflict anyway).
+    let mergeable = pr_check_token(checks_out, "MERGEABLE");
+    if mergeable == "conflicting" { return 0; };
+
+    // Recompute the CURRENT head fingerprint. A STALE block on an OLD head keys a
+    // different fp, so block_reason_for_head below returns "" — the no-op that makes
+    // acting on a stale block impossible.
+    // colony-lint: safe-exec-concat
+    let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
+    let head_fp = head_fingerprint(changes_raw);
+    if len(head_fp) == 0 { return 0; };
+
+    // colony-lint: safe-exec-concat
+    let notes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-notes " + shell_escape(iid_str) + repo_arg(owner, repo);
+    let notes_raw = try { exec sh notes_cmd; } catch e { ""; };
+    let reason = block_reason_for_head(notes_raw, head_fp);
+    // Empty = no blocking verdict for the CURRENT head (none / stale / flipped to
+    // pass) — nothing to recover.
+    if len(reason) == 0 { return 0; };
+
+    // Idempotency: the same block on the same head is re-driven at most once (guards
+    // the in-flight window before the fix pushes a new head). A NEW head (after the
+    // fix) has a NEW head_fp, so a fresh block on it is a fresh attempt — still under
+    // the per-issue cap.
+    let last_block = recall_latest(scoped_memo(owner, repo, "qa_fix:last_block:" + iid_str));
+    if last_block == head_fp { return 0; };
+
+    // Cap / escalation. The counter is MONOTONIC PER ISSUE (never reset per head) so
+    // the adversarial ratchet cannot become an infinite chase. On exhaustion post a
+    // one-time human note (guarded by qa_fix:escalated:<iid>) and stop — no further
+    // pushes.
+    let attempts = qa_fix_attempts(owner, repo, iid_str);
+    if attempts >= 2 {
+        let escalated = recall_latest(scoped_memo(owner, repo, "qa_fix:escalated:" + iid_str));
+        if len(escalated) == 0 {
+            memo_write(scoped_memo(owner, repo, "qa_fix:escalated:" + iid_str), head_fp);
+            // colony-lint: safe-exec-concat
+            let note_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + shell_escape(iid_str) + " --body " + shell_escape("**QA auto-fix gave up** (automated): 2 attempts did not clear the blocking QA verdict for this PR; needs a human.") + repo_arg(owner, repo);
+            try { exec sh note_cmd; } catch e {
+                print("[code_writer] QA-fix escalation note failed for PR", iid_str, ":", e);
+            };
+        };
+        print("[code_writer] QA-fix gave up on PR", iid_str, "after 2 attempts — needs human");
+        return 0;
+    };
+
+    let next_attempt = attempts + 1;
+
+    // Re-drive the PR's ACTUAL head branch (source_branch), validated above to start
+    // with fix/issue-. --recover pushes to the existing branch (no new PR); keying
+    // --issue on the PR iid shares the per-issue job dir with recover_at /
+    // resolve_review_at so the launcher pid-guard serializes the recover paths.
+    let branch_name = src;
+    let recover_title = "fix: address QA block on #" + iid_str;
+    let recover_task = "A pre-merge QA review BLOCKED this change. Fix ONLY the specific finding below with a MINIMAL change and stop; do not touch unrelated code:\n" + reason;
+    // colony-lint: safe-exec-concat
+    let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(iid_str) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(recover_title) + " --task " + shell_escape(recover_task) + " --recover";
+    let job_out = try { exec sh job_cmd; } catch e {
+        print("[code_writer] QA-fix launcher failed for PR", iid_str, ":", e);
+        "";
+    };
+    let job_state = job_word(job_out);
+    // Cap-deferred (RUNNING): the CODE_EDIT_MAX_CONCURRENT semaphore was saturated,
+    // so the launcher created NO job dir and promised a next-tick re-poll. Skip the
+    // watermark/attempts write so re-entry for this head is NOT swallowed and no
+    // budget is consumed (#1379). Mirrors resolve_review_at.
+    if job_state == "RUNNING" {
+        print("[code_writer] QA-fix deferred for PR", iid_str, "(concurrency cap) — will re-poll");
+        return 1;
+    };
+    // Launched (or crashed mid-launch): write the head-fp watermark + bump the
+    // attempt memo so a crash still counts (fail-closed: never exceed 2 re-drives),
+    // and the counter is NEVER reset per head (monotonic per issue). A guarded_push
+    // (#1516) refusal on a foreign-commit branch also lands here (non-RUNNING) — so a
+    // refusal counts toward the cap and escalates after 2, never loops.
+    memo_write(scoped_memo(owner, repo, "qa_fix:last_block:" + iid_str), head_fp);
+    memo_write(scoped_memo(owner, repo, "qa_fix:attempts:" + iid_str), to_string(next_attempt));
+    if job_state == "DONE" {
+        print("[code_writer] QA-fix pushed a fix to blocked PR", iid_str, "(attempt", next_attempt, "/2)");
+    } else {
+        print("[code_writer] re-driving PR", iid_str, "for QA block (attempt", next_attempt, "/2)");
+    };
+    // One QA-fix job per tick: signal the caller to return without drafting. The
+    // launcher's pid check gives idempotency so a re-poll won't double-launch.
+    return 1;
+}
+
+// recover_qa_block_scan: recurse over the open-PR list, launching at most ONE
+// QA-block re-drive per tick. Returns 1 once a job is launched, else 0. Mirrors
+// resolve_review_scan.
+fn recover_qa_block_scan(owner: string, repo: string, raw: string, idx: int) -> int {
+    let iid_str = open_pr_field(raw, idx, "iid");
+    if len(iid_str) == 0 { return 0; };
+    let did = recover_qa_block_at(owner, repo, raw, idx);
+    if did == 1 { return 1; };
+    return recover_qa_block_scan(owner, repo, raw, idx + 1);
+}
+
+// recover_qa_block_prs: list the federation's own open PRs and, at the autonomous
+// tier only, re-drive the FIRST green non-conflicting one whose head is a fix/issue-
+// branch we opened and that carries a BLOCKING QA verdict for its current head.
+// Returns 1 if it launched a QA-fix job (the caller returns for this tick — one job
+// per tick, do not also draft). Mirrors resolve_review_prs. The feature flag is the
+// FIRST statement: flag-off = zero forge reads = byte-identical no-op.
+fn recover_qa_block_prs(owner: string, repo: string) -> int {
+    // Feature-flag default OFF: dormant until qa_reviewer verdict precision is
+    // proven live (#1568). Reading the flag first keeps flag-off a zero-forge-read
+    // no-op. QA_FIX_RECOVERY_ENABLED is on the install.sh exec.env_passthrough
+    // allowlist + #1437 residue list (getenv reads the SANITIZED env).
+    if getenv("QA_FIX_RECOVERY_ENABLED") != "1" { return 0; };
+    // Autonomous-only: re-pushing to PRs is a terminal write.
+    if repo_tier("code_writer", owner, repo) != "autonomous" { return 0; };
+    // Raw (no --view): needs both `iid` and `source_branch`, which the `impl` view
+    // drops — same reason as recover_red_prs / resolve_review_prs.
+    // colony-lint: safe-exec-concat
+    let list_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state opened" + repo_arg(owner, repo);
+    let raw = try { exec sh list_cmd; } catch e { ""; };
+    if len(raw) < 5 { return 0; };
+    return recover_qa_block_scan(owner, repo, raw, 0);
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
     // #1518: auto-rebase of our own CONFLICTING PRs runs FIRST — BEFORE red-CI
     // recovery. A CONFLICTING PR has NO fresh CI run (GitHub skips workflows on
@@ -1391,6 +1613,23 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         let now_v = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
         if len(now_v) > 0 {
             memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now_v);
+        };
+        return;
+    };
+
+    // #1521: QA-block recovery. Runs AFTER review-finding recovery and BEFORE the
+    // draft path (last among the recovery sweeps — it and resolve_review_prs both
+    // act on GREEN own-PRs but on DISJOINT signals: actionable_note never matches
+    // the QA verdict marker, so there is no overlap). Feature-flagged default OFF
+    // (QA_FIX_RECOVERY_ENABLED). Acts only on a GREEN, non-conflicting own-PR
+    // carrying a BLOCKING QA verdict for the CURRENT head (the #1484 marker). One
+    // job per tick: a launch returns without drafting; the new head invalidates the
+    // stale verdict marker and re-stamps the #1484 wait clock for the gate to
+    // re-judge (this sweep does NOT touch the gate).
+    if recover_qa_block_prs(owner, repo) == 1 {
+        let now_q = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+        if len(now_q) > 0 {
+            memo_write(scoped_memo(owner, repo, "code_writer:last_check"), now_q);
         };
         return;
     };
