@@ -27,6 +27,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   deterministic proof over a canned fixture; `demo-immunefi-intake.sh` re-passes unchanged as the regression guard.
 
 ### Changed
+- **Audit-density penalty in `--live` discovery ranking** (#1599, epic #1505). The `--live`/`--bounties` MAPPER
+  now scans each program's TEXT fields (`knownIssues`/`programOverview`/`description`/`rewardsBody`/`audits`/
+  `impacts`, never the structured `audits` count) for audit-COMPETITION references (immunefi audit-competition
+  URLs, "audit competition"/"audit contest", sherlock/cantina/code4rena/codehawks/hats) and named auditor firms
+  (spearbit, trail of bits, openzeppelin, certora, halborn, cyfrin, zellic, ...). It folds a bounded penalty
+  (competition −15, each named firm −3 capped −9) INTO the live-only `discovery_bonus`, clamped ≥0, so a
+  competition-hardened target ranks BELOW a genuinely-unaudited one of equal bounty — a fresh launch date and an
+  empty `audits` array do NOT mean unaudited. The signal is surfaced in scope_hint col 5 as `aud:<n> comp:<yes|no>`
+  (the row stays exactly 5 columns). `score_of` is untouched and operator-supplied programs carry none of these
+  fields, so the operator-path ranks stay byte-identical (guarded by the unchanged `demo-immunefi-intake.sh`).
+  `demo-immunefi-live.sh` gains a deterministic fixture-pair assertion and is now wired into `colony-lint.sh`.
 
 ### Fixed
 
