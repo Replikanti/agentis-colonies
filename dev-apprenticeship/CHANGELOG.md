@@ -17,6 +17,37 @@ is asserted until multi-version CI is in place.
 
 ### Added
 
+- **QA-block recovery loop (fix-if-qa-block, default OFF)**
+  ([#1521](https://github.com/Replikanti/agentis-colonies/issues/1521)): a green
+  fed-owned PR that the adversarial `qa_reviewer` BLOCKS (the #1484 head-keyed
+  marker `<!-- qa-verdict head=<fp16> status=block -->`) used to sit HELD forever
+  — the #1484 gate is fail-safe, but nothing consumed the block to revise the
+  code. `implementation/code_writer.ag` gains a fourth own-PR recovery sweep,
+  `recover_qa_block_prs` (autonomous-tier, own `fix/issue-` PRs only), the
+  adversarial analog of the #1332 fix-if-red loop. It runs after review-finding
+  recovery and before the draft path, and on a GREEN, non-conflicting PR carrying
+  a `block` verdict for its RECOMPUTED current head, re-drives the fix via
+  `tools/code-edit-job.sh --recover` with the block reason as the brief. Routing
+  is exactly-one-path: red → `recover_red_prs`, conflicting →
+  `rebase_conflicting_prs`, green+block → this sweep. The re-drive force-pushes
+  through the existing `guarded_push` chokepoint
+  ([#1516](https://github.com/Replikanti/agentis-colonies/issues/1516)) — an
+  operator-carrying branch degrades to a yield note, never a clobber. The cap is
+  a **monotonic per-issue** counter (`qa_fix:attempts:<iid>`, cap 2, NEVER reset
+  per head): because the adversarial ratchet can raise a DIFFERENT block on each
+  re-review, a per-head cap would reset exactly when a new block appears and never
+  terminate the chase. Idempotency is the head-fp watermark
+  (`qa_fix:last_block:<iid>`), so one block drives at most one re-drive; on cap
+  exhaustion a one-time human note (`qa_fix:escalated:<iid>`) and no further
+  pushes. A new head invalidates the stale verdict marker and re-stamps the #1484
+  wait clock — the sweep produces heads for the gate to re-judge, it does NOT
+  bypass the gate. Gated behind a new default-OFF operator flag
+  `QA_FIX_RECOVERY_ENABLED` (registered on the `install.sh` `exec.env_passthrough`
+  allowlist; `getenv()` reads the sanitized env, so the flag is only honoured once
+  registered): the capability ships dormant until `qa_reviewer` verdict precision
+  is measured live (the burn-in tracked in
+  [#1568](https://github.com/Replikanti/agentis-colonies/issues/1568)). With the
+  flag unset the change is a byte-identical no-op (zero forge reads).
 - **Auto-rebase stage for the federation's own CONFLICTING PRs**
   ([#1518](https://github.com/Replikanti/agentis-colonies/issues/1518)): when an
   unrelated main merge makes a fed-owned PR `mergeable = CONFLICTING`, GitHub
