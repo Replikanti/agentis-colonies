@@ -30,6 +30,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   consolidated cheap post (9b/9d), and source guards that the old `see RE-HUNT.md` pointer is gone (9g).
 
 ### Added
+- **Persist the verbatim re-hunt draft so the Slack completion snippet is the REAL submission** (#1580, closing
+  the #1577 out-of-scope follow-up, epic #1505). The LIVE report gate now persists the report-writer's verbatim
+  4-section body to `<--out>/submission-draft.md` (a sibling of `pass.tsv`/`pass-result.txt`) so the #1577
+  `PENDING-HUMAN-REVIEW` completion callback uploads the ACTUAL submittable draft instead of the `pass.tsv` trace
+  fallback. Persistence happens in the gate wrapper `run-gate-agent.sh` (a new byte-neutral `persist_draft`) — the
+  only point where the full body survives, right after `extract_verdict` and BEFORE the `mktemp` `trap rm -rf EXIT`
+  teardown. `report-writer.ag` gains one closing sentinel `DARK-FACTORY:DRAFT-BODY-END` (contains no
+  `SUBMISSION-DRAFT|` substring, so verdict extraction is unaffected) so the wrapper slices a BOUNDED body
+  (marker line .. sentinel-EXCLUDING); a truncated render missing either the marker or the sentinel writes NOTHING,
+  never a run-to-EOF slice that could bake an internal store path into a Slack-bound file. The durable path threads
+  LIVE via `run-audit-pass.sh` (`DRAFT_OUT="$OUT/submission-draft.md"` + `SUBMISSION_DRAFT_OUT` on the
+  `exec.env_passthrough` allowlist) → coordinator `getenv` → `run_stage_live`'s gate-runner env. Byte-neutral on
+  non-PASS / no-draft / offline-fixture runs (`demo-audit-pass.sh` stays green); the human gate is untouched (the
+  file is local/operator-facing, nothing is auto-submitted). No `ingest-slack-outcome.sh` change — its callback
+  already prefers `submission-draft.md`. `demo-feedback-loop.sh` part 10 gains case 10a3 (the real producer writes
+  the bounded draft, no trailing-trace/sentinel leak, and the callback uploads that produced file byte-identically)
+  plus four static wiring pins across `coordinator.ag`/`run-audit-pass.sh`/`report-writer.ag`/`run-gate-agent.sh`.
 - **Re-hunt completion callback — the FINISHED result posts into the Slack thread** (#1577, closing the #1567
   seam, epic #1505). When the auto-invoked DETACHED re-hunt (#1567) FINISHES, a later `ingest-slack-outcome.sh`
   sweep (which re-enters an already-ingested stage BEFORE the `.outcome-ingested` short-circuit) posts its RESULT
