@@ -124,17 +124,21 @@ experience-store `outcome` enum as follows:
 | `0` | No signal yet (artefact unchanged) | _(skip: leave verdict pending)_ | _(no row emitted)_ |
 | `1` | Suggestion fully matches reality | `"success"` | `+0.15` |
 | `2` | Partial overlap (some of our suggestion landed) | `"partial"` | `+0.02` |
-| `3` | No overlap (operator acted, result diverges from ours) | `"fail"` | `-0.15` |
+| `3` | No overlap (operator acted, result diverges from ours) | `"failure"` | `-0.15` |
 
 Signal `0` is the critical case. When the operator hasn't yet touched
 the artefact, the verdict must stay pending — do not emit a
 `"success"` row for "nothing happened". That would re-introduce the
 structural optimism this pattern exists to fix.
 
-Binary (`success` / `fail`) is sufficient for agents where the ground
+Binary (`success` / `failure`) is sufficient for agents where the ground
 truth is clearly dichotomous (approval posted or not, tag created or
 not). Use the full ternary when partial credit is meaningful (label
-set overlap, file-list overlap, estimate within ±30%).
+set overlap, file-list overlap, estimate within ±30%). The outcome enum
+is exactly `success` / `partial` / `failure` / `timeout` / `error` — the
+experience store rejects any other literal (e.g. a bare `"fail"`) at
+runtime, so a mis-typed outcome errors the tick before the pending
+verdict clears.
 
 ## Ground-truth signal catalog
 
@@ -144,18 +148,36 @@ set overlap, file-list overlap, estimate within ±30%).
 | `triage/prioritizer` | `priority::*` label survival | same set-overlap over a filtered label subset |
 | `triage/router` | issue actually worked on by the routed colony (branch / MR created, or issue closed with the colony's trail) | `mr-list --ref=<issue_id_derived_branch>` or label check |
 | `code-review/{style,logic,security,test}_reviewer` | review comment survival (resolved / dismissed / quoted-in-diff) | GitLab `mr-notes` fetch; compare comment id across ticks |
-| `code-review/approval_decider` | MR outcome after decision — merged clean, reverted, or conflict after ship | `merge-requests --state merged --iid` lookup |
+| `code-review/approval_decider` **(Wave 1)** | MR fate after the approve/request_changes call — merged vs. closed-unmerged | bounded `merge-requests --state merged \| closed --per-page 50` list-scan + python3 iid membership (merged checked first) |
+| `planning/plan_reviewer` **(Wave 1)** | auto-promotion (#1362) survival — impl trigger label kept vs. `needs-planning` re-added, after a 30-min soak | `forge-api.sh issue <iid>` raw labels + python3 set membership |
 | `planning/scope_estimator` | estimate accuracy vs. actual cycle time | timestamp delta between issue created and closed |
 | `planning/risk_assessor` | did any listed risk materialise (e.g. CI failure tagged to the MR) | scan CI / comment history for risk keywords |
 | `planning/task_decomposer` | breakdown revised by the operator before MR merged | compare task list before vs. after |
-| `implementation/{code,test}_writer`, `implementation/refactorer` | MR outcome — merged, reverted, or follow-up fix merged within a window | `merge-requests --iid` status |
-| `release/ship_decider` | post-ship health (build green / red, incident in window) | `pipelines --ref=<tag>` status |
+| `implementation/code_writer` **(Wave 1)** | fate of the deterministic `fix/issue-<iid>` branch's MR — merged, closed-unmerged, or still open | bounded `merge-requests --state merged \| closed \| opened` list-scan via `raw_list_has_branch` (merged checked first) |
+| `implementation/{test_writer,refactorer}` | MR outcome — merged, reverted, or follow-up fix merged within a window | bounded `merge-requests` list-scan by branch |
+| `release/ship_decider` **(Wave 1)** | a release (new tag) actually cut after a `ship` verdict — **success-only** signal; the 24 h ageout drops the verdict UNSCORED (a `partial` would carry a positive delta and reward ignored ship calls) | sanitized tag-name **SET** baseline via `tags --per-page 50` + python3 set diff (GitHub `/tags` is unordered, so a set diff, not a latest-tag compare) |
 | `release/{version_bumper,changelog_writer}` | artefact edited post-hoc (tag rollback, changelog amendment) | compare artefact hash / length vs. commit time |
 | `release/release_checker` | ship decision actually made for the flagged MR | correlate against ship_decider's verdict row |
 
 Each row is a GitLab API call the agent already has access to (the
 pilot reuses `gitlab-api.sh get-issue`), plus a deterministic
 comparison. No core change is needed.
+
+**Caveat — no `--iid` / `get-mr` point-lookup verb.** The forge wrappers
+expose list verbs (`merge-requests --state <s>`), not a single-MR fetch, so
+the Wave-1 agents score against a **bounded list scan** within the 24 h
+verdict window: fetch the merged (and, if needed, closed / opened) lists at
+`--per-page 50` and test membership deterministically. The merged list is
+always checked FIRST and must PARSE as a JSON array before anything is
+scored — GitHub reports merged PRs as `state=closed` too, so a transient
+merged-query failure could otherwise misread a merged MR as
+closed-unmerged. Adding a `get-mr <iid>` verb is a possible future
+optimisation but is out of scope for Wave 1.
+
+**Wave 1 (#1453).** The four agents closest to terminal actions —
+`code-review/approval_decider`, `implementation/code_writer`,
+`planning/plan_reviewer`, `release/ship_decider` — carry the pilot's 4-step
+idiom (bold rows above). The remaining agents are Wave 2 follow-ups.
 
 ## Pilot: `triage/labeler`
 
@@ -293,7 +315,7 @@ Autonomous writes emit **two** `learn()` rows per action, not one:
 | When               | Row                                                                             | Outcome    | Tag bucket  |
 |--------------------|---------------------------------------------------------------------------------|------------|-------------|
 | At write           | `learn("label", "issue <iid>", <labels>, "success", [scope, "triage", "acted"])` | success    | acted       |
-| After 30 min soak  | `learn("label", "issue <iid> autonomous-revert-check", ..., <outcome>, [scope, "triage", "acted"])` | success / partial / fail | acted       |
+| After 30 min soak  | `learn("label", "issue <iid> autonomous-revert-check", ..., <outcome>, [scope, "triage", "acted"])` | success / partial / failure | acted       |
 
 The at-write row preserves the acting-path fitness signal the
 existing `#186` aggregation consumes. The post-soak row lands in the
@@ -312,7 +334,7 @@ output is strict:
 
 - **1 — full match:** every suggested label still present → `success`
 - **2 — partial erosion:** some labels removed → `partial`
-- **3 — full reversal:** none of our labels remain → `fail`
+- **3 — full reversal:** none of our labels remain → `failure`
 
 ### Ordering invariant
 

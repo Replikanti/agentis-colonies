@@ -395,7 +395,7 @@ fn signal_to_outcome(signal: int) -> string {
     if signal == 2 {
         return "partial";
     };
-    return "fail";
+    return "failure";
 }
 
 // #1234: map the reality-check signal to the crystallizer demote/reinforce

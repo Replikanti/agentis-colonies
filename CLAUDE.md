@@ -41,7 +41,7 @@ If a PR adds a runtime dependency under `tools/` that `dev-apprenticeship/` invo
 bash -n scripts/gitlab-api.sh   # Bash syntax check on any script
 ```
 
-Colony lint must pass with 0 failures before merge. CI baseline: 317 passed, 0 failed, 7 skipped (no agentis binary on runners). Local runs add ~42 per-agent `.ag` passes when `agentis` is installed.
+Colony lint must pass with 0 failures before merge. CI baseline: 318 passed, 0 failed, 7 skipped (no agentis binary on runners). Local runs add ~42 per-agent `.ag` passes when `agentis` is installed.
 
 ## LLM backend
 

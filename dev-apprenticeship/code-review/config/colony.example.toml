@@ -133,5 +133,5 @@ tick_interval_ms = 60000
 [[agents]]
 name = "approval_decider"
 source = "agents/approval_decider.ag"
-cb_budget = 600
+cb_budget = 800
 tick_interval_ms = 60000

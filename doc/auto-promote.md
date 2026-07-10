@@ -41,7 +41,7 @@ degrading (see _Evolve trigger_ below).
 | `entries_total` | count of rows in `.agentis/experience/<agent>.jsonl` | total experience rows, any tag |
 | `entries_acting` | count where row `tags` contain `acted`, `review-gated`, `emitted`, or `replicated` | rows from tier-gated acting branches |
 | `runtime_hours` | `now - daemon.started_at` | daemon age |
-| `reject_rate_acting` | acting rows with `verdict == reject` or `outcome == reject` or `rejected == true` / `entries_acting` | reject rate on acting rows only |
+| `reject_rate_acting` | acting rows with `verdict == reject` or `outcome ∈ {reject, failure}` or `rejected == true` / `entries_acting` | reject rate on acting rows only (#1453: an honest reality-check `failure` counts as a reject; `timeout`/`error` stay excluded as infra noise) |
 | `delta_slope_acting` | linear-regression slope of `delta` over the last `delta_slope_window` acting rows | short-window delta trend on acting rows |
 | `confidence` | `recall_latest("<agent>:confidence")` | current tier anchor |
 

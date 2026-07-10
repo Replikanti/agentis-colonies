@@ -212,7 +212,129 @@ fn slot_ready(owner: string, repo: string, iid: int, slot: string) -> bool {
     return len(slot_body(owner, repo, iid, slot)) >= 2;
 }
 
+// #1453 Wave 1: reality-check — map the reality-check signal to the
+// experience-store outcome enum. Signal 0 ("no signal yet") is handled by the
+// caller via an early return and never reaches this function.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    if signal == 2 {
+        return "partial";
+    };
+    return "failure";
+}
+
+// #1453 Wave 1: reality-check — record a pending verdict for an auto-promoted
+// issue (#1362). Stored as JSON array [t, iid, "<impl_label>,<plan_label>"] —
+// the fields are ASCII-safe (epoch int, iid int, label names carry no
+// quotes/newlines/backslashes in practice) so naive concatenation is
+// sufficient and we skip a JSON encoder. Single-slot idiom from labeler.ag:
+// the next autonomous promotion overwrites; evaluate_plan_verdict scores it
+// against the issue's current labels.
+fn record_plan_verdict(owner: string, repo: string, issue_id: int, labels_csv: string) -> void {
+    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"" + labels_csv + "\"]";
+    memo_write(scoped_memo(owner, repo, "plan_reviewer:pending_verdict"), blob);
+    print("[plan_reviewer] verdict recorded: issue", issue_id, "labels", labels_csv);
+}
+
+// #1453 Wave 1: reality-check — age of the pending verdict in seconds.
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// #1453 Wave 1: reality-check — score the pending promotion verdict against
+// the issue's CURRENT labels. impl trigger label still present => the
+// promotion survived (success); plan label re-added => the operator rejected
+// the handoff (fail); neither present => ambiguous (partial). Deterministic
+// membership check in python over the issue verb's labels array (both forge
+// backends return labels flattened to strings), NEVER a prompt(). 24h ageout
+// drops the verdict without scoring. Runs at the top of tick_for_repo before
+// peer-slot collection.
+fn evaluate_plan_verdict(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "plan_reviewer:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let timeout_s = 86400;
+    let age = verdict_age_seconds(blob);
+    if age > timeout_s {
+        print("[plan_reviewer] verdict aged out without signal");
+        memo_write(key, "");
+        return;
+    };
+    // Soak period (mirrors the pilot's #203 autonomous track): the impl
+    // label was set by OUR OWN promotion, so "still present" one tick
+    // later proves nothing — the operator needs time to notice and
+    // react. Scoring before the soak elapses would self-award a success
+    // for every promotion and reintroduce the structural optimism this
+    // pattern exists to remove.
+    let soak_s = 1800;
+    if age < soak_s {
+        return;
+    };
+    let issue_id = parse_int(to_string(json_get(blob, "[1]")));
+    let labels_csv = to_string(json_get(blob, "[2]"));
+    // A corrupt blob (json_get void) must not reach the compare: an
+    // empty/"void" CSV would score a spurious partial instead of
+    // staying pending. Drop it silently — nothing scorable remains. The
+    // .ag dialect has no `||`, so the two drop conditions are separate ifs.
+    if len(labels_csv) < 3 {
+        memo_write(key, "");
+        return;
+    };
+    if labels_csv == "void" {
+        memo_write(key, "");
+        return;
+    };
+    // colony-lint: safe-exec-concat
+    let cur_cmd = "$COLONY_DIR/scripts/forge-api.sh issue " + to_string(issue_id) + repo_arg(owner, repo);
+    let cur_raw = try { exec sh cur_cmd; } catch e { ""; };
+    if len(cur_raw) < 3 {
+        return;
+    };
+    // labels_csv is "<impl_label>,<plan_label>" as stashed by the promotion.
+    // Output: 1 = impl label present, 3 = plan label re-added, 2 = neither.
+    // A malformed payload collapses to "" via the try => parse_int 0 => leave
+    // pending (the 24h ageout is the backstop).
+    let match_cmd = "CSV=" + shell_escape(labels_csv) + " RAW=" + shell_escape(cur_raw) + " python3 -c 'import os, json; parts=[s.strip() for s in os.environ[\"CSV\"].split(\",\")]; impl=parts[0] if parts else \"\"; plan=parts[1] if len(parts)>1 else \"\"; act=set(json.loads(os.environ[\"RAW\"]).get(\"labels\") or []); print(1 if impl and impl in act else (3 if plan and plan in act else 2))'";
+    let signal_raw = try { exec sh match_cmd; } catch e { "0"; };
+    let signal = parse_int(signal_raw);
+    if signal == 0 {
+        return;
+    };
+    let outcome = signal_to_outcome(signal);
+    if len(owner) > 0 {
+        learn(
+            "review_plan",
+            "issue " + to_string(issue_id) + " reality-check",
+            "promotion labels: " + labels_csv + " | signal: " + to_string(signal),
+            outcome,
+            ["acted", "planning", repo_tag(owner, repo)]
+        );
+    } else {
+        learn(
+            "review_plan",
+            "issue " + to_string(issue_id) + " reality-check",
+            "promotion labels: " + labels_csv + " | signal: " + to_string(signal),
+            outcome,
+            ["acted", "planning"]
+        );
+    };
+    print("[plan_reviewer] reality-check: issue", issue_id, "signal", signal, "->", outcome);
+    memo_write(key, "");
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1453 Wave 1: reality-check — score the previous promotion verdict
+    // FIRST, before peer-slot collection and its early returns.
+    evaluate_plan_verdict(owner, repo);
+
     // 1. Collect peer outputs emitted this tick (partial over time).
     let scope = listen("planning:scope_estimate", 500);
     let risks = listen("planning:risks", 500);
@@ -418,6 +540,20 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                         };
                         if len(promote_result) > 0 {
                             print("[plan_reviewer] Auto-promoted issue", draft.issue_id, "to implementation (#1362)");
+                            // #1453 Wave 1: reality-check — stash the pending
+                            // verdict now that the promotion label swap
+                            // succeeded (the only tier that mutates labels);
+                            // evaluate_plan_verdict (top of tick_for_repo)
+                            // scores the operator's reaction on later ticks.
+                            // Comma-containing label names (GitHub permits
+                            // them) would corrupt the CSV payload — skip the
+                            // verdict rather than stash a lie. The .ag dialect
+                            // has no `&&`, so the two comma checks nest.
+                            if index_of(impl_label, ",") < 0 {
+                                if index_of(plan_label, ",") < 0 {
+                                    record_plan_verdict(owner, repo, draft.issue_id, impl_label + "," + plan_label);
+                                };
+                            };
                         } else {
                             print("[plan_reviewer] Auto-promote no-op for issue", draft.issue_id, "(will retry next tick)");
                         };
@@ -437,7 +573,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     "review_plan",
                     "issue " + to_string(draft.issue_id),
                     "post-failed: score=" + to_string(draft.review_score),
-                    "fail",
+                    "failure",
                     ["acted", "planning", repo_tag(owner, repo)]
                 );
             } else {
@@ -445,7 +581,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     "review_plan",
                     "issue " + to_string(draft.issue_id),
                     "post-failed: score=" + to_string(draft.review_score),
-                    "fail",
+                    "failure",
                     ["acted", "planning"]
                 );
             };
@@ -492,7 +628,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                         "review_plan",
                         "issue " + to_string(draft.issue_id),
                         "draft-post-failed: score=" + to_string(draft.review_score),
-                        "fail",
+                        "failure",
                         ["planning", "review-gated", repo_tag(owner, repo)]
                     );
                 } else {
@@ -500,7 +636,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                         "review_plan",
                         "issue " + to_string(draft.issue_id),
                         "draft-post-failed: score=" + to_string(draft.review_score),
-                        "fail",
+                        "failure",
                         ["planning", "review-gated"]
                     );
                 };

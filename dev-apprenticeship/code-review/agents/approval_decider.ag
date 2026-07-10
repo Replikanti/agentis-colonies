@@ -7,7 +7,7 @@
 // Run as daemon: agentis daemon agents/approval_decider.ag --colony code-review
 // Requires: exec_foreign capability, GITLAB_* env vars
 
-cb 600;
+cb 800;
 
 type ReviewDecision {
     mr_iid: int,
@@ -517,7 +517,156 @@ fn merge_ready_prs(owner: string, repo: string) -> int {
     return merge_scan(owner, repo, raw, 0);
 }
 
+// --- #1453 Wave 1: reality-check feedback loop ---
+//
+// Single-slot pending-verdict idiom from the triage/labeler pilot
+// (#106/#195): each acting/emitting tick stashes the decided action in a
+// `approval_decider:pending_verdict` memo; a later tick mechanically
+// re-queries the MR's terminal forge state (merged vs closed) and scores
+// the decision honestly into the experience store — no prompt() anywhere
+// on this path.
+
+// #1453 Wave 1: reality-check — a decision action is scorable only when it
+// has a mechanical ground truth in the MR's terminal state AND is quote-free
+// so the naive JSON blob stays valid. The .ag dialect has no `||`, so the two
+// scorable enum values are checked with sequential ifs.
+fn is_scorable_action(action: string) -> bool {
+    if action == "approve" {
+        return true;
+    };
+    if action == "request_changes" {
+        return true;
+    };
+    return false;
+}
+
+// #1453 Wave 1: reality-check — map the reality-check signal to the
+// experience-store outcome enum. Signal 0 ("no signal yet") is handled by
+// the caller via an early return and never reaches this function.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    if signal == 2 {
+        return "partial";
+    };
+    return "failure";
+}
+
+// #1453 Wave 1: reality-check — age (seconds) of a pending-verdict blob.
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// #1453 Wave 1: reality-check — record a pending decision verdict. Stored
+// as JSON array [ts, mr_iid, "action"] — all three fields are ASCII-safe
+// (epoch int, iid int, action is one of the fixed decision strings) so
+// naive concatenation is sufficient and we skip a JSON encoder (the
+// single-slot idiom from triage/labeler.ag record_label_verdict).
+fn record_approval_verdict(owner: string, repo: string, mr_iid: int, action: string) -> void {
+    let ts_raw = try { exec sh "date +%s"; } catch e { "0"; };
+    let blob = "[" + ts_raw + "," + to_string(mr_iid) + ",\"" + action + "\"]";
+    memo_write(scoped_memo(owner, repo, "approval_decider:pending_verdict"), blob);
+    print("[approval_decider] verdict recorded: MR", mr_iid, "action", action);
+}
+
+// #1453 Wave 1: reality-check — score the pending decision verdict against
+// what actually happened to the MR on the forge. approve → merged = the
+// call held up (success), closed-unmerged = it did not (fail);
+// request_changes → closed = held up, merged anyway = it did not. MR in
+// neither terminal list yet = no signal, leave the verdict pending.
+// Verdicts age out after 24h without signal and are dropped WITHOUT
+// scoring (absence of a terminal MR state is not evidence either way —
+// same semantic as the labeler pilot). Mechanical compare via exec sh +
+// python3 membership check — never a prompt().
+fn evaluate_approval_verdict(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "approval_decider:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let timeout_s = 86400;
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[approval_decider] verdict aged out without signal");
+        memo_write(key, "");
+        return;
+    };
+    let mr_iid = parse_int(to_string(json_get(blob, "[1]")));
+    let action = to_string(json_get(blob, "[2]"));
+    // colony-lint: safe-exec-concat
+    let merged_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 50" + repo_arg(owner, repo);
+    let merged_raw = try { exec sh merged_cmd; } catch e { ""; };
+    // colony-lint: safe-exec-concat
+    let closed_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state closed --per-page 50" + repo_arg(owner, repo);
+    let closed_raw = try { exec sh closed_cmd; } catch e { ""; };
+    if len(merged_raw) < 3 {
+        if len(closed_raw) < 3 {
+            // Both queries failed/empty — no signal this tick; retry later.
+            return;
+        };
+    };
+    // Deterministic membership check in python (cheap, reproducible)
+    // rather than a prompt() round-trip. Merged membership is checked
+    // FIRST on both action paths: GitHub reports merged PRs as
+    // state=closed too, so "merged" must win the tie. The MERGED list
+    // must PARSE as a JSON array or nothing is scored (print 0) — a
+    // transient merged-query failure while the closed query succeeds
+    // would otherwise misread a merged MR as closed-unmerged on GitHub
+    // (closed superset of merged) and record a spurious terminal row.
+    // request_changes + merged scores 2 (partial), not fail: the
+    // healthy workflow (author fixes, MR then merges) is ambiguous
+    // agreement, not an overruled objection. Output: 0 = no signal yet,
+    // 1 = success, 2 = partial, 3 = fail.
+    let match_cmd = "MERGED=" + shell_escape(merged_raw) + " CLOSED=" + shell_escape(closed_raw) +
+        " IID=" + shell_escape(to_string(mr_iid)) + " ACT=" + shell_escape(action) +
+        " python3 -c 'import os,json" +
+        "\ndef load(k):" +
+        "\n    try:" +
+        "\n        d=json.loads(os.environ.get(k) or \"\")" +
+        "\n    except Exception:" +
+        "\n        return None" +
+        "\n    return d if isinstance(d,list) else None" +
+        "\ndef iids(d):" +
+        "\n    return {str(x.get(\"iid\")) for x in (d or []) if isinstance(x,dict)}" +
+        "\niid=os.environ[\"IID\"]; act=os.environ[\"ACT\"]" +
+        "\nml=load(\"MERGED\")" +
+        "\nif ml is None:" +
+        "\n    print(0)" +
+        "\nelse:" +
+        "\n    m=iid in iids(ml); c=iid in iids(load(\"CLOSED\"))" +
+        "\n    if act==\"approve\":" +
+        "\n        print(1 if m else (3 if c else 0))" +
+        "\n    elif act==\"request_changes\":" +
+        "\n        print(2 if m else (1 if c else 0))" +
+        "\n    else:" +
+        "\n        print(0)'";
+    let signal_raw = try { exec sh match_cmd; } catch e { "0"; };
+    let signal = parse_int(signal_raw);
+    if signal == 0 {
+        return;
+    };
+    // Emit the honest reality-check outcome to the experience store so
+    // auto-promote's fitness gates see an acting-path reject rate that
+    // reflects what the forge actually did, not what we hoped.
+    let outcome = signal_to_outcome(signal);
+    if len(owner) > 0 {
+        learn("approval_decision", "MR " + to_string(mr_iid) + " reality-check", "action: " + action + " | signal: " + to_string(signal), outcome, ["acted", "code-review", repo_tag(owner, repo)]);
+    } else {
+        learn("approval_decision", "MR " + to_string(mr_iid) + " reality-check", "action: " + action + " | signal: " + to_string(signal), outcome, ["acted", "code-review"]);
+    };
+    print("[approval_decider] reality-check: MR", mr_iid, "signal", signal, "->", outcome);
+    memo_write(key, "");
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1453 Wave 1: reality-check — score any pending decision verdict from
+    // a previous tick FIRST, before the merge sweep and the bus gate. Cheap
+    // no-op when nothing is pending.
+    evaluate_approval_verdict(owner, repo);
+
     // #1375: durable own-PR auto-merge sweep runs FIRST — BEFORE the ephemeral
     // `listen("review:*_findings")` bus reads / early-exit gate below — so the
     // merge sweep happens every tick regardless of bus traffic (the bus emits
@@ -628,6 +777,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 };
             } else {
                 rl_clear("approval_decider", owner, repo);
+                // #1453 Wave 1: reality-check — stash the acted approve so a
+                // later tick scores it against the MR's merged/closed fate.
+                record_approval_verdict(owner, repo, decision.mr_iid, "approve");
             };
             print("[approval_decider] Approved MR", decision.mr_iid);
             if len(owner) > 0 {
@@ -689,6 +841,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     };
                 } else {
                     rl_clear("approval_decider", owner, repo);
+                    // #1453 Wave 1: reality-check — stash the acted
+                    // request_changes so a later tick scores it against the
+                    // MR's merged/closed fate.
+                    record_approval_verdict(owner, repo, decision.mr_iid, "request_changes");
                 };
                 if len(owner) > 0 {
                     learn("approval_decision", "MR " + to_string(decision.mr_iid), "request_changes: " + decision.reasoning, "success", ["acted", "code-review", repo_tag(owner, repo)]);
@@ -711,6 +867,16 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             try { exec sh post_cmd; } catch e {
                 print("[approval_decider] Failed to post draft summary:", e);
             };
+            // #1453 Wave 1: reality-check — stash the drafted action. Only
+            // the two enum actions with a mechanical ground truth in the
+            // MR's terminal state are stashed; anything else (escalate, or
+            // an off-enum LLM string whose quotes would break the naive
+            // JSON blob) is skipped. The stash is deliberately independent
+            // of the draft note's success — the scored object is the
+            // suggestion itself, not the note.
+            if is_scorable_action(decision.action) {
+                record_approval_verdict(owner, repo, decision.mr_iid, decision.action);
+            };
             emit("review:decision_suggestion", decision);
             if len(owner) > 0 {
                 learn("approval_decision", "MR " + to_string(decision.mr_iid), "drafted: " + decision.action + " — " + decision.reasoning, "partial", ["code-review", "review-gated", repo_tag(owner, repo)]);
@@ -721,6 +887,13 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             if my_tier == "propose" {
                 print("[approval_decider] Suggesting:", decision.action, "for MR", decision.mr_iid);
                 emit("review:decision_suggestion", decision);
+                // #1453 Wave 1: reality-check — stash the proposed action so
+                // a later tick scores it against the MR's merged/closed fate.
+                // Enum-gated for the same blob-safety reason as the
+                // review-gated site above.
+                if is_scorable_action(decision.action) {
+                    record_approval_verdict(owner, repo, decision.mr_iid, decision.action);
+                };
                 if len(owner) > 0 {
                     learn("approval_decision", "MR " + to_string(decision.mr_iid), "suggested: " + decision.action + " — " + decision.reasoning, "partial", ["emitted", "code-review", repo_tag(owner, repo)]);
                 } else {
