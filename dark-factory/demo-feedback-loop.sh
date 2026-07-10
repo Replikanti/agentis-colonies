@@ -96,6 +96,15 @@
 #      SC2016 discipline, slack.com-only egress). The feedback rides the #1535 honest-stub live-dispatch path.
 #      (9j2, #1571) the auto-invoke also fires from manifest.json's local_repo ALONE (deliver-submission.sh's
 #      --target-dir wiring), with no ingest-side --target-dir override — the last operator-friction seam.
+#      SELF-CONTAINED SLACK POSTS (#1574): every operator-facing router/ingest post now carries its payload
+#      inline so the operator acts from Slack alone — no `see <file>` pointers. (9e/9k) the greenlit hand-off
+#      posts the ready-to-run run-audit-pass.sh command as an in-thread code block (asserting run-audit-pass.sh +
+#      --reviewer-feedback + the OPERATOR_CLONE_PATH placeholder present, `see RE-HUNT`/`.md` absent); (9c) the
+#      needs-info follow-up is delivered as a thread snippet (getUploadURLExternal fires, the uploaded bytes carry
+#      the reviewer question) + a self-contained `follow-up drafted` one-liner; (9b/9d) the cheap actions are ONE
+#      consolidated `applied — …` confirmation (marked dead / tightened, self-contained); (9g) source guards pin
+#      that the old `see RE-HUNT.md` pointer is gone and slack_upload was ported. The durable files (RE-HUNT.md,
+#      FOLLOWUP.md, dead-targets.txt, gate-tuning/*) are unchanged silent records.
 #
 # All shell sub-scripts are invoked with `bash` (never `sh`) per the #1507 dash lesson.
 #
@@ -1392,6 +1401,11 @@ grep -q "^enzyme-onyx@a1b2c3d	" "$DEADF" 2>/dev/null \
   && ok "(9b) the .route-applied marker was written" || bad "(9b) .route-applied marker missing"
 [ ! -f "$STAGE9B/.route-proposed" ] \
   && ok "(9b) NO .route-proposed on an all-cheap outcome (no spend proposed)" || bad "(9b) unexpected .route-proposed on a cheap outcome"
+# (#1574) ONE consolidated, self-contained cheap-action confirmation carries both fragments (mark-dead + tune-gate).
+{ [ "$(conf_has "$POST9B" "marked dead")" = "ok" ] && [ "$(conf_has "$POST9B" "tightened")" = "ok" ]; } \
+  && ok "(9b) one consolidated cheap post carries both fragments (marked dead + tightened)" || bad "(9b) consolidated cheap post missing a fragment"
+{ [ "$(conf_has "$POST9B" "see ")" = "missing" ] && [ "$(conf_has "$POST9B" ".md")" = "missing" ]; } \
+  && ok "(9b) the consolidated cheap post is self-contained (no 'see '/'.md' pointer)" || bad "(9b) consolidated cheap post references an internal file"
 DEAD_N1="$(grep -c '^enzyme-onyx@a1b2c3d	' "$DEADF" 2>/dev/null || echo 0)"
 POST9B2="$WORK/slack-post-9b2.jsonl"; run9b "$POST9B2" >/dev/null
 DEAD_N2="$(grep -c '^enzyme-onyx@a1b2c3d	' "$DEADF" 2>/dev/null || echo 0)"
@@ -1402,6 +1416,7 @@ DEAD_N2="$(grep -c '^enzyme-onyx@a1b2c3d	' "$DEADF" 2>/dev/null || echo 0)"
 STAGE9C="$WORK/stage-9c"; mk_manifest9 "$STAGE9C" "enzyme-onyx@a1b2c3d:ni" "enzyme-onyx" "a1b2c3d"
 REPL9C="$WORK/replies-9c.json"
 mk_reply "$REPL9C" "outcome: We need more information before triaging — can you provide a runnable PoC?"
+mkdir -p "$WORK/slack-uploads-9c"   # (#1574) the FOLLOWUP.md snippet upload copies bytes here via the curl stub.
 env \
   SLACK_LOG="$WORK/slack-9c.log" SLACK_POST_BODY="$WORK/slack-post-9c.jsonl" SLACK_COMPLETE="$WORK/slack-complete-9c.jsonl" \
   SLACK_GETURL="$WORK/slack-geturl-9c.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-9c" SLACK_UPCNT="$WORK/slack-upcnt-9c" \
@@ -1418,6 +1433,18 @@ grep -q 'provide a runnable PoC' "$FUP" 2>/dev/null \
   && ok "(9c) FOLLOWUP.md carries the reviewer's question verbatim" || bad "(9c) FOLLOWUP.md missing the reviewer question"
 [ ! -f "$STAGE9C/.route-proposed" ] \
   && ok "(9c) NO .route-proposed on needs-info (a draft, not a spend)" || bad "(9c) unexpected .route-proposed on needs-info"
+# (#1574) the follow-up draft is delivered IN-THREAD: a snippet upload (getUploadURLExternal fires + the uploaded
+# bytes carry the reviewer question) + a self-contained `follow-up drafted` one-liner (no `see <file>` pointer).
+[ -s "$WORK/slack-geturl-9c.log" ] \
+  && ok "(9c) getUploadURLExternal fired for the follow-up snippet upload" || bad "(9c) no follow-up snippet upload"
+NI_SNIP="$(cat "$WORK/slack-uploads-9c"/content-* 2>/dev/null)"
+printf '%s' "$NI_SNIP" | grep -q 'provide a runnable PoC' \
+  && ok "(9c) the uploaded follow-up snippet carries the reviewer question verbatim" || bad "(9c) uploaded snippet missing the reviewer question"
+POST9C="$WORK/slack-post-9c.jsonl"
+[ "$(conf_has "$POST9C" "follow-up drafted")" = "ok" ] \
+  && ok "(9c) a 'follow-up drafted' post was made in the thread" || bad "(9c) no 'follow-up drafted' post"
+{ [ "$(conf_has "$POST9C" "see ")" = "missing" ] && [ "$(conf_has "$POST9C" ".md")" = "missing" ] && [ "$(conf_has "$POST9C" "/tmp")" = "missing" ]; } \
+  && ok "(9c) the follow-up post is self-contained (no 'see '/'.md'/'/tmp')" || bad "(9c) follow-up post references an internal file/path"
 
 # --- (9d) SPENDY PROPOSE (not executed): a rejected/impact-not-substantiated outcome -> a `propose:` post +
 #          .route-proposed + the tune note, and crucially NO RE-HUNT.md and NO .route-greenlit. --------------------
@@ -1445,6 +1472,11 @@ grep -q 'outcome_reply_ts=1700000000.000300' "$STAGE9D/.route-proposed" 2>/dev/n
   && ok "(9d) .route-proposed records the outcome reply ts (the greenlight `go` must land later)" || bad "(9d) .route-proposed missing the outcome reply ts"
 [ -f "$DF9/gate-tuning/impact-gate.md" ] \
   && ok "(9d) the tune-gate note was written to gate-tuning/impact-gate.md" || bad "(9d) impact-gate.md tune note missing"
+# (#1574) the consolidated cheap post reports the tightened gate, self-contained (no file pointer).
+[ "$(conf_has "$POST9D" "tightened")" = "ok" ] \
+  && ok "(9d) the consolidated cheap post reports the tightened gate" || bad "(9d) no consolidated tightened post"
+{ [ "$(conf_has "$POST9D" "see ")" = "missing" ] && [ "$(conf_has "$POST9D" ".md")" = "missing" ]; } \
+  && ok "(9d) the consolidated cheap post is self-contained (no 'see '/'.md' pointer)" || bad "(9d) consolidated cheap post references an internal file"
 [ ! -f "$STAGE9D/RE-HUNT.md" ] \
   && ok "(9d) NO RE-HUNT.md — the spend is PROPOSED, not executed (human-gated)" || bad "(9d) RE-HUNT.md leaked before a go reply"
 [ ! -f "$STAGE9D/.route-greenlit" ] \
@@ -1466,6 +1498,12 @@ grep -q 'OPERATOR_CLONE_PATH' "$REHUNT" 2>/dev/null \
   && ok "(9e) the RE-HUNT.md command leaves the operator clone path as the one placeholder" || bad "(9e) RE-HUNT.md missing the clone-path placeholder"
 [ "$(conf_has "$POST9E" "greenlit")" = "ok" ] \
   && ok "(9e) a 'greenlit' hand-off confirmation was posted into the thread" || bad "(9e) no greenlit post"
+# (#1574) the greenlit post now CARRIES the ready-to-run command in-thread (code block) — self-contained.
+{ [ "$(conf_has "$POST9E" "run-audit-pass.sh")" = "ok" ] && [ "$(conf_has "$POST9E" "--reviewer-feedback")" = "ok" ] \
+  && [ "$(conf_has "$POST9E" "OPERATOR_CLONE_PATH")" = "ok" ]; } \
+  && ok "(9e) the greenlit post carries the ready-to-run command in-thread (run-audit-pass.sh + --reviewer-feedback + clone-path placeholder)" || bad "(9e) greenlit post missing the in-thread command"
+{ [ "$(conf_has "$POST9E" "see RE-HUNT")" = "missing" ] && [ "$(conf_has "$POST9E" ".md")" = "missing" ]; } \
+  && ok "(9e) the greenlit post is self-contained (no 'see RE-HUNT'/'.md' file pointer)" || bad "(9e) greenlit post references an internal file"
 [ -f "$STAGE9D/.route-greenlit" ] \
   && ok "(9e) the .route-greenlit marker was written" || bad "(9e) .route-greenlit marker missing"
 grep -q 'feedback-intake.ag' "$ALOG9D" 2>/dev/null \
@@ -1502,6 +1540,14 @@ grep -q '.route-proposed' "$INGEST" && grep -q '.route-greenlit' "$INGEST" && gr
   && ok "(9g) the three idempotency markers (.route-applied/.route-proposed/.route-greenlit) are present" || bad "(9g) a router idempotency marker is missing"
 grep -qi 'HAND-OFF' "$INGEST" && grep -qi 'not a coordinator' "$INGEST" \
   && ok "(9g) ingest documents the greenlit action as a HAND-OFF, not a coordinator auto-invoke (honest)" || bad "(9g) ingest missing the honest hand-off note"
+# (#1574) the old 'see RE-HUNT.md' pointer is GONE (the command is carried in-thread); the snippet path was ported.
+if grep -qF 'handed off (see RE-HUNT.md)' "$INGEST"; then
+  bad "(9g) ingest still posts the old 'handed off (see RE-HUNT.md)' file pointer (should carry the command in-thread)"
+else
+  ok "(9g) ingest no longer posts a 'handed off (see RE-HUNT.md)' file pointer (the greenlit command is in-thread)"
+fi
+grep -qF 'slack_upload' "$INGEST" \
+  && ok "(9g) ingest ported slack_upload (the needs-info thread-snippet path)" || bad "(9g) ingest missing the ported slack_upload"
 
 # --- (9h) run-immunefi-intake.sh --dead-targets: a router-marked-dead program is dropped from the ranked queue. ---
 PROGS9="$WORK/programs-9.json"
@@ -1693,8 +1739,14 @@ POST9K="$WORK/slack-post-9k.jsonl"; run9k "$REPL9K_GO" "$POST9K"; RC=$?
 [ "$RC" -eq 0 ] && ok "(9k) fallback greenlight run exits 0" || bad "(9k) fallback run exited $RC (expected 0)"
 [ ! -e "$STUBLOG9K" ] \
   && ok "(9k) with no resolvable target dir the re-hunt is NOT auto-invoked (stub never ran)" || bad "(9k) re-hunt auto-invoked without a target dir"
-[ "$(conf_has "$POST9K" "handed off (see RE-HUNT.md)")" = "ok" ] \
-  && ok "(9k) the fallback posts the RE-HUNT.md command HAND-OFF" || bad "(9k) no hand-off post on the fallback"
+# (#1574) the fallback greenlit post CARRIES the command in-thread (no 'see RE-HUNT.md' pointer) — self-contained.
+[ "$(conf_has "$POST9K" "greenlit")" = "ok" ] \
+  && ok "(9k) the fallback posts the greenlit command HAND-OFF in-thread" || bad "(9k) no greenlit hand-off post on the fallback"
+{ [ "$(conf_has "$POST9K" "run-audit-pass.sh")" = "ok" ] && [ "$(conf_has "$POST9K" "--reviewer-feedback")" = "ok" ] \
+  && [ "$(conf_has "$POST9K" "OPERATOR_CLONE_PATH")" = "ok" ]; } \
+  && ok "(9k) the fallback greenlit post carries the ready-to-run command in-thread" || bad "(9k) fallback greenlit post missing the in-thread command"
+{ [ "$(conf_has "$POST9K" "see RE-HUNT")" = "missing" ] && [ "$(conf_has "$POST9K" ".md")" = "missing" ]; } \
+  && ok "(9k) the fallback greenlit post is self-contained (no 'see <file>' pointer)" || bad "(9k) fallback greenlit post references an internal file"
 [ "$(conf_has "$POST9K" "re-hunt launched")" = "missing" ] \
   && ok "(9k) the fallback posts NO 're-hunt launched'" || bad "(9k) fallback wrongly posted 're-hunt launched'"
 [ -f "$STAGE9K/RE-HUNT.md" ] \
@@ -1756,7 +1808,10 @@ if [ "$FAIL" -eq 0 ]; then
   note "       run-audit-pass.sh --reviewer-feedback -> coordinator PASS -> run-gate-agent.sh -> audit-scout.ag DEVISE"
   note "       (guarded, byte-identical when empty, prompt-only), and the greenlight AUTO-INVOKES the re-hunt DETACHED"
   note "       (setsid) with --reviewer-feedback + --target-dir when a target dir resolves, else the RE-HUNT.md hand-off"
-  note "       — idempotent, never submits. Never submits."
+  note "       — idempotent, never submits. And (#1574) every operator-facing router/ingest Slack post is now"
+  note "       SELF-CONTAINED — the greenlit hand-off carries the ready-to-run command as an in-thread code block,"
+  note "       the needs-info follow-up is a thread snippet + one-liner, the cheap actions are one consolidated"
+  note "       confirmation — no post references an internal file (durable files stay as silent records). Never submits."
   exit 0
 fi
 note "FAIL — a feedback-loop assertion regressed (see above)." >&2

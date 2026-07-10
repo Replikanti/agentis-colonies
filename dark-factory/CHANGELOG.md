@@ -14,6 +14,21 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+- **Self-contained Slack router/ingest posts** (#1574, epic #1505, following #1562/#1567/#1541). Every
+  operator-facing post `ingest-slack-outcome.sh` makes now carries its payload INLINE so the operator acts from
+  Slack alone — no `see <file>` pointers. The greenlit hand-off (no target dir resolved) posts the ready-to-run
+  `run-audit-pass.sh …` command as an in-thread mrkdwn code block (a shared `_rehunt_cmd` helper writes the SAME
+  string into `RE-HUNT.md` and the message; `--out re-hunt-out` is relative + the clone path stays the one
+  placeholder, so no internal/stage path leaks); the needs-info follow-up is delivered as a thread SNIPPET
+  (`slack_upload`, ported verbatim from `notify-submission.sh` with an added explicit `channel` arg) plus a
+  `follow-up drafted (in thread)` one-liner; and the cheap actions (mark-dead/tune-gate/reinforce) collapse into
+  ONE consolidated `applied — …` confirmation instead of silent writes. The durable files (`RE-HUNT.md`,
+  `FOLLOWUP.md`, `dead-targets.txt`, `gate-tuning/*`) are unchanged silent records. The never-submit invariant,
+  the propose→greenlight gating, and the `.route-applied`/`.route-proposed`/`.route-greenlit` idempotency markers
+  are untouched. `demo-feedback-loop.sh` asserts the in-thread command (9e/9k), the follow-up snippet (9c), the
+  consolidated cheap post (9b/9d), and source guards that the old `see RE-HUNT.md` pointer is gone (9g).
+
 ### Added
 - **`deliver-submission.sh --target-dir` → manifest `local_repo`** (#1571, closing the #1567 seam). Mirrors the
   existing `--bounty-url` wiring exactly: a new `--target-dir <dir>` flag threads verbatim into `manifest.json` as

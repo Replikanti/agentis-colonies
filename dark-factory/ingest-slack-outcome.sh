@@ -211,6 +211,121 @@ sys.stdout.write("1" if isinstance(o, dict) and o.get("ok") is True else "0")' 2
   [ "$ok" = "1" ]
 }
 
+# ==========================================================================================================
+# SNIPPET UPLOAD (ported from notify-submission.sh #1541) — the modern EXTERNAL file-upload flow, reserved for a
+# durable draft (FOLLOWUP.md) dropped into the thread as a one-click snippet. ONE adaptation vs notify's proven
+# copy: slack_upload takes an explicit <channel> arg (ingest processes multiple stages, so the channel varies per
+# stage — it cannot rely on a single global CHANNEL_ID the way notify does) used as completeUploadExternal's
+# channel_id. Best-effort single attempt (no retry loop), exactly like notify's copy.
+# ==========================================================================================================
+
+# _parse_ok <json-body> -> "OK\t<ts>" when ok==true, else "ERR\t<error>". The ts field is empty for endpoints
+# that do not return one (completeUploadExternal).
+_parse_ok() {
+  SLACK_BODY="$1" python3 -c '
+import json, os, sys
+try:
+    o = json.loads(os.environ.get("SLACK_BODY", "") or "")
+except Exception:
+    sys.stdout.write("ERR\tparse_error"); sys.exit(0)
+if isinstance(o, dict) and o.get("ok") is True:
+    sys.stdout.write("OK\t" + str(o.get("ts", "")))
+else:
+    sys.stdout.write("ERR\t" + (str(o.get("error", "unknown")) if isinstance(o, dict) else "not_json"))
+' 2>/dev/null
+}
+
+# _parse_upload_url <json-body> -> "OK\t<upload_url>\t<file_id>" when ok==true AND an upload_url is present,
+# else "ERR\t<error>".
+_parse_upload_url() {
+  SLACK_BODY="$1" python3 -c '
+import json, os, sys
+try:
+    o = json.loads(os.environ.get("SLACK_BODY", "") or "")
+except Exception:
+    sys.stdout.write("ERR\tparse_error"); sys.exit(0)
+if isinstance(o, dict) and o.get("ok") is True and o.get("upload_url"):
+    sys.stdout.write("OK\t" + str(o.get("upload_url", "")) + "\t" + str(o.get("file_id", "")))
+else:
+    sys.stdout.write("ERR\t" + (str(o.get("error", "unknown")) if isinstance(o, dict) else "not_json"))
+' 2>/dev/null
+}
+
+# _curl_json <url> <json-body> -> sets CURL_RC / CURL_HTTP / CURL_BODY. Bearer + JSON, POST. `-w '\n%{http_code}'`
+# appends the status as a final line; the body is everything before it. The token is ONLY in the Authorization
+# header, never a positional arg.
+CURL_RC=0; CURL_HTTP=""; CURL_BODY=""
+_curl_json() {
+  local url="$1" body="$2" resp
+  resp="$(curl -sS \
+    -H "Authorization: Bearer $BOT_TOKEN" \
+    -H 'Content-Type: application/json; charset=utf-8' \
+    -X POST -d "$body" \
+    -w '\n%{http_code}' \
+    "$url" 2>/dev/null)"
+  # SC2034: CURL_RC is set for parity with notify-submission.sh's ported globals; slack_upload keys on
+  # CURL_HTTP/CURL_BODY (no retry loop), so CURL_RC is unread here — kept verbatim, not dead-stripped.
+  # shellcheck disable=SC2034
+  CURL_RC=$?
+  CURL_HTTP="${resp##*$'\n'}"
+  CURL_BODY="${resp%$'\n'*}"
+}
+
+# slack_upload <filepath> <title> <channel> <thread_ts> -> best-effort file snippet into the thread via the MODERN
+# external upload flow: (1) files.getUploadURLExternal, (2) POST the raw bytes to the returned upload_url, (3)
+# files.completeUploadExternal into thread_ts on the given channel. Any failure warns + returns 1 (skip); never
+# fatal. Ported verbatim from notify-submission.sh; the ONLY change is the explicit <channel> arg (see the block
+# header above) used as completeUploadExternal's channel_id.
+slack_upload() {
+  local filepath="$1" title="$2" channel="$3" thread="$4"
+  [ -f "$filepath" ] || { echo "notify-submission.sh: upload skipped, file missing: $filepath" >&2; return 1; }
+  local length resp rc gethttp getbody parsed status rest upload_url file_id up_http cbody
+
+  length="$(wc -c < "$filepath" | tr -d ' ')"
+
+  # (1) getUploadURLExternal — form-encoded filename+length (the token stays in the Authorization header only).
+  resp="$(curl -sS \
+    -H "Authorization: Bearer $BOT_TOKEN" \
+    -X POST \
+    --data-urlencode "filename=$title" \
+    --data-urlencode "length=$length" \
+    -w '\n%{http_code}' \
+    "https://slack.com/api/files.getUploadURLExternal" 2>/dev/null)"
+  rc=$?
+  gethttp="${resp##*$'\n'}"; getbody="${resp%$'\n'*}"
+  parsed="$(_parse_upload_url "$getbody")"
+  status="${parsed%%$'\t'*}"
+  case "$gethttp" in 2*) : ;; *) status="ERR" ;; esac
+  if [ "$rc" -ne 0 ] || [ "$status" != OK ]; then
+    echo "notify-submission.sh: getUploadURLExternal failed for '$title' (${parsed#*$'\t'}) — skipping upload" >&2
+    return 1
+  fi
+  rest="${parsed#*$'\t'}"          # upload_url<TAB>file_id
+  upload_url="${rest%%$'\t'*}"
+  file_id="${rest#*$'\t'}"
+
+  # (2) POST the raw bytes to the pre-signed upload URL (no token — the URL itself is the credential).
+  resp="$(curl -sS -X POST --data-binary "@$filepath" -w '\n%{http_code}' "$upload_url" 2>/dev/null)"
+  rc=$?
+  up_http="${resp##*$'\n'}"
+  if [ "$rc" -ne 0 ]; then
+    echo "notify-submission.sh: raw upload POST transport error for '$title' (curl_rc=$rc) — skipping" >&2
+    return 1
+  fi
+  case "$up_http" in 2*) : ;; *) echo "notify-submission.sh: raw upload POST for '$title' returned HTTP $up_http — skipping" >&2; return 1 ;; esac
+
+  # (3) completeUploadExternal — thread the snippet under the message (thread_ts) in the given channel.
+  cbody="$(SLACK_FID="$file_id" SLACK_TITLE="$title" SLACK_CH="$channel" SLACK_THREAD="$thread" python3 -c 'import json, os; print(json.dumps({"files": [{"id": os.environ["SLACK_FID"], "title": os.environ["SLACK_TITLE"]}], "channel_id": os.environ["SLACK_CH"], "thread_ts": os.environ["SLACK_THREAD"]}))')"
+  _curl_json "https://slack.com/api/files.completeUploadExternal" "$cbody"
+  case "$CURL_HTTP" in 2*) : ;; *) echo "notify-submission.sh: completeUploadExternal for '$title' returned HTTP $CURL_HTTP — skipping" >&2; return 1 ;; esac
+  parsed="$(_parse_ok "$CURL_BODY")"
+  if [ "${parsed%%$'\t'*}" != OK ]; then
+    echo "notify-submission.sh: completeUploadExternal rejected '$title' (slack error: ${parsed#*$'\t'}) — skipping" >&2
+    return 1
+  fi
+  return 0
+}
+
 BOT_USER_ID="$(_slack_get_bot_user)"
 
 # _mf_field <manifest.json> <key> -> a top-level string field (deterministic, no jq), or "" on any failure.
@@ -274,12 +389,15 @@ _apply_reinforce_note() {
   printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ) $sid reinforce: winning path accepted — $details" >> "$gtfile"
 }
 
-# _apply_needs_info_draft <stage> <question> -> write $stage/FOLLOWUP.md, a SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW
-# stub carrying the reviewer's requested question VERBATIM + a pointer to submission-draft.md. The deterministic
-# stub is the GUARANTEED artifact; when agentis is on PATH it is best-effort ENRICHED by report-writer.ag (never
-# fatal, the stub survives either way — the mock-backend precedent).
+# _apply_needs_info_draft <stage> <question> <channel> <thread_ts> -> write $stage/FOLLOWUP.md, a
+# SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW stub carrying the reviewer's requested question VERBATIM, then (best-effort)
+# drop it into the thread as a one-click snippet + a self-contained `follow-up drafted (in thread)` one-liner so
+# the operator reads the draft from Slack alone (no `see <file>` pointer). The deterministic stub is the GUARANTEED
+# artifact; when agentis is on PATH it is best-effort ENRICHED by report-writer.ag (never fatal, the stub survives
+# either way — the mock-backend precedent). The snippet + post are best-effort: empty channel/thread -> no-op, the
+# FOLLOWUP.md file is still written as the durable record.
 _apply_needs_info_draft() {
-  local stage="$1" question="$2" f enrich
+  local stage="$1" question="$2" channel="$3" thread="$4" f enrich
   f="$stage/FOLLOWUP.md"
   {
     printf '%s\n' "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW"
@@ -289,7 +407,7 @@ _apply_needs_info_draft() {
     printf '%s\n' "## The reviewer's question (verbatim)"
     printf '%s\n' "$question"
     printf '%s\n' ""
-    printf '%s\n' "See ./submission-draft.md for the original finding to extend."
+    printf '%s\n' "See the Description snippet earlier in this thread for the original finding to extend."
   } > "$f"
   # Best-effort enrichment (only if agentis + report-writer.ag are present): append whatever the report writer
   # emits under a clearly-marked section. Fully non-fatal; the deterministic stub above is what the loop relies on.
@@ -302,6 +420,14 @@ _apply_needs_info_draft() {
         printf '%s\n' "$enrich"
       } >> "$f"
     fi
+  fi
+  # Deliver the draft into the thread (best-effort): a snippet upload + a self-contained one-liner. Empty
+  # channel/thread -> no-op (the file above is the durable record either way).
+  if [ -n "$channel" ] && [ -n "$thread" ]; then
+    slack_upload "$f" "FOLLOWUP.md" "$channel" "$thread" \
+      || echo "ingest-slack-outcome.sh: FOLLOWUP.md snippet upload failed for $stage (best-effort)" >&2
+    _slack_confirm "$channel" "$thread" "📝 follow-up drafted (in thread)" \
+      || echo "ingest-slack-outcome.sh: follow-up-drafted post failed for $stage (best-effort)" >&2
   fi
 }
 
@@ -324,18 +450,36 @@ _propose_spendy() {
   } > "$stage/.route-proposed"
 }
 
+# _rehunt_cmd <target@commit> <reason> <title> <location> <impact> <sev> -> print the ready-to-run
+# `run-audit-pass.sh …` command template (a documentation artifact, never exec'd by this script; the operator runs
+# it). Each LLM-tainted field is single-quoted via _shq; the operator's local clone path is the ONE placeholder;
+# `--out re-hunt-out` is RELATIVE (no internal/stage path leaks). ONE string reused for BOTH RE-HUNT.md's command
+# block AND the greenlit Slack message (so the operator can act from Slack alone).
+_rehunt_cmd() {
+  local tc="$1" reason="$2" title="$3" location="$4" impact="$5" sev="$6"
+  printf '%s\n' "dark-factory/run-audit-pass.sh --live --backend claude \\"
+  printf '%s\n' "  --reviewer-feedback $(_shq "$reason") \\"
+  printf '%s\n' "  --target-dir <OPERATOR_CLONE_PATH_FOR_${tc}> \\"
+  printf '%s\n' "  --finding-title $(_shq "$title") \\"
+  printf '%s\n' "  --finding-location $(_shq "$location") \\"
+  printf '%s\n' "  --finding-impact $(_shq "$impact") \\"
+  printf '%s\n' "  --severity-band $(_shq "$sev") \\"
+  printf '%s\n' "  --out re-hunt-out"
+}
+
 # _run_spendy_handoff <stage> <channel> <thread_ts> <manifest> <action> <reason> -> the GREENLIT action. ALWAYS
 # writes $stage/RE-HUNT.md (the durable record: target@commit + the reviewer reason as guidance + a ready-to-run
 # `run-audit-pass.sh …` command pre-filled from the manifest, operator clone path the ONE placeholder) and, after
 # the branch, .route-greenlit. DISPATCH (#1567): resolve a target dir (--target-dir override, else a manifest
 # `local_repo`/`target_dir`); when it resolves to a directory AND run-audit-pass.sh is executable AND setsid is
 # present, AUTO-INVOKE the feedback-informed re-hunt DETACHED (the code-edit-job.sh setsid convention) and post
-# `▶ re-hunt launched …`. Otherwise the command HAND-OFF: RE-HUNT.md is what the operator runs (not a
-# coordinator-style auto-invoke), posted as `▶ greenlit …`. Never submits — the re-hunt's best case is a
-# PENDING-HUMAN-REVIEW draft; RE-HUNT.md carries no submit primitive.
+# `▶ re-hunt launched …`. Otherwise the command HAND-OFF: the SAME ready-to-run command is posted IN-THREAD as a
+# code block (the operator copy-pastes it from Slack; RE-HUNT.md remains the durable record), posted as
+# `▶ greenlit …`. Never submits — the re-hunt's best case is a PENDING-HUMAN-REVIEW draft; RE-HUNT.md carries no
+# submit primitive.
 _run_spendy_handoff() {
   local stage="$1" channel="$2" thread="$3" mf="$4" action="$5" reason="$6"
-  local target commit title location impact sev verb td rh_out pid
+  local target commit title location impact sev verb td rh_out pid fence msg
   target="$(_mf_field "$mf" target)"
   commit="$(_mf_field "$mf" in_scope_commit)"
   title="$(_mf_field "$mf" finding_title)"
@@ -365,14 +509,7 @@ _run_spendy_handoff() {
     printf '%s\n' ""
     printf '%s\n' "## Ready-to-run command (fill in the operator's local clone path)"
     printf '%s\n' '```sh'
-    printf '%s\n' "dark-factory/run-audit-pass.sh --live --backend claude \\"
-    printf '%s\n' "  --reviewer-feedback $(_shq "$reason") \\"
-    printf '%s\n' "  --target-dir <OPERATOR_CLONE_PATH_FOR_${target}@${commit}> \\"
-    printf '%s\n' "  --finding-title $(_shq "$title") \\"
-    printf '%s\n' "  --finding-location $(_shq "$location") \\"
-    printf '%s\n' "  --finding-impact $(_shq "$impact") \\"
-    printf '%s\n' "  --severity-band $(_shq "$sev") \\"
-    printf '%s\n' "  --out $(_shq "$stage/re-hunt-out")"
+    _rehunt_cmd "$target@$commit" "$reason" "$title" "$location" "$impact" "$sev"
     printf '%s\n' '```'
   } > "$stage/RE-HUNT.md"
 
@@ -398,7 +535,18 @@ _run_spendy_handoff() {
     _slack_confirm "$channel" "$thread" "▶ re-hunt launched (pid $pid) — feedback threaded" \
       || echo "ingest-slack-outcome.sh: re-hunt-launched post failed for $stage (best-effort)" >&2
   else
-    _slack_confirm "$channel" "$thread" "▶ greenlit — $verb $target handed off (see RE-HUNT.md)" \
+    # No target dir resolved: post the SAME ready-to-run command IN-THREAD as a mrkdwn code block so the operator
+    # can copy-paste it from Slack alone (no `see RE-HUNT.md` pointer). `fence` is single-quoted so the backticks
+    # are NOT command-substituted; the whole text (glyph + newlines + backticks) is JSON-safe (dash-safe) via
+    # _slack_confirm's python3 json.dumps. RE-HUNT.md is still the durable record written above.
+    fence='```'
+    msg="$(printf '%s\n' \
+      "▶ greenlit — $verb $target. Copy-paste and run from your local clone (fill in <OPERATOR_CLONE_PATH>):" \
+      "$fence" \
+      "$(_rehunt_cmd "$target@$commit" "$reason" "$title" "$location" "$impact" "$sev")" \
+      "$fence" \
+      "Reviewer guidance: $reason")"
+    _slack_confirm "$channel" "$thread" "$msg" \
       || echo "ingest-slack-outcome.sh: greenlit post failed for $stage (best-effort)" >&2
   fi
   printf '%s\n' "greenlit $(date -u +%Y-%m-%dT%H:%M:%SZ) action=$action target=$target@$commit" > "$stage/.route-greenlit"
@@ -460,18 +608,28 @@ for m in msgs:
 _route_apply() {
   local stage="$1" mf="$2" disp="$3" root="$4" stage_field="$5" sid="$6"
   local channel="$7" thread="$8" reply_ts="$9" question="${10}"
-  local actions a target
+  local actions a target summ=""
   actions="$(route_actions "$disp" "$root")"
   target="$(_mf_field "$mf" target)"
+  # Accumulate ONE consolidated cheap-action confirmation (self-contained, no `see <file>` pointer). needs-info
+  # contributes NO fragment — it delivers its own thread snippet + one-liner in _apply_needs_info_draft.
   for a in $actions; do
     case "$a" in
-      cheap:mark-dead)        _apply_mark_dead "$stage" "$mf" "$root" "$sid" ;;
-      cheap:tune-gate)        _apply_tune_note "$stage_field" "$root" "$sid" "$disp" ;;
-      cheap:reinforce)        _apply_reinforce_note "$stage_field" "$sid" "$disp" ;;
-      cheap:needs-info-draft) _apply_needs_info_draft "$stage" "$question" ;;
+      cheap:mark-dead)        _apply_mark_dead "$stage" "$mf" "$root" "$sid"
+                              summ="${summ:+$summ · }🚫 $target marked dead — won't be re-queued" ;;
+      cheap:tune-gate)        _apply_tune_note "$stage_field" "$root" "$sid" "$disp"
+                              summ="${summ:+$summ · }🔧 $stage_field gate tightened from this rejection: $root" ;;
+      cheap:reinforce)        _apply_reinforce_note "$stage_field" "$sid" "$disp"
+                              summ="${summ:+$summ · }✅ reinforced the winning path on $stage_field" ;;
+      cheap:needs-info-draft) _apply_needs_info_draft "$stage" "$question" "$channel" "$thread" ;;
       spendy:*)               _propose_spendy "$a" "$target" "$root" "$channel" "$thread" "$stage" "$reply_ts" ;;
     esac
   done
+  # ONE post iff a cheap action produced a fragment (glyphs flow through _slack_confirm's json.dumps; dash-safe).
+  if [ -n "$summ" ]; then
+    _slack_confirm "$channel" "$thread" "🧭 applied — $summ" \
+      || echo "ingest-slack-outcome.sh: applied-summary post failed for $stage (best-effort)" >&2
+  fi
   printf '%s\n' "routed $(date -u +%Y-%m-%dT%H:%M:%SZ) disposition=$disp root=$root actions=$actions" > "$stage/.route-applied"
 }
 
