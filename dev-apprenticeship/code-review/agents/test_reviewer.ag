@@ -130,11 +130,11 @@ fn get_confidence() -> float {
 // Forge-agnostic and stable across our own note posts — posting a note bumps
 // updated_at but never the diff, so the reviewed-head gate below cannot
 // self-retrigger (#1370 idle-suppression principle applied to the reviewer
-// shape). python3 hashlib rather than sha256sum for macOS portability.
+// shape). Native sha256_hex (agentis >= 1.20.0, #1588 slice 3) hashes the
+// .ag string's UTF-8 bytes directly — no shell round-trip, value-identical
+// to the prior python3 sha256 pipeline it replaces.
 fn head_fingerprint(changes_raw: string) -> string {
-    let cmd = "printf '%s' " + shell_escape(changes_raw) +
-        " | python3 -c 'import sys, hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])'";
-    return try { exec sh cmd; } catch e { ""; };
+    return substring(sha256_hex(changes_raw), 0, 16);
 }
 
 fn tick_for_repo(owner: string, repo: string) -> void {

@@ -74,6 +74,36 @@ is asserted until multi-version CI is in place.
   [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
   mechanical-rewrite phase; slices 3-5 (sha256, CSV helpers, native-twin
   ports) land as separate follow-up PRs.
+- **Substrate purity Phase 0, slice 3 — `sha256` `python3 -c` sites replaced
+  with native `sha256_hex`**
+  ([#1588](https://github.com/Replikanti/agentis-colonies/issues/1588)): all
+  10 `printf '%s' <escaped> | python3 -c 'import ...hashlib...hexdigest()'`
+  sites across 7 code-review/implementation/triage agents now call the
+  native `sha256_hex(s)` builtin directly, with no shell round-trip at all.
+  The 7 `head_fingerprint` copies (`code-review/{qa_reviewer,style_reviewer,
+  test_reviewer,logic_reviewer,security_reviewer,approval_decider}` +
+  `implementation/code_writer`) become
+  `substring(sha256_hex(changes_raw), 0, 16)`; the 3 `content_hash` copies
+  (`triage/{router,labeler,prioritizer}`, full 64-hex, an internal per-agent
+  dedup fingerprint unrelated to the cross-agent marker) become
+  `sha256_hex(raw)`. **Value-identity is the load-bearing property**: the MR
+  head fingerprint feeds the [#1484](https://github.com/Replikanti/agentis-colonies/issues/1484)
+  merge-gate's `<!-- qa-verdict head=<fp16> -->` marker, so the new native
+  value had to be verified bit-for-bit equal to the old shelled-out one on
+  every input shape (embedded quotes, newlines, `$`/backtick) before this
+  slice could ship — `sha256_hex` hashes the `.ag` string's UTF-8 bytes
+  directly, the same bytes the old `shell_escape` + `printf '%s'` round-trip
+  handed to python's stdin, so there is no encoding delta to reconcile. All 7
+  `head_fingerprint` copies stay byte-identical to each other post-swap
+  (pinned by `tools/test-code-writer-qa-fix-recovery.sh` and
+  `tools/test-approval-decider-review-gate.sh`); the pipeline-text
+  assertions in `tools/test-reviewer-head-gate.sh` and
+  `tools/test-qa-reviewer.sh` are updated to grep for the new
+  `substring(sha256_hex(changes_raw), 0, 16)` expression instead of the
+  retired python pipeline. Part of the
+  [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
+  mechanical-rewrite phase; slices 4-5 (CSV helpers, native-twin ports) land
+  as separate follow-up PRs.
 
 ### Fixed
 

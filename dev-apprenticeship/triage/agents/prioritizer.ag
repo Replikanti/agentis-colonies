@@ -176,10 +176,11 @@ fn snapshot_issues_cmd(view: string) -> string {
 // restores the quiet-project early-exit: identical content => no prompt().
 // Total-on-failure: a hash failure yields "" so the gate never matches and
 // the agent falls through to its normal prompt() path (never starved).
+// Native sha256_hex (agentis >= 1.20.0, #1588 slice 3) hashes the .ag
+// string's UTF-8 bytes directly — no shell round-trip, value-identical to
+// the prior python3 sha256 pipeline it replaces.
 fn content_hash(raw: string) -> string {
-    let cmd = "RAW=" + shell_escape(raw) +
-        " python3 -c 'import os,hashlib; print(hashlib.sha256(os.environ[\"RAW\"].encode(\"utf-8\")).hexdigest())'";
-    return try { exec sh cmd; } catch e { ""; };
+    return sha256_hex(raw);
 }
 
 fn issues_cmd(owner: string, repo: string) -> string {

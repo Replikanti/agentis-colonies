@@ -1455,11 +1455,12 @@ fn resolve_review_prs(owner: string, repo: string) -> int {
 // qa_reviewer embedded, so recomputing it here with the same bytes is what makes a
 // STALE block on an OLD head a no-op (a force-push changed the diff => a different
 // fp => the marker no longer matches). code_writer cannot call another agent's
-// function, so it carries its own byte-identical copy.
+// function, so it carries its own byte-identical copy. Native sha256_hex
+// (agentis >= 1.20.0, #1588 slice 3) hashes the .ag string's UTF-8 bytes
+// directly — no shell round-trip, value-identical to the prior python3
+// sha256 pipeline it replaces.
 fn head_fingerprint(changes_raw: string) -> string {
-    let cmd = "printf '%s' " + shell_escape(changes_raw) +
-        " | python3 -c 'import sys, hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])'";
-    return try { exec sh cmd; } catch e { ""; };
+    return substring(sha256_hex(changes_raw), 0, 16);
 }
 
 // bot_login: the federation's own forge login, read from the sanitized env
