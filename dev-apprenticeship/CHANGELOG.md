@@ -15,6 +15,50 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Changed
+
+- **Substrate purity Phase 1, slice 3 — rate-limit jitter backoff goes
+  native**
+  ([#1597](https://github.com/Replikanti/agentis-colonies/issues/1597)):
+  `rl_backoff_secs(count)` (byte-identical bodies across
+  `code-review/approval_decider`, `planning/plan_reviewer`,
+  `planning/risk_assessor` — pinned by an `md5sum` of the extracted
+  function bodies) moves off an embedded `python3 -c` one-liner
+  (`random.randint`) onto native `pow_int`/`min_int`/`max_int`/
+  `mod(now_ms(), ...)`. Bounds are unchanged: `base = min(300, 5 *
+  2^max(0,count-1))`, jitter window `[base*0.75, base*1.25]` (integer
+  truncation, exact for `base` in `[5, 300]`). **Declared
+  non-equivalence**: the entropy source changes from
+  `random.randint(lo, hi)` to `lo + mod(now_ms(), hi-lo+1)` — this is
+  the `mod(now_ms())`-as-entropy workaround
+  [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
+  already sanctions; the value is deterministic-per-millisecond rather
+  than truly random, but functionally equivalent for its purpose
+  (de-synchronizing concurrent agents' retries, already helped by the
+  90-300 s tick stagger). `router.ag`'s `closed_by_context` is
+  explicitly deferred (annotated `// substrate-purity: deferred (CB)`,
+  up to 20 `exec sh` lookups per tick natively vs today's flat ~25 CB
+  single `exec sh`) — still embedded python; `normalize_assignee` was
+  already native (Phase 0 slice 4). Part of the
+  [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)
+  semantic-rewrite phase.
+
+### Fixed
+
+- **`rl_backoff_secs` exponent clamp — avoids an unhandled `pow_int` i64
+  overflow**
+  ([#1597](https://github.com/Replikanti/agentis-colonies/issues/1597)):
+  a naive native port (`pow_int(2, max(0, count-1))` with no upper
+  bound) would throw an uncaught `EvalError` once `count` reaches ~64
+  (plausible after ~64 consecutive rate-limit hits during a sustained
+  outage — `rl_mark` increments `count` on every rate-limited tick with
+  no other cap), aborting the whole tick instead of degrading
+  gracefully — a failure mode the old python (arbitrary-precision ints)
+  never had. Fixed by clamping the exponent to `6` *before* calling
+  `pow_int`: `5*2^6=320` already exceeds the `min(300, ...)` cap, so the
+  clamp is output-identical for every `count` where it matters and
+  removes the overflow path entirely.
+
 ## [2.10.0] - 2026-07-10
 
 **Requires:** agentis >= 1.20.0
