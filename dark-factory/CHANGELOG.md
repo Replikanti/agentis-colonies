@@ -14,6 +14,33 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Outcome → action ROUTER in `ingest-slack-outcome.sh`** (#1562, epic #1505). Once an outcome is CLASSIFIED
+  (the #1561 `FEEDBACK|<disp>|<conf>|<stage>|<SIGNAL>|<root_cause>|…` line), a **deterministic** bash `case`
+  (`route_actions`, never an LLM, no new `.ag`) turns `disposition + root_cause` into the next action(s). CHEAP
+  actions are local, reversible writes applied immediately: `mark-dead` (append a `target@<commit>` key to
+  `dead-targets.txt`, grep-guarded) — now **consulted** by `run-immunefi-intake.sh --dead-targets`, which drops a
+  rejected target from the next ranked queue (a freshness-style skip, closing the loop); `tune-gate` (a durable
+  calibration NOTE in `gate-tuning/<stage>.md`); `needs-info-draft` (a `SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW`
+  `FOLLOWUP.md` stub carrying the reviewer's question verbatim); `reinforce` (a winning-path note on `accepted`).
+  SPENDY actions (`re-devise`/`hunt-deeper`) are **propose-then-greenlight**, human-gated for spend: the router posts
+  a `propose:` message + writes `.route-proposed`, and the spend runs ONLY after a later operator `go` reply, which
+  produces a ready-to-run **hand-off** (`RE-HUNT.md` = the reviewer reason as guidance + a pre-filled
+  `run-audit-pass.sh …` command) + a `greenlit` post + `.route-greenlit`. **Honest scope:** the greenlit action is a
+  command HAND-OFF the operator runs, NOT a coordinator/hunt auto-invoke (no hunt entry accepts reviewer guidance
+  yet — a documented follow-up seam); `tune-gate` is a recorded HOOK (the gates do not `recall()` it yet) and the
+  router never calls `learn()` a second time (no double-count). Idempotent via three per-outcome markers
+  (`.route-applied`/`.route-proposed`/`.route-greenlit`), the greenlight pass re-entering before the
+  `.outcome-ingested` short-circuit so a `--all` cron catches a later `go`. The never-submit invariant is unchanged
+  (local writes + operator-workspace Slack posts only; `RE-HUNT.md` carries no submit primitive). `demo-feedback-loop.sh`
+  gains a nine-part router section (the deterministic map, cheap auto-apply + idempotency, spendy propose-not-execute,
+  greenlight-only-on-`go` + hand-off-not-auto-invoke, the `--dead-targets` skip).
+
+### Fixed
+- **Removed the dead `signal_upper()` helper in `ingest-slack-outcome.sh`** (#1564). PR #1563 (the #1561 classifier
+  rework) removed its only call site; its header comment described a "runtime-absent fallback" path that no code
+  reaches. Deleted the unreachable function + the stale comment; no functional change.
+
 ### Changed
 - **Feedback intake classifies the raw platform response instead of a rigid `verdict:` enum** (#1561, revises
   #1526/#1557). The operator no longer hand-picks a `verdict:` token — they paste the platform's response

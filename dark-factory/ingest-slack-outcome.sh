@@ -21,9 +21,25 @@
 # scope (granted on the operator's token). Re-installing the app for the new scope mints a fresh `xoxb` token —
 # re-store it as the `secret://` secret.
 #
+# OUTCOME->ACTION ROUTER (#1562): once an outcome is CLASSIFIED (the FEEDBACK line above), a DETERMINISTIC bash
+# `case` (route_actions, never an LLM) turns `disposition + root_cause` into the next action(s). CHEAP actions are
+# local, reversible writes applied immediately (mark-dead -> dead-targets.txt; tune-gate -> a gate-tuning/<stage>.md
+# calibration NOTE; needs-info-draft -> a FOLLOWUP.md stub; reinforce -> a winning-path note). SPENDY actions
+# (re-devise / hunt-deeper) are PROPOSE-then-GREENLIGHT: the router posts a `propose:` message into the thread and
+# writes `.route-proposed`; the spend runs ONLY after a later operator `go` reply, which produces a ready-to-run
+# HAND-OFF (a `run-audit-pass.sh …` command template in RE-HUNT.md + the reviewer reason as guidance) and writes
+# `.route-greenlit`. HONEST scope: the greenlit action is a command HAND-OFF the operator runs, NOT a coordinator
+# auto-invoke (no hunt entry point accepts reviewer guidance yet — auto-invoke is a documented follow-up seam); the
+# tune-gate note is a recorded calibration HOOK, NOT a behavior change (the gates do not `recall()` it yet, and the
+# router never calls `learn()` a second time, so an outcome is never double-counted). Three per-outcome markers keep
+# it idempotent: `.route-applied` (cheap actions ran + any spendy proposed, once), `.route-proposed` (a spendy
+# proposal is outstanding), `.route-greenlit` (the hand-off ran). The greenlight pass runs at the TOP of
+# process_stage — BEFORE the `.outcome-ingested` short-circuit — so a `--all` cron re-enters to catch a later `go`.
+#
 # NEVER-SUBMIT INVARIANT (unchanged): every network call this script makes is to `https://slack.com/api/...` on the
-# operator's OWN workspace. It adds NO bounty-platform egress and never submits — reading a thread + confirming is
-# an operator-workspace action, exactly like the notify.sh page and the notify-submission.sh delivery.
+# operator's OWN workspace. It adds NO bounty-platform egress and never submits — reading a thread, confirming,
+# proposing/marking/drafting, and writing a RE-HUNT.md hand-off are operator-workspace + local-write actions, exactly
+# like the notify.sh page and the notify-submission.sh delivery. RE-HUNT.md carries no submit primitive.
 #
 # Config (env):
 #   DARK_FACTORY_SLACK_BOT_TOKEN   the bot token (`xoxb-…`, a `secret://…` URI resolved via
@@ -37,6 +53,7 @@
 # defeating the loop.
 #
 # Usage:  ingest-slack-outcome.sh (--stage <staged-drop-dir> | --all) [--drop-dir DIR]
+#         ingest-slack-outcome.sh --route-preview <disposition> <root_cause>   # pure: print the action list, exit 0
 # Requires: bash + python3 + curl (+ agentis to fold into learning). Exit: 0 always (best-effort); 2 = bad args.
 set -u
 
@@ -44,15 +61,53 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DIR="${DARK_FACTORY_DIR:-$HOME/.dark-factory}"
 DROP_DIR="${DROP_DIR:-$DIR/drop}"
 
+# route_actions <disposition> <root_cause> -> space-separated tagged action tokens (cheap:*/spendy:*). The
+# DETERMINISTIC outcome->action map (#1562), never an LLM. Routing keys on the action TYPE (disposition +
+# root_cause); the tune-gate/reinforce TARGET gate is the classifier's `stage` field, applied by the caller.
+#   accepted, *                                        -> reinforce + hunt-deeper (find MORE on a paying target)
+#   needs-info, *                                      -> needs-info-draft (a FOLLOWUP.md stub for the operator)
+#   rejected, impact-not-substantiated|insufficient-poc-> tune-gate + re-devise (the finding needs a stronger case)
+#   rejected, out-of-scope-asset|known-issue|duplicate -> mark-dead + tune-gate (this target/commit is spent)
+#   rejected, none|other                               -> tune-gate (record only; no spend without guidance)
+#   out-of-scope, *                                    -> mark-dead + tune-gate
+#   duplicate, *                                       -> mark-dead + tune-gate
+#   unclear, *                                         -> (empty — never reached: a HOLD returns before routing)
+route_actions() {
+  case "$1" in
+    accepted)     echo "cheap:reinforce spendy:hunt-deeper" ;;
+    needs-info)   echo "cheap:needs-info-draft" ;;
+    rejected)
+      case "$2" in
+        impact-not-substantiated|insufficient-poc) echo "cheap:tune-gate spendy:re-devise" ;;
+        out-of-scope-asset|known-issue|duplicate)  echo "cheap:mark-dead cheap:tune-gate" ;;
+        *)                                          echo "cheap:tune-gate" ;;
+      esac ;;
+    out-of-scope) echo "cheap:mark-dead cheap:tune-gate" ;;
+    duplicate)    echo "cheap:mark-dead cheap:tune-gate" ;;
+    *)            echo "" ;;
+  esac
+}
+
 STAGE=""
 ALL=0
+ROUTE_PREVIEW=0
+RP_DISP=""
+RP_ROOT=""
 while [ $# -gt 0 ]; do case "$1" in
   --stage)    [ "$#" -ge 2 ] || { echo "ingest-slack-outcome.sh: --stage requires a value" >&2; exit 2; }; STAGE="$2"; shift 2;;
   --all)      ALL=1; shift;;
   --drop-dir) [ "$#" -ge 2 ] || { echo "ingest-slack-outcome.sh: --drop-dir requires a value" >&2; exit 2; }; DROP_DIR="$2"; shift 2;;
-  -h|--help)  sed -n '2,44p' "$0"; exit 0;;
+  --route-preview) [ "$#" -ge 3 ] || { echo "ingest-slack-outcome.sh: --route-preview requires <disposition> <root_cause>" >&2; exit 2; }; ROUTE_PREVIEW=1; RP_DISP="$2"; RP_ROOT="$3"; shift 3;;
+  -h|--help)  sed -n '2,57p' "$0"; exit 0;;
   *) echo "ingest-slack-outcome.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
+
+# --route-preview: a PURE introspection mode (no token, no Slack) — print the deterministic action list, exit 0.
+# Parsed EARLY, before token resolution and the --stage|--all required check, so the demo can pin the map per row.
+if [ "$ROUTE_PREVIEW" -eq 1 ]; then
+  route_actions "$RP_DISP" "$RP_ROOT"
+  exit 0
+fi
 
 if [ -z "$STAGE" ] && [ "$ALL" -eq 0 ]; then
   echo "ingest-slack-outcome.sh: one of --stage <dir> or --all is required" >&2; exit 2
@@ -85,19 +140,6 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 
 INTAKE_DIR="${DARK_FACTORY_AUDITOR_DIR:-$SCRIPT_DIR/auditor}"
-
-# signal_upper <disposition> -> the DETERMINISTIC signal (uppercase), the SAME disposition->signal map
-# feedback-intake.ag pins: accepted->SUCCESS, rejected/closed/duplicate/out-of-scope->FAILURE, needs-info->PARTIAL.
-# Runtime-absent fallback ONLY: when agentis is on PATH the confirmation signal is taken from the FEEDBACK line's
-# .ag-computed field, never from here (#1561).
-signal_upper() {
-  case "$1" in
-    accepted)                              echo SUCCESS ;;
-    rejected|closed|duplicate|out-of-scope) echo FAILURE ;;
-    needs-info)                            echo PARTIAL ;;
-    *)                                     echo PARTIAL ;;
-  esac
-}
 
 # _slack_get_bot_user -> the bot's own user_id via auth.test (Bearer only), or "" (best-effort: on any failure the
 # caller falls back to filtering bot messages by bot_id/subtype presence).
@@ -161,17 +203,260 @@ sys.stdout.write("1" if isinstance(o, dict) and o.get("ok") is True else "0")' 2
 
 BOT_USER_ID="$(_slack_get_bot_user)"
 
+# _mf_field <manifest.json> <key> -> a top-level string field (deterministic, no jq), or "" on any failure.
+_mf_field() {
+  python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get(sys.argv[2],""))
+except Exception: pass' "$1" "$2" 2>/dev/null || true
+}
+
+# _sanitize <text> -> a filename-safe token (the classifier `stage` becomes gate-tuning/<stage>.md).
+_sanitize() { printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/-/g'; }
+
+# ==========================================================================================================
+# OUTCOME->ACTION ROUTER (#1562). CHEAP helpers are local, reversible writes; SPENDY helpers are
+# propose-then-greenlight. None call learn() (feedback-intake.ag already learned the deterministic signal), none
+# egress to a bounty platform, and none auto-invoke a hunt (the greenlit action is a command HAND-OFF).
+# ==========================================================================================================
+
+# _apply_mark_dead <stage> <manifest> <root_cause> <submission_id> -> append `target@<commit>\treason\tsid\tts` to
+# $DIR/dead-targets.txt (consumed by the intake ranker's --dead-targets skip). Grep-guarded on the `target@commit`
+# key so re-runs never dup. A target that a platform rejected out-of-scope / as a known-issue is not re-queued.
+_apply_mark_dead() {
+  local stage="$1" mf="$2" root="$3" sid="$4" target commit key ddfile tab
+  tab="$(printf '\t')"
+  target="$(_mf_field "$mf" target)"
+  commit="$(_mf_field "$mf" in_scope_commit)"
+  if [ -z "$target" ]; then
+    echo "ingest-slack-outcome.sh: no target in manifest, skipping mark-dead for $stage" >&2
+    return 0
+  fi
+  key="$target@$commit"
+  ddfile="$DIR/dead-targets.txt"
+  mkdir -p "$DIR"
+  if [ -f "$ddfile" ] && grep -qF "$key$tab" "$ddfile" 2>/dev/null; then
+    return 0
+  fi
+  printf '%s\t%s\t%s\t%s\n' "$key" "$root" "$sid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$ddfile"
+}
+
+# _apply_tune_note <stage-field> <root_cause> <submission_id> <details> -> append a durable, attributed calibration
+# NOTE to $DIR/gate-tuning/<stage>.md. HONEST: feedback-intake.ag already learn()s the deterministic signal on the
+# gate's own topic — this note does NOT call learn() again (no double-count); the gates do not recall() it into
+# their prompts yet (a recorded HOOK, not a behavior change).
+_apply_tune_note() {
+  local stage_field="$1" root="$2" sid="$3" details="$4" gtdir gtfile
+  gtdir="$DIR/gate-tuning"
+  mkdir -p "$gtdir"
+  gtfile="$gtdir/$(_sanitize "$stage_field").md"
+  printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ) $sid tighten: $root — $details" >> "$gtfile"
+}
+
+# _apply_reinforce_note <stage-field> <submission_id> <details> -> append a winning-path note on `accepted` (records
+# the path that paid off). Same gate-tuning/<stage>.md store; NO re-learn() (feedback-intake already learned SUCCESS).
+_apply_reinforce_note() {
+  local stage_field="$1" sid="$2" details="$3" gtdir gtfile
+  gtdir="$DIR/gate-tuning"
+  mkdir -p "$gtdir"
+  gtfile="$gtdir/$(_sanitize "$stage_field").md"
+  printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ) $sid reinforce: winning path accepted — $details" >> "$gtfile"
+}
+
+# _apply_needs_info_draft <stage> <question> -> write $stage/FOLLOWUP.md, a SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW
+# stub carrying the reviewer's requested question VERBATIM + a pointer to submission-draft.md. The deterministic
+# stub is the GUARANTEED artifact; when agentis is on PATH it is best-effort ENRICHED by report-writer.ag (never
+# fatal, the stub survives either way — the mock-backend precedent).
+_apply_needs_info_draft() {
+  local stage="$1" question="$2" f enrich
+  f="$stage/FOLLOWUP.md"
+  {
+    printf '%s\n' "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW"
+    printf '%s\n' "# FOLLOWUP — the platform asked for more information (needs-info). Answer it in submission-draft.md,"
+    printf '%s\n' "# then re-deliver via deliver-submission.sh. This is a DRAFT for human review; never auto-submitted."
+    printf '%s\n' ""
+    printf '%s\n' "## The reviewer's question (verbatim)"
+    printf '%s\n' "$question"
+    printf '%s\n' ""
+    printf '%s\n' "See ./submission-draft.md for the original finding to extend."
+  } > "$f"
+  # Best-effort enrichment (only if agentis + report-writer.ag are present): append whatever the report writer
+  # emits under a clearly-marked section. Fully non-fatal; the deterministic stub above is what the loop relies on.
+  if command -v agentis >/dev/null 2>&1 && [ -f "$INTAKE_DIR/agents/report-writer.ag" ]; then
+    enrich="$( cd "$INTAKE_DIR" && env SUBMISSION_DIR="$stage" agentis go agents/report-writer.ag --enable-exec --grant-pii 2>/dev/null )" || true
+    if [ -n "$enrich" ]; then
+      {
+        printf '%s\n' ""
+        printf '%s\n' "## report-writer.ag draft (best-effort, unverified — review before use)"
+        printf '%s\n' "$enrich"
+      } >> "$f"
+    fi
+  fi
+}
+
+# _propose_spendy <action> <target> <reason> <channel> <thread_ts> <stage> <outcome_reply_ts> -> post a `propose:`
+# message into the thread (via _slack_confirm, so the ↻ glyph is emitted through python3 json.dumps, never dash
+# printf) and write $stage/.route-proposed. PROPOSE != EXECUTE: the spend runs ONLY on a later operator `go` reply.
+_propose_spendy() {
+  local action="$1" target="$2" reason="$3" channel="$4" thread="$5" stage="$6" outcome_ts="$7" verb
+  case "$action" in
+    spendy:hunt-deeper) verb="hunt-deeper" ;;
+    *)                  verb="re-hunt" ;;
+  esac
+  _slack_confirm "$channel" "$thread" \
+    "↻ propose: $verb $target with feedback: $reason — reply \`go\` to run" \
+    || echo "ingest-slack-outcome.sh: propose-spendy post failed for $stage (best-effort)" >&2
+  {
+    printf '%s\n' "action=$action"
+    printf '%s\n' "reason=$reason"
+    printf '%s\n' "outcome_reply_ts=$outcome_ts"
+  } > "$stage/.route-proposed"
+}
+
+# _run_spendy_handoff <stage> <channel> <thread_ts> <manifest> <action> <reason> -> the GREENLIT hand-off: write
+# $stage/RE-HUNT.md (target@commit + the reviewer reason as guidance + a ready-to-run `run-audit-pass.sh …` command
+# pre-filled from the manifest, with the operator's clone path as the ONE placeholder), post `▶ greenlit …`, write
+# .route-greenlit. HONEST: this is a command HAND-OFF the operator runs, NOT a coordinator auto-invoke (no hunt
+# entry accepts reviewer guidance yet — see the follow-up seam in the header). RE-HUNT.md carries no submit primitive.
+_run_spendy_handoff() {
+  local stage="$1" channel="$2" thread="$3" mf="$4" action="$5" reason="$6"
+  local target commit title location impact sev verb
+  target="$(_mf_field "$mf" target)"
+  commit="$(_mf_field "$mf" in_scope_commit)"
+  title="$(_mf_field "$mf" finding_title)"
+  location="$(_mf_field "$mf" finding_location)"
+  impact="$(_mf_field "$mf" finding_impact)"
+  sev="$(_mf_field "$mf" severity_band)"
+  case "$action" in
+    spendy:hunt-deeper) verb="hunt-deeper" ;;
+    *)                  verb="re-hunt" ;;
+  esac
+  {
+    printf '%s\n' "# RE-HUNT — greenlit hand-off for $target@$commit ($verb)"
+    printf '%s\n' "#"
+    printf '%s\n' "# This is a COMMAND HAND-OFF, not an auto-invocation: no hunt entry point accepts reviewer"
+    printf '%s\n' "# guidance yet, so the operator runs the command below. Wiring run-audit-pass.sh to thread the"
+    printf '%s\n' "# guidance into the devise/impact prompts is the documented follow-up seam. Never submits."
+    printf '%s\n' ""
+    printf '%s\n' "## Reviewer guidance (why the last attempt was rejected)"
+    printf '%s\n' "$reason"
+    printf '%s\n' ""
+    printf '%s\n' "## Finding to strengthen"
+    printf '%s\n' "target:        $target@$commit"
+    printf '%s\n' "title:         $title"
+    printf '%s\n' "location:      $location"
+    printf '%s\n' "impact:        $impact"
+    printf '%s\n' "severity:      $sev"
+    printf '%s\n' ""
+    printf '%s\n' "## Ready-to-run command (fill in the operator's local clone path)"
+    printf '%s\n' '```sh'
+    printf '%s\n' "dark-factory/run-audit-pass.sh --live --backend claude \\"
+    printf '%s\n' "  --target-dir <OPERATOR_CLONE_PATH_FOR_${target}@${commit}> \\"
+    printf '%s\n' "  --finding-title $(_shq "$title") \\"
+    printf '%s\n' "  --finding-location $(_shq "$location") \\"
+    printf '%s\n' "  --finding-impact $(_shq "$impact") \\"
+    printf '%s\n' "  --severity-band $(_shq "$sev") \\"
+    printf '%s\n' "  --out $(_shq "$stage/re-hunt-out")"
+    printf '%s\n' '```'
+  } > "$stage/RE-HUNT.md"
+  _slack_confirm "$channel" "$thread" "▶ greenlit — $verb $target handed off (see RE-HUNT.md)" \
+    || echo "ingest-slack-outcome.sh: greenlit post failed for $stage (best-effort)" >&2
+  printf '%s\n' "greenlit $(date -u +%Y-%m-%dT%H:%M:%SZ) action=$action target=$target@$commit" > "$stage/.route-greenlit"
+}
+
+# _shq <text> -> single-quote a value for the RE-HUNT.md command template (a documentation artifact, never exec'd
+# by this script; the operator runs it). Empty -> ''.
+_shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# _greenlight_check <stage> <channel> <thread_ts> <manifest> -> re-read the thread; if a non-bot reply whose trimmed
+# text is `go` (case-insensitive) with ts > the recorded outcome_reply_ts exists, fire the hand-off. No `go` -> a
+# silent no-op (no post), so a --all cron re-enters cheaply until the operator replies.
+_greenlight_check() {
+  local stage="$1" channel="$2" thread_ts="$3" mf="$4"
+  local outcome_ts action reason replies go_hit
+  [ -f "$stage/.route-proposed" ] || return 0
+  outcome_ts="$(grep '^outcome_reply_ts=' "$stage/.route-proposed" 2>/dev/null | head -1 | cut -d= -f2-)"
+  action="$(grep '^action='            "$stage/.route-proposed" 2>/dev/null | head -1 | cut -d= -f2-)"
+  reason="$(grep '^reason='            "$stage/.route-proposed" 2>/dev/null | head -1 | cut -d= -f2-)"
+  if ! replies="$(_fetch_replies "$channel" "$thread_ts")"; then
+    return 0
+  fi
+  go_hit="$(SLACK_BODY="$replies" BOT_UID="${BOT_USER_ID:-}" OUTCOME_TS="$outcome_ts" python3 -c '
+import json, os, sys
+try:
+    o = json.loads(os.environ.get("SLACK_BODY", "") or "")
+except Exception:
+    sys.exit(0)
+msgs = o.get("messages", []) if isinstance(o, dict) else []
+bot_uid = os.environ.get("BOT_UID", "")
+try:
+    floor = float(os.environ.get("OUTCOME_TS", "") or "0")
+except Exception:
+    floor = 0.0
+for m in msgs:
+    if not isinstance(m, dict):
+        continue
+    if m.get("bot_id") or m.get("subtype"):
+        continue
+    if bot_uid and m.get("user") == bot_uid:
+        continue
+    text = m.get("text", "")
+    if not isinstance(text, str) or text.strip().lower() != "go":
+        continue
+    try:
+        ts = float(m.get("ts", "") or "0")
+    except Exception:
+        ts = 0.0
+    if ts > floor:
+        sys.stdout.write("1"); sys.exit(0)
+' 2>/dev/null)"
+  [ "$go_hit" = "1" ] || return 0
+  _run_spendy_handoff "$stage" "$channel" "$thread_ts" "$mf" "$action" "$reason"
+}
+
+# _route_apply <stage> <manifest> <disposition> <root_cause> <stage-field> <submission_id> <channel> <thread_ts>
+#              <outcome_reply_ts> <question> -> run every cheap:* action for the classified outcome and, if any
+# spendy:* action is mapped, PROPOSE it (no execute). Writes .route-applied (routed once per outcome).
+_route_apply() {
+  local stage="$1" mf="$2" disp="$3" root="$4" stage_field="$5" sid="$6"
+  local channel="$7" thread="$8" reply_ts="$9" question="${10}"
+  local actions a target
+  actions="$(route_actions "$disp" "$root")"
+  target="$(_mf_field "$mf" target)"
+  for a in $actions; do
+    case "$a" in
+      cheap:mark-dead)        _apply_mark_dead "$stage" "$mf" "$root" "$sid" ;;
+      cheap:tune-gate)        _apply_tune_note "$stage_field" "$root" "$sid" "$disp" ;;
+      cheap:reinforce)        _apply_reinforce_note "$stage_field" "$sid" "$disp" ;;
+      cheap:needs-info-draft) _apply_needs_info_draft "$stage" "$question" ;;
+      spendy:*)               _propose_spendy "$a" "$target" "$root" "$channel" "$thread" "$stage" "$reply_ts" ;;
+    esac
+  done
+  printf '%s\n' "routed $(date -u +%Y-%m-%dT%H:%M:%SZ) disposition=$disp root=$root actions=$actions" > "$stage/.route-applied"
+}
+
 # process_stage <staged-drop-dir> -> reads the thread, captures the operator's outcome reply into OUTCOME.md, folds
 # it into learning via feedback-intake.ag, posts a confirmation, and marks the stage ingested. Every step is
 # best-effort; a per-stage failure returns 0 (warn + skip) so `--all` never crashes a batch.
 process_stage() {
   local stage="$1"
   local mf thread_ts channel replies sel reply_ts platform_response verdict payout submissionId
-  local intake_out intake_line fbk_disp fbk_conf fbk_stage fbk_signal cfg pend
+  local intake_out intake_line fbk_disp fbk_conf fbk_stage fbk_signal fbk_root cfg pend
+  local gl_thread gl_channel
 
   [ -d "$stage" ] || { echo "ingest-slack-outcome.sh: not a directory, skipping: $stage" >&2; return 0; }
   mf="$stage/manifest.json"
   [ -f "$mf" ] || { echo "ingest-slack-outcome.sh: no manifest.json, skipping: $stage" >&2; return 0; }
+
+  # GREENLIGHT PASS (#1562), BEFORE the `.outcome-ingested` short-circuit so a `--all` cron re-enters to catch a
+  # later operator `go` reply on an already-PROPOSED spendy action. No proposal outstanding / already greenlit ->
+  # a cheap no-op. A `go` reply fires the RE-HUNT.md hand-off (never a hunt auto-invoke).
+  if [ -f "$stage/.route-proposed" ] && [ ! -f "$stage/.route-greenlit" ]; then
+    gl_thread="$(_mf_field "$mf" slack_thread_ts)"
+    gl_channel="$(_mf_field "$mf" slack_channel)"
+    if [ -n "$gl_thread" ] && [ -n "$gl_channel" ]; then
+      _greenlight_check "$stage" "$gl_channel" "$gl_thread" "$mf"
+    fi
+  fi
 
   if [ -e "$stage/.outcome-ingested" ]; then
     echo "ingest-slack-outcome.sh: already ingested, skipping: $stage" >&2
@@ -291,7 +576,7 @@ if p:
 sys.stdout.write("\n".join(out) + "\n")
 ' > "$stage/OUTCOME.md"
 
-  fbk_disp=""; fbk_conf=""; fbk_stage="(stage n/a)"; fbk_signal=""
+  fbk_disp=""; fbk_conf=""; fbk_stage="(stage n/a)"; fbk_signal=""; fbk_root=""
 
   # RUN feedback-intake.ag FROM the auditor colony dir (durable store) so learn() PERSISTS. Ensure .agentis + the
   # three config keys (append ONLY the missing ones, each grep-guarded so re-runs never dup a line). If agentis is
@@ -315,6 +600,7 @@ sys.stdout.write("\n".join(out) + "\n")
     fbk_conf="$(printf '%s\n'   "$intake_line" | awk -F'|' '{print $3}')"
     fbk_stage="$(printf '%s\n'  "$intake_line" | awk -F'|' '{print $4}')"
     fbk_signal="$(printf '%s\n' "$intake_line" | awk -F'|' '{print $5}')"
+    fbk_root="$(printf '%s\n'   "$intake_line" | awk -F'|' '{print $6}')"
     [ -n "$fbk_stage" ] || fbk_stage="(stage n/a)"
   else
     echo "ingest-slack-outcome.sh: agentis not on PATH — wrote OUTCOME.md for $stage but deferring learn(); NOT marking ingested (re-run once the runtime is installed)" >&2
@@ -346,6 +632,14 @@ sys.stdout.write("\n".join(out) + "\n")
   # a marker so a later, clearer reply can still be learned.
   printf '%s\n' "ingested $(date -u +%Y-%m-%dT%H:%M:%SZ) disposition=$fbk_disp signal=$fbk_signal stage=$fbk_stage" > "$stage/.outcome-ingested"
   rm -f "$pend"
+
+  # ROUTE PASS (#1562): turn the classified outcome into the next action(s). Deterministic (route_actions, a bash
+  # case), routed once per outcome (`.route-applied`). Cheap actions apply immediately (local, reversible writes);
+  # a spendy action is only PROPOSED here — it runs on a later `go` reply via the greenlight pass above.
+  if [ ! -f "$stage/.route-applied" ]; then
+    _route_apply "$stage" "$mf" "$fbk_disp" "$fbk_root" "$fbk_stage" "$submissionId" \
+      "$channel" "$thread_ts" "$reply_ts" "$platform_response"
+  fi
   return 0
 }
 
