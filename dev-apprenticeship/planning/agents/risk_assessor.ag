@@ -114,14 +114,19 @@ fn rl_active(agent_name: string, owner: string, repo: string) -> int {
     return 0;
 }
 
+// Compute a jittered exponential backoff (seconds) for the given hit count.
+// base 5s, doubled per consecutive hit, capped at 300s, then +/-25% jitter
+// via mod(now_ms()) so the value de-synchronizes concurrent agents' retries.
+// The exponent is clamped to 6 BEFORE pow_int: 5*2^6=320 already saturates
+// min(300, ...), so the clamp changes nothing about the output while
+// removing pow_int's i64-overflow path for count beyond ~64 (#1597).
 fn rl_backoff_secs(count: int) -> int {
-    let cmd = "C=" + shell_escape(to_string(count)) +
-        " python3 -c 'import os,random; c=int(os.environ[\"C\"]); base=min(300, 5*(2**max(0,c-1))); lo=int(base*0.75); hi=int(base*1.25); print(random.randint(lo, hi) if hi>lo else base)'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    if len(out) == 0 { return 5; };
-    let secs = parse_int(out);
-    if secs <= 0 { return 5; };
-    return secs;
+    let exp = min_int(max_int(0, count - 1), 6);
+    let base = min_int(300, 5 * pow_int(2, exp));
+    let lo = base * 3 / 4;
+    let hi = base * 5 / 4;
+    if hi <= lo { return base; };
+    return lo + mod(now_ms(), hi - lo + 1);
 }
 
 fn rl_mark(agent_name: string, owner: string, repo: string) -> void {

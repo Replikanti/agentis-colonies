@@ -150,6 +150,8 @@ fn repo_field(line: string, idx: int) -> string {
 // hazards. The inline helper greps the blob for `#<digits>` tokens
 // (iids) plus json `"iid": N` shapes, dedupes (preserve first-seen
 // order), then shells out to closed-by-index.sh lookup per iid (cap 20).
+// substrate-purity: deferred (CB: native recursion needs up to 20 separate
+// exec sh lookups per tick; revisit with a batched verb or cheaper primitive)
 fn closed_by_context(owner: string, repo: string, blob: string) -> string {
     if len(owner) == 0 { return ""; };
     if len(blob) < 2 { return ""; };
