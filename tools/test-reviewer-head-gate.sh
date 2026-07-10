@@ -35,8 +35,9 @@
 #
 # Plus a cross-agent byte-identity check pinning head_fingerprint across all SIX
 # code-review agents (the four reviewers + qa_reviewer + approval_decider), and a
-# fixture run of the same hashlib pipeline the agents exec (stable on identical
-# diff, changes on new push).
+# fixture run of the sha256[:16] fingerprint-stability property in an
+# independent python3 harness (stable on identical diff, changes on new push;
+# agentis-core's native sha256_hex is value-identical, #1588 slice 3).
 #
 # Matches the test style of tools/test-qa-reviewer.sh (bash, [PASS]/[FAIL] lines,
 # `Results: N passed, M failed`). Exit 0 all-pass, 1 any-fail. Auto-discovered
@@ -81,11 +82,11 @@ for r in $REVIEWERS; do
     else
         fail "($r) fingerprint byte-identity" "the head_fingerprint body differs from qa_reviewer — the gate would silently never match"
     fi
-    # The agent execs the same portable hashlib pipeline (no sha256sum on macOS).
-    if grep -q 'hashlib.sha256(sys.stdin.buffer.read()).hexdigest()\[:16\]' "$AG"; then
-        pass "($r) fingerprints the diff with the portable python3 hashlib sha256[:16] pipeline"
+    # The agent hashes the diff with the native sha256_hex builtin (#1588 slice 3).
+    if grep -q 'substring(sha256_hex(changes_raw), 0, 16)' "$AG"; then
+        pass "($r) fingerprints the diff with the native sha256_hex[:16] expression"
     else
-        fail "($r) fingerprint pipeline" "head_fingerprint must use the python3 hashlib sha256[:16] pipeline"
+        fail "($r) fingerprint pipeline" "head_fingerprint must use substring(sha256_hex(changes_raw), 0, 16)"
     fi
 
     # (b) reviewed_head recall_latest gate precedes the review prompt() in

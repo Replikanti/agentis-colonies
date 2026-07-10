@@ -29,7 +29,8 @@
 #       dimensions, and reason lines are emitted ONLY on the fail branches.
 #   (d) no repost on unchanged MR head: the per-head fingerprint is stable for
 #       an identical diff and changes when the diff changes (fixture run of the
-#       same hashlib pipeline the agent execs), the memo gate reads
+#       sha256[:16] property in an independent python3 harness, value-identical
+#       to the agent's native sha256_hex expression, #1588 slice 3), the memo gate reads
 #       qa_reviewer:verdict_head:<iid> BEFORE prompt() in the same function,
 #       every tier branch writes the marker, and the autonomous/review-gated
 #       branches write it only after a successful post.
@@ -263,11 +264,13 @@ if [ -n "$fp1" ] && [ "$fp1" = "$fp2" ] && [ "$fp1" != "$fp3" ]; then
 else
     fail "(d) fingerprint fixture" "fp1=$fp1 fp2=$fp2 fp3=$fp3"
 fi
-# The .ag execs that same hashlib pipeline (portable: no sha256sum on stock macOS).
-if grep -q 'hashlib.sha256(sys.stdin.buffer.read()).hexdigest()\[:16\]' "$AG"; then
-    pass "(d) agent fingerprints the diff with the same portable hashlib pipeline"
+# The .ag hashes the diff with the native sha256_hex builtin (#1588 slice 3),
+# value-identical to the FP_PY fixture above (both hash the UTF-8 bytes and
+# hex-encode, no shell round-trip on the native side).
+if grep -q 'substring(sha256_hex(changes_raw), 0, 16)' "$AG"; then
+    pass "(d) agent fingerprints the diff with the native sha256_hex[:16] expression"
 else
-    fail "(d) fingerprint pipeline" "head_fingerprint must use the python3 hashlib sha256[:16] pipeline"
+    fail "(d) fingerprint pipeline" "head_fingerprint must use substring(sha256_hex(changes_raw), 0, 16)"
 fi
 # Memo gate reads qa_reviewer:verdict_head:<iid> BEFORE prompt() in the same
 # function (this recall_latest is also the check-prompt-gate.sh staleness gate).
