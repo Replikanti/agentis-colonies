@@ -15,6 +15,21 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Zone-mapping — auto-derive `scope.tsv` from a target** (#1612, epic #1611 milestone M1). New
+  `map-zones.sh` (shell plumbing) + `auditor/agents/zone-mapper.ag` (substrate classification) auto-derive a
+  target's DISCOVERY manifest from the code itself: locate in-scope Solidity/Anchor sources, group them into
+  candidate ZONES by directory, count LOC, compute an advisory `hardening_score` (post-audit churn via
+  `audit-delta.sh` + git file age; monotone, NEVER a gate), function-slice big contracts (`file@fn1+fn2`,
+  `slice-fns.sh` format), and delegate the ONE semantic step — subsystem name × applicable bug classes
+  (`C1..C14`) × description — to `zone-mapper.ag` (one `agentis go` per zone, exactly as `run-discovery.sh`
+  invokes `hunter.ag`). Emits `zones.json` (7-key structured model) + `scope.tsv` (the pipe-delimited manifest
+  `run-discovery.sh --scope` parses byte-for-byte), closing the auto-map → hunt loop. `run-discovery.sh` gains
+  an opt-in `--list-cells` (alias `-n`) dry-run that enumerates the `CELL|<subsystem>|<class>|<files>` it WOULD
+  hunt and exits BEFORE any side-effect (needs neither `--brief` nor an agentis binary) — the offline
+  round-trip for the generated `scope.tsv`; with no `--list-cells` the shipped hunt path is byte-identical.
+  Offline/CI determinism comes from `--fixture` (canned `ZONE|...` classification, no live LLM);
+  `fixtures/zone-map/` + `demo-map-zones.sh` are the deterministic proof (wired into `colony-lint`).
+  Read-only, never submits. See `docs/zone-split-orchestration.md`.
 - **`--live` Immunefi target discovery** (#1592, epic #1505). `run-immunefi-intake.sh` gains a discovery mode that
   fetches the public `bounties.json` (read-only unauthenticated GET; `--url` overridable, `--bounties <file>` the
   offline hatch), MAPS each surviving program — EVM/Solidity/Vyper/Yul, not `inviteOnly`, in-window `endDate`,

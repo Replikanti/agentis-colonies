@@ -854,6 +854,25 @@ if [ -x "$REPO_ROOT/dark-factory/demo-audit-history-probe.sh" ]; then
     fi
 fi
 
+# --- dark-factory zone-mapping: auto-derive scope.tsv from a target (#1612, epic #1611 M1) ---
+# map-zones.sh (shell plumbing) + auditor/agents/zone-mapper.ag (substrate classification) auto-derive a
+# target's DISCOVERY manifest: locate/group in-scope sources into ZONES, LOC + advisory hardening_score
+# (audit-delta churn + git age, never a gate), function-slice big contracts, and delegate subsystem x
+# bug-class classification to the substrate -> zones.json + scope.tsv (the pipe-delimited manifest
+# run-discovery.sh --scope reads verbatim). run-discovery.sh gains an opt-in --list-cells dry-run for the
+# offline round-trip. demo-map-zones.sh is pure bash/git/python3 over a throwaway git fixture with a
+# --fixture substrate stub (no network / no LLM) so it runs on CI runners; it also source-guards
+# zone-mapper.ag and runs it live via --backend mock when agentis is present.
+if [ -x "$REPO_ROOT/dark-factory/demo-map-zones.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-map-zones.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: zone-mapping (map-zones.sh + zone-mapper.ag -> zones.json + scope.tsv, --list-cells round-trip) (#1612)"
+    else
+        fail "dark-factory: zone-mapping regressed (#1612)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory snapshot owner-rebind hard assert (#1457) ---
 # The snapshot-replay harness reads the account's real on-chain owner and emits an explicit
 # OWNER REBIND / MATCH / MISMATCH marker; with EXPECT_PROGRAM_OWNER (run-audit --expect-owner) it

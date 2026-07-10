@@ -36,12 +36,17 @@
 #                       claude = metered -p API; mock = offline-deterministic wiring smoke).
 #   --out <dir>         Output dir for the run + leads (default: ./discovery-out).
 #   --agentis <bin>     agentis binary (default: `agentis` on PATH).
+#   --list-cells, -n    DRY RUN (#1612): print one `CELL|<subsystem>|<class>|<files>` line per cell this
+#                       manifest WOULD hunt, then exit 0 — BEFORE any agentis init / config / report side
+#                       effect. Needs neither --brief nor an agentis binary; the round-trip check for
+#                       map-zones.sh's auto-generated scope.tsv. The shipped hunt path is byte-identical.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 REPO="" ; SCOPE="" ; BRIEF="" ; TAXONOMY="" ; ONLY="" ; CLASSES_OVERRIDE=""
 BACKEND="flat-cyborg" ; MODEL="" ; OUT="$PWD/discovery-out"
+LIST_CELLS=""   # #1612: opt-in dry-run; empty = the shipped hunt path, byte-identical.
 
 need() { [ "$1" -ge 2 ] || { echo "run-discovery.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -56,6 +61,7 @@ while [ $# -gt 0 ]; do
     --model) need "$#"; MODEL="$2"; shift 2 ;;
     --out) need "$#"; OUT="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
+    --list-cells|-n) LIST_CELLS=1; shift ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-discovery.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -63,7 +69,38 @@ done
 
 [ -n "$REPO" ]  && [ -d "$REPO" ]  || { echo "run-discovery.sh: --repo <cloned repo dir> required (clone it with fetch-target.sh)" >&2; exit 2; }
 [ -n "$SCOPE" ] && [ -f "$SCOPE" ] || { echo "run-discovery.sh: --scope <subsystem|classes|files manifest> required" >&2; exit 2; }
-[ -n "$BRIEF" ] && [ -f "$BRIEF" ] || { echo "run-discovery.sh: --brief <invariants + known-issues + trust model> required (this anchors the hunt and excludes known issues)" >&2; exit 2; }
+# #1612: --list-cells needs no --brief (it never hunts) — guard the brief requirement behind it.
+if [ -z "$LIST_CELLS" ]; then
+  [ -n "$BRIEF" ] && [ -f "$BRIEF" ] || { echo "run-discovery.sh: --brief <invariants + known-issues + trust model> required (this anchors the hunt and excludes known issues)" >&2; exit 2; }
+fi
+
+# #1612 dry-run short-circuit: enumerate the (subsystem x class) cells this manifest WOULD hunt and exit,
+# BEFORE any agentis init / config / report side effect. Runs the SAME normalization as the hunt loop below
+# (trim + `''|\#*` skip + --only/--classes + comma class split), so the enumerated cells match the manifest
+# byte-for-byte. Needs neither --brief nor an agentis binary — the offline round-trip for map-zones.sh's
+# auto-generated scope.tsv. With no --list-cells every guard above is inert and the hunt path is unchanged.
+if [ -n "$LIST_CELLS" ]; then
+  while IFS='|' read -r SUBSYS CLS_CSV FILES_CSV || [ -n "${SUBSYS:-}" ]; do
+    SUBSYS="$(printf '%s' "$SUBSYS" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    case "$SUBSYS" in ''|\#*) continue ;; esac
+    CLS_CSV="$(printf '%s' "$CLS_CSV" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    FILES_CSV="$(printf '%s' "$FILES_CSV" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [ -n "$ONLY" ] && [ "$SUBSYS" != "$ONLY" ] && continue
+    [ -n "$CLASSES_OVERRIDE" ] && CLS_CSV="$CLASSES_OVERRIDE"
+    [ -n "$FILES_CSV" ] || continue
+    OLDIFS="$IFS"; IFS=','
+    for CLS in $CLS_CSV; do
+      IFS="$OLDIFS"
+      CLS="$(printf '%s' "$CLS" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+      [ -n "$CLS" ] || { IFS=','; continue; }
+      printf 'CELL|%s|%s|%s\n' "$SUBSYS" "$CLS" "$FILES_CSV"
+      IFS=','
+    done
+    IFS="$OLDIFS"
+  done < "$SCOPE"
+  exit 0
+fi
+
 [ -n "$TAXONOMY" ] || TAXONOMY="$HERE/auditor/bug-taxonomy.md"
 [ -f "$TAXONOMY" ] || { echo "run-discovery.sh: taxonomy not found: $TAXONOMY" >&2; exit 2; }
 command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ] || { echo "run-discovery.sh: agentis binary not found ($AGENTIS)" >&2; exit 3; }

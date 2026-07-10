@@ -1,0 +1,8 @@
+# zones.fixture.txt — canned substrate classification for the zone-map demo (map-zones.sh --fixture).
+# One `ZONE|<id>|<name>|<class-csv>|<description>` line per zone, mirroring zone-mapper.ag's stdout
+# contract, keyed by the zone id map-zones.sh derives from each directory (slug of the relative path).
+# This stubs the LLM step so demo-map-zones.sh is deterministic and never calls a live backend on CI.
+ZONE|contracts_vault|vault deposits|C1,C6,C11|ERC4626-style share vault: share-price accounting, rounding direction, first-depositor inflation
+ZONE|contracts_oracle|price oracle|C2,C9|External price feed: integrity/staleness and decimals scaling
+ZONE|contracts_liquidation|liquidation engine|C10,C8|CDP liquidate/seize/redeem: health-factor accounting and reentrancy on token transfer
+ZONE|contracts_governance|governance|C5,C13|Owner/guardian role model and pause/freeze consistency
