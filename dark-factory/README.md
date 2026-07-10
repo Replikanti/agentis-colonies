@@ -602,7 +602,10 @@ a safe no-op or a documented default). Env knobs read by an `.ag` agent must als
 | `--bounty-url` / `--drop-dir` (`$DROP_DIR`) | `deliver-submission.sh` | The bounty link embedded in the staged package, and the operator DROP-DIRECTORY exchange point (default `${DARK_FACTORY_DIR:-$HOME/.dark-factory}/drop`). |
 | `DARK_FACTORY_SLACK_BOT_TOKEN` | `deliver-submission.sh` → `notify-submission.sh` | Slack **bot-mode** delivery of the complete submission package (`xoxb-…`, a `secret://…` URI or raw; Slack app scopes `chat:write` + `files:write`, optional `chat:write.public`). Takes precedence over the webhook when set. |
 | `DARK_FACTORY_SLACK_CHANNEL` (`_WARN` / `_HIGH`) | `notify-submission.sh` | The base channel id (`C0…`) for bot mode, with optional per-severity overrides (Critical/High → `_HIGH`, Medium → `_WARN`). On delivery `notify-submission.sh` records the resolved `slack_thread_ts` + `slack_channel` into `manifest.json` and threads a reply-with-outcome prompt. |
+| `--target-dir` | `deliver-submission.sh`, `ingest-slack-outcome.sh` | The operator's local clone path. `deliver-submission.sh --target-dir` threads it into `manifest.json`'s `local_repo` field (#1571); `ingest-slack-outcome.sh --target-dir` overrides that manifest field at ingest time. Either is what the #1567 auto-invoke resolves a target dir from before launching a detached re-hunt. |
 | `DARK_FACTORY_SLACK_BOT_TOKEN` | `ingest-slack-outcome.sh` | Closes the loop: reads the operator's outcome REPLY back from the Slack thread (`conversations.replies`, needs the Slack app's `channels:history` scope) into `OUTCOME.md` and folds it into learning via `feedback-intake.ag`. Operator/cron-TRIGGERED (serverless — no always-on listener); idempotent per stage; never a bounty-platform submission. |
+| `DARK_FACTORY_RUN_AUDIT_PASS` | `ingest-slack-outcome.sh` | Overrides the path to `run-audit-pass.sh` for the #1567 auto-invoke (default `$SCRIPT_DIR/run-audit-pass.sh`); mirrors `DARK_FACTORY_AUDITOR_DIR`, mainly so the offline demo can inject a stub. |
+| `--route-preview <disposition> <root_cause>` | `ingest-slack-outcome.sh` | A pure introspection mode: prints `route_actions`' deterministic action list for the given disposition/root_cause and exits 0 — no token, no Slack, no network. A debug/demo helper for pinning the outcome→action map. |
 | `DARK_FACTORY_SLACK_WEBHOOK` | `deliver-submission.sh` | The webhook **fallback** finding-ready alert (`secret://…` URI or a raw webhook URL); falls back to `MONITOR_WEBHOOK_URL`. No webhook = a no-op. |
 | `GITHUB_TOKEN` / logged-in `gh` | `deliver-submission.sh` | Enables the best-effort **secret-gist** auto-create (`gh gist create`, secret by default — no `--secret` flag exists) for the PoC-form "secret Gist environment"; with no token it degrades to bundling the exact command in `poc/GIST_COMMAND.txt`. Egress is to the operator's OWN GitHub, never a bounty platform. |
 
@@ -714,14 +717,72 @@ SPENDY actions are **propose-then-greenlight**, human-gated for spend:
   (operator clone path the one placeholder) — posts a `greenlit` confirmation, and writes
   `.route-greenlit`.
 
-**Honest hand-off.** The greenlit action is a **command hand-off** the operator runs, not
-a coordinator auto-invoke: no hunt entry point accepts a reviewer-guidance input yet.
-Threading the guidance into `run-audit-pass.sh` (e.g. a `--reviewer-feedback` flag folded
-into the devise/impact prompts) is the documented **follow-up seam**. Three per-outcome
-markers keep it idempotent: `.route-applied`, `.route-proposed`, `.route-greenlit`; the
-greenlight pass runs before the `.outcome-ingested` short-circuit so a `--all` cron
-re-enters to catch a later `go`. Routing does only local writes + operator-workspace Slack
-posts — no bounty-platform egress, `RE-HUNT.md` carries no submit primitive, never submits.
+**Auto-invoked re-hunt (#1567).** On an operator `go`, the greenlight pass
+(`_run_spendy_handoff`) **always** writes `RE-HUNT.md` first — the durable record: target@
+commit, the reviewer reason as guidance, and a ready-to-run `run-audit-pass.sh …` command.
+It then resolves a target directory (the `--target-dir` override, else the manifest's
+`local_repo`/`target_dir` field — `local_repo` is what `deliver-submission.sh --target-dir`
+writes there, #1571); when that resolves to a real directory **and** `run-audit-pass.sh` is
+executable **and** `setsid` is on PATH, it **auto-invokes a detached re-hunt**
+(`setsid run-audit-pass.sh --live --backend claude --reviewer-feedback <reason>
+--target-dir <dir> …`, the same `setsid` discipline as `code-edit-job.sh`): the launcher
+passes the reason through an exported env var that expands only inside the detached child's
+own shell (never string-concatenated into the launcher's own command line), and
+`audit-scout.ag` reads it back via `getenv("REVIEWER_FEEDBACK")` into its DEVISE stage
+**prompt-only** — the reason folds into the `prompt()` instruction text and nowhere else, so
+an operator's rejection wording can never be re-parsed as a command. Only when no target dir
+resolves (or `run-audit-pass.sh`/`setsid` is missing) does it **fall back** to the command hand-off: the
+same ready-to-run command posted in-thread as a copy-paste code block, so the operator can
+act from Slack alone. Either path is a **local** `run-audit-pass.sh` invocation — never a
+submit; its terminal best case is a PENDING-HUMAN-REVIEW draft, and `RE-HUNT.md` carries no
+submit primitive. Propose-then-greenlight gating (above) is unchanged — auto-invoke only
+replaces what happens *after* the operator's `go`, not the gate itself.
+
+**Re-hunt completion callback (#1577).** A later `--stage`/`--all` sweep — including one
+over an already-ingested stage — re-enters `_rehunt_completion_check`: gated on
+`.re-hunt-pid` existing and `.re-hunt-reported` absent, it treats a terminal artifact
+(`re-hunt-out/pass-result.txt`) as authoritative over `kill -0` (a reused pid could
+otherwise read falsely alive); a live pid with no terminal artifact yet is a silent no-op
+(no post, no marker — the next sweep re-checks). Once finished it posts the result **once**,
+self-contained (#1574 — no `see <file>` pointer): `PENDING-HUMAN-REVIEW` uploads whichever
+durable draft artifact is actually present (`submission-draft.md` if the report-writer
+persisted one, else the `pass.tsv` trace — never fabricated, #1580) plus a "new draft ready"
+one-liner; any other non-empty result posts a "no new submittable finding (\<token\>)"
+one-liner; a dead process with no result posts a path-stripped "finished with an error
+(\<reason\>)" one-liner. `.re-hunt-reported` is written only after that post, so a cron never
+double-posts.
+
+Seven per-outcome/per-stage markers keep the whole loop idempotent: `.route-applied`,
+`.route-proposed`, `.route-greenlit`, `.re-hunt-pid` (the detached re-hunt's pid),
+`.re-hunt-reported` (the completion callback posted once), `.outcome-ingested`, and
+`.pending-confirmation`. The greenlight pass and the completion-callback pass both run
+**before** the `.outcome-ingested` short-circuit, so a `--all` cron re-enters an
+already-ingested stage to catch a later `go` or a re-hunt that finished since. Routing does
+only local writes + operator-workspace Slack posts — no bounty-platform egress, `RE-HUNT.md`
+carries no submit primitive, never submits.
+
+### Feedback-loop flow
+
+```mermaid
+flowchart TD
+    A["deliver-submission.sh<br/>--target-dir writes manifest local_repo (#1571)"] --> B["notify-submission.sh<br/>bot-mode Slack post + poc-run.png (#1550)"]
+    B --> C["operator replies in thread<br/>outcome: ..."]
+    C --> D["ingest-slack-outcome.sh<br/>--stage / --all"]
+    D --> E["feedback-intake.ag<br/>classify"]
+    E --> F["route_actions<br/>deterministic case"]
+    F -->|cheap| G["auto-apply<br/>mark-dead / tune-gate / needs-info-draft / reinforce"]
+    G --> H[".route-applied"]
+    F -->|spendy| I["propose in thread"]
+    I --> J[".route-proposed"]
+    J --> K["operator replies go"]
+    K --> L{"target dir resolves?"}
+    L -->|yes| M["auto-invoke detached re-hunt<br/>run-audit-pass.sh --reviewer-feedback (#1567)"]
+    L -->|no| N["RE-HUNT.md<br/>command hand-off"]
+    M --> O[".route-greenlit"]
+    N --> O
+    O --> P["re-hunt finishes"]
+    P --> Q["completion-check posts result once<br/>uploads submission-draft.md (#1577 / #1580)"]
+```
 
 ## Layout
 
@@ -748,9 +809,11 @@ dark-factory/
   novelty-gate.sh               # audit-aware residual hunt (#1485): reject a finding that RESTATES a known issue (exit 1; matched by shared target function/identifier + salient-term overlap vs the audits' exclusion set) vs pass a genuinely-novel one (exit 0); errs toward flagging for human review
   run-audit-pass.sh             # bootstrap for the coordinator SUBMISSION PASS (#1509, epic #1505 capstone): one `agentis go coordinator.ag` with PASS_ENABLED sequences scope -> devise -> poc -> impact -> dup -> report -> HALT, hard-halting on a blocking gate; never submits
   run-poc.sh                    # concrete-exploit PoC entrypoint (#1507): runs poc-writer.ag once to GENERATE one hand-driven attack-SEQUENCE test, then VERIFIES it through the toolchain-parametric gate (hardhat-poc.sh / forge-poc.sh chosen by detect-toolchain.sh); never submits
-  deliver-submission.sh         # delivery muscle (#1526, epic #1505): STAGES report-writer.ag's SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW draft into an operator DROP-DIRECTORY (manifest + OUTCOME.md + PoC + best-effort secret gist); refuses (exit 3) any draft missing the human-gate marker; never contacts a bounty platform
-  notify-submission.sh          # rich Slack BOT-MODE sender (#1541): posts the complete copy-paste-ready submission package to a Slack Bot App (form metadata as a main message + threaded Description/PoC/REPRODUCE file snippets); records slack_thread_ts/slack_channel + threads a reply-with-outcome prompt (#1557); operator page on the operator's OWN workspace, never a platform submission
-  ingest-slack-outcome.sh       # thread-outcome reader (#1557): reads the operator's reply back from the Slack thread (conversations.replies, channels:history) -> OUTCOME.md -> feedback-intake.ag learn() -> threaded confirmation; operator/cron-triggered (serverless, no listener), idempotent per stage, never submits
+  deliver-submission.sh         # delivery muscle (#1526, epic #1505): STAGES report-writer.ag's SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW draft into an operator DROP-DIRECTORY (manifest + OUTCOME.md + PoC + best-effort secret gist); `--target-dir` threads the operator's local clone path into manifest.json's `local_repo` field, resolved later for the #1567 auto-invoke (#1571); refuses (exit 3) any draft missing the human-gate marker; never contacts a bounty platform
+  render-run-evidence.sh        # PoC run-evidence renderer (#1550): renders a REAL captured poc-run.txt into a terminal-styled poc-run.png; best-effort renderer preference `freeze` (charmbracelet, unverified) -> render-run-evidence.py (Pillow, verified) -> skip (text-only degrade, never fatal); invoked by deliver-submission.sh, attached to the Slack thread by notify-submission.sh (bot-mode only)
+  render-run-evidence.py        # the Pillow PIL fallback renderer render-run-evidence.sh calls when `freeze` is unavailable (#1550)
+  notify-submission.sh          # rich Slack BOT-MODE sender (#1541): posts the complete copy-paste-ready submission package to a Slack Bot App (form metadata as a main message + threaded Description/PoC/REPRODUCE file snippets); records slack_thread_ts/slack_channel + threads a reply-with-outcome prompt (#1557); also attaches the #1550 poc-run.png run-evidence screenshot when a renderer produced one; operator page on the operator's OWN workspace, never a platform submission
+  ingest-slack-outcome.sh       # thread-outcome reader + outcome->action router (#1557/#1562): reads the operator's reply back from the Slack thread (conversations.replies, channels:history) -> OUTCOME.md -> feedback-intake.ag CLASSIFY -> deterministic route_actions (cheap:* auto-apply / spendy:* propose-then-greenlight) -> on operator `go` AUTO-INVOKES a detached re-hunt when a target dir resolves, else falls back to the RE-HUNT.md command hand-off (#1567) -> self-contained in-thread posts, no `see <file>` pointers (#1574) -> a later sweep's completion-callback posts the finished re-hunt's result exactly once (#1577), uploading the real persisted draft when present (#1580); idempotency markers `.outcome-ingested` / `.pending-confirmation` / `.route-applied` / `.route-proposed` / `.route-greenlit` / `.re-hunt-pid` / `.re-hunt-reported`; operator/cron-triggered (serverless, no listener), never submits
   demo-audit-hunter.sh          # offline, deterministic proof of the #1485 audit-aware foundation: novelty-gate flags restated known issues (value-leak/cursor-drift) + passes novel, fetch-audits SKIPs offline + ingests over localhost, exit 0
   demo-coordinator.sh           # offline, deterministic proof of the #1014 fact-driven + evolving-policy loop
   demo-dispatch.sh              # offline, deterministic proof of the #1014 M2 substrate DISPATCH (every action type)
@@ -782,7 +845,7 @@ dark-factory/
   demo-poc-gen.sh               # offline proof of the #1507 concrete-exploit PoC class (hardhat + non-invariant foundry): poc-writer.ag + the polarity-inverting toolchain gate
   demo-audit-scout.sh           # offline proof of the #1487 audit-aware DEVISE stage audit-scout.ag (ingest a target's audits -> RESIDUAL attack surface + exclusion boundary)
   demo-report-writer.sh         # offline proof of the #1508 report formatter report-writer.ag (confirmed finding + PoC + gate verdicts -> Immunefi-shaped 4-section SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW)
-  demo-feedback-loop.sh         # offline proof of the #1526 human<->federation feedback loop: deliver-submission.sh drop-dir + feedback-intake.ag folding OUTCOME.md back into learning (no platform API/scrape); part 8 (#1557) proves the Slack-thread outcome ingest (conversations.replies -> OUTCOME.md -> confirmation, idempotent)
+  demo-feedback-loop.sh         # offline proof of the #1526 human<->federation feedback loop: deliver-submission.sh drop-dir + feedback-intake.ag folding OUTCOME.md back into learning (no platform API/scrape); part 8 (#1557) proves the Slack-thread outcome ingest (conversations.replies -> OUTCOME.md -> confirmation, idempotent); part 9 (#1567/#1574) proves the deterministic outcome->action router, cheap auto-apply, and the greenlit AUTO-INVOKE of a detached re-hunt with self-contained in-thread posts; part 10 (#1577/#1580) proves the re-hunt completion callback posting the finished result exactly once + uploading the real persisted submission-draft.md
   setup-solana-toolchain.sh     # one-time offline toolchain build (network ON)
   snapshot-rpc.sh               # host RPC getAccountInfo -> frozen on-chain snapshot (V4)
   calibrate-sealevel.sh         # detection+validation scorecard over the sealevel corpus (V6)
