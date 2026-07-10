@@ -84,6 +84,16 @@
 #      RE-HUNT.md byte-unchanged). Plus source guards (the router is deterministic — no prompt() in the block; every
 #      https URL still targets slack.com; RE-HUNT.md carries no submit/egress primitive) and the
 #      run-immunefi-intake.sh --dead-targets skip (a router-marked-dead program is dropped from the ranked queue).
+#      SUB-PARTS 9i-9n (#1567) close the seam: (9i) the reviewer's rejection reason threads at every hop
+#      (run-audit-pass.sh --reviewer-feedback -> exec.env_passthrough -> coordinator PASS run_stage_live ->
+#      run-gate-agent.sh -> audit-scout.ag's DEVISE prompt) GUARDED so empty feedback is byte-identical and
+#      PROMPT-ONLY (never on an exec sh line); (9j) the greenlight AUTO-INVOKES run-audit-pass.sh DETACHED (setsid,
+#      a run-audit-pass STUB logging argv) carrying --reviewer-feedback + --target-dir when a target dir resolves,
+#      posting `re-hunt launched (pid ...)`; (9k) the fallback (no target dir) is unchanged — no invoke, the
+#      RE-HUNT.md command HAND-OFF, `handed off` post; (9l) idempotent (a third run never re-launches; .route-
+#      greenlit gate); (9m) never-submit (the argv carries no submit/platform token); (9n) router source guards
+#      (setsid, the DARK_FACTORY_RUN_AUDIT_PASS override, the [ -d ] guard, the detached </dev/null … & … disown,
+#      SC2016 discipline, slack.com-only egress). The feedback rides the #1535 honest-stub live-dispatch path.
 #
 # All shell sub-scripts are invoked with `bash` (never `sh`) per the #1507 dash lesson.
 #
@@ -1494,6 +1504,157 @@ bash "$IMMUNEFI" --programs "$PROGS9" --out "$Q9B" --dead-targets "$WORK/no-such
 grep -q 'immunefi:enzyme-onyx' "$Q9B" 2>/dev/null \
   && ok "(9h) with no dead-targets ledger enzyme-onyx is queued (a missing ledger drops nothing)" || bad "(9h) enzyme-onyx dropped even without a ledger"
 
+# ==========================================================================================================
+# FEEDBACK-INFORMED RE-HUNT + GREENLIGHT AUTO-INVOKE (#1567) — the reviewer's rejection reason threads through
+# run-audit-pass.sh -> coordinator PASS -> run-gate-agent.sh -> audit-scout.ag DEVISE (byte-identical when empty),
+# and the router's greenlight AUTO-INVOKES run-audit-pass.sh DETACHED when a target dir resolves (else the #1562
+# RE-HUNT.md hand-off). Offline, dash-safe, ASCII-only asserts.
+# ==========================================================================================================
+note "9i-9n) feedback-informed re-hunt: env threads at every hop + router auto-invoke-vs-hand-off ..."
+
+# --- (9i) PART-1 SOURCE GUARDS: REVIEWER_FEEDBACK threads at every hop, guarded + prompt-only (no toolchain). ----
+RUNPASS_SRC="$HERE/run-audit-pass.sh"
+GATERUN_SRC="$HERE/auditor/scripts/run-gate-agent.sh"
+COORD_SRC="$HERE/auditor/agents/coordinator.ag"
+SCOUT_SRC="$HERE/auditor/agents/audit-scout.ag"
+grep -qF -- '--reviewer-feedback)' "$RUNPASS_SRC" && grep -qF -- '--reviewer-feedback-file)' "$RUNPASS_SRC" \
+  && ok "(9i) run-audit-pass.sh defines --reviewer-feedback + --reviewer-feedback-file" || bad "(9i) run-audit-pass.sh missing the feedback flags"
+grep -qE 'exec.env_passthrough.*REVIEWER_FEEDBACK' "$RUNPASS_SRC" \
+  && ok "(9i) run-audit-pass.sh allowlists REVIEWER_FEEDBACK (getenv sees it, not sanitized to empty)" || bad "(9i) run-audit-pass.sh passthrough missing REVIEWER_FEEDBACK"
+grep -qF 'REVIEWER_FEEDBACK="$REVIEWER_FEEDBACK"' "$RUNPASS_SRC" \
+  && ok "(9i) run-audit-pass.sh exports REVIEWER_FEEDBACK into the coordinator env block" || bad "(9i) run-audit-pass.sh env block missing REVIEWER_FEEDBACK"
+grep -qE 'exec.env_passthrough.*REVIEWER_FEEDBACK' "$GATERUN_SRC" \
+  && ok "(9i) run-gate-agent.sh allowlists REVIEWER_FEEDBACK for the gate runtime" || bad "(9i) run-gate-agent.sh passthrough missing REVIEWER_FEEDBACK"
+grep -qF 'REVIEWER_FEEDBACK=" + shell_escape(getenv("REVIEWER_FEEDBACK"))' "$COORD_SRC" \
+  && ok "(9i) coordinator.ag run_stage_live forwards REVIEWER_FEEDBACK shell_escaped" || bad "(9i) coordinator.ag does not forward REVIEWER_FEEDBACK"
+grep -qF 'getenv("REVIEWER_FEEDBACK")' "$SCOUT_SRC" \
+  && ok "(9i) audit-scout.ag reads getenv(REVIEWER_FEEDBACK)" || bad "(9i) audit-scout.ag never reads REVIEWER_FEEDBACK"
+grep -qF 'if len(feedback) == 0' "$SCOUT_SRC" && grep -qF 'PRIOR SUBMISSION REJECTED' "$SCOUT_SRC" \
+  && ok "(9i) audit-scout.ag incorporates feedback GUARDED (empty -> byte-identical DEVISE prompt)" || bad "(9i) audit-scout.ag missing the empty-guard / feedback clause"
+if grep -n 'exec sh' "$SCOUT_SRC" | grep -qiE 'feedback|REVIEWER_FEEDBACK'; then
+  bad "(9i) audit-scout.ag puts feedback on an exec sh line — feedback must be PROMPT-ONLY"
+else
+  ok "(9i) audit-scout.ag keeps feedback PROMPT-ONLY (flows only into prompt(), never an exec sh)"
+fi
+
+# The router writes markers/dead-targets under DARK_FACTORY_DIR; a re-hunt STUB logs its argv (proving the
+# auto-invoke shape) without any real toolchain. The stub must be executable (the [ -x $RUN_AUDIT_PASS ] guard).
+RUN_AUDIT_STUB="$WORK/run-audit-pass-stub.sh"
+{
+  printf '%s\n' "#!/bin/sh"
+  printf '%s\n' 'echo "$*" >> "$RUN_AUDIT_STUB_LOG"'
+  printf '%s\n' 'exit 0'
+} > "$RUN_AUDIT_STUB"
+chmod +x "$RUN_AUDIT_STUB"
+
+# --- (9j) AUTO-INVOKE when a target dir resolves: greenlight launches the detached re-hunt with --reviewer-feedback.
+STAGE9J="$WORK/stage-9j"; mk_manifest9 "$STAGE9J" "enzyme-onyx@a1b2c3d:auto" "enzyme-onyx" "a1b2c3d"
+CLONE9J="$WORK/clone-9j"; mkdir -p "$CLONE9J"
+RUN_AUDIT_STUB_LOG="$WORK/run-audit-stub-9j.log"
+REPL9J="$WORK/replies-9j.json";       mk_reply    "$REPL9J"    "outcome: Closing as invalid -- the impact is not substantiated on-chain."
+REPL9J_GO="$WORK/replies-9j-go.json"; mk_reply_go "$REPL9J_GO" "outcome: Closing as invalid -- the impact is not substantiated on-chain."
+run9j() {  # $1 = replies fixture, $2 = post body
+  env \
+    SLACK_LOG="$WORK/slack-9j.log" SLACK_POST_BODY="$2" SLACK_COMPLETE="$WORK/slack-complete-9j.jsonl" \
+    SLACK_GETURL="$WORK/slack-geturl-9j.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-9j" SLACK_UPCNT="$WORK/slack-upcnt-9j" \
+    SLACK_REPLIES_FIXTURE="$1" AGENTIS_LOG="$WORK/agentis-9j.log" \
+    AGENTIS_STUB_FEEDBACK="FEEDBACK|rejected|high|impact-gate|FAILURE|impact-not-substantiated|stub reject" \
+    DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_DIR="$DF9" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-9" \
+    DARK_FACTORY_RUN_AUDIT_PASS="$RUN_AUDIT_STUB" RUN_AUDIT_STUB_LOG="$RUN_AUDIT_STUB_LOG" \
+    PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+    bash "$INGEST" --target-dir "$CLONE9J" --stage "$STAGE9J" >/dev/null 2>&1
+}
+if ! command -v setsid >/dev/null 2>&1; then
+  skip "(9j/9l/9m) setsid not present on this host — the detached auto-invoke path is not exercised"
+else
+  run9j "$REPL9J"    "$WORK/slack-post-9j-propose.jsonl"          # propose (no go yet)
+  POST9J="$WORK/slack-post-9j.jsonl"; run9j "$REPL9J_GO" "$POST9J"  # a later go greenlights -> detached auto-invoke
+  # setsid detaches the child; bounded-poll for the stub log (async, never a fixed sleep on the happy path).
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -s "$RUN_AUDIT_STUB_LOG" ]; do sleep 0.1; i=$((i+1)); done
+  [ -s "$RUN_AUDIT_STUB_LOG" ] \
+    && ok "(9j) the detached run-audit-pass re-hunt was auto-invoked (stub log populated)" || bad "(9j) run-audit-pass stub never invoked (auto-invoke did not fire)"
+  N9J="$(wc -l < "$RUN_AUDIT_STUB_LOG" 2>/dev/null | tr -d ' ')"
+  [ "$N9J" = "1" ] \
+    && ok "(9j) the re-hunt was invoked exactly once" || bad "(9j) re-hunt invoked $N9J times (expected 1)"
+  grep -q -- '--reviewer-feedback' "$RUN_AUDIT_STUB_LOG" 2>/dev/null && grep -q 'impact-not-substantiated' "$RUN_AUDIT_STUB_LOG" 2>/dev/null \
+    && ok "(9j) the re-hunt argv carries --reviewer-feedback + the rejection reason (feedback threaded)" || bad "(9j) re-hunt argv missing --reviewer-feedback/reason"
+  grep -q -- '--target-dir' "$RUN_AUDIT_STUB_LOG" 2>/dev/null && grep -qF "$CLONE9J" "$RUN_AUDIT_STUB_LOG" 2>/dev/null \
+    && ok "(9j) the re-hunt argv carries --target-dir <resolved clone>" || bad "(9j) re-hunt argv missing --target-dir"
+  { [ "$(conf_has "$POST9J" "re-hunt launched")" = "ok" ] && [ "$(conf_has "$POST9J" "pid")" = "ok" ]; } \
+    && ok "(9j) a 're-hunt launched (pid ...)' confirmation was posted into the thread" || bad "(9j) no 're-hunt launched'/pid post"
+  [ -f "$STAGE9J/RE-HUNT.md" ] \
+    && ok "(9j) RE-HUNT.md was still written (durable record) alongside the auto-invoke" || bad "(9j) RE-HUNT.md missing on auto-invoke"
+  [ -f "$STAGE9J/.route-greenlit" ] \
+    && ok "(9j) .route-greenlit was written on the auto-invoke greenlight" || bad "(9j) .route-greenlit missing on auto-invoke"
+
+  # --- (9m) NEVER-SUBMIT: the re-hunt argv carries no submit / bounty-platform token. ----------------------------
+  if grep -qiE 'submit|immunefi|code4rena|sherlock|hackerone' "$RUN_AUDIT_STUB_LOG" 2>/dev/null; then
+    bad "(9m) the re-hunt argv carries a submit / bounty-platform token"
+  else
+    ok "(9m) the re-hunt argv carries no submit / bounty-platform token (only --live/--reviewer-feedback/--target-dir/--finding-*/--out)"
+  fi
+
+  # --- (9l) IDEMPOTENCY: a third run (go present, .route-greenlit present) does not re-launch or re-post. --------
+  POST9L="$WORK/slack-post-9l.jsonl"; run9j "$REPL9J_GO" "$POST9L" >/dev/null
+  i2=0; while [ "$i2" -lt 20 ]; do sleep 0.1; i2=$((i2+1)); done   # give any errant re-launch time to write
+  N9L="$(wc -l < "$RUN_AUDIT_STUB_LOG" 2>/dev/null | tr -d ' ')"
+  [ "$N9L" = "1" ] \
+    && ok "(9l) a third run does NOT re-launch the re-hunt (stub count stays 1; .route-greenlit gate)" || bad "(9l) re-hunt re-launched on the third run (count=$N9L)"
+  [ "$(conf_has "$POST9L" "re-hunt launched")" = "missing" ] \
+    && ok "(9l) a third run posts no second 're-hunt launched' (idempotent)" || bad "(9l) a second 're-hunt launched' was posted"
+fi
+
+# --- (9k) FALLBACK when NO target dir resolves: no auto-invoke, the RE-HUNT.md command HAND-OFF instead. ---------
+STAGE9K="$WORK/stage-9k"; mk_manifest9 "$STAGE9K" "enzyme-onyx@a1b2c3d:hand" "enzyme-onyx" "a1b2c3d"
+REPL9K="$WORK/replies-9k.json";       mk_reply    "$REPL9K"    "outcome: Closing as invalid -- the impact is not substantiated on-chain."
+REPL9K_GO="$WORK/replies-9k-go.json"; mk_reply_go "$REPL9K_GO" "outcome: Closing as invalid -- the impact is not substantiated on-chain."
+STUBLOG9K="$WORK/run-audit-stub-9k.log"; ALOG9K="$WORK/agentis-9k.log"
+run9k() {  # $1 = replies fixture, $2 = post body — NO --target-dir; the manifest has no local_repo/target_dir.
+  env \
+    SLACK_LOG="$WORK/slack-9k.log" SLACK_POST_BODY="$2" SLACK_COMPLETE="$WORK/slack-complete-9k.jsonl" \
+    SLACK_GETURL="$WORK/slack-geturl-9k.log" SLACK_UPLOAD_DIR="$WORK/slack-uploads-9k" SLACK_UPCNT="$WORK/slack-upcnt-9k" \
+    SLACK_REPLIES_FIXTURE="$1" AGENTIS_LOG="$ALOG9K" \
+    AGENTIS_STUB_FEEDBACK="FEEDBACK|rejected|high|impact-gate|FAILURE|impact-not-substantiated|stub reject" \
+    DARK_FACTORY_SLACK_BOT_TOKEN="$FAKE_TOKEN_8" DARK_FACTORY_DIR="$DF9" DARK_FACTORY_AUDITOR_DIR="$WORK/auditor-throwaway-9" \
+    DARK_FACTORY_RUN_AUDIT_PASS="$RUN_AUDIT_STUB" RUN_AUDIT_STUB_LOG="$STUBLOG9K" \
+    PATH="$FAKEBIN8:$FAKEBIN6:$PATH" \
+    bash "$INGEST" --stage "$STAGE9K" >/dev/null 2>&1
+}
+run9k "$REPL9K" "$WORK/slack-post-9k-propose.jsonl"
+POST9K="$WORK/slack-post-9k.jsonl"; run9k "$REPL9K_GO" "$POST9K"; RC=$?
+[ "$RC" -eq 0 ] && ok "(9k) fallback greenlight run exits 0" || bad "(9k) fallback run exited $RC (expected 0)"
+[ ! -e "$STUBLOG9K" ] \
+  && ok "(9k) with no resolvable target dir the re-hunt is NOT auto-invoked (stub never ran)" || bad "(9k) re-hunt auto-invoked without a target dir"
+[ "$(conf_has "$POST9K" "handed off (see RE-HUNT.md)")" = "ok" ] \
+  && ok "(9k) the fallback posts the RE-HUNT.md command HAND-OFF" || bad "(9k) no hand-off post on the fallback"
+[ "$(conf_has "$POST9K" "re-hunt launched")" = "missing" ] \
+  && ok "(9k) the fallback posts NO 're-hunt launched'" || bad "(9k) fallback wrongly posted 're-hunt launched'"
+[ -f "$STAGE9K/RE-HUNT.md" ] \
+  && ok "(9k) RE-HUNT.md was written for the operator hand-off" || bad "(9k) RE-HUNT.md missing on the fallback"
+if grep -qE 'coordinator|audit-scout|run-audit-pass|audit-pass' "$ALOG9K" 2>/dev/null; then
+  bad "(9k) the agentis stub log shows a hunt auto-invoke on the fallback"
+else
+  ok "(9k) the agentis stub log shows ONLY feedback-intake.ag on the fallback (no coordinator/hunt)"
+fi
+
+# --- (9n) ROUTER SOURCE GUARDS: setsid detach, DARK_FACTORY_RUN_AUDIT_PASS override, [ -d guard, detach, slack-only.
+grep -q 'setsid bash -c' "$INGEST" \
+  && ok "(9n) the router auto-invoke uses setsid (detached, the code-edit-job.sh convention)" || bad "(9n) router missing setsid"
+grep -q 'DARK_FACTORY_RUN_AUDIT_PASS' "$INGEST" \
+  && ok "(9n) the re-hunt binary resolves via DARK_FACTORY_RUN_AUDIT_PASS (stub-injectable)" || bad "(9n) router missing the DARK_FACTORY_RUN_AUDIT_PASS override"
+grep -qF '[ -d "$td" ]' "$INGEST" \
+  && ok "(9n) the auto-invoke is guarded on [ -d <target dir> ]" || bad "(9n) router missing the [ -d target-dir ] guard"
+grep -q '</dev/null' "$INGEST" && grep -q 'disown' "$INGEST" \
+  && ok "(9n) the launch is fully detached (</dev/null ... & ... disown)" || bad "(9n) router launch not fully detached"
+grep -q 'shellcheck disable=SC2016' "$INGEST" \
+  && ok "(9n) the single-quoted setsid body is SC2016-disciplined (RH_* expand in the child, no untrusted concat)" || bad "(9n) router missing the SC2016 discipline"
+if grep -oE 'https://[A-Za-z0-9./_-]+' "$INGEST" | grep -qv 'slack.com'; then
+  bad "(9n) the router references a non-slack.com https URL: $(grep -oE 'https://[A-Za-z0-9./_-]+' "$INGEST" | grep -v 'slack.com' | head -1)"
+else
+  ok "(9n) every https URL in the router still targets slack.com (no bounty-platform egress introduced)"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 echo
 if [ "$FAIL" -eq 0 ]; then
@@ -1524,7 +1685,11 @@ if [ "$FAIL" -eq 0 ]; then
   note "       needs-info -> a marked FOLLOWUP.md), spendy actions are PROPOSED then run ONLY on a later operator go"
   note "       reply as a ready-to-run RE-HUNT.md command HAND-OFF (never a coordinator/hunt auto-invoke), idempotent"
   note "       via .route-applied/.route-proposed/.route-greenlit, and run-immunefi-intake.sh --dead-targets drops a"
-  note "       router-marked-dead target from the next queue. Never submits."
+  note "       router-marked-dead target from the next queue. And (#1567) the reviewer's rejection reason threads"
+  note "       run-audit-pass.sh --reviewer-feedback -> coordinator PASS -> run-gate-agent.sh -> audit-scout.ag DEVISE"
+  note "       (guarded, byte-identical when empty, prompt-only), and the greenlight AUTO-INVOKES the re-hunt DETACHED"
+  note "       (setsid) with --reviewer-feedback + --target-dir when a target dir resolves, else the RE-HUNT.md hand-off"
+  note "       — idempotent, never submits. Never submits."
   exit 0
 fi
 note "FAIL — a feedback-loop assertion regressed (see above)." >&2

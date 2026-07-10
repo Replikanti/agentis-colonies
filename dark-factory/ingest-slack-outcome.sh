@@ -26,11 +26,15 @@
 # local, reversible writes applied immediately (mark-dead -> dead-targets.txt; tune-gate -> a gate-tuning/<stage>.md
 # calibration NOTE; needs-info-draft -> a FOLLOWUP.md stub; reinforce -> a winning-path note). SPENDY actions
 # (re-devise / hunt-deeper) are PROPOSE-then-GREENLIGHT: the router posts a `propose:` message into the thread and
-# writes `.route-proposed`; the spend runs ONLY after a later operator `go` reply, which produces a ready-to-run
-# HAND-OFF (a `run-audit-pass.sh …` command template in RE-HUNT.md + the reviewer reason as guidance) and writes
-# `.route-greenlit`. HONEST scope: the greenlit action is a command HAND-OFF the operator runs, NOT a coordinator
-# auto-invoke (no hunt entry point accepts reviewer guidance yet — auto-invoke is a documented follow-up seam); the
-# tune-gate note is a recorded calibration HOOK, NOT a behavior change (the gates do not `recall()` it yet, and the
+# writes `.route-proposed`; the spend runs ONLY after a later operator `go` reply, which always writes the durable
+# RE-HUNT.md record + `.route-greenlit`. GREENLIT DISPATCH (#1567): when a target dir resolves (--target-dir, or a
+# manifest `local_repo`/`target_dir`) AND run-audit-pass.sh + setsid are present, the `go` AUTO-INVOKES the
+# feedback-informed re-hunt DETACHED (`run-audit-pass.sh --live --reviewer-feedback <reason> --target-dir …`, the
+# code-edit-job.sh setsid convention) — the reviewer reason threads into audit-scout.ag's DEVISE prompt. When no
+# target dir resolves (or setsid/bin is absent), the fallback is the command HAND-OFF the operator runs from
+# RE-HUNT.md (not a coordinator-style auto-invoke). Either way run-audit-pass.sh never submits (its terminal best
+# case is a PENDING-HUMAN-REVIEW draft). The tune-gate note is a recorded calibration HOOK, NOT a behavior change
+# (the gates do not `recall()` it yet, and the
 # router never calls `learn()` a second time, so an outcome is never double-counted). Three per-outcome markers keep
 # it idempotent: `.route-applied` (cheap actions ran + any spendy proposed, once), `.route-proposed` (a spendy
 # proposal is outstanding), `.route-greenlit` (the hand-off ran). The greenlight pass runs at the TOP of
@@ -38,8 +42,9 @@
 #
 # NEVER-SUBMIT INVARIANT (unchanged): every network call this script makes is to `https://slack.com/api/...` on the
 # operator's OWN workspace. It adds NO bounty-platform egress and never submits — reading a thread, confirming,
-# proposing/marking/drafting, and writing a RE-HUNT.md hand-off are operator-workspace + local-write actions, exactly
-# like the notify.sh page and the notify-submission.sh delivery. RE-HUNT.md carries no submit primitive.
+# proposing/marking/drafting, writing a RE-HUNT.md hand-off, and (on greenlight) launching the LOCAL run-audit-pass.sh
+# re-hunt are operator-workspace + local actions, exactly like the notify.sh page and the notify-submission.sh
+# delivery. RE-HUNT.md carries no submit primitive; run-audit-pass.sh never submits (a PENDING-HUMAN-REVIEW draft).
 #
 # Config (env):
 #   DARK_FACTORY_SLACK_BOT_TOKEN   the bot token (`xoxb-…`, a `secret://…` URI resolved via
@@ -52,7 +57,7 @@
 # its `learn()` PERSISTS in the colony's durable experience store — a mktemp run dir would evaporate the lesson,
 # defeating the loop.
 #
-# Usage:  ingest-slack-outcome.sh (--stage <staged-drop-dir> | --all) [--drop-dir DIR]
+# Usage:  ingest-slack-outcome.sh (--stage <staged-drop-dir> | --all) [--drop-dir DIR] [--target-dir DIR]
 #         ingest-slack-outcome.sh --route-preview <disposition> <root_cause>   # pure: print the action list, exit 0
 # Requires: bash + python3 + curl (+ agentis to fold into learning). Exit: 0 always (best-effort); 2 = bad args.
 set -u
@@ -93,10 +98,12 @@ ALL=0
 ROUTE_PREVIEW=0
 RP_DISP=""
 RP_ROOT=""
+TARGET_DIR_OVERRIDE=""
 while [ $# -gt 0 ]; do case "$1" in
   --stage)    [ "$#" -ge 2 ] || { echo "ingest-slack-outcome.sh: --stage requires a value" >&2; exit 2; }; STAGE="$2"; shift 2;;
   --all)      ALL=1; shift;;
   --drop-dir) [ "$#" -ge 2 ] || { echo "ingest-slack-outcome.sh: --drop-dir requires a value" >&2; exit 2; }; DROP_DIR="$2"; shift 2;;
+  --target-dir) [ "$#" -ge 2 ] || { echo "ingest-slack-outcome.sh: --target-dir requires a value" >&2; exit 2; }; TARGET_DIR_OVERRIDE="$2"; shift 2;;
   --route-preview) [ "$#" -ge 3 ] || { echo "ingest-slack-outcome.sh: --route-preview requires <disposition> <root_cause>" >&2; exit 2; }; ROUTE_PREVIEW=1; RP_DISP="$2"; RP_ROOT="$3"; shift 3;;
   -h|--help)  sed -n '2,57p' "$0"; exit 0;;
   *) echo "ingest-slack-outcome.sh: unknown arg: $1" >&2; exit 2;;
@@ -140,6 +147,9 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 
 INTAKE_DIR="${DARK_FACTORY_AUDITOR_DIR:-$SCRIPT_DIR/auditor}"
+# The feedback-informed re-hunt entry point (#1567). Overridable so the offline demo can inject a stub, mirroring
+# DARK_FACTORY_AUDITOR_DIR. run-audit-pass.sh NEVER submits — its terminal best case is a PENDING-HUMAN-REVIEW draft.
+RUN_AUDIT_PASS="${DARK_FACTORY_RUN_AUDIT_PASS:-$SCRIPT_DIR/run-audit-pass.sh}"
 
 # _slack_get_bot_user -> the bot's own user_id via auth.test (Bearer only), or "" (best-effort: on any failure the
 # caller falls back to filtering bot messages by bot_id/subtype presence).
@@ -312,14 +322,18 @@ _propose_spendy() {
   } > "$stage/.route-proposed"
 }
 
-# _run_spendy_handoff <stage> <channel> <thread_ts> <manifest> <action> <reason> -> the GREENLIT hand-off: write
-# $stage/RE-HUNT.md (target@commit + the reviewer reason as guidance + a ready-to-run `run-audit-pass.sh …` command
-# pre-filled from the manifest, with the operator's clone path as the ONE placeholder), post `▶ greenlit …`, write
-# .route-greenlit. HONEST: this is a command HAND-OFF the operator runs, NOT a coordinator auto-invoke (no hunt
-# entry accepts reviewer guidance yet — see the follow-up seam in the header). RE-HUNT.md carries no submit primitive.
+# _run_spendy_handoff <stage> <channel> <thread_ts> <manifest> <action> <reason> -> the GREENLIT action. ALWAYS
+# writes $stage/RE-HUNT.md (the durable record: target@commit + the reviewer reason as guidance + a ready-to-run
+# `run-audit-pass.sh …` command pre-filled from the manifest, operator clone path the ONE placeholder) and, after
+# the branch, .route-greenlit. DISPATCH (#1567): resolve a target dir (--target-dir override, else a manifest
+# `local_repo`/`target_dir`); when it resolves to a directory AND run-audit-pass.sh is executable AND setsid is
+# present, AUTO-INVOKE the feedback-informed re-hunt DETACHED (the code-edit-job.sh setsid convention) and post
+# `▶ re-hunt launched …`. Otherwise the command HAND-OFF: RE-HUNT.md is what the operator runs (not a
+# coordinator-style auto-invoke), posted as `▶ greenlit …`. Never submits — the re-hunt's best case is a
+# PENDING-HUMAN-REVIEW draft; RE-HUNT.md carries no submit primitive.
 _run_spendy_handoff() {
   local stage="$1" channel="$2" thread="$3" mf="$4" action="$5" reason="$6"
-  local target commit title location impact sev verb
+  local target commit title location impact sev verb td rh_out pid
   target="$(_mf_field "$mf" target)"
   commit="$(_mf_field "$mf" in_scope_commit)"
   title="$(_mf_field "$mf" finding_title)"
@@ -331,11 +345,11 @@ _run_spendy_handoff() {
     *)                  verb="re-hunt" ;;
   esac
   {
-    printf '%s\n' "# RE-HUNT — greenlit hand-off for $target@$commit ($verb)"
+    printf '%s\n' "# RE-HUNT — greenlit record for $target@$commit ($verb)"
     printf '%s\n' "#"
-    printf '%s\n' "# This is a COMMAND HAND-OFF, not an auto-invocation: no hunt entry point accepts reviewer"
-    printf '%s\n' "# guidance yet, so the operator runs the command below. Wiring run-audit-pass.sh to thread the"
-    printf '%s\n' "# guidance into the devise/impact prompts is the documented follow-up seam. Never submits."
+    printf '%s\n' "# run-audit-pass.sh threads --reviewer-feedback into the devise (#1567), so the command below re-runs"
+    printf '%s\n' "# the pass AROUND the rejection reason. When a target dir was resolvable this re-hunt was ALSO auto-"
+    printf '%s\n' "# invoked detached on greenlight (see .re-hunt-pid); otherwise run it yourself. Never submits."
     printf '%s\n' ""
     printf '%s\n' "## Reviewer guidance (why the last attempt was rejected)"
     printf '%s\n' "$reason"
@@ -350,6 +364,7 @@ _run_spendy_handoff() {
     printf '%s\n' "## Ready-to-run command (fill in the operator's local clone path)"
     printf '%s\n' '```sh'
     printf '%s\n' "dark-factory/run-audit-pass.sh --live --backend claude \\"
+    printf '%s\n' "  --reviewer-feedback $(_shq "$reason") \\"
     printf '%s\n' "  --target-dir <OPERATOR_CLONE_PATH_FOR_${target}@${commit}> \\"
     printf '%s\n' "  --finding-title $(_shq "$title") \\"
     printf '%s\n' "  --finding-location $(_shq "$location") \\"
@@ -358,8 +373,32 @@ _run_spendy_handoff() {
     printf '%s\n' "  --out $(_shq "$stage/re-hunt-out")"
     printf '%s\n' '```'
   } > "$stage/RE-HUNT.md"
-  _slack_confirm "$channel" "$thread" "▶ greenlit — $verb $target handed off (see RE-HUNT.md)" \
-    || echo "ingest-slack-outcome.sh: greenlit post failed for $stage (best-effort)" >&2
+
+  # DISPATCH: resolve a target dir (override wins, then a manifest local_repo/target_dir). When it resolves AND the
+  # re-hunt binary + setsid are present, AUTO-INVOKE detached; else fall back to the RE-HUNT.md command HAND-OFF.
+  td="$TARGET_DIR_OVERRIDE"
+  [ -n "$td" ] || td="$(_mf_field "$mf" local_repo)"
+  [ -n "$td" ] || td="$(_mf_field "$mf" target_dir)"
+  if [ -n "$td" ] && [ -d "$td" ] && [ -x "$RUN_AUDIT_PASS" ] && command -v setsid >/dev/null 2>&1; then
+    rh_out="$stage/re-hunt-out"
+    mkdir -p "$rh_out"
+    # SC2016: the $RH_* refs are deliberately INSIDE the single-quoted setsid body — they expand in the DETACHED
+    # child from its inherited env, NOT in this launcher (the code-edit-job.sh discipline; no untrusted concat, the
+    # LLM-tainted reason never reaches a command line here). Only --live/--backend/--reviewer-feedback/--target-dir/
+    # --finding-*/--out are passed; run-audit-pass.sh never submits (its best case is a PENDING-HUMAN-REVIEW draft).
+    export RH_BIN="$RUN_AUDIT_PASS" RH_TD="$td" RH_REASON="$reason" RH_TITLE="$title" \
+           RH_LOC="$location" RH_IMPACT="$impact" RH_SEV="$sev" RH_OUT="$rh_out"
+    # shellcheck disable=SC2016
+    setsid bash -c '"$RH_BIN" --live --backend claude --reviewer-feedback "$RH_REASON" --target-dir "$RH_TD" --finding-title "$RH_TITLE" --finding-location "$RH_LOC" --finding-impact "$RH_IMPACT" --severity-band "$RH_SEV" --out "$RH_OUT" > "$RH_OUT/re-hunt.log" 2>&1' </dev/null >/dev/null 2>&1 &
+    pid=$!
+    printf '%s' "$pid" > "$stage/.re-hunt-pid"
+    disown "$pid" 2>/dev/null || true
+    _slack_confirm "$channel" "$thread" "▶ re-hunt launched (pid $pid) — feedback threaded" \
+      || echo "ingest-slack-outcome.sh: re-hunt-launched post failed for $stage (best-effort)" >&2
+  else
+    _slack_confirm "$channel" "$thread" "▶ greenlit — $verb $target handed off (see RE-HUNT.md)" \
+      || echo "ingest-slack-outcome.sh: greenlit post failed for $stage (best-effort)" >&2
+  fi
   printf '%s\n' "greenlit $(date -u +%Y-%m-%dT%H:%M:%SZ) action=$action target=$target@$commit" > "$stage/.route-greenlit"
 }
 
