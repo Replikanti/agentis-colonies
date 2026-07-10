@@ -115,21 +115,47 @@ fn job_word(out: string) -> string {
 // helper scans for the first backtick-quoted token (the draft prompt tends to
 // wrap paths in backticks); failing that, the first slash-or-dot-bearing token
 // on the first list line. Returns "" when nothing path-shaped is found.
+//
+// #1597 (substrate purity P1): native rewrite, was an inline `python3 -c`.
+// `is_path_shaped` mirrors the python filter (`len(tok)>2 and ("/" in tok or
+// "." in tok)`); `lstrip_markers` mirrors `.lstrip("-*0123456789. \t")` via
+// repeated single-char strip from the front; `first_path_in_lines_at` walks
+// lines by index (no native list-slice/list-tail builtin exists per
+// docs/language.md's Core/Higher-order builtin tables, so an index-parameter
+// recursion replaces the python `for ln in t.splitlines()` loop). Total on
+// every failure mode (empty `files`, no lines, no path-shaped token) -> "",
+// matching the python's trailing `print("")`.
+fn is_path_shaped(tok: string) -> bool {
+    if len(tok) <= 2 { return false; };
+    if index_of(tok, "/") >= 0 { return true; };
+    return index_of(tok, ".") >= 0;
+}
+
+fn first_path_token(toks: list<string>) -> string {
+    let hit = filter(toks, |t: string| -> bool { return is_path_shaped(trim(t)); });
+    if len(hit) == 0 { return ""; };
+    return trim(get(hit, 0));
+}
+
+fn lstrip_markers(s: string) -> string {
+    if len(s) == 0 { return s; };
+    if index_of("-*0123456789. \t", substring(s, 0, 1)) >= 0 {
+        return lstrip_markers(substring(s, 1, len(s)));
+    };
+    return s;
+}
+
+fn first_path_in_lines_at(lines: list<string>, i: int) -> string {
+    if i >= len(lines) { return ""; };
+    let hit = first_path_token(regex_split("[\\s:,]+", lstrip_markers(get(lines, i))));
+    if len(hit) > 0 { return hit; };
+    return first_path_in_lines_at(lines, i + 1);
+}
+
 fn primary_file_path(files: string) -> string {
-    let cmd = "F=" + shell_escape(files) +
-        " python3 -c 'import os,re,sys" +
-        "\nt=os.environ[\"F\"]" +
-        "\nm=re.search(r\"`([^`]+)`\", t)" +
-        "\nif m:" +
-        "\n    print(m.group(1).strip()); sys.exit(0)" +
-        "\nfor ln in t.splitlines():" +
-        "\n    s=ln.lstrip(\"-*0123456789. \\t\")" +
-        "\n    for tok in re.split(r\"[\\s:,]+\", s):" +
-        "\n        if (\"/\" in tok or \".\" in tok) and len(tok)>2:" +
-        "\n            print(tok.strip()); sys.exit(0)" +
-        "\nprint(\"\")'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let bt = regex_capture("`([^`]+)`", files, 1);
+    if len(bt) > 0 { return trim(bt); };
+    return first_path_in_lines_at(regex_split("\\r\\n|\\r|\\n", files), 0);
 }
 
 // #1195: deterministically turn (existing content, LLM search/replace edits)
@@ -145,18 +171,26 @@ fn primary_file_path(files: string) -> string {
 // non-zero and the caller's `try` collapses to "" => treated as a failed
 // code-gen, no commit. `path` is shell_escape'd; `orig` and `edits` are passed
 // as env vars so the body itself carries no untrusted concatenation.
+//
+// #1597 (substrate purity P1): the `python3 -c` wrapper only did three
+// mechanical things apply-edits.py already does itself (build the tools/
+// path, run it with content on stdin + $APPLY_EDITS, json.dumps the
+// envelope) — verified apply-edits.py:126-141 reads stdin + the env var
+// directly. Now a plain `sh -c 'printf ... | python3 ...'` pipeline (no
+// embedded interpreter logic); the JSON envelope is built with
+// `json_escape_string` (matches python's `json.dumps` string-escaping for
+// `"`, `\`, control chars). A shell pipeline's exit status is the LAST
+// command's, so a non-zero apply-edits.py exit still fails the whole
+// `exec sh` -> `try/catch` collapses to "" -> same no-commit path as
+// today. `tools/apply-edits.py` itself is UNTOUCHED (stays class C).
 fn apply_edits_to_actions(path: string, orig: string, edits: string) -> string {
     // colony-lint: safe-exec-concat
     let cmd = "ORIG=" + shell_escape(orig) + " APPLY_EDITS=" + shell_escape(edits) +
-        " FP=" + shell_escape(path) +
-        " python3 -c 'import os,sys,subprocess,json" +
-        "\ntools=os.path.join(os.environ[\"COLONY_DIR\"], \"..\", \"..\", \"tools\", \"apply-edits.py\")" +
-        "\np=subprocess.run([sys.executable, tools], input=os.environ[\"ORIG\"], capture_output=True, text=True, env=os.environ)" +
-        "\nif p.returncode != 0:" +
-        "\n    sys.stderr.write(p.stderr); sys.exit(1)" +
-        "\nprint(json.dumps([{\"action\": \"update\", \"file_path\": os.environ[\"FP\"], \"content\": p.stdout}]))'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+        " sh -c 'printf %s \"$ORIG\" | python3 \"$COLONY_DIR/../../tools/apply-edits.py\"'";
+    let content = try { exec sh cmd; } catch e { ""; };
+    if len(content) == 0 { return ""; };
+    return "[{\"action\": \"update\", \"file_path\": \"" + json_escape_string(path) +
+        "\", \"content\": \"" + json_escape_string(content) + "\"}]";
 }
 
 // #1208: render a line-NUMBERED view of the file content for the edit prompt.
@@ -165,6 +199,9 @@ fn apply_edits_to_actions(path: string, orig: string, edits: string) -> string {
 // `**`-drop failure mode of the search/replace path). The UN-numbered content
 // rides $C (env var, off-argv) so ARG_MAX never bites; splitlines() keepends is
 // not needed here because the numbered view is a display artifact, not content.
+//
+// substrate-purity: deferred (CB: native recursion ~46 CB/line would exhaust
+// cb_per_tick on large files; revisit after a cheaper primitive lands)
 fn numbered_view(content: string) -> string {
     // colony-lint: safe-exec-concat
     let cmd = "C=" + shell_escape(content) +
@@ -190,18 +227,23 @@ fn numbered_view(content: string) -> string {
 // collapses to "" => treated as a failed code-gen, no commit. `path` is
 // shell_escape'd; `orig` and `edits` are passed as env vars so the body itself
 // carries no untrusted concatenation.
+//
+// #1597 (substrate purity P1): mirrors apply_edits_to_actions's rewrite —
+// the `python3 -c` wrapper only did three mechanical things
+// apply-line-edits.py already does itself (build the tools/ path, run it
+// with content on stdin + $LINE_EDITS, json.dumps the envelope) — verified
+// apply-line-edits.py:71-86 reads stdin + the env var directly. Now a plain
+// `sh -c 'printf ... | python3 ...'` pipeline; the JSON envelope is built
+// with `json_escape_string`. `tools/apply-line-edits.py` itself is
+// UNTOUCHED (stays class C).
 fn apply_line_edits_to_actions(path: string, orig: string, edits: string) -> string {
     // colony-lint: safe-exec-concat
     let cmd = "ORIG=" + shell_escape(orig) + " LINE_EDITS=" + shell_escape(edits) +
-        " FP=" + shell_escape(path) +
-        " python3 -c 'import os,sys,subprocess,json" +
-        "\ntools=os.path.join(os.environ[\"COLONY_DIR\"], \"..\", \"..\", \"tools\", \"apply-line-edits.py\")" +
-        "\np=subprocess.run([sys.executable, tools], input=os.environ[\"ORIG\"], capture_output=True, text=True, env=os.environ)" +
-        "\nif p.returncode != 0:" +
-        "\n    sys.stderr.write(p.stderr); sys.exit(1)" +
-        "\nprint(json.dumps([{\"action\": \"update\", \"file_path\": os.environ[\"FP\"], \"content\": p.stdout}]))'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+        " sh -c 'printf %s \"$ORIG\" | python3 \"$COLONY_DIR/../../tools/apply-line-edits.py\"'";
+    let content = try { exec sh cmd; } catch e { ""; };
+    if len(content) == 0 { return ""; };
+    return "[{\"action\": \"update\", \"file_path\": \"" + json_escape_string(path) +
+        "\", \"content\": \"" + json_escape_string(content) + "\"}]";
 }
 
 fn merged_mr_cmd(owner: string, repo: string) -> string {
@@ -319,22 +361,30 @@ fn input_unchanged(owner: string, repo: string, iid_str: string, upd: string) ->
 // equals BR. Returns "1" on a match, "0" otherwise. The raw JSON rides $J
 // (env var, off-argv) so ARG_MAX never bites. Total: malformed JSON / missing
 // field / non-list all collapse to "0".
+//
+// #1597 (substrate purity P1): native rewrite via
+// `json_array_object_field_values`, was an inline `python3 -c`. Malformed
+// JSON / non-array top-level both resolve to an empty list from the builtin
+// (confirmed: parse failure and non-Array both hit the builtin's own
+// `Vec::new()` fallback) — same as python's `except Exception` / `not
+// isinstance(d,list)` guards. Non-dict array entries are silently skipped by
+// the builtin, same as python's `isinstance(it,dict)` guard.
+//
+// Sharp edge caught during review (a real fix, not a transliteration
+// artifact): when an object is present but LACKS `source_branch`, the
+// builtin emits `""` for that entry so callers can distinguish
+// field-absent from object-absent; python's `it.get("source_branch")` is
+// `None`, and `None == br` is always `False` for a real branch string — but
+// if `branch == ""` the native version would WRONGLY match (`"" == ""` ->
+// true) where python never would. The `len(branch) == 0` guard below closes
+// that latent false-match gap. Every real caller (has_mr_for_branch, the
+// epic-decompose branch-check sites) always passes a computed
+// `fix/issue-<iid>` string, never `""`, so this is belt-and-braces here,
+// not a live bug on the current call graph.
 fn raw_list_has_branch(raw: string, branch: string) -> bool {
-    let cmd = "J=" + shell_escape(raw) + " BR=" + shell_escape(branch) +
-        " python3 -c 'import os,json,sys" +
-        "\ntry:" +
-        "\n    d=json.loads(os.environ[\"J\"])" +
-        "\nexcept Exception:" +
-        "\n    print(\"0\"); sys.exit(0)" +
-        "\nbr=os.environ[\"BR\"]" +
-        "\nif not isinstance(d,list):" +
-        "\n    print(\"0\"); sys.exit(0)" +
-        "\nfor it in d:" +
-        "\n    if isinstance(it,dict) and it.get(\"source_branch\")==br:" +
-        "\n        print(\"1\"); sys.exit(0)" +
-        "\nprint(\"0\")'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out == "1";
+    if len(branch) == 0 { return false; };
+    let branches = json_array_object_field_values(raw, "source_branch");
+    return len(filter(branches, |b: string| -> bool { return b == branch; })) > 0;
 }
 
 // #1259: split a (possibly CSV) planning:labels:epic vocab and OR the exact-
@@ -347,18 +397,23 @@ fn raw_list_has_branch(raw: string, branch: string) -> bool {
 // closing quote so it still can't match. ISSUE_DETAIL + VOCAB ride env vars
 // (off-argv, so ARG_MAX never bites). Total: a malformed/empty vocab or no token
 // match collapses to "0" => false (a missed auto-decompose is the safe failure).
+//
+// #1597 (substrate purity P1): native rewrite via regex_split + filter, was
+// an inline `python3 -c`. `index_of(issue_detail, "\"" + tt + "\"") >= 0` is
+// exactly python's `chr(34)+t+chr(34) in d` literal-substring test (-1 on
+// no match == total-on-no-match, same contract). `regex_split(",", ...)`
+// reproduces python's `.split(",")` token boundaries (including empty
+// tokens on leading/trailing/consecutive commas), which the `len(tt)==0`
+// filter then drops, same as python's `if t and ...`. Malformed/empty vocab
+// -> empty/all-empty tokens -> no hits -> false, matching the documented
+// fail-safe.
 fn is_epic_match(issue_detail: string, epic_vocab: string) -> bool {
-    let cmd = "D=" + shell_escape(issue_detail) + " V=" + shell_escape(epic_vocab) +
-        " python3 -c 'import os,sys" +
-        "\nd=os.environ[\"D\"]" +
-        "\nv=os.environ[\"V\"]" +
-        "\nfor t in v.split(\",\"):" +
-        "\n    t=t.strip()" +
-        "\n    if t and chr(34)+t+chr(34) in d:" +
-        "\n        print(\"1\"); sys.exit(0)" +
-        "\nprint(\"0\")'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out == "1";
+    let hits = filter(regex_split(",", epic_vocab), |t: string| -> bool {
+        let tt = trim(t);
+        if len(tt) == 0 { return false; };
+        return index_of(issue_detail, "\"" + tt + "\"") >= 0;
+    });
+    return len(hits) > 0;
 }
 
 // #1350: does an open OR merged MR already exist for this issue's deterministic
