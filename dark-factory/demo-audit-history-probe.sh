@@ -3,7 +3,7 @@
 # `audits` field is unreliable (empty even on heavily-hardened repos); the target repo's OWN git history —
 # fix-audit-N commits/branches, finding refs, auditor-firm mentions — is the real audit-density signal.
 #
-# Five cases, all offline:
+# Six cases, all offline:
 #   1. HARDENED fixture — a throwaway `git init` repo with fix-audit-N commits, a "remaining audit fixes"
 #      merge, Cantina/Sherlock finding-ref commits, and a `fix-audit-7` branch -> heavily_audited=true, a
 #      density above threshold, signals.fix_audit>=2, and commits_inspected matches the fixture.
@@ -13,6 +13,9 @@
 #      on stderr, and NO stdout JSON.
 #   4. an unreachable URL / a single-segment github ORG url -> exit 0 + [SKIP] (no real endpoint contacted).
 #   5. no positional arg and no --bounty -> exit 2 (bad-args band).
+#   6. --depth 0 / --depth abc -> exit 2 + an error line on stderr + NO stdout JSON (#1615: a silently-swallowed
+#      bad --depth would otherwise yield a confident-looking FALSE-CLEAN verdict — the wrong-direction failure
+#      for a target-selection tool, so this is bad-args (exit 2), never a [SKIP]).
 #
 # No network anywhere: fixtures are local `git init` repos plus an unreachable `.invalid` host. Mirrors the
 # other dark-factory demo-*.sh (assert-based PASS/FAIL lines, a trap-cleaned temp dir, exit non-zero on
@@ -171,12 +174,33 @@ note "5) no positional + no --bounty -> exit 2 ..."
 "$PROBE" >/dev/null 2>&1; RC=$?
 [ "$RC" -eq 2 ] && ok "missing target and --bounty -> exit 2" || bad "missing args did not exit 2 (rc=$RC)"
 
+# ----------------------------------------------------------------------------------------------------------
+# 6) bad --depth: zero and non-numeric both -> exit 2 + an error line on stderr + NO stdout JSON. A silently
+#    swallowed bad --depth would otherwise yield a confident-looking FALSE-CLEAN verdict (#1615) — the wrong-
+#    direction failure for a target-selection tool, so this is the bad-args band (exit 2), never a [SKIP].
+# ----------------------------------------------------------------------------------------------------------
+note "6) --depth 0 / --depth abc -> exit 2, no stdout JSON (#1615) ..."
+ZOUTF="$WORK/depth-zero.out"
+ZERRF="$WORK/depth-zero.err"
+"$PROBE" --depth 0 "$CLEAN" >"$ZOUTF" 2>"$ZERRF"; RC=$?
+[ "$RC" -eq 2 ] && ok "--depth 0 -> exit 2" || bad "--depth 0 exited $RC (expected 2)"
+[ -s "$ZERRF" ] && ok "--depth 0 emits an error line on stderr" || bad "no error line on stderr for --depth 0"
+if [ -s "$ZOUTF" ]; then bad "stdout is non-empty on the --depth 0 bad-args path (expected none)"; else ok "no stdout JSON on the --depth 0 bad-args path"; fi
+
+AOUTF="$WORK/depth-abc.out"
+AERRF="$WORK/depth-abc.err"
+"$PROBE" --depth abc "$CLEAN" >"$AOUTF" 2>"$AERRF"; RC=$?
+[ "$RC" -eq 2 ] && ok "--depth abc -> exit 2" || bad "--depth abc exited $RC (expected 2)"
+[ -s "$AERRF" ] && ok "--depth abc emits an error line on stderr" || bad "no error line on stderr for --depth abc"
+if [ -s "$AOUTF" ]; then bad "stdout is non-empty on the --depth abc bad-args path (expected none)"; else ok "no stdout JSON on the --depth abc bad-args path"; fi
+
 echo
 if [ "$FAILS" -eq 0 ]; then
   note "PASS: the probe read git history straight (not the unreliable bounty audits field) — a hardened fixture"
   note "      (fix-audit-N commits/branch, Cantina/Sherlock finding refs) scored heavily_audited=true, a clean"
   note "      fixture scored heavily_audited=false with 0 density, an unresolvable --bounty / an unreachable URL"
-  note "      / a github ORG url all degraded to a clean [SKIP] with no stdout JSON, and missing args exit 2."
+  note "      / a github ORG url all degraded to a clean [SKIP] with no stdout JSON, missing args exit 2, and a"
+  note "      bad --depth (0 / non-numeric) exits 2 with no stdout JSON instead of a false-clean verdict (#1615)."
   note "      Offline + deterministic; never touches a real endpoint, never submits."
   exit 0
 fi

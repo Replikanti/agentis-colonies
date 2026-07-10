@@ -14,7 +14,11 @@
 #   --bounty <file>         : resolve the repo from a SINGLE bounty JSON object's top-level `githubUrl` OR the
 #                             first github-looking in-scope `assets[].url` (checks BOTH — the #1592 mapper only
 #                             reads assets[].url; this is the improvement). No resolvable repo -> [SKIP].
-#   --depth N                : shallow-clone / log depth (default 500).
+#   --depth N                : shallow-clone / log depth (default 500). Must be a positive integer; a bad value
+#                             (non-numeric, zero, negative) is operator error -> exit 2 (NOT a SKIP), since
+#                             silently swallowing it would otherwise yield a confident-looking FALSE-CLEAN
+#                             verdict (commits_inspected=0 -> heavily_audited=false) — the wrong-direction
+#                             failure for a target-selection tool (#1615).
 #
 # Emits ONE JSON object to stdout (python3, no shell JSON parsing):
 #   {"repo":"<arg-or-resolved>","source":"local"|"clone","commits_inspected":N,"audit_signal_commits":K,
@@ -54,8 +58,14 @@ nv() { [ "$1" -ge 2 ] || { echo "audit-history-probe.sh: $2 requires a value" >&
 TARGET="" ; BOUNTY="" ; DEPTH="500"
 while [ $# -gt 0 ]; do case "$1" in
   --bounty)  nv "$#" "$1"; BOUNTY="$2"; shift 2;;
-  --depth)   nv "$#" "$1"; DEPTH="$2"; shift 2;;
-  -h|--help) sed -n '2,48p' "$0"; exit 0;;
+  --depth)
+    nv "$#" "$1"
+    case "$2" in
+      ''|*[!0-9]*) echo "audit-history-probe.sh: --depth must be a positive integer: $2" >&2; exit 2;;
+    esac
+    [ "$2" -ge 1 ] 2>/dev/null || { echo "audit-history-probe.sh: --depth must be >= 1: $2" >&2; exit 2; }
+    DEPTH="$2"; shift 2;;
+  -h|--help) sed -n '2,52p' "$0"; exit 0;;
   --) shift;;
   -*) echo "audit-history-probe.sh: unknown arg: $1" >&2; exit 2;;
   *)
