@@ -15,8 +15,33 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+**Requires:** agentis >= 1.22.4
+
 ### Changed
 
+- **Substrate purity P3 cluster A — native triage decision-context builders** ([#1638](https://github.com/Replikanti/agentis-colonies/issues/1638)):
+  the three embedded `python3 -c` context builders
+  `canonical_label_context` (`labeler.ag`), `canonical_route_context`
+  (`router.ag`), and `canonical_priority_context` (`prioritizer.ag`) are
+  replaced with native `.ag`, each removing an `exec sh`+python fork. Selection
+  is **flat / array-size-independent**: one `json_array_project` over the whole
+  issues array picks the first undecided issue via a `regex_capture` (labeler
+  `labels[0]`-empty, router `assignees[0].username`-empty, prioritizer a K=8
+  greedy-consume of the leading prioritized-row run + an O(1) `is_pri` VERIFY),
+  then a constant number of `json_get_raw`/`json_get` reads build ctx/q. The
+  keyword signature now uses the new core builtin **`token_hits(text, vocab)`**
+  (agentis >= 1.22.4) — byte-identical to the retired
+  `",".join(sorted({w for w in VOCAB if w in set(re.findall(r"[a-z]+",
+  text.lower()))}))` — and a shared `triage_vocab_csv()` constant (drift-asserted
+  across the three files and against `tools/lib/canonical-context.py` VOCAB).
+  ctx+iid feed the crystallizer KnowledgeEntry content-hash id, so byte-identity
+  is pinned by `tools/test-canonical-context.sh` (`agentis go` fixture oracles
+  reconstructing each retired one-liner) — no rule is re-keyed. Worst case at
+  `--per-page 50` / a 255-char vocab-dense title: labeler ~360 CB, router
+  ~525 CB, prioritizer ~1455 CB — all well under the 2000 `cb_per_tick` cap. The
+  `check-substrate-purity.sh` allowlist drops the three Cluster-A rows (10 → 7).
+  Requires the `token_hits` builtin, so the runtime floor moves to
+  **agentis >= 1.22.4** (was 1.22.3). Cluster B lands in a later PR.
 - **Substrate purity P3 cluster C — native CSV/tag set-ops** ([#1638](https://github.com/Replikanti/agentis-colonies/issues/1638)):
   two embedded `python3 -c` one-liners are replaced with native `.ag` builtin
   pipelines, each removing an `exec sh`+python fork. `labeler.ag`'s

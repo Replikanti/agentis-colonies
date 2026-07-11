@@ -246,57 +246,117 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// #1638 P3 cluster A: shared canonical-context helpers, added byte-identically
+// to labeler.ag / router.ag / prioritizer.ag (the nth_field/repo_field
+// duplication precedent; drift-asserted across the three files by
+// tools/test-canonical-context.sh). They replace the embedded `python3 -c`
+// context builders with native `.ag` — agent logic lives in the substrate, not
+// an interpreter one-liner (#1587 ratchet).
+
+// The 26-word triage keyword vocabulary as a comma list, fed directly to the
+// native token_hits(text, vocab) builtin (agentis >= 1.22.4): token_hits returns
+// the sorted-unique comma-joined subset of these words that appear as whole
+// [a-z]+ tokens in the ASCII-lowercased text — byte-identical to the retired
+// python `",".join(sorted({w for w in VOCAB if w in set(re.findall(r"[a-z]+",
+// text.lower()))}))`, i.e. the `kw=` value directly. Kept byte-identical to
+// tools/lib/canonical-context.py VOCAB (drift-asserted).
+fn triage_vocab_csv() -> string {
+    return "bug,crash,error,fail,segfault,panic,exception,docs,documentation,readme,feature,enhancement,request,question,security,vuln,cve,performance,perf,slow,test,ci,build,regression,refactor,dependency";
+}
+
+// json_get on a missing field yields Void whose to_string is "void"; map that
+// back to "" (python's `x.get(k) or ""`).
+fn void_to_empty(s: string) -> string {
+    if s == "void" { return ""; };
+    return s;
+}
+
+// Comma-join a list (python `",".join(...)`); "" for the empty list.
+fn joinc(items: list<string>) -> string {
+    return reduce(items, |acc: string, t: string| -> string {
+        if len(acc) > 0 { return acc + "," + t; };
+        return t;
+    }, "");
+}
+
+// Space-join a list (python `" ".join(...)`); "" for the empty list.
+fn joins(items: list<string>) -> string {
+    return reduce(items, |acc: string, t: string| -> string {
+        if len(acc) > 0 { return acc + " " + t; };
+        return t;
+    }, "");
+}
+
+// Replace every non-overlapping `needle` in `hay` with `rep` (no native
+// str_replace builtin). Tail-recursive per the `.ag` no-loops convention.
+fn str_replace_all(hay: string, needle: string, rep: string) -> string {
+    let p = index_of(hay, needle);
+    if p < 0 { return hay; };
+    return substring(hay, 0, p) + rep + str_replace_all(substring(hay, p + len(needle), len(hay)), needle, rep);
+}
+
+// Whitespace-collapse to one line, byte-identical to python
+// `re.sub(r"\s+", " ", text).strip()` on forge titles: map \t/\n/\r to a space
+// (ws_to_space), collapse runs of spaces to one (dedupe_space), then trim. Forge
+// issue titles never carry \f/\v, so those Unicode-whitespace forms are out of
+// scope (documented on #1638).
+fn ws_to_space(s: string) -> string {
+    return str_replace_all(str_replace_all(str_replace_all(s, "\t", " "), "\n", " "), "\r", " ");
+}
+fn dedupe_space(s: string) -> string {
+    if index_of(s, "  ") < 0 { return s; };
+    return dedupe_space(str_replace_all(s, "  ", " "));
+}
+fn collapse(s: string) -> string {
+    return trim(dedupe_space(ws_to_space(s)));
+}
+
+// 0-based array position of the row whose iid == `iid` in the flat
+// json_array_project TSV `proj`. iid is unique and line-anchored ("\n"+iid+"\t")
+// so index_of cannot mis-hit a numeric prefix (41 inside 341); the count of
+// newlines before that offset is the array index.
+fn row_index(proj: string, iid: string) -> int {
+    let p = index_of("\n" + proj, "\n" + iid + "\t");
+    return len(regex_find_all("\n", substring(proj, 0, p)));
+}
+
 // #1234 crystallizer pilot (ports labeler #1235): deterministic, prompt-free
 // canonical context for the first UNASSIGNED issue in `raw` (the router-view
-// JSON the LLM path consumes). Emits a single tab-separated line:
-//   "<iid>\t<canonical_ctx>\t<bm25_query>"
-// where canonical_ctx is "kw=" + sorted_kw_csv + " labels=" + sorted_labels_csv.
-// The 3rd field (#1429) is the issue's free text (title + label names —
-// the router view carries no description), whitespace-collapsed to one
-// line and truncated to 1200 bytes — the Stage 1b crystallizer_search
-// query. Emitted unconditionally (repo_field extraction by index keeps
-// fields 0-1 byte-identical for Stage 1), consumed only when
-// ROUTER_BM25_RECALL is on.
-// The keyword signature lowercases the issue title and matches a FIXED triage
-// vocabulary (the same set labeler uses); the sorted matched set plus the
-// sorted labels CSV are stable across repeats so the crystallized rule id is
-// identical tick-to-tick. Routing carries no personal/team scope dimension
-// (router's learn() rows have no scope tag), so — unlike labeler — no author
-// field is emitted; the router view also carries no description, so only the
-// title feeds the keyword signature. An issue with no vocab hit / no labels
-// still yields a valid ctx ("kw= labels="); it rarely crystallizes, which is
-// fine. Total-on-failure: any python/exec failure returns "" so the caller
-// falls through to the LLM path and is never starved.
+// JSON the LLM path consumes). Emits a single tab-separated line
+// "<iid>\t<canonical_ctx>\t<bm25_query>" where canonical_ctx is "kw=" +
+// sorted_kw_csv + " labels=" + sorted_labels_csv; the 3rd field (#1429) is the
+// whitespace-collapsed free text (title + label names — the router view carries
+// no description), <= 1200 bytes, the Stage 1b crystallizer_search query,
+// consumed only when ROUTER_BM25_RECALL is on.
+// #1638 P3 cluster A: native rewrite (was an embedded `python3 -c`). Flat,
+// array-size-independent: json_array_project selects the first issue whose
+// assignees[0].username projection cell is empty (== python's first `not
+// x.get("assignees")` on the triage view — assignees are objects, so the
+// dotted .username probe is required, a bare assignees[0] projects EMPTY), then
+// a constant number of json_get_raw / json_get reads on THAT one issue build
+// ctx/q. token_hits over the fixed vocab yields the sorted `kw=` set; the
+// `labels=` set is the trimmed / non-empty / sorted-unique label names. No
+// author field (router carries no scope), and the router view carries no
+// description so only the title feeds the keyword signature. An issue with no
+// vocab hit / no labels still yields a valid ctx ("kw= labels="); it rarely
+// crystallizes, which is fine. Total-on-failure: an empty / non-list /
+// no-candidate / missing-iid raw yields "" (regex_capture "" -> early return)
+// so the caller falls through to the LLM path and is never starved.
 fn canonical_route_context(issues_raw: string) -> string {
-    let cmd = "RAW=" + shell_escape(issues_raw) +
-        " python3 -c '" +
-        "import os, json, re\n" +
-        "VOCAB=[\"bug\",\"crash\",\"error\",\"fail\",\"segfault\",\"panic\",\"exception\",\"docs\",\"documentation\",\"readme\",\"feature\",\"enhancement\",\"request\",\"question\",\"security\",\"vuln\",\"cve\",\"performance\",\"perf\",\"slow\",\"test\",\"ci\",\"build\",\"regression\",\"refactor\",\"dependency\"]\n" +
-        "try:\n" +
-        "    data=json.loads(os.environ[\"RAW\"])\n" +
-        "except Exception:\n" +
-        "    print(\"\"); raise SystemExit\n" +
-        "if not isinstance(data, list):\n" +
-        "    print(\"\"); raise SystemExit\n" +
-        "chosen=None\n" +
-        "for x in data:\n" +
-        "    if not isinstance(x, dict): continue\n" +
-        "    if not x.get(\"assignees\"):\n" +
-        "        chosen=x; break\n" +
-        "if chosen is None:\n" +
-        "    print(\"\"); raise SystemExit\n" +
-        "iid=chosen.get(\"iid\")\n" +
-        "if iid is None:\n" +
-        "    print(\"\"); raise SystemExit\n" +
-        "text=(chosen.get(\"title\") or \"\").lower()\n" +
-        "toks=set(re.findall(r\"[a-z]+\", text))\n" +
-        "hits=sorted({w for w in VOCAB if w in toks})\n" +
-        "labels=sorted({str(l).strip() for l in (chosen.get(\"labels\") or []) if str(l).strip()})\n" +
-        "ctx=\"kw=\"+\",\".join(hits)+\" labels=\"+\",\".join(labels)\n" +
-        "q=re.sub(r\"\\s+\", \" \", (chosen.get(\"title\") or \"\")+\" \"+\" \".join(labels)).strip()[:1200]\n" +
-        "print(str(iid)+\"\\t\"+ctx+\"\\t\"+q)" +
-        "'";
-    return try { exec sh cmd; } catch e { ""; };
+    let proj = json_array_project(issues_raw, "", "iid,assignees[0].username");
+    let chosen = regex_capture("(?m)^([0-9]+)\t$", proj, 1);
+    if len(chosen) == 0 { return ""; };
+    let idx = row_index(proj, chosen);
+    let obj = json_get_raw(issues_raw, "[" + to_string(idx) + "]");
+    let labels = sort_unique_strings(filter(map(json_array_to_strings(json_get_raw(obj, "labels")), |l: string| -> string {
+        return trim(l);
+    }), |l: string| -> bool {
+        return len(l) > 0;
+    }));
+    let title = void_to_empty(to_string(json_get(obj, "title")));
+    let ctx = "kw=" + token_hits(title, triage_vocab_csv()) + " labels=" + joinc(labels);
+    let q = substring(collapse(title + " " + joins(labels)), 0, 1200);
+    return chosen + "\t" + ctx + "\t" + q;
 }
 
 // #1234 crystallizer pilot: canonical assignee for the rule's `action` slot.

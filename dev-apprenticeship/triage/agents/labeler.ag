@@ -138,6 +138,80 @@ fn repo_field(line: string, idx: int) -> string {
     return nth_field(line, "\t", idx);
 }
 
+// #1638 P3 cluster A: shared canonical-context helpers, added byte-identically
+// to labeler.ag / router.ag / prioritizer.ag (the nth_field/repo_field
+// duplication precedent; drift-asserted across the three files by
+// tools/test-canonical-context.sh). They replace the embedded `python3 -c`
+// context builders with native `.ag` — agent logic lives in the substrate, not
+// an interpreter one-liner (#1587 ratchet).
+
+// The 26-word triage keyword vocabulary as a comma list, fed directly to the
+// native token_hits(text, vocab) builtin (agentis >= 1.22.4): token_hits returns
+// the sorted-unique comma-joined subset of these words that appear as whole
+// [a-z]+ tokens in the ASCII-lowercased text — byte-identical to the retired
+// python `",".join(sorted({w for w in VOCAB if w in set(re.findall(r"[a-z]+",
+// text.lower()))}))`, i.e. the `kw=` value directly. Kept byte-identical to
+// tools/lib/canonical-context.py VOCAB (drift-asserted).
+fn triage_vocab_csv() -> string {
+    return "bug,crash,error,fail,segfault,panic,exception,docs,documentation,readme,feature,enhancement,request,question,security,vuln,cve,performance,perf,slow,test,ci,build,regression,refactor,dependency";
+}
+
+// json_get on a missing field yields Void whose to_string is "void"; map that
+// back to "" (python's `x.get(k) or ""`).
+fn void_to_empty(s: string) -> string {
+    if s == "void" { return ""; };
+    return s;
+}
+
+// Comma-join a list (python `",".join(...)`); "" for the empty list.
+fn joinc(items: list<string>) -> string {
+    return reduce(items, |acc: string, t: string| -> string {
+        if len(acc) > 0 { return acc + "," + t; };
+        return t;
+    }, "");
+}
+
+// Space-join a list (python `" ".join(...)`); "" for the empty list.
+fn joins(items: list<string>) -> string {
+    return reduce(items, |acc: string, t: string| -> string {
+        if len(acc) > 0 { return acc + " " + t; };
+        return t;
+    }, "");
+}
+
+// Replace every non-overlapping `needle` in `hay` with `rep` (no native
+// str_replace builtin). Tail-recursive per the `.ag` no-loops convention.
+fn str_replace_all(hay: string, needle: string, rep: string) -> string {
+    let p = index_of(hay, needle);
+    if p < 0 { return hay; };
+    return substring(hay, 0, p) + rep + str_replace_all(substring(hay, p + len(needle), len(hay)), needle, rep);
+}
+
+// Whitespace-collapse to one line, byte-identical to python
+// `re.sub(r"\s+", " ", text).strip()` on forge titles: map \t/\n/\r to a space
+// (ws_to_space), collapse runs of spaces to one (dedupe_space), then trim. Forge
+// issue titles never carry \f/\v, so those Unicode-whitespace forms are out of
+// scope (documented on #1638).
+fn ws_to_space(s: string) -> string {
+    return str_replace_all(str_replace_all(str_replace_all(s, "\t", " "), "\n", " "), "\r", " ");
+}
+fn dedupe_space(s: string) -> string {
+    if index_of(s, "  ") < 0 { return s; };
+    return dedupe_space(str_replace_all(s, "  ", " "));
+}
+fn collapse(s: string) -> string {
+    return trim(dedupe_space(ws_to_space(s)));
+}
+
+// 0-based array position of the row whose iid == `iid` in the flat
+// json_array_project TSV `proj`. iid is unique and line-anchored ("\n"+iid+"\t")
+// so index_of cannot mis-hit a numeric prefix (41 inside 341); the count of
+// newlines before that offset is the array index.
+fn row_index(proj: string, iid: string) -> int {
+    let p = index_of("\n" + proj, "\n" + iid + "\t");
+    return len(regex_find_all("\n", substring(proj, 0, p)));
+}
+
 // #1235 crystallizer pilot: deterministic, prompt-free canonical context
 // for the first unlabeled issue in `raw` (the labeler-view JSON the LLM
 // path consumes). Emits a single tab-separated line:
@@ -147,48 +221,33 @@ fn repo_field(line: string, idx: int) -> string {
 // whitespace-collapsed to one line and truncated to 1200 bytes — the
 // Stage 1b crystallizer_search query. It is emitted unconditionally
 // (repo_field extraction by index keeps fields 0-2 byte-identical for
-// Stage 1) and consumed only when LABELER_BM25_RECALL is on. The
-// keyword signature lowercases the issue title (+description when the
-// view carries one) and matches a FIXED triage vocabulary; the sorted
-// matched set is stable across repeats so the crystallized rule id is
-// identical tick-to-tick. scope mirrors scope_for_author: "personal"
+// Stage 1) and consumed only when LABELER_BM25_RECALL is on.
+// #1638 P3 cluster A: native rewrite (was an embedded `python3 -c`). Flat,
+// array-size-independent: json_array_project selects the first issue whose
+// labels[0] projection cell is empty (== python's first `not x.get("labels")`
+// on the string-label triage view), then a constant number of json_get_raw /
+// json_get reads on THAT one issue build ctx/q. token_hits over the fixed
+// vocab yields the sorted `kw=` set; scope mirrors scope_for_author: "personal"
 // when the issue's author matches the operator's GitLab username (memo
 // gitlab:me), "team" otherwise. An issue with no vocab hit yields
 // "kw= scope=<scope>" (still valid; rarely crystallizes, which is fine).
-// Total-on-failure: any python/exec failure returns "" so the caller
-// falls through to the LLM path and is never starved.
+// Total-on-failure: an empty/non-list/no-candidate/missing-iid raw yields ""
+// (regex_capture "" -> early return) so the caller falls through to the LLM
+// path and is never starved.
 fn canonical_label_context(issues_raw: string, me: string) -> string {
-    let cmd = "RAW=" + shell_escape(issues_raw) + " ME=" + shell_escape(me) +
-        " python3 -c '" +
-        "import os, json, re\n" +
-        "VOCAB=[\"bug\",\"crash\",\"error\",\"fail\",\"segfault\",\"panic\",\"exception\",\"docs\",\"documentation\",\"readme\",\"feature\",\"enhancement\",\"request\",\"question\",\"security\",\"vuln\",\"cve\",\"performance\",\"perf\",\"slow\",\"test\",\"ci\",\"build\",\"regression\",\"refactor\",\"dependency\"]\n" +
-        "me=os.environ.get(\"ME\",\"\").strip()\n" +
-        "try:\n" +
-        "    data=json.loads(os.environ[\"RAW\"])\n" +
-        "except Exception:\n" +
-        "    print(\"\"); raise SystemExit\n" +
-        "if not isinstance(data, list):\n" +
-        "    print(\"\"); raise SystemExit\n" +
-        "chosen=None\n" +
-        "for x in data:\n" +
-        "    if not isinstance(x, dict): continue\n" +
-        "    if not x.get(\"labels\"):\n" +
-        "        chosen=x; break\n" +
-        "if chosen is None:\n" +
-        "    print(\"\"); raise SystemExit\n" +
-        "iid=chosen.get(\"iid\")\n" +
-        "if iid is None:\n" +
-        "    print(\"\"); raise SystemExit\n" +
-        "author=((chosen.get(\"author\") or {}).get(\"username\")) or \"\"\n" +
-        "text=((chosen.get(\"title\") or \"\")+\" \"+(chosen.get(\"description\") or \"\")).lower()\n" +
-        "toks=set(re.findall(r\"[a-z]+\", text))\n" +
-        "hits=sorted({w for w in VOCAB if w in toks})\n" +
-        "scope=\"personal\" if (me and author==me) else \"team\"\n" +
-        "ctx=\"kw=\"+\",\".join(hits)+\" scope=\"+scope\n" +
-        "q=re.sub(r\"\\s+\", \" \", (chosen.get(\"title\") or \"\")+\" \"+(chosen.get(\"description\") or \"\")).strip()[:1200]\n" +
-        "print(str(iid)+\"\\t\"+author+\"\\t\"+ctx+\"\\t\"+q)" +
-        "'";
-    return try { exec sh cmd; } catch e { ""; };
+    let proj = json_array_project(issues_raw, "", "iid,labels[0]");
+    let chosen = regex_capture("(?m)^([0-9]+)\t$", proj, 1);
+    if len(chosen) == 0 { return ""; };
+    let idx = row_index(proj, chosen);
+    let obj = json_get_raw(issues_raw, "[" + to_string(idx) + "]");
+    let author = void_to_empty(to_string(json_get(obj, "author.username")));
+    let text = void_to_empty(to_string(json_get(obj, "title"))) + " " + void_to_empty(to_string(json_get(obj, "description")));
+    let scope = if len(me) > 0 {
+        if author == me { "personal"; } else { "team"; };
+    } else { "team"; };
+    let ctx = "kw=" + token_hits(text, triage_vocab_csv()) + " scope=" + scope;
+    let q = substring(collapse(text), 0, 1200);
+    return chosen + "\t" + author + "\t" + ctx + "\t" + q;
 }
 
 // #1235 crystallizer pilot: sorted, de-duplicated labels CSV. The

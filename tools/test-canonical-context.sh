@@ -28,30 +28,42 @@ FAIL=0
 pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
 
-# ----- 1. VOCAB drift -----
-
-# Canonical form: VOCAB=["bug","crash",...] with no whitespace.
-PY_VOCAB="$(python3 -c '
+# ----- 1. VOCAB drift (#1638 P3 cluster A) -----
+# The inline python `VOCAB=["bug",...]` literal is gone; the three .ag builders
+# now feed the native token_hits(text, vocab) builtin a comma-list constant
+# triage_vocab_csv(). Assert (a) that constant is byte-identical across the three
+# files and (b) it decodes (comma-split) to the same 26 words as
+# tools/lib/canonical-context.py VOCAB — otherwise backfilled rules are
+# unreachable from Stage 1 prefix replay / Stage 1b BM25 class-confirm.
+PY_VOCAB_CSV="$(python3 -c '
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("cc", sys.argv[1])
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-print("VOCAB=[" + ",".join("\"" + w + "\"" for w in mod.VOCAB) + "]")
+print(",".join(mod.VOCAB))
 ' "$CANON")"
 
+# Extract the single-line `return "...";` body of fn triage_vocab_csv().
+extract_vocab_csv() {
+    awk '/fn triage_vocab_csv\(\)/{f=1} f&&/return/{print; exit}' "$1" \
+        | sed -E 's/.*return "([^"]*)";.*/\1/'
+}
+
+CSV_REF=""
 for agent in labeler router prioritizer; do
     AG="$FED/triage/agents/$agent.ag"
-    # The inline literal lives in an .ag string: "VOCAB=[\"bug\",...]\n".
-    # Strip the escaping backslashes to recover the canonical form.
-    # \134 is octal for backslash (avoids shellcheck SC1003 on a quoted
-    # backslash literal).
-    AG_VOCAB="$(grep -o 'VOCAB=\[[^]]*\]' "$AG" | head -1 | tr -d '\134')"
-    if [ -z "$AG_VOCAB" ]; then
-        fail "$agent: inline VOCAB literal not found"
-    elif [ "$AG_VOCAB" = "$PY_VOCAB" ]; then
-        pass "$agent: inline VOCAB matches tools/lib/canonical-context.py"
+    CSV="$(extract_vocab_csv "$AG")"
+    if [ -z "$CSV" ]; then
+        fail "$agent: triage_vocab_csv() constant not found"
+        continue
+    fi
+    if [ -z "$CSV_REF" ]; then CSV_REF="$CSV"; fi
+    if [ "$CSV" != "$CSV_REF" ]; then
+        fail "$agent: triage_vocab_csv() drift vs labeler — '$CSV'"
+    elif [ "$CSV" = "$PY_VOCAB_CSV" ]; then
+        pass "$agent: triage_vocab_csv() matches canonical-context.py VOCAB"
     else
-        fail "$agent: VOCAB drift — agent='$AG_VOCAB' helper='$PY_VOCAB'"
+        fail "$agent: triage_vocab_csv() != canonical-context.py VOCAB — agent='$CSV' helper='$PY_VOCAB_CSV'"
     fi
 done
 
@@ -243,16 +255,121 @@ assert_line "#1436 free-text vocab: 'blocker' matches, fragment 'block' does not
     "$(run_issue_pv prioritize "$FIX_DIR/block.json" "blocker, important")" \
     "$(printf '32\tkw=crash labels=block\tkw=crash\tblocker\tCrash in parser block')"
 
-# Drift guard: both prioritizer inline python sites and the library carry
-# the tokenized form.
+# Drift guard: the remaining prioritizer inline python site and the library
+# carry the tokenized form. #1638 P3 cluster A retired canonical_priority_context's
+# python (now native `.ag`), so only the cluster-B score_priority_verdict_key
+# reality-check keeps its inline pv_set (2 -> 1).
 PRI_AG_FILE="$FED/triage/agents/prioritizer.ag"
 PV_SET_COUNT="$(grep -c 'pv_set={t.strip() for t in pv.split' "$PRI_AG_FILE" || true)"
-assert_line "#1436 both prioritizer python sites use the tokenized pv_set" \
-    "$PV_SET_COUNT" "2"
+assert_line "#1436 the remaining prioritizer python site uses the tokenized pv_set" \
+    "$PV_SET_COUNT" "1"
 if grep -q 'def pv_tokens(pv):' "$CANON"; then
     pass "#1436 canonical-context.py carries pv_tokens()"
 else
     fail "#1436 canonical-context.py missing pv_tokens()"
+fi
+
+# ----- 7. #1638 P3 cluster A: native builders byte-identical to the retired
+# python one-liners (agentis go). -----
+# canonical_{label,route,priority}_context are now native `.ag` (embedded
+# `python3 -c` removed). Their ctx+iid feed the crystallizer KnowledgeEntry id,
+# so each must be byte-identical to the retired one-liner on every fixture.
+# We drive the REAL .ag functions via `agentis go` (the #1613 / adv_parse
+# precedent — no hand-kept oracle can drift from the shipped path) and match
+# stdout against pinned expected values. Skipped when agentis is absent.
+if command -v agentis >/dev/null 2>&1; then
+    AG_TMP="$(mktemp -d)"
+    (cd "$AG_TMP" && agentis init) >/dev/null 2>&1
+
+    # Pull one top-level `fn NAME(...) { ... }` verbatim (closing `}` at col 0).
+    extract_fn() {
+        awk -v n="$2" 'BEGIN{p="^fn "n"\\("} $0 ~ p {f=1} f{print} /^}/{if(f) f=0}' "$1"
+    }
+    # A raw JSON string -> a valid `.ag` double-quoted literal.
+    aglit() { python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+
+    COMMON_FNS="triage_vocab_csv void_to_empty joinc joins str_replace_all ws_to_space dedupe_space collapse row_index"
+
+    # run_builder <agent.ag> <extra-fns> <call-expr>
+    run_builder() {
+        local file="$1" extra="$2" expr="$3" fn
+        {
+            echo "cb 5000;"
+            for fn in $COMMON_FNS $extra; do extract_fn "$file" "$fn"; echo; done
+            echo "print($expr);"
+        } > "$AG_TMP/probe.ag"
+        (cd "$AG_TMP" && agentis go probe.ag 2>/dev/null) | grep -v '^\[genesis\]'
+    }
+
+    LBL="$FED/triage/agents/labeler.ag"
+    RTR="$FED/triage/agents/router.ag"
+    PRI="$FED/triage/agents/prioritizer.ag"
+
+    ag_label() { local j; j="$(printf '%s' "$1" | aglit)"; run_builder "$LBL" "canonical_label_context" "canonical_label_context($j, \"$2\")"; }
+    ag_route() { local j; j="$(printf '%s' "$1" | aglit)"; run_builder "$RTR" "canonical_route_context" "canonical_route_context($j)"; }
+    ag_pri()   { local j p; j="$(printf '%s' "$1" | aglit)"; p="$(printf '%s' "$2" | aglit)"; run_builder "$PRI" "member is_pri regex_escape pvalt canonical_priority_context" "canonical_priority_context($j, $p)"; }
+
+    # --- labeler ---
+    assert_line "AG label: personal scope + sorted kw" \
+        "$(ag_label '[{"iid":7,"title":"Crash: segfault in parser build","description":"It fails with panic","labels":[],"author":{"username":"mholy"}}]' "mholy")" \
+        "$(printf '7\tmholy\tkw=build,crash,panic,segfault scope=personal\tCrash: segfault in parser build It fails with panic')"
+    assert_line "AG label: team scope (author != me)" \
+        "$(ag_label '[{"iid":7,"title":"Crash: segfault in parser build","description":"It fails with panic","labels":[],"author":{"username":"mholy"}}]' "alice")" \
+        "$(printf '7\tmholy\tkw=build,crash,panic,segfault scope=team\tCrash: segfault in parser build It fails with panic')"
+    assert_line "AG label: all labeled -> empty" \
+        "$(ag_label '[{"iid":7,"title":"bug","labels":["x"],"author":{"username":"mholy"}}]' "mholy")" ""
+    assert_line "AG label: non-list raw -> empty" \
+        "$(ag_label '{"iid":7}' "mholy")" ""
+    assert_line "AG label: missing iid -> empty" \
+        "$(ag_label '[{"title":"bug crash","labels":[]}]' "mholy")" ""
+    # exact 26-word vocab hit set, lexicographic kw= (empty ME -> team scope).
+    assert_line "AG label: full 26-word vocab hits sorted" \
+        "$(ag_label '[{"iid":9,"title":"docs readme feature ci build test bug crash error fail segfault panic exception documentation enhancement request question security vuln cve performance perf slow regression refactor dependency","labels":[],"author":{"username":"z"}}]' "")" \
+        "$(printf '9\tz\tkw=bug,build,ci,crash,cve,dependency,docs,documentation,enhancement,error,exception,fail,feature,panic,perf,performance,question,readme,refactor,regression,request,security,segfault,slow,test,vuln scope=team\tdocs readme feature ci build test bug crash error fail segfault panic exception documentation enhancement request question security vuln cve performance perf slow regression refactor dependency')"
+    # whitespace collapse: a tab and a newline in the title -> single spaces.
+    assert_line "AG label: whitespace collapse (tab+newline+runs)" \
+        "$(ag_label '[{"iid":5,"title":"bug\tcrash  \n build","description":"","labels":[],"author":{"username":"mholy"}}]' "mholy")" \
+        "$(printf '5\tmholy\tkw=bug,build,crash scope=personal\tbug crash build')"
+    # [:1200] byte truncation.
+    TRUNC_JSON="$(python3 -c 'import json; print(json.dumps([{"iid":11,"title":"bug "*400,"description":"","labels":[],"author":{"username":"z"}}]))')"
+    TRUNC_Q="$(python3 -c 'import re; print(re.sub(r"\s+"," ",("bug "*400)+" ").strip()[:1200])')"
+    assert_line "AG label: q truncated to 1200 bytes" \
+        "$(ag_label "$TRUNC_JSON" "")" \
+        "$(printf '11\tz\tkw=bug scope=team\t%s' "$TRUNC_Q")"
+
+    # --- router ---
+    assert_line "AG route: ALL labels in ctx (sorted, ASCII P1 < bug)" \
+        "$(ag_route '[{"iid":7,"title":"Crash segfault build","labels":["bug","P1"],"assignees":[]}]')" \
+        "$(printf '7\tkw=build,crash,segfault labels=P1,bug\tCrash segfault build P1 bug')"
+    assert_line "AG route: all assigned -> empty" \
+        "$(ag_route '[{"iid":7,"title":"bug","labels":[],"assignees":[{"username":"alice"}]}]')" ""
+    assert_line "AG route: picks first unassigned (2nd issue)" \
+        "$(ag_route '[{"iid":7,"title":"bug","labels":[],"assignees":[{"username":"a"}]},{"iid":9,"title":"docs ci","labels":["z","a"],"assignees":[]}]')" \
+        "$(printf '9\tkw=ci,docs labels=a,z\tdocs ci a z')"
+    assert_line "AG route: special chars in label kept, TSV well-formed" \
+        "$(ag_route '[{"iid":6,"title":"fix bug","labels":["needs, review","P1"],"assignees":[]}]')" \
+        "$(printf '6\tkw=bug labels=P1,needs, review\tfix bug P1 needs, review')"
+
+    # --- prioritizer ---
+    DPV="priority::critical, priority::high, priority::medium, priority::low, P1, P2, P3, P4, urgent"
+    assert_line "AG prioritize: non-priority labels only in ctx" \
+        "$(ag_pri '[{"iid":7,"title":"Crash segfault build","labels":["bug"]}]' "$DPV")" \
+        "$(printf '7\tkw=build,crash,segfault labels=bug\tCrash segfault build bug')"
+    # priority label at index >=1 (labels[1]=P2) proves the K-col projection.
+    assert_line "AG prioritize: priority label at index >=1 -> issue is prioritized, picks 2nd" \
+        "$(ag_pri '[{"iid":7,"title":"bug crash","labels":["area","P2"]},{"iid":9,"title":"docs","labels":["z"]}]' "$DPV")" \
+        "$(printf '9\tkw=docs labels=z\tdocs z')"
+    # custom-pv: "low" is priority-like only because the operator vocab lists it.
+    assert_line "AG prioritize: custom-pv membership skips prioritized, picks 2nd" \
+        "$(ag_pri '[{"iid":5,"title":"bug","labels":["low"]},{"iid":7,"title":"crash test","labels":["area"]}]' "high, low")" \
+        "$(printf '7\tkw=crash,test labels=area\tcrash test area')"
+    # all rows prioritized (P1 + urgent) -> greedy false-positive closed by VERIFY.
+    assert_line "AG prioritize: all-prioritized -> empty (greedy VERIFY)" \
+        "$(ag_pri '[{"iid":7,"title":"bug","labels":["P1"]},{"iid":9,"title":"crash","labels":["urgent"]}]' "$DPV")" ""
+
+    rm -rf "$AG_TMP"
+else
+    echo "[SKIP] agentis not on PATH — skipping native-builder byte-identity probes"
 fi
 
 echo ""

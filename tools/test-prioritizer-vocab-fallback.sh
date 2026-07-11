@@ -6,12 +6,12 @@
 #
 #   1. effective_priority_vocab()'s hardcoded fallback literal is EXACTLY
 #      the four scoped labels, with no P1/P2/P3/P4/urgent substrings.
-#   2. Regression guard: the is_pri() DETECTION heuristic inside
-#      canonical_priority_context() still recognizes the broad legacy
-#      scheme (`p\d+` pattern + "urgent" literal) -- narrowing the
-#      suggestion vocabulary must never accidentally narrow detection too,
-#      or already-labeled legacy issues would look "unprioritized" again
-#      and prioritizer would re-fire on them forever.
+#   2. Regression guard: the native is_pri() DETECTION heuristic (and the
+#      PRILINE regex canonical_priority_context() builds from it, #1638 P3
+#      cluster A) still recognizes the broad legacy scheme (`p[0-9]+` pattern +
+#      "urgent" literal) -- narrowing the suggestion vocabulary must never
+#      accidentally narrow detection too, or already-labeled legacy issues
+#      would look "unprioritized" again and prioritizer would re-fire forever.
 #   3. Regression guard: score_priority_verdict_key()'s match_cmd also
 #      still recognizes the broad legacy scheme (same failure mode as #2,
 #      but on the reality-check scoring path instead of selection).
@@ -82,16 +82,21 @@ else
     fi
 fi
 
-# -- (2) regression guard: is_pri() detection stays broad --------------------
+# -- (2) regression guard: the DETECTION grammar stays broad -----------------
+# #1638 P3 cluster A made canonical_priority_context native: detection now lives
+# in the top-level fn is_pri() (member / ^p<digits>$ / urgent) plus the PRILINE
+# regex canonical_priority_context() builds from it. Assert the broad legacy
+# scheme (p<digits> + urgent) survives on BOTH — narrowing it would make
+# already-labeled legacy issues look "unprioritized" and re-fire forever.
+ispri_block="$(fn_body is_pri || true)"
 ctx_block="$(fn_body canonical_priority_context)"
-if printf '%s' "$ctx_block" | grep -Fq 'is_pri(l)'; then
-    if printf '%s' "$ctx_block" | grep -Fq 'p\\d+' && printf '%s' "$ctx_block" | grep -Fq 'urgent'; then
-        ok "canonical_priority_context()'s is_pri() still recognizes p\\d+ and urgent (detection unchanged)"
-    else
-        bad "canonical_priority_context()'s is_pri() no longer recognizes both p\\d+ and urgent -- detection was accidentally narrowed"
-    fi
-else
+if [ -z "$ispri_block" ]; then
     bad "canonical_priority_context()'s is_pri() detection function not found"
+elif printf '%s' "$ispri_block" | grep -Fq 'p[0-9]+' && printf '%s' "$ispri_block" | grep -Fq 'urgent' \
+     && printf '%s' "$ctx_block" | grep -Fq 'p[0-9]+' && printf '%s' "$ctx_block" | grep -Fq 'urgent'; then
+    ok "is_pri() + PRILINE still recognize p<digits> and urgent (detection unchanged)"
+else
+    bad "is_pri()/PRILINE no longer recognizes both p<digits> and urgent -- detection was accidentally narrowed"
 fi
 
 # -- (3) regression guard: score_priority_verdict_key() match_cmd stays broad
