@@ -226,11 +226,22 @@ fi
 # omits the author clause.
 if printf '%s' "$ACTIONABLE" | grep -Fq 'system!=true|' \
    && printf '%s' "$ACTIONABLE" | grep -Fq 'body^=**Review Summary** (automated)' \
-   && printf '%s' "$ACTIONABLE" | grep -Fq 'author.username!=" + me' \
+   && printf '%s' "$ACTIONABLE" | grep -Fq 'author.username!=" + keep_escape(me)' \
    && printf '%s' "$ACTIONABLE" | grep -Fq 'if len(me) == 0'; then
     pass "(P2B) keep predicate: system!=true must + is_req/is_draft any half + empty-me author-omit fail-safe"
 else
-    fail "(P2B) keep predicate" "actionable_note must encode system!=true|author.username!=me;body^=...;body~... with the empty-me branch"
+    fail "(P2B) keep predicate" "actionable_note must encode system!=true|author.username!=keep_escape(me);body^=...;body~... with the empty-me branch"
+fi
+# me flows from the unvalidated gitlab:me / GITHUB_ME / GITLAB_ME env, so it is
+# keep_escape'd (backslash FIRST, then |, then ;) before concatenation — a stray
+# reserved char becomes a literal value char, never a forged/broken keep clause.
+KEEP_ESCAPE="$(awk '/^fn keep_escape\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+if printf '%s' "$KEEP_ESCAPE" | grep -Fq 'str_replace_all(s, "\\", "\\\\")' \
+   && printf '%s' "$KEEP_ESCAPE" | grep -Fq 'str_replace_all(a, "|", "\\|")' \
+   && printf '%s' "$KEEP_ESCAPE" | grep -Fq 'str_replace_all(b, ";", "\\;")'; then
+    pass "(P2B) keep_escape escapes reserved chars in value-position order: backslash first, then |, then ;"
+else
+    fail "(P2B) keep_escape order" "keep_escape must escape \\ first, then |, then ; (matching keep_unescape's \\\\/\\|/\\; contract)"
 fi
 
 # 10b. Cross-agent contract pin (mitigates the template coupling): the is_draft
@@ -261,6 +272,10 @@ fi
 if command -v agentis >/dev/null 2>&1; then
     AN_TMP="$(mktemp -d)"
     {
+        # keep_escape + its str_replace_all helper must ride along (actionable_note
+        # calls them); emit them BEFORE actionable_note.
+        awk '/^fn str_replace_all\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG"
+        awk '/^fn keep_escape\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG"
         awk '/^fn actionable_note\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG"
         # Single-tab helpers so every assertion prints on ONE line (the ascending
         # multi-note concat uses REAL `\n\n`, so we never print a body verbatim —
@@ -292,6 +307,8 @@ let J_MULTI = "[{\"id\":13,\"system\":false,\"author\":{\"username\":\"alice\"},
 let J_TAB = "[{\"id\":16,\"system\":false,\"author\":{\"username\":\"alice\"},\"body\":\"col1\tcol2\"}]";
 let J_NULL = "[{\"id\":17,\"system\":false,\"author\":null,\"body\":\"orphan note\"}]";
 let J_MEDOT = "[{\"id\":18,\"system\":false,\"author\":{\"username\":\"alice\"},\"body\":\"dotted human\"},{\"id\":19,\"system\":false,\"author\":{\"username\":\"a.b-c\"},\"body\":\"self plain\"}]";
+let J_HONLY = "[{\"id\":50,\"system\":false,\"author\":{\"username\":\"alice\"},\"body\":\"human note\"}]";
+let J_SELFPIPE = "[{\"id\":51,\"system\":false,\"author\":{\"username\":\"ev|il\"},\"body\":\"self plain\"}]";
 print("SEL_SYS=[", sel(J_SYS, ME), "]");
 print("SEL_OWN=[", sel(J_OWN, ME), "]");
 print("SEL_REQ=[", sel(J_REQ, ME), "]");
@@ -311,6 +328,11 @@ print("TAB_MAX=[", maxid(actionable_note(J_TAB, ME)), "]");
 print("TAB_REALTAB=[", to_string(index_of(body_of(actionable_note(J_TAB, ME)), "\t")), "]");
 print("TAB_ESCTAB=[", to_string(index_of(body_of(actionable_note(J_TAB, ME)), "\\t")), "]");
 print("MEDOT_MAX=[", maxid(actionable_note(J_MEDOT, "a.b-c")), "]");
+print("MEESC_CLEAN=[", sel(J_HONLY, "devbot"), "]");
+print("MEESC_PIPE=[", sel(J_HONLY, "ev|il"), "]");
+print("MEESC_SEMI=[", sel(J_HONLY, "ev;il"), "]");
+print("MEESC_BSL=[", sel(J_HONLY, "ev\\il"), "]");
+print("MEESC_SELF=[", sel(J_SELFPIPE, "ev|il"), "]");
 AGEOF
     } > "$AN_TMP/probe.ag"
     (cd "$AN_TMP" && agentis init) >/dev/null 2>&1
@@ -374,6 +396,26 @@ AGEOF
         pass "(P2B live) a me with '.'/'-' (a.b-c) injects no extra keep clause: self-authored note excluded, human kept (max=18, not 19)"
     else
         fail "(P2B live) me clause-injection safety" "MEDOT_MAX='$(g MEDOT_MAX)' (must be 18 — a.b-c used as identity, no grammar break)"
+    fi
+    # keep_escape: a me carrying a keep-grammar reserved char (|, ;, \) selects
+    # IDENTICALLY to a clean me on the same human-note fixture — the escaped char is
+    # a literal value char matching nobody, so the human note stays kept. The escape
+    # is load-bearing: WITHOUT it a raw ; or \ breaks the keep parse and the reducer
+    # drops EVERY note (the human finding silently suppressed -> resolver never
+    # re-drives). Also: a self note authored by the reserved-char me is still
+    # excluded (the escape round-trips to match the real author).
+    if [ "$(g MEESC_CLEAN)" = "50" ] \
+       && [ "$(g MEESC_PIPE)" = "$(g MEESC_CLEAN)" ] \
+       && [ "$(g MEESC_SEMI)" = "$(g MEESC_CLEAN)" ] \
+       && [ "$(g MEESC_BSL)" = "$(g MEESC_CLEAN)" ]; then
+        pass "(P2B live) keep_escape: a me containing '|'/';'/'\\' selects identically to a clean me (reserved char is a literal, forges/breaks no clause; escape is load-bearing for ; and \\)"
+    else
+        fail "(P2B live) me keep_escape equivalence" "clean='$(g MEESC_CLEAN)'(50) pipe='$(g MEESC_PIPE)' semi='$(g MEESC_SEMI)' bsl='$(g MEESC_BSL)' (all must equal clean)"
+    fi
+    if [ "$(g MEESC_SELF)" = "EMPTY" ]; then
+        pass "(P2B live) keep_escape round-trips: a self note authored by the reserved-char me (ev|il) is still correctly EXCLUDED"
+    else
+        fail "(P2B live) me keep_escape round-trip" "MEESC_SELF='$(g MEESC_SELF)' (a self note by ev|il must be excluded, not leaked)"
     fi
     rm -rf "$AN_TMP"
 else
