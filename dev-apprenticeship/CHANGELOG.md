@@ -15,10 +15,34 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
-**Requires:** agentis >= 1.22.2
+**Requires:** agentis >= 1.22.3
 
 ### Changed
 
+- **Native review-resolver reader — Phase 2 COMPLETE** (substrate purity Phase 2
+  PR B, [#1613](https://github.com/Replikanti/agentis-colonies/issues/1613) /
+  [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)):
+  `code_writer.actionable_note` (the [#1360](https://github.com/Replikanti/agentis-colonies/issues/1360)
+  review-resolver feeder) moves off its embedded `python3 -c` mr-notes one-liner
+  onto a single `json_array_reduce` call (agentis >= 1.22.3) — filtered max-id +
+  ascending-`id` body aggregate. The old `is_draft` python conjunction
+  (`[draft-review-decision]` AND `request_changes`) is inexpressible in the keep
+  grammar's pure-OR `any` half, so it is **reformulated** as one `~` clause on the
+  discriminating draft-template phrase `suggested action \`request_changes\``
+  (`approval_decider.ag:932`). This is **safe-direction**: the only note where it
+  diverges from the old python is an `approve`/`escalate` draft whose LLM reasoning
+  merely mentions `request_changes` — the old code KEPT it (and wrongly re-drove a
+  code-fix against an approval), the native clause DROPS it; never looser, only
+  tighter+safer. Body cells are now `\t`/`\n`-escaped (was tab→space collapse) —
+  the same accepted cosmetic class as PR A; the record still holds one real tab, so
+  the consumer's `repo_field` split is unaffected. This completes substrate-purity
+  Phase 2: **zero embedded python across all three merge-gate/resolver readers**
+  (`note_verdict`, `block_reason_for_head`, `actionable_note`), allowlist **13 →
+  12**, no deferred waiver.
+- **Floor bump to agentis >= 1.22.3.** `json_array_reduce` is above the PR-A 1.22.2
+  floor and load-bearing (no try/catch fallback), so the runtime floor moves to
+  **agentis >= 1.22.3** — the next release stays a **MINOR** (PR A already made this
+  cycle MINOR).
 - **Native merge-gate verdict readers** (substrate purity Phase 2 PR A,
   [#1613](https://github.com/Replikanti/agentis-colonies/issues/1613) /
   [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)): the two

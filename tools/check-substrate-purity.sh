@@ -92,7 +92,6 @@ if [ -n "${SUBSTRATE_PURITY_ALLOWLIST_FILE:-}" ]; then
     ALLOWLIST_COUNT_EXPECTED="$(printf '%s\n' "$ALLOWLIST" | grep -c . || true)"
 else
     ALLOWLIST="\
-implementation/agents/code_writer.ag:actionable_note
 triage/agents/labeler.ag:canonical_label_context
 triage/agents/prioritizer.ag:canonical_priority_context
 triage/agents/router.ag:canonical_route_context
@@ -105,7 +104,7 @@ code-review/agents/approval_decider.ag:evaluate_approval_verdict
 planning/agents/plan_reviewer.ag:evaluate_plan_verdict
 release/agents/ship_decider.ag:evaluate_ship_verdict
 release/agents/ship_decider.ag:tag_set_csv"
-    ALLOWLIST_COUNT_EXPECTED=13
+    ALLOWLIST_COUNT_EXPECTED=12
 fi
 
 # Guard against an accidental edit silently changing the debt size.

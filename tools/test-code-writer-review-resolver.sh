@@ -205,7 +205,182 @@ else
     pass "resolver path is prompt-free (check-prompt-gate not triggered)"
 fi
 
-# 9. Parse check: the agent commits cleanly under `agentis commit` (same as the
+# ---------------------------------------------------------------------------
+# actionable_note native reader (#1613 Phase 2 PR B): the review-resolver feeder
+# is now a single json_array_reduce call (agentis >= 1.22.3), no embedded python.
+# ---------------------------------------------------------------------------
+ACTIONABLE="$(awk '/^fn actionable_note\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+
+# 10a. Native: no embedded python / exec sh; the keep predicate rides
+# json_array_reduce with the documented `must|any` grammar (system!=true must,
+# is_human/is_req/is_draft-phrase in the OR half).
+if ! printf '%s' "$ACTIONABLE" | grep -Fq 'python3 -c' \
+   && ! printf '%s' "$ACTIONABLE" | grep -Fq 'exec sh' \
+   && printf '%s' "$ACTIONABLE" | grep -Fq 'json_array_reduce(raw, ""'; then
+    pass "(P2B) actionable_note is native — no embedded python / exec sh, rides json_array_reduce"
+else
+    fail "(P2B) native actionable_note" "actionable_note must be a plain json_array_reduce reader (no python3 -c / exec sh)"
+fi
+# The keep string: system!=true must-clause, the is_req startswith (^=) and the
+# is_draft phrase (~) in the any half, plus the empty-me fail-safe branch that
+# omits the author clause.
+if printf '%s' "$ACTIONABLE" | grep -Fq 'system!=true|' \
+   && printf '%s' "$ACTIONABLE" | grep -Fq 'body^=**Review Summary** (automated)' \
+   && printf '%s' "$ACTIONABLE" | grep -Fq 'author.username!=" + me' \
+   && printf '%s' "$ACTIONABLE" | grep -Fq 'if len(me) == 0'; then
+    pass "(P2B) keep predicate: system!=true must + is_req/is_draft any half + empty-me author-omit fail-safe"
+else
+    fail "(P2B) keep predicate" "actionable_note must encode system!=true|author.username!=me;body^=...;body~... with the empty-me branch"
+fi
+
+# 10b. Cross-agent contract pin (mitigates the template coupling): the is_draft
+# clause `body~suggested action \`request_changes\`` depends on approval_decider's
+# draft template (approval_decider.ag:932 emits `suggested action \`<action>\``,
+# with `request_changes` a valid action enum). Red-fail if either side is reworded
+# so the two are updated together, not silently decoupled.
+AD="$REPO_ROOT/dev-apprenticeship/code-review/agents/approval_decider.ag"
+# shellcheck disable=SC2016  # the backticks are literal .ag template bytes, not command substitution
+if printf '%s' "$ACTIONABLE" | grep -Fq 'body~suggested action `request_changes`'; then
+    if [ -f "$AD" ] \
+       && grep -Fq 'suggested action `" + decision.action + "`' "$AD" \
+       && grep -Fq '[draft-review-decision]' "$AD" \
+       && grep -Fq "'request_changes'" "$AD"; then
+        pass "(P2B) cross-agent pin: actionable_note's draft clause matches approval_decider's :932 \`suggested action \`<action>\`\` template"
+    else
+        fail "(P2B) cross-agent template drift" "approval_decider.ag must still emit the [draft-review-decision] \`suggested action \`<action>\`\` template with request_changes a valid action"
+    fi
+else
+    fail "(P2B) draft clause" "actionable_note must key is_draft on the phrase 'suggested action \`request_changes\`'"
+fi
+
+# 10c. Live `agentis go` behavioral probe (the test-approval-decider-review-gate.sh
+# #1514 precedent; skipped when agentis is absent, so CI runners are unaffected):
+# awk-extract fn actionable_note verbatim into a probe, drive an mr-notes fixture,
+# and assert the keep predicate + max-id + ascending-id concat + escaping ON THE
+# ACTUAL .ag path (no hand-kept oracle can drift from it).
+if command -v agentis >/dev/null 2>&1; then
+    AN_TMP="$(mktemp -d)"
+    {
+        awk '/^fn actionable_note\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG"
+        # Single-tab helpers so every assertion prints on ONE line (the ascending
+        # multi-note concat uses REAL `\n\n`, so we never print a body verbatim —
+        # only maxid / index positions).
+        cat <<'AGEOF'
+fn maxid(r: string) -> string {
+    let p = index_of(r, "\t");
+    if p < 0 { return ""; };
+    return substring(r, 0, p);
+}
+fn body_of(r: string) -> string {
+    let p = index_of(r, "\t");
+    if p < 0 { return ""; };
+    return substring(r, p + 1, len(r));
+}
+fn sel(raw: string, me: string) -> string {
+    let r = actionable_note(raw, me);
+    if len(r) == 0 { return "EMPTY"; };
+    return maxid(r);
+}
+let ME = "dev-bot";
+let J_SYS = "[{\"id\":10,\"system\":true,\"author\":{\"username\":\"someone\"},\"body\":\"changed the description\"}]";
+let J_OWN = "[{\"id\":11,\"system\":false,\"author\":{\"username\":\"dev-bot\"},\"body\":\"looking into it\"}]";
+let J_REQ = "[{\"id\":12,\"system\":false,\"author\":{\"username\":\"dev-bot\"},\"body\":\"**Review Summary** (automated)\n\nplease fix X\"}]";
+let J_HUMAN = "[{\"id\":13,\"system\":false,\"author\":{\"username\":\"alice\"},\"body\":\"this needs work\"}]";
+let J_DRAFTRC = "[{\"id\":14,\"system\":false,\"author\":{\"username\":\"dev-bot\"},\"body\":\"[draft-review-decision] **Review Summary** (automated, pending approval): suggested action `request_changes`\n\nreasoning here\"}]";
+let J_DRAFTAP = "[{\"id\":15,\"system\":false,\"author\":{\"username\":\"dev-bot\"},\"body\":\"[draft-review-decision] **Review Summary** (automated, pending approval): suggested action `approve`\n\nnot a request_changes situation\"}]";
+let J_MULTI = "[{\"id\":13,\"system\":false,\"author\":{\"username\":\"alice\"},\"body\":\"human A\"},{\"id\":12,\"system\":false,\"author\":{\"username\":\"dev-bot\"},\"body\":\"**Review Summary** (automated)\n\nfix now\"}]";
+let J_TAB = "[{\"id\":16,\"system\":false,\"author\":{\"username\":\"alice\"},\"body\":\"col1\tcol2\"}]";
+let J_NULL = "[{\"id\":17,\"system\":false,\"author\":null,\"body\":\"orphan note\"}]";
+let J_MEDOT = "[{\"id\":18,\"system\":false,\"author\":{\"username\":\"alice\"},\"body\":\"dotted human\"},{\"id\":19,\"system\":false,\"author\":{\"username\":\"a.b-c\"},\"body\":\"self plain\"}]";
+print("SEL_SYS=[", sel(J_SYS, ME), "]");
+print("SEL_OWN=[", sel(J_OWN, ME), "]");
+print("SEL_REQ=[", sel(J_REQ, ME), "]");
+print("SEL_HUMAN=[", sel(J_HUMAN, ME), "]");
+print("SEL_DRAFTRC=[", sel(J_DRAFTRC, ME), "]");
+print("SEL_DRAFTAP=[", sel(J_DRAFTAP, ME), "]");
+print("SEL_NULL=[", sel(J_NULL, ME), "]");
+print("SEL_EMPTYME_HUMAN=[", sel(J_HUMAN, ""), "]");
+print("SEL_EMPTYME_REQ=[", sel(J_REQ, ""), "]");
+print("SEL_EMPTYME_DRAFTRC=[", sel(J_DRAFTRC, ""), "]");
+print("SEL_MALFORMED=[", sel("not json", ME), "]");
+print("SEL_EMPTY=[", sel("[]", ME), "]");
+print("MULTI_MAX=[", maxid(actionable_note(J_MULTI, ME)), "]");
+print("MULTI_IFIX=[", to_string(index_of(body_of(actionable_note(J_MULTI, ME)), "fix now")), "]");
+print("MULTI_IHUMAN=[", to_string(index_of(body_of(actionable_note(J_MULTI, ME)), "human A")), "]");
+print("TAB_MAX=[", maxid(actionable_note(J_TAB, ME)), "]");
+print("TAB_REALTAB=[", to_string(index_of(body_of(actionable_note(J_TAB, ME)), "\t")), "]");
+print("TAB_ESCTAB=[", to_string(index_of(body_of(actionable_note(J_TAB, ME)), "\\t")), "]");
+print("MEDOT_MAX=[", maxid(actionable_note(J_MEDOT, "a.b-c")), "]");
+AGEOF
+    } > "$AN_TMP/probe.ag"
+    (cd "$AN_TMP" && agentis init) >/dev/null 2>&1
+    AN_OUT="$( (cd "$AN_TMP" && agentis go probe.ag) 2>/dev/null )"
+    g() { printf '%s\n' "$AN_OUT" | sed -n "s/^$1=\\[ \\(.*\\) \\]\$/\\1/p"; }
+
+    if [ "$(g SEL_SYS)" = "EMPTY" ] && [ "$(g SEL_OWN)" = "EMPTY" ]; then
+        pass "(P2B live) system note + own-bot plain note both EXCLUDED"
+    else
+        fail "(P2B live) exclude system/own-plain" "SEL_SYS='$(g SEL_SYS)' SEL_OWN='$(g SEL_OWN)' (both must be EMPTY)"
+    fi
+    if [ "$(g SEL_REQ)" = "12" ]; then
+        pass "(P2B live) own-bot **Review Summary** (automated) note INCLUDED (is_req, startswith)"
+    else
+        fail "(P2B live) is_req include" "SEL_REQ='$(g SEL_REQ)' (must be 12)"
+    fi
+    if [ "$(g SEL_HUMAN)" = "13" ]; then
+        pass "(P2B live) external human note INCLUDED (is_human, author.username != me)"
+    else
+        fail "(P2B live) is_human include" "SEL_HUMAN='$(g SEL_HUMAN)' (must be 13)"
+    fi
+    if [ "$(g SEL_DRAFTRC)" = "14" ]; then
+        pass "(P2B live) [draft-review-decision] request_changes note INCLUDED (is_draft phrase)"
+    else
+        fail "(P2B live) is_draft include" "SEL_DRAFTRC='$(g SEL_DRAFTRC)' (must be 14)"
+    fi
+    if [ "$(g SEL_DRAFTAP)" = "EMPTY" ]; then
+        pass "(P2B live) approve-draft whose reasoning mentions request_changes EXCLUDED (the safe-direction divergence from the old python)"
+    else
+        fail "(P2B live) safe divergence" "SEL_DRAFTAP='$(g SEL_DRAFTAP)' (must be EMPTY — the old python wrongly KEPT it)"
+    fi
+    if [ "$(g SEL_NULL)" = "17" ]; then
+        pass "(P2B live) null-author note KEPT via author.username!=me (documented #903: unreachable on a real forge, cap-bounded even if reached)"
+    else
+        fail "(P2B live) null-author keep" "SEL_NULL='$(g SEL_NULL)' (must be 17 — the documented !=me behavior)"
+    fi
+    if [ "$(g SEL_EMPTYME_HUMAN)" = "EMPTY" ] && [ "$(g SEL_EMPTYME_REQ)" = "12" ] && [ "$(g SEL_EMPTYME_DRAFTRC)" = "14" ]; then
+        pass "(P2B live) empty-me fail-safe: human suppressed, own req/draft markers still actionable"
+    else
+        fail "(P2B live) empty-me fail-safe" "human='$(g SEL_EMPTYME_HUMAN)'(EMPTY) req='$(g SEL_EMPTYME_REQ)'(12) draft='$(g SEL_EMPTYME_DRAFTRC)'(14)"
+    fi
+    if [ "$(g SEL_MALFORMED)" = "EMPTY" ] && [ "$(g SEL_EMPTY)" = "EMPTY" ]; then
+        pass "(P2B live) malformed JSON + empty array both yield \"\" (no record)"
+    else
+        fail "(P2B live) malformed/empty" "SEL_MALFORMED='$(g SEL_MALFORMED)' SEL_EMPTY='$(g SEL_EMPTY)' (both EMPTY)"
+    fi
+    if [ "$(g MULTI_MAX)" = "13" ] \
+       && [ -n "$(g MULTI_IFIX)" ] && [ "$(g MULTI_IFIX)" -ge 0 ] \
+       && [ -n "$(g MULTI_IHUMAN)" ] && [ "$(g MULTI_IHUMAN)" -ge 0 ] \
+       && [ "$(g MULTI_IFIX)" -lt "$(g MULTI_IHUMAN)" ]; then
+        pass "(P2B live) max-id across kept notes = highest (13); bodies concatenated ascending-id (id 12 'fix now' before id 13 'human A')"
+    else
+        fail "(P2B live) max-id / ascending concat" "MAX='$(g MULTI_MAX)'(13) IFIX='$(g MULTI_IFIX)' IHUMAN='$(g MULTI_IHUMAN)' (0<=IFIX<IHUMAN)"
+    fi
+    if [ "$(g TAB_MAX)" = "16" ] && [ "$(g TAB_REALTAB)" = "-1" ] && [ -n "$(g TAB_ESCTAB)" ] && [ "$(g TAB_ESCTAB)" -ge 0 ]; then
+        pass "(P2B live) a real tab in a body is escaped to \\t; the record keeps exactly one real tab, so repo_field splits into exactly two fields"
+    else
+        fail "(P2B live) escaped-body cell" "TAB_MAX='$(g TAB_MAX)'(16) TAB_REALTAB='$(g TAB_REALTAB)'(-1) TAB_ESCTAB='$(g TAB_ESCTAB)'(>=0)"
+    fi
+    if [ "$(g MEDOT_MAX)" = "18" ]; then
+        pass "(P2B live) a me with '.'/'-' (a.b-c) injects no extra keep clause: self-authored note excluded, human kept (max=18, not 19)"
+    else
+        fail "(P2B live) me clause-injection safety" "MEDOT_MAX='$(g MEDOT_MAX)' (must be 18 — a.b-c used as identity, no grammar break)"
+    fi
+    rm -rf "$AN_TMP"
+else
+    echo "[SKIP] (P2B live) actionable_note probe — agentis not on PATH"
+fi
+
+# 11. Parse check: the agent commits cleanly under `agentis commit` (same as the
 # per-agent syntax pass in colony-lint.sh). Skipped (not failed) when agentis is
 # not installed.
 if command -v agentis >/dev/null 2>&1; then
