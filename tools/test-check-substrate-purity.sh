@@ -298,7 +298,7 @@ fi
 # ----- Test 11: real repo passes clean (baked allowlist, no override) -----
 T11_OUT="$("$CHECK" "$REPO_ROOT" 2>&1)" && T11_RC=0 || T11_RC=$?
 if [ "$T11_RC" -eq 0 ]; then
-    pass "real repo: 15 allowlisted + 2 waived sites, zero findings"
+    pass "real repo: 13 allowlisted + 2 waived sites, zero findings"
 else
     fail "real repo — expected exit 0, got rc=$T11_RC: $T11_OUT"
 fi

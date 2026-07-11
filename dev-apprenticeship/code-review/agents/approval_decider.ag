@@ -315,49 +315,93 @@ fn head_fingerprint(changes_raw: string) -> string {
     return substring(sha256_hex(changes_raw), 0, 16);
 }
 
+// --- Shared verdict-note core (BYTE-IDENTICAL across approval_decider.ag and
+// implementation/code_writer.ag) -------------------------------------------
+// scan_verdict + marked_bot_note_body are duplicated verbatim in code_writer.ag
+// (.ag has no cross-file import, so "shared" = identical bodies) and pinned
+// byte-for-byte by tools/test-approval-decider-review-gate.sh /
+// tools/test-code-writer-qa-fix-recovery.sh — the author-bind logic can never
+// drift between the #1484 gate reader and the #1521 recovery reader. Native
+// rewrite of the retired `python3 -c` mr-notes readers on json_array_project
+// (agentis >= 1.22.2): ONE flat, size-independent projection of the notes array
+// into `author\tbody` TSV lines (element order preserved -> line 0 = newest
+// note, matching the forge's newest-first ordering; `\t`/`\n`/`\\` escaped
+// INSIDE each cell so the framing is injection-safe — a body with a real newline
+// cannot forge a second line or spoof the author cell).
+//
+// scan_verdict: walk the projected `author\tbody` TSV newest-first (line 0 =
+// newest), take-and-STOP on the FIRST bot-authored full-marker note, return its
+// BODY cell (reason + marker), "" if none. Per line, in CB-short-circuit order:
+// a whole-line index_of(mprefix) reject (the common no-marker line pays nothing
+// more), then the tab split, then the author bind, then regex_capture (so a bot
+// `status=weird` marker is SKIPPED and the scan CONTINUES to an older valid one
+// — exact python re.search parity). AUTHOR BIND (#1573): to_lower(author) ==
+// me_lc. `to_lower` is str::to_ascii_lowercase; GitHub logins are [A-Za-z0-9-]
+// and GitLab usernames [A-Za-z0-9_.-] — ASCII-only, where to_ascii_lowercase ==
+// .lower() == .casefold() byte-for-byte (the QA-Bot vs qa-bot case). A
+// hypothetical non-ASCII login folds differently -> author != me_lc -> marker
+// NOT honored -> HELD / no re-fix (always the fail-closed direction; the fed's
+// own bot login is never non-ASCII). An empty author cell (missing/misshapen
+// author, or an author-as-string that projects no .username) has tab <= 0 or an
+// empty prefix -> skipped, scan continues.
+fn scan_verdict(rest: string, me_lc: string, mprefix: string, marker_rx: string) -> string {
+    if len(rest) == 0 { return ""; };
+    let nl = index_of(rest, "\n");
+    let line = if nl >= 0 { substring(rest, 0, nl) } else { rest };
+    if index_of(line, mprefix) >= 0 {
+        let tab = index_of(line, "\t");
+        if tab > 0 {
+            if to_lower(substring(line, 0, tab)) == me_lc {
+                let body = substring(line, tab + 1, len(line));
+                if len(regex_capture(marker_rx, body, 1)) > 0 {
+                    return body;
+                };
+            };
+        };
+    };
+    if nl < 0 { return ""; };
+    return scan_verdict(substring(rest, nl + 1, len(rest)), me_lc, mprefix, marker_rx);
+}
+
+// marked_bot_note_body: fail-closed guards + flat projection + O(1) quick-reject.
+// Empty head_fp or empty me -> "" (empty-me fail-closed -> the gate stays HELD).
+// json_array_project returns "" on malformed / non-array notes_raw -> "" (HELD).
+// The whole-blob index_of(mprefix) short-circuits the overwhelmingly-common
+// verdict-NONE case with NO line walk at all (no marker for THIS head); only when
+// the head-keyed marker string IS present do we walk lines via scan_verdict.
+fn marked_bot_note_body(notes_raw: string, head_fp: string, me: string) -> string {
+    if len(head_fp) == 0 { return ""; };
+    if len(me) == 0 { return ""; };
+    let mprefix = "<!-- qa-verdict head=" + head_fp + " status=";
+    let marker_rx = "<!-- qa-verdict head=" + head_fp + " status=(pass|block) -->";
+    let tsv = json_array_project(notes_raw, "", "author.username,body");
+    if len(tsv) == 0 { return ""; };
+    if index_of(tsv, mprefix) < 0 { return ""; };
+    return scan_verdict(tsv, to_lower(me), mprefix, marker_rx);
+}
+
 // note_verdict: scan the mr-notes array for a body carrying the commit-keyed
-// marker `<!-- qa-verdict head=<head_fp> status=<s> -->` and print `s`
-// ("pass"|"block"). The raw notes JSON rides $J (env var, off-argv, like
-// open_pr_field), head_fp rides $H, and the fed's own bot login rides $ME so
-// ARG_MAX never bites. AUTHOR BIND (#1573): a marker is honored ONLY on a note
-// whose author.username casefold-equals the bot login `me` (from bot_login());
-// a marker QUOTED by an operator or another bot is ignored — a quoted `pass`
-// can never release the #1484 HOLD. An empty `me` (unconfigured forge identity)
-// honors NOTHING: note_verdict returns "" and the gate stays HELD (fail-closed,
-// never a spurious release). Total: malformed JSON, empty head, empty me, no
-// bot-authored matching marker all collapse to "" ( = none/stale, which the
-// caller treats as "no verdict yet"). ORDERING: mr-notes is newest-first on
-// both forges (GitHub sort=created direction=desc; GitLab order_by=created_at
-// sort=desc), so the FIRST bot-authored match in iteration order is the LATEST
-// verdict for this head — we take it and STOP. This prevents an early
-// stray/forged "pass" from masking a later genuine "block" for the same commit
-// (#1493 — now "newest BOT-authored match").
+// marker `<!-- qa-verdict head=<head_fp> status=<s> -->` and return `s`
+// ("pass"|"block"). Native since #1613: json_array_project flattens the array
+// into `author\tbody` TSV lines and a whole-blob quick-reject short-circuits the
+// verdict-NONE common case (see the shared core above). AUTHOR BIND (#1573): a
+// marker is honored ONLY on a note whose author.username casefold-equals the bot
+// login `me` (from bot_login()); a marker QUOTED by an operator or another bot is
+// ignored — a quoted `pass` can never release the #1484 HOLD. An empty `me`
+// (unconfigured forge identity) honors NOTHING: note_verdict returns "" and the
+// gate stays HELD (fail-closed, never a spurious release). Total: malformed JSON,
+// empty head, empty me, no bot-authored matching marker all collapse to "" ( =
+// none/stale, which the caller treats as "no verdict yet"). ORDERING: mr-notes is
+// newest-first on both forges (GitHub sort=created direction=desc; GitLab
+// order_by=created_at sort=desc), so the projection preserves that order and the
+// FIRST bot-authored match in the line walk is the LATEST verdict for this head —
+// we take it and STOP. This prevents an early stray/forged "pass" from masking a
+// later genuine "block" for the same commit (#1493 — now "newest BOT-authored
+// match").
 fn note_verdict(notes_raw: string, head_fp: string, me: string) -> string {
-    let cmd = "J=" + shell_escape(notes_raw) + " H=" + shell_escape(head_fp) + " ME=" + shell_escape(me) +
-        " python3 -c 'import os,json,re,sys" +
-        "\ntry:" +
-        "\n    d=json.loads(os.environ[\"J\"])" +
-        "\nexcept Exception:" +
-        "\n    print(\"\"); sys.exit(0)" +
-        "\nh=os.environ[\"H\"]" +
-        "\nme=os.environ[\"ME\"].casefold()" +
-        "\nif not h or not me or not isinstance(d,list):" +
-        "\n    print(\"\"); sys.exit(0)" +
-        "\npat=re.compile(\"<!-- qa-verdict head=\"+re.escape(h)+\" status=(pass|block) -->\")" +
-        "\nfor n in d:" +
-        "\n    if not isinstance(n,dict):" +
-        "\n        continue" +
-        "\n    a=n.get(\"author\")" +
-        "\n    author=a.get(\"username\") if isinstance(a,dict) else None" +
-        "\n    if not isinstance(author,str) or author.casefold()!=me:" +
-        "\n        continue" +
-        "\n    b=n.get(\"body\")" +
-        "\n    m=pat.search(b) if isinstance(b,str) else None" +
-        "\n    if m:" +
-        "\n        print(m.group(1)); sys.exit(0)" +
-        "\nprint(\"\")'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let body = marked_bot_note_body(notes_raw, head_fp, me);
+    if len(body) == 0 { return ""; };
+    return regex_capture("<!-- qa-verdict head=" + head_fp + " status=(pass|block) -->", body, 1);
 }
 
 // post_held_note_once: post a visible "auto-merge held" note at most once per
