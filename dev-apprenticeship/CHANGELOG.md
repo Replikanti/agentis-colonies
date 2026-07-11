@@ -32,7 +32,11 @@ is asserted until multi-version CI is in place.
   `dev-apprenticeship-v` prefix filter ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)
   Wave 1) + `sort_unique_strings` — value-identical to the retired python. The
   `check-substrate-purity.sh` allowlist drops the two Cluster-C rows (12 → 10).
-  Clusters A and B land in later PRs.
+  `tag_set_csv` uses a **flat-cost** pipeline (`json_array_project` → whole-blob
+  sanitize → multiline-anchored `(?m)^dev-apprenticeship-v` prefix filter →
+  `sort_unique_strings`) so no per-element `.ag` walk runs over the (growing,
+  `--per-page 50`-capped) tag array — worst case ~940 CB, well under the 2000
+  cb_per_tick cap. Clusters A and B land in later PRs.
 
 ### Removed
 

@@ -235,9 +235,12 @@ else
     fail "auto-promote: reject predicate does not count failure outcomes"
 fi
 
-# ----- ship_decider tag_set_csv: native rewrite structure (#1638 P3 cluster C) -----
+# ----- ship_decider tag_set_csv: FLAT-cost native rewrite (#1638 P3 cluster C, QA #1640) -----
 # The tag-set baseline feeds the reality-check compare, so its build must stay
-# native (no embedded python) and preserve the #1453 Wave 1 prefix filter.
+# native (no embedded python), preserve the #1453 Wave 1 prefix filter, AND be
+# FLAT cost — the first native draft's per-element map(sanitize)+filter(prefix)
+# `.ag` walk (~75 CB/tag) overflowed ship_decider's tick budget on a growing
+# tag set (#1640). The fix routes all per-element work through flat builtins.
 SHIP_FILE="$FED/release/agents/ship_decider.ag"
 TAGSET_REGION="$(evaluate_region "$SHIP_FILE" "tag_set_csv")"
 if printf '%s' "$TAGSET_REGION" | sed 's|//.*$||' | grep -q "python3"; then
@@ -245,39 +248,45 @@ if printf '%s' "$TAGSET_REGION" | sed 's|//.*$||' | grep -q "python3"; then
 else
     pass "ship_decider: tag_set_csv is python-free (native set-op pipeline)"
 fi
-if printf '%s' "$TAGSET_REGION" | grep -qF 'json_array_object_field_values(raw, "name")' \
-    && printf '%s' "$TAGSET_REGION" | grep -qF 'index_of(n, "dev-apprenticeship-v") == 0' \
-    && printf '%s' "$TAGSET_REGION" | grep -qF "sort_unique_strings(names)"; then
-    pass "ship_decider: tag_set_csv keeps prefix filter + sorted set (native)"
+# Flat-cost guard: NO per-element map/filter `.ag` walk over the tag array — the
+# projection + prefix filter must be single flat builtin calls (#1640).
+if printf '%s' "$TAGSET_REGION" | sed 's|//.*$||' | grep -qE 'map\(|filter\('; then
+    fail "ship_decider: tag_set_csv has a per-element map/filter walk (CB regression #1640)"
 else
-    fail "ship_decider: tag_set_csv missing prefix filter / sort_unique_strings"
+    pass "ship_decider: tag_set_csv is per-element-walk-free (flat cost, #1640)"
 fi
-if grep -qE "^fn sanitize_tag_name\(" "$SHIP_FILE"; then
-    pass "ship_decider: sanitize_tag_name helper defined"
+if printf '%s' "$TAGSET_REGION" | grep -qF 'json_array_project(raw, "", "name")' \
+    && printf '%s' "$TAGSET_REGION" | grep -qF '(?m)^dev-apprenticeship-v' \
+    && printf '%s' "$TAGSET_REGION" | grep -qF "sort_unique_strings(names)"; then
+    pass "ship_decider: tag_set_csv keeps flat projection + prefix filter + sorted set"
 else
-    fail "ship_decider: sanitize_tag_name helper missing"
+    fail "ship_decider: tag_set_csv missing json_array_project / prefix regex / sort_unique_strings"
+fi
+if grep -qE "^fn sanitize_tag_blob\(" "$SHIP_FILE"; then
+    pass "ship_decider: sanitize_tag_blob helper defined"
+else
+    fail "ship_decider: sanitize_tag_blob helper missing"
 fi
 
-# Live byte-identity: the sanitize (strip ,/\"/\\) + dev-apprenticeship-v
-# prefix filter + sorted-unique-set pipeline must be value-identical to the
-# retired python `sorted({sanitize(name) ... if n.startswith(...)})`. Embeds a
-# byte-identical copy of the native pipeline parameterized on a raw tags JSON
-# string (the forge call is factored out). Expected values are the python
-# reference outputs. Gated on the agentis binary (CI runners have none).
+# Live byte-identity: the flat pipeline (project -> whole-blob sanitize (strip
+# ,/\"/\\) -> multiline-anchored dev-apprenticeship-v prefix filter -> sorted
+# unique set) must be value-identical to the retired python
+# `sorted({sanitize(name) ... if n.startswith(...)})`. Embeds a byte-identical
+# copy of the native pipeline parameterized on a raw tags JSON string (the forge
+# call is factored out). Expected values are the python reference outputs. Gated
+# on the agentis binary (CI runners have none).
 if command -v agentis >/dev/null 2>&1; then
     TAGSET_TMP="$(mktemp -d)"
     trap 'rm -rf "$TAGSET_TMP"' EXIT
-    TAGSET_HELPER='fn sanitize_tag_name(name: string) -> string {
-    return reduce(regex_find_all("[^,\"\\\\]+", name), |acc: string, part: string| -> string {
+    TAGSET_HELPER='fn sanitize_tag_blob(blob: string) -> string {
+    return reduce(regex_find_all("[^,\"\\\\]+", blob), |acc: string, part: string| -> string {
         return acc + part;
     }, "");
 }
 fn tag_set_from_raw(raw: string) -> string {
-    let names = filter(map(json_array_object_field_values(raw, "name"), |n: string| -> string {
-        return sanitize_tag_name(n);
-    }), |n: string| -> bool {
-        return index_of(n, "dev-apprenticeship-v") == 0;
-    });
+    let blob = json_array_project(raw, "", "name");
+    let sanitized = sanitize_tag_blob(blob);
+    let names = regex_find_all("(?m)^dev-apprenticeship-v.*", sanitized);
     return reduce(sort_unique_strings(names), |acc: string, t: string| -> string {
         if len(acc) > 0 { return acc + "," + t; };
         return t;
@@ -319,6 +328,21 @@ fn tag_set_from_raw(raw: string) -> string {
         ""
     # empty tags array -> empty set (legitimate no-tags baseline).
     check_tagset "ship_decider tag_set: empty array -> empty" '[]' ""
+    # multiline ^ anchor: a mid-line prefix (not at line start) must NOT match,
+    # == python startswith. `xdev-apprenticeship-v1.0` -> excluded.
+    check_tagset "ship_decider tag_set: mid-line prefix not matched (startswith parity)" \
+        '[{\"name\":\"xdev-apprenticeship-v1.0\"}]' \
+        ""
+    # non-semver prefix tags are KEPT (python startswith has no digit rule);
+    # confirms sorted-set on the full sanitized name, not a version-char regex.
+    check_tagset "ship_decider tag_set: non-digit prefix tags kept + sorted" \
+        '[{\"name\":\"dev-apprenticeship-vB\"},{\"name\":\"dev-apprenticeship-vA\"}]' \
+        "dev-apprenticeship-vA,dev-apprenticeship-vB"
+    # sanitize-before-filter: a comma inside the name is stripped FIRST, which
+    # can make a non-prefixed name become prefixed, exactly like python.
+    check_tagset "ship_decider tag_set: sanitize-before-filter order (python parity)" \
+        '[{\"name\":\"dev-apprenticeship,-v1\"}]' \
+        "dev-apprenticeship-v1"
 else
     echo "[SKIP] agentis binary not found — tag_set_csv live byte-identity checks skipped"
 fi
