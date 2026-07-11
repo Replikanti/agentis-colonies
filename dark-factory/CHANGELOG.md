@@ -22,6 +22,26 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   colony `README.md` agent table and corrected the auditor agent count (22 → 23 agents).
 
 ### Added
+- **`watch-competitions.sh` — CodeHawks as a THIRD keyless channel** (#1643). Adds CodeHawks
+  (`codehawks.cyfrin.io/contests`) alongside the shipped Sherlock + Cantina channels, correcting the issue's
+  premise: CodeHawks is **NOT** API-key-gated and needs **NO Playwright/browser/node**. The `/contests` page is
+  server-rendered SvelteKit that embeds the keyless `competitions.getCompetitions` tRPC response in a
+  `data-sveltekit-fetched` script block, so a plain `curl -A "Mozilla/5.0"` + `json.loads` returns every
+  contest. New `--codehawks-from <file>` (offline hatch) / `--codehawks-url <url>` flags feed a defensive
+  `codehawks` branch in the one shared normalizer. There is **no status/phase enum** in the embed, so
+  submissions-open is **date-derived**: a contest surfaces only when `startDate <= today < endDate` AND
+  `finalised == false` AND `inviteOnly == false`; upcoming (`today < startDate`), judging/appeals
+  (`today >= endDate`, even with a future `appealEndDate`), finalised, invite-only, and undatable contests all
+  drop. Dedup key `codehawks:<urlSlug>`; scope repo from the list `githubUrl`; the raw `reward+currency` rides
+  in `scope_hint` as a `prize_label` (e.g. `7.25eth`/`20000usdc`) since `currencyUsdRate` is untrusted. The
+  whole CodeHawks extraction is wrapped in try/except so any embed drift contributes ZERO records and never
+  disturbs the Sherlock/Cantina channels — the shared record, ledger, scoring, 5-column TSV emit, and SKIP
+  contract are unchanged and reused (Sherlock/Cantina behaviour is byte-identical). `demo-watch-competitions.sh`
+  gains offline §4/§5 cases (relative-to-today fixture dates so the phase assertions never rot) proving
+  open-surfaces / upcoming-dropped / judging-with-future-appeal-dropped / finalised-dropped / invite-dropped /
+  idempotent-re-run / garbage-HTML-degrades / three-channel-coexistence + graceful-degrade; the untouched §1–§3
+  Sherlock/Cantina assertions are the zero-regression guard. READ-ONLY, NEVER-SUBMIT; only Code4rena remains
+  out of scope.
 - **Integration-seam / composability hunt LENS — a first-class `C15` bug-class** (#1644, epic #1611).
   Formalizes the ad-hoc integration-seam lens (validated on recent hunts) as THREE additive pieces over the
   shipped M1/M2 zone-split machinery — no new agent. (1) `auditor/bug-taxonomy.md` gains a
