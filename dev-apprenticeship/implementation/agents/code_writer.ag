@@ -158,94 +158,6 @@ fn primary_file_path(files: string) -> string {
     return first_path_in_lines_at(regex_split("\\r\\n|\\r|\\n", files), 0);
 }
 
-// #1195: deterministically turn (existing content, LLM search/replace edits)
-// into the `--actions` JSON commit-files expects, WITHOUT the LLM ever having
-// to emit the full file. tools/apply-edits.py reads the original content on
-// stdin and the edits JSON from $APPLY_EDITS, replaces each edit's old_str
-// (which must be an EXACT, unique substring) and prints the new full content;
-// we then json.dumps a single-element [{action:"update", file_path, content}]
-// array. Large values (the fetched file + the edits) ride env vars / a pipe
-// fed by `printf` (a shell builtin), never argv, so ARG_MAX never bites. If
-// apply-edits.py exits non-zero (mangled / ambiguous / missing old_str — the
-// flat-cyborg screen-scrape corruption guard) the whole `exec sh` exits
-// non-zero and the caller's `try` collapses to "" => treated as a failed
-// code-gen, no commit. `path` is shell_escape'd; `orig` and `edits` are passed
-// as env vars so the body itself carries no untrusted concatenation.
-//
-// #1597 (substrate purity P1): the `python3 -c` wrapper only did three
-// mechanical things apply-edits.py already does itself (build the tools/
-// path, run it with content on stdin + $APPLY_EDITS, json.dumps the
-// envelope) — verified apply-edits.py:126-141 reads stdin + the env var
-// directly. Now a plain `sh -c 'printf ... | python3 ...'` pipeline (no
-// embedded interpreter logic); the JSON envelope is built with
-// `json_escape_string` (matches python's `json.dumps` string-escaping for
-// `"`, `\`, control chars). A shell pipeline's exit status is the LAST
-// command's, so a non-zero apply-edits.py exit still fails the whole
-// `exec sh` -> `try/catch` collapses to "" -> same no-commit path as
-// today. `tools/apply-edits.py` itself is UNTOUCHED (stays class C).
-fn apply_edits_to_actions(path: string, orig: string, edits: string) -> string {
-    // colony-lint: safe-exec-concat
-    let cmd = "ORIG=" + shell_escape(orig) + " APPLY_EDITS=" + shell_escape(edits) +
-        " sh -c 'printf %s \"$ORIG\" | python3 \"$COLONY_DIR/../../tools/apply-edits.py\"'";
-    let content = try { exec sh cmd; } catch e { ""; };
-    if len(content) == 0 { return ""; };
-    return "[{\"action\": \"update\", \"file_path\": \"" + json_escape_string(path) +
-        "\", \"content\": \"" + json_escape_string(content) + "\"}]";
-}
-
-// #1208: render a line-NUMBERED view of the file content for the edit prompt.
-// Each line gets an `N|` prefix (N = 1-based line number) so the LLM can name
-// line-range edits without ever reproducing exact source bytes (the markdown
-// `**`-drop failure mode of the search/replace path). The UN-numbered content
-// rides $C (env var, off-argv) so ARG_MAX never bites; splitlines() keepends is
-// not needed here because the numbered view is a display artifact, not content.
-//
-// substrate-purity: deferred (CB: native recursion ~46 CB/line would exhaust
-// cb_per_tick on large files; revisit after a cheaper primitive lands)
-fn numbered_view(content: string) -> string {
-    // colony-lint: safe-exec-concat
-    let cmd = "C=" + shell_escape(content) +
-        " python3 -c 'import os,sys" +
-        "\ntext=os.environ[\"C\"]" +
-        "\nlines=text.splitlines()" +
-        "\nsys.stdout.write(\"\\n\".join(\"%d|%s\" % (i+1, ln) for i,ln in enumerate(lines)))'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
-}
-
-// #1208: deterministically turn (existing UN-numbered content, LLM line-range
-// edits) into the `--actions` JSON commit-files expects, WITHOUT the LLM ever
-// reproducing source bytes. tools/apply-line-edits.py reads the original content
-// on stdin and the edits JSON from $LINE_EDITS ([{start_line,end_line,new_text}],
-// 1-based inclusive; empty new_text deletes), validates 1<=start<=end<=nlines and
-// NON-OVERLAPPING, applies descending-by-start so earlier replacements don't shift
-// later ranges, and prints the new full content; we then json.dumps a single
-// [{action:"update", file_path, content}] array. Large values (fetched file +
-// edits) ride env vars / a pipe (`printf`, a shell builtin), never argv. If
-// apply-line-edits.py exits non-zero (out-of-bounds / overlapping — the
-// validation guard) the whole `exec sh` exits non-zero and the caller's `try`
-// collapses to "" => treated as a failed code-gen, no commit. `path` is
-// shell_escape'd; `orig` and `edits` are passed as env vars so the body itself
-// carries no untrusted concatenation.
-//
-// #1597 (substrate purity P1): mirrors apply_edits_to_actions's rewrite —
-// the `python3 -c` wrapper only did three mechanical things
-// apply-line-edits.py already does itself (build the tools/ path, run it
-// with content on stdin + $LINE_EDITS, json.dumps the envelope) — verified
-// apply-line-edits.py:71-86 reads stdin + the env var directly. Now a plain
-// `sh -c 'printf ... | python3 ...'` pipeline; the JSON envelope is built
-// with `json_escape_string`. `tools/apply-line-edits.py` itself is
-// UNTOUCHED (stays class C).
-fn apply_line_edits_to_actions(path: string, orig: string, edits: string) -> string {
-    // colony-lint: safe-exec-concat
-    let cmd = "ORIG=" + shell_escape(orig) + " LINE_EDITS=" + shell_escape(edits) +
-        " sh -c 'printf %s \"$ORIG\" | python3 \"$COLONY_DIR/../../tools/apply-line-edits.py\"'";
-    let content = try { exec sh cmd; } catch e { ""; };
-    if len(content) == 0 { return ""; };
-    return "[{\"action\": \"update\", \"file_path\": \"" + json_escape_string(path) +
-        "\", \"content\": \"" + json_escape_string(content) + "\"}]";
-}
-
 fn merged_mr_cmd(owner: string, repo: string) -> string {
     let ts = recall_latest(scoped_memo(owner, repo, "code_writer:last_check"));
     // colony-lint: safe-exec-concat
@@ -2172,11 +2084,13 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // #1210: Approach A — edit files DIRECTLY in a local checkout via
                 // Claude Code (flat-cyborg), then commit the `git diff` and open
                 // the PR. This replaces the old "create-branch -> get-file ->
-                // numbered_view -> line-range prompt() -> apply-line-edits.py ->
-                // commit-files via the forge Git Database API" chain. That chain
-                // round-tripped file CONTENT through flat-cyborg's TUI screen-
-                // scrape, which line-wraps and corrupts large files (#1152 /
-                // #1195 / #1208). Editing in a real checkout sidesteps the
+                // line-numbered view -> line-range prompt() -> apply-line-edits.py ->
+                // commit-files via the forge Git Database API" chain (its
+                // wrapper functions, orphaned by this migration, were deleted
+                // outright in #1607 rather than carried as dead code). That
+                // chain round-tripped file CONTENT through flat-cyborg's TUI
+                // screen-scrape, which line-wraps and corrupts large files
+                // (#1152 / #1195 / #1208). Editing in a real checkout sidesteps the
                 // screen-scrape: claude's own file tools touch the working tree
                 // and we commit whatever git shows. The editing prompt now lives
                 // INSIDE the orchestrator's flat-cyborg invocation, NOT as an .ag

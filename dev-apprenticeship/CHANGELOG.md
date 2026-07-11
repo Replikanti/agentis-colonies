@@ -15,6 +15,27 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Removed
+
+- **Dead `code_writer.ag` edit-application chain** ([#1607](https://github.com/Replikanti/agentis-colonies/issues/1607)):
+  `apply_edits_to_actions`, `apply_line_edits_to_actions`, and `numbered_view`
+  are deleted — QA on PR #1605 found the first two had zero real callers, on
+  main and before the substrate-purity P1 rewrite; tracing the call graph
+  showed `numbered_view` was called only by those two, and was one of the two
+  `// substrate-purity: deferred (CB)` WAIVED Phase-1 sites — i.e. Phase 1
+  mistakenly deferred a dead function instead of deleting it. The
+  edit-application flow they belonged to (`get-file` -> numbered view ->
+  line-range `prompt()` -> `apply-line-edits.py` -> `commit-files`) was
+  retired by the [#1210](https://github.com/Replikanti/agentis-colonies/issues/1210)
+  edit-in-checkout approach (`tools/code-edit-in-checkout.sh`) long ago;
+  these were its orphaned remnants. `tools/apply-edits.py` and
+  `tools/apply-line-edits.py` are untouched — they remain in use as the
+  exempt pipe-target example in `tools/check-substrate-purity.sh`'s tests and
+  ship in `BUNDLE.manifest` independent of this removal.
+  `tools/check-substrate-purity.sh`'s allowlist stays at 12 (`numbered_view`
+  was a waiver, not an allowlist row); one waived Phase-1 site remains
+  (`router.ag:closed_by_context`).
+
 ## [2.11.0] - 2026-07-11
 
 **Requires:** agentis >= 1.22.3

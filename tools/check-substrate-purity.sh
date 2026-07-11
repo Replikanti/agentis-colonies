@@ -36,9 +36,10 @@
 # Waiver (`// substrate-purity: deferred (<reason>)`) is honoured when it appears
 # either (a) on the line immediately above the finding, or (b) anywhere in the
 # contiguous `//`-comment block directly above the enclosing `fn` declaration.
-# Rule (b) is required because both existing waived Phase-1 sites (numbered_view
-# in code_writer.ag, closed_by_context in router.ag) sit above `fn`, several
-# lines before the actual `python3 -c` line.
+# Rule (b) is required because the one remaining waived Phase-1 site
+# (closed_by_context in router.ag) sits above `fn`, several lines before the
+# actual `python3 -c` line. (A second waived site, code_writer.ag:numbered_view,
+# was deleted outright as dead code in #1607 rather than rewritten.)
 #
 # KNOWN LIMITATION (grep-level, not a full parser; matches check-exec-sh.sh's
 # own documented `+`-splitting caveat): a token deliberately split across a `+`
@@ -71,10 +72,11 @@ fi
 # --- Allowlist ---------------------------------------------------------------
 # Known remaining embedded-interpreter sites, keyed `relpath:function` (relpath
 # under dev-apprenticeship/). Enumerated by scanning every finding on the
-# #1587-epic baseline and excluding the two inline-waived Phase-1 sites
-# (code_writer.ag:numbered_view, router.ag:closed_by_context). Prune a row when
-# its Phase 2/3 rewrite lands — the [STALE-ALLOWLIST] direction will fail the
-# lint until you do.
+# #1587-epic baseline and excluding the one remaining inline-waived Phase-1
+# site (router.ag:closed_by_context; the other, code_writer.ag:numbered_view,
+# was dead code and was deleted in #1607 instead of being carried as debt).
+# Prune a row when its Phase 2/3 rewrite lands — the [STALE-ALLOWLIST]
+# direction will fail the lint until you do.
 #
 # SUBSTRATE_PURITY_ALLOWLIST_FILE (test-only override): when set to a readable
 # file, the allowlist is loaded from it (one `relpath:function` per line, blank
