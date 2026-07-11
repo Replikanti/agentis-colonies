@@ -6,12 +6,14 @@
 #
 #   1. effective_priority_vocab()'s hardcoded fallback literal is EXACTLY
 #      the four scoped labels, with no P1/P2/P3/P4/urgent substrings.
-#   2. Regression guard: the is_pri() DETECTION heuristic inside
-#      canonical_priority_context() still recognizes the broad legacy
-#      scheme (`p\d+` pattern + "urgent" literal) -- narrowing the
-#      suggestion vocabulary must never accidentally narrow detection too,
-#      or already-labeled legacy issues would look "unprioritized" again
-#      and prioritizer would re-fire on them forever.
+#   2. Regression guard: the native is_pri() DETECTION heuristic (and BOTH
+#      regexes canonical_priority_context() builds from it -- PRILINE for
+#      selection and PRISET for the #1638 CB-fix raw-JSON VERIFY) still recognize
+#      the broad legacy scheme (`priority*` prefix + `p[0-9]+` pattern + "urgent"
+#      literal). Narrowing the suggestion vocabulary must never accidentally
+#      narrow detection too, and the flat PRISET VERIFY must never silently narrow
+#      relative to is_pri, or already-labeled legacy issues would look
+#      "unprioritized" again and prioritizer would re-fire forever.
 #   3. Regression guard: score_priority_verdict_key()'s match_cmd also
 #      still recognizes the broad legacy scheme (same failure mode as #2,
 #      but on the reality-check scoring path instead of selection).
@@ -82,16 +84,48 @@ else
     fi
 fi
 
-# -- (2) regression guard: is_pri() detection stays broad --------------------
+# -- (2) regression guard: the DETECTION grammar stays broad -----------------
+# #1638 P3 cluster A made canonical_priority_context native: detection now lives
+# in the top-level fn is_pri() (member / ^p<digits>$ / urgent) plus the PRILINE
+# regex (selection) canonical_priority_context() builds from it. Assert the broad
+# legacy scheme (p<digits> + urgent) survives on BOTH — narrowing it would make
+# already-labeled legacy issues look "unprioritized" and re-fire forever.
+ispri_block="$(fn_body is_pri || true)"
 ctx_block="$(fn_body canonical_priority_context)"
-if printf '%s' "$ctx_block" | grep -Fq 'is_pri(l)'; then
-    if printf '%s' "$ctx_block" | grep -Fq 'p\\d+' && printf '%s' "$ctx_block" | grep -Fq 'urgent'; then
-        ok "canonical_priority_context()'s is_pri() still recognizes p\\d+ and urgent (detection unchanged)"
-    else
-        bad "canonical_priority_context()'s is_pri() no longer recognizes both p\\d+ and urgent -- detection was accidentally narrowed"
-    fi
-else
+if [ -z "$ispri_block" ]; then
     bad "canonical_priority_context()'s is_pri() detection function not found"
+elif printf '%s' "$ispri_block" | grep -Fq 'p[0-9]+' && printf '%s' "$ispri_block" | grep -Fq 'urgent' \
+     && printf '%s' "$ctx_block" | grep -Fq 'p[0-9]+' && printf '%s' "$ctx_block" | grep -Fq 'urgent'; then
+    ok "is_pri() + PRILINE still recognize p<digits> and urgent (detection unchanged)"
+else
+    bad "is_pri()/PRILINE no longer recognizes both p<digits> and urgent -- detection was accidentally narrowed"
+fi
+
+# -- (2b) #1638 CB fix: the flat raw-JSON VERIFY regex (PRISET) must mirror
+# is_pri's grammar and not silently narrow it. Extract the PRISET literal and
+# assert it still carries the three broad-scheme branches: `priority` (startswith),
+# `p[0-9]+` (fullmatch), and `urgent`. If PRISET ever drops one, a legacy label
+# would pass the VERIFY and the chosen issue would emit as "unprioritized".
+priset_line="$(printf '%s' "$ctx_block" | grep -F 'let PRISET =' || true)"
+if [ -z "$priset_line" ]; then
+    bad "canonical_priority_context()'s PRISET raw-JSON VERIFY literal not found"
+elif printf '%s' "$priset_line" | grep -Fq 'priority[^' \
+     && printf '%s' "$priset_line" | grep -Fq 'p[0-9]+' \
+     && printf '%s' "$priset_line" | grep -Fq 'urgent'; then
+    ok "PRISET still recognizes priority*, p<digits> and urgent (raw-JSON VERIFY not narrowed vs is_pri)"
+else
+    bad "PRISET no longer covers priority*/p<digits>/urgent -- the flat VERIFY silently narrowed relative to is_pri: $priset_line"
+fi
+
+# -- (2c) #1638 QA: PRISET must keep is_pri's to_lower(trim(l)) whitespace
+# tolerance -- a `[ ]*` run after the opening quote and on the p<digits>/urgent/pv
+# arms, so a space-padded priority label ("  P1  ") is still detected. Dropping the
+# `[ ]*` re-introduces the QA byte-identity regression (padded priority leaks into
+# nonpri instead of returning "").
+if [ -n "$priset_line" ] && printf '%s' "$priset_line" | grep -Fq '[ ]*'; then
+    ok "PRISET carries [ ]* whitespace tolerance (restores is_pri's trim for padded labels)"
+else
+    bad "PRISET dropped its [ ]* whitespace tolerance -- padded priority labels ('  P1  ') would leak past the VERIFY: $priset_line"
 fi
 
 # -- (3) regression guard: score_priority_verdict_key() match_cmd stays broad
