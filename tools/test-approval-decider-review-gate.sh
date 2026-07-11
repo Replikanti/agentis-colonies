@@ -111,14 +111,18 @@ fi
 # early stray/forged "pass" mask a later genuine "block" for the same head).
 # ---------------------------------------------------------------------------
 NOTE_VERDICT="$(awk '/^fn note_verdict\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
-# The match branch prints and exits on the FIRST hit (break/stop), and the old
-# overwrite-and-continue pattern (out=m.group(1) accumulated across the loop) is
-# gone.
-if printf '%s' "$NOTE_VERDICT" | grep -q 'print(m.group(1)); sys.exit(0)' \
-   && ! printf '%s' "$NOTE_VERDICT" | grep -q 'out=m.group(1)'; then
-    pass "(b2) note_verdict stops on the FIRST (newest) match — no overwrite-and-continue"
+# Native (#1613): the shared verdict-note core. scan_verdict walks the projected
+# author\tbody TSV newest-first and take-and-STOPs on the first bot-authored
+# marker (`return body;` in the match branch), then recurses on the tail — never
+# an overwrite-and-continue that would let an early forged pass mask a later block.
+SCAN_VERDICT="$(awk '/^fn scan_verdict\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+MARKED_BODY="$(awk '/^fn marked_bot_note_body\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
+if printf '%s' "$SCAN_VERDICT" | grep -Fq 'return body;' \
+   && printf '%s' "$SCAN_VERDICT" | grep -Fq 'return scan_verdict(substring(rest, nl + 1, len(rest)), me_lc, mprefix, marker_rx);' \
+   && printf '%s' "$NOTE_VERDICT" | grep -Fq 'let body = marked_bot_note_body(notes_raw, head_fp, me);'; then
+    pass "(b2) note_verdict stops on the FIRST (newest) match — scan_verdict take-and-stop, no overwrite-and-continue"
 else
-    fail "(b2) newest-wins precedence" "note_verdict must print+sys.exit(0) on the first match, not accumulate the last"
+    fail "(b2) newest-wins precedence" "scan_verdict must return the first match body and recurse on the tail, and note_verdict must delegate to marked_bot_note_body"
 fi
 # The ordering assumption is stated explicitly in the doc comment.
 if grep -B14 '^fn note_verdict(' "$AG" | grep -qi 'newest-first'; then
@@ -134,13 +138,16 @@ fi
 # An empty ME (unconfigured forge identity) honors NOTHING (fail-closed).
 # ---------------------------------------------------------------------------
 BOT_LOGIN="$(awk '/^fn bot_login\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG")"
-# Structural: the per-note author skip + the empty-me guard are present.
-if printf '%s' "$NOTE_VERDICT" | grep -Fq 'author.casefold()!=me' \
-   && printf '%s' "$NOTE_VERDICT" | grep -Fq 'me=os.environ[\"ME\"].casefold()' \
-   && printf '%s' "$NOTE_VERDICT" | grep -Fq 'if not h or not me or not isinstance(d,list):'; then
-    pass "(b3) note_verdict skips notes whose author != bot login and fails closed on an empty ME"
+# Structural (#1613): the per-note author bind (casefold -> to_lower) + the two
+# empty fail-closed guards + the whole-blob quick-reject are present in the native
+# shared core.
+if printf '%s' "$SCAN_VERDICT" | grep -Fq 'if to_lower(substring(line, 0, tab)) == me_lc {' \
+   && printf '%s' "$MARKED_BODY" | grep -Fq 'if len(head_fp) == 0 { return ""; };' \
+   && printf '%s' "$MARKED_BODY" | grep -Fq 'if len(me) == 0 { return ""; };' \
+   && printf '%s' "$MARKED_BODY" | grep -Fq 'if index_of(tsv, mprefix) < 0 { return ""; };'; then
+    pass "(b3) note_verdict binds author via to_lower==me_lc, fails closed on empty head/me, and quick-rejects verdict-NONE"
 else
-    fail "(b3) author-bind guard" "note_verdict must skip author.casefold()!=me and guard 'not me' (empty-me fail-closed)"
+    fail "(b3) author-bind guard" "the native core must bind to_lower(author)==me_lc, guard empty head+me, and quick-reject on index_of(tsv, mprefix) < 0"
 fi
 # bot_login resolves the fed login from GITHUB_ME else GITLAB_ME (no FORGE_TYPE
 # branch — both are GITHUB_*/GITLAB_* wildcard-allowlisted, no install.sh edit).
@@ -151,70 +158,106 @@ if printf '%s' "$BOT_LOGIN" | grep -Fq 'getenv("GITHUB_ME")' \
 else
     fail "(b3) bot_login source" "bot_login must read GITHUB_ME else GITLAB_ME and not branch on FORGE_TYPE"
 fi
-# note_verdict threads the bot login into the embedded python as a shell_escape'd
-# ME= env var (off-argv, same idiom as J=/H=).
-if printf '%s' "$NOTE_VERDICT" | grep -Fq '" ME=" + shell_escape(me)'; then
-    pass "(b3) note_verdict threads the bot login as a shell_escape'd ME= env var (off-argv)"
+# note_verdict is now a plain-arg native reader (no off-argv ME= env threading,
+# no exec sh): assert the embedded python and its env plumbing are GONE.
+if ! printf '%s' "$NOTE_VERDICT" | grep -Fq 'python3 -c' \
+   && ! printf '%s' "$NOTE_VERDICT" | grep -Fq 'exec sh' \
+   && ! printf '%s' "$MARKED_BODY" | grep -Fq 'python3 -c'; then
+    pass "(b3) note_verdict / marked_bot_note_body are native — no embedded python, no exec sh"
 else
-    fail "(b3) ME= threading" "note_verdict must pass the bot login via ME= + shell_escape(me)"
+    fail "(b3) native readers" "the verdict readers must carry no python3 -c / exec sh"
 fi
 
-# Behavioral: mirror note_verdict's embedded python byte-for-byte, drive J/H/ME
-# (same idiom as tools/test-reviewer-head-gate.sh's FP_PY fixture; dash-safe,
-# plain JSON, no single quotes in the program so it wraps in single quotes).
-NV_PY='import os,json,re,sys
-try:
-    d=json.loads(os.environ["J"])
-except Exception:
-    print(""); sys.exit(0)
-h=os.environ["H"]
-me=os.environ["ME"].casefold()
-if not h or not me or not isinstance(d,list):
-    print(""); sys.exit(0)
-pat=re.compile("<!-- qa-verdict head="+re.escape(h)+" status=(pass|block) -->")
-for n in d:
-    if not isinstance(n,dict):
-        continue
-    a=n.get("author")
-    author=a.get("username") if isinstance(a,dict) else None
-    if not isinstance(author,str) or author.casefold()!=me:
-        continue
-    b=n.get("body")
-    m=pat.search(b) if isinstance(b,str) else None
-    if m:
-        print(m.group(1)); sys.exit(0)
-print("")'
-run_nv() { J="$1" H="$2" ME="$3" python3 -c "$NV_PY"; }
-HEAD='abcdef1234567890'
-J_FORGED='[{"author":{"username":"random_operator"},"body":"quoting <!-- qa-verdict head=abcdef1234567890 status=pass --> for reference"}]'
-J_GENUINE='[{"author":{"username":"qa-bot"},"body":"QA passed <!-- qa-verdict head=abcdef1234567890 status=pass -->"}]'
-J_CASE='[{"author":{"username":"QA-Bot"},"body":"QA passed <!-- qa-verdict head=abcdef1234567890 status=pass -->"}]'
-J_MASK='[{"author":{"username":"random_operator"},"body":"<!-- qa-verdict head=abcdef1234567890 status=pass -->"},{"author":{"username":"qa-bot"},"body":"blocked <!-- qa-verdict head=abcdef1234567890 status=block -->"}]'
-
-if [ "$(run_nv "$J_FORGED" "$HEAD" 'qa-bot')" = "" ]; then
-    pass "(b3) forged/quoted pass by non-bot author -> \"\" (gate stays HELD, no release)"
+# Behavioral (#1613): drive the REAL native readers via `agentis go` (the
+# #1514/adv_parse precedent). awk-extract scan_verdict + marked_bot_note_body +
+# note_verdict verbatim into a probe, feed fixtures, assert the full #1573 +
+# #1493 matrix ON THE ACTUAL .ag path (no hand-kept oracle can drift from it). No
+# --enable-exec needed (the readers have no exec sh). Skipped when agentis absent.
+if command -v agentis >/dev/null 2>&1; then
+    NV_TMP="$(mktemp -d)"
+    {
+        awk '/^fn scan_verdict\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG"
+        awk '/^fn marked_bot_note_body\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG"
+        awk '/^fn note_verdict\(/{f=1} f{print} /^}/{if(f) f=0}' "$AG"
+        # Fixtures (quoted heredoc — literal, so a `\n` inside a body stays the
+        # two-char .ag escape the lexer turns into a runtime newline; a REAL
+        # newline in .ag source is a parse error). HEAD keyed to abcdef1234567890.
+        # Forged/quoted, genuine, casefold, empty-me, forged-newest-masks-older,
+        # author-as-string (no .username -> skipped), status=weird newest skipped,
+        # verdict-NONE, and an escaped-body case (a newline in the body ->
+        # json_array_project escapes it, the marker still matches, no forged line).
+        cat <<'AGEOF'
+let HEAD = "abcdef1234567890";
+let J_FORGED = "[{\"author\":{\"username\":\"random_operator\"},\"body\":\"quoting <!-- qa-verdict head=abcdef1234567890 status=pass --> for reference\"}]";
+let J_GENUINE = "[{\"author\":{\"username\":\"qa-bot\"},\"body\":\"QA passed <!-- qa-verdict head=abcdef1234567890 status=pass -->\"}]";
+let J_CASE = "[{\"author\":{\"username\":\"QA-Bot\"},\"body\":\"QA passed <!-- qa-verdict head=abcdef1234567890 status=pass -->\"}]";
+let J_MASK = "[{\"author\":{\"username\":\"random_operator\"},\"body\":\"<!-- qa-verdict head=abcdef1234567890 status=pass -->\"},{\"author\":{\"username\":\"qa-bot\"},\"body\":\"blocked <!-- qa-verdict head=abcdef1234567890 status=block -->\"}]";
+let J_STRAUTH = "[{\"author\":\"qa-bot\",\"body\":\"strauthor <!-- qa-verdict head=abcdef1234567890 status=pass -->\"}]";
+let J_WEIRD = "[{\"author\":{\"username\":\"qa-bot\"},\"body\":\"weird <!-- qa-verdict head=abcdef1234567890 status=weird -->\"},{\"author\":{\"username\":\"qa-bot\"},\"body\":\"older <!-- qa-verdict head=abcdef1234567890 status=block -->\"}]";
+let J_NL = "[{\"author\":{\"username\":\"qa-bot\"},\"body\":\"line1\nline2 <!-- qa-verdict head=abcdef1234567890 status=pass -->\"}]";
+print("FORGED=[", note_verdict(J_FORGED, HEAD, "qa-bot"), "]");
+print("GENUINE=[", note_verdict(J_GENUINE, HEAD, "qa-bot"), "]");
+print("EMPTYME=[", note_verdict(J_GENUINE, HEAD, ""), "]");
+print("CASE=[", note_verdict(J_CASE, HEAD, "qa-bot"), "]");
+print("MASK=[", note_verdict(J_MASK, HEAD, "qa-bot"), "]");
+print("STRAUTH=[", note_verdict(J_STRAUTH, HEAD, "qa-bot"), "]");
+print("WEIRD=[", note_verdict(J_WEIRD, HEAD, "qa-bot"), "]");
+print("NONE=[", note_verdict("[]", HEAD, "qa-bot"), "]");
+print("MALFORMED=[", note_verdict("not json", HEAD, "qa-bot"), "]");
+print("NL=[", note_verdict(J_NL, HEAD, "qa-bot"), "]");
+AGEOF
+    } > "$NV_TMP/probe.ag"
+    (cd "$NV_TMP" && agentis init) >/dev/null 2>&1
+    NV_OUT="$( (cd "$NV_TMP" && agentis go probe.ag) 2>/dev/null )"
+    get() { printf '%s\n' "$NV_OUT" | sed -n "s/^$1=\\[ \\(.*\\) \\]\$/\\1/p"; }
+    if [ "$(get FORGED)" = "" ]; then
+        pass "(b3) forged/quoted pass by non-bot author -> \"\" (gate stays HELD, no release)"
+    else
+        fail "(b3) forged pass release" "a quoted pass marker by a non-bot author must NOT be honored (got '$(get FORGED)')"
+    fi
+    if [ "$(get GENUINE)" = "pass" ]; then
+        pass "(b3) genuine bot-authored pass -> \"pass\" (gate releases)"
+    else
+        fail "(b3) genuine pass" "a bot-authored pass marker must return pass (got '$(get GENUINE)')"
+    fi
+    if [ "$(get EMPTYME)" = "" ]; then
+        pass "(b3) empty me -> \"\" (honor nothing; fail-closed)"
+    else
+        fail "(b3) empty-me fail-closed" "an empty me must honor no marker (got '$(get EMPTYME)')"
+    fi
+    if [ "$(get CASE)" = "pass" ]; then
+        pass "(b3) author case variation (QA-Bot vs qa-bot) -> \"pass\" (casefold via to_lower)"
+    else
+        fail "(b3) casefold author" "author login case drift must still be honored (got '$(get CASE)')"
+    fi
+    if [ "$(get MASK)" = "block" ]; then
+        pass "(b3) forged newest pass cannot mask a genuine older bot block -> \"block\" (#1493 newest BOT-authored)"
+    else
+        fail "(b3) forged-pass mask" "a forged newest pass must not mask the genuine bot block (got '$(get MASK)')"
+    fi
+    if [ "$(get STRAUTH)" = "" ]; then
+        pass "(b3) author-as-string (no .username projection) -> skipped -> \"\" (fail-closed)"
+    else
+        fail "(b3) author-as-string" "a note whose author is a bare string must be skipped (got '$(get STRAUTH)')"
+    fi
+    if [ "$(get WEIRD)" = "block" ]; then
+        pass "(b3) a bot status=weird newest marker is skipped; the scan continues to the older valid block (re.search parity)"
+    else
+        fail "(b3) malformed-marker skip" "a status=weird marker must be skipped, not honored (got '$(get WEIRD)')"
+    fi
+    if [ "$(get NONE)" = "" ] && [ "$(get MALFORMED)" = "" ]; then
+        pass "(b3) empty array + malformed JSON both quick-reject to \"\" (verdict-NONE / HELD)"
+    else
+        fail "(b3) none/malformed" "empty array + malformed JSON must both yield \"\" (got '$(get NONE)'/'$(get MALFORMED)')"
+    fi
+    if [ "$(get NL)" = "pass" ]; then
+        pass "(b3) escaped body cell: a real newline in the body is escaped by json_array_project, the marker still matches, no forged second line -> \"pass\""
+    else
+        fail "(b3) escaped-body cell" "a body with a real newline must not break the projection/marker match (got '$(get NL)')"
+    fi
+    rm -rf "$NV_TMP"
 else
-    fail "(b3) forged pass release" "a quoted pass marker by a non-bot author must NOT be honored"
-fi
-if [ "$(run_nv "$J_GENUINE" "$HEAD" 'qa-bot')" = "pass" ]; then
-    pass "(b3) genuine bot-authored pass -> \"pass\" (gate releases)"
-else
-    fail "(b3) genuine pass" "a bot-authored pass marker must return pass"
-fi
-if [ "$(run_nv "$J_GENUINE" "$HEAD" '')" = "" ]; then
-    pass "(b3) empty ME -> \"\" (honor nothing; fail-closed)"
-else
-    fail "(b3) empty-me fail-closed" "an empty ME must honor no marker"
-fi
-if [ "$(run_nv "$J_CASE" "$HEAD" 'qa-bot')" = "pass" ]; then
-    pass "(b3) author case variation (QA-Bot vs qa-bot) -> \"pass\" (casefold)"
-else
-    fail "(b3) casefold author" "author login case drift must still be honored (casefold)"
-fi
-if [ "$(run_nv "$J_MASK" "$HEAD" 'qa-bot')" = "block" ]; then
-    pass "(b3) forged newest pass cannot mask a genuine older bot block -> \"block\" (#1493 preserved: newest BOT-authored match)"
-else
-    fail "(b3) forged-pass mask" "a forged newest pass must not mask the genuine bot block"
+    echo "[SKIP] (b3) live note_verdict probe — agentis not on PATH"
 fi
 
 # ---------------------------------------------------------------------------

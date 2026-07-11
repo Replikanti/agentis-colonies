@@ -15,6 +15,36 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+**Requires:** agentis >= 1.22.2
+
+### Changed
+
+- **Native merge-gate verdict readers** (substrate purity Phase 2 PR A,
+  [#1613](https://github.com/Replikanti/agentis-colonies/issues/1613) /
+  [#1587](https://github.com/Replikanti/agentis-colonies/issues/1587)): the two
+  auto-merge safety-gate readers — `approval_decider.note_verdict` (the
+  [#1484](https://github.com/Replikanti/agentis-colonies/issues/1484) head-keyed
+  QA review gate) and `code_writer.block_reason_for_head` (the
+  [#1521](https://github.com/Replikanti/agentis-colonies/issues/1521) QA-block
+  recovery reader) — move off their embedded `python3 -c` mr-notes one-liners onto
+  pure `.ag` builtins. `json_array_project` flattens the notes array into one flat,
+  size-independent `author\tbody` TSV projection and a whole-blob quick-reject
+  short-circuits the common verdict-NONE case with no line walk (measured ~91 CB
+  for a 100-note page, well under `approval_decider`'s cb 800). A **byte-identical**
+  shared core (`scan_verdict` + `marked_bot_note_body`) is duplicated across the two
+  agents and pinned by both suites, so the author-bind can never drift. The
+  pass/block/none gate DECISION is value-identical on every gate-relevant input
+  (full [#1573](https://github.com/Replikanti/agentis-colonies/issues/1573) author-
+  bind + [#1493](https://github.com/Replikanti/agentis-colonies/issues/1493)
+  newest-first matrix); the one cosmetic divergence is that a real newline/tab in a
+  `block` reason now renders as the escaped `\n`/`\t` two-char form (the
+  json_array_project framing) instead of raw — documented in
+  `block_reason_for_head`. Prunes the two allowlist rows from
+  `tools/check-substrate-purity.sh` (15 → 13; `actionable_note` stays, its native
+  rewrite is PR B). **Floor bump:** `json_array_project` is above the prior 1.20.0
+  floor, so the runtime floor moves to **agentis >= 1.22.2** — no try/catch
+  fallback (the projection is load-bearing), making the next release a **MINOR**.
+
 ## [2.10.1] - 2026-07-10
 
 **Requires:** agentis >= 1.20.0
