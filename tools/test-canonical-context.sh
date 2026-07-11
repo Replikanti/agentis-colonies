@@ -367,6 +367,72 @@ if command -v agentis >/dev/null 2>&1; then
     assert_line "AG prioritize: all-prioritized -> empty (greedy VERIFY)" \
         "$(ag_pri '[{"iid":7,"title":"bug","labels":["P1"]},{"iid":9,"title":"crash","labels":["urgent"]}]' "$DPV")" ""
 
+    # ----- #1638 CB fix: raw-JSON VERIFY equivalence (byte-identity with the
+    # retired per-label is_pri filter) -----
+    # canonical_priority_context now VERIFYs the chosen issue with ONE regex
+    # (PRISET) over the raw JSON label array instead of a per-label is_pri walk.
+    # PRISET mirrors is_pri's grammar quote-anchored: a priority label makes the
+    # issue "already prioritized" -> "" (fail SAFE); a non-priority label leaves
+    # it selectable -> emits the line. Cases mirror the #1638 byte-identity table.
+    assert_line "#1638 AG prioritize: 'p12x' is NOT priority (p<digits> needs a closing quote)" \
+        "$(ag_pri '[{"iid":7,"title":"Crash","labels":["p12x"]}]' "$DPV")" \
+        "$(printf '7\tkw=crash labels=p12x\tCrash p12x')"
+    assert_line "#1638 AG prioritize: 'deprioritize' is NOT priority (not a startswith prefix)" \
+        "$(ag_pri '[{"iid":7,"title":"Crash","labels":["deprioritize"]}]' "$DPV")" \
+        "$(printf '7\tkw=crash labels=deprioritize\tCrash deprioritize')"
+    assert_line "#1638 AG prioritize: 'xpriority' is NOT priority (not a startswith prefix)" \
+        "$(ag_pri '[{"iid":7,"title":"Crash","labels":["xpriority"]}]' "$DPV")" \
+        "$(printf '7\tkw=crash labels=xpriority\tCrash xpriority')"
+    assert_line "#1638 AG prioritize: 'priorityqueue' IS priority (startswith) -> empty" \
+        "$(ag_pri '[{"iid":7,"title":"Crash","labels":["priorityqueue"]}]' "$DPV")" ""
+    assert_line "#1638 AG prioritize: 'Priority::High' IS priority (startswith, case-folded) -> empty" \
+        "$(ag_pri '[{"iid":7,"title":"Crash","labels":["Priority::High"]}]' "$DPV")" ""
+    # KEY safety net: a priority label at index >=9 is OUTSIDE the K=8 projection
+    # (iid + labels[0..8]), so PRILINE cannot see it and the greedy capture would
+    # wrongly pick this issue; the FLAT VERIFY reads the FULL raw label array and
+    # catches it -> "" (the projection cutoff cannot leak a prioritized issue).
+    assert_line "#1638 AG prioritize: priority label at index >=9 caught by full-array VERIFY -> empty" \
+        "$(ag_pri '[{"iid":7,"title":"Crash","labels":["a0","a1","a2","a3","a4","a5","a6","a7","a8","priority::high"]}]' "$DPV")" ""
+    # custom-pv exact-vs-prefix: 'high' listed in pv is a fullmatch member, but
+    # 'highway' (prefix only) is NOT priority (PRISET closes the branch on ").
+    assert_line "#1638 AG prioritize: 'highway' is NOT priority under custom pv 'high' (member is exact)" \
+        "$(ag_pri '[{"iid":7,"title":"Crash","labels":["highway","bug"]}]' "high, low")" \
+        "$(printf '7\tkw=crash labels=bug,highway\tCrash bug highway')"
+    # punctuation labels: pva regex_escapes pv tokens and raw label metachars sit
+    # only inside the literal quoted PRISET branch, never interpreted as regex.
+    assert_line "#1638 AG prioritize: punctuation labels are NOT priority, TSV well-formed" \
+        "$(ag_pri '[{"iid":7,"title":"Crash","labels":["c++","re[gex]"]}]' "$DPV")" \
+        "$(printf '7\tkw=crash labels=c++,re[gex]\tCrash c++ re[gex]')"
+
+    # ----- #1638 CB fix: label-count sweep under the enforced cb cap -----
+    # The retired per-label is_pri VERIFY cost ~283 CB/label (~363 on a heavier
+    # vocab) and overflowed the live cb_per_tick=2000 at ~5 labels on the chosen
+    # issue; the flat raw-JSON VERIFY drops the slope to ~58 CB/label (the shared
+    # output-join floor). Assert canonical_priority_context COMPLETES under a
+    # `cb 2000;` header (== the enforced cb_per_tick) for a chosen issue carrying
+    # 0..20 non-priority labels -- the regression the old code failed at 4+ labels.
+    # Uses the production-default 4-token priority::* vocab (pvalt -> "").
+    DEFPV="priority::critical, priority::high, priority::medium, priority::low"
+    ag_pri_cap2000() {
+        # OK   = completes (no CognitiveOverload) and emits the non-empty line
+        # OVERFLOW = the cb 2000 cap was exceeded; EMPTY = no output
+        local j p out fn
+        j="$(printf '%s' "$1" | aglit)"; p="$(printf '%s' "$2" | aglit)"
+        {
+            echo "cb 2000;"
+            for fn in $COMMON_FNS member is_pri regex_escape pvalt canonical_priority_context; do extract_fn "$PRI" "$fn"; echo; done
+            echo "print(canonical_priority_context($j, $p));"
+        } > "$AG_TMP/pri_cap.ag"
+        out="$( (cd "$AG_TMP" && agentis go pri_cap.ag 2>&1) | grep -v '^\[genesis\]' )"
+        if printf '%s' "$out" | grep -q CognitiveOverload; then echo "OVERFLOW"
+        elif [ -n "$out" ]; then echo "OK"; else echo "EMPTY"; fi
+    }
+    for NL in 0 1 2 4 8 12 16 20; do
+        NL_JSON="$(python3 -c 'import json,sys; n=int(sys.argv[1]); print(json.dumps([{"iid":7,"title":"Crash segfault build","labels":["area%d"%i for i in range(n)]}]))' "$NL")"
+        assert_line "#1638 AG prioritize: canonical_priority_context completes under cb 2000 at $NL labels" \
+            "$(ag_pri_cap2000 "$NL_JSON" "$DEFPV")" "OK"
+    done
+
     rm -rf "$AG_TMP"
 else
     echo "[SKIP] agentis not on PATH — skipping native-builder byte-identity probes"

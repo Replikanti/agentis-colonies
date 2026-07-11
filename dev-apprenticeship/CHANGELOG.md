@@ -38,7 +38,17 @@ is asserted until multi-version CI is in place.
   is pinned by `tools/test-canonical-context.sh` (`agentis go` fixture oracles
   reconstructing each retired one-liner) — no rule is re-keyed. Worst case at
   `--per-page 50` / a 255-char vocab-dense title: labeler ~360 CB, router
-  ~525 CB, prioritizer ~1455 CB — all well under the 2000 `cb_per_tick` cap. The
+  ~525 CB, prioritizer selection ~1455 CB. The prioritizer's per-label priority
+  VERIFY tail, however, ran `is_pri` ~2× per label (~283 CB/label) and overflowed
+  the 2000 `cb_per_tick` cap past ~5 labels on the chosen issue; this PR flattens
+  it to a single `regex_match` (`PRISET`) over the raw JSON label array
+  (`json_get_raw`), dropping the slope to ~58 CB/label (the shared output-join
+  floor) — re-measured under a `cb 2000;` cap: 627 CB @0, 853 @4, 1085 @8, 1781
+  @20 labels, under the cap through 20 labels (crossover ~5 → ~24 labels).
+  `ctx`/`iid`/`q` bytes are unchanged (only the internal VERIFY path changed),
+  pinned by the new `test-canonical-context.sh` label-count sweep + raw-JSON
+  priority-equivalence fixtures and the `PRISET` grammar-drift assertion in
+  `test-prioritizer-vocab-fallback.sh`. The
   `check-substrate-purity.sh` allowlist drops the three Cluster-A rows (10 → 7).
   Requires the `token_hits` builtin, so the runtime floor moves to
   **agentis >= 1.22.4** (was 1.22.3). Cluster B lands in a later PR.

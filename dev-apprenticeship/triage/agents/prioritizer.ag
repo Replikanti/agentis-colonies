@@ -375,33 +375,45 @@ fn pvalt(pv_toks: list<string>) -> string {
 // labels come from json_get_raw (original case), so case is preserved. Two
 // safety nets close the flat approximation: (1) the K-column cutoff and the
 // greedy false-positive when EVERY row is prioritized are both caught by the
-// O(1) VERIFY — re-read the chosen issue's FULL labels and, if any is_pri, return
-// "" (fail SAFE to the LLM path, never a wrong pick); (2) PVALT metachar-escapes
-// custom vocab values. Total-on-failure: an empty / non-list / no-candidate /
-// missing-iid raw yields "" (regex_capture "" -> early return) so the caller
-// falls through to the LLM path and is never starved.
+// O(1) VERIFY — a SINGLE regex_match of PRISET over the chosen issue's FULL raw
+// JSON label array (json_get_raw, no per-label is_pri walk); if any label is
+// priority it returns "" (fail SAFE to the LLM path, never a wrong pick). PRISET
+// mirrors is_pri's grammar quote-anchored: "priority..." (startswith),
+// "p<digits>"/"urgent" (fullmatch), or a custom pv token — the JSON quotes give
+// the same anchoring is_pri's startswith/fullmatch/member do (pinned byte-for-byte
+// by test-canonical-context.sh and the PRISET drift assertion in
+// test-prioritizer-vocab-fallback.sh). (2) PVALT metachar-escapes custom vocab
+// values. Total-on-failure: an empty / non-list / no-candidate / missing-iid raw
+// yields "" (regex_capture "" -> early return) so the caller falls through to the
+// LLM path and is never starved.
 fn canonical_priority_context(issues_raw: string, vocab: string) -> string {
     let pv_toks = filter(map(regex_split(",", to_lower(vocab)), |t: string| -> string {
         return trim(t);
     }), |t: string| -> bool {
         return len(t) > 0;
     });
+    let pva = pvalt(pv_toks);
     let proj = json_array_project(issues_raw, "", "iid,labels[0],labels[1],labels[2],labels[3],labels[4],labels[5],labels[6],labels[7],labels[8]");
     let lp = to_lower(proj);
-    let PRILINE = "[0-9]+(?:\t[^\t\n]*)*\t(?:priority[^\t\n]*|p[0-9]+|urgent" + pvalt(pv_toks) + ")(?:\t[^\t\n]*)*";
+    let PRILINE = "[0-9]+(?:\t[^\t\n]*)*\t(?:priority[^\t\n]*|p[0-9]+|urgent" + pva + ")(?:\t[^\t\n]*)*";
     let chosen = regex_capture("(?s)\\A(?:" + PRILINE + "\n)*([0-9]+)\t", lp, 1);
     if len(chosen) == 0 { return ""; };
     let idx = row_index(proj, chosen);
-    let labels = json_array_to_strings(json_get_raw(issues_raw, "[" + to_string(idx) + "].labels"));
-    let pri = filter(labels, |l: string| -> bool {
-        return is_pri(to_lower(trim(l)), pv_toks);
-    });
-    if len(pri) > 0 { return ""; };
+    let labels_raw = json_get_raw(issues_raw, "[" + to_string(idx) + "].labels");
+    // FLAT VERIFY: one regex over the raw JSON label array (no per-label is_pri).
+    // A JSON-quoted field "<label>" is priority iff it starts with "priority",
+    // is exactly "p<digits>"/"urgent", or is a custom pv token; the surrounding
+    // JSON quotes give the same anchoring is_pri's startswith/fullmatch/member do.
+    let PRISET = "\"(?:priority[^\"]*|p[0-9]+|urgent" + pva + ")\"";
+    if regex_match(PRISET, to_lower(labels_raw)) { return ""; };
+    // VERIFY passed => no label is priority, so the old per-label !is_pri filter is
+    // dead code: nonpri is just the non-empty trimmed labels, sorted-unique (same
+    // shape as router's labels= set).
+    let labels = json_array_to_strings(labels_raw);
     let nonpri = sort_unique_strings(filter(map(labels, |l: string| -> string {
         return trim(l);
     }), |l: string| -> bool {
-        if len(l) == 0 { return false; };
-        return !is_pri(to_lower(l), pv_toks);
+        return len(l) > 0;
     }));
     let title = void_to_empty(to_string(json_get(issues_raw, "[" + to_string(idx) + "].title")));
     let ctx = "kw=" + token_hits(title, triage_vocab_csv()) + " labels=" + joinc(nonpri);
