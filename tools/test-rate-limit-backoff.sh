@@ -24,6 +24,18 @@
 # (one integer per line to $GITLAB_BACKOFF_TRACE) instead of really sleeping —
 # the test runs in well under a second with no wall-clock waits.
 #
+# Tests 1-5 above cover the bash-level `_backoff_sleep()` HTTP-429 curl retry
+# in gitlab-api.sh — a DIFFERENT mechanism from the native `.ag`
+# `rl_backoff_secs()` colony-side forge-call backoff added in #1601 (issue
+# #1602: this file never exercised the latter). The section below adds LIVE
+# coverage for `rl_backoff_secs`, following the `agentis go` probe precedent
+# in tools/test-approval-decider-review-gate.sh: awk-extract the REAL
+# function body out of an agent, drive it with fixture counts via a scratch
+# probe.ag, and assert the #1601 contract — the deterministic base formula,
+# the exponent-clamp overflow-safety fix (#1597), the jitter band, and
+# cross-agent byte-identity. Skips cleanly when `agentis` is not on PATH so
+# CI runners (which have no binary) stay green.
+#
 # Usage: ./tools/test-rate-limit-backoff.sh
 # Exit code 0 if all tests pass, 1 otherwise.
 
@@ -184,6 +196,140 @@ if [ "$gate_ok" = "1" ]; then
     pass "rl_active gate + rl_mark/rl_clear wired into every agent (defer, not fail)"
 else
     fail "an agent is missing the rate-limit gate/mark/clear wiring"
+fi
+
+# ----- Test 6: native rl_backoff_secs (#1601/#1602) -----
+# Cross-agent byte-identity (checked unconditionally, no agentis needed): a
+# drift in the shared helper body is the exact regression #1601 pins against
+# (an md5sum-pinned contract per the CHANGELOG entry).
+AD_RL="$(awk '/^fn rl_backoff_secs\(/{f=1} f{print} /^}/{if(f) f=0}' "$REPO_ROOT/dev-apprenticeship/code-review/agents/approval_decider.ag")"
+PR_RL="$(awk '/^fn rl_backoff_secs\(/{f=1} f{print} /^}/{if(f) f=0}' "$REPO_ROOT/dev-apprenticeship/planning/agents/plan_reviewer.ag")"
+RA_RL="$(awk '/^fn rl_backoff_secs\(/{f=1} f{print} /^}/{if(f) f=0}' "$REPO_ROOT/dev-apprenticeship/planning/agents/risk_assessor.ag")"
+if [ -n "$AD_RL" ] && [ "$AD_RL" = "$PR_RL" ] && [ "$AD_RL" = "$RA_RL" ]; then
+    pass "rl_backoff_secs is byte-identical across approval_decider/plan_reviewer/risk_assessor"
+else
+    fail "rl_backoff_secs body diverged across agents (a drift here silently desyncs their backoff behavior)"
+fi
+
+if command -v agentis >/dev/null 2>&1; then
+    RL_TMP="$(mktemp -d)"
+    {
+        printf '%s\n' "$AD_RL"
+        cat <<'AGEOF'
+print("c1=", rl_backoff_secs(1));
+print("c2=", rl_backoff_secs(2));
+print("c3=", rl_backoff_secs(3));
+print("c7=", rl_backoff_secs(7));
+print("c8=", rl_backoff_secs(8));
+print("c64=", rl_backoff_secs(64));
+print("c100=", rl_backoff_secs(100));
+AGEOF
+    } > "$RL_TMP/probe.ag"
+    (cd "$RL_TMP" && agentis init) >/dev/null 2>&1
+    RL_RC=0
+    RL_OUT="$( (cd "$RL_TMP" && agentis go probe.ag) 2>&1 )" || RL_RC=$?
+    getv() { printf '%s\n' "$RL_OUT" | sed -n "s/^$1= \\([0-9]*\\)\$/\\1/p"; }
+
+    # Expected jitter band per count, mirroring the .ag formula exactly:
+    #   exp = min(max(0, count-1), 6)
+    #   base = min(300, 5 * 2^exp)
+    #   band = [base*3/4, base*5/4]  (integer truncation, as in the .ag body)
+    # NB: the jitter band is NOT further clamped to 300 in the .ag body — at
+    # the saturated base=300 the band is [225, 375], confirmed against a live
+    # run (see PR description). Assertions below use this real band, not a
+    # naive 300s ceiling.
+    band_lo() {
+        c="$1"
+        e=$((c - 1)); [ "$e" -lt 0 ] && e=0; [ "$e" -gt 6 ] && e=6
+        b=$((5 * (1 << e))); [ "$b" -gt 300 ] && b=300
+        echo $((b * 3 / 4))
+    }
+    band_hi() {
+        c="$1"
+        e=$((c - 1)); [ "$e" -lt 0 ] && e=0; [ "$e" -gt 6 ] && e=6
+        b=$((5 * (1 << e))); [ "$b" -gt 300 ] && b=300
+        echo $((b * 5 / 4))
+    }
+    check_in_band() { # $1 value $2 count $3 label
+        v="$1"; c="$2"; label="$3"
+        lo=$(band_lo "$c"); hi=$(band_hi "$c")
+        case "$v" in '' | *[!0-9]*) echo "  $label: non-numeric output '$v'"; return 1 ;; esac
+        if [ "$v" -lt "$lo" ] || [ "$v" -gt "$hi" ]; then
+            echo "  $label: count=$c value=$v not in band [$lo,$hi]"
+            return 1
+        fi
+        return 0
+    }
+
+    if [ "$RL_RC" -eq 0 ]; then
+        pass "live rl_backoff_secs probe ran cleanly (agentis go, no error)"
+    else
+        fail "live rl_backoff_secs probe" "agentis go exited $RL_RC: $RL_OUT"
+    fi
+
+    # Deterministic base formula per count: min(300, 5*2^(count-1)), asserted
+    # via each output's jitter band (exact value is non-deterministic).
+    formula_ok=1
+    for c in 1 2 3 7 8; do
+        v="$(getv "c$c")"
+        check_in_band "$v" "$c" "count=$c" || formula_ok=0
+    done
+    if [ "$formula_ok" = "1" ]; then
+        pass "base formula min(300, 5*2^(count-1)) holds per-count (jitter band [base*0.75, base*1.25])"
+    else
+        fail "base formula per-count band check failed (see above)"
+    fi
+
+    # Exponent clamp / count=100 overflow-safety (#1597 fix under test): an
+    # unclamped pow_int(2, 99) would throw an uncaught EvalError. count=64 and
+    # count=100 must both run clean (already implied by RL_RC above, since
+    # they share the same probe.ag run) AND land in the SAME saturated band
+    # as count=7/8 — proof the exponent is pinned at 6, not left to overflow.
+    v64="$(getv c64)"; v100="$(getv c100)"
+    sat_lo=$(band_lo 100); sat_hi=$(band_hi 100)
+    clamp_ok=1
+    check_in_band "$v64" 100 "count=64" || clamp_ok=0
+    check_in_band "$v100" 100 "count=100" || clamp_ok=0
+    if [ "$clamp_ok" = "1" ] && [ "$sat_lo" = "225" ] && [ "$sat_hi" = "375" ]; then
+        pass "exponent clamp: count=64/100 ran without overflow, saturating to the same 300s-base band [225,375] as count=7/8"
+    else
+        fail "exponent clamp / overflow-safety" "count=64 -> $v64, count=100 -> $v100 must both land in [$sat_lo,$sat_hi]"
+    fi
+
+    # Jitter bounds across several independent calls: three separate agentis
+    # go invocations (distinct now_ms() per process) driving the SAME count
+    # must each land in-band — the entropy source varies the value but never
+    # escapes the formula's window.
+    jitter_ok=1
+    jitter_vals=""
+    j=0
+    while [ "$j" -lt 3 ]; do
+        printf 'print(rl_backoff_secs(7));\n' > "$RL_TMP/jprobe_body.ag"
+        {
+            printf '%s\n' "$AD_RL"
+            cat "$RL_TMP/jprobe_body.ag"
+        } > "$RL_TMP/jprobe.ag"
+        JV="$( (cd "$RL_TMP" && agentis go jprobe.ag) 2>/dev/null | tr -d '[:space:]' )"
+        jitter_vals="$jitter_vals $JV"
+        case "$JV" in
+            '' | *[!0-9]*) jitter_ok=0 ;;
+            *)
+                if [ "$JV" -lt 225 ] || [ "$JV" -gt 375 ]; then
+                    jitter_ok=0
+                fi
+                ;;
+        esac
+        j=$((j + 1))
+    done
+    if [ "$jitter_ok" = "1" ]; then
+        pass "jitter bounds: 3 independent calls at count=7 all land in [225,375] (values:$jitter_vals)"
+    else
+        fail "jitter bounds" "an independent call fell outside [225,375] (values:$jitter_vals)"
+    fi
+
+    rm -rf "$RL_TMP"
+else
+    echo "[SKIP] live rl_backoff_secs probe — agentis not on PATH"
 fi
 
 echo ""
