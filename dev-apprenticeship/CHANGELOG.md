@@ -15,6 +15,25 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+### Changed
+
+- **Substrate purity P3 cluster C — native CSV/tag set-ops** ([#1638](https://github.com/Replikanti/agentis-colonies/issues/1638)):
+  two embedded `python3 -c` one-liners are replaced with native `.ag` builtin
+  pipelines, each removing an `exec sh`+python fork. `labeler.ag`'s
+  `normalize_labels_csv` (sorted/deduped label CSV feeding the crystallizer
+  KnowledgeEntry content-hash id) is now
+  `sort_unique_strings(filter(map(regex_split(...), trim), nonempty))` re-joined
+  with commas — live-confirmed byte-identical to `sorted({t.strip() for t in
+  CSV.split(",") if t.strip()})` across ASCII, mixed-case, Unicode, whitespace,
+  and empty inputs, so no crystallized rule is re-keyed. `ship_decider.ag`'s
+  `tag_set_csv` builds the tag-set baseline via
+  `json_array_object_field_values` + a `sanitize_tag_name` helper (strips
+  `,`/`"`/`\` via `regex_find_all` complement runs) + the preserved
+  `dev-apprenticeship-v` prefix filter ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)
+  Wave 1) + `sort_unique_strings` — value-identical to the retired python. The
+  `check-substrate-purity.sh` allowlist drops the two Cluster-C rows (12 → 10).
+  Clusters A and B land in later PRs.
+
 ### Removed
 
 - **Dead `code_writer.ag` edit-application chain** ([#1607](https://github.com/Replikanti/agentis-colonies/issues/1607)):

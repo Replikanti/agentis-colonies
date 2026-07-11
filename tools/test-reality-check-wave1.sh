@@ -235,6 +235,94 @@ else
     fail "auto-promote: reject predicate does not count failure outcomes"
 fi
 
+# ----- ship_decider tag_set_csv: native rewrite structure (#1638 P3 cluster C) -----
+# The tag-set baseline feeds the reality-check compare, so its build must stay
+# native (no embedded python) and preserve the #1453 Wave 1 prefix filter.
+SHIP_FILE="$FED/release/agents/ship_decider.ag"
+TAGSET_REGION="$(evaluate_region "$SHIP_FILE" "tag_set_csv")"
+if printf '%s' "$TAGSET_REGION" | sed 's|//.*$||' | grep -q "python3"; then
+    fail "ship_decider: tag_set_csv still embeds python3 (substrate purity regression)"
+else
+    pass "ship_decider: tag_set_csv is python-free (native set-op pipeline)"
+fi
+if printf '%s' "$TAGSET_REGION" | grep -qF 'json_array_object_field_values(raw, "name")' \
+    && printf '%s' "$TAGSET_REGION" | grep -qF 'index_of(n, "dev-apprenticeship-v") == 0' \
+    && printf '%s' "$TAGSET_REGION" | grep -qF "sort_unique_strings(names)"; then
+    pass "ship_decider: tag_set_csv keeps prefix filter + sorted set (native)"
+else
+    fail "ship_decider: tag_set_csv missing prefix filter / sort_unique_strings"
+fi
+if grep -qE "^fn sanitize_tag_name\(" "$SHIP_FILE"; then
+    pass "ship_decider: sanitize_tag_name helper defined"
+else
+    fail "ship_decider: sanitize_tag_name helper missing"
+fi
+
+# Live byte-identity: the sanitize (strip ,/\"/\\) + dev-apprenticeship-v
+# prefix filter + sorted-unique-set pipeline must be value-identical to the
+# retired python `sorted({sanitize(name) ... if n.startswith(...)})`. Embeds a
+# byte-identical copy of the native pipeline parameterized on a raw tags JSON
+# string (the forge call is factored out). Expected values are the python
+# reference outputs. Gated on the agentis binary (CI runners have none).
+if command -v agentis >/dev/null 2>&1; then
+    TAGSET_TMP="$(mktemp -d)"
+    trap 'rm -rf "$TAGSET_TMP"' EXIT
+    TAGSET_HELPER='fn sanitize_tag_name(name: string) -> string {
+    return reduce(regex_find_all("[^,\"\\\\]+", name), |acc: string, part: string| -> string {
+        return acc + part;
+    }, "");
+}
+fn tag_set_from_raw(raw: string) -> string {
+    let names = filter(map(json_array_object_field_values(raw, "name"), |n: string| -> string {
+        return sanitize_tag_name(n);
+    }), |n: string| -> bool {
+        return index_of(n, "dev-apprenticeship-v") == 0;
+    });
+    return reduce(sort_unique_strings(names), |acc: string, t: string| -> string {
+        if len(acc) > 0 { return acc + "," + t; };
+        return t;
+    }, "");
+}'
+    run_tagset() {
+        local body="$1" sandbox
+        sandbox="$(mktemp -d -p "$TAGSET_TMP")"
+        (
+            cd "$sandbox"
+            agentis init >/dev/null 2>&1
+            {
+                printf 'cb 8000;\n\n%s\n\n%s\n' "$TAGSET_HELPER" "$body"
+            } > probe.ag
+            agentis go probe.ag 2>/dev/null | grep -v genesis | tail -n 1
+        )
+        rm -rf "$sandbox"
+    }
+    check_tagset() {
+        local label="$1" raw="$2" want="$3" got
+        got="$(run_tagset "print(tag_set_from_raw(\"$raw\"));")"
+        if [ "$got" = "$want" ]; then
+            pass "$label"
+        else
+            fail "$label (want='$want' got='$got')"
+        fi
+    }
+    # prefix filter drops federation-dashboard-v + human tags; dedup + sort.
+    check_tagset "ship_decider tag_set: prefix filter + sorted set" \
+        '[{\"name\":\"dev-apprenticeship-v2.10.1\"},{\"name\":\"federation-dashboard-v1.0.0\"},{\"name\":\"dev-apprenticeship-v2.9.0\"},{\"name\":\"random-human-tag\"}]' \
+        "dev-apprenticeship-v2.10.1,dev-apprenticeship-v2.9.0"
+    # sanitize strips comma, double-quote, backslash from a name.
+    check_tagset "ship_decider tag_set: sanitize ,/\"/\\ in tag name" \
+        '[{\"name\":\"dev-apprenticeship-v9,0\\\"x\\\\y\"}]' \
+        "dev-apprenticeship-v90xy"
+    # no matching prefix -> empty set (repo with only foreign/human tags).
+    check_tagset "ship_decider tag_set: no matching prefix -> empty" \
+        '[{\"name\":\"federation-dashboard-v2.0\"},{\"name\":\"human\"}]' \
+        ""
+    # empty tags array -> empty set (legitimate no-tags baseline).
+    check_tagset "ship_decider tag_set: empty array -> empty" '[]' ""
+else
+    echo "[SKIP] agentis binary not found — tag_set_csv live byte-identity checks skipped"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

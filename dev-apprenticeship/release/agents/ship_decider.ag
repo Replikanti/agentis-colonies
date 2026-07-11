@@ -153,21 +153,45 @@ fn verdict_age_seconds(blob: string) -> int {
 // filtered to THIS federation's release prefix — otherwise a federation-dashboard
 // tag (or any human tag) after our verdict would false-credit the ship decision
 // with a success it did not cause.
+// #1638 P3 cluster C: sanitize a single tag name — strip commas, double
+// quotes, and backslashes so the naive-concat JSON blob and CSV separator
+// stay valid. `regex_find_all("[^,\"\\]+", name)` keeps the complement runs
+// (everything that is NOT a comma/quote/backslash) and `reduce(..., concat)`
+// re-joins them, which is byte-identical to python's
+// `.replace(",","").replace(chr(34),"").replace(chr(92),"")`.
+fn sanitize_tag_name(name: string) -> string {
+    return reduce(regex_find_all("[^,\"\\\\]+", name), |acc: string, part: string| -> string {
+        return acc + part;
+    }, "");
+}
 fn tag_set_csv(owner: string, repo: string) -> string {
     // colony-lint: safe-exec-concat
     let tags_cmd = "$COLONY_DIR/scripts/forge-api.sh tags --per-page 50" + repo_arg(owner, repo);
     let raw = try { exec sh tags_cmd; } catch e { ""; };
     if index_of(raw, "[") != 0 { return "__QUERY_FAILED__"; };
-    let csv_cmd = "RAW=" + shell_escape(raw) +
-        " python3 -c 'import os,json" +
-        "\ntry:" +
-        "\n    d=json.loads(os.environ[\"RAW\"])" +
-        "\nexcept Exception:" +
-        "\n    print(\"__QUERY_FAILED__\"); raise SystemExit" +
-        "\nnames=sorted({n for n in (str(x.get(\"name\",\"\")).replace(\",\",\"\").replace(chr(34),\"\").replace(chr(92),\"\") for x in d if isinstance(x,dict)) if n.startswith(\"dev-apprenticeship-v\")})" +
-        "\nprint(\",\".join(names))'";
-    let out = try { exec sh csv_cmd; } catch e { "__QUERY_FAILED__"; };
-    return out;
+    // #1638 P3 cluster C: native rewrite (was an embedded `python3 -c`
+    // one-liner). `json_array_object_field_values(raw, "name")` projects each
+    // object's `name` (missing field -> "", non-object entries skipped by the
+    // builtin, same as python's `str(x.get("name",""))` + `isinstance(x,dict)`
+    // guard); `map(..., sanitize_tag_name)` strips ,/"/\ per name, then the
+    // `index_of(n, "dev-apprenticeship-v") == 0` filter is the #1453 Wave 1
+    // prefix gate — sanitize-then-prefix order matches python's inner
+    // generator + outer `if n.startswith(...)`, so a federation-dashboard-v or
+    // human tag can NOT enter the set. `sort_unique_strings` == python
+    // `sorted(set(...))` (dedup + lexicographic UTF-8 byte order, live-confirmed
+    // byte-identical). The leading-`[` guard above already turns a failed /
+    // non-array query into `__QUERY_FAILED__`; a `[`-prefixed but malformed body
+    // now yields "" (no tags) instead of the old catch-`__QUERY_FAILED__`, and
+    // since both leave the verdict pending the direction is safe.
+    let names = filter(map(json_array_object_field_values(raw, "name"), |n: string| -> string {
+        return sanitize_tag_name(n);
+    }), |n: string| -> bool {
+        return index_of(n, "dev-apprenticeship-v") == 0;
+    });
+    return reduce(sort_unique_strings(names), |acc: string, t: string| -> string {
+        if len(acc) > 0 { return acc + "," + t; };
+        return t;
+    }, "");
 }
 
 // #1453 Wave 1: reality-check — record a pending ship verdict. Stored as

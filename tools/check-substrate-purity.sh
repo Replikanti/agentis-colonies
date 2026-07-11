@@ -101,12 +101,10 @@ triage/agents/labeler.ag:evaluate_label_verdict
 triage/agents/labeler.ag:score_one_autonomous
 triage/agents/router.ag:score_route_verdict_key
 triage/agents/prioritizer.ag:score_priority_verdict_key
-triage/agents/labeler.ag:normalize_labels_csv
 code-review/agents/approval_decider.ag:evaluate_approval_verdict
 planning/agents/plan_reviewer.ag:evaluate_plan_verdict
-release/agents/ship_decider.ag:evaluate_ship_verdict
-release/agents/ship_decider.ag:tag_set_csv"
-    ALLOWLIST_COUNT_EXPECTED=12
+release/agents/ship_decider.ag:evaluate_ship_verdict"
+    ALLOWLIST_COUNT_EXPECTED=10
 fi
 
 # Guard against an accidental edit silently changing the debt size.
