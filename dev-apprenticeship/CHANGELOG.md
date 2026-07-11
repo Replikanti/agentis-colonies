@@ -15,6 +15,8 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-07-11
+
 **Requires:** agentis >= 1.22.3
 
 ### Changed
@@ -585,7 +587,8 @@ is asserted until multi-version CI is in place.
   the default HOLD, auto-merge pauses until a human merges (set
   `merge_review_timeout_action = merge` for bounded-wait-then-merge).
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.10.1...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.11.0...HEAD
+[2.11.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.10.1...dev-apprenticeship-v2.11.0
 [2.10.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.10.0...dev-apprenticeship-v2.10.1
 [2.10.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.9.0...dev-apprenticeship-v2.10.0
 [2.9.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.8.0...dev-apprenticeship-v2.9.0
