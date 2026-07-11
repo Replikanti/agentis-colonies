@@ -80,6 +80,18 @@ fn record_rule_feedback(blob: string, signal: int) -> void {
     };
     crystallizer_record_use(rule_id, signal == 1, rule_feedback_delta(signal));
     print("[labeler] crystallizer feedback: rule", rule_id, "signal", signal);
+}
+
+fn normalize_labels_csv(csv: string) -> string {
+    let toks = sort_unique_strings(filter(map(regex_split(",", csv), |t: string| -> string {
+        return trim(t);
+    }), |t: string| -> bool {
+        return len(t) > 0;
+    }));
+    return reduce(toks, |acc: string, t: string| -> string {
+        if len(acc) > 0 { return acc + "," + t; };
+        return t;
+    }, "");
 }'
 
 # run_probe BODY -> stdout of `agentis go` over (cb + HELPER + BODY).
@@ -93,7 +105,7 @@ run_probe() {
         cd "$sandbox"
         agentis init >/dev/null 2>&1
         cat > probe.ag <<EOF
-cb 100;
+cb 5000;
 
 $HELPER
 
@@ -166,6 +178,31 @@ if echo "$OUT" | grep -Fq "[labeler] crystallizer feedback"; then
 else
     pass "test 4: empty rule_id (LLM path) -> no sentinel"
 fi
+
+# --- Tests 5a-5f: normalize_labels_csv byte-identity (#1638 P3 cluster C) --
+# The native rewrite (was `sorted({t.strip() for t in CSV.split(",") if
+# t.strip()})`) feeds the crystallizer KnowledgeEntry content-hash id, so its
+# sorted/deduped output MUST be byte-identical to python `sorted(set(...))`.
+# Each expected value below is the python reference output for the same input.
+# Covers: whitespace-trim + dedup, mixed-case ASCII order, Unicode order
+# (UTF-8 byte order == code-point order), empty csv, all-empty tokens, and a
+# case-sensitive sort (uppercase sorts before lowercase).
+check_norm() {
+    local label="$1" input="$2" want="$3" got
+    got="$(run_probe "print(normalize_labels_csv(\"$input\"));" | tail -n 1)"
+    if [ "$got" = "$want" ]; then
+        pass "$label"
+    else
+        fail "$label" "want='$want' got='$got'"
+    fi
+}
+
+check_norm "test 5a: trim + dedup drops blanks/whitespace" " a, b ,, a " "a,b"
+check_norm "test 5b: mixed-case ASCII sorted set" "Zeta,apple,P1,bug,ci,docs,bug" "P1,Zeta,apple,bug,ci,docs"
+check_norm "test 5c: Unicode byte order == python sorted()" "  Café , caff, cafz, café ,zzz, ab ,Éa, café " "Café,ab,caff,cafz,café,zzz,Éa"
+check_norm "test 5d: empty csv -> empty string" "" ""
+check_norm "test 5e: all-empty tokens -> empty string" ",,," ""
+check_norm "test 5f: case-sensitive sort (upper before lower)" "B,a,C,b,A" "A,B,C,a,b"
 
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

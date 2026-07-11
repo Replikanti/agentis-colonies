@@ -196,10 +196,29 @@ fn canonical_label_context(issues_raw: string, me: string) -> string {
 // is identical across repeats of the same decision (NOT free-form LLM
 // prose). Sort is deterministic; empty / whitespace tokens dropped.
 // Total-on-failure returns "" (caller treats "" as no usable action).
+// #1638 P3 cluster C: native rewrite (was an embedded `python3 -c`
+// one-liner). Byte-identical to the old `sorted({t.strip() for t in
+// CSV.split(",") if t.strip()})`: `regex_split(",", csv)` == `.split(",")`,
+// `map(..., trim)` == `.strip()` on each token, the `len(t) > 0` filter drops
+// the empty/whitespace tokens exactly like `if t.strip()`, and
+// `sort_unique_strings` == `sorted(set(...))` (dedup on the TRIMMED value,
+// map-before-sort, mirroring the set comprehension). `sort_unique_strings` is
+// lexicographic UTF-8 byte order, which equals Python's `sorted()` code-point
+// order on the full ASCII+Unicode label charset (live-confirmed byte-identical),
+// so the crystallizer content-hash id is preserved — no rule re-key. The pure
+// builtin pipeline has no exec/shell failure mode: an empty/all-blank csv
+// collapses `toks` to [] -> reduce over [] with "" init -> "" (matches
+// `",".join([])`), so the total-on-failure "" is preserved.
 fn normalize_labels_csv(csv: string) -> string {
-    let cmd = "CSV=" + shell_escape(csv) +
-        " python3 -c 'import os; toks=sorted({t.strip() for t in os.environ[\"CSV\"].split(\",\") if t.strip()}); print(\",\".join(toks))'";
-    return try { exec sh cmd; } catch e { ""; };
+    let toks = sort_unique_strings(filter(map(regex_split(",", csv), |t: string| -> string {
+        return trim(t);
+    }), |t: string| -> bool {
+        return len(t) > 0;
+    }));
+    return reduce(toks, |acc: string, t: string| -> string {
+        if len(acc) > 0 { return acc + "," + t; };
+        return t;
+    }, "");
 }
 
 // #1474: labeler must never emit priority-like tokens -- that's

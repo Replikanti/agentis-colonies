@@ -20,7 +20,7 @@
 #            grep-level scanner cannot reassemble the token)
 #   Test 10: allowlist entry whose file no longer reproduces the finding ->
 #            [STALE-ALLOWLIST], exit 1 (shrinking-debt direction)
-#   Test 11: the REAL repo passes clean under the baked-in 15-entry allowlist
+#   Test 11: the REAL repo passes clean under the baked-in 10-entry allowlist
 #   Test 12: flagged awk (`awk -F: '...'`) is caught — flag-tolerant AWK_PAT
 #            (a QA-found evasion of the original quote-adjacent pattern)
 #   Test 13: bare `python3 <<EOF` heredoc (program on stdin) is caught, while
@@ -298,7 +298,7 @@ fi
 # ----- Test 11: real repo passes clean (baked allowlist, no override) -----
 T11_OUT="$("$CHECK" "$REPO_ROOT" 2>&1)" && T11_RC=0 || T11_RC=$?
 if [ "$T11_RC" -eq 0 ]; then
-    pass "real repo: 12 allowlisted + 1 waived site, zero findings"
+    pass "real repo: 10 allowlisted + 1 waived site, zero findings"
 else
     fail "real repo — expected exit 0, got rc=$T11_RC: $T11_OUT"
 fi

@@ -153,21 +153,64 @@ fn verdict_age_seconds(blob: string) -> int {
 // filtered to THIS federation's release prefix — otherwise a federation-dashboard
 // tag (or any human tag) after our verdict would false-credit the ship decision
 // with a success it did not cause.
+// #1638 P3 cluster C: sanitize the WHOLE projected-names blob in ONE flat
+// pass — strip every comma, double quote, and backslash so the naive-concat
+// JSON blob and the CSV separator stay valid even for exotic-but-legal git
+// tag names. `regex_find_all("[^,\"\\]+", blob)` returns the maximal runs
+// that contain none of those three chars (newlines are KEPT — `\n` is in the
+// complement class — so the one-name-per-line structure is preserved), and
+// `reduce(..., concat)` re-joins them, deleting exactly `,`/`"`/`\` globally.
+// Byte-identical to python's per-name
+// `.replace(",","").replace(chr(34),"").replace(chr(92),"")`: sanitize does
+// not cross line boundaries, so per-blob == per-name. Flat cost: a clean
+// (special-char-free) blob is ONE match regardless of tag count; cost scales
+// with the number of stripped chars (~0 for real semver tags), NOT the tag
+// count.
+fn sanitize_tag_blob(blob: string) -> string {
+    return reduce(regex_find_all("[^,\"\\\\]+", blob), |acc: string, part: string| -> string {
+        return acc + part;
+    }, "");
+}
 fn tag_set_csv(owner: string, repo: string) -> string {
     // colony-lint: safe-exec-concat
     let tags_cmd = "$COLONY_DIR/scripts/forge-api.sh tags --per-page 50" + repo_arg(owner, repo);
     let raw = try { exec sh tags_cmd; } catch e { ""; };
     if index_of(raw, "[") != 0 { return "__QUERY_FAILED__"; };
-    let csv_cmd = "RAW=" + shell_escape(raw) +
-        " python3 -c 'import os,json" +
-        "\ntry:" +
-        "\n    d=json.loads(os.environ[\"RAW\"])" +
-        "\nexcept Exception:" +
-        "\n    print(\"__QUERY_FAILED__\"); raise SystemExit" +
-        "\nnames=sorted({n for n in (str(x.get(\"name\",\"\")).replace(\",\",\"\").replace(chr(34),\"\").replace(chr(92),\"\") for x in d if isinstance(x,dict)) if n.startswith(\"dev-apprenticeship-v\")})" +
-        "\nprint(\",\".join(names))'";
-    let out = try { exec sh csv_cmd; } catch e { "__QUERY_FAILED__"; };
-    return out;
+    // #1638 P3 cluster C: FLAT-cost native rewrite (was an embedded
+    // `python3 -c` one-liner). The first native draft used a per-element
+    // `map(sanitize)`+`filter(prefix)` `.ag` walk, which pays ~75 CB/tag and
+    // overflowed ship_decider's tick budget on the live repo's (growing) tag
+    // set — QA #1640. This pipeline pushes all per-element work into flat Rust
+    // builtins so the cost no longer scales with the total tag count:
+    //   1. `json_array_project(raw, "", "name")` — ONE call, projects every
+    //      object's `name` to a newline-separated blob (missing field -> "",
+    //      non-object entries skipped, same as python's `str(x.get("name",""))`
+    //      + `isinstance(x,dict)` guard). Flat.
+    //   2. `sanitize_tag_blob` — ONE regex+reduce, strips ,/"/\ over the whole
+    //      blob (see its comment). Flat for clean tags.
+    //   3. `regex_find_all("(?m)^dev-apprenticeship-v.*", ...)` — ONE call, the
+    //      #1453 Wave 1 prefix gate: the multiline `^` anchor keeps ONLY names
+    //      that START with the prefix (a mid-line `xdev-apprenticeship-v` does
+    //      NOT match), byte-identical to python's `if n.startswith(...)` on the
+    //      SANITIZED name (sanitize-before-filter order preserved), so a
+    //      federation-dashboard-v or human tag can NOT enter the set.
+    //   4. `sort_unique_strings` == python `sorted(set(...))` (dedup +
+    //      lexicographic UTF-8 byte order, live-confirmed byte-identical).
+    // The only residual per-element cost is the final CSV `reduce` join, and it
+    // runs over the FILTERED dev-apprenticeship-v subset, itself hard-capped by
+    // the `--per-page 50` query — worst case (50 all-dev-app tags) is ~940 CB,
+    // well under the 2000 cb_per_tick cap and bounded independent of repo age.
+    // The leading-`[` guard above already turns a failed / non-array query into
+    // `__QUERY_FAILED__`; a `[`-prefixed but malformed body yields "" (no tags)
+    // instead of the old catch-`__QUERY_FAILED__`, and since both leave the
+    // verdict pending the direction is safe.
+    let blob = json_array_project(raw, "", "name");
+    let sanitized = sanitize_tag_blob(blob);
+    let names = regex_find_all("(?m)^dev-apprenticeship-v.*", sanitized);
+    return reduce(sort_unique_strings(names), |acc: string, t: string| -> string {
+        if len(acc) > 0 { return acc + "," + t; };
+        return t;
+    }, "");
 }
 
 // #1453 Wave 1: reality-check — record a pending ship verdict. Stored as

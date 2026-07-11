@@ -235,6 +235,118 @@ else
     fail "auto-promote: reject predicate does not count failure outcomes"
 fi
 
+# ----- ship_decider tag_set_csv: FLAT-cost native rewrite (#1638 P3 cluster C, QA #1640) -----
+# The tag-set baseline feeds the reality-check compare, so its build must stay
+# native (no embedded python), preserve the #1453 Wave 1 prefix filter, AND be
+# FLAT cost — the first native draft's per-element map(sanitize)+filter(prefix)
+# `.ag` walk (~75 CB/tag) overflowed ship_decider's tick budget on a growing
+# tag set (#1640). The fix routes all per-element work through flat builtins.
+SHIP_FILE="$FED/release/agents/ship_decider.ag"
+TAGSET_REGION="$(evaluate_region "$SHIP_FILE" "tag_set_csv")"
+if printf '%s' "$TAGSET_REGION" | sed 's|//.*$||' | grep -q "python3"; then
+    fail "ship_decider: tag_set_csv still embeds python3 (substrate purity regression)"
+else
+    pass "ship_decider: tag_set_csv is python-free (native set-op pipeline)"
+fi
+# Flat-cost guard: NO per-element map/filter `.ag` walk over the tag array — the
+# projection + prefix filter must be single flat builtin calls (#1640).
+if printf '%s' "$TAGSET_REGION" | sed 's|//.*$||' | grep -qE 'map\(|filter\('; then
+    fail "ship_decider: tag_set_csv has a per-element map/filter walk (CB regression #1640)"
+else
+    pass "ship_decider: tag_set_csv is per-element-walk-free (flat cost, #1640)"
+fi
+if printf '%s' "$TAGSET_REGION" | grep -qF 'json_array_project(raw, "", "name")' \
+    && printf '%s' "$TAGSET_REGION" | grep -qF '(?m)^dev-apprenticeship-v' \
+    && printf '%s' "$TAGSET_REGION" | grep -qF "sort_unique_strings(names)"; then
+    pass "ship_decider: tag_set_csv keeps flat projection + prefix filter + sorted set"
+else
+    fail "ship_decider: tag_set_csv missing json_array_project / prefix regex / sort_unique_strings"
+fi
+if grep -qE "^fn sanitize_tag_blob\(" "$SHIP_FILE"; then
+    pass "ship_decider: sanitize_tag_blob helper defined"
+else
+    fail "ship_decider: sanitize_tag_blob helper missing"
+fi
+
+# Live byte-identity: the flat pipeline (project -> whole-blob sanitize (strip
+# ,/\"/\\) -> multiline-anchored dev-apprenticeship-v prefix filter -> sorted
+# unique set) must be value-identical to the retired python
+# `sorted({sanitize(name) ... if n.startswith(...)})`. Embeds a byte-identical
+# copy of the native pipeline parameterized on a raw tags JSON string (the forge
+# call is factored out). Expected values are the python reference outputs. Gated
+# on the agentis binary (CI runners have none).
+if command -v agentis >/dev/null 2>&1; then
+    TAGSET_TMP="$(mktemp -d)"
+    trap 'rm -rf "$TAGSET_TMP"' EXIT
+    TAGSET_HELPER='fn sanitize_tag_blob(blob: string) -> string {
+    return reduce(regex_find_all("[^,\"\\\\]+", blob), |acc: string, part: string| -> string {
+        return acc + part;
+    }, "");
+}
+fn tag_set_from_raw(raw: string) -> string {
+    let blob = json_array_project(raw, "", "name");
+    let sanitized = sanitize_tag_blob(blob);
+    let names = regex_find_all("(?m)^dev-apprenticeship-v.*", sanitized);
+    return reduce(sort_unique_strings(names), |acc: string, t: string| -> string {
+        if len(acc) > 0 { return acc + "," + t; };
+        return t;
+    }, "");
+}'
+    run_tagset() {
+        local body="$1" sandbox
+        sandbox="$(mktemp -d -p "$TAGSET_TMP")"
+        (
+            cd "$sandbox"
+            agentis init >/dev/null 2>&1
+            {
+                printf 'cb 8000;\n\n%s\n\n%s\n' "$TAGSET_HELPER" "$body"
+            } > probe.ag
+            agentis go probe.ag 2>/dev/null | grep -v genesis | tail -n 1
+        )
+        rm -rf "$sandbox"
+    }
+    check_tagset() {
+        local label="$1" raw="$2" want="$3" got
+        got="$(run_tagset "print(tag_set_from_raw(\"$raw\"));")"
+        if [ "$got" = "$want" ]; then
+            pass "$label"
+        else
+            fail "$label (want='$want' got='$got')"
+        fi
+    }
+    # prefix filter drops federation-dashboard-v + human tags; dedup + sort.
+    check_tagset "ship_decider tag_set: prefix filter + sorted set" \
+        '[{\"name\":\"dev-apprenticeship-v2.10.1\"},{\"name\":\"federation-dashboard-v1.0.0\"},{\"name\":\"dev-apprenticeship-v2.9.0\"},{\"name\":\"random-human-tag\"}]' \
+        "dev-apprenticeship-v2.10.1,dev-apprenticeship-v2.9.0"
+    # sanitize strips comma, double-quote, backslash from a name.
+    check_tagset "ship_decider tag_set: sanitize ,/\"/\\ in tag name" \
+        '[{\"name\":\"dev-apprenticeship-v9,0\\\"x\\\\y\"}]' \
+        "dev-apprenticeship-v90xy"
+    # no matching prefix -> empty set (repo with only foreign/human tags).
+    check_tagset "ship_decider tag_set: no matching prefix -> empty" \
+        '[{\"name\":\"federation-dashboard-v2.0\"},{\"name\":\"human\"}]' \
+        ""
+    # empty tags array -> empty set (legitimate no-tags baseline).
+    check_tagset "ship_decider tag_set: empty array -> empty" '[]' ""
+    # multiline ^ anchor: a mid-line prefix (not at line start) must NOT match,
+    # == python startswith. `xdev-apprenticeship-v1.0` -> excluded.
+    check_tagset "ship_decider tag_set: mid-line prefix not matched (startswith parity)" \
+        '[{\"name\":\"xdev-apprenticeship-v1.0\"}]' \
+        ""
+    # non-semver prefix tags are KEPT (python startswith has no digit rule);
+    # confirms sorted-set on the full sanitized name, not a version-char regex.
+    check_tagset "ship_decider tag_set: non-digit prefix tags kept + sorted" \
+        '[{\"name\":\"dev-apprenticeship-vB\"},{\"name\":\"dev-apprenticeship-vA\"}]' \
+        "dev-apprenticeship-vA,dev-apprenticeship-vB"
+    # sanitize-before-filter: a comma inside the name is stripped FIRST, which
+    # can make a non-prefixed name become prefixed, exactly like python.
+    check_tagset "ship_decider tag_set: sanitize-before-filter order (python parity)" \
+        '[{\"name\":\"dev-apprenticeship,-v1\"}]' \
+        "dev-apprenticeship-v1"
+else
+    echo "[SKIP] agentis binary not found — tag_set_csv live byte-identity checks skipped"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
