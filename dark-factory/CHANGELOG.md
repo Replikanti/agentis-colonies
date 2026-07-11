@@ -22,6 +22,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   colony `README.md` agent table and corrected the auditor agent count (22 → 23 agents).
 
 ### Added
+- **`watch-competitions.sh` — audit-COMPETITION freshness watcher** (#1635). A NEW standalone, read-only,
+  keyless watcher — the competition-side mirror of the shipped #1623 `watch-new-listings.sh` — that scans TWO
+  keyless competition feeds (Sherlock `mainnet-contest.sherlock.xyz/contests` and Cantina
+  `cantina.xyz/api/v0/competitions`) and surfaces a live audit competition ONCE, the first run it is seen. The
+  shell layer does all fetching (curl, unauthenticated GETs only; Sherlock paginated `?page=1..--max-pages`,
+  default 5) and ONE embedded `python3` block normalizes BOTH schemas into one common record + filters + emits
+  — never shell JSON. LIVE filter: Sherlock `status == RUNNING AND not private` (future `ends_at` when it
+  parses); Cantina `status NOT IN {complete, escalations_ended, closed, judging, ended, completed}` (allowlist-
+  by-exclusion). The dedup key derives from LIST-endpoint fields ONLY (`sherlock:<numeric id>` /
+  `cantina:<url-slug-or-uuid>`) so it never mutates between runs; a first-seen self-dedup ledger
+  (`seen-competitions.txt`) means two runs over the same input yield zero new alerts. Emits the SAME 5-column
+  TSV `run-batch.sh --queue` consumes (`score<TAB>key<TAB>url<TAB>title<TAB>scope_hint`, separate queue file
+  `competitions.queue`), score = prize (log-scaled) + freshness, `scope_hint` packing platform/status/prize/
+  kyc/ends/repo. `--sherlock-from`/`--cantina-from` are offline hatches; a partial outage on one platform's
+  live fetch never suppresses the healthy one; no usable input from either / no `python3` -> `[SKIP]` + exit 0
+  with the ledger + queue byte-for-byte untouched. READ-ONLY, NEVER-SUBMIT. Purely additive — edits none of the
+  funnel scripts. `demo-watch-competitions.sh` is the offline, dash-safe deterministic proof. CodeHawks
+  (API-key-gated -> a Playwright/browser follow-up) and Code4rena (no clean keyless endpoint) are out of scope.
 - **Close the loop — M4 verify integration + M5 capstone (CLOSES epic #1611)** (#1630). Two NEW standalone
   entrypoints that CHAIN the already-shipped M1–M3 + delivery scripts and EDIT none of them.
   - **`verify-findings.sh` (M4 — the M3→verify bridge).** Drives a verification gate over EVERY candidate in an

@@ -955,6 +955,17 @@ if [ -x "$REPO_ROOT/dark-factory/demo-watch-new-listings.sh" ]; then
     fi
 fi
 
+# --- dark-factory competition watcher: Sherlock + Cantina freshness watch (#1635) ---
+if [ -x "$REPO_ROOT/dark-factory/demo-watch-competitions.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-watch-competitions.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: competition watcher (Sherlock RUNNING + Cantina non-complete, ledger dedup, offline SKIP) (#1635)"
+    else
+        fail "dark-factory: competition watcher regressed (#1635)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory snapshot owner-rebind hard assert (#1457) ---
 # The snapshot-replay harness reads the account's real on-chain owner and emits an explicit
 # OWNER REBIND / MATCH / MISMATCH marker; with EXPECT_PROGRAM_OWNER (run-audit --expect-owner) it
