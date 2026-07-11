@@ -404,7 +404,13 @@ fn canonical_priority_context(issues_raw: string, vocab: string) -> string {
     // A JSON-quoted field "<label>" is priority iff it starts with "priority",
     // is exactly "p<digits>"/"urgent", or is a custom pv token; the surrounding
     // JSON quotes give the same anchoring is_pri's startswith/fullmatch/member do.
-    let PRISET = "\"(?:priority[^\"]*|p[0-9]+|urgent" + pva + ")\"";
+    // `[ ]*` after the opening quote + on the p<digits>/urgent/pv arms restores
+    // is_pri's to_lower(trim(l)) for the realistic space-padded label ("  P1  ");
+    // `priority[^"]*` already consumes to the closing quote so it absorbs trailing
+    // space. Only literal spaces appear unescaped in raw JSON string content (tab/
+    // newline are JSON-escaped to \t/\n) — those, and a literal `"`, stay the
+    // documented pathological exclusion (forge labels never carry them).
+    let PRISET = "\"[ ]*(?:priority[^\"]*|(?:p[0-9]+|urgent" + pva + ")[ ]*)\"";
     if regex_match(PRISET, to_lower(labels_raw)) { return ""; };
     // VERIFY passed => no label is priority, so the old per-label !is_pri filter is
     // dead code: nonpri is just the non-empty trimmed labels, sorted-unique (same

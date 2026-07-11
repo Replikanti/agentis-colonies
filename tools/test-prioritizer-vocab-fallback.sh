@@ -117,6 +117,17 @@ else
     bad "PRISET no longer covers priority*/p<digits>/urgent -- the flat VERIFY silently narrowed relative to is_pri: $priset_line"
 fi
 
+# -- (2c) #1638 QA: PRISET must keep is_pri's to_lower(trim(l)) whitespace
+# tolerance -- a `[ ]*` run after the opening quote and on the p<digits>/urgent/pv
+# arms, so a space-padded priority label ("  P1  ") is still detected. Dropping the
+# `[ ]*` re-introduces the QA byte-identity regression (padded priority leaks into
+# nonpri instead of returning "").
+if [ -n "$priset_line" ] && printf '%s' "$priset_line" | grep -Fq '[ ]*'; then
+    ok "PRISET carries [ ]* whitespace tolerance (restores is_pri's trim for padded labels)"
+else
+    bad "PRISET dropped its [ ]* whitespace tolerance -- padded priority labels ('  P1  ') would leak past the VERIFY: $priset_line"
+fi
+
 # -- (3) regression guard: score_priority_verdict_key() match_cmd stays broad
 score_block="$(fn_body score_priority_verdict_key)"
 if [ -z "$score_block" ]; then

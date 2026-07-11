@@ -403,6 +403,24 @@ if command -v agentis >/dev/null 2>&1; then
     assert_line "#1638 AG prioritize: punctuation labels are NOT priority, TSV well-formed" \
         "$(ag_pri '[{"iid":7,"title":"Crash","labels":["c++","re[gex]"]}]' "$DPV")" \
         "$(printf '7\tkw=crash labels=c++,re[gex]\tCrash c++ re[gex]')"
+    # #1638 QA: PRISET must restore is_pri's to_lower(trim(l)) for space-padded
+    # priority labels. Without the `[ ]*` tolerance the padded label slips past the
+    # raw-JSON VERIFY and leaks into nonpri; with it, a padded priority label makes
+    # the issue "already prioritized" -> "" (byte-identical to the python oracle,
+    # which strips-then-is_pri). Non-padded controls stay green above.
+    assert_line "#1638 QA AG prioritize: '  P1  ' (space-padded) IS priority -> empty" \
+        "$(ag_pri '[{"iid":7,"title":"Crash","labels":["  P1  ","bug"]}]' "$DPV")" ""
+    assert_line "#1638 QA AG prioritize: '  urgent  ' (space-padded) IS priority -> empty" \
+        "$(ag_pri '[{"iid":7,"title":"Crash","labels":["  urgent  "]}]' "$DPV")" ""
+    assert_line "#1638 QA AG prioritize: '  priority::high  ' (space-padded) IS priority -> empty" \
+        "$(ag_pri '[{"iid":7,"title":"Crash","labels":["  priority::high  "]}]' "$DPV")" ""
+    assert_line "#1638 QA AG prioritize: '  high  ' (space-padded custom-pv) IS priority -> empty" \
+        "$(ag_pri '[{"iid":7,"title":"Crash","labels":["  high  ","bug"]}]' "high, low")" ""
+    # Control: the SAME custom-pv 'high' unpadded is likewise priority (proves the
+    # padded case is caught by trim tolerance, not by a spurious match).
+    assert_line "#1638 QA AG prioritize: 'highway' (padded 'high' is NOT a prefix match) -> line" \
+        "$(ag_pri '[{"iid":7,"title":"Crash","labels":["  highway  ","bug"]}]' "high, low")" \
+        "$(printf '7\tkw=crash labels=bug,highway\tCrash bug highway')"
 
     # ----- #1638 CB fix: label-count sweep under the enforced cb cap -----
     # The retired per-label is_pri VERIFY cost ~283 CB/label (~363 on a heavier
