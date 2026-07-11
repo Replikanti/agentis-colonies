@@ -1,0 +1,9 @@
+# zones.fixture.txt — canned substrate classification for the seam-lens demo (map-zones.sh --fixture).
+# One `ZONE|<id>|<name>|<class-csv>|<description>` line per zone, mirroring zone-mapper.ag's stdout contract,
+# keyed by the zone id map-zones.sh derives from each directory (slug of the relative path). This stubs the
+# LLM step so demo-seam-lens.sh is deterministic and never calls a live backend on CI. The two integration
+# zones (adapters/oracle — names + external-protocol imports) carry C15; the plain-token zone (no pattern
+# name, no external import) deliberately does NOT — the C15 detection negative control. Public-safe only.
+ZONE|contracts_adapters|multi-adapter vault|C15,C1,C6|Adapter-based ERC4626 vault integrating external lending + swap-router protocols across the seam
+ZONE|contracts_oracle|chainlink oracle wrapper|C15,C2|External Chainlink price-feed wrapper: cross-boundary staleness/decimals and oracle integrity
+ZONE|contracts_token|plain token|C6,C13|Self-contained ERC20 accounting + pause consistency; NO external integration (negative control)

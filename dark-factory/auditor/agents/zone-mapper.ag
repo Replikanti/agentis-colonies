@@ -1,7 +1,7 @@
 cb 300000;
 // #1612 (epic #1611) — ZONE-MAPPER. Given ONE candidate zone (a directory of in-scope contracts) plus
 // the taxonomy, classify its subsystem identity: a human name, the bug classes an external attacker would
-// probe here (a subset of the taxonomy's C1..C14), and a one-line description. This is the ONE SEMANTIC
+// probe here (a subset of the taxonomy's C1..C15), and a one-line description. This is the ONE SEMANTIC
 // step of map-zones.sh's auto-manifest: the shell does the mechanical plumbing (locate/group/LOC/hardening/
 // slice/format), the substrate decides subsystem x bug-class — mirroring how run-discovery.sh delegates the
 // per-cell hunt to hunter.ag. map-zones.sh runs this once per zone and scrapes the single `ZONE|` line.
@@ -11,7 +11,7 @@ cb 300000;
 //   ZONE_ID     stable id for this zone (slug of its directory; echoed back verbatim in the ZONE| line)
 //   ZONE_FILES  newline-separated in-scope contract paths (relative to TARGET_DIR) for this zone. A path
 //               may be function-sliced as `file@fn1+fn2` (slice-fns.sh format) for a big contract.
-//   TAXONOMY    path to bug-taxonomy.md (the class menu C1..C14 the classification chooses from)
+//   TAXONOMY    path to bug-taxonomy.md (the class menu C1..C15 the classification chooses from)
 // Stdout: exactly one `ZONE|<id>|<name>|<class1,class2,...>|<one-line description>` line.
 
 // --- file readers (dynamic paths -> safe-exec-concat per hunter.ag precedent) ---
@@ -38,7 +38,7 @@ fn scoped_code(dir: string, files: string) -> string {
     }, "");
 }
 
-// The whole taxonomy (the class menu C1..C14) so the classification chooses from the real class ids.
+// The whole taxonomy (the class menu C1..C15) so the classification chooses from the real class ids.
 fn read_taxonomy(path: string) -> string {
     if len(path) == 0 { return ""; }
     // colony-lint: safe-exec-concat
@@ -67,6 +67,13 @@ let instruction =
   + "probe HERE, and write a one-line description of why. Choose classes ONLY from the taxonomy below, by "
   + "their ids (e.g. C1, C6, C10); pick the 1-4 that genuinely fit this zone's mechanics, not every class.\n\n"
   + "=== THE BUG-CLASS MENU (choose ids from here) ===\n" + taxo + "\n\n"
+  + "=== INTEGRATION-SEAM DETECTION RULE (C15) ===\n"
+  + "INCLUDE `C15` (integration-seam / composability) in this zone's class list when the zone's contracts are "
+  + "named `*Adapter`/`*Guard`/`*Bridge`/`*Oracle`/`*Wrapper`/`*Router`/`*Strategy`, OR they import or call an "
+  + "external protocol's interface (an integration into a SECOND protocol) — the cross-protocol seam is "
+  + "under-audited by construction (protocol A's auditors trust B; B's auditors never see A's integration "
+  + "code). A name suffix is a strong hint but not required: an import/call into another protocol's interface "
+  + "IS the seam even with a plain name. If this zone does NOT integrate a second protocol, do NOT add C15.\n\n"
   + "=== ZONE ID (echo it back UNCHANGED as the first field) ===\n" + zoneId + "\n\n"
   + "=== HOW TO ANSWER ===\n"
   + "FIRST reason step by step: read the zone's contracts, name the subsystem, and for EACH candidate class "

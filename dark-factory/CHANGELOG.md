@@ -22,6 +22,32 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   colony `README.md` agent table and corrected the auditor agent count (22 → 23 agents).
 
 ### Added
+- **Integration-seam / composability hunt LENS — a first-class `C15` bug-class** (#1644, epic #1611).
+  Formalizes the ad-hoc integration-seam lens (validated on recent hunts) as THREE additive pieces over the
+  shipped M1/M2 zone-split machinery — no new agent. (1) `auditor/bug-taxonomy.md` gains a
+  `## C15 — Integration-seam / composability` class in the standard `hits/hunt/breaks/sev/seen` format,
+  encoding six heuristics: asset/balance mis-accounting across the integration (a mispriced share = theft —
+  the ERC4626 share-price-vs-real-assets invariant across the boundary, the top seam); the new/exotic-adapter
+  under-audited tail; FIND THE GLOBAL VALUE-CONSERVATION BACKSTOP FIRST (a withdraw-invariant + op-type lock +
+  slippage cap degrades a single-adapter bug to a REVERT — the lens pays off only where per-adapter
+  correctness is the ONLY barrier OR the code is FRESH); cross-integration composition (flashloan via adapter
+  A → manipulate a position priced by adapter B → extract; check for an op-type lock); scope discipline
+  (attack the target's OWN integration code, not the integrated protocol — the latter is out-of-scope-by-trust);
+  and freshness synergy (an amplifier on fresh integration-heavy targets, not a way to crack a mature hardened
+  one). (2) `auditor/agents/zone-mapper.ag` gains a PROMPT-ONLY detection rule (no new `exec sh`/builtin logic,
+  substrate-pure) that tags a zone `C15` when its contracts are named `*Adapter`/`*Guard`/`*Bridge`/`*Oracle`/
+  `*Wrapper`/`*Router`/`*Strategy` OR import/call an external protocol's interface. (3)
+  `auditor/agents/brief-writer.ag` gains a conditional `seamClause` (mirrors the existing
+  `residualClause`/`boundaryClause` additive pattern) that appends a dedicated "Integration-seam hunt guide"
+  subsection when the zone carries the comma-bounded `,C15,` token; when C15 is ABSENT the clause is the EMPTY
+  STRING, so a non-integration zone's brief is **byte-identical** to before (zero regression). A new offline,
+  deterministic `demo-seam-lens.sh` (wired into `colony-lint`) over a dedicated `fixtures/seam-lens/` tree
+  (integration contracts + a plain-token negative control) pins the C15 round-trip into `scope.tsv`, the
+  six-heuristic seam subsection on C15 briefs, the seam-free plain-token control, and the source guards — it
+  touches none of the shared `fixtures/zone-map/` tree so the M1/M2/M3/M4/M5 demos stay byte-identical.
+  Empirical basis stays generic (oracle-integrated AMMs, ERC4626 adapter vaults, multi-adapter pool managers).
+  Honest caveat: the lens is triage/focus machinery — it improves where the hunt LOOKS; hunt DEPTH stays
+  LLM-backend-gated. READ-ONLY, NEVER-SUBMIT (nothing changes the never-submit contract).
 - **`watch-competitions.sh` — audit-COMPETITION freshness watcher** (#1635). A NEW standalone, read-only,
   keyless watcher — the competition-side mirror of the shipped #1623 `watch-new-listings.sh` — that scans TWO
   keyless competition feeds (Sherlock `mainnet-contest.sherlock.xyz/contests` and Cantina

@@ -2,7 +2,7 @@
 # map-zones.sh — #1612 (milestone M1 of epic #1611: zone-mapping). Auto-derive a target's DISCOVERY
 # manifest from the code itself: locate in-scope Solidity/Anchor sources, group them into candidate
 # ZONES by directory, and delegate the ONE semantic step — deciding each zone's applicable bug classes
-# (subset of the taxonomy's C1..C14) plus a human name/description — to the substrate agent
+# (subset of the taxonomy's C1..C15) plus a human name/description — to the substrate agent
 # auditor/agents/zone-mapper.ag (invoked once per zone with `agentis go`, exactly as run-discovery.sh
 # invokes hunter.ag). It emits zones.json (the structured model) and scope.tsv (the pipe-delimited
 # manifest that run-discovery.sh --scope already parses byte-for-byte), closing the auto-map -> hunt loop.
