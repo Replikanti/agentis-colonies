@@ -22,6 +22,26 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   colony `README.md` agent table and corrected the auditor agent count (22 → 23 agents).
 
 ### Added
+- **Parallel fan-out — bounded-concurrency hunt over `(subsystem × class)` cells** (#1625, epic #1611 M3).
+  `run-discovery.sh` gains an opt-in `--jobs N` (alias `-j N`, default `1`) bounded-concurrency fan-out: it
+  hunts up to N cells CONCURRENTLY instead of strictly serially, dropping wall-clock from the sum of the
+  cells toward the slowest cell per wave. Effective concurrency is HARD-CAPPED at `min(--jobs,
+  LLM_MAX_DISCOVERY_CELLS)` (default cap `4`) by a self-contained `wait -n` job-slot loop that never fails
+  open — so N concurrent `agentis go` / `forge` / `solc` processes cannot OOM-thrash a single host (tune per
+  host via `LLM_MAX_DISCOVERY_CELLS`; `--jobs` over the cap is clamped with a stderr warning). Under `--jobs
+  > 1` each cell runs in its OWN isolated agentis store (a `cp -r` of the initialised template into
+  `run/cell-<slug>_<cls>/`) so concurrent builds/memo writes never race; a consequence is that #1001
+  cross-cell blackboard steering is DISABLED under parallelism (every cell's board starts empty) — a
+  documented throughput-vs-steering trade. Results are aggregated AFTER the pool drains, scraped in MANIFEST
+  order by the same helper the serial path uses, so `discovery-report.md` and the new additive
+  `discovery-results.json` (`{repo, backend, jobs, cells, totals}`) are deterministic and independent of
+  completion order. `--jobs 1` (the default) keeps the ONE shared store with live #1001 steering and is
+  BYTE-FOR-BYTE identical to the pre-M3 hunt (all new machinery sits behind `[ "$JOBS" -gt 1 ]`; the serial
+  loop is factored into functions the parallel path calls identically). Read-only, never submits.
+  `demo-discovery-parallel.sh` is the offline deterministic proof — a fast stub through the existing
+  `--agentis` seam (no live agentis/forge/network) asserts serial==golden, concurrency observed + cap never
+  exceeded (incl. the clamp path), aggregation==serial (order-independent), per-cell store isolation, and
+  a failed cell still degrades.
 - **New-listing watcher — freshness-first Immunefi target selection** (#1623). New standalone
   `watch-new-listings.sh` (does NOT source, and makes NO edit to, `run-immunefi-intake.sh` — that file's ranking
   output stays regression-critical and byte-identical) duplicates the #1592 EVM/Solidity/Vyper/Yul, not-

@@ -169,12 +169,18 @@ The operator supplies three inputs and the colony fans out one substrate agent p
   file may be written `file@fn1+fn2` to feed the hunter **only those functions** (+ the contract header)
   — slice big/complex contracts this way so a deep liquidation/redemption read fits the LLM budget.
 - `--brief <brief.md>` — the protocol's invariants-to-break, **known issues to exclude**, and trust model.
+- `--jobs N` (`-j N`, default `1`) — OPT-IN bounded-concurrency fan-out (#1625, epic #1611 M3): hunt up to N
+  cells at once instead of serially. Concurrency is HARD-CAPPED at `min(N, LLM_MAX_DISCOVERY_CELLS)` (default
+  cap `4`, tune per host) so concurrent LLM + `forge`/`solc` builds never OOM-thrash the box; each cell runs
+  in its OWN isolated store, so #1001 cross-cell steering is off under `--jobs > 1`. `--jobs 1` (the default)
+  is **byte-for-byte identical** to the pre-M3 hunt (shared store, live #1001 steering).
 
 ```bash
 dark-factory/run-discovery.sh \
     --repo "$PWD/target" --scope "$PWD/scope.tsv" --brief "$PWD/brief.md" \
     --out "$PWD/discovery-out"
 # cheap wiring smoke (no real LLM):  add  --backend mock --only "<subsystem>" --classes C1
+# parallel fan-out (up to 4 cells at once; hard-capped, isolated per-cell stores):  add  --jobs 4
 ```
 
 The bug classes live in [`auditor/bug-taxonomy.md`](./auditor/bug-taxonomy.md) (14 DeFi classes —
@@ -249,12 +255,37 @@ dark-factory/run-discovery.sh --repo "$PWD/target" --scope "$PWD/zonemap/scope.t
 # DRY RUN: prints BRIEF|<abs>|<lines> (the brief resolved) + the zone's CELL| line(s), offline, no agentis
 ```
 
-The M3 fan-out will run one `run-discovery.sh --only <zone> --brief brief_<zone>.md` per zone on the *existing*
-single-`--brief` flag — per-zone briefing needs no new hunt-path wiring. `gen-briefs.sh` is read-only and never
-submits; offline/CI determinism comes from `--fixture` (canned brief bodies, no live LLM). Brief **quality is
-the decisive depth lever and is LLM-backend-gated** — M2 ships the machinery + a fixture-proven format; live
-depth is backend-dependent. Schema, the `SCOPE_BRIEF` contract, and residual sourcing:
-[`docs/zone-split-orchestration.md`](./docs/zone-split-orchestration.md).
+Per-zone briefing needs no new hunt-path wiring — each zone is hunted with the *existing* single-`--brief`
+flag. `gen-briefs.sh` is read-only and never submits; offline/CI determinism comes from `--fixture` (canned
+brief bodies, no live LLM). Brief **quality is the decisive depth lever and is LLM-backend-gated** — M2 ships
+the machinery + a fixture-proven format; live depth is backend-dependent. Schema, the `SCOPE_BRIEF` contract,
+and residual sourcing: [`docs/zone-split-orchestration.md`](./docs/zone-split-orchestration.md).
+
+### Fan out the hunt in parallel (`run-discovery.sh --jobs N`)
+
+M1 maps the manifest, M2 primes the depth; **M3 (#1625, epic #1611)** adds THROUGHPUT. `run-discovery.sh
+--jobs N` (`-j N`, default `1`) hunts the `(subsystem × class)` cells with **bounded concurrency** instead of
+serially — wall-clock drops from the sum of the cells toward the slowest cell per wave.
+
+```bash
+# hunt up to 4 cells concurrently; hard-capped, each cell in its own isolated agentis store:
+dark-factory/run-discovery.sh --repo "$PWD/target" --scope "$PWD/zonemap/scope.tsv" \
+  --brief "$PWD/zonemap/briefs/brief_<zone_id>.md" --jobs 4
+# tune the ceiling per host (default 4):  LLM_MAX_DISCOVERY_CELLS=2 dark-factory/run-discovery.sh … --jobs 8
+```
+
+Effective concurrency is HARD-CAPPED at `min(--jobs, LLM_MAX_DISCOVERY_CELLS)` (default `4`) by a
+self-contained `wait -n` job-slot that **never fails open** — so N concurrent `agentis go` + `forge`/`solc`
+builds can't OOM-thrash a single host (a `--jobs` over the cap is clamped with a warning). Under `--jobs > 1`
+each cell runs in its OWN isolated store (a `cp -r` of the initialised template), so concurrent memo/build
+writes never race; a consequence is that #1001 cross-cell blackboard steering is **off** under parallelism
+(each cell's board starts empty — a documented throughput-vs-steering trade). Results are aggregated after the
+pool drains in **manifest order**, so `discovery-report.md` (and the additive `discovery-results.json`) is
+deterministic and independent of completion order. **`--jobs 1` (the default) keeps the shared store with live
+#1001 steering and is byte-for-byte identical to the pre-M3 hunt** — all fan-out machinery sits behind
+`--jobs > 1`. Read-only, never submits; offline/CI determinism is pinned by `demo-discovery-parallel.sh` (a
+fast stub through the `--agentis` seam — no live agentis/forge/network). Model + the blackboard-under-
+concurrency decision: [`docs/zone-split-orchestration.md`](./docs/zone-split-orchestration.md).
 
 ### Inter-agent coordination (shared blackboard, #1001)
 
@@ -838,7 +869,7 @@ dark-factory/
   README.md                     # this file
   VERSION  CHANGELOG.md  BUNDLE.manifest  install.sh
   run-audit.sh                  # operator entrypoint: DAG fork-matcher audit -> human-gated package
-  run-discovery.sh              # operator entrypoint: custom-code discovery (hunter fan-out) -> leads; --list-cells (-n) DRY-RUNs the (subsystem x class) cells a scope.tsv would hunt (no --brief/agentis; hunt path byte-identical) (#1612)
+  run-discovery.sh              # operator entrypoint: custom-code discovery (hunter fan-out) -> leads; --list-cells (-n) DRY-RUNs the (subsystem x class) cells a scope.tsv would hunt (no --brief/agentis; hunt path byte-identical) (#1612); --jobs N (-j N, default 1) opt-in bounded-concurrency fan-out over the cells, hard-capped at min(N, LLM_MAX_DISCOVERY_CELLS=4), isolated per-cell stores, deterministic manifest-order aggregation, serial byte-identical (#1625, epic #1611 M3)
   map-zones.sh                  # auto-derive the discovery manifest (#1612, epic #1611 M1): locate/group in-scope sources into ZONES, LOC + advisory hardening_score (audit-delta churn + git age, never a gate), function-slice big contracts, and delegate subsystem x bug-class classification to zone-mapper.ag -> zones.json + scope.tsv (run-discovery --scope reads it verbatim); --fixture stubs the substrate offline; read-only, never submits
   gen-briefs.sh                 # per-zone brief generation (#1619, epic #1611 M2): turn M1's zones.json + scope.tsv into briefs/brief_<zone_id>.md (+ zone_briefs.json index) in the EXACT format hunter.ag consumes via SCOPE_BRIEF -> header + bug-class list, the substrate DEPTH body (brief-writer.ag: invariants-to-break + folded audit residual + prior-pattern hints), in/out-of-scope, honesty mandate; --audit-residuals consumes audit-scout.ag's BOUNDARY|/RESIDUAL| output; --fixture stubs the substrate offline; read-only, never submits
   screen-leads.sh               # cheap substrate-native lead pre-screen (eval_ag) before forge-verify
@@ -892,6 +923,7 @@ dark-factory/
   demo-audit-history-probe.sh   # offline, deterministic proof of #1609: a `git init` hardened fixture (fix-audit-N commits/branch, Cantina/Sherlock finding refs) -> heavily_audited=true above the density threshold; a clean fixture -> heavily_audited=false with 0 density; --bounty with no resolvable repo, an unreachable URL, and a single-segment github ORG url each -> [SKIP]+exit 0 with no stdout JSON; missing args -> exit 2; no network, exit 0
   demo-map-zones.sh             # offline, deterministic proof of #1612 zone-mapping (epic #1611 M1): over a throwaway git fixture (audited baseline + post-audit churn), map-zones.sh --since + --fixture -> zones.json (7 keys) + scope.tsv (pipe-delimited, oversized contract sliced, no |/newline/backtick), run-discovery --list-cells ROUND-TRIP matches the manifest, hardening_score monotone + never a gate, no network/submit; source-guards zone-mapper.ag + runs it live via --backend mock when agentis is present
   demo-gen-briefs.sh            # offline, deterministic proof of #1619 brief-generation (epic #1611 M2): chains map-zones.sh --fixture into gen-briefs.sh --fixture over a throwaway git fixture -> one non-empty brief_<zone_id>.md per zone + zone_briefs.json; each brief carries >=1 scope.tsv class + in/out-of-scope + honesty mandate; brief-safety (no NUL, <=2000 lines, no bare CANDIDATE|/BLACKBOARD- token, no leaked sentinel); run-discovery --brief --list-cells ROUND-TRIP (BRIEF| + CELL|); --audit-residuals folds RESIDUAL leads + seeds out-of-scope from BOUNDARY; no network/submit; source-guards brief-writer.ag + runs it live via --backend mock when agentis is present
+  demo-discovery-parallel.sh    # offline, deterministic proof of #1625 parallel fan-out (epic #1611 M3): drives run-discovery.sh --jobs over a fast offline stub via the existing --agentis seam (no live agentis/forge/network) -> --jobs 1 report BYTE-IDENTICAL to the checked-in golden (serial unchanged); --jobs 3 runs cells concurrently (observed max >= 2) AND never exceeds the cap (max <= 3), incl. the LLM_MAX_DISCOVERY_CELLS=2 clamp (max <= 2); aggregated candidate rows + discovery-results.json multiset == serial (order-independent); each cell ran in its OWN run/cell-<slug>_<cls>/.agentis store with no cross-cell contamination + STEERS=0 (steering off under --jobs>1); a forced-failing cell still degrades (run finishes, rest scraped); read-only/never-submit; [SKIP]s the parallel assertions when bash lacks wait -n
   demo-watch-new-listings.sh    # offline, deterministic proof of #1623: a canned bounties.json fixture (launchDate values computed relative to "today" so the window/stale assertions never rot) -> a pre-seeded launch-window-fresh program surfaces reason:window, a pre-seeded stale program is dropped, a stale-but-unseeded program surfaces via first-seen reason:new-listing despite its old launchDate, the duplicated survivor filter still gates non-EVM/inviteOnly/below-floor/past-endDate rows; a second run over the same ledger drops the now-seen first-seen program (idempotent) while the still-in-window program legitimately re-surfaces; no --bounties + an unreachable --url -> [SKIP]+exit 0 with the queue AND ledger byte-for-byte untouched; no network, exit 0
   demo-owner-assert.sh          # proof of the #1457 snapshot owner-rebind hard assert: harness reads the real on-chain owner + emits OWNER REBIND/MATCH/MISMATCH; EXPECT_PROGRAM_OWNER mismatch -> INCONCLUSIVE (exit 3) before the exploit; source-guard (CI-safe) + live 3-mode run when the toolchain is present
   demo-audit-pass.sh            # offline, deterministic proof of the #1509 coordinator submission pass: scope -> devise -> poc -> impact -> dup -> report -> HALT with hard early-exit gates and a human-gated halt
