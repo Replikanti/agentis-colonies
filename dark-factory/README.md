@@ -287,6 +287,40 @@ deterministic and independent of completion order. **`--jobs 1` (the default) ke
 fast stub through the `--agentis` seam — no live agentis/forge/network). Model + the blackboard-under-
 concurrency decision: [`docs/zone-split-orchestration.md`](./docs/zone-split-orchestration.md).
 
+### Verify the leads (`verify-findings.sh`)
+
+M3 emits `discovery-results.json` — UNVERIFIED leads. **M4 (#1630, epic #1611)** is the bridge to a verdict.
+[`verify-findings.sh`](./verify-findings.sh) drives a gate (`--gate refute` default, or `poc`/`symbolic`) over
+EVERY candidate and aggregates the CONFIRMED-only survivors into `verified_findings.json`.
+
+```bash
+dark-factory/verify-findings.sh --results "$PWD/discovery-out/discovery-results.json" \
+  --repo "$PWD/target" --gate refute --out "$PWD/verify-out"
+# emits verify-out/verified_findings.json (CONFIRMED-only; {repo, gate, verified[], totals})
+```
+
+It is READ-ONLY over `discovery-results.json` (never mutates it) and never submits; a gate that errors on one
+candidate is skipped (not fatal) and an un-confirmed candidate is dropped. Offline determinism via the
+`run-refute.sh --agentis` stub seam; proven by `demo-verify-findings.sh`.
+
+### Run the whole loop (`run-zone-hunt.sh`)
+
+**M5 (#1630, epic #1611)** is the CAPSTONE that CLOSES the epic. [`run-zone-hunt.sh`](./run-zone-hunt.sh) chains
+the shipped entrypoints into ONE end-to-end zone-hunt — `map-zones → gen-briefs → per-zone run-discovery → merge
+→ verify-findings → run-audit-pass → deliver-submission` — and EDITS none of them.
+
+```bash
+dark-factory/run-zone-hunt.sh --repo "$PWD/target" --out "$PWD/zone-hunt-out" \
+  --in-scope "the in-scope program" --jobs 4        # live: reasons through --backend/--agentis + run-audit-pass --live
+# every finding HALTS at PENDING-HUMAN-REVIEW; drafts are STAGED into zone-hunt-out/drop for a human to file
+```
+
+The never-submit **HALT** is load-bearing: the capstone adds ZERO egress and reuses two baked-in gates —
+`run-audit-pass.sh` halts at `PENDING-HUMAN-REVIEW` and `deliver-submission.sh` refuses any unmarked draft (and
+only stages locally). Per-finding errors are logged + skipped so one bad finding never aborts the batch. Offline
+via `--map-fixture`/`--brief-fixture`/`--pass-fixture` + the `--agentis` stub; proven by `demo-run-zone-hunt.sh`.
+Full chain + the HALT enforcement: [`docs/zone-split-orchestration.md`](./docs/zone-split-orchestration.md).
+
 ### Inter-agent coordination (shared blackboard, #1001)
 
 The fan-out is no longer a flat sum of independent cells. Because every (subsystem × class) cell runs

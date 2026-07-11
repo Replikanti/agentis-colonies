@@ -214,15 +214,101 @@ via a fast stub wired through the existing `--agentis` seam (no live agentis/for
 concurrency observed + cap never exceeded (incl. the clamp), aggregation == serial, per-cell isolation,
 `STEERS = 0` under parallelism, and a failed cell still degrades (its log is scraped, the run finishes).
 
+## M4: verify integration (#1630)
+
+M3 emits `discovery-results.json` — a machine-readable set of UNVERIFIED candidate LEADS. A candidate is worth a
+human's attention ONLY after a SECOND, independent gate fails to kill it. **M4 (#1630)** is that bridge:
+`verify-findings.sh` drives the gate over EVERY candidate and aggregates the survivors into
+`verified_findings.json`, the CONFIRMED-only input the M5 capstone hands to the submission pass.
+
+### Input → gate → output
+
+- **Input.** `verify-findings.sh --results <discovery-results.json> --repo <dir> --out <dir>`. It reads the M3
+  JSON (never the markdown report) and splits each `cells[].candidates[]` string on `|` into its five fields —
+  `<file:fn:line>|<classid>|<severity>|<exploit>|<poc sketch>` — deriving each candidate's code file as the part
+  before the FIRST `:` of the location (resolved against `--repo`). It is **READ-ONLY**: it never mutates
+  `discovery-results.json`.
+- **Gate (`--gate`, default `refute`).** Per candidate it writes a one-line gate manifest from the candidate's
+  own fields and invokes the operator-selected gate AS-IS:
+  - `refute` (default): `run-refute.sh` — a hostile skeptic re-reads the candidate against the real control-flow
+    and defaults to REFUTED on any doubt; **CONFIRMED = the `REAL` verdict**, read from the
+    `| <location> | <class> | <VERDICT> | <reason> |` row of the per-candidate `refute-report.md`. Default
+    because its `<file:fn>|<class>|<sev>|<exploit>|<code-file>` manifest is the best match for a discovery
+    candidate and it has the offline `--agentis` + `--backend mock` stub seam.
+  - `poc`: `run-poc.sh` — CONFIRMED = the `POC|<target>|FINDING` line.
+  - `symbolic`: `run-symbolic.sh` — CONFIRMED = the `SYMBOLIC|<file:fn>|COUNTEREXAMPLE` line.
+- **Per-candidate isolation (degrade).** Each gate call is wrapped so a gate that ERRORS on one candidate is
+  logged and SKIPPED (never fatal), and any candidate the gate cannot CONFIRM (incl. a missing code file that
+  the gate cannot evaluate) is DROPPED as unverified. One bad candidate never aborts the batch; a rigorous
+  negative (zero survivors) is a valid outcome.
+- **Output — `verified_findings.json` (CONFIRMED-only).**
+  `{repo, gate, verified:[{subsystem, location, file, class, severity, exploit, poc_sketch, verdict, reason}],
+  totals:{candidates, verified}}`, emitted via `python3 json.dumps` (the repo convention).
+
+`demo-verify-findings.sh` pins the schema, the CONFIRMED-only filtering (REFUTED dropped), the read-only
+invariant (`discovery-results.json` byte-unchanged), the degrade path, and never-submit — all offline via the
+`--agentis` refute stub.
+
+## M5: gate + deliver — the capstone (#1630)
+
+M1 maps, M2 primes, M3 hunts, M4 verifies. **M5 (#1630)** is the CAPSTONE that chains them into ONE end-to-end
+autonomous zone-hunt: `run-zone-hunt.sh --repo <dir>`. It EDITS none of the shipped scripts — it only invokes
+them as-is — and it CLOSES epic #1611.
+
+### The chain (exact)
+
+```
+map-zones.sh (M1)  →  gen-briefs.sh (M2)  →  per-zone run-discovery.sh (M3)  →  merge  →
+verify-findings.sh (M4)  →  per verified finding: run-audit-pass.sh  →  deliver-submission.sh
+```
+
+- **M1/M2** run once; offline via `--map-fixture` / `--brief-fixture`, live via `--backend`/`--agentis`.
+- **M3 — per-zone loop.** Because `run-discovery.sh` takes ONE `--brief`, the capstone honors M2's per-zone
+  briefs by looping: for each zone in `zones.json`, `run-discovery.sh --only "<zone name>" --brief
+  "briefs/brief_<id>.md" --jobs N …` into `<out>/discovery/<id>`, then MERGES each zone's
+  `discovery-results.json` (concat `cells[]`, sum `totals`) into `discovery-results.merged.json`. Zones loop
+  **serially** — the intra-zone `--jobs` is the only parallelism, so the M3 OOM cap is never stacked across
+  zones.
+- **M4** verifies the merged candidates (refute gate) → `verified_findings.json`.
+- **M5 tail — per verified finding.** `run-audit-pass.sh` is called with the finding facts:
+  `--finding-location`, `--finding-impact` (the exploit), `--poc-repo` (the repo), `--poc-target` (the code
+  file basename), `--poc-hypothesis` (the exploit), `--poc-class`, `--severity-band`, `--in-scope` (the intake
+  scope context), `--backend`/`--agentis`/`--out`, plus the mode switch: `--pass-fixture` offline or `--live`.
+  When `pass-result.txt == PENDING-HUMAN-REVIEW` AND a `submission-draft.md` is present, `deliver-submission.sh`
+  STAGES the marked draft into `<out>/drop/<slug>/` (manifest.json + submission-draft.md + OUTCOME.md).
+
+### The HALT / NEVER-SUBMIT invariant (load-bearing)
+
+The capstone contains NO `curl`/`wget`/`submit`/egress verb on any executable line. The never-submit invariant
+is enforced by the TWO baked-in gates it REUSES per finding — its two enforcement points:
+
+1. `run-audit-pass.sh` terminates at `PENDING-HUMAN-REVIEW` — it NEVER emits a submit; the best case is a draft.
+   A blocked finding (`BLOCKED-SCOPE`/`NO-RESIDUAL`/`NO-POC`/`BLOCKED-IMPACT`) writes NO draft, so nothing is
+   staged.
+2. `deliver-submission.sh` REFUSES (exit 3) any draft lacking `SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW` and only
+   STAGES it into a LOCAL drop-dir.
+
+The delivery/notify page (Slack) targets only the operator's OWN workspace, never a bounty platform. Because
+`deliver-submission.sh` already pages internally, **the capstone does NOT call `notify-submission.sh` itself** —
+that would double-page; with no Slack env the page is a silent no-op.
+
+### Per-finding error propagation
+
+Each finding's `run-audit-pass → deliver-submission` body is wrapped so a single bad finding (e.g. a submission
+pass that hard-fails) is LOGGED and SKIPPED; the batch finishes over every remaining finding and the capstone
+exits 0. `demo-run-zone-hunt.sh` pins the whole chain, the HALT on every delivered path, never-submit (no
+egress, no draft for a scope-blocked finding), and per-finding propagation — all offline via ONE `--agentis`
+stub + the M1/M2/M5 `--fixture` seams.
+
 ## The M1..M5 map
 
 | Milestone | Scope |
 |-----------|-------|
 | **M1 (#1612)** | zone mapping: `map-zones.sh` + `zone-mapper.ag` → `zones.json` + `scope.tsv`; the `--list-cells` round-trip. |
 | **M2 (#1619)** | per-zone brief generation: `gen-briefs.sh` + `brief-writer.ag` → `brief_<zone>.md`, fed to `run-discovery.sh --brief`. |
-| **M3 (#1625)** | parallel fan-out: `run-discovery.sh --jobs N` bounded-concurrency over the `(subsystem × class)` cells + isolated per-cell stores + a hard cap + deterministic aggregation. **(this)** |
-| M4 | verify integration — route each surfaced lead into the forge/Halmos gate. |
-| M5 | gate + deliver — the human-gated packaging capstone. |
+| **M3 (#1625)** | parallel fan-out: `run-discovery.sh --jobs N` bounded-concurrency over the `(subsystem × class)` cells + isolated per-cell stores + a hard cap + deterministic aggregation. |
+| **M4 (#1630)** | verify integration: `verify-findings.sh` routes each surfaced lead into the refute (default) / poc / symbolic gate → CONFIRMED-only `verified_findings.json` (read-only over the M3 output). |
+| **M5 (#1630)** | gate + deliver — the capstone: `run-zone-hunt.sh` chains map→brief→per-zone discovery→merge→verify→run-audit-pass→deliver-submission and HALTS every finding at `PENDING-HUMAN-REVIEW` (never submits). **Closes epic #1611.** |
 
 ## Three honest caveats
 

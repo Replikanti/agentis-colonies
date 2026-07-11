@@ -1,0 +1,289 @@
+#!/usr/bin/env bash
+# run-zone-hunt.sh — #1630 (milestone M5 of epic #1611: gate + deliver). The CAPSTONE that closes the loop.
+#
+# It chains the shipped M1..M4 + delivery entrypoints into ONE end-to-end autonomous zone-hunt and EDITS none of
+# them — it only invokes them as-is:
+#   map-zones.sh (M1)  -> gen-briefs.sh (M2)  -> per-zone run-discovery.sh (M3)  -> merge  ->
+#   verify-findings.sh (M4)  -> per verified finding: run-audit-pass.sh  -> deliver-submission.sh
+#
+# THE HALT (load-bearing, never-submit). The capstone contains NO curl/wget/submit/egress verb on any executable
+# line. The never-submit invariant is enforced by the TWO baked-in gates it reuses per finding:
+#   1. run-audit-pass.sh terminates at PENDING-HUMAN-REVIEW — it NEVER emits a submit; the best case is a draft.
+#   2. deliver-submission.sh REFUSES (exit 3) any draft lacking SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW and only
+#      STAGES it into a local drop-dir (+ pages the operator's OWN Slack, never a bounty platform).
+# The capstone deliberately does NOT call notify-submission.sh itself (deliver-submission already pages
+# internally — calling it here would double-page). It adds ZERO new egress path.
+#
+# PER-FINDING ERROR PROPAGATION. Each finding's audit-pass -> deliver body is wrapped so a single bad finding is
+# LOGGED and SKIPPED; the batch finishes over every remaining finding and the capstone exits 0.
+#
+# TWO PATHS. Offline (deterministic, CI): pass --map-fixture / --brief-fixture (the M1/M2 substrate stubs) +
+# --pass-fixture (the run-audit-pass stub) and drive every substrate call through the --agentis stub seam — no
+# LLM, no forge, no network. Live (operator): omit the fixtures; map-zones/gen-briefs/run-discovery/run-audit-pass
+# reason through the real backend and run-audit-pass runs --live. Submission is ALWAYS a separate human action.
+#
+# Usage:
+#   run-zone-hunt.sh --repo <dir> [--out <dir>] [options]
+#
+# Options:
+#   --repo <dir>        Cloned target repo root (clone with fetch-target.sh). REQUIRED.
+#   --out <dir>         Output dir for the whole run (default: ./zone-hunt-out).
+#   --jobs <N>          run-discovery.sh intra-zone bounded concurrency (default 1; zones loop SERIALLY).
+#   --backend <mock|flat-cyborg|claude>  LLM backend for every substrate step (default: flat-cyborg).
+#   --agentis <bin>     agentis binary (default: `agentis` on PATH).
+#   --scope-hint <t>    map-zones.sh source restriction (comma/space list of files or dir-prefixes).
+#   --since <ref>       Audit-covered ref (feeds map-zones.sh's advisory hardening_score).
+#   --audit-residuals <f>  audit-scout.ag output folded into gen-briefs.sh's per-zone briefs (optional).
+#   --in-scope <t>      The in-scope program facts handed to run-audit-pass.sh's scope gate.
+#   --asset-contracts <t>  Optional in-scope asset/contract facts (recorded for the scope gate context).
+#   --impact-threshold <t>  Optional impact bar handed through to the audit-pass context.
+#   --map-fixture <f>   map-zones.sh --fixture (OFFLINE M1); when present the M1 substrate step is stubbed.
+#   --brief-fixture <f> gen-briefs.sh --fixture (OFFLINE M2); when present the M2 substrate step is stubbed.
+#   --pass-fixture <PF> run-audit-pass.sh --pass-fixture (OFFLINE M5); absent => run-audit-pass runs --live.
+#   --drop-dir <dir>    deliver-submission.sh drop-dir (default: <out>/drop).
+#   -h, --help          This help.
+#
+# Exit: 0 after the batch (a clean halt on every finding, incl. per-finding failures that were skipped); 2 usage
+#       error; 3 missing prerequisite (an upstream stage — map/brief/discovery/verify — failed to produce output).
+set -eu
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+AGENTIS="agentis"
+REPO="" ; OUT="$PWD/zone-hunt-out" ; JOBS=1 ; BACKEND="flat-cyborg"
+SCOPE_HINT="" ; SINCE="" ; RESIDUALS=""
+IN_SCOPE="" ; ASSET_CONTRACTS="" ; IMPACT_THRESHOLD=""
+MAP_FIXTURE="" ; BRIEF_FIXTURE="" ; PASS_FIXTURE="" ; DROP_DIR=""
+
+nv() { [ "$1" -ge 2 ] || { echo "run-zone-hunt.sh: missing value for the preceding flag" >&2; exit 2; }; }
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)             nv "$#"; REPO="$2"; shift 2 ;;
+    --out)              nv "$#"; OUT="$2"; shift 2 ;;
+    --jobs)             nv "$#"; JOBS="$2"; shift 2 ;;
+    --backend)          nv "$#"; BACKEND="$2"; shift 2 ;;
+    --agentis)          nv "$#"; AGENTIS="$2"; shift 2 ;;
+    --scope-hint)       nv "$#"; SCOPE_HINT="$2"; shift 2 ;;
+    --since)            nv "$#"; SINCE="$2"; shift 2 ;;
+    --audit-residuals)  nv "$#"; RESIDUALS="$2"; shift 2 ;;
+    --in-scope)         nv "$#"; IN_SCOPE="$2"; shift 2 ;;
+    --asset-contracts)  nv "$#"; ASSET_CONTRACTS="$2"; shift 2 ;;
+    --impact-threshold) nv "$#"; IMPACT_THRESHOLD="$2"; shift 2 ;;
+    --map-fixture)      nv "$#"; MAP_FIXTURE="$2"; shift 2 ;;
+    --brief-fixture)    nv "$#"; BRIEF_FIXTURE="$2"; shift 2 ;;
+    --pass-fixture)     nv "$#"; PASS_FIXTURE="$2"; shift 2 ;;
+    --drop-dir)         nv "$#"; DROP_DIR="$2"; shift 2 ;;
+    -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
+    *) echo "run-zone-hunt.sh: unknown flag $1" >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$REPO" ] && [ -d "$REPO" ] || { echo "run-zone-hunt.sh: --repo <cloned repo dir> required (clone it with fetch-target.sh)" >&2; exit 2; }
+case "$JOBS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --jobs must be a positive integer (got '$JOBS')" >&2; exit 2 ;; esac
+[ "$JOBS" -ge 1 ] || { echo "run-zone-hunt.sh: --jobs must be >= 1 (got '$JOBS')" >&2; exit 2; }
+[ -z "$MAP_FIXTURE" ]   || [ -f "$MAP_FIXTURE" ]   || { echo "run-zone-hunt.sh: --map-fixture not found: $MAP_FIXTURE" >&2; exit 2; }
+[ -z "$BRIEF_FIXTURE" ] || [ -f "$BRIEF_FIXTURE" ] || { echo "run-zone-hunt.sh: --brief-fixture not found: $BRIEF_FIXTURE" >&2; exit 2; }
+[ -z "$RESIDUALS" ]     || [ -f "$RESIDUALS" ]     || { echo "run-zone-hunt.sh: --audit-residuals not found: $RESIDUALS" >&2; exit 2; }
+command -v python3 >/dev/null 2>&1 || { echo "run-zone-hunt.sh: python3 not installed" >&2; exit 3; }
+
+MAPZONES="$HERE/map-zones.sh"
+GENBRIEFS="$HERE/gen-briefs.sh"
+DISCOVERY="$HERE/run-discovery.sh"
+VERIFY="$HERE/verify-findings.sh"
+AUDITPASS="$HERE/run-audit-pass.sh"
+DELIVER="$HERE/deliver-submission.sh"
+for tool in "$MAPZONES" "$GENBRIEFS" "$DISCOVERY" "$VERIFY" "$AUDITPASS" "$DELIVER"; do
+  [ -x "$tool" ] || { echo "run-zone-hunt.sh: required entrypoint not found/executable: $tool" >&2; exit 3; }
+done
+
+REPO="$(cd "$REPO" && pwd)"
+mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
+[ -n "$DROP_DIR" ] || DROP_DIR="$OUT/drop"
+[ -z "$MAP_FIXTURE" ]   || MAP_FIXTURE="$(cd "$(dirname "$MAP_FIXTURE")" && pwd)/$(basename "$MAP_FIXTURE")"
+[ -z "$BRIEF_FIXTURE" ] || BRIEF_FIXTURE="$(cd "$(dirname "$BRIEF_FIXTURE")" && pwd)/$(basename "$BRIEF_FIXTURE")"
+[ -z "$RESIDUALS" ]     || RESIDUALS="$(cd "$(dirname "$RESIDUALS")" && pwd)/$(basename "$RESIDUALS")"
+
+REPO_NAME="$(basename "$REPO")"
+COMMIT="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+# The scope context handed to run-audit-pass.sh's scope gate (--in-scope): the in-scope program facts, plus the
+# optional asset-contract and impact-threshold intake facts when supplied (they inform the scope decision).
+SCOPE_CONTEXT="$IN_SCOPE"
+if [ -n "$ASSET_CONTRACTS" ]; then
+  SCOPE_CONTEXT="${SCOPE_CONTEXT}${SCOPE_CONTEXT:+ | }asset contracts: $ASSET_CONTRACTS"
+fi
+if [ -n "$IMPACT_THRESHOLD" ]; then
+  SCOPE_CONTEXT="${SCOPE_CONTEXT}${SCOPE_CONTEXT:+ | }impact threshold: $IMPACT_THRESHOLD"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# STAGE 1 (M1): map-zones.sh -> <out>/map/zones.json + scope.tsv. --map-fixture => offline; else live substrate.
+# ----------------------------------------------------------------------------------------------------------
+MAP="$OUT/map"
+echo "run-zone-hunt.sh: [M1] mapping zones -> $MAP ..." >&2
+if [ -n "$MAP_FIXTURE" ]; then
+  "$MAPZONES" --repo "$REPO" --out "$MAP" ${SCOPE_HINT:+--scope-hint "$SCOPE_HINT"} ${SINCE:+--since "$SINCE"} \
+    --fixture "$MAP_FIXTURE"
+else
+  "$MAPZONES" --repo "$REPO" --out "$MAP" ${SCOPE_HINT:+--scope-hint "$SCOPE_HINT"} ${SINCE:+--since "$SINCE"} \
+    --backend "$BACKEND" --agentis "$AGENTIS"
+fi
+[ -f "$MAP/zones.json" ] && [ -f "$MAP/scope.tsv" ] || { echo "run-zone-hunt.sh: map-zones.sh did not emit zones.json + scope.tsv" >&2; exit 3; }
+
+# ----------------------------------------------------------------------------------------------------------
+# STAGE 2 (M2): gen-briefs.sh -> <out>/briefs/briefs/brief_<id>.md per zone. --brief-fixture => offline.
+# ----------------------------------------------------------------------------------------------------------
+BRIEFS="$OUT/briefs"
+echo "run-zone-hunt.sh: [M2] generating per-zone briefs -> $BRIEFS ..." >&2
+if [ -n "$BRIEF_FIXTURE" ]; then
+  "$GENBRIEFS" --zones "$MAP/zones.json" --scope "$MAP/scope.tsv" --out "$BRIEFS" --repo "$REPO" \
+    ${RESIDUALS:+--audit-residuals "$RESIDUALS"} --fixture "$BRIEF_FIXTURE"
+else
+  "$GENBRIEFS" --zones "$MAP/zones.json" --scope "$MAP/scope.tsv" --out "$BRIEFS" --repo "$REPO" \
+    ${RESIDUALS:+--audit-residuals "$RESIDUALS"} --backend "$BACKEND" --agentis "$AGENTIS"
+fi
+[ -f "$BRIEFS/briefs/zone_briefs.json" ] || { echo "run-zone-hunt.sh: gen-briefs.sh did not emit zone_briefs.json" >&2; exit 3; }
+
+# ----------------------------------------------------------------------------------------------------------
+# STAGE 3 (M3): per-zone run-discovery.sh, each with its OWN zone brief; merge into discovery-results.merged.json.
+# Zones loop SERIALLY (the intra-zone --jobs is the only parallelism — the M3 OOM cap is not stacked across zones).
+# ----------------------------------------------------------------------------------------------------------
+DISC="$OUT/discovery"; mkdir -p "$DISC"
+ZONE_LIST="$OUT/.zone-list.tsv"
+python3 - "$MAP/zones.json" > "$ZONE_LIST" <<'PY'
+import sys, json
+zones = json.load(open(sys.argv[1], encoding="utf-8"))
+if not isinstance(zones, list):
+    zones = []
+for z in zones:
+    zid = z.get("id", "")
+    name = z.get("name", zid)
+    if not zid:
+        continue
+    print("%s\t%s" % (zid.replace("\t", " "), name.replace("\t", " ")))
+PY
+
+ZONES_HUNTED=0
+while IFS='	' read -r ZID ZNAME || [ -n "${ZID:-}" ]; do
+  [ -n "$ZID" ] || continue
+  ZBRIEF="$BRIEFS/briefs/brief_${ZID}.md"
+  if [ ! -f "$ZBRIEF" ]; then
+    echo "run-zone-hunt.sh: [M3] zone '$ZNAME' ($ZID) has no brief at $ZBRIEF; skipping" >&2
+    continue
+  fi
+  echo "run-zone-hunt.sh: [M3] hunting zone '$ZNAME' ($ZID) with its brief ..." >&2
+  ZONES_HUNTED=$((ZONES_HUNTED + 1))
+  "$DISCOVERY" --repo "$REPO" --scope "$MAP/scope.tsv" --only "$ZNAME" --brief "$ZBRIEF" \
+    --jobs "$JOBS" --backend "$BACKEND" --agentis "$AGENTIS" --out "$DISC/$ZID" \
+    || echo "run-zone-hunt.sh: [M3] discovery failed for zone '$ZNAME' ($ZID); continuing" >&2
+done < "$ZONE_LIST"
+
+MERGED="$DISC/discovery-results.merged.json"
+python3 - "$MERGED" "$DISC" "$REPO_NAME" "$BACKEND" "$JOBS" <<'PY'
+import sys, os, json, glob
+merged_path, disc_dir, repo, backend, jobs = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
+cells, tc, tcand, ts = [], 0, 0, 0
+for zid in sorted(os.listdir(disc_dir)):
+    p = os.path.join(disc_dir, zid, "discovery-results.json")
+    if not os.path.isfile(p):
+        continue
+    try:
+        d = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        continue
+    cells.extend(d.get("cells", []))
+    t = d.get("totals", {})
+    tc += int(t.get("cells", 0)); tcand += int(t.get("candidates", 0)); ts += int(t.get("steers", 0))
+out = {"repo": repo, "backend": backend, "jobs": jobs, "cells": cells,
+       "totals": {"cells": tc, "candidates": tcand, "steers": ts}}
+json.dump(out, open(merged_path, "w", encoding="utf-8"), indent=2)
+open(merged_path, "a", encoding="utf-8").write("\n")
+print("run-zone-hunt.sh: [M3] merged %d cell(s), %d candidate(s) from %d zone(s)" % (tc, tcand, len(cells)), file=sys.stderr)
+PY
+[ -f "$MERGED" ] || { echo "run-zone-hunt.sh: merge produced no discovery-results.merged.json" >&2; exit 3; }
+
+# ----------------------------------------------------------------------------------------------------------
+# STAGE 4 (M4): verify-findings.sh over the merged candidates -> <out>/verify/verified_findings.json (CONFIRMED only).
+# ----------------------------------------------------------------------------------------------------------
+VER="$OUT/verify"
+echo "run-zone-hunt.sh: [M4] verifying candidates (refute gate) -> $VER ..." >&2
+"$VERIFY" --results "$MERGED" --repo "$REPO" --gate refute --backend "$BACKEND" --agentis "$AGENTIS" --out "$VER"
+VERIFIED_JSON="$VER/verified_findings.json"
+[ -f "$VERIFIED_JSON" ] || { echo "run-zone-hunt.sh: verify-findings.sh did not emit verified_findings.json" >&2; exit 3; }
+
+# ----------------------------------------------------------------------------------------------------------
+# STAGE 5 (M5): per verified finding -> run-audit-pass.sh (HALTS at PENDING-HUMAN-REVIEW) -> deliver-submission.sh
+# (stages the marked draft into the drop-dir). Per-finding body is wrapped so one bad finding is skipped, not fatal.
+# ----------------------------------------------------------------------------------------------------------
+FINDING_TSV="$OUT/.verified-findings.tsv"
+python3 - "$VERIFIED_JSON" > "$FINDING_TSV" <<'PY'
+import sys, json
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+for f in data.get("verified", []):
+    row = [f.get("location", ""), f.get("file", ""), f.get("class", ""),
+           f.get("severity", ""), f.get("exploit", "")]
+    row = [c.replace("\t", " ").replace("\n", " ") for c in row]
+    print("\t".join(row))
+PY
+
+APOUT="$OUT/audit-pass"; mkdir -p "$APOUT"
+FINDINGS=0 ; DELIVERED=0 ; HALTED_NODRAFT=0 ; FAILED=0
+
+# process_finding <slug> <location> <file> <class> <severity> <exploit> — run-audit-pass then, on a marked draft,
+# deliver-submission. Every external call is explicitly guarded with `|| return 1` so a failure propagates to the
+# caller's per-finding wrapper (set -e is disabled inside a function called under `||`).
+process_finding() {
+  pf_slug="$1"; pf_loc="$2"; pf_file="$3"; pf_class="$4"; pf_sev="$5"; pf_expl="$6"
+  pf_out="$APOUT/$pf_slug"; rm -rf "$pf_out"; mkdir -p "$pf_out"
+  pf_target="$(basename "$pf_file")"
+  if [ -n "$PASS_FIXTURE" ]; then
+    "$AUDITPASS" --finding-location "$pf_loc" --finding-impact "$pf_expl" \
+      --poc-repo "$REPO" --poc-target "$pf_target" --poc-hypothesis "$pf_expl" --poc-class "$pf_class" \
+      --severity-band "$pf_sev" --in-scope "$SCOPE_CONTEXT" \
+      --pass-fixture "$PASS_FIXTURE" --backend "$BACKEND" --agentis "$AGENTIS" --out "$pf_out" || return 1
+  else
+    "$AUDITPASS" --finding-location "$pf_loc" --finding-impact "$pf_expl" \
+      --poc-repo "$REPO" --poc-target "$pf_target" --poc-hypothesis "$pf_expl" --poc-class "$pf_class" \
+      --severity-band "$pf_sev" --in-scope "$IN_SCOPE" \
+      --live --backend "$BACKEND" --agentis "$AGENTIS" --out "$pf_out" || return 1
+  fi
+  pf_result=""
+  [ -f "$pf_out/pass-result.txt" ] && pf_result="$(cat "$pf_out/pass-result.txt")"
+  if [ "$pf_result" = "PENDING-HUMAN-REVIEW" ] && [ -f "$pf_out/submission-draft.md" ]; then
+    echo "run-zone-hunt.sh:   finding '$pf_slug' reached PENDING-HUMAN-REVIEW — staging the draft (human-gated) ..." >&2
+    "$DELIVER" --id "${REPO_NAME}@${COMMIT}:${pf_slug}" --draft-file "$pf_out/submission-draft.md" \
+      --target "$REPO_NAME" --target-dir "$REPO" --commit "$COMMIT" --finding-slug "$pf_slug" \
+      --title "${pf_class} finding: ${pf_loc}" --location "$pf_loc" --impact "$pf_expl" --severity "$pf_sev" \
+      --scope-verdict payable --impact-verdict substantiated --dup-risk low --drop-dir "$DROP_DIR" || return 1
+    PF_STAGED=1
+  else
+    echo "run-zone-hunt.sh:   finding '$pf_slug' halted before a draft ($pf_result) — nothing staged (no submission)." >&2
+    PF_STAGED=0
+  fi
+  return 0
+}
+
+while IFS='	' read -r LOCATION CODEFILE CLASS SEVERITY EXPLOIT || [ -n "${LOCATION:-}" ]; do
+  [ -n "$LOCATION" ] || continue
+  FINDINGS=$((FINDINGS + 1))
+  SLUG="$(printf '%s' "$LOCATION" | tr -cs 'A-Za-z0-9' '-' | sed 's/-*$//; s/^-*//')"
+  [ -n "$SLUG" ] || SLUG="finding-$FINDINGS"
+  PF_STAGED=0
+  if process_finding "$SLUG" "$LOCATION" "$CODEFILE" "$CLASS" "$SEVERITY" "$EXPLOIT"; then
+    if [ "$PF_STAGED" -eq 1 ]; then DELIVERED=$((DELIVERED + 1)); else HALTED_NODRAFT=$((HALTED_NODRAFT + 1)); fi
+  else
+    echo "run-zone-hunt.sh: finding '$SLUG' failed (see $APOUT/$SLUG); continuing" >&2
+    FAILED=$((FAILED + 1))
+  fi
+done < "$FINDING_TSV"
+
+echo >&2
+echo "================ ZONE-HUNT: $ZONES_HUNTED zone(s) hunted, $FINDINGS verified finding(s) ================" >&2
+echo "run-zone-hunt.sh: delivered (staged, PENDING HUMAN REVIEW): $DELIVERED" >&2
+echo "run-zone-hunt.sh: halted before a draft (nothing staged): $HALTED_NODRAFT" >&2
+echo "run-zone-hunt.sh: per-finding failures (skipped): $FAILED" >&2
+if [ "$DELIVERED" -gt 0 ]; then
+  echo "run-zone-hunt.sh: $DELIVERED draft(s) staged in $DROP_DIR — a human reviews each and files it manually. This never submits." >&2
+else
+  echo "run-zone-hunt.sh: no finding reached a human-gate draft — nothing staged, nothing submitted." >&2
+fi
+exit 0

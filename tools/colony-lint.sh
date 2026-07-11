@@ -910,6 +910,40 @@ if [ -x "$REPO_ROOT/dark-factory/demo-discovery-parallel.sh" ]; then
     fi
 fi
 
+# --- dark-factory verify integration: the M3 -> verify bridge (#1630, epic #1611 M4) ---
+# verify-findings.sh drives the refute gate (run-refute.sh, as-is) over EVERY candidate in an M3
+# discovery-results.json and aggregates the CONFIRMED-only survivors into verified_findings.json (seam-3 schema).
+# It is READ-ONLY over discovery-results.json and has no submit verb. demo-verify-findings.sh is pure
+# bash/python3 driving a fast offline refute stub through the existing --agentis seam (no live agentis / forge /
+# network): asserts the schema keys, CONFIRMED-only filtering (REFUTED dropped), the read-only invariant
+# (discovery-results.json byte-unchanged), a degrade (ungate-able candidate skipped not fatal), and never-submit.
+if [ -x "$REPO_ROOT/dark-factory/demo-verify-findings.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-verify-findings.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: verify integration (verify-findings.sh: refute gate -> CONFIRMED-only verified_findings.json, read-only) (#1630)"
+    else
+        fail "dark-factory: verify integration regressed (#1630)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- dark-factory zone-hunt capstone: map -> brief -> discovery -> verify -> audit-pass -> deliver (#1630, epic #1611 M5) ---
+# run-zone-hunt.sh chains the shipped M1..M4 + delivery entrypoints into ONE autonomous zone-hunt and EDITS none
+# of them; it HALTS every finding at PENDING-HUMAN-REVIEW (enforced by run-audit-pass's terminal + deliver-
+# submission's marker-refuse) and adds ZERO egress. Per-finding errors are logged + skipped (the batch finishes).
+# demo-run-zone-hunt.sh is pure bash/git/python3 over a throwaway git fixture with ONE --agentis stub + the
+# M1/M2/M5 --fixture seams (no live agentis / forge / network): asserts the chain is wired, the HALT on every
+# delivered path, never-submit (no egress, no draft for a scope-blocked finding), and per-finding propagation.
+if [ -x "$REPO_ROOT/dark-factory/demo-run-zone-hunt.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-run-zone-hunt.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: zone-hunt capstone (run-zone-hunt.sh: map->brief->discovery->verify->audit-pass->deliver, HALT at PENDING-HUMAN-REVIEW) (#1630)"
+    else
+        fail "dark-factory: zone-hunt capstone regressed (#1630)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory new-listing watcher: freshness-first Immunefi target selection (#1623) ---
 if [ -x "$REPO_ROOT/dark-factory/demo-watch-new-listings.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-watch-new-listings.sh" 2>&1)" && check_rc=0 || check_rc=$?
