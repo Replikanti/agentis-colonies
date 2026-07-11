@@ -7,7 +7,7 @@
 #   Test 2:  NEW escape, no waiver, not allowlisted -> [NEW-ESCAPE], exit 1
 #   Test 3:  waiver on the line directly above the finding -> passes (rule a)
 #   Test 4:  waiver in the leading comment block above `fn` -> passes (rule b,
-#            the real numbered_view / closed_by_context shape)
+#            the real closed_by_context shape)
 #   Test 5:  a file:function matching an allowlist entry passes (no waiver)
 #   Test 6:  a comment-only prose mention of `python3 -c` passes (the ~70
 #            doc-comment lines in the real corpus must not trip the scanner)
@@ -124,8 +124,8 @@ else
 fi
 
 # ----- Test 4: waiver in the leading comment block above `fn` (rule b) -----
-# The real numbered_view / closed_by_context shape: the `deferred` marker sits
-# in the comment block above the `fn`, several lines before the python3 line.
+# The real closed_by_context shape: the `deferred` marker sits in the comment
+# block above the `fn`, several lines before the python3 line.
 T4="$FAKE_ROOT/t4"; make_tree "$T4"
 cat > "$T4/dev-apprenticeship/implementation/agents/a.ag" <<'EOF'
 // numbered view of a blob; rides an env var off-argv so ARG_MAX never bites.
@@ -298,7 +298,7 @@ fi
 # ----- Test 11: real repo passes clean (baked allowlist, no override) -----
 T11_OUT="$("$CHECK" "$REPO_ROOT" 2>&1)" && T11_RC=0 || T11_RC=$?
 if [ "$T11_RC" -eq 0 ]; then
-    pass "real repo: 12 allowlisted + 2 waived sites, zero findings"
+    pass "real repo: 12 allowlisted + 1 waived site, zero findings"
 else
     fail "real repo — expected exit 0, got rc=$T11_RC: $T11_OUT"
 fi
