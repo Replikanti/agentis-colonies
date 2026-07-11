@@ -19,7 +19,7 @@ directory, that an attacker would probe as a unit. Each zone carries:
 - its **files** (relative to the repo; a big contract is function-sliced — see below),
 - **loc** (lines of code across the zone),
 - an advisory **hardening_score**,
-- **bug_classes_likely** — the subset of the taxonomy's `C1..C14` classes the substrate picked.
+- **bug_classes_likely** — the subset of the taxonomy's `C1..C15` classes the substrate picked.
 
 ### `.ag` vs shell split
 
@@ -300,6 +300,53 @@ exits 0. `demo-run-zone-hunt.sh` pins the whole chain, the HALT on every deliver
 egress, no draft for a scope-blocked finding), and per-finding propagation — all offline via ONE `--agentis`
 stub + the M1/M2/M5 `--fixture` seams.
 
+## The integration-seam / composability lens (C15, #1644)
+
+The `(subsystem × class)` map treats every bug class as one lens among equals. But one lens recurred on
+recent hunts often enough to formalize as a first-class class: the **integration seam** — the boundary where
+the target's own code calls INTO a *second* protocol (an adapter, a guard, an oracle read, a router wrapper).
+That boundary is under-audited by construction: protocol A's auditors trust B, and B's auditors never see A's
+integration code, so nobody owns the seam. `C15 — Integration-seam / composability` in
+[`auditor/bug-taxonomy.md`](../auditor/bug-taxonomy.md) makes it a real class the map can pick and the brief
+can deepen. It ships as THREE additive pieces over the existing machinery — no new agent:
+
+1. **The C15 taxonomy class** — the `hits/hunt/breaks/sev/seen` entry encoding the six heuristics below.
+2. **A prompt-only zone-mapper detection rule** — `zone-mapper.ag` includes `C15` in a zone's class list when
+   the zone's contracts are named `*Adapter`/`*Guard`/`*Bridge`/`*Oracle`/`*Wrapper`/`*Router`/`*Strategy`,
+   OR they import/call an external protocol's interface. It is a *prompt* rule, not a shell regex: an
+   import-based integration with a plain contract name (no suffix) is still the seam, and the LLM reasons over
+   that where a filename grep would miss it. No new `exec sh`/builtin logic (substrate-pure by construction).
+3. **A conditional brief-writer `seamClause`** — `brief-writer.ag` mirrors its existing
+   `residualClause`/`boundaryClause` additive pattern: when the zone's class list carries the comma-bounded
+   token `,C15,` it appends a dedicated "Integration-seam hunt guide" subsection (the six heuristics as a hunt
+   guide, sourced from the C15 taxonomy section that already flows into the class lens); when `C15` is ABSENT
+   the clause is the EMPTY STRING, so the brief for a non-integration zone is **byte-identical** to today.
+
+### The six heuristics
+
+1. **Asset/balance mis-accounting across the integration** — does the value an adapter *reports* match the
+   assets actually *held* after the external call round-trips? A mispriced share/pool-token is theft. This is
+   the top seam: the ERC4626 share-price-vs-real-assets invariant across the integration boundary.
+2. **The under-audited tail** — new/exotic/recently-added adapters are the tail nobody re-reviewed; the
+   widely-forked mainline is picked over. Prioritise the recently-added ones.
+3. **Find the global value-conservation backstop FIRST** — a protocol-wide withdraw-invariant + an
+   operation-type lock + a cumulative-slippage cap degrades a single-adapter bug to a REVERT, not a drain.
+   The lens pays off where per-adapter correctness is the ONLY barrier, or where the integration code is FRESH.
+4. **Cross-integration composition** — flashloan via adapter A → manipulate a position priced by adapter B →
+   extract; two adapters composing into a state single-adapter checks miss. Check for an op-type lock.
+5. **Scope discipline** — attack the TARGET's OWN integration code (adapter/guard/wrapper/oracle-read), NOT
+   the integrated protocol. "The integrated protocol misbehaves" is usually out-of-scope-by-trust; payable =
+   theft/freezing of the target's users via its own integration logic.
+6. **Freshness synergy** — the lens is an AMPLIFIER on fresh integration-heavy targets (oracle-integrated
+   AMMs, ERC4626 adapter vaults, multi-adapter pool managers), not a way to crack a mature hardened one —
+   there a single-adapter bug expects a revert, not a drain. Freshness × seam is where the lens earns its keep.
+
+`demo-seam-lens.sh` pins the whole lens offline over a dedicated `fixtures/seam-lens/` tree (integration
+contracts + a plain-token negative control): the C15 tag round-trips into `scope.tsv` only on integration
+zones, the C15 briefs carry the six-heuristic hunt guide, the plain zone stays seam-free (the no-C15
+byte-clean control), plus the taxonomy/zone-mapper/brief-writer source guards. It touches NONE of the shared
+`fixtures/zone-map/` tree, so `demo-map-zones.sh` / `demo-gen-briefs.sh` stay byte-identical.
+
 ## The M1..M5 map
 
 | Milestone | Scope |
@@ -310,7 +357,7 @@ stub + the M1/M2/M5 `--fixture` seams.
 | **M4 (#1630)** | verify integration: `verify-findings.sh` routes each surfaced lead into the refute (default) / poc / symbolic gate → CONFIRMED-only `verified_findings.json` (read-only over the M3 output). |
 | **M5 (#1630)** | gate + deliver — the capstone: `run-zone-hunt.sh` chains map→brief→per-zone discovery→merge→verify→run-audit-pass→deliver-submission and HALTS every finding at `PENDING-HUMAN-REVIEW` (never submits). **Closes epic #1611.** |
 
-## Three honest caveats
+## Four honest caveats
 
 1. **Classification AND brief depth are LLM-backend-gated.** `zone-mapper.ag` and `brief-writer.ag` reason
    only as well as the backend behind `prompt()`; a `mock` run does not reason (the demos assert execution and
@@ -326,3 +373,9 @@ stub + the M1/M2/M5 `--fixture` seams.
    zone-mapping pass still runs zones sequentially.
 3. **READ-ONLY, NEVER-SUBMIT.** `map-zones.sh` touches no network and has no submission path. Surfacing a
    starting manifest is the whole job; verification and any submission stay separate, human-gated actions.
+4. **The seam lens is triage/focus machinery, not depth (C15, #1644).** The C15 class + the zone-mapper
+   detection rule + the brief `seamClause` improve where the hunt *looks* — they route integration zones to
+   the seam heuristics and prime the brief. But the DEPTH of any actual seam hunt (does a specific adapter
+   mis-account? is the global backstop truly absent?) stays LLM-backend-gated, exactly like caveat #1: the
+   demo proves the lens wiring + the six-heuristic content + the byte-identical no-C15 path, never live hunt
+   quality. Freshness × seam is where it pays off; on a mature hardened multi-adapter manager expect reverts.

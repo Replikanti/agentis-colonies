@@ -1,0 +1,57 @@
+# briefs.fixture.txt — canned substrate brief bodies for the seam-lens demo (gen-briefs.sh --fixture).
+# One DARK-FACTORY:BRIEF-BEGIN|<zone_id> .. DARK-FACTORY:BRIEF-END block per zone id map-zones.sh derives from
+# fixtures/seam-lens/ (the slug of each contracts/ subdirectory), mirroring brief-writer.ag's stdout contract.
+# The two C15 (integration-seam) zones carry a `## Integration-seam hunt guide` subsection with all 6
+# heuristics; the plain-token zone (no C15) carries NONE — the negative control that proves seamClause is
+# empty for a non-integration zone and the brief stays seam-free. Public-safe, generic mechanics only.
+DARK-FACTORY:BRIEF-BEGIN|contracts_adapters
+Attack the adapter-based ERC4626 vault as an external depositor holding no privileged role:
+- C1/C6: can totalAssets() drift from the assets actually held once an adapter round-trips into the external
+  pool? A single mis-rounded or mis-reported adapter balance mints free shares.
+
+## Integration-seam hunt guide
+This zone is an integration seam — apply all 6 C15 heuristics:
+1. ASSET/BALANCE MIS-ACCOUNTING across the boundary: does the adapter-reported value match the assets actually
+   held after the external call round-trips? A mispriced share is theft (the top seam — the ERC4626
+   share-price-vs-real-assets invariant across the integration boundary).
+2. NEW/EXOTIC ADAPTER BIAS: prioritise the recently-added AaveV3Adapter — the under-audited tail nobody owns,
+   not the widely-forked mainline.
+3. GLOBAL VALUE-CONSERVATION BACKSTOP: FIRST find or prove ABSENT a protocol-wide withdraw-invariant + op-lock
+   + cumulative-slippage cap; where it holds a single-adapter bug degrades to a REVERT, so the lens pays off
+   only where per-adapter correctness is the ONLY barrier OR the code is FRESH.
+4. CROSS-INTEGRATION COMPOSITION: can a flashloan via one adapter manipulate a position priced by another and
+   extract, absent an operation-type lock?
+5. SCOPE DISCIPLINE: attack the vault's OWN adapter/guard code, NOT the integrated pool — "the integrated
+   protocol misbehaves" is out-of-scope-by-trust unless the target fails to defend against it.
+6. FRESHNESS SYNERGY: this amplifies on this fresh integration-heavy vault; a mature hardened manager would
+   revert, not drain.
+Break invariant: "adapter-reported value == assets actually held across the external call".
+DARK-FACTORY:BRIEF-END
+DARK-FACTORY:BRIEF-BEGIN|contracts_oracle
+Attack the Chainlink oracle wrapper as an external actor:
+- C2: is staleness + deviation applied on every read path, or does a downstream consumer skip it? Is the
+  token/feed/stable decimal conversion exact across the wrapper boundary?
+
+## Integration-seam hunt guide
+This zone is an integration seam — apply all 6 C15 heuristics:
+1. ASSET/BALANCE MIS-ACCOUNTING across the boundary: does the wrapped price match the real feed value after
+   the cross-boundary read? A mispriced share downstream is theft (the top seam).
+2. NEW/EXOTIC ADAPTER BIAS: a recently-added feed wrapper is the under-audited tail — probe it before the
+   mainline oracle.
+3. GLOBAL VALUE-CONSERVATION BACKSTOP: FIRST find or prove ABSENT a protocol-wide withdraw-invariant + op-lock
+   + slippage cap; where it holds a mispriced read degrades to a REVERT, so the lens pays off only where the
+   wrapper's correctness is the ONLY barrier OR the code is FRESH.
+4. CROSS-INTEGRATION COMPOSITION: can a manipulated feed compose with a flashloan-priced position elsewhere to
+   extract, absent an operation-type lock?
+5. SCOPE DISCIPLINE: attack the wrapper's OWN staleness/decimals handling, NOT the Chainlink feed — a feed that
+   misbehaves is out-of-scope-by-trust unless the wrapper fails to defend against it.
+6. FRESHNESS SYNERGY: this amplifies on a fresh integration-heavy target, not a way to crack a mature one.
+Break invariant: "wrapper-reported price == fair feed price across the boundary".
+DARK-FACTORY:BRIEF-END
+DARK-FACTORY:BRIEF-BEGIN|contracts_token
+Attack the plain ERC20 token as an external actor (NO external integration — negative control):
+- C6: is every balance update rounded/ordered so no unchecked underflow or double-credit is reachable on
+  transfer/approve?
+- C13: is any pause/freeze state enforced consistently across every value-moving path?
+Break invariant: "sum of balances == totalSupply"; "a frozen address cannot move value".
+DARK-FACTORY:BRIEF-END

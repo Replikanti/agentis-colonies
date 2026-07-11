@@ -944,6 +944,26 @@ if [ -x "$REPO_ROOT/dark-factory/demo-run-zone-hunt.sh" ]; then
     fi
 fi
 
+# --- dark-factory integration-seam / composability lens: the C15 bug-class hunt lens (#1644, epic #1611) ---
+# A first-class C15 taxonomy class + a PROMPT-ONLY zone-mapper detection rule (tag integration/adapter zones —
+# *Adapter/*Guard/*Bridge/*Oracle/*Wrapper/*Router/*Strategy or external-protocol importers) + a conditional
+# brief-writer seamClause (mirrors residualClause/boundaryClause: fires on the comma-bounded ,C15, token,
+# empty otherwise so a non-C15 brief is BYTE-IDENTICAL). demo-seam-lens.sh is pure bash/git/python3 over a
+# throwaway git fixture (fixtures/seam-lens/ — integration contracts + a plain-token negative control) with a
+# --fixture stub (no network / no LLM) so it runs on CI runners: asserts the C15 tag round-trips into scope.tsv
+# only on integration zones, the C15 briefs carry the 6-heuristic seam hunt guide, the plain zone stays
+# seam-free, detection-semantics consistency, and the taxonomy/zone-mapper/brief-writer source guards; it also
+# runs the pipeline live via --backend mock when agentis is present.
+if [ -x "$REPO_ROOT/dark-factory/demo-seam-lens.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-seam-lens.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: integration-seam lens (C15 taxonomy class + zone-mapper detection + brief-writer seamClause, no-C15 byte-identical) (#1644)"
+    else
+        fail "dark-factory: integration-seam lens regressed (#1644)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory new-listing watcher: freshness-first Immunefi target selection (#1623) ---
 if [ -x "$REPO_ROOT/dark-factory/demo-watch-new-listings.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-watch-new-listings.sh" 2>&1)" && check_rc=0 || check_rc=$?

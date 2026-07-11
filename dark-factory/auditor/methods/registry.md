@@ -17,7 +17,7 @@ self-extension loop (#1000): the federation grows its own agent set, not just it
 list. It parses both shapes (the `<control-assertion>` is wired into the agent's output
 contract when present).
 
-METHOD|breadth-screen|C1-C14|per (subsystem x bug-class) reason-first adversarial LLM pass over sliced in-scope contracts|run-discovery.sh|builtin|0.50
+METHOD|breadth-screen|C1-C15|per (subsystem x bug-class) reason-first adversarial LLM pass over sliced in-scope contracts|run-discovery.sh|builtin|0.50
 METHOD|function-slicing|*|extract `file@fn` slices (contract header + named fns) so big contracts fit the LLM budget|slice-fns.sh|builtin|0.60
 METHOD|brief-ingestion|*|fold the target's own audit docs / known-issues into the hunt anchor to exclude documented findings|run-discovery.sh --brief|builtin|0.70
 METHOD|deep-cross-function-audit|C5-C12|whole-contract read, enumerate invariants, trace the call-graph, build sequenced multi-actor attack hypotheses|deep-audit subagent|builtin|0.55

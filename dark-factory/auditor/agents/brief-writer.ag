@@ -22,7 +22,7 @@ cb 300000;
 //   ZONE_FILES      newline-separated in-scope contract paths (relative to TARGET_DIR); a path may be
 //                   function-sliced as `file@fn1+fn2` (slice-fns.sh format) for a big contract.
 //   ZONE_CLASSES    comma-separated bug class ids for this zone (e.g. "C1,C6,C11") — the lens set to brief.
-//   TAXONOMY        path to bug-taxonomy.md (the class menu C1..C14 whose sections carry the hunt lens).
+//   TAXONOMY        path to bug-taxonomy.md (the class menu C1..C15 whose sections carry the hunt lens).
 //   AUDIT_RESIDUAL  (optional) matched `RESIDUAL|<subsystem>|<class>|<why-missed>|<sketch>` lines from
 //                   audit-scout.ag for this zone — the surface the prior auditors missed. PROMPT-ONLY.
 //   AUDIT_BOUNDARY  (optional) the `BOUNDARY|<known>` exclusion set from audit-scout.ag. PROMPT-ONLY.
@@ -92,6 +92,15 @@ let boundary = getenv("AUDIT_BOUNDARY");
 let residualClause = if len(residual) == 0 { "" } else { "\n\n=== AUDIT RESIDUAL — surface the prior auditors MISSED (fold these in, hunt AROUND them) ===\n" + residual + "\n" };
 let boundaryClause = if len(boundary) == 0 { "" } else { "\n\n=== KNOWN ISSUES — already documented in the audits; NEVER brief a hunt to re-report these ===\n" + boundary + "\n" };
 
+// C15 integration-seam lens (#1644): when this zone carries the C15 class, append a seam-focused hunt
+// subsection keyed on the comma-bounded token `,C15,` (normalized with leading/trailing commas, exactly like
+// residual/boundary key off their env). When C15 is ABSENT, seamClause == "" and the instruction concat is
+// BYTE-IDENTICAL to the pre-#1644 prompt (the load-bearing zero-regression guarantee). The C15 taxonomy
+// section already flows into `lens` via classes_doc/class_section("C15"); this clause DIRECTS the writer to
+// turn it into a dedicated subsection, sourced from the 6 heuristics.
+let hasSeam = index_of("," + classesCsv + ",", ",C15,") >= 0;
+let seamClause = if hasSeam { "\n\n=== INTEGRATION-SEAM HUNT GUIDE (C15 present) ===\nThis zone is an integration seam. In the body, add a dedicated '## Integration-seam hunt guide' subsection that turns the C15 lens into concrete moves for THIS zone's functions, covering all 6 heuristics: (1) ASSET/BALANCE MIS-ACCOUNTING across the integration — does the adapter-reported value match the assets actually held after the external call round-trips? A mispriced share/pool-token = theft (the top seam; the ERC4626 share-price-vs-real-assets invariant across the integration boundary). (2) NEW/EXOTIC ADAPTER BIAS — prioritise recently-added/one-off adapters; the widely-forked ones are picked over, the tail is not. (3) GLOBAL VALUE-CONSERVATION BACKSTOP — FIRST find (or prove ABSENT) a protocol-wide invariant layer (a withdraw-invariant + an operation-type lock + a cumulative-slippage cap that reverts any op leaving the pool worth less): where it holds, a single-adapter bug degrades to a REVERT not a drain, so the lens pays off only where per-adapter correctness is the ONLY barrier OR the code is FRESH. (4) CROSS-INTEGRATION COMPOSITION — can a flashloan via adapter A → manipulate a position priced by adapter B → extract, or two adapters compose into a state single-adapter checks miss? Check for an operation-type lock. (5) SCOPE DISCIPLINE — attack the TARGET's OWN integration code (adapter/guard/wrapper/oracle-read), NOT the integrated protocol; 'the integrated protocol misbehaves' is usually out-of-scope-by-trust unless the target fails to defend against it — payable = theft/freezing of the target's users via its own integration logic. (6) FRESHNESS SYNERGY — this amplifies on fresh integration-heavy targets; on a mature hardened multi-adapter manager expect reverts, not drains.\n" } else { "" };
+
 // The instruction carries the class lens (taxonomy sections), the zone identity, and the optional audit
 // residual/boundary; the zone's concatenated code is the prompt payload (matches hunter.ag / audit-scout.ag's
 // prompt(instruction, code) shape). The output is the brief BODY only — gen-briefs.sh wraps it in the
@@ -106,6 +115,7 @@ let instruction =
   + "=== THE BUG-CLASS LENS (the taxonomy sections for this zone's classes) ===\n" + lens + "\n"
   + residualClause
   + boundaryClause
+  + seamClause
   + "=== HOW TO ANSWER ===\n"
   + "FIRST reason step by step: read the zone's contracts and, for EACH bug class, name the specific "
   + "invariant this zone's functions could violate and the attack that would break it; where an audit "
