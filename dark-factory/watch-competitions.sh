@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
-# watch-competitions.sh — the audit-COMPETITION freshness watcher (#1635): a standalone (NOT sourcing
-# watch-new-listings.sh or run-immunefi-intake.sh) read-only scan of the two keyless competition JSON feeds —
-# Sherlock's `mainnet-contest.sherlock.xyz/contests` and Cantina's `cantina.xyz/api/v0/competitions` — that
-# surfaces a live audit competition ONCE, the first run it is seen, rather than re-ranking the whole set. It is
-# the competition-side mirror of the shipped #1623 new-listing watcher: the shell layer does all fetching
-# (curl, unauthenticated GETs only) and ONE embedded python3 block does ALL JSON parse / normalize / filter /
-# emit — never shell JSON parsing. Both platforms feed ONE common normalized record through a single python
-# normalizer (Sherlock's paginated `{"items":[...]}` shape and Cantina's bare top-level array both mapped into
-# the same dict), so the emit/ledger/scoring/SKIP logic is single-sourced.
+# watch-competitions.sh — the audit-COMPETITION freshness watcher (#1635, #1643): a standalone (NOT sourcing
+# watch-new-listings.sh or run-immunefi-intake.sh) read-only scan of THREE keyless competition sources —
+# Sherlock's `mainnet-contest.sherlock.xyz/contests`, Cantina's `cantina.xyz/api/v0/competitions`, and
+# CodeHawks' `codehawks.cyfrin.io/contests` — that surfaces a live audit competition ONCE, the first run it is
+# seen, rather than re-ranking the whole set. It is the competition-side mirror of the shipped #1623 new-listing
+# watcher: the shell layer does all fetching (curl, unauthenticated GETs only) and ONE embedded python3 block
+# does ALL parse / normalize / filter / emit — never shell parsing. All three platforms feed ONE common
+# normalized record through a single python normalizer (Sherlock's paginated `{"items":[...]}` shape, Cantina's
+# bare top-level array, and CodeHawks' `data-sveltekit-fetched` HTML-embedded tRPC JSON all mapped into the same
+# dict), so the emit/ledger/scoring/SKIP logic is single-sourced. CodeHawks is NOT API-key-gated: the `/contests`
+# page is server-rendered SvelteKit that embeds the keyless `competitions.getCompetitions` tRPC response in the
+# HTML, so a plain `curl -A "Mozilla/5.0"` (no browser, no node) returns all contests — no Playwright needed.
 #
-# Usage: watch-competitions.sh [--sherlock-from <file>] [--cantina-from <file>]
-#                              [--sherlock-url <endpoint>] [--cantina-url <endpoint>]
+# Usage: watch-competitions.sh [--sherlock-from <file>] [--cantina-from <file>] [--codehawks-from <file>]
+#                              [--sherlock-url <endpoint>] [--cantina-url <endpoint>] [--codehawks-url <url>]
 #                              [--max-pages N] [--ledger <file>] [--out <file>] [-h]
 #   --sherlock-from : offline hatch — read a raw Sherlock contests JSON (a `{"items":[...]}` object or a bare
 #                      array) from <file> instead of a live fetch. No network. Unreadable -> exit 2.
 #   --cantina-from  : offline hatch — read a raw Cantina competitions JSON (a bare array or a `{"data":[...]}`
 #                      wrapper) from <file> instead of a live fetch. No network. Unreadable -> exit 2.
+#   --codehawks-from: offline hatch — read a raw CodeHawks `/contests` page HTML (the `data-sveltekit-fetched`
+#                      tRPC embed) from <file> instead of a live fetch. No network. Unreadable -> exit 2.
 #   --sherlock-url  : the live Sherlock endpoint (default https://mainnet-contest.sherlock.xyz/contests).
 #   --cantina-url   : the live Cantina endpoint (default https://cantina.xyz/api/v0/competitions).
+#   --codehawks-url : the live CodeHawks contests page (default https://codehawks.cyfrin.io/contests).
 #   --max-pages     : Sherlock live pagination cap (default 5). Positive integer; a bad value (non-numeric,
 #                      zero, negative) is operator error -> exit 2 — a swallowed bad value would silently
 #                      truncate the fetch and yield a confident-looking false "nothing live".
@@ -27,35 +33,48 @@
 #   --out           : queue output path (default ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/competitions.queue —
 #                      a name distinct from new-listings.queue/immunefi.queue).
 #
-# DISCOVERY (three source modes per platform, generalizing #1623's single-endpoint SKIP to two platforms):
-#   - `--sherlock-from` / `--cantina-from` given -> read that file, no network (unreadable -> exit 2).
-#   - absent -> live fetch of `--sherlock-url` / `--cantina-url` (Sherlock paginated `?page=1..--max-pages`).
+# DISCOVERY (three source modes per platform, generalizing #1623's single-endpoint SKIP to three platforms):
+#   - `--sherlock-from` / `--cantina-from` / `--codehawks-from` given -> read that file, no network (unreadable
+#     -> exit 2).
+#   - absent -> live fetch of `--sherlock-url` / `--cantina-url` / `--codehawks-url` (Sherlock paginated
+#     `?page=1..--max-pages`; CodeHawks a single keyless `curl -A "Mozilla/5.0"` of the SvelteKit page).
 #   - `command -v python3` missing -> `[SKIP]` + exit 0. On the live path, `command -v curl` missing ->
 #     `[SKIP]` + exit 0.
-#   - A platform on the live path whose fetch fails/empties contributes nothing, but the OTHER platform still
-#     proceeds — a partial outage must NOT suppress the healthy platform's new competitions.
+#   - A platform on the live path whose fetch fails/empties contributes nothing, but the OTHERS still
+#     proceed — a partial outage must NOT suppress a healthy platform's new competitions. The CodeHawks
+#     HTML-embed parse is additionally wrapped in a try/except that contributes ZERO on any drift/malformation,
+#     so a CodeHawks-side break never disturbs Sherlock/Cantina.
 #   - If, after resolution, NO platform has any usable input -> `[SKIP]` + exit 0 with `--out` and `--ledger`
 #     byte-for-byte UNTOUCHED.
 #
 # COMMON normalized record (one python dict per competition — the ONLY schema the emit/ledger path sees):
-#   platform "sherlock"|"cantina" · id (list-endpoint id) · key (dedup key, below) · name · url · status (raw,
-#   lowercased) · live (bool, per-platform rule) · prize_usd (float, best-effort) · kyc (bool) · ends (ISO date
-#   or "-") · repo (best-effort from LIST fields, else "-"). `clean()` strips tabs/newlines from every string
-#   field (TSV-safety), verbatim from watch-new-listings.sh.
+#   platform "sherlock"|"cantina"|"codehawks" · id (list-endpoint id) · key (dedup key, below) · name · url ·
+#   status (raw/derived, lowercased) · live (bool, per-platform rule) · prize_usd (float, best-effort) · kyc
+#   (bool) · ends (ISO date or "-") · repo (best-effort from LIST fields, else "-"). CodeHawks additionally
+#   carries `prize_label` (raw `reward+currency`, e.g. `7.25eth`/`20000usdc`), surfaced in scope_hint's prize:
+#   field so the amount shows even when the currency is not USD-scored. `clean()` strips tabs/newlines from
+#   every string field (TSV-safety), verbatim from watch-new-listings.sh.
 #
 # KEY rule (derived ONLY from list-endpoint fields, so the dedup key never mutates between runs):
-#   Sherlock: `sherlock:<numeric id>` (always present in the list, stable — slugs need a per-contest detail
-#             fetch, which is deferred, so they must NOT drive the key).
-#   Cantina : `cantina:<slug>` where slug = last non-empty path segment of `url` lowercased, else the uuid id.
+#   Sherlock : `sherlock:<numeric id>` (always present in the list, stable — slugs need a per-contest detail
+#              fetch, which is deferred, so they must NOT drive the key).
+#   Cantina  : `cantina:<slug>` where slug = last non-empty path segment of `url` lowercased, else the uuid id.
+#   CodeHawks: `codehawks:<urlSlug>` (the contest's stable `urlSlug`, present on every embed row).
 #
 # LIVE filter (per platform, stated exactly):
-#   Sherlock: live = (status.lower() == "running") AND not private; additionally, when `ends_at` parses,
-#             require it to be in the future. JUDGING / ESCALATION / any non-RUNNING status is dropped; a
-#             private (invite-only) contest is dropped (not permissionless).
-#   Cantina : live = status.lower() NOT IN {complete, escalations_ended, closed, judging, ended, completed} —
-#             an allowlist-by-exclusion (no live-status string can be confirmed while none is open), failing
-#             toward surfacing rather than hiding a genuine live competition.
-#   NO hard language/DeFi filter on either platform (both are Solidity-centric audit comps); any tag rides in
+#   Sherlock : live = (status.lower() == "running") AND not private; additionally, when `ends_at` parses,
+#              require it to be in the future. JUDGING / ESCALATION / any non-RUNNING status is dropped; a
+#              private (invite-only) contest is dropped (not permissionless).
+#   Cantina  : live = status.lower() NOT IN {complete, escalations_ended, closed, judging, ended, completed} —
+#              an allowlist-by-exclusion (no live-status string can be confirmed while none is open), failing
+#              toward surfacing rather than hiding a genuine live competition.
+#   CodeHawks: there is NO status/phase enum in the embed — submissions-open is DATE-DERIVED. live = the
+#              contest is inside its `[startDate, endDate)` window (`startDate <= today < endDate`) AND
+#              `finalised == false` AND `inviteOnly == false`. Everything else drops: `finalised` (ended),
+#              `inviteOnly` (not permissionless), `today < startDate` (upcoming), `today >= endDate`
+#              (judging/appeals/ended — a future `appealEndDate` does NOT keep submissions open), and any
+#              contest whose dates do not parse (fail toward hiding an unconfirmable one).
+#   NO hard language/DeFi filter on any platform (all are Solidity-centric audit comps); any tag rides in
 #   scope_hint.
 #
 # EMIT + LEDGER (first-seen only): emit(comp) iff comp.live AND comp.key not in the ledger. After a successful
@@ -66,16 +85,17 @@
 #     score = int(round(prize_term + freshness_term)), prize_term = 70*min(1, log10(1+prize_usd)/7),
 #     freshness_term = 30 (every emitted row is freshly surfaced). Sorted score DESC then key ASC (house
 #     tie-break). scope_hint (single field, no extra columns) =
-#     `platform:<sherlock|cantina> status:<raw> prize:<usd-or-'-'> kyc:<yes|no> ends:<date-or-'-'> repo:<repo-or-'-'>`.
+#     `platform:<sherlock|cantina|codehawks> status:<raw-or-derived> prize:<usd-or-label-or-'-'> kyc:<yes|no>
+#     ends:<date-or-'-'> repo:<repo-or-'-'>` (CodeHawks's prize: carries the raw `reward+currency` label).
 #
 # Requires: python3 (the normalizer). curl only on a live-fetch path (a read-only public GET). Read-only /
 # NEVER-SUBMIT: only unauthenticated GETs; no write beyond the local ledger/queue, no platform call. The
 # operator wires the recurring schedule (cron/systemd timer) — out of scope here.
 # Exit 0 on success or a clean [SKIP]; 2 on bad/missing args.
 #
-# OUT OF SCOPE (follow-ups): CodeHawks (API-key-gated -> a Playwright/browser path) and Code4rena (no clean
-# keyless endpoint); per-contest Sherlock scope/repo enrichment via `GET /contests/<id>` (repo stays best-effort
-# from LIST fields only, so the key/ledger stay list-only and stable).
+# OUT OF SCOPE (follow-ups): Code4rena (no clean keyless endpoint); per-contest Sherlock scope/repo enrichment
+# via `GET /contests/<id>` (repo stays best-effort from LIST fields only, so the key/ledger stay list-only and
+# stable). CodeHawks NO LONGER needs a browser — the #1643 keyless HTML-embed path lands it as a third channel.
 set -u
 
 DIR="${DARK_FACTORY_DIR:-$HOME/.dark-factory}"
@@ -83,16 +103,19 @@ DIR="${DARK_FACTORY_DIR:-$HOME/.dark-factory}"
 # nv: a value-taking flag must be followed by a value; under `set -u` a bare trailing flag would otherwise crash
 # on $2 (unbound) instead of the promised exit 2. $1 = remaining argc ($#), $2 = the flag name.
 nv() { [ "$1" -ge 2 ] || { echo "watch-competitions.sh: $2 requires a value" >&2; exit 2; }; }
-SHERLOCK_FROM="" ; CANTINA_FROM=""
+SHERLOCK_FROM="" ; CANTINA_FROM="" ; CODEHAWKS_FROM=""
 SHERLOCK_URL="https://mainnet-contest.sherlock.xyz/contests"
 CANTINA_URL="https://cantina.xyz/api/v0/competitions"
+CODEHAWKS_URL="https://codehawks.cyfrin.io/contests"
 MAX_PAGES="5"
 LEDGER="$DIR/seen-competitions.txt" ; OUT="$DIR/competitions.queue" ; MAX_TIME="30"
 while [ $# -gt 0 ]; do case "$1" in
-  --sherlock-from) nv "$#" "$1"; SHERLOCK_FROM="$2"; shift 2;;
-  --cantina-from)  nv "$#" "$1"; CANTINA_FROM="$2"; shift 2;;
-  --sherlock-url)  nv "$#" "$1"; SHERLOCK_URL="$2"; shift 2;;
-  --cantina-url)   nv "$#" "$1"; CANTINA_URL="$2"; shift 2;;
+  --sherlock-from)  nv "$#" "$1"; SHERLOCK_FROM="$2"; shift 2;;
+  --cantina-from)   nv "$#" "$1"; CANTINA_FROM="$2"; shift 2;;
+  --codehawks-from) nv "$#" "$1"; CODEHAWKS_FROM="$2"; shift 2;;
+  --sherlock-url)   nv "$#" "$1"; SHERLOCK_URL="$2"; shift 2;;
+  --cantina-url)    nv "$#" "$1"; CANTINA_URL="$2"; shift 2;;
+  --codehawks-url)  nv "$#" "$1"; CODEHAWKS_URL="$2"; shift 2;;
   --max-pages)
     nv "$#" "$1"
     case "$2" in
@@ -102,7 +125,7 @@ while [ $# -gt 0 ]; do case "$1" in
     MAX_PAGES="$2"; shift 2;;
   --ledger)        nv "$#" "$1"; LEDGER="$2"; shift 2;;
   --out)           nv "$#" "$1"; OUT="$2"; shift 2;;
-  -h|--help)       sed -n '2,77p' "$0"; exit 0;;
+  -h|--help)       sed -n '2,98p' "$0"; exit 0;;
   *) echo "watch-competitions.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
 
@@ -152,13 +175,28 @@ else
   fi
 fi
 
-# No usable input from EITHER platform -> a clean [SKIP], ledger + queue byte-for-byte untouched. (When curl is
-# missing on a pure live run both resolutions produce nothing and we land here.)
-if [ -z "${SHERLOCK_FILES# }" ] && [ -z "$CANTINA_FILE" ]; then
-  if ! command -v curl >/dev/null 2>&1 && [ -z "$SHERLOCK_FROM" ] && [ -z "$CANTINA_FROM" ]; then
+# --- CodeHawks source resolution -> CODEHAWKS_FILE (one raw `/contests` page HTML file, or empty) ------------
+# The live fetch is a single keyless GET of the SvelteKit page WITH a browser-shaped UA (matches the verified-
+# working request); the embed-JSON extraction happens defensively inside the python normalizer.
+CODEHAWKS_FILE=""
+if [ -n "$CODEHAWKS_FROM" ]; then
+  [ -r "$CODEHAWKS_FROM" ] || { echo "watch-competitions.sh: --codehawks-from <file> not readable: $CODEHAWKS_FROM" >&2; exit 2; }
+  CODEHAWKS_FILE="$CODEHAWKS_FROM"
+else
+  if command -v curl >/dev/null 2>&1; then
+    chf="$TMPDIR_WC/codehawks.html"
+    curl -sS -A "Mozilla/5.0" --max-time "$MAX_TIME" "$CODEHAWKS_URL" -o "$chf" 2>/dev/null || :
+    [ -s "$chf" ] && CODEHAWKS_FILE="$chf"
+  fi
+fi
+
+# No usable input from ANY platform -> a clean [SKIP], ledger + queue byte-for-byte untouched. (When curl is
+# missing on a pure live run all three resolutions produce nothing and we land here.)
+if [ -z "${SHERLOCK_FILES# }" ] && [ -z "$CANTINA_FILE" ] && [ -z "$CODEHAWKS_FILE" ]; then
+  if ! command -v curl >/dev/null 2>&1 && [ -z "$SHERLOCK_FROM" ] && [ -z "$CANTINA_FROM" ] && [ -z "$CODEHAWKS_FROM" ]; then
     echo "[SKIP] curl not installed" >&2
   else
-    echo "[SKIP] no network / empty response from both platforms — nothing to watch" >&2
+    echo "[SKIP] no network / empty response from all platforms — nothing to watch" >&2
   fi
   exit 0
 fi
@@ -167,7 +205,7 @@ mkdir -p "$(dirname "$OUT")" 2>/dev/null || true
 mkdir -p "$(dirname "$LEDGER")" 2>/dev/null || true
 
 # NORMALIZE (both schemas -> one record) + FILTER + EMIT + LEDGER UPDATE (python3 only, no shell JSON parsing).
-SHERLOCK_FILES="$SHERLOCK_FILES" CANTINA_FILE="$CANTINA_FILE" LEDGER="$LEDGER" OUT="$OUT" python3 - <<'PY'
+SHERLOCK_FILES="$SHERLOCK_FILES" CANTINA_FILE="$CANTINA_FILE" CODEHAWKS_FILE="$CODEHAWKS_FILE" LEDGER="$LEDGER" OUT="$OUT" python3 - <<'PY'
 import datetime
 import json
 import math
@@ -177,6 +215,7 @@ import sys
 
 sherlock_files = os.environ.get("SHERLOCK_FILES", "").split()
 cantina_file = os.environ.get("CANTINA_FILE", "").strip()
+codehawks_file = os.environ.get("CODEHAWKS_FILE", "").strip()
 ledger_path = os.environ["LEDGER"]
 out_path = os.environ["OUT"]
 
@@ -354,6 +393,82 @@ for it in craw:
         "repo": repo,
     })
 
+# --- CodeHawks: keyless HTML embed (server-rendered SvelteKit `data-sveltekit-fetched` tRPC block). ENTIRELY
+# DEFENSIVE — the whole extraction is wrapped in try/except so ANY failure (block absent, JSON malformed, embed
+# drift, HTML instead of the page) contributes ZERO records and NEVER disturbs the Sherlock/Cantina records
+# already in `comps`. There is NO status enum: submissions-open is DATE-DERIVED (see the header LIVE filter). ---
+if codehawks_file:
+    try:
+        with open(codehawks_file, encoding="utf-8", errors="ignore") as fh:
+            html = fh.read()
+        m = re.search(
+            r'data-sveltekit-fetched[^>]*data-url="[^"]*competitions\.getCompetitions[^"]*"[^>]*>(.*?)</script>',
+            html, re.S)
+        if m:
+            outer = json.loads(m.group(1).strip())
+            body = json.loads(outer["body"]) if isinstance(outer, dict) else None
+            contests = []
+            for elem in as_list(body):
+                if isinstance(elem, dict):
+                    data = elem.get("result", {}).get("data") if isinstance(elem.get("result"), dict) else None
+                    if isinstance(data, list):
+                        contests.extend(data)
+            for it in contests:
+                if not isinstance(it, dict):
+                    continue
+                slug = str(it.get("urlSlug") or "").strip()
+                if not slug:
+                    continue
+                start = parse_date(it.get("startDate"))
+                ends = parse_date(it.get("endDate"))
+                finalised = bool(it.get("finalised"))
+                invite = bool(it.get("inviteOnly"))
+                # Derived phase (order matters): finalised -> ended; inviteOnly -> not permissionless;
+                # undatable -> unknown (hide); today < start -> upcoming; today >= end -> judging/appeals;
+                # else the [start, end) window is open. Only `open` surfaces. A future appealEndDate is NOT
+                # consulted — submissions close at endDate.
+                if finalised:
+                    phase = "ended"
+                elif invite:
+                    phase = "invite-only"
+                elif start is None or ends is None:
+                    phase = "unknown"
+                elif today < start:
+                    phase = "upcoming"
+                elif today >= ends:
+                    phase = "judging"
+                else:
+                    phase = "open"
+                live = (phase == "open")
+                reward = it.get("reward")
+                currency = str(it.get("currency") or "").strip()
+                # currencyUsdRate is unreliable (observed 1 for ETH) -> USD-score ONLY stable currencies; the raw
+                # reward+currency always rides in scope_hint via prize_label so nothing is hidden.
+                prize = usd(reward) if currency.lower() in {"usdc", "usd", "dai", "busd"} else 0.0
+                if reward in (None, ""):
+                    prize_label = ""
+                else:
+                    rtxt = ("%g" % reward) if isinstance(reward, (int, float)) else str(reward)
+                    prize_label = ("%s%s" % (rtxt, currency)) if currency else rtxt
+                repo = str(it.get("githubUrl")) if looks_like_repo(it.get("githubUrl")) else "-"
+                name = str(it.get("name") or it.get("company") or slug)
+                comps.append({
+                    "platform": "codehawks",
+                    "id": slug,
+                    "key": "codehawks:%s" % slug,
+                    "name": name,
+                    "url": "https://codehawks.cyfrin.io/c/%s" % slug,
+                    "status": phase,
+                    "live": live,
+                    "prize_usd": prize,
+                    "prize_label": prize_label,
+                    "kyc": bool(it.get("requiresKyc")),
+                    "ends": ends.isoformat() if ends is not None else "-",
+                    "repo": repo,
+                })
+    except Exception as exc:
+        sys.stderr.write("watch-competitions: codehawks parse skipped (%s)\n" % exc)
+
 # DEDUP by key (case-insensitive), keep first occurrence — mirrors watch-new-listings.sh, applied before the
 # emit pass so a repeated key is never double-counted / double-appended to the ledger.
 _seen_keys = set()
@@ -382,6 +497,7 @@ now_ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%
 rows = []
 n_sherlock = 0
 n_cantina = 0
+n_codehawks = 0
 n_live = 0
 new_ledger_keys = []
 for c in comps:
@@ -399,9 +515,13 @@ for c in comps:
     score = int(round(prize_term + 30.0))
     if c["platform"] == "sherlock":
         n_sherlock += 1
-    else:
+    elif c["platform"] == "cantina":
         n_cantina += 1
-    prize_str = str(int(prize)) if prize else "-"
+    else:
+        n_codehawks += 1
+    # CodeHawks records carry a raw `reward+currency` label so the amount shows even when un-USD-scored;
+    # Sherlock/Cantina set no prize_label, so their computation is byte-identical to before.
+    prize_str = c.get("prize_label") if c.get("prize_label") else (str(int(prize)) if prize else "-")
     scope = "platform:%s status:%s prize:%s kyc:%s ends:%s repo:%s" % (
         c["platform"], clean(c["status"]) or "-", prize_str, "yes" if c["kyc"] else "no",
         c["ends"] or "-", clean(c["repo"]) or "-")
@@ -425,7 +545,7 @@ if new_ledger_keys:
 
 ledger_total = len(seen | {k.lower() for k in new_ledger_keys})
 sys.stderr.write(
-    "watch-competitions: %d new (%d sherlock, %d cantina) of %d live of %d total -> %s; "
+    "watch-competitions: %d new (%d sherlock, %d cantina, %d codehawks) of %d live of %d total -> %s; "
     "ledger now tracks %d key(s)\n" % (
-        len(rows), n_sherlock, n_cantina, n_live, len(comps), out_path, ledger_total))
+        len(rows), n_sherlock, n_cantina, n_codehawks, n_live, len(comps), out_path, ledger_total))
 PY
