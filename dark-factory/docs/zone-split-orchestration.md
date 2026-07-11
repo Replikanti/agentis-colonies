@@ -156,13 +156,71 @@ generated brief resolves and is what would be handed to every cell as `SCOPE_BRI
 `BRIEF=""` so the block is skipped and the M1 `--list-cells` output is unchanged; the shipped hunt path is
 byte-identical. `demo-gen-briefs.sh` pins the whole chain (map → brief → round-trip → residual fold) offline.
 
+## M3: parallel fan-out (#1625)
+
+M1 produces the manifest, M2 the depth; **M3 (#1625)** adds THROUGHPUT. `run-discovery.sh` gains an opt-in
+`--jobs N` (alias `-j N`, default `1`) bounded-concurrency fan-out: instead of hunting the `(subsystem ×
+class)` cells strictly serially, it runs up to N of them CONCURRENTLY. Wall-clock drops from the *sum* of the
+cells toward the *slowest cell* per concurrency wave — the lever that makes a large auto-mapped manifest
+(many zones × many classes) practical to hunt in one pass.
+
+`--jobs 1` (the default) is **byte-for-byte identical** to the pre-M3 hunt: it runs the current serial loop
+against the ONE shared agentis store with live #1001 blackboard steering, and every piece of the fan-out
+machinery sits behind `[ "$JOBS" -gt 1 ]`. `run-discovery.sh` factors the per-cell invocation (`run_cell`)
+and the per-cell scrape (`scrape_cell_log`) into functions the serial loop and the parallel-aggregation pass
+call **identically**, so the serial report cannot drift.
+
+### The OOM/thrash discipline — a HARD cap, never fail-open
+
+The headline risk is memory. Each cell is an `agentis go` → LLM PTY session, and a real hunt spawns
+downstream `forge`/`solc` builds; N of those at once can melt a single ~30 GB host. M3 enforces a **hard
+ceiling**: effective concurrency `= min(--jobs, LLM_MAX_DISCOVERY_CELLS)`, default cap `4`, enforced by a
+self-contained `wait -n` job-slot loop that keeps at most that many `run_cell` processes live at any instant.
+`--jobs 99` on a default host is silently clamped to 4 (with a stderr warning). Tune the cap per host via
+`LLM_MAX_DISCOVERY_CELLS` — raise it on a big box, drop it to 2 on a laptop.
+
+This is deliberately NOT `tools/lib/llm-session-slot.sh`: that daemon-tier semaphore **fails open** after
+`LLM_SLOT_WAIT_S` (it cannot guarantee "never more than N"), caps host-global LLM sessions at a different
+granularity than the outer `agentis go` process, and resolves its pool from `COLONY_DIR`/`AGENTIS_*` — env an
+operator-run discovery batch does not set. A small self-contained hard cap is both smaller and honest for the
+"the cap is never exceeded" guarantee; `demo-discovery-parallel.sh` asserts it (including the clamp path).
+
+### Blackboard under concurrency (isolate-and-aggregate)
+
+The #1001 blackboard is a SHARED in-run memo: each cell reads the board before it prompts and posts its
+CANDIDATE back, so a lead an earlier cell found steers later cells. That read-append-write is race-free today
+ONLY because cells run **sequentially** against one shared store. Under `--jobs > 1` there is no "later" cell
+to steer, and concurrent writes into one agentis store would risk lost updates / corruption. M3 resolves this
+by **isolation**: each parallel cell gets its OWN agentis store — a `cp -r` of the initialised `$RUN`
+template into `$RUN/cell-<slug>_<cls>/` — so there is no shared board to race. Every cell therefore starts
+with an EMPTY board, `hunter.ag`'s `focus_block()` returns `""`, and its prompt is byte-identical to the
+pre-#1001 single-cell prompt. **Cross-cell #1001 steering is deliberately disabled under `--jobs > 1`** — a
+documented throughput-vs-steering trade. Serial (`--jobs 1`) keeps the shared store WITH live steering.
+
+The **rejected** alternative was making the shared board concurrency-safe (atomic append / `mkdir`-lock). It
+was rejected because #1001's read-append-write encodes a "later cell sees an earlier cell's lead" ORDERING
+that is meaningless when cells run concurrently — even a race-free append buys only a nondeterministic partial
+view while forcing concurrent writes into one store (corruption risk) and a `hunter.ag` protocol change.
+Isolation is smaller, honest, and the only option that makes the aggregated result deterministic.
+
+### Deterministic aggregation
+
+Cells finish out of order, but results are collected AFTER the pool fully drains, by scraping each cell's log
+in **manifest order** with the same `scrape_cell_log` the serial path uses. So the final `discovery-report.md`
+candidate/coordination rows — and the additive machine-readable `discovery-results.json` (emitted on both
+paths: `{repo, backend, jobs, cells:[…], totals:{cells,candidates,steers}}`) — are identical to the serial
+result set and independent of completion order. `demo-discovery-parallel.sh` pins the whole contract offline
+via a fast stub wired through the existing `--agentis` seam (no live agentis/forge/network): serial == golden,
+concurrency observed + cap never exceeded (incl. the clamp), aggregation == serial, per-cell isolation,
+`STEERS = 0` under parallelism, and a failed cell still degrades (its log is scraped, the run finishes).
+
 ## The M1..M5 map
 
 | Milestone | Scope |
 |-----------|-------|
 | **M1 (#1612)** | zone mapping: `map-zones.sh` + `zone-mapper.ag` → `zones.json` + `scope.tsv`; the `--list-cells` round-trip. |
-| **M2 (#1619)** | per-zone brief generation: `gen-briefs.sh` + `brief-writer.ag` → `brief_<zone>.md`, fed to `run-discovery.sh --brief`. **(this)** |
-| M3 | parallel fan-out across zones + a concurrency cap + result collection. |
+| **M2 (#1619)** | per-zone brief generation: `gen-briefs.sh` + `brief-writer.ag` → `brief_<zone>.md`, fed to `run-discovery.sh --brief`. |
+| **M3 (#1625)** | parallel fan-out: `run-discovery.sh --jobs N` bounded-concurrency over the `(subsystem × class)` cells + isolated per-cell stores + a hard cap + deterministic aggregation. **(this)** |
 | M4 | verify integration — route each surfaced lead into the forge/Halmos gate. |
 | M5 | gate + deliver — the human-gated packaging capstone. |
 
@@ -175,7 +233,10 @@ byte-identical. `demo-gen-briefs.sh` pins the whole chain (map → brief → rou
    brief quality (the decisive depth lever) is only as good as that backend and is a research risk measured
    against the manual baselines, not something the plumbing can guarantee. `--fixture` stubs the output for
    deterministic, offline CI; it proves wiring + format, never live quality.
-2. **M3 needs a concurrency cap.** Fanning `zone-mapper.ag` / the hunt across many zones without a cap
-   would bunch `prompt()` sessions; M3 owns that. M1 runs zones sequentially.
+2. **Concurrency needs a hard cap (M3, #1625).** Fanning the hunt across many cells without a ceiling would
+   bunch `prompt()` sessions and OOM-thrash a single host. M3 (`run-discovery.sh --jobs N`) caps effective
+   concurrency at `min(--jobs, LLM_MAX_DISCOVERY_CELLS=4)` with a self-contained hard `wait -n` slot (never
+   fail-open), isolates each cell's store, and defaults to `--jobs 1` (serial, byte-identical). M1's own
+   zone-mapping pass still runs zones sequentially.
 3. **READ-ONLY, NEVER-SUBMIT.** `map-zones.sh` touches no network and has no submission path. Surfacing a
    starting manifest is the whole job; verification and any submission stay separate, human-gated actions.

@@ -892,6 +892,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-gen-briefs.sh" ]; then
     fi
 fi
 
+# --- dark-factory parallel fan-out: bounded-concurrency hunt over (subsystem x class) cells (#1625, epic #1611 M3) ---
+# run-discovery.sh gains an opt-in --jobs N (-j N, default 1) bounded-concurrency fan-out: up to
+# min(N, LLM_MAX_DISCOVERY_CELLS=4) cells hunt concurrently, EACH in its own isolated agentis store (cp -r of
+# the initialised template) so concurrent builds/memo writes never race, with results aggregated AFTER the
+# pool drains in manifest order. --jobs 1 (default) is byte-for-byte identical to the pre-M3 serial hunt.
+# demo-discovery-parallel.sh is pure bash/python3 driving a fast offline stub through the existing --agentis
+# seam (no live agentis / forge / network): asserts serial==golden, concurrency observed + cap never
+# exceeded (incl. the LLM_MAX_DISCOVERY_CELLS clamp), aggregation==serial, per-cell isolation, and degrade.
+if [ -x "$REPO_ROOT/dark-factory/demo-discovery-parallel.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-discovery-parallel.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: parallel fan-out (run-discovery.sh --jobs N bounded-concurrency + isolated per-cell store, serial byte-identical) (#1625)"
+    else
+        fail "dark-factory: parallel fan-out regressed (#1625)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory new-listing watcher: freshness-first Immunefi target selection (#1623) ---
 if [ -x "$REPO_ROOT/dark-factory/demo-watch-new-listings.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-watch-new-listings.sh" 2>&1)" && check_rc=0 || check_rc=$?
