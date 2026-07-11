@@ -1,8 +1,8 @@
 # Dev Apprenticeship
 
-![Version: 2.10.1](https://img.shields.io/badge/version-2.10.1-blue) ![Agentis >= v1.22.2](https://img.shields.io/badge/agentis-%3E%3D%20v1.22.2-blue) ![Agents: 22](https://img.shields.io/badge/agents-22-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
+![Version: 2.10.1](https://img.shields.io/badge/version-2.10.1-blue) ![Agentis >= v1.22.3](https://img.shields.io/badge/agentis-%3E%3D%20v1.22.3-blue) ![Agents: 22](https://img.shields.io/badge/agents-22-green) ![Status: Beta](https://img.shields.io/badge/status-beta-yellow)
 
-**Version:** `2.10.1` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.22.2`
+**Version:** `2.10.1` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.22.3`
 
 > **One example federation** built on the [`agentis-colonies`](../) platform. The platform contract every federation must satisfy is [ADR-0003](../doc/adr/ADR-0003-federation-portability-contract.md); to scaffold a different kind of federation (data-ops, research, support-triage, monitoring-ops, …) see [`doc/federation-patterns.md`](../doc/federation-patterns.md) and [`tools/new-federation.sh`](../tools/new-federation.sh).
 
@@ -103,7 +103,7 @@ agentis memo set code_writer:confidence 0.97
 
 ## What you need
 
-- [Agentis](https://github.com/Replikanti/agentis) runtime **>= v1.22.2** (v1.8.0 adds the crystallizer builtins used by the rule-replay pilots; v1.20.0 adds the `crystallizer_search` BM25 retrieval builtin used by Stage 1b recall + retrieval-grounded prompts; v1.22.2 adds the `json_array_project` flat JSON-array projection builtin the native merge-gate verdict readers depend on — a hard floor with no try/catch fallback, pinned by the substrate-purity Phase 2 PR A CHANGELOG entry)
+- [Agentis](https://github.com/Replikanti/agentis) runtime **>= v1.22.3** (v1.8.0 adds the crystallizer builtins used by the rule-replay pilots; v1.20.0 adds the `crystallizer_search` BM25 retrieval builtin used by Stage 1b recall + retrieval-grounded prompts; v1.22.2 adds the `json_array_project` flat JSON-array projection builtin the native merge-gate verdict readers depend on; v1.22.3 adds `json_array_reduce` — filtered max-id + ascending-id body aggregate — the native `actionable_note` review-resolver reader depends on — a hard floor with no try/catch fallback, pinned by the substrate-purity Phase 2 CHANGELOG entries)
 - An LLM backend (Claude CLI, Ollama, or any OpenAI-compatible API)
 - GitLab instance with API access (personal access token with `api` scope)
 - Python 3 and git

@@ -1321,52 +1321,94 @@ fn bot_username() -> string {
     return recall_latest("gitlab:me");
 }
 
-// actionable_note: scan the mr-notes JSON (on $J, off-argv) for the most-recent
-// (highest `id`) ACTIONABLE note, given the bot username on $ME. A note is
-// actionable when it is non-system AND either (a) authored by a human
-// (author.username != $ME, and $ME is non-empty) or (b) the federation's own
-// request_changes verdict — body starts `**Review Summary** (automated)` (the
-// autonomous post) or contains both `[draft-review-decision]` and
-// `request_changes` (the review-gated draft). Plain reviewer comments, approvals,
-// and clean reviews are NOT actionable. Prints a tab-joined record
-// `<max_note_id>\t<concatenated actionable bodies>` (tabs in bodies collapsed to
-// spaces so the record stays two fields) or "" when none / malformed JSON.
+// str_replace_all: replace every occurrence of `from` in `s` with `to`. Recurses
+// on the TAIL after each hit (never re-scans the just-inserted `to`), so it is
+// safe even when `to` contains `from` (the `\` -> `\\` case in keep_escape). No
+// native replace builtin exists; this is the index_of/substring idiom.
+fn str_replace_all(s: string, from: string, to: string) -> string {
+    let p = index_of(s, from);
+    if p < 0 { return s; };
+    return substring(s, 0, p) + to + str_replace_all(substring(s, p + len(from), len(s)), from, to);
+}
+
+// keep_escape: escape a VALUE for the json_array_reduce keep grammar. The keep
+// parser's keep_unescape accepts exactly `\\`/`\|`/`\;`, so a value is escaped in
+// that order — backslash FIRST (`\` -> `\\`), then `|` -> `\|`, then `;` -> `\;`
+// (escaping `\` last would double-escape the backslashes introduced by the `|`/`;`
+// passes). Without this, an operator-set `me` (the unvalidated gitlab:me /
+// GITHUB_ME / GITLAB_ME env) carrying a `;` or `\` would break the keep parse and
+// the reducer would drop EVERY note (a genuine human finding silently suppressed,
+// so the resolver never re-drives); a `|` would risk forging a must/any boundary.
+// keep_escape makes the invariant enforced-by-construction, not assumed.
+fn keep_escape(s: string) -> string {
+    let a = str_replace_all(s, "\\", "\\\\");
+    let b = str_replace_all(a, "|", "\\|");
+    return str_replace_all(b, ";", "\\;");
+}
+
+// actionable_note: reduce the mr-notes JSON to the most-recent (highest `id`)
+// ACTIONABLE note, given the bot username `me`. A note is actionable when it is
+// non-system AND either (a) authored by a human (author.username != me, me
+// non-empty) or (b) the federation's own request_changes verdict — body starts
+// `**Review Summary** (automated)` (the autonomous post) or is the review-gated
+// draft (approval_decider.ag:932). Plain reviewer comments, approvals, and clean
+// reviews are NOT actionable. Returns `<max_note_id>\t<concatenated actionable
+// bodies>` (bodies joined ascending-`id` by `\n\n`) or "" when none / malformed.
+//
+// Native via `json_array_reduce` (agentis >= 1.22.3, the #1587 substrate-purity
+// ratchet, #1613) — no embedded python. The keep grammar is `must "|" any`:
+// `must` = `system!=true` (ALL); the `any` half is an OR-list evaluated as
+// `any.is_empty() OR ANY(any)`.
+//   * is_human -> `author.username!=me` (a missing/null author.username coerces
+//     to "", so an author-LESS note is KEPT: DECIDED (#903) — unreachable on a
+//     real forge (every note carries a non-null author) and non-harmful even if
+//     reached (an actionable_note drives only a cap-2 re-fix, never a merge-gate
+//     release like the verdict readers), so the `!=me` keep stands, documented).
+//   * is_req -> `body^=**Review Summary** (automated)` (startswith, value-
+//     identical to the old python).
+//   * is_draft -> `body~suggested action \`request_changes\``. The old python
+//     is_draft was a TWO-substring conjunction (`[draft-review-decision]` AND
+//     `request_changes`) — inexpressible in the pure-OR `any` half (the grammar
+//     has no conjunction-in-OR). This single `~` clause on the discriminating
+//     phrase from the draft template (approval_decider.ag:932 emits
+//     `suggested action \`<action>\`` iff the decision is request_changes)
+//     captures the intent. Divergence is provably SAFE-DIRECTION and rare: the
+//     only note where it differs is an `approve`/`escalate` draft whose LLM
+//     reasoning text happens to contain `request_changes` — the old python KEPT
+//     it (and wrongly re-drove a code-fix against an approval), this DROPS it.
+//     Never looser, only tighter+safer.
+// Empty-me fail-safe: OMIT the author clause (else `author.username!=""` keeps
+// every authored note) — only the federation's own request_changes / draft
+// markers stay actionable, never a bare author mismatch. me is a forge username
+// (`[A-Za-z0-9_.-]`, never `;`/`|`/`\`), but it flows from the UNVALIDATED
+// gitlab:me / GITHUB_ME / GITLAB_ME operator env, so it is keep_escape'd before
+// concatenation — a stray reserved char is then a literal value char (matches
+// nobody), never a forged/broken clause. This is enforced-by-construction.
+//
+// Forge-unreachable coercion divergences (same "native coercion vs the old
+// python's strict type-checks" axis as the null-author `!=me` keep above, listed
+// for an honest+complete divergence set — every real GitHub/GitLab note makes
+// them moot): (i) a non-boolean `system` value (e.g. the JSON string "true") is
+// compared stringly by `system!=true`, so the reducer treats it as non-system and
+// KEEPS-eligible where the old python's `is True` matched and dropped — direction
+// differs; (ii) a note with a present `id` but ABSENT `body` key is projected with
+// an empty body and can be included, where the old python's `isinstance(body,str)`
+// hard-skipped it. Both are unreachable (every forge note carries a genuine
+// boolean `system` and a present `body`) and, like null-author, at worst a
+// cap-2-bounded spurious re-fix, never a merge-gate release.
+//
+// json_array_reduce json_tsv_escapes each body cell (a real `\t`/`\n` in a body
+// becomes the two-char `\t`/`\n`) and joins notes with real `\n\n`, so the record
+// still holds exactly one real tab (the max_id separator) — the consumer's
+// repo_field split is unaffected; the body TEXT is now escaped instead of the old
+// tab->space collapse (the same accepted cosmetic class as PR A's block reason,
+// read fine by the re-fix LLM).
 fn actionable_note(raw: string, me: string) -> string {
-    let cmd = "J=" + shell_escape(raw) + " ME=" + shell_escape(me) +
-        " python3 -c 'import os,json,sys" +
-        "\ntry:" +
-        "\n    d=json.loads(os.environ[\"J\"])" +
-        "\nexcept Exception:" +
-        "\n    print(\"\"); sys.exit(0)" +
-        "\nif not isinstance(d,list):" +
-        "\n    print(\"\"); sys.exit(0)" +
-        "\nme=os.environ[\"ME\"]" +
-        "\nhits=[]" +
-        "\nfor it in d:" +
-        "\n    if not isinstance(it,dict):" +
-        "\n        continue" +
-        "\n    if it.get(\"system\") is True:" +
-        "\n        continue" +
-        "\n    nid=it.get(\"id\")" +
-        "\n    if not isinstance(nid,int):" +
-        "\n        continue" +
-        "\n    body=it.get(\"body\")" +
-        "\n    if not isinstance(body,str):" +
-        "\n        continue" +
-        "\n    a=it.get(\"author\")" +
-        "\n    author=a.get(\"username\") if isinstance(a,dict) else None" +
-        "\n    is_human=(me!=\"\" and isinstance(author,str) and author!=me)" +
-        "\n    is_req=body.startswith(\"**Review Summary** (automated)\")" +
-        "\n    is_draft=(\"[draft-review-decision]\" in body and \"request_changes\" in body)" +
-        "\n    if is_human or is_req or is_draft:" +
-        "\n        hits.append((nid, body.replace(chr(9), \" \")))" +
-        "\nif not hits:" +
-        "\n    print(\"\"); sys.exit(0)" +
-        "\nmax_id=max(h[0] for h in hits)" +
-        "\nbodies=(chr(10)+chr(10)).join(b for _,b in sorted(hits))" +
-        "\nsys.stdout.write(str(max_id)+chr(9)+bodies)'";
-    let out = try { exec sh cmd; } catch e { ""; };
-    return out;
+    let draft = "body^=**Review Summary** (automated);body~suggested action `request_changes`";
+    if len(me) == 0 {
+        return json_array_reduce(raw, "", "system!=true|" + draft, "id", "body");
+    };
+    return json_array_reduce(raw, "", "system!=true|author.username!=" + keep_escape(me) + ";" + draft, "id", "body");
 }
 
 // resolve_review_at: process the open PR at index `idx`. Returns 1 if it LAUNCHED
