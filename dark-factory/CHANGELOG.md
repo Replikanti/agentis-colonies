@@ -22,6 +22,34 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   colony `README.md` agent table and corrected the auditor agent count (22 → 23 agents).
 
 ### Added
+- **Close the loop — M4 verify integration + M5 capstone (CLOSES epic #1611)** (#1630). Two NEW standalone
+  entrypoints that CHAIN the already-shipped M1–M3 + delivery scripts and EDIT none of them.
+  - **`verify-findings.sh` (M4 — the M3→verify bridge).** Drives a verification gate over EVERY candidate in an
+    M3 `discovery-results.json` and aggregates the CONFIRMED-only survivors into `verified_findings.json`
+    (`{repo, gate, verified:[{subsystem, location, file, class, severity, exploit, poc_sketch, verdict,
+    reason}], totals}`). Per candidate it derives a one-line gate manifest from the candidate's own fields and
+    invokes the operator-selected gate AS-IS: `--gate refute` (DEFAULT — `run-refute.sh`, CONFIRMED = the `REAL`
+    verdict), `--gate poc` (`run-poc.sh`, CONFIRMED = `POC|…|FINDING`), or `--gate symbolic` (`run-symbolic.sh`,
+    CONFIRMED = `SYMBOLIC|…|COUNTEREXAMPLE`). It is **READ-ONLY** over `discovery-results.json` (never mutates
+    it), has NO submit verb, and isolates each candidate — a gate that errors on one candidate is logged +
+    skipped, an un-CONFIRMED candidate is dropped, and one bad candidate never aborts the batch.
+    `demo-verify-findings.sh` is the offline deterministic proof (a fast refute stub through the `--agentis`
+    seam): schema keys, CONFIRMED-only filtering (REFUTED dropped), the read-only invariant, a degrade, and
+    never-submit.
+  - **`run-zone-hunt.sh` (M5 — the capstone).** Chains the shipped entrypoints into ONE end-to-end autonomous
+    zone-hunt: `map-zones.sh (M1) → gen-briefs.sh (M2) → per-zone run-discovery.sh (M3, per-zone `--only`/
+    `--brief` loop → merge) → verify-findings.sh (M4) → per verified finding: run-audit-pass.sh →
+    deliver-submission.sh`. Zones loop SERIALLY (the intra-zone `--jobs` is the only parallelism, so the M3 OOM
+    cap is not stacked across zones). It EDITS none of the shipped scripts. **The never-submit HALT** is
+    load-bearing: the capstone adds ZERO egress and reuses two baked-in gates — `run-audit-pass.sh` terminates
+    at `PENDING-HUMAN-REVIEW` (never a submit; a blocked finding writes no draft) and `deliver-submission.sh`
+    REFUSES (exit 3) any draft lacking the `SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW` marker and only STAGES to a
+    local drop-dir (deliver already pages the operator's OWN Slack internally, so the capstone never calls
+    `notify-submission.sh` — no double-page). Per-finding error propagation: a finding whose pass hard-fails is
+    logged + skipped, the batch finishes, and the capstone exits 0. Offline via `--map-fixture`/
+    `--brief-fixture`/`--pass-fixture` + the `--agentis` stub; live via `--backend`/`--agentis` + `--live`.
+    `demo-run-zone-hunt.sh` pins the whole chain, the HALT on every delivered path, never-submit (no egress, no
+    draft for a scope-blocked finding), and per-finding propagation. **Closes epic #1611.**
 - **Parallel fan-out — bounded-concurrency hunt over `(subsystem × class)` cells** (#1625, epic #1611 M3).
   `run-discovery.sh` gains an opt-in `--jobs N` (alias `-j N`, default `1`) bounded-concurrency fan-out: it
   hunts up to N cells CONCURRENTLY instead of strictly serially, dropping wall-clock from the sum of the
