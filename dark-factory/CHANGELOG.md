@@ -22,6 +22,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   colony `README.md` agent table and corrected the auditor agent count (22 → 23 agents).
 
 ### Added
+- **`bench/corpus-bench/` — score the pipeline against REAL concluded Sherlock contests, not just a synthetic
+  fixture.** Sibling of the fixture-based `run-capability-bench.sh` (#1490): `corpus.tsv` manifests 8 concluded
+  contests (132 accepted High/Medium findings total — no code or findings re-hosted, only GitHub slugs +
+  fetch/extraction logic); `extract-gt.sh` parses each judging repo's compiled `README.md` report
+  (`# Issue H-1: <title>` / `## Found by <watsons>`) into `truth.tsv`, using the watson-handle count as a
+  **rarity** signal (1-2 rare, 3-8 mid, 9+ consensus); `run-corpus-bench.sh` orchestrates fetch → GT-extract →
+  the REAL federation (`run-zone-hunt.sh`, a real LLM backend) → scoring via the same `novelty-gate.sh` overlap
+  oracle `run-capability-bench.sh` uses, reporting recall overall, by severity, and by rarity tier — flat
+  recall alone hides that consensus bugs are the easy part. Verified leads matching no truth row are reported
+  as `unmatched_leads` for manual triage, never auto-claimed as novel. Default (no-flag) action is a
+  deterministic `--self-test` (extract-gt.sh vs a bundled fixture) — CI-safe, wired into `colony-lint.sh`; the
+  real `--live` measurement (network + a real backend) is operator-run only.
 - **`watch-competitions.sh` — CodeHawks as a THIRD keyless channel** (#1643). Adds CodeHawks
   (`codehawks.cyfrin.io/contests`) alongside the shipped Sherlock + Cantina channels, correcting the issue's
   premise: CodeHawks is **NOT** API-key-gated and needs **NO Playwright/browser/node**. The `/contests` page is

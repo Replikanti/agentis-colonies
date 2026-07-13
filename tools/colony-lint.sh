@@ -1149,6 +1149,20 @@ if [ -x "$REPO_ROOT/dark-factory/bench/run-capability-bench.sh" ]; then
     fi
 fi
 
+# --- dark-factory corpus bench — deterministic self-test (sibling of #1490, scored against real concluded
+# Sherlock contests instead of a synthetic fixture). Its default (no-flag) action is --self-test: extract-gt.sh's
+# judging-README parser must byte-match a bundled fixture's expected truth.tsv. No network, no LLM. The real
+# --live measurement (fetch real contests, run the real federation, score recall) is operator-run, never on CI.
+if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/run-corpus-bench.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/bench/corpus-bench/run-corpus-bench.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: corpus bench GT-extraction self-test"
+    else
+        fail "dark-factory: corpus bench GT-extraction self-test regressed"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory invariant-hunt target-linkage gate (#1471) ---
 # The invariant-hunt generation path could produce a false FINDING when the LLM substituted its own toy
 # contract of the same name instead of importing the in-scope target. forge-invariant.sh gained a
