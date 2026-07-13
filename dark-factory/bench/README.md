@@ -82,3 +82,10 @@ Drop a new `fixtures/<name>/` with `src/`, `audit.txt`, and `truth.tsv`, then ru
 `--fixture dark-factory/bench/fixtures/<name>`. Keep the residual genuinely outside the
 `audit.txt` boundary (no shared function token / salient terms), or STAGE 1 will
 correctly flag it as already-known.
+
+## corpus-bench (real concluded contests)
+
+[`corpus-bench/`](./corpus-bench/) is the sibling bench that scores the pipeline against real, concluded
+Sherlock contests (ground truth extracted from their public judging-repo reports) instead of one synthetic
+fixture — recall stratified by severity and by finding rarity (rare/mid/consensus, i.e. how many watsons
+independently found it). See [`corpus-bench/README.md`](./corpus-bench/README.md).
