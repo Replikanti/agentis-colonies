@@ -112,7 +112,7 @@ fi
 
 # ---- --gt ---------------------------------------------------------------------------------------------------
 if [ "$DO_GT" -eq 1 ]; then
-  while IFS=$'\t' read -r id _code _judging _scope; do
+  while IFS=$'\t' read -r id _code _judging _subdir _scope; do
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
     readme="$WORK/$id/judging/README.md"
@@ -125,10 +125,11 @@ fi
 # ---- --hunt (REAL federation) --------------------------------------------------------------------------------
 if [ "$DO_HUNT" -eq 1 ]; then
   [ -x "$ZONEHUNT" ] || { echo "run-corpus-bench.sh: run-zone-hunt.sh not found/executable at $ZONEHUNT" >&2; exit 3; }
-  while IFS=$'\t' read -r id _code _judging scope_hint; do
+  while IFS=$'\t' read -r id _code _judging project_subdir scope_hint; do
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
-    code_dir="$WORK/$id/code"
+    [ -n "$project_subdir" ] || { echo "run-corpus-bench.sh: [$id] corpus.tsv row has no project_subdir; skipping" >&2; continue; }
+    code_dir="$WORK/$id/code/$project_subdir"
     [ -d "$code_dir" ] || { echo "run-corpus-bench.sh: [$id] no cloned code at $code_dir (run --fetch first)" >&2; continue; }
     say "HUNT: [$id] running the real federation (run-zone-hunt.sh --backend $BACKEND) ..."
     "$ZONEHUNT" --repo "$code_dir" --out "$WORK/$id/zone-hunt-out" --backend "$BACKEND" --jobs "$JOBS" \
@@ -146,7 +147,7 @@ G_VERIFIED=0 ; G_MATCHED_LEADS=0 ; G_UNMATCHED_LEADS=0
 
 if [ "$DO_SCORE" -eq 1 ]; then
   command -v python3 >/dev/null 2>&1 || { echo "run-corpus-bench.sh: python3 not installed (scoring needs it)" >&2; exit 3; }
-  while IFS=$'\t' read -r id _code _judging _scope; do
+  while IFS=$'\t' read -r id _code _judging _subdir _scope; do
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
     truth="$WORK/$id/truth.tsv"

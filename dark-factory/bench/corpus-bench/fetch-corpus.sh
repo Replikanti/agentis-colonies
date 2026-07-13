@@ -34,7 +34,7 @@ FETCH_TARGET="$HERE/../../fetch-target.sh"
 [ -x "$FETCH_TARGET" ] || FETCH_TARGET=""
 
 FAILED=0
-while IFS=$'\t' read -r id code_repo judging_repo _scope_hint; do
+while IFS=$'\t' read -r id code_repo judging_repo _project_subdir _scope_hint; do
   case "$id" in ""|\#*) continue;; esac
   if [ -n "$IDS" ]; then
     case " $IDS " in *" $id "*) : ;; *) continue;; esac

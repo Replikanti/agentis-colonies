@@ -15,7 +15,7 @@ campaign keeps missing (see `project_hunt_bench_calibration` / `project_dark_fac
 
 ```
 corpus-bench/
-  corpus.tsv                    # manifest: id, code_repo, judging_repo, scope_hint (see header comment)
+  corpus.tsv                    # manifest: id, code_repo, judging_repo, project_subdir, scope_hint (see header)
   fetch-corpus.sh                # clone code+judging repos for one/every corpus.tsv row (no re-hosting)
   extract-gt.sh                  # judging-repo README.md -> truth.tsv (ground truth + rarity)
   run-corpus-bench.sh             # orchestrator + scorer (this is the entrypoint)
