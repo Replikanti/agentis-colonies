@@ -161,7 +161,135 @@ fn head_fingerprint(changes_raw: string) -> string {
     return substring(sha256_hex(changes_raw), 0, 16);
 }
 
+// --- #1453 Wave 2 (M1): reality-check feedback loop ---
+//
+// Copied from the Wave-1 idiom (approval_decider / code_writer): each acting
+// tier that POSTS a findings note on an MR stashes the reviewed head
+// fingerprint in a single-slot `style_reviewer:pending_verdict` memo; a later
+// tick mechanically re-queries the MR's terminal forge state (merged vs closed)
+// and scores whether the review held up — no prompt() on this path. The `.ag`
+// dialect has no imports, so signal_to_outcome / verdict_age_seconds / the
+// list-scan helper are re-defined per file exactly as the seven Wave-1/pilot
+// agents do.
+
+// Map the reality-check signal to the experience-store outcome enum. Signal 0
+// ("no terminal state yet") is handled by the caller via an early return and
+// never reaches this function.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    if signal == 2 {
+        return "partial";
+    };
+    return "failure";
+}
+
+// Age (seconds) of a pending-verdict blob.
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = to_string(now_ms() / 1000);
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// Native FLAT iid-membership over a merge-requests list JSON: project the `iid`
+// column to a newline-separated blob with ONE json_array_project call (no
+// per-element map/filter `.ag` walk — the #1640 CB-overflow lesson) and test
+// exact-line membership by wrapping both the projection and the needle in
+// newlines so a substring hit can't cross an iid boundary ("2" never matches
+// inside "12"). Total: empty/malformed list or empty needle -> false.
+fn iid_in_list(raw: string, iid_str: string) -> bool {
+    if len(iid_str) == 0 { return false; };
+    let projected = json_array_project(raw, "", "iid");
+    if len(projected) == 0 { return false; };
+    return index_of("\n" + projected + "\n", "\n" + iid_str + "\n") >= 0;
+}
+
+// Record a pending review verdict. Stored as JSON array [ts, mr_iid, "head"] —
+// all three fields are ASCII-safe (epoch int, iid int, 16-hex head
+// fingerprint) so naive concatenation is sufficient and we skip a JSON encoder
+// (the single-slot idiom from labeler.ag). `head` is the same head_fingerprint()
+// the #1461 per-head gate keys on.
+fn record_style_verdict(owner: string, repo: string, mr_iid: int, head: string) -> void {
+    let ts_raw = to_string(now_ms() / 1000);
+    let blob = "[" + ts_raw + "," + to_string(mr_iid) + ",\"" + head + "\"]";
+    memo_write(scoped_memo(owner, repo, "style_reviewer:pending_verdict"), blob);
+    print("[style_reviewer] verdict recorded: MR", mr_iid, "head", head);
+}
+
+// Score the pending review verdict against the MR's terminal forge state. The
+// findings were posted on an MR; its fate — and whether new commits addressed
+// them — is the honest ground truth. Merged & head changed since we reviewed
+// (new commits landed => findings likely addressed) => success (1); merged with
+// the SAME head (merged as-is / findings ignored) => partial (2);
+// closed-unmerged => partial (2); still open / not found => no signal yet
+// (leave pending). The merged list is parsed FIRST with a parse-guard so a
+// GitHub backend (whose closed list is a superset of merged) can never misread
+// a merged MR as closed-unmerged. 24h ageout drops the verdict UNSCORED
+// (absence of a terminal state is not evidence either way). Mechanical compare
+// via native flat builtins — NEVER a prompt().
+fn evaluate_style_verdict(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "style_reviewer:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let timeout_s = 86400;
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[style_reviewer] verdict aged out without signal");
+        memo_write(key, "");
+        return;
+    };
+    let mr_iid = parse_int(to_string(json_get(blob, "[1]")));
+    let iid_s = to_string(mr_iid);
+    let stored_head = to_string(json_get(blob, "[2]"));
+    // colony-lint: safe-exec-concat
+    let merged_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 50" + repo_arg(owner, repo);
+    let merged_raw = try { exec sh merged_cmd; } catch e { ""; };
+    // Score ONLY when the merged list parsed as a JSON array (index 0 = leading
+    // "["); a transient merged-query failure otherwise leaves the verdict
+    // pending for a later tick.
+    if index_of(merged_raw, "[") != 0 {
+        return;
+    };
+    let signal = if iid_in_list(merged_raw, iid_s) {
+        // Merged — did new commits change the head since we reviewed?
+        // colony-lint: safe-exec-concat
+        let changes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-changes " + shell_escape(iid_s) + repo_arg(owner, repo);
+        let changes_raw = try { exec sh changes_cmd; } catch e { ""; };
+        let cur_head = if len(changes_raw) >= 10 { head_fingerprint(changes_raw); } else { ""; };
+        // head changed => findings likely addressed (success); unchanged (or
+        // unfetchable) => merged as-is / findings ignored (partial).
+        if len(cur_head) > 0 {
+            if cur_head != stored_head { 1; } else { 2; };
+        } else {
+            2;
+        };
+    } else {
+        // colony-lint: safe-exec-concat
+        let closed_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state closed --per-page 50" + repo_arg(owner, repo);
+        let closed_raw = try { exec sh closed_cmd; } catch e { ""; };
+        if iid_in_list(closed_raw, iid_s) { 2; } else { 0; };
+    };
+    if signal == 0 {
+        return;
+    };
+    let outcome = signal_to_outcome(signal);
+    if len(owner) > 0 {
+        learn("style_review", "MR " + iid_s + " reality-check", "head " + stored_head + " | signal: " + to_string(signal), outcome, ["acted", "code-review", repo_tag(owner, repo)]);
+    } else {
+        learn("style_review", "MR " + iid_s + " reality-check", "head " + stored_head + " | signal: " + to_string(signal), outcome, ["acted", "code-review"]);
+    };
+    print("[style_reviewer] reality-check: MR", mr_iid, "signal", signal, "->", outcome);
+    memo_write(key, "");
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1453 Wave 2 (M1): score any pending review verdict FIRST (read-only, no
+    // early return) before the poll below. Cheap no-op when nothing is pending.
+    evaluate_style_verdict(owner, repo);
+
     // #147: cheap delta-check. `mr_cmd()` filters --since last_check;
     // an empty `[]` response means no MR updates since last tick and we
     // early-exit before any prompt(). last_check is refreshed so the
@@ -291,6 +419,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // #1461: mark this head reviewed only AFTER a successful post —
                 // a failed post is a logged no-op that retries next tick.
                 memo_write(scoped_memo(owner, repo, "style_reviewer:reviewed_head:" + to_string(mr_iid)), head);
+                // #1453 Wave 2 (M1): stash the reviewed head so a later tick
+                // scores this posted review against the MR's merged/closed fate.
+                record_style_verdict(owner, repo, mr_iid, head);
                 // #104: tag knowledge as personal (operator's own MR) vs team.
                 let scope = scope_for_author(review.author);
                 if len(owner) > 0 {
@@ -315,6 +446,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     // #1461: mark this head reviewed after a successful draft post.
                     memo_write(scoped_memo(owner, repo, "style_reviewer:reviewed_head:" + to_string(mr_iid)), head);
                     memo_write(scoped_memo(owner, repo, "style_reviewer:approved:" + to_string(mr_iid)), "drafted");
+                    // #1453 Wave 2 (M1): stash the reviewed head (draft post) so
+                    // a later tick scores it against the MR's merged/closed fate.
+                    record_style_verdict(owner, repo, mr_iid, head);
                     let scope = scope_for_author(review.author);
                     if len(owner) > 0 {
                         learn("style_review", "drafted on MR " + to_string(mr_iid), review.summary, "partial", [scope, "code-review", "review-gated", repo_tag(owner, repo)]);

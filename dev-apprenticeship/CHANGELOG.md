@@ -17,6 +17,24 @@ is asserted until multi-version CI is in place.
 
 **Requires:** agentis >= 1.22.4
 
+### Added
+
+- **Reality-check feedback loop — Wave 2 M1 (code-review, 5 agents)** ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)):
+  the four line reviewers (`logic_reviewer`, `security_reviewer`,
+  `style_reviewer`, `test_reviewer`) and `qa_reviewer` now close the
+  [doc/feedback-loop.md](./doc/feedback-loop.md) loop. Each acting tier that
+  posts a note stashes a single-slot `<agent>:pending_verdict` memo; a later
+  tick mechanically cross-references the MR's terminal forge state (a bounded
+  `merge-requests --state merged|closed --per-page 50` scan via a native
+  flat-cost `iid_in_list` helper, merged parsed first) and `learn()`s the honest
+  outcome with the `"acted"` tag — no `prompt()` on the scoring path. Line
+  reviewers score merged & head-changed (findings addressed) as `success`,
+  merged-as-is / closed-unmerged as `partial`; `qa_reviewer` scores its
+  pass/block verdict, with **block & merged mapped to `failure`** — the
+  auto-merge-override signal (#1484) the fitness gates most need. Unsignalled
+  verdicts age out UNSCORED after 24h. Source-asserted by
+  `tools/test-reality-check-wave2.sh`.
+
 ### Changed
 
 - **Substrate purity P3 cluster A — native triage decision-context builders** ([#1638](https://github.com/Replikanti/agentis-colonies/issues/1638)):
