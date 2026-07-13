@@ -132,7 +132,124 @@ fn first_unhandled_iid(owner: string, repo: string, issues_raw: string, idx: int
     return iid;
 }
 
+// --- #1453 Wave 2 (M3): reality-check feedback loop ---
+//
+// Copies the shipped Wave 1/2 idiom in shape (single-slot pending_verdict
+// memo, evaluate-first-in-tick, 86400 ageout, prompt()-free compare). The
+// ground truth is the FATE of the issue the breakdown was posted on: our
+// breakdown feeds plan_reviewer -> auto-promote (#1362) -> implementation, so
+// the advised issue's terminal state is the honest first-order signal —
+// closed as real work (no noise label) means the breakdown was actionable;
+// closed as noise (wontfix/invalid/duplicate/not-planned) means it wasn't.
+// See doc/feedback-loop.md and the #1453 M3 plan comment for the rationale
+// behind rejecting the umbrella's child-issue-count signal (task_decomposer
+// posts a markdown note, never creates child issues, so that signal never
+// fires).
+
+// Map the reality-check signal to the experience-store outcome enum. Signal
+// 0 ("issue still open") is handled by the caller via an early return and
+// never reaches this function.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    return "failure";
+}
+
+// Age (seconds) of a pending-verdict blob.
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = to_string(now_ms() / 1000);
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// Native flat noise-label membership over the raw issue JSON's "labels"
+// subtree: a fixed sequence of quote-anchored index_of checks (no
+// per-element map/filter walk over the array — the #1640 CB-overflow
+// lesson). The JSON-quoted label value gives the same anchoring a set
+// membership test would, on both forge backends (GitLab's flat string
+// array and GitHub's array-of-objects both quote the label name).
+fn noise_label_hit(issue_raw: string) -> bool {
+    let labels_raw = json_get_raw(issue_raw, "labels");
+    if len(labels_raw) == 0 { return false; };
+    if index_of(labels_raw, "\"wontfix\"") >= 0 { return true; };
+    if index_of(labels_raw, "\"invalid\"") >= 0 { return true; };
+    if index_of(labels_raw, "\"duplicate\"") >= 0 { return true; };
+    if index_of(labels_raw, "\"not-planned\"") >= 0 { return true; };
+    return false;
+}
+
+// Record a pending task-decomposition verdict. Stored as JSON array
+// [ts, issue_id, "<count>"] — all three fields are ASCII-safe (epoch int,
+// issue id int, a small subtask count string) so naive concatenation is
+// sufficient and we skip a JSON encoder (the single-slot idiom from
+// labeler.ag / plan_reviewer.ag).
+fn record_decompose_verdict(owner: string, repo: string, issue_id: int, count: string) -> void {
+    let ts_raw = to_string(now_ms() / 1000);
+    let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"" + count + "\"]";
+    memo_write(scoped_memo(owner, repo, "task_decomposer:pending_verdict"), blob);
+    print("[task_decomposer] verdict recorded: issue", issue_id, "count", count);
+}
+
+// Score the pending task-decomposition verdict against the issue's CURRENT
+// terminal forge state. Re-query forge-api.sh issue <iid>: still "opened" ->
+// leave pending (no signal yet, absence is not evidence either way); closed
+// with no noise label -> success; closed with a noise label -> failure. 24h
+// ageout drops the verdict UNSCORED. Mechanical compare via native flat
+// builtins — NEVER a prompt().
+fn evaluate_decompose_verdict(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "task_decomposer:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let timeout_s = 86400;
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[task_decomposer] verdict aged out without signal");
+        memo_write(key, "");
+        return;
+    };
+    let issue_id = parse_int(to_string(json_get(blob, "[1]")));
+    let count = to_string(json_get(blob, "[2]"));
+    // colony-lint: safe-exec-concat
+    let cur_cmd = "$COLONY_DIR/scripts/forge-api.sh issue " + to_string(issue_id) + repo_arg(owner, repo);
+    let cur_raw = try { exec sh cur_cmd; } catch e { ""; };
+    if len(cur_raw) < 3 {
+        return;
+    };
+    let state = to_string(json_get(cur_raw, "state"));
+    if state != "closed" {
+        return;
+    };
+    let signal = if noise_label_hit(cur_raw) { 2; } else { 1; };
+    let outcome = signal_to_outcome(signal);
+    if len(owner) > 0 {
+        learn(
+            "task_decomposition",
+            "issue " + to_string(issue_id) + " reality-check",
+            "breakdown: " + count + " subtasks | signal: " + to_string(signal),
+            outcome,
+            ["acted", "planning", repo_tag(owner, repo)]
+        );
+    } else {
+        learn(
+            "task_decomposition",
+            "issue " + to_string(issue_id) + " reality-check",
+            "breakdown: " + count + " subtasks | signal: " + to_string(signal),
+            outcome,
+            ["acted", "planning"]
+        );
+    };
+    print("[task_decomposer] reality-check: issue", issue_id, "signal", signal, "->", outcome);
+    memo_write(key, "");
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1453 Wave 2 (M3): score any pending decompose verdict FIRST
+    // (read-only, no early return) before the observe/act steps below.
+    evaluate_decompose_verdict(owner, repo);
+
     // Staleness gate for the observe step (#187). See risk_assessor.ag
     // for rationale. 1 800 s = 30 min between observe prompts keeps
     // the decomposition-pattern library fresh without a heartbeat-LLM
@@ -263,6 +380,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             memo_write(posted_key, "1");
             // #1370: all-tier handled marker (value = tier).
             memo_write(handled_key(owner, repo, target_iid), "autonomous");
+            // #1453 Wave 2 (M3): stash the posted breakdown so a later tick
+            // scores it against the issue's terminal (closed) fate.
+            record_decompose_verdict(owner, repo, breakdown.issue_id, to_string(breakdown.count));
             if len(owner) > 0 {
                 learn(
                     "task_decomposition",

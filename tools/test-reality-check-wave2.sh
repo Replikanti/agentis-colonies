@@ -245,10 +245,45 @@ for pair in "test_writer:record_test_verdict" "refactorer:record_refactor_verdic
     fi
 done
 
+# --- M3 — planning (3 agents) ---
+#
+# scope_estimator and task_decomposer score the fate of the issue their
+# estimate/breakdown was posted on: our advice feeds plan_reviewer ->
+# auto-promote (#1362) -> implementation, so the advised issue's terminal
+# forge state is the honest ground truth (the umbrella's cycle-time /
+# child-issue-count signals are substrate-blocked or dead — see the #1453 M3
+# plan comment). Ground truth is a single `forge-api.sh issue <iid>` fetch:
+# state == "closed" and no noise label => success; closed + a noise label
+# (wontfix/invalid/duplicate/not-planned) => failure; still "opened" => skip
+# (no signal). risk_assessor is WAIVED (no forge-observable materialisation
+# signal) — asserted separately below.
+PLAN="$FED/planning/agents"
+
+check_agent "$PLAN/scope_estimator.ag" "scope_estimator" "scope"    "scope_estimate"    2 \
+    "forge-api.sh issue " "\"closed\""
+check_agent "$PLAN/task_decomposer.ag" "task_decomposer" "decompose" "task_decomposition" 2 \
+    "forge-api.sh issue " "\"closed\""
+
+# risk_assessor: WAIVED — defines no record_/evaluate_ verdict fn, and
+# carries the waiver annotation (forward-compatible with the M6
+# check-reality-check.sh guard rail, which will assert the presence of
+# EITHER a wired verdict pair OR this waiver string for every acting agent).
+RISK_FILE="$PLAN/risk_assessor.ag"
+if grep -Eq "^fn record_.*_verdict\(" "$RISK_FILE" || grep -Eq "^fn evaluate_.*_verdict\(" "$RISK_FILE"; then
+    fail "risk_assessor: unexpected record_/evaluate_ verdict fn defined (should stay WAIVED)"
+else
+    pass "risk_assessor: no record_/evaluate_ verdict fn defined (WAIVED)"
+fi
+if grep -q "reality-check-waived:" "$RISK_FILE"; then
+    pass "risk_assessor: carries the reality-check-waived: annotation"
+else
+    fail "risk_assessor: missing the reality-check-waived: annotation"
+fi
+
 # Outcome enum: "fail" is not a valid learn() outcome (core enforces
-# success/failure/partial/timeout/error). Swept across the M1 + M2 agents so a
-# reintroduced invalid literal fails the PR (the Wave-1 test sweeps the whole
-# federation; this is the wave-2-local belt-and-braces).
+# success/failure/partial/timeout/error). Swept across the M1 + M2 + M3
+# agents so a reintroduced invalid literal fails the PR (the Wave-1 test
+# sweeps the whole federation; this is the wave-2-local belt-and-braces).
 ENUM_FAIL=0
 for f in logic_reviewer security_reviewer style_reviewer test_reviewer qa_reviewer; do
     if grep -qE '"fail",|return "fail";' "$CR/$f.ag"; then
@@ -262,8 +297,14 @@ for f in commit_composer test_writer refactorer; do
         ENUM_FAIL=1
     fi
 done
+for f in scope_estimator task_decomposer risk_assessor; do
+    if grep -qE '"fail",|return "fail";' "$PLAN/$f.ag"; then
+        fail "$f: invalid outcome literal \"fail\" survives"
+        ENUM_FAIL=1
+    fi
+done
 if [ "$ENUM_FAIL" -eq 0 ]; then
-    pass "outcome enum: no invalid \"fail\" literal in the M1 + M2 agents"
+    pass "outcome enum: no invalid \"fail\" literal in the M1 + M2 + M3 agents"
 fi
 
 # Live byte-identity of the native iid_in_list membership helper (the compare's
