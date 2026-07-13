@@ -192,6 +192,59 @@ for pair in "test_writer:record_test_verdict" "refactorer:record_refactor_verdic
     fi
 done
 
+# --- M2 branch-resolution race retry (#1653) ---
+#
+# The opened-MR list is queried once at commit time; commit_composer is a
+# separate daemon on an independent tick clock and may not have opened the MR for
+# our branch yet. Rather than silently drop the verdict, record_ persists the
+# BRANCH in a durable <agent>:pending_branch_resolution memo and resolve_pending_
+# branch retries the resolution on later ticks — bounded by the same 24h ageout,
+# dropping the branch UNSCORED if it never becomes an open MR. Assert, per agent:
+#   1. resolve_pending_branch is defined and invoked at the TOP of tick_for_repo
+#   2. record_ writes the branch to the pending_branch_resolution memo on the
+#      unresolved path; resolve_ reads it back (>=2 scoped_memo sites)
+#   3. resolve_ carries the 86400 ageout and re-queries the opened list
+for pair in "test_writer:record_test_verdict" "refactorer:record_refactor_verdict"; do
+    agent="${pair%%:*}"; rec_fn="${pair##*:}"
+    file="$IMPL/$agent.ag"
+    key="${agent}:pending_branch_resolution"
+
+    if grep -Eq "^fn resolve_pending_branch\(" "$file"; then
+        pass "$agent: resolve_pending_branch defined"
+    else
+        fail "$agent: missing resolve_pending_branch definition"
+    fi
+
+    if tick_head "$file" | grep -q "resolve_pending_branch(owner, repo)"; then
+        pass "$agent: resolve_pending_branch invoked at the top of tick_for_repo"
+    else
+        fail "$agent: resolve_pending_branch not in the first lines of tick_for_repo"
+    fi
+
+    br_count="$(grep -c "scoped_memo(owner, repo, \"$key\")" "$file" || true)"
+    if [ "$br_count" -ge 2 ]; then
+        pass "$agent: \"$key\" written (record_) and read (resolve_) via scoped_memo ($br_count sites)"
+    else
+        fail "$agent: expected >=2 scoped_memo(\"$key\") sites, found $br_count"
+    fi
+
+    REC_REGION="$(evaluate_region "$file" "$rec_fn")"
+    if printf '%s' "$REC_REGION" | grep -qF "\"$key\""; then
+        pass "$agent: $rec_fn persists the branch to $key on the unresolved path"
+    else
+        fail "$agent: $rec_fn does not persist to $key when iid_for_branch fails"
+    fi
+
+    RES_REGION="$(evaluate_region "$file" "resolve_pending_branch")"
+    if printf '%s' "$RES_REGION" | grep -qF "86400" \
+        && printf '%s' "$RES_REGION" | grep -qF -- "--state opened --per-page 50" \
+        && printf '%s' "$RES_REGION" | grep -qF "iid_for_branch("; then
+        pass "$agent: resolve_pending_branch retries opened-list resolution under a 86400 ageout"
+    else
+        fail "$agent: resolve_pending_branch missing 86400 ageout / opened-list re-query"
+    fi
+done
+
 # Outcome enum: "fail" is not a valid learn() outcome (core enforces
 # success/failure/partial/timeout/error). Swept across the M1 + M2 agents so a
 # reintroduced invalid literal fails the PR (the Wave-1 test sweeps the whole
@@ -264,6 +317,84 @@ if command -v agentis >/dev/null 2>&1; then
         "print(to_string(iid_in_list(\"not json\", \"5\")));" "false"
 else
     echo "[SKIP] agentis binary not found — iid_in_list live membership checks skipped"
+fi
+
+# Live behaviour of the #1653 branch-resolution retry: the same iid_for_branch
+# resolver returns "" on the tick the branch is not yet an open MR (deferred to
+# pending_branch_resolution) and resolves once commit_composer's MR appears on a
+# follow-up tick; the shared verdict_age_seconds drives the 24h ageout drop.
+if command -v agentis >/dev/null 2>&1; then
+    RES_TMP="$(mktemp -d)"
+    trap 'rm -rf "$IID_TMP" "$RES_TMP"' EXIT
+    RES_HELPER='fn nth_field(s: string, sep: string, n: int) -> string {
+    if n < 0 { return ""; };
+    if len(s) == 0 { return ""; };
+    let p = index_of(s, sep);
+    if n == 0 {
+        if p < 0 { return s; };
+        return substring(s, 0, p);
+    };
+    if p < 0 { return ""; };
+    return nth_field(substring(s, p + len(sep), len(s)), sep, n - 1);
+}
+fn parallel_iid_at(branches: string, iids: string, branch: string, n: int) -> string {
+    let id = nth_field(iids, "\n", n);
+    if len(id) == 0 { return ""; };
+    let b = nth_field(branches, "\n", n);
+    if b == branch { return id; };
+    return parallel_iid_at(branches, iids, branch, n + 1);
+}
+fn iid_for_branch(raw: string, branch: string) -> string {
+    if len(branch) == 0 { return ""; };
+    let iids = json_array_project(raw, "", "iid");
+    if len(iids) == 0 { return ""; };
+    let branches = json_array_project(raw, "", "source_branch");
+    return parallel_iid_at(branches, iids, branch, 0);
+}
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = to_string(now_ms() / 1000);
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}'
+    run_res() {
+        local body="$1" sandbox
+        sandbox="$(mktemp -d -p "$RES_TMP")"
+        (
+            cd "$sandbox"
+            agentis init >/dev/null 2>&1
+            {
+                printf 'cb 4000;\n\n%s\n\n%s\n' "$RES_HELPER" "$body"
+            } > probe.ag
+            agentis go probe.ag 2>/dev/null | grep -v genesis | tail -n 1
+        )
+        rm -rf "$sandbox"
+    }
+    check_res() {
+        local label="$1" body="$2" want="$3" got
+        got="$(run_res "$body")"
+        if [ "$got" = "$want" ]; then
+            pass "$label"
+        else
+            fail "$label (want='$want' got='$got')"
+        fi
+    }
+    OPENED='[{\"iid\":7,\"source_branch\":\"feat/x\"}]'
+    # First tick: commit_composer has not opened the MR yet -> unresolved ("")
+    # -> record_ persists the branch to pending_branch_resolution.
+    check_res "branch-retry: unresolved on first tick (empty opened list)" \
+        "print(iid_for_branch(\"[]\", \"feat/x\"));" ""
+    # Follow-up tick: the MR now carries the branch -> resolves to its iid.
+    check_res "branch-retry: resolves on a follow-up tick (branch now open)" \
+        "print(iid_for_branch(\"$OPENED\", \"feat/x\"));" "7"
+    # A fresh pending_branch_resolution blob is inside the 24h window (kept).
+    check_res "branch-retry: fresh branch-blob is within the 24h window" \
+        "print(to_string(verdict_age_seconds(\"[\" + to_string(now_ms() / 1000) + \"]\") > 86400));" "false"
+    # A >24h-old branch-blob ages out and is dropped UNSCORED.
+    check_res "branch-retry: >24h branch-blob is aged out (dropped unscored)" \
+        "print(to_string(verdict_age_seconds(\"[\" + to_string(now_ms() / 1000 - 90000) + \"]\") > 86400));" "true"
+else
+    echo "[SKIP] agentis binary not found — branch-retry live checks skipped"
 fi
 
 echo ""

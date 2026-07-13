@@ -243,11 +243,24 @@ fn iid_for_branch(raw: string, branch: string) -> string {
     return parallel_iid_at(branches, iids, branch, 0);
 }
 
+// Write the single-slot pending-verdict blob [ts, iid, ""] for the MR our
+// refactor was committed onto, so a later tick scores it against merged/closed
+// fate. Shared by the immediate resolve path (record_refactor_verdict) and the
+// deferred retry path (resolve_pending_branch).
+fn stash_refactor_verdict(owner: string, repo: string, mr_iid: string) -> void {
+    let ts_raw = to_string(now_ms() / 1000);
+    let blob = "[" + ts_raw + "," + mr_iid + ",\"\"]";
+    memo_write(scoped_memo(owner, repo, "refactorer:pending_verdict"), blob);
+    print("[refactorer] verdict recorded: MR", mr_iid);
+}
+
 // Record a pending verdict for the MR our refactor was committed onto. We know
-// the branch we committed to, so resolve it to the open MR's iid and stash
-// [ts, iid, ""]. If no open MR carries this branch yet (commit_composer may not
-// have opened it in this tick), skip — a not-yet-attributable commit is not a
-// scored verdict.
+// the branch we committed to, so resolve it to the open MR's iid and stash the
+// verdict. If no open MR carries this branch yet, DON'T drop the verdict:
+// commit_composer is a separate daemon on an independent tick clock and may not
+// have opened the MR yet (#1653). Persist the branch in a durable
+// refactorer:pending_branch_resolution memo and retry resolution on a later tick
+// (resolve_pending_branch), bounded by the same 24h ageout.
 fn record_refactor_verdict(owner: string, repo: string, branch: string) -> void {
     if len(branch) == 0 { return; };
     // colony-lint: safe-exec-concat
@@ -255,12 +268,48 @@ fn record_refactor_verdict(owner: string, repo: string, branch: string) -> void 
     let opened_raw = try { exec sh opened_cmd; } catch e { ""; };
     let mr_iid = iid_for_branch(opened_raw, branch);
     if len(mr_iid) == 0 {
+        let ts_raw = to_string(now_ms() / 1000);
+        let blob = "[" + ts_raw + ",\"" + branch + "\"]";
+        memo_write(scoped_memo(owner, repo, "refactorer:pending_branch_resolution"), blob);
+        print("[refactorer] branch not yet attributable, deferred:", branch);
         return;
     };
-    let ts_raw = to_string(now_ms() / 1000);
-    let blob = "[" + ts_raw + "," + mr_iid + ",\"\"]";
-    memo_write(scoped_memo(owner, repo, "refactorer:pending_verdict"), blob);
-    print("[refactorer] verdict recorded: MR", mr_iid, "branch", branch);
+    stash_refactor_verdict(owner, repo, mr_iid);
+}
+
+// #1653: retry the branch->iid resolution that record_refactor_verdict deferred
+// when commit_composer had not opened the MR yet. Runs at the TOP of
+// tick_for_repo. On each tick it re-queries the opened-MR list for the persisted
+// branch; once the branch resolves it stashes the normal pending_verdict blob and
+// clears the retry memo. If the branch never becomes an open MR within 24h
+// (86400s), the verdict is dropped UNSCORED — same posture as every other ageout
+// in this loop: never mis-score, just skip.
+fn resolve_pending_branch(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "refactorer:pending_branch_resolution");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    if verdict_age_seconds(blob) > 86400 {
+        print("[refactorer] pending branch resolution aged out without an MR");
+        memo_write(key, "");
+        return;
+    };
+    let branch = to_string(json_get(blob, "[1]"));
+    if len(branch) == 0 {
+        memo_write(key, "");
+        return;
+    };
+    // colony-lint: safe-exec-concat
+    let opened_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state opened --per-page 50" + repo_arg(owner, repo);
+    let opened_raw = try { exec sh opened_cmd; } catch e { ""; };
+    let mr_iid = iid_for_branch(opened_raw, branch);
+    if len(mr_iid) == 0 {
+        return;
+    };
+    stash_refactor_verdict(owner, repo, mr_iid);
+    memo_write(key, "");
+    print("[refactorer] deferred branch resolved -> MR", mr_iid, "branch", branch);
 }
 
 // Score the pending verdict against the fate of the MR we committed a refactor
@@ -315,6 +364,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
     // #1453 Wave 2 (M2): score any pending MR verdict FIRST (read-only, no
     // early return) before the poll below. Cheap no-op when nothing is pending.
     evaluate_refactor_verdict(owner, repo);
+    // #1653: retry a deferred branch->iid resolution (commit_composer may have
+    // opened the MR on a later tick than the commit). No-op when nothing pending.
+    resolve_pending_branch(owner, repo);
 
     // 1. Learn from refactoring patterns in merged MRs
     let cmd = merged_mr_cmd(owner, repo);
