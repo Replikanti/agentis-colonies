@@ -386,6 +386,10 @@ fn qa_one_mr(owner: string, repo: string, raw: string, idx: int) -> void {
             // Marker written only AFTER a successful post: a failed post is a
             // logged no-op that retries next tick.
             memo_write(scoped_memo(owner, repo, "qa_reviewer:verdict_head:" + to_string(mr_iid)), head);
+            // #1453 Wave 2 (M1): stash the posted pass|block verdict so a later
+            // tick scores it against the MR's merged/closed fate (block & merged
+            // => the override the auto-merge gate must learn from).
+            record_qa_verdict(owner, repo, mr_iid, verdict_status(verdict, adv_status));
             if len(owner) > 0 {
                 learn("qa_review", "MR " + to_string(mr_iid), note, "success", ["code-review", "acted", repo_tag(owner, repo)]);
             } else {
@@ -406,6 +410,9 @@ fn qa_one_mr(owner: string, repo: string, raw: string, idx: int) -> void {
             };
             if len(result) > 0 {
                 memo_write(scoped_memo(owner, repo, "qa_reviewer:verdict_head:" + to_string(mr_iid)), head);
+                // #1453 Wave 2 (M1): stash the posted pass|block verdict (draft)
+                // so a later tick scores it against the MR's merged/closed fate.
+                record_qa_verdict(owner, repo, mr_iid, verdict_status(verdict, adv_status));
                 if len(owner) > 0 {
                     learn("qa_review", "drafted on MR " + to_string(mr_iid), note, "partial", ["code-review", "review-gated", repo_tag(owner, repo)]);
                 } else {
@@ -449,7 +456,131 @@ fn qa_mr_at(owner: string, repo: string, raw: string, idx: int) -> void {
     return qa_mr_at(owner, repo, raw, idx + 1);
 }
 
+// --- #1453 Wave 2 (M1): reality-check feedback loop ---
+//
+// The highest-value Wave-2 row: qa_reviewer's pass/block verdict directly gates
+// auto-merge (#1484), so an honest override signal is a real safety gain. Each
+// acting tier that POSTS a verdict note stashes the machine-readable pass|block
+// status (the same one verdict_status() writes into the commit-keyed marker) in
+// a single-slot `qa_reviewer:pending_verdict` memo; a later tick mechanically
+// cross-references the MR's terminal forge state (merged vs closed) and scores
+// whether the verdict held up — no prompt() on this path. The `.ag` dialect has
+// no imports, so signal_to_outcome / verdict_age_seconds / the list-scan helper
+// are re-defined per file exactly as the seven Wave-1/pilot agents do.
+
+// Map the reality-check signal to the experience-store outcome enum. Signal 0
+// ("no terminal state yet") is handled by the caller via an early return and
+// never reaches this function.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    if signal == 2 {
+        return "partial";
+    };
+    return "failure";
+}
+
+// Age (seconds) of a pending-verdict blob.
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = to_string(now_ms() / 1000);
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// Native FLAT iid-membership over a merge-requests list JSON: project the `iid`
+// column to a newline-separated blob with ONE json_array_project call (no
+// per-element map/filter `.ag` walk — the #1640 CB-overflow lesson) and test
+// exact-line membership by wrapping both the projection and the needle in
+// newlines so a substring hit can't cross an iid boundary ("2" never matches
+// inside "12"). Total: empty/malformed list or empty needle -> false.
+fn iid_in_list(raw: string, iid_str: string) -> bool {
+    if len(iid_str) == 0 { return false; };
+    let projected = json_array_project(raw, "", "iid");
+    if len(projected) == 0 { return false; };
+    return index_of("\n" + projected + "\n", "\n" + iid_str + "\n") >= 0;
+}
+
+// Record a pending QA verdict. Stored as JSON array [ts, mr_iid, "pass|block"] —
+// all three fields are ASCII-safe (epoch int, iid int, the fixed verdict_status
+// vocabulary) so naive concatenation is sufficient and we skip a JSON encoder
+// (the single-slot idiom from labeler.ag).
+fn record_qa_verdict(owner: string, repo: string, mr_iid: int, status: string) -> void {
+    let ts_raw = to_string(now_ms() / 1000);
+    let blob = "[" + ts_raw + "," + to_string(mr_iid) + ",\"" + status + "\"]";
+    memo_write(scoped_memo(owner, repo, "qa_reviewer:pending_verdict"), blob);
+    print("[qa_reviewer] verdict recorded: MR", mr_iid, "status", status);
+}
+
+// Score the pending QA verdict against the MR's terminal forge state. pass &
+// merged => success (the verdict held); block & closed-unmerged => success (the
+// block was upheld); block & merged => FAILURE (the block was overridden and the
+// MR shipped anyway — the #1484 safety-override case we most want to learn
+// from); pass & closed-unmerged => partial (the pass didn't cause a merge, but
+// wasn't wrong); still open / not found => no signal yet (leave pending). The
+// merged list is parsed FIRST with a parse-guard so a GitHub backend (whose
+// closed list is a superset of merged) can never misread a merged MR as
+// closed-unmerged. 24h ageout drops the verdict UNSCORED. Mechanical native
+// compare — NEVER a prompt().
+fn evaluate_qa_verdict(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "qa_reviewer:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let timeout_s = 86400;
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[qa_reviewer] verdict aged out without signal");
+        memo_write(key, "");
+        return;
+    };
+    let mr_iid = parse_int(to_string(json_get(blob, "[1]")));
+    let iid_s = to_string(mr_iid);
+    let status = to_string(json_get(blob, "[2]"));
+    // colony-lint: safe-exec-concat
+    let merged_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 50" + repo_arg(owner, repo);
+    let merged_raw = try { exec sh merged_cmd; } catch e { ""; };
+    // Score ONLY when the merged list parsed as a JSON array (index 0 = leading
+    // "["); a transient merged-query failure otherwise leaves the verdict
+    // pending for a later tick.
+    if index_of(merged_raw, "[") != 0 {
+        return;
+    };
+    let signal = if iid_in_list(merged_raw, iid_s) {
+        // Merged. A block that merged anyway is a SAFETY OVERRIDE => failure (3);
+        // a pass that merged held up => success (1).
+        if status == "block" { 3; } else { 1; };
+    } else {
+        // colony-lint: safe-exec-concat
+        let closed_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state closed --per-page 50" + repo_arg(owner, repo);
+        let closed_raw = try { exec sh closed_cmd; } catch e { ""; };
+        if iid_in_list(closed_raw, iid_s) {
+            // Closed unmerged. A block upheld => success (1); a pass that never
+            // merged => partial (2).
+            if status == "block" { 1; } else { 2; };
+        } else {
+            0;
+        };
+    };
+    if signal == 0 {
+        return;
+    };
+    let outcome = signal_to_outcome(signal);
+    if len(owner) > 0 {
+        learn("qa_review", "MR " + iid_s + " reality-check", "verdict " + status + " | signal: " + to_string(signal), outcome, ["acted", "code-review", repo_tag(owner, repo)]);
+    } else {
+        learn("qa_review", "MR " + iid_s + " reality-check", "verdict " + status + " | signal: " + to_string(signal), outcome, ["acted", "code-review"]);
+    };
+    print("[qa_reviewer] reality-check: MR", mr_iid, "verdict", status, "signal", signal, "->", outcome);
+    memo_write(key, "");
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1453 Wave 2 (M1): score any pending QA verdict FIRST (read-only, no early
+    // return) before the poll below. Cheap no-op when nothing is pending.
+    evaluate_qa_verdict(owner, repo);
+
     // Open MRs, reviewer view. No --since filter: the per-head memo gate is
     // the idle suppressor here — a bounded list read per tick, zero LLM calls
     // when every head is already verdicted.
