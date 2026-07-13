@@ -128,7 +128,135 @@ fn should_learn_from_mr(owner: string, repo: string, mr_iid: int) -> bool {
     return false;
 }
 
+// --- #1453 Wave 2 (M2): reality-check feedback loop ---
+//
+// Copied from the Wave-1 idiom (code_writer) and the M1 code-review reviewers:
+// when this agent autonomously opens an MR, it stashes the created MR iid in a
+// single-slot `commit_composer:pending_verdict` memo; a later tick mechanically
+// re-queries whether that MR merged or was closed-unmerged and scores the
+// decision — no prompt() on this path. The `.ag` dialect has no imports, so
+// signal_to_outcome / verdict_age_seconds / the list-scan helper are re-defined
+// per file exactly as the seven Wave-1/M1 agents do.
+
+// Map the reality-check signal to the experience-store outcome enum. Signal 0
+// ("no terminal state yet") is handled by the caller via an early return and
+// never reaches this function. M2 only emits 1 (merged) and 3 (closed-
+// unmerged); the partial branch is carried for idiom parity with Wave 1.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    if signal == 2 {
+        return "partial";
+    };
+    return "failure";
+}
+
+// Age (seconds) of a pending-verdict blob.
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = to_string(now_ms() / 1000);
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// Native FLAT iid-membership over a merge-requests list JSON: project the `iid`
+// column to a newline-separated blob with ONE json_array_project call (no
+// per-element map/filter `.ag` walk — the #1640 CB-overflow lesson) and test
+// exact-line membership by wrapping both the projection and the needle in
+// newlines so a substring hit can't cross an iid boundary ("2" never matches
+// inside "12"). Total: empty/malformed list or empty needle -> false. Same
+// native helper the M1 reviewers wrote (not the python-based Wave-1
+// raw_list_has_branch).
+fn iid_in_list(raw: string, iid_str: string) -> bool {
+    if len(iid_str) == 0 { return false; };
+    let projected = json_array_project(raw, "", "iid");
+    if len(projected) == 0 { return false; };
+    return index_of("\n" + projected + "\n", "\n" + iid_str + "\n") >= 0;
+}
+
+// The create-mr forge response is the RAW backend object: GitLab returns an MR
+// carrying `iid`, GitHub a PR carrying `number`. Read `iid` first, fall back to
+// `number`; json_get emits the "void" sentinel for a missing key, so both are
+// filtered to "" for the record guard.
+fn created_mr_iid(mr_result: string) -> string {
+    let iid = to_string(json_get(mr_result, "iid"));
+    if len(iid) > 0 { if iid != "void" { return iid; }; };
+    let num = to_string(json_get(mr_result, "number"));
+    if num == "void" { return ""; };
+    return num;
+}
+
+// Record a pending verdict for an autonomously opened MR. Stored as JSON array
+// [ts, iid, ""] — epoch int, iid int and an empty payload are all ASCII-safe so
+// naive concatenation is sufficient and we skip a JSON encoder (the single-slot
+// idiom from labeler.ag). A blank iid (unresolvable create-mr response) is a
+// no-op.
+fn record_commit_verdict(owner: string, repo: string, mr_iid: string) -> void {
+    if len(mr_iid) == 0 { return; };
+    let ts_raw = to_string(now_ms() / 1000);
+    let blob = "[" + ts_raw + "," + mr_iid + ",\"\"]";
+    memo_write(scoped_memo(owner, repo, "commit_composer:pending_verdict"), blob);
+    print("[commit_composer] verdict recorded: MR", mr_iid);
+}
+
+// Score the pending verdict against the fate of the MR we opened. Mechanical
+// compare via the raw merge-requests lists — NEVER a prompt(). merged =>
+// success (1); closed-unmerged => failure (3); still open / not found => no
+// signal yet (leave pending). The merged list is parsed FIRST with a parse-
+// guard so a GitHub backend (whose closed list is a superset of merged) can
+// never misread a merged MR as closed-unmerged. 24h ageout drops the verdict
+// UNSCORED (absence of a terminal state is not evidence either way). Runs at
+// the TOP of tick_for_repo, before any other work.
+fn evaluate_commit_verdict(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "commit_composer:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let timeout_s = 86400;
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[commit_composer] verdict aged out without signal");
+        memo_write(key, "");
+        return;
+    };
+    let mr_iid = parse_int(to_string(json_get(blob, "[1]")));
+    let iid_s = to_string(mr_iid);
+    // colony-lint: safe-exec-concat
+    let merged_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 50" + repo_arg(owner, repo);
+    let merged_raw = try { exec sh merged_cmd; } catch e { ""; };
+    // Score ONLY when the merged list parsed as a JSON array (index 0 = leading
+    // "["); a transient merged-query failure otherwise leaves the verdict
+    // pending for a later tick.
+    if index_of(merged_raw, "[") != 0 {
+        return;
+    };
+    let signal = if iid_in_list(merged_raw, iid_s) {
+        1;
+    } else {
+        // colony-lint: safe-exec-concat
+        let closed_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state closed --per-page 50" + repo_arg(owner, repo);
+        let closed_raw = try { exec sh closed_cmd; } catch e { ""; };
+        if iid_in_list(closed_raw, iid_s) { 3; } else { 0; };
+    };
+    if signal == 0 {
+        return;
+    };
+    let outcome = signal_to_outcome(signal);
+    if len(owner) > 0 {
+        learn("commit_compose", "MR " + iid_s + " reality-check", "signal: " + to_string(signal), outcome, ["acted", "implementation", repo_tag(owner, repo)]);
+    } else {
+        learn("commit_compose", "MR " + iid_s + " reality-check", "signal: " + to_string(signal), outcome, ["acted", "implementation"]);
+    };
+    print("[commit_composer] reality-check: MR", mr_iid, "signal", signal, "->", outcome);
+    memo_write(key, "");
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1453 Wave 2 (M2): score any pending MR verdict FIRST (read-only, no
+    // early return) before the poll below. Cheap no-op when nothing is pending.
+    evaluate_commit_verdict(owner, repo);
+
     // 1. Learn commit conventions from recently merged MRs
     let cmd = merged_mr_cmd(owner, repo);
     let raw = try {
@@ -238,6 +366,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 };
                 memo_write(scoped_memo(owner, repo, "commit_composer:last_mr_issue"), pending_issue);
                 memo_write(scoped_memo(owner, repo, "implementation:pending_mr"), "");
+                // #1453 Wave 2 (M2): stash the created MR iid so a later tick
+                // scores this MR against its merged/closed fate.
+                record_commit_verdict(owner, repo, created_mr_iid(mr_result));
             };
         };
         // Below autonomous: leave the durable memo in place so a later tick at
@@ -291,6 +422,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
             // so the no-event fallback does not re-open this same MR next tick.
             memo_write(scoped_memo(owner, repo, "commit_composer:last_mr_issue"), to_string(plan.issue_id));
             memo_write(scoped_memo(owner, repo, "implementation:pending_mr"), "");
+            // #1453 Wave 2 (M2): stash the created MR iid so a later tick scores
+            // this MR against its merged/closed fate.
+            record_commit_verdict(owner, repo, created_mr_iid(mr_result));
         };
     } else {
         if my_tier == "review-gated" {

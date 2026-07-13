@@ -165,7 +165,211 @@ fn should_learn_from_mr(owner: string, repo: string, mr_iid: int) -> bool {
     return false;
 }
 
+// --- #1453 Wave 2 (M2): reality-check feedback loop ---
+//
+// Copied from the Wave-1 idiom (code_writer) and the M1 code-review reviewers:
+// when this agent autonomously commits tests onto an MR's branch, it stashes
+// that MR's iid in a single-slot `test_writer:pending_verdict` memo; a later
+// tick mechanically re-queries whether the MR merged or was closed-unmerged and
+// scores the decision — no prompt() on this path. The `.ag` dialect has no
+// imports, so signal_to_outcome / verdict_age_seconds / the list-scan helper are
+// re-defined per file exactly as the seven Wave-1/M1 agents do.
+
+// Map the reality-check signal to the experience-store outcome enum. Signal 0
+// ("no terminal state yet") is handled by the caller via an early return and
+// never reaches this function. M2 only emits 1 (merged) and 3 (closed-
+// unmerged); the partial branch is carried for idiom parity with Wave 1.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    if signal == 2 {
+        return "partial";
+    };
+    return "failure";
+}
+
+// Age (seconds) of a pending-verdict blob.
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = to_string(now_ms() / 1000);
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// Native FLAT iid-membership over a merge-requests list JSON: project the `iid`
+// column to a newline-separated blob with ONE json_array_project call (no
+// per-element map/filter `.ag` walk — the #1640 CB-overflow lesson) and test
+// exact-line membership by wrapping both the projection and the needle in
+// newlines so a substring hit can't cross an iid boundary ("2" never matches
+// inside "12"). Total: empty/malformed list or empty needle -> false. Same
+// native helper the M1 reviewers wrote (not the python-based Wave-1
+// raw_list_has_branch).
+fn iid_in_list(raw: string, iid_str: string) -> bool {
+    if len(iid_str) == 0 { return false; };
+    let projected = json_array_project(raw, "", "iid");
+    if len(projected) == 0 { return false; };
+    return index_of("\n" + projected + "\n", "\n" + iid_str + "\n") >= 0;
+}
+
+// Parallel-column walk: the `iid` and `source_branch` projections of the same
+// merge-requests list preserve array order (one line per element, empty line
+// for a missing field — verified live), so the iid on the same line as a
+// matching source_branch is that MR's iid. Driven off the always-present `iid`
+// column so an empty trailing branch never short-circuits the walk; a real
+// (non-empty) branch never matches an empty projection line. Returns "" when
+// exhausted. Bounded native recursion (<=50 rows), not a per-element map/filter
+// closure (#1640 CB lesson).
+fn parallel_iid_at(branches: string, iids: string, branch: string, n: int) -> string {
+    let id = nth_field(iids, "\n", n);
+    if len(id) == 0 {
+        return "";
+    };
+    let b = nth_field(branches, "\n", n);
+    if b == branch {
+        return id;
+    };
+    return parallel_iid_at(branches, iids, branch, n + 1);
+}
+
+// Resolve the iid of the MR whose `source_branch` equals `branch`, over a raw
+// (no --view) merge-requests list — the raw shape carries source_branch, which
+// the `impl` view drops (same reason code_writer's recover_red_prs reads raw).
+// Two flat json_array_project calls + the parallel walk above; total on empty
+// branch / empty or malformed list -> "".
+fn iid_for_branch(raw: string, branch: string) -> string {
+    if len(branch) == 0 { return ""; };
+    let iids = json_array_project(raw, "", "iid");
+    if len(iids) == 0 { return ""; };
+    let branches = json_array_project(raw, "", "source_branch");
+    return parallel_iid_at(branches, iids, branch, 0);
+}
+
+// Write the single-slot pending-verdict blob [ts, iid, ""] for the MR our tests
+// were committed onto, so a later tick scores it against merged/closed fate.
+// Shared by the immediate resolve path (record_test_verdict) and the deferred
+// retry path (resolve_pending_branch).
+fn stash_test_verdict(owner: string, repo: string, mr_iid: string) -> void {
+    let ts_raw = to_string(now_ms() / 1000);
+    let blob = "[" + ts_raw + "," + mr_iid + ",\"\"]";
+    memo_write(scoped_memo(owner, repo, "test_writer:pending_verdict"), blob);
+    print("[test_writer] verdict recorded: MR", mr_iid);
+}
+
+// Record a pending verdict for the MR our tests were committed onto. We know the
+// branch we committed to, so resolve it to the open MR's iid and stash the
+// verdict. If no open MR carries this branch yet, DON'T drop the verdict:
+// commit_composer is a separate daemon on an independent tick clock and may not
+// have opened the MR yet (#1653). Persist the branch in a durable
+// test_writer:pending_branch_resolution memo and retry resolution on a later
+// tick (resolve_pending_branch), bounded by the same 24h ageout.
+fn record_test_verdict(owner: string, repo: string, branch: string) -> void {
+    if len(branch) == 0 { return; };
+    // colony-lint: safe-exec-concat
+    let opened_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state opened --per-page 50" + repo_arg(owner, repo);
+    let opened_raw = try { exec sh opened_cmd; } catch e { ""; };
+    let mr_iid = iid_for_branch(opened_raw, branch);
+    if len(mr_iid) == 0 {
+        let ts_raw = to_string(now_ms() / 1000);
+        let blob = "[" + ts_raw + ",\"" + branch + "\"]";
+        memo_write(scoped_memo(owner, repo, "test_writer:pending_branch_resolution"), blob);
+        print("[test_writer] branch not yet attributable, deferred:", branch);
+        return;
+    };
+    stash_test_verdict(owner, repo, mr_iid);
+}
+
+// #1653: retry the branch->iid resolution that record_test_verdict deferred when
+// commit_composer had not opened the MR yet. Runs at the TOP of tick_for_repo. On
+// each tick it re-queries the opened-MR list for the persisted branch; once the
+// branch resolves it stashes the normal pending_verdict blob and clears the retry
+// memo. If the branch never becomes an open MR within 24h (86400s), the verdict
+// is dropped UNSCORED — same posture as every other ageout in this loop: never
+// mis-score, just skip.
+fn resolve_pending_branch(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "test_writer:pending_branch_resolution");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    if verdict_age_seconds(blob) > 86400 {
+        print("[test_writer] pending branch resolution aged out without an MR");
+        memo_write(key, "");
+        return;
+    };
+    let branch = to_string(json_get(blob, "[1]"));
+    if len(branch) == 0 {
+        memo_write(key, "");
+        return;
+    };
+    // colony-lint: safe-exec-concat
+    let opened_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state opened --per-page 50" + repo_arg(owner, repo);
+    let opened_raw = try { exec sh opened_cmd; } catch e { ""; };
+    let mr_iid = iid_for_branch(opened_raw, branch);
+    if len(mr_iid) == 0 {
+        return;
+    };
+    stash_test_verdict(owner, repo, mr_iid);
+    memo_write(key, "");
+    print("[test_writer] deferred branch resolved -> MR", mr_iid, "branch", branch);
+}
+
+// Score the pending verdict against the fate of the MR we committed tests onto.
+// Mechanical compare via the raw merge-requests lists — NEVER a prompt().
+// merged => success (1); closed-unmerged => failure (3); still open / not found
+// => no signal yet (leave pending). The merged list is parsed FIRST with a
+// parse-guard so a GitHub backend (whose closed list is a superset of merged)
+// can never misread a merged MR as closed-unmerged. 24h ageout drops the
+// verdict UNSCORED. Runs at the TOP of tick_for_repo, before any other work.
+fn evaluate_test_verdict(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "test_writer:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let timeout_s = 86400;
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[test_writer] verdict aged out without signal");
+        memo_write(key, "");
+        return;
+    };
+    let mr_iid = parse_int(to_string(json_get(blob, "[1]")));
+    let iid_s = to_string(mr_iid);
+    // colony-lint: safe-exec-concat
+    let merged_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 50" + repo_arg(owner, repo);
+    let merged_raw = try { exec sh merged_cmd; } catch e { ""; };
+    if index_of(merged_raw, "[") != 0 {
+        return;
+    };
+    let signal = if iid_in_list(merged_raw, iid_s) {
+        1;
+    } else {
+        // colony-lint: safe-exec-concat
+        let closed_cmd = "$COLONY_DIR/scripts/forge-api.sh merge-requests --state closed --per-page 50" + repo_arg(owner, repo);
+        let closed_raw = try { exec sh closed_cmd; } catch e { ""; };
+        if iid_in_list(closed_raw, iid_s) { 3; } else { 0; };
+    };
+    if signal == 0 {
+        return;
+    };
+    let outcome = signal_to_outcome(signal);
+    if len(owner) > 0 {
+        learn("test_write", "MR " + iid_s + " reality-check", "signal: " + to_string(signal), outcome, ["acted", "implementation", repo_tag(owner, repo)]);
+    } else {
+        learn("test_write", "MR " + iid_s + " reality-check", "signal: " + to_string(signal), outcome, ["acted", "implementation"]);
+    };
+    print("[test_writer] reality-check: MR", mr_iid, "signal", signal, "->", outcome);
+    memo_write(key, "");
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1453 Wave 2 (M2): score any pending MR verdict FIRST (read-only, no
+    // early return) before the poll below. Cheap no-op when nothing is pending.
+    evaluate_test_verdict(owner, repo);
+    // #1653: retry a deferred branch->iid resolution (commit_composer may have
+    // opened the MR on a later tick than the commit). No-op when nothing pending.
+    resolve_pending_branch(owner, repo);
+
     // 1. Learn from test files in recently merged MRs
     let cmd = merged_mr_cmd(owner, repo);
     let raw = try {
@@ -265,6 +469,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     } else {
                         learn("test_write", "issue " + to_string(tests.issue_id), tests.summary, "success", ["acted", "implementation"]);
                     };
+                    // #1453 Wave 2 (M2): stash the iid of the MR carrying this
+                    // branch so a later tick scores it against merged/closed fate.
+                    record_test_verdict(owner, repo, tests.branch_name);
                 };
             } else {
                 if my_tier == "review-gated" {
