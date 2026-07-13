@@ -157,10 +157,45 @@ else
     fail "qa_reviewer: block & merged does NOT map to failure (safety-override miss)"
 fi
 
+# --- M2 — implementation (3 agents) ---
+#
+# commit_composer scores the fate of the MR it create-mr'd (iid read straight
+# off the create-mr response); test_writer and refactorer score the fate of the
+# existing MR their commit-files landed on (iid resolved from the branch they
+# committed to via the opened-MR list). All three re-query the terminal state
+# with the same native iid_in_list bounded merged/closed scan (merged parsed
+# FIRST, --per-page 50) — merged => success, closed-unmerged => failure, open =>
+# skip. commit_composer stashes at BOTH autonomous create-mr paths (durable
+# handoff + live event), so 3 = definition + 2 calls; test_writer and refactorer
+# stash at their single autonomous commit path, so 2 = definition + 1 call.
+IMPL="$FED/implementation/agents"
+
+check_agent "$IMPL/commit_composer.ag" "commit_composer" "commit"   "commit_compose"  3 \
+    "--state merged --per-page 50" "--state closed --per-page 50" "iid_in_list("
+check_agent "$IMPL/test_writer.ag"     "test_writer"     "test"     "test_write"      2 \
+    "--state merged --per-page 50" "--state closed --per-page 50" "iid_in_list("
+check_agent "$IMPL/refactorer.ag"      "refactorer"      "refactor" "refactor"        2 \
+    "--state merged --per-page 50" "--state closed --per-page 50" "iid_in_list("
+
+# M2 branch->iid resolution: test_writer and refactorer only know the branch
+# they committed onto, so record_ resolves it to the MR iid via the OPENED list
+# (raw shape carries source_branch) before stashing. Assert the resolver + its
+# opened-list query are present in the record function.
+for pair in "test_writer:record_test_verdict" "refactorer:record_refactor_verdict"; do
+    agent="${pair%%:*}"; rec_fn="${pair##*:}"
+    REC_REGION="$(evaluate_region "$IMPL/$agent.ag" "$rec_fn")"
+    if printf '%s' "$REC_REGION" | grep -qF "iid_for_branch(" \
+        && printf '%s' "$REC_REGION" | grep -qF -- "--state opened --per-page 50"; then
+        pass "$agent: $rec_fn resolves branch->iid via iid_for_branch over the opened list"
+    else
+        fail "$agent: $rec_fn missing iid_for_branch / opened-list resolution"
+    fi
+done
+
 # Outcome enum: "fail" is not a valid learn() outcome (core enforces
-# success/failure/partial/timeout/error). Swept across the five M1 agents so a
+# success/failure/partial/timeout/error). Swept across the M1 + M2 agents so a
 # reintroduced invalid literal fails the PR (the Wave-1 test sweeps the whole
-# federation; this is the M1-local belt-and-braces).
+# federation; this is the wave-2-local belt-and-braces).
 ENUM_FAIL=0
 for f in logic_reviewer security_reviewer style_reviewer test_reviewer qa_reviewer; do
     if grep -qE '"fail",|return "fail";' "$CR/$f.ag"; then
@@ -168,8 +203,14 @@ for f in logic_reviewer security_reviewer style_reviewer test_reviewer qa_review
         ENUM_FAIL=1
     fi
 done
+for f in commit_composer test_writer refactorer; do
+    if grep -qE '"fail",|return "fail";' "$IMPL/$f.ag"; then
+        fail "$f: invalid outcome literal \"fail\" survives"
+        ENUM_FAIL=1
+    fi
+done
 if [ "$ENUM_FAIL" -eq 0 ]; then
-    pass "outcome enum: no invalid \"fail\" literal in the five M1 agents"
+    pass "outcome enum: no invalid \"fail\" literal in the M1 + M2 agents"
 fi
 
 # Live byte-identity of the native iid_in_list membership helper (the compare's

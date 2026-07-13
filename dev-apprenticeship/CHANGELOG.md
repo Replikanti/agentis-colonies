@@ -34,6 +34,18 @@ is asserted until multi-version CI is in place.
   auto-merge-override signal (#1484) the fitness gates most need. Unsignalled
   verdicts age out UNSCORED after 24h. Source-asserted by
   `tools/test-reality-check-wave2.sh`.
+- **Reality-check feedback loop — Wave 2 M2 (implementation, 3 agents)** ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)):
+  `commit_composer`, `test_writer`, and `refactorer` now close the same loop for
+  their acting decisions. Each stashes a single-slot `<agent>:pending_verdict`
+  memo when it acts autonomously — `commit_composer` reads the created MR iid
+  straight off the `create-mr` response, `test_writer` and `refactorer` resolve
+  the branch they committed onto to the open MR's iid via a native flat
+  `iid_for_branch` parallel-column lookup — and a later tick scores the MR's
+  terminal fate with the same bounded `merge-requests --state merged|closed
+  --per-page 50` scan via the flat `iid_in_list` helper (merged parsed first,
+  parse-guarded): merged => `success`, closed-unmerged => `failure`, still open
+  => left pending; 24h ageout drops unsignalled verdicts UNSCORED. No `prompt()`
+  on the scoring path. Source-asserted by `tools/test-reality-check-wave2.sh`.
 
 ### Changed
 
