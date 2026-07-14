@@ -46,6 +46,25 @@ is asserted until multi-version CI is in place.
   parse-guarded): merged => `success`, closed-unmerged => `failure`, still open
   => left pending; 24h ageout drops unsignalled verdicts UNSCORED. No `prompt()`
   on the scoring path. Source-asserted by `tools/test-reality-check-wave2.sh`.
+- **Reality-check feedback loop — Wave 2 M3 (planning, 3 agents)** ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)):
+  `scope_estimator` and `task_decomposer` now close the same loop by scoring
+  the fate of the issue their estimate/breakdown was posted on — the advised
+  issue's terminal forge state, not the umbrella plan's original cycle-time /
+  child-issue-count signals, which are substrate-blocked (no native ISO8601->
+  epoch parsing without a new embedded interpreter) or dead (task_decomposer
+  posts a markdown note, never child issues). Each stashes a single-slot
+  `<agent>:pending_verdict` memo when it posts autonomously, and a later tick
+  re-queries `forge-api.sh issue <iid>`: `state == "closed"` with no noise
+  label (`wontfix`/`invalid`/`duplicate`/`not-planned`) => `success`; closed
+  with a noise label => `failure`; still open => left pending. Label
+  membership is a native flat-cost quote-anchored `index_of` over the raw
+  `labels` JSON subtree — no per-element `.ag` walk, no new embedded
+  `python3`. 24h ageout drops unsignalled verdicts UNSCORED; no `prompt()` on
+  the scoring path. `risk_assessor` stays WAIVED — its advisory risk list has
+  no forge-observable materialisation signal and no promote->ship consumption
+  chain, so issue-fate would be a mislabelled signal; it carries a
+  `// colony-lint: reality-check-waived:` annotation instead. Source-asserted
+  by `tools/test-reality-check-wave2.sh`.
 
 ### Changed
 

@@ -338,6 +338,7 @@ fn tick_for_repo(owner: string, repo: string) -> void {
         // Direct external write: post the risk assessment as an issue note.
         emit("planning:risks", assessment);
         let note = "**Risk Assessment** (automated): " + assessment.severity + "\n\n" + assessment.risks;
+        // colony-lint: reality-check-waived: risk materialisation has no separable mechanical forge signal (advisory-only risk list, not consumed by the promote->ship pipeline; only semantic CI/comment keyword correlation, which is noisier than silence); revisit if a structured risk-outcome marker is added
         // colony-lint: safe-exec-concat
         let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(assessment.issue_id) + " --body " + shell_escape(note) + repo_arg(owner, repo);
         let post_result = try { exec sh post_cmd; } catch e {
