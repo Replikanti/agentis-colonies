@@ -96,7 +96,149 @@ fn repo_field(line: string, idx: int) -> string {
     return nth_field(line, "\t", idx);
 }
 
+// --- #1453 Wave 2 M4: reality-check feedback loop ---
+//
+// version_bumper's own tag is a directly falsifiable artefact — unlike
+// release_checker/changelog_writer (release colony's other two Wave 2 M4
+// agents), which score whether a release was EVENTUALLY cut (success-only),
+// this is a genuine ternary. tag_exists() re-queries whether the exact tag
+// we created still exists; found -> success (no soak needed — a rollback is
+// durable), confirmed absent past a 24h confirmation-lag grace window ->
+// failure. A failing/unparseable query never scores a failure — it leaves
+// the verdict pending, or drops it UNSCORED once aged out.
+
+// #1453 Wave 2 M4: reality-check — map the reality-check signal to the
+// experience-store outcome enum.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    if signal == 2 {
+        return "partial";
+    };
+    return "failure";
+}
+
+// #1453 Wave 2 M4: reality-check — age (seconds) of a pending-verdict blob.
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = to_string(now_ms() / 1000);
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// #1453 Wave 2 M4: reality-check — does `tag_name` still exist on the repo?
+// 1 = found, 0 = not found (query succeeded), -1 = query failed/unparseable
+// (never treat a failed query as "not found" — see evaluate_version_verdict
+// below). version_bumper runs per-repo over whatever iter-repos.sh iterates
+// (any customer repo), so unlike ship_decider's tag_set_csv this does NOT
+// filter by the "dev-apprenticeship-v" federation-release prefix — that
+// filter is specific to ship_decider self-observing THIS federation's own
+// repo. Here we only need to know whether the ONE tag we just created
+// (bump.next) still exists, whatever its name — a lean single-tag-
+// membership check, flat cost, no python3.
+fn tag_exists(owner: string, repo: string, tag_name: string) -> int {
+    if len(tag_name) == 0 { return 0; };
+    // colony-lint: safe-exec-concat
+    let tags_cmd = "$COLONY_DIR/scripts/forge-api.sh tags --per-page 50" + repo_arg(owner, repo);
+    let raw = try { exec sh tags_cmd; } catch e { ""; };
+    if index_of(raw, "[") != 0 { return -1; };
+    let projected = json_array_project(raw, "", "name");
+    if len(projected) == 0 { return 0; };
+    if index_of("\n" + projected + "\n", "\n" + tag_name + "\n") >= 0 { return 1; };
+    return 0;
+}
+
+// #1453 Wave 2 M4: reality-check — record a pending version verdict. Stored
+// as JSON array [ts, 0, "tag_name"] (id slot fixed at 0 — no separate
+// artefact id, mirrors ship_decider's shape). No query needed at record
+// time — bump.next is already known.
+fn record_version_verdict(owner: string, repo: string, tag_name: string) -> void {
+    let ts_raw = to_string(now_ms() / 1000);
+    let blob = "[" + ts_raw + ",0,\"" + tag_name + "\"]";
+    memo_write(scoped_memo(owner, repo, "version_bumper:pending_verdict"), blob);
+    print("[version_bumper] version verdict recorded: tag", tag_name);
+}
+
+// #1453 Wave 2 M4: reality-check — score the pending version verdict
+// against tag survival. Genuine ternary (unlike release_checker/
+// changelog_writer's success-only signal): our own tag is a directly
+// falsifiable artefact. Found on the FIRST evaluate call that sees it ->
+// success, no soak (a rollback is durable). Confirmed absent AND past the
+// 24h confirmation-lag grace window -> failure. A failing query, or
+// not-found-but-still-inside-24h, leaves the verdict pending; a
+// persistently-failing query that ages out drops UNSCORED (never score a
+// failure off a failed query). Mechanical compare — never a prompt().
+fn evaluate_version_verdict(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "version_bumper:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    if emit_ts <= 0 {
+        // Corrupt blob or failed stash-time clock — nothing scorable.
+        memo_write(key, "");
+        return;
+    };
+    let tag_name = to_string(json_get(blob, "[2]"));
+    if tag_name == "void" {
+        memo_write(key, "");
+        return;
+    };
+
+    // Re-query ground truth via tag_exists(): a single `tags --per-page 50`
+    // list fetch projected via json_array_project(raw, "", "name") and
+    // checked for newline-boundary-anchored membership (no python3, no
+    // per-element .ag walk). found: 1 = tag confirmed alive, 0 = not found
+    // (yet), -1 = query failed/unparseable.
+    let found = tag_exists(owner, repo, tag_name);
+    let timeout_s = 86400;
+
+    if found == 1 {
+        let outcome_s = signal_to_outcome(1);
+        if len(owner) > 0 {
+            learn("version_bump", "version reality-check", "tag [" + tag_name + "] confirmed alive | signal: 1", outcome_s, ["acted", "release", repo_tag(owner, repo)]);
+        } else {
+            learn("version_bump", "version reality-check", "tag [" + tag_name + "] confirmed alive | signal: 1", outcome_s, ["acted", "release"]);
+        };
+        print("[version_bumper] reality-check: tag confirmed ->", outcome_s);
+        memo_write(key, "");
+        return;
+    };
+
+    if found == 0 {
+        if verdict_age_seconds(blob) > timeout_s {
+            let outcome_s = signal_to_outcome(3);
+            if len(owner) > 0 {
+                learn("version_bump", "version reality-check", "tag [" + tag_name + "] confirmed absent after 24h | signal: 3", outcome_s, ["acted", "release", repo_tag(owner, repo)]);
+            } else {
+                learn("version_bump", "version reality-check", "tag [" + tag_name + "] confirmed absent after 24h | signal: 3", outcome_s, ["acted", "release"]);
+            };
+            print("[version_bumper] reality-check: tag confirmed absent ->", outcome_s);
+            memo_write(key, "");
+            return;
+        };
+        // Not found but still inside the 24h confirmation-lag window —
+        // leave pending.
+        return;
+    };
+
+    // found == -1: the tags query failed/was unparseable. Never score a
+    // failure off a failed query — only drop it UNSCORED once aged out.
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[version_bumper] version verdict aged out on a failing query — dropped unscored");
+        memo_write(key, "");
+        return;
+    };
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1453 Wave 2 M4: reality-check — score any pending version verdict
+    // from a previous tick FIRST, before the event-listen early-exit below.
+    // Cheap no-op when nothing is pending.
+    evaluate_version_verdict(owner, repo);
+
     // #147: version_bumper is pure event-driven. It reacts to a
     // `release:ship_decision` emit from ship_decider — no GitLab poll
     // is needed to decide whether to do work. If the inbox is empty,
@@ -219,6 +361,14 @@ fn tick_for_repo(owner: string, repo: string) -> void {
 
         if len(tag_result) > 0 {
             print("[version_bumper] Created tag", bump.next);
+
+            // #1453 Wave 2 M4: reality-check — the tag we just created is a
+            // directly falsifiable artefact; stash it now so
+            // evaluate_version_verdict can re-confirm its survival on a
+            // later tick. Independent of whether create-release also
+            // succeeds below (the signal is tag survival only, not
+            // release-object survival).
+            record_version_verdict(owner, repo, bump.next);
 
             // Build release description from changelog or bump reasoning
             let release_desc = changelog_str + bump.reasoning;

@@ -108,7 +108,135 @@ fn mr_delta_cmd_for(owner: string, repo: string, ts: string) -> string {
     return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --per-page 1" + repo_arg(owner, repo);
 }
 
+// --- #1453 Wave 2 M4: reality-check feedback loop ---
+//
+// release_checker's pre-release check is a non-terminal diagnostic — it
+// never ships anything itself. Mirroring ship_decider's posture exactly
+// (success-only, #1453 Wave 1), the ground truth here is whether a release
+// was actually cut AFTER the MR was flagged ready — newest_release_tag()'s
+// tag_name compared against the baseline stashed when we posted the check.
+// Unlike GitHub's /tags (unordered), both backends' `releases` verb returns
+// pre-sorted newest-first (gitlab-api.sh: order_by=released_at&sort=desc;
+// github-api.sh: GitHub's default /releases order, created_at desc), so a
+// plain string compare of the newest tag_name is sound — no set-diff, no
+// python3.
+
+// #1453 Wave 2 M4: reality-check — map the reality-check signal to the
+// experience-store outcome enum.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    if signal == 2 {
+        return "partial";
+    };
+    return "failure";
+}
+
+// #1453 Wave 2 M4: reality-check — age (seconds) of a pending-verdict blob.
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = to_string(now_ms() / 1000);
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// #1453 Wave 2 M4: reality-check — newest release tag_name, or "" when the
+// repo has no releases yet, or the sentinel "__QUERY_FAILED__" when the
+// query failed/unparseable (must not be stashed or compared: a failed
+// stash-time query would otherwise make any pre-existing release look like
+// a fresh one). Both backends' `releases` verb is pre-sorted newest-first
+// (see block comment above), so "[0].tag_name" is the sound ground truth —
+// no ISO8601 parsing, no per-element walk.
+fn newest_release_tag(owner: string, repo: string) -> string {
+    // colony-lint: safe-exec-concat
+    let releases_cmd = "$COLONY_DIR/scripts/forge-api.sh releases --per-page 1 --view release-summary" + repo_arg(owner, repo);
+    let raw = try { exec sh releases_cmd; } catch e { ""; };
+    if index_of(raw, "[") != 0 { return "__QUERY_FAILED__"; };
+    let tag = to_string(json_get(raw, "[0].tag_name"));
+    if tag == "void" { return ""; };
+    return tag;
+}
+
+// #1453 Wave 2 M4: reality-check — record a pending checker verdict.
+// Stored as JSON array [ts, mr_iid, "baseline_tag"]. A failed releases
+// query (sentinel) skips the stash entirely — never stash a baseline the
+// evaluator could misread.
+fn record_checker_verdict(owner: string, repo: string, mr_iid: int, baseline_tag: string) -> void {
+    if baseline_tag == "__QUERY_FAILED__" {
+        print("[release_checker] releases query failed — skipping checker verdict stash");
+        return;
+    };
+    let ts_raw = to_string(now_ms() / 1000);
+    let blob = "[" + ts_raw + "," + to_string(mr_iid) + ",\"" + baseline_tag + "\"]";
+    memo_write(scoped_memo(owner, repo, "release_checker:pending_verdict"), blob);
+    print("[release_checker] checker verdict recorded: baseline tag", baseline_tag);
+}
+
+// #1453 Wave 2 M4: reality-check — score the pending checker verdict.
+// Success-only, mirroring ship_decider's posture exactly: the newest
+// release tag_name differing from the stashed baseline (and non-empty,
+// non-sentinel) means a release was actually cut after we flagged the MR
+// ready — signal 1, success. While unchanged the verdict stays pending, and
+// the 24h ageout drops it WITHOUT scoring: an MR not yet shipped is not a
+// wrong check, release batching is a normal workflow, and learn("partial")
+// would carry a positive delta and quietly reward ignored release work
+// (same rationale ship_decider's doc comment already states). Mechanical
+// compare — never a prompt().
+fn evaluate_checker_verdict(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "release_checker:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    if emit_ts <= 0 {
+        memo_write(key, "");
+        return;
+    };
+    let baseline = to_string(json_get(blob, "[2]"));
+    if baseline == "void" {
+        memo_write(key, "");
+        return;
+    };
+
+    // Re-query ground truth via newest_release_tag(): a single
+    // `releases --per-page 1 --view release-summary` fetch +
+    // json_get(raw, "[0].tag_name") — both backends return releases
+    // pre-sorted newest-first, so no ordering logic is needed here.
+    let cur = newest_release_tag(owner, repo);
+    if cur != "__QUERY_FAILED__" {
+        if len(cur) > 0 {
+            if cur != baseline {
+                let outcome_s = signal_to_outcome(1);
+                if len(owner) > 0 {
+                    learn("release_check", "release reality-check", "new release tag [" + cur + "] beyond baseline [" + baseline + "] | signal: 1", outcome_s, ["acted", "release", repo_tag(owner, repo)]);
+                } else {
+                    learn("release_check", "release reality-check", "new release tag [" + cur + "] beyond baseline [" + baseline + "] | signal: 1", outcome_s, ["acted", "release"]);
+                };
+                print("[release_checker] reality-check: release cut after flagged-ready check ->", outcome_s);
+                memo_write(key, "");
+                return;
+            };
+        };
+    };
+
+    let timeout_s = 86400;
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[release_checker] checker verdict aged out without a release — dropped unscored");
+        memo_write(key, "");
+        return;
+    };
+    // Newest release tag unchanged (or query failed) and still inside the
+    // 24h window — leave pending.
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1453 Wave 2 M4: reality-check — score any pending checker verdict
+    // from a previous tick FIRST, before the delta gate's early-exit below.
+    // Cheap no-op when nothing is pending.
+    evaluate_checker_verdict(owner, repo);
+
     // #147: cheap delta-check BEFORE any prompt(). release_checker's
     // real work is driven by two signals: `implementation:mr_ready`
     // (a new MR needs a pre-release check) and newly-merged MRs (re-
@@ -213,6 +341,11 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                     };
                 };
                 emit("release:check_result", result);
+                // #1453 Wave 2 M4: reality-check — stash the newest-release
+                // baseline now; evaluate_checker_verdict re-queries it on a
+                // later tick to see whether a release was actually cut
+                // after we flagged this MR ready.
+                record_checker_verdict(owner, repo, mr_ready.issue_id, newest_release_tag(owner, repo));
                 if len(owner) > 0 {
                     learn("release_check", "pipeline check", result.ci_status + " | " + result.issues_found, "success", ["acted", "release", repo_tag(owner, repo)]);
                 } else {

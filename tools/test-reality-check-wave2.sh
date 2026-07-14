@@ -280,8 +280,55 @@ else
     fail "risk_assessor: missing the reality-check-waived: annotation"
 fi
 
+# --- M4 — release (3 agents) ---
+#
+# version_bumper, release_checker, and changelog_writer get the 4-step
+# reality-check loop. version_bumper's own tag is a directly falsifiable
+# artefact (genuine ternary — found -> success, confirmed absent past a 24h
+# grace window -> failure); release_checker/changelog_writer mirror
+# ship_decider's success-only posture exactly: the newest release tag_name
+# (both backends' `releases` verb returns pre-sorted newest-first) differing
+# from the stashed baseline -> success, 24h ageout drops UNSCORED. See the
+# #1453 Wave 2 M4 plan comment for the full rationale (in particular why
+# version_bumper does NOT reuse ship_decider's tag_set_csv/sanitize_tag_blob
+# — those hardcode a federation-specific tag-prefix filter that is wrong for
+# a per-customer-repo agent).
+REL="$FED/release/agents"
+
+check_agent "$REL/version_bumper.ag" "version_bumper" "version" "version_bump" 2 \
+    "tags --per-page 50" "json_array_project(raw, \"\", \"name\")" "tag_exists("
+check_agent "$REL/release_checker.ag" "release_checker" "checker" "release_check" 2 \
+    "releases --per-page 1 --view release-summary" "newest_release_tag("
+check_agent "$REL/changelog_writer.ag" "changelog_writer" "changelog" "changelog_write" 2 \
+    "releases --per-page 1 --view release-summary" "newest_release_tag("
+
+# M4 safety assert: version_bumper must map confirmed absence to the
+# failure signal (mirrors the M1 qa_reviewer block-and-merged assert) — the
+# one place M4 introduces a real negative signal on the release colony.
+VERSION_REGION="$(evaluate_region "$REL/version_bumper.ag" "evaluate_version_verdict")"
+if printf '%s' "$VERSION_REGION" | grep -qF "signal_to_outcome(3)"; then
+    pass "version_bumper: confirmed tag absence maps to the failure signal (3)"
+else
+    fail "version_bumper: confirmed tag absence does NOT map to failure"
+fi
+
+# M4 success-only assert: release_checker and changelog_writer must each
+# drop an aged-out verdict UNSCORED (mirrors the Wave-1 ship_decider block)
+# and must NEVER map to the failure signal — an MR/draft not yet shipped is
+# not a wrong call, and scoring it would reward ignored release work.
+for pair in "release_checker:evaluate_checker_verdict" "changelog_writer:evaluate_changelog_verdict"; do
+    agent="${pair%%:*}"; eval_fn="${pair##*:}"
+    REGION="$(evaluate_region "$REL/$agent.ag" "$eval_fn")"
+    if printf '%s' "$REGION" | grep -q "aged out without a release" \
+        && ! printf '%s' "$REGION" | grep -qF "signal_to_outcome(3)"; then
+        pass "$agent: ageout drops unscored (success-only signal)"
+    else
+        fail "$agent: ageout must drop without scoring, and must never fail"
+    fi
+done
+
 # Outcome enum: "fail" is not a valid learn() outcome (core enforces
-# success/failure/partial/timeout/error). Swept across the M1 + M2 + M3
+# success/failure/partial/timeout/error). Swept across the M1 + M2 + M3 + M4
 # agents so a reintroduced invalid literal fails the PR (the Wave-1 test
 # sweeps the whole federation; this is the wave-2-local belt-and-braces).
 ENUM_FAIL=0
@@ -303,8 +350,14 @@ for f in scope_estimator task_decomposer risk_assessor; do
         ENUM_FAIL=1
     fi
 done
+for f in version_bumper release_checker changelog_writer; do
+    if grep -qE '"fail",|return "fail";' "$REL/$f.ag"; then
+        fail "$f: invalid outcome literal \"fail\" survives"
+        ENUM_FAIL=1
+    fi
+done
 if [ "$ENUM_FAIL" -eq 0 ]; then
-    pass "outcome enum: no invalid \"fail\" literal in the M1 + M2 + M3 agents"
+    pass "outcome enum: no invalid \"fail\" literal in the M1 + M2 + M3 + M4 agents"
 fi
 
 # Live byte-identity of the native iid_in_list membership helper (the compare's
