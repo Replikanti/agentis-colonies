@@ -65,8 +65,17 @@ mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 TAXONOMY="$HERE/auditor/bug-taxonomy.md"
 
 # --- locate in-scope Solidity/Anchor sources (relative to --repo) -------------------------------------
-SOURCES="$(cd "$REPO" && find . -type f \( -name '*.sol' -o -name '*.rs' \) 2>/dev/null | sed 's#^\./##' | LC_ALL=C sort || true)"
-[ -n "$SOURCES" ] || { echo "map-zones.sh: no Solidity/Anchor sources found under $REPO" >&2; exit 2; }
+# PRUNE vendored dependencies and build artifacts. A Foundry/Hardhat target's OWN auditable code lives in
+# src/ or contracts/; lib/ (Foundry submodules), node_modules/ (npm), out/ + cache/ + artifacts/ (build
+# output), and .git/ are third-party or generated, never the target's own zones — grouping openzeppelin or
+# forge-std into "zones" is both wrong (you audit the target, not its deps) and, on a big dep tree (e.g. a
+# yearn strategy vendors ~5.5k .sol under lib/), it overflows the mechanical pass's single SOURCES env
+# string past MAX_ARG_STRLEN (~128 KB) -> `Argument list too long`. `--scope-hint` can still add a specific
+# path back if a target genuinely keeps in-scope code under a pruned dir.
+SOURCES="$(cd "$REPO" && find . \
+  \( -type d \( -name lib -o -name node_modules -o -name out -o -name cache -o -name artifacts -o -name .git \) -prune \) -o \
+  \( -type f \( -name '*.sol' -o -name '*.rs' \) -print \) 2>/dev/null | sed 's#^\./##' | LC_ALL=C sort || true)"
+[ -n "$SOURCES" ] || { echo "map-zones.sh: no Solidity/Anchor sources found under $REPO (own code only; lib/node_modules/out/cache are pruned — use --scope-hint to add a path back)" >&2; exit 2; }
 
 # --- advisory hardening input: the post-audit churn signal (never a gate) -----------------------------
 # audit-delta.sh reports the files that changed SINCE the audit ref; a zone with more churned files is
