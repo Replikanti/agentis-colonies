@@ -41,7 +41,7 @@ If a PR adds a runtime dependency under `tools/` that `dev-apprenticeship/` invo
 bash -n scripts/gitlab-api.sh   # Bash syntax check on any script
 ```
 
-Colony lint must pass with 0 failures before merge. Counts drift as tests are added — as of v2.10.1 the CI baseline is 371 passed, 0 failed, 7 skipped (no agentis binary on runners) and a local run with `agentis` installed reports 521 passed, 0 failed, 6 skipped (adds per-agent `.ag` parse/type passes plus binary-dependent tests). The invariant is the 0 failures, not the exact counts.
+Colony lint must pass with 0 failures before merge. Counts drift as tests are added — as of v2.11.0 the CI baseline is 372 passed, 0 failed, 7 skipped (no agentis binary on runners) and a local run with `agentis` installed reports 522 passed, 0 failed, 6 skipped (adds per-agent `.ag` parse/type passes plus binary-dependent tests). The invariant is the 0 failures, not the exact counts.
 
 ## LLM backend
 
@@ -136,6 +136,7 @@ Verb-level API details: [doc/tooling-reference.md](./doc/tooling-reference.md).
 | `check-prompt-gate.sh` | Lint: every `prompt()` needs a same-function memo staleness gate (`// colony-lint: prompt-gate-ok` to waive) |
 | `check-getenv-allowlist.sh` | Lint: every dev-apprenticeship `getenv()` knob must be on the install.sh `exec.env_passthrough` allowlist + #1437 residue list, or waived (`// colony-lint: getenv-unregistered-ok`) ([#1428](https://github.com/Replikanti/agentis-colonies/issues/1428)) |
 | `check-substrate-purity.sh` | Lint: no NEW embedded `python3 -c`/awk/sed logic in dev-apprenticeship `exec sh` strings; known remaining sites are allowlisted by `file:function:phase`, everything else needs a `// substrate-purity: deferred (<reason>)` waiver — `[NEW-ESCAPE]` on a new site, `[STALE-ALLOWLIST]` when a rewritten site's row is left behind ([#1587](https://github.com/Replikanti/agentis-colonies/issues/1587) ratchet, [#1608](https://github.com/Replikanti/agentis-colonies/issues/1608)) |
+| `check-reality-check.sh` | Lint: every dev-apprenticeship acting-tier agent (forge write verb present) must wire the reality-check loop (`<agent>:pending_verdict`) or carry `// colony-lint: reality-check-waived: <reason>` — keeps the [#1453](https://github.com/Replikanti/agentis-colonies/issues/1453) federation-wide rollout from regressing on new agents |
 | `check-changelog.sh` | CI: warn on component change without CHANGELOG update, fail on VERSION bump without entry |
 | `make-federation-bundle.sh` | Build the curated release tarball from `BUNDLE.manifest` (invoked by `release.yml`) |
 | `make-dashboard-bundle.sh` | Build the `federation-dashboard` release tarball (invoked by `release-dashboard.yml`) |

@@ -646,6 +646,27 @@ if [ -x "$REPO_ROOT/tools/check-substrate-purity.sh" ]; then
     fi
 fi
 
+# --- Check reality-check feedback-loop wiring (#1453) ---
+# A dev-apprenticeship agent that writes to the forge (opens an MR, posts a
+# note, tags/releases, merges) must either wire the reality-check feedback
+# loop (a `<agent>:pending_verdict` memo, per doc/feedback-loop.md's 4-step
+# idiom) or carry a documented `// colony-lint: reality-check-waived: ...`
+# waiver. This is the regression guard for the #1453 federation-wide
+# rollout: a new acting agent, or a new acting call site, that skips both
+# wiring and waiver fails the lint.
+if [ -x "$REPO_ROOT/tools/check-reality-check.sh" ]; then
+    check_out="$("$REPO_ROOT/tools/check-reality-check.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "check-reality-check: every dev-apprenticeship acting agent wired or waived (#1453)"
+    elif [ "$check_rc" -eq 2 ]; then
+        fail "check-reality-check: infra/usage error (exit 2 — not a wiring finding)"
+        printf '%s\n' "$check_out"
+    else
+        fail "check-reality-check: forge write verb without reality-check wiring or waiver (#1453)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- Check LLM prompt strings for bare push() examples (#943) ---
 # `push(list, x)` in agentis is PURE — it returns a new list and does
 # NOT mutate the input. Several research-foundry agents embed `.ag`
