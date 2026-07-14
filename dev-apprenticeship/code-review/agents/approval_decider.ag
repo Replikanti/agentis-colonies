@@ -641,6 +641,15 @@ fn record_approval_verdict(owner: string, repo: string, mr_iid: int, action: str
     print("[approval_decider] verdict recorded: MR", mr_iid, "action", action);
 }
 
+// Native list membership for the reality-check comparator (#1638 P3 cluster
+// B): the `.ag` dialect has no list `contains`, so membership is a plain
+// equality filter — byte-identical to python's `iid in iids(list)`. Mirrors
+// the triage agents' member/2 verbatim so the verdict-scorer set idiom stays
+// one grammar across the federation.
+fn member(x: string, xs: list<string>) -> bool {
+    return len(filter(xs, |y: string| -> bool { return y == x; })) > 0;
+}
+
 // #1453 Wave 1: reality-check — score the pending decision verdict against
 // what actually happened to the MR on the forge. approve → merged = the
 // call held up (success), closed-unmerged = it did not (fail);
@@ -676,43 +685,38 @@ fn evaluate_approval_verdict(owner: string, repo: string) -> void {
             return;
         };
     };
-    // Deterministic membership check in python (cheap, reproducible)
-    // rather than a prompt() round-trip. Merged membership is checked
-    // FIRST on both action paths: GitHub reports merged PRs as
-    // state=closed too, so "merged" must win the tie. The MERGED list
-    // must PARSE as a JSON array or nothing is scored (print 0) — a
-    // transient merged-query failure while the closed query succeeds
-    // would otherwise misread a merged MR as closed-unmerged on GitHub
-    // (closed superset of merged) and record a spurious terminal row.
-    // request_changes + merged scores 2 (partial), not fail: the
-    // healthy workflow (author fixes, MR then merges) is ambiguous
-    // agreement, not an overruled objection. Output: 0 = no signal yet,
-    // 1 = success, 2 = partial, 3 = fail.
-    let match_cmd = "MERGED=" + shell_escape(merged_raw) + " CLOSED=" + shell_escape(closed_raw) +
-        " IID=" + shell_escape(to_string(mr_iid)) + " ACT=" + shell_escape(action) +
-        " python3 -c 'import os,json" +
-        "\ndef load(k):" +
-        "\n    try:" +
-        "\n        d=json.loads(os.environ.get(k) or \"\")" +
-        "\n    except Exception:" +
-        "\n        return None" +
-        "\n    return d if isinstance(d,list) else None" +
-        "\ndef iids(d):" +
-        "\n    return {str(x.get(\"iid\")) for x in (d or []) if isinstance(x,dict)}" +
-        "\niid=os.environ[\"IID\"]; act=os.environ[\"ACT\"]" +
-        "\nml=load(\"MERGED\")" +
-        "\nif ml is None:" +
-        "\n    print(0)" +
-        "\nelse:" +
-        "\n    m=iid in iids(ml); c=iid in iids(load(\"CLOSED\"))" +
-        "\n    if act==\"approve\":" +
-        "\n        print(1 if m else (3 if c else 0))" +
-        "\n    elif act==\"request_changes\":" +
-        "\n        print(2 if m else (1 if c else 0))" +
-        "\n    else:" +
-        "\n        print(0)'";
-    let signal_raw = try { exec sh match_cmd; } catch e { "0"; };
-    let signal = parse_int(signal_raw);
+    // Deterministic membership check, native `.ag` (was an embedded
+    // `python3 -c`; #1638 P3 cluster B). Merged membership is checked FIRST on
+    // both action paths: GitHub reports merged PRs as state=closed too, so
+    // "merged" must win the tie. The MERGED list must PARSE as a JSON array or
+    // nothing is scored — a transient merged-query failure while the closed
+    // query succeeds would otherwise misread a merged MR as closed-unmerged on
+    // GitHub (closed superset of merged) and record a spurious terminal row;
+    // the native leading-`[` guard reproduces python's `ml is None -> print(0)`
+    // (here: return without scoring, subsuming the old signal-0 path).
+    // json_array_object_field_values projects each object's `iid` to a flat
+    // string list (non-array / iid-less entries drop to "" — same as python's
+    // `{str(x.get("iid")) for x in d if isinstance(x,dict)}` over real MRs,
+    // which always carry an iid), so member(to_string(mr_iid), ...) is the
+    // `iid in iids(...)` test. request_changes + merged scores 2 (partial),
+    // not fail: the healthy workflow (author fixes, MR then merges) is
+    // ambiguous agreement, not an overruled objection. Output: 0 = no signal
+    // yet, 1 = success, 2 = partial, 3 = fail.
+    if index_of(trim(merged_raw), "[") != 0 {
+        return;
+    };
+    let iid_str = to_string(mr_iid);
+    let m = member(iid_str, json_array_object_field_values(merged_raw, "iid"));
+    let c = member(iid_str, json_array_object_field_values(closed_raw, "iid"));
+    let signal = if action == "approve" {
+        if m { 1; } else { if c { 3; } else { 0; }; };
+    } else {
+        if action == "request_changes" {
+            if m { 2; } else { if c { 1; } else { 0; }; };
+        } else {
+            0;
+        };
+    };
     if signal == 0 {
         return;
     };

@@ -564,6 +564,15 @@ fn verdict_age_seconds(blob: string) -> int {
     return now - emit_ts;
 }
 
+// Native list membership for the reality-check comparator (#1638 P3 cluster
+// B): the `.ag` dialect has no list `contains`, so membership is a plain
+// equality filter — byte-identical to python's `x in xs`. Mirrors
+// prioritizer.ag's / labeler.ag's member/2 verbatim so the triage
+// verdict-scorer set idiom stays one grammar.
+fn member(x: string, xs: list<string>) -> bool {
+    return len(filter(xs, |y: string| -> bool { return y == x; })) > 0;
+}
+
 // #1234: score the pending routing verdict against what the operator actually
 // did on GitLab (ports labeler's single-slot evaluate_label_verdict). Returns
 // early (leaves the verdict pending) when the pilot is disabled, no verdict
@@ -600,13 +609,39 @@ fn score_route_verdict_key(owner: string, repo: string, key: string) -> string {
     if len(cur_raw) < 3 {
         return "keep";
     };
-    // Deterministic compare in python (cheap, reproducible) rather than a
-    // prompt() round-trip. Output: 0 = no signal (still unassigned),
-    // 1 = kept (our suggested username is among the current assignees),
-    // 3 = reassigned (assigned, but not to our username).
-    let match_cmd = "SUGGESTED=" + shell_escape(suggested) + " RAW=" + shell_escape(cur_raw) + " python3 -c 'import os, json; sug=os.environ[\"SUGGESTED\"].strip(); d=json.loads(os.environ[\"RAW\"]); ns={(a or {}).get(\"username\") for a in (d.get(\"assignees\") or [])}; a1=d.get(\"assignee\"); ns.add((a1 or {}).get(\"username\")) if isinstance(a1, dict) else None; ns={n for n in ns if n}; print(0 if not ns else (1 if sug in ns else 3))'";
-    let signal_raw = try { exec sh match_cmd; } catch e { "0"; };
-    let signal = parse_int(signal_raw);
+    // Deterministic compare, native `.ag` (was an embedded `python3 -c`;
+    // #1638 P3 cluster B). Build the current-assignee username set from BOTH
+    // the `assignees` array (flat json_array_object_field_values projection)
+    // and the deprecated singular `assignee`, dropping empties — byte-
+    // equivalent to python's `ns = {usernames of assignees} ∪ {singular
+    // assignee username}; ns = {n for n in ns if n}`. Output: 0 = no signal
+    // (still unassigned), 1 = kept (our suggested username is in that set),
+    // 3 = reassigned (assigned, but not to our username). `0 if not ns else
+    // (1 if sug in ns else 3)`.
+    let sug = trim(suggested);
+    let ns = filter(map(json_array_object_field_values(json_get_raw(cur_raw, "assignees"), "username"), |u: string| -> string {
+        return trim(u);
+    }), |u: string| -> bool {
+        return len(u) > 0;
+    });
+    let a1 = void_to_empty(to_string(json_get(cur_raw, "assignee.username")));
+    let signal = if len(ns) == 0 {
+        if len(a1) == 0 {
+            0;
+        } else {
+            if a1 == sug { 1; } else { 3; };
+        };
+    } else {
+        if member(sug, ns) {
+            1;
+        } else {
+            if len(a1) > 0 {
+                if a1 == sug { 1; } else { 3; };
+            } else {
+                3;
+            };
+        };
+    };
     if signal == 0 {
         return "keep";
     };

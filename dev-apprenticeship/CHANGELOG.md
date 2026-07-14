@@ -170,6 +170,31 @@ is asserted until multi-version CI is in place.
   `sort_unique_strings`) so no per-element `.ag` walk runs over the (growing,
   `--per-page 50`-capped) tag array — worst case ~940 CB, well under the 2000
   cb_per_tick cap. Clusters A and B land in later PRs.
+- **Substrate purity P3 cluster B1 — native reality-check comparators (5/7 sites)** ([#1638](https://github.com/Replikanti/agentis-colonies/issues/1638)):
+  five embedded `python3 -c` verdict-scorers are replaced with native `.ag`,
+  each removing an `exec sh`+python fork: `labeler.ag`'s `evaluate_label_verdict`
+  (propose) and `score_one_autonomous` (autonomous), `router.ag`'s
+  `score_route_verdict_key`, `code-review/approval_decider.ag`'s
+  `evaluate_approval_verdict`, and `planning/plan_reviewer.ag`'s
+  `evaluate_plan_verdict`. The array leaf `json_get` returns Void for is
+  materialized via `json_get_raw` → `json_array_to_strings` (both the
+  missing-key `""` and the empty-array `"[]"` collapse to an empty list,
+  matching python's `set(json.loads(raw).get(k, []))`); set membership/subset/
+  intersect compose from a shared `member`/`subset`/`intersect` (a `filter`+`len`
+  equality walk, mirroring `prioritizer.ag`'s `member` grammar). The
+  approval_decider keeps its **"MERGED must parse as a JSON array or score 0"**
+  guard (GitHub closed-superset-of-merged hazard) as a native leading-`[`
+  precondition. Each scorer feeds the honest-outcome `learn()` signal (auto-
+  promote's `reject_rate_acting`), NOT the crystallizer id, so no rule is
+  re-keyed; every signal branch is pinned to the retired python's output by a
+  live `agentis go` fixture in `test-reality-check-wave1.sh`. All five are
+  mechanical small-set (<10-element) comparators measured well under the 2000
+  `cb_per_tick` cap (labeler realistic 282 / pathological 10×10 1378;
+  approval_decider flat single-walk over ≤50 iids 441; router/plan_reviewer
+  trivial). The `check-substrate-purity.sh` allowlist drops the five B1 rows
+  (7 → 2). The remaining two CB-critical scorers (`prioritizer`'s
+  `score_priority_verdict_key`, `ship_decider`'s `evaluate_ship_verdict`) need
+  flat rewrites and stay allowlisted for a follow-up PR B2.
 
 ### Removed
 
