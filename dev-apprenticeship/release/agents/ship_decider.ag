@@ -261,23 +261,47 @@ fn evaluate_ship_verdict(owner: string, repo: string) -> void {
         return;
     };
     let cur = tag_set_csv(owner, repo);
+    // #1638 P3 cluster B2: native, FLAT-cost set-difference (was an embedded
+    // `python3 -c` computing `set(CUR) - set(BASE) != {}`). The naive native
+    // rewrite — `len(filter(cur, |c| !member(c, base))) > 0` — is an
+    // O(|cur|x|base|) nested closure walk over the FULL dev-app tag history
+    // (tag_set_csv is `--per-page 50`, sorted-unique, monotonically growing):
+    // it measured 6749 CB already at today's 26 tags because the dominant
+    // no-release path (cur == baseline) still walked the whole cross product
+    // every tick. Two flat steps replace it: (a) a free string-equality
+    // early-exit for the no-release path — `cur` and `baseline` are both
+    // sorted-unique CSVs from the same tag_set_csv, so equal strings <=> equal
+    // sets <=> no new tag <=> signal 0; and (b) for the differing path, a
+    // union-length test: `set(CUR) - set(BASE)` is non-empty IFF the union of
+    // the two sets is strictly larger than the baseline set. `.ag` has no list
+    // concat, so the two CSVs are joined as STRINGS before ONE regex_split;
+    // `filter(..., len(x) > 0)` reproduces python's `{x for x in s.split(",")
+    // if x}` byte-exactly (empties dropped, NOT trimmed), and
+    // sort_unique_strings dedups. Measured flat ~1023 CB @26 tags / ~1527 @40,
+    // well under cb_per_tick and bounded by the `--per-page 50` cap.
+    // `.ag` has no `&&`, so the query-failed guard and the free
+    // `cur == baseline` early-exit nest: only the differing, query-OK path
+    // pays for the union split.
     if cur != "__QUERY_FAILED__" {
-        let diff_cmd = "BASE=" + shell_escape(baseline) + " CUR=" + shell_escape(cur) +
-            " python3 -c 'import os" +
-            "\nsplit=lambda s:{x for x in s.split(\",\") if x}" +
-            "\nprint(1 if split(os.environ[\"CUR\"]) - split(os.environ[\"BASE\"]) else 0)'";
-        let signal_raw = try { exec sh diff_cmd; } catch e { "0"; };
-        if parse_int(signal_raw) == 1 {
-            // A release was cut after our ship verdict — the call held up.
-            let outcome_s = signal_to_outcome(1);
-            if len(owner) > 0 {
-                learn("ship_decide", "ship reality-check", "new tag beyond baseline [" + baseline + "] | signal: 1", outcome_s, ["acted", "release", repo_tag(owner, repo)]);
-            } else {
-                learn("ship_decide", "ship reality-check", "new tag beyond baseline [" + baseline + "] | signal: 1", outcome_s, ["acted", "release"]);
+        if cur != baseline {
+            let base_u = sort_unique_strings(filter(regex_split(",", baseline), |x: string| -> bool {
+                return len(x) > 0;
+            }));
+            let union = sort_unique_strings(filter(regex_split(",", baseline + "," + cur), |x: string| -> bool {
+                return len(x) > 0;
+            }));
+            if len(union) > len(base_u) {
+                // A release was cut after our ship verdict — the call held up.
+                let outcome_s = signal_to_outcome(1);
+                if len(owner) > 0 {
+                    learn("ship_decide", "ship reality-check", "new tag beyond baseline [" + baseline + "] | signal: 1", outcome_s, ["acted", "release", repo_tag(owner, repo)]);
+                } else {
+                    learn("ship_decide", "ship reality-check", "new tag beyond baseline [" + baseline + "] | signal: 1", outcome_s, ["acted", "release"]);
+                };
+                print("[ship_decider] reality-check: new tag after ship verdict ->", outcome_s);
+                memo_write(key, "");
+                return;
             };
-            print("[ship_decider] reality-check: new tag after ship verdict ->", outcome_s);
-            memo_write(key, "");
-            return;
         };
     };
     let timeout_s = 86400;

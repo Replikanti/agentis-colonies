@@ -209,6 +209,30 @@ is asserted until multi-version CI is in place.
   (7 → 2). The remaining two CB-critical scorers (`prioritizer`'s
   `score_priority_verdict_key`, `ship_decider`'s `evaluate_ship_verdict`) need
   flat rewrites and stay allowlisted for a follow-up PR B2.
+- **Substrate purity P3 cluster B2 — flat CB-safe reality-check scorers (final 2/7 sites); #1587 COMPLETE** ([#1638](https://github.com/Replikanti/agentis-colonies/issues/1638)):
+  the last two embedded `python3 -c` verdict-scorers are rewritten to native
+  `.ag`. A naive per-element `.ag` walk would OVERFLOW `cb_per_tick` for both
+  (the exact failure the epic warns about), so each uses a flat, size-independent
+  idiom. `prioritizer.ag`'s `score_priority_verdict_key` mirrors the merged
+  `canonical_priority_context`: ONE `regex_find_all(PRISET)` over the raw JSON
+  label array (quote-anchored `priority*` / `p<digits>` / `urgent` / custom-pv,
+  the same grammar `is_pri` detects) selects the priority-like labels at ~349 CB
+  regardless of label count — replacing the per-label `is_pri` walk that measured
+  462 CB @2 labels and overflowed past ~12. `ship_decider.ag`'s
+  `evaluate_ship_verdict` replaces an `O(|cur|×|base|)` set-difference over the
+  full, monotonically-growing dev-app tag history (already 6749 CB at 26 tags)
+  with a free `cur == baseline` string early-exit for the dominant no-release
+  path plus a flat union-length test (`|BASE ∪ CUR| > |BASE|` ⇔ a new tag), ~1.5k
+  CB and bounded by the `--per-page 50` cap. Both are byte-identical to the
+  retired python on every realistic input (empties, single-element, full match/
+  mismatch, sub/superset both directions, case-insensitive `P1`/`p1`), pinned by
+  live `agentis go` value-identity fixtures plus `cb 2000;` CB-regression sweeps
+  in `test-reality-check-wave1.sh`; the score-path PRISET is tied to `is_pri` by
+  a new grammar-drift assertion in `test-prioritizer-vocab-fallback.sh`. Neither
+  feeds the crystallizer id, so no rule is re-keyed. The `check-substrate-purity.sh`
+  allowlist drops the final two rows (2 → **0**): **all 22 dev-apprenticeship
+  agents are now embedded-interpreter-free and the #1587 ratchet is fully closed**
+  — the guard-rail can only ever fail a NEW escape.
 
 ### Removed
 

@@ -93,10 +93,13 @@ if [ -n "${SUBSTRATE_PURITY_ALLOWLIST_FILE:-}" ]; then
     ALLOWLIST="$(grep -vE '^[[:space:]]*(#|$)' "$SUBSTRATE_PURITY_ALLOWLIST_FILE" || true)"
     ALLOWLIST_COUNT_EXPECTED="$(printf '%s\n' "$ALLOWLIST" | grep -c . || true)"
 else
-    ALLOWLIST="\
-triage/agents/prioritizer.ag:score_priority_verdict_key
-release/agents/ship_decider.ag:evaluate_ship_verdict"
-    ALLOWLIST_COUNT_EXPECTED=2
+    # #1587 fully closed (#1638 Phase 3 cluster B2): all 22 dev-apprenticeship
+    # agents are embedded-python-free — the allowlist is empty. The ratchet now
+    # only ever fails on a [NEW-ESCAPE]; there is nothing left to prune. Keep the
+    # empty-string literal (not an unset var) so the count assertion and the
+    # in_allowlist / [STALE-ALLOWLIST] loops iterate cleanly over zero entries.
+    ALLOWLIST=""
+    ALLOWLIST_COUNT_EXPECTED=0
 fi
 
 # Guard against an accidental edit silently changing the debt size.

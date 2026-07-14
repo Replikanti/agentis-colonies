@@ -96,11 +96,15 @@ tick N+k : evaluate_verdict()
    reality-check query is a second, smaller read for the specific
    artefact captured in the memo.
 
-3. **Compare suggestion vs. current state** deterministically. Use
-   `exec sh` with a small inline `python3 -c '...'` when the comparison
-   is set-based or numeric; use `json_get` + `parse_int` when it's a
-   single field. **Avoid another `prompt()` round-trip** — comparison
-   is mechanical, not semantic.
+3. **Compare suggestion vs. current state** deterministically with
+   native `.ag` builtins (`json_get`/`json_get_raw` +
+   `json_array_to_strings`/`json_array_object_field_values` for the JSON
+   leaves, `regex_find_all`/`sort_unique_strings` + `filter`/`len` for
+   set operations); use `json_get` + `parse_int` when it's a single
+   field. The #1587 substrate-purity ratchet retired the last embedded
+   `python3 -c` comparators (Phase 3 cluster B), so every scorer is now
+   pure `.ag`. **Avoid another `prompt()` round-trip** — comparison is
+   mechanical, not semantic.
 
 4. **Emit `learn()` with the honest outcome** and clear the verdict
    memo. Always include the `"acted"` tag so the row lands in
@@ -168,19 +172,19 @@ verdict clears.
 
 | Colony / agent | Ground truth | Comparison primitive |
 |---|---|---|
-| `triage/labeler` | label set on the issue N ticks after suggestion | python3 set operations over `json.loads(raw).labels` |
-| `triage/prioritizer` | `priority::*` label survival | same set-overlap over a filtered label subset |
+| `triage/labeler` | label set on the issue N ticks after suggestion | native `.ag` set operations (`json_get_raw` -> `json_array_to_strings`, `member`/`subset`/`intersect` via `filter`+`len`) over the issue labels |
+| `triage/prioritizer` | `priority::*` label survival | native flat `regex_find_all(PRISET)` over the raw label array (quote-anchored `priority*`/`p<digits>`/`urgent`/custom-pv), constant-cost regardless of label count (#1638 B2) |
 | `triage/router` | issue actually worked on by the routed colony (branch / MR created, or issue closed with the colony's trail) | `mr-list --ref=<issue_id_derived_branch>` or label check |
 | `triage/issue_creator` **(Wave 2 M5)** | fate of the self-observe issue it `create-issue`'d — closed as real work vs. closed as noise | `forge-api.sh issue <iid>` state + native quote-anchored `index_of` label-set membership (same helper family as `planning/scope_estimator`, Wave 2 M3) |
 | `code-review/{style,logic,security,test}_reviewer` | review comment survival (resolved / dismissed / quoted-in-diff) | GitLab `mr-notes` fetch; compare comment id across ticks |
-| `code-review/approval_decider` **(Wave 1)** | MR fate after the approve/request_changes call — merged vs. closed-unmerged | bounded `merge-requests --state merged \| closed --per-page 50` list-scan + python3 iid membership (merged checked first) |
-| `planning/plan_reviewer` **(Wave 1)** | auto-promotion (#1362) survival — impl trigger label kept vs. `needs-planning` re-added, after a 30-min soak | `forge-api.sh issue <iid>` raw labels + python3 set membership |
+| `code-review/approval_decider` **(Wave 1)** | MR fate after the approve/request_changes call — merged vs. closed-unmerged | bounded `merge-requests --state merged \| closed --per-page 50` list-scan + native `.ag` iid membership (`json_array_object_field_values` + `member`, merged checked first, both-ends bracket guard) |
+| `planning/plan_reviewer` **(Wave 1)** | auto-promotion (#1362) survival — impl trigger label kept vs. `needs-planning` re-added, after a 30-min soak | `forge-api.sh issue <iid>` raw labels + native `.ag` set membership (`json_get_raw` -> `json_array_to_strings` + `member`) |
 | `planning/scope_estimator` **(Wave 2 M3)** | fate of the issue the estimate was posted on — closed as real work vs. closed as noise | `forge-api.sh issue <iid>` state + native quote-anchored `index_of` label-set membership |
 | `planning/risk_assessor` **(WAIVED)** | _(no wired signal — advisory risk list has no separable mechanical forge signal; a structured risk-outcome marker would be needed, see the `// colony-lint: reality-check-waived:` annotation in the agent)_ | _(n/a)_ |
 | `planning/task_decomposer` **(Wave 2 M3)** | fate of the issue the breakdown was posted on — closed as real work vs. closed as noise | `forge-api.sh issue <iid>` state + native quote-anchored `index_of` label-set membership |
 | `implementation/code_writer` **(Wave 1)** | fate of the deterministic `fix/issue-<iid>` branch's MR — merged, closed-unmerged, or still open | bounded `merge-requests --state merged \| closed \| opened` list-scan via `raw_list_has_branch` (merged checked first) |
 | `implementation/{test_writer,refactorer}` | MR outcome — merged, reverted, or follow-up fix merged within a window | bounded `merge-requests` list-scan by branch |
-| `release/ship_decider` **(Wave 1)** | a release (new tag) actually cut after a `ship` verdict — **success-only** signal; the 24 h ageout drops the verdict UNSCORED (a `partial` would carry a positive delta and reward ignored ship calls) | sanitized tag-name **SET** baseline via `tags --per-page 50` + python3 set diff (GitHub `/tags` is unordered, so a set diff, not a latest-tag compare) |
+| `release/ship_decider` **(Wave 1)** | a release (new tag) actually cut after a `ship` verdict — **success-only** signal; the 24 h ageout drops the verdict UNSCORED (a `partial` would carry a positive delta and reward ignored ship calls) | sanitized tag-name **SET** baseline via `tags --per-page 50` + native `.ag` set diff — a free `cur == baseline` early-exit plus a flat union-length test (`len(union) > len(baseline)`), constant-cost regardless of tag history (#1638 B2); GitHub `/tags` is unordered, so a set diff, not a latest-tag compare |
 | `release/version_bumper` **(Wave 2 M4)** | tag survival — does the tag it created still exist; genuine ternary (found -> success, confirmed absent past a 24h grace window -> failure) | `tag_exists` boundary-anchored `index_of` membership over `tags --per-page 50` (deliberately NOT ship_decider's prefix-filtered tag-name set — version_bumper runs per customer repo, not just this federation's own) |
 | `release/changelog_writer` **(Wave 2 M4)** | a release actually cut after its draft — **success-only** signal; the 24 h ageout drops the verdict UNSCORED | newest-`tag_name` compare over `releases --per-page 1` (both backends return releases pre-sorted newest-first) |
 | `release/release_checker` **(Wave 2 M4)** | a release actually cut after it flagged the MR ready — **success-only** signal; the 24 h ageout drops the verdict UNSCORED | same newest-`tag_name` compare over `releases --per-page 1` |
@@ -223,8 +227,10 @@ emission in step 4. The conversion was:
    the JSON blob.
 2. Step 2 (re-query): unchanged. `evaluate_label_verdict()` already
    calls `get-issue`.
-3. Step 3 (compare): unchanged. The inline `python3` set-comparison
-   emits signal 0 / 1 / 2 / 3.
+3. Step 3 (compare): the set-comparison emits signal 0 / 1 / 2 / 3.
+   (Originally an inline `python3 -c`; the #1587 ratchet Phase 3 cluster B
+   rewrote it to a native `.ag` `member`/`subset`/`intersect` compare —
+   same signals.)
 4. **Step 4 (emit `learn()`):** new. After the pre-existing
    `apply_feedback()` call that adjusts `labeler:confidence` (the #106
    path), the agent now also emits `learn("label", ..., outcome,
@@ -364,8 +370,8 @@ reverted write nets to ~0.0 fitness delta, which is the honest answer.
 The compare step in `score_one_autonomous()` differs from the propose
 path because we wrote the labels ourselves. There is no "no signal
 yet" case (signal 0 doesn't exist here) — if the operator has cleared
-our labels entirely, that is a reversal, not silence. The python3
-output is strict:
+our labels entirely, that is a reversal, not silence. The native `.ag`
+compare output is strict:
 
 - **1 — full match:** every suggested label still present → `success`
 - **2 — partial erosion:** some labels removed → `partial`

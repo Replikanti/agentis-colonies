@@ -655,42 +655,54 @@ fn score_priority_verdict_key(owner: string, repo: string, key: string) -> strin
         return "keep";
     };
     let vocab = effective_priority_vocab();
-    // Deterministic compare in python (cheap, reproducible) rather than a
-    // prompt() round-trip. Output: 0 = no signal (no priority-like label
-    // yet), 1 = kept (our suggested label is the ONLY priority-like label),
-    // 2 = partial (ours present but the operator ADDED a different
-    // priority-like label — an escalation is not agreement, #1437; delta
-    // 0.0, rule feedback delta 0.0), 3 = overridden (a priority-like label
-    // present, but not ours). Comparison is case-insensitive (#1437) —
-    // is_pri lowercases, so a case-mismatched suggestion must not read as
-    // an override.
-    let match_cmd = "SUGGESTED=" + shell_escape(suggested) + " RAW=" + shell_escape(cur_raw) + " PV=" + shell_escape(vocab) +
-        " python3 -c '" +
-        "import os, json, re\n" +
-        "pv=os.environ.get(\"PV\",\"\").lower()\n" +
-        "pv_set={t.strip() for t in pv.split(\",\") if t.strip()}\n" +
-        "def is_pri(l):\n" +
-        "    l2=str(l).strip().lower()\n" +
-        "    if not l2: return False\n" +
-        "    if l2.startswith(\"priority\"): return True\n" +
-        "    if re.fullmatch(r\"p\\d+\", l2): return True\n" +
-        "    if l2==\"urgent\": return True\n" +
-        "    if l2 in pv_set: return True\n" +
-        "    return False\n" +
-        "sug=os.environ[\"SUGGESTED\"].strip()\n" +
-        "sug_l=sug.lower()\n" +
-        "try:\n" +
-        "    act=[str(l) for l in json.loads(os.environ[\"RAW\"]).get(\"labels\", [])]\n" +
-        "except Exception:\n" +
-        "    print(0); raise SystemExit\n" +
-        "act_l=[a.strip().lower() for a in act]\n" +
-        "pri=[l for l in act if is_pri(l)]\n" +
-        "ours=sug_l in act_l\n" +
-        "others=[l for l in pri if str(l).strip().lower()!=sug_l]\n" +
-        "print(0 if not pri else (1 if (ours and len(others)==0) else (2 if ours else 3)))" +
-        "'";
-    let signal_raw = try { exec sh match_cmd; } catch e { "0"; };
-    let signal = parse_int(signal_raw);
+    // #1638 P3 cluster B2: native, FLAT-cost priority-set compare (was an
+    // embedded `python3 -c`). The naive per-label `filter(act, is_pri)` walk
+    // pays ~283 CB/label (is_pri runs a regex_match + a member() over the
+    // operator vocab per label) and OVERFLOWED cb_per_tick past ~12 labels
+    // (462 CB @2, 1892 @12, overflow @16 — the exact #1640-class failure).
+    // This mirrors the merged canonical_priority_context idiom: ONE flat
+    // regex_find_all of PRISET over the raw JSON label array selects the
+    // quoted priority-like labels (priority* / ^p<digits>$ / urgent / a custom
+    // pv token, quote-anchored — the same grammar is_pri detects, byte-verified
+    // by the PRISET drift assertion in test-prioritizer-vocab-fallback.sh), at
+    // ~349 CB independent of label count. Output: 0 = no signal (no
+    // priority-like label yet), 1 = kept (our suggested label is the ONLY
+    // priority-like label), 2 = partial (ours present but the operator ADDED a
+    // different priority-like label — an escalation is not agreement, #1437;
+    // delta 0.0, rule feedback delta 0.0), 3 = overridden (a priority-like
+    // label present, but not ours). Comparison is case-insensitive (#1437):
+    // both the labels (to_lower(labels_raw)) and the suggestion (sug_q) are
+    // lowercased, so a case-mismatched suggestion never reads as an override.
+    // A malformed / missing-key cur_raw -> json_get_raw "" -> no matches ->
+    // signal 0 (leave pending), subsuming the old python try/except -> print(0)
+    // (the json_get_raw is try-wrapped for the same defensive discipline as the
+    // cluster-B1 array readers). Documented pathological exclusions (forge
+    // labels never carry them, same class as canonical_priority_context's): a
+    // label / pv token containing a literal `"`, or leading/trailing space
+    // padding that would desync a PRISET match from the trimmed sug_q.
+    let pv_toks = filter(map(regex_split(",", to_lower(vocab)), |t: string| -> string {
+        return trim(t);
+    }), |t: string| -> bool {
+        return len(t) > 0;
+    });
+    let pva = pvalt(pv_toks);
+    let labels_lc = to_lower(try { json_get_raw(cur_raw, "labels"); } catch e { ""; });
+    let PRISET = "\"[ ]*(?:priority[^\"]*|(?:p[0-9]+|urgent" + pva + ")[ ]*)\"";
+    let pri = regex_find_all(PRISET, labels_lc);
+    let sug_q = "\"" + to_lower(trim(suggested)) + "\"";
+    let ours = member(sug_q, pri);
+    let others = filter(pri, |m: string| -> bool {
+        return m != sug_q;
+    });
+    let signal = if len(pri) == 0 {
+        0;
+    } else {
+        if ours {
+            if len(others) == 0 { 1; } else { 2; };
+        } else {
+            3;
+        };
+    };
     if signal == 0 {
         return "keep";
     };
