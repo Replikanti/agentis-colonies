@@ -247,7 +247,7 @@ run_cell() {
       HUNT_CLASS="$rc_cls" \
       SUBSYSTEM="$rc_subsys" \
       SLICER="$rc_dir/slice-fns.sh" \
-      "$AGENTIS" go hunter.ag --enable-exec --enable-messaging ) >"$rc_log" 2>&1 || \
+      "$AGENTIS" go hunter.ag --enable-exec --enable-messaging --grant-pii ) >"$rc_log" 2>&1 || \
       echo "run-discovery.sh: hunter run failed for $rc_cls/'$rc_subsys' (see $rc_log)" >&2
 }
 
