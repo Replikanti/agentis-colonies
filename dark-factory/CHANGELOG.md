@@ -14,12 +14,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-14
+
+**Requires:** agentis >= `1.18.0`
+
 ### Documentation
 - **Doc sweep for the target-selection front-end** (#1609/#1612, epic #1611). Reflected the intake funnel
   (`run-immunefi-intake.sh --live` + `audit-history-probe.sh`) and zone-mapping (`map-zones.sh` +
   `zone-mapper.ag`) in the top-level `README.md` federation row and the repo `CLAUDE.md` project overview
   (dark-factory is EVM + Solana/Anchor, not Solana-only); added the `zone-mapper.ag` row to the auditor
-  colony `README.md` agent table and corrected the auditor agent count (22 → 23 agents).
+  colony `README.md` agent table and corrected the auditor agent count (22 → 24 agents, after `brief-writer.ag`
+  landed alongside it in the same milestone).
 
 ### Added
 - **`bench/corpus-bench/` — score the pipeline against REAL concluded Sherlock contests, not just a synthetic
@@ -224,6 +229,40 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `demo-immunefi-live.sh` gains a deterministic fixture-pair assertion and is now wired into `colony-lint.sh`.
 
 ### Fixed
+- **`hunter.ag` crashed on an illegal blackboard memo key at the exact moment it surfaced a CANDIDATE**
+  (#1657/#1658). The `outcome == "success"` branch wrote a second memo keyed
+  `"dark-factory:blackboard:" + subsystem` — a human-readable zone name (spaces/`&`/`/`), illegal in a memo key
+  (`[A-Za-z0-9_:.-]` only) — aborting the hunter before its finding flushed to stdout, so `run-discovery.sh`
+  saw a non-zero exit and silently discarded the lead. Fired only on positive findings, so it destroyed
+  exactly the productive hunts. The per-subsystem key was never read by anything (every reader reads
+  `dark-factory:blackboard:leads`); removed. Found live via `bench/corpus-bench` (41 of 175 hunt cells
+  crashed on this across the 8-contest corpus run) and independently reproduced on a live protocol hunt.
+- **`map-zones.sh` globbed vendored dependencies and build artifacts as audit "zones"** (#1659/#1660). The
+  source `find` swept the whole target repo, so it grouped `lib/` Foundry submodules (openzeppelin,
+  forge-std, ...) and `node_modules/`/`out/`/`cache/`/`artifacts/` into their own zones and handed them to the
+  hunter — wrong scope, wasted hunt budget — and on a large dependency tree overflowed the mechanical pass's
+  single `SOURCES` env string past `MAX_ARG_STRLEN` (~128 KB), aborting the whole zone-hunt with
+  `Argument list too long` (measured: a Yearn strategy vendors 5,521 `.sol` under `lib/`, 627 KB). Now prunes
+  `lib/`, `node_modules/`, `out/`, `cache/`, `artifacts/`, `.git/` from the source glob.
+- **`map-zones.sh`/`gen-briefs.sh` lost a zone's classification/brief when the LLM indented its reply**
+  (#1662/#1663). The `ZONE|` scrape (`grep '^ZONE|' | head -1`) and the brief sentinel match
+  (`$0=="DARK-FACTORY:BRIEF-BEGIN|"z`) were anchored/exact, but the LLM non-deterministically indents its
+  whole answer sometimes — an indented marker line was silently missed, leaving the zone unclassified (0 hunt
+  cells) or the brief mechanically stubbed, with no error. Live evidence: a real contest's CORE strategy zone
+  was dropped this way while sibling zones at column 0 classified fine. Both scrapes are now whitespace-
+  tolerant. Regression coverage added in `demo-map-zones.sh`/`demo-gen-briefs.sh` (#1664/#1667): an
+  indented-marker fixture, derived at runtime, that fails if either scrape is ever re-anchored.
+- **`map-zones.sh`/`gen-briefs.sh` silently accepted an LLM's echoed prompt template as valid content**
+  (#1655/#1656). The zone-mapper/brief-writer sometimes answer a fill-in-the-blank prompt by echoing its own
+  bracketed placeholder verbatim (e.g. `name="<short subsystem name>"`) instead of real content; both scripts
+  accepted it at face value. Added a shared heuristic (a value that, stripped, starts with `<` and ends with
+  `>` is an unfilled template) and treat it the same as an existing failed-run.
+- **`demo-audit-pass.sh` flaky ~1-in-5 (a different stage-row assertion missing each run)** (#1666/#1669).
+  Root-caused to an intermittent read-side flake in `agentis memo get` itself (confirmed NOT a
+  write-completion race — the on-disk memo file was proven byte-complete at the exact moment a check failed;
+  NOT a lingering process; NOT a `.ag` logic bug), amplified by the harness's ~24+ reads per run. Fixed with a
+  bounded read-retry (8 attempts) in the test harness only; `coordinator.ag`/`run-audit-pass.sh` untouched.
+  Companion issue filed in the private `agentis-core` repo (#909) to track the underlying read flakiness.
 
 ## [0.3.0] - 2026-07-10
 
@@ -2442,7 +2481,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   with a `pending_human_review` marker. The colony NEVER auto-posts to a
   bounty platform — submission is always an explicit human action.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.3.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.0...HEAD
+[0.4.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.3.0...dark-factory-v0.4.0
 [0.3.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.2.0...dark-factory-v0.3.0
 [0.2.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/dark-factory-v0.2.0
 [0.1.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/dark-factory-v0.1.0
