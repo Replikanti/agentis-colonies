@@ -95,6 +95,15 @@ if printf '%s' "$REVIEW_GATE" | grep -q 'forge-api.sh mr-changes ' \
 else
     fail "(b) review_gate reads" "review_gate must fingerprint mr-changes and scan mr-notes via note_verdict"
 fi
+# The note_verdict call must be fail-closed wrapped (#1629): under an adversarial
+# marker flood, the pure line-walk can exhaust cb_per_tick and raise an uncaught
+# CognitiveOverload; the try/catch fallback to "" scopes the failure to this one
+# PR (HOLD) instead of aborting the whole tick.
+if printf '%s' "$REVIEW_GATE" | grep -Fq 'let status = try { note_verdict(notes_raw, head_fp, bot_login()); } catch e { ""; };'; then
+    pass "(b) note_verdict call is fail-closed wrapped (try/catch -> \"\")"
+else
+    fail "(b) note_verdict fail-closed wrap" "the note_verdict call in review_gate must be wrapped: let status = try { note_verdict(...); } catch e { \"\"; };"
+fi
 # A passing verdict releases; a fail-to-fingerprint fails SAFE (wait, never merge).
 if printf '%s' "$REVIEW_GATE" | grep -q 'if status == "pass" {' \
    && printf '%s' "$REVIEW_GATE" | grep -q 'if len(changes_raw) < 10 { return "wait"; }' \

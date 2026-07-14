@@ -71,7 +71,7 @@ CW_MARKED="$(awk '/^fn marked_bot_note_body\(/{f=1} f{print} /^}/{if(f) f=0}' "$
 # 1. block-on-current-head-detected-and-redriven
 # ---------------------------------------------------------------------------
 if printf '%s' "$QA_AT" | grep -Fq 'let head_fp = head_fingerprint(changes_raw)' \
-   && printf '%s' "$QA_AT" | grep -Fq 'let reason = block_reason_for_head(notes_raw, head_fp, bot_login())'; then
+   && printf '%s' "$QA_AT" | grep -Fq 'let reason = try { block_reason_for_head(notes_raw, head_fp, bot_login()); } catch e { ""; };'; then
     pass "detection: head_fingerprint(mr-changes) + block_reason_for_head(mr-notes, head_fp, bot_login())"
 else
     fail "detection helpers" "recover_qa_block_at must compute head_fp and block_reason_for_head"

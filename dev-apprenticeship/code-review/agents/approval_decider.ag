@@ -439,7 +439,7 @@ fn review_gate(owner: string, repo: string, iid_str: string) -> string {
     // colony-lint: safe-exec-concat
     let notes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-notes " + shell_escape(iid_str) + repo_arg(owner, repo);
     let notes_raw = try { exec sh notes_cmd; } catch e { ""; };
-    let status = note_verdict(notes_raw, head_fp, bot_login());
+    let status = try { note_verdict(notes_raw, head_fp, bot_login()); } catch e { ""; };
 
     if status == "pass" {
         return "merge";
