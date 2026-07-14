@@ -176,8 +176,31 @@ run_pass() {
 }
 pass_result() { ( cd "$1" && agentis memo get coordinator:pass_result ) 2>/dev/null; }
 pass_trace()  { ( cd "$1" && agentis memo get coordinator:pass_trace ) 2>/dev/null; }
+# #1666: `agentis memo get` has an intermittent PER-CALL flaky read — reproduced at scale, the on-disk memo
+# file is already byte-complete/correct at the exact moment a check fails, so this is NOT a write-completion
+# race. This is a bounded RETRY of the read itself (re-issuing the identical `agentis memo get` each attempt),
+# not a sync/sleep wait for a write to finish — do not "simplify" this back into a single-shot call or a fixed
+# sleep; see the #1666 plan for the reproduction that ruled those out.
 # Does the trace contain a row for stage $2?  `trace_has <dir> <stage>`
-trace_has() { pass_trace "$1" | grep -q "stage=$2	"; }
+trace_has() {
+  _th_tries=0
+  while [ "$_th_tries" -lt 8 ]; do
+    pass_trace "$1" | grep -q "stage=$2	" && return 0
+    _th_tries=$((_th_tries + 1))
+  done
+  return 1
+}
+# Sibling of trace_has() for an arbitrary grep pattern (used by the LIVE stub-runner dispatch check below,
+# which greps a `stage=...\tverdict=...` shape rather than a bare stage name) — same bounded read-retry
+# rationale as trace_has(), NOT a write-completion wait.  `trace_has_row <dir> <pattern>`
+trace_has_row() {
+  _thr_tries=0
+  while [ "$_thr_tries" -lt 8 ]; do
+    pass_trace "$1" | grep -q "$2" && return 0
+    _thr_tries=$((_thr_tries + 1))
+  done
+  return 1
+}
 
 note "running the deterministic offline pass under three fact-states ..."
 
@@ -257,7 +280,7 @@ for kv in "--repo /stub/repo" "--target Vault.sol:Vault" "--hypothesis reentranc
 done
 [ -z "$_cap_missing" ] && ok "run_poc_live built run-poc.sh's CLI from the POC_* facts (--repo/--target/--hypothesis/--class)" || bad "poc CLI missing args:$_cap_missing"
 # poc_class parsed the stub's POC|...|FINDING line (the exact shape run-poc.sh now emits) -> verdict=finding.
-if pass_trace "$LV" | grep -q 'stage=poc	verdict=finding'; then
+if trace_has_row "$LV" 'stage=poc	verdict=finding'; then
   ok "poc_class parsed the POC|...|FINDING line -> stage=poc verdict=finding"
 else
   bad "poc stage did not normalize to verdict=finding (poc_class/POC| parsing)"; pass_trace "$LV" | sed 's/^/        | /'
