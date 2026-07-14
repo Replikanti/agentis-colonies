@@ -189,6 +189,10 @@ sig-replay, reentrancy, decimals, integration-seam/composability, …), each wit
 distilled from real audits. The **integration-seam / composability** class (`C15`, #1644) is the
 under-audited cross-protocol boundary — adapters, guards, oracle-read wrappers, routers; `zone-mapper.ag`
 auto-tags integration/adapter zones with it and `brief-writer.ag` emits a seam-focused hunt subsection.
+Similarly, `zone-mapper.ag` deterministically force-tags `C10`/`C11` (first-depositor/inflation, stability-pool
+offset) onto any zone whose code references a lending/CDP/stability-pool interface — direct or ERC4626-wrapped
+(#1681) — as a backstop over the LLM's own classification, since a missed lending signal is costlier than a
+false positive.
 
 Every `CANDIDATE` in `discovery-out/discovery-report.md` is a **lead, not a finding** — unverified
 until it reproduces through the multi-contract Foundry gate:
