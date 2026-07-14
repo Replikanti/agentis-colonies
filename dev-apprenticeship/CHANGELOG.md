@@ -17,6 +17,13 @@ is asserted until multi-version CI is in place.
 
 **Requires:** agentis >= 1.22.4
 
+### Changed
+
+- `ship_decider`'s declarative `cb`/`cb_budget` bumped from 600 to 1200 ([#1642](https://github.com/Replikanti/agentis-colonies/issues/1642)):
+  the old value under-stated `tag_set_csv`'s measured 939-CB worst-case tick
+  cost; the runtime-enforced `cb_per_tick` cap (separate, defaults to 2000)
+  was never at risk. Declaration-hygiene only, no behavior change.
+
 ### Added
 
 - **Reality-check feedback loop — Wave 2 M1 (code-review, 5 agents)** ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)):

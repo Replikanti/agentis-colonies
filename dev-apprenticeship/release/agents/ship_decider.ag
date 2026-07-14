@@ -7,7 +7,7 @@
 // Run as daemon: agentis daemon agents/ship_decider.ag --colony release
 // Requires: exec_foreign capability, GITLAB_* env vars
 
-cb 600;
+cb 1200;
 
 type ShipPatterns {
     releases_seen: int,
