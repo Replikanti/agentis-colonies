@@ -140,7 +140,10 @@ generate() {
     local TIMESTAMP
     TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S')"
     local EPOCH
-    EPOCH="$(date '+%s')"
+    # #1685: test-only hermeticity hook (extends the #1043/#1145 single-injected-now
+    # invariant to the booted path). Default is byte-identical wall-clock; the override
+    # lets a test freeze the whole page (collector/timeline/history) to one epoch.
+    EPOCH="${FEDERATION_DASHBOARD_EPOCH_OVERRIDE:-$(date '+%s')}"
 
     local DAEMONS
     DAEMONS="$( (cd "$FED_DIR" && agentis daemon list --json) 2>/dev/null || echo '[]')"
