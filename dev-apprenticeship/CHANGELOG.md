@@ -65,6 +65,32 @@ is asserted until multi-version CI is in place.
   chain, so issue-fate would be a mislabelled signal; it carries a
   `// colony-lint: reality-check-waived:` annotation instead. Source-asserted
   by `tools/test-reality-check-wave2.sh`.
+- **Reality-check feedback loop — Wave 2 M4 (release, 3 agents)** ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)):
+  `version_bumper`, `release_checker`, and `changelog_writer` now close the
+  same loop for the release colony. `version_bumper` is a genuine ternary —
+  the tag it just created is a directly falsifiable artefact: a new native
+  `tag_exists(owner, repo, tag_name)` helper re-queries a single `tags
+  --per-page 50` list, projects it via `json_array_project(raw, "", "name")`,
+  and checks newline-boundary-anchored membership (found => `success`,
+  scored on the first evaluate that sees it, no soak needed; confirmed
+  absent past a 24h confirmation-lag grace window => `failure`). This
+  deliberately does NOT reuse `ship_decider`'s `tag_set_csv`/
+  `sanitize_tag_blob` helpers — those hardcode a `^dev-apprenticeship-v`
+  prefix filter correct for ship_decider (self-observing this federation's
+  own repo) but wrong for version_bumper, which runs per customer repo.
+  `release_checker` and `changelog_writer` mirror `ship_decider`'s
+  success-only posture exactly via a new native `newest_release_tag(owner,
+  repo)` helper (`releases --per-page 1 --view release-summary` +
+  `json_get(raw, "[0].tag_name")`, `"__QUERY_FAILED__"` sentinel on a failed
+  query): the newest release tag_name differing from the stashed baseline
+  means a release was actually cut after the check/draft => `success`; the
+  24h ageout drops the verdict UNSCORED (never `failure` — release batching
+  is normal, and scoring the ageout would reward ignored release work). Both
+  backends' `releases` verb returns releases pre-sorted newest-first, so a
+  plain string compare is sound — no set-diff, no python3, no per-element
+  `.ag` walk. Each agent stashes a single-slot `<agent>:pending_verdict`
+  memo once, at its single autonomous acting site; no `prompt()` on the
+  scoring path. Source-asserted by `tools/test-reality-check-wave2.sh`.
 
 ### Changed
 

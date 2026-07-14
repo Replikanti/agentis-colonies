@@ -156,8 +156,9 @@ verdict clears.
 | `implementation/code_writer` **(Wave 1)** | fate of the deterministic `fix/issue-<iid>` branch's MR — merged, closed-unmerged, or still open | bounded `merge-requests --state merged \| closed \| opened` list-scan via `raw_list_has_branch` (merged checked first) |
 | `implementation/{test_writer,refactorer}` | MR outcome — merged, reverted, or follow-up fix merged within a window | bounded `merge-requests` list-scan by branch |
 | `release/ship_decider` **(Wave 1)** | a release (new tag) actually cut after a `ship` verdict — **success-only** signal; the 24 h ageout drops the verdict UNSCORED (a `partial` would carry a positive delta and reward ignored ship calls) | sanitized tag-name **SET** baseline via `tags --per-page 50` + python3 set diff (GitHub `/tags` is unordered, so a set diff, not a latest-tag compare) |
-| `release/{version_bumper,changelog_writer}` | artefact edited post-hoc (tag rollback, changelog amendment) | compare artefact hash / length vs. commit time |
-| `release/release_checker` | ship decision actually made for the flagged MR | correlate against ship_decider's verdict row |
+| `release/version_bumper` **(Wave 2 M4)** | tag survival — does the tag it created still exist; genuine ternary (found -> success, confirmed absent past a 24h grace window -> failure) | `tag_exists` boundary-anchored `index_of` membership over `tags --per-page 50` (deliberately NOT ship_decider's prefix-filtered tag-name set — version_bumper runs per customer repo, not just this federation's own) |
+| `release/changelog_writer` **(Wave 2 M4)** | a release actually cut after its draft — **success-only** signal; the 24 h ageout drops the verdict UNSCORED | newest-`tag_name` compare over `releases --per-page 1` (both backends return releases pre-sorted newest-first) |
+| `release/release_checker` **(Wave 2 M4)** | a release actually cut after it flagged the MR ready — **success-only** signal; the 24 h ageout drops the verdict UNSCORED | same newest-`tag_name` compare over `releases --per-page 1` |
 
 Each row is a GitLab API call the agent already has access to (the
 pilot reuses `gitlab-api.sh get-issue`), plus a deterministic
