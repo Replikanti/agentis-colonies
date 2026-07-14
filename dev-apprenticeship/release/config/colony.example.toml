@@ -75,7 +75,7 @@ backend = "cli"
 [[agents]]
 name = "ship_decider"
 source = "agents/ship_decider.ag"
-cb_budget = 600
+cb_budget = 1200
 tick_interval_ms = 60000
 
 [[agents]]
