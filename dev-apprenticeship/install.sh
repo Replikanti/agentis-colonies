@@ -917,6 +917,12 @@ if [ -d "$AGENTIS_DIR" ]; then
             "$AGENTIS_CONFIG" > "$AGENTIS_CONFIG.tmp" && mv "$AGENTIS_CONFIG.tmp" "$AGENTIS_CONFIG"
         ok "upgraded exec.env_passthrough (#1521)"
     fi
+    # #1537 M3: AG_DRIVEN_EDIT_LOOP and AG_DECOMPOSE_LOOP are RETIRED (the AG loop
+    # is now the sole editing path, no longer flag-gated), but both stay on the
+    # allowlist below: the migrations above are a byte-exact grep -qxF chain, so
+    # dropping either name would break the chain for existing installs. Inert
+    # allowlist entries are harmless — check-getenv-allowlist.sh is one-directional
+    # (getenv -> allowlist), so an orphaned entry never fails lint.
     write_key 'exec.env_passthrough'         'COLONY_DIR,FORGE_TYPE,GITLAB_*,GITHUB_*,IMPLEMENTATION_TRIGGER_LABEL,PLANNING_TRIGGER_LABEL,AUTO_MERGE,PLAN_AUTO_PROMOTE,CODE_EDIT_MAX_CONCURRENT,AG_DRIVEN_EDIT_LOOP,LLM_MAX_CONCURRENT,LABELER_RULE_FIRST,LABELER_RULE_CONFIDENCE,ROUTER_RULE_FIRST,ROUTER_RULE_CONFIDENCE,LABELER_BM25_RECALL,ROUTER_BM25_RECALL,TRIAGE_BM25_K,PRIORITIZER_RULE_FIRST,PRIORITIZER_RULE_CONFIDENCE,PRIORITIZER_BM25_RECALL,QA_ADVERSARIAL_LLM_CMD,CODE_EDIT_MAX_ATTEMPTS,MERGE_REVIEW_TIMEOUT_S,MERGE_REVIEW_TIMEOUT_ACTION,CODE_EDIT_TIMEOUT_MS,CODE_EDIT_TOTAL_BUDGET_MS,CODE_EDIT_VERIFY_CMD,CODE_EDIT_VERIFY_TIMEOUT_MS,CODE_EDIT_MAX_SUBTASKS,CODE_EDIT_MODEL,CODE_EDIT_EFFORT,AG_DECOMPOSE_LOOP,QA_FIX_RECOVERY_ENABLED'
     # #1437: loud residue check. The exact-match migrations above
     # deliberately skip a hand-edited allowlist (#1426 contract: never
