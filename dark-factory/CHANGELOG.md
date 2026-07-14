@@ -14,6 +14,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **`run-discovery.sh` invoked `hunter.ag` without `--grant-pii`** (#1675), unlike every other
+  gate/agent invocation in this colony (`demo-scope-gate.sh`, `demo-impact-gate.sh`,
+  `run-gate-agent.sh`, etc.). A hunt cell's prompt (protocol source + scope brief + taxonomy)
+  routinely contains hex addresses/hashes that false-positive-trip the PII heuristic; when the
+  `prompt()` call was blocked, a downstream fallback echoed the raw PROMPT TEXT as if it were the
+  model's output, and the `CANDIDATE|` line-grep matched the format-instruction EXAMPLE line
+  embedded in the prompt itself — surfacing fabricated "candidates" made of literal placeholder
+  tokens (`<file:function:line>`, `<class=C1>`, ...) instead of real analysis. Found live on a
+  real Immunefi hunt. Fixed by adding `--grant-pii` to the hunter invocation, matching every
+  sibling script's convention (prompt content here is public open-source Solidity + an
+  operator-authored scope brief — never real PII).
+
 ## [0.4.0] - 2026-07-14
 
 **Requires:** agentis >= `1.18.0`
