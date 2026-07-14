@@ -692,8 +692,19 @@ fn evaluate_approval_verdict(owner: string, repo: string) -> void {
     // nothing is scored — a transient merged-query failure while the closed
     // query succeeds would otherwise misread a merged MR as closed-unmerged on
     // GitHub (closed superset of merged) and record a spurious terminal row;
-    // the native leading-`[` guard reproduces python's `ml is None -> print(0)`
-    // (here: return without scoring, subsuming the old signal-0 path).
+    // the native leading-`[`/trailing-`]` guard reproduces python's `ml is
+    // None -> print(0)` (here: return without scoring, subsuming the old
+    // signal-0 path). QA (#1674) live-probed a truncated-but-bracket-prefixed
+    // payload (e.g. a network read cut off mid-response: `[{"iid":41`) against
+    // a leading-`[`-only guard: json_array_object_field_values degrades
+    // gracefully on the malformed tail instead of throwing, so `m` silently
+    // resolved false and the tick fell through to a real (wrong) score instead
+    // of "no signal yet" — exactly the closed-superset hazard this guard
+    // exists to prevent. Checking BOTH ends closes that gap for the realistic
+    // truncation shape (a corrupted/partial forge response is corrupted at the
+    // tail, not with balanced-but-scrambled brackets); python's strict
+    // `json.loads` remains the fully general reference, this is the closest
+    // native approximation without a JSON-validate builtin.
     // json_array_object_field_values projects each object's `iid` to a flat
     // string list (non-array / iid-less entries drop to "" — same as python's
     // `{str(x.get("iid")) for x in d if isinstance(x,dict)}` over real MRs,
@@ -702,7 +713,11 @@ fn evaluate_approval_verdict(owner: string, repo: string) -> void {
     // not fail: the healthy workflow (author fixes, MR then merges) is
     // ambiguous agreement, not an overruled objection. Output: 0 = no signal
     // yet, 1 = success, 2 = partial, 3 = fail.
-    if index_of(trim(merged_raw), "[") != 0 {
+    let merged_trimmed = trim(merged_raw);
+    if index_of(merged_trimmed, "[") != 0 {
+        return;
+    };
+    if substring(merged_trimmed, len(merged_trimmed) - 1, len(merged_trimmed)) != "]" {
         return;
     };
     let iid_str = to_string(mr_iid);

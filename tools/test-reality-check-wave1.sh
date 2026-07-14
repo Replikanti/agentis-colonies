@@ -201,13 +201,16 @@ fi
 # approval_decider: merged list must parse before anything is scored.
 # #1638 P3 cluster B: the python `ml is None -> print(0)` guard and the
 # `print(2 if m else (1 if c else 0))` request_changes mapping are now the
-# native leading-`[` array guard + the request_changes signal ternary.
+# native leading-`[`/trailing-`]` array guard + the request_changes signal
+# ternary (both-ends check added post-QA #1674: a leading-`[`-only guard let a
+# truncated MERGED payload through to a real, wrong score).
 APPR_REGION="$(evaluate_region "$FED/code-review/agents/approval_decider.ag" "evaluate_approval_verdict")"
-if printf '%s' "$APPR_REGION" | grep -qF 'index_of(trim(merged_raw), "[") != 0' \
+if printf '%s' "$APPR_REGION" | grep -qF 'index_of(merged_trimmed, "[") != 0' \
+    && printf '%s' "$APPR_REGION" | grep -qF 'substring(merged_trimmed, len(merged_trimmed) - 1, len(merged_trimmed)) != "]"' \
     && printf '%s' "$APPR_REGION" | grep -qF 'if m { 2; } else { if c { 1; } else { 0; }; };'; then
-    pass "approval_decider: merged-parse guard + request_changes/merged=partial"
+    pass "approval_decider: merged-parse guard (both ends) + request_changes/merged=partial"
 else
-    fail "approval_decider: missing merged-parse guard or partial mapping"
+    fail "approval_decider: missing merged-parse guard (leading+trailing bracket) or partial mapping"
 fi
 
 # code_writer: unparseable merged/opened lists leave the verdict pending.
@@ -433,7 +436,9 @@ fn route_signal(suggested: string, cur_raw: string) -> int {
     return s;
 }
 fn approval_signal(action: string, merged_raw: string, closed_raw: string, iid_str: string) -> int {
-    if index_of(trim(merged_raw), "[") != 0 { return 0; };
+    let merged_trimmed = trim(merged_raw);
+    if index_of(merged_trimmed, "[") != 0 { return 0; };
+    if substring(merged_trimmed, len(merged_trimmed) - 1, len(merged_trimmed)) != "]" { return 0; };
     let m = member(iid_str, json_array_object_field_values(merged_raw, "iid"));
     let c = member(iid_str, json_array_object_field_values(closed_raw, "iid"));
     let s = if action == "approve" {
@@ -511,7 +516,8 @@ fn plan_signal(labels_csv: string, cur_raw: string) -> int {
     check_signal "router: assignees ∪ singular set membership -> 1/success" \
         'route_signal("alice", "{\"assignees\":[{\"username\":\"bob\"}],\"assignee\":{\"username\":\"alice\"}}")' "1"
     # approval_decider (evaluate_approval_verdict): merged wins the tie; the
-    # MERGED list must parse as an array (leading `[`) or nothing is scored.
+    # MERGED list must parse as an array (leading `[` AND trailing `]`) or
+    # nothing is scored.
     check_signal "approval_decider: approve + merged -> 1/success" \
         'approval_signal("approve", "[{\"iid\":41}]", "[]", "41")' "1"
     check_signal "approval_decider: approve + closed-only -> 3/failure" \
@@ -522,8 +528,24 @@ fn plan_signal(labels_csv: string, cur_raw: string) -> int {
         'approval_signal("request_changes", "[{\"iid\":41}]", "[]", "41")' "2"
     check_signal "approval_decider: request_changes + closed -> 1/success" \
         'approval_signal("request_changes", "[]", "[{\"iid\":41}]", "41")' "1"
-    check_signal "approval_decider: unparseable MERGED -> 0/no-score (closed-superset guard)" \
+    check_signal "approval_decider: unparseable MERGED (empty string) -> 0/no-score (closed-superset guard)" \
         'approval_signal("approve", "", "[{\"iid\":41}]", "41")' "0"
+    # QA #1674: a leading-`[`-only guard let a truncated MERGED payload (a
+    # forge read cut off mid-response, e.g. by a network timeout) through to
+    # json_array_object_field_values, which degrades gracefully on the
+    # malformed tail rather than throwing -- `m` silently resolved false and
+    # the tick fell through to a REAL WRONG score off the closed list, exactly
+    # the closed-superset-of-merged hazard this guard exists to prevent.
+    # Python's strict json.loads would reject all four of these as unparseable
+    # -> signal forced 0; the both-ends bracket check must too.
+    check_signal "approval_decider: truncated MERGED (array unclosed) -> 0/no-score" \
+        'approval_signal("approve", "[{\"iid\":41}", "[{\"iid\":41}]", "41")' "0"
+    check_signal "approval_decider: truncated MERGED (mid-key cutoff) -> 0/no-score" \
+        'approval_signal("approve", "[{\"ii", "[{\"iid\":41}]", "41")' "0"
+    check_signal "approval_decider: MERGED with trailing garbage after valid array -> 0/no-score" \
+        'approval_signal("approve", "[{\"iid\":41}]xyz", "[{\"iid\":41}]", "41")' "0"
+    check_signal "approval_decider: truncated MERGED on request_changes path -> 0/no-score" \
+        'approval_signal("request_changes", "[{\"iid\":41", "[{\"iid\":41}]", "41")' "0"
     # plan_reviewer (evaluate_plan_verdict): impl label present -> 1, plan label
     # re-added -> 3, neither -> 2 (single-field CSV -> plan="").
     check_signal "plan_reviewer: impl label present -> 1/success" \
