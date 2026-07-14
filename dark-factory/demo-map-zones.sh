@@ -92,6 +92,35 @@ else bad "zones.json schema assertion failed"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (c2) REGRESSION (#1664): an INDENTED ZONE| marker line must still be classified — proving #1663's
+#      whitespace-tolerant scrape (`grep -E '^[[:space:]]*ZONE\|' ... | sed 's/^[[:space:]]*//'`) stays in
+#      place. Derive the indented fixture at runtime from the checked-in FIXTURE_TXT (indent only the ZONE|
+#      lines 2 spaces; comments are untouched), run map-zones.sh over it into a fresh out dir, and assert
+#      every zone's bug_classes_likely is still non-empty (not silently dropped to the empty fallback).
+# ----------------------------------------------------------------------------------------------------------
+note "1b) regression: an indented ZONE| marker line is still classified (#1663 whitespace-tolerant scrape) ..."
+INDENTED_FIXTURE="$WORK/zones-indented.fixture.txt"
+sed -E 's/^(ZONE\|)/  \1/' "$FIXTURE_TXT" > "$INDENTED_FIXTURE"
+OUT_INDENTED="$WORK/out-indented"
+"$MAPZONES" --repo "$REPO" --out "$OUT_INDENTED" --since "$BASE" --fixture "$INDENTED_FIXTURE" \
+  >/dev/null 2>"$WORK/map-indented.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "map-zones.sh exits 0 on the indented fixture" \
+  || { bad "map-zones.sh exited $RC on the indented fixture"; sed 's/^/      /' "$WORK/map-indented.err" >&2; }
+[ -f "$OUT_INDENTED/zones.json" ] && ok "emitted zones.json for the indented fixture" || bad "zones.json not emitted for the indented fixture"
+if python3 - "$OUT_INDENTED/zones.json" <<'PY'
+import sys, json
+zones = json.load(open(sys.argv[1], encoding="utf-8"))
+assert isinstance(zones, list) and zones, "zones.json is not a non-empty array"
+for z in zones:
+    assert isinstance(z.get("bug_classes_likely"), list) and z["bug_classes_likely"], \
+        "zone %r has empty bug_classes_likely -- the indented ZONE| line was dropped" % z.get("id")
+PY
+then ok "every zone's bug_classes_likely is still non-empty despite the indented ZONE| marker"
+else bad "indented-marker regression: a zone's classification was dropped"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # (d) scope.tsv is pipe-delimited `subsystem | classes | files`, carries a `file@fn+fn` slice for the
 #     oversized contract, and contains NO `|`/newline/backtick inside any field (shell-safety, AC #7).
 # ----------------------------------------------------------------------------------------------------------

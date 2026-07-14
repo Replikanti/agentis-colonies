@@ -137,6 +137,34 @@ else bad "brief-content (four-element) assertion failed"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (c2) REGRESSION (#1664): INDENTED BRIEF-BEGIN/BRIEF-END sentinels must still yield the real (non-fallback)
+#      brief body -- proving #1663's whitespace-tolerant slice_block() match stays in place. Derive the
+#      indented fixture at runtime from the checked-in BRIEFS_FIXTURE (indent only the sentinel lines 2
+#      spaces; the interior body lines stay at column 0), run gen-briefs.sh over it into a fresh out dir, and
+#      assert the anchor zone's brief is non-empty and does NOT carry the mechanical-fallback marker.
+# ----------------------------------------------------------------------------------------------------------
+note "3b) regression: indented BRIEF-BEGIN/BRIEF-END sentinels still yield a real brief body (#1663) ..."
+INDENTED_BRIEFS_FIXTURE="$WORK/briefs-indented.fixture.txt"
+sed -E 's/^(DARK-FACTORY:BRIEF-BEGIN\|.*|DARK-FACTORY:BRIEF-END)$/  \1/' "$BRIEFS_FIXTURE" > "$INDENTED_BRIEFS_FIXTURE"
+OUT_INDENTED="$WORK/out-indented"
+"$GENBRIEFS" --zones "$ZM/zones.json" --scope "$ZM/scope.tsv" --out "$OUT_INDENTED" --fixture "$INDENTED_BRIEFS_FIXTURE" \
+  >/dev/null 2>"$WORK/gen-indented.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "gen-briefs.sh exits 0 on the indented-sentinel fixture" \
+  || { bad "gen-briefs.sh exited $RC on the indented-sentinel fixture"; sed 's/^/      /' "$WORK/gen-indented.err" >&2; }
+INDENTED_BRIEF_FILE="$OUT_INDENTED/briefs/brief_${ANCHOR_ID}.md"
+if [ -s "$INDENTED_BRIEF_FILE" ]; then
+  ok "anchor brief is non-empty for the indented-sentinel fixture"
+else
+  bad "anchor brief missing/empty for the indented-sentinel fixture: $INDENTED_BRIEF_FILE"
+fi
+if [ -f "$INDENTED_BRIEF_FILE" ] && grep -q "Mechanical fallback" "$INDENTED_BRIEF_FILE"; then
+  bad "indented-sentinel regression: the brief fell back to the mechanical stub (the sentinel scrape missed the indented marker)"
+else
+  ok "the indented-sentinel brief was sliced from the fixture, not degraded to the mechanical fallback"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # (d) Brief-safety: no NUL, <= 2000 lines, no bare CANDIDATE|/BLACKBOARD- token, no leaked sentinel (a brief is
 #     injected verbatim into hunter.ag's prompt and must never masquerade as a scraped hunter output line).
 # ----------------------------------------------------------------------------------------------------------
