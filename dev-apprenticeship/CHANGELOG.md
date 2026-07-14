@@ -17,6 +17,10 @@ is asserted until multi-version CI is in place.
 
 **Requires:** agentis >= 1.22.4
 
+## [2.12.0] - 2026-07-15
+
+**Requires:** agentis >= 1.22.4
+
 ### Changed
 
 - `ship_decider`'s declarative `cb`/`cb_budget` bumped from 600 to 1200 ([#1642](https://github.com/Replikanti/agentis-colonies/issues/1642)):
