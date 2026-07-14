@@ -255,14 +255,15 @@ assert_line "#1436 free-text vocab: 'blocker' matches, fragment 'block' does not
     "$(run_issue_pv prioritize "$FIX_DIR/block.json" "blocker, important")" \
     "$(printf '32\tkw=crash labels=block\tkw=crash\tblocker\tCrash in parser block')"
 
-# Drift guard: the remaining prioritizer inline python site and the library
-# carry the tokenized form. #1638 P3 cluster A retired canonical_priority_context's
-# python (now native `.ag`), so only the cluster-B score_priority_verdict_key
-# reality-check keeps its inline pv_set (2 -> 1).
+# Drift guard: prioritizer.ag now carries ZERO inline python. #1638 P3 cluster A
+# retired canonical_priority_context's python (2 -> 1) and cluster B2 retired the
+# last one — score_priority_verdict_key's reality-check pv_set (1 -> 0), which is
+# now a native regex_find_all(PRISET) compare. The tokenized pv form survives only
+# in the out-of-scope library backfill (canonical-context.py, checked below).
 PRI_AG_FILE="$FED/triage/agents/prioritizer.ag"
 PV_SET_COUNT="$(grep -c 'pv_set={t.strip() for t in pv.split' "$PRI_AG_FILE" || true)"
-assert_line "#1436 the remaining prioritizer python site uses the tokenized pv_set" \
-    "$PV_SET_COUNT" "1"
+assert_line "#1638 B2 prioritizer.ag carries zero inline python pv_set sites" \
+    "$PV_SET_COUNT" "0"
 if grep -q 'def pv_tokens(pv):' "$CANON"; then
     pass "#1436 canonical-context.py carries pv_tokens()"
 else

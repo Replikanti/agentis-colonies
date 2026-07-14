@@ -14,9 +14,12 @@
 #      narrow detection too, and the flat PRISET VERIFY must never silently narrow
 #      relative to is_pri, or already-labeled legacy issues would look
 #      "unprioritized" again and prioritizer would re-fire forever.
-#   3. Regression guard: score_priority_verdict_key()'s match_cmd also
-#      still recognizes the broad legacy scheme (same failure mode as #2,
-#      but on the reality-check scoring path instead of selection).
+#   3. Regression guard: score_priority_verdict_key() (native since #1638 P3
+#      cluster B2 — was an embedded python3 match_cmd) builds its own flat
+#      raw-JSON PRISET, which must ALSO still recognize the broad legacy scheme
+#      (same failure mode as #2, but on the reality-check scoring path instead
+#      of selection — a narrowed score-PRISET would mis-classify a legacy
+#      priority label as "no priority-like label yet" -> signal 0 forever).
 #
 # Grep/awk-based (dash-safe), mirroring tools/test-labeler-autonomous-verdict.sh.
 
@@ -128,15 +131,39 @@ else
     bad "PRISET dropped its [ ]* whitespace tolerance -- padded priority labels ('  P1  ') would leak past the VERIFY: $priset_line"
 fi
 
-# -- (3) regression guard: score_priority_verdict_key() match_cmd stays broad
+# -- (3) regression guard: score_priority_verdict_key()'s native PRISET stays
+# broad. #1638 P3 cluster B2 replaced the embedded python match_cmd with a flat
+# raw-JSON regex_find_all(PRISET, to_lower(labels)) — the SAME grammar
+# canonical_priority_context builds. Assert the score-path PRISET literal still
+# carries the three broad-scheme branches (priority* / p[0-9]+ / urgent) AND the
+# `[ ]*` whitespace tolerance, so the reality-check scorer cannot silently
+# narrow relative to is_pri (which would read a legacy P1 as "no priority label
+# yet" and leave the verdict pending forever).
 score_block="$(fn_body score_priority_verdict_key)"
 if [ -z "$score_block" ]; then
     bad "score_priority_verdict_key() not found"
 else
-    if printf '%s' "$score_block" | grep -Fq 'p\\d+' && printf '%s' "$score_block" | grep -Fq 'urgent'; then
-        ok "score_priority_verdict_key()'s match_cmd still recognizes p\\d+ and urgent (detection unchanged)"
+    # Strip // line comments first — the doc comment legitimately references the
+    # retired `python3 -c` and must not trip the substrate-purity assertion.
+    if printf '%s' "$score_block" | sed 's|//.*$||' | grep -Fq 'python3'; then
+        bad "score_priority_verdict_key() still embeds python3 (substrate purity regression, #1587)"
     else
-        bad "score_priority_verdict_key()'s match_cmd no longer recognizes both p\\d+ and urgent -- detection was accidentally narrowed"
+        ok "score_priority_verdict_key() is python-free (native raw-JSON PRISET compare, #1638 B2)"
+    fi
+    score_priset="$(printf '%s' "$score_block" | grep -F 'let PRISET =' || true)"
+    if [ -z "$score_priset" ]; then
+        bad "score_priority_verdict_key()'s PRISET raw-JSON literal not found"
+    elif printf '%s' "$score_priset" | grep -Fq 'priority[^' \
+         && printf '%s' "$score_priset" | grep -Fq 'p[0-9]+' \
+         && printf '%s' "$score_priset" | grep -Fq 'urgent'; then
+        ok "score_priority_verdict_key()'s PRISET still recognizes priority*, p<digits> and urgent (not narrowed vs is_pri)"
+    else
+        bad "score_priority_verdict_key()'s PRISET no longer covers priority*/p<digits>/urgent -- the scoring VERIFY silently narrowed: $score_priset"
+    fi
+    if [ -n "$score_priset" ] && printf '%s' "$score_priset" | grep -Fq '[ ]*'; then
+        ok "score_priority_verdict_key()'s PRISET carries [ ]* whitespace tolerance (parity with is_pri's trim)"
+    else
+        bad "score_priority_verdict_key()'s PRISET dropped its [ ]* whitespace tolerance: $score_priset"
     fi
 fi
 

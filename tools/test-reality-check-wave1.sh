@@ -561,6 +561,194 @@ else
     echo "[SKIP] agentis binary not found — cluster B1 comparator signal checks skipped"
 fi
 
+# ----- Cluster B2 comparators: flat CB-safe rewrites (#1638 P3, allowlist 2->0) --
+# The final 2 verdict scorers overflowed cb_per_tick with a naive per-element
+# walk and so were split out of B1: prioritizer's `score_priority_verdict_key`
+# ran is_pri (~283 CB) per label (462 @2, 1892 @12, OVERFLOW @16 — the #1640
+# class), and ship_decider's `evaluate_ship_verdict` computed set(CUR)-set(BASE)
+# as an O(|cur|x|base|) nested walk over the full, monotonically growing dev-app
+# tag history (6749 CB already at 26 tags). Both were rewritten flat — prioritizer
+# via ONE regex_find_all(PRISET) over the raw label array, ship_decider via a
+# free `cur == baseline` early-exit + a union-length set-difference. Two
+# properties are pinned: (a) VALUE-IDENTITY of each signal vs the retired python,
+# and (b) a CB REGRESSION guard — the rewrite completes under `cb 2000;` (the
+# enforced cb_per_tick) at label/tag counts the naive walk overflowed at. Gated
+# on the agentis binary (CI runners have none).
+if command -v agentis >/dev/null 2>&1; then
+    B2_TMP="$(mktemp -d)"
+    B2_HELPERS='fn member(x: string, xs: list<string>) -> bool {
+    return len(filter(xs, |y: string| -> bool { return y == x; })) > 0;
+}
+fn str_replace_all(hay: string, needle: string, rep: string) -> string {
+    let p = index_of(hay, needle);
+    if p < 0 { return hay; };
+    return substring(hay, 0, p) + rep + str_replace_all(substring(hay, p + len(needle), len(hay)), needle, rep);
+}
+fn regex_escape(s: string) -> string {
+    let a = str_replace_all(s, "\\", "\\\\");
+    let b = str_replace_all(a, ".", "\\.");
+    let c = str_replace_all(b, "+", "\\+");
+    let d = str_replace_all(c, "*", "\\*");
+    let e = str_replace_all(d, "?", "\\?");
+    let f = str_replace_all(e, "(", "\\(");
+    let g = str_replace_all(f, ")", "\\)");
+    let h = str_replace_all(g, "[", "\\[");
+    let i = str_replace_all(h, "]", "\\]");
+    let j = str_replace_all(i, "{", "\\{");
+    let k = str_replace_all(j, "}", "\\}");
+    let l = str_replace_all(k, "^", "\\^");
+    let m = str_replace_all(l, "$", "\\$");
+    return str_replace_all(m, "|", "\\|");
+}
+fn pvalt(pv_toks: list<string>) -> string {
+    let extra = filter(pv_toks, |t: string| -> bool {
+        if index_of(t, "priority") == 0 { return false; };
+        if regex_match("^p[0-9]+$", t) { return false; };
+        if t == "urgent" { return false; };
+        return true;
+    });
+    return reduce(extra, |acc: string, t: string| -> string {
+        return acc + "|" + regex_escape(t);
+    }, "");
+}
+fn priority_signal(suggested: string, cur_raw: string, vocab: string) -> int {
+    let pv_toks = filter(map(regex_split(",", to_lower(vocab)), |t: string| -> string {
+        return trim(t);
+    }), |t: string| -> bool {
+        return len(t) > 0;
+    });
+    let pva = pvalt(pv_toks);
+    let labels_lc = to_lower(try { json_get_raw(cur_raw, "labels"); } catch e { ""; });
+    let PRISET = "\"[ ]*(?:priority[^\"]*|(?:p[0-9]+|urgent" + pva + ")[ ]*)\"";
+    let pri = regex_find_all(PRISET, labels_lc);
+    let sug_q = "\"" + to_lower(trim(suggested)) + "\"";
+    let ours = member(sug_q, pri);
+    let others = filter(pri, |m: string| -> bool {
+        return m != sug_q;
+    });
+    let signal = if len(pri) == 0 {
+        0;
+    } else {
+        if ours {
+            if len(others) == 0 { 1; } else { 2; };
+        } else {
+            3;
+        };
+    };
+    return signal;
+}
+fn ship_diff_signal(baseline: string, cur: string) -> int {
+    if cur == baseline { return 0; };
+    let base_u = sort_unique_strings(filter(regex_split(",", baseline), |x: string| -> bool {
+        return len(x) > 0;
+    }));
+    let union = sort_unique_strings(filter(regex_split(",", baseline + "," + cur), |x: string| -> bool {
+        return len(x) > 0;
+    }));
+    if len(union) > len(base_u) { return 1; };
+    return 0;
+}'
+    run_b2() {
+        local budget="$1" body="$2" sandbox
+        sandbox="$(mktemp -d -p "$B2_TMP")"
+        (
+            cd "$sandbox"
+            agentis init >/dev/null 2>&1
+            {
+                printf 'cb %s;\n\n%s\n\n%s\n' "$budget" "$B2_HELPERS" "$body"
+            } > probe.ag
+            agentis go probe.ag 2>/dev/null | grep -v genesis | tail -n 1
+        )
+        rm -rf "$sandbox"
+    }
+    check_b2() {
+        local label="$1" call="$2" want="$3" got
+        got="$(run_b2 8000 "print($call);")"
+        if [ "$got" = "$want" ]; then
+            pass "$label"
+        else
+            fail "$label (want='$want' got='$got')"
+        fi
+    }
+    # -- prioritizer (score_priority_verdict_key) value-identity: 0 no pri-label,
+    # 1 ours-only, 2 ours+other-pri, 3 other-pri-only; case-insensitive P1/p1;
+    # legacy urgent + custom-pv token; malformed/missing raw -> 0/pending.
+    DEFPV="priority::low,priority::medium,priority::high,priority::critical"
+    check_b2 "prioritizer: no priority-like label yet -> 0/keep" \
+        "priority_signal(\"P1\", \"{\\\"labels\\\":[\\\"bug\\\",\\\"docs\\\"]}\", \"$DEFPV\")" "0"
+    check_b2 "prioritizer: our label is the only priority one -> 1/success" \
+        "priority_signal(\"P1\", \"{\\\"labels\\\":[\\\"bug\\\",\\\"p1\\\"]}\", \"$DEFPV\")" "1"
+    check_b2 "prioritizer: ours + a different priority label -> 2/partial" \
+        'priority_signal("P1", "{\"labels\":[\"p1\",\"p2\"]}", "priority::low")' "2"
+    check_b2 "prioritizer: a different priority label, not ours -> 3/override" \
+        'priority_signal("P1", "{\"labels\":[\"p2\"]}", "priority::low")' "3"
+    check_b2 "prioritizer: case-insensitive Priority::High match -> 1/success" \
+        'priority_signal("Priority::High", "{\"labels\":[\"Priority::High\"]}", "priority::high")' "1"
+    check_b2 "prioritizer: legacy urgent ours-only -> 1/success" \
+        'priority_signal("urgent", "{\"labels\":[\"urgent\"]}", "priority::low")' "1"
+    check_b2 "prioritizer: custom-pv token blocker ours-only -> 1/success" \
+        'priority_signal("blocker", "{\"labels\":[\"blocker\"]}", "blocker,priority::high")' "1"
+    check_b2 "prioritizer: custom-pv exact-not-prefix (highway vs high) not priority -> 0" \
+        'priority_signal("P1", "{\"labels\":[\"highway\"]}", "high")' "0"
+    check_b2 "prioritizer: malformed cur_raw -> 0/keep (python try/except parity)" \
+        'priority_signal("P1", "not json at all", "priority::low")' "0"
+    check_b2 "prioritizer: empty labels array -> 0/keep" \
+        'priority_signal("P1", "{\"labels\":[]}", "priority::low")' "0"
+    check_b2 "prioritizer: missing labels key -> 0/keep" \
+        'priority_signal("P1", "{\"title\":\"x\"}", "priority::low")' "0"
+    # -- ship_decider (evaluate_ship_verdict) value-identity: new tag beyond
+    # baseline -> 1/success, unchanged -> 0, both-empty -> 0, first-ever tag -> 1,
+    # tag removed (cur subset of base) -> 0, reordered-same-set -> 0.
+    check_b2 "ship_decider: new tag beyond baseline -> 1/success" \
+        'ship_diff_signal("dev-apprenticeship-v1.0.0", "dev-apprenticeship-v1.0.0,dev-apprenticeship-v1.1.0")' "1"
+    check_b2 "ship_decider: tag set unchanged -> 0/pending" \
+        'ship_diff_signal("dev-apprenticeship-v1.0.0", "dev-apprenticeship-v1.0.0")' "0"
+    check_b2 "ship_decider: both empty (no tags either side) -> 0/pending" \
+        'ship_diff_signal("", "")' "0"
+    check_b2 "ship_decider: first-ever tag over empty baseline -> 1/success" \
+        'ship_diff_signal("", "dev-apprenticeship-v1.0.0")' "1"
+    check_b2 "ship_decider: a tag removed (cur subset of baseline) -> 0/pending" \
+        'ship_diff_signal("a,b", "a")' "0"
+    check_b2 "ship_decider: reordered same set -> 0/pending (union-length parity)" \
+        'ship_diff_signal("a,b", "b,a")' "0"
+
+    # -- CB regression guard (the whole reason B2 is split from B1). Run the SAME
+    # signal fns under `cb 2000;` (the enforced cb_per_tick) at label/tag counts
+    # where the naive per-element walk overflowed, and assert both a correct
+    # result AND completion (an overflow prints nothing / an error -> mismatch).
+    check_b2_cb() {
+        local label="$1" call="$2" want="$3" got
+        got="$(run_b2 2000 "print($call);")"
+        if [ "$got" = "$want" ]; then
+            pass "$label"
+        else
+            fail "$label (cb 2000 overflow or wrong result: want='$want' got='$got')"
+        fi
+    }
+    # prioritizer: 20 labels (19 non-priority + p1) — naive is_pri-per-label
+    # overflowed past ~12; the flat PRISET stays ~349 CB. Expect 1 (ours only).
+    PRI20='{\"labels\":[\"l0\",\"l1\",\"l2\",\"l3\",\"l4\",\"l5\",\"l6\",\"l7\",\"l8\",\"l9\",\"l10\",\"l11\",\"l12\",\"l13\",\"l14\",\"l15\",\"l16\",\"l17\",\"l18\",\"p1\"]}'
+    check_b2_cb "prioritizer: 20 labels under cb 2000 -> 1 (flat, was #1640 overflow)" \
+        "priority_signal(\"P1\", \"$PRI20\", \"$DEFPV\")" "1"
+    # ship_decider: baseline 20 tags, cur = same 20 + 1 new — naive set-difference
+    # was 6749 CB @26 tags; the union-length test stays ~1.5k CB. Expect 1.
+    SHIP_BASE=""; SHIP_CUR=""
+    for i in $(seq 0 19); do
+        t="dev-apprenticeship-v1.$i.0"
+        if [ -z "$SHIP_BASE" ]; then SHIP_BASE="$t"; else SHIP_BASE="$SHIP_BASE,$t"; fi
+    done
+    SHIP_CUR="$SHIP_BASE,dev-apprenticeship-v1.20.0"
+    check_b2_cb "ship_decider: 21-tag diff under cb 2000 -> 1 (flat, was 6749 CB @26 tags)" \
+        "ship_diff_signal(\"$SHIP_BASE\", \"$SHIP_CUR\")" "1"
+    # ship_decider: the dominant no-release path (cur == baseline) at 20 tags must
+    # early-exit for free — 0, no union split at all.
+    check_b2_cb "ship_decider: 20-tag no-change under cb 2000 -> 0 (free early-exit)" \
+        "ship_diff_signal(\"$SHIP_BASE\", \"$SHIP_BASE\")" "0"
+    rm -rf "$B2_TMP"
+else
+    echo "[SKIP] agentis binary not found — cluster B2 comparator + CB-sweep checks skipped"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
