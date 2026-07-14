@@ -20,6 +20,15 @@
 #      (same failure mode as #2, but on the reality-check scoring path instead
 #      of selection — a narrowed score-PRISET would mis-classify a legacy
 #      priority label as "no priority-like label yet" -> signal 0 forever).
+#   4. #1678 regression: the #1638 B2 rewrite above still walked the MATCHED
+#      priority-label array (`pri`) with two per-element `.ag` closures
+#      (member(sug_q, pri) / filter(pri, |m| m != sug_q)) — `pri`'s length is
+#      bounded by the raw label count, not a small constant, so an issue whose
+#      labels are ALL priority-like still overflowed cb_per_tick (observed
+#      110-130 all-priority labels). Section 4 pins the static absence of both
+#      closures; section 5 (agentis-gated) pins the four realistic signal
+#      values AND reproduces the 150-all-priority-label pathology directly
+#      under a tight `cb 400;` budget.
 #
 # Grep/awk-based (dash-safe), mirroring tools/test-labeler-autonomous-verdict.sh.
 
@@ -165,6 +174,112 @@ else
     else
         bad "score_priority_verdict_key()'s PRISET dropped its [ ]* whitespace tolerance: $score_priset"
     fi
+fi
+
+
+# -- (4) #1678 regression: score_priority_verdict_key() must no longer walk
+# the MATCHED-subset array `pri` with a per-element `.ag` closure. Strip //
+# comments first: the doc comment above the fix legitimately quotes both
+# retired closures (as history) and must not trip this static pin.
+if [ -z "$score_block" ]; then
+    bad "score_priority_verdict_key() not found (see section 3)"
+else
+    score_code="$(printf '%s' "$score_block" | sed 's|//.*$||')"
+    if printf '%s' "$score_code" | grep -Fq 'member(sug_q, pri)'; then
+        bad "score_priority_verdict_key() still walks pri via member(sug_q, pri) -- #1678 per-element closure regressed"
+    else
+        ok "score_priority_verdict_key() no longer calls member(sug_q, pri) (#1678 flat rewrite)"
+    fi
+    if printf '%s' "$score_code" | grep -Fq 'filter(pri,'; then
+        bad "score_priority_verdict_key() still walks pri via filter(pri, ...) -- #1678 per-element closure regressed"
+    else
+        ok "score_priority_verdict_key() no longer calls filter(pri, ...) (#1678 flat rewrite)"
+    fi
+fi
+
+# -- (5) #1678 live probe: pin the four realistic signal cases and reproduce
+# the pathological 150-all-priority-label repro under a TIGHT cb budget.
+# Embeds a byte-identical copy of the pri_count/ours/signal logic
+# (parameterized on labels_lc, sug_q) -- the forge query and the pv-vocab
+# extension are factored out since none of these cases need a custom pv
+# token. Gated on the agentis binary (CI runners have none), same convention
+# as tools/test-reality-check-wave1.sh's live probes.
+if command -v agentis >/dev/null 2>&1; then
+    PROBE_TMP="$(mktemp -d)"
+    trap 'rm -rf "$PROBE_TMP"' EXIT
+    PROBE_HELPER='fn score_signal(labels_lc: string, sug_q: string) -> int {
+    let PRISET = "\"[ ]*(?:priority[^\"]*|(?:p[0-9]+|urgent)[ ]*)\"";
+    let pri = regex_find_all(PRISET, labels_lc);
+    let pri_count = len(pri);
+    let ours = index_of(labels_lc, sug_q) >= 0;
+    let signal = if pri_count == 0 {
+        0;
+    } else {
+        if ours {
+            if pri_count > 1 { 2; } else { 1; };
+        } else {
+            3;
+        };
+    };
+    return signal;
+}'
+    run_probe() {
+        local budget="$1" body="$2" sandbox
+        sandbox="$(mktemp -d -p "$PROBE_TMP")"
+        (
+            cd "$sandbox"
+            agentis init >/dev/null 2>&1
+            {
+                printf 'cb %s;\n\n%s\n\n%s\n' "$budget" "$PROBE_HELPER" "$body"
+            } > probe.ag
+            agentis go probe.ag 2>/dev/null | grep -v genesis | tail -n 1
+        )
+        rm -rf "$sandbox"
+    }
+    check_probe() {
+        local label="$1" budget="$2" call="$3" want="$4" got
+        got="$(run_probe "$budget" "print($call);")"
+        if [ "$got" = "$want" ]; then
+            ok "$label"
+        else
+            bad "$label (want='$want' got='$got')"
+        fi
+    }
+    # Four realistic cases, all under the same tight cb 400 the pathological
+    # repro below runs under.
+    check_probe "score_signal: no priority label yet -> 0/keep" 400 \
+        'score_signal("[\"bug\",\"docs\"]", "\"p1\"")' "0"
+    check_probe "score_signal: our label is the only priority one -> 1/success" 400 \
+        'score_signal("[\"bug\",\"p1\"]", "\"p1\"")' "1"
+    check_probe "score_signal: ours + a different priority label -> 2/partial" 400 \
+        'score_signal("[\"p1\",\"p2\"]", "\"p1\"")' "2"
+    check_probe "score_signal: a different priority label, not ours -> 3/override" 400 \
+        'score_signal("[\"p2\"]", "\"p1\"")' "3"
+
+    # #1678 pathological repro: 150 distinct all-priority-matching labels
+    # ("priority-0".."priority-149", all matching PRISET's `priority[^"]*`
+    # branch). sug_q picks the first as ours. The old member(sug_q, pri) +
+    # filter(pri, ...) walk paid ~70+ CB/element over all 150 matched entries
+    # (>10000 CB) and overflowed cb_per_tick well before this point (observed
+    # 110-130); the flat len()/index_of() rewrite stays a handful of native
+    # calls regardless of pri's length. `cb 400;` is well under the enforced
+    # cb_per_tick default of 2000, and far below what the old walk needed.
+    labels150=""
+    i=0
+    while [ "$i" -lt 150 ]; do
+        if [ "$i" -gt 0 ]; then
+            labels150="${labels150},"
+        fi
+        labels150="${labels150}$(printf '\\"priority-%d\\"' "$i")"
+        i=$((i + 1))
+    done
+    labels150="[${labels150}]"
+    call_150="score_signal(\"$labels150\", \"\\\"priority-0\\\"\")"
+    check_probe "score_signal: #1678 repro -- 150 all-priority labels under cb 400 -> 2 (flat, was overflow @110-130)" \
+        400 "$call_150" "2"
+    rm -rf "$PROBE_TMP"
+else
+    echo "[SKIP] agentis binary not found -- #1678 live score_signal probes skipped"
 fi
 
 echo

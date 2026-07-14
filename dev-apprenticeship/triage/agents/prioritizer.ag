@@ -665,17 +665,47 @@ fn score_priority_verdict_key(owner: string, repo: string, key: string) -> strin
     // quoted priority-like labels (priority* / ^p<digits>$ / urgent / a custom
     // pv token, quote-anchored — the same grammar is_pri detects, byte-verified
     // by the PRISET drift assertion in test-prioritizer-vocab-fallback.sh), at
-    // ~349 CB independent of label count. Output: 0 = no signal (no
-    // priority-like label yet), 1 = kept (our suggested label is the ONLY
-    // priority-like label), 2 = partial (ours present but the operator ADDED a
-    // different priority-like label — an escalation is not agreement, #1437;
-    // delta 0.0, rule feedback delta 0.0), 3 = overridden (a priority-like
-    // label present, but not ours). Comparison is case-insensitive (#1437):
-    // both the labels (to_lower(labels_raw)) and the suggestion (sug_q) are
-    // lowercased, so a case-mismatched suggestion never reads as an override.
-    // A malformed / missing-key cur_raw -> json_get_raw "" -> no matches ->
-    // signal 0 (leave pending), subsuming the old python try/except -> print(0)
-    // (the json_get_raw is try-wrapped for the same defensive discipline as the
+    // ~349 CB independent of label count.
+    //
+    // #1678 follow-up: the FIRST cut of this fix still paid per-element CB
+    // downstream of the flat regex_find_all — `member(sug_q, pri)` and
+    // `filter(pri, |m| m != sug_q)` both walk `pri`, the array of MATCHED
+    // priority-like labels, with an `.ag` closure per element. `pri`'s length
+    // is bounded by the raw label count, not by a small constant, so an issue
+    // whose labels are ALL priority-like (pri_count == full label count) still
+    // overflows cb_per_tick — exactly the pathology #1678 reproduced (overflow
+    // observed between 110-130 all-priority labels). The fix drops both
+    // closures for two flat, native, O(1)-cost primitives already used
+    // elsewhere in this file: `pri_count = len(pri)` (a native call on the
+    // array agentis-core already built) and `ours = index_of(labels_lc,
+    // sug_q) >= 0` (a single native substring search over the raw label blob,
+    // not a per-element walk over `pri`). `sug_q` is the quote-delimited
+    // literal `"\"" + to_lower(trim(suggested)) + "\""`, so `index_of(labels_lc,
+    // sug_q) >= 0` is an exact quote-anchored field match against the raw JSON
+    // label blob (the same anchoring PRISET already relies on), not a loose
+    // substring test — a same-length-prefix collision like `"priority-1"`
+    // inside `"priority-10"` is excluded because the closing `"` in `sug_q`
+    // would have to coincide with a non-`"` character. GitHub label sets have
+    // no duplicate names, so when `ours` is true, `sug_q` is exactly one of
+    // the `pri_count` matched entries — `pri_count > 1` is therefore
+    // equivalent to the old `len(others) > 0` ("some OTHER priority-like
+    // label besides ours is present"); when `ours` is false, `others` was
+    // never read by the old ternary (only used inside the `ours` branch), so
+    // nothing is lost by not computing it. Net effect: every remaining
+    // operation is a single native call independent of label count — CB
+    // stays flat regardless of how many labels match PRISET.
+    //
+    // Output: 0 = no signal (no priority-like label yet), 1 = kept (our
+    // suggested label is the ONLY priority-like label), 2 = partial (ours
+    // present but the operator ADDED a different priority-like label — an
+    // escalation is not agreement, #1437; delta 0.0, rule feedback delta 0.0),
+    // 3 = overridden (a priority-like label present, but not ours).
+    // Comparison is case-insensitive (#1437): both the labels
+    // (to_lower(labels_raw)) and the suggestion (sug_q) are lowercased, so a
+    // case-mismatched suggestion never reads as an override. A malformed /
+    // missing-key cur_raw -> json_get_raw "" -> no matches -> signal 0 (leave
+    // pending), subsuming the old python try/except -> print(0) (the
+    // json_get_raw is try-wrapped for the same defensive discipline as the
     // cluster-B1 array readers). Documented pathological exclusions (forge
     // labels never carry them, same class as canonical_priority_context's): a
     // label / pv token containing a literal `"`, or leading/trailing space
@@ -690,15 +720,13 @@ fn score_priority_verdict_key(owner: string, repo: string, key: string) -> strin
     let PRISET = "\"[ ]*(?:priority[^\"]*|(?:p[0-9]+|urgent" + pva + ")[ ]*)\"";
     let pri = regex_find_all(PRISET, labels_lc);
     let sug_q = "\"" + to_lower(trim(suggested)) + "\"";
-    let ours = member(sug_q, pri);
-    let others = filter(pri, |m: string| -> bool {
-        return m != sug_q;
-    });
-    let signal = if len(pri) == 0 {
+    let pri_count = len(pri);
+    let ours = index_of(labels_lc, sug_q) >= 0;
+    let signal = if pri_count == 0 {
         0;
     } else {
         if ours {
-            if len(others) == 0 { 1; } else { 2; };
+            if pri_count > 1 { 2; } else { 1; };
         } else {
             3;
         };
