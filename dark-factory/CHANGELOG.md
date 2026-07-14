@@ -14,6 +14,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-15
+
+**Requires:** agentis >= `1.18.0`
+
 ### Fixed
 - **`run-discovery.sh` invoked `hunter.ag` without `--grant-pii`** (#1675), unlike every other
   gate/agent invocation in this colony (`demo-scope-gate.sh`, `demo-impact-gate.sh`,
@@ -2494,7 +2498,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   with a `pending_human_review` marker. The colony NEVER auto-posts to a
   bounty platform — submission is always an explicit human action.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.1...HEAD
+[0.4.1]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.0...dark-factory-v0.4.1
 [0.4.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.3.0...dark-factory-v0.4.0
 [0.3.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.2.0...dark-factory-v0.3.0
 [0.2.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/dark-factory-v0.2.0
