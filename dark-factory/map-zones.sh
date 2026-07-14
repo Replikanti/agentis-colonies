@@ -193,7 +193,7 @@ CLASS_LINES="$OUT/.zone-classes.txt"
 SKELETON=""
 SRC_LABEL=""
 if [ -n "$FIXTURE" ]; then
-  grep '^ZONE|' "$FIXTURE" > "$CLASS_LINES" || true
+  grep -E '^[[:space:]]*ZONE\|' "$FIXTURE" | sed 's/^[[:space:]]*//' > "$CLASS_LINES" || true
   SRC_LABEL="fixture"
 elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
   # Substrate classification: one zone-mapper.ag run per zone, against a shared agentis store (mirrors
@@ -227,7 +227,13 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
         SLICER="$RUN/slice-fns.sh" \
         "$AGENTIS" go zone-mapper.ag --enable-exec --enable-messaging ) > "$RUN/zone_${ZID}.log" 2>&1 \
       || echo "map-zones.sh: zone-mapper run failed for zone '$ZID' (see $RUN/zone_${ZID}.log)" >&2
-    grep '^ZONE|' "$RUN/zone_${ZID}.log" | head -1 >> "$CLASS_LINES" || true
+    # Scrape the zone-mapper's ZONE| emission WHITESPACE-TOLERANTLY: the LLM formats its reply
+    # non-deterministically and sometimes indents the whole answer (observed live: the core `src` zone's
+    # ZONE| line came back indented 2 spaces), so an anchored `^ZONE|` silently misses it -> the zone is
+    # left unclassified -> 0 cells -> the zone is NEVER hunted. Match leading whitespace, strip it, and take
+    # the LAST emission (the agent reasons first and emits the ZONE| line at the end). The python parser
+    # below still drops any placeholder/template echo, so feeding it the real last line is safe.
+    grep -E '^[[:space:]]*ZONE\|' "$RUN/zone_${ZID}.log" | sed 's/^[[:space:]]*//' | tail -1 >> "$CLASS_LINES" || true
   done <<EOF
 $ZONE_LIST
 EOF

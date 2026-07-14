@@ -150,9 +150,14 @@ fi
 # keyed to this zone id and stopping at its first closing sentinel. Identical extraction over a fixture or a
 # live agentis log (the run-gate-agent.sh --classify-log precedent).
 slice_block() {
+  # WHITESPACE-TOLERANT sentinel match: the LLM formats its reply non-deterministically and sometimes indents
+  # the whole answer, so an exact `$0=="...BEGIN|"z` comparison would miss an indented sentinel and the brief
+  # would silently fall back to the mechanical stub (same failure mode as map-zones.sh's ZONE| scrape). Compare
+  # a whitespace-stripped copy of the line to the sentinel, but PRINT the raw body lines verbatim.
   awk -v z="$2" '
-    $0=="DARK-FACTORY:BRIEF-BEGIN|" z {f=1; next}
-    $0=="DARK-FACTORY:BRIEF-END" && f {f=0; exit}
+    { s=$0; sub(/^[[:space:]]+/,"",s); sub(/[[:space:]]+$/,"",s) }
+    s=="DARK-FACTORY:BRIEF-BEGIN|" z {f=1; next}
+    s=="DARK-FACTORY:BRIEF-END" && f {f=0; exit}
     f {print}
   ' "$1"
 }
