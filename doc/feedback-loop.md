@@ -19,13 +19,37 @@ outcome is consumed, see [`auto-promote.md`](./auto-promote.md).
 
 ## Scope
 
+The pattern is now **federation-wide**: all 22 `dev-apprenticeship` agents
+participate — 21 wired with the 4-step idiom below, and one
+(`planning/risk_assessor`) carrying a documented file-scope waiver because
+its advisory risk list has no separable mechanical forge signal to compare
+against (see the [ground-truth signal catalog](#ground-truth-signal-catalog)
+row and the [Enforcement](#enforcement) section). What began as a pilot on a
+single agent and fanned out colony-by-colony (#1453, Wave 1 + Wave 2 M1–M6)
+is now the default shape for every acting agent in this federation;
+[`tools/check-reality-check.sh`](../tools/check-reality-check.sh) is the
+`colony-lint`-enforced mechanism that keeps new agents from regressing it.
+
 - **Included:** the 4-step pattern, memo schema, signal-to-outcome
   mapping, per-colony ground-truth signal catalog, pilot reference
   ([`triage/labeler`](../dev-apprenticeship/triage/agents/labeler.ag)),
-  interaction with the per-agent confidence memo from #106.
+  interaction with the per-agent confidence memo from #106, the
+  `check-reality-check.sh` enforcement mechanism.
 - **Excluded:** the tier contract (in ADR-0001), the auto-promote
   classifier (in `auto-promote.md`), the experience-store schema (in
   the agentis runtime docs).
+
+## Enforcement
+
+[`tools/check-reality-check.sh`](../tools/check-reality-check.sh) (run by
+`colony-lint.sh`) enforces the file-scope rule going forward: every
+`dev-apprenticeship/*/agents/*.ag` file that writes to the forge (opens an
+MR, posts a note, tags/releases, merges — the 9 verbs behind
+`forge-api.sh`) must either contain the `"<agent>:pending_verdict"` memo
+key from step 1 below, or carry a `// colony-lint: reality-check-waived:
+<reason>` annotation. `planning/risk_assessor.ag` is the worked example of
+the waiver path — read its annotation for the shape of a justified
+exception.
 
 ## The pattern
 
@@ -176,10 +200,16 @@ merged-query failure could otherwise misread a merged MR as
 closed-unmerged. Adding a `get-mr <iid>` verb is a possible future
 optimisation but is out of scope for Wave 1.
 
-**Wave 1 (#1453).** The four agents closest to terminal actions —
-`code-review/approval_decider`, `implementation/code_writer`,
-`planning/plan_reviewer`, `release/ship_decider` — carry the pilot's 4-step
-idiom (bold rows above). The remaining agents are Wave 2 follow-ups.
+**Rollout complete (#1453).** Wave 1 carried the pilot's 4-step idiom onto
+the four agents closest to terminal actions — `code-review/approval_decider`,
+`implementation/code_writer`, `planning/plan_reviewer`,
+`release/ship_decider` (bold rows above). Wave 2 (M1–M6) fanned the pattern
+out to every remaining acting agent, colony by colony; the per-row
+`**(Wave 2 M<n>)**` tags above are historical provenance for which PR
+shipped which row. All 22 dev-apprenticeship agents now participate — 21
+wired, 1 documented waiver (`planning/risk_assessor`) — and
+[`tools/check-reality-check.sh`](../tools/check-reality-check.sh) is the
+regression guard that keeps it that way for any agent added from here on.
 
 ## Pilot: `triage/labeler`
 
@@ -261,9 +291,12 @@ a fresh agent is not penalised for having no reality-check rows yet.
   `delta_slope_negative_for` or `evolve.trigger.reject_rate_above`
   need re-calibration once real reject rows flow, that is a follow-up
   (see [#163](https://github.com/Replikanti/agentis-colonies/issues/163)).
-- **Fan-out to the other 20 agents.** One follow-up per colony or per
-  agent; the pilot validates the shape, subsequent tickets copy it.
-  Autonomous-tier coverage is tracked separately (see below).
+- **Fan-out to the other 20 agents.** Done — #1453 Wave 2 (M1–M6) carried
+  the pattern (wired or documented-waived) to every remaining acting
+  agent. Any *new* acting agent added to `dev-apprenticeship` is caught by
+  [`tools/check-reality-check.sh`](../tools/check-reality-check.sh) at PR
+  time rather than needing a manual follow-up ticket. Autonomous-tier
+  coverage is tracked separately (see below).
 
 ## Autonomous-tier extension (#203, labeler pilot)
 
