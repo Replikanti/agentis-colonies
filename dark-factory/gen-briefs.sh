@@ -157,6 +157,19 @@ slice_block() {
   ' "$1"
 }
 
+# is_placeholder_echo <file> — the LLM sometimes answers the brief-writer prompt by echoing its OWN bracketed
+# template instead of a real brief (observed live: a whole body of literally "<the markdown body: ...>"). A
+# real brief never legitimately looks like that, so treat it the same as a failed brief-writer run rather than
+# accepting a template as a valid, non-empty body.
+is_placeholder_echo() {
+  body="$(cat "$1" 2>/dev/null)"
+  trimmed="$(printf '%s' "$body" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$trimmed" in
+    '<'*'>') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 SRC_LABEL=""
 RUN=""
 if [ -n "$FIXTURE" ]; then
@@ -212,6 +225,10 @@ while IFS="$TAB" read -r ZID ZNAME ZCLASSES ZFILES || [ -n "${ZID:-}" ]; do
         "$AGENTIS" go brief-writer.ag --enable-exec --enable-messaging ) > "$LOG" 2>&1 \
       || echo "gen-briefs.sh: brief-writer run failed for zone '$ZID' (see $LOG)" >&2
     slice_block "$LOG" "$ZID" > "$BODY_OUT" || true
+  fi
+  if [ -s "$BODY_OUT" ] && is_placeholder_echo "$BODY_OUT"; then
+    echo "gen-briefs.sh: brief-writer returned an unfilled template for zone '$ZID' (echoed the prompt's own placeholder instead of a real brief) -- falling back to mechanical brief" >&2
+    rm -f "$BODY_OUT"
   fi
   # SRC_LABEL=mechanical (or an empty slice) leaves no body file -> the assembly uses the mechanical fallback.
   [ -s "$BODY_OUT" ] || rm -f "$BODY_OUT"

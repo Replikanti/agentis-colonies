@@ -228,11 +228,21 @@ fi
 
 # --- merge mechanical model + classification -> zones.json (+ scope.tsv unless skeleton) ---------------
 COUNT="$(MECH_JSON="$MECH_JSON" CLASS_LINES="$CLASS_LINES" OUT_DIR="$OUT" SKELETON="$SKELETON" python3 - <<'PY'
-import os, re, json
+import os, re, json, sys
 
 mech = json.load(open(os.environ["MECH_JSON"], encoding="utf-8"))
 skeleton = os.environ.get("SKELETON", "") == "1"
 out_dir = os.environ["OUT_DIR"]
+
+# is_placeholder_echo: the LLM sometimes answers a fill-in-the-blank prompt by echoing the prompt's OWN
+# bracketed template instead of real content (observed live: name="<short subsystem name>",
+# classes="<class1,class2,...>", desc="<one-line why these classes apply>"). A real zone name/class-list/
+# description never legitimately looks like that, so treat a bracket-wrapped value the same as a failed
+# zone-mapper run (dropped from classmap -> unclassified, same downstream handling as any other failure)
+# instead of silently propagating a template into zones.json.
+def is_placeholder_echo(s):
+    t = s.strip()
+    return t.startswith("<") and t.endswith(">")
 
 # classification lines: `ZONE|id|name|class-csv|description` (the zone-mapper.ag / --fixture contract).
 classmap = {}
@@ -244,11 +254,13 @@ if cl and os.path.exists(cl):
             continue
         parts = line.split("|")
         if len(parts) >= 5:
-            classmap[parts[1].strip()] = {
-                "name": parts[2].strip(),
-                "classes": parts[3].strip(),
-                "desc": parts[4].strip(),
-            }
+            zid, name, classes, desc = parts[1].strip(), parts[2].strip(), parts[3].strip(), parts[4].strip()
+            if is_placeholder_echo(name) or is_placeholder_echo(classes) or is_placeholder_echo(desc):
+                print("map-zones.sh: zone-mapper returned an unfilled template for zone '%s' (echoed the "
+                      "prompt's own placeholder instead of real content) -- treating as unclassified" % zid,
+                      file=sys.stderr)
+                continue
+            classmap[zid] = {"name": name, "classes": classes, "desc": desc}
 
 # scope.tsv field-safety: no `|`, newline, or backtick may appear inside any pipe-delimited field.
 def clean(s):
