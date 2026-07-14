@@ -57,15 +57,40 @@ exit 0
 SHIM
 chmod +x "$SHIM_DIR/agentis"
 
+# Per-call wall-clock cap + bounded retry for run_start (#1679). The
+# `--restart-agent` path spawns ~25 cold `python3` starts (TOML parsing via
+# tools/parse-toml.sh) BEFORE the shimmed daemon launches — idle that preamble
+# is ~1.3 s, but its latency scales with host contention and under a busy CI
+# host it once blew the old hardcoded `timeout 4`, killing the script (rc=124,
+# empty stderr) and flaking the test. A generous 30 s cap (~10-23x idle
+# headroom) plus a retry that fires ONLY on the timeout-kill code lets a rare
+# transient spike self-heal without masking real failures. Both env-overridable
+# for slow runners.
+START_TIMEOUT="${START_TIMEOUT:-30}"
+START_MAX_ATTEMPTS="${START_MAX_ATTEMPTS:-3}"
+
 # Run the triage start-colony.sh against $1 with `--restart-agent
 # issue_creator`, dumping the env that reaches the (shimmed) `agentis
-# daemon` invocation to $2. timeout 4s caps the test budget per call.
+# daemon` invocation to $2. Caps each call at START_TIMEOUT seconds and
+# retries ONLY on a timeout-kill (rc=124), up to START_MAX_ATTEMPTS, so a
+# contention spike in the ~25-python preamble self-heals; every other exit
+# code (test 5's malformed-config exit 1, launch-failure exit 4) returns
+# immediately with no behavioural change (#1679).
 run_start() {
-    local config="$1" envdump="$2" rc=0
-    T316M2_ENV_DUMP="$envdump" T316M2_MARKER="$RUN_MARKER" PATH="$SHIM_DIR:$PATH" \
-        timeout 4 bash "$START" --restart-agent issue_creator "$config" \
-            >"$TMPDIR_TEST/stdout" 2>"$TMPDIR_TEST/stderr" || rc=$?
-    pkill -f "$RUN_MARKER" 2>/dev/null || true
+    local config="$1" envdump="$2" rc=0 attempt=1
+    while :; do
+        rc=0
+        T316M2_ENV_DUMP="$envdump" T316M2_MARKER="$RUN_MARKER" PATH="$SHIM_DIR:$PATH" \
+            timeout "$START_TIMEOUT" bash "$START" --restart-agent issue_creator "$config" \
+                >"$TMPDIR_TEST/stdout" 2>"$TMPDIR_TEST/stderr" || rc=$?
+        pkill -f "$RUN_MARKER" 2>/dev/null || true
+        if [ "$rc" -eq 124 ] && [ "$attempt" -lt "$START_MAX_ATTEMPTS" ]; then
+            attempt=$((attempt + 1))
+            sleep 1
+            continue
+        fi
+        break
+    done
     return $rc
 }
 
