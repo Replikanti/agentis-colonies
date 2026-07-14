@@ -11,9 +11,10 @@
 #
 # We assert, structurally:
 #   - the autonomous-tier plan note text exists;
-#   - the plan-post guard/block precedes (by line number) BOTH launch calls
-#     (the in-shell `job_raw` launcher and the AG-driven `ag_edit_step` call)
-#     — visibility must land BEFORE the edit job starts, not after;
+#   - the plan-post guard/block precedes (by line number) BOTH AG launch calls
+#     (`ag_decompose_step` for epics and `ag_edit_step` for ordinary issues;
+#     #1537 M3 retired the in-shell `job_raw` launcher) — visibility must land
+#     BEFORE the edit job starts, not after;
 #   - the idempotency guard (`code_writer:plan_posted:` memo-scoped key)
 #     exists, so retries/re-polls never double-post;
 #   - the post is fail-open: a failed `exec sh` is caught and logged, never
@@ -57,15 +58,17 @@ fi
 #    number — visibility must land BEFORE the edit job starts (the pre-code
 #    intervention point cited in #1482), not after.
 guard_line="$(grep -n -F -- 'if !plan_already_posted(' "$AG" | head -1 | cut -d: -f1)"
-job_raw_line="$(grep -n -F -- 'let job_raw = if ag_loop_on' "$AG" | head -1 | cut -d: -f1)"
+# #1537 M3: the verdict dispatch is now the two AG launch calls (the in-shell
+# job_raw launcher was retired). Pin the guard before BOTH in the dispatch.
+ag_decompose_step_line="$(grep -n -F -- 'ag_decompose_step(owner, repo, issue_iid,' "$AG" | head -1 | cut -d: -f1)"
 ag_edit_step_line="$(grep -n -F -- 'ag_edit_step(owner, repo, issue_iid,' "$AG" | head -1 | cut -d: -f1)"
 
-if [ -n "$guard_line" ] && [ -n "$job_raw_line" ] && [ -n "$ag_edit_step_line" ] \
-  && [ "$guard_line" -lt "$job_raw_line" ] && [ "$guard_line" -lt "$ag_edit_step_line" ]; then
-  pass "plan-post guard precedes both launch calls (job_raw and ag_edit_step)"
+if [ -n "$guard_line" ] && [ -n "$ag_decompose_step_line" ] && [ -n "$ag_edit_step_line" ] \
+  && [ "$guard_line" -lt "$ag_decompose_step_line" ] && [ "$guard_line" -lt "$ag_edit_step_line" ]; then
+  pass "plan-post guard precedes both AG launch calls (ag_decompose_step and ag_edit_step)"
 else
   fail "plan-post ordering vs launch calls" \
-    "guard_line=$guard_line job_raw_line=$job_raw_line ag_edit_step_line=$ag_edit_step_line (guard must be less than both)"
+    "guard_line=$guard_line ag_decompose_step_line=$ag_decompose_step_line ag_edit_step_line=$ag_edit_step_line (guard must be less than both)"
 fi
 
 # 3. Idempotency guard: a code_writer:plan_posted:<iid> scoped memo key must

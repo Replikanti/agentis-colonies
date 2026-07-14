@@ -54,17 +54,11 @@ trigger_label = "implementation"
 # both labeled AND assigned). (#291)
 require_assignee = false
 
-# #1354: caller-driven edit loop. When true (the DEFAULT since step 3),
-# code_writer.ag drives the attempt/continuation/verify/finalize state machine
-# ITSELF over the --one-attempt / --reuse / --finalize primitives, instead of
-# delegating the whole loop to code-edit-in-checkout.sh's in-shell multi-attempt
-# loop — the #1354 migration (loop logic in the .ag, the shell a thin
-# per-invocation primitive). Set to false to fall back to the in-shell loop for
-# every issue. Note: epic-class issues (--decompose) always use the in-shell
-# path regardless, until decomposition is migrated into the .ag (see #1353).
-# Exported to the daemon as AG_DRIVEN_EDIT_LOOP (read via getenv); an absent key
-# resolves to ON, only an explicit false/0/no/off opts out.
-ag_driven_edit_loop = true
+# #1537 M3: the caller-driven edit loop (#1354) is now the SOLE editing path —
+# code_writer.ag always drives the attempt/continuation/verify/finalize state
+# machine itself (ag_edit_step for ordinary issues, ag_decompose_step for
+# epics). The former `ag_driven_edit_loop` opt-out key (and the AG_DECOMPOSE_LOOP
+# opt-in) are retired; there is no in-shell multi-attempt route left to select.
 
 # Per-colony LLM backend override (#319, schema reserved for forward-
 # compat — NO RUNTIME EFFECT today; see #351). All four keys are

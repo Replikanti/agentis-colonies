@@ -551,11 +551,11 @@ fn clear_job_dir(iid_str: string) -> void {
 }
 
 // ---------------------------------------------------------------------------
-// #1354 step 2b — the caller-driven edit loop. When AG_DRIVEN_EDIT_LOOP=1,
-// code_writer OWNS the attempt/continuation/verify/finalize state machine that
-// code-edit-in-checkout.sh's internal multi-attempt loop owns by default,
-// driving the --one-attempt / --reuse / --finalize primitives (#1354 step 2a)
-// through the detached launcher across ticks. Per-issue state lives in two
+// #1354 step 2b — the caller-driven edit loop, now the SOLE path for ordinary
+// issues (#1537 M3 retired the AG_DRIVEN_EDIT_LOOP opt-out and the default
+// in-shell loop). code_writer OWNS the attempt/continuation/verify/finalize state
+// machine, driving the --one-attempt / --reuse / --finalize primitives (#1354
+// step 2a) through the detached launcher across ticks. Per-issue state lives in two
 // repo-scoped memos:
 //     code_edit_loop:phase:<iid>     "" | "attempt" | "finalize"
 //     code_edit_loop:attempts:<iid>  count of --one-attempt drives done so far
@@ -802,7 +802,7 @@ fn ag_edit_step(owner: string, repo: string, iid: string, branch: string, title:
 }
 
 // ---------------------------------------------------------------------------
-// #1422 M2 — the AG-driven decompose loop. When AG_DECOMPOSE_LOOP=1, an
+// #1422 M3 — the AG-driven decompose loop, now the SOLE path for epics. An
 // epic-class issue is decomposed and driven ENTIRELY from code_writer.ag,
 // consuming the --decompose-only primitive (M1) instead of the in-shell
 // --decompose orchestration. It is a cross-tick, memo-threaded FSM that mirrors
@@ -810,10 +810,10 @@ fn ag_edit_step(owner: string, repo: string, iid: string, branch: string, title:
 // machine, not a call stack) and drives the per-subtask --one-attempt / --reuse
 // sequence onto ONE branch, closed by exactly ONE --finalize => ONE PR.
 //
-// DEFAULT OFF: epics keep flowing through the untouched in-shell --decompose
-// path unless an operator sets AG_DECOMPOSE_LOOP=1 (M1+M2 land the capability;
-// flipping the default, deleting the in-shell loop, and retiring the opt-out are
-// the burn-in-gated M3 follow-up).
+// #1537 M3: the AG-driven decompose loop is unconditional for epics (the
+// AG_DECOMPOSE_LOOP opt-out is retired) and the dead in-shell --decompose route
+// is gone. The in-shell multi-attempt loop body survives only as the engine
+// behind code-edit-in-checkout.sh's --recover / monolithic fallback.
 //
 // State memos (all under the existing code_edit_loop: namespace, per iid):
 //   code_edit_loop:decomp:<iid>          "" | "decomposing" | "editing" | "finalize"
@@ -2171,12 +2171,10 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // the same vocab whole into an LLM prompt that can split it.
                 let is_epic = is_epic_match(issue_detail, epic_vocab_or_default);
                 if is_epic { print("[code_writer] issue", issue_iid, "is epic-class — auto-decomposing (#1257)"); };
-                // #1422 M2: an epic opts into the AG-driven decompose loop only
-                // when AG_DECOMPOSE_LOOP=1 (DEFAULT OFF); otherwise it stays on
-                // the untouched in-shell --decompose path. A non-epic never
-                // decomposes (decompose_flag=""), so the flag is epic-scoped.
-                let ag_decompose_on = if is_epic { getenv("AG_DECOMPOSE_LOOP") == "1"; } else { false; };
-                let decompose_flag = if is_epic { if ag_decompose_on { ""; } else { " --decompose"; }; } else { ""; };
+                // #1537 M3: an epic ALWAYS drives the AG-driven decompose loop —
+                // the AG_DECOMPOSE_LOOP opt-out and the in-shell --decompose path
+                // are retired. A non-epic never decomposes.
+                let ag_decompose_on = is_epic;
                 // #1349: thread the agent's OWN drafted summary through as the
                 // PR/MR body (--description). draft.summary is the "2-3 sentences
                 // for the PR body" the prompt() above already produced; without
@@ -2185,49 +2183,23 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 // in shell plumbing. code-edit-job.sh forwards it to the detached
                 // worker; code-edit-in-checkout.sh uses it for create-mr (static
                 // template only as the empty-value fallback).
-                // #1354 step 2b: when AG_DRIVEN_EDIT_LOOP=1, code_writer drives
-                // the attempt/continuation/verify/finalize loop ITSELF over the
-                // #1354-step-2a primitives (ag_edit_step); otherwise the default
-                // in-shell multi-attempt loop runs (code-edit-in-checkout.sh's
-                // own loop, launched here). Both collapse to one verdict shape —
-                // "DONE:<url>" / "RUNNING" / "NO_EDITS" / "ERROR" — so the
-                // terminal handling below is shared. For the default path the PR
-                // URL is folded into DONE via job_rest (the RESULT= token).
-                // #1354 step 3: the AG-driven loop is the default for ORDINARY
-                // issues. #1422 M2: EPICS now have TWO routes — the AG-driven
-                // decompose loop (ag_decompose_step, opt-in via AG_DECOMPOSE_LOOP,
-                // DEFAULT OFF) or the untouched in-shell --decompose path (the
-                // working default until the M3 burn-in). ag_loop_on (the ordinary
-                // AG loop, ag_edit_step) is only ever on for NON-epics — an epic
-                // routes through ag_decompose_step or the in-shell path, never
-                // ag_edit_step, so decomposition is never silently dropped.
-                let ag_loop_on = if is_epic { false; } else { getenv("AG_DRIVEN_EDIT_LOOP") == "1"; };
-                // Default path launches the in-shell loop HERE so its raw poll
-                // line (STATUS=.. PID_ALIVE=.. RESULT=..) stays in scope for the
-                // ERROR diagnostic below; job_cmd is built either way but only
-                // exec'd on the default (neither-AG-path) route. Both AG paths
-                // drive + log their own detail, so job_raw is "" there.
-                // colony-lint: safe-exec-concat
-                let job_cmd = "$COLONY_DIR/../../tools/code-edit-job.sh --owner " + shell_escape(owner) + " --repo " + shell_escape(repo) + " --issue " + shell_escape(issue_iid) + " --branch " + shell_escape(branch_name) + " --title " + shell_escape(draft.title) + " --description " + shell_escape(draft.summary) + " --task " + shell_escape(task_text) + decompose_flag;
-                // Exec the in-shell launcher only when NEITHER AG path is active
-                // (`.ag` has no `||`, so nest the two off-checks).
-                let job_raw = if ag_loop_on { ""; } else {
-                    if ag_decompose_on { ""; } else {
-                        try { exec sh job_cmd; } catch e {
-                            print("[code_writer] code-edit-job launcher failed — not marking drafted, will retry:", e);
-                            "";
-                        };
-                    };
-                };
+                // #1537 M3: the AG-driven loop is now the SOLE editing path. An
+                // ORDINARY issue always drives the attempt/continuation/verify/
+                // finalize loop ITSELF over the #1354-step-2a primitives
+                // (ag_edit_step); an EPIC always drives the AG decompose loop
+                // (ag_decompose_step, above). The in-shell multi-attempt loop and
+                // the bare --decompose entrypoint are retired — the loop body only
+                // survives inside code-edit-in-checkout.sh as the --recover engine.
+                // Both AG steps collapse to one verdict shape — "DONE:<url>" /
+                // "RUNNING" / "NO_EDITS" / "ERROR" — so the terminal handling below
+                // is shared. ag_loop_on is on for every NON-epic; an epic routes
+                // through ag_decompose_step, never ag_edit_step, so decomposition
+                // is never silently dropped.
+                let ag_loop_on = if is_epic { false; } else { true; };
                 let verdict = if ag_decompose_on {
                     ag_decompose_step(owner, repo, issue_iid, branch_name, draft.title, task_text, draft.summary);
                 } else {
-                    if ag_loop_on {
-                        ag_edit_step(owner, repo, issue_iid, branch_name, draft.title, task_text, draft.summary);
-                    } else {
-                        let d = job_decide(job_raw);
-                        if d == "DONE" { "DONE:" + job_rest(job_raw); } else { d; };
-                    };
+                    ag_edit_step(owner, repo, issue_iid, branch_name, draft.title, task_text, draft.summary);
                 };
                 // Split the verdict into a bare state + the PR URL (empty unless
                 // DONE) so the branches below read a stable job_state / pr_url.
@@ -2281,15 +2253,15 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                             } else {
                                 // #1356: terminal ERROR — job-died (running pid gone),
                                 // done-without-url, job-failed, or a stale/half-written
-                                // dir, all folded here by job_decide. Same job-dir +
-                                // marker clear so the next tick retries. On the default
-                                // path job_raw carries the raw STATUS=.. PID_ALIVE=..
-                                // line for diagnosis; on the AG path ag_edit_step logged
-                                // its own detail and job_raw is "" (verdict = "ERROR").
+                                // dir. #1537 M3: both routes are now AG-driven
+                                // (ag_edit_step / ag_decompose_step), so the FSM step
+                                // logged its own detail and the verdict alone
+                                // ("ERROR") is the diagnostic here. Same job-dir +
+                                // marker clear so the next tick retries.
                                 clear_job_dir(issue_iid);
                                 memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_iid"), "");
                                 memo_write(scoped_memo(owner, repo, "code_writer:last_drafted_updated_at"), "");
-                                print("[code_writer] Detached checkout-edit error for issue", draft.issue_id, ":", job_raw, verdict, "— cleared draft markers, will retry");
+                                print("[code_writer] Detached checkout-edit error for issue", draft.issue_id, ":", verdict, "— cleared draft markers, will retry");
                             };
                         };
                     };

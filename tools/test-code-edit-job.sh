@@ -296,8 +296,10 @@ else
 fi
 
 # ===========================================================================
-# Scenario E (#1254): --decompose is forwarded to the orchestrator; a normal
-# run omits it. The stub records its argv to a marker file.
+# Scenario E (#1537 M3): the bare --decompose passthrough is RETIRED. Passing it
+# to the launcher is now an unknown flag -> exit 2 (no orchestrator spawned), and
+# a normal run never forwards --decompose. The stub records its argv to a marker
+# file. (Epic decomposition now rides --decompose-only; see scenario K.)
 # ===========================================================================
 poll_done() {
     _jd="$1"
@@ -308,17 +310,16 @@ poll_done() {
     return 1
 }
 
-DEC_MARKER="$WORK/dec-marker"; : > "$DEC_MARKER"
 env COLONY_DIR="$COLONY_DIR" CODE_EDIT_ORCH="$STUB" GITHUB_TOKEN="$FAKE_TOKEN" \
     GITHUB_OWNER="$OWNER" GITHUB_REPO="$REPO" \
-    STUB_SLEEP=0 STUB_EXIT=0 STUB_URL="https://example.test/pr/dec" STUB_MARKER="$DEC_MARKER" \
+    STUB_SLEEP=0 STUB_EXIT=0 STUB_URL="https://example.test/pr/dec" \
     bash "$LAUNCHER" --owner "$OWNER" --repo "$REPO" --issue 700 \
         --branch "fix/issue-700" --title "epic" --task "do it" --decompose >/dev/null 2>&1
-poll_done "$(job_dir_for 700)" || true
-if grep -q -- '--decompose' "$DEC_MARKER" 2>/dev/null; then
-    pass "E: --decompose is forwarded to the orchestrator"
+DEC_RC=$?
+if [ "$DEC_RC" -eq 2 ]; then
+    pass "E: bare --decompose is rejected as an unknown flag (exit 2, retired #1537 M3)"
 else
-    fail "E: --decompose passthrough" "marker=$(cat "$DEC_MARKER" 2>/dev/null)"
+    fail "E: bare --decompose rejected" "expected exit 2 (unknown flag), got $DEC_RC"
 fi
 
 NEG_MARKER="$WORK/neg-marker"; : > "$NEG_MARKER"
@@ -401,7 +402,7 @@ if [ -n "$UNCAP_PID" ]; then kill "$UNCAP_PID" 2>/dev/null || true; fi
 
 # ===========================================================================
 # Scenario G (#1349): --description is forwarded to the orchestrator verbatim,
-# the same way --title/--decompose are relayed. The stub records its argv to a
+# the same way --title/--recover are relayed. The stub records its argv to a
 # marker file (line "start ... args=[...]"). A run WITH --description must show
 # the description text passed through; a run WITHOUT it must not add the flag.
 # ===========================================================================

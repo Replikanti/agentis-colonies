@@ -14,11 +14,12 @@
 #       ag_decompose_step (a single is_finalize=true launch in the finalize state);
 #   (d) multi-subtask accumulation — force_reuse is `i > 1` (subtask >= 2 uses
 #       --reuse to accumulate on subtask 1's fresh branch);
-#   (e) in-shell fallback still works — decompose_flag = " --decompose" stays
-#       reachable when ag_decompose_on is false (default OFF);
+#   (e) #1537 M3: the in-shell --decompose fallback is RETIRED — no decompose_flag
+#       and no bare " --decompose" concat remain in the dispatch;
 #   (f) ag_decompose_reset clears all SIX memo keys + the subtasks file;
 #   (g) clear_job_dir fires after STATUS=decomposed and each subtask boundary;
-#   (h) the AG_DECOMPOSE_LOOP gate is epic-scoped + default OFF (getenv == "1").
+#   (h) #1537 M3: an epic ALWAYS drives the AG decompose loop —
+#       `let ag_decompose_on = is_epic;` (the AG_DECOMPOSE_LOOP opt-out is gone).
 #
 # Matches the test style of tools/test-code-writer-plan-post.sh (bash,
 # [PASS]/[FAIL] lines, `Results: N passed, M failed`). Exit 0 all-pass, 1
@@ -105,13 +106,14 @@ else
   fail "force_reuse = i > 1" "expected 'let force_reuse = i > 1;' in ag_decompose_step"
 fi
 
-# 5 (e). In-shell fallback still works: decompose_flag = " --decompose" stays
-#        reachable when ag_decompose_on is false (the default-OFF path). The
-#        dispatch nests it as: if ag_decompose_on { ""; } else { " --decompose"; }.
-if grep -F -q -- 'if is_epic { if ag_decompose_on { ""; } else { " --decompose"; }; } else { ""; };' "$AG"; then
-  pass "fallback: in-shell --decompose reachable when ag_decompose_on is false"
+# 5 (e). #1537 M3: the in-shell --decompose fallback is RETIRED. The dispatch no
+#        longer builds a decompose_flag or concats a bare " --decompose" — epics
+#        route unconditionally through ag_decompose_step over --decompose-only.
+if ! grep -F -q -- 'decompose_flag' "$AG" \
+  && ! grep -F -q -- ' --decompose"' "$AG"; then
+  pass "retired: no decompose_flag / bare --decompose concat remains in the dispatch"
 else
-  fail "in-shell --decompose fallback reachable" "expected the nested decompose_flag ternary in the dispatch"
+  fail "in-shell --decompose fallback retired" "found a lingering decompose_flag or bare ' --decompose' concat (should be removed in #1537 M3)"
 fi
 
 # 6 (f). ag_decompose_reset clears ALL SIX memo keys + the subtasks file.
@@ -140,12 +142,14 @@ else
   fail "clear_job_dir call sites" "count=$cjd_count (need >= 2: post-decomposed + subtask advance)"
 fi
 
-# 8 (h). The AG_DECOMPOSE_LOOP gate is epic-scoped + default OFF: read via
-#        getenv() == "1", and only when is_epic.
-if grep -F -q -- 'let ag_decompose_on = if is_epic { getenv("AG_DECOMPOSE_LOOP") == "1"; } else { false; };' "$AG"; then
-  pass "AG_DECOMPOSE_LOOP gate is epic-scoped + default OFF (getenv == \"1\")"
+# 8 (h). #1537 M3: an epic ALWAYS drives the AG decompose loop — ag_decompose_on
+#        is now the unconditional `is_epic` (the AG_DECOMPOSE_LOOP getenv opt-out
+#        is retired), so no getenv("AG_DECOMPOSE_LOOP") read remains.
+if grep -F -q -- 'let ag_decompose_on = is_epic;' "$AG" \
+  && ! grep -F -q -- 'getenv("AG_DECOMPOSE_LOOP")' "$AG"; then
+  pass "ag_decompose_on = is_epic (unconditional epic -> AG decompose; opt-out retired)"
 else
-  fail "AG_DECOMPOSE_LOOP gate" "expected the epic-scoped getenv(\"AG_DECOMPOSE_LOOP\") == \"1\" gate"
+  fail "ag_decompose_on unconditional" "expected 'let ag_decompose_on = is_epic;' and NO getenv(\"AG_DECOMPOSE_LOOP\") read"
 fi
 
 # 9. Dispatch routes ag_decompose_on to ag_decompose_step (verdict contract).

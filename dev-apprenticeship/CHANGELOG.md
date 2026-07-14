@@ -117,6 +117,20 @@ is asserted until multi-version CI is in place.
 
 ### Changed
 
+- **AG-driven edit/decompose loop is now the SOLE editing path — M3** ([#1537](https://github.com/Replikanti/agentis-colonies/issues/1537), completing [#1422](https://github.com/Replikanti/agentis-colonies/issues/1422)):
+  `code_writer.ag` now always drives the attempt/continuation/verify/finalize
+  state machine itself — `ag_edit_step` for ordinary issues, `ag_decompose_step`
+  (per-subtask `--one-attempt`/`--reuse` onto one branch → one `--finalize` → one
+  PR) for epics. The `AG_DRIVEN_EDIT_LOOP` and `AG_DECOMPOSE_LOOP` runtime
+  opt-outs and the dead in-shell routing in `code_writer.ag` are retired; the two
+  flags stay on the `install.sh` `exec.env_passthrough` allowlist (inert but kept
+  for the byte-exact migration chain). The in-shell multi-attempt loop body in
+  `tools/code-edit-in-checkout.sh` is retained as the engine behind `--recover`
+  (and the monolithic single-subtask fallback) — only the bare `--decompose`
+  production entrypoint is removed (from `code-edit-in-checkout.sh` and its
+  `code-edit-job.sh` passthrough); `--decompose-only` is intact. Source-asserted
+  by `tools/test-code-writer-decompose-ag.sh` (unconditional epic → AG decompose)
+  and `tools/test-code-edit-in-checkout.sh` (retained loop + `--decompose-only`).
 - **Substrate purity P3 cluster A — native triage decision-context builders** ([#1638](https://github.com/Replikanti/agentis-colonies/issues/1638)):
   the three embedded `python3 -c` context builders
   `canonical_label_context` (`labeler.ag`), `canonical_route_context`
@@ -173,6 +187,12 @@ is asserted until multi-version CI is in place.
 
 ### Removed
 
+- **`ag_driven_edit_loop` config key + the `--decompose` entrypoint** ([#1537](https://github.com/Replikanti/agentis-colonies/issues/1537)):
+  the `[implementation] ag_driven_edit_loop` key (and its `start-colony.sh`
+  derivation/export) is removed — the AG loop is unconditional, so there is no
+  in-shell fallback left to select (**config-schema change**). The bare
+  `--decompose` flag is dropped from `code-edit-in-checkout.sh` and
+  `code-edit-job.sh`; epics decompose via the AG loop over `--decompose-only`.
 - **Dead `code_writer.ag` edit-application chain** ([#1607](https://github.com/Replikanti/agentis-colonies/issues/1607)):
   `apply_edits_to_actions`, `apply_line_edits_to_actions`, and `numbered_view`
   are deleted — QA on PR #1605 found the first two had zero real callers, on

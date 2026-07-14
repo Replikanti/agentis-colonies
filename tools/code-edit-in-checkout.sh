@@ -14,16 +14,20 @@
 #
 # Usage:
 #   code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> \
-#       --branch <name> --title <t> --task <text> [--decompose] [--recover]
+#       --branch <name> --title <t> --task <text> [--recover]
 #
-#   --decompose first drives claude to split <task> into an ordered list of
-#   sub-edits, then runs the edit+verify loop once per subtask on the same
-#   branch -> one commit/PR (code_writer passes it for epic-labelled issues).
-#   Set FORGE_TYPE=gitlab to run the same clone -> edit -> verify -> commit ->
-#   MR loop against GitLab (GITHUB_* / GITLAB_* env supplies the host + token).
+#   Set FORGE_TYPE=gitlab to run the clone -> edit -> verify -> commit -> MR loop
+#   against GitLab (GITHUB_* / GITLAB_* env supplies the host + token).
+#
+#   #1537 M3: the bare `--decompose` production entrypoint (drive-split then run
+#   the per-subtask loop in-shell) is RETIRED — epics are now decomposed and
+#   driven entirely from code_writer.ag over the `--decompose-only` primitive
+#   below. Decomposition survives here ONLY as `--decompose-only`; the internal
+#   per-subtask loop body survives as the engine behind `--recover` and the
+#   monolithic single-subtask fallback (see fill_subtasks_file).
 #
 #   --decompose-only --subtasks-out <file> (#1422 M1) runs ONLY the
-#   decomposition drive (implies --decompose) and writes the ordered
+#   decomposition drive and writes the ordered
 #   NUL-delimited subtask list to <file>, then prints a single line
 #       DECOMPOSED count=<n>
 #   and exits 0 BEFORE the per-subtask loop — no edit, no commit, no PR. It
@@ -111,7 +115,7 @@
 #                                (else auto-detect npm test / make test / pytest;
 #                                empty = fast change-scoped check; `true` = skip)
 #   CODE_EDIT_VERIFY_TIMEOUT_MS  verify gate timeout (300000)
-#   CODE_EDIT_MAX_SUBTASKS       --decompose subtask cap (8)
+#   CODE_EDIT_MAX_SUBTASKS       --decompose-only subtask cap (8)
 #   FORGE_TYPE                   github (default) | gitlab
 set -eu
 
@@ -129,16 +133,20 @@ TASK=""
 # threaded through code-edit-job.sh. Empty => fall back to the static template
 # at create-mr time. The LLM reasoning lives in the .ag prompt(), NOT here.
 DESCRIPTION_ARG=""
+# #1537 M3: DECOMPOSE is no longer settable from the CLI (the bare `--decompose`
+# entrypoint is retired). It is now an INTERNAL flag flipped on only by
+# --decompose-only so fill_subtasks_file runs the decomposition drive; every
+# other path (bare full loop, --recover) leaves it 0 and takes the monolithic
+# single-subtask fallback.
 DECOMPOSE=0
-# --decompose-only (#1422 M1): run ONLY the decomposition drive (the same drive
-# --decompose runs first) and write the ordered NUL-delimited subtask list to
-# the caller-named --subtasks-out file, then print `DECOMPOSED count=<n>` and
-# exit 0 BEFORE the per-subtask edit loop. It runs NO edits, NO commit, NO PR.
-# This surfaces the decomposition as a stand-alone primitive so code_writer.ag
-# can drive the per-subtask sequence itself (the AG-driven decompose loop),
+# --decompose-only (#1422 M1): run ONLY the decomposition drive and write the
+# ordered NUL-delimited subtask list to the caller-named --subtasks-out file,
+# then print `DECOMPOSED count=<n>` and exit 0 BEFORE the per-subtask edit loop.
+# It runs NO edits, NO commit, NO PR. This surfaces the decomposition as a
+# stand-alone primitive so code_writer.ag can drive the per-subtask sequence
+# itself (the AG-driven decompose loop — the SOLE epic path since #1537 M3),
 # exactly as --one-attempt surfaced the single edit drive. --decompose-only
-# implies --decompose (the drive must actually run to yield >1 subtask). The
-# default --decompose path (no --decompose-only) is byte-untouched.
+# sets DECOMPOSE=1 internally (the drive must actually run to yield >1 subtask).
 DECOMPOSE_ONLY=0
 SUBTASKS_OUT=""
 RECOVER=0
@@ -170,7 +178,7 @@ FINALIZE=0
 PROBE_REMOTE_HEAD=0
 
 usage() {
-    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose] [--decompose-only --subtasks-out <file>] [--recover] [--rebase] [--one-attempt] [--continuation <file>] [--reuse] [--finalize] [--probe-remote-head]" >&2
+    echo "usage: code-edit-in-checkout.sh --owner <o> --repo <r> --issue <iid> --branch <name> --title <t> --task <text> [--description <d>] [--decompose-only --subtasks-out <file>] [--recover] [--rebase] [--one-attempt] [--continuation <file>] [--reuse] [--finalize] [--probe-remote-head]" >&2
 }
 
 while [ $# -gt 0 ]; do
@@ -182,7 +190,8 @@ while [ $# -gt 0 ]; do
         --title)  TITLE="${2:-}";  shift 2 ;;
         --task)   TASK="${2:-}";   shift 2 ;;
         --description) DESCRIPTION_ARG="${2:-}"; shift 2 ;;
-        --decompose) DECOMPOSE=1; shift ;;
+        # #1537 M3: bare --decompose is retired; DECOMPOSE is set only via
+        # --decompose-only (internal) so the drive runs for the M1 primitive.
         --decompose-only) DECOMPOSE_ONLY=1; DECOMPOSE=1; shift ;;
         --subtasks-out) SUBTASKS_OUT="${2:-}"; shift 2 ;;
         --recover) RECOVER=1; shift ;;
@@ -1162,18 +1171,18 @@ fi
 # loop) is skipped ENTIRELY under --finalize (#1354 step 2a), which only commits
 # a diff that prior --one-attempt drives already accumulated in this workspace.
 if [ "$FINALIZE" -ne 1 ]; then
-# Decompose (#1254): for a large/epic task, split it into an ORDERED list of
-# small sub-edits and run the edit loop once per subtask on the SAME branch,
-# accumulating into ONE commit/PR. Without --decompose (or if decomposition
-# yields nothing) the whole task is the single "subtask" -> identical to M1/M2.
+# Decompose (#1254): split a task into an ORDERED list of small sub-edits and
+# run the edit loop once per subtask on the SAME branch, accumulating into ONE
+# commit/PR. #1537 M3: the bare --decompose entrypoint is retired, so on every
+# remaining path into this loop (the bare full loop and --recover) DECOMPOSE is 0
+# and the whole task is the single "subtask" -> identical to M1/M2. The drive
+# only runs under --decompose-only, which exits before the loop.
 #
 # #1422 M1: the decomposition drive + parse + monolithic fallback + count are
 # factored into fill_subtasks_file() so --decompose-only can reuse them VERBATIM
-# without entering the per-subtask edit loop. The default --decompose path calls
-# it and falls straight through to the loop below, so its behaviour stays
-# byte-identical. The function sets the globals SUBTASKS_FILE / SUBTASK_COUNT
-# (and SUBTASKS_LIST, cleaned up by the EXIT trap). The monolithic fallback
-# guarantees SUBTASK_COUNT >= 1.
+# without entering the per-subtask edit loop. The function sets the globals
+# SUBTASKS_FILE / SUBTASK_COUNT (and SUBTASKS_LIST, cleaned up by the EXIT trap).
+# The monolithic fallback guarantees SUBTASK_COUNT >= 1.
 fill_subtasks_file() {
     SUBTASKS_FILE="$(mktemp)"
     if [ "$DECOMPOSE" -eq 1 ]; then
@@ -1231,6 +1240,11 @@ if [ "$DECOMPOSE_ONLY" -eq 1 ]; then
     exit 0
 fi
 
+# #1537 M3: the per-subtask iteration + the inner multi-attempt `while :;` loop
+# below are now reached ONLY via --recover (and any bare full-loop / monolithic
+# single-subtask fallback), never via a --decompose entrypoint. code_writer.ag
+# drives epics through the AG decompose loop over --decompose-only + --one-attempt
+# instead. The loop body is retained intact as --recover's editing engine.
 subtask_idx=0
 while IFS= read -r -d '' CUR_TASK <&3; do
     [ -z "$CUR_TASK" ] && continue
