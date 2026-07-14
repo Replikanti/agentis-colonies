@@ -199,12 +199,18 @@ else
 fi
 
 # approval_decider: merged list must parse before anything is scored.
+# #1638 P3 cluster B: the python `ml is None -> print(0)` guard and the
+# `print(2 if m else (1 if c else 0))` request_changes mapping are now the
+# native leading-`[`/trailing-`]` array guard + the request_changes signal
+# ternary (both-ends check added post-QA #1674: a leading-`[`-only guard let a
+# truncated MERGED payload through to a real, wrong score).
 APPR_REGION="$(evaluate_region "$FED/code-review/agents/approval_decider.ag" "evaluate_approval_verdict")"
-if printf '%s' "$APPR_REGION" | grep -q "ml is None" \
-    && printf '%s' "$APPR_REGION" | grep -qF 'print(2 if m else (1 if c else 0))'; then
-    pass "approval_decider: merged-parse guard + request_changes/merged=partial"
+if printf '%s' "$APPR_REGION" | grep -qF 'index_of(merged_trimmed, "[") != 0' \
+    && printf '%s' "$APPR_REGION" | grep -qF 'substring(merged_trimmed, len(merged_trimmed) - 1, len(merged_trimmed)) != "]"' \
+    && printf '%s' "$APPR_REGION" | grep -qF 'if m { 2; } else { if c { 1; } else { 0; }; };'; then
+    pass "approval_decider: merged-parse guard (both ends) + request_changes/merged=partial"
 else
-    fail "approval_decider: missing merged-parse guard or partial mapping"
+    fail "approval_decider: missing merged-parse guard (leading+trailing bracket) or partial mapping"
 fi
 
 # code_writer: unparseable merged/opened lists leave the verdict pending.
@@ -345,6 +351,214 @@ fn tag_set_from_raw(raw: string) -> string {
         "dev-apprenticeship-v1"
 else
     echo "[SKIP] agentis binary not found — tag_set_csv live byte-identity checks skipped"
+fi
+
+# ----- Cluster B1 comparators: live signal byte-identity (#1638 P3) -----
+# The 5 mechanical small-set verdict scorers were migrated from an embedded
+# `python3 -c` set-comparison to native `.ag` (json_get_raw ->
+# json_array_to_strings for the array leaf json_get returns Void for; member/
+# subset/intersect via filter+len). The honest-outcome signal each one feeds
+# learn() is the value-identity anchor — a wrong compare corrupts auto-promote's
+# reject_rate_acting. Each probe embeds a byte-identical copy of the migrated
+# signal logic (the forge query factored out, raw JSON passed in) and pins the
+# exact signal per suggested/actual combo to the retired python's output. Gated
+# on the agentis binary (CI runners have none).
+if command -v agentis >/dev/null 2>&1; then
+    CMP_TMP="$(mktemp -d)"
+    COMPARE_HELPERS='fn member(x: string, xs: list<string>) -> bool {
+    return len(filter(xs, |y: string| -> bool { return y == x; })) > 0;
+}
+fn subset(sug: list<string>, act: list<string>) -> bool {
+    return len(filter(sug, |s: string| -> bool { return !member(s, act); })) == 0;
+}
+fn intersect(sug: list<string>, act: list<string>) -> bool {
+    return len(filter(sug, |s: string| -> bool { return member(s, act); })) > 0;
+}
+fn void_to_empty(s: string) -> string {
+    if s == "void" { return ""; };
+    return s;
+}
+fn nth_field(s: string, sep: string, n: int) -> string {
+    if n < 0 { return ""; };
+    if len(s) == 0 { return ""; };
+    let p = index_of(s, sep);
+    if n == 0 {
+        if p < 0 { return s; };
+        return substring(s, 0, p);
+    };
+    if p < 0 { return ""; };
+    return nth_field(substring(s, p + len(sep), len(s)), sep, n - 1);
+}
+fn sug_list(suggested: string) -> list<string> {
+    return filter(map(regex_split(",", suggested), |t: string| -> string {
+        return trim(t);
+    }), |t: string| -> bool {
+        return len(t) > 0;
+    });
+}
+fn label_propose_signal(suggested: string, cur_raw: string) -> int {
+    let act = json_array_to_strings(json_get_raw(cur_raw, "labels"));
+    let sug = sug_list(suggested);
+    let s = if len(act) == 0 {
+        0;
+    } else {
+        if len(sug) > 0 {
+            if subset(sug, act) { 1; } else { if intersect(sug, act) { 2; } else { 3; }; };
+        } else {
+            if intersect(sug, act) { 2; } else { 3; };
+        };
+    };
+    return s;
+}
+fn label_auto_signal(suggested: string, cur_raw: string) -> int {
+    let act = json_array_to_strings(json_get_raw(cur_raw, "labels"));
+    let sug = sug_list(suggested);
+    let s = if len(sug) > 0 {
+        if subset(sug, act) { 1; } else { if intersect(sug, act) { 2; } else { 3; }; };
+    } else {
+        if intersect(sug, act) { 2; } else { 3; };
+    };
+    return s;
+}
+fn route_signal(suggested: string, cur_raw: string) -> int {
+    let sug = trim(suggested);
+    let ns = filter(map(json_array_object_field_values(json_get_raw(cur_raw, "assignees"), "username"), |u: string| -> string {
+        return trim(u);
+    }), |u: string| -> bool {
+        return len(u) > 0;
+    });
+    let a1 = void_to_empty(to_string(json_get(cur_raw, "assignee.username")));
+    let s = if len(ns) == 0 {
+        if len(a1) == 0 { 0; } else { if a1 == sug { 1; } else { 3; }; };
+    } else {
+        if member(sug, ns) { 1; } else { if len(a1) > 0 { if a1 == sug { 1; } else { 3; }; } else { 3; }; };
+    };
+    return s;
+}
+fn approval_signal(action: string, merged_raw: string, closed_raw: string, iid_str: string) -> int {
+    let merged_trimmed = trim(merged_raw);
+    if index_of(merged_trimmed, "[") != 0 { return 0; };
+    if substring(merged_trimmed, len(merged_trimmed) - 1, len(merged_trimmed)) != "]" { return 0; };
+    let m = member(iid_str, json_array_object_field_values(merged_raw, "iid"));
+    let c = member(iid_str, json_array_object_field_values(closed_raw, "iid"));
+    let s = if action == "approve" {
+        if m { 1; } else { if c { 3; } else { 0; }; };
+    } else {
+        if action == "request_changes" { if m { 2; } else { if c { 1; } else { 0; }; }; } else { 0; };
+    };
+    return s;
+}
+fn plan_signal(labels_csv: string, cur_raw: string) -> int {
+    let impl = trim(nth_field(labels_csv, ",", 0));
+    let plan = trim(nth_field(labels_csv, ",", 1));
+    let act = json_array_to_strings(json_get_raw(cur_raw, "labels"));
+    let s = if len(impl) > 0 {
+        if member(impl, act) { 1; } else { if len(plan) > 0 { if member(plan, act) { 3; } else { 2; }; } else { 2; }; };
+    } else {
+        if len(plan) > 0 { if member(plan, act) { 3; } else { 2; }; } else { 2; };
+    };
+    return s;
+}'
+    run_compare() {
+        local body="$1" sandbox
+        sandbox="$(mktemp -d -p "$CMP_TMP")"
+        (
+            cd "$sandbox"
+            agentis init >/dev/null 2>&1
+            {
+                printf 'cb 8000;\n\n%s\n\n%s\n' "$COMPARE_HELPERS" "$body"
+            } > probe.ag
+            agentis go probe.ag 2>/dev/null | grep -v genesis | tail -n 1
+        )
+        rm -rf "$sandbox"
+    }
+    check_signal() {
+        local label="$1" call="$2" want="$3" got
+        got="$(run_compare "print($call);")"
+        if [ "$got" = "$want" ]; then
+            pass "$label"
+        else
+            fail "$label (want='$want' got='$got')"
+        fi
+    }
+    # labeler propose (evaluate_label_verdict): empty act -> 0 (leave pending),
+    # full subset -> 1, partial -> 2, disjoint -> 3; missing-key AND [] both 0.
+    check_signal "labeler propose: no labels yet ([]) -> 0/pending" \
+        'label_propose_signal("bug,ci", "{\"labels\":[]}")' "0"
+    check_signal "labeler propose: missing labels key -> 0/pending" \
+        'label_propose_signal("bug,ci", "{\"title\":\"x\"}")' "0"
+    check_signal "labeler propose: full subset -> 1/success" \
+        'label_propose_signal("bug,ci", "{\"labels\":[\"bug\",\"ci\",\"docs\"]}")' "1"
+    check_signal "labeler propose: partial overlap -> 2/partial" \
+        'label_propose_signal("bug,x", "{\"labels\":[\"bug\",\"ci\",\"docs\"]}")' "2"
+    check_signal "labeler propose: disjoint -> 3/failure" \
+        'label_propose_signal("x,y", "{\"labels\":[\"bug\",\"ci\",\"docs\"]}")' "3"
+    # labeler autonomous (score_one_autonomous): same but empty act -> 3 (no
+    # signal-0 branch — an empty act is a full reversal).
+    check_signal "labeler autonomous: empty act -> 3/failure (no pending)" \
+        'label_auto_signal("bug,ci", "{\"labels\":[]}")' "3"
+    check_signal "labeler autonomous: full subset -> 1/success" \
+        'label_auto_signal("bug,ci", "{\"labels\":[\"bug\",\"ci\"]}")' "1"
+    check_signal "labeler autonomous: partial erosion -> 2/partial" \
+        'label_auto_signal("bug,x", "{\"labels\":[\"bug\"]}")' "2"
+    check_signal "labeler autonomous: full reversal -> 3/failure" \
+        'label_auto_signal("x,y", "{\"labels\":[\"bug\"]}")' "3"
+    # router (score_route_verdict_key): unassigned -> 0, suggested among
+    # assignees -> 1, reassigned away -> 3, singular-assignee fallback -> 1.
+    check_signal "router: still unassigned -> 0/keep" \
+        'route_signal("alice", "{\"assignees\":[]}")' "0"
+    check_signal "router: suggested among assignees -> 1/success" \
+        'route_signal("alice", "{\"assignees\":[{\"username\":\"alice\"},{\"username\":\"bob\"}]}")' "1"
+    check_signal "router: reassigned away -> 3/failure" \
+        'route_signal("alice", "{\"assignees\":[{\"username\":\"bob\"}]}")' "3"
+    check_signal "router: singular assignee fallback match -> 1/success" \
+        'route_signal("carol", "{\"assignee\":{\"username\":\"carol\"}}")' "1"
+    check_signal "router: assignees ∪ singular set membership -> 1/success" \
+        'route_signal("alice", "{\"assignees\":[{\"username\":\"bob\"}],\"assignee\":{\"username\":\"alice\"}}")' "1"
+    # approval_decider (evaluate_approval_verdict): merged wins the tie; the
+    # MERGED list must parse as an array (leading `[` AND trailing `]`) or
+    # nothing is scored.
+    check_signal "approval_decider: approve + merged -> 1/success" \
+        'approval_signal("approve", "[{\"iid\":41}]", "[]", "41")' "1"
+    check_signal "approval_decider: approve + closed-only -> 3/failure" \
+        'approval_signal("approve", "[]", "[{\"iid\":41}]", "41")' "3"
+    check_signal "approval_decider: approve + neither -> 0/no-score" \
+        'approval_signal("approve", "[]", "[]", "41")' "0"
+    check_signal "approval_decider: request_changes + merged -> 2/partial" \
+        'approval_signal("request_changes", "[{\"iid\":41}]", "[]", "41")' "2"
+    check_signal "approval_decider: request_changes + closed -> 1/success" \
+        'approval_signal("request_changes", "[]", "[{\"iid\":41}]", "41")' "1"
+    check_signal "approval_decider: unparseable MERGED (empty string) -> 0/no-score (closed-superset guard)" \
+        'approval_signal("approve", "", "[{\"iid\":41}]", "41")' "0"
+    # QA #1674: a leading-`[`-only guard let a truncated MERGED payload (a
+    # forge read cut off mid-response, e.g. by a network timeout) through to
+    # json_array_object_field_values, which degrades gracefully on the
+    # malformed tail rather than throwing -- `m` silently resolved false and
+    # the tick fell through to a REAL WRONG score off the closed list, exactly
+    # the closed-superset-of-merged hazard this guard exists to prevent.
+    # Python's strict json.loads would reject all four of these as unparseable
+    # -> signal forced 0; the both-ends bracket check must too.
+    check_signal "approval_decider: truncated MERGED (array unclosed) -> 0/no-score" \
+        'approval_signal("approve", "[{\"iid\":41}", "[{\"iid\":41}]", "41")' "0"
+    check_signal "approval_decider: truncated MERGED (mid-key cutoff) -> 0/no-score" \
+        'approval_signal("approve", "[{\"ii", "[{\"iid\":41}]", "41")' "0"
+    check_signal "approval_decider: MERGED with trailing garbage after valid array -> 0/no-score" \
+        'approval_signal("approve", "[{\"iid\":41}]xyz", "[{\"iid\":41}]", "41")' "0"
+    check_signal "approval_decider: truncated MERGED on request_changes path -> 0/no-score" \
+        'approval_signal("request_changes", "[{\"iid\":41", "[{\"iid\":41}]", "41")' "0"
+    # plan_reviewer (evaluate_plan_verdict): impl label present -> 1, plan label
+    # re-added -> 3, neither -> 2 (single-field CSV -> plan="").
+    check_signal "plan_reviewer: impl label present -> 1/success" \
+        'plan_signal("impl-label,plan-label", "{\"labels\":[\"impl-label\"]}")' "1"
+    check_signal "plan_reviewer: plan label re-added -> 3/failure" \
+        'plan_signal("impl-label,plan-label", "{\"labels\":[\"plan-label\"]}")' "3"
+    check_signal "plan_reviewer: neither label present -> 2/partial" \
+        'plan_signal("impl-label,plan-label", "{\"labels\":[\"other\"]}")' "2"
+    check_signal "plan_reviewer: single-field CSV (no plan slot) -> 1/success" \
+        'plan_signal("impl-label", "{\"labels\":[\"impl-label\"]}")' "1"
+    rm -rf "$CMP_TMP"
+else
+    echo "[SKIP] agentis binary not found — cluster B1 comparator signal checks skipped"
 fi
 
 echo ""

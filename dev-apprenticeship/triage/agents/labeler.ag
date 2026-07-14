@@ -572,6 +572,25 @@ fn verdict_age_seconds(blob: string) -> int {
     return now - emit_ts;
 }
 
+// Native set primitives for the reality-check comparators (#1638 P3 cluster
+// B): the `.ag` dialect has no list `contains`, so membership is a plain
+// equality filter — byte-identical to python's `x in xs` on a set/list of
+// strings. member/2 mirrors prioritizer.ag's helper verbatim so the triage
+// verdict-scorer set idiom stays one grammar. subset/intersect compose from
+// member: filter has no short-circuit, so each is a full O(|sug|×|act|) walk,
+// bounded by the <10-label triage sets. The `len(sug) > 0` guard at the call
+// sites (not here) reproduces python's `sug and` and blocks the empty-set
+// `issubset==True` trap.
+fn member(x: string, xs: list<string>) -> bool {
+    return len(filter(xs, |y: string| -> bool { return y == x; })) > 0;
+}
+fn subset(sug: list<string>, act: list<string>) -> bool {
+    return len(filter(sug, |s: string| -> bool { return !member(s, act); })) == 0;
+}
+fn intersect(sug: list<string>, act: list<string>) -> bool {
+    return len(filter(sug, |s: string| -> bool { return member(s, act); })) > 0;
+}
+
 // Score the current pending verdict against what the operator actually
 // did on GitLab. Returns early (leaves verdict pending) when no verdict
 // exists or the issue still has no labels (no signal yet). Clears the
@@ -596,15 +615,35 @@ fn evaluate_label_verdict(owner: string, repo: string) -> void {
     if len(cur_raw) < 3 {
         return;
     };
-    // Deterministic overlap check in python (cheap, reproducible) rather
-    // than a prompt() round-trip. json_get() returns Void for array leaves,
-    // so extract `labels` inside python instead of via a second json_get.
-    // Output: 0 = no signal (no labels yet), 1 = full match (every suggested
-    // label present), 2 = partial overlap, 3 = mismatch (operator labeled
-    // but none of ours matched).
-    let match_cmd = "SUGGESTED=" + shell_escape(suggested) + " RAW=" + shell_escape(cur_raw) + " python3 -c 'import os, json; sug={s.strip() for s in os.environ[\"SUGGESTED\"].split(\",\") if s.strip()}; act=set(json.loads(os.environ[\"RAW\"]).get(\"labels\", [])); print(0 if not act else (1 if sug and sug.issubset(act) else (2 if sug & act else 3)))'";
-    let signal_raw = try { exec sh match_cmd; } catch e { "0"; };
-    let signal = parse_int(signal_raw);
+    // Deterministic overlap check, native `.ag` (was an embedded `python3 -c`;
+    // #1638 P3 cluster B). json_get() returns Void for array leaves, so the
+    // `labels` array is materialized via json_get_raw -> json_array_to_strings
+    // (BOTH the missing-key "" and the empty-array "[]" collapse to an empty
+    // list, matching python's `set(json.loads(raw).get("labels", []))`); the
+    // suggested CSV becomes a trimmed non-empty token list. Output: 0 = no
+    // signal (no labels yet), 1 = full match (every suggested label present),
+    // 2 = partial overlap, 3 = mismatch (operator labeled but none of ours
+    // matched). Byte-equivalent to the old `0 if not act else (1 if sug and
+    // sug.issubset(act) else (2 if sug & act else 3))`: the `len(sug) > 0`
+    // guard reproduces python's `sug and` (blocks the empty-set subset trap).
+    // The pure pipeline has no exec/shell failure mode — a malformed cur_raw
+    // yields an empty act -> signal 0 (leave pending), subsuming the old
+    // catch-"0".
+    let act = json_array_to_strings(json_get_raw(cur_raw, "labels"));
+    let sug = filter(map(regex_split(",", suggested), |t: string| -> string {
+        return trim(t);
+    }), |t: string| -> bool {
+        return len(t) > 0;
+    });
+    let signal = if len(act) == 0 {
+        0;
+    } else {
+        if len(sug) > 0 {
+            if subset(sug, act) { 1; } else { if intersect(sug, act) { 2; } else { 3; }; };
+        } else {
+            if intersect(sug, act) { 2; } else { 3; };
+        };
+    };
     if signal == 0 {
         return;
     };
@@ -742,14 +781,24 @@ fn score_one_autonomous(owner: string, repo: string, issue_id: int) -> string {
         // failures will eventually hit the ageout and drop silently.
         return "keep";
     };
-    // Autonomous compare is different from the propose path: we WROTE
-    // the labels, so "act empty" is a reversal signal (signal 3, fail),
-    // not a "no signal yet" (which in propose we would leave pending).
-    // Output: 1 = full match (none removed), 2 = partial erosion,
-    // 3 = full reversal (none of ours remain).
-    let match_cmd = "SUGGESTED=" + shell_escape(suggested) + " RAW=" + shell_escape(cur_raw) + " python3 -c 'import os, json; sug={s.strip() for s in os.environ[\"SUGGESTED\"].split(\",\") if s.strip()}; act=set(json.loads(os.environ[\"RAW\"]).get(\"labels\", [])); print(1 if sug and sug.issubset(act) else (2 if sug & act else 3))'";
-    let signal_raw = try { exec sh match_cmd; } catch e { "3"; };
-    let signal = parse_int(signal_raw);
+    // Autonomous compare is different from the propose path: we WROTE the
+    // labels, so "act empty" is a reversal signal (signal 3, fail), not a
+    // "no signal yet". Native `.ag` (was an embedded `python3 -c`; #1638 P3
+    // cluster B) — same act/sug materialization as the propose path but with
+    // NO signal-0 branch (an empty act falls through subset/intersect to 3,
+    // matching the old default and catch-"3"). Output: 1 = full match (none
+    // removed), 2 = partial erosion, 3 = full reversal (none of ours remain).
+    let act = json_array_to_strings(json_get_raw(cur_raw, "labels"));
+    let sug = filter(map(regex_split(",", suggested), |t: string| -> string {
+        return trim(t);
+    }), |t: string| -> bool {
+        return len(t) > 0;
+    });
+    let signal = if len(sug) > 0 {
+        if subset(sug, act) { 1; } else { if intersect(sug, act) { 2; } else { 3; }; };
+    } else {
+        if intersect(sug, act) { 2; } else { 3; };
+    };
     // #1235: credit / penalise the crystallized rule (no-op on LLM-path
     // verdicts whose blob carries an empty rule_id).
     record_rule_feedback(blob, signal);

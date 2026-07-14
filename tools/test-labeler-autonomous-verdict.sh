@@ -143,23 +143,25 @@ else
 fi
 
 # -- (6) autonomous compare has no signal==0 arm -----------------------------
-# Compare the two compare_cmd python3 inline scripts: propose has signal 0,
-# autonomous must not. Grep for the two-arm ternary that starts at `print(1
-# if sug and sug.issubset(act)` — the propose variant prepends a
-# `0 if not act else` guard; the autonomous variant does not.
-if grep -Fq "print(0 if not act else" "$LABELER"; then
-    ok "propose compare still has signal==0 guard (0 if not act else ...)"
+# #1638 P3 cluster B: the two compares are now native `.ag` (was `python3 -c`).
+# The propose path (evaluate_label_verdict) keeps its empty-act signal-0 arm
+# (`if len(act) == 0 { 0; }`); the autonomous path (score_one_autonomous) does
+# NOT — an empty act there is a reversal (signal 3). Assert the signal-0 arm is
+# present in the propose region and ABSENT from the autonomous region.
+PROPOSE_REGION="$(awk '/^fn evaluate_label_verdict\(/,/^}/' "$LABELER")"
+AUTO_REGION="$(awk '/^fn score_one_autonomous\(/,/^}/' "$LABELER")"
+if printf '%s' "$PROPOSE_REGION" | grep -qF 'if len(act) == 0 {'; then
+    ok "propose compare still has signal==0 guard (if len(act) == 0 ...)"
 else
     bad "propose compare signal==0 guard missing — #195 regressed"
 fi
 
-# Look for an autonomous-specific compare that does NOT have the `0 if not act`
-# prefix. The pattern must be: `print(1 if sug and sug.issubset(act) else (2`
-# WITHOUT a leading `0 if not act else`.
-if awk '/SUGGESTED=/ && /RAW=/ && /python3/ {print}' "$LABELER" | grep -vq "0 if not act else"; then
-    ok "at least one compare call is autonomous-style (no signal==0 arm)"
+# The autonomous compare must NOT carry the `if len(act) == 0` empty-act arm —
+# a reversal there is signal 3, not "no signal yet".
+if printf '%s' "$AUTO_REGION" | grep -qF 'if len(act) == 0 {'; then
+    bad "autonomous compare still has an empty-act signal==0 arm — #203 regressed"
 else
-    bad "every compare call still has signal==0 arm — autonomous-compare variant missing"
+    ok "autonomous compare has no signal==0 arm (empty act => reversal signal 3)"
 fi
 
 # -- (7) soak and ageout constants -------------------------------------------
