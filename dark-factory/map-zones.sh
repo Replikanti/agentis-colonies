@@ -70,12 +70,14 @@ TAXONOMY="$HERE/auditor/bug-taxonomy.md"
 # output), and .git/ are third-party or generated, never the target's own zones — grouping openzeppelin or
 # forge-std into "zones" is both wrong (you audit the target, not its deps) and, on a big dep tree (e.g. a
 # yearn strategy vendors ~5.5k .sol under lib/), it overflows the mechanical pass's single SOURCES env
-# string past MAX_ARG_STRLEN (~128 KB) -> `Argument list too long`. `--scope-hint` can still add a specific
-# path back if a target genuinely keeps in-scope code under a pruned dir.
+# string past MAX_ARG_STRLEN (~128 KB) -> `Argument list too long`. NOTE: `--scope-hint` below only ever
+# NARROWS this already-pruned SOURCES list (it intersects, it cannot resurrect a file whose directory was
+# pruned here) — if a target genuinely keeps its own in-scope code under one of these names, edit the
+# `-name` list in this `find` instead.
 SOURCES="$(cd "$REPO" && find . \
   \( -type d \( -name lib -o -name node_modules -o -name out -o -name cache -o -name artifacts -o -name .git \) -prune \) -o \
   \( -type f \( -name '*.sol' -o -name '*.rs' \) -print \) 2>/dev/null | sed 's#^\./##' | LC_ALL=C sort || true)"
-[ -n "$SOURCES" ] || { echo "map-zones.sh: no Solidity/Anchor sources found under $REPO (own code only; lib/node_modules/out/cache are pruned — use --scope-hint to add a path back)" >&2; exit 2; }
+[ -n "$SOURCES" ] || { echo "map-zones.sh: no Solidity/Anchor sources found under $REPO (own code only; lib/node_modules/out/cache/artifacts/.git are pruned — --scope-hint narrows this list, it cannot restore a pruned path; edit the find's -name list above if this target's own code lives under one of them)" >&2; exit 2; }
 
 # --- advisory hardening input: the post-audit churn signal (never a gate) -----------------------------
 # audit-delta.sh reports the files that changed SINCE the audit ref; a zone with more churned files is
