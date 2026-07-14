@@ -10,8 +10,10 @@
 #
 # This demo proves that loop end-to-end with NO network and NO real LLM, by standing up a deterministic
 # fake `claude` on PATH. It runs the REAL `run-discovery.sh` against a 2-subsystem fixture:
-#   cell 1  oracle / C2       -> finds a stale-price CANDIDATE, posts it to the blackboard
-#   cell 2  liquidation / C2  -> reads the board; its prompt now carries the oracle lead, so it is steered
+#   cell 1  "Vault fee accountant & oracle" / C2  -> finds a stale-price CANDIDATE, posts it to the blackboard
+#   cell 2  liquidation / C2                       -> reads the board; its prompt now carries the oracle lead
+# Cell 1's subsystem name carries spaces + `&` on purpose: it is the regression for the blackboard memo-key
+# crash (a per-subsystem key built from a real zone name is illegal and killed the hunter at its CANDIDATE post).
 # The fake LLM ASSERTS on cell 2 that the prompt it received contains the oracle lead (the steer is real,
 # not cosmetic), then returns a corroborating CANDIDATE. The demo asserts the coordination shows up in
 # the run log + the discovery report, and exits non-zero if the steer did not happen.
@@ -70,9 +72,14 @@ MD
 
 # scope: oracle FIRST (it will post the lead), liquidation SECOND (it will read + be steered). Same class
 # C2 keeps the demo focused; the steer is cross-SUBSYSTEM (oracle -> liquidation), the interesting case.
+# The oracle subsystem is deliberately named with SPACES and an `&` — the shape a real zone name takes
+# (zone-mapper.ag emits human-readable names like "Vault fee accountant & oracle"). This is the regression
+# for the memo-key crash: the hunter posts its CANDIDATE to the blackboard, and a per-subsystem memo key
+# built from this name is ILLEGAL ([A-Za-z0-9_:.-] only) — pre-fix that crashed the hunter at the moment of
+# a positive finding, silently discarding every real lead. Post-fix the name rides only in the lead body.
 cat > "$WORK/scope.tsv" <<'TSV'
-oracle      | C2 | contracts/OracleLib.sol
-liquidation | C2 | contracts/LiquidationEngine.sol
+Vault fee accountant & oracle | C2 | contracts/OracleLib.sol
+liquidation                   | C2 | contracts/LiquidationEngine.sol
 TSV
 
 # --- deterministic fake `claude`: the LLM the hunter shells out to (run-discovery sets llm.command=claude)
@@ -127,10 +134,18 @@ echo
 FAIL=0
 [ "$RC" -eq 0 ] || { echo "FAIL: run-discovery.sh exited $RC" >&2; FAIL=1; }
 [ -f "$WORK/STEER_CONFIRMED" ] || { echo "FAIL: cell 2's prompt did NOT contain cell 1's blackboard lead (no steer)" >&2; FAIL=1; }
-grep -q '^BLACKBOARD-POST|oracle|C2|' "$OUT"/run/hunt_oracle_C2.log 2>/dev/null \
-  || { echo "FAIL: oracle cell did not POST its lead to the blackboard" >&2; FAIL=1; }
+# The oracle cell's log is slugged from its space/&-bearing subsystem name (tr -cs 'A-Za-z0-9' '_'):
+# "Vault fee accountant & oracle" -> "Vault_fee_accountant_oracle". Pre-fix this cell CRASHED at its
+# CANDIDATE post (illegal memo key) and this BLACKBOARD-POST line never appeared — the regression assertion.
+grep -q '^BLACKBOARD-POST|Vault fee accountant & oracle|C2|' "$OUT"/run/hunt_Vault_fee_accountant_oracle_C2.log 2>/dev/null \
+  || { echo "FAIL: oracle cell did not POST its lead to the blackboard (memo-key crash regression?)" >&2; FAIL=1; }
 grep -q '^BLACKBOARD-FOCUS|liquidation|C2|' "$OUT"/run/hunt_liquidation_C2.log 2>/dev/null \
   || { echo "FAIL: liquidation cell did not log being steered by the blackboard" >&2; FAIL=1; }
+# No hunter cell may have died on the illegal-memo-key runtime error (the bug this demo now guards). The
+# hunter's per-cell stdout+stderr is captured by run-discovery.sh into $OUT/run/hunt_*.log, so the crash
+# (if reintroduced) surfaces there, not in the top-level run log.
+! grep -rq 'memo key must be non-empty' "$OUT"/run/ 2>/dev/null \
+  || { echo "FAIL: a hunter cell crashed on an illegal memo key (blackboard per-subsystem key regression)" >&2; FAIL=1; }
 grep -q 'Inter-agent coordination (blackboard' "$REPORT" 2>/dev/null \
   || { echo "FAIL: report is missing the coordination section" >&2; FAIL=1; }
 

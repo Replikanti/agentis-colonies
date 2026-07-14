@@ -194,11 +194,15 @@ learn("hunt", cls + ":" + subsystem, "discovery hunt of " + cls + " on " + subsy
 // `dark-factory:lead` on the bus so an out-of-band coordinator/dashboard can react too. A reasoned
 // SAFE writes nothing — only positive findings steer, never a clean result. memo_write overwrites the
 // key, so we read-append-write to keep prior siblings' leads (single shared store = no lost update,
-// cells run sequentially).
+// cells run sequentially). The subsystem name rides inside the lead BODY (the `subsystem|...` prefix
+// every reader splits on) — it must NOT be spliced into a memo KEY: a real zone name carries spaces,
+// `&`, `/`, `()` etc, none of which are legal in a memo key ([A-Za-z0-9_:.-]), so a per-subsystem key
+// crashed the hunter on every real (multi-word-named) zone at the exact moment it surfaced a CANDIDATE,
+// silently discarding the lead. Only `dark-factory:blackboard:leads` is ever read (here + coordinator.ag);
+// the per-subsystem shadow key was never read by anything, so it is gone.
 if outcome == "success" {
     let lead = subsystem + "|" + cls + "|" + lead_summary(verdict);
     memo_write("dark-factory:blackboard:leads", append_line(board, lead));
-    memo_write("dark-factory:blackboard:" + subsystem, lead);
     emit("dark-factory:lead", "{\"subsystem\":\"" + subsystem + "\",\"class\":\"" + cls + "\"}");
     print("BLACKBOARD-POST|" + lead);
 }
