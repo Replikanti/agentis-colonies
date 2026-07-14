@@ -323,7 +323,7 @@ fi
 P2_WORK="$(mktemp -d)"
 DAEMON_PID=""
 cleanup2() {
-    [ -n "$DAEMON_PID" ] && kill -KILL "$DAEMON_PID" 2>/dev/null || true
+    if [ -n "$DAEMON_PID" ]; then kill -KILL "$DAEMON_PID" 2>/dev/null || true; fi
     rm -rf "$P2_WORK"
 }
 trap cleanup2 EXIT
