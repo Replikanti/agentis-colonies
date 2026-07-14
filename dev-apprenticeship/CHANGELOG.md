@@ -615,6 +615,20 @@ is asserted until multi-version CI is in place.
   draft→edit→finalize cycle over an existing PR; the MR-less-branch rescue is
   preserved.
 
+- **Adversarial marker flood no longer aborts the whole merge-gate-reader tick**
+  ([#1629](https://github.com/Replikanti/agentis-colonies/issues/1629)): the
+  `note_verdict` call in `approval_decider.review_gate` and the
+  `block_reason_for_head` call in `code_writer.recover_qa_block_at` were the
+  only two calls in those functions left unwrapped — everything else already
+  reads its `exec sh` inputs through `try { ... } catch e { ""; }`. Under a
+  flood of non-bot notes each carrying the current-head marker prefix, the
+  quick-reject in the shared `scan_verdict` core is defeated and the full
+  line-walk can exhaust `cb_per_tick`, raising an uncaught `CognitiveOverload`
+  that aborted the whole tick — not just the flooded PR. Both calls are now
+  wrapped in the same fail-closed idiom as their siblings, so a flood scopes
+  to an empty verdict/reason for that one PR (HOLD / no re-drive this tick)
+  instead of taking down the reader for every other PR.
+
 ### Security
 
 - **QA-verdict marker bound to the bot author in both body-only readers**

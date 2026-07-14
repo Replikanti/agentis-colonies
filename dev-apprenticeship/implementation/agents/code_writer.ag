@@ -1650,7 +1650,7 @@ fn recover_qa_block_at(owner: string, repo: string, raw: string, idx: int) -> in
     // colony-lint: safe-exec-concat
     let notes_cmd = "$COLONY_DIR/scripts/forge-api.sh mr-notes " + shell_escape(iid_str) + repo_arg(owner, repo);
     let notes_raw = try { exec sh notes_cmd; } catch e { ""; };
-    let reason = block_reason_for_head(notes_raw, head_fp, bot_login());
+    let reason = try { block_reason_for_head(notes_raw, head_fp, bot_login()); } catch e { ""; };
     // Empty = no blocking verdict for the CURRENT head (none / stale / flipped to
     // pass) — nothing to recover.
     if len(reason) == 0 { return 0; };
