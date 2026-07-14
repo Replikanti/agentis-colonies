@@ -619,7 +619,10 @@ fn score_route_verdict_key(owner: string, repo: string, key: string) -> string {
     // 3 = reassigned (assigned, but not to our username). `0 if not ns else
     // (1 if sug in ns else 3)`.
     let sug = trim(suggested);
-    let ns = filter(map(json_array_object_field_values(json_get_raw(cur_raw, "assignees"), "username"), |u: string| -> string {
+    // json_array_object_field_values can panic on a malformed-but-bracket-balanced
+    // payload (agentis-core builtin gap, not fixed here); fail-closed to an empty
+    // projection so a panic degrades to "no assignees" rather than aborting the tick.
+    let ns = filter(map(try { json_array_object_field_values(json_get_raw(cur_raw, "assignees"), "username"); } catch e { []; }, |u: string| -> string {
         return trim(u);
     }), |u: string| -> bool {
         return len(u) > 0;

@@ -721,8 +721,12 @@ fn evaluate_approval_verdict(owner: string, repo: string) -> void {
         return;
     };
     let iid_str = to_string(mr_iid);
-    let m = member(iid_str, json_array_object_field_values(merged_raw, "iid"));
-    let c = member(iid_str, json_array_object_field_values(closed_raw, "iid"));
+    // json_array_object_field_values can panic on a malformed-but-bracket-balanced
+    // payload (agentis-core builtin gap, not fixed here); fail-closed to an empty
+    // projection so a panic degrades to "no signal" (m=c=false) rather than
+    // aborting the tick, mirroring python's try/except around json.loads.
+    let m = member(iid_str, try { json_array_object_field_values(merged_raw, "iid"); } catch e { []; });
+    let c = member(iid_str, try { json_array_object_field_values(closed_raw, "iid"); } catch e { []; });
     let signal = if action == "approve" {
         if m { 1; } else { if c { 3; } else { 0; }; };
     } else {
