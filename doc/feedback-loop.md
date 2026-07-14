@@ -147,6 +147,7 @@ verdict clears.
 | `triage/labeler` | label set on the issue N ticks after suggestion | python3 set operations over `json.loads(raw).labels` |
 | `triage/prioritizer` | `priority::*` label survival | same set-overlap over a filtered label subset |
 | `triage/router` | issue actually worked on by the routed colony (branch / MR created, or issue closed with the colony's trail) | `mr-list --ref=<issue_id_derived_branch>` or label check |
+| `triage/issue_creator` **(Wave 2 M5)** | fate of the self-observe issue it `create-issue`'d — closed as real work vs. closed as noise | `forge-api.sh issue <iid>` state + native quote-anchored `index_of` label-set membership (same helper family as `planning/scope_estimator`, Wave 2 M3) |
 | `code-review/{style,logic,security,test}_reviewer` | review comment survival (resolved / dismissed / quoted-in-diff) | GitLab `mr-notes` fetch; compare comment id across ticks |
 | `code-review/approval_decider` **(Wave 1)** | MR fate after the approve/request_changes call — merged vs. closed-unmerged | bounded `merge-requests --state merged \| closed --per-page 50` list-scan + python3 iid membership (merged checked first) |
 | `planning/plan_reviewer` **(Wave 1)** | auto-promotion (#1362) survival — impl trigger label kept vs. `needs-planning` re-added, after a 30-min soak | `forge-api.sh issue <iid>` raw labels + python3 set membership |

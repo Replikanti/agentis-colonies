@@ -91,6 +91,22 @@ is asserted until multi-version CI is in place.
   `.ag` walk. Each agent stashes a single-slot `<agent>:pending_verdict`
   memo once, at its single autonomous acting site; no `prompt()` on the
   scoring path. Source-asserted by `tools/test-reality-check-wave2.sh`.
+- **Reality-check feedback loop — Wave 2 M5 (triage, 1 agent)** ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)):
+  `issue_creator` now closes the loop for the self-observe issues it files.
+  It stashes a single-slot `issue_creator:pending_verdict` memo when it
+  create-issue's autonomously, and a later tick re-queries `forge-api.sh
+  issue <iid>`: `state == "closed"` with no noise label => `success`
+  (the issue survived triage as real work); closed with a noise label
+  (`wontfix`/`invalid`/`duplicate`/`not-planned`) => `failure`; still open =>
+  left pending. Reuses `planning/scope_estimator`'s (Wave 2 M3) native
+  `noise_label_hit`/`signal_to_outcome` helpers verbatim (own byte-identical
+  copy — the `.ag` dialect has no imports) rather than building the
+  umbrella's richer branch/MR/label-progression "worked" detector: unlike
+  `code_writer`, a triage-filed self-observe issue has no deterministic
+  derived branch name to bounded-list-scan for, so that signal is
+  substrate-blocked here without a new forge-exposed provenance join. 24h
+  ageout drops unsignalled verdicts UNSCORED; no `prompt()` on the scoring
+  path. Source-asserted by `tools/test-reality-check-wave2.sh`.
 
 ### Changed
 
