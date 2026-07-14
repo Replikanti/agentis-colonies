@@ -103,7 +103,7 @@ LOG
 # #311 PR B: spend log fixture. Three rows in a now-anchored window so the
 # today/7d/30d aggregations are non-zero. The orphan agent_id (no daemon
 # registered) exercises the "no role mapping" path of collect_spend_log().
-NOW_MS_FIX="$(python3 -c 'import time; print(int(time.time()*1000))')"
+NOW_MS_FIX=$((SUITE_NOW * 1000))
 NOW_MS_T1=$((NOW_MS_FIX - 60000))
 NOW_MS_T2=$((NOW_MS_FIX - 120000))
 NOW_MS_T3=$((NOW_MS_FIX - 180000))
@@ -122,8 +122,13 @@ if [ -z "$PORT" ]; then
 fi
 
 # --- Boot the dashboard. setsid -> own process group for clean teardown. ---
+# #1685: freeze the booted collector's "now" to the one $SUITE_NOW the fixtures
+# derive from (inline, so the override is scoped to this boot). Without it the
+# collector re-samples wall-clock at /refresh time and can straddle local
+# midnight under host load, dropping the oldest spend row out of the today bucket.
 LOG_FILE="$TMPDIR_TEST/dashboard.log"
-setsid bash "$DASHBOARD_SH" "$FED_DIR" "$PORT" >"$LOG_FILE" 2>&1 &
+FEDERATION_DASHBOARD_EPOCH_OVERRIDE="$SUITE_NOW" \
+    setsid bash "$DASHBOARD_SH" "$FED_DIR" "$PORT" >"$LOG_FILE" 2>&1 &
 DASH_PID=$!
 
 # Wait for readiness.
@@ -2484,6 +2489,18 @@ if [ -f "$TIMELINE_PY" ] && ! grep -Eq 'time\.time\(\)' "$TIMELINE_PY"; then
 else
     fail "66: federation-dashboard-timeline.py still calls time.time() — 00:00 UTC date-boundary flake risk (#1145)" \
          "offending: $(grep -nE 'time\.time\(\)' "$TIMELINE_PY" 2>/dev/null | tr '\n' ' ')"
+fi
+
+# t68 (#1685): the bin entry point must keep the FEDERATION_DASHBOARD_EPOCH_OVERRIDE
+# hermeticity hook next to the EPOCH= wall-clock read. #1043/#1145 froze the collector
+# and timeline helper to a single injected epoch, but the BOOTED path re-sampled the
+# wall clock in bin/federation-dashboard's EPOCH=$(date '+%s'), which straddled local
+# midnight under host load and flaked test 27 (cost aggregation). This suite now boots
+# with the override set to $SUITE_NOW; source-guard so the hook can't be silently dropped.
+if [ -f "$DASHBOARD_SH" ] && grep -q 'FEDERATION_DASHBOARD_EPOCH_OVERRIDE' "$DASHBOARD_SH"; then
+    pass "68: bin/federation-dashboard honours FEDERATION_DASHBOARD_EPOCH_OVERRIDE — booted collector freezable to one injected epoch (#1685)"
+else
+    fail "68: bin/federation-dashboard dropped the FEDERATION_DASHBOARD_EPOCH_OVERRIDE hook — booted path re-samples wall-clock, test-27 midnight-straddle flake returns (#1685)"
 fi
 
 # --- #1231: the Status-tab status-meta verdict summary rolls up liveness
