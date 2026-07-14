@@ -52,6 +52,130 @@ fn outcome_of(verdict: string) -> string {
     return "failure";
 }
 
+// --- #1681 deterministic C10/C11 lending/CDP/stability-pool backstop -------------------------------
+// zone-mapper's LLM classification under-recognizes lending/CDP/stability-pool code (direct forks AND
+// ERC4626-style Strategy/Vault wrappers around them) — see #1681 (yearn-ybold's Strategy.sol zone, which
+// wraps a Liquity-fork stability pool, classified to [C15,C2,C12] with C10/C11 never assigned). The prompt
+// instruction below is best-effort; this block is the deterministic guarantee applied AFTER prompt().
+
+// Does the zone's own concatenated code (the `code` local built by scoped_code() — NOT the file names)
+// reference a lending/CDP/stability-pool interface, directly or via an ERC4626 wrapper's import/type line?
+// Sequential checks (no `&&`/`||`, this file's existing style). Identifier set from the issue report, with
+// ONE deviation confirmed live pre-merge (#1681 plan's own flagged risk): the bare generic `IPool` token
+// was DROPPED in favor of `IPoolAddressesProvider` (Aave's own address-registry interface, always imported
+// alongside a real Aave V3 integration, so it keeps the Aave signal without the collision) after a live
+// map-zones.sh --backend claude run against the symm corpus-bench target showed `IPool` false-firing on
+// `contracts_vesting_interfaces` — a Balancer v3 pool/router integration the LLM itself correctly classified
+// as C15-only, that the bare-`IPool` backstop then force-appended C10/C11 onto anyway (confirmed via the
+// second, backstop-appended `ZONE|` line in that run's zone log). yearn-ybold's positive match is unaffected
+// (its zones fire on `ITroveManager`/`IStabilityPool`/`ICollateralRegistry`, never on `IPool`).
+fn contains_lending_signal(code: string) -> bool {
+    if index_of(code, "ITroveManager") >= 0 { return true; }
+    if index_of(code, "IStabilityPool") >= 0 { return true; }
+    if index_of(code, "ICollateralRegistry") >= 0 { return true; }
+    if index_of(code, "IAaveLendingPool") >= 0 { return true; }
+    if index_of(code, "IPoolAddressesProvider") >= 0 { return true; }
+    if index_of(code, "IComptroller") >= 0 { return true; }
+    if index_of(code, "ICToken") >= 0 { return true; }
+    return false;
+}
+
+// First non-empty line of `s` (mirrors hunter.ag::first_line — the verdict's ZONE| line is what we want).
+fn first_line(s: string) -> string {
+    return reduce(regex_split("\n", s), |acc: string, l: string| -> string {
+        if len(acc) > 0 { return acc; }
+        if len(l) > 0 { return l; }
+        return acc;
+    }, "");
+}
+
+// The first `ZONE|`-prefixed line of `verdict`; "" when no such line exists (mirrors outcome_of's own
+// failure detection so a genuinely failed classification is never force-upgraded to success).
+fn zone_line(verdict: string) -> string {
+    let at = index_of(verdict, "ZONE|");
+    if at < 0 { return ""; }
+    return first_line(substring(verdict, at, len(verdict)));
+}
+
+// The Nth `|`-delimited field of `line`, 0-based (same reduce-with-tab-prefixed-accumulator idiom as
+// coordinator.ag::payload_field; duplicated locally per this codebase's per-agent-copy convention).
+fn pipe_field(line: string, n: int) -> string {
+    let segs = regex_split("\\|", line);
+    let acc = reduce(segs, |a: string, seg: string| -> string {
+        let bar = index_of(a, "\t");
+        let idx = parse_int(substring(a, 0, bar));
+        let cap = substring(a, bar + 1, len(a));
+        if idx == n { return to_string(idx + 1) + "\t" + seg; }
+        return to_string(idx + 1) + "\t" + cap;
+    }, "0\t");
+    return substring(acc, index_of(acc, "\t") + 1, len(acc));
+}
+
+// .ag has no trim builtin (same gap prospector/intake.ag::trim documents): strip leading/trailing ASCII
+// whitespace by scanning in from both ends; interior spaces are preserved. Needed because the LLM's own
+// csv classes field may come back "C15, C2, C12" (comma-space) rather than "C15,C2,C12".
+fn is_ws(c: string) -> bool {
+    if c == " " { return true; }
+    if c == "\t" { return true; }
+    if c == "\r" { return true; }
+    if c == "\n" { return true; }
+    return false;
+}
+fn first_nonws(s: string, i: int, n: int) -> int {
+    if i >= n { return n; }
+    if is_ws(substring(s, i, i + 1)) { return first_nonws(s, i + 1, n); }
+    return i;
+}
+fn last_nonws(s: string, i: int) -> int {
+    if i < 0 { return -1; }
+    if is_ws(substring(s, i, i + 1)) { return last_nonws(s, i - 1); }
+    return i;
+}
+fn trim(s: string) -> string {
+    let n = len(s);
+    if n == 0 { return ""; }
+    let startIdx = first_nonws(s, 0, n);
+    if startIdx >= n { return ""; }
+    let endIdx = last_nonws(s, n - 1);
+    if endIdx < startIdx { return ""; }
+    return substring(s, startIdx, endIdx + 1);
+}
+
+// Is `cls` already one of the comma-separated (optionally comma-space) ids in `classesCsv`?
+fn class_has(classesCsv: string, cls: string) -> bool {
+    return reduce(regex_split(",", classesCsv), |acc: bool, c: string| -> bool {
+        if acc { return true; }
+        return trim(c) == cls;
+    }, false);
+}
+
+// Append `cls` to `classesCsv` unless it is already present (avoids duplicate `C10,C10` entries, which
+// would otherwise double run-discovery.sh's per-zone cell fan-out cost for that class).
+fn force_include(classesCsv: string, cls: string) -> string {
+    if class_has(classesCsv, cls) { return classesCsv; }
+    if len(trim(classesCsv)) == 0 { return cls; }
+    return classesCsv + "," + cls;
+}
+
+// The deterministic net: when the zone's code signals a lending/CDP/stability-pool system (direct or
+// ERC4626-wrapped), force C10 ("first-depositor/inflation") + C11 ("stability-pool offset") into its class
+// list regardless of what the LLM returned — false positives here are cheaper than a missed first-depositor
+// or stability-pool-offset bug (the issue's own stated tradeoff). A genuine classification failure (no
+// ZONE| line at all) is left alone, not forced to succeed. The corrected line is APPENDED as a new,
+// trailing `ZONE|` line rather than mutating the LLM's own line in place: map-zones.sh's scraper already
+// takes `grep -E '^[[:space:]]*ZONE\|' ... | tail -1` (the #1663/#1664 whitespace-tolerant last-line
+// scrape), so the appended line is picked up with zero changes to the shell side.
+fn apply_backstop(verdict: string, code: string) -> string {
+    let line = zone_line(verdict);
+    if len(line) == 0 { return verdict; }
+    if !contains_lending_signal(code) { return verdict; }
+    let withC10 = force_include(pipe_field(line, 3), "C10");
+    let withBoth = force_include(withC10, "C11");
+    let rebuilt = "ZONE|" + pipe_field(line, 1) + "|" + pipe_field(line, 2) + "|" + withBoth + "|" + pipe_field(line, 4);
+    if rebuilt == line { return verdict; }
+    return verdict + "\n" + rebuilt;
+}
+
 let dir = getenv("TARGET_DIR");
 let zoneId = getenv("ZONE_ID");
 let files = getenv("ZONE_FILES");
@@ -74,6 +198,17 @@ let instruction =
   + "under-audited by construction (protocol A's auditors trust B; B's auditors never see A's integration "
   + "code). A name suffix is a strong hint but not required: an import/call into another protocol's interface "
   + "IS the seam even with a plain name. If this zone does NOT integrate a second protocol, do NOT add C15.\n\n"
+  + "=== LENDING/CDP/STABILITY-POOL DETECTION RULE (C10/C11) ===\n"
+  + "The taxonomy's own guidance is: \"a lender -> C8/C10/C11\". If this zone IS a lender/CDP/stability-pool "
+  + "system (a Trove/CDP manager, a Compound/Aave-style money market, a Liquity-style stability pool, or a "
+  + "fork of any of those), INCLUDE `C10` (first-depositor/inflation) and `C11` (stability-pool offset). This "
+  + "extends to WRAPPED instances too: an ERC4626-style Strategy or Vault contract that deposits into, or "
+  + "withdraws from, such a system is lending-adjacent even though it is not itself the lender — include "
+  + "C10/C11 for the wrapper zone as well. Signals to look for (import/type lines, not just contract names): "
+  + "`ITroveManager`, `IStabilityPool`, `ICollateralRegistry`, `IAaveLendingPool`, `IPoolAddressesProvider`, "
+  + "`IComptroller`, `ICToken`. A bare, generic `IPool`/pool interface is NOT enough by itself — Balancer- and "
+  + "AMM-style pools use that name too; only add C10/C11 when the zone is genuinely a lending/CDP/stability-pool "
+  + "integration. If none of this zone's contracts touch a lending/CDP/stability-pool system, do NOT add C10/C11.\n\n"
   + "=== ZONE ID (echo it back UNCHANGED as the first field) ===\n" + zoneId + "\n\n"
   + "=== HOW TO ANSWER ===\n"
   + "FIRST reason step by step: read the zone's contracts, name the subsystem, and for EACH candidate class "
@@ -83,11 +218,14 @@ let instruction =
   + "long as you need first; ONLY the single ZONE| line is parsed, so your analysis above it is free.";
 
 let verdict = prompt(instruction, code) -> string;
+// #1681: apply the deterministic C10/C11 lending-signal backstop after the LLM classification, before the
+// verdict is surfaced or scored — see apply_backstop() above for why it appends rather than mutates.
+let finalVerdict = apply_backstop(verdict, code);
 
 // Surface the classification to map-zones.sh (stdout) and record the attempt so the mapping reweights over
 // time (mirrors hunter.ag / audit-scout.ag's print/emit/learn/memo tail).
-print(verdict);
-let outcome = outcome_of(verdict);
+print(finalVerdict);
+let outcome = outcome_of(finalVerdict);
 emit("dark-factory:zone_mapped", "{\"zone\":\"" + zoneId + "\",\"outcome\":\"" + outcome + "\"}");
 learn("zone-map", zoneId, "attack-surface classification of zone " + zoneId, outcome, ["zone-map", zoneId, outcome]);
 memo_write("zone-mapper:last_check", "done");
