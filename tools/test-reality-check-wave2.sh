@@ -327,6 +327,20 @@ for pair in "release_checker:evaluate_checker_verdict" "changelog_writer:evaluat
     fi
 done
 
+# --- M5 — triage (1 agent) ---
+#
+# issue_creator scores the fate of the self-observe issue it create-issue'd:
+# our filed issue's terminal forge state is the honest ground truth (the
+# umbrella's branch/MR/label-progression "worked" signal is substrate-blocked
+# for a triage-filed issue — no derived branch name, see the #1453 M5 plan
+# comment). Reuses the exact M3 primitive (forge-api.sh issue <iid> +
+# noise_label_hit, byte-identical copy): closed with no noise label =>
+# success, closed with a noise label => failure, still open => skip.
+TRIAGE="$FED/triage/agents"
+
+check_agent "$TRIAGE/issue_creator.ag" "issue_creator" "issue" "create_issue" 2 \
+    "forge-api.sh issue " "\"closed\""
+
 # Outcome enum: "fail" is not a valid learn() outcome (core enforces
 # success/failure/partial/timeout/error). Swept across the M1 + M2 + M3 + M4
 # agents so a reintroduced invalid literal fails the PR (the Wave-1 test

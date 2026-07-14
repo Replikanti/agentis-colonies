@@ -148,7 +148,127 @@ fn get_confidence() -> float {
     return 0.0;
 }
 
+// --- #1453 Wave 2 (M5): reality-check feedback loop ---
+//
+// Copies the shipped Wave 2 M3 idiom in shape (single-slot pending_verdict
+// memo, evaluate-first-in-tick, 86400 ageout, prompt()-free compare). The
+// ground truth is the FATE of the self-observe issue this agent filed:
+// unlike code_writer (Wave 1), which owns a deterministic fix/issue-<iid>
+// branch name it can bounded-list-scan for, a triage-filed issue has no
+// derived branch name — whoever picks it up chooses an arbitrary one, so
+// "worked (branch/MR/label progression)" is not mechanically observable
+// here without a NEW cross-artifact join the forge wrappers don't expose.
+// Instead this milestone reuses the exact proven M3 primitive
+// (planning/scope_estimator.ag's noise_label_hit + signal_to_outcome,
+// byte-identical copy — the .ag dialect has no imports): closed with no
+// noise label means the issue survived triage as real work (success);
+// closed with a noise label (wontfix/invalid/duplicate/not-planned) means
+// it was rejected as noise (failure); still open means no signal yet. This
+// directly measures self-observe noise, which the #1411 acceptance gate
+// already cares about. See doc/feedback-loop.md and the #1453 M5 plan
+// comment for the full rationale.
+
+// Map the reality-check signal to the experience-store outcome enum. Signal
+// 0 ("issue still open") is handled by the caller via an early return and
+// never reaches this function.
+fn signal_to_outcome(signal: int) -> string {
+    if signal == 1 {
+        return "success";
+    };
+    return "failure";
+}
+
+// Age (seconds) of a pending-verdict blob.
+fn verdict_age_seconds(blob: string) -> int {
+    let emit_ts = parse_int(to_string(json_get(blob, "[0]")));
+    let now_raw = to_string(now_ms() / 1000);
+    let now = parse_int(now_raw);
+    return now - emit_ts;
+}
+
+// Native flat noise-label membership over the raw issue JSON's "labels"
+// subtree: a fixed sequence of quote-anchored index_of checks (no
+// per-element map/filter walk over the array — the #1640 CB-overflow
+// lesson). The JSON-quoted label value gives the same anchoring a set
+// membership test would, on both forge backends (GitLab's flat string
+// array and GitHub's array-of-objects both quote the label name).
+fn noise_label_hit(issue_raw: string) -> bool {
+    let labels_raw = json_get_raw(issue_raw, "labels");
+    if len(labels_raw) == 0 { return false; };
+    if index_of(labels_raw, "\"wontfix\"") >= 0 { return true; };
+    if index_of(labels_raw, "\"invalid\"") >= 0 { return true; };
+    if index_of(labels_raw, "\"duplicate\"") >= 0 { return true; };
+    if index_of(labels_raw, "\"not-planned\"") >= 0 { return true; };
+    return false;
+}
+
+// Record a pending issue-creation verdict. No payload needed beyond the
+// issue id — mirrors ship_decider/changelog_writer's empty-payload-slot
+// convention.
+fn record_issue_verdict(owner: string, repo: string, issue_id: int) -> void {
+    let ts_raw = to_string(now_ms() / 1000);
+    let blob = "[" + ts_raw + "," + to_string(issue_id) + ",\"\"]";
+    memo_write(scoped_memo(owner, repo, "issue_creator:pending_verdict"), blob);
+    print("[issue_creator] verdict recorded: issue", issue_id);
+}
+
+// Score the pending issue-creation verdict against the issue's CURRENT
+// terminal forge state. Re-query forge-api.sh issue <iid>: still "opened" ->
+// leave pending (no signal yet, absence is not evidence either way); closed
+// with no noise label -> success; closed with a noise label -> failure. 24h
+// ageout drops the verdict UNSCORED. Mechanical compare via native flat
+// builtins — NEVER a prompt().
+fn evaluate_issue_verdict(owner: string, repo: string) -> void {
+    let key = scoped_memo(owner, repo, "issue_creator:pending_verdict");
+    let blob = recall_latest(key);
+    if len(blob) < 3 {
+        return;
+    };
+    let timeout_s = 86400;
+    if verdict_age_seconds(blob) > timeout_s {
+        print("[issue_creator] verdict aged out without signal");
+        memo_write(key, "");
+        return;
+    };
+    let issue_id = parse_int(to_string(json_get(blob, "[1]")));
+    // colony-lint: safe-exec-concat
+    let cur_cmd = "$COLONY_DIR/scripts/forge-api.sh issue " + to_string(issue_id) + repo_arg(owner, repo);
+    let cur_raw = try { exec sh cur_cmd; } catch e { ""; };
+    if len(cur_raw) < 3 {
+        return;
+    };
+    let state = to_string(json_get(cur_raw, "state"));
+    if state != "closed" {
+        return;
+    };
+    let signal = if noise_label_hit(cur_raw) { 2; } else { 1; };
+    let outcome = signal_to_outcome(signal);
+    if len(owner) > 0 {
+        learn(
+            "create_issue",
+            "issue " + to_string(issue_id) + " reality-check",
+            "signal: " + to_string(signal),
+            outcome,
+            ["acted", "triage", repo_tag(owner, repo)]
+        );
+    } else {
+        learn(
+            "create_issue",
+            "issue " + to_string(issue_id) + " reality-check",
+            "signal: " + to_string(signal),
+            outcome,
+            ["acted", "triage"]
+        );
+    };
+    print("[issue_creator] reality-check: issue", issue_id, "signal", signal, "->", outcome);
+    memo_write(key, "");
+}
+
 fn tick_for_repo(owner: string, repo: string) -> void {
+    // #1453 Wave 2 (M5): score any pending issue-creation verdict FIRST
+    // (read-only, no early return) before the observe/act steps below.
+    evaluate_issue_verdict(owner, repo);
+
     let cmd = issues_cmd(owner, repo);
     let raw = try {
         exec sh cmd;
@@ -218,6 +338,9 @@ fn tick_for_repo(owner: string, repo: string) -> void {
                 } else {
                     learn("create_issue", "created", draft.title, "success", ["acted", "triage"]);
                 };
+                // #1453 Wave 2 (M5): stash the created issue so a later tick
+                // scores it against its terminal (closed) fate.
+                record_issue_verdict(owner, repo, parse_int(to_string(json_get(result, "iid"))));
             };
         } else {
             if my_tier == "review-gated" {
