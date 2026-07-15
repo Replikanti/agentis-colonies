@@ -116,6 +116,28 @@ REPORT="$OUT/refute-report.md"
   echo "|---|---|---|---|"
 } > "$REPORT"
 
+# --- #1699 bounded single-class C6 fallback -------------------------------------------------------------
+# A candidate REFUTED under its ASSIGNED class is not dropped outright when its own code file trips a
+# conservative accounting signal. The hunter routinely mislabels a value-moving-function accounting bug (the
+# real nature is a missing/short fee deduction before a transfer = C6) as an integration/composability seam
+# (e.g. C15), so the assigned-class refutation attacks the wrong thesis and legitimately "refutes" a claim
+# that was never the bug's true nature — the real finding is buried as a false negative. fallback_class_for()
+# gates a SINGLE C6 retry on a compound-AND signal over the candidate's staged code: a value-moving function
+# DECLARATION *and* an amount-deduction idiom. Both must fire, and the assigned class must not already be C6
+# (never re-run a class against itself). Returns `C6` when it should retry, empty otherwise.
+#
+# The signal vocabulary is deliberately SHARED with zone-mapper.ag's #1698 contains_accounting_signal()
+# (has_value_moving_function / has_amount_deduction, ~L101-130): the SAME value-moving keyword set
+# (withdraw|deposit|mint(|burn(|redeem|swap) AND the SAME deduction idioms (`-=`, `.sub(`). The two lists can
+# drift independently — when you touch one, check the other (and any future map-zones.sh mechanical mirror).
+fallback_class_for() {
+  fc_src="$1"; fc_assigned="$2"
+  [ "$fc_assigned" = "C6" ] && { printf ''; return 0; }
+  grep -qE 'function[[:space:]]+(withdraw|deposit|mint\(|burn\(|redeem|swap)' "$fc_src" || { printf ''; return 0; }
+  grep -qE '(-=|\.sub\()' "$fc_src" || { printf ''; return 0; }
+  printf 'C6'
+}
+
 CHECKED=0 ; REAL=0 ; REFUTED=0 ; ERRORED=0
 # Manifest loop: one candidate per line, `file:fn | class | sev | exploit | code-file`.
 while IFS='|' read -r CFN CLS SEV EXPL CODEF || [ -n "${CFN:-}" ]; do
@@ -171,14 +193,49 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF || [ -n "${CFN:-}" ]; do
   VLINE="$(grep 'VERDICT|' "$CELL_LOG" | tail -1 || true)"
   if [ -z "$VLINE" ]; then
     VERD="REFUTED" ; REASON="no verdict line produced (treated as refuted)"
-    REFUTED=$((REFUTED + 1))
   else
     V="$(printf '%s' "$VLINE" | sed 's/^.*\(VERDICT|\)/\1/')"
     VERD="$(printf '%s' "$V" | cut -d'|' -f2)"
     REASON="$(printf '%s' "$V" | cut -d'|' -f5-)"
-    if [ "$VERD" = "REAL" ]; then REAL=$((REAL + 1)); else REFUTED=$((REFUTED + 1)); fi
   fi
-  printf '| %s | %s | %s | %s |\n' "$CFN" "$CLS" "$VERD" "$REASON" >> "$REPORT"
+  ROW_CLS="$CLS"
+
+  # #1699 bounded single-class C6 fallback: a candidate REFUTED under its assigned class gets ONE more full
+  # hostile read under C6 when its code trips the compound-AND accounting signal (see fallback_class_for).
+  # The retry can only convert REFUTED -> REAL (never the reverse), costs at most ONE extra refuter.ag call
+  # per candidate, and keeps the candidate only if it INDEPENDENTLY survives the C6 lens (the same conservative
+  # single-thesis refuter, so a candidate with no real accounting bug is REFUTED under C6 too — precision holds).
+  if [ "$VERD" = "REFUTED" ]; then
+    FB="$(fallback_class_for "$SRC" "$CLS")"
+    if [ -n "$FB" ]; then
+      FB_LOG="$RUN/refute_${SLUG}_c6.log"
+      echo "run-refute.sh: $CFN refuted under $CLS; accounting signal fired, retrying under $FB ..." >&2
+      ( cd "$RUN" && env \
+          CAND_FILE_FN="$CFN" \
+          CAND_CLASS="$FB" \
+          CAND_SEVERITY="$SEV" \
+          CAND_EXPLOIT="$EXPL" \
+          CODE_PATH="$STAGED" \
+          BRIEF_PATH="$BRIEF_IN_RUN" \
+          "$AGENTIS" go refuter.ag --enable-exec --enable-messaging --grant-pii ) >"$FB_LOG" 2>&1 || \
+          echo "run-refute.sh: fallback refuter run failed for '$CFN' (see $FB_LOG)" >&2
+      FB_VLINE="$(grep 'VERDICT|' "$FB_LOG" | tail -1 || true)"
+      if [ -n "$FB_VLINE" ]; then
+        FB_V="$(printf '%s' "$FB_VLINE" | sed 's/^.*\(VERDICT|\)/\1/')"
+        FB_VERD="$(printf '%s' "$FB_V" | cut -d'|' -f2)"
+        FB_REASON="$(printf '%s' "$FB_V" | cut -d'|' -f5-)"
+        if [ "$FB_VERD" = "REAL" ]; then
+          VERD="REAL" ; ROW_CLS="$FB"
+          REASON="recovered under $FB fallback (assigned $CLS refuted): $FB_REASON"
+        fi
+      fi
+    fi
+  fi
+
+  # Tally AFTER the fallback decision so the counters reflect the FINAL verdict, and emit exactly ONE report
+  # row per candidate carrying the WINNING class (ROW_CLS) — verify-findings.sh reads the first data row + exits.
+  if [ "$VERD" = "REAL" ]; then REAL=$((REAL + 1)); else REFUTED=$((REFUTED + 1)); fi
+  printf '| %s | %s | %s | %s |\n' "$CFN" "$ROW_CLS" "$VERD" "$REASON" >> "$REPORT"
 done < "$CANDS"
 
 {
