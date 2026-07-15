@@ -10,8 +10,11 @@
 #      count per finding — 1-2 rare, 3-8 mid, 9+ consensus),
 #   2. runs the REAL end-to-end federation pipeline (run-zone-hunt.sh: map -> brief -> discover -> verify) over
 #      the real contest CODE repo through a real LLM backend,
-#   3. scores the pipeline's verified findings against ground truth via the SAME overlap oracle
-#      (novelty-gate.sh) run-capability-bench.sh already uses, stratified by severity + rarity.
+#   3. scores the pipeline's verified findings against ground truth via a LOCATION-first bench matcher
+#      (score-match.py, #1697): a lead's file basename + function name (from verified_findings.json.location)
+#      must co-occur in a truth row's signature — stratified by severity + rarity. This REPLACED the free-text
+#      novelty-gate.sh overlap oracle, which failed across every threshold on real contest prose. The live
+#      novelty-gate.sh is untouched (frozen for the #1698/#1699 re-measurement); this matcher is bench-only.
 #
 # Corpus is a manifest (corpus.tsv), not re-hosted code or findings — see corpus.tsv + README.md.
 #
@@ -33,7 +36,8 @@
 #   --corpus <file>   corpus.tsv (default: corpus.tsv next to this script).
 #   --backend <b>     LLM backend for --hunt (default: flat-cyborg, the federation default; see ../../CLAUDE.md).
 #   --jobs <N>        run-zone-hunt.sh intra-zone concurrency (default 1).
-#   --min-overlap <N> novelty-gate.sh overlap threshold for scoring (default 2, same default as the capability bench).
+#   --min-overlap <N> Overlap threshold for scoring's LOCATION-UNAVAILABLE FALLBACK ONLY (a lead with no
+#                     parseable function); location-resolvable leads are threshold-independent. Default 2.
 #   --agentis <bin>   agentis binary (default: `agentis` on PATH).
 #   --json            Emit the aggregate scorecard as one JSON object on stdout (human log still goes to stderr).
 # Exit: 0 = requested stage(s) completed (a low/zero recall is DATA, not a failure — same posture as the
@@ -42,9 +46,9 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 DF="$(cd "$HERE/../.." && pwd)"   # dark-factory/
-GATE="$DF/novelty-gate.sh"
 ZONEHUNT="$DF/run-zone-hunt.sh"
 EXTRACTGT="$HERE/extract-gt.sh"
+SCOREMATCH="$HERE/score-match.py"
 FETCHCORPUS="$HERE/fetch-corpus.sh"
 CORPUS="$HERE/corpus.tsv"
 
@@ -76,12 +80,6 @@ esac; done
 
 say() { echo "run-corpus-bench.sh: $*" >&2; }
 
-# overlaps: is `stdin` text KNOWN (overlaps) w.r.t. exclusion file $1? echo 1 if KNOWN else 0.
-overlaps() {
-  "$GATE" --exclusion "$1" --min-overlap "$MINOV" >/dev/null 2>&1
-  [ "$?" -eq 1 ] && echo 1 || echo 0
-}
-
 # ---- --self-test (default; deterministic, no network/LLM) ------------------------------------------------
 if [ "$DO_SELFTEST" -eq 1 ]; then
   command -v python3 >/dev/null 2>&1 || { echo "run-corpus-bench.sh: [SKIP] python3 not installed" >&2; exit 0; }
@@ -90,13 +88,28 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
   if diff -q "$TMP_TRUTH" "$HERE/fixtures/expected-truth.tsv" >/dev/null 2>&1; then
     say "SELF-TEST: extract-gt.sh output byte-matches fixtures/expected-truth.tsv -> PASS"
     rm -f "$TMP_TRUTH"
-    [ "$ANY_ACTION" -eq 1 ] && [ "$DO_FETCH$DO_GT$DO_HUNT$DO_SCORE" = "0000" ] && exit 0
   else
     say "SELF-TEST: extract-gt.sh output DIFFERS from fixtures/expected-truth.tsv -> FAIL"
     diff "$TMP_TRUTH" "$HERE/fixtures/expected-truth.tsv" >&2 || true
     rm -f "$TMP_TRUTH"
     exit 1
   fi
+
+  # Second assertion (#1697): score-match.py over fixtures/score/ must byte-match the expected scorecard AND
+  # be IDENTICAL at --min-overlap 2 and 5 — i.e. the location-first recall is threshold-independent.
+  S_FIX="$HERE/fixtures/score"
+  SC2="$(python3 "$SCOREMATCH" "$S_FIX/truth.tsv" "$S_FIX/verified_findings.json" --min-overlap 2 2>/dev/null)"
+  SC5="$(python3 "$SCOREMATCH" "$S_FIX/truth.tsv" "$S_FIX/verified_findings.json" --min-overlap 5 2>/dev/null)"
+  EXPECT="$(cat "$S_FIX/expected-scorecard.txt")"
+  if [ "$SC2" = "$EXPECT" ] && [ "$SC5" = "$EXPECT" ]; then
+    say "SELF-TEST: score-match.py over fixtures/score/ matches expected-scorecard.txt at --min-overlap 2 and 5 -> PASS"
+  else
+    say "SELF-TEST: score-match.py over fixtures/score/ DIFFERS from expected-scorecard.txt (or is threshold-dependent) -> FAIL"
+    { printf '%s\n' "--- expected ---"; printf '%s\n' "$EXPECT"; printf '%s\n' "--- --min-overlap 2 ---"; printf '%s\n' "$SC2"; printf '%s\n' "--- --min-overlap 5 ---"; printf '%s\n' "$SC5"; } >&2
+    exit 1
+  fi
+
+  [ "$ANY_ACTION" -eq 1 ] && [ "$DO_FETCH$DO_GT$DO_HUNT$DO_SCORE" = "0000" ] && exit 0
 fi
 [ "$DO_FETCH$DO_GT$DO_HUNT$DO_SCORE" = "0000" ] && exit 0
 
@@ -156,34 +169,27 @@ if [ "$DO_SCORE" -eq 1 ]; then
     if [ ! -f "$verified_json" ]; then say "SCORE: [$id] no verified_findings.json (run --hunt first); skipping"; continue; fi
     say "SCORE: [$id] scoring verified findings against truth.tsv ..."
 
-    LEADS_TXT="$(mktemp)"
-    python3 - "$verified_json" > "$LEADS_TXT" <<'PY'
-import sys, json
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-for f in data.get("verified", []):
-    row = " ".join([f.get("location", ""), f.get("class", ""), f.get("exploit", ""), f.get("poc_sketch", "")])
-    print(row.replace("\t", " ").replace("\n", " "))
-PY
-    verified_n="$(wc -l < "$LEADS_TXT" | tr -d ' ')"
+    # LOCATION-first bench matcher (#1697): score-match.py emits one `<sev_id>\tHIT|MISS` line per truth row
+    # plus a `LEADS\t<verified_n>\t<matched_leads>` trailer. --min-overlap only governs its fallback.
+    SCORE_OUT="$(python3 "$SCOREMATCH" "$truth" "$verified_json" --min-overlap "$MINOV")" \
+      || { say "SCORE: [$id] score-match.py failed; skipping"; continue; }
 
-    # ALL-truth exclusion file (signature column only) — used to flag which leads matched *something* (for
-    # precision/triage), never to auto-claim novelty for the rest (unmatched != confirmed-novel; see README.md).
-    ALL_SIG="$(mktemp)"
-    cut -f5 "$truth" > "$ALL_SIG"
+    declare -A HITMAP=()
+    verified_n=0 ; matched_leads=0
+    while IFS=$'\t' read -r f1 f2 f3; do
+      if [ "$f1" = "LEADS" ]; then verified_n="$f2"; matched_leads="$f3"; continue; fi
+      [ -n "$f1" ] && HITMAP["$f1"]="$f2"
+    done <<SCORE_EOF
+$SCORE_OUT
+SCORE_EOF
 
     c_total=0 ; c_hits=0
     c_h_total=0 ; c_h_hits=0 ; c_m_total=0 ; c_m_hits=0
     c_rare_total=0 ; c_rare_hits=0 ; c_mid_total=0 ; c_mid_hits=0 ; c_cons_total=0 ; c_cons_hits=0
-    while IFS=$'\t' read -r sev_id severity rarity title signature; do
+    while IFS=$'\t' read -r sev_id severity rarity title _signature; do
       [ -n "${sev_id:-}" ] || continue
       c_total=$((c_total+1))
-      SIGFILE="$(mktemp)"; printf '%s\n' "$signature" > "$SIGFILE"
-      hit=0
-      while IFS= read -r lead; do
-        [ -n "$lead" ] || continue
-        [ "$(printf '%s' "$lead" | overlaps "$SIGFILE")" = "1" ] && { hit=1; break; }
-      done < "$LEADS_TXT"
-      rm -f "$SIGFILE"
+      hit=0; [ "${HITMAP[$sev_id]:-MISS}" = "HIT" ] && hit=1
       [ "$hit" = 1 ] && c_hits=$((c_hits+1))
       case "$severity" in
         High)   c_h_total=$((c_h_total+1)); [ "$hit" = 1 ] && c_h_hits=$((c_h_hits+1)) ;;
@@ -196,13 +202,7 @@ PY
       say "  [$id] $([ "$hit" = 1 ] && echo HIT || echo MISS) $sev_id (rarity $rarity): $title"
     done < "$truth"
 
-    matched_leads=0
-    while IFS= read -r lead; do
-      [ -n "$lead" ] || continue
-      [ "$(printf '%s' "$lead" | overlaps "$ALL_SIG")" = "1" ] && matched_leads=$((matched_leads+1))
-    done < "$LEADS_TXT"
     unmatched_leads=$((verified_n - matched_leads))
-    rm -f "$LEADS_TXT" "$ALL_SIG"
 
     say "  [$id] recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total, verified-leads $verified_n (matched $matched_leads, unmatched $unmatched_leads — needs manual triage, NOT auto-claimed novel)"
 
