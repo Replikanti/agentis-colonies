@@ -52,6 +52,10 @@
 #      does not contain the `[OUTPUT CHANNEL]` directive (30); with the knob
 #      unset (default), both extract flags are present and the directive IS in
 #      the prompt — a regression guard for the existing default behaviour (31).
+#   32 (#1694). Burst-input -> paste-input migration: source-assert the wrapper
+#      carries `--paste-input` and no longer carries the retired `--no-jitter`
+#      or `--wrap-input` burst-path flags — a regression guard against silently
+#      reverting to the fold-based delivery `--paste-input` supersedes.
 #
 # Auto-discovered by tools/colony-lint.sh's tools-test loop. Exit 0 if all pass.
 
@@ -807,6 +811,23 @@ REC_EOF
 
     rm -rf "$REC_DIR"
     rm -f "$FCREC" "$FCREC_CMD"
+fi
+
+# ===========================================================================
+# Burst-input -> paste-input migration (#1694). `--paste-input` delivers the
+# instruction block as an atomic bracketed paste and takes precedence over
+# `--wrap-input` at dispatch, so the old `--no-jitter --wrap-input 72` burst
+# combo is now dead weight; a source-assert regression guard against silently
+# reverting to it, same style as test 18's default-literal check.
+# ===========================================================================
+if [ ! -f "$WRAPPER" ]; then
+    fail "missing wrapper for paste-input test: $WRAPPER"
+elif grep -q -- '--paste-input' "$WRAPPER" \
+     && ! grep -q -- '--no-jitter' "$WRAPPER" \
+     && ! grep -q -- '--wrap-input' "$WRAPPER"; then
+    pass "test 32: wrapper source carries --paste-input, no stale --no-jitter/--wrap-input"
+else
+    fail "test 32: wrapper source paste-input migration"
 fi
 
 echo ""
