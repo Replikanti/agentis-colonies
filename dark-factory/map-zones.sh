@@ -143,6 +143,32 @@ def fn_names(f):
         pass
     return names
 
+# Value-moving / recovery vocabulary (#1701): a large contract's first 8 DECLARED function names are
+# frequently all admin/init setters (e.g. dodo's Gateway* files), so truncating fn_names() by pure
+# declaration order starves the per-zone classification prompt of every function that actually moves
+# value or recovers from a failed cross-chain call — the ones a hunt most needs to see. This vocabulary
+# intentionally mirrors auditor/agents/zone-mapper.ag's #1698 C6 (has_value_moving_function, lines ~102-107)
+# and C17 (has_revert_handler, lines ~143-147) backstop nets, plus a few extra terms (`transfer`, `onCall`,
+# `claim`, `liquidate`) needed to also prioritize non-Gateway shapes (e.g. the liquidation-engine fixture
+# below). Two independently-maintained lists can drift; if you touch one, check the other.
+VALUE_MOVING_KEYWORDS = re.compile(
+    r"(withdraw|deposit|mint|burn|redeem|swap|transfer|onrevert|onabort|oncall|cancel|refund|claim|liquidate)",
+    re.IGNORECASE,
+)
+
+def prioritize_fn_names(names, cap):
+    # Reorder (never drop/rename) `names` — already in file-declaration order, deduplicated — so a
+    # value-moving/recovery name survives an [:cap] slice ahead of admin/setter noise. Partition into
+    # (a) keyword match, no leading `_` (Solidity's internal/private convention -> not directly
+    # attacker-reachable, so ranked below public matches), (b) keyword match, leading `_`, (c) everything
+    # else -- each partition keeping its original declaration order -- then take the first `cap` names of
+    # (a + b + c). A small/simple contract whose whole function list already fits under `cap` is unaffected
+    # (the reordering only matters once truncation actually happens).
+    matched_public = [n for n in names if VALUE_MOVING_KEYWORDS.search(n) and not n.startswith("_")]
+    matched_private = [n for n in names if VALUE_MOVING_KEYWORDS.search(n) and n.startswith("_")]
+    rest = [n for n in names if not VALUE_MOVING_KEYWORDS.search(n)]
+    return (matched_public + matched_private + rest)[:cap]
+
 def age_days(f):
     try:
         out = subprocess.run(["git", "-C", repo, "log", "-1", "--format=%ct", "--", f],
@@ -162,7 +188,7 @@ for d, files in groups.items():
     scope_tokens = []
     for f in files:
         if loc(f) > thr:
-            fns = fn_names(f)[:8]
+            fns = prioritize_fn_names(fn_names(f), 8)
             scope_tokens.append(f + "@" + "+".join(fns) if fns else f)
         else:
             scope_tokens.append(f)

@@ -14,6 +14,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **`map-zones.sh`'s big-contract function-slice now prioritizes value-moving/recovery
+  functions over declaration order** (#1701). `fn_names(f)[:8]` used to truncate purely
+  by file-declaration order, so any contract whose first 8 declared functions are
+  admin/init setters starved the per-zone classification prompt of every
+  value-moving/recovery function — reproduced live against dodo's `GatewayCrossChain.sol`
+  / `GatewaySend.sol` / `GatewayTransferNative.sol`, where the old slice caught none of
+  `withdraw*`/`onRevert`/`onAbort`/`onCall`. New `prioritize_fn_names(names, cap)` helper
+  reorders (never drops/renames) the same `fn_names()` output: keyword-matched
+  non-underscore names first, then keyword-matched underscore-prefixed names, then
+  everything else, each group keeping its original declaration order — reusing
+  `auditor/agents/zone-mapper.ag`'s #1698 C6/C17 value-moving/recovery vocabulary. The
+  `fixtures/zone-map/contracts/liquidation/Liquidation.sol` fixture gained 4 admin
+  setters ahead of `liquidate`/`redeem` so it actually reproduces the bug shape, and
+  `demo-map-zones.sh` gained a regression assertion pinning `liquidate`/`redeem` into the
+  liquidation zone's emitted slice. `zone-mapper.ag` itself (already fixed by #1702) and
+  `slice-fns.sh` are untouched.
+
 ## [0.4.2] - 2026-07-15
 
 **Requires:** agentis >= `1.18.0`
