@@ -14,6 +14,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **`flat-cyborg-claude.sh` migrated from the burst-input flag combo to `--paste-input`**
+  (#1694). Both host-run wrapper call sites (`dark-factory/flat-cyborg-claude.sh` and
+  `tools/flat-cyborg-claude.sh`) dropped `--no-jitter --wrap-input 72` in favor of
+  `--paste-input`: flat-cyborg's `--no-jitter` burst path chunk-times writes to defeat an
+  Ink-style editor's paste-collapse heuristic, but for large prompts (a multi-KB
+  DEVISE-shaped prompt can arrive empty, truncated, or garbled) this is best-effort and
+  the failure is intermittent, per flat-cyborg PR #61 / commit `4ba2266`, which added a
+  conservative `BURST_MAX_BYTES` guardrail on the burst path that now directs callers to
+  `--paste-input` — the atomic bracketed-paste path — instead of risking a silent
+  mis-delivery. `--paste-input` takes precedence over `--wrap-input` at dispatch, so the
+  fold-based flag was already a dead no-op once paste wins; this change removes it along
+  with the now-stale wrapper comments.
+
 ## [0.4.1] - 2026-07-15
 
 **Requires:** agentis >= `1.18.0`

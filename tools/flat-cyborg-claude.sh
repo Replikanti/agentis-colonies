@@ -86,8 +86,9 @@ if [ "$FLAT_CYBORG_RESULT_FILE" != "0" ]; then
 [OUTPUT CHANNEL] Write your COMPLETE reply — and nothing else — to this exact file path using your file-writing tool: $RESULT_FILE
 Write the raw reply content only: for a JSON reply, the raw JSON object with NO markdown code fences; for prose, the prose itself. This file is the authoritative channel for your answer — write it before you finish."
 fi
-# --wrap-input 72: fold the (often single-line, ~700-char) instruction block so it
-# does not overflow claude's editor input.
+# --paste-input: deliver the (often single-line, ~700-char) instruction block as
+# an atomic bracketed paste so it does not overflow claude's editor input line by
+# line; no line-folding needed, the paste path supersedes the retired fold flag.
 # --extract-structural (needs flat-cyborg >=0.10.2): claude INTERMITTENTLY omits the
 # reply sentinel; strict --extract then burns the full --timeout-ms and exits "no
 # fenced reply", which the agentis caller retries -> repeated ~700s gen hangs that end
@@ -222,7 +223,7 @@ EFFORT_SETTINGS='{"effortLevel":"'"$CLAUDE_REASONING_EFFORT"'"}'
 EXTRACT_FLAGS="--extract"
 [ "$FLAT_CYBORG_RESULT_FILE" = "0" ] || EXTRACT_FLAGS="--extract --extract-structural"
 # shellcheck disable=SC2086 # intentional word-splitting: fixed literal, no metacharacters
-flat-cyborg $EXTRACT_FLAGS --no-jitter --auto-approve --wrap-input 72 \
+flat-cyborg $EXTRACT_FLAGS --auto-approve --paste-input \
   --idle-ms "${FLAT_CYBORG_IDLE_MS:-30000}" \
   --timeout-ms "${FLAT_CYBORG_TIMEOUT_MS:-240000}" \
   --cmd-file "$PROMPT_FILE" -- claude --model "${CLAUDE_REASONING_MODEL:-sonnet}" --settings "$EFFORT_SETTINGS" > "$REPLY_FILE" &
