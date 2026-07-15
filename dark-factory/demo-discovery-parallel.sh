@@ -18,6 +18,10 @@
 #      steering is off under `--jobs > 1` (STEERS = 0, every cell's coordination is empty).
 #   5) DEGRADE:                a cell whose stub EXITS NON-ZERO still lets the run finish + scrape the rest.
 #   6) READ-ONLY / NEVER-SUBMIT: no network / no submission verb on run-discovery.sh's executable lines.
+#   7) WRAPPED CANDIDATE (#1707): a synthetic PTY-wrapped CANDIDATE record (STUB_WRAP=1) — exploit/poc_sketch
+#      prose split across several continuation lines with no CANDIDATE|/BLACKBOARD- prefix — is reconstructed
+#      WHOLE by `_join_wrapped_candidates()`: the full exploit sentence and poc_sketch survive intact, and the
+#      wrap does not split into two bogus candidates.
 #
 # The parallel-only assertions [SKIP] cleanly when the bash that runs run-discovery.sh lacks `wait -n`
 # (needs bash >= 4.3) — run-discovery.sh then degrades to serial, which the demo does not misreport.
@@ -97,8 +101,23 @@ case "$cmd" in
       sleep "${STUB_SLEEP:-0.5}"
       rmdir "$marker" 2>/dev/null || true
     fi
-    printf 'CANDIDATE|%s:%s:1|%s|Medium|stub external exploit path|stub foundry PoC sketch\n' \
-      "${SUBSYSTEM:-}" "${HUNT_CLASS:-}" "${HUNT_CLASS:-}"
+    if [ "${STUB_WRAP:-}" = "1" ] && [ "${HUNT_CLASS:-}" = "C1" ]; then
+      # #1707: synthetic PTY-wrapped record — the CANDIDATE| line's exploit/poc_sketch prose is split
+      # across several continuation lines carrying NO CANDIDATE|/BLACKBOARD- prefix and breaking
+      # mid-sentence, reproducing the shape flat-cyborg's PTY capture produces when the hunter's reply
+      # exceeds one physical line (hunter.ag's own ~118-120 column contract). The "|" separating the
+      # exploit field from the poc_sketch field lands mid-continuation, exactly as a real wrap would.
+      printf 'CANDIDATE|Vault.sol:deposit:42|%s|High|An attacker can drain the vault by depositing\n' "${HUNT_CLASS:-}"
+      printf 'collateral then immediately calling emergencyWithdraw before the accounting snapshot\n'
+      printf 'updates, exploiting the stale share price to redeem shares at the pre-deposit\n'
+      printf 'exchange rate and capture the difference as risk-free profit.|1. deploy\n'
+      printf 'MaliciousDepositor pointing at the target Vault; 2. call deposit(1000e18) then\n'
+      printf 'immediately call emergencyWithdraw() in the same transaction; 3. assert\n'
+      printf 'vm.assertGt(token.balanceOf(attacker), 1000e18, "drained more than deposited");\n'
+    else
+      printf 'CANDIDATE|%s:%s:1|%s|Medium|stub external exploit path|stub foundry PoC sketch\n' \
+        "${SUBSYSTEM:-}" "${HUNT_CLASS:-}" "${HUNT_CLASS:-}"
+    fi
     exit 0 ;;
   *) exit 0 ;;
 esac
@@ -243,6 +262,46 @@ if grep -vE '^[[:space:]]*#' "$DISCOVERY" | grep -Eiq '(^|[^a-z])(curl|wget|subm
   bad "run-discovery.sh invokes a network/submission verb on an executable line"
 else
   ok "run-discovery.sh has no network / no submission verb on any executable line (read-only, never submits)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (7) WRAPPED CANDIDATE (#1707): a synthetic PTY-wrapped CANDIDATE record survives extraction whole.
+# ----------------------------------------------------------------------------------------------------------
+note "7) synthetic PTY-wrapped CANDIDATE record (#1707) is reconstructed whole ..."
+WRAP_OUT="$WORK/out-wrap"
+STUB_WRAP=1 \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$WRAP_OUT" --jobs 1 >/dev/null 2>"$WORK/wrap.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "run-discovery.sh --jobs 1 with STUB_WRAP=1 exits 0" \
+  || { bad "STUB_WRAP=1 run exited $RC"; sed 's/^/      /' "$WORK/wrap.err" >&2; }
+
+if grep -F 'capture the difference as risk-free profit.' "$WRAP_OUT/discovery-report.md" >/dev/null 2>&1; then
+  ok "discovery-report.md's C1 row carries the FULL exploit sentence (not the first-line fragment)"
+else
+  bad "discovery-report.md's C1 row is missing the wrapped exploit tail — continuation lines were dropped"
+fi
+if grep -F 'MaliciousDepositor' "$WRAP_OUT/discovery-report.md" >/dev/null 2>&1 \
+   && grep -F 'vm.assertGt' "$WRAP_OUT/discovery-report.md" >/dev/null 2>&1; then
+  ok "discovery-report.md's C1 row carries a non-empty, fully-joined poc_sketch"
+else
+  bad "discovery-report.md's C1 row is missing the wrapped poc_sketch tail"
+fi
+
+if python3 - "$WRAP_OUT/discovery-results.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+c1 = [c for c in d["cells"] if c["class"] == "C1"]
+assert len(c1) == 1, "expected exactly one C1 cell, got %d" % len(c1)
+cands = c1[0]["candidates"]
+assert len(cands) == 1, "the wrap split into %d candidate(s) for C1 (expected exactly 1)" % len(cands)
+body = cands[0]
+assert body.count("|") == 4, "expected 5 pipe-delimited fields after CANDIDATE| is stripped, got %d" % (body.count("|") + 1)
+assert "capture the difference as risk-free profit." in body, "exploit field truncated in discovery-results.json"
+assert "vm.assertGt" in body, "poc_sketch field truncated in discovery-results.json"
+PY
+then ok "discovery-results.json's C1 candidate is a single, fully-joined record (5 fields, exploit+poc intact)"
+else bad "discovery-results.json's C1 candidate is malformed / truncated / split into extra candidates"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
