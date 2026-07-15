@@ -14,6 +14,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-15
+
+**Requires:** agentis >= `1.18.0`
+
 ### Fixed
 - **`flat-cyborg-claude.sh` migrated from the burst-input flag combo to `--paste-input`**
   (#1694). Both host-run wrapper call sites (`dark-factory/flat-cyborg-claude.sh` and
@@ -27,6 +31,37 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   mis-delivery. `--paste-input` takes precedence over `--wrap-input` at dispatch, so the
   fold-based flag was already a dead no-op once paste wins; this change removes it along
   with the now-stale wrapper comments.
+- **Decorated or truncated candidate locations from `hunter.ag` silently mis-tallied by
+  `verify-findings.sh`** (#1691). Two real corpus-bench cases reproduced the failure:
+  yearn-ybold's `src/.../StrategyAprOracle.sol@aprAfterDebtChange` code-file key never
+  resolved on disk, so `run-refute.sh` silently dropped the candidate and
+  `verify-findings.sh` tallied the drop identically to a genuine REFUTED verdict; crestal's
+  truncated `src/BlueprintV3.sol:...:~(test/BlueprintV3.t.sol:...` location, with blank
+  class/severity/exploit, landed a content-less REAL finding in `verified[]`. Fixed
+  downstream-first: `verify-findings.sh` now derives the code file via `bare_codefile()`
+  (strips a `~(...)` test tail, an `@func` suffix, and a stray trailing `(`) before
+  resolving it, and routes a candidate whose normalized file doesn't resolve — or whose
+  class/severity are blank (a truncation signal) — to a new distinguishable `ERRORED`
+  status BEFORE the gate runs, never counted as refuted or verified. Adds
+  `totals.errored` + an `errors[]` array (additive; existing `verified[]`-reading
+  consumers are unaffected) so the rigorous-refutation count is
+  `candidates - verified - errored`. `run-refute.sh` gets the same loud ERROR reporting
+  for standalone callers; `hunter.ag`/`stateful-invariant-fuzz.ag` tighten the CANDIDATE
+  output spec as defense in depth. `demo-verify-findings.sh` gains fixtures for both real
+  shapes plus a `candidates == verified + errored + refuted` bookkeeping assertion.
+- **Eight remaining content-transmitting `.ag` invocations under `dark-factory/` were
+  missing `--grant-pii`** (#1690), the same PII-heuristic stall previously fixed for
+  `hunter.ag` (#1675) and `zone-mapper.ag` — any call transmitting target source, scope,
+  findings, PoCs, or persisted patterns to the model can trip the false-positive block on
+  benign public Solidity/operator-authored text, and a blocked `prompt()` falls back to
+  echoing the raw prompt as if it were the model's reply. Flagged every remaining site
+  (the live pipeline, the persisted pattern-store readers, and the demo/mock harnesses)
+  with `--grant-pii` plus a justification comment; the content-free `share-patterns.ag`
+  call stays unflagged. Adds a pure-shell `colony-lint` guard requiring `--grant-pii` (or
+  a `# no-pii: <reason>` waiver) on every `go <name>.ag --enable-exec`/`--enable-eval-ag`
+  invocation under `dark-factory/` — matching the direct, `GO=(...)`-array, and
+  heredoc-emitted-runner forms — so a fourth rediscovery of this bug class fails CI
+  instead of surfacing live on a real hunt.
 
 ## [0.4.1] - 2026-07-15
 
@@ -2512,7 +2547,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   with a `pending_human_review` marker. The colony NEVER auto-posts to a
   bounty platform — submission is always an explicit human action.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.1...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.2...HEAD
+[0.4.2]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.1...dark-factory-v0.4.2
 [0.4.1]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.0...dark-factory-v0.4.1
 [0.4.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.3.0...dark-factory-v0.4.0
 [0.3.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.2.0...dark-factory-v0.3.0
