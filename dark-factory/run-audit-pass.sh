@@ -156,6 +156,8 @@ fi
 } > "$RUN/.agentis/config"
 
 RUN_LOG="$RUN/pass.log"
+# --grant-pii: finding/PoC/mechanism text + target contract source can carry addresses/identifiers
+# that trip the PII heuristic; input is benign public contract/finding text (#1690).
 ( cd "$RUN" && env \
     PASS_ENABLED=1 \
     PASS_FIXTURE="$PASS_FIXTURE" \
@@ -183,7 +185,7 @@ RUN_LOG="$RUN/pass.log"
     SEVERITY_BAND="$SEVERITY_BAND" \
     REVIEWER_FEEDBACK="$REVIEWER_FEEDBACK" \
     SUBMISSION_DRAFT_OUT="$DRAFT_OUT" \
-    "$AGENTIS" go coordinator.ag --enable-exec --enable-messaging ) >"$RUN_LOG" 2>&1 \
+    "$AGENTIS" go coordinator.ag --enable-exec --enable-messaging --grant-pii ) >"$RUN_LOG" 2>&1 \
   || { echo "run-audit-pass.sh: submission pass failed (see $RUN_LOG)" >&2; exit 1; }
 
 grep -E '^PASS\|' "$RUN_LOG" >/dev/null 2>&1 \

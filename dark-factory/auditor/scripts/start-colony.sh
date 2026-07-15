@@ -70,7 +70,10 @@ if ! command -v agentis >/dev/null 2>&1; then
 fi
 
 echo "Starting auditor pipeline: agentis go $AGENT_FILE (hardened sandbox, offline)"
+# --grant-pii: the real target's contract source (reached via env) can embed addresses/identifiers
+# that trip the PII heuristic; input is benign public contract text (#1690).
 exec agentis go "$AGENT_FILE" \
     --enable-exec \
     --enable-messaging \
+    --grant-pii \
     --sandbox-profile hardened

@@ -176,6 +176,8 @@ esac
 CELL_LOG="$RUN/poc_${SLUG}.log"
 
 echo "run-poc.sh: generating + verifying a concrete-exploit PoC for $TARGET ($CLASS) [$KIND] ..." >&2
+# --grant-pii: hypothesis + target contract source can carry addresses/identifiers that trip the PII
+# heuristic; input is benign public contract text (#1690).
 ( cd "$RUN" && env \
     TARGET_FN="$TARGET" \
     TARGET_CLASS="$CLASS" \
@@ -189,7 +191,7 @@ echo "run-poc.sh: generating + verifying a concrete-exploit PoC for $TARGET ($CL
     TARGET_FIXTURES_DIR="$FIXTURES_DIR_IN_RUN" \
     POC_MATCH="$MATCH" \
     POC_REPAIR_ROUNDS="$REPAIR_ROUNDS" \
-    "$AGENTIS" go poc-writer.ag --enable-exec --enable-messaging ) >"$CELL_LOG" 2>&1 || \
+    "$AGENTIS" go poc-writer.ag --enable-exec --enable-messaging --grant-pii ) >"$CELL_LOG" 2>&1 || \
     echo "run-poc.sh: poc-writer run failed for '$TARGET' (see $CELL_LOG)" >&2
 
 # The agent's contract: exactly one `POC|<target>|<verdict>` line, then (on a FINDING) a `POC-FILE|<path>` line.

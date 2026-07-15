@@ -53,8 +53,10 @@ echo "recall: seeding from $(basename "$SEED_MANIFEST") ..." >&2
 nseed=0
 while IFS='|' read -r C S M || [ -n "$C" ]; do
   case "$C" in ''|\#*) continue ;; esac
+  # --grant-pii: SEED_SRC contract source can embed addresses/identifiers that trip the PII
+  # heuristic; input is benign public contract text (#1690).
   ( cd "$RUN" && env SEED_CLASS="$C" SEED_SRC="$S" SEED_FUNC="$M" EVM_HARNESS_DIR="$EVM_HARNESS" \
-      "$AGENTIS" go seed-patterns.ag --enable-exec ) >/dev/null 2>&1 || true
+      "$AGENTIS" go seed-patterns.ag --enable-exec --grant-pii ) >/dev/null 2>&1 || true
   nseed=$((nseed + 1))
 done < "$SEED_MANIFEST"
 echo "recall: seeded $nseed pattern(s)" >&2
@@ -73,9 +75,11 @@ RAW="$OUT/recall-raw.txt"; : > "$RAW"
 ntest=0
 while IFS='|' read -r C S ID TR EXPECT || [ -n "$C" ]; do
   case "$C" in ''|\#*) continue ;; esac
+  # --grant-pii: TEST_SRC contract source can embed addresses/identifiers that trip the PII
+  # heuristic; input is benign public contract text (#1690).
   line=$( cd "$RUN" && env TEST_SRC="$S" TEST_CLASS="$C" TEST_ID="$ID" TEST_TRANSFORM="$TR" EVM_HARNESS_DIR="$EVM_HARNESS" \
       FUZZY_SEEDS="$FUZZY_SEEDS" FUZZY_THRESHOLD="$FUZZY_THRESHOLD" \
-      "$AGENTIS" go recall-match.ag --enable-exec 2>/dev/null | grep '^RECALL|' || true )
+      "$AGENTIS" go recall-match.ag --enable-exec --grant-pii 2>/dev/null | grep '^RECALL|' || true )
   [ -n "$line" ] && echo "${line}|expect=${EXPECT}" >> "$RAW"
   ntest=$((ntest + 1))
 done < "$TEST_MANIFEST"

@@ -219,13 +219,17 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
   while IFS="$TAB" read -r ZID ZFILES || [ -n "${ZID:-}" ]; do
     [ -n "$ZID" ] || continue
     ZFILES_NL="$(printf '%s' "$ZFILES" | tr ',' '\n')"
+    # --grant-pii: TARGET_DIR carries the target's contract source, which routinely embeds hex
+    # addresses/hashes that trip the PII heuristic; input is benign public contract text. Without it,
+    # prompt() gets blocked, the zone stays unclassified, and the whole DISCOVERY hunt stalls (#1690,
+    # mirrors the hunter.ag fix in #1676).
     ( cd "$RUN" && env \
         TARGET_DIR="$REPO" \
         ZONE_ID="$ZID" \
         ZONE_FILES="$ZFILES_NL" \
         TAXONOMY="$TAXONOMY" \
         SLICER="$RUN/slice-fns.sh" \
-        "$AGENTIS" go zone-mapper.ag --enable-exec --enable-messaging ) > "$RUN/zone_${ZID}.log" 2>&1 \
+        "$AGENTIS" go zone-mapper.ag --enable-exec --enable-messaging --grant-pii ) > "$RUN/zone_${ZID}.log" 2>&1 \
       || echo "map-zones.sh: zone-mapper run failed for zone '$ZID' (see $RUN/zone_${ZID}.log)" >&2
     # Scrape the zone-mapper's ZONE| emission WHITESPACE-TOLERANTLY: the LLM formats its reply
     # non-deterministically and sometimes indents the whole answer (observed live: the core `src` zone's

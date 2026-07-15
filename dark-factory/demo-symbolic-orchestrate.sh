@@ -71,11 +71,13 @@ init_store() {
 orchestrate() {
   _store="$1"; _fixture="$2"
   _steps="$(awk -v n="$BUDGET" 'BEGIN{ for (i=0;i<n;i++){ printf "%s%d", (i?"\n":""), i } }')"
+  # --grant-pii: scope text can carry addresses/identifiers that trip the PII heuristic; benign
+  # fixture, kept uniform with the other flagged demos + recurrence defense (#1690).
   ( cd "$_store" && env \
       SCOPE="$SCOPE_FX" CLASS_FITNESS="$FIT_FX" PENDING="" \
       BUDGET="$BUDGET" DRY_CAP="$DRY_CAP" STEPS="$_steps" SYM_POLICY_TT="$SYM_TT" \
       ORCHESTRATE_ENABLED=1 DISPATCH_ENABLED=1 DISPATCH_FIXTURE="$_fixture" \
-      agentis go coordinator.ag --enable-exec --enable-messaging 2>/dev/null )
+      agentis go coordinator.ag --enable-exec --enable-messaging --grant-pii 2>/dev/null )
 }
 
 # Read the loop's durable trace / policy memos back.

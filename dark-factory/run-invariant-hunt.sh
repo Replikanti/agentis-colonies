@@ -408,6 +408,8 @@ if [ -n "$PATTERN_STORE" ]; then
 fi
 
 echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..." >&2
+# --grant-pii: target/fork context + staged contract source can carry addresses/identifiers that trip
+# the PII heuristic; input is benign public contract text (#1690).
 ( cd "$RUN" && env \
     TARGET_FN="$TARGET" \
     TARGET_CLASS="$CLASS" \
@@ -426,7 +428,7 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
     FORK_TARGET="$FORK_TARGET" \
     FORK_CONTEXT="$FORK_CONTEXT" \
     FORGE_INVARIANT="$RUN/forge-invariant.sh" \
-    "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging ) >"$CELL_LOG" 2>&1 || \
+    "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging --grant-pii ) >"$CELL_LOG" 2>&1 || \
     echo "run-invariant-hunt.sh: invariant-prover run failed for '$TARGET' (see $CELL_LOG)" >&2
 
 # PERSIST: copy any `invpat:*` the prover wrote this run (on a FINDING) back OUT to the persistent store,

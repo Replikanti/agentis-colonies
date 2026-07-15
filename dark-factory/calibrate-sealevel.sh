@@ -48,10 +48,12 @@ run_one() {
       'llm.cli_timeout_ms = 180000' 'trace.level = quiet' \
       'exec.env_passthrough = BOUNTY_TARGET,BOUNTY_POC,SOLANA_ANCHOR_HARNESS_DIR' \
       'exec.default_timeout_ms = 180000' > .agentis/config
+    # --grant-pii: BOUNTY_TARGET/BOUNTY_POC contract source can embed addresses/identifiers that trip
+    # the PII heuristic; input is benign public contract/PoC text (#1690).
     env BOUNTY_TARGET="$CORPUS/$lesson/$variant.rs" \
         BOUNTY_POC="$CORPUS/$lesson/poc.rs" \
         SOLANA_ANCHOR_HARNESS_DIR="$HARNESS" \
-        timeout 300 "$AGENTIS" go auditor.ag --enable-exec --enable-messaging \
+        timeout 300 "$AGENTIS" go auditor.ag --enable-exec --enable-messaging --grant-pii \
         > run.log 2>&1
   )
   cls="$(grep -oE 'guard: [A-Za-z]+ fired' "$d/run.log" 2>/dev/null | head -1 | awk '{print $2}')"

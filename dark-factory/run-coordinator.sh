@@ -304,6 +304,8 @@ echo "run-coordinator.sh: policy BEFORE the run: [$(read_policy)]" >&2
 # ONE in-substrate run drives the ENTIRE audit. ORCHESTRATE_ENABLED selects the loop mode; DISPATCH_ENABLED
 # keeps every action's dispatch in-substrate (#1014 M2); DISPATCH_FIXTURE carries the offline verdict rules.
 RUN_LOG="$RUN/orchestrate.log"
+# --grant-pii: scope + target/spec repo paths and contract source can carry addresses/identifiers that
+# trip the PII heuristic; input is benign public contract/scope text (#1690).
 ( cd "$RUN" && env \
     SCOPE="$SCOPE" \
     CLASS_FITNESS="$CLASS_FITNESS" \
@@ -319,7 +321,7 @@ RUN_LOG="$RUN/orchestrate.log"
     ORCHESTRATE_ENABLED=1 \
     DISPATCH_ENABLED=1 \
     DISPATCH_FIXTURE="$DISPATCH_FIXTURE" \
-    "$AGENTIS" go coordinator.ag --enable-exec --enable-messaging ) >"$RUN_LOG" 2>&1 \
+    "$AGENTIS" go coordinator.ag --enable-exec --enable-messaging --grant-pii ) >"$RUN_LOG" 2>&1 \
   || { echo "run-coordinator.sh: in-substrate orchestration failed (see $RUN_LOG)" >&2; exit 1; }
 
 grep -E '^ORCHESTRATE\|' "$RUN_LOG" >/dev/null 2>&1 \

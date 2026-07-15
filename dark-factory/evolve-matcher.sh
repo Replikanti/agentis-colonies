@@ -44,8 +44,10 @@ cp "$HERE/auditor/agents/pattern-evolver.ag" "$RUN/pattern-evolver.ag"
 } > "$RUN/.agentis/config"
 
 echo "evolve: searching genome against fork-pair oracle $(basename "$FORK_BASE") -> $(basename "$FORK_FORK") (beta=$BETA) ..." >&2
+# --grant-pii: fork-pair contract source can embed addresses/identifiers that trip the PII
+# heuristic; input is benign public contract text (#1690).
 ( cd "$RUN" && env EVM_HARNESS_DIR="$EVM_HARNESS" FORK_BASE="$FORK_BASE" FORK_FORK="$FORK_FORK" EVOLVE_BETA="$BETA" \
-    "$AGENTIS" go pattern-evolver.ag --enable-exec ) 2>&1 | grep '^evolve:'
+    "$AGENTIS" go pattern-evolver.ag --enable-exec --grant-pii ) 2>&1 | grep '^evolve:'
 
 # surface the evolved config from the memo store for the operator / run-audit --use-evolved.
 TH="$(cd "$RUN" && "$AGENTIS" memo get evolved:fuzzy_threshold 2>/dev/null || true)"

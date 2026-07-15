@@ -171,8 +171,10 @@ run_pass() {
     echo "learning.enabled = true"
     echo "experience.enabled = true"
   } > "$_d/.agentis/config"
+  # --grant-pii: finding/PoC fixture text can carry addresses/identifiers that trip the PII heuristic;
+  # benign fixture (mock backend), kept uniform with the other flagged demos + recurrence defense (#1690).
   ( cd "$_d" && env PASS_ENABLED=1 PASS_FIXTURE="$_fx" \
-      agentis go coordinator.ag --enable-exec --enable-messaging ) >"$_d/pass.log" 2>&1
+      agentis go coordinator.ag --enable-exec --enable-messaging --grant-pii ) >"$_d/pass.log" 2>&1
 }
 pass_result() { ( cd "$1" && agentis memo get coordinator:pass_result ) 2>/dev/null; }
 pass_trace()  { ( cd "$1" && agentis memo get coordinator:pass_trace ) 2>/dev/null; }
@@ -268,10 +270,12 @@ cp "$COORD" "$LV/coordinator.ag"
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$LV/.agentis/config"
+# --grant-pii: PoC target/hypothesis text can carry addresses/identifiers that trip the PII heuristic;
+# benign fixture (mock backend), kept uniform with the other flagged demos + recurrence defense (#1690).
 ( cd "$LV" && env PASS_ENABLED=1 \
     SCOPE_GATE_RUN="$LV/gate-stub.sh" DEVISE_RUN="$LV/gate-stub.sh" POC_RUN="$LV/poc-stub.sh" \
     POC_REPO="/stub/repo" POC_TARGET="Vault.sol:Vault" POC_HYPOTHESIS="reentrancy drain" POC_CLASS="C-reentrancy" \
-    agentis go coordinator.ag --enable-exec --enable-messaging ) >"$LV/pass.log" 2>&1
+    agentis go coordinator.ag --enable-exec --enable-messaging --grant-pii ) >"$LV/pass.log" 2>&1
 # The poc branch must have called the stub with all four flags carrying the POC_* values (proves the CLI-arg
 # construction + shell_escape()ing — e.g. the spaced --hypothesis survives as one argument).
 _cap_missing=""

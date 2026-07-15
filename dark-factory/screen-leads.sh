@@ -139,8 +139,10 @@ while IFS='|' read -r LEAD HARNESS || [ -n "${LEAD:-}" ]; do
   LEADS=$((LEADS + 1))
   CELL_LOG="$RUN/screen_$(printf '%s' "$LEAD" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//').log"
   echo "screen-leads.sh: screening lead '$LEAD' ..." >&2
+  # --grant-pii: lead id + harness content can carry addresses/identifiers that trip the PII
+  # heuristic; input is benign public contract/finding text (#1690).
   ( cd "$RUN" && env LEAD_ID="$LEAD" POC_HARNESS="$HARNESS" \
-      "$AGENTIS" go poc-screener.ag --enable-exec --enable-eval-ag --enable-messaging ) >"$CELL_LOG" 2>&1 || \
+      "$AGENTIS" go poc-screener.ag --enable-exec --enable-eval-ag --enable-messaging --grant-pii ) >"$CELL_LOG" 2>&1 || \
       echo "screen-leads.sh: screener run failed for '$LEAD' (see $CELL_LOG)" >&2
   # The screener's contract: a single `SCREENED|<lead>|<class>|<outcome>|<ret>` line.
   LINE="$(grep -m1 'SCREENED|' "$CELL_LOG" || true)"

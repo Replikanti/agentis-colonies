@@ -173,6 +173,8 @@ while IFS='|' read -r CFN CLS INV CODEF FIXT || [ -n "${CFN:-}" ]; do
   SPEC_OUT="$REPO_IN_RUN/test/Spec_${SLUG}.t.sol"
   CELL_LOG="$RUN/symbolic_${SLUG}.log"
   echo "run-symbolic.sh: generating + verifying $CFN ($CLS) ..." >&2
+  # --grant-pii: candidate/invariant text + target contract source can carry addresses/identifiers
+  # that trip the PII heuristic; input is benign public contract text (#1690).
   ( cd "$RUN" && env \
       CAND_FILE_FN="$CFN" \
       CAND_CLASS="$CLS" \
@@ -183,7 +185,7 @@ while IFS='|' read -r CFN CLS INV CODEF FIXT || [ -n "${CFN:-}" ]; do
       SPEC_FIXTURE="$FIXT_IN_RUN" \
       CODE_PATH="$CODE_IN_RUN" \
       HALMOS_VERIFY="$RUN/halmos-verify.sh" \
-      "$AGENTIS" go symbolic-prover.ag --enable-exec --enable-messaging ) >"$CELL_LOG" 2>&1 || \
+      "$AGENTIS" go symbolic-prover.ag --enable-exec --enable-messaging --grant-pii ) >"$CELL_LOG" 2>&1 || \
       echo "run-symbolic.sh: symbolic-prover run failed for '$CFN' (see $CELL_LOG)" >&2
 
   # The prover's contract: exactly one `SYMBOLIC|<file:fn>|<verdict>` line. Take the LAST match. No line

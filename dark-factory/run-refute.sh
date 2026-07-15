@@ -144,6 +144,8 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF || [ -n "${CFN:-}" ]; do
   cp "$SRC" "$STAGED"
   CELL_LOG="$RUN/refute_${SLUG}.log"
   echo "run-refute.sh: refuting $CFN ($CLS) ..." >&2
+  # --grant-pii: candidate/exploit text + staged contract source can carry addresses/identifiers that
+  # trip the PII heuristic; input is benign public contract/finding text (#1690).
   ( cd "$RUN" && env \
       CAND_FILE_FN="$CFN" \
       CAND_CLASS="$CLS" \
@@ -151,7 +153,7 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF || [ -n "${CFN:-}" ]; do
       CAND_EXPLOIT="$EXPL" \
       CODE_PATH="$STAGED" \
       BRIEF_PATH="$BRIEF_IN_RUN" \
-      "$AGENTIS" go refuter.ag --enable-exec --enable-messaging ) >"$CELL_LOG" 2>&1 || \
+      "$AGENTIS" go refuter.ag --enable-exec --enable-messaging --grant-pii ) >"$CELL_LOG" 2>&1 || \
       echo "run-refute.sh: refuter run failed for '$CFN' (see $CELL_LOG)" >&2
 
   # The refuter's contract: exactly one `VERDICT|REAL|...` or `VERDICT|REFUTED|...` line. Take the LAST

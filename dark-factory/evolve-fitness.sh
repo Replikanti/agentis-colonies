@@ -185,8 +185,10 @@ while [ "$i" -le "$ITERS" ]; do
     # yield (0..1 float) -> integer percent for the deterministic scheduler.
     YPCT="$(printf '%s' "$YIELD" | awk '{printf "%d", ($1*100)+0.5}')"
     VERDICT="$(verdict_for "$YPCT" "$i" "$ITERS")"
+    # --grant-pii: persisted patterns can embed addresses from prior real hunts that trip the PII
+    # heuristic; input is benign public contract-derived pattern text (#1690).
     ( cd "$RUN" && env HUNT_CLASS="$CLS" SUBSYSTEM="$SUBSYS" VERDICT="$VERDICT" ITER="$i" \
-        "$AGENTIS" go fitness-driver.ag --enable-exec ) >/dev/null 2>&1 \
+        "$AGENTIS" go fitness-driver.ag --enable-exec --grant-pii ) >/dev/null 2>&1 \
       || echo "evolve-fitness.sh: driver cell failed for $CLS/'$SUBSYS' (iter $i)" >&2
     CELLS=$((CELLS + 1))
   done < "$CORPUS_FILE"

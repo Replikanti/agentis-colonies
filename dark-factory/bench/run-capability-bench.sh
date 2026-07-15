@@ -117,7 +117,9 @@ if [ "$LIVE" = "1" ]; then
       cd "$WORK/run" || exit 90
       export TARGET_DIR="$FIXTURE" IN_SCOPE="src/ShareVault.sol" \
              AUDIT_DIR="$WORK/audits" FETCH_AUDITS="$FETCH" SCOPE_BRIEF=""
-      agentis go audit-scout.ag --enable-exec --enable-messaging
+      # --grant-pii: TARGET_DIR + fetched audits carry contract source/addresses that trip the PII
+      # heuristic; the fixture is benign public contract text, backend is LIVE claude (#1690).
+      agentis go audit-scout.ag --enable-exec --enable-messaging --grant-pii
     ) >"$WORK/scout.out" 2>&1 || say "  (audit-scout exited non-zero; scoring whatever RESIDUAL leads it printed)"
     grep '^RESIDUAL|' "$WORK/scout.out" > "$WORK/leads.txt" 2>/dev/null || true
     s2_leads="$(wc -l < "$WORK/leads.txt" | tr -d ' ')"

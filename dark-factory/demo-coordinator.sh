@@ -69,11 +69,13 @@ init_store() {
 # is unambiguous regardless of the rationale tail. All other env defaults to a benign value.
 decide_line() {
   _store="$1"; shift
+  # --grant-pii: scope/pending text can carry addresses/identifiers that trip the PII heuristic;
+  # benign fixture, kept uniform with the other flagged demos + recurrence defense (#1690).
   ( cd "$_store" && env \
       SCOPE="${SCOPE:-}" CLASS_FITNESS="${CLASS_FITNESS:-}" POLICY="${POLICY:-}" \
       PENDING="${PENDING:-}" BUDGET="${BUDGET:-10}" DRY_STREAK="${DRY_STREAK:-0}" DRY_CAP="${DRY_CAP:-3}" \
       PREV_ACTION="${PREV_ACTION:-}" PREV_KEY="${PREV_KEY:-}" LAST_OUTCOME="${LAST_OUTCOME:-}" \
-      "$@" agentis go coordinator.ag --enable-exec --enable-messaging 2>/dev/null ) \
+      "$@" agentis go coordinator.ag --enable-exec --enable-messaging --grant-pii 2>/dev/null ) \
     | grep -E '^ACTION\|' | head -1
 }
 

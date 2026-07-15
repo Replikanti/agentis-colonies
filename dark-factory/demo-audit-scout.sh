@@ -130,7 +130,9 @@ TXT
     cd "$WORK/run" || exit 90
     export TARGET_DIR="$WORK/target" IN_SCOPE="src/Vault.sol" \
            AUDIT_DIR="$WORK/audits" FETCH_AUDITS="$FETCH" SCOPE_BRIEF=""
-    agentis go audit-scout.ag --enable-exec --enable-messaging
+    # --grant-pii: TARGET_DIR + audits carry contract source/addresses that trip the PII heuristic;
+    # benign fixture, kept uniform with the other flagged demos + recurrence defense (#1690).
+    agentis go audit-scout.ag --enable-exec --enable-messaging --grant-pii
   ) >"$WORK/out.log" 2>&1
   rc=$?
   set -e
