@@ -46,11 +46,40 @@ contract Liquidation {
         _entered = false;
     }
 
+    uint256 public feeBps;
+    bool public paused;
+    uint256 public minCollateral;
+    uint256 public gracePeriod;
+
     constructor(address collateral_, address debt_, address oracle_) {
         owner = msg.sender;
         collateralToken = IERC20(collateral_);
         debtToken = IERC20(debt_);
         oracle = IPriceOracle(oracle_);
+    }
+
+    // Admin/init setters (#1701 fixture): declared here, ahead of the value-moving/recovery functions
+    // below, so this fixture mirrors the dodo Gateway* shape (many admin setters declared before
+    // liquidate/redeem) that map-zones.sh's fn_names()[:8] truncation used to starve of exactly the
+    // functions a hunt most needs to see.
+    function setFeeBps(uint256 bps_) external {
+        require(msg.sender == owner, "not owner");
+        feeBps = bps_;
+    }
+
+    function setPaused(bool paused_) external {
+        require(msg.sender == owner, "not owner");
+        paused = paused_;
+    }
+
+    function setMinCollateral(uint256 amount_) external {
+        require(msg.sender == owner, "not owner");
+        minCollateral = amount_;
+    }
+
+    function setGracePeriod(uint256 seconds_) external {
+        require(msg.sender == owner, "not owner");
+        gracePeriod = seconds_;
     }
 
     function openPosition(uint256 collateralAmount, uint256 debtAmount) external nonReentrant {

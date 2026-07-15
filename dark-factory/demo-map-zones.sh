@@ -145,6 +145,31 @@ else bad "scope.tsv format/safety assertion failed"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (d2) REGRESSION (#1701): fn_names()[:8] used to truncate a big contract's function-slice by pure
+#      declaration order, so a value-moving/recovery function declared AFTER 8 admin/setter functions never
+#      made the slice (reproduced live against dodo's Gateway* files). The liquidation fixture now declares
+#      4 admin setters ahead of liquidate/redeem specifically to reproduce that shape; assert the emitted
+#      scope.tsv slice for the liquidation zone still surfaces `liquidate` (and `redeem`) despite them.
+# ----------------------------------------------------------------------------------------------------------
+if python3 - "$OUT/scope.tsv" <<'PY'
+import sys
+rows = [l.rstrip("\n") for l in open(sys.argv[1], encoding="utf-8") if l.strip() and not l.lstrip().startswith("#")]
+liq_rows = [l for l in rows if l.startswith("liquidation engine |")]
+assert liq_rows, "no scope.tsv row for the liquidation engine zone"
+files_field = liq_rows[0].split("|")[2]
+fn_names = set()
+for tok in files_field.split(","):
+    tok = tok.strip()
+    if "@" in tok:
+        fn_names.update(tok.split("@", 1)[1].split("+"))
+assert "liquidate" in fn_names, "liquidate missing from the liquidation zone's function slice: %r" % sorted(fn_names)
+assert "redeem" in fn_names, "redeem missing from the liquidation zone's function slice: %r" % sorted(fn_names)
+PY
+then ok "liquidation zone's function-slice surfaces liquidate + redeem despite 8+ admin setters preceding them in the file (#1701)"
+else bad "fn-slice priority regression: liquidate/redeem dropped from the liquidation zone's function slice"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # (e) ROUND-TRIP: run-discovery.sh --list-cells over the emitted scope.tsv prints >=1 CELL| and the
 #     enumerated (subsystem x class) cells match the manifest exactly (AC #3; offline, no agentis).
 # ----------------------------------------------------------------------------------------------------------
