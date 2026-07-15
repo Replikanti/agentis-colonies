@@ -160,6 +160,13 @@ run_gate_refute() {
         print v "\t" r; found=1; exit } }
     END { if (!found) print "REFUTED\tno verdict row (dropped as unverified)" }
   ' "$rg_report" > "$rg_out/verdict.txt"
+  # #1699: also scrape the WINNING class from the same (first) data row. run-refute.sh's #1699 C6 fallback can
+  # convert a candidate REFUTED under its assigned class into REAL under C6 and emits the report row with the
+  # class it SURVIVED under — read that back so verified_findings.json records C6, not the mislabelled input.
+  awk -F'|' '
+    NF>=5 { v=$4; gsub(/[[:space:]]/,"",v);
+      if (v=="REAL"||v=="REFUTED"||v=="ERROR") { c=$3; gsub(/[[:space:]]/,"",c); print c; exit } }
+  ' "$rg_report" > "$rg_out/eff-class.txt"
   return 0
 }
 
@@ -245,8 +252,15 @@ while IFS= read -r CANDROW || [ -n "${CANDROW:-}" ]; do
     ERRORED=$((ERRORED + 1))
     echo "verify-findings.sh:   -> ERRORED ($VERD)" >&2
   elif [ "$VERD" = "$CONFIRM_TOKEN" ]; then
+    # #1699: for the refute gate, record the class the candidate actually SURVIVED under (run-refute.sh's C6
+    # fallback may differ from the originally-assigned class), so verified_findings.json is not mislabelled.
+    EFF_CLASS="$CLASS"
+    if [ "$GATE" = "refute" ] && [ -s "$CELL_OUT/eff-class.txt" ]; then
+      EFF="$(cat "$CELL_OUT/eff-class.txt")"
+      [ -n "$EFF" ] && [ "$EFF" != "$CLASS" ] && EFF_CLASS="$EFF"
+    fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$SUBSYS" "$LOCATION" "$CODEFILE" "$CLASS" "$SEVERITY" "$EXPLOIT" "$SKETCH" "$VERD" "$REASON" >> "$CONFIRMED_TSV"
+      "$SUBSYS" "$LOCATION" "$CODEFILE" "$EFF_CLASS" "$SEVERITY" "$EXPLOIT" "$SKETCH" "$VERD" "$REASON" >> "$CONFIRMED_TSV"
     VERIFIED=$((VERIFIED + 1))
     echo "verify-findings.sh:   -> CONFIRMED ($VERD)" >&2
   else

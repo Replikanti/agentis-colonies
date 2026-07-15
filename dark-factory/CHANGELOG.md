@@ -31,6 +31,21 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `demo-map-zones.sh` gained a regression assertion pinning `liquidate`/`redeem` into the
   liquidation zone's emitted slice. `zone-mapper.ag` itself (already fixed by #1702) and
   `slice-fns.sh` are untouched.
+- **Refute gate no longer drops a real bug misassigned the wrong class** (#1699). When a
+  candidate is REFUTED under its hunter-assigned class and its own code file trips a
+  conservative compound-AND accounting signal (a value-moving function *declaration* AND an
+  amount-deduction idiom, the vocabulary shared with `zone-mapper.ag`'s #1698
+  `contains_accounting_signal`), `run-refute.sh` now re-invokes `refuter.ag` **once** under
+  `C6` (accounting) and keeps the candidate only if it *independently* survives that second
+  full hostile read. The retry can only convert REFUTED→REAL, costs at most one extra
+  refuter call per signal-positive candidate, and is signal-gated (a candidate without the
+  signal is never retried), so the false-positive rate is protected. `verify-findings.sh`
+  now records the class the candidate SURVIVED under (e.g. `C6`) in `verified_findings.json`,
+  not the mislabelled input class. Pinned by the deterministic offline demo
+  (`demo-verify-findings.sh`). On dodo's live corpus, `GatewayCrossChain.sol:onCall` correctly
+  trips the signal and is retried under C6, but does not yet recover in practice because the
+  on-disk candidate's exploit text is itself truncated by an unrelated discovery-stage bug
+  (#1705) — the mechanism is verified correct and ready to recover it once that lands.
 
 ## [0.4.2] - 2026-07-15
 

@@ -6,9 +6,12 @@
 #
 # Assertions:
 #   1) verified_findings.json is valid JSON carrying the seam-3 schema keys (repo, gate, verified[], totals).
-#   2) CONFIRMED-only: exactly the candidates the refute stub returned REAL are kept; the REFUTED one is dropped.
-#      Includes a DECORATED-but-resolvable candidate (`file@func:line`, #1691) — proven NORMALIZED (its `file`
-#      field is the bare path) and ASSESSED, not silently dropped as if refuted (pins the yearn-ybold fix).
+#   2) CONFIRMED-only: exactly the candidates that survive the refute stub are kept. Includes a DECORATED-but-
+#      resolvable candidate (`file@func:line`, #1691) — proven NORMALIZED (its `file` field is the bare path)
+#      and ASSESSED, not silently dropped as if refuted (pins the yearn-ybold fix). Also pins the #1699 C6
+#      fallback: a candidate REFUTED under its assigned class whose code trips the compound-AND accounting
+#      signal is retried ONCE under C6 and recovered — recorded under the class it SURVIVED (C6), not the
+#      mislabelled input — while a REFUTED candidate WITHOUT the signal stays dropped (signal-gated, not blanket).
 #   3) READ-ONLY: discovery-results.json is byte-for-byte UNCHANGED after the run (verify never mutates M3 output).
 #   4) ERRORED (#1691): a candidate the gate cannot evaluate — an ABSENT code file, or a TRUNCATED record with
 #      blank class/severity (`file:fn:~(test/...`, pins the crestal fix) — lands in totals.errored / errors[],
@@ -47,6 +50,10 @@ printf 'contract Vault { function deposit() public {} }\n'   > "$REPO/contracts/
 printf 'contract Oracle { function price() public {} }\n'    > "$REPO/contracts/Oracle.sol"
 printf 'contract Token { function transfer() public {} }\n'  > "$REPO/contracts/Token.sol"
 printf 'contract Strategy { function aprAfterDebtChange() public {} }\n' > "$REPO/contracts/Strategy.sol"
+# #1699 C6-fallback fixture: a value-moving function DECLARATION (`function swap`) AND an amount-deduction
+# idiom (`-=`) — trips run-refute.sh's compound-AND accounting signal, so a candidate REFUTED under its
+# assigned class is retried under C6 (the stub returns REAL for C6) and recovered.
+printf 'contract Gateway { function swap(uint256 amount) public { amount -= fee; } }\n' > "$REPO/contracts/Gateway.sol"
 printf 'contract BlueprintV3 { function createPrivateDeploymentRequestWithSig() public {} }\n' > "$REPO/src/BlueprintV3.sol"
 
 # ----------------------------------------------------------------------------------------------------------
@@ -74,10 +81,13 @@ STUBEOF
 chmod +x "$STUB"
 
 # ----------------------------------------------------------------------------------------------------------
-# (c) The inline M3 discovery-results.json: 6 candidates — 3 the stub confirms REAL (incl. one DECORATED
-#     `file@func:line`, #1691), 1 REFUTED (C-refuted), 1 whose code file is ABSENT from the repo (errored), and
-#     1 TRUNCATED record with blank class/severity + a `:~(test/...` tail (errored). Built via python3 (the JSON
-#     convention). The decorated + truncated locations are the two real shapes reproduced in the #1691 report.
+# (c) The inline M3 discovery-results.json: 7 candidates — 3 the stub confirms REAL directly (incl. one
+#     DECORATED `file@func:line`, #1691), 1 REFUTED under its assigned class but RECOVERED under the #1699 C6
+#     fallback (its code trips the compound-AND accounting signal), 1 REFUTED with NO signal so it stays dropped
+#     (the negative control that proves the retry is signal-gated, not blanket), 1 whose code file is ABSENT from
+#     the repo (errored), and 1 TRUNCATED record with blank class/severity + a `:~(test/...` tail (errored).
+#     Built via python3 (the JSON convention). The decorated + truncated locations are the two real shapes
+#     reproduced in the #1691 report; the Gateway swap candidate reproduces the #1699 dodo GatewayCrossChain case.
 # ----------------------------------------------------------------------------------------------------------
 RES="$WORK/discovery-results.json"
 python3 - > "$RES" <<'PY'
@@ -101,6 +111,10 @@ data = {
          "files": "contracts/Token.sol",
          "candidates": ["contracts/Token.sol:transfer:5|C-refuted|Low|transfer lacks an owner check|anyone moves funds"],
          "coordination": []},
+        {"subsystem": "gateway swap", "class": "C-refuted",
+         "files": "contracts/Gateway.sol",
+         "candidates": ["contracts/Gateway.sol:onCall|C-refuted|High|misclassified accounting bug in a value-moving swap|short-deduct the fee before the swap"],
+         "coordination": []},
         {"subsystem": "ghost", "class": "C9",
          "files": "contracts/Missing.sol",
          "candidates": ["contracts/Missing.sol:ghost:1|C9|Medium|references a file absent from the repo|the gate cannot evaluate it"],
@@ -110,7 +124,7 @@ data = {
          "candidates": ["src/BlueprintV3.sol:createPrivateDeploymentRequestWithSig:~(test/BlueprintV3.t.sol:test_createPrivateDeploym||||"],
          "coordination": []},
     ],
-    "totals": {"cells": 6, "candidates": 6, "steers": 0},
+    "totals": {"cells": 7, "candidates": 7, "steers": 0},
 }
 print(json.dumps(data, indent=2))
 PY
@@ -120,7 +134,7 @@ cp "$RES" "$WORK/results.orig"   # byte-exact snapshot for the read-only asserti
 # Run verify-findings.sh over the merged candidates.
 # ----------------------------------------------------------------------------------------------------------
 OUT="$WORK/out"
-note "running verify-findings.sh --gate refute over 6 candidates (offline stub) ..."
+note "running verify-findings.sh --gate refute over 7 candidates (offline stub) ..."
 "$VERIFY" --results "$RES" --repo "$REPO" --out "$OUT" --gate refute --backend mock --agentis "$STUB" \
   >"$WORK/verify.out" 2>"$WORK/verify.err"
 RC=$?
@@ -141,24 +155,31 @@ assert d["gate"] == "refute", "gate != refute: %r" % d["gate"]
 assert d["repo"] == "target", "repo != target: %r" % d["repo"]
 assert isinstance(d["verified"], list), "verified is not a list"
 assert set(d["totals"].keys()) >= {"candidates", "verified"}, "totals keys missing"
-assert d["totals"]["candidates"] == 6, "candidates total != 6: %r" % d["totals"]["candidates"]
-assert d["totals"]["verified"] == 3, "verified total != 3: %r" % d["totals"]["verified"]
-assert len(d["verified"]) == 3, "verified list len != 3: %d" % len(d["verified"])
+assert d["totals"]["candidates"] == 7, "candidates total != 7: %r" % d["totals"]["candidates"]
+assert d["totals"]["verified"] == 4, "verified total != 4: %r" % d["totals"]["verified"]
+assert len(d["verified"]) == 4, "verified list len != 4: %d" % len(d["verified"])
 keys = {"subsystem", "location", "file", "class", "severity", "exploit", "poc_sketch", "verdict", "reason"}
 for v in d["verified"]:
     assert set(v.keys()) == keys, "verified entry keys %r != %r" % (set(v.keys()), keys)
     assert v["verdict"] == "REAL", "a kept finding is not REAL: %r" % v["verdict"]
 locs = sorted(v["location"] for v in d["verified"])
 assert locs == [
+    "contracts/Gateway.sol:onCall",
     "contracts/Oracle.sol:price:20",
     "contracts/Strategy.sol@aprAfterDebtChange:107-116",
     "contracts/Vault.sol:deposit:12",
 ], "kept the wrong findings: %r" % locs
-# the REFUTED candidate and both errored candidates must be absent from verified[]
+# both errored candidates, and the SIGNAL-LESS refuted candidate (Token), must be absent from verified[]
 alll = " ".join(v["location"] for v in d["verified"])
-assert "Token.sol" not in alll, "the REFUTED candidate was not dropped"
+assert "Token.sol" not in alll, "the signal-less REFUTED candidate was not dropped (retry is not signal-gated)"
 assert "Missing.sol" not in alll, "the absent-code (errored) candidate leaked into verified[]"
 assert "BlueprintV3" not in alll, "the truncated (errored) candidate leaked into verified[]"
+# #1699: the Gateway candidate was REFUTED under its assigned class (C-refuted) but its code trips the C6
+# compound-AND signal, so run-refute.sh's single C6 retry recovered it — and it is recorded under the class it
+# SURVIVED (C6), not the mislabelled input class. Token has no value-moving decl / no `-=`, so it stays dropped.
+gw = {v["location"]: v for v in d["verified"]}["contracts/Gateway.sol:onCall"]
+assert gw["class"] == "C6", "recovered candidate not recorded under the surviving class C6: %r" % gw["class"]
+assert gw["file"] == "contracts/Gateway.sol", "recovered candidate code file mis-derived: %r" % gw["file"]
 # the derived code file is the BARE path before the first colon of an already-well-formed location (no-op)
 byloc = {v["location"]: v for v in d["verified"]}
 assert byloc["contracts/Vault.sol:deposit:12"]["file"] == "contracts/Vault.sol", "code file mis-derived"
@@ -171,7 +192,7 @@ assert dec["file"] == "contracts/Strategy.sol", "decorated location not normaliz
 assert dec["class"] == "C15", "decorated candidate class mis-parsed: %r" % dec["class"]
 assert dec["verdict"] == "REAL", "decorated candidate was not assessed: %r" % dec["verdict"]
 PY
-then ok "verified_findings.json carries the schema keys AND only the 3 REAL findings (REFUTED + 2 errored excluded; #1691 decorated location normalized + assessed)"
+then ok "verified_findings.json carries the schema keys AND only the 4 REAL findings (signal-less REFUTED Token + 2 errored excluded; #1691 decorated location normalized; #1699 Gateway recovered under C6)"
 else bad "schema / CONFIRMED-only assertion failed"
 fi
 
