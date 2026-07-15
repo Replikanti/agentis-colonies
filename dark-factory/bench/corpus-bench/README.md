@@ -18,10 +18,14 @@ corpus-bench/
   corpus.tsv                    # manifest: id, code_repo, judging_repo, project_subdir, scope_hint (see header)
   fetch-corpus.sh                # clone code+judging repos for one/every corpus.tsv row (no re-hosting)
   extract-gt.sh                  # judging-repo README.md -> truth.tsv (ground truth + rarity)
+  score-match.py                 # bench-only scorer: verified_findings.json leads -> HIT/MISS per truth row
   run-corpus-bench.sh             # orchestrator + scorer (this is the entrypoint)
   fixtures/
     sample-judging-readme.md      # tiny synthetic judging report (2 findings, rarity 2 and 9)
     expected-truth.tsv            # extract-gt.sh's expected output on the fixture above
+    score/                        # synthetic score-match.py fixture (truth.tsv + verified_findings.json +
+                                  #   expected-scorecard.txt); the second self-test asserts recall 1/3, stable
+                                  #   across --min-overlap 2 and 5 (no re-hosted Sherlock prose)
 ```
 
 No contest code or finding text is re-hosted in this repo — only the manifest (repo/commit-free GitHub slugs)
@@ -43,16 +47,27 @@ Source: <link>
 
 The watson-handle count is the **rarity** signal: a finding six watsons independently found (consensus) is a
 different, easier target than one only a single watson caught (rare). `truth.tsv` columns: `sev_id  severity
-rarity  title  signature` (signature = title + a truncated body snippet, fed to `novelty-gate.sh`'s overlap
-oracle for scoring — same idiom as `../fixtures/*/truth.tsv`).
+rarity  title  signature` (signature = title + a truncated body snippet; the compiled Sherlock prose reliably
+names both the affected `*.sol` file basename and the function — the signal `score-match.py` matches on — same
+idiom as `../fixtures/*/truth.tsv`).
 
 ## Scoring
 
 For each contest: run the REAL federation pipeline (`run-zone-hunt.sh`: map → brief → discover → verify) over
-the cloned code repo through a real LLM backend, then match each `verified_findings.json` lead against every
-`truth.tsv` row via `novelty-gate.sh`'s overlap oracle (the same mechanism `run-capability-bench.sh` uses).
-Recall is reported overall, by severity (High/Medium), and by rarity (rare 1-2 / mid 3-8 / consensus 9+) —
-flat recall alone hides that consensus bugs are the easy part.
+the cloned code repo through a real LLM backend, then score each `verified_findings.json` lead against the
+`truth.tsv` rows via the **location-first** bench matcher `score-match.py` (#1697). Each lead carries a
+structured `location = <file>:<function>:<line>`; a lead HITs a truth row when the lead's **file basename AND
+function name both occur** in that row's `signature`. Requiring both tokens disambiguates the file basename
+(many rows can name `GatewayTransferNative.sol`; a specific function name lands on one), so **recall is
+threshold-independent** for any lead whose function resolves — `--min-overlap` governs ONLY the fallback used
+when a lead has no parseable function (file-basename present + a stopword-filtered technical-token overlap
+floor). Recall counts DISTINCT truth rows matched (two leads hitting one row count once) and is reported
+overall, by severity (High/Medium), and by rarity (rare 1-2 / mid 3-8 / consensus 9+) — flat recall alone
+hides that consensus bugs are the easy part.
+
+> This replaced an earlier free-text token-overlap oracle (`novelty-gate.sh`) that failed across every
+> threshold on real contest prose (#1697). `score-match.py` is **bench-only**: the live `novelty-gate.sh`
+> hunting-pipeline gate and `extract-gt.sh`'s `truth.tsv` schema are both unchanged.
 
 **Verified leads that don't match any truth row are reported as `unmatched_leads`, never auto-claimed as
 novel.** A concluded, multi-watson-combed contest rarely has a genuinely missed valid H/M; an unmatched lead is

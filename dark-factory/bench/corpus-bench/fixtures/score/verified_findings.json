@@ -1,0 +1,22 @@
+{
+  "repo": "synthetic-fixture",
+  "gate": "score-match-selftest",
+  "verified": [
+    {
+      "location": "contracts/VaultManager.sol:claimReward:88",
+      "file": "contracts/VaultManager.sol",
+      "class": "reentrancy",
+      "exploit": "re-enter claimReward via token callback before the balance write",
+      "poc_sketch": "callback -> claimReward -> drain"
+    },
+    {
+      "location": "contracts/VaultManager.sol:rebalancePool:140",
+      "file": "contracts/VaultManager.sol",
+      "class": "accounting",
+      "exploit": "rebalancePool mis-weights the pool during a generic swap",
+      "poc_sketch": "call rebalancePool with a crafted token amount"
+    }
+  ],
+  "errors": [],
+  "totals": {"verified": 2}
+}
