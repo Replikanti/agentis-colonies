@@ -116,7 +116,7 @@ REPORT="$OUT/refute-report.md"
   echo "|---|---|---|---|"
 } > "$REPORT"
 
-CHECKED=0 ; REAL=0 ; REFUTED=0
+CHECKED=0 ; REAL=0 ; REFUTED=0 ; ERRORED=0
 # Manifest loop: one candidate per line, `file:fn | class | sev | exploit | code-file`.
 while IFS='|' read -r CFN CLS SEV EXPL CODEF || [ -n "${CFN:-}" ]; do
   CFN="$(printf '%s' "$CFN" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
@@ -126,7 +126,14 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF || [ -n "${CFN:-}" ]; do
   EXPL="$(printf '%s' "$EXPL" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   CODEF="$(printf '%s' "$CODEF" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   [ -n "$ONLY" ] && [ "$CFN" != "$ONLY" ] && continue
-  [ -n "$CODEF" ] || { echo "run-refute.sh: candidate '$CFN' has no code-file; skipping" >&2; continue; }
+  # A candidate whose code file cannot be resolved is ERRORED, not silently dropped: an unresolvable candidate
+  # was never assessed, so it must be DISTINGUISHABLE from a rigorous REFUTED verdict in the report (#1691).
+  if [ -z "$CODEF" ]; then
+    echo "run-refute.sh: candidate '$CFN' has no code-file; recording as ERROR (not assessed)" >&2
+    printf '| %s | %s | ERROR | no code-file provided |\n' "$CFN" "$CLS" >> "$REPORT"
+    ERRORED=$((ERRORED + 1))
+    continue
+  fi
 
   # Resolve the code file (absolute as-is, else relative to --code-dir) and stage it into the rundir so
   # the sandboxed exec sh — which cannot read $HOME — can always read it by an in-rundir path.
@@ -135,7 +142,9 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF || [ -n "${CFN:-}" ]; do
     *)  SRC="$CODE_DIR/$CODEF" ;;
   esac
   if [ ! -f "$SRC" ]; then
-    echo "run-refute.sh: code file not found for '$CFN': $SRC; skipping" >&2
+    echo "run-refute.sh: code file not found for '$CFN': $SRC; recording as ERROR (not assessed)" >&2
+    printf '| %s | %s | ERROR | code file not found: %s |\n' "$CFN" "$CLS" "$CODEF" >> "$REPORT"
+    ERRORED=$((ERRORED + 1))
     continue
   fi
   CHECKED=$((CHECKED + 1))
@@ -175,11 +184,11 @@ done < "$CANDS"
 {
   echo
   echo "---"
-  echo "Checked: $CHECKED    REAL (survived, verify with forge): $REAL    REFUTED (killed): $REFUTED"
+  echo "Checked: $CHECKED    REAL (survived, verify with forge): $REAL    REFUTED (killed): $REFUTED    ERRORED (unresolvable code file): $ERRORED"
 } >> "$REPORT"
 
 echo >&2
-echo "================ REFUTE: $CHECKED checked, $REAL survived, $REFUTED refuted ================" >&2
+echo "================ REFUTE: $CHECKED checked, $REAL survived, $REFUTED refuted, $ERRORED errored ================" >&2
 echo "run-refute.sh: verdicts at $REPORT" >&2
 if [ "$REAL" -gt 0 ]; then
   echo "run-refute.sh: NEXT = forge-verify each REAL lead with evm-harness/forge-verify.sh; only a PASSING PoC is a finding. Submission stays human-gated." >&2

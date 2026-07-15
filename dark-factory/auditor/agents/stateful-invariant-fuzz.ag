@@ -68,6 +68,9 @@ let instruction =
   + "Subsystem under review: " + subsystem + ".\n\n"
   + "=== OUTPUT CONTRACT ===\nIf you find a qualifying bug, output EXACTLY one line:\n"
   + "CANDIDATE|<file:function:line>|<method=stateful-invariant-fuzz>|<severity=Medium|High>|<one-sentence external exploit path>|<concrete foundry PoC sketch: what to deploy, call, and assert>\n"
+  + "The <file:function:line> field MUST be a BARE repo-relative source path, then the function name, then an "
+  + "optional line — exactly `file:function[:line]` and nothing more: NO `@`-compound suffix, NO `~(...)` test "
+  + "reference, and NO extra `:` beyond those two.\n"
   + "If after rigorous analysis there is NO qualifying bug this method surfaces in this subsystem, output exactly:\nSAFE\n"
   + "Output nothing else — no preamble, no markdown.";
 
