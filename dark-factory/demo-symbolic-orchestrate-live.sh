@@ -179,13 +179,15 @@ SCOPE_FX=$'vault accounting|C1'
 FIT_FX="C1=0.5500"
 orchestrate_live() {
   _store="$1"; _spec="$2"
+  # --grant-pii: scope + spec repo text can carry addresses/identifiers that trip the PII heuristic;
+  # benign fixture, kept uniform with the other flagged demos + recurrence defense (#1690).
   ( cd "$_store" && env \
       SCOPE="$SCOPE_FX" CLASS_FITNESS="$FIT_FX" PENDING="cand-0|vault accounting|C1" \
       BUDGET=1 DRY_CAP=3 STEPS="0" SYM_POLICY_TT=15000 \
       SYM_REPO="$REPO" SYM_SPEC="$_spec" SYM_FUNCTION="check" \
       HALMOS_VERIFY="$GATE" \
       ORCHESTRATE_ENABLED=1 DISPATCH_ENABLED=1 DISPATCH_FIXTURE="" \
-      agentis go coordinator.ag --enable-exec --enable-messaging 2>&1 )
+      agentis go coordinator.ag --enable-exec --enable-messaging --grant-pii 2>&1 )
 }
 read_outcome() { ( cd "$1" && agentis memo get coordinator:last_outcome ) 2>/dev/null | tail -1; }
 

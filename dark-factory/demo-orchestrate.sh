@@ -96,11 +96,13 @@ init_store() {
 orchestrate() {
   _store="$1"
   _steps="$(awk -v n="$BUDGET" 'BEGIN{ for (i=0;i<n;i++){ printf "%s%d", (i?"\n":""), i } }')"
+  # --grant-pii: scope text can carry addresses/identifiers that trip the PII heuristic; benign
+  # fixture, kept uniform with the other flagged demos + recurrence defense (#1690).
   ( cd "$_store" && env \
       SCOPE="$SCOPE_FX" CLASS_FITNESS="$FIT_FX" PENDING="" \
       BUDGET="$BUDGET" DRY_CAP="$DRY_CAP" STEPS="$_steps" \
       ORCHESTRATE_ENABLED=1 DISPATCH_ENABLED=1 DISPATCH_FIXTURE="$FIXTURE_FX" \
-      agentis go coordinator.ag --enable-exec --enable-messaging 2>/dev/null )
+      agentis go coordinator.ag --enable-exec --enable-messaging --grant-pii 2>/dev/null )
 }
 
 # Read the loop's durable trace / policy memos back (the cross-process channel the bootstrap reads).
@@ -197,11 +199,13 @@ echo "==========================================================================
 GUARD_BUDGET=12
 init_store "$WORK/guard"
 GUARD_STEPS="$(awk -v n="$GUARD_BUDGET" 'BEGIN{ for (i=0;i<n;i++){ printf "%s%d", (i?"\n":""), i } }')"
+# --grant-pii: scope text can carry addresses/identifiers that trip the PII heuristic; benign
+# fixture, kept uniform with the other flagged demos + recurrence defense (#1690).
 ( cd "$WORK/guard" && env \
     SCOPE="$SCOPE_FX" CLASS_FITNESS="$FIT_FX" PENDING="" \
     BUDGET="$GUARD_BUDGET" DRY_CAP="$DRY_CAP" STEPS="$GUARD_STEPS" \
     ORCHESTRATE_ENABLED=1 DISPATCH_ENABLED=1 DISPATCH_FIXTURE="$FIXTURE_FX" \
-    agentis go coordinator.ag --enable-exec --enable-messaging >/dev/null 2>&1 )
+    agentis go coordinator.ag --enable-exec --enable-messaging --grant-pii >/dev/null 2>&1 )
 GUARD_TRACE="$(read_trace "$WORK/guard")"
 GUARD_STEPN="$(printf '%s\n' "$GUARD_TRACE" | grep -c '^step=')"
 if [ "$GUARD_STEPN" -eq "$GUARD_BUDGET" ]; then
@@ -231,11 +235,13 @@ EXPECT_HUNTS=2
 EXPECT_POLICY="hunt=-0.3000"
 init_store "$WORK/stop"
 STOP_STEPS="$(awk -v n="$STOP_BUDGET" 'BEGIN{ for (i=0;i<n;i++){ printf "%s%d", (i?"\n":""), i } }')"
+# --grant-pii: scope text can carry addresses/identifiers that trip the PII heuristic; benign
+# fixture, kept uniform with the other flagged demos + recurrence defense (#1690).
 ( cd "$WORK/stop" && env \
     SCOPE="$STOP_SCOPE" CLASS_FITNESS="$STOP_FIT" PENDING="" \
     BUDGET="$STOP_BUDGET" DRY_CAP="$STOP_DRY_CAP" STEPS="$STOP_STEPS" \
     ORCHESTRATE_ENABLED=1 DISPATCH_ENABLED=1 DISPATCH_FIXTURE="$STOP_FIXTURE" \
-    agentis go coordinator.ag --enable-exec --enable-messaging >/dev/null 2>&1 )
+    agentis go coordinator.ag --enable-exec --enable-messaging --grant-pii >/dev/null 2>&1 )
 STOP_TRACE="$(read_trace "$WORK/stop")"
 STOP_POLICY="$(read_policy "$WORK/stop")"
 # The number of hunt actions actually EXECUTED (non-stop hunt rows in the trace).

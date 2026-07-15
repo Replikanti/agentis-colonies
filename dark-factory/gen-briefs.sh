@@ -217,6 +217,9 @@ while IFS="$TAB" read -r ZID ZNAME ZCLASSES ZFILES || [ -n "${ZID:-}" ]; do
   elif [ "$SRC_LABEL" = "substrate" ]; then
     ZFILES_NL="$(printf '%s' "$ZFILES" | tr ',' '\n')"
     LOG="$RUN/brief_${ZID}.log"
+    # --grant-pii: TARGET_DIR + AUDIT_RESIDUAL/AUDIT_BOUNDARY carry contract source and audit-scope
+    # text that can embed addresses/identifiers tripping the PII heuristic; input is benign public
+    # contract/scope text. Sibling of map-zones in the same live map->brief->hunt chain (#1690).
     ( cd "$RUN" && env \
         TARGET_DIR="$REPO" \
         ZONE_ID="$ZID" \
@@ -227,7 +230,7 @@ while IFS="$TAB" read -r ZID ZNAME ZCLASSES ZFILES || [ -n "${ZID:-}" ]; do
         AUDIT_RESIDUAL="$RESIDUAL_TXT" \
         AUDIT_BOUNDARY="$BOUNDARY_TXT" \
         SLICER="$RUN/slice-fns.sh" \
-        "$AGENTIS" go brief-writer.ag --enable-exec --enable-messaging ) > "$LOG" 2>&1 \
+        "$AGENTIS" go brief-writer.ag --enable-exec --enable-messaging --grant-pii ) > "$LOG" 2>&1 \
       || echo "gen-briefs.sh: brief-writer run failed for zone '$ZID' (see $LOG)" >&2
     slice_block "$LOG" "$ZID" > "$BODY_OUT" || true
   fi

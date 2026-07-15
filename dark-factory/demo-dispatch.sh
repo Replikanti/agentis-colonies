@@ -67,12 +67,14 @@ init_store() {
 # coordinator decides an action and dispatches it in the SAME process because DISPATCH_ENABLED is set.
 run_combined() {
   _store="$1"; shift
+  # --grant-pii: scope/pending text can carry addresses/identifiers that trip the PII heuristic;
+  # benign fixture, kept uniform with the other flagged demos + recurrence defense (#1690).
   ( cd "$_store" && env \
       SCOPE="${SCOPE:-}" CLASS_FITNESS="${CLASS_FITNESS:-}" POLICY="${POLICY:-}" \
       PENDING="${PENDING:-}" BUDGET="${BUDGET:-10}" DRY_STREAK="${DRY_STREAK:-0}" DRY_CAP="${DRY_CAP:-3}" \
       PREV_ACTION="${PREV_ACTION:-}" PREV_KEY="${PREV_KEY:-}" LAST_OUTCOME="${LAST_OUTCOME:-}" \
       DISPATCH_ENABLED=1 DISPATCH_FIXTURE="${DISPATCH_FIXTURE:-}" \
-      "$@" agentis go coordinator.ag --enable-exec --enable-messaging 2>/dev/null ) \
+      "$@" agentis go coordinator.ag --enable-exec --enable-messaging --grant-pii 2>/dev/null ) \
     | grep -E '^(ACTION|DISPATCH)\|'
 }
 
@@ -84,8 +86,10 @@ read_outcome_memo() { ( cd "$1" && agentis memo get coordinator:last_outcome ) 2
 # coordinator.ag inlines — so the demo doubles as a SYNC-GUARD: the standalone agent must produce the
 # byte-identical DISPATCH| marker + memo as the inlined coordinator path, or the two copies have drifted.
 run_standalone() {
+  # --grant-pii: dispatch args can carry addresses/identifiers that trip the PII heuristic; benign
+  # fixture, kept uniform with the other flagged demos + recurrence defense (#1690).
   ( cd "$1" && env DISPATCH_ARGS="$2" DISPATCH_FIXTURE="$3" \
-      agentis go dispatcher.ag --enable-exec --enable-messaging 2>/dev/null ) \
+      agentis go dispatcher.ag --enable-exec --enable-messaging --grant-pii 2>/dev/null ) \
     | grep -E '^DISPATCH\|'
 }
 

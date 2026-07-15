@@ -33,7 +33,9 @@ if [ -z "${NO_AGENTIS:-}" ] && command -v agentis >/dev/null 2>&1; then
   ( cd "$rd" && agentis init >/dev/null 2>&1
     { echo "llm.backend = flat-cyborg"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"
       echo "exec.env_passthrough = REGISTRY,GAP"; echo "llm.cli_timeout_ms = 300000"; echo "exec.default_timeout_ms = 30000"; } >> .agentis/config
-    REGISTRY="$rd/registry.md" GAP="$rd/gap.md" agentis go method-inventor.ag --enable-exec --enable-messaging ) > "$rd/out" 2>"$rd/err"
+    # --grant-pii: REGISTRY/GAP method text can carry addresses/identifiers that trip the PII
+    # heuristic; input is benign operator-authored method text (#1690).
+    REGISTRY="$rd/registry.md" GAP="$rd/gap.md" agentis go method-inventor.ag --enable-exec --enable-messaging --grant-pii ) > "$rd/out" 2>"$rd/err"
   proposal="$(grep -m1 '^METHOD|' "$rd/out" 2>/dev/null || true)"
   if [ -n "$proposal" ]; then echo "[invent] via agentis go (substrate-native)"; else echo "[invent] agentis go produced no METHOD| line (see $rd/err); falling back" >&2; fi
 fi

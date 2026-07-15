@@ -1218,6 +1218,48 @@ if [ -x "$REPO_ROOT/dark-factory/demo-poc-gen.sh" ]; then
     fi
 fi
 
+# --- dark-factory --grant-pii guard on live/exec .ag invocations (#1690) ---
+# The PII heuristic that blocked hunter.ag (#1675/#1676) and then zone-mapper.ag (#1690) can trip on
+# ANY invocation that transmits target source / scope / findings / PoCs / persisted patterns (all benign
+# public Solidity + operator-authored text — never real PII) to the model. When prompt() is blocked, a
+# downstream fallback echoes the raw prompt as if it were the model's reply and the whole map->hunt->verify
+# chain stalls. This guard ratchets the fix: every `agentis go <name>.ag` invocation under dark-factory/
+# that carries --enable-exec or --enable-eval-ag MUST also carry --grant-pii, or an explicit
+# `# no-pii: <reason>` waiver, so a fourth independent rediscovery fails CI instead of surfacing live.
+# Grep-only (no agentis / no network); it also matches the `GO=(go <name>.ag ...)` array form and the
+# heredoc-emitted runner string. Comment lines are skipped, and the content-free `share-patterns.ag`
+# call is excluded automatically (it carries no --enable-exec).
+if [ -d "$REPO_ROOT/dark-factory" ]; then
+    pii_offenders=""
+    # -I skips binary; iterate every .sh under dark-factory recursively.
+    while IFS= read -r sh_file; do
+        # For each candidate invocation line (has `go <name>.ag` AND an exec/eval flag), skip pure
+        # comment lines and any line already carrying --grant-pii or a `# no-pii:` waiver; the rest fail.
+        while IFS=: read -r ln_no ln_txt; do
+            [ -n "$ln_no" ] || continue
+            case "$ln_txt" in
+                *--grant-pii*) continue ;;
+                *"# no-pii:"*) continue ;;
+            esac
+            # Skip lines whose first non-blank character is `#` (prose/comment references).
+            stripped="${ln_txt#"${ln_txt%%[![:space:]]*}"}"
+            case "$stripped" in \#*) continue ;; esac
+            pii_offenders="${pii_offenders}${sh_file#"$REPO_ROOT/"}:${ln_no}: ${stripped}
+"
+        done <<EOF
+$(grep -nE 'go[[:space:]]+[A-Za-z0-9_./-]+\.ag' "$sh_file" 2>/dev/null | grep -E 'enable-exec|enable-eval-ag' || true)
+EOF
+    done <<EOF
+$(find "$REPO_ROOT/dark-factory" -type f -name '*.sh' 2>/dev/null || true)
+EOF
+    if [ -z "$pii_offenders" ]; then
+        pass "dark-factory: every --enable-exec/--enable-eval-ag .ag invocation carries --grant-pii (or a # no-pii: waiver) (#1690)"
+    else
+        fail "dark-factory: .ag invocation with --enable-exec/--enable-eval-ag is missing --grant-pii (#1690) — add --grant-pii or a '# no-pii: <reason>' waiver:"
+        printf '%s' "$pii_offenders"
+    fi
+fi
+
 # --- tier-branch double learn() guard (#636) ---
 # Every `_publish_<role>(...)` / `_submitter_<phase>(...)` helper in
 # research-foundry/ must gate its top-level `learn(..., ["emitted", ...])`

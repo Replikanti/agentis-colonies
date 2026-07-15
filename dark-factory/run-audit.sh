@@ -160,7 +160,9 @@ if [ -n "$SEED_MANIFEST" ]; then
     case "$SCLASS" in ''|\#*) continue ;; esac
     # EVM_HARNESS_DIR lets seed-patterns.ag also seed the STRUCTURAL signature (variant match) via
     # struct-sig.js; empty for non-EVM seeds, where the struct pass self-skips (len(ed)==0).
-    ( cd "$RUN" && env SEED_CLASS="$SCLASS" SEED_SRC="$SSRC" SEED_FUNC="$SMARK" EVM_HARNESS_DIR="$EVM_HARNESS" "$AGENTIS" go seed-patterns.ag --enable-exec ) 2>&1 | grep -i 'seed' >&2 || true
+    # --grant-pii: SEED_SRC/SEED_FUNC are the target's contract source, which can embed addresses/
+    # identifiers that trip the PII heuristic; input is benign public contract text (#1690).
+    ( cd "$RUN" && env SEED_CLASS="$SCLASS" SEED_SRC="$SSRC" SEED_FUNC="$SMARK" EVM_HARNESS_DIR="$EVM_HARNESS" "$AGENTIS" go seed-patterns.ag --enable-exec --grant-pii ) 2>&1 | grep -i 'seed' >&2 || true
   done < "$SEED_MANIFEST"
 
   # #861 M3+: build the fuzzy-match seed corpus (one `Class:::<normalized-sig>` per seed) so reconn's
@@ -193,7 +195,9 @@ ENV=(BOUNTY_TARGET="$TARGET")
 [ -n "$POC" ]            && ENV+=(BOUNTY_POC="$POC")
 [ -n "$REPO" ]           && ENV+=(BOUNTY_REPO="$REPO" BOUNTY_IN_SCOPE="$IN_SCOPE" BOUNTY_CONTRACT="$CONTRACT")
 
-GO=(go auditor.ag --enable-exec --enable-messaging)
+# --grant-pii: BOUNTY_TARGET/BOUNTY_POC/BOUNTY_REPO carry the target's contract source, which can
+# embed addresses/identifiers that trip the PII heuristic; input is benign public contract text (#1690).
+GO=(go auditor.ag --enable-exec --enable-messaging --grant-pii)
 [ "$SANDBOX" = "hardened" ] && GO+=(--sandbox-profile hardened)
 
 echo "run-audit.sh: auditing $(basename "$TARGET") (backend=$BACKEND, sandbox=$SANDBOX)" >&2

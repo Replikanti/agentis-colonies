@@ -311,7 +311,10 @@ if [ -n "$PATTERN_STORE" ]; then
     echo 'INV_OUT="$REPO_IN_WORK/test/Inv_gate.t.sol"'
     echo 'OPT=""; [ -n "$RUNS" ] && OPT="$OPT --runs $RUNS"; [ -n "$DEPTH" ] && OPT="$OPT --depth $DEPTH"; [ -n "$SEED" ] && OPT="$OPT --seed $SEED"'
     echo 'LOG="$WORK/prover.log"'
-    echo '( cd "$WORK" && env TARGET_FN="$TARGET" TARGET_CLASS="$CLASS" INV_REPO="$REPO_IN_WORK" INV_OUT="$INV_OUT" INV_MATCH="$MATCH" HANDLER_FIXTURE="$WORK/handler-fixture.t.sol" CODE_PATH="" INV_RUNS="$RUNS" INV_DEPTH="$DEPTH" INV_SEED="$SEED" FORK_URL="$FORK_URL" FORK_BLOCK="$FORK_BLOCK" FORK_TARGET="" FORK_CONTEXT="$FORK_CONTEXT" FORGE_INVARIANT="$WORK/forge-invariant.sh" "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging ) >"$LOG" 2>&1 || true'
+    # --grant-pii (inside the emitted runner): the candidate's target/fork context + staged contract
+    # source can carry addresses/identifiers that trip the PII heuristic; input is benign public
+    # contract text (#1690).
+    echo '( cd "$WORK" && env TARGET_FN="$TARGET" TARGET_CLASS="$CLASS" INV_REPO="$REPO_IN_WORK" INV_OUT="$INV_OUT" INV_MATCH="$MATCH" HANDLER_FIXTURE="$WORK/handler-fixture.t.sol" CODE_PATH="" INV_RUNS="$RUNS" INV_DEPTH="$DEPTH" INV_SEED="$SEED" FORK_URL="$FORK_URL" FORK_BLOCK="$FORK_BLOCK" FORK_TARGET="" FORK_CONTEXT="$FORK_CONTEXT" FORGE_INVARIANT="$WORK/forge-invariant.sh" "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging --grant-pii ) >"$LOG" 2>&1 || true'
     # Surface the prover trail (incl. RECALL-INVPAT / INVPAT-LEARNED) to stderr AND append it to the stable
     # trail file the driver reads back (the coordinator discards the captured exec output, so the trail file is
     # the durable channel for the prover's recall/persist evidence).
@@ -423,6 +426,8 @@ RUN_LOG="$RUN/orchestrate.log"
 # target; the flat INV_REPO/INV_TARGET/INV_MATCH below are only the env-FALLBACK (set by the --repo/--target
 # shorthand, EMPTY in the multi-candidate path so each lead resolves purely from its carried memo). INV_POLICY_TT
 # seeds the policy so the engine is chosen.
+# --grant-pii: scope + per-candidate repo/target memos can carry addresses/identifiers that trip the
+# PII heuristic; input is benign public contract/scope text (#1690).
 ( cd "$RUN" && env \
     SCOPE="$SCOPE" \
     CLASS_FITNESS="$CLASS_FITNESS" \
@@ -444,7 +449,7 @@ RUN_LOG="$RUN/orchestrate.log"
     INV_FORK_URL="$FORK_URL" \
     INV_FORK_BLOCK="$FORK_BLOCK" \
     INV_FORK_CONTEXT="$FORK_CONTEXT" \
-    "$AGENTIS" go coordinator.ag --enable-exec --enable-messaging ) >"$RUN_LOG" 2>&1 \
+    "$AGENTIS" go coordinator.ag --enable-exec --enable-messaging --grant-pii ) >"$RUN_LOG" 2>&1 \
   || { echo "run-autonomous-hunt.sh: in-substrate autonomous hunt failed (see $RUN_LOG)" >&2; exit 1; }
 
 grep -E '^ORCHESTRATE\|' "$RUN_LOG" >/dev/null 2>&1 \
