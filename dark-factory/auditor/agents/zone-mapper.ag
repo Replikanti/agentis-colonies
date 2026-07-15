@@ -80,6 +80,89 @@ fn contains_lending_signal(code: string) -> bool {
     return false;
 }
 
+// --- #1698 deterministic C6 (value-moving accounting) backstop -------------------------------------
+// zone-mapper's LLM classification under-recognizes zones that OWN value-moving accounting logic (mint/
+// redeem/deposit/withdraw/swap entrypoints that adjust an amount before it moves) — see #1698 (dodo's
+// Gateway zone, which does `amount -= platformFeesForTx;` inside GatewayCrossChain.sol/GatewayTransferNative.sol,
+// classified to [C15,C3,C12,C9] with C6 never assigned). A single-substring backstop (bare "withdraw"/"swap")
+// was rejected live-checking dodo's own zones: `function withdraw`/`function swap...` already appear in
+// `contracts/interfaces/IWETH9.sol` and `IUniswapV2Router01.sol` (pure interface declarations, no bodies)
+// and in `contracts/mocks/*.sol` (trivial pass-throughs) — neither owns real accounting logic. The compound
+// AND below (a function DECLARATION keyword + a companion amount-deduction idiom) fires only on zones that
+// actually own the arithmetic: dodo's Gateway zone matches both; `contracts_interfaces` has the declaration
+// keyword but interfaces have no function bodies (hence no `-=`/`.sub(` anywhere — a Solidity-language
+// guarantee, not a heuristic); `contracts_libraries` has `.sub(` in UniswapV2Library.sol but no value-moving
+// function *declarations*; `contracts_mocks` has `function mint`/`function withdraw` but no `-=`/`.sub(`
+// (trivial pass-throughs) — all three correctly stay unmatched.
+
+// Does the zone's code DECLARE a value-moving entrypoint (mint/burn/deposit/withdraw/redeem/swap)? A
+// function-declaration substring, never a bare mention/call-site (this is what distinguishes an interface
+// or a call-site from the subsystem that actually owns the logic).
+fn has_value_moving_function(code: string) -> bool {
+    if index_of(code, "function withdraw") >= 0 { return true; }
+    if index_of(code, "function deposit") >= 0 { return true; }
+    if index_of(code, "function mint(") >= 0 { return true; }
+    if index_of(code, "function burn(") >= 0 { return true; }
+    if index_of(code, "function redeem") >= 0 { return true; }
+    if index_of(code, "function swap") >= 0 { return true; }
+    return false;
+}
+
+// Does the zone's code contain an amount-deduction idiom (`amount -= platformFeesForTx;` style, or
+// SafeMath-style `.sub(` for targets on pre-0.8 Solidity)?
+fn has_amount_deduction(code: string) -> bool {
+    if index_of(code, "-=") >= 0 { return true; }
+    if index_of(code, ".sub(") >= 0 { return true; }
+    return false;
+}
+
+// True only when the zone BOTH declares a value-moving entrypoint AND does amount-deduction arithmetic
+// (nested `if`, not `&&` — this file has no boolean-AND operator).
+fn contains_accounting_signal(code: string) -> bool {
+    if has_value_moving_function(code) {
+        if has_amount_deduction(code) { return true; }
+    }
+    return false;
+}
+
+// --- #1698 deterministic C17 (index/slot-overwrite) backstop ---------------------------------------
+// zone-mapper's LLM classification under-recognizes zones whose recovery/refund handlers write an id-keyed
+// mapping/array slot — see #1698 (dodo's Gateway zone, whose `onRevert`/`onAbort` handlers write
+// `refundInfos[externalId] = refundInfo;`, M-7's exact shape). Live-verified: dodo's Gateway zone defines
+// `function onRevert`/`function onAbort` (both GatewayCrossChain.sol and GatewayTransferNative.sol) and
+// writes the indexed slot inside them — both conditions hold. Crucially, dodo's test-suite zone (e.g.
+// `test/GatewaySend.t.sol`) *calls* `gatewaySendA.onRevert(...)` and separately contains unrelated `] =`
+// array writes, but never *defines* `function onRevert` (confirmed via `grep -rn "function onRevert"
+// contracts/ test/` returning zero test-dir hits) — requiring the declaration form (not a bare mention)
+// keeps the test zone from over-firing on this signal. `contracts_interfaces`/`contracts_libraries`/
+// `contracts_mocks` have neither signal at all.
+
+// Does the zone's code DECLARE a revert/refund/cancel recovery handler? A function-declaration substring,
+// never a bare mention/call-site.
+fn has_revert_handler(code: string) -> bool {
+    if index_of(code, "function onRevert") >= 0 { return true; }
+    if index_of(code, "function onAbort") >= 0 { return true; }
+    if index_of(code, "function cancel") >= 0 { return true; }
+    if index_of(code, "function claimRefund") >= 0 { return true; }
+    if index_of(code, "function refund") >= 0 { return true; }
+    return false;
+}
+
+// Does the zone's code write an indexed slot (`mapping[key] = value;` / `array[idx] = value;` — bracket-
+// close, space, equals; distinguishes a WRITE from a read like `x = mapping[key];`)?
+fn has_indexed_write(code: string) -> bool {
+    return index_of(code, "] =") >= 0;
+}
+
+// True only when the zone BOTH declares a revert/refund/cancel handler AND writes an indexed slot (nested
+// `if`, not `&&`).
+fn contains_index_overwrite_signal(code: string) -> bool {
+    if has_revert_handler(code) {
+        if has_indexed_write(code) { return true; }
+    }
+    return false;
+}
+
 // First non-empty line of `s` (mirrors hunter.ag::first_line — the verdict's ZONE| line is what we want).
 fn first_line(s: string) -> string {
     return reduce(regex_split("\n", s), |acc: string, l: string| -> string {
@@ -157,21 +240,43 @@ fn force_include(classesCsv: string, cls: string) -> string {
     return classesCsv + "," + cls;
 }
 
+// Per-signal class-forcing helpers (kept separate rather than inlined into apply_backstop() so each net's
+// gate stays a single readable `if !signal { return classesCsv; }` early-return, matching this file's
+// no-reassignment `let` style — .ag bindings are single-assignment, so the C10/C11/C6/C17 nets are chained
+// through sequential `let` locals in apply_backstop() below rather than mutating one accumulator).
+fn apply_lending_backstop(classesCsv: string, code: string) -> string {
+    if !contains_lending_signal(code) { return classesCsv; }
+    let withC10 = force_include(classesCsv, "C10");
+    return force_include(withC10, "C11");
+}
+fn apply_accounting_backstop(classesCsv: string, code: string) -> string {
+    if !contains_accounting_signal(code) { return classesCsv; }
+    return force_include(classesCsv, "C6");
+}
+fn apply_index_overwrite_backstop(classesCsv: string, code: string) -> string {
+    if !contains_index_overwrite_signal(code) { return classesCsv; }
+    return force_include(classesCsv, "C17");
+}
+
 // The deterministic net: when the zone's code signals a lending/CDP/stability-pool system (direct or
-// ERC4626-wrapped), force C10 ("first-depositor/inflation") + C11 ("stability-pool offset") into its class
-// list regardless of what the LLM returned — false positives here are cheaper than a missed first-depositor
-// or stability-pool-offset bug (the issue's own stated tradeoff). A genuine classification failure (no
-// ZONE| line at all) is left alone, not forced to succeed. The corrected line is APPENDED as a new,
-// trailing `ZONE|` line rather than mutating the LLM's own line in place: map-zones.sh's scraper already
-// takes `grep -E '^[[:space:]]*ZONE\|' ... | tail -1` (the #1663/#1664 whitespace-tolerant last-line
-// scrape), so the appended line is picked up with zero changes to the shell side.
+// ERC4626-wrapped), force C10 ("first-depositor/inflation") + C11 ("stability-pool offset"); when it signals
+// value-moving accounting logic it owns (#1698), force C6 ("accounting/rounding direction"); when it signals
+// an id-keyed slot write inside a revert/refund/cancel recovery handler (#1698), force C17 ("index/slot-
+// overwrite") — into its class list regardless of what the LLM returned. False positives here are cheaper
+// than a missed first-depositor, stability-pool-offset, accounting, or slot-overwrite bug (the same tradeoff
+// #1681 established). A genuine classification failure (no ZONE| line at all) is left alone, not forced to
+// succeed. The corrected line is APPENDED as a new, trailing `ZONE|` line rather than mutating the LLM's own
+// line in place: map-zones.sh's scraper already takes `grep -E '^[[:space:]]*ZONE\|' ... | tail -1` (the
+// #1663/#1664 whitespace-tolerant last-line scrape), so the appended line is picked up with zero changes to
+// the shell side. All four classes are folded into ONE rebuilt trailing line (not one appended line per
+// class) so that single `tail -1` scrape stays correct.
 fn apply_backstop(verdict: string, code: string) -> string {
     let line = zone_line(verdict);
     if len(line) == 0 { return verdict; }
-    if !contains_lending_signal(code) { return verdict; }
-    let withC10 = force_include(pipe_field(line, 3), "C10");
-    let withBoth = force_include(withC10, "C11");
-    let rebuilt = "ZONE|" + pipe_field(line, 1) + "|" + pipe_field(line, 2) + "|" + withBoth + "|" + pipe_field(line, 4);
+    let withLending = apply_lending_backstop(pipe_field(line, 3), code);
+    let withAccounting = apply_accounting_backstop(withLending, code);
+    let withAll = apply_index_overwrite_backstop(withAccounting, code);
+    let rebuilt = "ZONE|" + pipe_field(line, 1) + "|" + pipe_field(line, 2) + "|" + withAll + "|" + pipe_field(line, 4);
     if rebuilt == line { return verdict; }
     return verdict + "\n" + rebuilt;
 }
@@ -209,6 +314,22 @@ let instruction =
   + "`IComptroller`, `ICToken`. A bare, generic `IPool`/pool interface is NOT enough by itself — Balancer- and "
   + "AMM-style pools use that name too; only add C10/C11 when the zone is genuinely a lending/CDP/stability-pool "
   + "integration. If none of this zone's contracts touch a lending/CDP/stability-pool system, do NOT add C10/C11.\n\n"
+  + "=== VALUE-MOVING ACCOUNTING DETECTION RULE (C6) ===\n"
+  + "The taxonomy's own guidance is: \"mint/redeem, fee math, AMM invariants, any a*b/c\". INCLUDE `C6` "
+  + "(accounting/rounding direction) when this zone DEFINES (not just declares or imports) a mint/burn/"
+  + "deposit/withdraw/redeem/swap entrypoint whose function BODY does amount-adjusting arithmetic — a fee "
+  + "deducted from the amount before it moves, a balance decremented, a rounding step applied. A pure "
+  + "interface declaration (no function body) is NOT enough, and a trivial pass-through mock (no real "
+  + "arithmetic) is NOT enough — only add C6 when this zone genuinely OWNS the value-moving accounting "
+  + "logic. If this zone has no such entrypoint, or only calls/imports one defined elsewhere, do NOT add C6.\n\n"
+  + "=== INDEX/SLOT-OVERWRITE DETECTION RULE (C17) ===\n"
+  + "The taxonomy's own guidance is: \"any id-keyed record write (mapping/array slot assignment) -> C17\", "
+  + "with special emphasis on such writes near revert/refund/cancel paths. INCLUDE `C17` (index/slot-overwrite) "
+  + "when this zone DEFINES a revert/refund/cancel recovery handler that writes an id-keyed mapping/array slot "
+  + "from the recovery payload without first checking the slot is empty — a stale or externally-supplied id "
+  + "reused as a storage key can silently clobber a prior record. This is distinct from a routine balance-"
+  + "mapping increment (e.g. `balances[msg.sender] += amount`), which is not itself an overwrite risk. If this "
+  + "zone has no such recovery-path slot write, do NOT add C17.\n\n"
   + "=== ZONE ID (echo it back UNCHANGED as the first field) ===\n" + zoneId + "\n\n"
   + "=== HOW TO ANSWER ===\n"
   + "FIRST reason step by step: read the zone's contracts, name the subsystem, and for EACH candidate class "
@@ -218,8 +339,8 @@ let instruction =
   + "long as you need first; ONLY the single ZONE| line is parsed, so your analysis above it is free.";
 
 let verdict = prompt(instruction, code) -> string;
-// #1681: apply the deterministic C10/C11 lending-signal backstop after the LLM classification, before the
-// verdict is surfaced or scored — see apply_backstop() above for why it appends rather than mutates.
+// #1681 + #1698: apply the deterministic C10/C11/C6/C17 backstop nets after the LLM classification, before
+// the verdict is surfaced or scored — see apply_backstop() above for why it appends rather than mutates.
 let finalVerdict = apply_backstop(verdict, code);
 
 // Surface the classification to map-zones.sh (stdout) and record the attempt so the mapping reweights over
