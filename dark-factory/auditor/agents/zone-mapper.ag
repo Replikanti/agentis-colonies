@@ -163,6 +163,28 @@ fn contains_index_overwrite_signal(code: string) -> bool {
     return false;
 }
 
+// --- #1713 value-custody flag (severity-first deep-hunt gate) ---------------------------------------
+// A zone is VALUE-CUSTODY when it OWNS the accounting that moves user funds — either the #1698 C6
+// value-moving-accounting net (a mint/redeem/deposit/withdraw/swap entrypoint that adjusts an amount
+// before it moves) OR the #1681 C10/C11 lending/CDP/stability-pool net (a Trove/money-market/stability-
+// pool system, directly or via an ERC4626 wrapper). Those are the zones where a stateful-invariant fuzzer
+// (run-invariant-hunt.sh) is worth its cost: money-tier bugs live in the multi-step accounting a single-
+// function read misses. PURE REUSE — no new detection logic; both nets are the already-live-tuned #1698/
+// #1681 helpers above. map-zones.sh scrapes the CUSTODY| diagnostic line this emits (below) into
+// zones.json's `value_custody`; run-zone-hunt.sh's --deep-hunt stage gates on it.
+fn is_value_custody(code: string) -> bool {
+    if contains_accounting_signal(code) { return true; }
+    if contains_lending_signal(code) { return true; }
+    return false;
+}
+
+// .ag has no bool->string builtin that guarantees the `true`/`false` tokens map-zones.sh's CUSTODY| scrape
+// parses; branch explicitly (matches this file's no-reassignment style).
+fn bool_str(b: bool) -> string {
+    if b { return "true"; }
+    return "false";
+}
+
 // First non-empty line of `s` (mirrors hunter.ag::first_line — the verdict's ZONE| line is what we want).
 fn first_line(s: string) -> string {
     return reduce(regex_split("\n", s), |acc: string, l: string| -> string {
@@ -463,6 +485,12 @@ print(finalVerdict);
 // #1711: surface the learned-fitness recommendation used this run as a NON-ZONE| diagnostic line, so the
 // recommend() result is observable in the zone log without perturbing map-zones.sh's `^ZONE\|` scrape.
 print("FITNESS-REC|" + zoneId + "|" + to_string(rec));
+// #1713: emit the value-custody flag as a NON-ZONE| diagnostic line (same trailing-line-scrape channel as
+// FITNESS-REC|). map-zones.sh scrapes `CUSTODY|<zoneId>|<true|false>` into zones.json's `value_custody`;
+// run-zone-hunt.sh's --deep-hunt stage runs the invariant engine only on the `true` zones. The `.ag` owns
+// the semantic decision (via the shipped #1698/#1681 nets); the shell only scrapes — never perturbs the
+// `^ZONE\|` scrape.
+print("CUSTODY|" + zoneId + "|" + bool_str(is_value_custody(code)));
 let outcome = outcome_of(finalVerdict);
 emit("dark-factory:zone_mapped", "{\"zone\":\"" + zoneId + "\",\"outcome\":\"" + outcome + "\"}");
 learn("zone-map", zoneId, "attack-surface classification of zone " + zoneId, outcome, ["zone-map", zoneId, outcome]);

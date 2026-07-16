@@ -1,0 +1,15 @@
+# briefs.fixture.txt — canned substrate brief bodies for the #1713 deep-hunt A/B self-test
+# (gen-briefs.sh --fixture). One DARK-FACTORY:BRIEF-BEGIN|<zone_id> .. DARK-FACTORY:BRIEF-END block per
+# zone id map-zones.sh derives from src/ (src -> `src`, src/periphery -> `src_periphery`). Public-safe,
+# generic protocol mechanics only.
+DARK-FACTORY:BRIEF-BEGIN|src
+Attack the share-price accounting as an external depositor holding no privileged role:
+- C6: is every division rounded AGAINST the user on deposit and FOR the vault on withdraw? A raw balanceOf
+  read as the price numerator lets a donated-asset spike mint zero shares to the next honest deposit.
+- C10: is the first-depositor inflation guarded (virtual/dead shares)? Seed 1 wei, donate to spike the
+  price, then front-run the first real deposit to steal it across a multi-step sequence.
+Break invariant: "a depositor's claim is always worth at least what they deposited, minus dust".
+DARK-FACTORY:BRIEF-END
+DARK-FACTORY:BRIEF-BEGIN|src_periphery
+Read-only view helpers. No value moves here; nothing to break beyond stale-read consistency.
+DARK-FACTORY:BRIEF-END

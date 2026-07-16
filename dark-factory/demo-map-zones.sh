@@ -80,15 +80,34 @@ if python3 - "$OUT/zones.json" <<'PY'
 import sys, json
 zones = json.load(open(sys.argv[1], encoding="utf-8"))
 assert isinstance(zones, list) and zones, "zones.json is not a non-empty array"
-need = {"id", "name", "files", "loc", "hardening_score", "bug_classes_likely", "description"}
+need = {"id", "name", "files", "loc", "hardening_score", "bug_classes_likely", "description", "value_custody"}
 for z in zones:
     assert set(z.keys()) == need, "zone %r keys %r != %r" % (z.get("id"), set(z.keys()), need)
     assert isinstance(z["files"], list) and z["files"], "zone %r has no files" % z.get("id")
     assert isinstance(z["bug_classes_likely"], list), "bug_classes_likely not a list"
     assert isinstance(z["loc"], int) and isinstance(z["hardening_score"], int), "loc/hardening not ints"
+    assert isinstance(z["value_custody"], bool), "value_custody not a bool"
 PY
-then ok "zones.json is a valid JSON array; every zone has exactly the 7 keys (id/name/files/loc/hardening_score/bug_classes_likely/description)"
+then ok "zones.json is a valid JSON array; every zone has exactly the 8 keys (id/name/files/loc/hardening_score/bug_classes_likely/description/value_custody)"
 else bad "zones.json schema assertion failed"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (c3) #1713 VALUE-CUSTODY FLAG: the accounting/lending zones are flagged value_custody:true, the read-only
+#      oracle/governance zones value_custody:false (the fixture DECLARES the flags via CUSTODY| lines, since
+#      the .ag is not run on the --fixture path). This gates run-zone-hunt.sh's severity-first --deep-hunt.
+# ----------------------------------------------------------------------------------------------------------
+note "1c) #1713: value_custody flag round-trips from the fixture CUSTODY| lines into zones.json ..."
+if python3 - "$OUT/zones.json" <<'PY'
+import sys, json
+zones = {z["id"]: z for z in json.load(open(sys.argv[1], encoding="utf-8"))}
+assert zones["contracts_vault"]["value_custody"] is True, "accounting vault zone not flagged value_custody"
+assert zones["contracts_liquidation"]["value_custody"] is True, "lending/CDP liquidation zone not flagged value_custody"
+assert zones["contracts_oracle"]["value_custody"] is False, "read-only oracle zone wrongly flagged value_custody"
+assert zones["contracts_governance"]["value_custody"] is False, "governance role zone wrongly flagged value_custody"
+PY
+then ok "value_custody is true for the accounting vault + lending/CDP zones, false for the oracle + governance zones"
+else bad "value_custody flag did not round-trip as expected"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -358,6 +377,15 @@ if grep -q 'ZONE|' "$MAPPER" && grep -q 'prompt(' "$MAPPER"; then
   ok "zone-mapper.ag emits the ZONE| classification via one prompt()"
 else
   bad "zone-mapper.ag missing the ZONE| output token / prompt()"
+fi
+# #1713: the value-custody flag reuses the shipped #1698/#1681 nets (no new detection logic) and emits a
+# NON-ZONE| CUSTODY| diagnostic line map-zones.sh scrapes.
+if grep -q 'fn is_value_custody' "$MAPPER" \
+   && grep -q 'contains_accounting_signal' "$MAPPER" && grep -q 'contains_lending_signal' "$MAPPER" \
+   && grep -q '"CUSTODY|"' "$MAPPER"; then
+  ok "zone-mapper.ag defines is_value_custody (reusing contains_accounting_signal/contains_lending_signal) + emits the CUSTODY| line"
+else
+  bad "zone-mapper.ag missing the #1713 is_value_custody / CUSTODY| emission"
 fi
 if grep -q 'learn("zone-map"' "$MAPPER" && grep -q 'memo_write("zone-mapper:last_check"' "$MAPPER"; then
   ok "zone-mapper.ag records the mapping (learn) + writes its last_check memo"

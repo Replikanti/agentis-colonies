@@ -1,0 +1,8 @@
+[profile.default]
+src = "src"
+out = "out"
+
+[invariant]
+runs = 64
+depth = 32
+fail_on_revert = false

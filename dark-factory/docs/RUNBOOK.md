@@ -132,6 +132,50 @@ agent (`auditor/agents/hunter.ag`) out over (subsystem × bug-class).
 7. **Submit (manual, human-gated)** — only a forge-VERIFIED lead is worth submitting, and only a human
    submits it. As everywhere in this colony, nothing is auto-posted.
 
+## Severity-first deep-hunt (`run-zone-hunt.sh --deep-hunt`, #1713)
+
+The breadth pass (`run-discovery.sh` → `hunter.ag`) reads each (subsystem × bug-class) cell once, deeply,
+but a **money-tier** bug on a high-value zone is often a *stateful* one — it only emerges from a multi-step
+call sequence a single-function read cannot see (first-depositor inflation, a donate-then-deposit share
+spike, a liquidate/seize/redeem accounting break). `--deep-hunt` adds a **second, severity-first lens** that
+runs the shipped stateful-invariant engine (`run-invariant-hunt.sh`) on exactly the zones that hold user
+funds, and folds any fuzzer-reproduced FINDING back into the same verified-findings stream.
+
+- **Value-custody gate.** `zone-mapper.ag` flags a zone `value_custody: true` in `zones.json` when it OWNS
+  value-moving accounting (`contains_accounting_signal`, the #1698 C6 net) or is a lending/CDP/stability-pool
+  system (`contains_lending_signal`, the #1681 C10/C11 net) — pure reuse of the shipped nets, no new
+  detection logic. `map-zones.sh` scrapes the flag off the agent's `CUSTODY|<id>|<true|false>` line
+  (additive to `zones.json` only — `scope.tsv`'s schema is untouched).
+- **The stage.** With `--deep-hunt`, a new stage runs BETWEEN verify (M4) and deliver (M5), active only when
+  the target is a Foundry project (`foundry.toml` present — EVM invariant-fuzzing is Foundry-specific; a
+  non-Foundry target is logged and skipped). For each value-custody zone it picks ONE primary target (the
+  largest `.sol` in the zone, `--deep-hunt-max-targets` default 1) and runs `run-invariant-hunt.sh`. Each
+  FINDING is merged into `verify/verified_findings.json` as a `source=invariant-hunt` entry with a
+  bench-parseable `location = <file>:<function>`, so M5 halts it at the same human gate and corpus-bench
+  scores it alongside the breadth findings.
+- **Default OFF.** Without `--deep-hunt` every run is byte-identical to before (no new stage, no new egress —
+  `run-invariant-hunt.sh` never submits and the merge is a local file read/write).
+
+```
+# breadth + severity-first depth, offline-deterministic (fixture-driven, no LLM/forge):
+./run-zone-hunt.sh --repo <repo> --out zone-hunt-out --deep-hunt \
+    --invariant-fixture <handler.t.sol> --map-fixture <zones.txt> --brief-fixture <briefs.txt> \
+    --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+    --backend mock --agentis <stub>
+
+# live (real backend + forge): omit the fixtures; --deep-hunt gates on the mapped value_custody zones.
+./run-zone-hunt.sh --repo <repo> --out zone-hunt-out --deep-hunt --backend flat-cyborg
+```
+
+**Measuring it is a bench PROXY, not a jackpot claim.** `bench/corpus-bench/deep-hunt-ab.sh` runs the
+pipeline ON vs OFF over the same target and reports the **High-severity recall delta** the deep lens buys.
+`--self-test` (CI-safe, offline) proves the mechanism end to end: deep-hunt ON adds a `source=invariant-hunt`
+High finding that `score-match.py` scores a HIT and the breadth pass missed. `--live --id <id> --code-dir
+<dir> --truth <truth.tsv>` measures a real contest — but on a **SCRATCH COPY** in an isolated `--work` dir,
+restricted to a single value-custody zone via `--scope-hint`, and only AFTER any live corpus-bench run frees
+CPU/subscription capacity (it owns a claude subscription slot). This is a capability-frontier attempt
+measured by a proxy — the real test is fresh live targets the bench cannot measure.
+
 ## Calibration
 
 `sealevel-scorecard.md` records the auditor against real `coral-xyz/sealevel-attacks`

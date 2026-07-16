@@ -221,6 +221,11 @@ PY
 # --- classification: --fixture -> substrate (agentis) -> mechanical skeleton --------------------------
 CLASS_LINES="$OUT/.zone-classes.txt"
 : > "$CLASS_LINES"
+# #1713: value-custody flags scraped from zone-mapper.ag's `CUSTODY|<id>|<true|false>` diagnostic line
+# (the severity-first deep-hunt gate). Additive to zones.json only; scope.tsv is untouched. Always
+# initialised (empty on the skeleton path) so the merge below reads it unconditionally.
+CUSTODY_LINES="$OUT/.custody-flags.txt"
+: > "$CUSTODY_LINES"
 # #1707: zone ids whose zone-mapper reply never carried a ZONE| sentinel after retries (TUI chrome / no
 # answer). A failed zone is flagged classification_failed in zones.json and EXCLUDED from scope.tsv — visibly
 # a failure, not the silent empty-classes drop it used to become. Always initialised (empty on non-substrate
@@ -232,6 +237,9 @@ SKELETON=""
 SRC_LABEL=""
 if [ -n "$FIXTURE" ]; then
   grep -E '^[[:space:]]*ZONE\|' "$FIXTURE" | sed 's/^[[:space:]]*//' > "$CLASS_LINES" || true
+  # #1713: an offline fixture DECLARES value-custody zones with `CUSTODY|<id>|<true|false>` lines (the .ag
+  # is not run on the fixture path, so the flag rides the fixture like the ZONE| classification does).
+  grep -E '^[[:space:]]*CUSTODY\|' "$FIXTURE" | sed 's/^[[:space:]]*//' >> "$CUSTODY_LINES" || true
   SRC_LABEL="fixture"
 elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
   # Substrate classification: one zone-mapper.ag run per zone, against a shared agentis store (mirrors
@@ -301,6 +309,10 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
       # the LAST emission (the agent reasons first and emits the ZONE| line at the end). The python parser
       # below still drops any placeholder/template echo, so feeding it the real last line is safe.
       grep -E '^[[:space:]]*ZONE\|' "$ZLOG" | sed 's/^[[:space:]]*//' | tail -1 >> "$CLASS_LINES" || true
+      # #1713: scrape the value-custody flag off the same trailing-line channel (whitespace-tolerant, LAST
+      # emission), exactly like the ZONE| scrape above. A zone whose reply carries no CUSTODY| line stays
+      # value_custody=false by the merge's default.
+      grep -E '^[[:space:]]*CUSTODY\|' "$ZLOG" | sed 's/^[[:space:]]*//' | tail -1 >> "$CUSTODY_LINES" || true
     else
       printf '%s\n' "$ZID" >> "$FAILED_ZONES"
       FAILED=$((FAILED + 1))
@@ -316,7 +328,7 @@ fi
 
 # --- merge mechanical model + classification -> zones.json (+ scope.tsv unless skeleton) ---------------
 COUNT="$(MECH_JSON="$MECH_JSON" CLASS_LINES="$CLASS_LINES" OUT_DIR="$OUT" SKELETON="$SKELETON" \
-  FAILED_ZONES="$FAILED_ZONES" python3 - <<'PY'
+  FAILED_ZONES="$FAILED_ZONES" CUSTODY_LINES="$CUSTODY_LINES" python3 - <<'PY'
 import os, re, json, sys
 
 mech = json.load(open(os.environ["MECH_JSON"], encoding="utf-8"))
@@ -362,6 +374,20 @@ if cl and os.path.exists(cl):
                 continue
             classmap[zid] = {"name": name, "classes": classes, "desc": desc}
 
+# #1713: value-custody flags: `CUSTODY|<zid>|<true|false>` (zone-mapper.ag's diagnostic line, or a fixture
+# declaration). Parsed into custodymap[zid]; every zone gets value_custody set below (default False when a
+# zone has no CUSTODY| line). ADDITIVE to zones.json only — scope.tsv is untouched.
+custodymap = {}
+cf = os.environ.get("CUSTODY_LINES", "")
+if cf and os.path.exists(cf):
+    for line in open(cf, encoding="utf-8", errors="ignore"):
+        line = line.rstrip("\n")
+        if not line.startswith("CUSTODY|"):
+            continue
+        parts = line.split("|")
+        if len(parts) >= 3:
+            custodymap[parts[1].strip()] = parts[2].strip().lower() == "true"
+
 # scope.tsv field-safety: no `|`, newline, or backtick may appear inside any pipe-delimited field.
 def clean(s):
     return re.sub(r"[|`\r\n]", " ", s).strip()
@@ -381,6 +407,9 @@ for z in mech:
         "hardening_score": z["hardening_score"],
         "bug_classes_likely": classes,
         "description": desc,
+        # #1713: the severity-first deep-hunt gate. run-zone-hunt.sh --deep-hunt runs the stateful-invariant
+        # engine only on value_custody zones. Default False for any zone with no CUSTODY| line.
+        "value_custody": custodymap.get(z["id"], False),
     }
     if z["id"] in failed_zones:
         z_out["classification_failed"] = True
