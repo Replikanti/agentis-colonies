@@ -197,7 +197,11 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
     if [ "$BACKEND" = "claude" ]; then
       echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 600000"
     elif [ "$BACKEND" = "flat-cyborg" ]; then
-      echo "llm.cli_timeout_ms = 600000"
+      # idle_ms above the native backend's 4000 default: with 4000, flat-cyborg declares IDLE after
+      # only 4s of screen silence, which fires DURING claude's think-pause on a large prompt and scrapes
+      # the pre-answer TUI footer as a chrome "reply" (#1707). A/B-proven: idle 4000 -> chrome, idle
+      # >=8000 -> real reply. 12000 matches flat-cyborg's "agentic runs need 12000+".
+      echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = opus"
     fi
     echo "trace.level = normal"
     echo "exec.env_passthrough = TARGET_DIR,ZONE_ID,ZONE_NAME,ZONE_FILES,ZONE_CLASSES,TAXONOMY,AUDIT_RESIDUAL,AUDIT_BOUNDARY,SLICER"
