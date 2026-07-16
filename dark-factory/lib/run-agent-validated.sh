@@ -62,9 +62,12 @@ df_sentinel_present() {
       grep -Eq '^[[:space:]]*ZONE\|' "$dsp_log"
       ;;
     brief-writer)
-      # gen-briefs.sh slices between DARK-FACTORY:BRIEF-BEGIN|<id> and BRIEF-END; a bare `SKIP` line is the
-      # legit "skip this zone" reply (matched anchored to a whole line so prose containing "skip" can't pass).
-      grep -q "DARK-FACTORY:BRIEF-BEGIN|${dsp_zone}" "$dsp_log" \
+      # gen-briefs.sh's slice_block() matches a WHOLE whitespace-trimmed line equal to
+      # `DARK-FACTORY:BRIEF-BEGIN|<id>` (awk `s==...`, #1663 whitespace-tolerant), so this predicate must
+      # anchor the same way — an unanchored substring would let prose that merely MENTIONS the sentinel pass
+      # validation while slice_block extracts 0 bytes (#1707 in the opposite direction). A bare `SKIP` line is
+      # the legit "skip this zone" reply (also anchored to a whole line so prose containing "skip" can't pass).
+      grep -Eq "^[[:space:]]*DARK-FACTORY:BRIEF-BEGIN\|${dsp_zone}[[:space:]]*\$" "$dsp_log" \
         || grep -Eq '^[[:space:]]*SKIP[[:space:]]*$' "$dsp_log"
       ;;
     hunter)
