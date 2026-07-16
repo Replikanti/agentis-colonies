@@ -18,7 +18,7 @@
 #      steering is off under `--jobs > 1` (STEERS = 0, every cell's coordination is empty).
 #   5) DEGRADE:                a cell whose stub EXITS NON-ZERO still lets the run finish + scrape the rest.
 #   6) READ-ONLY / NEVER-SUBMIT: no network / no submission verb on run-discovery.sh's executable lines.
-#   7) WRAPPED CANDIDATE (#1707): a synthetic PTY-wrapped CANDIDATE record (STUB_WRAP=1) — exploit/poc_sketch
+#   7) WRAPPED CANDIDATE (#1705): a synthetic PTY-wrapped CANDIDATE record (STUB_WRAP=1) — exploit/poc_sketch
 #      prose split across several continuation lines with no CANDIDATE|/BLACKBOARD- prefix — is reconstructed
 #      WHOLE by `_join_wrapped_candidates()`: the full exploit sentence and poc_sketch survive intact, and the
 #      wrap does not split into two bogus candidates.
@@ -102,7 +102,7 @@ case "$cmd" in
       rmdir "$marker" 2>/dev/null || true
     fi
     if [ "${STUB_WRAP:-}" = "1" ] && [ "${HUNT_CLASS:-}" = "C1" ]; then
-      # #1707: synthetic PTY-wrapped record — the CANDIDATE| line's exploit/poc_sketch prose is split
+      # #1705: synthetic PTY-wrapped record — the CANDIDATE| line's exploit/poc_sketch prose is split
       # across several continuation lines carrying NO CANDIDATE|/BLACKBOARD- prefix and breaking
       # mid-sentence, reproducing the shape flat-cyborg's PTY capture produces when the hunter's reply
       # exceeds one physical line (hunter.ag's own ~118-120 column contract). The "|" separating the
@@ -265,9 +265,9 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
-# (7) WRAPPED CANDIDATE (#1707): a synthetic PTY-wrapped CANDIDATE record survives extraction whole.
+# (7) WRAPPED CANDIDATE (#1705): a synthetic PTY-wrapped CANDIDATE record survives extraction whole.
 # ----------------------------------------------------------------------------------------------------------
-note "7) synthetic PTY-wrapped CANDIDATE record (#1707) is reconstructed whole ..."
+note "7) synthetic PTY-wrapped CANDIDATE record (#1705) is reconstructed whole ..."
 WRAP_OUT="$WORK/out-wrap"
 STUB_WRAP=1 \
   "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \

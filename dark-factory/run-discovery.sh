@@ -213,7 +213,7 @@ fi
 _json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
 
 # _join_wrapped_candidates <log> — reconstruct one logical line per `CANDIDATE|...` record from a hunt log,
-# undoing flat-cyborg's PTY-capture line wrap (#1707). A `CANDIDATE|file:fn:line|class|severity|exploit|poc`
+# undoing flat-cyborg's PTY-capture line wrap (#1705). A `CANDIDATE|file:fn:line|class|severity|exploit|poc`
 # record's exploit/poc_sketch prose routinely exceeds one physical line; the raw log then carries the tail
 # as continuation lines with no `CANDIDATE|` prefix, which a bare `grep 'CANDIDATE|'` silently drops. Here a
 # `CANDIDATE|` line opens/flushes a record; a `BLACKBOARD-*` line or a blank line closes the current record
