@@ -236,6 +236,107 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (h) #1707 SENTINEL VALIDATION + RETRY (substrate path, offline via a stub --agentis): a zone-mapper reply
+#     that is TUI chrome (no ZONE| sentinel) is RETRIED, not silently left unclassified. (a) chrome-then-ZONE|
+#     recovers (real classes + zone in scope.tsv); (b) chrome-on-all marks the zone classification_failed +
+#     excludes it from scope.tsv + counts + logs it — never a silent unclassified-and-dropped zone.
+# ----------------------------------------------------------------------------------------------------------
+# Fast offline stub through the --agentis seam (drives the SUBSTRATE path, NOT --fixture). dash-safe.
+STUB="$WORK/agentis-stub"
+cat > "$STUB" <<'STUBEOF'
+#!/bin/sh
+set -u
+cmd="${1:-}"
+case "$cmd" in
+  init) mkdir -p .agentis; exit 0 ;;
+  go)
+    key="${ZONE_ID:-z}"
+    # #1707: emit chrome (no ZONE| sentinel) for the first STUB_CHROME_ATTEMPTS attempts of each zone.
+    if [ -n "${STUB_CHROME_CTR:-}" ]; then
+      ckey="$(printf '%s' "$key" | tr -cs 'A-Za-z0-9' '_')"
+      cf="$STUB_CHROME_CTR/$ckey"
+      cn=0; [ -f "$cf" ] && cn="$(cat "$cf")"
+      cn=$((cn + 1)); printf '%s' "$cn" > "$cf"
+      if [ "$cn" -le "${STUB_CHROME_ATTEMPTS:-0}" ]; then
+        printf 'high · /effort\n'
+        printf 'esc to interrupt\n'
+        exit 0
+      fi
+    fi
+    printf 'ZONE|%s|core subsystem|C1,C6|deposit accounting invariants under external attack\n' "$key"
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+STUBEOF
+chmod +x "$STUB"
+
+note "3c) #1707: a zone-mapper reply of chrome-then-ZONE| is RETRIED and classified (not left unclassified) ..."
+OUT_CHROME="$WORK/out-chrome"
+STUB_CHROME_CTR="$WORK/ctr-chrome"; mkdir -p "$STUB_CHROME_CTR"
+DF_AGENT_MAX_ATTEMPTS=2 STUB_CHROME_CTR="$STUB_CHROME_CTR" STUB_CHROME_ATTEMPTS=1 \
+  "$MAPZONES" --repo "$REPO" --out "$OUT_CHROME" --agentis "$STUB" >/dev/null 2>"$WORK/map-chrome.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "map-zones.sh exits 0 on the chrome-then-ZONE| substrate stub" \
+  || { bad "map-zones.sh exited $RC on the chrome stub"; sed 's/^/      /' "$WORK/map-chrome.err" >&2; }
+if grep -q 'valid zone-mapper sentinel on attempt 2/2' "$WORK/map-chrome.err"; then
+  ok "the scraper logged a successful retry (valid on attempt 2/2)"
+else
+  bad "no retry was logged — the chrome reply was not actually retried"
+fi
+if python3 - "$OUT_CHROME/zones.json" <<'PY'
+import sys, json
+zones = json.load(open(sys.argv[1], encoding="utf-8"))
+assert zones, "no zones emitted"
+for z in zones:
+    assert z.get("bug_classes_likely"), "zone %r left unclassified despite the retry" % z.get("id")
+    assert "classification_failed" not in z, "a recovered zone was wrongly flagged classification_failed"
+PY
+then ok "every zone was classified after the retry (non-empty bug_classes_likely, no classification_failed flag)"
+else bad "a zone was left unclassified despite chrome-then-ZONE| recovery"
+fi
+if [ -s "$OUT_CHROME/scope.tsv" ] && grep -qv '^#' "$OUT_CHROME/scope.tsv"; then
+  ok "the recovered zones ship in scope.tsv (hunted)"
+else
+  bad "scope.tsv has no data rows after the retry"
+fi
+
+note "3d) #1707: a zone-mapper reply of chrome on ALL attempts is FAILED (classification_failed, excluded, logged) ..."
+OUT_FAIL="$WORK/out-mapfail"
+STUB_CHROME_CTR="$WORK/ctr-mapfail"; mkdir -p "$STUB_CHROME_CTR"
+DF_AGENT_MAX_ATTEMPTS=2 STUB_CHROME_CTR="$STUB_CHROME_CTR" STUB_CHROME_ATTEMPTS=99 \
+  "$MAPZONES" --repo "$REPO" --out "$OUT_FAIL" --agentis "$STUB" >/dev/null 2>"$WORK/map-fail.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "map-zones.sh still exits 0 with all-chrome zones (visibility via flag/counter/log)" \
+  || { bad "map-zones.sh exited $RC on the all-chrome stub"; sed 's/^/      /' "$WORK/map-fail.err" >&2; }
+if python3 - "$OUT_FAIL/zones.json" <<'PY'
+import sys, json
+zones = json.load(open(sys.argv[1], encoding="utf-8"))
+assert zones, "no zones emitted"
+for z in zones:
+    assert z.get("classification_failed") is True, "zone %r not flagged classification_failed" % z.get("id")
+    assert not z.get("bug_classes_likely"), "a failed zone kept a classification"
+PY
+then ok "every all-chrome zone is flagged classification_failed:true in zones.json (a visible failure, not a silent drop)"
+else bad "an all-chrome zone was not flagged classification_failed"
+fi
+# excluded from scope.tsv (no data rows) — a failed zone is not silently hunted with empty classes
+if [ -f "$OUT_FAIL/scope.tsv" ] && grep -q '^[^#]' "$OUT_FAIL/scope.tsv"; then
+  bad "a failed zone leaked into scope.tsv"
+else
+  ok "the failed zones are excluded from scope.tsv (never hunted with no trace)"
+fi
+if grep -q 'FAILED classification' "$WORK/map-fail.err"; then
+  ok "the summary loudly reports the FAILED classification count (retried, still chrome; NOT hunted)"
+else
+  bad "no loud FAILED-classification summary was logged"
+fi
+if [ -s "$OUT_FAIL/.failed-zones.txt" ]; then
+  ok "the failed zone ids are recorded in .failed-zones.txt"
+else
+  bad ".failed-zones.txt is empty despite all-chrome zones"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # SECOND PART — substrate: source-guard zone-mapper.ag always; run live via --backend mock when agentis on PATH.
 # ----------------------------------------------------------------------------------------------------------
 note "4) source-guarding auditor/agents/zone-mapper.ag ..."

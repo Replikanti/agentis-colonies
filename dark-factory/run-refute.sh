@@ -39,6 +39,12 @@
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# #1707: shared reply-shape validation + retry for the refuter substrate call (see the helper header).
+# verify-findings.sh inherits this fix transitively (it dispatches to run-refute.sh, no `agentis go` of its own).
+# shellcheck source=lib/run-agent-validated.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/run-agent-validated.sh"
+DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
 AGENTIS="agentis"
 CANDS="" ; CODE_DIR="" ; BRIEF="" ; ONLY=""
 BACKEND="flat-cyborg" ; MODEL="" ; OUT="$PWD/refute-out"
@@ -176,27 +182,38 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF || [ -n "${CFN:-}" ]; do
   CELL_LOG="$RUN/refute_${SLUG}.log"
   echo "run-refute.sh: refuting $CFN ($CLS) ..." >&2
   # --grant-pii: candidate/exploit text + staged contract source can carry addresses/identifiers that
-  # trip the PII heuristic; input is benign public contract/finding text (#1690).
-  ( cd "$RUN" && env \
-      CAND_FILE_FN="$CFN" \
-      CAND_CLASS="$CLS" \
-      CAND_SEVERITY="$SEV" \
-      CAND_EXPLOIT="$EXPL" \
-      CODE_PATH="$STAGED" \
-      BRIEF_PATH="$BRIEF_IN_RUN" \
-      "$AGENTIS" go refuter.ag --enable-exec --enable-messaging --grant-pii ) >"$CELL_LOG" 2>&1 || \
-      echo "run-refute.sh: refuter run failed for '$CFN' (see $CELL_LOG)" >&2
-
-  # The refuter's contract: exactly one `VERDICT|REAL|...` or `VERDICT|REFUTED|...` line. Take the LAST
-  # match (the agent prints its verdict after free-form reasoning). No line at all = treat as REFUTED
-  # (conservative: a candidate that did not even produce a verdict has not survived the gate).
-  VLINE="$(grep 'VERDICT|' "$CELL_LOG" | tail -1 || true)"
-  if [ -z "$VLINE" ]; then
-    VERD="REFUTED" ; REASON="no verdict line produced (treated as refuted)"
-  else
+  # trip the PII heuristic; input is benign public contract/finding text (#1690). Dynamic scope:
+  # _rf_attempt reads CFN/CLS/SEV/EXPL/STAGED/BRIEF_IN_RUN from the loop.
+  # shellcheck disable=SC2317  # invoked by name through df_run_agent_validated
+  _rf_attempt() {
+    ( cd "$RUN" && env \
+        CAND_FILE_FN="$CFN" \
+        CAND_CLASS="$CLS" \
+        CAND_SEVERITY="$SEV" \
+        CAND_EXPLOIT="$EXPL" \
+        CODE_PATH="$STAGED" \
+        BRIEF_PATH="$BRIEF_IN_RUN" \
+        "$AGENTIS" go refuter.ag --enable-exec --enable-messaging --grant-pii ) >"$1" 2>&1 || \
+        echo "run-refute.sh: refuter run failed for '$CFN' (see $1)" >&2
+  }
+  # #1707: validate the refuter reply carries a VERDICT| line and RETRY on TUI chrome / no answer. This
+  # REPLACES the old silent "no VERDICT| ⇒ REFUTED" default, which killed a possibly-real candidate on a
+  # render/timing flake. Only if N attempts STILL yield no VERDICT| is the candidate marked as a
+  # DISTINGUISHABLE failure — reuse the ERRORED category (UNASSESSED, not refuted) — so a chrome reply can
+  # never silently kill a candidate. The genuine `VERDICT|REFUTED` path (a real hostile-read kill) is below.
+  if df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-refute.sh: '$CFN'" "$CELL_LOG" refuter "" _rf_attempt; then
+    # The refuter's contract: exactly one `VERDICT|REAL|...` or `VERDICT|REFUTED|...` line. Take the LAST
+    # match (the agent prints its verdict after free-form reasoning); validation guarantees one is present.
+    VLINE="$(grep 'VERDICT|' "$CELL_LOG" | tail -1 || true)"
     V="$(printf '%s' "$VLINE" | sed 's/^.*\(VERDICT|\)/\1/')"
     VERD="$(printf '%s' "$V" | cut -d'|' -f2)"
     REASON="$(printf '%s' "$V" | cut -d'|' -f5-)"
+  else
+    echo "run-refute.sh: '$CFN' produced no VERDICT| reply after $DF_AGENT_MAX_ATTEMPTS attempts; recording as ERROR (UNASSESSED — not refuted)" >&2
+    printf '| %s | %s | ERROR | no VERDICT| reply after %s attempts (UNASSESSED — not refuted) |\n' \
+      "$CFN" "$CLS" "$DF_AGENT_MAX_ATTEMPTS" >> "$REPORT"
+    ERRORED=$((ERRORED + 1))
+    continue
   fi
   ROW_CLS="$CLS"
 
@@ -241,7 +258,7 @@ done < "$CANDS"
 {
   echo
   echo "---"
-  echo "Checked: $CHECKED    REAL (survived, verify with forge): $REAL    REFUTED (killed): $REFUTED    ERRORED (unresolvable code file): $ERRORED"
+  echo "Checked: $CHECKED    REAL (survived, verify with forge): $REAL    REFUTED (killed): $REFUTED    ERRORED (unresolvable code file / unassessed no-verdict): $ERRORED"
 } >> "$REPORT"
 
 echo >&2

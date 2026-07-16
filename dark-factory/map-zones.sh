@@ -34,6 +34,11 @@
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# #1707: shared reply-shape validation + retry for the zone-mapper substrate call (see the helper header).
+# shellcheck source=lib/run-agent-validated.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/run-agent-validated.sh"
+DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
 AGENTIS="agentis"
 REPO="" ; OUT="" ; SCOPE_HINT="" ; SINCE="" ; FIXTURE="" ; BACKEND="flat-cyborg"
 # A contract above this many lines is emitted function-sliced (`file@fn1+fn2`, slice-fns.sh format) in
@@ -216,6 +221,13 @@ PY
 # --- classification: --fixture -> substrate (agentis) -> mechanical skeleton --------------------------
 CLASS_LINES="$OUT/.zone-classes.txt"
 : > "$CLASS_LINES"
+# #1707: zone ids whose zone-mapper reply never carried a ZONE| sentinel after retries (TUI chrome / no
+# answer). A failed zone is flagged classification_failed in zones.json and EXCLUDED from scope.tsv — visibly
+# a failure, not the silent empty-classes drop it used to become. Always initialised (empty on non-substrate
+# paths) so the merge below can read it unconditionally.
+FAILED_ZONES="$OUT/.failed-zones.txt"
+: > "$FAILED_ZONES"
+FAILED=0
 SKELETON=""
 SRC_LABEL=""
 if [ -n "$FIXTURE" ]; then
@@ -241,29 +253,40 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
     echo "learning.enabled = true"
     echo "experience.enabled = true"
   } > "$RUN/.agentis/config"
-  TAB="$(printf '\t')"
-  while IFS="$TAB" read -r ZID ZFILES || [ -n "${ZID:-}" ]; do
-    [ -n "$ZID" ] || continue
-    ZFILES_NL="$(printf '%s' "$ZFILES" | tr ',' '\n')"
-    # --grant-pii: TARGET_DIR carries the target's contract source, which routinely embeds hex
-    # addresses/hashes that trip the PII heuristic; input is benign public contract text. Without it,
-    # prompt() gets blocked, the zone stays unclassified, and the whole DISCOVERY hunt stalls (#1690,
-    # mirrors the hunter.ag fix in #1676).
+  # --grant-pii: TARGET_DIR carries the target's contract source, which routinely embeds hex
+  # addresses/hashes that trip the PII heuristic; input is benign public contract text. Without it,
+  # prompt() gets blocked, the zone stays unclassified, and the whole DISCOVERY hunt stalls (#1690,
+  # mirrors the hunter.ag fix in #1676). Dynamic scope: _mz_attempt reads ZID/ZFILES_NL from the loop.
+  # shellcheck disable=SC2317  # invoked by name through df_run_agent_validated
+  _mz_attempt() {
     ( cd "$RUN" && env \
         TARGET_DIR="$REPO" \
         ZONE_ID="$ZID" \
         ZONE_FILES="$ZFILES_NL" \
         TAXONOMY="$TAXONOMY" \
         SLICER="$RUN/slice-fns.sh" \
-        "$AGENTIS" go zone-mapper.ag --enable-exec --enable-messaging --grant-pii ) > "$RUN/zone_${ZID}.log" 2>&1 \
-      || echo "map-zones.sh: zone-mapper run failed for zone '$ZID' (see $RUN/zone_${ZID}.log)" >&2
-    # Scrape the zone-mapper's ZONE| emission WHITESPACE-TOLERANTLY: the LLM formats its reply
-    # non-deterministically and sometimes indents the whole answer (observed live: the core `src` zone's
-    # ZONE| line came back indented 2 spaces), so an anchored `^ZONE|` silently misses it -> the zone is
-    # left unclassified -> 0 cells -> the zone is NEVER hunted. Match leading whitespace, strip it, and take
-    # the LAST emission (the agent reasons first and emits the ZONE| line at the end). The python parser
-    # below still drops any placeholder/template echo, so feeding it the real last line is safe.
-    grep -E '^[[:space:]]*ZONE\|' "$RUN/zone_${ZID}.log" | sed 's/^[[:space:]]*//' | tail -1 >> "$CLASS_LINES" || true
+        "$AGENTIS" go zone-mapper.ag --enable-exec --enable-messaging --grant-pii ) > "$1" 2>&1 \
+      || echo "map-zones.sh: zone-mapper run failed for zone '$ZID' (see $1)" >&2
+  }
+  TAB="$(printf '\t')"
+  while IFS="$TAB" read -r ZID ZFILES || [ -n "${ZID:-}" ]; do
+    [ -n "$ZID" ] || continue
+    ZFILES_NL="$(printf '%s' "$ZFILES" | tr ',' '\n')"
+    ZLOG="$RUN/zone_${ZID}.log"
+    # #1707: validate the zone-mapper reply carries a ZONE| sentinel and RETRY on TUI chrome / no answer,
+    # instead of silently leaving the zone unclassified (0 cells -> never hunted, no trace).
+    if df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "map-zones.sh: zone '$ZID'" "$ZLOG" zone-mapper "$ZID" _mz_attempt; then
+      # Scrape the zone-mapper's ZONE| emission WHITESPACE-TOLERANTLY: the LLM formats its reply
+      # non-deterministically and sometimes indents the whole answer (observed live: the core `src` zone's
+      # ZONE| line came back indented 2 spaces), so an anchored `^ZONE|` silently misses it -> the zone is
+      # left unclassified -> 0 cells -> the zone is NEVER hunted. Match leading whitespace, strip it, and take
+      # the LAST emission (the agent reasons first and emits the ZONE| line at the end). The python parser
+      # below still drops any placeholder/template echo, so feeding it the real last line is safe.
+      grep -E '^[[:space:]]*ZONE\|' "$ZLOG" | sed 's/^[[:space:]]*//' | tail -1 >> "$CLASS_LINES" || true
+    else
+      printf '%s\n' "$ZID" >> "$FAILED_ZONES"
+      FAILED=$((FAILED + 1))
+    fi
   done <<EOF
 $ZONE_LIST
 EOF
@@ -274,12 +297,24 @@ else
 fi
 
 # --- merge mechanical model + classification -> zones.json (+ scope.tsv unless skeleton) ---------------
-COUNT="$(MECH_JSON="$MECH_JSON" CLASS_LINES="$CLASS_LINES" OUT_DIR="$OUT" SKELETON="$SKELETON" python3 - <<'PY'
+COUNT="$(MECH_JSON="$MECH_JSON" CLASS_LINES="$CLASS_LINES" OUT_DIR="$OUT" SKELETON="$SKELETON" \
+  FAILED_ZONES="$FAILED_ZONES" python3 - <<'PY'
 import os, re, json, sys
 
 mech = json.load(open(os.environ["MECH_JSON"], encoding="utf-8"))
 skeleton = os.environ.get("SKELETON", "") == "1"
 out_dir = os.environ["OUT_DIR"]
+
+# #1707: zones whose zone-mapper reply never carried a ZONE| sentinel after retries. Such a zone is written
+# to zones.json with "classification_failed": true and EXCLUDED from scope.tsv — a visible failure, not the
+# silent unclassified-and-dropped zone it used to become.
+failed_zones = set()
+fz = os.environ.get("FAILED_ZONES", "")
+if fz and os.path.exists(fz):
+    for line in open(fz, encoding="utf-8"):
+        z = line.strip()
+        if z:
+            failed_zones.add(z)
 
 # is_placeholder_echo: the LLM sometimes answers a fill-in-the-blank prompt by echoing the prompt's OWN
 # bracketed template instead of real content (observed live: name="<short subsystem name>",
@@ -320,7 +355,7 @@ for z in mech:
     name = c.get("name") or z["name"]
     classes = [x.strip() for x in c.get("classes", "").split(",") if x.strip()]
     desc = c.get("desc", "")
-    zones.append({
+    z_out = {
         "id": z["id"],
         "name": name,
         "files": z["files"],
@@ -328,8 +363,11 @@ for z in mech:
         "hardening_score": z["hardening_score"],
         "bug_classes_likely": classes,
         "description": desc,
-    })
-    if not skeleton and classes:
+    }
+    if z["id"] in failed_zones:
+        z_out["classification_failed"] = True
+    zones.append(z_out)
+    if not skeleton and classes and z["id"] not in failed_zones:
         subsystem = clean(name)
         cls_csv = ",".join(clean(x) for x in classes)
         files_csv = ",".join(clean(t) for t in z["scope_files"])
@@ -353,5 +391,8 @@ PY
 if [ -n "$SKELETON" ]; then
   echo "map-zones.sh: $COUNT zone(s) mapped (skeleton, unclassified) -> $OUT/zones.json" >&2
 else
-  echo "map-zones.sh: $COUNT zone(s) -> $OUT/zones.json + $OUT/scope.tsv (classified via $SRC_LABEL); feed scope.tsv to run-discovery.sh --scope" >&2
+  SUMMARY="map-zones.sh: $COUNT zone(s) -> $OUT/zones.json + $OUT/scope.tsv (classified via $SRC_LABEL); feed scope.tsv to run-discovery.sh --scope"
+  # #1707: surface a chrome/no-answer classification failure loudly in the summary, never a silent drop.
+  [ "${FAILED:-0}" -gt 0 ] && SUMMARY="$SUMMARY — $FAILED zone(s) FAILED classification (retried ${DF_AGENT_MAX_ATTEMPTS}x, still chrome; NOT hunted)"
+  echo "$SUMMARY" >&2
 fi

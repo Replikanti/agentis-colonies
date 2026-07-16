@@ -256,6 +256,116 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (h) #1707 SENTINEL VALIDATION + RETRY (substrate path, offline via a stub --agentis): a brief-writer reply
+#     that is TUI chrome (no BRIEF-BEGIN|/SKIP) is RETRIED. (a) chrome-then-BRIEF-BEGIN| ⇒ the real body is
+#     captured; (b) a legit bare SKIP passes on attempt 1 (no retry, no false-reject → mechanical fallback);
+#     (c) chrome-on-all ⇒ loud + COUNTED mechanical fallback (a softer stage, but never a silent degrade).
+# ----------------------------------------------------------------------------------------------------------
+# Fast offline stub through the --agentis seam (drives the SUBSTRATE path, NOT --fixture). dash-safe.
+STUB="$WORK/agentis-stub"
+cat > "$STUB" <<'STUBEOF'
+#!/bin/sh
+set -u
+cmd="${1:-}"
+case "$cmd" in
+  init) mkdir -p .agentis; exit 0 ;;
+  go)
+    key="${ZONE_ID:-z}"
+    # #1707: a legit bare SKIP for a designated zone — the valid "skip this zone" sentinel; passes attempt 1.
+    if [ -n "${STUB_SKIP_ZONE:-}" ] && [ "${STUB_SKIP_ZONE}" = "$key" ]; then
+      printf 'SKIP\n'
+      exit 0
+    fi
+    # #1707: emit chrome (no BRIEF-BEGIN|/SKIP sentinel) for the first STUB_CHROME_ATTEMPTS attempts.
+    if [ -n "${STUB_CHROME_CTR:-}" ]; then
+      ckey="$(printf '%s' "$key" | tr -cs 'A-Za-z0-9' '_')"
+      cf="$STUB_CHROME_CTR/$ckey"
+      cn=0; [ -f "$cf" ] && cn="$(cat "$cf")"
+      cn=$((cn + 1)); printf '%s' "$cn" > "$cf"
+      if [ "$cn" -le "${STUB_CHROME_ATTEMPTS:-0}" ]; then
+        printf 'high · /effort\n'
+        printf 'esc to interrupt\n'
+        exit 0
+      fi
+    fi
+    printf 'DARK-FACTORY:BRIEF-BEGIN|%s\n' "$key"
+    printf 'Probe C1 deposit accounting: break the share-price invariant with an external donate.\n'
+    printf 'DARK-FACTORY:BRIEF-END\n'
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+STUBEOF
+chmod +x "$STUB"
+
+note "6b) #1707: a brief-writer reply of chrome-then-BRIEF-BEGIN| is RETRIED and the real body captured ..."
+GB_CHROME="$WORK/out-gb-chrome"
+STUB_CHROME_CTR="$WORK/ctr-gb-chrome"; mkdir -p "$STUB_CHROME_CTR"
+DF_AGENT_MAX_ATTEMPTS=2 STUB_CHROME_CTR="$STUB_CHROME_CTR" STUB_CHROME_ATTEMPTS=1 \
+  "$GENBRIEFS" --zones "$ZM/zones.json" --scope "$ZM/scope.tsv" --out "$GB_CHROME" --repo "$REPO" --agentis "$STUB" \
+  >/dev/null 2>"$WORK/gb-chrome.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "gen-briefs.sh exits 0 on the chrome-then-BRIEF-BEGIN| substrate stub" \
+  || { bad "gen-briefs.sh exited $RC on the chrome stub"; sed 's/^/      /' "$WORK/gb-chrome.err" >&2; }
+if grep -q 'valid brief-writer sentinel on attempt 2/2' "$WORK/gb-chrome.err"; then
+  ok "the scraper logged a successful retry (valid on attempt 2/2)"
+else
+  bad "no retry was logged — the chrome reply was not actually retried"
+fi
+GB_CHROME_BRIEF="$GB_CHROME/briefs/brief_${ANCHOR_ID}.md"
+if [ -s "$GB_CHROME_BRIEF" ] && grep -qF 'share-price invariant with an external donate' "$GB_CHROME_BRIEF" \
+   && ! grep -q 'Mechanical fallback' "$GB_CHROME_BRIEF"; then
+  ok "the anchor brief carries the retried real body (not the mechanical fallback)"
+else
+  bad "the anchor brief did not capture the retried real body (fell back to mechanical?)"
+fi
+
+note "6c) #1707: a legit bare SKIP passes on attempt 1 (no retry, no false-reject, mechanical fallback) ..."
+GB_SKIP="$WORK/out-gb-skip"
+STUB_SKIP_ZONE="$ANCHOR_ID" DF_AGENT_MAX_ATTEMPTS=2 \
+  "$GENBRIEFS" --zones "$ZM/zones.json" --scope "$ZM/scope.tsv" --out "$GB_SKIP" --repo "$REPO" --agentis "$STUB" \
+  >/dev/null 2>"$WORK/gb-skip.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "gen-briefs.sh exits 0 with a bare-SKIP anchor zone" \
+  || { bad "gen-briefs.sh exited $RC on the SKIP stub"; sed 's/^/      /' "$WORK/gb-skip.err" >&2; }
+if grep -q 'valid brief-writer sentinel on attempt' "$WORK/gb-skip.err"; then
+  bad "a bare SKIP reply triggered a spurious retry (false-reject)"
+else
+  ok "the bare SKIP passed on attempt 1 — no spurious retry"
+fi
+if grep -q 'FAILED validation' "$WORK/gb-skip.err"; then
+  bad "a bare SKIP was wrongly counted as a FAILED validation"
+else
+  ok "the bare SKIP was NOT counted as a failure (a legit empty reply)"
+fi
+GB_SKIP_BRIEF="$GB_SKIP/briefs/brief_${ANCHOR_ID}.md"
+if [ -s "$GB_SKIP_BRIEF" ] && grep -q 'Mechanical fallback' "$GB_SKIP_BRIEF"; then
+  ok "the SKIP zone continues to the mechanical fallback exactly as before (no depth body, but a valid brief)"
+else
+  bad "the SKIP zone's brief is missing or did not take the mechanical fallback"
+fi
+
+note "6d) #1707: chrome on ALL attempts is a LOUD + COUNTED mechanical fallback (never a silent degrade) ..."
+GB_FAIL="$WORK/out-gb-fail"
+STUB_CHROME_CTR="$WORK/ctr-gb-fail"; mkdir -p "$STUB_CHROME_CTR"
+DF_AGENT_MAX_ATTEMPTS=2 STUB_CHROME_CTR="$STUB_CHROME_CTR" STUB_CHROME_ATTEMPTS=99 \
+  "$GENBRIEFS" --zones "$ZM/zones.json" --scope "$ZM/scope.tsv" --out "$GB_FAIL" --repo "$REPO" --agentis "$STUB" \
+  >/dev/null 2>"$WORK/gb-fail.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "gen-briefs.sh still exits 0 with all-chrome zones (mechanical fallback keeps the hunt alive)" \
+  || { bad "gen-briefs.sh exited $RC on the all-chrome stub"; sed 's/^/      /' "$WORK/gb-fail.err" >&2; }
+if grep -q 'FAILED validation' "$WORK/gb-fail.err"; then
+  ok "the summary loudly reports the FAILED brief-validation count (retried, still chrome; mechanical fallback)"
+else
+  bad "no loud FAILED-validation summary was logged for the all-chrome zones"
+fi
+GB_FAIL_BRIEF="$GB_FAIL/briefs/brief_${ANCHOR_ID}.md"
+if [ -s "$GB_FAIL_BRIEF" ] && grep -q 'Mechanical fallback' "$GB_FAIL_BRIEF"; then
+  ok "a brief is still emitted for each failed zone via the mechanical fallback (a softer stage, but counted)"
+else
+  bad "the all-chrome zone produced no mechanical-fallback brief"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # SECOND PART — substrate: source-guard brief-writer.ag always; run live via --backend mock when agentis on PATH.
 # ----------------------------------------------------------------------------------------------------------
 note "7) source-guarding auditor/agents/brief-writer.ag ..."

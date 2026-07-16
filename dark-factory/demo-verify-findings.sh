@@ -70,6 +70,21 @@ case "$cmd" in
   go)
     fn="${CAND_FILE_FN:-}"
     cls="${CAND_CLASS:-}"
+    # #1707: optional TUI-chrome injection — emit chrome (NO VERDICT| sentinel) for the first
+    # STUB_CHROME_ATTEMPTS attempts of each candidate (keyed by file:fn via STUB_CHROME_CTR), so the demo can
+    # prove run-refute.sh RETRIES past chrome and, when it never clears, marks the candidate ERRORED
+    # (UNASSESSED) rather than silently REFUTED. Unset STUB_CHROME_CTR leaves the main run untouched.
+    if [ -n "${STUB_CHROME_CTR:-}" ]; then
+      ckey="$(printf '%s' "$fn" | tr -cs 'A-Za-z0-9' '_')"
+      cf="$STUB_CHROME_CTR/$ckey"
+      cn=0; [ -f "$cf" ] && cn="$(cat "$cf")"
+      cn=$((cn + 1)); printf '%s' "$cn" > "$cf"
+      if [ "$cn" -le "${STUB_CHROME_ATTEMPTS:-0}" ]; then
+        printf 'high · /effort\n'
+        printf 'esc to interrupt\n'
+        exit 0
+      fi
+    fi
     case "$cls" in
       *refuted*|*REFUTED*) echo "VERDICT|REFUTED|$fn|$cls|a hostile read killed it" ;;
       *)                   echo "VERDICT|REAL|$fn|$cls|survived a hostile read" ;;
@@ -251,6 +266,76 @@ if grep -vE '^[[:space:]]*#' "$VERIFY" | grep -Eiq '(^|[^a-z])(curl|wget|submit)
   bad "verify-findings.sh invokes a network/submission verb on an executable line"
 else
   ok "verify-findings.sh has no network / no submission verb on any executable line (read-only, never submits)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (6) #1707 INHERITED REFUTE VALIDATION: verify-findings.sh has no `agentis go` of its own — it dispatches to
+#     run-refute.sh, which now validates the refuter reply carries a VERDICT| line and RETRIES on TUI chrome.
+#     (a) chrome-then-VERDICT| ⇒ the refuter is retried and the REAL verdict is captured (verified, not
+#     dropped); (b) chrome-on-ALL ⇒ the candidate surfaces as ERRORED-UNASSESSED (visible + distinguishable),
+#     NOT silently REFUTED/dropped — the whole bug this closes.
+# ----------------------------------------------------------------------------------------------------------
+# A one-candidate results.json referencing a code file that exists in $REPO and a class that is NOT refuted.
+CHROME_RES="$WORK/chrome-results.json"
+python3 - > "$CHROME_RES" <<'PY'
+import json
+data = {
+    "repo": "target", "backend": "mock", "jobs": 1,
+    "cells": [
+        {"subsystem": "vault deposits", "class": "C1",
+         "files": "contracts/Vault.sol",
+         "candidates": ["contracts/Vault.sol:deposit:12|C1|High|external depositor mints free shares|donate an asset to inflate the share price"],
+         "coordination": []},
+    ],
+    "totals": {"cells": 1, "candidates": 1, "steers": 0},
+}
+print(json.dumps(data, indent=2))
+PY
+
+note "6a) #1707: chrome-then-VERDICT| ⇒ run-refute.sh is retried and the REAL verdict is captured ..."
+CHROME_OK_OUT="$WORK/out-chrome-ok"
+STUB_CHROME_CTR="$WORK/ctr-vf-ok"; mkdir -p "$STUB_CHROME_CTR"
+DF_AGENT_MAX_ATTEMPTS=2 STUB_CHROME_CTR="$STUB_CHROME_CTR" STUB_CHROME_ATTEMPTS=1 \
+  "$VERIFY" --results "$CHROME_RES" --repo "$REPO" --out "$CHROME_OK_OUT" --gate refute --backend mock --agentis "$STUB" \
+  >"$WORK/vf-chrome-ok.out" 2>"$WORK/vf-chrome-ok.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "verify-findings.sh exits 0 with a chrome-then-VERDICT| candidate" \
+  || { bad "chrome-then-VERDICT| verify run exited $RC"; sed 's/^/      /' "$WORK/vf-chrome-ok.err" >&2; }
+if python3 - "$CHROME_OK_OUT/verified_findings.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["totals"]["verified"] == 1, "chrome-then-VERDICT| candidate not verified: %r" % d["totals"]["verified"]
+assert d["totals"].get("errored", 0) == 0, "chrome-then-VERDICT| candidate wrongly errored: %r" % d["totals"].get("errored")
+assert len(d["verified"]) == 1 and d["verified"][0]["verdict"] == "REAL", "the retried candidate was not captured as REAL"
+assert "Vault.sol" in d["verified"][0]["location"], "wrong candidate captured"
+PY
+then ok "the refuter was retried past chrome and the REAL verdict captured (verified == 1, errored == 0) — no chrome false-negative"
+else bad "chrome-then-VERDICT| candidate was not verified (retry did not recover the verdict)"
+fi
+
+note "6b) #1707: chrome-on-ALL ⇒ the candidate surfaces as ERRORED-UNASSESSED, NOT silently REFUTED/dropped ..."
+CHROME_FAIL_OUT="$WORK/out-chrome-fail"
+STUB_CHROME_CTR="$WORK/ctr-vf-fail"; mkdir -p "$STUB_CHROME_CTR"
+DF_AGENT_MAX_ATTEMPTS=2 STUB_CHROME_CTR="$STUB_CHROME_CTR" STUB_CHROME_ATTEMPTS=99 \
+  "$VERIFY" --results "$CHROME_RES" --repo "$REPO" --out "$CHROME_FAIL_OUT" --gate refute --backend mock --agentis "$STUB" \
+  >"$WORK/vf-chrome-fail.out" 2>"$WORK/vf-chrome-fail.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "verify-findings.sh still exits 0 with a chrome-on-all candidate" \
+  || { bad "chrome-on-all verify run exited $RC"; sed 's/^/      /' "$WORK/vf-chrome-fail.err" >&2; }
+if python3 - "$CHROME_FAIL_OUT/verified_findings.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["totals"]["verified"] == 0, "a chrome-on-all candidate was wrongly verified: %r" % d["totals"]["verified"]
+assert d["totals"].get("errored", 0) == 1, "chrome-on-all candidate not errored: %r" % d["totals"].get("errored")
+assert len(d["verified"]) == 0, "verified[] is not empty"
+errlocs = " ".join(e["location"] for e in d.get("errors", []))
+assert "Vault.sol" in errlocs, "the chrome-on-all candidate is not in errors[] (silently dropped?)"
+# it must NOT be a rigorous REFUTED: candidates - verified - errored == 0 (no candidate silently refuted)
+cand = d["totals"]["candidates"]; ver = d["totals"]["verified"]; err = d["totals"]["errored"]
+assert cand - ver - err == 0, "a chrome-on-all candidate was silently REFUTED (rigorous-refutation count != 0)"
+PY
+then ok "the chrome-on-all candidate is ERRORED-UNASSESSED (errored == 1, in errors[], NOT verified, NOT silently refuted)"
+else bad "chrome-on-all candidate mis-handled (verified, dropped, or silently refuted instead of errored)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------

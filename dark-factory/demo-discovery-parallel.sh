@@ -101,6 +101,25 @@ case "$cmd" in
       sleep "${STUB_SLEEP:-0.5}"
       rmdir "$marker" 2>/dev/null || true
     fi
+    # #1707: optional TUI-chrome injection — emit chrome (NO CANDIDATE|/SAFE sentinel) for the first
+    # STUB_CHROME_ATTEMPTS attempts of each cell (keyed by subsystem+class via STUB_CHROME_CTR), so the demo
+    # can prove the scraper RETRIES past chrome and, when it never clears, FAILS LOUDLY with a .novalid marker.
+    if [ -n "${STUB_CHROME_CTR:-}" ]; then
+      ckey="$(printf '%s' "${SUBSYSTEM:-s}_${HUNT_CLASS:-c}" | tr -cs 'A-Za-z0-9' '_')"
+      cf="$STUB_CHROME_CTR/$ckey"
+      cn=0; [ -f "$cf" ] && cn="$(cat "$cf")"
+      cn=$((cn + 1)); printf '%s' "$cn" > "$cf"
+      if [ "$cn" -le "${STUB_CHROME_ATTEMPTS:-0}" ]; then
+        printf 'high · /effort\n'
+        printf 'esc to interrupt\n'
+        exit 0
+      fi
+    fi
+    # #1707: optional bare-SAFE reply — the legit "rigorous clean" sentinel; must PASS on attempt 1.
+    if [ "${STUB_SAFE:-}" = "1" ]; then
+      printf 'SAFE\n'
+      exit 0
+    fi
     if [ "${STUB_WRAP:-}" = "1" ] && [ "${HUNT_CLASS:-}" = "C1" ]; then
       # #1705: synthetic PTY-wrapped record — the CANDIDATE| line's exploit/poc_sketch prose is split
       # across several continuation lines carrying NO CANDIDATE|/BLACKBOARD- prefix and breaking
@@ -246,11 +265,16 @@ PY
   RC=$?
   [ "$RC" -eq 0 ] && ok "run-discovery.sh --jobs 3 with a failing cell still exits 0 (degrades, not aborts)" \
     || { bad "the run aborted on a failing cell (exit $RC)"; sed 's/^/      /' "$WORK/degrade.err" >&2; }
-  if grep -q '| C1 |' "$DEG_OUT/discovery-report.md" && grep -q '| C6 |' "$DEG_OUT/discovery-report.md" \
-     && grep -q '| C11 |' "$DEG_OUT/discovery-report.md" && ! grep -q '| C10 |' "$DEG_OUT/discovery-report.md"; then
-    ok "the 3 healthy cells were scraped; only the forced-failing C10 cell surfaced no candidate"
+  # #1707: a cell whose stub EXITS NON-ZERO produces no valid CANDIDATE|/SAFE sentinel, so it is RETRIED and
+  # then surfaces as a DISTINCT FAILED row (no longer silently dropped). The 3 healthy cells each still
+  # surface their CANDIDATE (3 candidate rows), and the failing C10 cell is a FAILED row, not a candidate.
+  DEG_CANDS="$(grep -c 'stub external exploit path' "$DEG_OUT/discovery-report.md" 2>/dev/null || printf '0')"
+  if [ "$DEG_CANDS" -eq 3 ] && grep -q '| C1 |' "$DEG_OUT/discovery-report.md" \
+     && grep -q '| C6 |' "$DEG_OUT/discovery-report.md" && grep -q '| C11 |' "$DEG_OUT/discovery-report.md" \
+     && grep -qF 'FAILED — no CANDIDATE|/SAFE reply' "$DEG_OUT/discovery-report.md"; then
+    ok "the 3 healthy cells were scraped as candidates; the forced-failing C10 cell surfaced a distinct FAILED row (#1707), not a silent drop"
   else
-    bad "degrade scraping is wrong (healthy cells missing or the failing cell surfaced a candidate)"
+    bad "degrade scraping is wrong (healthy candidate count $DEG_CANDS != 3, or no FAILED row for the failing cell)"
   fi
 fi
 
@@ -302,6 +326,134 @@ assert "vm.assertGt" in body, "poc_sketch field truncated in discovery-results.j
 PY
 then ok "discovery-results.json's C1 candidate is a single, fully-joined record (5 fields, exploit+poc intact)"
 else bad "discovery-results.json's C1 candidate is malformed / truncated / split into extra candidates"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (8) #1707 SENTINEL VALIDATION + RETRY: a cell whose reply is TUI chrome (no CANDIDATE|/SAFE) is RETRIED,
+#     not silently scraped as a rigorous negative. (a) chrome-then-CANDIDATE recovers; (b) same under
+#     --jobs > 1; (c) a legit bare SAFE passes on attempt 1 (no false-reject); (d) chrome-on-all FAILS LOUDLY.
+# ----------------------------------------------------------------------------------------------------------
+note "8) #1707: a cell that emits chrome then a valid CANDIDATE| is RETRIED and captured (serial) ..."
+CHROME_OUT="$WORK/out-chrome-serial"
+STUB_CHROME_CTR="$WORK/ctr-chrome-serial"; mkdir -p "$STUB_CHROME_CTR"
+DF_AGENT_MAX_ATTEMPTS=2 STUB_CHROME_CTR="$STUB_CHROME_CTR" STUB_CHROME_ATTEMPTS=1 \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$CHROME_OUT" --jobs 1 >/dev/null 2>"$WORK/chrome-serial.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "run-discovery.sh --jobs 1 with chrome-then-CANDIDATE exits 0" \
+  || { bad "chrome-then-CANDIDATE serial run exited $RC"; sed 's/^/      /' "$WORK/chrome-serial.err" >&2; }
+if grep -q '| C1 |' "$CHROME_OUT/discovery-report.md" && grep -q '| C6 |' "$CHROME_OUT/discovery-report.md" \
+   && grep -q '| C10 |' "$CHROME_OUT/discovery-report.md" && grep -q '| C11 |' "$CHROME_OUT/discovery-report.md"; then
+  ok "all 4 cells surfaced a CANDIDATE after the retry (no chrome false-negative)"
+else
+  bad "a cell was lost to chrome (retry did not recover the CANDIDATE)"
+fi
+if grep -q 'valid hunter sentinel on attempt 2/2' "$WORK/chrome-serial.err"; then
+  ok "the scraper logged a successful retry (valid on attempt 2/2)"
+else
+  bad "no retry was logged — the chrome reply was not actually retried"
+fi
+if python3 - "$CHROME_OUT/discovery-results.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["totals"]["failed"] == 0, "a retried-then-valid run must have 0 failed cells: %r" % d["totals"]["failed"]
+PY
+then ok "discovery-results.json totals.failed == 0 (all cells recovered)"
+else bad "totals.failed != 0 despite every cell recovering after retry"
+fi
+
+if [ "$PAR_OK" -ne 1 ]; then
+  skip "8b) chrome-then-CANDIDATE under --jobs > 1: the bash running run-discovery.sh lacks 'wait -n'"
+else
+  note "8b) #1707: chrome-then-CANDIDATE is retried + captured under --jobs 3 (parallel) too ..."
+  CHROME_PAR="$WORK/out-chrome-par"
+  STUB_CHROME_CTR="$WORK/ctr-chrome-par"; mkdir -p "$STUB_CHROME_CTR"
+  DF_AGENT_MAX_ATTEMPTS=2 STUB_CHROME_CTR="$STUB_CHROME_CTR" STUB_CHROME_ATTEMPTS=1 STUB_SLEEP=0 \
+    "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+    --out "$CHROME_PAR" --jobs 3 >/dev/null 2>"$WORK/chrome-par.err"
+  RC=$?
+  [ "$RC" -eq 0 ] && ok "run-discovery.sh --jobs 3 with chrome-then-CANDIDATE exits 0" \
+    || { bad "chrome-then-CANDIDATE parallel run exited $RC"; sed 's/^/      /' "$WORK/chrome-par.err" >&2; }
+  grep '| Medium' "$CHROME_PAR/discovery-report.md" | sort > "$WORK/rows.chrome-par"
+  if cmp -s "$WORK/rows.serial" "$WORK/rows.chrome-par"; then
+    ok "the parallel chrome-retry candidate rows equal the serial golden rows (retry composes with --jobs > 1)"
+  else
+    bad "parallel chrome-retry diverged from the serial candidate set:"
+    diff "$WORK/rows.serial" "$WORK/rows.chrome-par" | sed 's/^/      /' >&2
+  fi
+fi
+
+note "9) #1707: a legit bare SAFE reply PASSES on attempt 1 (no false-reject, not FAILED) ..."
+SAFE_OUT="$WORK/out-safe"
+STUB_CHROME_CTR="$WORK/ctr-safe"; mkdir -p "$STUB_CHROME_CTR"
+DF_AGENT_MAX_ATTEMPTS=2 STUB_SAFE=1 STUB_CHROME_CTR="$STUB_CHROME_CTR" STUB_CHROME_ATTEMPTS=0 \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$SAFE_OUT" --jobs 1 >/dev/null 2>"$WORK/safe.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "run-discovery.sh with an all-SAFE hunter exits 0" \
+  || { bad "SAFE run exited $RC"; sed 's/^/      /' "$WORK/safe.err" >&2; }
+if grep -q 'valid hunter sentinel on attempt' "$WORK/safe.err"; then
+  bad "a bare SAFE reply triggered a spurious retry (false-reject)"
+else
+  ok "a bare SAFE reply passed on attempt 1 — no spurious retry"
+fi
+if [ "$(cat "$WORK/ctr-safe/vault_deposits_C1" 2>/dev/null)" = "1" ]; then
+  ok "the SAFE cell ran exactly once (counter == 1 — no retry)"
+else
+  bad "the SAFE cell ran more than once (counter != 1) — false-reject"
+fi
+if python3 - "$SAFE_OUT/discovery-results.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["totals"]["failed"] == 0, "a clean SAFE run must have 0 failed cells: %r" % d["totals"]["failed"]
+assert d["totals"]["candidates"] == 0, "SAFE cells surfaced candidates: %r" % d["totals"]["candidates"]
+PY
+then ok "totals.failed == 0 and totals.candidates == 0 for the all-SAFE run"
+else bad "SAFE run totals wrong (failed != 0 or candidates != 0)"
+fi
+if grep -q 'rigorous NEGATIVE' "$SAFE_OUT/discovery-report.md"; then
+  ok "the all-SAFE run prints the rigorous NEGATIVE line (a clean result is valid)"
+else
+  bad "the all-SAFE clean run did not print the rigorous NEGATIVE line"
+fi
+
+note "10) #1707: chrome on ALL attempts FAILS LOUDLY (.novalid marker + FAILED row, not a silent 0) ..."
+FAIL_OUT="$WORK/out-chrome-fail"
+STUB_CHROME_CTR="$WORK/ctr-chrome-fail"; mkdir -p "$STUB_CHROME_CTR"
+DF_AGENT_MAX_ATTEMPTS=2 STUB_CHROME_CTR="$STUB_CHROME_CTR" STUB_CHROME_ATTEMPTS=99 \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$FAIL_OUT" --jobs 1 >/dev/null 2>"$WORK/chrome-fail.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "run-discovery.sh with all-chrome cells still exits 0 (marker/counters carry visibility)" \
+  || { bad "all-chrome run exited $RC"; sed 's/^/      /' "$WORK/chrome-fail.err" >&2; }
+NNV="$(ls "$FAIL_OUT/run/"*.novalid 2>/dev/null | wc -l | tr -d ' ')"
+[ "$NNV" -ge 4 ] && ok "each of the 4 cells dropped a .novalid marker ($NNV markers)" \
+  || bad "expected >=4 .novalid markers, found $NNV"
+if grep -qF 'FAILED — no CANDIDATE|/SAFE reply' "$FAIL_OUT/discovery-report.md"; then
+  ok "the report carries a distinct FAILED row for each unassessed cell"
+else
+  bad "no FAILED row emitted for the all-chrome cells"
+fi
+if grep -q 'rigorous NEGATIVE' "$FAIL_OUT/discovery-report.md"; then
+  bad "an all-chrome (unassessed) run wrongly printed a rigorous NEGATIVE (a silent clean result)"
+else
+  ok "no rigorous NEGATIVE line — an unassessed run is NOT a clean result"
+fi
+if python3 - "$FAIL_OUT/discovery-results.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["totals"]["failed"] == 4, "expected 4 failed cells: %r" % d["totals"]["failed"]
+assert d["totals"]["candidates"] == 0, "an all-chrome run surfaced candidates: %r" % d["totals"]["candidates"]
+failed_cells = [c for c in d["cells"] if c.get("status") == "failed"]
+assert len(failed_cells) == 4, "expected 4 status=failed cells, got %d" % len(failed_cells)
+PY
+then ok "discovery-results.json totals.failed == 4, every failed cell carries status=failed, 0 candidates"
+else bad "discovery-results.json failed-cell accounting is wrong"
+fi
+if grep -q 'no valid hunter sentinel after 2 attempts' "$WORK/chrome-fail.err"; then
+  ok "the loud FAILED line was logged to stderr (not a silent 0)"
+else
+  bad "no loud FAILED line logged for the all-chrome cells"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
