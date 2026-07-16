@@ -99,7 +99,9 @@ fi
   echo "llm.backend = $BACKEND"
   # 600s: a hostile cross-function trace of a candidate is the same order of cost as a discovery read.
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = 600000"; }
-  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"; }
+  # idle_ms 12000 (> native 4000 default): 4000 fires IDLE during claude's think-pause on a large prompt
+  # and scrapes the pre-answer TUI footer as a chrome "reply" (#1707). A/B-proven: 4000 -> chrome, >=8000 -> real reply.
+  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"; }
   echo "trace.level = normal"
   # The refuter reads the candidate code + brief through exec sh; pass through its whole env contract.
   echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH"
