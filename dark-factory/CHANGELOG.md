@@ -15,6 +15,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+
+## [0.4.3] - 2026-07-16
+
+**Requires:** agentis >= `1.22.7`
+
+### Fixed
 - **`map-zones.sh`'s big-contract function-slice now prioritizes value-moving/recovery
   functions over declaration order** (#1701). `fn_names(f)[:8]` used to truncate purely
   by file-declaration order, so any contract whose first 8 declared functions are
@@ -2580,7 +2586,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   with a `pending_human_review` marker. The colony NEVER auto-posts to a
   bounty platform — submission is always an explicit human action.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.2...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.3...HEAD
+[0.4.3]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.2...dark-factory-v0.4.3
 [0.4.2]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.1...dark-factory-v0.4.2
 [0.4.1]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.0...dark-factory-v0.4.1
 [0.4.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.3.0...dark-factory-v0.4.0
