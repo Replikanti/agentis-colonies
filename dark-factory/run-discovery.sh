@@ -212,6 +212,38 @@ fi
 # _json_str <s> — emit <s> as a JSON string literal (escape backslash + double-quote; cell output is single-line).
 _json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
 
+# _join_wrapped_candidates <log> — reconstruct one logical line per `CANDIDATE|...` record from a hunt log,
+# undoing flat-cyborg's PTY-capture line wrap (#1705). A `CANDIDATE|file:fn:line|class|severity|exploit|poc`
+# record's exploit/poc_sketch prose routinely exceeds one physical line; the raw log then carries the tail
+# as continuation lines with no `CANDIDATE|` prefix, which a bare `grep 'CANDIDATE|'` silently drops. Here a
+# `CANDIDATE|` line opens/flushes a record; a `BLACKBOARD-*` line or a blank line closes the current record
+# without starting a new one (these are the only meaningful boundary tokens in a hunt log — see hunter.ag's
+# own framing); any other line while a record is open is a continuation, appended with a single space
+# (terminal wrap breaks on column width, not on meaningful newlines — a stray space is a cosmetic artifact,
+# not data loss). Emits one reconstructed line per record, in log order.
+_join_wrapped_candidates() {
+  jwc_log="$1"
+  awk '
+    /^[[:space:]]*CANDIDATE\|/ {
+      if (rec != "") print rec
+      rec = $0
+      next
+    }
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*$/ {
+      if (rec != "") { print rec; rec = "" }
+      next
+    }
+    {
+      if (rec != "") {
+        line = $0
+        sub(/^[[:space:]]+/, "", line)
+        rec = rec " " line
+      }
+    }
+    END { if (rec != "") print rec }
+  ' "$jwc_log"
+}
+
 # _accumulate_cell <subsys> <cls> <files> <log> — append ONE JSON object for this cell to $CELLS_JSONL
 # (additive; feeds discovery-results.json). Never touches $REPORT.
 _accumulate_cell() {
@@ -222,7 +254,7 @@ _accumulate_cell() {
     ac_c="$(printf '%s' "$ac_line" | sed 's/^.*\(CANDIDATE|\)/\1/; s/^CANDIDATE|//')"
     ac_c="$(_json_str "$ac_c")"
     if [ -z "$ac_cands" ]; then ac_cands="$ac_c"; else ac_cands="$ac_cands,$ac_c"; fi
-  done < <(grep -v '^BLACKBOARD-' "$ac_log" 2>/dev/null | grep 'CANDIDATE|' || true)
+  done < <(_join_wrapped_candidates "$ac_log" 2>/dev/null || true)
   ac_coord=""
   if grep -q '^BLACKBOARD-FOCUS|' "$ac_log" 2>/dev/null; then
     ac_f="$(grep '^BLACKBOARD-FOCUS|' "$ac_log" | head -1 | sed 's/^BLACKBOARD-FOCUS|//')"
@@ -275,7 +307,7 @@ scrape_cell_log() {
       BODY="$(printf '%s' "$CAND" | sed 's/^CANDIDATE|//; s/|/ \/ /g')"
       printf '| %s | %s | %s |\n' "$sc_subsys" "$sc_cls" "$BODY" >> "$REPORT"
       CANDIDATES=$((CANDIDATES + 1))
-    done < <(grep -v '^BLACKBOARD-' "$sc_log" | grep 'CANDIDATE|')
+    done < <(_join_wrapped_candidates "$sc_log")
     if grep -q '^BLACKBOARD-POST|' "$sc_log"; then
       echo "run-discovery.sh:   ↳ posted a lead to the blackboard for later cells to focus on" >&2
     fi
