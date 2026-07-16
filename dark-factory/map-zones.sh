@@ -250,7 +250,7 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
       # prompt and scrapes the pre-answer TUI footer ("high · /effort") as a chrome "reply" — the whole
       # zone/cell then fails validation (#1707). A/B-proven: idle 4000 -> chrome, idle >=8000 -> real
       # ZONE| line (same model, same prompt). 12000 matches flat-cyborg's "agentic runs need 12000+".
-      echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"
+      echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = opus"
     fi
     echo "trace.level = normal"
     echo "exec.env_passthrough = TARGET_DIR,ZONE_ID,ZONE_FILES,TAXONOMY,SLICER"
