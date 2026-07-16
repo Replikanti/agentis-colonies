@@ -257,7 +257,20 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
     echo "exec.default_timeout_ms = 30000"
     echo "learning.enabled = true"
     echo "experience.enabled = true"
+    # #1711: knowledge store must be enabled for zone-mapper.ag's recommend()/query_knowledge("hunt-fitness")
+    # to read the bench-fed real-bug fitness (also fixes the latent learning.enabled-without-knowledge.enabled
+    # gap). Harmless when no fitness is imported: query_knowledge returns empty -> the reorder is an identity.
+    echo "knowledge.enabled = true"
   } > "$RUN/.agentis/config"
+  # #1711 LEARN->ACT bridge: if the operator points HUNT_FITNESS_JSON at a bench-to-knowledge.sh output, import
+  # it into THIS run's store (which was just wiped + re-init'd above) BEFORE the zone loop, so every zone-mapper
+  # run sees the learned real-bug fitness. --replace is mandatory (re-import without it accumulates samples).
+  # Unset/unreadable -> skipped -> today's behaviour exactly. Not an exec.env_passthrough entry: this is a
+  # shell-level env read here, not an `.ag` getenv().
+  if [ -n "${HUNT_FITNESS_JSON:-}" ] && [ -r "${HUNT_FITNESS_JSON:-}" ]; then
+    ( cd "$RUN" && "$AGENTIS" knowledge import "$HUNT_FITNESS_JSON" --replace ) \
+      || echo "map-zones.sh: hunt-fitness import failed (continuing)" >&2
+  fi
   # --grant-pii: TARGET_DIR carries the target's contract source, which routinely embeds hex
   # addresses/hashes that trip the PII heuristic; input is benign public contract text. Without it,
   # prompt() gets blocked, the zone stays unclassified, and the whole DISCOVERY hunt stalls (#1690,

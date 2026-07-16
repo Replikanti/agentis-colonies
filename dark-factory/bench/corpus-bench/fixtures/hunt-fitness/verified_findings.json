@@ -1,0 +1,57 @@
+{
+  "repo": "synthetic-fixture",
+  "gate": "hunt-fitness-selftest",
+  "verified": [
+    {
+      "location": "contracts/Vault.sol:deposit:20",
+      "file": "contracts/Vault.sol",
+      "class": "class=C6",
+      "exploit": "deposit adjusts the amount before it moves, rounding in the protocol favor",
+      "poc_sketch": "deposit -> skim accumulated balance"
+    },
+    {
+      "location": "contracts/Vault.sol:mint:44",
+      "file": "contracts/Vault.sol",
+      "class": "C6",
+      "exploit": "mint floors division so the caller loses a wei",
+      "poc_sketch": "mint -> systematic one-wei bias"
+    },
+    {
+      "location": "contracts/Vault.sol:accrue:60",
+      "file": "contracts/Vault.sol",
+      "class": "class=C6",
+      "exploit": "accrue recomputes an index (no ground-truth bug here — noise)",
+      "poc_sketch": "accrue -> no exploit"
+    },
+    {
+      "location": "contracts/Router.sol:swap:80",
+      "file": "contracts/Router.sol",
+      "class": "class=C3",
+      "exploit": "swap trusts an external quote across the integration seam",
+      "poc_sketch": "swap -> seam mismatch"
+    },
+    {
+      "location": "contracts/Lib.sol:helper:10",
+      "file": "contracts/Lib.sol",
+      "class": "C3",
+      "exploit": "helper is a pure utility (no ground-truth bug — noise)",
+      "poc_sketch": "helper -> no exploit"
+    },
+    {
+      "location": "contracts/Lib.sol:util:12",
+      "file": "contracts/Lib.sol",
+      "class": "class=C3",
+      "exploit": "util is a pure utility (no ground-truth bug — noise)",
+      "poc_sketch": "util -> no exploit"
+    },
+    {
+      "location": "contracts/Lib.sol:noop:14",
+      "file": "contracts/Lib.sol",
+      "class": "C3",
+      "exploit": "noop does nothing (no ground-truth bug — noise)",
+      "poc_sketch": "noop -> no exploit"
+    }
+  ],
+  "errors": [],
+  "totals": {"verified": 7}
+}

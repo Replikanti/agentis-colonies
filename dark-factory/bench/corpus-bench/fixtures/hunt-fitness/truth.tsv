@@ -1,0 +1,3 @@
+H-1	High	2	Deposit accounting drains the vault in Vault.sol	Deposit accounting drains the vault -- Vault.sol deposit() adjusts the amount before it moves, rounding in the protocol favor and letting an attacker skim accumulated balances.
+M-1	Medium	5	Mint rounding in Vault.sol	Mint rounding -- Vault.sol mint() floors division on every call so the caller systematically loses a wei per mint.
+M-2	Medium	6	Swap seam mismatch in Router.sol	Swap seam -- Router.sol swap() trusts an external quote without validating the integration seam.

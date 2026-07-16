@@ -11,13 +11,21 @@
 # This is a BENCH scorer only. It does NOT touch novelty-gate.sh (the LIVE hunting-pipeline boundary/novelty
 # gate, frozen for the #1698/#1699 re-measurement) or extract-gt.sh (truth.tsv schema unchanged).
 #
-# Usage: score-match.py <truth.tsv> <verified_findings.json> [--min-overlap N]
+# Usage: score-match.py <truth.tsv> <verified_findings.json> [--min-overlap N] [--per-lead]
 #   truth.tsv           extract-gt.sh output: sev_id \t severity \t rarity \t title \t signature (per row).
 #   verified_findings.json  run-zone-hunt.sh verify output: {"verified": [ {location, file, ...}, ... ]}.
 #   --min-overlap N     ONLY governs the location-unavailable fallback (a lead with no parseable function).
 #                       Location-resolvable leads are threshold-INDEPENDENT; N never affects them. Default 2.
+#   --per-lead          ADDITIVE (default output byte-identical without it): after the normal output, append
+#                       one `LEAD\t<class>\t<HIT|MISS>` line per verified lead — HIT when that lead matched a
+#                       real GT row, MISS otherwise. This is per-lead REAL-BUG PRECISION material for the
+#                       bench->knowledge fitness feeder (bench-to-knowledge.sh, issue #1711): a class's HITs
+#                       are its leads that hit ground truth, its MISSes are unmatched noise. The lead's `class`
+#                       field is NORMALIZED (a leading `class=` prefix is stripped; empty/missing -> `unknown`)
+#                       so the `class=C3` vs `C3` inconsistency in verified_findings.json collapses to one key.
 # Output (stdout): one `<sev_id>\t<HIT|MISS>` line per truth row (input order), then a trailer line
-#   `LEADS\t<verified_n>\t<matched_leads>` (verified lead count; leads matching >=1 truth row).
+#   `LEADS\t<verified_n>\t<matched_leads>` (verified lead count; leads matching >=1 truth row). With
+#   `--per-lead`, one `LEAD\t<class>\t<HIT|MISS>` line per verified lead follows the trailer.
 # Exit: 0 always on a well-formed run; 2 bad args; 3 unreadable/malformed input.
 import sys
 import os
@@ -78,6 +86,16 @@ def lead_text(lead):
     )
 
 
+def normalized_class(lead):
+    """Uniform bug-class key for a lead (--per-lead only). verified_findings.json mixes `class=C3` and `C3`;
+    strip a leading `class=` and surrounding whitespace, and map an empty/missing class to `unknown` so the
+    fitness feeder aggregates one key per class regardless of the upstream formatting inconsistency."""
+    raw = str(lead.get("class", "") or "").strip()
+    if raw.startswith("class="):
+        raw = raw[len("class="):].strip()
+    return raw if raw else "unknown"
+
+
 def lead_matches_row(basename, function, ltokens, signature, min_overlap):
     sig = signature.lower()
     file_ok = bool(basename) and basename in sig  # basename carries `.sol`, so this is inherently anchored
@@ -99,6 +117,7 @@ def main(argv):
     truth_path = None
     verified_path = None
     min_overlap = 2
+    per_lead = False
     i = 1
     while i < len(argv):
         a = argv[i]
@@ -110,6 +129,9 @@ def main(argv):
             except ValueError:
                 die(2, "--min-overlap must be an integer")
             i += 2
+        elif a == "--per-lead":
+            per_lead = True
+            i += 1
         elif a in ("-h", "--help"):
             sys.stdout.write(__doc__ or "")
             return 0
@@ -149,12 +171,14 @@ def main(argv):
     leads = data.get("verified", []) if isinstance(data, dict) else []
     # Pre-resolve each lead once (location + fallback tokens) so the O(rows x leads) loop stays cheap.
     resolved = []
+    lead_class = []  # parallel to `resolved`; normalized bug-class key per lead (--per-lead only)
     for lead in leads:
         if not isinstance(lead, dict):
             continue
         basename, function = lead_location(lead)
         ltokens = technical_tokens(lead_text(lead)) if not function else set()
         resolved.append((basename, function, ltokens))
+        lead_class.append(normalized_class(lead))
 
     matched_leads = 0
     lead_hit = [False] * len(resolved)
@@ -170,6 +194,12 @@ def main(argv):
     for ri, (sev_id, _signature) in enumerate(rows):
         out.append(f"{sev_id}\t{'HIT' if row_hit[ri] else 'MISS'}")
     out.append(f"LEADS\t{len(resolved)}\t{matched_leads}")
+    # ADDITIVE per-lead real-bug precision material (issue #1711): only appended under --per-lead so the
+    # default output stays byte-identical for run-corpus-bench.sh --self-test. A lead is a HIT when it matched
+    # a real GT row (lead_hit[li]); MISS = unmatched noise. Class is the normalized key.
+    if per_lead:
+        for li in range(len(resolved)):
+            out.append(f"LEAD\t{lead_class[li]}\t{'HIT' if lead_hit[li] else 'MISS'}")
     sys.stdout.write("\n".join(out) + "\n")
     return 0
 
