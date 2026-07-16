@@ -1,0 +1,106 @@
+cb 30000;
+// reorder-harness.ag — a TINY test harness for the #1711 learned-real-bug fitness reorder. It DUPLICATES
+// zone-mapper.ag's `query_knowledge("hunt-fitness")` + class-reorder logic (per this codebase's explicit
+// per-agent-copy convention — .ag has no shared-module import) on a HARDCODED class CSV and prints the result,
+// so demo-hunt-fitness.sh can prove the ordering reflects the imported fitness AND changes when the fitness
+// changes, WITHOUT needing a real ZONE| line (the mock backend never produces one). It lives OUTSIDE any
+// `<colony>/agents/` dir so colony-lint does not treat it as a federation agent; it has no `exec sh`.
+// The demo's source-guard asserts BOTH this harness and the real agent call `query_knowledge("hunt-fitness"`,
+// keeping the copy in sync. Requires learning.enabled + experience.enabled + knowledge.enabled in the store.
+
+// --- trim (copied from zone-mapper.ag; .ag has no trim builtin) ---
+fn is_ws(c: string) -> bool {
+    if c == " " { return true; }
+    if c == "\t" { return true; }
+    if c == "\r" { return true; }
+    if c == "\n" { return true; }
+    return false;
+}
+fn first_nonws(s: string, i: int, n: int) -> int {
+    if i >= n { return n; }
+    if is_ws(substring(s, i, i + 1)) { return first_nonws(s, i + 1, n); }
+    return i;
+}
+fn last_nonws(s: string, i: int) -> int {
+    if i < 0 { return -1; }
+    if is_ws(substring(s, i, i + 1)) { return last_nonws(s, i - 1); }
+    return i;
+}
+fn trim(s: string) -> string {
+    let n = len(s);
+    if n == 0 { return ""; }
+    let startIdx = first_nonws(s, 0, n);
+    if startIdx >= n { return ""; }
+    let endIdx = last_nonws(s, n - 1);
+    if endIdx < startIdx { return ""; }
+    return substring(s, startIdx, endIdx + 1);
+}
+
+// --- fitness reorder (copied from zone-mapper.ag::apply_fitness_reorder + helpers) ---
+fn rate_of(rows: list, cls: string) -> float {
+    return reduce(rows, |acc: float, row: map| -> float {
+        let cond = to_string(get(row, "condition"));
+        let at = index_of(cond, "class ");
+        if at < 0 { return acc; }
+        let rc = trim(substring(cond, at + 6, len(cond)));
+        if rc == cls {
+            let sr = get(row, "success_rate");
+            if sr > acc { return sr; }
+        }
+        return acc;
+    }, 0.0 - 1.0);
+}
+fn csv_classes(csv: string) -> list {
+    return reduce(regex_split(",", csv), |acc: list, c: string| -> list {
+        let t = trim(c);
+        if len(t) == 0 { return acc; }
+        return push(acc, t);
+    }, []);
+}
+fn with_fitness(rows: list, classes: list) -> list {
+    return filter(classes, |c: string| -> bool { return rate_of(rows, c) > (0.0 - 1.0); });
+}
+fn without_fitness(rows: list, classes: list) -> list {
+    return filter(classes, |c: string| -> bool { return rate_of(rows, c) <= (0.0 - 1.0); });
+}
+fn argmax_rate(rows: list, classes: list, i: int, bi: int, br: float) -> int {
+    if i >= len(classes) { return bi; }
+    let r = rate_of(rows, get(classes, i));
+    if r > br { return argmax_rate(rows, classes, i + 1, i, r); }
+    return argmax_rate(rows, classes, i + 1, bi, br);
+}
+fn drop_at(classes: list, k: int, i: int, acc: list) -> list {
+    if i >= len(classes) { return acc; }
+    if i == k { return drop_at(classes, k, i + 1, acc); }
+    return drop_at(classes, k, i + 1, push(acc, get(classes, i)));
+}
+fn sel_sort(rows: list, classes: list) -> list {
+    if len(classes) == 0 { return classes; }
+    let bi = argmax_rate(rows, classes, 0, 0, 0.0 - 2.0);
+    let best = get(classes, bi);
+    let rest = drop_at(classes, bi, 0, []);
+    let sortedRest = sel_sort(rows, rest);
+    return reduce(sortedRest, |a: list, x: string| -> list { return push(a, x); }, push([], best));
+}
+fn join_csv(items: list) -> string {
+    return reduce(items, |acc: string, x: string| -> string {
+        if len(acc) == 0 { return x; }
+        return acc + "," + x;
+    }, "");
+}
+fn apply_fitness_reorder(classesCsv: string) -> string {
+    let rows = query_knowledge("hunt-fitness", 64);
+    if len(rows) == 0 { return classesCsv; }
+    let classes = csv_classes(classesCsv);
+    let withF = with_fitness(rows, classes);
+    if len(withF) == 0 { return classesCsv; }
+    let ordered = sel_sort(rows, withF);
+    let noF = without_fitness(rows, classes);
+    let all = reduce(noF, |a: list, x: string| -> list { return push(a, x); }, ordered);
+    return join_csv(all);
+}
+
+// Hardcoded input CSV: the demo re-imports different fitness between runs and asserts the reordered output
+// tracks it (C6-high -> C6 first; flipped C3-high -> C3 first). C15 has no fitness entry -> always trails.
+let input = "C3,C6,C15";
+print("REORDER|" + input + "|" + apply_fitness_reorder(input));

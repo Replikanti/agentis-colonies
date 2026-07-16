@@ -270,13 +270,121 @@ fn apply_index_overwrite_backstop(classesCsv: string, code: string) -> string {
 // #1663/#1664 whitespace-tolerant last-line scrape), so the appended line is picked up with zero changes to
 // the shell side. All four classes are folded into ONE rebuilt trailing line (not one appended line per
 // class) so that single `tail -1` scrape stays correct.
+
+// --- #1711 learned-real-bug fitness reorder (the ACT half of the corpus-bench -> hunter feedback loop) -----
+// The bench (bench-to-knowledge.sh) imports per-class REAL-BUG precision as agentis `hunt-fitness` knowledge;
+// this agent CONSUMES it here to reorder a zone's class CSV so historically-real-bug classes hunt FIRST. That
+// order flows through map-zones.sh's `tail -1` ZONE| scrape -> scope.tsv -> run-discovery.sh's per-cell fan-out
+// in CSV order, seeding the #1001 blackboard for siblings with the highest-precision class first. NOTE: this is
+// a deliberate IMPORTED-KNOWLEDGE channel (recommend/query_knowledge("hunt-fitness") reading bench-fed rows),
+// NOT an in-agent learn->recommend loop — the agent's own learn() topic stays "zone-map"; the corrected signal
+// lives in the separate, inspectable knowledge store, never entangled with hunter's local "surfaced=success".
+// Pure `.ag`, no `exec sh`. When no hunt-fitness knowledge is imported (query_knowledge empty) OR none of the
+// zone's classes carry a fitness entry, every function below is an IDENTITY on the class CSV — byte-identical
+// to today, so the reorder only ever changes behaviour once the bench has taught it something.
+
+// success_rate (real-bug precision) for `cls` among the knowledge rows; -1.0 when the class has no entry.
+fn rate_of(rows: list, cls: string) -> float {
+    return reduce(rows, |acc: float, row: map| -> float {
+        let cond = to_string(get(row, "condition"));   // entry condition is "class <CLS>"
+        let at = index_of(cond, "class ");
+        if at < 0 { return acc; }
+        let rc = trim(substring(cond, at + 6, len(cond)));
+        if rc == cls {
+            let sr = get(row, "success_rate");
+            if sr > acc { return sr; }
+        }
+        return acc;
+    }, 0.0 - 1.0);
+}
+
+// Trimmed, non-empty class ids from a CSV, ORIGINAL order preserved (mirrors class_has's split idiom).
+fn csv_classes(csv: string) -> list {
+    return reduce(regex_split(",", csv), |acc: list, c: string| -> list {
+        let t = trim(c);
+        if len(t) == 0 { return acc; }
+        return push(acc, t);
+    }, []);
+}
+
+// Partition helpers: a class HAS fitness when rate_of > -1.0 (a real entry, incl. a legitimate 0.0-precision
+// one); it lacks fitness when rate_of <= -1.0 (the rate_of sentinel). Both preserve original CSV order.
+fn with_fitness(rows: list, classes: list) -> list {
+    return filter(classes, |c: string| -> bool { return rate_of(rows, c) > (0.0 - 1.0); });
+}
+fn without_fitness(rows: list, classes: list) -> list {
+    return filter(classes, |c: string| -> bool { return rate_of(rows, c) <= (0.0 - 1.0); });
+}
+
+// Index in `classes` of the highest-precision element; FIRST occurrence on ties (strict `>`), so a stable
+// selection sort falls out. Recursion carries the running best index/rate (this file's no-reassignment style).
+fn argmax_rate(rows: list, classes: list, i: int, bi: int, br: float) -> int {
+    if i >= len(classes) { return bi; }
+    let r = rate_of(rows, get(classes, i));
+    if r > br { return argmax_rate(rows, classes, i + 1, i, r); }
+    return argmax_rate(rows, classes, i + 1, bi, br);
+}
+// `classes` with the element at index k dropped, order otherwise preserved.
+fn drop_at(classes: list, k: int, i: int, acc: list) -> list {
+    if i >= len(classes) { return acc; }
+    if i == k { return drop_at(classes, k, i + 1, acc); }
+    return drop_at(classes, k, i + 1, push(acc, get(classes, i)));
+}
+// Stable selection sort of the with-fitness classes by DESCENDING real-bug precision (ties keep original CSV
+// order via argmax's first-occurrence rule). ≤ a handful of classes per zone, so the O(n^2) walk is trivial.
+fn sel_sort(rows: list, classes: list) -> list {
+    if len(classes) == 0 { return classes; }
+    let bi = argmax_rate(rows, classes, 0, 0, 0.0 - 2.0);
+    let best = get(classes, bi);
+    let rest = drop_at(classes, bi, 0, []);
+    let sortedRest = sel_sort(rows, rest);
+    return reduce(sortedRest, |a: list, x: string| -> list { return push(a, x); }, push([], best));
+}
+// Join a class list back into a comma-separated string (no trailing separator).
+fn join_csv(items: list) -> string {
+    return reduce(items, |acc: string, x: string| -> string {
+        if len(acc) == 0 { return x; }
+        return acc + "," + x;
+    }, "");
+}
+
+// Reorder `classesCsv` so classes with a learned real-bug fitness entry come FIRST (highest precision first,
+// stable on ties), then the classes with no entry in their original order. Identity when no fitness is imported
+// OR when none of this zone's classes carry an entry (preserving today's exact CSV, spacing included).
+fn apply_fitness_reorder(classesCsv: string) -> string {
+    let rows = query_knowledge("hunt-fitness", 64);
+    if len(rows) == 0 { return classesCsv; }
+    let classes = csv_classes(classesCsv);
+    let withF = with_fitness(rows, classes);
+    if len(withF) == 0 { return classesCsv; }
+    let ordered = sel_sort(rows, withF);
+    let noF = without_fitness(rows, classes);
+    let all = reduce(noF, |a: list, x: string| -> list { return push(a, x); }, ordered);
+    return join_csv(all);
+}
+
+// A short "learned fitness prior" block prepended to the classification instruction (mirrors dev-apprenticeship
+// risk_assessor's `"Past incident patterns: " + to_string(rec)` shape). Empty when recommend() carries no
+// knowledge (get(rec,"knowledge") == 0) -> byte-identical prompt to today, so no regression before any import.
+fn fitness_prior(rec: map) -> string {
+    if get(rec, "knowledge") == 0 { return ""; }
+    return "=== LEARNED REAL-BUG FITNESS PRIOR (corpus-bench ground truth) ===\n"
+      + "On already-scored contests, these bug classes historically caught the most REAL bugs per candidate. "
+      + "Weight your class choice toward the higher-precision ones WHEN this zone's mechanics genuinely expose "
+      + "them (do not add a class the zone does not actually support):\n"
+      + to_string(rec) + "\n\n";
+}
+
 fn apply_backstop(verdict: string, code: string) -> string {
     let line = zone_line(verdict);
     if len(line) == 0 { return verdict; }
     let withLending = apply_lending_backstop(pipe_field(line, 3), code);
     let withAccounting = apply_accounting_backstop(withLending, code);
     let withAll = apply_index_overwrite_backstop(withAccounting, code);
-    let rebuilt = "ZONE|" + pipe_field(line, 1) + "|" + pipe_field(line, 2) + "|" + withAll + "|" + pipe_field(line, 4);
+    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C6/C10/C11/C17) by learned
+    // real-bug precision, so the highest-precision class leads the CSV that run-discovery.sh fans out.
+    let reordered = apply_fitness_reorder(withAll);
+    let rebuilt = "ZONE|" + pipe_field(line, 1) + "|" + pipe_field(line, 2) + "|" + reordered + "|" + pipe_field(line, 4);
     if rebuilt == line { return verdict; }
     return verdict + "\n" + rebuilt;
 }
@@ -287,10 +395,16 @@ let files = getenv("ZONE_FILES");
 let code = scoped_code(dir, files);
 let taxo = read_taxonomy(getenv("TAXONOMY"));
 
+// #1711: pull the learned real-bug fitness recommendation (bench-fed `hunt-fitness` knowledge) and turn it
+// into a soft prior on the classification. Empty (no knowledge imported) -> byte-identical prompt to today.
+let rec = recommend("hunt-fitness", ["real-bug"]);
+let priorBlock = fitness_prior(rec);
+
 // The instruction carries the class menu (taxonomy) + the strict output contract; the zone's concatenated
-// code is the prompt payload (matches hunter.ag / audit-scout.ag's prompt(instruction, code) shape).
-let instruction =
-    "You are an elite adversarial smart-contract auditor doing ATTACK-SURFACE MAPPING. You are handed ONE "
+// code is the prompt payload (matches hunter.ag / audit-scout.ag's prompt(instruction, code) shape). The
+// learned fitness prior (empty until the bench teaches it something) leads the instruction.
+let instruction = priorBlock
+  + "You are an elite adversarial smart-contract auditor doing ATTACK-SURFACE MAPPING. You are handed ONE "
   + "zone of a target — a directory of in-scope contracts — and your job is to classify it: give it a short "
   + "human subsystem name, choose the bug CLASSES an external attacker (holding NO privileged role) would "
   + "probe HERE, and write a one-line description of why. Choose classes ONLY from the taxonomy below, by "
@@ -346,6 +460,9 @@ let finalVerdict = apply_backstop(verdict, code);
 // Surface the classification to map-zones.sh (stdout) and record the attempt so the mapping reweights over
 // time (mirrors hunter.ag / audit-scout.ag's print/emit/learn/memo tail).
 print(finalVerdict);
+// #1711: surface the learned-fitness recommendation used this run as a NON-ZONE| diagnostic line, so the
+// recommend() result is observable in the zone log without perturbing map-zones.sh's `^ZONE\|` scrape.
+print("FITNESS-REC|" + zoneId + "|" + to_string(rec));
 let outcome = outcome_of(finalVerdict);
 emit("dark-factory:zone_mapped", "{\"zone\":\"" + zoneId + "\",\"outcome\":\"" + outcome + "\"}");
 learn("zone-map", zoneId, "attack-surface classification of zone " + zoneId, outcome, ["zone-map", zoneId, outcome]);

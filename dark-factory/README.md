@@ -658,6 +658,17 @@ dark-factory/evolve-fitness.sh --iters 6 --json
 #    `class | subsystem | yield` manifest.
 ```
 
+**Ground-truth-anchored fitness (bench → hunter, #1711).** The loop above reweights on the hunt's OWN
+signal — "surfaced a candidate = success", which trains trigger-happiness, not correctness, because the hunt
+has no ground truth at hunt time. The corpus-bench closes the correcting half: it knows which classes caught
+REAL Sherlock bugs, computes per-class real-bug PRECISION from its HIT/MISS scoring, and imports it as agentis
+`hunt-fitness` knowledge that `zone-mapper.ag` consumes (`recommend()` + `query_knowledge`) to hunt the
+highest-precision classes first. This is a SEPARATE, inspectable (`agentis knowledge list`) channel from the
+`fitness-driver.ag` experience signal above — never entangled with it. See
+[`bench/corpus-bench/README.md`](./bench/corpus-bench/README.md#fitness-feedback-loop-bench--hunter-1711) for
+the `bench-to-knowledge.sh` feeder, the `HUNT_FITNESS_JSON` operator knob, and `--replace` idempotency;
+`demo-hunt-fitness.sh` pins the loop end-to-end on `--backend mock`.
+
 ## Invent new audit methods (`run-method-discovery.sh`)
 
 The federation's **self-improvement** layer. When the current method-set plateaus, the

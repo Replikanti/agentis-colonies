@@ -14,6 +14,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Corpus-bench → hunter fitness feedback loop** (learn + recommend wiring, #1711). The
+  bench now closes the loop it only ever recorded before: `score-match.py` grew an additive
+  `--per-lead` flag emitting one `LEAD<TAB><class><TAB><HIT|MISS>` line per verified lead
+  (reusing the existing HIT/MISS matcher; default output stays byte-identical), and the new
+  `bench/corpus-bench/bench-to-knowledge.sh` reads already-scored contests, computes per-class
+  REAL-BUG precision (`hits / (hits + misses)`), normalizes the mixed `class=C3` / `C3` field,
+  and imports it as agentis `hunt-fitness` KnowledgeEntry rows (`agentis knowledge import
+  <json> --replace`; `--replace` is mandatory — re-import without it accumulates). `zone-mapper.ag`
+  now CONSUMES that fitness via `recommend()` + `query_knowledge("hunt-fitness")`, reordering its
+  emitted `ZONE|` class CSV so historically-real-bug classes hunt first (riding the existing
+  post-`prompt()`/`apply_backstop` append mechanism — no shell reorder). `map-zones.sh` enables
+  `knowledge.enabled` and imports `HUNT_FITNESS_JSON` (operator knob) after `agentis init`, before
+  the zone loop. No fitness imported ⇒ identity (byte-identical prompt AND class CSV). MVP is global
+  per-class fitness; per-protocol-type keying is a noted follow-up. agentis-core untouched
+  (`learn`/`recommend`/`knowledge` primitives already exist). Pinned by the new
+  `demo-hunt-fitness.sh` (all functional parts `--backend mock`).
+
 ### Fixed
 
 ## [0.4.3] - 2026-07-16

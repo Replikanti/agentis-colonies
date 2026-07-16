@@ -19,6 +19,9 @@ corpus-bench/
   fetch-corpus.sh                # clone code+judging repos for one/every corpus.tsv row (no re-hosting)
   extract-gt.sh                  # judging-repo README.md -> truth.tsv (ground truth + rarity)
   score-match.py                 # bench-only scorer: verified_findings.json leads -> HIT/MISS per truth row
+                                  #   (--per-lead: also emit per-lead class + HIT/MISS for the fitness feeder)
+  bench-to-knowledge.sh           # LEARN half (#1711): scored contests -> per-class real-bug precision ->
+                                  #   agentis `hunt-fitness` knowledge (feeds zone-mapper.ag's reorder)
   run-corpus-bench.sh             # orchestrator + scorer (this is the entrypoint)
   fixtures/
     sample-judging-readme.md      # tiny synthetic judging report (2 findings, rarity 2 and 9)
@@ -26,6 +29,9 @@ corpus-bench/
     score/                        # synthetic score-match.py fixture (truth.tsv + verified_findings.json +
                                   #   expected-scorecard.txt); the second self-test asserts recall 1/3, stable
                                   #   across --min-overlap 2 and 5 (no re-hosted Sherlock prose)
+    hunt-fitness/                 # synthetic fixture for the fitness loop (#1711): truth.tsv +
+                                  #   verified_findings.json (mixed `class=C6`/`C6` formatting, C6 high-
+                                  #   precision, C3 mostly noise) + reorder-harness.ag (mirrors the agent)
 ```
 
 No contest code or finding text is re-hosted in this repo — only the manifest (repo/commit-free GitHub slugs)
@@ -95,6 +101,57 @@ repos and stages a full `run-zone-hunt.sh` output tree per contest, none of whic
 Exit `0` = requested stage(s) ran (a low/zero recall is DATA, not a failure — same posture as
 `run-capability-bench.sh`'s live stage); `1` = `--self-test` regressed; `2` = bad args; `3` = missing
 prerequisite (repo not fetched yet, `agentis` missing, etc).
+
+## Fitness feedback loop (bench → hunter, #1711)
+
+The bench does not just *measure* — it now **teaches the hunt**. The same HIT/MISS matching that scores recall
+also tells us which bug classes actually catch REAL bugs (vs surface noise), and that signal feeds back into
+`zone-mapper.ag`'s class selection so the highest-precision classes hunt first:
+
+```
+score-match.py --per-lead   →   bench-to-knowledge.sh   →   agentis knowledge import --replace   →   zone-mapper.ag
+(per-lead class + HIT/MISS)     (per-class precision)       (hunt-fitness KnowledgeEntry rows)       (recommend/reorder)
+```
+
+1. **LEARN.** `score-match.py --per-lead` appends one `LEAD<TAB><class><TAB><HIT|MISS>` line per verified lead
+   (a HIT = the lead matched a real GT row; MISS = unmatched noise). The flag is purely additive — default
+   output stays byte-identical, so the `--self-test` regression is unaffected. `bench-to-knowledge.sh` reads
+   the already-scored contests under a `--work` dir, aggregates per class GLOBALLY (`hits`, `misses`,
+   `precision = hits/(hits+misses)`), NORMALIZES the messy class field (`class=C3` and `C3` collapse to `C3`;
+   empty → `unknown`), and writes agentis `hunt-fitness` `KnowledgeEntry` rows. With `--import <store-dir>` it
+   runs `agentis knowledge import <json> --replace`.
+
+   ```bash
+   dark-factory/bench/corpus-bench/bench-to-knowledge.sh \
+     --work <scored-work-dir> --id dodo --id yieldoor --out hunt-fitness.json
+   ```
+
+   **`--replace` is mandatory** (and always used by the feeder): a re-import WITHOUT it ACCUMULATES samples.
+   The full JSON is regenerated from all selected contests each run, so the import is idempotent.
+
+2. **ACT.** `zone-mapper.ag` calls `recommend("hunt-fitness", ["real-bug"])` (a soft prior on the
+   classification prompt) and `query_knowledge("hunt-fitness", …)` to reorder its emitted `ZONE|` class CSV so
+   classes with the highest real-bug precision lead — riding the existing post-`prompt()`/`apply_backstop`
+   append mechanism (no shell reorder). That order flows through `map-zones.sh`'s `ZONE|` scrape → `scope.tsv`
+   → `run-discovery.sh`'s per-cell fan-out in CSV order. `map-zones.sh` enables `knowledge.enabled` and, when
+   the operator sets `HUNT_FITNESS_JSON` to a feeder output, imports it into the run store after `agentis init`
+   and before the zone loop:
+
+   ```bash
+   HUNT_FITNESS_JSON=/path/to/hunt-fitness.json dark-factory/map-zones.sh --repo <target> --out <out> --backend <b>
+   ```
+
+   With no fitness imported the whole path is an **identity** (byte-identical prompt AND class CSV to today), so
+   this never changes behaviour until the bench has taught it something.
+
+**MVP boundary.** Fitness is **global per-class** (aggregated across all scored contests). Per-protocol-type
+keying (e.g. C6 on a cross-chain gateway vs a lending vault) is a noted follow-up. This layer reprioritizes what
+the hunt can *already* do; it does not change the underlying hunt quality. agentis-core is untouched — the
+`learn`/`recommend`/`knowledge` primitives already exist.
+
+`dark-factory/demo-hunt-fitness.sh` pins the whole loop (source-guards + feeder precision/normalization +
+`knowledge list` visibility + fitness-driven reorder that flips when the fitness flips). Every functional part
+runs on `--backend mock` (no LLM), so it never contends with a live corpus-bench run.
 
 ## Adding a contest
 
