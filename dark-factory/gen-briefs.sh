@@ -39,6 +39,11 @@
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# #1707: shared reply-shape validation + retry for the brief-writer substrate call (see the helper header).
+# shellcheck source=lib/run-agent-validated.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/run-agent-validated.sh"
+DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
 AGENTIS="agentis"
 ZONES="" ; SCOPE="" ; OUT="" ; REPO="" ; RESIDUALS="" ; FIXTURE="" ; BACKEND="flat-cyborg"
 
@@ -207,6 +212,29 @@ else
 fi
 
 BOUNDARY_TXT="$(cat "$WORK/res/boundary.txt" 2>/dev/null || true)"
+# #1707: count of zones whose brief-writer reply never carried a BRIEF-BEGIN|/SKIP sentinel after retries
+# (TUI chrome / no answer). Such a zone still falls back to the mechanical brief (a softer stage — a
+# mechanical brief keeps the hunt alive) but is now COUNTED + reported, not a silent degrade.
+FAILED=0
+# --grant-pii: TARGET_DIR + AUDIT_RESIDUAL/AUDIT_BOUNDARY carry contract source and audit-scope text that
+# can embed addresses/identifiers tripping the PII heuristic; input is benign public contract/scope text.
+# Sibling of map-zones in the same live map->brief->hunt chain (#1690). Dynamic scope: _gb_attempt reads
+# ZID/ZNAME/ZFILES_NL/ZCLASSES/RESIDUAL_TXT from the loop below.
+# shellcheck disable=SC2317  # invoked by name through df_run_agent_validated
+_gb_attempt() {
+  ( cd "$RUN" && env \
+      TARGET_DIR="$REPO" \
+      ZONE_ID="$ZID" \
+      ZONE_NAME="$ZNAME" \
+      ZONE_FILES="$ZFILES_NL" \
+      ZONE_CLASSES="$ZCLASSES" \
+      TAXONOMY="$TAXONOMY" \
+      AUDIT_RESIDUAL="$RESIDUAL_TXT" \
+      AUDIT_BOUNDARY="$BOUNDARY_TXT" \
+      SLICER="$RUN/slice-fns.sh" \
+      "$AGENTIS" go brief-writer.ag --enable-exec --enable-messaging --grant-pii ) > "$1" 2>&1 \
+    || echo "gen-briefs.sh: brief-writer run failed for zone '$ZID' (see $1)" >&2
+}
 TAB="$(printf '\t')"
 while IFS="$TAB" read -r ZID ZNAME ZCLASSES ZFILES || [ -n "${ZID:-}" ]; do
   [ -n "$ZID" ] || continue
@@ -217,21 +245,12 @@ while IFS="$TAB" read -r ZID ZNAME ZCLASSES ZFILES || [ -n "${ZID:-}" ]; do
   elif [ "$SRC_LABEL" = "substrate" ]; then
     ZFILES_NL="$(printf '%s' "$ZFILES" | tr ',' '\n')"
     LOG="$RUN/brief_${ZID}.log"
-    # --grant-pii: TARGET_DIR + AUDIT_RESIDUAL/AUDIT_BOUNDARY carry contract source and audit-scope
-    # text that can embed addresses/identifiers tripping the PII heuristic; input is benign public
-    # contract/scope text. Sibling of map-zones in the same live map->brief->hunt chain (#1690).
-    ( cd "$RUN" && env \
-        TARGET_DIR="$REPO" \
-        ZONE_ID="$ZID" \
-        ZONE_NAME="$ZNAME" \
-        ZONE_FILES="$ZFILES_NL" \
-        ZONE_CLASSES="$ZCLASSES" \
-        TAXONOMY="$TAXONOMY" \
-        AUDIT_RESIDUAL="$RESIDUAL_TXT" \
-        AUDIT_BOUNDARY="$BOUNDARY_TXT" \
-        SLICER="$RUN/slice-fns.sh" \
-        "$AGENTIS" go brief-writer.ag --enable-exec --enable-messaging --grant-pii ) > "$LOG" 2>&1 \
-      || echo "gen-briefs.sh: brief-writer run failed for zone '$ZID' (see $LOG)" >&2
+    # #1707: validate the brief-writer reply carries a BRIEF-BEGIN|<id> block OR a legit bare SKIP, and
+    # RETRY on TUI chrome / no answer. A legit SKIP passes on attempt 1 (no retry) and continues to the
+    # existing mechanical/empty-body fallback exactly as before; chrome retries, then on final failure
+    # logs loudly + counts the degrade instead of silently falling back.
+    df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "gen-briefs.sh: zone '$ZID'" "$LOG" brief-writer "$ZID" _gb_attempt \
+      || FAILED=$((FAILED + 1))
     slice_block "$LOG" "$ZID" > "$BODY_OUT" || true
   fi
   if [ -s "$BODY_OUT" ] && is_placeholder_echo "$BODY_OUT"; then
@@ -356,4 +375,7 @@ print(count)
 PY
 )"
 
-echo "gen-briefs.sh: $COUNT brief(s) -> $BRIEFS/brief_<zone_id>.md (bodies via $SRC_LABEL); feed one to run-discovery.sh --brief" >&2
+GB_SUMMARY="gen-briefs.sh: $COUNT brief(s) -> $BRIEFS/brief_<zone_id>.md (bodies via $SRC_LABEL); feed one to run-discovery.sh --brief"
+# #1707: surface a chrome/no-answer brief failure loudly (still a mechanical fallback, but counted).
+[ "${FAILED:-0}" -gt 0 ] && GB_SUMMARY="$GB_SUMMARY — $FAILED brief(s) FAILED validation (retried ${DF_AGENT_MAX_ATTEMPTS}x, still chrome; mechanical fallback used)"
+echo "$GB_SUMMARY" >&2

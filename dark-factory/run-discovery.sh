@@ -58,6 +58,11 @@
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# #1707: shared reply-shape validation + retry for the hunter substrate call (see the helper header).
+# shellcheck source=lib/run-agent-validated.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/run-agent-validated.sh"
+DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
 AGENTIS="agentis"
 REPO="" ; SCOPE="" ; BRIEF="" ; TAXONOMY="" ; ONLY="" ; CLASSES_OVERRIDE=""
 BACKEND="flat-cyborg" ; MODEL="" ; OUT="$PWD/discovery-out"
@@ -184,7 +189,10 @@ REPORT="$OUT/discovery-report.md"
   echo "|---|---|---|"
 } > "$REPORT"
 
-CELLS=0 ; CANDIDATES=0 ; STEERS=0
+CELLS=0 ; CANDIDATES=0 ; STEERS=0 ; FAILED_CELLS=0
+# #1707: FAILED_CELLS counts cells whose hunter reply never carried a CANDIDATE|/SAFE sentinel after
+# DF_AGENT_MAX_ATTEMPTS retries (TUI chrome / no answer). Such a cell is NOT a rigorous negative — it is
+# surfaced as a distinct FAILED row + a "status":"failed" JSON record, never silently folded into "0 candidates".
 # #1001: rows recording where one cell's lead STEERED a later cell (the blackboard coordination loop),
 # folded into the report at the end. Kept separate from $REPORT so it can be appended as its own table.
 COORD="$RUN/coordination.tsv"; : > "$COORD"
@@ -244,10 +252,12 @@ _join_wrapped_candidates() {
   ' "$jwc_log"
 }
 
-# _accumulate_cell <subsys> <cls> <files> <log> — append ONE JSON object for this cell to $CELLS_JSONL
-# (additive; feeds discovery-results.json). Never touches $REPORT.
+# _accumulate_cell <subsys> <cls> <files> <log> [status] — append ONE JSON object for this cell to
+# $CELLS_JSONL (additive; feeds discovery-results.json). Never touches $REPORT. [status] defaults to "ok";
+# a #1707 no-sentinel-after-retries cell is recorded as "failed" so the JSON distinguishes it from a clean
+# (0-candidate) negative.
 _accumulate_cell() {
-  ac_subsys="$1"; ac_cls="$2"; ac_files="$3"; ac_log="$4"
+  ac_subsys="$1"; ac_cls="$2"; ac_files="$3"; ac_log="$4"; ac_status="${5:-ok}"
   ac_cands=""
   while IFS= read -r ac_line; do
     [ -n "$ac_line" ] || continue
@@ -260,9 +270,9 @@ _accumulate_cell() {
     ac_f="$(grep '^BLACKBOARD-FOCUS|' "$ac_log" | head -1 | sed 's/^BLACKBOARD-FOCUS|//')"
     ac_coord="$(_json_str "$ac_f")"
   fi
-  printf '{"subsystem":%s,"class":%s,"files":%s,"candidates":[%s],"coordination":[%s]}\n' \
+  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]}\n' \
     "$(_json_str "$ac_subsys")" "$(_json_str "$ac_cls")" "$(_json_str "$ac_files")" \
-    "$ac_cands" "$ac_coord" >> "$CELLS_JSONL"
+    "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" >> "$CELLS_JSONL"
 }
 
 # run_cell <dir> <subsys> <cls> <in_scope> <log> — invoke the hunter for ONE (subsystem x class) cell into
@@ -271,16 +281,25 @@ _accumulate_cell() {
 run_cell() {
   rc_dir="$1"; rc_subsys="$2"; rc_cls="$3"; rc_in_scope="$4"; rc_log="$5"
   echo "run-discovery.sh: hunting $rc_cls on '$rc_subsys' ..." >&2
-  ( cd "$rc_dir" && env \
-      TARGET_DIR="$REPO" \
-      IN_SCOPE="$rc_in_scope" \
-      SCOPE_BRIEF="$BRIEF" \
-      TAXONOMY="$TAXONOMY" \
-      HUNT_CLASS="$rc_cls" \
-      SUBSYSTEM="$rc_subsys" \
-      SLICER="$rc_dir/slice-fns.sh" \
-      "$AGENTIS" go hunter.ag --enable-exec --enable-messaging --grant-pii ) >"$rc_log" 2>&1 || \
-      echo "run-discovery.sh: hunter run failed for $rc_cls/'$rc_subsys' (see $rc_log)" >&2
+  # shellcheck disable=SC2317  # invoked by name through df_run_agent_validated
+  _rc_attempt() {
+    ( cd "$rc_dir" && env \
+        TARGET_DIR="$REPO" \
+        IN_SCOPE="$rc_in_scope" \
+        SCOPE_BRIEF="$BRIEF" \
+        TAXONOMY="$TAXONOMY" \
+        HUNT_CLASS="$rc_cls" \
+        SUBSYSTEM="$rc_subsys" \
+        SLICER="$rc_dir/slice-fns.sh" \
+        "$AGENTIS" go hunter.ag --enable-exec --enable-messaging --grant-pii ) >"$1" 2>&1 || \
+        echo "run-discovery.sh: hunter run failed for $rc_cls/'$rc_subsys' (see $1)" >&2
+  }
+  # #1707: validate the hunter reply carries a CANDIDATE|/SAFE sentinel and RETRY on TUI chrome / no answer,
+  # instead of scraping an empty log as a rigorous negative. The retry lives INSIDE run_cell (called by both
+  # the serial and parallel paths) and failure is signalled via a "$rc_log.novalid" MARKER FILE, not an exit
+  # code — a backgrounded `run_cell &` loses its return across `wait -n`, but the marker survives for the
+  # deferred manifest-order aggregation in scrape_cell_log. Never trips set -e (|| true).
+  df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-discovery.sh: $rc_cls/'$rc_subsys'" "$rc_log" hunter "" _rc_attempt || true
 }
 
 # scrape_cell_log <subsys> <cls> <log> <files> — the (byte-identical) post-cell scrape: surface the #1001
@@ -288,6 +307,18 @@ run_cell() {
 # and accumulate the cell into the additive JSON. Called in MANIFEST order on both paths (deterministic).
 scrape_cell_log() {
   sc_subsys="$1"; sc_cls="$2"; sc_log="$3"; sc_files="$4"
+  # #1707: a cell whose reply never produced a CANDIDATE|/SAFE sentinel after DF_AGENT_MAX_ATTEMPTS retries
+  # (TUI chrome / no answer) carries a "$sc_log.novalid" marker. Do NOT treat its empty log as a rigorous
+  # negative: surface it as a DISTINCT FAILED row + counter so it is visible, not silently folded into
+  # "0 candidates". Recorded as "status":"failed" in the additive JSON.
+  if [ -f "$sc_log.novalid" ]; then
+    echo "run-discovery.sh:   ↳ FAILED: $sc_cls/'$sc_subsys' produced no CANDIDATE|/SAFE reply after $DF_AGENT_MAX_ATTEMPTS attempts (NOT a rigorous negative)" >&2
+    printf '| %s | %s | FAILED — no CANDIDATE|/SAFE reply after %s attempts (NOT a rigorous negative) |\n' \
+      "$sc_subsys" "$sc_cls" "$DF_AGENT_MAX_ATTEMPTS" >> "$REPORT"
+    FAILED_CELLS=$((FAILED_CELLS + 1))
+    _accumulate_cell "$sc_subsys" "$sc_cls" "$sc_files" "$sc_log" failed
+    return 0
+  fi
   # #1001 coordination: the hunter reads a shared BLACKBOARD before it prompts and posts every
   # CANDIDATE back to it, so a lead an EARLIER cell found steers later cells (corroborate / pivot).
   # Surface both halves of that loop to the operator and the report: BLACKBOARD-FOCUS| = THIS cell was
@@ -414,7 +445,10 @@ else
   done
 fi
 
-if [ "$CANDIDATES" -eq 0 ]; then
+# #1707: only a run with ZERO candidates AND ZERO failed cells is a rigorous NEGATIVE. A cell that FAILED
+# validation (chrome / no answer) is NOT evidence of cleanliness, so its presence suppresses this line —
+# the FAILED rows above already make those cells visible as unassessed, not clean.
+if [ "$CANDIDATES" -eq 0 ] && [ "$FAILED_CELLS" -eq 0 ]; then
   echo "| _(none)_ | — | rigorous NEGATIVE — no candidate of any hunted class survived. A clean result on audited code is a valid outcome; nothing is submitted. |" >> "$REPORT"
 fi
 {
@@ -445,12 +479,12 @@ fi
 # paths. It does not affect discovery-report.md's bytes (the byte-identical invariant targets the report).
 RESULTS_JSON="$OUT/discovery-results.json"
 CELLS_ARR="$(paste -sd, "$CELLS_JSONL" 2>/dev/null || true)"
-printf '{"repo":%s,"backend":%s,"jobs":%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s}}\n' \
+printf '{"repo":%s,"backend":%s,"jobs":%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s}}\n' \
   "$(_json_str "$(basename "$REPO")")" "$(_json_str "$BACKEND")" "$JOBS" "$CELLS_ARR" \
-  "$CELLS" "$CANDIDATES" "$STEERS" > "$RESULTS_JSON"
+  "$CELLS" "$CANDIDATES" "$STEERS" "$FAILED_CELLS" > "$RESULTS_JSON"
 
 echo >&2
-echo "================ DISCOVERY: $CELLS cells, $CANDIDATES candidate(s), $STEERS blackboard-steered ================" >&2
+echo "================ DISCOVERY: $CELLS cells, $CANDIDATES candidate(s), $STEERS blackboard-steered, $FAILED_CELLS failed ================" >&2
 echo "run-discovery.sh: leads at $REPORT" >&2
 if [ "$CANDIDATES" -gt 0 ]; then
   echo "run-discovery.sh: NEXT = verify each lead with evm-harness/forge-verify.sh; only a PASSING PoC is a finding. Submission stays human-gated." >&2
