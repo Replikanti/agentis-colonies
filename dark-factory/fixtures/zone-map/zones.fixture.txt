@@ -6,3 +6,10 @@ ZONE|contracts_vault|vault deposits|C1,C6,C11|ERC4626-style share vault: share-p
 ZONE|contracts_oracle|price oracle|C2,C9|External price feed: integrity/staleness and decimals scaling
 ZONE|contracts_liquidation|liquidation engine|C10,C8|CDP liquidate/seize/redeem: health-factor accounting and reentrancy on token transfer
 ZONE|contracts_governance|governance|C5,C13|Owner/guardian role model and pause/freeze consistency
+# #1713: value-custody flags (severity-first deep-hunt gate). A fixture DECLARES them since the .ag is not
+# run on the --fixture path. The accounting vault + the lending/CDP liquidation engine are value-custody;
+# the read-only oracle feed + the governance role model are not.
+CUSTODY|contracts_vault|true
+CUSTODY|contracts_oracle|false
+CUSTODY|contracts_liquidation|true
+CUSTODY|contracts_governance|false

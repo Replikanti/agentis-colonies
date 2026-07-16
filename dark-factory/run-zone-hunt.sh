@@ -40,6 +40,15 @@
 #   --map-fixture <f>   map-zones.sh --fixture (OFFLINE M1); when present the M1 substrate step is stubbed.
 #   --brief-fixture <f> gen-briefs.sh --fixture (OFFLINE M2); when present the M2 substrate step is stubbed.
 #   --pass-fixture <PF> run-audit-pass.sh --pass-fixture (OFFLINE M5); absent => run-audit-pass runs --live.
+#   --deep-hunt         #1713: enable STAGE 4.5 — a SECOND, severity-first lens that runs the stateful-
+#                       invariant engine (run-invariant-hunt.sh) on the VALUE-CUSTODY zones (zones.json's
+#                       value_custody flag) and merges each fuzzer-reproduced FINDING into
+#                       verified_findings.json (tagged source=invariant-hunt) so M5 + corpus-bench see it.
+#                       DEFAULT OFF — without it every run is byte-identical to before. Requires the target
+#                       to be a Foundry project ($REPO/foundry.toml); a non-Foundry target logs + skips it.
+#   --invariant-fixture <f>  run-invariant-hunt.sh --handler-fixture (the OFFLINE/deterministic deep-hunt
+#                       path — no LLM). Only meaningful with --deep-hunt.
+#   --deep-hunt-max-targets <N>  Max primary targets per value-custody zone (default 1 — the largest .sol).
 #   --drop-dir <dir>    deliver-submission.sh drop-dir (default: <out>/drop).
 #   -h, --help          This help.
 #
@@ -53,6 +62,7 @@ REPO="" ; OUT="$PWD/zone-hunt-out" ; JOBS=1 ; BACKEND="flat-cyborg"
 SCOPE_HINT="" ; SINCE="" ; RESIDUALS=""
 IN_SCOPE="" ; ASSET_CONTRACTS="" ; IMPACT_THRESHOLD=""
 MAP_FIXTURE="" ; BRIEF_FIXTURE="" ; PASS_FIXTURE="" ; DROP_DIR=""
+DEEP_HUNT=0 ; INV_FIXTURE="" ; DEEP_HUNT_MAX_TARGETS=1
 
 nv() { [ "$1" -ge 2 ] || { echo "run-zone-hunt.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -71,6 +81,9 @@ while [ $# -gt 0 ]; do
     --map-fixture)      nv "$#"; MAP_FIXTURE="$2"; shift 2 ;;
     --brief-fixture)    nv "$#"; BRIEF_FIXTURE="$2"; shift 2 ;;
     --pass-fixture)     nv "$#"; PASS_FIXTURE="$2"; shift 2 ;;
+    --deep-hunt)        DEEP_HUNT=1; shift ;;
+    --invariant-fixture) nv "$#"; INV_FIXTURE="$2"; shift 2 ;;
+    --deep-hunt-max-targets) nv "$#"; DEEP_HUNT_MAX_TARGETS="$2"; shift 2 ;;
     --drop-dir)         nv "$#"; DROP_DIR="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-zone-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -83,6 +96,9 @@ case "$JOBS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --jobs must be a positive i
 [ -z "$MAP_FIXTURE" ]   || [ -f "$MAP_FIXTURE" ]   || { echo "run-zone-hunt.sh: --map-fixture not found: $MAP_FIXTURE" >&2; exit 2; }
 [ -z "$BRIEF_FIXTURE" ] || [ -f "$BRIEF_FIXTURE" ] || { echo "run-zone-hunt.sh: --brief-fixture not found: $BRIEF_FIXTURE" >&2; exit 2; }
 [ -z "$RESIDUALS" ]     || [ -f "$RESIDUALS" ]     || { echo "run-zone-hunt.sh: --audit-residuals not found: $RESIDUALS" >&2; exit 2; }
+[ -z "$INV_FIXTURE" ]   || [ -f "$INV_FIXTURE" ]   || { echo "run-zone-hunt.sh: --invariant-fixture not found: $INV_FIXTURE" >&2; exit 2; }
+case "$DEEP_HUNT_MAX_TARGETS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-max-targets must be a positive integer (got '$DEEP_HUNT_MAX_TARGETS')" >&2; exit 2 ;; esac
+[ "$DEEP_HUNT_MAX_TARGETS" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-max-targets must be >= 1 (got '$DEEP_HUNT_MAX_TARGETS')" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "run-zone-hunt.sh: python3 not installed" >&2; exit 3; }
 
 MAPZONES="$HERE/map-zones.sh"
@@ -101,6 +117,7 @@ mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 [ -z "$MAP_FIXTURE" ]   || MAP_FIXTURE="$(cd "$(dirname "$MAP_FIXTURE")" && pwd)/$(basename "$MAP_FIXTURE")"
 [ -z "$BRIEF_FIXTURE" ] || BRIEF_FIXTURE="$(cd "$(dirname "$BRIEF_FIXTURE")" && pwd)/$(basename "$BRIEF_FIXTURE")"
 [ -z "$RESIDUALS" ]     || RESIDUALS="$(cd "$(dirname "$RESIDUALS")" && pwd)/$(basename "$RESIDUALS")"
+[ -z "$INV_FIXTURE" ]   || INV_FIXTURE="$(cd "$(dirname "$INV_FIXTURE")" && pwd)/$(basename "$INV_FIXTURE")"
 
 REPO_NAME="$(basename "$REPO")"
 COMMIT="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
@@ -209,6 +226,146 @@ echo "run-zone-hunt.sh: [M4] verifying candidates (refute gate) -> $VER ..." >&2
 "$VERIFY" --results "$MERGED" --repo "$REPO" --gate refute --backend "$BACKEND" --agentis "$AGENTIS" --out "$VER"
 VERIFIED_JSON="$VER/verified_findings.json"
 [ -f "$VERIFIED_JSON" ] || { echo "run-zone-hunt.sh: verify-findings.sh did not emit verified_findings.json" >&2; exit 3; }
+
+# ----------------------------------------------------------------------------------------------------------
+# STAGE 4.5 (#1713): SEVERITY-FIRST DEEP-HUNT — a SECOND lens on the VALUE-CUSTODY zones. Default OFF (no
+# --deep-hunt => this whole block is skipped and the run is byte-identical to before). It runs the shipped
+# stateful-invariant engine (run-invariant-hunt.sh, UNCHANGED) on each value_custody zone's primary target
+# and MERGES every fuzzer-reproduced FINDING into verified_findings.json — tagged source=invariant-hunt —
+# so M5 below and corpus-bench score the deep finding alongside the breadth findings. Gated on a Foundry
+# target ($REPO/foundry.toml): EVM invariant-fuzzing is Foundry-specific; a non-Foundry target logs + skips.
+# ZERO new egress — run-invariant-hunt.sh never submits and the merge is a local file read/write.
+# ----------------------------------------------------------------------------------------------------------
+if [ "$DEEP_HUNT" -eq 1 ]; then
+  if [ ! -f "$REPO/foundry.toml" ]; then
+    echo "run-zone-hunt.sh: [deep-hunt] --deep-hunt set but $REPO has no foundry.toml (EVM invariant-fuzzing is Foundry-specific) — skipping deep-hunt" >&2
+  else
+    INVHUNT="$HERE/run-invariant-hunt.sh"
+    [ -x "$INVHUNT" ] || { echo "run-zone-hunt.sh: [deep-hunt] required entrypoint not found/executable: $INVHUNT" >&2; exit 3; }
+    DEEP="$OUT/deep-hunt"; mkdir -p "$DEEP"
+    # Enumerate the value-custody zones + their ONE primary target (the largest-by-line-count .sol in the
+    # zone's files, lexicographic tie-break; bounded to --deep-hunt-max-targets per zone) + the zone's
+    # dominant custody class (prefer C6/C10/C11, else the literal C-invariant). TSV: zid \t relfile \t class.
+    DEEP_TARGETS="$OUT/.deep-hunt-targets.tsv"
+    python3 - "$MAP/zones.json" "$REPO" "$DEEP_HUNT_MAX_TARGETS" > "$DEEP_TARGETS" <<'PY'
+import sys, os, json
+zones = json.load(open(sys.argv[1], encoding="utf-8"))
+repo, max_targets = sys.argv[2], int(sys.argv[3])
+if not isinstance(zones, list):
+    zones = []
+def loc(rel):
+    try:
+        with open(os.path.join(repo, rel), encoding="utf-8", errors="ignore") as fh:
+            return sum(1 for _ in fh)
+    except Exception:
+        return 0
+def dominant_class(classes):
+    for c in ("C6", "C10", "C11"):
+        if c in classes:
+            return c
+    return "C-invariant"
+for z in zones:
+    if not z.get("value_custody"):
+        continue
+    zid = z.get("id", "")
+    if not zid:
+        continue
+    sols = [f for f in z.get("files", []) if isinstance(f, str) and f.endswith(".sol")]
+    if not sols:
+        continue
+    # largest by line count; lexicographic tie-break (smallest name wins on equal loc)
+    ranked = sorted(sols, key=lambda f: (-loc(f), f))
+    dclass = dominant_class(z.get("bug_classes_likely", []))
+    for rel in ranked[:max_targets]:
+        print("%s\t%s\t%s" % (zid.replace("\t", " "), rel.replace("\t", " "), dclass))
+PY
+    DEEP_FINDINGS=0
+    while IFS='	' read -r ZID RELFILE DCLASS || [ -n "${ZID:-}" ]; do
+      [ -n "$ZID" ] || continue
+      echo "run-zone-hunt.sh: [deep-hunt] stateful-invariant lens on zone '$ZID' target '$RELFILE' ($DCLASS) ..." >&2
+      DZOUT="$DEEP/$ZID"
+      if [ -n "$INV_FIXTURE" ]; then
+        "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
+          --handler-fixture "$INV_FIXTURE" --backend "$BACKEND" --agentis "$AGENTIS" --out "$DZOUT" \
+          || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID'; continuing" >&2; continue; }
+      else
+        "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
+          --backend "$BACKEND" --agentis "$AGENTIS" --out "$DZOUT" \
+          || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID'; continuing" >&2; continue; }
+      fi
+      # Adapter: convert the engine's INVARIANT|<target>|FINDING + STEP| witness into a schema-compatible
+      # verified[] entry (source=invariant-hunt) and APPEND it to verified_findings.json. Only a FINDING
+      # verdict merges; CLEAN/HARNESS_ERROR is a logged no-op. score-match.py keys on verified[].location,
+      # so location = <relfile>:<fn> (fn = first identifier-before-( in the STEP| sequence).
+      MERGED_ADD="$(python3 - "$VERIFIED_JSON" "$DZOUT" "$RELFILE" "$DCLASS" <<'PY'
+import sys, os, json, glob, re
+verified_json, dzout, relfile, dclass = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+logs = sorted(glob.glob(os.path.join(dzout, "run", "invariant_*.log")))
+if not logs:
+    print("0"); sys.exit(0)
+verdict = None
+inv_target = ""
+steps = []
+with open(logs[-1], encoding="utf-8", errors="ignore") as fh:
+    for line in fh:
+        if "INVARIANT|" in line:
+            seg = line.split("INVARIANT|", 1)[1].strip()
+            cols = seg.split("|")
+            inv_target = cols[0].strip()
+            if len(cols) >= 2:
+                verdict = cols[1].strip()
+        if line.startswith("STEP|"):
+            steps.append(line[len("STEP|"):].rstrip("\n"))
+if verdict != "FINDING":
+    print("0"); sys.exit(0)
+# fn = first identifier-before-( in the shrunk STEP| sequence; fall back to the contract-file stem.
+fn = ""
+for s in steps:
+    m = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", s)
+    if m:
+        fn = m.group(1); break
+if not fn:
+    fn = os.path.splitext(os.path.basename(relfile))[0]
+steps_joined = " ; ".join(steps)
+broken = "stateful invariant broken on " + (inv_target or relfile)
+entry = {
+    "location": "%s:%s" % (relfile, fn),
+    "file": relfile,
+    "class": dclass,
+    "severity": "High",
+    # exploit carries the broken-invariant text AND the joined STEP| names so score-match's technical-token
+    # FALLBACK still matches when the primary location fn is imperfect.
+    "exploit": (broken + " | " + steps_joined) if steps_joined else broken,
+    "poc_sketch": steps_joined,
+    "verdict": "FINDING",
+    "reason": "stateful-invariant fuzzer reproduced a shrunk exploit sequence",
+    "source": "invariant-hunt",
+}
+try:
+    data = json.load(open(verified_json, encoding="utf-8"))
+except Exception:
+    data = {}
+if not isinstance(data, dict):
+    data = {}
+data.setdefault("verified", []).append(entry)
+totals = data.setdefault("totals", {})
+totals["verified"] = int(totals.get("verified", 0)) + 1
+with open(verified_json, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=2)
+    fh.write("\n")
+print("1")
+PY
+)"
+      if [ "$MERGED_ADD" = "1" ]; then
+        DEEP_FINDINGS=$((DEEP_FINDINGS + 1))
+        echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' -> FINDING merged into verified_findings.json (source=invariant-hunt)" >&2
+      else
+        echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' -> no FINDING to merge (CLEAN / HARNESS_ERROR)" >&2
+      fi
+    done < "$DEEP_TARGETS"
+    echo "run-zone-hunt.sh: [deep-hunt] merged $DEEP_FINDINGS invariant-hunt finding(s) into verified_findings.json" >&2
+  fi
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 5 (M5): per verified finding -> run-audit-pass.sh (HALTS at PENDING-HUMAN-REVIEW) -> deliver-submission.sh

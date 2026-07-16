@@ -1184,6 +1184,22 @@ if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/run-corpus-bench.sh" ]; then
     fi
 fi
 
+# --- dark-factory severity-first deep-hunt A/B (#1713) ---
+# deep-hunt-ab.sh --self-test drives run-zone-hunt.sh over fixtures/deep-hunt/ TWICE through one --agentis
+# stub (no network / LLM / forge): once breadth-only, once with --deep-hunt --invariant-fixture, and asserts
+# the deep lens adds a source=invariant-hunt High finding (bench-scored a HIT via score-match.py) that the
+# breadth pass missed — the ON-vs-OFF High-recall delta, proven offline. The real --live measurement is
+# operator-run on an isolated non-contending zone, never on CI.
+if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/deep-hunt-ab.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/bench/corpus-bench/deep-hunt-ab.sh" --self-test 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: severity-first deep-hunt A/B self-test (#1713)"
+    else
+        fail "dark-factory: severity-first deep-hunt A/B self-test regressed (#1713)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory invariant-hunt target-linkage gate (#1471) ---
 # The invariant-hunt generation path could produce a false FINDING when the LLM substituted its own toy
 # contract of the same name instead of importing the in-scope target. forge-invariant.sh gained a
