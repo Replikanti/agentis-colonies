@@ -249,6 +249,32 @@ fi
   || bad "the capstone did not exit 0 after a per-finding failure"
 
 # ----------------------------------------------------------------------------------------------------------
+# #1717: --deep-hunt-repair-rounds is declared + threaded into BOTH $INVHUNT deep-hunt call sites (source
+# guard, mirrors --deep-hunt-max-targets above), plus one offline, LLM-free CLI check that the new flag is
+# actually wired into arg-validation (fails fast before any heavy stage).
+# ----------------------------------------------------------------------------------------------------------
+note "#1717 --deep-hunt-repair-rounds wiring ..."
+if grep -q 'DEEP_HUNT_REPAIR_ROUNDS=4' "$ZONEHUNT"; then
+  ok "run-zone-hunt.sh declares DEEP_HUNT_REPAIR_ROUNDS with default 4"
+else
+  bad "run-zone-hunt.sh missing the DEEP_HUNT_REPAIR_ROUNDS=4 default"
+fi
+if [ "$(grep -c -- '--repair-rounds "\$DEEP_HUNT_REPAIR_ROUNDS"' "$ZONEHUNT")" -eq 2 ]; then
+  ok "run-zone-hunt.sh threads --repair-rounds \"\$DEEP_HUNT_REPAIR_ROUNDS\" into both \$INVHUNT deep-hunt call sites"
+else
+  bad "run-zone-hunt.sh does not thread --repair-rounds into both \$INVHUNT deep-hunt call sites"
+fi
+BADVAL_ERR="$WORK/deep-hunt-repair-rounds-badval.err"
+"$ZONEHUNT" --repo "$HERE" --deep-hunt --deep-hunt-repair-rounds notanumber >/dev/null 2>"$BADVAL_ERR"
+BADVAL_RC=$?
+if [ "$BADVAL_RC" -eq 2 ] && grep -q -- '--deep-hunt-repair-rounds must be a positive integer' "$BADVAL_ERR"; then
+  ok "run-zone-hunt.sh --deep-hunt-repair-rounds notanumber fails fast with exit 2 + the usage error"
+else
+  bad "run-zone-hunt.sh --deep-hunt-repair-rounds notanumber did not fail fast as expected (exit $BADVAL_RC):"
+  sed 's/^/      /' "$BADVAL_ERR" | head -10 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — M5 capstone (run-zone-hunt.sh: map -> brief -> discovery -> verify -> audit-pass -> deliver, HALT) holds"
   exit 0
