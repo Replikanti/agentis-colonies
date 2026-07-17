@@ -144,12 +144,18 @@ funds, and folds any fuzzer-reproduced FINDING back into the same verified-findi
 - **Value-custody gate.** `zone-mapper.ag` flags a zone `value_custody: true` in `zones.json` when it OWNS
   value-moving accounting (`contains_accounting_signal`, the #1698 C6 net) or is a lending/CDP/stability-pool
   system (`contains_lending_signal`, the #1681 C10/C11 net) — pure reuse of the shipped nets, no new
-  detection logic. `map-zones.sh` scrapes the flag off the agent's `CUSTODY|<id>|<true|false>` line
+  detection logic. **#1717:** interface-only and test zones are excluded up front (a path-level guard,
+  ahead of the content nets) — an interface has no implementation to stateful-fuzz (a guaranteed
+  HARNESS_ERROR) and a test file is not the custody logic under audit. `map-zones.sh` scrapes the flag
+  off the agent's `CUSTODY|<id>|<true|false>` line
   (additive to `zones.json` only — `scope.tsv`'s schema is untouched).
 - **The stage.** With `--deep-hunt`, a new stage runs BETWEEN verify (M4) and deliver (M5), active only when
   the target is a Foundry project (`foundry.toml` present — EVM invariant-fuzzing is Foundry-specific; a
   non-Foundry target is logged and skipped). For each value-custody zone it picks ONE primary target (the
-  largest `.sol` in the zone, `--deep-hunt-max-targets` default 1) and runs `run-invariant-hunt.sh`. Each
+  largest `.sol` in the zone, `--deep-hunt-max-targets` default 1) and runs `run-invariant-hunt.sh`
+  (`--deep-hunt-repair-rounds` compile-repair attempts, default 4 — #1717, deeper than the prover's own
+  default of 2 so a real custody contract's harness reliably compiles instead of degrading to
+  HARNESS_ERROR on the first non-compiling draft). Each
   FINDING is merged into `verify/verified_findings.json` as a `source=invariant-hunt` entry with a
   bench-parseable `location = <file>:<function>`, so M5 halts it at the same human gate and corpus-bench
   scores it alongside the breadth findings.
