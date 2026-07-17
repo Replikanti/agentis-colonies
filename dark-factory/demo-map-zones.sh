@@ -387,6 +387,12 @@ if grep -q 'fn is_value_custody' "$MAPPER" \
 else
   bad "zone-mapper.ag missing the #1713 is_value_custody / CUSTODY| emission"
 fi
+# #1717: the path-level test/interface exclusion runs BEFORE the content signals in is_value_custody.
+if grep -q 'fn zone_is_test_or_interface' "$MAPPER" && grep -q 'fn is_test_or_interface_path' "$MAPPER"; then
+  ok "zone-mapper.ag defines the #1717 path-level test/interface exclusion"
+else
+  bad "zone-mapper.ag missing the #1717 zone_is_test_or_interface / is_test_or_interface_path helpers"
+fi
 if grep -q 'learn("zone-map"' "$MAPPER" && grep -q 'memo_write("zone-mapper:last_check"' "$MAPPER"; then
   ok "zone-mapper.ag records the mapping (learn) + writes its last_check memo"
 else
@@ -404,6 +410,84 @@ else
   else
     bad "map-zones.sh --backend mock failed (exit $RC):"
     sed 's/^/      /' "$WORK/mock.err" | head -20 >&2
+  fi
+
+  # ----------------------------------------------------------------------------------------------------
+  # #1717: path-level test/interface exclusion regression. A SECOND throwaway micro-repo (kept separate
+  # from $REPO above so the offline --fixture assertions are untouched) with three zones (src/,
+  # interfaces/, test/), each reproducing one of the issue's false-positive classes: a real custody
+  # contract (must stay value_custody=true), a pure interface that merely references a lending type
+  # (must now resolve false), and a Foundry test mock that redefines withdraw with real arithmetic (must
+  # now resolve false). mock backend still runs is_value_custody()'s real, non-LLM logic — only prompt()
+  # is stubbed — so this exercises the actual #1717 fix, not a fixture-declared CUSTODY| line.
+  # ----------------------------------------------------------------------------------------------------
+  CUSTODY_REPO="$WORK/target-custody-paths"
+  mkdir -p "$CUSTODY_REPO/src" "$CUSTODY_REPO/interfaces" "$CUSTODY_REPO/test"
+  cat > "$CUSTODY_REPO/src/Vault.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract Vault {
+    mapping(address => uint256) public balances;
+
+    function withdraw(uint256 amount) external {
+        balances[msg.sender] -= amount;
+        payable(msg.sender).transfer(amount);
+    }
+}
+SOL
+  cat > "$CUSTODY_REPO/interfaces/IVault.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+interface IVault {
+    function withdraw(uint256 amount) external;
+    function stabilityPool() external view returns (IStabilityPool);
+}
+SOL
+  cat > "$CUSTODY_REPO/test/VaultTest.t.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract VaultTestMock {
+    mapping(address => uint256) public balances;
+
+    function withdraw(uint256 amount) external {
+        balances[msg.sender] -= amount;
+    }
+}
+SOL
+  git -C "$CUSTODY_REPO" init -q
+  git -C "$CUSTODY_REPO" config user.email demo@example.invalid
+  git -C "$CUSTODY_REPO" config user.name "demo"
+  git -C "$CUSTODY_REPO" add -A
+  git -C "$CUSTODY_REPO" commit -qm "custody-path fixture"
+
+  OUT3="$WORK/out-custody-paths"
+  "$MAPZONES" --repo "$CUSTODY_REPO" --out "$OUT3" --backend mock >/dev/null 2>"$WORK/mock-custody.err"
+  RC3=$?
+  # NOTE (deviation from the plan's literal read-zones.json mechanism, same intent): mock backend always
+  # replies with the literal string "mock" (agentis-core's MockBackend, deterministic-by-design), which
+  # never carries a ZONE| sentinel — map-zones.sh's df_run_agent_validated therefore treats every zone as
+  # a FAILED classification and never runs the ZONE|/CUSTODY| scrape into zones.json (this is pre-existing,
+  # unrelated to #1717: the SAME gate is why the existing block above only asserts exit-0 + zones.json
+  # presence, never its classification content). The zone-mapper.ag run itself still executes to completion
+  # and writes its raw CUSTODY|<id>|<bool> diagnostic line to $OUT3/run/zone_<id>.log regardless of that
+  # gate (verified live) — reading it there exercises the exact same is_value_custody(code, files) call
+  # this fix changed, without depending on the unrelated ZONE| classification-retry machinery.
+  if [ "$RC3" -eq 0 ] && [ -d "$OUT3/run" ]; then
+    CUSTODY_SRC="$(grep -h '^CUSTODY|src|' "$OUT3/run/zone_src.log" 2>/dev/null | tail -1)"
+    CUSTODY_IFACE="$(grep -h '^CUSTODY|interfaces|' "$OUT3/run/zone_interfaces.log" 2>/dev/null | tail -1)"
+    CUSTODY_TEST="$(grep -h '^CUSTODY|test|' "$OUT3/run/zone_test.log" 2>/dev/null | tail -1)"
+    if [ "$CUSTODY_SRC" = "CUSTODY|src|true" ] && [ "$CUSTODY_IFACE" = "CUSTODY|interfaces|false" ] \
+       && [ "$CUSTODY_TEST" = "CUSTODY|test|false" ]; then
+      ok "#1717: is_value_custody() true for a real custody contract (src/), false for a pure interface (interfaces/) and a test mock (test/)"
+    else
+      bad "#1717: unexpected CUSTODY| lines (want src=true interfaces=false test=false, got src='$CUSTODY_SRC' interfaces='$CUSTODY_IFACE' test='$CUSTODY_TEST')"
+    fi
+  else
+    bad "map-zones.sh --backend mock failed on the #1717 custody-path fixture (exit $RC3):"
+    sed 's/^/      /' "$WORK/mock-custody.err" | head -20 >&2
   fi
 fi
 

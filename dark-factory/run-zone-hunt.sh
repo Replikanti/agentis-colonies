@@ -49,6 +49,11 @@
 #   --invariant-fixture <f>  run-invariant-hunt.sh --handler-fixture (the OFFLINE/deterministic deep-hunt
 #                       path — no LLM). Only meaningful with --deep-hunt.
 #   --deep-hunt-max-targets <N>  Max primary targets per value-custody zone (default 1 — the largest .sol).
+#   --deep-hunt-repair-rounds <N>  #1717: run-invariant-hunt.sh --repair-rounds for every deep-hunt target
+#                       (default 4 — a value-custody zone whose first harness draft doesn't compile gets
+#                       more bounded compile-repair attempts before HARNESS_ERROR; the loop still
+#                       short-circuits on the first successful verdict, so a clean-compiling harness pays
+#                       nothing extra). Threaded into both --deep-hunt $INVHUNT invocations.
 #   --drop-dir <dir>    deliver-submission.sh drop-dir (default: <out>/drop).
 #   -h, --help          This help.
 #
@@ -62,7 +67,7 @@ REPO="" ; OUT="$PWD/zone-hunt-out" ; JOBS=1 ; BACKEND="flat-cyborg"
 SCOPE_HINT="" ; SINCE="" ; RESIDUALS=""
 IN_SCOPE="" ; ASSET_CONTRACTS="" ; IMPACT_THRESHOLD=""
 MAP_FIXTURE="" ; BRIEF_FIXTURE="" ; PASS_FIXTURE="" ; DROP_DIR=""
-DEEP_HUNT=0 ; INV_FIXTURE="" ; DEEP_HUNT_MAX_TARGETS=1
+DEEP_HUNT=0 ; INV_FIXTURE="" ; DEEP_HUNT_MAX_TARGETS=1 ; DEEP_HUNT_REPAIR_ROUNDS=4
 
 nv() { [ "$1" -ge 2 ] || { echo "run-zone-hunt.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -84,6 +89,7 @@ while [ $# -gt 0 ]; do
     --deep-hunt)        DEEP_HUNT=1; shift ;;
     --invariant-fixture) nv "$#"; INV_FIXTURE="$2"; shift 2 ;;
     --deep-hunt-max-targets) nv "$#"; DEEP_HUNT_MAX_TARGETS="$2"; shift 2 ;;
+    --deep-hunt-repair-rounds) nv "$#"; DEEP_HUNT_REPAIR_ROUNDS="$2"; shift 2 ;;
     --drop-dir)         nv "$#"; DROP_DIR="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-zone-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -99,6 +105,8 @@ case "$JOBS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --jobs must be a positive i
 [ -z "$INV_FIXTURE" ]   || [ -f "$INV_FIXTURE" ]   || { echo "run-zone-hunt.sh: --invariant-fixture not found: $INV_FIXTURE" >&2; exit 2; }
 case "$DEEP_HUNT_MAX_TARGETS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-max-targets must be a positive integer (got '$DEEP_HUNT_MAX_TARGETS')" >&2; exit 2 ;; esac
 [ "$DEEP_HUNT_MAX_TARGETS" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-max-targets must be >= 1 (got '$DEEP_HUNT_MAX_TARGETS')" >&2; exit 2; }
+case "$DEEP_HUNT_REPAIR_ROUNDS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be a positive integer (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2 ;; esac
+[ "$DEEP_HUNT_REPAIR_ROUNDS" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be >= 1 (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "run-zone-hunt.sh: python3 not installed" >&2; exit 3; }
 
 MAPZONES="$HERE/map-zones.sh"
@@ -287,10 +295,12 @@ PY
       if [ -n "$INV_FIXTURE" ]; then
         "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
           --handler-fixture "$INV_FIXTURE" --backend "$BACKEND" --agentis "$AGENTIS" --out "$DZOUT" \
+          --repair-rounds "$DEEP_HUNT_REPAIR_ROUNDS" \
           || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID'; continuing" >&2; continue; }
       else
         "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
           --backend "$BACKEND" --agentis "$AGENTIS" --out "$DZOUT" \
+          --repair-rounds "$DEEP_HUNT_REPAIR_ROUNDS" \
           || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID'; continuing" >&2; continue; }
       fi
       # Adapter: convert the engine's INVARIANT|<target>|FINDING + STEP| witness into a schema-compatible

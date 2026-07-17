@@ -163,16 +163,62 @@ fn contains_index_overwrite_signal(code: string) -> bool {
     return false;
 }
 
+// --- #1717 path-level test/interface exclusion (applied BEFORE the content signals below) -----------
+// A zone/file path can deterministically say "this is a test unit" or "this is a pure interface" in a
+// way content signals cannot: an interface getter that merely returns `IStabilityPool`, or a Foundry
+// mock that redefines `withdraw` with real arithmetic to exercise a harness, both trip the #1698/#1681
+// content nets even though neither is a state-holding contract worth stateful-fuzzing. Path convention
+// is a strictly stronger signal here (see the issue's `src_interfaces`/`src_test`/`src_test_utils` false
+// positives), so this exclusion runs FIRST and short-circuits is_value_custody() to false.
+fn ends_with(s: string, suf: string) -> bool {
+    let n = len(s);
+    let m = len(suf);
+    if m > n { return false; }
+    return substring(s, n - m, n) == suf;
+}
+
+// Sequential-`if` (this file's style, no `&&`) over ONE relative path: true when it is a Foundry test
+// file (`test/`/`tests/` prefix or mid-path segment, or a `.t.sol` suffix) or a pure-interface unit
+// (`interfaces/` prefix or mid-path segment).
+fn is_test_or_interface_path(rel: string) -> bool {
+    if substring(rel, 0, 5) == "test/" { return true; }
+    if substring(rel, 0, 6) == "tests/" { return true; }
+    if index_of(rel, "/test/") >= 0 { return true; }
+    if index_of(rel, "/tests/") >= 0 { return true; }
+    if substring(rel, 0, 11) == "interfaces/" { return true; }
+    if index_of(rel, "/interfaces/") >= 0 { return true; }
+    if ends_with(rel, ".t.sol") { return true; }
+    return false;
+}
+
+// Does ANY file in this zone's newline-separated `files` list (ZONE_FILES) look like a test/interface
+// path? OR-over-list (same short-circuit-on-true reduce idiom class_has() uses above) — a single
+// test/interface file is enough to say this zone isn't a state-holding custody target.
+fn zone_is_test_or_interface(files: string) -> bool {
+    return reduce(regex_split("\n", files), |acc: bool, rel: string| -> bool {
+        if acc { return true; }
+        if len(rel) == 0 { return false; }
+        // Function-sliced entries (`file@fn1+fn2`, slice-fns.sh format) are tested on their file part
+        // only — same at = index_of(rel, "@") strip idiom cat_file() uses above.
+        let at = index_of(rel, "@");
+        if at >= 0 { return is_test_or_interface_path(substring(rel, 0, at)); }
+        return is_test_or_interface_path(rel);
+    }, false);
+}
+
 // --- #1713 value-custody flag (severity-first deep-hunt gate) ---------------------------------------
 // A zone is VALUE-CUSTODY when it OWNS the accounting that moves user funds — either the #1698 C6
 // value-moving-accounting net (a mint/redeem/deposit/withdraw/swap entrypoint that adjusts an amount
 // before it moves) OR the #1681 C10/C11 lending/CDP/stability-pool net (a Trove/money-market/stability-
 // pool system, directly or via an ERC4626 wrapper). Those are the zones where a stateful-invariant fuzzer
 // (run-invariant-hunt.sh) is worth its cost: money-tier bugs live in the multi-step accounting a single-
-// function read misses. PURE REUSE — no new detection logic; both nets are the already-live-tuned #1698/
-// #1681 helpers above. map-zones.sh scrapes the CUSTODY| diagnostic line this emits (below) into
-// zones.json's `value_custody`; run-zone-hunt.sh's --deep-hunt stage gates on it.
-fn is_value_custody(code: string) -> bool {
+// function read misses. #1717 adds a path-level test/interface exclusion FIRST (content signals alone
+// false-positive on interface getters and test mocks — see zone_is_test_or_interface() above); the
+// content nets below (already-live-tuned #1698/#1681 helpers) still decide every remaining zone.
+// map-zones.sh scrapes the CUSTODY| diagnostic line this emits (below) into zones.json's `value_custody`;
+// run-zone-hunt.sh's --deep-hunt stage gates on it.
+fn is_value_custody(code: string, files: string) -> bool {
+    if zone_is_test_or_interface(files) { return false; }
     if contains_accounting_signal(code) { return true; }
     if contains_lending_signal(code) { return true; }
     return false;
@@ -490,7 +536,7 @@ print("FITNESS-REC|" + zoneId + "|" + to_string(rec));
 // run-zone-hunt.sh's --deep-hunt stage runs the invariant engine only on the `true` zones. The `.ag` owns
 // the semantic decision (via the shipped #1698/#1681 nets); the shell only scrapes — never perturbs the
 // `^ZONE\|` scrape.
-print("CUSTODY|" + zoneId + "|" + bool_str(is_value_custody(code)));
+print("CUSTODY|" + zoneId + "|" + bool_str(is_value_custody(code, files)));
 let outcome = outcome_of(finalVerdict);
 emit("dark-factory:zone_mapped", "{\"zone\":\"" + zoneId + "\",\"outcome\":\"" + outcome + "\"}");
 learn("zone-map", zoneId, "attack-surface classification of zone " + zoneId, outcome, ["zone-map", zoneId, outcome]);
