@@ -125,10 +125,11 @@ awk '/^fn repair_step\(/{f=1} f{print} f&&/^}/{exit}' "$AG" \
     | grep -Fq 'let bothRealViolation = if stop_flag(prevRc) == "1" { len(missing) > 0 } else { false };' \
     || b_fail="${b_fail} no-violation-detect"
 # The loop + first-attempt stop are both-real aware (threaded composeFresh/names). The gate-args slot carries
-# `gateExtra` (fork + the #1471 target-linkage args) since #1471 — previously the bare `fork`.
+# `gateExtra` (fork + the #1471 target-linkage args) since #1471 — previously the bare `fork`. Since #1720 the
+# loop also carries the re-injected generation scaffold as the trailing arg (`sharedScaffold`).
 printf '%s\n' "$src" | grep -Fq 'let firstStop = stop_flag_both(rc_of(firstOut), test, composableFresh, requiredNames);' \
     || b_fail="${b_fail} no-bothreal-first-stop"
-printf '%s\n' "$src" | grep -Fq 'repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, gateExtra, composableFresh, requiredNames)' \
+printf '%s\n' "$src" | grep -Fq 'repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, gateExtra, composableFresh, requiredNames, sharedScaffold)' \
     || b_fail="${b_fail} no-threaded-loop"
 
 if [ -z "$b_fail" ]; then

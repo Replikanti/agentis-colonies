@@ -369,62 +369,111 @@ fn compose_fresh_seed(active: bool) -> string {
          + "must not have drained the system. In this composable-fresh mode the size budget grows to ~180 lines "
          + "(still bounded) to fit the multi-deploy + wiring `setUp()`.\n";
 }
+// #1720 — the CANONICAL COMPILING SKELETON injected into BOTH the first-generation prompt AND every compile-
+// repair round (via sharedScaffold, threaded through the repair chain). Each of the 4 repair rounds is only as
+// effective as the context it carries; the deep-hunt HARNESS_ERROR rate was dominated by tests that never got
+// the InvBase/targetContracts/_bound boilerplate right, or drifted away from it on repair. Handing the model a
+// compact, boilerplate-only skeleton to fill in — the same skeleton every round — collapses that failure mode.
+// It is BOILERPLATE-ONLY: it must NEVER declare a contract of the target's name (the test contract is the
+// generic `InvariantTest`, the actor is `Handler`), so it can never trip the #1471 target-linkage/shadow gate.
+// The importLine/auxImportLines directives are woven in so the model sees WHERE the real imports go. Kept
+// compact (~35 lines) so it does not re-trigger the #1079 prompt-size hang.
+fn harness_skeleton(matchPrefix: string, deployName: string, importLine: string, auxImportLines: string) -> string {
+    return "=== CANONICAL COMPILING SKELETON ===\n"
+         + "Start from this skeleton. Keep the `InvBase` / `targetContracts()` / `_target()` / `_bound()` "
+         + "boilerplate VERBATIM (it is the StdInvariant ABI Foundry auto-discovers — no forge-std needed). Fill "
+         + "in ONLY the three holes: the REAL deploy in `setUp()`, the `Handler` action functions, and the ONE "
+         + "`" + matchPrefix + "_*` invariant. Do NOT declare a contract named the same as the target — import "
+         + "and deploy the REAL one. Do NOT import forge-std.\n"
+         + "```solidity\n"
+         + "// SPDX-License-Identifier: MIT\n"
+         + "pragma solidity ^0.8.20;\n"
+         + "// Imports — fill these from the directives:\n"
+         + importLine
+         + auxImportLines
+         + "abstract contract InvBase {\n"
+         + "    address[] private _targets;\n"
+         + "    function targetContracts() public view returns (address[] memory) { return _targets; }\n"
+         + "    function _target(address a) internal { _targets.push(a); }\n"
+         + "}\n"
+         + "contract Handler {\n"
+         + "    // Track the honest victim's deposits/shares here so the invariant can compare claim-vs-deposit.\n"
+         + "    function _bound(uint256 x, uint256 lo, uint256 hi) private pure returns (uint256) {\n"
+         + "        return hi <= lo ? lo : lo + (x % (hi - lo + 1));\n"
+         + "    }\n"
+         + "    // ACTIONS: one public function per protocol action (deposit/withdraw/borrow/donate/...),\n"
+         + "    // each fuzzed `uint256` input passed through _bound(x, lo, hi) to a REALISTIC range.\n"
+         + "}\n"
+         + "contract InvariantTest is InvBase {\n"
+         + "    Handler handler;\n"
+         + "    function setUp() public {\n"
+         + "        // DEPLOY the REAL " + deployName + " (+ any aux), deploy the Handler wired to it,\n"
+         + "        // then register it: _target(address(handler));\n"
+         + "    }\n"
+         + "    function " + matchPrefix + "_property() public view {\n"
+         + "        // ONE deep invariant: the single highest-value property for the bug-class lens below,\n"
+         + "        // asserted with plain require(...). It must only break under a SEQUENCE of calls.\n"
+         + "    }\n"
+         + "}\n"
+         + "```\n";
+}
+
+// #1720 — the STATIC generation scaffold, factored out of generate_test so the EXACT same requirements (the
+// compiling skeleton + deploy guidance + realistic-bounds + mock-fidelity guards + the aux sources + the bug-
+// class lens + the answer contract) are re-injected on every compile-repair round, not just the first attempt.
+// Built once from the module lets already in scope (invMatch, deployName, importLine, auxImportLines, auxBlock,
+// targetClass) — the per-run fork/compose/recall SEEDS stay dynamic and are prepended in generate_test.
+let sharedScaffold =
+    "You are a stateful-invariant-fuzzing engineer. Write a self-contained Foundry stateful-invariant "
+  + "test (Solidity, `pragma solidity ^0.8.20;`) for the target contract below so Foundry's invariant "
+  + "fuzzer can drive randomized multi-call SEQUENCES through it and find a MULTI-STEP exploit. "
+  + "Requirements:\n"
+  + "  - IMPORT and DEPLOY the REAL target contract under test (the contract whose source is shown below) "
+  + "— do NOT inline a mock copy of it. A minimal mock of an EXTERNAL dependency it needs (e.g. an ERC20 "
+  + "asset/token, an oracle) is fine, but the unit under test MUST be the real imported contract, so the "
+  + "verdict is about real code. Do NOT import forge-std — this test must compile with ZERO library "
+  + "remappings.\n"
+  + harness_skeleton(invMatch, deployName, importLine, auxImportLines)
+  + "  - In `setUp()` deploy the real target. For a normal `constructor(args)`: `new " + deployName + "(args)`. "
+  + "For an OpenZeppelin **upgradeable** contract whose constructor calls `_disableInitializers()`: deploy "
+  + "behind a proxy — add `import {ERC1967Proxy} from \"@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol\";` "
+  + "and `" + deployName + " t = " + deployName + "(address(new ERC1967Proxy(address(new " + deployName
+  + "()), abi.encodeCall(" + deployName + ".initialize, (<args>)))));`. Read the target's "
+  + "constructor/initializer signature from the source below to wire the arguments correctly.\n"
+  + "  - EXACTLY ONE deep `" + invMatch + "_*` invariant: pick the SINGLE highest-value property for the "
+  + "bug-class lens below (e.g. solvency / collateralization for an accounting lens, share-price monotonicity "
+  + "for a vault lens), asserted with plain `require(...)` — do NOT enumerate every property. Expose in the "
+  + "Handler ONLY the core state-changing actions needed to exercise THAT one invariant — not every protocol "
+  + "action. The invariant must catch a bug that only a SEQUENCE of calls can produce, not a single call. Keep "
+  + "the entire test under ~120 lines; the real-deploy `setUp()` counts toward that budget, so keep the "
+  + "import/deploy minimal and stay bounded.\n"
+  + "  - REALISTIC INPUT BOUNDS (false-positive guard): BOUND every fuzzed input with the private "
+  + "`_bound(x, lo, hi)` helper to a REALISTIC range — and ESPECIALLY any EXTERNAL-PERTURBATION action "
+  + "(price/oracle setters, deviation setters, donations, fee/rate setters) MUST be `_bound`ed to a "
+  + "realistic range (e.g. a price within a small percentage band around the peg, token amounts within sane "
+  + "ranges), NEVER an arbitrary `uint`. An invariant may break ONLY under a REALISTIC multi-step sequence: a "
+  + "break caused SOLELY by an absurd-magnitude input (e.g. a price of 1e30) is NOT a finding and the harness "
+  + "must not allow it.\n"
+  + "  - MOCK-DEP FIDELITY (false-positive guard): any mock of an EXTERNAL dependency MUST match the REAL "
+  + "units/decimals/types the target assumes for it — read those from the target source (e.g. if the target "
+  + "treats a token as 6-decimal USDC, the mock's `decimals()` must return 6; match the return types and "
+  + "signatures the target actually calls). A mock whose decimals/units/types do NOT match the target's "
+  + "assumptions is INVALID and produces false findings.\n\n"
+  + auxBlock
+  + "=== BUG CLASS (lens) ===\n" + targetClass + "\n\n"
+  + "=== HOW TO ANSWER ===\n"
+  + "Output ONLY the Solidity source of the `*.t.sol` test — no markdown fences, no prose before or "
+  + "after. It must compile and define at least one `contract` and one `" + invMatch + "_*` function.";
+
 fn generate_test(klass: string, src: string, matchPrefix: string, prior: string, forkActive: bool, forkTarget: string, forkUrl: string, forkBlock: string, composeActive: bool, forkContext: string, deployName: string, importLine: string, composeFresh: bool, auxBlock: string, auxImportLines: string) -> string {
+    // #1720 — prepend the per-run recall/fork/compose SEEDS, then append the shared static scaffold (skeleton +
+    // requirements + aux + lens + answer contract). The scaffold is identical to what the repair rounds re-inject.
     let instruction =
         recall_seed(klass, prior)
       + fork_seed(forkActive, forkTarget, forkUrl, forkBlock)
       + compose_seed(composeActive, forkContext)
       + compose_fresh_seed(composeFresh)
-      + "You are a stateful-invariant-fuzzing engineer. Write a self-contained Foundry stateful-invariant "
-      + "test (Solidity, `pragma solidity ^0.8.20;`) for the target contract below so Foundry's invariant "
-      + "fuzzer can drive randomized multi-call SEQUENCES through it and find a MULTI-STEP exploit. "
-      + "Requirements:\n"
-      + "  - IMPORT and DEPLOY the REAL target contract under test (the contract whose source is shown below) "
-      + "— do NOT inline a mock copy of it. A minimal mock of an EXTERNAL dependency it needs (e.g. an ERC20 "
-      + "asset/token, an oracle) is fine, but the unit under test MUST be the real imported contract, so the "
-      + "verdict is about real code. Do NOT import forge-std — this test must compile with ZERO library "
-      + "remappings.\n"
-      + importLine
-      + auxImportLines
-      + "  - In `setUp()` deploy the real target. For a normal `constructor(args)`: `new " + deployName + "(args)`. "
-      + "For an OpenZeppelin **upgradeable** contract whose constructor calls `_disableInitializers()`: deploy "
-      + "behind a proxy — add `import {ERC1967Proxy} from \"@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol\";` "
-      + "and `" + deployName + " t = " + deployName + "(address(new ERC1967Proxy(address(new " + deployName
-      + "()), abi.encodeCall(" + deployName + ".initialize, (<args>)))));`. Read the target's "
-      + "constructor/initializer signature from the source below to wire the arguments correctly.\n"
-      + "  - A `Handler` contract whose PUBLIC functions are the protocol's actions as a real attacker/user "
-      + "would call them (deposit, withdraw, donate, borrow, ...), each taking fuzzed `uint` inputs you BOUND "
-      + "to realistic ranges with a private `_bound(x, lo, hi)` helper (NO forge-std `bound`). Track the "
-      + "honest victim's deposits/shares in Handler state so an invariant can compare claim-vs-deposit.\n"
-      + "  - An `abstract contract InvBase` that exposes `function targetContracts() public view returns "
-      + "(address[] memory)` returning the addresses to fuzz, with an internal `_target(address)` that pushes "
-      + "to that array (this is the StdInvariant ABI Foundry auto-discovers — no forge-std needed).\n"
-      + "  - A test contract `is InvBase` with a `setUp()` that deploys the protocol + the Handler and calls "
-      + "`_target(address(handler))`, plus EXACTLY ONE deep `" + matchPrefix + "_*` view function asserting with "
-      + "plain `require(...)` the SINGLE highest-value property for the bug-class lens below — pick the one "
-      + "invariant most relevant to that lens (e.g. solvency / collateralization for an accounting lens, "
-      + "share-price monotonicity for a vault lens), do NOT enumerate every property. Expose in the Handler "
-      + "ONLY the core state-changing actions needed to exercise THAT one invariant — not every protocol action. "
-      + "The invariant must catch a bug that only a SEQUENCE of calls can produce, not a single call. "
-      + "Keep the entire test under ~120 lines; do not exceed it — the real-deploy `setUp()` counts toward "
-      + "that budget, so keep the import/deploy minimal and stay bounded.\n"
-      + "  - REALISTIC INPUT BOUNDS (false-positive guard): BOUND every fuzzed input with the private "
-      + "`_bound(x, lo, hi)` helper to a REALISTIC range — and ESPECIALLY any EXTERNAL-PERTURBATION action "
-      + "(price/oracle setters, deviation setters, donations, fee/rate setters) MUST be `_bound`ed to a "
-      + "realistic range (e.g. a price within a small percentage band around the peg, token amounts within sane "
-      + "ranges), NEVER an arbitrary `uint`. An invariant may break ONLY under a REALISTIC multi-step sequence: a "
-      + "break caused SOLELY by an absurd-magnitude input (e.g. a price of 1e30) is NOT a finding and the harness "
-      + "must not allow it.\n"
-      + "  - MOCK-DEP FIDELITY (false-positive guard): any mock of an EXTERNAL dependency MUST match the REAL "
-      + "units/decimals/types the target assumes for it — read those from the target source (e.g. if the target "
-      + "treats a token as 6-decimal USDC, the mock's `decimals()` must return 6; match the return types and "
-      + "signatures the target actually calls). A mock whose decimals/units/types do NOT match the target's "
-      + "assumptions is INVALID and produces false findings.\n\n"
-      + auxBlock
-      + "=== BUG CLASS (lens) ===\n" + klass + "\n\n"
-      + "=== HOW TO ANSWER ===\n"
-      + "Output ONLY the Solidity source of the `*.t.sol` test — no markdown fences, no prose before or "
-      + "after. It must compile and define at least one `contract` and one `" + matchPrefix + "_*` function.";
+      + sharedScaffold;
     // colony-lint: prompt-gate-ok
     return prompt(instruction, src) -> string;
 }
@@ -513,14 +562,18 @@ fn repair_rounds(raw: string) -> int {
 }
 let repairRounds = repair_rounds(getenv("INV_REPAIR_ROUNDS"));
 
-// Extract a useful compiler-error excerpt from the gate's captured output (forge stderr). Keep only the lines
-// that carry diagnostic signal (Error / error[ / a `-->` source pointer / a Compiler banner) so the repair
-// prompt stays focused, then cap the whole excerpt to a few KB so it stays bounded (forge can emit very long
-// build logs). Untrusted: it flows ONLY into the plain-string repair prompt below, never into a shell.
+// Extract a useful compiler-error excerpt from the gate's captured output (forge stderr). Keep the lines that
+// carry diagnostic signal — the Error / error[ / `-->` source pointer / Compiler banner lines AND (#1720) the
+// solc source-context lines the model needs to actually locate the fault: the numbered gutter lines
+// (`   12 |   foo`, matched by `^[[:space:]]*[0-9]*[[:space:]]*\|`) and the caret-underline lines (`   ^^^^`,
+// matched by `\^`). Without that context the repair prompt saw the error TEXT but not the offending SOURCE, so
+// a round often "fixed" the wrong line. Raise the line cap (80 -> 160) and the byte cap (4000 -> 6000) to fit
+// the extra context while staying bounded (forge can emit very long build logs). Untrusted: it flows ONLY into
+// the plain-string repair prompt below, never into a shell.
 fn error_excerpt(out: string) -> string {
     // colony-lint: safe-exec-concat
-    let filtered = exec sh "printf '%s' " + shell_escape(out) + " | grep -E 'Error|error\\[|[-][-]>|Compiler' | head -n 80 || true";
-    if len(filtered) > 4000 { return substring(filtered, 0, 4000); }
+    let filtered = exec sh "printf '%s' " + shell_escape(out) + " | grep -E 'Error|error\\[|[-][-]>|Compiler|^[[:space:]]*[0-9]*[[:space:]]*\\||\\^' | head -n 160 || true";
+    if len(filtered) > 6000 { return substring(filtered, 0, 6000); }
     return filtered;
 }
 // The repair instruction: hand the model the compiler error + its PRIOR test source, with the SAME hard
@@ -528,18 +581,23 @@ fn error_excerpt(out: string) -> string {
 // `<matchPrefix>_*` naming, import+deploy the REAL target, output-only). prevSrc/excerpt are derived from the
 // LLM completion + the untrusted target's forge output — they flow ONLY into this plain-string prompt, never
 // a shell.
-fn repair_instruction(excerpt: string, prevSrc: string, matchPrefix: string) -> string {
-    return "The Foundry invariant test you wrote did NOT compile (or matched no `invariant_*`). Compiler output:\n"
+// #1720 — re-inject the FULL generation scaffold (the compiling skeleton + all the requirements/lens/answer
+// contract) on every compile-repair round, then hand the model the compiler error + its PRIOR test source. A
+// repair round that only saw the error text drifted off the canonical skeleton; re-anchoring it to the SAME
+// scaffold the first attempt got — with the now-richer solc source context in `excerpt` — is what makes the 4
+// rounds converge instead of thrash. The scaffold already carries the pragma/no-forge-std/targetContracts()/
+// require()/`<prefix>_*`/import-the-REAL-target constraints, so the tail is just the failure + the fix ask.
+fn repair_instruction(excerpt: string, prevSrc: string, scaffold: string) -> string {
+    return scaffold
+         + "\n=== YOUR PREVIOUS TEST FAILED TO COMPILE ===\nCompiler output:\n"
          + excerpt
          + "\nYour previous test was:\n"
          + prevSrc
-         + "\nFix it and output ONLY the corrected Solidity — same constraints (pragma ^0.8.20, NO forge-std, "
-         + "targetContracts(), plain require(), `" + matchPrefix + "_*` naming, import+deploy the REAL target, "
-         + "output-only).";
+         + "\nFix it and output ONLY the corrected Solidity.";
 }
-fn repair_test(excerpt: string, prevSrc: string, matchPrefix: string) -> string {
+fn repair_test(excerpt: string, prevSrc: string, scaffold: string) -> string {
     // colony-lint: prompt-gate-ok
-    return prompt(repair_instruction(excerpt, prevSrc, matchPrefix), "") -> string;
+    return prompt(repair_instruction(excerpt, prevSrc, scaffold), "") -> string;
 }
 // FM2 (#1077) — the POINTED both-real-violation repair instruction. The harness COMPILED + the gate returned a
 // verdict, but in composable-fresh mode it mocked or omitted one or more REQUIRED real contracts (`missing`,
@@ -610,7 +668,7 @@ fn stop_flag_both(rc: int, testSrc: string, composeFresh: bool, names: list<stri
 // source through the SAME shell_escape()d printf mechanism, re-run the gate, and STOP via the both-real-aware
 // stop flag. matchPrefix + the gate-invocation pieces + composeFresh/names are carried in as params (the .ag
 // pass-everything convention) so the body needs no module globals.
-fn repair_step(acc: string, gateSh: string, repo: string, out: string, matchPrefix: string, budgetArgs: string, forkArgs: string, composeFresh: bool, names: list<string>) -> string {
+fn repair_step(acc: string, gateSh: string, repo: string, out: string, matchPrefix: string, budgetArgs: string, forkArgs: string, composeFresh: bool, names: list<string>, scaffold: string) -> string {
     if rstate_field(acc, 0) == "1" { return acc; }
     let prevSrc = rstate_field(acc, 1);
     let prevOut = rstate_field(acc, 2);
@@ -620,10 +678,11 @@ fn repair_step(acc: string, gateSh: string, repo: string, out: string, matchPref
     // required real contract. A HARNESS_ERROR (rc not in {0,1}) takes the compile-error repair regardless.
     // (Nested if, not `&&`: single-assignment .ag has no short-circuit boolean operators.)
     let bothRealViolation = if stop_flag(prevRc) == "1" { len(missing) > 0 } else { false };
+    // #1720 — the compile-error repair re-injects the FULL `scaffold`; the both-real repair (#1077) is UNCHANGED.
     let fixed = if bothRealViolation {
         repair_test_bothreal(missing, prevSrc, matchPrefix)
     } else {
-        repair_test(error_excerpt(prevOut), prevSrc, matchPrefix)
+        repair_test(error_excerpt(prevOut), prevSrc, scaffold)
     };
     let _wr = write_test(fixed, out);
     let newOut = run_gate(gateSh, repo, out, matchPrefix, budgetArgs, forkArgs);
@@ -634,11 +693,11 @@ fn repair_step(acc: string, gateSh: string, repo: string, out: string, matchPref
 // `remaining <= 0` is a true no-op (returns the state untouched), so INV_REPAIR_ROUNDS=0 — and the fixture
 // path, which seeds stopped="1" — make ZERO extra prompt()/gate calls. `repair_step` itself short-circuits
 // once stopped, so a FINDING/CLEAN (with both-real satisfied) ends the recursion early even with rounds left.
-fn repair_loop(acc: string, remaining: int, gateSh: string, repo: string, out: string, matchPrefix: string, budgetArgs: string, forkArgs: string, composeFresh: bool, names: list<string>) -> string {
+fn repair_loop(acc: string, remaining: int, gateSh: string, repo: string, out: string, matchPrefix: string, budgetArgs: string, forkArgs: string, composeFresh: bool, names: list<string>, scaffold: string) -> string {
     if remaining <= 0 { return acc; }
     if rstate_field(acc, 0) == "1" { return acc; }
-    let next = repair_step(acc, gateSh, repo, out, matchPrefix, budgetArgs, forkArgs, composeFresh, names);
-    return repair_loop(next, remaining - 1, gateSh, repo, out, matchPrefix, budgetArgs, forkArgs, composeFresh, names);
+    let next = repair_step(acc, gateSh, repo, out, matchPrefix, budgetArgs, forkArgs, composeFresh, names, scaffold);
+    return repair_loop(next, remaining - 1, gateSh, repo, out, matchPrefix, budgetArgs, forkArgs, composeFresh, names, scaffold);
 }
 
 // FIRST attempt: write the chosen test + run the gate ONCE (today's one-shot — byte-identical for the fixture
@@ -661,7 +720,7 @@ let initState = rstate(initStopped, test, firstOut);
 // disable path) and the fixture path both leave `finalState` == `initState` (today's one-shot behaviour). The
 // composeFresh flag + requiredNames are threaded so a both-real violation also drives a round (and the pointed
 // repair prompt) in composable-fresh mode; outside it they are inert (composeFresh false => no extra trigger).
-let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, gateExtra, composableFresh, requiredNames);
+let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, gateExtra, composableFresh, requiredNames, sharedScaffold);
 
 // The verdict is the gate's exit code on the LAST attempt — NEVER the LLM's opinion (unchanged contract) —
 // EXCEPT the #1077 both-real override: in composable-fresh mode, if the FINAL harness STILL mocked/omitted a

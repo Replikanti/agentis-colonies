@@ -1216,6 +1216,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-linkage.sh" ]; then
     fi
 fi
 
+# --- dark-factory invariant-hunt harness-gen repair scaffold + error-context (#1720) ---
+# The deep-hunt path returned HARNESS_ERROR too often because its 4 repair rounds were under-anchored: the
+# canonical InvBase/targetContracts/_bound boilerplate was only described in prose (not a compiling skeleton),
+# and the compile-error excerpt kept only the error TEXT, not the solc source context. invariant-prover.ag now
+# injects a boilerplate-only compiling skeleton (harness_skeleton -> sharedScaffold) into the FIRST prompt AND
+# re-injects it on every repair round (threaded through the repair chain), and error_excerpt keeps the
+# -->/gutter/caret source-context lines. demo-invariant-repair.sh source-guards the wiring (CI-safe, no
+# toolchain) + proves the widened error filter keeps that context over a canned solc error block.
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-repair.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-repair.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: invariant-hunt harness-gen repair scaffold + error-context (#1720)"
+    else
+        fail "dark-factory: invariant-hunt harness-gen repair scaffold + error-context regressed (#1720)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory concrete-exploit PoC-gen (hardhat / non-invariant foundry) (#1507) ---
 # The SECOND PoC class alongside the invariant machinery: poc-writer.ag writes ONE concrete attack-SEQUENCE test
 # (not a property-fuzz handler) and the toolchain-parametric gate (evm-harness/hardhat-poc.sh /
