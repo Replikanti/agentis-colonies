@@ -108,13 +108,14 @@ else
 fi
 
 # (c) The repair re-prompt()s with the compiler error + prior source. A
-# `repair_instruction()` carries the "did NOT compile" framing, an
+# `repair_instruction()` carries the compile-failure framing (since #1720 the
+# "FAILED TO COMPILE" section prepended to the re-injected scaffold), an
 # `error_excerpt` of forge's output, and the prior source; `repair_test()`
 # feeds it to prompt().
 c_fail=""
 printf '%s\n' "$src" | grep -Eq 'fn[[:space:]]+repair_instruction\(' \
     || c_fail="${c_fail} no-repair_instruction"
-printf '%s\n' "$src" | grep -Fq 'did NOT compile' \
+printf '%s\n' "$src" | grep -Fq 'FAILED TO COMPILE' \
     || c_fail="${c_fail} no-compile-framing"
 printf '%s\n' "$src" | grep -Eq 'fn[[:space:]]+error_excerpt\(' \
     || c_fail="${c_fail} no-error_excerpt"

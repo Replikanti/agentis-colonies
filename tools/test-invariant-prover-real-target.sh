@@ -51,11 +51,13 @@ if [ ! -f "$AG" ]; then
     exit 1
 fi
 
-# Extract only the `generate_test(...)` function body so the import/deploy
-# directive assertions scope to the live-generation instruction and never to
-# the doc comments or other agents. awk: from the `fn generate_test` line
-# through the next `\n}` at column 0 (the function close brace).
-gen_body="$(awk '/^fn generate_test\(/{f=1} f{print} f&&/^}/{exit}' "$AG")"
+# Extract the STATIC generation instruction. Since #1720 it is factored out of
+# generate_test() into the module-level `harness_skeleton()` (the canonical
+# compiling skeleton) + the `sharedScaffold` string (the requirement paragraphs
+# + bug-class lens + answer contract); generate_test appends sharedScaffold and
+# the compile-repair chain re-injects it. Capture BOTH blocks so the import/deploy
+# directive assertions scope to that instruction and never to doc comments.
+gen_body="$(awk '/^fn harness_skeleton\(/{f=1} f{print} f&&/^}/{f=0}' "$AG"; awk '/^let sharedScaffold/{f=1} f{print} f&&/;[[:space:]]*$/{f=0}' "$AG")"
 
 if [ -z "$gen_body" ]; then
     fail "generate_test body found" "no 'fn generate_test(...)' block in $AG"

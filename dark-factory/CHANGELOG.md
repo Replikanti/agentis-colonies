@@ -33,6 +33,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `demo-hunt-fitness.sh` (all functional parts `--backend mock`).
 
 ### Fixed
+- **Invariant-hunt harness generation + repair effectiveness** (#1720, follow-up to the #1716 A/B that
+  showed the deep-hunt path burning its 4 repair rounds and still returning HARNESS_ERROR too often). The
+  round COUNT is unchanged; each round is made more effective. `invariant-prover.ag` now (a) injects a
+  compact, boilerplate-only CANONICAL COMPILING SKELETON (`harness_skeleton` → `sharedScaffold`) into the
+  first-generation prompt and RE-INJECTS the same scaffold on every compile-repair round (threaded through
+  `repair_instruction`/`repair_test`/`repair_step`/`repair_loop`), so a repair round re-anchors to the exact
+  InvBase/`targetContracts()`/`_bound` boilerplate instead of drifting off it; the skeleton is boilerplate-only
+  (generic `InvariantTest`/`Handler`, never a contract of the target's name) so it can never trip the #1471
+  target-linkage/shadow gate; and (b) widens `error_excerpt` to keep the solc SOURCE context the model needs to
+  locate a fault — the `-->` pointer, the numbered gutter lines, and the caret-underline lines — alongside the
+  error text, with the line cap raised 80 → 160 and the byte cap 4000 → 6000. The fuzzer stays the sole verdict
+  source; only generation/repair prompts change, and the both-real repair path (#1077) is untouched. Pinned by
+  the new `demo-invariant-repair.sh` (source-guard, CI-safe, wired into colony-lint).
 
 ## [0.4.3] - 2026-07-16
 
