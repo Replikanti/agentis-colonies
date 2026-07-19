@@ -1252,6 +1252,25 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-audit-seed.sh" ]; then
     fi
 fi
 
+# --- dark-factory invariant-hunt mutant-kill validation (#1724) ---
+# The invariant-hunt track judged bugs with the forge-invariant.sh stateful fuzzer, but nothing measured
+# whether a GENERATED invariant is EXPRESSIVE enough to catch real bugs (the #1716 A/B limit). #1724 adds a
+# standardized, per-TARGET_CLASS MUTANT KILL-SET (evm-harness/mutants/) + a runnable harness
+# (evm-harness/mutant-kill.sh) that drives each fixture through the SAME forge-invariant.sh gate and reports
+# KILLED/SURVIVED (exit 1=FINDING=KILLED, 0=CLEAN=SURVIVED, 2=HARNESS_ERROR=ERROR). Each class encodes a
+# three-way DISCRIMINATION (good KILLS mutant + SURVIVES clean twin, toothless SURVIVES mutant). The gate and
+# its verdict/marker/#1471 contract are untouched. demo-invariant-mutant-kill.sh source-guards the fixtures +
+# manifest + harness wiring (CI-safe) and, when forge is present, runs mutant-kill.sh --self-test live.
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-mutant-kill.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-mutant-kill.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: invariant-hunt mutant-kill validation (kill-set + discrimination self-test) (#1724)"
+    else
+        fail "dark-factory: invariant-hunt mutant-kill validation regressed (#1724)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory concrete-exploit PoC-gen (hardhat / non-invariant foundry) (#1507) ---
 # The SECOND PoC class alongside the invariant machinery: poc-writer.ag writes ONE concrete attack-SEQUENCE test
 # (not a property-fuzz handler) and the toolchain-parametric gate (evm-harness/hardhat-poc.sh /
