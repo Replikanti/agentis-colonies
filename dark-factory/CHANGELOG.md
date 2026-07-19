@@ -15,6 +15,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Audit-informed invariant seeding on the deep-hunt path** (#1722, follow-up to the #1716 A/B
+  that isolated invariant EXPRESSIVENESS, not plumbing, as the limit). `run-invariant-hunt.sh`
+  gains an optional `--audit-context <file>` (a target's spec / audit-scope doc); it is staged into
+  the rundir and threaded to `invariant-prover.ag` as `INV_AUDIT_CONTEXT`. The prover reads it via
+  the sandboxed `cat_file` and prepends a new `audit_seed()` block to the existing `generate_test`
+  seed chain (alongside `recall_seed`/`fork_seed`/`compose_seed`), steering the LLM to formalize a
+  protocol-SPECIFIC value-conservation property from the doc rather than only the generic per-lens
+  default — reusing the existing `TARGET_CLASS`/`recall_pattern` scaffolding, not a parallel one.
+  Purely additive: no `--audit-context` ⇒ empty seed ⇒ byte-identical prompt. The FUZZER
+  (`evm-harness/forge-invariant.sh` exit code) stays the SOLE verdict; the `INVARIANT|` marker
+  contract and the #1471 target-linkage gate are byte-identical. Pinned by the CI-safe source-guard
+  `demo-invariant-audit-seed.sh` (colony-lint block; no live LLM/forge).
 - **Corpus-bench → hunter fitness feedback loop** (learn + recommend wiring, #1711). The
   bench now closes the loop it only ever recorded before: `score-match.py` grew an additive
   `--per-lead` flag emitting one `LEAD<TAB><class><TAB><HIT|MISS>` line per verified lead

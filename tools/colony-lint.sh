@@ -1234,6 +1234,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-repair.sh" ]; then
     fi
 fi
 
+# --- dark-factory invariant-hunt audit-informed invariant seeding (#1722) ---
+# The #1716 A/B isolated invariant EXPRESSIVENESS (not plumbing) as the deep-hunt limit. run-invariant-hunt.sh
+# gains an optional --audit-context <file> (a target's spec / audit-scope doc); it is staged into the rundir and
+# threaded to invariant-prover.ag as INV_AUDIT_CONTEXT. The prover reads it via the sandboxed cat_file and
+# prepends a new audit_seed() block to the existing generate_test seed chain, steering the LLM to formalize a
+# protocol-SPECIFIC value-conservation property. Purely additive (empty context => byte-identical prompt); the
+# fuzzer stays the sole verdict and the #1471 linkage gate is untouched. demo-invariant-audit-seed.sh source-
+# guards the wiring + proves the unreadable-context exit-2 error offline (CI-safe, no LLM/forge/agentis).
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-audit-seed.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-audit-seed.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: invariant-hunt audit-informed invariant seeding (#1722)"
+    else
+        fail "dark-factory: invariant-hunt audit-informed invariant seeding regressed (#1722)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory concrete-exploit PoC-gen (hardhat / non-invariant foundry) (#1507) ---
 # The SECOND PoC class alongside the invariant machinery: poc-writer.ag writes ONE concrete attack-SEQUENCE test
 # (not a property-fuzz handler) and the toolchain-parametric gate (evm-harness/hardhat-poc.sh /
