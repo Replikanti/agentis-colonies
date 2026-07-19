@@ -402,8 +402,27 @@ fn compose_fresh_seed(active: bool) -> string {
 // class) is never empty/no-op — it still asks for >=2 actors + a direct external-perturbation action, so every
 // target benefits even when TARGET_CLASS is blank. Purely additive prompt steering: it never touches verdict_of,
 // the INVARIANT| marker, or the #1471 --require-import/--require-contract gate.
+// #1725 (#1742 QA fix) — the live-hunt pipeline (zone-mapper.ag -> run-zone-hunt.sh dominant_class() ->
+// run-invariant-hunt.sh --class) feeds a BARE taxonomy code (C1..C18, e.g. "C10"/"C11"), NOT the descriptive
+// label ("C-erc4626") the keyword branches below match. Without this normalization the primary production path
+// silently hit the generic default every time. class_is() is an ANCHORED exact match ("|" + k + "|" so "c1"
+// never matches "c10"/"c11"/"c12"); class_to_keyword() maps the codes that unambiguously correspond to one of
+// the five action classes to that class's existing keyword, leaving genuinely-ambiguous codes (rounding C6,
+// oracle C2, access C5, ...) to the sensible generic default. Flat index_of only — no per-element recursion.
+fn class_is(k: string, code: string) -> bool {
+    return index_of("|" + k + "|", "|" + code + "|") >= 0;
+}
+fn class_to_keyword(k: string) -> string {
+    if class_is(k, "c1") { return "vault"; }
+    if class_is(k, "c11") { return "vault"; }
+    if class_is(k, "c10") { return "lend"; }
+    if class_is(k, "c12") { return "amm"; }
+    if class_is(k, "c8") { return "reentran"; }
+    return k;
+}
+
 fn action_checklist_hint(klass: string) -> string {
-    let k = to_lower(klass);
+    let k = class_to_keyword(to_lower(klass));
     let vaultHint = "for the vault/ERC4626 class: include a direct-donation action, a first-depositor "
          + "micro-deposit action, and >=2 actor addresses (attacker/victim) for deposit/withdraw/harvest "
          + "sequences.";
@@ -437,7 +456,7 @@ fn action_checklist_hint(klass: string) -> string {
 // as action_checklist_hint (kept in lockstep intentionally — one compact sentence for the inline Handler comment,
 // one spelled-out MUST-include list for the generation prompt itself).
 fn action_checklist_prompt(klass: string) -> string {
-    let k = to_lower(klass);
+    let k = class_to_keyword(to_lower(klass));
     let vaultPrompt = "  - a direct-donation action (transfer the underlying asset straight to the vault, "
          + "bypassing deposit)\n"
          + "  - a first-depositor micro-deposit action (deposit a tiny amount before the victim's larger one)\n"

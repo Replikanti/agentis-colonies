@@ -80,6 +80,44 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# 1b) PRODUCTION-PATH CLASS NORMALIZATION (#1742 QA fix) — the live-hunt pipeline feeds a BARE taxonomy code
+#     (C1..C18) as TARGET_CLASS, not the descriptive label the keyword branches match. class_to_keyword() must
+#     map the codes that unambiguously correspond to an action class onto that class's keyword BEFORE the branch
+#     dispatch, or the primary path silently falls to the generic default (the effectiveness gap QA caught). The
+#     match must be ANCHORED (class_is via "|"-delimiters) so "c1" never matches "c10"/"c11"/"c12".
+# ----------------------------------------------------------------------------------------------------------
+note "source-guarding the #1742 bare-taxonomy-code normalization ..."
+
+if grep -q 'fn class_is(k: string, code: string) -> bool' "$PROVER" \
+   && grep -q 'index_of("|" + k + "|", "|" + code + "|")' "$PROVER"; then
+  ok "class_is() is an anchored exact match (|-delimited, so c1 does not match c10/c11/c12)"
+else
+  bad "class_is() anchored-match helper missing or not |-delimited"
+fi
+
+if grep -q 'fn class_to_keyword(k: string) -> string' "$PROVER"; then
+  ok "class_to_keyword() bare-code normalizer is defined"
+else
+  bad "class_to_keyword() normalizer missing"
+fi
+
+if grep -q 'if class_is(k, "c1") { return "vault"; }' "$PROVER" \
+   && grep -q 'if class_is(k, "c11") { return "vault"; }' "$PROVER" \
+   && grep -q 'if class_is(k, "c10") { return "lend"; }' "$PROVER" \
+   && grep -q 'if class_is(k, "c12") { return "amm"; }' "$PROVER" \
+   && grep -q 'if class_is(k, "c8") { return "reentran"; }' "$PROVER"; then
+  ok "the production taxonomy codes map to their action class (C1/C11->vault, C10->lend, C12->amm, C8->reentran)"
+else
+  bad "the taxonomy-code -> action-class mapping is incomplete"
+fi
+
+if [ "$(grep -c 'let k = class_to_keyword(to_lower(klass));' "$PROVER")" -eq 2 ]; then
+  ok "BOTH action_checklist_hint/prompt normalize via class_to_keyword(to_lower(klass)) (not bare to_lower)"
+else
+  bad "an action_checklist_* function still keys on the raw label (bare to_lower) — production path regressed"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # 2) PER-CLASS COVERAGE — each of the 5 classes (plus the generic default) has its distinguishing checklist
 #    text present in the prover source.
 # ----------------------------------------------------------------------------------------------------------

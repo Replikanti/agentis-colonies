@@ -38,7 +38,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   multi-CONTRACT composability across targets (#1726, the explicit multi-actor-within-one-target vs.
   multi-contract follow-up). The behavioural question — does a richer Handler action space actually
   shrink the generation−verified DELTA — is deferred to a live operator re-hunt outside CI; this
-  change ships the deterministic wiring only.
+  change ships the deterministic wiring only. The branch dispatch first normalizes the BARE taxonomy
+  code the live-hunt pipeline actually feeds as `TARGET_CLASS` (`C1`..`C18`, e.g. `C10`/`C11`) onto its
+  action class (`class_to_keyword` + anchored `class_is`, so `c1` never matches `c10`/`c11`/`c12`) —
+  `C1`/`C11`→vault, `C10`→lending, `C12`→AMM, `C8`→reentrancy; ambiguous codes (rounding `C6`, oracle
+  `C2`, access `C5`, …) keep the generic default. Without it the primary production path silently hit
+  the default every time even though the descriptive-keyword branches were correct (#1742 QA).
 - **Historical DeFi exploit-class pattern seeding** (#1733). A new curated, OFFLINE fixture,
   `auditor/methods/historical-exploits.md`, hand-authors 7 canonical, well-known PUBLIC DeFi
   exploit CLASSES — one entry per distinct `C1`/`C2`/`C5`/`C6`/`C8`/`C11`/`C16` taxonomy id from
