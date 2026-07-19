@@ -15,6 +15,35 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Adversarial/multi-actor Handler action checklist for the deep-hunt fuzzer** (#1725). The #1716
+  generation−verified A/B isolated a DELTA gap: the LLM names a plausible deep invariant but the
+  Handler it writes never gives the fuzzer the ADVERSARIAL action space needed to actually break it
+  (no direct-donation action, only one actor, no liquidation/sandwich/reentrancy sequence) — the
+  fuzzer can only search sequences over the actions the Handler exposes. `invariant-prover.ag` gains
+  two flat string-building functions, `action_checklist_hint()` (a one-line hint woven into the
+  Handler's Solidity comment) and `action_checklist_prompt()` (the fuller MUST-include checklist
+  appended to `sharedScaffold`'s generation prompt), both keyed off the existing `TARGET_CLASS` (no
+  new env var, no new `prompt()` call, no runner change). Five protocol-CLASS branches, ordered
+  most-specific-first: vault/ERC4626 (direct-donation + first-depositor + multi-actor),
+  lending/CDP (multi-borrower + liquidation sequence + bounded price-oracle move), staking
+  (multi-staker + reward-timing/vesting-sandwich), AMM (sandwich + direct-donation), reentrancy
+  (a callback-receiver actor re-entering a sensitive function) — plus a generic multi-actor +
+  direct-external-perturbation default so an unclassified target still benefits. The verdict/marker/
+  #1471 gate (`verdict_of`, the `INVARIANT|<file:fn>|<verdict>` marker, and the
+  `--require-import`/`--require-contract` target-linkage args) are untouched — this is prompt
+  steering only, never a hard gate. `demo-invariant-handler-actions.sh` source-guards the wiring, all
+  5 per-class checklists (plus the default), the untouched verdict/marker/#1471 contract, and that
+  `TARGET_CLASS`'s `exec.env_passthrough` entry got no new sibling; wired into `colony-lint.sh`.
+  **Out of scope**: harness compile robustness (#1720), which invariant is generated (#1722),
+  multi-CONTRACT composability across targets (#1726, the explicit multi-actor-within-one-target vs.
+  multi-contract follow-up). The behavioural question — does a richer Handler action space actually
+  shrink the generation−verified DELTA — is deferred to a live operator re-hunt outside CI; this
+  change ships the deterministic wiring only. The branch dispatch first normalizes the BARE taxonomy
+  code the live-hunt pipeline actually feeds as `TARGET_CLASS` (`C1`..`C18`, e.g. `C10`/`C11`) onto its
+  action class (`class_to_keyword` + anchored `class_is`, so `c1` never matches `c10`/`c11`/`c12`) —
+  `C1`/`C11`→vault, `C10`→lending, `C12`→AMM, `C8`→reentrancy; ambiguous codes (rounding `C6`, oracle
+  `C2`, access `C5`, …) keep the generic default. Without it the primary production path silently hit
+  the default every time even though the descriptive-keyword branches were correct (#1742 QA).
 - **Historical DeFi exploit-class pattern seeding** (#1733). A new curated, OFFLINE fixture,
   `auditor/methods/historical-exploits.md`, hand-authors 7 canonical, well-known PUBLIC DeFi
   exploit CLASSES — one entry per distinct `C1`/`C2`/`C5`/`C6`/`C8`/`C11`/`C16` taxonomy id from

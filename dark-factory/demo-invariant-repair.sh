@@ -56,7 +56,7 @@ else
 fi
 
 if grep -q 'let sharedScaffold' "$PROVER" \
-   && grep -q 'harness_skeleton(invMatch, deployName, importLine, auxImportLines)' "$PROVER"; then
+   && grep -q 'harness_skeleton(invMatch, deployName, importLine, auxImportLines' "$PROVER"; then
   ok "sharedScaffold is built from harness_skeleton + the static requirements"
 else
   bad "sharedScaffold missing or not built from harness_skeleton"

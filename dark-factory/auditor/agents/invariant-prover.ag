@@ -391,6 +391,108 @@ fn compose_fresh_seed(active: bool) -> string {
          + "must not have drained the system. In this composable-fresh mode the size budget grows to ~180 lines "
          + "(still bounded) to fit the multi-deploy + wiring `setUp()`.\n";
 }
+// #1725 — ADVERSARIAL/MULTI-ACTOR HANDLER ACTION CHECKLIST. The #1716 A/B isolated a DELTA gap where the LLM
+// names a plausible deep invariant but the Handler it wrote never gives the fuzzer the ADVERSARIAL action space
+// needed to actually break it (no direct-donation action, only one actor, no liquidation/sandwich/reentrancy
+// sequence) — the fuzzer can only search sequences over the actions the Handler exposes. These two functions are
+// flat string builders keyed off the SAME `targetClass` (`TARGET_CLASS`, already module-scope + already on
+// run-invariant-hunt.sh's exec.env_passthrough list — no new env var, no new prompt() call, no per-element
+// recursion). Classification is a `to_lower(klass)` + `index_of(...)` substring match, same idiom as #1729's
+// contains_access_control_signal(). Branch order is MOST-SPECIFIC-FIRST; the default fallback (empty/unmatched
+// class) is never empty/no-op — it still asks for >=2 actors + a direct external-perturbation action, so every
+// target benefits even when TARGET_CLASS is blank. Purely additive prompt steering: it never touches verdict_of,
+// the INVARIANT| marker, or the #1471 --require-import/--require-contract gate.
+// #1725 (#1742 QA fix) — the live-hunt pipeline (zone-mapper.ag -> run-zone-hunt.sh dominant_class() ->
+// run-invariant-hunt.sh --class) feeds a BARE taxonomy code (C1..C18, e.g. "C10"/"C11"), NOT the descriptive
+// label ("C-erc4626") the keyword branches below match. Without this normalization the primary production path
+// silently hit the generic default every time. class_is() is an ANCHORED exact match ("|" + k + "|" so "c1"
+// never matches "c10"/"c11"/"c12"); class_to_keyword() maps the codes that unambiguously correspond to one of
+// the five action classes to that class's existing keyword, leaving genuinely-ambiguous codes (rounding C6,
+// oracle C2, access C5, ...) to the sensible generic default. Flat index_of only — no per-element recursion.
+fn class_is(k: string, code: string) -> bool {
+    return index_of("|" + k + "|", "|" + code + "|") >= 0;
+}
+fn class_to_keyword(k: string) -> string {
+    if class_is(k, "c1") { return "vault"; }
+    if class_is(k, "c11") { return "vault"; }
+    if class_is(k, "c10") { return "lend"; }
+    if class_is(k, "c12") { return "amm"; }
+    if class_is(k, "c8") { return "reentran"; }
+    return k;
+}
+
+fn action_checklist_hint(klass: string) -> string {
+    let k = class_to_keyword(to_lower(klass));
+    let vaultHint = "for the vault/ERC4626 class: include a direct-donation action, a first-depositor "
+         + "micro-deposit action, and >=2 actor addresses (attacker/victim) for deposit/withdraw/harvest "
+         + "sequences.";
+    if index_of(k, "4626") >= 0 { return vaultHint; }
+    if index_of(k, "vault") >= 0 { return vaultHint; }
+    let lendHint = "for the lending/CDP class: include >=2 borrower addresses, a liquidation sequence (borrow "
+         + "-> liquidate -> collect by different actors), and a bounded price-oracle-move action.";
+    if index_of(k, "lend") >= 0 { return lendHint; }
+    if index_of(k, "cdp") >= 0 { return lendHint; }
+    if index_of(k, "borrow") >= 0 { return lendHint; }
+    if index_of(k, "liquidat") >= 0 { return lendHint; }
+    if index_of(k, "collateral") >= 0 { return lendHint; }
+    if index_of(k, "stak") >= 0 {
+        return "for the staking class: include >=2 staker addresses with staggered stake/unstake timing around "
+             + "reward distribution (reward-timing / vesting-sandwich).";
+    }
+    let ammHint = "for the AMM class: include a sandwich action (attacker trades before/after a victim swap) "
+         + "and a direct-donation action into the pool reserves.";
+    if index_of(k, "amm") >= 0 { return ammHint; }
+    if index_of(k, "swap") >= 0 { return ammHint; }
+    if index_of(k, "dex") >= 0 { return ammHint; }
+    if index_of(k, "reentran") >= 0 {
+        return "for the reentrancy class: include a callback-receiver actor that re-enters a sensitive function "
+             + "(withdraw/liquidate/mint) during its own external-call callback.";
+    }
+    return "include >=2 bounded actor addresses and a direct external-perturbation action (raw donation / direct "
+         + "rate-set) bypassing the normal entry points.";
+}
+
+// #1725 — the FULLER multi-line bulleted checklist injected into sharedScaffold's prompt, same branch order/keys
+// as action_checklist_hint (kept in lockstep intentionally — one compact sentence for the inline Handler comment,
+// one spelled-out MUST-include list for the generation prompt itself).
+fn action_checklist_prompt(klass: string) -> string {
+    let k = class_to_keyword(to_lower(klass));
+    let vaultPrompt = "  - a direct-donation action (transfer the underlying asset straight to the vault, "
+         + "bypassing deposit)\n"
+         + "  - a first-depositor micro-deposit action (deposit a tiny amount before the victim's larger one)\n"
+         + "  - >=2 actor addresses (attacker/victim) driving deposit/withdraw/harvest in different orders\n"
+         + "  - optionally, a reentrancy-callback stub if the target's asset/hook allows it\n";
+    if index_of(k, "4626") >= 0 { return vaultPrompt; }
+    if index_of(k, "vault") >= 0 { return vaultPrompt; }
+    let lendPrompt = "  - >=2 borrower addresses with independent collateral/debt positions\n"
+         + "  - a liquidation sequence: borrow -> liquidate -> collect, each step by a DIFFERENT actor\n"
+         + "  - a bounded price-oracle-move action (a realistic collateral price shift) preceding liquidation\n";
+    if index_of(k, "lend") >= 0 { return lendPrompt; }
+    if index_of(k, "cdp") >= 0 { return lendPrompt; }
+    if index_of(k, "borrow") >= 0 { return lendPrompt; }
+    if index_of(k, "liquidat") >= 0 { return lendPrompt; }
+    if index_of(k, "collateral") >= 0 { return lendPrompt; }
+    if index_of(k, "stak") >= 0 {
+        return "  - >=2 staker addresses with staggered stake/unstake timing\n"
+             + "  - a reward-timing / vesting-sandwich sequence: stake right before a reward distribution, "
+             + "unstake right after\n";
+    }
+    let ammPrompt = "  - a sandwich action: an attacker trades immediately before AND after a victim's swap\n"
+         + "  - a direct-donation action into the pool reserves (bypassing the normal swap/mint path)\n";
+    if index_of(k, "amm") >= 0 { return ammPrompt; }
+    if index_of(k, "swap") >= 0 { return ammPrompt; }
+    if index_of(k, "dex") >= 0 { return ammPrompt; }
+    if index_of(k, "reentran") >= 0 {
+        return "  - a reentrancy-actor: a callback-receiver contract that re-enters a sensitive function "
+             + "(withdraw/liquidate/mint) from within its own external-call callback\n"
+             + "  - >=2 actor addresses so the reentrant call and the outer call are attributable to different "
+             + "positions\n";
+    }
+    return "  - >=2 bounded actor addresses (no single-actor sequences)\n"
+         + "  - a direct external-perturbation action (raw donation / direct rate-set) that bypasses the normal "
+         + "entry points\n";
+}
+
 // #1720 — the CANONICAL COMPILING SKELETON injected into BOTH the first-generation prompt AND every compile-
 // repair round (via sharedScaffold, threaded through the repair chain). Each of the 4 repair rounds is only as
 // effective as the context it carries; the deep-hunt HARNESS_ERROR rate was dominated by tests that never got
@@ -400,7 +502,7 @@ fn compose_fresh_seed(active: bool) -> string {
 // generic `InvariantTest`, the actor is `Handler`), so it can never trip the #1471 target-linkage/shadow gate.
 // The importLine/auxImportLines directives are woven in so the model sees WHERE the real imports go. Kept
 // compact (~35 lines) so it does not re-trigger the #1079 prompt-size hang.
-fn harness_skeleton(matchPrefix: string, deployName: string, importLine: string, auxImportLines: string) -> string {
+fn harness_skeleton(matchPrefix: string, deployName: string, importLine: string, auxImportLines: string, actionHint: string) -> string {
     return "=== CANONICAL COMPILING SKELETON ===\n"
          + "Start from this skeleton. Keep the `InvBase` / `targetContracts()` / `_target()` / `_bound()` "
          + "boilerplate VERBATIM (it is the StdInvariant ABI Foundry auto-discovers — no forge-std needed). Fill "
@@ -425,6 +527,7 @@ fn harness_skeleton(matchPrefix: string, deployName: string, importLine: string,
          + "    }\n"
          + "    // ACTIONS: one public function per protocol action (deposit/withdraw/borrow/donate/...),\n"
          + "    // each fuzzed `uint256` input passed through _bound(x, lo, hi) to a REALISTIC range.\n"
+         + "    // ADVERSARIAL ACTION HINT: " + actionHint + "\n"
          + "}\n"
          + "contract InvariantTest is InvBase {\n"
          + "    Handler handler;\n"
@@ -455,7 +558,7 @@ let sharedScaffold =
   + "asset/token, an oracle) is fine, but the unit under test MUST be the real imported contract, so the "
   + "verdict is about real code. Do NOT import forge-std — this test must compile with ZERO library "
   + "remappings.\n"
-  + harness_skeleton(invMatch, deployName, importLine, auxImportLines)
+  + harness_skeleton(invMatch, deployName, importLine, auxImportLines, action_checklist_hint(targetClass))
   + "  - In `setUp()` deploy the real target. For a normal `constructor(args)`: `new " + deployName + "(args)`. "
   + "For an OpenZeppelin **upgradeable** contract whose constructor calls `_disableInitializers()`: deploy "
   + "behind a proxy — add `import {ERC1967Proxy} from \"@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol\";` "
@@ -483,6 +586,10 @@ let sharedScaffold =
   + "assumptions is INVALID and produces false findings.\n\n"
   + auxBlock
   + "=== BUG CLASS (lens) ===\n" + targetClass + "\n\n"
+  + "=== ADVERSARIAL ACTION CHECKLIST ===\n"
+  + "For the bug class above, the Handler MUST include these adversarial/multi-actor actions in addition to "
+  + "the happy-path ones (skip any that plainly do not apply to this target):\n"
+  + action_checklist_prompt(targetClass) + "\n\n"
   + "=== HOW TO ANSWER ===\n"
   + "Output ONLY the Solidity source of the `*.t.sol` test — no markdown fences, no prose before or "
   + "after. It must compile and define at least one `contract` and one `" + invMatch + "_*` function.";
