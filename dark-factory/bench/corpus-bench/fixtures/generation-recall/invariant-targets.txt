@@ -1,0 +1,6 @@
+# generation-recall fixture: deep-hunt invariant-prover output lines (run-invariant-hunt.sh /
+# run-zone-hunt.sh deep-hunt adapter emit exactly one `INVARIANT|<file:fn>|<verdict>` per prover run).
+# The CLEAN verdict below is DISCARDED by hypotheses-to-leads.py --from-invariants: the prover GENERATED an
+# invariant that NAMES the first-depositor bug's location (Vault.sol:deposit), which is a generation HIT even
+# though the fuzzer did not confirm it — that unconfirmed-but-named row is the generation-vs-verification delta.
+INVARIANT|Vault.sol:deposit|CLEAN

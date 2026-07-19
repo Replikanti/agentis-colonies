@@ -15,6 +15,27 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Ground-truth-anchored generation-recall harness** (#1730, follow-up to the #1716 A/B that isolated
+  invariant EXPRESSIVENESS as the deep-hunt limit). `bench/corpus-bench/generation-recall.sh` scores the
+  GENERATOR's hypotheses against ground truth instead of the pipeline's post-confirmation verified findings,
+  isolating the GENERATION step from fuzzer/refuter confirmation: it projects the two generation artifacts a
+  corpus-bench run already stages — the breadth hunter's PRE-REFUTE candidates
+  (`zone-hunt-out/discovery/discovery-results.merged.json`) and the deep-hunt lens's generated invariant
+  targets (`zone-hunt-out/deep-hunt/*/run/invariant_*.log`, the `INVARIANT|<file:fn>|<verdict>` lines) —
+  through a new stdlib-only adapter `bench/corpus-bench/hypotheses-to-leads.py` into the
+  `{"verified":[...]}` lead shape the FROZEN `score-match.py` already consumes. The invariant's FUZZER VERDICT
+  is IGNORED: a CLEAN invariant that still NAMES a GT bug's location counts toward generation-recall, so
+  generation-recall > verified-recall exposes the #1716 expressiveness gap (a bug the pipeline NAMED but never
+  confirmed) as an explicit generation-minus-verified DELTA. Generation-recall = (distinct GT `truth.tsv` rows
+  location-first matched by >=1 generated hypothesis) / (total GT rows), stratified overall / by severity /
+  by rarity (the rare tier is the headline capability number), threshold-independent at `--min-overlap` 2 and
+  5. `--self-test` (default, CI-safe, no network/LLM/forge) projects `fixtures/generation-recall/` and asserts
+  the byte-matched leads + scorecard and the generation-vs-verified delta; `--from-work <dir>` scores a real
+  already-hunted corpus-bench work dir (a missing artifact is a logged skip, never a false 0). `score-match.py`,
+  `extract-gt.sh`, `run-zone-hunt.sh`, `run-discovery.sh`, and `run-invariant-hunt.sh` are UNCHANGED — the
+  adapter absorbs all projection logic, keeping the #1698/#1699 re-measurement scorer byte-identical (still
+  pinned by `run-corpus-bench.sh --self-test`). Pinned by the CI-safe source-guard
+  `demo-generation-recall.sh` (colony-lint block).
 - **Mutation-guided invariant validation + mutant-kill acceptance-gate seam** (#1724, follow-up to the
   #1716 A/B that isolated invariant EXPRESSIVENESS, not plumbing, as the deep-hunt limit). A standardized,
   per-`TARGET_CLASS` MUTANT KILL-SET under `evm-harness/mutants/` (`manifest.tsv` index + `README.md`

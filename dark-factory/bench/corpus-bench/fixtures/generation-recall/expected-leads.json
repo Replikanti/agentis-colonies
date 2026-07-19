@@ -1,0 +1,16 @@
+{
+  "verified": [
+    {
+      "class": "C2",
+      "exploit": "floor division favors the protocol on every settlement",
+      "file": "src/Vault.sol",
+      "location": "src/Vault.sol:settleEpoch:120",
+      "poc_sketch": "call settleEpoch across epochs and skim the rounding bias"
+    },
+    {
+      "class": "invariant",
+      "file": "Vault.sol",
+      "location": "Vault.sol:deposit"
+    }
+  ]
+}

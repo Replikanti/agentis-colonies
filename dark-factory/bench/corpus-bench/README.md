@@ -80,6 +80,45 @@ novel.** A concluded, multi-watson-combed contest rarely has a genuinely missed 
 far more likely noise (FP, out-of-scope, already-known-but-phrased-differently) than a real find. Treat it as
 a manual-triage queue, not a result.
 
+## Generation-recall harness (#1730)
+
+The scoring above measures the pipeline's **post-confirmation** verified findings. `generation-recall.sh`
+measures one step earlier — the **generator's hypotheses** — so it isolates the GENERATION step from
+fuzzer/refuter confirmation and answers the #1716 question the ON-vs-OFF A/B could not: *of the GT bugs the
+pipeline never submitted, how many did it actually NAME but then fail to CONFIRM?*
+
+It scores the two generation artifacts a corpus-bench run already stages, projected through the stdlib-only
+adapter `hypotheses-to-leads.py` into the `{"verified":[...]}` lead shape the **unchanged** `score-match.py`
+already consumes:
+
+- the breadth hunter's **pre-refute** candidates — `zone-hunt-out/discovery/discovery-results.merged.json`
+  (each `cells[].candidates[]` string `file:fn:line|class|severity|exploit|poc`);
+- the deep-hunt lens's **generated invariant targets** — `zone-hunt-out/deep-hunt/*/run/invariant_*.log`,
+  the `INVARIANT|<file:fn>|<verdict>` lines, scored **with the fuzzer verdict IGNORED**. A `CLEAN` verdict is
+  ambiguous (a real bug the invariant was too weak to trip is indistinguishable from a genuinely safe target),
+  so a `CLEAN` invariant that still **names** a GT bug's location counts as generation-recall — the fuzzer's
+  failure to confirm is the generation-vs-confirmation *delta*, not a miss of the generation step.
+
+**Metric.** generation-recall = (DISTINCT GT `truth.tsv` rows whose signature is location-first matched by
+`≥1` generated hypothesis) / (total GT rows), using the same file-basename + function co-occurrence rule as
+above (threshold-independent at `--min-overlap` 2 and 5), reported overall / by severity / by rarity — the
+rare tier is the headline capability number. When a contest also carries `verify/verified_findings.json`, the
+**generation−verified DELTA** (GT rows a hypothesis NAMED but the fuzzer/refuter never confirmed) is printed
+too — the #1716 expressiveness gap, made measurable.
+
+```bash
+# deterministic self-test (what colony-lint runs via demo-generation-recall.sh; no network/LLM/forge):
+dark-factory/bench/corpus-bench/generation-recall.sh --self-test
+
+# score the generation step of an already-hunted corpus-bench work dir:
+dark-factory/bench/corpus-bench/generation-recall.sh --from-work <dir> --id yieldoor --json
+```
+
+`score-match.py`, `extract-gt.sh`, `run-zone-hunt.sh`, `run-discovery.sh`, and `run-invariant-hunt.sh` are all
+**unchanged** — this harness only consumes their artifacts, and the adapter absorbs every projection detail so
+the #1698/#1699 re-measurement scorer stays byte-identical. This GT-anchored before/after is the **standard
+evidence for money-tier levers**: a single one-target A/B is no longer the sole signal.
+
 ## Usage
 
 ```bash

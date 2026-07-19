@@ -1200,6 +1200,24 @@ if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/deep-hunt-ab.sh" ]; then
     fi
 fi
 
+# --- dark-factory generation-recall harness (#1730) ---
+# generation-recall.sh scores the GENERATOR's hypotheses (the breadth hunter's pre-refute candidates + the
+# deep-hunt lens's INVARIANT|<file:fn>|<verdict> targets, verdict IGNORED) against ground truth, isolating the
+# GENERATION step from fuzzer/refuter confirmation — so generation-recall > verified-recall exposes the #1716
+# expressiveness gap (a CLEAN invariant that NAMED a real bug is a generation HIT the fuzzer dropped). A thin
+# adapter (hypotheses-to-leads.py) projects both artifacts into the lead shape the FROZEN score-match.py
+# consumes, so extract-gt.sh / score-match.py stay byte-identical. demo-generation-recall.sh source-guards the
+# wiring (CI-safe, no forge/LLM) + runs the harness's --self-test and asserts the generation-vs-verified delta.
+if [ -x "$REPO_ROOT/dark-factory/demo-generation-recall.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-generation-recall.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: generation-recall harness self-test (#1730)"
+    else
+        fail "dark-factory: generation-recall harness self-test regressed (#1730)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory invariant-hunt target-linkage gate (#1471) ---
 # The invariant-hunt generation path could produce a false FINDING when the LLM substituted its own toy
 # contract of the same name instead of importing the in-scope target. forge-invariant.sh gained a
