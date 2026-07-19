@@ -31,10 +31,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   paragraph steers the LLM; the net is the deterministic guarantee. An unconditional `ACCESS-CTRL|<id>|<bool>`
   diagnostic line (same trailing-line-scrape channel as #1713's `CUSTODY|`) makes the signal observable +
   offline-testable under the mock backend. No per-element `.ag` recursion (O(1) in zone size, well under the
-  `cb_per_tick` cap), so substrate purity holds. The deep-hunt invariant path, the refuter, and
-  `bench/corpus-bench/generation-recall.sh` are UNCHANGED — the before/after is a live operator re-hunt of
-  the corpus rare-set against the #1716 baseline. Pinned by the CI-safe source-guard + mock-backend
-  behavioural block in `demo-map-zones.sh` (colony-lint block), mirroring the #1717 custody-path regression.
+  `cb_per_tick` cap), so substrate purity holds. **#1740 narrowing:** the `_init(` and `AccessControl`/
+  `hasRole(` sub-signals were bare substrings over-firing on a plain non-upgradeable `_init(` helper and a
+  read-only adapter merely querying another contract's role; both now require declaration/upgradeable-chain
+  anchoring — `_init(` is gated behind a compound-AND on an OZ-upgradeable base signal
+  (`UUPSUpgradeable`/`Initializable`/`ERC1967`), and `AccessControl`/`hasRole(` require an `is AccessControl`
+  inheritance-declaration form — mirroring this file's existing `has_value_moving_function` + `has_amount_
+  deduction` compound-AND idiom and the #1681 `IPool` -> `IPoolAddressesProvider` narrowing precedent. The
+  deep-hunt invariant path, the refuter, and `bench/corpus-bench/generation-recall.sh` are UNCHANGED — the
+  before/after is a live operator re-hunt of the corpus rare-set against the #1716 baseline. Pinned by the
+  CI-safe source-guard + mock-backend behavioural block in `demo-map-zones.sh` (colony-lint block), mirroring
+  the #1717 custody-path regression (now including the #1740 plainamm/reader narrowing fixtures).
 - **Ground-truth-anchored generation-recall harness** (#1730, follow-up to the #1716 A/B that isolated
   invariant EXPRESSIVENESS as the deep-hunt limit). `bench/corpus-bench/generation-recall.sh` scores the
   GENERATOR's hypotheses against ground truth instead of the pipeline's post-confirmation verified findings,

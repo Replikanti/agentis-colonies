@@ -177,22 +177,63 @@ fn contains_index_overwrite_signal(code: string) -> bool {
 // extra C5 cell returns SAFE cheaply. Flat `index_of` on the pre-built `code` blob only — no per-element
 // recursion (the CB cost-driving dimension), so this is O(1) in zone size, well under the cb_per_tick cap.
 
+// --- #1740 narrowing: two of the signals above were bare substrings broader than the OZ-specific idiom
+// they were meant to catch, unlike the #1698/#1681 nets' declaration-form/compound-AND discipline. Live-
+// repro'd against real contains_access_control_signal() via map-zones.sh --backend mock:
+//
+// (1) `_init(` fired on ANY plain internal helper literally named `_init(...)` — e.g. a non-upgradeable
+//     constant-product pool's private `_init(uint256,uint256)` setup helper, unrelated to the OZ-upgradeable
+//     `__Xxx_init(` initializer chain the comment above actually describes. Narrowed to a compound-AND
+//     (mirrors this file's `has_value_moving_function` + `has_amount_deduction` idiom): `_init(` only counts
+//     when the zone ALSO carries an OZ-upgradeable base signal (`UUPSUpgradeable`/`Initializable`/`ERC1967`) —
+//     the real chain never appears without one of those in genuinely upgradeable code.
+// (2) `AccessControl` / `hasRole(` fired on a read-only adapter that merely imports `IAccessControl` and
+//     QUERIES another contract's role (`IAccessControl(target).hasRole(bytes32(0), who)`), owning no C5
+//     surface of its own. Narrowed to an INHERITANCE-declaration form (`"is AccessControl"`, which also
+//     matches `"is AccessControlUpgradeable"` as a prefix) — a call-site/import never says `is AccessControl`.
+
+// Does the zone's code carry an OZ-upgradeable base signal? Reused as the `_init(` chain's compound-AND
+// anchor (see contains_access_control_signal below); `UUPSUpgradeable`/`ERC1967` also fire independently.
+fn has_oz_upgradeable_base(code: string) -> bool {
+    if index_of(code, "UUPSUpgradeable") >= 0 { return true; }
+    if index_of(code, "Initializable") >= 0 { return true; }
+    if index_of(code, "ERC1967") >= 0 { return true; }
+    return false;
+}
+
+// True only when the zone BOTH calls an `_init(` helper AND carries an OZ-upgradeable base signal (nested
+// `if`, not `&&`) — the OZ-upgradeable `__Xxx_init(` chain, never a plain non-upgradeable `_init(` helper.
+fn is_oz_init_chain_signal(code: string) -> bool {
+    if index_of(code, "_init(") >= 0 {
+        if has_oz_upgradeable_base(code) { return true; }
+    }
+    return false;
+}
+
+// Does the zone's code DECLARE inheritance from an AccessControl base (`"is AccessControl"`, which also
+// matches the `"is AccessControlUpgradeable"` prefix)? A declaration substring, never a bare mention/import/
+// call-site — distinguishes a contract that OWNS the AccessControl surface from one that merely queries
+// another contract's `hasRole(...)`.
+fn is_access_control_inheritance_signal(code: string) -> bool {
+    return index_of(code, "is AccessControl") >= 0;
+}
+
 // Does the zone's code OWN privileged access-control or upgrade/proxy surface? A fixed sequence of
-// body-level idioms — access-control modifiers/checks (onlyOwner/onlyRole/_checkRole/_checkOwner/hasRole,
-// the AccessControl base) and init/upgrade/proxy authorization (UUPS _authorizeUpgrade, initializer guards
-// _disableInitializers/reinitializer, the OZ-upgradeable `__Xxx_init(` chain, UUPSUpgradeable, and the
-// ERC1967/StorageSlot proxy-slot idioms). Sequential `if` (this file's no-`||` style).
+// body-level idioms — access-control modifiers/checks (onlyOwner/onlyRole/_checkRole/_checkOwner, an
+// AccessControl inheritance declaration) and init/upgrade/proxy authorization (UUPS _authorizeUpgrade,
+// initializer guards _disableInitializers/reinitializer, the OZ-upgradeable `__Xxx_init(` chain, gated on
+// an upgradeable base per #1740 above, UUPSUpgradeable, and the ERC1967/StorageSlot proxy-slot idioms).
+// Sequential `if` (this file's no-`||` style).
 fn contains_access_control_signal(code: string) -> bool {
     if index_of(code, "onlyOwner") >= 0 { return true; }
     if index_of(code, "onlyRole(") >= 0 { return true; }
     if index_of(code, "_checkRole") >= 0 { return true; }
     if index_of(code, "_checkOwner") >= 0 { return true; }
-    if index_of(code, "hasRole(") >= 0 { return true; }
-    if index_of(code, "AccessControl") >= 0 { return true; }
+    if is_access_control_inheritance_signal(code) { return true; }
     if index_of(code, "_authorizeUpgrade") >= 0 { return true; }
     if index_of(code, "_disableInitializers") >= 0 { return true; }
     if index_of(code, "reinitializer(") >= 0 { return true; }
-    if index_of(code, "_init(") >= 0 { return true; }
+    if is_oz_init_chain_signal(code) { return true; }
     if index_of(code, "UUPSUpgradeable") >= 0 { return true; }
     if index_of(code, "ERC1967") >= 0 { return true; }
     if index_of(code, "StorageSlot") >= 0 { return true; }
