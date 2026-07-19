@@ -276,15 +276,22 @@ let composableMode = composable_active(forkContext);
 // When the persisted-FINDING pattern is empty, the invented hint stands in as the recall descriptor.
 // #1728 Part B: also consult a THIRD tier `invpat:teeth:<class>` — a CREDIBLE-CLEAN pattern (an invariant that
 // KILLED this class's #1724 mutant kill-set even though the fuzzer found no bug on THAT target; persist_teeth
-// below wrote it). Recall precedence is FINDING (`invpat:latest:`) > teeth-clean (`invpat:teeth:`) > invented
-// cold-start hint (`invpat:invented:`), so a proven FINDING is NEVER overridden — the teeth pattern only stands
-// in when no FINDING exists yet. Byte-identical to before when no teeth memo is present.
+// below wrote it).
+// #1731: also consult a FOURTH, LOWEST tier `invpat:corpus:<class>` — the CROSS-RUN ENSEMBLE/UNION descriptor
+// (persist_corpus below accumulates EVERY generated invariant's descriptor here, on a FINDING OR a CLEAN, not
+// only the winners), so a class the run-to-run variance left with no FINDING/teeth memo can still recall a prior
+// hypothesis to adapt. Recall precedence is FINDING (`invpat:latest:`) > teeth-clean (`invpat:teeth:`) > invented
+// cold-start hint (`invpat:invented:`) > cross-run corpus (`invpat:corpus:`), so a proven FINDING is NEVER
+// overridden — each weaker tier only stands in when the stronger ones are empty. Byte-identical to before when
+// neither the teeth nor the corpus memo is present.
 fn recall_pattern(klass: string) -> string {
     let learned = recall_latest("invpat:latest:" + klass);
     if len(learned) > 0 { return learned; }
     let teeth = recall_latest("invpat:teeth:" + klass);
     if len(teeth) > 0 { return teeth; }
-    return recall_latest("invpat:invented:" + klass);
+    let invented = recall_latest("invpat:invented:" + klass);
+    if len(invented) > 0 { return invented; }
+    return recall_latest("invpat:corpus:" + klass);
 }
 let prior = recall_pattern(targetClass);
 if len(prior) > 0 {
@@ -702,6 +709,13 @@ let seedArg = getenv("INV_SEED");
 // Empty MUTANT_KILL => teeth-gate OFF => today's FINDING-only behaviour is byte-identical (older/other callers,
 // or a run without the harness staged, degrade gracefully). It is read here, but consumed only after the marker.
 let mutantKill = getenv("MUTANT_KILL");
+// #1731 — cross-run ENSEMBLE/UNION gate. When run-invariant-hunt.sh's `--replay-corpus` + `--pattern-store` are
+// both set it threads INV_CORPUS=1 (on exec.env_passthrough); persist_corpus below then accumulates EVERY
+// generated invariant's descriptor into the lowest-precedence `invpat:corpus:<class>` memo (FINDING OR CLEAN),
+// so the union of prior hypotheses is recallable. Empty INV_CORPUS => persist_corpus early-returns => the
+// pipeline is byte-identical to before (same default-off idiom as MUTANT_KILL's `len(mk)==0` guard). Read here
+// with the other env knobs; consumed only after the verdict marker + persist_pattern/persist_teeth below.
+let corpusOn = getenv("INV_CORPUS");
 fn opt_flag(flag: string, val: string) -> string {
     if len(val) == 0 { return ""; }
     return " " + flag + " " + shell_escape(val);
@@ -1093,4 +1107,42 @@ fn persist_teeth(verd: string, tth: string, klass: string, target: string, match
     }
 }
 persist_teeth(verdict, teeth, targetClass, targetFn, invMatch);
+
+// --- ACCUMULATE the generated invariant into the CROSS-RUN corpus/ensemble (invpat:corpus:, #1731) ---
+// The ENSEMBLE/UNION seed side (the REPLAY side lives entirely in run-invariant-hunt.sh's shell replay loop —
+// there is NO per-element `.ag` loop here). Sibling of persist_pattern (FINDING-only) and persist_teeth
+// (credible-clean-only), mirroring seed-patterns.ag's dag_put + memo_write in the parallel invpat:* namespace.
+// The KEY difference from those two is that persist_corpus accumulates EVERY generated invariant — on a FINDING
+// OR a CLEAN, not only the winners — so the union of ALL hypotheses this class ever produced is recallable. It
+// is ONE O(1) memo_write per generation (no growing-set walk in .ag): the descriptor is the SAME deterministic
+// psig shape (class::target::match-prefix) persist_pattern/persist_teeth use, so an identical hypothesis collapses
+// to the same memo. persist_corpus consults NOTHING of the verdict machinery — it references neither verdict_of
+// /final_verdict nor the #1471 --require-import/--require-contract gate — and is placed AFTER the verdict marker
+// + persist_pattern + persist_teeth, so a corpus-persist failure can NEVER alter the verdict, the marker, the
+// learn() outcome, or the FINDING -> invpat:latest: / credible -> invpat:teeth: paths (all byte-untouched).
+// GUARD: an empty INV_CORPUS (the default — run-invariant-hunt.sh threads INV_CORPUS=1 only under --replay-corpus
+// + --pattern-store) => early-return => the whole accumulation is a no-op and the pipeline is byte-identical to
+// before (same guard idiom as run_mutant_kill's `len(mk)==0`). FINDING and CLEAN are two separate `if` blocks —
+// single-assignment .ag has no `||` — recording into invpat:corpus: at the SAME lowest recall precedence; a
+// HARNESS_ERROR persists nothing (an uncompilable/no-invariant hypothesis is not worth replaying).
+fn persist_corpus(corpusOn: string, verd: string, klass: string, target: string, matchPrefix: string) -> void {
+    if len(corpusOn) == 0 { return; }
+    if verd == "FINDING" {
+        let psig = klass + "::" + target + "::" + matchPrefix;
+        let h = dag_put(psig);
+        memo_write("invpat:exact:" + h, klass);
+        memo_write("invpat:corpus:" + klass, psig);
+        emit("dark-factory:invariant_corpus", "{\"class\":\"" + klass + "\",\"sig\":\"" + psig + "\",\"verdict\":\"FINDING\"}");
+        print("INVPAT-CORPUS|" + klass + "|" + psig);
+    }
+    if verd == "CLEAN" {
+        let psig = klass + "::" + target + "::" + matchPrefix;
+        let h = dag_put(psig);
+        memo_write("invpat:exact:" + h, klass);
+        memo_write("invpat:corpus:" + klass, psig);
+        emit("dark-factory:invariant_corpus", "{\"class\":\"" + klass + "\",\"sig\":\"" + psig + "\",\"verdict\":\"CLEAN\"}");
+        print("INVPAT-CORPUS|" + klass + "|" + psig);
+    }
+}
+persist_corpus(corpusOn, verdict, targetClass, targetFn, invMatch);
 memo_write("invariant-prover:last_check", "done");

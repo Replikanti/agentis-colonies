@@ -90,6 +90,17 @@
 #                        earlier hunt's confirmed invariant shape (discovered -> stored -> recalled -> reused).
 #                        Absent the flag the per-run store is ephemeral -> no cross-run pattern memory (the
 #                        M1/M2 behaviour is byte-identical).
+#   --replay-corpus      #1731: CROSS-RUN ENSEMBLE / UNION replay. Accumulate EVERY generated invariant SOURCE
+#                        (on a FINDING OR a CLEAN, not only the winners) under --pattern-store/corpus/<class>/
+#                        and, on the NEXT run, REPLAY that accumulated union against the fresh target through
+#                        the SAME staged fuzzer gate (pure shell — NO extra agentis spawn, NO LLM per replay) —
+#                        re-using the #1471 link gate so a foreign-import replay is HARNESS_ERROR, never a false
+#                        verdict. Also threads INV_CORPUS=1 to the prover so it accumulates the descriptor into
+#                        the lowest-precedence invpat:corpus:<class> recall tier. REQUIRES --pattern-store (the
+#                        corpus lives there). Default OFF => the pipeline is byte-identical to today.
+#   --corpus-max N       #1731: cap the cross-run corpus at N most-recent entries per class (default 16). Bounds
+#                        BOTH storage (content-addressed dedup + most-recent eviction) AND replay cost. Whole
+#                        number, validated like --runs.
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
 set -eu
 
@@ -97,6 +108,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 REPO="" ; TARGET="" ; CLASS="" ; FIXTURE="" ; CODE="" ; MATCH="invariant"
 BACKEND="flat-cyborg" ; MODEL="" ; RUNS="" ; DEPTH="" ; SEED="" ; OUT="$PWD/invariant-out" ; PATTERN_STORE=""
+REPLAY_CORPUS=""  # #1731: cross-run ENSEMBLE/UNION replay; "" => OFF (default; byte-identical to today)
+CORPUS_MAX="16"   # #1731: max corpus entries kept/replayed per class (most-recent eviction; whole number)
 REPAIR_ROUNDS=""  # #1073: extra compile-repair rounds; "" => the prover's own default (2)
 AUDIT_CONTEXT=""  # #1722: optional spec / audit-scope doc; "" => no audit seed (byte-identical prompt)
 FORK_URL="" ; FORK_BLOCK="" ; FORK_TARGET=""
@@ -129,6 +142,8 @@ while [ $# -gt 0 ]; do
     --fork-target) need "$#"; FORK_TARGET_SPECS+=("$2"); shift 2 ;;
     --out) need "$#"; OUT="$2"; shift 2 ;;
     --pattern-store) need "$#"; PATTERN_STORE="$2"; shift 2 ;;
+    --replay-corpus) REPLAY_CORPUS=1; shift ;;
+    --corpus-max) need "$#"; CORPUS_MAX="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-invariant-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -145,6 +160,12 @@ done
 # #1073: --repair-rounds must be a whole number when set (a non-numeric value would silently fall back to the
 # prover's default; reject it here so an operator typo surfaces).
 case "$REPAIR_ROUNDS" in '') ;; *[!0-9]*) echo "run-invariant-hunt.sh: --repair-rounds must be a whole number" >&2; exit 2 ;; esac
+# #1731: --corpus-max must be a whole number (validated like --runs). An empty value (e.g. `--corpus-max ""`)
+# falls back to the default 16 so the prune/replay bound is always a usable integer.
+case "$CORPUS_MAX" in
+  '') CORPUS_MAX=16 ;;
+  *[!0-9]*) echo "run-invariant-hunt.sh: --corpus-max must be a whole number" >&2; exit 2 ;;
+esac
 # FM1 (#1041): fork-arg shape validation (mirrors the gate's). --fork-url must look like an http(s) URL,
 # --fork-block a whole number requiring --fork-url.
 case "$FORK_URL" in
@@ -406,7 +427,9 @@ done
   # FM2 (#1075): INV_AUX carries the sentinel-joined `<abs_path>:<Name>` auxiliary-contract list so the prover
   # can deploy + WIRE the whole system (fresh-deploy composability).
   # #1728: MUTANT_KILL threads the staged #1724 mutant-kill.sh path so the prover's TEETH-GATE can measure a CLEAN.
-  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT,MUTANT_KILL"
+  # #1731: INV_CORPUS (=1 only under --replay-corpus + --pattern-store) arms the prover's persist_corpus so it
+  # accumulates EVERY generated invariant's descriptor into the invpat:corpus:<class> recall tier.
+  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT,MUTANT_KILL,INV_CORPUS"
   # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s default.
   echo "exec.default_timeout_ms = 600000"
   # Each verify is recorded as experience; invariant-prover fitness reweights over targets.
@@ -429,6 +452,13 @@ if [ -n "$PATTERN_STORE" ]; then
   [ -d "$PATTERN_STORE/.agentis" ] || ( cd "$PATTERN_STORE" && "$AGENTIS" init >/dev/null 2>&1 )
 fi
 
+# #1731: arm the prover's persist_corpus ONLY when the cross-run ensemble is fully wired — both --replay-corpus
+# AND --pattern-store present (the corpus lives in the store). Else "" so persist_corpus early-returns and the
+# pipeline is byte-identical to today (mirrors #1728's MUTANT_KILL default-empty gate). Threaded as INV_CORPUS
+# into the agentis go env block below.
+INV_CORPUS_VAL=""
+if [ -n "$REPLAY_CORPUS" ] && [ -n "$PATTERN_STORE" ]; then INV_CORPUS_VAL=1; fi
+
 # Bridge every `invpat:*` memo from $1's store into $2's store via the agentis memo CLI. The DAG content
 # HASH is deterministic (sha256 of the signature), so only the memo VALUES need to travel between stores —
 # `recall_latest("invpat:latest:<class>")` is what the prover reads to seed GENERATE, and re-`dag_put`ting
@@ -440,6 +470,57 @@ bridge_invpat() {  # $1 = src store dir, $2 = dst store dir
     _v="$( ( cd "$_src" && "$AGENTIS" memo get "$k" ) 2>/dev/null )"
     [ -n "$_v" ] && ( cd "$_dst" && "$AGENTIS" memo set "$k" "$_v" >/dev/null 2>&1 )
   done
+}
+
+# #1731 — CROSS-RUN ENSEMBLE / UNION REPLAY (the cheap, no-LLM replay side the issue asks for). Replays the
+# accumulated union of PRIOR-run invariant SOURCES (stored content-addressed under
+# $PATTERN_STORE/corpus/<class_slug>/) against THIS run's freshly-staged target repo, through the SAME staged
+# forge-invariant gate + the identical #1471 link args (built in CORPUS_LINK_ARGS, pure fresh-deploy mode) — so a
+# hypothesis authored for a DIFFERENT contract is scored HARNESS_ERROR by the same fuzzer path, never a false
+# FINDING/CLEAN. It is PURE SHELL over a BOUNDED set (--corpus-max): NO agentis spawn per replay, NO per-element
+# .ag loop, NO LLM. Each replay is one gate invocation whose exit maps 1->FINDING / 0->CLEAN / else->HARNESS_ERROR
+# (the prover's exact contract). Appends one row per replay to a `## Corpus replay` section of $REPORT; it writes
+# NOTHING back to the corpus and does NOT alter the primary INVARIANT| verdict or verified_findings.json.
+replay_corpus() {  # $1 = corpus class dir, $2 = report path
+  _cdir="$1"; _rpt="$2"
+  [ -d "$_cdir" ] || return 0
+  # ls -t: most-recent first, bounded to --corpus-max so replay cost is capped exactly like storage. The corpus
+  # filenames are content-addressed (`<sha256>.t.sol`, hex only) so the word-split into distinct argv is safe.
+  # shellcheck disable=SC2046  # intentional word-split of the (charset-safe) corpus filenames into positional args
+  set -- $(ls -t "$_cdir"/*.t.sol 2>/dev/null | head -n "$CORPUS_MAX")
+  [ "$#" -gt 0 ] || return 0
+  {
+    echo
+    echo "## Corpus replay (union of prior hypotheses)"
+    echo
+    echo "Each prior-run invariant hypothesis (accumulated on a FINDING OR a CLEAN, not only winners) re-run"
+    echo "against THIS target through the SAME staged fuzzer gate + the #1471 link gate. A hypothesis authored"
+    echo "for a different contract is HARNESS_ERROR here, never a false verdict. Bounded by --corpus-max."
+    echo
+    echo "| Corpus entry | Verdict |"
+    echo "|---|---|"
+  } >> "$_rpt"
+  _replayed=0
+  for _cf in "$@"; do
+    [ -f "$_cf" ] || continue
+    _replayed=$((_replayed + 1))
+    # Copy the corpus entry as the SOLE test in the run's repo (drop any prior *.t.sol so the fuzzer scopes only
+    # to the replayed hypothesis), then run the SAME staged gate in pure fresh-deploy mode.
+    rm -f "$REPO_IN_RUN/test/"*.t.sol 2>/dev/null || true
+    cp "$_cf" "$REPO_IN_RUN/test/CorpusReplay.t.sol"
+    set +e
+    sh "$RUN/forge-invariant.sh" --repo "$REPO_IN_RUN" --target "$REPO_IN_RUN/test/CorpusReplay.t.sol" --match "$MATCH" ${CORPUS_LINK_ARGS[@]+"${CORPUS_LINK_ARGS[@]}"} >/dev/null 2>&1
+    _crc=$?
+    set -e
+    case "$_crc" in
+      1) _cv="FINDING" ;;
+      0) _cv="CLEAN" ;;
+      *) _cv="HARNESS_ERROR" ;;
+    esac
+    printf '| %s | %s |\n' "$(basename "$_cf")" "$_cv" >> "$_rpt"
+  done
+  echo "run-invariant-hunt.sh: replayed $_replayed prior corpus hypothes$( [ "$_replayed" -eq 1 ] && echo is || echo es ) for $CLASS" >&2
+  return 0
 }
 
 # RECALL: seed the per-run store with any patterns a PRIOR run persisted, BEFORE `agentis go` (so the
@@ -471,6 +552,7 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
     FORK_CONTEXT="$FORK_CONTEXT" \
     FORGE_INVARIANT="$RUN/forge-invariant.sh" \
     MUTANT_KILL="$MUTANT_KILL_IN_RUN" \
+    INV_CORPUS="$INV_CORPUS_VAL" \
     "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging --grant-pii ) >"$CELL_LOG" 2>&1 || \
     echo "run-invariant-hunt.sh: invariant-prover run failed for '$TARGET' (see $CELL_LOG)" >&2
 
@@ -522,6 +604,54 @@ REPORT="$OUT/invariant-report.md"
     echo "A human triages this candidate before any submission. This colony never posts."
   fi
 } > "$REPORT"
+
+# #1731 — CROSS-RUN ENSEMBLE / UNION: replay the accumulated union of PRIOR hypotheses, then accumulate THIS
+# run's invariant, then prune to the cap. Gated on --replay-corpus AND --pattern-store (else a no-op, so the
+# default pipeline is byte-identical to today). Order is deliberate: (a) REPLAY the corpus AS IT STANDS from
+# prior runs — this run is EXCLUDED because accumulation (b) happens after — so replay = the true prior union;
+# (b) ACCUMULATE this run's generated invariant (on a FINDING OR CLEAN only), content-addressed by its sha256 so
+# an identical hypothesis is stored once (dedup); (c) PRUNE to CORPUS_MAX most-recent (bounding BOTH storage and
+# next-run replay cost). The replay clobbers the run repo's test/ dir, so this run's INV_OUT is preserved FIRST.
+if [ -n "$REPLAY_CORPUS" ] && [ -n "$PATTERN_STORE" ]; then
+  CLASS_SLUG="$(printf '%s' "$CLASS" | tr -cs 'A-Za-z0-9._-' '_')"
+  CORPUS_DIR="$PATTERN_STORE/corpus/$CLASS_SLUG"
+  # #1471 link args for the replay gate — reproduce the prover's link_args() in PURE FRESH-DEPLOY mode only:
+  # any fork/composability context references the target by on-chain address (no source import), so requiring an
+  # import there is wrong. Held as an array so paths with spaces stay one argv element (shellcheck-safe).
+  CORPUS_LINK_ARGS=()
+  if [ -z "$FORK_URL" ] && [ -z "$FORK_TARGET" ] && [ -z "$FORK_CONTEXT" ] && [ -n "$CODE_IN_RUN" ]; then
+    CORPUS_LINK_ARGS=(--require-import "$CODE_IN_RUN")
+    case "$TARGET" in *:*) _tname="${TARGET#*:}" ;; *) _tname="" ;; esac
+    [ -n "$_tname" ] && CORPUS_LINK_ARGS+=(--require-contract "$_tname")
+  fi
+  # Preserve this run's generated invariant before replay clobbers test/*.t.sol.
+  THIS_INV=""
+  if [ -f "$INV_OUT" ]; then THIS_INV="$RUN/this-run-invariant.t.sol"; cp "$INV_OUT" "$THIS_INV"; fi
+  # (a) REPLAY the prior union (this run not yet accumulated).
+  replay_corpus "$CORPUS_DIR" "$REPORT"
+  # (b) ACCUMULATE this run's invariant (FINDING|CLEAN only), content-addressed => dedup.
+  case "$VERD" in
+    FINDING|CLEAN)
+      if [ -n "$THIS_INV" ]; then
+        if command -v sha256sum >/dev/null 2>&1; then _sha="$(sha256sum "$THIS_INV" | cut -d' ' -f1)"
+        elif command -v shasum >/dev/null 2>&1; then _sha="$(shasum -a 256 "$THIS_INV" | cut -d' ' -f1)"
+        else _sha=""; fi
+        if [ -n "$_sha" ]; then
+          mkdir -p "$CORPUS_DIR"
+          cp "$THIS_INV" "$CORPUS_DIR/$_sha.t.sol"
+          echo "run-invariant-hunt.sh: accumulated this run's $VERD invariant into the corpus ($CLASS_SLUG/$_sha.t.sol)" >&2
+        fi
+      fi
+      ;;
+  esac
+  # (c) PRUNE to CORPUS_MAX most-recent (most-recent eviction; bounds storage AND replay). A while-read loop (not
+  # `xargs rm`) so an empty over-cap set cannot make rm error out under `set -e`.
+  if [ -d "$CORPUS_DIR" ]; then
+    ls -t "$CORPUS_DIR"/*.t.sol 2>/dev/null | tail -n +"$((CORPUS_MAX + 1))" | while IFS= read -r _old; do
+      [ -n "$_old" ] && rm -f "$_old"
+    done
+  fi
+fi
 
 echo >&2
 echo "================ INVARIANT-HUNT: $TARGET -> $VERD ================" >&2
