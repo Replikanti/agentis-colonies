@@ -274,9 +274,16 @@ let composableMode = composable_active(forkContext);
 // Int M3 (#1037) Part B: also consult `invpat:invented:<class>` — a NEW invariant class proposed by the
 // coordinator's invent-method action (method-inventor.ag, fixture path) — as an additional generation hint.
 // When the persisted-FINDING pattern is empty, the invented hint stands in as the recall descriptor.
+// #1728 Part B: also consult a THIRD tier `invpat:teeth:<class>` — a CREDIBLE-CLEAN pattern (an invariant that
+// KILLED this class's #1724 mutant kill-set even though the fuzzer found no bug on THAT target; persist_teeth
+// below wrote it). Recall precedence is FINDING (`invpat:latest:`) > teeth-clean (`invpat:teeth:`) > invented
+// cold-start hint (`invpat:invented:`), so a proven FINDING is NEVER overridden — the teeth pattern only stands
+// in when no FINDING exists yet. Byte-identical to before when no teeth memo is present.
 fn recall_pattern(klass: string) -> string {
     let learned = recall_latest("invpat:latest:" + klass);
     if len(learned) > 0 { return learned; }
+    let teeth = recall_latest("invpat:teeth:" + klass);
+    if len(teeth) > 0 { return teeth; }
     return recall_latest("invpat:invented:" + klass);
 }
 let prior = recall_pattern(targetClass);
@@ -690,6 +697,11 @@ let gate = getenv("FORGE_INVARIANT");
 let runsArg = getenv("INV_RUNS");
 let depthArg = getenv("INV_DEPTH");
 let seedArg = getenv("INV_SEED");
+// #1728 — the #1724 mutant-kill harness path (run-invariant-hunt.sh stages it into the rundir + threads
+// MUTANT_KILL). It drives the TEETH-GATE below, which runs strictly AFTER the fuzzer verdict on a CLEAN only.
+// Empty MUTANT_KILL => teeth-gate OFF => today's FINDING-only behaviour is byte-identical (older/other callers,
+// or a run without the harness staged, degrade gracefully). It is read here, but consumed only after the marker.
+let mutantKill = getenv("MUTANT_KILL");
 fn opt_flag(flag: string, val: string) -> string {
     if len(val) == 0 { return ""; }
     return " " + flag + " " + shell_escape(val);
@@ -955,14 +967,84 @@ let steps = steps_of(runOut);
 if verdict == "FINDING" {
     if len(steps) > 0 { print(steps); }
 }
+
+// --- TEETH-GATE: turn a CLEAN into a LEARNING signal via the #1724 mutant kill-set (#1728) --------
+// The gap this closes: today a CLEAN dead-ends without learning — a TOOTHLESS invariant (holds because it is
+// too weak to break) and a CREDIBLE one (holds because the target really is clean under a KILLING invariant)
+// are indistinguishable, so the loop learns nothing from either. AFTER the fuzzer verdict is finalized and the
+// `INVARIANT|` marker is already printed (above), on a CLEAN only, run mutant-kill.sh --class/--invariant (the
+// #1724 seam) and classify the CLEAN. This is STRICTLY ADDITIVE: it can NEVER touch the verdict — verdict,
+// final_verdict, the marker, and the #1471 gate are already computed + printed. A SKIP (no forge), error, or
+// unparseable/all-ERROR ratio => `unmeasured` => today's FINDING-only behaviour, byte-identical.
+//
+// run_mutant_kill runs ONE `exec sh` (mutant iteration lives INSIDE mutant-kill.sh — no per-element .ag
+// recursion), every dynamic value shell_escape()d, mirroring run_gate's idiom. Empty MUTANT_KILL or empty
+// class => "" (no exec at all) => teeth_of("") == "unmeasured" => graceful fallback.
+fn run_mutant_kill(mk: string, klass: string, inv: string) -> string {
+    if len(mk) == 0 { return ""; }
+    if len(klass) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "set +e; sh " + shell_escape(mk) + " --class " + shell_escape(klass) + " --invariant " + shell_escape(inv) + " 2>&1; echo __rc=$?";
+}
+// Classify a measured CLEAN by the mutant kill-set outcome (flat builtins only — no per-element walk). Parses
+// `mutant-kill.sh: kill ratio: K / M killed( (E harness error(s)))`:
+//   unmeasured — SKIP (`[SKIP]`), gate error (rc!=0, e.g. missing class dir / bad args), NO `kill ratio:` line,
+//                M<=0 (no mutants), OR all mutants ERRORed ((M-E)<1): fall back to today's behaviour. An
+//                interface mismatch makes every class mutant ERROR (a real target imports itself, not the class
+//                exemplar) — that is `unmeasured`, NEVER `toothless`, so a legitimate real-target clean is not
+//                penalized.
+//   credible   — the invariant KILLED at least one class mutant (K>=1): it has TEETH.
+//   toothless  — it killed nothing (K==0) yet at least one mutant genuinely SURVIVED ((M-E)>=1): a real miss.
+fn teeth_of(mkOut: string) -> string {
+    if index_of(mkOut, "[SKIP]") >= 0 { return "unmeasured"; }
+    if rc_of(mkOut) != 0 { return "unmeasured"; }
+    if index_of(mkOut, "kill ratio:") < 0 { return "unmeasured"; }
+    let m = parse_int(regex_capture("/ ([0-9]+) killed", mkOut, 1));
+    if m <= 0 { return "unmeasured"; }
+    let k = parse_int(regex_capture("kill ratio: ([0-9]+) /", mkOut, 1));
+    let e = parse_int(regex_capture("([0-9]+) harness error", mkOut, 1));
+    if k >= 1 { return "credible"; }
+    if (m - e) >= 1 { return "toothless"; }
+    return "unmeasured";
+}
+// Compute the teeth classification. On anything other than a CLEAN there is NO exec (teeth == "none") — so a
+// FINDING / HARNESS_ERROR path is byte-identical to before (zero extra exec sh, zero extra CB). Only a CLEAN
+// runs the kill-set.
+fn measure_teeth(verd: string, mk: string, klass: string, inv: string) -> string {
+    if verd != "CLEAN" { return "none"; }
+    return teeth_of(run_mutant_kill(mk, klass, inv));
+}
+let teeth = measure_teeth(verdict, mutantKill, targetClass, invOut);
+
 let outcome = outcome_of(verdict);
 fn gen_mode(usedFix: bool) -> string {
     if usedFix { return "fixture"; }
     return "llm";
 }
 let genMode = gen_mode(usedFixture);
+// #1728 — the learn() OUTCOME/TAGS carry the teeth signal so invariant-prover fitness can tell a CREDIBLE CLEAN
+// (killed the class kill-set) from a TOOTHLESS one (a real miss) from an UNMEASURED / plain CLEAN. A credible
+// clean is a PARTIAL outcome (it produced a validated-EXPRESSIVE invariant, short of a FINDING); every other
+// outcome is UNCHANGED (FINDING=success, plain/toothless/unmeasured CLEAN=failure, HARNESS_ERROR=error). The
+// emit() below stays byte-identical (its outcome field is verdict-derived, not teeth-derived).
+fn learn_outcome(base: string, tth: string) -> string {
+    if tth == "credible" { return "partial"; }
+    return base;
+}
+fn teeth_tag(tth: string) -> string {
+    if tth == "credible" { return "credible-clean"; }
+    if tth == "toothless" { return "toothless-clean"; }
+    return "";
+}
+fn learn_tags(klass: string, verd: string, outc: string, tth: string) -> list<string> {
+    let tag = teeth_tag(tth);
+    if len(tag) == 0 { return [klass, verd, outc]; }
+    return [klass, verd, outc, tag];
+}
+let learnOutcome = learn_outcome(outcome, teeth);
+let learnTags = learn_tags(targetClass, verdict, outcome, teeth);
 emit("dark-factory:invariant_verdict", "{\"target\":\"" + targetFn + "\",\"class\":\"" + targetClass + "\",\"verdict\":\"" + verdict + "\",\"gen\":\"" + genMode + "\",\"outcome\":\"" + outcome + "\"}");
-learn("invariant-prove", targetClass + ":" + targetFn, "stateful-invariant-fuzz generate-and-verify of " + targetFn + " (" + targetClass + ") -> " + verdict, outcome, [targetClass, verdict, outcome]);
+learn("invariant-prove", targetClass + ":" + targetFn, "stateful-invariant-fuzz generate-and-verify of " + targetFn + " (" + targetClass + ") -> " + verdict, learnOutcome, learnTags);
 
 // --- PERSIST the winning invariant pattern to the DAG memory (Int M3, #1037) ---------------------
 // AFTER the verdict print (above), and ONLY on a FINDING, record the invariant pattern the fuzzer just
@@ -984,4 +1066,31 @@ fn persist_pattern(verd: string, klass: string, target: string, matchPrefix: str
     }
 }
 persist_pattern(verdict, targetClass, targetFn, invMatch);
+
+// --- PERSIST a CREDIBLE-CLEAN pattern to the NEW invpat:teeth: tier (#1728) ----------------------
+// Sibling of persist_pattern (FINDING-only -> invpat:latest:), mirroring seed-patterns.ag's dag_put +
+// memo_write in the parallel invpat:* namespace. ONLY on a CLEAN whose invariant KILLED the class mutant
+// kill-set (teeth=="credible"): the invariant is validated-EXPRESSIVE even though the fuzzer found no bug on
+// THIS target, so it is worth recalling — recall_pattern() consults invpat:teeth: BELOW invpat:latest:, so it
+// can NEVER override a proven FINDING (a separate namespace + recall precedence keeps the FINDING path intact).
+// A `toothless` CLEAN prints an observability line but is NEVER persisted; `unmeasured`/`none` do nothing.
+// Placed AFTER the verdict print + persist_pattern so a teeth failure can never alter the verdict, the marker,
+// the learn() outcome, or the FINDING -> invpat:latest: path (all byte-untouched). Same psig shape as
+// persist_pattern so the same class/shape recalls deterministically across runs.
+fn persist_teeth(verd: string, tth: string, klass: string, target: string, matchPrefix: string) -> void {
+    if verd == "CLEAN" {
+        if tth == "credible" {
+            let psig = klass + "::" + target + "::" + matchPrefix;
+            let h = dag_put(psig);
+            memo_write("invpat:exact:" + h, klass);
+            memo_write("invpat:teeth:" + klass, psig);
+            emit("dark-factory:invariant_teeth", "{\"class\":\"" + klass + "\",\"sig\":\"" + psig + "\",\"teeth\":\"credible\"}");
+            print("INVPAT-TEETH|" + klass + "|credible|" + psig);
+        }
+        if tth == "toothless" {
+            print("INVPAT-TEETH|" + klass + "|toothless|" + target);
+        }
+    }
+}
+persist_teeth(verdict, teeth, targetClass, targetFn, invMatch);
 memo_write("invariant-prover:last_check", "done");

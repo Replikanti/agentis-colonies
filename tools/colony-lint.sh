@@ -1342,6 +1342,29 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-multi-target.sh" ]; then
     fi
 fi
 
+# --- dark-factory invariant-hunt teeth-signal learning loop (#1728) ---
+# The deep-hunt learned from a FINDING (persist_pattern -> invpat:latest: -> recall_pattern) but a CLEAN
+# dead-ended: a TOOTHLESS invariant (too weak to break) and a CREDIBLE one (target really clean under a KILLING
+# invariant) were indistinguishable. #1728 wires the #1724 mutant-kill seam in as a LEARNING signal that fires
+# STRICTLY AFTER the fuzzer verdict + the INVARIANT| marker: on a CLEAN only, invariant-prover.ag runs
+# mutant-kill.sh --class/--invariant in ONE shell_escape()d exec (mutant iteration stays inside the harness),
+# parses the kill ratio with flat builtins, and classifies the CLEAN into credible (K>=1 -> reward `partial` +
+# persist to a NEW invpat:teeth:<class> recall tier, recalled BELOW invpat:latest: so a FINDING is never
+# overridden) / toothless (killed nothing -> not persisted) / unmeasured (SKIP/error/all-ERROR -> today's
+# behaviour, byte-identical). run-invariant-hunt.sh stages the kill-set + threads MUTANT_KILL. The FUZZER stays
+# the sole verdict; verdict_of/final_verdict/the marker/the #1471 gate + the FINDING->invpat:latest: path are
+# byte-untouched. demo-invariant-teeth-learning.sh source-guards the wiring (CI-safe) and, under forge, pins the
+# exact C-erc4626 kill ratios teeth_of() keys on.
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-teeth-learning.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-teeth-learning.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: invariant-hunt teeth-signal learning loop (mutant-kill acceptance + invpat:teeth: tier) (#1728)"
+    else
+        fail "dark-factory: invariant-hunt teeth-signal learning loop regressed (#1728)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory historical-exploit-class pattern seeding (#1733) ---
 # A static, offline library of 7 canonical historical DeFi exploit CLASSES (auditor/methods/
 # historical-exploits.md, one entry per C1/C2/C5/C6/C8/C11/C16 taxonomy id, hand-authored, no

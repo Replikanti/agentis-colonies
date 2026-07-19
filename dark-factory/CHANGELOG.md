@@ -15,6 +15,37 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Mutant-kill teeth-signal wired into the invariant learning loop** (#1728). The deep-hunt learned from
+  a FINDING (`persist_pattern` → `invpat:latest:<class>` → `recall_pattern`) but a CLEAN dead-ended without
+  learning: a TOOTHLESS invariant (holds because it is too weak to break) and a CREDIBLE one (holds because
+  the target really is clean under a KILLING invariant) were indistinguishable, so the loop learned nothing
+  from either. This wires the #1724 mutant kill-set in as an ACCEPTANCE/LEARNING signal. STRICTLY AFTER the
+  fuzzer verdict is finalized and the `INVARIANT|` marker is printed, on a CLEAN only, `invariant-prover.ag`
+  makes ONE `exec sh` call to `evm-harness/mutant-kill.sh --class <TARGET_CLASS> --invariant <INV_OUT>` (every
+  dynamic value `shell_escape()`d; mutant iteration lives inside `mutant-kill.sh`, no per-element `.ag`
+  recursion), parses the `kill ratio: K / M killed` line with FLAT builtins (`index_of`/`regex_capture`), and
+  classifies the CLEAN into **credible** (K≥1: the invariant KILLED the class mutants → `learn()` outcome
+  `partial` + tag `credible-clean` + persist to a NEW `invpat:teeth:<class>` recall tier), **toothless** (K==0
+  with a genuine survivor: tag `toothless-clean`, an observability `INVPAT-TEETH|…|toothless|…` line, NOT
+  persisted), or **unmeasured** (SKIP without forge / gate error / no `kill ratio:` line / all mutants ERROR →
+  today's FINDING-only behaviour, byte-identical). `recall_pattern` gains the `invpat:teeth:` tier BETWEEN
+  `invpat:latest:` (FINDING) and `invpat:invented:` — precedence FINDING > teeth-clean > invented — so a
+  credible-clean pattern is recallable when no FINDING exists yet without ever overriding a proven FINDING.
+  `run-invariant-hunt.sh` stages `mutant-kill.sh` + the `mutants/` tree into the rundir (self-contained: the
+  harness resolves `forge-invariant.sh` relative to its own dir, which becomes `$RUN`) and threads `MUTANT_KILL`
+  on the `exec.env_passthrough` allowlist + the env block; `bridge_invpat`'s `^invpat:` matcher already carries
+  the new namespace across `--pattern-store`, no runner-bridge change. **The FUZZER stays the SOLE verdict**:
+  `verdict_of`, `final_verdict`, the `INVARIANT|` marker, the #1471 `--require-import`/`--require-contract`
+  gate, and the FINDING → `invpat:latest:` path are all byte-untouched; the teeth-gate is strictly ADDITIVE and
+  a SKIP/error/unmeasured ratio never blocks, crashes, or alters the verdict. **Known limitation:** #1724's
+  kill-set is per-CLASS canonical (not per-target), so the credible-clean reward fires on class-canonical /
+  `HANDLER_FIXTURE`-seeded invariants and degrades to `unmeasured` on arbitrary real targets (a live-generated
+  invariant imports the real target, not the class exemplar, so the class mutants all ERROR → interface
+  mismatch). The wiring is the deliverable; the live rare-recall lift is a deferred operator A/B and per-target
+  mutation is a future lever. Source-guarded by new `demo-invariant-teeth-learning.sh` (wired into
+  `colony-lint.sh`), which pins the ONE-exec/shell_escape discipline, the after-marker placement, the
+  verdict/marker/#1471-untouched contract, the recall precedence, and — under forge — the exact C-erc4626
+  `kill ratio: 1 / 1` (credible) vs `0 / 1` (toothless) thresholds `teeth_of()` keys on.
 - **Metamorphic-relation invariants + multi-contract deep-hunt wiring** (#1726). Two independent levers
   for the stateful-invariant deep-hunt, both landing default-safe. **M1 (metamorphic relations,
   prompt-only):** `invariant-prover.ag` gains a flat class-keyed string builder

@@ -239,6 +239,8 @@ done
 
 PROVER="$HERE/auditor/agents/invariant-prover.ag"
 GATE="$HERE/evm-harness/forge-invariant.sh"
+MUTANT_KILL_SRC="$HERE/evm-harness/mutant-kill.sh"
+MUTANTS_SRC="$HERE/evm-harness/mutants"
 [ -f "$PROVER" ] || { echo "run-invariant-hunt.sh: invariant-prover agent not found at $PROVER" >&2; exit 3; }
 [ -f "$GATE" ] || { echo "run-invariant-hunt.sh: forge-invariant gate not found at $GATE" >&2; exit 3; }
 
@@ -247,6 +249,18 @@ RUN="$OUT/run"
 rm -rf "$RUN"; mkdir -p "$RUN"
 cp "$PROVER" "$RUN/invariant-prover.ag"
 cp "$GATE" "$RUN/forge-invariant.sh"
+# #1728 — stage the #1724 mutant kill-set (mutant-kill.sh + the mutants/ fixture tree) into the rundir next to
+# the gate so the prover's TEETH-GATE can run it from the exec sandbox (which cannot read $HOME). mutant-kill.sh
+# resolves forge-invariant.sh + mutants/ relative to its OWN dir — which becomes $RUN, where $RUN/forge-invariant.sh
+# already exists — so the staged copies are self-contained. Guarded so a missing kill-set degrades gracefully:
+# MUTANT_KILL stays pointing at a path that may not exist, and the prover falls back to today's FINDING-only
+# behaviour (its run_mutant_kill SKIP/error handling treats a missing/failed harness as `unmeasured`).
+MUTANT_KILL_IN_RUN=""
+if [ -f "$MUTANT_KILL_SRC" ] && [ -d "$MUTANTS_SRC" ]; then
+  cp "$MUTANT_KILL_SRC" "$RUN/mutant-kill.sh"
+  cp -R "$MUTANTS_SRC" "$RUN/mutants"
+  MUTANT_KILL_IN_RUN="$RUN/mutant-kill.sh"
+fi
 
 # #1079: SLIM a Solidity source before it is staged into the rundir as the prover's CODE_PATH / aux source.
 # The generation prompt embeds the FULL source of the target (and, in composable-fresh mode, of every aux),
@@ -391,7 +405,8 @@ done
   # role->address context set so the generation prompt can compose calls across the deployed protocols.
   # FM2 (#1075): INV_AUX carries the sentinel-joined `<abs_path>:<Name>` auxiliary-contract list so the prover
   # can deploy + WIRE the whole system (fresh-deploy composability).
-  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT"
+  # #1728: MUTANT_KILL threads the staged #1724 mutant-kill.sh path so the prover's TEETH-GATE can measure a CLEAN.
+  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT,MUTANT_KILL"
   # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s default.
   echo "exec.default_timeout_ms = 600000"
   # Each verify is recorded as experience; invariant-prover fitness reweights over targets.
@@ -455,6 +470,7 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
     FORK_TARGET="$FORK_TARGET" \
     FORK_CONTEXT="$FORK_CONTEXT" \
     FORGE_INVARIANT="$RUN/forge-invariant.sh" \
+    MUTANT_KILL="$MUTANT_KILL_IN_RUN" \
     "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging --grant-pii ) >"$CELL_LOG" 2>&1 || \
     echo "run-invariant-hunt.sh: invariant-prover run failed for '$TARGET' (see $CELL_LOG)" >&2
 
