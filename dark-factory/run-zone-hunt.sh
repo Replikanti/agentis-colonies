@@ -49,6 +49,15 @@
 #   --invariant-fixture <f>  run-invariant-hunt.sh --handler-fixture (the OFFLINE/deterministic deep-hunt
 #                       path — no LLM). Only meaningful with --deep-hunt.
 #   --deep-hunt-max-targets <N>  Max primary targets per value-custody zone (default 1 — the largest .sol).
+#   --deep-hunt-aux-max <N>  #1726 (M2): max SECONDARY co-custody contracts fed to the deep-hunt as
+#                       run-invariant-hunt.sh --aux (the shipped composable-fresh multi-contract engine —
+#                       INV_AUX -> compose_fresh_seed -> multi-register targetContracts() -> #1077 both-real
+#                       enforcement, REUSED verbatim). For each value-custody zone the up-to-N largest
+#                       co-custody .sol AFTER the primary target are threaded as --aux, so a SYSTEM invariant
+#                       spanning >1 contract can be reached. DEFAULT 0 = OFF = byte-identical single-target
+#                       behaviour (STAGE 4.5 emits an empty aux column and neither $INVHUNT invocation gains a
+#                       --aux arg). The #1471 linkage gate still fires on the PRIMARY target; aux contracts are
+#                       protected by the existing #1077 both-real HARNESS_ERROR safety.
 #   --deep-hunt-repair-rounds <N>  #1717: run-invariant-hunt.sh --repair-rounds for every deep-hunt target
 #                       (default 4 — a value-custody zone whose first harness draft doesn't compile gets
 #                       more bounded compile-repair attempts before HARNESS_ERROR; the loop still
@@ -67,7 +76,7 @@ REPO="" ; OUT="$PWD/zone-hunt-out" ; JOBS=1 ; BACKEND="flat-cyborg"
 SCOPE_HINT="" ; SINCE="" ; RESIDUALS=""
 IN_SCOPE="" ; ASSET_CONTRACTS="" ; IMPACT_THRESHOLD=""
 MAP_FIXTURE="" ; BRIEF_FIXTURE="" ; PASS_FIXTURE="" ; DROP_DIR=""
-DEEP_HUNT=0 ; INV_FIXTURE="" ; DEEP_HUNT_MAX_TARGETS=1 ; DEEP_HUNT_REPAIR_ROUNDS=4
+DEEP_HUNT=0 ; INV_FIXTURE="" ; DEEP_HUNT_MAX_TARGETS=1 ; DEEP_HUNT_REPAIR_ROUNDS=4 ; DEEP_HUNT_AUX_MAX=0
 
 nv() { [ "$1" -ge 2 ] || { echo "run-zone-hunt.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -89,6 +98,7 @@ while [ $# -gt 0 ]; do
     --deep-hunt)        DEEP_HUNT=1; shift ;;
     --invariant-fixture) nv "$#"; INV_FIXTURE="$2"; shift 2 ;;
     --deep-hunt-max-targets) nv "$#"; DEEP_HUNT_MAX_TARGETS="$2"; shift 2 ;;
+    --deep-hunt-aux-max) nv "$#"; DEEP_HUNT_AUX_MAX="$2"; shift 2 ;;
     --deep-hunt-repair-rounds) nv "$#"; DEEP_HUNT_REPAIR_ROUNDS="$2"; shift 2 ;;
     --drop-dir)         nv "$#"; DROP_DIR="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
@@ -105,6 +115,7 @@ case "$JOBS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --jobs must be a positive i
 [ -z "$INV_FIXTURE" ]   || [ -f "$INV_FIXTURE" ]   || { echo "run-zone-hunt.sh: --invariant-fixture not found: $INV_FIXTURE" >&2; exit 2; }
 case "$DEEP_HUNT_MAX_TARGETS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-max-targets must be a positive integer (got '$DEEP_HUNT_MAX_TARGETS')" >&2; exit 2 ;; esac
 [ "$DEEP_HUNT_MAX_TARGETS" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-max-targets must be >= 1 (got '$DEEP_HUNT_MAX_TARGETS')" >&2; exit 2; }
+case "$DEEP_HUNT_AUX_MAX" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-aux-max must be a non-negative integer (got '$DEEP_HUNT_AUX_MAX')" >&2; exit 2 ;; esac
 case "$DEEP_HUNT_REPAIR_ROUNDS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be a positive integer (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2 ;; esac
 [ "$DEEP_HUNT_REPAIR_ROUNDS" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be >= 1 (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "run-zone-hunt.sh: python3 not installed" >&2; exit 3; }
@@ -254,11 +265,14 @@ if [ "$DEEP_HUNT" -eq 1 ]; then
     # Enumerate the value-custody zones + their ONE primary target (the largest-by-line-count .sol in the
     # zone's files, lexicographic tie-break; bounded to --deep-hunt-max-targets per zone) + the zone's
     # dominant custody class (prefer C6/C10/C11, else the literal C-invariant). TSV: zid \t relfile \t class.
+    # #1726 (M2): when --deep-hunt-aux-max > 0, a 4th column carries the comma-joined next up-to-N largest
+    # co-custody .sol (the secondary contracts for a SYSTEM invariant). When 0 (default) NO 4th column is
+    # emitted — every row is byte-identical to before, so single-target deep-hunt runs are unchanged.
     DEEP_TARGETS="$OUT/.deep-hunt-targets.tsv"
-    python3 - "$MAP/zones.json" "$REPO" "$DEEP_HUNT_MAX_TARGETS" > "$DEEP_TARGETS" <<'PY'
+    python3 - "$MAP/zones.json" "$REPO" "$DEEP_HUNT_MAX_TARGETS" "$DEEP_HUNT_AUX_MAX" > "$DEEP_TARGETS" <<'PY'
 import sys, os, json
 zones = json.load(open(sys.argv[1], encoding="utf-8"))
-repo, max_targets = sys.argv[2], int(sys.argv[3])
+repo, max_targets, aux_max = sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 if not isinstance(zones, list):
     zones = []
 def loc(rel):
@@ -285,22 +299,45 @@ for z in zones:
     ranked = sorted(sols, key=lambda f: (-loc(f), f))
     dclass = dominant_class(z.get("bug_classes_likely", []))
     for rel in ranked[:max_targets]:
-        print("%s\t%s\t%s" % (zid.replace("\t", " "), rel.replace("\t", " "), dclass))
+        # #1726 (M2): aux-max == 0 => byte-identical 3-column row (single-target). aux-max > 0 => append a 4th
+        # column with the next up-to-aux_max largest co-custody .sol (this zone's secondary contracts).
+        if aux_max > 0:
+            aux = [f for f in ranked if f != rel][:aux_max]
+            auxcol = ",".join(a.replace("\t", " ") for a in aux)
+            print("%s\t%s\t%s\t%s" % (zid.replace("\t", " "), rel.replace("\t", " "), dclass, auxcol))
+        else:
+            print("%s\t%s\t%s" % (zid.replace("\t", " "), rel.replace("\t", " "), dclass))
 PY
     DEEP_FINDINGS=0
-    while IFS='	' read -r ZID RELFILE DCLASS || [ -n "${ZID:-}" ]; do
+    while IFS='	' read -r ZID RELFILE DCLASS AUXFILES || [ -n "${ZID:-}" ]; do
       [ -n "$ZID" ] || continue
+      # #1726 (M2): split the comma-joined AUXFILES column (present only when --deep-hunt-aux-max > 0) into
+      # distinct `--aux <rel>` argv elements — one per SECONDARY co-custody contract — reusing the shipped
+      # composable-fresh multi-contract engine (run-invariant-hunt.sh --aux -> INV_AUX -> compose_fresh_seed
+      # -> multi-register targetContracts() -> #1077 both-real enforcement). Empty AUXFILES (the default
+      # aux-max=0 path) leaves the arg list empty, so both $INVHUNT invocations are byte-identical to the
+      # single-target path. All contract iteration stays here in the shell runner (never a per-element .ag loop).
+      set --
+      if [ -n "${AUXFILES:-}" ]; then
+        _aux_old_ifs="$IFS"; IFS=','
+        # shellcheck disable=SC2086  # intentional word-split of the comma-joined aux list into distinct args
+        for _auxrel in $AUXFILES; do
+          [ -n "$_auxrel" ] || continue
+          set -- "$@" --aux "$_auxrel"
+        done
+        IFS="$_aux_old_ifs"
+      fi
       echo "run-zone-hunt.sh: [deep-hunt] stateful-invariant lens on zone '$ZID' target '$RELFILE' ($DCLASS) ..." >&2
       DZOUT="$DEEP/$ZID"
       if [ -n "$INV_FIXTURE" ]; then
         "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
           --handler-fixture "$INV_FIXTURE" --backend "$BACKEND" --agentis "$AGENTIS" --out "$DZOUT" \
-          --repair-rounds "$DEEP_HUNT_REPAIR_ROUNDS" \
+          --repair-rounds "$DEEP_HUNT_REPAIR_ROUNDS" "$@" \
           || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID'; continuing" >&2; continue; }
       else
         "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
           --backend "$BACKEND" --agentis "$AGENTIS" --out "$DZOUT" \
-          --repair-rounds "$DEEP_HUNT_REPAIR_ROUNDS" \
+          --repair-rounds "$DEEP_HUNT_REPAIR_ROUNDS" "$@" \
           || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID'; continuing" >&2; continue; }
       fi
       # Adapter: convert the engine's INVARIANT|<target>|FINDING + STEP| witness into a schema-compatible

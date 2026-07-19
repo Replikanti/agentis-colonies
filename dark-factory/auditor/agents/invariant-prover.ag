@@ -493,6 +493,62 @@ fn action_checklist_prompt(klass: string) -> string {
          + "entry points\n";
 }
 
+// #1726 (M1) — METAMORPHIC RELATIONS: an ALTERNATIVE shape for the SAME single `invMatch_*` invariant, never a
+// second property. A round-trip / commutativity / monotonicity relation is often EASIER to state correctly than
+// an absolute predicate and targets exactly the rounding-direction / value-leak / inflation class where the rare
+// Highs live. Same flat-string / class-keyed idiom as action_checklist_prompt (class_to_keyword(to_lower(klass))
+// normalizer + anchored class_is, most-specific-first, non-empty generic default) — no new env var, no runner
+// change, no new prompt() call, no per-element recursion. Purely additive prompt steering: verdict_of, the
+// INVARIANT| marker, and the #1471 --require-import/--require-contract gate are untouched.
+fn metamorphic_relation_prompt(klass: string) -> string {
+    // distinct var name `mk` (not `k`) so the #1725 handler-action demo's "exactly 2 normalizer sites" count
+    // stays exact; this function normalizes through the SAME class_to_keyword(to_lower(klass)) helper.
+    let mk = class_to_keyword(to_lower(klass));
+    let vaultMeta = "  - ROUND-TRIP: redeem(deposit(x)) <= x and previewRedeem(previewDeposit(x)) <= x — a "
+         + "deposit-then-redeem round-trip must NEVER return more underlying than went in (rounding must favour "
+         + "the vault)\n"
+         + "  - COMMUTATIVITY: two deposits by different actors are order-independent — the share accounting "
+         + "commutes (same total shares/assets regardless of deposit order)\n"
+         + "  - MONOTONICITY: share price (assets-per-share) is monotonic non-decreasing under a no-op or a "
+         + "direct donation — it must never DROP for existing holders (first-depositor inflation lens)\n";
+    if index_of(mk, "4626") >= 0 { return vaultMeta; }
+    if index_of(mk, "vault") >= 0 { return vaultMeta; }
+    let lendMeta = "  - ROUND-TRIP: deposit-collateral then withdraw-collateral returns <= the deposited amount "
+         + "(never more)\n"
+         + "  - ROUND-TRIP: borrow then immediately repay leaves debt <= the original principal and frees NO "
+         + "extra collateral (the round-trip mints no value)\n";
+    if index_of(mk, "lend") >= 0 { return lendMeta; }
+    if index_of(mk, "cdp") >= 0 { return lendMeta; }
+    if index_of(mk, "borrow") >= 0 { return lendMeta; }
+    if index_of(mk, "liquidat") >= 0 { return lendMeta; }
+    if index_of(mk, "collateral") >= 0 { return lendMeta; }
+    if index_of(mk, "stak") >= 0 {
+        return "  - ROUND-TRIP: stake then unstake returns <= the staked principal (excluding legitimately "
+             + "accrued rewards) — never more\n"
+             + "  - IDEMPOTENCE: claiming rewards twice with NO elapsed accrual between the calls is idempotent "
+             + "(the second claim pays zero)\n";
+    }
+    let ammMeta = "  - ROUND-TRIP: a swap A->B->A must NOT increase the actor's balance — a round-trip swap "
+         + "yields NO free value (fees/rounding may only lose value)\n"
+         + "  - ROUND-TRIP: addLiquidity then removeLiquidity returns <= the contributed amounts\n"
+         + "  - COMMUTATIVITY: two independent swaps commute within rounding tolerance (order does not create "
+         + "value)\n";
+    if index_of(mk, "amm") >= 0 { return ammMeta; }
+    if index_of(mk, "swap") >= 0 { return ammMeta; }
+    if index_of(mk, "dex") >= 0 { return ammMeta; }
+    if index_of(mk, "reentran") >= 0 {
+        return "  - COMMUTATIVITY/IDEMPOTENCE: a re-entrant call composed with its outer call must reach the "
+             + "SAME accounting state as running the two sequentially — the reentrant path grants no "
+             + "double-credit\n";
+    }
+    return "  - ROUND-TRIP: any put/take (deposit/withdraw) round-trip must NOT return more value than was put "
+         + "in\n"
+         + "  - COMMUTATIVITY: two independent same-actor operations commute (order does not change the final "
+         + "state)\n"
+         + "  - MONOTONICITY: a no-op sequence keeps the honest actor's share price monotonic non-increasing "
+         + "against them (no value silently leaks out)\n";
+}
+
 // #1720 — the CANONICAL COMPILING SKELETON injected into BOTH the first-generation prompt AND every compile-
 // repair round (via sharedScaffold, threaded through the repair chain). Each of the 4 repair rounds is only as
 // effective as the context it carries; the deep-hunt HARNESS_ERROR rate was dominated by tests that never got
@@ -590,6 +646,13 @@ let sharedScaffold =
   + "For the bug class above, the Handler MUST include these adversarial/multi-actor actions in addition to "
   + "the happy-path ones (skip any that plainly do not apply to this target):\n"
   + action_checklist_prompt(targetClass) + "\n\n"
+  + "=== METAMORPHIC RELATIONS (alternative property shape) ===\n"
+  + "The ONE deep invariant above MAY instead be expressed as a METAMORPHIC RELATION — a round-trip / "
+  + "commutativity / monotonicity property — which is often EASIER to state correctly than an absolute "
+  + "predicate and targets the rounding-direction / value-leak / inflation class where rare Highs hide. This "
+  + "is an ALTERNATIVE SHAPE for the SAME single `" + invMatch + "_*` property, NEVER a second invariant. If "
+  + "it fits the target better than an absolute predicate, prefer it:\n"
+  + metamorphic_relation_prompt(targetClass) + "\n\n"
   + "=== HOW TO ANSWER ===\n"
   + "Output ONLY the Solidity source of the `*.t.sol` test — no markdown fences, no prose before or "
   + "after. It must compile and define at least one `contract` and one `" + invMatch + "_*` function.";

@@ -1307,6 +1307,41 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-handler-actions.sh" ]; then
     fi
 fi
 
+# --- dark-factory invariant-hunt metamorphic-relation prompt lever (#1726 M1) ---
+# The #1716 A/B showed the fuzzer reaches a plausible ABSOLUTE-predicate invariant but rarely the harder-to-state
+# property where the rare Highs live. #1726 M1 adds metamorphic_relation_prompt() to invariant-prover.ag (keyed
+# off the existing TARGET_CLASS via class_to_keyword, no new env var) and a `=== METAMORPHIC RELATIONS ===` block
+# to sharedScaffold, framing the ONE invariant as an OPTIONAL round-trip / commutativity / monotonicity relation
+# (an ALTERNATIVE shape, never a second property). demo-invariant-metamorphic.sh source-guards the wiring, all 5
+# per-class relation menus (plus the default), and the untouched verdict/marker/#1471 gate (CI-safe, no LLM/forge).
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-metamorphic.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-metamorphic.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: invariant-hunt metamorphic-relation prompt lever (#1726 M1)"
+    else
+        fail "dark-factory: invariant-hunt metamorphic-relation prompt lever (#1726 M1)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- dark-factory multi-contract deep-hunt wiring (#1726 M2) ---
+# The composable-fresh multi-contract engine already ships end-to-end (run-invariant-hunt.sh --aux -> INV_AUX ->
+# compose_fresh_seed -> multi-register targetContracts() -> #1077 both-real HARNESS_ERROR); it was just never
+# REACHED from the autonomous deep-hunt path. #1726 M2 is confined to run-zone-hunt.sh: a new --deep-hunt-aux-max
+# <N> flag (default 0 = OFF = byte-identical) threads a value-custody zone's SECONDARY co-custody .sol as --aux,
+# REUSING the already-safety-gated engine verbatim (zero .ag / gate change). demo-invariant-multi-target.sh
+# source-guards the flag/default/validation, the STAGE 4.5 aux-column emission + both invocations, the aux-max=0
+# byte-identical guard, and that the reused #1077/#1471 safety path is byte-present (CI-safe, no LLM/forge).
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-multi-target.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-multi-target.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: multi-contract deep-hunt wiring (#1726 M2)"
+    else
+        fail "dark-factory: multi-contract deep-hunt wiring (#1726 M2)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory historical-exploit-class pattern seeding (#1733) ---
 # A static, offline library of 7 canonical historical DeFi exploit CLASSES (auditor/methods/
 # historical-exploits.md, one entry per C1/C2/C5/C6/C8/C11/C16 taxonomy id, hand-authored, no
