@@ -67,7 +67,12 @@ for _cdir in "$MUTANTS_DIR"/C-*/; do
   _mut=$(ls "$_cdir"*.mutant-*.sol 2>/dev/null | wc -l)
   _tooth=$(ls "$_cdir"inv_toothless.t.sol 2>/dev/null | wc -l)
   # a "good" invariant fixture = an inv_*.t.sol that is NOT the toothless control
-  _good=$(ls "$_cdir"inv_*.t.sol 2>/dev/null | grep -cv 'inv_toothless.t.sol' || true)
+  _good=0
+  for _gf in "$_cdir"inv_*.t.sol; do
+    [ -e "$_gf" ] || continue
+    case "$_gf" in *inv_toothless.t.sol) continue ;; esac
+    _good=$((_good + 1))
+  done
   if [ "$_base" -ge 1 ] && [ "$_mut" -ge 1 ] && [ "$_good" -ge 1 ] && [ "$_tooth" -ge 1 ]; then
     ok "$_cls: base=$_base mutant=$_mut good=$_good toothless=$_tooth"
   else
