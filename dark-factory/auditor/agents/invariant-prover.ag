@@ -97,6 +97,12 @@ let invMatch = match_prefix(getenv("INV_MATCH"));
 let fixturePath = getenv("HANDLER_FIXTURE");
 let codePath = getenv("CODE_PATH");
 let code = cat_file(codePath);
+// #1722 — audit-informed invariant seeding. INV_AUDIT_CONTEXT points at a target's spec / audit-scope doc; the
+// prover reads it via the same sandboxed cat_file as CODE_PATH and folds it into the generation prompt to steer
+// the LLM at a protocol-SPECIFIC value-conservation property. Untrusted operator input — it flows ONLY into the
+// plain-string prompt (never a shell), exactly like `code`, so no shell_escape. Empty => "" => byte-identical prompt.
+let auditPath = getenv("INV_AUDIT_CONTEXT");
+let auditText = cat_file(auditPath);
 
 // #1070-B1 — drive the REAL target. The generated test is written to INV_OUT (under <repo>/test/...) and the
 // target source is CODE_PATH; the model needs the CORRECT relative import path so it can `import` and DEPLOY
@@ -304,6 +310,22 @@ fn recall_seed(klass: string, prior: string) -> string {
     return "A prior FINDING on bug class " + klass + " used this invariant pattern: " + prior
          + ". Adapt that invariant/handler shape to the current target.\n";
 }
+// #1722 — AUDIT-INFORMED invariant seeding. When the operator supplies a target's spec / audit-scope doc, steer
+// the model to FORMALIZE the single highest-value protocol-SPECIFIC value-conservation / accounting / access-
+// control property stated there as the deep `invariant_*` property — preferring a NAMED protocol-specific
+// conservation law over the generic per-lens default. The #1716 A/B isolated invariant EXPRESSIVENESS (not
+// plumbing) as the limit, so this narrows the property the model reaches for. `auditText` is untrusted operator
+// input that flows only into this plain-string prompt — never a shell. Empty => "" => the prompt is byte-identical.
+fn audit_seed(auditText: string) -> string {
+    if len(auditText) == 0 { return ""; }
+    return "AUDIT-INFORMED INVARIANT SEEDING: the target's spec / audit-scope doc is provided below. FORMALIZE "
+         + "the SINGLE highest-value protocol-SPECIFIC value-conservation / accounting / access-control property "
+         + "it states as the deep `invariant_*` property — prefer a NAMED protocol-specific conservation law "
+         + "(e.g. 'sum of user balances never exceeds total supply', 'collateral always backs minted debt', "
+         + "'only the owner role can move escrowed funds') over the generic per-lens default. The invariant must "
+         + "still be one a SEQUENCE of calls can break, checked with plain `require(...)`.\n"
+         + "--- TARGET SPEC / AUDIT-SCOPE PROPERTIES ---\n" + auditText + "\n";
+}
 // FM1 (#1041) — FORK-MODE generation seed. When the target is a LIVE DEPLOYED contract on a forked chain, the
 // generator must drive the REAL deployed contract by ADDRESS (not deploy a fresh copy): a Handler that calls
 // its real functions with bounded inputs and FUNDED actors (`vm.deal`), plus a DEEP invariant checked against
@@ -469,7 +491,8 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
     // #1720 — prepend the per-run recall/fork/compose SEEDS, then append the shared static scaffold (skeleton +
     // requirements + aux + lens + answer contract). The scaffold is identical to what the repair rounds re-inject.
     let instruction =
-        recall_seed(klass, prior)
+        audit_seed(auditText)
+      + recall_seed(klass, prior)
       + fork_seed(forkActive, forkTarget, forkUrl, forkBlock)
       + compose_seed(composeActive, forkContext)
       + compose_fresh_seed(composeFresh)

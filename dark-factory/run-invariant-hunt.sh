@@ -75,6 +75,13 @@
 #                        (FINDING/CLEAN). Default 2 (so <=3 total attempts). 0 disables repair (one shot). The
 #                        verbatim HANDLER_FIXTURE path is NEVER repaired. Exported to the prover as
 #                        INV_REPAIR_ROUNDS; omitted => the prover's own default (2) applies.
+#   --audit-context <file>  #1722: a target's spec / audit-scope doc. Staged into the rundir and threaded to the
+#                        prover as INV_AUDIT_CONTEXT; the prover reads it via the sandboxed cat_file and prepends
+#                        an `audit_seed()` block to the generation prompt, steering the LLM to formalize a
+#                        protocol-SPECIFIC value-conservation property from the doc instead of only the generic
+#                        per-lens default (the #1716 A/B isolated invariant EXPRESSIVENESS, not plumbing, as the
+#                        limit). Purely additive: absent the flag the prompt is byte-identical to today. An
+#                        unreadable file is a hard usage error (exit 2). Mirrors run-autoharness.sh's FM4 wiring.
 #   --out <dir>          Output dir for the run + report (default: ./invariant-out).
 #   --pattern-store <dir>  Int M3 (#1037): a PERSISTENT pattern-DAG store reused ACROSS runs. When set, the
 #                        winning-invariant patterns the prover PERSISTS on a FINDING (`invpat:*` memos) are
@@ -91,6 +98,7 @@ AGENTIS="agentis"
 REPO="" ; TARGET="" ; CLASS="" ; FIXTURE="" ; CODE="" ; MATCH="invariant"
 BACKEND="flat-cyborg" ; MODEL="" ; RUNS="" ; DEPTH="" ; SEED="" ; OUT="$PWD/invariant-out" ; PATTERN_STORE=""
 REPAIR_ROUNDS=""  # #1073: extra compile-repair rounds; "" => the prover's own default (2)
+AUDIT_CONTEXT=""  # #1722: optional spec / audit-scope doc; "" => no audit seed (byte-identical prompt)
 FORK_URL="" ; FORK_BLOCK="" ; FORK_TARGET=""
 # FM2 (#1041): the composability context set — one `--fork-target '<role>=<addr>'` per array slot. A bare
 # `--fork-target <addr>` (FM1 shorthand, no '=') is normalised to a `target=<addr>` slot below.
@@ -115,6 +123,7 @@ while [ $# -gt 0 ]; do
     --depth) need "$#"; DEPTH="$2"; shift 2 ;;
     --seed) need "$#"; SEED="$2"; shift 2 ;;
     --repair-rounds) need "$#"; REPAIR_ROUNDS="$2"; shift 2 ;;
+    --audit-context) need "$#"; AUDIT_CONTEXT="$2"; shift 2 ;;
     --fork-url) need "$#"; FORK_URL="$2"; shift 2 ;;
     --fork-block) need "$#"; FORK_BLOCK="$2"; shift 2 ;;
     --fork-target) need "$#"; FORK_TARGET_SPECS+=("$2"); shift 2 ;;
@@ -145,6 +154,9 @@ case "$FORK_URL" in
 esac
 case "$FORK_BLOCK" in '') ;; *[!0-9]*) echo "run-invariant-hunt.sh: --fork-block must be a whole number" >&2; exit 2 ;; esac
 [ -z "$FORK_BLOCK" ] || [ -n "$FORK_URL" ] || { echo "run-invariant-hunt.sh: --fork-block requires --fork-url" >&2; exit 2; }
+# #1722: an --audit-context file must be readable. Validated HERE (before the agentis-binary check below) so an
+# operator typo surfaces as a clean usage error even offline, mirroring run-autoharness.sh's FM4 --audit-context.
+[ -z "$AUDIT_CONTEXT" ] || [ -r "$AUDIT_CONTEXT" ] || { echo "run-invariant-hunt.sh: --audit-context file not readable: $AUDIT_CONTEXT" >&2; exit 2; }
 
 # FM2 (#1041): resolve the repeatable --fork-target specs into the FORK_CONTEXT role->address set and the
 # FM1 FORK_TARGET single-address. Each spec is either `<role>=<addr>` (a context role) or a bare `<addr>`
@@ -332,6 +344,14 @@ if [ -n "$CODE" ]; then
   slim_sol_source "$CODE" "$RUN/target-code.sol"
   CODE_IN_RUN="$RUN/target-code.sol"
 fi
+# #1722: stage the (optional) audit-context doc into the rundir so the sandboxed reader can reach it. Plain `cp`
+# — it is a spec / audit-scope TEXT doc, NOT Solidity, so it is NOT run through slim_sol_source. Empty => "" =>
+# the prover's audit_seed() returns "" => the generation prompt is byte-identical to a non-audit run.
+AUDIT_IN_RUN=""
+if [ -n "$AUDIT_CONTEXT" ]; then
+  cp "$AUDIT_CONTEXT" "$RUN/audit-context.txt"
+  AUDIT_IN_RUN="$RUN/audit-context.txt"
+fi
 
 # FM2 (#1075): stage each resolved --aux source into the rundir (so the sandboxed reader can reach it) and
 # build INV_AUX — a sentinel-joined list of `<abs_path_in_run>:<Name>` entries, sentinel `@@A@@`. The sentinel
@@ -371,7 +391,7 @@ done
   # role->address context set so the generation prompt can compose calls across the deployed protocols.
   # FM2 (#1075): INV_AUX carries the sentinel-joined `<abs_path>:<Name>` auxiliary-contract list so the prover
   # can deploy + WIRE the whole system (fresh-deploy composability).
-  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX"
+  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT"
   # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s default.
   echo "exec.default_timeout_ms = 600000"
   # Each verify is recorded as experience; invariant-prover fitness reweights over targets.
@@ -425,6 +445,7 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
     HANDLER_FIXTURE="$FIXTURE_IN_RUN" \
     CODE_PATH="$CODE_IN_RUN" \
     INV_AUX="$INV_AUX" \
+    INV_AUDIT_CONTEXT="$AUDIT_IN_RUN" \
     INV_RUNS="$RUNS" \
     INV_DEPTH="$DEPTH" \
     INV_SEED="$SEED" \
