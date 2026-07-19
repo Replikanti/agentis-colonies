@@ -393,6 +393,18 @@ if grep -q 'fn zone_is_test_or_interface' "$MAPPER" && grep -q 'fn is_test_or_in
 else
   bad "zone-mapper.ag missing the #1717 zone_is_test_or_interface / is_test_or_interface_path helpers"
 fi
+# #1729: the C5 access-control/init-upgrade/proxy backstop net exists, is chained into apply_backstop (so C5
+# reaches scope.tsv -> is hunted -> can be NAMED), carries its classification rule, and emits the ACCESS-CTRL|
+# diagnostic (mirrors the #1698/#1681 net idiom + the #1713/#1717 diagnostic-line convention).
+if grep -q 'fn contains_access_control_signal' "$MAPPER" \
+   && grep -q 'fn apply_access_control_backstop' "$MAPPER" \
+   && grep -q 'apply_access_control_backstop(' "$MAPPER" \
+   && grep -q 'ACCESS-CONTROL / INIT-UPGRADE / PROXY DETECTION RULE (C5)' "$MAPPER" \
+   && grep -q '"ACCESS-CTRL|"' "$MAPPER"; then
+  ok "zone-mapper.ag defines the #1729 C5 net (contains_access_control_signal + apply_access_control_backstop), chains it into apply_backstop, carries the C5 rule, and emits the ACCESS-CTRL| line"
+else
+  bad "zone-mapper.ag missing the #1729 C5 access-control/init-upgrade/proxy backstop wiring"
+fi
 if grep -q 'learn("zone-map"' "$MAPPER" && grep -q 'memo_write("zone-mapper:last_check"' "$MAPPER"; then
   ok "zone-mapper.ag records the mapping (learn) + writes its last_check memo"
 else
@@ -488,6 +500,122 @@ SOL
   else
     bad "map-zones.sh --backend mock failed on the #1717 custody-path fixture (exit $RC3):"
     sed 's/^/      /' "$WORK/mock-custody.err" | head -20 >&2
+  fi
+
+  # ----------------------------------------------------------------------------------------------------
+  # #1729: C5 access-control/init-upgrade/proxy signal regression. A THIRD throwaway micro-repo with two
+  # zones (separate directories, since map-zones.sh groups by immediate dir): access/UpgradeableVault.sol
+  # OWNS privileged/upgrade surface (onlyOwner + _authorizeUpgrade + initializer), math/PlainMath.sol owns
+  # none. mock backend still runs contains_access_control_signal()'s real, non-LLM logic — only prompt() is
+  # stubbed — so this exercises the actual #1729 signal offline via the unconditional ACCESS-CTRL| diagnostic
+  # line (the mock reply carries no ZONE| sentinel, so the apply_backstop append itself is unreachable here —
+  # the same constraint #1713/#1717 read via CUSTODY|).
+  # ----------------------------------------------------------------------------------------------------
+  AC_REPO="$WORK/target-access-control"
+  mkdir -p "$AC_REPO/access" "$AC_REPO/math"
+  cat > "$AC_REPO/access/UpgradeableVault.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract UpgradeableVault {
+    address public owner;
+    bool private _initialized;
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "not owner");
+        _;
+    }
+
+    function initialize(address owner_) external initializer {
+        owner = owner_;
+    }
+
+    function _authorizeUpgrade(address newImpl) internal onlyOwner {}
+}
+SOL
+  cat > "$AC_REPO/math/PlainMath.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+library PlainMath {
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a + b;
+    }
+}
+SOL
+  # #1740: two narrowing-regression zones added to the SAME repo (map-zones.sh groups by immediate dir, so
+  # each gets its own zone) — a plain non-upgradeable pool with a private `_init(` helper (must resolve
+  # false, distinct from the OZ-upgradeable `__Xxx_init(` chain) and a read-only adapter that QUERIES another
+  # contract's AccessControl role via `hasRole(` without owning any AccessControl surface itself (must also
+  # resolve false, distinct from an `is AccessControl` inheritance declaration).
+  mkdir -p "$AC_REPO/plainamm" "$AC_REPO/reader"
+  cat > "$AC_REPO/plainamm/Pool.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract Pool {
+    uint256 public reserve0;
+    uint256 public reserve1;
+
+    constructor(uint256 r0, uint256 r1) { _init(r0, r1); }
+
+    function _init(uint256 r0, uint256 r1) internal {
+        reserve0 = r0;
+        reserve1 = r1;
+    }
+
+    function swap(uint256 amountIn, bool zeroForOne) external returns (uint256 amountOut) {
+        amountOut = amountIn;
+    }
+}
+SOL
+  cat > "$AC_REPO/reader/RoleReader.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import {IAccessControl} from "@openzeppelin/contracts/access/IAccessControl.sol";
+
+contract RoleReader {
+    function isAdmin(address target, address who) external view returns (bool) {
+        return IAccessControl(target).hasRole(bytes32(0), who);
+    }
+}
+SOL
+
+  git -C "$AC_REPO" init -q
+  git -C "$AC_REPO" config user.email demo@example.invalid
+  git -C "$AC_REPO" config user.name "demo"
+  git -C "$AC_REPO" add -A
+  git -C "$AC_REPO" commit -qm "access-control fixture"
+
+  OUT4="$WORK/out-access-control"
+  "$MAPZONES" --repo "$AC_REPO" --out "$OUT4" --backend mock >/dev/null 2>"$WORK/mock-ac.err"
+  RC4=$?
+  # Same diagnostic-line read as the #1717 block: zone-mapper.ag writes ACCESS-CTRL|<id>|<bool> to
+  # $OUT4/run/zone_<id>.log regardless of the mock's no-ZONE| classification gate.
+  if [ "$RC4" -eq 0 ] && [ -d "$OUT4/run" ]; then
+    AC_VAULT="$(grep -h '^ACCESS-CTRL|access|' "$OUT4/run/zone_access.log" 2>/dev/null | tail -1)"
+    AC_MATH="$(grep -h '^ACCESS-CTRL|math|' "$OUT4/run/zone_math.log" 2>/dev/null | tail -1)"
+    AC_PLAINAMM="$(grep -h '^ACCESS-CTRL|plainamm|' "$OUT4/run/zone_plainamm.log" 2>/dev/null | tail -1)"
+    AC_READER="$(grep -h '^ACCESS-CTRL|reader|' "$OUT4/run/zone_reader.log" 2>/dev/null | tail -1)"
+    if [ "$AC_VAULT" = "ACCESS-CTRL|access|true" ] && [ "$AC_MATH" = "ACCESS-CTRL|math|false" ]; then
+      ok "#1729: contains_access_control_signal() true for an onlyOwner/_authorizeUpgrade/initializer vault, false for plain math"
+    else
+      bad "#1729: unexpected ACCESS-CTRL| lines (want UpgradeableVault=true PlainMath=false, got vault='$AC_VAULT' math='$AC_MATH')"
+    fi
+    if [ "$AC_PLAINAMM" = "ACCESS-CTRL|plainamm|false" ]; then
+      ok "#1740: contains_access_control_signal() false for a plain non-upgradeable pool's private _init( helper (no OZ-upgradeable base)"
+    else
+      bad "#1740: plainamm regression (want ACCESS-CTRL|plainamm|false, got '$AC_PLAINAMM')"
+    fi
+    if [ "$AC_READER" = "ACCESS-CTRL|reader|false" ]; then
+      ok "#1740: contains_access_control_signal() false for a read-only adapter that queries IAccessControl(target).hasRole(...) without owning AccessControl surface"
+    else
+      bad "#1740: reader regression (want ACCESS-CTRL|reader|false, got '$AC_READER')"
+    fi
+  else
+    bad "map-zones.sh --backend mock failed on the #1729/#1740 access-control fixture (exit $RC4):"
+    sed 's/^/      /' "$WORK/mock-ac.err" | head -20 >&2
   fi
 fi
 
