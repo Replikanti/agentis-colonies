@@ -1,0 +1,22 @@
+# manifest.tsv — the standardized MUTANT KILL-SET index for the invariant-hunt discovery track (#1724).
+#
+# One row per (contract-fixture, invariant-fixture) pair with its EXPECTED discrimination result. The
+# self-test in ../mutant-kill.sh iterates this file: it stages the contract fixture to src/Target.sol and
+# the invariant fixture to test/Inv.t.sol in a throwaway foundry project, runs the SAME evm-harness/
+# forge-invariant.sh stateful-fuzzing gate the discovery track uses, maps its exit (1=FINDING=KILLED,
+# 0=CLEAN=SURVIVED, 2=HARNESS_ERROR=ERROR), and asserts it equals the `expected` column.
+#
+# The three-way DISCRIMINATION per class proves a "kill" measures invariant EXPRESSIVENESS, not a rigged
+# always-fire harness: the GOOD invariant KILLS the mutant AND SURVIVES the clean base twin, while the
+# TOOTHLESS invariant SURVIVES the mutant. See README.md for the layout + the STABLE-CONTRACT-NAME rule.
+#
+# Columns (tab-separated): class  contract-fixture  invariant-fixture  expected(KILLED|SURVIVED)  note
+# Fixtures resolve as mutants/<class>/<file>. Blank lines and `#` comments are ignored.
+
+C-erc4626	Vault.mutant-donation.sol	inv_victim_not_robbed.t.sol	KILLED	good solvency-claim invariant catches the donation/inflation attack
+C-erc4626	Vault.base.sol	inv_victim_not_robbed.t.sol	SURVIVED	good invariant does NOT false-positive on the hardened (virtual-offset) twin
+C-erc4626	Vault.mutant-donation.sol	inv_toothless.t.sol	SURVIVED	toothless (totalShares>=0) invariant MISSES the mutant — discrimination control
+
+C-accounting	Lending.mutant-rounding.sol	inv_debt_backed.t.sol	KILLED	good solvency invariant catches the inverted-rounding accounting drift
+C-accounting	Lending.base.sol	inv_debt_backed.t.sol	SURVIVED	good invariant does NOT false-positive on the correctly-accounted twin
+C-accounting	Lending.mutant-rounding.sol	inv_toothless.t.sol	SURVIVED	toothless (totalDebt>=0) invariant MISSES the mutant — discrimination control

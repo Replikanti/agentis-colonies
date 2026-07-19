@@ -15,6 +15,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Mutation-guided invariant validation + mutant-kill acceptance-gate seam** (#1724, follow-up to the
+  #1716 A/B that isolated invariant EXPRESSIVENESS, not plumbing, as the deep-hunt limit). A standardized,
+  per-`TARGET_CLASS` MUTANT KILL-SET under `evm-harness/mutants/` (`manifest.tsv` index + `README.md`
+  convention doc + two seeded classes: `C-erc4626` donation/inflation and `C-accounting` inverted-rounding
+  accounting drift, each with a CLEAN base twin, a mutant, a GOOD invariant, and a TOOTHLESS control) plus a
+  runnable harness `evm-harness/mutant-kill.sh`. The harness drives each fixture through the EXISTING
+  `evm-harness/forge-invariant.sh` stateful-fuzzing gate and maps its exit to a kill result
+  (`1=FINDING=KILLED`, `0=CLEAN=SURVIVED`, `2=HARNESS_ERROR=ERROR`), so the verdict is the FUZZER's, never an
+  LLM opinion. Each class encodes a three-way DISCRIMINATION self-test: the good invariant KILLS the mutant
+  AND SURVIVES the clean twin, while the toothless control SURVIVES the mutant — a "kill" therefore measures
+  invariant expressiveness, not a rigged always-fire harness. `--self-test` iterates the manifest and asserts
+  every verdict matches its expected column; `--class <c> --invariant <path>` is an offline quality metric
+  (the deferred repair-loop acceptance gate's clean seam). The harness SKIPs cleanly (exit 0, `[SKIP]`)
+  without `forge`, exactly like `demo-invariant-hunt.sh`. The FUZZER / `forge-invariant.sh` exit code, the
+  `INVARIANT|<file:fn>|<verdict>` marker, and the #1471 target-linkage gate are byte-identical (unchanged);
+  `invariant-prover.ag` is untouched. Pinned by the CI-safe source-guard `demo-invariant-mutant-kill.sh`
+  (colony-lint block; live `--self-test` under forge is the operator's step). **Future work:** wiring the
+  kill ratio into the deep-hunt repair loop as an explicit accept/reject acceptance gate (use-b) is deferred.
 - **Audit-informed invariant seeding on the deep-hunt path** (#1722, follow-up to the #1716 A/B
   that isolated invariant EXPRESSIVENESS, not plumbing, as the limit). `run-invariant-hunt.sh`
   gains an optional `--audit-context <file>` (a target's spec / audit-scope doc); it is staged into
