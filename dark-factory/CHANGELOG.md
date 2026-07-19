@@ -15,6 +15,30 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Metamorphic-relation invariants + multi-contract deep-hunt wiring** (#1726). Two independent levers
+  for the stateful-invariant deep-hunt, both landing default-safe. **M1 (metamorphic relations,
+  prompt-only):** `invariant-prover.ag` gains a flat class-keyed string builder
+  `metamorphic_relation_prompt()` (reusing the existing `class_to_keyword(to_lower())` normalizer +
+  anchored `class_is`, no new env var, no runner change) that appends a `=== METAMORPHIC RELATIONS
+  (alternative property shape) ===` block to `sharedScaffold`. It frames the ONE deep invariant as an
+  OPTIONAL round-trip / commutativity / monotonicity relation — an ALTERNATIVE shape for the SAME single
+  `invariant_*` property, NEVER a second property — which is often easier to state correctly than an
+  absolute predicate and targets the rounding-direction / value-leak / inflation class where rare Highs
+  live. Per-class menus: vault/ERC4626 (`redeem(deposit(x)) <= x` round-trip, deposit commutativity,
+  share-price monotonicity), lending/CDP (collateral + borrow→repay round-trips), staking (stake→unstake
+  round-trip, claim idempotence), AMM (swap `A->B->A` no free value, add/removeLiquidity round-trip, swap
+  commutativity), reentrancy (reentrant∘outer == sequential), plus a generic put/take round-trip default.
+  **M2 (multi-contract deep-hunt, runner wiring):** `run-zone-hunt.sh` gains a `--deep-hunt-aux-max <N>`
+  flag (**default 0 = OFF = byte-identical** single-target behaviour) that threads a value-custody zone's
+  SECONDARY co-custody `.sol` into the deep-hunt as `run-invariant-hunt.sh --aux` — REUSING the already
+  shipped #1075/#1077 composable-fresh multi-contract engine verbatim (`INV_AUX` → `compose_fresh_seed` →
+  multi-register `targetContracts()` → the both-real HARNESS_ERROR enforcement). STAGE 4.5 emits the
+  co-custody contracts as an optional 4th TSV `AUXFILES` column only when aux-max > 0; at the default 0 the
+  enumerated rows and both `$INVHUNT` invocations are byte-identical to before. The #1471 linkage gate
+  (`--require-import`/`--require-contract`) still fires on the PRIMARY target and the both-real safety
+  protects the aux contracts — M2 touches NO `.ag` / gate code. Both legs are source-guarded by new
+  `demo-invariant-metamorphic.sh` (M1) and `demo-invariant-multi-target.sh` (M2), wired into
+  `colony-lint.sh`. Behavioural rare-recall validation (the live yearn A/B) is deferred to #1730.
 - **Adversarial/multi-actor Handler action checklist for the deep-hunt fuzzer** (#1725). The #1716
   generation−verified A/B isolated a DELTA gap: the LLM names a plausible deep invariant but the
   Handler it writes never gives the fuzzer the ADVERSARIAL action space needed to actually break it
