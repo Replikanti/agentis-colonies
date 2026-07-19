@@ -1289,6 +1289,27 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-mutant-kill.sh" ]; then
     fi
 fi
 
+# --- dark-factory historical-exploit-class pattern seeding (#1733) ---
+# A static, offline library of 7 canonical historical DeFi exploit CLASSES (auditor/methods/
+# historical-exploits.md, one entry per C1/C2/C5/C6/C8/C11/C16 taxonomy id, hand-authored, no
+# scraping) generalizes the single-line --method-fixture mechanism run-autonomous-hunt.sh already
+# implements: seed-historical-patterns.sh seeds each entry into invpat:invented:<class> (the SAME
+# cold-start hint recall_pattern() already consults when no invpat:latest:<class> real FINDING
+# exists yet), using the exact class-extraction pipeline the --method-fixture leg uses. No new
+# memo namespace, no touch to invariant-prover.ag / seed-patterns.ag / run-autonomous-hunt.sh.
+# demo-historical-patterns.sh source-guards the library schema (exactly 7 entries, 6 fields each,
+# no class-key collision) and the seeder wiring (CI-safe) and, when agentis is present, seeds a
+# throwaway pattern-store and reads back a class entry verbatim.
+if [ -x "$REPO_ROOT/dark-factory/demo-historical-patterns.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-historical-patterns.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: historical-exploit-class pattern seeding (library schema + seeder wiring) (#1733)"
+    else
+        fail "dark-factory: historical-exploit-class pattern seeding regressed (#1733)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory concrete-exploit PoC-gen (hardhat / non-invariant foundry) (#1507) ---
 # The SECOND PoC class alongside the invariant machinery: poc-writer.ag writes ONE concrete attack-SEQUENCE test
 # (not a property-fuzz handler) and the toolchain-parametric gate (evm-harness/hardhat-poc.sh /
