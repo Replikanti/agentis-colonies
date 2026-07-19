@@ -1289,6 +1289,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-mutant-kill.sh" ]; then
     fi
 fi
 
+# --- dark-factory invariant-hunt Handler adversarial/multi-actor action checklist (#1725) ---
+# The #1716 A/B isolated a DELTA gap: the LLM names a plausible deep invariant but the Handler it writes never
+# gives the fuzzer the ADVERSARIAL action space needed to actually break it. #1725 adds action_checklist_hint()
+# / action_checklist_prompt() to invariant-prover.ag, keyed off the existing TARGET_CLASS (no new env var), a
+# one-line hint woven into the Handler's Solidity comment and a fuller MUST-include checklist appended to the
+# generation prompt, across 5 protocol-CLASS branches (vault/ERC4626, lending/CDP, staking, AMM, reentrancy)
+# plus a generic multi-actor+perturbation default. The verdict/marker/#1471 gate contract is untouched.
+# demo-invariant-handler-actions.sh source-guards the wiring + per-class coverage (CI-safe, no LLM/forge).
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-handler-actions.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-handler-actions.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: invariant-hunt Handler adversarial/multi-actor action checklist (#1725)"
+    else
+        fail "dark-factory: invariant-hunt Handler adversarial/multi-actor action checklist (#1725)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory historical-exploit-class pattern seeding (#1733) ---
 # A static, offline library of 7 canonical historical DeFi exploit CLASSES (auditor/methods/
 # historical-exploits.md, one entry per C1/C2/C5/C6/C8/C11/C16 taxonomy id, hand-authored, no
