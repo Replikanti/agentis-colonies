@@ -18,6 +18,7 @@ not rewrite decisions.
 - [ADR-0002: Forge abstraction — normalized wrapper dispatch for multi-forge federations](./ADR-0002-forge-abstraction.md) — Accepted, 2026-04-24
 - [ADR-0003: Federation portability contract — what every federation in this repo must provide](./ADR-0003-federation-portability-contract.md) — Accepted, 2026-04-24
 - [ADR-0008: Compute-first novelty discovery as the canonical pattern for novelty-requiring Agentis federations](./ADR-0008-compute-first-novelty.md) — Proposed, 2026-05-17
+- [ADR-0009: Environmental invariants as an optional per-federation evolve-loop surface](./ADR-0009-environmental-invariants.md) — Proposed, 2026-07-19
 
 ## Evaluation records
 
