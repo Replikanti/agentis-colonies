@@ -1365,6 +1365,29 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-teeth-learning.sh" ]; then
     fi
 fi
 
+# --- dark-factory invariant-hunt cross-run ensemble/union replay (#1731) ---
+# Run-to-run variance (#1716) meant a class that produced a good invariant on one run produced nothing on the
+# next, and only the WINNER's descriptor survived. #1731 accumulates EVERY generated invariant (on a FINDING OR
+# a CLEAN, not only winners) and REPLAYS that accumulated UNION against a fresh target cheaply (no extra LLM).
+# SEED: invariant-prover.ag's persist_corpus() writes the descriptor into a NEW lowest-precedence
+# invpat:corpus:<class> recall tier in ONE O(1) memo_write (no per-element .ag loop), default-off via INV_CORPUS.
+# REPLAY: run-invariant-hunt.sh keeps the full test SOURCE per class under --pattern-store/corpus/<class>/ and,
+# under a default-off --replay-corpus flag, loops that BOUNDED set (content-addressed dedup + --corpus-max
+# most-recent eviction) re-running the SAME staged fuzzer gate per file in pure shell — reusing the #1471 link
+# gate so a foreign-import replay is HARNESS_ERROR, never a false verdict. The FUZZER stays the sole verdict;
+# verdict_of/final_verdict/the marker/the #1471 gate + the FINDING->invpat:latest:/teeth paths are byte-untouched;
+# default-off the pipeline is byte-identical. demo-invariant-corpus-replay.sh source-guards the wiring (CI-safe)
+# and, under forge + agentis, pins >=2 replay rows + the --corpus-max cap.
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-corpus-replay.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-corpus-replay.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: invariant-hunt cross-run corpus/ensemble replay (invpat:corpus: tier + runner replay loop) (#1731)"
+    else
+        fail "dark-factory: invariant-hunt cross-run corpus/ensemble replay regressed (#1731)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory historical-exploit-class pattern seeding (#1733) ---
 # A static, offline library of 7 canonical historical DeFi exploit CLASSES (auditor/methods/
 # historical-exploits.md, one entry per C1/C2/C5/C6/C8/C11/C16 taxonomy id, hand-authored, no

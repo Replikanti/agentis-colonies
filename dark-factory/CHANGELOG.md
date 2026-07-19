@@ -15,6 +15,42 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Cross-run invariant ensemble / union replay** (#1731). Run-to-run variance (#1716) means a class that
+  produced a good invariant on one run may produce nothing on the next, yet today only the WINNER's descriptor
+  survives — every non-winning (but valid) hypothesis is discarded. This accumulates the UNION of ALL generated
+  invariants (on a FINDING OR a CLEAN, not just the winners) and REPLAYS it against a fresh target cheaply, with
+  NO extra LLM. Two roles, splitting the seed from the replay. **SEED** (`invariant-prover.ag`): a new
+  `persist_corpus()` — a byte-for-byte-shaped sibling of `persist_teeth()` — writes the just-generated
+  invariant's descriptor (the same `class::target::match-prefix` `psig` `persist_pattern`/`persist_teeth` use)
+  into a NEW lowest-precedence `invpat:corpus:<class>` memo, on a FINDING OR a CLEAN (two separate `if` blocks —
+  single-assignment `.ag` has no `||`), in ONE O(1) `memo_write` per generation (no growing-set walk, no
+  per-element `.ag` loop). It early-returns when `INV_CORPUS` is empty (default-off ⇒ byte-identical, the same
+  guard idiom as `run_mutant_kill`'s `len(mk)==0`), and is placed AFTER the `INVARIANT|` marker + `persist_pattern`
+  + `persist_teeth`. `recall_pattern()` gains `invpat:corpus:` as its WEAKEST tier — precedence FINDING
+  (`invpat:latest:`) > teeth-clean (`invpat:teeth:`) > invented (`invpat:invented:`) > cross-run corpus
+  (`invpat:corpus:`) — so a proven FINDING is never overridden. **REPLAY** (`run-invariant-hunt.sh`, pure SHELL):
+  a new `replay_corpus()` keeps the full generated test SOURCE per class under `--pattern-store/corpus/<class>/`
+  and, under a default-off `--replay-corpus` flag, loops that BOUNDED set — re-running the SAME staged
+  `forge-invariant.sh` gate per file PLUS the identical #1471 `--require-import`/`--require-contract` link args in
+  pure fresh-deploy mode, mapping exit 1→FINDING/0→CLEAN/else→HARNESS_ERROR — and appends one row per replay to a
+  `## Corpus replay (union of prior hypotheses)` report section. It is pure shell over a bounded set: NO
+  `agentis` spawn per replay, NO per-element `.ag`, NO LLM. Accumulation is content-addressed (`cp` the
+  invariant to `<sha256>.t.sol` ⇒ an identical hypothesis is stored once = dedup) and pruned to `--corpus-max`
+  most-recent entries (default 16), bounding BOTH storage and replay cost. `INV_CORPUS` joins the
+  `exec.env_passthrough` allowlist and is threaded as `INV_CORPUS=1` into the `agentis go` env block ONLY when
+  both `--replay-corpus` and `--pattern-store` are set; `bridge_invpat`'s `^invpat:` matcher already ferries the
+  new namespace across `--pattern-store`, no bridge change. `run-zone-hunt.sh` gains a thin pass-through of
+  `--pattern-store`/`--replay-corpus`/`--corpus-max` forwarded verbatim to both deep-hunt invocations (absent ⇒
+  byte-identical arg lists). **The FUZZER stays the SOLE verdict** and the #1471 gate is untouched: a replay
+  authored for a different contract is scored HARNESS_ERROR by the same fuzzer path, never a false verdict.
+  **Default-off byte-identical:** with `--replay-corpus` OFF and `INV_CORPUS` empty the pipeline is byte-identical
+  to before (mirrors #1728's `MUTANT_KILL` / #1726's `--deep-hunt-aux-max 0`). **Measurement:** the union-recall
+  lift is measured out-of-CI via #1730's generation-recall over an ON-vs-OFF `--replay-corpus` run — a deferred
+  operator A/B; this ships the WIRING, not a recall number. Source-guarded by new
+  `demo-invariant-corpus-replay.sh` (wired into `colony-lint.sh`), which pins the after-marker placement, the
+  FINDING-AND-CLEAN accumulation, the one-memo/no-loop discipline, the recall precedence, the
+  verdict/marker/#1471-untouched contract, the default-off guard, the staged-gate replay, the content-addressed
+  dedup + `--corpus-max` prune, and — under forge + agentis — ≥2 replay rows with the cap enforced.
 - **Mutant-kill teeth-signal wired into the invariant learning loop** (#1728). The deep-hunt learned from
   a FINDING (`persist_pattern` → `invpat:latest:<class>` → `recall_pattern`) but a CLEAN dead-ended without
   learning: a TOOTHLESS invariant (holds because it is too weak to break) and a CREDIBLE one (holds because

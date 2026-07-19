@@ -230,7 +230,9 @@ else
   bad "run-invariant-hunt.sh does not stage mutant-kill.sh + mutants/ into the rundir"
 fi
 
-if grep -q 'exec.env_passthrough = .*,MUTANT_KILL"' "$RUNNER"; then
+# MUTANT_KILL must be a passthrough entry (comma-anchored so it matches whether it is mid-list or last — #1731
+# appended INV_CORPUS after it, so it is no longer necessarily the final entry).
+if grep -q 'exec.env_passthrough = .*,MUTANT_KILL[,"]' "$RUNNER"; then
   ok "MUTANT_KILL is on the exec.env_passthrough allowlist (else getenv would read empty)"
 else
   bad "MUTANT_KILL is not on exec.env_passthrough (the getenv read would be silently inert)"
