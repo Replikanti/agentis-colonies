@@ -1,0 +1,15 @@
+{
+  "repo": "generation-recall-fixture",
+  "gate": "generation-recall-selftest",
+  "verified": [
+    {
+      "location": "src/Vault.sol:settleEpoch:120",
+      "file": "src/Vault.sol",
+      "class": "C2",
+      "exploit": "floor division favors the protocol on every settlement",
+      "poc_sketch": "call settleEpoch across epochs and skim the rounding bias"
+    }
+  ],
+  "errors": [],
+  "totals": {"verified": 1}
+}

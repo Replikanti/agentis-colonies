@@ -1,0 +1,3 @@
+S-D1	HIT
+S-D2	HIT
+LEADS	2	2

@@ -1,0 +1,18 @@
+{
+  "repo": "generation-recall-fixture",
+  "backend": "mock",
+  "jobs": 1,
+  "cells": [
+    {
+      "subsystem": "vault-core",
+      "class": "C2",
+      "files": "src/Vault.sol",
+      "status": "ok",
+      "candidates": [
+        "src/Vault.sol:settleEpoch:120|C2|Medium|floor division favors the protocol on every settlement|call settleEpoch across epochs and skim the rounding bias"
+      ],
+      "coordination": []
+    }
+  ],
+  "totals": {"cells": 1, "candidates": 1, "steers": 0}
+}
