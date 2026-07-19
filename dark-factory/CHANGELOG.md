@@ -15,6 +15,31 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Historical DeFi exploit-class pattern seeding** (#1733). A new curated, OFFLINE fixture,
+  `auditor/methods/historical-exploits.md`, hand-authors 7 canonical, well-known PUBLIC DeFi
+  exploit CLASSES — one entry per distinct `C1`/`C2`/`C5`/`C6`/`C8`/`C11`/`C16` taxonomy id from
+  `bug-taxonomy.md` (no Code4rena/Immunefi scraping, no network, no protocol/client names). A new
+  `seed-historical-patterns.sh` generalizes the single-line `--method-fixture` mechanism
+  `run-autonomous-hunt.sh` already implements (parse a `METHOD|...` line, extract its class via
+  the exact `cut -d'|' -f3 | cut -d',' -f1 | tr -d '[:space:]'` pipeline, `agentis memo set
+  invpat:invented:<class> <line>`) from ONE line to N, so a fresh `--pattern-store` starts with a
+  curated cold-start hint for every covered class instead of only whichever class a live
+  invent-method run happened to propose. This writes into the SAME `invpat:invented:<class>`
+  fallback slot `recall_pattern()` already consults when no `invpat:latest:<class>` (a prior real
+  FINDING) has been persisted yet — no new memo namespace, and `invariant-prover.ag` /
+  `seed-patterns.ag` / `run-autonomous-hunt.sh` are untouched. Because that memo key is one value
+  per class (a later `memo set` overwrites), the fixture carries exactly one entry per distinct
+  class, folding grouped sub-patterns (e.g. classic + read-only reentrancy under `C8`) into that
+  one entry's free text rather than splitting them into colliding entries.
+  `dark-factory/demo-historical-patterns.sh` source-guards the library's schema (exactly 7
+  entries, 6 pipe-delimited fields each, no class-key collision) and the seeder's wiring
+  (CI-safe, no LLM/forge), and — when `agentis` is on PATH — behaviourally seeds a throwaway
+  pattern-store and reads a class entry back verbatim; wired into `colony-lint.sh`. Distinguishes
+  from #1722 (per-target audit-doc seeding, a different free-text seed on the same prompt chain)
+  and composes with #1724 (the mutant-kill validation harness, unrelated but complementary — a
+  seeded generation hint and a mutant-kill discrimination check both raise invariant quality,
+  independently). Out of scope: seeding `bugpat:exact`/`bugpat:struct` (needs real source code to
+  hash, incompatible with the offline/no-scraping constraint); no version bump, no tag.
 - **C5 access-control / init-upgrade / proxy class-assignment backstop for the breadth lens** (#1729,
   follow-up to the #1716 baseline whose rare generation-recall was 4/35). The breadth hunter can only NAME
   a non-conservation bug when the zone owning it is assigned the relevant class, so `run-discovery.sh` runs

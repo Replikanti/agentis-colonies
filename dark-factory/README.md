@@ -1018,6 +1018,7 @@ dark-factory/
     agents/share-patterns.ag    # publish locally-seeded patterns to the knowledge market (knowledge_sell; #861)
     agents/pattern-evolver.ag   # evolve the fuzzy matcher's granularity genome against the fork-pair recall oracle (#861 M4)
     methods/registry.md         # the method registry gen-agent.sh reads (METHOD| lines; #998 loop, #1000 generator)
+    methods/historical-exploits.md  # curated OFFLINE library of 7 canonical historical DeFi exploit classes (one METHOD| entry per C1/C2/C5/C6/C8/C11/C16 taxonomy id); seed-historical-patterns.sh seeds it into invpat:invented:<class> (#1733)
     methods/gap-stateful.md     # a documented gap the current method-set misses (the #998 invent trigger)
     method-discovery/controls/  # paired Buggy/Safe control corpus (the two-sided adoption gate)
     bug-taxonomy.md             # 15 DeFi bug classes + per-class hunt lens (the discovery knowledge; C15 = integration-seam/composability, #1644)
