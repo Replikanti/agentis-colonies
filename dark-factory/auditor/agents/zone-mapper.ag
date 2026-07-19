@@ -163,6 +163,42 @@ fn contains_index_overwrite_signal(code: string) -> bool {
     return false;
 }
 
+// --- #1729 deterministic C5 (access-control / init-upgrade / proxy) backstop ------------------------
+// The breadth lens structurally cannot NAME a non-conservation bug unless the zone owning it is assigned
+// the relevant class, so run-discovery.sh runs that (zone x class) cell — the #1681/#1698 nets already
+// proved the LLM zone-mapper systematically UNDER-assigns classes, and the deterministic nets above cover
+// only the conservation-adjacent classes (C6/C10/C11/C17). C5 (access-control / init-upgrade / proxy) is
+// the most mechanically detectable non-conservation class and had ZERO coverage, so its zones never
+// entered scope.tsv and its bugs (yearn-ybold / yieldoor / notional territory, #1716 rare generation-
+// recall 4/35) were structurally un-NAMED. The signals below are BODY-level privileged/upgrade idioms:
+// a pure interface carries declarations, never a modifier body or an `_authorizeUpgrade` override, so
+// interface-only zones stay clean the same way the #1698 net's interface false-positives do. False
+// positives here are cheaper than a missed access-control/upgrade bug (the #1681/#1698 tradeoff): an
+// extra C5 cell returns SAFE cheaply. Flat `index_of` on the pre-built `code` blob only — no per-element
+// recursion (the CB cost-driving dimension), so this is O(1) in zone size, well under the cb_per_tick cap.
+
+// Does the zone's code OWN privileged access-control or upgrade/proxy surface? A fixed sequence of
+// body-level idioms — access-control modifiers/checks (onlyOwner/onlyRole/_checkRole/_checkOwner/hasRole,
+// the AccessControl base) and init/upgrade/proxy authorization (UUPS _authorizeUpgrade, initializer guards
+// _disableInitializers/reinitializer, the OZ-upgradeable `__Xxx_init(` chain, UUPSUpgradeable, and the
+// ERC1967/StorageSlot proxy-slot idioms). Sequential `if` (this file's no-`||` style).
+fn contains_access_control_signal(code: string) -> bool {
+    if index_of(code, "onlyOwner") >= 0 { return true; }
+    if index_of(code, "onlyRole(") >= 0 { return true; }
+    if index_of(code, "_checkRole") >= 0 { return true; }
+    if index_of(code, "_checkOwner") >= 0 { return true; }
+    if index_of(code, "hasRole(") >= 0 { return true; }
+    if index_of(code, "AccessControl") >= 0 { return true; }
+    if index_of(code, "_authorizeUpgrade") >= 0 { return true; }
+    if index_of(code, "_disableInitializers") >= 0 { return true; }
+    if index_of(code, "reinitializer(") >= 0 { return true; }
+    if index_of(code, "_init(") >= 0 { return true; }
+    if index_of(code, "UUPSUpgradeable") >= 0 { return true; }
+    if index_of(code, "ERC1967") >= 0 { return true; }
+    if index_of(code, "StorageSlot") >= 0 { return true; }
+    return false;
+}
+
 // --- #1717 path-level test/interface exclusion (applied BEFORE the content signals below) -----------
 // A zone/file path can deterministically say "this is a test unit" or "this is a pure interface" in a
 // way content signals cannot: an interface getter that merely returns `IStabilityPool`, or a Foundry
@@ -325,6 +361,10 @@ fn apply_index_overwrite_backstop(classesCsv: string, code: string) -> string {
     if !contains_index_overwrite_signal(code) { return classesCsv; }
     return force_include(classesCsv, "C17");
 }
+fn apply_access_control_backstop(classesCsv: string, code: string) -> string {
+    if !contains_access_control_signal(code) { return classesCsv; }
+    return force_include(classesCsv, "C5");
+}
 
 // The deterministic net: when the zone's code signals a lending/CDP/stability-pool system (direct or
 // ERC4626-wrapped), force C10 ("first-depositor/inflation") + C11 ("stability-pool offset"); when it signals
@@ -448,8 +488,11 @@ fn apply_backstop(verdict: string, code: string) -> string {
     if len(line) == 0 { return verdict; }
     let withLending = apply_lending_backstop(pipe_field(line, 3), code);
     let withAccounting = apply_accounting_backstop(withLending, code);
-    let withAll = apply_index_overwrite_backstop(withAccounting, code);
-    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C6/C10/C11/C17) by learned
+    let withIndex = apply_index_overwrite_backstop(withAccounting, code);
+    // #1729: force C5 (access-control / init-upgrade / proxy) when the zone owns privileged/upgrade surface,
+    // so the breadth lens's non-conservation class reaches scope.tsv and can be NAMED.
+    let withAll = apply_access_control_backstop(withIndex, code);
+    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C10/C11/C17) by learned
     // real-bug precision, so the highest-precision class leads the CSV that run-discovery.sh fans out.
     let reordered = apply_fitness_reorder(withAll);
     let rebuilt = "ZONE|" + pipe_field(line, 1) + "|" + pipe_field(line, 2) + "|" + reordered + "|" + pipe_field(line, 4);
@@ -512,6 +555,17 @@ let instruction = priorBlock
   + "reused as a storage key can silently clobber a prior record. This is distinct from a routine balance-"
   + "mapping increment (e.g. `balances[msg.sender] += amount`), which is not itself an overwrite risk. If this "
   + "zone has no such recovery-path slot write, do NOT add C17.\n\n"
+  + "=== ACCESS-CONTROL / INIT-UPGRADE / PROXY DETECTION RULE (C5) ===\n"
+  + "The taxonomy's own guidance is: role-gated setters, upgrade authorization, and initializer/proxy "
+  + "surface. INCLUDE `C5` (access control / role model) when this zone OWNS privileged or upgrade/proxy "
+  + "surface — a role/owner-gated function body (an `onlyOwner`/`onlyRole`/`_checkRole`/`hasRole` modifier "
+  + "or check, an `AccessControl`/`Ownable` base), OR an initialization/upgrade path (a UUPS "
+  + "`_authorizeUpgrade`, an `initializer`/`reinitializer`/`_disableInitializers` guard, an OZ-upgradeable "
+  + "`__Xxx_init` chain, or an `ERC1967`/`StorageSlot`/`UUPSUpgradeable` proxy-slot idiom). The bug is a "
+  + "sensitive setter that LOSES its guard or gets the WRONG role, an unprivileged path to a role, or an "
+  + "unrestricted `_authorizeUpgrade`/uninitialized proxy. A pure interface (declarations only, no modifier "
+  + "bodies) does NOT own this surface — do NOT add C5 for it. If this zone has no privileged or "
+  + "upgrade/proxy surface of its own, do NOT add C5.\n\n"
   + "=== ZONE ID (echo it back UNCHANGED as the first field) ===\n" + zoneId + "\n\n"
   + "=== HOW TO ANSWER ===\n"
   + "FIRST reason step by step: read the zone's contracts, name the subsystem, and for EACH candidate class "
@@ -537,6 +591,11 @@ print("FITNESS-REC|" + zoneId + "|" + to_string(rec));
 // the semantic decision (via the shipped #1698/#1681 nets); the shell only scrapes — never perturbs the
 // `^ZONE\|` scrape.
 print("CUSTODY|" + zoneId + "|" + bool_str(is_value_custody(code, files)));
+// #1729: emit the C5 access-control/init-upgrade/proxy signal as a NON-ZONE| diagnostic line (same trailing-
+// line-scrape channel as CUSTODY|), so contains_access_control_signal() is observable + offline-testable under
+// the mock backend (whose reply carries no ZONE| line, making the apply_backstop append itself unreachable
+// there — the same constraint #1713/#1717 handled via the CUSTODY| diagnostic). Never perturbs the `^ZONE\|` scrape.
+print("ACCESS-CTRL|" + zoneId + "|" + bool_str(contains_access_control_signal(code)));
 let outcome = outcome_of(finalVerdict);
 emit("dark-factory:zone_mapped", "{\"zone\":\"" + zoneId + "\",\"outcome\":\"" + outcome + "\"}");
 learn("zone-map", zoneId, "attack-surface classification of zone " + zoneId, outcome, ["zone-map", zoneId, outcome]);

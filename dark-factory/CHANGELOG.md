@@ -15,6 +15,26 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **C5 access-control / init-upgrade / proxy class-assignment backstop for the breadth lens** (#1729,
+  follow-up to the #1716 baseline whose rare generation-recall was 4/35). The breadth hunter can only NAME
+  a non-conservation bug when the zone owning it is assigned the relevant class, so `run-discovery.sh` runs
+  that `(zone x class)` cell — but `auditor/agents/zone-mapper.ag` had ZERO C5 coverage (its deterministic
+  nets covered only the conservation-adjacent C6/C10/C11/C17), so access-control / init-upgrade / proxy
+  zones (yearn-ybold / yieldoor / notional territory) never entered `scope.tsv` and their bugs were
+  structurally un-NAMED. A deterministic net — `contains_access_control_signal()` (flat `index_of` on the
+  pre-built `code` blob over body-level privileged/upgrade idioms: `onlyOwner`/`onlyRole`/`_checkRole`/
+  `_checkOwner`/`hasRole`/`AccessControl`, and `_authorizeUpgrade`/`_disableInitializers`/`reinitializer`/
+  the OZ-upgradeable `__Xxx_init` chain/`UUPSUpgradeable`/`ERC1967`/`StorageSlot`) + `apply_access_control_
+  backstop()` — folds `C5` into the class CSV through `apply_backstop`, exactly mirroring the shipped
+  #1681 (C10/C11) / #1698 (C6/C17) net idiom (single-assignment `let` chain, `force_include`, before
+  `apply_fitness_reorder`). A best-effort `ACCESS-CONTROL / INIT-UPGRADE / PROXY DETECTION RULE (C5)` prompt
+  paragraph steers the LLM; the net is the deterministic guarantee. An unconditional `ACCESS-CTRL|<id>|<bool>`
+  diagnostic line (same trailing-line-scrape channel as #1713's `CUSTODY|`) makes the signal observable +
+  offline-testable under the mock backend. No per-element `.ag` recursion (O(1) in zone size, well under the
+  `cb_per_tick` cap), so substrate purity holds. The deep-hunt invariant path, the refuter, and
+  `bench/corpus-bench/generation-recall.sh` are UNCHANGED — the before/after is a live operator re-hunt of
+  the corpus rare-set against the #1716 baseline. Pinned by the CI-safe source-guard + mock-backend
+  behavioural block in `demo-map-zones.sh` (colony-lint block), mirroring the #1717 custody-path regression.
 - **Ground-truth-anchored generation-recall harness** (#1730, follow-up to the #1716 A/B that isolated
   invariant EXPRESSIVENESS as the deep-hunt limit). `bench/corpus-bench/generation-recall.sh` scores the
   GENERATOR's hypotheses against ground truth instead of the pipeline's post-confirmation verified findings,
