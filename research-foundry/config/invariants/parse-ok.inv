@@ -1,0 +1,9 @@
+# parse-ok.inv — cull any candidate whose source does not parse.
+#
+# Mirrors auto-evolve-ab.sh validity check 3a (the `agentis commit` gate):
+# parse-only, NOT typecheck (agentis typecheck is warnings-only, so folding
+# it in would cull candidates the bash gate accepts). Source-shape field
+# `parse_ok` (payload v2, agentis-core #938) is `Parser::parse_source(src)
+# .is_ok()`. A boolean field takes a bare boolean literal and only ==/!=.
+class = inviolable
+when parse_ok == false

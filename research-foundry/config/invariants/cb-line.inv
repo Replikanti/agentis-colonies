@@ -1,0 +1,8 @@
+# cb-line.inv — cull any candidate lacking a `cb <N>;` budget line.
+#
+# Mirrors auto-evolve-ab.sh validity check 3c: a raw-text `^\s*cb\s+[0-9]+\s*;`
+# match at the top of the source. Source-shape field `has_cb_line` (payload
+# v2, agentis-core #938) is that raw-text match. A boolean field takes a bare
+# boolean literal and only ==/!=.
+class = inviolable
+when has_cb_line == false

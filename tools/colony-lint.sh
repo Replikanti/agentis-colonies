@@ -787,6 +787,22 @@ if [ -x "$REPO_ROOT/research-foundry/tools/test-mathlib-novelty-check.sh" ]; the
     fi
 fi
 
+# --- Environmental-invariant modules (#1736) ---
+# research-foundry/config/invariants/*.inv reproduce auto-evolve-ab.sh's
+# validity checks 3a/3b/3c as source-shape predicate modules (agentis-core
+# #929/#938). The test pins the .inv grammar (always) and, when an agentis
+# >= v1.24.0 binary is on PATH, that `agentis invariant check` culls a
+# fixture violating each invariant and passes a valid one.
+if [ -x "$REPO_ROOT/research-foundry/tools/test-invariants.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/research-foundry/tools/test-invariants.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "test-invariants: research-foundry .inv modules mirror validity checks 3a/3b/3c (#1736)"
+    else
+        fail "test-invariants: research-foundry .inv module grammar / cull-parity drifted (#1736)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory submission-triage gates (#1456/#1458) ---
 # submit-triage.sh scores staged findings (READY / INCOMPLETE / DUP-RISK), flags impact-credibility
 # (IMPACT quant/qual?) and duplicate-risk (NOVELTY via --known-issues), and never contacts a platform.

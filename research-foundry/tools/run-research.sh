@@ -988,6 +988,18 @@ write_bootstrap() {
         # Memo cap bump: 18 colonies x 30 ticks x per-pid keys + per-claim
         # status keys fills the default 500 fast. Mirrors #587.
         printf '  printf "memo.max_keys = 50000\\n"\n'
+        # #1736: environmental-invariant adoption on the daemon-A/B parity
+        # probe. `evolution.invariants_dir` points cmd_evolve AND the
+        # `agentis invariant check` pre-spawn gate (agentis-core #929/#937,
+        # >= v1.24.0) at the checked-in *.inv modules staged below. The
+        # ABSOLUTE container path is required — the daemon and CLI run from
+        # WORKDIR /run-root. Emitted unless RESEARCH_INVARIANTS=0, which
+        # leaves the key entirely unset (byte-identical feature-off on both
+        # the arena and CLI surfaces; a present-but-empty value is NOT inert
+        # on the arena path, so we omit the key rather than blank it).
+        if [ "${RESEARCH_INVARIANTS:-1}" != "0" ]; then
+            printf '  printf "evolution.invariants_dir = /run-root/config/invariants\\n"\n'
+        fi
         if [ "$LLM_BACKEND" = "openai" ]; then
             printf '  printf "llm.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
             printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
@@ -1161,6 +1173,13 @@ write_bootstrap() {
         printf 'chmod 600 /run-root/.agentis/identity/private.key 2>/dev/null || true\n'
         printf 'if [ -d /repo/research-foundry/data/papers ]; then cp -r /repo/research-foundry/data/papers /run-root/data/papers; fi\n'
         printf 'if [ -f /repo/research-foundry/config/authors.toml ]; then cp /repo/research-foundry/config/authors.toml /run-root/config/authors.toml; fi\n'
+        # #1736: stage the environmental-invariant modules from the
+        # read-only /repo mount (same reliability as authors.toml above).
+        # The `evolution.invariants_dir` key emitted above points here; the
+        # dir must exist and hold >= 1 *.inv module or the fail-closed
+        # cmd_evolve path aborts. Staged unconditionally — an unreferenced
+        # dir is inert when RESEARCH_INVARIANTS=0 leaves the key unset.
+        printf 'if [ -d /repo/research-foundry/config/invariants ]; then cp -r /repo/research-foundry/config/invariants /run-root/config/invariants; fi\n'
         printf ': > /run-root/.agentis/sandbox/discovery-ledger.jsonl\n'
         printf ': > /run-root/.agentis/sandbox/audit-ledger.jsonl\n'
         printf ': > /run-root/.agentis/sandbox/preprint-ledger.jsonl\n'

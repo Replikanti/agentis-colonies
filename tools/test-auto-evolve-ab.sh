@@ -622,6 +622,107 @@ else
     fail "allowlist enforcement" "rc=$ALLOW_RC cands=$ALLOW_CANDS ledger=$(cat "$LEDGER" 2>/dev/null) out: $ALLOW_OUT"
 fi
 
+# ----- Test 19: observe-only invariant probe is wired (source-anchored) -----
+# #1736: the containerized block must invoke `agentis invariant check`
+# and record an `invariant_check` ledger row, and the probe must be
+# OBSERVE-ONLY — placed before the daemon spawn, its rc captured via
+# `|| INV_RC=$?`, never branched on and never triggering an exit. This
+# assertion is CI-safe (pure grep) so it holds even without agentis/podman.
+
+SRC_FILE="$SCRIPT_DIR/auto-evolve-ab.sh"
+PROBE_LINE=$(grep -n "agentis invariant check" "$SRC_FILE" | head -1 | cut -d: -f1)
+LEDGER_ROW_LINE=$(grep -n 'ledger_append "invariant_check"' "$SRC_FILE" | head -1 | cut -d: -f1)
+SPAWN_DEF_LINE=$(grep -nE '^SPAWN_CMD=' "$SRC_FILE" | head -1 | cut -d: -f1)
+
+PROBE_OK=true
+[ -n "$PROBE_LINE" ] || PROBE_OK=false
+[ -n "$LEDGER_ROW_LINE" ] || PROBE_OK=false
+[ -n "$SPAWN_DEF_LINE" ] || PROBE_OK=false
+# The probe + its ledger row must precede the SPAWN_CMD definition.
+if [ "$PROBE_OK" = "true" ]; then
+    [ "$PROBE_LINE" -lt "$SPAWN_DEF_LINE" ] || PROBE_OK=false
+    [ "$LEDGER_ROW_LINE" -lt "$SPAWN_DEF_LINE" ] || PROBE_OK=false
+fi
+# rc captured via `|| INV_RC=$?` (never a bare, set -e-tripping call).
+grep -q '|| INV_RC=\$?' "$SRC_FILE" || PROBE_OK=false
+# No exit/branch keyed on the invariant rc/decision (observe-only).
+if grep -E 'INV_(RC|DECISION)' "$SRC_FILE" | grep -qE '\b(exit|return|continue)\b'; then
+    PROBE_OK=false
+fi
+
+if [ "$PROBE_OK" = "true" ]; then
+    pass "invariant probe: observe-only, wired before spawn, writes invariant_check row (#1736)"
+else
+    fail "invariant probe wiring" "probe_line=$PROBE_LINE ledger_line=$LEDGER_ROW_LINE spawn_line=$SPAWN_DEF_LINE"
+fi
+
+# ----- Test 20: probe writes a cull/divergent ledger row + no abort -----
+# Drive the containerized path with a stubbed `podman` on PATH that
+# returns a canned `invariant check --json` CULL verdict (exit 3) and
+# succeeds (exit 0) for every other exec (daemon spawn, pkill). The
+# harness must record an `invariant_check` row with decision:"cull",
+# parity:"divergent" AND still exit 0 (the probe never gates). Requires
+# a real `agentis` for validity gate 3a; skipped when absent (mirrors
+# tests 4/8's agentis-optional convention).
+
+if command -v agentis >/dev/null 2>&1; then
+    STUB_BIN="$TMPDIR_TEST/stub-bin"
+    mkdir -p "$STUB_BIN"
+    cat > "$STUB_BIN/podman" <<'PODMANEOF'
+#!/usr/bin/env bash
+# Test stub: cull verdict for the invariant probe, success otherwise.
+case "$*" in
+    *"invariant check"*)
+        echo '{"active":true,"decision":"cull","inviolable":[{"invariant_hash":"abc123","reason":"inviolable abc123: parse_ok == false (got false)"}],"set_hash":"deadbeefdeadbeef","skipped_runtime_modules":2,"source_hash":"x"}'
+        exit 3
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+PODMANEOF
+    chmod +x "$STUB_BIN/podman"
+
+    rm -f "$LEDGER"
+    # RESEARCH_DAEMON_TICK_INTERVAL_MS=1 + --ticks 1 => WAIT_S=0 (sleep 0).
+    PROBE_OUT=$(PATH="$STUB_BIN:$PATH" \
+        MUTATE_LLM_STUB="$GOOD_STUB" \
+        RESEARCH_DAEMON_TICK_INTERVAL_MS=1 \
+        "$SCRIPT_DIR/auto-evolve-ab.sh" "$FAKE_FED" probe "$FAKE_COLONY" "$PARENT_AG" \
+        --ticks 1 --config "$FAKE_CONFIG" --containerized 2>&1) && PROBE_RC=0 || PROBE_RC=$?
+
+    ROW_OK=false
+    if python3 -c "
+import json, sys
+found = False
+with open(sys.argv[1]) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if row.get('event') != 'invariant_check':
+            continue
+        if row.get('decision') == 'cull' and row.get('parity') == 'divergent' \
+                and row.get('invariant_rc') == 3 and row.get('skipped_runtime_modules') == 2:
+            found = True
+sys.exit(0 if found else 1)
+" "$LEDGER" 2>/dev/null; then
+        ROW_OK=true
+    fi
+
+    if [ "$ROW_OK" = "true" ] && [ "$PROBE_RC" = "0" ]; then
+        pass "invariant probe: cull verdict -> invariant_check row (decision=cull parity=divergent), harness exits 0 (#1736)"
+    else
+        fail "invariant probe cull row" "row_ok=$ROW_OK rc=$PROBE_RC ledger=$(cat "$LEDGER" 2>/dev/null) out: $PROBE_OUT"
+    fi
+else
+    pass "invariant probe cull-verdict functional test (skipped: agentis not on PATH)"
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
