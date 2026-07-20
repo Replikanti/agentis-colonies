@@ -17,6 +17,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [0.5.0] - 2026-07-20
 
 ### Added
+- **Vault harness directive: pin the target import to its in-repo path (fix core-dep harness-gen HARNESS_ERROR variance)**
+  (#1755, M5). M1–M4 make the autonomous pipeline GENERATE a harness that CATCHES the yearn first-depositor
+  money-tier bug (deterministic FINDING, reproducible 4-step exploit witness, passes the #1471 link gate), but
+  harness-gen is not yet RELIABLE: across two autonomous runs the LLM's import for the target contract VARIES.
+  The catching run imported the target from its real in-repo source (`import {LiquityV2SPStrategy} from
+  "../src/Strategy.sol";`); a second run imported the pipeline's FLATTENED staged copy (`import {...} from
+  "target-code.sol";`) — a file that lives one directory ABOVE the foundry repo, not inside it, so the test fails
+  to compile (`Source "target-code.sol" not found`) => HARNESS_ERROR. This adds one directive-string bullet to
+  `core_dep_seed` in `auditor/agents/invariant-prover.ag`: import the target ONLY from its real in-repo
+  `../src/<Target>.sol` path (the same `rel_import_path(invOut, codePath)` value the skeleton's `importLine`
+  already resolves, now threaded into `core_dep_seed` as `targetRel`), and NEVER from the flattened staged
+  `target-code.sol` (or any `CODE_PATH`-style flat copy) — that flat copy exists only for the #1471 link-gate's
+  textual check, not as a compilable import inside the harness's Foundry repo. It is a flat string-literal
+  addition inside the same `vaultRoute`/`active`-gated `!active => ""` builder, so it is **default-off
+  byte-identical** when `--core-dep-harness` is off / the target is non-yearn; `verdict_of`, the `INVARIANT|`
+  marker, and the #1471 `--require-import`/`--require-contract` gate are untouched. `demo-invariant-core-dep.sh`
+  source-guards the new import-path-pin directive text (target imported from its in-repo `../src/` path, NOT from
+  `target-code.sol`) and the updated `core_dep_seed` signature.
 - **Vault harness directive: complete the first-depositor catch recipe (profitMaxUnlockTime(0) + wei-scale actions + relative victim-fairness tolerance)**
   (#1755, M4). M1–M3 make the autonomous pipeline GENERATE the right harness structure (real `TokenizedStrategy`,
   victim-fairness invariant, donation Handler, health-check disabled), but a hand-reconstruction of the exact

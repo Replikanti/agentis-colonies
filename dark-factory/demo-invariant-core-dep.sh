@@ -138,8 +138,8 @@ else
   bad "the vaultRoute gate is missing"
 fi
 
-if grep -q 'fn core_dep_seed(active: bool, name: string, rel: string, addr: string) -> string' "$PROVER"; then
-  ok "core_dep_seed(active, name, rel, addr) is defined"
+if grep -q 'fn core_dep_seed(active: bool, name: string, rel: string, addr: string, targetName: string, targetRel: string) -> string' "$PROVER"; then
+  ok "core_dep_seed(active, name, rel, addr, targetName, targetRel) is defined"
 else
   bad "core_dep_seed() is missing"
 fi
@@ -154,6 +154,20 @@ if grep -q 'do NOT mock it, do NOT etch a zero-returning fallback stub' "$PROVER
   ok "the directive forbids mocking / zero-stubbing the singleton (deploy the REAL one)"
 else
   bad "the directive does not forbid stubbing the singleton"
+fi
+
+# #1755 M5 — TARGET IMPORT-PATH PIN. Two autonomous runs proved harness-gen import-path variance is the remaining
+# blocker: the catching run imported the target from its real in-repo `../src/<Target>.sol`, a second run imported
+# the pipeline's flattened staged copy `target-code.sol` (one dir above the repo, not compilable inside it) and
+# failed with `Source "target-code.sol" not found` => HARNESS_ERROR. core_dep_seed must PIN the target to its
+# in-repo path (the same rel_import_path-derived value the skeleton's importLine resolves) and FORBID
+# target-code.sol so the catching shape is the reliable output.
+if grep -q 'IMPORT THE TARGET' "$PROVER" \
+   && grep -q 'in-repo source path' "$PROVER" \
+   && grep -q 'NEVER import the target from the flattened staged copy `target-code.sol`' "$PROVER"; then
+  ok "the directive pins the target import to its in-repo ../src/ path and forbids the flattened target-code.sol"
+else
+  bad "the directive does not pin the target import path / does not forbid target-code.sol (harness-gen variance unfixed)"
 fi
 
 # #1755 M3 — the profit-limit health-check gate: BaseHealthCheck.report() reverts with reason `healthCheck` when a
@@ -209,7 +223,7 @@ else
   bad "the canonical Vm address 0x7109...12D is missing"
 fi
 
-if grep -q 'core_dep_seed(vaultRoute, coreDepName, coreDepRel, coreDepAddr)' "$PROVER"; then
+if grep -q 'core_dep_seed(vaultRoute, coreDepName, coreDepRel, coreDepAddr, deployName, relImport)' "$PROVER"; then
   ok "core_dep_seed(vaultRoute, ...) is woven into sharedScaffold (re-injects each #1073 repair round)"
 else
   bad "core_dep_seed is not woven into sharedScaffold"
@@ -221,7 +235,7 @@ fi
 # ----------------------------------------------------------------------------------------------------------
 note "source-guarding the #1755 (M1) empty-INV_CORE_DEP -> \"\" byte-identical guard ..."
 
-if grep -Pzoq 'fn core_dep_seed\(active: bool, name: string, rel: string, addr: string\) -> string \{\n    if !active \{ return ""; \}' "$PROVER"; then
+if grep -Pzoq 'fn core_dep_seed\(active: bool, name: string, rel: string, addr: string, targetName: string, targetRel: string\) -> string \{\n    if !active \{ return ""; \}' "$PROVER"; then
   ok "core_dep_seed(!active) returns \"\" as its FIRST statement (byte-identical when off)"
 else
   bad "core_dep_seed does not early-return \"\" on !active (byte-identical guard broken)"

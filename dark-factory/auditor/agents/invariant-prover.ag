@@ -515,9 +515,25 @@ fn victim_fairness_invariant_prompt(klass: string, active: bool) -> string {
 // constructor storage; per-strategy ERC4626 storage lives at the strategy's own custom base slot
 // (keccak256("yearn.base.strategy.storage")-1) under delegatecall, so deploying the target AFTER the etch
 // initializes real share storage AT THE STRATEGY. The directive is a plain string — no shell. `!active` => "".
-fn core_dep_seed(active: bool, name: string, rel: string, addr: string) -> string {
+// #1755 M5 — TARGET IMPORT-PATH PIN. Two autonomous runs proved harness-gen is not yet RELIABLE: the CATCHING run
+// imported the target from its real in-repo source (`import {LiquityV2SPStrategy} from "../src/Strategy.sol";`)
+// and caught the H-1 first-depositor bug; a second run imported it from the pipeline's FLATTENED staged copy
+// (`import {...} from "target-code.sol";`) — a file that lives one dir ABOVE the foundry repo, not inside it, so
+// the test fails to compile (`Source "target-code.sol" not found`) => HARNESS_ERROR. So the LLM's target import
+// VARIES between the correct `../src/<Target>.sol` and the wrong staged `target-code.sol`. `targetRel` is the SAME
+// `rel_import_path(invOut, codePath)` value the skeleton's `importLine` already resolves (the in-repo `../src/...`
+// path); pinning it here — and forbidding `target-code.sol` — collapses the variance to the catching shape. Still
+// a flat string-literal addition inside the same `!active => ""` builder (default-off byte-identical).
+fn core_dep_seed(active: bool, name: string, rel: string, addr: string, targetName: string, targetRel: string) -> string {
     if !active { return ""; }
     return "=== CORE-DEPENDENCY (delegatecall singleton) — DEPLOY THE REAL " + name + " ===\n"
+         + "  - IMPORT THE TARGET (" + targetName + ") ONLY from its REAL in-repo source path: "
+         + "import {" + targetName + "} from \"" + targetRel + "\"; — that relative path resolves to the target's "
+         + "actual Solidity source inside the staged repo (its `src/` tree, the same path the skeleton's import "
+         + "line above already gives). NEVER import the target from the flattened staged copy `target-code.sol` "
+         + "(or any CODE_PATH-style flat file one directory ABOVE the repo): that flat copy exists ONLY for the "
+         + "link-gate's textual check and is NOT a compilable source inside this Foundry repo, so importing it "
+         + "fails to compile with `Source \"target-code.sol\" not found`.\n"
          + "This target inherits its ERC4626 share logic (deposit/mint/withdraw/redeem, price-per-share, "
          + "totalSupply/totalAssets) from a delegatecall SINGLETON: `BaseStrategy` forwards every share call to "
          + "the contract at the CONSTANT address " + addr + ". You MUST deploy the REAL " + name + " and "
@@ -813,7 +829,7 @@ let sharedScaffold =
   + "treats a token as 6-decimal USDC, the mock's `decimals()` must return 6; match the return types and "
   + "signatures the target actually calls). A mock whose decimals/units/types do NOT match the target's "
   + "assumptions is INVALID and produces false findings.\n\n"
-  + core_dep_seed(vaultRoute, coreDepName, coreDepRel, coreDepAddr)
+  + core_dep_seed(vaultRoute, coreDepName, coreDepRel, coreDepAddr, deployName, relImport)
   + auxBlock
   + "=== BUG CLASS (lens) ===\n" + targetClass + "\n\n"
   + "=== ADVERSARIAL ACTION CHECKLIST ===\n"
