@@ -12,7 +12,7 @@
 #   2. All 5 hunter.ag files contain `knowledge_buy(` BEFORE the seed
 #      `prompt(` fires.
 #   3. Topic shape: every hunter constructs the sell topic as
-#      `"tribes-bench-" + tribe_name() + "/" + bug_id` (per-finder
+#      `"tribes-bench-" + _tribe_name + "/" + bug_id` (per-finder
 #      prefix, §9 risk 3 mitigation).
 #   4. ask_price formula sanity (shell-arith): `max(1, floor(rep*10)+1)`.
 #   5. max_cb formula sanity (shell-arith): `floor(rep*20) + 5`.
@@ -96,7 +96,7 @@ done
 for tribe in $ALL_TRIBES; do
     assert_contains "$tribe hunter.ag uses per-finder sell topic prefix" \
         "$FED_DIR/$tribe/agents/hunter.ag" \
-        '"tribes-bench-" + tribe_name() + "/" + bug_id'
+        '"tribes-bench-" + _tribe_name + "/" + bug_id'
 done
 
 # --- 4. ask_price formula: max(1, floor(rep*10) + 1) ---
@@ -127,7 +127,7 @@ assert_eq "max_cb_for_rep(10) == 25 (ceil)"  "25" "$(max_cb_for_rep 10)"
 for tribe in $ALL_TRIBES; do
     assert_contains "$tribe hunter.ag lists bundle topic" \
         "$FED_DIR/$tribe/agents/hunter.ag" \
-        '"tribes-bench-bundle/" + tribe_name()'
+        '"tribes-bench-bundle/" + _tribe_name'
 done
 
 # --- 7. Espionage three-predicate gate ---
