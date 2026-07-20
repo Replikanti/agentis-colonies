@@ -1,0 +1,30 @@
+# no-order-placement.inv — trading-binance is backtest-only (#1737): no
+# variant may ever place, cancel, or submit a live order. Capability-absence
+# (v3, agentis-core #943): `forbidden_callee_used` is true iff the candidate
+# statically calls any of the listed callees, regardless of arguments.
+#
+# None of these names are agentis-core builtins or existing `.ag` functions
+# in this federation today (verified: `grep` across all six
+# `tribe-*/agents/strategist.ag` finds zero matches, and `agentis invariant
+# check` against all six real strategist sources returns decision:"pass"
+# for this module). This module is pure defense-in-depth against a future
+# evolved variant inventing an order-placement verb — it does not react to
+# anything the codebase does today.
+#
+# `new_order` is Binance's own "New Order" REST verb name
+# (`POST /fapi/v1/order`) — included so a variant that names its call after
+# the exchange API directly is caught too.
+#
+# Why forbidden_callee and NOT egress_allow/egress_outside_allowlist: see
+# no-network-egress.inv's header and the PR description. In short, the real
+# strategist.ag uses `exec sh` throughout (always opaque under the v3
+# predicate) and calls `replicate(target_r, ...)` with a non-literal,
+# memo-derived target (also opaque) — an egress-allowlist module would
+# unconditionally cull the legitimate strategist, verified live against the
+# v1.26.0 binary.
+class = inviolable
+forbidden_callee = place_order
+forbidden_callee = cancel_order
+forbidden_callee = submit_order
+forbidden_callee = new_order
+when forbidden_callee_used == true

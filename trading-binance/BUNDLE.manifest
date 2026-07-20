@@ -8,6 +8,7 @@ trading-binance/tools/run-ab-experiment.sh
 trading-binance/tools/analyze-ab-results.py
 trading-binance/tools/test-run-ab-experiment.sh
 trading-binance/tools/test-analyze-ab-results.py
+trading-binance/config/
 trading-binance/data/
 trading-binance/tribe-alpha/
 trading-binance/tribe-beta/

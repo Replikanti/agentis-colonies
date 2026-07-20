@@ -138,6 +138,23 @@
 #   REPLAY_STRATEGIST_FITNESS_PENALTY_LOSS_PER_BPS
 #                                Fitness penalty multiplier per bps of
 #                                negative PnL; forward-compat. Default: 1
+#   REPLAY_INVARIANTS            1 = emit `evolution.invariants_dir =
+#                                /run-root/config/invariants` into the
+#                                hermetic .agentis/config, activating the
+#                                two backtest-only capability-absence
+#                                modules under trading-binance/config/
+#                                invariants/ (no-order-placement.inv,
+#                                no-network-egress.inv) on the
+#                                `agentis invariant check` CLI surface
+#                                (#1737). 0 leaves the key entirely unset
+#                                (byte-identical feature-off; a present-
+#                                but-empty value is not inert on every
+#                                surface, so the key is omitted rather than
+#                                blanked). Default: 1. NOTE: this does NOT
+#                                gate the live replicate()/daemon path --
+#                                the v3 source-shape fields are `None`
+#                                there; see CHANGELOG.md for the honest
+#                                enforcement-surface writeup.
 #
 # Flags:
 #   --dry-run    Same as REPLAY_DRY_RUN=1.
@@ -507,6 +524,19 @@ write_bootstrap() {
         # M98 v3 prompt-evolution buffer) both depend on memo, so the
         # whole experiment degrades. Mirrors tribes-bench #544 chunk 2.
         printf '  printf "memo.max_keys = 50000\\n"\n'
+        # #1737: backtest-only environmental invariants. evolution.
+        # invariants_dir points `agentis invariant check` (the CLI forensic
+        # surface -- see no-order-placement.inv / no-network-egress.inv
+        # headers) at the checked-in module set staged below. ABSOLUTE
+        # container path required -- the daemon/CLI run from WORKDIR
+        # /run-root. Emitted unless REPLAY_INVARIANTS=0, which leaves the
+        # key entirely unset (byte-identical feature-off; a present-but-
+        # empty value is not inert on every surface, so omit rather than
+        # blank). NOTE: this does not gate the live replicate()/daemon
+        # path -- the v3 source-shape fields are `None` there.
+        if [ "${REPLAY_INVARIANTS:-1}" != "0" ]; then
+            printf '  printf "evolution.invariants_dir = /run-root/config/invariants\\n"\n'
+        fi
         if [ "$LLM_BACKEND" = "openai" ]; then
             printf '  printf "llm.openai.endpoint = %s\\n"\n' "$OPENAI_ENDPOINT"
             printf '  printf "llm.openai.model = %s\\n"\n' "$OPENAI_MODEL"
@@ -534,6 +564,11 @@ write_bootstrap() {
         printf '    cp -r /repo/trading-binance/tribe-$t /run-root/tribe-$t\n'
         printf 'done\n'
         printf 'cp -r /repo/trading-binance/tools /run-root/tools\n'
+        # #1737: stage the backtest-only environmental-invariant modules
+        # from the read-only /repo mount (same idiom as the tribe/tools
+        # copies above). Staged unconditionally -- an unreferenced dir is
+        # inert when REPLAY_INVARIANTS=0 leaves the config key unset.
+        printf 'if [ -d /repo/trading-binance/config/invariants ]; then cp -r /repo/trading-binance/config/invariants /run-root/config/invariants; fi\n'
         printf 'mkdir -p /run-root/.agentis/sandbox /run-root/.agentis/logs\n'
         # Seed propose-tier confidence for each tribe's strategist daemon.
         printf 'for t in alpha beta gamma delta epsilon zeta; do\n'
@@ -671,11 +706,56 @@ signal_shutdown() {
     emit_cmd "podman exec replay-laptop touch /run-root/.shutdown 2>/dev/null || true"
 }
 
+# --- 7b) Invariant-set hash probe (host-side, forensic; #1737) ---
+# Computes run-meta.json's invariant_set_hash by running the REAL agentis
+# CLI (never a mock) against the checked-in .inv module set under
+# trading-binance/config/invariants/ -- the same `agentis invariant check
+# --json` surface tools/auto-evolve-ab.sh's #1736 parity probe uses. The
+# set hash is module-set-derived (SHA-256 over sorted module hashes), NOT
+# candidate-derived, so any tribe's seed strategist.ag source yields the
+# same value; tribe-alpha is used as a representative probe candidate.
+# `run-meta.json` is NOT auto-populated by the runtime -- this helper is
+# the explicit host-side computation the plan calls for.
+# Skipped entirely (field stays empty, no side effects) in dry-run, when
+# REPLAY_INVARIANTS=0, or when `agentis` is not on PATH -- this probe is
+# forensic/observational only, never a gate.
+INVARIANT_SET_HASH=""
+compute_invariant_set_hash() {
+    if [ "$DRY_RUN" = "1" ]; then
+        return 0
+    fi
+    if [ "${REPLAY_INVARIANTS:-1}" = "0" ]; then
+        return 0
+    fi
+    if ! command -v agentis >/dev/null 2>&1; then
+        emit_step "invariant set hash: skipped (agentis not on PATH)"
+        return 0
+    fi
+    probe_dir="$(mktemp -d)"
+    ( cd "$probe_dir" && agentis init >/dev/null 2>&1 ) || true
+    printf 'evolution.invariants_dir = %s\n' "$FED_DIR/config/invariants" >>"$probe_dir/.agentis/config"
+    probe_json="$(cd "$probe_dir" && agentis invariant check "$FED_DIR/tribe-alpha/agents/strategist.ag" --json 2>/dev/null)" || true
+    INVARIANT_SET_HASH="$(printf '%s' "$probe_json" | python3 -c '
+import json, sys
+try:
+    obj = json.loads(sys.stdin.read())
+except (json.JSONDecodeError, ValueError):
+    sys.exit(0)
+sys.stdout.write(str(obj.get("set_hash", "")))
+' 2>/dev/null)" || INVARIANT_SET_HASH=""
+    rm -rf "$probe_dir"
+    emit_step "invariant set hash: ${INVARIANT_SET_HASH:-<unavailable>}"
+}
+
 # --- 8) run-meta.json ---
 write_run_meta() {
     emit_step "writing run-meta.json"
     started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    emit_cmd "python3 -c 'import json; json.dump({\"started_at\":\"$started_at\",\"symbol\":\"$SYMBOL\",\"timeframe\":\"$TIMEFRAME\",\"start\":\"$START\",\"end\":\"$END\",\"speed\":$SPEED,\"daemon_count\":$DAEMON_COUNT,\"lookback_window\":$LOOKBACK_WINDOW,\"hold_period\":$HOLD_PERIOD,\"llm_backend\":\"$LLM_BACKEND\",\"image_tag\":\"$IMAGE_TAG\"}, open(\"$RUN_META\",\"w\"), indent=2)'"
+    invariants_dir_meta=""
+    if [ "${REPLAY_INVARIANTS:-1}" != "0" ]; then
+        invariants_dir_meta="trading-binance/config/invariants"
+    fi
+    emit_cmd "python3 -c 'import json; json.dump({\"started_at\":\"$started_at\",\"symbol\":\"$SYMBOL\",\"timeframe\":\"$TIMEFRAME\",\"start\":\"$START\",\"end\":\"$END\",\"speed\":$SPEED,\"daemon_count\":$DAEMON_COUNT,\"lookback_window\":$LOOKBACK_WINDOW,\"hold_period\":$HOLD_PERIOD,\"llm_backend\":\"$LLM_BACKEND\",\"image_tag\":\"$IMAGE_TAG\",\"invariant_set_hash\":\"$INVARIANT_SET_HASH\",\"invariants_dir\":\"$invariants_dir_meta\"}, open(\"$RUN_META\",\"w\"), indent=2)'"
 }
 
 # --- 9) Analyser placeholder ---
@@ -692,6 +772,7 @@ load_candles
 build_image
 stage_seed_prompts
 write_bootstrap
+compute_invariant_set_hash
 write_run_meta
 spawn_container
 tick_stream

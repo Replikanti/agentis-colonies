@@ -1,0 +1,38 @@
+# no-network-egress.inv — trading-binance is backtest-only (#1737): no
+# variant may reach the network at all. Capability-absence (v3,
+# agentis-core #943): `forbidden_callee_used` is true iff the candidate
+# statically calls any of the listed callees, regardless of arguments.
+#
+# Deliberately NOT expressed as egress_allow/egress_outside_allowlist (the
+# docs' own api.binance.com / data.binance.vision example). Verified live
+# against the installed v1.26.0 binary and the real strategist.ag sources
+# that an egress-allowlist module ALWAYS culls the legitimate strategist:
+#   (a) strategist.ag uses `exec sh` throughout for legitimate local-only
+#       work (env reads, timestamps, invoking tools/verify-trade.sh) — any
+#       `exec` is unconditionally opaque under the v3 predicate, and
+#   (b) independent of (a), the legitimate `replicate(target_r, ...)` call
+#       passes a non-literal, memo-derived `target_r`
+#       (`select_replication_target()` never returns a literal), and
+#       `replicate`'s host-arg is itself a covered egress channel
+#       (agentis-core #948) — also opaque.
+# So copying the documented egress-allowlist example verbatim would be a
+# self-inflicted permanent cull of the incumbent, not a useful law. Instead
+# this module denies the network-capable CALLEES by name: `http_get` /
+# `http_post` cover direct HTTP egress, `use_tool` covers dispatch through
+# the tool-invocation surface (a literal tool name is recorded as both an
+# egress destination and a callee, so this also catches
+# `use_tool("place_order", ...)`-style dispatch), and `smtp_send` covers the
+# one network builtin the egress-allowlist predicate does not itself
+# inspect (agentis-core config-reference.md #943 coverage boundary).
+#
+# None of these callees exist anywhere in any of the six
+# `tribe-*/agents/strategist.ag` today (verified by grep and by
+# `agentis invariant check` returning decision:"pass" for all six against
+# this module) — trading-binance's only network-capable code lives in
+# host-side Python tools that run BEFORE daemon spawn, never inside `.ag`.
+class = inviolable
+forbidden_callee = http_get
+forbidden_callee = http_post
+forbidden_callee = use_tool
+forbidden_callee = smtp_send
+when forbidden_callee_used == true

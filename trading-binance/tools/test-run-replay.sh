@@ -399,6 +399,27 @@ fi
 assert_contains "T-seed7. unseeded dry-run shows the <none> seed sentinel" "$OUT" \
     "seed prompts dir: <none>"
 
+# ---------------------------------------------------------------------------
+# T-inv. Backtest-only environmental invariants (#1737): the config-gen
+# block emits `evolution.invariants_dir = /run-root/config/invariants`
+# gated by REPLAY_INVARIANTS, the staging block copies
+# trading-binance/config/invariants into the run root, and write_run_meta
+# threads invariant_set_hash through. Real-run (non-dry-run) generator code
+# lives inside a bash heredoc-built string, so these are asserted on the
+# script SOURCE, matching the file's existing header-doc / seed-prompt
+# memo-set idiom.
+# ---------------------------------------------------------------------------
+assert_contains "T-inv1. config-gen emits evolution.invariants_dir" "$SRC" \
+    "evolution.invariants_dir = /run-root/config/invariants"
+assert_contains "T-inv2. invariants_dir config key is gated by REPLAY_INVARIANTS" "$SRC" \
+    'REPLAY_INVARIANTS:-1'
+assert_contains "T-inv3. staging block copies config/invariants" "$SRC" \
+    "cp -r /repo/trading-binance/config/invariants /run-root/config/invariants"
+assert_contains "T-inv4. write_run_meta references invariant_set_hash" "$SRC" \
+    "invariant_set_hash"
+assert_contains "T-inv5. header documents REPLAY_INVARIANTS" "$SRC" \
+    "REPLAY_INVARIANTS"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
