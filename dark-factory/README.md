@@ -1021,7 +1021,7 @@ dark-factory/
     methods/historical-exploits.md  # curated OFFLINE library of 7 canonical historical DeFi exploit classes (one METHOD| entry per C1/C2/C5/C6/C8/C11/C16 taxonomy id); seed-historical-patterns.sh seeds it into invpat:invented:<class> (#1733)
     methods/gap-stateful.md     # a documented gap the current method-set misses (the #998 invent trigger)
     method-discovery/controls/  # paired Buggy/Safe control corpus (the two-sided adoption gate)
-    bug-taxonomy.md             # 15 DeFi bug classes + per-class hunt lens (the discovery knowledge; C15 = integration-seam/composability, #1644)
+    bug-taxonomy.md             # 18 DeFi bug classes (C1–C18) + per-class hunt lens (the discovery knowledge; C15 = integration-seam/composability, #1644)
     slice-fns.sh                # Solidity function-slicer (scope `file@fn1+fn2` -> header + named fns)
     config/colony.example.toml  # forge.type = "none"; cb_budget
     scripts/start-colony.sh     # thin `agentis go` launcher (the legacy auditor.ag pipeline)
