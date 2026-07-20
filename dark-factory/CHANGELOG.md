@@ -15,6 +15,36 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Complementary symbolic / bounded-model-checking oracle alongside the deep-hunt fuzzer** (#1732). The
+  deep-hunt has a single oracle — Foundry's stateful fuzzer, which SAMPLES call sequences and so can MISS a
+  value-conservation break on a rare path (#1716). This wires the ALREADY-SHIPPED SOUND gate
+  `evm-harness/halmos-verify.sh` (Halmos symbolic execution + an SMT solver) in as a SECOND, INDEPENDENT oracle
+  that runs over the SAME generated invariant test AFTER the fuzzer verdict, behind a default-off
+  `--symbolic-oracle` flag (plus an optional `--symbolic-timeout <s>`) on `run-invariant-hunt.sh`. **The FUZZER
+  stays the SOLE primary verdict:** the symbolic result is a SEPARATE `SYMBOLIC|<file:fn>|<verdict>` stderr
+  marker (reusing `run-symbolic.sh`'s convention) + its own `## Symbolic oracle (complementary)` report section,
+  and never reads or alters `$VERD`, the `INVARIANT|` marker, or `verified_findings.json`. The pass is ONE staged
+  gate invocation (`cp` the gate into `$RUN/halmos-verify.sh`, then `sh "$RUN/halmos-verify.sh" --repo ... --target
+  $INV_OUT --function $MATCH`) mapping exit `0→PROVED / 1→COUNTEREXAMPLE / 3→INCONCLUSIVE / *→HARNESS_ERROR` —
+  NO `agentis` spawn, NO per-element `.ag` loop. It runs AFTER the primary `$REPORT` is written and BEFORE the
+  #1731 replay block clobbers `test/`, so `$INV_OUT` is intact. **Tool-absence is a clean runner-side SKIP:**
+  `halmos-verify.sh` itself exits 2 (harness/usage) when halmos/forge are absent — indistinguishable from a real
+  harness error — so a `command -v halmos`+`command -v forge` guard SKIPs first (a SKIPPED report row,
+  exit-neutral), and a fuzzer that generated no test (`$INV_OUT` absent) is likewise a SKIP, never a
+  HARNESS_ERROR. `run-zone-hunt.sh` gains a thin pass-through of `--symbolic-oracle`/`--symbolic-timeout`
+  forwarded verbatim to both deep-hunt invocations. **Zero `.ag` change:** `auditor/agents/invariant-prover.ag`
+  is byte-untouched — halmos consumes the generated `invariant_*` directly via `--function`, so no dedicated
+  spec is generated. **Default-off byte-identical:** with `--symbolic-oracle` OFF (the default) the runner and
+  both `run-zone-hunt.sh` invocations are byte-identical to before. **Honest limitation (wiring only):** a
+  no-argument `invariant_*` is symbolically executed with concrete `setUp()` state, so a `PROVED` here can be
+  vacuous; the deep symbolic lift needs symbolic-argument `check_*` specs, which is a deferred generation concern
+  (out of scope — this ships the WIRING, not a behavioural number). The behavioural confirmation (does symbolic
+  catch value-conservation on rare paths the fuzzer misses) is a deferred live #1730 operator run. Source-guarded
+  by new `demo-invariant-symbolic-oracle.sh` (wired into `colony-lint.sh`), which pins the default-off gate, the
+  after-`$REPORT`/before-#1731 ordering, the staged-gate invocation, the exit→verdict map + the command-v SKIP
+  guard, the fuzzer-stays-sole-verdict contract (no `verdict_of`/`final_verdict`/`$VERD`/`verified_findings`/#1471
+  reference), the `SYMBOLIC|` marker + report section, the zone pass-through, the byte-untouched `.ag` anchors,
+  and — under forge + agentis — the section-only-with-the-flag + primary-verdict-unchanged live contract.
 - **Cross-run invariant ensemble / union replay** (#1731). Run-to-run variance (#1716) means a class that
   produced a good invariant on one run may produce nothing on the next, yet today only the WINNER's descriptor
   survives — every non-winning (but valid) hypothesis is discarded. This accumulates the UNION of ALL generated

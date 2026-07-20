@@ -101,6 +101,16 @@
 #   --corpus-max N       #1731: cap the cross-run corpus at N most-recent entries per class (default 16). Bounds
 #                        BOTH storage (content-addressed dedup + most-recent eviction) AND replay cost. Whole
 #                        number, validated like --runs.
+#   --symbolic-oracle    #1732: run a COMPLEMENTARY symbolic / bounded-model-checking pass (Halmos, via the
+#                        SOUND evm-harness/halmos-verify.sh gate) over the SAME generated invariant test AFTER
+#                        the fuzzer has produced its verdict. This is a SECOND, INDEPENDENT oracle — the FUZZER
+#                        stays the SOLE primary verdict; the symbolic result is reported separately as a
+#                        `SYMBOLIC|<file:fn>|<verdict>` marker + a `## Symbolic oracle (complementary)` report
+#                        section and NEVER alters the INVARIANT| verdict or verified_findings.json. The gate is
+#                        skipped (a SKIPPED report row, exit-neutral) when halmos/forge are absent or the fuzzer
+#                        produced no test, so tool-absence is never a HARNESS_ERROR. Default OFF => byte-identical.
+#   --symbolic-timeout S #1732: per-assertion Halmos solver timeout in seconds for the --symbolic-oracle pass
+#                        (whole number; "" => the gate's own default 60). No effect without --symbolic-oracle.
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
 set -eu
 
@@ -110,6 +120,8 @@ REPO="" ; TARGET="" ; CLASS="" ; FIXTURE="" ; CODE="" ; MATCH="invariant"
 BACKEND="flat-cyborg" ; MODEL="" ; RUNS="" ; DEPTH="" ; SEED="" ; OUT="$PWD/invariant-out" ; PATTERN_STORE=""
 REPLAY_CORPUS=""  # #1731: cross-run ENSEMBLE/UNION replay; "" => OFF (default; byte-identical to today)
 CORPUS_MAX="16"   # #1731: max corpus entries kept/replayed per class (most-recent eviction; whole number)
+SYMBOLIC_ORACLE=""  # #1732: complementary symbolic/BMC (halmos) oracle; "" => OFF (default; byte-identical)
+SYMBOLIC_TIMEOUT="" # #1732: per-assertion halmos solver timeout (seconds); "" => the gate's own default (60)
 REPAIR_ROUNDS=""  # #1073: extra compile-repair rounds; "" => the prover's own default (2)
 AUDIT_CONTEXT=""  # #1722: optional spec / audit-scope doc; "" => no audit seed (byte-identical prompt)
 FORK_URL="" ; FORK_BLOCK="" ; FORK_TARGET=""
@@ -144,6 +156,8 @@ while [ $# -gt 0 ]; do
     --pattern-store) need "$#"; PATTERN_STORE="$2"; shift 2 ;;
     --replay-corpus) REPLAY_CORPUS=1; shift ;;
     --corpus-max) need "$#"; CORPUS_MAX="$2"; shift 2 ;;
+    --symbolic-oracle) SYMBOLIC_ORACLE=1; shift ;;
+    --symbolic-timeout) need "$#"; SYMBOLIC_TIMEOUT="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-invariant-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -166,6 +180,10 @@ case "$CORPUS_MAX" in
   '') CORPUS_MAX=16 ;;
   *[!0-9]*) echo "run-invariant-hunt.sh: --corpus-max must be a whole number" >&2; exit 2 ;;
 esac
+# #1732: --symbolic-timeout must be a whole number of seconds when set. An empty value (the default, or an
+# explicit `--symbolic-timeout ""`) is passed through as "" so the halmos-verify.sh gate applies its own
+# default (60); only a non-numeric value is a hard usage error so an operator typo surfaces here.
+case "$SYMBOLIC_TIMEOUT" in '') ;; *[!0-9]*) echo "run-invariant-hunt.sh: --symbolic-timeout must be a whole number of seconds" >&2; exit 2 ;; esac
 # FM1 (#1041): fork-arg shape validation (mirrors the gate's). --fork-url must look like an http(s) URL,
 # --fork-block a whole number requiring --fork-url.
 case "$FORK_URL" in
@@ -260,6 +278,10 @@ done
 
 PROVER="$HERE/auditor/agents/invariant-prover.ag"
 GATE="$HERE/evm-harness/forge-invariant.sh"
+# #1732: the COMPLEMENTARY symbolic/BMC gate. Resolved here (a pure variable, no side effect => byte-identical
+# when --symbolic-oracle is off); it is staged into the rundir + invoked ONLY inside the flag-gated
+# symbolic_oracle() below, so with the flag off the rundir and pipeline are byte-identical to today.
+GATE_HALMOS="$HERE/evm-harness/halmos-verify.sh"
 MUTANT_KILL_SRC="$HERE/evm-harness/mutant-kill.sh"
 MUTANTS_SRC="$HERE/evm-harness/mutants"
 [ -f "$PROVER" ] || { echo "run-invariant-hunt.sh: invariant-prover agent not found at $PROVER" >&2; exit 3; }
@@ -523,6 +545,68 @@ replay_corpus() {  # $1 = corpus class dir, $2 = report path
   return 0
 }
 
+# #1732 — COMPLEMENTARY SYMBOLIC / BOUNDED-MODEL-CHECKING ORACLE. A SECOND, INDEPENDENT oracle that runs the
+# SOUND staged evm-harness/halmos-verify.sh gate over the SAME generated invariant test AFTER the fuzzer has
+# produced its verdict. The FUZZER stays the SOLE primary verdict: this function reads NONE of $VERD /
+# verdict_of / final_verdict, never touches the INVARIANT| marker or verified_findings.json, and appends only
+# its own `## Symbolic oracle (complementary)` report section + a `SYMBOLIC|<target>|<verdict>` stderr marker
+# (reusing run-symbolic.sh's marker convention + verdict vocabulary). It is ONE staged-gate invocation — NO
+# agentis spawn, NO per-element .ag loop. Called ONLY under `if [ -n "$SYMBOLIC_ORACLE" ]` (below), so with the
+# flag off it never runs and the pipeline is byte-identical to today.
+#
+# Tool-absence is a clean SKIP, never a HARNESS_ERROR: halmos-verify.sh itself exits 2 (harness/usage) when
+# halmos/forge are absent, which would be indistinguishable from a real harness error, so we guard on
+# `command -v halmos`+`command -v forge` HERE (the runner side) and, if either is missing OR the fuzzer produced
+# no test ($INV_OUT absent, a fuzzer HARNESS_ERROR), append a SKIPPED row and return without a verdict.
+symbolic_oracle() {  # $1 = report path
+  _srpt="$1"
+  {
+    echo
+    echo "## Symbolic oracle (complementary)"
+    echo
+    echo "A SECOND, INDEPENDENT oracle (Halmos symbolic execution / bounded model checking) run over the SAME"
+    echo "generated invariant test AFTER the fuzzer verdict. The FUZZER stays the SOLE primary verdict above;"
+    echo "this row NEVER alters it. PROVED = the property held for ALL symbolic inputs Halmos explored;"
+    echo "COUNTEREXAMPLE = a concrete input violates it; INCONCLUSIVE = a path could not be decided; SKIPPED ="
+    echo "halmos/forge absent or no test was generated (NOT a verdict). NB a no-argument invariant_* is checked"
+    echo "with concrete setUp() state, so a PROVED here can be vacuous — deep symbolic properties need"
+    echo "symbolic-argument check_* specs (a deferred generation concern, out of scope for this wiring)."
+    echo
+    echo "| Target | Function | Symbolic verdict |"
+    echo "|---|---|---|"
+  } >> "$_srpt"
+  # Clean SKIP (exit-neutral): the fuzzer produced no test, OR the symbolic toolchain is absent. Never a verdict.
+  if [ ! -f "$INV_OUT" ]; then
+    printf '| %s | %s | %s |\n' "$TARGET" "$MATCH" "SKIPPED (no generated invariant test)" >> "$_srpt"
+    echo "run-invariant-hunt.sh: [skip] symbolic oracle — the fuzzer generated no invariant test ($TARGET)" >&2
+    return 0
+  fi
+  if ! command -v halmos >/dev/null 2>&1 || ! command -v forge >/dev/null 2>&1; then
+    printf '| %s | %s | %s |\n' "$TARGET" "$MATCH" "SKIPPED (halmos/forge not on PATH)" >> "$_srpt"
+    echo "run-invariant-hunt.sh: [skip] symbolic oracle — halmos/forge not installed (a SKIP, not a HARNESS_ERROR)" >&2
+    return 0
+  fi
+  # Stage the SOUND gate into the rundir (next to the staged forge-invariant.sh) so it can run from a cwd the
+  # sandbox can reach, then invoke it over the SAME generated invariant, matching the `invariant_*` functions.
+  cp "$GATE_HALMOS" "$RUN/halmos-verify.sh"
+  set +e
+  sh "$RUN/halmos-verify.sh" --repo "$REPO_IN_RUN" --target "$INV_OUT" --function "$MATCH" ${SYMBOLIC_TIMEOUT:+--timeout "$SYMBOLIC_TIMEOUT"} >&2
+  _hrc=$?
+  set -e
+  case "$_hrc" in
+    0) SYMV="PROVED" ;;
+    1) SYMV="COUNTEREXAMPLE" ;;
+    3) SYMV="INCONCLUSIVE" ;;
+    *) SYMV="HARNESS_ERROR" ;;
+  esac
+  # Emit the marker on STDERR (run-symbolic.sh's convention) and append the row. This is the ONLY channel the
+  # symbolic verdict flows through — it never reaches the INVARIANT| marker, $VERD, or verified_findings.json.
+  echo "SYMBOLIC|$TARGET|$SYMV" >&2
+  printf '| %s | %s | %s |\n' "$TARGET" "$MATCH" "$SYMV" >> "$_srpt"
+  echo "run-invariant-hunt.sh: [symbolic] complementary oracle verdict for $TARGET: $SYMV (the fuzzer verdict above is unchanged)" >&2
+  return 0
+}
+
 # RECALL: seed the per-run store with any patterns a PRIOR run persisted, BEFORE `agentis go` (so the
 # prover's recall_pattern() sees them and folds them into GENERATE).
 if [ -n "$PATTERN_STORE" ]; then
@@ -604,6 +688,15 @@ REPORT="$OUT/invariant-report.md"
     echo "A human triages this candidate before any submission. This colony never posts."
   fi
 } > "$REPORT"
+
+# #1732 — COMPLEMENTARY SYMBOLIC / BMC ORACLE. Runs AFTER the primary $REPORT is written (the fuzzer verdict is
+# already finalized) and BEFORE the #1731 replay block below clobbers test/*.t.sol, so $INV_OUT is intact. The
+# whole block is gated on $SYMBOLIC_ORACLE: with the flag off it never runs => byte-identical to today. It only
+# APPENDS a `## Symbolic oracle (complementary)` section to $REPORT and emits a SYMBOLIC| stderr marker; it does
+# NOT read or alter $VERD, the INVARIANT| marker, or verified_findings.json (the fuzzer stays the sole verdict).
+if [ -n "$SYMBOLIC_ORACLE" ]; then
+  symbolic_oracle "$REPORT"
+fi
 
 # #1731 — CROSS-RUN ENSEMBLE / UNION: replay the accumulated union of PRIOR hypotheses, then accumulate THIS
 # run's invariant, then prune to the cap. Gated on --replay-corpus AND --pattern-store (else a no-op, so the

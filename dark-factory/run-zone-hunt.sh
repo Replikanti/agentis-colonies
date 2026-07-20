@@ -70,6 +70,12 @@
 #                       --pattern-store. Forwarded verbatim to both $INVHUNT invocations; absent => byte-identical.
 #   --corpus-max <N>    #1731: cap the cross-run corpus at N most-recent entries per class (default in the engine
 #                       is 16). Forwarded verbatim to both $INVHUNT invocations; absent => byte-identical.
+#   --symbolic-oracle   #1732: run the COMPLEMENTARY symbolic/BMC (Halmos) oracle over each deep-hunt target's
+#                       generated invariant AFTER the fuzzer verdict — a SEPARATE report section + SYMBOLIC|
+#                       marker; the fuzzer stays the SOLE verdict. Forwarded verbatim to both $INVHUNT
+#                       invocations; absent => byte-identical.
+#   --symbolic-timeout <S>  #1732: per-assertion Halmos solver timeout (seconds) for --symbolic-oracle.
+#                       Forwarded verbatim to both $INVHUNT invocations; absent => byte-identical.
 #   --drop-dir <dir>    deliver-submission.sh drop-dir (default: <out>/drop).
 #   -h, --help          This help.
 #
@@ -113,6 +119,8 @@ while [ $# -gt 0 ]; do
     --pattern-store)    nv "$#"; DEEP_FWD+=(--pattern-store "$2"); shift 2 ;;
     --replay-corpus)    DEEP_FWD+=(--replay-corpus); shift ;;
     --corpus-max)       nv "$#"; DEEP_FWD+=(--corpus-max "$2"); shift 2 ;;
+    --symbolic-oracle)  DEEP_FWD+=(--symbolic-oracle); shift ;;
+    --symbolic-timeout) nv "$#"; DEEP_FWD+=(--symbolic-timeout "$2"); shift 2 ;;
     --drop-dir)         nv "$#"; DROP_DIR="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-zone-hunt.sh: unknown flag $1" >&2; exit 2 ;;

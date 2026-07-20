@@ -1388,6 +1388,27 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-corpus-replay.sh" ]; then
     fi
 fi
 
+# --- dark-factory invariant-hunt complementary symbolic/BMC oracle (#1732) ---
+# The deep-hunt fuzzer SAMPLES call sequences and can miss a value-conservation break on a rare path (#1716).
+# #1732 wires the SHIPPED SOUND evm-harness/halmos-verify.sh gate in as a SECOND, INDEPENDENT oracle that runs
+# over the SAME generated invariant test AFTER the fuzzer verdict, behind a default-off --symbolic-oracle flag on
+# run-invariant-hunt.sh. The FUZZER stays the SOLE primary verdict; the symbolic result is a SEPARATE
+# SYMBOLIC|<file:fn>|<verdict> marker + a ## Symbolic oracle (complementary) report section, never touching
+# $VERD / the INVARIANT| marker / verified_findings.json / the #1471 gate. Tool-absence is a runner-side clean
+# SKIP (command -v halmos+forge), never a HARNESS_ERROR (the gate itself exits 2 on tool-absence). Zero .ag
+# change: halmos consumes the generated invariant_* via --function. demo-invariant-symbolic-oracle.sh
+# source-guards the wiring (CI-safe) and, under forge + agentis, pins the section-only-with-the-flag + the
+# primary-verdict-unchanged contract.
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-symbolic-oracle.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-symbolic-oracle.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: invariant-hunt complementary symbolic/BMC oracle (halmos gate, default-off, fuzzer stays sole verdict) (#1732)"
+    else
+        fail "dark-factory: invariant-hunt complementary symbolic/BMC oracle regressed (#1732)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory historical-exploit-class pattern seeding (#1733) ---
 # A static, offline library of 7 canonical historical DeFi exploit CLASSES (auditor/methods/
 # historical-exploits.md, one entry per C1/C2/C5/C6/C8/C11/C16 taxonomy id, hand-authored, no
