@@ -49,3 +49,31 @@ confidence ladder defined in
 - `propose` — emit on bus + draft external writes
 - `review-gated` — direct external writes (non-terminal)
 - `autonomous` — terminal external writes (merge, tag, ack alert, post reply, …)
+
+## Environmental invariants
+
+This federation adopted [ADR-0009](../doc/adr/ADR-0009-environmental-invariants.md)'s
+optional invariants surface: two content-addressed `forbidden_callee`
+modules under [`config/invariants/`](./config/invariants/) that state
+the "backtest-only" law as an auditable predicate rather than an
+implicit assumption:
+
+- `no-order-placement.inv` — denies `place_order` / `cancel_order` /
+  `submit_order` / `new_order`.
+- `no-network-egress.inv` — denies `http_get` / `http_post` /
+  `use_tool` / `smtp_send`.
+
+`tools/run-replay.sh` stages the module set and emits
+`evolution.invariants_dir` into the hermetic `.agentis/config` (gated
+by `REPLAY_INVARIANTS`, default on; `=0` leaves the key entirely
+unset). Requires agentis **>= v1.25.0** (the `forbidden_callee`
+source-shape payload).
+
+**Be precise about what this gates.** This is a **CLI-forensic,
+observe-only** surface — `agentis invariant check` is run as a
+host-side probe (recorded into `run-meta.json`'s `invariant_set_hash`),
+not as a live daemon gate. `trading-binance`'s `replicate()` growth
+happens entirely inside the daemon with no external pre-spawn
+checkpoint to hook, so adopting this surface does **not** gate live
+daemon admission for this federation (contrast `tribes-bench`, which
+wires the same core surface into real replicate-admission + self-cull).

@@ -118,13 +118,13 @@ is proven.
 |---|---|---|
 | Federations on the legacy `agentis evolve` path (`tools/auto-promote.sh`'s else-branch, `evolve.mutation.enabled=false`, e.g. observe-only agents) | Generational evolve loop | Yes — `evolution.invariants_dir` applies |
 | `research-foundry`'s mutation/A/B scheduler (`tools/auto-evolve-ab.sh`, `evolve.mutation.enabled=true`, candidates spawned via `agentis daemon`) | Mutation/A/B daemon-spawn loop | Partially — the source-shape pre-spawn gate exists since agentis-core v1.24.0 (`agentis invariant check`) and the harness invokes it **observe-only** since [PR#1753](https://github.com/Replikanti/agentis-colonies/pull/1753) (verdict recorded to the mutation ledger; adoption was [Replikanti/agentis-colonies#1736](https://github.com/Replikanti/agentis-colonies/issues/1736)); the four bash validity checks in `auto-evolve-ab.sh` remain the authoritative gate until real-run parity is proven, and runtime-behavior (payload v1) invariants remain ungated on this path |
-| `tribes-bench`, `trading-binance` (`replicate()`-grown daemon populations, no generational `agentis evolve` call in their scripts today) | `replicate()` / daemon-population growth | Not yet for runtime-behavior invariants — no enforcement at `replicate()` admission or population sweep ships today, tracked as [Replikanti/agentis-core#942](https://github.com/Replikanti/agentis-core/issues/942) (replicate-admission/sweep enforcement) and [Replikanti/agentis-core#943](https://github.com/Replikanti/agentis-core/issues/943) (capability-absence/egress-allowlist predicates). `agentis invariant check`'s pre-spawn source-shape gate is available to any harness that spawns candidates, but it is not the runtime-admission surface these federations need |
+| `tribes-bench`, `trading-binance` (`replicate()`-grown daemon populations, no generational `agentis evolve` call in their scripts today) | `replicate()` / daemon-population growth | Shipped surface, split adoption. The runtime surface itself shipped as [Replikanti/agentis-core#942](https://github.com/Replikanti/agentis-core/issues/942) (daemon replicate-admission gate + self-sweep, v1.25.0) and [Replikanti/agentis-core#943](https://github.com/Replikanti/agentis-core/issues/943) (source-shape `forbidden_callee`/`egress_outside_allowlist` predicates, v1.25.0; egress widened in v1.26.0), enabled for `<colony>`-scoped memo signals by [Replikanti/agentis-core#950](https://github.com/Replikanti/agentis-core/issues/950) (memo-bound fitness signals, v1.27.0) and [Replikanti/agentis-core#953](https://github.com/Replikanti/agentis-core/issues/953) (`<colony>` token, v1.28.0). `tribes-bench` adopted it as **live daemon enforcement** — two `<colony>`-scoped reputation memo-signal modules wired into replicate-admission + self-sweep ([PR#1766](https://github.com/Replikanti/agentis-colonies/pull/1766), closing [#1735](https://github.com/Replikanti/agentis-colonies/issues/1735)). `trading-binance` adopted the source-shape `forbidden_callee` predicates too, but only as an **observe-only, CLI-forensic** surface (`agentis invariant check`, operator/CI-run) — its `replicate()` growth happens entirely inside the live daemon with no external pre-spawn checkpoint to hook, so the admission gate itself is not exercised there ([PR#1760](https://github.com/Replikanti/agentis-colonies/pull/1760), closing [#1737](https://github.com/Replikanti/agentis-colonies/issues/1737)) |
 
-This ADR does not promise the `replicate()`/daemon-population surface
-is gated; that is future core work ([Replikanti/agentis-core#942](https://github.com/Replikanti/agentis-core/issues/942)
-and [Replikanti/agentis-core#943](https://github.com/Replikanti/agentis-core/issues/943),
-the concrete follow-ups from agentis-core#929's original phase-2 note),
-out of this ADR's authority to commit to.
+This ADR's earlier revision left the `replicate()`/daemon-population
+surface as a future-core promise. That surface has since shipped
+(agentis-core v1.25.0–v1.28.0, [#942](https://github.com/Replikanti/agentis-core/issues/942)/[#943](https://github.com/Replikanti/agentis-core/issues/943)/[#950](https://github.com/Replikanti/agentis-core/issues/950)/[#953](https://github.com/Replikanti/agentis-core/issues/953))
+and been adopted per-federation as described in the table above; see
+"Consequences" below for the current, corrected state.
 
 ## Behavioural contract
 
@@ -191,14 +191,32 @@ authoritative format.
   follow-up), and runtime-behavior (payload v1) invariants remain
   ungated there regardless.
 - `tribes-bench` and `trading-binance`'s `replicate()`-grown daemon
-  populations are NOT covered by this MVP. A federation relying solely
-  on `replicate()` gets no invariant gating today regardless of
-  whether `evolution.invariants_dir` is set. This is a real gap,
-  tracked as [Replikanti/agentis-core#942](https://github.com/Replikanti/agentis-core/issues/942)
-  (`replicate()`-admission gating / population sweep) and
+  populations were NOT covered by the original MVP; that gap has since
+  closed on the core side and been adopted asymmetrically per
+  federation. The runtime admission/sweep surface shipped as
+  [Replikanti/agentis-core#942](https://github.com/Replikanti/agentis-core/issues/942)
+  (replicate-admission gate + self-sweep, v1.25.0) and
   [Replikanti/agentis-core#943](https://github.com/Replikanti/agentis-core/issues/943)
-  (capability-absence and egress-allowlist predicates the same
-  federations need), not papered over here.
+  (`forbidden_callee`/`egress_outside_allowlist` source-shape
+  predicates, v1.25.0; egress widened v1.26.0), with
+  [Replikanti/agentis-core#950](https://github.com/Replikanti/agentis-core/issues/950)
+  (memo-bound fitness signals, v1.27.0) and
+  [Replikanti/agentis-core#953](https://github.com/Replikanti/agentis-core/issues/953)
+  (`<colony>` token, v1.28.0) enabling `<colony>`-scoped memo-signal
+  predicates on top of it. `tribes-bench` adopted the full live-daemon
+  surface — two `<colony>`-scoped reputation-floor modules gating real
+  admission and self-cull ([PR#1766](https://github.com/Replikanti/agentis-colonies/pull/1766),
+  closing [#1735](https://github.com/Replikanti/agentis-colonies/issues/1735)).
+  `trading-binance` adopted only the source-shape `forbidden_callee`
+  predicates as an **observe-only, CLI-forensic** surface
+  ([PR#1760](https://github.com/Replikanti/agentis-colonies/pull/1760),
+  closing [#1737](https://github.com/Replikanti/agentis-colonies/issues/1737)):
+  its `replicate()` growth happens entirely inside the live daemon with
+  no external pre-spawn checkpoint, so `evolution.invariants_dir`
+  there activates the module set only for the read-only
+  `agentis invariant check <file> --json` CLI surface — it is NOT live
+  daemon enforcement for `trading-binance`. Neither adoption is papered
+  over here; the distinction is load-bearing.
 - `install.sh` / orchestrators do not yet prompt for
   `evolution.invariants_dir`; wiring that prompt into any federation's
   setup flow is adoption work for a separate, later issue — not part
@@ -262,12 +280,35 @@ authoritative format.
   — deliverable-now slice adopting `evolution.invariants_dir` on the
   legacy `agentis evolve` path only.
 - [Replikanti/agentis-core#942](https://github.com/Replikanti/agentis-core/issues/942)
-  — concrete phase-2 follow-up: gate `replicate()` admission and/or a
-  daemon-population sweep for runtime-field invariant enforcement
-  (the surface `tribes-bench`/`trading-binance` need).
+  — the phase-2 follow-up this ADR originally deferred to core work:
+  `replicate()`-admission gating and a daemon-population self-sweep for
+  runtime-field invariant enforcement (the surface `tribes-bench`/
+  `trading-binance` need). Shipped in agentis-core **v1.25.0**.
 - [Replikanti/agentis-core#943](https://github.com/Replikanti/agentis-core/issues/943)
-  — concrete phase-2 follow-up: capability-absence and
-  egress-allowlist predicates, complementing #942.
+  — the companion phase-2 follow-up: `forbidden_callee`/
+  `egress_outside_allowlist` source-shape predicates, complementing
+  #942. Shipped in agentis-core **v1.25.0**; egress coverage widened in
+  **v1.26.0**.
+- [Replikanti/agentis-core#950](https://github.com/Replikanti/agentis-core/issues/950)
+  — memo-bound fitness signals, the enabler that lets an environmental
+  invariant read a federation's own memo state (e.g. a reputation
+  score) rather than only source-shape fields. Shipped in agentis-core
+  **v1.27.0**.
+- [Replikanti/agentis-core#953](https://github.com/Replikanti/agentis-core/issues/953)
+  — the `<colony>` predicate token, letting a single shared module set
+  scope a memo-bound signal per colony without cross-colony
+  contamination. Shipped in agentis-core **v1.28.0**.
+- [Replikanti/agentis-colonies#1737](https://github.com/Replikanti/agentis-colonies/issues/1737)
+  / [PR#1760](https://github.com/Replikanti/agentis-colonies/pull/1760)
+  — `trading-binance`'s adoption of the #942/#943 source-shape surface:
+  two `forbidden_callee` modules (order-placement, network-egress),
+  wired as an **observe-only, CLI-forensic** probe, not live daemon
+  enforcement.
+- [Replikanti/agentis-colonies#1735](https://github.com/Replikanti/agentis-colonies/issues/1735)
+  / [PR#1766](https://github.com/Replikanti/agentis-colonies/pull/1766)
+  — `tribes-bench`'s adoption of the #942/#943/#950/#953 surface as
+  **live daemon enforcement**: two `<colony>`-scoped reputation-floor
+  modules gating real `replicate()` admission and self-cull.
 
 ## Supersedes
 
