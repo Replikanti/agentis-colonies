@@ -822,6 +822,28 @@ if [ -x "$REPO_ROOT/trading-binance/tools/test-invariants.sh" ]; then
     fi
 fi
 
+# --- tribes-bench reputation-floor environmental invariants (#1735) ---
+# tribes-bench/config/invariants/*.inv formalize the ad-hoc reputation
+# penalties as one <colony>-scoped signal (agentis-core #950/#953) expressed at
+# two severities: reputation-floor-costly.inv (advisory) and
+# reputation-floor-inviolable.inv (real refuse/self-cull). The test pins the
+# .inv grammar + the ABSENCE of the tribe-blind <self> token (Layer 1, always),
+# the memo-format contract + fail-closed clean load (Layer 2, needs agentis
+# >= v1.28.0 on PATH), and that every tribe-*/scripts/start-colony.sh still
+# launches its daemon `--colony tribe-<name>` (Layer 3, the fact the scoping
+# depends on). Per-federation tools/test-*.sh are NOT auto-discovered by the
+# loops above (only root tools/test-*.sh is globbed) so this needs the same
+# explicit hook.
+if [ -x "$REPO_ROOT/tribes-bench/tools/test-invariants.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/tribes-bench/tools/test-invariants.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "test-invariants: tribes-bench reputation-floor .inv modules (<colony> signal, two floors) (#1735)"
+    else
+        fail "test-invariants: tribes-bench .inv module grammar / <self>-absence / --colony pin drifted (#1735)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory submission-triage gates (#1456/#1458) ---
 # submit-triage.sh scores staged findings (READY / INCOMPLETE / DUP-RISK), flags impact-credibility
 # (IMPACT quant/qual?) and duplicate-risk (NOVELTY via --known-issues), and never contacts a platform.

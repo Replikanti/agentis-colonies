@@ -26,6 +26,11 @@ tribes-bench/calibration.toml
 # ----- Shared assets -----
 tribes-bench/targets/
 tribes-bench/tools/
+# Environmental-invariant modules (#1735): the two <colony>-scoped
+# reputation-floor `.inv` predicates + their README. Federation-level (shared
+# across all five tribes), not per-tribe, since one module set scopes per tribe
+# via the `<colony>` token.
+tribes-bench/config/
 # Stage 1 M2+M3 (#364) tooling already covered by `tribes-bench/tools/`
 # above; explicitly listed for documentation:
 #   tribes-bench/tools/run-stage1.sh

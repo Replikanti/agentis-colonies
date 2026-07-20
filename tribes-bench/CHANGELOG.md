@@ -14,6 +14,35 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+
+- **Feat(invariants):** optional environmental-invariant surface under
+  `tribes-bench/config/invariants/` that formalizes the ad-hoc reputation
+  penalties as content-addressed `.inv` predicate modules (agentis-core RFC
+  #929, ADR-0009; [#1735](https://github.com/Replikanti/agentis-colonies/issues/1735)).
+  ONE shared signal binding —
+  `signal reputation = memo("reputation:tribes-bench-<colony>")` — expressed at
+  two severities: `reputation-floor-costly.inv` (`class = costly`, advisory,
+  `when reputation < 0.3`) and `reputation-floor-inviolable.inv`
+  (`class = inviolable`, real `replicate()` refuse / in-tick self-cull,
+  `when reputation < 0.1`). The `<colony>` substitution token (agentis-core
+  #953) resolves each daemon to its own tribe (`--colony tribe-<name>`), so the
+  single shared module set scopes correctly per tribe with no cross-tribe
+  contamination — deliberately not the role/`<self>` token, which resolves to
+  the shared basename `"hunter"` for all five tribes. `run-stage2.sh` wires the
+  keys (`evolution.invariants_dir`, `daemon.invariant_gate`,
+  `daemon.invariant_sweep`) into the shared hermetic `.agentis/config` under a
+  new `STAGE2_INVARIANTS` knob (default `1`; `0` leaves every key unset —
+  byte-identical feature-off) and HARD-ABORTS when `STAGE2_INVARIANTS=1` on an
+  `agentis < 1.28.0` runtime (below the `<colony>` floor the token stays literal
+  and all five tribes collapse onto one memo key — unsafe under `inviolable`).
+  A forensic `invariant-set-hash.txt` sidecar is written per run. The inline
+  `+0.05`/`-0.10` reputation arithmetic in `hunter.ag` is unchanged — it is what
+  writes the reputation these invariants read; the modules are an additive audit
+  / enforcement layer, not a second write path. New pin
+  `tribes-bench/tools/test-invariants.sh` (grammar + `<self>`-absence + memo
+  contract + `--colony` launch-flag), wired into `tools/colony-lint.sh`.
+
 ### Fixed
 
 - **Fix(market):** `tribes-bench/tribe-{alpha,beta,gamma,delta,epsilon}/agents/hunter.ag` no longer pass `"cache_hit"` / `"rejected"` into the `outcome` slot of the `knowledge_market` `learn()` rows. The agentis runtime outcome enum is `{success, failure, partial, timeout, error}`; pre-fix the runtime rejected each call with `[tick:error] invalid outcome 'cache_hit'` (and analogous for `rejected`) so the per-tick error count was inflated even though the federation otherwise worked correctly. Mirrors the research-foundry fix from agentis-colonies PR #794 — the per-call vocabulary (`cache_hit` / `rejected`) is now placed in the `recommendation` slot (preserving log readability + `tools/check-learn-tags.sh` disambiguation) while the outcome slot carries the runtime-valid enum value (`cache_hit→success`, `rejected→failure`). 20 sites patched (5 tribes × 4 sites each: buy_topic cache_hit/rejected + espionage_topic cache_hit/rejected). Pre-existing since [#493](https://github.com/Replikanti/agentis-colonies/pull/493) (Loose category (c) market lifecycle) on each hunter — was kept latent in #794 via the `market:cache_hit` / `market:rejected` aliases in `tools/check-learn-tags.sh`; this PR is the follow-up that migrates the actual sites. `tools/check-learn-tags.sh` schema retains the alias entries during the transition so a partial future revert still lints; the aliases can be removed in a separate cleanup.

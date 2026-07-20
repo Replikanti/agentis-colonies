@@ -1,0 +1,32 @@
+# reputation-floor-costly.inv — soft advisory floor on a tribe's externally
+# scored reputation (#1735; agentis-core #950 signal payload-v4, #953 <colony>).
+#
+# ONE shared module set for all five tribes. The signal is `<colony>`-scoped
+# (agentis-core #953): `read_fitness_signal` resolves `<colony>` from the
+# daemon's own `--colony` value (`Evaluator::colony_name`, set at startup), so
+# `reputation:tribes-bench-<colony>` reads EACH daemon's OWN tribe reputation —
+# a hunter launched `--colony tribe-alpha` reads `reputation:tribes-bench-tribe-alpha`,
+# tribe-beta's reads its own, and so on. Two daemons sharing one `.agentis` memo
+# dir each read their own colony's memo (agentis-core's `two_colonies_read_own`
+# test). NO cross-tribe contamination, so one module covers all five tribes.
+#
+# Deliberately NOT the role/self token: every tribe launches its hunter from a
+# source file literally named `hunter.ag`, so `role_name_from_source_path`
+# resolves the role token to the identical string "hunter" for all five tribes —
+# it cannot discriminate tribes. `<colony>` is the only token that scopes per
+# tribe here (test-invariants.sh Layer 1 asserts the role token is absent).
+#
+# Floor = 0.3. Reputation is seeded at 0.5 (each tribe's start-colony.sh runs
+# `agentis memo set "reputation:tribes-bench-<tribe>" "0.5"` before launch) and
+# walks +0.05 (clamp 1.0) on a verified finding / -0.10 (clamp 0.0) on a false
+# positive (tribe-alpha/agents/hunter.ag:1312-1402, identical across tribes).
+# 0.3 requires >= 2 net false positives beyond the seed: a single unlucky tick
+# (0.5 -> 0.4) does NOT fire. This is the WARM-UP / advisory band — `class =
+# costly` is advisory-only on both daemon surfaces (replicate() admission gate
+# and in-tick self-sweep): it logs `evolution.invariant_penalized` but never
+# debits CB and never refuses/culls (there is no CB ledger on the daemon
+# surfaces). The harder `inviolable` cull lives in reputation-floor-inviolable.inv
+# at a lower floor. See config/invariants/README.md for the full design.
+class = costly
+signal reputation = memo("reputation:tribes-bench-<colony>")
+when reputation < 0.3

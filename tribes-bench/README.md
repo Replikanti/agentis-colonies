@@ -285,6 +285,27 @@ infrastructure — no live experimental run lands here (that's M3, #394).
    `downstream_verified` post-hoc by scanning the buyer's experience
    JSONL within 5 ticks, and rewrites the CSV with a header line.
 
+5. **Reputation floors as environmental invariants** (optional;
+   [#1735](https://github.com/Replikanti/agentis-colonies/issues/1735)).
+   The inline reputation penalties above are additionally formalized as
+   content-addressed `.inv` predicate modules under
+   [`config/invariants/`](./config/invariants/) (agentis-core RFC #929,
+   ADR-0009). ONE shared `<colony>`-scoped signal binding —
+   `signal reputation = memo("reputation:tribes-bench-<colony>")` — is
+   expressed at two severities: a `costly` advisory floor (`reputation <
+   0.3`) and an `inviolable` cull floor (`reputation < 0.1`, real
+   `replicate()` refuse / self-cull). The `<colony>` token (agentis-core
+   #953) resolves each daemon to its own tribe via its `--colony
+   tribe-<name>` launch flag, so the single shared module set scopes
+   correctly per tribe with no cross-tribe contamination. `run-stage2.sh`
+   wires the surface in under `STAGE2_INVARIANTS=1` (default) and
+   **requires agentis >= 1.28.0** for the `<colony>` token — it
+   hard-aborts on an older runtime rather than silently degrading to a
+   shared literal memo key; `STAGE2_INVARIANTS=0` leaves the surface off.
+   The inline `+0.05`/`-0.10` arithmetic is unchanged — it writes the
+   reputation the invariants read. Full design:
+   [`config/invariants/README.md`](./config/invariants/README.md).
+
 **Analyser revenue contract** (per #393 §9 risk 2): seller revenue is
 
 > `revenue = Σ(ask_price for r in rows where r.op="buy" AND r.cache_hit=0)`
