@@ -131,10 +131,26 @@ else
   bad "the redeemable-value shape is missing"
 fi
 
-if grep -q 'require(redeemable + dust >= deposited)' "$PROVER"; then
-  ok "the plain-require assertion (require(redeemable + dust >= deposited)) is present"
+# #1755 M4 — RELATIVE tolerance (not absolute dust). The first-depositor / share-inflation theft is PROPORTIONAL and
+# maximal at the wei-scale totalAssets=2/totalSupply=1 boundary, where an absolute +1e12 dust dwarfs the loss and
+# never trips; a relative integer-math tolerance (redeemable * 10000 >= deposited * 9900, a 1% band) trips the
+# proportional theft at ANY scale. The absolute-dust require() form must be GONE.
+if grep -q 'require(redeemable \* 10000 >= deposited \* 9900)' "$PROVER"; then
+  ok "the plain-require assertion is the RELATIVE integer-math tolerance (require(redeemable * 10000 >= deposited * 9900), a 1% band)"
 else
-  bad "the plain-require assertion is missing"
+  bad "the RELATIVE-tolerance plain-require assertion (redeemable * 10000 >= deposited * 9900) is missing"
+fi
+
+if grep -q 'require(redeemable + dust >= deposited)' "$PROVER"; then
+  bad "the OLD absolute-dust require(redeemable + dust >= deposited) form is still present (a coarse dust never trips the wei-scale theft)"
+else
+  ok "the absolute-dust require() form is gone (replaced by the relative tolerance)"
+fi
+
+if grep -q 'a proportional epsilon' "$PROVER" && grep -q 'NOT an absolute rounding `dust`' "$PROVER"; then
+  ok "the directive tells the model to use a RELATIVE (proportional epsilon) tolerance, not an absolute dust"
+else
+  bad "the RELATIVE-vs-absolute tolerance guidance is missing from the victim-fairness directive"
 fi
 
 if grep -q 'track each victim' "$PROVER"; then

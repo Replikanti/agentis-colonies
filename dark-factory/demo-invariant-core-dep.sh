@@ -166,6 +166,37 @@ else
   bad "the directive does not disable the profit-limit health check (setDoHealthCheck(false) + healthCheck gate) — first-depositor report() reverts, bug unreachable"
 fi
 
+# #1755 M4 — the missing management precondition: setProfitMaxUnlockTime(0). Even after setDoHealthCheck(false) a
+# profit realized through report() is LOCKED and unlocks linearly over profitMaxUnlockTime, so totalAssets never
+# inflates for share pricing and the CLEAN verdict persists. With profitMaxUnlockTime==0 the donation lands in
+# totalAssets instantly: seed 1 wei + donate 1 wei + report -> totalAssets=2, totalSupply=1 (2x share price).
+if grep -q 'setProfitMaxUnlockTime(0)' "$PROVER" && grep -q 'profit-unlock window' "$PROVER"; then
+  ok "the directive tells the Handler (as management) to call setProfitMaxUnlockTime(0) so the donation is recognized in totalAssets instantly (not locked over the profit-unlock window)"
+else
+  bad "the directive does not add setProfitMaxUnlockTime(0) — the donated profit stays locked, totalAssets never inflates, verdict stays CLEAN"
+fi
+
+if grep -q 'totalAssets == 2, totalSupply == 1' "$PROVER"; then
+  ok "the directive names the share-inflation boundary (seed 1 wei + donate 1 wei + report -> totalAssets==2, totalSupply==1, 2x share price)"
+else
+  bad "the directive does not name the totalAssets==2/totalSupply==1 share-inflation boundary the attack exploits"
+fi
+
+# #1755 M4 — wei-scale attack actions: the rounding theft bites at the totalAssets=2/totalSupply=1 boundary (a
+# victim depositing 3 wei redeems only 2, 33% robbed) and vanishes at large scale, so the handler MUST fuzz tiny
+# amounts IN ADDITION to realistic 1e15..1e21 sizes.
+if grep -q 'TINY WEI-SCALE amounts' "$PROVER" && grep -q -- '\[1, 1000\]' "$PROVER"; then
+  ok "the directive requires TINY WEI-SCALE attack amounts (bounded like [1, 1000]) in addition to realistic sizes"
+else
+  bad "the directive does not require wei-scale attack amounts — the fuzzer never drives the tiny-value regime where the rounding theft is reachable"
+fi
+
+if grep -q 'a victim depositing 3 wei redeems only 2, 33% ' "$PROVER"; then
+  ok "the directive states the proven wei-scale theft (victim deposits 3 wei -> redeems 2, 33% robbed)"
+else
+  bad "the directive does not state the proven wei-scale theft magnitude"
+fi
+
 if grep -q 'interface Vm { function etch(address, bytes calldata) external;' "$PROVER"; then
   ok "core_dep_seed injects the forge-std-free minimal Vm interface (etch/deal/prank)"
 else
