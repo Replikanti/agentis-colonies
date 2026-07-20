@@ -488,6 +488,20 @@ fn vault_target_import(route: bool, file: string) -> string {
     return file;
 }
 let vaultTargetImport = vault_target_import(vaultRoute, targetFile);
+// #1765 — the in-repo target IMPORT PATH the core-dep GENERATION directive pins as core_dep_seed's `targetRel`.
+// The generated harness lives at INV_OUT under `<repo>/test/`, and the target's REAL in-repo source is
+// `<repo>/<targetFile>` (the `--target` FILE part — `target_file(TARGET_FN)`, e.g. `src/Strategy.sol`), so the
+// only COMPILABLE import from the harness is `../` + targetFile = `../src/<Target>.sol` (basename `Strategy.sol`)
+// — EXACTLY what the catching harness wrote (`import {LiquityV2SPStrategy} from "../src/Strategy.sol";`). This
+// REPLACES the M5 `relImport` (= rel_import_path(invOut, CODE_PATH), which resolves to the staged flat-copy
+// basename `../../target-code.sol` — NOT compilable inside the repo) as the directive's target-import hint, so the
+// generation prompt no longer contradicts itself. Same file-part idiom as targetFile; a pure string concat (no
+// shell, no per-element recursion). Empty targetFile => "" (the seed's target-import line reads "").
+fn vault_target_rel(file: string) -> string {
+    if len(file) == 0 { return ""; }
+    return "../" + file;
+}
+let vaultTargetRel = vault_target_rel(targetFile);
 // #1755 M2 — EFFECTIVE CLASS override. The live-hunt pipeline (zone-mapper.ag -> run-zone-hunt.sh dominant_class()
 // -> run-invariant-hunt.sh --class) COLLAPSES yearn's zone [C15,C10,C11,C2] to a single dominant code, and that
 // tuple resolves to C10 -> class_to_keyword("c10")=="lend", so the vault branches of the GENERATION selectors
@@ -550,17 +564,19 @@ fn victim_fairness_invariant_prompt(klass: string, active: bool) -> string {
 // and caught the H-1 first-depositor bug; a second run imported it from the pipeline's FLATTENED staged copy
 // (`import {...} from "target-code.sol";`) — a file that lives one dir ABOVE the foundry repo, not inside it, so
 // the test fails to compile (`Source "target-code.sol" not found`) => HARNESS_ERROR. So the LLM's target import
-// VARIES between the correct `../src/<Target>.sol` and the wrong staged `target-code.sol`. `targetRel` is the SAME
-// `rel_import_path(invOut, codePath)` value the skeleton's `importLine` already resolves (the in-repo `../src/...`
-// path); pinning it here — and forbidding `target-code.sol` — collapses the variance to the catching shape. Still
-// a flat string-literal addition inside the same `!active => ""` builder (default-off byte-identical).
+// VARIES between the correct `../src/<Target>.sol` and the wrong staged `target-code.sol`. #1765 fix: `targetRel`
+// is `vaultTargetRel` = `../` + the `--target` FILE part (`targetFile`, e.g. `src/Strategy.sol`) = the in-repo
+// `../src/<Target>.sol` path the catching harness used — NOT `relImport` (= rel_import_path(invOut, CODE_PATH),
+// which M5 threaded here but actually resolves to the staged flat-copy basename `../../target-code.sol`, the WRONG
+// shape). Pinning THIS in-repo path — and forbidding `target-code.sol` — collapses the variance to the catching
+// shape. Still a flat string-literal addition inside the same `!active => ""` builder (default-off byte-identical).
 fn core_dep_seed(active: bool, name: string, rel: string, addr: string, targetName: string, targetRel: string) -> string {
     if !active { return ""; }
     return "=== CORE-DEPENDENCY (delegatecall singleton) — DEPLOY THE REAL " + name + " ===\n"
          + "  - IMPORT THE TARGET (" + targetName + ") ONLY from its REAL in-repo source path: "
          + "import {" + targetName + "} from \"" + targetRel + "\"; — that relative path resolves to the target's "
-         + "actual Solidity source inside the staged repo (its `src/` tree, the same path the skeleton's import "
-         + "line above already gives). NEVER import the target from the flattened staged copy `target-code.sol` "
+         + "actual Solidity source inside the staged repo (its `src/` tree), the same real contract you deploy "
+         + "below. NEVER import the target from the flattened staged copy `target-code.sol` "
          + "(or any CODE_PATH-style flat file one directory ABOVE the repo): that flat copy exists ONLY for the "
          + "link-gate's textual check and is NOT a compilable source inside this Foundry repo, so importing it "
          + "fails to compile with `Source \"target-code.sol\" not found`.\n"
@@ -859,7 +875,7 @@ let sharedScaffold =
   + "treats a token as 6-decimal USDC, the mock's `decimals()` must return 6; match the return types and "
   + "signatures the target actually calls). A mock whose decimals/units/types do NOT match the target's "
   + "assumptions is INVALID and produces false findings.\n\n"
-  + core_dep_seed(vaultRoute, coreDepName, coreDepRel, coreDepAddr, deployName, relImport)
+  + core_dep_seed(vaultRoute, coreDepName, coreDepRel, coreDepAddr, deployName, vaultTargetRel)
   + auxBlock
   + "=== BUG CLASS (lens) ===\n" + targetClass + "\n\n"
   + "=== ADVERSARIAL ACTION CHECKLIST ===\n"

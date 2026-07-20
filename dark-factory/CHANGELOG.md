@@ -15,6 +15,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **`core_dep_seed` hands the model the REAL in-repo target import path, not `relImport` (= the staged `../../target-code.sol` basename)**
+  (#1765, #1755 M5 follow-up). M5 threaded `relImport` (= `rel_import_path(invOut, codePath)`) into `core_dep_seed`
+  as its `targetRel` — the import path the GENERATION directive tells the model to use for the target. But by
+  `run-invariant-hunt.sh`'s path arithmetic `codePath = CODE_PATH = <RUN>/target-code.sol`, so `relImport` resolves
+  to `../../target-code.sol` (basename `target-code.sol`), NOT the in-repo `../src/<Target>.sol` the M5 comment
+  claimed and the catching harness actually used (`import {LiquityV2SPStrategy} from "../src/Strategy.sol";`). So the
+  generation prompt handed the model an INCONSISTENT hint (import from a `target-code.sol`-basename path while ALSO
+  being told to forbid `target-code.sol`) — a plausible driver of the harness-gen import-path VARIANCE (some runs
+  imported `../src/…` and caught; some reached for `target-code.sol` and failed to compile → `HARNESS_ERROR`). The
+  fix: `core_dep_seed`'s `targetRel` is now `vaultTargetRel` = `../` + the `--target` FILE part
+  (`vault_target_rel(targetFile)`, e.g. `src/Strategy.sol` → `../src/Strategy.sol`, basename `<Target>.sol`), derived
+  from `TARGET_FN` by the same file-part idiom M6 added — exactly the path the catching harness imports. The
+  misleading M5 comment (`targetRel` = `rel_import_path(invOut, codePath)` = the in-repo `../src/…`) is corrected.
+  This is ONLY the GENERATION prompt's hint: the #1471 arming (M6, which independently derives the basename from
+  `TARGET_FN`), `verdict_of`, and the `INVARIANT|` marker are untouched. Inside the `!active => ""` builder, so it is
+  **default-off byte-identical** when `--core-dep-harness` is off / the target is non-yearn. `demo-invariant-core-dep.sh`
+  source-guards that the directive pins the in-repo `../src/…` import (from `TARGET_FN`) and that the call site threads
+  `vaultTargetRel`, NOT `relImport`/`target-code.sol`.
 - **Arm the #1471 link gate with the in-repo target path on the core-dep harness (fix M5's import pin HARNESS_ERRORing a real FINDING)**
   (#1755, M6). M5 pins the core-dep harness to import the target from its REAL in-repo `../src/<Target>.sol`
   source (basename e.g. `Strategy.sol`) — the shape that COMPILES and CATCHES the yearn first-depositor

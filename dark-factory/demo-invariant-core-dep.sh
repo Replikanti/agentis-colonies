@@ -156,18 +156,41 @@ else
   bad "the directive does not forbid stubbing the singleton"
 fi
 
-# #1755 M5 — TARGET IMPORT-PATH PIN. Two autonomous runs proved harness-gen import-path variance is the remaining
-# blocker: the catching run imported the target from its real in-repo `../src/<Target>.sol`, a second run imported
-# the pipeline's flattened staged copy `target-code.sol` (one dir above the repo, not compilable inside it) and
-# failed with `Source "target-code.sol" not found` => HARNESS_ERROR. core_dep_seed must PIN the target to its
-# in-repo path (the same rel_import_path-derived value the skeleton's importLine resolves) and FORBID
-# target-code.sol so the catching shape is the reliable output.
+# #1755 M5 / #1765 — TARGET IMPORT-PATH PIN. Two autonomous runs proved harness-gen import-path variance is the
+# remaining blocker: the catching run imported the target from its real in-repo `../src/<Target>.sol`, a second run
+# imported the pipeline's flattened staged copy `target-code.sol` (one dir above the repo, not compilable inside it)
+# and failed with `Source "target-code.sol" not found` => HARNESS_ERROR. core_dep_seed must PIN the target to its
+# in-repo path and FORBID target-code.sol so the catching shape is the reliable output. #1765 corrected the hint the
+# model actually receives: the directive's `targetRel` is now the in-repo `../` + TARGET_FN file part
+# (`vaultTargetRel`), NOT `relImport` (= rel_import_path(invOut, CODE_PATH), which resolves to the WRONG staged
+# flat-copy basename `../../target-code.sol`).
 if grep -q 'IMPORT THE TARGET' "$PROVER" \
    && grep -q 'in-repo source path' "$PROVER" \
    && grep -q 'NEVER import the target from the flattened staged copy `target-code.sol`' "$PROVER"; then
   ok "the directive pins the target import to its in-repo ../src/ path and forbids the flattened target-code.sol"
 else
   bad "the directive does not pin the target import path / does not forbid target-code.sol (harness-gen variance unfixed)"
+fi
+
+# #1765 — the directive's `targetRel` hint MUST be the REAL in-repo target path (`../` + TARGET_FN file part =
+# `../src/<Target>.sol`, basename `<Target>.sol`), derived from TARGET_FN via the same file-part idiom as targetFile
+# — NOT the M5 `relImport` (which resolves to the staged flat-copy basename `../../target-code.sol`). Guard the
+# derivation helper, its "../" + targetFile body, and that the core_dep_seed CALL SITE now threads vaultTargetRel
+# (not relImport) as the sixth (targetRel) argument.
+if grep -q 'fn vault_target_rel(file: string) -> string' "$PROVER" \
+   && grep -q 'return "../" + file;' "$PROVER" \
+   && grep -q 'let vaultTargetRel = vault_target_rel(targetFile);' "$PROVER"; then
+  ok "vault_target_rel(targetFile) = \"../\" + the TARGET_FN file part (the in-repo ../src/<Target>.sol import path)"
+else
+  bad "vault_target_rel (../ + targetFile, the in-repo target-import path derivation) is missing"
+fi
+
+if grep -q 'core_dep_seed(vaultRoute, coreDepName, coreDepRel, coreDepAddr, deployName, vaultTargetRel)' "$PROVER"; then
+  ok "core_dep_seed threads vaultTargetRel (the in-repo ../src/ path) as targetRel — NOT relImport/target-code.sol"
+elif grep -q 'core_dep_seed(vaultRoute, coreDepName, coreDepRel, coreDepAddr, deployName, relImport)' "$PROVER"; then
+  bad "core_dep_seed still threads relImport (= ../../target-code.sol basename) as targetRel — the #1765 hint bug is unfixed"
+else
+  bad "the core_dep_seed call site does not thread vaultTargetRel as targetRel"
 fi
 
 # #1755 M3 — the profit-limit health-check gate: BaseHealthCheck.report() reverts with reason `healthCheck` when a
@@ -223,7 +246,7 @@ else
   bad "the canonical Vm address 0x7109...12D is missing"
 fi
 
-if grep -q 'core_dep_seed(vaultRoute, coreDepName, coreDepRel, coreDepAddr, deployName, relImport)' "$PROVER"; then
+if grep -q 'core_dep_seed(vaultRoute, coreDepName, coreDepRel, coreDepAddr, deployName, vaultTargetRel)' "$PROVER"; then
   ok "core_dep_seed(vaultRoute, ...) is woven into sharedScaffold (re-injects each #1073 repair round)"
 else
   bad "core_dep_seed is not woven into sharedScaffold"
