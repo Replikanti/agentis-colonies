@@ -87,19 +87,44 @@ federation's `.agentis/config` (the same file that already carries
 ### Selection-surface coverage per federation type
 
 The MVP hooks only the CLI `agentis evolve` generational loop
-(`run_arena_variant` and the selection block in `evolve.rs`), invoked
-from this repo by any federation's `tools/auto-promote.sh` evolve
-handler or `tools/auto-evolve-ab.sh` scheduler — this path is shared
-platform tooling, not gated to one federation.
+(`run_arena_variant` and the selection block in `evolve.rs`). Within
+this repo, that loop is invoked solely from `tools/auto-promote.sh`'s
+legacy `agentis evolve` else-branch (`:532–537`), taken when
+`evolve.mutation.enabled=false` (the default). When
+`evolve.mutation.enabled=true`, `auto-promote.sh:507–527` instead
+routes to `tools/auto-evolve-ab.sh`'s mutation/A/B scheduler, which
+spawns each candidate via `agentis daemon` (`tools/auto-evolve-ab.sh:469`)
+and never calls `agentis evolve` — so that path does not reach
+`cmd_evolve` and is not gated by the arena's runtime-behavior (payload
+v1) evaluation. As of agentis-core **v1.24.0**, a second, narrower
+gate exists for exactly this case: `agentis invariant check
+<candidate.ag>` ([Replikanti/agentis-core#937](https://github.com/Replikanti/agentis-core/issues/937),
+merged [PR#940](https://github.com/Replikanti/agentis-core/pull/940))
+is a read-only, pre-spawn CLI command a daemon-A/B harness can call to
+reject a candidate *before* spawning it, evaluating the same active
+`evolution.invariants_dir` set against the payload-v2 source-shape
+fields ([Replikanti/agentis-core#938](https://github.com/Replikanti/agentis-core/issues/938),
+merged [PR#939](https://github.com/Replikanti/agentis-core/pull/939):
+`parse_ok`, `tier_coverage_ok`, `has_cb_line`, plus `source_hash`) —
+modules that reference a runtime-only field are skipped, not
+evaluated. Since [PR#1753](https://github.com/Replikanti/agentis-colonies/pull/1753)
+`tools/auto-evolve-ab.sh` invokes this gate as an **observe-only**
+probe before each candidate spawn: the verdict is recorded to the
+mutation ledger for parity comparison, while the harness's four bash
+validity checks remain the authoritative gate until real-run parity
+is proven.
 
 | Federation type | Selection surface | Covered today? |
 |---|---|---|
-| Federations whose tooling drives `agentis evolve` (generational A/B via `tools/auto-promote.sh` / `tools/auto-evolve-ab.sh`, e.g. `research-foundry/`) | Generational evolve loop | Yes — `evolution.invariants_dir` applies |
-| `tribes-bench`, `trading-binance` (`replicate()`-grown daemon populations, no generational `agentis evolve` call in their scripts today) | `replicate()` / daemon-population growth | Not yet — tracked as the core RFC's phase-2 scope extension |
+| Federations on the legacy `agentis evolve` path (`tools/auto-promote.sh`'s else-branch, `evolve.mutation.enabled=false`, e.g. observe-only agents) | Generational evolve loop | Yes — `evolution.invariants_dir` applies |
+| `research-foundry`'s mutation/A/B scheduler (`tools/auto-evolve-ab.sh`, `evolve.mutation.enabled=true`, candidates spawned via `agentis daemon`) | Mutation/A/B daemon-spawn loop | Partially — the source-shape pre-spawn gate exists since agentis-core v1.24.0 (`agentis invariant check`) and the harness invokes it **observe-only** since [PR#1753](https://github.com/Replikanti/agentis-colonies/pull/1753) (verdict recorded to the mutation ledger; adoption was [Replikanti/agentis-colonies#1736](https://github.com/Replikanti/agentis-colonies/issues/1736)); the four bash validity checks in `auto-evolve-ab.sh` remain the authoritative gate until real-run parity is proven, and runtime-behavior (payload v1) invariants remain ungated on this path |
+| `tribes-bench`, `trading-binance` (`replicate()`-grown daemon populations, no generational `agentis evolve` call in their scripts today) | `replicate()` / daemon-population growth | Not yet for runtime-behavior invariants — no enforcement at `replicate()` admission or population sweep ships today, tracked as [Replikanti/agentis-core#942](https://github.com/Replikanti/agentis-core/issues/942) (replicate-admission/sweep enforcement) and [Replikanti/agentis-core#943](https://github.com/Replikanti/agentis-core/issues/943) (capability-absence/egress-allowlist predicates). `agentis invariant check`'s pre-spawn source-shape gate is available to any harness that spawns candidates, but it is not the runtime-admission surface these federations need |
 
 This ADR does not promise the `replicate()`/daemon-population surface
-is gated; that is future core work (agentis-core#929's own phase-2
-note), out of this ADR's authority to commit to.
+is gated; that is future core work ([Replikanti/agentis-core#942](https://github.com/Replikanti/agentis-core/issues/942)
+and [Replikanti/agentis-core#943](https://github.com/Replikanti/agentis-core/issues/943),
+the concrete follow-ups from agentis-core#929's original phase-2 note),
+out of this ADR's authority to commit to.
 
 ## Behavioural contract
 
@@ -145,12 +170,35 @@ authoritative format.
 
 **Negative / known limitations:**
 
+- `research-foundry`'s mutation/A/B path (`tools/auto-evolve-ab.sh`) is
+  NOT gated by the arena's runtime-behavior evaluation, for the same
+  reason as the table split above: candidates are spawned via `agentis
+  daemon`, not `agentis evolve`, so `cmd_evolve`'s invariant gate never
+  runs on this path. Since agentis-core **v1.24.0**, a pre-spawn
+  source-shape substrate gate DOES exist —
+  `agentis invariant check <candidate.ag>`
+  ([Replikanti/agentis-core#937](https://github.com/Replikanti/agentis-core/issues/937),
+  [PR#940](https://github.com/Replikanti/agentis-core/pull/940)) —
+  evaluating the payload-v2 source-shape fields
+  ([Replikanti/agentis-core#938](https://github.com/Replikanti/agentis-core/issues/938),
+  [PR#939](https://github.com/Replikanti/agentis-core/pull/939)) — and
+  since [PR#1753](https://github.com/Replikanti/agentis-colonies/pull/1753)
+  (adoption tracked as [Replikanti/agentis-colonies#1736](https://github.com/Replikanti/agentis-colonies/issues/1736))
+  `tools/auto-evolve-ab.sh` invokes it as an observe-only probe whose
+  verdict lands in the mutation ledger. The probe never gates: the
+  four bash validity checks remain the authoritative gate until
+  real-run parity is proven (bash-check removal is a deferred
+  follow-up), and runtime-behavior (payload v1) invariants remain
+  ungated there regardless.
 - `tribes-bench` and `trading-binance`'s `replicate()`-grown daemon
   populations are NOT covered by this MVP. A federation relying solely
   on `replicate()` gets no invariant gating today regardless of
   whether `evolution.invariants_dir` is set. This is a real gap,
-  tracked against the core RFC's phase-2 scope extension, not papered
-  over here.
+  tracked as [Replikanti/agentis-core#942](https://github.com/Replikanti/agentis-core/issues/942)
+  (`replicate()`-admission gating / population sweep) and
+  [Replikanti/agentis-core#943](https://github.com/Replikanti/agentis-core/issues/943)
+  (capability-absence and egress-allowlist predicates the same
+  federations need), not papered over here.
 - `install.sh` / orchestrators do not yet prompt for
   `evolution.invariants_dir`; wiring that prompt into any federation's
   setup flow is adoption work for a separate, later issue — not part
@@ -195,6 +243,31 @@ authoritative format.
 - [`dark-factory/README.md`](../../dark-factory/README.md) and
   [`dark-factory/auditor/methods/registry.md`](../../dark-factory/auditor/methods/registry.md)
   — terminology disambiguation source for "protocol invariants."
+- [Replikanti/agentis-colonies#1736](https://github.com/Replikanti/agentis-colonies/issues/1736)
+  — scoping analysis that surfaced the legacy-path vs. mutation/A/B
+  coverage gap corrected by this revision; its adoption work landed
+  observe-only via [PR#1753](https://github.com/Replikanti/agentis-colonies/pull/1753).
+- [Replikanti/agentis-core#937](https://github.com/Replikanti/agentis-core/issues/937)
+  — mechanism decision for gating the `agentis daemon` mutation/A/B
+  spawn path; shipped in agentis-core v1.24.0 as
+  [PR#940](https://github.com/Replikanti/agentis-core/pull/940),
+  the read-only pre-spawn `agentis invariant check` CLI gate.
+- [Replikanti/agentis-core#938](https://github.com/Replikanti/agentis-core/issues/938)
+  — extend the predicate payload with source-shape fields so
+  `auto-evolve-ab.sh`'s validity checks are expressible as
+  environmental invariants; shipped in agentis-core v1.24.0 as
+  [PR#939](https://github.com/Replikanti/agentis-core/pull/939)
+  (payload v2: `parse_ok`, `tier_coverage_ok`, `has_cb_line`).
+- [Replikanti/agentis-colonies#1745](https://github.com/Replikanti/agentis-colonies/issues/1745)
+  — deliverable-now slice adopting `evolution.invariants_dir` on the
+  legacy `agentis evolve` path only.
+- [Replikanti/agentis-core#942](https://github.com/Replikanti/agentis-core/issues/942)
+  — concrete phase-2 follow-up: gate `replicate()` admission and/or a
+  daemon-population sweep for runtime-field invariant enforcement
+  (the surface `tribes-bench`/`trading-binance` need).
+- [Replikanti/agentis-core#943](https://github.com/Replikanti/agentis-core/issues/943)
+  — concrete phase-2 follow-up: capability-absence and
+  egress-allowlist predicates, complementing #942.
 
 ## Supersedes
 
