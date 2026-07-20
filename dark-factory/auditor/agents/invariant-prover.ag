@@ -293,10 +293,10 @@ fn recall_pattern(klass: string) -> string {
     if len(invented) > 0 { return invented; }
     return recall_latest("invpat:corpus:" + klass);
 }
-let prior = recall_pattern(targetClass);
-if len(prior) > 0 {
-    print("RECALL-INVPAT|" + targetClass + "|" + prior);
-}
+// #1755 M2 — `prior` (the recall descriptor folded into the generation seed) is deferred until `effClass` is in
+// scope (below, once vaultRoute is known): on a yearn vault route the recall must consult the C11 first-depositor
+// pattern (invpat:invented:C11, #1733), NOT the dominant_class()-collapsed C10. It is a GENERATION input only, so
+// moving the call-site down does not touch the verdict path. See the `effClass` block.
 
 // --- GENERATE the handler + invariants -----------------------------------------------------------
 // Offline / deterministic path: a HANDLER_FIXTURE is a ready-made invariant test used VERBATIM, no LLM.
@@ -458,6 +458,52 @@ let coreDepAddr = core_dep_field(coreDep, 2);
 // "" when coreDep is empty (core_dep_field returns "" -> rel_import_path returns "") -> the seed's import line is
 // skipped (byte-identical).
 let coreDepRel = rel_import_path(invOut, core_dep_field(coreDep, 0));
+// #1755 M2 — EFFECTIVE CLASS override. The live-hunt pipeline (zone-mapper.ag -> run-zone-hunt.sh dominant_class()
+// -> run-invariant-hunt.sh --class) COLLAPSES yearn's zone [C15,C10,C11,C2] to a single dominant code, and that
+// tuple resolves to C10 -> class_to_keyword("c10")=="lend", so the vault branches of the GENERATION selectors
+// never fire on the very target whose money-tier bug is a vault first-depositor. On vaultRoute (the SAME gate M1
+// stages the real TokenizedStrategy singleton on) we OVERRIDE the class the GENERATION prompt sees to C11 (the
+// ERC4626/vault code) so the #1725 donation + first-depositor Handler actions, the #1726 round-trip/monotonicity
+// relation, and the #1733 first-depositor recall pattern all fire. This is byte-scoped to the generation prompt:
+// verdict_of, the INVARIANT| marker, the #1471 --require-import/--require-contract gate, and every
+// persist_*/emit/learn stay on `targetClass`. `!vaultRoute` => effClass == targetClass => byte-identical. It is
+// a flat single-branch string builder — no per-element recursion, no new env, no new prompt(). dominant_class()
+// upstream is left byte-identical (the override lives HERE, not by re-ranking the class in the runner).
+fn effective_class(klass: string, route: bool) -> string {
+    if route { return "C11"; }
+    return klass;
+}
+let effClass = effective_class(targetClass, vaultRoute);
+// #1755 M2 — `prior` (moved down from the recall block so `effClass` is in scope): on a yearn vault route recall
+// keys on C11 (invpat:invented:C11 = the #1733 first-depositor seed) instead of the collapsed C10. `prior` is a
+// GENERATION input only (folded into recall_seed, threaded through choose_test) — never the verdict. Off =>
+// effClass == targetClass => the recalled descriptor and the RECALL-INVPAT line are byte-identical.
+let prior = recall_pattern(effClass);
+if len(prior) > 0 {
+    print("RECALL-INVPAT|" + effClass + "|" + prior);
+}
+// #1755 M2 — VAULT VICTIM-FAIRNESS INVARIANT directive. On the vault route (active = vaultRoute) the ONE deep
+// invariant is not left to the model's discretion: it MUST be the #1724 `inv_victim_not_robbed` per-actor
+// FAIRNESS property, because the money-tier first-depositor / share-inflation bug (the yearn-ybold H-1 High)
+// manifests precisely as a LATER honest depositor redeeming strictly LESS than they deposited after a prior
+// actor's 1-wei micro-deposit + direct donation — a break a GLOBAL solvency sum can mask. Plain-string prompt
+// directive only (no shell, no env, no per-element recursion); it is prompt STEERING and never a second gate.
+// `!active` => "" => byte-identical to a non-vault run (where dominant_class() would have routed C10/lend).
+fn victim_fairness_invariant_prompt(klass: string, active: bool) -> string {
+    if !active { return ""; }
+    return "=== VAULT VICTIM-FAIRNESS INVARIANT ===\n"
+         + "For this vault target the ONE deep `" + klass + "`-lens invariant MUST be per-actor VICTIM-FAIRNESS, "
+         + "NOT a global solvency sum (a global sum can stay balanced while an individual victim is robbed):\n"
+         + "  - For EVERY honest depositor, their redeemable value — `shares * assetBalance / totalShares` (the "
+         + "assets their shares can currently withdraw) — MUST be >= what they deposited, minus a small rounding "
+         + "`dust`.\n"
+         + "  - No PRIOR actor's first-deposit (1-wei micro-deposit) or direct-donation share manipulation may rob "
+         + "a LATER depositor: a later honest deposit must mint shares worth what was paid and stay redeemable "
+         + "for it.\n"
+         + "  - The Handler MUST track each victim's (deposited, shares) as it deposits and assert the property "
+         + "with a plain `require(redeemable + dust >= deposited)` — no global-sum shortcut, no forge-std "
+         + "assertions.\n\n";
+}
 // #1755 — CORE-DEPENDENCY generation seed: the EXACT etch recipe proven by the M1.0 feasibility spike. The yearn-
 // v3 delegatecall singleton lives at the hard-coded constant 0xD377919FA87120584B21279a491F82D5265A139c (threaded
 // in as `addr` via INV_CORE_DEP so a future non-yearn core dep can reuse this builder). `vm.etch` copies RUNTIME
@@ -718,7 +764,7 @@ let sharedScaffold =
   + "asset/token, an oracle) is fine, but the unit under test MUST be the real imported contract, so the "
   + "verdict is about real code. Do NOT import forge-std — this test must compile with ZERO library "
   + "remappings.\n"
-  + harness_skeleton(invMatch, deployName, importLine, auxImportLines, action_checklist_hint(targetClass))
+  + harness_skeleton(invMatch, deployName, importLine, auxImportLines, action_checklist_hint(effClass))
   + "  - In `setUp()` deploy the real target. For a normal `constructor(args)`: `new " + deployName + "(args)`. "
   + "For an OpenZeppelin **upgradeable** contract whose constructor calls `_disableInitializers()`: deploy "
   + "behind a proxy — add `import {ERC1967Proxy} from \"@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol\";` "
@@ -750,14 +796,15 @@ let sharedScaffold =
   + "=== ADVERSARIAL ACTION CHECKLIST ===\n"
   + "For the bug class above, the Handler MUST include these adversarial/multi-actor actions in addition to "
   + "the happy-path ones (skip any that plainly do not apply to this target):\n"
-  + action_checklist_prompt(targetClass) + "\n\n"
+  + action_checklist_prompt(effClass) + "\n\n"
   + "=== METAMORPHIC RELATIONS (alternative property shape) ===\n"
   + "The ONE deep invariant above MAY instead be expressed as a METAMORPHIC RELATION — a round-trip / "
   + "commutativity / monotonicity property — which is often EASIER to state correctly than an absolute "
   + "predicate and targets the rounding-direction / value-leak / inflation class where rare Highs hide. This "
   + "is an ALTERNATIVE SHAPE for the SAME single `" + invMatch + "_*` property, NEVER a second invariant. If "
   + "it fits the target better than an absolute predicate, prefer it:\n"
-  + metamorphic_relation_prompt(targetClass) + "\n\n"
+  + metamorphic_relation_prompt(effClass) + "\n\n"
+  + victim_fairness_invariant_prompt(effClass, vaultRoute)
   + "=== HOW TO ANSWER ===\n"
   + "Output ONLY the Solidity source of the `*.t.sol` test — no markdown fences, no prose before or "
   + "after. It must compile and define at least one `contract` and one `" + invMatch + "_*` function.";

@@ -33,7 +33,8 @@ bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 
 # ----------------------------------------------------------------------------------------------------------
 # 1) WIRING — metamorphic_relation_prompt() is defined, normalizes through the SAME class_to_keyword(to_lower())
-#    normalizer (not bare to_lower), and sharedScaffold carries the header + the call on targetClass.
+#    normalizer (not bare to_lower), and sharedScaffold carries the header + the call on effClass (#1755 M2
+#    rerouted the GENERATION selectors from targetClass to the vaultRoute C11 override).
 # ----------------------------------------------------------------------------------------------------------
 note "source-guarding the #1726 (M1) metamorphic-relation wiring ..."
 
@@ -55,10 +56,10 @@ else
   bad "sharedScaffold missing the METAMORPHIC RELATIONS header"
 fi
 
-if grep -q 'metamorphic_relation_prompt(targetClass)' "$PROVER"; then
-  ok "sharedScaffold calls metamorphic_relation_prompt(targetClass)"
+if grep -q 'metamorphic_relation_prompt(effClass)' "$PROVER"; then
+  ok "sharedScaffold calls metamorphic_relation_prompt(effClass) (#1755 M2 vaultRoute override)"
 else
-  bad "sharedScaffold does not call metamorphic_relation_prompt(targetClass)"
+  bad "sharedScaffold does not call metamorphic_relation_prompt(effClass)"
 fi
 
 if grep -q 'ALTERNATIVE SHAPE for the SAME single' "$PROVER"; then

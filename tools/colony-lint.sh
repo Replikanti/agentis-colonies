@@ -1362,6 +1362,28 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-core-dep.sh" ]; then
     fi
 fi
 
+# --- dark-factory vault first-depositor victim-fairness routing (#1755 M2) ---
+# run-zone-hunt.sh's dominant_class() collapses yearn's zone [C15,C10,C11,C2] to C10, so the prover would see
+# TARGET_CLASS=C10 -> class_to_keyword("c10")=="lend" and the VAULT branches of the generation selectors never fire
+# on the target whose money-tier bug is a vault first-depositor. #1755 M2 fixes this INSIDE the prover (leaving
+# dominant_class() byte-identical) via an EFFECTIVE-CLASS override gated on M1's vaultRoute: effective_class()
+# returns C11 on the vault route and feeds effClass into the GENERATION selectors ONLY (action_checklist_hint/
+# _prompt, metamorphic_relation_prompt, recall_pattern), plus a new victim_fairness_invariant_prompt() weaving the
+# #1724 inv_victim_not_robbed shape into sharedScaffold. The FUZZER stays the sole verdict: verdict_of, the
+# INVARIANT| marker, emit/learn/persist_*, and the #1471 linkage gate all keep targetClass. Off the vault route
+# effClass==targetClass and the directive is "" => byte-identical. demo-invariant-vault-first-depositor.sh
+# source-guards the override, the four effClass selector call sites, the victim-fairness shape + vault-gating +
+# ""-when-inactive, the untouched-targetClass verdict/marker/#1471/persist path, and the no-new-env contract.
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-vault-first-depositor.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-vault-first-depositor.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: vault first-depositor victim-fairness routing (#1755 M2)"
+    else
+        fail "dark-factory: vault first-depositor victim-fairness routing (#1755 M2)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory multi-contract deep-hunt wiring (#1726 M2) ---
 # The composable-fresh multi-contract engine already ships end-to-end (run-invariant-hunt.sh --aux -> INV_AUX ->
 # compose_fresh_seed -> multi-register targetContracts() -> #1077 both-real HARNESS_ERROR); it was just never

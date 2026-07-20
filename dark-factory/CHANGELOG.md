@@ -15,6 +15,30 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Vault first-depositor victim-fairness invariant + donation Handler routing for yearn-v3 targets**
+  (#1755, M2). With M1 the deep-hunt harness now runs the REAL `TokenizedStrategy` share path, but the GENERATION
+  still misclassified the target: `run-zone-hunt.sh`'s `dominant_class()` collapses yearn's zone
+  `[C15,C10,C11,C2]` to **C10**, so `invariant-prover.ag` saw `TARGET_CLASS=C10` →
+  `class_to_keyword("c10")=="lend"` and the VAULT branches of the generation selectors never fired on the very
+  target whose money-tier bug (the yearn-ybold H-1 first-depositor / share-inflation High) is a vault
+  first-depositor. This fixes it INSIDE the prover (leaving `dominant_class()` byte-identical) with an
+  EFFECTIVE-CLASS override gated on M1's `vaultRoute`: `effective_class(targetClass, vaultRoute)` returns `"C11"`
+  on the vault route and feeds `effClass` into the GENERATION selectors ONLY — `action_checklist_hint`/
+  `action_checklist_prompt` (the #1725 direct-donation + first-depositor micro-deposit + ≥2-actor checklist),
+  `metamorphic_relation_prompt` (the #1726 round-trip/monotonicity relation), and `recall_pattern` (→
+  `invpat:invented:C11`, the #1733 first-depositor seed). A new `victim_fairness_invariant_prompt()` weaves the
+  #1724 `inv_victim_not_robbed` SHAPE — for every honest depositor, redeemable value
+  (`shares * assetBalance / totalShares`) must stay `>=` deposited − dust, asserted with a plain
+  `require(redeemable + dust >= deposited)` and per-victim `(deposited, shares)` tracking in the Handler — into
+  `sharedScaffold`, gated on `vaultRoute` and re-injected each compile-repair round. **The FUZZER stays the SOLE
+  verdict:** `effClass` touches ONLY the generation prompt; `verdict_of`, the `INVARIANT|` marker, `emit`,
+  `learn`, `persist_pattern`/`persist_teeth`/`persist_corpus`, and the #1471 `--require-import`/
+  `--require-contract` gate all keep `targetClass`. **Default-off byte-identical:** off the vault route
+  (`INV_CORE_DEP` empty or a non-yearn target) `vaultRoute` is false, `effClass == targetClass`, and
+  `victim_fairness_invariant_prompt` returns `""`, so the generation prompt is byte-identical to before.
+  `demo-invariant-vault-first-depositor.sh` (registered in `colony-lint`) source-guards the override, the four
+  `effClass` selector call sites, the victim-fairness shape + vault-gating + `""`-when-inactive, the
+  untouched-`targetClass` verdict/marker/#1471/persist path, and the no-new-env contract.
 - **Core-dependency harness-gen: deploy the REAL yearn-v3 `TokenizedStrategy` singleton for the deep-hunt**
   (#1755, M1). On yearn-v3 targets the ERC4626 share logic (deposit/mint/withdraw/redeem, price-per-share,
   totalSupply/totalAssets) does NOT live in the target contract — the target inherits `BaseStrategy`, which
