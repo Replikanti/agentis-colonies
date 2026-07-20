@@ -1340,6 +1340,28 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-metamorphic.sh" ]; then
     fi
 fi
 
+# --- dark-factory core-dependency harness-gen (#1755 M1) ---
+# The money-tier bug on yearn-v3 targets (first-depositor / share-inflation) is unfuzzable when the harness etches
+# a zero-returning stub at the ERC4626 delegatecall singleton (BaseStrategy -> TokenizedStrategy @ 0xD377...9c).
+# #1755 M1 adds a default-off --core-dep-harness flag: run-invariant-hunt.sh detects the yearn-v3 signal in the
+# target source, locates the REAL TokenizedStrategy in the staged repo copy, and threads INV_CORE_DEP
+# (<path>:Name:addr, allowlisted on exec.env_passthrough); run-zone-hunt.sh forwards the flag verbatim; the prover
+# reads it and, on vaultRoute (coreDep staged AND yearn-v3 signal), weaves a core_dep_seed into sharedScaffold that
+# directs the harness to DEPLOY the real singleton and vm.etch it at the constant address. Off / non-yearn target
+# => INV_CORE_DEP="" => vaultRoute false => byte-identical prompt + arg-construction. demo-invariant-core-dep.sh
+# source-guards the whole wiring + the empty->"" byte-identical guard + the untouched verdict/marker/#1471 gate,
+# and (forge present) runs a distilled yearn-lib-free fixture through the SAME etch recipe to pin real share
+# accounting (CI-safe: SKIPs the live check when forge is absent).
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-core-dep.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-core-dep.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: core-dependency harness-gen (#1755 M1)"
+    else
+        fail "dark-factory: core-dependency harness-gen (#1755 M1)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory multi-contract deep-hunt wiring (#1726 M2) ---
 # The composable-fresh multi-contract engine already ships end-to-end (run-invariant-hunt.sh --aux -> INV_AUX ->
 # compose_fresh_seed -> multi-register targetContracts() -> #1077 both-real HARNESS_ERROR); it was just never

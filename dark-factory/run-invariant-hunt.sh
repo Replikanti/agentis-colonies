@@ -111,6 +111,14 @@
 #                        produced no test, so tool-absence is never a HARNESS_ERROR. Default OFF => byte-identical.
 #   --symbolic-timeout S #1732: per-assertion Halmos solver timeout in seconds for the --symbolic-oracle pass
 #                        (whole number; "" => the gate's own default 60). No effect without --symbolic-oracle.
+#   --core-dep-harness   #1755: CORE-DEPENDENCY harness-gen. For yearn-v3 targets whose ERC4626 share logic lives
+#                        in a delegatecall SINGLETON (BaseStrategy -> TokenizedStrategy), auto-detect the signal in
+#                        the target source and thread the REAL singleton path into the prover so the generated
+#                        harness deploys + `vm.etch`es the actual TokenizedStrategy at 0xD377...9c INSTEAD of a
+#                        zero-returning stub — making deposit/mint/withdraw/redeem share accounting genuinely
+#                        fuzzable (the first-depositor / share-inflation path). Default OFF => the yearn-v3 signal
+#                        is never probed, INV_CORE_DEP stays "" and the pipeline is byte-identical to today. A
+#                        non-yearn target under the flag also stays byte-identical (the signal does not fire).
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
 set -eu
 
@@ -122,6 +130,7 @@ REPLAY_CORPUS=""  # #1731: cross-run ENSEMBLE/UNION replay; "" => OFF (default; 
 CORPUS_MAX="16"   # #1731: max corpus entries kept/replayed per class (most-recent eviction; whole number)
 SYMBOLIC_ORACLE=""  # #1732: complementary symbolic/BMC (halmos) oracle; "" => OFF (default; byte-identical)
 SYMBOLIC_TIMEOUT="" # #1732: per-assertion halmos solver timeout (seconds); "" => the gate's own default (60)
+CORE_DEP_HARNESS="" # #1755: deploy the REAL delegatecall singleton (yearn-v3 TokenizedStrategy); "" => OFF (byte-identical)
 REPAIR_ROUNDS=""  # #1073: extra compile-repair rounds; "" => the prover's own default (2)
 AUDIT_CONTEXT=""  # #1722: optional spec / audit-scope doc; "" => no audit seed (byte-identical prompt)
 FORK_URL="" ; FORK_BLOCK="" ; FORK_TARGET=""
@@ -158,6 +167,7 @@ while [ $# -gt 0 ]; do
     --corpus-max) need "$#"; CORPUS_MAX="$2"; shift 2 ;;
     --symbolic-oracle) SYMBOLIC_ORACLE=1; shift ;;
     --symbolic-timeout) need "$#"; SYMBOLIC_TIMEOUT="$2"; shift 2 ;;
+    --core-dep-harness) CORE_DEP_HARNESS=1; shift ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-invariant-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -388,6 +398,29 @@ cp -R "$REPO" "$REPO_IN_RUN"
 rm -f "$REPO_IN_RUN/test/"*.t.sol 2>/dev/null || true
 mkdir -p "$REPO_IN_RUN/test"
 
+# #1755: CORE-DEPENDENCY harness-gen. Only under --core-dep-harness AND only when the target source carries the
+# yearn-v3 delegatecall-singleton signal (`TokenizedStrategy`/`BaseStrategy`) do we locate the REAL singleton
+# inside the staged repo copy and thread it to the prover as INV_CORE_DEP="<abs path in REPO_IN_RUN>:<Name>:<addr>".
+# Because REPO_IN_RUN is a FULL copy, the singleton is present with the repo's own remappings intact, so the
+# generated harness imports it in-repo (no flat staging / remapping surgery). The prover then deploys it and
+# `vm.etch`es its runtime code at the constant delegatecall address INSTEAD of a zero-returning stub, so the
+# ERC4626 share path is fuzzable. Flag off / signal absent / lib missing => INV_CORE_DEP="" => byte-identical.
+INV_CORE_DEP=""
+if [ -n "$CORE_DEP_HARNESS" ]; then
+  if [ -n "$CODE" ] && grep -qE 'TokenizedStrategy|BaseStrategy' "$CODE" 2>/dev/null; then
+    _ts_in_run="$REPO_IN_RUN/lib/tokenized-strategy/src/TokenizedStrategy.sol"
+    [ -f "$_ts_in_run" ] || _ts_in_run="$(find "$REPO_IN_RUN"/lib -name TokenizedStrategy.sol -print -quit 2>/dev/null || true)"
+    if [ -n "$_ts_in_run" ] && [ -f "$_ts_in_run" ]; then
+      INV_CORE_DEP="$_ts_in_run:TokenizedStrategy:0xD377919FA87120584B21279a491F82D5265A139c"
+      echo "run-invariant-hunt.sh: [core-dep] yearn-v3 signal found — real TokenizedStrategy singleton staged at $_ts_in_run" >&2
+    else
+      echo "run-invariant-hunt.sh: [core-dep] yearn-v3 signal found but TokenizedStrategy.sol not located under $REPO_IN_RUN/lib — skipping (byte-identical)" >&2
+    fi
+  else
+    echo "run-invariant-hunt.sh: [core-dep] yearn-v3 signal or lib not found — skipping (byte-identical)" >&2
+  fi
+fi
+
 # Stage the (optional) fixture + code into the rundir so the sandboxed reader can reach them.
 FIXTURE_IN_RUN=""
 if [ -n "$FIXTURE" ]; then
@@ -451,7 +484,9 @@ done
   # #1728: MUTANT_KILL threads the staged #1724 mutant-kill.sh path so the prover's TEETH-GATE can measure a CLEAN.
   # #1731: INV_CORPUS (=1 only under --replay-corpus + --pattern-store) arms the prover's persist_corpus so it
   # accumulates EVERY generated invariant's descriptor into the invpat:corpus:<class> recall tier.
-  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT,MUTANT_KILL,INV_CORPUS"
+  # #1755: INV_CORE_DEP (set only under --core-dep-harness + yearn-v3 signal) carries the real delegatecall
+  # singleton `<path>:<Name>:<addr>` so the prover generates a `vm.etch` of the actual TokenizedStrategy.
+  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT,MUTANT_KILL,INV_CORPUS,INV_CORE_DEP"
   # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s default.
   echo "exec.default_timeout_ms = 600000"
   # Each verify is recorded as experience; invariant-prover fitness reweights over targets.
@@ -626,6 +661,7 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
     CODE_PATH="$CODE_IN_RUN" \
     INV_AUX="$INV_AUX" \
     INV_AUDIT_CONTEXT="$AUDIT_IN_RUN" \
+    INV_CORE_DEP="$INV_CORE_DEP" \
     INV_RUNS="$RUNS" \
     INV_DEPTH="$DEPTH" \
     INV_SEED="$SEED" \

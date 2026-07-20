@@ -226,7 +226,7 @@ fi
 # ----------------------------------------------------------------------------------------------------------
 note "source-guarding the INV_CORPUS env wiring ..."
 
-if grep -q 'exec.env_passthrough = .*,INV_CORPUS"' "$RUNNER"; then
+if grep -qE 'exec\.env_passthrough = .*,INV_CORPUS(,|")' "$RUNNER"; then
   ok "INV_CORPUS is on the exec.env_passthrough allowlist (else getenv would read empty)"
 else
   bad "INV_CORPUS is not on exec.env_passthrough (the getenv read would be silently inert)"

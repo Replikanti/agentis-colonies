@@ -405,6 +405,96 @@ fn compose_fresh_seed(active: bool) -> string {
          + "must not have drained the system. In this composable-fresh mode the size budget grows to ~180 lines "
          + "(still bounded) to fit the multi-deploy + wiring `setUp()`.\n";
 }
+// #1755 — CORE-DEPENDENCY HARNESS-GEN. For yearn-v3 targets the ERC4626 share logic (deposit/mint/withdraw/
+// redeem, PPS, totalSupply/totalAssets) does NOT live in the target contract — the target inherits `BaseStrategy`
+// which delegatecalls a SINGLETON `TokenizedStrategy` at the hard-coded constant 0xD377...9c. A harness that
+// etches a zero-returning stub there makes every share call a no-op, so the first-depositor / share-inflation
+// class (the money-tier bug) is unfuzzable. INV_CORE_DEP (set by run-invariant-hunt.sh --core-dep-harness ONLY
+// when the target source carries the yearn-v3 signal AND the real singleton was located in the staged repo copy)
+// is `<abs_path>:<Name>:<addr>`: the path to the REAL TokenizedStrategy.sol staged in-repo, its contract Name,
+// and the delegatecall address. It is UNTRUSTED operator input that flows ONLY into the plain-string generation
+// prompt (the singleton import path + the etch directive), never into a shell (the rel-import realpath is read
+// back from a shell_escape()d exec, as for the target). Empty INV_CORE_DEP => vaultRoute false => core_dep_seed()
+// returns "" => the prompt is byte-identical to a non-core-dep run.
+let coreDep = getenv("INV_CORE_DEP");
+// Split one `<abs_path>:<Name>:<addr>` entry: field 0 = path (up to the FIRST `:`), 1 = Name (up to the next),
+// 2 = address (remainder). Same first-`:`-split idiom as aux_field, applied twice (an abs path may carry no `:`
+// in the rundir staging; a Solidity identifier and an 0x-address carry none). Empty entry => "" for every field.
+fn core_dep_field(entry: string, n: int) -> string {
+    let c1 = index_of(entry, ":");
+    if c1 < 0 {
+        if n == 0 { return entry; }
+        return "";
+    }
+    if n == 0 { return substring(entry, 0, c1); }
+    let rest = substring(entry, c1 + 1, len(entry));
+    let c2 = index_of(rest, ":");
+    if c2 < 0 {
+        if n == 1 { return rest; }
+        return "";
+    }
+    if n == 1 { return substring(rest, 0, c2); }
+    return substring(rest, c2 + 1, len(rest));
+}
+// The yearn-v3 delegatecall-singleton signal in the target source. Single-assignment `.ag` has no `||`, so this
+// is a flat nested-if `index_of` chain (the #1729 signal-classifier idiom). Guards the directive so the flag ON
+// against a NON-yearn target stays byte-identical (the signal does not fire).
+fn contains_yearn_v3_signal(src: string) -> bool {
+    if index_of(src, "TokenizedStrategy") >= 0 { return true; }
+    if index_of(src, "BaseStrategy") >= 0 { return true; }
+    return false;
+}
+// vaultRoute gates the whole capability: INV_CORE_DEP must be staged (the runner found the real singleton) AND
+// the target source must carry the yearn-v3 signal. `let x = a AND b` has no short-circuit form here, so a
+// nested-if returns the conjunction. Empty coreDep OR a non-yearn target => false => byte-identical prompt.
+fn vault_route(cd: string, src: string) -> bool {
+    if len(cd) == 0 { return false; }
+    return contains_yearn_v3_signal(src);
+}
+let vaultRoute = vault_route(coreDep, code);
+let coreDepName = core_dep_field(coreDep, 1);
+let coreDepAddr = core_dep_field(coreDep, 2);
+// The singleton import path, made relative to dirname(INV_OUT) with the SAME helper as the target/aux imports.
+// "" when coreDep is empty (core_dep_field returns "" -> rel_import_path returns "") -> the seed's import line is
+// skipped (byte-identical).
+let coreDepRel = rel_import_path(invOut, core_dep_field(coreDep, 0));
+// #1755 — CORE-DEPENDENCY generation seed: the EXACT etch recipe proven by the M1.0 feasibility spike. The yearn-
+// v3 delegatecall singleton lives at the hard-coded constant 0xD377919FA87120584B21279a491F82D5265A139c (threaded
+// in as `addr` via INV_CORE_DEP so a future non-yearn core dep can reuse this builder). `vm.etch` copies RUNTIME
+// bytecode (the singleton's `FACTORY` immutable is baked into that runtime code, so it survives the etch) but NOT
+// constructor storage; per-strategy ERC4626 storage lives at the strategy's own custom base slot
+// (keccak256("yearn.base.strategy.storage")-1) under delegatecall, so deploying the target AFTER the etch
+// initializes real share storage AT THE STRATEGY. The directive is a plain string — no shell. `!active` => "".
+fn core_dep_seed(active: bool, name: string, rel: string, addr: string) -> string {
+    if !active { return ""; }
+    return "=== CORE-DEPENDENCY (delegatecall singleton) — DEPLOY THE REAL " + name + " ===\n"
+         + "This target inherits its ERC4626 share logic (deposit/mint/withdraw/redeem, price-per-share, "
+         + "totalSupply/totalAssets) from a delegatecall SINGLETON: `BaseStrategy` forwards every share call to "
+         + "the contract at the CONSTANT address " + addr + ". You MUST deploy the REAL " + name + " and "
+         + "`vm.etch` its runtime code there — do NOT mock it, do NOT etch a zero-returning fallback stub, or the "
+         + "share accounting is a no-op and the first-depositor / share-inflation bug is unfuzzable.\n"
+         + "  - Import the real singleton with: import {" + name + "} from \"" + rel + "\";\n"
+         + "  - Declare this minimal forge-std-free cheatcode interface + handle (the same Vm address the rest of "
+         + "the harness uses):\n"
+         + "        interface Vm { function etch(address, bytes calldata) external; function deal(address, uint256) external; function prank(address) external; function startPrank(address) external; function stopPrank() external; }\n"
+         + "        Vm constant vm = Vm(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D);\n"
+         + "  - In `setUp()`, BEFORE deploying the target: construct the real singleton — `" + name + "`'s "
+         + "constructor takes a single `address _factory` (used ONLY by `report()`'s protocol-fee path, so a "
+         + "minimal factory mock returning `(0, address(0))` from `protocol_fee_config()` is share-math-neutral). "
+         + "Then etch its runtime code at the constant address:\n"
+         + "        " + name + " _ts = new " + name + "(address(_factoryMock));\n"
+         + "        vm.etch(" + addr + ", address(_ts).code);\n"
+         + "  - ONLY AFTER that etch, deploy the REAL target — its constructor delegatecalls `initialize()` on the "
+         + "etched singleton, which writes the strategy's real ERC4626 storage at the strategy address. Open "
+         + "deposits if the target gates them (e.g. an `allowDeposits()` / allowlist as management, the deployer), "
+         + "and approve the yield source from the strategy so `deposit()`'s deploy hook succeeds.\n"
+         + "  - Drive deposit/mint/withdraw/redeem through THIS real share path in the Handler, and expose the "
+         + "first-depositor attack as adversarial actions: a 1-wei first deposit followed by a direct donation "
+         + "(and, if the target realizes donations via `report()`, a report) so a LATER honest depositor's "
+         + "redeemable value can be shown to collapse. The ONE deep invariant is per-actor VICTIM-FAIRNESS: no "
+         + "honest depositor can redeem strictly LESS than they deposited (minus dust) after any sequence.\n\n";
+}
+
 // #1725 — ADVERSARIAL/MULTI-ACTOR HANDLER ACTION CHECKLIST. The #1716 A/B isolated a DELTA gap where the LLM
 // names a plausible deep invariant but the Handler it wrote never gives the fuzzer the ADVERSARIAL action space
 // needed to actually break it (no direct-donation action, only one actor, no liquidation/sandwich/reentrancy
@@ -654,6 +744,7 @@ let sharedScaffold =
   + "treats a token as 6-decimal USDC, the mock's `decimals()` must return 6; match the return types and "
   + "signatures the target actually calls). A mock whose decimals/units/types do NOT match the target's "
   + "assumptions is INVALID and produces false findings.\n\n"
+  + core_dep_seed(vaultRoute, coreDepName, coreDepRel, coreDepAddr)
   + auxBlock
   + "=== BUG CLASS (lens) ===\n" + targetClass + "\n\n"
   + "=== ADVERSARIAL ACTION CHECKLIST ===\n"
