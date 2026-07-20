@@ -15,6 +15,31 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Core-dependency harness-gen: deploy the REAL yearn-v3 `TokenizedStrategy` singleton for the deep-hunt**
+  (#1755, M1). On yearn-v3 targets the ERC4626 share logic (deposit/mint/withdraw/redeem, price-per-share,
+  totalSupply/totalAssets) does NOT live in the target contract — the target inherits `BaseStrategy`, which
+  delegatecalls a SINGLETON `TokenizedStrategy` at the hard-coded constant
+  `0xD377919FA87120584B21279a491F82D5265A139c`. A harness that etches a zero-returning stub there makes every
+  share call a no-op, so the money-tier first-depositor / share-inflation bug (the yearn-ybold H-1 High) is
+  structurally unfuzzable. This adds a default-off `--core-dep-harness` flag to `run-invariant-hunt.sh` that,
+  ONLY when the target source carries the yearn-v3 signal (`TokenizedStrategy`/`BaseStrategy`) AND the real
+  singleton is located inside the staged repo copy (`lib/tokenized-strategy/src/TokenizedStrategy.sol`, with a
+  `find … -print -quit` fallback), threads `INV_CORE_DEP="<abs path>:TokenizedStrategy:0xD377…9c"` into the
+  prover (appended to the `exec.env_passthrough` allowlist). `run-zone-hunt.sh` forwards the flag verbatim into
+  both deep-hunt invocations. `auditor/agents/invariant-prover.ag` reads `INV_CORE_DEP`, and on `vaultRoute`
+  (coreDep staged AND the yearn-v3 signal fires) weaves a `core_dep_seed` into `sharedScaffold` (so it re-injects
+  on every #1073 compile-repair round) directing the model to DEPLOY the real singleton and `vm.etch` its runtime
+  code at the constant address INSTEAD of a zero stub — the exact recipe proven by the M1.0 feasibility spike
+  (`vm.etch` preserves the singleton's immutable `FACTORY` baked into runtime code; per-strategy ERC4626 storage
+  lives at the strategy's own base slot under delegatecall, so deploying the target AFTER the etch initializes
+  real share storage). **The FUZZER stays the SOLE verdict:** M1 only adds a `setUp()` deploy directive —
+  `verdict_of`, the `INVARIANT|` marker, and the #1471 `--require-import`/`--require-contract` target-linkage gate
+  are byte-untouched. **Default-off byte-identical:** with `--core-dep-harness` absent (or a non-yearn target
+  under the flag) `INV_CORE_DEP` stays `""`, `vaultRoute` is false, `core_dep_seed` returns `""`, and both the
+  generation prompt and the runner arg-construction are byte-identical to before. `demo-invariant-core-dep.sh`
+  (registered in `colony-lint`) source-guards the whole wiring + the byte-identical guard + the untouched verdict
+  contract, and when forge is present runs a distilled, yearn-lib-free ERC4626-behind-a-singleton fixture through
+  the SAME etch recipe to pin real share accounting offline.
 - **Complementary symbolic / bounded-model-checking oracle alongside the deep-hunt fuzzer** (#1732). The
   deep-hunt has a single oracle — Foundry's stateful fuzzer, which SAMPLES call sequences and so can MISS a
   value-conservation break on a rare path (#1716). This wires the ALREADY-SHIPPED SOUND gate

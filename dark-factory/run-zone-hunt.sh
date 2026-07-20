@@ -76,6 +76,10 @@
 #                       invocations; absent => byte-identical.
 #   --symbolic-timeout <S>  #1732: per-assertion Halmos solver timeout (seconds) for --symbolic-oracle.
 #                       Forwarded verbatim to both $INVHUNT invocations; absent => byte-identical.
+#   --core-dep-harness  #1755: for yearn-v3 delegatecall-singleton targets, make the deep-hunt harness deploy +
+#                       `vm.etch` the REAL TokenizedStrategy singleton (instead of a zero stub) so the ERC4626
+#                       share path is fuzzable. Forwarded verbatim to both $INVHUNT invocations; absent =>
+#                       byte-identical.
 #   --drop-dir <dir>    deliver-submission.sh drop-dir (default: <out>/drop).
 #   -h, --help          This help.
 #
@@ -121,6 +125,7 @@ while [ $# -gt 0 ]; do
     --corpus-max)       nv "$#"; DEEP_FWD+=(--corpus-max "$2"); shift 2 ;;
     --symbolic-oracle)  DEEP_FWD+=(--symbolic-oracle); shift ;;
     --symbolic-timeout) nv "$#"; DEEP_FWD+=(--symbolic-timeout "$2"); shift 2 ;;
+    --core-dep-harness) DEEP_FWD+=(--core-dep-harness); shift ;;
     --drop-dir)         nv "$#"; DROP_DIR="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-zone-hunt.sh: unknown flag $1" >&2; exit 2 ;;
