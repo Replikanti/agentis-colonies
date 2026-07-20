@@ -156,6 +156,16 @@ else
   bad "the directive does not forbid stubbing the singleton"
 fi
 
+# #1755 M3 — the profit-limit health-check gate: BaseHealthCheck.report() reverts with reason `healthCheck` when a
+# donation is realized as an outsized profit, so the donation-realizing report() reverts, totalAssets never
+# inflates, and the first-depositor bug is unreachable. The directive must instruct the Handler (which is the
+# strategy's management, being the deployer) to also call setDoHealthCheck(false) in setUp.
+if grep -q 'setDoHealthCheck(false)' "$PROVER" && grep -q 'revert reason `healthCheck`' "$PROVER"; then
+  ok "the directive tells the Handler to disable the profit-limit health check (setDoHealthCheck(false), healthCheck revert gate) so report() succeeds and totalAssets inflates"
+else
+  bad "the directive does not disable the profit-limit health check (setDoHealthCheck(false) + healthCheck gate) — first-depositor report() reverts, bug unreachable"
+fi
+
 if grep -q 'interface Vm { function etch(address, bytes calldata) external;' "$PROVER"; then
   ok "core_dep_seed injects the forge-std-free minimal Vm interface (etch/deal/prank)"
 else
