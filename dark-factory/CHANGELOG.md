@@ -15,6 +15,32 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Vault harness directive: complete the first-depositor catch recipe (profitMaxUnlockTime(0) + wei-scale actions + relative victim-fairness tolerance)**
+  (#1755, M4). M1–M3 make the autonomous pipeline GENERATE the right harness structure (real `TokenizedStrategy`,
+  victim-fairness invariant, donation Handler, health-check disabled), but a hand-reconstruction of the exact
+  autonomous catch on the etched real `TokenizedStrategy` (each step confirmed live) showed the first-depositor
+  bug still does not fire for three precise reasons, each with a proven fix. This adds the remaining three
+  directive-string additions to `auditor/agents/invariant-prover.ag`, all inside the existing
+  `vaultRoute`/`active`-gated builders (default-off byte-identical; `verdict_of`, the `INVARIANT|` marker, and
+  the #1471 `--require-import`/`--require-contract` gate untouched):
+  (b) **`setProfitMaxUnlockTime(0)`** — the missing management precondition. Without it a donation realized via
+  `report()` is LOCKED and unlocks linearly over the profit-unlock window, so `totalAssets` never inflates for
+  share pricing and the invariant always holds (the CLEAN we kept hitting). `core_dep_seed` now instructs the
+  Handler (as management, the deployer) to also call `setProfitMaxUnlockTime(0)` — a `public onlyManagement`
+  function on `TokenizedStrategy` — so seed 1 wei + donate 1 wei + `report()` yields `totalAssets == 2,
+  totalSupply == 1` (a 2x share price), the exact share-inflation boundary.
+  (c) **Wei-scale attack actions** — the rounding theft is MAXIMAL at the `totalAssets=2 / totalSupply=1`
+  boundary (proven: a victim depositing 3 wei redeems only 2, 33% robbed) and vanishes at large scale.
+  `core_dep_seed` now requires the first-depositor attack actions (attacker seed, attacker donation, victim
+  deposit) to include TINY WEI-SCALE amounts bounded like `[1, 1000]` in ADDITION to realistic sizes — the
+  handler's realistic `1e15..1e21` victim range and `1..1e24` donation range miss the rounding entirely.
+  (d) **Relative victim-fairness tolerance** — the generated invariant's absolute `+1e12` dust is coarser than
+  the wei-scale loss and never trips. `victim_fairness_invariant_prompt` now asks for a RELATIVE tolerance
+  (integer-math `require(redeemable * 10000 >= deposited * 9900)`, a 1% band, multiply-both-sides form) instead
+  of an absolute dust, so the PROPORTIONAL theft trips at ANY scale (`2 < 3 * 0.99`); per-actor victim tracking
+  is unchanged, only the tolerance form. `demo-invariant-core-dep.sh` source-guards the new
+  `setProfitMaxUnlockTime(0)` + wei-scale directive text; `demo-invariant-vault-first-depositor.sh` source-guards
+  the relative-tolerance assertion (and that the absolute-dust form is gone).
 - **Vault harness directive: disable the profit-limit health check for the first-depositor attack**
   (#1755, M3). With M1 (real `TokenizedStrategy` staging) + M2 (victim-fairness invariant + donation Handler)
   the generated yearn-v3 harness is structurally correct, but a live forensic trace showed the first-depositor

@@ -495,14 +495,18 @@ fn victim_fairness_invariant_prompt(klass: string, active: bool) -> string {
          + "For this vault target the ONE deep `" + klass + "`-lens invariant MUST be per-actor VICTIM-FAIRNESS, "
          + "NOT a global solvency sum (a global sum can stay balanced while an individual victim is robbed):\n"
          + "  - For EVERY honest depositor, their redeemable value — `shares * assetBalance / totalShares` (the "
-         + "assets their shares can currently withdraw) — MUST be >= what they deposited, minus a small rounding "
-         + "`dust`.\n"
+         + "assets their shares can currently withdraw) — MUST be >= what they deposited, minus a small RELATIVE "
+         + "tolerance (a proportional epsilon), NOT an absolute rounding `dust`: the first-depositor / "
+         + "share-inflation theft is PROPORTIONAL (a fixed fraction of the victim's deposit) and, at the wei-scale "
+         + "boundary where it is maximal, a coarse absolute dust (e.g. +1e12) dwarfs the actual loss and never "
+         + "trips.\n"
          + "  - No PRIOR actor's first-deposit (1-wei micro-deposit) or direct-donation share manipulation may rob "
          + "a LATER depositor: a later honest deposit must mint shares worth what was paid and stay redeemable "
          + "for it.\n"
          + "  - The Handler MUST track each victim's (deposited, shares) as it deposits and assert the property "
-         + "with a plain `require(redeemable + dust >= deposited)` — no global-sum shortcut, no forge-std "
-         + "assertions.\n\n";
+         + "with a plain integer-math RELATIVE-tolerance `require(redeemable * 10000 >= deposited * 9900)` (a 1% "
+         + "tolerance; multiply-both-sides form so the theft trips at ANY scale and no division rounding direction "
+         + "can mask it) — no absolute-dust shortcut, no global-sum shortcut, no forge-std assertions.\n\n";
 }
 // #1755 — CORE-DEPENDENCY generation seed: the EXACT etch recipe proven by the M1.0 feasibility spike. The yearn-
 // v3 delegatecall singleton lives at the hard-coded constant 0xD377919FA87120584B21279a491F82D5265A139c (threaded
@@ -539,11 +543,25 @@ fn core_dep_seed(active: bool, name: string, rel: string, addr: string) -> strin
          + "`setDoHealthCheck(false)` as management (the deployer) in the same setup, right after `allowDeposits()` "
          + "— otherwise the donation-realizing `report()` reverts, `totalAssets` never inflates, and the "
          + "first-depositor / share-inflation bug is unreachable.\n"
+         + "  - As management (the deployer), the Handler MUST ALSO call the strategy's `setProfitMaxUnlockTime(0)` "
+         + "(a `public onlyManagement` function on `TokenizedStrategy`) in the same setup: WITHOUT it a profit "
+         + "realized through `report()` is LOCKED and unlocks LINEARLY over the profit-unlock window, so "
+         + "`totalAssets` never inflates for share pricing and the first-depositor bug stays unreachable (the CLEAN "
+         + "verdict). WITH `profitMaxUnlockTime == 0` the donation is recognized in `totalAssets` INSTANTLY — seed "
+         + "1 wei + donate 1 wei + report() then yields `totalAssets == 2, totalSupply == 1` (a 2x share price), "
+         + "the exact share-inflation boundary the first-depositor attack exploits.\n"
          + "  - Drive deposit/mint/withdraw/redeem through THIS real share path in the Handler, and expose the "
          + "first-depositor attack as adversarial actions: a 1-wei first deposit followed by a direct donation "
          + "(and, if the target realizes donations via `report()`, a report) so a LATER honest depositor's "
-         + "redeemable value can be shown to collapse. The ONE deep invariant is per-actor VICTIM-FAIRNESS: no "
-         + "honest depositor can redeem strictly LESS than they deposited (minus dust) after any sequence.\n\n";
+         + "redeemable value can be shown to collapse.\n"
+         + "  - CRITICAL SCALE: the first-depositor attack actions (attacker seed, attacker donation, victim "
+         + "deposit) MUST include TINY WEI-SCALE amounts — bound at least one action set in a small range like "
+         + "[1, 1000] IN ADDITION to realistic sizes — because the share-inflation rounding theft is MAXIMAL at "
+         + "the totalAssets=2 / totalSupply=1 boundary (proven: a victim depositing 3 wei redeems only 2, 33% "
+         + "robbed) and VANISHES at large scale; a Handler that only fuzzes realistic 1e15..1e21 victim sizes and "
+         + "1..1e24 donations never drives the tiny-value regime where the bug is reachable.\n"
+         + "  - The ONE deep invariant is per-actor VICTIM-FAIRNESS: no honest depositor can redeem strictly LESS "
+         + "than they deposited (minus a small RELATIVE tolerance, not an absolute dust) after any sequence.\n\n";
 }
 
 // #1725 — ADVERSARIAL/MULTI-ACTOR HANDLER ACTION CHECKLIST. The #1716 A/B isolated a DELTA gap where the LLM
