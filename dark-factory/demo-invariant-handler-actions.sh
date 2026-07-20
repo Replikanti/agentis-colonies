@@ -33,7 +33,9 @@ bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 
 # ----------------------------------------------------------------------------------------------------------
 # 1) WIRING — both new functions exist, harness_skeleton takes actionHint, the call site passes
-#    action_checklist_hint(targetClass), and sharedScaffold carries the checklist header + call.
+#    action_checklist_hint(effClass), and sharedScaffold carries the checklist header + call.
+#    (#1755 M2 rerouted the GENERATION selectors from targetClass to effClass — the vaultRoute C11 override —
+#    so on a yearn vault route the vault checklist fires despite dominant_class() collapsing the class to C10.)
 # ----------------------------------------------------------------------------------------------------------
 note "source-guarding the #1725 prover wiring ..."
 
@@ -61,10 +63,10 @@ else
   bad "harness_skeleton() missing the ADVERSARIAL ACTION HINT comment line"
 fi
 
-if grep -q 'harness_skeleton(invMatch, deployName, importLine, auxImportLines, action_checklist_hint(targetClass))' "$PROVER"; then
-  ok "the harness_skeleton() call site passes action_checklist_hint(targetClass)"
+if grep -q 'harness_skeleton(invMatch, deployName, importLine, auxImportLines, action_checklist_hint(effClass))' "$PROVER"; then
+  ok "the harness_skeleton() call site passes action_checklist_hint(effClass) (#1755 M2 vaultRoute override)"
 else
-  bad "the harness_skeleton() call site does not pass action_checklist_hint(targetClass)"
+  bad "the harness_skeleton() call site does not pass action_checklist_hint(effClass)"
 fi
 
 if grep -q 'ADVERSARIAL ACTION CHECKLIST' "$PROVER"; then
@@ -73,10 +75,10 @@ else
   bad "sharedScaffold missing the ADVERSARIAL ACTION CHECKLIST header"
 fi
 
-if grep -q 'action_checklist_prompt(targetClass)' "$PROVER"; then
-  ok "sharedScaffold calls action_checklist_prompt(targetClass)"
+if grep -q 'action_checklist_prompt(effClass)' "$PROVER"; then
+  ok "sharedScaffold calls action_checklist_prompt(effClass) (#1755 M2 vaultRoute override)"
 else
-  bad "sharedScaffold does not call action_checklist_prompt(targetClass)"
+  bad "sharedScaffold does not call action_checklist_prompt(effClass)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
