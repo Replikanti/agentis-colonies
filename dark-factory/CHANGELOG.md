@@ -14,6 +14,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-20
+
 ### Added
 - **Vault harness directive: complete the first-depositor catch recipe (profitMaxUnlockTime(0) + wei-scale actions + relative victim-fairness tolerance)**
   (#1755, M4). M1–M3 make the autonomous pipeline GENERATE the right harness structure (real `TokenizedStrategy`,
