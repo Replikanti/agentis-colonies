@@ -1,0 +1,10 @@
+# tier-coverage.inv — cull any candidate missing the confidence-tier contract.
+#
+# Mirrors auto-evolve-ab.sh validity check 3b: at least one tier("…") /
+# repo_tier("…", call AND the three tier literals "propose" / "review-gated"
+# / "autonomous" must appear in the source text. Source-shape field
+# `tier_coverage_ok` (payload v2, agentis-core #938) is that raw-text
+# grep-semantics check. A boolean field takes a bare boolean literal and
+# only ==/!=.
+class = inviolable
+when tier_coverage_ok == false

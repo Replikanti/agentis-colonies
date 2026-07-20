@@ -25,7 +25,17 @@
 #   3. Validity gate (4 checks): `agentis commit` succeeds, tier
 #      coverage regex passes (mirroring colony-lint.sh §475-490),
 #      a `cb <N>;` budget line is present, and the rationale file is
-#      non-empty. On failure, write `mutation_rejected` + exit.
+#      non-empty. On failure, write `mutation_rejected` + exit. These
+#      four bash checks are the SOLE gate.
+#   3e. Invariant parity probe (containerized-only, OBSERVE ONLY, #1736):
+#      just before the A/B spawn, run `agentis invariant check
+#      <candidate> --json` (agentis >= v1.24.0, #937) against the
+#      checked-in source-shape .inv modules and record its verdict in an
+#      `invariant_check` ledger row (decision pass/cull/error + parity
+#      agree/divergent/na). It NEVER gates — the rc is advisory, never
+#      branched on, never aborts the harness — it only builds the
+#      real-run parity dataset a follow-up needs before a bash check can
+#      be retired.
 #   4. A/B daemon spawn (containerized-only): spawn the candidate
 #      daemon under a synthetic agent_id `<agent>-cand-gen-<N>` so its
 #      experience writes go to an isolated .jsonl. Wait K ticks
@@ -466,6 +476,58 @@ fi
 CONTAINER_NAME="${RESEARCH_CONTAINER_NAME:-research-foundry-laptop}"
 CANDIDATE_CONTAINER_PATH="/run-root/${COLONY}/agents/.evolve/${AGENT_NAME}.ag.candidate-gen-${GENERATION_NEXT}"
 CANDIDATE_LOG="/run-root/.agentis/logs/${SYNTHETIC_ID}.log"
+
+# ------------------------------------------------------------------
+# 3e. Environmental-invariant parity probe — OBSERVE ONLY (#1736)
+# ------------------------------------------------------------------
+#
+# The four bash validity checks (3a-3d) above remain the SOLE gate; a
+# candidate only reaches here after PASSING all of them. agentis
+# >= v1.24.0 ships `agentis invariant check <candidate> --json` (#937),
+# a read-only source-shape gate that reads `evolution.invariants_dir`.
+# The three checked-in .inv modules (parse-ok / tier-coverage / cb-line)
+# reproduce checks 3a/3b/3c verbatim (agentis-core #938). We run it here
+# PURELY to record its verdict alongside the bash gate's (which already
+# said PASS), building the real-run parity dataset a follow-up needs
+# before any bash check can be retired. It never gates: the exit code
+# is advisory, we never branch on it and never let it abort the harness.
+#
+# Exit codes (#937): 0=pass, 3=cull, 1=error. The CLI self-exits
+# non-zero, so under `set -euo pipefail` we capture the rc via
+# `|| INV_RC=$?` on the command substitution — never a bare call. Since
+# the bash gate already PASSED, parity is: pass=agree, cull=divergent,
+# error/other=na. WORKDIR /run-root in-container resolves the config +
+# invariants_dir (mirrors the #900 podman-exec routing in
+# auto-promote.sh).
+INV_RC=0
+INV_JSON=$(podman exec "$CONTAINER_NAME" bash -c \
+    "agentis invariant check '$CANDIDATE_CONTAINER_PATH' --json" 2>/dev/null) || INV_RC=$?
+case "$INV_RC" in
+    0) INV_DECISION="pass"; INV_PARITY="agree" ;;
+    3) INV_DECISION="cull"; INV_PARITY="divergent" ;;
+    *) INV_DECISION="error"; INV_PARITY="na" ;;
+esac
+# Optional forensic extras from the --json body (set_hash +
+# skipped_runtime_modules). python3 is already a hard dep of this file;
+# keep it failure-isolated so a parse hiccup never perturbs the probe or
+# the decision (which is derived from the authoritative rc, not JSON).
+INV_EXTRAS=$(printf '%s' "$INV_JSON" | python3 -c "
+import json, sys
+try:
+    obj = json.loads(sys.stdin.read())
+except (json.JSONDecodeError, ValueError):
+    sys.exit(0)
+set_hash = str(obj.get('set_hash', ''))
+try:
+    skipped = int(obj.get('skipped_runtime_modules'))
+except (TypeError, ValueError):
+    skipped = -1
+sys.stdout.write(',\"set_hash\":\"%s\",\"skipped_runtime_modules\":%d' % (set_hash, skipped))
+" 2>/dev/null) || INV_EXTRAS=""
+ledger_append "invariant_check" \
+    "{\"candidate_sha8\":\"$CANDIDATE_SHA8\",\"decision\":\"$INV_DECISION\",\"parity\":\"$INV_PARITY\",\"invariant_rc\":$INV_RC$INV_EXTRAS}"
+log "  invariant check (observe-only): decision=$INV_DECISION parity=$INV_PARITY rc=$INV_RC"
+
 SPAWN_CMD="agentis daemon $CANDIDATE_CONTAINER_PATH --colony $COLONY --enable-exec --enable-messaging --tick-interval $TICK_INTERVAL_MS > $CANDIDATE_LOG 2>&1 &"
 
 log "  spawning candidate daemon: synthetic_id=$SYNTHETIC_ID wait_s=$WAIT_S"

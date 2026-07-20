@@ -1339,6 +1339,23 @@ assert_contains "43s. RESEARCH_LLM_BACKEND=claude dry-run names claude backend" 
 assert_contains "43t. claude fallback dry-run mounts ~/.claude into the container" "$CLAUDE_OUT" \
     ":/root/.claude:rw,z"
 
+# ---------------------------------------------------------------------------
+# 44. #1736: environmental-invariant adoption on the daemon-A/B parity probe.
+# The config-gen emits `evolution.invariants_dir` pointing at the ABSOLUTE
+# container path /run-root/config/invariants, and the staging block copies
+# the checked-in module dir from the read-only /repo mount. The emit is
+# gated by RESEARCH_INVARIANTS (default on) so RESEARCH_INVARIANTS=0 leaves
+# the key entirely unset (byte-identical feature-off). These printf lines
+# live in the container-side bootstrap and never reach dry-run stdout, so
+# they are source-grepped from $SRC like the #835/#1138 tier assertions.
+# ---------------------------------------------------------------------------
+assert_contains "44a. config-gen emits evolution.invariants_dir printf (absolute path)" "$SRC" \
+    'printf "evolution.invariants_dir = /run-root/config/invariants\\n"'
+assert_contains "44b. invariants_dir emit is gated by RESEARCH_INVARIANTS (default on)" "$SRC" \
+    'if [ "${RESEARCH_INVARIANTS:-1}" != "0" ]; then'
+assert_contains "44c. staging block copies the checked-in invariants dir" "$SRC" \
+    'if [ -d /repo/research-foundry/config/invariants ]; then cp -r /repo/research-foundry/config/invariants /run-root/config/invariants; fi'
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
