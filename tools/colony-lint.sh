@@ -803,6 +803,25 @@ if [ -x "$REPO_ROOT/research-foundry/tools/test-invariants.sh" ]; then
     fi
 fi
 
+# --- Backtest-only environmental invariants (#1737) ---
+# trading-binance/config/invariants/*.inv express the federation's
+# backtest-only law as two forbidden_callee (capability-absence) modules:
+# no-order-placement.inv and no-network-egress.inv. The test pins the .inv
+# grammar (always) and, when an agentis >= v1.25.0 binary is on PATH, that
+# all six real tribe-*/agents/strategist.ag pass clean and two synthetic
+# bad-strategist fixtures are culled naming the right callee. Per-federation
+# tools/test-*.sh scripts are NOT auto-discovered by the loops above (only
+# root tools/test-*.sh is globbed) so this needs the same explicit hook.
+if [ -x "$REPO_ROOT/trading-binance/tools/test-invariants.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/trading-binance/tools/test-invariants.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "test-invariants: trading-binance backtest-only .inv modules (forbidden_callee) (#1737)"
+    else
+        fail "test-invariants: trading-binance .inv module grammar / cull-parity drifted (#1737)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory submission-triage gates (#1456/#1458) ---
 # submit-triage.sh scores staged findings (READY / INCOMPLETE / DUP-RISK), flags impact-credibility
 # (IMPACT quant/qual?) and duplicate-risk (NOVELTY via --known-issues), and never contacts a platform.
