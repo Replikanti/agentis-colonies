@@ -15,6 +15,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Vault harness directive: disable the profit-limit health check for the first-depositor attack**
+  (#1755, M3). With M1 (real `TokenizedStrategy` staging) + M2 (victim-fairness invariant + donation Handler)
+  the generated yearn-v3 harness is structurally correct, but a live forensic trace showed the first-depositor
+  attack still cannot fire: yearn strategies inherit `BaseHealthCheck`, whose `report()` runs a PROFIT-LIMIT
+  health check that reverts with reason `healthCheck` when a donation is realized as an outsized profit. Because
+  the donation-realizing `report()` reverts, `totalAssets` never inflates and the first-depositor /
+  share-inflation bug is unreachable. This extends `core_dep_seed`'s existing "open deposits as management"
+  directive in `auditor/agents/invariant-prover.ag` with one instruction: right after `allowDeposits()`, the
+  Handler — which is the strategy's `management` (the deployer) — MUST ALSO call `setDoHealthCheck(false)` so the
+  donation-realizing `report()` succeeds and `totalAssets` inflates. It is a flat string-concat addition to the
+  same `!active => ""` directive, so it is **default-off byte-identical** when `--core-dep-harness` is off /
+  the target is non-yearn, and it touches ONLY the generation prompt — `verdict_of`, the `INVARIANT|` marker,
+  and the #1471 `--require-import`/`--require-contract` gate are unchanged. `demo-invariant-core-dep.sh`
+  source-guards the new `setDoHealthCheck(false)` + `healthCheck`-gate directive text.
 - **Vault first-depositor victim-fairness invariant + donation Handler routing for yearn-v3 targets**
   (#1755, M2). With M1 the deep-hunt harness now runs the REAL `TokenizedStrategy` share path, but the GENERATION
   still misclassified the target: `run-zone-hunt.sh`'s `dominant_class()` collapses yearn's zone
