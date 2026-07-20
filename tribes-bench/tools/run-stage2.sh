@@ -66,6 +66,19 @@
 #                          (default: http://127.0.0.1:11434/api/generate).
 #   STAGE2_OLLAMA_MODEL    #438: model id when STAGE2_LLM_BACKEND=ollama
 #                          (default: llama3.1:8b).
+#   STAGE2_INVARIANTS      #1735: 1 (default) wires the optional environmental-
+#                          invariant surface — appends evolution.invariants_dir
+#                          + daemon.invariant_gate + daemon.invariant_sweep into
+#                          the shared hermetic .agentis/config so every tribe's
+#                          daemon evaluates config/invariants/*.inv (the two
+#                          <colony>-scoped reputation floors), and writes a
+#                          forensic invariant-set-hash.txt sidecar. Requires
+#                          agentis >= 1.28.0 (the #953 <colony> token that scopes
+#                          the shared module set per tribe); when on and the
+#                          installed runtime is older, run-stage2.sh HARD-ABORTS
+#                          (exit 1) rather than silently degrade to a shared
+#                          literal memo key across tribes. 0 leaves the config
+#                          keys UNSET — byte-identical to the feature being off.
 #
 # Exit codes:
 #   0   run completed and telemetry.csv produced
@@ -120,6 +133,17 @@ for bin in agentis jq python3; do
         exit 1
     fi
 done
+
+# #1735: optional environmental-invariant surface (config/invariants/*.inv).
+# Default on. 0 leaves the config keys UNSET — byte-identical feature-off.
+STAGE2_INVARIANTS="${STAGE2_INVARIANTS:-1}"
+INVARIANTS_DIR="$FED_DIR/config/invariants"
+# Runtime floor for the <colony> signal token (#953, agentis v1.28.0) that
+# scopes the single shared module set per tribe. Below this floor the token
+# stays literal and all five tribes collapse onto one memo key — a cross-tribe
+# contamination bug under the inviolable class — so we HARD-ABORT rather than
+# silently degrade (see config/invariants/README.md §Version floor).
+INVARIANTS_MIN_AGENTIS="1.28.0"
 
 # --- Calibration: parse calibration.toml and export to env ---
 # We delegate calibration parsing to a small python helper to dodge the
@@ -233,6 +257,40 @@ if [ "$RESUMING" = "0" ] && [ -f "$CONFIG_FILE" ]; then
     # LLM rounds enough headroom without sacrificing crash detection.
     if ! grep -q '^daemon\.heartbeat_interval_ms' "$CONFIG_FILE"; then
         printf 'daemon.heartbeat_interval_ms = 600000\n' >> "$CONFIG_FILE"
+    fi
+    # #1735: wire the optional environmental-invariant surface. Every tribe's
+    # daemon walks up to this shared hermetic .agentis/config, so the same
+    # config/invariants/*.inv set is loaded by all five — correct precisely
+    # because both modules bind a <colony>-scoped signal (#953). The two
+    # daemon.invariant_* gates make the inviolable floor a real refuse/self-cull;
+    # the costly floor stays advisory. STAGE2_INVARIANTS=0 leaves every key
+    # unset (inert on every surface), byte-identical to the feature being off.
+    if [ "$STAGE2_INVARIANTS" != "0" ]; then
+        # HARD-ABORT below the <colony> floor: on an older runtime the token is
+        # left literal and all five tribes share one memo key, wrongly culling a
+        # healthy tribe for another's reputation under the inviolable class.
+        # Never silently degrade — abort with an actionable escape hatch.
+        INV_AGENTIS_VER="$(agentis --version 2>/dev/null | sed -n 's/^agentis v\([0-9][0-9.]*\).*$/\1/p' | head -1)"
+        if [ -z "$INV_AGENTIS_VER" ] || ! python3 -c "
+import sys
+def parse(v):
+    return tuple(int(x) for x in v.split('.'))
+sys.exit(0 if parse('${INV_AGENTIS_VER:-0}') >= parse('$INVARIANTS_MIN_AGENTIS') else 1)
+" 2>/dev/null; then
+            echo "run-stage2: STAGE2_INVARIANTS=1 requires agentis >= $INVARIANTS_MIN_AGENTIS for the <colony> signal token (#953); found '${INV_AGENTIS_VER:-unparseable}'." >&2
+            echo "            An older runtime leaves <colony> literal -> all five tribes share one reputation memo key -> cross-tribe self-cull under the inviolable floor." >&2
+            echo "            Upgrade the runtime, or re-run with STAGE2_INVARIANTS=0 to leave the invariant surface off." >&2
+            exit 1
+        fi
+        if ! grep -q '^evolution\.invariants_dir' "$CONFIG_FILE"; then
+            printf 'evolution.invariants_dir = %s\n' "$INVARIANTS_DIR" >> "$CONFIG_FILE"
+        fi
+        if ! grep -q '^daemon\.invariant_gate' "$CONFIG_FILE"; then
+            printf 'daemon.invariant_gate = true\n' >> "$CONFIG_FILE"
+        fi
+        if ! grep -q '^daemon\.invariant_sweep' "$CONFIG_FILE"; then
+            printf 'daemon.invariant_sweep = true\n' >> "$CONFIG_FILE"
+        fi
     fi
     # #423: agentis init emits `llm.backend = mock` as the default. The
     # harness writes `llm-backend.txt` for telemetry but never propagated
@@ -374,6 +432,29 @@ STARTED_AT_NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if [ "$RESUMING" = "0" ]; then
     agentis --version > "$RUN_DIR/agentis-version.txt" 2>&1 || true
     printf '%s\n' "$RUN_LLM_BACKEND" > "$RUN_DIR/llm-backend.txt"
+    # #1735: forensic invariant-set-hash sidecar. Mirrors trading-binance's
+    # run-replay.sh #1737 probe: a throwaway `agentis invariant check --json`
+    # against the checked-in module set reports `set_hash` (SHA-256 over the
+    # sorted module hashes, candidate-independent) even though the signal
+    # modules are inert on that read-only surface — no live daemon needed. A
+    # sidecar file, NOT threaded into run-baseline-meta.py's fixed argv schema
+    # (that helper is shared with run-baseline.sh + pinned by an argv-count
+    # test). Forensic only, never a gate: skipped when STAGE2_INVARIANTS=0.
+    if [ "$STAGE2_INVARIANTS" != "0" ] && command -v agentis >/dev/null 2>&1; then
+        INV_PROBE_DIR="$(mktemp -d)"
+        ( cd "$INV_PROBE_DIR" && agentis init >/dev/null 2>&1 ) || true
+        printf 'evolution.invariants_dir = %s\n' "$INVARIANTS_DIR" >> "$INV_PROBE_DIR/.agentis/config"
+        INV_PROBE_JSON="$(cd "$INV_PROBE_DIR" && agentis invariant check "$FED_DIR/tribe-alpha/agents/hunter.ag" --json 2>/dev/null)" || true
+        printf '%s' "$INV_PROBE_JSON" | python3 -c "
+import json, sys
+try:
+    obj = json.loads(sys.stdin.read())
+except (json.JSONDecodeError, ValueError):
+    sys.exit(0)
+sys.stdout.write(str(obj.get('set_hash', '')))
+" > "$RUN_DIR/invariant-set-hash.txt" 2>/dev/null || : > "$RUN_DIR/invariant-set-hash.txt"
+        rm -rf "$INV_PROBE_DIR"
+    fi
     python3 "$TOOLS_DIR/run-baseline-meta.py" \
         "$RUN_DIR/run-meta.json" \
         "$STARTED_AT_NOW" \

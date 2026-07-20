@@ -1,0 +1,33 @@
+# reputation-floor-inviolable.inv — hard cull floor on a tribe's externally
+# scored reputation (#1735; agentis-core #950 signal payload-v4, #953 <colony>).
+#
+# IDENTICAL signal binding to reputation-floor-costly.inv — one signal, one
+# memo template, expressed twice at two severities. The signal is `<colony>`-
+# scoped (agentis-core #953): `<colony>` resolves to the daemon's own `--colony`
+# value, so `reputation:tribes-bench-<colony>` reads EACH daemon's OWN tribe
+# reputation with no cross-tribe contamination. See the sibling module's header
+# and config/invariants/README.md for why this is `<colony>` and not the
+# role/self token (all five hunters share the source basename "hunter", so the
+# role token cannot distinguish tribes).
+#
+# Floor = 0.1, LOWER than the costly module's 0.3 — this is a SEVERITY
+# escalation, not redundant containment. Given the +0.05/-0.10 walk from the
+# 0.5 seed (tribe-alpha/agents/hunter.ag:1312-1402), 0.1 requires >= 4 net
+# false positives beyond the seed with no offsetting verified finding: a
+# lineage that has demonstrated SUSTAINED, not incidental, unreliability.
+# `class = inviolable` is a REAL enforcement path on both daemon surfaces: a
+# HARD refuse at the replicate() admission gate (`daemon.invariant_gate`) and a
+# graceful self-cull on the in-tick sweep (`daemon.invariant_sweep`). This is
+# only safe because `<colony>` scopes the signal per daemon — under a v1.27.0
+# binary that does not recognise `<colony>` the token stays literal, all five
+# tribes share one memo key, and a healthy tribe could be culled for another
+# tribe's bad reputation; run-stage2.sh HARD-ABORTS below agentis 1.28.0 for
+# exactly that reason (STAGE2_INVARIANTS=1 version guard).
+#
+# Fail-closed: a `Missing` reputation read (memo absent/empty/unparseable, or an
+# unresolved/empty `<colony>`) self-culls, so the memo must be seeded before a
+# daemon's first sweep tick — every start-colony.sh seeds it at "0.5" before the
+# daemon launch loop (cold-start covered by construction).
+class = inviolable
+signal reputation = memo("reputation:tribes-bench-<colony>")
+when reputation < 0.1
