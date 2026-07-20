@@ -122,6 +122,18 @@ fn target_name(label: string) -> string {
     return substring(label, c + 1, len(label));
 }
 let targetName = target_name(targetFn);
+// #1755 M6 — the FILE part of the target label (everything BEFORE the first `:`; the whole label when there is no
+// `:Name`). On the core-dep/vaultRoute path this is the target's REAL in-repo source path (e.g. `src/Strategy.sol`),
+// whose BASENAME (`Strategy.sol`) is exactly what M5's directive makes the generated harness import
+// (`import {..} from "../src/Strategy.sol";`). The #1471 gate (forge-invariant.sh) basenames its `--require-import`
+// arg, so on vaultRoute link_args() arms the gate with THIS file part (basename `Strategy.sol`) instead of the
+// staged `target-code.sol` — reconciling the gate with M5's pin. Never a verdict; a gate/generation input only.
+fn target_file(label: string) -> string {
+    let c = index_of(label, ":");
+    if c < 0 { return label; }
+    return substring(label, 0, c);
+}
+let targetFile = target_file(targetFn);
 // The NAME used in the DEPLOY guidance template. When the caller's label carries no `:Name` we fall back to
 // the `<Target>` placeholder so the `new <Target>(args)` / proxy-deploy template stays readable (the model
 // substitutes the declared contract name it reads from the source below).
@@ -458,6 +470,24 @@ let coreDepAddr = core_dep_field(coreDep, 2);
 // "" when coreDep is empty (core_dep_field returns "" -> rel_import_path returns "") -> the seed's import line is
 // skipped (byte-identical).
 let coreDepRel = rel_import_path(invOut, core_dep_field(coreDep, 0));
+// #1755 M6 — reconcile the #1471 TARGET-LINKAGE gate with M5's target-import pin. On the core-dep/vaultRoute path
+// M5 makes the generated harness import the target from its REAL in-repo `../src/<Target>.sol` source (basename
+// e.g. `Strategy.sol`) — the shape that COMPILES and CATCHES the money-tier bug — NOT the pipeline's staged
+// `target-code.sol` (a flat copy one dir above the foundry repo, present ONLY for the gate's textual check). But
+// link_args() below arms the #1471 gate with `--require-import <CODE_PATH>` = `target-code.sol`, and the gate
+// (forge-invariant.sh) greps the harness for an `import` whose BASENAME matches that arg — so the CATCHING harness
+// (which imports `../src/Strategy.sol`, basename `Strategy.sol`) is rejected as HARNESS_ERROR on a basename
+// technicality BEFORE any fuzzing. `vaultTargetImport` is the in-repo target file path (`targetFile`, basename
+// `Strategy.sol`) ONLY on vaultRoute, "" otherwise; link_args() uses it in place of `codePath` for
+// `--require-import` there. The gate STILL REQUIRES a real in-scope-target import (the #1471 safety property is
+// fully preserved — a harness importing NEITHER `target-code.sol` NOR the real `../src/<Target>.sol` still
+// HARNESS_ERRORs); only WHICH real-target path is required changes (staged copy -> in-repo copy, the SAME real
+// contract). `!vaultRoute` => "" => link_args() is byte-identical to today on the non-core-dep path.
+fn vault_target_import(route: bool, file: string) -> string {
+    if !route { return ""; }
+    return file;
+}
+let vaultTargetImport = vault_target_import(vaultRoute, targetFile);
 // #1755 M2 — EFFECTIVE CLASS override. The live-hunt pipeline (zone-mapper.ag -> run-zone-hunt.sh dominant_class()
 // -> run-invariant-hunt.sh --class) COLLAPSES yearn's zone [C15,C10,C11,C2] to a single dominant code, and that
 // tuple resolves to C10 -> class_to_keyword("c10")=="lend", so the vault branches of the GENERATION selectors
@@ -912,14 +942,27 @@ let fork = opt_flag("--fork-url", forkUrl) + opt_flag("--fork-block", forkBlock)
 // byte-identical to today. codePath is the staged target source the runner passes (the gate basenames it,
 // matching the test's realpath-relative import of that same file); targetName is the `*.sol:Name` label's Name
 // (empty => import-only check, no shadow assertion). Each value is shell_escape()d here / in opt_flag.
-fn link_args(fUrl: string, fTarget: string, fContext: string, cPath: string, tName: string) -> string {
+// #1755 M6 — on the core-dep/vaultRoute path the CATCHING harness imports the target from its REAL in-repo
+// `../src/<Target>.sol` source (M5's pin), NOT the staged `target-code.sol`, so the gate must require THAT
+// basename; `vaultImport` (non-empty only on vaultRoute) carries the in-repo target file path and overrides
+// codePath for `--require-import`. The safety intent is intact — `../src/<Target>.sol` IS the real in-scope
+// target — and a harness importing neither still HARNESS_ERRORs; only the required real-target path changes.
+fn link_args(fUrl: string, fTarget: string, fContext: string, cPath: string, tName: string, vaultImport: string) -> string {
     if len(fUrl) > 0 { return ""; }
     if len(fTarget) > 0 { return ""; }
     if len(fContext) > 0 { return ""; }
+    // #1755 M6 — on the core-dep/vaultRoute path arm the gate with the REAL in-repo target path (`vaultImport`,
+    // basename e.g. `Strategy.sol` — the path M5 pins the harness to import), NOT the staged `target-code.sol`.
+    // The gate STILL requires a real in-scope-target import (the #1471 safety property is preserved: a harness
+    // importing neither the staged nor the in-repo real target still fails); only the required basename changes.
+    // `vaultImport == ""` (every non-core-dep caller) => the two statements below are byte-identical to today.
+    if len(vaultImport) > 0 {
+        return " --require-import " + shell_escape(vaultImport) + opt_flag("--require-contract", tName);
+    }
     if len(cPath) == 0 { return ""; }
     return " --require-import " + shell_escape(cPath) + opt_flag("--require-contract", tName);
 }
-let linkArgs = link_args(forkUrl, forkTarget, forkContext, codePath, targetName);
+let linkArgs = link_args(forkUrl, forkTarget, forkContext, codePath, targetName, vaultTargetImport);
 // The extra gate args appended to EVERY gate invocation (the first attempt AND each repair round) so a
 // substituted-target test is rejected as HARNESS_ERROR no matter which attempt produced it.
 let gateExtra = fork + linkArgs;

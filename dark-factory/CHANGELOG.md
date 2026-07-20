@@ -14,6 +14,28 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **Arm the #1471 link gate with the in-repo target path on the core-dep harness (fix M5's import pin HARNESS_ERRORing a real FINDING)**
+  (#1755, M6). M5 pins the core-dep harness to import the target from its REAL in-repo `../src/<Target>.sol`
+  source (basename e.g. `Strategy.sol`) — the shape that COMPILES and CATCHES the yearn first-depositor
+  money-tier bug — instead of the pipeline's staged `target-code.sol`. But the prover's `link_args`
+  (`auditor/agents/invariant-prover.ag`) armed the #1471 TARGET-LINKAGE gate with `--require-import <CODE_PATH>`
+  = the staged `target-code.sol`, and the gate (`evm-harness/forge-invariant.sh`) basenames that arg and greps
+  the harness for an `import` of THAT basename. So the catching harness (importing `../src/Strategy.sol`, basename
+  `Strategy.sol` ≠ `target-code.sol`) was rejected as `HARNESS_ERROR` **before any fuzzing** — the pipeline
+  mis-reported its own real FINDING as a harness error every run (an M5↔#1471 basename conflict, NOT the earlier
+  mis-diagnosed `__rc`-capture bug). The fix: on the core-dep/`vaultRoute` path only, arm `--require-import` with
+  the target's in-repo file path (the target label's file part, basename `Strategy.sol` — the path M5 pins the
+  harness to import) instead of `target-code.sol`. The #1471 safety property is fully preserved — the gate STILL
+  requires the harness to import the REAL in-scope target, and a harness importing NEITHER the staged nor the
+  in-repo real target still `HARNESS_ERROR`s; only WHICH real-target path is required changes (staged copy →
+  in-repo copy, the SAME real contract). Scoped strictly: on the non-core-dep path (`vaultImport == ""`)
+  `link_args` is **byte-identical** — it still arms with `codePath`. The fuzzer stays the sole verdict; the
+  `INVARIANT|` marker, `verdict_of`'s exit-code→token map, and the #1471 matcher LOGIC in `forge-invariant.sh`
+  are untouched (only WHAT path is passed changes, not how the gate matches). `demo-invariant-core-dep.sh`
+  source-guards the vaultRoute-scoped in-repo arming, the byte-identical non-core-dep fall-through, and the
+  untouched matcher logic.
+
 ## [0.5.0] - 2026-07-20
 
 ### Added

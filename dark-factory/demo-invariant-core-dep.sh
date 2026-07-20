@@ -273,6 +273,77 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# 5b) #1755 M6 — #1471 LINK GATE reconciled with M5's target-import pin. M5 makes the CATCHING harness import the
+#     target from its REAL in-repo `../src/<Target>.sol` (basename e.g. Strategy.sol), NOT the staged
+#     `target-code.sol`. The #1471 gate basenames --require-import and greps the harness for THAT basename, so the
+#     pipeline's `--require-import <CODE_PATH>` (= target-code.sol) rejected the catching harness as HARNESS_ERROR
+#     before any fuzzing. M6 arms --require-import with the in-repo target file path (targetFile) ON vaultRoute ONLY;
+#     the non-core-dep path keeps arming with codePath (byte-identical). The gate LOGIC in forge-invariant.sh and
+#     the safety property (a harness importing NEITHER real path still HARNESS_ERRORs) are untouched.
+# ----------------------------------------------------------------------------------------------------------
+note "source-guarding the #1755 (M6) #1471-link-gate reconciliation with M5's import pin ..."
+
+if grep -q 'fn target_file(label: string) -> string' "$PROVER" \
+   && grep -q 'let targetFile = target_file(targetFn);' "$PROVER"; then
+  ok "target_file(targetFn) extracts the target's in-repo file path (before the first :) — basename is the pinned import basename"
+else
+  bad "target_file() / targetFile derivation is missing"
+fi
+
+if grep -q 'fn vault_target_import(route: bool, file: string) -> string' "$PROVER" \
+   && grep -Pzoq 'fn vault_target_import\(route: bool, file: string\) -> string \{\n    if !route \{ return ""; \}' "$PROVER"; then
+  ok "vault_target_import(!route) returns \"\" — the in-repo import override is core-dep/vaultRoute-scoped (byte-identical off)"
+else
+  bad "vault_target_import is missing / not gated on route (returns non-empty when off)"
+fi
+
+if grep -q 'let vaultTargetImport = vault_target_import(vaultRoute, targetFile);' "$PROVER"; then
+  ok "vaultTargetImport = the in-repo target path ONLY on vaultRoute (\"\" otherwise)"
+else
+  bad "vaultTargetImport wiring (gated on vaultRoute) is missing"
+fi
+
+if grep -q 'fn link_args(fUrl: string, fTarget: string, fContext: string, cPath: string, tName: string, vaultImport: string) -> string' "$PROVER"; then
+  ok "link_args now takes vaultImport (the core-dep in-repo target path)"
+else
+  bad "link_args signature does not carry vaultImport"
+fi
+
+# On vaultRoute (vaultImport non-empty) the gate is armed with vaultImport, NOT codePath/target-code.sol.
+if grep -Pzoq 'if len\(vaultImport\) > 0 \{\n        return " --require-import " \+ shell_escape\(vaultImport\) \+ opt_flag\("--require-contract", tName\);\n    \}' "$PROVER"; then
+  ok "on vaultRoute, --require-import is armed with the in-repo target path (vaultImport), not target-code.sol"
+else
+  bad "link_args does not arm --require-import with vaultImport on the core-dep path"
+fi
+
+# NON-core-dep path (vaultImport == "") keeps the ORIGINAL codePath arming, byte-identical to today.
+if grep -Pzoq 'if len\(vaultImport\) > 0 \{[^}]*\}\n    if len\(cPath\) == 0 \{ return ""; \}\n    return " --require-import " \+ shell_escape\(cPath\) \+ opt_flag\("--require-contract", tName\);' "$PROVER"; then
+  ok "non-core-dep path (empty vaultImport) still arms --require-import with codePath — byte-identical to today"
+else
+  bad "the non-core-dep codePath arming (byte-identical fall-through) changed unexpectedly"
+fi
+
+if grep -q 'let linkArgs = link_args(forkUrl, forkTarget, forkContext, codePath, targetName, vaultTargetImport);' "$PROVER"; then
+  ok "the link_args call threads vaultTargetImport"
+else
+  bad "the link_args call does not thread vaultTargetImport"
+fi
+
+# The #1471 matcher LOGIC in forge-invariant.sh (basename REQ_IMPORT + grep) must be untouched — M6 changes only
+# WHAT PATH is passed, never HOW the gate matches.
+FORGEINV="$HERE/evm-harness/forge-invariant.sh"
+if [ -f "$FORGEINV" ]; then
+  if grep -q '_tgt_base="\$(basename "\$REQ_IMPORT")"' "$FORGEINV" \
+     && grep -q 'the test does not import the in-scope target' "$FORGEINV"; then
+    ok "forge-invariant.sh #1471 matcher logic (basename REQ_IMPORT + import grep) is untouched"
+  else
+    bad "the #1471 matcher logic in forge-invariant.sh changed unexpectedly"
+  fi
+else
+  skip "forge-invariant.sh not found at $FORGEINV — matcher-logic guard skipped"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # 6) LIVE ETCH RECIPE (forge present) — run the distilled, yearn-lib-FREE fixture through the SAME etch recipe:
 #    deploy a minimal ERC4626-ish singleton, vm.etch it at the constant address, deploy a base-strategy that
 #    delegatecalls it in its constructor + fallback, then deposit -> non-zero shares, totalSupply moves,
