@@ -334,6 +334,73 @@ else
   bad "the directive does not name the totalAssets==2/totalSupply==1 share-inflation boundary the attack exploits"
 fi
 
+# ----------------------------------------------------------------------------------------------------------
+# #1763 G2 + G3 — the two yearn-hardcoded management-call directives are now emitted by GENERAL builders
+# (admin_guard_seed / deferred_accounting_seed), concatenated as siblings of core_dep_seed, with yearn kept as
+# the WORKED EXAMPLE. The three M3/M4 assertions above still pass (the setDoHealthCheck(false) / healthCheck /
+# setProfitMaxUnlockTime(0) / profit-unlock-window / totalAssets==2,totalSupply==1 strings now live inside the
+# new builders) — these assertions add that the extraction is a GENERAL directive, not a bare yearn literal, and
+# that the default-off byte-identical guard holds for each builder just as it does for core_dep_seed.
+# ----------------------------------------------------------------------------------------------------------
+note "source-guarding the #1763 G2/G3 general admin-guard + deferred-accounting builders ..."
+
+if grep -q 'fn admin_guard_seed(active: bool) -> string' "$PROVER"; then
+  ok "admin_guard_seed(active) is defined (G2 general admin-guard neutralization builder)"
+else
+  bad "admin_guard_seed(active) is missing from the prover (G2 extraction absent)"
+fi
+
+if grep -q 'fn deferred_accounting_seed(active: bool) -> string' "$PROVER"; then
+  ok "deferred_accounting_seed(active) is defined (G3 general deferred-accounting neutralization builder)"
+else
+  bad "deferred_accounting_seed(active) is missing from the prover (G3 extraction absent)"
+fi
+
+# GENERAL FRAMING — each builder must instruct the model to DERIVE the neutralizing calls from the TARGET'S OWN
+# source (health checks / limits / pause / caps for G2; time-lock / vesting / streaming / cooldown for G3), not
+# only emit the yearn literal. The general header + the derive-from-source instruction pin the general path.
+if grep -q 'NEUTRALIZE ADMIN GUARDS' "$PROVER" && grep -q "DERIVE FROM THE TARGET'S OWN SOURCE" "$PROVER"; then
+  ok "admin_guard_seed carries the general framing (derive the guard-relaxing management calls from the target's own onlyManagement/onlyOwner setters), not only the yearn literal"
+else
+  bad "admin_guard_seed is missing the general framing (guards derived from the target's own setters)"
+fi
+
+if grep -q 'NEUTRALIZE DEFERRED ACCOUNTING' "$PROVER" && grep -q 'time-locked / vesting / streaming / cooldown' "$PROVER"; then
+  ok "deferred_accounting_seed carries the general framing (detect+set-to-instant any time-locked/vesting/streaming/cooldown deferral), not only the yearn literal"
+else
+  bad "deferred_accounting_seed is missing the general framing (deferral detected from the target's own source)"
+fi
+
+# YEARN WORKED EXAMPLE — each builder keeps yearn as the concrete worked example (the regression pin), so the
+# general framing never dilutes the catch.
+if grep -q 'WORKED EXAMPLE (yearn-v3 `TokenizedStrategy`)' "$PROVER"; then
+  ok "the builders keep yearn's TokenizedStrategy as the concrete WORKED EXAMPLE (the general framing does not drop the catch)"
+else
+  bad "the yearn WORKED EXAMPLE framing is missing from the general builders"
+fi
+
+# BYTE-IDENTICAL-WHEN-OFF — each new builder early-returns "" as its FIRST statement, the same guard idiom as
+# core_dep_seed, so a non-yearn / flag-off run adds NOTHING (all three builders return "" => byte-identical prompt).
+if grep -Pzoq 'fn admin_guard_seed\(active: bool\) -> string \{\n    if !active \{ return ""; \}' "$PROVER"; then
+  ok "admin_guard_seed(!active) returns \"\" as its FIRST statement (byte-identical when off)"
+else
+  bad "admin_guard_seed does not early-return \"\" on !active (byte-identical guard broken)"
+fi
+
+if grep -Pzoq 'fn deferred_accounting_seed\(active: bool\) -> string \{\n    if !active \{ return ""; \}' "$PROVER"; then
+  ok "deferred_accounting_seed(!active) returns \"\" as its FIRST statement (byte-identical when off)"
+else
+  bad "deferred_accounting_seed does not early-return \"\" on !active (byte-identical guard broken)"
+fi
+
+# SIBLING CONCATENATION — admin_guard_seed(vaultRoute) and deferred_accounting_seed(vaultRoute) are concatenated
+# immediately after core_dep_seed(...) at the SAME vaultRoute gate in the generation-prompt assembly.
+if grep -Pzoq '\+ core_dep_seed\(vaultRoute, coreDepName, coreDepRel, coreDepAddr, deployName, vaultTargetRel\)\n  \+ admin_guard_seed\(vaultRoute\)\n  \+ deferred_accounting_seed\(vaultRoute\)' "$PROVER"; then
+  ok "admin_guard_seed(vaultRoute) + deferred_accounting_seed(vaultRoute) are concatenated as siblings of core_dep_seed at the same vaultRoute gate"
+else
+  bad "the new builders are not concatenated as siblings of core_dep_seed at the assembly point (same vaultRoute gate)"
+fi
+
 # #1755 M4 — wei-scale attack actions: the rounding theft bites at the totalAssets=2/totalSupply=1 boundary (a
 # victim depositing 3 wei redeems only 2, 33% robbed) and vanishes at large scale, so the handler MUST fuzz tiny
 # amounts IN ADDITION to realistic 1e15..1e21 sizes.

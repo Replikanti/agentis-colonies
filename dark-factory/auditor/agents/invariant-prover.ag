@@ -617,19 +617,7 @@ fn core_dep_seed(active: bool, name: string, rel: string, addr: string, targetNa
          + "  - ONLY AFTER that etch, deploy the REAL target — its constructor delegatecalls `initialize()` on the "
          + "etched singleton, which writes the strategy's real ERC4626 storage at the strategy address. Open "
          + "deposits if the target gates them (e.g. an `allowDeposits()` / allowlist as management, the deployer), "
-         + "and approve the yield source from the strategy so `deposit()`'s deploy hook succeeds. Because the "
-         + "strategy's `report()` runs a profit-limit HEALTH CHECK that reverts (revert reason `healthCheck`) when "
-         + "a donation is realized as an outsized profit, the Handler MUST ALSO call the strategy's "
-         + "`setDoHealthCheck(false)` as management (the deployer) in the same setup, right after `allowDeposits()` "
-         + "— otherwise the donation-realizing `report()` reverts, `totalAssets` never inflates, and the "
-         + "first-depositor / share-inflation bug is unreachable.\n"
-         + "  - As management (the deployer), the Handler MUST ALSO call the strategy's `setProfitMaxUnlockTime(0)` "
-         + "(a `public onlyManagement` function on `TokenizedStrategy`) in the same setup: WITHOUT it a profit "
-         + "realized through `report()` is LOCKED and unlocks LINEARLY over the profit-unlock window, so "
-         + "`totalAssets` never inflates for share pricing and the first-depositor bug stays unreachable (the CLEAN "
-         + "verdict). WITH `profitMaxUnlockTime == 0` the donation is recognized in `totalAssets` INSTANTLY — seed "
-         + "1 wei + donate 1 wei + report() then yields `totalAssets == 2, totalSupply == 1` (a 2x share price), "
-         + "the exact share-inflation boundary the first-depositor attack exploits.\n"
+         + "and approve the yield source from the strategy so `deposit()`'s deploy hook succeeds.\n"
          + "  - Drive deposit/mint/withdraw/redeem through THIS real share path in the Handler, and expose the "
          + "first-depositor attack as adversarial actions: a 1-wei first deposit followed by a direct donation "
          + "(and, if the target realizes donations via `report()`, a report) so a LATER honest depositor's "
@@ -642,6 +630,56 @@ fn core_dep_seed(active: bool, name: string, rel: string, addr: string, targetNa
          + "1..1e24 donations never drives the tiny-value regime where the bug is reachable.\n"
          + "  - The ONE deep invariant is per-actor VICTIM-FAIRNESS: no honest depositor can redeem strictly LESS "
          + "than they deposited (minus a small RELATIVE tolerance, not an absolute dust) after any sequence.\n\n";
+}
+
+// #1763 G2 — GENERAL ADMIN-GUARD NEUTRALIZATION. Extracted out of core_dep_seed (which used to hard-code yearn's
+// `setDoHealthCheck(false)`) into a protocol-GENERAL directive: because the Handler DEPLOYS the target it holds the
+// target's management/owner role, so it can call the target's OWN `onlyManagement`/`onlyOwner`-gated setters to
+// disable/relax any guard (health check, profit/loss-limit ratio, pause/freeze flag, deposit cap) standing between
+// the fuzzer and the bug. The LLM does the target-specific derivation from source; this builder supplies the general
+// instruction plus yearn's `setDoHealthCheck(false)` as the concrete WORKED EXAMPLE — not the only path. Concatenated
+// as a sibling of core_dep_seed at the same `active`/vaultRoute gate; `!active => ""` (default-off byte-identical).
+fn admin_guard_seed(active: bool) -> string {
+    if !active { return ""; }
+    return "  - NEUTRALIZE ADMIN GUARDS (you deploy AS management/owner): the target may expose "
+         + "`onlyManagement`/`onlyOwner`-gated setters that ARM guards which block the attack or its realization — "
+         + "profit-limit HEALTH CHECKS, profit/loss-limit RATIOS, pause/freeze flags, deposit caps/allowlists. Because "
+         + "the Handler is the deployer it holds that admin role, so DERIVE FROM THE TARGET'S OWN SOURCE the exact "
+         + "management calls that DISABLE or RELAX every such guard standing between the fuzzer and the bug (or its "
+         + "realization), and issue them as the deployer in `setUp()`. If any blocking guard is left armed the "
+         + "attack-realizing call reverts, the manipulated quantity never moves, and the bug is unreachable (a false "
+         + "CLEAN verdict).\n"
+         + "    WORKED EXAMPLE (yearn-v3 `TokenizedStrategy`): the strategy's `report()` runs a profit-limit HEALTH "
+         + "CHECK that reverts (revert reason `healthCheck`) when a donation is realized as an outsized profit, so the "
+         + "Handler MUST ALSO call the strategy's `setDoHealthCheck(false)` as management (the deployer) in the same "
+         + "setup, right after `allowDeposits()` — otherwise the donation-realizing `report()` reverts, `totalAssets` "
+         + "never inflates, and the first-depositor / share-inflation bug is unreachable.\n";
+}
+
+// #1763 G3 — GENERAL DEFERRED-ACCOUNTING NEUTRALIZATION. Twin of G2, extracted out of core_dep_seed (which used to
+// hard-code yearn's `setProfitMaxUnlockTime(0)`). The state change the manipulation relies on may not register
+// immediately: a time-locked / vesting / streaming / cooldown mechanism can DEFER it so the quantity the attack
+// inflates only moves over time and never reaches the boundary inside a single fuzzed sequence. The general directive
+// tells the Handler (again the deployer, so management/owner) to DETECT any such deferral in the target's own source
+// and set its window/period to ZERO (set-to-instant), with yearn's `setProfitMaxUnlockTime(0)` as the WORKED EXAMPLE.
+// Concatenated as a sibling of core_dep_seed at the same gate; `!active => ""` (default-off byte-identical).
+fn deferred_accounting_seed(active: bool) -> string {
+    if !active { return ""; }
+    return "  - NEUTRALIZE DEFERRED ACCOUNTING (set-to-instant, as management/owner): the state change the "
+         + "manipulation relies on may not register immediately — a time-locked / vesting / streaming / cooldown "
+         + "mechanism can DEFER it (profit unlock, reward streaming, unlock windows, cooldown periods) so the quantity "
+         + "the attack inflates only moves over time and never reaches the exploitable boundary within one fuzzed "
+         + "sequence. DETECT any such deferral in the target's OWN source and, via its `onlyManagement`/`onlyOwner` "
+         + "setter, set its window/period to ZERO so the change is recognized INSTANTLY; without it the manipulated "
+         + "quantity stays deferred and the verdict stays a false CLEAN.\n"
+         + "    WORKED EXAMPLE (yearn-v3 `TokenizedStrategy`): as management (the deployer) the Handler MUST ALSO call "
+         + "the strategy's `setProfitMaxUnlockTime(0)` (a `public onlyManagement` function on `TokenizedStrategy`) in "
+         + "the same setup: WITHOUT it a profit realized through `report()` is LOCKED and unlocks LINEARLY over the "
+         + "profit-unlock window, so `totalAssets` never inflates for share pricing and the first-depositor bug stays "
+         + "unreachable (the CLEAN verdict). WITH `profitMaxUnlockTime == 0` the donation is recognized in "
+         + "`totalAssets` INSTANTLY — seed 1 wei + donate 1 wei + report() then yields "
+         + "`totalAssets == 2, totalSupply == 1` (a 2x share price), the exact share-inflation boundary the "
+         + "first-depositor attack exploits.\n";
 }
 
 // #1725 — ADVERSARIAL/MULTI-ACTOR HANDLER ACTION CHECKLIST. The #1716 A/B isolated a DELTA gap where the LLM
@@ -894,6 +932,8 @@ let sharedScaffold =
   + "signatures the target actually calls). A mock whose decimals/units/types do NOT match the target's "
   + "assumptions is INVALID and produces false findings.\n\n"
   + core_dep_seed(vaultRoute, coreDepName, coreDepRel, coreDepAddr, deployName, vaultTargetRel)
+  + admin_guard_seed(vaultRoute)
+  + deferred_accounting_seed(vaultRoute)
   + auxBlock
   + "=== BUG CLASS (lens) ===\n" + targetClass + "\n\n"
   + "=== ADVERSARIAL ACTION CHECKLIST ===\n"
