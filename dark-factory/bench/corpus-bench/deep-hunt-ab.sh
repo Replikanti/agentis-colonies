@@ -66,6 +66,31 @@ high_hit_of() {
     | awk -F'\t' -v id="$3" '$1==id {print $2; found=1} END{ if(!found) print "MISS" }'
 }
 
+# high_recall_count <truth.tsv> <verified_findings.json> -> prints the count of High truth rows scored HIT.
+# Used to compute the ON-vs-OFF High-recall delta Δ deterministically in the self-test (#1774). score-match's
+# output is captured to a temp file (not piped) so the python reader takes truth + scorecard as file argv —
+# same idiom as report_side, no scorecard text ever interpolated into the shell.
+high_recall_count() {
+  _hrc_scf="$(mktemp "${TMPDIR:-/tmp}/deep-hunt-ab-hrc.XXXXXX")"
+  python3 "$SCOREMATCH" "$1" "$2" --min-overlap "$MINOV" > "$_hrc_scf" 2>/dev/null || true
+  python3 - "$1" "$_hrc_scf" <<'PY'
+import sys
+truth, scf = sys.argv[1], sys.argv[2]
+high = set()
+for line in open(truth, encoding="utf-8", errors="ignore"):
+    c = line.rstrip("\n").split("\t")
+    if len(c) >= 5 and c[1] == "High":
+        high.add(c[0])
+n = 0
+for line in open(scf, encoding="utf-8", errors="ignore"):
+    c = line.rstrip("\n").split("\t")
+    if len(c) >= 2 and c[0] in high and c[1] == "HIT":
+        n += 1
+print(n)
+PY
+  rm -f "$_hrc_scf"
+}
+
 # ==========================================================================================================
 # --self-test (default): the offline, deterministic acceptance bar.
 # ==========================================================================================================
@@ -100,28 +125,36 @@ if [ "$MODE" = "self-test" ]; then
 
   PASS_FIXTURE="scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted"
 
-  run_side() {  # $1 = out dir, $2 = "off"|"on"
-    _out="$1"; _side="$2"
-    _extra=""
-    [ "$_side" = "on" ] && _extra="--deep-hunt --invariant-fixture $FIX/handler-fixture.t.sol"
-    # shellcheck disable=SC2086
+  # #1774: mirror the --live SHARED-breadth structure — run breadth once (NO --deep-hunt), clone it, then apply
+  # ONLY the STAGE 4.5 lens over the clone. So ON is a superset of OFF by construction and Δ isolates the lens.
+  run_breadth() {  # $1 = out dir — breadth-only baseline (the shared base for OFF and the ON clone).
+    _out="$1"
     "$ZONEHUNT" --repo "$REPO" --out "$_out" --drop-dir "$_out/drop" --scope-hint src \
       --backend mock --agentis "$STUB" \
       --map-fixture "$FIX/zones.fixture.txt" --brief-fixture "$FIX/briefs.fixture.txt" \
       --pass-fixture "$PASS_FIXTURE" --in-scope "the whole in-scope program" \
-      $_extra >"$_out.log" 2>&1
+      >"$_out.log" 2>&1
+  }
+
+  run_lens_only() {  # $1 = out dir (a CLONE of a breadth --out) — apply ONLY the deep-hunt STAGE 4.5 lens.
+    _out="$1"
+    "$ZONEHUNT" --repo "$REPO" --out "$_out" --deep-hunt --deep-hunt-only \
+      --invariant-fixture "$FIX/handler-fixture.t.sol" \
+      --backend mock --agentis "$STUB" \
+      >"$_out.log" 2>&1
   }
 
   OUT_OFF="$WORK/off"
   OUT_ON="$WORK/on"
 
-  note "running the breadth-only baseline (deep-hunt OFF) ..."
-  run_side "$OUT_OFF" off; RC_OFF=$?
-  [ "$RC_OFF" -eq 0 ] && ok "OFF run exits 0" || { bad "OFF run exited $RC_OFF"; sed 's/^/      /' "$OUT_OFF.log" | tail -30 >&2; }
+  note "running the shared breadth baseline (deep-hunt OFF) ..."
+  run_breadth "$OUT_OFF"; RC_OFF=$?
+  [ "$RC_OFF" -eq 0 ] && ok "OFF (shared breadth) run exits 0" || { bad "OFF run exited $RC_OFF"; sed 's/^/      /' "$OUT_OFF.log" | tail -30 >&2; }
 
-  note "running the severity-first deep-hunt (deep-hunt ON) ..."
-  run_side "$OUT_ON" on; RC_ON=$?
-  [ "$RC_ON" -eq 0 ] && ok "ON run exits 0" || { bad "ON run exited $RC_ON"; sed 's/^/      /' "$OUT_ON.log" | tail -30 >&2; }
+  note "cloning the shared breadth base OFF -> ON, then applying ONLY the deep-hunt lens over the clone ..."
+  rm -rf "$OUT_ON"; cp -R "$OUT_OFF" "$OUT_ON"
+  run_lens_only "$OUT_ON"; RC_ON=$?
+  [ "$RC_ON" -eq 0 ] && ok "ON (breadth clone + deep-hunt lens) run exits 0" || { bad "ON run exited $RC_ON"; sed 's/^/      /' "$OUT_ON.log" | tail -30 >&2; }
 
   VJ_OFF="$OUT_OFF/verify/verified_findings.json"
   VJ_ON="$OUT_ON/verify/verified_findings.json"
@@ -168,9 +201,70 @@ PY
     bad "(c) expected OFF=MISS ON=HIT for the High truth row, got OFF=$HIT_OFF ON=$HIT_ON"
   fi
 
+  # (d) SUPERSET: ON verified[] locations ⊇ OFF verified[] locations — the shared-breadth union invariant, proven
+  #     directly. Because ON is a clone of OFF's breadth base plus the append-only lens, it can never LOSE a row.
+  if [ -f "$VJ_OFF" ] && [ -f "$VJ_ON" ] && python3 - "$VJ_OFF" "$VJ_ON" <<'PY'
+import sys, json
+def locs(p):
+    d = json.load(open(p, encoding="utf-8"))
+    v = d.get("verified", []) if isinstance(d, dict) else []
+    return set((f or {}).get("location", "") for f in v)
+off, on = locs(sys.argv[1]), locs(sys.argv[2])
+assert off <= on, "ON is not a superset of OFF: OFF-only locations = %r" % sorted(off - on)
+PY
+  then ok "(d) ON verified[] locations ⊇ OFF verified[] locations (the shared-breadth union invariant holds)"
+  else bad "(d) ON is NOT a superset of OFF — the shared-breadth union invariant regressed"
+  fi
+
+  # (e) Δ = ON − OFF High recall = +1 on the FINDING fixture: the lens added exactly the S-D1 truth row.
+  DOFF="$(high_recall_count "$FIX/truth.tsv" "$VJ_OFF")"
+  DON="$(high_recall_count "$FIX/truth.tsv" "$VJ_ON")"
+  DELTA=$((DON - DOFF))
+  note "  High recall: OFF=$DOFF ON=$DON Δ=$DELTA"
+  if [ "$DELTA" -eq 1 ]; then
+    ok "(e) Δ = ON − OFF High recall = +1 (the deep-hunt lens added exactly one truth-row hit; Δ ≥ 0 holds)"
+  else
+    bad "(e) expected Δ=+1 on the FINDING fixture, got Δ=$DELTA (OFF=$DOFF ON=$DON)"
+  fi
+
+  # (f) Δ = 0 when the lens merges NOTHING: a SECOND breadth clone whose lens-only call sees DEEP_HUNT_VERDICT=CLEAN
+  #     emits an INVARIANT|...|CLEAN verdict, so STAGE 4.5's adapter merges 0 (models the live yieldoor "lens ran
+  #     but merged 0" evidence). ON2 must then equal OFF2 recall, carry NO invariant-hunt finding, and Δ = 0 —
+  #     the whole point of sharing one breadth pass: Δ can never go negative.
+  OUT_OFF2="$WORK/off2"
+  OUT_ON2="$WORK/on2"
+  note "running a second breadth baseline + a CLEAN (merges-0) lens to pin Δ = 0 ..."
+  run_breadth "$OUT_OFF2"; RC_OFF2=$?
+  [ "$RC_OFF2" -eq 0 ] || { bad "OFF2 run exited $RC_OFF2"; sed 's/^/      /' "$OUT_OFF2.log" | tail -30 >&2; }
+  rm -rf "$OUT_ON2"; cp -R "$OUT_OFF2" "$OUT_ON2"
+  ( export DEEP_HUNT_VERDICT=CLEAN; run_lens_only "$OUT_ON2" ); RC_ON2=$?
+  [ "$RC_ON2" -eq 0 ] || { bad "ON2 (CLEAN lens) run exited $RC_ON2"; sed 's/^/      /' "$OUT_ON2.log" | tail -30 >&2; }
+  VJ_OFF2="$OUT_OFF2/verify/verified_findings.json"
+  VJ_ON2="$OUT_ON2/verify/verified_findings.json"
+
+  if [ -f "$VJ_ON2" ] && python3 - "$VJ_ON2" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+v = d.get("verified", []) if isinstance(d, dict) else []
+assert not any((f or {}).get("source") == "invariant-hunt" for f in v), "ON2 carries an invariant-hunt finding despite the CLEAN verdict"
+PY
+  then ok "(f1) the CLEAN lens merged 0 findings — ON2 has NO source=invariant-hunt finding"
+  else bad "(f1) ON2 unexpectedly carries an invariant-hunt finding under DEEP_HUNT_VERDICT=CLEAN"
+  fi
+
+  D2OFF="$(high_recall_count "$FIX/truth.tsv" "$VJ_OFF2")"
+  D2ON="$(high_recall_count "$FIX/truth.tsv" "$VJ_ON2")"
+  DELTA2=$((D2ON - D2OFF))
+  note "  CLEAN-lens High recall: OFF2=$D2OFF ON2=$D2ON Δ=$DELTA2"
+  if [ "$D2ON" -eq "$D2OFF" ] && [ "$DELTA2" -eq 0 ]; then
+    ok "(f2) ON2 == OFF2 High recall and Δ = 0 — a lens that merges 0 never drives Δ negative"
+  else
+    bad "(f2) expected ON2==OFF2 and Δ=0 under the CLEAN lens, got OFF2=$D2OFF ON2=$D2ON Δ=$DELTA2"
+  fi
+
   echo
   if [ "$FAILS" -eq 0 ]; then
-    note "PASS — severity-first deep-hunt adds a source=invariant-hunt High finding (bench-scored HIT) that the breadth pass missed"
+    note "PASS — shared breadth: ON ⊇ OFF, Δ=+1 on the FINDING fixture, Δ=0 when the lens merges 0 (Δ ≥ 0 by construction)"
     exit 0
   fi
   note "FAIL — $FAILS assertion(s) regressed" >&2
@@ -196,20 +290,35 @@ if [ "$MODE" = "live" ]; then
   cp -R "$CODE_DIR/." "$SCRATCH/"
   note "live A/B on an isolated scratch copy: $SCRATCH (scope-hint: ${SCOPE_HINT:-<none>}, backend: $BACKEND)"
 
-  run_live() {  # $1 = out dir, $2 = "off"|"on"
-    _out="$1"; _side="$2"
-    _extra=""
-    [ "$_side" = "on" ] && _extra="--deep-hunt"
-    # shellcheck disable=SC2086
+  # #1774: SHARE one breadth pass across OFF and ON so ON ⊇ OFF and Δ isolates the lens (not breadth run-to-run
+  # noise). Breadth runs ONCE (NO --deep-hunt) -> OFF; ON is a CLONE of that breadth base with ONLY the deep-hunt
+  # STAGE 4.5 lens applied over it (--deep-hunt-only). ON can therefore only ADD the lens's findings.
+  run_breadth() {  # $1 = out dir — the single shared breadth pass (NO --deep-hunt).
+    _out="$1"
     "$ZONEHUNT" --repo "$SCRATCH" --out "$_out" --backend "$BACKEND" --agentis "$AGENTIS" \
-      ${SCOPE_HINT:+--scope-hint "$SCOPE_HINT"} $_extra \
-      || note "  [$ID] run-zone-hunt.sh ($_side) exited non-zero; scoring whatever it produced"
+      ${SCOPE_HINT:+--scope-hint "$SCOPE_HINT"} \
+      || note "  [$ID] run-zone-hunt.sh (breadth) exited non-zero; scoring whatever it produced"
+  }
+
+  run_lens_only() {  # $1 = out dir (a CLONE of the breadth --out) — apply ONLY the deep-hunt STAGE 4.5 lens.
+    _out="$1"
+    "$ZONEHUNT" --repo "$SCRATCH" --out "$_out" --deep-hunt --deep-hunt-only \
+      --backend "$BACKEND" --agentis "$AGENTIS" \
+      || note "  [$ID] run-zone-hunt.sh (deep-hunt-only) exited non-zero; scoring whatever it produced"
   }
 
   OUT_OFF="$WORK/$ID/off"
   OUT_ON="$WORK/$ID/on"
-  note "[$ID] OFF (breadth-only) ..."; run_live "$OUT_OFF" off
-  note "[$ID] ON  (deep-hunt) ..."; run_live "$OUT_ON" on
+  note "[$ID] breadth (the shared baseline) ..."; run_breadth "$OUT_OFF"
+  if [ -f "$OUT_OFF/verify/verified_findings.json" ] && [ -f "$OUT_OFF/map/zones.json" ]; then
+    note "[$ID] cloning the breadth base OFF -> ON, then applying ONLY the deep-hunt lens ..."
+    rm -rf "$OUT_ON"; cp -R "$OUT_OFF" "$OUT_ON"
+    run_lens_only "$OUT_ON"
+    AB_ON=1
+  else
+    note "[$ID] breadth produced no verify/verified_findings.json + map/zones.json — skipping ON honestly (Δ undefined, NOT a false negative)"
+    AB_ON=0
+  fi
 
   report_side() {  # $1 = out dir, $2 = label
     _vj="$1/verify/verified_findings.json"
@@ -245,8 +354,38 @@ PY
 
   note "================ DEEP-HUNT A/B [$ID] ================"
   report_side "$OUT_OFF" "OFF (breadth)"
-  report_side "$OUT_ON" "ON  (deep-hunt)"
-  note "the ON-vs-OFF High recall delta is the deep-hunt lens's measured contribution on this zone (a bench proxy, not a jackpot)."
+  if [ "$AB_ON" -eq 1 ]; then
+    report_side "$OUT_ON" "ON  (breadth + deep-hunt lens)"
+    # Δ = ON − OFF High recall. ON is a superset CLONE of OFF's breadth base plus the append-only lens, so
+    # Δ ≥ 0 BY CONSTRUCTION — it equals the count of truth rows the deep-hunt lens ADDED on the shared breadth.
+    # report_side already wrote each side's scorecard to <out>.scorecard.txt; cross them in one clean python call.
+    python3 - "$TRUTH" "$OUT_OFF.scorecard.txt" "$OUT_ON.scorecard.txt" "$ID" <<'PY'
+import sys
+truth, scf_off, scf_on, cid = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+high = set()
+for line in open(truth, encoding="utf-8", errors="ignore"):
+    c = line.rstrip("\n").split("\t")
+    if len(c) >= 5 and c[1] == "High":
+        high.add(c[0])
+def recall(path):
+    n = 0
+    try:
+        fh = open(path, encoding="utf-8", errors="ignore")
+    except OSError:
+        return 0
+    for line in fh:
+        c = line.rstrip("\n").split("\t")
+        if len(c) >= 2 and c[0] in high and c[1] == "HIT":
+            n += 1
+    return n
+off, on = recall(scf_off), recall(scf_on)
+print("deep-hunt-ab.sh:   [%s] Δ = ON − OFF High recall = %d − %d = %+d (≥ 0 by construction: ON ⊇ OFF)"
+      % (cid, on, off, on - off))
+PY
+  else
+    note "  [$ID] ON skipped — Δ not computed (the shared breadth base was unavailable)"
+  fi
+  note "the ON-vs-OFF High recall delta is the deep-hunt lens's measured contribution on this zone (Δ ≥ 0 by construction — a bench proxy, not a jackpot)."
   exit 0
 fi
 

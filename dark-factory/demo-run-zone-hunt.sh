@@ -275,6 +275,33 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# #1774: --deep-hunt-only applies ONLY the STAGE 4.5 lens over an EXISTING breadth --out (the seam
+# deep-hunt-ab.sh --live uses to SHARE one breadth pass across OFF/ON). Two offline, LLM-free CLI guards pin its
+# contract (mirroring the --deep-hunt-repair-rounds badval pattern above): (i) it REQUIRES --deep-hunt, and
+# (ii) over an --out lacking the reused artifacts (map/zones.json + verify/verified_findings.json) it exits 3.
+# ----------------------------------------------------------------------------------------------------------
+note "#1774 --deep-hunt-only wiring ..."
+DHO_REQ_ERR="$WORK/deep-hunt-only-requires.err"
+"$ZONEHUNT" --repo "$HERE" --deep-hunt-only >/dev/null 2>"$DHO_REQ_ERR"
+DHO_REQ_RC=$?
+if [ "$DHO_REQ_RC" -eq 2 ] && grep -q -- '--deep-hunt-only requires --deep-hunt' "$DHO_REQ_ERR"; then
+  ok "run-zone-hunt.sh --deep-hunt-only WITHOUT --deep-hunt fails fast with exit 2 + the usage error"
+else
+  bad "run-zone-hunt.sh --deep-hunt-only without --deep-hunt did not fail fast as expected (exit $DHO_REQ_RC):"
+  sed 's/^/      /' "$DHO_REQ_ERR" | head -10 >&2
+fi
+DHO_PRE_ERR="$WORK/deep-hunt-only-prereq.err"
+DHO_EMPTY_OUT="$WORK/deep-hunt-only-empty-out"
+"$ZONEHUNT" --repo "$REPO" --out "$DHO_EMPTY_OUT" --deep-hunt --deep-hunt-only >/dev/null 2>"$DHO_PRE_ERR"
+DHO_PRE_RC=$?
+if [ "$DHO_PRE_RC" -eq 3 ] && grep -q -- '--deep-hunt-only requires an existing' "$DHO_PRE_ERR"; then
+  ok "run-zone-hunt.sh --deep-hunt-only over an --out lacking the reused breadth artifacts fails fast with exit 3"
+else
+  bad "run-zone-hunt.sh --deep-hunt-only over an empty --out did not fail fast as expected (exit $DHO_PRE_RC):"
+  sed 's/^/      /' "$DHO_PRE_ERR" | head -10 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — M5 capstone (run-zone-hunt.sh: map -> brief -> discovery -> verify -> audit-pass -> deliver, HALT) holds"
   exit 0
