@@ -170,6 +170,10 @@ printf 'contract G { address constant IMPL = 0x111111111111111111111111111111111
 # (D-known) generic constant delegatecall to the KNOWN registry address (no yearn NAME signal) => resolves via
 # the address registry, proving the general (non-yearn-named) path also resolves when the singleton is known.
 printf 'contract G2 { address constant S = 0xD377919FA87120584B21279a491F82D5265A139c; function f() external { S.delegatecall(msg.data); } }\n' > "$DWORK/generic-known.sol"
+# (comment-only) #1771 review over-fire hardening: the yearn address appears ONLY in a COMMENT, with a
+# delegatecall to a DIFFERENT address => EMPTY (a bare address mention in a comment must NOT resolve the
+# singleton; the by-address branch strips // comments before matching).
+printf 'contract C { // ref 0xD377919FA87120584B21279a491F82D5265A139c\n function f() external { address(0x2).delegatecall(msg.data); } }\n' > "$DWORK/commented.sol"
 # unrelated ERC20 — no delegatecall-singleton shape at all => EMPTY.
 printf 'contract T { function transfer(address,uint256) external {} }\n' > "$DWORK/erc20.sol"
 
@@ -189,7 +193,7 @@ else
   bad "(D) the registry-by-address general resolution did NOT fire (got: '$(d_out "$DWORK/generic-known.sol")')"
 fi
 
-for _f in eip1967 diamond generic erc20; do
+for _f in eip1967 diamond generic erc20 commented; do
   _o="$(d_out "$DWORK/$_f.sol")"
   if [ -z "$_o" ]; then
     ok "($_f) an unresolvable/ambiguous target yields EMPTY (no guessed address — the OVER-FIRE mitigation)"

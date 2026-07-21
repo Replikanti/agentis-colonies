@@ -107,11 +107,14 @@ if [ -z "$shape" ]; then
 fi
 
 # Registry resolution BY ADDRESS: a recognized shape is resolvable only if the target references a KNOWN
-# singleton address in a delegatecall context AND that singleton's real source is locatable in-repo. This
+# singleton address in a delegatecall CODE context AND that singleton's real source is locatable in-repo. This
 # generalizes the (B)/(D) constant-address case beyond the yearn NAME signal while staying registry-bounded
 # (never a guessed address). A diamond's per-selector facets and a bare EIP-1967 runtime slot value carry no
 # such constant => they fall through to EMPTY.
-if [ "$has_dc" = 1 ] && grep -qi "$YEARN_ADDR" "$SRC" 2>/dev/null; then
+# #1771 review — OVER-FIRE hardening: strip `//` line-comments before the address match, so a bare mention of the
+# registry address in a COMMENT (not a real constant/delegatecall use) does NOT resolve the singleton. The yearn
+# NAME path (case A above) is unaffected; only this secondary by-address branch is tightened to non-comment code.
+if [ "$has_dc" = 1 ] && sed 's://.*::' "$SRC" 2>/dev/null | grep -qi "$YEARN_ADDR"; then
   _y="$(locate_yearn_singleton)"
   if [ -n "$_y" ]; then
     say "[$shape] resolved via known-singleton registry (address match $YEARN_ADDR) — $_y"
