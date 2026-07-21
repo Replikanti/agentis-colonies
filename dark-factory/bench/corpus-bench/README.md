@@ -119,6 +119,50 @@ dark-factory/bench/corpus-bench/generation-recall.sh --from-work <dir> --id yiel
 the #1698/#1699 re-measurement scorer stays byte-identical. This GT-anchored before/after is the **standard
 evidence for money-tier levers**: a single one-target A/B is no longer the sole signal.
 
+## Generalization measurement bench (#1763 G4)
+
+The [#1763](https://github.com/Replikanti/agentis-colonies/issues/1763) epic generalized three yearn-hardcoded
+pieces of the share-inflation catch by DETECTION (G1: core-dependency delegatecall-singleton) and by DIRECTIVE
+(G2/G3: admin-guard + deferred-accounting) — always keeping yearn-ybold as the worked example, and always proven
+not to regress the yearn catch. `generalization-bench.sh` is the measurement that asks the question those PRs
+could not: **did that generalization actually TRANSFER to a target that is not yearn?**
+
+It ORCHESTRATES the two frozen sibling harnesses above (it reimplements neither): `generation-recall.sh
+--from-work` for the generator's reach on each target, and `deep-hunt-ab.sh --live` for the ON-vs-OFF High-recall
+delta — scored, per selected contest, against that contest's own `truth.tsv`. It selects the corpus contests
+whose ground truth is share-inflation / value-conservation / first-depositor class — the targets where G1-G3
+SHOULD transfer if it generalized at all: **yieldoor, plaza, notional, mellow** (all share-issuing value-custody
+vault protocols, verified present in `corpus.tsv`). `yearn-ybold` is NOT a selected target — it is the
+REGRESSION ANCHOR.
+
+The report is built to produce an **honest negative**: the aggregate TRANSFER verdict is computed over the
+NON-yearn targets, and a zero recall is printed as `TRANSFER: NONE`, never smoothed. A **HARD regression gate**
+(`--regression`, also run inside `--self-test` and before every `--live` report) refuses to report any transfer
+number unless the yearn base still yields its deterministic FINDING under the generalized code — it runs the two
+CI-enforced yearn source-guard demos (`demo-invariant-core-dep.sh` + `demo-invariant-vault-first-depositor.sh`)
+and FAILS LOUD on any overfitting loss.
+
+```bash
+# deterministic self-test (what colony-lint runs; no network/LLM/forge — selection + orchestration + the HARD
+# yearn regression gate over synthetic fixtures):
+dark-factory/bench/corpus-bench/generalization-bench.sh --self-test
+
+# standalone yearn-base regression gate:
+dark-factory/bench/corpus-bench/generalization-bench.sh --regression
+
+# real measurement over an already-staged corpus-bench --work dir (operator-run):
+dark-factory/bench/corpus-bench/generalization-bench.sh --live --work <staged-work-dir> --json
+```
+
+`--live` is **never** the default and drives the real LLM/forge backend: run it ONLY after freed subscription
+capacity, on a single non-contending value-custody zone — the same discipline as `deep-hunt-ab.sh --live`. It
+consumes a `--work` dir the operator has already staged with `run-corpus-bench.sh --fetch --gt [--hunt]` (with
+the generalized capability ON); the `generation-recall.sh` / `deep-hunt-ab.sh` / `score-match.py` primitives it
+calls are all **unchanged** — this bench only orchestrates and reports. The fitness / genome-search "evolve"
+driver (item 10 of the G4 plan) is a SEPARATE follow-up, deferred until this bench produces a baseline; per the
+epic it will be the `pattern-evolver.ag` genome-search-over-a-bench-fitness-oracle idiom, not an `evolve_self()`
+runtime builtin (which does not exist in this substrate).
+
 ## Usage
 
 ```bash
