@@ -46,6 +46,12 @@
 #                       verified_findings.json (tagged source=invariant-hunt) so M5 + corpus-bench see it.
 #                       DEFAULT OFF — without it every run is byte-identical to before. Requires the target
 #                       to be a Foundry project ($REPO/foundry.toml); a non-Foundry target logs + skips it.
+#   --deep-hunt-only    #1774: skip M1..M4 (breadth) AND M5 (delivery) and apply ONLY the UNCHANGED STAGE 4.5
+#                       lens over an EXISTING breadth --out (its map/zones.json + verify/verified_findings.json
+#                       must already exist, else exit 3). Requires --deep-hunt. This is the seam deep-hunt-ab.sh
+#                       --live uses to SHARE one breadth pass across OFF and ON: breadth once -> OFF, clone ->
+#                       ON, lens-only over the clone, so ON is a superset of OFF and the A/B delta isolates the
+#                       lens. DEFAULT OFF => the full M1..M4 -> (4.5) -> M5 path is byte-identical to before.
 #   --invariant-fixture <f>  run-invariant-hunt.sh --handler-fixture (the OFFLINE/deterministic deep-hunt
 #                       path — no LLM). Only meaningful with --deep-hunt.
 #   --deep-hunt-max-targets <N>  Max primary targets per value-custody zone (default 1 — the largest .sol).
@@ -94,6 +100,7 @@ SCOPE_HINT="" ; SINCE="" ; RESIDUALS=""
 IN_SCOPE="" ; ASSET_CONTRACTS="" ; IMPACT_THRESHOLD=""
 MAP_FIXTURE="" ; BRIEF_FIXTURE="" ; PASS_FIXTURE="" ; DROP_DIR=""
 DEEP_HUNT=0 ; INV_FIXTURE="" ; DEEP_HUNT_MAX_TARGETS=1 ; DEEP_HUNT_REPAIR_ROUNDS=4 ; DEEP_HUNT_AUX_MAX=0
+DEEP_HUNT_ONLY=0  # #1774: apply ONLY the STAGE 4.5 lens over an existing breadth --out (requires --deep-hunt).
 # #1731: cross-run ensemble/union flags — a THIN pass-through: collected verbatim into DEEP_FWD and appended to
 # both --deep-hunt run-invariant-hunt.sh invocations. Empty (the default) => the arg lists are byte-identical.
 DEEP_FWD=()
@@ -116,6 +123,7 @@ while [ $# -gt 0 ]; do
     --brief-fixture)    nv "$#"; BRIEF_FIXTURE="$2"; shift 2 ;;
     --pass-fixture)     nv "$#"; PASS_FIXTURE="$2"; shift 2 ;;
     --deep-hunt)        DEEP_HUNT=1; shift ;;
+    --deep-hunt-only)   DEEP_HUNT_ONLY=1; shift ;;
     --invariant-fixture) nv "$#"; INV_FIXTURE="$2"; shift 2 ;;
     --deep-hunt-max-targets) nv "$#"; DEEP_HUNT_MAX_TARGETS="$2"; shift 2 ;;
     --deep-hunt-aux-max) nv "$#"; DEEP_HUNT_AUX_MAX="$2"; shift 2 ;;
@@ -144,6 +152,7 @@ case "$DEEP_HUNT_MAX_TARGETS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hun
 case "$DEEP_HUNT_AUX_MAX" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-aux-max must be a non-negative integer (got '$DEEP_HUNT_AUX_MAX')" >&2; exit 2 ;; esac
 case "$DEEP_HUNT_REPAIR_ROUNDS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be a positive integer (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2 ;; esac
 [ "$DEEP_HUNT_REPAIR_ROUNDS" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be >= 1 (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2; }
+[ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires --deep-hunt" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "run-zone-hunt.sh: python3 not installed" >&2; exit 3; }
 
 MAPZONES="$HERE/map-zones.sh"
@@ -179,7 +188,13 @@ fi
 
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 1 (M1): map-zones.sh -> <out>/map/zones.json + scope.tsv. --map-fixture => offline; else live substrate.
+#
+# #1774: the whole breadth block (M1..M4) is gated on --deep-hunt-only being OFF (the default). When
+# --deep-hunt-only is set we SKIP M1..M4 entirely and instead REUSE an existing breadth --out — deriving the
+# same MAP/VER/VERIFIED_JSON paths STAGE 4.5 reads/appends and asserting the two artifacts already exist —
+# then fall straight through to the UNCHANGED STAGE 4.5 lens. Default (off) => M1..M4 run exactly as before.
 # ----------------------------------------------------------------------------------------------------------
+if [ "$DEEP_HUNT_ONLY" -eq 0 ]; then
 MAP="$OUT/map"
 echo "run-zone-hunt.sh: [M1] mapping zones -> $MAP ..." >&2
 if [ -n "$MAP_FIXTURE" ]; then
@@ -271,6 +286,13 @@ echo "run-zone-hunt.sh: [M4] verifying candidates (refute gate) -> $VER ..." >&2
 "$VERIFY" --results "$MERGED" --repo "$REPO" --gate refute --backend "$BACKEND" --agentis "$AGENTIS" --out "$VER"
 VERIFIED_JSON="$VER/verified_findings.json"
 [ -f "$VERIFIED_JSON" ] || { echo "run-zone-hunt.sh: verify-findings.sh did not emit verified_findings.json" >&2; exit 3; }
+else
+  # #1774 --deep-hunt-only: M1..M4 were skipped — REUSE the existing breadth --out. Derive the exact paths the
+  # UNCHANGED STAGE 4.5 lens reads ($MAP/zones.json) and appends to ($VERIFIED_JSON), and assert they exist.
+  MAP="$OUT/map"; VER="$OUT/verify"; VERIFIED_JSON="$VER/verified_findings.json"
+  [ -f "$MAP/zones.json" ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires an existing $MAP/zones.json (run breadth first)" >&2; exit 3; }
+  [ -f "$VERIFIED_JSON" ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires an existing $VERIFIED_JSON (run breadth first)" >&2; exit 3; }
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 4.5 (#1713): SEVERITY-FIRST DEEP-HUNT — a SECOND lens on the VALUE-CUSTODY zones. Default OFF (no
@@ -438,6 +460,13 @@ PY
     done < "$DEEP_TARGETS"
     echo "run-zone-hunt.sh: [deep-hunt] merged $DEEP_FINDINGS invariant-hunt finding(s) into verified_findings.json" >&2
   fi
+fi
+
+# #1774: --deep-hunt-only halts here — the lens has been applied over the reused breadth --out; M5 delivery is
+# the breadth path's job (it already ran when OFF was produced) and is deliberately skipped for the lens clone.
+if [ "$DEEP_HUNT_ONLY" -eq 1 ]; then
+  echo "run-zone-hunt.sh: [deep-hunt-only] lens applied over the reused breadth --out; skipping M5 delivery" >&2
+  exit 0
 fi
 
 # ----------------------------------------------------------------------------------------------------------

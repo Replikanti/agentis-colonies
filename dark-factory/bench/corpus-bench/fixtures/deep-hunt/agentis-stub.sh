@@ -36,10 +36,16 @@ case "$cmd" in
         # the deep engine's contract: exactly one INVARIANT|<file:fn>|<verdict> line, then STEP| witness lines
         # on a FINDING. The multi-step donate/inflation sequence leads with deposit(, so the adapter's
         # "first identifier-before-(" scrape yields `deposit`.
-        echo "INVARIANT|src/Vault.sol:deposit|FINDING"
-        echo "STEP|deposit(1)"
-        echo "STEP|attackerDonate(1000000000000000000000000)"
-        echo "STEP|deposit(1000000000000000000)"
+        # #1774: the verdict is parametrized via an inherited DEEP_HUNT_VERDICT (default FINDING => byte-identical
+        # to before, the Δ=+1 path). DEEP_HUNT_VERDICT=CLEAN emits a CLEAN verdict with NO witness so STAGE 4.5's
+        # adapter merges 0 findings (the deterministic Δ=0 fixture — models the live "lens ran but merged 0" case).
+        verd="${DEEP_HUNT_VERDICT:-FINDING}"
+        echo "INVARIANT|src/Vault.sol:deposit|$verd"
+        if [ "$verd" = "FINDING" ]; then
+          echo "STEP|deposit(1)"
+          echo "STEP|attackerDonate(1000000000000000000000000)"
+          echo "STEP|deposit(1000000000000000000)"
+        fi
         exit 0 ;;
       coordinator.ag)
         loc="${FINDING_LOCATION:-}"
