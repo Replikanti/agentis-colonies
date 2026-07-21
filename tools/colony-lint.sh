@@ -1275,6 +1275,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-generation-recall.sh" ]; then
     fi
 fi
 
+# --- dark-factory generalization measurement bench (#1763 G4) ---
+# generalization-bench.sh answers "did the G1-G3 generalization TRANSFER BEYOND YEARN?": it orchestrates
+# generation-recall.sh --from-work (#1730) + deep-hunt-ab.sh --live (#1713) over the corpus's share-inflation /
+# value-conservation / first-depositor contests (yieldoor/plaza/notional/mellow), scored against each contest's
+# truth.tsv, and REPORTS an honest transfer number (a zero/negative delta is DATA, never smoothed). Its
+# --self-test (CI-safe, no network / LLM / forge) drives the bench's own selection + orchestration over synthetic
+# fixtures AND runs the HARD yearn regression gate (the yearn base must still yield a deterministic FINDING under
+# the generalized code). The real --live measurement is operator-run on freed subscription capacity, never on CI.
+if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/generalization-bench.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/bench/corpus-bench/generalization-bench.sh" --self-test 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: generalization measurement bench self-test (#1763 G4)"
+    else
+        fail "dark-factory: generalization measurement bench self-test regressed (#1763 G4)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory invariant-hunt target-linkage gate (#1471) ---
 # The invariant-hunt generation path could produce a false FINDING when the LLM substituted its own toy
 # contract of the same name instead of importing the in-scope target. forge-invariant.sh gained a
