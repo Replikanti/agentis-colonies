@@ -26,6 +26,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 PROVER="$HERE/auditor/agents/invariant-prover.ag"
 RUNNER="$HERE/run-invariant-hunt.sh"
 ZONE="$HERE/run-zone-hunt.sh"
+DETECT="$HERE/detect-core-dep.sh"
 
 FAILS=0
 note() { echo "demo-invariant-core-dep.sh: $*"; }
@@ -36,6 +37,7 @@ skip() { echo "  [SKIP] $*"; }
 [ -f "$PROVER" ] || { note "prover not found: $PROVER" >&2; exit 3; }
 [ -f "$RUNNER" ] || { note "runner not found: $RUNNER" >&2; exit 3; }
 [ -f "$ZONE" ]   || { note "zone-hunt not found: $ZONE" >&2; exit 3; }
+[ -f "$DETECT" ] || { note "detector not found: $DETECT" >&2; exit 3; }
 
 # ----------------------------------------------------------------------------------------------------------
 # 1) RUNNER WIRING — the default-off flag, the yearn-v3 detection + lib-locate, the INV_CORE_DEP thread, and the
@@ -55,23 +57,20 @@ else
   bad "--core-dep-harness boolean arg case missing / not a bare shift"
 fi
 
-if grep -q "grep -qE 'TokenizedStrategy|BaseStrategy'" "$RUNNER"; then
-  ok "the yearn-v3 signal grep (TokenizedStrategy|BaseStrategy) gates the thread"
+# #1763 G1 — the runner no longer inlines the yearn-only grep+locate; it DELEGATES to detect-core-dep.sh (the
+# general, no-LLM detector) and splits its `<path>:<Name>:<addr>|<featureset>` output at `|` into INV_CORE_DEP
+# (schema UNCHANGED) and the NEW INV_CORE_FEATURES. The detector-internal detection is source-guarded in section 3.
+if grep -q '"\$HERE/detect-core-dep.sh" "\$CODE" "\$REPO_IN_RUN"' "$RUNNER"; then
+  ok "the runner calls detect-core-dep.sh over the target source + the staged repo copy (no inline grep+locate)"
 else
-  bad "the yearn-v3 signal grep is missing"
+  bad "the runner does not delegate to detect-core-dep.sh"
 fi
 
-if grep -q 'lib/tokenized-strategy/src/TokenizedStrategy.sol' "$RUNNER" \
-   && grep -q 'find "\$REPO_IN_RUN"/lib -name TokenizedStrategy.sol -print -quit' "$RUNNER"; then
-  ok "the singleton is located in REPO_IN_RUN (primary path + find -print -quit fallback)"
+if grep -q 'INV_CORE_DEP="\${_det%%|\*}"' "$RUNNER" \
+   && grep -q 'INV_CORE_FEATURES="\${_det##\*|}"' "$RUNNER"; then
+  ok "the detector output is split at | into INV_CORE_DEP (<path>:Name:addr, schema UNCHANGED) and INV_CORE_FEATURES"
 else
-  bad "the singleton lib-locate (primary + find fallback) is missing"
-fi
-
-if grep -q 'INV_CORE_DEP="\$_ts_in_run:TokenizedStrategy:0xD377919FA87120584B21279a491F82D5265A139c"' "$RUNNER"; then
-  ok "INV_CORE_DEP is threaded as <path>:TokenizedStrategy:0xD377...9c"
-else
-  bad "the INV_CORE_DEP <path>:Name:addr thread is missing / malformed"
+  bad "the detector-output split into INV_CORE_DEP / INV_CORE_FEATURES is missing / malformed"
 fi
 
 if grep -q 'INV_CORE_DEP="\$INV_CORE_DEP" \\' "$RUNNER"; then
@@ -80,15 +79,21 @@ else
   bad "INV_CORE_DEP is not passed into the agentis go env block"
 fi
 
-if grep -q 'exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT,MUTANT_KILL,INV_CORPUS,INV_CORE_DEP' "$RUNNER"; then
-  ok "INV_CORE_DEP is on the exec.env_passthrough allowlist (else getenv() reads the sanitized env as \"\")"
+if grep -q 'INV_CORE_FEATURES="\$INV_CORE_FEATURES" \\' "$RUNNER"; then
+  ok "INV_CORE_FEATURES is passed into the agentis go env block beside INV_CORE_DEP"
 else
-  bad "INV_CORE_DEP is NOT on the exec.env_passthrough allowlist"
+  bad "INV_CORE_FEATURES is not passed into the agentis go env block"
 fi
 
-# The skip log on a miss keeps the byte-identical contract observable in the run log.
+if grep -q 'exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT,MUTANT_KILL,INV_CORPUS,INV_CORE_DEP,INV_CORE_FEATURES' "$RUNNER"; then
+  ok "INV_CORE_DEP + INV_CORE_FEATURES are on the exec.env_passthrough allowlist (else getenv() reads the sanitized env as \"\")"
+else
+  bad "INV_CORE_DEP / INV_CORE_FEATURES are NOT both on the exec.env_passthrough allowlist"
+fi
+
+# The skip log on a detector miss keeps the byte-identical contract observable in the run log.
 if grep -q 'skipping (byte-identical)' "$RUNNER"; then
-  ok "a signal/lib miss logs a [core-dep] skip note (byte-identical on the miss)"
+  ok "a detector miss logs a [core-dep] skip note (byte-identical on the miss)"
 else
   bad "the [core-dep] skip-note on a miss is missing"
 fi
@@ -104,6 +109,98 @@ if grep -q -- '--core-dep-harness) DEEP_FWD+=(--core-dep-harness); shift ;;' "$Z
 else
   bad "run-zone-hunt.sh DEEP_FWD pass-through for --core-dep-harness is missing"
 fi
+
+# ----------------------------------------------------------------------------------------------------------
+# 2b) #1763 G1 — the GENERAL detector detect-core-dep.sh. SOURCE-guard the branches (yearn registry entry,
+#     EIP-1967 impl-slot literal, fallback/diamond, generic constant delegatecall, the no-guess safety), then
+#     RUN it over A/B/C/D fixtures. HIGHEST-RISK is OVER-FIRE, so the load-bearing assertions are: the yearn
+#     case resolves to the EXACT <path>:TokenizedStrategy:0xD377...9c|dcs, and every UNRESOLVABLE shape yields
+#     EMPTY (no guessed address).
+# ----------------------------------------------------------------------------------------------------------
+note "source-guarding the #1763 G1 detect-core-dep.sh general detector ..."
+
+if grep -q '0xD377919FA87120584B21279a491F82D5265A139c' "$DETECT" \
+   && grep -q 'lib/tokenized-strategy/src/TokenizedStrategy.sol' "$DETECT" \
+   && grep -q 'find "\$ROOT"/lib -name TokenizedStrategy.sol -print -quit' "$DETECT"; then
+  ok "(A) detector holds the yearn registry entry (TokenizedStrategy locate + 0xD377...9c, primary path + find fallback)"
+else
+  bad "the detector's yearn registry entry (TokenizedStrategy locate + 0xD377...9c) is missing"
+fi
+
+if grep -q '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc' "$DETECT"; then
+  ok "(B) detector recognizes the EIP-1967 implementation-slot literal (reused from run-live-watch.sh's IMPL_SLOT)"
+else
+  bad "the detector does not recognize the EIP-1967 impl-slot literal"
+fi
+
+if grep -q 'fallback' "$DETECT" && grep -qE 'facet|diamond|selector' "$DETECT"; then
+  ok "(C) detector recognizes the diamond/facets fallback-dispatch shape"
+else
+  bad "the detector does not recognize the diamond/facets shape"
+fi
+
+if grep -q 'delegatecall' "$DETECT" && grep -q 'generic-delegatecall' "$DETECT"; then
+  ok "(D) detector recognizes the generic constant-address delegatecall shape"
+else
+  bad "the detector does not recognize the generic delegatecall shape"
+fi
+
+if grep -q 'no guessed address' "$DETECT" && grep -q 'no guess' "$DETECT"; then
+  ok "the detector documents the OVER-FIRE mitigation (EMPTY on any unresolvable shape — never a guessed address)"
+else
+  bad "the detector does not carry the no-guessed-address safety note"
+fi
+
+# --- RUNTIME: run the detector over distilled A/B/C/D fixtures (mechanical, no LLM/forge/network). ---
+note "running detect-core-dep.sh over distilled A/B/C/D fixtures ..."
+
+DWORK="$(mktemp -d)"
+trap 'rm -rf "$DWORK"' EXIT
+mkdir -p "$DWORK/repo/lib/tokenized-strategy/src"
+printf 'contract TokenizedStrategy {}\n' > "$DWORK/repo/lib/tokenized-strategy/src/TokenizedStrategy.sol"
+
+# (A) yearn BaseStrategy target — resolves to the EXACT singleton line.
+printf 'import "x"; contract Strat is BaseStrategy {}\n' > "$DWORK/yearn.sol"
+# (B) EIP-1967 proxy — impl slot literal, impl address only at runtime (unresolvable) => EMPTY.
+printf 'contract P { fallback() external { assembly { let i := sload(0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc) let r := delegatecall(gas(), i, 0, 0, 0, 0) } } }\n' > "$DWORK/eip1967.sol"
+# (C) diamond/facets — per-selector facet dispatch, no single singleton addr => EMPTY.
+printf 'contract Diamond { mapping(bytes4=>address) facet; fallback() external { address f = facet[msg.sig]; assembly { let r := delegatecall(gas(), f, 0, 0, 0, 0) } } }\n' > "$DWORK/diamond.sol"
+# (D) generic constant delegatecall to an UNKNOWN external address => EMPTY (no registry match, no guess).
+printf 'contract G { address constant IMPL = 0x1111111111111111111111111111111111111111; function f() external { IMPL.delegatecall(msg.data); } }\n' > "$DWORK/generic.sol"
+# (D-known) generic constant delegatecall to the KNOWN registry address (no yearn NAME signal) => resolves via
+# the address registry, proving the general (non-yearn-named) path also resolves when the singleton is known.
+printf 'contract G2 { address constant S = 0xD377919FA87120584B21279a491F82D5265A139c; function f() external { S.delegatecall(msg.data); } }\n' > "$DWORK/generic-known.sol"
+# (comment-only) #1771 review over-fire hardening: the yearn address appears ONLY in a COMMENT, with a
+# delegatecall to a DIFFERENT address => EMPTY (a bare address mention in a comment must NOT resolve the
+# singleton; the by-address branch strips // comments before matching).
+printf 'contract C { // ref 0xD377919FA87120584B21279a491F82D5265A139c\n function f() external { address(0x2).delegatecall(msg.data); } }\n' > "$DWORK/commented.sol"
+# unrelated ERC20 — no delegatecall-singleton shape at all => EMPTY.
+printf 'contract T { function transfer(address,uint256) external {} }\n' > "$DWORK/erc20.sol"
+
+D_YEARN_EXPECT="$DWORK/repo/lib/tokenized-strategy/src/TokenizedStrategy.sol:TokenizedStrategy:0xD377919FA87120584B21279a491F82D5265A139c|dcs"
+
+d_out() { sh "$DETECT" "$1" "$DWORK/repo" 2>/dev/null; }
+
+if [ "$(d_out "$DWORK/yearn.sol")" = "$D_YEARN_EXPECT" ]; then
+  ok "(A) yearn target resolves to EXACTLY <path>:TokenizedStrategy:0xD377...9c|dcs (featureset carries dcs)"
+else
+  bad "(A) yearn target did NOT resolve to the exact singleton line (got: '$(d_out "$DWORK/yearn.sol")')"
+fi
+
+if [ "$(d_out "$DWORK/generic-known.sol")" = "$D_YEARN_EXPECT" ]; then
+  ok "(D) a generic constant-delegatecall to the KNOWN registry address resolves via the address registry (general, non-yearn-named path)"
+else
+  bad "(D) the registry-by-address general resolution did NOT fire (got: '$(d_out "$DWORK/generic-known.sol")')"
+fi
+
+for _f in eip1967 diamond generic erc20 commented; do
+  _o="$(d_out "$DWORK/$_f.sol")"
+  if [ -z "$_o" ]; then
+    ok "($_f) an unresolvable/ambiguous target yields EMPTY (no guessed address — the OVER-FIRE mitigation)"
+  else
+    bad "($_f) OVER-FIRE: an unresolvable target emitted a line ('$_o') instead of EMPTY"
+  fi
+done
 
 # ----------------------------------------------------------------------------------------------------------
 # 3) PROVER WIRING — INV_CORE_DEP getenv, the yearn-v3 signal classifier, the field splitter, vaultRoute gating,
@@ -124,6 +221,24 @@ if grep -q 'fn contains_yearn_v3_signal(src: string) -> bool' "$PROVER" \
   ok "contains_yearn_v3_signal() is a flat nested-if index_of on TokenizedStrategy/BaseStrategy (no || — single-assignment .ag)"
 else
   bad "contains_yearn_v3_signal() flat-index_of classifier is missing"
+fi
+
+# #1763 G1 — the GENERAL core-dependency signal classifier. It MUST keep contains_yearn_v3_signal() as ONE
+# explicit branch (yearn stays a named special case) and cover the general signals (delegatecall + the EIP-1967
+# impl-slot literal). This is the signal SIDE of the vault_route AND-gate.
+if grep -q 'fn contains_core_dep_signal(src: string) -> bool' "$PROVER" \
+   && grep -q 'if contains_yearn_v3_signal(src) { return true; }' "$PROVER" \
+   && grep -q 'index_of(src, "delegatecall")' "$PROVER" \
+   && grep -q 'index_of(src, "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc")' "$PROVER"; then
+  ok "contains_core_dep_signal() calls contains_yearn_v3_signal() as one explicit branch + covers delegatecall + the EIP-1967 slot"
+else
+  bad "contains_core_dep_signal() (general signal calling contains_yearn_v3_signal + delegatecall/EIP-1967) is missing"
+fi
+
+if grep -q 'return contains_core_dep_signal(src);' "$PROVER"; then
+  ok "vault_route() gates on contains_core_dep_signal(src) (generalized from the yearn-only signal)"
+else
+  bad "vault_route() does not gate on contains_core_dep_signal(src)"
 fi
 
 if grep -q 'fn core_dep_field(entry: string, n: int) -> string' "$PROVER"; then
@@ -378,7 +493,7 @@ if ! command -v forge >/dev/null 2>&1; then
   skip "forge not on PATH — install foundryup (https://getfoundry.sh) to run the live etch-recipe check"
 else
   WORK="$(mktemp -d)"
-  trap 'rm -rf "$WORK"' EXIT
+  trap 'rm -rf "$WORK" "$DWORK"' EXIT
   mkdir -p "$WORK/src" "$WORK/test"
   printf '[profile.default]\nsrc = "src"\nout = "out"\n' > "$WORK/foundry.toml"
   cat > "$WORK/test/CoreDep.t.sol" <<'SOL'

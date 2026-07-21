@@ -456,12 +456,28 @@ fn contains_yearn_v3_signal(src: string) -> bool {
     if index_of(src, "BaseStrategy") >= 0 { return true; }
     return false;
 }
-// vaultRoute gates the whole capability: INV_CORE_DEP must be staged (the runner found the real singleton) AND
-// the target source must carry the yearn-v3 signal. `let x = a AND b` has no short-circuit form here, so a
-// nested-if returns the conjunction. Empty coreDep OR a non-yearn target => false => byte-identical prompt.
+// #1763 G1 — the GENERAL core-dependency (delegatecall-singleton) signal in the target source. Same flat
+// nested-if `index_of` classifier idiom (single-assignment `.ag` has no `||`). yearn-v3 stays an EXPLICIT case:
+// the FIRST branch calls contains_yearn_v3_signal() so yearn remains a named special case (and the regression
+// demo's `grep 'fn contains_yearn_v3_signal'` stays satisfied). The remaining branches cover the general shapes
+// the runner-side detect-core-dep.sh recognizes: a `delegatecall` and the canonical EIP-1967 implementation-slot
+// literal. This only BROADENS the signal SIDE of the vault_route AND-gate; the address SIDE (len(cd)>0) still
+// only fires when detect-core-dep.sh RESOLVED a concrete singleton, so a non-resolved target stays inert.
+fn contains_core_dep_signal(src: string) -> bool {
+    if contains_yearn_v3_signal(src) { return true; }
+    if index_of(src, "delegatecall") >= 0 { return true; }
+    if index_of(src, "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc") >= 0 { return true; }
+    return false;
+}
+// vaultRoute gates the whole capability: INV_CORE_DEP must be staged (the runner's detector RESOLVED a real
+// singleton) AND the target source must carry the general core-dependency signal. `let x = a AND b` has no
+// short-circuit form here, so a nested-if returns the conjunction. Empty coreDep (flag off / detector miss) OR a
+// target with no delegatecall-singleton signal => false => byte-identical prompt. Because coreDep is non-empty
+// ONLY when detect-core-dep.sh resolved an address (yearn is the only registry entry today), broadening the
+// signal from yearn-specific to general is inert unless a singleton was actually resolved.
 fn vault_route(cd: string, src: string) -> bool {
     if len(cd) == 0 { return false; }
-    return contains_yearn_v3_signal(src);
+    return contains_core_dep_signal(src);
 }
 let vaultRoute = vault_route(coreDep, code);
 let coreDepName = core_dep_field(coreDep, 1);
@@ -580,11 +596,13 @@ fn core_dep_seed(active: bool, name: string, rel: string, addr: string, targetNa
          + "(or any CODE_PATH-style flat file one directory ABOVE the repo): that flat copy exists ONLY for the "
          + "link-gate's textual check and is NOT a compilable source inside this Foundry repo, so importing it "
          + "fails to compile with `Source \"target-code.sol\" not found`.\n"
-         + "This target inherits its ERC4626 share logic (deposit/mint/withdraw/redeem, price-per-share, "
-         + "totalSupply/totalAssets) from a delegatecall SINGLETON: `BaseStrategy` forwards every share call to "
-         + "the contract at the CONSTANT address " + addr + ". You MUST deploy the REAL " + name + " and "
+         + "This target DELEGATES its core/share logic to a delegatecall SINGLETON at the CONSTANT address "
+         + addr + ": it forwards those calls there and holds none of that logic itself (for an ERC4626 vault the "
+         + "delegated surface is deposit/mint/withdraw/redeem, price-per-share, totalSupply/totalAssets — the "
+         + "worked example being a yearn-v3 `BaseStrategy` that forwards every ERC4626 share call to its "
+         + "`TokenizedStrategy` singleton). You MUST deploy the REAL " + name + " and "
          + "`vm.etch` its runtime code there — do NOT mock it, do NOT etch a zero-returning fallback stub, or the "
-         + "share accounting is a no-op and the first-depositor / share-inflation bug is unfuzzable.\n"
+         + "core/share accounting is a no-op and the first-depositor / share-inflation bug is unfuzzable.\n"
          + "  - Import the real singleton with: import {" + name + "} from \"" + rel + "\";\n"
          + "  - Declare this minimal forge-std-free cheatcode interface + handle (the same Vm address the rest of "
          + "the harness uses):\n"

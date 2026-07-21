@@ -398,26 +398,31 @@ cp -R "$REPO" "$REPO_IN_RUN"
 rm -f "$REPO_IN_RUN/test/"*.t.sol 2>/dev/null || true
 mkdir -p "$REPO_IN_RUN/test"
 
-# #1755: CORE-DEPENDENCY harness-gen. Only under --core-dep-harness AND only when the target source carries the
-# yearn-v3 delegatecall-singleton signal (`TokenizedStrategy`/`BaseStrategy`) do we locate the REAL singleton
-# inside the staged repo copy and thread it to the prover as INV_CORE_DEP="<abs path in REPO_IN_RUN>:<Name>:<addr>".
-# Because REPO_IN_RUN is a FULL copy, the singleton is present with the repo's own remappings intact, so the
-# generated harness imports it in-repo (no flat staging / remapping surgery). The prover then deploys it and
-# `vm.etch`es its runtime code at the constant delegatecall address INSTEAD of a zero-returning stub, so the
-# ERC4626 share path is fuzzable. Flag off / signal absent / lib missing => INV_CORE_DEP="" => byte-identical.
+# #1763 G1: CORE-DEPENDENCY harness-gen. Only under --core-dep-harness do we run the mechanical (no-LLM)
+# detect-core-dep.sh over the target source + the staged repo copy. It emits EITHER EMPTY (no resolvable
+# delegatecall singleton) or one line `<abs_singleton_src>:<Name>:<addr>|<featureset>`; we split it at `|` into
+# INV_CORE_DEP="<path>:<Name>:<addr>" (schema UNCHANGED — the prover's core_dep_field/etch recipe already threads
+# name/addr) and INV_CORE_FEATURES (the detected shape tags, e.g. `dcs`). yearn-v3 stays an explicit,
+# byte-preserved registry case INSIDE the detector; the general delegatecall-singleton shapes (EIP-1967 proxy,
+# diamond/facets, generic constant-address) are recognized but resolve a concrete address ONLY against the
+# known-singleton registry, emitting EMPTY on any ambiguity (the over-fire mitigation — never a guessed address).
+# Because REPO_IN_RUN is a FULL copy, a resolved singleton is present with the repo's own remappings intact, so the
+# generated harness imports it in-repo. Flag off / no source / detector miss => INV_CORE_DEP="" (+ empty features)
+# => today's single-target path (byte-identical, never a bad vm.etch directive).
 INV_CORE_DEP=""
+INV_CORE_FEATURES=""
 if [ -n "$CORE_DEP_HARNESS" ]; then
-  if [ -n "$CODE" ] && grep -qE 'TokenizedStrategy|BaseStrategy' "$CODE" 2>/dev/null; then
-    _ts_in_run="$REPO_IN_RUN/lib/tokenized-strategy/src/TokenizedStrategy.sol"
-    [ -f "$_ts_in_run" ] || _ts_in_run="$(find "$REPO_IN_RUN"/lib -name TokenizedStrategy.sol -print -quit 2>/dev/null || true)"
-    if [ -n "$_ts_in_run" ] && [ -f "$_ts_in_run" ]; then
-      INV_CORE_DEP="$_ts_in_run:TokenizedStrategy:0xD377919FA87120584B21279a491F82D5265A139c"
-      echo "run-invariant-hunt.sh: [core-dep] yearn-v3 signal found — real TokenizedStrategy singleton staged at $_ts_in_run" >&2
+  if [ -n "$CODE" ] && [ -f "$CODE" ]; then
+    _det="$("$HERE/detect-core-dep.sh" "$CODE" "$REPO_IN_RUN" || true)"
+    if [ -n "$_det" ]; then
+      INV_CORE_DEP="${_det%%|*}"
+      INV_CORE_FEATURES="${_det##*|}"
+      echo "run-invariant-hunt.sh: [core-dep] singleton detected — $INV_CORE_DEP (features: $INV_CORE_FEATURES)" >&2
     else
-      echo "run-invariant-hunt.sh: [core-dep] yearn-v3 signal found but TokenizedStrategy.sol not located under $REPO_IN_RUN/lib — skipping (byte-identical)" >&2
+      echo "run-invariant-hunt.sh: [core-dep] no resolvable delegatecall singleton — skipping (byte-identical)" >&2
     fi
   else
-    echo "run-invariant-hunt.sh: [core-dep] yearn-v3 signal or lib not found — skipping (byte-identical)" >&2
+    echo "run-invariant-hunt.sh: [core-dep] no target source — skipping (byte-identical)" >&2
   fi
 fi
 
@@ -484,9 +489,10 @@ done
   # #1728: MUTANT_KILL threads the staged #1724 mutant-kill.sh path so the prover's TEETH-GATE can measure a CLEAN.
   # #1731: INV_CORPUS (=1 only under --replay-corpus + --pattern-store) arms the prover's persist_corpus so it
   # accumulates EVERY generated invariant's descriptor into the invpat:corpus:<class> recall tier.
-  # #1755: INV_CORE_DEP (set only under --core-dep-harness + yearn-v3 signal) carries the real delegatecall
-  # singleton `<path>:<Name>:<addr>` so the prover generates a `vm.etch` of the actual TokenizedStrategy.
-  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT,MUTANT_KILL,INV_CORPUS,INV_CORE_DEP"
+  # #1755: INV_CORE_DEP (set only under --core-dep-harness + a resolved delegatecall singleton) carries the real
+  # delegatecall singleton `<path>:<Name>:<addr>` so the prover generates a `vm.etch` of the actual singleton.
+  # #1763 G1: INV_CORE_FEATURES carries the detected shape tags (e.g. `dcs`); empty when no singleton resolved.
+  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT,MUTANT_KILL,INV_CORPUS,INV_CORE_DEP,INV_CORE_FEATURES"
   # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s default.
   echo "exec.default_timeout_ms = 600000"
   # Each verify is recorded as experience; invariant-prover fitness reweights over targets.
@@ -662,6 +668,7 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
     INV_AUX="$INV_AUX" \
     INV_AUDIT_CONTEXT="$AUDIT_IN_RUN" \
     INV_CORE_DEP="$INV_CORE_DEP" \
+    INV_CORE_FEATURES="$INV_CORE_FEATURES" \
     INV_RUNS="$RUNS" \
     INV_DEPTH="$DEPTH" \
     INV_SEED="$SEED" \
