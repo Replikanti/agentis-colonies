@@ -148,7 +148,18 @@ fn rel_import_path(out: string, src: string) -> string {
     // colony-lint: safe-exec-concat
     return exec sh "realpath --relative-to \"$(dirname " + shell_escape(out) + ")\" " + shell_escape(src) + " 2>/dev/null | tr -d '\\n' || true";
 }
-let relImport = rel_import_path(invOut, codePath);
+// #1776 — resolve the target's REAL in-repo source ABSOLUTE path inside the staged repo, so the single-target
+// fresh-deploy path can import the COMPILABLE `../src/<Target>.sol` (like #1765's vaultTargetRel) instead of the
+// staged flat copy `../../target-code.sol` (which solc refuses — that path escapes the Foundry root). Tries
+// `<repo>/<file>` then `<repo>/src/<file>` (robust to `--target src/X.sol` vs a bare `X.sol`); prints the first
+// that exists, else "". Mechanical shell (test/printf) — the SAME sandboxed-exec idiom as rel_import_path — both
+// args shell_escape()d.
+fn resolve_in_repo_src(repo: string, file: string) -> string {
+    if len(repo) == 0 { return ""; }
+    if len(file) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "if test -f " + shell_escape(repo) + "/" + shell_escape(file) + " ; then printf '%s' " + shell_escape(repo) + "/" + shell_escape(file) + " ; elif test -f " + shell_escape(repo) + "/src/" + shell_escape(file) + " ; then printf '%s' " + shell_escape(repo) + "/src/" + shell_escape(file) + " ; fi";
+}
 // The import-path injection line the model reads. When the NAME is known we name it explicitly; when only the
 // file is known we point the model at the contract it sees DECLARED in the source. Empty when there is no
 // target source to import (relImport == "") -> today's behaviour (no import-path line).
@@ -159,7 +170,6 @@ fn import_line(name: string, rel: string) -> string {
     }
     return "  - Import the target from \"" + rel + "\" — import the contract you see DECLARED in the source below.\n";
 }
-let importLine = import_line(targetName, relImport);
 
 // FM2 (#1075) — COMPOSABLE-FRESH MODE. INV_AUX is the FRESH-DEPLOY sibling of FORK_CONTEXT: a sentinel-joined
 // list of AUXILIARY in-scope contracts the prover should ALSO deploy + WIRE alongside the target so the
@@ -272,6 +282,34 @@ fn composable_active(ctx: string) -> bool {
     return count_roles(ctx) > 1;
 }
 let composableMode = composable_active(forkContext);
+
+// #1776 — SINGLE-TARGET FRESH-DEPLOY import/link generalization. relImport/importLine are consumed only later
+// (sharedScaffold), so their `let` bindings are relocated HERE — AFTER forkMode/composableMode/composableFresh —
+// to keep single-assignment top-down order while letting the import path depend on the mode. The #1765 + #1755-M6
+// in-repo pins (the compilable `../src/<Target>.sol` import + the gate armed with the in-repo basename) fired ONLY
+// on the yearn core-dep/vaultRoute path; every OTHER fresh-deploy target was left on the un-compilable staged
+// `../../target-code.sol` for BOTH the generation directive and the #1471 gate, so a genuine harness either failed
+// to compile (`Source "target-code.sol" not found`) or was rejected on a basename technicality (#1776).
+//   relImport       — CODE_PATH relative to dirname(INV_OUT); resolves to the staged flat copy `../../target-code.sol`.
+//   targetSrcAbs    — the target's REAL in-repo source ABS path (`<repo>/src/<Target>.sol`), "" if unresolved.
+//   targetInRepoRel — that real source relative to dirname(INV_OUT) = the COMPILABLE `../src/<Target>.sol`.
+//   singleFresh     — the pure single-target fresh-deploy path (no fork / no fork-context / no composable-fresh).
+//                     ONLY here do we swap the import to the in-repo source + arm the gate with its basename; fork /
+//                     fork-context / composable-fresh(aux) stay byte-identical (relImport, "" gate).
+//   effImport       — the import path the skeleton pins: the in-repo source on singleFresh when it resolved, else
+//                     today's relImport (never worse than today — an unresolved source falls back to relImport).
+let relImport = rel_import_path(invOut, codePath);
+let targetSrcAbs = resolve_in_repo_src(invRepo, targetFile);
+let targetInRepoRel = rel_import_path(invOut, targetSrcAbs);
+fn single_fresh(fork: bool, compose: bool, composeFresh: bool) -> bool {
+    if fork { return false; }
+    if compose { return false; }
+    if composeFresh { return false; }
+    return true;
+}
+let singleFresh = single_fresh(forkMode, composableMode, composableFresh);
+let effImport = if singleFresh { if len(targetInRepoRel) > 0 { targetInRepoRel } else { relImport } } else { relImport };
+let importLine = import_line(targetName, effImport);
 
 // --- RECALL a prior winning invariant pattern (Int M3, #1037) ------------------------------------
 // Before GENERATE, recall the latest invariant pattern that produced a FINDING on THIS bug class from the
@@ -890,6 +928,22 @@ fn harness_skeleton(matchPrefix: string, deployName: string, importLine: string,
          + "```\n";
 }
 
+// #1776 — GENERAL single-target fresh-deploy import forbiddance. On singleFresh (every non-yearn fresh-deploy
+// target) the skeleton's importLine now pins the COMPILABLE in-repo `../src/<Target>.sol`; this directive stops the
+// model drifting back to the staged flat copy `../../target-code.sol` (which solc refuses), mirroring
+// core_dep_seed's own import forbiddance. "" when NOT singleFresh (fork / fork-context / composable-fresh) => the
+// prompt is byte-identical off this path.
+fn single_fresh_import_guard(single: bool) -> string {
+    if !single { return ""; }
+    return "  - IMPORT THE TARGET ONLY from its REAL in-repo source path shown in the skeleton above "
+         + "(e.g. import {<Target>} from \"../src/<Target>.sol\"): that relative path resolves to the target's "
+         + "actual Solidity source inside the staged repo (its `src/` tree), the same real contract you deploy. "
+         + "NEVER import the flattened staged copy `target-code.sol` (or any CODE_PATH-style flat file one "
+         + "directory ABOVE the repo): that flat copy exists ONLY for the link-gate's textual check and is NOT a "
+         + "compilable source inside this Foundry repo, so importing it fails to compile with "
+         + "`Source \"target-code.sol\" not found`.\n";
+}
+
 // #1720 — the STATIC generation scaffold, factored out of generate_test so the EXACT same requirements (the
 // compiling skeleton + deploy guidance + realistic-bounds + mock-fidelity guards + the aux sources + the bug-
 // class lens + the answer contract) are re-injected on every compile-repair round, not just the first attempt.
@@ -906,6 +960,7 @@ let sharedScaffold =
   + "verdict is about real code. Do NOT import forge-std — this test must compile with ZERO library "
   + "remappings.\n"
   + harness_skeleton(invMatch, deployName, importLine, auxImportLines, action_checklist_hint(effClass))
+  + single_fresh_import_guard(singleFresh)
   + "  - In `setUp()` deploy the real target. For a normal `constructor(args)`: `new " + deployName + "(args)`. "
   + "For an OpenZeppelin **upgradeable** contract whose constructor calls `_disableInitializers()`: deploy "
   + "behind a proxy — add `import {ERC1967Proxy} from \"@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol\";` "
@@ -1036,7 +1091,16 @@ fn link_args(fUrl: string, fTarget: string, fContext: string, cPath: string, tNa
     if len(cPath) == 0 { return ""; }
     return " --require-import " + shell_escape(cPath) + opt_flag("--require-contract", tName);
 }
-let linkArgs = link_args(forkUrl, forkTarget, forkContext, codePath, targetName, vaultTargetImport);
+// #1776 — GENERAL single-target fresh-deploy link arg. The #1755-M6 vaultTargetImport pin (arm the #1471 gate with
+// the in-repo basename, not the staged `target-code.sol`) fired ONLY on vaultRoute; every other fresh-deploy target
+// was left arming the gate with `target-code.sol` and rejecting the CATCHING harness (which imports the compilable
+// `../src/<Target>.sol`) on a basename technicality (#1776). Generalize the pin to singleFresh: prefer
+// vaultTargetImport when set (vaultRoute — targetImport == vaultTargetImport there, BYTE-IDENTICAL, so the yearn
+// source-guards hold), else the target file basename on singleFresh, else "" (fork / fork-context / composable —
+// link_args also self-guards to ""). The #1471 anti-fabrication property is preserved: a real in-scope-target
+// import (basename `<Target>.sol`) is still MANDATORY, and `--require-contract <Name>` still forbids a shadow.
+let targetImport = if len(vaultTargetImport) > 0 { vaultTargetImport } else { if singleFresh { targetFile } else { "" } };
+let linkArgs = link_args(forkUrl, forkTarget, forkContext, codePath, targetName, targetImport);
 // The extra gate args appended to EVERY gate invocation (the first attempt AND each repair round) so a
 // substituted-target test is rejected as HARNESS_ERROR no matter which attempt produced it.
 let gateExtra = fork + linkArgs;
