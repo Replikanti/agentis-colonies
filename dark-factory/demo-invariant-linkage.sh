@@ -12,10 +12,14 @@
 #
 # This demo has TWO parts:
 #   1) SOURCE-GUARD (always, CI-safe, no toolchain): asserts the gate wiring + the prover's fresh-deploy-only
-#      threading are present, so a refactor that drops either is caught even on runners with no forge.
+#      threading are present, PLUS the #1776 general single-target fresh-deploy generalization (resolve_in_repo_src /
+#      targetInRepoRel / effImport / singleFresh / targetImport), so a refactor that drops either is caught even on
+#      runners with no forge.
 #   2) LIVE (when forge is on PATH): builds a throwaway foundry project and runs the gate over (a) a substituted
-#      toy target -> exit 2 + the #1471 reason, and (b) a test that imports the real target -> the gate proceeds
-#      past linkage. agentis is NOT needed (the gate is exercised directly).
+#      toy target -> exit 2 + the #1471 reason, (b) a test that imports the real in-repo target -> the gate proceeds
+#      past linkage, and (c) a test importing the flat copy staged ONE DIR ABOVE the Foundry root
+#      (`../../target-code.sol`) -> HARNESS_ERROR (the #1776 non-yearn failure the generalization fixes). agentis is
+#      NOT needed (the gate is exercised directly).
 #
 # Usage:  dark-factory/demo-invariant-linkage.sh
 # Exit: 0 = all assertions hold (live parts SKIP cleanly when forge is absent) ; non-zero = a regression.
@@ -69,6 +73,33 @@ if grep -q -- '--require-import' "$PROVER" && grep -q 'let gateExtra = fork + li
   ok "invariant-prover.ag threads gateExtra (fork + link args) into the gate call"
 else
   bad "invariant-prover.ag does not thread the link args into the gate call"
+fi
+
+# #1776 — GENERAL single-target fresh-deploy generalization: the prover must resolve the target's REAL in-repo
+# source (targetInRepoRel via resolve_in_repo_src) and, on the singleFresh path, (a) pin the skeleton import to it
+# (effImport) and (b) arm the #1471 gate with the in-repo target basename (targetImport) instead of the staged
+# `../../target-code.sol`. Off that path (fork / fork-context / composable-fresh) the generation + gate stay
+# byte-identical. A refactor dropping this regresses the non-yearn HARNESS_ERROR (#1776), so pin it here.
+if grep -q 'fn resolve_in_repo_src(repo: string, file: string) -> string' "$PROVER" \
+   && grep -q 'let targetInRepoRel = rel_import_path(invOut, targetSrcAbs);' "$PROVER" \
+   && grep -q 'let effImport = ' "$PROVER" \
+   && grep -q 'let importLine = import_line(targetName, effImport);' "$PROVER"; then
+  ok "invariant-prover.ag resolves the in-repo target source + pins the skeleton import to it on singleFresh (effImport)"
+else
+  bad "invariant-prover.ag does not compute targetInRepoRel/effImport for the single-target fresh-deploy import (#1776)"
+fi
+if grep -q 'let singleFresh = single_fresh(forkMode, composableMode, composableFresh);' "$PROVER" \
+   && grep -q 'let targetImport = ' "$PROVER" \
+   && grep -q 'let linkArgs = link_args(forkUrl, forkTarget, forkContext, codePath, targetName, targetImport);' "$PROVER"; then
+  ok "invariant-prover.ag arms linkArgs with targetImport (in-repo basename on singleFresh, vaultTargetImport on vaultRoute)"
+else
+  bad "invariant-prover.ag does not arm linkArgs with the generalized targetImport (#1776)"
+fi
+if grep -q 'fn single_fresh_import_guard(single: bool) -> string' "$PROVER" \
+   && grep -q 'single_fresh_import_guard(singleFresh)' "$PROVER"; then
+  ok "invariant-prover.ag weaves the single-target in-repo-import forbiddance into sharedScaffold gated on singleFresh"
+else
+  bad "invariant-prover.ag does not weave the singleFresh in-repo-import forbiddance (#1776)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -143,6 +174,52 @@ SOL
   else
     bad "linked test wrongly rejected by the #1471 gate (rc=$good_rc)"
     printf '%s\n' "$good_out" | sed 's/^/        | /' | tail -5
+  fi
+
+  # (c) FLAT-COPY-ABOVE-ROOT (#1776, the yieldoor/Leverager HARNESS_ERROR): a harness that imports the flattened
+  #     target staged ONE DIR ABOVE the Foundry root (`../../target-code.sol`, the pipeline's <rundir>/target-code.sol
+  #     shape) must HARNESS_ERROR — solc refuses a relative import that escapes the project root — whereas the in-repo
+  #     `../src/<Target>.sol` import (case b) compiles + proceeds. This pins the exact contrast the #1776
+  #     generalization fixes: the general single-target fresh-deploy path must import the real in-repo source, never
+  #     the flat copy. The gate is armed with the FLAT basename here so the #1471 check passes and the COMPILE failure
+  #     is what surfaces (reproducing the measured yieldoor error), not a linkage rejection.
+  NEST="$WORK/nested"
+  mkdir -p "$NEST/repo/src" "$NEST/repo/test"
+  printf '[profile.default]\nsrc = "src"\nout = "out"\n\n[invariant]\nruns = 8\ndepth = 4\nfail_on_revert = false\n' > "$NEST/repo/foundry.toml"
+  # the flattened copy staged ONE DIR ABOVE the Foundry root — present ONLY for the link-gate's textual check.
+  cat > "$NEST/target-code.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Leverager { uint public total; function add(uint a) external { total += a; } }
+SOL
+  # the REAL in-repo source (what the #1776 generalization imports instead).
+  cat > "$NEST/repo/src/Leverager.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+contract Leverager { uint public total; function add(uint a) external { total += a; } }
+SOL
+  cat > "$NEST/repo/test/Flat.t.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+import {Leverager} from "../../target-code.sol";
+abstract contract InvBase {
+  address[] private _t;
+  function targetContracts() public view returns (address[] memory){ return _t; }
+  function _target(address a) internal { _t.push(a); }
+}
+contract FlatInv is InvBase {
+  Leverager p;
+  function setUp() public { p = new Leverager(); _target(address(p)); }
+  function invariant_total_nonneg() public view { require(p.total() >= 0, "x"); }
+}
+SOL
+  flat_out="$(sh "$GATE" --repo "$NEST/repo" --target test/Flat.t.sol --match invariant \
+               --require-import target-code.sol --require-contract Leverager 2>&1)"; flat_rc=$?
+  if [ "$flat_rc" -ne 0 ]; then
+    ok "flat-copy-above-root import (../../target-code.sol) -> HARNESS_ERROR (rc=$flat_rc) — solc cannot escape the Foundry root (#1776)"
+  else
+    bad "flat-copy-above-root import should HARNESS_ERROR — got rc=$flat_rc (the #1776 general-path import bug)"
+    printf '%s\n' "$flat_out" | sed 's/^/        | /' | tail -5
   fi
 fi
 

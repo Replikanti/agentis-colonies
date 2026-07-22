@@ -528,10 +528,11 @@ else
   bad "the non-core-dep codePath arming (byte-identical fall-through) changed unexpectedly"
 fi
 
-if grep -q 'let linkArgs = link_args(forkUrl, forkTarget, forkContext, codePath, targetName, vaultTargetImport);' "$PROVER"; then
-  ok "the link_args call threads vaultTargetImport"
+if grep -q 'let linkArgs = link_args(forkUrl, forkTarget, forkContext, codePath, targetName, targetImport);' "$PROVER" \
+   && grep -q 'let targetImport = if len(vaultTargetImport) > 0 { vaultTargetImport }' "$PROVER"; then
+  ok "the link_args call threads targetImport (== vaultTargetImport on vaultRoute — #1755-M6 pin byte-identical there)"
 else
-  bad "the link_args call does not thread vaultTargetImport"
+  bad "the link_args call does not thread targetImport preferring vaultTargetImport on vaultRoute"
 fi
 
 # The #1471 matcher LOGIC in forge-invariant.sh (basename REQ_IMPORT + grep) must be untouched — M6 changes only
