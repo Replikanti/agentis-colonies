@@ -313,6 +313,10 @@ GATE="$HERE/evm-harness/forge-invariant.sh"
 GATE_HALMOS="$HERE/evm-harness/halmos-verify.sh"
 MUTANT_KILL_SRC="$HERE/evm-harness/mutant-kill.sh"
 MUTANTS_SRC="$HERE/evm-harness/mutants"
+# #1794 — the SHARED HARNESS-MOCK LIBRARY (auditor/harness-mocks/*.sol). Staged into the generated harness
+# project below so the prover can IMPORT a ready dependency mock instead of hand-authoring one per run — the
+# failure mode that turned complex targets (LP oracles, modular vaults) into HARNESS_ERROR. A pure variable here.
+HARNESS_MOCKS_SRC="$HERE/auditor/harness-mocks"
 [ -f "$PROVER" ] || { echo "run-invariant-hunt.sh: invariant-prover agent not found at $PROVER" >&2; exit 3; }
 [ -f "$GATE" ] || { echo "run-invariant-hunt.sh: forge-invariant gate not found at $GATE" >&2; exit 3; }
 
@@ -416,6 +420,27 @@ REPO_IN_RUN="$RUN/repo"
 cp -R "$REPO" "$REPO_IN_RUN"
 rm -f "$REPO_IN_RUN/test/"*.t.sol 2>/dev/null || true
 mkdir -p "$REPO_IN_RUN/test"
+
+# #1794 — STAGE THE SHARED HARNESS-MOCK LIBRARY into the harness project, BEFORE the prover writes/compiles the
+# test, so a generated harness can `import {MockERC20} from "./mocks/MockERC20.sol";` and it RESOLVES (the test
+# is written to $REPO_IN_RUN/test/, one directory above `mocks/`). This is a pure COPY of dependency-free,
+# compile-clean Solidity into a NEW `test/mocks/` dir:
+#   * it never edits foundry.toml, the src/ tree, or any existing test — nothing the fuzzer scopes to changes;
+#   * the library declares no test contract and no `invariant_*`/`test*` function, so `forge test` discovers
+#     nothing new and a harness that imports NOTHING from here produces a byte-IDENTICAL verdict;
+#   * a repo that ALREADY ships `test/mocks/<Name>.sol` keeps its OWN file (never clobbered — the target
+#     project's copy is the authority for its own build).
+# The library carries `pragma solidity >=0.8.0` so it compiles under whatever 0.8.x the staged project pins.
+# A missing library dir degrades gracefully to today's behaviour (the prover's generic "author a minimal mock"
+# instruction still applies), so this is never a hard failure.
+if [ -d "$HARNESS_MOCKS_SRC" ]; then
+  mkdir -p "$REPO_IN_RUN/test/mocks"
+  for _mock in "$HARNESS_MOCKS_SRC"/*.sol; do
+    [ -f "$_mock" ] || continue
+    _mock_dst="$REPO_IN_RUN/test/mocks/$(basename "$_mock")"
+    [ -f "$_mock_dst" ] || cp "$_mock" "$_mock_dst"
+  done
+fi
 
 # #1763 G1: CORE-DEPENDENCY harness-gen. Only under --core-dep-harness do we run the mechanical (no-LLM)
 # detect-core-dep.sh over the target source + the staged repo copy. It emits EITHER EMPTY (no resolvable

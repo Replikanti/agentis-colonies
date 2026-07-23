@@ -1368,6 +1368,38 @@ fn single_fresh_import_guard(single: bool) -> string {
          + "`Source \"target-code.sol\" not found`.\n";
 }
 
+// #1794 — the STAGED MOCK LIBRARY directive. run-invariant-hunt.sh copies `auditor/harness-mocks/*.sol` into the
+// harness project's `test/mocks/` BEFORE this generation runs, so these four dependency-free mocks already exist,
+// already compile, and resolve from the generated test as `./mocks/<Name>.sol`. Hand-authoring a token / feed /
+// share-vault / pool mock per run is where generation failed on complex targets (an LP oracle's Curve/Balancer
+// pricing deps, a modular vault's share dep -> a test that does not compile -> HARNESS_ERROR, i.e. NO verdict), so
+// point the model at the library FIRST and keep bespoke authoring for shapes the library does not cover. Purely
+// ADDITIVE to the requirement list below: no class routing, no lens selector and no ensemble variant is touched,
+// and it does NOT relax the MOCK-DEP FIDELITY rule it follows — the constructor args still carry the target's own
+// decimals/units. A run whose harness imports nothing from `./mocks/` is unaffected by the staged files.
+let stagedMockLibrary =
+    "  - STAGED MOCK LIBRARY (import these instead of writing your own): a library of dependency-free, "
+  + "already-compiling dependency mocks is ALREADY STAGED next to this test at `./mocks/`. When the target needs "
+  + "a price feed, a token, a share vault or an LP/AMM pool, IMPORT the staged mock — do NOT author another copy:\n"
+  + "      * `import {MockAggregatorV3} from \"./mocks/MockAggregatorV3.sol\";` — Chainlink feed. "
+  + "`new MockAggregatorV3(<decimals>, <answer>)`; reads `decimals()`, `latestRoundData()`, `getRoundData()`; "
+  + "`updatedAt` is FRESH by default — perturb the price with `setAnswer(int256)`, go stale with "
+  + "`setStale(<ageSeconds>)` or `setIncompleteRound()`.\n"
+  + "      * `import {MockERC20} from \"./mocks/MockERC20.sol\";` — ERC20. "
+  + "`new MockERC20(\"USDC\", \"USDC\", 6)` (name, symbol, DECIMALS); open `mint(to, amt)` / `burn(from, amt)` "
+  + "plus approve/transfer/transferFrom.\n"
+  + "      * `import {MockVault4626} from \"./mocks/MockVault4626.sol\";` — ERC4626 share vault. "
+  + "`new MockVault4626(<asset>, <decimals>)`; deposit/mint/withdraw/redeem, convertToShares/convertToAssets, "
+  + "previewDeposit/previewMint/previewWithdraw/previewRedeem, totalAssets/totalSupply.\n"
+  + "      * `import {MockPool} from \"./mocks/MockPool.sol\";` — Curve/Balancer/UniV2-style pool. "
+  + "`new MockPool(<token0>, <token1>)`; reads `getReserves()`, `balances(i)`, `totalSupply()`, "
+  + "`get_virtual_price()` / `getVirtualPrice()` / `getRate()`, `get_dy(i, j, dx)` / "
+  + "`getAmountOut(dx, zeroForOne)`; move the price with `setReserves(r0, r1)`, `setVirtualPrice(p)`, "
+  + "`setTotalSupply(s)`.\n"
+  + "    Import ONLY the mocks you actually deploy, and construct each with the decimals/units the TARGET "
+  + "assumes. Author a bespoke mock ONLY for a dependency shape the library does not cover, and NEVER re-declare "
+  + "a contract named like one of the staged mocks.\n";
+
 // #1720 — the STATIC generation scaffold, factored out of generate_test so the EXACT same requirements (the
 // compiling skeleton + deploy guidance + realistic-bounds + mock-fidelity guards + the aux sources + the bug-
 // class lens + the answer contract) are re-injected on every compile-repair round, not just the first attempt.
@@ -1409,7 +1441,9 @@ let sharedScaffold =
   + "units/decimals/types the target assumes for it — read those from the target source (e.g. if the target "
   + "treats a token as 6-decimal USDC, the mock's `decimals()` must return 6; match the return types and "
   + "signatures the target actually calls). A mock whose decimals/units/types do NOT match the target's "
-  + "assumptions is INVALID and produces false findings.\n\n"
+  + "assumptions is INVALID and produces false findings.\n"
+  + stagedMockLibrary
+  + "\n"
   + core_dep_seed(vaultRoute, coreDepName, coreDepRel, coreDepAddr, deployName, vaultTargetRel)
   + admin_guard_seed(vaultRoute)
   + deferred_accounting_seed(vaultRoute)
