@@ -352,7 +352,7 @@ def dominant_class(classes):
 # dropped every non-custody zone BEFORE class routing, so #1786's oracle (C2) lens — and every future class
 # lens — never fired on a non-custody zone. Grow this set as class lenses land (C16/C17 liveness #1789,
 # C5 access #1785). Value-custody zones are unaffected (their dominant_class stays C6/C10/C11).
-IMPLEMENTED_NONCUSTODY = {"C2"}
+IMPLEMENTED_NONCUSTODY = {"C2", "C16"}
 def has_impl_sol(z):
     # a fuzzable IMPLEMENTATION contract exists in the zone — not an interface-only zone. Interface .sol
     # (under an interfaces/ dir, or the `IName` convention) has no body to deploy/fuzz => a guaranteed
