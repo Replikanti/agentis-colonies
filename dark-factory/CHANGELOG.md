@@ -14,6 +14,32 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **Single-run METAMORPHIC ENSEMBLE for the deep-hunt invariant lens (`--ensemble-candidates <N>`, default off)**
+  (#1778). Single-draw variance was capping deep-hunt recall on value-custody targets: the rare High hides in a
+  per-unit-price / per-share value-conservation break that ONE generated invariant often fails to state. For a
+  value-custody target the runner now steers N DISTINCT relational-invariant VARIANTS — large-vs-small unit-price
+  monotonicity (`require(pB <= pS + pS/1000 + 1, ...)` via the contract's own `simulate*`/`preview*`/`convertTo*`/
+  `quote*` views), before-vs-after existing-holder per-share price, and actor-A-vs-B value parity — each its OWN
+  prover generation + its OWN forge run(s) through the UNCHANGED gate/repair/teeth loop, then takes an
+  ENSEMBLE-VOTE verdict (any candidate FINDING ⇒ FINDING with that candidate's shrunk witness; else any
+  HARNESS_ERROR ⇒ HARNESS_ERROR; else CLEAN). The prover (`invariant-prover.ag`) gains only two additive,
+  empty-by-default builders — `is_value_custody()` + `metamorphic_variant_seed()` — gated on an empty-by-default
+  `INV_ENSEMBLE_VARIANT` (appended at the END of the `exec.env_passthrough` allowlist); the ensemble LOOP +
+  verdict aggregation live in `run-invariant-hunt.sh`, REUSING #1726's per-class relation vocabulary as REQUIRED
+  (not optional) shapes and mirroring #1731's shell-side cross-run ensemble. `run-zone-hunt.sh` forwards the flag
+  verbatim via `DEEP_FWD`; `bench/corpus-bench/deep-hunt-ab.sh` forwards it into the `--live` A/B ON arm. Composes
+  with the #1722 audit seed, #1755 core-dep seed, and the #1731 corpus replay (the winning candidate accumulates
+  into that corpus). **Default off (N = 0/1, or the offline `--handler-fixture` path) is byte-identical to today's
+  single-draw pipeline**: the aggregate is emitted as the LAST `INVARIANT|<target>|<verdict>` line (per-candidate
+  diagnostics use a `CANDIDATE|` prefix carrying no `INVARIANT|` substring), so both downstream consumers (this
+  runner's `tail -1`, `run-zone-hunt.sh`'s last-`INVARIANT|`-wins adapter) parse unchanged, and `verdict_of`, the
+  marker contract, and the #1471 `--require-import`/`--require-contract` gate semantics are untouched.
+  `demo-invariant-ensemble.sh` source-guards the wiring, the byte-identical-when-OFF guard, the three variant
+  shapes, and the bench forwarding (CI-safe, no LLM/forge/agentis). The real-money acceptance bench
+  (`deep-hunt-ab.sh --live --ensemble-candidates 3`, expecting the plaza pool target Δ > 0) is a separate
+  post-merge step, not part of this change.
+
 ### Fixed
 - **`core_dep_seed` hands the model the REAL in-repo target import path, not `relImport` (= the staged `../../target-code.sol` basename)**
   (#1765, #1755 M5 follow-up). M5 threaded `relImport` (= `rel_import_path(invOut, codePath)`) into `core_dep_seed`

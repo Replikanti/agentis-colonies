@@ -86,6 +86,10 @@
 #                       `vm.etch` the REAL TokenizedStrategy singleton (instead of a zero stub) so the ERC4626
 #                       share path is fuzzable. Forwarded verbatim to both $INVHUNT invocations; absent =>
 #                       byte-identical.
+#   --ensemble-candidates <N>  #1778: run the SINGLE-RUN METAMORPHIC ENSEMBLE per deep-hunt target — steer N
+#                       distinct relational-invariant VARIANTS through the unchanged gate and take an ensemble
+#                       vote (any break => FINDING). Forwarded verbatim to both $INVHUNT invocations; default 0
+#                       (= OFF) / N < 2 => byte-identical to today's single-draw deep-hunt.
 #   --drop-dir <dir>    deliver-submission.sh drop-dir (default: <out>/drop).
 #   -h, --help          This help.
 #
@@ -134,6 +138,7 @@ while [ $# -gt 0 ]; do
     --symbolic-oracle)  DEEP_FWD+=(--symbolic-oracle); shift ;;
     --symbolic-timeout) nv "$#"; DEEP_FWD+=(--symbolic-timeout "$2"); shift 2 ;;
     --core-dep-harness) DEEP_FWD+=(--core-dep-harness); shift ;;
+    --ensemble-candidates) nv "$#"; DEEP_FWD+=(--ensemble-candidates "$2"); shift 2 ;;
     --drop-dir)         nv "$#"; DROP_DIR="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-zone-hunt.sh: unknown flag $1" >&2; exit 2 ;;

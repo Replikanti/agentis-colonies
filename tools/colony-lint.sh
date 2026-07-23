@@ -1528,6 +1528,29 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-symbolic-oracle.sh" ]; then
     fi
 fi
 
+# --- dark-factory single-run metamorphic ensemble (#1778) ---
+# Single-draw variance was capping deep-hunt recall: a value-custody target's rare High hides in a
+# per-unit-price / per-share value-conservation break one generated invariant often fails to state. #1778 adds a
+# default-off --ensemble-candidates <N> flag: run-invariant-hunt.sh steers N DISTINCT relational-invariant
+# VARIANTS (large-vs-small unit-price monotonicity, before-vs-after holder-price, actor-A-vs-B parity) through the
+# UNCHANGED gate and takes an ensemble-vote verdict (any FINDING => FINDING; else any HARNESS_ERROR; else CLEAN).
+# The prover gains two additive, empty-by-default builders (is_value_custody + metamorphic_variant_seed, gated on
+# INV_ENSEMBLE_VARIANT); the loop + aggregation live in the shell runner (mirroring #1731). run-zone-hunt.sh
+# forwards the flag verbatim via DEEP_FWD; deep-hunt-ab.sh forwards it into the --live ON arm. Default 0 / N < 2 /
+# fixture => byte-identical: the INVARIANT| marker, verdict_of, and the #1471 gate are untouched (the aggregate is
+# emitted as the LAST INVARIANT| line, per-candidate diagnostics use a CANDIDATE| prefix). demo-invariant-
+# ensemble.sh source-guards the wiring, the byte-identical-when-OFF guard, the three variant shapes, and the
+# bench forwarding (CI-safe, no LLM/forge/agentis).
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-ensemble.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-ensemble.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: invariant-hunt single-run metamorphic ensemble (default-off --ensemble-candidates, byte-identical when OFF) (#1778)"
+    else
+        fail "dark-factory: invariant-hunt single-run metamorphic ensemble regressed (#1778)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory historical-exploit-class pattern seeding (#1733) ---
 # A static, offline library of 7 canonical historical DeFi exploit CLASSES (auditor/methods/
 # historical-exploits.md, one entry per C1/C2/C5/C6/C8/C11/C16 taxonomy id, hand-authored, no
