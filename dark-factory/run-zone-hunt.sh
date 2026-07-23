@@ -401,6 +401,13 @@ PY
 import sys, os, json, glob, re
 verified_json, dzout, relfile, dclass = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 logs = sorted(glob.glob(os.path.join(dzout, "run", "invariant_*.log")))
+# #1778 ensemble writes per-candidate logs `invariant_<t>_c<N>.log` ALONGSIDE the canonical
+# aggregate `invariant_<t>.log` (which carries the ensemble-VOTE verdict + the winning candidate's
+# STEP| witness). Read the AGGREGATE, never a per-candidate: `sorted()` is codepoint order, where
+# `_` (0x5F) > `.` (0x2E), so `sorted()[-1]` would otherwise land on the last `_c<N>` CLEAN log and
+# silently drop a real ensemble FINDING. Single-candidate/OFF runs emit only the aggregate, so this
+# filter is a no-op there.
+logs = [p for p in logs if not re.search(r"_c[0-9]+\.log$", os.path.basename(p))]
 if not logs:
     print("0"); sys.exit(0)
 verdict = None

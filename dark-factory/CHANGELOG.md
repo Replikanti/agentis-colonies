@@ -41,6 +41,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   post-merge step, not part of this change.
 
 ### Fixed
+- **The #1778 ensemble FINDING now actually merges into `verified_findings.json` (the deep-hunt merge adapter reads the AGGREGATE log, not a per-candidate one)**
+  (#1778 follow-up). The `run-zone-hunt.sh` merge adapter selects the invariant log via `sorted(glob("invariant_*.log"))[-1]`.
+  The ensemble writes per-candidate logs `invariant_<t>_c<N>.log` ALONGSIDE the canonical aggregate `invariant_<t>.log`
+  (which carries the ensemble-vote verdict + the winning candidate's `STEP|` witness). Because `sorted()` is codepoint
+  order and `_` (0x5F) > `.` (0x2E), `sorted()[-1]` landed on the last per-candidate `_c<N>` log — typically a CLEAN one —
+  so a real ensemble FINDING was silently read as CLEAN and dropped (`Δ = +0` even when a candidate broke). The adapter now
+  filters `_c[0-9]+\.log$` out of the glob, always reading the aggregate; single-candidate/OFF runs emit only the aggregate,
+  so the filter is a no-op there. Proven live: the plaza `Pool.sol` ensemble (candidate 1 metamorphic → FINDING) was being
+  dropped as CLEAN pre-fix; post-fix the aggregate FINDING + its 20-line `STEP|` witness merge. `demo-invariant-ensemble.sh`
+  gains a source-guard (the `_c<N>` filter is present) + a behavioural check (selection picks the aggregate FINDING under
+  codepoint sort).
 - **`core_dep_seed` hands the model the REAL in-repo target import path, not `relImport` (= the staged `../../target-code.sol` basename)**
   (#1765, #1755 M5 follow-up). M5 threaded `relImport` (= `rel_import_path(invOut, codePath)`) into `core_dep_seed`
   as its `targetRel` — the import path the GENERATION directive tells the model to use for the target. But by
