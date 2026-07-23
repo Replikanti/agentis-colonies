@@ -343,9 +343,30 @@ def dominant_class(classes):
         if c in classes:
             return c
     return "C-invariant"
+# #1790: IMPLEMENTED non-value-custody lens classes — a zone that is NOT value_custody is still a deep-hunt
+# target when its dominant_class is one of these (the lens has templates for it). Without this, the gate below
+# dropped every non-custody zone BEFORE class routing, so #1786's oracle (C2) lens — and every future class
+# lens — never fired on a non-custody zone. Grow this set as class lenses land (C16/C17 liveness #1789,
+# C5 access #1785). Value-custody zones are unaffected (their dominant_class stays C6/C10/C11).
+IMPLEMENTED_NONCUSTODY = {"C2"}
+def has_impl_sol(z):
+    # a fuzzable IMPLEMENTATION contract exists in the zone — not an interface-only zone. Interface .sol
+    # (under an interfaces/ dir, or the `IName` convention) has no body to deploy/fuzz => a guaranteed
+    # HARNESS_ERROR, so an interface-only non-custody zone is not a useful deep-hunt target.
+    for f in z.get("files", []):
+        if not (isinstance(f, str) and f.endswith(".sol")):
+            continue
+        base = f.rsplit("/", 1)[-1]
+        if "/interfaces/" in f or "/interface/" in f:
+            continue
+        if len(base) >= 2 and base[0] == "I" and base[1].isupper():
+            continue
+        return True
+    return False
 for z in zones:
     if not z.get("value_custody"):
-        continue
+        if dominant_class(z.get("bug_classes_likely", [])) not in IMPLEMENTED_NONCUSTODY or not has_impl_sol(z):
+            continue
     zid = z.get("id", "")
     if not zid:
         continue
