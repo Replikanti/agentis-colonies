@@ -64,6 +64,12 @@
 #                       behaviour (STAGE 4.5 emits an empty aux column and neither $INVHUNT invocation gains a
 #                       --aux arg). The #1471 linkage gate still fires on the PRIMARY target; aux contracts are
 #                       protected by the existing #1077 both-real HARNESS_ERROR safety.
+#   --deep-hunt-max-lenses <N>  #1795: max lens classes run per deep-hunt zone (default 2). The STAGE 4.5
+#                       selection emits one row per (zone x APPLICABLE implemented lens class) instead of the
+#                       single dominant class, so a non-custody lens (oracle C2, liveness C16, access C5) is no
+#                       longer shadowed by the custody-first routing on a value-custody zone. Rows are ordered
+#                       custody-primary first, then C2, C16, C5 (the coverage-map rarity order) and truncated to
+#                       N — so N=1 reproduces the pre-#1795 single-lens fan-out.
 #   --deep-hunt-repair-rounds <N>  #1717: run-invariant-hunt.sh --repair-rounds for every deep-hunt target
 #                       (default 4 — a value-custody zone whose first harness draft doesn't compile gets
 #                       more bounded compile-repair attempts before HARNESS_ERROR; the loop still
@@ -104,6 +110,7 @@ SCOPE_HINT="" ; SINCE="" ; RESIDUALS=""
 IN_SCOPE="" ; ASSET_CONTRACTS="" ; IMPACT_THRESHOLD=""
 MAP_FIXTURE="" ; BRIEF_FIXTURE="" ; PASS_FIXTURE="" ; DROP_DIR=""
 DEEP_HUNT=0 ; INV_FIXTURE="" ; DEEP_HUNT_MAX_TARGETS=1 ; DEEP_HUNT_REPAIR_ROUNDS=4 ; DEEP_HUNT_AUX_MAX=0
+DEEP_HUNT_MAX_LENSES=2  # #1795: max lens classes per deep-hunt zone (custody-primary first, then C2/C16/C5).
 DEEP_HUNT_ONLY=0  # #1774: apply ONLY the STAGE 4.5 lens over an existing breadth --out (requires --deep-hunt).
 # #1731: cross-run ensemble/union flags — a THIN pass-through: collected verbatim into DEEP_FWD and appended to
 # both --deep-hunt run-invariant-hunt.sh invocations. Empty (the default) => the arg lists are byte-identical.
@@ -131,6 +138,7 @@ while [ $# -gt 0 ]; do
     --invariant-fixture) nv "$#"; INV_FIXTURE="$2"; shift 2 ;;
     --deep-hunt-max-targets) nv "$#"; DEEP_HUNT_MAX_TARGETS="$2"; shift 2 ;;
     --deep-hunt-aux-max) nv "$#"; DEEP_HUNT_AUX_MAX="$2"; shift 2 ;;
+    --deep-hunt-max-lenses) nv "$#"; DEEP_HUNT_MAX_LENSES="$2"; shift 2 ;;
     --deep-hunt-repair-rounds) nv "$#"; DEEP_HUNT_REPAIR_ROUNDS="$2"; shift 2 ;;
     --pattern-store)    nv "$#"; DEEP_FWD+=(--pattern-store "$2"); shift 2 ;;
     --replay-corpus)    DEEP_FWD+=(--replay-corpus); shift ;;
@@ -155,6 +163,8 @@ case "$JOBS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --jobs must be a positive i
 case "$DEEP_HUNT_MAX_TARGETS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-max-targets must be a positive integer (got '$DEEP_HUNT_MAX_TARGETS')" >&2; exit 2 ;; esac
 [ "$DEEP_HUNT_MAX_TARGETS" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-max-targets must be >= 1 (got '$DEEP_HUNT_MAX_TARGETS')" >&2; exit 2; }
 case "$DEEP_HUNT_AUX_MAX" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-aux-max must be a non-negative integer (got '$DEEP_HUNT_AUX_MAX')" >&2; exit 2 ;; esac
+case "$DEEP_HUNT_MAX_LENSES" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-max-lenses must be a positive integer (got '$DEEP_HUNT_MAX_LENSES')" >&2; exit 2 ;; esac
+[ "$DEEP_HUNT_MAX_LENSES" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-max-lenses must be >= 1 (got '$DEEP_HUNT_MAX_LENSES')" >&2; exit 2; }
 case "$DEEP_HUNT_REPAIR_ROUNDS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be a positive integer (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2 ;; esac
 [ "$DEEP_HUNT_REPAIR_ROUNDS" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be >= 1 (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2; }
 [ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires --deep-hunt" >&2; exit 2; }
@@ -321,11 +331,14 @@ if [ "$DEEP_HUNT" -eq 1 ]; then
     # #1726 (M2): when --deep-hunt-aux-max > 0, a 4th column carries the comma-joined next up-to-N largest
     # co-custody .sol (the secondary contracts for a SYSTEM invariant). When 0 (default) NO 4th column is
     # emitted — every row is byte-identical to before, so single-target deep-hunt runs are unchanged.
+    # #1795: a zone now emits ONE ROW PER APPLICABLE LENS CLASS (bounded by --deep-hunt-max-lenses), not one row
+    # for its single dominant class — see lens_classes() below.
     DEEP_TARGETS="$OUT/.deep-hunt-targets.tsv"
-    python3 - "$MAP/zones.json" "$REPO" "$DEEP_HUNT_MAX_TARGETS" "$DEEP_HUNT_AUX_MAX" > "$DEEP_TARGETS" <<'PY'
+    python3 - "$MAP/zones.json" "$REPO" "$DEEP_HUNT_MAX_TARGETS" "$DEEP_HUNT_AUX_MAX" "$DEEP_HUNT_MAX_LENSES" > "$DEEP_TARGETS" <<'PY'
 import sys, os, json
 zones = json.load(open(sys.argv[1], encoding="utf-8"))
 repo, max_targets, aux_max = sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+max_lenses = int(sys.argv[5])
 if not isinstance(zones, list):
     zones = []
 def loc(rel):
@@ -334,6 +347,17 @@ def loc(rel):
             return sum(1 for _ in fh)
     except Exception:
         return 0
+# #1795: SINGLE SOURCE OF TRUTH for the implemented lens classes — the custody-primary codes and the
+# non-value-custody codes, in coverage-map rarity/precedence order. dominant_class(), the non-custody selection
+# gate and the multi-lens fan-out below all derive from these two tuples; never restate the literals.
+CUSTODY_PRIMARY_CLASSES = ("C6", "C10", "C11")
+# #1790: IMPLEMENTED non-value-custody lens classes — a zone that is NOT value_custody is still a deep-hunt
+# target when one of these applies (the lens has templates for it). Without this, the gate below dropped every
+# non-custody zone BEFORE class routing, so #1786's oracle (C2) lens — and every future class lens — never fired
+# on a non-custody zone. Grow this tuple as class lenses land: C16 (liveness #1789) and C5 (access-control
+# #1785) join C2 here so their zones are actually selected and hunted.
+IMPLEMENTED_NONCUSTODY = ("C2", "C16", "C5")
+IMPLEMENTED_LENS_CLASSES = CUSTODY_PRIMARY_CLASSES + IMPLEMENTED_NONCUSTODY
 def dominant_class(classes):
     # #1783: C2 (Oracle integrity) is appended AFTER the C6/C10/C11 value-custody-primary codes, so it wins
     # only when no value-custody-primary class is present — byte-identical routing for every zone that has
@@ -347,17 +371,30 @@ def dominant_class(classes):
     # value-custody-primary, oracle or liveness code) routes to the access-control / privilege lens
     # (--class C5 -> prover class_to_keyword "access" -> is_access_sensitive); byte-identical routing for
     # every zone that has C6/C10/C11/C2/C16.
-    for c in ("C6", "C10", "C11", "C2", "C16", "C5"):
+    for c in IMPLEMENTED_LENS_CLASSES:
         if c in classes:
             return c
     return "C-invariant"
-# #1790: IMPLEMENTED non-value-custody lens classes — a zone that is NOT value_custody is still a deep-hunt
-# target when its dominant_class is one of these (the lens has templates for it). Without this, the gate below
-# dropped every non-custody zone BEFORE class routing, so #1786's oracle (C2) lens — and every future class
-# lens — never fired on a non-custody zone. Grow this set as class lenses land: C16 (liveness #1789) and
-# C5 (access-control #1785) join C2 here so their non-custody zones are actually selected and hunted.
-# Value-custody zones are unaffected (their dominant_class stays C6/C10/C11).
-IMPLEMENTED_NONCUSTODY = {"C2", "C16", "C5"}
+def lens_classes(z):
+    # #1795: EVERY applicable implemented lens for the zone, most-precedent first, capped at max_lenses.
+    # Before #1795 a zone got exactly ONE lens — its dominant_class — so on a value-custody zone the
+    # custody-first precedence SHADOWED the non-custody lenses: yieldoor/plaza `src` are value_custody AND
+    # carry C2, yet only the custody lens ever ran, making their oracle bugs structurally unreachable.
+    # Row 1 is UNCHANGED (the dominant_class the zone got before, under the same custody/non-custody gate), so
+    # nothing regresses; the extra rows are the applicable non-custody lenses that used to be dropped.
+    classes = z.get("bug_classes_likely", [])
+    dclass = dominant_class(classes)
+    out = []
+    if z.get("value_custody"):
+        # a value-custody zone always keeps its custody-primary row (or the generic C-invariant) FIRST
+        out.append(dclass)
+    elif dclass in IMPLEMENTED_NONCUSTODY:
+        # #1790 non-custody gate: unchanged first row for a zone whose dominant class is an implemented lens
+        out.append(dclass)
+    for c in IMPLEMENTED_NONCUSTODY:
+        if c in classes and c not in out:
+            out.append(c)
+    return out[:max_lenses]
 def has_impl_sol(z):
     # a fuzzable IMPLEMENTATION contract exists in the zone — not an interface-only zone. Interface .sol
     # (under an interfaces/ dir, or the `IName` convention) has no body to deploy/fuzz => a guaranteed
@@ -373,9 +410,11 @@ def has_impl_sol(z):
         return True
     return False
 for z in zones:
-    if not z.get("value_custody"):
-        if dominant_class(z.get("bug_classes_likely", [])) not in IMPLEMENTED_NONCUSTODY or not has_impl_sol(z):
-            continue
+    lenses = lens_classes(z)
+    if not lenses:
+        continue
+    if not z.get("value_custody") and not has_impl_sol(z):
+        continue
     zid = z.get("id", "")
     if not zid:
         continue
@@ -384,16 +423,17 @@ for z in zones:
         continue
     # largest by line count; lexicographic tie-break (smallest name wins on equal loc)
     ranked = sorted(sols, key=lambda f: (-loc(f), f))
-    dclass = dominant_class(z.get("bug_classes_likely", []))
     for rel in ranked[:max_targets]:
-        # #1726 (M2): aux-max == 0 => byte-identical 3-column row (single-target). aux-max > 0 => append a 4th
-        # column with the next up-to-aux_max largest co-custody .sol (this zone's secondary contracts).
-        if aux_max > 0:
-            aux = [f for f in ranked if f != rel][:aux_max]
-            auxcol = ",".join(a.replace("\t", " ") for a in aux)
-            print("%s\t%s\t%s\t%s" % (zid.replace("\t", " "), rel.replace("\t", " "), dclass, auxcol))
-        else:
-            print("%s\t%s\t%s" % (zid.replace("\t", " "), rel.replace("\t", " "), dclass))
+        # #1795: one row per applicable lens class — the FIRST is the class this zone got before #1795.
+        for dclass in lenses:
+            # #1726 (M2): aux-max == 0 => byte-identical 3-column row (single-target). aux-max > 0 => append a 4th
+            # column with the next up-to-aux_max largest co-custody .sol (this zone's secondary contracts).
+            if aux_max > 0:
+                aux = [f for f in ranked if f != rel][:aux_max]
+                auxcol = ",".join(a.replace("\t", " ") for a in aux)
+                print("%s\t%s\t%s\t%s" % (zid.replace("\t", " "), rel.replace("\t", " "), dclass, auxcol))
+            else:
+                print("%s\t%s\t%s" % (zid.replace("\t", " "), rel.replace("\t", " "), dclass))
 PY
     DEEP_FINDINGS=0
     while IFS='	' read -r ZID RELFILE DCLASS AUXFILES || [ -n "${ZID:-}" ]; do
@@ -415,17 +455,22 @@ PY
         IFS="$_aux_old_ifs"
       fi
       echo "run-zone-hunt.sh: [deep-hunt] stateful-invariant lens on zone '$ZID' target '$RELFILE' ($DCLASS) ..." >&2
-      DZOUT="$DEEP/$ZID"
+      # #1795: the out-dir is keyed per (ZONE, CLASS), not per zone — with the multi-lens fan-out two rows of
+      # one zone would otherwise SHARE a run dir and their per-target `invariant_<t>.log` would collide, so the
+      # #1780 merge adapter below (globs `invariant_*.log` under $DZOUT/run, filters the per-candidate
+      # `_c<N>.log`) would read the wrong lens's verdict. The `deep-hunt/*/run/invariant_*.log` consumers
+      # (generation-recall.sh, generalization-bench.sh) glob the zone level, so the suffix is transparent to them.
+      DZOUT="$DEEP/$ZID-$DCLASS"
       if [ -n "$INV_FIXTURE" ]; then
         "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
           --handler-fixture "$INV_FIXTURE" --backend "$BACKEND" --agentis "$AGENTIS" --out "$DZOUT" \
           --repair-rounds "$DEEP_HUNT_REPAIR_ROUNDS" "$@" ${DEEP_FWD[@]+"${DEEP_FWD[@]}"} \
-          || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID'; continuing" >&2; continue; }
+          || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID' ($DCLASS); continuing" >&2; continue; }
       else
         "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
           --backend "$BACKEND" --agentis "$AGENTIS" --out "$DZOUT" \
           --repair-rounds "$DEEP_HUNT_REPAIR_ROUNDS" "$@" ${DEEP_FWD[@]+"${DEEP_FWD[@]}"} \
-          || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID'; continuing" >&2; continue; }
+          || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID' ($DCLASS); continuing" >&2; continue; }
       fi
       # Adapter: convert the engine's INVARIANT|<target>|FINDING + STEP| witness into a schema-compatible
       # verified[] entry (source=invariant-hunt) and APPEND it to verified_findings.json. Only a FINDING
@@ -499,9 +544,9 @@ PY
 )"
       if [ "$MERGED_ADD" = "1" ]; then
         DEEP_FINDINGS=$((DEEP_FINDINGS + 1))
-        echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' -> FINDING merged into verified_findings.json (source=invariant-hunt)" >&2
+        echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> FINDING merged into verified_findings.json (source=invariant-hunt)" >&2
       else
-        echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' -> no FINDING to merge (CLEAN / HARNESS_ERROR)" >&2
+        echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> no FINDING to merge (CLEAN / HARNESS_ERROR)" >&2
       fi
     done < "$DEEP_TARGETS"
     echo "run-zone-hunt.sh: [deep-hunt] merged $DEEP_FINDINGS invariant-hunt finding(s) into verified_findings.json" >&2

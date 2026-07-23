@@ -216,9 +216,10 @@ fi
 
 # run-zone-hunt.sh dominant_class() routes an oracle-dependent zone (C2, no custody-primary code) to the oracle
 # lens — appended AFTER C6/C10/C11 so value-custody-primary zones stay byte-identical.
-# (substring match: #1784 appends "C16" after "C2", so the tuple no longer ends at C2 — assert the "C11", "C2"
-# ordering that keeps custody-primary codes ahead of the oracle code, unchanged by the C16 append.)
-if grep -q '"C10", "C11", "C2"' "$ZONEHUNT"; then
+# (#1795 split the precedence tuple into CUSTODY_PRIMARY_CLASSES + IMPLEMENTED_NONCUSTODY, concatenated in that
+# order — assert the custody-primary tuple ENDS at C11 and the non-custody tuple STARTS at C2, which is the same
+# "custody-primary codes ahead of the oracle code" contract the flat tuple carried before.)
+if grep -q '"C10", "C11")' "$ZONEHUNT" && grep -q 'IMPLEMENTED_NONCUSTODY = ("C2"' "$ZONEHUNT"; then
   ok "run-zone-hunt.sh dominant_class() appends C2 after C10/C11 (oracle zones reach the lens; custody unchanged)"
 else
   bad "run-zone-hunt.sh dominant_class() does not route C2 (the oracle lens never fires on the live path)"
@@ -343,14 +344,16 @@ fi
 
 # run-zone-hunt.sh dominant_class() routes an access-only zone (C5, no custody-primary / oracle / liveness code) to
 # the access lens — appended AFTER C6/C10/C11/C2/C16 so value-custody, oracle and liveness zones stay byte-identical.
-if grep -q 'for c in ("C6", "C10", "C11", "C2", "C16", "C5"):' "$ZONEHUNT"; then
+# (#1795 moved the precedence order into the shared IMPLEMENTED_LENS_CLASSES tuple; the order itself is the contract.)
+if grep -q 'CUSTODY_PRIMARY_CLASSES = ("C6", "C10", "C11")' "$ZONEHUNT" \
+   && grep -q 'IMPLEMENTED_LENS_CLASSES = CUSTODY_PRIMARY_CLASSES + IMPLEMENTED_NONCUSTODY' "$ZONEHUNT"; then
   ok "run-zone-hunt.sh dominant_class() appends C5 after C16 (access zones reach the lens; custody/oracle/liveness unchanged)"
 else
   bad "run-zone-hunt.sh dominant_class() does not route C5 (the access lens never fires on the live path)"
 fi
 
 # #1785 — C5 joins the IMPLEMENTED_NONCUSTODY gate so an access-dominant non-custody zone is actually selected.
-if grep -q 'IMPLEMENTED_NONCUSTODY = {"C2", "C16", "C5"}' "$ZONEHUNT"; then
+if grep -q 'IMPLEMENTED_NONCUSTODY = ("C2", "C16", "C5")' "$ZONEHUNT"; then
   ok "run-zone-hunt.sh IMPLEMENTED_NONCUSTODY includes C5 (access-dominant non-custody zones are hunted)"
 else
   bad "run-zone-hunt.sh IMPLEMENTED_NONCUSTODY does not include C5 (access zones dropped before class routing)"
@@ -529,6 +532,151 @@ else
   bad "merge adapter selection picked '$_picked' (expected FINDING) — the codepoint-sort regression is back"
 fi
 
+# ----------------------------------------------------------------------------------------------------------
+# 7) #1795 MULTI-LENS PER ZONE — the STAGE 4.5 selection emits one row per (zone x APPLICABLE implemented lens
+#    class), so a value-custody zone that ALSO carries C2/C16/C5 no longer shadows those lenses behind its
+#    custody-first dominant class. Guard the single source of truth for the class lists, the preserved
+#    custody-first row, the --deep-hunt-max-lenses fan-out cap, and the per-(zone,class) DZOUT.
+# ----------------------------------------------------------------------------------------------------------
+note "source-guarding the #1795 multi-lens-per-zone selection ..."
+
+if grep -q 'CUSTODY_PRIMARY_CLASSES = ("C6", "C10", "C11")' "$ZONEHUNT" \
+   && grep -q 'IMPLEMENTED_NONCUSTODY = ("C2", "C16", "C5")' "$ZONEHUNT" \
+   && grep -q 'IMPLEMENTED_LENS_CLASSES = CUSTODY_PRIMARY_CLASSES + IMPLEMENTED_NONCUSTODY' "$ZONEHUNT"; then
+  ok "the implemented lens classes have a SINGLE source of truth (custody-primary + non-custody tuples)"
+else
+  bad "the #1795 single-source-of-truth lens-class tuples are missing from run-zone-hunt.sh"
+fi
+
+# dominant_class() must DERIVE its precedence from the shared tuple, never restate the literals.
+if grep -q 'for c in IMPLEMENTED_LENS_CLASSES:' "$ZONEHUNT" \
+   && ! grep -q 'for c in ("C6", "C10", "C11", "C2", "C16", "C5"):' "$ZONEHUNT"; then
+  ok "dominant_class() iterates IMPLEMENTED_LENS_CLASSES (no duplicated class literals)"
+else
+  bad "dominant_class() still restates the class precedence literals instead of deriving them"
+fi
+
+if grep -q 'def lens_classes(z):' "$ZONEHUNT" && grep -q 'return out\[:max_lenses\]' "$ZONEHUNT"; then
+  ok "lens_classes() is defined and truncates to the --deep-hunt-max-lenses cap"
+else
+  bad "lens_classes() is missing or does not apply the fan-out cap"
+fi
+
+if grep -q 'DEEP_HUNT_MAX_LENSES=2' "$ZONEHUNT" \
+   && grep -q -- '--deep-hunt-max-lenses) nv "$#"; DEEP_HUNT_MAX_LENSES="$2"; shift 2 ;;' "$ZONEHUNT"; then
+  ok "run-zone-hunt.sh declares --deep-hunt-max-lenses with default 2 and parses it"
+else
+  bad "run-zone-hunt.sh does not declare/parse --deep-hunt-max-lenses (default 2)"
+fi
+
+if grep -q 'DZOUT="\$DEEP/\$ZID-\$DCLASS"' "$ZONEHUNT"; then
+  ok "the deep-hunt out-dir is keyed per (zone, class) — no invariant_<t>.log collision across lenses"
+else
+  bad "the deep-hunt out-dir is not keyed per (zone, class) — multi-lens runs would corrupt the merge adapter"
+fi
+
+# Offline CLI guard: the cap is whole-number-validated and fails fast (exit 2) before any heavy stage.
+_ml_err="$(mktemp)"
+"$ZONEHUNT" --repo "$HERE" --deep-hunt --deep-hunt-max-lenses notanumber >/dev/null 2>"$_ml_err"
+_ml_rc=$?
+if [ "$_ml_rc" -eq 2 ] && grep -q -- '--deep-hunt-max-lenses must be a positive integer' "$_ml_err"; then
+  ok "run-zone-hunt.sh --deep-hunt-max-lenses notanumber fails fast with exit 2 + the usage error"
+else
+  bad "run-zone-hunt.sh --deep-hunt-max-lenses notanumber did not fail fast as expected (exit $_ml_rc)"
+fi
+rm -f "$_ml_err"
+
+# Behavioural: run the REAL selection python (extracted verbatim from the STAGE 4.5 heredoc) over a synthetic
+# zones.json shaped like the corpus — a value-custody zone carrying C2+C5, a custody-only zone, a non-custody
+# oracle zone and an interface-only non-custody zone. CI-safe (pure python3, no toolchain/agentis/forge/LLM).
+note "behaviourally guarding the #1795 selection (real STAGE 4.5 python over a synthetic zones.json) ..."
+_ml_tmp="$(mktemp -d)"
+awk '/> "\$DEEP_TARGETS" <</{f=1;next} f&&/^PY$/{exit} f{print}' "$ZONEHUNT" > "$_ml_tmp/select.py"
+mkdir -p "$_ml_tmp/repo/src/oracles" "$_ml_tmp/repo/src/interfaces"
+: > "$_ml_tmp/repo/src/Pool.sol"; : > "$_ml_tmp/repo/src/Vault.sol"
+: > "$_ml_tmp/repo/src/oracles/Feed.sol"; : > "$_ml_tmp/repo/src/interfaces/IPool.sol"
+cat > "$_ml_tmp/zones.json" <<'JSON'
+[
+  {"id": "src", "value_custody": true, "bug_classes_likely": ["C2", "C6", "C10", "C15", "C5"],
+   "files": ["src/Pool.sol"]},
+  {"id": "src_vault", "value_custody": true, "bug_classes_likely": ["C6", "C10"],
+   "files": ["src/Vault.sol"]},
+  {"id": "src_oracles", "value_custody": false, "bug_classes_likely": ["C2", "C9", "C15"],
+   "files": ["src/oracles/Feed.sol"]},
+  {"id": "src_interfaces", "value_custody": false, "bug_classes_likely": ["C2", "C10", "C15"],
+   "files": ["src/interfaces/IPool.sol"]}
+]
+JSON
+_rows_n2="$(python3 "$_ml_tmp/select.py" "$_ml_tmp/zones.json" "$_ml_tmp/repo" 1 0 2)"
+_rows_n1="$(python3 "$_ml_tmp/select.py" "$_ml_tmp/zones.json" "$_ml_tmp/repo" 1 0 1)"
+
+# (i) the value-custody zone emits its CUSTODY row FIRST (byte-identical to the pre-#1795 single row) ...
+if [ "$(printf '%s\n' "$_rows_n2" | head -1)" = "$(printf 'src\tsrc/Pool.sol\tC6')" ]; then
+  ok "(i) the value-custody zone's custody-primary (C6) row is still emitted FIRST"
+else
+  bad "(i) the value-custody zone lost its leading custody-primary row: $(printf '%s\n' "$_rows_n2" | head -1)"
+fi
+
+# (ii) ... AND the previously-shadowed oracle (C2) lens now runs on that same zone.
+if printf '%s\n' "$_rows_n2" | grep -qx "$(printf 'src\tsrc/Pool.sol\tC2')"; then
+  ok "(ii) the shadowed oracle (C2) lens now ALSO runs on the value-custody zone (the #1795 gap)"
+else
+  bad "(ii) the value-custody zone still emits no C2 row — the oracle lens is still shadowed"
+fi
+
+# (iii) the cap bounds the fan-out: C5 also applies to that zone but is truncated at N=2.
+if [ "$(printf '%s\n' "$_rows_n2" | grep -c '^src	')" -eq 2 ]; then
+  ok "(iii) --deep-hunt-max-lenses caps the zone at 2 lens rows (C5 truncated by the rarity order)"
+else
+  bad "(iii) the fan-out cap did not bound the zone to 2 lens rows"
+fi
+
+# (iv) N=1 reproduces the pre-#1795 selection EXACTLY (custody zones keep their lens; interface-only skipped).
+_expect_n1="$(printf 'src\tsrc/Pool.sol\tC6\nsrc_vault\tsrc/Vault.sol\tC6\nsrc_oracles\tsrc/oracles/Feed.sol\tC2')"
+if [ "$_rows_n1" = "$_expect_n1" ]; then
+  ok "(iv) --deep-hunt-max-lenses 1 reproduces the pre-#1795 single-lens selection exactly"
+else
+  bad "(iv) --deep-hunt-max-lenses 1 does NOT reproduce the pre-#1795 selection:"
+  printf '%s\n' "$_rows_n1" | sed 's/^/      /' >&2
+fi
+
+# (v) the interface-only non-custody zone stays skipped even though C2 applies to it (no fuzzable body).
+if printf '%s\n' "$_rows_n2" | grep -q '^src_interfaces	'; then
+  bad "(v) the interface-only non-custody zone was selected (guaranteed HARNESS_ERROR)"
+else
+  ok "(v) the interface-only non-custody zone stays skipped under the multi-lens fan-out"
+fi
+
+# (vi) per-(zone,class) out-dirs keep the #1780 merge adapter resolving the RIGHT log per row: two lenses of one
+#      zone write their own run/ tree, so the adapter reads each lens's own verdict instead of one clobbered log.
+mkdir -p "$_ml_tmp/deep-hunt/src-C6/run" "$_ml_tmp/deep-hunt/src-C2/run"
+printf 'INVARIANT|src/Pool.sol|CLEAN\n'   > "$_ml_tmp/deep-hunt/src-C6/run/invariant_src_Pool_sol.log"
+printf 'INVARIANT|src/Pool.sol|FINDING\n' > "$_ml_tmp/deep-hunt/src-C2/run/invariant_src_Pool_sol.log"
+printf 'INVARIANT|src/Pool.sol|CLEAN\n'   > "$_ml_tmp/deep-hunt/src-C2/run/invariant_src_Pool_sol_c1.log"
+_verdicts="$(python3 - "$_ml_tmp/deep-hunt" <<'PY'
+import sys, os, glob, re
+root = sys.argv[1]
+out = []
+for d in sorted(os.listdir(root)):
+    logs = sorted(glob.glob(os.path.join(root, d, "run", "invariant_*.log")))
+    logs = [p for p in logs if not re.search(r"_c[0-9]+\.log$", os.path.basename(p))]
+    verdict = "NONE"
+    if logs:
+        with open(logs[-1], encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                if "INVARIANT|" in line:
+                    verdict = line.split("INVARIANT|", 1)[1].strip().split("|")[1].strip()
+    out.append("%s=%s" % (d, verdict))
+print(" ".join(out))
+PY
+)"
+rm -rf "$_ml_tmp"
+if [ "$_verdicts" = "src-C2=FINDING src-C6=CLEAN" ]; then
+  ok "(vi) the merge adapter resolves each (zone,class) run dir to its OWN aggregate verdict"
+else
+  bad "(vi) the per-(zone,class) merge-adapter resolution regressed (got '$_verdicts')"
+fi
+
 echo
 if [ "$FAILS" -eq 0 ]; then
   note "PASS: #1778 single-run metamorphic ensemble is wired — is_value_custody() + metamorphic_variant_seed()"
@@ -538,6 +686,10 @@ if [ "$FAILS" -eq 0 ]; then
   note "      the allowlist + synthesizes the CANDIDATE|/aggregate-INVARIANT| vote, the INVARIANT| marker +"
   note "      verdict_of + #1471 gate are untouched, the #1725 normalizer count is still 2, and the bench"
   note "      forwarding (run-zone-hunt.sh DEEP_FWD + deep-hunt-ab.sh --live ON arm) is wired."
+  note "      #1795 also holds: the STAGE 4.5 selection derives every lens class from ONE source of truth, emits"
+  note "      the custody-primary row FIRST plus the previously-shadowed C2/C16/C5 lenses, bounds the fan-out via"
+  note "      --deep-hunt-max-lenses (default 2; N=1 == the pre-#1795 selection), keeps interface-only zones"
+  note "      skipped, and keys each run dir per (zone, class) so the merge adapter reads the right verdict."
   exit 0
 fi
 note "DEMO FAILED — a #1778 metamorphic-ensemble wiring assertion did not hold" >&2
