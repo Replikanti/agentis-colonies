@@ -67,11 +67,39 @@ else
   bad "metamorphic_variant_seed() lost its empty-variant early return (OFF no longer byte-identical)"
 fi
 
-# Non-value-custody classes also get "" (defensive — the ensemble only runs on value_custody deep-hunt zones).
-if grep -q 'if !is_value_custody(klass) { return ""; }' "$PROVER"; then
-  ok "metamorphic_variant_seed() returns \"\" for a non-value-custody class (defensive no-op)"
+# #1783 (M3) — CUSTODY-FIRST / ORACLE-SECOND precedence. Value-custody is checked BEFORE is_oracle_dependent, and
+# a class that is neither falls through to a final `return "";` — so a non-custody / non-oracle class (and the
+# empty variant guarded above) yields a BYTE-IDENTICAL generation prompt. A value-custody label containing "price"
+# hits the custody branch first (the oracle detector fires false on it).
+# (.ag has no `else if`; the oracle branch nests as `else { if is_oracle_dependent(klass) { ... } else {} }`.)
+_vc_ln="$(grep -n 'if is_value_custody(klass) {' "$PROVER" | head -1 | cut -d: -f1)"
+_or_ln="$(grep -n 'if is_oracle_dependent(klass) {' "$PROVER" | head -1 | cut -d: -f1)"
+if [ -n "$_vc_ln" ] && [ -n "$_or_ln" ] && [ "$_vc_ln" -lt "$_or_ln" ]; then
+  ok "metamorphic_variant_seed() checks is_value_custody() BEFORE is_oracle_dependent() (custody-first precedence)"
 else
-  bad "metamorphic_variant_seed() no longer guards on is_value_custody() (could steer a non-custody class)"
+  bad "metamorphic_variant_seed() lost the custody-first / oracle-second precedence"
+fi
+
+# The neither-custody-nor-oracle branch returns "" (byte-identical for out-of-class targets). Match the inner
+# oracle-else tail `} else { <ws> return ""; <ws> }` — the arm reached when neither detector fires.
+if grep -Pzoq 'if is_oracle_dependent\(klass\) \{[\s\S]*?\} else \{\s*\n\s*return "";\s*\n\s*\}' "$PROVER"; then
+  ok "metamorphic_variant_seed() ends with a return \"\"; fallthrough (non-custody + non-oracle => byte-identical)"
+else
+  bad "metamorphic_variant_seed() lost the final return \"\"; fallthrough (out-of-class no longer byte-identical)"
+fi
+
+# #1783 (M1) — the oracle-manipulation detector sibling of is_value_custody, with DISJOINT keywords.
+if grep -q 'fn is_oracle_dependent(klass: string) -> bool' "$PROVER"; then
+  ok "is_oracle_dependent() is defined on the prover (oracle-manipulation lens class)"
+else
+  bad "is_oracle_dependent() missing from the prover"
+fi
+
+# C2 (Oracle integrity) maps to the "oracle" keyword in class_to_keyword (the bare-code production path).
+if grep -q 'if class_is(k, "c2") { return "oracle"; }' "$PROVER"; then
+  ok "class_to_keyword() maps the bare C2 taxonomy code to the \"oracle\" keyword"
+else
+  bad "class_to_keyword() does not map C2 to \"oracle\" (the oracle lens would never route)"
 fi
 
 if grep -q 'let ensembleVariant = getenv("INV_ENSEMBLE_VARIANT");' "$PROVER"; then
@@ -118,6 +146,61 @@ if grep -q 'ACTOR-A-vs-ACTOR-B PARITY relation' "$PROVER" \
   ok "variant 2 present (actor-A-vs-B same-sized-op value parity)"
 else
   bad "variant 2 missing (actor-A-vs-B parity)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# 2b) #1783 ORACLE-MANIPULATION LENS CLASS — the oracle branch is present in action_checklist_prompt() and
+#     metamorphic_relation_prompt() (matched inline, DISJOINT keywords, placed after the reentran block), and the
+#     three oracle ensemble variant seeds are present with their forge-proven require() forms. Default-off is
+#     preserved by the custody-first precedence asserted in section 1.
+# ----------------------------------------------------------------------------------------------------------
+note "source-guarding the #1783 oracle-manipulation lens class ..."
+
+# action_checklist_prompt() oracle branch — price-perturbation + stale-then-fresh actions.
+if grep -q 'PRICE-PERTURBATION action' "$PROVER" \
+   && grep -q 'STALE-THEN-FRESH read action' "$PROVER"; then
+  ok "action_checklist_prompt() carries the oracle branch (price-perturbation + stale-then-fresh actions)"
+else
+  bad "action_checklist_prompt() missing the oracle branch"
+fi
+
+# metamorphic_relation_prompt() oracle menu — the three shapes.
+if grep -q 'MONOTONE-PRICE-RESPONSE' "$PROVER" \
+   && grep -q 'STALE-VS-FRESH PARITY' "$PROVER" \
+   && grep -q 'MANIPULATION-BOUNDED-EXTRACTION' "$PROVER"; then
+  ok "metamorphic_relation_prompt() carries the three oracle metamorphic shapes"
+else
+  bad "metamorphic_relation_prompt() missing one or more oracle metamorphic shapes"
+fi
+
+# The three oracle ensemble variant seeds + their pinned require() forms.
+if grep -q 'ORACLE-PRICE MONOTONICITY relation' "$PROVER" \
+   && grep -q 'require(vHi >= vLo && vHi <= vLo + vLo/20 + 1' "$PROVER"; then
+  ok "oracle variant 0 present (bounded-move price monotonicity, vHi/vLo require form)"
+else
+  bad "oracle variant 0 missing (bounded-move price monotonicity)"
+fi
+
+if grep -q 'STALE-vs-FRESH oracle PARITY relation' "$PROVER" \
+   && grep -q 'require(vStale <= vFresh + vFresh/1000 + 1' "$PROVER"; then
+  ok "oracle variant 1 present (stale-vs-fresh parity, vStale/vFresh require form)"
+else
+  bad "oracle variant 1 missing (stale-vs-fresh parity)"
+fi
+
+if grep -q 'MANIPULATION-BOUNDED-EXTRACTION relation' "$PROVER" \
+   && grep -q 'require(gainA <= gainB + gainB/1000 + 1' "$PROVER"; then
+  ok "oracle variant 2 present (manipulation-bounded-extraction, gainA/gainB require form)"
+else
+  bad "oracle variant 2 missing (manipulation-bounded-extraction)"
+fi
+
+# run-zone-hunt.sh dominant_class() routes an oracle-dependent zone (C2, no custody-primary code) to the oracle
+# lens — appended AFTER C6/C10/C11 so value-custody-primary zones stay byte-identical.
+if grep -q 'for c in ("C6", "C10", "C11", "C2"):' "$ZONEHUNT"; then
+  ok "run-zone-hunt.sh dominant_class() appends C2 after C10/C11 (oracle zones reach the lens; custody unchanged)"
+else
+  bad "run-zone-hunt.sh dominant_class() does not route C2 (the oracle lens never fires on the live path)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------

@@ -752,6 +752,10 @@ fn class_to_keyword(k: string) -> string {
     if class_is(k, "c10") { return "lend"; }
     if class_is(k, "c12") { return "amm"; }
     if class_is(k, "c8") { return "reentran"; }
+    // #1783 (M1) — C2 = "Oracle integrity" (auditor/bug-taxonomy.md). A bare `C2` dominant label routes to the
+    // new "oracle" keyword so the oracle-manipulation metamorphic lens fires. is_value_custody("oracle") is false,
+    // so a value-custody target (yearn/plaza) never picks it up — the oracle detector fires false on those.
+    if class_is(k, "c2") { return "oracle"; }
     // #1778 — a bare `pool`/`redeem` dominant label (e.g. the plaza pool/redeem target) is value-custody but has
     // no taxonomy code; route it to the closest existing menu so the metamorphic-ensemble variant selector and the
     // #1726 relation menu fire the right (AMM / vault) shape instead of the generic default.
@@ -827,6 +831,24 @@ fn action_checklist_prompt(klass: string) -> string {
              + "  - >=2 actor addresses so the reentrant call and the outer call are attributable to different "
              + "positions\n";
     }
+    // #1783 (M1) — ORACLE-MANIPULATION class. Matched inline via index_of on the SAME oracle keyword set as
+    // is_oracle_dependent (NOT a call to it — .ag is definition-before-use and is_oracle_dependent is defined
+    // later). Value-custody keywords are matched first above, so a value-custody label never reaches this branch.
+    let oraclePrompt = "  - a PRICE-PERTURBATION action: deploy a MOCK price feed / oracle the target reads and "
+         + "let the Handler MOVE its answer WITHIN a realistic band (`_bound` the new price to e.g. +/-5% around "
+         + "the peg) so a multi-call SEQUENCE can move the price mid-flight — NEVER an arbitrary magnitude\n"
+         + "  - a STALE-THEN-FRESH read action: let the mock feed report a STALE `updatedAt` / lower "
+         + "`answeredInRound` on one call and a FRESH one on the next, so a value read straddles the "
+         + "staleness / deviation boundary\n"
+         + "  - >=2 actor addresses (attacker/victim) so the actor who MOVES the price and the actor who "
+         + "transacts around it are attributable to different positions\n";
+    if index_of(k, "oracle") >= 0 { return oraclePrompt; }
+    if index_of(k, "price") >= 0 { return oraclePrompt; }
+    if index_of(k, "feed") >= 0 { return oraclePrompt; }
+    if index_of(k, "chainlink") >= 0 { return oraclePrompt; }
+    if index_of(k, "slot0") >= 0 { return oraclePrompt; }
+    if index_of(k, "getprice") >= 0 { return oraclePrompt; }
+    if index_of(k, "latestanswer") >= 0 { return oraclePrompt; }
     return "  - >=2 bounded actor addresses (no single-actor sequences)\n"
          + "  - a direct external-perturbation action (raw donation / direct rate-set) that bypasses the normal "
          + "entry points\n";
@@ -880,6 +902,33 @@ fn metamorphic_relation_prompt(klass: string) -> string {
              + "SAME accounting state as running the two sequentially — the reentrant path grants no "
              + "double-credit\n";
     }
+    // #1783 (M1) — ORACLE-MANIPULATION relations. Matched inline on the SAME oracle keyword set as
+    // is_oracle_dependent (value-custody keywords matched first above => a value-custody label never reaches this).
+    let oracleMeta = "  - MONOTONE-PRICE-RESPONSE: protocol value read off the oracle must move MONOTONICALLY with "
+         + "the oracle price within its valid band and never jump discontinuously — snapshot a value view "
+         + "(collateral value / mint-out / redeem-out) at the low bounded price, move the mock feed UP by a "
+         + "bounded step (still in band), re-read, and assert the value moved in the SAME direction and by no "
+         + "more than the price step: "
+         + "`require(vHi >= vLo && vHi <= vLo + vLo/20 + 1, \"protocol value non-monotone / discontinuous in "
+         + "oracle price\");`\n"
+         + "  - STALE-VS-FRESH PARITY: a value computed off a JUST-moved (stale) oracle read must equal one off "
+         + "the settled (fresh) read at the SAME price within tolerance — read with the mock feed marked stale "
+         + "then again marked fresh and assert parity: "
+         + "`require(vStale <= vFresh + vFresh/1000 + 1 && vFresh <= vStale + vStale/1000 + 1, \"stale vs fresh "
+         + "oracle read diverge\");` (a price-read path that skips the staleness / sequencer-uptime / deviation "
+         + "check on ONE branch breaks this)\n"
+         + "  - MANIPULATION-BOUNDED-EXTRACTION: an actor who PERTURBS the oracle within its band, round-trips "
+         + "through the protocol (deposit/borrow/redeem/liquidate) and restores the price must NOT end richer "
+         + "than an identical actor who never touched the oracle: "
+         + "`require(gainPerturb <= gainBaseline + gainBaseline/1000 + 1, \"actor extracted value by perturbing "
+         + "the oracle within its band\");`\n";
+    if index_of(mk, "oracle") >= 0 { return oracleMeta; }
+    if index_of(mk, "price") >= 0 { return oracleMeta; }
+    if index_of(mk, "feed") >= 0 { return oracleMeta; }
+    if index_of(mk, "chainlink") >= 0 { return oracleMeta; }
+    if index_of(mk, "slot0") >= 0 { return oracleMeta; }
+    if index_of(mk, "getprice") >= 0 { return oracleMeta; }
+    if index_of(mk, "latestanswer") >= 0 { return oracleMeta; }
     return "  - ROUND-TRIP: any put/take (deposit/withdraw) round-trip must NOT return more value than was put "
          + "in\n"
          + "  - COMMUTATIVITY: two independent same-actor operations commute (order does not change the final "
@@ -910,6 +959,24 @@ fn is_value_custody(klass: string) -> bool {
     return false;
 }
 
+// #1783 (M1) — is this an ORACLE-DEPENDENT class (protocol value read off an external price feed: Chainlink /
+// AMM spot / slot0 / getPrice / latestAnswer)? Sibling of is_value_custody, normalizing through the SAME
+// class_to_keyword(to_lower(klass)) helper (C2 -> "oracle"), then anchored index_of over an oracle keyword set
+// that is DISJOINT from the value-custody set (4626/vault/lend/cdp/borrow/collateral/amm/swap/dex/pool/redeem/stak)
+// — so an out-of-class or value-custody label never trips it. Flat index_of only — no per-element recursion. A
+// distinct local `oc` (not `k`) keeps the #1725 handler-action normalizer-site count at exactly 2.
+fn is_oracle_dependent(klass: string) -> bool {
+    let oc = class_to_keyword(to_lower(klass));
+    if index_of(oc, "oracle") >= 0 { return true; }
+    if index_of(oc, "price") >= 0 { return true; }
+    if index_of(oc, "feed") >= 0 { return true; }
+    if index_of(oc, "chainlink") >= 0 { return true; }
+    if index_of(oc, "slot0") >= 0 { return true; }
+    if index_of(oc, "getprice") >= 0 { return true; }
+    if index_of(oc, "latestanswer") >= 0 { return true; }
+    return false;
+}
+
 // #1778 (M1) — METAMORPHIC ENSEMBLE VARIANT selection. The single-run ensemble (run-invariant-hunt.sh
 // --ensemble-candidates N, default OFF) steers N DISTINCT relational-invariant SHAPES — one per candidate —
 // through the UNCHANGED gate and takes an ensemble vote (any break => FINDING). This builder returns the REQUIRED
@@ -921,45 +988,97 @@ fn is_value_custody(klass: string) -> bool {
 // INVARIANT| marker, and the #1471 --require-import/--require-contract gate are untouched.
 fn metamorphic_variant_seed(klass: string, variant: string) -> string {
     if variant == "" { return ""; }
-    if !is_value_custody(klass) { return ""; }
-    let header = "=== ENSEMBLE VARIANT (metamorphic shape — REQUIRED for this candidate) ===\n";
-    // variant 0 — LARGE-vs-SMALL per-unit-price monotonicity via the contract's OWN pricing view functions.
-    if variant == "0" {
+    // #1783 (M3) — CUSTODY-FIRST / ORACLE-SECOND precedence. A value-custody label wins first (its variant
+    // strings are byte-identical to #1778), then an oracle-dependent label picks the oracle shapes; any other
+    // class (or the empty variant above) returns "" => a BYTE-IDENTICAL generation prompt. Value-custody is
+    // checked before is_oracle_dependent, so a value-custody label containing "price" never reaches the oracle
+    // branch (an oracle bug inside a vault/lend zone routes to the custody lens — a documented known limitation).
+    if is_value_custody(klass) {
+        let header = "=== ENSEMBLE VARIANT (metamorphic shape — REQUIRED for this candidate) ===\n";
+        // variant 0 — LARGE-vs-SMALL per-unit-price monotonicity via the contract's OWN pricing view functions.
+        if variant == "0" {
+            return header
+                 + "Express the ONE deep invariant as a LARGE-vs-SMALL per-unit-price MONOTONICITY relation, using "
+                 + "the contract's OWN pricing view functions (`simulate*` / `preview*` / `convertTo*` / `quote*`): a "
+                 + "LARGE operation must NEVER get a strictly better per-unit price than a SMALL one. Compute the "
+                 + "small-op unit price `pS` and the large-op unit price `pB` from those views (scale both to the SAME "
+                 + "fixed-point unit) and assert `require(pB <= pS + pS/1000 + 1, \"large op overpaid vs small\");` — "
+                 + "the `+ pS/1000 + 1` is the rounding/fee tolerance. A large actor beating a small actor's unit "
+                 + "price is exactly the value-leak the rare Highs hide in.\n";
+        }
+        // variant 1 — BEFORE-vs-AFTER existing-holder per-share price monotonicity across an interposed op.
+        if variant == "1" {
+            return header
+                 + "Express the ONE deep invariant as a BEFORE-vs-AFTER MONOTONICITY relation for an EXISTING "
+                 + "holder: snapshot the holder's redeemable-per-share (vault) or reserves-per-LP (pool) value, "
+                 + "interpose ONE other operation (a no-op, a direct donation, or a DIFFERENT actor's deposit/swap), "
+                 + "then re-read it and assert it did NOT decrease: "
+                 + "`require(afterPer >= beforePer, \"holder redeemable-per-share dropped\");`. An existing holder's "
+                 + "per-share value silently dropping under someone else's action is the first-depositor / donation "
+                 + "inflation lens.\n";
+        }
+        // variant 2 — ACTOR-A-vs-ACTOR-B value parity (identity/order independence).
+        if variant == "2" {
+            return header
+                 + "Express the ONE deep invariant as an ACTOR-A-vs-ACTOR-B PARITY relation: have two distinct actors "
+                 + "perform the SAME-sized operation and assert they receive within-tolerance-EQUAL value "
+                 + "`require(vA <= vB + vB/1000 + 1 && vB <= vA + vA/1000 + 1, \"actor A/B value parity broken\");`. "
+                 + "Same-sized operations paying different actors differently (identity/order dependence) expose a "
+                 + "value-conservation break.\n";
+        }
+        // index >= 3 — ensemble breadth beyond the three pinned shapes falls back to the #1726 class-keyed
+        // round-trip/commutativity menu, but as a REQUIRED (pick-one) shape rather than the optional framing.
         return header
-             + "Express the ONE deep invariant as a LARGE-vs-SMALL per-unit-price MONOTONICITY relation, using "
-             + "the contract's OWN pricing view functions (`simulate*` / `preview*` / `convertTo*` / `quote*`): a "
-             + "LARGE operation must NEVER get a strictly better per-unit price than a SMALL one. Compute the "
-             + "small-op unit price `pS` and the large-op unit price `pB` from those views (scale both to the SAME "
-             + "fixed-point unit) and assert `require(pB <= pS + pS/1000 + 1, \"large op overpaid vs small\");` — "
-             + "the `+ pS/1000 + 1` is the rounding/fee tolerance. A large actor beating a small actor's unit "
-             + "price is exactly the value-leak the rare Highs hide in.\n";
+             + "Express the ONE deep invariant as one of the following class-specific metamorphic relations "
+             + "(REQUIRED — pick the one that best fits this target and assert it with plain `require(...)`):\n"
+             + metamorphic_relation_prompt(klass);
+    } else {
+      // .ag has no `else if`; the oracle branch nests as `else { if is_oracle_dependent(klass) { ... } else {} }`.
+      if is_oracle_dependent(klass) {
+        // #1783 (M3) — ORACLE-MANIPULATION ensemble variants. Same header + index<->shape mapping as the custody
+        // branch, each pinning ONE oracle metamorphic relation as REQUIRED; index >= 3 falls back to the #1726
+        // oracle menu (metamorphic_relation_prompt routes the oracle class to oracleMeta).
+        let oheader = "=== ENSEMBLE VARIANT (metamorphic shape — REQUIRED for this candidate) ===\n";
+        // variant 0 — ORACLE-PRICE MONOTONICITY across a bounded feed move.
+        if variant == "0" {
+            return oheader
+                 + "Express the ONE deep invariant as an ORACLE-PRICE MONOTONICITY relation: deploy a MOCK price "
+                 + "feed the target reads, snapshot a value view (collateral value / mint-out / redeem-out) at the "
+                 + "LOW bounded price `vLo`, move the mock feed UP by a BOUNDED step (still inside its allowed band), "
+                 + "re-read `vHi`, and assert the value moved in the SAME direction by no more than the price step: "
+                 + "`require(vHi >= vLo && vHi <= vLo + vLo/20 + 1, \"protocol value non-monotone / discontinuous "
+                 + "across a bounded oracle move\");`. A value that jumps a step an attacker straddles by moving the "
+                 + "feed inside its allowed range is the oracle-manipulation rare High.\n";
+        }
+        // variant 1 — STALE-vs-FRESH oracle read parity.
+        if variant == "1" {
+            return oheader
+                 + "Express the ONE deep invariant as a STALE-vs-FRESH oracle PARITY relation: compute a value off "
+                 + "the mock feed marked STALE (old `updatedAt` / lower `answeredInRound`) as `vStale`, then off the "
+                 + "SAME feed marked FRESH at the SAME price as `vFresh`, and assert they match within tolerance: "
+                 + "`require(vStale <= vFresh + vFresh/1000 + 1 && vFresh <= vStale + vStale/1000 + 1, \"stale vs "
+                 + "fresh oracle read diverge\");`. A read path skipping the staleness / deviation check on ONE branch "
+                 + "(mint vs withdraw vs liquidation) breaks it.\n";
+        }
+        // variant 2 — MANIPULATION-BOUNDED-EXTRACTION: perturb-and-restore must not out-earn a clean round-trip.
+        if variant == "2" {
+            return oheader
+                 + "Express the ONE deep invariant as a MANIPULATION-BOUNDED-EXTRACTION relation: actor A PERTURBS "
+                 + "the oracle within its band, round-trips through the protocol (deposit/borrow/redeem/liquidate) "
+                 + "and RESTORES the price, netting `gainA`; actor B runs the SAME round-trip WITHOUT touching the "
+                 + "oracle, netting `gainB`; assert A did NOT end richer: "
+                 + "`require(gainA <= gainB + gainB/1000 + 1, \"actor extracted value by perturbing the oracle "
+                 + "within its band\");`. A profit from a bounded in-band perturbation is the manipulation High.\n";
+        }
+        // index >= 3 — fall back to the #1726 oracle relation menu as a REQUIRED (pick-one) shape.
+        return oheader
+             + "Express the ONE deep invariant as one of the following ORACLE metamorphic relations "
+             + "(REQUIRED — pick the one that best fits this target and assert it with plain `require(...)`):\n"
+             + metamorphic_relation_prompt(klass);
+      } else {
+        return "";
+      }
     }
-    // variant 1 — BEFORE-vs-AFTER existing-holder per-share price monotonicity across an interposed op.
-    if variant == "1" {
-        return header
-             + "Express the ONE deep invariant as a BEFORE-vs-AFTER MONOTONICITY relation for an EXISTING "
-             + "holder: snapshot the holder's redeemable-per-share (vault) or reserves-per-LP (pool) value, "
-             + "interpose ONE other operation (a no-op, a direct donation, or a DIFFERENT actor's deposit/swap), "
-             + "then re-read it and assert it did NOT decrease: "
-             + "`require(afterPer >= beforePer, \"holder redeemable-per-share dropped\");`. An existing holder's "
-             + "per-share value silently dropping under someone else's action is the first-depositor / donation "
-             + "inflation lens.\n";
-    }
-    // variant 2 — ACTOR-A-vs-ACTOR-B value parity (identity/order independence).
-    if variant == "2" {
-        return header
-             + "Express the ONE deep invariant as an ACTOR-A-vs-ACTOR-B PARITY relation: have two distinct actors "
-             + "perform the SAME-sized operation and assert they receive within-tolerance-EQUAL value "
-             + "`require(vA <= vB + vB/1000 + 1 && vB <= vA + vA/1000 + 1, \"actor A/B value parity broken\");`. "
-             + "Same-sized operations paying different actors differently (identity/order dependence) expose a "
-             + "value-conservation break.\n";
-    }
-    // index >= 3 — ensemble breadth beyond the three pinned shapes falls back to the #1726 class-keyed
-    // round-trip/commutativity menu, but as a REQUIRED (pick-one) shape rather than the optional framing.
-    return header
-         + "Express the ONE deep invariant as one of the following class-specific metamorphic relations "
-         + "(REQUIRED — pick the one that best fits this target and assert it with plain `require(...)`):\n"
-         + metamorphic_relation_prompt(klass);
 }
 
 // #1720 — the CANONICAL COMPILING SKELETON injected into BOTH the first-generation prompt AND every compile-

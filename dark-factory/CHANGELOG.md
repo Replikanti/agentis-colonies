@@ -15,6 +15,28 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **ORACLE-MANIPULATION invariant lens class for the deep-hunt prover (default-off, byte-identical when the class does not apply)**
+  (#1783, epic #1782, on the #1778 ensemble rails). A SECOND class-routed metamorphic lens alongside the #1778
+  value-custody class: the prover (`invariant-prover.ag`) gains an `is_oracle_dependent()` detector (sibling of
+  `is_value_custody`, keywords `oracle`/`price`/`feed`/`chainlink`/`slot0`/`getprice`/`latestanswer`, DISJOINT from
+  the value-custody set) plus a `class_to_keyword` mapping of the bare taxonomy code `C2` (Oracle integrity) to the
+  new `oracle` keyword. `action_checklist_prompt()` gains an oracle branch (price-perturbation + stale-then-fresh
+  actions) and `metamorphic_relation_prompt()` a three-shape oracle menu (monotone-price-response, stale-vs-fresh
+  parity, manipulation-bounded-extraction), both after the reentrancy branch. `metamorphic_variant_seed()` is
+  restructured CUSTODY-FIRST / ORACLE-SECOND: the value-custody variant strings stay byte-identical, an
+  oracle-dependent class then routes the three oracle ensemble variants (bounded-move price monotonicity,
+  stale-vs-fresh parity, manipulation-bounded-extraction), and any other class falls through to `return ""`.
+  `run-zone-hunt.sh` `dominant_class()` appends `C2` AFTER `C6/C10/C11`, so an oracle-dependent zone with no
+  value-custody-primary code now routes to the oracle lens on the live deep-hunt path (byte-identical routing for
+  every zone that has `C6/C10/C11`; an oracle bug inside a vault/lend zone still routes to the custody lens — a
+  documented known limitation for this milestone). **Default off**: an empty `INV_ENSEMBLE_VARIANT`, or any
+  non-oracle/non-custody class, yields a BYTE-IDENTICAL generation prompt, and a value-custody target (yearn/plaza)
+  hits the custody branch first (the oracle detector fires false on it); the #1725 normalizer-site count stays 2,
+  and `verdict_of`, the `INVARIANT|` marker, and the #1471 target-linkage gate are untouched.
+  `demo-invariant-ensemble.sh` source-guards the detector, the C2→oracle map, the oracle action/relation/variant
+  text, the custody-first precedence + `return ""` fallthrough, the retained #1725 count, and the `dominant_class`
+  C2 routing (CI-safe, no LLM/forge/agentis). The live-A/B acceptance (an oracle target through the ensemble
+  producing an `INVARIANT|...|FINDING` witness) is a separate post-merge step, not part of this change.
 - **Single-run METAMORPHIC ENSEMBLE for the deep-hunt invariant lens (`--ensemble-candidates <N>`, default off)**
   (#1778). Single-draw variance was capping deep-hunt recall on value-custody targets: the rare High hides in a
   per-unit-price / per-share value-conservation break that ONE generated invariant often fails to state. For a
