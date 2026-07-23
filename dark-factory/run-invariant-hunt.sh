@@ -119,6 +119,17 @@
 #                        fuzzable (the first-depositor / share-inflation path). Default OFF => the yearn-v3 signal
 #                        is never probed, INV_CORE_DEP stays "" and the pipeline is byte-identical to today. A
 #                        non-yearn target under the flag also stays byte-identical (the signal does not fire).
+#   --ensemble-candidates <N>  #1778: SINGLE-RUN METAMORPHIC ENSEMBLE. Kill single-draw variance by steering N
+#                        DISTINCT relational-invariant VARIANTS (large-vs-small unit-price monotonicity,
+#                        before-vs-after holder-price, actor-A-vs-B parity) for a value-custody target — each
+#                        fuzzed INDEPENDENTLY through the UNCHANGED gate — then taking an ENSEMBLE-VOTE verdict:
+#                        ANY candidate FINDING => FINDING (with that candidate's shrunk witness); else any
+#                        HARNESS_ERROR => HARNESS_ERROR; else CLEAN. Each candidate is its own prover generation
+#                        (INV_ENSEMBLE_VARIANT="<i>") + its own forge run(s) via the same repair/teeth gate. The
+#                        aggregate is emitted as the LAST `INVARIANT|<target>|<verdict>` line so both downstream
+#                        consumers (this runner + run-zone-hunt.sh's last-wins adapter) read it unchanged;
+#                        per-candidate diagnostics use a `CANDIDATE|` prefix. Default 0 (= OFF); N < 2 or the
+#                        offline --handler-fixture path => the single verbatim run (byte-identical to today).
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
 set -eu
 
@@ -131,6 +142,7 @@ CORPUS_MAX="16"   # #1731: max corpus entries kept/replayed per class (most-rece
 SYMBOLIC_ORACLE=""  # #1732: complementary symbolic/BMC (halmos) oracle; "" => OFF (default; byte-identical)
 SYMBOLIC_TIMEOUT="" # #1732: per-assertion halmos solver timeout (seconds); "" => the gate's own default (60)
 CORE_DEP_HARNESS="" # #1755: deploy the REAL delegatecall singleton (yearn-v3 TokenizedStrategy); "" => OFF (byte-identical)
+ENSEMBLE_CANDIDATES="0"  # #1778: single-run metamorphic-ensemble candidate count; 0/1 => OFF (byte-identical to today)
 REPAIR_ROUNDS=""  # #1073: extra compile-repair rounds; "" => the prover's own default (2)
 AUDIT_CONTEXT=""  # #1722: optional spec / audit-scope doc; "" => no audit seed (byte-identical prompt)
 FORK_URL="" ; FORK_BLOCK="" ; FORK_TARGET=""
@@ -168,6 +180,7 @@ while [ $# -gt 0 ]; do
     --symbolic-oracle) SYMBOLIC_ORACLE=1; shift ;;
     --symbolic-timeout) need "$#"; SYMBOLIC_TIMEOUT="$2"; shift 2 ;;
     --core-dep-harness) CORE_DEP_HARNESS=1; shift ;;
+    --ensemble-candidates) need "$#"; ENSEMBLE_CANDIDATES="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-invariant-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -194,6 +207,12 @@ esac
 # explicit `--symbolic-timeout ""`) is passed through as "" so the halmos-verify.sh gate applies its own
 # default (60); only a non-numeric value is a hard usage error so an operator typo surfaces here.
 case "$SYMBOLIC_TIMEOUT" in '') ;; *[!0-9]*) echo "run-invariant-hunt.sh: --symbolic-timeout must be a whole number of seconds" >&2; exit 2 ;; esac
+# #1778: --ensemble-candidates must be a whole number (validated like --corpus-max). An empty value (or an
+# explicit `--ensemble-candidates ""`) falls back to 0 (OFF); N < 2 also takes the OFF single-candidate path.
+case "$ENSEMBLE_CANDIDATES" in
+  '') ENSEMBLE_CANDIDATES=0 ;;
+  *[!0-9]*) echo "run-invariant-hunt.sh: --ensemble-candidates must be a whole number" >&2; exit 2 ;;
+esac
 # FM1 (#1041): fork-arg shape validation (mirrors the gate's). --fork-url must look like an http(s) URL,
 # --fork-block a whole number requiring --fork-url.
 case "$FORK_URL" in
@@ -492,7 +511,9 @@ done
   # #1755: INV_CORE_DEP (set only under --core-dep-harness + a resolved delegatecall singleton) carries the real
   # delegatecall singleton `<path>:<Name>:<addr>` so the prover generates a `vm.etch` of the actual singleton.
   # #1763 G1: INV_CORE_FEATURES carries the detected shape tags (e.g. `dcs`); empty when no singleton resolved.
-  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT,MUTANT_KILL,INV_CORPUS,INV_CORE_DEP,INV_CORE_FEATURES"
+  # #1778: INV_ENSEMBLE_VARIANT (the per-candidate metamorphic-variant index; "" on the OFF/single path) is
+  # APPENDED at the END so every existing demo's substring/allowlist assertion stays green.
+  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT,MUTANT_KILL,INV_CORPUS,INV_CORE_DEP,INV_CORE_FEATURES,INV_ENSEMBLE_VARIANT"
   # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s default.
   echo "exec.default_timeout_ms = 600000"
   # Each verify is recorded as experience; invariant-prover fitness reweights over targets.
@@ -654,55 +675,120 @@ if [ -n "$PATTERN_STORE" ]; then
   bridge_invpat "$PATTERN_STORE" "$RUN"
 fi
 
+# #1778 — run ONE prover candidate: generate + stateful-fuzz with a specific metamorphic ENSEMBLE variant, write
+# its cell log, parse the fuzzer verdict from the LAST `INVARIANT|` marker, and ECHO that verdict on stdout. The
+# OFF/single path calls this ONCE with variant="" + the canonical INV_OUT/CELL_LOG, so the generated artifacts
+# land exactly where they do today and the runtime behaviour is byte-identical (INV_ENSEMBLE_VARIANT="" reaches
+# the prover's metamorphic_variant_seed(), which returns "" => the generation prompt is unchanged). Each candidate
+# is its OWN prover generation + its OWN forge run(s) through the SAME unchanged gate/repair/teeth loop.
+# --grant-pii: target/fork context + staged contract source can carry addresses/identifiers that trip the PII
+# heuristic; input is benign public contract text (#1690).
+run_one_candidate() {  # $1 = variant ("" = OFF/single), $2 = INV_OUT path, $3 = cell log path -> echoes verdict
+  _variant="$1"; _invout="$2"; _celllog="$3"
+  ( cd "$RUN" && env \
+      TARGET_FN="$TARGET" \
+      TARGET_CLASS="$CLASS" \
+      INV_REPO="$REPO_IN_RUN" \
+      INV_OUT="$_invout" \
+      INV_MATCH="$MATCH" \
+      HANDLER_FIXTURE="$FIXTURE_IN_RUN" \
+      CODE_PATH="$CODE_IN_RUN" \
+      INV_AUX="$INV_AUX" \
+      INV_AUDIT_CONTEXT="$AUDIT_IN_RUN" \
+      INV_CORE_DEP="$INV_CORE_DEP" \
+      INV_CORE_FEATURES="$INV_CORE_FEATURES" \
+      INV_ENSEMBLE_VARIANT="$_variant" \
+      INV_RUNS="$RUNS" \
+      INV_DEPTH="$DEPTH" \
+      INV_SEED="$SEED" \
+      INV_REPAIR_ROUNDS="$REPAIR_ROUNDS" \
+      FORK_URL="$FORK_URL" \
+      FORK_BLOCK="$FORK_BLOCK" \
+      FORK_TARGET="$FORK_TARGET" \
+      FORK_CONTEXT="$FORK_CONTEXT" \
+      FORGE_INVARIANT="$RUN/forge-invariant.sh" \
+      MUTANT_KILL="$MUTANT_KILL_IN_RUN" \
+      INV_CORPUS="$INV_CORPUS_VAL" \
+      "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging --grant-pii ) >"$_celllog" 2>&1 || \
+      echo "run-invariant-hunt.sh: invariant-prover run failed for '$TARGET' (see $_celllog)" >&2
+  # The prover's contract: exactly one `INVARIANT|<file:fn>|<verdict>` line, then (on a FINDING) `STEP|...` lines.
+  # Take the LAST verdict match. No line at all = HARNESS_ERROR (no verdict produced).
+  _vline="$(grep 'INVARIANT|' "$_celllog" | tail -1 || true)"
+  if [ -z "$_vline" ]; then
+    _cverd="HARNESS_ERROR"
+  else
+    _cverd="$(printf '%s' "$_vline" | sed 's/.*INVARIANT|//' | cut -d'|' -f2)"
+  fi
+  case "$_cverd" in
+    FINDING|CLEAN|HARNESS_ERROR) ;;
+    *) _cverd="HARNESS_ERROR" ;;
+  esac
+  printf '%s\n' "$_cverd"
+}
+
 echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..." >&2
-# --grant-pii: target/fork context + staged contract source can carry addresses/identifiers that trip
-# the PII heuristic; input is benign public contract text (#1690).
-( cd "$RUN" && env \
-    TARGET_FN="$TARGET" \
-    TARGET_CLASS="$CLASS" \
-    INV_REPO="$REPO_IN_RUN" \
-    INV_OUT="$INV_OUT" \
-    INV_MATCH="$MATCH" \
-    HANDLER_FIXTURE="$FIXTURE_IN_RUN" \
-    CODE_PATH="$CODE_IN_RUN" \
-    INV_AUX="$INV_AUX" \
-    INV_AUDIT_CONTEXT="$AUDIT_IN_RUN" \
-    INV_CORE_DEP="$INV_CORE_DEP" \
-    INV_CORE_FEATURES="$INV_CORE_FEATURES" \
-    INV_RUNS="$RUNS" \
-    INV_DEPTH="$DEPTH" \
-    INV_SEED="$SEED" \
-    INV_REPAIR_ROUNDS="$REPAIR_ROUNDS" \
-    FORK_URL="$FORK_URL" \
-    FORK_BLOCK="$FORK_BLOCK" \
-    FORK_TARGET="$FORK_TARGET" \
-    FORK_CONTEXT="$FORK_CONTEXT" \
-    FORGE_INVARIANT="$RUN/forge-invariant.sh" \
-    MUTANT_KILL="$MUTANT_KILL_IN_RUN" \
-    INV_CORPUS="$INV_CORPUS_VAL" \
-    "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging --grant-pii ) >"$CELL_LOG" 2>&1 || \
-    echo "run-invariant-hunt.sh: invariant-prover run failed for '$TARGET' (see $CELL_LOG)" >&2
+# #1778 — SINGLE-RUN METAMORPHIC ENSEMBLE dispatch. OFF (ENSEMBLE_CANDIDATES < 2, OR the offline
+# --handler-fixture path where N copies would be identical) => ONE candidate with variant="" + the canonical
+# INV_OUT/CELL_LOG => byte-identical to today. ON (N >= 2 on the LLM path): steer N distinct metamorphic VARIANTS
+# through the UNCHANGED gate, collect their verdicts, and take the ensemble vote (any FINDING => FINDING; else any
+# HARNESS_ERROR => HARNESS_ERROR; else CLEAN). The winning (FIRST-FINDING) candidate's INV_OUT + STEP| witness
+# feed the #1731 corpus accumulation + teeth-gate reference; the aggregate is synthesized into $CELL_LOG as the
+# LAST `INVARIANT|` line, with per-candidate `CANDIDATE|` diagnostics (which carry no `INVARIANT|` substring), so
+# BOTH downstream consumers (this runner's tail -1, run-zone-hunt.sh's last-`INVARIANT|`-wins adapter) read the
+# aggregate with ZERO parser change.
+if [ "$ENSEMBLE_CANDIDATES" -ge 2 ] && [ -z "$FIXTURE_IN_RUN" ]; then
+  echo "run-invariant-hunt.sh: [ensemble] $ENSEMBLE_CANDIDATES metamorphic candidates for $TARGET ..." >&2
+  ENS_AGG="CLEAN"; ENS_HAD_HARNESS=""; ENS_WIN_LOG=""; ENS_WIN_INVOUT=""
+  ENS_ROWS=()
+  ens_i=0
+  while [ "$ens_i" -lt "$ENSEMBLE_CANDIDATES" ]; do
+    ens_invout="$REPO_IN_RUN/test/Inv_${SLUG}_c${ens_i}.t.sol"
+    ens_celllog="$RUN/invariant_${SLUG}_c${ens_i}.log"
+    # Clear any prior candidate's test so the fuzzer scopes only to THIS candidate (the #1731 replay idiom).
+    rm -f "$REPO_IN_RUN/test/"*.t.sol 2>/dev/null || true
+    ens_verd="$(run_one_candidate "$ens_i" "$ens_invout" "$ens_celllog")"
+    echo "run-invariant-hunt.sh: [ensemble] candidate $ens_i (variant $ens_i) -> $ens_verd" >&2
+    ENS_ROWS+=("CANDIDATE|$TARGET|$ens_i|$ens_i|$ens_verd")
+    if [ "$ens_verd" = "FINDING" ]; then
+      if [ "$ENS_AGG" != "FINDING" ]; then ENS_AGG="FINDING"; ENS_WIN_LOG="$ens_celllog"; ENS_WIN_INVOUT="$ens_invout"; fi
+    elif [ "$ens_verd" = "HARNESS_ERROR" ]; then
+      ENS_HAD_HARNESS=1
+    fi
+    ens_i=$((ens_i + 1))
+  done
+  if [ "$ENS_AGG" != "FINDING" ] && [ -n "$ENS_HAD_HARNESS" ]; then ENS_AGG="HARNESS_ERROR"; fi
+  VERD="$ENS_AGG"
+  # Point INV_OUT at the winning candidate's generated test (a real file for the #1731 corpus accumulation); on a
+  # non-FINDING aggregate, fall back to the LAST candidate's INV_OUT so the corpus/teeth path references a real test.
+  if [ -n "$ENS_WIN_INVOUT" ]; then INV_OUT="$ENS_WIN_INVOUT"; else INV_OUT="$REPO_IN_RUN/test/Inv_${SLUG}_c$((ENSEMBLE_CANDIDATES - 1)).t.sol"; fi
+  # The winning candidate's shrunk witness (only a FINDING has STEP| lines). STEPS is the #1471-style stripped form
+  # for the report; the raw STEP| lines are re-emitted into the synthesized log verbatim (multi-line safe).
+  ENS_WIN_STEPS_RAW=""
+  if [ -n "$ENS_WIN_LOG" ]; then
+    STEPS="$(grep '^STEP|' "$ENS_WIN_LOG" | sed 's/^STEP|//' || true)"
+    ENS_WIN_STEPS_RAW="$(grep '^STEP|' "$ENS_WIN_LOG" || true)"
+  else
+    STEPS=""
+  fi
+  # Synthesize the canonical $CELL_LOG: per-candidate CANDIDATE| diagnostics + the winning STEP| witness + the
+  # aggregate INVARIANT| as the LAST such line (both consumers take the last INVARIANT|).
+  {
+    echo "run-invariant-hunt.sh: [ensemble] $ENSEMBLE_CANDIDATES candidates, aggregate $VERD"
+    for ens_r in ${ENS_ROWS[@]+"${ENS_ROWS[@]}"}; do printf '%s\n' "$ens_r"; done
+    [ -n "$ENS_WIN_STEPS_RAW" ] && printf '%s\n' "$ENS_WIN_STEPS_RAW"
+    printf 'INVARIANT|%s|%s\n' "$TARGET" "$VERD"
+  } > "$CELL_LOG"
+else
+  VERD="$(run_one_candidate "" "$INV_OUT" "$CELL_LOG")"
+  # Collect the shrunk exploit sequence (the STEP| lines) the prover printed on a FINDING.
+  STEPS="$(grep '^STEP|' "$CELL_LOG" | sed 's/^STEP|//' || true)"
+fi
 
 # PERSIST: copy any `invpat:*` the prover wrote this run (on a FINDING) back OUT to the persistent store,
 # so the NEXT run on the same class recalls it. Skipped (no-op) when --pattern-store was not supplied.
 if [ -n "$PATTERN_STORE" ]; then
   bridge_invpat "$RUN" "$PATTERN_STORE"
 fi
-
-# The prover's contract: exactly one `INVARIANT|<file:fn>|<verdict>` line, then (on a FINDING) `STEP|...`
-# lines. Take the LAST verdict match. No line at all = treat as HARNESS_ERROR (no verdict was produced).
-VLINE="$(grep 'INVARIANT|' "$CELL_LOG" | tail -1 || true)"
-if [ -z "$VLINE" ]; then
-  VERD="HARNESS_ERROR"
-else
-  VERD="$(printf '%s' "$VLINE" | sed 's/.*INVARIANT|//' | cut -d'|' -f2)"
-fi
-case "$VERD" in
-  FINDING|CLEAN|HARNESS_ERROR) ;;
-  *) VERD="HARNESS_ERROR" ;;
-esac
-# Collect the shrunk exploit sequence (the STEP| lines) the prover printed on a FINDING.
-STEPS="$(grep '^STEP|' "$CELL_LOG" | sed 's/^STEP|//' || true)"
 
 GEN_KIND="generated(LLM)"; [ -n "$FIXTURE_IN_RUN" ] && GEN_KIND="fixture"
 

@@ -28,7 +28,11 @@
 #     single isolated non-contending value-custody zone. All deterministic/CI paths use --backend mock.
 #
 # Usage: deep-hunt-ab.sh [--self-test] | [--live --id <id> --code-dir <dir> --truth <f> [--scope-hint <t>]
-#                          [--work <dir>] [--backend <b>] [--agentis <bin>] [--min-overlap <N>]] [-h]
+#                          [--work <dir>] [--backend <b>] [--agentis <bin>] [--min-overlap <N>]
+#                          [--ensemble-candidates <N>]] [-h]
+#   --ensemble-candidates <N>  #1778: forward run-zone-hunt.sh --ensemble-candidates into the --live ON arm's
+#     deep-hunt lens, so the A/B toggles the SINGLE-RUN METAMORPHIC ENSEMBLE ON only in the ON arm (the OFF
+#     breadth base + the self-test path are untouched). Unset (default) => byte-identical to today.
 # Exit: 0 = self-test held / live measurement completed ; 1 = self-test regressed ; 2 = bad args ;
 #       3 = missing prerequisite.
 set -u
@@ -41,6 +45,7 @@ FIX="$HERE/fixtures/deep-hunt"
 
 MODE="self-test"
 ID="" ; CODE_DIR="" ; TRUTH="" ; SCOPE_HINT="" ; WORK="" ; BACKEND="flat-cyborg" ; AGENTIS="agentis" ; MINOV="2"
+ENSEMBLE_CANDIDATES=""  # #1778: --live ON-arm metamorphic-ensemble candidate count; unset => byte-identical
 
 nv() { [ "$1" -ge 2 ] || { echo "deep-hunt-ab.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do case "$1" in
@@ -54,6 +59,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --backend)     nv "$#"; BACKEND="$2"; shift 2 ;;
   --agentis)     nv "$#"; AGENTIS="$2"; shift 2 ;;
   --min-overlap) nv "$#"; MINOV="$2"; shift 2 ;;
+  --ensemble-candidates) nv "$#"; ENSEMBLE_CANDIDATES="$2"; shift 2 ;;
   -h|--help)     awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
   *) echo "deep-hunt-ab.sh: unknown arg: $1" >&2; exit 2 ;;
 esac; done
@@ -302,8 +308,10 @@ if [ "$MODE" = "live" ]; then
 
   run_lens_only() {  # $1 = out dir (a CLONE of the breadth --out) — apply ONLY the deep-hunt STAGE 4.5 lens.
     _out="$1"
+    # #1778: forward --ensemble-candidates into the ON arm's deep-hunt lens ONLY (unset => byte-identical).
     "$ZONEHUNT" --repo "$SCRATCH" --out "$_out" --deep-hunt --deep-hunt-only \
       --backend "$BACKEND" --agentis "$AGENTIS" \
+      ${ENSEMBLE_CANDIDATES:+--ensemble-candidates "$ENSEMBLE_CANDIDATES"} \
       || note "  [$ID] run-zone-hunt.sh (deep-hunt-only) exited non-zero; scoring whatever it produced"
   }
 

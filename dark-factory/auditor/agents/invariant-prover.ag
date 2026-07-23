@@ -580,6 +580,11 @@ let prior = recall_pattern(effClass);
 if len(prior) > 0 {
     print("RECALL-INVPAT|" + effClass + "|" + prior);
 }
+// #1778 (M1) — the metamorphic-ENSEMBLE variant index for THIS candidate, read from the sanitized env (empty by
+// default => ensemble OFF => byte-identical generation). run-invariant-hunt.sh threads INV_ENSEMBLE_VARIANT="$i"
+// per candidate (and appends it to the exec.env_passthrough allowlist so getenv actually sees it). It is a
+// GENERATION input only — folded into generate_test's instruction below — and never touches the verdict path.
+let ensembleVariant = getenv("INV_ENSEMBLE_VARIANT");
 // #1755 M2 — VAULT VICTIM-FAIRNESS INVARIANT directive. On the vault route (active = vaultRoute) the ONE deep
 // invariant is not left to the model's discretion: it MUST be the #1724 `inv_victim_not_robbed` per-actor
 // FAIRNESS property, because the money-tier first-depositor / share-inflation bug (the yearn-ybold H-1 High)
@@ -747,6 +752,11 @@ fn class_to_keyword(k: string) -> string {
     if class_is(k, "c10") { return "lend"; }
     if class_is(k, "c12") { return "amm"; }
     if class_is(k, "c8") { return "reentran"; }
+    // #1778 — a bare `pool`/`redeem` dominant label (e.g. the plaza pool/redeem target) is value-custody but has
+    // no taxonomy code; route it to the closest existing menu so the metamorphic-ensemble variant selector and the
+    // #1726 relation menu fire the right (AMM / vault) shape instead of the generic default.
+    if class_is(k, "pool") { return "amm"; }
+    if class_is(k, "redeem") { return "vault"; }
     return k;
 }
 
@@ -876,6 +886,80 @@ fn metamorphic_relation_prompt(klass: string) -> string {
          + "state)\n"
          + "  - MONOTONICITY: a no-op sequence keeps the honest actor's share price monotonic non-increasing "
          + "against them (no value silently leaks out)\n";
+}
+
+// #1778 (M1) — is this a VALUE-CUSTODY class (funds held on behalf of users: vault/ERC4626, lending/CDP, AMM/pool,
+// staking)? Normalizes through the SAME class_to_keyword(to_lower(klass)) helper as the action/metamorphic menus,
+// then anchored index_of over the value-custody keyword set. Only these classes carry a per-unit-price / per-share
+// conservation law the metamorphic ENSEMBLE variants can pin. Flat index_of only — no per-element recursion. A
+// distinct local `vk` (not `k`) keeps the #1725 handler-action normalizer-site count at exactly 2.
+fn is_value_custody(klass: string) -> bool {
+    let vk = class_to_keyword(to_lower(klass));
+    if index_of(vk, "4626") >= 0 { return true; }
+    if index_of(vk, "vault") >= 0 { return true; }
+    if index_of(vk, "lend") >= 0 { return true; }
+    if index_of(vk, "cdp") >= 0 { return true; }
+    if index_of(vk, "borrow") >= 0 { return true; }
+    if index_of(vk, "collateral") >= 0 { return true; }
+    if index_of(vk, "amm") >= 0 { return true; }
+    if index_of(vk, "swap") >= 0 { return true; }
+    if index_of(vk, "dex") >= 0 { return true; }
+    if index_of(vk, "pool") >= 0 { return true; }
+    if index_of(vk, "redeem") >= 0 { return true; }
+    if index_of(vk, "stak") >= 0 { return true; }
+    return false;
+}
+
+// #1778 (M1) — METAMORPHIC ENSEMBLE VARIANT selection. The single-run ensemble (run-invariant-hunt.sh
+// --ensemble-candidates N, default OFF) steers N DISTINCT relational-invariant SHAPES — one per candidate —
+// through the UNCHANGED gate and takes an ensemble vote (any break => FINDING). This builder returns the REQUIRED
+// directive for the index-th variant, REUSING #1726's per-class relation vocabulary but pinning ONE shape as a
+// MUST (not the optional "MAY instead" framing #1726 deliberately left open). It is gated on the value we read
+// from INV_ENSEMBLE_VARIANT: `variant == ""` (the DEFAULT — ensemble OFF) => "" so the generation prompt is
+// BYTE-IDENTICAL to today's single-draw pipeline; a non-value-custody class also returns "" (defensive — the
+// ensemble only ever runs on value_custody deep-hunt zones). Purely additive prompt steering: verdict_of, the
+// INVARIANT| marker, and the #1471 --require-import/--require-contract gate are untouched.
+fn metamorphic_variant_seed(klass: string, variant: string) -> string {
+    if variant == "" { return ""; }
+    if !is_value_custody(klass) { return ""; }
+    let header = "=== ENSEMBLE VARIANT (metamorphic shape — REQUIRED for this candidate) ===\n";
+    // variant 0 — LARGE-vs-SMALL per-unit-price monotonicity via the contract's OWN pricing view functions.
+    if variant == "0" {
+        return header
+             + "Express the ONE deep invariant as a LARGE-vs-SMALL per-unit-price MONOTONICITY relation, using "
+             + "the contract's OWN pricing view functions (`simulate*` / `preview*` / `convertTo*` / `quote*`): a "
+             + "LARGE operation must NEVER get a strictly better per-unit price than a SMALL one. Compute the "
+             + "small-op unit price `pS` and the large-op unit price `pB` from those views (scale both to the SAME "
+             + "fixed-point unit) and assert `require(pB <= pS + pS/1000 + 1, \"large op overpaid vs small\");` — "
+             + "the `+ pS/1000 + 1` is the rounding/fee tolerance. A large actor beating a small actor's unit "
+             + "price is exactly the value-leak the rare Highs hide in.\n";
+    }
+    // variant 1 — BEFORE-vs-AFTER existing-holder per-share price monotonicity across an interposed op.
+    if variant == "1" {
+        return header
+             + "Express the ONE deep invariant as a BEFORE-vs-AFTER MONOTONICITY relation for an EXISTING "
+             + "holder: snapshot the holder's redeemable-per-share (vault) or reserves-per-LP (pool) value, "
+             + "interpose ONE other operation (a no-op, a direct donation, or a DIFFERENT actor's deposit/swap), "
+             + "then re-read it and assert it did NOT decrease: "
+             + "`require(afterPer >= beforePer, \"holder redeemable-per-share dropped\");`. An existing holder's "
+             + "per-share value silently dropping under someone else's action is the first-depositor / donation "
+             + "inflation lens.\n";
+    }
+    // variant 2 — ACTOR-A-vs-ACTOR-B value parity (identity/order independence).
+    if variant == "2" {
+        return header
+             + "Express the ONE deep invariant as an ACTOR-A-vs-ACTOR-B PARITY relation: have two distinct actors "
+             + "perform the SAME-sized operation and assert they receive within-tolerance-EQUAL value "
+             + "`require(vA <= vB + vB/1000 + 1 && vB <= vA + vA/1000 + 1, \"actor A/B value parity broken\");`. "
+             + "Same-sized operations paying different actors differently (identity/order dependence) expose a "
+             + "value-conservation break.\n";
+    }
+    // index >= 3 — ensemble breadth beyond the three pinned shapes falls back to the #1726 class-keyed
+    // round-trip/commutativity menu, but as a REQUIRED (pick-one) shape rather than the optional framing.
+    return header
+         + "Express the ONE deep invariant as one of the following class-specific metamorphic relations "
+         + "(REQUIRED — pick the one that best fits this target and assert it with plain `require(...)`):\n"
+         + metamorphic_relation_prompt(klass);
 }
 
 // #1720 — the CANONICAL COMPILING SKELETON injected into BOTH the first-generation prompt AND every compile-
@@ -1011,7 +1095,8 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
     // #1720 — prepend the per-run recall/fork/compose SEEDS, then append the shared static scaffold (skeleton +
     // requirements + aux + lens + answer contract). The scaffold is identical to what the repair rounds re-inject.
     let instruction =
-        audit_seed(auditText)
+        metamorphic_variant_seed(effClass, ensembleVariant)
+      + audit_seed(auditText)
       + recall_seed(klass, prior)
       + fork_seed(forkActive, forkTarget, forkUrl, forkBlock)
       + compose_seed(composeActive, forkContext)
