@@ -343,16 +343,21 @@ def dominant_class(classes):
     # value-custody-primary or oracle code) routes to the arithmetic-overflow / liveness (DoS) lens
     # (--class C16 -> prover class_to_keyword "liveness" -> is_liveness_sensitive); byte-identical routing for
     # every zone that has C6/C10/C11/C2.
-    for c in ("C6", "C10", "C11", "C2", "C16"):
+    # #1785: C5 (Access control / role model) is appended AFTER C16, so an access-only zone (C5 but no
+    # value-custody-primary, oracle or liveness code) routes to the access-control / privilege lens
+    # (--class C5 -> prover class_to_keyword "access" -> is_access_sensitive); byte-identical routing for
+    # every zone that has C6/C10/C11/C2/C16.
+    for c in ("C6", "C10", "C11", "C2", "C16", "C5"):
         if c in classes:
             return c
     return "C-invariant"
 # #1790: IMPLEMENTED non-value-custody lens classes — a zone that is NOT value_custody is still a deep-hunt
 # target when its dominant_class is one of these (the lens has templates for it). Without this, the gate below
 # dropped every non-custody zone BEFORE class routing, so #1786's oracle (C2) lens — and every future class
-# lens — never fired on a non-custody zone. Grow this set as class lenses land (C16/C17 liveness #1789,
-# C5 access #1785). Value-custody zones are unaffected (their dominant_class stays C6/C10/C11).
-IMPLEMENTED_NONCUSTODY = {"C2", "C16"}
+# lens — never fired on a non-custody zone. Grow this set as class lenses land: C16 (liveness #1789) and
+# C5 (access-control #1785) join C2 here so their non-custody zones are actually selected and hunted.
+# Value-custody zones are unaffected (their dominant_class stays C6/C10/C11).
+IMPLEMENTED_NONCUSTODY = {"C2", "C16", "C5"}
 def has_impl_sol(z):
     # a fuzzable IMPLEMENTATION contract exists in the zone — not an interface-only zone. Interface .sol
     # (under an interfaces/ dir, or the `IName` convention) has no body to deploy/fuzz => a guaranteed

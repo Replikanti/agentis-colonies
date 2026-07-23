@@ -15,6 +15,35 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **ACCESS-CONTROL / PRIVILEGE invariant lens class for the deep-hunt prover (default-off, byte-identical when the class does not apply)**
+  (#1785, epic #1782, on the #1778 ensemble rails). A FOURTH class-routed metamorphic lens alongside the #1778
+  value-custody class, the #1783 oracle class and the #1784 liveness class: the prover (`invariant-prover.ag`) gains
+  an `is_access_sensitive()` detector (sibling of `is_value_custody`/`is_oracle_dependent`/`is_liveness_sensitive`,
+  keywords `access`/`role`/`onlyowner`/`onlyrole`/`privilege`/`permission`/`auth`/`tradetype`, DISJOINT from the
+  value-custody, oracle AND liveness sets) plus a `class_to_keyword` mapping of the bare taxonomy code `C5` (Access
+  control / role model) to the new `access` keyword. `action_checklist_prompt()` gains an access branch (an
+  unprivileged-caller action calling every guarded state-changing entrypoint + a param-tamper action choosing the
+  sensitive attacker-influenced enum/parameter) and `metamorphic_relation_prompt()` a two-shape access menu
+  (unprivileged-no-effect, param-tamper-parity), both after the liveness block. `metamorphic_variant_seed()` extends
+  the CUSTODY-FIRST / ORACLE-SECOND / LIVENESS-THIRD precedence chain with an ACCESS-FOURTH branch: the value-custody,
+  oracle and liveness variant strings stay byte-identical, an access-sensitive class then routes the two access
+  ensemble variants (variant 0 unprivileged-no-effect via `require(sAfter == sBefore, ...)`, variant 1
+  param-tamper-parity via `require(gainTamper <= gainHonest + gainHonest/1000 + 1, ...)`; index >= 2 falls back to the
+  access menu), and any other class falls through to `return ""`. The class carries TWO metamorphic shapes (#1785) —
+  the two REQUIRED templates — so, like the liveness branch, there is no pinned variant 2. `run-zone-hunt.sh`
+  `dominant_class()` appends `C5` AFTER `C6/C10/C11/C2/C16`, and `C5` joins the `IMPLEMENTED_NONCUSTODY` gate
+  (`{"C2", "C16", "C5"}`), so an access-only zone (C5 but no value-custody-primary, oracle or liveness code) is now
+  selected and routes to the access lens on the live deep-hunt path (byte-identical routing for every zone that has
+  `C6/C10/C11/C2/C16`; an access bug inside a higher-precedence zone still routes to that lens — a documented known
+  limitation for this milestone). **Default off**: an empty `INV_ENSEMBLE_VARIANT`, or any
+  non-access/non-liveness/non-oracle/non-custody class, yields a BYTE-IDENTICAL generation prompt, and a value-custody
+  / oracle / liveness target hits its own branch first (the access detector fires false on it); the #1725
+  normalizer-site count stays 2, and `verdict_of`, the `INVARIANT|` marker, and the #1471 target-linkage gate are
+  untouched. `demo-invariant-ensemble.sh` source-guards the detector, the C5→access map, the access
+  action/relation/variant text, the liveness-third / access-fourth precedence + `return ""` fallthrough, the retained
+  #1725 count, and the `dominant_class`/`IMPLEMENTED_NONCUSTODY` C5 routing (CI-safe, no LLM/forge/agentis). The
+  live-A/B acceptance (the notional H-10 `TradeType`/param-tamper witness through the ensemble producing an
+  `INVARIANT|...|FINDING`) is a separate post-merge step, not part of this change.
 - **ARITHMETIC-OVERFLOW / LIVENESS (DoS) invariant lens class for the deep-hunt prover (default-off, byte-identical when the class does not apply)**
   (#1784, epic #1782, on the #1778 ensemble rails). A THIRD class-routed metamorphic lens alongside the #1778
   value-custody class and the #1783 oracle class: the prover (`invariant-prover.ag`) gains an
