@@ -756,6 +756,11 @@ fn class_to_keyword(k: string) -> string {
     // new "oracle" keyword so the oracle-manipulation metamorphic lens fires. is_value_custody("oracle") is false,
     // so a value-custody target (yearn/plaza) never picks it up — the oracle detector fires false on those.
     if class_is(k, "c2") { return "oracle"; }
+    // #1784 (M1) — C16 = "State-machine liveness / stuck-state" (auditor/bug-taxonomy.md). A bare `C16` dominant
+    // label routes to the new "liveness" keyword so the arithmetic-overflow / liveness (DoS) metamorphic lens fires.
+    // is_value_custody("liveness") and is_oracle_dependent("liveness") are both false, so a value-custody / oracle
+    // target never picks it up — the liveness detector fires false on those.
+    if class_is(k, "c16") { return "liveness"; }
     // #1778 — a bare `pool`/`redeem` dominant label (e.g. the plaza pool/redeem target) is value-custody but has
     // no taxonomy code; route it to the closest existing menu so the metamorphic-ensemble variant selector and the
     // #1726 relation menu fire the right (AMM / vault) shape instead of the generic default.
@@ -849,6 +854,28 @@ fn action_checklist_prompt(klass: string) -> string {
     if index_of(k, "slot0") >= 0 { return oraclePrompt; }
     if index_of(k, "getprice") >= 0 { return oraclePrompt; }
     if index_of(k, "latestanswer") >= 0 { return oraclePrompt; }
+    // #1784 (M1) — ARITHMETIC-OVERFLOW / LIVENESS (DoS) class. Matched inline via index_of on the SAME liveness
+    // keyword set as is_liveness_sensitive (NOT a call to it — .ag is definition-before-use and is_liveness_sensitive
+    // is defined later). Value-custody AND oracle keywords are matched first above, so those labels never reach here.
+    let livenessPrompt = "  - a WRAP-BOUNDARY action: drive the narrow-int accumulator / observation index the "
+         + "target increments (a `uint8`/`uint16` counter such as an observation cardinality, ring-buffer slot, or "
+         + "epoch index) up to AND one past its max value across a reachable multi-call SEQUENCE, so the next "
+         + "read/write straddles the wrap point — NEVER by writing the storage slot directly\n"
+         + "  - a FULL-RANGE ENTRYPOINT-SWEEP action: after the accumulator sits at its boundary, call every "
+         + "CRITICAL user entrypoint (deposit / withdraw / settle / observe — the paths a user MUST reach) over the "
+         + "full valid input domain and record whether any of them reverts\n"
+         + "  - >=2 actor addresses so the actor who DRIVES the counter to its boundary and the actor who then "
+         + "needs the critical path are attributable to different positions\n";
+    if index_of(k, "liveness") >= 0 { return livenessPrompt; }
+    if index_of(k, "overflow") >= 0 { return livenessPrompt; }
+    if index_of(k, "uint8") >= 0 { return livenessPrompt; }
+    if index_of(k, "uint16") >= 0 { return livenessPrompt; }
+    if index_of(k, "observation") >= 0 { return livenessPrompt; }
+    if index_of(k, "cardinality") >= 0 { return livenessPrompt; }
+    if index_of(k, "index") >= 0 { return livenessPrompt; }
+    if index_of(k, "revert") >= 0 { return livenessPrompt; }
+    if index_of(k, "dos") >= 0 { return livenessPrompt; }
+    if index_of(k, "getincrement") >= 0 { return livenessPrompt; }
     return "  - >=2 bounded actor addresses (no single-actor sequences)\n"
          + "  - a direct external-perturbation action (raw donation / direct rate-set) that bypasses the normal "
          + "entry points\n";
@@ -929,6 +956,30 @@ fn metamorphic_relation_prompt(klass: string) -> string {
     if index_of(mk, "slot0") >= 0 { return oracleMeta; }
     if index_of(mk, "getprice") >= 0 { return oracleMeta; }
     if index_of(mk, "latestanswer") >= 0 { return oracleMeta; }
+    // #1784 (M1) — ARITHMETIC-OVERFLOW / LIVENESS (DoS) relations. Matched inline on the SAME liveness keyword set
+    // as is_liveness_sensitive (value-custody + oracle keywords matched first above => those labels never reach this).
+    let livenessMeta = "  - NO-REVERT-ON-VALID-RANGE: every CRITICAL entrypoint must stay CALLABLE over the full "
+         + "valid input domain — assert a critical call (deposit / withdraw / settle / observe) SUCCEEDS at a "
+         + "representative input, drive the protocol through a reachable sequence (accumulator / observation-index "
+         + "increments), then re-call the SAME entrypoint over its valid range and assert it STILL does not revert; a "
+         + "revert that is not an EXPLICIT `require` on genuinely invalid input is a liveness finding: "
+         + "`try target.criticalFn(x) {} catch { revert(\"critical path bricked over valid input\"); }`\n"
+         + "  - NARROW-INT-NO-WRAP: a `uint8`/`uint16` accumulator (observation cardinality, ring-buffer slot, epoch "
+         + "counter) must NOT wrap under a reachable call sequence — read the counter `cBefore`, advance it through "
+         + "the protocol's OWN increment path near its max, read `cAfter`, and assert it advanced MONOTONICALLY "
+         + "without wrapping: `require(cAfter >= cBefore, \"narrow-int accumulator wrapped -> DoS\");` (a `uint16 a + "
+         + "b` that overflows and reverts every subsequent critical call is exactly the integer-overflow-to-DoS rare "
+         + "High)\n";
+    if index_of(mk, "liveness") >= 0 { return livenessMeta; }
+    if index_of(mk, "overflow") >= 0 { return livenessMeta; }
+    if index_of(mk, "uint8") >= 0 { return livenessMeta; }
+    if index_of(mk, "uint16") >= 0 { return livenessMeta; }
+    if index_of(mk, "observation") >= 0 { return livenessMeta; }
+    if index_of(mk, "cardinality") >= 0 { return livenessMeta; }
+    if index_of(mk, "index") >= 0 { return livenessMeta; }
+    if index_of(mk, "revert") >= 0 { return livenessMeta; }
+    if index_of(mk, "dos") >= 0 { return livenessMeta; }
+    if index_of(mk, "getincrement") >= 0 { return livenessMeta; }
     return "  - ROUND-TRIP: any put/take (deposit/withdraw) round-trip must NOT return more value than was put "
          + "in\n"
          + "  - COMMUTATIVITY: two independent same-actor operations commute (order does not change the final "
@@ -974,6 +1025,29 @@ fn is_oracle_dependent(klass: string) -> bool {
     if index_of(oc, "slot0") >= 0 { return true; }
     if index_of(oc, "getprice") >= 0 { return true; }
     if index_of(oc, "latestanswer") >= 0 { return true; }
+    return false;
+}
+
+// #1784 (M1) — is this a LIVENESS-SENSITIVE class (a critical protocol path can be bricked by a narrow-int
+// overflow / an unexpected revert on valid-range input: a `uint8`/`uint16` observation cardinality or ring-buffer
+// index that wraps, an accumulator that overflows-to-DoS)? Sibling of is_value_custody / is_oracle_dependent,
+// normalizing through the SAME class_to_keyword(to_lower(klass)) helper (C16 -> "liveness"), then anchored index_of
+// over a liveness keyword set DISJOINT from BOTH the value-custody set (4626/vault/lend/cdp/borrow/collateral/amm/
+// swap/dex/pool/redeem/stak) AND the oracle set (oracle/price/feed/chainlink/slot0/getprice/latestanswer) — so an
+// out-of-class, value-custody, or oracle label never trips it. Flat index_of only — no per-element recursion. A
+// distinct local `lc` (not `k`) keeps the #1725 handler-action normalizer-site count at exactly 2.
+fn is_liveness_sensitive(klass: string) -> bool {
+    let lc = class_to_keyword(to_lower(klass));
+    if index_of(lc, "liveness") >= 0 { return true; }
+    if index_of(lc, "overflow") >= 0 { return true; }
+    if index_of(lc, "uint8") >= 0 { return true; }
+    if index_of(lc, "uint16") >= 0 { return true; }
+    if index_of(lc, "observation") >= 0 { return true; }
+    if index_of(lc, "cardinality") >= 0 { return true; }
+    if index_of(lc, "index") >= 0 { return true; }
+    if index_of(lc, "revert") >= 0 { return true; }
+    if index_of(lc, "dos") >= 0 { return true; }
+    if index_of(lc, "getincrement") >= 0 { return true; }
     return false;
 }
 
@@ -1076,7 +1150,44 @@ fn metamorphic_variant_seed(klass: string, variant: string) -> string {
              + "(REQUIRED — pick the one that best fits this target and assert it with plain `require(...)`):\n"
              + metamorphic_relation_prompt(klass);
       } else {
-        return "";
+        // .ag has no `else if`; the liveness branch nests as `else { if is_liveness_sensitive(klass) {} else {} }`.
+        if is_liveness_sensitive(klass) {
+          // #1784 (M3) — ARITHMETIC-OVERFLOW / LIVENESS (DoS) ensemble variants. Same header + index<->shape mapping
+          // as the custody / oracle branches, each pinning ONE liveness metamorphic relation as REQUIRED; index >= 2
+          // falls back to the #1726 liveness menu (metamorphic_relation_prompt routes the liveness class to
+          // livenessMeta). The class carries TWO metamorphic shapes (#1784) — the two REQUIRED templates — so there
+          // is no pinned variant 2 (unlike the oracle branch's three); index >= 2 uses the menu fallback.
+          let lheader = "=== ENSEMBLE VARIANT (metamorphic shape — REQUIRED for this candidate) ===\n";
+          // variant 0 — NO-REVERT-ON-VALID-RANGE: every critical entrypoint stays callable over the full valid domain.
+          if variant == "0" {
+              return lheader
+                   + "Express the ONE deep invariant as a NO-REVERT-ON-VALID-RANGE relation: assert a CRITICAL "
+                   + "entrypoint (deposit / withdraw / settle / observe) SUCCEEDS at a representative valid input, "
+                   + "drive the protocol through a reachable sequence that advances its narrow-int accumulator / "
+                   + "observation index, then re-call the SAME entrypoint across its valid input range and assert it "
+                   + "STILL does not revert: "
+                   + "`try target.criticalFn(x) {} catch { revert(\"critical path bricked over valid input\"); }`. A "
+                   + "critical path that reverts on valid input after a reachable sequence is the DoS rare High.\n";
+          }
+          // variant 1 — NARROW-INT-NO-WRAP: a uint8/uint16 accumulator must not wrap under a reachable sequence.
+          if variant == "1" {
+              return lheader
+                   + "Express the ONE deep invariant as a NARROW-INT-NO-WRAP relation: read a `uint8`/`uint16` "
+                   + "accumulator (observation cardinality, ring-buffer slot, epoch counter) as `cBefore`, advance it "
+                   + "through the protocol's OWN increment path near its max in a reachable sequence, read `cAfter`, "
+                   + "and assert it advanced MONOTONICALLY without wrapping: "
+                   + "`require(cAfter >= cBefore, \"narrow-int accumulator wrapped -> DoS\");`. A `uint16 a + b` that "
+                   + "overflows and reverts every subsequent critical call is exactly the integer-overflow-to-DoS "
+                   + "rare High.\n";
+          }
+          // index >= 2 — fall back to the #1726 liveness relation menu as a REQUIRED (pick-one) shape.
+          return lheader
+               + "Express the ONE deep invariant as one of the following LIVENESS metamorphic relations "
+               + "(REQUIRED — pick the one that best fits this target and assert it with plain `require(...)`):\n"
+               + metamorphic_relation_prompt(klass);
+        } else {
+          return "";
+        }
       }
     }
 }
