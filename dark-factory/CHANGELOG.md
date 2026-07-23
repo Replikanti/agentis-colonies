@@ -15,6 +15,32 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **MULTI-LENS PER ZONE on the deep-hunt selection — the non-custody class lenses are no longer shadowed by
+  custody-first routing** (#1795, epic #1782). `run-zone-hunt.sh`'s STAGE 4.5 selection used to emit ONE row per
+  zone (its `dominant_class`, custody-first `C6 → C10 → C11 → C2 → C16 → C5`), so a non-custody lens only ever
+  fired on a zone with no custody-primary class. Measured on the corpus, yieldoor and plaza `src` are
+  `value_custody=true` AND carry `C2`, so the oracle lens never ran there and their oracle bugs (yieldoor H-2,
+  plaza H-4/H-11) were structurally unreachable. The selection now emits one row per **(zone × applicable
+  implemented lens class)**: a new `lens_classes()` keeps the zone's pre-#1795 row FIRST (the custody-primary
+  class for a value-custody zone, the #1790 non-custody dominant class otherwise) and then appends every
+  applicable `IMPLEMENTED_NONCUSTODY` class (`C2`, `C16`, `C5`) the zone carries, in coverage-map rarity order.
+  The implemented lens classes now have a **single source of truth** — `CUSTODY_PRIMARY_CLASSES` +
+  `IMPLEMENTED_NONCUSTODY`, concatenated into `IMPLEMENTED_LENS_CLASSES`, which `dominant_class()` iterates —
+  so the precedence order and the gate can no longer drift apart. The fan-out is bounded by a new
+  `--deep-hunt-max-lenses <N>` (**default 2**); `N=1` reproduces the pre-#1795 selection exactly. Interface-only
+  non-custody zones stay skipped (still a guaranteed `HARNESS_ERROR`), and value-custody zones keep their custody
+  lens unchanged — no zone loses a lens it previously got. The per-zone deep-hunt out-dir is now keyed per
+  **(zone, class)** (`deep-hunt/<zid>-<class>`): without it two lenses of one zone would share a run dir and
+  their per-target `invariant_<t>.log` would collide, so the #1780 merge adapter (globs `invariant_*.log` under
+  `<dzout>/run`, filters the per-candidate `_c<N>.log`) would read the wrong lens's verdict; the
+  `deep-hunt/*/run/invariant_*.log` consumers (`generation-recall.sh`, `generalization-bench.sh`) glob the zone
+  level, so the suffix is transparent to them. The zone-hunt log lines carry the class so a zone appearing more
+  than once still reads correctly. `demo-invariant-ensemble.sh` guards the single source of truth, the
+  `lens_classes()` cap, the flag + its validation, the per-(zone,class) out-dir, and — behaviourally, by running
+  the REAL selection python over a synthetic corpus-shaped `zones.json` — the custody-row-first invariant, the
+  now-emitted C2 row, the `N=2` cap, `N=1` == the pre-#1795 selection, the skipped interface-only zone, and the
+  per-(zone,class) merge-adapter resolution (CI-safe, no LLM/forge/agentis). Measuring the live A/B recall of the
+  wider fan-out is a separate post-merge step.
 - **ACCESS-CONTROL / PRIVILEGE invariant lens class for the deep-hunt prover (default-off, byte-identical when the class does not apply)**
   (#1785, epic #1782, on the #1778 ensemble rails). A FOURTH class-routed metamorphic lens alongside the #1778
   value-custody class, the #1783 oracle class and the #1784 liveness class: the prover (`invariant-prover.ag`) gains
