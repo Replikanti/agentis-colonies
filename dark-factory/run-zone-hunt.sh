@@ -339,7 +339,11 @@ def dominant_class(classes):
     # only when no value-custody-primary class is present — byte-identical routing for every zone that has
     # C6/C10/C11, and an oracle-dependent zone (C2 but no custody-primary code) now routes to the oracle lens
     # (--class C2 -> prover class_to_keyword "oracle" -> is_oracle_dependent) instead of the generic C-invariant.
-    for c in ("C6", "C10", "C11", "C2"):
+    # #1784: C16 (State-machine liveness / stuck-state) is appended AFTER C2, so a liveness-only zone (C16 but no
+    # value-custody-primary or oracle code) routes to the arithmetic-overflow / liveness (DoS) lens
+    # (--class C16 -> prover class_to_keyword "liveness" -> is_liveness_sensitive); byte-identical routing for
+    # every zone that has C6/C10/C11/C2.
+    for c in ("C6", "C10", "C11", "C2", "C16"):
         if c in classes:
             return c
     return "C-invariant"

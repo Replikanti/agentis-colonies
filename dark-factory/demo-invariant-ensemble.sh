@@ -80,10 +80,19 @@ else
   bad "metamorphic_variant_seed() lost the custody-first / oracle-second precedence"
 fi
 
-# The neither-custody-nor-oracle branch returns "" (byte-identical for out-of-class targets). Match the inner
-# oracle-else tail `} else { <ws> return ""; <ws> }` — the arm reached when neither detector fires.
-if grep -Pzoq 'if is_oracle_dependent\(klass\) \{[\s\S]*?\} else \{\s*\n\s*return "";\s*\n\s*\}' "$PROVER"; then
-  ok "metamorphic_variant_seed() ends with a return \"\"; fallthrough (non-custody + non-oracle => byte-identical)"
+# #1784 (M3) — ORACLE-SECOND / LIVENESS-THIRD precedence. is_oracle_dependent is checked BEFORE
+# is_liveness_sensitive (nested in its else), so an oracle label never reaches the liveness branch.
+_lv_ln="$(grep -n 'if is_liveness_sensitive(klass) {' "$PROVER" | head -1 | cut -d: -f1)"
+if [ -n "$_or_ln" ] && [ -n "$_lv_ln" ] && [ "$_or_ln" -lt "$_lv_ln" ]; then
+  ok "metamorphic_variant_seed() checks is_oracle_dependent() BEFORE is_liveness_sensitive() (oracle-second precedence)"
+else
+  bad "metamorphic_variant_seed() lost the oracle-second / liveness-third precedence"
+fi
+
+# The neither-custody-nor-oracle-nor-liveness branch returns "" (byte-identical for out-of-class targets). Match the
+# inner liveness-else tail `} else { <ws> return ""; <ws> }` — the arm reached when none of the three detectors fires.
+if grep -Pzoq 'if is_liveness_sensitive\(klass\) \{[\s\S]*?\} else \{\s*\n\s*return "";\s*\n\s*\}' "$PROVER"; then
+  ok "metamorphic_variant_seed() ends with a return \"\"; fallthrough (non-custody + non-oracle + non-liveness => byte-identical)"
 else
   bad "metamorphic_variant_seed() lost the final return \"\"; fallthrough (out-of-class no longer byte-identical)"
 fi
@@ -197,10 +206,73 @@ fi
 
 # run-zone-hunt.sh dominant_class() routes an oracle-dependent zone (C2, no custody-primary code) to the oracle
 # lens — appended AFTER C6/C10/C11 so value-custody-primary zones stay byte-identical.
-if grep -q 'for c in ("C6", "C10", "C11", "C2"):' "$ZONEHUNT"; then
+# (substring match: #1784 appends "C16" after "C2", so the tuple no longer ends at C2 — assert the "C11", "C2"
+# ordering that keeps custody-primary codes ahead of the oracle code, unchanged by the C16 append.)
+if grep -q '"C10", "C11", "C2"' "$ZONEHUNT"; then
   ok "run-zone-hunt.sh dominant_class() appends C2 after C10/C11 (oracle zones reach the lens; custody unchanged)"
 else
   bad "run-zone-hunt.sh dominant_class() does not route C2 (the oracle lens never fires on the live path)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# 2c) #1784 ARITHMETIC-OVERFLOW / LIVENESS (DoS) LENS CLASS — the liveness branch is present in
+#     action_checklist_prompt() and metamorphic_relation_prompt() (matched inline, DISJOINT keywords, placed after
+#     the oracle block), and the two liveness ensemble variant seeds are present with their require()/try-catch
+#     forms. Default-off is preserved by the oracle-second / liveness-third precedence asserted in section 1.
+# ----------------------------------------------------------------------------------------------------------
+note "source-guarding the #1784 arithmetic-overflow / liveness (DoS) lens class ..."
+
+# #1784 (M1) — the liveness detector sibling of is_value_custody / is_oracle_dependent, with DISJOINT keywords.
+if grep -q 'fn is_liveness_sensitive(klass: string) -> bool' "$PROVER"; then
+  ok "is_liveness_sensitive() is defined on the prover (arithmetic-overflow / liveness lens class)"
+else
+  bad "is_liveness_sensitive() missing from the prover"
+fi
+
+# C16 (State-machine liveness / stuck-state) maps to the "liveness" keyword in class_to_keyword (the bare-code path).
+if grep -q 'if class_is(k, "c16") { return "liveness"; }' "$PROVER"; then
+  ok "class_to_keyword() maps the bare C16 taxonomy code to the \"liveness\" keyword"
+else
+  bad "class_to_keyword() does not map C16 to \"liveness\" (the liveness lens would never route)"
+fi
+
+# action_checklist_prompt() liveness branch — wrap-boundary + full-range entrypoint-sweep actions.
+if grep -q 'WRAP-BOUNDARY action' "$PROVER" \
+   && grep -q 'FULL-RANGE ENTRYPOINT-SWEEP action' "$PROVER"; then
+  ok "action_checklist_prompt() carries the liveness branch (wrap-boundary + full-range entrypoint-sweep actions)"
+else
+  bad "action_checklist_prompt() missing the liveness branch"
+fi
+
+# metamorphic_relation_prompt() liveness menu — the two shapes.
+if grep -q 'NO-REVERT-ON-VALID-RANGE' "$PROVER" \
+   && grep -q 'NARROW-INT-NO-WRAP' "$PROVER"; then
+  ok "metamorphic_relation_prompt() carries the two liveness metamorphic shapes"
+else
+  bad "metamorphic_relation_prompt() missing one or more liveness metamorphic shapes"
+fi
+
+# The two liveness ensemble variant seeds + their pinned require()/try-catch forms.
+if grep -q 'NO-REVERT-ON-VALID-RANGE relation' "$PROVER" \
+   && grep -q 'critical path bricked over valid input' "$PROVER"; then
+  ok "liveness variant 0 present (no-revert-on-valid-range, try/catch revert form)"
+else
+  bad "liveness variant 0 missing (no-revert-on-valid-range)"
+fi
+
+if grep -q 'NARROW-INT-NO-WRAP relation' "$PROVER" \
+   && grep -q 'require(cAfter >= cBefore' "$PROVER"; then
+  ok "liveness variant 1 present (narrow-int-no-wrap, cAfter/cBefore require form)"
+else
+  bad "liveness variant 1 missing (narrow-int-no-wrap)"
+fi
+
+# run-zone-hunt.sh dominant_class() routes a liveness-only zone (C16, no custody-primary or oracle code) to the
+# liveness lens — appended AFTER C6/C10/C11/C2 so value-custody and oracle zones stay byte-identical.
+if grep -q 'for c in ("C6", "C10", "C11", "C2", "C16"):' "$ZONEHUNT"; then
+  ok "run-zone-hunt.sh dominant_class() appends C16 after C2 (liveness zones reach the lens; custody/oracle unchanged)"
+else
+  bad "run-zone-hunt.sh dominant_class() does not route C16 (the liveness lens never fires on the live path)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------

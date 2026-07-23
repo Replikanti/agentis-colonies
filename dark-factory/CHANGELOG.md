@@ -15,6 +15,33 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **ARITHMETIC-OVERFLOW / LIVENESS (DoS) invariant lens class for the deep-hunt prover (default-off, byte-identical when the class does not apply)**
+  (#1784, epic #1782, on the #1778 ensemble rails). A THIRD class-routed metamorphic lens alongside the #1778
+  value-custody class and the #1783 oracle class: the prover (`invariant-prover.ag`) gains an
+  `is_liveness_sensitive()` detector (sibling of `is_value_custody`/`is_oracle_dependent`, keywords
+  `liveness`/`overflow`/`uint8`/`uint16`/`observation`/`cardinality`/`index`/`revert`/`dos`/`getincrement`, DISJOINT
+  from BOTH the value-custody and oracle sets) plus a `class_to_keyword` mapping of the bare taxonomy code `C16`
+  (State-machine liveness / stuck-state) to the new `liveness` keyword. `action_checklist_prompt()` gains a liveness
+  branch (a wrap-boundary action driving a `uint8`/`uint16` accumulator / observation index past its max + a
+  full-range critical-entrypoint sweep) and `metamorphic_relation_prompt()` a two-shape liveness menu
+  (no-revert-on-valid-range, narrow-int-no-wrap), both after the oracle block. `metamorphic_variant_seed()` extends
+  the CUSTODY-FIRST / ORACLE-SECOND precedence chain with a LIVENESS-THIRD branch: the value-custody and oracle
+  variant strings stay byte-identical, a liveness-sensitive class then routes the two liveness ensemble variants
+  (variant 0 no-revert-on-valid-range via a `try/catch` revert, variant 1 narrow-int-no-wrap via
+  `require(cAfter >= cBefore, ...)`; index >= 2 falls back to the liveness menu), and any other class falls through
+  to `return ""`. The class carries TWO metamorphic shapes (its two REQUIRED templates), so — unlike the oracle
+  branch's three — there is no pinned variant 2. `run-zone-hunt.sh` `dominant_class()` appends `C16` AFTER
+  `C6/C10/C11/C2`, so a liveness-only zone with no value-custody-primary or oracle code now routes to the liveness
+  lens on the live deep-hunt path (byte-identical routing for every zone that has `C6/C10/C11/C2`; an overflow bug
+  inside a vault/lend/oracle zone still routes to the higher-precedence lens — a documented known limitation for
+  this milestone). **Default off**: an empty `INV_ENSEMBLE_VARIANT`, or any non-liveness/non-oracle/non-custody
+  class, yields a BYTE-IDENTICAL generation prompt, and a value-custody or oracle target hits its own branch first
+  (the liveness detector fires false on it); the #1725 normalizer-site count stays 2, and `verdict_of`, the
+  `INVARIANT|` marker, and the #1471 target-linkage gate are untouched. `demo-invariant-ensemble.sh` source-guards
+  the detector, the C16→liveness map, the liveness action/relation/variant text, the oracle-second / liveness-third
+  precedence + `return ""` fallthrough, the retained #1725 count, and the `dominant_class` C16 routing (CI-safe, no
+  LLM/forge/agentis). The live-A/B acceptance (the yieldoor H-3 overflow-DoS witness through the ensemble producing
+  an `INVARIANT|...|FINDING`) is a separate post-merge step (#1787), not part of this change.
 - **ORACLE-MANIPULATION invariant lens class for the deep-hunt prover (default-off, byte-identical when the class does not apply)**
   (#1783, epic #1782, on the #1778 ensemble rails). A SECOND class-routed metamorphic lens alongside the #1778
   value-custody class: the prover (`invariant-prover.ag`) gains an `is_oracle_dependent()` detector (sibling of
