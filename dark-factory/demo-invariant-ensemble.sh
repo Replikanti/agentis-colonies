@@ -89,10 +89,20 @@ else
   bad "metamorphic_variant_seed() lost the oracle-second / liveness-third precedence"
 fi
 
-# The neither-custody-nor-oracle-nor-liveness branch returns "" (byte-identical for out-of-class targets). Match the
-# inner liveness-else tail `} else { <ws> return ""; <ws> }` — the arm reached when none of the three detectors fires.
-if grep -Pzoq 'if is_liveness_sensitive\(klass\) \{[\s\S]*?\} else \{\s*\n\s*return "";\s*\n\s*\}' "$PROVER"; then
-  ok "metamorphic_variant_seed() ends with a return \"\"; fallthrough (non-custody + non-oracle + non-liveness => byte-identical)"
+# #1785 (M3) — LIVENESS-THIRD / ACCESS-FOURTH precedence. is_liveness_sensitive is checked BEFORE
+# is_access_sensitive (nested in its else), so a liveness label never reaches the access branch.
+_ac_ln="$(grep -n 'if is_access_sensitive(klass) {' "$PROVER" | head -1 | cut -d: -f1)"
+if [ -n "$_lv_ln" ] && [ -n "$_ac_ln" ] && [ "$_lv_ln" -lt "$_ac_ln" ]; then
+  ok "metamorphic_variant_seed() checks is_liveness_sensitive() BEFORE is_access_sensitive() (liveness-third precedence)"
+else
+  bad "metamorphic_variant_seed() lost the liveness-third / access-fourth precedence"
+fi
+
+# The neither-custody-nor-oracle-nor-liveness-nor-access branch returns "" (byte-identical for out-of-class targets).
+# Match the inner access-else tail `} else { <ws> return ""; <ws> }` — the arm reached when none of the four detectors
+# fires.
+if grep -Pzoq 'if is_access_sensitive\(klass\) \{[\s\S]*?\} else \{\s*\n\s*return "";\s*\n\s*\}' "$PROVER"; then
+  ok "metamorphic_variant_seed() ends with a return \"\"; fallthrough (non-custody + non-oracle + non-liveness + non-access => byte-identical)"
 else
   bad "metamorphic_variant_seed() lost the final return \"\"; fallthrough (out-of-class no longer byte-identical)"
 fi
@@ -269,10 +279,81 @@ fi
 
 # run-zone-hunt.sh dominant_class() routes a liveness-only zone (C16, no custody-primary or oracle code) to the
 # liveness lens — appended AFTER C6/C10/C11/C2 so value-custody and oracle zones stay byte-identical.
-if grep -q 'for c in ("C6", "C10", "C11", "C2", "C16"):' "$ZONEHUNT"; then
+# (substring match: #1785 appends "C5" after "C16", so the tuple no longer ends at C16 — assert the "C2", "C16"
+# ordering that keeps the oracle code ahead of the liveness code, unchanged by the C5 append.)
+if grep -q '"C2", "C16"' "$ZONEHUNT"; then
   ok "run-zone-hunt.sh dominant_class() appends C16 after C2 (liveness zones reach the lens; custody/oracle unchanged)"
 else
   bad "run-zone-hunt.sh dominant_class() does not route C16 (the liveness lens never fires on the live path)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# 2d) #1785 ACCESS-CONTROL / PRIVILEGE LENS CLASS — the access branch is present in action_checklist_prompt() and
+#     metamorphic_relation_prompt() (matched inline, DISJOINT keywords, placed after the liveness block), and the two
+#     access ensemble variant seeds are present with their require() forms. Default-off is preserved by the
+#     liveness-third / access-fourth precedence asserted in section 1.
+# ----------------------------------------------------------------------------------------------------------
+note "source-guarding the #1785 access-control / privilege lens class ..."
+
+# #1785 (M1) — the access detector sibling of is_value_custody / is_oracle_dependent / is_liveness_sensitive, with
+# DISJOINT keywords.
+if grep -q 'fn is_access_sensitive(klass: string) -> bool' "$PROVER"; then
+  ok "is_access_sensitive() is defined on the prover (access-control / privilege lens class)"
+else
+  bad "is_access_sensitive() missing from the prover"
+fi
+
+# C5 (Access control / role model) maps to the "access" keyword in class_to_keyword (the bare-code path).
+if grep -q 'if class_is(k, "c5") { return "access"; }' "$PROVER"; then
+  ok "class_to_keyword() maps the bare C5 taxonomy code to the \"access\" keyword"
+else
+  bad "class_to_keyword() does not map C5 to \"access\" (the access lens would never route)"
+fi
+
+# action_checklist_prompt() access branch — unprivileged-caller + param-tamper actions.
+if grep -q 'UNPRIVILEGED-CALLER action' "$PROVER" \
+   && grep -q 'PARAM-TAMPER action' "$PROVER"; then
+  ok "action_checklist_prompt() carries the access branch (unprivileged-caller + param-tamper actions)"
+else
+  bad "action_checklist_prompt() missing the access branch"
+fi
+
+# metamorphic_relation_prompt() access menu — the two shapes.
+if grep -q 'UNPRIVILEGED-NO-EFFECT' "$PROVER" \
+   && grep -q 'PARAM-TAMPER-PARITY' "$PROVER"; then
+  ok "metamorphic_relation_prompt() carries the two access metamorphic shapes"
+else
+  bad "metamorphic_relation_prompt() missing one or more access metamorphic shapes"
+fi
+
+# The two access ensemble variant seeds + their pinned require() forms.
+if grep -q 'UNPRIVILEGED-NO-EFFECT relation' "$PROVER" \
+   && grep -q 'require(sAfter == sBefore' "$PROVER"; then
+  ok "access variant 0 present (unprivileged-no-effect, sAfter/sBefore require form)"
+else
+  bad "access variant 0 missing (unprivileged-no-effect)"
+fi
+
+if grep -q 'PARAM-TAMPER-PARITY relation' "$PROVER" \
+   && grep -q 'require(gainTamper <= gainHonest + gainHonest/1000 + 1' "$PROVER"; then
+  ok "access variant 1 present (param-tamper parity, gainTamper/gainHonest require form)"
+else
+  bad "access variant 1 missing (param-tamper parity)"
+fi
+
+# run-zone-hunt.sh dominant_class() routes an access-only zone (C5, no custody-primary / oracle / liveness code) to
+# the access lens — appended AFTER C6/C10/C11/C2/C16 so value-custody, oracle and liveness zones stay byte-identical.
+if grep -q 'for c in ("C6", "C10", "C11", "C2", "C16", "C5"):' "$ZONEHUNT"; then
+  ok "run-zone-hunt.sh dominant_class() appends C5 after C16 (access zones reach the lens; custody/oracle/liveness unchanged)"
+else
+  bad "run-zone-hunt.sh dominant_class() does not route C5 (the access lens never fires on the live path)"
+fi
+
+# #1785 — C5 joins the IMPLEMENTED_NONCUSTODY gate so an access-dominant non-custody zone is actually selected.
+if grep -q 'IMPLEMENTED_NONCUSTODY = {"C2", "C16", "C5"}' "$ZONEHUNT"; then
+  ok "run-zone-hunt.sh IMPLEMENTED_NONCUSTODY includes C5 (access-dominant non-custody zones are hunted)"
+else
+  bad "run-zone-hunt.sh IMPLEMENTED_NONCUSTODY does not include C5 (access zones dropped before class routing)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------

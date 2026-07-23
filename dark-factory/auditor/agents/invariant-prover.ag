@@ -761,6 +761,11 @@ fn class_to_keyword(k: string) -> string {
     // is_value_custody("liveness") and is_oracle_dependent("liveness") are both false, so a value-custody / oracle
     // target never picks it up — the liveness detector fires false on those.
     if class_is(k, "c16") { return "liveness"; }
+    // #1785 (M1) — C5 = "Access control / role model" (auditor/bug-taxonomy.md). A bare `C5` dominant label routes to
+    // the new "access" keyword so the access-control / privilege metamorphic lens fires. is_value_custody("access"),
+    // is_oracle_dependent("access") and is_liveness_sensitive("access") are all false, so a value-custody / oracle /
+    // liveness target never picks it up — the access detector fires false on those.
+    if class_is(k, "c5") { return "access"; }
     // #1778 — a bare `pool`/`redeem` dominant label (e.g. the plaza pool/redeem target) is value-custody but has
     // no taxonomy code; route it to the closest existing menu so the metamorphic-ensemble variant selector and the
     // #1726 relation menu fire the right (AMM / vault) shape instead of the generic default.
@@ -876,6 +881,25 @@ fn action_checklist_prompt(klass: string) -> string {
     if index_of(k, "revert") >= 0 { return livenessPrompt; }
     if index_of(k, "dos") >= 0 { return livenessPrompt; }
     if index_of(k, "getincrement") >= 0 { return livenessPrompt; }
+    // #1785 (M1) — ACCESS-CONTROL / PRIVILEGE class. Matched inline via index_of on the SAME access keyword set as
+    // is_access_sensitive (NOT a call to it — .ag is definition-before-use and is_access_sensitive is defined later).
+    // Value-custody, oracle AND liveness keywords are matched first above, so those labels never reach here.
+    let accessPrompt = "  - an UNPRIVILEGED-CALLER action: from an actor holding NO role (not owner / admin / keeper) "
+         + "call every state-changing entrypoint that LOOKS guarded (sensitive setters, upgrade authorization, role "
+         + "grants, config writes) and record whether any of them SUCCEEDS\n"
+         + "  - a PARAM-TAMPER action: on an operation that takes an attacker-influenced enum / parameter (a "
+         + "`TradeType`, a recipient / beneficiary address, a market or asset id) choose the SENSITIVE value that "
+         + "routes value toward the caller, so a multi-call SEQUENCE can straddle the honest-vs-tampered choice\n"
+         + "  - >=2 actor addresses (privileged / unprivileged) so the actor who HOLDS the role and the actor who "
+         + "ATTEMPTS the privileged effect are attributable to different positions\n";
+    if index_of(k, "access") >= 0 { return accessPrompt; }
+    if index_of(k, "role") >= 0 { return accessPrompt; }
+    if index_of(k, "onlyowner") >= 0 { return accessPrompt; }
+    if index_of(k, "onlyrole") >= 0 { return accessPrompt; }
+    if index_of(k, "privilege") >= 0 { return accessPrompt; }
+    if index_of(k, "permission") >= 0 { return accessPrompt; }
+    if index_of(k, "auth") >= 0 { return accessPrompt; }
+    if index_of(k, "tradetype") >= 0 { return accessPrompt; }
     return "  - >=2 bounded actor addresses (no single-actor sequences)\n"
          + "  - a direct external-perturbation action (raw donation / direct rate-set) that bypasses the normal "
          + "entry points\n";
@@ -980,6 +1004,32 @@ fn metamorphic_relation_prompt(klass: string) -> string {
     if index_of(mk, "revert") >= 0 { return livenessMeta; }
     if index_of(mk, "dos") >= 0 { return livenessMeta; }
     if index_of(mk, "getincrement") >= 0 { return livenessMeta; }
+    // #1785 (M1) — ACCESS-CONTROL / PRIVILEGE relations. Matched inline on the SAME access keyword set as
+    // is_access_sensitive (value-custody + oracle + liveness keywords matched first above => those labels never
+    // reach this).
+    let accessMeta = "  - UNPRIVILEGED-NO-EFFECT: an actor holding NO privileged role must NOT change "
+         + "protocol-critical state or another party's balances beyond its OWN position — snapshot a critical view "
+         + "(an admin-set config value, a global accumulator, a victim's balance) as `sBefore`, have a role-less "
+         + "actor call every state-changing entrypoint it can reach, re-read `sAfter`, and assert nothing outside "
+         + "that actor's own position moved: "
+         + "`require(sAfter == sBefore, \"unprivileged caller changed protocol-critical state\");` (a sensitive "
+         + "setter that lost its guard, or a mis-set role-admin that lets an unprivileged path obtain a role, breaks "
+         + "this)\n"
+         + "  - PARAM-TAMPER-PARITY: two calls IDENTICAL except an attacker-chosen enum / parameter (a `TradeType`, a "
+         + "recipient address, a market id) must not diverge in WHO receives value — run the operation with the "
+         + "HONEST param netting the caller `gainHonest`, run it again with the attacker-chosen param netting "
+         + "`gainTamper`, and assert the tampered call did NOT redirect value to the attacker: "
+         + "`require(gainTamper <= gainHonest + gainHonest/1000 + 1, \"attacker-chosen param redirected value\");` (an "
+         + "unvalidated enum/param that reaches a privileged/unsafe path to steal from the vault is exactly the "
+         + "access-control rare High)\n";
+    if index_of(mk, "access") >= 0 { return accessMeta; }
+    if index_of(mk, "role") >= 0 { return accessMeta; }
+    if index_of(mk, "onlyowner") >= 0 { return accessMeta; }
+    if index_of(mk, "onlyrole") >= 0 { return accessMeta; }
+    if index_of(mk, "privilege") >= 0 { return accessMeta; }
+    if index_of(mk, "permission") >= 0 { return accessMeta; }
+    if index_of(mk, "auth") >= 0 { return accessMeta; }
+    if index_of(mk, "tradetype") >= 0 { return accessMeta; }
     return "  - ROUND-TRIP: any put/take (deposit/withdraw) round-trip must NOT return more value than was put "
          + "in\n"
          + "  - COMMUTATIVITY: two independent same-actor operations commute (order does not change the final "
@@ -1048,6 +1098,29 @@ fn is_liveness_sensitive(klass: string) -> bool {
     if index_of(lc, "revert") >= 0 { return true; }
     if index_of(lc, "dos") >= 0 { return true; }
     if index_of(lc, "getincrement") >= 0 { return true; }
+    return false;
+}
+
+// #1785 (M1) — is this an ACCESS-CONTROL / PRIVILEGE-SENSITIVE class (an unprivileged caller can reach a privileged
+// effect, or steal via an attacker-chosen parameter/enum: a sensitive setter that lost its guard, a mis-set
+// role-admin, an unvalidated `TradeType`/recipient/market-id that routes value)? Sibling of is_value_custody /
+// is_oracle_dependent / is_liveness_sensitive, normalizing through the SAME class_to_keyword(to_lower(klass)) helper
+// (C5 -> "access"), then anchored index_of over an access keyword set DISJOINT from the value-custody set
+// (4626/vault/lend/cdp/borrow/collateral/amm/swap/dex/pool/redeem/stak), the oracle set (oracle/price/feed/chainlink/
+// slot0/getprice/latestanswer) AND the liveness set (liveness/overflow/uint8/uint16/observation/cardinality/index/
+// revert/dos/getincrement) — so an out-of-class, value-custody, oracle or liveness label never trips it. Flat
+// index_of only — no per-element recursion. A distinct local `ac` (not `k`) keeps the #1725 handler-action
+// normalizer-site count at exactly 2.
+fn is_access_sensitive(klass: string) -> bool {
+    let ac = class_to_keyword(to_lower(klass));
+    if index_of(ac, "access") >= 0 { return true; }
+    if index_of(ac, "role") >= 0 { return true; }
+    if index_of(ac, "onlyowner") >= 0 { return true; }
+    if index_of(ac, "onlyrole") >= 0 { return true; }
+    if index_of(ac, "privilege") >= 0 { return true; }
+    if index_of(ac, "permission") >= 0 { return true; }
+    if index_of(ac, "auth") >= 0 { return true; }
+    if index_of(ac, "tradetype") >= 0 { return true; }
     return false;
 }
 
@@ -1186,7 +1259,44 @@ fn metamorphic_variant_seed(klass: string, variant: string) -> string {
                + "(REQUIRED — pick the one that best fits this target and assert it with plain `require(...)`):\n"
                + metamorphic_relation_prompt(klass);
         } else {
-          return "";
+          // .ag has no `else if`; the access branch nests as `else { if is_access_sensitive(klass) {} else {} }`.
+          if is_access_sensitive(klass) {
+            // #1785 (M3) — ACCESS-CONTROL / PRIVILEGE ensemble variants. Same header + index<->shape mapping as the
+            // custody / oracle / liveness branches, each pinning ONE access metamorphic relation as REQUIRED; index
+            // >= 2 falls back to the #1726 access menu (metamorphic_relation_prompt routes the access class to
+            // accessMeta). The class carries TWO metamorphic shapes (#1785) — the two REQUIRED templates — so, like
+            // the liveness branch, there is no pinned variant 2; index >= 2 uses the menu fallback.
+            let aheader = "=== ENSEMBLE VARIANT (metamorphic shape — REQUIRED for this candidate) ===\n";
+            // variant 0 — UNPRIVILEGED-NO-EFFECT: a role-less caller cannot change protocol-critical state.
+            if variant == "0" {
+                return aheader
+                     + "Express the ONE deep invariant as an UNPRIVILEGED-NO-EFFECT relation: snapshot a "
+                     + "protocol-critical view (an admin-set config value, a global accumulator, a victim's balance) "
+                     + "as `sBefore`, have an actor holding NO privileged role call every state-changing entrypoint it "
+                     + "can reach, re-read `sAfter`, and assert nothing outside that actor's OWN position moved: "
+                     + "`require(sAfter == sBefore, \"unprivileged caller changed protocol-critical state\");`. A "
+                     + "role-less caller reaching a privileged effect (a setter that lost its guard, a mis-set "
+                     + "role-admin) is the access-control rare High.\n";
+            }
+            // variant 1 — PARAM-TAMPER-PARITY: an attacker-chosen enum/param must not redirect who-gets-value.
+            if variant == "1" {
+                return aheader
+                     + "Express the ONE deep invariant as a PARAM-TAMPER-PARITY relation: run an operation with the "
+                     + "HONEST enum / parameter netting the caller `gainHonest`, then run the SAME operation IDENTICAL "
+                     + "except for an attacker-chosen enum / parameter (a `TradeType`, a recipient address, a market "
+                     + "id) netting `gainTamper`, and assert the tampered call did NOT redirect value to the attacker: "
+                     + "`require(gainTamper <= gainHonest + gainHonest/1000 + 1, \"attacker-chosen param redirected "
+                     + "value\");`. An unvalidated param that reaches a privileged/unsafe path to steal from the vault "
+                     + "is the access-control rare High.\n";
+            }
+            // index >= 2 — fall back to the #1726 access relation menu as a REQUIRED (pick-one) shape.
+            return aheader
+                 + "Express the ONE deep invariant as one of the following ACCESS-CONTROL metamorphic relations "
+                 + "(REQUIRED — pick the one that best fits this target and assert it with plain `require(...)`):\n"
+                 + metamorphic_relation_prompt(klass);
+          } else {
+            return "";
+          }
         }
       }
     }
