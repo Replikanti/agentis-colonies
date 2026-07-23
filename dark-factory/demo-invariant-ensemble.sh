@@ -249,6 +249,50 @@ else
   bad "deep-hunt-ab.sh does not parse + forward --ensemble-candidates into the --live ON arm"
 fi
 
+# ----------------------------------------------------------------------------------------------------------
+# 6) MERGE ADAPTER READS THE AGGREGATE, NOT A PER-CANDIDATE LOG — the ensemble writes per-candidate logs
+#    `invariant_<t>_c<N>.log` ALONGSIDE the canonical aggregate `invariant_<t>.log`. The run-zone-hunt.sh
+#    merge adapter globs `invariant_*.log` and reads `sorted()[-1]`; since `_` (0x5F) > `.` (0x2E) in
+#    codepoint order, WITHOUT a filter `sorted()[-1]` lands on the last per-candidate CLEAN log and silently
+#    drops a real ensemble FINDING (the Δ=+0 regression). Guard both the source filter AND the behaviour.
+# ----------------------------------------------------------------------------------------------------------
+note "guarding the #1778 merge adapter (aggregate log wins over per-candidate logs) ..."
+
+if grep -qE '_c\[0-9\]\+\\\.log\$' "$ZONEHUNT"; then
+  ok "run-zone-hunt.sh merge adapter filters per-candidate _c<N>.log out of the invariant_*.log glob"
+else
+  bad "run-zone-hunt.sh merge adapter does NOT filter per-candidate _c<N>.log (ensemble FINDING would be dropped)"
+fi
+
+# Behavioural: replicate the adapter's selection over the real failure-pattern filenames and assert it
+# picks the FINDING aggregate, not a CLEAN per-candidate. Pure python3 (CI-safe; no toolchain/agentis/forge).
+_sel_tmp="$(mktemp -d)"
+: > "$_sel_tmp/invariant_src_Pool_sol.log"        # aggregate (ensemble-vote verdict lives here)
+: > "$_sel_tmp/invariant_src_Pool_sol_c0.log"
+: > "$_sel_tmp/invariant_src_Pool_sol_c1.log"
+: > "$_sel_tmp/invariant_src_Pool_sol_c2.log"
+printf 'INVARIANT|src/Pool.sol|FINDING\n' > "$_sel_tmp/invariant_src_Pool_sol.log"
+printf 'INVARIANT|src/Pool.sol|CLEAN\n'   > "$_sel_tmp/invariant_src_Pool_sol_c2.log"
+_picked="$(python3 - "$_sel_tmp" <<'PY'
+import sys, os, glob, re
+d = sys.argv[1]
+logs = sorted(glob.glob(os.path.join(d, "invariant_*.log")))
+logs = [p for p in logs if not re.search(r"_c[0-9]+\.log$", os.path.basename(p))]
+verdict = None
+with open(logs[-1], encoding="utf-8", errors="ignore") as fh:
+    for line in fh:
+        if "INVARIANT|" in line:
+            verdict = line.split("INVARIANT|", 1)[1].strip().split("|")[1].strip()
+print(verdict or "NONE")
+PY
+)"
+rm -rf "$_sel_tmp"
+if [ "$_picked" = "FINDING" ]; then
+  ok "merge adapter selection reads the aggregate FINDING (not a per-candidate CLEAN) under codepoint sort"
+else
+  bad "merge adapter selection picked '$_picked' (expected FINDING) — the codepoint-sort regression is back"
+fi
+
 echo
 if [ "$FAILS" -eq 0 ]; then
   note "PASS: #1778 single-run metamorphic ensemble is wired — is_value_custody() + metamorphic_variant_seed()"
