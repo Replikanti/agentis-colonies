@@ -15,6 +15,37 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **SHARED HARNESS-MOCK LIBRARY for generated invariant harnesses (inert when unused)**
+  (#1794). Harness GENERATION — not hypothesis quality — was the transfer-validation bottleneck on complex
+  targets: the prover had to hand-author EVERY external-dependency mock inside each generated test, and an LP
+  oracle needing Curve/Balancer-style pricing reads (or a modular vault needing a share-vault dependency)
+  produced a harness that did not compile — a `HARNESS_ERROR`, i.e. NO verdict at all rather than a CLEAN or a
+  FINDING. New `auditor/harness-mocks/` ships four minimal, **dependency-free, compile-clean** Solidity mocks
+  covering the shapes that actually broke the runs: `MockAggregatorV3.sol` (Chainlink feed — configurable
+  decimals/answer, fresh `updatedAt` by default, `latestRoundData`/`getRoundData`, explicit
+  `setAnswer`/`setStale`/`setIncompleteRound` perturbation), `MockERC20.sol` (constructor-configurable decimals,
+  open `mint`/`burn`, approve/transfer/transferFrom), `MockVault4626.sol` (minimal ERC4626 share vault —
+  deposit/mint/withdraw/redeem, `convertTo*`, `preview*`, `totalAssets`/`totalSupply`, classic offset-free share
+  math so the donation / first-depositor inflation path stays reachable) and `MockPool.sol` (generic
+  Curve/Balancer/UniV2-style pool — settable reserves + LP `totalSupply`, `get_virtual_price()` /
+  `getVirtualPrice()` / `getRate()`, and a reserve-derived `get_dy(i, j, dx)` / `getAmountOut` quote). No file
+  imports anything (not even a sibling), each pins the deliberately wide `pragma solidity >=0.8.0` so it compiles
+  under whatever 0.8.x the staged target project pins, and no two files declare the same top-level name, so a
+  harness may import all four at once. `run-invariant-hunt.sh` STAGES the library into the generated harness
+  project at `<repo>/test/mocks/` before the prover writes or compiles, so a generated
+  `import {MockERC20} from "./mocks/MockERC20.sol";` resolves. Staging is a pure copy into a NEW `test/mocks/`
+  dir: it never edits `foundry.toml`, the `src/` tree or an existing test, never clobbers a repo that ships its
+  own `test/mocks/<Name>.sol`, and the library declares no test contract and no `test*`/`invariant_*` function —
+  so a harness that imports nothing new keeps a byte-identical verdict. `invariant-prover.ag` gains an ADDITIVE
+  `stagedMockLibrary` directive folded into `sharedScaffold` (hence re-injected on every compile-repair round):
+  when the target needs a price feed / token / share vault / pool dependency, IMPORT the staged mock with its
+  exact `./mocks/<Name>.sol` path and the target's own decimals/units (the #1720 MOCK-DEP FIDELITY rule is
+  unchanged and still governs), and author a bespoke mock ONLY for a shape the library does not cover. Class
+  routing, the metamorphic ensemble, the `INVARIANT|` marker, `verdict_of`, the #1471 target-linkage gate and the
+  #1725 handler-action normalizer count are all untouched. New `demo-harness-mocks.sh` (registered in
+  `tools/colony-lint.sh`) source-guards the library contract, the staging wiring + ordering and the prompt
+  directive, and behaviourally executes the runner's OWN staging block against a fixture Foundry project to prove
+  the inertness and no-clobber properties (CI-safe: no LLM, no forge, no agentis).
 - **ACCESS-CONTROL / PRIVILEGE invariant lens class for the deep-hunt prover (default-off, byte-identical when the class does not apply)**
   (#1785, epic #1782, on the #1778 ensemble rails). A FOURTH class-routed metamorphic lens alongside the #1778
   value-custody class, the #1783 oracle class and the #1784 liveness class: the prover (`invariant-prover.ag`) gains

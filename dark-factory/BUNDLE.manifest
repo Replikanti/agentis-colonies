@@ -37,3 +37,7 @@ dark-factory/auditor/README.md
 dark-factory/auditor/agents/
 dark-factory/auditor/config/colony.example.toml
 dark-factory/auditor/scripts/
+# The #1794 shared harness-mock library: dependency-free Solidity mocks
+# run-invariant-hunt.sh stages into every generated invariant harness. A
+# RUNTIME dependency of the deep-hunt path, not contributor-only tooling.
+dark-factory/auditor/harness-mocks/

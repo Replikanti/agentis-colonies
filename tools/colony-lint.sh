@@ -1551,6 +1551,28 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-ensemble.sh" ]; then
     fi
 fi
 
+# --- dark-factory shared harness-mock library (#1794) ---
+# The deep-hunt prover used to hand-author EVERY external-dependency mock inside each generated harness; on
+# complex targets (an LP oracle's Curve/Balancer pricing deps, a modular vault's share dep) that produced a test
+# that did not compile — a HARNESS_ERROR, i.e. NO verdict at all. #1794 adds auditor/harness-mocks/ (four
+# dependency-free, compile-clean Solidity mocks: MockAggregatorV3 / MockERC20 / MockVault4626 / MockPool),
+# staged by run-invariant-hunt.sh into the generated harness project's test/mocks/ BEFORE the prover writes or
+# compiles, plus an additive prover directive telling the model to IMPORT them instead of authoring another copy.
+# Staging is INERT when unused (a pure copy into a NEW test/mocks/ dir; no test surface, no clobber of a repo's
+# own mock, nothing else touched), so a harness that imports nothing new keeps its verdict. demo-harness-mocks.sh
+# source-guards the library contract (dependency-free, wide pragma, unique names, test-discovery-inert), the
+# staging wiring + ordering, the prompt directive, and the untouched verdict/routing contracts, and behaviourally
+# executes the runner's own staging block against a fixture repo (CI-safe, no LLM/forge/agentis).
+if [ -x "$REPO_ROOT/dark-factory/demo-harness-mocks.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-harness-mocks.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: shared harness-mock library (staged into test/mocks/, inert when unused) (#1794)"
+    else
+        fail "dark-factory: shared harness-mock library regressed (#1794)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory historical-exploit-class pattern seeding (#1733) ---
 # A static, offline library of 7 canonical historical DeFi exploit CLASSES (auditor/methods/
 # historical-exploits.md, one entry per C1/C2/C5/C6/C8/C11/C16 taxonomy id, hand-authored, no
