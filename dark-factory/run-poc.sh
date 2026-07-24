@@ -157,7 +157,11 @@ fi
   echo "llm.backend = $BACKEND"
   # 600s: writing a concrete exploit PoC for a real protocol is the same order of cost as a discovery read.
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = 600000"; }
-  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"; }
+  # #1810: idle_ms 12000 (> native 4000 default) — with 4000, flat-cyborg fires IDLE during claude's think-pause
+  # on the large PoC-generation prompt and captures chrome / no fenced reply ("--extract found no fenced reply"),
+  # so the generated test is garbled/truncated and never compiles -> HARNESS_ERROR. Every sibling flat-cyborg
+  # driver (run-discovery/gen-briefs/map-zones/run-refute/run-invariant-hunt) already sets 12000; run-poc missed it.
+  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"; }
   echo "trace.level = normal"
   # The poc-writer reads code + the fixture and writes/runs the test through exec sh; pass its whole env contract.
   echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,BUG_HYPOTHESIS,POC_KIND,POC_REPO,POC_OUT,POC_HARNESS,POC_FIXTURE,CODE_PATH,TARGET_FIXTURES_DIR,POC_MATCH,POC_REPAIR_ROUNDS"
