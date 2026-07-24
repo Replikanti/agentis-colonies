@@ -189,6 +189,35 @@ else bad "fn-slice priority regression: liquidate/redeem dropped from the liquid
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (d3) REGRESSION (#1799): the value-MOVING functions of a big vault/CDP contract used to fill the whole
+#      fn-slice by themselves and truncate out its value-READING (valuation/pricing) functions — so an entire
+#      rare-bug family (share/asset mispricing, e.g. notional's AbstractSingleSidedLP.convertToAssets, fb=2
+#      H-4) never reached scope.tsv and was never hunted. map-zones.sh now RESERVES a valuation-slot quota
+#      (VALUATION_KEYWORDS). The liquidation fixture declares `convertToAssets` LAST (after every admin setter
+#      AND every value-moving fn); assert it survives the slice WITHOUT displacing liquidate/redeem.
+# ----------------------------------------------------------------------------------------------------------
+if python3 - "$OUT/scope.tsv" <<'PY'
+import sys
+rows = [l.rstrip("\n") for l in open(sys.argv[1], encoding="utf-8") if l.strip() and not l.lstrip().startswith("#")]
+liq_rows = [l for l in rows if l.startswith("liquidation engine |")]
+assert liq_rows, "no scope.tsv row for the liquidation engine zone"
+files_field = liq_rows[0].split("|")[2]
+fn_names = set()
+for tok in files_field.split(","):
+    tok = tok.strip()
+    if "@" in tok:
+        fn_names.update(tok.split("@", 1)[1].split("+"))
+assert "convertToAssets" in fn_names, \
+    "convertToAssets (last-declared valuation fn) truncated out of the slice: %r" % sorted(fn_names)
+# the reservation must NOT come at the cost of the value-moving path the #1701 test guards
+assert "liquidate" in fn_names and "redeem" in fn_names, \
+    "valuation reservation displaced a value-moving fn: %r" % sorted(fn_names)
+PY
+then ok "liquidation zone's slice surfaces the LAST-declared valuation fn convertToAssets AND keeps liquidate + redeem (#1799 valuation-slot reservation)"
+else bad "fn-slice valuation regression: convertToAssets truncated out (or displaced a value-moving fn)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # (e) ROUND-TRIP: run-discovery.sh --list-cells over the emitted scope.tsv prints >=1 CELL| and the
 #     enumerated (subsystem x class) cells match the manifest exactly (AC #3; offline, no agentis).
 # ----------------------------------------------------------------------------------------------------------

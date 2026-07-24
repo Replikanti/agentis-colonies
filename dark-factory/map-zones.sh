@@ -161,18 +161,47 @@ VALUE_MOVING_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# Value-READING / valuation vocabulary (#1799): the share/asset conversion + pricing path where an entire
+# rare-bug family lives (ERC4626 convertToAssets/convertToShares/preview*/totalAssets, oracle price/getValue/
+# exchangeRate, pricePerShare, quote). These are DISTINCT from the value-MOVING verbs above — a vault's many
+# deposit/withdraw/redeem functions routinely fill the whole [:cap] slice by themselves and truncate out its
+# convert/price functions (measured live: notional's AbstractSingleSidedLP had 11 value-moving matches, so its
+# convertToAssets — the fb=2 H-4 mispricing surface — never reached scope.tsv). prioritize_fn_names() below
+# RESERVES a small quota for this class so the read/pricing path is always represented, not just the move path.
+VALUATION_KEYWORDS = re.compile(
+    r"(convert|previewredeem|previewdeposit|previewmint|previewwithdraw|price|totalassets"
+    r"|pricepershare|exchangerate|sharestoassets|assetstoshares|getvalue|valueof|quote|spotprice)",
+    re.IGNORECASE,
+)
+
 def prioritize_fn_names(names, cap):
-    # Reorder (never drop/rename) `names` — already in file-declaration order, deduplicated — so a
-    # value-moving/recovery name survives an [:cap] slice ahead of admin/setter noise. Partition into
-    # (a) keyword match, no leading `_` (Solidity's internal/private convention -> not directly
-    # attacker-reachable, so ranked below public matches), (b) keyword match, leading `_`, (c) everything
-    # else -- each partition keeping its original declaration order -- then take the first `cap` names of
-    # (a + b + c). A small/simple contract whose whole function list already fits under `cap` is unaffected
-    # (the reordering only matters once truncation actually happens).
-    matched_public = [n for n in names if VALUE_MOVING_KEYWORDS.search(n) and not n.startswith("_")]
-    matched_private = [n for n in names if VALUE_MOVING_KEYWORDS.search(n) and n.startswith("_")]
-    rest = [n for n in names if not VALUE_MOVING_KEYWORDS.search(n)]
-    return (matched_public + matched_private + rest)[:cap]
+    # Reorder (never drop/rename) `names` — already in file-declaration order, deduplicated — so the
+    # functions a hunt most needs to see survive an [:cap] slice ahead of admin/setter noise. Partition into
+    # three families, each keeping declaration order and ranking public (no leading `_`, attacker-reachable)
+    # ahead of leading-`_` internal names:
+    #   moving    — VALUE_MOVING_KEYWORDS: token movement / cross-chain recovery (#1701).
+    #   valuation — VALUATION_KEYWORDS and NOT value-moving: the share/asset conversion + pricing path (#1799).
+    #   rest      — everything else.
+    # Then reserve up to cap//3 slots (>=1 whenever any valuation fn exists) for `valuation`, fill the balance
+    # with `moving`, and backfill spare capacity from the leftovers. A contract whose whole function list
+    # already fits under `cap` is unaffected (both the reordering and the reservation only bite once
+    # truncation actually happens). cap//3 keeps the move path dominant (it is where most exploits act) while
+    # guaranteeing the read/pricing path is never fully crowded out.
+    def pub_first(xs):
+        return [n for n in xs if not n.startswith("_")] + [n for n in xs if n.startswith("_")]
+    moving = pub_first([n for n in names if VALUE_MOVING_KEYWORDS.search(n)])
+    valuation = pub_first([n for n in names
+                           if VALUATION_KEYWORDS.search(n) and not VALUE_MOVING_KEYWORDS.search(n)])
+    rest = [n for n in names
+            if not VALUE_MOVING_KEYWORDS.search(n) and not VALUATION_KEYWORDS.search(n)]
+    reserve = min(len(valuation), max(1, cap // 3)) if valuation else 0
+    picked = moving[:cap - reserve] + valuation[:reserve]
+    for n in moving[cap - reserve:] + valuation[reserve:] + rest:
+        if len(picked) >= cap:
+            break
+        if n not in picked:
+            picked.append(n)
+    return picked[:cap]
 
 def age_days(f):
     try:
