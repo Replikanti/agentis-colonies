@@ -302,6 +302,46 @@ else
   bad "run_poc_live did not memo the PoC artifact paths (#1802): poc_file='$_pf1802' poc_run='$_pr1802'"
 fi
 
+# --- (c-ter) #1806: devise is ADVISORY for an already-verified finding (FINDING_VERIFIED), a HARD gate otherwise.
+#     All gates wired productive EXCEPT devise (bare NO-RESIDUAL). With FINDING_VERIFIED=1 the pass must PROCEED
+#     past devise to the report human-gate; unset it must still HALT at NO-RESIDUAL (pre-#1806 byte-identical).
+VER="$WORK/verified"; mkdir -p "$VER"
+cat > "$VER/gate-stub.sh" <<'STUB'
+#!/usr/bin/env bash
+case "${VERDICT_PREFIX:-}" in
+  SCOPE-GATE)  echo "SCOPE-GATE|PAYABLE|in scope" ;;
+  RESIDUAL)    echo "NO-RESIDUAL" ;;
+  IMPACT-GATE) echo "IMPACT-GATE|SUBSTANTIATED|provable" ;;
+  DUP-RISK)    echo "DUP-RISK|LOW|unique" ;;
+  SUBMISSION-DRAFT) echo "SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW" ;;
+  *)           echo "${VERDICT_PREFIX:-UNKNOWN}|STUB" ;;
+esac
+STUB
+cat > "$VER/poc-stub.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "POC|stub-target|FINDING"
+STUB
+chmod +x "$VER/gate-stub.sh" "$VER/poc-stub.sh"
+cp "$COORD" "$VER/coordinator.ag"
+( cd "$VER" && agentis init >/dev/null 2>&1 )
+{
+  echo "llm.backend = mock"; echo "trace.level = normal"
+  echo "exec.env_passthrough = PASS_ENABLED,STAGES,SCOPE_GATE_RUN,DEVISE_RUN,POC_RUN,IMPACT_GATE_RUN,DUP_RUN,REPORT_RUN,POC_REPO,POC_TARGET,POC_HYPOTHESIS,POC_CLASS,FINDING_VERIFIED,SUBMISSION_DRAFT_OUT"
+  echo "exec.default_timeout_ms = 30000"; echo "learning.enabled = true"; echo "experience.enabled = true"
+} > "$VER/.agentis/config"
+ver_pass() {  # $1 = FINDING_VERIFIED value; echoes coordinator:pass_result
+  ( cd "$VER" && env PASS_ENABLED=1 FINDING_VERIFIED="$1" \
+      SCOPE_GATE_RUN="$VER/gate-stub.sh" DEVISE_RUN="$VER/gate-stub.sh" POC_RUN="$VER/poc-stub.sh" \
+      IMPACT_GATE_RUN="$VER/gate-stub.sh" DUP_RUN="$VER/gate-stub.sh" REPORT_RUN="$VER/gate-stub.sh" \
+      POC_REPO=/r POC_TARGET="V.sol:V" POC_HYPOTHESIS="h" POC_CLASS="C16" SUBMISSION_DRAFT_OUT="$VER/draft.md" \
+      agentis go coordinator.ag --enable-exec --enable-messaging --grant-pii ) >"$VER/pass_${1:-none}.log" 2>&1
+  ( cd "$VER" && agentis memo get coordinator:pass_result ) 2>/dev/null
+}
+_rv1="$(ver_pass 1)"
+[ "$_rv1" = "PENDING-HUMAN-REVIEW" ] && ok "devise ADVISORY for a verified finding: proceeds past NO-RESIDUAL to the human-gate (#1806)" || bad "verified finding did NOT proceed past devise (#1806): got '$_rv1'"
+_rv0="$(ver_pass '')"
+[ "$_rv0" = "NO-RESIDUAL" ] && ok "devise HARD gate for an UNverified finding: still halts at NO-RESIDUAL (pre-#1806 byte-identical)" || bad "unverified finding devise gate regressed (#1806): got '$_rv0'"
+
 # --- (d) the never-submit invariant across ALL three runs. ------------------------------------------------
 if grep -RiqE 'SUBMIT|submitting|posted to (immunefi|the platform|bounty)' "$WORK"/*/pass.log; then
   bad "a submit token appeared in a pass log — the pass must never submit"

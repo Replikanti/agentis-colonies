@@ -1304,6 +1304,17 @@ fn impact_proceeds(v: string) -> bool { return v == "substantiated"; }
 //     impact not substantiated -> BLOCKED-IMPACT ; a stub `incomplete` on any of them -> INCOMPLETE.
 //   dup HIGH is ADVISORY (threaded into DUP_RISK, never halts — the human decides). report is TERMINAL:
 //   drafted -> PENDING-HUMAN-REVIEW (the human-gate), anything else -> INCOMPLETE.
+// #1806 — devise is ADVISORY (records + threads its verdict, never HALTS) for an ALREADY-VERIFIED finding:
+// one that arrived at the pass having independently passed the fuzzer/refute gate (verify-findings.sh --gate
+// refute in run-zone-hunt). The devise stage (audit-scout: "is this a residual the auditors MISSED") is a
+// PROACTIVE hunt heuristic — gating a concrete, reproducing, in-scope bug on it (especially with no AUDIT_DIR
+// corpus, where audit-scout defaults to NO-RESIDUAL) wrongly kills real findings before the poc gate ever runs.
+// The poc HARD gate (does the concrete exploit test PASS) remains the real safety: nothing drafts unless the
+// PoC reproduces. Opt-in via FINDING_VERIFIED (run-audit-pass --finding-verified); unset => devise stays a HARD
+// gate, byte-identical to pre-#1806.
+fn devise_advisory() -> bool {
+    return len(getenv("FINDING_VERIFIED")) > 0;
+}
 fn pass_step(state: string, stage: string) -> string {
     if state_field(state, 0) == "1" { return state; }
     let scopeV = state_field(state, 2);
@@ -1346,12 +1357,13 @@ fn pass_step(state: string, stage: string) -> string {
         else { if stage == "impact" { if v == "incomplete" { "INCOMPLETE" } else { "BLOCKED-IMPACT" } }
         else { "INCOMPLETE" } } } };
 
-    // report is TERMINAL (always halts); dup is ADVISORY (never halts); the hard gates halt iff they did not
-    // proceed.
+    // report is TERMINAL (always halts); dup is ADVISORY (never halts); devise is ADVISORY too on an
+    // already-verified finding (#1806); the hard gates halt iff they did not proceed.
     let halted2 =
         if stage == "report" { "1" }
         else { if stage == "dup" { "0" }
-        else { if proceeds { "0" } else { "1" } } };
+        else { if stage == "devise" { if devise_advisory() { "0" } else { if proceeds { "0" } else { "1" } } }
+        else { if proceeds { "0" } else { "1" } } } };
 
     let reason2 =
         if stage == "report" { if v == "drafted" { "PENDING-HUMAN-REVIEW" } else { "INCOMPLETE" } }
