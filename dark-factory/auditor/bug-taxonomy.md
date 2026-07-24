@@ -83,11 +83,11 @@ Format per class: **hits** (protocol shapes where it lives) · **hunt** (the adv
 - **seen:** Hedgehog (Liquity fork — FeesRouter egress bounded-to-fee, clean); KiloLend (Compound — donation window closed, paused).
 
 ## C11 — First-depositor / inflation
-- **hits:** any share-minting vault/market without a dead-shares mitigation.
-- **hunt:** Can an attacker mint 1 wei into an empty market then donate underlying to inflate the exchange rate so later depositors' shares round to 0? Is there a `MINIMUM_LIQUIDITY` / dead-shares / virtual-offset guard? Are new markets seeded at listing?
-- **breaks:** "later depositors get fair shares".
+- **hits:** any share-minting vault/market without a dead-shares mitigation — INCLUDING a strategy/vault that INHERITS its share logic from an external framework (ERC4626, Solmate/OZ ERC4626, Yearn `BaseStrategy`/`TokenizedStrategy`, a v3 vault base) rather than implementing `mint`/`deposit` itself.
+- **hunt:** Can an attacker mint 1 wei into an empty market then donate underlying to inflate the exchange rate so later depositors' shares round to 0? Is there a `MINIMUM_LIQUIDITY` / dead-shares / virtual-offset guard? Are new markets seeded at listing? **When the contract INHERITS its share math from a framework, do NOT assume the framework mitigates** — many ERC4626 bases (incl. Yearn TokenizedStrategy) do NOT add dead shares / a virtual offset, so the DEPLOYER must seed. Check whether THIS contract or its FACTORY/constructor performs an initial seed deposit at deploy time. A framework-inheriting strategy that reaches an EMPTY first state with no initial seed and no inherited virtual-offset is first-depositor-inflatable even though the mint math lives in the inherited base — the finding is the MISSING deploy-time seed, not code in this file.
+- **breaks:** "later depositors get fair shares"; "a fresh vault/strategy is never reachable in an unseeded, mitigation-free state".
 - **sev:** High when a fresh/empty market is reachable.
-- **seen:** a virtual-balance savings vault (mitigates); KiloLend (markets seeded).
+- **seen:** a virtual-balance savings vault (mitigates); KiloLend (markets seeded); corpus-bench yearn GT H-1 (a Yearn v3 strategy inheriting `TokenizedStrategy` whose factory/constructor performs no initial seed → first-depositor inflatable).
 
 ## C12 — Slippage / MEV / fee-vs-protection
 - **hits:** swaps, withdrawals with user `minOut`, anything with a fee deducted around a user check.
