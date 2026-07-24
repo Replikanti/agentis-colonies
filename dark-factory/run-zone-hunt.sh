@@ -588,11 +588,13 @@ process_finding() {
   if [ -n "$PASS_FIXTURE" ]; then
     "$AUDITPASS" --finding-location "$pf_loc" --finding-impact "$pf_expl" \
       --poc-repo "$REPO" --poc-target "$pf_target" --poc-hypothesis "$pf_expl" --poc-class "$pf_class" \
+      --finding-verified \
       --severity-band "$pf_sev" --in-scope "$SCOPE_CONTEXT" \
       --pass-fixture "$PASS_FIXTURE" --backend "$BACKEND" --agentis "$AGENTIS" --out "$pf_out" || return 1
   else
     "$AUDITPASS" --finding-location "$pf_loc" --finding-impact "$pf_expl" \
       --poc-repo "$REPO" --poc-target "$pf_target" --poc-hypothesis "$pf_expl" --poc-class "$pf_class" \
+      --finding-verified \
       --severity-band "$pf_sev" --in-scope "$IN_SCOPE" \
       --live --backend "$BACKEND" --agentis "$AGENTIS" --out "$pf_out" || return 1
   fi
