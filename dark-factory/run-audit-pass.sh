@@ -131,15 +131,14 @@ cp "$COORD_AG" "$RUN/coordinator.ag"
 # name-keyed, never positional).
 STAGES="$(printf 'scope\ndevise\npoc\nimpact\ndup\nreport')"
 
-# The LIVE per-stage runners (operator-gated; behind the coordinator's absent-runner honest-stub). The five
-# .ag gates all route through the ONE generic run-gate-agent.sh (it derives the gate from the coordinator's
-# VERDICT_PREFIX env); PoC reuses run-poc.sh. Only wired on --live so the offline/fixture path never runs them.
-SCOPE_GATE_RUN=""; DEVISE_RUN=""; POC_RUN=""; IMPACT_GATE_RUN=""; DUP_RUN=""; REPORT_RUN=""
+# #1813: on --live the pass runs each gate TOP-LEVEL (below) rather than nesting them inside `agentis go`.
+# Sequential flat-cyborg sessions spawned from WITHIN the coordinator's nested exec degrade — the 2nd+ screen-
+# scrape returns an empty extract (#1812), which killed the whole live pass at the poc stage. run-poc and the
+# .ag gates run reliably as top-level flat-cyborg sessions (exactly how the sibling drivers run them); the
+# coordinator then applies its EXACT gating logic over the collected verdicts as a PASS_FIXTURE (below).
 if [ "$LIVE" -eq 1 ]; then
   [ -f "$GATE_RUN" ] || { echo "run-audit-pass.sh: run-gate-agent.sh not found at $GATE_RUN" >&2; exit 3; }
   [ -f "$POC_RUN_SH" ] || { echo "run-audit-pass.sh: run-poc.sh not found at $POC_RUN_SH" >&2; exit 3; }
-  SCOPE_GATE_RUN="$GATE_RUN"; DEVISE_RUN="$GATE_RUN"; IMPACT_GATE_RUN="$GATE_RUN"
-  DUP_RUN="$GATE_RUN"; REPORT_RUN="$GATE_RUN"; POC_RUN="$POC_RUN_SH"
 fi
 
 ( cd "$RUN" && "$AGENTIS" init >/dev/null 2>&1 )
@@ -162,18 +161,82 @@ fi
 } > "$RUN/.agentis/config"
 
 RUN_LOG="$RUN/pass.log"
-# --grant-pii: finding/PoC/mechanism text + target contract source can carry addresses/identifiers
-# that trip the PII heuristic; input is benign public contract/finding text (#1690).
+
+# ---- #1813: TOP-LEVEL gate orchestration (--live) ---------------------------------------------------------
+# Run each gate as its OWN top-level flat-cyborg session and collect the verdicts into a PASS_FIXTURE; the
+# coordinator then GATES over that fixture (deterministic, no nested flat-cyborg), sidestepping #1812. run-poc
+# runs top-level here (reliable -> FINDING) and its POC-FILE/POC-RUN paths are memo'd for the deliver wire
+# (#1802). The report gate runs top-level to generate the human-review draft (report-writer embeds the PoC).
+POC_FILE_LIVE=""; POC_RUN_LIVE=""
+if [ "$LIVE" -eq 1 ]; then
+  _scopeV=""; _impactV=""; _dupV=""
+  _gate() {  # $1 verdict-prefix, $2 negative-token ("" if none), $3 POC_FILE (report only) -> echoes verdict line
+    _nt=""; [ -n "$2" ] && _nt="--negative-token $2"
+    # shellcheck disable=SC2086
+    env VERDICT_PREFIX="$1" VERDICT_NEGATIVE="$2" GATE_BACKEND="$BACKEND" \
+        FINDING_LOCATION="$FINDING_LOCATION" FINDING_IMPACT="$FINDING_IMPACT" SCOPE_FILE="$SCOPE_FILE" \
+        TARGET_DIR="$TARGET_DIR" IN_SCOPE="$IN_SCOPE" AUDIT_DIR="$AUDIT_DIR" MECHANISM_NOTES="$MECHANISM_NOTES" \
+        FINDING_FILE="$FINDING_FILE" FINDING_ANCHOR="$FINDING_ANCHOR" FINDING_TITLE="$FINDING_TITLE" \
+        SEVERITY_BAND="$SEVERITY_BAND" REVIEWER_FEEDBACK="$REVIEWER_FEEDBACK" \
+        SCOPE_VERDICT="$_scopeV" IMPACT_VERDICT="$_impactV" DUP_RISK="$_dupV" \
+        POC_FILE="$3" SUBMISSION_DRAFT_OUT="$DRAFT_OUT" \
+        bash "$GATE_RUN" --verdict-prefix "$1" --backend "$BACKEND" $_nt 2>>"$RUN/gates.log" || true
+  }
+  _sl="$(_gate SCOPE-GATE '' '')"
+  case "$_sl" in
+    *"SCOPE-GATE|PAYABLE"*)            _scopeV=payable ;;
+    *"SCOPE-GATE|OUT-OF-SCOPE-ASSET"*) _scopeV=out-of-scope-asset ;;
+    *"SCOPE-GATE|EXCLUDED-CARVEOUT"*)  _scopeV=excluded-carveout ;;
+    *"SCOPE-GATE|INELIGIBLE-IMPACT"*)  _scopeV=ineligible-impact ;;
+    *) _scopeV=incomplete ;;
+  esac
+  FIX="scope=$_scopeV"
+  if [ "$_scopeV" = payable ]; then
+    _dl="$(_gate RESIDUAL NO-RESIDUAL '')"
+    case "$_dl" in *"NO-RESIDUAL"*) _dv=no-residual ;; *"RESIDUAL|"*) _dv=residual ;; *) _dv=incomplete ;; esac
+    FIX="$FIX;devise=$_dv"
+    # poc HARD -- TOP-LEVEL run-poc (the reliable path; nested run-poc hit #1812)
+    bash "$POC_RUN_SH" --repo "$POC_REPO" --target "$POC_TARGET" --hypothesis "$POC_HYPOTHESIS" \
+      --class "$POC_CLASS" --backend "$BACKEND" --out "$RUN/poc-live" >"$RUN/poc.log" 2>&1 || true
+    _pl="$(grep '^POC|' "$RUN/poc.log" 2>/dev/null | grep -v '^POC-FILE|' | tail -1 || true)"
+    case "$_pl" in *"|FINDING"*) _pv=finding ;; *"|CLEAN"*) _pv=clean ;; *) _pv=harness-error ;; esac
+    FIX="$FIX;poc=$_pv"
+    POC_FILE_LIVE="$(grep '^POC-FILE|' "$RUN/poc.log" 2>/dev/null | tail -1 | sed 's/^POC-FILE|//' || true)"
+    POC_RUN_LIVE="$(grep '^POC-RUN|' "$RUN/poc.log" 2>/dev/null | tail -1 | sed 's/^POC-RUN|//' || true)"
+    if [ "$_pv" = finding ]; then
+      _il="$(_gate IMPACT-GATE '' "$POC_FILE_LIVE")"
+      case "$_il" in
+        *"IMPACT-GATE|SUBSTANTIATED"*)      _impactV=substantiated ;;
+        *"IMPACT-GATE|SIMULATED-STATE"*)    _impactV=simulated-state ;;
+        *"IMPACT-GATE|PRIVILEGED-TRIGGER"*) _impactV=privileged-trigger ;;
+        *"IMPACT-GATE|NO-PROVABLE-CLAIM"*)  _impactV=no-provable-claim ;;
+        *) _impactV=incomplete ;;
+      esac
+      FIX="$FIX;impact=$_impactV"
+      if [ "$_impactV" = substantiated ]; then
+        _ul="$(_gate DUP-RISK '' "$POC_FILE_LIVE")"
+        case "$_ul" in *"DUP-RISK|LOW"*) _dupV=low ;; *"DUP-RISK|HIGH"*) _dupV=high ;; *"DUP-RISK|MODERATE"*) _dupV=moderate ;; *) _dupV=incomplete ;; esac
+        FIX="$FIX;dup=$_dupV"
+        _rl="$(_gate SUBMISSION-DRAFT '' "$POC_FILE_LIVE")"
+        case "$_rl" in *"SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW"*) _rv=drafted ;; *) _rv=failed ;; esac
+        FIX="$FIX;report=$_rv"
+      fi
+    fi
+  fi
+  PASS_FIXTURE="$FIX"
+  echo "run-audit-pass.sh: live top-level gate verdicts -> $FIX" >&2
+  # #1802: memo the concrete PoC artifact paths so the deliver wire surfaces them (run_poc_live is bypassed on
+  # the top-level path, so run-audit-pass memos them directly into the coordinator store the readback reads).
+  [ -n "$POC_FILE_LIVE" ] && ( cd "$RUN" && "$AGENTIS" memo set coordinator:poc_file "$POC_FILE_LIVE" >/dev/null 2>&1 || true )
+  [ -n "$POC_RUN_LIVE" ]  && ( cd "$RUN" && "$AGENTIS" memo set coordinator:poc_run "$POC_RUN_LIVE" >/dev/null 2>&1 || true )
+fi
+
+# The coordinator applies its gating logic over PASS_FIXTURE (the live-built one above, or the operator's offline
+# --pass-fixture) -- deterministic, no nested flat-cyborg. --grant-pii: benign public contract/finding text (#1690).
 ( cd "$RUN" && env \
     PASS_ENABLED=1 \
     PASS_FIXTURE="$PASS_FIXTURE" \
     STAGES="$STAGES" \
-    SCOPE_GATE_RUN="$SCOPE_GATE_RUN" \
-    DEVISE_RUN="$DEVISE_RUN" \
-    POC_RUN="$POC_RUN" \
-    IMPACT_GATE_RUN="$IMPACT_GATE_RUN" \
-    DUP_RUN="$DUP_RUN" \
-    REPORT_RUN="$REPORT_RUN" \
     FINDING_LOCATION="$FINDING_LOCATION" \
     FINDING_IMPACT="$FINDING_IMPACT" \
     SCOPE_FILE="$SCOPE_FILE" \
@@ -191,7 +254,6 @@ RUN_LOG="$RUN/pass.log"
     SEVERITY_BAND="$SEVERITY_BAND" \
     REVIEWER_FEEDBACK="$REVIEWER_FEEDBACK" \
     SUBMISSION_DRAFT_OUT="$DRAFT_OUT" \
-    PASS_BACKEND="$BACKEND" \
     FINDING_VERIFIED="$FINDING_VERIFIED" \
     "$AGENTIS" go coordinator.ag --enable-exec --enable-messaging --grant-pii ) >"$RUN_LOG" 2>&1 \
   || { echo "run-audit-pass.sh: submission pass failed (see $RUN_LOG)" >&2; exit 1; }
