@@ -600,10 +600,26 @@ process_finding() {
   [ -f "$pf_out/pass-result.txt" ] && pf_result="$(cat "$pf_out/pass-result.txt")"
   if [ "$pf_result" = "PENDING-HUMAN-REVIEW" ] && [ -f "$pf_out/submission-draft.md" ]; then
     echo "run-zone-hunt.sh:   finding '$pf_slug' reached PENDING-HUMAN-REVIEW — staging the draft (human-gated) ..." >&2
+    # #1802 — bundle the runnable concrete PoC the pass generated (run-audit-pass.sh surfaced its paths from the
+    # coordinator memo) so the drop-dir package carries poc/Poc_*.t.sol + REPRODUCE.md + poc-run.txt, not just the
+    # draft text. Empty (no FINDING poc / offline fixture) -> pf_poc_args stays empty and the deliver call is
+    # byte-identical to today.
+    pf_poc_args=()
+    if [ -f "$pf_out/poc-file-path.txt" ]; then
+      pf_pocfile="$(cat "$pf_out/poc-file-path.txt")"
+      if [ -n "$pf_pocfile" ] && [ -f "$pf_pocfile" ]; then
+        pf_poc_args+=(--poc-file "$pf_pocfile" --poc-target "$pf_target" --poc-kind foundry)
+      fi
+    fi
+    if [ -f "$pf_out/poc-run-path.txt" ]; then
+      pf_pocrun="$(cat "$pf_out/poc-run-path.txt")"
+      [ -n "$pf_pocrun" ] && [ -f "$pf_pocrun" ] && pf_poc_args+=(--poc-run "$pf_pocrun")
+    fi
     "$DELIVER" --id "${REPO_NAME}@${COMMIT}:${pf_slug}" --draft-file "$pf_out/submission-draft.md" \
       --target "$REPO_NAME" --target-dir "$REPO" --commit "$COMMIT" --finding-slug "$pf_slug" \
       --title "${pf_class} finding: ${pf_loc}" --location "$pf_loc" --impact "$pf_expl" --severity "$pf_sev" \
-      --scope-verdict payable --impact-verdict substantiated --dup-risk low --drop-dir "$DROP_DIR" || return 1
+      --scope-verdict payable --impact-verdict substantiated --dup-risk low --drop-dir "$DROP_DIR" \
+      ${pf_poc_args[@]+"${pf_poc_args[@]}"} || return 1
     PF_STAGED=1
   else
     echo "run-zone-hunt.sh:   finding '$pf_slug' halted before a draft ($pf_result) — nothing staged (no submission)." >&2

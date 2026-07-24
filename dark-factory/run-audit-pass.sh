@@ -197,6 +197,15 @@ TRACE="$OUT/pass.tsv"
 ( cd "$RUN" && "$AGENTIS" memo get coordinator:pass_trace ) 2>/dev/null > "$TRACE" || true
 RESULT="$( ( cd "$RUN" && "$AGENTIS" memo get coordinator:pass_result ) 2>/dev/null )"
 
+# #1802 — surface the concrete PoC artifact paths the pass generated (run_poc_live memo'd them off run-poc.sh's
+# POC-FILE|/POC-RUN| stdout) so the caller (run-zone-hunt.sh) can bundle the runnable witness into the submission
+# package via deliver-submission.sh --poc-file/--poc-run. Absent on a pass that never reached a FINDING poc stage
+# (offline fixture path, or a CLEAN/HARNESS_ERROR poc) -> the files are simply not written (no PoC to bundle).
+POC_FILE_PATH="$( ( cd "$RUN" && "$AGENTIS" memo get coordinator:poc_file ) 2>/dev/null )"
+POC_RUN_PATH="$( ( cd "$RUN" && "$AGENTIS" memo get coordinator:poc_run ) 2>/dev/null )"
+[ -n "$POC_FILE_PATH" ] && printf '%s' "$POC_FILE_PATH" > "$OUT/poc-file-path.txt"
+[ -n "$POC_RUN_PATH" ] && printf '%s' "$POC_RUN_PATH" > "$OUT/poc-run-path.txt"
+
 echo "run-audit-pass.sh: pass trace ->" >&2
 while IFS= read -r row; do [ -n "$row" ] && echo "run-audit-pass.sh:   $row" >&2; done < "$TRACE"
 echo "run-audit-pass.sh: pass RESULT: $RESULT" >&2
