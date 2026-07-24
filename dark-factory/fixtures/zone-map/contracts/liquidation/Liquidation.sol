@@ -166,4 +166,15 @@ contract Liquidation {
         require(msg.sender == owner, "not owner");
         oracle = IPriceOracle(oracle_);
     }
+
+    // Valuation / conversion path (#1799 fixture): declared LAST, AFTER the admin setters AND the
+    // value-moving functions above, so a pure declaration-order [:8] slice truncates it out — reproducing
+    // notional's AbstractSingleSidedLP.convertToAssets shape (the fb=2 H-4 mispricing surface that never
+    // reached scope.tsv until map-zones.sh reserved a slot for the value-READING path). The (d3) assertion
+    // in demo-map-zones.sh proves this survives the slice; without the VALUATION_KEYWORDS reservation it does
+    // not. Generic, public-safe — no real math soundness, exactly like the rest of this fixture.
+    function convertToAssets(uint256 shares) external view returns (uint256 assets) {
+        uint256 price = oracle.latestPrice();
+        assets = (shares * price) / PRECISION;
+    }
 }
