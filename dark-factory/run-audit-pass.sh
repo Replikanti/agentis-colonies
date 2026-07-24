@@ -148,7 +148,7 @@ fi
   echo "trace.level = normal"
   # getenv reads the SANITIZED env — EVERY pass var the coordinator reads must be on this allowlist or it is
   # silently empty. Covers the pass gate flags, the finding facts, and every *_RUN live-runner path.
-  echo "exec.env_passthrough = PASS_ENABLED,PASS_FIXTURE,STAGES,SCOPE_GATE_RUN,DEVISE_RUN,POC_RUN,IMPACT_GATE_RUN,DUP_RUN,REPORT_RUN,FINDING_LOCATION,FINDING_IMPACT,SCOPE_FILE,TARGET_DIR,IN_SCOPE,AUDIT_DIR,MECHANISM_NOTES,POC_FILE,POC_REPO,POC_TARGET,POC_HYPOTHESIS,POC_CLASS,FINDING_FILE,FINDING_ANCHOR,FINDING_TITLE,SEVERITY_BAND,SCOPE_VERDICT,IMPACT_VERDICT,DUP_RISK,REVIEWER_FEEDBACK,SUBMISSION_DRAFT_OUT"
+  echo "exec.env_passthrough = PASS_ENABLED,PASS_FIXTURE,STAGES,SCOPE_GATE_RUN,DEVISE_RUN,POC_RUN,IMPACT_GATE_RUN,DUP_RUN,REPORT_RUN,FINDING_LOCATION,FINDING_IMPACT,SCOPE_FILE,TARGET_DIR,IN_SCOPE,AUDIT_DIR,MECHANISM_NOTES,POC_FILE,POC_REPO,POC_TARGET,POC_HYPOTHESIS,POC_CLASS,FINDING_FILE,FINDING_ANCHOR,FINDING_TITLE,SEVERITY_BAND,SCOPE_VERDICT,IMPACT_VERDICT,DUP_RISK,REVIEWER_FEEDBACK,SUBMISSION_DRAFT_OUT,PASS_BACKEND"
   # A live gate run (agentis go + reasoning) far exceeds the 30s default; the offline fixture path never execs.
   if [ "$LIVE" -eq 1 ]; then echo "exec.default_timeout_ms = 600000"; else echo "exec.default_timeout_ms = 30000"; fi
   echo "learning.enabled = true"
@@ -185,6 +185,7 @@ RUN_LOG="$RUN/pass.log"
     SEVERITY_BAND="$SEVERITY_BAND" \
     REVIEWER_FEEDBACK="$REVIEWER_FEEDBACK" \
     SUBMISSION_DRAFT_OUT="$DRAFT_OUT" \
+    PASS_BACKEND="$BACKEND" \
     "$AGENTIS" go coordinator.ag --enable-exec --enable-messaging --grant-pii ) >"$RUN_LOG" 2>&1 \
   || { echo "run-audit-pass.sh: submission pass failed (see $RUN_LOG)" >&2; exit 1; }
 

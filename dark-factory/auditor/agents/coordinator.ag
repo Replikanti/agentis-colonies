@@ -1193,6 +1193,14 @@ fn marker_value(blob: string, marker: string) -> string {
     if nl < 0 { return rest; }
     return substring(rest, 0, nl);
 }
+// #1804 — the LLM backend the live pass runs its gate/poc runners on, threaded from run-audit-pass.sh's
+// --backend (PASS_BACKEND). Empty => "" => the runner keeps its own default (run-poc.sh defaults flat-cyborg;
+// run-gate-agent.sh defaults mock), so a caller that never set PASS_BACKEND is byte-identical to pre-#1804.
+fn pass_backend_flag() -> string {
+    let b = getenv("PASS_BACKEND");
+    if len(b) == 0 { return ""; }
+    return " --backend " + shell_escape(b);
+}
 fn run_poc_live(runner: string) -> string {
     // colony-lint: safe-exec-concat
     let out = exec sh "set +e; bash " + shell_escape(runner)
@@ -1200,6 +1208,7 @@ fn run_poc_live(runner: string) -> string {
             + " --target " + shell_escape(getenv("POC_TARGET"))
             + " --hypothesis " + shell_escape(getenv("POC_HYPOTHESIS"))
             + " --class " + shell_escape(getenv("POC_CLASS"))
+            + pass_backend_flag()
             + " 2>&1";
     // #1802 — persist the concrete PoC artifact paths run-poc.sh printed (`POC-FILE|`/`POC-RUN|`, printed on a
     // FINDING only) so (a) the report stage embeds the PoC excerpt (report_poc_file() recalls it below) and
@@ -1254,7 +1263,9 @@ fn run_stage_live(stage: string, runner: string) -> string {
             + " VERDICT_PREFIX=" + shell_escape(stage_prefix(stage))
             + " VERDICT_NEGATIVE=" + shell_escape(stage_negative_token(stage))
             + " REVIEWER_FEEDBACK=" + shell_escape(getenv("REVIEWER_FEEDBACK"))
-            + " SUBMISSION_DRAFT_OUT=" + shell_escape(getenv("SUBMISSION_DRAFT_OUT"));
+            + " SUBMISSION_DRAFT_OUT=" + shell_escape(getenv("SUBMISSION_DRAFT_OUT"))
+            // #1804 — select the .ag gate's backend (run-gate-agent.sh reads GATE_BACKEND); "" keeps its mock default.
+            + " GATE_BACKEND=" + shell_escape(getenv("PASS_BACKEND"));
     // colony-lint: safe-exec-concat
     // #1507 dash-safety: invoke via `bash`, never `sh` — the runners (run-gate-agent.sh, run-poc.sh) are
     // bash-shebang scripts; explicit `sh <script>` ignores the shebang and runs under dash on CI, which

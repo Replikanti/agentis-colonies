@@ -37,7 +37,10 @@ AGENT="${GATE_AGENT:-}"
 PREFIX="${VERDICT_PREFIX:-}"
 NEGATIVE_TOKEN="${VERDICT_NEGATIVE:-}"
 CLASSIFY_LOG=""
-BACKEND="mock"
+# #1804: default the backend from the GATE_BACKEND env so the coordinator's live submission pass can select
+# flat-cyborg/claude for the .ag gates it exec-shs (run_stage_live sets GATE_BACKEND); an explicit --backend
+# still wins, and the offline/CI default stays `mock` (GATE_BACKEND unset).
+BACKEND="${GATE_BACKEND:-mock}"
 AGENTIS="agentis"
 
 need() { [ "$1" -ge 2 ] || { echo "run-gate-agent.sh: missing value for the preceding flag" >&2; exit 2; }; }
