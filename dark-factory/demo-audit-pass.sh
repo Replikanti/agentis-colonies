@@ -258,6 +258,8 @@ cat > "$LV/poc-stub.sh" <<STUB
 #!/usr/bin/env bash
 echo "\$@" >> "$CAP"
 echo "POC|stub-target|FINDING"
+echo "POC-FILE|/stub/poc-out/run/repo/test/Poc_stub.t.sol"
+echo "POC-RUN|/stub/poc-out/poc-run.txt"
 STUB
 chmod +x "$LV/gate-stub.sh" "$LV/poc-stub.sh"
 cp "$COORD" "$LV/coordinator.ag"
@@ -288,6 +290,16 @@ if trace_has_row "$LV" 'stage=poc	verdict=finding'; then
   ok "poc_class parsed the POC|...|FINDING line -> stage=poc verdict=finding"
 else
   bad "poc stage did not normalize to verdict=finding (poc_class/POC| parsing)"; pass_trace "$LV" | sed 's/^/        | /'
+fi
+# #1802 — run_poc_live must ALSO lift run-poc.sh's POC-FILE|/POC-RUN| artifact-path lines off stdout and memo
+# them (coordinator:poc_file / coordinator:poc_run), so run-audit-pass.sh can surface them and run-zone-hunt.sh
+# can bundle the runnable PoC into the submission package (deliver-submission.sh --poc-file/--poc-run).
+_pf1802="$( ( cd "$LV" && agentis memo get coordinator:poc_file ) 2>/dev/null )"
+_pr1802="$( ( cd "$LV" && agentis memo get coordinator:poc_run ) 2>/dev/null )"
+if [ "$_pf1802" = "/stub/poc-out/run/repo/test/Poc_stub.t.sol" ] && [ "$_pr1802" = "/stub/poc-out/poc-run.txt" ]; then
+  ok "run_poc_live memo'd the concrete PoC artifact paths for the deliver wire (coordinator:poc_file/poc_run) (#1802)"
+else
+  bad "run_poc_live did not memo the PoC artifact paths (#1802): poc_file='$_pf1802' poc_run='$_pr1802'"
 fi
 
 # --- (d) the never-submit invariant across ALL three runs. ------------------------------------------------

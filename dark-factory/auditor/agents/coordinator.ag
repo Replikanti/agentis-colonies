@@ -1180,6 +1180,19 @@ fn stage_runner(stage: string) -> string {
 // verdict line is the `POC|<target>|<verdict>` marker run-poc.sh prints on stdout (#1535); poc_class() parses
 // the `|FINDING`/`|CLEAN`/`|HARNESS_ERROR` tail. Mirrors run_symbolic_live's exec-sh shape; each value
 // shell_escape()d. Invoked via `bash` (never `sh` — run-poc.sh is bash-shebang; the #1507 dash anti-pattern).
+// #1802 — extract the value after "<marker>|" up to end-of-line from a multi-line blob; "" if the marker is
+// absent. Used to lift run-poc.sh's `POC-FILE|<abs>` / `POC-RUN|<abs>` artifact-path lines off its stdout so the
+// runnable concrete PoC (previously read only for its verdict token) can be threaded into the submission
+// package. Native string ops (index_of/substring) — no embedded interpreter.
+fn marker_value(blob: string, marker: string) -> string {
+    let key = marker + "|";
+    let p = index_of(blob, key);
+    if p < 0 { return ""; }
+    let rest = substring(blob, p + len(key), len(blob));
+    let nl = index_of(rest, "\n");
+    if nl < 0 { return rest; }
+    return substring(rest, 0, nl);
+}
 fn run_poc_live(runner: string) -> string {
     // colony-lint: safe-exec-concat
     let out = exec sh "set +e; bash " + shell_escape(runner)
@@ -1188,7 +1201,24 @@ fn run_poc_live(runner: string) -> string {
             + " --hypothesis " + shell_escape(getenv("POC_HYPOTHESIS"))
             + " --class " + shell_escape(getenv("POC_CLASS"))
             + " 2>&1";
+    // #1802 — persist the concrete PoC artifact paths run-poc.sh printed (`POC-FILE|`/`POC-RUN|`, printed on a
+    // FINDING only) so (a) the report stage embeds the PoC excerpt (report_poc_file() recalls it below) and
+    // (b) the caller (run-audit-pass.sh via `agentis memo get`) can bundle the runnable witness into the
+    // submission package. Previously only the verdict token survived. Empty (CLEAN/HARNESS_ERROR print no path)
+    // => no memo => downstream byte-identical.
+    let pocFile = marker_value(out, "POC-FILE");
+    let pocRun = marker_value(out, "POC-RUN");
+    if len(pocFile) > 0 { memo_write("coordinator:poc_file", pocFile); }
+    if len(pocRun) > 0 { memo_write("coordinator:poc_run", pocRun); }
     return normalize_class("poc", out);
+}
+// #1802 — the PoC source the report stage embeds: prefer the concrete file run_poc_live just memo'd (the pass
+// generates it mid-run, so `agentis go`'s sanitized getenv can't carry it), else the operator-supplied POC_FILE
+// env. Empty => today's behaviour (report-writer.ag renders with no excerpt).
+fn report_poc_file() -> string {
+    let m = recall_latest("coordinator:poc_file");
+    if len(m) > 0 { return m; }
+    return getenv("POC_FILE");
 }
 
 // Run the stage's LIVE runner and normalize its verdict line — mirrors run_symbolic_live's exec-sh muscle.
@@ -1213,7 +1243,7 @@ fn run_stage_live(stage: string, runner: string) -> string {
             + " IN_SCOPE=" + shell_escape(getenv("IN_SCOPE"))
             + " AUDIT_DIR=" + shell_escape(getenv("AUDIT_DIR"))
             + " MECHANISM_NOTES=" + shell_escape(getenv("MECHANISM_NOTES"))
-            + " POC_FILE=" + shell_escape(getenv("POC_FILE"))
+            + " POC_FILE=" + shell_escape(report_poc_file())
             + " FINDING_FILE=" + shell_escape(getenv("FINDING_FILE"))
             + " FINDING_ANCHOR=" + shell_escape(getenv("FINDING_ANCHOR"))
             + " FINDING_TITLE=" + shell_escape(getenv("FINDING_TITLE"))
