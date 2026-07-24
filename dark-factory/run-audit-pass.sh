@@ -152,7 +152,11 @@ fi
   # silently empty. Covers the pass gate flags, the finding facts, and every *_RUN live-runner path.
   echo "exec.env_passthrough = PASS_ENABLED,PASS_FIXTURE,STAGES,SCOPE_GATE_RUN,DEVISE_RUN,POC_RUN,IMPACT_GATE_RUN,DUP_RUN,REPORT_RUN,FINDING_LOCATION,FINDING_IMPACT,SCOPE_FILE,TARGET_DIR,IN_SCOPE,AUDIT_DIR,MECHANISM_NOTES,POC_FILE,POC_REPO,POC_TARGET,POC_HYPOTHESIS,POC_CLASS,FINDING_FILE,FINDING_ANCHOR,FINDING_TITLE,SEVERITY_BAND,SCOPE_VERDICT,IMPACT_VERDICT,DUP_RISK,REVIEWER_FEEDBACK,SUBMISSION_DRAFT_OUT,PASS_BACKEND,FINDING_VERIFIED"
   # A live gate run (agentis go + reasoning) far exceeds the 30s default; the offline fixture path never execs.
-  if [ "$LIVE" -eq 1 ]; then echo "exec.default_timeout_ms = 600000"; else echo "exec.default_timeout_ms = 30000"; fi
+  # #1808: this ceiling must cover the POC stage, whose run_poc_live exec-shs run-poc.sh — a FULL generate +
+  # bounded compile-repair (up to 2 rounds @ 600s LLM each) + forge build/test cycle that legitimately runs many
+  # minutes; the 600000ms ceiling killed it on the first LLM call (partial 499-byte stdout). 30min covers the
+  # worst-case run-poc budget; the .ag reasoning gates finish in well under it (a ceiling, not a wait).
+  if [ "$LIVE" -eq 1 ]; then echo "exec.default_timeout_ms = 1800000"; else echo "exec.default_timeout_ms = 30000"; fi
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"
