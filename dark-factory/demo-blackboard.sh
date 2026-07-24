@@ -148,6 +148,13 @@ grep -q '^BLACKBOARD-FOCUS|liquidation|C2|' "$OUT"/run/hunt_liquidation_C2.log 2
   || { echo "FAIL: a hunter cell crashed on an illegal memo key (blackboard per-subsystem key regression)" >&2; FAIL=1; }
 grep -q 'Inter-agent coordination (blackboard' "$REPORT" 2>/dev/null \
   || { echo "FAIL: report is missing the coordination section" >&2; FAIL=1; }
+# #1799 diversity guard: a same-subsystem sibling lead must NOT redirect a cell off its own class. The
+# corroborate paragraph must steer the cell to hunt its assigned class across ALL scoped functions FIRST
+# (secondary corroboration), and must NOT carry the old pile-on wording that collapsed multi-class coverage.
+grep -q 'FIRST hunt YOUR assigned class across ALL your scoped functions' "$HERE/auditor/agents/hunter.ag" \
+  || { echo "FAIL: hunter.ag corroborate_para lost the #1799 own-class-first diversity instruction" >&2; FAIL=1; }
+! grep -q 'check for the same root-cause class on adjacent functions' "$HERE/auditor/agents/hunter.ag" \
+  || { echo "FAIL: hunter.ag still carries the pre-#1799 same-class pile-on wording (redirects cells off their class)" >&2; FAIL=1; }
 
 if [ "$FAIL" -eq 0 ]; then
   echo "PASS: cell 1 (oracle/C2) posted a lead; cell 2 (liquidation/C2) READ it from the blackboard and"

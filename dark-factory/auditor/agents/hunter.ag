@@ -105,10 +105,19 @@ fn board_bullets(board: string, subsystem: string, want_same: bool) -> string {
 }
 
 // The "corroborate THIS subsystem" paragraph (empty when no same-subsystem lead exists).
+// #1799: a sibling lead is a same-SUBSYSTEM lead but almost always a DIFFERENT class (map-zones emits one
+// subsystem x many classes, so every later cell of that subsystem lands here). The old wording ("check for
+// the same root-cause class on adjacent functions") redirected each class-cell onto the sibling's class +
+// function — so on a real multi-class hunt every cell CONVERGED on the first-posted lead and never hunted
+// its OWN assigned class, collapsing coverage (measured live on notional: C1/C6/C4 all piled onto the C15
+// getWithdrawRequestValue lead and the run named no other function). Corroboration stays valuable but MUST
+// be secondary: hunt your assigned class across ALL scoped functions first — especially the untouched ones.
 fn corroborate_para(same: string) -> string {
     if len(same) == 0 { return ""; }
-    return "A sibling cell already surfaced a lead in THIS subsystem — CORROBORATE or refute it, and "
-         + "check for the same root-cause class on adjacent functions:\n" + same + "\n";
+    return "A sibling cell already surfaced a lead in THIS subsystem. Treat it as a PRIOR, but do NOT narrow "
+         + "your hunt onto it: FIRST hunt YOUR assigned class across ALL your scoped functions — especially "
+         + "the ones NO sibling has flagged yet — THEN, secondarily, corroborate or refute the sibling lead:\n"
+         + same + "\n";
 }
 
 // The "pivot toward an OTHER-subsystem lead" paragraph (empty when no other-subsystem lead exists).
