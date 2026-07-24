@@ -119,6 +119,15 @@ fn target_name(label: string) -> string {
     return substring(label, c + 1, len(label));
 }
 let targetName = target_name(targetFn);
+// #1800 — the FILE part of the target label (before the first `:`; the whole label when there is no `:Name`),
+// e.g. `src/Strategy.sol` or a bare `Strategy.sol`. Its basename is what the in-repo PoC imports and what arms
+// the #1471 gate. Exact port of invariant-prover.ag's target_file (#1755 M6 / #1776).
+fn target_file(label: string) -> string {
+    let c = index_of(label, ":");
+    if c < 0 { return label; }
+    return substring(label, 0, c);
+}
+let targetFile = target_file(targetFn);
 fn deploy_name(name: string) -> string {
     if len(name) == 0 { return "<Target>"; }
     return name;
@@ -130,7 +139,26 @@ fn rel_import_path(out: string, src: string) -> string {
     // colony-lint: safe-exec-concat
     return exec sh "realpath --relative-to \"$(dirname " + shell_escape(out) + ")\" " + shell_escape(src) + " 2>/dev/null | tr -d '\\n' || true";
 }
-let relImport = rel_import_path(pocOut, codePath);
+// #1800 — resolve the target's REAL in-repo source ABSOLUTE path inside the staged repo, so the generated PoC
+// imports the COMPILABLE `../src/<Target>.sol` (its own `./interfaces/`, `./libraries/` siblings intact) instead
+// of the flat staged copy `$RUN/target-code.sol`, whose relative imports dangle (`Source "./interfaces/..." not
+// found`) -> HARNESS_ERROR on EVERY sibling-import target. Exact port of invariant-prover.ag's resolve_in_repo_src
+// (#1776/#1765). Tries `<repo>/<file>` then `<repo>/src/<file>`; prints the first that exists, else "".
+fn resolve_in_repo_src(repo: string, file: string) -> string {
+    if len(repo) == 0 { return ""; }
+    if len(file) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "if test -f " + shell_escape(repo) + "/" + shell_escape(file) + " ; then printf '%s' " + shell_escape(repo) + "/" + shell_escape(file) + " ; elif test -f " + shell_escape(repo) + "/src/" + shell_escape(file) + " ; then printf '%s' " + shell_escape(repo) + "/src/" + shell_escape(file) + " ; fi";
+}
+// The compilable in-repo source when it resolves, else the flat staged CODE_PATH (out-of-repo `--code` — the
+// fresh-deploy path is then byte-identical to pre-#1800). Both the model's import directive AND the #1471 gate's
+// --require-import key off THIS path, so they never contradict (the #1755 M6 reconciliation, ported).
+fn import_src(inRepo: string, flat: string) -> string {
+    if len(inRepo) > 0 { return inRepo; }
+    return flat;
+}
+let importSrc = import_src(resolve_in_repo_src(pocRepo, targetFile), codePath);
+let relImport = rel_import_path(pocOut, importSrc);
 // The reference-directive line the model reads. hardhat: name the artifact for getContractFactory / getContractAt
 // (the anti-fabrication gate keys on that same name). foundry: the realpath-relative `import {Name} from "..."`.
 // Empty when there is no target source to reference.
@@ -259,7 +287,7 @@ fn link_args(cPath: string, tName: string) -> string {
     if len(cPath) == 0 { return ""; }
     return " --require-import " + shell_escape(cPath) + opt_flag("--require-contract", tName);
 }
-let linkArgs = link_args(codePath, targetName);
+let linkArgs = link_args(importSrc, targetName);
 
 // Write the generated/fixture test to POC_OUT. The test content is UNTRUSTED (an LLM completion or an operator
 // fixture) so it MUST go through shell_escape(), never a heredoc. Wrapped in a fn so the repair loop reuses the
