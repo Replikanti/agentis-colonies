@@ -1,0 +1,29 @@
+{
+  "repo": "synthetic-fixture",
+  "gate": "mech-judge-selftest",
+  "verified": [
+    {
+      "location": "src/StrategyFactory.sol:newStrategy:41",
+      "file": "src/StrategyFactory.sol",
+      "class": "C16",
+      "exploit": "the factory deploys a strategy with an empty pool, so the first depositor seeds one wei, donates assets straight to the contract and makes the next honest deposit mint zero shares",
+      "poc_sketch": "deploy via newStrategy -> deposit 1 wei -> transfer assets in -> victim deposits -> redeem the pool"
+    },
+    {
+      "location": "src/Strategy.sol:estimatedTotalAssets:212",
+      "file": "src/Strategy.sol",
+      "class": "C2",
+      "exploit": "the accounting getter reports a total that still ignores an unreported loss, so depositing just before the loss is booked buys shares at a stale price and dilutes existing holders",
+      "poc_sketch": "observe the pending loss -> deposit -> wait for the loss to be booked -> withdraw at the corrected price"
+    },
+    {
+      "location": "src/Leverager.sol:checkPoolActivity:96",
+      "file": "src/Leverager.sol",
+      "class": "C19",
+      "exploit": "the tick-range width is narrowed into a uint16 after a wider multiplication, so a wide range wraps to a tiny value and every later position is opened against the corrupted range, reverting all new deposits",
+      "poc_sketch": "open a position with a range wide enough to overflow the uint16 width -> every subsequent deposit reverts"
+    }
+  ],
+  "errors": [],
+  "totals": {"verified": 3}
+}

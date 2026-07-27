@@ -21,6 +21,8 @@
 # Usage: run-corpus-bench.sh [--self-test] [--fetch] [--gt] [--hunt] [--score] [--live]
 #                            [--id <id>]... [--work <dir>] [--corpus <file>] [--backend <mock|flat-cyborg|claude>]
 #                            [--jobs <N>] [--min-overlap <N>] [--agentis <bin>] [--json] [-h]
+#                            [--judge <off|cache|cmd>] [--judge-cmd <path>] [--judge-cache <file.jsonl>]
+#                            [--judge-log <file.jsonl>] [--judge-batch <N>] [--judge-min-confidence <N>]
 #   (no action flag)  same as --self-test.
 #   --self-test       Deterministic, CI-safe, no network/LLM: extract-gt.sh over fixtures/sample-judging-readme.md
 #                     must byte-match fixtures/expected-truth.tsv. This is the safety property that gates CI,
@@ -40,6 +42,14 @@
 #                     parseable function); location-resolvable leads are threshold-independent. Default 2.
 #   --agentis <bin>   agentis binary (default: `agentis` on PATH).
 #   --json            Emit the aggregate scorecard as one JSON object on stdout (human log still goes to stderr).
+#   --judge <mode>    #1829 SEMANTIC MECHANISM JUDGE for the --score stage: off (DEFAULT — the frozen #1697
+#                     location-first token matcher, byte-identical output) | cache (replay recorded decisions,
+#                     deterministic, no LLM) | cmd (judge live through --judge-cmd, default mech-judge.sh,
+#                     which drives the flat-cyborg wrapper). In judge mode there is NO token fallback: an
+#                     unparseable reply is a JUDGE-ERROR and the scorer aborts above its max error rate.
+#   --judge-cmd <p> / --judge-cache <f> / --judge-log <f> / --judge-batch <N> / --judge-min-confidence <N>
+#                     Forwarded verbatim to score-match.py (see its header). A judged number is reproducible
+#                     only via its recorded cache/log — archive them next to the scorecard.
 # Exit: 0 = requested stage(s) completed (a low/zero recall is DATA, not a failure — same posture as the
 #       capability bench's live stage) ; 1 = --self-test regressed ; 2 = bad args ; 3 = missing prerequisite.
 set -u
@@ -54,6 +64,7 @@ CORPUS="$HERE/corpus.tsv"
 
 WORK="$PWD/corpus-bench-work"
 IDS="" ; BACKEND="flat-cyborg" ; JOBS="1" ; MINOV="2" ; AGENTIS="agentis" ; JSON=0
+JUDGE="off" ; JUDGE_CMD="" ; JUDGE_CACHE="" ; JUDGE_LOG="" ; JUDGE_BATCH="" ; JUDGE_MINCONF=""
 DO_SELFTEST=0 ; DO_FETCH=0 ; DO_GT=0 ; DO_HUNT=0 ; DO_SCORE=0 ; ANY_ACTION=0
 declare -a ID_ARGS=()
 
@@ -73,12 +84,29 @@ while [ $# -gt 0 ]; do case "$1" in
   --min-overlap) nv "$#" "$1"; MINOV="$2"; shift 2;;
   --agentis)     nv "$#" "$1"; AGENTIS="$2"; shift 2;;
   --json)        JSON=1; shift;;
+  --judge)               nv "$#" "$1"; JUDGE="$2"; shift 2;;
+  --judge-cmd)           nv "$#" "$1"; JUDGE_CMD="$2"; shift 2;;
+  --judge-cache)         nv "$#" "$1"; JUDGE_CACHE="$2"; shift 2;;
+  --judge-log)           nv "$#" "$1"; JUDGE_LOG="$2"; shift 2;;
+  --judge-batch)         nv "$#" "$1"; JUDGE_BATCH="$2"; shift 2;;
+  --judge-min-confidence) nv "$#" "$1"; JUDGE_MINCONF="$2"; shift 2;;
   -h|--help)     awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0;;
   *) echo "run-corpus-bench.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
 [ "$ANY_ACTION" -eq 1 ] || DO_SELFTEST=1
 
 say() { echo "run-corpus-bench.sh: $*" >&2; }
+
+# #1829: the judge flags forwarded to score-match.py. The mode is always passed explicitly (never an empty
+# array expansion) and defaults to `off`, which selects the frozen #1697 matcher — byte-identical output.
+declare -a JUDGE_ARGS=(--judge "$JUDGE")
+if [ "$JUDGE" != "off" ]; then
+  [ -n "$JUDGE_CMD" ]     && JUDGE_ARGS+=(--judge-cmd "$JUDGE_CMD")
+  [ -n "$JUDGE_CACHE" ]   && JUDGE_ARGS+=(--judge-cache "$JUDGE_CACHE")
+  [ -n "$JUDGE_LOG" ]     && JUDGE_ARGS+=(--judge-log "$JUDGE_LOG")
+  [ -n "$JUDGE_BATCH" ]   && JUDGE_ARGS+=(--judge-batch "$JUDGE_BATCH")
+  [ -n "$JUDGE_MINCONF" ] && JUDGE_ARGS+=(--judge-min-confidence "$JUDGE_MINCONF")
+fi
 
 # ---- --self-test (default; deterministic, no network/LLM) ------------------------------------------------
 if [ "$DO_SELFTEST" -eq 1 ]; then
@@ -157,6 +185,7 @@ G_TOTAL=0 ; G_HITS=0
 G_H_TOTAL=0 ; G_H_HITS=0 ; G_M_TOTAL=0 ; G_M_HITS=0
 G_RARE_TOTAL=0 ; G_RARE_HITS=0 ; G_MID_TOTAL=0 ; G_MID_HITS=0 ; G_CONS_TOTAL=0 ; G_CONS_HITS=0
 G_VERIFIED=0 ; G_MATCHED_LEADS=0 ; G_UNMATCHED_LEADS=0
+G_JUDGE_CALLS=0 ; G_JUDGE_ERRORS=0
 
 if [ "$DO_SCORE" -eq 1 ]; then
   command -v python3 >/dev/null 2>&1 || { echo "run-corpus-bench.sh: python3 not installed (scoring needs it)" >&2; exit 3; }
@@ -171,13 +200,20 @@ if [ "$DO_SCORE" -eq 1 ]; then
 
     # LOCATION-first bench matcher (#1697): score-match.py emits one `<sev_id>\tHIT|MISS` line per truth row
     # plus a `LEADS\t<verified_n>\t<matched_leads>` trailer. --min-overlap only governs its fallback.
-    SCORE_OUT="$(python3 "$SCOREMATCH" "$truth" "$verified_json" --min-overlap "$MINOV")" \
-      || { say "SCORE: [$id] score-match.py failed; skipping"; continue; }
+    # Under --judge (#1829) the same call instead applies the semantic mechanism judge and adds ONE extra
+    # `JUDGE\t<calls>\t<errors>` trailer; exit 4 there means the judge degraded (cache miss / too many
+    # JUDGE-ERRORs) and the contest is deliberately left unscored rather than reported as a low recall.
+    SCORE_OUT="$(python3 "$SCOREMATCH" "$truth" "$verified_json" --min-overlap "$MINOV" "${JUDGE_ARGS[@]}")" \
+      && score_rc=0 || score_rc=$?
+    if [ "$score_rc" -ne 0 ]; then
+      say "SCORE: [$id] score-match.py failed (exit $score_rc); skipping"; continue
+    fi
 
     declare -A HITMAP=()
-    verified_n=0 ; matched_leads=0
+    verified_n=0 ; matched_leads=0 ; judge_calls=0 ; judge_errors=0
     while IFS=$'\t' read -r f1 f2 f3; do
       if [ "$f1" = "LEADS" ]; then verified_n="$f2"; matched_leads="$f3"; continue; fi
+      if [ "$f1" = "JUDGE" ]; then judge_calls="$f2"; judge_errors="$f3"; continue; fi
       [ -n "$f1" ] && HITMAP["$f1"]="$f2"
     done <<SCORE_EOF
 $SCORE_OUT
@@ -205,8 +241,10 @@ SCORE_EOF
     unmatched_leads=$((verified_n - matched_leads))
 
     say "  [$id] recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total, verified-leads $verified_n (matched $matched_leads, unmatched $unmatched_leads — needs manual triage, NOT auto-claimed novel)"
+    [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s)"
 
-    CONTEST_JSON+=("{\"id\":\"$id\",\"gt_total\":$c_total,\"hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"verified_leads\":$verified_n,\"matched_leads\":$matched_leads,\"unmatched_leads\":$unmatched_leads}")
+    CONTEST_JSON+=("{\"id\":\"$id\",\"gt_total\":$c_total,\"hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"verified_leads\":$verified_n,\"matched_leads\":$matched_leads,\"unmatched_leads\":$unmatched_leads,\"judge\":{\"mode\":\"$JUDGE\",\"calls\":$judge_calls,\"errors\":$judge_errors}}")
+    G_JUDGE_CALLS=$((G_JUDGE_CALLS+judge_calls)); G_JUDGE_ERRORS=$((G_JUDGE_ERRORS+judge_errors))
 
     G_TOTAL=$((G_TOTAL+c_total)); G_HITS=$((G_HITS+c_hits))
     G_H_TOTAL=$((G_H_TOTAL+c_h_total)); G_H_HITS=$((G_H_HITS+c_h_hits))
@@ -223,13 +261,16 @@ SCORE_EOF
   say "by severity   : High $G_H_HITS/$G_H_TOTAL, Medium $G_M_HITS/$G_M_TOTAL"
   say "by rarity     : rare(1-2) $G_RARE_HITS/$G_RARE_TOTAL, mid(3-8) $G_MID_HITS/$G_MID_TOTAL, consensus(9+) $G_CONS_HITS/$G_CONS_TOTAL"
   say "verified leads: $G_VERIFIED total, $G_MATCHED_LEADS matched a truth row, $G_UNMATCHED_LEADS unmatched (manual triage required before any novelty claim)"
+  if [ "$JUDGE" != "off" ]; then
+    say "scoring mode  : SEMANTIC MECHANISM JUDGE (--judge $JUDGE, #1829) — $G_JUDGE_CALLS judging calls, $G_JUDGE_ERRORS JUDGE-ERROR(s). Archive the --judge-log next to this number: it is reproducible offline only via --judge cache."
+  fi
 
   if [ "$JSON" -eq 1 ]; then
     joined="$(IFS=,; echo "${CONTEST_JSON[*]:-}")"
-    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"verified_leads":%d,"matched_leads":%d,"unmatched_leads":%d}}\n' \
+    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"verified_leads":%d,"matched_leads":%d,"unmatched_leads":%d,"judge":{"mode":"%s","calls":%d,"errors":%d}}}\n' \
       "$joined" "$G_TOTAL" "$G_HITS" "$G_H_TOTAL" "$G_H_HITS" "$G_M_TOTAL" "$G_M_HITS" \
       "$G_RARE_TOTAL" "$G_RARE_HITS" "$G_MID_TOTAL" "$G_MID_HITS" "$G_CONS_TOTAL" "$G_CONS_HITS" \
-      "$G_VERIFIED" "$G_MATCHED_LEADS" "$G_UNMATCHED_LEADS"
+      "$G_VERIFIED" "$G_MATCHED_LEADS" "$G_UNMATCHED_LEADS" "$JUDGE" "$G_JUDGE_CALLS" "$G_JUDGE_ERRORS"
   fi
 fi
 

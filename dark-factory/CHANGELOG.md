@@ -15,6 +15,39 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **SEMANTIC MECHANISM JUDGE as an opt-in corpus-bench scoring mode (default OFF)** (#1829).
+  `score-match.py`'s location-first matcher decides "did the hunter find this ground-truth bug?" by file
+  basename + function name co-occurrence, and that ruler undercounts in BOTH directions: a candidate that
+  describes a truth row's exact root cause from a factory/helper/getter the report's prose never names scores
+  MISS (**name-divergent true match**), while a candidate that merely shares a function name with a row but
+  describes a different mechanism scores HIT — on the wrong row (**name-coincident false match**). New
+  `--judge <off|cache|cmd>` replaces the name rule with a root-cause + mechanism decision: the scorer shows one
+  lead (location, class, exploit, poc_sketch) against a batch of truth rows (`--judge-batch`, default 12, so a
+  name twin has a better home to go to) and reads back `VERDICT|<lead_id>|<sev_id>|MATCH|<confidence>|<reason>`
+  lines, scoring only MATCHes at or above `--judge-min-confidence` (default 70). **`--judge off` is the default
+  and the frozen #1697 code path is byte-identical** — four existing self-tests (`run-corpus-bench.sh`,
+  `generation-recall.sh`, `deep-hunt-ab.sh`, `generalization-bench.sh`) pin that. In judge mode the judge is
+  **AUTHORITATIVE: there is no fallback to the token matcher**, because a silent fallback would re-import
+  exactly the two defects above — an unparseable reply is a `JUDGE-ERROR` (never a quiet NO-MATCH), the
+  scorecard grows one `JUDGE<TAB><calls><TAB><errors>` trailer, and the run **aborts with exit 4** above
+  `--judge-max-error-rate` (default 20 %) so a degraded backend can never publish a plausible-looking low
+  recall. Every call is content-keyed (sha256 of the canonical request) into a read-through `--judge-cache`
+  plus an append-only `--judge-log`, so a live-judged number is replayable offline with `--judge cache` (a
+  cache MISS is fatal, exit 4 — a replay never invents a decision); the README makes archiving the log
+  mandatory for any quoted number. New `bench/corpus-bench/mech-judge.sh` is the judge driver (one request
+  JSON on stdin -> `VERDICT|` lines on stdout, the same "echo only the verdict line" idiom as
+  `run-gate-agent.sh`); its LLM path goes through `${MECH_JUDGE_LLM_CMD:-<federation-root>/flat-cyborg-claude.sh}`
+  — the flat-cyborg PTY wrapper, on the flat-rate subscription session, **never** the metered print-mode API —
+  with `FLAT_CYBORG_IDLE_MS` raised to 12000 (the wrapper's 8000 default truncates a multi-row reasoning
+  reply). `run-corpus-bench.sh` and `generation-recall.sh` thread the `--judge*` flags through (the generation
+  and verified halves of the DELTA are always measured with the SAME ruler) and report judge calls/errors in
+  their per-contest lines and `--json`. New `demo-mech-judge.sh` (colony-lint) is the acceptance regression:
+  on one synthetic fixture it pins BOTH scorecards byte-exactly — the token matcher's wrong `1/4` with its
+  single hit on the wrong row, and the judge's correct `3/4` — so neither direction of the defect can come
+  back silently, and it asserts the fail-closed paths (malformed reply fabricates no MATCH, degraded judge
+  exits 4, cache miss exits 4) plus the flat-cyborg-only driver contract. CI needs no LLM, no network and no
+  `agentis`: the judge runs off the recorded cache and an offline stub. `novelty-gate.sh`, `extract-gt.sh`'s
+  `truth.tsv` schema and the location-first algorithm itself are untouched.
 - **SHARED HARNESS-MOCK LIBRARY for generated invariant harnesses (inert when unused)**
   (#1794). Harness GENERATION — not hypothesis quality — was the transfer-validation bottleneck on complex
   targets: the prover had to hand-author EVERY external-dependency mock inside each generated test, and an LP

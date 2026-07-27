@@ -8,14 +8,43 @@
 # tokens to co-occur in one signature disambiguates the ambiguous file basename (e.g. GatewayTransferNative.sol
 # appears in many rows; a specific function name appears in one) and makes recall threshold-independent.
 #
+# SEMANTIC MECHANISM JUDGE (issue #1829). The location-first matcher above errs in BOTH directions, because a
+# name is neither necessary nor sufficient evidence of the same bug:
+#   * NAME-DIVERGENT TRUE MATCH (false negative): the hunter names the factory/helper that actually contains the
+#     faulty code while the GT prose anchors its `.sol` link on the strategy contract and never names that
+#     function -> the same root cause scores MISS.
+#   * NAME-COINCIDENT FALSE MATCH (false positive): a candidate names a function a GT row also names, but
+#     describes a DIFFERENT mechanism -> an unrelated row scores HIT.
+# `--judge <cache|cmd>` replaces the token matcher with one LLM decision per lead over batches of truth rows,
+# deciding ROOT CAUSE + MECHANISM identity. In judge mode the judge is AUTHORITATIVE: there is NO fallback to
+# the token matcher, because a silent fallback would re-import exactly the two failure modes above. An
+# unparseable reply is a JUDGE-ERROR (never a silent NO-MATCH) and the run ABORTS with exit 4 above
+# `--judge-max-error-rate` — a degraded backend must not produce a plausible-looking low recall.
+# `--judge off` is the DEFAULT and keeps the #1697 matcher frozen and byte-identical.
+#
 # This is a BENCH scorer only. It does NOT touch novelty-gate.sh (the LIVE hunting-pipeline boundary/novelty
 # gate, frozen for the #1698/#1699 re-measurement) or extract-gt.sh (truth.tsv schema unchanged).
 #
 # Usage: score-match.py <truth.tsv> <verified_findings.json> [--min-overlap N] [--per-lead]
+#                       [--judge <off|cache|cmd>] [--judge-cmd <path>] [--judge-cache <file.jsonl>]
+#                       [--judge-log <file.jsonl>] [--judge-batch N] [--judge-min-confidence N]
+#                       [--judge-max-error-rate PCT]
 #   truth.tsv           extract-gt.sh output: sev_id \t severity \t rarity \t title \t signature (per row).
 #   verified_findings.json  run-zone-hunt.sh verify output: {"verified": [ {location, file, ...}, ... ]}.
 #   --min-overlap N     ONLY governs the location-unavailable fallback (a lead with no parseable function).
 #                       Location-resolvable leads are threshold-INDEPENDENT; N never affects them. Default 2.
+#   --judge <mode>      off (DEFAULT, the frozen #1697 token matcher) | cache (replay recorded decisions only;
+#                       a cache MISS is fatal, exit 4 — deterministic, CI-safe, no LLM) | cmd (invoke
+#                       --judge-cmd for a miss and record it read-through into --judge-cache).
+#   --judge-cmd <path>  judge driver: one request JSON on stdin -> `VERDICT|` lines on stdout. Default
+#                       mech-judge.sh next to this script (which drives the flat-cyborg PTY wrapper).
+#   --judge-cache <f>   JSONL read-through cache keyed by the sha256 of the canonical request. A judged number
+#                       is only reproducible via its recorded cache/log — archive it next to the scorecard.
+#   --judge-log <f>     JSONL append-only log of every LIVE judging call (request + raw reply + decisions).
+#   --judge-batch N     truth rows shown per judging call (default 12): the lead is judged against ALTERNATIVE
+#                       rows, so a name-coincident candidate has a better home to go to.
+#   --judge-min-confidence N  MATCH decisions below this confidence (0-100) do not score. Default 70.
+#   --judge-max-error-rate P  abort (exit 4) when JUDGE-ERRORs exceed this percentage of leads. Default 20.
 #   --per-lead          ADDITIVE (default output byte-identical without it): after the normal output, append
 #                       one `LEAD\t<class>\t<HIT|MISS>` line per verified lead — HIT when that lead matched a
 #                       real GT row, MISS otherwise. This is per-lead REAL-BUG PRECISION material for the
@@ -24,13 +53,17 @@
 #                       field is NORMALIZED (a leading `class=` prefix is stripped; empty/missing -> `unknown`)
 #                       so the `class=C3` vs `C3` inconsistency in verified_findings.json collapses to one key.
 # Output (stdout): one `<sev_id>\t<HIT|MISS>` line per truth row (input order), then a trailer line
-#   `LEADS\t<verified_n>\t<matched_leads>` (verified lead count; leads matching >=1 truth row). With
-#   `--per-lead`, one `LEAD\t<class>\t<HIT|MISS>` line per verified lead follows the trailer.
-# Exit: 0 always on a well-formed run; 2 bad args; 3 unreadable/malformed input.
+#   `LEADS\t<verified_n>\t<matched_leads>` (verified lead count; leads matching >=1 truth row). In judge mode
+#   ONE extra trailer line `JUDGE\t<calls>\t<errors>` follows it. With `--per-lead`, one
+#   `LEAD\t<class>\t<HIT|MISS>` line per verified lead follows the trailer(s).
+# Exit: 0 always on a well-formed run; 2 bad args; 3 unreadable/malformed input or an unrunnable judge driver;
+#       4 judge mode degraded (cache miss under --judge cache, or JUDGE-ERRORs over --judge-max-error-rate).
 import sys
 import os
 import re
 import json
+import hashlib
+import subprocess
 
 # Generic-DeFi stopwords stripped from the technical-token FALLBACK only — these words appear in almost every
 # finding's prose, so counting them as overlap is exactly what made the old oracle useless.
@@ -113,11 +146,193 @@ def lead_matches_row(basename, function, ltokens, signature, min_overlap):
     return overlap >= min_overlap
 
 
+# ==============================================================================================================
+# SEMANTIC MECHANISM JUDGE (#1829) — everything below is reached ONLY under --judge cache|cmd. The default
+# --judge off path never enters here and never changes.
+# ==============================================================================================================
+JUDGE_MODES = ("off", "cache", "cmd")
+VERDICT_PREFIX = "VERDICT|"
+
+
+def lead_id(i):
+    """Judge-facing id of the i-th lead in `resolved` order. verified_findings.json leads carry no stable id,
+    but the input order IS deterministic for a given file, so `L<index>` is a stable request key component."""
+    return "L" + str(i)
+
+
+def judge_request(lid, lead, rows_chunk):
+    """(canonical_request_json, sha256_key) for one lead judged against one batch of truth rows. The key is
+    CONTENT-derived, so a recorded decision replays for the same lead+rows regardless of run order."""
+    req = {
+        "lead": {
+            "id": lid,
+            "location": str(lead.get("location", "") or ""),
+            "file": str(lead.get("file", "") or ""),
+            "class": str(lead.get("class", "") or ""),
+            "exploit": str(lead.get("exploit", "") or ""),
+            "poc_sketch": str(lead.get("poc_sketch", "") or ""),
+        },
+        "rows": [{"sev_id": sev_id, "signature": signature} for sev_id, signature in rows_chunk],
+    }
+    text = json.dumps(req, sort_keys=True, separators=(",", ":"))
+    return text, hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def parse_verdicts(raw, lid, valid_sev_ids):
+    """Parse a judge reply into (decisions, dropped).
+
+    Grammar (one per line, anything else on the line ignored):
+      VERDICT|<lead_id>|<sev_id>|MATCH|<confidence>|<reason>
+      VERDICT|<lead_id>|NONE|NO-MATCH|<confidence>|<reason>
+    A verdict about a DIFFERENT lead is ignored (never cross-credited). A MATCH naming a sev_id that is not in
+    this request's rows is DROPPED and counted as an error — a hallucinated row id must never score a hit.
+    An empty `decisions` list is the caller's JUDGE-ERROR signal; it is NEVER read as a silent NO-MATCH."""
+    decisions = []
+    dropped = 0
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if not line.startswith(VERDICT_PREFIX):
+            continue
+        parts = line.split("|")
+        if len(parts) < 5:
+            continue
+        line_lid = parts[1].strip()
+        sev_id = parts[2].strip()
+        decision = parts[3].strip().upper()
+        reason = parts[5].strip() if len(parts) >= 6 else ""
+        if line_lid != lid or decision not in ("MATCH", "NO-MATCH"):
+            continue
+        try:
+            confidence = int(float(parts[4].strip()))
+        except ValueError:
+            continue
+        if decision == "MATCH":
+            if sev_id not in valid_sev_ids:
+                dropped += 1
+                continue
+        else:
+            sev_id = "NONE"
+        decisions.append((sev_id, decision, confidence, reason))
+    return decisions, dropped
+
+
+def load_judge_cache(path):
+    """key -> recorded entry, from a JSONL cache (last entry for a key wins). A missing/unreadable cache is an
+    EMPTY cache: under --judge cache the first miss then dies, which is the intended loud failure."""
+    cache = {}
+    if not path:
+        return cache
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(entry, dict) and entry.get("key"):
+                    cache[entry["key"]] = entry
+    except OSError:
+        pass
+    return cache
+
+
+def append_jsonl(path, entry):
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, sort_keys=True, separators=(",", ":")) + "\n")
+    except OSError as e:
+        die(3, "cannot append to " + path + ": " + str(e))
+
+
+def invoke_judge(judge_cmd, request_text):
+    """Run the judge driver with the request on stdin; return its stdout verbatim. A non-zero exit or an empty
+    reply is NOT fatal here — it simply yields no parseable verdict, i.e. a JUDGE-ERROR upstream."""
+    try:
+        proc = subprocess.run([judge_cmd], input=request_text, capture_output=True, text=True)
+    except OSError as e:
+        die(3, "cannot run --judge-cmd " + str(judge_cmd) + ": " + str(e))
+    return proc.stdout or ""
+
+
+def run_judge(leads, rows, mode, judge_cmd, cache_path, log_path, batch, min_conf):
+    """Judge every lead against every truth row, in batches. Returns (row_hit, lead_hit, calls, errors).
+
+    The recorded RAW REPLY is authoritative on a cache hit (it is re-parsed by the same parser the live path
+    uses), so `--judge cache` and `--judge cmd` over the same decisions produce byte-identical scorecards."""
+    valid_sev_ids = {sev_id for sev_id, _sig in rows}
+    row_index = {sev_id: ri for ri, (sev_id, _sig) in enumerate(rows)}
+    cache = load_judge_cache(cache_path)
+    row_hit = [False] * len(rows)
+    lead_hit = [False] * len(leads)
+    calls = 0
+    errors = 0
+    for li, lead in enumerate(leads):
+        lid = lead_id(li)
+        for start in range(0, len(rows), batch):
+            text, key = judge_request(lid, lead, rows[start:start + batch])
+            calls += 1
+            entry = cache.get(key)
+            if entry is None:
+                if mode == "cache":
+                    die(4, "--judge cache: no recorded decision for lead " + lid + " (request key " + key
+                        + "); record it first with --judge cmd --judge-cache <file>")
+                raw = invoke_judge(judge_cmd, text)
+                decisions, dropped = parse_verdicts(raw, lid, valid_sev_ids)
+                entry = {
+                    "key": key,
+                    "lead_id": lid,
+                    "request": text,
+                    "raw_reply": raw,
+                    "decisions": [
+                        {"sev_id": d[0], "decision": d[1], "confidence": d[2], "reason": d[3]} for d in decisions
+                    ],
+                }
+                cache[key] = entry
+                append_jsonl(cache_path, entry)
+                append_jsonl(log_path, entry)
+            else:
+                decisions, dropped = parse_verdicts(entry.get("raw_reply", ""), lid, valid_sev_ids)
+            # A dropped (hallucinated) row id is an error; so is a reply with nothing parseable at all. The
+            # latter is the fail-closed rule this mode exists for: no verdict is never read as NO-MATCH.
+            errors += dropped
+            if not decisions:
+                errors += 1
+                continue
+            for sev_id, decision, confidence, _reason in decisions:
+                if decision != "MATCH" or confidence < min_conf:
+                    continue
+                ri = row_index.get(sev_id)
+                if ri is None:
+                    continue
+                row_hit[ri] = True
+                lead_hit[li] = True
+    return row_hit, lead_hit, calls, errors
+
+
 def main(argv):
     truth_path = None
     verified_path = None
     min_overlap = 2
     per_lead = False
+    judge_mode = "off"
+    judge_cmd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mech-judge.sh")
+    judge_cache = ""
+    judge_log = ""
+    judge_batch = 12
+    judge_min_conf = 70
+    judge_max_error_rate = 20
+
+    def int_arg(flag, raw):
+        try:
+            return int(raw)
+        except ValueError:
+            die(2, flag + " must be an integer")
+
     i = 1
     while i < len(argv):
         a = argv[i]
@@ -132,6 +347,28 @@ def main(argv):
         elif a == "--per-lead":
             per_lead = True
             i += 1
+        elif a in ("--judge", "--judge-cmd", "--judge-cache", "--judge-log",
+                   "--judge-batch", "--judge-min-confidence", "--judge-max-error-rate"):
+            if i + 1 >= len(argv):
+                die(2, a + " requires a value")
+            val = argv[i + 1]
+            if a == "--judge":
+                if val not in JUDGE_MODES:
+                    die(2, "--judge must be one of: " + "|".join(JUDGE_MODES))
+                judge_mode = val
+            elif a == "--judge-cmd":
+                judge_cmd = val
+            elif a == "--judge-cache":
+                judge_cache = val
+            elif a == "--judge-log":
+                judge_log = val
+            elif a == "--judge-batch":
+                judge_batch = int_arg(a, val)
+            elif a == "--judge-min-confidence":
+                judge_min_conf = int_arg(a, val)
+            else:
+                judge_max_error_rate = int_arg(a, val)
+            i += 2
         elif a in ("-h", "--help"):
             sys.stdout.write(__doc__ or "")
             return 0
@@ -147,6 +384,10 @@ def main(argv):
             die(2, "unexpected extra arg: " + a)
     if truth_path is None or verified_path is None:
         die(2, "usage: score-match.py <truth.tsv> <verified_findings.json> [--min-overlap N]")
+    if judge_batch < 1:
+        die(2, "--judge-batch must be >= 1")
+    if judge_mode == "cache" and not judge_cache:
+        die(2, "--judge cache requires --judge-cache <file.jsonl> (the recorded decisions to replay)")
 
     try:
         rows = []
@@ -171,6 +412,7 @@ def main(argv):
     leads = data.get("verified", []) if isinstance(data, dict) else []
     # Pre-resolve each lead once (location + fallback tokens) so the O(rows x leads) loop stays cheap.
     resolved = []
+    lead_objs = []   # parallel to `resolved`; the raw lead dicts (judge mode only)
     lead_class = []  # parallel to `resolved`; normalized bug-class key per lead (--per-lead only)
     for lead in leads:
         if not isinstance(lead, dict):
@@ -178,22 +420,40 @@ def main(argv):
         basename, function = lead_location(lead)
         ltokens = technical_tokens(lead_text(lead)) if not function else set()
         resolved.append((basename, function, ltokens))
+        lead_objs.append(lead)
         lead_class.append(normalized_class(lead))
 
     matched_leads = 0
-    lead_hit = [False] * len(resolved)
-    row_hit = [False] * len(rows)
-    for li, (basename, function, ltokens) in enumerate(resolved):
-        for ri, (_sev_id, signature) in enumerate(rows):
-            if lead_matches_row(basename, function, ltokens, signature, min_overlap):
-                row_hit[ri] = True
-                lead_hit[li] = True
+    judge_calls = 0
+    judge_errors = 0
+    if judge_mode == "off":
+        # FROZEN #1697 location-first path — untouched, and the only path that calls lead_matches_row().
+        lead_hit = [False] * len(resolved)
+        row_hit = [False] * len(rows)
+        for li, (basename, function, ltokens) in enumerate(resolved):
+            for ri, (_sev_id, signature) in enumerate(rows):
+                if lead_matches_row(basename, function, ltokens, signature, min_overlap):
+                    row_hit[ri] = True
+                    lead_hit[li] = True
+    else:
+        # #1829 judge mode: the judge is AUTHORITATIVE — no token fallback, no silent NO-MATCH.
+        row_hit, lead_hit, judge_calls, judge_errors = run_judge(
+            lead_objs, rows, judge_mode, judge_cmd, judge_cache, judge_log, judge_batch, judge_min_conf)
+        if resolved and (judge_errors * 100.0) / len(resolved) > judge_max_error_rate:
+            die(4, "judge error rate " + str(judge_errors) + "/" + str(len(resolved)) + " leads exceeds "
+                + "--judge-max-error-rate " + str(judge_max_error_rate) + "%; refusing to report a recall "
+                + "number from a degraded judge (check --judge-log for the raw replies)")
     matched_leads = sum(1 for h in lead_hit if h)
 
     out = []
     for ri, (sev_id, _signature) in enumerate(rows):
         out.append(f"{sev_id}\t{'HIT' if row_hit[ri] else 'MISS'}")
     out.append(f"LEADS\t{len(resolved)}\t{matched_leads}")
+    # ADDITIVE judge trailer (#1829): present ONLY in judge mode, so the default output stays byte-identical.
+    # `calls` counts every lead x row-batch judging request (cache hits included, so a replay reports the same
+    # number as the live run); `errors` counts JUDGE-ERRORs (unparseable reply / hallucinated row id).
+    if judge_mode != "off":
+        out.append(f"JUDGE\t{judge_calls}\t{judge_errors}")
     # ADDITIVE per-lead real-bug precision material (issue #1711): only appended under --per-lead so the
     # default output stays byte-identical for run-corpus-bench.sh --self-test. A lead is a HIT when it matched
     # a real GT row (lead_hit[li]); MISS = unmatched noise. Class is the normalized key.
