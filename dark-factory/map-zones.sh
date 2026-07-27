@@ -210,6 +210,21 @@ VALUATION_KEYWORDS = re.compile(
     re.IGNORECASE,
 )
 
+# Function-slice cap (#1825): raising this from 8 to 16 is the smallest uniform cap that recovers three
+# rare-bug functions the old cap truncated out of scope.tsv on the corpus targets -- yieldoor's
+# Strategy.checkPoolActivity (rank 16 of 35 declared names), yieldoor's ReserveLogic._updateIndexes (rank
+# 12 of 18), and plaza's Pool.startAuction (rank 13 of 24). FLAT, not adaptive: every percentile-style rule
+# measured against both targets either overshoots one or undershoots the other (the rank distribution is
+# not a function of declared-name count), and a flat cap costs nothing on a contract with <= FN_SLICE_CAP
+# declared names -- it is simply no longer truncated.
+#
+# ZERO-MARGIN WARNING: at cap 16, Strategy.checkPoolActivity lands at EXACTLY rank 16 of 16 -- it falls in
+# the `rest` partition below (neither `moving` nor `valuation` has claim on it), so nothing protects its
+# slot. Any future addition to VALUE_MOVING_KEYWORDS or VALUATION_KEYWORDS promotes other names ahead of it
+# in the slice and can push it back out past the cap. If you extend either keyword list and this margin
+# breaks, raise FN_SLICE_CAP in that same PR -- do not pre-inflate it now on speculation.
+FN_SLICE_CAP = 16
+
 def prioritize_fn_names(names, cap):
     # Reorder (never drop/rename) `names` — already in file-declaration order, deduplicated — so the
     # functions a hunt most needs to see survive an [:cap] slice ahead of admin/setter noise. Partition into
@@ -258,7 +273,7 @@ for d, files in groups.items():
     scope_tokens = []
     for f in files:
         if loc(f) > thr:
-            fns = prioritize_fn_names(fn_names(f), 8)
+            fns = prioritize_fn_names(fn_names(f), FN_SLICE_CAP)
             scope_tokens.append(f + "@" + "+".join(fns) if fns else f)
         else:
             scope_tokens.append(f)

@@ -163,6 +163,35 @@ else bad "#1824 path-exclusion assertion failed"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (1e) #1825: the fn-slice cap was raised from 8 to 16 (map-zones.sh's FN_SLICE_CAP) because the old cap
+#      truncated out mid-ranked, non-value-moving, non-valuation rare-bug functions on the corpus targets
+#      (Strategy.checkPoolActivity, ReserveLogic._updateIndexes, Pool.startAuction). The liquidation fixture
+#      (17 declared names) reproduces that shape: `accrue`, `seize` and `_healthFactor` are ranks 14/15/16
+#      under prioritize_fn_names() at cap 16 -- truncated at the old cap 8, present at cap 16. Assert all
+#      three survive the slice AND that `setOracle` (rank 17) is still absent -- a two-sided pin: the first
+#      half fails if the cap drops below 16, the second fails if the cap is removed entirely.
+# ----------------------------------------------------------------------------------------------------------
+note "1e) #1825: fn-slice cap raise to 16 recovers accrue/seize/_healthFactor without uncapping the slice ..."
+if python3 - "$OUT/scope.tsv" <<'PY'
+import sys
+rows = [l.rstrip("\n") for l in open(sys.argv[1], encoding="utf-8") if l.strip() and not l.lstrip().startswith("#")]
+liq_rows = [l for l in rows if l.startswith("liquidation engine |")]
+assert liq_rows, "no scope.tsv row for the liquidation engine zone"
+files_field = liq_rows[0].split("|")[2]
+fn_names = set()
+for tok in files_field.split(","):
+    tok = tok.strip()
+    if "@" in tok:
+        fn_names.update(tok.split("@", 1)[1].split("+"))
+for needed in ("accrue", "seize", "_healthFactor"):
+    assert needed in fn_names, "%s missing from the liquidation zone's function slice at cap 16: %r" % (needed, sorted(fn_names))
+assert "setOracle" not in fn_names, "setOracle (rank 17) leaked into the slice -- the cap is no longer bounded at 16: %r" % sorted(fn_names)
+PY
+then ok "liquidation zone's slice surfaces accrue/seize/_healthFactor (ranks 14-16, recovered by the cap raise) and still excludes setOracle (rank 17)"
+else bad "fn-slice cap-16 assertion failed"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # (c2) REGRESSION (#1664): an INDENTED ZONE| marker line must still be classified — proving #1663's
 #      whitespace-tolerant scrape (`grep -E '^[[:space:]]*ZONE\|' ... | sed 's/^[[:space:]]*//'`) stays in
 #      place. Derive the indented fixture at runtime from the checked-in FIXTURE_TXT (indent only the ZONE|
@@ -216,11 +245,19 @@ else bad "scope.tsv format/safety assertion failed"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
-# (d2) REGRESSION (#1701): fn_names()[:8] used to truncate a big contract's function-slice by pure
-#      declaration order, so a value-moving/recovery function declared AFTER 8 admin/setter functions never
-#      made the slice (reproduced live against dodo's Gateway* files). The liquidation fixture now declares
-#      4 admin setters ahead of liquidate/redeem specifically to reproduce that shape; assert the emitted
-#      scope.tsv slice for the liquidation zone still surfaces `liquidate` (and `redeem`) despite them.
+# (d2) REGRESSION (#1701): fn_names()[:cap] used to truncate a big contract's function-slice by pure
+#      declaration order, so a value-moving/recovery function declared AFTER several admin/setter functions
+#      never made the slice (reproduced live against dodo's Gateway* files). The liquidation fixture now
+#      declares 4 admin setters ahead of liquidate/redeem specifically to reproduce that shape; assert the
+#      emitted scope.tsv slice for the liquidation zone still surfaces `liquidate` (and `redeem`) despite
+#      them.
+#
+#      #1825 NOTE: at the raised cap (16 of 17 declared names), a naive declaration-order slice would ALSO
+#      contain `liquidate` (declared 12th) and `redeem` (declared 14th) -- only `setOracle` (17th) falls
+#      out -- so plain membership has gone vacuous as a regression guard for the #1701 reorder. Restore its
+#      teeth with an ORDERING assertion instead: map-zones.sh emits names in prioritized order, so
+#      `liquidate` must sort ahead of `setFeeBps` under the reorder (rank 3 < rank 8) while declaration
+#      order would put it behind (declared 12th > declared 5th).
 # ----------------------------------------------------------------------------------------------------------
 if python3 - "$OUT/scope.tsv" <<'PY'
 import sys
@@ -228,16 +265,19 @@ rows = [l.rstrip("\n") for l in open(sys.argv[1], encoding="utf-8") if l.strip()
 liq_rows = [l for l in rows if l.startswith("liquidation engine |")]
 assert liq_rows, "no scope.tsv row for the liquidation engine zone"
 files_field = liq_rows[0].split("|")[2]
-fn_names = set()
+fn_names = []
 for tok in files_field.split(","):
     tok = tok.strip()
     if "@" in tok:
-        fn_names.update(tok.split("@", 1)[1].split("+"))
-assert "liquidate" in fn_names, "liquidate missing from the liquidation zone's function slice: %r" % sorted(fn_names)
-assert "redeem" in fn_names, "redeem missing from the liquidation zone's function slice: %r" % sorted(fn_names)
+        fn_names.extend(tok.split("@", 1)[1].split("+"))
+assert "liquidate" in fn_names, "liquidate missing from the liquidation zone's function slice: %r" % fn_names
+assert "redeem" in fn_names, "redeem missing from the liquidation zone's function slice: %r" % fn_names
+assert "setFeeBps" in fn_names, "setFeeBps missing -- cannot assert ordering: %r" % fn_names
+assert fn_names.index("liquidate") < fn_names.index("setFeeBps"), \
+    "liquidate does not precede setFeeBps in the emitted slice order -- the #1701 reorder has gone vacuous: %r" % fn_names
 PY
-then ok "liquidation zone's function-slice surfaces liquidate + redeem despite 8+ admin setters preceding them in the file (#1701)"
-else bad "fn-slice priority regression: liquidate/redeem dropped from the liquidation zone's function slice"
+then ok "liquidation zone's function-slice surfaces liquidate + redeem ahead of admin setters in emitted order (#1701, ordering-pinned post-#1825)"
+else bad "fn-slice priority regression: liquidate/redeem dropped, or no longer ordered ahead of admin setters"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -247,6 +287,13 @@ fi
 #      H-4) never reached scope.tsv and was never hunted. map-zones.sh now RESERVES a valuation-slot quota
 #      (VALUATION_KEYWORDS). The liquidation fixture declares `convertToAssets` LAST (after every admin setter
 #      AND every value-moving fn); assert it survives the slice WITHOUT displacing liquidate/redeem.
+#
+#      #1825 NOTE: unlike (d2)'s guard, this one is NOT yet vacuous at cap 16 -- `convertToAssets` is
+#      declared LAST of the fixture's 17 names, so an unprioritised `[:16]` still drops it and the membership
+#      assert below would still fire. The ordering guard is added PRE-EMPTIVELY, for the cap raise after this
+#      one: at cap 17+ membership becomes satisfiable by declaration order alone and stops proving anything.
+#      `convertToAssets` (a reserved valuation slot) must sort ahead of `setPaused` (rest partition) in the
+#      emitted order (rank 6 < rank 9).
 # ----------------------------------------------------------------------------------------------------------
 if python3 - "$OUT/scope.tsv" <<'PY'
 import sys
@@ -254,19 +301,22 @@ rows = [l.rstrip("\n") for l in open(sys.argv[1], encoding="utf-8") if l.strip()
 liq_rows = [l for l in rows if l.startswith("liquidation engine |")]
 assert liq_rows, "no scope.tsv row for the liquidation engine zone"
 files_field = liq_rows[0].split("|")[2]
-fn_names = set()
+fn_names = []
 for tok in files_field.split(","):
     tok = tok.strip()
     if "@" in tok:
-        fn_names.update(tok.split("@", 1)[1].split("+"))
+        fn_names.extend(tok.split("@", 1)[1].split("+"))
 assert "convertToAssets" in fn_names, \
-    "convertToAssets (last-declared valuation fn) truncated out of the slice: %r" % sorted(fn_names)
+    "convertToAssets (last-declared valuation fn) truncated out of the slice: %r" % fn_names
 # the reservation must NOT come at the cost of the value-moving path the #1701 test guards
 assert "liquidate" in fn_names and "redeem" in fn_names, \
-    "valuation reservation displaced a value-moving fn: %r" % sorted(fn_names)
+    "valuation reservation displaced a value-moving fn: %r" % fn_names
+assert "setPaused" in fn_names, "setPaused missing -- cannot assert ordering: %r" % fn_names
+assert fn_names.index("convertToAssets") < fn_names.index("setPaused"), \
+    "convertToAssets does not precede setPaused in the emitted slice order -- the #1799 reservation has gone vacuous: %r" % fn_names
 PY
-then ok "liquidation zone's slice surfaces the LAST-declared valuation fn convertToAssets AND keeps liquidate + redeem (#1799 valuation-slot reservation)"
-else bad "fn-slice valuation regression: convertToAssets truncated out (or displaced a value-moving fn)"
+then ok "liquidation zone's slice surfaces the LAST-declared valuation fn convertToAssets ahead of admin setters, and keeps liquidate + redeem (#1799 valuation-slot reservation, ordering-pinned post-#1825)"
+else bad "fn-slice valuation regression: convertToAssets truncated out, displaced a value-moving fn, or no longer ordered ahead of admin setters"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
