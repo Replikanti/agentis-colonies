@@ -1275,6 +1275,26 @@ if [ -x "$REPO_ROOT/dark-factory/demo-generation-recall.sh" ]; then
     fi
 fi
 
+# --- dark-factory semantic mechanism judge scoring mode (#1829) ---
+# score-match.py's location-first token matcher decides "same bug?" by file+function name co-occurrence, which
+# undercounts BOTH ways: it MISSES a candidate that describes the GT row's root cause from a factory/getter the
+# report's prose never names, and CREDITS a candidate that merely shares a function name while describing a
+# different mechanism. #1829 adds an OPT-IN `--judge off|cache|cmd` mode that decides root-cause + mechanism
+# identity through mech-judge.sh (which drives the flat-cyborg PTY wrapper, never the metered print-mode API);
+# the judge is AUTHORITATIVE (no token fallback) and fails CLOSED (JUDGE-ERROR + exit 4 over the max error
+# rate). demo-mech-judge.sh source-guards that wiring and pins BOTH scorecards byte-exactly on one synthetic
+# fixture — the token matcher's wrong 1/4 and the judge's right 3/4 — so neither direction can regress
+# silently. CI-safe: the judge runs off a recorded decision cache + an offline stub (no LLM, no network).
+if [ -x "$REPO_ROOT/dark-factory/demo-mech-judge.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-mech-judge.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: semantic mechanism judge scoring mode (#1829)"
+    else
+        fail "dark-factory: semantic mechanism judge scoring mode regressed (#1829)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory generalization measurement bench (#1763 G4) ---
 # generalization-bench.sh answers "did the G1-G3 generalization TRANSFER BEYOND YEARN?": it orchestrates
 # generation-recall.sh --from-work (#1730) + deep-hunt-ab.sh --live (#1713) over the corpus's share-inflation /

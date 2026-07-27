@@ -34,7 +34,12 @@
 #     <id>/truth.tsv, and report per-bug HIT/MISS + the stratified aggregate (+ the DELTA when
 #     verify/verified_findings.json is present). A missing artifact is a logged skip, NEVER a false 0.
 #
-# Usage: generation-recall.sh [--self-test] | [--from-work <dir> [--id <id>]... [--min-overlap N] [--json]] [-h]
+# Usage: generation-recall.sh [--self-test] | [--from-work <dir> [--id <id>]... [--min-overlap N] [--json]
+#                             [--judge <off|cache|cmd>] [--judge-cmd <p>] [--judge-cache <f>] [--judge-log <f>]
+#                             [--judge-batch N] [--judge-min-confidence N]] [-h]
+#   --judge* : #1829 — forwarded verbatim to score-match.py for BOTH the generation scorecard and the
+#              verified-recall side of the DELTA, so the two halves are always measured with the SAME ruler.
+#              Default `off` = the frozen #1697 token matcher; `--self-test` is always judge-off.
 # Exit: 0 = stage ran (a low/zero recall is DATA, not a failure) ; 1 = --self-test regressed ; 2 = bad args ;
 #       3 = missing prerequisite.
 set -u
@@ -46,6 +51,7 @@ FIX="$HERE/fixtures/generation-recall"
 
 MODE="self-test"
 WORK="" ; IDS="" ; MINOV="2" ; JSON=0
+JUDGE="off" ; JUDGE_CMD="" ; JUDGE_CACHE="" ; JUDGE_LOG="" ; JUDGE_BATCH="" ; JUDGE_MINCONF=""
 
 nv() { [ "$1" -ge 2 ] || { echo "generation-recall.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do case "$1" in
@@ -54,20 +60,37 @@ while [ $# -gt 0 ]; do case "$1" in
   --id)          nv "$#"; IDS="$IDS $2"; shift 2 ;;
   --min-overlap) nv "$#"; MINOV="$2"; shift 2 ;;
   --json)        JSON=1; shift ;;
+  --judge)                nv "$#"; JUDGE="$2"; shift 2 ;;
+  --judge-cmd)            nv "$#"; JUDGE_CMD="$2"; shift 2 ;;
+  --judge-cache)          nv "$#"; JUDGE_CACHE="$2"; shift 2 ;;
+  --judge-log)            nv "$#"; JUDGE_LOG="$2"; shift 2 ;;
+  --judge-batch)          nv "$#"; JUDGE_BATCH="$2"; shift 2 ;;
+  --judge-min-confidence) nv "$#"; JUDGE_MINCONF="$2"; shift 2 ;;
   -h|--help)     awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
   *) echo "generation-recall.sh: unknown arg: $1" >&2; exit 2 ;;
 esac; done
 
 say() { echo "generation-recall.sh: $*" >&2; }
 
+# #1829: judge flags forwarded to score-match.py. The mode is ALWAYS passed explicitly (never an empty array
+# expansion) and defaults to `off`, which selects the frozen #1697 matcher — byte-identical output.
+declare -a JUDGE_ARGS=(--judge "$JUDGE")
+if [ "$JUDGE" != "off" ]; then
+  [ -n "$JUDGE_CMD" ]     && JUDGE_ARGS+=(--judge-cmd "$JUDGE_CMD")
+  [ -n "$JUDGE_CACHE" ]   && JUDGE_ARGS+=(--judge-cache "$JUDGE_CACHE")
+  [ -n "$JUDGE_LOG" ]     && JUDGE_ARGS+=(--judge-log "$JUDGE_LOG")
+  [ -n "$JUDGE_BATCH" ]   && JUDGE_ARGS+=(--judge-batch "$JUDGE_BATCH")
+  [ -n "$JUDGE_MINCONF" ] && JUDGE_ARGS+=(--judge-min-confidence "$JUDGE_MINCONF")
+fi
+
 # recall_hits <truth.tsv> <leads.json> — print "<hits> <total>" (HIT truth rows / total truth rows) from
-# score-match.py at --min-overlap "$MINOV". Empty on scorer failure.
+# score-match.py at --min-overlap "$MINOV" (and the selected --judge mode). Empty on scorer failure.
 recall_hits() {
   _t="$1"; _j="$2"
-  _sc="$(python3 "$SCOREMATCH" "$_t" "$_j" --min-overlap "$MINOV" 2>/dev/null)" || return 1
+  _sc="$(python3 "$SCOREMATCH" "$_t" "$_j" --min-overlap "$MINOV" "${JUDGE_ARGS[@]}" 2>/dev/null)" || return 1
   _total=0; _hits=0
   while IFS="$(printf '\t')" read -r _f1 _f2 _f3; do
-    [ "$_f1" = "LEADS" ] && continue
+    case "$_f1" in LEADS|JUDGE) continue ;; esac
     [ -n "$_f1" ] || continue
     _total=$((_total + 1))
     [ "$_f2" = "HIT" ] && _hits=$((_hits + 1))
@@ -190,12 +213,14 @@ if [ "$MODE" = "from-work" ]; then
     fi
     say "SCORE: [$id] scoring the union of generation hypotheses against truth.tsv ..."
 
-    SCORE_OUT="$(python3 "$SCOREMATCH" "$truth" "$leads" --min-overlap "$MINOV" 2>/dev/null)" \
+    SCORE_OUT="$(python3 "$SCOREMATCH" "$truth" "$leads" --min-overlap "$MINOV" "${JUDGE_ARGS[@]}" 2>/dev/null)" \
       || { say "SCORE: [$id] score-match.py failed; skipping"; continue; }
 
     declare -A HITMAP=()
-    while IFS="$(printf '\t')" read -r f1 f2 _f3; do
+    judge_calls=0 ; judge_errors=0
+    while IFS="$(printf '\t')" read -r f1 f2 f3; do
       [ "$f1" = "LEADS" ] && continue
+      if [ "$f1" = "JUDGE" ]; then judge_calls="$f2"; judge_errors="$f3"; continue; fi
       [ -n "$f1" ] && HITMAP["$f1"]="$f2"
     done <<SCORE_EOF
 $SCORE_OUT
@@ -221,6 +246,7 @@ SCORE_EOF
     done < "$truth"
 
     say "  [$id] generation-recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total"
+    [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE, #1829): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s)"
 
     # GENERATION-minus-VERIFIED DELTA — GT rows a hypothesis NAMED but the fuzzer/refuter never confirmed.
     verified_json="$WORK/$id/zone-hunt-out/verify/verified_findings.json"

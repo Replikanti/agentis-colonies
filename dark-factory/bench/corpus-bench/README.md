@@ -20,6 +20,9 @@ corpus-bench/
   extract-gt.sh                  # judging-repo README.md -> truth.tsv (ground truth + rarity)
   score-match.py                 # bench-only scorer: verified_findings.json leads -> HIT/MISS per truth row
                                   #   (--per-lead: also emit per-lead class + HIT/MISS for the fitness feeder)
+                                  #   (--judge: semantic mechanism judge instead of the token matcher, #1829)
+  mech-judge.sh                   # judge driver (#1829): request JSON on stdin -> VERDICT| lines on stdout,
+                                  #   judged through the flat-cyborg PTY wrapper (never a metered API call)
   bench-to-knowledge.sh           # LEARN half (#1711): scored contests -> per-class real-bug precision ->
                                   #   agentis `hunt-fitness` knowledge (feeds zone-mapper.ag's reorder)
   run-corpus-bench.sh             # orchestrator + scorer (this is the entrypoint)
@@ -32,6 +35,11 @@ corpus-bench/
     hunt-fitness/                 # synthetic fixture for the fitness loop (#1711): truth.tsv +
                                   #   verified_findings.json (mixed `class=C6`/`C6` formatting, C6 high-
                                   #   precision, C3 mostly noise) + reorder-harness.ag (mirrors the agent)
+    mech-judge/                   # synthetic fixture for the mechanism judge (#1829): truth.tsv + leads.json
+                                  #   + BOTH pinned scorecards (expected-scorecard.token.txt = the documented
+                                  #   defect, expected-scorecard.judge.txt = the corrected answer) +
+                                  #   judge-decisions.jsonl (the recorded cache) + judge-stub.sh (offline
+                                  #   judge backend; MECH_JUDGE_STUB_MODE=malformed for the fail-closed case)
 ```
 
 No contest code or finding text is re-hosted in this repo — only the manifest (repo/commit-free GitHub slugs)
@@ -59,6 +67,18 @@ idiom as `../fixtures/*/truth.tsv`).
 
 ## Scoring
 
+Two rulers, one scorer. `--judge off` (the **default**, and the only mode CI runs by default) is the
+location-first token matcher below; `--judge cache|cmd` (#1829) replaces it with the semantic mechanism judge
+described in the next section. The default is deliberately the cheap deterministic one — but it has two
+documented failure modes, so **any published recall number should say which ruler produced it**:
+
+- **name-divergent true match → false negative.** The hunter names the factory/helper/getter that actually
+  contains the faulty code, while the report's prose anchors its `.sol` link on a different contract and never
+  names that function. Same root cause, same mechanism, scored MISS.
+- **name-coincident false match → false positive.** A candidate names a function a truth row also names but
+  describes a completely different mechanism. Different bug, scored HIT — and it lands on the wrong row, so
+  the real row it *did* describe still reads MISS.
+
 For each contest: run the REAL federation pipeline (`run-zone-hunt.sh`: map → brief → discover → verify) over
 the cloned code repo through a real LLM backend, then score each `verified_findings.json` lead against the
 `truth.tsv` rows via the **location-first** bench matcher `score-match.py` (#1697). Each lead carries a
@@ -79,6 +99,87 @@ hides that consensus bugs are the easy part.
 novel.** A concluded, multi-watson-combed contest rarely has a genuinely missed valid H/M; an unmatched lead is
 far more likely noise (FP, out-of-scope, already-known-but-phrased-differently) than a real find. Treat it as
 a manual-triage queue, not a result.
+
+## Semantic mechanism judge (#1829)
+
+`--judge cache|cmd` swaps the name-matching rule for a **root-cause + mechanism** decision made by a model.
+The scorer shows one lead — its `location`, `class`, `exploit` and `poc_sketch` — against a batch of truth
+rows and asks: does this candidate describe the SAME faulty code behaviour, abused the SAME way, as one of
+these rows? The prompt states both halves of the rule explicitly, because both naive heuristics are wrong:
+*shared names are not sufficient evidence* and *divergent names are not disqualifying*.
+
+**Decision contract.** `score-match.py` writes one canonical request per lead × row batch on the driver's
+stdin and reads verdict lines off its stdout — nothing else:
+
+```
+request  {"lead":{"id","location","file","class","exploit","poc_sketch"},"rows":[{"sev_id","signature"},...]}
+reply    VERDICT|<lead_id>|<sev_id>|MATCH|<confidence 0-100>|<one-line reason>
+         VERDICT|<lead_id>|NONE|NO-MATCH|<confidence 0-100>|<one-line reason>
+```
+
+Only `MATCH` decisions at or above `--judge-min-confidence` (default 70) score. A verdict about another lead
+is ignored; a `MATCH` naming a `sev_id` that was not in the request is dropped.
+
+**The judge is AUTHORITATIVE — there is no fallback to the token matcher.** A silent fallback would re-import
+exactly the two failure modes the judge exists to fix, so an unparseable reply is a **JUDGE-ERROR**, never a
+quiet NO-MATCH, and the run **aborts with exit 4** once JUDGE-ERRORs exceed `--judge-max-error-rate` (default
+20 %) — a degraded backend must not be allowed to publish a plausible-looking low recall. Judge mode adds one
+extra trailer line to the scorecard, `JUDGE<TAB><calls><TAB><errors>`; the per-row `HIT|MISS` lines and the
+`LEADS` trailer keep their shape, so every downstream consumer is unaffected.
+
+**Three modes, and which one belongs where:**
+
+| mode | what it does | where |
+|------|--------------|-------|
+| `off` (default) | the frozen #1697 token matcher, byte-identical output | everywhere by default; the only mode in the corpus-bench self-tests |
+| `cache` | replays recorded decisions from `--judge-cache`; a **miss is fatal (exit 4)** | CI (`demo-mech-judge.sh`) and any offline re-derivation of a published number |
+| `cmd` | invokes `--judge-cmd` (default `mech-judge.sh`) for a miss and records it read-through | operator-run only, on freed subscription capacity |
+
+**CI never runs `cmd`.** The CI path is `cache` plus an offline stub — no LLM, no network, no `agentis`.
+
+**Reproducibility rule.** A judged number is reproducible offline **only** via its recorded decisions:
+`--judge-cache` is a content-keyed read-through cache (sha256 of the canonical request) and `--judge-log` is
+an append-only record of every live judging call, including the raw reply. **Archive the log next to the
+scorecard** — the recorded raw reply is what the cache replays and re-parses, so `--judge cache` reproduces a
+`--judge cmd` scorecard byte-for-byte. Without the log, a judged recall number is an unverifiable claim.
+
+**Judging always runs through the flat-cyborg PTY wrapper.** `mech-judge.sh` shells out to
+`${MECH_JUDGE_LLM_CMD:-<federation-root>/flat-cyborg-claude.sh}` (the same `LLM_WRAP`-style indirection
+`run-autoharness.sh` and `run-method-discovery.sh` use), so judging bills against the flat-rate subscription
+session and never the metered print-mode API. It raises `FLAT_CYBORG_IDLE_MS` to 12000: the wrapper's own
+8000 default is too short for a multi-row reasoning prompt and truncates the reply.
+
+**Cost shape.** One judging call per lead × batch of `--judge-batch` rows (default 12) — a 37-row contest
+costs 4 calls per lead. The batch exists for accuracy as much as cost: judging a lead against ALTERNATIVE
+rows gives a name-coincident candidate a better home to go to instead of being forced onto its name twin. The
+read-through cache makes re-scoring free.
+
+```bash
+# CI / offline: replay recorded decisions (this is what colony-lint runs via demo-mech-judge.sh)
+dark-factory/bench/corpus-bench/score-match.py <truth.tsv> <verified_findings.json> \
+  --judge cache --judge-cache <decisions.jsonl>
+
+# operator re-measurement of an already-staged work dir, live judge, decisions recorded for replay:
+dark-factory/bench/corpus-bench/run-corpus-bench.sh --score --id yieldoor --work <dir> --json \
+  --judge cmd --judge-cache <dir>/judge-cache.jsonl --judge-log <dir>/judge-log.jsonl
+
+# the same ruler on the generation side (both halves of the generation-minus-verified DELTA):
+dark-factory/bench/corpus-bench/generation-recall.sh --from-work <dir> --id yieldoor \
+  --judge cache --judge-cache <dir>/judge-cache.jsonl --json
+
+# driver contract check (offline):
+dark-factory/bench/corpus-bench/mech-judge.sh --self-test
+```
+
+`--judge cmd` follows the same discipline as `--live` elsewhere in this bench: run it only on freed
+subscription capacity, never on CI, and never as part of a PR gate. `novelty-gate.sh` (the live
+hunting-pipeline gate), `extract-gt.sh`'s `truth.tsv` schema and the location-first algorithm itself are all
+**unchanged** — judge mode is strictly additive and default-off.
+
+`dark-factory/demo-mech-judge.sh` pins the whole thing on one synthetic fixture (`fixtures/mech-judge/`, our
+own structural analogues — no contest prose or code is re-hosted here either): the token matcher's WRONG
+answer and the judge's RIGHT answer are both byte-exact, so neither direction of the #1829 defect can come
+back silently, and the fail-closed paths (malformed reply, degraded judge, cache miss) are asserted too.
 
 ## Generation-recall harness (#1730)
 
