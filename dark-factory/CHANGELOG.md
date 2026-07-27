@@ -300,6 +300,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   are untouched (only WHAT path is passed changes, not how the gate matches). `demo-invariant-core-dep.sh`
   source-guards the vaultRoute-scoped in-repo arming, the byte-identical non-core-dep fall-through, and the
   untouched matcher logic.
+- **`run-zone-hunt.sh` STAGE 3 hunts value-custody zones first** (#1826). The serial per-zone discovery loop
+  consumed `.zone-list.tsv` in whatever order `zones.json` carried, which `map-zones.sh` derives from
+  `sorted(sources)` grouped by directory — alphabetical, not custody-aware. A wall-clock timeout imposed from
+  outside the pipeline (there is no per-zone budget primitive inside it) could therefore truncate the run
+  after an arbitrary, priority-blind prefix: on the `plaza` corpus target the one `value_custody` zone sat
+  SECOND, after a non-custody `script/` zone. The fix sorts the same in-memory `zones` list the STAGE 3 python
+  heredoc already builds by `(not value_custody, id)` before printing `.zone-list.tsv` — custody-first, zone
+  id as the stable tie-break — so a truncated run now only ever drops the lowest-priority (non-custody) zones.
+  No new CLI flag, no change to `.zone-list.tsv`'s 2-column shape, no change to `map-zones.sh`'s own
+  zone-generation order or to the STAGE 4.5 `--deep-hunt` zone selection (which already reads `value_custody`
+  directly off `zones.json`, independent of `.zone-list.tsv`). `z.get("value_custody", False)` keeps a zone
+  from an older `zones.json` predating #1713 sorting as non-custody instead of raising. `demo-run-zone-hunt.sh`
+  gains a new assertion block pinning: every custody zone before every non-custody zone, id-ordered within
+  each group, AND byte-identical `.zone-list.tsv` output across two independent runs of the same fixture.
 
 ## [0.5.0] - 2026-07-20
 

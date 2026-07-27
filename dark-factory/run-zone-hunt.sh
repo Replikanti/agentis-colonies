@@ -238,6 +238,8 @@ fi
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 3 (M3): per-zone run-discovery.sh, each with its OWN zone brief; merge into discovery-results.merged.json.
 # Zones loop SERIALLY (the intra-zone --jobs is the only parallelism — the M3 OOM cap is not stacked across zones).
+# Priority order: value-custody zones first (tie-broken by zone id), then everything else, so a truncated run
+# only ever drops the lowest-priority (non-custody) zones (#1826).
 # ----------------------------------------------------------------------------------------------------------
 DISC="$OUT/discovery"; mkdir -p "$DISC"
 ZONE_LIST="$OUT/.zone-list.tsv"
@@ -246,6 +248,7 @@ import sys, json
 zones = json.load(open(sys.argv[1], encoding="utf-8"))
 if not isinstance(zones, list):
     zones = []
+zones = sorted(zones, key=lambda z: (not z.get("value_custody", False), z.get("id", "")))
 for z in zones:
     zid = z.get("id", "")
     name = z.get("name", zid)
