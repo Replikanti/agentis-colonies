@@ -63,6 +63,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   And a full re-sweep into an existing `--out` **carries `attempts[]` over** while the archive suffix is the
   first FREE `.attempt-<n>` on disk, so no archive is ever destroyed and `--rehunt-max-attempts` is a real
   bound across re-sweeps.
+  **Two more from the re-review** (blocks (o) and an extended (m)): the merge unions **candidates**, not just
+  cells — "most candidates wins" still dropped leads when a later attempt surfaced more, but different, leads
+  on the same cell, and `carried_over_cells` stayed 0 so the loss was silent; candidate lists are now unioned
+  and deduplicated on the whole candidate string (a key that cannot collapse two distinct leads), with partial
+  carries counted. And a cap that cannot be enforced now has its **own** status `budget_unenforceable` and does
+  **not** stop the sweep: unenforceability is a per-zone property, not a spent pool, so a trivially enforceable
+  neighbour is still hunted and no zone is told to raise a run budget that does not exist. Block (k) now drives
+  BOTH zero-cell triggers — the unclassified zone and a classified zone whose name `map-zones.sh`'s `clean()`
+  rewrote before `scope.tsv` — so narrowing the guard back to a classification test fails CI.
 - **SEMANTIC MECHANISM JUDGE as an opt-in corpus-bench scoring mode (default OFF)** (#1829).
   `score-match.py`'s location-first matcher decides "did the hunter find this ground-truth bug?" by file
   basename + function name co-occurrence, and that ruler undercounts in BOTH directions: a candidate that

@@ -204,7 +204,8 @@ Per-zone `status` tells you what to do next:
 |---|---|---|
 | `hunted` / `hunted_empty` | complete coverage of the classes hunted (`hunted_empty` = a rigorous negative) | nothing — unless `budget_truncated: true`, which means the class list was shortened and the negative is not rigorous |
 | `hunted_degraded` | a cell produced no verdict after retries (#1707) | re-hunt with `--rehunt-gaps --rehunt-include-partial` |
-| `budget_exhausted` | the run declined to pay for it — **not** a negative | raise the budget, or `--rehunt-gaps` |
+| `budget_exhausted` | the RUN cell budget was spent before this zone came up — **not** a negative. Every zone after it was denied too | raise `--run-cell-budget`, or `--rehunt-gaps` |
+| `budget_unenforceable` | a **partial** hunt of this zone cannot be expressed: its subsystem name matches several `scope.tsv` lines, so no `--classes` prefix lands exactly on the cap. Nothing was charged and the zones after it were unaffected | give it its full planned budget (raise `--zone-cell-budget` above the `cells_planned` in its record, or drop the cap), or re-map so the subsystem name is unique; `--rehunt-gaps` with no cap also closes it |
 | `failed` | `run-discovery.sh` exited non-zero (see `exit_code`, `detail`) | `--rehunt-gaps`; a second failure is a defect to escalate |
 | `in_flight` | the process died mid-zone (external kill / OOM) | `--rehunt-gaps` |
 | `not_reached` | never attempted — zero evidence | `--rehunt-gaps` |
@@ -226,18 +227,22 @@ Per-zone `status` tells you what to do next:
 
 A cell budget bounds the number of hunter substrate calls and **nothing else** — not wall-clock, not tokens,
 not memory. It is a coverage-shaping knob, not a cost cap. It never reorders anything: the cut always falls on
-the tail of the #1826 value-custody-first order, and the first denial stops the loop. If a zone's subsystem
-name matches more than one `scope.tsv` line, a partial cap cannot be expressed exactly (`--classes` is a
-per-line override, not a cell filter) — that zone is **denied** with the measured count in its `detail` rather
-than being charged less than it would run. Raise the budget, or re-map so the names are distinct.
+the tail of the #1826 value-custody-first order, and running out of the **run** budget stops the loop. If a
+zone's subsystem name matches more than one `scope.tsv` line, a partial cap cannot be expressed exactly
+(`--classes` is a per-line override, not a cell filter) — that zone alone is **denied** as
+`budget_unenforceable`, with the measured count in its `detail`, rather than being charged less than it would
+run; the sweep carries on to the next zone. Raise that zone's budget above its `cells_planned`, or re-map so
+the names are distinct.
 
 **The merge is a union across attempts.** A re-hunt archives the prior `discovery/<zid>` to
 `discovery/<zid>.attempt-<n>` (the first free suffix — archives are never deleted or overwritten) and
-`discovery-results.merged.json` then covers **every** attempt, deduplicated by `(subsystem, class, files)`,
-with the most-candidates copy winning. A re-hunt can therefore only ever add evidence: a hunter that returns
-`SAFE` on a cell that previously produced a `CANDIDATE` does not erase it — refuting a candidate is STAGE 4's
-job. The merged file records this under its `merge` key (`policy`, `carried_over_cells`) and STAGE 3 logs the
-carried-over count when it is non-zero.
+`discovery-results.merged.json` then covers **every** attempt, deduplicated by `(subsystem, class, files)`;
+where one cell appears in several attempts their candidate lists are **unioned** (deduplicated on the whole
+candidate string, so two distinct leads never collapse). A re-hunt can therefore only ever add evidence: no
+candidate any attempt produced is dropped — not by a later `SAFE`, and not by a later attempt that happens to
+surface more, but different, leads on the same cell. Refuting a candidate is STAGE 4's job. The merged file
+records this under its `merge` key (`policy`, `carried_over_cells`) and STAGE 3 logs the carried-over count
+when it is non-zero; `carried_over_cells` counts partial carries too, so nothing about the union is silent.
 
 Two things to know before you re-hunt:
 
