@@ -324,6 +324,7 @@ conclusion:
 |---|---|---|
 | `not_reached` | by `init`, before the loop; never updated | **Zero evidence.** Never attempted. NOT a negative. A re-hunt is a plain first attempt. |
 | `no_brief` | STAGE 2 emitted no `briefs/brief_<id>.md` | **Upstream defect**, not a hunt outcome. A re-hunt cannot fix it (`--rehunt-gaps` does not re-run STAGE 2); needs a fresh full run. |
+| `unscoped` | the zone ran **zero cells** — it has no matching line in `scope.tsv` | **Zero evidence, never a negative.** `map-zones.sh` emits a scope line only `if not skeleton and classes and z["id"] not in failed_zones`, so an unclassified zone and a `classification_failed` zone are both in `zones.json` and absent from the manifest — yet `gen-briefs.sh` walks `zones.json`, so they DO get a brief and reach STAGE 3. An **upstream mapping defect**: re-map the target; a re-hunt against the same map cannot fix it. |
 | `in_flight` | immediately before `run-discovery.sh` is invoked | **Attempt started, outcome unknown** — the process died mid-zone (external kill, OOM). Artifacts partial. Retry as-is. |
 | `failed` | `run-discovery.sh` exited non-zero | **Attempt made, the tool failed.** NOT a negative. Distinct from `in_flight`: a second failure is a defect to escalate, not an environment problem. |
 | `budget_exhausted` | admission denied — 0 cells of budget remained | **The zone is hunt-able; the run declined to pay.** NOT a negative. The cheapest gap to close. |
@@ -335,6 +336,15 @@ conclusion:
 genuinely hunted, but its `hunted_empty` is not a rigorous negative. Hence two derived fields, computed in one
 place (`lib/zone-coverage.py`) so no consumer re-derives policy: `complete` = every zone is
 `hunted`/`hunted_empty` **and** untruncated; `gap_zones` = the ids that fail that test, in priority order.
+
+**A zone that ran zero cells can never be a `hunted_*` state.** This is the one derivation worth stating twice,
+because getting it wrong re-creates the whole defect inside the record: `run-discovery.sh` exits **0** with
+`totals:{cells:0,candidates:0,failed:0}` whenever `--only <name>` matched no manifest line, so
+`failed == 0 and candidates == 0` is not evidence of cleanliness there. The guard is on the OUTCOME (zero cells
+ran), not on any single cause, so an unclassified zone, a `classification_failed` zone and a `zones.json` name
+that `map-zones.sh`'s `clean()` rewrote before it reached `scope.tsv` all land on `unscoped` rather than on a
+fake rigorous negative. STAGE 3 also names the case up front, as a sibling of the missing-brief guard, so such
+a zone is never hunted and never charged budget.
 
 **Fail-loud, always on.** When `complete == false` STAGE 3 prints a `COVERAGE GAP:` banner + a per-status
 breakdown to stderr; `discovery-results.merged.json` carries an additive top-level `coverage` object
@@ -350,8 +360,15 @@ parse that returns before the agentis-binary check, so it needs no binary, no LL
 effective cap is `min(zone budget or ∞, run budget − spent or ∞)`:
 
 - cap ≥ planned → hunt unchanged; the invocation is **byte-identical** (no `--classes` argument is added).
-- 0 < cap < planned → hunt with `--classes <first cap classes>` (scope.tsv order = the mapper's relevance
-  order, so the least-likely classes are the ones dropped) + `budget_truncated: true`.
+- 0 < cap < planned → hunt with `--classes <first cap distinct classes>` (scope.tsv order = the mapper's
+  relevance order, so the least-likely classes are the ones dropped) + `budget_truncated: true` — **but only
+  when that lands exactly on the cap, and that is measured, not assumed.** `--classes` is a per-manifest-LINE
+  override in `run-discovery.sh`, not a cell filter, while the class list is per-CELL; `map-zones.sh` keys
+  scope lines on `clean(name)` with no dedup, so a zone whose subsystem name matches **several** lines would
+  admit `lines × cap` cells and would apply classes to files the mapper never assigned them to. A second
+  `--list-cells` probe with the candidate override therefore measures the real admitted count; if it is not
+  exactly the cap the zone is **denied** (`budget_exhausted`, with the measured count in `detail`) instead of
+  being mis-charged, and the loop stops as for any denial — so the cut still falls on the #1826 tail.
 - cap == 0 → the zone is `budget_exhausted` and **the loop stops**; every remaining zone is `budget_exhausted`.
 - probe failure → `cells_planned: null` + a `detail`; with budgets OFF nothing changes, with a run budget ON
   the zone is charged the whole remainder and is the last zone admitted.
@@ -379,15 +396,33 @@ included partial) have prior artifacts that `run-discovery.sh` destroys on re-en
 `> $REPORT`), the runner first moves `discovery/<zid>` → `discovery/<zid>.attempt-<n>` and pushes the prior
 terminal state into `attempts[]`, so the failure evidence survives and `attempts` length is the give-up input.
 `--rehunt-max-attempts <N>` (default 2) leaves a zone alone once it has N attempts: one `--rehunt-gaps` pass is
-exactly one pass over the gap set, never a loop. The merge is unchanged and already globs every zone dir
-(skipping the `.attempt-<n>` evidence dirs), so it naturally produces the **union**; STAGE 4/5 then run over
-that union. Budgets compose: `--rehunt-gaps --run-cell-budget N` re-hunts as much of the gap set as the budget
-allows and records the rest as `budget_exhausted` again.
+exactly one pass over the gap set, never a loop. Budgets compose: `--rehunt-gaps --run-cell-budget N` re-hunts
+as much of the gap set as the budget allows and records the rest as `budget_exhausted` again.
 
-`demo-run-zone-hunt.sh` blocks (f)–(j) pin all of it offline: the record is total and the default path inert;
+Two properties of the archive make the re-entrance safe, and both are load-bearing:
+
+- **The suffix is the first FREE `.attempt-<n>` on disk, never a counter derived from the record.** A full
+  re-sweep rewrites the record while the archives stay on disk, so a record-derived counter could point at an
+  existing archive and `mv` would destroy it. Nothing in the pipeline ever deletes an archive. For the same
+  reason `init` **carries `attempts[]` over** when it re-sweeps into an existing `--out`: that list is retry
+  history and the `--rehunt-max-attempts` give-up input, not per-run state, so zeroing it would both un-bound
+  the give-up counter and desync it from the dirs on disk.
+- **The merge is a UNION ACROSS ATTEMPTS.** If archived dirs were excluded, a re-hunt that yields *less* than
+  the attempt it archived would silently delete real candidates from `discovery-results.merged.json` — while
+  reporting a *better* coverage verdict than the run it replaced. That is a worse failure than the one this
+  issue fixes. So the merge reads every attempt of every zone and deduplicates cells by
+  `(subsystem, class, files)`, with **the most-candidates copy winning**: a later `SAFE` never erases an
+  earlier `CANDIDATE`, because refuting a candidate is STAGE 4's job, not the merge's. Totals are derived from
+  the deduplicated set (so they cannot desync from `cells[]`), and the merged file declares the policy plus the
+  carried-over cell count under its `merge` key. STAGE 4/5 then run over that union.
+
+`demo-run-zone-hunt.sh` blocks (f)–(n) pin all of it offline: the record is total and the default path inert;
 a truncated run is distinguishable from a clean sweep (with a negative control reproducing the 1-of-7 shape);
 a failed zone keeps its exit code; the re-hunt is targeted, unions to the clean-sweep cell total, and preserves
-the prior attempt.
+the prior attempt. Blocks (k)–(n) pin the four properties an adversarial review found missing — a zero-cell
+zone is a gap, the union cannot lose a candidate, an unenforceable cap denies instead of mis-charging, and a
+full re-sweep neither resets the give-up counter nor clobbers an archive — and each of those assertions was
+mutation-tested (reverting its fix makes it fire).
 
 ### The HALT / NEVER-SUBMIT invariant (load-bearing)
 

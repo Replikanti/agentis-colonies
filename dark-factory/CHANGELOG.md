@@ -49,6 +49,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   budget-truncated run whose denied zones are present as `budget_exhausted` and are exactly the non-custody
   tail, with a negative control reproducing the 1-of-7 silent-absence shape — and its existing blocks (a)–(e)
   plus the #1717/#1774 CLI guards are untouched and still pass.
+  **Four properties added after adversarial review**, each with a mutation-tested self-test (blocks (k)–(n)):
+  a ninth state `unscoped` for a zone that ran **zero cells** — `map-zones.sh` writes a `scope.tsv` line only
+  `if not skeleton and classes and z["id"] not in failed_zones`, so an unclassified or `classification_failed`
+  zone reaches STAGE 3 with a brief, matches no manifest line, and exits 0 with `totals:{cells:0}`; deriving
+  `hunted_empty` there re-created the silent-absence defect *inside* the record, so zero cells can no longer
+  derive any `hunted_*` status and the case is named up front, before the zone is hunted or charged. The merge
+  is a **union across attempts** (dedup by `(subsystem, class, files)`, most-candidates wins, declared under a
+  `merge` key) so a re-hunt that yields less than the attempt it archived can never delete a candidate while
+  reporting a cleaner verdict. The class-truncation cap is **measured** with a second `--list-cells` probe —
+  `--classes` is a per-manifest-LINE override, not a cell filter, so a zone matching several scope lines used
+  to be charged N while running L×N cells with mis-assigned classes; it is now denied instead of mis-charged.
+  And a full re-sweep into an existing `--out` **carries `attempts[]` over** while the archive suffix is the
+  first FREE `.attempt-<n>` on disk, so no archive is ever destroyed and `--rehunt-max-attempts` is a real
+  bound across re-sweeps.
 - **SEMANTIC MECHANISM JUDGE as an opt-in corpus-bench scoring mode (default OFF)** (#1829).
   `score-match.py`'s location-first matcher decides "did the hunter find this ground-truth bug?" by file
   basename + function name co-occurrence, and that ruler undercounts in BOTH directions: a candidate that

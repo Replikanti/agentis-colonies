@@ -209,6 +209,7 @@ Per-zone `status` tells you what to do next:
 | `in_flight` | the process died mid-zone (external kill / OOM) | `--rehunt-gaps` |
 | `not_reached` | never attempted — zero evidence | `--rehunt-gaps` |
 | `no_brief` | STAGE 2 produced no brief — an upstream defect | re-run the FULL pass; `--rehunt-gaps` deliberately never selects it |
+| `unscoped` | the zone ran **zero cells**: it is in `zones.json` but has no line in `map/scope.tsv` (an unclassified or `classification_failed` zone). Zero evidence — **never** a clean negative | re-map the target (`--scope-hint`, or fix the classification); a re-hunt against the same map cannot fix it, so `--rehunt-gaps` never selects it |
 
 ### Bounding a run and closing the gap
 
@@ -225,7 +226,18 @@ Per-zone `status` tells you what to do next:
 
 A cell budget bounds the number of hunter substrate calls and **nothing else** — not wall-clock, not tokens,
 not memory. It is a coverage-shaping knob, not a cost cap. It never reorders anything: the cut always falls on
-the tail of the #1826 value-custody-first order, and the first denial stops the loop.
+the tail of the #1826 value-custody-first order, and the first denial stops the loop. If a zone's subsystem
+name matches more than one `scope.tsv` line, a partial cap cannot be expressed exactly (`--classes` is a
+per-line override, not a cell filter) — that zone is **denied** with the measured count in its `detail` rather
+than being charged less than it would run. Raise the budget, or re-map so the names are distinct.
+
+**The merge is a union across attempts.** A re-hunt archives the prior `discovery/<zid>` to
+`discovery/<zid>.attempt-<n>` (the first free suffix — archives are never deleted or overwritten) and
+`discovery-results.merged.json` then covers **every** attempt, deduplicated by `(subsystem, class, files)`,
+with the most-candidates copy winning. A re-hunt can therefore only ever add evidence: a hunter that returns
+`SAFE` on a cell that previously produced a `CANDIDATE` does not erase it — refuting a candidate is STAGE 4's
+job. The merged file records this under its `merge` key (`policy`, `carried_over_cells`) and STAGE 3 logs the
+carried-over count when it is non-zero.
 
 Two things to know before you re-hunt:
 
@@ -240,7 +252,8 @@ Two things to know before you re-hunt:
 A re-entered `failed`/`in_flight` zone's prior artifacts are moved to `discovery/<zid>.attempt-<n>` (and the
 prior state pushed into the record's `attempts[]`) before the new attempt, so the failure evidence survives.
 One `--rehunt-gaps` pass is exactly one pass over the gap set; `--rehunt-max-attempts` (default 2) stops a zone
-from being retried forever.
+from being retried forever — and that bound survives a full re-sweep into the same `--out`, because `init`
+carries `attempts[]` over instead of zeroing it.
 
 ## Calibration
 
