@@ -24,6 +24,15 @@
 #      i) --rehunt-gaps re-enters ONLY the gap zones, merges the UNION, preserves a failed attempt's artifacts
 #         in discovery/<zid>.attempt-<n> + attempts[], and guards its prerequisites with exit 3.
 #      j) every new flag fails fast with exit 2 on a bad value / an illegal combination.
+#   k-n) #1830 REVIEW FINDINGS (each assertion fails without its fix):
+#      k) a zone that ran ZERO cells (in zones.json, absent from scope.tsv) is `unscoped` and a GAP — never a
+#         `hunted_*` negative, which would re-create the silent-absence defect inside the record.
+#      l) the merge is a UNION across attempts: a re-hunt that yields less than the attempt it archived cannot
+#         delete a candidate from discovery-results.merged.json.
+#      m) a cap that `--classes` cannot enforce exactly (a zone spanning >1 scope.tsv line) DENIES the zone
+#         instead of charging N while running L x N cells with mis-assigned classes.
+#      n) a full re-sweep carries `attempts[]` over and the next re-hunt archives to the first FREE
+#         `.attempt-<n>`, so no archive is ever destroyed and --rehunt-max-attempts really bounds.
 #
 # Usage:  dark-factory/demo-run-zone-hunt.sh
 # Requires: git + python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression.
@@ -88,6 +97,9 @@ case "$cmd" in
   go)
     case "$sub" in
       hunter.ag)
+        # DEMO_HUNTER_SILENT: every cell answers SAFE. Used by block (l) to make a re-hunt yield LESS than the
+        # attempt it archived. UNSET (the default) => this branch is inert and blocks (a)-(k) are unchanged.
+        if [ -n "${DEMO_HUNTER_SILENT:-}" ]; then echo "SAFE"; exit 0; fi
         s="${SUBSYSTEM:-}"; c="${HUNT_CLASS:-}"
         if [ "$s" = "vault deposits" ] && [ "$c" = "C1" ]; then
           echo "CANDIDATE|contracts/vault/Vault.sol:deposit:10|C1|High|external depositor mints free shares|donate an asset to inflate the share price"
@@ -665,6 +677,238 @@ badflag "--require-coverage 101" 'integer percentage 0-100' --require-coverage 1
 badflag "--rehunt-include-partial without --rehunt-gaps" 'requires --rehunt-gaps' --rehunt-include-partial
 badflag "--rehunt-gaps with --deep-hunt-only" 'cannot be combined with --deep-hunt-only' \
   --rehunt-gaps --deep-hunt --deep-hunt-only
+
+# ----------------------------------------------------------------------------------------------------------
+# (k) #1830 review finding 1: a zone that ran ZERO cells must NEVER derive a `hunted_*` status. `map-zones.sh`
+#     writes a scope.tsv line only `if not skeleton and classes and z["id"] not in failed_zones`, so an
+#     UNCLASSIFIED zone (and a `classification_failed` zone) is in zones.json, gets a brief from gen-briefs.sh
+#     (which iterates zones.json), passes the brief guard, and then `run-discovery.sh --only <name>` matches no
+#     manifest line, runs 0 cells and exits 0 with `totals:{cells:0,candidates:0,failed:0}`. Deriving
+#     `hunted_empty` there re-created the silent-absence defect INSIDE the record: complete: true, no banner,
+#     `--require-coverage 100` passing, while a real zone was never looked at.
+# ----------------------------------------------------------------------------------------------------------
+note 'k) #1830 a zone that ran ZERO cells is unscoped (a gap), never a negative ...'
+REPO_K="$WORK/target-unscoped"
+mkdir -p "$REPO_K"
+cp -R "$FIXTURE_DIR/contracts" "$REPO_K/contracts"
+mkdir -p "$REPO_K/contracts/rewards"
+printf 'contract Rewards { function claim() public {} function accrue() public {} }\n' > "$REPO_K/contracts/rewards/Rewards.sol"
+git -C "$REPO_K" init -q
+git -C "$REPO_K" config user.email demo@example.invalid
+git -C "$REPO_K" config user.name "demo"
+git -C "$REPO_K" add -A
+git -C "$REPO_K" commit -qm "audited baseline"
+# The zones fixture is the SHIPPED one — deliberately with no ZONE| line for contracts_rewards, which is
+# exactly the unclassified shape. The briefs fixture DOES carry a brief for it (gen-briefs walks zones.json).
+BRIEFS_K="$WORK/briefs-unscoped.fixture.txt"
+cp "$BRIEFS_FIXTURE" "$BRIEFS_K"
+{
+  echo "DARK-FACTORY:BRIEF-BEGIN|contracts_rewards"
+  echo "Attack the reward accrual accounting."
+  echo "DARK-FACTORY:BRIEF-END"
+} >> "$BRIEFS_K"
+OUTK="$WORK/zh-unscoped"
+"$ZONEHUNT" --repo "$REPO_K" --out "$OUTK" --drop-dir "$OUTK/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_K" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" \
+  >"$WORK/zhk.out" 2>"$WORK/zhk.err"
+RCK=$?
+if [ "$RCK" -eq 0 ] && python3 - "$OUTK" <<'PY'
+import sys, os, json
+out = sys.argv[1]
+rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
+zones = json.load(open(os.path.join(out, "map", "zones.json"), encoding="utf-8"))
+by_id = dict((z["id"], z) for z in rec["zones"])
+assert len(rec["zones"]) == len(zones) == 5, "record/zones.json size mismatch: %d/%d" % (len(rec["zones"]), len(zones))
+r = by_id["contracts_rewards"]
+assert r["status"] == "unscoped", "the zero-cell zone is %r, not unscoped" % r["status"]
+assert r["cells"] == 0 and r["cells_planned"] == 0, "unexpected cell counts: %r" % r
+# THE SINK: no zone may ever be `hunted_*` with zero cells run.
+bad = [z["id"] for z in rec["zones"] if z["status"].startswith("hunted") and z["cells"] == 0]
+assert not bad, "zones claim a hunted status with 0 cells: %r" % bad
+assert rec["complete"] is False, "a run that never looked at a real zone reported complete"
+assert rec["gap_zones"] == ["contracts_rewards"], "gap_zones wrong: %r" % rec["gap_zones"]
+PY
+then ok 'an unclassified zone (in zones.json, absent from scope.tsv) is recorded unscoped and IS a gap'
+else bad "the unscoped-zone assertion failed (exit $RCK)"
+fi
+if grep -q 'COVERAGE GAP:' "$WORK/zhk.err" && grep -q 'has NO line in scope.tsv' "$WORK/zhk.err"; then
+  ok "the unscoped zone is named on stderr and raises the COVERAGE GAP banner"
+else
+  bad "the unscoped zone did not surface on stderr"
+fi
+"$ZONEHUNT" --repo "$REPO_K" --out "$WORK/zh-unscoped2" --drop-dir "$WORK/zh-unscoped2/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_K" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --require-coverage 100 \
+  >/dev/null 2>"$WORK/zhk2.err"
+RCK2=$?
+[ "$RCK2" -eq 4 ] && ok "--require-coverage 100 now REFUSES the run that never looked at that zone (exit 4)" \
+  || bad "--require-coverage 100 passed a run with an unhunted zone (exit $RCK2)"
+
+# ----------------------------------------------------------------------------------------------------------
+# (l) #1830 review finding 2: a re-hunt must never DELETE evidence from the merged file. The re-entry moves
+#     discovery/<zid> to <zid>.attempt-<n>; if the merge excluded those dirs, a re-hunt that yields LESS than
+#     the attempt it archived would silently drop real candidates AND report a better coverage verdict. The
+#     merge is therefore a UNION across attempts, deduplicated by (subsystem, class, files), most-candidates
+#     wins — a later SAFE never erases an earlier CANDIDATE (refuting is STAGE 4's job).
+# ----------------------------------------------------------------------------------------------------------
+note "l) #1830 the merge is a union across attempts — a re-hunt cannot delete a candidate ..."
+OUTL="$WORK/zh-union"
+"$ZONEHUNT" --repo "$REPO" --out "$OUTL" --drop-dir "$OUTL/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --zone-cell-budget 1 \
+  >"$WORK/zhl1.out" 2>"$WORK/zhl1.err"
+RCL1=$?
+# Pass 2 re-hunts the truncated zones with a hunter that finds NOTHING this time.
+DEMO_HUNTER_SILENT=1 "$ZONEHUNT" --repo "$REPO" --out "$OUTL" --drop-dir "$OUTL/drop" \
+  --backend mock --agentis "$STUB" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --rehunt-gaps --rehunt-include-partial --rehunt-max-attempts 3 \
+  >"$WORK/zhl2.out" 2>"$WORK/zhl2.err"
+RCL2=$?
+if [ "$RCL1" -eq 0 ] && [ "$RCL2" -eq 0 ] && python3 - "$OUTL" <<'PY'
+import sys, os, json, glob
+out = sys.argv[1]
+merged = json.load(open(os.path.join(out, "discovery", "discovery-results.merged.json"), encoding="utf-8"))
+archived = {}
+for p in sorted(glob.glob(os.path.join(out, "discovery", "*.attempt-*", "discovery-results.json"))):
+    archived[p] = json.load(open(p, encoding="utf-8"))["totals"]["candidates"]
+lost = sum(archived.values())
+assert lost >= 1, "the fixture did not archive an attempt holding a candidate: %r" % archived
+# The candidate the second, emptier attempt did NOT reproduce must still be in the merged file.
+assert merged["totals"]["candidates"] >= lost, \
+    "the re-hunt LOST %d archived candidate(s): merged carries %d" % (lost, merged["totals"]["candidates"])
+assert merged["merge"]["policy"] == "union-across-attempts", "merge policy not declared: %r" % merged.get("merge")
+assert merged["merge"]["carried_over_cells"] >= 1, "nothing was carried over from the archived attempt"
+assert merged["totals"]["cells"] == 9, "the union double-counted or lost cells: %r" % merged["totals"]["cells"]
+cand_locs = [c for cell in merged["cells"] for c in cell.get("candidates", [])]
+assert any("Vault.sol" in c for c in cand_locs), "the archived vault candidate is not in cells[]: %r" % cand_locs
+PY
+then ok "a re-hunt that finds LESS than the attempt it archived keeps every prior candidate in the merged file"
+else bad "the union-across-attempts assertion failed (exit $RCL1/$RCL2)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (m) #1830 review finding 3: `--classes` is a per-manifest-LINE override in run-discovery.sh, not a cell
+#     filter. map-zones.sh keys scope lines on clean(name) with no dedup, so two zones can share a subsystem
+#     name; a class-prefix "cap of N" would then admit L x N cells and apply classes to files the mapper never
+#     assigned them to. The admitted count is MEASURED with a second --list-cells probe; when it does not land
+#     exactly on the cap the zone is DENIED rather than mis-charged.
+# ----------------------------------------------------------------------------------------------------------
+note "m) #1830 a cap that cannot be enforced denies the zone instead of mis-charging it ..."
+REPO_M="$WORK/target-dupname"
+mkdir -p "$REPO_M/contracts/v1" "$REPO_M/contracts/v2"
+printf 'contract A { function f() public {} }\n' > "$REPO_M/contracts/v1/A.sol"
+printf 'contract B { function g() public {} }\n' > "$REPO_M/contracts/v2/B.sol"
+git -C "$REPO_M" init -q
+git -C "$REPO_M" config user.email demo@example.invalid
+git -C "$REPO_M" config user.name "demo"
+git -C "$REPO_M" add -A
+git -C "$REPO_M" commit -qm "audited baseline"
+ZONES_M="$WORK/zones-dupname.fixture.txt"
+{
+  echo "ZONE|contracts_v1|vault|C1,C6,C11|first vault dir"
+  echo "ZONE|contracts_v2|vault|C2,C9|second vault dir with the SAME name"
+  echo "CUSTODY|contracts_v1|true"
+  echo "CUSTODY|contracts_v2|true"
+} > "$ZONES_M"
+BRIEFS_M="$WORK/briefs-dupname.fixture.txt"
+{
+  echo "DARK-FACTORY:BRIEF-BEGIN|contracts_v1"
+  echo "Break the first vault."
+  echo "DARK-FACTORY:BRIEF-END"
+  echo "DARK-FACTORY:BRIEF-BEGIN|contracts_v2"
+  echo "Break the second vault."
+  echo "DARK-FACTORY:BRIEF-END"
+} > "$BRIEFS_M"
+OUTM="$WORK/zh-dupname"
+"$ZONEHUNT" --repo "$REPO_M" --out "$OUTM" --drop-dir "$OUTM/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_M" --brief-fixture "$BRIEFS_M" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --zone-cell-budget 2 \
+  >"$WORK/zhm.out" 2>"$WORK/zhm.err"
+RCM=$?
+if [ "$RCM" -eq 0 ] && python3 - "$OUTM" <<'PY'
+import sys, os, json
+out = sys.argv[1]
+lines = [l for l in open(os.path.join(out, "map", "scope.tsv"), encoding="utf-8").read().splitlines()
+         if l.strip() and not l.startswith("#")]
+subs = [l.split("|")[0].strip() for l in lines]
+assert subs.count("vault") == 2, "the fixture did not produce two scope lines with one name: %r" % subs
+rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
+v1 = dict((z["id"], z) for z in rec["zones"])["contracts_v1"]
+assert v1["status"] == "budget_exhausted", "the unenforceable cap produced %r" % v1["status"]
+assert v1["budget_truncated"] is False, "an unenforceable cap was recorded as a truncation"
+assert "not enforceable" in v1["detail"], "the denial is not explained: %r" % v1["detail"]
+# THE INVARIANT: no zone may ever RUN more cells than the budget CHARGED it.
+over = [(z["id"], z["cells"], z["cells_charged"]) for z in rec["zones"] if z["cells"] > z["cells_charged"]]
+assert not over, "zones ran more cells than they were charged: %r" % over
+assert rec["complete"] is False and "contracts_v1" in rec["gap_zones"], "the denied zone is not a gap"
+PY
+then ok "a zone spanning two scope.tsv lines is DENIED (not charged 2 while running 4) and no zone outruns its charge"
+else bad "the unenforceable-cap assertion failed (exit $RCM)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (n) #1830 review finding 4: a FULL re-sweep into an existing --out must not reset `attempts[]` while the
+#     `.attempt-<n>` dirs stay on disk — that both un-bounds --rehunt-max-attempts and makes the next re-hunt
+#     reuse a suffix that already exists, destroying the preserved evidence. attempts[] is carried over by
+#     `init`, and the archive suffix is the first FREE one on disk, never a record-derived counter.
+# ----------------------------------------------------------------------------------------------------------
+note "n) #1830 a full re-sweep preserves the retry history and never clobbers an archive ..."
+# OUT4 already holds one archived attempt for contracts_governance (block i.2).
+"$ZONEHUNT" --repo "$REPO" --out "$OUT4" --drop-dir "$OUT4/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB_FAIL" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" \
+  >"$WORK/zhn1.out" 2>"$WORK/zhn1.err"
+RCN1=$?
+if [ "$RCN1" -eq 0 ] && python3 - "$OUT4/coverage/zone-coverage.json" <<'PY'
+import sys, json
+rec = json.load(open(sys.argv[1], encoding="utf-8"))
+g = dict((z["id"], z) for z in rec["zones"])["contracts_governance"]
+assert len(g["attempts"]) == 1, "the full re-sweep reset attempts[] to %r" % g["attempts"]
+assert g["status"] == "failed", "the re-swept zone is %r" % g["status"]
+PY
+then ok "a full re-sweep into an existing --out CARRIES attempts[] over (the give-up counter is not reset)"
+else bad "the full-re-sweep attempts[] preservation assertion failed (exit $RCN1)"
+fi
+ATT1_BEFORE="$(ls "$OUT4/discovery/contracts_governance.attempt-1" 2>/dev/null | tr '\n' ',')"
+# STUB_FAIL again, so the zone stays a gap and the give-up bound below has something to bind on.
+"$ZONEHUNT" --repo "$REPO" --out "$OUT4" --drop-dir "$OUT4/drop" \
+  --backend mock --agentis "$STUB_FAIL" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --rehunt-gaps --rehunt-max-attempts 3 \
+  >"$WORK/zhn2.out" 2>"$WORK/zhn2.err"
+RCN2=$?
+ATT1_AFTER="$(ls "$OUT4/discovery/contracts_governance.attempt-1" 2>/dev/null | tr '\n' ',')"
+if [ "$RCN2" -eq 0 ] && [ -d "$OUT4/discovery/contracts_governance.attempt-1" ] \
+   && [ -d "$OUT4/discovery/contracts_governance.attempt-2" ] \
+   && [ "$ATT1_BEFORE" = "$ATT1_AFTER" ] && [ -n "$ATT1_BEFORE" ]; then
+  ok "the next re-hunt archives to .attempt-2 — .attempt-1 is untouched, no archive is ever deleted"
+else
+  bad "the re-hunt clobbered or skipped an archive (exit $RCN2; before='$ATT1_BEFORE' after='$ATT1_AFTER')"
+fi
+"$ZONEHUNT" --repo "$REPO" --out "$OUT4" --drop-dir "$OUT4/drop" \
+  --backend mock --agentis "$STUB" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --rehunt-gaps --rehunt-max-attempts 1 \
+  >"$WORK/zhn3.out" 2>"$WORK/zhn3.err"
+RCN3=$?
+if [ "$RCN3" -eq 0 ] && grep -q 'leaving it alone' "$WORK/zhn3.err" \
+   && [ "$(grep -c '\[M3\] hunting zone' "$WORK/zhn3.err")" -eq 0 ]; then
+  ok "--rehunt-max-attempts is a REAL bound across re-sweeps: the over-cap zone is left alone, nothing re-hunts"
+else
+  bad "--rehunt-max-attempts did not bind after a full re-sweep (exit $RCN3)"
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then

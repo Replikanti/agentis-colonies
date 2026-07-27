@@ -339,13 +339,18 @@ fi
 
 CELL_PROBE="$OUT/.zone-cell-probe.txt"
 RUN_SPENT=0 ; BUDGET_STOP=0
-while IFS='	' read -r ZID ZNAME ZACTION ZATTEMPT || [ -n "${ZID:-}" ]; do
+while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
   [ -n "$ZID" ] || continue
   [ -n "${ZACTION:-}" ] || ZACTION="hunt"
-  # `no_brief` is an UPSTREAM defect, never collapsed into a retryable failure; a capped zone is left alone so
-  # one --rehunt-gaps pass is exactly one pass over the gap set, never a loop. Both stay in gap_zones.
+  # `no_brief` and `unscoped` are UPSTREAM defects, never collapsed into a retryable failure; a capped zone is
+  # left alone so one --rehunt-gaps pass is exactly one pass over the gap set, never a loop. All stay in
+  # gap_zones — they are visible gaps, they are just not gaps a re-hunt of this --out can close.
   if [ "$ZACTION" = "no-brief" ]; then
     echo "run-zone-hunt.sh: [M3] zone '$ZID' has no brief — a re-hunt cannot fix this (re-run without --rehunt-gaps)" >&2
+    continue
+  fi
+  if [ "$ZACTION" = "unscoped" ]; then
+    echo "run-zone-hunt.sh: [M3] zone '$ZID' has no line in scope.tsv — a re-hunt cannot fix this (re-map the target)" >&2
     continue
   fi
   if [ "$ZACTION" = "capped" ]; then
@@ -372,6 +377,17 @@ while IFS='	' read -r ZID ZNAME ZACTION ZATTEMPT || [ -n "${ZID:-}" ]; do
   if "$DISCOVERY" --repo "$REPO" --scope "$MAP/scope.tsv" --only "$ZNAME" --list-cells > "$CELL_PROBE" 2>/dev/null; then
     CELLS_PLANNED="$(grep -c '^CELL|' "$CELL_PROBE" || true)"
     CLASSES_ALL="$(grep '^CELL|' "$CELL_PROBE" | cut -d'|' -f3 | tr '\n' ',' | sed 's/,$//')"
+  fi
+  # SIBLING of the brief guard above: a zone can be in zones.json and have NO line in scope.tsv — map-zones.sh
+  # emits one only `if not skeleton and classes and z["id"] not in failed_zones`, so an unclassified zone and a
+  # `classification_failed` zone (#1707's deliberately-visible state) both reach here with a brief and zero
+  # cells. Hunting it would exit 0 with `totals:{cells:0}` and look like a clean negative. Name the case
+  # instead of inferring it, and never charge budget for a zone that cannot be hunted.
+  if [ -n "$CELLS_PLANNED" ] && [ "$CELLS_PLANNED" -eq 0 ]; then
+    echo "run-zone-hunt.sh: [M3] zone '$ZNAME' ($ZID) has NO line in scope.tsv (0 cells) — recorded unscoped, NOT a negative" >&2
+    "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status unscoped --cells-planned 0 --cells-charged 0 \
+      --detail "no matching line in map/scope.tsv (unclassified / classification_failed zone, or a name the mapper rewrote)"
+    continue
   fi
   # ADMISSION (one uniform rule): effective cap = min(zone budget or inf, run budget - spent or inf). Both
   # budgets 0 (the default) => ZCAP stays empty = unbounded => the invocation below gains NO argument.
@@ -405,22 +421,63 @@ while IFS='	' read -r ZID ZNAME ZACTION ZATTEMPT || [ -n "${ZID:-}" ]; do
       ZCHARGE=0
     fi
   elif [ -n "$ZCAP" ] && [ "$ZCAP" -lt "$CELLS_PLANNED" ]; then
-    # Shorten the class list to the first ZCAP classes. scope.tsv order IS the mapper's relevance order, so
-    # the classes dropped are the least likely ones.
-    ZCLASSES_ARG="$(printf '%s' "$CLASSES_ALL" | cut -d',' -f1-"$ZCAP")"
-    ZCHARGE="$ZCAP"
-    ZTRUNC="1"
-    ZDETAIL="per-zone cap $ZCAP < $CELLS_PLANNED planned cell(s); class list shortened"
+    # Shorten the class list to the first ZCAP DISTINCT classes. scope.tsv order IS the mapper's relevance
+    # order, so the classes dropped are the least likely ones.
+    #
+    # `--classes` is a per-manifest-LINE OVERRIDE in run-discovery.sh, not a cell filter, while CLASSES_ALL is
+    # per-CELL. When a zone's subsystem name matches MORE THAN ONE scope.tsv line (map-zones.sh keys lines on
+    # clean(name) with no dedup) the override is applied to every one of them, so a "cap of N" would admit
+    # L x N cells and would apply classes to files the mapper never assigned them to. So the admitted count is
+    # MEASURED with a second --list-cells probe instead of assumed; if it does not land exactly on the cap the
+    # zone is DENIED rather than mis-charged. Denial keeps the #1826 order (the loop stops), and a wrong
+    # budget is never silently absorbed.
+    ZCLASSES_ARG=""
+    ZNSEL=0
+    _cls_old_ifs="$IFS"; IFS=','
+    for _cls in $CLASSES_ALL; do
+      IFS="$_cls_old_ifs"
+      if [ -n "$_cls" ]; then
+        case ",$ZCLASSES_ARG," in
+          *",$_cls,"*) : ;;
+          *) ZCLASSES_ARG="${ZCLASSES_ARG:+$ZCLASSES_ARG,}$_cls"; ZNSEL=$((ZNSEL + 1)) ;;
+        esac
+      fi
+      if [ "$ZNSEL" -ge "$ZCAP" ]; then break; fi
+      IFS=','
+    done
+    IFS="$_cls_old_ifs"
+    ZADMIT=""
+    if [ -n "$ZCLASSES_ARG" ] && "$DISCOVERY" --repo "$REPO" --scope "$MAP/scope.tsv" --only "$ZNAME" \
+         --classes "$ZCLASSES_ARG" --list-cells > "$CELL_PROBE" 2>/dev/null; then
+      ZADMIT="$(grep -c '^CELL|' "$CELL_PROBE" || true)"
+    fi
+    if [ "${ZADMIT:-x}" = "$ZCAP" ]; then
+      ZCHARGE="$ZCAP"
+      ZTRUNC="1"
+      ZDETAIL="per-zone cap $ZCAP < $CELLS_PLANNED planned cell(s); class list shortened to $ZCLASSES_ARG"
+    else
+      echo "run-zone-hunt.sh: [M3] zone '$ZNAME' ($ZID) DENIED — a cap of $ZCAP cannot be enforced on it (--classes $ZCLASSES_ARG would admit ${ZADMIT:-?} cell(s), not $ZCAP: the zone spans several scope.tsv lines); recorded budget_exhausted rather than mis-charging the budget" >&2
+      "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status budget_exhausted \
+        --cells-planned "$CELLS_PLANNED" --cells-charged 0 --classes "$CLASSES_ALL" \
+        --detail "cap $ZCAP not enforceable: a --classes prefix would admit ${ZADMIT:-unknown} of $CELLS_PLANNED cell(s)"
+      BUDGET_STOP=1
+      continue
+    fi
   fi
   if [ "$ZACTION" = "retry" ]; then
     # failed / in_flight (and an --rehunt-include-partial partial) carry PRIOR ARTIFACTS that run-discovery.sh
     # destroys on re-entry (`rm -rf $RUN`, `> $REPORT`). Move them aside FIRST, then push the prior terminal
     # state into attempts[] — the failure evidence survives and attempts[] is the give-up input.
+    #
+    # The suffix is the FIRST FREE `.attempt-<n>` ON DISK, never a counter derived from the record: a full
+    # re-sweep rewrites the record while the archives stay on disk, so a record-derived suffix could point at
+    # an existing archive and `mv` would destroy it. Nothing here ever deletes an archive.
+    ZATTEMPT=1
+    while [ -e "$DISC/$ZID.attempt-$ZATTEMPT" ]; do ZATTEMPT=$((ZATTEMPT + 1)); done
     if [ -d "$DISC/$ZID" ]; then
-      rm -rf "$DISC/$ZID.attempt-${ZATTEMPT:-1}"
-      mv "$DISC/$ZID" "$DISC/$ZID.attempt-${ZATTEMPT:-1}"
+      mv "$DISC/$ZID" "$DISC/$ZID.attempt-$ZATTEMPT"
     fi
-    "$ZONECOV" retry --file "$COVERAGE_JSON" --zone "$ZID" --artifacts "discovery/$ZID.attempt-${ZATTEMPT:-1}"
+    "$ZONECOV" retry --file "$COVERAGE_JSON" --zone "$ZID" --artifacts "discovery/$ZID.attempt-$ZATTEMPT"
   fi
   echo "run-zone-hunt.sh: [M3] hunting zone '$ZNAME' ($ZID) with its brief ..." >&2
   ZCLASSES_REC="$CLASSES_ALL"
@@ -457,32 +514,60 @@ MERGED="$DISC/discovery-results.merged.json"
 # used to drop (#1707 degraded cells vanished with it).
 COVERAGE_FRAGMENT="$("$ZONECOV" summary --file "$COVERAGE_JSON" --json)"
 python3 - "$MERGED" "$DISC" "$REPO_NAME" "$BACKEND" "$JOBS" "$COVERAGE_FRAGMENT" <<'PY'
-import sys, os, json, glob
+import sys, os, json
 merged_path, disc_dir, repo, backend, jobs = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
 coverage = json.loads(sys.argv[6])
-cells, tc, tcand, ts, tf = [], 0, 0, 0, 0
-for zid in sorted(os.listdir(disc_dir)):
-    # #1830: `<zid>.attempt-<n>` dirs are PRESERVED EVIDENCE from a prior attempt, not a zone — counting them
-    # would double-count a re-hunt. Zone ids are `[^A-Za-z0-9]+ -> _` slugs, so they never contain a dot.
-    if ".attempt-" in zid:
-        continue
-    p = os.path.join(disc_dir, zid, "discovery-results.json")
+# #1830 MERGE POLICY — UNION ACROSS ATTEMPTS. A re-hunt moves `discovery/<zid>` to `<zid>.attempt-<n>`, so
+# excluding those dirs would let a re-hunt that yields LESS than the attempt it archived silently DELETE real
+# candidates from this file — while reporting a cleaner coverage verdict. That is a worse failure than the one
+# this issue fixes, so the merge unions every attempt of every zone:
+#   - cells are deduplicated by (subsystem, class, files);
+#   - when the same cell exists in several attempts the one with the MOST candidates wins. A later SAFE never
+#     erases an earlier CANDIDATE: refuting a candidate is STAGE 4's job, not the merge's.
+# The current zone dir sorts BEFORE its `.attempt-<n>` archives (a prefix sorts first), so it is seen first and
+# `cells[]` stays in current-run order; archives only contribute what the current attempt did not produce.
+def cell_key(c):
+    return (c.get("subsystem", ""), c.get("class", ""), c.get("files", ""))
+best, order, carried = {}, [], 0
+for name in sorted(os.listdir(disc_dir)):
+    p = os.path.join(disc_dir, name, "discovery-results.json")
     if not os.path.isfile(p):
         continue
     try:
         d = json.load(open(p, encoding="utf-8"))
     except Exception:
         continue
-    cells.extend(d.get("cells", []))
-    t = d.get("totals", {})
-    tc += int(t.get("cells", 0)); tcand += int(t.get("candidates", 0)); ts += int(t.get("steers", 0))
-    tf += int(t.get("failed", 0))
+    archived = ".attempt-" in name
+    for c in d.get("cells", []):
+        if not isinstance(c, dict):
+            continue
+        k = cell_key(c)
+        prev = best.get(k)
+        if prev is None:
+            best[k] = c
+            order.append(k)
+            if archived:
+                carried += 1
+        elif len(c.get("candidates", []) or []) > len(prev.get("candidates", []) or []):
+            best[k] = c
+            if archived:
+                carried += 1
+cells = [best[k] for k in order]
+# Totals are derived from the deduplicated set with run-discovery.sh's own definitions (cells = one entry per
+# cell, steers = cells carrying a blackboard FOCUS, failed = #1707 no-sentinel cells), so they can never
+# desync from `cells[]` the way summing per-zone totals across overlapping attempts would.
+tc = len(cells)
+tcand = sum(len(c.get("candidates", []) or []) for c in cells)
+ts = sum(1 for c in cells if c.get("coordination"))
+tf = sum(1 for c in cells if c.get("status") == "failed")
 out = {"repo": repo, "backend": backend, "jobs": jobs, "cells": cells,
        "totals": {"cells": tc, "candidates": tcand, "steers": ts, "failed": tf},
+       "merge": {"policy": "union-across-attempts", "carried_over_cells": carried},
        "coverage": coverage}
 json.dump(out, open(merged_path, "w", encoding="utf-8"), indent=2)
 open(merged_path, "a", encoding="utf-8").write("\n")
-print("run-zone-hunt.sh: [M3] merged %d cell(s), %d candidate(s) from %d zone(s)" % (tc, tcand, len(cells)), file=sys.stderr)
+print("run-zone-hunt.sh: [M3] merged %d cell(s), %d candidate(s)%s" % (
+    tc, tcand, (" (%d carried over from a prior attempt)" % carried) if carried else ""), file=sys.stderr)
 PY
 [ -f "$MERGED" ] || { echo "run-zone-hunt.sh: merge produced no discovery-results.merged.json" >&2; exit 3; }
 

@@ -17,6 +17,11 @@
 # THE STATE VOCABULARY (closed; consumers branch on `status`):
 #   not_reached       written by `init` before the loop; never updated. ZERO EVIDENCE — not a negative.
 #   no_brief          STAGE 2 emitted no brief for the zone. An UPSTREAM DEFECT; a re-hunt cannot fix it.
+#   unscoped          the zone ran ZERO cells: it has no line in `scope.tsv` (map-zones.sh writes one only
+#                     `if not skeleton and classes and z["id"] not in failed_zones`, so an unclassified or
+#                     `classification_failed` zone is in zones.json and absent from the manifest), or its
+#                     zones.json name does not match any manifest subsystem. ZERO EVIDENCE — an upstream
+#                     MAPPING defect, and a re-hunt against the same map cannot fix it. NEVER a negative.
 #   in_flight         set immediately before `run-discovery.sh` is invoked; survives only if the process died
 #                     mid-zone. Attempt started, outcome unknown (external kill / OOM). Retry as-is.
 #   failed            `run-discovery.sh` exited non-zero. Attempt made, the TOOL failed — not a negative.
@@ -39,7 +44,10 @@
 #        [--zone-cell-budget N] [--run-cell-budget N]
 #        Writes the record with every zone `not_reached` AND emits `.zone-list.tsv`. The #1826 priority sort
 #        key `(not value_custody, id)` lives HERE (moved verbatim out of run-zone-hunt.sh's inline heredoc)
-#        so the record's order and the hunt order provably cannot drift.
+#        so the record's order and the hunt order provably cannot drift. A full re-sweep into an --out that
+#        already has a record CARRIES `attempts[]` OVER per zone: that list is the retry HISTORY (and the
+#        `--rehunt-max-attempts` give-up input), not per-run state — zeroing it would both un-bound the
+#        give-up counter and make the next re-hunt reuse an `.attempt-<n>` suffix that is still on disk.
 #   set --file <coverage.json> --zone <zid> [--status <s>] [--exit-code N] [--cells-planned N|null]
 #       [--cells-charged N] [--classes CSV] [--budget-truncated] [--results <discovery-results.json>]
 #       [--detail TEXT]
@@ -47,12 +55,13 @@
 #       reads `totals.{cells,candidates,failed}` and DERIVES the terminal status itself — the derivation
 #       exists in exactly one place. Omitted fields keep their current value.
 #   gaps --file <coverage.json> [--include-partial] [--max-attempts N]
-#       The re-hunt work list in priority order, TSV `<zid>\t<name>\t<action>\t<next-attempt>` where action is
+#       The re-hunt work list in priority order, TSV `<zid>\t<name>\t<action>` where action is
 #         hunt      a plain first attempt (not_reached / budget_exhausted) — nothing to preserve
 #         retry     prior artifacts exist (failed / in_flight, or a partial under --include-partial): the
 #                   caller MUST move `discovery/<zid>` aside and call `retry` before re-entering
 #         capped    `attempts` already has >= --max-attempts entries; leave it alone
 #         no-brief  never selected — the missing prerequisite is NOT collapsed into a retryable failure
+#         unscoped  never selected — the zone is absent from scope.tsv, which a re-hunt cannot change
 #   retry --file <coverage.json> --zone <zid> --artifacts <relpath>
 #       Push the prior terminal state into `attempts[]` and reset the zone to `not_reached` for a new attempt.
 #   summary --file <coverage.json> [--counts | --json]
@@ -75,9 +84,11 @@ STATUSES = (
     "budget_exhausted",
     "in_flight",
     "no_brief",
+    "unscoped",
     "not_reached",
 )
-# A zone is COVERED only when it was hunted to completion; everything else is a gap.
+# A zone is COVERED only when it was hunted to completion; everything else is a gap. `unscoped` is
+# deliberately NOT here: a zone that ran zero cells is not a negative of any kind (see the header).
 COVERED_STATUSES = ("hunted", "hunted_empty")
 # Statuses whose remedy is "run the zone again" — the default re-hunt work set.
 RETRYABLE_STATUSES = ("not_reached", "budget_exhausted", "in_flight", "failed")
@@ -211,6 +222,18 @@ def cmd_init(argv):
     # first, tie-broken by id, so a truncated run only ever drops the lowest-priority (non-custody) zones.
     # The record's order and the hunt order are now the same list by construction.
     zones = sorted(zones, key=lambda z: (not z.get("value_custody", False), z.get("id", "")))
+    # Carry the retry HISTORY across a full re-sweep into an existing --out (see the header): everything else
+    # is per-run state and is deliberately reset to `not_reached`.
+    prior_attempts = {}
+    if os.path.isfile(f["--out"]):
+        try:
+            with open(f["--out"], encoding="utf-8") as fh:
+                old = json.load(fh)
+            for z in old.get("zones", []) if isinstance(old, dict) else []:
+                if isinstance(z, dict) and z.get("id") and isinstance(z.get("attempts"), list):
+                    prior_attempts[z["id"]] = z["attempts"]
+        except (OSError, ValueError):
+            prior_attempts = {}
     entries = []
     lines = []
     for z in zones:
@@ -239,7 +262,7 @@ def cmd_init(argv):
             "ended_at": "",
             "results": "",
             "detail": "",
-            "attempts": [],
+            "attempts": prior_attempts.get(zid, []),
         })
     started = now_iso()
     rec = {
@@ -316,7 +339,17 @@ def cmd_set(argv):
             z["candidates"] = int(t.get("candidates", 0) or 0)
             z["failed_cells"] = int(t.get("failed", 0) or 0)
             z["results"] = relative_to_out(f["--file"], path)
-            if z["failed_cells"] > 0:
+            if z["cells"] == 0:
+                # ZERO cells ran. run-discovery.sh exits 0 with `totals:{cells:0,...}` whenever --only matched
+                # no manifest line, so `failed == 0 and candidates == 0` is NOT evidence of cleanliness here —
+                # deriving `hunted_empty` would re-create, inside the record, the exact silent-absence defect
+                # this record exists to remove. The guard is on the OUTCOME (zero cells ran), not on any one
+                # cause, so an unclassified zone, a `classification_failed` zone and a name that map-zones.sh's
+                # clean() rewrote before it reached scope.tsv all land here.
+                status = "unscoped"
+                if not z.get("detail"):
+                    z["detail"] = "zero cells ran: the zone has no matching line in scope.tsv"
+            elif z["failed_cells"] > 0:
                 status = "hunted_degraded"
             elif z["candidates"] > 0:
                 status = "hunted"
@@ -355,15 +388,17 @@ def cmd_gaps(argv):
         partial = st == "hunted_degraded" or (st in COVERED_STATUSES and z.get("budget_truncated"))
         if st == "no_brief":
             action = "no-brief"
+        elif st == "unscoped":
+            action = "unscoped"
         elif st in RETRYABLE_STATUSES:
             action = "retry" if st in HAS_ARTIFACTS else "hunt"
         elif partial and include_partial:
             action = "retry"
         else:
             continue
-        if action != "no-brief" and max_attempts > 0 and len(attempts) >= max_attempts:
+        if action in ("hunt", "retry") and max_attempts > 0 and len(attempts) >= max_attempts:
             action = "capped"
-        sys.stdout.write("%s\t%s\t%s\t%d\n" % (z.get("id", ""), z.get("name", ""), action, len(attempts) + 1))
+        sys.stdout.write("%s\t%s\t%s\n" % (z.get("id", ""), z.get("name", ""), action))
     return 0
 
 
