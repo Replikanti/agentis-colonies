@@ -96,11 +96,43 @@
 #                       distinct relational-invariant VARIANTS through the unchanged gate and take an ensemble
 #                       vote (any break => FINDING). Forwarded verbatim to both $INVHUNT invocations; default 0
 #                       (= OFF) / N < 2 => byte-identical to today's single-draw deep-hunt.
+#   --zone-cell-budget <N>  #1830: max CELLS admitted for ONE zone. 0 (default) = OFF = unbounded, and the
+#                       run-discovery.sh invocation gains NO argument (byte-identical to before). A zone whose
+#                       planned cell count exceeds the cap is hunted with `--classes <first N classes>` and
+#                       recorded `budget_truncated: true`. NOTE: cells are the unit the pipeline enumerates
+#                       and controls — this bounds the number of hunter substrate calls and NOTHING ELSE. It
+#                       is NOT a wall-clock, token or memory cap (per-cell cost varies ~20 % on its own).
+#   --run-cell-budget <N>  #1830: max CELLS across ALL of STAGE 3. 0 (default) = OFF. The effective cap for a
+#                       zone is min(zone budget, run budget - spent). The FIRST denial STOPS the loop and every
+#                       remaining zone is recorded `budget_exhausted` — never best-effort packing, which would
+#                       silently invert the #1826 value-custody-first order.
+#   --require-coverage <pct>  #1830: after STAGE 3, exit 4 BEFORE STAGE 4/5 when the covered fraction is below
+#                       <pct> (0-100). Default empty = OFF. A degraded run must not be able to publish a
+#                       plausible-looking result; the coverage record is already on disk when it aborts.
+#   --rehunt-gaps       #1830: TARGETED RE-HUNT. SKIP STAGE 1/2 and re-enter STAGE 3 against ONLY the zones the
+#                       existing <out>/coverage/zone-coverage.json records as gaps (not_reached /
+#                       budget_exhausted / in_flight / failed), then merge (the merge globs every zone dir, so
+#                       it naturally produces the UNION) and run STAGE 4/5 over that union. Requires an existing
+#                       --out with map/zones.json, map/scope.tsv, briefs/briefs/ and the coverage record, else
+#                       exit 3. Mutually exclusive with --deep-hunt-only (exit 2). DEFAULT OFF.
+#   --rehunt-include-partial  #1830: also re-hunt PARTIAL zones (hunted_degraded, or budget_truncated) — off by
+#                       default because a re-hunt would redo cells that already produced results. Requires
+#                       --rehunt-gaps (exit 2).
+#   --rehunt-max-attempts <N>  #1830: leave a zone alone once its coverage record carries >= N attempts
+#                       (default 2). ONE --rehunt-gaps pass is exactly ONE pass over the gap set, never a loop.
 #   --drop-dir <dir>    deliver-submission.sh drop-dir (default: <out>/drop).
 #   -h, --help          This help.
 #
+# COVERAGE (#1830, ALWAYS ON — the deliberate exception to every other knob's default-inertness). STAGE 3 writes
+# <out>/coverage/zone-coverage.json BEFORE it hunts a single zone, with EVERY zone in zones.json present as
+# `not_reached`, and rewrites each entry as the zone transitions. Absence is therefore not representable: a
+# truncated run cannot look like a clean sweep. When the record is incomplete STAGE 3 prints a COVERAGE GAP
+# banner to stderr and discovery-results.merged.json carries an additive `coverage` object. Schema + the
+# eight-state vocabulary: lib/zone-coverage.py and docs/zone-split-orchestration.md.
+#
 # Exit: 0 after the batch (a clean halt on every finding, incl. per-finding failures that were skipped); 2 usage
-#       error; 3 missing prerequisite (an upstream stage — map/brief/discovery/verify — failed to produce output).
+#       error; 3 missing prerequisite (an upstream stage — map/brief/discovery/verify — failed to produce output);
+#       4 --require-coverage was set and STAGE 3 covered less than that fraction of the zones (#1830).
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -112,6 +144,10 @@ MAP_FIXTURE="" ; BRIEF_FIXTURE="" ; PASS_FIXTURE="" ; DROP_DIR=""
 DEEP_HUNT=0 ; INV_FIXTURE="" ; DEEP_HUNT_MAX_TARGETS=1 ; DEEP_HUNT_REPAIR_ROUNDS=4 ; DEEP_HUNT_AUX_MAX=0
 DEEP_HUNT_MAX_LENSES=2  # #1795: max lens classes per deep-hunt zone (custody-primary first, then C2/C16/C5).
 DEEP_HUNT_ONLY=0  # #1774: apply ONLY the STAGE 4.5 lens over an existing breadth --out (requires --deep-hunt).
+# #1830: per-zone hunt budget + targeted re-hunt. Every knob here defaults OFF/inert — with them off STAGE 3's
+# run-discovery.sh invocation gains no argument. The COVERAGE RECORD itself is NOT gated on any of them.
+ZONE_CELL_BUDGET=0 ; RUN_CELL_BUDGET=0 ; REQUIRE_COVERAGE=""
+REHUNT_GAPS=0 ; REHUNT_INCLUDE_PARTIAL=0 ; REHUNT_MAX_ATTEMPTS=2
 # #1731: cross-run ensemble/union flags — a THIN pass-through: collected verbatim into DEEP_FWD and appended to
 # both --deep-hunt run-invariant-hunt.sh invocations. Empty (the default) => the arg lists are byte-identical.
 DEEP_FWD=()
@@ -147,6 +183,12 @@ while [ $# -gt 0 ]; do
     --symbolic-timeout) nv "$#"; DEEP_FWD+=(--symbolic-timeout "$2"); shift 2 ;;
     --core-dep-harness) DEEP_FWD+=(--core-dep-harness); shift ;;
     --ensemble-candidates) nv "$#"; DEEP_FWD+=(--ensemble-candidates "$2"); shift 2 ;;
+    --zone-cell-budget) nv "$#"; ZONE_CELL_BUDGET="$2"; shift 2 ;;
+    --run-cell-budget)  nv "$#"; RUN_CELL_BUDGET="$2"; shift 2 ;;
+    --require-coverage) nv "$#"; REQUIRE_COVERAGE="$2"; shift 2 ;;
+    --rehunt-gaps)      REHUNT_GAPS=1; shift ;;
+    --rehunt-include-partial) REHUNT_INCLUDE_PARTIAL=1; shift ;;
+    --rehunt-max-attempts) nv "$#"; REHUNT_MAX_ATTEMPTS="$2"; shift 2 ;;
     --drop-dir)         nv "$#"; DROP_DIR="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-zone-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -168,6 +210,19 @@ case "$DEEP_HUNT_MAX_LENSES" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt
 case "$DEEP_HUNT_REPAIR_ROUNDS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be a positive integer (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2 ;; esac
 [ "$DEEP_HUNT_REPAIR_ROUNDS" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be >= 1 (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2; }
 [ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires --deep-hunt" >&2; exit 2; }
+# #1830: the budget/re-hunt knobs use the same integer validation + exit-2 shape as every flag above.
+case "$ZONE_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-cell-budget must be a non-negative integer (got '$ZONE_CELL_BUDGET')" >&2; exit 2 ;; esac
+case "$RUN_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --run-cell-budget must be a non-negative integer (got '$RUN_CELL_BUDGET')" >&2; exit 2 ;; esac
+case "$REHUNT_MAX_ATTEMPTS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --rehunt-max-attempts must be a positive integer (got '$REHUNT_MAX_ATTEMPTS')" >&2; exit 2 ;; esac
+[ "$REHUNT_MAX_ATTEMPTS" -ge 1 ] || { echo "run-zone-hunt.sh: --rehunt-max-attempts must be >= 1 (got '$REHUNT_MAX_ATTEMPTS')" >&2; exit 2; }
+if [ -n "$REQUIRE_COVERAGE" ]; then
+  case "$REQUIRE_COVERAGE" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --require-coverage must be an integer percentage 0-100 (got '$REQUIRE_COVERAGE')" >&2; exit 2 ;; esac
+  [ "$REQUIRE_COVERAGE" -le 100 ] || { echo "run-zone-hunt.sh: --require-coverage must be an integer percentage 0-100 (got '$REQUIRE_COVERAGE')" >&2; exit 2; }
+fi
+[ "$REHUNT_INCLUDE_PARTIAL" -eq 0 ] || [ "$REHUNT_GAPS" -eq 1 ] || { echo "run-zone-hunt.sh: --rehunt-include-partial requires --rehunt-gaps" >&2; exit 2; }
+# The two re-use modes are deliberately NOT combinable: --deep-hunt-only re-applies the lens over a breadth
+# --out while --rehunt-gaps re-enters breadth itself, and STAGE 4 would overwrite the lens's merged findings.
+[ "$REHUNT_GAPS" -eq 0 ] || [ "$DEEP_HUNT_ONLY" -eq 0 ] || { echo "run-zone-hunt.sh: --rehunt-gaps cannot be combined with --deep-hunt-only" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "run-zone-hunt.sh: python3 not installed" >&2; exit 3; }
 
 MAPZONES="$HERE/map-zones.sh"
@@ -179,6 +234,9 @@ DELIVER="$HERE/deliver-submission.sh"
 for tool in "$MAPZONES" "$GENBRIEFS" "$DISCOVERY" "$VERIFY" "$AUDITPASS" "$DELIVER"; do
   [ -x "$tool" ] || { echo "run-zone-hunt.sh: required entrypoint not found/executable: $tool" >&2; exit 3; }
 done
+# #1830: the coverage record's sole owner (schema, the eight-state vocabulary, the #1826 priority sort).
+ZONECOV="$HERE/lib/zone-coverage.py"
+[ -f "$ZONECOV" ] || { echo "run-zone-hunt.sh: required helper not found: $ZONECOV" >&2; exit 3; }
 
 REPO="$(cd "$REPO" && pwd)"
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
@@ -211,6 +269,18 @@ fi
 # ----------------------------------------------------------------------------------------------------------
 if [ "$DEEP_HUNT_ONLY" -eq 0 ]; then
 MAP="$OUT/map"
+BRIEFS="$OUT/briefs"
+# #1830: the coverage record is a CONTRACT, so its path is fixed (no flag). <out>/coverage/zone-coverage.json.
+COVERAGE_DIR="$OUT/coverage"; COVERAGE_JSON="$COVERAGE_DIR/zone-coverage.json"
+if [ "$REHUNT_GAPS" -eq 1 ]; then
+  # #1830 --rehunt-gaps: STAGE 1/2 are SKIPPED — the map, the scope manifest, the per-zone briefs and the
+  # coverage record all come from the existing --out. Assert each one by name (the #1774 prerequisite-guard
+  # shape) so a re-hunt against the wrong --out fails loud instead of silently re-mapping.
+  for _pre in "$MAP/zones.json" "$MAP/scope.tsv" "$BRIEFS/briefs" "$COVERAGE_JSON"; do
+    [ -e "$_pre" ] || { echo "run-zone-hunt.sh: --rehunt-gaps requires an existing $_pre (run the full breadth pass first)" >&2; exit 3; }
+  done
+  echo "run-zone-hunt.sh: [M3] --rehunt-gaps: reusing $MAP + $BRIEFS; STAGE 1/2 skipped" >&2
+else
 echo "run-zone-hunt.sh: [M1] mapping zones -> $MAP ..." >&2
 if [ -n "$MAP_FIXTURE" ]; then
   "$MAPZONES" --repo "$REPO" --out "$MAP" ${SCOPE_HINT:+--scope-hint "$SCOPE_HINT"} ${SINCE:+--since "$SINCE"} \
@@ -224,7 +294,6 @@ fi
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 2 (M2): gen-briefs.sh -> <out>/briefs/briefs/brief_<id>.md per zone. --brief-fixture => offline.
 # ----------------------------------------------------------------------------------------------------------
-BRIEFS="$OUT/briefs"
 echo "run-zone-hunt.sh: [M2] generating per-zone briefs -> $BRIEFS ..." >&2
 if [ -n "$BRIEF_FIXTURE" ]; then
   "$GENBRIEFS" --zones "$MAP/zones.json" --scope "$MAP/scope.tsv" --out "$BRIEFS" --repo "$REPO" \
@@ -234,67 +303,310 @@ else
     ${RESIDUALS:+--audit-residuals "$RESIDUALS"} --backend "$BACKEND" --agentis "$AGENTIS"
 fi
 [ -f "$BRIEFS/briefs/zone_briefs.json" ] || { echo "run-zone-hunt.sh: gen-briefs.sh did not emit zone_briefs.json" >&2; exit 3; }
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 3 (M3): per-zone run-discovery.sh, each with its OWN zone brief; merge into discovery-results.merged.json.
 # Zones loop SERIALLY (the intra-zone --jobs is the only parallelism — the M3 OOM cap is not stacked across zones).
 # Priority order: value-custody zones first (tie-broken by zone id), then everything else, so a truncated run
 # only ever drops the lowest-priority (non-custody) zones (#1826).
+#
+# #1830: the loop is now driven by, and reports into, the COVERAGE RECORD (lib/zone-coverage.py). `init` writes
+# <out>/coverage/zone-coverage.json with EVERY zone `not_reached` — and emits the #1826-ordered .zone-list.tsv
+# from the same sorted list, so record order and hunt order cannot drift — BEFORE the first zone runs. Each
+# zone is then set `in_flight` immediately before its run-discovery.sh call and rewritten to its terminal state
+# after, so absence is never representable: an externally-killed run still leaves a truthful record on disk.
+# Under --rehunt-gaps the work list comes from the record (`gaps`) instead, and STAGE 1/2 were skipped above.
 # ----------------------------------------------------------------------------------------------------------
 DISC="$OUT/discovery"; mkdir -p "$DISC"
 ZONE_LIST="$OUT/.zone-list.tsv"
-python3 - "$MAP/zones.json" > "$ZONE_LIST" <<'PY'
-import sys, json
-zones = json.load(open(sys.argv[1], encoding="utf-8"))
-if not isinstance(zones, list):
-    zones = []
-zones = sorted(zones, key=lambda z: (not z.get("value_custody", False), z.get("id", "")))
-for z in zones:
-    zid = z.get("id", "")
-    name = z.get("name", zid)
-    if not zid:
-        continue
-    print("%s\t%s" % (zid.replace("\t", " "), name.replace("\t", " ")))
-PY
+mkdir -p "$COVERAGE_DIR"
+ZONE_WORK="$OUT/.zone-work.tsv"
+if [ "$REHUNT_GAPS" -eq 1 ]; then
+  # TSV `<zid> <name> <action> <next-attempt>`; actions: hunt | retry | capped | no-brief (see the helper).
+  if [ "$REHUNT_INCLUDE_PARTIAL" -eq 1 ]; then
+    "$ZONECOV" gaps --file "$COVERAGE_JSON" --max-attempts "$REHUNT_MAX_ATTEMPTS" --include-partial > "$ZONE_WORK"
+  else
+    "$ZONECOV" gaps --file "$COVERAGE_JSON" --max-attempts "$REHUNT_MAX_ATTEMPTS" > "$ZONE_WORK"
+  fi
+else
+  "$ZONECOV" init --zones "$MAP/zones.json" --out "$COVERAGE_JSON" --zone-list "$ZONE_LIST" \
+    --repo "$REPO_NAME" --commit "$COMMIT" \
+    --zone-cell-budget "$ZONE_CELL_BUDGET" --run-cell-budget "$RUN_CELL_BUDGET"
+  # The full sweep's work list IS the priority order; the missing 3rd/4th columns default to a plain `hunt`.
+  cp "$ZONE_LIST" "$ZONE_WORK"
+fi
 
-ZONES_HUNTED=0
-while IFS='	' read -r ZID ZNAME || [ -n "${ZID:-}" ]; do
+CELL_PROBE="$OUT/.zone-cell-probe.txt"
+RUN_SPENT=0 ; BUDGET_STOP=0
+while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
   [ -n "$ZID" ] || continue
+  [ -n "${ZACTION:-}" ] || ZACTION="hunt"
+  # `no_brief` and `unscoped` are UPSTREAM defects, never collapsed into a retryable failure; a capped zone is
+  # left alone so one --rehunt-gaps pass is exactly one pass over the gap set, never a loop. All stay in
+  # gap_zones — they are visible gaps, they are just not gaps a re-hunt of this --out can close.
+  if [ "$ZACTION" = "no-brief" ]; then
+    echo "run-zone-hunt.sh: [M3] zone '$ZID' has no brief — a re-hunt cannot fix this (re-run without --rehunt-gaps)" >&2
+    continue
+  fi
+  if [ "$ZACTION" = "unscoped" ]; then
+    echo "run-zone-hunt.sh: [M3] zone '$ZID' has no line in scope.tsv — a re-hunt cannot fix this (re-map the target)" >&2
+    continue
+  fi
+  if [ "$ZACTION" = "capped" ]; then
+    echo "run-zone-hunt.sh: [M3] zone '$ZID' already has >= $REHUNT_MAX_ATTEMPTS attempt(s); leaving it alone" >&2
+    "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --detail "attempt cap reached"
+    continue
+  fi
+  if [ "$BUDGET_STOP" -eq 1 ]; then
+    # Only ever reached after a genuine RUN-pool exhaustion: BUDGET_STOP is set exclusively on the two paths
+    # below that require --run-cell-budget > 0, so naming the pool here can never be a false claim.
+    "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status budget_exhausted --cells-charged 0 \
+      --detail "admission denied: the run cell budget ($RUN_CELL_BUDGET cells) was already spent by an earlier zone"
+    continue
+  fi
   ZBRIEF="$BRIEFS/briefs/brief_${ZID}.md"
   if [ ! -f "$ZBRIEF" ]; then
     echo "run-zone-hunt.sh: [M3] zone '$ZNAME' ($ZID) has no brief at $ZBRIEF; skipping" >&2
+    "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status no_brief \
+      --detail "STAGE 2 emitted no briefs/briefs/brief_${ZID}.md"
     continue
   fi
+  # The zone's PLANNED cell count comes from the shipped #1612 dry run — a pure manifest parse that returns
+  # before the agentis-binary check, so it needs no binary, no LLM and no network. A probe failure degrades to
+  # cells_planned: null + a detail string; it never blocks the hunt.
+  CELLS_PLANNED="" ; CLASSES_ALL=""
+  if "$DISCOVERY" --repo "$REPO" --scope "$MAP/scope.tsv" --only "$ZNAME" --list-cells > "$CELL_PROBE" 2>/dev/null; then
+    CELLS_PLANNED="$(grep -c '^CELL|' "$CELL_PROBE" || true)"
+    CLASSES_ALL="$(grep '^CELL|' "$CELL_PROBE" | cut -d'|' -f3 | tr '\n' ',' | sed 's/,$//')"
+  fi
+  # SIBLING of the brief guard above: a zone can be in zones.json and have NO line in scope.tsv — map-zones.sh
+  # emits one only `if not skeleton and classes and z["id"] not in failed_zones`, so an unclassified zone and a
+  # `classification_failed` zone (#1707's deliberately-visible state) both reach here with a brief and zero
+  # cells. Hunting it would exit 0 with `totals:{cells:0}` and look like a clean negative. Name the case
+  # instead of inferring it, and never charge budget for a zone that cannot be hunted.
+  if [ -n "$CELLS_PLANNED" ] && [ "$CELLS_PLANNED" -eq 0 ]; then
+    echo "run-zone-hunt.sh: [M3] zone '$ZNAME' ($ZID) has NO line in scope.tsv (0 cells) — recorded unscoped, NOT a negative" >&2
+    "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status unscoped --cells-planned 0 --cells-charged 0 \
+      --detail "no matching line in map/scope.tsv (unclassified / classification_failed zone, or a name the mapper rewrote)"
+    continue
+  fi
+  # ADMISSION (one uniform rule): effective cap = min(zone budget or inf, run budget - spent or inf). Both
+  # budgets 0 (the default) => ZCAP stays empty = unbounded => the invocation below gains NO argument.
+  ZCAP=""
+  if [ "$ZONE_CELL_BUDGET" -gt 0 ]; then ZCAP="$ZONE_CELL_BUDGET"; fi
+  if [ "$RUN_CELL_BUDGET" -gt 0 ]; then
+    ZREMAIN=$((RUN_CELL_BUDGET - RUN_SPENT))
+    [ "$ZREMAIN" -ge 0 ] || ZREMAIN=0
+    if [ -z "$ZCAP" ] || [ "$ZREMAIN" -lt "$ZCAP" ]; then ZCAP="$ZREMAIN"; fi
+  fi
+  if [ -n "$ZCAP" ] && [ "$ZCAP" -eq 0 ]; then
+    # The FIRST denial STOPS the loop: best-effort packing (skip an expensive high-priority zone, admit a
+    # cheap low-priority one) would silently invert the #1826 value-custody-first order. Explicit non-goal.
+    echo "run-zone-hunt.sh: [M3] zone '$ZNAME' ($ZID) DENIED — the run cell budget is spent; it and every remaining zone are recorded budget_exhausted" >&2
+    "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status budget_exhausted \
+      --cells-planned "${CELLS_PLANNED:-null}" --cells-charged 0 --classes "$CLASSES_ALL" \
+      --detail "admission denied: 0 of the run cell budget ($RUN_CELL_BUDGET cells) remaining"
+    BUDGET_STOP=1
+    continue
+  fi
+  ZCHARGE="${CELLS_PLANNED:-0}" ; ZCLASSES_ARG="" ; ZTRUNC="" ; ZDETAIL=""
+  if [ -z "$CELLS_PLANNED" ]; then
+    ZDETAIL="--list-cells probe failed; planned cell count unknown"
+    if [ "$RUN_CELL_BUDGET" -gt 0 ]; then
+      # Conservative: an unmeasurable zone is admitted, charged the WHOLE remaining run budget, and is the
+      # last zone admitted — an unknown cost may not silently eat the zones behind it.
+      ZCHARGE=$((RUN_CELL_BUDGET - RUN_SPENT))
+      [ "$ZCHARGE" -ge 0 ] || ZCHARGE=0
+      BUDGET_STOP=1
+    else
+      ZCHARGE=0
+    fi
+  elif [ -n "$ZCAP" ] && [ "$ZCAP" -lt "$CELLS_PLANNED" ]; then
+    # Shorten the class list to the first ZCAP DISTINCT classes. scope.tsv order IS the mapper's relevance
+    # order, so the classes dropped are the least likely ones.
+    #
+    # `--classes` is a per-manifest-LINE OVERRIDE in run-discovery.sh, not a cell filter, while CLASSES_ALL is
+    # per-CELL. When a zone's subsystem name matches MORE THAN ONE scope.tsv line (map-zones.sh keys lines on
+    # clean(name) with no dedup) the override is applied to every one of them, so a "cap of N" would admit
+    # L x N cells and would apply classes to files the mapper never assigned them to. So the admitted count is
+    # MEASURED with a second --list-cells probe instead of assumed; if it does not land exactly on the cap the
+    # zone is DENIED rather than mis-charged. Denial keeps the #1826 order (the loop stops), and a wrong
+    # budget is never silently absorbed.
+    ZCLASSES_ARG=""
+    ZNSEL=0
+    _cls_old_ifs="$IFS"; IFS=','
+    for _cls in $CLASSES_ALL; do
+      IFS="$_cls_old_ifs"
+      if [ -n "$_cls" ]; then
+        case ",$ZCLASSES_ARG," in
+          *",$_cls,"*) : ;;
+          *) ZCLASSES_ARG="${ZCLASSES_ARG:+$ZCLASSES_ARG,}$_cls"; ZNSEL=$((ZNSEL + 1)) ;;
+        esac
+      fi
+      if [ "$ZNSEL" -ge "$ZCAP" ]; then break; fi
+      IFS=','
+    done
+    IFS="$_cls_old_ifs"
+    ZADMIT=""
+    if [ -n "$ZCLASSES_ARG" ] && "$DISCOVERY" --repo "$REPO" --scope "$MAP/scope.tsv" --only "$ZNAME" \
+         --classes "$ZCLASSES_ARG" --list-cells > "$CELL_PROBE" 2>/dev/null; then
+      ZADMIT="$(grep -c '^CELL|' "$CELL_PROBE" || true)"
+    fi
+    if [ "${ZADMIT:-x}" = "$ZCAP" ]; then
+      ZCHARGE="$ZCAP"
+      ZTRUNC="1"
+      ZDETAIL="per-zone cap $ZCAP < $CELLS_PLANNED planned cell(s); class list shortened to $ZCLASSES_ARG"
+    else
+      # Unenforceability is a property of THIS zone (its subsystem name matches several scope.tsv lines), not
+      # of a spent pool: nothing was charged, the zones behind it are unaffected, and the remedy is different.
+      # So it gets its OWN status and the sweep CONTINUES — stopping the loop here would deny trivially
+      # enforceable zones and, with no --run-cell-budget set, would label them with a pool that does not exist.
+      echo "run-zone-hunt.sh: [M3] zone '$ZNAME' ($ZID) DENIED — a cap of $ZCAP cannot be enforced on it (--classes $ZCLASSES_ARG would admit ${ZADMIT:-?} cell(s), not $ZCAP: the zone spans several scope.tsv lines); give it its full planned budget or re-map so its subsystem name is unique. Continuing with the next zone" >&2
+      "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status budget_unenforceable \
+        --cells-planned "$CELLS_PLANNED" --cells-charged 0 --classes "$CLASSES_ALL" \
+        --detail "cap $ZCAP not enforceable: a --classes prefix would admit ${ZADMIT:-unknown} of $CELLS_PLANNED cell(s) because the zone matches several scope.tsv lines"
+      continue
+    fi
+  fi
+  if [ "$ZACTION" = "retry" ]; then
+    # failed / in_flight (and an --rehunt-include-partial partial) carry PRIOR ARTIFACTS that run-discovery.sh
+    # destroys on re-entry (`rm -rf $RUN`, `> $REPORT`). Move them aside FIRST, then push the prior terminal
+    # state into attempts[] — the failure evidence survives and attempts[] is the give-up input.
+    #
+    # The suffix is the FIRST FREE `.attempt-<n>` ON DISK, never a counter derived from the record: a full
+    # re-sweep rewrites the record while the archives stay on disk, so a record-derived suffix could point at
+    # an existing archive and `mv` would destroy it. Nothing here ever deletes an archive.
+    ZATTEMPT=1
+    while [ -e "$DISC/$ZID.attempt-$ZATTEMPT" ]; do ZATTEMPT=$((ZATTEMPT + 1)); done
+    if [ -d "$DISC/$ZID" ]; then
+      mv "$DISC/$ZID" "$DISC/$ZID.attempt-$ZATTEMPT"
+    fi
+    "$ZONECOV" retry --file "$COVERAGE_JSON" --zone "$ZID" --artifacts "discovery/$ZID.attempt-$ZATTEMPT"
+  fi
   echo "run-zone-hunt.sh: [M3] hunting zone '$ZNAME' ($ZID) with its brief ..." >&2
-  ZONES_HUNTED=$((ZONES_HUNTED + 1))
+  ZCLASSES_REC="$CLASSES_ALL"
+  if [ -n "$ZTRUNC" ]; then
+    ZCLASSES_REC="$ZCLASSES_ARG"
+    "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status in_flight \
+      --cells-planned "${CELLS_PLANNED:-null}" --cells-charged "$ZCHARGE" --classes "$ZCLASSES_REC" \
+      --budget-truncated --detail "$ZDETAIL"
+  else
+    "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status in_flight \
+      --cells-planned "${CELLS_PLANNED:-null}" --cells-charged "$ZCHARGE" --classes "$ZCLASSES_REC" \
+      --detail "$ZDETAIL"
+  fi
+  RUN_SPENT=$((RUN_SPENT + ZCHARGE))
+  ZRC=0
   "$DISCOVERY" --repo "$REPO" --scope "$MAP/scope.tsv" --only "$ZNAME" --brief "$ZBRIEF" \
     --jobs "$JOBS" --backend "$BACKEND" --agentis "$AGENTIS" --out "$DISC/$ZID" \
-    || echo "run-zone-hunt.sh: [M3] discovery failed for zone '$ZNAME' ($ZID); continuing" >&2
-done < "$ZONE_LIST"
+    ${ZCLASSES_ARG:+--classes "$ZCLASSES_ARG"} \
+    || ZRC=$?
+  if [ "$ZRC" -eq 0 ]; then
+    # The terminal status (hunted / hunted_empty / hunted_degraded) is DERIVED in the helper from this zone's
+    # own totals — the derivation exists in exactly one place, so no consumer re-implements the policy.
+    "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --exit-code 0 --results "$DISC/$ZID/discovery-results.json"
+  else
+    echo "run-zone-hunt.sh: [M3] discovery failed for zone '$ZNAME' ($ZID); continuing" >&2
+    "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status failed --exit-code "$ZRC" \
+      --detail "run-discovery.sh exited $ZRC"
+  fi
+done < "$ZONE_WORK"
 
 MERGED="$DISC/discovery-results.merged.json"
-python3 - "$MERGED" "$DISC" "$REPO_NAME" "$BACKEND" "$JOBS" <<'PY'
-import sys, os, json, glob
+# #1830: the merge embeds the record's ALREADY-DERIVED coverage fields (it never re-derives them) so a consumer
+# that reads only the merged file can see a truncation, and propagates the per-zone totals.failed the merge
+# used to drop (#1707 degraded cells vanished with it).
+COVERAGE_FRAGMENT="$("$ZONECOV" summary --file "$COVERAGE_JSON" --json)"
+python3 - "$MERGED" "$DISC" "$REPO_NAME" "$BACKEND" "$JOBS" "$COVERAGE_FRAGMENT" <<'PY'
+import sys, os, json
 merged_path, disc_dir, repo, backend, jobs = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
-cells, tc, tcand, ts = [], 0, 0, 0
-for zid in sorted(os.listdir(disc_dir)):
-    p = os.path.join(disc_dir, zid, "discovery-results.json")
+coverage = json.loads(sys.argv[6])
+# #1830 MERGE POLICY — UNION ACROSS ATTEMPTS. A re-hunt moves `discovery/<zid>` to `<zid>.attempt-<n>`, so
+# excluding those dirs would let a re-hunt that yields LESS than the attempt it archived silently DELETE real
+# candidates from this file — while reporting a cleaner coverage verdict. That is a worse failure than the one
+# this issue fixes, so the merge unions every attempt of every zone:
+#   - cells are deduplicated by (subsystem, class, files);
+#   - when the same cell exists in several attempts their CANDIDATE LISTS ARE UNIONED, deduplicated on the
+#     WHOLE candidate string. Electing a single "winning" cell (e.g. the one with the most candidates) would
+#     still drop leads: an attempt that surfaced ONE real lead loses to a later attempt that surfaced TWO
+#     unrelated ones. No candidate any attempt ever produced is discarded here — refuting a candidate is
+#     STAGE 4's job, not the merge's. The whole string is the dedupe key precisely because it cannot collapse
+#     two genuinely distinct leads: two candidates are merged only when they are byte-identical.
+# The current zone dir sorts BEFORE its `.attempt-<n>` archives (a prefix sorts first), so it is seen first and
+# `cells[]` stays in current-run order; the cell keeps the CURRENT attempt's fields (its status is the fresher
+# truth about this run) and only gains the archived attempts' extra candidates.
+def cell_key(c):
+    return (c.get("subsystem", ""), c.get("class", ""), c.get("files", ""))
+def candidates_of(c):
+    return [x for x in (c.get("candidates") or []) if isinstance(x, str)]
+best, order, carried = {}, [], 0
+for name in sorted(os.listdir(disc_dir)):
+    p = os.path.join(disc_dir, name, "discovery-results.json")
     if not os.path.isfile(p):
         continue
     try:
         d = json.load(open(p, encoding="utf-8"))
     except Exception:
         continue
-    cells.extend(d.get("cells", []))
-    t = d.get("totals", {})
-    tc += int(t.get("cells", 0)); tcand += int(t.get("candidates", 0)); ts += int(t.get("steers", 0))
+    archived = ".attempt-" in name
+    for c in d.get("cells", []):
+        if not isinstance(c, dict):
+            continue
+        k = cell_key(c)
+        prev = best.get(k)
+        if prev is None:
+            entry = dict(c)
+            entry["candidates"] = list(candidates_of(c))
+            best[k] = entry
+            order.append(k)
+            if archived:
+                carried += 1
+            continue
+        seen = set(prev["candidates"])
+        added = 0
+        for cand in candidates_of(c):
+            if cand not in seen:
+                seen.add(cand)
+                prev["candidates"].append(cand)
+                added += 1
+        # `carried_over_cells` counts every cell whose merged content came, WHOLLY OR PARTLY, from an archived
+        # attempt — so a partial carry is as visible as a whole one, on stderr and in the merged file.
+        if added and archived:
+            carried += 1
+cells = [best[k] for k in order]
+# Totals are derived from the deduplicated set with run-discovery.sh's own definitions (cells = one entry per
+# cell, steers = cells carrying a blackboard FOCUS, failed = #1707 no-sentinel cells), so they can never
+# desync from `cells[]` the way summing per-zone totals across overlapping attempts would.
+tc = len(cells)
+tcand = sum(len(c.get("candidates", []) or []) for c in cells)
+ts = sum(1 for c in cells if c.get("coordination"))
+tf = sum(1 for c in cells if c.get("status") == "failed")
 out = {"repo": repo, "backend": backend, "jobs": jobs, "cells": cells,
-       "totals": {"cells": tc, "candidates": tcand, "steers": ts}}
+       "totals": {"cells": tc, "candidates": tcand, "steers": ts, "failed": tf},
+       "merge": {"policy": "union-across-attempts", "carried_over_cells": carried},
+       "coverage": coverage}
 json.dump(out, open(merged_path, "w", encoding="utf-8"), indent=2)
 open(merged_path, "a", encoding="utf-8").write("\n")
-print("run-zone-hunt.sh: [M3] merged %d cell(s), %d candidate(s) from %d zone(s)" % (tc, tcand, len(cells)), file=sys.stderr)
+print("run-zone-hunt.sh: [M3] merged %d cell(s), %d candidate(s)%s" % (
+    tc, tcand, (" (%d carried over from a prior attempt)" % carried) if carried else ""), file=sys.stderr)
 PY
 [ -f "$MERGED" ] || { echo "run-zone-hunt.sh: merge produced no discovery-results.merged.json" >&2; exit 3; }
+
+# FAIL-LOUD (#1830, always on): an incomplete record prints the COVERAGE GAP banner + a per-status breakdown.
+# A clean sweep prints nothing here, so the banner is signal, not noise.
+"$ZONECOV" summary --file "$COVERAGE_JSON" >&2
+COVERAGE_COUNTS="$("$ZONECOV" summary --file "$COVERAGE_JSON" --counts)"
+ZONES_COVERED="${COVERAGE_COUNTS%% *}" ; ZONES_TOTAL="${COVERAGE_COUNTS##* }"
+echo "run-zone-hunt.sh: [M3] coverage: $ZONES_COVERED/$ZONES_TOTAL zone(s) covered — record: $COVERAGE_JSON" >&2
+
+# Opt-in gate (default OFF): halt BEFORE verify/deliver when the run covered too little, so a degraded run
+# cannot produce a plausible-looking result set. The record is already on disk when this aborts.
+if [ -n "$REQUIRE_COVERAGE" ] && [ "$ZONES_TOTAL" -gt 0 ] \
+   && [ $((ZONES_COVERED * 100)) -lt $((REQUIRE_COVERAGE * ZONES_TOTAL)) ]; then
+  echo "run-zone-hunt.sh: [M3] --require-coverage $REQUIRE_COVERAGE not met ($ZONES_COVERED/$ZONES_TOTAL zone(s) covered); halting before STAGE 4/5" >&2
+  exit 4
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 4 (M4): verify-findings.sh over the merged candidates -> <out>/verify/verified_findings.json (CONFIRMED only).
@@ -648,7 +960,9 @@ while IFS='	' read -r LOCATION CODEFILE CLASS SEVERITY EXPLOIT || [ -n "${LOCATI
 done < "$FINDING_TSV"
 
 echo >&2
-echo "================ ZONE-HUNT: $ZONES_HUNTED zone(s) hunted, $FINDINGS verified finding(s) ================" >&2
+# #1830: the banner reports COVERAGE (covered/total), not the old "zones hunted" count — that counted only the
+# zones that started, so a truncated run's banner was indistinguishable from a clean sweep's.
+echo "================ ZONE-HUNT: $ZONES_COVERED/$ZONES_TOTAL zone(s) covered, $FINDINGS verified finding(s) ================" >&2
 echo "run-zone-hunt.sh: delivered (staged, PENDING HUMAN REVIEW): $DELIVERED" >&2
 echo "run-zone-hunt.sh: halted before a draft (nothing staged): $HALTED_NODRAFT" >&2
 echo "run-zone-hunt.sh: per-finding failures (skipped): $FAILED" >&2

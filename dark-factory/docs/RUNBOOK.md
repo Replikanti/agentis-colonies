@@ -182,6 +182,84 @@ restricted to a single value-custody zone via `--scope-hint`, and only AFTER any
 CPU/subscription capacity (it owns a claude subscription slot). This is a capability-frontier attempt
 measured by a proxy — the real test is fresh live targets the bench cannot measure.
 
+## Zone coverage: did this run actually hunt everything? (`coverage/zone-coverage.json`, #1830)
+
+Every `run-zone-hunt.sh` run writes `<out>/coverage/zone-coverage.json` — **always**, with no flag, and
+**before** the first zone is hunted, with every zone in `zones.json` present as `not_reached`. Read it before
+you trust a result set: a run that was cut short (an external kill, a failing zone, an exhausted budget) is
+otherwise indistinguishable from a run that genuinely found less.
+
+```bash
+python3 -c 'import json;d=json.load(open("zone-hunt-out/coverage/zone-coverage.json"));\
+print(d["complete"], d["gap_zones"]); print(d["totals"]["by_status"])'
+```
+
+- `complete: true`, `gap_zones: []` → a clean sweep; the merged findings are the whole picture.
+- `complete: false` → STAGE 3 also printed a `COVERAGE GAP:` banner to stderr, and
+  `discovery-results.merged.json` carries the same verdict under its `coverage` key.
+
+Per-zone `status` tells you what to do next:
+
+| `status` | what it means | what to do |
+|---|---|---|
+| `hunted` / `hunted_empty` | complete coverage of the classes hunted (`hunted_empty` = a rigorous negative) | nothing — unless `budget_truncated: true`, which means the class list was shortened and the negative is not rigorous |
+| `hunted_degraded` | a cell produced no verdict after retries (#1707) | re-hunt with `--rehunt-gaps --rehunt-include-partial` |
+| `budget_exhausted` | the RUN cell budget was spent before this zone came up — **not** a negative. Every zone after it was denied too | raise `--run-cell-budget`, or `--rehunt-gaps` |
+| `budget_unenforceable` | a **partial** hunt of this zone cannot be expressed: its subsystem name matches several `scope.tsv` lines, so no `--classes` prefix lands exactly on the cap. Nothing was charged and the zones after it were unaffected | give it its full planned budget (raise `--zone-cell-budget` above the `cells_planned` in its record, or drop the cap), or re-map so the subsystem name is unique; `--rehunt-gaps` with no cap also closes it |
+| `failed` | `run-discovery.sh` exited non-zero (see `exit_code`, `detail`) | `--rehunt-gaps`; a second failure is a defect to escalate |
+| `in_flight` | the process died mid-zone (external kill / OOM) | `--rehunt-gaps` |
+| `not_reached` | never attempted — zero evidence | `--rehunt-gaps` |
+| `no_brief` | STAGE 2 produced no brief — an upstream defect | re-run the FULL pass; `--rehunt-gaps` deliberately never selects it |
+| `unscoped` | the zone ran **zero cells**: it is in `zones.json` but has no line in `map/scope.tsv` (an unclassified or `classification_failed` zone). Zero evidence — **never** a clean negative | re-map the target (`--scope-hint`, or fix the classification); a re-hunt against the same map cannot fix it, so `--rehunt-gaps` never selects it |
+
+### Bounding a run and closing the gap
+
+```bash
+# bound it: cells are the unit (the number of hunter calls). Both default 0 = OFF = unbounded.
+./run-zone-hunt.sh --repo <repo> --out zone-hunt-out --run-cell-budget 40 --zone-cell-budget 8
+
+# refuse to publish a degraded run: exit 4 BEFORE verify/deliver when coverage is under 80 %.
+./run-zone-hunt.sh --repo <repo> --out zone-hunt-out --run-cell-budget 40 --require-coverage 80
+
+# close the gap later: STAGE 1/2 are skipped, ONLY the gap zones are re-entered, and the merge is the UNION.
+./run-zone-hunt.sh --repo <repo> --out zone-hunt-out --rehunt-gaps
+```
+
+A cell budget bounds the number of hunter substrate calls and **nothing else** — not wall-clock, not tokens,
+not memory. It is a coverage-shaping knob, not a cost cap. It never reorders anything: the cut always falls on
+the tail of the #1826 value-custody-first order, and running out of the **run** budget stops the loop. If a
+zone's subsystem name matches more than one `scope.tsv` line, a partial cap cannot be expressed exactly
+(`--classes` is a per-line override, not a cell filter) — that zone alone is **denied** as
+`budget_unenforceable`, with the measured count in its `detail`, rather than being charged less than it would
+run; the sweep carries on to the next zone. Raise that zone's budget above its `cells_planned`, or re-map so
+the names are distinct.
+
+**The merge is a union across attempts.** A re-hunt archives the prior `discovery/<zid>` to
+`discovery/<zid>.attempt-<n>` (the first free suffix — archives are never deleted or overwritten) and
+`discovery-results.merged.json` then covers **every** attempt, deduplicated by `(subsystem, class, files)`;
+where one cell appears in several attempts their candidate lists are **unioned** (deduplicated on the whole
+candidate string, so two distinct leads never collapse). A re-hunt can therefore only ever add evidence: no
+candidate any attempt produced is dropped — not by a later `SAFE`, and not by a later attempt that happens to
+surface more, but different, leads on the same cell. Refuting a candidate is STAGE 4's job. The merged file
+records this under its `merge` key (`policy`, `carried_over_cells`) and STAGE 3 logs the carried-over count
+when it is non-zero; `carried_over_cells` counts partial carries too, so nothing about the union is silent.
+
+Two things to know before you re-hunt:
+
+- **A re-hunt re-runs STAGE 4 over the union**, which **overwrites** `verify/verified_findings.json` — and
+  that discards any `source=invariant-hunt` findings a prior `--deep-hunt` merged into it. Re-apply the lens
+  afterwards with `--deep-hunt --deep-hunt-only` (that path exists for exactly this). The two reuse modes
+  cannot be combined in one invocation (`--rehunt-gaps` + `--deep-hunt-only` is exit 2).
+- **A re-hunt re-runs STAGE 5 over already-delivered findings.** `deliver-submission.sh` stages into
+  `<drop>/<repo>@<commit>:<slug>/`, so a repeat rewrites that finding's own dir rather than accumulating
+  duplicates — but on a live run it does pay for the audit pass again.
+
+A re-entered `failed`/`in_flight` zone's prior artifacts are moved to `discovery/<zid>.attempt-<n>` (and the
+prior state pushed into the record's `attempts[]`) before the new attempt, so the failure evidence survives.
+One `--rehunt-gaps` pass is exactly one pass over the gap set; `--rehunt-max-attempts` (default 2) stops a zone
+from being retried forever — and that bound survives a full re-sweep into the same `--out`, because `init`
+carries `attempts[]` over instead of zeroing it.
+
 ## Calibration
 
 `sealevel-scorecard.md` records the auditor against real `coral-xyz/sealevel-attacks`
