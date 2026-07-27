@@ -257,6 +257,12 @@ fn ends_with(s: string, suf: string) -> bool {
 // Sequential-`if` (this file's style, no `&&`) over ONE relative path: true when it is a Foundry test
 // file (`test/`/`tests/` prefix or mid-path segment, or a `.t.sol` suffix) or a pure-interface unit
 // (`interfaces/` prefix or mid-path segment).
+//
+// #1824: map-zones.sh's mechanical grouping pass carries a SEPARATE, independently-maintained copy of
+// this same test/interfaces exclusion (plus mocks/ and script/, which this function does NOT cover) so
+// an excluded path never forms a zone in the first place (map-zones.sh's is_excluded_zone_path(),
+// dark-factory/map-zones.sh, mechanical-pass python heredoc). Two independently-maintained lists can
+// drift; if you touch this function, check that one too.
 fn is_test_or_interface_path(rel: string) -> bool {
     if substring(rel, 0, 5) == "test/" { return true; }
     if substring(rel, 0, 6) == "tests/" { return true; }

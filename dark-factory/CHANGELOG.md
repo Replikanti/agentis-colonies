@@ -209,6 +209,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   post-merge step, not part of this change.
 
 ### Fixed
+- **`map-zones.sh`'s mechanical grouping pass no longer turns `test/`/`tests/`/`interfaces/`/`mocks/`/`script/`
+  directories (or `.t.sol` files) into discovery zones** (#1824). Every directory reachable under `--repo` used
+  to become a zone regardless of what it held, so `scope.tsv` routinely carried Foundry test suites, mocks,
+  pure interfaces, and deployment scripts alongside the target's real code — none of which can hold a real
+  bug, so classifying and hunting them was pure wasted hunter effort (there is no timeout anywhere in this
+  pipeline for that effort to consume; `run-zone-hunt.sh`'s zone loop is an unbounded serial `for`). The new
+  `is_excluded_zone_path()` filter drops sources matching those path conventions (segment-anchored — a
+  leading `<prefix>/` or mid-path `/<prefix>/`, never a bare substring, so a real dir like `scripts_core/` is
+  unaffected) from `sources` before the mechanical pass groups them into zones, so an excluded file never
+  forms a zone at all — it disappears from BOTH `zones.json` and `scope.tsv`. This is **path-based, not
+  `value_custody`-based**: `libraries/`, `types/`, and every other directory name are untouched and keep
+  flowing into zones exactly as before (this is the guard that keeps zones like yieldoor's rare M-2 finding,
+  `ReserveLogic._updateIndexes`, reachable). An explicit `--scope-hint` bypasses the filter entirely (the
+  operator's explicit narrowing is trusted), so an atypically-named real directory can still be forced in
+  with zero new CLI surface. `demo-map-zones.sh` gains a fixture regression: `test/`, `mocks/`, `interfaces/`,
+  and `script/` zones with real (non-empty) classifications are asserted absent from both outputs, while a
+  `libraries/` zone and a `scripts_core/` zone (proving the match is segment-anchored, not a substring of
+  `script`) are asserted present with their classification intact.
 - **The #1778 ensemble FINDING now actually merges into `verified_findings.json` (the deep-hunt merge adapter reads the AGGREGATE log, not a per-candidate one)**
   (#1778 follow-up). The `run-zone-hunt.sh` merge adapter selects the invariant log via `sorted(glob("invariant_*.log"))[-1]`.
   The ensemble writes per-candidate logs `invariant_<t>_c<N>.log` ALONGSIDE the canonical aggregate `invariant_<t>.log`

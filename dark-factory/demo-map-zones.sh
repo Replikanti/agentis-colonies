@@ -51,6 +51,14 @@ trap 'rm -rf "$WORK"' EXIT
 REPO="$WORK/target"
 mkdir -p "$REPO"
 cp -R "$FIXTURE_DIR/contracts" "$REPO/contracts"
+# #1824: excluded-path fixtures (test/mocks/interfaces/script, plus the libraries/ + scripts_core/
+# regression dirs) — see the (c4) assertion block below for what these prove.
+cp -R "$FIXTURE_DIR/test" "$REPO/test"
+cp -R "$FIXTURE_DIR/mocks" "$REPO/mocks"
+cp -R "$FIXTURE_DIR/interfaces" "$REPO/interfaces"
+cp -R "$FIXTURE_DIR/script" "$REPO/script"
+cp -R "$FIXTURE_DIR/libraries" "$REPO/libraries"
+cp -R "$FIXTURE_DIR/scripts_core" "$REPO/scripts_core"
 git -C "$REPO" init -q
 git -C "$REPO" config user.email demo@example.invalid
 git -C "$REPO" config user.name "demo"
@@ -108,6 +116,50 @@ assert zones["contracts_governance"]["value_custody"] is False, "governance role
 PY
 then ok "value_custody is true for the accounting vault + lending/CDP zones, false for the oracle + governance zones"
 else bad "value_custody flag did not round-trip as expected"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (c4) #1824: mechanical-pass PATH exclusion. test/mocks/interfaces/script zones are dropped from BOTH
+#      zones.json and scope.tsv before the fixture is even reached (the fixture's ZONE| lines for those
+#      dirs are REAL, non-empty classifications, so this proves the filter actually fires — not just that
+#      "unclassified zones don't ship", which is already true today). `libraries/` (a value_custody zone,
+#      NOT test/mocks/interfaces/script) and `scripts_core/` (a real dir name, not the excluded `script/`
+#      prefix) MUST both survive with their classification intact — proving the match is path-based (not
+#      value_custody-based) and segment-anchored (not a bare substring of "script").
+# ----------------------------------------------------------------------------------------------------------
+note "1d) #1824: test/mocks/interfaces/script zones are excluded from zones.json + scope.tsv; libraries/ + scripts_core/ survive ..."
+if python3 - "$OUT/zones.json" "$OUT/scope.tsv" <<'PY'
+import sys, json
+
+EXCLUDED_IDS = {"test", "tests", "mocks", "interfaces", "script"}
+EXCLUDED_SEGMENTS = ("test/", "mocks/", "interfaces/", "script/")
+
+zones = json.load(open(sys.argv[1], encoding="utf-8"))
+zone_ids = {z["id"] for z in zones}
+assert not (zone_ids & EXCLUDED_IDS), "an excluded zone id leaked into zones.json: %r" % (zone_ids & EXCLUDED_IDS)
+
+rows = [l.rstrip("\n") for l in open(sys.argv[2], encoding="utf-8") if l.strip() and not l.lstrip().startswith("#")]
+for l in rows:
+    subsys, cls, files = [p.strip() for p in l.split("|")]
+    assert subsys not in EXCLUDED_IDS, "excluded zone %r leaked into scope.tsv" % subsys
+    for tok in files.split(","):
+        f = tok.split("@", 1)[0].strip()
+        assert not any(f.startswith(seg) or ("/" + seg) in f for seg in EXCLUDED_SEGMENTS), \
+            "excluded path segment leaked into scope.tsv: %r" % f
+
+by_id = {z["id"]: z for z in zones}
+assert "libraries" in by_id, "libraries/ zone missing from zones.json -- the path filter over-excluded it"
+assert by_id["libraries"]["bug_classes_likely"], "libraries/ zone's classification was dropped"
+assert by_id["libraries"]["value_custody"] is True, "libraries/ zone lost its value_custody flag"
+assert any(l.split("|")[0].strip() == "reserve logic" for l in rows), "libraries/ zone missing from scope.tsv"
+
+assert "scripts_core" in by_id, "scripts_core/ (real dir, not the excluded script/ prefix) was wrongly dropped"
+assert by_id["scripts_core"]["bug_classes_likely"], "scripts_core/ zone's classification was dropped"
+assert any(l.split("|")[0].strip() == "keeper" for l in rows), \
+    "scripts_core/ zone missing from scope.tsv -- an over-broad match on 'script' would cause this"
+PY
+then ok "test/mocks/interfaces/script zones excluded from zones.json + scope.tsv; libraries/ (value_custody) and scripts_core/ (segment-anchored non-match) both survive intact"
+else bad "#1824 path-exclusion assertion failed"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -505,7 +557,13 @@ SOL
   git -C "$CUSTODY_REPO" commit -qm "custody-path fixture"
 
   OUT3="$WORK/out-custody-paths"
-  "$MAPZONES" --repo "$CUSTODY_REPO" --out "$OUT3" --backend mock >/dev/null 2>"$WORK/mock-custody.err"
+  # #1824: the mechanical-pass path filter now drops interfaces/ and test/ zones BEFORE zone-mapper.ag ever
+  # runs on them, so this test needs the documented escape hatch (--scope-hint) to keep exercising
+  # zone-mapper.ag's OWN content-level is_value_custody() logic for those paths (the thing this block is
+  # actually regression-testing) rather than having #1824's earlier, stronger filter make the zones
+  # disappear before reaching the substrate at all.
+  "$MAPZONES" --repo "$CUSTODY_REPO" --out "$OUT3" --backend mock --scope-hint "src,interfaces,test" \
+    >/dev/null 2>"$WORK/mock-custody.err"
   RC3=$?
   # NOTE (deviation from the plan's literal read-zones.json mechanism, same intent): mock backend always
   # replies with the literal string "mock" (agentis-core's MockBackend, deterministic-by-design), which

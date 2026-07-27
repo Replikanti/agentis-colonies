@@ -120,6 +120,42 @@ if delta_json:
     except Exception:
         churn = set()
 
+# #1824: drop directory/suffix conventions that can never hold a real bug (test/tests/interfaces/mocks/
+# script + the .t.sol suffix) from `sources` BEFORE grouping, so an excluded file never forms a zone at
+# all -- it disappears from BOTH zones.json and scope.tsv. There is no timeout anywhere in this pipeline
+# (run-zone-hunt.sh's zone loop is an unbounded serial `for`); the cost this removes is wasted hunter
+# effort classifying and hunting zones that cannot contain a real bug, not a consumed budget.
+#
+# PATH-based, NOT value_custody-based -- do NOT fold this into a custody check. `libraries/`, `types/`,
+# and every other directory name are left completely untouched and MUST keep flowing into zones (e.g.
+# yieldoor's rare M-2 finding, ReserveLogic._updateIndexes, lives under a `libraries/` dir).
+#
+# Segment-anchored (never a bare substring): each prefix only matches a LEADING `<prefix>/` segment or a
+# mid-path `/<prefix>/` segment, so a real dir named `scripts_core/` or a file `src/testing_utils.sol` is
+# not swept up by an over-broad match.
+#
+# This mirrors -- but is a SEPARATE, independently-maintained copy of -- zone-mapper.ag's #1717
+# is_test_or_interface_path() (auditor/agents/zone-mapper.ag:260-269), which only recognizes
+# test/tests/interfaces/.t.sol; this list is extended with mocks/ and script/, which #1717 does NOT
+# cover. Two independently-maintained lists can drift; if you touch one, check the other (same
+# convention already used for VALUE_MOVING_KEYWORDS above).
+EXCLUDED_ZONE_PREFIXES = ("test/", "tests/", "interfaces/", "mocks/", "script/")
+
+
+def is_excluded_zone_path(f):
+    for p in EXCLUDED_ZONE_PREFIXES:
+        if f.startswith(p) or ("/" + p) in f:
+            return True
+    return f.endswith(".t.sol")
+
+
+# Escape hatch = the existing --scope-hint flag, not a new flag: when the operator passed --scope-hint,
+# `sources` above is already intersected down to their explicit list -- trust that narrowing and skip
+# this filter, so an operator who knows their target can force an atypically-named real dir (e.g. a
+# `mocks/` dir that is actually a compatibility shim) back in by hinting it, with zero new CLI surface.
+if not hint_raw:
+    sources = [f for f in sources if not is_excluded_zone_path(f)]
+
 # group by immediate directory
 groups = OrderedDict()
 for f in sorted(sources):
