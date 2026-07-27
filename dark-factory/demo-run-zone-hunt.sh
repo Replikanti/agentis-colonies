@@ -249,6 +249,44 @@ fi
   || bad "the capstone did not exit 0 after a per-finding failure"
 
 # ----------------------------------------------------------------------------------------------------------
+# (e) #1826: STAGE 3 hunts value-custody zones first. The fixture's four real zones are a mix that is NOT
+#     custody-sorted alphabetically pre-fix (`CUSTODY|contracts_vault|true`, `CUSTODY|contracts_oracle|false`,
+#     `CUSTODY|contracts_liquidation|true`, `CUSTODY|contracts_governance|false` -- directory order is
+#     governance, liquidation, oracle, vault). This pins acceptance criteria 1 and 3 (every custody zone before
+#     any non-custody zone, so a truncated run only ever loses the lowest-priority zones) and, via a second
+#     independent run diffed against the first, criterion 2 (byte-identical order across runs).
+# ----------------------------------------------------------------------------------------------------------
+note "e) STAGE 3 hunts value-custody zones first, deterministically ..."
+ZONE_LIST="$OUT/.zone-list.tsv"
+if [ -f "$ZONE_LIST" ]; then
+  ZIDS="$(cut -f1 "$ZONE_LIST" | tr '\n' ',')"
+  if [ "$ZIDS" = "contracts_liquidation,contracts_vault,contracts_governance,contracts_oracle," ]; then
+    ok "the two custody zones (contracts_liquidation, contracts_vault) precede the two non-custody zones (contracts_governance, contracts_oracle), each group id-ordered"
+  else
+    bad "unexpected .zone-list.tsv order: $ZIDS"
+  fi
+else
+  bad ".zone-list.tsv not found at $ZONE_LIST"
+fi
+
+OUT2="$WORK/zh2"
+DROP2="$OUT2/drop"
+"$ZONEHUNT" --repo "$REPO" --out "$OUT2" --drop-dir "$DROP2" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" \
+  >"$WORK/zh2.out" 2>"$WORK/zh2.err"
+RC2=$?
+ZONE_LIST2="$OUT2/.zone-list.tsv"
+if [ "$RC2" -eq 0 ] && [ -f "$ZONE_LIST2" ] && diff -u "$ZONE_LIST" "$ZONE_LIST2" >"$WORK/zone-list.diff" 2>&1; then
+  ok "a second independent run produces a byte-identical .zone-list.tsv (deterministic order)"
+else
+  bad "a second run's .zone-list.tsv differs from the first (or the second run failed, rc=$RC2):"
+  sed 's/^/      /' "$WORK/zone-list.diff" 2>/dev/null | head -40 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # #1717: --deep-hunt-repair-rounds is declared + threaded into BOTH $INVHUNT deep-hunt call sites (source
 # guard, mirrors --deep-hunt-max-targets above), plus one offline, LLM-free CLI check that the new flag is
 # actually wired into arg-validation (fails fast before any heavy stage).
