@@ -209,6 +209,27 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   post-merge step, not part of this change.
 
 ### Fixed
+- **`map-zones.sh`'s function-slice cap raised from 8 to 16, recovering three rare-bug functions the old cap
+  truncated out of `scope.tsv`** (#1825). `prioritize_fn_names()` reorders a big contract's declared function
+  names so value-moving (#1701) and valuation (#1799) functions survive the `[:cap]` slice ahead of admin/
+  setter noise, but the truncation point itself was still a hardcoded `8`. Re-checking the corpus bench's
+  preserved `scope.tsv` against the ground-truth rare findings showed the reorder was not enough: three
+  functions from real audit reports still fell out past rank 8 — yieldoor's `Strategy.checkPoolActivity`
+  (rank 16 of 35 declared names), yieldoor's `ReserveLogic._updateIndexes` (rank 12 of 18), and plaza's
+  `Pool.startAuction` (rank 13 of 24). A flat cap of **16** is the smallest uniform value that recovers all
+  three: no percentile-style adaptive rule measured against both targets clears all three without either
+  overshooting the cheapest zone's payload or undershooting one of the three ranks (the rank distribution is
+  not a function of the contract's declared-name count). Measured cost: **+0 discovery cells** (the cap
+  changes only the per-cell payload `run-discovery.sh` hands each zone, never the cell count) and +6…20 %
+  per-cell payload across the corpus targets (sub-linear, because the payload is dominated by contract
+  headers and sub-threshold whole files, not marginal function bodies). `map-zones.sh` now names the literal
+  `FN_SLICE_CAP = 16`, with a comment recording the zero-margin fact that `checkPoolActivity` lands at
+  EXACTLY rank 16 of 16 (in the unclaimed `rest` partition) — a future addition to `VALUE_MOVING_KEYWORDS` or
+  `VALUATION_KEYWORDS` can push it back out past the cap. `demo-map-zones.sh` gains a new fixture assertion
+  (`accrue`/`seize`/`_healthFactor` present at cap 16, `setOracle` still absent) and converts its two existing
+  #1701/#1799 regression guards from plain membership checks to ORDERING checks (`index(x) < index(y)`),
+  since membership alone goes vacuous once the cap is large enough that a naive declaration-order slice would
+  also contain the guarded names.
 - **`map-zones.sh`'s mechanical grouping pass no longer turns `test/`/`tests/`/`interfaces/`/`mocks/`/`script/`
   directories (or `.t.sol` files) into discovery zones** (#1824). Every directory reachable under `--repo` used
   to become a zone regardless of what it held, so `scope.tsv` routinely carried Foundry test suites, mocks,
