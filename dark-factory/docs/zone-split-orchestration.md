@@ -268,7 +268,7 @@ verify-findings.sh (M4)  →  per verified finding: run-audit-pass.sh  →  deli
   "briefs/brief_<id>.md" --jobs N …` into `<out>/discovery/<id>`, then MERGES each zone's
   `discovery-results.json` (concat `cells[]`, sum `totals`) into `discovery-results.merged.json`. Zones loop
   **serially** — the intra-zone `--jobs` is the only parallelism, so the M3 OOM cap is never stacked across
-  zones.
+  zones. Zone ORDER is value-custody-first (#1826) and every zone's OUTCOME is recorded (#1830, below).
 - **M4** verifies the merged candidates (refute gate) → `verified_findings.json`.
 - **M5 tail — per verified finding.** `run-audit-pass.sh` is called with the finding facts:
   `--finding-location`, `--finding-impact` (the exploit), `--poc-repo` (the repo), `--poc-target` (the code
@@ -276,6 +276,118 @@ verify-findings.sh (M4)  →  per verified finding: run-audit-pass.sh  →  deli
   scope context), `--backend`/`--agentis`/`--out`, plus the mode switch: `--pass-fixture` offline or `--live`.
   When `pass-result.txt == PENDING-HUMAN-REVIEW` AND a `submission-draft.md` is present, `deliver-submission.sh`
   STAGES the marked draft into `<out>/drop/<slug>/` (manifest.json + submission-draft.md + OUTCOME.md).
+
+### M3 coverage: the record, the cell budget, the targeted re-hunt (#1830)
+
+Before #1830 a truncated zone-hunt was **indistinguishable from a clean sweep**. STAGE 3 logged a failing zone
+and continued; the merge glob (`if not os.path.isfile(p): continue`) skipped a zone dir with no
+`discovery-results.json` exactly like a zone that never existed; and the merged file's keys were
+`repo, backend, jobs, cells, totals` with no zone field anywhere. Measured on a preserved bench work dir: one
+target hunted **1 of its 7 zones** (the zone holding the epic's named rare bug was never reached) and its
+merged artifact reported a plausible 6-cell / 12-candidate run with **no representation of the other six
+zones at all**.
+
+**The record.** `<out>/coverage/zone-coverage.json` — a fixed path, not a flag, because it is a contract (it is
+the input the autonomous self-tuning loop needs; a coordinator cannot close a gap that is never written down).
+It is written **unconditionally and pessimistically**: before STAGE 3 runs a single zone it already contains
+one entry per zone in `zones.json` with `status: "not_reached"`, and each entry is rewritten in place as the
+zone transitions. **Absence is therefore not representable** — a zone can never be silently missing, only
+visibly `not_reached` — and an externally-imposed kill still leaves a truthful record on disk. `zones[]` is
+ordered by, and always the same length as, the #1826 priority order; paths in `results` /
+`attempts[].artifacts` are relative to `<out>` so the record is portable.
+
+```json
+{
+  "schema": "zone-coverage/v1",
+  "repo": "…", "commit": "…", "started_at": "…", "updated_at": "…",
+  "budget": { "unit": "cells", "per_zone": 0, "run": 0 },
+  "zones": [
+    { "id": "src", "name": "…", "value_custody": true, "order": 1,
+      "status": "hunted", "cells_planned": 6, "cells_charged": 6,
+      "classes_hunted": ["C1", "C6", "C11"], "budget_truncated": false,
+      "cells": 6, "candidates": 12, "failed_cells": 0, "exit_code": 0,
+      "started_at": "…", "ended_at": "…",
+      "results": "discovery/src/discovery-results.json", "detail": "", "attempts": [] }
+  ],
+  "totals": { "zones": 7, "cells_planned": 21, "cells_charged": 6, "candidates": 12, "failed_cells": 0,
+              "by_status": { "hunted": 1, "hunted_empty": 0, "hunted_degraded": 0, "failed": 0,
+                             "budget_exhausted": 0, "in_flight": 0, "no_brief": 0, "not_reached": 6 } },
+  "complete": false,
+  "gap_zones": ["…"]
+}
+```
+
+**The state vocabulary is closed** — a consumer branches on `status`, and each state licenses exactly one
+conclusion:
+
+| `status` | set when | what a consumer is entitled to conclude |
+|---|---|---|
+| `not_reached` | by `init`, before the loop; never updated | **Zero evidence.** Never attempted. NOT a negative. A re-hunt is a plain first attempt. |
+| `no_brief` | STAGE 2 emitted no `briefs/brief_<id>.md` | **Upstream defect**, not a hunt outcome. A re-hunt cannot fix it (`--rehunt-gaps` does not re-run STAGE 2); needs a fresh full run. |
+| `in_flight` | immediately before `run-discovery.sh` is invoked | **Attempt started, outcome unknown** — the process died mid-zone (external kill, OOM). Artifacts partial. Retry as-is. |
+| `failed` | `run-discovery.sh` exited non-zero | **Attempt made, the tool failed.** NOT a negative. Distinct from `in_flight`: a second failure is a defect to escalate, not an environment problem. |
+| `budget_exhausted` | admission denied — 0 cells of budget remained | **The zone is hunt-able; the run declined to pay.** NOT a negative. The cheapest gap to close. |
+| `hunted_degraded` | exit 0 **and** `totals.failed > 0` | **Partial coverage** — at least one cell produced no sentinel after retries (#1707). NOT a rigorous negative. |
+| `hunted_empty` | exit 0, no failed cells, no candidates | **Rigorous negative for the classes actually hunted** — read together with `budget_truncated`. |
+| `hunted` | exit 0, no failed cells, candidates > 0 | **Complete coverage** of the classes hunted; its candidates are in the merged file. |
+
+`budget_truncated` is a **qualifier, not a status**: a zone whose per-zone cap shortened its class list was
+genuinely hunted, but its `hunted_empty` is not a rigorous negative. Hence two derived fields, computed in one
+place (`lib/zone-coverage.py`) so no consumer re-derives policy: `complete` = every zone is
+`hunted`/`hunted_empty` **and** untruncated; `gap_zones` = the ids that fail that test, in priority order.
+
+**Fail-loud, always on.** When `complete == false` STAGE 3 prints a `COVERAGE GAP:` banner + a per-status
+breakdown to stderr; `discovery-results.merged.json` carries an additive top-level `coverage` object
+(`complete`, `gap_zones`, `by_status`) plus the per-zone `totals.failed` the merge used to drop; and the
+closing banner reports `<covered>/<total> zone(s) covered` instead of a hunted-zone count. Opt-in gate
+(default OFF): `--require-coverage <pct>` exits **4** before STAGE 4/5, so a degraded run cannot produce a
+plausible-looking result set — the record is already on disk when it aborts.
+
+**The budget unit is CELLS**, enforced as an **admission decision before a zone starts**:
+`--zone-cell-budget N` (one zone) and `--run-cell-budget N` (all of STAGE 3), both default `0` = OFF. A zone's
+planned cell count comes from the shipped `run-discovery.sh --list-cells` dry run (#1612) — a pure manifest
+parse that returns before the agentis-binary check, so it needs no binary, no LLM and no network. The
+effective cap is `min(zone budget or ∞, run budget − spent or ∞)`:
+
+- cap ≥ planned → hunt unchanged; the invocation is **byte-identical** (no `--classes` argument is added).
+- 0 < cap < planned → hunt with `--classes <first cap classes>` (scope.tsv order = the mapper's relevance
+  order, so the least-likely classes are the ones dropped) + `budget_truncated: true`.
+- cap == 0 → the zone is `budget_exhausted` and **the loop stops**; every remaining zone is `budget_exhausted`.
+- probe failure → `cells_planned: null` + a `detail`; with budgets OFF nothing changes, with a run budget ON
+  the zone is charged the whole remainder and is the last zone admitted.
+
+Two things this deliberately does **not** do. It does not bound wall-clock, tokens or memory — cell *count* is
+invariant to the #1825 function-slice cap while per-cell *cost* is not (that change measured **+0 cells,
++6…20 % payload**), so the budget is a **coverage-shaping knob, not a cost cap**. And it introduces **no
+ordering of its own**: it consumes `.zone-list.tsv` exactly as #1826 sorted it, and "the first denial stops the
+loop" is what keeps that true — best-effort packing (skip an expensive high-priority zone, admit a cheap
+low-priority one) would silently invert #1826 and is an explicit non-goal, pinned by a self-test that asserts
+the denied set is exactly the non-custody tail. Wall-clock deadlines were rejected: the observed truncations
+were imposed from *outside* the pipeline (an internal deadline would have prevented none of them, only added a
+second way to truncate), and enforcing one means killing an in-flight zone mid-run, which *creates* the
+ambiguous half-written state this record exists to remove. `in_flight` records the externally-killed case
+honestly instead of pretending to prevent it.
+
+**Re-entrance (`--rehunt-gaps`, default OFF).** STAGE 1/2 are skipped; `map/zones.json`, `map/scope.tsv`,
+`briefs/briefs/` and the coverage record must already exist under `--out`, else exit 3 naming the missing
+artifact. The work list comes from the **record**, not the filesystem: every zone whose status is
+`not_reached` / `budget_exhausted` / `in_flight` / `failed`, in priority order. Partial zones
+(`hunted_degraded`, or `budget_truncated`) are excluded by default — a re-hunt would redo cells that already
+produced results — and included only under `--rehunt-include-partial`. `no_brief` is **never** selected: the
+missing prerequisite is not collapsed into a retryable failure. Because `failed` / `in_flight` (and an
+included partial) have prior artifacts that `run-discovery.sh` destroys on re-entry (`rm -rf $RUN`,
+`> $REPORT`), the runner first moves `discovery/<zid>` → `discovery/<zid>.attempt-<n>` and pushes the prior
+terminal state into `attempts[]`, so the failure evidence survives and `attempts` length is the give-up input.
+`--rehunt-max-attempts <N>` (default 2) leaves a zone alone once it has N attempts: one `--rehunt-gaps` pass is
+exactly one pass over the gap set, never a loop. The merge is unchanged and already globs every zone dir
+(skipping the `.attempt-<n>` evidence dirs), so it naturally produces the **union**; STAGE 4/5 then run over
+that union. Budgets compose: `--rehunt-gaps --run-cell-budget N` re-hunts as much of the gap set as the budget
+allows and records the rest as `budget_exhausted` again.
+
+`demo-run-zone-hunt.sh` blocks (f)–(j) pin all of it offline: the record is total and the default path inert;
+a truncated run is distinguishable from a clean sweep (with a negative control reproducing the 1-of-7 shape);
+a failed zone keeps its exit code; the re-hunt is targeted, unions to the clean-sweep cell total, and preserves
+the prior attempt.
 
 ### The HALT / NEVER-SUBMIT invariant (load-bearing)
 

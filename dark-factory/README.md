@@ -322,6 +322,17 @@ dark-factory/run-zone-hunt.sh --repo "$PWD/target" --out "$PWD/zone-hunt-out" \
 # every finding HALTS at PENDING-HUMAN-REVIEW; drafts are STAGED into zone-hunt-out/drop for a human to file
 ```
 
+**Coverage is always recorded (#1830).** Every run writes `<out>/coverage/zone-coverage.json` — no flag, and
+**before** the first zone is hunted, with every zone in `zones.json` present as `not_reached` — so a run that
+was cut short can never look like a clean sweep: an unhunted zone is visibly `not_reached` /
+`budget_exhausted` / `failed`, never silently absent. An incomplete run prints a `COVERAGE GAP:` banner and the
+merged results carry a `coverage` object. Two default-OFF budget knobs bound a run in **cells** (the number of
+hunter calls, not a cost cap): `--zone-cell-budget N` / `--run-cell-budget N`; the cut always falls on the tail
+of the value-custody-first order. `--rehunt-gaps` later re-enters **only** the gap zones (STAGE 1/2 skipped)
+and merges into the union. Record schema, the eight-state vocabulary and the re-entrance contract:
+[`docs/zone-split-orchestration.md`](./docs/zone-split-orchestration.md); operator recipes:
+[`docs/RUNBOOK.md`](./docs/RUNBOOK.md).
+
 The never-submit **HALT** is load-bearing: the capstone adds ZERO egress and reuses two baked-in gates —
 `run-audit-pass.sh` halts at `PENDING-HUMAN-REVIEW` and `deliver-submission.sh` refuses any unmarked draft (and
 only stages locally). Per-finding errors are logged + skipped so one bad finding never aborts the batch. Offline

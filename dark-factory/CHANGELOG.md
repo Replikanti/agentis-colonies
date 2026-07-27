@@ -15,6 +15,40 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **ZONE-COVERAGE RECORD + per-zone cell budget + targeted re-hunt for `run-zone-hunt.sh`** (#1830).
+  A truncated zone-hunt used to be **indistinguishable from a clean sweep**: STAGE 3 logged a failing zone and
+  continued, the merge glob skipped a zone dir with no `discovery-results.json` exactly like a zone that never
+  existed, and the merged file carried no zone field at all. (Measured on a preserved bench work dir: one
+  target hunted **1 of its 7 zones** — the zone holding the epic's named rare bug was never reached — and its
+  merged artifact reported a plausible 6-cell / 12-candidate run with no representation of the other six.)
+  New `lib/zone-coverage.py` owns `<out>/coverage/zone-coverage.json`, a versioned contract
+  (`zone-coverage/v1`) written **unconditionally and before the first zone runs**, with **every** zone in
+  `zones.json` present as `not_reached` and rewritten in place as it transitions — so **absence is not
+  representable** and an externally-killed run still leaves a truthful record. Eight closed states
+  (`not_reached` / `no_brief` / `in_flight` / `failed` / `budget_exhausted` / `hunted_degraded` /
+  `hunted_empty` / `hunted`) each license exactly one conclusion, plus the `budget_truncated` qualifier; the
+  derived `complete` / `gap_zones` are computed in one place. Fail-loud and always on: a `COVERAGE GAP:`
+  stderr banner, an additive `coverage` object (and the previously-dropped `totals.failed`) in
+  `discovery-results.merged.json`, and a `<covered>/<total> zone(s) covered` closing banner. Budgets are
+  measured in **cells** and enforced as a pre-zone admission decision — `--zone-cell-budget` /
+  `--run-cell-budget`, both default `0` = OFF — using the shipped `--list-cells` dry run (#1612, no binary/LLM/
+  network); a cell budget bounds hunter calls and **nothing else** (not wall-clock, tokens or memory: the
+  #1825 slice-cap change measured +0 cells but +6…20 % per-cell payload), and it introduces **no ordering of
+  its own** — the first denial stops the loop so the cut always falls on the tail of the #1826
+  value-custody-first order (best-effort packing is an explicit non-goal, pinned by a self-test).
+  `--rehunt-gaps` skips STAGE 1/2 and re-enters **only** the recorded gap zones, moving a `failed`/`in_flight`
+  zone's prior artifacts to `discovery/<zid>.attempt-<n>` and pushing its terminal state into `attempts[]`
+  before re-entry (`failed` is never collapsed into `not_reached`); `no_brief` is never selected;
+  `--rehunt-include-partial` and `--rehunt-max-attempts` bound the pass; the unchanged merge produces the
+  UNION. Opt-in `--require-coverage <pct>` exits **4** before STAGE 4/5 so a degraded run cannot publish a
+  plausible-looking result set. **Every knob defaults OFF/inert** — with them off the `run-discovery.sh`
+  invocation gains no argument and the run is byte-identical; the record and the gap banner are the deliberate
+  exception, because that is the acceptance criterion. `.zone-list.tsv` generation moved into
+  `zone-coverage.py init` **verbatim** (same #1826 sort key, skip and line format) so the record order and the
+  hunt order cannot drift. `demo-run-zone-hunt.sh` gains blocks (f)–(j) — including the one that matters: a
+  budget-truncated run whose denied zones are present as `budget_exhausted` and are exactly the non-custody
+  tail, with a negative control reproducing the 1-of-7 silent-absence shape — and its existing blocks (a)–(e)
+  plus the #1717/#1774 CLI guards are untouched and still pass.
 - **SEMANTIC MECHANISM JUDGE as an opt-in corpus-bench scoring mode (default OFF)** (#1829).
   `score-match.py`'s location-first matcher decides "did the hunter find this ground-truth bug?" by file
   basename + function name co-occurrence, and that ruler undercounts in BOTH directions: a candidate that

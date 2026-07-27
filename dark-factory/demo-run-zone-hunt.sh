@@ -14,6 +14,16 @@
 #      operator page is a no-op), and NO draft is staged for the OOSCOPE finding (its scope gate blocks it).
 #   d) PER-FINDING PROPAGATION: a finding whose submission pass HARD-FAILS (the coordinator stub exits 1) is
 #      logged + skipped, the batch still finishes, the healthy finding still stages, and the capstone exits 0.
+#   e) #1826 ORDER: STAGE 3 hunts value-custody zones first, deterministically across runs.
+#   f-j) #1830 COVERAGE RECORD + BUDGET + RE-HUNT:
+#      f) the record is TOTAL (one entry per zones.json zone, in #1826 order) and the default path is INERT.
+#      g) THE ONE THAT MATTERS — a --run-cell-budget-truncated run is DISTINGUISHABLE from a clean sweep: the
+#         denied zones are present as budget_exhausted and are exactly the non-custody tail (a best-effort
+#         packing implementation fails this), with a negative control pinning the silent-absence defect.
+#      h) a zone whose run-discovery.sh exits non-zero is recorded `failed` with its exit code, not swallowed.
+#      i) --rehunt-gaps re-enters ONLY the gap zones, merges the UNION, preserves a failed attempt's artifacts
+#         in discovery/<zid>.attempt-<n> + attempts[], and guards its prerequisites with exit 3.
+#      j) every new flag fails fast with exit 2 on a bad value / an illegal combination.
 #
 # Usage:  dark-factory/demo-run-zone-hunt.sh
 # Requires: git + python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression.
@@ -338,6 +348,323 @@ else
   bad "run-zone-hunt.sh --deep-hunt-only over an empty --out did not fail fast as expected (exit $DHO_PRE_RC):"
   sed 's/^/      /' "$DHO_PRE_ERR" | head -10 >&2
 fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (f) #1830: the COVERAGE RECORD is TOTAL and the default path stays INERT. Over run 1 (no budget flag at all)
+#     the record must already account for EVERY zone in zones.json, in the #1826 priority order, all hunted,
+#     with the budget knobs reported OFF — i.e. adding the record changed no behaviour, only added evidence.
+#     Block (e) above still diffs .zone-list.tsv byte-for-byte across two runs; that is the gate on having
+#     moved its generation into `zone-coverage.py init`.
+# ----------------------------------------------------------------------------------------------------------
+note "f) #1830 the coverage record is total and the default (budget-OFF) path is inert ..."
+COV="$OUT/coverage/zone-coverage.json"
+if [ -f "$COV" ] && python3 - "$COV" "$OUT/map/zones.json" "$OUT/.zone-list.tsv" <<'PY'
+import sys, json
+rec = json.load(open(sys.argv[1], encoding="utf-8"))
+zones = json.load(open(sys.argv[2], encoding="utf-8"))
+order = [l.split("\t")[0] for l in open(sys.argv[3], encoding="utf-8").read().splitlines() if l.strip()]
+assert rec["schema"] == "zone-coverage/v1", "wrong schema: %r" % rec["schema"]
+assert len(rec["zones"]) == len(zones) == 4, "record covers %d of %d zones" % (len(rec["zones"]), len(zones))
+assert [z["id"] for z in rec["zones"]] == order, "record order != .zone-list.tsv order"
+bad = [(z["id"], z["status"]) for z in rec["zones"] if z["status"] not in ("hunted", "hunted_empty")]
+assert not bad, "not every zone was hunted: %r" % bad
+assert rec["complete"] is True, "complete != True"
+assert rec["gap_zones"] == [], "gap_zones != []: %r" % rec["gap_zones"]
+assert rec["budget"] == {"unit": "cells", "per_zone": 0, "run": 0}, "budget knobs not OFF: %r" % rec["budget"]
+for z in rec["zones"]:
+    assert z["budget_truncated"] is False, "%s reports budget_truncated with budgets OFF" % z["id"]
+    assert z["cells_charged"] == z["cells_planned"], "%s charged %r of %r planned cells" % (
+        z["id"], z["cells_charged"], z["cells_planned"])
+PY
+then ok "the record accounts for ALL 4 zones in #1826 priority order, all hunted, budget knobs OFF + untruncated"
+else bad "the run-1 coverage record assertion failed"
+fi
+if python3 - "$OUT/discovery/discovery-results.merged.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["coverage"]["complete"] is True, "merged coverage.complete != True"
+assert d["coverage"]["gap_zones"] == [], "merged coverage.gap_zones != []"
+assert d["totals"]["failed"] == 0, "merged totals.failed != 0: %r" % d["totals"]["failed"]
+PY
+then ok "discovery-results.merged.json gained coverage.complete + the propagated totals.failed (additive keys)"
+else bad "the merged-JSON coverage/totals.failed assertion failed"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (g) #1830 THE ONE THAT MATTERS — a TRUNCATED run is DISTINGUISHABLE from a clean sweep. The fixture's cell
+#     counts are liquidation 2 + vault 3 + governance 2 + oracle 2 = 9, so --run-cell-budget 5 admits exactly
+#     the two VALUE-CUSTODY zones and denies the two non-custody ones. Asserted: the denied zones are PRESENT
+#     in the record as budget_exhausted (not absent, not hunted_empty), the denied set is exactly the
+#     non-custody tail (a best-effort packing implementation FAILS here, which is the point — packing would
+#     silently invert #1826), and the gap is visible on stderr and in the merged file.
+# ----------------------------------------------------------------------------------------------------------
+note "g) #1830 a budget-truncated run is distinguishable from a clean sweep ..."
+OUT3="$WORK/zh3"
+"$ZONEHUNT" --repo "$REPO" --out "$OUT3" --drop-dir "$OUT3/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --run-cell-budget 5 \
+  >"$WORK/zh3.out" 2>"$WORK/zh3.err"
+RC3=$?
+[ "$RC3" -eq 0 ] && ok "a budget-truncated run still exits 0 (the budget shapes coverage, it is not an error)" \
+  || { bad "the --run-cell-budget run exited $RC3"; sed 's/^/      /' "$WORK/zh3.err" | tail -20 >&2; }
+if python3 - "$OUT3/coverage/zone-coverage.json" <<'PY'
+import sys, json
+rec = json.load(open(sys.argv[1], encoding="utf-8"))
+ids = [z["id"] for z in rec["zones"]]
+assert len(ids) == 4, "the record dropped a zone under a budget: %r" % ids
+denied = [z["id"] for z in rec["zones"] if z["status"] == "budget_exhausted"]
+assert denied == ["contracts_governance", "contracts_oracle"], "denied set wrong: %r" % denied
+hunted = [z["id"] for z in rec["zones"] if z["status"] in ("hunted", "hunted_empty")]
+assert hunted == ["contracts_liquidation", "contracts_vault"], "admitted set wrong: %r" % hunted
+assert rec["complete"] is False, "a truncated run reported complete"
+assert rec["gap_zones"] == ["contracts_governance", "contracts_oracle"], "gap_zones wrong: %r" % rec["gap_zones"]
+# THE #1826 INTERACTION: the cut falls on exactly the non-custody tail — never on a value-custody zone.
+noncustody = [z["id"] for z in rec["zones"] if not z["value_custody"]]
+assert denied == noncustody, "the budget denied %r, not the non-custody tail %r" % (denied, noncustody)
+assert rec["budget"]["run"] == 5, "the record does not report the run budget: %r" % rec["budget"]
+PY
+then ok "all 4 zones are in the record; the 2 denied ones are budget_exhausted and are EXACTLY the non-custody tail (#1826 holds)"
+else bad "the truncated-run coverage assertion failed"
+fi
+if grep -q 'COVERAGE GAP:' "$WORK/zh3.err"; then
+  ok "STAGE 3 printed the fail-loud COVERAGE GAP banner to stderr"
+else
+  bad "no COVERAGE GAP banner on stderr for the truncated run"
+fi
+if python3 - "$OUT3/discovery/discovery-results.merged.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["coverage"]["complete"] is False, "merged file reports a truncated run as complete"
+assert d["coverage"]["by_status"]["budget_exhausted"] == 2, "merged by_status wrong: %r" % d["coverage"]["by_status"]
+PY
+then ok "a consumer reading ONLY discovery-results.merged.json can see the truncation (coverage.complete == false)"
+else bad "the merged file hid the truncation"
+fi
+# The NEGATIVE CONTROL that pins the defect itself: the filesystem alone shows 2 hunted zones out of 4 mapped
+# — exactly the shape a real target hit (1 of 7 zones hunted, merged file looking clean). The record is the
+# only artifact that accounts for all 4.
+if python3 - "$OUT3" <<'PY'
+import sys, os, json, glob
+out = sys.argv[1]
+fs_zones = sorted(os.path.basename(os.path.dirname(p))
+                  for p in glob.glob(os.path.join(out, "discovery", "*", "discovery-results.json")))
+mapped = json.load(open(os.path.join(out, "map", "zones.json"), encoding="utf-8"))
+rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
+assert len(fs_zones) == 2, "expected 2 zone dirs with results, got %r" % fs_zones
+assert len(mapped) == 4, "expected 4 mapped zones, got %d" % len(mapped)
+assert len(rec["zones"]) == 4, "the record accounts for %d of 4 zones" % len(rec["zones"])
+PY
+then ok "negative control: the discovery dirs alone show 2 of 4 zones (the silent-absence shape) — only the record accounts for all 4"
+else bad "the negative-control assertion failed"
+fi
+# The OTHER budget branch: 0 < cap < planned SHORTENS the class list instead of denying the zone. With
+# --zone-cell-budget 2 only `vault deposits` (3 planned cells) is over the cap, so it is hunted with
+# --classes C1,C6 and flagged budget_truncated — a QUALIFIER, not a status: the zone WAS hunted, but its
+# result is not a rigorous negative, so it still counts as a gap.
+OUT6="$WORK/zh6"
+"$ZONEHUNT" --repo "$REPO" --out "$OUT6" --drop-dir "$OUT6/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --zone-cell-budget 2 \
+  >"$WORK/zh6.out" 2>"$WORK/zh6.err"
+RC6=$?
+if [ "$RC6" -eq 0 ] && python3 - "$OUT6" <<'PY'
+import sys, os, json
+out = sys.argv[1]
+rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
+by_id = dict((z["id"], z) for z in rec["zones"])
+v = by_id["contracts_vault"]
+assert v["status"] in ("hunted", "hunted_empty"), "the truncated zone is %r, not hunted" % v["status"]
+assert v["budget_truncated"] is True, "the over-cap zone is not flagged budget_truncated"
+assert v["cells_planned"] == 3 and v["cells_charged"] == 2, "planned/charged wrong: %r/%r" % (
+    v["cells_planned"], v["cells_charged"])
+assert v["classes_hunted"] == ["C1", "C6"], "the shortened class list is %r" % v["classes_hunted"]
+for zid in ("contracts_liquidation", "contracts_governance", "contracts_oracle"):
+    assert by_id[zid]["budget_truncated"] is False, "%s was truncated at cap 2 with 2 planned cells" % zid
+assert rec["complete"] is False, "a budget_truncated zone must keep the run out of `complete`"
+assert rec["gap_zones"] == ["contracts_vault"], "gap_zones wrong: %r" % rec["gap_zones"]
+merged = json.load(open(os.path.join(out, "discovery", "discovery-results.merged.json"), encoding="utf-8"))
+assert merged["totals"]["cells"] == 8, "expected 8 cells under the per-zone cap, got %r" % merged["totals"]["cells"]
+PY
+then ok "--zone-cell-budget 2 SHORTENS the over-cap zone to its first 2 classes + flags budget_truncated (still a gap)"
+else bad "the per-zone cap / budget_truncated assertion failed (exit $RC6)"
+fi
+OUT5="$WORK/zh5"
+"$ZONEHUNT" --repo "$REPO" --out "$OUT5" --drop-dir "$OUT5/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --run-cell-budget 5 --require-coverage 100 \
+  >"$WORK/zh5.out" 2>"$WORK/zh5.err"
+RC5=$?
+if [ "$RC5" -eq 4 ] && [ ! -f "$OUT5/verify/verified_findings.json" ] && [ -f "$OUT5/coverage/zone-coverage.json" ]; then
+  ok "--require-coverage 100 halts the same truncated run with exit 4 BEFORE verify/deliver, record still on disk"
+else
+  bad "--require-coverage 100 did not halt as expected (exit $RC5)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (h) #1830: a FAILED zone is RECORDED, not swallowed. A second stub fails `agentis init` for exactly one
+#     zone's out-dir, which makes run-discovery.sh itself exit non-zero for that zone (it runs init under
+#     set -e with cwd inside the zone dir). The capstone's posture is unchanged — a per-zone failure is still
+#     non-fatal — but the zone is now `failed` with its exit code instead of a log line and nothing else.
+# ----------------------------------------------------------------------------------------------------------
+note "h) #1830 a failed zone is recorded with its exit code, not swallowed ..."
+STUB_FAIL="$WORK/agentis-stub-failzone"
+sed 's|^  init) mkdir -p .agentis; exit 0 ;;|  init)\n    case "$PWD" in */discovery/contracts_governance/*) exit 1 ;; esac\n    mkdir -p .agentis; exit 0 ;;|' "$STUB" > "$STUB_FAIL"
+chmod +x "$STUB_FAIL"
+OUT4="$WORK/zh4"
+"$ZONEHUNT" --repo "$REPO" --out "$OUT4" --drop-dir "$OUT4/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB_FAIL" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" \
+  >"$WORK/zh4.out" 2>"$WORK/zh4.err"
+RC4=$?
+[ "$RC4" -eq 0 ] && ok "a per-zone discovery failure is still non-fatal — the capstone exits 0 (posture unchanged)" \
+  || { bad "the failed-zone run exited $RC4"; sed 's/^/      /' "$WORK/zh4.err" | tail -20 >&2; }
+if python3 - "$OUT4/coverage/zone-coverage.json" <<'PY'
+import sys, json
+rec = json.load(open(sys.argv[1], encoding="utf-8"))
+by_id = dict((z["id"], z) for z in rec["zones"])
+gov = by_id["contracts_governance"]
+assert gov["status"] == "failed", "the failing zone is %r, not failed" % gov["status"]
+assert gov["exit_code"], "the failed zone carries no non-zero exit_code: %r" % gov["exit_code"]
+others = [z["status"] for z in rec["zones"] if z["id"] != "contracts_governance"]
+assert all(s in ("hunted", "hunted_empty") for s in others), "the other zones are %r" % others
+assert rec["complete"] is False, "a run with a failed zone reported complete"
+assert rec["gap_zones"] == ["contracts_governance"], "gap_zones wrong: %r" % rec["gap_zones"]
+PY
+then ok "the failed zone is recorded status=failed with its exit code; the run is NOT complete"
+else bad "the failed-zone coverage assertion failed"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (i) #1830: the re-hunt is TARGETED, RE-ENTRANT, and does not collapse `failed` into `not_reached`.
+# ----------------------------------------------------------------------------------------------------------
+note "i) #1830 --rehunt-gaps re-enters only the gap zones and preserves prior evidence ..."
+"$ZONEHUNT" --repo "$REPO" --out "$OUT3" --drop-dir "$OUT3/drop" \
+  --backend mock --agentis "$STUB" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --rehunt-gaps \
+  >"$WORK/zh3r.out" 2>"$WORK/zh3r.err"
+RC3R=$?
+if [ "$RC3R" -eq 0 ] && ! grep -q '\[M1\] mapping zones' "$WORK/zh3r.err" \
+   && ! grep -q '\[M2\] generating' "$WORK/zh3r.err" \
+   && [ "$(grep -c '\[M3\] hunting zone' "$WORK/zh3r.err")" -eq 2 ] \
+   && grep -q "hunting zone 'governance'" "$WORK/zh3r.err" \
+   && grep -q "hunting zone 'price oracle'" "$WORK/zh3r.err"; then
+  ok "i.1: --rehunt-gaps skipped STAGE 1/2 and hunted EXACTLY the 2 budget-denied zones"
+else
+  bad "i.1: --rehunt-gaps did not re-enter exactly the gap zones (exit $RC3R)"
+  sed 's/^/      /' "$WORK/zh3r.err" | tail -20 >&2
+fi
+if python3 - "$OUT3" <<'PY'
+import sys, os, json
+out = sys.argv[1]
+rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
+assert rec["complete"] is True, "the re-hunt did not close the gap: %r" % rec["gap_zones"]
+assert rec["gap_zones"] == [], "gap_zones != [] after the re-hunt: %r" % rec["gap_zones"]
+merged = json.load(open(os.path.join(out, "discovery", "discovery-results.merged.json"), encoding="utf-8"))
+assert merged["totals"]["cells"] == 9, "union merge wrong: %r cells (a clean sweep is 9)" % merged["totals"]["cells"]
+assert merged["coverage"]["complete"] is True, "the merged file still reports a gap"
+PY
+then ok "i.1: after the re-hunt the record is complete and the merge is the UNION (9 cells = the clean-sweep total)"
+else bad "i.1: the post-re-hunt union/completeness assertion failed"
+fi
+"$ZONEHUNT" --repo "$REPO" --out "$OUT4" --drop-dir "$OUT4/drop" \
+  --backend mock --agentis "$STUB" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --rehunt-gaps \
+  >"$WORK/zh4r.out" 2>"$WORK/zh4r.err"
+RC4R=$?
+if [ "$RC4R" -eq 0 ] && [ -d "$OUT4/discovery/contracts_governance.attempt-1/run" ] \
+   && [ -f "$OUT4/discovery/contracts_governance.attempt-1/run/hunter.ag" ]; then
+  ok "i.2: the failed attempt's artifacts were MOVED to discovery/<zid>.attempt-1 (not destroyed by re-entry)"
+else
+  bad "i.2: the failed zone's prior artifacts were not preserved (exit $RC4R)"
+fi
+if python3 - "$OUT4/coverage/zone-coverage.json" <<'PY'
+import sys, json
+rec = json.load(open(sys.argv[1], encoding="utf-8"))
+gov = dict((z["id"], z) for z in rec["zones"])["contracts_governance"]
+assert len(gov["attempts"]) == 1, "attempts != 1: %r" % gov["attempts"]
+a = gov["attempts"][0]
+assert a["status"] == "failed", "the pushed attempt is %r, not the failed one" % a["status"]
+assert a["exit_code"], "the pushed attempt lost its non-zero exit code: %r" % a["exit_code"]
+assert a["artifacts"] == "discovery/contracts_governance.attempt-1", "artifacts path wrong: %r" % a["artifacts"]
+assert gov["status"] in ("hunted", "hunted_empty"), "the re-hunted zone is %r" % gov["status"]
+assert rec["complete"] is True, "the re-hunt did not close the gap"
+PY
+then ok "i.2: the prior failed attempt survives in attempts[] with its exit code; the zone is now hunted"
+else bad "i.2: the attempts[] preservation assertion failed"
+fi
+# i.4: a PARTIAL zone (budget_truncated) is deliberately NOT in the default work list — a re-hunt would redo
+# cells that already produced results — and is reached only under --rehunt-include-partial, which treats it as
+# a `retry` (prior artifacts moved aside, prior state pushed into attempts[]).
+"$ZONEHUNT" --repo "$REPO" --out "$OUT6" --drop-dir "$OUT6/drop" \
+  --backend mock --agentis "$STUB" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --rehunt-gaps --rehunt-include-partial \
+  >"$WORK/zh6r.out" 2>"$WORK/zh6r.err"
+RC6R=$?
+if [ "$RC6R" -eq 0 ] && [ "$(grep -c '\[M3\] hunting zone' "$WORK/zh6r.err")" -eq 1 ] \
+   && [ -d "$OUT6/discovery/contracts_vault.attempt-1" ] && python3 - "$OUT6" <<'PY'
+import sys, os, json
+out = sys.argv[1]
+rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
+v = dict((z["id"], z) for z in rec["zones"])["contracts_vault"]
+assert v["budget_truncated"] is False, "the re-hunt did not clear budget_truncated"
+assert v["cells_charged"] == 3 and v["classes_hunted"] == ["C1", "C6", "C11"], "re-hunt was still capped: %r" % v
+assert len(v["attempts"]) == 1 and v["attempts"][0]["status"] in ("hunted", "hunted_empty"), \
+    "the truncated attempt was not preserved: %r" % v["attempts"]
+assert rec["complete"] is True, "the partial re-hunt did not close the gap: %r" % rec["gap_zones"]
+merged = json.load(open(os.path.join(out, "discovery", "discovery-results.merged.json"), encoding="utf-8"))
+assert merged["totals"]["cells"] == 9, "union merge wrong: %r cells" % merged["totals"]["cells"]
+PY
+then ok "i.4: --rehunt-include-partial re-hunts the truncated zone in full, preserves the partial attempt, closes the gap"
+else bad "i.4: the --rehunt-include-partial assertion failed (exit $RC6R)"
+fi
+NOCOV="$WORK/zh-nocov"
+cp -R "$OUT" "$NOCOV"
+rm -rf "$NOCOV/coverage"
+REHUNT_PRE_ERR="$WORK/rehunt-prereq.err"
+"$ZONEHUNT" --repo "$REPO" --out "$NOCOV" --backend mock --agentis "$STUB" --rehunt-gaps \
+  >/dev/null 2>"$REHUNT_PRE_ERR"
+REHUNT_PRE_RC=$?
+if [ "$REHUNT_PRE_RC" -eq 3 ] && grep -q -- '--rehunt-gaps requires an existing' "$REHUNT_PRE_ERR" \
+   && grep -q 'coverage/zone-coverage.json' "$REHUNT_PRE_ERR"; then
+  ok "i.3: --rehunt-gaps over an --out lacking the coverage record fails fast with exit 3, naming the artifact"
+else
+  bad "i.3: --rehunt-gaps missing-record guard did not fire as expected (exit $REHUNT_PRE_RC):"
+  sed 's/^/      /' "$REHUNT_PRE_ERR" | head -10 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (j) #1830 flag validation, fail-fast (the #1717 badval idiom — no heavy stage runs).
+# ----------------------------------------------------------------------------------------------------------
+note "j) #1830 budget / re-hunt flag validation fails fast ..."
+badflag() {
+  bf_desc="$1"; bf_expect="$2"; shift 2
+  bf_err="$WORK/badflag.err"
+  "$ZONEHUNT" --repo "$HERE" "$@" >/dev/null 2>"$bf_err"
+  bf_rc=$?
+  if [ "$bf_rc" -eq 2 ] && grep -q -- "$bf_expect" "$bf_err"; then
+    ok "$bf_desc fails fast with exit 2 + the usage error"
+  else
+    bad "$bf_desc did not fail fast as expected (exit $bf_rc):"
+    sed 's/^/      /' "$bf_err" | head -5 >&2
+  fi
+}
+badflag "--zone-cell-budget notanumber" 'must be a non-negative integer' --zone-cell-budget notanumber
+badflag "--run-cell-budget -1" 'must be a non-negative integer' --run-cell-budget -1
+badflag "--require-coverage 101" 'integer percentage 0-100' --require-coverage 101
+badflag "--rehunt-include-partial without --rehunt-gaps" 'requires --rehunt-gaps' --rehunt-include-partial
+badflag "--rehunt-gaps with --deep-hunt-only" 'cannot be combined with --deep-hunt-only' \
+  --rehunt-gaps --deep-hunt --deep-hunt-only
 
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
