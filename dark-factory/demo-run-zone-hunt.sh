@@ -33,6 +33,10 @@
 #         instead of charging N while running L x N cells with mis-assigned classes.
 #      n) a full re-sweep carries `attempts[]` over and the next re-hunt archives to the first FREE
 #         `.attempt-<n>`, so no archive is ever destroyed and --rehunt-max-attempts really bounds.
+#      o) the merge unions CANDIDATES per cell: a later attempt that surfaces MORE (but different) leads on a
+#         cell cannot drop the earlier attempt's lead, and a partial carry is counted + reported.
+#      (k) covers BOTH zero-cell triggers — the unclassified zone and the classified zone whose name
+#         map-zones.sh's clean() rewrote — so narrowing the guard back to "no classes" fails CI.
 #
 # Usage:  dark-factory/demo-run-zone-hunt.sh
 # Requires: git + python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression.
@@ -101,6 +105,14 @@ case "$cmd" in
         # attempt it archived. UNSET (the default) => this branch is inert and blocks (a)-(k) are unchanged.
         if [ -n "${DEMO_HUNTER_SILENT:-}" ]; then echo "SAFE"; exit 0; fi
         s="${SUBSYSTEM:-}"; c="${HUNT_CLASS:-}"
+        # DEMO_HUNTER_TWO_LEADS: the vault/C1 cell answers with TWO DIFFERENT candidates instead of the usual
+        # one. Used by block (o) to make a re-hunt yield MORE candidates than the attempt it archived, on the
+        # SAME cell. UNSET (the default) => inert.
+        if [ -n "${DEMO_HUNTER_TWO_LEADS:-}" ] && [ "$s" = "vault deposits" ] && [ "$c" = "C1" ]; then
+          echo "CANDIDATE|contracts/vault/Vault.sol:mint:20|C1|Medium|a second, unrelated lead|noise-1"
+          echo "CANDIDATE|contracts/vault/Vault.sol:redeem:30|C1|Medium|a third, unrelated lead|noise-2"
+          exit 0
+        fi
         if [ "$s" = "vault deposits" ] && [ "$c" = "C1" ]; then
           echo "CANDIDATE|contracts/vault/Vault.sol:deposit:10|C1|High|external depositor mints free shares|donate an asset to inflate the share price"
         elif [ "$s" = "price oracle" ] && [ "$c" = "C2" ]; then
@@ -691,26 +703,38 @@ note 'k) #1830 a zone that ran ZERO cells is unscoped (a gap), never a negative 
 REPO_K="$WORK/target-unscoped"
 mkdir -p "$REPO_K"
 cp -R "$FIXTURE_DIR/contracts" "$REPO_K/contracts"
-mkdir -p "$REPO_K/contracts/rewards"
+mkdir -p "$REPO_K/contracts/rewards" "$REPO_K/contracts/accrual"
 printf 'contract Rewards { function claim() public {} function accrue() public {} }\n' > "$REPO_K/contracts/rewards/Rewards.sol"
+printf 'contract Accrual { function tick() public {} }\n' > "$REPO_K/contracts/accrual/Accrual.sol"
 git -C "$REPO_K" init -q
 git -C "$REPO_K" config user.email demo@example.invalid
 git -C "$REPO_K" config user.name "demo"
 git -C "$REPO_K" add -A
 git -C "$REPO_K" commit -qm "audited baseline"
-# The zones fixture is the SHIPPED one — deliberately with no ZONE| line for contracts_rewards, which is
-# exactly the unclassified shape. The briefs fixture DOES carry a brief for it (gen-briefs walks zones.json).
+# TWO independent triggers for the same sink, because the guard is keyed on the OUTCOME (zero cells ran), not
+# on any single cause — if it is ever narrowed back to "no classes in zones.json", trigger B must fail CI.
+#   trigger A (contracts_rewards): NO ZONE| line at all -> unclassified -> map-zones.sh writes no scope line.
+#   trigger B (contracts_accrual): a fully CLASSIFIED zone whose name contains a BACKTICK. map-zones.sh keeps
+#     the name verbatim in zones.json but runs it through clean() (`[|`\r\n]` -> space) for scope.tsv, so the
+#     zone HAS a scope line — under a different subsystem string — and `--only "<zones.json name>"` matches
+#     nothing. Zero cells, exit 0, and pre-fix that derived a clean `hunted_empty`.
+ZONES_K="$WORK/zones-unscoped.fixture.txt"
+cp "$ZONES_FIXTURE" "$ZONES_K"
+printf 'ZONE|contracts_accrual|`accrual` engine|C1,C6|Interest accrual, named with a backtick the mapper must strip\n' >> "$ZONES_K"
 BRIEFS_K="$WORK/briefs-unscoped.fixture.txt"
 cp "$BRIEFS_FIXTURE" "$BRIEFS_K"
 {
   echo "DARK-FACTORY:BRIEF-BEGIN|contracts_rewards"
   echo "Attack the reward accrual accounting."
   echo "DARK-FACTORY:BRIEF-END"
+  echo "DARK-FACTORY:BRIEF-BEGIN|contracts_accrual"
+  echo "Attack the interest index."
+  echo "DARK-FACTORY:BRIEF-END"
 } >> "$BRIEFS_K"
 OUTK="$WORK/zh-unscoped"
 "$ZONEHUNT" --repo "$REPO_K" --out "$OUTK" --drop-dir "$OUTK/drop" --scope-hint contracts \
   --backend mock --agentis "$STUB" \
-  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_K" \
+  --map-fixture "$ZONES_K" --brief-fixture "$BRIEFS_K" \
   --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
   --in-scope "the whole in-scope program" \
   >"$WORK/zhk.out" 2>"$WORK/zhk.err"
@@ -721,17 +745,31 @@ out = sys.argv[1]
 rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
 zones = json.load(open(os.path.join(out, "map", "zones.json"), encoding="utf-8"))
 by_id = dict((z["id"], z) for z in rec["zones"])
-assert len(rec["zones"]) == len(zones) == 5, "record/zones.json size mismatch: %d/%d" % (len(rec["zones"]), len(zones))
-r = by_id["contracts_rewards"]
-assert r["status"] == "unscoped", "the zero-cell zone is %r, not unscoped" % r["status"]
-assert r["cells"] == 0 and r["cells_planned"] == 0, "unexpected cell counts: %r" % r
+assert len(rec["zones"]) == len(zones) == 6, "record/zones.json size mismatch: %d/%d" % (len(rec["zones"]), len(zones))
+# trigger A - unclassified zone, no scope.tsv line at all.
+a = by_id["contracts_rewards"]
+assert a["status"] == "unscoped", "trigger A zone is %r, not unscoped" % a["status"]
+assert a["cells"] == 0 and a["cells_planned"] == 0, "unexpected cell counts: %r" % a
+# trigger B - a CLASSIFIED zone whose zones.json name was rewritten by map-zones.sh's clean() before it
+# reached scope.tsv, so the zone HAS a scope line under a different subsystem string and --only matches
+# nothing. This is the trigger a "no classes in zones.json" guard would miss - the plausible future refactor.
+b = by_id["contracts_accrual"]
+zb = [z for z in zones if z["id"] == "contracts_accrual"][0]
+assert zb["bug_classes_likely"], "trigger B must be a CLASSIFIED zone, else it degenerates into trigger A"
+assert "`" in zb["name"], "trigger B needs the raw backticked name in zones.json: %r" % zb["name"]
+scope = open(os.path.join(out, "map", "scope.tsv"), encoding="utf-8").read()
+assert "accrual" in scope, "trigger B needs a scope line (under the CLEANED name)"
+assert zb["name"] not in scope, "trigger B needs the scope line under a DIFFERENT subsystem string"
+assert b["status"] == "unscoped", "trigger B zone is %r, not unscoped" % b["status"]
+assert b["cells"] == 0, "trigger B zone ran %r cells" % b["cells"]
 # THE SINK: no zone may ever be `hunted_*` with zero cells run.
 bad = [z["id"] for z in rec["zones"] if z["status"].startswith("hunted") and z["cells"] == 0]
 assert not bad, "zones claim a hunted status with 0 cells: %r" % bad
 assert rec["complete"] is False, "a run that never looked at a real zone reported complete"
-assert rec["gap_zones"] == ["contracts_rewards"], "gap_zones wrong: %r" % rec["gap_zones"]
+assert sorted(rec["gap_zones"]) == ["contracts_accrual", "contracts_rewards"], \
+    "gap_zones wrong: %r" % rec["gap_zones"]
 PY
-then ok 'an unclassified zone (in zones.json, absent from scope.tsv) is recorded unscoped and IS a gap'
+then ok 'BOTH zero-cell triggers are unscoped gaps: the unclassified zone AND the classified zone whose name clean() rewrote'
 else bad "the unscoped-zone assertion failed (exit $RCK)"
 fi
 if grep -q 'COVERAGE GAP:' "$WORK/zhk.err" && grep -q 'has NO line in scope.tsv' "$WORK/zhk.err"; then
@@ -741,7 +779,7 @@ else
 fi
 "$ZONEHUNT" --repo "$REPO_K" --out "$WORK/zh-unscoped2" --drop-dir "$WORK/zh-unscoped2/drop" --scope-hint contracts \
   --backend mock --agentis "$STUB" \
-  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_K" \
+  --map-fixture "$ZONES_K" --brief-fixture "$BRIEFS_K" \
   --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
   --in-scope "the whole in-scope program" --require-coverage 100 \
   >/dev/null 2>"$WORK/zhk2.err"
@@ -811,12 +849,20 @@ git -C "$REPO_M" config user.email demo@example.invalid
 git -C "$REPO_M" config user.name "demo"
 git -C "$REPO_M" add -A
 git -C "$REPO_M" commit -qm "audited baseline"
+mkdir -p "$REPO_M/contracts/solo"
+printf 'contract C { function h() public {} }\n' > "$REPO_M/contracts/solo/C.sol"
+git -C "$REPO_M" add -A
+git -C "$REPO_M" commit -qm "solo zone"
 ZONES_M="$WORK/zones-dupname.fixture.txt"
 {
   echo "ZONE|contracts_v1|vault|C1,C6,C11|first vault dir"
   echo "ZONE|contracts_v2|vault|C2,C9|second vault dir with the SAME name"
+  # A third, uniquely-named zone with ONE cell — trivially enforceable at cap 2, and NOT value-custody so it
+  # is hunted LAST. If an unenforceability denial stopped the loop, this zone would be denied too.
+  echo "ZONE|contracts_solo|solo keeper|C6|uniquely named, 1 cell"
   echo "CUSTODY|contracts_v1|true"
   echo "CUSTODY|contracts_v2|true"
+  echo "CUSTODY|contracts_solo|false"
 } > "$ZONES_M"
 BRIEFS_M="$WORK/briefs-dupname.fixture.txt"
 {
@@ -825,6 +871,9 @@ BRIEFS_M="$WORK/briefs-dupname.fixture.txt"
   echo "DARK-FACTORY:BRIEF-END"
   echo "DARK-FACTORY:BRIEF-BEGIN|contracts_v2"
   echo "Break the second vault."
+  echo "DARK-FACTORY:BRIEF-END"
+  echo "DARK-FACTORY:BRIEF-BEGIN|contracts_solo"
+  echo "Break the keeper."
   echo "DARK-FACTORY:BRIEF-END"
 } > "$BRIEFS_M"
 OUTM="$WORK/zh-dupname"
@@ -843,16 +892,27 @@ lines = [l for l in open(os.path.join(out, "map", "scope.tsv"), encoding="utf-8"
 subs = [l.split("|")[0].strip() for l in lines]
 assert subs.count("vault") == 2, "the fixture did not produce two scope lines with one name: %r" % subs
 rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
-v1 = dict((z["id"], z) for z in rec["zones"])["contracts_v1"]
-assert v1["status"] == "budget_exhausted", "the unenforceable cap produced %r" % v1["status"]
+by_id = dict((z["id"], z) for z in rec["zones"])
+v1 = by_id["contracts_v1"]
+assert v1["status"] == "budget_unenforceable", "the unenforceable cap produced %r" % v1["status"]
 assert v1["budget_truncated"] is False, "an unenforceable cap was recorded as a truncation"
 assert "not enforceable" in v1["detail"], "the denial is not explained: %r" % v1["detail"]
 # THE INVARIANT: no zone may ever RUN more cells than the budget CHARGED it.
 over = [(z["id"], z["cells"], z["cells_charged"]) for z in rec["zones"] if z["cells"] > z["cells_charged"]]
 assert not over, "zones ran more cells than they were charged: %r" % over
 assert rec["complete"] is False and "contracts_v1" in rec["gap_zones"], "the denied zone is not a gap"
+# R2a: unenforceability is a PER-ZONE property, so the sweep must CONTINUE. contracts_solo is 1 cell against
+# a cap of 2 — trivially enforceable, unrelated to the mis-named zones, and hunted LAST (non-custody).
+solo = by_id["contracts_solo"]
+assert solo["status"] in ("hunted", "hunted_empty"), \
+    "an unenforceability denial stopped the sweep: contracts_solo is %r" % solo["status"]
+assert solo["cells"] == 1, "contracts_solo did not actually run: %r" % solo
+# R2b: never claim a run budget was exhausted when there is no run budget.
+assert rec["budget"]["run"] == 0, "this case is meant to run with NO --run-cell-budget: %r" % rec["budget"]
+liars = [(z["id"], z["detail"]) for z in rec["zones"] if "run cell budget" in (z["detail"] or "")]
+assert not liars, "details blame a run budget that does not exist: %r" % liars
 PY
-then ok "a zone spanning two scope.tsv lines is DENIED (not charged 2 while running 4) and no zone outruns its charge"
+then ok "a zone spanning two scope.tsv lines is DENIED as budget_unenforceable, the sweep CONTINUES, and no detail blames a run budget that does not exist"
 else bad "the unenforceable-cap assertion failed (exit $RCM)"
 fi
 
@@ -908,6 +968,56 @@ if [ "$RCN3" -eq 0 ] && grep -q 'leaving it alone' "$WORK/zhn3.err" \
   ok "--rehunt-max-attempts is a REAL bound across re-sweeps: the over-cap zone is left alone, nothing re-hunts"
 else
   bad "--rehunt-max-attempts did not bind after a full re-sweep (exit $RCN3)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (o) #1830 review residual R1: the merge must union CANDIDATES, not elect a winning cell. "Most candidates
+#     wins" still dropped leads in the adjacent case: an attempt that surfaced ONE real lead loses wholesale to
+#     a later attempt on the SAME cell that surfaced TWO unrelated ones — silently, with carried_over_cells
+#     staying 0. Same bug class as review finding 2, one step narrower.
+# ----------------------------------------------------------------------------------------------------------
+note "o) #1830 the merge unions candidates per cell — a richer later attempt cannot drop an earlier lead ..."
+OUTO="$WORK/zh-candunion"
+"$ZONEHUNT" --repo "$REPO" --out "$OUTO" --drop-dir "$OUTO/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --zone-cell-budget 1 \
+  >"$WORK/zho1.out" 2>"$WORK/zho1.err"
+RCO1=$?
+# The re-hunt returns TWO different candidates on the very cell that produced the real lead in pass 1.
+DEMO_HUNTER_TWO_LEADS=1 "$ZONEHUNT" --repo "$REPO" --out "$OUTO" --drop-dir "$OUTO/drop" \
+  --backend mock --agentis "$STUB" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --rehunt-gaps --rehunt-include-partial --rehunt-max-attempts 3 \
+  >"$WORK/zho2.out" 2>"$WORK/zho2.err"
+RCO2=$?
+if [ "$RCO1" -eq 0 ] && [ "$RCO2" -eq 0 ] && python3 - "$OUTO" <<'PY'
+import sys, os, json
+out = sys.argv[1]
+merged = json.load(open(os.path.join(out, "discovery", "discovery-results.merged.json"), encoding="utf-8"))
+cands = [c for cell in merged["cells"] for c in (cell.get("candidates") or [])]
+# The pass-1 lead and BOTH pass-2 leads must all be present: no attempt's candidates are ever discarded.
+assert any("Vault.sol:deposit:10" in c for c in cands), \
+    "the earlier attempt's lead was DROPPED by a richer later attempt: %r" % cands
+assert any("Vault.sol:mint:20" in c for c in cands), "a later lead is missing: %r" % cands
+assert any("Vault.sol:redeem:30" in c for c in cands), "a later lead is missing: %r" % cands
+# The union happens INSIDE one cell entry, so the cell count must not grow.
+c1 = [cell for cell in merged["cells"] if cell.get("subsystem") == "vault deposits" and cell.get("class") == "C1"]
+assert len(c1) == 1, "the vault/C1 cell was duplicated instead of unioned: %d entries" % len(c1)
+assert len(c1[0]["candidates"]) == 3, "the cell holds %r, expected all 3 leads" % c1[0]["candidates"]
+assert len(cands) == len(set(cands)), "the union emitted duplicate candidate strings: %r" % cands
+# And a partial carry must be as VISIBLE as a whole one.
+assert merged["merge"]["carried_over_cells"] >= 1, \
+    "a partial carry was silent: carried_over_cells = %r" % merged["merge"]["carried_over_cells"]
+PY
+then ok "all 3 leads survive (1 from the archived attempt + 2 from the re-hunt) in ONE unioned cell, and the partial carry is counted"
+else bad "the candidate-union assertion failed (exit $RCO1/$RCO2)"
+fi
+if grep -q 'carried over from a prior attempt' "$WORK/zho2.err"; then
+  ok "the partial carry is also reported on stderr (not only in the merged file)"
+else
+  bad "the partial carry was not reported on stderr"
 fi
 
 # ----------------------------------------------------------------------------------------------------------

@@ -359,8 +359,10 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
     continue
   fi
   if [ "$BUDGET_STOP" -eq 1 ]; then
+    # Only ever reached after a genuine RUN-pool exhaustion: BUDGET_STOP is set exclusively on the two paths
+    # below that require --run-cell-budget > 0, so naming the pool here can never be a false claim.
     "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status budget_exhausted --cells-charged 0 \
-      --detail "admission denied: the run cell budget was already exhausted"
+      --detail "admission denied: the run cell budget ($RUN_CELL_BUDGET cells) was already spent by an earlier zone"
     continue
   fi
   ZBRIEF="$BRIEFS/briefs/brief_${ZID}.md"
@@ -401,10 +403,10 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
   if [ -n "$ZCAP" ] && [ "$ZCAP" -eq 0 ]; then
     # The FIRST denial STOPS the loop: best-effort packing (skip an expensive high-priority zone, admit a
     # cheap low-priority one) would silently invert the #1826 value-custody-first order. Explicit non-goal.
-    echo "run-zone-hunt.sh: [M3] zone '$ZNAME' ($ZID) DENIED — the cell budget is spent; it and every remaining zone are recorded budget_exhausted" >&2
+    echo "run-zone-hunt.sh: [M3] zone '$ZNAME' ($ZID) DENIED — the run cell budget is spent; it and every remaining zone are recorded budget_exhausted" >&2
     "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status budget_exhausted \
       --cells-planned "${CELLS_PLANNED:-null}" --cells-charged 0 --classes "$CLASSES_ALL" \
-      --detail "admission denied: 0 cells of budget remaining"
+      --detail "admission denied: 0 of the run cell budget ($RUN_CELL_BUDGET cells) remaining"
     BUDGET_STOP=1
     continue
   fi
@@ -456,11 +458,14 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
       ZTRUNC="1"
       ZDETAIL="per-zone cap $ZCAP < $CELLS_PLANNED planned cell(s); class list shortened to $ZCLASSES_ARG"
     else
-      echo "run-zone-hunt.sh: [M3] zone '$ZNAME' ($ZID) DENIED — a cap of $ZCAP cannot be enforced on it (--classes $ZCLASSES_ARG would admit ${ZADMIT:-?} cell(s), not $ZCAP: the zone spans several scope.tsv lines); recorded budget_exhausted rather than mis-charging the budget" >&2
-      "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status budget_exhausted \
+      # Unenforceability is a property of THIS zone (its subsystem name matches several scope.tsv lines), not
+      # of a spent pool: nothing was charged, the zones behind it are unaffected, and the remedy is different.
+      # So it gets its OWN status and the sweep CONTINUES — stopping the loop here would deny trivially
+      # enforceable zones and, with no --run-cell-budget set, would label them with a pool that does not exist.
+      echo "run-zone-hunt.sh: [M3] zone '$ZNAME' ($ZID) DENIED — a cap of $ZCAP cannot be enforced on it (--classes $ZCLASSES_ARG would admit ${ZADMIT:-?} cell(s), not $ZCAP: the zone spans several scope.tsv lines); give it its full planned budget or re-map so its subsystem name is unique. Continuing with the next zone" >&2
+      "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status budget_unenforceable \
         --cells-planned "$CELLS_PLANNED" --cells-charged 0 --classes "$CLASSES_ALL" \
-        --detail "cap $ZCAP not enforceable: a --classes prefix would admit ${ZADMIT:-unknown} of $CELLS_PLANNED cell(s)"
-      BUDGET_STOP=1
+        --detail "cap $ZCAP not enforceable: a --classes prefix would admit ${ZADMIT:-unknown} of $CELLS_PLANNED cell(s) because the zone matches several scope.tsv lines"
       continue
     fi
   fi
@@ -522,12 +527,19 @@ coverage = json.loads(sys.argv[6])
 # candidates from this file — while reporting a cleaner coverage verdict. That is a worse failure than the one
 # this issue fixes, so the merge unions every attempt of every zone:
 #   - cells are deduplicated by (subsystem, class, files);
-#   - when the same cell exists in several attempts the one with the MOST candidates wins. A later SAFE never
-#     erases an earlier CANDIDATE: refuting a candidate is STAGE 4's job, not the merge's.
+#   - when the same cell exists in several attempts their CANDIDATE LISTS ARE UNIONED, deduplicated on the
+#     WHOLE candidate string. Electing a single "winning" cell (e.g. the one with the most candidates) would
+#     still drop leads: an attempt that surfaced ONE real lead loses to a later attempt that surfaced TWO
+#     unrelated ones. No candidate any attempt ever produced is discarded here — refuting a candidate is
+#     STAGE 4's job, not the merge's. The whole string is the dedupe key precisely because it cannot collapse
+#     two genuinely distinct leads: two candidates are merged only when they are byte-identical.
 # The current zone dir sorts BEFORE its `.attempt-<n>` archives (a prefix sorts first), so it is seen first and
-# `cells[]` stays in current-run order; archives only contribute what the current attempt did not produce.
+# `cells[]` stays in current-run order; the cell keeps the CURRENT attempt's fields (its status is the fresher
+# truth about this run) and only gains the archived attempts' extra candidates.
 def cell_key(c):
     return (c.get("subsystem", ""), c.get("class", ""), c.get("files", ""))
+def candidates_of(c):
+    return [x for x in (c.get("candidates") or []) if isinstance(x, str)]
 best, order, carried = {}, [], 0
 for name in sorted(os.listdir(disc_dir)):
     p = os.path.join(disc_dir, name, "discovery-results.json")
@@ -544,14 +556,24 @@ for name in sorted(os.listdir(disc_dir)):
         k = cell_key(c)
         prev = best.get(k)
         if prev is None:
-            best[k] = c
+            entry = dict(c)
+            entry["candidates"] = list(candidates_of(c))
+            best[k] = entry
             order.append(k)
             if archived:
                 carried += 1
-        elif len(c.get("candidates", []) or []) > len(prev.get("candidates", []) or []):
-            best[k] = c
-            if archived:
-                carried += 1
+            continue
+        seen = set(prev["candidates"])
+        added = 0
+        for cand in candidates_of(c):
+            if cand not in seen:
+                seen.add(cand)
+                prev["candidates"].append(cand)
+                added += 1
+        # `carried_over_cells` counts every cell whose merged content came, WHOLLY OR PARTLY, from an archived
+        # attempt — so a partial carry is as visible as a whole one, on stderr and in the merged file.
+        if added and archived:
+            carried += 1
 cells = [best[k] for k in order]
 # Totals are derived from the deduplicated set with run-discovery.sh's own definitions (cells = one entry per
 # cell, steers = cells carrying a blackboard FOCUS, failed = #1707 no-sentinel cells), so they can never

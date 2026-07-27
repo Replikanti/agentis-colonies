@@ -25,8 +25,15 @@
 #   in_flight         set immediately before `run-discovery.sh` is invoked; survives only if the process died
 #                     mid-zone. Attempt started, outcome unknown (external kill / OOM). Retry as-is.
 #   failed            `run-discovery.sh` exited non-zero. Attempt made, the TOOL failed — not a negative.
-#   budget_exhausted  admission denied: the remaining cell budget was 0 when the zone came up. The zone is
-#                     hunt-able; the run declined to pay. The cheapest gap to close.
+#   budget_exhausted  admission denied: the remaining RUN cell budget was 0 when the zone came up. The zone is
+#                     hunt-able; the run declined to pay. Every zone AFTER it was denied too (the pool is
+#                     spent, so the loop stops). Remedy: raise --run-cell-budget, or --rehunt-gaps.
+#   budget_unenforceable  admission denied for a reason that is LOCAL TO THIS ZONE: a partial cap cannot be
+#                     expressed for it, because `--classes` is a per-manifest-LINE override and the zone's
+#                     subsystem name matches SEVERAL scope.tsv lines, so no class prefix lands exactly on the
+#                     cap (see run-zone-hunt.sh). Deliberately NOT `budget_exhausted`: no pool was spent, the
+#                     zones after it are unaffected (the sweep continues), and the remedy is different —
+#                     give this zone its full planned budget, or re-map so its subsystem name is unique.
 #   hunted_degraded   exit 0 AND `totals.failed > 0` — at least one cell produced no sentinel (#1707).
 #                     PARTIAL coverage, not a rigorous negative.
 #   hunted_empty      exit 0, no failed cells, no candidates. A RIGOROUS NEGATIVE for the classes actually
@@ -82,6 +89,7 @@ STATUSES = (
     "hunted_degraded",
     "failed",
     "budget_exhausted",
+    "budget_unenforceable",
     "in_flight",
     "no_brief",
     "unscoped",
@@ -90,8 +98,10 @@ STATUSES = (
 # A zone is COVERED only when it was hunted to completion; everything else is a gap. `unscoped` is
 # deliberately NOT here: a zone that ran zero cells is not a negative of any kind (see the header).
 COVERED_STATUSES = ("hunted", "hunted_empty")
-# Statuses whose remedy is "run the zone again" — the default re-hunt work set.
-RETRYABLE_STATUSES = ("not_reached", "budget_exhausted", "in_flight", "failed")
+# Statuses whose remedy is "run the zone again" — the default re-hunt work set. `budget_unenforceable` is here
+# because a re-hunt with no cap (or a cap >= the zone's planned cells) hunts it in full; it never ran, so it
+# has nothing to preserve and is a plain first attempt.
+RETRYABLE_STATUSES = ("not_reached", "budget_exhausted", "budget_unenforceable", "in_flight", "failed")
 # Statuses that already produced artifacts, so a re-entry would destroy evidence unless it is moved aside.
 HAS_ARTIFACTS = ("in_flight", "failed", "hunted", "hunted_empty", "hunted_degraded")
 
