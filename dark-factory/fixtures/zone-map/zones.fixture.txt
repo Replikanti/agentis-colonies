@@ -6,10 +6,25 @@ ZONE|contracts_vault|vault deposits|C1,C6,C11|ERC4626-style share vault: share-p
 ZONE|contracts_oracle|price oracle|C2,C9|External price feed: integrity/staleness and decimals scaling
 ZONE|contracts_liquidation|liquidation engine|C10,C8|CDP liquidate/seize/redeem: health-factor accounting and reentrancy on token transfer
 ZONE|contracts_governance|governance|C5,C13|Owner/guardian role model and pause/freeze consistency
+# #1824: real (non-empty) classifications for the excluded-path zones, so this fixture actually PROVES
+# the mechanical-pass path filter -- without the fix, each of these WOULD legitimately reach scope.tsv.
+ZONE|test|foo test|C1|Foundry unit test for a withdraw path (must never reach scope.tsv)
+ZONE|mocks|mock token|C6|Foundry mock token used only by tests (must never reach scope.tsv)
+ZONE|interfaces|foo interface|C6|Pure interface declaration, no implementation (must never reach scope.tsv)
+ZONE|script|deploy script|C5|Foundry deployment script, not target code (must never reach scope.tsv)
+# `libraries/` MUST survive the #1824 path filter (it is not on the excluded-prefix list) -- this is the
+# regression the fix guards against: yieldoor's rare M-2 finding (ReserveLogic._updateIndexes) lives here.
+ZONE|libraries|reserve logic|C1,C11|Interest-index accrual math shared by the lending zones
+# `scripts_core/` is a REAL directory (not the excluded `script/` prefix) -- proves the match is
+# segment-anchored, not a bare substring of "script".
+ZONE|scripts_core|keeper|C6|Keeper automation contract, not a deployment script
 # #1713: value-custody flags (severity-first deep-hunt gate). A fixture DECLARES them since the .ag is not
 # run on the --fixture path. The accounting vault + the lending/CDP liquidation engine are value-custody;
-# the read-only oracle feed + the governance role model are not.
+# the read-only oracle feed + the governance role model are not. `libraries/` is flagged value_custody
+# (NOT the path exclusion -- see #1824 comment above; this proves the filter is path-based, not custody-
+# based) so its classification-preservation stays visible end-to-end.
 CUSTODY|contracts_vault|true
 CUSTODY|contracts_oracle|false
 CUSTODY|contracts_liquidation|true
 CUSTODY|contracts_governance|false
+CUSTODY|libraries|true
