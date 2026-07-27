@@ -288,9 +288,12 @@ fi
 #      (VALUATION_KEYWORDS). The liquidation fixture declares `convertToAssets` LAST (after every admin setter
 #      AND every value-moving fn); assert it survives the slice WITHOUT displacing liquidate/redeem.
 #
-#      #1825 NOTE: add the same ordering guard as (d2) so this does not silently go vacuous if the cap is
-#      raised again -- `convertToAssets` (a reserved valuation slot) must sort ahead of `setPaused` (rest
-#      partition) in the emitted order (rank 6 < rank 9).
+#      #1825 NOTE: unlike (d2)'s guard, this one is NOT yet vacuous at cap 16 -- `convertToAssets` is
+#      declared LAST of the fixture's 17 names, so an unprioritised `[:16]` still drops it and the membership
+#      assert below would still fire. The ordering guard is added PRE-EMPTIVELY, for the cap raise after this
+#      one: at cap 17+ membership becomes satisfiable by declaration order alone and stops proving anything.
+#      `convertToAssets` (a reserved valuation slot) must sort ahead of `setPaused` (rest partition) in the
+#      emitted order (rank 6 < rank 9).
 # ----------------------------------------------------------------------------------------------------------
 if python3 - "$OUT/scope.tsv" <<'PY'
 import sys

@@ -227,9 +227,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   EXACTLY rank 16 of 16 (in the unclaimed `rest` partition) — a future addition to `VALUE_MOVING_KEYWORDS` or
   `VALUATION_KEYWORDS` can push it back out past the cap. `demo-map-zones.sh` gains a new fixture assertion
   (`accrue`/`seize`/`_healthFactor` present at cap 16, `setOracle` still absent) and converts its two existing
-  #1701/#1799 regression guards from plain membership checks to ORDERING checks (`index(x) < index(y)`),
-  since membership alone goes vacuous once the cap is large enough that a naive declaration-order slice would
-  also contain the guarded names.
+  #1701/#1799 regression guards from plain membership checks to ORDERING checks (`index(x) < index(y)`).
+  Membership goes vacuous once the cap is large enough that a naive declaration-order slice would also contain
+  the guarded name — which at cap 16 is already true of the #1701 guard (`liquidate` is declared 12th of 17,
+  `redeem` 14th, so both survive an unprioritised `[:16]`). The #1799 guard is not yet vacuous at this cap
+  (`convertToAssets` is declared LAST of 17 and still drops out of a naive `[:16]`); it is converted for the
+  same reason pre-emptively, so the next cap raise cannot silently hollow it out.
 - **`map-zones.sh`'s mechanical grouping pass no longer turns `test/`/`tests/`/`interfaces/`/`mocks/`/`script/`
   directories (or `.t.sol` files) into discovery zones** (#1824). Every directory reachable under `--repo` used
   to become a zone regardless of what it held, so `scope.tsv` routinely carried Foundry test suites, mocks,
