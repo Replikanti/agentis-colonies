@@ -18,17 +18,23 @@
 #
 # Corpus is a manifest (corpus.tsv), not re-hosted code or findings — see corpus.tsv + README.md.
 #
-# Usage: run-corpus-bench.sh [--self-test] [--fetch] [--gt] [--hunt] [--score] [--live]
+# Usage: run-corpus-bench.sh [--self-test] [--fetch] [--gt] [--dupes] [--hunt] [--score] [--live]
 #                            [--id <id>]... [--work <dir>] [--corpus <file>] [--backend <mock|flat-cyborg|claude>]
 #                            [--jobs <N>] [--min-overlap <N>] [--agentis <bin>] [--json] [-h]
 #                            [--judge <off|cache|cmd>] [--judge-cmd <path>] [--judge-cache <file.jsonl>]
 #                            [--judge-log <file.jsonl>] [--judge-batch <N>] [--judge-min-confidence <N>]
+#                            [--gt-dupes <file>] [--gt-dupes-min-confidence <N>] [--no-gt-dupes]
 #   (no action flag)  same as --self-test.
 #   --self-test       Deterministic, CI-safe, no network/LLM: extract-gt.sh over fixtures/sample-judging-readme.md
 #                     must byte-match fixtures/expected-truth.tsv. This is the safety property that gates CI,
 #                     exactly like run-capability-bench.sh's STAGE 1.
 #   --fetch           Clone code+judging repos for the selected --id(s) (default: every corpus.tsv row).
 #   --gt              (Re)build truth.tsv per selected contest from its cloned judging repo.
+#   --dupes           Build the #1840 GT-EQUIVALENCE artifact (gt-dupes.sh -> <work>/<id>/gt-dupes.tsv) for
+#                     each selected contest: which accepted truth rows are the SAME underlying bug. Judged
+#                     once per contest through mech-judge.sh, so it costs LLM calls — operator-only, like
+#                     --hunt, and deliberately NOT part of --live (which keeps its current meaning). An
+#                     existing artifact is never clobbered; rebuild it with `gt-dupes.sh --force`.
 #   --hunt            Run the REAL federation (run-zone-hunt.sh) over each selected contest's cloned code.
 #                     Needs `agentis` + a real backend; never run on CI.
 #   --score           Score each contest's verified_findings.json against its truth.tsv; print the scorecard.
@@ -50,6 +56,12 @@
 #   --judge-cmd <p> / --judge-cache <f> / --judge-log <f> / --judge-batch <N> / --judge-min-confidence <N>
 #                     Forwarded verbatim to score-match.py (see its header). A judged number is reproducible
 #                     only via its recorded cache/log — archive them next to the scorecard.
+#   --gt-dupes <f>    #1840: score with this GT-equivalence artifact instead of the per-contest default
+#                     (<work>/<id>/gt-dupes.tsv, used automatically when it exists). A named-but-missing file
+#                     is an error, never a silent unexpanded number.
+#   --gt-dupes-min-confidence <N>  merge bar applied at SCORING time (default 85, see score-match.py). Raising
+#                     it re-derives the unexpanded number from the SAME archived artifact.
+#   --no-gt-dupes     ignore any gt-dupes.tsv and score one row per accepted GT row only (the pre-#1840 ruler).
 # Exit: 0 = requested stage(s) completed (a low/zero recall is DATA, not a failure — same posture as the
 #       capability bench's live stage) ; 1 = --self-test regressed ; 2 = bad args ; 3 = missing prerequisite.
 set -u
@@ -60,12 +72,14 @@ ZONEHUNT="$DF/run-zone-hunt.sh"
 EXTRACTGT="$HERE/extract-gt.sh"
 SCOREMATCH="$HERE/score-match.py"
 FETCHCORPUS="$HERE/fetch-corpus.sh"
+GTDUPES="$HERE/gt-dupes.sh"
 CORPUS="$HERE/corpus.tsv"
 
 WORK="$PWD/corpus-bench-work"
 IDS="" ; BACKEND="flat-cyborg" ; JOBS="1" ; MINOV="2" ; AGENTIS="agentis" ; JSON=0
 JUDGE="off" ; JUDGE_CMD="" ; JUDGE_CACHE="" ; JUDGE_LOG="" ; JUDGE_BATCH="" ; JUDGE_MINCONF=""
-DO_SELFTEST=0 ; DO_FETCH=0 ; DO_GT=0 ; DO_HUNT=0 ; DO_SCORE=0 ; ANY_ACTION=0
+GT_DUPES="" ; GT_DUPES_MINCONF="" ; NO_GT_DUPES=0
+DO_SELFTEST=0 ; DO_FETCH=0 ; DO_GT=0 ; DO_DUPES=0 ; DO_HUNT=0 ; DO_SCORE=0 ; ANY_ACTION=0
 declare -a ID_ARGS=()
 
 nv() { [ "$1" -ge 2 ] || { echo "run-corpus-bench.sh: $2 requires a value" >&2; exit 2; }; }
@@ -73,6 +87,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --self-test)   DO_SELFTEST=1; ANY_ACTION=1; shift;;
   --fetch)       DO_FETCH=1; ANY_ACTION=1; shift;;
   --gt)          DO_GT=1; ANY_ACTION=1; shift;;
+  --dupes)       DO_DUPES=1; ANY_ACTION=1; shift;;
   --hunt)        DO_HUNT=1; ANY_ACTION=1; shift;;
   --score)       DO_SCORE=1; ANY_ACTION=1; shift;;
   --live)        DO_FETCH=1; DO_GT=1; DO_HUNT=1; DO_SCORE=1; ANY_ACTION=1; shift;;
@@ -90,6 +105,9 @@ while [ $# -gt 0 ]; do case "$1" in
   --judge-log)           nv "$#" "$1"; JUDGE_LOG="$2"; shift 2;;
   --judge-batch)         nv "$#" "$1"; JUDGE_BATCH="$2"; shift 2;;
   --judge-min-confidence) nv "$#" "$1"; JUDGE_MINCONF="$2"; shift 2;;
+  --gt-dupes)                nv "$#" "$1"; GT_DUPES="$2"; shift 2;;
+  --gt-dupes-min-confidence) nv "$#" "$1"; GT_DUPES_MINCONF="$2"; shift 2;;
+  --no-gt-dupes) NO_GT_DUPES=1; shift;;
   -h|--help)     awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0;;
   *) echo "run-corpus-bench.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
@@ -106,6 +124,15 @@ if [ "$JUDGE" != "off" ]; then
   [ -n "$JUDGE_LOG" ]     && JUDGE_ARGS+=(--judge-log "$JUDGE_LOG")
   [ -n "$JUDGE_BATCH" ]   && JUDGE_ARGS+=(--judge-batch "$JUDGE_BATCH")
   [ -n "$JUDGE_MINCONF" ] && JUDGE_ARGS+=(--judge-min-confidence "$JUDGE_MINCONF")
+fi
+
+# #1840: an explicitly named artifact must exist. Silently scoring without it would report an unexpanded
+# number under a flag that says otherwise.
+if [ -n "$GT_DUPES" ] && [ ! -f "$GT_DUPES" ]; then
+  echo "run-corpus-bench.sh: --gt-dupes artifact not found: $GT_DUPES" >&2; exit 3
+fi
+if [ -n "$GT_DUPES" ] && [ "$NO_GT_DUPES" -eq 1 ]; then
+  echo "run-corpus-bench.sh: --gt-dupes and --no-gt-dupes are mutually exclusive" >&2; exit 2
 fi
 
 # ---- --self-test (default; deterministic, no network/LLM) ------------------------------------------------
@@ -137,9 +164,9 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
     exit 1
   fi
 
-  [ "$ANY_ACTION" -eq 1 ] && [ "$DO_FETCH$DO_GT$DO_HUNT$DO_SCORE" = "0000" ] && exit 0
+  [ "$ANY_ACTION" -eq 1 ] && [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
 fi
-[ "$DO_FETCH$DO_GT$DO_HUNT$DO_SCORE" = "0000" ] && exit 0
+[ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
 
 [ -f "$CORPUS" ] || { echo "run-corpus-bench.sh: corpus manifest not found: $CORPUS" >&2; exit 2; }
 mkdir -p "$WORK"; WORK="$(cd "$WORK" && pwd)"
@@ -160,6 +187,28 @@ if [ "$DO_GT" -eq 1 ]; then
     [ -f "$readme" ] || { echo "run-corpus-bench.sh: [$id] no judging README at $readme (run --fetch first)" >&2; continue; }
     say "GT: [$id] extracting truth.tsv ..."
     bash "$EXTRACTGT" "$readme" "$WORK/$id/truth.tsv"
+  done < "$CORPUS"
+fi
+
+# ---- --dupes (#1840 GT-equivalence artifact; costs LLM calls, operator-only) -----------------------------------
+if [ "$DO_DUPES" -eq 1 ]; then
+  [ -x "$GTDUPES" ] || { echo "run-corpus-bench.sh: gt-dupes.sh not found/executable at $GTDUPES" >&2; exit 3; }
+  while IFS=$'\t' read -r id _code _judging _subdir _scope; do
+    case "$id" in ""|\#*) continue;; esac
+    if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
+    truth="$WORK/$id/truth.tsv"
+    [ -f "$truth" ] || { echo "run-corpus-bench.sh: [$id] no truth.tsv at $truth (run --gt first)" >&2; continue; }
+    if [ -f "$WORK/$id/gt-dupes.tsv" ]; then
+      say "DUPES: [$id] gt-dupes.tsv already built; leaving it alone (rebuild with gt-dupes.sh --force)"
+      continue
+    fi
+    say "DUPES: [$id] judging the truth rows against each other (upper triangle) ..."
+    declare -a DUPES_BUILD=()
+    [ -n "$JUDGE_CMD" ]   && DUPES_BUILD+=(--judge-cmd "$JUDGE_CMD")
+    [ -n "$JUDGE_BATCH" ] && DUPES_BUILD+=(--batch "$JUDGE_BATCH")
+    bash "$GTDUPES" "$truth" "$WORK/$id/gt-dupes.tsv" --log "$WORK/$id/gt-dupes-log.jsonl" \
+      ${DUPES_BUILD[@]+"${DUPES_BUILD[@]}"} \
+      || say "  [$id] gt-dupes.sh exited non-zero; no artifact for this contest"
   done < "$CORPUS"
 fi
 
@@ -186,6 +235,7 @@ G_H_TOTAL=0 ; G_H_HITS=0 ; G_M_TOTAL=0 ; G_M_HITS=0
 G_RARE_TOTAL=0 ; G_RARE_HITS=0 ; G_MID_TOTAL=0 ; G_MID_HITS=0 ; G_CONS_TOTAL=0 ; G_CONS_HITS=0
 G_VERIFIED=0 ; G_MATCHED_LEADS=0 ; G_UNMATCHED_LEADS=0
 G_JUDGE_CALLS=0 ; G_JUDGE_ERRORS=0
+G_DUP_CLASSES=0 ; G_DUP_EXPANDED=0 ; G_DUP_RARE_EXPANDED=0
 
 if [ "$DO_SCORE" -eq 1 ]; then
   command -v python3 >/dev/null 2>&1 || { echo "run-corpus-bench.sh: python3 not installed (scoring needs it)" >&2; exit 3; }
@@ -198,22 +248,44 @@ if [ "$DO_SCORE" -eq 1 ]; then
     if [ ! -f "$verified_json" ]; then say "SCORE: [$id] no verified_findings.json (run --hunt first); skipping"; continue; fi
     say "SCORE: [$id] scoring verified findings against truth.tsv ..."
 
+    # #1840: the GT-equivalence artifact for THIS contest — the explicit --gt-dupes override, else the
+    # per-contest gt-dupes.tsv when one has been built. A number is never silently expanded: the artifact path
+    # and its provenance header are printed alongside the scorecard.
+    dupes_file=""
+    declare -a DUPE_ARGS=()
+    if [ "$NO_GT_DUPES" -eq 0 ]; then
+      if [ -n "$GT_DUPES" ]; then dupes_file="$GT_DUPES"
+      elif [ -f "$WORK/$id/gt-dupes.tsv" ]; then dupes_file="$WORK/$id/gt-dupes.tsv"; fi
+    fi
+    if [ -n "$dupes_file" ]; then
+      DUPE_ARGS=(--gt-dupes "$dupes_file")
+      [ -n "$GT_DUPES_MINCONF" ] && DUPE_ARGS+=(--gt-dupes-min-confidence "$GT_DUPES_MINCONF")
+      say "  [$id] GT-equivalence crediting ON (#1840): $dupes_file"
+      say "  [$id] artifact provenance: $(grep -m1 '^# gt-dupes/' "$dupes_file" || echo '(no gt-dupes/vN provenance header)')"
+    fi
+
     # LOCATION-first bench matcher (#1697): score-match.py emits one `<sev_id>\tHIT|MISS` line per truth row
     # plus a `LEADS\t<verified_n>\t<matched_leads>` trailer. --min-overlap only governs its fallback.
     # Under --judge (#1829) the same call instead applies the semantic mechanism judge and adds ONE extra
     # `JUDGE\t<calls>\t<errors>` trailer; exit 4 there means the judge degraded (cache miss / too many
     # JUDGE-ERRORs) and the contest is deliberately left unscored rather than reported as a low recall.
-    SCORE_OUT="$(python3 "$SCOREMATCH" "$truth" "$verified_json" --min-overlap "$MINOV" "${JUDGE_ARGS[@]}")" \
+    SCORE_OUT="$(python3 "$SCOREMATCH" "$truth" "$verified_json" --min-overlap "$MINOV" "${JUDGE_ARGS[@]}" \
+                   ${DUPE_ARGS[@]+"${DUPE_ARGS[@]}"})" \
       && score_rc=0 || score_rc=$?
     if [ "$score_rc" -ne 0 ]; then
       say "SCORE: [$id] score-match.py failed (exit $score_rc); skipping"; continue
     fi
 
     declare -A HITMAP=()
-    verified_n=0 ; matched_leads=0 ; judge_calls=0 ; judge_errors=0
+    declare -A EXPANDED=()
+    verified_n=0 ; matched_leads=0 ; judge_calls=0 ; judge_errors=0 ; dup_classes=0 ; dup_expanded=0
     while IFS=$'\t' read -r f1 f2 f3; do
       if [ "$f1" = "LEADS" ]; then verified_n="$f2"; matched_leads="$f3"; continue; fi
       if [ "$f1" = "JUDGE" ]; then judge_calls="$f2"; judge_errors="$f3"; continue; fi
+      # #1840 trailers: DUP carries the class/expansion counts, DUPHIT attributes one expanded row to the row
+      # actually matched. Neither is a truth row — a DUPHIT's second field is a sev_id, not HIT/MISS.
+      if [ "$f1" = "DUP" ]; then dup_classes="$f2"; dup_expanded="$f3"; continue; fi
+      if [ "$f1" = "DUPHIT" ]; then EXPANDED["$f2"]=1; continue; fi
       [ -n "$f1" ] && HITMAP["$f1"]="$f2"
     done <<SCORE_EOF
 $SCORE_OUT
@@ -222,29 +294,36 @@ SCORE_EOF
     c_total=0 ; c_hits=0
     c_h_total=0 ; c_h_hits=0 ; c_m_total=0 ; c_m_hits=0
     c_rare_total=0 ; c_rare_hits=0 ; c_mid_total=0 ; c_mid_hits=0 ; c_cons_total=0 ; c_cons_hits=0
+    c_rare_expanded=0
     while IFS=$'\t' read -r sev_id severity rarity title _signature; do
       [ -n "${sev_id:-}" ] || continue
       c_total=$((c_total+1))
       hit=0; [ "${HITMAP[$sev_id]:-MISS}" = "HIT" ] && hit=1
+      # #1840: a row credited THROUGH its equivalence class rather than by a lead that named it directly. The
+      # denominators are untouched — this only annotates where a hit came from.
+      exp=0; [ "${EXPANDED[$sev_id]:-0}" = "1" ] && exp=1
       [ "$hit" = 1 ] && c_hits=$((c_hits+1))
       case "$severity" in
         High)   c_h_total=$((c_h_total+1)); [ "$hit" = 1 ] && c_h_hits=$((c_h_hits+1)) ;;
         Medium) c_m_total=$((c_m_total+1)); [ "$hit" = 1 ] && c_m_hits=$((c_m_hits+1)) ;;
       esac
-      if   [ "$rarity" -le 2 ] 2>/dev/null; then c_rare_total=$((c_rare_total+1)); [ "$hit" = 1 ] && c_rare_hits=$((c_rare_hits+1))
+      if   [ "$rarity" -le 2 ] 2>/dev/null; then c_rare_total=$((c_rare_total+1)); [ "$hit" = 1 ] && c_rare_hits=$((c_rare_hits+1)); [ "$exp" = 1 ] && c_rare_expanded=$((c_rare_expanded+1))
       elif [ "$rarity" -le 8 ] 2>/dev/null; then c_mid_total=$((c_mid_total+1));  [ "$hit" = 1 ] && c_mid_hits=$((c_mid_hits+1))
       else                                       c_cons_total=$((c_cons_total+1)); [ "$hit" = 1 ] && c_cons_hits=$((c_cons_hits+1))
       fi
-      say "  [$id] $([ "$hit" = 1 ] && echo HIT || echo MISS) $sev_id (rarity $rarity): $title"
+      say "  [$id] $([ "$hit" = 1 ] && echo HIT || echo MISS)$([ "$exp" = 1 ] && echo ' (via GT-equivalence)') $sev_id (rarity $rarity): $title"
     done < "$truth"
 
     unmatched_leads=$((verified_n - matched_leads))
+    rare_note=""; [ -n "$dupes_file" ] && rare_note=" ($c_rare_expanded via GT-equivalence)"
 
-    say "  [$id] recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total, verified-leads $verified_n (matched $matched_leads, unmatched $unmatched_leads — needs manual triage, NOT auto-claimed novel)"
+    say "  [$id] recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total$rare_note, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total, verified-leads $verified_n (matched $matched_leads, unmatched $unmatched_leads — needs manual triage, NOT auto-claimed novel)"
     [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s)"
+    [ -n "$dupes_file" ] && say "  [$id] GT-equivalence (#1840): $dup_classes class(es), $dup_expanded row(s) credited through a class; the same replay without expansion reads $((c_hits - dup_expanded))/$c_total"
 
-    CONTEST_JSON+=("{\"id\":\"$id\",\"gt_total\":$c_total,\"hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"verified_leads\":$verified_n,\"matched_leads\":$matched_leads,\"unmatched_leads\":$unmatched_leads,\"judge\":{\"mode\":\"$JUDGE\",\"calls\":$judge_calls,\"errors\":$judge_errors}}")
+    CONTEST_JSON+=("{\"id\":\"$id\",\"gt_total\":$c_total,\"hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"verified_leads\":$verified_n,\"matched_leads\":$matched_leads,\"unmatched_leads\":$unmatched_leads,\"judge\":{\"mode\":\"$JUDGE\",\"calls\":$judge_calls,\"errors\":$judge_errors},\"dup\":{\"classes\":$dup_classes,\"expanded\":$dup_expanded,\"rare_expanded\":$c_rare_expanded}}")
     G_JUDGE_CALLS=$((G_JUDGE_CALLS+judge_calls)); G_JUDGE_ERRORS=$((G_JUDGE_ERRORS+judge_errors))
+    G_DUP_CLASSES=$((G_DUP_CLASSES+dup_classes)); G_DUP_EXPANDED=$((G_DUP_EXPANDED+dup_expanded)); G_DUP_RARE_EXPANDED=$((G_DUP_RARE_EXPANDED+c_rare_expanded))
 
     G_TOTAL=$((G_TOTAL+c_total)); G_HITS=$((G_HITS+c_hits))
     G_H_TOTAL=$((G_H_TOTAL+c_h_total)); G_H_HITS=$((G_H_HITS+c_h_hits))
@@ -259,18 +338,22 @@ SCORE_EOF
   say "================ CORPUS-BENCH AGGREGATE ================"
   say "overall recall: $G_HITS/$G_TOTAL"
   say "by severity   : High $G_H_HITS/$G_H_TOTAL, Medium $G_M_HITS/$G_M_TOTAL"
-  say "by rarity     : rare(1-2) $G_RARE_HITS/$G_RARE_TOTAL, mid(3-8) $G_MID_HITS/$G_MID_TOTAL, consensus(9+) $G_CONS_HITS/$G_CONS_TOTAL"
+  say "by rarity     : rare(1-2) $G_RARE_HITS/$G_RARE_TOTAL$([ "$G_DUP_EXPANDED" -gt 0 ] && echo " ($G_DUP_RARE_EXPANDED via GT-equivalence)"), mid(3-8) $G_MID_HITS/$G_MID_TOTAL, consensus(9+) $G_CONS_HITS/$G_CONS_TOTAL"
   say "verified leads: $G_VERIFIED total, $G_MATCHED_LEADS matched a truth row, $G_UNMATCHED_LEADS unmatched (manual triage required before any novelty claim)"
+  if [ "$G_DUP_EXPANDED" -gt 0 ]; then
+    say "GT-equivalence: $G_DUP_CLASSES judged class(es), $G_DUP_EXPANDED row(s) credited through a class (#1840). The SAME replay without class expansion reads $((G_HITS - G_DUP_EXPANDED))/$G_TOTAL — quote the ruler with the number."
+  fi
   if [ "$JUDGE" != "off" ]; then
     say "scoring mode  : SEMANTIC MECHANISM JUDGE (--judge $JUDGE, #1829) — $G_JUDGE_CALLS judging calls, $G_JUDGE_ERRORS JUDGE-ERROR(s). Archive the --judge-log next to this number: it is reproducible offline only via --judge cache."
   fi
 
   if [ "$JSON" -eq 1 ]; then
     joined="$(IFS=,; echo "${CONTEST_JSON[*]:-}")"
-    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"verified_leads":%d,"matched_leads":%d,"unmatched_leads":%d,"judge":{"mode":"%s","calls":%d,"errors":%d}}}\n' \
+    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"verified_leads":%d,"matched_leads":%d,"unmatched_leads":%d,"judge":{"mode":"%s","calls":%d,"errors":%d},"dup":{"classes":%d,"expanded":%d,"rare_expanded":%d}}}\n' \
       "$joined" "$G_TOTAL" "$G_HITS" "$G_H_TOTAL" "$G_H_HITS" "$G_M_TOTAL" "$G_M_HITS" \
       "$G_RARE_TOTAL" "$G_RARE_HITS" "$G_MID_TOTAL" "$G_MID_HITS" "$G_CONS_TOTAL" "$G_CONS_HITS" \
-      "$G_VERIFIED" "$G_MATCHED_LEADS" "$G_UNMATCHED_LEADS" "$JUDGE" "$G_JUDGE_CALLS" "$G_JUDGE_ERRORS"
+      "$G_VERIFIED" "$G_MATCHED_LEADS" "$G_UNMATCHED_LEADS" "$JUDGE" "$G_JUDGE_CALLS" "$G_JUDGE_ERRORS" \
+      "$G_DUP_CLASSES" "$G_DUP_EXPANDED" "$G_DUP_RARE_EXPANDED"
   fi
 fi
 

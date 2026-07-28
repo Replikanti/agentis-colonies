@@ -1285,12 +1285,19 @@ fi
 # rate). demo-mech-judge.sh source-guards that wiring and pins BOTH scorecards byte-exactly on one synthetic
 # fixture — the token matcher's wrong 1/4 and the judge's right 3/4 — so neither direction can regress
 # silently. CI-safe: the judge runs off a recorded decision cache + an offline stub (no LLM, no network).
+# The SAME demo also gates #1840 GT-EQUIVALENCE CREDITING, a residual of that fix: the judge emits at most one
+# MATCH per candidate and sees only one row batch per call, so when the judging repo accepted TWO rows for the
+# same underlying bug a lead credits one twin and the RARE twin is silently lost. `score-match.py --gt-dupes`
+# credits the whole GT-side equivalence class (built once per contest by gt-dupes.sh through the unchanged
+# judge driver) while leaving every denominator, the LEADS trailer and the unmatched-lead queue untouched.
+# The demo pins the defect and the fix byte-exactly on a SECOND fixture plus the guard rails (name-sharing
+# non-duplicate never co-credited, stale artifact exits 3, raised merge bar re-derives the unexpanded number).
 if [ -x "$REPO_ROOT/dark-factory/demo-mech-judge.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-mech-judge.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
-        pass "dark-factory: semantic mechanism judge scoring mode (#1829)"
+        pass "dark-factory: semantic mechanism judge + GT-equivalence crediting (#1829, #1840)"
     else
-        fail "dark-factory: semantic mechanism judge scoring mode regressed (#1829)"
+        fail "dark-factory: semantic mechanism judge / GT-equivalence crediting regressed (#1829, #1840)"
         printf '%s\n' "$check_out"
     fi
 fi

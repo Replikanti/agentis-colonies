@@ -13,8 +13,16 @@
 # untouched, and in judge mode the judge is AUTHORITATIVE — there is no silent fallback to the token matcher,
 # because a fallback would re-import exactly the two bugs above.
 #
-# This demo has TWO parts (both CI-safe: no forge, no LLM, no network — the judge runs against a recorded
-# decision cache and an offline stub):
+# GT EQUIVALENCE CLASSES (#1840) — a residual of the same defect, pinned here too. The judge is asked for at
+# most one MATCH per candidate and only ever sees one --judge-batch slice at a time, so when a judging repo
+# accepted TWO rows for the same underlying bug, a lead that found it credits whichever twin the model named.
+# Because the headline is stratified by rarity and the twins usually have very different watson counts, the
+# lost one is the RARE one — the pipeline finds a rare bug and is scored as if it had not. The fix is GT-side:
+# an artifact next to truth.tsv lists judged duplicate pairs (gt-dupes.sh), and `score-match.py --gt-dupes`
+# credits the whole equivalence class. It expands `row_hit` ONLY, so no denominator and no lead count moves.
+#
+# This demo has THREE parts (all CI-safe: no forge, no LLM, no network — the judge runs against a recorded
+# decision cache and offline stubs):
 #   1) SOURCE-GUARD (always): mech-judge.sh judges through the flat-cyborg PTY wrapper and never through the
 #      metered print-mode API; score-match.py defaults to --judge off; and the judge path never consults
 #      lead_matches_row (no token fallback).
@@ -22,6 +30,11 @@
 #      the judge's RIGHT answer are both pinned byte-exactly — 1/4 with the one hit on the wrong row vs 3/4
 #      all-correct — and the fail-closed paths hold (a malformed judge reply fabricates no MATCH and raises
 #      the JUDGE-ERROR count; a degraded judge aborts with exit 4; a --judge cache miss exits 4).
+#   3) GT EQUIVALENCE (#1840, when python3 is present): on a SECOND, separate fixture the lost rare twin and
+#      its recovery are both pinned byte-exactly (2/4 rare 0/2 -> 3/4 rare 1/2), together with the guard rails
+#      — a genuine non-duplicate that merely shares a function name is never co-credited, the LEADS trailer
+#      never moves, a stale artifact is a hard exit 3, a raised merge bar re-derives the unexpanded number
+#      from the same artifact, and the builder pairs exactly the twins.
 #
 # Usage:  dark-factory/demo-mech-judge.sh
 # Exit: 0 = all assertions hold (SKIPs cleanly when python3 is absent) ; 1 = a regression ; 3 = missing fixture.
@@ -33,6 +46,8 @@ SCOREMATCH="$CB/score-match.py"
 JUDGE="$CB/mech-judge.sh"
 FIX="$CB/fixtures/mech-judge"
 STUB="$FIX/judge-stub.sh"
+DFIX="$CB/fixtures/gt-dupes"
+GTDUPES="$CB/gt-dupes.sh"
 
 FAILS=0
 note() { echo "demo-mech-judge.sh: $*"; }
@@ -44,6 +59,11 @@ skip() { echo "  [SKIP] $*"; }
 [ -f "$JUDGE" ]      || { note "judge driver not found: $JUDGE" >&2; exit 3; }
 for f in truth.tsv leads.json judge-stub.sh judge-decisions.jsonl expected-scorecard.token.txt expected-scorecard.judge.txt; do
   [ -f "$FIX/$f" ] || { note "fixture missing: $FIX/$f" >&2; exit 3; }
+done
+[ -f "$GTDUPES" ] || { note "builder not found: $GTDUPES" >&2; exit 3; }
+for f in truth.tsv leads.json judge-stub.sh judge-decisions.jsonl dupes-stub.sh gt-dupes.tsv \
+         gt-dupes.stale.tsv expected-scorecard.nodup.txt expected-scorecard.dup.txt; do
+  [ -f "$DFIX/$f" ] || { note "fixture missing: $DFIX/$f" >&2; exit 3; }
 done
 
 # ----------------------------------------------------------------------------------------------------------
@@ -162,6 +182,110 @@ else
   fi
 fi
 
+# ----------------------------------------------------------------------------------------------------------
+# 3) GT EQUIVALENCE CLASSES (#1840) — the lost rare twin, and the guard rails against over-crediting.
+# ----------------------------------------------------------------------------------------------------------
+note "source-guarding + pinning the #1840 GT-equivalence crediting ..."
+
+# (o) the pairing pass reuses the SAME judging path as scoring: mech-judge.sh (hence the flat-cyborg wrapper),
+#     never the metered print-mode API. Same non-comment grep idiom as the (b2) check above.
+if grep -qE '^JUDGE_CMD=.*mech-judge\.sh' "$GTDUPES" \
+   && ! grep -vE '^[[:space:]]*#' "$GTDUPES" | grep -qE 'claude[[:space:]]+-p'; then
+  ok "(o) gt-dupes.sh routes its LLM path through mech-judge.sh and never the metered print-mode API"
+else
+  bad "(o) gt-dupes.sh does not reuse mech-judge.sh, or shells out to the metered print-mode API"
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  skip "python3 not on PATH — install python3 to run the GT-equivalence scoring assertions"
+else
+  DCACHE="$DFIX/judge-decisions.jsonl"
+
+  # (h) the DEFECT, pinned: the judge emits ONE match for the lead, so the rare twin D-2 scores MISS. 2/4,
+  #     and the rare stratum reads 0/2 even though the pipeline found one of its two bugs.
+  NODUP="$(python3 "$SCOREMATCH" "$DFIX/truth.tsv" "$DFIX/leads.json" \
+             --judge cache --judge-cache "$DCACHE" 2>/dev/null)"
+  if [ "$NODUP" = "$(cat "$DFIX/expected-scorecard.nodup.txt")" ]; then
+    ok "(h) without --gt-dupes the recorded decisions reproduce the DEFECT byte-exactly (D-2, the rare twin,"
+    echo "         is MISS: 2/4, rare 0/2)"
+  else
+    bad "(h) the un-expanded scorecard DIFFERS from expected-scorecard.nodup.txt"
+    diff <(printf '%s\n' "$NODUP") "$DFIX/expected-scorecard.nodup.txt" >&2 || true
+  fi
+
+  # (i) the FIX, pinned: the SAME replay with the equivalence artifact credits the whole class. 3/4, rare 1/2,
+  #     and the DUP/DUPHIT trailers make the expansion separable (hits - expanded = the (h) number).
+  DUP="$(python3 "$SCOREMATCH" "$DFIX/truth.tsv" "$DFIX/leads.json" \
+           --judge cache --judge-cache "$DCACHE" --gt-dupes "$DFIX/gt-dupes.tsv" 2>/dev/null)"
+  if [ "$DUP" = "$(cat "$DFIX/expected-scorecard.dup.txt")" ]; then
+    ok "(i) --gt-dupes credits the equivalence class on the SAME replay (D-2 flips to HIT: 3/4, rare 1/2,"
+    echo "         DUP 1 1, DUPHIT D-2 D-1 — so hits minus expanded recovers the pre-#1840 2/4)"
+  else
+    bad "(i) the expanded scorecard DIFFERS from expected-scorecard.dup.txt"
+    diff <(printf '%s\n' "$DUP") "$DFIX/expected-scorecard.dup.txt" >&2 || true
+  fi
+
+  # (j) NEGATIVE CONTROL: D-3 shares the settleEpoch function name with the hit row D-4 but is a different
+  #     mechanism. It must stay MISS in BOTH runs — asserted on the row line itself, not only via the
+  #     byte-compare, because this is the failure mode class expansion could introduce.
+  if printf '%s\n' "$NODUP" | grep -q '^D-3	MISS$' && printf '%s\n' "$DUP" | grep -q '^D-3	MISS$'; then
+    ok "(j) the name-sharing non-duplicate D-3 is MISS in BOTH runs — a shared function name never co-credits"
+  else
+    bad "(j) D-3 was credited: class expansion reached a row that is NOT the same bug"
+    diff <(printf '%s\n' "$NODUP") <(printf '%s\n' "$DUP") >&2 || true
+  fi
+
+  # (k) PRECISION INVARIANT: expansion touches row_hit only. The LEADS trailer — verified leads and how many
+  #     matched — must be byte-identical, so one lead can never become N matched leads.
+  L_NODUP="$(printf '%s\n' "$NODUP" | grep '^LEADS	')"
+  L_DUP="$(printf '%s\n' "$DUP" | grep '^LEADS	')"
+  if [ -n "$L_NODUP" ] && [ "$L_NODUP" = "$L_DUP" ]; then
+    ok "(k) the LEADS trailer is byte-identical with and without --gt-dupes ($L_NODUP) — one lead never"
+    echo "         becomes N matched leads, so the unmatched-lead triage queue keeps its meaning"
+  else
+    bad "(k) --gt-dupes moved the LEADS trailer ('$L_NODUP' vs '$L_DUP') — expansion must touch row_hit only"
+  fi
+
+  # (l) a STALE artifact (naming a sev_id this truth.tsv does not contain) is a hard exit 3, never a silent
+  #     skip: an artifact from another contest must not mis-credit the headline.
+  python3 "$SCOREMATCH" "$DFIX/truth.tsv" "$DFIX/leads.json" --judge cache --judge-cache "$DCACHE" \
+    --gt-dupes "$DFIX/gt-dupes.stale.tsv" >/dev/null 2>&1 && stale_rc=0 || stale_rc=$?
+  if [ "$stale_rc" -eq 3 ]; then
+    ok "(l) a --gt-dupes artifact naming an unknown sev_id exits 3 (stale/wrong-contest artifacts fail loud)"
+  else
+    bad "(l) expected exit 3 from a stale --gt-dupes artifact, got $stale_rc"
+  fi
+
+  # (m) THRESHOLD SENSITIVITY / baseline comparability: the merge bar is applied at SCORING time, so raising
+  #     it above the pair's confidence re-derives the UNEXPANDED number from the very same archived artifact.
+  #     The DUP attribution trailer stays (it reports 0 classes, 0 expansions) — that is what makes the two
+  #     numbers auditable as one run; everything above it must match (h) byte-for-byte.
+  HICONF="$(python3 "$SCOREMATCH" "$DFIX/truth.tsv" "$DFIX/leads.json" --judge cache --judge-cache "$DCACHE" \
+              --gt-dupes "$DFIX/gt-dupes.tsv" --gt-dupes-min-confidence 99 2>/dev/null)"
+  HICONF_BODY="$(printf '%s\n' "$HICONF" | grep -vE '^(DUP|DUPHIT)	')"
+  if [ "$HICONF_BODY" = "$(cat "$DFIX/expected-scorecard.nodup.txt")" ] \
+     && [ "$(printf '%s\n' "$HICONF" | grep -c '^DUPHIT	')" -eq 0 ] \
+     && printf '%s\n' "$HICONF" | grep -q '^DUP	0	0$'; then
+    ok "(m) --gt-dupes-min-confidence 99 re-derives the UNEXPANDED scorecard from the SAME artifact"
+    echo "         (identical to (h) plus an explicit 'DUP 0 0' — both numbers come from one archive)"
+  else
+    bad "(m) raising the merge bar did not reproduce the unexpanded scorecard"
+    diff <(printf '%s\n' "$HICONF_BODY") "$DFIX/expected-scorecard.nodup.txt" >&2 || true
+  fi
+
+  # (n) BUILDER CONTRACT: gt-dupes.sh over the offline builder stub reproduces the committed artifact body —
+  #     it pairs the two twins and does NOT pair the two rows that merely share a function name.
+  BTMP="$(mktemp -d)"
+  bash "$GTDUPES" "$DFIX/truth.tsv" "$BTMP/gt-dupes.tsv" --judge-cmd "$DFIX/dupes-stub.sh" >/dev/null 2>&1
+  if diff <(grep -v '^#' "$BTMP/gt-dupes.tsv" 2>/dev/null) <(grep -v '^#' "$DFIX/gt-dupes.tsv") >/dev/null 2>&1; then
+    ok "(n) gt-dupes.sh rebuilds the committed artifact body (pairs D-1/D-2, leaves D-3/D-4 unpaired)"
+  else
+    bad "(n) the rebuilt gt-dupes.tsv body differs from the committed fixture"
+    diff <(grep -v '^#' "$BTMP/gt-dupes.tsv" 2>/dev/null) <(grep -v '^#' "$DFIX/gt-dupes.tsv") >&2 || true
+  fi
+  rm -rf "$BTMP"
+fi
+
 echo
 if [ "$FAILS" -eq 0 ]; then
   note "PASS: the #1829 semantic mechanism judge is wired as an OPT-IN score-match.py mode. --judge off keeps"
@@ -170,7 +294,12 @@ if [ "$FAILS" -eq 0 ]; then
   note "      false match on the same fixture (1/4 wrong -> 3/4 right). The judge is AUTHORITATIVE — no token"
   note "      fallback — and fails CLOSED: an unparseable reply is a JUDGE-ERROR, a degraded judge or a cache"
   note "      miss exits 4, and every judging call goes through the flat-cyborg subscription wrapper."
+  note "      #1840 rides on the same scorer: --gt-dupes credits the GT EQUIVALENCE CLASS, so a lead that"
+  note "      matched one of two accepted rows for the same bug no longer loses the rare twin (2/4 rare 0/2"
+  note "      -> 3/4 rare 1/2 on the same recorded decisions). Denominators, the LEADS trailer and the"
+  note "      unmatched-lead queue are untouched, a name-sharing non-duplicate is never co-credited, a stale"
+  note "      artifact exits 3, and DUP/DUPHIT keep the expansion separable from the direct hits."
   exit 0
 fi
-note "DEMO FAILED — a #1829 mechanism-judge assertion did not hold" >&2
+note "DEMO FAILED — a #1829 mechanism-judge / #1840 GT-equivalence assertion did not hold" >&2
 exit 1

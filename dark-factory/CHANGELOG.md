@@ -15,6 +15,35 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **GT-EQUIVALENCE CREDITING for the corpus bench — opt-in, default OFF** (#1840).
+  A concluded judging repo routinely accepts **two rows for the same underlying bug**, described differently
+  and found by very different watson counts. The mechanism judge (#1829) is asked for at most one MATCH per
+  candidate and only ever sees one `--judge-batch` slice of the rows per call, so a lead that finds such a bug
+  credits whichever twin the model named — and because the headline is stratified by rarity, the **rare twin
+  is the one silently lost**: the pipeline finds a rare bug and is scored as if it had not. Equivalence is a
+  property of the ground truth, not of the matcher, so it is now decided GT-side and stored per contest: new
+  `gt-dupes.sh` judges every truth row against the rows after it (upper triangle, batched) through the
+  **unchanged** `mech-judge.sh` driver/grammar/decision rule and writes `gt-dupes.tsv` next to `truth.tsv`
+  (`DUP<TAB><sev_a><TAB><sev_b><TAB><confidence><TAB><reason>` plus a `source=judge|manual` provenance
+  header); `score-match.py --gt-dupes <file>` unions the pairs into classes and credits every member of a
+  class one of whose rows was matched. The precision contract is narrow by design: **denominators never move**
+  (`gt_total` and every stratum stay one entry per accepted row), expansion touches `row_hit` **only** (so
+  `matched_leads`, `unmatched_leads` and the `--per-lead` lines are unchanged and one lead can never become N
+  matched leads), and new `DUP` / `DUPHIT` trailers make `hits - expanded_hits` recover the pre-#1840 number
+  from the **same** replay. Guard rails against a wrong merge inflating exactly the stratum this protects: a
+  merge bar of 85 by default (`--gt-dupes-min-confidence`, deliberately above the 70-point scoring gate) that
+  is applied at **scoring** time so one archived artifact re-derives both numbers and anything in between, a
+  fail-closed `--gt-dupes-max-class` cap (default 3), a mandatory per-pair reason, and a hard exit 3 when a
+  pair names a `sev_id` absent from `truth.tsv` (a stale or wrong-contest artifact never silently
+  mis-credits). `run-corpus-bench.sh` gains a `--dupes` stage (operator-only, like `--hunt`, and deliberately
+  **not** folded into `--live`), `--gt-dupes` / `--gt-dupes-min-confidence` / `--no-gt-dupes`, per-contest
+  `rare <h>/<t> (<n> via GT-equivalence)` reporting and a `"dup"` JSON block; `generation-recall.sh` forwards
+  the flags so both halves of the generation-minus-verified DELTA use one ruler. Without `--gt-dupes` no
+  trailer is emitted and every existing scorecard stays byte-identical. `demo-mech-judge.sh` pins the defect
+  and the fix byte-exactly on a second synthetic fixture (`fixtures/gt-dupes/`, kept separate from
+  `fixtures/mech-judge/` so the frozen #1829 cache keys cannot be re-baselined): 2/4 rare 0/2 -> 3/4 rare 1/2,
+  plus the negative control, the untouched `LEADS` trailer, the stale-artifact exit 3, the raised-merge-bar
+  re-derivation and the builder contract.
 - **WITHIN-CONTRACT DEPTH PASS for the discovery hunter — opt-in, default OFF** (#1827).
   The hunter surfaced roughly **one** bug per `(function × class)` and missed co-located ones even when it
   hunted the right contract: on `Strategy.checkPoolActivity` it found the narrow-int/DoS bug and missed the

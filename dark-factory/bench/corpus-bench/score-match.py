@@ -22,13 +22,33 @@
 # `--judge-max-error-rate` — a degraded backend must not produce a plausible-looking low recall.
 # `--judge off` is the DEFAULT and keeps the #1697 matcher frozen and byte-identical.
 #
+# GT EQUIVALENCE CLASSES (issue #1840). A concluded judging repo routinely accepts TWO rows for the SAME
+# underlying bug, described differently and found by very different watson counts. The judge is asked for at
+# most one MATCH per candidate and only ever sees one `--judge-batch` slice at a time, so a lead that finds
+# such a bug credits whichever twin the model happened to name — and because the headline metric is stratified
+# by rarity, the RARE twin is the one silently lost. `--gt-dupes <file>` fixes that GT-side: a per-contest
+# artifact (built once by gt-dupes.sh, archived next to truth.tsv) lists judged duplicate PAIRS, which are
+# unioned into equivalence CLASSES, and a lead that matched any member credits every member.
+# The precision contract is deliberately narrow:
+#   * DENOMINATORS NEVER MOVE — `gt_total` and every severity/rarity stratum stay one entry per accepted row.
+#   * EXPANSION TOUCHES `row_hit` ONLY — `LEADS`/`matched_leads` and the `--per-lead` lines are untouched, so
+#     one lead can never become N matched leads and the unmatched-lead triage queue keeps its meaning.
+#   * EVERY EXPANDED HIT IS SEPARABLE — the `DUP` / `DUPHIT` trailers make `hits - expanded_hits` recover the
+#     pre-#1840 number from the SAME replay, so no published figure can hide how much came from expansion.
+#   * FAIL-CLOSED — a pair naming a sev_id absent from truth.tsv is a hard exit 3 (a stale or wrong-contest
+#     artifact must never silently mis-credit), and a class larger than `--gt-dupes-max-class` is not expanded
+#     at all. The merge bar (`--gt-dupes-min-confidence`, default 85) is applied at SCORING time and sits
+#     deliberately above the 70-point scoring gate, because a false merge silently moves the headline.
+# The flag is opt-in and absent by default, so every existing scorecard stays byte-identical.
+#
 # This is a BENCH scorer only. It does NOT touch novelty-gate.sh (the LIVE hunting-pipeline boundary/novelty
 # gate, frozen for the #1698/#1699 re-measurement) or extract-gt.sh (truth.tsv schema unchanged).
 #
 # Usage: score-match.py <truth.tsv> <verified_findings.json> [--min-overlap N] [--per-lead]
 #                       [--judge <off|cache|cmd>] [--judge-cmd <path>] [--judge-cache <file.jsonl>]
 #                       [--judge-log <file.jsonl>] [--judge-batch N] [--judge-min-confidence N]
-#                       [--judge-max-error-rate PCT]
+#                       [--judge-max-error-rate PCT] [--gt-dupes <file.tsv>]
+#                       [--gt-dupes-min-confidence N] [--gt-dupes-max-class N]
 #   truth.tsv           extract-gt.sh output: sev_id \t severity \t rarity \t title \t signature (per row).
 #   verified_findings.json  run-zone-hunt.sh verify output: {"verified": [ {location, file, ...}, ... ]}.
 #   --min-overlap N     ONLY governs the location-unavailable fallback (a lead with no parseable function).
@@ -45,6 +65,16 @@
 #                       rows, so a name-coincident candidate has a better home to go to.
 #   --judge-min-confidence N  MATCH decisions below this confidence (0-100) do not score. Default 70.
 #   --judge-max-error-rate P  abort (exit 4) when JUDGE-ERRORs exceed this percentage of leads. Default 20.
+#   --gt-dupes <f>      #1840 GT-equivalence artifact next to truth.tsv (gt-dupes.sh output): `#` comment /
+#                       provenance lines plus one `DUP\t<sev_a>\t<sev_b>\t<confidence>\t<reason>` row per
+#                       judged duplicate pair. Pairs are unioned into classes and a matched member credits the
+#                       whole class. Applies in EVERY --judge mode: equivalence is a property of the ground
+#                       truth, not of the matcher. Absent by default (output byte-identical without it).
+#   --gt-dupes-min-confidence N  merge bar applied at SCORING time (0-100, default 85 — deliberately above the
+#                       70-point scoring gate). One archived artifact therefore re-derives the expanded number,
+#                       the unexpanded number, and any threshold in between.
+#   --gt-dupes-max-class N  a class of more than N rows is NOT expanded at all (default 3), with a warning on
+#                       stderr — fail-closed against a runaway merge chain.
 #   --per-lead          ADDITIVE (default output byte-identical without it): after the normal output, append
 #                       one `LEAD\t<class>\t<HIT|MISS>` line per verified lead — HIT when that lead matched a
 #                       real GT row, MISS otherwise. This is per-lead REAL-BUG PRECISION material for the
@@ -54,9 +84,12 @@
 #                       so the `class=C3` vs `C3` inconsistency in verified_findings.json collapses to one key.
 # Output (stdout): one `<sev_id>\t<HIT|MISS>` line per truth row (input order), then a trailer line
 #   `LEADS\t<verified_n>\t<matched_leads>` (verified lead count; leads matching >=1 truth row). In judge mode
-#   ONE extra trailer line `JUDGE\t<calls>\t<errors>` follows it. With `--per-lead`, one
-#   `LEAD\t<class>\t<HIT|MISS>` line per verified lead follows the trailer(s).
-# Exit: 0 always on a well-formed run; 2 bad args; 3 unreadable/malformed input or an unrunnable judge driver;
+#   ONE extra trailer line `JUDGE\t<calls>\t<errors>` follows it. Under `--gt-dupes`, one
+#   `DUP\t<classes>\t<expanded_hits>` trailer plus one `DUPHIT\t<credited_sev_id>\t<directly_matched_sev_id>`
+#   line per expanded row follow those. With `--per-lead`, one `LEAD\t<class>\t<HIT|MISS>` line per verified
+#   lead comes last.
+# Exit: 0 always on a well-formed run; 2 bad args; 3 unreadable/malformed input, a stale --gt-dupes artifact,
+#       or an unrunnable judge driver;
 #       4 judge mode degraded (cache miss under --judge cache, or JUDGE-ERRORs over --judge-max-error-rate).
 import sys
 import os
@@ -314,6 +347,105 @@ def run_judge(leads, rows, mode, judge_cmd, cache_path, log_path, batch, min_con
     return row_hit, lead_hit, calls, errors
 
 
+# ==============================================================================================================
+# GT EQUIVALENCE CLASSES (#1840) — reached ONLY under --gt-dupes. Without the flag nothing below runs and the
+# scorecard is byte-identical to the pre-#1840 output in every --judge mode.
+# ==============================================================================================================
+GT_DUPES_TAG = "DUP"
+
+
+def load_gt_dupes(path, min_conf):
+    """Parse a gt-dupes.tsv artifact into (classes, named_sev_ids).
+
+    Grammar: `#` comment / provenance lines and blank lines are skipped; every other line must be
+      DUP \t <sev_a> \t <sev_b> \t <confidence 0-100> [\t <reason>]
+    Pairs at or above `min_conf` are unioned (union-find) into equivalence CLASSES; a pair BELOW the bar is
+    still parsed and its ids still validated by the caller, it simply does not merge — so one archived
+    artifact re-derives the number at any threshold. `classes` holds only groups of >= 2 rows, ordered by
+    first appearance in the file. A malformed record is a hard error, never a silent skip: half-applying an
+    artifact this scorer does not understand is exactly how a mis-credit would slip through."""
+    parent = {}
+    order = []
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def add(x):
+        if x not in parent:
+            parent[x] = x
+            order.append(x)
+
+    try:
+        fh = open(path, encoding="utf-8", errors="ignore")
+    except OSError as e:
+        die(3, "cannot read --gt-dupes " + path + ": " + str(e))
+    with fh:
+        for lineno, line in enumerate(fh, 1):
+            line = line.rstrip("\n")
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            cols = line.split("\t")
+            where = path + ":" + str(lineno) + ": "
+            if cols[0] != GT_DUPES_TAG:
+                die(3, where + "unknown record tag '" + cols[0] + "' (expected " + GT_DUPES_TAG + ")")
+            if len(cols) < 4:
+                die(3, where + GT_DUPES_TAG + " needs <sev_a> <sev_b> <confidence> [reason], TAB-separated")
+            sev_a, sev_b = cols[1].strip(), cols[2].strip()
+            if not sev_a or not sev_b:
+                die(3, where + "empty sev_id in a " + GT_DUPES_TAG + " pair")
+            if sev_a == sev_b:
+                die(3, where + "self-pair '" + sev_a + "' (a row is not a duplicate of itself)")
+            try:
+                confidence = int(float(cols[3].strip()))
+            except ValueError:
+                die(3, where + "confidence must be a number, got '" + cols[3].strip() + "'")
+            add(sev_a)
+            add(sev_b)
+            if confidence < min_conf:
+                continue
+            root_a, root_b = find(sev_a), find(sev_b)
+            if root_a != root_b:
+                parent[root_b] = root_a
+
+    groups = {}
+    for sev_id in order:
+        groups.setdefault(find(sev_id), []).append(sev_id)
+    classes = [members for members in groups.values() if len(members) >= 2]
+    return classes, set(order)
+
+
+def expand_row_hits(row_hit, classes, rows, max_class):
+    """Credit the equivalence CLASS instead of the single row a matcher happened to name.
+
+    Returns `(expanded_row_hit, expansions)` where `expansions` is the list of
+    `(credited_sev_id, directly_matched_sev_id)` pairs in truth-row order. Expansion reads the DIRECT hits
+    only, never its own output, so credit cannot cascade beyond one class. A class larger than `max_class` is
+    left entirely alone (fail-closed against a runaway merge) with a warning on stderr."""
+    index = {sev_id: ri for ri, (sev_id, _sig) in enumerate(rows)}
+    direct = list(row_hit)
+    expanded = list(row_hit)
+    expansions = []
+    for members in classes:
+        if len(members) > max_class:
+            sys.stderr.write("score-match.py: --gt-dupes: equivalence class of " + str(len(members))
+                             + " rows (" + ", ".join(members) + ") exceeds --gt-dupes-max-class "
+                             + str(max_class) + "; NOT expanded\n")
+            continue
+        indices = sorted(index[m] for m in members)
+        source = next((ri for ri in indices if direct[ri]), None)
+        if source is None:
+            continue
+        for ri in indices:
+            if not direct[ri]:
+                expanded[ri] = True
+                expansions.append((rows[ri][0], rows[source][0]))
+    expansions.sort(key=lambda pair: index[pair[0]])
+    return expanded, expansions
+
+
 def main(argv):
     truth_path = None
     verified_path = None
@@ -326,6 +458,9 @@ def main(argv):
     judge_batch = 12
     judge_min_conf = 70
     judge_max_error_rate = 20
+    gt_dupes = ""
+    gt_dupes_min_conf = 85
+    gt_dupes_max_class = 3
 
     def int_arg(flag, raw):
         try:
@@ -369,6 +504,17 @@ def main(argv):
             else:
                 judge_max_error_rate = int_arg(a, val)
             i += 2
+        elif a in ("--gt-dupes", "--gt-dupes-min-confidence", "--gt-dupes-max-class"):
+            if i + 1 >= len(argv):
+                die(2, a + " requires a value")
+            val = argv[i + 1]
+            if a == "--gt-dupes":
+                gt_dupes = val
+            elif a == "--gt-dupes-min-confidence":
+                gt_dupes_min_conf = int_arg(a, val)
+            else:
+                gt_dupes_max_class = int_arg(a, val)
+            i += 2
         elif a in ("-h", "--help"):
             sys.stdout.write(__doc__ or "")
             return 0
@@ -388,6 +534,9 @@ def main(argv):
         die(2, "--judge-batch must be >= 1")
     if judge_mode == "cache" and not judge_cache:
         die(2, "--judge cache requires --judge-cache <file.jsonl> (the recorded decisions to replay)")
+    if gt_dupes_max_class < 2:
+        die(2, "--gt-dupes-max-class must be >= 2 (the smallest equivalence class is a pair); omit "
+               "--gt-dupes to score without any class expansion")
 
     try:
         rows = []
@@ -402,6 +551,19 @@ def main(argv):
                 rows.append((cols[0], cols[4]))  # (sev_id, signature)
     except OSError as e:
         die(3, "cannot read truth.tsv: " + str(e))
+
+    # #1840: load + validate the equivalence artifact BEFORE any judging happens, so a stale one costs zero
+    # LLM calls. A pair naming a sev_id this truth.tsv does not contain is a hard error: such an artifact is
+    # either stale or from another contest, and silently skipping it would mis-credit the headline.
+    gt_dupe_classes = []
+    if gt_dupes:
+        gt_dupe_classes, gt_dupe_named = load_gt_dupes(gt_dupes, gt_dupes_min_conf)
+        known_sev_ids = {sev_id for sev_id, _sig in rows}
+        unknown = sorted(s for s in gt_dupe_named if s not in known_sev_ids)
+        if unknown:
+            die(3, "--gt-dupes " + gt_dupes + " names sev_id(s) absent from " + truth_path + ": "
+                + ", ".join(unknown) + " — the artifact is stale or from another contest; rebuild it with "
+                + "gt-dupes.sh")
 
     try:
         with open(verified_path, encoding="utf-8", errors="ignore") as fh:
@@ -445,6 +607,13 @@ def main(argv):
                 + "number from a degraded judge (check --judge-log for the raw replies)")
     matched_leads = sum(1 for h in lead_hit if h)
 
+    # #1840 GT-equivalence crediting, applied to BOTH matchers (equivalence is a property of the ground truth,
+    # not of the matcher). It expands `row_hit` ONLY — `lead_hit`/`matched_leads` are already final above, so
+    # one lead can never become N matched leads.
+    gt_expansions = []
+    if gt_dupes:
+        row_hit, gt_expansions = expand_row_hits(row_hit, gt_dupe_classes, rows, gt_dupes_max_class)
+
     out = []
     for ri, (sev_id, _signature) in enumerate(rows):
         out.append(f"{sev_id}\t{'HIT' if row_hit[ri] else 'MISS'}")
@@ -454,6 +623,14 @@ def main(argv):
     # number as the live run); `errors` counts JUDGE-ERRORs (unparseable reply / hallucinated row id).
     if judge_mode != "off":
         out.append(f"JUDGE\t{judge_calls}\t{judge_errors}")
+    # ADDITIVE GT-equivalence trailers (#1840): present ONLY under --gt-dupes, so every pinned scorecard
+    # without the flag stays byte-identical. `DUP` reports the loaded class count and how many rows were
+    # credited THROUGH a class rather than directly — `hits - expanded_hits` is exactly the pre-#1840 number
+    # from the same replay — and one `DUPHIT` line per expanded row attributes it to the row actually matched.
+    if gt_dupes:
+        out.append(f"DUP\t{len(gt_dupe_classes)}\t{len(gt_expansions)}")
+        for credited_sev_id, matched_sev_id in gt_expansions:
+            out.append(f"DUPHIT\t{credited_sev_id}\t{matched_sev_id}")
     # ADDITIVE per-lead real-bug precision material (issue #1711): only appended under --per-lead so the
     # default output stays byte-identical for run-corpus-bench.sh --self-test. A lead is a HIT when it matched
     # a real GT row (lead_hit[li]); MISS = unmatched noise. Class is the normalized key.

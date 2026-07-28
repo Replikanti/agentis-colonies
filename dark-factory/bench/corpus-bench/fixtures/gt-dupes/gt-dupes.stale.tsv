@@ -1,0 +1,5 @@
+# gt-dupes/v1 contest=gt-dupes source=manual driver=none built=2026-07-28T00:00:00Z
+# DELIBERATELY STALE fixture: D-9 does not exist in truth.tsv. Loading it must be a hard exit 3, never a
+# silent skip — an artifact rebuilt against a different truth.tsv (or copied from another contest) would
+# otherwise mis-credit the headline without saying so.
+DUP	D-1	D-9	95	pairing kept only to pin the stale-artifact fail-closed path

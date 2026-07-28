@@ -1,0 +1,5 @@
+# gt-dupes/v1 contest=gt-dupes source=judge driver=mech-judge.sh built=2026-07-28T00:00:00Z
+# Judged duplicate pairs for fixtures/gt-dupes/truth.tsv. D-1 (consensus twin, rarity 24) and D-2 (rare twin,
+# rarity 2) are the same capped-deposit truncation bug written up from two sides. D-3/D-4 share the
+# settleEpoch function name and are NOT paired — a shared name is never evidence of the same bug.
+DUP	D-1	D-2	93	same capped-deposit truncation and the same unreconciled remainder stranded in the router, described from the router side and from the pool side

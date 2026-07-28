@@ -23,6 +23,8 @@ corpus-bench/
                                   #   (--judge: semantic mechanism judge instead of the token matcher, #1829)
   mech-judge.sh                   # judge driver (#1829): request JSON on stdin -> VERDICT| lines on stdout,
                                   #   judged through the flat-cyborg PTY wrapper (never a metered API call)
+  gt-dupes.sh                     # GT-equivalence builder (#1840): judges truth rows against each other
+                                  #   (upper triangle) through mech-judge.sh -> gt-dupes.tsv next to truth.tsv
   bench-to-knowledge.sh           # LEARN half (#1711): scored contests -> per-class real-bug precision ->
                                   #   agentis `hunt-fitness` knowledge (feeds zone-mapper.ag's reorder)
   run-corpus-bench.sh             # orchestrator + scorer (this is the entrypoint)
@@ -40,6 +42,14 @@ corpus-bench/
                                   #   defect, expected-scorecard.judge.txt = the corrected answer) +
                                   #   judge-decisions.jsonl (the recorded cache) + judge-stub.sh (offline
                                   #   judge backend; MECH_JUDGE_STUB_MODE=malformed for the fail-closed case)
+    gt-dupes/                     # synthetic fixture for GT equivalence (#1840), deliberately SEPARATE from
+                                  #   mech-judge/ (adding a row there would change every request payload and
+                                  #   silently re-baseline the frozen #1829 cache keys): truth.tsv with a
+                                  #   consensus/rare twin pair + a name-sharing NON-duplicate control,
+                                  #   leads.json, judge-stub.sh + judge-decisions.jsonl (the recorded
+                                  #   one-MATCH defect), dupes-stub.sh (offline builder backend), gt-dupes.tsv
+                                  #   + gt-dupes.stale.tsv, and BOTH pinned scorecards
+                                  #   (expected-scorecard.nodup.txt / .dup.txt)
 ```
 
 No contest code or finding text is re-hosted in this repo — only the manifest (repo/commit-free GitHub slugs)
@@ -181,6 +191,92 @@ own structural analogues — no contest prose or code is re-hosted here either):
 answer and the judge's RIGHT answer are both byte-exact, so neither direction of the #1829 defect can come
 back silently, and the fail-closed paths (malformed reply, degraded judge, cache miss) are asserted too.
 
+## GT equivalence classes (#1840)
+
+A concluded judging repo routinely accepts **two rows for the same underlying bug**, written up differently
+and found by very different watson counts. The judge is asked for at most one MATCH per candidate and only
+ever sees one `--judge-batch` slice of the rows at a time — a duplicate pair straddling two batches is
+invisible to it by construction — so a lead that finds such a bug credits whichever twin the model happened to
+name. Since the headline is stratified by rarity and the twins' watson counts differ, **the twin that gets
+lost is the rare one**: the pipeline finds a rare bug and is scored as if it had not.
+
+Equivalence is a property of the **ground truth**, not of the matcher, so it is decided GT-side, once per
+contest, and stored as a file:
+
+```
+gt-dupes.tsv (next to truth.tsv)
+# gt-dupes/v1 contest=<id> source=judge|manual driver=<driver> built=<iso8601>
+DUP<TAB><sev_a><TAB><sev_b><TAB><confidence 0-100><TAB><one-line reason>
+```
+
+`gt-dupes.sh` builds it by judging every truth row against the rows AFTER it (upper triangle — no self-pairs,
+half the calls) through the **unchanged** `mech-judge.sh` driver, request grammar and decision rule: the row
+under test is sent in the `lead` slot as `R-<sev_id>` with its signature in `exploit`. So the same judge that
+decides "did this lead find that bug?" decides "are these two rows the same bug?". `source=` distinguishes a
+judged artifact from a hand-curated one; an unparseable reply produces **no** pair (no pair = no expansion =
+the old behaviour) and is counted in a summary line.
+
+**What the numbers mean (precision contract).** `score-match.py --gt-dupes <file>` unions the pairs into
+classes and, when a lead matched any member, credits every member:
+
+| quantity | effect |
+|----------|--------|
+| `gt_total`, every severity/rarity stratum total | **unchanged** — one entry per accepted GT row, exactly as the judging repo published it. Denominators are never collapsed. |
+| `hits` | GT rows whose underlying bug the hunter found: matched directly **or** through another row in the same class. Both twins count, each in its own stratum — which is the point: the rare twin lands in the rare stratum. |
+| `matched_leads` / `unmatched_leads` / `--per-lead` `LEAD` lines | **unchanged**. Expansion touches `row_hit` only, so one lead can never become N matched leads and the unmatched-lead triage queue keeps its meaning. |
+| new trailers | `DUP<TAB><classes><TAB><expanded_hits>` plus one `DUPHIT<TAB><credited><TAB><directly_matched>` per expanded row. **`hits - expanded_hits` is exactly the pre-#1840 number, from the same replay.** |
+
+**Report two numbers, and name the ruler.** Any headline scored with an artifact must be quoted as
+`rare X/Y (Z via GT-equivalence)` alongside the ruler it was measured with — "mechanism judge (#1829) +
+GT-equivalence crediting (#1840)" is not the same ruler as the token matcher, and a number measured under one
+is not comparable to a number measured under the other. The published token-matcher baseline is **not**
+re-derivable under the new rule (no artifact exists for those contests); what *is* guaranteed is that every
+judged run whose decisions are archived replays both numbers from one cache.
+
+**Guard rails against inflation** (a wrong pair would inflate exactly the stratum this exists to protect):
+
+- `--gt-dupes-min-confidence` (default **85**, deliberately above the 70-point scoring gate) is applied at
+  **scoring** time, so one archived artifact re-derives the expanded number, the unexpanded number and any
+  threshold in between.
+- A class larger than `--gt-dupes-max-class` (default 3) is **not** expanded at all, with a warning on stderr.
+- Every pair carries a reason, and `DUP`/`DUPHIT` keep every expanded hit separable from the direct ones.
+- A pair naming a `sev_id` absent from `truth.tsv` is a hard **exit 3** — a stale or wrong-contest artifact
+  never silently mis-credits.
+
+**Opt-in and default-off.** Without `--gt-dupes` no trailer is emitted and every existing scorecard
+(`fixtures/mech-judge/`, `fixtures/score/`, `--self-test`) stays byte-identical.
+
+**Cost shape.** About `N/2 x ceil(N/batch)` judging calls per contest — for a 30-row contest roughly 55 calls,
+comparable to one scoring pass — but paid **once per contest**, independent of the lead count, and persisted
+as a file. (Re-judging each lead against the remaining rows instead would be `O(leads x rows)` and re-paid on
+every run.)
+
+```bash
+# build the artifact for one contest (operator-run: it costs judging calls; NOT part of --live):
+dark-factory/bench/corpus-bench/run-corpus-bench.sh --dupes --id yieldoor --work <dir>
+
+# or standalone, with the decision log archived next to it:
+dark-factory/bench/corpus-bench/gt-dupes.sh <dir>/yieldoor/truth.tsv <dir>/yieldoor/gt-dupes.tsv \
+  --log <dir>/yieldoor/gt-dupes-log.jsonl
+
+# score with it (picked up automatically when <work>/<id>/gt-dupes.tsv exists; zero extra LLM calls):
+dark-factory/bench/corpus-bench/run-corpus-bench.sh --score --id yieldoor --work <dir> --json \
+  --judge cache --judge-cache <dir>/judge-cache.jsonl
+
+# the same replay under the pre-#1840 ruler, for the two-number comparison:
+dark-factory/bench/corpus-bench/run-corpus-bench.sh --score --id yieldoor --work <dir> --no-gt-dupes \
+  --judge cache --judge-cache <dir>/judge-cache.jsonl
+
+# builder contract check (offline, no LLM):
+dark-factory/bench/corpus-bench/gt-dupes.sh --self-test
+```
+
+`dark-factory/demo-mech-judge.sh` pins the whole thing on a second synthetic fixture (`fixtures/gt-dupes/`,
+kept separate from `fixtures/mech-judge/` so the frozen #1829 cache keys cannot be re-baselined): the lost
+rare twin (2/4, rare 0/2) and its recovery (3/4, rare 1/2) are both byte-exact, and so are the guard rails —
+the name-sharing non-duplicate stays MISS, the `LEADS` trailer never moves, a stale artifact exits 3, a raised
+merge bar re-derives the unexpanded number, and the builder pairs exactly the twins.
+
 ## Generation-recall harness (#1730)
 
 The scoring above measures the pipeline's **post-confirmation** verified findings. `generation-recall.sh`
@@ -275,6 +371,7 @@ dark-factory/bench/corpus-bench/run-corpus-bench.sh --live --work /path/outside/
 
 # one contest at a time, staged:
 dark-factory/bench/corpus-bench/run-corpus-bench.sh --fetch --gt --id yieldoor --work <dir>
+dark-factory/bench/corpus-bench/run-corpus-bench.sh --dupes --id yieldoor --work <dir>   # optional, #1840
 dark-factory/bench/corpus-bench/run-corpus-bench.sh --hunt  --id yieldoor --work <dir> --backend flat-cyborg
 dark-factory/bench/corpus-bench/run-corpus-bench.sh --score --id yieldoor --work <dir> --json
 ```
