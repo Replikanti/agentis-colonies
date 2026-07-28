@@ -37,6 +37,17 @@
 #         cell cannot drop the earlier attempt's lead, and a partial carry is counted + reported.
 #      (k) covers BOTH zero-cell triggers — the unclassified zone and the classified zone whose name
 #         map-zones.sh's clean() rewrote — so narrowing the guard back to "no classes" fails CI.
+#   p-s) #1827 WITHIN-CONTRACT DEPTH (`--zone-depth-cells`, default 0 = OFF):
+#      p) INERT BY DEFAULT: with the flag absent, the run-discovery.sh argv STAGE 3 actually executes carries
+#         NO --depth-max-cells (asserted against a recorded argv, not inferred from an artifact).
+#      q) DEPTH GIVES WAY FIRST: under a cell budget the depth allowance is trimmed to whatever headroom is
+#         left ABOVE the zone's planned breadth cells — and where the cap is at/below the breadth count depth
+#         is 0 and the existing class-truncation path runs unchanged (same classes, same charge, same argv).
+#      r) HONEST CHARGE: cells_charged = breadth + depth, cells_planned still means "what --list-cells
+#         measured", the detail names the split, and a zone that FINDS NO LEAD still shows the cap charged
+#         while spending 0 depth cells (depth is not enumerable ex ante, so the cap is charged up front).
+#      s) NO DOUBLE CHARGE: a --rehunt-gaps pass with depth on completes the record without any zone ever
+#         being charged more than one attempt's breadth + depth.
 #
 # Usage:  dark-factory/demo-run-zone-hunt.sh
 # Requires: git + python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression.
@@ -109,6 +120,14 @@ case "$cmd" in
         # DEMO_HUNTER_SILENT: every cell answers SAFE. Used by block (l) to make a re-hunt yield LESS than the
         # attempt it archived. UNSET (the default) => this branch is inert and blocks (a)-(k) are unchanged.
         if [ -n "${DEMO_HUNTER_SILENT:-}" ]; then echo "SAFE"; exit 0; fi
+        # #1827: a DEPTH cell mirrors hunter.ag's DEPTH-CELL| diagnostic and answers SAFE, so blocks (p)-(s)
+        # measure the CELL ACCOUNTING without perturbing the verified/delivered finding set the other blocks
+        # pin. DEPTH_TARGET is empty on every breadth cell, so this branch is inert for blocks (a)-(o).
+        if [ -n "${DEPTH_TARGET:-}" ]; then
+          echo "DEPTH-CELL|${SUBSYSTEM:-}|${HUNT_CLASS:-}|${DEPTH_TARGET:-}"
+          echo "SAFE"
+          exit 0
+        fi
         s="${SUBSYSTEM:-}"; c="${HUNT_CLASS:-}"
         # DEMO_HUNTER_TWO_LEADS: the vault/C1 cell answers with TWO DIFFERENT candidates instead of the usual
         # one. Used by block (o) to make a re-hunt yield MORE candidates than the attempt it archived, on the
@@ -1027,6 +1046,225 @@ if grep -q 'carried over from a prior attempt' "$WORK/zho2.err"; then
 else
   bad "the partial carry was not reported on stderr"
 fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (p)-(s) #1827 WITHIN-CONTRACT DEPTH. STAGE 3's run-discovery.sh invocation is the thing under test, so it is
+#     driven through a SHIM directory: every dark-factory entry point is symlinked into it EXCEPT
+#     run-discovery.sh, which is a recorder that appends its argv and then execs the real one. run-zone-hunt.sh
+#     resolves its siblings from `dirname $0`, so running the symlinked capstone out of the shim makes the
+#     argv observable WITHOUT adding a seam to the shipped script.
+# ----------------------------------------------------------------------------------------------------------
+note "p) #1827 with --zone-depth-cells absent, STAGE 3's run-discovery.sh argv carries no --depth-max-cells ..."
+SHIM="$WORK/shim"
+mkdir -p "$SHIM"
+for _f in "$HERE"/*; do
+  _b="$(basename "$_f")"
+  [ "$_b" = "run-discovery.sh" ] && continue
+  ln -s "$_f" "$SHIM/$_b"
+done
+{
+  printf '#!/bin/sh\n'
+  printf 'printf "%%s\\n" "$*" >> "$DF_ARGV_LOG"\n'
+  printf 'exec "$DF_REAL_DISCOVERY" "$@"\n'
+} > "$SHIM/run-discovery.sh"
+chmod +x "$SHIM/run-discovery.sh"
+
+ARGV_OFF="$WORK/argv-depth-off.log"; : > "$ARGV_OFF"
+OUTP="$WORK/zh-depth-off"
+DF_ARGV_LOG="$ARGV_OFF" DF_REAL_DISCOVERY="$HERE/run-discovery.sh" \
+  "$SHIM/run-zone-hunt.sh" --repo "$REPO" --out "$OUTP" --drop-dir "$OUTP/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" \
+  >"$WORK/zhp.out" 2>"$WORK/zhp.err"
+RCP=$?
+[ "$RCP" -eq 0 ] && ok "the shimmed capstone runs the same chain and exits 0 (the recorder is transparent)" \
+  || { bad "the shimmed depth-off run exited $RCP"; sed 's/^/      /' "$WORK/zhp.err" | tail -20 >&2; }
+if [ -s "$ARGV_OFF" ] && ! grep -q -- '--depth-max-cells' "$ARGV_OFF"; then
+  ok "p) not one recorded run-discovery.sh invocation (hunt or --list-cells probe) carries --depth-max-cells"
+else
+  bad "p) a --depth-max-cells argument appeared with --zone-depth-cells absent (or nothing was recorded)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (r) HONEST CHARGE, with the fixture's per-zone breadth counts (liquidation 2, vault 3, governance 2,
+#     oracle 2). At --zone-depth-cells 2 with NO budget every zone is charged its planned breadth + 2, and
+#     `contracts_governance` — whose cells all answer SAFE — proves the cap is charged UP FRONT: charged 4,
+#     spent 2. Undercounting depth to look cheap is exactly the failure this design refuses.
+# ----------------------------------------------------------------------------------------------------------
+note "r) #1827 cells_charged = breadth + depth; a lead-less zone still shows the cap charged, 0 spent ..."
+ARGV_ON="$WORK/argv-depth-on.log"; : > "$ARGV_ON"
+OUTR="$WORK/zh-depth-on"
+DF_ARGV_LOG="$ARGV_ON" DF_REAL_DISCOVERY="$HERE/run-discovery.sh" \
+  "$SHIM/run-zone-hunt.sh" --repo "$REPO" --out "$OUTR" --drop-dir "$OUTR/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --zone-depth-cells 2 \
+  >"$WORK/zhr.out" 2>"$WORK/zhr.err"
+RCR=$?
+[ "$RCR" -eq 0 ] && ok "the --zone-depth-cells 2 run exits 0" \
+  || { bad "the depth-on run exited $RCR"; sed 's/^/      /' "$WORK/zhr.err" | tail -20 >&2; }
+if [ "$(grep -c -- '--depth-max-cells 2' "$ARGV_ON")" -eq 4 ]; then
+  ok "r) each of the 4 hunted zones was invoked with --depth-max-cells 2 (the --list-cells probes are not)"
+else
+  bad "r) expected 4 hunt invocations carrying --depth-max-cells 2, got $(grep -c -- '--depth-max-cells 2' "$ARGV_ON")"
+fi
+if python3 - "$OUTR" <<'PY'
+import sys, os, json
+out = sys.argv[1]
+rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
+by_id = dict((z["id"], z) for z in rec["zones"])
+# planned breadth per zone stays what --list-cells measured; the charge gains the depth CAP.
+want_planned = {"contracts_liquidation": 2, "contracts_vault": 3, "contracts_governance": 2, "contracts_oracle": 2}
+for zid, planned in want_planned.items():
+    z = by_id[zid]
+    assert z["cells_planned"] == planned, "%s cells_planned %r != %r" % (zid, z["cells_planned"], planned)
+    assert z["cells_charged"] == planned + 2, "%s charged %r, expected breadth %d + depth 2" % (
+        zid, z["cells_charged"], planned)
+    assert "depth" in (z.get("detail") or ""), "%s detail does not name the breadth/depth split: %r" % (
+        zid, z.get("detail"))
+# The zone whose breadth cells all answered SAFE spends NOTHING on depth, yet is still charged the cap.
+gov = by_id["contracts_governance"]
+assert gov["cells"] == 2, "the lead-less zone ran %r cells, expected only its 2 breadth cells" % gov["cells"]
+assert gov["cells"] < gov["cells_charged"], "the up-front cap charge is not visible on the lead-less zone"
+# Zones WITH a lead really spent depth cells, and each zone's own results file reports the split.
+for zid, planned, spent in (("contracts_liquidation", 2, 4), ("contracts_vault", 3, 5), ("contracts_oracle", 2, 4)):
+    d = json.load(open(os.path.join(out, "discovery", zid, "discovery-results.json"), encoding="utf-8"))
+    assert d["totals"]["cells"] == spent, "%s ran %r cells, expected %d" % (zid, d["totals"]["cells"], spent)
+    assert d["totals"]["depth_cells"] == spent - planned, "%s depth_cells %r" % (zid, d["totals"]["depth_cells"])
+    depth = [c for c in d["cells"] if c.get("phase") == "depth"]
+    assert len(depth) == spent - planned, "%s phase-tagged %d of %d depth cells" % (zid, len(depth), spent - planned)
+    for c in depth:
+        assert "@" in c["files"], "%s depth cell payload is not narrowed to file@fn: %r" % (zid, c["files"])
+gd = json.load(open(os.path.join(out, "discovery", "contracts_governance", "discovery-results.json"), encoding="utf-8"))
+assert gd["totals"]["depth_cells"] == 0, "the lead-less zone spent %r depth cell(s)" % gd["totals"]["depth_cells"]
+assert rec["complete"] is True, "the depth-on sweep is not complete"
+PY
+then ok "r) every zone charged breadth+2 with the split in its detail; leads spend depth cells, the lead-less zone spends 0 while still charged the cap"
+else bad "r) the depth charge/accounting assertion failed"
+fi
+# The capstone's downstream stages are untouched by depth: the same 3 findings still verify.
+if python3 - "$OUTR/verify/verified_findings.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["totals"]["verified"] == 3, "depth changed the verified finding count: %r" % d["totals"]["verified"]
+PY
+then ok "r2) the depth pass did not perturb STAGE 4: the same 3 findings verify"
+else bad "r2) the depth pass changed the verified finding set"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (q) DEPTH GIVES WAY FIRST. Two arms of the same budget interaction:
+#     q1 `--zone-cell-budget 4 --zone-depth-cells 2`: only `vault deposits` (3 planned) has less than 2 cells
+#        of headroom, so its depth allowance shrinks to 1 while its breadth CLASS LIST IS UNTOUCHED.
+#     q2 `--zone-cell-budget 2 --zone-depth-cells 2`: no zone has ANY headroom, so depth is 0 everywhere and
+#        the existing class-truncation path runs EXACTLY as it does with depth off (block (g)'s OUT6 run) —
+#        same classes, same charge, same budget_truncated flag, and no --depth-max-cells in the argv.
+# ----------------------------------------------------------------------------------------------------------
+note "q) #1827 under a cell budget, depth is trimmed BEFORE a single breadth class is dropped ..."
+OUTQ1="$WORK/zh-depth-q1"
+"$ZONEHUNT" --repo "$REPO" --out "$OUTQ1" --drop-dir "$OUTQ1/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --zone-cell-budget 4 --zone-depth-cells 2 \
+  >"$WORK/zhq1.out" 2>"$WORK/zhq1.err"
+RCQ1=$?
+if [ "$RCQ1" -eq 0 ] && python3 - "$OUTQ1" <<'PY'
+import sys, os, json
+out = sys.argv[1]
+rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
+by_id = dict((z["id"], z) for z in rec["zones"])
+# Every zone stays under the cap of 4, and NONE is class-truncated: depth absorbed the whole squeeze.
+for z in rec["zones"]:
+    assert z["cells_charged"] <= 4, "%s charged %r over the cap of 4" % (z["id"], z["cells_charged"])
+    assert z["budget_truncated"] is False, "%s dropped a breadth class while depth was still on" % z["id"]
+v = by_id["contracts_vault"]
+assert v["cells_planned"] == 3 and v["cells_charged"] == 4, \
+    "the squeezed zone charged %r of %r planned" % (v["cells_charged"], v["cells_planned"])
+assert v["classes_hunted"] == ["C1", "C6", "C11"], "the squeezed zone's class list was shortened: %r" % v["classes_hunted"]
+d = json.load(open(os.path.join(out, "discovery", "contracts_vault", "discovery-results.json"), encoding="utf-8"))
+assert d["totals"]["depth_cells"] == 1, "the squeezed zone got %r depth cells, expected the 1 cell of headroom" % d["totals"]["depth_cells"]
+PY
+then ok "q1) at cap 4 the squeezed zone keeps ALL 3 breadth classes and its depth allowance shrinks 2 -> 1"
+else bad "q1) the depth-shrinks-first assertion failed (exit $RCQ1)"
+fi
+ARGV_Q2="$WORK/argv-depth-q2.log"; : > "$ARGV_Q2"
+OUTQ2="$WORK/zh-depth-q2"
+DF_ARGV_LOG="$ARGV_Q2" DF_REAL_DISCOVERY="$HERE/run-discovery.sh" \
+  "$SHIM/run-zone-hunt.sh" --repo "$REPO" --out "$OUTQ2" --drop-dir "$OUTQ2/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --zone-cell-budget 2 --zone-depth-cells 2 \
+  >"$WORK/zhq2.out" 2>"$WORK/zhq2.err"
+RCQ2=$?
+# The DEPTH-OFF twin of the same run (block (g)'s zh6 --out is mutated by the (i.2) re-hunt, so this needs
+# its own baseline). The truncation path must be indistinguishable from it on every substantive field.
+# (`detail` additionally names the trimmed depth pass; that is the whole point of trimming visibly.)
+OUTQ2OFF="$WORK/zh-depth-q2-off"
+"$ZONEHUNT" --repo "$REPO" --out "$OUTQ2OFF" --drop-dir "$OUTQ2OFF/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --zone-cell-budget 2 \
+  >"$WORK/zhq2off.out" 2>"$WORK/zhq2off.err"
+if [ "$RCQ2" -eq 0 ] && ! grep -q -- '--depth-max-cells' "$ARGV_Q2" && python3 - "$OUTQ2" "$OUTQ2OFF" <<'PY'
+import sys, os, json
+def rec(p):
+    return json.load(open(os.path.join(p, "coverage", "zone-coverage.json"), encoding="utf-8"))
+on, off = rec(sys.argv[1]), rec(sys.argv[2])
+fields = ("id", "status", "cells_planned", "cells_charged", "classes_hunted", "budget_truncated", "cells")
+a = [tuple(z[f] if not isinstance(z[f], list) else tuple(z[f]) for f in fields) for z in on["zones"]]
+b = [tuple(z[f] if not isinstance(z[f], list) else tuple(z[f]) for f in fields) for z in off["zones"]]
+assert a == b, "the truncation path diverged with depth on:\n  on  = %r\n  off = %r" % (a, b)
+assert on["complete"] == off["complete"] and on["gap_zones"] == off["gap_zones"], "derived fields diverged"
+for z in on["zones"]:
+    assert "trimmed to 0" in (z.get("detail") or ""), "%s does not record that depth was trimmed: %r" % (
+        z["id"], z.get("detail"))
+PY
+then ok "q2) with no headroom, depth is 0, the argv gains nothing, and the class-truncation path matches the depth-off run field for field"
+else bad "q2) the no-headroom truncation path diverged from the depth-off run (exit $RCQ2)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (s) NO DOUBLE CHARGE across a re-hunt: a zone's cells_charged is the cost of ONE attempt (breadth + the
+#     depth cap), rewritten per attempt — never accumulated into a number that grows with attempts[].
+# ----------------------------------------------------------------------------------------------------------
+note "s) #1827 a --rehunt-gaps pass with depth on never charges a zone more than one attempt ..."
+OUTS="$WORK/zh-depth-rehunt"
+"$ZONEHUNT" --repo "$REPO" --out "$OUTS" --drop-dir "$OUTS/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --run-cell-budget 8 --zone-depth-cells 2 \
+  >"$WORK/zhs1.out" 2>"$WORK/zhs1.err"
+RCS1=$?
+"$ZONEHUNT" --repo "$REPO" --out "$OUTS" --drop-dir "$OUTS/drop" \
+  --backend mock --agentis "$STUB" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --rehunt-gaps --run-cell-budget 8 --zone-depth-cells 2 \
+  >"$WORK/zhs2.out" 2>"$WORK/zhs2.err"
+RCS2=$?
+if [ "$RCS1" -eq 0 ] && [ "$RCS2" -eq 0 ] && python3 - "$OUTS" <<'PY'
+import sys, os, json
+out = sys.argv[1]
+rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
+denied = [z["id"] for z in rec["zones"] if z["status"] == "budget_exhausted"]
+assert not denied, "the re-hunt left %r denied" % denied
+assert rec["complete"] is True, "the re-hunt did not complete the record"
+for z in rec["zones"]:
+    # ONE attempt's cost, never a running total: breadth + at most the depth cap.
+    assert z["cells_charged"] <= z["cells_planned"] + 2, \
+        "%s charged %r, more than one attempt of %r breadth + 2 depth" % (z["id"], z["cells_charged"], z["cells_planned"])
+    assert z["cells"] <= z["cells_planned"] + 2, "%s ran %r cells, more than one attempt" % (z["id"], z["cells"])
+PY
+then ok "s) the re-hunt completes the record and no zone is charged (or runs) more than one attempt's breadth + depth"
+else bad "s) the re-hunt double-charged or failed to complete (exit $RCS1/$RCS2)"
+fi
+badflag "--zone-depth-cells notanumber" 'must be a non-negative integer' --zone-depth-cells notanumber
 
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then

@@ -14,6 +14,10 @@ cb 300000;
 //   TAXONOMY    path to bug-taxonomy.md
 //   HUNT_CLASS  one class id, e.g. "C1"
 //   SUBSYSTEM   human label for this slice
+//   DEPTH_TARGET  #1827 (optional, default ""): `file@fn` of ONE already-flagged function this cell
+//               re-reads under a different lens. Empty (the default) => the prompt is byte-identical.
+//   DEPTH_KNOWN   #1827 (optional, default ""): the lead(s) a breadth cell already surfaced on that
+//               function, quoted VERBATIM as an exclusion. Consumed as ONE opaque string (never split).
 // Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
@@ -53,6 +57,14 @@ fn class_section(taxo: string, cls: string) -> string {
 fn outcome_of(verdict: string) -> string {
     if index_of(verdict, "CANDIDATE|") >= 0 { return "success"; }
     return "failure";
+}
+
+// #1827: a depth cell carries an extra "depth" tag so taxonomy fitness can be read per PHASE — a class that
+// only ever produces on the breadth pass is a different signal from one that produces on a re-read. A breadth
+// cell's tag list is byte-identical to the pre-#1827 one.
+fn hunt_tags(cls: string, subsystem: string, outcome: string, depth: string) -> list<string> {
+    if len(depth) == 0 { return [cls, subsystem, outcome]; }
+    return [cls, subsystem, outcome, "depth"];
 }
 
 // --- #1001 shared BLACKBOARD: a first inter-agent coordination primitive ---
@@ -145,6 +157,34 @@ fn focus_block(board: string, subsystem: string) -> string {
          + "is genuinely clean here.\n\n";
 }
 
+// --- #1827 WITHIN-CONTRACT DEPTH pass ---
+// Breadth yields <= 1 candidate per cell across the corpus even though the output contract below already asks
+// for "EVERY qualifying bug", so the binding constraint is ATTENTION over a whole-zone payload, not the
+// contract. A depth cell therefore re-asks the SAME question with the payload narrowed to ONE already-flagged
+// function (`file@fn`, through cat_file's existing slicer) and the lead(s) that function already produced
+// injected VERBATIM as an exclusion — the cheapest fake ("re-report the known bug") is foreclosed by
+// construction, and the model's attention is spent on a second, mechanistically DIFFERENT bug.
+//
+// `known` is consumed as ONE OPAQUE STRING: it is never regex_split/reduce'd, so the added CB cost is O(1)
+// in the number of known leads. An interpreted per-element walk pays ~70+ CB per element and would blow the
+// enforced cb_per_tick ceiling on a function carrying a handful of leads — the recidivist substrate trap.
+//
+// Returns "" when `target` is empty, so a breadth cell's prompt stays byte-identical to the pre-#1827 one.
+fn depth_block(target: string, known: string) -> string {
+    if len(target) == 0 { return ""; }
+    return "=== DEPTH PASS — a sibling cell ALREADY found a bug in this exact function ===\n"
+         + "Function under review: " + target + ". The payload below is narrowed to that ONE function (plus "
+         + "its contract header), because a bug was already proven to live here — this function carries real "
+         + "attack surface and deserves a second, independent read.\n"
+         + "ALREADY REPORTED here — do NOT report any of these again, in ANY rewording, and do not merely "
+         + "restate their root cause:\n"
+         + known + "\n"
+         + "Report a bug whose MECHANISM is genuinely DIFFERENT from every line above (a different invariant, "
+         + "a different attacker action, a different faulty guard) — a paraphrase of a known lead is worth "
+         + "nothing. Do NOT invent one to satisfy this request: if, after tracing this function yourself, "
+         + "there is no second qualifying bug, answer SAFE. A rigorous SAFE here is a valid, useful result.\n\n";
+}
+
 let dir = getenv("TARGET_DIR");
 let files = getenv("IN_SCOPE");
 let cls = getenv("HUNT_CLASS");
@@ -165,6 +205,17 @@ if len(focus) > 0 {
         + first_line(board));
 }
 
+// #1827 DEPTH read: run-discovery.sh sets DEPTH_TARGET/DEPTH_KNOWN only on a depth cell (they must be on
+// `exec.env_passthrough`, else getenv() returns "" and the whole feature is silently inert). `depth` is ""
+// on every breadth cell, so the instruction below stays byte-identical there. The printed DEPTH-CELL| line
+// makes the pass observable in the cell log even on the mock backend; run-discovery.sh treats it as a record
+// BOUNDARY in _join_wrapped_candidates so it can never be glued onto an open CANDIDATE| record as prose.
+let depth_target = getenv("DEPTH_TARGET");
+let depth = depth_block(depth_target, getenv("DEPTH_KNOWN"));
+if len(depth) > 0 {
+    print("DEPTH-CELL|" + subsystem + "|" + cls + "|" + depth_target);
+}
+
 // The instruction carries the lens (taxonomy class), the brief (invariants + known-issues), and the
 // strict output contract; the code is the prompt payload (matches auditor.ag::classify_evm_llm shape).
 // The (possibly empty) blackboard FOCUS block sits up top so prior siblings' leads bias the hunt.
@@ -174,6 +225,7 @@ let instruction =
   + "you have traced the actual control/data flow yourself. An obvious-looking bug IS a real bug unless a "
   + "guard in the code provably stops it — do NOT assume prior auditors already caught it.\n\n"
   + focus
+  + depth
   + "=== HUNT THIS BUG CLASS (the lens) ===\n" + classDoc + "\n\n"
   + "=== PROTOCOL BRIEF — invariants whose violation is a valid finding, and KNOWN ISSUES you MUST NOT report ===\n"
   + brief + "\n\n"
@@ -199,7 +251,7 @@ let verdict = prompt(instruction, code) -> string;
 print(verdict);
 let outcome = outcome_of(verdict);
 emit("dark-factory:hunt_result", "{\"class\":\"" + cls + "\",\"subsystem\":\"" + subsystem + "\",\"outcome\":\"" + outcome + "\"}");
-learn("hunt", cls + ":" + subsystem, "discovery hunt of " + cls + " on " + subsystem, outcome, [cls, subsystem, outcome]);
+learn("hunt", cls + ":" + subsystem, "discovery hunt of " + cls + " on " + subsystem, outcome, hunt_tags(cls, subsystem, outcome, depth));
 
 // #1001 WRITE side: a CANDIDATE is a LEAD worth steering siblings toward. POST it to the shared
 // blackboard (rolling, read by every later cell above) as `subsystem|class|<lead summary>`, and emit
