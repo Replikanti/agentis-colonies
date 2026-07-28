@@ -465,6 +465,16 @@ _plan_depth_cells() {
         i2 = index(rest, ":")
         if (i2 > 0) fn = substr(rest, 1, i2 - 1); else fn = rest
         if (fn == "") continue
+        # SECURITY: file/fn come from the LOCATION field of a hunter-written CANDIDATE line -- LLM output,
+        # NOT operator-curated scope.tsv content. loc_target (file@fn) becomes the IN_SCOPE of a depth cell,
+        # and cat_file() in hunter.ag concatenates IN_SCOPE UNESCAPED into an exec sh command (pre-#1827
+        # code, safe only while IN_SCOPE was always trusted config). A prompt-injected or hostile target
+        # could make the hunter emit a location carrying shell metacharacters or a dot-dot traversal, so
+        # reject anything that is not a plain repo-relative path / identifier BEFORE it becomes a target.
+        if (file !~ /^[A-Za-z0-9_.\/-]+$/) continue
+        if (file ~ /(^|\/)\.\.(\/|$)/) continue
+        if (file ~ /^\//) continue
+        if (fn !~ /^[A-Za-z0-9_$]+$/) continue
         sev = 2
         nf = split(cand, F, "|")
         if (nf >= 3) {

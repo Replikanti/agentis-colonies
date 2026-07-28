@@ -657,8 +657,13 @@ DEPTH_OUT_B="$WORK/out-depth3b"
 STUB_DEPTH=1 \
   "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
   --out "$DEPTH_OUT_B" --jobs 1 --depth-max-cells 3 >/dev/null 2>"$WORK/depth3b.err"
+# _depth_seq <out-dir> — the SEQUENCE of depth cells (subsystem|class|files, in cells[] order) read from
+# <out-dir>/discovery-results.json. This used to open() the OUT DIR itself, so every call raised
+# IsADirectoryError, wrote NOTHING to its stdout redirection, and the two "identical" empty files then
+# compared equal under `cmp -s` regardless of the real depth sequence — 15/15b passed VACUOUSLY. The
+# emptiness guards below keep that failure mode from coming back silently.
 _depth_seq() {
-  python3 - "$1" <<'PY'
+  python3 - "$1/discovery-results.json" <<'PY'
 import sys, json
 d = json.load(open(sys.argv[1], encoding="utf-8"))
 for c in d["cells"]:
@@ -668,7 +673,9 @@ PY
 }
 _depth_seq "$DEPTH_OUT" > "$WORK/depthseq.1"
 _depth_seq "$DEPTH_OUT_B" > "$WORK/depthseq.2"
-if cmp -s "$WORK/depthseq.1" "$WORK/depthseq.2"; then
+if [ ! -s "$WORK/depthseq.1" ]; then
+  bad "15) depth cell sequence extraction produced no rows -- the comparison below would be vacuous"
+elif cmp -s "$WORK/depthseq.1" "$WORK/depthseq.2"; then
   ok "15) two identical serial runs produce the same depth cell sequence"
 else
   bad "15) the depth cell sequence is not deterministic:"
@@ -682,7 +689,9 @@ else
     "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
     --out "$DEPTH_PAR" --jobs 3 --depth-max-cells 3 >/dev/null 2>"$WORK/depthpar.err"
   _depth_seq "$DEPTH_PAR" > "$WORK/depthseq.par"
-  if cmp -s "$WORK/depthseq.1" "$WORK/depthseq.par"; then
+  if [ ! -s "$WORK/depthseq.par" ]; then
+    bad "15b) depth cell sequence extraction (--jobs 3) produced no rows -- the comparison below would be vacuous"
+  elif cmp -s "$WORK/depthseq.1" "$WORK/depthseq.par"; then
     ok "15b) the --jobs 3 depth set equals the serial one (derived from the manifest-ordered accumulator)"
   else
     bad "15b) the --jobs 3 depth set diverged from serial:"
