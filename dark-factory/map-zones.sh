@@ -177,7 +177,14 @@ def fn_names(f):
     try:
         with open(os.path.join(repo, f), encoding="utf-8", errors="ignore") as fh:
             for line in fh:
-                m = re.search(r"\bfunction\s+([A-Za-z0-9_]+)", line)
+                # #1834: anchored on a line that (after only leading whitespace) STARTS with the `function` keyword
+                # immediately followed by `(` -- a real declaration, not the English word "function" appearing anywhere
+                # in NatSpec prose or a `//` comment describing one (the old `\bfunction\s+NAME` scraped the WORD
+                # FOLLOWING "function" off those as a phantom name, e.g. "This function is called..." -> "is"). NOTE:
+                # this is a per-LINE scraper with no comment-state tracking, so a declaration living inside a
+                # `/* ... */` block comment still matches -- an accepted, documented residual (see
+                # fixtures/zone-map/contracts/registry/Registry.sol), not something this fix claims to close.
+                m = re.search(r"^\s*function\s+([A-Za-z0-9_]+)\s*\(", line)
                 if m and m.group(1) not in names:
                     names.append(m.group(1))
     except Exception:

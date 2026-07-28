@@ -71,6 +71,11 @@ trap 'rm -rf "$WORK"' EXIT
 REPO="$WORK/target"
 mkdir -p "$REPO"
 cp -R "$FIXTURE_DIR/contracts" "$REPO/contracts"
+# #1834: contracts/registry/ is a map-zones.sh fn_names()-regression fixture for demo-map-zones.sh only,
+# isolated in its own zone so it never interacts with THIS capstone's #1826/#1830 zone-count/order pins
+# (this script's zones.fixture.txt classifications now include it too, since both demos share the fixture
+# tree). Drop it here rather than touch every hardcoded zone-count/order assertion below.
+rm -rf "$REPO/contracts/registry"
 mkdir -p "$REPO/OOSCOPE" "$REPO/EXPLODE"
 printf 'contract Thing { function foo() public {} }\n' > "$REPO/OOSCOPE/Thing.sol"
 printf 'contract Boom { function bang() public {} }\n'  > "$REPO/EXPLODE/Boom.sol"
@@ -703,6 +708,9 @@ note 'k) #1830 a zone that ran ZERO cells is unscoped (a gap), never a negative 
 REPO_K="$WORK/target-unscoped"
 mkdir -p "$REPO_K"
 cp -R "$FIXTURE_DIR/contracts" "$REPO_K/contracts"
+# #1834: see the (a) REPO setup above -- drop the isolated fn_names()-regression fixture so it doesn't
+# perturb this block's hardcoded 6-zone count.
+rm -rf "$REPO_K/contracts/registry"
 mkdir -p "$REPO_K/contracts/rewards" "$REPO_K/contracts/accrual"
 printf 'contract Rewards { function claim() public {} function accrue() public {} }\n' > "$REPO_K/contracts/rewards/Rewards.sol"
 printf 'contract Accrual { function tick() public {} }\n' > "$REPO_K/contracts/accrual/Accrual.sol"
