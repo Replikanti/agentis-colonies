@@ -106,6 +106,17 @@
 #                       zone is min(zone budget, run budget - spent). The FIRST denial STOPS the loop and every
 #                       remaining zone is recorded `budget_exhausted` — never best-effort packing, which would
 #                       silently invert the #1826 value-custody-first order.
+#   --zone-depth-cells <N>  #1827: max WITHIN-CONTRACT DEPTH cells per zone, forwarded to run-discovery.sh as
+#                       --depth-max-cells. 0 (default) = OFF, and the run-discovery.sh invocation gains NO
+#                       argument (byte-identical to before). A depth cell re-reads ONE function a breadth
+#                       candidate already flagged, under a different lens, with the known lead excluded — it
+#                       is an EXTRA cell drawn from the SAME pool as breadth cells, never a hidden second
+#                       prompt inside one. Depth cells are not enumerable by --list-cells (they depend on the
+#                       breadth RESULTS), so the CAP is charged up front — the conservative choice, matching
+#                       the existing "an unmeasurable zone is charged the whole remaining budget" precedent.
+#                       INTERACTION WITH THE CELL BUDGET: under --zone-cell-budget / --run-cell-budget the
+#                       depth allowance is TRIMMED TO 0 BEFORE a single breadth class is dropped — breadth
+#                       coverage is the #1824/#1825/#1826 investment and is never traded for depth.
 #   --require-coverage <pct>  #1830: after STAGE 3, exit 4 BEFORE STAGE 4/5 when the covered fraction is below
 #                       <pct> (0-100). Default empty = OFF. A degraded run must not be able to publish a
 #                       plausible-looking result; the coverage record is already on disk when it aborts.
@@ -147,6 +158,8 @@ DEEP_HUNT_ONLY=0  # #1774: apply ONLY the STAGE 4.5 lens over an existing breadt
 # #1830: per-zone hunt budget + targeted re-hunt. Every knob here defaults OFF/inert — with them off STAGE 3's
 # run-discovery.sh invocation gains no argument. The COVERAGE RECORD itself is NOT gated on any of them.
 ZONE_CELL_BUDGET=0 ; RUN_CELL_BUDGET=0 ; REQUIRE_COVERAGE=""
+# #1827: per-zone within-contract depth allowance. 0 (default) = OFF; the STAGE 3 invocation gains no argument.
+ZONE_DEPTH_CELLS=0
 REHUNT_GAPS=0 ; REHUNT_INCLUDE_PARTIAL=0 ; REHUNT_MAX_ATTEMPTS=2
 # #1731: cross-run ensemble/union flags — a THIN pass-through: collected verbatim into DEEP_FWD and appended to
 # both --deep-hunt run-invariant-hunt.sh invocations. Empty (the default) => the arg lists are byte-identical.
@@ -185,6 +198,7 @@ while [ $# -gt 0 ]; do
     --ensemble-candidates) nv "$#"; DEEP_FWD+=(--ensemble-candidates "$2"); shift 2 ;;
     --zone-cell-budget) nv "$#"; ZONE_CELL_BUDGET="$2"; shift 2 ;;
     --run-cell-budget)  nv "$#"; RUN_CELL_BUDGET="$2"; shift 2 ;;
+    --zone-depth-cells) nv "$#"; ZONE_DEPTH_CELLS="$2"; shift 2 ;;
     --require-coverage) nv "$#"; REQUIRE_COVERAGE="$2"; shift 2 ;;
     --rehunt-gaps)      REHUNT_GAPS=1; shift ;;
     --rehunt-include-partial) REHUNT_INCLUDE_PARTIAL=1; shift ;;
@@ -213,6 +227,8 @@ case "$DEEP_HUNT_REPAIR_ROUNDS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-h
 # #1830: the budget/re-hunt knobs use the same integer validation + exit-2 shape as every flag above.
 case "$ZONE_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-cell-budget must be a non-negative integer (got '$ZONE_CELL_BUDGET')" >&2; exit 2 ;; esac
 case "$RUN_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --run-cell-budget must be a non-negative integer (got '$RUN_CELL_BUDGET')" >&2; exit 2 ;; esac
+# #1827: the depth allowance is a cell count, validated in the same block/shape as the budgets above.
+case "$ZONE_DEPTH_CELLS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-depth-cells must be a non-negative integer (got '$ZONE_DEPTH_CELLS')" >&2; exit 2 ;; esac
 case "$REHUNT_MAX_ATTEMPTS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --rehunt-max-attempts must be a positive integer (got '$REHUNT_MAX_ATTEMPTS')" >&2; exit 2 ;; esac
 [ "$REHUNT_MAX_ATTEMPTS" -ge 1 ] || { echo "run-zone-hunt.sh: --rehunt-max-attempts must be >= 1 (got '$REHUNT_MAX_ATTEMPTS')" >&2; exit 2; }
 if [ -n "$REQUIRE_COVERAGE" ]; then
@@ -410,6 +426,21 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
     BUDGET_STOP=1
     continue
   fi
+  # #1827 DEPTH ALLOWANCE — computed BEFORE the class-truncation path below, and deliberately shaped so that
+  # depth is what gives way first: whatever headroom the cap leaves ABOVE this zone's planned breadth cells,
+  # capped by --zone-depth-cells. If the cap is at or below the planned breadth count the headroom is 0, so
+  # depth is trimmed to 0 and the (unchanged) breadth truncation path runs exactly as before. Breadth coverage
+  # is the #1824/#1825/#1826 investment and is never traded for depth. An UNMEASURABLE zone (probe failed)
+  # gets no depth either — an unknown cost may not be topped up with a second unknown one.
+  ZDEPTH_EFF=0
+  if [ "$ZONE_DEPTH_CELLS" -gt 0 ] && [ -n "$CELLS_PLANNED" ]; then
+    ZDEPTH_EFF="$ZONE_DEPTH_CELLS"
+    if [ -n "$ZCAP" ]; then
+      ZHEAD=$((ZCAP - CELLS_PLANNED))
+      if [ "$ZHEAD" -lt 0 ]; then ZHEAD=0; fi
+      if [ "$ZHEAD" -lt "$ZDEPTH_EFF" ]; then ZDEPTH_EFF="$ZHEAD"; fi
+    fi
+  fi
   ZCHARGE="${CELLS_PLANNED:-0}" ; ZCLASSES_ARG="" ; ZTRUNC="" ; ZDETAIL=""
   if [ -z "$CELLS_PLANNED" ]; then
     ZDETAIL="--list-cells probe failed; planned cell count unknown"
@@ -469,6 +500,18 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
       continue
     fi
   fi
+  # #1827: depth cells are ADDITIONAL cells drawn from the SAME pool, so they are charged here — never
+  # invisible. `--cells-planned` keeps its meaning ("what --list-cells measured", i.e. breadth), while
+  # `cells_charged` becomes breadth + depth and the detail names the split.
+  # Empty unless depth is genuinely admitted, so a depth-off zone's run-discovery.sh argv is byte-identical.
+  ZDEPTH_ARG=""
+  if [ "$ZDEPTH_EFF" -gt 0 ]; then
+    ZDEPTH_ARG="$ZDEPTH_EFF"
+    ZCHARGE=$((ZCHARGE + ZDEPTH_EFF))
+    ZDETAIL="${ZDETAIL:+$ZDETAIL; }charged ${CELLS_PLANNED:-0} breadth + $ZDEPTH_EFF depth cell(s) (#1827 within-contract depth pass)"
+  elif [ "$ZONE_DEPTH_CELLS" -gt 0 ]; then
+    ZDETAIL="${ZDETAIL:+$ZDETAIL; }depth pass trimmed to 0 cell(s) — the cell budget leaves no headroom above breadth (#1827)"
+  fi
   if [ "$ZACTION" = "retry" ]; then
     # failed / in_flight (and an --rehunt-include-partial partial) carry PRIOR ARTIFACTS that run-discovery.sh
     # destroys on re-entry (`rm -rf $RUN`, `> $REPORT`). Move them aside FIRST, then push the prior terminal
@@ -501,6 +544,7 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
   "$DISCOVERY" --repo "$REPO" --scope "$MAP/scope.tsv" --only "$ZNAME" --brief "$ZBRIEF" \
     --jobs "$JOBS" --backend "$BACKEND" --agentis "$AGENTIS" --out "$DISC/$ZID" \
     ${ZCLASSES_ARG:+--classes "$ZCLASSES_ARG"} \
+    ${ZDEPTH_ARG:+--depth-max-cells "$ZDEPTH_ARG"} \
     || ZRC=$?
   if [ "$ZRC" -eq 0 ]; then
     # The terminal status (hunted / hunted_empty / hunted_degraded) is DERIVED in the helper from this zone's

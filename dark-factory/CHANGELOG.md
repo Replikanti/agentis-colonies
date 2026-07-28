@@ -15,6 +15,39 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **WITHIN-CONTRACT DEPTH PASS for the discovery hunter — opt-in, default OFF** (#1827).
+  The hunter surfaced roughly **one** bug per `(function × class)` and missed co-located ones even when it
+  hunted the right contract: on `Strategy.checkPoolActivity` it found the narrow-int/DoS bug and missed the
+  two oracle-check bugs in the same function; on a whole target it named the right contracts and none of the
+  five ground-truth findings. `hunter.ag` already asks for "EVERY qualifying bug" and breadth still yields
+  ≤ 1 candidate per cell across the corpus, so the binding constraint is **attention over a whole-zone
+  payload**, not the output contract. New `run-discovery.sh --depth-max-cells <N>` (default `0` = OFF) adds,
+  AFTER every breadth cell has run, one EXTRA cell per (already-flagged function × alternative lens): the
+  payload is narrowed to that single `file@fn` through the existing `slice-fns.sh` slicer, and the lead(s)
+  the function already produced are injected VERBATIM as an exclusion, so the model must find a
+  mechanistically DIFFERENT bug or answer `SAFE`. Lens order per location is the zone's OTHER classes first
+  and the producing one last (at both diagnosing sites the co-located miss lives under a different taxonomy
+  class); locations are ranked High-before-Medium, then by candidate count, then by first appearance, and the
+  cap is spent ROUND-ROBIN so it cannot burn entirely on the first flagged function. The exhaustive
+  per-(function × class) multi-pass alternative was rejected: one real zone alone declares ~180 sliced
+  functions × 6 classes, and its "multi-pass inside one cell" variant would make a cell arbitrarily more
+  expensive INVISIBLY to the #1830 budget. A depth cell is therefore a **real, counted, charged cell** —
+  present in `cells[]` as `"phase":"depth"`, summed into `totals.cells`, reported in `totals.depth_cells` —
+  never a hidden second prompt. `run-zone-hunt.sh --zone-depth-cells <N>` (default `0` = OFF) forwards it per
+  zone with the effective allowance `min(N, max(0, cap − planned breadth cells))`, so under
+  `--zone-cell-budget`/`--run-cell-budget` **depth is trimmed to 0 BEFORE a single breadth class is dropped**;
+  `cells_charged` becomes breadth + depth (the cap is charged up front, since depth cells are not enumerable
+  by `--list-cells`) and the coverage `detail` names the split. No new coverage status. `DEPTH_KNOWN` is
+  consumed as ONE opaque string — never split — so the added CB cost is flat: a bisected **44 CB at 1, 8, 64
+  and 256 known leads**, swept under a `cb 2000;` probe (the enforced `cb_per_tick` ceiling) against
+  `depth_block()` extracted from `hunter.ag` by line range. With the flag off the whole path is inert: the
+  `run-discovery.sh` argv, `discovery-report.md` (pinned byte-for-byte against the golden) and
+  `discovery-results.json` keys are all unchanged. `demo-discovery-parallel.sh` (11)–(17) and
+  `demo-run-zone-hunt.sh` (p)–(s) pin inertness, env wiring incl. the `exec.env_passthrough` registration,
+  the ranked round-robin, zero cost with no lead, determinism + serial/parallel identity, the new
+  `DEPTH-CELL|` record boundary, budget interaction and the CB sweep — all offline, all mutation-tested.
+  **The defaults stay OFF** until the held-out single-variable A/B declared in
+  `docs/zone-split-orchestration.md` passes its five criteria (P1–P5).
 - **ZONE-COVERAGE RECORD + per-zone cell budget + targeted re-hunt for `run-zone-hunt.sh`** (#1830).
   A truncated zone-hunt used to be **indistinguishable from a clean sweep**: STAGE 3 logged a failing zone and
   continued, the merge glob skipped a zone dir with no `discovery-results.json` exactly like a zone that never

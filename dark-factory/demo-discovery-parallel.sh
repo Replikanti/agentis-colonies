@@ -22,6 +22,25 @@
 #      prose split across several continuation lines with no CANDIDATE|/BLACKBOARD- prefix — is reconstructed
 #      WHOLE by `_join_wrapped_candidates()`: the full exploit sentence and poc_sketch survive intact, and the
 #      wrap does not split into two bogus candidates.
+#   11-17) #1827 WITHIN-CONTRACT DEPTH PASS (`--depth-max-cells`, default 0 = OFF):
+#      11) INERTNESS: with the flag absent the report is byte-identical to the golden (assertion 1) AND
+#          discovery-results.json carries no `phase` and no `totals.depth_cells` key at all.
+#      12) WIRING: with the flag on, the stub proves it received DEPTH_TARGET, DEPTH_KNOWN (the verbatim
+#          breadth lead) and an IN_SCOPE narrowed to the `file@fn` form — this is what pins the
+#          `exec.env_passthrough` registration, without which getenv() silently returns "".
+#      13) ACCOUNTING + ORDER: exactly min(cap, planned pairs) depth cells, each `"phase":"depth"`,
+#          totals.cells = breadth + depth, totals.depth_cells = depth; the order is the ranked round-robin
+#          (High location first, other-class lens before the producing one, one class per location per pass).
+#      14) NO-LEAD ZERO COST: a zone whose breadth cells all answer SAFE emits ZERO depth cells even at cap 12.
+#      15) DETERMINISM: two identical runs produce the same depth cell sequence, and the `--jobs 3` depth set
+#          equals the serial one (both derive it from the manifest-ordered accumulator, not the blackboard).
+#      16) WRAP SAFETY: a `DEPTH-CELL|` line following a wrapped CANDIDATE record is a record BOUNDARY — it is
+#          never glued onto the open record as prose and never scraped as a finding.
+#      17) CB SWEEP (needs the agentis binary; clean [SKIP] otherwise): `depth_block()`, EXTRACTED FROM
+#          hunter.ag BY LINE RANGE (never copy-pasted, which would drift), completes under a `cb 2000;` probe
+#          — the ENFORCED cb_per_tick ceiling — at 1 / 8 / 64 / 256 known leads. The swept dimension is the
+#          KNOWN-LEAD COUNT, not the obvious prompt length: a per-element walk over that list would overflow
+#          long before 256 and print nothing.
 #
 # The parallel-only assertions [SKIP] cleanly when the bash that runs run-discovery.sh lacks `wait -n`
 # (needs bash >= 4.3) — run-discovery.sh then degrades to serial, which the demo does not misreport.
@@ -115,9 +134,45 @@ case "$cmd" in
         exit 0
       fi
     fi
+    # #1827: record THIS cell's depth-relevant env so the demo can prove run-discovery.sh really handed
+    # DEPTH_TARGET / DEPTH_KNOWN / a narrowed IN_SCOPE through (i.e. that they are on exec.env_passthrough).
+    if [ -n "${STUB_ENVLOG:-}" ]; then
+      printf '%s|%s|%s|%s|%s\n' "${SUBSYSTEM:-}" "${HUNT_CLASS:-}" \
+        "$(printf '%s' "${IN_SCOPE:-}" | tr '\n' ' ')" "${DEPTH_TARGET:-}" \
+        "$(printf '%s' "${DEPTH_KNOWN:-}" | tr '\n' ' ')" >> "$STUB_ENVLOG"
+    fi
+    # #1827: a DEPTH cell. Mirror hunter.ag's own DEPTH-CELL| diagnostic line, then answer. STUB_DEPTH_WRAP
+    # emits a PTY-wrapped CANDIDATE record whose continuation lines are FOLLOWED by that diagnostic line —
+    # the shape that would glue "DEPTH-CELL|..." onto the open record as prose without the #1827 boundary.
+    if [ -n "${DEPTH_TARGET:-}" ]; then
+      if [ "${STUB_DEPTH_WRAP:-}" = "1" ]; then
+        printf 'CANDIDATE|contracts/vault/Vault.sol:deposit:10|%s|Medium|a depth lead whose exploit prose\n' "${HUNT_CLASS:-}"
+        printf 'wraps across several physical lines before the run ends|1. deploy Reentrant; 2. call\n'
+        printf 'deposit() twice in one tx; 3. assert vm.assertEq(shares, 0, "double-counted");\n'
+        printf 'DEPTH-CELL|%s|%s|%s\n' "${SUBSYSTEM:-}" "${HUNT_CLASS:-}" "${DEPTH_TARGET:-}"
+        exit 0
+      fi
+      printf 'DEPTH-CELL|%s|%s|%s\n' "${SUBSYSTEM:-}" "${HUNT_CLASS:-}" "${DEPTH_TARGET:-}"
+      printf 'SAFE\n'
+      exit 0
+    fi
     # #1707: optional bare-SAFE reply — the legit "rigorous clean" sentinel; must PASS on attempt 1.
     if [ "${STUB_SAFE:-}" = "1" ]; then
       printf 'SAFE\n'
+      exit 0
+    fi
+    # #1827: realistic breadth leads for the depth fixture — TWO distinct functions of the SAME file, flagged
+    # by DIFFERENT classes and at different severities. The HIGH one is deliberately surfaced by the SECOND
+    # cell (C6) and the MEDIUM one by the FIRST (C1), so severity ranking is NOT confounded with first
+    # appearance: dropping the severity criterion flips the expected depth order and fails assertion 13.
+    if [ "${STUB_DEPTH:-}" = "1" ]; then
+      case "${SUBSYSTEM:-}|${HUNT_CLASS:-}" in
+        "vault deposits|C1")
+          printf 'CANDIDATE|contracts/vault/Vault.sol:withdraw:20|C1|Medium|depth-fixture medium lead|stub sketch\n' ;;
+        "vault deposits|C6")
+          printf 'CANDIDATE|contracts/vault/Vault.sol:deposit:10|C6|High|depth-fixture high lead|stub sketch\n' ;;
+        *) printf 'SAFE\n' ;;
+      esac
       exit 0
     fi
     if [ "${STUB_WRAP:-}" = "1" ] && [ "${HUNT_CLASS:-}" = "C1" ]; then
@@ -168,6 +223,18 @@ else
 fi
 [ -f "$SER_OUT/discovery-results.json" ] && ok "emitted the additive discovery-results.json alongside the report" \
   || bad "discovery-results.json was not emitted on the serial path"
+# (11) #1827 INERTNESS: with no --depth-max-cells the JSON must not grow a depth key ANYWHERE. The byte-identity
+# of the report itself is already pinned by the golden comparison above.
+if python3 - "$SER_OUT/discovery-results.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert "depth_cells" not in d["totals"], "totals grew depth_cells with the depth pass OFF: %r" % d["totals"]
+for c in d["cells"]:
+    assert "phase" not in c, "a breadth cell carries a phase key with the depth pass OFF: %r" % c
+PY
+then ok "11) depth OFF is inert: no totals.depth_cells, no per-cell phase key (report byte-identity above)"
+else bad "11) the depth-off JSON grew a depth key"
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 # (2)+(3)+(4) PARALLEL: --jobs 3 concurrency + cap + aggregation == serial + isolation.
@@ -454,6 +521,262 @@ if grep -q 'no valid hunter sentinel after 2 attempts' "$WORK/chrome-fail.err"; 
   ok "the loud FAILED line was logged to stderr (not a silent 0)"
 else
   bad "no loud FAILED line logged for the all-chrome cells"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (12)+(13) #1827: the depth pass is WIRED (the hunter really receives DEPTH_TARGET/DEPTH_KNOWN/narrowed
+#     IN_SCOPE) and ACCOUNTED (cells counted, phase-tagged, totals.depth_cells honest, ranked round-robin).
+#
+#     The fixture's breadth leads are two DIFFERENT functions of the SAME file, flagged by DIFFERENT classes,
+#     with the HIGH one deliberately surfaced by the SECOND cell so severity is not confounded with order:
+#       cell 1  C1 -> Vault.sol:withdraw (Medium)  -> class order [C6, C1]  (other lens first, producer last)
+#       cell 2  C6 -> Vault.sol:deposit  (High)    -> class order [C1, C6]
+#     Ranked High-before-Medium, spread round-robin one class per location per pass, the full plan is
+#       1. deposit/C1   2. withdraw/C6   3. deposit/C6   4. withdraw/C1
+#     so `--depth-max-cells 3` must take exactly the first three. Each of the three ranking/ordering rules is
+#     mutation-pinned by that sequence: dropping the severity criterion promotes `withdraw` (it appeared
+#     first); putting the producing lens first flips every pair; iterating locations before passes would
+#     spend the whole cap on `deposit` and never re-read `withdraw`.
+# ----------------------------------------------------------------------------------------------------------
+note "12) #1827: with --depth-max-cells the hunter receives DEPTH_TARGET / DEPTH_KNOWN / a narrowed IN_SCOPE ..."
+DEPTH_OUT="$WORK/out-depth3"
+ENVLOG="$WORK/envlog-depth3"; : > "$ENVLOG"
+STUB_DEPTH=1 STUB_ENVLOG="$ENVLOG" \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$DEPTH_OUT" --jobs 1 --depth-max-cells 3 >/dev/null 2>"$WORK/depth3.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "run-discovery.sh --depth-max-cells 3 exits 0" \
+  || { bad "the depth run exited $RC"; sed 's/^/      /' "$WORK/depth3.err" >&2; }
+if python3 - "$ENVLOG" <<'PY'
+import sys
+# maxsplit=4: the 5th field is DEPTH_KNOWN, which is itself a pipe-delimited candidate record.
+rows = [l.split("|", 4) for l in open(sys.argv[1], encoding="utf-8").read().splitlines() if l.strip()]
+breadth = [r for r in rows if not r[3]]
+depth = [r for r in rows if r[3]]
+assert len(breadth) == 4, "expected 4 breadth invocations, got %d" % len(breadth)
+assert len(depth) == 3, "expected 3 depth invocations, got %d" % len(depth)
+for r in breadth:
+    assert r[4] == "", "a breadth cell received a non-empty DEPTH_KNOWN: %r" % r
+for r in depth:
+    # DEPTH_TARGET is the file@fn form and IN_SCOPE is narrowed to exactly it (the slicer's contract).
+    assert "@" in r[3], "DEPTH_TARGET is not a file@fn: %r" % r[3]
+    assert r[2].strip() == r[3], "IN_SCOPE %r was not narrowed to the depth target %r" % (r[2], r[3])
+    # DEPTH_KNOWN quotes the breadth lead VERBATIM (this is the exclusion the model must not re-report).
+    assert "Vault.sol:" in r[4] and "depth-fixture" in r[4], "DEPTH_KNOWN is not the verbatim lead: %r" % r[4]
+    fn = r[3].split("@")[1]
+    assert (":%s:" % fn) in r[4], "DEPTH_KNOWN %r is not the lead for the target %r" % (r[4], r[3])
+PY
+then ok "12) every depth cell got DEPTH_TARGET=<file@fn>, IN_SCOPE narrowed to it, and the VERBATIM breadth lead as DEPTH_KNOWN"
+else bad "12) the depth env wiring assertion failed"
+fi
+# The stub is not the real runtime, so it sees the RAW env — passing the vars to it does NOT prove the .ag
+# runtime would see them. getenv() reads the SANITIZED env: only exec.env_passthrough-allowlisted names reach
+# it, and an unregistered knob is SILENTLY inert (#1426/#1428). So pin the written config directly.
+DEPTH_CFG="$DEPTH_OUT/run/.agentis/config"
+if [ -f "$DEPTH_CFG" ] \
+   && grep '^exec.env_passthrough' "$DEPTH_CFG" | grep -q 'DEPTH_TARGET' \
+   && grep '^exec.env_passthrough' "$DEPTH_CFG" | grep -q 'DEPTH_KNOWN'; then
+  ok "12b) DEPTH_TARGET + DEPTH_KNOWN are on the written exec.env_passthrough allowlist (else getenv() is silently inert)"
+else
+  bad "12b) DEPTH_TARGET/DEPTH_KNOWN missing from exec.env_passthrough in $DEPTH_CFG — the depth pass would be inert at runtime"
+fi
+
+note "13) #1827: depth cells are counted, phase-tagged and ordered by the ranked round-robin ..."
+if python3 - "$DEPTH_OUT/discovery-results.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+depth = [c for c in d["cells"] if c.get("phase") == "depth"]
+breadth = [c for c in d["cells"] if c.get("phase") != "depth"]
+assert len(breadth) == 4, "expected 4 breadth cells, got %d" % len(breadth)
+assert len(depth) == 3, "expected min(cap=3, 4 planned pairs) = 3 depth cells, got %d" % len(depth)
+assert d["totals"]["cells"] == 7, "totals.cells must be breadth+depth = 7, got %r" % d["totals"]["cells"]
+assert d["totals"]["depth_cells"] == 3, "totals.depth_cells wrong: %r" % d["totals"]["depth_cells"]
+for c in breadth:
+    assert "phase" not in c, "a breadth cell was phase-tagged: %r" % c
+seq = [(c["class"], c["files"]) for c in depth]
+assert seq == [("C1", "contracts/vault/Vault.sol@deposit"),
+               ("C6", "contracts/vault/Vault.sol@withdraw"),
+               ("C6", "contracts/vault/Vault.sol@deposit")], \
+    "the depth order is not the ranked round-robin: %r" % seq
+# The depth cell's `files` differs from the breadth cell's, so run-zone-hunt.sh's (subsystem, class, files)
+# merge key cannot collapse a depth cell into the breadth cell of the same class.
+bkeys = set((c["subsystem"], c["class"], c["files"]) for c in breadth)
+for c in depth:
+    assert (c["subsystem"], c["class"], c["files"]) not in bkeys, "a depth cell collides with a breadth cell key"
+PY
+then ok "13) 3 depth cells, each phase=depth, totals.cells = 4+3 and totals.depth_cells = 3; order = [deposit/C1, withdraw/C6, deposit/C6]"
+else bad "13) the depth accounting / ordering assertion failed"
+fi
+if [ "$(grep -c '^| ' "$DEPTH_OUT/discovery-report.md" 2>/dev/null || printf '0')" -ge 1 ] \
+   && ! grep -q 'DEPTH-CELL' "$DEPTH_OUT/discovery-report.md"; then
+  ok "13b) the report carries no DEPTH-CELL| diagnostic text (it is a boundary token, never a finding)"
+else
+  bad "13b) a DEPTH-CELL| diagnostic leaked into discovery-report.md"
+fi
+# The cap really binds: at a cap ABOVE the planned pair count the plan is exhausted, never padded.
+DEPTH_OUT12="$WORK/out-depth12"
+STUB_DEPTH=1 \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$DEPTH_OUT12" --jobs 1 --depth-max-cells 12 >/dev/null 2>"$WORK/depth12.err"
+if python3 - "$DEPTH_OUT12/discovery-results.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["totals"]["depth_cells"] == 4, "expected all 4 planned pairs at cap 12, got %r" % d["totals"]["depth_cells"]
+assert d["totals"]["cells"] == 8, "totals.cells wrong at cap 12: %r" % d["totals"]["cells"]
+PY
+then ok "13c) at cap 12 the plan is EXHAUSTED at its 4 (location x lens) pairs — min(cap, planned), never padded"
+else bad "13c) the depth plan was padded or truncated wrongly at cap 12"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (14) #1827 NO-LEAD ZERO COST: depth is DIRECTED — a zone whose breadth cells produced no lead pays nothing.
+# ----------------------------------------------------------------------------------------------------------
+note "14) #1827: an all-SAFE breadth pass emits ZERO depth cells even at cap 12 ..."
+NOLEAD_OUT="$WORK/out-depth-nolead"
+STUB_SAFE=1 \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$NOLEAD_OUT" --jobs 1 --depth-max-cells 12 >/dev/null 2>"$WORK/nolead.err"
+if python3 - "$NOLEAD_OUT/discovery-results.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d["totals"]["depth_cells"] == 0, "an all-SAFE run spent %r depth cell(s)" % d["totals"]["depth_cells"]
+assert d["totals"]["cells"] == 4, "an all-SAFE run ran %r cells, expected the 4 breadth ones" % d["totals"]["cells"]
+assert not [c for c in d["cells"] if c.get("phase") == "depth"], "an all-SAFE run produced a depth cell"
+PY
+then ok "14) no breadth lead => 0 depth cells and totals.cells stays at the 4 breadth cells (depth is directed)"
+else bad "14) an all-SAFE breadth pass still spent depth cells"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (15) #1827 DETERMINISM: the depth set is derived from the manifest-ordered accumulator, so it is stable
+#      across runs AND identical under --jobs > 1 (where every breadth cell's blackboard is empty — a
+#      memo-derived target list would diverge here, which is exactly why it is not memo-derived).
+# ----------------------------------------------------------------------------------------------------------
+note "15) #1827: the depth cell set is deterministic and --jobs 3 == serial ..."
+DEPTH_OUT_B="$WORK/out-depth3b"
+STUB_DEPTH=1 \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$DEPTH_OUT_B" --jobs 1 --depth-max-cells 3 >/dev/null 2>"$WORK/depth3b.err"
+_depth_seq() {
+  python3 - "$1" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+for c in d["cells"]:
+    if c.get("phase") == "depth":
+        print("%s|%s|%s" % (c["subsystem"], c["class"], c["files"]))
+PY
+}
+_depth_seq "$DEPTH_OUT" > "$WORK/depthseq.1"
+_depth_seq "$DEPTH_OUT_B" > "$WORK/depthseq.2"
+if cmp -s "$WORK/depthseq.1" "$WORK/depthseq.2"; then
+  ok "15) two identical serial runs produce the same depth cell sequence"
+else
+  bad "15) the depth cell sequence is not deterministic:"
+  diff "$WORK/depthseq.1" "$WORK/depthseq.2" | sed 's/^/      /' >&2
+fi
+if [ "$PAR_OK" -ne 1 ]; then
+  skip "15b) --jobs 3 depth set: the bash running run-discovery.sh lacks 'wait -n'"
+else
+  DEPTH_PAR="$WORK/out-depth-par"
+  STUB_DEPTH=1 STUB_SLEEP=0 \
+    "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+    --out "$DEPTH_PAR" --jobs 3 --depth-max-cells 3 >/dev/null 2>"$WORK/depthpar.err"
+  _depth_seq "$DEPTH_PAR" > "$WORK/depthseq.par"
+  if cmp -s "$WORK/depthseq.1" "$WORK/depthseq.par"; then
+    ok "15b) the --jobs 3 depth set equals the serial one (derived from the manifest-ordered accumulator)"
+  else
+    bad "15b) the --jobs 3 depth set diverged from serial:"
+    diff "$WORK/depthseq.1" "$WORK/depthseq.par" | sed 's/^/      /' >&2
+  fi
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (16) #1827 WRAP SAFETY: `_join_wrapped_candidates` closes a record on `CANDIDATE|`, `BLACKBOARD-*`, a blank
+#      line — and now on `DEPTH-CELL|`. Without that boundary the diagnostic line is appended to the open
+#      record as a continuation, corrupting the poc_sketch field with `DEPTH-CELL|<subsystem>|<class>|...`
+#      and adding phantom pipe-delimited fields.
+# ----------------------------------------------------------------------------------------------------------
+note "16) #1827: a DEPTH-CELL| line after a wrapped CANDIDATE is a boundary, not a continuation ..."
+DWRAP_OUT="$WORK/out-depth-wrap"
+STUB_DEPTH=1 STUB_DEPTH_WRAP=1 \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$DWRAP_OUT" --jobs 1 --depth-max-cells 1 >/dev/null 2>"$WORK/depthwrap.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "run-discovery.sh --depth-max-cells 1 with a wrapped depth reply exits 0" \
+  || { bad "the wrapped depth run exited $RC"; sed 's/^/      /' "$WORK/depthwrap.err" >&2; }
+if grep -q 'DEPTH-CELL' "$DWRAP_OUT/discovery-report.md"; then
+  bad "16) the DEPTH-CELL| diagnostic was glued onto the wrapped CANDIDATE record and reached the report"
+else
+  ok "16) no DEPTH-CELL| text in the report — the diagnostic closed the record instead of continuing it"
+fi
+if python3 - "$DWRAP_OUT/discovery-results.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+depth = [c for c in d["cells"] if c.get("phase") == "depth"]
+assert len(depth) == 1, "expected exactly 1 depth cell, got %d" % len(depth)
+cands = depth[0]["candidates"]
+assert len(cands) == 1, "the wrap + diagnostic split into %d candidate(s)" % len(cands)
+body = cands[0]
+assert "DEPTH-CELL" not in body, "the diagnostic line was appended to the candidate: %r" % body
+assert body.count("|") == 4, "expected 5 pipe-delimited fields, got %d: %r" % (body.count("|") + 1, body)
+assert 'vm.assertEq(shares, 0, "double-counted");' in body, "the wrapped poc_sketch tail was lost: %r" % body
+PY
+then ok "16b) the depth candidate is ONE fully-joined 5-field record; the diagnostic is neither appended nor scraped"
+else bad "16b) the wrapped depth candidate is malformed (glued diagnostic / phantom fields / lost tail)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (17) #1827 ARG GUARD + CB SWEEP.
+# ----------------------------------------------------------------------------------------------------------
+note "17) #1827: --depth-max-cells validation + the depth_block() CB sweep ..."
+"$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$WORK/out-badval" --depth-max-cells notanumber >/dev/null 2>"$WORK/badval.err"
+BADRC=$?
+if [ "$BADRC" -eq 2 ] && grep -q 'must be a non-negative integer' "$WORK/badval.err"; then
+  ok "17a) --depth-max-cells notanumber fails fast with exit 2 + the usage error"
+else
+  bad "17a) --depth-max-cells notanumber did not fail fast (exit $BADRC)"
+fi
+
+# The CB sweep runs the SHIPPED depth_block(), EXTRACTED FROM hunter.ag BY LINE RANGE — a copy-pasted twin
+# would silently drift from the agent it claims to measure. `cb 2000;` is the ENFORCED per-tick ceiling
+# (cb_per_tick's default), not the declarative `cb 300000;` header the one-shot `agentis go` path uses; the
+# swept dimension is the KNOWN-LEAD COUNT, because a per-element walk over DEPTH_KNOWN is the failure mode
+# this design refuses (it would overflow well before 256 leads and print nothing).
+HUNTER_AG="$HERE/auditor/agents/hunter.ag"
+if ! command -v agentis >/dev/null 2>&1; then
+  skip "17b) depth_block() CB sweep — no agentis binary on PATH"
+elif [ ! -f "$HUNTER_AG" ]; then
+  bad "17b) hunter.ag not found at $HUNTER_AG"
+else
+  DB_FRAG="$WORK/depth_block.frag"
+  awk '/^fn depth_block\(/{f=1} f{print} f&&/^}$/{exit}' "$HUNTER_AG" > "$DB_FRAG"
+  if ! grep -q '^fn depth_block(' "$DB_FRAG"; then
+    bad "17b) could not extract depth_block() from hunter.ag by line range (was it renamed?)"
+  else
+    CB_OK=1
+    for N in 1 8 64 256; do
+      KNOWN=""; i=0
+      while [ "$i" -lt "$N" ]; do
+        KNOWN="${KNOWN}- contracts/vault/Vault.sol:deposit:10|C1|High|known lead $i|sketch $i\\n"
+        i=$((i + 1))
+      done
+      SANDBOX="$WORK/cb-$N"; rm -rf "$SANDBOX"; mkdir -p "$SANDBOX"
+      ( cd "$SANDBOX" && agentis init >/dev/null 2>&1 ) || true
+      {
+        printf 'cb 2000;\n\n'
+        cat "$DB_FRAG"
+        printf '\n\nprint("DEPTHLEN=" + to_string(len(depth_block("contracts/vault/Vault.sol@deposit", "%s"))));\n' "$KNOWN"
+      } > "$SANDBOX/probe.ag"
+      CB_OUT="$( cd "$SANDBOX" && agentis go probe.ag 2>&1 | grep '^DEPTHLEN=' | tail -1 )"
+      CB_LEN="${CB_OUT#DEPTHLEN=}"
+      case "$CB_LEN" in
+        ''|*[!0-9]*) bad "17b) depth_block() did NOT complete under cb 2000 at $N known lead(s) (overflow / no output)"; CB_OK=0 ;;
+        *) [ "$CB_LEN" -gt 0 ] || { bad "17b) depth_block() returned an EMPTY block at $N known lead(s)"; CB_OK=0; } ;;
+      esac
+    done
+    [ "$CB_OK" -eq 1 ] && ok "17b) depth_block() completes under cb 2000 (the enforced cb_per_tick) with a non-empty block at 1/8/64/256 known leads"
+  fi
 fi
 
 # ----------------------------------------------------------------------------------------------------------

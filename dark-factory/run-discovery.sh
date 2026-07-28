@@ -48,6 +48,20 @@
 #                       MANIFEST order, so the finding set is deterministic + independent of completion
 #                       order. --jobs 1 (the default) keeps the ONE shared store WITH live #1001 steering
 #                       and is BYTE-FOR-BYTE identical to the pre-M3 hunt.
+#   --depth-max-cells <N>  #1827 WITHIN-CONTRACT DEPTH PASS. 0 (default) = OFF = the run is byte-identical
+#                       to before. With N > 0, AFTER every breadth cell has run, re-hunt the functions a
+#                       breadth candidate already flagged: one EXTRA cell per (flagged function x alternative
+#                       lens), payload narrowed to that single function (`file@fn` through slice-fns.sh) and
+#                       the already-known lead(s) injected VERBATIM as an exclusion, so the model must find a
+#                       mechanistically DIFFERENT bug or answer SAFE. Class order per location = the zone's
+#                       OTHER classes first (in manifest order), the producing class LAST; locations are
+#                       ranked High-before-Medium, then by candidate count, then by first appearance, and the
+#                       cap is spread ROUND-ROBIN (one class per location per pass) so it never burns entirely
+#                       on the first flagged function. Depth cells are REAL cells: counted in the run total,
+#                       present in `cells[]` (tagged `"phase":"depth"`), and charged by run-zone-hunt.sh's
+#                       admission rule — never a hidden second prompt inside an existing cell. ONE pass, never
+#                       a loop: the target list is computed once from the breadth set, so a depth candidate can
+#                       never spawn further depth cells.
 #   --list-cells, -n    DRY RUN (#1612): print one `CELL|<subsystem>|<class>|<files>` line per cell this
 #                       manifest WOULD hunt, then exit 0 — BEFORE any agentis init / config / report side
 #                       effect. Needs neither --brief nor an agentis binary; the round-trip check for
@@ -55,6 +69,9 @@
 #                       #1619: when --brief is ALSO given, --list-cells first validates it, resolves it to an
 #                       absolute path, and prints `BRIEF|<abs>|<line-count>` — the offline proof that a
 #                       generated brief resolves + is what would be handed to the hunter as SCOPE_BRIEF.
+#                       #1827: depth cells are NOT enumerable ex ante (they depend on the breadth RESULTS),
+#                       so --list-cells still prints the breadth cells only; run-zone-hunt.sh charges the
+#                       depth CAP up front instead — the conservative choice.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -68,6 +85,7 @@ REPO="" ; SCOPE="" ; BRIEF="" ; TAXONOMY="" ; ONLY="" ; CLASSES_OVERRIDE=""
 BACKEND="flat-cyborg" ; MODEL="" ; OUT="$PWD/discovery-out"
 LIST_CELLS=""   # #1612: opt-in dry-run; empty = the shipped hunt path, byte-identical.
 JOBS=1          # #1625: opt-in bounded-concurrency fan-out; 1 = serial, byte-identical to the pre-M3 hunt.
+DEPTH_MAX_CELLS=0  # #1827: opt-in within-contract depth pass; 0 = OFF, the whole path is inert.
 
 need() { [ "$1" -ge 2 ] || { echo "run-discovery.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -83,6 +101,7 @@ while [ $# -gt 0 ]; do
     --out) need "$#"; OUT="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --jobs|-j) need "$#"; JOBS="$2"; shift 2 ;;
+    --depth-max-cells) need "$#"; DEPTH_MAX_CELLS="$2"; shift 2 ;;
     --list-cells|-n) LIST_CELLS=1; shift ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-discovery.sh: unknown flag $1" >&2; exit 2 ;;
@@ -92,6 +111,9 @@ done
 # #1625: --jobs must be a positive integer (validated even under --list-cells, which then ignores it).
 case "$JOBS" in ''|*[!0-9]*) echo "run-discovery.sh: --jobs must be a positive integer (got '$JOBS')" >&2; exit 2 ;; esac
 [ "$JOBS" -ge 1 ] || { echo "run-discovery.sh: --jobs must be >= 1 (got '$JOBS')" >&2; exit 2; }
+# #1827: --depth-max-cells uses the same integer validation + exit-2 shape (also validated under --list-cells,
+# which then ignores it — depth cells are not enumerable ex ante).
+case "$DEPTH_MAX_CELLS" in ''|*[!0-9]*) echo "run-discovery.sh: --depth-max-cells must be a non-negative integer (got '$DEPTH_MAX_CELLS')" >&2; exit 2 ;; esac
 
 [ -n "$REPO" ]  && [ -d "$REPO" ]  || { echo "run-discovery.sh: --repo <cloned repo dir> required (clone it with fetch-target.sh)" >&2; exit 2; }
 [ -n "$SCOPE" ] && [ -f "$SCOPE" ] || { echo "run-discovery.sh: --scope <subsystem|classes|files manifest> required" >&2; exit 2; }
@@ -171,7 +193,10 @@ cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (s
   [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"; }
   echo "trace.level = normal"
   # The hunter reads source + the brief/taxonomy through exec sh; pass through its whole env contract.
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER"
+  # #1827 DEPTH_TARGET/DEPTH_KNOWN MUST be on this allowlist: getenv() reads the SANITIZED env, so an
+  # unregistered knob silently returns "" and the whole depth pass would be inert (the #1426/#1428 failure
+  # mode). demo-discovery-parallel.sh asserts the stub actually receives them.
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN"
   echo "exec.default_timeout_ms = 30000"
   # Discovery records every attempt as experience and reweights taxonomy fitness over time.
   echo "learning.enabled = true"
@@ -226,9 +251,10 @@ _json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
 # undoing flat-cyborg's PTY-capture line wrap (#1705). A `CANDIDATE|file:fn:line|class|severity|exploit|poc`
 # record's exploit/poc_sketch prose routinely exceeds one physical line; the raw log then carries the tail
 # as continuation lines with no `CANDIDATE|` prefix, which a bare `grep 'CANDIDATE|'` silently drops. Here a
-# `CANDIDATE|` line opens/flushes a record; a `BLACKBOARD-*` line or a blank line closes the current record
-# without starting a new one (these are the only meaningful boundary tokens in a hunt log — see hunter.ag's
-# own framing); any other line while a record is open is a continuation, appended with a single space
+# `CANDIDATE|` line opens/flushes a record; a `BLACKBOARD-*` line, a `DEPTH-CELL|` line (#1827) or a blank
+# line closes the current record without starting a new one (these are the only meaningful boundary tokens in
+# a hunt log — see hunter.ag's own framing); any other line while a record is open is a continuation, appended
+# with a single space
 # (terminal wrap breaks on column width, not on meaningful newlines — a stray space is a cosmetic artifact,
 # not data loss). Emits one reconstructed line per record, in log order.
 _join_wrapped_candidates() {
@@ -239,7 +265,7 @@ _join_wrapped_candidates() {
       rec = $0
       next
     }
-    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*$/ {
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*$/ {
       if (rec != "") { print rec; rec = "" }
       next
     }
@@ -254,12 +280,15 @@ _join_wrapped_candidates() {
   ' "$jwc_log"
 }
 
-# _accumulate_cell <subsys> <cls> <files> <log> [status] — append ONE JSON object for this cell to
+# _accumulate_cell <subsys> <cls> <files> <log> [status] [phase] — append ONE JSON object for this cell to
 # $CELLS_JSONL (additive; feeds discovery-results.json). Never touches $REPORT. [status] defaults to "ok";
 # a #1707 no-sentinel-after-retries cell is recorded as "failed" so the JSON distinguishes it from a clean
-# (0-candidate) negative.
+# (0-candidate) negative. [phase] (#1827) is "depth" ONLY on a depth cell — a breadth cell's object gains no
+# key at all, so the depth-off JSON is byte-identical to the pre-#1827 one.
 _accumulate_cell() {
-  ac_subsys="$1"; ac_cls="$2"; ac_files="$3"; ac_log="$4"; ac_status="${5:-ok}"
+  ac_subsys="$1"; ac_cls="$2"; ac_files="$3"; ac_log="$4"; ac_status="${5:-ok}"; ac_phase="${6:-}"
+  ac_phase_json=""
+  if [ "$ac_phase" = "depth" ]; then ac_phase_json=',"phase":"depth"'; fi
   ac_cands=""
   while IFS= read -r ac_line; do
     [ -n "$ac_line" ] || continue
@@ -272,16 +301,20 @@ _accumulate_cell() {
     ac_f="$(grep '^BLACKBOARD-FOCUS|' "$ac_log" | head -1 | sed 's/^BLACKBOARD-FOCUS|//')"
     ac_coord="$(_json_str "$ac_f")"
   fi
-  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]}\n' \
+  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s}\n' \
     "$(_json_str "$ac_subsys")" "$(_json_str "$ac_cls")" "$(_json_str "$ac_files")" \
-    "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" >> "$CELLS_JSONL"
+    "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" >> "$CELLS_JSONL"
 }
 
-# run_cell <dir> <subsys> <cls> <in_scope> <log> — invoke the hunter for ONE (subsystem x class) cell into
-# <log>. Serial passes dir=$RUN (the shared store); parallel passes an isolated per-cell store. Never trips
-# set -e (the invocation ends `|| echo …`), so a failed cell degrades (its log is still scraped), not aborts.
+# run_cell <dir> <subsys> <cls> <in_scope> <log> [depth_target] [depth_known] — invoke the hunter for ONE
+# (subsystem x class) cell into <log>. Serial passes dir=$RUN (the shared store); parallel passes an isolated
+# per-cell store. Never trips set -e (the invocation ends `|| echo …`), so a failed cell degrades (its log is
+# still scraped), not aborts. #1827: the two trailing params are EMPTY on every breadth cell (the hunter's
+# depth block is then "" and its prompt is byte-identical); a depth cell passes the `file@fn` under review and
+# the already-known lead(s) that must not be re-reported.
 run_cell() {
   rc_dir="$1"; rc_subsys="$2"; rc_cls="$3"; rc_in_scope="$4"; rc_log="$5"
+  rc_depth_target="${6:-}"; rc_depth_known="${7:-}"
   echo "run-discovery.sh: hunting $rc_cls on '$rc_subsys' ..." >&2
   # shellcheck disable=SC2317  # invoked by name through df_run_agent_validated
   _rc_attempt() {
@@ -293,6 +326,8 @@ run_cell() {
         HUNT_CLASS="$rc_cls" \
         SUBSYSTEM="$rc_subsys" \
         SLICER="$rc_dir/slice-fns.sh" \
+        DEPTH_TARGET="$rc_depth_target" \
+        DEPTH_KNOWN="$rc_depth_known" \
         "$AGENTIS" go hunter.ag --enable-exec --enable-messaging --grant-pii ) >"$1" 2>&1 || \
         echo "run-discovery.sh: hunter run failed for $rc_cls/'$rc_subsys' (see $1)" >&2
   }
@@ -304,11 +339,12 @@ run_cell() {
   df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-discovery.sh: $rc_cls/'$rc_subsys'" "$rc_log" hunter "" _rc_attempt || true
 }
 
-# scrape_cell_log <subsys> <cls> <log> <files> — the (byte-identical) post-cell scrape: surface the #1001
-# BLACKBOARD-FOCUS coordination row (+ $COORD, STEERS), scrape CANDIDATE| rows into $REPORT (+ CANDIDATES),
-# and accumulate the cell into the additive JSON. Called in MANIFEST order on both paths (deterministic).
+# scrape_cell_log <subsys> <cls> <log> <files> [phase] — the (byte-identical) post-cell scrape: surface the
+# #1001 BLACKBOARD-FOCUS coordination row (+ $COORD, STEERS), scrape CANDIDATE| rows into $REPORT
+# (+ CANDIDATES), and accumulate the cell into the additive JSON. Called in MANIFEST order on both paths
+# (deterministic). [phase] (#1827) is "depth" only for a depth cell and is forwarded to _accumulate_cell.
 scrape_cell_log() {
-  sc_subsys="$1"; sc_cls="$2"; sc_log="$3"; sc_files="$4"
+  sc_subsys="$1"; sc_cls="$2"; sc_log="$3"; sc_files="$4"; sc_phase="${5:-}"
   # #1707: a cell whose reply never produced a CANDIDATE|/SAFE sentinel after DF_AGENT_MAX_ATTEMPTS retries
   # (TUI chrome / no answer) carries a "$sc_log.novalid" marker. Do NOT treat its empty log as a rigorous
   # negative: surface it as a DISTINCT FAILED row + counter so it is visible, not silently folded into
@@ -318,7 +354,7 @@ scrape_cell_log() {
     printf '| %s | %s | FAILED — no CANDIDATE|/SAFE reply after %s attempts (NOT a rigorous negative) |\n' \
       "$sc_subsys" "$sc_cls" "$DF_AGENT_MAX_ATTEMPTS" >> "$REPORT"
     FAILED_CELLS=$((FAILED_CELLS + 1))
-    _accumulate_cell "$sc_subsys" "$sc_cls" "$sc_files" "$sc_log" failed
+    _accumulate_cell "$sc_subsys" "$sc_cls" "$sc_files" "$sc_log" failed "$sc_phase"
     return 0
   fi
   # #1001 coordination: the hunter reads a shared BLACKBOARD before it prompts and posts every
@@ -345,7 +381,148 @@ scrape_cell_log() {
       echo "run-discovery.sh:   ↳ posted a lead to the blackboard for later cells to focus on" >&2
     fi
   fi
-  _accumulate_cell "$sc_subsys" "$sc_cls" "$sc_files" "$sc_log"
+  _accumulate_cell "$sc_subsys" "$sc_cls" "$sc_files" "$sc_log" ok "$sc_phase"
+}
+
+# _plan_depth_cells <cap> <known-dir> — #1827: read the ACCUMULATED breadth cells in $CELLS_JSONL and print
+# the depth plan, one TSV row per depth cell: `<subsystem>\t<class>\t<file@fn>\t<known-leads file>`. Also
+# writes each flagged location's already-known lead block to <known-dir>/known-<rank>.txt (multi-line, so it
+# cannot ride on the TSV row). Prints nothing when no breadth cell surfaced a usable location.
+#
+# It reads $CELLS_JSONL — NOT the blackboard memo — precisely because that accumulator is written in MANIFEST
+# order on BOTH the serial and the --jobs > 1 path (under parallelism every cell's board is empty, so a
+# memo-derived target list would differ per path). One code path, one order, one depth set.
+#
+# Ranking (deterministic, no ties left to the shell): (a) severity High before Medium before other, (b) more
+# breadth candidates first, (c) first appearance in manifest order. Per location the class order is the zone's
+# classes that did NOT produce a lead there (in manifest order) FIRST, then the producing one(s) LAST — at both
+# diagnosing sites the co-located miss lives under a DIFFERENT taxonomy class than the hit, so a cross-lens
+# re-read is the higher-yield draw and same-class exhaustion is the fallback. The cap is then spread
+# ROUND-ROBIN (one class per location per pass) so it cannot burn entirely on the first flagged function.
+#
+# The JSON scan is a real (tiny) string scanner rather than a `,`-split: _json_str escapes `\` and `"`, and a
+# hunter's exploit prose routinely contains quotes — splitting on `","` would mis-slice such a record.
+_plan_depth_cells() {
+  awk -v cap="$1" -v kdir="$2" '
+    # Index of the value opening-quote for <key> at or after <from>; 0 when absent.
+    function nextkey(s, from, key,   q) {
+      q = index(substr(s, from), key)
+      if (q == 0) return 0
+      return from + q - 1 + length(key)
+    }
+    # Decode the JSON string whose opening quote is at s[p]; sets G_STR + G_POS (just past the close quote).
+    function jsread(s, p,   out, c) {
+      out = ""; p = p + 1
+      while (p <= length(s)) {
+        c = substr(s, p, 1)
+        if (c == "\\") { out = out substr(s, p + 1, 1); p = p + 2; continue }
+        if (c == "\"") { G_STR = out; G_POS = p + 1; return }
+        out = out c; p = p + 1
+      }
+      G_STR = out; G_POS = p
+    }
+    # Should location a be ranked AFTER location b?
+    function worse(a, b) {
+      if (loc_sev[a] != loc_sev[b]) return (loc_sev[a] > loc_sev[b])
+      if (loc_count[a] != loc_count[b]) return (loc_count[a] < loc_count[b])
+      return (loc_first[a] > loc_first[b])
+    }
+    BEGIN { ci = 0; nloc = 0 }
+    {
+      line = $0; pos = 1
+      k = nextkey(line, pos, "\"subsystem\":"); if (k == 0) next
+      jsread(line, k); subsys = G_STR; pos = G_POS
+      k = nextkey(line, pos, "\"class\":");     if (k == 0) next
+      jsread(line, k); cls = G_STR; pos = G_POS
+      k = nextkey(line, pos, "\"files\":");     if (k == 0) next
+      jsread(line, k); pos = G_POS
+      k = nextkey(line, pos, "\"status\":");    if (k == 0) next
+      jsread(line, k); status = G_STR; pos = G_POS
+      ci++
+      # The zone class order IS the manifest (scope.tsv) order: first appearance wins. A cell that FAILED
+      # still contributes its class here — the class was hunted, it just produced no usable reply.
+      if (!((subsys SUBSEP cls) in zcls_seen)) {
+        zcls_seen[subsys SUBSEP cls] = 1
+        zn[subsys]++
+        zcls[subsys, zn[subsys]] = cls
+      }
+      if (status != "ok") next
+      k = index(substr(line, pos), "\"candidates\":[")
+      if (k == 0) next
+      pos = pos + k - 1 + length("\"candidates\":[")
+      while (1) {
+        c = substr(line, pos, 1)
+        if (c == "" || c == "]") break
+        if (c != "\"") { pos++; continue }
+        jsread(line, pos); cand = G_STR; pos = G_POS
+        # `file:fn[:line]|class|severity|exploit|poc` — the location is the head field.
+        b = index(cand, "|")
+        if (b > 0) head = substr(cand, 1, b - 1); else head = cand
+        i1 = index(head, ":")
+        if (i1 < 2) continue                       # no `file:fn` -> nothing to narrow the payload to
+        file = substr(head, 1, i1 - 1)
+        rest = substr(head, i1 + 1)
+        i2 = index(rest, ":")
+        if (i2 > 0) fn = substr(rest, 1, i2 - 1); else fn = rest
+        if (fn == "") continue
+        sev = 2
+        nf = split(cand, F, "|")
+        if (nf >= 3) {
+          s3 = tolower(F[3])
+          if (index(s3, "high") > 0) sev = 0
+          else if (index(s3, "medium") > 0) sev = 1
+        }
+        key = subsys SUBSEP file SUBSEP fn
+        if (!(key in loc_seen)) {
+          loc_seen[key] = 1
+          nloc++
+          loc_key[nloc] = key
+          loc_subsys[key] = subsys
+          loc_target[key] = file "@" fn
+          loc_first[key] = ci
+          loc_sev[key] = sev
+          loc_count[key] = 0
+          loc_known[key] = ""
+        }
+        if (sev < loc_sev[key]) loc_sev[key] = sev
+        loc_count[key]++
+        loc_prod[key, cls] = 1
+        if (loc_known[key] == "") loc_known[key] = "- " cand
+        else loc_known[key] = loc_known[key] "\n- " cand
+      }
+    }
+    END {
+      if (nloc == 0) exit 0
+      for (i = 1; i <= nloc; i++) ord[i] = loc_key[i]
+      for (i = 2; i <= nloc; i++) {                 # insertion sort: n is the flagged-location count
+        v = ord[i]; j = i - 1
+        while (j >= 1 && worse(ord[j], v)) { ord[j + 1] = ord[j]; j-- }
+        ord[j + 1] = v
+      }
+      maxn = 0
+      for (i = 1; i <= nloc; i++) {
+        key = ord[i]; s = loc_subsys[key]; m = 0
+        for (j = 1; j <= zn[s]; j++) { c = zcls[s, j]; if (!((key, c) in loc_prod)) { m++; clsl[key, m] = c } }
+        for (j = 1; j <= zn[s]; j++) { c = zcls[s, j]; if ((key, c) in loc_prod)  { m++; clsl[key, m] = c } }
+        clsn[key] = m
+        if (m > maxn) maxn = m
+        kf = kdir "/known-" i ".txt"
+        print loc_known[key] > kf
+        close(kf)
+        loc_kf[key] = kf
+      }
+      emitted = 0
+      for (p = 1; p <= maxn; p++) {
+        for (i = 1; i <= nloc; i++) {
+          if (emitted >= cap) exit 0
+          key = ord[i]
+          if (p > clsn[key]) continue
+          printf "%s\t%s\t%s\t%s\n", loc_subsys[key], clsl[key, p], loc_target[key], loc_kf[key]
+          emitted++
+        }
+      }
+    }
+  ' "$CELLS_JSONL"
 }
 
 # Manifest loop: one subsystem per line, `subsystem | classes | files`. Run the hunter once per
@@ -447,6 +624,34 @@ else
   done
 fi
 
+# #1827 DEPTH PASS — ONE pass, after ALL breadth cells, on BOTH the serial and the parallel path (the plan is
+# derived from the same manifest-ordered $CELLS_JSONL, so the depth set is identical either way). Each depth
+# cell is a FULL cell: it increments $CELLS, runs through the unchanged run_cell + scrape_cell_log, and lands
+# in cells[] tagged "phase":"depth". Targets are computed ONCE, BEFORE the first depth cell runs, so a depth
+# candidate can never spawn further depth cells (the #1830 --rehunt-gaps rule: one pass, never a loop).
+DEPTH_CELLS=0
+if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then
+  DEPTH_KNOWN_DIR="$RUN/depth-known"; mkdir -p "$DEPTH_KNOWN_DIR"
+  DEPTH_PLAN="$RUN/depth-plan.tsv"
+  _plan_depth_cells "$DEPTH_MAX_CELLS" "$DEPTH_KNOWN_DIR" > "$DEPTH_PLAN"
+  DEPTH_PLANNED="$(grep -c . "$DEPTH_PLAN" 2>/dev/null || true)"
+  echo "run-discovery.sh: depth pass — ${DEPTH_PLANNED:-0} extra cell(s) over the flagged functions (cap $DEPTH_MAX_CELLS)" >&2
+  while IFS='	' read -r D_SUBSYS D_CLS D_TARGET D_KNOWNF || [ -n "${D_SUBSYS:-}" ]; do
+    [ -n "$D_SUBSYS" ] || continue
+    CELLS=$((CELLS + 1))
+    DEPTH_CELLS=$((DEPTH_CELLS + 1))
+    D_SLUG="$(printf '%s' "$D_SUBSYS" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
+    D_LOG="$RUN/depth_${D_SLUG}_${D_CLS}_${DEPTH_CELLS}.log"
+    D_KNOWN="$(cat "$D_KNOWNF" 2>/dev/null || true)"
+    echo "run-discovery.sh:   ↳ DEPTH: re-reading $D_TARGET under $D_CLS (excluding the known lead(s))" >&2
+    # IN_SCOPE is the NARROWED `file@fn` — cat_file() routes it through the existing slice-fns.sh slicer, so
+    # the payload is that one function plus its contract header. It also keeps the depth cell's (subsystem,
+    # class, files) key DISTINCT from the breadth cell's, which is what run-zone-hunt.sh's merge dedupes on.
+    run_cell "$RUN" "$D_SUBSYS" "$D_CLS" "$D_TARGET" "$D_LOG" "$D_TARGET" "$D_KNOWN"
+    scrape_cell_log "$D_SUBSYS" "$D_CLS" "$D_LOG" "$D_TARGET" depth
+  done < "$DEPTH_PLAN"
+fi
+
 # #1707: only a run with ZERO candidates AND ZERO failed cells is a rigorous NEGATIVE. A cell that FAILED
 # validation (chrome / no answer) is NOT evidence of cleanliness, so its presence suppresses this line —
 # the FAILED rows above already make those cells visible as unassessed, not clean.
@@ -481,12 +686,18 @@ fi
 # paths. It does not affect discovery-report.md's bytes (the byte-identical invariant targets the report).
 RESULTS_JSON="$OUT/discovery-results.json"
 CELLS_ARR="$(paste -sd, "$CELLS_JSONL" 2>/dev/null || true)"
-printf '{"repo":%s,"backend":%s,"jobs":%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s}}\n' \
+# #1827: totals.depth_cells appears ONLY when --depth-max-cells > 0, so a depth-off run's JSON keys are
+# byte-identical to the pre-#1827 ones. `cells` is the TOTAL (breadth + depth) — depth never hides.
+DEPTH_TOTAL_JSON=""
+if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then DEPTH_TOTAL_JSON=",\"depth_cells\":$DEPTH_CELLS"; fi
+printf '{"repo":%s,"backend":%s,"jobs":%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s%s}}\n' \
   "$(_json_str "$(basename "$REPO")")" "$(_json_str "$BACKEND")" "$JOBS" "$CELLS_ARR" \
-  "$CELLS" "$CANDIDATES" "$STEERS" "$FAILED_CELLS" > "$RESULTS_JSON"
+  "$CELLS" "$CANDIDATES" "$STEERS" "$FAILED_CELLS" "$DEPTH_TOTAL_JSON" > "$RESULTS_JSON"
 
 echo >&2
-echo "================ DISCOVERY: $CELLS cells, $CANDIDATES candidate(s), $STEERS blackboard-steered, $FAILED_CELLS failed ================" >&2
+DEPTH_BANNER=""
+if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then DEPTH_BANNER=" ($DEPTH_CELLS depth)"; fi
+echo "================ DISCOVERY: $CELLS cells$DEPTH_BANNER, $CANDIDATES candidate(s), $STEERS blackboard-steered, $FAILED_CELLS failed ================" >&2
 echo "run-discovery.sh: leads at $REPORT" >&2
 if [ "$CANDIDATES" -gt 0 ]; then
   echo "run-discovery.sh: NEXT = verify each lead with evm-harness/forge-verify.sh; only a PASSING PoC is a finding. Submission stays human-gated." >&2

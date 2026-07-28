@@ -440,6 +440,100 @@ earlier one. Every one of those assertions is mutation-tested — reverting its 
 drives BOTH zero-cell triggers, so narrowing the guard from "zero cells ran" to "no classes in zones.json"
 fails CI on the trigger that has a scope line under a rewritten name.
 
+### M3 within-contract depth: re-reading a function a breadth cell already flagged (#1827)
+
+Breadth surfaces roughly **one** bug per `(function × class)` and misses co-located ones. Two diagnosing
+sites: on `Strategy.checkPoolActivity` the hunter found the narrow-int/DoS bug and missed the two
+oracle-check bugs in the same function; on a whole target it named the right contracts and none of the five
+ground-truth findings. `hunter.ag` already asks for "EVERY qualifying bug", and breadth still yields ≤ 1
+candidate per cell across the corpus — so **the binding constraint is attention over a whole-zone payload,
+not the output contract**. Narrow the payload and re-ask, but only where a lead already proves the function
+carries attack surface.
+
+**What a depth cell is.** A full, ordinary cell — same agent, same retry policy, same scrape — with three
+differences: `IN_SCOPE` is a single `file@fn` (routed through the existing `slice-fns.sh` slicer, so the
+payload is that one function plus its contract header), `DEPTH_TARGET` names it, and `DEPTH_KNOWN` quotes the
+lead(s) the function already produced **verbatim** as an exclusion. The prompt then asks for a bug whose
+*mechanism* differs from every excluded line, and keeps the `SAFE` escape and the trace-the-code rule intact
+— the cheapest fake (re-reporting the known bug) is foreclosed by construction, and fabricating a second one
+is explicitly disallowed. `hunter.ag` prints `DEPTH-CELL|<subsystem>|<class>|<file@fn>`, which
+`_join_wrapped_candidates()` treats as a record **boundary** (alongside `CANDIDATE|`, `BLACKBOARD-*` and a
+blank line) so it can never be glued onto an open candidate record as prose.
+
+**Cross-lens first, same-class last.** At both diagnosing sites the co-located miss lives under a *different*
+taxonomy class than the hit. So a location's lens order is: the zone's classes that did **not** produce a lead
+there (in manifest order) first, then the producing one(s) last. That ordering is a *hypothesis the held-out
+A/B measures*, not an assumption — the per-cell logs say which lens produced what, so it is re-tunable
+without redesign.
+
+**The plan, computed once.** After every breadth cell has run, `run-discovery.sh::_plan_depth_cells()` reads
+the accumulated `results-cells.jsonl` — **not** the blackboard memo, because under `--jobs > 1` every cell's
+board is empty and a memo-derived list would differ per path, while the accumulator is written in manifest
+order on both. Flagged locations are ranked by (a) severity, High before Medium, (b) breadth-candidate count
+descending, (c) first appearance in manifest order; the cap is then spent **round-robin, one class per
+location per pass**, so it cannot burn entirely on the first flagged function. Targets are computed **once,
+before the first depth cell runs**, so a depth candidate can never spawn further depth cells — one pass,
+never a loop (the same rule `--rehunt-gaps` follows).
+
+**Cells, not hidden prompts.** A depth cell is counted in `totals.cells`, appears in `cells[]` tagged
+`"phase":"depth"`, and is reported in `totals.depth_cells` (emitted **only** when the flag is on). Its
+`files` field is the narrowed `file@fn`, which also keeps its `(subsystem, class, files)` merge key distinct
+from the breadth cell of the same class. Sized on real numbers — a plaza `src` zone is 6 breadth cells, the
+whole run 18 — a cap of 4/zone is +67 % on that zone and +22 % on the run; a cap of 12 is +200 % / +100 %.
+The payload per depth cell is a single-KB function slice against an 85.8–96.6 KB whole-zone cell, but
+run-discovery.sh charges *reasoning*, not payload, so a depth cell still costs one cell. Undercounting them
+to look cheap is exactly the failure this design refuses.
+
+**Interaction with the cell budget (#1830), stated rather than assumed.** Depth cells spend the same pool as
+breadth cells. `run-zone-hunt.sh --zone-depth-cells N` forwards `--depth-max-cells` per zone, and the
+effective allowance is `min(N, max(0, cap − planned breadth cells))` — i.e. **depth is trimmed to 0 before a
+single breadth class is dropped**. Breadth coverage is the #1824/#1825/#1826 investment and is never traded
+for depth. A budgeted run with depth on therefore covers fewer zones unless the operator raises the budget by
+(zones-with-candidates × depth cap). Depth cells are **not** enumerable by `--list-cells` (they depend on the
+breadth results), so the **cap is charged up front** — the conservative choice, matching the existing "an
+unmeasurable zone is charged the whole remaining budget" precedent. A zone that finds no lead therefore shows
+its cap charged and 0 depth cells spent. `cells_planned` keeps meaning "what `--list-cells` measured";
+`cells_charged` becomes breadth + depth and the coverage `detail` names the split. **No new coverage status**
+— the state vocabulary above is untouched.
+
+**Substrate cost.** `DEPTH_KNOWN` is consumed as **one opaque string**: never `regex_split`/`reduce`d, so the
+CB cost is O(1) in the number of known leads. That is the recidivist trap here — an interpreted per-element
+walk pays ~70+ CB per element and blows the enforced `cb_per_tick` ceiling. Measured by bisecting the minimum
+budget at which `depth_block()` completes: **44 CB at 1, 8, 64 and 256 known leads** — flat. The sweep runs in
+`demo-discovery-parallel.sh` under a `cb 2000;` probe (the *enforced* ceiling, not the declarative `cb
+300000;` header the one-shot `agentis go` path uses), with the function **extracted from `hunter.ag` by line
+range**, never copy-pasted — a duplicated twin would silently drift from the agent it claims to measure.
+
+**Default OFF, and the held-out gate that could flip it.** `--depth-max-cells` / `--zone-depth-cells` ship at
+`0`. Flipping any default requires a single-variable A/B on a **held-out** target — declared before the code
+was written, and deliberately not the diagnosing site, because "the hunter now surfaces 2 bugs on
+`checkPoolActivity`" is satisfiable by teaching-to-test. The held-out target is plaza `src/Pool.sol::startAuction`
+(co-located ground truth: one rare + two non-rare findings; confirmed inside today's slice, so the
+measurement isolates depth from the coverage work; and in the preserved baseline run the hunter named that
+function exactly once, describing none of them). Both arms regenerate `map/scope.tsv` on current main —
+reusing a preserved artifact would silently re-measure the coverage fixes as depth. **PASS requires all
+five:**
+
+| | Criterion |
+|---|---|
+| P1 | ON surfaces ≥ 2 candidates located at that function, judged **mechanistically distinct from each other** (not a paraphrase pair). |
+| P2 | ON matches ≥ 1 ground-truth finding OFF does not, **and that new match is one of the co-located set**. A match anywhere else is luck elsewhere, not within-contract depth. |
+| P3 | No regression: every ground-truth row OFF matched is still matched by ON. |
+| P4 | Precision floor: ON's total zone candidate count ≤ 2× OFF's, and ON's matched/total ratio ≥ 0.5× OFF's. |
+| P5 | Cost honesty: observed cells ≤ OFF cells + cap, and `totals.depth_cells` equals the observed extra. |
+
+P1 holding while P2 fails means depth produced **volume, not recall**. An extra match on the diagnosing
+target only, with none on the held-out one, is **teaching-to-test** and an explicit FAIL. Any P3 regression or
+P4 breach is a FAIL. On FAIL the flag stays off and the negative result is recorded — a measured non-result is
+a result.
+
+`demo-discovery-parallel.sh` blocks (11)–(17) and `demo-run-zone-hunt.sh` blocks (p)–(s) pin all of the
+mechanics offline: default-inertness down to the byte-identical golden report and an argv carrying no new
+argument; the env wiring (including the `exec.env_passthrough` registration, without which `getenv()` is
+silently inert); the ranked round-robin order; zero cost when no lead was found; determinism and
+serial/parallel identity; the `DEPTH-CELL|` record boundary; depth being trimmed before breadth under a
+budget; and the CB sweep. Each is mutation-tested — reverting its fix makes it fire.
+
 ### The HALT / NEVER-SUBMIT invariant (load-bearing)
 
 The capstone contains NO `curl`/`wget`/`submit`/egress verb on any executable line. The never-submit invariant
