@@ -266,6 +266,29 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   post-merge step, not part of this change.
 
 ### Fixed
+- **`map-zones.sh`'s `fn_names()` no longer scrapes NatSpec prose or a commented-out declaration as a phantom
+  function name, burning slice slots** (#1834). The old regex, `\bfunction\s+([A-Za-z0-9_]+)`, matched the
+  WORD FOLLOWING the literal substring "function" anywhere on a line — so a NatSpec comment like `/// @notice
+  Internal function which performs...` scraped `which` as a "function name", and a `//`-commented-out old
+  declaration scraped the dead name too, each burning a slot in the `FN_SLICE_CAP`-bounded slice ahead of real
+  declarations. Anchored the regex on `^\s*function\s+([A-Za-z0-9_]+)\s*\(` — a line that (after only leading
+  whitespace) STARTS with the `function` keyword immediately followed by `(`, i.e. an actual declaration — a
+  strict subset match that never adds a name the old regex wouldn't also have matched. Verified against real
+  corpus-bench targets (`BondToken.sol`, `PoolFactory.sol`, `LendingPool.sol`, `Leverager.sol`): **zero**
+  legitimate declarations lost, zero spurious names gained; the only names dropped are the phantom words
+  themselves (`to`, `is`, `updates`, `calculates`, `resets`, `which`, `can`). Verified the fix does not move
+  any of the three #1825 rare-bug functions within the cap-16 slice: `Strategy.checkPoolActivity` stays at
+  rank 16 of 16, `ReserveLogic._updateIndexes` at rank 12 of 16, `Pool.startAuction` at rank 11 of 16 —
+  byte-identical before and after removing the phantoms in those four files. Out of scope: comment-state
+  (`/* ... */` block) tracking — `fn_names()` is a one-pass-per-line scraper with no lexer, and a declaration
+  living inside a block comment is an accepted, documented residual (empirically 0 hits across 263 `.sol`
+  files in the sampled corpus). New fixture `contracts/registry/Registry.sol` carries all three shapes (NatSpec
+  prose, commented-out declaration, block-comment declaration) in its own file/zone — appending them to the
+  existing `Liquidation.sol` fixture was tried and found unsafe, since a phantom name containing `price` shifts
+  the `valuation` partition's reserved-slot count and silently bumps `_healthFactor` out of its existing cap-16
+  pin. `demo-map-zones.sh` gains block `(1f)`, asserting the registry zone's function slice equals exactly
+  `{setAllowed, isAllowed, renounceOwnership, oldSetAllowedBatch}` — set-equality so it fails on ANY unexpected
+  phantom, and fails if the accepted block-comment residual (`oldSetAllowedBatch`) silently disappears.
 - **`map-zones.sh`'s function-slice cap raised from 8 to 16, recovering three rare-bug functions the old cap
   truncated out of `scope.tsv`** (#1825). `prioritize_fn_names()` reorders a big contract's declared function
   names so value-moving (#1701) and valuation (#1799) functions survive the `[:cap]` slice ahead of admin/

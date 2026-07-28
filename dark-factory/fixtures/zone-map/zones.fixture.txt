@@ -18,6 +18,7 @@ ZONE|libraries|reserve logic|C1,C11|Interest-index accrual math shared by the le
 # `scripts_core/` is a REAL directory (not the excluded `script/` prefix) -- proves the match is
 # segment-anchored, not a bare substring of "script".
 ZONE|scripts_core|keeper|C6|Keeper automation contract, not a deployment script
+ZONE|contracts_registry|allowlist registry|C5|Owner-gated allowlist toggle; fn_names() phantom-name regression fixture (#1834)
 # #1713: value-custody flags (severity-first deep-hunt gate). A fixture DECLARES them since the .ag is not
 # run on the --fixture path. The accounting vault + the lending/CDP liquidation engine are value-custody;
 # the read-only oracle feed + the governance role model are not. `libraries/` is flagged value_custody

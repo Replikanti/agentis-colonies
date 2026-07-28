@@ -192,6 +192,37 @@ else bad "fn-slice cap-16 assertion failed"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (1f) #1834: fn_names() no longer scrapes the English word "function" out of NatSpec prose or a
+#      commented-out declaration as a phantom function name -- only a real `function NAME(` declaration
+#      line counts. contracts/registry/Registry.sol carries all three shapes from the issue: NatSpec
+#      prose, a commented-out OLD declaration, and a declaration inside a `/* ... */` block comment. The
+#      first two must produce ZERO phantom names; the third is an ACCEPTED, DOCUMENTED residual
+#      (fn_names() has no comment-state tracking) and is asserted PRESENT, not absent, so the gap stays
+#      a conscious, pinned decision rather than a silent assumption.
+# ----------------------------------------------------------------------------------------------------------
+note "1f) #1834: fn_names() extracts only real declarations, not NatSpec/commented-out prose (block-comment residual pinned as accepted) ..."
+if python3 - "$OUT/scope.tsv" <<'PY'
+import sys
+rows = [l.rstrip("\n") for l in open(sys.argv[1], encoding="utf-8") if l.strip() and not l.lstrip().startswith("#")]
+reg_rows = [l for l in rows if l.startswith("allowlist registry |")]
+assert reg_rows, "no scope.tsv row for the allowlist registry zone"
+files_field = reg_rows[0].split("|")[2]
+fn_names = set()
+for tok in files_field.split(","):
+    tok = tok.strip()
+    if "@" in tok:
+        fn_names.update(tok.split("@", 1)[1].split("+"))
+expected = {"setAllowed", "isAllowed", "renounceOwnership", "oldSetAllowedBatch"}
+assert fn_names == expected, (
+    "allowlist registry function-slice does not match exactly the real + accepted-residual "
+    "declarations: got %r, want %r" % (sorted(fn_names), sorted(expected))
+)
+PY
+then ok "allowlist registry slice is exactly {setAllowed, isAllowed, renounceOwnership, oldSetAllowedBatch} -- no NatSpec/commented-out-line phantom leaked in, and the accepted block-comment residual (oldSetAllowedBatch) is present and pinned"
+else bad "#1834 fn_names() scrape-accuracy assertion failed"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # (c2) REGRESSION (#1664): an INDENTED ZONE| marker line must still be classified — proving #1663's
 #      whitespace-tolerant scrape (`grep -E '^[[:space:]]*ZONE\|' ... | sed 's/^[[:space:]]*//'`) stays in
 #      place. Derive the indented fixture at runtime from the checked-in FIXTURE_TXT (indent only the ZONE|
