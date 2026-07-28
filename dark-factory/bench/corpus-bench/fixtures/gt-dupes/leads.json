@@ -1,0 +1,22 @@
+{
+  "repo": "synthetic-fixture",
+  "gate": "gt-dupes-selftest",
+  "verified": [
+    {
+      "location": "src/Router.sol:joinAndDeposit:88",
+      "file": "src/Router.sol",
+      "class": "C1",
+      "exploit": "the pool truncates the deposit to the remaining cap and pulls only that, but the router assumes the whole transferred amount was consumed and never refunds or sweeps the remainder, so the depositor's excess is permanently stranded in the shared router",
+      "poc_sketch": "fill the pool to just under its reserve cap -> deposit through the router -> observe the unconsumed remainder sitting in the router"
+    },
+    {
+      "location": "src/Vault.sol:settleEpoch:141",
+      "file": "src/Vault.sol",
+      "class": "C9",
+      "exploit": "the pending-withdrawal queue is only drained while the epoch duration is non-zero, so settling a zero-duration epoch leaves every already-queued withdrawal unclaimable forever",
+      "poc_sketch": "queue a withdrawal -> configure a zero-length epoch -> settle it -> the queued withdrawal can never be claimed"
+    }
+  ],
+  "errors": [],
+  "totals": {"verified": 2}
+}

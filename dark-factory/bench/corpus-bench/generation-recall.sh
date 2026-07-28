@@ -36,10 +36,15 @@
 #
 # Usage: generation-recall.sh [--self-test] | [--from-work <dir> [--id <id>]... [--min-overlap N] [--json]
 #                             [--judge <off|cache|cmd>] [--judge-cmd <p>] [--judge-cache <f>] [--judge-log <f>]
-#                             [--judge-batch N] [--judge-min-confidence N]] [-h]
+#                             [--judge-batch N] [--judge-min-confidence N] [--gt-dupes <f>]
+#                             [--gt-dupes-min-confidence N]] [-h]
 #   --judge* : #1829 — forwarded verbatim to score-match.py for BOTH the generation scorecard and the
 #              verified-recall side of the DELTA, so the two halves are always measured with the SAME ruler.
 #              Default `off` = the frozen #1697 token matcher; `--self-test` is always judge-off.
+#   --gt-dupes* : #1840 — same deal for the GT-equivalence artifact: forwarded to BOTH halves of the DELTA, so
+#              a duplicated GT pair is credited identically on the generation and the verified side. The
+#              artifact is PER CONTEST (`<work>/<id>/gt-dupes.tsv`), so pass it with a single `--id`. Absent
+#              by default; `--self-test` never uses it.
 # Exit: 0 = stage ran (a low/zero recall is DATA, not a failure) ; 1 = --self-test regressed ; 2 = bad args ;
 #       3 = missing prerequisite.
 set -u
@@ -52,6 +57,7 @@ FIX="$HERE/fixtures/generation-recall"
 MODE="self-test"
 WORK="" ; IDS="" ; MINOV="2" ; JSON=0
 JUDGE="off" ; JUDGE_CMD="" ; JUDGE_CACHE="" ; JUDGE_LOG="" ; JUDGE_BATCH="" ; JUDGE_MINCONF=""
+GT_DUPES="" ; GT_DUPES_MINCONF=""
 
 nv() { [ "$1" -ge 2 ] || { echo "generation-recall.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do case "$1" in
@@ -66,6 +72,8 @@ while [ $# -gt 0 ]; do case "$1" in
   --judge-log)            nv "$#"; JUDGE_LOG="$2"; shift 2 ;;
   --judge-batch)          nv "$#"; JUDGE_BATCH="$2"; shift 2 ;;
   --judge-min-confidence) nv "$#"; JUDGE_MINCONF="$2"; shift 2 ;;
+  --gt-dupes)                nv "$#"; GT_DUPES="$2"; shift 2 ;;
+  --gt-dupes-min-confidence) nv "$#"; GT_DUPES_MINCONF="$2"; shift 2 ;;
   -h|--help)     awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
   *) echo "generation-recall.sh: unknown arg: $1" >&2; exit 2 ;;
 esac; done
@@ -83,14 +91,27 @@ if [ "$JUDGE" != "off" ]; then
   [ -n "$JUDGE_MINCONF" ] && JUDGE_ARGS+=(--judge-min-confidence "$JUDGE_MINCONF")
 fi
 
+# #1840: the GT-equivalence flags, forwarded to BOTH halves of the DELTA so one ruler measures both. The array
+# is EMPTY by default, hence the `${arr[@]+...}` guard at every expansion (an unguarded empty expansion trips
+# `set -u` on older bash).
+declare -a DUPE_ARGS=()
+if [ -n "$GT_DUPES" ]; then
+  DUPE_ARGS+=(--gt-dupes "$GT_DUPES")
+  [ -n "$GT_DUPES_MINCONF" ] && DUPE_ARGS+=(--gt-dupes-min-confidence "$GT_DUPES_MINCONF")
+fi
+
 # recall_hits <truth.tsv> <leads.json> — print "<hits> <total>" (HIT truth rows / total truth rows) from
-# score-match.py at --min-overlap "$MINOV" (and the selected --judge mode). Empty on scorer failure.
+# score-match.py at --min-overlap "$MINOV" (and the selected --judge / --gt-dupes mode). Empty on failure.
 recall_hits() {
   _t="$1"; _j="$2"
-  _sc="$(python3 "$SCOREMATCH" "$_t" "$_j" --min-overlap "$MINOV" "${JUDGE_ARGS[@]}" 2>/dev/null)" || return 1
+  _sc="$(python3 "$SCOREMATCH" "$_t" "$_j" --min-overlap "$MINOV" "${JUDGE_ARGS[@]}" \
+           ${DUPE_ARGS[@]+"${DUPE_ARGS[@]}"} 2>/dev/null)" || return 1
   _total=0; _hits=0
   while IFS="$(printf '\t')" read -r _f1 _f2 _f3; do
-    case "$_f1" in LEADS|JUDGE) continue ;; esac
+    # Trailer lines, NOT truth rows. DUP/DUPHIT (#1840) belong here for the same reason LEADS/JUDGE do: a
+    # DUPHIT line's second field is a sev_id, not HIT/MISS, so counting it would inflate BOTH the denominator
+    # and (silently) the recall this DELTA is built from.
+    case "$_f1" in LEADS|JUDGE|DUP|DUPHIT) continue ;; esac
     [ -n "$_f1" ] || continue
     _total=$((_total + 1))
     [ "$_f2" = "HIT" ] && _hits=$((_hits + 1))
@@ -213,14 +234,19 @@ if [ "$MODE" = "from-work" ]; then
     fi
     say "SCORE: [$id] scoring the union of generation hypotheses against truth.tsv ..."
 
-    SCORE_OUT="$(python3 "$SCOREMATCH" "$truth" "$leads" --min-overlap "$MINOV" "${JUDGE_ARGS[@]}" 2>/dev/null)" \
+    SCORE_OUT="$(python3 "$SCOREMATCH" "$truth" "$leads" --min-overlap "$MINOV" "${JUDGE_ARGS[@]}" \
+                   ${DUPE_ARGS[@]+"${DUPE_ARGS[@]}"} 2>/dev/null)" \
       || { say "SCORE: [$id] score-match.py failed; skipping"; continue; }
 
     declare -A HITMAP=()
-    judge_calls=0 ; judge_errors=0
+    judge_calls=0 ; judge_errors=0 ; dup_classes=0 ; dup_expanded=0
     while IFS="$(printf '\t')" read -r f1 f2 f3; do
       [ "$f1" = "LEADS" ] && continue
       if [ "$f1" = "JUDGE" ]; then judge_calls="$f2"; judge_errors="$f3"; continue; fi
+      # #1840 trailers: DUP carries counts and DUPHIT an attribution pair — neither is a truth row, and a
+      # DUPHIT's second field is a sev_id rather than HIT/MISS, so both must be skipped before HITMAP.
+      if [ "$f1" = "DUP" ]; then dup_classes="$f2"; dup_expanded="$f3"; continue; fi
+      [ "$f1" = "DUPHIT" ] && continue
       [ -n "$f1" ] && HITMAP["$f1"]="$f2"
     done <<SCORE_EOF
 $SCORE_OUT
@@ -247,6 +273,7 @@ SCORE_EOF
 
     say "  [$id] generation-recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total"
     [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE, #1829): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s)"
+    [ -n "$GT_DUPES" ] && say "  [$id] GT-equivalence crediting (#1840) from $GT_DUPES: $dup_classes class(es), $dup_expanded row(s) credited through a class (generation-recall without them: $((c_hits - dup_expanded))/$c_total)"
 
     # GENERATION-minus-VERIFIED DELTA — GT rows a hypothesis NAMED but the fuzzer/refuter never confirmed.
     verified_json="$WORK/$id/zone-hunt-out/verify/verified_findings.json"
