@@ -1,0 +1,325 @@
+{
+  "schema": "zone-coverage/v1",
+  "repo": "fixture-target",
+  "commit": "0000000",
+  "started_at": "2026-07-29T00:00:00Z",
+  "updated_at": "2026-07-29T00:00:00Z",
+  "budget": {
+    "unit": "cells",
+    "per_zone": 2,
+    "run": 24
+  },
+  "zones": [
+    {
+      "id": "z01_hunted",
+      "name": "hunted zone",
+      "value_custody": true,
+      "order": 1,
+      "status": "hunted",
+      "cells_planned": 2,
+      "cells_charged": 2,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 2,
+      "candidates": 1,
+      "failed_cells": 0,
+      "exit_code": 0,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "",
+      "attempts": []
+    },
+    {
+      "id": "z02_hunted_empty",
+      "name": "rigorous negative zone",
+      "value_custody": true,
+      "order": 2,
+      "status": "hunted_empty",
+      "cells_planned": 2,
+      "cells_charged": 2,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 2,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": 0,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "",
+      "attempts": []
+    },
+    {
+      "id": "z03_truncated",
+      "name": "partially hunted zone",
+      "value_custody": false,
+      "order": 3,
+      "status": "hunted",
+      "cells_planned": 4,
+      "cells_charged": 2,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": true,
+      "cells": 2,
+      "candidates": 1,
+      "failed_cells": 0,
+      "exit_code": 0,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "per-zone cap 2 < 4 planned cell(s)",
+      "attempts": []
+    },
+    {
+      "id": "z04_degraded",
+      "name": "degraded zone",
+      "value_custody": false,
+      "order": 4,
+      "status": "hunted_degraded",
+      "cells_planned": 2,
+      "cells_charged": 2,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 2,
+      "candidates": 0,
+      "failed_cells": 1,
+      "exit_code": 0,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "",
+      "attempts": []
+    },
+    {
+      "id": "z05_not_reached",
+      "name": "never attempted zone",
+      "value_custody": false,
+      "order": 5,
+      "status": "not_reached",
+      "cells_planned": null,
+      "cells_charged": 0,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": null,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "",
+      "attempts": []
+    },
+    {
+      "id": "z06_budget_exhausted",
+      "name": "denied zone",
+      "value_custody": false,
+      "order": 6,
+      "status": "budget_exhausted",
+      "cells_planned": 2,
+      "cells_charged": 0,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": null,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "admission denied: 0 of the run cell budget remaining",
+      "attempts": []
+    },
+    {
+      "id": "z07_budget_unenforceable",
+      "name": "uncappable zone",
+      "value_custody": false,
+      "order": 7,
+      "status": "budget_unenforceable",
+      "cells_planned": 2,
+      "cells_charged": 0,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": null,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "cap not enforceable: the zone matches several scope.tsv lines",
+      "attempts": []
+    },
+    {
+      "id": "z08_in_flight",
+      "name": "killed mid-zone",
+      "value_custody": false,
+      "order": 8,
+      "status": "in_flight",
+      "cells_planned": 2,
+      "cells_charged": 2,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": null,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "",
+      "results": "",
+      "detail": "",
+      "attempts": []
+    },
+    {
+      "id": "z09_failed",
+      "name": "tool-failure zone",
+      "value_custody": false,
+      "order": 9,
+      "status": "failed",
+      "cells_planned": 2,
+      "cells_charged": 2,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": 1,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "run-discovery.sh exited 1",
+      "attempts": []
+    },
+    {
+      "id": "z10_failed_capped",
+      "name": "tool-failure zone at the ceiling",
+      "value_custody": false,
+      "order": 10,
+      "status": "failed",
+      "cells_planned": 2,
+      "cells_charged": 2,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": 1,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "run-discovery.sh exited 1",
+      "attempts": [
+        {
+          "n": 1,
+          "status": "failed",
+          "exit_code": 1,
+          "ended_at": "2026-07-29T00:00:00Z",
+          "artifacts": "discovery/z10_failed_capped.attempt-1"
+        },
+        {
+          "n": 2,
+          "status": "failed",
+          "exit_code": 1,
+          "ended_at": "2026-07-29T00:00:00Z",
+          "artifacts": "discovery/z10_failed_capped.attempt-2"
+        }
+      ]
+    },
+    {
+      "id": "z11_no_brief",
+      "name": "brief-less zone",
+      "value_custody": false,
+      "order": 11,
+      "status": "no_brief",
+      "cells_planned": null,
+      "cells_charged": 0,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": null,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "STAGE 2 emitted no briefs/briefs/brief_z11_no_brief.md",
+      "attempts": []
+    },
+    {
+      "id": "z12_unscoped",
+      "name": "unmapped zone",
+      "value_custody": false,
+      "order": 12,
+      "status": "unscoped",
+      "cells_planned": 0,
+      "cells_charged": 0,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": null,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "no matching line in map/scope.tsv",
+      "attempts": []
+    }
+  ],
+  "totals": {
+    "zones": 12,
+    "cells_planned": 20,
+    "cells_charged": 14,
+    "candidates": 2,
+    "failed_cells": 1,
+    "by_status": {
+      "hunted": 2,
+      "hunted_empty": 1,
+      "hunted_degraded": 1,
+      "failed": 2,
+      "budget_exhausted": 1,
+      "budget_unenforceable": 1,
+      "in_flight": 1,
+      "no_brief": 1,
+      "unscoped": 1,
+      "not_reached": 1
+    }
+  },
+  "complete": false,
+  "gap_zones": [
+    "z03_truncated",
+    "z04_degraded",
+    "z05_not_reached",
+    "z06_budget_exhausted",
+    "z07_budget_unenforceable",
+    "z08_in_flight",
+    "z09_failed",
+    "z10_failed_capped",
+    "z11_no_brief",
+    "z12_unscoped"
+  ]
+}

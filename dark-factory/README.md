@@ -333,6 +333,18 @@ and merges into the union. Record schema, the eight-state vocabulary and the re-
 [`docs/zone-split-orchestration.md`](./docs/zone-split-orchestration.md); operator recipes:
 [`docs/RUNBOOK.md`](./docs/RUNBOOK.md).
 
+**Self-tuning breadth (#1828).** [`run-zone-sweep.sh`](./run-zone-sweep.sh) is the entrypoint that closes those
+gaps **by itself**: it runs a breadth pass, asks `lib/gap-policy.py` what the resulting coverage record
+warrants (`rehunt_now` / `raise_budget_and_rehunt` / `remap_target` / `give_up`), re-enters through the same
+`--rehunt-gaps` machinery, and stops under three independent bounds — with no operator step in the loop.
+`run-zone-hunt.sh` stays the **single-pass** entrypoint and is unchanged by #1828. Exit 0 only when coverage
+is complete, exit 5 when gaps remain (the report is always written to `<out>/coverage/gap-report.md`).
+
+```bash
+dark-factory/run-zone-sweep.sh --repo "$PWD/target" --out "$PWD/zone-hunt-out" \
+  --budget-ceiling 60 -- --run-cell-budget 40 --in-scope "the in-scope program"
+```
+
 The never-submit **HALT** is load-bearing: the capstone adds ZERO egress and reuses two baked-in gates —
 `run-audit-pass.sh` halts at `PENDING-HUMAN-REVIEW` and `deliver-submission.sh` refuses any unmarked draft (and
 only stages locally). Per-finding errors are logged + skipped so one bad finding never aborts the batch. Offline

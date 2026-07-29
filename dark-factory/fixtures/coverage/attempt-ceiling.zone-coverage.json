@@ -1,0 +1,96 @@
+{
+  "schema": "zone-coverage/v1",
+  "repo": "fixture-target",
+  "commit": "0000000",
+  "started_at": "2026-07-29T00:00:00Z",
+  "updated_at": "2026-07-29T00:00:00Z",
+  "budget": {
+    "unit": "cells",
+    "per_zone": 0,
+    "run": 5
+  },
+  "zones": [
+    {
+      "id": "z01_hunted",
+      "name": "hunted zone",
+      "value_custody": true,
+      "order": 1,
+      "status": "hunted",
+      "cells_planned": 2,
+      "cells_charged": 2,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 2,
+      "candidates": 1,
+      "failed_cells": 0,
+      "exit_code": 0,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "",
+      "attempts": []
+    },
+    {
+      "id": "z02_failed",
+      "name": "tool-failure zone at the ceiling",
+      "value_custody": false,
+      "order": 2,
+      "status": "failed",
+      "cells_planned": 2,
+      "cells_charged": 2,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": 1,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "run-discovery.sh exited 1",
+      "attempts": [
+        {
+          "n": 1,
+          "status": "failed",
+          "exit_code": 1,
+          "ended_at": "2026-07-29T00:00:00Z",
+          "artifacts": "discovery/z02_failed.attempt-1"
+        },
+        {
+          "n": 2,
+          "status": "failed",
+          "exit_code": 1,
+          "ended_at": "2026-07-29T00:00:00Z",
+          "artifacts": "discovery/z02_failed.attempt-2"
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "zones": 2,
+    "cells_planned": 4,
+    "cells_charged": 4,
+    "candidates": 1,
+    "failed_cells": 0,
+    "by_status": {
+      "hunted": 1,
+      "hunted_empty": 0,
+      "hunted_degraded": 0,
+      "failed": 1,
+      "budget_exhausted": 0,
+      "budget_unenforceable": 0,
+      "in_flight": 0,
+      "no_brief": 0,
+      "unscoped": 0,
+      "not_reached": 0
+    }
+  },
+  "complete": false,
+  "gap_zones": [
+    "z02_failed"
+  ]
+}

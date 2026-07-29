@@ -440,6 +440,82 @@ earlier one. Every one of those assertions is mutation-tested — reverting its 
 drives BOTH zero-cell triggers, so narrowing the guard from "zero cells ran" to "no classes in zones.json"
 fails CI on the trigger that has a scope line under a rewritten name.
 
+### Gap remediation: what a re-hunt may act on (#1828 M1)
+
+#1830 writes the record and offers the queries; it decides nothing. #1828 adds the **decision** — and the
+first thing a decision needs is a pinned answer to "which gaps is a re-hunt even allowed to touch?". That rule
+already exists in `zone-coverage.py gaps`; this section states it as a contract so a consumer can rely on it.
+
+| `status` | `gaps` action | actionable? | why |
+|---|---|---|---|
+| `hunted` / `hunted_empty` (untruncated) | *(absent)* | — | not a gap at all |
+| `hunted` + `budget_truncated` | `retry`, only under `--include-partial` | opt-in | the zone WAS hunted; a re-hunt redoes cells that already produced results |
+| `hunted_degraded` | `retry`, only under `--include-partial` | opt-in | same: partial coverage, not zero coverage |
+| `not_reached` | `hunt` | yes | zero evidence, nothing to preserve |
+| `budget_exhausted` | `hunt` | yes | hunt-able; the run declined to pay. Remedy: more budget, or a re-hunt |
+| `budget_unenforceable` | `hunt` | yes | never ran; remedy is its full planned budget, or a re-map |
+| `in_flight` | `retry` | yes | prior artifacts exist — move them aside first |
+| `failed` | `retry` | yes | prior artifacts exist — move them aside first |
+| *any of the above with `attempts >= --max-attempts`* | `capped` | no | leave it alone; one pass is one pass |
+| `no_brief` | `no-brief` | **never** | an upstream defect; a re-hunt against the same briefs cannot fix it |
+| `unscoped` | `unscoped` | **never** | an upstream MAPPING defect; a re-hunt against the same map cannot fix it |
+
+Two properties of that table are load-bearing for anything that loops over it, and both are verified against
+the shipped helper (`demo-gap-policy.sh` block 1):
+
+- **The attempt ceiling bounds only the artifact-bearing statuses.** `attempts[]` is appended only by
+  `zone-coverage.py retry`, which `run-zone-hunt.sh` calls only on the `retry` action. A zone denied on
+  admission is recorded `budget_exhausted` with **no** attempt entry, so `gaps --max-attempts N` keeps
+  emitting `hunt` for it at N = 1, 2, 3, 99 — forever. **Any autonomous loop over the gap set must therefore
+  carry its own pass bound**; `--rehunt-max-attempts` is not one. (Measured: with the three bounds below
+  removed, the `budget_unenforceable` fixture launched 129 re-hunt passes in 90 s and was still going.)
+- **`summary --json`.`gap_zones` is a strict SUPERSET of the `gaps` TSV.** The partials are the difference.
+  Actionability must be read from the TSV; `gap_zones` is for reporting only.
+
+### Self-tuning breadth: the remediation loop (#1828 M2/M3)
+
+The loop lives in a **new layer above** the capstone — `lib/gap-policy.py` (the rule) + `run-zone-sweep.sh`
+(the driver). **`run-zone-hunt.sh` is not modified by #1828 at all**: it stays the single-pass, tactical
+entrypoint, which is the strongest available form of default-inertness (a file that is not touched cannot
+regress its golden pin). Putting the policy inside the capstone would have made a 1000-line script
+self-recursive and would have folded "how much may I spend" into the loop that spends it.
+
+**The four verbs**, evaluated in this order over the TSV (`actionable` = `hunt|retry` rows):
+
+1. record `complete` → `give_up|nothing_actionable`.
+2. re-hunt passes already done ≥ `--max-rehunt-passes` → `give_up|pass_ceiling`.
+3. no actionable row → `give_up|attempt_ceiling` if anything is `capped`; else `remap_target|upstream_defect`
+   if anything is `no-brief`/`unscoped`; else `give_up|partial_only` if the only gaps are partials; else
+   `give_up|nothing_actionable`.
+4. actionable rows exist →
+   a. **no-progress guard**: the previous pass was a plain `rehunt_now` and closed nothing → the budget branch
+      if there is headroom, else `give_up|no_progress`;
+   b. every actionable gap is `budget_exhausted`/`budget_unenforceable` → the budget branch;
+   c. **budget branch**: `--budget-ceiling` defaults to **0 = no raise permitted**, so
+      `raise_budget_and_rehunt` is unreachable by default. With headroom the raise goes **straight to the
+      ceiling** (so at most ONE raise per sweep is possible), carrying `zone_cell_budget=0` only when an
+      actionable zone is `budget_unenforceable` — the per-zone cap is exactly what could not be expressed for
+      it. Without headroom: `give_up|budget_ceiling`;
+   d. otherwise `rehunt_now`.
+
+**Three independent bounds** stop the loop, and each is pinned on its own by `demo-run-zone-sweep.sh` block
+(C): the sweep's `--max-rehunt-passes` (default 2), the no-progress guard (4a), and the budget branch (4b/4c).
+None of them reads `attempts[]`, because — per the finding above — `attempts[]` cannot bound the case that
+matters.
+
+**`remap_target` is a REPORTED decision, never an action.** The sweep never re-runs STAGE 1/2 by itself: a
+re-map invalidates the briefs and the very record the policy is reasoning over. The same goes for re-slicing.
+
+**Every exit path writes the report**, including the abort paths — `<out>/coverage/gap-remediation.json` (the
+`gap-remediation/v1` ledger: one entry per pass with `gaps_before`/`gaps_after` and a `closed` set *derived*
+from them, never asserted by the caller) and `<out>/coverage/gap-report.md`. Exit **0** only when the final
+record is `complete`; exit **5** when gaps remain after the policy exhausted its options, with the report
+named on stderr — an incomplete sweep is never silent. An aborted breadth pass propagates the inner exit code
+and still leaves a report saying no coverage record was written.
+
+Policy **learning** from re-hunt outcomes is deliberately out of scope (#1828 M4): the verb set is fixed and
+the rule is deterministic — same record, same ledger, same verb, every time.
+
 ### M3 within-contract depth: re-reading a function a breadth cell already flagged (#1827)
 
 Breadth surfaces roughly **one** bug per `(function × class)` and misses co-located ones. Two diagnosing

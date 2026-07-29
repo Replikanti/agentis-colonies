@@ -1022,6 +1022,45 @@ if [ -x "$REPO_ROOT/dark-factory/demo-run-zone-hunt.sh" ]; then
     fi
 fi
 
+# --- dark-factory gap-remediation policy: classification contract + decision rule (#1828 M1/M2) ---
+# lib/gap-policy.py turns a #1830 coverage record into one of four verbs (rehunt_now / raise_budget_and_rehunt /
+# remap_target / give_up). It NEVER re-derives #1830's classification — it shells out to lib/zone-coverage.py —
+# and it reads actionability from the `gaps` TSV only, never from the (strictly larger) `gap_zones` list.
+# demo-gap-policy.sh is pure bash/python3 over checked-in fixtures/coverage/ records (no agentis / LLM / network
+# / hunt): asserts the retryable/defect/capped/partial classification, the gaps-vs-gap_zones superset relation,
+# the finding the loop bound rests on (a budget_exhausted zone never becomes `capped` at ANY --max-attempts),
+# every branch of the decision rule incl. both sides of the budget branch and the no-progress guard, and that
+# the ledger DERIVES closed[] rather than trusting the caller.
+if [ -x "$REPO_ROOT/dark-factory/demo-gap-policy.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-gap-policy.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: gap-remediation policy (gap-policy.py: classification contract + the four-verb decision rule) (#1828)"
+    else
+        fail "dark-factory: gap-remediation policy regressed (#1828)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- dark-factory self-tuning breadth: the gap-remediation loop above run-zone-hunt.sh (#1828 M3) ---
+# run-zone-sweep.sh runs a breadth pass, asks gap-policy.py what to do with the resulting coverage record, and
+# re-enters through the shipped --rehunt-gaps until the rule says stop — with NO operator step in the loop.
+# run-zone-hunt.sh is not modified by #1828 at all; the sweep is strictly a layer above it.
+# demo-run-zone-sweep.sh is pure bash/git/python3 over the same fixtures/zone-map/ tree and offline seams the
+# capstone demo uses, with its own minimal --agentis stub: asserts AUTONOMY (one command closes the gaps),
+# INERTNESS (--max-rehunt-passes 0 produces a BYTE-IDENTICAL merged artifact to a direct run-zone-hunt.sh
+# pass), BOUNDEDNESS (three independent bounds stop a re-hunt that closes nothing — the record's own attempt
+# ceiling provably cannot), remap_target being REPORTED and never executed, the attempt ceiling, flag
+# validation, and that an aborted sweep still leaves both the ledger and an honest report on disk.
+if [ -x "$REPO_ROOT/dark-factory/demo-run-zone-sweep.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-run-zone-sweep.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: self-tuning breadth (run-zone-sweep.sh: breadth -> decide -> --rehunt-gaps loop, bounded, default-inert) (#1828)"
+    else
+        fail "dark-factory: self-tuning breadth regressed (#1828)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory integration-seam / composability lens: the C15 bug-class hunt lens (#1644, epic #1611) ---
 # A first-class C15 taxonomy class + a PROMPT-ONLY zone-mapper detection rule (tag integration/adapter zones —
 # *Adapter/*Guard/*Bridge/*Oracle/*Wrapper/*Router/*Strategy or external-protocol importers) + a conditional
