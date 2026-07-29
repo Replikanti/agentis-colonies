@@ -48,6 +48,10 @@
 #                     run-zone-hunt.sh. Default 0 = OFF, so the hunt invocation gains NO argument and the
 #                     measured pipeline is byte-identical to a pre-#1827 run. Depth ADDS cells, so a run with
 #                     it on is not cost-comparable to one without — state it next to any recall number.
+#   --zone-depth-lens-quota <N>  #1850 DEPTH ALLOCATION: consecutive lenses per flagged function before the
+#                     depth plan moves on, forwarded verbatim to run-zone-hunt.sh. Unset (default) = the
+#                     hunt stage's own default, and the invocation gains NO argument. N=1 reproduces #1827's
+#                     breadth-first spread, so the two A/B arms differ by exactly this one flag.
 #   --min-overlap <N> Overlap threshold for scoring's LOCATION-UNAVAILABLE FALLBACK ONLY (a lead with no
 #                     parseable function); location-resolvable leads are threshold-independent. Default 2.
 #   --agentis <bin>   agentis binary (default: `agentis` on PATH).
@@ -91,6 +95,8 @@ WORK="$PWD/corpus-bench-work"
 # (demo-mech-judge.sh assertion (s) fails the lint on divergence).
 JUDGE_MINCONF_DEFAULT=60
 IDS="" ; BACKEND="flat-cyborg" ; JOBS="1" ; MINOV="2" ; AGENTIS="agentis" ; JSON=0 ; ZONE_DEPTH_CELLS="0"
+# #1850: EMPTY = unset = run-discovery.sh owns the default; only a set value is forwarded to the hunt stage.
+ZONE_DEPTH_LENS_QUOTA=""
 JUDGE="off" ; JUDGE_CMD="" ; JUDGE_CACHE="" ; JUDGE_LOG="" ; JUDGE_BATCH="" ; JUDGE_MINCONF=""
 GT_DUPES="" ; GT_DUPES_MINCONF="" ; NO_GT_DUPES=0
 DO_SELFTEST=0 ; DO_FETCH=0 ; DO_GT=0 ; DO_DUPES=0 ; DO_HUNT=0 ; DO_SCORE=0 ; ANY_ACTION=0
@@ -111,6 +117,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --backend)     nv "$#" "$1"; BACKEND="$2"; shift 2;;
   --jobs)        nv "$#" "$1"; JOBS="$2"; shift 2;;
   --zone-depth-cells) nv "$#" "$1"; ZONE_DEPTH_CELLS="$2"; shift 2;;
+  --zone-depth-lens-quota) nv "$#" "$1"; ZONE_DEPTH_LENS_QUOTA="$2"; shift 2;;
   --min-overlap) nv "$#" "$1"; MINOV="$2"; shift 2;;
   --agentis)     nv "$#" "$1"; AGENTIS="$2"; shift 2;;
   --json)        JSON=1; shift;;
@@ -131,6 +138,14 @@ esac; done
 case "$ZONE_DEPTH_CELLS" in
   ''|*[!0-9]*) echo "run-corpus-bench.sh: --zone-depth-cells must be a non-negative integer (got '$ZONE_DEPTH_CELLS')" >&2; exit 2 ;;
 esac
+# #1850: validated only when SET, with the positive-integer shape the hunt stage enforces. The two A/B arms
+# differ by exactly this one bench-level flag, so a typo here must fail before a single contest is hunted.
+if [ -n "$ZONE_DEPTH_LENS_QUOTA" ]; then
+  case "$ZONE_DEPTH_LENS_QUOTA" in
+    ''|*[!0-9]*) echo "run-corpus-bench.sh: --zone-depth-lens-quota must be a positive integer (got '$ZONE_DEPTH_LENS_QUOTA')" >&2; exit 2 ;;
+  esac
+  [ "$ZONE_DEPTH_LENS_QUOTA" -ge 1 ] || { echo "run-corpus-bench.sh: --zone-depth-lens-quota must be >= 1 (got '$ZONE_DEPTH_LENS_QUOTA')" >&2; exit 2; }
+fi
 [ "$ANY_ACTION" -eq 1 ] || DO_SELFTEST=1
 
 say() { echo "run-corpus-bench.sh: $*" >&2; }
@@ -244,6 +259,7 @@ if [ "$DO_HUNT" -eq 1 ]; then
   DEPTH_ARG=""
   [ "$ZONE_DEPTH_CELLS" -gt 0 ] 2>/dev/null && DEPTH_ARG="$ZONE_DEPTH_CELLS"
   [ -n "$DEPTH_ARG" ] && say "HUNT: within-contract DEPTH pass ON (--zone-depth-cells $DEPTH_ARG, #1827) — this ADDS cells; a recall number from this run is not cost-comparable to a depth-off one"
+  [ -n "$ZONE_DEPTH_LENS_QUOTA" ] && say "HUNT: depth allocation pinned to --zone-depth-lens-quota $ZONE_DEPTH_LENS_QUOTA (#1850) — lenses per location per round; state it next to any recall number"
   while IFS=$'\t' read -r id _code _judging project_subdir scope_hint; do
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
@@ -254,6 +270,7 @@ if [ "$DO_HUNT" -eq 1 ]; then
     "$ZONEHUNT" --repo "$code_dir" --out "$WORK/$id/zone-hunt-out" --backend "$BACKEND" --jobs "$JOBS" \
       --agentis "$AGENTIS" ${scope_hint:+--scope-hint "$scope_hint"} \
       ${DEPTH_ARG:+--zone-depth-cells "$DEPTH_ARG"} \
+      ${ZONE_DEPTH_LENS_QUOTA:+--zone-depth-lens-quota "$ZONE_DEPTH_LENS_QUOTA"} \
       || say "  [$id] run-zone-hunt.sh exited non-zero; scoring whatever it produced"
   done < "$CORPUS"
 fi

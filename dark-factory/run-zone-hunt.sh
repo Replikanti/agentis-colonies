@@ -117,6 +117,11 @@
 #                       INTERACTION WITH THE CELL BUDGET: under --zone-cell-budget / --run-cell-budget the
 #                       depth allowance is TRIMMED TO 0 BEFORE a single breadth class is dropped — breadth
 #                       coverage is the #1824/#1825/#1826 investment and is never traded for depth.
+#   --zone-depth-lens-quota <N>  #1850: how many CONSECUTIVE lenses one flagged function gets before the depth
+#                       plan moves to the next one, forwarded to run-discovery.sh as --depth-lens-quota. Must
+#                       be >= 1; N=1 reproduces #1827's breadth-first spread exactly. Forwarded ONLY when the
+#                       operator set it AND depth is genuinely admitted, so a depth-off zone's argv — and a
+#                       default depth-on zone's argv — are byte-identical to before.
 #   --require-coverage <pct>  #1830: after STAGE 3, exit 4 BEFORE STAGE 4/5 when the covered fraction is below
 #                       <pct> (0-100). Default empty = OFF. A degraded run must not be able to publish a
 #                       plausible-looking result; the coverage record is already on disk when it aborts.
@@ -160,6 +165,9 @@ DEEP_HUNT_ONLY=0  # #1774: apply ONLY the STAGE 4.5 lens over an existing breadt
 ZONE_CELL_BUDGET=0 ; RUN_CELL_BUDGET=0 ; REQUIRE_COVERAGE=""
 # #1827: per-zone within-contract depth allowance. 0 (default) = OFF; the STAGE 3 invocation gains no argument.
 ZONE_DEPTH_CELLS=0
+# #1850: depth allocation. EMPTY = "the operator did not set it" — run-discovery.sh owns the default, so an
+# unset knob forwards NOTHING and the STAGE 3 argv is byte-identical to a pre-#1850 depth-on run.
+ZONE_DEPTH_LENS_QUOTA=""
 REHUNT_GAPS=0 ; REHUNT_INCLUDE_PARTIAL=0 ; REHUNT_MAX_ATTEMPTS=2
 # #1731: cross-run ensemble/union flags — a THIN pass-through: collected verbatim into DEEP_FWD and appended to
 # both --deep-hunt run-invariant-hunt.sh invocations. Empty (the default) => the arg lists are byte-identical.
@@ -199,6 +207,7 @@ while [ $# -gt 0 ]; do
     --zone-cell-budget) nv "$#"; ZONE_CELL_BUDGET="$2"; shift 2 ;;
     --run-cell-budget)  nv "$#"; RUN_CELL_BUDGET="$2"; shift 2 ;;
     --zone-depth-cells) nv "$#"; ZONE_DEPTH_CELLS="$2"; shift 2 ;;
+    --zone-depth-lens-quota) nv "$#"; ZONE_DEPTH_LENS_QUOTA="$2"; shift 2 ;;
     --require-coverage) nv "$#"; REQUIRE_COVERAGE="$2"; shift 2 ;;
     --rehunt-gaps)      REHUNT_GAPS=1; shift ;;
     --rehunt-include-partial) REHUNT_INCLUDE_PARTIAL=1; shift ;;
@@ -229,6 +238,12 @@ case "$ZONE_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-cell-bud
 case "$RUN_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --run-cell-budget must be a non-negative integer (got '$RUN_CELL_BUDGET')" >&2; exit 2 ;; esac
 # #1827: the depth allowance is a cell count, validated in the same block/shape as the budgets above.
 case "$ZONE_DEPTH_CELLS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-depth-cells must be a non-negative integer (got '$ZONE_DEPTH_CELLS')" >&2; exit 2 ;; esac
+# #1850: the allocation quota is validated only when SET (empty = unset = run-discovery.sh's own default), and
+# then with the positive-integer shape run-discovery.sh itself enforces — a typo must fail here, not 9 zones in.
+if [ -n "$ZONE_DEPTH_LENS_QUOTA" ]; then
+  case "$ZONE_DEPTH_LENS_QUOTA" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-depth-lens-quota must be a positive integer (got '$ZONE_DEPTH_LENS_QUOTA')" >&2; exit 2 ;; esac
+  [ "$ZONE_DEPTH_LENS_QUOTA" -ge 1 ] || { echo "run-zone-hunt.sh: --zone-depth-lens-quota must be >= 1 (got '$ZONE_DEPTH_LENS_QUOTA')" >&2; exit 2; }
+fi
 case "$REHUNT_MAX_ATTEMPTS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --rehunt-max-attempts must be a positive integer (got '$REHUNT_MAX_ATTEMPTS')" >&2; exit 2 ;; esac
 [ "$REHUNT_MAX_ATTEMPTS" -ge 1 ] || { echo "run-zone-hunt.sh: --rehunt-max-attempts must be >= 1 (got '$REHUNT_MAX_ATTEMPTS')" >&2; exit 2; }
 if [ -n "$REQUIRE_COVERAGE" ]; then
@@ -505,10 +520,14 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
   # `cells_charged` becomes breadth + depth and the detail names the split.
   # Empty unless depth is genuinely admitted, so a depth-off zone's run-discovery.sh argv is byte-identical.
   ZDEPTH_ARG=""
+  # #1850: the allocation rides the SAME admission gate — an operator-set quota reaches STAGE 3 only when
+  # depth is genuinely admitted, so a trimmed-to-0 or depth-off zone's argv gains nothing from it either.
+  ZQUOTA_ARG=""
   if [ "$ZDEPTH_EFF" -gt 0 ]; then
     ZDEPTH_ARG="$ZDEPTH_EFF"
+    ZQUOTA_ARG="$ZONE_DEPTH_LENS_QUOTA"
     ZCHARGE=$((ZCHARGE + ZDEPTH_EFF))
-    ZDETAIL="${ZDETAIL:+$ZDETAIL; }charged ${CELLS_PLANNED:-0} breadth + $ZDEPTH_EFF depth cell(s) (#1827 within-contract depth pass)"
+    ZDETAIL="${ZDETAIL:+$ZDETAIL; }charged ${CELLS_PLANNED:-0} breadth + $ZDEPTH_EFF depth cell(s) (#1827 within-contract depth pass)${ZQUOTA_ARG:+, lens quota $ZQUOTA_ARG per location per round (#1850)}"
   elif [ "$ZONE_DEPTH_CELLS" -gt 0 ]; then
     ZDETAIL="${ZDETAIL:+$ZDETAIL; }depth pass trimmed to 0 cell(s) — the cell budget leaves no headroom above breadth (#1827)"
   fi
@@ -545,6 +564,7 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
     --jobs "$JOBS" --backend "$BACKEND" --agentis "$AGENTIS" --out "$DISC/$ZID" \
     ${ZCLASSES_ARG:+--classes "$ZCLASSES_ARG"} \
     ${ZDEPTH_ARG:+--depth-max-cells "$ZDEPTH_ARG"} \
+    ${ZQUOTA_ARG:+--depth-lens-quota "$ZQUOTA_ARG"} \
     || ZRC=$?
   if [ "$ZRC" -eq 0 ]; then
     # The terminal status (hunted / hunted_empty / hunted_degraded) is DERIVED in the helper from this zone's

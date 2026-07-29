@@ -362,6 +362,34 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   post-merge step, not part of this change.
 
 ### Changed
+- **The within-contract depth pass now CONCENTRATES its budget instead of spreading it** (#1850). The #1827
+  depth pass allocated its cap breadth-first — one lens per flagged location per pass — so on the run that
+  produced its held-out verdict, 12 depth cells went to 10 distinct locations and no function was ever hunted
+  under more than two lenses. The mechanism the pass exists for (re-reading ONE function under several lenses
+  until it stops yielding) was therefore never exercised, and the A/B that shipped the flag OFF measured an
+  allocation, not the capability. `run-discovery.sh --depth-lens-quota <N>` (default **3**) replaces the
+  round-robin with a **quota-round-robin**: each location takes N consecutive lenses before the plan moves on,
+  in rounds, until the cap is spent.
+  - **`N=1` reproduces the old allocation byte-for-byte**, so the spread arm stays re-derivable with a flag
+    rather than a second code path — `demo-discovery-parallel.sh` (13d) keeps the pre-#1850 expectation
+    verbatim as exactly that case. N is not a taste parameter: on the recorded 12-cell plan, full exhaustion
+    (N = the zone's 6 classes) gives the acceptance-criterion location **zero** lenses, and N = 2 gives the
+    top locations only what the spread already gave them. N = 3 is the smallest quota that clears "hunted
+    under >= 3 distinct lenses" while still reaching the rank-4 location.
+  - **Nothing else moves.** The location ranking, the `(location x lens)` pair multiset and the cap semantics
+    (`min(cap, planned pairs)`) are untouched — only the emission order — so depth still ADDS cells,
+    `totals.depth_cells` still equals the observed extra, `--list-cells` still enumerates breadth only, and
+    the #1830 budget still trims depth to 0 before a single breadth class is dropped. Per-location spend is
+    bounded by the classes the ZONE advertises, so a quota can never burn a whole cap on one function.
+  - `run-zone-hunt.sh --zone-depth-lens-quota` and `bench/corpus-bench/run-corpus-bench.sh
+    --zone-depth-lens-quota` forward it; both are inert unless SET, so a default depth-on argv is
+    byte-identical to a pre-#1850 one and the two A/B arms differ by exactly one bench-level flag.
+    `totals.depth_lens_quota` (emitted only when depth is on, like `depth_cells`) records which allocation
+    produced a given set of cells, so no future reader can compare two depth arms blind.
+  - **Depth itself stays OFF** (`--depth-max-cells` / `--zone-depth-cells` remain `0`): this changes how the
+    cap is spent, not whether it is spent. The held-out A/B that could flip a default is declared up front in
+    `docs/zone-split-orchestration.md` (P0-P5, a fresh target, pre-committed FAIL consequences) and is an
+    operator run — it is NOT claimed by this change.
 - **The mechanism judge's scoring gate moved 70 -> 60, and every judged scorecard now records the ruler it was
   measured with** (#1841). The judge's decision rule states that divergent file or function names are NOT
   disqualifying, and the judge obeys that in the **decision** — but not in the **confidence**: when a lead
