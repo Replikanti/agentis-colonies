@@ -15,6 +15,40 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **SELF-TUNING BREADTH — the coordinator closes its own coverage gaps** (#1828, M1–M3).
+  #1830 made a truncated zone-hunt *visible* (`coverage/zone-coverage.json`, the nine-state vocabulary,
+  `gaps` / `--rehunt-gaps`) but decided nothing: closing a gap was still an operator step. This adds the
+  decision and the loop as a **new layer above** the capstone — **`run-zone-hunt.sh` is not modified at all**,
+  which is the strongest available form of default-inertness (an untouched file cannot regress its golden
+  pin) and keeps the M1..M5 orchestration tactical.
+  - `lib/gap-policy.py` — the rule. `decide` maps a coverage record + the pass history to exactly one of
+    `rehunt_now` / `raise_budget_and_rehunt` / `remap_target` / `give_up`; `ledger init|append|finish`
+    maintains the `gap-remediation/v1` account (per pass: `gaps_before`/`gaps_after` and a `closed` set
+    **derived** from them, never asserted by the caller); `report` renders the honest end-of-sweep markdown.
+    It never re-derives #1830's classification — it shells out to `lib/zone-coverage.py` — and it reads
+    actionability from the `gaps` TSV only, never from the strictly larger `gap_zones` list.
+  - `run-zone-sweep.sh` — the driver: breadth pass → `decide` → `--rehunt-gaps` → repeat, with no operator
+    step anywhere in the loop. `--max-rehunt-passes` (default 2), `--rehunt-max-attempts` (2),
+    `--rehunt-include-partial`, `--budget-ceiling` (**0 = a raise is never permitted**); everything after
+    `--` is forwarded verbatim, and the flags the sweep owns are rejected in the passthrough (exit 2).
+    Exit 0 only when coverage is complete, exit 5 when gaps remain — and `coverage/gap-remediation.json` +
+    `coverage/gap-report.md` are written on **every** exit path including the aborts.
+  - **The bound cannot come from the record.** `attempts[]` is appended only by `zone-coverage.py retry`,
+    which the runner calls only for artifact-bearing statuses, so a zone denied on admission
+    (`budget_exhausted` / `budget_unenforceable`) never becomes `capped` at any `--max-attempts`. Three
+    independent bounds replace it: the sweep's own pass ceiling, a no-progress guard (a plain re-hunt that
+    closed nothing escalates or stops), and the budget branch (a raise goes straight to the authorized
+    ceiling, so at most one per sweep). Measured: with all three removed the unenforceable-cap fixture
+    launched 129 re-hunt passes in 90 s and was still going.
+  - `remap_target` is a **reported** decision, never an action — the sweep never re-runs STAGE 1/2 by itself,
+    because a re-map invalidates the briefs and the record the policy is reasoning over. Policy *learning*
+    (M4) is explicitly out of scope: the verb set is fixed and the rule is deterministic.
+  - New `demo-gap-policy.sh` (30 assertions: the classification contract, the gaps-vs-`gap_zones` superset
+    relation, the never-`capped` finding at `--max-attempts` 1/2/3/99, every branch of the rule) and
+    `demo-run-zone-sweep.sh` (29 assertions: autonomy, byte-identical inertness against a direct
+    `run-zone-hunt.sh` pass, all three bounds, `remap_target`, the attempt ceiling, flag validation, abort
+    honesty), both wired into `tools/colony-lint.sh`; new `fixtures/coverage/` records; contract written up
+    in `docs/zone-split-orchestration.md` with operator recipes in `docs/RUNBOOK.md`.
 - **GT-EQUIVALENCE CREDITING for the corpus bench — opt-in, default OFF** (#1840).
   A concluded judging repo routinely accepts **two rows for the same underlying bug**, described differently
   and found by very different watson counts. The mechanism judge (#1829) is asked for at most one MATCH per

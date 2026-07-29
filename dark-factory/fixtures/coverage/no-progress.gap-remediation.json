@@ -1,0 +1,46 @@
+{
+  "schema": "gap-remediation/v1",
+  "repo": "fixture-target",
+  "commit": "0000000",
+  "coverage": "gap-only.zone-coverage.json",
+  "started_at": "2026-07-29T00:00:00Z",
+  "updated_at": "2026-07-29T00:00:00Z",
+  "passes": [
+    {
+      "n": 1,
+      "decision": "initial",
+      "run_cell_budget": 5,
+      "zone_cell_budget": 0,
+      "exit_code": 0,
+      "gaps_before": [],
+      "gaps_after": [
+        "z02_not_reached"
+      ],
+      "closed": [],
+      "detail": "the breadth pass",
+      "ended_at": "2026-07-29T00:00:00Z"
+    },
+    {
+      "n": 2,
+      "decision": "rehunt_now",
+      "run_cell_budget": 5,
+      "zone_cell_budget": 0,
+      "exit_code": 0,
+      "gaps_before": [
+        "z02_not_reached"
+      ],
+      "gaps_after": [
+        "z02_not_reached"
+      ],
+      "closed": [],
+      "detail": "a re-hunt that closed nothing — the same action provably repeats",
+      "ended_at": "2026-07-29T00:00:00Z"
+    }
+  ],
+  "closed": [],
+  "remaining": [
+    "z02_not_reached"
+  ],
+  "passes_done": 1,
+  "terminal_reason": ""
+}

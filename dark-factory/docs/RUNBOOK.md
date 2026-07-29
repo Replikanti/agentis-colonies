@@ -223,7 +223,35 @@ Per-zone `status` tells you what to do next:
 
 # close the gap later: STAGE 1/2 are skipped, ONLY the gap zones are re-entered, and the merge is the UNION.
 ./run-zone-hunt.sh --repo <repo> --out zone-hunt-out --rehunt-gaps
+
+# or let it close its own gaps (#1828): breadth -> decide -> --rehunt-gaps, no operator step in the loop.
+# run-zone-hunt.sh stays the SINGLE-PASS entrypoint; run-zone-sweep.sh is the self-tuning-breadth one.
+./run-zone-sweep.sh --repo <repo> --out zone-hunt-out --budget-ceiling 60 -- --run-cell-budget 40
 ```
+
+### Closing the gaps automatically (`run-zone-sweep.sh`, #1828)
+
+One command, then it decides for itself. Everything after `--` is forwarded verbatim to every inner
+`run-zone-hunt.sh` invocation; the sweep owns `--rehunt-gaps` / `--rehunt-max-attempts` /
+`--rehunt-include-partial` and rejects them in the passthrough (exit 2).
+
+| Sweep flag | Default | What it bounds |
+|---|---|---|
+| `--max-rehunt-passes N` | `2` | RE-HUNT passes after the breadth pass. `0` = breadth only (byte-equivalent to a direct `run-zone-hunt.sh` pass). **This is the bound that matters**: `--rehunt-max-attempts` cannot stop a `budget_exhausted` zone, which never gains an `attempts[]` entry |
+| `--rehunt-max-attempts N` | `2` | per-zone attempts, handed to both the policy and the runner |
+| `--rehunt-include-partial` | off | also act on `hunted_degraded` / `budget_truncated` zones |
+| `--budget-ceiling N` | `0` | the highest run cell budget the sweep may raise **itself** to. `0` = never; a raise goes straight to the ceiling, so at most ONE per sweep |
+
+Exit **0** = the final record is `complete`; **5** = gaps remain (the terminal reason is named on stderr);
+**2** usage; **3** missing prerequisite; anything else is the inner `run-zone-hunt.sh` exit code. Read
+`<out>/coverage/gap-report.md` either way — it is written on **every** exit path, names each closed gap and
+the pass that closed it, and for each remaining gap says why a re-hunt cannot close it. Terminal reasons:
+`complete`, `pass_ceiling`, `attempt_ceiling`, `budget_ceiling`, `no_progress`, `partial_only`,
+`upstream_defect` (re-map the target — the sweep never re-runs STAGE 1/2 by itself), `nothing_actionable`.
+
+Cost note: every pass re-runs STAGE 4/5 over the union, so the default `--max-rehunt-passes 2` means at most
+three verify passes. A passthrough `--require-coverage <pct>` makes intermediate passes halt at exit 4 before
+STAGE 4/5, which the sweep treats as a normal continue.
 
 A cell budget bounds the number of hunter substrate calls and **nothing else** — not wall-clock, not tokens,
 not memory. It is a coverage-shaping knob, not a cost cap. It never reorders anything: the cut always falls on

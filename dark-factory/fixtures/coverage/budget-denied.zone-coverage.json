@@ -1,0 +1,104 @@
+{
+  "schema": "zone-coverage/v1",
+  "repo": "fixture-target",
+  "commit": "0000000",
+  "started_at": "2026-07-29T00:00:00Z",
+  "updated_at": "2026-07-29T00:00:00Z",
+  "budget": {
+    "unit": "cells",
+    "per_zone": 2,
+    "run": 5
+  },
+  "zones": [
+    {
+      "id": "z01_hunted",
+      "name": "hunted zone",
+      "value_custody": true,
+      "order": 1,
+      "status": "hunted",
+      "cells_planned": 2,
+      "cells_charged": 2,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 2,
+      "candidates": 1,
+      "failed_cells": 0,
+      "exit_code": 0,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "",
+      "attempts": []
+    },
+    {
+      "id": "z02_budget_exhausted",
+      "name": "denied zone",
+      "value_custody": false,
+      "order": 2,
+      "status": "budget_exhausted",
+      "cells_planned": 2,
+      "cells_charged": 0,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": null,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "admission denied: 0 of the run cell budget (5 cells) remaining",
+      "attempts": []
+    },
+    {
+      "id": "z03_budget_unenforceable",
+      "name": "uncappable zone",
+      "value_custody": false,
+      "order": 3,
+      "status": "budget_unenforceable",
+      "cells_planned": 2,
+      "cells_charged": 0,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": null,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "cap 2 not enforceable: the zone matches several scope.tsv lines",
+      "attempts": []
+    }
+  ],
+  "totals": {
+    "zones": 3,
+    "cells_planned": 6,
+    "cells_charged": 2,
+    "candidates": 1,
+    "failed_cells": 0,
+    "by_status": {
+      "hunted": 1,
+      "hunted_empty": 0,
+      "hunted_degraded": 0,
+      "failed": 0,
+      "budget_exhausted": 1,
+      "budget_unenforceable": 1,
+      "in_flight": 0,
+      "no_brief": 0,
+      "unscoped": 0,
+      "not_reached": 0
+    }
+  },
+  "complete": false,
+  "gap_zones": [
+    "z02_budget_exhausted",
+    "z03_budget_unenforceable"
+  ]
+}
