@@ -43,7 +43,10 @@
 # The passthrough may NOT contain --rehunt-gaps / --rehunt-include-partial / --rehunt-max-attempts (the sweep
 # owns the re-entry) or --deep-hunt-only (which is mutually exclusive with a re-hunt): exit 2.
 #
-# REPORT (written on EVERY exit path, including the abort paths — an incomplete sweep is never silent):
+# REPORT (written on every exit path ONCE THE SWEEP HAS STARTED, including every abort path — an incomplete
+# sweep is never silent. Usage errors (exit 2) and missing-prerequisite errors (exit 3) return before the
+# ledger exists: there is no sweep to report on, and no --out to write it to, so they are loud on stderr
+# instead. #1849.):
 #   <out>/coverage/gap-remediation.json   the ledger: one entry per pass with gaps_before/after + closed
 #   <out>/coverage/gap-report.md          the human report: what closed, what remains, and why
 #
@@ -106,8 +109,14 @@ mkdir -p "$COVERAGE_DIR"
 TERMINAL_REASON="unset"
 
 # ----------------------------------------------------------------------------------------------------------
-# The report is written on EVERY exit path — including the abort paths — so an incomplete sweep is never
-# silent. It is a trap, not a call site, precisely because the interesting exits are the unhappy ones.
+# The report is written on every exit path from HERE ON — including every abort path — so an incomplete sweep
+# is never silent. It is a trap, not a call site, precisely because the interesting exits are the unhappy ones.
+#
+# The boundary is deliberate and is the whole content of #1849: the argument and prerequisite checks above
+# return BEFORE this point, and they have nothing to report — the ledger does not exist yet, and a usage error
+# may not even carry an --out to write into. `finish` degrades to a no-op in that state anyway (it is gated on
+# `[ -f "$LEDGER" ]`), so moving the trap up would buy a silent no-op rather than a report. Those paths stay
+# loud on stderr instead. Everything after this line, including a mid-sweep abort, produces the report.
 # ----------------------------------------------------------------------------------------------------------
 finish() {
   fin_rc=$?

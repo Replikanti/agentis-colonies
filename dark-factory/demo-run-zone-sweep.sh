@@ -485,6 +485,21 @@ else
   sed 's/^/      /' "$WORK/f.err" | tail -10 >&2
 fi
 
+# (#1849) The DOCUMENTED BOUNDARY of "never silent": a usage error returns before the sweep exists, so it
+# writes no report — and must not, since there is nothing to report and possibly no --out to report into. It
+# is loud on stderr instead. Pinned so the boundary stays a decision rather than drifting either way: if a
+# future change starts writing an empty report here, or stops being loud, this fails.
+OUTG="$WORK/g-usage"
+"$SWEEP" --repo "$REPO" --out "$OUTG" --budget-ceiling -1 >/dev/null 2>"$WORK/g.err"
+RCG=$?
+if [ "$RCG" -eq 2 ] && [ ! -f "$OUTG/coverage/gap-report.md" ] && [ ! -f "$OUTG/coverage/gap-remediation.json" ] \
+   && grep -q 'must be a non-negative integer' "$WORK/g.err"; then
+  ok "F: a usage error exits 2 loudly with NO report — the documented boundary of the never-silent rule"
+else
+  bad "F: the usage-error boundary drifted (exit $RCG; report present? $([ -f "$OUTG/coverage/gap-report.md" ] && echo yes || echo no))"
+  sed 's/^/      /' "$WORK/g.err" | tail -5 >&2
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — run-zone-sweep.sh (#1828 M3: autonomy, inertness, boundedness, defects, ceiling, validation) holds"
