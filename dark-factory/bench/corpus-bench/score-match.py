@@ -588,13 +588,22 @@ def main(argv):
     try:
         rows = []
         with open(truth_path, encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
+            for lineno, line in enumerate(fh, 1):
                 line = line.rstrip("\n")
                 if not line:
                     continue
                 cols = line.split("\t")
                 if len(cols) < 5 or not cols[0]:
                     continue
+                # #1845: NONE is the sentinel parse_verdicts() forcibly writes into a NO-MATCH decision, so a
+                # ground-truth row carrying that literal id would COLLIDE with every rejection the judge makes.
+                # extract-gt.sh can only ever emit H-N / M-N ids, so this cannot happen on real corpus data —
+                # but nothing here enforced it, which left the guarantee resting on a convention plus the
+                # `decision != "MATCH"` guard in the scoring loop rather than on the data model. Fail closed:
+                # a hand-authored fixture must not be able to make a NO-MATCH credit a row.
+                if cols[0] == "NONE":
+                    die(3, "truth.tsv row %d uses the reserved sev_id 'NONE' — that literal is the NO-MATCH "
+                           "sentinel in the judge reply grammar and can never name a ground-truth row" % lineno)
                 rows.append((cols[0], cols[4]))  # (sev_id, signature)
     except OSError as e:
         die(3, "cannot read truth.tsv: " + str(e))

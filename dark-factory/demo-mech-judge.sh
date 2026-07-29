@@ -387,6 +387,25 @@ else
     bad "(r) G-3 was credited at some threshold — a different mechanism must be rejected by the DECISION"
     printf '%s\n' "$ZERO" | sed 's/^/         | /' | head -8
   fi
+
+  # (t) #1845: NONE is the sentinel parse_verdicts() writes into every NO-MATCH decision, so a truth row
+  #     carrying that literal id would be credited by any rejection the judge makes. extract-gt.sh can only
+  #     emit H-N / M-N, so real corpus data cannot hit it — but that made the guarantee a CONVENTION plus the
+  #     `decision != "MATCH"` guard, not a property of the data model. The scorer now refuses such a row
+  #     outright, so the collision is unreachable no matter what the scoring loop later grows into.
+  NONE_TRUTH="$(mktemp)"
+  printf 'NONE\tHigh\t1\ta decoy row literally named NONE\ta decoy row literally named NONE -- prose\n' > "$NONE_TRUTH"
+  printf 'G-2\tMedium\t5\tanother row\tanother row -- prose\n' >> "$NONE_TRUTH"
+  NONE_OUT="$(python3 "$SCOREMATCH" "$NONE_TRUTH" "$LFIX/leads.json" \
+                --judge cache --judge-cache "$LCACHE" 2>&1)" && NONE_RC=0 || NONE_RC=$?
+  rm -f "$NONE_TRUTH"
+  if [ "$NONE_RC" -eq 3 ] && printf '%s\n' "$NONE_OUT" | grep -q "reserved sev_id 'NONE'"; then
+    ok "(t) a truth.tsv row whose sev_id is the reserved NO-MATCH sentinel 'NONE' is refused with exit 3 —"
+    echo "         a rejection can never collide with a ground-truth row id"
+  else
+    bad "(t) a truth.tsv row with sev_id 'NONE' was accepted (rc $NONE_RC) — a NO-MATCH decision can collide"
+    printf '%s\n' "$NONE_OUT" | sed 's/^/         | /' | head -6
+  fi
 fi
 
 echo
