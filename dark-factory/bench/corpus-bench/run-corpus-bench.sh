@@ -44,6 +44,10 @@
 #   --corpus <file>   corpus.tsv (default: corpus.tsv next to this script).
 #   --backend <b>     LLM backend for --hunt (default: flat-cyborg, the federation default; see ../../CLAUDE.md).
 #   --jobs <N>        run-zone-hunt.sh intra-zone concurrency (default 1).
+#   --zone-depth-cells <N>  #1827 WITHIN-CONTRACT DEPTH: max depth cells per zone, forwarded verbatim to
+#                     run-zone-hunt.sh. Default 0 = OFF, so the hunt invocation gains NO argument and the
+#                     measured pipeline is byte-identical to a pre-#1827 run. Depth ADDS cells, so a run with
+#                     it on is not cost-comparable to one without — state it next to any recall number.
 #   --min-overlap <N> Overlap threshold for scoring's LOCATION-UNAVAILABLE FALLBACK ONLY (a lead with no
 #                     parseable function); location-resolvable leads are threshold-independent. Default 2.
 #   --agentis <bin>   agentis binary (default: `agentis` on PATH).
@@ -86,7 +90,7 @@ WORK="$PWD/corpus-bench-work"
 # #1841: the scoring gate this harness forwards AND prints. Must equal score-match.py's judge_min_conf default
 # (demo-mech-judge.sh assertion (s) fails the lint on divergence).
 JUDGE_MINCONF_DEFAULT=60
-IDS="" ; BACKEND="flat-cyborg" ; JOBS="1" ; MINOV="2" ; AGENTIS="agentis" ; JSON=0
+IDS="" ; BACKEND="flat-cyborg" ; JOBS="1" ; MINOV="2" ; AGENTIS="agentis" ; JSON=0 ; ZONE_DEPTH_CELLS="0"
 JUDGE="off" ; JUDGE_CMD="" ; JUDGE_CACHE="" ; JUDGE_LOG="" ; JUDGE_BATCH="" ; JUDGE_MINCONF=""
 GT_DUPES="" ; GT_DUPES_MINCONF="" ; NO_GT_DUPES=0
 DO_SELFTEST=0 ; DO_FETCH=0 ; DO_GT=0 ; DO_DUPES=0 ; DO_HUNT=0 ; DO_SCORE=0 ; ANY_ACTION=0
@@ -106,6 +110,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --corpus)      nv "$#" "$1"; CORPUS="$2"; shift 2;;
   --backend)     nv "$#" "$1"; BACKEND="$2"; shift 2;;
   --jobs)        nv "$#" "$1"; JOBS="$2"; shift 2;;
+  --zone-depth-cells) nv "$#" "$1"; ZONE_DEPTH_CELLS="$2"; shift 2;;
   --min-overlap) nv "$#" "$1"; MINOV="$2"; shift 2;;
   --agentis)     nv "$#" "$1"; AGENTIS="$2"; shift 2;;
   --json)        JSON=1; shift;;
@@ -121,6 +126,11 @@ while [ $# -gt 0 ]; do case "$1" in
   -h|--help)     awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0;;
   *) echo "run-corpus-bench.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
+# Validated with the other bad-value checks, i.e. BEFORE the self-test short-circuit — a typo'd knob must fail
+# fast on every invocation, not only on the ones that reach the hunt stage.
+case "$ZONE_DEPTH_CELLS" in
+  ''|*[!0-9]*) echo "run-corpus-bench.sh: --zone-depth-cells must be a non-negative integer (got '$ZONE_DEPTH_CELLS')" >&2; exit 2 ;;
+esac
 [ "$ANY_ACTION" -eq 1 ] || DO_SELFTEST=1
 
 say() { echo "run-corpus-bench.sh: $*" >&2; }
@@ -229,6 +239,11 @@ fi
 # ---- --hunt (REAL federation) --------------------------------------------------------------------------------
 if [ "$DO_HUNT" -eq 1 ]; then
   [ -x "$ZONEHUNT" ] || { echo "run-corpus-bench.sh: run-zone-hunt.sh not found/executable at $ZONEHUNT" >&2; exit 3; }
+  # #1827: 0 (the default) leaves DEPTH_ARG empty, so the run-zone-hunt.sh invocation below gains NO argument
+  # and the measured pipeline is byte-identical to a pre-depth run. Only a positive value turns depth on.
+  DEPTH_ARG=""
+  [ "$ZONE_DEPTH_CELLS" -gt 0 ] 2>/dev/null && DEPTH_ARG="$ZONE_DEPTH_CELLS"
+  [ -n "$DEPTH_ARG" ] && say "HUNT: within-contract DEPTH pass ON (--zone-depth-cells $DEPTH_ARG, #1827) — this ADDS cells; a recall number from this run is not cost-comparable to a depth-off one"
   while IFS=$'\t' read -r id _code _judging project_subdir scope_hint; do
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
@@ -238,6 +253,7 @@ if [ "$DO_HUNT" -eq 1 ]; then
     say "HUNT: [$id] running the real federation (run-zone-hunt.sh --backend $BACKEND) ..."
     "$ZONEHUNT" --repo "$code_dir" --out "$WORK/$id/zone-hunt-out" --backend "$BACKEND" --jobs "$JOBS" \
       --agentis "$AGENTIS" ${scope_hint:+--scope-hint "$scope_hint"} \
+      ${DEPTH_ARG:+--zone-depth-cells "$DEPTH_ARG"} \
       || say "  [$id] run-zone-hunt.sh exited non-zero; scoring whatever it produced"
   done < "$CORPUS"
 fi
