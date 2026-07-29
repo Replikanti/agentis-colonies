@@ -294,6 +294,15 @@ if [ "$DO_SCORE" -eq 1 ]; then
       [ -n "$GT_DUPES_MINCONF" ] && DUPE_ARGS+=(--gt-dupes-min-confidence "$GT_DUPES_MINCONF")
       say "  [$id] GT-equivalence crediting ON (#1840): $dupes_file"
       say "  [$id] artifact provenance: $(grep -m1 '^# gt-dupes/' "$dupes_file" || echo '(no gt-dupes/vN provenance header)')"
+    elif [ "$NO_GT_DUPES" -eq 1 ]; then
+      say "  [$id] GT-equivalence crediting OFF (--no-gt-dupes): one row per accepted GT row, the pre-#1840 ruler"
+    else
+      # The silence this replaces cost a real misreading: a contest scored WITHOUT an artifact was compared
+      # against one scored WITH it, and a rare row that was present on both sides read as a regression. The
+      # ruler is only comparable across two numbers when both state it, which is the #1841 principle applied
+      # to the other half of the scorer.
+      say "  [$id] GT-equivalence crediting OFF: no $WORK/$id/gt-dupes.tsv (the --live stages do not build one;"
+      say "  [$id]   run --dupes to build it). A rare figure from this run is NOT comparable to one scored with it."
     fi
 
     # LOCATION-first bench matcher (#1697): score-match.py emits one `<sev_id>\tHIT|MISS` line per truth row
