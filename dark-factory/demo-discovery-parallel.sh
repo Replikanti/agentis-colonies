@@ -22,20 +22,29 @@
 #      prose split across several continuation lines with no CANDIDATE|/BLACKBOARD- prefix — is reconstructed
 #      WHOLE by `_join_wrapped_candidates()`: the full exploit sentence and poc_sketch survive intact, and the
 #      wrap does not split into two bogus candidates.
-#   11-17) #1827 WITHIN-CONTRACT DEPTH PASS (`--depth-max-cells`, default 0 = OFF):
+#   11-17) #1827 WITHIN-CONTRACT DEPTH PASS (`--depth-max-cells`, default 0 = OFF) + its #1850 ALLOCATION
+#          (`--depth-lens-quota`, default 3):
 #      11) INERTNESS: with the flag absent the report is byte-identical to the golden (assertion 1) AND
-#          discovery-results.json carries no `phase` and no `totals.depth_cells` key at all.
+#          discovery-results.json carries no `phase`, no `totals.depth_cells` and no `totals.depth_lens_quota`
+#          key at all.
 #      12) WIRING: with the flag on, the stub proves it received DEPTH_TARGET, DEPTH_KNOWN (the verbatim
 #          breadth lead) and an IN_SCOPE narrowed to the `file@fn` form — this is what pins the
 #          `exec.env_passthrough` registration, without which getenv() silently returns "".
 #      13) ACCOUNTING + ORDER: exactly min(cap, planned pairs) depth cells, each `"phase":"depth"`,
-#          totals.cells = breadth + depth, totals.depth_cells = depth; the order is the ranked round-robin
-#          (High location first, other-class lens before the producing one, one class per location per pass).
+#          totals.cells = breadth + depth, totals.depth_cells = depth, totals.depth_lens_quota = the
+#          allocation; the order is the ranked QUOTA-round-robin (High location first, other-class lens
+#          before the producing one, `quota` consecutive lenses per location per round).
+#      13d) COMPATIBILITY PIN: the SAME run at `--depth-lens-quota 1` reproduces #1827's breadth-first
+#          spread sequence VERBATIM — the spread arm stays re-derivable with a flag, not a second code path.
+#      13e) THE #1850 ACCEPTANCE, OFFLINE: on a 4-class zone at cap 3 the default quota puts all three depth
+#          cells on ONE function under three DISTINCT lenses (the offline analogue of "hunted under >= 3
+#          lenses"); the same fixture at quota 1 gives the top location at most 2 of the 3.
 #      14) NO-LEAD ZERO COST: a zone whose breadth cells all answer SAFE emits ZERO depth cells even at cap 12.
 #      15) DETERMINISM: two identical runs produce the same depth cell sequence, and the `--jobs 3` depth set
 #          equals the serial one (both derive it from the manifest-ordered accumulator, not the blackboard).
 #      16) WRAP SAFETY: a `DEPTH-CELL|` line following a wrapped CANDIDATE record is a record BOUNDARY — it is
 #          never glued onto the open record as prose and never scraped as a finding.
+#      17c) ARG GUARD: `--depth-lens-quota 0` and a non-numeric value both fail fast with exit 2.
 #      17) CB SWEEP (needs the agentis binary; clean [SKIP] otherwise): `depth_block()`, EXTRACTED FROM
 #          hunter.ag BY LINE RANGE (never copy-pasted, which would drift), completes under a `cb 2000;` probe
 #          — the ENFORCED cb_per_tick ceiling — at 1 / 8 / 64 / 256 known leads. The swept dimension is the
@@ -229,10 +238,12 @@ if python3 - "$SER_OUT/discovery-results.json" <<'PY'
 import sys, json
 d = json.load(open(sys.argv[1], encoding="utf-8"))
 assert "depth_cells" not in d["totals"], "totals grew depth_cells with the depth pass OFF: %r" % d["totals"]
+# #1850: the allocation record rides the SAME gate, so a depth-off run's key set is unchanged by it too.
+assert "depth_lens_quota" not in d["totals"], "totals grew depth_lens_quota with the depth pass OFF: %r" % d["totals"]
 for c in d["cells"]:
     assert "phase" not in c, "a breadth cell carries a phase key with the depth pass OFF: %r" % c
 PY
-then ok "11) depth OFF is inert: no totals.depth_cells, no per-cell phase key (report byte-identity above)"
+then ok "11) depth OFF is inert: no totals.depth_cells, no totals.depth_lens_quota, no per-cell phase key (report byte-identity above)"
 else bad "11) the depth-off JSON grew a depth key"
 fi
 
@@ -531,12 +542,14 @@ fi
 #     with the HIGH one deliberately surfaced by the SECOND cell so severity is not confounded with order:
 #       cell 1  C1 -> Vault.sol:withdraw (Medium)  -> class order [C6, C1]  (other lens first, producer last)
 #       cell 2  C6 -> Vault.sol:deposit  (High)    -> class order [C1, C6]
-#     Ranked High-before-Medium, spread round-robin one class per location per pass, the full plan is
-#       1. deposit/C1   2. withdraw/C6   3. deposit/C6   4. withdraw/C1
-#     so `--depth-max-cells 3` must take exactly the first three. Each of the three ranking/ordering rules is
-#     mutation-pinned by that sequence: dropping the severity criterion promotes `withdraw` (it appeared
-#     first); putting the producing lens first flips every pair; iterating locations before passes would
-#     spend the whole cap on `deposit` and never re-read `withdraw`.
+#     Ranked High-before-Medium and spent by the #1850 QUOTA-round-robin at the default quota 3 (each location
+#     takes its whole 2-lens list before the plan moves on), the full plan is
+#       1. deposit/C1   2. deposit/C6   3. withdraw/C6   4. withdraw/C1
+#     so `--depth-max-cells 3` must take exactly the first three. That sequence still mutation-pins all three
+#     ranking/ordering rules the pre-#1850 one did — dropping the severity criterion promotes `withdraw` (it
+#     appeared first) and changes it; putting the producing lens first flips every pair — and it now
+#     ADDITIONALLY fires if the allocation regresses to the breadth-first spread, which the old expectation
+#     could not detect. The spread itself is not lost: (13d) pins it verbatim under `--depth-lens-quota 1`.
 # ----------------------------------------------------------------------------------------------------------
 note "12) #1827: with --depth-max-cells the hunter receives DEPTH_TARGET / DEPTH_KNOWN / a narrowed IN_SCOPE ..."
 DEPTH_OUT="$WORK/out-depth3"
@@ -581,7 +594,7 @@ else
   bad "12b) DEPTH_TARGET/DEPTH_KNOWN missing from exec.env_passthrough in $DEPTH_CFG — the depth pass would be inert at runtime"
 fi
 
-note "13) #1827: depth cells are counted, phase-tagged and ordered by the ranked round-robin ..."
+note "13) #1827/#1850: depth cells are counted, phase-tagged and ordered by the ranked quota-round-robin ..."
 if python3 - "$DEPTH_OUT/discovery-results.json" <<'PY'
 import sys, json
 d = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -591,20 +604,22 @@ assert len(breadth) == 4, "expected 4 breadth cells, got %d" % len(breadth)
 assert len(depth) == 3, "expected min(cap=3, 4 planned pairs) = 3 depth cells, got %d" % len(depth)
 assert d["totals"]["cells"] == 7, "totals.cells must be breadth+depth = 7, got %r" % d["totals"]["cells"]
 assert d["totals"]["depth_cells"] == 3, "totals.depth_cells wrong: %r" % d["totals"]["depth_cells"]
+# #1850: the arm records WHICH allocation produced it, so two depth runs can never be compared blind.
+assert d["totals"]["depth_lens_quota"] == 3, "totals.depth_lens_quota wrong: %r" % d["totals"].get("depth_lens_quota")
 for c in breadth:
     assert "phase" not in c, "a breadth cell was phase-tagged: %r" % c
 seq = [(c["class"], c["files"]) for c in depth]
 assert seq == [("C1", "contracts/vault/Vault.sol@deposit"),
-               ("C6", "contracts/vault/Vault.sol@withdraw"),
-               ("C6", "contracts/vault/Vault.sol@deposit")], \
-    "the depth order is not the ranked round-robin: %r" % seq
+               ("C6", "contracts/vault/Vault.sol@deposit"),
+               ("C6", "contracts/vault/Vault.sol@withdraw")], \
+    "the depth order is not the ranked quota-round-robin: %r" % seq
 # The depth cell's `files` differs from the breadth cell's, so run-zone-hunt.sh's (subsystem, class, files)
 # merge key cannot collapse a depth cell into the breadth cell of the same class.
 bkeys = set((c["subsystem"], c["class"], c["files"]) for c in breadth)
 for c in depth:
     assert (c["subsystem"], c["class"], c["files"]) not in bkeys, "a depth cell collides with a breadth cell key"
 PY
-then ok "13) 3 depth cells, each phase=depth, totals.cells = 4+3 and totals.depth_cells = 3; order = [deposit/C1, withdraw/C6, deposit/C6]"
+then ok "13) 3 depth cells, each phase=depth, totals.cells = 4+3, totals.depth_cells = 3, totals.depth_lens_quota = 3; order = [deposit/C1, deposit/C6, withdraw/C6]"
 else bad "13) the depth accounting / ordering assertion failed"
 fi
 if [ "$(grep -c '^| ' "$DEPTH_OUT/discovery-report.md" 2>/dev/null || printf '0')" -ge 1 ] \
@@ -626,6 +641,80 @@ assert d["totals"]["cells"] == 8, "totals.cells wrong at cap 12: %r" % d["totals
 PY
 then ok "13c) at cap 12 the plan is EXHAUSTED at its 4 (location x lens) pairs — min(cap, planned), never padded"
 else bad "13c) the depth plan was padded or truncated wrongly at cap 12"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (13d) #1850 COMPATIBILITY PIN. `--depth-lens-quota 1` must reproduce #1827's breadth-first spread EXACTLY —
+#     this expectation is the pre-#1850 assertion 13, kept verbatim. It is what makes the quota a single
+#     integer spanning both allocations instead of a second code path, and what keeps #1827's measured arm
+#     re-derivable at this commit. MUTATION: break the quota=1 degeneration (e.g. clamp the quota to >= 2, or
+#     iterate locations before rounds unconditionally) and this fires while (13) still passes.
+# ----------------------------------------------------------------------------------------------------------
+note "13d) #1850: --depth-lens-quota 1 reproduces the pre-#1850 breadth-first spread verbatim ..."
+DEPTH_Q1="$WORK/out-depth3-q1"
+STUB_DEPTH=1 \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$DEPTH_Q1" --jobs 1 --depth-max-cells 3 --depth-lens-quota 1 >/dev/null 2>"$WORK/depthq1.err"
+if python3 - "$DEPTH_Q1/discovery-results.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+depth = [c for c in d["cells"] if c.get("phase") == "depth"]
+assert len(depth) == 3, "expected 3 depth cells at quota 1, got %d" % len(depth)
+assert d["totals"]["depth_cells"] == 3, "totals.depth_cells wrong at quota 1: %r" % d["totals"]["depth_cells"]
+assert d["totals"]["depth_lens_quota"] == 1, "totals.depth_lens_quota wrong: %r" % d["totals"].get("depth_lens_quota")
+seq = [(c["class"], c["files"]) for c in depth]
+assert seq == [("C1", "contracts/vault/Vault.sol@deposit"),
+               ("C6", "contracts/vault/Vault.sol@withdraw"),
+               ("C6", "contracts/vault/Vault.sol@deposit")], \
+    "quota 1 did NOT reproduce the #1827 spread: %r" % seq
+PY
+then ok "13d) at quota 1 the plan is the #1827 spread byte-for-byte: [deposit/C1, withdraw/C6, deposit/C6]"
+else bad "13d) --depth-lens-quota 1 did not reproduce the shipped spread"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (13e) #1850 ACCEPTANCE, OFFLINE. The issue's acceptance line is "one flagged function is hunted under >= 3
+#     distinct lenses at the same total depth budget". The pinned fixture above cannot express it — its zone
+#     advertises only 2 classes, so no location HAS a third lens. This uses its OWN scope fixture (the pinned
+#     one must not change: assertion 1 is a byte-identical golden comparison) declaring a 4-class zone over
+#     the same file. The stub flags `deposit` High under C6 and `withdraw` Medium under C1; C15/C2 answer
+#     SAFE. At cap 3 the default quota must put ALL THREE cells on the top-ranked function under THREE
+#     DISTINCT lenses. The quota-1 arm of the same fixture is the control: it can give the top location at
+#     most 2 of the 3 cells, so this pair fails the moment the quota stops concentrating.
+# ----------------------------------------------------------------------------------------------------------
+note "13e) #1850: on a 4-class zone the default quota hunts ONE function under 3 distinct lenses ..."
+SCOPE4="$WORK/scope-4class.tsv"
+printf 'vault deposits | C1,C6,C15,C2 | contracts/vault/Vault.sol\n' > "$SCOPE4"
+Q3_OUT="$WORK/out-4class-q3"
+STUB_DEPTH=1 \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE4" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$Q3_OUT" --jobs 1 --depth-max-cells 3 >/dev/null 2>"$WORK/q3.err"
+Q1_OUT="$WORK/out-4class-q1"
+STUB_DEPTH=1 \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE4" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$Q1_OUT" --jobs 1 --depth-max-cells 3 --depth-lens-quota 1 >/dev/null 2>"$WORK/q1.err"
+if python3 - "$Q3_OUT/discovery-results.json" "$Q1_OUT/discovery-results.json" <<'PY'
+import sys, json, collections
+def depth_cells(p):
+    d = json.load(open(p, encoding="utf-8"))
+    return d, [c for c in d["cells"] if c.get("phase") == "depth"]
+d3, q3 = depth_cells(sys.argv[1])
+d1, q1 = depth_cells(sys.argv[2])
+assert len(q3) == 3, "expected 3 depth cells at the default quota, got %d" % len(q3)
+assert d3["totals"]["depth_lens_quota"] == 3, "the default quota is not 3: %r" % d3["totals"].get("depth_lens_quota")
+# THE ACCEPTANCE: one location, three distinct lenses.
+locs = collections.Counter(c["files"] for c in q3)
+assert len(locs) == 1, "the depth budget still spread over %d locations: %r" % (len(locs), dict(locs))
+assert list(locs)[0].endswith("@deposit"), "the concentrated location is not the top-ranked one: %r" % list(locs)
+lenses = set(c["class"] for c in q3)
+assert len(lenses) == 3, "the concentrated location got %d distinct lenses, expected 3: %r" % (len(lenses), sorted(lenses))
+# The CONTROL: the same fixture at quota 1 cannot concentrate — it is the mechanism check, not a tautology.
+assert len(q1) == 3, "expected 3 depth cells in the quota-1 control, got %d" % len(q1)
+top = collections.Counter(c["files"] for c in q1).most_common(1)[0][1]
+assert top <= 2, "the quota-1 control gave the top location %d of 3 cells — the quota is not what concentrates" % top
+PY
+then ok "13e) at the default quota all 3 depth cells hunt Vault.sol@deposit under 3 DISTINCT lenses; the quota-1 control gives its top location at most 2"
+else bad "13e) the concentration assertion failed (the depth budget did not exhaust one location)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -746,6 +835,24 @@ if [ "$BADRC" -eq 2 ] && grep -q 'must be a non-negative integer' "$WORK/badval.
 else
   bad "17a) --depth-max-cells notanumber did not fail fast (exit $BADRC)"
 fi
+
+# (17c) #1850: the quota is a POSITIVE integer. 0 is rejected too — a 0-lens quota would emit an EMPTY depth
+# plan at a non-zero cap, i.e. silently disable a depth pass the operator explicitly paid for. Both errors
+# must NAME the flag and the offending value, and both must fire BEFORE any run side effect.
+for _bad in 0 notanumber; do
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+    --out "$WORK/out-badquota-$_bad" --depth-max-cells 3 --depth-lens-quota "$_bad" \
+    >/dev/null 2>"$WORK/badquota-$_bad.err"
+  QRC=$?
+  if [ "$QRC" -eq 2 ] \
+     && grep -q -- '--depth-lens-quota' "$WORK/badquota-$_bad.err" \
+     && grep -q "got '$_bad'" "$WORK/badquota-$_bad.err" \
+     && [ ! -d "$WORK/out-badquota-$_bad" ]; then
+    ok "17c) --depth-lens-quota $_bad fails fast with exit 2, names the flag + the value, and writes no output dir"
+  else
+    bad "17c) --depth-lens-quota $_bad did not fail fast (exit $QRC)"
+  fi
+done
 
 # The CB sweep runs the SHIPPED depth_block(), EXTRACTED FROM hunter.ag BY LINE RANGE — a copy-pasted twin
 # would silently drift from the agent it claims to measure. `cb 2000;` is the ENFORCED per-tick ceiling

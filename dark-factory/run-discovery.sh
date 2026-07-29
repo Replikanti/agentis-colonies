@@ -56,12 +56,25 @@
 #                       mechanistically DIFFERENT bug or answer SAFE. Class order per location = the zone's
 #                       OTHER classes first (in manifest order), the producing class LAST; locations are
 #                       ranked High-before-Medium, then by candidate count, then by first appearance, and the
-#                       cap is spread ROUND-ROBIN (one class per location per pass) so it never burns entirely
-#                       on the first flagged function. Depth cells are REAL cells: counted in the run total,
+#                       cap is spread by the QUOTA-ROUND-ROBIN below so it never burns entirely on the first
+#                       flagged function. Depth cells are REAL cells: counted in the run total,
 #                       present in `cells[]` (tagged `"phase":"depth"`), and charged by run-zone-hunt.sh's
 #                       admission rule — never a hidden second prompt inside an existing cell. ONE pass, never
 #                       a loop: the target list is computed once from the breadth set, so a depth candidate can
 #                       never spawn further depth cells.
+#   --depth-lens-quota <N>  #1850 ALLOCATION of the --depth-max-cells cap across the flagged locations.
+#                       N (default 3, must be >= 1) = how many CONSECUTIVE lenses one location gets before the
+#                       plan moves to the next one; after every location has had N the rounds repeat (positions
+#                       N+1..2N, and so on) until the cap is spent. N=1 degenerates to the shipped
+#                       one-class-per-location-per-pass spread BYTE-FOR-BYTE, which is why the old allocation
+#                       needs no second code path. #1827's breadth-first spread never gave any location more
+#                       than 1-2 lenses, so the mechanism the depth pass exists for — hunting ONE function
+#                       under several lenses — was never exercised; N=3 is the smallest quota that clears
+#                       "hunted under >= 3 distinct lenses" while still reaching the rank-4 location at the
+#                       caps we measure with. Per-location spend is naturally bounded by the number of classes
+#                       the ZONE advertises (a location's lens list IS the zone's class list), so this can
+#                       never burn a whole cap on one function. Ranking, the pair multiset and the cap
+#                       semantics (min(cap, planned pairs)) are UNCHANGED — only the emission order moves.
 #   --list-cells, -n    DRY RUN (#1612): print one `CELL|<subsystem>|<class>|<files>` line per cell this
 #                       manifest WOULD hunt, then exit 0 — BEFORE any agentis init / config / report side
 #                       effect. Needs neither --brief nor an agentis binary; the round-trip check for
@@ -86,6 +99,7 @@ BACKEND="flat-cyborg" ; MODEL="" ; OUT="$PWD/discovery-out"
 LIST_CELLS=""   # #1612: opt-in dry-run; empty = the shipped hunt path, byte-identical.
 JOBS=1          # #1625: opt-in bounded-concurrency fan-out; 1 = serial, byte-identical to the pre-M3 hunt.
 DEPTH_MAX_CELLS=0  # #1827: opt-in within-contract depth pass; 0 = OFF, the whole path is inert.
+DEPTH_LENS_QUOTA=3 # #1850: consecutive lenses per location per round; 1 = the #1827 spread, byte-for-byte.
 
 need() { [ "$1" -ge 2 ] || { echo "run-discovery.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -102,6 +116,7 @@ while [ $# -gt 0 ]; do
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --jobs|-j) need "$#"; JOBS="$2"; shift 2 ;;
     --depth-max-cells) need "$#"; DEPTH_MAX_CELLS="$2"; shift 2 ;;
+    --depth-lens-quota) need "$#"; DEPTH_LENS_QUOTA="$2"; shift 2 ;;
     --list-cells|-n) LIST_CELLS=1; shift ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-discovery.sh: unknown flag $1" >&2; exit 2 ;;
@@ -114,6 +129,10 @@ case "$JOBS" in ''|*[!0-9]*) echo "run-discovery.sh: --jobs must be a positive i
 # #1827: --depth-max-cells uses the same integer validation + exit-2 shape (also validated under --list-cells,
 # which then ignores it — depth cells are not enumerable ex ante).
 case "$DEPTH_MAX_CELLS" in ''|*[!0-9]*) echo "run-discovery.sh: --depth-max-cells must be a non-negative integer (got '$DEPTH_MAX_CELLS')" >&2; exit 2 ;; esac
+# #1850: --depth-lens-quota is a POSITIVE integer — 0 lenses per location would emit an empty plan at a
+# non-zero cap, i.e. silently disable a depth pass the operator asked for. Same fail-fast shape as --jobs.
+case "$DEPTH_LENS_QUOTA" in ''|*[!0-9]*) echo "run-discovery.sh: --depth-lens-quota must be a positive integer (got '$DEPTH_LENS_QUOTA')" >&2; exit 2 ;; esac
+[ "$DEPTH_LENS_QUOTA" -ge 1 ] || { echo "run-discovery.sh: --depth-lens-quota must be >= 1 (got '$DEPTH_LENS_QUOTA')" >&2; exit 2; }
 
 [ -n "$REPO" ]  && [ -d "$REPO" ]  || { echo "run-discovery.sh: --repo <cloned repo dir> required (clone it with fetch-target.sh)" >&2; exit 2; }
 [ -n "$SCOPE" ] && [ -f "$SCOPE" ] || { echo "run-discovery.sh: --scope <subsystem|classes|files manifest> required" >&2; exit 2; }
@@ -397,13 +416,14 @@ scrape_cell_log() {
 # breadth candidates first, (c) first appearance in manifest order. Per location the class order is the zone's
 # classes that did NOT produce a lead there (in manifest order) FIRST, then the producing one(s) LAST — at both
 # diagnosing sites the co-located miss lives under a DIFFERENT taxonomy class than the hit, so a cross-lens
-# re-read is the higher-yield draw and same-class exhaustion is the fallback. The cap is then spread
-# ROUND-ROBIN (one class per location per pass) so it cannot burn entirely on the first flagged function.
+# re-read is the higher-yield draw and same-class exhaustion is the fallback. The cap is then spent by the
+# #1850 QUOTA-ROUND-ROBIN: `quota` consecutive lenses per location, in rounds, so the budget CONCENTRATES on
+# the top-ranked functions without ever burning entirely on the first one (quota = 1 is the #1827 spread).
 #
 # The JSON scan is a real (tiny) string scanner rather than a `,`-split: _json_str escapes `\` and `"`, and a
 # hunter's exploit prose routinely contains quotes — splitting on `","` would mis-slice such a record.
 _plan_depth_cells() {
-  awk -v cap="$1" -v kdir="$2" '
+  awk -v cap="$1" -v kdir="$2" -v quota="$3" '
     # Index of the value opening-quote for <key> at or after <from>; 0 when absent.
     function nextkey(s, from, key,   q) {
       q = index(substr(s, from), key)
@@ -521,15 +541,27 @@ _plan_depth_cells() {
         close(kf)
         loc_kf[key] = kf
       }
+      # #1850 QUOTA-ROUND-ROBIN. Each location gets `quota` CONSECUTIVE lenses before the plan moves on;
+      # after every location has had its quota the rounds repeat (positions quota+1..2*quota, and so on)
+      # until the cap is spent. At quota == 1 this degenerates to the #1827 `for pass { for location }`
+      # spread BYTE-FOR-BYTE, which is why that allocation needs no second code path. A location with fewer
+      # remaining lenses than the quota emits all it has and the stream continues — no reserved-but-unspent
+      # quota, so the plan is one ordered stream truncated at `cap`, work-conserving by construction.
       emitted = 0
-      for (p = 1; p <= maxn; p++) {
+      for (rnd = 0; rnd * quota < maxn; rnd++) {
+        progressed = 0
         for (i = 1; i <= nloc; i++) {
-          if (emitted >= cap) exit 0
           key = ord[i]
-          if (p > clsn[key]) continue
-          printf "%s\t%s\t%s\t%s\n", loc_subsys[key], clsl[key, p], loc_target[key], loc_kf[key]
-          emitted++
+          for (q = 1; q <= quota; q++) {
+            p = rnd * quota + q
+            if (p > clsn[key]) break            # the lens list of this location is exhausted for this round
+            if (emitted >= cap) exit 0
+            printf "%s\t%s\t%s\t%s\n", loc_subsys[key], clsl[key, p], loc_target[key], loc_kf[key]
+            emitted++
+            progressed = 1
+          }
         }
+        if (!progressed) break
       }
     }
   ' "$CELLS_JSONL"
@@ -643,9 +675,9 @@ DEPTH_CELLS=0
 if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then
   DEPTH_KNOWN_DIR="$RUN/depth-known"; mkdir -p "$DEPTH_KNOWN_DIR"
   DEPTH_PLAN="$RUN/depth-plan.tsv"
-  _plan_depth_cells "$DEPTH_MAX_CELLS" "$DEPTH_KNOWN_DIR" > "$DEPTH_PLAN"
+  _plan_depth_cells "$DEPTH_MAX_CELLS" "$DEPTH_KNOWN_DIR" "$DEPTH_LENS_QUOTA" > "$DEPTH_PLAN"
   DEPTH_PLANNED="$(grep -c . "$DEPTH_PLAN" 2>/dev/null || true)"
-  echo "run-discovery.sh: depth pass — ${DEPTH_PLANNED:-0} extra cell(s) over the flagged functions (cap $DEPTH_MAX_CELLS)" >&2
+  echo "run-discovery.sh: depth pass — ${DEPTH_PLANNED:-0} extra cell(s) over the flagged functions (cap $DEPTH_MAX_CELLS, lens quota $DEPTH_LENS_QUOTA per location per round)" >&2
   while IFS='	' read -r D_SUBSYS D_CLS D_TARGET D_KNOWNF || [ -n "${D_SUBSYS:-}" ]; do
     [ -n "$D_SUBSYS" ] || continue
     CELLS=$((CELLS + 1))
@@ -698,8 +730,10 @@ RESULTS_JSON="$OUT/discovery-results.json"
 CELLS_ARR="$(paste -sd, "$CELLS_JSONL" 2>/dev/null || true)"
 # #1827: totals.depth_cells appears ONLY when --depth-max-cells > 0, so a depth-off run's JSON keys are
 # byte-identical to the pre-#1827 ones. `cells` is the TOTAL (breadth + depth) — depth never hides.
+# #1850: totals.depth_lens_quota rides the SAME gate and records WHICH allocation produced these cells, so no
+# future reader can compare two depth arms without seeing that they were spent differently.
 DEPTH_TOTAL_JSON=""
-if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then DEPTH_TOTAL_JSON=",\"depth_cells\":$DEPTH_CELLS"; fi
+if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then DEPTH_TOTAL_JSON=",\"depth_cells\":$DEPTH_CELLS,\"depth_lens_quota\":$DEPTH_LENS_QUOTA"; fi
 printf '{"repo":%s,"backend":%s,"jobs":%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s%s}}\n' \
   "$(_json_str "$(basename "$REPO")")" "$(_json_str "$BACKEND")" "$JOBS" "$CELLS_ARR" \
   "$CELLS" "$CANDIDATES" "$STEERS" "$FAILED_CELLS" "$DEPTH_TOTAL_JSON" > "$RESULTS_JSON"

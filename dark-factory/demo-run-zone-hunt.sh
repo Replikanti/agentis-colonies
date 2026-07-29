@@ -37,9 +37,11 @@
 #         cell cannot drop the earlier attempt's lead, and a partial carry is counted + reported.
 #      (k) covers BOTH zero-cell triggers — the unclassified zone and the classified zone whose name
 #         map-zones.sh's clean() rewrote — so narrowing the guard back to "no classes" fails CI.
-#   p-s) #1827 WITHIN-CONTRACT DEPTH (`--zone-depth-cells`, default 0 = OFF):
+#   p-t) #1827 WITHIN-CONTRACT DEPTH (`--zone-depth-cells`, default 0 = OFF) + its #1850 ALLOCATION
+#        (`--zone-depth-lens-quota`, default unset = run-discovery.sh owns it):
 #      p) INERT BY DEFAULT: with the flag absent, the run-discovery.sh argv STAGE 3 actually executes carries
-#         NO --depth-max-cells (asserted against a recorded argv, not inferred from an artifact).
+#         NO --depth-max-cells and NO --depth-lens-quota (asserted against a recorded argv, not inferred from
+#         an artifact).
 #      q) DEPTH GIVES WAY FIRST: under a cell budget the depth allowance is trimmed to whatever headroom is
 #         left ABOVE the zone's planned breadth cells — and where the cap is at/below the breadth count depth
 #         is 0 and the existing class-truncation path runs unchanged (same classes, same charge, same argv).
@@ -48,6 +50,10 @@
 #         while spending 0 depth cells (depth is not enumerable ex ante, so the cap is charged up front).
 #      s) NO DOUBLE CHARGE: a --rehunt-gaps pass with depth on completes the record without any zone ever
 #         being charged more than one attempt's breadth + depth.
+#      t) #1850 ALLOCATION FORWARDING: --zone-depth-lens-quota reaches every hunted zone as
+#         --depth-lens-quota, is recorded in the coverage detail and in each zone's totals, and does NOT
+#         change what depth costs — cells_charged is still breadth + the depth cap. With the knob unset the
+#         depth-on argv is byte-identical to a pre-#1850 one (asserted inside (r)).
 #
 # Usage:  dark-factory/demo-run-zone-hunt.sh
 # Requires: git + python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression.
@@ -1081,10 +1087,11 @@ DF_ARGV_LOG="$ARGV_OFF" DF_REAL_DISCOVERY="$HERE/run-discovery.sh" \
 RCP=$?
 [ "$RCP" -eq 0 ] && ok "the shimmed capstone runs the same chain and exits 0 (the recorder is transparent)" \
   || { bad "the shimmed depth-off run exited $RCP"; sed 's/^/      /' "$WORK/zhp.err" | tail -20 >&2; }
-if [ -s "$ARGV_OFF" ] && ! grep -q -- '--depth-max-cells' "$ARGV_OFF"; then
-  ok "p) not one recorded run-discovery.sh invocation (hunt or --list-cells probe) carries --depth-max-cells"
+if [ -s "$ARGV_OFF" ] && ! grep -q -- '--depth-max-cells' "$ARGV_OFF" \
+   && ! grep -q -- '--depth-lens-quota' "$ARGV_OFF"; then
+  ok "p) not one recorded run-discovery.sh invocation (hunt or --list-cells probe) carries --depth-max-cells or --depth-lens-quota"
 else
-  bad "p) a --depth-max-cells argument appeared with --zone-depth-cells absent (or nothing was recorded)"
+  bad "p) a --depth-max-cells / --depth-lens-quota argument appeared with the depth flags absent (or nothing was recorded)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -1110,6 +1117,13 @@ if [ "$(grep -c -- '--depth-max-cells 2' "$ARGV_ON")" -eq 4 ]; then
   ok "r) each of the 4 hunted zones was invoked with --depth-max-cells 2 (the --list-cells probes are not)"
 else
   bad "r) expected 4 hunt invocations carrying --depth-max-cells 2, got $(grep -c -- '--depth-max-cells 2' "$ARGV_ON")"
+fi
+# #1850: with the allocation knob UNSET, a depth-on argv is byte-identical to the pre-#1850 one — the default
+# lives in run-discovery.sh and is never re-spelled here (two spellings of one default is how they drift).
+if ! grep -q -- '--depth-lens-quota' "$ARGV_ON"; then
+  ok "r1b) with --zone-depth-lens-quota unset the depth-on argv gains no --depth-lens-quota (run-discovery.sh owns the default)"
+else
+  bad "r1b) an unset --zone-depth-lens-quota still forwarded --depth-lens-quota into the STAGE 3 argv"
 fi
 if python3 - "$OUTR" <<'PY'
 import sys, os, json
@@ -1264,7 +1278,59 @@ PY
 then ok "s) the re-hunt completes the record and no zone is charged (or runs) more than one attempt's breadth + depth"
 else bad "s) the re-hunt double-charged or failed to complete (exit $RCS1/$RCS2)"
 fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (t) #1850 ALLOCATION FORWARDING. `--zone-depth-lens-quota 2` must reach EVERY hunted zone as
+#     `--depth-lens-quota 2` (never the --list-cells probes, which enumerate breadth only), be recorded in the
+#     coverage detail AND in each zone's own totals, and change NOTHING about cost: the charge is still
+#     breadth + the depth cap, exactly as block (r) pins it with the knob unset. An allocation that quietly
+#     moved the charge would make the two A/B arms non-comparable, which is the whole point of the knob.
+#     The quota under test is deliberately NOT run-discovery.sh's default of 3: a zone would record a 3 even
+#     with the forwarding removed, so a 3 here would make the totals assertion vacuous.
+# ----------------------------------------------------------------------------------------------------------
+note "t) #1850 --zone-depth-lens-quota reaches every hunted zone and does not move the charge ..."
+ARGV_T="$WORK/argv-depth-quota.log"; : > "$ARGV_T"
+OUTT="$WORK/zh-depth-quota"
+DF_ARGV_LOG="$ARGV_T" DF_REAL_DISCOVERY="$HERE/run-discovery.sh" \
+  "$SHIM/run-zone-hunt.sh" --repo "$REPO" --out "$OUTT" --drop-dir "$OUTT/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --zone-depth-cells 2 --zone-depth-lens-quota 2 \
+  >"$WORK/zht.out" 2>"$WORK/zht.err"
+RCT=$?
+[ "$RCT" -eq 0 ] && ok "the --zone-depth-cells 2 --zone-depth-lens-quota 2 run exits 0" \
+  || { bad "the quota run exited $RCT"; sed 's/^/      /' "$WORK/zht.err" | tail -20 >&2; }
+if [ "$(grep -c -- '--depth-lens-quota 2' "$ARGV_T")" -eq 4 ]; then
+  ok "t) each of the 4 hunted zones was invoked with --depth-lens-quota 2 (the --list-cells probes are not)"
+else
+  bad "t) expected 4 hunt invocations carrying --depth-lens-quota 2, got $(grep -c -- '--depth-lens-quota 2' "$ARGV_T")"
+fi
+if python3 - "$OUTT" <<'PY'
+import sys, os, json
+out = sys.argv[1]
+rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
+by_id = dict((z["id"], z) for z in rec["zones"])
+want_planned = {"contracts_liquidation": 2, "contracts_vault": 3, "contracts_governance": 2, "contracts_oracle": 2}
+for zid, planned in want_planned.items():
+    z = by_id[zid]
+    # The allocation is an ORDERING, never a cost: the charge is byte-identical to block (r)'s.
+    assert z["cells_charged"] == planned + 2, "%s charged %r, expected breadth %d + depth 2" % (
+        zid, z["cells_charged"], planned)
+    assert "lens quota 2" in (z.get("detail") or ""), "%s detail does not name the quota: %r" % (
+        zid, z.get("detail"))
+for zid in want_planned:
+    d = json.load(open(os.path.join(out, "discovery", zid, "discovery-results.json"), encoding="utf-8"))
+    assert d["totals"]["depth_lens_quota"] == 2, "%s totals.depth_lens_quota %r" % (
+        zid, d["totals"].get("depth_lens_quota"))
+assert rec["complete"] is True, "the quota sweep is not complete"
+PY
+then ok "t2) every zone records the quota in its coverage detail and in totals.depth_lens_quota, and the charge is unchanged (breadth + the depth cap)"
+else bad "t2) the quota record / charge assertion failed"
+fi
 badflag "--zone-depth-cells notanumber" 'must be a non-negative integer' --zone-depth-cells notanumber
+badflag "--zone-depth-lens-quota notanumber" "must be a positive integer (got 'notanumber')" --zone-depth-lens-quota notanumber
+badflag "--zone-depth-lens-quota 0" "must be >= 1 (got '0')" --zone-depth-lens-quota 0
 
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then

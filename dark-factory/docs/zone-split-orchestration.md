@@ -546,13 +546,44 @@ without redesign.
 the accumulated `results-cells.jsonl` — **not** the blackboard memo, because under `--jobs > 1` every cell's
 board is empty and a memo-derived list would differ per path, while the accumulator is written in manifest
 order on both. Flagged locations are ranked by (a) severity, High before Medium, (b) breadth-candidate count
-descending, (c) first appearance in manifest order; the cap is then spent **round-robin, one class per
-location per pass**, so it cannot burn entirely on the first flagged function. Targets are computed **once,
-before the first depth cell runs**, so a depth candidate can never spawn further depth cells — one pass,
-never a loop (the same rule `--rehunt-gaps` follows).
+descending, (c) first appearance in manifest order. Targets are computed **once, before the first depth cell
+runs**, so a depth candidate can never spawn further depth cells — one pass, never a loop (the same rule
+`--rehunt-gaps` follows).
+
+**How the cap is allocated — the quota-round-robin (#1850).** The original allocation spent the cap
+*breadth-first*: one class per location per pass. Measured, that never gave any location more than one or two
+lenses, so the mechanism the depth pass exists for — hunting **one** function repeatedly under different
+lenses — was never exercised, and #1827's held-out A/B failed on exactly that criterion. The fix is a single
+integer, `--depth-lens-quota N` (`run-zone-hunt.sh --zone-depth-lens-quota`, default **3**): each location
+takes **N consecutive lenses** before the plan moves to the next one, and after every location has had N the
+rounds repeat (positions N+1…2N, and so on) until the cap is spent.
+
+- **Why not "exhaust the top location"?** A location's lens list *is* the zone's class list, so per-location
+  spend is already bounded by the classes the zone advertises — but full exhaustion is still strictly worse.
+  On the recorded 12-cell plan that diagnosed this defect, the zone advertised 6 classes: full exhaustion
+  (N = 6) hands ranks 1 and 2 six cells each and the rank-4 location — the one the acceptance criterion names
+  — gets **zero**. At N = 3 ranks 1–4 get three lenses each and that location gets exactly three.
+- **Why not N = 2?** It reaches more locations but gives the top ones exactly what the breadth-first spread
+  already gave them, which produced nothing at the target. N = 3 is the smallest quota that clears "hunted
+  under ≥ 3 distinct lenses" while still reaching rank 4 at that cap.
+- **A location with fewer remaining lenses than the quota** emits all it has and the stream continues. There
+  is no reserved-but-unspent quota: the plan is one ordered stream truncated at `cap`, work-conserving by
+  construction.
+- **N = 1 is the old allocation, byte-for-byte.** The quota-round-robin degenerates to the original
+  `for pass { for location }` loop, which is why the breadth-first spread needs no second code path and why
+  #1827's measured arm stays re-derivable at any later commit. `demo-discovery-parallel.sh` (13d) pins that
+  sequence verbatim.
+- **No adaptive stopping.** "Keep hunting this function until it stops yielding" is deliberately NOT
+  implemented — letting a depth result re-plan depth would break the one-pass rule above.
+
+The ranking, the `(location × lens)` pair multiset and the cap semantics (`min(cap, planned pairs)`) are
+**unchanged** by the quota — only the emission order moves — which is what keeps the cost accounting below
+exactly as it was. `totals.depth_lens_quota` records which allocation produced a given set of depth cells, so
+two depth arms can never be compared without seeing that they were spent differently.
 
 **Cells, not hidden prompts.** A depth cell is counted in `totals.cells`, appears in `cells[]` tagged
-`"phase":"depth"`, and is reported in `totals.depth_cells` (emitted **only** when the flag is on). Its
+`"phase":"depth"`, and is reported in `totals.depth_cells` alongside `totals.depth_lens_quota` (both emitted
+**only** when the flag is on, so a depth-off run's JSON key set is unchanged). Its
 `files` field is the narrowed `file@fn`, which also keeps its `(subsystem, class, files)` merge key distinct
 from the breadth cell of the same class. Sized on real numbers — a plaza `src` zone is 6 breadth cells, the
 whole run 18 — a cap of 4/zone is +67 % on that zone and +22 % on the run; a cap of 12 is +200 % / +100 %.
@@ -569,8 +600,10 @@ for depth. A budgeted run with depth on therefore covers fewer zones unless the 
 breadth results), so the **cap is charged up front** — the conservative choice, matching the existing "an
 unmeasurable zone is charged the whole remaining budget" precedent. A zone that finds no lead therefore shows
 its cap charged and 0 depth cells spent. `cells_planned` keeps meaning "what `--list-cells` measured";
-`cells_charged` becomes breadth + depth and the coverage `detail` names the split. **No new coverage status**
-— the state vocabulary above is untouched.
+`cells_charged` becomes breadth + depth and the coverage `detail` names the split (and, when the operator set
+one, the lens quota). **No new coverage status** — the state vocabulary above is untouched. The quota is an
+*ordering*, never a cost: `--zone-depth-lens-quota` is forwarded only when depth is genuinely admitted, and it
+never moves `cells_charged`, so the two A/B arms remain cost-comparable.
 
 **Substrate cost.** `DEPTH_KNOWN` is consumed as **one opaque string**: never `regex_split`/`reduce`d, so the
 CB cost is O(1) in the number of known leads. That is the recidivist trap here — an interpreted per-element
@@ -581,34 +614,67 @@ budget at which `depth_block()` completes: **44 CB at 1, 8, 64 and 256 known lea
 range**, never copy-pasted — a duplicated twin would silently drift from the agent it claims to measure.
 
 **Default OFF, and the held-out gate that could flip it.** `--depth-max-cells` / `--zone-depth-cells` ship at
-`0`. Flipping any default requires a single-variable A/B on a **held-out** target — declared before the code
-was written, and deliberately not the diagnosing site, because "the hunter now surfaces 2 bugs on
-`checkPoolActivity`" is satisfiable by teaching-to-test. The held-out target is plaza `src/Pool.sol::startAuction`
-(co-located ground truth: one rare + two non-rare findings; confirmed inside today's slice, so the
-measurement isolates depth from the coverage work; and in the preserved baseline run the hunter named that
-function exactly once, describing none of them). Both arms regenerate `map/scope.tsv` on current main —
-reusing a preserved artifact would silently re-measure the coverage fixes as depth. **PASS requires all
-five:**
+`0`, and the #1850 quota does not change that: it changes how the cap is spent, not whether it is spent.
+Flipping any default requires a single-variable A/B on a **held-out** target — declared before the code was
+written, and deliberately not a diagnosing site, because "the hunter now surfaces 2 bugs on the function we
+tuned against" is satisfiable by teaching-to-test.
+
+The **#1827 gate** ran against plaza `src/Pool.sol::startAuction` and recorded **P2 FAIL**: the depth arm
+gained seven ground-truth rows the control missed, none of them from the co-located set the criterion named.
+That result refutes *depth budgeted breadth-first*; it does not test *within-contract depth*, because at a cap
+of 12 over 10 flagged locations the budget never concentrated — the held-out function got exactly one extra
+lens out of five available. Hence #1850, and hence a fresh gate.
+
+The **#1850 gate** is the `notional` pricing surface — `src/AbstractYieldStrategy.sol::price` and its override
+one dispatch step down, `src/single-sided-lp/AbstractSingleSidedLP.sol::convertToAssets`. Its co-located
+ground-truth set is two findings that are **both rare and both High** (a donation/escrow inflation and a
+context-dependent pricing fallback), whose Root Cause sections cite the same two line ranges; the mechanisms
+are plainly distinct, so a single candidate cannot satisfy both. It is fresh for this defect (no notional
+function appears in the plaza/crestal diagnosis), it is inside today's function slice — `price` at rank 15 of
+a cap-16 slice, `convertToAssets` at rank 12 of 25, so the measurement isolates allocation from the
+#1825/#1834 coverage work — and the preserved baseline run flagged neither site. Disclosure, so the held-out
+claim is not overstated: notional **has** been hunted before, and `convertToAssets` is cited in `map-zones.sh`
+as the motivation for the valuation-slot reservation — but that is a **coverage** inspection (is the function
+in the payload at all), never a depth or allocation one.
+
+The control is the breadth-first spread at the same cap; the treatment is the same target, same cap, same
+backend/model, with `--depth-lens-quota 3`. Both arms are scored under the **same ruler** — the same judge
+gate and the same GT-equivalence crediting rule, because a rare figure from one crediting rule is not
+comparable to a rare figure from another. `price` sits one slot from truncation, so the slice replay must be
+re-run at measurement time; if it has fallen out, the target is invalid and the run does not count.
+
+**PASS requires all six:**
 
 | | Criterion |
 |---|---|
-| P1 | ON surfaces ≥ 2 candidates located at that function, judged **mechanistically distinct from each other** (not a paraphrase pair). |
-| P2 | ON matches ≥ 1 ground-truth finding OFF does not, **and that new match is one of the co-located set**. A match anywhere else is luck elsewhere, not within-contract depth. |
-| P3 | No regression: every ground-truth row OFF matched is still matched by ON. |
-| P4 | Precision floor: ON's total zone candidate count ≤ 2× OFF's, and ON's matched/total ratio ≥ 0.5× OFF's. |
-| P5 | Cost honesty: observed cells ≤ OFF cells + cap, and `totals.depth_cells` equals the observed extra. |
+| P0 | **Mechanism (GT-free).** In the treatment at least one flagged location receives **≥ 3 distinct lenses** — countable as `"phase":"depth"` cells sharing one `file@fn` in `discovery-results.json` — while the control's maximum lenses-per-location at the same cap is ≤ 2. |
+| P1 | The treatment surfaces **≥ 2 candidates** at one of the held-out sites, judged **mechanistically distinct from each other** (not a paraphrase pair). |
+| P2 | The treatment matches **≥ 1 ground-truth row the control does not, and that new match is one of the co-located pair**. A new match anywhere else is luck elsewhere, not within-contract depth. |
+| P3 | No regression: every ground-truth row the control matched is still matched by the treatment. |
+| P4 | Precision floor: treatment candidate count ≤ 2× the control's, and treatment matched/total ratio ≥ 0.5× the control's. |
+| P5 | Cost honesty: both arms run the same per-zone cap; in each arm `totals.depth_cells` ≤ cap and equals the observed extra, and each scored artifact records `totals.depth_lens_quota`. |
 
-P1 holding while P2 fails means depth produced **volume, not recall**. An extra match on the diagnosing
-target only, with none on the held-out one, is **teaching-to-test** and an explicit FAIL. Any P3 regression or
-P4 breach is a FAIL. On FAIL the flag stays off and the negative result is recorded — a measured non-result is
-a result.
+**Pre-committed consequences.** P0 failing is an *implementation* defect, not a result — fix and re-run,
+nothing is recorded as a measurement. P0 holding while P3 fails **refutes** the concentrated allocation: the
+default quota reverts to `1`, the flag stays, and the negative is recorded. P0 and P3 holding while P2 fails
+means concentration did not buy co-located rare recall on a fresh target: depth stays OFF and the default
+quota stays 3 only if the treatment's total ground-truth matches ≥ the control's, otherwise it reverts to 1 —
+the next lever is then the widened depth slice or the location ranking, each its own issue, never a quiet
+retune here. All six holding settles the *allocation* question only; flipping `--zone-depth-cells` off `0`
+remains a separate decision, since it doubles cells. A measured non-result is a result.
 
-`demo-discovery-parallel.sh` blocks (11)–(17) and `demo-run-zone-hunt.sh` blocks (p)–(s) pin all of the
+Re-running the diagnosing site (plaza at cap 12 with `--depth-lens-quota 3`) is reported as a confirmatory
+diagnostic and **licenses nothing on its own** — breadth is stochastic, so a miss there is a ranking
+observation, not an allocation failure.
+
+`demo-discovery-parallel.sh` blocks (11)–(17) and `demo-run-zone-hunt.sh` blocks (p)–(t) pin all of the
 mechanics offline: default-inertness down to the byte-identical golden report and an argv carrying no new
 argument; the env wiring (including the `exec.env_passthrough` registration, without which `getenv()` is
-silently inert); the ranked round-robin order; zero cost when no lead was found; determinism and
-serial/parallel identity; the `DEPTH-CELL|` record boundary; depth being trimmed before breadth under a
-budget; and the CB sweep. Each is mutation-tested — reverting its fix makes it fire.
+silently inert); the ranked quota-round-robin order; the `--depth-lens-quota 1` compatibility pin; one
+function hunted under three distinct lenses at cap 3 on a 4-class zone (the offline analogue of P0), with the
+quota-1 arm as its control; zero cost when no lead was found; determinism and serial/parallel identity; the
+`DEPTH-CELL|` record boundary; depth being trimmed before breadth under a budget; and the CB sweep. Each is
+mutation-tested — reverting its fix makes it fire.
 
 ### The HALT / NEVER-SUBMIT invariant (load-bearing)
 
