@@ -53,9 +53,16 @@
 #                     deterministic, no LLM) | cmd (judge live through --judge-cmd, default mech-judge.sh,
 #                     which drives the flat-cyborg wrapper). In judge mode there is NO token fallback: an
 #                     unparseable reply is a JUDGE-ERROR and the scorer aborts above its max error rate.
+#                     A judged recall figure is only meaningful quoted together with its RULER: the judge
+#                     mode, the confidence gate (--judge-min-confidence, default 60 since #1841) and the
+#                     GT-equivalence state. All three are printed with every scorecard.
 #   --judge-cmd <p> / --judge-cache <f> / --judge-log <f> / --judge-batch <N> / --judge-min-confidence <N>
 #                     Forwarded verbatim to score-match.py (see its header). A judged number is reproducible
 #                     only via its recorded cache/log — archive them next to the scorecard.
+#                     --judge-min-confidence defaults to 60 (#1841) and is ALWAYS forwarded explicitly in
+#                     judge mode, so the threshold this harness PRINTS is by construction the one it passed —
+#                     there is no second source of truth to drift. The value, the number of MATCH decisions
+#                     the gate dropped and how many rows that cost appear in the human line and in --json.
 #   --gt-dupes <f>    #1840: score with this GT-equivalence artifact instead of the per-contest default
 #                     (<work>/<id>/gt-dupes.tsv, used automatically when it exists). A named-but-missing file
 #                     is an error, never a silent unexpanded number.
@@ -76,6 +83,9 @@ GTDUPES="$HERE/gt-dupes.sh"
 CORPUS="$HERE/corpus.tsv"
 
 WORK="$PWD/corpus-bench-work"
+# #1841: the scoring gate this harness forwards AND prints. Must equal score-match.py's judge_min_conf default
+# (demo-mech-judge.sh assertion (s) fails the lint on divergence).
+JUDGE_MINCONF_DEFAULT=60
 IDS="" ; BACKEND="flat-cyborg" ; JOBS="1" ; MINOV="2" ; AGENTIS="agentis" ; JSON=0
 JUDGE="off" ; JUDGE_CMD="" ; JUDGE_CACHE="" ; JUDGE_LOG="" ; JUDGE_BATCH="" ; JUDGE_MINCONF=""
 GT_DUPES="" ; GT_DUPES_MINCONF="" ; NO_GT_DUPES=0
@@ -123,7 +133,11 @@ if [ "$JUDGE" != "off" ]; then
   [ -n "$JUDGE_CACHE" ]   && JUDGE_ARGS+=(--judge-cache "$JUDGE_CACHE")
   [ -n "$JUDGE_LOG" ]     && JUDGE_ARGS+=(--judge-log "$JUDGE_LOG")
   [ -n "$JUDGE_BATCH" ]   && JUDGE_ARGS+=(--judge-batch "$JUDGE_BATCH")
-  [ -n "$JUDGE_MINCONF" ] && JUDGE_ARGS+=(--judge-min-confidence "$JUDGE_MINCONF")
+  # #1841: resolve the gate to the shared default when unset and forward it ALWAYS, so the number reported
+  # alongside the scorecard is the very number score-match.py was given. A conditional forward would let the
+  # printed threshold and the applied threshold drift apart the moment either default moved.
+  [ -n "$JUDGE_MINCONF" ] || JUDGE_MINCONF="$JUDGE_MINCONF_DEFAULT"
+  JUDGE_ARGS+=(--judge-min-confidence "$JUDGE_MINCONF")
 fi
 
 # #1840: an explicitly named artifact must exist. Silently scoring without it would report an unexpanded
@@ -235,6 +249,8 @@ G_H_TOTAL=0 ; G_H_HITS=0 ; G_M_TOTAL=0 ; G_M_HITS=0
 G_RARE_TOTAL=0 ; G_RARE_HITS=0 ; G_MID_TOTAL=0 ; G_MID_HITS=0 ; G_CONS_TOTAL=0 ; G_CONS_HITS=0
 G_VERIFIED=0 ; G_MATCHED_LEADS=0 ; G_UNMATCHED_LEADS=0
 G_JUDGE_CALLS=0 ; G_JUDGE_ERRORS=0
+G_GATE_CONF="null" ; G_GATE_DROPPED=0 ; G_GATE_ROWS=0
+[ "$JUDGE" != "off" ] && G_GATE_CONF="$JUDGE_MINCONF"
 G_DUP_CLASSES=0 ; G_DUP_EXPANDED=0 ; G_DUP_RARE_EXPANDED=0
 
 if [ "$DO_SCORE" -eq 1 ]; then
@@ -279,9 +295,14 @@ if [ "$DO_SCORE" -eq 1 ]; then
     declare -A HITMAP=()
     declare -A EXPANDED=()
     verified_n=0 ; matched_leads=0 ; judge_calls=0 ; judge_errors=0 ; dup_classes=0 ; dup_expanded=0
-    while IFS=$'\t' read -r f1 f2 f3; do
+    gate_conf="$JUDGE_MINCONF" ; gate_dropped=0 ; gate_rows=0
+    # A GATE trailer carries FOUR fields, so the reader takes f4 too; every other line leaves it empty.
+    while IFS=$'\t' read -r f1 f2 f3 f4; do
       if [ "$f1" = "LEADS" ]; then verified_n="$f2"; matched_leads="$f3"; continue; fi
       if [ "$f1" = "JUDGE" ]; then judge_calls="$f2"; judge_errors="$f3"; continue; fi
+      # #1841 trailer: the confidence gate in force, the MATCH decisions it dropped, and the rows that cost.
+      # Skipped here for the same reason as JUDGE — it is a trailer, never a truth row.
+      if [ "$f1" = "GATE" ]; then gate_conf="$f2"; gate_dropped="$f3"; gate_rows="$f4"; continue; fi
       # #1840 trailers: DUP carries the class/expansion counts, DUPHIT attributes one expanded row to the row
       # actually matched. Neither is a truth row — a DUPHIT's second field is a sev_id, not HIT/MISS.
       if [ "$f1" = "DUP" ]; then dup_classes="$f2"; dup_expanded="$f3"; continue; fi
@@ -318,10 +339,17 @@ SCORE_EOF
     rare_note=""; [ -n "$dupes_file" ] && rare_note=" ($c_rare_expanded via GT-equivalence)"
 
     say "  [$id] recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total$rare_note, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total, verified-leads $verified_n (matched $matched_leads, unmatched $unmatched_leads — needs manual triage, NOT auto-claimed novel)"
-    [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s)"
+    [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE, min-confidence $gate_conf): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s); gate dropped $gate_dropped MATCH decision(s), costing $gate_rows row(s)"
     [ -n "$dupes_file" ] && say "  [$id] GT-equivalence (#1840): $dup_classes class(es), $dup_expanded row(s) credited through a class; the same replay without expansion reads $((c_hits - dup_expanded))/$c_total"
 
-    CONTEST_JSON+=("{\"id\":\"$id\",\"gt_total\":$c_total,\"hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"verified_leads\":$verified_n,\"matched_leads\":$matched_leads,\"unmatched_leads\":$unmatched_leads,\"judge\":{\"mode\":\"$JUDGE\",\"calls\":$judge_calls,\"errors\":$judge_errors},\"dup\":{\"classes\":$dup_classes,\"expanded\":$dup_expanded,\"rare_expanded\":$c_rare_expanded}}")
+    # #1841: the gate does not exist under --judge off — report it as null/0 there rather than inventing a
+    # threshold the token matcher never applied.
+    c_gate_conf_json="null" ; c_gate_dropped_json=0 ; c_gate_rows_json=0
+    if [ "$JUDGE" != "off" ]; then
+      c_gate_conf_json="$gate_conf" ; c_gate_dropped_json="$gate_dropped" ; c_gate_rows_json="$gate_rows"
+      G_GATE_DROPPED=$((G_GATE_DROPPED+gate_dropped)); G_GATE_ROWS=$((G_GATE_ROWS+gate_rows))
+    fi
+    CONTEST_JSON+=("{\"id\":\"$id\",\"gt_total\":$c_total,\"hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"verified_leads\":$verified_n,\"matched_leads\":$matched_leads,\"unmatched_leads\":$unmatched_leads,\"judge\":{\"mode\":\"$JUDGE\",\"calls\":$judge_calls,\"errors\":$judge_errors,\"min_confidence\":$c_gate_conf_json,\"gated_matches\":$c_gate_dropped_json,\"gated_rows\":$c_gate_rows_json},\"dup\":{\"classes\":$dup_classes,\"expanded\":$dup_expanded,\"rare_expanded\":$c_rare_expanded}}")
     G_JUDGE_CALLS=$((G_JUDGE_CALLS+judge_calls)); G_JUDGE_ERRORS=$((G_JUDGE_ERRORS+judge_errors))
     G_DUP_CLASSES=$((G_DUP_CLASSES+dup_classes)); G_DUP_EXPANDED=$((G_DUP_EXPANDED+dup_expanded)); G_DUP_RARE_EXPANDED=$((G_DUP_RARE_EXPANDED+c_rare_expanded))
 
@@ -344,15 +372,17 @@ SCORE_EOF
     say "GT-equivalence: $G_DUP_CLASSES judged class(es), $G_DUP_EXPANDED row(s) credited through a class (#1840). The SAME replay without class expansion reads $((G_HITS - G_DUP_EXPANDED))/$G_TOTAL — quote the ruler with the number."
   fi
   if [ "$JUDGE" != "off" ]; then
-    say "scoring mode  : SEMANTIC MECHANISM JUDGE (--judge $JUDGE, #1829) — $G_JUDGE_CALLS judging calls, $G_JUDGE_ERRORS JUDGE-ERROR(s). Archive the --judge-log next to this number: it is reproducible offline only via --judge cache."
+    say "scoring mode  : SEMANTIC MECHANISM JUDGE (--judge $JUDGE, --judge-min-confidence $JUDGE_MINCONF, #1829) — $G_JUDGE_CALLS judging calls, $G_JUDGE_ERRORS JUDGE-ERROR(s). Archive the --judge-log next to this number: it is reproducible offline only via --judge cache."
+    say "confidence gate: dropped $G_GATE_DROPPED MATCH decision(s) at $JUDGE_MINCONF, costing $G_GATE_ROWS row(s) (#1841). Quote the gate WITH the number; a nonzero cost means this headline is gate-sensitive and the same archived cache re-derives it at any other threshold."
   fi
 
   if [ "$JSON" -eq 1 ]; then
     joined="$(IFS=,; echo "${CONTEST_JSON[*]:-}")"
-    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"verified_leads":%d,"matched_leads":%d,"unmatched_leads":%d,"judge":{"mode":"%s","calls":%d,"errors":%d},"dup":{"classes":%d,"expanded":%d,"rare_expanded":%d}}}\n' \
+    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"verified_leads":%d,"matched_leads":%d,"unmatched_leads":%d,"judge":{"mode":"%s","calls":%d,"errors":%d,"min_confidence":%s,"gated_matches":%d,"gated_rows":%d},"dup":{"classes":%d,"expanded":%d,"rare_expanded":%d}}}\n' \
       "$joined" "$G_TOTAL" "$G_HITS" "$G_H_TOTAL" "$G_H_HITS" "$G_M_TOTAL" "$G_M_HITS" \
       "$G_RARE_TOTAL" "$G_RARE_HITS" "$G_MID_TOTAL" "$G_MID_HITS" "$G_CONS_TOTAL" "$G_CONS_HITS" \
       "$G_VERIFIED" "$G_MATCHED_LEADS" "$G_UNMATCHED_LEADS" "$JUDGE" "$G_JUDGE_CALLS" "$G_JUDGE_ERRORS" \
+      "$G_GATE_CONF" "$G_GATE_DROPPED" "$G_GATE_ROWS" \
       "$G_DUP_CLASSES" "$G_DUP_EXPANDED" "$G_DUP_RARE_EXPANDED"
   fi
 fi

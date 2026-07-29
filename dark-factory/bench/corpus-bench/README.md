@@ -127,15 +127,46 @@ reply    VERDICT|<lead_id>|<sev_id>|MATCH|<confidence 0-100>|<one-line reason>
          VERDICT|<lead_id>|NONE|NO-MATCH|<confidence 0-100>|<one-line reason>
 ```
 
-Only `MATCH` decisions at or above `--judge-min-confidence` (default 70) score. A verdict about another lead
-is ignored; a `MATCH` naming a `sev_id` that was not in the request is dropped.
+Only `MATCH` decisions at or above `--judge-min-confidence` (default **60**) score. A verdict about another
+lead is ignored; a `MATCH` naming a `sev_id` that was not in the request is dropped.
+
+**The gate is an outlier floor, not a recall parameter (#1841).** The decision rule tells the judge that
+divergent file or function names are not disqualifying, and it obeys that in the DECISION — but not in the
+CONFIDENCE: a lead that describes the row's root cause from a superseded copy, a factory or a helper comes
+back `MATCH` at a confidence in the **60s**. At the old default of 70 that hedge became a scored MISS, so the
+rule and the ruler contradicted each other and the contradiction was resolved against the pipeline. The
+default now sits **below** the whole observed 62–68 hedge band rather than through the middle of it: it exists
+to drop a MATCH the judge itself disbelieves, and on the 43 recorded decisions it was chosen against it drops
+nothing at all at 50 or 60. It cannot manufacture a false positive either — the #1829 false-positive direction
+is decided by `MATCH`/`NO-MATCH`, and the gate only ever *drops* MATCHes, so no threshold can credit a
+candidate the judge rejected. That number rests on one interim run at one pipeline revision: it is a
+**sensitivity curve, not a calibration**. Two things falsify it, both visible in the artifacts below — a
+credited MATCH in `[60, 70)` that triage shows is a different mechanism, or a location-divergent true match
+recorded *below* 60. Either means the confidence cannot separate the two populations, and the answer is to
+separate mechanism confidence from location agreement, not to retune again.
+
+Judge mode therefore emits a second trailer next to `JUDGE`:
+
+```
+GATE<TAB><min_confidence><TAB><gated_matches><TAB><gated_rows>
+```
+
+— the threshold in force, how many valid `MATCH` decisions it dropped, and how many truth rows are MISS
+**only** because of it. **A nonzero `gated_rows` means that run's headline is gate-sensitive** and must be
+published with its sensitivity; the same archived cache re-derives the number at any other threshold
+(`--judge-min-confidence 70` reproduces a pre-#1841 scorecard byte-for-byte).
 
 **The judge is AUTHORITATIVE — there is no fallback to the token matcher.** A silent fallback would re-import
 exactly the two failure modes the judge exists to fix, so an unparseable reply is a **JUDGE-ERROR**, never a
 quiet NO-MATCH, and the run **aborts with exit 4** once JUDGE-ERRORs exceed `--judge-max-error-rate` (default
-20 %) — a degraded backend must not be allowed to publish a plausible-looking low recall. Judge mode adds one
-extra trailer line to the scorecard, `JUDGE<TAB><calls><TAB><errors>`; the per-row `HIT|MISS` lines and the
-`LEADS` trailer keep their shape, so every downstream consumer is unaffected.
+20 %) — a degraded backend must not be allowed to publish a plausible-looking low recall. Judge mode adds two
+extra trailer lines to the scorecard, `JUDGE<TAB><calls><TAB><errors>` and the `GATE` line above; the per-row
+`HIT|MISS` lines and the `LEADS` trailer keep their shape, so every downstream consumer is unaffected.
+
+**Quoting the ruler.** A judged recall figure is meaningless on its own — quote it with
+`(judge mode, min-confidence, gt-dupes state)`. All three now appear in the human line and in the `--json`
+output of `run-corpus-bench.sh`, and both harnesses **forward the threshold they print**, so the printed gate
+is by construction the applied one. `GATE` says what that gate cost the run.
 
 **Three modes, and which one belongs where:**
 
@@ -152,6 +183,18 @@ extra trailer line to the scorecard, `JUDGE<TAB><calls><TAB><errors>`; the per-r
 an append-only record of every live judging call, including the raw reply. **Archive the log next to the
 scorecard** — the recorded raw reply is what the cache replays and re-parses, so `--judge cache` reproduces a
 `--judge cmd` scorecard byte-for-byte. Without the log, a judged recall number is an unverifiable claim.
+
+**Cache-generation hazard — read this before editing the judge prompt.** The cache key covers `{lead, rows}`
+**only**; the prompt in `mech-judge.sh` is deliberately *not* part of it, and a replay re-parses the recorded
+`raw_reply` instead of re-asking. So editing the prompt, the `VERDICT|` grammar or the decision rule does
+**not** invalidate a single recorded decision: entries from before and after the edit keep colliding on the
+same key, and one cache file silently mixes two **decision generations** with no field anywhere saying which
+is which. Any prompt change must therefore **version the key first** — stamp a `judge_rev` (a hash of the
+prompt builder) on every newly recorded entry, report the distinct revisions found at replay time
+(pre-existing entries read `unversioned`), and offer a hard-fail switch for a mixed cache. This is not
+currently implemented, and it is uninformative until a second generation exists — which is exactly why the
+rule is "version before you edit", not "version afterwards". The same warning sits on `judge_request()` in
+`score-match.py`, where the key is built.
 
 **Judging always runs through the flat-cyborg PTY wrapper.** `mech-judge.sh` shells out to
 `${MECH_JUDGE_LLM_CMD:-<federation-root>/flat-cyborg-claude.sh}` (the same `LLM_WRAP`-style indirection
@@ -186,10 +229,15 @@ subscription capacity, never on CI, and never as part of a PR gate. `novelty-gat
 hunting-pipeline gate), `extract-gt.sh`'s `truth.tsv` schema and the location-first algorithm itself are all
 **unchanged** — judge mode is strictly additive and default-off.
 
-`dark-factory/demo-mech-judge.sh` pins the whole thing on one synthetic fixture (`fixtures/mech-judge/`, our
-own structural analogues — no contest prose or code is re-hosted here either): the token matcher's WRONG
-answer and the judge's RIGHT answer are both byte-exact, so neither direction of the #1829 defect can come
-back silently, and the fail-closed paths (malformed reply, degraded judge, cache miss) are asserted too.
+`dark-factory/demo-mech-judge.sh` pins the whole thing on synthetic fixtures (`fixtures/mech-judge/` and
+`fixtures/mech-judge-location/`, our own structural analogues — no contest prose or code is re-hosted here
+either): the token matcher's WRONG answer and the judge's RIGHT answer are both byte-exact, so neither
+direction of the #1829 defect can come back silently, and the fail-closed paths (malformed reply, degraded
+judge, cache miss) are asserted too. The location fixture pins the gate in both directions from ONE recorded
+decision set — a hedged `MATCH|64` from a superseded-copy location is MISS at 70 and credited at the shipped
+default with an unchanged `JUDGE` trailer, while a name-coincident different-mechanism lead stays MISS even at
+`--judge-min-confidence 0` — plus a source-guard that the default has exactly one value across the scorer and
+both harnesses.
 
 ## GT equivalence classes (#1840)
 
@@ -235,7 +283,7 @@ judged run whose decisions are archived replays both numbers from one cache.
 
 **Guard rails against inflation** (a wrong pair would inflate exactly the stratum this exists to protect):
 
-- `--gt-dupes-min-confidence` (default **85**, deliberately above the 70-point scoring gate) is applied at
+- `--gt-dupes-min-confidence` (default **85**, deliberately far above the judge's scoring gate) is applied at
   **scoring** time, so one archived artifact re-derives the expanded number, the unexpanded number and any
   threshold in between.
 - A class larger than `--gt-dupes-max-class` (default 3) is **not** expanded at all, with a warning on stderr.

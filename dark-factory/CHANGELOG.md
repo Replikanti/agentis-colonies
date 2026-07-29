@@ -327,6 +327,51 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   (`deep-hunt-ab.sh --live --ensemble-candidates 3`, expecting the plaza pool target Δ > 0) is a separate
   post-merge step, not part of this change.
 
+### Changed
+- **The mechanism judge's scoring gate moved 70 -> 60, and every judged scorecard now records the ruler it was
+  measured with** (#1841). The judge's decision rule states that divergent file or function names are NOT
+  disqualifying, and the judge obeys that in the **decision** — but not in the **confidence**: when a lead
+  describes the ground-truth row's root cause from a location the row's prose never names (a superseded copy,
+  a factory, a helper), it returns `MATCH` with a confidence in the 60s. The old `--judge-min-confidence`
+  default of 70 then converted that hedge into a scored MISS, so the rule and the ruler contradicted each
+  other and the contradiction was resolved against the pipeline. The new default sits deliberately **below**
+  the entire observed 62–68 hedge band rather than through the middle of it, which makes it an **outlier
+  floor** against a MATCH the judge itself disbelieves rather than a recall parameter. **Evidence base, stated
+  plainly: 43 judging calls over 2 contests from ONE interim run at ONE pipeline revision — a sensitivity
+  curve, not a calibration.** What it establishes is that the hedged band is 62–68 and correlates with
+  location divergence, and that nothing at all is dropped at 50 or 60 on either contest, i.e. the shipped gate
+  is inert on the measured data. Two named falsifiers, both observable from the artifacts this change emits: a
+  future MATCH credited in `[60, 70)` that triage shows is a *different* mechanism, or a location-divergent
+  true match recorded *below* 60. Either one means the confidence cannot separate the two populations and the
+  answer is separating mechanism confidence from location agreement, not another retune. Because a gate that
+  moves a headline silently is the real hazard, `score-match.py` now emits an additive judge-mode-only trailer
+  `GATE<TAB><min_confidence><TAB><gated_matches><TAB><gated_rows>` — the threshold in force, how many valid
+  MATCH decisions it dropped, and how many rows are MISS *only* because of it — and a nonzero `gated_rows` is
+  the standing tripwire that a headline is gate-sensitive. `run-corpus-bench.sh` and `generation-recall.sh`
+  both resolve the gate to a shared `JUDGE_MINCONF_DEFAULT=60` and **always forward the value they print**, so
+  the printed threshold is by construction the applied one; `run-corpus-bench.sh --json` gains
+  `judge.min_confidence` / `judge.gated_matches` / `judge.gated_rows` (`null` + zeros under `--judge off`,
+  where no gate exists). Nothing touches the prompt, the `VERDICT|` grammar, the cache key, `--judge off` or
+  the MATCH/NO-MATCH decision itself: the #1829 false-positive direction is decided by the DECISION and the
+  gate only ever *drops* MATCHes, so no threshold value can promote a NO-MATCH — pinned by a new fixture
+  (`fixtures/mech-judge-location/`) in which a name-coincident different-mechanism lead stays MISS even at
+  `--judge-min-confidence 0`, while a hedged `MATCH|64` from a superseded-copy location is MISS at 70 and
+  credited at the default **from the same recorded decisions with an identical `JUDGE` trailer** — the fix is
+  a re-score, not a re-judge. The existing fixtures' decisions are all 85–92, so the default move changes no
+  HIT/MISS anywhere; they only gain the `GATE` line. **Effect on published figures, stated rather than
+  absorbed:** the 6/19 #1799 baseline is **untouched** (it was measured under `--judge off`, where no
+  confidence gate exists); the interim judged run re-reads at 60 as crestal `rare 1/3 -> 2/3` and `all 4/7 ->
+  5/7`, and plaza `rare 0/5` unchanged with `all 4/30 -> 5/30` because a `found_by=14` row's `62`/`63`
+  decisions now score — the honest cost of choosing a floor below the band instead of inside it. Both numbers
+  are re-derivable from the one archived cache: `--judge-min-confidence 70` reproduces the old scorecard
+  byte-for-byte. `gt-dupes.sh`'s **recording** floor stays 70 and is no longer described as "the same gate the
+  scorer applies" — it is an independent floor on which pairs get written, and the 85 merge bar is what
+  decides expansion; the location-contamination argument does not reach GT-vs-GT judging, where neither side
+  is a hunter location. Finally, the pre-existing **cache-generation hazard** is now documented where the next
+  person will hit it (on `judge_request()` in `score-match.py` and in the bench README): the key covers
+  `{lead, rows}` only, the prompt is therefore not part of it and replay re-parses the recorded reply, so any
+  prompt edit must version the key first or one cache file will silently mix two decision generations.
+
 ### Fixed
 - **`map-zones.sh`'s `fn_names()` no longer scrapes NatSpec prose or a commented-out declaration as a phantom
   function name, burning slice slots** (#1834). The old regex, `\bfunction\s+([A-Za-z0-9_]+)`, matched the

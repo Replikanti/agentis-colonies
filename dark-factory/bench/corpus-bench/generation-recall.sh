@@ -41,6 +41,9 @@
 #   --judge* : #1829 — forwarded verbatim to score-match.py for BOTH the generation scorecard and the
 #              verified-recall side of the DELTA, so the two halves are always measured with the SAME ruler.
 #              Default `off` = the frozen #1697 token matcher; `--self-test` is always judge-off.
+#              `--judge-min-confidence` defaults to 60 (#1841, the SAME value run-corpus-bench.sh uses) and is
+#              ALWAYS forwarded explicitly in judge mode, so the gate this harness prints is the one it
+#              passed, and the two harnesses can never disagree about which gate produced a number.
 #   --gt-dupes* : #1840 — same deal for the GT-equivalence artifact: forwarded to BOTH halves of the DELTA, so
 #              a duplicated GT pair is credited identically on the generation and the verified side. The
 #              artifact is PER CONTEST (`<work>/<id>/gt-dupes.tsv`), so pass it with a single `--id`. Absent
@@ -55,6 +58,9 @@ SCOREMATCH="$HERE/score-match.py"
 FIX="$HERE/fixtures/generation-recall"
 
 MODE="self-test"
+# #1841: the scoring gate this harness forwards AND prints. Must equal score-match.py's judge_min_conf default
+# and run-corpus-bench.sh's JUDGE_MINCONF_DEFAULT (demo-mech-judge.sh assertion (s) fails on divergence).
+JUDGE_MINCONF_DEFAULT=60
 WORK="" ; IDS="" ; MINOV="2" ; JSON=0
 JUDGE="off" ; JUDGE_CMD="" ; JUDGE_CACHE="" ; JUDGE_LOG="" ; JUDGE_BATCH="" ; JUDGE_MINCONF=""
 GT_DUPES="" ; GT_DUPES_MINCONF=""
@@ -88,7 +94,10 @@ if [ "$JUDGE" != "off" ]; then
   [ -n "$JUDGE_CACHE" ]   && JUDGE_ARGS+=(--judge-cache "$JUDGE_CACHE")
   [ -n "$JUDGE_LOG" ]     && JUDGE_ARGS+=(--judge-log "$JUDGE_LOG")
   [ -n "$JUDGE_BATCH" ]   && JUDGE_ARGS+=(--judge-batch "$JUDGE_BATCH")
-  [ -n "$JUDGE_MINCONF" ] && JUDGE_ARGS+=(--judge-min-confidence "$JUDGE_MINCONF")
+  # #1841: resolve to the shared default when unset and forward ALWAYS — the printed gate is by construction
+  # the applied gate, on this harness exactly as on run-corpus-bench.sh.
+  [ -n "$JUDGE_MINCONF" ] || JUDGE_MINCONF="$JUDGE_MINCONF_DEFAULT"
+  JUDGE_ARGS+=(--judge-min-confidence "$JUDGE_MINCONF")
 fi
 
 # #1840: the GT-equivalence flags, forwarded to BOTH halves of the DELTA so one ruler measures both. The array
@@ -108,10 +117,10 @@ recall_hits() {
            ${DUPE_ARGS[@]+"${DUPE_ARGS[@]}"} 2>/dev/null)" || return 1
   _total=0; _hits=0
   while IFS="$(printf '\t')" read -r _f1 _f2 _f3; do
-    # Trailer lines, NOT truth rows. DUP/DUPHIT (#1840) belong here for the same reason LEADS/JUDGE do: a
-    # DUPHIT line's second field is a sev_id, not HIT/MISS, so counting it would inflate BOTH the denominator
-    # and (silently) the recall this DELTA is built from.
-    case "$_f1" in LEADS|JUDGE|DUP|DUPHIT) continue ;; esac
+    # Trailer lines, NOT truth rows. DUP/DUPHIT (#1840) and GATE (#1841) belong here for the same reason
+    # LEADS/JUDGE do: a DUPHIT line's second field is a sev_id, not HIT/MISS, so counting it would inflate
+    # BOTH the denominator and (silently) the recall this DELTA is built from.
+    case "$_f1" in LEADS|JUDGE|GATE|DUP|DUPHIT) continue ;; esac
     [ -n "$_f1" ] || continue
     _total=$((_total + 1))
     [ "$_f2" = "HIT" ] && _hits=$((_hits + 1))
@@ -240,9 +249,13 @@ if [ "$MODE" = "from-work" ]; then
 
     declare -A HITMAP=()
     judge_calls=0 ; judge_errors=0 ; dup_classes=0 ; dup_expanded=0
-    while IFS="$(printf '\t')" read -r f1 f2 f3; do
+    gate_conf="$JUDGE_MINCONF" ; gate_dropped=0 ; gate_rows=0
+    # A GATE trailer carries FOUR fields, so the reader takes f4 too; every other line leaves it empty.
+    while IFS="$(printf '\t')" read -r f1 f2 f3 f4; do
       [ "$f1" = "LEADS" ] && continue
       if [ "$f1" = "JUDGE" ]; then judge_calls="$f2"; judge_errors="$f3"; continue; fi
+      # #1841 trailer: the confidence gate in force and what it cost. A trailer, never a truth row.
+      if [ "$f1" = "GATE" ]; then gate_conf="$f2"; gate_dropped="$f3"; gate_rows="$f4"; continue; fi
       # #1840 trailers: DUP carries counts and DUPHIT an attribution pair — neither is a truth row, and a
       # DUPHIT's second field is a sev_id rather than HIT/MISS, so both must be skipped before HITMAP.
       if [ "$f1" = "DUP" ]; then dup_classes="$f2"; dup_expanded="$f3"; continue; fi
@@ -272,7 +285,7 @@ SCORE_EOF
     done < "$truth"
 
     say "  [$id] generation-recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total"
-    [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE, #1829): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s)"
+    [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE, min-confidence $gate_conf, #1829): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s); gate dropped $gate_dropped MATCH decision(s), costing $gate_rows row(s) (#1841)"
     [ -n "$GT_DUPES" ] && say "  [$id] GT-equivalence crediting (#1840) from $GT_DUPES: $dup_classes class(es), $dup_expanded row(s) credited through a class (generation-recall without them: $((c_hits - dup_expanded))/$c_total)"
 
     # GENERATION-minus-VERIFIED DELTA — GT rows a hypothesis NAMED but the fuzzer/refuter never confirmed.

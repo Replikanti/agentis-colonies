@@ -33,8 +33,13 @@
 #   --judge-cmd <p>   judge driver (default: mech-judge.sh next to this script, which drives the flat-cyborg
 #                     PTY wrapper — judging bills against the flat-rate subscription, never the metered API).
 #   --batch N         truth rows shown per judging call (default 12, same as the scorer's --judge-batch).
-#   --min-confidence N  RECORDING floor: a MATCH below this confidence is not written (default 70, the same
-#                     gate the scorer applies to judge MATCHes). The merge bar is the scorer's, and higher.
+#   --min-confidence N  RECORDING floor: a MATCH below this confidence is not written (default 70). This is an
+#                     INDEPENDENT floor on which pairs get written to the artifact — NOT the scorer's judge
+#                     gate (`--judge-min-confidence`, 60 since #1841) and not the merge decision either: what
+#                     actually expands a class is the scorer's `--gt-dupes-min-confidence` bar (85), applied
+#                     at scoring time. #1841's location-contamination argument does not reach here: this pass
+#                     judges GT rows against GT rows, where neither side is a hunter location, so lowering
+#                     this floor would only rewrite the artifacts for no gain.
 #   --log <f>         JSONL append-only record of every judging call (request + raw reply + accepted pairs).
 #   --force           overwrite an existing <out.tsv> (without it an existing artifact is never clobbered).
 #   --self-test       offline contract check (no LLM, no network): the builder reproduces the committed
