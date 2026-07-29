@@ -21,7 +21,17 @@
 # an artifact next to truth.tsv lists judged duplicate pairs (gt-dupes.sh), and `score-match.py --gt-dupes`
 # credits the whole equivalence class. It expands `row_hit` ONLY, so no denominator and no lead count moves.
 #
-# This demo has THREE parts (all CI-safe: no forge, no LLM, no network — the judge runs against a recorded
+# THE SCORING GATE (#1841) — the second residual of the same defect, pinned here too. The judge obeys "a
+# divergent location is not disqualifying" in its DECISION but not in its CONFIDENCE: a lead that describes the
+# GT row's root cause from a superseded copy / factory / helper comes back MATCH with a confidence in the 60s.
+# The old `--judge-min-confidence` default of 70 then turned that hedge into a scored MISS, so the rule and the
+# ruler contradicted each other. The default is now 60 — placed BELOW the whole observed 62-68 hedge band, an
+# outlier floor rather than a recall parameter — and every judged scorecard carries a `GATE` trailer naming the
+# threshold in force plus what it dropped, so a gate can never move a headline silently again. It cannot
+# re-open the #1829 false-positive direction: the gate only ever DROPS MATCHes, so no threshold can credit a
+# candidate the judge decided NO-MATCH on.
+#
+# This demo has FOUR parts (all CI-safe: no forge, no LLM, no network — the judge runs against a recorded
 # decision cache and offline stubs):
 #   1) SOURCE-GUARD (always): mech-judge.sh judges through the flat-cyborg PTY wrapper and never through the
 #      metered print-mode API; score-match.py defaults to --judge off; and the judge path never consults
@@ -35,6 +45,13 @@
 #      — a genuine non-duplicate that merely shares a function name is never co-credited, the LEADS trailer
 #      never moves, a stale artifact is a hard exit 3, a raised merge bar re-derives the unexpanded number
 #      from the same artifact, and the builder pairs exactly the twins.
+#   4) LOCATION DIVERGENCE vs THE GATE (#1841, when python3 is present): on a THIRD fixture whose recorded
+#      decisions carry a location-hedged `MATCH|64`, the defect and the fix are pinned byte-exactly on ONE
+#      decision set — at gate 70 the row is MISS (`GATE 70 1 1`), at the shipped default it is credited
+#      (`GATE 60 0 0`) with an identical `JUDGE` trailer, so the fix is a RE-SCORE and not a re-judge. Plus
+#      the #1829 guard in the same fixture (a name-coincident different-mechanism lead stays MISS even at
+#      `--judge-min-confidence 0`) and a source-guard that the default has exactly one value across the
+#      scorer and both harnesses.
 #
 # Usage:  dark-factory/demo-mech-judge.sh
 # Exit: 0 = all assertions hold (SKIPs cleanly when python3 is absent) ; 1 = a regression ; 3 = missing fixture.
@@ -48,6 +65,9 @@ FIX="$CB/fixtures/mech-judge"
 STUB="$FIX/judge-stub.sh"
 DFIX="$CB/fixtures/gt-dupes"
 GTDUPES="$CB/gt-dupes.sh"
+LFIX="$CB/fixtures/mech-judge-location"
+RUNBENCH="$CB/run-corpus-bench.sh"
+GENRECALL="$CB/generation-recall.sh"
 
 FAILS=0
 note() { echo "demo-mech-judge.sh: $*"; }
@@ -65,6 +85,12 @@ for f in truth.tsv leads.json judge-stub.sh judge-decisions.jsonl dupes-stub.sh 
          gt-dupes.stale.tsv expected-scorecard.nodup.txt expected-scorecard.dup.txt; do
   [ -f "$DFIX/$f" ] || { note "fixture missing: $DFIX/$f" >&2; exit 3; }
 done
+for f in truth.tsv leads.json judge-stub.sh judge-decisions.jsonl \
+         expected-scorecard.default.txt expected-scorecard.gated.txt; do
+  [ -f "$LFIX/$f" ] || { note "fixture missing: $LFIX/$f" >&2; exit 3; }
+done
+[ -f "$RUNBENCH" ]  || { note "harness not found: $RUNBENCH" >&2; exit 3; }
+[ -f "$GENRECALL" ] || { note "harness not found: $GENRECALL" >&2; exit 3; }
 
 # ----------------------------------------------------------------------------------------------------------
 # 1) SOURCE-GUARD — the judge wiring (CI-safe, no toolchain).
@@ -286,6 +312,83 @@ else
   rm -rf "$BTMP"
 fi
 
+# ----------------------------------------------------------------------------------------------------------
+# 4) LOCATION DIVERGENCE vs THE GATE (#1841) — the hedged MATCH the old 70-point default threw away.
+# ----------------------------------------------------------------------------------------------------------
+note "pinning the #1841 confidence gate on fixtures/mech-judge-location/ ..."
+
+# (s) SOURCE-GUARD against ruler drift: the shipped default has exactly ONE value across the scorer and both
+#     harnesses, each harness forwards it UNCONDITIONALLY (so the gate it prints is the gate it applied), and
+#     run-corpus-bench.sh reports the threshold in the human line AND in --json.
+sm_default="$(grep -oE '^[[:space:]]*judge_min_conf = [0-9]+' "$SCOREMATCH" | grep -oE '[0-9]+$')"
+rb_default="$(grep -oE '^JUDGE_MINCONF_DEFAULT=[0-9]+' "$RUNBENCH" | grep -oE '[0-9]+$')"
+gr_default="$(grep -oE '^JUDGE_MINCONF_DEFAULT=[0-9]+' "$GENRECALL" | grep -oE '[0-9]+$')"
+rb_forwards="$(grep -cE '^[[:space:]]*JUDGE_ARGS\+=\(--judge-min-confidence' "$RUNBENCH")"
+gr_forwards="$(grep -cE '^[[:space:]]*JUDGE_ARGS\+=\(--judge-min-confidence' "$GENRECALL")"
+rb_json_conf="$(grep -c 'min_confidence' "$RUNBENCH")"
+# The human line must interpolate the threshold the scorer reported back, not a re-derived one. The pattern is
+# deliberately a LITERAL '$gate_conf' — it is source text being grepped for, not an expansion.
+# shellcheck disable=SC2016
+rb_human_conf='min-confidence $gate_conf'
+if [ -n "$sm_default" ] && [ "$sm_default" = "$rb_default" ] && [ "$sm_default" = "$gr_default" ] \
+   && [ "$rb_forwards" -eq 1 ] && [ "$gr_forwards" -eq 1 ] \
+   && grep -qF "$rb_human_conf" "$RUNBENCH" && [ "$rb_json_conf" -ge 2 ]; then
+  ok "(s) one ruler, one value: score-match.py, run-corpus-bench.sh and generation-recall.sh all default the"
+  echo "         gate to $sm_default, both harnesses forward it unconditionally, and run-corpus-bench.sh prints it in"
+  echo "         the human line and in --json — the printed threshold IS the applied one"
+else
+  bad "(s) the judge gate default drifted or is not recorded (scorer '$sm_default', run-corpus-bench"
+  bad "    '$rb_default', generation-recall '$gr_default'; unconditional forwards $rb_forwards/$gr_forwards)"
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  skip "python3 not on PATH — install python3 to run the #1841 confidence-gate scoring assertions"
+else
+  LCACHE="$LFIX/judge-decisions.jsonl"
+
+  # (p) the DEFECT, pinned: at the OLD 70-point gate the location-hedged MATCH|64 on G-1 is thrown away. The
+  #     GATE trailer names the ruler and its cost — 1 dropped MATCH decision, 1 row lost.
+  GATED="$(python3 "$SCOREMATCH" "$LFIX/truth.tsv" "$LFIX/leads.json" \
+             --judge cache --judge-cache "$LCACHE" --judge-min-confidence 70 2>/dev/null)"
+  if [ "$GATED" = "$(cat "$LFIX/expected-scorecard.gated.txt")" ]; then
+    ok "(p) at --judge-min-confidence 70 the recorded decisions reproduce the DEFECT byte-exactly (G-1, matched"
+    echo "         from a superseded-copy location at confidence 64, is MISS; GATE 70 1 1)"
+  else
+    bad "(p) the gated scorecard DIFFERS from expected-scorecard.gated.txt"
+    diff <(printf '%s\n' "$GATED") "$LFIX/expected-scorecard.gated.txt" >&2 || true
+  fi
+
+  # (q) the FIX, pinned: the SAME recorded decisions credit G-1 at the shipped default, and the JUDGE trailer
+  #     is IDENTICAL in both runs — the fix is a RE-SCORE of decisions already made, never a re-judge.
+  DEFAULTED="$(python3 "$SCOREMATCH" "$LFIX/truth.tsv" "$LFIX/leads.json" \
+                 --judge cache --judge-cache "$LCACHE" 2>/dev/null)"
+  J_GATED="$(printf '%s\n' "$GATED" | grep '^JUDGE	')"
+  J_DEFAULT="$(printf '%s\n' "$DEFAULTED" | grep '^JUDGE	')"
+  if [ "$DEFAULTED" = "$(cat "$LFIX/expected-scorecard.default.txt")" ] \
+     && [ -n "$J_GATED" ] && [ "$J_GATED" = "$J_DEFAULT" ]; then
+    ok "(q) the shipped default credits G-1 on the SAME decisions (GATE 60 0 0) with an identical JUDGE"
+    echo "         trailer ($J_DEFAULT) — a re-score of recorded decisions, not a re-judge"
+  else
+    bad "(q) the default-gate scorecard DIFFERS from expected-scorecard.default.txt, or the JUDGE trailer moved"
+    diff <(printf '%s\n' "$DEFAULTED") "$LFIX/expected-scorecard.default.txt" >&2 || true
+  fi
+
+  # (r) the #1829 GUARD, both directions from one fixture: G-3's exact file+function is named by a lead that
+  #     describes a DIFFERENT mechanism. It is excluded by the DECISION, so NO gate value can credit it —
+  #     asserted at 0 as well as at the default and the old 70, because the gate only ever DROPS MATCHes.
+  ZERO="$(python3 "$SCOREMATCH" "$LFIX/truth.tsv" "$LFIX/leads.json" \
+            --judge cache --judge-cache "$LCACHE" --judge-min-confidence 0 2>/dev/null)"
+  if printf '%s\n' "$ZERO" | grep -q '^G-3	MISS$' \
+     && printf '%s\n' "$DEFAULTED" | grep -q '^G-3	MISS$' \
+     && printf '%s\n' "$GATED" | grep -q '^G-3	MISS$'; then
+    ok "(r) the name-coincident different-mechanism lead leaves G-3 MISS at gate 0, 60 AND 70 — lowering the"
+    echo "         gate cannot re-open the #1829 false-positive direction"
+  else
+    bad "(r) G-3 was credited at some threshold — a different mechanism must be rejected by the DECISION"
+    printf '%s\n' "$ZERO" | sed 's/^/         | /' | head -8
+  fi
+fi
+
 echo
 if [ "$FAILS" -eq 0 ]; then
   note "PASS: the #1829 semantic mechanism judge is wired as an OPT-IN score-match.py mode. --judge off keeps"
@@ -299,7 +402,13 @@ if [ "$FAILS" -eq 0 ]; then
   note "      -> 3/4 rare 1/2 on the same recorded decisions). Denominators, the LEADS trailer and the"
   note "      unmatched-lead queue are untouched, a name-sharing non-duplicate is never co-credited, a stale"
   note "      artifact exits 3, and DUP/DUPHIT keep the expansion separable from the direct hits."
+  note "      #1841 closes the last residual: the judge hedges its CONFIDENCE on a location it was told not to"
+  note "      hold against a candidate, so the gate moved to 60 — below the whole observed hedge band, an"
+  note "      outlier floor rather than a recall knob — and every judged scorecard now carries a GATE trailer"
+  note "      naming the threshold and what it cost. The same recorded decisions re-score at any threshold"
+  note "      (70 reproduces the old number byte-exactly), and no gate value can credit a candidate the judge"
+  note "      decided NO-MATCH on."
   exit 0
 fi
-note "DEMO FAILED — a #1829 mechanism-judge / #1840 GT-equivalence assertion did not hold" >&2
+note "DEMO FAILED — a #1829 mechanism-judge / #1840 GT-equivalence / #1841 confidence-gate assertion did not hold" >&2
 exit 1

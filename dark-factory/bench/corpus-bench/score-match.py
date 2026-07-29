@@ -38,8 +38,23 @@
 #   * FAIL-CLOSED — a pair naming a sev_id absent from truth.tsv is a hard exit 3 (a stale or wrong-contest
 #     artifact must never silently mis-credit), and a class larger than `--gt-dupes-max-class` is not expanded
 #     at all. The merge bar (`--gt-dupes-min-confidence`, default 85) is applied at SCORING time and sits
-#     deliberately above the 70-point scoring gate, because a false merge silently moves the headline.
+#     deliberately far above the judge's scoring gate, because a false merge silently moves the headline.
 # The flag is opt-in and absent by default, so every existing scorecard stays byte-identical.
+#
+# THE SCORING GATE, AND RECORDING THE RULER (issue #1841). The judge's decision rule says location divergence
+# is NOT disqualifying, but the judge does not obey that rule in its CONFIDENCE: when a lead describes the GT
+# row's root cause from a location the row's prose never names (a superseded copy, a factory, a helper), it
+# returns MATCH with a confidence in the 60s. At the old `--judge-min-confidence` default of 70 that hedge
+# became a scored MISS, so the rule and the ruler contradicted each other and the contradiction was resolved
+# against the pipeline. The default is now 60 — placed deliberately BELOW the entire observed 62-68
+# location-divergence band rather than through the middle of it, which makes it an OUTLIER FLOOR against a
+# MATCH the judge itself disbelieves, not a recall parameter. It is inert on the measured data (43 judging
+# calls over 2 contests: nothing at all is dropped at 50 or 60 on either). No threshold value can create a
+# false positive: the #1829 false-positive direction is decided by the MATCH/NO-MATCH DECISION, and the gate
+# only ever DROPS MATCHes. Because a gate that moves a headline silently is the actual hazard, judge mode now
+# also emits `GATE\t<threshold>\t<gated_matches>\t<gated_rows>`: the threshold in force, how many MATCH
+# decisions it dropped, and how many rows that cost. A run reporting a nonzero `gated_rows` is a run whose
+# headline is gate-sensitive and must publish the sensitivity alongside it.
 #
 # This is a BENCH scorer only. It does NOT touch novelty-gate.sh (the LIVE hunting-pipeline boundary/novelty
 # gate, frozen for the #1698/#1699 re-measurement) or extract-gt.sh (truth.tsv schema unchanged).
@@ -63,16 +78,19 @@
 #   --judge-log <f>     JSONL append-only log of every LIVE judging call (request + raw reply + decisions).
 #   --judge-batch N     truth rows shown per judging call (default 12): the lead is judged against ALTERNATIVE
 #                       rows, so a name-coincident candidate has a better home to go to.
-#   --judge-min-confidence N  MATCH decisions below this confidence (0-100) do not score. Default 70.
+#   --judge-min-confidence N  MATCH decisions below this confidence (0-100) do not score. Default 60 (#1841:
+#                       an outlier floor placed BELOW the observed 62-68 location-divergence hedge band, not a
+#                       recall parameter). The value in force is reported in the `GATE` trailer, and one
+#                       archived decision cache re-derives the number at any threshold.
 #   --judge-max-error-rate P  abort (exit 4) when JUDGE-ERRORs exceed this percentage of leads. Default 20.
 #   --gt-dupes <f>      #1840 GT-equivalence artifact next to truth.tsv (gt-dupes.sh output): `#` comment /
 #                       provenance lines plus one `DUP\t<sev_a>\t<sev_b>\t<confidence>\t<reason>` row per
 #                       judged duplicate pair. Pairs are unioned into classes and a matched member credits the
 #                       whole class. Applies in EVERY --judge mode: equivalence is a property of the ground
 #                       truth, not of the matcher. Absent by default (output byte-identical without it).
-#   --gt-dupes-min-confidence N  merge bar applied at SCORING time (0-100, default 85 — deliberately above the
-#                       70-point scoring gate). One archived artifact therefore re-derives the expanded number,
-#                       the unexpanded number, and any threshold in between.
+#   --gt-dupes-min-confidence N  merge bar applied at SCORING time (0-100, default 85 — deliberately far above
+#                       the judge's scoring gate). One archived artifact therefore re-derives the expanded
+#                       number, the unexpanded number, and any threshold in between.
 #   --gt-dupes-max-class N  a class of more than N rows is NOT expanded at all (default 3), with a warning on
 #                       stderr — fail-closed against a runaway merge chain.
 #   --per-lead          ADDITIVE (default output byte-identical without it): after the normal output, append
@@ -84,7 +102,9 @@
 #                       so the `class=C3` vs `C3` inconsistency in verified_findings.json collapses to one key.
 # Output (stdout): one `<sev_id>\t<HIT|MISS>` line per truth row (input order), then a trailer line
 #   `LEADS\t<verified_n>\t<matched_leads>` (verified lead count; leads matching >=1 truth row). In judge mode
-#   ONE extra trailer line `JUDGE\t<calls>\t<errors>` follows it. Under `--gt-dupes`, one
+#   TWO extra trailer lines follow it: `JUDGE\t<calls>\t<errors>` and (#1841) `GATE\t<min_confidence>\t
+#   <gated_matches>\t<gated_rows>` — the confidence gate in force, how many valid MATCH decisions it dropped,
+#   and how many truth rows are MISS ONLY because of it. Under `--gt-dupes`, one
 #   `DUP\t<classes>\t<expanded_hits>` trailer plus one `DUPHIT\t<credited_sev_id>\t<directly_matched_sev_id>`
 #   line per expanded row follow those. With `--per-lead`, one `LEAD\t<class>\t<HIT|MISS>` line per verified
 #   lead comes last.
@@ -195,7 +215,17 @@ def lead_id(i):
 
 def judge_request(lid, lead, rows_chunk):
     """(canonical_request_json, sha256_key) for one lead judged against one batch of truth rows. The key is
-    CONTENT-derived, so a recorded decision replays for the same lead+rows regardless of run order."""
+    CONTENT-derived, so a recorded decision replays for the same lead+rows regardless of run order.
+
+    CACHE-GENERATION HAZARD — READ BEFORE TOUCHING mech-judge.sh's PROMPT. The key covers `{lead, rows}` ONLY.
+    The PROMPT is deliberately NOT part of it, and replay re-parses the recorded `raw_reply` rather than
+    re-asking. So editing the prompt (or the `VERDICT|` grammar, or the decision rule) does NOT invalidate any
+    recorded decision: old and new decisions keep colliding on the same key and one cache file silently mixes
+    two DECISION GENERATIONS, with no field anywhere that says which is which. Any prompt change must
+    therefore VERSION THE KEY FIRST — stamp a `judge_rev` (a sha256 of the prompt builder) on every newly
+    recorded entry, report the distinct revisions found at replay time (pre-existing entries read
+    `unversioned`), and offer a hard-fail switch for a mixed cache. Do not "just tweak the wording": the whole
+    reproducibility claim of a judged recall number rests on this key."""
     req = {
         "lead": {
             "id": lid,
@@ -293,7 +323,12 @@ def invoke_judge(judge_cmd, request_text):
 
 
 def run_judge(leads, rows, mode, judge_cmd, cache_path, log_path, batch, min_conf):
-    """Judge every lead against every truth row, in batches. Returns (row_hit, lead_hit, calls, errors).
+    """Judge every lead against every truth row, in batches.
+
+    Returns (row_hit, lead_hit, calls, errors, gated_matches, gated_row_indices) — the last two are the #1841
+    GATE accounting: how many otherwise-valid MATCH decisions `min_conf` dropped, and which truth rows they
+    named. A hallucinated row id is NEVER counted here (it is already an error upstream), so `gated_matches`
+    only ever reports decisions the judge made about real rows and the gate then discarded.
 
     The recorded RAW REPLY is authoritative on a cache hit (it is re-parsed by the same parser the live path
     uses), so `--judge cache` and `--judge cmd` over the same decisions produce byte-identical scorecards."""
@@ -304,6 +339,8 @@ def run_judge(leads, rows, mode, judge_cmd, cache_path, log_path, batch, min_con
     lead_hit = [False] * len(leads)
     calls = 0
     errors = 0
+    gated_matches = 0
+    gated_row_indices = set()
     for li, lead in enumerate(leads):
         lid = lead_id(li)
         for start in range(0, len(rows), batch):
@@ -337,14 +374,21 @@ def run_judge(leads, rows, mode, judge_cmd, cache_path, log_path, batch, min_con
                 errors += 1
                 continue
             for sev_id, decision, confidence, _reason in decisions:
-                if decision != "MATCH" or confidence < min_conf:
+                if decision != "MATCH":
                     continue
                 ri = row_index.get(sev_id)
                 if ri is None:
                     continue
+                # #1841 GATE accounting, before the scoring decision: the judge said MATCH about a REAL row
+                # and only the confidence gate stops it from scoring. Recording it here is what makes the
+                # gate's cost visible in the scorecard instead of silent.
+                if confidence < min_conf:
+                    gated_matches += 1
+                    gated_row_indices.add(ri)
+                    continue
                 row_hit[ri] = True
                 lead_hit[li] = True
-    return row_hit, lead_hit, calls, errors
+    return row_hit, lead_hit, calls, errors, gated_matches, gated_row_indices
 
 
 # ==============================================================================================================
@@ -456,7 +500,10 @@ def main(argv):
     judge_cache = ""
     judge_log = ""
     judge_batch = 12
-    judge_min_conf = 70
+    # #1841: BELOW the observed 62-68 location-divergence hedge band, not through it — an outlier floor, not a
+    # recall knob. Keep this in sync with JUDGE_MINCONF_DEFAULT in run-corpus-bench.sh + generation-recall.sh
+    # (demo-mech-judge.sh assertion (s) fails on divergence).
+    judge_min_conf = 60
     judge_max_error_rate = 20
     gt_dupes = ""
     gt_dupes_min_conf = 85
@@ -588,6 +635,8 @@ def main(argv):
     matched_leads = 0
     judge_calls = 0
     judge_errors = 0
+    judge_gated_matches = 0
+    judge_gated_rows = set()
     if judge_mode == "off":
         # FROZEN #1697 location-first path — untouched, and the only path that calls lead_matches_row().
         lead_hit = [False] * len(resolved)
@@ -599,7 +648,7 @@ def main(argv):
                     lead_hit[li] = True
     else:
         # #1829 judge mode: the judge is AUTHORITATIVE — no token fallback, no silent NO-MATCH.
-        row_hit, lead_hit, judge_calls, judge_errors = run_judge(
+        row_hit, lead_hit, judge_calls, judge_errors, judge_gated_matches, judge_gated_rows = run_judge(
             lead_objs, rows, judge_mode, judge_cmd, judge_cache, judge_log, judge_batch, judge_min_conf)
         if resolved and (judge_errors * 100.0) / len(resolved) > judge_max_error_rate:
             die(4, "judge error rate " + str(judge_errors) + "/" + str(len(resolved)) + " leads exceeds "
@@ -623,6 +672,13 @@ def main(argv):
     # number as the live run); `errors` counts JUDGE-ERRORs (unparseable reply / hallucinated row id).
     if judge_mode != "off":
         out.append(f"JUDGE\t{judge_calls}\t{judge_errors}")
+        # ADDITIVE gate trailer (#1841), judge-mode-only exactly like JUDGE, and emitted AFTER the #1840
+        # expansion so `gated_rows` counts only rows that are still MISS in the FINAL scorecard — a row the
+        # gate dropped but an equivalence class credited anyway cost nothing. `gated_matches` is the raw count
+        # of dropped MATCH decisions (several can name the same row). Nonzero `gated_rows` means the headline
+        # is gate-sensitive: re-derive it at another threshold from the same cache before publishing.
+        gated_rows = sum(1 for ri in judge_gated_rows if not row_hit[ri])
+        out.append(f"GATE\t{judge_min_conf}\t{judge_gated_matches}\t{gated_rows}")
     # ADDITIVE GT-equivalence trailers (#1840): present ONLY under --gt-dupes, so every pinned scorecard
     # without the flag stays byte-identical. `DUP` reports the loaded class count and how many rows were
     # credited THROUGH a class rather than directly — `hits - expanded_hits` is exactly the pre-#1840 number

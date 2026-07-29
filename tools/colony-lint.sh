@@ -1292,12 +1292,20 @@ fi
 # judge driver) while leaving every denominator, the LEADS trailer and the unmatched-lead queue untouched.
 # The demo pins the defect and the fix byte-exactly on a SECOND fixture plus the guard rails (name-sharing
 # non-duplicate never co-credited, stale artifact exits 3, raised merge bar re-derives the unexpanded number).
+# It ALSO gates #1841, the other residual: the judge obeys "a divergent location is not disqualifying" in its
+# DECISION but hedges its CONFIDENCE into the 60s for exactly those candidates, and the old 70-point
+# `--judge-min-confidence` default then turned a confirmed mechanism match into a scored miss. The gate now
+# sits at 60 — below the whole observed hedge band, an outlier floor rather than a recall knob — every judged
+# scorecard carries a `GATE` trailer naming the threshold and what it dropped, and both harnesses forward the
+# threshold they print. A THIRD fixture pins the defect and the fix on one recorded decision set (MISS at 70,
+# credited at 60, identical JUDGE trailer) plus the #1829 guard at gate 0 and the single-source-of-truth
+# default.
 if [ -x "$REPO_ROOT/dark-factory/demo-mech-judge.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-mech-judge.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
-        pass "dark-factory: semantic mechanism judge + GT-equivalence crediting (#1829, #1840)"
+        pass "dark-factory: semantic mechanism judge + GT-equivalence crediting + confidence gate (#1829, #1840, #1841)"
     else
-        fail "dark-factory: semantic mechanism judge / GT-equivalence crediting regressed (#1829, #1840)"
+        fail "dark-factory: semantic mechanism judge / GT-equivalence crediting / confidence gate regressed (#1829, #1840, #1841)"
         printf '%s\n' "$check_out"
     fi
 fi

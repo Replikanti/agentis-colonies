@@ -1,0 +1,29 @@
+{
+  "repo": "synthetic-fixture",
+  "gate": "mech-judge-location-selftest",
+  "verified": [
+    {
+      "location": "src/history/VaultV2.sol:queueDeposit:88",
+      "file": "src/history/VaultV2.sol",
+      "class": "C4",
+      "exploit": "the deposit request is stored at a hardcoded index 0 of the per-epoch request array rather than at the queue's next free slot, so the second depositor of an epoch overwrites the first request in place while the first depositor's assets have already been pulled in and can never be claimed",
+      "poc_sketch": "queue a deposit -> queue a second deposit in the same epoch -> the first request slot now holds the second request and the first depositor's balance is unrecoverable"
+    },
+    {
+      "location": "src/Vault.sol:settleEpoch:140",
+      "file": "src/Vault.sol",
+      "class": "C7",
+      "exploit": "settleEpoch carries no caller restriction and no check that the epoch's end timestamp has passed, so anyone can settle an epoch the moment it opens and close it against the holders who expected the full duration",
+      "poc_sketch": "open an epoch -> call settleEpoch from an unrelated account in the same block -> the epoch is closed early"
+    },
+    {
+      "location": "src/Vault.sol:redeem:210",
+      "file": "src/Vault.sol",
+      "class": "C2",
+      "exploit": "the caller's shares are burned before the total supply is read for the pro-rata computation, so the divisor is already reduced and each redemption pays out more than the holder's share of the assets, at the expense of everyone still in the vault",
+      "poc_sketch": "redeem a position in many small slices -> each slice rounds in the redeemer's favour -> the vault ends short of the remaining holders' claims"
+    }
+  ],
+  "errors": [],
+  "totals": {"verified": 3}
+}
