@@ -554,7 +554,8 @@ runs**, so a depth candidate can never spawn further depth cells — one pass, n
 *breadth-first*: one class per location per pass. Measured, that never gave any location more than one or two
 lenses, so the mechanism the depth pass exists for — hunting **one** function repeatedly under different
 lenses — was never exercised, and #1827's held-out A/B failed on exactly that criterion. The fix is a single
-integer, `--depth-lens-quota N` (`run-zone-hunt.sh --zone-depth-lens-quota`, default **3**): each location
+integer, `--depth-lens-quota N` (`run-zone-hunt.sh --zone-depth-lens-quota`, default **1**, the #1827 spread —
+reverted from an initial default of 3 after the #1850 measurement below did not support it): each location
 takes **N consecutive lenses** before the plan moves to the next one, and after every location has had N the
 rounds repeat (positions N+1…2N, and so on) until the cap is spent.
 
