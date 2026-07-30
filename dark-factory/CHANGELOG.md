@@ -367,9 +367,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   produced its held-out verdict, 12 depth cells went to 10 distinct locations and no function was ever hunted
   under more than two lenses. The mechanism the pass exists for (re-reading ONE function under several lenses
   until it stops yielding) was therefore never exercised, and the A/B that shipped the flag OFF measured an
-  allocation, not the capability. `run-discovery.sh --depth-lens-quota <N>` (default **3**) replaces the
+  allocation, not the capability. `run-discovery.sh --depth-lens-quota <N>` (default **1**) replaces the
   round-robin with a **quota-round-robin**: each location takes N consecutive lenses before the plan moves on,
-  in rounds, until the cap is spent.
+  in rounds, until the cap is spent. `N=1` reproduces the #1827 spread byte-for-byte, which is why the old
+  allocation needs no second code path.
+  The default shipped as 3 and was **reverted to 1** after the measurement: quota 3 on plaza produced the
+  first rare row the depth pass has ever found (M-12, `found_by=1`, via a second lens on `exitBalancerPool`
+  that the spread never gave it) but the same run matched 10/30 ground-truth rows against the control's
+  13/30. The four losses are **not attributable** — both arms re-hunted the stochastic breadth pass, so that
+  A/B cannot separate an allocation effect from breadth variance. Deciding the default needs a
+  **breadth-fixed** A/B (a depth-only re-entry that consumes a recorded `results-cells.jsonl` instead of
+  re-hunting breadth); until then the default is the value whose behaviour is measured, and `3` is available
+  for the experiment.
   - **`N=1` reproduces the old allocation byte-for-byte**, so the spread arm stays re-derivable with a flag
     rather than a second code path — `demo-discovery-parallel.sh` (13d) keeps the pre-#1850 expectation
     verbatim as exactly that case. N is not a taste parameter: on the recorded 12-cell plan, full exhaustion

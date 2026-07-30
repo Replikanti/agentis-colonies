@@ -63,7 +63,7 @@
 #                       a loop: the target list is computed once from the breadth set, so a depth candidate can
 #                       never spawn further depth cells.
 #   --depth-lens-quota <N>  #1850 ALLOCATION of the --depth-max-cells cap across the flagged locations.
-#                       N (default 3, must be >= 1) = how many CONSECUTIVE lenses one location gets before the
+#                       N (default 1, must be >= 1) = how many CONSECUTIVE lenses one location gets before the
 #                       plan moves to the next one; after every location has had N the rounds repeat (positions
 #                       N+1..2N, and so on) until the cap is spent. N=1 degenerates to the shipped
 #                       one-class-per-location-per-pass spread BYTE-FOR-BYTE, which is why the old allocation
@@ -99,7 +99,13 @@ BACKEND="flat-cyborg" ; MODEL="" ; OUT="$PWD/discovery-out"
 LIST_CELLS=""   # #1612: opt-in dry-run; empty = the shipped hunt path, byte-identical.
 JOBS=1          # #1625: opt-in bounded-concurrency fan-out; 1 = serial, byte-identical to the pre-M3 hunt.
 DEPTH_MAX_CELLS=0  # #1827: opt-in within-contract depth pass; 0 = OFF, the whole path is inert.
-DEPTH_LENS_QUOTA=3 # #1850: consecutive lenses per location per round; 1 = the #1827 spread, byte-for-byte.
+# #1850: consecutive lenses per location per round. Default 1 = the #1827 spread, byte-for-byte.
+# 3 concentrates the budget and DID produce the first rare row depth has ever found (plaza M-12, via a
+# second lens on exitBalancerPool), but the run that showed it also lost four mid/consensus rows whose loss
+# is NOT attributable — both arms re-hunted the stochastic breadth pass, so that A/B cannot separate an
+# allocation effect from breadth variance. The default stays at the measured-safe value until a
+# breadth-fixed A/B justifies moving it; `--depth-lens-quota 3` is available for that experiment.
+DEPTH_LENS_QUOTA=1
 
 need() { [ "$1" -ge 2 ] || { echo "run-discovery.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
