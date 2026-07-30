@@ -210,6 +210,35 @@ else bad "3) the depth filter is not load-bearing / the seeded cell set is wrong
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (3b) THE CARRIED CANDIDATES MUST REACH THE REPORT, not just the counters. run-discovery.sh re-renders them
+#      precisely so "the depth-only report is not misleadingly empty of the breadth leads its depth plan was
+#      derived from" — but the counter and the row are written by different lines, so a report that lost every
+#      carried row still reports the right total in its footer and in discovery-results.json. That is the
+#      failure mode this pins: a silently empty table under an honest-looking count (#1859).
+#      MUTATION: drop the `printf ... >> "$REPORT"` in the seed step's `cand)` branch, keeping the counter.
+# ----------------------------------------------------------------------------------------------------------
+note "3b) every carried breadth candidate is RENDERED into the report, not merely counted ..."
+if python3 - "$Q3_OUT/discovery-results.json" "$Q3_OUT/discovery-report.md" <<'PY2'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+carried = [c for c in d["cells"] if c.get("phase") != "depth"]
+cands = [x for c in carried for x in (c.get("candidates") or [])]
+assert cands, "the fixture carries no breadth candidates - this assertion would be vacuous"
+body = open(sys.argv[2], encoding="utf-8").read()
+# The seed renders a candidate by replacing its `|` field separators with ` / ` (run-discovery.sh's
+# `cand)` branch). Checking the rendered TEXT rather than counting rows keeps this immune to the
+# coordination table's steer rows, which share the report and the subsystem column.
+missing = [x for x in cands if x.replace("|", " / ") not in body]
+assert not missing, (
+    "%d of %d carried candidate(s) are counted but never rendered - the footer total and the table "
+    "disagree, which is the misleadingly-empty report #1859 pins:\n  %s"
+    % (len(missing), len(cands), "\n  ".join(m[:90] for m in missing[:3])))
+PY2
+then ok "3b) all carried breadth candidates appear as rendered report rows — counter and table agree"
+else bad "3b) carried candidates are counted but not rendered into the report"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # (4) CARRIED CELLS VERBATIM. The seeded records must be the SOURCE records byte-for-byte, which is what makes
 #     a depth-only arm a drop-in for verify-findings.sh -> score-match.py.
 #     MUTATION: sort_keys=True, ensure_ascii=True (both fixtures carry non-ASCII prose), or dropping a field.
