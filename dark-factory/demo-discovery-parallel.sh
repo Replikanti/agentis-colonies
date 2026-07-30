@@ -556,7 +556,7 @@ DEPTH_OUT="$WORK/out-depth3"
 ENVLOG="$WORK/envlog-depth3"; : > "$ENVLOG"
 STUB_DEPTH=1 STUB_ENVLOG="$ENVLOG" \
   "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
-  --out "$DEPTH_OUT" --jobs 1 --depth-max-cells 3 >/dev/null 2>"$WORK/depth3.err"
+  --out "$DEPTH_OUT" --jobs 1 --depth-max-cells 3 --depth-lens-quota 3 >/dev/null 2>"$WORK/depth3.err"
 RC=$?
 [ "$RC" -eq 0 ] && ok "run-discovery.sh --depth-max-cells 3 exits 0" \
   || { bad "the depth run exited $RC"; sed 's/^/      /' "$WORK/depth3.err" >&2; }
@@ -672,6 +672,31 @@ then ok "13d) at quota 1 the plan is the #1827 spread byte-for-byte: [deposit/C1
 else bad "13d) --depth-lens-quota 1 did not reproduce the shipped spread"
 fi
 
+# (13f) THE DEFAULT PIN. The quota shipped at 3 and was reverted to 1 after the plaza measurement: quota 3
+#       found a rare row the spread never did (M-12) but the same run matched fewer rows overall, and because
+#       BOTH arms re-hunt the stochastic breadth pass, those losses are not attributable to the allocation.
+#       The default is therefore the value whose behaviour is measured, and it must not drift back silently —
+#       a default change is a behaviour change for every operator who enables depth without naming a quota.
+DEPTH_DEF="$WORK/out-depth3-default"
+STUB_DEPTH=1 \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$DEPTH_DEF" --jobs 1 --depth-max-cells 3 >/dev/null 2>"$WORK/depthdef.err"
+note "13f) #1850: the DEFAULT quota (no flag) is 1 — the spread — not the concentrated allocation ..."
+if python3 - "$DEPTH_DEF/discovery-results.json" "$DEPTH_Q1/discovery-results.json" <<'PY'
+import sys, json
+def depth(p):
+    d = json.load(open(p, encoding="utf-8"))
+    return d, [(c["class"], c["files"]) for c in d["cells"] if c.get("phase") == "depth"]
+dd, sd = depth(sys.argv[1])
+dq, sq = depth(sys.argv[2])
+assert dd["totals"]["depth_lens_quota"] == 1, \
+    "the DEFAULT lens quota is not 1: %r (a default change is a behaviour change — see #1850)" % dd["totals"].get("depth_lens_quota")
+assert sd == sq, "the default allocation differs from an explicit --depth-lens-quota 1:\n  default %r\n  quota1  %r" % (sd, sq)
+PY
+then ok "13f) the default is quota 1 and its depth sequence is identical to an explicit --depth-lens-quota 1"
+else bad "13f) the default quota drifted away from the measured-safe value (1)"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # (13e) #1850 ACCEPTANCE, OFFLINE. The issue's acceptance line is "one flagged function is hunted under >= 3
 #     distinct lenses at the same total depth budget". The pinned fixture above cannot express it — its zone
@@ -688,7 +713,7 @@ printf 'vault deposits | C1,C6,C15,C2 | contracts/vault/Vault.sol\n' > "$SCOPE4"
 Q3_OUT="$WORK/out-4class-q3"
 STUB_DEPTH=1 \
   "$DISCOVERY" --repo "$REPO" --scope "$SCOPE4" --brief "$BRIEF" --backend mock --agentis "$STUB" \
-  --out "$Q3_OUT" --jobs 1 --depth-max-cells 3 >/dev/null 2>"$WORK/q3.err"
+  --out "$Q3_OUT" --jobs 1 --depth-max-cells 3 --depth-lens-quota 3 >/dev/null 2>"$WORK/q3.err"
 Q1_OUT="$WORK/out-4class-q1"
 STUB_DEPTH=1 \
   "$DISCOVERY" --repo "$REPO" --scope "$SCOPE4" --brief "$BRIEF" --backend mock --agentis "$STUB" \
@@ -745,7 +770,7 @@ note "15) #1827: the depth cell set is deterministic and --jobs 3 == serial ..."
 DEPTH_OUT_B="$WORK/out-depth3b"
 STUB_DEPTH=1 \
   "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
-  --out "$DEPTH_OUT_B" --jobs 1 --depth-max-cells 3 >/dev/null 2>"$WORK/depth3b.err"
+  --out "$DEPTH_OUT_B" --jobs 1 --depth-max-cells 3 --depth-lens-quota 3 >/dev/null 2>"$WORK/depth3b.err"
 # _depth_seq <out-dir> — the SEQUENCE of depth cells (subsystem|class|files, in cells[] order) read from
 # <out-dir>/discovery-results.json. This used to open() the OUT DIR itself, so every call raised
 # IsADirectoryError, wrote NOTHING to its stdout redirection, and the two "identical" empty files then
@@ -776,7 +801,7 @@ else
   DEPTH_PAR="$WORK/out-depth-par"
   STUB_DEPTH=1 STUB_SLEEP=0 \
     "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
-    --out "$DEPTH_PAR" --jobs 3 --depth-max-cells 3 >/dev/null 2>"$WORK/depthpar.err"
+    --out "$DEPTH_PAR" --jobs 3 --depth-max-cells 3 --depth-lens-quota 3 >/dev/null 2>"$WORK/depthpar.err"
   _depth_seq "$DEPTH_PAR" > "$WORK/depthseq.par"
   if [ ! -s "$WORK/depthseq.par" ]; then
     bad "15b) depth cell sequence extraction (--jobs 3) produced no rows -- the comparison below would be vacuous"
