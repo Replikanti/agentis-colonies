@@ -677,6 +677,80 @@ quota-1 arm as its control; zero cost when no lead was found; determinism and se
 `DEPTH-CELL|` record boundary; depth being trimmed before breadth under a budget; and the CB sweep. Each is
 mutation-tested — reverting its fix makes it fire.
 
+### Depth-only re-entry: measuring an allocation without re-hunting breadth (#1857)
+
+Every depth A/B above shares one confound: both arms re-run the **stochastic** breadth pass, so a row the
+treatment lost may have been lost by breadth variance rather than by the allocation. That is exactly why
+#1850's four lost mid/consensus rows were unattributable and why the default reverted to `1`. Fixing the
+breadth sample is therefore a prerequisite for the measurement, not a convenience.
+
+`run-discovery.sh --depth-from <discovery-results.json>` consumes a **recorded** run, seeds the cell
+accumulator with that run's **breadth** cells and falls straight into the unmodified depth block above.
+`_plan_depth_cells()`, `run_cell()` and `scrape_cell_log()` are reused verbatim, so the plan a re-entry
+computes **is** the plan the original run computed — `demo-depth-reentry.sh` (1)/(2) pin that against both
+recorded plaza arms' own `depth-plan.tsv`. Two re-entries differing only in `--depth-lens-quota` then differ
+only in the allocation.
+
+**What it consumes, and why not the other file.** The input is `discovery-results.json`, never the raw
+`run/results-cells.jsonl`: the JSONL carries no provenance at all (no repo, no totals, no backend), so none
+of the refusals below would be possible. The recorded **breadth** cells are carried into `cells[]`
+byte-for-byte, so a depth-only arm is a drop-in for `verify-findings.sh --results` → `score-match.py` and is
+scored on breadth+depth exactly like a full run.
+
+**Depth cells are filtered out of the seed, and that is correctness, not hygiene.** A depth candidate fed
+back into the accumulator changes `loc_count` / `loc_sev` / `loc_prod`, which moves both the location ranking
+and the per-location lens order. Replaying the quota-3 arm *unfiltered* yields extra `C17`/`C5` lenses and
+promotes `startAuction` above `transferReserveToAuction` — a different experiment wearing the same name.
+
+**Refusal matrix.**
+
+| Situation | Exit | Why |
+|---|---|---|
+| `--depth-from` with `--list-cells` / `--only` / `--classes` / `--scope` | 2 | none can affect a plan derived from recorded cells — the zone class order comes from those cells' own `class` fields, not from a manifest, so accepting them would be a silent lie |
+| `--depth-from` without `--depth-max-cells > 0` | 2 | a depth-only run with no depth budget is a no-op that would still write an output dir |
+| missing input file / no `python3` | 2 / 3 | the operator's argv vs. an unmet dependency |
+| recorded `repo` ≠ `basename --repo` | 3 | the artifact belongs to another target |
+| recorded `commit` present and ≠ current HEAD | 3 | the checkout moved under the recording |
+| a depth target the checkout no longer carries | 3 | the one guard that reaches the working tree |
+| the input records **0** breadth cells | 3 | nothing to plan a depth pass from |
+
+Exit **2** = the operator typed something that cannot be honoured; exit **3** = the artifact does not match
+this target (the #1840 fail-closed precedent). Every artifact-only refusal fires **before** the output dir
+exists, so a refused re-entry leaves nothing behind.
+
+**What the guard cannot detect — stated, not papered over.** Every run now records `commit` (a *soft* git
+dependency: a non-git target degrades to `"unknown"` and never fails), so from this change onward a stale
+checkout is refused. It buys nothing for artifacts recorded **before** it, which is every artifact that
+exists today including both plaza arms: such a re-entry prints
+`the input records no commit; re-entry provenance is UNVERIFIED` and runs. It also cannot detect a **dirty
+working tree** (`rev-parse` is identical with uncommitted edits — it pins the commit, not the content), two
+different repos cloned into identically-named directories, or a changed `scope.tsv` (deliberately: the plan
+never reads the manifest, which is why `--scope` is refused rather than validated). **Re-entering against the
+checkout that produced the input is the operator's responsibility**; `depth_from.commit` puts that on the
+record. No guard here implies a check it does not make.
+
+**The A/B recipe.** One breadth run, then two re-entries:
+
+```sh
+# 1. one breadth pass — this is the sample both arms will share
+run-discovery.sh --repo <target> --scope <scope.tsv> --brief <brief.md> --out breadth-out
+
+# 2. two arms over that ONE sample, differing only in the allocation
+run-discovery.sh --repo <target> --brief <brief.md> --out arm-q1 \
+  --depth-from breadth-out/discovery-results.json --depth-max-cells 12 --depth-lens-quota 1
+run-discovery.sh --repo <target> --brief <brief.md> --out arm-q3 \
+  --depth-from breadth-out/discovery-results.json --depth-max-cells 12 --depth-lens-quota 3
+```
+
+Both arms carry the identical breadth rows into `cells[]`, so they are scored under the same ruler and the
+difference between them is the allocation. `depth_from` in each output records the source, its repo and
+commit, and the carried counts.
+
+**Out of scope, deliberately:** no `run-zone-hunt.sh` capstone flag (the primitive is driven directly until
+one real A/B has used it), no re-hunting of breadth under `--depth-from` (the input is authoritative and
+read-only — there is no partial or top-up mode), and no re-deciding the `--depth-lens-quota` default: this
+builds the instrument, #1827's measurement moves the default.
+
 ### The HALT / NEVER-SUBMIT invariant (load-bearing)
 
 The capstone contains NO `curl`/`wget`/`submit`/egress verb on any executable line. The never-submit invariant

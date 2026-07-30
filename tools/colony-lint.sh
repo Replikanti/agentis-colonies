@@ -988,6 +988,51 @@ if [ -x "$REPO_ROOT/dark-factory/demo-discovery-parallel.sh" ]; then
     fi
 fi
 
+# --- dark-factory: the --depth-lens-quota default is a MEASURED decision, pinned statically (#1856) ---
+# The behavioural guard is demo-discovery-parallel.sh block 13f (it RUNS run-discovery.sh and reads
+# totals.depth_lens_quota). Retrospective mutation testing on #1854 found 13f to be the SOLE assertion that
+# fires when the default drifts: at DEPTH_LENS_QUOTA=2 and =3 every other one of the 58 + 71 demo assertions
+# still passed. This is its orthogonal twin — STATIC (it reads the source, spawns nothing), so deleting
+# either leaves the other standing. The regex pins the VALUE, tolerating indentation, quoting and a trailing
+# comment: every spelling that is still "a shell assignment of the literal 1" passes.
+DF_DISCOVERY="$REPO_ROOT/dark-factory/run-discovery.sh"
+if [ -f "$DF_DISCOVERY" ]; then
+    quota_assigns="$(grep -cE '^[[:space:]]*DEPTH_LENS_QUOTA=' "$DF_DISCOVERY" || true)"
+    if [ "$quota_assigns" -ne 1 ]; then
+        fail "dark-factory: expected exactly ONE DEPTH_LENS_QUOTA default assignment in run-discovery.sh, found $quota_assigns (#1856)"
+        echo "      If you moved or renamed the default, update this pin in tools/colony-lint.sh in the same commit."
+    elif grep -qE '^[[:space:]]*DEPTH_LENS_QUOTA=["'"'"']?1["'"'"']?[[:space:]]*(#.*)?$' "$DF_DISCOVERY"; then
+        pass "dark-factory: the --depth-lens-quota default is still the measured-safe 1 (static pin, #1856)"
+    else
+        fail "dark-factory: the --depth-lens-quota default drifted away from 1 (run-discovery.sh, DEPTH_LENS_QUOTA=; #1850/#1854, #1856)"
+        echo "      Quota 3 was measured on plaza: it found one rare row the spread never did, but the same run"
+        echo "      lost four mid/consensus rows whose loss is NOT attributable (both arms re-hunted the"
+        echo "      stochastic breadth pass). The default stays at the measured-safe value until a"
+        echo "      breadth-fixed A/B justifies moving it - use --depth-lens-quota 3 for that experiment."
+        echo "      If you moved or renamed the default, update this pin in tools/colony-lint.sh in the same commit."
+    fi
+fi
+
+# --- dark-factory depth-only re-entry: replay a recorded breadth pass, hunt only depth (#1857) ---
+# run-discovery.sh gains an opt-in --depth-from <discovery-results.json>: seed the cell accumulator with a
+# RECORDED run's BREADTH cells and fall into the unchanged #1827 depth block, so two arms differing only in
+# --depth-lens-quota share ONE breadth sample (the confound that made #1850's A/B unreadable). The input is
+# the sibling artifact that carries provenance, never the raw results-cells.jsonl. demo-depth-reentry.sh is
+# pure bash/python3 over checked-in recordings of two real plaza arms driven through the existing --agentis
+# seam (no live agentis / forge / LLM / network, no hunt): asserts both quota acceptances against the
+# recorded plans, the load-bearing depth filter, byte-verbatim carried cells, carried totals, --jobs
+# equivalence, default-inertness down to the golden report, and every refusal (repo / commit / missing
+# target / no breadth cells / the five refused flags).
+if [ -x "$REPO_ROOT/dark-factory/demo-depth-reentry.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-depth-reentry.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: depth-only re-entry (run-discovery.sh --depth-from: recorded breadth carried, depth re-hunted, provenance-guarded) (#1857)"
+    else
+        fail "dark-factory: depth-only re-entry regressed (#1857)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory verify integration: the M3 -> verify bridge (#1630, epic #1611 M4) ---
 # verify-findings.sh drives the refute gate (run-refute.sh, as-is) over EVERY candidate in an M3
 # discovery-results.json and aggregates the CONFIRMED-only survivors into verified_findings.json (seam-3 schema).
