@@ -23,7 +23,7 @@
 #      WHOLE by `_join_wrapped_candidates()`: the full exploit sentence and poc_sketch survive intact, and the
 #      wrap does not split into two bogus candidates.
 #   11-17) #1827 WITHIN-CONTRACT DEPTH PASS (`--depth-max-cells`, default 0 = OFF) + its #1850 ALLOCATION
-#          (`--depth-lens-quota`, default 3):
+#          (`--depth-lens-quota`, default 1 - reverted from 3 by #1854):
 #      11) INERTNESS: with the flag absent the report is byte-identical to the golden (assertion 1) AND
 #          discovery-results.json carries no `phase`, no `totals.depth_cells` and no `totals.depth_lens_quota`
 #          key at all.
@@ -36,7 +36,7 @@
 #          before the producing one, `quota` consecutive lenses per location per round).
 #      13d) COMPATIBILITY PIN: the SAME run at `--depth-lens-quota 1` reproduces #1827's breadth-first
 #          spread sequence VERBATIM — the spread arm stays re-derivable with a flag, not a second code path.
-#      13e) THE #1850 ACCEPTANCE, OFFLINE: on a 4-class zone at cap 3 the default quota puts all three depth
+#      13e) THE #1850 ACCEPTANCE, OFFLINE: on a 4-class zone at cap 3 an explicit quota 3 puts all three depth
 #          cells on ONE function under three DISTINCT lenses (the offline analogue of "hunted under >= 3
 #          lenses"); the same fixture at quota 1 gives the top location at most 2 of the 3.
 #      14) NO-LEAD ZERO COST: a zone whose breadth cells all answer SAFE emits ZERO depth cells even at cap 12.
@@ -542,7 +542,7 @@ fi
 #     with the HIGH one deliberately surfaced by the SECOND cell so severity is not confounded with order:
 #       cell 1  C1 -> Vault.sol:withdraw (Medium)  -> class order [C6, C1]  (other lens first, producer last)
 #       cell 2  C6 -> Vault.sol:deposit  (High)    -> class order [C1, C6]
-#     Ranked High-before-Medium and spent by the #1850 QUOTA-round-robin at the default quota 3 (each location
+#     Ranked High-before-Medium and spent by the #1850 QUOTA-round-robin at an explicit quota 3 (each location
 #     takes its whole 2-lens list before the plan moves on), the full plan is
 #       1. deposit/C1   2. deposit/C6   3. withdraw/C6   4. withdraw/C1
 #     so `--depth-max-cells 3` must take exactly the first three. That sequence still mutation-pins all three
@@ -677,6 +677,10 @@ fi
 #       BOTH arms re-hunt the stochastic breadth pass, those losses are not attributable to the allocation.
 #       The default is therefore the value whose behaviour is measured, and it must not drift back silently —
 #       a default change is a behaviour change for every operator who enables depth without naming a quota.
+#       13f is the BEHAVIOURAL half of that guard (it RUNS the tool and reads totals.depth_lens_quota); its
+#       orthogonal STATIC twin lives in tools/colony-lint.sh, which greps the default straight out of
+#       run-discovery.sh (#1856). Deleting either leaves the other standing — if you weaken one, say so in
+#       the other's failure text too.
 DEPTH_DEF="$WORK/out-depth3-default"
 STUB_DEPTH=1 \
   "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
@@ -703,11 +707,11 @@ fi
 #     advertises only 2 classes, so no location HAS a third lens. This uses its OWN scope fixture (the pinned
 #     one must not change: assertion 1 is a byte-identical golden comparison) declaring a 4-class zone over
 #     the same file. The stub flags `deposit` High under C6 and `withdraw` Medium under C1; C15/C2 answer
-#     SAFE. At cap 3 the default quota must put ALL THREE cells on the top-ranked function under THREE
+#     SAFE. At cap 3 an explicit quota 3 must put ALL THREE cells on the top-ranked function under THREE
 #     DISTINCT lenses. The quota-1 arm of the same fixture is the control: it can give the top location at
 #     most 2 of the 3 cells, so this pair fails the moment the quota stops concentrating.
 # ----------------------------------------------------------------------------------------------------------
-note "13e) #1850: on a 4-class zone the default quota hunts ONE function under 3 distinct lenses ..."
+note "13e) #1850: on a 4-class zone an explicit quota 3 hunts ONE function under 3 distinct lenses ..."
 SCOPE4="$WORK/scope-4class.tsv"
 printf 'vault deposits | C1,C6,C15,C2 | contracts/vault/Vault.sol\n' > "$SCOPE4"
 Q3_OUT="$WORK/out-4class-q3"
@@ -725,8 +729,8 @@ def depth_cells(p):
     return d, [c for c in d["cells"] if c.get("phase") == "depth"]
 d3, q3 = depth_cells(sys.argv[1])
 d1, q1 = depth_cells(sys.argv[2])
-assert len(q3) == 3, "expected 3 depth cells at the default quota, got %d" % len(q3)
-assert d3["totals"]["depth_lens_quota"] == 3, "the default quota is not 3: %r" % d3["totals"].get("depth_lens_quota")
+assert len(q3) == 3, "expected 3 depth cells at an explicit quota 3, got %d" % len(q3)
+assert d3["totals"]["depth_lens_quota"] == 3, "the explicit --depth-lens-quota 3 was not recorded: %r" % d3["totals"].get("depth_lens_quota")
 # THE ACCEPTANCE: one location, three distinct lenses.
 locs = collections.Counter(c["files"] for c in q3)
 assert len(locs) == 1, "the depth budget still spread over %d locations: %r" % (len(locs), dict(locs))
@@ -738,7 +742,7 @@ assert len(q1) == 3, "expected 3 depth cells in the quota-1 control, got %d" % l
 top = collections.Counter(c["files"] for c in q1).most_common(1)[0][1]
 assert top <= 2, "the quota-1 control gave the top location %d of 3 cells — the quota is not what concentrates" % top
 PY
-then ok "13e) at the default quota all 3 depth cells hunt Vault.sol@deposit under 3 DISTINCT lenses; the quota-1 control gives its top location at most 2"
+then ok "13e) at an explicit quota 3 all 3 depth cells hunt Vault.sol@deposit under 3 DISTINCT lenses; the quota-1 control gives its top location at most 2"
 else bad "13e) the concentration assertion failed (the depth budget did not exhaust one location)"
 fi
 

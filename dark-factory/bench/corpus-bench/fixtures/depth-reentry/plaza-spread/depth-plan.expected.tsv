@@ -1,0 +1,12 @@
+Plaza bond and leverage pool with coupon auction, oracle adapters and routers	C18	src/Pool.sol@getRedeemAmount
+Plaza bond and leverage pool with coupon auction, oracle adapters and routers	C6	src/Pool.sol@transferReserveToAuction
+Plaza bond and leverage pool with coupon auction, oracle adapters and routers	C18	src/BondOracleAdapter.sol@latestRoundData
+Plaza bond and leverage pool with coupon auction, oracle adapters and routers	C6	src/Pool.sol@startAuction
+Plaza bond and leverage pool with coupon auction, oracle adapters and routers	C18	src/BalancerRouter.sol@exitBalancerPool
+Plaza bond and leverage pool with coupon auction, oracle adapters and routers	C18	src/LifiRouter.sol@create
+Plaza bond and leverage pool with coupon auction, oracle adapters and routers	C18	src/OracleReader.sol@getOraclePrice
+Plaza bond and leverage pool with coupon auction, oracle adapters and routers	C6	src/Auction.sol@bid
+Plaza bond and leverage pool with coupon auction, oracle adapters and routers	C18	src/BalancerRouter.sol@joinBalancerAndPredeposit
+Plaza bond and leverage pool with coupon auction, oracle adapters and routers	C18	src/Pool.sol@distribute
+Plaza bond and leverage pool with coupon auction, oracle adapters and routers	C15	src/Pool.sol@getRedeemAmount
+Plaza bond and leverage pool with coupon auction, oracle adapters and routers	C2	src/Pool.sol@transferReserveToAuction

@@ -1,0 +1,12 @@
+Plaza bond-leverage pool with coupon auction and oracle adapters	C18	src/Pool.sol@getRedeemAmount
+Plaza bond-leverage pool with coupon auction and oracle adapters	C2	src/Pool.sol@getRedeemAmount
+Plaza bond-leverage pool with coupon auction and oracle adapters	C15	src/Pool.sol@getRedeemAmount
+Plaza bond-leverage pool with coupon auction and oracle adapters	C6	src/Pool.sol@transferReserveToAuction
+Plaza bond-leverage pool with coupon auction and oracle adapters	C2	src/Pool.sol@transferReserveToAuction
+Plaza bond-leverage pool with coupon auction and oracle adapters	C15	src/Pool.sol@transferReserveToAuction
+Plaza bond-leverage pool with coupon auction and oracle adapters	C6	src/Pool.sol@startAuction
+Plaza bond-leverage pool with coupon auction and oracle adapters	C2	src/Pool.sol@startAuction
+Plaza bond-leverage pool with coupon auction and oracle adapters	C15	src/Pool.sol@startAuction
+Plaza bond-leverage pool with coupon auction and oracle adapters	C18	src/BondOracleAdapter.sol@latestRoundData
+Plaza bond-leverage pool with coupon auction and oracle adapters	C6	src/BondOracleAdapter.sol@latestRoundData
+Plaza bond-leverage pool with coupon auction and oracle adapters	C15	src/BondOracleAdapter.sol@latestRoundData

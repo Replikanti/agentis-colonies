@@ -75,6 +75,23 @@
 #                       the ZONE advertises (a location's lens list IS the zone's class list), so this can
 #                       never burn a whole cap on one function. Ranking, the pair multiset and the cap
 #                       semantics (min(cap, planned pairs)) are UNCHANGED — only the emission order moves.
+#   --depth-from <file>  #1857 DEPTH-ONLY RE-ENTRY. Consume a RECORDED run's `discovery-results.json` (NOT the
+#                       raw `run/results-cells.jsonl`, which carries no provenance), seed this run's cell
+#                       accumulator with that run's BREADTH cells, and run ONLY the depth pass over them. The
+#                       breadth pass is NOT re-hunted: two arms that differ only in `--depth-lens-quota` then
+#                       share ONE breadth sample, so the difference between them is the allocation and not
+#                       breadth variance — which is the confound that made #1850's A/B unreadable. Requires
+#                       `--depth-max-cells > 0` (a depth-only run with no depth budget is a no-op) and
+#                       `--brief`; REFUSES `--scope`, `--only`, `--classes` and `--list-cells` (exit 2) because
+#                       none of them can affect a plan derived from recorded cells — the zone class order comes
+#                       from the recorded `class` fields, not from the manifest. Needs python3 (exit 3).
+#                       Exit 2 = the operator typed something that cannot be honoured (bad flag combo, missing
+#                       file, cap 0); exit 3 = the artifact does not match this target (recorded `repo` or
+#                       `commit` mismatch, a depth target that no longer exists, an input with no breadth cell).
+#                       HONESTY: an input recorded BEFORE this flag existed carries no `commit`, so a stale
+#                       checkout of the SAME repo at a DIFFERENT commit is UNDETECTABLE — such a run prints an
+#                       UNVERIFIED banner and continues. Re-entering against the checkout that produced the
+#                       input is the OPERATOR's responsibility; `depth_from.commit` puts it on the record.
 #   --list-cells, -n    DRY RUN (#1612): print one `CELL|<subsystem>|<class>|<files>` line per cell this
 #                       manifest WOULD hunt, then exit 0 — BEFORE any agentis init / config / report side
 #                       effect. Needs neither --brief nor an agentis binary; the round-trip check for
@@ -106,6 +123,8 @@ DEPTH_MAX_CELLS=0  # #1827: opt-in within-contract depth pass; 0 = OFF, the whol
 # allocation effect from breadth variance. The default stays at the measured-safe value until a
 # breadth-fixed A/B justifies moving it; `--depth-lens-quota 3` is available for that experiment.
 DEPTH_LENS_QUOTA=1
+# #1857: opt-in depth-only re-entry; empty = OFF, every code path below is inert and the shipped hunt is unchanged.
+DEPTH_FROM=""
 
 need() { [ "$1" -ge 2 ] || { echo "run-discovery.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -123,6 +142,7 @@ while [ $# -gt 0 ]; do
     --jobs|-j) need "$#"; JOBS="$2"; shift 2 ;;
     --depth-max-cells) need "$#"; DEPTH_MAX_CELLS="$2"; shift 2 ;;
     --depth-lens-quota) need "$#"; DEPTH_LENS_QUOTA="$2"; shift 2 ;;
+    --depth-from) need "$#"; DEPTH_FROM="$2"; shift 2 ;;
     --list-cells|-n) LIST_CELLS=1; shift ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-discovery.sh: unknown flag $1" >&2; exit 2 ;;
@@ -139,9 +159,28 @@ case "$DEPTH_MAX_CELLS" in ''|*[!0-9]*) echo "run-discovery.sh: --depth-max-cell
 # non-zero cap, i.e. silently disable a depth pass the operator asked for. Same fail-fast shape as --jobs.
 case "$DEPTH_LENS_QUOTA" in ''|*[!0-9]*) echo "run-discovery.sh: --depth-lens-quota must be a positive integer (got '$DEPTH_LENS_QUOTA')" >&2; exit 2 ;; esac
 [ "$DEPTH_LENS_QUOTA" -ge 1 ] || { echo "run-discovery.sh: --depth-lens-quota must be >= 1 (got '$DEPTH_LENS_QUOTA')" >&2; exit 2; }
+# #1857: the depth-only re-entry's ARGV contract. Everything here is an exit 2 — the operator asked for
+# something that cannot be honoured — and it is checked BEFORE the --repo/--scope/--brief requirements below,
+# so a refused flag combination is named rather than reported as a missing manifest. The refused flags are
+# refused rather than validated: a plan derived from RECORDED cells takes its zone class order from those
+# cells' own `class` fields, so --scope/--only/--classes could not change it and accepting them would be a
+# silent lie. --list-cells is refused for the same reason (depth cells are not enumerable ex ante).
+if [ -n "$DEPTH_FROM" ]; then
+  [ -f "$DEPTH_FROM" ] || { echo "run-discovery.sh: --depth-from file not found: $DEPTH_FROM" >&2; exit 2; }
+  [ -z "$LIST_CELLS" ]       || { echo "run-discovery.sh: --depth-from cannot be combined with --list-cells (depth cells are not enumerable ex ante)" >&2; exit 2; }
+  [ -z "$ONLY" ]             || { echo "run-discovery.sh: --depth-from cannot be combined with --only (the plan comes from the recorded cells, not from a manifest)" >&2; exit 2; }
+  [ -z "$CLASSES_OVERRIDE" ] || { echo "run-discovery.sh: --depth-from cannot be combined with --classes (the plan comes from the recorded cells, not from a manifest)" >&2; exit 2; }
+  [ -z "$SCOPE" ]            || { echo "run-discovery.sh: --depth-from cannot be combined with --scope (the plan comes from the recorded cells, not from a manifest)" >&2; exit 2; }
+  [ "$DEPTH_MAX_CELLS" -gt 0 ] || { echo "run-discovery.sh: --depth-from needs --depth-max-cells > 0 (a depth-only run with no depth budget is a no-op)" >&2; exit 2; }
+  command -v python3 >/dev/null 2>&1 || { echo "run-discovery.sh: --depth-from needs python3 to read the recorded run" >&2; exit 3; }
+fi
 
 [ -n "$REPO" ]  && [ -d "$REPO" ]  || { echo "run-discovery.sh: --repo <cloned repo dir> required (clone it with fetch-target.sh)" >&2; exit 2; }
-[ -n "$SCOPE" ] && [ -f "$SCOPE" ] || { echo "run-discovery.sh: --scope <subsystem|classes|files manifest> required" >&2; exit 2; }
+# #1857: --scope is the manifest the BREADTH pass walks; a depth-only re-entry hunts no breadth cell, so it is
+# required only on the shipped path (and refused above on the re-entry one).
+if [ -z "$DEPTH_FROM" ]; then
+  [ -n "$SCOPE" ] && [ -f "$SCOPE" ] || { echo "run-discovery.sh: --scope <subsystem|classes|files manifest> required" >&2; exit 2; }
+fi
 # #1612: --list-cells needs no --brief (it never hunts) — guard the brief requirement behind it.
 if [ -z "$LIST_CELLS" ]; then
   [ -n "$BRIEF" ] && [ -f "$BRIEF" ] || { echo "run-discovery.sh: --brief <invariants + known-issues + trust model> required (this anchors the hunt and excludes known issues)" >&2; exit 2; }
@@ -194,9 +233,71 @@ command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ] || { echo "run-discov
 REPO="$(cd "$REPO" && pwd)"
 BRIEF="$(cd "$(dirname "$BRIEF")" && pwd)/$(basename "$BRIEF")"
 TAXONOMY="$(cd "$(dirname "$TAXONOMY")" && pwd)/$(basename "$TAXONOMY")"
+[ -z "$DEPTH_FROM" ] || DEPTH_FROM="$(cd "$(dirname "$DEPTH_FROM")" && pwd)/$(basename "$DEPTH_FROM")"
+# #1857: the commit this run actually read, recorded in discovery-results.json so a LATER --depth-from can
+# refuse a stale checkout. A SOFT dependency: a non-git target (or no git at all) degrades to "unknown" and
+# never fails the run. It pins the commit, not the content — an uncommitted edit is invisible to rev-parse.
+COMMIT="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
 HUNTER="$HERE/auditor/agents/hunter.ag"
 [ -f "$HUNTER" ] || { echo "run-discovery.sh: hunter agent not found at $HUNTER" >&2; exit 3; }
+
+# #1857 PROVENANCE GUARD — every refusal that can be decided from the recorded artifact ALONE fires HERE,
+# before the output dir exists, so a refused re-entry leaves nothing behind. Exit 3 throughout: the artifact
+# does not match this target (the #1840 fail-closed precedent), as opposed to the exit-2 argv refusals above.
+# What it CANNOT detect is stated in the header and printed as a banner: an input recorded before `commit`
+# existed cannot pin the source tree, so a stale checkout of the SAME repo is the operator's responsibility.
+_probe_recorded_run() {
+  python3 - "$1" <<'PY'
+import sys, json
+p = sys.argv[1]
+try:
+    with open(p, encoding="utf-8") as fh:
+        d = json.load(fh)
+except Exception as exc:                    # any read/parse failure is fatal - never a silently empty replay
+    sys.stderr.write("run-discovery.sh: --depth-from: %s is not readable JSON (%s)\n" % (p, exc))
+    raise SystemExit(3)
+if not isinstance(d, dict) or not isinstance(d.get("cells"), list):
+    sys.stderr.write("run-discovery.sh: --depth-from: %s is not a discovery-results.json object with a cells[] array\n" % p)
+    raise SystemExit(3)
+# The depth filter is a CORRECTNESS requirement, not hygiene: a depth candidate fed back into the ranking
+# moves both the location order and the per-location lens order, so replaying an unfiltered file computes a
+# DIFFERENT plan than the run it claims to re-enter.
+breadth = [c for c in d["cells"] if isinstance(c, dict) and c.get("phase") != "depth"]
+if not breadth:
+    sys.stderr.write("run-discovery.sh: --depth-from: %s records 0 breadth cell(s) - nothing to plan a depth pass from\n" % p)
+    raise SystemExit(3)
+# ONE FACT PER LINE, never a TSV: `commit` is absent on every artifact recorded before it existed, and a tab
+# IFS collapses runs of tabs (tab is IFS whitespace), which would silently shift an empty field's successor
+# into it — i.e. read the CELL COUNT as the recorded commit.
+sys.stdout.write("\n".join([
+    str(d.get("repo") or ""),
+    str(d.get("commit") or ""),
+    str(len(breadth)),
+    str(sum(len(c.get("candidates") or []) for c in breadth)),
+]) + "\n")
+PY
+}
+DF_REPO="" ; DF_COMMIT="" ; DF_CELLS=0 ; DF_CANDIDATES=0
+if [ -n "$DEPTH_FROM" ]; then
+  DF_FACTS="$(_probe_recorded_run "$DEPTH_FROM")" || exit 3
+  {
+    read -r DF_REPO
+    read -r DF_COMMIT
+    read -r DF_CELLS
+    read -r DF_CANDIDATES
+  } <<EOF
+$DF_FACTS
+EOF
+  [ "$DF_REPO" = "$(basename "$REPO")" ] || {
+    echo "run-discovery.sh: --depth-from: the input was recorded against repo '$DF_REPO', but --repo is '$(basename "$REPO")'" >&2; exit 3; }
+  if [ -z "$DF_COMMIT" ]; then
+    echo "run-discovery.sh: --depth-from: the input records no commit; re-entry provenance is UNVERIFIED" >&2
+    echo "run-discovery.sh:   ↳ a stale checkout of '$DF_REPO' at a DIFFERENT commit cannot be detected from this artifact — re-entering against the checkout that produced it is YOUR responsibility" >&2
+  elif [ "$DF_COMMIT" != "$COMMIT" ]; then
+    echo "run-discovery.sh: --depth-from: the input was recorded at commit $DF_COMMIT, but --repo is at $COMMIT" >&2; exit 3
+  fi
+fi
 
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 RUN="$OUT/run"
@@ -233,6 +334,9 @@ REPORT="$OUT/discovery-report.md"
   echo "# Dark Factory — custom-code discovery leads"
   echo
   echo "- repo: \`$(basename "$REPO")\`   backend: $BACKEND"
+  # #1857: a depth-only re-entry hunted NO breadth cell — say so on the record, next to the provenance of the
+  # breadth sample it reused, so the table below is never read as "this run found these leads".
+  [ -n "$DEPTH_FROM" ] && echo "- depth-only re-entry (#1857): $DF_CELLS breadth cell(s) carried from \`$DEPTH_FROM\`; recorded commit ${DF_COMMIT:-none (UNVERIFIED)}, current HEAD $COMMIT"
   echo "- Each CANDIDATE below is an UNVERIFIED LEAD. It is a finding ONLY after it reproduces through"
   echo "  \`evm-harness/forge-verify.sh --repo <repo> --poc <Exploit.t.sol>\` (PoC PASSES = exploit fires)."
   echo "- Submission is a separate, explicit human action. This colony never posts to a platform."
@@ -573,9 +677,72 @@ _plan_depth_cells() {
   ' "$CELLS_JSONL"
 }
 
+# _seed_from_recorded_run — #1857: the DEPTH-ONLY RE-ENTRY. Instead of hunting the breadth pass, seed
+# $CELLS_JSONL with the BREADTH cells of a recorded `discovery-results.json` and let the run fall straight
+# into the unchanged #1827 depth block below: _plan_depth_cells + run_cell + scrape_cell_log are reused
+# VERBATIM, so the plan a re-entry computes is the plan the original run computed. That is the whole property
+# this exists to buy, and it is why the re-entry is not a second script.
+#
+# The cells are re-emitted with `separators=(",",":")` + `ensure_ascii=False`, which reproduces _json_str's
+# output byte-for-byte on both preserved plaza arms — the carried records are the SOURCE records, not an
+# approximation, so verify-findings.sh -> score-match.py score a depth-only arm exactly like a full run.
+#
+# The carried breadth cells are ALSO re-rendered into $REPORT/$COORD with the same transformations
+# scrape_cell_log uses, and the counters are seeded from the recorded run, so a depth-only report is not
+# misleadingly empty of the breadth leads its depth plan was derived from.
+_seed_from_recorded_run() {
+  sr_rows="$RUN/depth-from-rows.tsv"
+  python3 - "$DEPTH_FROM" "$CELLS_JSONL" "$sr_rows" <<'PY'
+import sys, json
+src, jsonl, rows = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(src, encoding="utf-8") as fh:
+    d = json.load(fh)
+breadth = [c for c in d["cells"] if isinstance(c, dict) and c.get("phase") != "depth"]
+with open(jsonl, "w", encoding="utf-8") as out:
+    for c in breadth:
+        out.write(json.dumps(c, ensure_ascii=False, separators=(",", ":")) + "\n")
+def flat(s):
+    # The row file is TSV read back by the shell; a tab/newline inside a hunter-written string would split it.
+    return str(s).replace("\t", " ").replace("\r", " ").replace("\n", " ")
+with open(rows, "w", encoding="utf-8") as out:
+    for c in breadth:
+        sub, cls = flat(c.get("subsystem", "")), flat(c.get("class", ""))
+        if c.get("status") != "ok":
+            # Mirrors scrape_cell_log's early return: a #1707 failed cell contributes its FAILED row and
+            # nothing else — never silently folded into "0 candidates".
+            out.write("\t".join(["failed", sub, cls, ""]) + "\n")
+            continue
+        for cand in (c.get("candidates") or []):
+            out.write("\t".join(["cand", sub, cls, flat(cand)]) + "\n")
+        for co in (c.get("coordination") or []):
+            out.write("\t".join(["steer", sub, cls, flat(co)]) + "\n")
+PY
+  CELLS="$DF_CELLS"
+  while IFS='	' read -r SR_KIND SR_SUBSYS SR_CLS SR_BODY || [ -n "${SR_KIND:-}" ]; do
+    case "$SR_KIND" in
+      cand)
+        SR_RENDERED="$(printf '%s' "$SR_BODY" | sed 's/|/ \/ /g')"
+        printf '| %s | %s | %s |\n' "$SR_SUBSYS" "$SR_CLS" "$SR_RENDERED" >> "$REPORT"
+        CANDIDATES=$((CANDIDATES + 1)) ;;
+      steer)
+        printf '| %s | %s | steered by blackboard — %s |\n' "$SR_SUBSYS" "$SR_CLS" "$SR_BODY" >> "$COORD"
+        STEERS=$((STEERS + 1)) ;;
+      failed)
+        printf '| %s | %s | FAILED — carried from the recorded run, no CANDIDATE|/SAFE reply (NOT a rigorous negative) |\n' \
+          "$SR_SUBSYS" "$SR_CLS" >> "$REPORT"
+        FAILED_CELLS=$((FAILED_CELLS + 1)) ;;
+    esac
+  done < "$sr_rows"
+  echo "run-discovery.sh: depth-only re-entry — carried $CELLS breadth cell(s) / $CANDIDATES candidate(s) from $DEPTH_FROM; NO breadth cell is re-hunted" >&2
+}
+
 # Manifest loop: one subsystem per line, `subsystem | classes | files`. Run the hunter once per
 # (subsystem x class) — that cell is the colony-native analogue of one focused audit agent.
-if [ "$JOBS" -le 1 ]; then
+# #1857: --depth-from replaces the whole breadth pass with the recorded one; the serial and parallel blocks
+# below are textually untouched, so the shipped path cannot be reached by the re-entry and vice versa.
+if [ -n "$DEPTH_FROM" ]; then
+  _seed_from_recorded_run
+elif [ "$JOBS" -le 1 ]; then
   # SERIAL path (default): the current loop, byte-for-byte identical to the pre-M3 hunt — run_cell then
   # scrape_cell_log inline in manifest order against the ONE shared $RUN store (live #1001 steering).
   while IFS='|' read -r SUBSYS CLS_CSV FILES_CSV || [ -n "${SUBSYS:-}" ]; do
@@ -683,6 +850,17 @@ if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then
   DEPTH_PLAN="$RUN/depth-plan.tsv"
   _plan_depth_cells "$DEPTH_MAX_CELLS" "$DEPTH_KNOWN_DIR" "$DEPTH_LENS_QUOTA" > "$DEPTH_PLAN"
   DEPTH_PLANNED="$(grep -c . "$DEPTH_PLAN" 2>/dev/null || true)"
+  # #1857: the ONE provenance guard that reaches the WORKING TREE. Every other refusal is decided from the
+  # artifact alone (before the output dir exists); this one needs the computed plan, so it fires here — still
+  # BEFORE the first depth cell runs. A target the checkout no longer carries means the tree moved under the
+  # recorded run, which is exactly the stale-checkout case the commit key cannot catch on an old artifact.
+  if [ -n "$DEPTH_FROM" ]; then
+    while IFS= read -r DG_TARGET; do
+      [ -n "$DG_TARGET" ] || continue
+      DG_FILE="${DG_TARGET%%@*}"
+      [ -f "$REPO/$DG_FILE" ] || { echo "run-discovery.sh: --depth-from: the depth plan targets '$DG_FILE', which does not exist under $REPO — the checkout moved under the recorded run" >&2; exit 3; }
+    done < <(cut -f3 "$DEPTH_PLAN" | sort -u)
+  fi
   echo "run-discovery.sh: depth pass — ${DEPTH_PLANNED:-0} extra cell(s) over the flagged functions (cap $DEPTH_MAX_CELLS, lens quota $DEPTH_LENS_QUOTA per location per round)" >&2
   while IFS='	' read -r D_SUBSYS D_CLS D_TARGET D_KNOWNF || [ -n "${D_SUBSYS:-}" ]; do
     [ -n "$D_SUBSYS" ] || continue
@@ -710,6 +888,8 @@ fi
   echo
   echo "---"
   echo "Cells run: $CELLS    Candidates surfaced: $CANDIDATES (all UNVERIFIED — forge-verify each before it counts)."
+  # #1857: without this line `Cells run: N` reads as "N cells were hunted", which a depth-only re-entry did not do.
+  [ -n "$DEPTH_FROM" ] && echo "Of those, $DF_CELLS breadth cell(s) were CARRIED from \`$DEPTH_FROM\` (NOT re-hunted); $DEPTH_CELLS depth cell(s) were hunted by this run."
 } >> "$REPORT"
 
 # #1001: append the coordination table — where a lead from one cell STEERED a later cell via the shared
@@ -740,8 +920,15 @@ CELLS_ARR="$(paste -sd, "$CELLS_JSONL" 2>/dev/null || true)"
 # future reader can compare two depth arms without seeing that they were spent differently.
 DEPTH_TOTAL_JSON=""
 if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then DEPTH_TOTAL_JSON=",\"depth_cells\":$DEPTH_CELLS,\"depth_lens_quota\":$DEPTH_LENS_QUOTA"; fi
-printf '{"repo":%s,"backend":%s,"jobs":%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s%s}}\n' \
-  "$(_json_str "$(basename "$REPO")")" "$(_json_str "$BACKEND")" "$JOBS" "$CELLS_ARR" \
+# #1857: `commit` is recorded on EVERY run (a soft git dependency that degrades to "unknown"), so a LATER
+# --depth-from can refuse a stale checkout; `depth_from` rides the same emit-only-when-set gate as the depth
+# totals, so a run without the flag keeps its exact key set.
+DEPTH_FROM_JSON=""
+if [ -n "$DEPTH_FROM" ]; then
+  DEPTH_FROM_JSON=",\"depth_from\":{\"source\":$(_json_str "$DEPTH_FROM"),\"repo\":$(_json_str "$DF_REPO"),\"commit\":$(_json_str "$DF_COMMIT"),\"carried_cells\":$DF_CELLS,\"carried_candidates\":$DF_CANDIDATES}"
+fi
+printf '{"repo":%s,"commit":%s,"backend":%s,"jobs":%s%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s%s}}\n' \
+  "$(_json_str "$(basename "$REPO")")" "$(_json_str "$COMMIT")" "$(_json_str "$BACKEND")" "$JOBS" "$DEPTH_FROM_JSON" "$CELLS_ARR" \
   "$CELLS" "$CANDIDATES" "$STEERS" "$FAILED_CELLS" "$DEPTH_TOTAL_JSON" > "$RESULTS_JSON"
 
 echo >&2

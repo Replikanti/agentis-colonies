@@ -15,6 +15,35 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **DEPTH-ONLY RE-ENTRY — a depth A/B that is actually readable** (#1857). Every depth measurement so far
+  re-hunted the **stochastic** breadth pass in both arms, so a row the treatment lost could not be
+  attributed to the allocation rather than to breadth variance — which is precisely why #1850's four lost
+  rows settled nothing and the `--depth-lens-quota` default reverted to `1`.
+  - `run-discovery.sh --depth-from <discovery-results.json>` consumes a **recorded** run, seeds the cell
+    accumulator with its **breadth** cells and falls into the unmodified #1827 depth block:
+    `_plan_depth_cells()` / `run_cell()` / `scrape_cell_log()` are reused verbatim, so the plan a re-entry
+    computes IS the plan the original run computed (pinned against both recorded plaza arms' own
+    `depth-plan.tsv`). Two arms differing only in the quota then share ONE breadth sample.
+  - The input is the sibling `discovery-results.json`, never the raw `run/results-cells.jsonl` — the JSONL
+    carries no provenance, so none of the refusals would be possible. Carried cells land in `cells[]`
+    byte-for-byte, so a depth-only arm is a drop-in for `verify-findings.sh` → `score-match.py`.
+  - **The depth filter is correctness, not hygiene**: replaying an artifact unfiltered feeds depth
+    candidates back into the ranking and computes a different plan (extra `C17`/`C5` lenses,
+    `startAuction` promoted above `transferReserveToAuction`).
+  - Refusals: exit **2** for an argv that cannot be honoured (`--list-cells` / `--only` / `--classes` /
+    `--scope`, a missing file, `--depth-max-cells 0`), exit **3** when the artifact does not match this
+    target (recorded `repo` or `commit` mismatch, a depth target the checkout no longer carries, an input
+    with no breadth cell). Every artifact-only refusal fires before the output dir exists.
+  - `discovery-results.json` now records `commit` on **every** run (a soft git dependency that degrades to
+    `"unknown"`), so a stale checkout is refused from here on. It buys nothing for artifacts recorded
+    earlier: those print `re-entry provenance is UNVERIFIED` and run, and re-entering against the checkout
+    that produced the input stays the **operator's** responsibility. The banner claims no check it does not
+    make. `depth_from` (source, repo, commit, carried counts) is emitted only under the flag.
+  - `demo-depth-reentry.sh` — 13 offline assertions over checked-in recordings of two real plaza arms
+    (`bench/corpus-bench/fixtures/depth-reentry/`, deliberately outside the bundled `fixtures/` tree), each
+    mutation-tested; wired into `colony-lint.sh`. Default-inertness is pinned down to the byte-identical
+    golden report and an absent `depth_from` key.
+
 - **SELF-TUNING BREADTH — the coordinator closes its own coverage gaps** (#1828, M1–M3).
   #1830 made a truncated zone-hunt *visible* (`coverage/zone-coverage.json`, the nine-state vocabulary,
   `gaps` / `--rehunt-gaps`) but decided nothing: closing a gap was still an operator step. This adds the
@@ -362,6 +391,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   post-merge step, not part of this change.
 
 ### Changed
+- **The `--depth-lens-quota` default has a second, independent guard** (#1856). Mutation testing on #1854
+  found `demo-discovery-parallel.sh` block 13f to be the SOLE assertion that fires when the default drifts
+  (at `2` and at `3`, all other 58 + 71 demo assertions still passed). `colony-lint.sh` gains its
+  orthogonal **static** twin: a value-oriented grep that the default is still the measured-safe `1`,
+  tolerating indentation, quoting and a trailing comment, with a self-repairing failure message. 13f is
+  behavioural (it runs the tool), the pin is static (it reads the source) — deleting either leaves the
+  other standing. `demo-discovery-parallel.sh`'s stale "default quota 3" comments (left by the #1854
+  revert, which #1855 fixed only in the docs) now say "an explicit quota 3", including the assertion
+  message that would otherwise have misdirected a debugger straight past the cause.
 - **The within-contract depth pass now CONCENTRATES its budget instead of spreading it** (#1850). The #1827
   depth pass allocated its cap breadth-first — one lens per flagged location per pass — so on the run that
   produced its held-out verdict, 12 depth cells went to 10 distinct locations and no function was ever hunted
