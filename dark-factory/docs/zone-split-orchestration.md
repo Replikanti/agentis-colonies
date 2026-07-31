@@ -292,6 +292,83 @@ human's attention ONLY after a SECOND, independent gate fails to kill it. **M4 (
   `{repo, gate, verified:[{subsystem, location, file, class, severity, exploit, poc_sketch, verdict, reason}],
   totals:{candidates, verified}}`, emitted via `python3 json.dumps` (the repo convention).
 
+### STAGE 4 under `--jobs` (isolate-and-aggregate) (#1863)
+
+M3 parallelised the hunt; STAGE 4 stayed strictly serial, so the refute gate became the run's serial **tail** —
+one gate is ~4 min wall-clock, and the merge feeding it dedupes on the whole candidate string, so the gate
+count tracks total candidates and grows with every recall improvement. `verify-findings.sh` gains the same
+opt-in `--jobs N` (default `1`): gate up to N candidates concurrently. `run-zone-hunt.sh` forwards its own
+`--jobs` here as well as to STAGE 3; the stages are **sequential**, so one flag can never stack two ceilings.
+
+**The cap.** Effective concurrency `= min(--jobs, LLM_MAX_VERIFY_GATES)`, default `4`, enforced by the same
+self-contained `wait -n` job-slot as M3 — a HARD limit that never fails open, warned about and clamped when
+`--jobs` exceeds it. The env knob is deliberately a NEW name, not M3's `LLM_MAX_DISCOVERY_CELLS`: the two
+stages have different per-slot costs (under `--gate poc`/`--gate symbolic` a slot additionally copies the
+target repo and runs a build), so they are tuned independently. It is not `tools/lib/llm-session-slot.sh` for
+exactly the M3 reasons above: that semaphore **fails open** after `LLM_SLOT_WAIT_S` and resolves its pool from
+`COLONY_DIR`/`AGENTIS_*`, env an operator-run verify batch does not set.
+
+**The learning store: ISOLATED PER CANDIDATE — and that loses nothing, because the isolation already exists.**
+`run-refute.sh` sets `learning.enabled = true` / `experience.enabled = true`, which reads like a cross-candidate
+reweighting that serial ordering would provide and parallelism would destroy. It is not.
+`verify-findings.sh` calls `run-refute.sh` ONCE PER CANDIDATE with a distinct `--out`
+(`<out>/gates/<n>_<slug>/refute-out`), and `run-refute.sh` does `rm -rf "$RUN"` + `agentis init` inside that
+`--out` on every invocation, over a `candidate.manifest` that `run_gate_refute()` writes with exactly ONE data
+line. So the store is created fresh for ONE candidate and never read again. Measured offline on a 2-candidate
+fixture through the `--agentis` seam:
+
+```
+==== .agentis stores:
+<out>/gates/1_contracts_A_sol_f_1/refute-out/run/.agentis
+<out>/gates/2_contracts_B_sol_g_1/refute-out/run/.agentis
+==== candidate.manifest line counts:
+1_contracts_A_sol_f_1: 1
+2_contracts_B_sol_g_1: 1
+```
+
+Two candidates, two disjoint stores, one candidate each. `--jobs > 1` therefore cannot lose refuter
+reweighting across candidates — there is none to lose — and a verdict does not depend on the candidate's
+position in the manifest. `demo-verify-parallel.sh` pins this on BOTH the serial and the parallel path, so it
+is a measured property rather than an argument.
+
+The **rejected** alternative was serialising the store writes into ONE shared refuter store. That is not
+"preserving today's behaviour": it would CREATE cross-candidate reweighting that has never run — an unmeasured
+quality change smuggled in under a throughput ticket — and it would make a verdict depend on manifest
+position, which is precisely what makes a gate result irreproducible.
+
+**The C6 fallback stays inside its own candidate's slot.** `run-refute.sh`'s #1699 C6 retry is a SEQUENTIAL
+step of its own manifest loop, in the same process as the first attempt, and `verify-findings.sh` backgrounds
+exactly ONE subshell per candidate — so that subshell's process tree holds at most one live `agentis go` at any
+instant, fallback or not. Peak agentis concurrency is `effective_jobs`, never `effective_jobs x 2`. The rule to
+hold: **fan-out lives in exactly one place — `verify-findings.sh`'s launch loop; nothing below it backgrounds
+anything.** Pinned three ways: a live max-concurrency assertion on a fixture where two candidates trigger the
+fallback, an assertion that every `candidate.manifest` carries exactly one data line, and a STATIC check that
+`run-refute.sh` contains no `&`-backgrounding and no `wait`.
+
+**Deferred, manifest-ordered aggregation.** Gates finish out of order, but NOTHING is classified while any
+gate is live: the launch loop only records `(cell_out, subsystem, location, code file, class, severity,
+exploit, sketch, preflight reason)` per candidate, and after the pool drains a single pass replays them in
+MANIFEST order through the same `classify_candidate` / `record_errored` the serial path calls. Crucially the
+#1691 **preflight** ERROR rows are carried, NOT emitted inline — emitting them during the launch loop while
+gate-`ERROR` verdicts land in the drain pass would GROUP the two error kinds instead of interleaving them, and
+`errors[]` would differ between `--jobs 1` and `--jobs > 1` on any target that has both. A missing or empty
+`gate.rc` (the shape a background job killed by the OOM killer leaves, since the redirect creates the file
+before the gate runs) is read as **rc 1** → the existing SKIPPED path: the candidate is visibly unassessed,
+never silently dropped and never confirmed.
+
+Only the DISPATCH differs between the two paths. The per-candidate work is factored into `gate_candidate` /
+`classify_candidate` / `record_errored`, called identically by both, so there is exactly ONE copy of the block
+that decides `verified[]` / `errors[]` membership and order. `--jobs 1` runs today's exact statement sequence
+and writes no new artifact; `verified_findings.json` grows no key (in particular NO `jobs` key — that would be
+a shape change for `score-match.py` / corpus-bench; concurrency provenance goes to stderr only).
+
+`demo-verify-parallel.sh` pins the whole contract offline through the `--agentis` stub seam over a fixture
+mixing all five outcome kinds with the two ERROR kinds interleaved: serial == a golden minted against the
+PRE-#1863 script, `cmp` BYTE-identity between `--jobs 1` and `--jobs 3` (stronger than the hunter side's
+sorted-multiset comparison, and the contract corpus-bench's `--score` matcher depends on), concurrency
+observed + cap never exceeded incl. the clamp, C6 slot discipline, store isolation on both paths, both degrade
+shapes, the arg guard and never-submit.
+
 ### The gate's implementation appendix + the reason contract (#1861)
 
 The gate stages exactly ONE file per candidate, so a candidate anchored in an abstract base was judged with no

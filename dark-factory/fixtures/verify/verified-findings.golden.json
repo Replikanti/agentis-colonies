@@ -1,0 +1,72 @@
+{
+  "repo": "target",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "vault staking",
+      "location": "contracts/Vault.sol:stake:12",
+      "file": "contracts/Vault.sol",
+      "class": "C1",
+      "severity": "High",
+      "exploit": "an external staker mints free shares",
+      "poc_sketch": "donate to inflate the share price",
+      "verdict": "REAL",
+      "reason": "survived a hostile read"
+    },
+    {
+      "subsystem": "gateway swap",
+      "location": "contracts/Gateway.sol:swap:3",
+      "file": "contracts/Gateway.sol",
+      "class": "C6",
+      "severity": "High",
+      "exploit": "misclassified accounting bug in a value-moving swap",
+      "poc_sketch": "short-deduct the fee",
+      "verdict": "REAL",
+      "reason": "recovered under C6 fallback (assigned C-refuted refuted): recovered under the accounting lens"
+    },
+    {
+      "subsystem": "router withdrawals",
+      "location": "contracts/Router.sol:withdraw:9",
+      "file": "contracts/Router.sol",
+      "class": "C6",
+      "severity": "High",
+      "exploit": "misclassified accounting bug in a value-moving withdraw",
+      "poc_sketch": "short-deduct on exit",
+      "verdict": "REAL",
+      "reason": "recovered under C6 fallback (assigned C-refuted refuted): recovered under the accounting lens"
+    },
+    {
+      "subsystem": "price oracle",
+      "location": "contracts/Oracle.sol:price:20",
+      "file": "contracts/Oracle.sol",
+      "class": "C2",
+      "severity": "Medium",
+      "exploit": "a stale round is accepted on the withdraw path",
+      "poc_sketch": "push a stale price then withdraw",
+      "verdict": "REAL",
+      "reason": "survived a hostile read"
+    }
+  ],
+  "errors": [
+    {
+      "location": "contracts/Missing.sol:ghost:1",
+      "file": "contracts/Missing.sol",
+      "reason": "code file not found: contracts/Missing.sol"
+    },
+    {
+      "location": "contracts/Chrome.sol:stall:7",
+      "file": "contracts/Chrome.sol",
+      "reason": "no VERDICT"
+    },
+    {
+      "location": "src/Truncated.sol:fn:~(test/Truncated.t.sol:test_fn",
+      "file": "src/Truncated.sol",
+      "reason": "malformed candidate (blank class/severity \u2014 truncated record)"
+    }
+  ],
+  "totals": {
+    "candidates": 8,
+    "verified": 4,
+    "errored": 3
+  }
+}

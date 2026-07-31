@@ -31,6 +31,30 @@
 #   --brief <file>      Optional protocol brief handed to the refute gate (invariants + known issues).
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the gate (default: flat-cyborg).
 #   --agentis <bin>     agentis binary (default: `agentis` on PATH).
+#   --jobs <N>          OPT-IN bounded-concurrency fan-out over the CANDIDATE gates (#1863; default N=1 =
+#                       serial = today's exact statement sequence). Gate up to N candidates CONCURRENTLY:
+#                       STAGE 4 is the SERIAL TAIL of a zone hunt (~4 min per refute gate x every candidate
+#                       the merge produced) and each candidate's gate is independent of the others.
+#                       Concurrency is HARD-CAPPED at min(N, LLM_MAX_VERIFY_GATES=4) so N concurrent
+#                       `agentis go` / forge / solc processes cannot OOM-thrash a single host — the cap NEVER
+#                       fails open. That env knob is deliberately SEPARATE from run-discovery.sh's
+#                       LLM_MAX_DISCOVERY_CELLS: STAGE 3 and STAGE 4 are sequential stages, so their ceilings
+#                       are tuned independently and never stack.
+#                       STORE ISOLATION (already true serially, made explicit here): every candidate's gate
+#                       runs in its OWN <out>/gates/<n>_<slug>/refute-out rundir, which run-refute.sh
+#                       `rm -rf`s + `agentis init`s on every invocation, and each invocation is handed
+#                       EXACTLY ONE manifest line. So the `learning.enabled` / `experience.enabled` store is
+#                       created fresh for ONE candidate and never read again: there is NO cross-candidate
+#                       refuter reweighting on EITHER path, and a verdict never depends on the candidate's
+#                       position in the manifest. --jobs > 1 therefore loses no steering — there is none.
+#                       C6 STAYS INSIDE ITS SLOT: run-refute.sh's #1699 C6 fallback is a SEQUENTIAL step of
+#                       its own manifest loop, and this script backgrounds exactly ONE subshell per
+#                       candidate, so peak agentis concurrency is effective_jobs, never effective_jobs x 2.
+#                       The rule: fan-out lives in THIS launch loop and nothing below it backgrounds work.
+#                       Aggregation is DEFERRED until the pool drains and then replayed in MANIFEST order
+#                       (preflight-ERROR and gate-ERROR rows interleaved exactly as the serial path emits
+#                       them), so verified[] / errors[] / totals are byte-identical to the serial run.
+#                       Needs bash >= 4.3 (`wait -n`); an older bash degrades to serial with a notice.
 #   -h, --help          This help.
 #
 # Exit: 0 on a clean run that reached its aggregate (even with zero survivors — a rigorous negative is valid);
@@ -40,6 +64,7 @@ set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 RESULTS="" ; REPO="" ; OUT="" ; GATE="refute" ; BRIEF="" ; BACKEND="flat-cyborg"
+JOBS=1  # #1863: opt-in bounded-concurrency gate fan-out; 1 = serial, today's exact statement sequence.
 
 nv() { [ "$1" -ge 2 ] || { echo "verify-findings.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -51,6 +76,7 @@ while [ $# -gt 0 ]; do
     --brief)   nv "$#"; BRIEF="$2"; shift 2 ;;
     --backend) nv "$#"; BACKEND="$2"; shift 2 ;;
     --agentis) nv "$#"; AGENTIS="$2"; shift 2 ;;
+    --jobs)    nv "$#"; JOBS="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "verify-findings.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -63,6 +89,9 @@ case "$GATE" in
   refute|poc|symbolic) : ;;
   *) echo "verify-findings.sh: --gate must be one of refute|poc|symbolic (got '$GATE')" >&2; exit 2 ;;
 esac
+# #1863: --jobs is a POSITIVE integer, validated before any side effect (same shape as run-discovery.sh).
+case "$JOBS" in ''|*[!0-9]*) echo "verify-findings.sh: --jobs must be a positive integer (got '$JOBS')" >&2; exit 2 ;; esac
+[ "$JOBS" -ge 1 ] || { echo "verify-findings.sh: --jobs must be >= 1 (got '$JOBS')" >&2; exit 2; }
 [ -z "$BRIEF" ] || [ -f "$BRIEF" ] || { echo "verify-findings.sh: --brief not found: $BRIEF" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "verify-findings.sh: python3 not installed" >&2; exit 3; }
 
@@ -80,6 +109,27 @@ case "$GATE" in
   poc)      [ -x "$POC" ]      || { echo "verify-findings.sh: run-poc.sh not found/executable at $POC" >&2; exit 3; } ;;
   symbolic) [ -x "$SYMBOLIC" ] || { echo "verify-findings.sh: run-symbolic.sh not found/executable at $SYMBOLIC" >&2; exit 3; } ;;
 esac
+
+# #1863: the concurrency ceiling. Effective parallelism = min(--jobs, GATE_CAP); the cap is HARD (never
+# fail-open) so N concurrent gates — each an `agentis go` LLM session, and under --gate poc/symbolic also a
+# repo copy + a build — cannot OOM-thrash a single host. Conservative default 4; tune per host via
+# LLM_MAX_VERIFY_GATES, which is deliberately NOT run-discovery.sh's LLM_MAX_DISCOVERY_CELLS: STAGE 3 and
+# STAGE 4 are sequential stages, so one forwarded --jobs can never stack the two ceilings.
+GATE_CAP="${LLM_MAX_VERIFY_GATES:-4}"
+case "$GATE_CAP" in ''|*[!0-9]*) GATE_CAP=4 ;; esac
+[ "$GATE_CAP" -ge 1 ] || GATE_CAP=4
+effective_jobs="$JOBS"
+# --jobs > 1 uses `wait -n` (bash >= 4.3). On an older bash, degrade to the serial path rather than misbehave.
+if [ "$JOBS" -gt 1 ]; then
+  if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] || { [ "${BASH_VERSINFO[0]:-0}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -lt 3 ]; }; then
+    echo "verify-findings.sh: --jobs > 1 needs bash >= 4.3 (wait -n) — running serially instead" >&2
+    JOBS=1
+    effective_jobs=1
+  elif [ "$effective_jobs" -gt "$GATE_CAP" ]; then
+    echo "verify-findings.sh: --jobs $JOBS exceeds the hard cap LLM_MAX_VERIFY_GATES=$GATE_CAP; clamping concurrency to $GATE_CAP" >&2
+    effective_jobs="$GATE_CAP"
+  fi
+fi
 
 REPO_NAME="$(basename "$REPO")"
 # #1861: the refute gate stages exactly ONE file, so a candidate anchored in an abstract base is judged with
@@ -237,6 +287,82 @@ run_gate_symbolic() {
 
 CANDIDATES=0 ; VERIFIED=0 ; SKIPPED=0 ; ERRORED=0
 ERRORS_TSV="$WORK/errored.tsv"; : > "$ERRORS_TSV"
+
+# --- factored per-candidate primitives (#1863). The serial loop and the deferred parallel pass call these
+# IDENTICALLY; only the DISPATCH differs between the two paths, so the block that decides verified[] /
+# errors[] membership and ORDER — the likeliest place for a silent serial-vs-parallel divergence — exists in
+# exactly ONE copy. All shared state (the counters, confirmed.tsv, errored.tsv) is mutated by the PARENT
+# shell only; a backgrounded job writes solely inside its own per-candidate gates/<n>_<slug>/ directory. ---
+
+# gate_candidate <cell_out> <location> <class> <severity> <exploit> <codefile> — dispatch the operator-selected
+# gate for ONE candidate. Returns the gate's rc: 0 = the gate RAN (any verdict), non-zero = the gate itself
+# errored (the caller SKIPS that candidate). run_gate_refute / run_gate_poc / run_gate_symbolic are untouched.
+gate_candidate() {
+  gc_out="$1"; gc_loc="$2"; gc_cls="$3"; gc_sev="$4"; gc_expl="$5"; gc_file="$6"
+  case "$GATE" in
+    refute)   run_gate_refute   "$gc_out" "$gc_loc" "$gc_cls" "$gc_sev" "$gc_expl" "$gc_file" ;;
+    poc)      run_gate_poc      "$gc_out" "$gc_cls" "$gc_expl" "$gc_file" ;;
+    symbolic) run_gate_symbolic "$gc_out" "$gc_loc" "$gc_cls" "$gc_expl" "$gc_file" ;;
+  esac
+}
+
+# record_errored <location> <codefile> <reason> <status> — the ONE place a candidate lands in errors[]: the
+# TSV append, the counter bump and the `-> ERRORED (<status>)` operator line. <status> keeps the two callers'
+# distinct wording (the #1691 preflight's `ERROR_MALFORMED: …` vs the gate-propagated `ERROR` token).
+record_errored() {
+  re_loc="$1"; re_file="$2"; re_reason="$3"; re_status="$4"
+  printf '%s\t%s\t%s\n' "$re_loc" "$re_file" "$re_reason" >> "$ERRORS_TSV"
+  ERRORED=$((ERRORED + 1))
+  echo "verify-findings.sh:   -> ERRORED ($re_status)" >&2
+}
+
+# classify_candidate <gate_rc> <cell_out> <subsys> <location> <codefile> <class> <severity> <exploit> <sketch>
+# — everything the walk does with a gated candidate that is not the gate call itself: the gate-errored SKIP,
+# the verdict read, the ERROR route into errors[], the CONFIRMED append into confirmed.tsv (#1699 effective
+# class included) and the dropped line. A gate_rc that is not 0 — INCLUDING a missing or empty gate.rc under
+# --jobs > 1, which the caller normalises to 1 — is the SKIPPED path: a background job the OOM killer took is
+# a visibly unassessed candidate, never a silent drop and never a confirmed finding.
+classify_candidate() {
+  cc_rc="$1"; cc_out="$2"; cc_subsys="$3"; cc_loc="$4"; cc_file="$5"
+  cc_cls="$6"; cc_sev="$7"; cc_expl="$8"; cc_sketch="$9"
+  if [ "$cc_rc" -ne 0 ]; then
+    echo "verify-findings.sh: gate errored for $cc_loc (see $cc_out/gate.log); skipping" >&2
+    SKIPPED=$((SKIPPED + 1))
+    return 0
+  fi
+  cc_verd="$(cut -f1 "$cc_out/verdict.txt")"
+  cc_reason="$(cut -f2- "$cc_out/verdict.txt")"
+  if [ "$cc_verd" = "ERROR" ]; then
+    # A gate that PROPAGATED an ERROR token (e.g. run-refute.sh's loud unresolvable-code row) — errored, not
+    # refuted (change 2 pre-validates, so this belt-and-suspenders path is rarely reached inside the pipeline).
+    record_errored "$cc_loc" "$cc_file" "$cc_reason" "$cc_verd"
+  elif [ "$cc_verd" = "$CONFIRM_TOKEN" ]; then
+    # #1699: for the refute gate, record the class the candidate actually SURVIVED under (run-refute.sh's C6
+    # fallback may differ from the originally-assigned class), so verified_findings.json is not mislabelled.
+    cc_eff_class="$cc_cls"
+    if [ "$GATE" = "refute" ] && [ -s "$cc_out/eff-class.txt" ]; then
+      cc_eff="$(cat "$cc_out/eff-class.txt")"
+      [ -n "$cc_eff" ] && [ "$cc_eff" != "$cc_cls" ] && cc_eff_class="$cc_eff"
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$cc_subsys" "$cc_loc" "$cc_file" "$cc_eff_class" "$cc_sev" "$cc_expl" "$cc_sketch" "$cc_verd" "$cc_reason" >> "$CONFIRMED_TSV"
+    VERIFIED=$((VERIFIED + 1))
+    echo "verify-findings.sh:   -> CONFIRMED ($cc_verd)" >&2
+  else
+    echo "verify-findings.sh:   -> dropped ($cc_verd)" >&2
+  fi
+  return 0
+}
+
+# #1863 parallel bookkeeping: ONE row per candidate, pushed in MANIFEST order by the launch loop and replayed
+# by the deferred pass below. Untouched (and unread) on the serial path. PJ_PREFLIGHT carries the #1691
+# preflight reason when the candidate never reached a gate — the row is NOT emitted inline, because emitting
+# preflight errors during the launch loop while gate-ERROR verdicts land in the drain pass would GROUP them
+# instead of interleaving them, and errors[] would then differ between --jobs 1 and --jobs > 1 on any target
+# carrying both kinds.
+PJ_OUT=() ; PJ_SUBSYS=() ; PJ_LOC=() ; PJ_FILE=() ; PJ_CLS=() ; PJ_SEV=() ; PJ_EXPL=() ; PJ_SKETCH=() ; PJ_PREFLIGHT=()
+live=0
+
 # Candidate loop: drive the selected gate over each candidate with per-candidate isolation. A gate that ERRORS
 # is logged + SKIPPED (never fatal); an un-CONFIRMED candidate is DROPPED. Only a CONFIRMED verdict is kept.
 # A candidate whose normalized code file does NOT resolve on disk, or whose required fields were lost to
@@ -245,6 +371,7 @@ ERRORS_TSV="$WORK/errored.tsv"; : > "$ERRORS_TSV"
 # Read one raw TSV line at a time (IFS= so leading/trailing whitespace is preserved) and split with `cut`: a
 # tab-whitespace `read` COLLAPSES consecutive empty fields, which would mis-align a truncated candidate's blank
 # class/severity and drop the trailing MALFORMED flag — cut preserves every field, empty ones included.
+# The parse block below is shared by both paths, so CELL_OUT stays index-stable and artifact paths never move.
 while IFS= read -r CANDROW || [ -n "${CANDROW:-}" ]; do
   [ -n "$CANDROW" ] || continue
   SUBSYS="$(printf '%s\n' "$CANDROW" | cut -f1)"
@@ -259,47 +386,75 @@ while IFS= read -r CANDROW || [ -n "${CANDROW:-}" ]; do
   CANDIDATES=$((CANDIDATES + 1))
   SLUG="$(printf '%s' "$LOCATION" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
   CELL_OUT="$CELLS/${CANDIDATES}_${SLUG}"
+  EREASON=""
   if [ "${MALFORMED:-0}" = "1" ] || [ ! -f "$REPO/$CODEFILE" ]; then
     if [ "${MALFORMED:-0}" = "1" ]; then
       EREASON="malformed candidate (blank class/severity — truncated record)"
     else
       EREASON="code file not found: $CODEFILE"
     fi
-    printf '%s\t%s\t%s\n' "$LOCATION" "$CODEFILE" "$EREASON" >> "$ERRORS_TSV"
-    ERRORED=$((ERRORED + 1))
-    echo "verify-findings.sh:   -> ERRORED (ERROR_MALFORMED: $EREASON)" >&2
+  fi
+  if [ "$JOBS" -le 1 ]; then
+    # SERIAL path (default): today's exact statement sequence — preflight ERROR + continue, else the
+    # "verifying …" line, the gate, and the classification, inline and in manifest order. Writes NO new artifact.
+    if [ -n "$EREASON" ]; then
+      record_errored "$LOCATION" "$CODEFILE" "$EREASON" "ERROR_MALFORMED: $EREASON"
+      continue
+    fi
+    echo "verify-findings.sh: [$GATE] verifying $LOCATION ($CLASS) ..." >&2
+    GATE_RC=0
+    gate_candidate "$CELL_OUT" "$LOCATION" "$CLASS" "$SEVERITY" "$EXPLOIT" "$CODEFILE" || GATE_RC=1
+    classify_candidate "$GATE_RC" "$CELL_OUT" "$SUBSYS" "$LOCATION" "$CODEFILE" "$CLASS" "$SEVERITY" "$EXPLOIT" "$SKETCH"
     continue
   fi
-  echo "verify-findings.sh: [$GATE] verifying $LOCATION ($CLASS) ..." >&2
-  case "$GATE" in
-    refute)   run_gate_refute   "$CELL_OUT" "$LOCATION" "$CLASS" "$SEVERITY" "$EXPLOIT" "$CODEFILE" || { echo "verify-findings.sh: gate errored for $LOCATION (see $CELL_OUT/gate.log); skipping" >&2; SKIPPED=$((SKIPPED + 1)); continue; } ;;
-    poc)      run_gate_poc      "$CELL_OUT" "$CLASS" "$EXPLOIT" "$CODEFILE" || { echo "verify-findings.sh: gate errored for $LOCATION (see $CELL_OUT/gate.log); skipping" >&2; SKIPPED=$((SKIPPED + 1)); continue; } ;;
-    symbolic) run_gate_symbolic "$CELL_OUT" "$LOCATION" "$CLASS" "$EXPLOIT" "$CODEFILE" || { echo "verify-findings.sh: gate errored for $LOCATION (see $CELL_OUT/gate.log); skipping" >&2; SKIPPED=$((SKIPPED + 1)); continue; } ;;
-  esac
-  VERD="$(cut -f1 "$CELL_OUT/verdict.txt")"
-  REASON="$(cut -f2- "$CELL_OUT/verdict.txt")"
-  if [ "$VERD" = "ERROR" ]; then
-    # A gate that PROPAGATED an ERROR token (e.g. run-refute.sh's loud unresolvable-code row) — errored, not
-    # refuted (change 2 pre-validates, so this belt-and-suspenders path is rarely reached inside the pipeline).
-    printf '%s\t%s\t%s\n' "$LOCATION" "$CODEFILE" "$REASON" >> "$ERRORS_TSV"
-    ERRORED=$((ERRORED + 1))
-    echo "verify-findings.sh:   -> ERRORED ($VERD)" >&2
-  elif [ "$VERD" = "$CONFIRM_TOKEN" ]; then
-    # #1699: for the refute gate, record the class the candidate actually SURVIVED under (run-refute.sh's C6
-    # fallback may differ from the originally-assigned class), so verified_findings.json is not mislabelled.
-    EFF_CLASS="$CLASS"
-    if [ "$GATE" = "refute" ] && [ -s "$CELL_OUT/eff-class.txt" ]; then
-      EFF="$(cat "$CELL_OUT/eff-class.txt")"
-      [ -n "$EFF" ] && [ "$EFF" != "$CLASS" ] && EFF_CLASS="$EFF"
-    fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$SUBSYS" "$LOCATION" "$CODEFILE" "$EFF_CLASS" "$SEVERITY" "$EXPLOIT" "$SKETCH" "$VERD" "$REASON" >> "$CONFIRMED_TSV"
-    VERIFIED=$((VERIFIED + 1))
-    echo "verify-findings.sh:   -> CONFIRMED ($VERD)" >&2
-  else
-    echo "verify-findings.sh:   -> dropped ($VERD)" >&2
+  # PARALLEL path (#1863, --jobs > 1): record the candidate in manifest order, then — unless the #1691
+  # preflight already disqualified it — wait for a free slot and background EXACTLY ONE gate subshell for it.
+  # Nothing is classified here; the deferred pass below owns every row of verified[] and errors[].
+  PJ_OUT+=("$CELL_OUT") ; PJ_SUBSYS+=("$SUBSYS") ; PJ_LOC+=("$LOCATION") ; PJ_FILE+=("$CODEFILE")
+  PJ_CLS+=("$CLASS") ; PJ_SEV+=("$SEVERITY") ; PJ_EXPL+=("$EXPLOIT") ; PJ_SKETCH+=("$SKETCH")
+  PJ_PREFLIGHT+=("$EREASON")
+  if [ -n "$EREASON" ]; then
+    continue
   fi
+  while [ "$live" -ge "$effective_jobs" ]; do
+    wait -n 2>/dev/null || true
+    live=$((live - 1))
+  done
+  echo "verify-findings.sh: [$GATE] verifying $LOCATION ($CLASS) ..." >&2
+  mkdir -p "$CELL_OUT"
+  # The subshell's ONLY stdout is the rc byte; the gates route their own output into gates/<n>_<slug>/gate.log.
+  # stdin is /dev/null so a child can never consume the parent's candidates.tsv read.
+  ( gate_candidate "$CELL_OUT" "$LOCATION" "$CLASS" "$SEVERITY" "$EXPLOIT" "$CODEFILE" && printf 0 || printf 1 ) \
+    > "$CELL_OUT/gate.rc" </dev/null &
+  live=$((live + 1))
 done < "$WORK/candidates.tsv"
+
+if [ "$JOBS" -gt 1 ]; then
+  # Drain the pool FIRST — no candidate is classified while any gate is still running.
+  while [ "$live" -gt 0 ]; do
+    wait -n 2>/dev/null || true
+    live=$((live - 1))
+  done
+  # Deferred aggregation: ONE pass over the recorded rows in MANIFEST order, so verified[], errors[] (the
+  # #1691 preflight rows and the gate-propagated ERROR rows INTERLEAVED exactly as serial emits them) and the
+  # totals are independent of completion order. A missing or EMPTY gate.rc — the shape a killed background
+  # job leaves behind, since the redirect creates the file before the gate runs — is read as rc 1.
+  pidx=0 ; pn=${#PJ_OUT[@]}
+  while [ "$pidx" -lt "$pn" ]; do
+    if [ -n "${PJ_PREFLIGHT[$pidx]}" ]; then
+      record_errored "${PJ_LOC[$pidx]}" "${PJ_FILE[$pidx]}" "${PJ_PREFLIGHT[$pidx]}" "ERROR_MALFORMED: ${PJ_PREFLIGHT[$pidx]}"
+    else
+      GATE_RC=1
+      if [ -s "${PJ_OUT[$pidx]}/gate.rc" ]; then
+        GATE_RC="$(cat "${PJ_OUT[$pidx]}/gate.rc")"
+      fi
+      case "$GATE_RC" in ''|*[!0-9]*) GATE_RC=1 ;; esac
+      classify_candidate "$GATE_RC" "${PJ_OUT[$pidx]}" "${PJ_SUBSYS[$pidx]}" "${PJ_LOC[$pidx]}" \
+        "${PJ_FILE[$pidx]}" "${PJ_CLS[$pidx]}" "${PJ_SEV[$pidx]}" "${PJ_EXPL[$pidx]}" "${PJ_SKETCH[$pidx]}"
+    fi
+    pidx=$((pidx + 1))
+  done
+fi
 
 # --- aggregate CONFIRMED-only -> verified_findings.json (python3 json.dumps, the repo convention; seam-3 schema).
 #     totals.errored + errors[] (#1691) make a malformed/unresolvable candidate DISTINGUISHABLE from a rigorous

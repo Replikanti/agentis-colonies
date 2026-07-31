@@ -1050,6 +1050,27 @@ if [ -x "$REPO_ROOT/dark-factory/demo-verify-findings.sh" ]; then
     fi
 fi
 
+# --- dark-factory STAGE 4 gate fan-out: bounded-concurrency verify over the candidates (#1863) ---
+# verify-findings.sh gains an opt-in --jobs N (default 1) bounded-concurrency fan-out over the CANDIDATE
+# gates: up to min(N, LLM_MAX_VERIFY_GATES=4) gates run concurrently, each already in its own per-candidate
+# gates/<n>_<slug>/ rundir, with aggregation DEFERRED until the pool drains and replayed in MANIFEST order.
+# --jobs 1 (the default) runs today's exact serial statement sequence and writes no new artifact.
+# demo-verify-parallel.sh is pure bash/python3 driving a fast offline stub through the existing --agentis
+# seam (no live agentis / forge / network): asserts serial == a golden minted against the PRE-#1863 script,
+# BYTE-identity between --jobs 1 and --jobs 3 (so verified[]/errors[] order and totals are concurrency-
+# invariant), concurrency observed + the cap never exceeded (incl. the LLM_MAX_VERIFY_GATES clamp), the #1699
+# C6 retry staying inside its own slot, per-candidate store isolation on BOTH paths, the degrade paths (a
+# hard-failing gate and an OOM-killed job are SKIPPED, never confirmed), the arg guard, and never-submit.
+if [ -x "$REPO_ROOT/dark-factory/demo-verify-parallel.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-verify-parallel.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: STAGE 4 gate fan-out (verify-findings.sh --jobs N bounded-concurrency, serial byte-identical, deferred manifest-ordered aggregation) (#1863)"
+    else
+        fail "dark-factory: STAGE 4 gate fan-out regressed (#1863)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory zone-hunt capstone: map -> brief -> discovery -> verify -> audit-pass -> deliver (#1630, epic #1611 M5) ---
 # run-zone-hunt.sh chains the shipped M1..M4 + delivery entrypoints into ONE autonomous zone-hunt and EDITS none
 # of them; it HALTS every finding at PENDING-HUMAN-REVIEW (enforced by run-audit-pass's terminal + deliver-

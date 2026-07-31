@@ -14,6 +14,40 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **STAGE 4 GATE FAN-OUT** (#1863). `verify-findings.sh` gains an opt-in `--jobs <N>` (default `1`) bounded-
+  concurrency fan-out over the CANDIDATE gates, and `run-zone-hunt.sh` forwards its own `--jobs` to it. The
+  refute gate was the pipeline's serial TAIL: ~4 min per gate, one gate per merged candidate, run to
+  completion AFTER the parallelised hunt — on a large target that tail cost more than the hunt it followed,
+  and it gets worse with every recall improvement that raises candidate yield.
+  - Effective concurrency is HARD-CAPPED at `min(--jobs, LLM_MAX_VERIFY_GATES)` (default `4`) by a
+    self-contained `wait -n` job-slot that **never fails open**; a `--jobs` over the cap is clamped with a
+    stderr warning. The env knob is deliberately separate from `run-discovery.sh`'s `LLM_MAX_DISCOVERY_CELLS`
+    — STAGE 3 and STAGE 4 are sequential stages, so one forwarded `--jobs` can never stack the two ceilings,
+    and they tune independently (lower it for `--gate poc`/`--gate symbolic`, where a slot also copies the
+    target repo and runs a build). `bash < 4.3` (no `wait -n`) degrades to serial with a notice.
+  - **No cross-candidate refuter reweighting on EITHER path — no behaviour change.** `run-refute.sh` sets
+    `learning.enabled` / `experience.enabled`, but `verify-findings.sh` invokes it ONCE PER CANDIDATE with a
+    distinct `--out`, which it `rm -rf`s + `agentis init`s per invocation, over a `candidate.manifest` that
+    carries exactly ONE data line. The store is therefore created fresh for one candidate and never read
+    again: there was no cross-candidate reweighting to lose, and a verdict never depended on manifest
+    position. `--jobs > 1` is a scheduling change, not a quality change. The rejected alternative — funnelling
+    the gates through one shared refuter store — would have CREATED that reweighting for the first time, an
+    unmeasured quality change under a throughput ticket, and made verdicts position-dependent.
+  - Aggregation is DEFERRED until the pool drains and replayed in MANIFEST order, with the #1691 preflight
+    ERROR rows carried rather than emitted inline, so `verified[]`, `errors[]` (both ERROR kinds interleaved)
+    and `totals` are byte-identical to the serial run. `verified_findings.json`'s shape is unchanged — in
+    particular NO `jobs` key (that would break `score-match.py` / corpus-bench); concurrency provenance goes
+    to stderr only. `run-refute.sh`'s #1699 C6 retry stays a sequential step inside its candidate's single
+    slot, so peak agentis concurrency is `effective_jobs`, never double.
+  - `--jobs 1` (the default, everywhere including inside `run-zone-hunt.sh`) runs today's exact serial
+    statement sequence and writes no new artifact. New `demo-verify-parallel.sh` pins it offline through the
+    `--agentis` stub seam against a golden minted from the PRE-#1863 script: serial == golden, `cmp`
+    byte-identity between `--jobs 1` and `--jobs 3`, concurrency observed + the cap never exceeded (incl. the
+    clamp), C6 slot discipline, per-candidate store isolation on both paths, both degrade shapes (a
+    hard-failing gate and a vanished `gate.rc` are SKIPPED — visibly unassessed, never confirmed), the arg
+    guard and never-submit. `demo-run-zone-hunt.sh` adds the two forwarding pins.
+
 ### Fixed
 - **ZONE SPLITTING NO LONGER SEVERS INHERITANCE** (#1861). `map-zones.sh` groups by DIRECTORY, so on a
   codebase organised around abstract base contracts the base lands in one zone and every implementation in
