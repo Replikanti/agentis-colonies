@@ -20,6 +20,9 @@ cb 300000;
 //   CAND_EXPLOIT   the one-sentence external exploit path the candidate claims
 //   CODE_PATH      absolute path to a file holding the RELEVANT code (the function(s) + context to judge
 //                  against). The exec sandbox cannot read $HOME — pass a rundir path or a /tmp path.
+//   AUX_CODE_PATH  optional path to the IMPLEMENTATION APPENDIX (#1861): when CODE_PATH is an `abstract
+//                  contract`, this is a function-sliced derived contract that implements its `virtual`
+//                  members. "" to skip — and with "" the prompt is byte-identical to the pre-#1861 one.
 //   BRIEF_PATH     optional path to the protocol brief (invariants + KNOWN ISSUES to exclude); "" to skip.
 // Stdout: exactly one verdict line —
 //   VERDICT|REAL|<file:fn>|<class>|<one-sentence why the refutation FAILED: the exploit holds>
@@ -41,11 +44,39 @@ fn outcome_of(verdict: string) -> string {
     return "failure";
 }
 
+// --- #1861 implementation appendix ------------------------------------------------------------------------
+// A zone split by DIRECTORY puts an abstract base in one zone and its implementations in others, so this gate
+// used to judge a base class with none of its behaviour in view and answered "…in this contract contains
+// no…" — a correct statement about the file and a wrong verdict about the protocol. When an appendix is
+// staged it is appended to the PAYLOAD under a labelled header (hunter.ag's `// ========== <path> ==========`
+// convention) and ONE judging rule is added. Both helpers return "" for an empty appendix, so the no-appendix
+// prompt is byte-for-byte the pre-#1861 prompt.
+fn appendix_payload(code: string, aux: string, auxPath: string) -> string {
+    if len(aux) == 0 { return code; }
+    return code
+      + "\n\n// ========== " + auxPath + " ==========\n"
+      + "// IMPLEMENTATION APPENDIX: the contract under review above is ABSTRACT. The slice below is a\n"
+      + "// DERIVED contract that implements its `virtual` members — the behaviour the abstract file does\n"
+      + "// not contain. Judge the RESOLVED behaviour (base + override), not either file alone.\n"
+      + aux;
+}
+
+fn appendix_rule(aux: string) -> string {
+    if len(aux) == 0 { return ""; }
+    return "  (d) The contract under review is ABSTRACT and some functions the claim depends on are `virtual` "
+      + "and implemented in the DERIVED contract shown at the end of the payload. Judge the RESOLVED behaviour "
+      + "(base + override): \"this file does not implement X\" is NOT by itself a refutation when X is "
+      + "implemented below. It REMAINS a refutation if the derived override provably guards the path, or if "
+      + "the claim needs behaviour absent from BOTH files.\n";
+}
+
 let candFn = getenv("CAND_FILE_FN");
 let candClass = getenv("CAND_CLASS");
 let candSev = getenv("CAND_SEVERITY");
 let candExploit = getenv("CAND_EXPLOIT");
+let auxPath = getenv("AUX_CODE_PATH");
 let code = cat_file(getenv("CODE_PATH"));
+let aux = cat_file(auxPath);
 let brief = cat_file(getenv("BRIEF_PATH"));
 
 // The instruction carries the skeptic role + the conservative tie-break (default REFUTED) + the strict
@@ -71,6 +102,7 @@ let instruction =
   + "restates a listed KNOWN ISSUE, or it is below Medium severity. -> REFUTED (out of scope).\n"
   + "  (c) You traced the code and the claimed exploit genuinely holds for an UNPRIVILEGED external attacker, "
   + "with no guard stopping it. -> REAL.\n"
+  + appendix_rule(aux)
   + "TIE-BREAK: if after an honest trace you are NOT confident the exploit holds — the relevant code is not "
   + "shown, the path is ambiguous, or you cannot point to the exact step that breaks an invariant — answer "
   + "REFUTED. Surviving this gate must require the claim to be unambiguously real; uncertainty kills it.\n\n"
@@ -84,7 +116,12 @@ let instruction =
   + "Reason for as long as you need first; ONLY the final VERDICT| line is parsed, so your analysis above it "
   + "is free. If you are unsure, the line MUST be VERDICT|REFUTED|...";
 
-let verdict = prompt(instruction, code) -> string;
+// #1861: make the attachment OBSERVABLE in the cell log before the (expensive) call, so an operator reading
+// a verdict can tell which of the two payload shapes produced it. run-refute.sh's verdict scraper closes a
+// wrapped record on this sentinel, exactly as the hunter's scraper closes on BLACKBOARD-/DEPTH-CELL|.
+if len(aux) > 0 { print("AUX-CONTEXT|" + auxPath); }
+
+let verdict = prompt(instruction, appendix_payload(code, aux, auxPath)) -> string;
 
 // Surface the verdict (stdout, parsed by run-refute.sh) and record the attempt so refuter fitness reweights.
 print(verdict);

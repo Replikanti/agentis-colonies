@@ -82,6 +82,12 @@ case "$GATE" in
 esac
 
 REPO_NAME="$(basename "$REPO")"
+# #1861: the refute gate stages exactly ONE file, so a candidate anchored in an abstract base is judged with
+# no implementation of it in view — the measured "…in this contract contains no…" refutation. lib/inheritance.py
+# names the representative implementor and auditor/slice-fns.sh cuts it down to the members that carry the
+# base's virtual behaviour. Both are OPTIONAL: either one missing means no aux, and a byte-identical manifest.
+INHERITANCE="$HERE/lib/inheritance.py"
+SLICER="$HERE/auditor/slice-fns.sh"
 WORK="$OUT/.verify-work"; rm -rf "$WORK"; mkdir -p "$WORK"
 CELLS="$OUT/gates"; rm -rf "$CELLS"; mkdir -p "$CELLS"
 CONFIRMED_TSV="$WORK/confirmed.tsv"; : > "$CONFIRMED_TSV"
@@ -137,6 +143,26 @@ if rows:
     sys.stdout.write("\n")
 PY
 
+# resolve_aux_code <out> <relfile> -> prints the absolute path of a staged, function-sliced implementation
+# APPENDIX for <relfile>, or nothing (#1861). Fires only when <relfile> declares an `abstract contract` with
+# body-less `virtual` members AND a descendant elsewhere in the repo implements at least one of them; the
+# whole helper degrades to "no aux" on every other input, so a target with no abstract bases produces a
+# byte-identical gate manifest. Also writes <out>/aux.txt — the per-candidate record of WHAT was attached, so
+# a verdict that turns on the appendix is attributable from the artifacts alone.
+resolve_aux_code() {
+  ra_out="$1"; ra_relfile="$2"
+  [ -f "$INHERITANCE" ] && [ -x "$SLICER" ] || return 0
+  ra_hit="$(python3 "$INHERITANCE" implementor --repo "$REPO" --file "$ra_relfile" 2>/dev/null || true)"
+  [ -n "$ra_hit" ] || return 0
+  ra_impl="$(printf '%s\n' "$ra_hit" | head -1 | cut -f1)"
+  ra_fns="$(printf '%s\n' "$ra_hit" | head -1 | cut -f2)"
+  [ -n "$ra_impl" ] && [ -n "$ra_fns" ] && [ -f "$REPO/$ra_impl" ] || return 0
+  "$SLICER" "$REPO/$ra_impl" "$ra_fns" > "$ra_out/aux.sol" 2>/dev/null || { rm -f "$ra_out/aux.sol"; return 0; }
+  [ -s "$ra_out/aux.sol" ] || { rm -f "$ra_out/aux.sol"; return 0; }
+  printf '%s@%s\n' "$ra_impl" "$ra_fns" > "$ra_out/aux.txt"
+  printf '%s' "$ra_out/aux.sol"
+}
+
 # run_gate_refute <out> <location> <class> <severity> <exploit> <relfile> -> writes <out>/verdict.txt as
 # "<VERDICT>\t<reason>"; returns 0 when the gate RAN (any verdict, incl. no-verdict -> REFUTED), non-zero only
 # when the gate itself errored (so the caller SKIPS that candidate). The refuter report row is `| <location> |
@@ -144,7 +170,14 @@ PY
 run_gate_refute() {
   rg_out="$1"; rg_loc="$2"; rg_cls="$3"; rg_sev="$4"; rg_expl="$5"; rg_relfile="$6"
   mkdir -p "$rg_out"
-  printf '%s|%s|%s|%s|%s\n' "$rg_loc" "$rg_cls" "$rg_sev" "$rg_expl" "$rg_relfile" > "$rg_out/candidate.manifest"
+  # #1861: the OPTIONAL 6th manifest column. No hit -> the line has five fields, byte-identical to today.
+  rg_aux="$(resolve_aux_code "$rg_out" "$rg_relfile")"
+  if [ -n "$rg_aux" ]; then
+    echo "verify-findings.sh:   + implementation appendix for the abstract base $rg_relfile: $(cat "$rg_out/aux.txt")" >&2
+    printf '%s|%s|%s|%s|%s|%s\n' "$rg_loc" "$rg_cls" "$rg_sev" "$rg_expl" "$rg_relfile" "$rg_aux" > "$rg_out/candidate.manifest"
+  else
+    printf '%s|%s|%s|%s|%s\n' "$rg_loc" "$rg_cls" "$rg_sev" "$rg_expl" "$rg_relfile" > "$rg_out/candidate.manifest"
+  fi
   if [ -n "$BRIEF" ]; then
     "$REFUTE" --candidates "$rg_out/candidate.manifest" --code-dir "$REPO" --brief "$BRIEF" \
       --backend "$BACKEND" --agentis "$AGENTIS" --out "$rg_out/refute-out" >"$rg_out/gate.log" 2>&1 || return 1

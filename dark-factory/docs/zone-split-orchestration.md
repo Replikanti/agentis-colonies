@@ -52,6 +52,48 @@ A JSON array, one object per zone, every object carrying all seven keys:
 ]
 ```
 
+### The inheritance appendix (#1861) — two additive keys
+
+Grouping by DIRECTORY puts an `abstract contract` in one zone and every implementation in others, so such a
+zone is hunted against a base class and none of its behaviour. Measured on the diagnosing target: the refute
+gate confirmed **1 of 22** candidates on its abstract-base zone against **14 of 22** on a concrete-contract
+zone of the same target in the same run, 9 of the refutations in the refuter's own *"…in this contract
+contains no…"* words.
+
+`map-zones.sh` therefore pipes the mechanical zone model through `lib/inheritance.py appendix`, which adds two
+keys to a zone whose abstract base has **no in-zone implementor**:
+
+```json
+{
+  "abstract_base": true,
+  "implementation_appendix": [
+    {
+      "base": "src/AbstractYieldStrategy.sol",
+      "contract": "AbstractYieldStrategy",
+      "implementor": "src/staking/AbstractStakingStrategy.sol",
+      "implementor_contract": "AbstractStakingStrategy",
+      "resolves": ["_initiateWithdraw", "_mintYieldTokens", "_postLiquidation"],
+      "unresolved": []
+    }
+  ]
+}
+```
+
+- **Trigger.** A file declares an `abstract contract` with at least one `virtual` member whose logical
+  declaration terminates in `;` (no body there), AND the zone holds no descendant that resolves any of them.
+  `interface` and `library` never trigger; a zone that already contains an implementation is a literal no-op.
+- **Representative choice** (deterministic, no LLM): rank every transitive descendant by
+  `(# body-less virtuals it declares WITH a body) DESC, (inheritance hops) ASC, (LOC) ASC, (path) ASC`, take
+  exactly **one**. It deliberately does NOT prefer concrete contracts — on the diagnosing target every
+  concrete leaf resolves at most 2 of 5 body-less virtuals while the 1-hop intermediate abstract subclass
+  resolves 5 of 5.
+- **`implementor: null`** is the recorded-only fallback: an abstract base with no descendant anywhere (or one
+  whose name is ambiguous across files) leaves `scope_files` untouched and only records the condition — so a
+  low confirmation rate on that zone is attributable from the artifact instead of inferred from prose.
+- `files`, `loc`, `hardening_score` and the zone id are **never** touched, so the #1830 coverage record, the
+  brief filenames, `--only` and STAGE 4.5 deep-hunt selection are byte-identical either way. An absent or
+  failing `lib/inheritance.py` logs one stderr line and the run continues with the untouched model.
+
 ## `hardening_score` derivation
 
 An integer in `[0, 100]`, computed **offline** and **deterministically** from two signals:
@@ -78,6 +120,11 @@ monotonicity and the not-a-gate property.
 - `#`-prefixed and blank lines are ignored; fields are whitespace-trimmed; files are relative to the repo.
 - A big contract is written `file@fn1+fn2+...` (the `slice-fns.sh` slice format) so a deep per-cell read
   fits the hunter's per-call budget.
+- A zone carrying the #1861 inheritance appendix gains **at most ONE extra token**, always in that same
+  `path@fn1+fn2` slice form and never a bare path — the representative implementor, sliced to the base's
+  virtual members and capped by the same `FN_SLICE_CAP = 16` as every other slice. It is bytes, never cells:
+  `run-discovery.sh` emits one cell per (manifest line x class) and passes the whole file list to each, so the
+  #1830 cell budget, its probes and every coverage number are unchanged.
 - No `|`, newline, or backtick may appear inside any field (shell-safety, asserted by the demo).
 
 ### Round-trip: `run-discovery.sh --list-cells`
@@ -245,9 +292,37 @@ human's attention ONLY after a SECOND, independent gate fails to kill it. **M4 (
   `{repo, gate, verified:[{subsystem, location, file, class, severity, exploit, poc_sketch, verdict, reason}],
   totals:{candidates, verified}}`, emitted via `python3 json.dumps` (the repo convention).
 
+### The gate's implementation appendix + the reason contract (#1861)
+
+The gate stages exactly ONE file per candidate, so a candidate anchored in an abstract base was judged with no
+implementation of it in view — the isolation failure the zone-side appendix alone cannot fix, because the
+refuter never sees the zone payload. Two additions, both strictly optional:
+
+- **The 6th manifest column.** `run_gate_refute` asks `lib/inheritance.py implementor --repo <dir> --file
+  <rel>` for the representative implementor of the candidate's own file. On a hit it slices that file with
+  `auditor/slice-fns.sh` into `<cell>/aux.sol`, records what was attached in `<cell>/aux.txt`, and appends the
+  path as an OPTIONAL sixth column of the one-line gate manifest:
+  `<file:fn>|<class>|<sev>|<exploit>|<code-file>|<aux-code-file>`. `run-refute.sh` resolves and stages it
+  exactly like `<code-file>` and env-ins `AUX_CODE_PATH` — which **must** stay on
+  `exec.env_passthrough` (`getenv()` reads the SANITIZED env, so an unregistered knob would leave the whole
+  feature staged-but-never-read). The C6 fallback re-run carries the same appendix, so both attempts judge the
+  same payload. `refuter.ag` appends it to the payload under a labelled header and adds exactly ONE judging
+  rule: *"this file does not implement X" is not by itself a refutation when X is implemented below* — the
+  conservative "uncertainty kills it" tie-break is untouched, and an aux-carrying candidate the skeptic
+  refutes is still dropped. Missing helper, missing slicer or no hit → a five-column manifest, byte-identical
+  to the pre-#1861 one. `--gate poc` and `--gate symbolic` are untouched.
+- **The verdict-reason contract.** The recorded reason used to be truncated mid-sentence, because
+  flat-cyborg's PTY capture wraps a long `VERDICT|` line and `grep 'VERDICT|' | tail -1` keeps only the first
+  physical line. `run-refute.sh` now rejoins the wrapped record with `_join_wrapped_verdict()`, modelled on
+  `run-discovery.sh`'s `_join_wrapped_candidates()` (the #1705 fix for the same defect on the hunter side),
+  and normalises the scraped reason: whitespace squeezed, and any literal `|` mapped to `/` — a raw pipe both
+  breaks the four-cell markdown row AND re-truncates the reason at this script's `awk -F'|' … $5` read.
+
 `demo-verify-findings.sh` pins the schema, the CONFIRMED-only filtering (REFUTED dropped), the read-only
 invariant (`discovery-results.json` byte-unchanged), the degrade path, and never-submit — all offline via the
-`--agentis` refute stub.
+`--agentis` refute stub — plus the eight #1861 pins (appendix reaches the gate; concrete candidates stay
+byte-identically inert; the C6 re-run carries it; an aux-carrying REFUTED candidate stays dropped; a wrapped
+reason survives whole; a piped reason keeps the row at four cells; five-column back-compat; bookkeeping).
 
 ## M5: gate + deliver — the capstone (#1630)
 

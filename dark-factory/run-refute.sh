@@ -20,9 +20,12 @@
 #   run-refute.sh --candidates <cands.tsv> [options]
 #
 # Candidate manifest (one candidate per line; `#` and blank lines ignored). Columns are `|`-separated:
-#   <file:fn> | <classid> | <severity> | <claimed exploit sentence> | <code-file>
+#   <file:fn> | <classid> | <severity> | <claimed exploit sentence> | <code-file> [| <aux-code-file>]
 # where <code-file> is a path (absolute, or relative to --code-dir) to a file holding the RELEVANT code
-# the skeptic judges against. e.g.
+# the skeptic judges against, and the OPTIONAL 6th column <aux-code-file> is a path to a SECOND file holding
+# the derived contract that implements the first file's `virtual` members (#1861 — the implementation
+# appendix verify-findings.sh attaches when the candidate is anchored in an abstract base). A five-column
+# manifest behaves exactly as before: no aux is staged and the refuter prompt is byte-identical. e.g.
 #   Vault.sol:liquidate | C10 | High   | anyone can self-liquidate at a stale price to seize collateral | vault_liquidate.sol
 #   Token.sol:transfer  | C5  | Medium | transfer() lacks an owner check so anyone can move funds        | token_transfer.sol
 #
@@ -104,7 +107,10 @@ fi
   [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"; }
   echo "trace.level = normal"
   # The refuter reads the candidate code + brief through exec sh; pass through its whole env contract.
-  echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH"
+  # AUX_CODE_PATH (#1861) MUST be on this allowlist: getenv() reads the SANITIZED env, so an unregistered
+  # knob is silently inert — the implementation appendix would be staged, never read, and the gate would keep
+  # refuting abstract bases in isolation with no visible failure at all.
+  echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH"
   echo "exec.default_timeout_ms = 30000"
   # Each refutation is recorded as experience; refuter fitness reweights over candidates.
   echo "learning.enabled = true"
@@ -146,15 +152,50 @@ fallback_class_for() {
   printf 'C6'
 }
 
+# _join_wrapped_verdict <log> — reconstruct the LAST logical `VERDICT|...` record from a refuter log, undoing
+# flat-cyborg's PTY-capture line wrap. Modelled directly on run-discovery.sh's _join_wrapped_candidates()
+# (#1705, the same defect on the hunter side): the verdict's one-sentence reason routinely exceeds one physical
+# line, the raw log then carries the tail as continuation lines with no `VERDICT|` prefix, and a bare
+# `grep 'VERDICT|' | tail -1` silently truncates the reason mid-sentence — which is exactly what made
+# `verdict.txt` and `refute-report.md` unreadable to an operator (#1861's secondary item). A `VERDICT|` line
+# opens (and replaces) the record; a blank line, an `AUX-CONTEXT|` sentinel, EOF or 12 continuation lines
+# close it; any other line while a record is open is appended with its leading whitespace stripped and a
+# single joining space (terminal wrap breaks on column width, not on meaningful newlines).
+_join_wrapped_verdict() {
+  jwv_log="$1"
+  awk '
+    /VERDICT\|/ { rec = $0; open = 1; cont = 0; next }
+    open && (/^[[:space:]]*$/ || /AUX-CONTEXT\|/) { open = 0; next }
+    open {
+      if (cont >= 12) { open = 0; next }
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      rec = rec " " line
+      cont++
+    }
+    END { if (rec != "") print rec }
+  ' "$jwv_log"
+}
+
+# _clean_reason <reason> — normalise a scraped verdict reason for the pipe-delimited report row. A literal `|`
+# in the reason breaks the four-cell markdown row AND re-truncates the reason at verify-findings.sh's
+# `awk -F'|' ... $5`, so map it to `/`; squeeze the whitespace the wrap-join introduces. Nothing else consumes
+# the reason, so this is the whole contract.
+_clean_reason() {
+  printf '%s' "$1" | tr '|' '/' | sed 's/[[:space:]][[:space:]]*/ /g; s/^ *//; s/ *$//'
+}
+
 CHECKED=0 ; REAL=0 ; REFUTED=0 ; ERRORED=0
-# Manifest loop: one candidate per line, `file:fn | class | sev | exploit | code-file`.
-while IFS='|' read -r CFN CLS SEV EXPL CODEF || [ -n "${CFN:-}" ]; do
+# Manifest loop: one candidate per line, `file:fn | class | sev | exploit | code-file [| aux-code-file]`.
+# AUXF is EMPTY on a five-column line, so every existing manifest (and every existing fixture) is unaffected.
+while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
   CFN="$(printf '%s' "$CFN" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   case "$CFN" in ''|\#*) continue ;; esac
   CLS="$(printf '%s' "$CLS" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   SEV="$(printf '%s' "$SEV" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   EXPL="$(printf '%s' "$EXPL" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   CODEF="$(printf '%s' "$CODEF" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  AUXF="$(printf '%s' "${AUXF:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   [ -n "$ONLY" ] && [ "$CFN" != "$ONLY" ] && continue
   # A candidate whose code file cannot be resolved is ERRORED, not silently dropped: an unresolvable candidate
   # was never assessed, so it must be DISTINGUISHABLE from a rigorous REFUTED verdict in the report (#1691).
@@ -181,11 +222,27 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF || [ -n "${CFN:-}" ]; do
   SLUG="$(printf '%s' "$CFN" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
   STAGED="$RUN/code_${SLUG}.txt"
   cp "$SRC" "$STAGED"
+  # #1861: stage the optional implementation appendix next to the candidate code, resolved EXACTLY like
+  # <code-file>. An aux that cannot be resolved is a logged WARNING that degrades to no-aux — never an ERROR
+  # row: the candidate itself is still fully assessable against its own file, which is today's behaviour.
+  AUX_STAGED=""
+  if [ -n "$AUXF" ]; then
+    case "$AUXF" in
+      /*) AUX_SRC="$AUXF" ;;
+      *)  AUX_SRC="$CODE_DIR/$AUXF" ;;
+    esac
+    if [ -f "$AUX_SRC" ]; then
+      AUX_STAGED="$RUN/aux_${SLUG}.txt"
+      cp "$AUX_SRC" "$AUX_STAGED"
+    else
+      echo "run-refute.sh: aux code file not found for '$CFN': $AUX_SRC; continuing WITHOUT the implementation appendix" >&2
+    fi
+  fi
   CELL_LOG="$RUN/refute_${SLUG}.log"
   echo "run-refute.sh: refuting $CFN ($CLS) ..." >&2
   # --grant-pii: candidate/exploit text + staged contract source can carry addresses/identifiers that
   # trip the PII heuristic; input is benign public contract/finding text (#1690). Dynamic scope:
-  # _rf_attempt reads CFN/CLS/SEV/EXPL/STAGED/BRIEF_IN_RUN from the loop.
+  # _rf_attempt reads CFN/CLS/SEV/EXPL/STAGED/AUX_STAGED/BRIEF_IN_RUN from the loop.
   # shellcheck disable=SC2317  # invoked by name through df_run_agent_validated
   _rf_attempt() {
     ( cd "$RUN" && env \
@@ -194,6 +251,7 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF || [ -n "${CFN:-}" ]; do
         CAND_SEVERITY="$SEV" \
         CAND_EXPLOIT="$EXPL" \
         CODE_PATH="$STAGED" \
+        AUX_CODE_PATH="$AUX_STAGED" \
         BRIEF_PATH="$BRIEF_IN_RUN" \
         "$AGENTIS" go refuter.ag --enable-exec --enable-messaging --grant-pii ) >"$1" 2>&1 || \
         echo "run-refute.sh: refuter run failed for '$CFN' (see $1)" >&2
@@ -206,10 +264,10 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF || [ -n "${CFN:-}" ]; do
   if df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-refute.sh: '$CFN'" "$CELL_LOG" refuter "" _rf_attempt; then
     # The refuter's contract: exactly one `VERDICT|REAL|...` or `VERDICT|REFUTED|...` line. Take the LAST
     # match (the agent prints its verdict after free-form reasoning); validation guarantees one is present.
-    VLINE="$(grep 'VERDICT|' "$CELL_LOG" | tail -1 || true)"
+    VLINE="$(_join_wrapped_verdict "$CELL_LOG" || true)"
     V="$(printf '%s' "$VLINE" | sed 's/^.*\(VERDICT|\)/\1/')"
     VERD="$(printf '%s' "$V" | cut -d'|' -f2)"
-    REASON="$(printf '%s' "$V" | cut -d'|' -f5-)"
+    REASON="$(_clean_reason "$(printf '%s' "$V" | cut -d'|' -f5-)")"
   else
     echo "run-refute.sh: '$CFN' produced no VERDICT| reply after $DF_AGENT_MAX_ATTEMPTS attempts; recording as ERROR (UNASSESSED — not refuted)" >&2
     printf '| %s | %s | ERROR | no VERDICT| reply after %s attempts (UNASSESSED — not refuted) |\n' \
@@ -229,20 +287,24 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF || [ -n "${CFN:-}" ]; do
     if [ -n "$FB" ]; then
       FB_LOG="$RUN/refute_${SLUG}_c6.log"
       echo "run-refute.sh: $CFN refuted under $CLS; accounting signal fired, retrying under $FB ..." >&2
+      # #1861: the fallback re-run carries the SAME implementation appendix. Forgetting it here is the easy
+      # miss — the candidate would be judged with the derived contract in view on attempt 1 and without it on
+      # the C6 retry, i.e. two different questions answered under one verdict.
       ( cd "$RUN" && env \
           CAND_FILE_FN="$CFN" \
           CAND_CLASS="$FB" \
           CAND_SEVERITY="$SEV" \
           CAND_EXPLOIT="$EXPL" \
           CODE_PATH="$STAGED" \
+          AUX_CODE_PATH="$AUX_STAGED" \
           BRIEF_PATH="$BRIEF_IN_RUN" \
           "$AGENTIS" go refuter.ag --enable-exec --enable-messaging --grant-pii ) >"$FB_LOG" 2>&1 || \
           echo "run-refute.sh: fallback refuter run failed for '$CFN' (see $FB_LOG)" >&2
-      FB_VLINE="$(grep 'VERDICT|' "$FB_LOG" | tail -1 || true)"
+      FB_VLINE="$(_join_wrapped_verdict "$FB_LOG" || true)"
       if [ -n "$FB_VLINE" ]; then
         FB_V="$(printf '%s' "$FB_VLINE" | sed 's/^.*\(VERDICT|\)/\1/')"
         FB_VERD="$(printf '%s' "$FB_V" | cut -d'|' -f2)"
-        FB_REASON="$(printf '%s' "$FB_V" | cut -d'|' -f5-)"
+        FB_REASON="$(_clean_reason "$(printf '%s' "$FB_V" | cut -d'|' -f5-)")"
         if [ "$FB_VERD" = "REAL" ]; then
           VERD="REAL" ; ROW_CLS="$FB"
           REASON="recovered under $FB fallback (assigned $CLS refuted): $FB_REASON"

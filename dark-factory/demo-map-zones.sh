@@ -518,6 +518,433 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (i) #1861 INHERITANCE APPENDIX. A zone whose file declares an `abstract contract` with body-less `virtual`
+#     members, and which holds no implementation of it, is hunted against a base class and none of its
+#     behaviour — measured on the diagnosing target as a 1-in-22 refute-gate confirmation rate against 14-in-22
+#     on a concrete-contract zone of the same target in the same run. map-zones.sh now appends ONE
+#     function-sliced representative implementor to such a zone's scope_files and records the condition in the
+#     additive `abstract_base` / `implementation_appendix` keys.
+#
+#     SELF-CONTAINED: its own throwaway repo and its own inline ZONE| fixture. fixtures/zone-map/ is read by
+#     SIX demos, so a new directory there would ripple through all of them — this block touches none of it
+#     (and the (c) 8-key schema assertion above still holds precisely because the shipped fixture declares no
+#     abstract contract at all, i.e. the shipped path is a literal no-op).
+#
+#     The CONTROL run is the same map-zones.sh executed from a shadow dir that deliberately does NOT carry
+#     lib/inheritance.py — so it doubles as the proof that an absent helper degrades to a no-op instead of
+#     failing the run.
+# ----------------------------------------------------------------------------------------------------------
+note "5) #1861: inheritance appendix (abstract base + cross-zone implementor) ..."
+INH_REPO="$WORK/target-inheritance"
+mkdir -p "$INH_REPO/base" "$INH_REPO/staking" "$INH_REPO/orphan" "$INH_REPO/iface" "$INH_REPO/ifaceimpl" \
+         "$INH_REPO/ml" "$INH_REPO/mlimpl" "$INH_REPO/lay" "$INH_REPO/layimpl" \
+         "$INH_REPO/dup" "$INH_REPO/dupa" "$INH_REPO/dupb" \
+         "$INH_REPO/gp" "$INH_REPO/mid" "$INH_REPO/leaf" \
+         "$INH_REPO/cyc" "$INH_REPO/cyc2" "$INH_REPO/together"
+
+# The diagnosing shape: an abstract base with body-less virtuals (`_initiateWithdraw`, `_mintYieldTokens` —
+# the latter declared across three physical lines) plus a virtual member that DOES have a body here
+# (`convertToAssets`, which the implementor overrides), and a plain non-virtual function that must never
+# reach the slice. The `is Ownable(msg.sender)` clause pins the constructor-arg strip.
+cat > "$INH_REPO/base/AbstractYield.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+abstract contract AbstractYield is Ownable(msg.sender) {
+    function _initiateWithdraw(uint256 shares) internal virtual returns (uint256);
+    function _mintYieldTokens(
+        uint256 amount,
+        address to
+    ) internal virtual;
+    function convertToAssets(uint256 shares) public view virtual returns (uint256) {
+        return shares;
+    }
+    function totalAssets() public view returns (uint256) {
+        return 0;
+    }
+}
+SOL
+cat > "$INH_REPO/staking/StakingStrategy.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract StakingStrategy is AbstractYield {
+    function _initiateWithdraw(uint256 shares) internal override returns (uint256) {
+        return shares;
+    }
+    function _mintYieldTokens(uint256 amount, address to) internal override {
+    }
+    function convertToAssets(uint256 shares) public view override returns (uint256) {
+        return shares * 2;
+    }
+}
+SOL
+# A4: an abstract base with NO descendant anywhere -> the option-C record, nothing attached.
+cat > "$INH_REPO/orphan/AbstractOrphan.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+abstract contract AbstractOrphan {
+    function orphanWork(uint256 amount) internal virtual returns (uint256);
+}
+SOL
+# A5: an `interface` in a NON-excluded directory, with a descendant that would resolve its member. The
+# `virtual` keyword is written out deliberately so the ONLY thing keeping this inert is the kind check.
+cat > "$INH_REPO/iface/IThing.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+interface IThing {
+    function ping(uint256 amount) external virtual returns (uint256);
+}
+SOL
+cat > "$INH_REPO/ifaceimpl/Thing.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract Thing is IThing {
+    function ping(uint256 amount) external override returns (uint256) {
+        return amount;
+    }
+}
+SOL
+# A6: two real-world declaration shapes a single-line `contract A is B {` regex cannot see.
+cat > "$INH_REPO/ml/AbstractML.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+abstract contract AbstractML {
+    function mlWork(uint256 amount) internal virtual returns (uint256);
+}
+SOL
+cat > "$INH_REPO/mlimpl/MLImpl.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract MLImpl
+    is
+    AbstractML
+{
+    function mlWork(uint256 amount) internal override returns (uint256) {
+        return amount;
+    }
+}
+SOL
+cat > "$INH_REPO/lay/AbstractLay.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+abstract contract AbstractLay {
+    function layWork(uint256 amount) internal virtual returns (uint256);
+}
+SOL
+cat > "$INH_REPO/layimpl/LayImpl.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract LayImpl layout at (2 ** 128) is AbstractLay {
+    function layWork(uint256 amount) internal override returns (uint256) {
+        return amount;
+    }
+}
+SOL
+# A7: the same contract NAME declared in two scanned files -> ambiguous -> no edge at all.
+cat > "$INH_REPO/dup/AbstractDup.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+abstract contract AbstractDup {
+    function dupWork(uint256 amount) internal virtual returns (uint256);
+}
+SOL
+cat > "$INH_REPO/dupa/DupImpl.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract DupImpl is AbstractDup {
+    function dupWork(uint256 amount) internal override returns (uint256) {
+        return amount;
+    }
+}
+SOL
+cp "$INH_REPO/dupa/DupImpl.sol" "$INH_REPO/dupb/DupImpl.sol"
+# A8a: the implementation is a GRANDCHILD (the intermediate resolves nothing and is itself abstract).
+cat > "$INH_REPO/gp/AbstractGrand.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+abstract contract AbstractGrand {
+    function grandWork(uint256 amount) internal virtual returns (uint256);
+}
+SOL
+cat > "$INH_REPO/mid/MidAbstract.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+abstract contract MidAbstract is AbstractGrand {
+    uint256 public midState;
+}
+SOL
+cat > "$INH_REPO/leaf/GrandImpl.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract GrandImpl is MidAbstract {
+    function grandWork(uint256 amount) internal override returns (uint256) {
+        return amount;
+    }
+}
+SOL
+# A8b: an inheritance CYCLE (CycA is CycB, CycB is CycA) must terminate, not spin.
+cat > "$INH_REPO/cyc/CycA.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+abstract contract CycA is CycB {
+    function cycWork(uint256 amount) internal virtual returns (uint256);
+}
+SOL
+cat > "$INH_REPO/cyc2/CycB.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract CycB is CycA {
+    function cycWork(uint256 amount) internal override returns (uint256) {
+        return amount;
+    }
+}
+SOL
+# A3 control: an abstract base whose implementor is ALREADY in the same zone -> a literal no-op.
+cat > "$INH_REPO/together/AbstractTog.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+abstract contract AbstractTog {
+    function togWork(uint256 amount) internal virtual returns (uint256);
+}
+SOL
+cat > "$INH_REPO/together/TogImpl.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract TogImpl is AbstractTog {
+    function togWork(uint256 amount) internal override returns (uint256) {
+        return amount;
+    }
+}
+SOL
+git -C "$INH_REPO" init -q
+git -C "$INH_REPO" config user.email demo@example.invalid
+git -C "$INH_REPO" config user.name "demo"
+git -C "$INH_REPO" add -A
+git -C "$INH_REPO" commit -qm "inheritance fixture"
+
+# Inline ZONE| fixture (one line per zone id = the slug of each immediate directory).
+INH_FIXTURE="$WORK/inheritance.fixture.txt"
+: > "$INH_FIXTURE"
+for z in base staking orphan iface ifaceimpl ml mlimpl lay layimpl dup dupa dupb gp mid leaf cyc cyc2 together; do
+  printf 'ZONE|%s|%s|C1,C6|inheritance fixture zone\n' "$z" "$z" >> "$INH_FIXTURE"
+done
+
+# The CONTROL: the very same map-zones.sh run from a shadow dir WITHOUT lib/inheritance.py.
+NOINH="$WORK/df-noinherit"
+mkdir -p "$NOINH/lib" "$NOINH/auditor"
+cp "$MAPZONES" "$NOINH/map-zones.sh"
+cp "$HERE/lib/run-agent-validated.sh" "$NOINH/lib/run-agent-validated.sh"
+cp "$HERE/auditor/slice-fns.sh" "$NOINH/auditor/slice-fns.sh"
+cp "$HERE/auditor/bug-taxonomy.md" "$NOINH/auditor/bug-taxonomy.md" 2>/dev/null || true
+
+OUT_INH="$WORK/out-inheritance"
+OUT_CTRL="$WORK/out-inheritance-control"
+"$MAPZONES" --repo "$INH_REPO" --out "$OUT_INH" --fixture "$INH_FIXTURE" >/dev/null 2>"$WORK/inh.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "map-zones.sh exits 0 on the inheritance fixture (incl. the CycA/CycB cycle)" \
+  || { bad "map-zones.sh exited $RC on the inheritance fixture"; sed 's/^/      /' "$WORK/inh.err" >&2; }
+"$NOINH/map-zones.sh" --repo "$INH_REPO" --out "$OUT_CTRL" --fixture "$INH_FIXTURE" \
+  >/dev/null 2>"$WORK/inh-ctrl.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "map-zones.sh degrades to a no-op (exit 0) when lib/inheritance.py is absent" \
+  || { bad "map-zones.sh exited $RC without lib/inheritance.py"; sed 's/^/      /' "$WORK/inh-ctrl.err" >&2; }
+
+# --- A1: the triggering zone carries the record naming the cross-zone implementor + its resolved members.
+if python3 - "$OUT_INH/zones.json" <<'PY'
+import sys, json
+zones = {z["id"]: z for z in json.load(open(sys.argv[1], encoding="utf-8"))}
+z = zones["base"]
+assert z.get("abstract_base") is True, "the abstract-base zone is not flagged abstract_base"
+app = z.get("implementation_appendix")
+assert isinstance(app, list) and len(app) == 1, "implementation_appendix missing / not a 1-entry list: %r" % app
+e = app[0]
+assert set(e.keys()) == {"base", "contract", "implementor", "implementor_contract", "resolves", "unresolved"}, \
+    "appendix entry keys %r" % sorted(e.keys())
+assert e["base"] == "base/AbstractYield.sol", "wrong base file: %r" % e["base"]
+assert e["contract"] == "AbstractYield", "wrong base contract: %r" % e["contract"]
+assert e["implementor"] == "staking/StakingStrategy.sol", "wrong implementor: %r" % e["implementor"]
+assert e["implementor_contract"] == "StakingStrategy", "wrong implementor contract: %r" % e["implementor_contract"]
+assert e["resolves"] == ["_initiateWithdraw", "_mintYieldTokens"], "wrong resolved members: %r" % e["resolves"]
+assert e["unresolved"] == [], "unexpected unresolved members: %r" % e["unresolved"]
+PY
+then ok "A1: the abstract-base zone records abstract_base + an implementation_appendix naming staking/StakingStrategy.sol and the 2 body-less virtuals it resolves"
+else bad "A1: the cross-zone implementation_appendix record is wrong or missing"
+fi
+
+# --- A2: the zone's scope.tsv line gains EXACTLY ONE `path@fn+fn` token — always sliced, never a whole file.
+if python3 - "$OUT_INH/scope.tsv" "$OUT_CTRL/scope.tsv" <<'PY'
+import sys
+
+
+def files_field(path, subsys):
+    for l in open(path, encoding="utf-8"):
+        if not l.strip() or l.lstrip().startswith("#"):
+            continue
+        parts = [p.strip() for p in l.split("|")]
+        if parts[0] == subsys:
+            return [t.strip() for t in parts[2].split(",") if t.strip()]
+    raise AssertionError("no scope.tsv row for %r in %s" % (subsys, path))
+
+
+got = files_field(sys.argv[1], "base")
+ctrl = files_field(sys.argv[2], "base")
+assert got[:len(ctrl)] == ctrl, "the pre-existing tokens changed: %r vs %r" % (got, ctrl)
+extra = got[len(ctrl):]
+assert len(extra) == 1, "expected exactly one appendix token, got %r" % extra
+tok = extra[0]
+assert "@" in tok, "the appendix was appended as a BARE path (whole file), not a function slice: %r" % tok
+path, fns = tok.split("@", 1)
+assert path == "staking/StakingStrategy.sol", "wrong appendix path: %r" % path
+assert fns.split("+") == ["_initiateWithdraw", "_mintYieldTokens", "convertToAssets"], \
+    "wrong appendix slice (the overridden bodied virtual must ride along): %r" % fns
+PY
+then ok "A2: the abstract-base zone's scope.tsv line gains exactly one path@fn+fn token (staking/StakingStrategy.sol@_initiateWithdraw+_mintYieldTokens+convertToAssets) -- always sliced, never a whole file"
+else bad "A2: the appendix token is missing, duplicated, or a bare whole-file path"
+fi
+
+# --- A3: everything else is byte-identical to the no-appendix control (incl. the in-zone-implementor zone).
+if python3 - "$OUT_INH/zones.json" "$OUT_CTRL/zones.json" "$OUT_INH/scope.tsv" "$OUT_CTRL/scope.tsv" <<'PY'
+import sys, json
+
+TRIGGER = {"base", "orphan", "dup", "ml", "lay", "gp", "cyc"}
+
+got = {z["id"]: z for z in json.load(open(sys.argv[1], encoding="utf-8"))}
+ctrl = {z["id"]: z for z in json.load(open(sys.argv[2], encoding="utf-8"))}
+assert set(got) == set(ctrl), "the zone SET changed: %r" % (set(got) ^ set(ctrl))
+for zid in got:
+    for k in ("files", "loc", "hardening_score", "name", "bug_classes_likely", "value_custody"):
+        assert got[zid][k] == ctrl[zid][k], "zone %r key %r changed: %r vs %r" % (zid, k, got[zid][k], ctrl[zid][k])
+    if zid not in TRIGGER:
+        assert "abstract_base" not in got[zid], "non-triggering zone %r gained abstract_base" % zid
+        assert "implementation_appendix" not in got[zid], "non-triggering zone %r gained an appendix" % zid
+# the in-zone-implementor zone is the sharp control: it HOLDS an abstract base and must still be untouched
+assert "abstract_base" not in got["together"], "a zone whose implementor is already in-zone was given an appendix"
+
+
+def rows(path):
+    out = {}
+    for l in open(path, encoding="utf-8"):
+        if not l.strip() or l.lstrip().startswith("#"):
+            continue
+        out[l.split("|")[0].strip()] = l.rstrip("\n")
+    return out
+
+
+g, c = rows(sys.argv[3]), rows(sys.argv[4])
+assert set(g) == set(c), "the scope.tsv subsystem set changed"
+changed = sorted(k for k in g if g[k] != c[k])
+assert changed == sorted(["base", "ml", "lay", "gp", "cyc"]), \
+    "exactly the 5 attaching zones' scope.tsv lines may change, got %r" % changed
+PY
+then ok "A3: every zones.json files/loc/hardening_score and every non-attaching scope.tsv line is byte-identical to the no-appendix control (incl. the in-zone-implementor zone, which stays a literal no-op)"
+else bad "A3: the appendix perturbed zone identity or a control zone's manifest line"
+fi
+
+# --- A4: an abstract base with no descendant anywhere -> the option-C record, scope.tsv line unchanged.
+if python3 - "$OUT_INH/zones.json" "$OUT_INH/scope.tsv" "$OUT_CTRL/scope.tsv" <<'PY'
+import sys, json
+zones = {z["id"]: z for z in json.load(open(sys.argv[1], encoding="utf-8"))}
+z = zones["orphan"]
+assert z.get("abstract_base") is True, "the descendant-less abstract base is not recorded at all"
+app = z["implementation_appendix"]
+assert len(app) == 1 and app[0]["implementor"] is None, "expected the option-C implementor:null fallback: %r" % app
+assert app[0]["implementor_contract"] is None, "implementor_contract must be null too: %r" % app[0]
+assert app[0]["unresolved"] == ["orphanWork"], "the unresolved member is not recorded: %r" % app[0]["unresolved"]
+
+
+def row(path, subsys):
+    for l in open(path, encoding="utf-8"):
+        if l.split("|")[0].strip() == subsys:
+            return l.rstrip("\n")
+    raise AssertionError("no row for %r" % subsys)
+
+
+assert row(sys.argv[2], "orphan") == row(sys.argv[3], "orphan"), \
+    "the descendant-less zone's scope.tsv line changed -- a same-named/nearest contract was attached"
+PY
+then ok "A4: an abstract base with no descendant anywhere records abstract_base + implementor:null and leaves its scope.tsv line untouched (the option-C inert fallback)"
+else bad "A4: the descendant-less abstract base was not handled as the inert option-C record"
+fi
+
+# --- A5: an `interface` never triggers, even with a resolving descendant one zone away.
+if python3 - "$OUT_INH/zones.json" <<'PY'
+import sys, json
+zones = {z["id"]: z for z in json.load(open(sys.argv[1], encoding="utf-8"))}
+assert "abstract_base" not in zones["iface"], "an `interface` was treated as an abstract base"
+assert "implementation_appendix" not in zones["iface"], "an `interface` zone gained an appendix"
+PY
+then ok "A5: an interface in a non-excluded directory never triggers, even though its member is body-less, virtual, and implemented one zone away"
+else bad "A5: an interface was treated as an abstract base"
+fi
+
+# --- A6: a multi-line `is` list and a `layout at (...) is` clause are both parsed.
+if python3 - "$OUT_INH/zones.json" <<'PY'
+import sys, json
+zones = {z["id"]: z for z in json.load(open(sys.argv[1], encoding="utf-8"))}
+ml = zones["ml"]["implementation_appendix"][0]
+assert ml["implementor"] == "mlimpl/MLImpl.sol", "the multi-line `is` descendant was not found: %r" % ml
+lay = zones["lay"]["implementation_appendix"][0]
+assert lay["implementor"] == "layimpl/LayImpl.sol", "the `layout at (...) is` descendant was not found: %r" % lay
+PY
+then ok "A6: a descendant declared with a multi-line is-list AND one declared 'contract X layout at (2 ** 128) is Y' are both reached (a single-line regex finds neither)"
+else bad "A6: a multi-line / layout-clause descendant declaration was not parsed"
+fi
+
+# --- A7: a contract name declared in two scanned files contributes NO edge.
+if python3 - "$OUT_INH/zones.json" "$OUT_INH/scope.tsv" "$OUT_CTRL/scope.tsv" <<'PY'
+import sys, json
+zones = {z["id"]: z for z in json.load(open(sys.argv[1], encoding="utf-8"))}
+app = zones["dup"]["implementation_appendix"][0]
+assert app["implementor"] is None, \
+    "an AMBIGUOUS contract name (declared in dupa/ and dupb/) still produced an edge: %r" % app["implementor"]
+
+
+def row(path, subsys):
+    for l in open(path, encoding="utf-8"):
+        if l.split("|")[0].strip() == subsys:
+            return l.rstrip("\n")
+    raise AssertionError("no row for %r" % subsys)
+
+
+assert row(sys.argv[2], "dup") == row(sys.argv[3], "dup"), "an ambiguous-name implementor was attached anyway"
+PY
+then ok "A7: a contract name declared in two scanned files is ambiguous and contributes no edge (no appendix, scope.tsv line untouched) -- taking the first declaration would attach one"
+else bad "A7: an ambiguous contract name still produced an inheritance edge"
+fi
+
+# --- A8: a transitive (grandchild) implementor is reachable, and an inheritance cycle terminates.
+if python3 - "$OUT_INH/zones.json" <<'PY'
+import sys, json
+zones = {z["id"]: z for z in json.load(open(sys.argv[1], encoding="utf-8"))}
+gp = zones["gp"]["implementation_appendix"][0]
+assert gp["implementor"] == "leaf/GrandImpl.sol", \
+    "the GRANDCHILD implementor was not reached (direct edges only?): %r" % gp["implementor"]
+assert gp["resolves"] == ["grandWork"], "the grandchild's resolved member is wrong: %r" % gp["resolves"]
+cyc = zones["cyc"]["implementation_appendix"][0]
+assert cyc["implementor"] == "cyc2/CycB.sol", "the cyclic descendant was not resolved: %r" % cyc["implementor"]
+PY
+then ok "A8: a grandchild implementor is reachable through an intermediate abstract contract that resolves nothing, and a CycA-is-CycB-is-CycA cycle terminates with the right implementor"
+else bad "A8: the transitive walk missed the grandchild or did not terminate correctly on a cycle"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # SECOND PART — substrate: source-guard zone-mapper.ag always; run live via --backend mock when agentis on PATH.
 # ----------------------------------------------------------------------------------------------------------
 note "4) source-guarding auditor/agents/zone-mapper.ag ..."
