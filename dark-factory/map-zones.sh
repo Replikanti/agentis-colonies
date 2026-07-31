@@ -305,6 +305,32 @@ print("\n".join(listing))
 PY
 )"
 
+# --- #1861 inheritance appendix: reach the implementation a directory split severed -------------------
+# A zone whose file declares an `abstract contract` with body-less `virtual` members, and which holds NO
+# implementation of it, is hunted against a base class and none of its behaviour. lib/inheritance.py appends
+# ONE function-sliced representative implementor to that zone's scope_files and records the condition in the
+# additive `abstract_base` / `implementation_appendix` keys the merge below copies through. Follows the
+# DELTA_JSON precedent above for a helper that degrades to a no-op: an absent or failing helper logs one
+# stderr line and the run continues with the UNTOUCHED mechanical model (today's behaviour exactly).
+# `files`, `loc` and `hardening_score` are never touched, so zone identity — and with it the #1830 coverage
+# record, the brief filenames, `--only` and STAGE 4.5 deep-hunt selection — is byte-identical either way.
+# NOTE: ZONE_LIST above is deliberately NOT rewritten. It feeds zone-mapper.ag's CLASSIFICATION, which must
+# keep judging the zone on its OWN files; the appendix is extra payload for the HUNT, not evidence for the map.
+INHERITANCE="$HERE/lib/inheritance.py"
+INHERIT_LOG="$OUT/.inheritance.log"
+: > "$INHERIT_LOG"
+if [ -f "$INHERITANCE" ]; then
+  if MECH_APPENDED="$(python3 "$INHERITANCE" appendix --zones "$MECH_JSON" --repo "$REPO" 2>"$INHERIT_LOG")" \
+     && [ -n "$MECH_APPENDED" ]; then
+    printf '%s' "$MECH_APPENDED" > "$MECH_JSON"
+    if [ -s "$INHERIT_LOG" ]; then cat "$INHERIT_LOG" >&2; fi
+  else
+    echo "map-zones.sh: inheritance appendix helper failed (continuing with the untouched zone model; see $INHERIT_LOG)" >&2
+  fi
+else
+  echo "map-zones.sh: lib/inheritance.py not found (continuing without the inheritance appendix)" >&2
+fi
+
 # --- classification: --fixture -> substrate (agentis) -> mechanical skeleton --------------------------
 CLASS_LINES="$OUT/.zone-classes.txt"
 : > "$CLASS_LINES"
@@ -498,6 +524,13 @@ for z in mech:
         # engine only on value_custody zones. Default False for any zone with no CUSTODY| line.
         "value_custody": custodymap.get(z["id"], False),
     }
+    # #1861: the inheritance-appendix record, copied through ONLY when lib/inheritance.py actually set it —
+    # a target with no cross-zone abstract base emits a byte-identical zones.json. `implementor: null` inside
+    # an entry is the option-C fallback: the condition is visible in the artifact even when nothing was
+    # attached, so a low confirmation rate on such a zone is attributable rather than read as a hunting miss.
+    if z.get("abstract_base"):
+        z_out["abstract_base"] = True
+        z_out["implementation_appendix"] = z.get("implementation_appendix", [])
     if z["id"] in failed_zones:
         z_out["classification_failed"] = True
     zones.append(z_out)

@@ -14,6 +14,47 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **ZONE SPLITTING NO LONGER SEVERS INHERITANCE** (#1861). `map-zones.sh` groups by DIRECTORY, so on a
+  codebase organised around abstract base contracts the base lands in one zone and every implementation in
+  others — and BOTH readers then reason about the base in isolation. Measured on the diagnosing target: the
+  refute gate confirmed **1 of 22** candidates on its abstract-base zone against **14 of 22** on a
+  concrete-contract zone of the same target in the same run, 9 of the refutations in the refuter's own
+  *"…in this contract contains no…"* words.
+  - New `lib/inheritance.py` is the single source of truth for "which contract actually implements this
+    abstract base": a regex + logical-declaration index (no solc, no toolchain — this path must run offline
+    on CI with python3 only) that ranks every transitive descendant by `(# of the base's body-less virtual
+    members it declares WITH a body) DESC, (hops) ASC, (LOC) ASC, (path) ASC` and takes exactly ONE. It
+    deliberately does NOT prefer concrete contracts: on the diagnosing base every concrete leaf resolves at
+    most 2 of 5 body-less virtuals while the 1-hop intermediate abstract subclass resolves 5 of 5.
+  - **Both** reads are fixed, because fixing one is a non-fix: `map-zones.sh` appends ONE function-sliced
+    representative implementor to the `scope_files` of a triggering zone (the hunter's payload), and
+    `verify-findings.sh` attaches the same slice to the refute gate as an OPTIONAL 6th manifest column
+    (`run-refute.sh` stages it and env-ins `AUX_CODE_PATH`; `refuter.ag` appends it to the payload and gains
+    exactly one judging rule). The gate fires per CANDIDATE FILE, so it also repairs zones whose implementor
+    was in-zone all along — the refuter never saw the zone payload.
+  - Bounded and inert by construction: at most one extra file per zone and per candidate, always
+    function-sliced (never a whole file) and capped by the existing `FN_SLICE_CAP = 16`; `files`, `loc`,
+    `hardening_score` and zone ids are untouched, so the #1830 coverage record, brief filenames, `--only` and
+    STAGE 4.5 deep-hunt selection are byte-identical. Cells are emitted per (manifest line x class), so the
+    appendix costs **bytes, never cells**. A target with no abstract base produces a byte-identical payload
+    and argv (golden-pinned).
+  - Every named Solidity-parsing failure mode is made INERT rather than wrong — an out-of-scan base ends the
+    chain, `interface`/`library` never trigger, a contract name declared in two scanned files is ambiguous and
+    contributes no edge, cycles are broken by a visited set, and C3 linearization is explicitly not modelled.
+    When nothing resolves, the condition is still RECORDED (`abstract_base: true`,
+    `implementation_appendix[].implementor: null`) so a low confirmation rate is attributable from the
+    artifact instead of inferred from refutation prose.
+  - The appendix informs the judgement, it does not rubber-stamp it: the conservative "uncertainty kills it"
+    tie-break is untouched and an aux-carrying candidate the skeptic refutes is still dropped.
+- **The recorded refutation reason is no longer truncated mid-sentence** (#1861, secondary). flat-cyborg's PTY
+  capture wraps a long `VERDICT|` line, and `grep 'VERDICT|' | tail -1` kept only the first physical line — so
+  `verdict.txt` and `refute-report.md` showed an operator half a sentence. `run-refute.sh` rejoins the wrapped
+  record with `_join_wrapped_verdict()`, modelled on `run-discovery.sh`'s `_join_wrapped_candidates()` (the
+  #1705 fix for the same defect on the hunter side), and normalises the reason: whitespace squeezed and any
+  literal `|` mapped to `/`, since a raw pipe both breaks the four-cell markdown row AND re-truncates the
+  reason at `verify-findings.sh`'s `awk -F'|' … $5` read.
+
 ### Added
 - **DEPTH-ONLY RE-ENTRY — a depth A/B that is actually readable** (#1857). Every depth measurement so far
   re-hunted the **stochastic** breadth pass in both arms, so a row the treatment lost could not be
