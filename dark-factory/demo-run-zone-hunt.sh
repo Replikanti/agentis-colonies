@@ -54,6 +54,10 @@
 #         --depth-lens-quota, is recorded in the coverage detail and in each zone's totals, and does NOT
 #         change what depth costs — cells_charged is still breadth + the depth cap. With the knob unset the
 #         depth-on argv is byte-identical to a pre-#1850 one (asserted inside (r)).
+#   u) #1863 --jobs FORWARDING: --jobs reaches BOTH substrate-heavy stages — STAGE 3's run-discovery.sh AND
+#      STAGE 4's verify-findings.sh (static, over the source) — and an end-to-end --jobs 2 stub run produces a
+#      verify/verified_findings.json byte-identical to the default run's (the fan-out changes wall-clock, never
+#      the verdict set). The stages are sequential, so one flag never stacks two concurrency ceilings.
 #
 # Usage:  dark-factory/demo-run-zone-hunt.sh
 # Requires: git + python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression.
@@ -401,6 +405,36 @@ if [ "$DHO_PRE_RC" -eq 3 ] && grep -q -- '--deep-hunt-only requires an existing'
 else
   bad "run-zone-hunt.sh --deep-hunt-only over an empty --out did not fail fast as expected (exit $DHO_PRE_RC):"
   sed 's/^/      /' "$DHO_PRE_ERR" | head -10 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (u) #1863: --jobs is forwarded to BOTH substrate-heavy stages. STAGE 4 (verify-findings.sh) used to gate
+# every merged candidate strictly serially while STAGE 3 fanned out, which made the refute gate the run's
+# serial TAIL. A STATIC pin (the --repair-rounds idiom above) counts the forwarded call sites, and a DYNAMIC
+# one re-runs the whole capstone at --jobs 2 and demands a byte-identical verified_findings.json — the fan-out
+# is a scheduling change, never a verdict change.
+# ----------------------------------------------------------------------------------------------------------
+note "#1863 --jobs forwarding (STAGE 3 hunt cells AND STAGE 4 verify gates) ..."
+if [ "$(grep -cF -- '--jobs "$JOBS"' "$ZONEHUNT")" -eq 2 ]; then
+  ok "run-zone-hunt.sh threads --jobs \"\$JOBS\" into BOTH call sites (STAGE 3 run-discovery.sh + STAGE 4 verify-findings.sh)"
+else
+  bad "run-zone-hunt.sh does not thread --jobs into both the STAGE 3 and the STAGE 4 call sites"
+fi
+OUT_J2="$WORK/zh-jobs2"
+"$ZONEHUNT" --repo "$REPO" --out "$OUT_J2" --drop-dir "$OUT_J2/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" --jobs 2 \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" \
+  >"$WORK/zh-jobs2.out" 2>"$WORK/zh-jobs2.err"
+RCJ2=$?
+[ "$RCJ2" -eq 0 ] && ok "run-zone-hunt.sh --jobs 2 exits 0 end-to-end (offline stub)" \
+  || { bad "the --jobs 2 capstone run exited $RCJ2"; sed 's/^/      /' "$WORK/zh-jobs2.err" | tail -30 >&2; }
+if cmp -s "$OUT/verify/verified_findings.json" "$OUT_J2/verify/verified_findings.json"; then
+  ok "the --jobs 2 run's verify/verified_findings.json is BYTE-IDENTICAL to the default run's (STAGE 4 fan-out is verdict-neutral end-to-end)"
+else
+  bad "the --jobs 2 run's verified_findings.json diverged from the default run's:"
+  diff "$OUT/verify/verified_findings.json" "$OUT_J2/verify/verified_findings.json" | sed 's/^/      /' >&2
 fi
 
 # ----------------------------------------------------------------------------------------------------------

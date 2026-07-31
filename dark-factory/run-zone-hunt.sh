@@ -28,7 +28,11 @@
 # Options:
 #   --repo <dir>        Cloned target repo root (clone with fetch-target.sh). REQUIRED.
 #   --out <dir>         Output dir for the whole run (default: ./zone-hunt-out).
-#   --jobs <N>          run-discovery.sh intra-zone bounded concurrency (default 1; zones loop SERIALLY).
+#   --jobs <N>          Bounded concurrency for BOTH substrate-heavy stages (default 1; zones loop SERIALLY):
+#                       STAGE 3's intra-zone run-discovery.sh hunt cells and STAGE 4's verify-findings.sh
+#                       refute gates (#1863). Never at the same time — the stages are sequential, so one flag
+#                       cannot stack two caps; each stage clamps to its own ceiling
+#                       (LLM_MAX_DISCOVERY_CELLS / LLM_MAX_VERIFY_GATES, both default 4).
 #   --backend <mock|flat-cyborg|claude>  LLM backend for every substrate step (default: flat-cyborg).
 #   --agentis <bin>     agentis binary (default: `agentis` on PATH).
 #   --scope-hint <t>    map-zones.sh source restriction (comma/space list of files or dir-prefixes).
@@ -338,7 +342,9 @@ fi
 
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 3 (M3): per-zone run-discovery.sh, each with its OWN zone brief; merge into discovery-results.merged.json.
-# Zones loop SERIALLY (the intra-zone --jobs is the only parallelism — the M3 OOM cap is not stacked across zones).
+# Zones loop SERIALLY (the intra-zone --jobs is the only parallelism here — the M3 OOM cap is not stacked
+# across zones). The SAME --jobs is forwarded to STAGE 4's verify gates (#1863), which run only after this
+# whole stage has finished, so the two stages never hold slots at the same time.
 # Priority order: value-custody zones first (tie-broken by zone id), then everything else, so a truncated run
 # only ever drops the lowest-priority (non-custody) zones (#1826).
 #
@@ -674,10 +680,13 @@ fi
 
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 4 (M4): verify-findings.sh over the merged candidates -> <out>/verify/verified_findings.json (CONFIRMED only).
+# #1863: --jobs is forwarded here too. STAGE 3 has already finished by the time this runs (the stages are
+# SEQUENTIAL), so the one flag governs the hunt cells and then the verify gates — it never stacks the two caps.
 # ----------------------------------------------------------------------------------------------------------
 VER="$OUT/verify"
 echo "run-zone-hunt.sh: [M4] verifying candidates (refute gate) -> $VER ..." >&2
-"$VERIFY" --results "$MERGED" --repo "$REPO" --gate refute --backend "$BACKEND" --agentis "$AGENTIS" --out "$VER"
+"$VERIFY" --results "$MERGED" --repo "$REPO" --gate refute --backend "$BACKEND" --agentis "$AGENTIS" \
+  --jobs "$JOBS" --out "$VER"
 VERIFIED_JSON="$VER/verified_findings.json"
 [ -f "$VERIFIED_JSON" ] || { echo "run-zone-hunt.sh: verify-findings.sh did not emit verified_findings.json" >&2; exit 3; }
 else

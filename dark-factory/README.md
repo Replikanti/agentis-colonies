@@ -310,6 +310,34 @@ It is READ-ONLY over `discovery-results.json` (never mutates it) and never submi
 candidate is skipped (not fatal) and an un-confirmed candidate is dropped. Offline determinism via the
 `run-refute.sh --agentis` stub seam; proven by `demo-verify-findings.sh`.
 
+**Fan the gates out too (`--jobs N`, #1863).** STAGE 4 is the pipeline's serial *tail*: one refute gate is
+~4 min of wall-clock and the candidate count grows with every recall improvement, so on a large target the
+gate sweep can cost more than the parallelised hunt that produced it. `verify-findings.sh --jobs N` (default
+`1`) gates up to N candidates concurrently, and `run-zone-hunt.sh` forwards its own `--jobs` here as well as
+to STAGE 3 — the stages are sequential, so one flag never stacks two ceilings.
+
+```bash
+# gate up to 4 candidates concurrently; hard-capped, each candidate already in its own gate rundir:
+dark-factory/verify-findings.sh --results "$PWD/discovery-out/discovery-results.json" \
+  --repo "$PWD/target" --gate refute --out "$PWD/verify-out" --jobs 4
+# tune the ceiling per host (default 4):  LLM_MAX_VERIFY_GATES=2 dark-factory/verify-findings.sh … --jobs 8
+```
+
+Effective concurrency is HARD-CAPPED at `min(--jobs, LLM_MAX_VERIFY_GATES)` (default `4`) by a self-contained
+`wait -n` job-slot that **never fails open** (a `--jobs` over the cap is clamped with a warning); the knob is
+separate from `LLM_MAX_DISCOVERY_CELLS` so the two stages tune independently — worth lowering for `--gate
+poc`/`--gate symbolic`, where a slot also copies the repo and runs a build. Every candidate's gate already
+ran in its OWN `gates/<n>_<slug>/refute-out` rundir, freshly `agentis init`ed and handed exactly one manifest
+line, so there is **no cross-candidate refuter reweighting on either path** — `--jobs > 1` loses no steering
+because there is none. run-refute.sh's #1699 C6 retry is a sequential step inside its candidate's single slot,
+so peak concurrency is `effective_jobs`, not double it. Aggregation is **deferred** until the pool drains and
+replayed in manifest order, so `verified_findings.json` — `verified[]` order, `errors[]` order and totals —
+is byte-identical to the serial run; its shape is unchanged (no `jobs` key). **`--jobs 1` (the default) runs
+today's exact serial statement sequence.** Pinned offline by `demo-verify-parallel.sh` (a fast stub through
+the `--agentis` seam — no live agentis/forge/network), whose serial golden was minted against the *pre*-#1863
+script. Model + the learning-store decision:
+[`docs/zone-split-orchestration.md`](./docs/zone-split-orchestration.md).
+
 ### Run the whole loop (`run-zone-hunt.sh`)
 
 **M5 (#1630, epic #1611)** is the CAPSTONE that CLOSES the epic. [`run-zone-hunt.sh`](./run-zone-hunt.sh) chains
