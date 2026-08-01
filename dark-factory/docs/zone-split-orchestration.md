@@ -144,6 +144,27 @@ Observability, at parity with the gate: the hunter prints `APPENDIX-CONTEXT|<tok
 stderr line and derives a per-cell `appendix` key **from that log line** into `discovery-results.json` — a
 cell with no appendix gains no key at all, and the key is appended after every pre-existing one.
 
+The sentinel is gated on the framing having been **assembled into the prompt** — `framing_emitted()` requires
+the labelled header to be in the payload AND the judging block in the instruction, matched through the same
+marker helpers the producers use — not on the token being non-empty. That distinction is the difference
+between a record and a claim: gated on the token, the artifact would still report "this cell was framed"
+after a regression that dropped the framing, so the thing added to make appendix influence attributable could
+not detect its own loss. Both mutations that would make this feature a production no-op (dropping `appx` from
+the instruction, or calling `scoped_code` with an empty token) therefore produce **no** `APPENDIX-CONTEXT|`
+line, no stderr row and no `appendix` key at all — verified live, and pinned by `demo-discovery-parallel.sh`
+18h, the one assertion in that file that actually interprets `hunter.ag` (a real `agentis` plus a fake
+`claude` that dumps the prompt, the `demo-blackboard.sh` idiom). The stub-driven assertions 18a–18f and the
+extracted-fragment CB probes in 18g are structurally blind to it.
+
+**Cost, measured.** `appendix_label` folds into the existing reduce — O(1) per in-scope token, no new reduce,
+no per-element `exec` — but the constant is roughly the whole pre-existing per-element cost of that reduce:
+under a `cb 2000;` stress probe the pre-#1865 fold clears 107 tokens and this one 55, and every cell pays it,
+appendix-free zones included (the call happens before the empty-token early return). It is not a runtime risk
+at the budget that actually runs — `agentis go` honours `hunter.ag`'s declared `cb 300000;`, where the fold is
+bounded by the 16 MiB string heap (~378 tokens), not by CB, against the ~10 files a real zone carries. 18g
+measures both ceilings by binary search and pins them against the cost comment in the agent, so the claim
+cannot go stale.
+
 **Residual (known, narrow).** Because the appendix file is a legal in-scope file in that payload, a candidate
 can be located in a file belonging to a *different* zone. Nothing downstream branches on that: attribution is
 the CELL's zone (`run-discovery.sh`), the #1830 coverage record is derived per zone from that zone's own

@@ -64,12 +64,20 @@
 #           never glued onto a PTY-wrapped CANDIDATE record.
 #      18f) DEPTH INTERACTION: every `"phase":"depth"` cell receives an EMPTY APPENDIX_FILE (a depth payload
 #           IS the narrowed function; framing it as "your contract is abstract" would be a lie).
-#      18g) CB SWEEP (needs the agentis binary; clean [SKIP] otherwise): appendix_header/appendix_label/
-#           appendix_rule EXTRACTED FROM hunter.ag BY LINE RANGE, under a `cb 2000;` probe, swept over the
-#           IN_SCOPE TOKEN COUNT (1/8/32/64) against a CONTROL fold that omits the helper — that count is
-#           the only dimension this change touches per element. An N at which the CONTROL itself overflows
-#           is [SKIP]ped (a property of the pre-existing reduce, not of this change), never reported as a
-#           failure this diff caused.
+#      18g) CB (needs the agentis binary; clean [SKIP] otherwise), on the appendix helpers EXTRACTED FROM
+#           hunter.ag BY LINE RANGE, swept over the IN_SCOPE TOKEN COUNT against a CONTROL fold that omits
+#           the helper — the only dimension this change touches per element. (A) under the `cb 300000;`
+#           hunter.ag actually declares (what `agentis go` honours) both folds complete at 1/8/32/64/200 and
+#           the labelled one adds the header for the matching token; (B) under the `cb 2000;` cb_per_tick
+#           default BOTH ceilings are binary-searched and the measured headroom asserted — the naive "the
+#           labelled fold clears every N the control clears" is FALSE in the band between them; (C) the two
+#           measured numbers are pinned against hunter.ag's cost comment so the claim cannot go stale.
+#      18h) LIVE HUNTER (needs the agentis binary; clean [SKIP] otherwise): the ONLY assertion here that
+#           interprets hunter.ag. A real agentis + a fake `claude` that dumps the prompt (the
+#           demo-blackboard.sh idiom) proves BOTH halves of the framing reach the model for the framed zone
+#           and NEITHER reaches an appendix-free one — the regression 18a-18g are structurally blind to,
+#           since they drive a stub or a synthetic fold. The `appendix` record is asserted in the same
+#           breath: it is derived from the assembled prompt, so it disappears with the framing.
 #
 # The parallel-only assertions [SKIP] cleanly when the bash that runs run-discovery.sh lacks `wait -n`
 # (needs bash >= 4.3) — run-discovery.sh then degrades to serial, which the demo does not misreport.
@@ -1162,44 +1170,57 @@ then ok "18f) with a sidecar AND --depth-max-cells every depth cell receives an 
 else bad "18f) a depth cell was framed with an implementation appendix"
 fi
 
-# (18g) CB SWEEP of the three new hunter.ag helpers, EXTRACTED BY LINE RANGE (a copy-pasted twin would drift
-# from the agent it claims to measure). `cb 2000;` is the ENFORCED per-tick ceiling, not the declarative
-# `cb 300000;` header. The swept dimension is the IN_SCOPE TOKEN COUNT, because that is the only dimension
-# this change makes per-element: appendix_label is folded over the EXISTING scoped_code reduce. The control
-# is the same fold WITHOUT the helper, so the assertion is a delta ("the labelled fold clears every N the
-# control clears"), not an absolute budget the fixture's own prose size could dominate.
+# (18g) CB of the appendix helpers, EXTRACTED FROM hunter.ag BY LINE RANGE (a copy-pasted twin would drift
+# from the agent it claims to measure). The swept dimension is the IN_SCOPE TOKEN COUNT — the only dimension
+# this change touches per element, since appendix_label is folded over the EXISTING scoped_code reduce.
+#
+# TWO probes, because one alone would state something untrue:
+#   A) the PRODUCTION budget. `agentis go hunter.ag` honours the source's own `cb 300000;`, so that — not the
+#      `cb 2000;` cb_per_tick default — is what actually runs. Assert both folds complete far beyond any real
+#      zone's file count and that the labelled fold really does add the header for the matching token.
+#   B) the STRESS BAND, measured rather than assumed. Under `cb 2000;` the two folds have DIFFERENT ceilings
+#      (the appendix-free fold's per-element cost roughly doubles), so the naive property "the labelled fold
+#      clears every N the control clears" is FALSE in the band between them — a sweep at fixed points can sit
+#      either side of it and assert nothing. Binary-search BOTH ceilings instead, assert the headroom that
+#      matters (the labelled fold clears an order of magnitude more tokens than a real zone has files) and
+#      pin the two measured numbers against the cost comment in hunter.ag, so the claim cannot go stale.
+# The band is measured with an EMPTY appendix on purpose: that is the cost EVERY cell pays, appendix-free
+# zones included, because the call happens before `len(appendix) == 0` can return.
 if ! command -v agentis >/dev/null 2>&1; then
-  skip "18g) appendix helper CB sweep — no agentis binary on PATH"
+  skip "18g) appendix helper CB probes — no agentis binary on PATH"
 elif [ ! -f "$HUNTER_AG" ]; then
   bad "18g) hunter.ag not found at $HUNTER_AG"
 else
   APX_FRAG="$WORK/appendix_helpers.frag"
   : > "$APX_FRAG"
-  for _fn in appendix_header appendix_label appendix_rule; do
+  APX_HELPERS="appendix_marker anchoring_marker appendix_header appendix_label appendix_rule"
+  for _fn in $APX_HELPERS; do
     awk -v want="^fn $_fn\\\\(" '$0 ~ want {f=1} f{print} f&&/^}$/{exit}' "$HUNTER_AG" >> "$APX_FRAG"
     printf '\n' >> "$APX_FRAG"
   done
   MISSING_FN=""
-  for _fn in appendix_header appendix_label appendix_rule; do
+  for _fn in $APX_HELPERS; do
     grep -q "^fn $_fn(" "$APX_FRAG" || MISSING_FN="$MISSING_FN $_fn"
   done
   if [ -n "$MISSING_FN" ]; then
     bad "18g) could not extract from hunter.ag by line range (renamed?):$MISSING_FN"
   else
-    APX_CB_OK=1
-    APX_CB_NS=""
-    for N in 1 8 32 64; do
-      TOKENS=""; i=0
-      while [ "$i" -lt "$N" ]; do
-        TOKENS="${TOKENS}contracts/z/File$i.sol@fnA+fnB\\n"
-        i=$((i + 1))
+    # _apx_cb_probe <N> <budget> <ctrl|treat|treatlbl> — build the fold probe and print its resulting length,
+    # or NOTHING when it did not complete under <budget>. ctrl = the pre-#1865 fold; treat = the shipped fold
+    # with an EMPTY appendix (what every appendix-free zone pays); treatlbl = the same with the matching token.
+    _apx_cb_probe() {
+      _n="$1"; _budget="$2"; _arm="$3"
+      _toks=""; _i=0
+      while [ "$_i" -lt "$_n" ]; do
+        _toks="${_toks}contracts/z/File$_i.sol@fnA+fnB\\n"
+        _i=$((_i + 1))
       done
-      SANDBOX="$WORK/cb-apx-$N"; rm -rf "$SANDBOX"; mkdir -p "$SANDBOX"
-      ( cd "$SANDBOX" && agentis init >/dev/null 2>&1 ) || true
+      _sb="$WORK/cb-apx-$_arm-$_budget-$_n"; rm -rf "$_sb"; mkdir -p "$_sb"
+      ( cd "$_sb" && agentis init >/dev/null 2>&1 ) || true
       {
-        printf 'cb 2000;\n\n'
+        printf 'cb %s;\n\n' "$_budget"
         cat "$APX_FRAG"
-        # CONTROL fold: the pre-#1865 scoped_code shape (labelled section headers, no helper).
+        # CONTROL fold: the pre-#1865 scoped_code shape (labelled section headers, no helper call).
         printf 'fn fold_control(files: string) -> string {\n'
         printf '    return reduce(regex_split("\\n", files), |acc: string, rel: string| -> string {\n'
         printf '        if len(rel) == 0 { return acc; }\n'
@@ -1211,36 +1232,137 @@ else
         printf '        if len(rel) == 0 { return acc; }\n'
         printf '        return acc + "\\n\\n// ========== " + rel + " ==========\\n" + appendix_label(rel, apx, base);\n'
         printf '    }, "");\n}\n\n'
-        printf 'let toks = "%s";\n' "$TOKENS"
-        printf 'print("CTRLLEN=" + to_string(len(fold_control(toks))));\n'
-        printf 'print("APXLEN=" + to_string(len(fold_labelled(toks, "contracts/z/File0.sol@fnA+fnB", "contracts/base/AbstractYield.sol"))));\n'
-        printf 'print("RULELEN=" + to_string(len(appendix_rule("contracts/z/File0.sol@fnA+fnB", "contracts/base/AbstractYield.sol"))));\n'
-      } > "$SANDBOX/probe.ag"
-      APX_RAW="$( cd "$SANDBOX" && agentis go probe.ag 2>&1 )"
-      CTRL_LEN="$(printf '%s\n' "$APX_RAW" | grep '^CTRLLEN=' | tail -1)"; CTRL_LEN="${CTRL_LEN#CTRLLEN=}"
-      TREAT_LEN="$(printf '%s\n' "$APX_RAW" | grep '^APXLEN=' | tail -1)"; TREAT_LEN="${TREAT_LEN#APXLEN=}"
-      RULE_LEN="$(printf '%s\n' "$APX_RAW" | grep '^RULELEN=' | tail -1)"; RULE_LEN="${RULE_LEN#RULELEN=}"
-      case "$CTRL_LEN" in
-        ''|*[!0-9]*)
-          # The CONTROL itself did not clear cb 2000 at this N — that is a property of the pre-existing fold,
-          # not of this change. Report it as a skip rather than a regression this diff caused.
-          skip "18g) N=$N: the CONTROL fold (no appendix helper) did not complete under cb 2000 — nothing to compare"
-          continue ;;
-      esac
-      case "$TREAT_LEN" in
-        ''|*[!0-9]*) bad "18g) the labelled fold did NOT complete under cb 2000 at $N in-scope token(s) while the control did"; APX_CB_OK=0; continue ;;
-      esac
-      if [ "$TREAT_LEN" -le "$CTRL_LEN" ]; then
-        bad "18g) at $N token(s) the labelled fold added no header for the matching token (len $TREAT_LEN <= control $CTRL_LEN)"
-        APX_CB_OK=0
-      fi
-      case "$RULE_LEN" in
-        ''|*[!0-9]*) bad "18g) appendix_rule() did not complete under cb 2000 at $N token(s)"; APX_CB_OK=0 ;;
-        *) [ "$RULE_LEN" -gt 0 ] || { bad "18g) appendix_rule() returned an EMPTY block at $N token(s)"; APX_CB_OK=0; } ;;
-      esac
-      APX_CB_NS="${APX_CB_NS:+$APX_CB_NS/}$N"
+        printf 'let toks = "%s";\n' "$_toks"
+        case "$_arm" in
+          ctrl)     printf 'print("LEN=" + to_string(len(fold_control(toks))));\n' ;;
+          treat)    printf 'print("LEN=" + to_string(len(fold_labelled(toks, "", ""))));\n' ;;
+          treatlbl) printf 'print("LEN=" + to_string(len(fold_labelled(toks, "contracts/z/File0.sol@fnA+fnB", "contracts/base/AbstractYield.sol"))));\n' ;;
+        esac
+      } > "$_sb/probe.ag"
+      ( cd "$_sb" && agentis go probe.ag 2>&1 | grep '^LEN=' | tail -1 ) | sed 's/^LEN=//'
+    }
+    # _apx_cb_max <budget> <arm> — the largest token count this fold still completes at (binary search).
+    _apx_cb_max() {
+      _lo=1; _hi=256
+      while [ "$_lo" -lt "$_hi" ]; do
+        _mid=$(( (_lo + _hi + 1) / 2 ))
+        if [ -n "$(_apx_cb_probe "$_mid" "$1" "$2")" ]; then _lo="$_mid"; else _hi=$(( _mid - 1 )); fi
+      done
+      printf '%s' "$_lo"
+    }
+
+    # --- (A) the budget that actually runs in production: hunter.ag's own `cb 300000;`.
+    APX_PROD_OK=1
+    for N in 1 8 32 64 200; do
+      C_LEN="$(_apx_cb_probe "$N" 300000 ctrl)"
+      T_LEN="$(_apx_cb_probe "$N" 300000 treatlbl)"
+      case "$C_LEN" in ''|*[!0-9]*) bad "18g-A) the CONTROL fold did not complete under the production cb 300000 at $N token(s)"; APX_PROD_OK=0; continue ;; esac
+      case "$T_LEN" in ''|*[!0-9]*) bad "18g-A) the LABELLED fold did not complete under the production cb 300000 at $N token(s)"; APX_PROD_OK=0; continue ;; esac
+      [ "$T_LEN" -gt "$C_LEN" ] || { bad "18g-A) at $N token(s) the labelled fold added no header for the matching token (len $T_LEN <= control $C_LEN)"; APX_PROD_OK=0; }
     done
-    [ "$APX_CB_OK" -eq 1 ] && ok "18g) appendix_header/appendix_label/appendix_rule complete under cb 2000 (the enforced cb_per_tick) at ${APX_CB_NS:-no} in-scope token count(s) — every N whose CONTROL fold also cleared — and the labelled fold labels exactly the matching token"
+    [ "$APX_PROD_OK" -eq 1 ] && ok "18g-A) under the cb 300000 hunter.ag actually declares, both folds complete at 1/8/32/64/200 in-scope tokens (a real zone carries ~10) and the labelled one adds the header for exactly the matching token"
+
+    # --- (B) the stress band under the cb_per_tick default, measured on both arms.
+    APX_CTRL_MAX="$(_apx_cb_max 2000 ctrl)"
+    APX_TREAT_MAX="$(_apx_cb_max 2000 treat)"
+    # 32 is the documented floor: an order of magnitude above the ~10 files a real zone carries, so the
+    # helper cannot be the thing that bounds a hunt even at the strictest per-tick budget in the runtime.
+    if [ "$APX_TREAT_MAX" -ge 32 ] && [ "$APX_TREAT_MAX" -le "$APX_CTRL_MAX" ]; then
+      ok "18g-B) measured under cb 2000: the pre-#1865 fold clears $APX_CTRL_MAX tokens, the shipped one $APX_TREAT_MAX (appendix EMPTY — the cost every zone pays); >= the 32-token floor, i.e. never the binding constraint on a real zone"
+    else
+      bad "18g-B) the appendix-free fold's cb 2000 ceiling is $APX_TREAT_MAX (control $APX_CTRL_MAX) — below the 32-token floor or above the control, so the per-element cost regressed"
+    fi
+    # The cost comment in hunter.ag quotes these two numbers. Pin them, so the claim cannot silently go stale
+    # (the failure mode the review caught: a comment saying "one len + one compare" for a ~2x per-element cost).
+    if grep -q "completes $APX_CTRL_MAX tokens and this one $APX_TREAT_MAX" "$HUNTER_AG"; then
+      ok "18g-C) hunter.ag's cost comment quotes the MEASURED band ($APX_CTRL_MAX vs $APX_TREAT_MAX tokens under cb 2000), not an assumed one"
+    else
+      bad "18g-C) hunter.ag's cost comment does not match the measured band (control $APX_CTRL_MAX, treatment $APX_TREAT_MAX under cb 2000 with $(agentis version 2>/dev/null | head -1)) — update the comment"
+    fi
+  fi
+fi
+
+# (18h) LIVE HUNTER — the ONLY assertion in this file that actually INTERPRETS hunter.ag, and the one that
+# makes the rest of block 18 mean anything. 18a-18f drive `--agentis "$STUB"`, a shell stub standing in for
+# `agentis go`, so the agent source is never executed there; 18g extracts three helpers BY LINE RANGE into a
+# synthetic fold, so it never assembles the payload or the instruction. Both are therefore blind to the two
+# one-line regressions that would make this whole feature a production no-op:
+#   M1  delete `+ appx` from the instruction  -> the resolved-behaviour + ANCHORING block never reaches the model
+#   M2  call scoped_code(dir, files, "", "")  -> the `// IMPLEMENTATION APPENDIX:` payload header never reaches it
+# So: a real `agentis` interprets the REAL hunter.ag against a fake `claude` on PATH that DUMPS the prompt it
+# is handed (the demo-blackboard.sh idiom), and the prompt itself is asserted — BOTH halves, in the framed
+# zone only. The `appendix` record is asserted in the SAME breath, because it is now derived from the
+# assembled prompt (hunter.ag::framing_emitted) rather than from the token being set: under M1 or M2 the
+# sentinel must NOT fire, so the artifact that exists to make the framing attributable also detects its loss.
+if ! command -v agentis >/dev/null 2>&1; then
+  skip "18h) live-hunter framing assertion — no agentis binary on PATH"
+else
+  LIVE_BIN="$WORK/live-bin"; mkdir -p "$LIVE_BIN"
+  LIVE_PROMPTS="$WORK/live-prompts"; rm -rf "$LIVE_PROMPTS"; mkdir -p "$LIVE_PROMPTS"
+  # The fake LLM: dump the prompt (instruction + payload, on stdin) and answer the sentinel the cell needs.
+  cat > "$LIVE_BIN/claude" <<EOF
+#!/usr/bin/env bash
+set -eu
+PROMPT="\$(cat)"
+printf '%s' "\$PROMPT" > "$LIVE_PROMPTS/prompt.\$\$"
+echo SAFE
+exit 0
+EOF
+  chmod +x "$LIVE_BIN/claude"
+  LIVE_OUT="$WORK/out-appendix-live"
+  # --backend claude is REQUIRED: it is the backend that honours llm.command, so the fake above is what the
+  # substrate calls. The agentis binary, hunter.ag and the whole run-discovery.sh path are the real ones.
+  PATH="$LIVE_BIN:$PATH" "$DISCOVERY" --repo "$REPO" --scope "$SCOPE_APX" --brief "$BRIEF" \
+    --backend claude --out "$LIVE_OUT" --jobs 1 --appendix "$APX_TSV" \
+    >/dev/null 2>"$WORK/appendix-live.err"
+  RC=$?
+  if [ "$RC" -ne 0 ]; then
+    bad "18h) the live-hunter run exited $RC"; sed 's/^/      /' "$WORK/appendix-live.err" | tail -20 >&2
+  elif python3 - "$LIVE_PROMPTS" "$LIVE_OUT/discovery-results.json" "$APX_TOKEN" "$APX_BASE" <<'PY'
+import sys, os, json
+
+pdir, results, tok, base = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+prompts = []
+for n in sorted(os.listdir(pdir)):
+    with open(os.path.join(pdir, n), encoding="utf-8", errors="replace") as fh:
+        prompts.append(fh.read())
+assert len(prompts) == 4, "expected one dumped prompt per cell (4), got %d" % len(prompts)
+
+HEADER = "// IMPLEMENTATION APPENDIX:"
+ANCHOR = "ANCHORING:"
+SECTION = "// ========== %s ==========" % tok
+
+framed = [p for p in prompts if SECTION in p]
+others = [p for p in prompts if SECTION not in p]
+assert len(framed) == 2, "expected the 2 cells of the appendix zone to carry the token section, got %d" % len(framed)
+assert len(others) == 2, "expected 2 control-zone prompts, got %d" % len(others)
+
+for p in framed:
+    # M2 detector: the labelled header must be in the PAYLOAD, attached to the appendix section itself.
+    assert HEADER in p, "the payload section is UNLABELLED — the hunter was not told its contract is abstract"
+    i = p.index(SECTION) + len(SECTION)
+    assert p[i:i + 200].lstrip("\n").startswith(HEADER), \
+        "the label is not attached to the appendix section: %r" % p[i:i + 120]
+    assert base in p, "the abstract base is not named in the prompt: %r" % base
+    # M1 detector: the judging block (resolved behaviour + anchoring) must be in the INSTRUCTION.
+    assert ANCHOR in p, "the ANCHORING clause never reached the model — the judging block is missing"
+    assert "RESOLVED behaviour" in p, "the resolved-behaviour clause never reached the model"
+for p in others:
+    assert HEADER not in p, "an appendix-free zone's prompt grew the appendix header"
+    assert ANCHOR not in p, "an appendix-free zone's prompt grew the anchoring clause"
+
+# The record, produced by the REAL agent this time (not the stub's printf): the framed cells and only the
+# framed cells carry it. Under M1/M2 framing_emitted() is false, so this key disappears with the framing.
+d = json.load(open(results, encoding="utf-8"))
+for c in d["cells"]:
+    if c["subsystem"] == "abstract base":
+        assert c.get("appendix") == tok, \
+            "the live-hunter cell recorded appendix=%r, not %r" % (c.get("appendix"), tok)
+    else:
+        assert "appendix" not in c, "an unframed live cell carries an appendix key: %r" % c
+PY
+  then ok "18h) a REAL agentis interpreting the REAL hunter.ag puts BOTH halves of the framing in the prompt of the framed zone only (the labelled header attached to the appendix section, the ANCHORING/resolved-behaviour block in the instruction) and records appendix=<token> for exactly those cells"
+  else bad "18h) the live hunter did not frame the appendix payload (or framed a zone that has none)"
   fi
 fi
 

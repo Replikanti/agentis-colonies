@@ -44,7 +44,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   - Attributability at parity with the gate: the hunter prints `APPENDIX-CONTEXT|<token>` before the model
     call (a record BOUNDARY for `_join_wrapped_candidates`, exactly like `DEPTH-CELL|`), `run-discovery.sh`
     logs one stderr line and derives a per-cell `appendix` key FROM THAT LOG LINE, appended after every
-    pre-existing key so `_plan_depth_cells`'s forward key scan is untouched.
+    pre-existing key so `_plan_depth_cells`'s forward key scan is untouched. The sentinel is gated on the
+    framing having been ASSEMBLED INTO THE PROMPT (`framing_emitted()`: the labelled header in the payload
+    AND the judging block in the instruction, matched through the same marker helpers the producers use),
+    not on the token being non-empty — otherwise the artifact added to make appendix influence attributable
+    would keep reporting "framed" after a regression that dropped the framing, and could not detect its own
+    loss. Both no-op regressions now produce no sentinel, no stderr row and no `appendix` key.
+  - Cost, MEASURED rather than assumed: `appendix_label` folds into the existing reduce (O(1) per token, no
+    new reduce, no per-element `exec`), but the constant is roughly the whole pre-existing per-element cost
+    of that reduce — under a `cb 2000;` stress probe the pre-#1865 fold clears 107 tokens and this one 55,
+    and every cell pays it, appendix-free zones included. Not a runtime risk at the budget that actually
+    runs: `agentis go` honours `hunter.ag`'s declared `cb 300000;`, where the fold is bounded by the 16 MiB
+    string heap (~378 tokens) rather than by CB, against the ~10 files a real zone carries.
   - The known residual is stated rather than papered over: a candidate CAN be located in the appendix file,
     i.e. in a file another zone owns. Nothing downstream branches on it (coverage is derived per zone from
     that zone's own totals, dedup keys on `(subsystem, class, files)`), the cost is one extra gate call and a
@@ -55,8 +66,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     in-zone-implementor / descendant-less / ambiguous-name negative controls and the no-helper control tree)
     and `demo-discovery-parallel.sh` 18a-18g (default inertness, stub-observed env wiring, the
     `exec.env_passthrough` allowlist, the sidecar self-check, the log-derived cell key + wrap safety, the
-    depth interaction, and a CB sweep of the three new `.ag` helpers extracted from `hunter.ag` BY LINE
-    RANGE, swept over the IN_SCOPE token count against a control fold).
+    depth interaction, the CB probes above, and — 18h — a LIVE assertion in which a real `agentis`
+    interprets the real `hunter.ag` against a fake `claude` that dumps the prompt: both halves of the
+    framing must reach the model for the framed zone and neither for an appendix-free one. That is the one
+    assertion that can see the two no-op regressions; the stub-driven and fragment-extracted ones cannot.
 - **ZONE SPLITTING NO LONGER SEVERS INHERITANCE** (#1861). `map-zones.sh` groups by DIRECTORY, so on a
   codebase organised around abstract base contracts the base lands in one zone and every implementation in
   others — and BOTH readers then reason about the base in isolation. Measured on the diagnosing target: the
