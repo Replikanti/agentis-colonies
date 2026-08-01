@@ -44,6 +44,35 @@ here). Sections below are verbatim the former CLAUDE.md long-form entries.
 | `self-observe.sh` | The federation's self-improvement driver ([#1266](https://github.com/Replikanti/agentis-colonies/issues/1266) M3): runs every `detect-*.sh`, turns each finding into ONE small, deduplicated, rate-limited tracking issue (`--file` to create; dry-run by default). **Acceptance gate ([#1411](https://github.com/Replikanti/agentis-colonies/issues/1411), M4 step 2 of #1266):** before filing a candidate it consults the recorded acceptance rate for the finding's `signal_class` and **suppresses** filing for any class the record proves is chronically rejected — rate below `SELF_OBSERVE_MIN_ACCEPTANCE` (0..1, default `0.3`) **and** at least `SELF_OBSERVE_MIN_SAMPLES` closed outcomes (default `5`), so a class is never judged on one or two data points; no-history classes file as normal. Rates come from a deterministic, memo-only source (`SELF_OBSERVE_RATES_CMD`, default `track-issue-outcomes.sh --rates` — no forge calls) and the gate runs BEFORE dedup/rate-limit so a dead class costs zero `gh` calls. Every suppression is logged: `[self-observe] suppress (low acceptance: <class> rate=<r> n=<t> < min <M>): <loc>`, and the run summary carries a `suppressed=<n>` count. The `issue_creator` tier gate (#1411 step 3) is deliberately **scoped to auto-promote** — `tools/auto-promote.sh` already moves `issue_creator`'s effective tier toward autonomous on fitness (fed by the new `self_observe_outcome` `learn()` rows below); duplicating a tier ceiling in the shell driver would fork that policy, so the per-class filing gate is the volume feedback and tier movement stays with auto-promote. |
 | `track-issue-outcomes.sh` | Classifies the fate of each self-filed issue ([#1402](https://github.com/Replikanti/agentis-colonies/issues/1402), M4 step 1): `success` (closed by a merged PR) vs `noise` (closed without one), appending one JSONL record per issue to a memo store via `lib/outcome-store.sh` (idempotent on iid). Modes: bare scan records new outcomes; `--summary` prints per-signal-class acceptance rates (human-readable); `--rates` prints the machine-readable `<class>\t<success>\t<total>\t<rate>` TSV the self-observe gate consumes ([#1411](https://github.com/Replikanti/agentis-colonies/issues/1411)) — both read ONLY the memo (no forge calls). On each scan it also emits ONE `learn()`-shaped row per newly-classified issue — topic `self_observe_outcome`, tag `success`/`noise` — into a second memo log, so the crystallizer / auto-promote can distill which signal classes are worth filing (`learn()` is an in-`.ag` builtin with no CLI, so this deterministic shell log is the bridge). A bundle runtime dep of `self-observe.sh` since #1411 (in `BUNDLE.manifest`). |
 | `lib/outcome-store.sh` | Shared, dependency-free helper (sibling of `lib/candidate-queue.sh`) that appends + reads the self-filed-issue outcome records and the parallel `self_observe_outcome` learn log as JSONL over two agentis memo keys (`self_observe:outcomes`, `self_observe:learn`; overridable via `OUTCOME_STORE_KEY` / `LEARN_LOG_KEY`). All fields encoded with `python3 json.dumps`. Bundle runtime dep since #1411. |
+| `lib/daemon-guard.sh` | Contributor-only test helper ([#1750](https://github.com/Replikanti/agentis-colonies/issues/1750), [#1869](https://github.com/Replikanti/agentis-colonies/issues/1869)): spawn + reap guard for the three tools tests that launch a REAL `agentis daemon`. `daemon_guard_spawn` launches through `setsid` so the daemon is its own session + group leader; `daemon_guard_stop` / `daemon_guard_reap` then take the whole group down (TERM → poll → STOP → KILL), backed by a workspace-scoped sweep (`daemon_guard_survivors`) that matches `agentis daemon` **and** `/proc/<pid>/cwd` under the run's own `mktemp -d`. `daemon_guard_teardown` is the EXIT-trap body: capture `$?`, reap, `rm -rf`, return the original status. Degrades without `setsid` (single-pid ledger entries, never group-killed) or without `/proc` (`ps -eo pid=,args=` sweep). Never issues a bare `pkill -f 'agentis daemon'` — see §Live-daemon tools tests. NOT in `BUNDLE.manifest`: test tooling, not a runtime dep. |
+
+## Live-daemon tools tests (#1750 / #1869)
+
+Exactly three `tools/test-*.sh` scripts launch a real `agentis daemon`
+(everything else shims `agentis` on `PATH`): `test-ag-decompose-burnin.sh`,
+`test-dashboard-freshness-liveness.sh`, `test-single-block-byte-identity.sh`.
+All three spawn and reap through `lib/daemon-guard.sh`, because
+`( cd D && agentis daemon … ) &` produces three processes — the subshell,
+the `agentis daemon` watchdog and the `agentis daemon-inner` it forks — and
+killing the recorded `$!` left both agentis processes alive. The survivors
+reparented to PID 1, outlived `git worktree remove`, and degraded the next
+run of the same script.
+
+`colony-lint.sh` adds three knobs around this:
+
+| Knob | Default | Effect |
+|------|---------|--------|
+| `--no-live-daemon` (flag) | off | Skips the three live-daemon tests. |
+| `COLONY_LINT_SKIP_LIVE_DAEMON=1` | `0` | Same as the flag, for CI/env wiring. |
+| `COLONY_LINT_TEST_TIMEOUT_S` | `300` | Per-test wall-clock bound (`timeout`, when available). Exceeding it is a `[FAIL] … (timed out after Ns)`, never a hang. |
+
+The default stays **run** so coverage cannot drop silently; the skip exists
+for operators linting next to a live federation. Independently, the lint
+snapshots the `agentis daemon` pid set before and after the tools-test loop
+and fails `tools: no agentis daemon leaked by tools tests` on any pid that is
+new in the *after* set — a set difference, so a pre-existing operator
+federation is neither flagged nor touched. That guard reports; it never
+signals anything.
 
 ## federation-dashboard component files (long-form table)
 

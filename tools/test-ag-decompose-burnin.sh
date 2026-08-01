@@ -61,6 +61,12 @@ REPO_ROOT="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 ORCH="$REPO_ROOT/tools/code-edit-in-checkout.sh"
 AG_FILE="$REPO_ROOT/dev-apprenticeship/implementation/agents/code_writer.ag"
 
+# PART 2 launches a real `agentis daemon`; every launch/kill goes through the
+# shared guard so the watchdog + daemon-inner pair cannot outlive this run
+# (#1750, #1869 — `kill $!` reaped only the subshell).
+# shellcheck source=tools/lib/daemon-guard.sh
+. "$REPO_ROOT/tools/lib/daemon-guard.sh"
+
 PASS=0; FAIL=0; SKIP=0
 pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1${2:+: $2}"; FAIL=$((FAIL + 1)); }
@@ -322,11 +328,10 @@ fi
 
 P2_WORK="$(mktemp -d)"
 DAEMON_PID=""
-cleanup2() {
-    if [ -n "$DAEMON_PID" ]; then kill -KILL "$DAEMON_PID" 2>/dev/null || true; fi
-    rm -rf "$P2_WORK"
-}
-trap cleanup2 EXIT
+daemon_guard_init "$P2_WORK"
+# Kill-before-rm, group-scoped, $?-preserving. Do NOT add TERM to this trap:
+# bash already runs the EXIT trap on SIGTERM, so it would fire twice.
+trap 'daemon_guard_teardown "$P2_WORK"' EXIT
 
 OWNER2="acme"; REPO2="widget"; IID2=701
 EPIC_UPDATED_AT="2026-01-01T00:00:00Z"
@@ -459,11 +464,10 @@ wait_for() {
     return 1
 }
 
-( cd "$FED_DIR2" && env "${DAEMON_ENV[@]}" agentis daemon "$AG_FILE" \
+DAEMON_PID="$(daemon_guard_spawn --cwd "$FED_DIR2" --log "$P2_WORK/daemon1.log" \
+    -- env "${DAEMON_ENV[@]}" agentis daemon "$AG_FILE" \
     --colony implementation --enable-exec --enable-messaging \
-    --tick-interval 400 --cb-per-tick 8000 --prompt-timeout-s 30 \
-    </dev/null >"$P2_WORK/daemon1.log" 2>&1 ) &
-DAEMON_PID=$!
+    --tick-interval 400 --cb-per-tick 8000 --prompt-timeout-s 30)"
 sleep 1
 if kill -0 "$DAEMON_PID" 2>/dev/null; then
     pass "part2: live agentis daemon (run 1) launched against code_writer.ag"
@@ -480,11 +484,10 @@ else
     fail "part2/condition3 setup: subtask 1 completion" "daemon1.log tail: $(tail -40 "$P2_WORK/daemon1.log")"
 fi
 
-kill -TERM "$DAEMON_PID" 2>/dev/null || true
-_n=0
-while kill -0 "$DAEMON_PID" 2>/dev/null && [ "$_n" -lt 10 ]; do sleep 1; _n=$((_n + 1)); done
-kill -KILL "$DAEMON_PID" 2>/dev/null || true
-wait "$DAEMON_PID" 2>/dev/null
+# Group-scoped stop: the old `kill $!` reaped only the launching subshell, so
+# run 1's daemon-inner kept ticking through run 2 of the SAME execution and
+# inflated the per-subtask edit counts asserted below (#1750 finding 4).
+daemon_guard_stop "$DAEMON_PID" 10 || true
 DAEMON_PID=""
 pass "part2/condition3: daemon run 1 killed (simulating a tick-gap / daemon restart mid-sequence)"
 
@@ -495,11 +498,10 @@ else
     fail "part2/condition3: memo state survived the kill" "subtask_idx=[$IDX_AFTER_KILL]"
 fi
 
-( cd "$FED_DIR2" && env "${DAEMON_ENV[@]}" agentis daemon "$AG_FILE" \
+DAEMON_PID="$(daemon_guard_spawn --cwd "$FED_DIR2" --log "$P2_WORK/daemon2.log" \
+    -- env "${DAEMON_ENV[@]}" agentis daemon "$AG_FILE" \
     --colony implementation --enable-exec --enable-messaging \
-    --tick-interval 400 --cb-per-tick 8000 --prompt-timeout-s 30 \
-    </dev/null >"$P2_WORK/daemon2.log" 2>&1 ) &
-DAEMON_PID=$!
+    --tick-interval 400 --cb-per-tick 8000 --prompt-timeout-s 30)"
 sleep 1
 if kill -0 "$DAEMON_PID" 2>/dev/null; then
     pass "part2/condition3: daemon run 2 (the 'restart') launched"
@@ -545,6 +547,20 @@ if [ "$COMMITS2" = "2" ] && [ "$COMMIT_FILES2" = "one.txt,two.txt," ]; then
     pass "part2/condition3: final commit contains BOTH subtask files (subtask 1 not lost across the restart, subtask 2 not skipped)"
 else
     fail "part2/condition3: final commit content" "commits=$COMMITS2 files=[$COMMIT_FILES2]"
+fi
+
+# --- Leak gate (#1750, #1869) ---
+# Stop run 2 explicitly, then assert this run's workspace holds no live
+# `agentis daemon` at all. Before the guard, both runs' watchdog +
+# daemon-inner pairs reparented to PID 1 and survived even `git worktree
+# remove`, degrading (or hanging) the NEXT invocation of this very script.
+daemon_guard_stop "$DAEMON_PID" 10 || true
+DAEMON_PID=""
+LEAKED_DAEMONS="$(daemon_guard_survivors "$P2_WORK" || true)"
+if [ -z "$LEAKED_DAEMONS" ]; then
+    pass "part2: no agentis daemon left alive in this run's workspace after teardown"
+else
+    fail "part2: leaked agentis daemon(s)" "$(printf '%s' "$LEAKED_DAEMONS" | tr '\n' ';')"
 fi
 
 echo ""

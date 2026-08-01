@@ -58,11 +58,18 @@ ITER_REPOS="$REPO_ROOT/tools/iter-repos.sh"
 ITER_REPOS_PY="$REPO_ROOT/tools/iter-repos.py"
 RESOLVE_REPO_PY="$REPO_ROOT/tools/forge-resolve-repo.py"
 
+# Every run_daemon() launch goes through the shared guard (#1750, #1869).
+# shellcheck source=tools/lib/daemon-guard.sh
+. "$REPO_ROOT/tools/lib/daemon-guard.sh"
+
 PASS=0
 FAIL=0
 TMPDIR_TEST="$(mktemp -d)"
-DAEMON_MARKER="byteid-test-$$"
-trap 'pkill -f "'"$DAEMON_MARKER"'" 2>/dev/null || true; rm -rf "$TMPDIR_TEST"' EXIT
+# The old trap reaped `pkill -f "$DAEMON_MARKER"`, which matched NOTHING: the
+# marker never reached the daemon's argv (measured argv is `agentis daemon
+# dev-apprenticeship/triage/agents/router.ag --tick-interval ...`). Reap the
+# guard's ledger + a sweep of the run tree instead.
+trap 'daemon_guard_reap >/dev/null 2>&1 || true; rm -rf "$TMPDIR_TEST"' EXIT
 
 pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1${2:+: $2}"; FAIL=$((FAIL + 1)); }
@@ -102,25 +109,24 @@ STUB
 }
 
 # Run the daemon for ~$2 seconds with the env supplied via the rest of the
-# argv. Output captured to <run>/daemon.log. Daemon argv is annotated with
-# DAEMON_MARKER via the file path so the EXIT trap can reap survivors.
+# argv. Output captured to <run>/daemon.log. The launch goes through
+# tools/lib/daemon-guard.sh scoped to <run>, so the watchdog AND the
+# daemon-inner it forks are both reaped here (the old `kill -TERM $pid` hit
+# only the `timeout` wrapper and left the pair running — #1750, #1869).
 run_daemon() {
     local run="$1" seconds="$2" pid
     shift 2
-    cd "$run" || return 1
-    local log_marker_dir="$run/cmdmarker-$DAEMON_MARKER"
-    mkdir -p "$log_marker_dir"
-    COLONY_DIR="$run/dev-apprenticeship/triage" "$@" \
-        timeout "$seconds" \
-        agentis daemon dev-apprenticeship/triage/agents/router.ag \
-            --tick-interval 1000 --cb-per-tick 400 --colony triage \
-            --enable-exec --enable-messaging \
-            > "$run/daemon.log" 2>&1 &
-    pid=$!
+    daemon_guard_init "$run"
+    pid="$(daemon_guard_spawn --cwd "$run" --log "$run/daemon.log" \
+        -- env COLONY_DIR="$run/dev-apprenticeship/triage" "$@" \
+           agentis daemon dev-apprenticeship/triage/agents/router.ag \
+               --tick-interval 1000 --cb-per-tick 400 --colony triage \
+               --enable-exec --enable-messaging)"
     sleep "$seconds"
-    kill -TERM "$pid" 2>/dev/null
-    wait "$pid" 2>/dev/null || true
-    cd - >/dev/null || return 1
+    daemon_guard_stop "$pid" 10 || true
+    # Belt and braces: anything still alive under <run> goes too, so the
+    # NEXT run's memo comparison is not polluted by a ticking leftover.
+    daemon_guard_reap >/dev/null 2>&1 || true
 }
 
 # Sort and list the basenames of all memo files under <run>/.agentis/memo,

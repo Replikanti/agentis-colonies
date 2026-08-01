@@ -152,6 +152,7 @@ Verb-level API details: [doc/tooling-reference.md](./doc/tooling-reference.md).
 | `lib/outcome-store.sh` | Shared JSONL memo store for outcomes + learn log |
 | `lib/llm-session-slot.sh` | Global LLM-session semaphore ([#1352](https://github.com/Replikanti/agentis-colonies/issues/1352), see §LLM backend) |
 | `lib/candidate-queue.sh` | Shared queue helper for multi-candidate flows |
+| `lib/daemon-guard.sh` | Contributor-only test helper ([#1750](https://github.com/Replikanti/agentis-colonies/issues/1750), [#1869](https://github.com/Replikanti/agentis-colonies/issues/1869)): `setsid`-scoped spawn + group reap + workspace-scoped sweep for the three tools tests that launch a real `agentis daemon`, so no daemon outlives its run |
 
 Long-form per-tool documentation: [doc/tooling-reference.md](./doc/tooling-reference.md).
 
