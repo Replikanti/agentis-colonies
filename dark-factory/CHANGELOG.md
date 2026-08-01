@@ -14,6 +14,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-01
+
 ### Added
 - **STAGE 4 GATE FAN-OUT** (#1863). `verify-findings.sh` gains an opt-in `--jobs <N>` (default `1`) bounded-
   concurrency fan-out over the CANDIDATE gates, and `run-zone-hunt.sh` forwards its own `--jobs` to it. The
@@ -3706,7 +3708,9 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   with a `pending_human_review` marker. The colony NEVER auto-posts to a
   bounty platform — submission is always an explicit human action.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.3...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.6.0...HEAD
+[0.6.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.5.0...dark-factory-v0.6.0
+[0.5.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.3...dark-factory-v0.5.0
 [0.4.3]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.2...dark-factory-v0.4.3
 [0.4.2]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.1...dark-factory-v0.4.2
 [0.4.1]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.0...dark-factory-v0.4.1
