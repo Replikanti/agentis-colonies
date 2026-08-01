@@ -14,6 +14,51 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **EXTERNAL-ASSUMPTION HUNT LENS — bug classes `C22` + `C23`** (#1872, STAGE A / authoring only). The
+  corpus-bench `notional` contest exposed a bug shape the taxonomy had no lens for: the target's own code is
+  internally consistent, and the bug is an ASSUMPTION it makes about a SECOND protocol. Seven ground-truth
+  rows carried it and the hunt scored 0 on all of them. They split by the ENUMERATION the hunter has to
+  perform, so this ships two narrow classes rather than one catch-all "external-protocol assumption" class
+  (whose hunt would collapse to "enumerate the assumptions" — it names no artefact and fires on every zone
+  that imports anything).
+  - **`C22` — Cross-protocol asset / unit equivalence**: two DIFFERENT externally-issued asset
+    representations (a Pendle `SY`/`PT`/`YT` triple, native ETH vs WETH, an external LP/receipt token vs its
+    underlying, a token amount vs a USD amount) treated as interchangeable at a hardcoded 1:1 rate where the
+    ISSUER only guarantees a live rate. Enumerates token addresses, imported interfaces and the exact points
+    where two amounts meet in ONE arithmetic step or comparison.
+  - **`C23` — Hardcoded external-integration parameter**: a literal / `constant` / `immutable` argument to an
+    external call (a `useEth`-style bool, a `dexId`/pool-type/coin-index enum, a hardcoded pool/router/token
+    address, a magic amount) that is correct for exactly ONE external configuration on a code path that can
+    reach another. Enumerates, per external call, the SET of configurations in which the constant holds.
+  - Both classes carry two MANDATORY guard fields beyond the usual `hits/hunt/breaks/sev/seen`: a
+    `NOT this class` disambiguation against the neighbouring lenses (C2/C9/C1 for C22; C5/C12/C15 for C23)
+    and a three-part `required evidence (else report SAFE)` contract — the exact line, the external
+    protocol's documented contradicting behaviour, and a reachable state where it bites. Missing any of the
+    three is not a candidate.
+  - **`C2` amended, not forked**: the one oracle-domain-of-validity row (a derived-asset price adapter
+    written against one market shape) is a hunt bullet inside the existing oracle-integrity class plus a
+    `seen:` entry, so it costs no extra cell on any zone the C2 lens already covers.
+  - `zone-mapper.ag` gains two PROMPT-ONLY detection rules in the C15/C6/C17/C5 house style, each an
+    `INCLUDE ... ONLY WHEN ...` sentence with an explicit `do NOT add` negative clause. **No deterministic
+    `apply_*_backstop`/force-include is added and the `pick the 1-4` per-zone class cap is untouched** —
+    that is the cell-budget guard (#1830) and a deliberate decision, not an omission: a menu entry DISPLACES
+    a class inside the cap, a force-include would ADD a cell to every matching zone unconditionally. Both
+    facts are pinned by the new test.
+  - `demo-external-assumption-lens.sh` (new, pure awk/grep, no network/LLM/agentis; wired into
+    `colony-lint.sh`) is the regression contract for the two things that can silently rot — the class text
+    losing its anti-catch-all guards, and someone later adding the force-include. It also replays
+    `hunter.ag::class_section()`'s own `## <cls> ` awk anchor against the real taxonomy for `C2`/`C22`/`C23`,
+    pinning the `## C2 ` vs `## C22 ` prefix collision that is the one way this change could break an
+    already-working lens.
+  - **Transfer status, stated honestly.** `C22` has a held-out transfer target named for a later stage;
+    **`C23` is `transfer-pending`** — it ships with three `notional` rows and NO held-out instance in this
+    corpus, so it must not be read as transfer-validated on the back of `C22`'s result. Finding `C23` a
+    held-out instance in another contest is follow-up work. Both classes are so far validated only by the
+    authoring probe on the target they were derived from; the held-out transfer measurement and the
+    full-pipeline recall/cell-cost numbers are separate, later stages, and no `VERSION` bump or class-coverage
+    retag happens here.
+
 ## [0.6.0] - 2026-08-01
 
 ### Added
