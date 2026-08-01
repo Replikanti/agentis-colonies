@@ -1,0 +1,30 @@
+{
+  "repo": "fixture-target",
+  "gate": "confirm-cost-selftest",
+  "verified": [
+    {
+      "subsystem": "alpha subsystem",
+      "location": "contracts/Alpha.sol:claim:10",
+      "file": "contracts/Alpha.sol",
+      "class": "reentrancy",
+      "severity": "High",
+      "exploit": "re-enter claim before the balance write",
+      "poc_sketch": "callback -> claim -> drain",
+      "verdict": "confirmed",
+      "reason": "reentrancy reproduced"
+    },
+    {
+      "subsystem": "alpha subsystem",
+      "location": "contracts/Alpha.sol:withdraw:44",
+      "file": "contracts/Alpha.sol",
+      "class": "accounting",
+      "severity": "Medium",
+      "exploit": "withdraw mis-weights the pool",
+      "poc_sketch": "call withdraw with a crafted amount",
+      "verdict": "confirmed",
+      "reason": "accounting drift reproduced"
+    }
+  ],
+  "errors": [],
+  "totals": {"candidates": 7, "verified": 2, "errored": 0}
+}

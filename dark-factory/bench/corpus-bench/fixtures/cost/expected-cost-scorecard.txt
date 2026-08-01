@@ -1,0 +1,4 @@
+ZONE	z01_alpha	10	4	2	50.0	5.0
+ZONE	z02_beta	6	3	0	0.0	n/a
+ZONE	z03_gamma	4	0	0	n/a	n/a
+RUN	20	7	2	28.6	10.0

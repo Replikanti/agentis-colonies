@@ -38,6 +38,12 @@
 #   --hunt            Run the REAL federation (run-zone-hunt.sh) over each selected contest's cloned code.
 #                     Needs `agentis` + a real backend; never run on CI.
 #   --score           Score each contest's verified_findings.json against its truth.tsv; print the scorecard.
+#                     ALSO prints #1867 COST figures per contest (cells spent, candidates generated, confirmed
+#                     by the refute gate, confirm rate, cells-per-confirmed) plus a run-level cost line — a
+#                     pure join of that contest's own zone-coverage.json + verified_findings.json via
+#                     confirm-cost.py, no additional judge/LLM calls. A contest with no coverage record (a
+#                     --score-only run over hand-placed artifacts) just prints no cost line for it; --score
+#                     itself never fails because of a missing one.
 #   --live            Shorthand for --fetch --gt --hunt --score (the full real-backend measurement).
 #   --id <id>         Restrict to one corpus.tsv row (repeatable). Default: every row.
 #   --work <dir>      Work dir for clones + run-zone-hunt.sh output (default: ./corpus-bench-work).
@@ -86,6 +92,7 @@ DF="$(cd "$HERE/../.." && pwd)"   # dark-factory/
 ZONEHUNT="$DF/run-zone-hunt.sh"
 EXTRACTGT="$HERE/extract-gt.sh"
 SCOREMATCH="$HERE/score-match.py"
+CONFIRMCOST="$HERE/confirm-cost.py"
 FETCHCORPUS="$HERE/fetch-corpus.sh"
 GTDUPES="$HERE/gt-dupes.sh"
 CORPUS="$HERE/corpus.tsv"
@@ -203,6 +210,19 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
     exit 1
   fi
 
+  # Third assertion (#1867): confirm-cost.py over fixtures/cost/ must byte-match expected-cost-scorecard.txt —
+  # same deterministic, offline, CI-safe posture as the two assertions above.
+  C_FIX="$HERE/fixtures/cost"
+  COST_OUT="$(python3 "$CONFIRMCOST" "$C_FIX/zone-coverage.json" "$C_FIX/verified_findings.json" 2>/dev/null)"
+  COST_EXPECT="$(cat "$C_FIX/expected-cost-scorecard.txt")"
+  if [ "$COST_OUT" = "$COST_EXPECT" ]; then
+    say "SELF-TEST: confirm-cost.py over fixtures/cost/ matches expected-cost-scorecard.txt -> PASS"
+  else
+    say "SELF-TEST: confirm-cost.py over fixtures/cost/ DIFFERS from expected-cost-scorecard.txt -> FAIL"
+    { printf '%s\n' "--- expected ---"; printf '%s\n' "$COST_EXPECT"; printf '%s\n' "--- actual ---"; printf '%s\n' "$COST_OUT"; } >&2
+    exit 1
+  fi
+
   [ "$ANY_ACTION" -eq 1 ] && [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
 fi
 [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
@@ -285,6 +305,10 @@ G_JUDGE_CALLS=0 ; G_JUDGE_ERRORS=0
 G_GATE_CONF="null" ; G_GATE_DROPPED=0 ; G_GATE_ROWS=0
 [ "$JUDGE" != "off" ] && G_GATE_CONF="$JUDGE_MINCONF"
 G_DUP_CLASSES=0 ; G_DUP_EXPANDED=0 ; G_DUP_RARE_EXPANDED=0
+# #1867: run-level cost accounting (cells spent, candidates generated, candidates confirmed by the refute
+# gate), summed across every contest that HAS a coverage record. A contest without one just contributes 0 —
+# see the confirm-cost.py call below.
+G_COST_CELLS=0 ; G_COST_CANDIDATES=0 ; G_COST_CONFIRMED=0
 
 if [ "$DO_SCORE" -eq 1 ]; then
   command -v python3 >/dev/null 2>&1 || { echo "run-corpus-bench.sh: python3 not installed (scoring needs it)" >&2; exit 3; }
@@ -384,6 +408,39 @@ SCORE_EOF
     [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE, min-confidence $gate_conf): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s); gate dropped $gate_dropped MATCH decision(s), costing $gate_rows row(s)"
     [ -n "$dupes_file" ] && say "  [$id] GT-equivalence (#1840): $dup_classes class(es), $dup_expanded row(s) credited through a class; the same replay without expansion reads $((c_hits - dup_expanded))/$c_total"
 
+    # #1867: run-level COST for this contest (cells spent / candidates generated / confirmed by the refute
+    # gate), joined from its own zone-coverage.json (#1830) + the verified_findings.json already scored above.
+    # A --score-only run over hand-placed artifacts with no coverage record degrades to "no cost line for this
+    # contest" — --score must never hard-fail because of it.
+    coverage_json="$WORK/$id/zone-hunt-out/coverage/zone-coverage.json"
+    c_cost_cells=0 ; c_cost_candidates=0 ; c_cost_confirmed=0
+    c_cost_rate_json="null" ; c_cost_cpc_json="null"
+    if [ -f "$coverage_json" ]; then
+      COST_OUT="$(python3 "$CONFIRMCOST" "$coverage_json" "$verified_json")" && cost_rc=0 || cost_rc=$?
+      if [ "$cost_rc" -eq 0 ]; then
+        # Same trailer-reading idiom as the LEADS/JUDGE/GATE readers above — ZONE carries 6 fields after the
+        # tag, RUN carries 5; the extra read slot is simply empty on a RUN line.
+        while IFS=$'\t' read -r cf1 cf2 cf3 cf4 cf5 cf6 cf7; do
+          if [ "$cf1" = "ZONE" ]; then
+            say "  [$id] cost zone $cf2: cells $cf3, candidates $cf4, confirmed $cf5, confirm rate $cf6, cells-per-confirmed $cf7"
+          elif [ "$cf1" = "RUN" ]; then
+            c_cost_cells="$cf2"; c_cost_candidates="$cf3"; c_cost_confirmed="$cf4"
+            c_cost_rate_json="$cf5"; c_cost_cpc_json="$cf6"
+            [ "$c_cost_rate_json" = "n/a" ] && c_cost_rate_json="null"
+            [ "$c_cost_cpc_json" = "n/a" ] && c_cost_cpc_json="null"
+            say "  [$id] cost: cells $c_cost_cells, candidates $c_cost_candidates, confirmed $c_cost_confirmed, confirm rate $cf5, cells-per-confirmed $cf6"
+          fi
+        done <<COST_EOF
+$COST_OUT
+COST_EOF
+        G_COST_CELLS=$((G_COST_CELLS+c_cost_cells)); G_COST_CANDIDATES=$((G_COST_CANDIDATES+c_cost_candidates)); G_COST_CONFIRMED=$((G_COST_CONFIRMED+c_cost_confirmed))
+      else
+        say "  [$id] confirm-cost.py failed (exit $cost_rc); no cost figures for this contest"
+      fi
+    else
+      say "  [$id] no zone-coverage.json at $coverage_json (needs a #1830 coverage record from --hunt); no cost figures for this contest"
+    fi
+
     # #1841: the gate does not exist under --judge off — report it as null/0 there rather than inventing a
     # threshold the token matcher never applied.
     c_gate_conf_json="null" ; c_gate_dropped_json=0 ; c_gate_rows_json=0
@@ -391,7 +448,7 @@ SCORE_EOF
       c_gate_conf_json="$gate_conf" ; c_gate_dropped_json="$gate_dropped" ; c_gate_rows_json="$gate_rows"
       G_GATE_DROPPED=$((G_GATE_DROPPED+gate_dropped)); G_GATE_ROWS=$((G_GATE_ROWS+gate_rows))
     fi
-    CONTEST_JSON+=("{\"id\":\"$id\",\"gt_total\":$c_total,\"hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"verified_leads\":$verified_n,\"matched_leads\":$matched_leads,\"unmatched_leads\":$unmatched_leads,\"judge\":{\"mode\":\"$JUDGE\",\"calls\":$judge_calls,\"errors\":$judge_errors,\"min_confidence\":$c_gate_conf_json,\"gated_matches\":$c_gate_dropped_json,\"gated_rows\":$c_gate_rows_json},\"dup\":{\"classes\":$dup_classes,\"expanded\":$dup_expanded,\"rare_expanded\":$c_rare_expanded}}")
+    CONTEST_JSON+=("{\"id\":\"$id\",\"gt_total\":$c_total,\"hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"verified_leads\":$verified_n,\"matched_leads\":$matched_leads,\"unmatched_leads\":$unmatched_leads,\"judge\":{\"mode\":\"$JUDGE\",\"calls\":$judge_calls,\"errors\":$judge_errors,\"min_confidence\":$c_gate_conf_json,\"gated_matches\":$c_gate_dropped_json,\"gated_rows\":$c_gate_rows_json},\"dup\":{\"classes\":$dup_classes,\"expanded\":$dup_expanded,\"rare_expanded\":$c_rare_expanded},\"cost\":{\"cells\":$c_cost_cells,\"candidates\":$c_cost_candidates,\"confirmed\":$c_cost_confirmed,\"confirm_rate_pct\":$c_cost_rate_json,\"cells_per_confirmed\":$c_cost_cpc_json}}")
     G_JUDGE_CALLS=$((G_JUDGE_CALLS+judge_calls)); G_JUDGE_ERRORS=$((G_JUDGE_ERRORS+judge_errors))
     G_DUP_CLASSES=$((G_DUP_CLASSES+dup_classes)); G_DUP_EXPANDED=$((G_DUP_EXPANDED+dup_expanded)); G_DUP_RARE_EXPANDED=$((G_DUP_RARE_EXPANDED+c_rare_expanded))
 
@@ -413,6 +470,21 @@ SCORE_EOF
   if [ "$G_DUP_EXPANDED" -gt 0 ]; then
     say "GT-equivalence: $G_DUP_CLASSES judged class(es), $G_DUP_EXPANDED row(s) credited through a class (#1840). The SAME replay without class expansion reads $((G_HITS - G_DUP_EXPANDED))/$G_TOTAL — quote the ruler with the number."
   fi
+  # #1867: run-level cost line, summed across every contest scored this invocation that had a coverage
+  # record. cells/candidates are a straight sum; rate/cells-per-confirmed are re-derived from the summed
+  # totals (never averaged per-contest ratios) so the figure is never a fabricated number on a zero
+  # denominator.
+  G_COST_RATE="n/a"; G_COST_RATE_JSON="null"
+  if [ "$G_COST_CANDIDATES" -gt 0 ]; then
+    G_COST_RATE="$(awk -v c="$G_COST_CONFIRMED" -v n="$G_COST_CANDIDATES" 'BEGIN{printf "%.1f", 100.0*c/n}')"
+    G_COST_RATE_JSON="$G_COST_RATE"
+  fi
+  G_COST_CPC="n/a"; G_COST_CPC_JSON="null"
+  if [ "$G_COST_CONFIRMED" -gt 0 ]; then
+    G_COST_CPC="$(awk -v cells="$G_COST_CELLS" -v n="$G_COST_CONFIRMED" 'BEGIN{printf "%.1f", cells/n}')"
+    G_COST_CPC_JSON="$G_COST_CPC"
+  fi
+  say "cost          : cells $G_COST_CELLS, candidates $G_COST_CANDIDATES, confirmed $G_COST_CONFIRMED, confirm rate $G_COST_RATE, cells-per-confirmed $G_COST_CPC"
   if [ "$JUDGE" != "off" ]; then
     say "scoring mode  : SEMANTIC MECHANISM JUDGE (--judge $JUDGE, --judge-min-confidence $JUDGE_MINCONF, #1829) — $G_JUDGE_CALLS judging calls, $G_JUDGE_ERRORS JUDGE-ERROR(s). Archive the --judge-log next to this number: it is reproducible offline only via --judge cache."
     say "confidence gate: dropped $G_GATE_DROPPED MATCH decision(s) at $JUDGE_MINCONF, costing $G_GATE_ROWS row(s) (#1841). Quote the gate WITH the number; a nonzero cost means this headline is gate-sensitive and the same archived cache re-derives it at any other threshold."
@@ -420,12 +492,13 @@ SCORE_EOF
 
   if [ "$JSON" -eq 1 ]; then
     joined="$(IFS=,; echo "${CONTEST_JSON[*]:-}")"
-    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"verified_leads":%d,"matched_leads":%d,"unmatched_leads":%d,"judge":{"mode":"%s","calls":%d,"errors":%d,"min_confidence":%s,"gated_matches":%d,"gated_rows":%d},"dup":{"classes":%d,"expanded":%d,"rare_expanded":%d}}}\n' \
+    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"verified_leads":%d,"matched_leads":%d,"unmatched_leads":%d,"judge":{"mode":"%s","calls":%d,"errors":%d,"min_confidence":%s,"gated_matches":%d,"gated_rows":%d},"dup":{"classes":%d,"expanded":%d,"rare_expanded":%d},"cost":{"cells":%d,"candidates":%d,"confirmed":%d,"confirm_rate_pct":%s,"cells_per_confirmed":%s}}}\n' \
       "$joined" "$G_TOTAL" "$G_HITS" "$G_H_TOTAL" "$G_H_HITS" "$G_M_TOTAL" "$G_M_HITS" \
       "$G_RARE_TOTAL" "$G_RARE_HITS" "$G_MID_TOTAL" "$G_MID_HITS" "$G_CONS_TOTAL" "$G_CONS_HITS" \
       "$G_VERIFIED" "$G_MATCHED_LEADS" "$G_UNMATCHED_LEADS" "$JUDGE" "$G_JUDGE_CALLS" "$G_JUDGE_ERRORS" \
       "$G_GATE_CONF" "$G_GATE_DROPPED" "$G_GATE_ROWS" \
-      "$G_DUP_CLASSES" "$G_DUP_EXPANDED" "$G_DUP_RARE_EXPANDED"
+      "$G_DUP_CLASSES" "$G_DUP_EXPANDED" "$G_DUP_RARE_EXPANDED" \
+      "$G_COST_CELLS" "$G_COST_CANDIDATES" "$G_COST_CONFIRMED" "$G_COST_RATE_JSON" "$G_COST_CPC_JSON"
   fi
 fi
 
