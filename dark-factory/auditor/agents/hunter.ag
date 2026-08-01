@@ -18,6 +18,10 @@ cb 300000;
 //               re-reads under a different lens. Empty (the default) => the prompt is byte-identical.
 //   DEPTH_KNOWN   #1827 (optional, default ""): the lead(s) a breadth cell already surfaced on that
 //               function, quoted VERBATIM as an exclusion. Consumed as ONE opaque string (never split).
+//   APPENDIX_FILE #1865 (optional, default ""): the ONE IN_SCOPE token (`path@fn+fn`) that is the #1861
+//               inheritance appendix — a DERIVED contract sliced in because this zone's primary contract is
+//               abstract. Empty (the default) => every helper below returns "" and the prompt is byte-identical.
+//   APPENDIX_BASE #1865 (optional, default ""): the abstract base that token implements (rel path).
 // Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
@@ -37,12 +41,98 @@ fn cat_file(path: string) -> string {
     return exec sh "sh ${slicer} ${file} '${funcs}' 2>/dev/null || true";
 }
 
-// Concatenate every in-scope contract into one labelled blob.
-fn scoped_code(dir: string, files: string) -> string {
+// --- #1865 IMPLEMENTATION-APPENDIX FRAMING (the generation-side twin of refuter.ag's #1861 gate half) ---
+// #1861 already routes the derived implementor's slice into this payload (map-zones.sh appends the token to
+// the zone's scope_files, run-discovery.sh feeds it through IN_SCOPE). What never arrived is the FRAMING: the
+// slice landed as just another `// ========== <path> ==========` section, so the hunter was never told that
+// its primary contract is ABSTRACT and that the extra section is that contract's implementation. The helpers
+// below add exactly that: a labelled header on that one payload section (appendix_label/appendix_header) and
+// one judging block in the instruction (appendix_rule), both of which return "" for an empty APPENDIX_FILE —
+// an appendix-free zone's payload and instruction stay byte-for-byte what they were. framing_emitted() then
+// gates the RECORD on both halves actually being in the assembled prompt.
+//
+// COST — measured, not asserted (agentis v1.28.0, demo-discovery-parallel.sh 18g reproduces it). The added
+// work is O(1) per in-scope token (one call, one len, one string compare — no new reduce, no per-element
+// exec), but the CONSTANT is NOT small: it is roughly the whole pre-existing per-element cost of that
+// reduce, so the fold's per-element budget is about 2x. Under a `cb 2000;` stress probe the pre-#1865 fold
+// completes 107 tokens and this one 55 — and the cost is paid on EVERY cell, appendix-free zones included,
+// because the call happens before `len(appendix) == 0` can return. It is NOT a runtime risk at the budget
+// that actually runs: `agentis go` honours this file's declared `cb 300000;`, where the same fold is bounded
+// by the 16 MiB string heap (~378 tokens) rather than by CB, three orders of magnitude above a real zone's
+// file count. A per-element interpreted WALK (regex_split/reduce over a list, ~70+ CB per element) is the
+// recidivist substrate trap this design still refuses; a per-element CALL is affordable, not free.
+
+// The two markers the framing is RECOGNISED by, one per half (payload label, judging block). They are
+// helpers rather than literals repeated at the check site, so a reword cannot desync framing_emitted() below
+// from the text it has to detect. Written multi-line like every other fn here: demo-discovery-parallel.sh
+// 18g extracts these BY LINE RANGE with the repo's `f&&/^}$/{exit}` idiom, which needs a closing line.
+fn appendix_marker() -> string {
+    return "// IMPLEMENTATION APPENDIX:";
+}
+
+fn anchoring_marker() -> string {
+    return "ANCHORING:";
+}
+
+fn appendix_header(base: string) -> string {
+    return appendix_marker() + " the contract under review (" + base + ") is ABSTRACT — some of its\n"
+      + "// members are `virtual` with no body there. The slice below is ONE representative DERIVED contract\n"
+      + "// implementing them: the behaviour the abstract file does not contain. Hunt the RESOLVED behaviour\n"
+      + "// (base + override), not either file alone.\n";
+}
+
+// The header for the ONE payload section that IS the appendix; "" for every other file (and for every file
+// when no appendix is staged). Concatenating "" is a no-op, which is what keeps the ordinary payload intact.
+fn appendix_label(rel: string, appendix: string, base: string) -> string {
+    if len(appendix) == 0 { return ""; }
+    if rel != appendix { return ""; }
+    return appendix_header(base);
+}
+
+// Concatenate every in-scope contract into one labelled blob (#1865: the appendix section additionally
+// carries the header above, so the model can tell context from primary contract).
+fn scoped_code(dir: string, files: string, appendix: string, base: string) -> string {
     return reduce(regex_split("\n", files), |acc: string, rel: string| -> string {
         if len(rel) == 0 { return acc; }
-        return acc + "\n\n// ========== " + rel + " ==========\n" + cat_file(dir + "/" + rel);
+        return acc + "\n\n// ========== " + rel + " ==========\n"
+             + appendix_label(rel, appendix, base) + cat_file(dir + "/" + rel);
     }, "");
+}
+
+// The prompt-level judging block: the counterpart of refuter.ag::appendix_rule, plus the ANCHORING clause the
+// gate does not need. Anchoring matters because the appendix file is a legal in-scope file in this payload,
+// so the output contract's bare `file:function[:line]` can legitimately name a file belonging to a DIFFERENT
+// zone. Nothing downstream validates a candidate's file against zone membership (and a mechanical drop would
+// discard exactly the "the bug is in the override" finding this appendix exists to surface), so the fix is to
+// make such a location INTENTIONAL — and, via the APPENDIX-CONTEXT| sentinel below, attributable afterwards.
+fn appendix_rule(appendix: string, base: string) -> string {
+    if len(appendix) == 0 { return ""; }
+    return "=== ABSTRACT CONTRACT — READ WITH THE IMPLEMENTATION APPENDIX ===\n"
+      + "The contract you are auditing, " + base + ", is ABSTRACT: some members it declares are `virtual` "
+      + "with no body in that file. The LAST section of the payload, " + appendix + ", is ONE representative "
+      + "DERIVED contract that implements them.\n"
+      + "Judge the RESOLVED behaviour (base + override): a bug that only exists once the override's body is "
+      + "substituted into the base's flow IS a qualifying finding, and \"this file does not implement X\" is "
+      + "NEVER a reason to skip a path — read X in the derived slice and keep tracing.\n"
+      + anchoring_marker() + " the derived slice is CONTEXT for the base, not a second hunting ground. Put "
+      + "the CANDIDATE location on the ABSTRACT contract's OWN function whenever the flaw is in the base's "
+      + "logic, ordering or guards; name the derived file only when the flaw is genuinely in the override's "
+      + "own body.\n\n";
+}
+
+// #1865 HONESTY GATE for the record. The sentinel below — and with it run-discovery.sh's per-cell
+// `appendix` key, the artifact whose whole job is to make appendix influence attributable — must assert only
+// what actually happened. Gating it on "the token was non-empty" would make it claim a cell was FRAMED even
+// if the framing had been dropped from the payload or from the instruction, so the record could not serve as
+// its own regression detector: a hunter that silently stopped framing would still be recorded as framing.
+// It is therefore derived from the ASSEMBLED prompt — the labelled header must be in the PAYLOAD and the
+// judging block in the INSTRUCTION — through the same marker helpers the producers use, so a reword cannot
+// desync the check from the text it detects. Both halves are required: either one missing is a broken
+// framing, and neither is reachable without a token, which is why the token test stays as the first gate.
+fn framing_emitted(appendix: string, instruction: string, code: string) -> bool {
+    if len(appendix) == 0 { return false; }
+    if index_of(code, appendix_marker()) < 0 { return false; }
+    return index_of(instruction, anchoring_marker()) >= 0;
 }
 
 // Extract the `## <cls> ...` section from the taxonomy (until the next `## `).
@@ -190,7 +280,12 @@ let files = getenv("IN_SCOPE");
 let cls = getenv("HUNT_CLASS");
 let subsystem = getenv("SUBSYSTEM");
 let brief = cat_file(getenv("SCOPE_BRIEF"));
-let code = scoped_code(dir, files);
+// #1865: run-discovery.sh --appendix sets these on a BREADTH cell whose payload carries the #1861 derived
+// implementor (they must be on `exec.env_passthrough`, else getenv() returns "" and the framing is silently
+// inert). Both are "" on every other cell, so scoped_code's output is byte-identical there.
+let appendix_file = getenv("APPENDIX_FILE");
+let appendix_base = getenv("APPENDIX_BASE");
+let code = scoped_code(dir, files, appendix_file, appendix_base);
 let classDoc = class_section(getenv("TAXONOMY"), cls);
 
 // #1001 READ side: pull the shared blackboard FIRST, so a lead an EARLIER cell posted this run can
@@ -216,6 +311,11 @@ if len(depth) > 0 {
     print("DEPTH-CELL|" + subsystem + "|" + cls + "|" + depth_target);
 }
 
+// #1865 APPENDIX read: the judging block for a payload carrying the derived implementor of an abstract base.
+// The sentinel it enables is printed further down — AFTER `instruction` exists, because it is gated on the
+// framing having actually been assembled into the prompt (see framing_emitted), not on the token being set.
+let appx = appendix_rule(appendix_file, appendix_base);
+
 // The instruction carries the lens (taxonomy class), the brief (invariants + known-issues), and the
 // strict output contract; the code is the prompt payload (matches auditor.ag::classify_evm_llm shape).
 // The (possibly empty) blackboard FOCUS block sits up top so prior siblings' leads bias the hunt.
@@ -226,6 +326,7 @@ let instruction =
   + "guard in the code provably stops it — do NOT assume prior auditors already caught it.\n\n"
   + focus
   + depth
+  + appx
   + "=== HUNT THIS BUG CLASS (the lens) ===\n" + classDoc + "\n\n"
   + "=== PROTOCOL BRIEF — invariants whose violation is a valid finding, and KNOWN ISSUES you MUST NOT report ===\n"
   + brief + "\n\n"
@@ -244,6 +345,16 @@ let instruction =
   + "write the single token: SAFE\n"
   + "Reason for as long as you need first; ONLY the CANDIDATE| line(s) or the final SAFE token are parsed, so "
   + "your analysis text above them is free.";
+
+// #1865: the hunt-side twin of the gate's AUX-CONTEXT| (refuter.ag) — it makes the attachment observable in
+// the cell log BEFORE the expensive call, is what run-discovery.sh derives the per-cell `appendix` record
+// from, and is treated as a record BOUNDARY by _join_wrapped_candidates so it can never be glued onto an
+// open CANDIDATE| record. The token carries no `CANDIDATE|` substring, so the sentinel predicate in
+// lib/run-agent-validated.sh cannot false-accept a cell on it. It fires ONLY when both halves of the framing
+// are demonstrably in the prompt about to be sent, so no artifact can claim a framing that did not happen.
+if framing_emitted(appendix_file, instruction, code) {
+    print("APPENDIX-CONTEXT|" + appendix_file);
+}
 
 let verdict = prompt(instruction, code) -> string;
 

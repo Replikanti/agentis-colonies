@@ -29,6 +29,13 @@
 #   --repo <dir>        Cloned target repo root (clone with fetch-target.sh). REQUIRED.
 #   --scope <file>      Subsystem x class x files manifest (see above). REQUIRED.
 #   --brief <file>      Protocol brief: invariants-to-break + known-issues-to-exclude + trust model. REQUIRED.
+#   --appendix <file>   #1865 OPTIONAL sidecar written by map-zones.sh (`<subsystem>\t<token>\t<base>`, TAB-
+#                       delimited). It names, per manifest line, the ONE #1861 inheritance-appendix token in
+#                       that line's file list and the abstract base it implements — a fact the manifest itself
+#                       cannot carry, since the token has the same `file@fn+fn` shape as any other slice. The
+#                       hunter then LABELS that payload section and gains the resolved-behaviour + anchoring
+#                       rules. Absent (the default) => the whole path is inert and the prompt is byte-identical.
+#                       A row is used only if its token literally appears in that line's file list.
 #   --taxonomy <file>   bug-taxonomy.md (default: bundled ./auditor/bug-taxonomy.md).
 #   --only <subsystem>  Hunt only the line whose subsystem label matches (smoke test / re-run one slice).
 #   --classes <ids>     Override EVERY line's class list with this comma list (e.g. C1,C2 for a cheap probe).
@@ -112,6 +119,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
 AGENTIS="agentis"
 REPO="" ; SCOPE="" ; BRIEF="" ; TAXONOMY="" ; ONLY="" ; CLASSES_OVERRIDE=""
+# #1865: opt-in inheritance-appendix sidecar; empty = OFF, every code path below is inert.
+APPENDIX_TSV=""
 BACKEND="flat-cyborg" ; MODEL="" ; OUT="$PWD/discovery-out"
 LIST_CELLS=""   # #1612: opt-in dry-run; empty = the shipped hunt path, byte-identical.
 JOBS=1          # #1625: opt-in bounded-concurrency fan-out; 1 = serial, byte-identical to the pre-M3 hunt.
@@ -132,6 +141,7 @@ while [ $# -gt 0 ]; do
     --repo) need "$#"; REPO="$2"; shift 2 ;;
     --scope) need "$#"; SCOPE="$2"; shift 2 ;;
     --brief) need "$#"; BRIEF="$2"; shift 2 ;;
+    --appendix) need "$#"; APPENDIX_TSV="$2"; shift 2 ;;
     --taxonomy) need "$#"; TAXONOMY="$2"; shift 2 ;;
     --only) need "$#"; ONLY="$2"; shift 2 ;;
     --classes) need "$#"; CLASSES_OVERRIDE="$2"; shift 2 ;;
@@ -180,6 +190,11 @@ fi
 # required only on the shipped path (and refused above on the re-entry one).
 if [ -z "$DEPTH_FROM" ]; then
   [ -n "$SCOPE" ] && [ -f "$SCOPE" ] || { echo "run-discovery.sh: --scope <subsystem|classes|files manifest> required" >&2; exit 2; }
+fi
+# #1865: the sidecar is OPTIONAL, but a path the operator typed and that does not exist is a typo, not an
+# opt-out — fail fast rather than run the whole hunt with the framing silently off.
+if [ -n "$APPENDIX_TSV" ]; then
+  [ -f "$APPENDIX_TSV" ] || { echo "run-discovery.sh: --appendix file not found: $APPENDIX_TSV" >&2; exit 2; }
 fi
 # #1612: --list-cells needs no --brief (it never hunts) — guard the brief requirement behind it.
 if [ -z "$LIST_CELLS" ]; then
@@ -322,7 +337,9 @@ cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (s
   # #1827 DEPTH_TARGET/DEPTH_KNOWN MUST be on this allowlist: getenv() reads the SANITIZED env, so an
   # unregistered knob silently returns "" and the whole depth pass would be inert (the #1426/#1428 failure
   # mode). demo-discovery-parallel.sh asserts the stub actually receives them.
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN"
+  # #1865 APPENDIX_FILE/APPENDIX_BASE ride the same rule for the same reason: unregistered => "" => the
+  # hunter would concatenate the derived slice with no label and no judging rule, exactly as before the fix.
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE"
   echo "exec.default_timeout_ms = 30000"
   # Discovery records every attempt as experience and reweights taxonomy fitness over time.
   echo "learning.enabled = true"
@@ -380,12 +397,12 @@ _json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
 # undoing flat-cyborg's PTY-capture line wrap (#1705). A `CANDIDATE|file:fn:line|class|severity|exploit|poc`
 # record's exploit/poc_sketch prose routinely exceeds one physical line; the raw log then carries the tail
 # as continuation lines with no `CANDIDATE|` prefix, which a bare `grep 'CANDIDATE|'` silently drops. Here a
-# `CANDIDATE|` line opens/flushes a record; a `BLACKBOARD-*` line, a `DEPTH-CELL|` line (#1827) or a blank
-# line closes the current record without starting a new one (these are the only meaningful boundary tokens in
-# a hunt log — see hunter.ag's own framing); any other line while a record is open is a continuation, appended
-# with a single space
-# (terminal wrap breaks on column width, not on meaningful newlines — a stray space is a cosmetic artifact,
-# not data loss). Emits one reconstructed line per record, in log order.
+# `CANDIDATE|` line opens/flushes a record; a `BLACKBOARD-*` line, a `DEPTH-CELL|` line (#1827), an
+# `APPENDIX-CONTEXT|` line (#1865) or a blank line closes the current record without starting a new one
+# (these are the only meaningful boundary tokens in a hunt log — see hunter.ag's own framing); any other line
+# while a record is open is a continuation, appended with a single space (terminal wrap breaks on column
+# width, not on meaningful newlines — a stray space is a cosmetic artifact, not data loss). Emits one
+# reconstructed line per record, in log order.
 _join_wrapped_candidates() {
   jwc_log="$1"
   awk '
@@ -394,7 +411,7 @@ _join_wrapped_candidates() {
       rec = $0
       next
     }
-    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*$/ {
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*$/ {
       if (rec != "") { print rec; rec = "" }
       next
     }
@@ -414,6 +431,11 @@ _join_wrapped_candidates() {
 # a #1707 no-sentinel-after-retries cell is recorded as "failed" so the JSON distinguishes it from a clean
 # (0-candidate) negative. [phase] (#1827) is "depth" ONLY on a depth cell — a breadth cell's object gains no
 # key at all, so the depth-off JSON is byte-identical to the pre-#1827 one.
+# #1865: `appendix` is derived from the LOG (the hunter's own APPENDIX-CONTEXT| sentinel), not from a new
+# parameter — the same idiom as `coordination` below, and it records what the AGENT actually framed rather
+# than what the shell intended to stage. It is appended LAST in the printf, after `phase`, so
+# _plan_depth_cells's forward key scan (subsystem -> class -> files -> status -> candidates) is untouched and
+# a cell with no appendix keeps its exact key set.
 _accumulate_cell() {
   ac_subsys="$1"; ac_cls="$2"; ac_files="$3"; ac_log="$4"; ac_status="${5:-ok}"; ac_phase="${6:-}"
   ac_phase_json=""
@@ -430,20 +452,49 @@ _accumulate_cell() {
     ac_f="$(grep '^BLACKBOARD-FOCUS|' "$ac_log" | head -1 | sed 's/^BLACKBOARD-FOCUS|//')"
     ac_coord="$(_json_str "$ac_f")"
   fi
-  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s}\n' \
+  ac_appendix_json=""
+  if grep -q '^APPENDIX-CONTEXT|' "$ac_log" 2>/dev/null; then
+    ac_a="$(grep '^APPENDIX-CONTEXT|' "$ac_log" | head -1 | sed 's/^APPENDIX-CONTEXT|//')"
+    ac_appendix_json=",\"appendix\":$(_json_str "$ac_a")"
+  fi
+  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s}\n' \
     "$(_json_str "$ac_subsys")" "$(_json_str "$ac_cls")" "$(_json_str "$ac_files")" \
-    "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" >> "$CELLS_JSONL"
+    "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" "$ac_appendix_json" >> "$CELLS_JSONL"
 }
 
-# run_cell <dir> <subsys> <cls> <in_scope> <log> [depth_target] [depth_known] — invoke the hunter for ONE
+# _appendix_for <subsystem> <files_csv> — #1865: the (token, base) pair the --appendix sidecar records for
+# THIS manifest line, printed as `<token>\t<base>`, or nothing. Two guards make the sidecar advisory-and-safe:
+#   * no --appendix (or no row for this subsystem) => nothing, i.e. the framing is simply off for this cell;
+#   * SELF-CHECK: the row is used only when its token literally appears in this line's FILES_CSV. map-zones.sh
+#     keys scope.tsv lines on clean(name) with no dedup, so a subsystem name can match SEVERAL manifest lines
+#     (the ambiguity run-zone-hunt.sh already documents at its per-zone cap probe). Framing a line that does
+#     not carry the token would tell the hunter its contract is abstract about a payload that has no
+#     appendix section at all — the check makes that impossible.
+_appendix_for() {
+  [ -n "$APPENDIX_TSV" ] || return 0
+  af_row="$(awk -F'	' -v s="$1" '$1 == s { print $2 "	" $3; exit }' "$APPENDIX_TSV" 2>/dev/null || true)"
+  [ -n "$af_row" ] || return 0
+  af_tok="${af_row%%	*}"
+  [ -n "$af_tok" ] || return 0
+  case ",$2," in
+    *",$af_tok,"*) printf '%s\n' "$af_row" ;;
+  esac
+}
+
+# run_cell <dir> <subsys> <cls> <in_scope> <log> [depth_target] [depth_known] [appendix_file] [appendix_base]
+# — invoke the hunter for ONE
 # (subsystem x class) cell into <log>. Serial passes dir=$RUN (the shared store); parallel passes an isolated
 # per-cell store. Never trips set -e (the invocation ends `|| echo …`), so a failed cell degrades (its log is
 # still scraped), not aborts. #1827: the two trailing params are EMPTY on every breadth cell (the hunter's
 # depth block is then "" and its prompt is byte-identical); a depth cell passes the `file@fn` under review and
 # the already-known lead(s) that must not be re-reported.
+# #1865: params 8/9 carry the appendix pair for a BREADTH cell whose payload holds the derived implementor.
+# They are EMPTY on every depth cell by construction: a depth payload IS the narrowed function, so framing it
+# as "your contract is abstract, the last section implements it" would be a lie about that payload.
 run_cell() {
   rc_dir="$1"; rc_subsys="$2"; rc_cls="$3"; rc_in_scope="$4"; rc_log="$5"
   rc_depth_target="${6:-}"; rc_depth_known="${7:-}"
+  rc_appendix_file="${8:-}"; rc_appendix_base="${9:-}"
   echo "run-discovery.sh: hunting $rc_cls on '$rc_subsys' ..." >&2
   # shellcheck disable=SC2317  # invoked by name through df_run_agent_validated
   _rc_attempt() {
@@ -457,6 +508,8 @@ run_cell() {
         SLICER="$rc_dir/slice-fns.sh" \
         DEPTH_TARGET="$rc_depth_target" \
         DEPTH_KNOWN="$rc_depth_known" \
+        APPENDIX_FILE="$rc_appendix_file" \
+        APPENDIX_BASE="$rc_appendix_base" \
         "$AGENTIS" go hunter.ag --enable-exec --enable-messaging --grant-pii ) >"$1" 2>&1 || \
         echo "run-discovery.sh: hunter run failed for $rc_cls/'$rc_subsys' (see $1)" >&2
   }
@@ -495,6 +548,13 @@ scrape_cell_log() {
     echo "run-discovery.sh:   ↳ COORDINATION: $sc_cls/'$sc_subsys' steered by the blackboard ($FOCUS_LINE)" >&2
     printf '| %s | %s | steered by blackboard — %s |\n' "$sc_subsys" "$sc_cls" "$FOCUS_LINE" >> "$COORD"
     STEERS=$((STEERS + 1))
+  fi
+  # #1865: the hunter prints APPENDIX-CONTEXT|<token> when it FRAMED a payload section as the derived
+  # implementor of an abstract base. Surface it to the operator (the twin of verify-findings.sh's gate-side
+  # line), so a candidate located in a file the zone does not own is attributable while the run is happening.
+  if grep -q '^APPENDIX-CONTEXT|' "$sc_log"; then
+    APX_LINE="$(grep '^APPENDIX-CONTEXT|' "$sc_log" | head -1 | sed 's/^APPENDIX-CONTEXT|//')"
+    echo "run-discovery.sh:   ↳ implementation appendix attached: $APX_LINE" >&2
   fi
   # The hunter's contract: a `CANDIDATE|file:fn:line|class|severity|exploit|poc` line, or `SAFE`.
   # Exclude the hunter's own `BLACKBOARD-*` diagnostic lines: they echo a lead summary (which no longer
@@ -758,6 +818,10 @@ elif [ "$JOBS" -le 1 ]; then
     # IN_SCOPE is newline-separated (hunter splits on \n); convert the manifest's comma list.
     IN_SCOPE="$(printf '%s' "$FILES_CSV" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' || true)"
     SLUG="$(printf '%s' "$SUBSYS" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
+    # #1865: resolve the appendix pair ONCE per manifest line (every class cell of a line shares the payload).
+    APXF="" ; APXB=""
+    APX_ROW="$(_appendix_for "$SUBSYS" "$FILES_CSV")"
+    if [ -n "$APX_ROW" ]; then APXF="${APX_ROW%%	*}"; APXB="${APX_ROW#*	}"; fi
 
     OLDIFS="$IFS"; IFS=','
     for CLS in $CLS_CSV; do
@@ -766,7 +830,7 @@ elif [ "$JOBS" -le 1 ]; then
       [ -n "$CLS" ] || { IFS=','; continue; }
       CELLS=$((CELLS + 1))
       CELL_LOG="$RUN/hunt_${SLUG}_${CLS}.log"
-      run_cell "$RUN" "$SUBSYS" "$CLS" "$IN_SCOPE" "$CELL_LOG"
+      run_cell "$RUN" "$SUBSYS" "$CLS" "$IN_SCOPE" "$CELL_LOG" "" "" "$APXF" "$APXB"
       scrape_cell_log "$SUBSYS" "$CLS" "$CELL_LOG" "$FILES_CSV"
       IFS=','
     done
@@ -780,6 +844,7 @@ else
   # min(--jobs, CELL_CAP); after the pool drains, scrape each cell in MANIFEST order (the SAME scrape_cell_log)
   # so the aggregated finding set is identical + independent of completion order.
   CELL_SUBSYS=() ; CELL_CLS=() ; CELL_INSCOPE=() ; CELL_FILES=() ; CELL_DIR=() ; CELL_LOGP=()
+  CELL_APXF=() ; CELL_APXB=()   # #1865: the per-line appendix pair, resolved with the manifest line itself
   while IFS='|' read -r SUBSYS CLS_CSV FILES_CSV || [ -n "${SUBSYS:-}" ]; do
     SUBSYS="$(printf '%s' "$SUBSYS" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     case "$SUBSYS" in ''|\#*) continue ;; esac
@@ -790,6 +855,9 @@ else
     [ -n "$FILES_CSV" ] || { echo "run-discovery.sh: subsystem '$SUBSYS' has no files; skipping" >&2; continue; }
     IN_SCOPE="$(printf '%s' "$FILES_CSV" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' || true)"
     SLUG="$(printf '%s' "$SUBSYS" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
+    APXF="" ; APXB=""
+    APX_ROW="$(_appendix_for "$SUBSYS" "$FILES_CSV")"
+    if [ -n "$APX_ROW" ]; then APXF="${APX_ROW%%	*}"; APXB="${APX_ROW#*	}"; fi
     OLDIFS="$IFS"; IFS=','
     for CLS in $CLS_CSV; do
       IFS="$OLDIFS"
@@ -798,6 +866,7 @@ else
       CELLS=$((CELLS + 1))
       CELL_SUBSYS+=("$SUBSYS") ; CELL_CLS+=("$CLS") ; CELL_INSCOPE+=("$IN_SCOPE")
       CELL_FILES+=("$FILES_CSV") ; CELL_DIR+=("$RUN/cell-${SLUG}_${CLS}") ; CELL_LOGP+=("$RUN/hunt_${SLUG}_${CLS}.log")
+      CELL_APXF+=("$APXF") ; CELL_APXB+=("$APXB")
       IFS=','
     done
     IFS="$OLDIFS"
@@ -822,7 +891,8 @@ else
     cp -r "$RUN/.agentis" "$cdir/.agentis"        # isolated store: an empty blackboard, no cross-cell race
     cp "$RUN/hunter.ag" "$cdir/hunter.ag"
     cp "$RUN/slice-fns.sh" "$cdir/slice-fns.sh"
-    run_cell "$cdir" "${CELL_SUBSYS[$idx]}" "${CELL_CLS[$idx]}" "${CELL_INSCOPE[$idx]}" "${CELL_LOGP[$idx]}" &
+    run_cell "$cdir" "${CELL_SUBSYS[$idx]}" "${CELL_CLS[$idx]}" "${CELL_INSCOPE[$idx]}" "${CELL_LOGP[$idx]}" \
+      "" "" "${CELL_APXF[$idx]}" "${CELL_APXB[$idx]}" &
     live=$((live + 1))
     idx=$((idx + 1))
   done
