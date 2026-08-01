@@ -15,6 +15,48 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **THE HUNTER IS NOW TOLD ITS CONTRACT IS ABSTRACT** (#1865). #1861 got the derived implementor's BYTES into
+  the hunter's payload (`lib/inheritance.py` → `map-zones.sh` → `scope.tsv` → `IN_SCOPE`), but not the
+  FRAMING: the slice arrived as just another `// ========== <path> ==========` section, so the hunter was
+  never told that its primary contract is ABSTRACT nor that the extra section implements it — while the
+  refute gate had carried exactly that label + judging rule since #1861. There was also no hunt-side twin of
+  the gate's `AUX-CONTEXT|` line and `aux.txt`, so an appendix-influenced candidate was not attributable from
+  the artifacts alone. This closes both gaps and nothing else — it does NOT re-implement zone composition
+  (that shipped in #1861/#1862) and it ships no measurement.
+  - The hunter cannot self-detect the condition: `map-zones.sh` emits the same `path@fn1+fn2` shape for any
+    zone file above the LOC threshold, so the appendix token is byte-indistinguishable from an ordinary
+    slice. The fact is therefore written down where it is known — a new `<out>/appendix.tsv` sidecar
+    (`<subsystem>\t<token>\t<abstract base>`), one row per zone that ACTUALLY attached a token, written only
+    when at least one row exists. A target with no cross-zone abstract base emits the pre-#1865 file set, and
+    `run-zone-hunt.sh` then passes no new flag at all (byte-identical STAGE 3 argv).
+  - `run-discovery.sh --appendix <file>` resolves the row per manifest line and env-ins `APPENDIX_FILE` /
+    `APPENDIX_BASE` (both registered on `exec.env_passthrough` — an unregistered knob is silently inert, the
+    #1426/#1428 failure mode). A row is honoured only when its token literally appears in that line's file
+    list, which keeps the sidecar safe under the subsystem-name ambiguity `scope.tsv` already has. Depth
+    cells always get an EMPTY pair: a depth payload IS the narrowed function, so framing it as "your contract
+    is abstract" would be a lie about that payload.
+  - `hunter.ag` gains `appendix_header` / `appendix_label` / `appendix_rule`, each returning `""` on an empty
+    token, so an appendix-free zone's payload and instruction stay byte-for-byte what they were. The label is
+    folded into the EXISTING `scoped_code` reduce (one `len` + one compare per token — no new reduce, no
+    per-element `exec`), and the rule adds the resolved-behaviour clause plus an ANCHORING clause: the derived
+    slice is context for the base, not a second hunting ground, so the `CANDIDATE` location belongs on the
+    abstract contract's own function unless the flaw is in the override's own body.
+  - Attributability at parity with the gate: the hunter prints `APPENDIX-CONTEXT|<token>` before the model
+    call (a record BOUNDARY for `_join_wrapped_candidates`, exactly like `DEPTH-CELL|`), `run-discovery.sh`
+    logs one stderr line and derives a per-cell `appendix` key FROM THAT LOG LINE, appended after every
+    pre-existing key so `_plan_depth_cells`'s forward key scan is untouched.
+  - The known residual is stated rather than papered over: a candidate CAN be located in the appendix file,
+    i.e. in a file another zone owns. Nothing downstream branches on it (coverage is derived per zone from
+    that zone's own totals, dedup keys on `(subsystem, class, files)`), the cost is one extra gate call and a
+    `verified[].subsystem` that can name a zone not owning `verified[].file`. A mechanical drop of
+    out-of-zone candidates is deliberately NOT added — it would discard exactly the "the bug is in the
+    override" finding the appendix exists to surface.
+  - Tests: `demo-map-zones.sh` A9 (sidecar content + absence, on the existing #1861 fixture, incl. the
+    in-zone-implementor / descendant-less / ambiguous-name negative controls and the no-helper control tree)
+    and `demo-discovery-parallel.sh` 18a-18g (default inertness, stub-observed env wiring, the
+    `exec.env_passthrough` allowlist, the sidecar self-check, the log-derived cell key + wrap safety, the
+    depth interaction, and a CB sweep of the three new `.ag` helpers extracted from `hunter.ag` BY LINE
+    RANGE, swept over the IN_SCOPE token count against a control fold).
 - **ZONE SPLITTING NO LONGER SEVERS INHERITANCE** (#1861). `map-zones.sh` groups by DIRECTORY, so on a
   codebase organised around abstract base contracts the base lands in one zone and every implementation in
   others — and BOTH readers then reason about the base in isolation. Measured on the diagnosing target: the

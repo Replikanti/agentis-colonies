@@ -944,6 +944,60 @@ then ok "A8: a grandchild implementor is reachable through an intermediate abstr
 else bad "A8: the transitive walk missed the grandchild or did not terminate correctly on a cycle"
 fi
 
+# --- A9 (#1865): the appendix SIDECAR — appendix.tsv names, per subsystem, WHICH token is the derived
+#     implementor and WHICH abstract base it implements. That fact is unrecoverable downstream: A2 pins that
+#     the token has the same `path@fn+fn` shape every oversized zone file gets, so run-discovery.sh cannot
+#     tell it apart from an ordinary slice. Rows exist for exactly the zones that ATTACHED a token (the same
+#     five whose scope.tsv lines A3 allows to change) — never for `together` (in-zone implementor, a literal
+#     no-op) and never for `orphan`/`dup` (recorded with implementor: null, nothing reached the payload) —
+#     and the control tree, whose map-zones.sh has no lib/inheritance.py, writes no appendix.tsv AT ALL.
+if [ -f "$OUT_CTRL/appendix.tsv" ]; then
+  bad "A9: the no-inheritance.py control run wrote an appendix.tsv (a target with no cross-zone abstract base must emit the pre-#1865 file set)"
+elif python3 - "$OUT_INH/appendix.tsv" "$OUT_INH/scope.tsv" <<'PY'
+import sys
+
+rows = []
+for l in open(sys.argv[1], encoding="utf-8"):
+    if not l.strip() or l.lstrip().startswith("#"):
+        continue
+    parts = l.rstrip("\n").split("\t")
+    assert len(parts) == 3, "a sidecar row is not 3 TAB-delimited fields: %r" % l
+    rows.append(parts)
+
+by_sub = {}
+for sub, tok, base in rows:
+    assert sub not in by_sub, "subsystem %r has more than one sidecar row" % sub
+    by_sub[sub] = (tok, base)
+
+# Exactly the zones that ATTACHED a token get a row (A3's `changed` set), and nothing else.
+assert set(by_sub) == {"base", "ml", "lay", "gp", "cyc"}, \
+    "the sidecar row set is not the attaching-zone set: %r" % sorted(by_sub)
+assert "together" not in by_sub, "the in-zone-implementor zone got a sidecar row (nothing was attached to it)"
+assert "orphan" not in by_sub, "the descendant-less zone got a sidecar row (implementor: null attaches nothing)"
+assert "dup" not in by_sub, "the ambiguous-name zone got a sidecar row (no edge, nothing attached)"
+
+tok, base = by_sub["base"]
+assert tok == "staking/StakingStrategy.sol@_initiateWithdraw+_mintYieldTokens+convertToAssets", \
+    "the sidecar token is not the A2 token: %r" % tok
+assert base == "base/AbstractYield.sol", "the sidecar base column is wrong: %r" % base
+
+# Coherence with the manifest: every recorded token must literally be in THAT subsystem's scope.tsv file
+# list — this is what run-discovery.sh's self-check tests, so a sidecar that cannot pass it is inert.
+manifest = {}
+for l in open(sys.argv[2], encoding="utf-8"):
+    if not l.strip() or l.lstrip().startswith("#"):
+        continue
+    parts = [p.strip() for p in l.split("|")]
+    manifest[parts[0]] = [t.strip() for t in parts[2].split(",") if t.strip()]
+for sub, (tok, base) in by_sub.items():
+    assert sub in manifest, "sidecar names subsystem %r, which has no scope.tsv line" % sub
+    assert tok in manifest[sub], "sidecar token %r is not in %r's scope.tsv file list" % (tok, sub)
+    assert tok.split("@", 1)[0] != base, "the sidecar points the token at its own base: %r" % tok
+PY
+then ok "A9: appendix.tsv records <subsystem>TAB<token>TAB<base> for exactly the 5 attaching zones (base -> staking/StakingStrategy.sol@... / base/AbstractYield.sol), no row for the in-zone-implementor / descendant-less / ambiguous zones, every token present in that subsystem's own scope.tsv line, and the no-helper control writes no appendix.tsv at all"
+else bad "A9: the #1865 appendix sidecar is missing, mis-keyed, or names a zone that attached nothing"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # SECOND PART — substrate: source-guard zone-mapper.ag always; run live via --backend mock when agentis on PATH.
 # ----------------------------------------------------------------------------------------------------------

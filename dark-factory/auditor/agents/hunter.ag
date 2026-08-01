@@ -18,6 +18,10 @@ cb 300000;
 //               re-reads under a different lens. Empty (the default) => the prompt is byte-identical.
 //   DEPTH_KNOWN   #1827 (optional, default ""): the lead(s) a breadth cell already surfaced on that
 //               function, quoted VERBATIM as an exclusion. Consumed as ONE opaque string (never split).
+//   APPENDIX_FILE #1865 (optional, default ""): the ONE IN_SCOPE token (`path@fn+fn`) that is the #1861
+//               inheritance appendix — a DERIVED contract sliced in because this zone's primary contract is
+//               abstract. Empty (the default) => every helper below returns "" and the prompt is byte-identical.
+//   APPENDIX_BASE #1865 (optional, default ""): the abstract base that token implements (rel path).
 // Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
@@ -37,12 +41,60 @@ fn cat_file(path: string) -> string {
     return exec sh "sh ${slicer} ${file} '${funcs}' 2>/dev/null || true";
 }
 
-// Concatenate every in-scope contract into one labelled blob.
-fn scoped_code(dir: string, files: string) -> string {
+// --- #1865 IMPLEMENTATION-APPENDIX FRAMING (the generation-side twin of refuter.ag's #1861 gate half) ---
+// #1861 already routes the derived implementor's slice into this payload (map-zones.sh appends the token to
+// the zone's scope_files, run-discovery.sh feeds it through IN_SCOPE). What never arrived is the FRAMING: the
+// slice landed as just another `// ========== <path> ==========` section, so the hunter was never told that
+// its primary contract is ABSTRACT and that the extra section is that contract's implementation. These three
+// helpers add exactly that, and every one of them returns "" for an empty APPENDIX_FILE — an appendix-free
+// zone's payload and instruction stay byte-for-byte what they were.
+//
+// COST: appendix_label is folded over the EXISTING scoped_code reduce (one len + one string compare per
+// token, no new reduce, no per-element exec), so the added work is O(1) per in-scope file. A per-element
+// interpreted walk is the recidivist substrate trap that blows the enforced cb_per_tick ceiling.
+fn appendix_header(base: string) -> string {
+    return "// IMPLEMENTATION APPENDIX: the contract under review (" + base + ") is ABSTRACT — some of its\n"
+      + "// members are `virtual` with no body there. The slice below is ONE representative DERIVED contract\n"
+      + "// implementing them: the behaviour the abstract file does not contain. Hunt the RESOLVED behaviour\n"
+      + "// (base + override), not either file alone.\n";
+}
+
+// The header for the ONE payload section that IS the appendix; "" for every other file (and for every file
+// when no appendix is staged). Concatenating "" is a no-op, which is what keeps the ordinary payload intact.
+fn appendix_label(rel: string, appendix: string, base: string) -> string {
+    if len(appendix) == 0 { return ""; }
+    if rel != appendix { return ""; }
+    return appendix_header(base);
+}
+
+// Concatenate every in-scope contract into one labelled blob (#1865: the appendix section additionally
+// carries the header above, so the model can tell context from primary contract).
+fn scoped_code(dir: string, files: string, appendix: string, base: string) -> string {
     return reduce(regex_split("\n", files), |acc: string, rel: string| -> string {
         if len(rel) == 0 { return acc; }
-        return acc + "\n\n// ========== " + rel + " ==========\n" + cat_file(dir + "/" + rel);
+        return acc + "\n\n// ========== " + rel + " ==========\n"
+             + appendix_label(rel, appendix, base) + cat_file(dir + "/" + rel);
     }, "");
+}
+
+// The prompt-level judging block: the counterpart of refuter.ag::appendix_rule, plus the ANCHORING clause the
+// gate does not need. Anchoring matters because the appendix file is a legal in-scope file in this payload,
+// so the output contract's bare `file:function[:line]` can legitimately name a file belonging to a DIFFERENT
+// zone. Nothing downstream validates a candidate's file against zone membership (and a mechanical drop would
+// discard exactly the "the bug is in the override" finding this appendix exists to surface), so the fix is to
+// make such a location INTENTIONAL — and, via the APPENDIX-CONTEXT| sentinel below, attributable afterwards.
+fn appendix_rule(appendix: string, base: string) -> string {
+    if len(appendix) == 0 { return ""; }
+    return "=== ABSTRACT CONTRACT — READ WITH THE IMPLEMENTATION APPENDIX ===\n"
+      + "The contract you are auditing, " + base + ", is ABSTRACT: some members it declares are `virtual` "
+      + "with no body in that file. The LAST section of the payload, " + appendix + ", is ONE representative "
+      + "DERIVED contract that implements them.\n"
+      + "Judge the RESOLVED behaviour (base + override): a bug that only exists once the override's body is "
+      + "substituted into the base's flow IS a qualifying finding, and \"this file does not implement X\" is "
+      + "NEVER a reason to skip a path — read X in the derived slice and keep tracing.\n"
+      + "ANCHORING: the derived slice is CONTEXT for the base, not a second hunting ground. Put the CANDIDATE "
+      + "location on the ABSTRACT contract's OWN function whenever the flaw is in the base's logic, ordering "
+      + "or guards; name the derived file only when the flaw is genuinely in the override's own body.\n\n";
 }
 
 // Extract the `## <cls> ...` section from the taxonomy (until the next `## `).
@@ -190,7 +242,12 @@ let files = getenv("IN_SCOPE");
 let cls = getenv("HUNT_CLASS");
 let subsystem = getenv("SUBSYSTEM");
 let brief = cat_file(getenv("SCOPE_BRIEF"));
-let code = scoped_code(dir, files);
+// #1865: run-discovery.sh --appendix sets these on a BREADTH cell whose payload carries the #1861 derived
+// implementor (they must be on `exec.env_passthrough`, else getenv() returns "" and the framing is silently
+// inert). Both are "" on every other cell, so scoped_code's output is byte-identical there.
+let appendix_file = getenv("APPENDIX_FILE");
+let appendix_base = getenv("APPENDIX_BASE");
+let code = scoped_code(dir, files, appendix_file, appendix_base);
 let classDoc = class_section(getenv("TAXONOMY"), cls);
 
 // #1001 READ side: pull the shared blackboard FIRST, so a lead an EARLIER cell posted this run can
@@ -216,6 +273,17 @@ if len(depth) > 0 {
     print("DEPTH-CELL|" + subsystem + "|" + cls + "|" + depth_target);
 }
 
+// #1865 APPENDIX read: the judging block for a payload carrying the derived implementor of an abstract base.
+// The printed APPENDIX-CONTEXT| line is the hunt-side twin of the gate's AUX-CONTEXT| (refuter.ag) — it makes
+// the attachment observable in the cell log BEFORE the expensive call, is what run-discovery.sh derives the
+// per-cell `appendix` record from, and is treated as a record BOUNDARY by _join_wrapped_candidates so it can
+// never be glued onto an open CANDIDATE| record. The token carries no `CANDIDATE|` substring, so the
+// sentinel predicate in lib/run-agent-validated.sh cannot false-accept a cell on it.
+let appx = appendix_rule(appendix_file, appendix_base);
+if len(appx) > 0 {
+    print("APPENDIX-CONTEXT|" + appendix_file);
+}
+
 // The instruction carries the lens (taxonomy class), the brief (invariants + known-issues), and the
 // strict output contract; the code is the prompt payload (matches auditor.ag::classify_evm_llm shape).
 // The (possibly empty) blackboard FOCUS block sits up top so prior siblings' leads bias the hunt.
@@ -226,6 +294,7 @@ let instruction =
   + "guard in the code provably stops it — do NOT assume prior auditors already caught it.\n\n"
   + focus
   + depth
+  + appx
   + "=== HUNT THIS BUG CLASS (the lens) ===\n" + classDoc + "\n\n"
   + "=== PROTOCOL BRIEF — invariants whose violation is a valid finding, and KNOWN ISSUES you MUST NOT report ===\n"
   + brief + "\n\n"

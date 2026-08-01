@@ -369,6 +369,12 @@ else
 fi
 
 CELL_PROBE="$OUT/.zone-cell-probe.txt"
+# #1865: map-zones.sh writes $MAP/appendix.tsv ONLY when some zone actually attached a #1861 inheritance
+# appendix, so on a target with no cross-zone abstract base this stays empty and STAGE 3's argv is
+# byte-identical to before. The two --list-cells probes below are NOT given it: they are pure manifest parses
+# and the sidecar cannot change the cell set.
+ZAPX_ARG=""
+if [ -f "$MAP/appendix.tsv" ]; then ZAPX_ARG="$MAP/appendix.tsv"; fi
 RUN_SPENT=0 ; BUDGET_STOP=0
 while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
   [ -n "$ZID" ] || continue
@@ -565,6 +571,7 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
     ${ZCLASSES_ARG:+--classes "$ZCLASSES_ARG"} \
     ${ZDEPTH_ARG:+--depth-max-cells "$ZDEPTH_ARG"} \
     ${ZQUOTA_ARG:+--depth-lens-quota "$ZQUOTA_ARG"} \
+    ${ZAPX_ARG:+--appendix "$ZAPX_ARG"} \
     || ZRC=$?
   if [ "$ZRC" -eq 0 ]; then
     # The terminal status (hunted / hunted_empty / hunted_degraded) is DERIVED in the helper from this zone's
