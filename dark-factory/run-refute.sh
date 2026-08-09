@@ -7,8 +7,10 @@
 # (file:fn + claimed exploit + class) and the relevant code, `prompt()` a hostile reader that tries to
 # REFUTE it against the actual control-flow (defaulting to REFUTED on any doubt), `emit` the verdict, and
 # `print` a `VERDICT|REAL|...` / `VERDICT|REFUTED|...` line. It runs ENTIRELY through the substrate
-# (prompt/emit/learn), so each refutation is recorded as experience and refuter fitness reweights — the
-# colony-native form of the `adversarial-refute` step (auditor/methods/registry.md) that previously ran as
+# (prompt/emit/learn), but learning/experience recording stays OFF below: the per-run store is wiped
+# fresh on every invocation (see the `rm -rf "$RUN"` before the store is initialized), so no refutation
+# `learn()` write is ever read back — there is no cross-candidate reweighting to speak of (#1866). This is
+# the colony-native form of the `adversarial-refute` step (auditor/methods/registry.md) that previously ran as
 # an externally-orchestrated subagent. This is the proven pattern (#999) for porting the colony's other
 # deep capabilities (deep cross-function audit, build-and-run PoC, fork-differential) onto the substrate.
 #
@@ -112,9 +114,11 @@ fi
   # refuting abstract bases in isolation with no visible failure at all.
   echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH"
   echo "exec.default_timeout_ms = 30000"
-  # Each refutation is recorded as experience; refuter fitness reweights over candidates.
-  echo "learning.enabled = true"
-  echo "experience.enabled = true"
+  # Learning/experience recording is OFF: the store above is `rm -rf`'d (line 90) immediately before
+  # every invocation, so any `learn()` write here is never read back — proven zero cross-candidate
+  # reweighting (docs/zone-split-orchestration.md). See #1866.
+  echo "learning.enabled = false"
+  echo "experience.enabled = false"
 } > "$RUN/.agentis/config"
 
 REPORT="$OUT/refute-report.md"

@@ -5,8 +5,10 @@
 # known-bug pattern, so it returns nothing on a bespoke protocol. run-discovery.sh drives the colony's
 # DISCOVERY agent (auditor/agents/hunter.ag): a taxonomy-driven, adversarial, per-(subsystem x bug-class)
 # audit of CUSTOM multi-contract code — the colony-native, substrate-driven version of a hand-run
-# multi-agent pass. The hunter runs ENTIRELY through the agentis substrate (prompt/emit/learn), so every
-# attempt is recorded as experience and the taxonomy's per-class fitness reweights over time.
+# multi-agent pass. The hunter runs ENTIRELY through the agentis substrate (prompt/emit/learn), but
+# learning/experience recording stays OFF below: the per-run store is wiped fresh on every invocation
+# (see the `rm -rf "$RUN"` before the store is initialized), so nothing `learn()` writes is ever read
+# back — there is no cross-run reweighting to speak of (#1866).
 #
 # A surfaced CANDIDATE is a LEAD, not a finding. It is UNVERIFIED until the operator reproduces it through
 # evm-harness/forge-verify.sh (a real Foundry PoC that PASSES only if the exploit fires). Only a forge-
@@ -341,9 +343,11 @@ cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (s
   # hunter would concatenate the derived slice with no label and no judging rule, exactly as before the fix.
   echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE"
   echo "exec.default_timeout_ms = 30000"
-  # Discovery records every attempt as experience and reweights taxonomy fitness over time.
-  echo "learning.enabled = true"
-  echo "experience.enabled = true"
+  # Learning/experience recording is OFF: the store above is `rm -rf`'d (line 319) immediately before
+  # every invocation, so any `learn()` write here is never read back — structurally inert, not disabled
+  # by accident. See #1866.
+  echo "learning.enabled = false"
+  echo "experience.enabled = false"
 } > "$RUN/.agentis/config"
 
 REPORT="$OUT/discovery-report.md"
