@@ -157,9 +157,11 @@ frozen snapshot with `snapshot-rpc.sh --rpc <url> --out snap.txt <pubkey>`.
 contest code (a fresh stablecoin, a new vault) needs **discovery**, not matching. `run-discovery.sh`
 drives the colony's discovery agent — [`auditor/agents/hunter.ag`](./auditor/agents/hunter.ag) — a
 taxonomy-driven, adversarial, per-(subsystem × bug-class) audit that runs **entirely through the
-agentis substrate** (`prompt` / `emit` / `learn`), so every hunt is recorded as experience and the
-taxonomy's per-class fitness reweights over time. It is the colony-native form of a hand-run
-multi-agent audit pass.
+agentis substrate** (`prompt` / `emit` / `learn`). Learning/experience recording stays **off**:
+the per-run store is wiped fresh before every invocation and each cell gets its own isolated
+per-cell copy (see the parallel fan-out note below), so no `learn()` write is ever read back —
+there is no cross-run or cross-cell fitness reweighting (#1866). It is the colony-native form of a
+hand-run multi-agent audit pass.
 
 The operator supplies three inputs and the colony fans out one substrate agent per cell:
 
@@ -518,8 +520,9 @@ must fail to break the lead. `run-refute.sh` drives that gate on the substrate v
 [`auditor/agents/refuter.ag`](./auditor/agents/refuter.ag) — for each candidate it env-ins the
 `file:fn` + claimed exploit + the relevant code, `prompt`s a hostile reader that tries to **REFUTE** the
 claim against the actual control/data flow (**defaulting to REFUTED on any doubt**, so only unambiguous
-leads survive), `emit`s `dark-factory:refute_verdict`, and `learn`s the attempt so refuter fitness
-reweights. This is the colony-native form of the `adversarial-refute` method
+leads survive), and `emit`s `dark-factory:refute_verdict`. Learning/experience recording stays **off**:
+each candidate's gate runs in its OWN freshly-wiped rundir (see above), so any `learn()` write is never
+read back — there is **no cross-candidate refuter reweighting** (#1866). This is the colony-native form of the `adversarial-refute` method
 ([`auditor/methods/registry.md`](./auditor/methods/registry.md)) that previously ran as an external
 subagent — the proven pattern (#999) for porting the colony's other deep capabilities (deep
 cross-function audit, build-and-run PoC, fork-differential) onto the substrate.
