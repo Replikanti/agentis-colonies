@@ -206,6 +206,15 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
     echo "trace.level = normal"
     echo "exec.env_passthrough = TARGET_DIR,ZONE_ID,ZONE_NAME,ZONE_FILES,ZONE_CLASSES,TAXONOMY,AUDIT_RESIDUAL,AUDIT_BOUNDARY,SLICER"
     echo "exec.default_timeout_ms = 30000"
+    # Experience is ENABLED because `learn()` is a WRITE this flag GATES (#1878, measured on agentis v1.28.0):
+    # brief-writer.ag ends every zone with learn("brief", ...), and with `experience.enabled = false` agentis
+    # raises `runtime error: experience not enabled` on that call — and a runtime error DISCARDS the cell's
+    # whole accumulated stdout, so the `DARK-FACTORY:BRIEF-BEGIN|<zone>` block this script scrapes never
+    # appears; every zone then looks like TUI chrome, burns its retries and falls back to the mechanical body,
+    # i.e. the DEPTH lever silently goes to zero (#1877's shape). This block previously carried NO comment,
+    # which is exactly how #1877 re-derived the wrong "structurally inert" conclusion. `learning.enabled` gates
+    # recommend()/adapt()/score_options() only — nothing on this path calls them — and is kept paired so a
+    # future adaptive call cannot make `agentis go` refuse to start. Guard: demo-experience-flags.sh.
     echo "learning.enabled = true"
     echo "experience.enabled = true"
   } > "$RUN/.agentis/config"

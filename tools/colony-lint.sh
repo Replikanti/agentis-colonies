@@ -1198,20 +1198,23 @@ if [ -x "$REPO_ROOT/dark-factory/demo-external-assumption-lens.sh" ]; then
     fi
 fi
 
-# --- dark-factory experience/learning flags regression guard (#1881, the #1866/#1877 flip) ---
+# --- dark-factory experience/learning flags regression guard (#1881 + #1878, the #1866/#1877 flip) ---
 # #1877 flipped experience.enabled/learning.enabled to false on run-discovery.sh (STAGE 3 hunter) and
-# run-refute.sh (STAGE 4 refute gate) as "structurally inert" — but the .ag READS experience intra-run, so
-# agentis hard-errors `experience not enabled`, FAILING every hunt cell and ERRORING every refute gate: a
-# silent false-zero across the whole discover->verify pipeline that the stub-`agentis` demos never caught.
-# demo-experience-flags.sh source-guards both scripts (always, CI-safe) and, when agentis is on PATH, runs a
-# real hunter + refuter cell via --backend mock (offline; the mock LLM returns instantly) and asserts neither
-# hits the runtime error — the output-level mutation guard the #1877 change lacked.
+# run-refute.sh (STAGE 4 refute gate) as "structurally inert". What the flag actually gates is the `learn()`
+# WRITE every one of these .ag agents ends its tick with: agentis hard-errors `experience not enabled` on the
+# call and then DISCARDS the cell's whole accumulated stdout, so the sentinel the driver greps silently
+# vanishes — a false ZERO across the discover->verify->submit pipeline that the stub-`agentis` demos never
+# caught. #1878 measured the same verdict at OUTPUT level for six more scripts (screen-leads, gen-briefs,
+# run-symbolic, run-poc, run-audit-pass, auditor/scripts/run-gate-agent). demo-experience-flags.sh
+# source-guards all 8 hunt/submission-path scripts + ratchets against ANY unannotated `= false` emission
+# (always, CI-safe) and, when agentis is on PATH, runs 8 real offline cells (--backend mock / no LLM) that
+# each assert both error-absence AND a positive control — the output-level mutation guard #1877 lacked.
 if [ -x "$REPO_ROOT/dark-factory/demo-experience-flags.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-experience-flags.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
-        pass "dark-factory: experience/learning flags on the hunt + refute paths (no experience-not-enabled) (#1881)"
+        pass "dark-factory: experience/learning flags on the 8 hunt/submission-path scripts (no experience-not-enabled) (#1881, #1878)"
     else
-        fail "dark-factory: experience/learning flags regressed — pipeline returns a false zero (#1881)"
+        fail "dark-factory: experience/learning flags regressed — a pipeline stage returns a false zero (#1881, #1878)"
         printf '%s\n' "$check_out"
     fi
 fi

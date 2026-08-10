@@ -156,6 +156,15 @@ fi
   # minutes; the 600000ms ceiling killed it on the first LLM call (partial 499-byte stdout). 30min covers the
   # worst-case run-poc budget; the .ag reasoning gates finish in well under it (a ceiling, not a wait).
   if [ "$LIVE" -eq 1 ]; then echo "exec.default_timeout_ms = 1800000"; else echo "exec.default_timeout_ms = 30000"; fi
+  # Experience is ENABLED because `learn()` is a WRITE this flag GATES (#1878, measured on agentis v1.28.0):
+  # coordinator.ag::pass_step fires learn("coordinator-pass", <stage>, ...) ONCE PER STAGE on BOTH the
+  # --pass-fixture and the --live path, and with `experience.enabled = false` agentis raises `runtime error:
+  # experience not enabled` on the first of them — a runtime error DISCARDS the coordinator's whole
+  # accumulated stdout, so run/pass.log carries no stage lines, pass.tsv/pass-result.txt come out EMPTY and
+  # the pass reports nothing instead of PENDING-HUMAN-REVIEW (#1877's silent false zero, at the submission
+  # gate). `learning.enabled` gates recommend()/adapt()/score_options() only — the pass calls none of them —
+  # and is kept paired so a future adaptive call cannot make `agentis go` refuse to start. Guard:
+  # demo-experience-flags.sh.
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"

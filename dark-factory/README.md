@@ -157,9 +157,11 @@ frozen snapshot with `snapshot-rpc.sh --rpc <url> --out snap.txt <pubkey>`.
 contest code (a fresh stablecoin, a new vault) needs **discovery**, not matching. `run-discovery.sh`
 drives the colony's discovery agent — [`auditor/agents/hunter.ag`](./auditor/agents/hunter.ag) — a
 taxonomy-driven, adversarial, per-(subsystem × bug-class) audit that runs **entirely through the
-agentis substrate** (`prompt` / `emit` / `learn`). Learning/experience are **enabled**: the hunter
-READS experience WITHIN a single run (agentis hard-errors `experience not enabled` on that read when
-the feature is off — #1881), even though the per-run store is wiped fresh before every invocation and
+agentis substrate** (`prompt` / `emit` / `learn`). Learning/experience are **enabled**: `hunter.ag` ends
+its tick with `learn("hunt", …)` and it is that **write** the flag gates — agentis hard-errors
+`experience not enabled` on the call and then **discards the cell's whole stdout**, so the
+`CANDIDATE|`/`SAFE` sentinel vanishes (#1881, measured at output level in #1878) — even though the
+per-run store is wiped fresh before every invocation and
 each cell gets its own isolated per-cell copy (see the parallel fan-out note below), so no `learn()`
 write is ever read back ACROSS runs or cells — there is no cross-run or cross-cell fitness reweighting
 (#1866). It is the colony-native form of a hand-run multi-agent audit pass.
@@ -521,9 +523,11 @@ must fail to break the lead. `run-refute.sh` drives that gate on the substrate v
 [`auditor/agents/refuter.ag`](./auditor/agents/refuter.ag) — for each candidate it env-ins the
 `file:fn` + claimed exploit + the relevant code, `prompt`s a hostile reader that tries to **REFUTE** the
 claim against the actual control/data flow (**defaulting to REFUTED on any doubt**, so only unambiguous
-leads survive), and `emit`s `dark-factory:refute_verdict`. Learning/experience are **enabled**: the
-refuter READS experience WITHIN a run (agentis hard-errors `experience not enabled` on that read when
-the feature is off — #1881), even though each candidate's gate runs in its OWN freshly-wiped rundir
+leads survive), and `emit`s `dark-factory:refute_verdict`. Learning/experience are **enabled**:
+`refuter.ag` ends its tick with `learn("refute", …)` and it is that **write** the flag gates — agentis
+hard-errors `experience not enabled` on the call and then **discards the cell's whole stdout**, so the
+`VERDICT|` sentinel vanishes (#1881, measured at output level in #1878) — even though each candidate's
+gate runs in its OWN freshly-wiped rundir
 (see above), so no `learn()` write is ever read back ACROSS candidates — there is **no cross-candidate
 refuter reweighting** (#1866). This is the colony-native form of the `adversarial-refute` method
 ([`auditor/methods/registry.md`](./auditor/methods/registry.md)) that previously ran as an external

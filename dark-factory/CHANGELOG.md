@@ -94,6 +94,27 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     clean and discriminative, recall payoff unproven** — the `notional` judged recall + the class-coverage
     retag are the follow-up (#1879).
 
+### Changed
+- **The six remaining hunt/submission-path scripts' experience flags are PROVEN load-bearing at output level**
+  (#1878, closing out the #1866/#1877/#1881 arc). `screen-leads.sh`, `gen-briefs.sh`, `run-symbolic.sh`,
+  `run-poc.sh`, `run-audit-pass.sh` and `auditor/scripts/run-gate-agent.sh` carried comments claiming the flags
+  were bookkeeping ("fitness reweights over targets") or carried no comment at all — which is how #1877
+  re-derived the wrong "structurally inert" conclusion. Measured on agentis **v1.28.0**: the flag gates the
+  `learn()` **WRITE** (not a read, as #1881 assumed) — `learn()` raises `runtime error: experience not enabled`
+  and **any** runtime error makes agentis DISCARD the program's whole accumulated stdout, so a cell that
+  already printed its verdict line emits nothing. Mutation-proven per script: flipping `experience.enabled`
+  off makes `screen-leads` report `0 reproduced / 0 held / 3 indeterminate` (every row `(no verdict)`),
+  `run-symbolic` and `run-poc` lose their `SYMBOLIC|` / `POC|` lines, `gen-briefs` lose the
+  `DARK-FACTORY:BRIEF-BEGIN|` block, `run-audit-pass` emit an EMPTY `pass-result.txt` instead of
+  `PENDING-HUMAN-REVIEW`, and `run-gate-agent` print NOTHING (which the coordinator reads as `incomplete`).
+  All comments corrected to the measured mechanism (including the superseded "READS experience intra-run"
+  wording in `run-discovery.sh` / `run-refute.sh` / README and in the #1881 entry below); **no flag changed**.
+  `demo-experience-flags.sh` grew from 2 to **8** source-guarded scripts + **8** live cells, each with a
+  POSITIVE CONTROL (the `"action":"<name>"` experience row, or the probe verdict line for the store-less gate
+  runner) so a cell cannot pass vacuously, an order-independence accrual probe on `screen-leads`, and a new
+  ratchet: no `dark-factory` script may emit `experience.enabled = false` / `learning.enabled = false` without
+  an explicit `# experience-flags: intentional-off (<reason>)` annotation.
+
 ### Fixed
 - **`experience.enabled` / `learning.enabled` regression on the hunt + refute paths** (#1881, from #1866/#1877).
   #1877 flipped both flags to `false` on `run-discovery.sh` (STAGE 3 hunter) and `run-refute.sh` (STAGE 4 refute

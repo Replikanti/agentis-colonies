@@ -6,9 +6,10 @@
 # DISCOVERY agent (auditor/agents/hunter.ag): a taxonomy-driven, adversarial, per-(subsystem x bug-class)
 # audit of CUSTOM multi-contract code — the colony-native, substrate-driven version of a hand-run
 # multi-agent pass. The hunter runs ENTIRELY through the agentis substrate (prompt/emit/learn). Learning/
-# experience are ENABLED below: the hunter READS experience WITHIN a single run (agentis hard-errors
-# `experience not enabled` on that read when the feature is off — #1881), even though the per-run store
-# is wiped fresh on every invocation and so carries no CROSS-run reweighting (#1866).
+# experience are ENABLED below: hunter.ag ends its tick with `learn("hunt", ...)`, and it is that WRITE the
+# flag gates — agentis hard-errors `experience not enabled` on the call and then DISCARDS the cell's whole
+# stdout, so the CANDIDATE|/SAFE sentinel vanishes (#1881/#1878) — even though the per-run store is wiped
+# fresh on every invocation and so carries no CROSS-run reweighting (#1866).
 #
 # A surfaced CANDIDATE is a LEAD, not a finding. It is UNVERIFIED until the operator reproduces it through
 # evm-harness/forge-verify.sh (a real Foundry PoC that PASSES only if the exploit fires). Only a forge-
@@ -343,11 +344,12 @@ cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (s
   # hunter would concatenate the derived slice with no label and no judging rule, exactly as before the fix.
   echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE"
   echo "exec.default_timeout_ms = 30000"
-  # Learning/experience are ENABLED: the hunter READS experience WITHIN a single run (not just records it),
-  # and agentis hard-errors `experience not enabled` on that read when the feature is off — so #1866/#1877's
-  # "structurally inert, safe to disable" premise was wrong for this script (the cp -r isolation stops
-  # cross-cell accrual, but the hunter still reads experience intra-run). Disabling them breaks every hunt
-  # cell (no CANDIDATE|/SAFE sentinel -> 5 failed attempts -> FAILED). Regression restored here.
+  # Learning/experience are ENABLED: hunter.ag ends its tick with `learn("hunt", ...)`, and it is that WRITE
+  # the flag gates (#1878 measured it on agentis v1.28.0 — `experience.enabled = false` makes learn() raise
+  # `runtime error: experience not enabled`, and ANY runtime error makes agentis discard the program's whole
+  # accumulated stdout). So #1866/#1877's "structurally inert, safe to disable" premise was wrong for this
+  # script: disabling them breaks every hunt cell (no CANDIDATE|/SAFE sentinel -> 5 failed attempts ->
+  # FAILED), even though the cp -r isolation means nothing is ever read back. Regression restored here.
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"

@@ -108,7 +108,15 @@ fi
   echo "exec.default_timeout_ms = 30000"
   # eval_ag is a metered sub-interpreter; allow it without granting the inner program new caps.
   echo "eval_ag = allow"
-  # Record every screen as substrate experience so screen fitness (reproduced/held/junk) accrues.
+  # Experience is ENABLED because `learn()` is a WRITE this flag GATES (#1878, measured on agentis v1.28.0):
+  # poc-screener.ag ends every screen with learn("poc-screen", ...), and with `experience.enabled = false`
+  # agentis raises `runtime error: experience not enabled` on that call — and a runtime error DISCARDS the
+  # cell's whole accumulated stdout, so the `SCREENED|` line the loop below greps never appears and EVERY lead
+  # falls through to "(no verdict)"/indeterminate (0 reproduced, exit 1). That is #1877's silent false zero.
+  # `learning.enabled` gates recommend()/adapt()/score_options() only — nothing on this path calls them — and
+  # is kept paired so a future adaptive call cannot make `agentis go` refuse to start. NOT bookkeeping and NOT
+  # fitness reweighting: the per-invocation store is wiped above and nothing ever reads it back, so no screen
+  # fitness accrues within OR across runs. Guard: demo-experience-flags.sh.
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"
