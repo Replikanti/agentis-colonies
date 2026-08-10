@@ -15,7 +15,10 @@ auto-derived; refine as `tag-bug-classes` (a #1787 deliverable) is built.
 - `REDUNDANT` — lens finds it but breadth already caught it (no net recall).
 - `OUT-OF-CLASS` — no lens template expresses this class yet.
 - `HARNESS-ERROR` — lens's generated harness did not compile/run on this target (harness-robustness gap, not template gap).
+- `REFUTED` — the lens GENERATES a candidate at the GT location, but the adversarial refute gate (#1699) drops it (candidate not airtight enough to survive a hostile read) — a verify-gate gap, not a coverage or generation gap.
 - `IN-FLIGHT` — a lens class for this is being built.
+
+> **Measured lens status is from the #1879 re-run (2026-08-10), not the 2026-07-23 A/B.** Ruler: `--zone-depth-cells 4`, semantic judge `--judge-min-confidence 60`, GT-equivalence off, scoped to the 3 lens-target notional zones. Result: **notional rare recall 1/14 (was 0/14)** — **H-9 CAUGHT by C23** (judge conf 93; the same candidate was REFUTED under the C22 framing, CONFIRMED under C23), **H-8 REFUTED** (C22 fired + generated PT/sUSDe-accounting candidates, but not H-8's oracle SY==YT bug, and the refute gate dropped them), **M-12 REFUTED** (C2 candidate at `PendlePTOracle._getPTRate`, dropped). The bottleneck for the rest is the refute gate, not coverage/generation. NB: this run required restoring the #1877/#1881 `experience.enabled` regression on `run-discovery.sh` + `run-refute.sh`, which otherwise zeroes the whole pipeline.
 
 ## Per-finding tags (5 of 8 contests run so far)
 
@@ -48,8 +51,8 @@ auto-derived; refine as `tag-bug-classes` (a #1787 deliverable) is built.
 | notional | H-5 migrateRewardPool storage design | 5 | C17 slot-overwrite | OUT-OF-CLASS |
 | notional | H-6 DoS DineroWithdrawRequestManager | 7 | C16 liveness | OUT-OF-CLASS |
 | notional | H-7 claimAccountRewards missing param check | 5 | C5 access | OUT-OF-CLASS |
-| notional | **H-8 Pendle SY 1:1 assumption** | **2** | **C15 integration** | OUT-OF-CLASS |
-| notional | **H-9 hardcoded useEth in remove_liquidity** | **2** | **C15 integration** | OUT-OF-CLASS |
+| notional | **H-8 Pendle SY 1:1 assumption** | **2** | **C22 x-protocol unit** | REFUTED (#1879) |
+| notional | **H-9 hardcoded useEth in remove_liquidity** | **2** | **C23 hardcoded-param** | **CAUGHT** ✅ (#1879) |
 | notional | **H-10 TradeType change to steal** | **2** | **C5 access** | OUT-OF-CLASS (#1785) |
 | notional | H-11 missing slippage PT redemption | 11 | C12 slippage | OUT-OF-CLASS |
 | mellow | H-1 checkSignatures duplicate signers | 44 | C7 signature | OUT-OF-CLASS |
@@ -68,7 +71,9 @@ auto-derived; refine as `tag-bug-classes` (a #1787 deliverable) is built.
 | C2 oracle integrity | 5 | 1 | IN-FLIGHT (#1783) | 5 Highs incl. 2 rare (fb=1) — highest ROI |
 | C5 access control | 3 | 2 | OPEN (#1785) | 3 Highs incl. notional H-10 (fb=2 rare) |
 | C6 accounting / rounding | 7 | 3 | OUT-OF-CLASS | large but mostly non-rare; breadth-adjacent |
-| C15 integration-seam | 3 | 2 | OUT-OF-CLASS | notional H-8/H-9 rare (fb=2) — good target |
+| C15 integration-seam | 1 | 2 | OUT-OF-CLASS | plaza H-7; notional H-8/H-9 retagged to C22/C23 (#1879) |
+| C22 x-protocol asset/unit | 1 | 2 | REFUTED (#1879) | notional H-8 (fb=2): C22 fired + generated PT/sUSDe candidates, refute gate dropped them |
+| C23 hardcoded ext-param | 1 | 2 | **CAUGHT** ✅ (#1879) | notional H-9 (fb=2): judge conf 93 — first C22/C23-family catch, end-to-end |
 | C16 liveness / stuck-state | 4 | 3 | OPEN (#1784 overlaps) | DoS class |
 | C17 index/slot-overwrite | 2 | 1 | OPEN (#1784) | yieldoor H-3 (fb=1 rare, overflow) |
 | C10 liquidation / redemption | 4 | 3 | OUT-OF-CLASS | |
@@ -85,7 +90,7 @@ Three corpus contests remain to tag: dodo, crestal, symm.
 ## Prioritization (rarity × corpus-occurrence × not-yet-caught)
 
 1. **C2 oracle** — 5 corpus Highs, 2 rare (fb=1: yieldoor H-2, notional H-2). **In flight (#1783).** Transfer pair: derive on notional H-4 → hold out yieldoor H-2 (or plaza H-4).
-2. **C15 integration-seam** — notional H-8/H-9 (fb=2), plaza H-7. Under-audited by construction (per taxonomy), so high real-money tail.
+2. **C23 hardcoded ext-param** — notional H-9 (fb=2) **CAUGHT end-to-end (#1879)**, judge conf 93; the pattern (hardcoded `useEth`/`dexId`/pool-index on an external call) should transfer to other integration-adapter targets. **C22 x-protocol unit** (notional H-8, fb=2) fires + generates but is **REFUTED** — the remaining gap there is candidate airtightness vs. the refute gate, not coverage or generation.
 3. **C5 access control** — notional H-10 (fb=2 rare) + H-7 + yieldoor H-7. Issue #1785.
 4. **C17 slot-overwrite / overflow** — yieldoor H-3 (fb=1), notional H-5. Issue #1784.
 
