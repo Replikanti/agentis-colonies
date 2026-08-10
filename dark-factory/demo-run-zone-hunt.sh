@@ -54,6 +54,17 @@
 #         --depth-lens-quota, is recorded in the coverage detail and in each zone's totals, and does NOT
 #         change what depth costs — cells_charged is still breadth + the depth cap. With the knob unset the
 #         depth-on argv is byte-identical to a pre-#1850 one (asserted inside (r)).
+#   v) #1880 TOTAL DEPTH BUDGET (`--total-depth-cells`, default 0 = OFF): the per-zone depth allowance is
+#      lowered to min(--zone-depth-cells, N / zone count) uniformly across the sweep.
+#      v1) SCALING: at --zone-depth-cells 3 --total-depth-cells 8 over 4 zones every zone is hunted at 2
+#          (neither the nominal 3 nor 0, so the assertion cannot pass vacuously), the summed depth charge is
+#          exactly the ceiling, the detail names the scaling, and the record carries budget.depth_*.
+#      v2) CEILING BELOW ZONE COUNT: 3 cells over 4 zones gives 0 — no --depth-max-cells anywhere, a detail
+#          naming the TOTAL-budget cause (never the cell-budget headroom one), and a record field-for-field
+#          identical to a --zone-depth-cells 0 twin.
+#      v3) INERTNESS: with --total-depth-cells absent, depth behaves exactly as #1827 shipped it and the
+#          record's `budget` object gains NO depth keys (the exact-dict pin in block (f) is the twin guard).
+#      v4) VALIDATION: a bad value and a ceiling with depth off both fail fast with exit 2.
 #   u) #1863 --jobs FORWARDING: --jobs reaches BOTH substrate-heavy stages — STAGE 3's run-discovery.sh AND
 #      STAGE 4's verify-findings.sh (static, over the source) — and an end-to-end --jobs 2 stub run produces a
 #      verify/verified_findings.json byte-identical to the default run's (the fan-out changes wall-clock, never
@@ -1365,6 +1376,130 @@ fi
 badflag "--zone-depth-cells notanumber" 'must be a non-negative integer' --zone-depth-cells notanumber
 badflag "--zone-depth-lens-quota notanumber" "must be a positive integer (got 'notanumber')" --zone-depth-lens-quota notanumber
 badflag "--zone-depth-lens-quota 0" "must be >= 1 (got '0')" --zone-depth-lens-quota 0
+
+# ----------------------------------------------------------------------------------------------------------
+# (v) #1880 TOTAL DEPTH BUDGET. `--zone-depth-cells` is a PER-ZONE maximum, so the sweep admits depth x zone
+#     count cells and a many-zone contest silently costs a multiple of what the flag reads. The ceiling lowers
+#     the per-zone allowance to min(--zone-depth-cells, N / zone count) uniformly, and is INERT when absent.
+#     The fixture's four zones (breadth 2/3/2/2) make the arithmetic checkable by hand.
+# ----------------------------------------------------------------------------------------------------------
+note "v1) #1880 --total-depth-cells 8 over 4 zones scales the per-zone depth allowance 3 -> 2 ..."
+ARGV_V1="$WORK/argv-total-depth-v1.log"; : > "$ARGV_V1"
+OUTV1="$WORK/zh-total-depth-v1"
+DF_ARGV_LOG="$ARGV_V1" DF_REAL_DISCOVERY="$HERE/run-discovery.sh" \
+  "$SHIM/run-zone-hunt.sh" --repo "$REPO" --out "$OUTV1" --drop-dir "$OUTV1/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --zone-depth-cells 3 --total-depth-cells 8 \
+  >"$WORK/zhv1.out" 2>"$WORK/zhv1.err"
+RCV1=$?
+[ "$RCV1" -eq 0 ] && ok "the --zone-depth-cells 3 --total-depth-cells 8 run exits 0" \
+  || { bad "the #1880 scaling run exited $RCV1"; sed 's/^/      /' "$WORK/zhv1.err" | tail -20 >&2; }
+# 8 / 4 = 2 — deliberately neither the nominal 3 nor 0, so neither "the flag was ignored" nor "depth was
+# switched off" can satisfy this assertion.
+if [ "$(grep -c -- '--depth-max-cells 2' "$ARGV_V1")" -eq 4 ] && ! grep -q -- '--depth-max-cells 3' "$ARGV_V1"; then
+  ok "v1) all 4 hunted zones were invoked with the SCALED --depth-max-cells 2, and never with the nominal 3"
+else
+  bad "v1) expected 4 hunt invocations at the scaled --depth-max-cells 2, got $(grep -c -- '--depth-max-cells 2' "$ARGV_V1")"
+fi
+if python3 - "$OUTV1" <<'PY'
+import sys, os, json
+out = sys.argv[1]
+rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
+want_planned = {"contracts_liquidation": 2, "contracts_vault": 3, "contracts_governance": 2, "contracts_oracle": 2}
+spent = 0
+for z in rec["zones"]:
+    planned = want_planned[z["id"]]
+    assert z["cells_planned"] == planned, "%s cells_planned %r != %r" % (z["id"], z["cells_planned"], planned)
+    assert z["cells_charged"] == planned + 2, "%s charged %r, expected breadth %d + the scaled depth 2" % (
+        z["id"], z["cells_charged"], planned)
+    assert "scaled from 3" in (z.get("detail") or ""), "%s detail does not name the scaling: %r" % (
+        z["id"], z.get("detail"))
+    spent += z["cells_charged"] - planned
+# The whole point: the SWEEP's depth charge is bounded by the ceiling, not by the per-zone flag.
+assert spent == 8, "the sweep charged %r depth cell(s), expected the full ceiling of 8" % spent
+assert rec["budget"]["depth_total"] == 8, "budget.depth_total %r" % rec["budget"].get("depth_total")
+assert rec["budget"]["depth_per_zone"] == 2, "budget.depth_per_zone %r" % rec["budget"].get("depth_per_zone")
+assert rec["complete"] is True, "the #1880-scaled sweep is not complete"
+PY
+then ok "v1) every zone charged breadth + the SCALED 2, the sweep's depth charge is exactly the 8-cell ceiling, and the record carries budget.depth_total/depth_per_zone"
+else bad "v1) the #1880 scaling / accounting assertion failed"
+fi
+
+note "v2) #1880 a ceiling below the zone count gives 0 depth everywhere, with its OWN cause in the detail ..."
+ARGV_V2="$WORK/argv-total-depth-v2.log"; : > "$ARGV_V2"
+OUTV2="$WORK/zh-total-depth-v2"
+DF_ARGV_LOG="$ARGV_V2" DF_REAL_DISCOVERY="$HERE/run-discovery.sh" \
+  "$SHIM/run-zone-hunt.sh" --repo "$REPO" --out "$OUTV2" --drop-dir "$OUTV2/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --zone-depth-cells 3 --total-depth-cells 3 \
+  >"$WORK/zhv2.out" 2>"$WORK/zhv2.err"
+RCV2=$?
+# The DEPTH-OFF twin of the same sweep: with the allowance at 0 the run must be indistinguishable from one
+# that never asked for depth at all (the (q2) comparison idiom, on the same fields).
+OUTV2OFF="$WORK/zh-total-depth-v2-off"
+"$ZONEHUNT" --repo "$REPO" --out "$OUTV2OFF" --drop-dir "$OUTV2OFF/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --zone-depth-cells 0 \
+  >"$WORK/zhv2off.out" 2>"$WORK/zhv2off.err"
+if [ "$RCV2" -eq 0 ] && ! grep -q -- '--depth-max-cells' "$ARGV_V2" && python3 - "$OUTV2" "$OUTV2OFF" <<'PY'
+import sys, os, json
+def rec(p):
+    return json.load(open(os.path.join(p, "coverage", "zone-coverage.json"), encoding="utf-8"))
+on, off = rec(sys.argv[1]), rec(sys.argv[2])
+fields = ("id", "status", "cells_planned", "cells_charged", "classes_hunted", "budget_truncated", "cells")
+a = [tuple(z[f] if not isinstance(z[f], list) else tuple(z[f]) for f in fields) for z in on["zones"]]
+b = [tuple(z[f] if not isinstance(z[f], list) else tuple(z[f]) for f in fields) for z in off["zones"]]
+assert a == b, "the zeroed-depth sweep diverged from the depth-off one:\n  on  = %r\n  off = %r" % (a, b)
+assert on["complete"] == off["complete"] and on["gap_zones"] == off["gap_zones"], "derived fields diverged"
+for z in on["zones"]:
+    detail = z.get("detail") or ""
+    # The two causes of "depth 0" must stay distinguishable: this one is the sweep-level ceiling, NOT the
+    # per-zone cell-budget headroom trim (which this run never sets).
+    assert "total depth budget" in detail, "%s does not name the total-budget cause: %r" % (z["id"], detail)
+    assert "no headroom" not in detail, "%s blames the cell budget for a total-budget trim: %r" % (z["id"], detail)
+assert on["budget"]["depth_per_zone"] == 0, "budget.depth_per_zone %r" % on["budget"].get("depth_per_zone")
+PY
+then ok "v2) 3 cells over 4 zones admits no depth at all: no --depth-max-cells in the argv, the record matches the depth-off twin field for field, and the detail names the TOTAL budget (not the cell-budget headroom)"
+else bad "v2) the below-zone-count ceiling assertion failed (exit $RCV2)"
+fi
+
+note "v3) #1880 with --total-depth-cells absent, depth is exactly what #1827 shipped and budget gains no keys ..."
+ARGV_V3="$WORK/argv-total-depth-v3.log"; : > "$ARGV_V3"
+OUTV3="$WORK/zh-total-depth-v3"
+DF_ARGV_LOG="$ARGV_V3" DF_REAL_DISCOVERY="$HERE/run-discovery.sh" \
+  "$SHIM/run-zone-hunt.sh" --repo "$REPO" --out "$OUTV3" --drop-dir "$OUTV3/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --zone-depth-cells 3 \
+  >"$WORK/zhv3.out" 2>"$WORK/zhv3.err"
+RCV3=$?
+if [ "$RCV3" -eq 0 ] && [ "$(grep -c -- '--depth-max-cells 3' "$ARGV_V3")" -eq 4 ] && python3 - "$OUTV3" <<'PY'
+import sys, os, json
+out = sys.argv[1]
+rec = json.load(open(os.path.join(out, "coverage", "zone-coverage.json"), encoding="utf-8"))
+# THE INERTNESS PIN: with the ceiling off the record's budget object is byte-identical to a pre-#1880 one —
+# no depth_total, no depth_per_zone. (Block (f) pins the same dict on the depth-OFF default path.)
+assert rec["budget"] == {"unit": "cells", "per_zone": 0, "run": 0}, \
+    "the depth-on record gained #1880 keys with the ceiling off: %r" % rec["budget"]
+for z in rec["zones"]:
+    assert "#1880" not in (z.get("detail") or ""), "%s detail mentions the ceiling with it off: %r" % (
+        z["id"], z.get("detail"))
+PY
+then ok "v3) with the ceiling absent every zone keeps the nominal --depth-max-cells 3 and the record's budget object gains NO depth keys"
+else bad "v3) the #1880-off inertness assertion failed (exit $RCV3)"
+fi
+
+badflag "--total-depth-cells notanumber" 'must be a non-negative integer' \
+  --zone-depth-cells 3 --total-depth-cells notanumber
+badflag "--total-depth-cells without --zone-depth-cells" 'a total depth ceiling with depth off is a no-op' \
+  --total-depth-cells 8
 
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then

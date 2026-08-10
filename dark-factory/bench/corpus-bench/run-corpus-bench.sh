@@ -21,6 +21,8 @@
 # Usage: run-corpus-bench.sh [--self-test] [--fetch] [--gt] [--dupes] [--hunt] [--score] [--live]
 #                            [--id <id>]... [--work <dir>] [--corpus <file>] [--backend <mock|flat-cyborg|claude>]
 #                            [--jobs <N>] [--min-overlap <N>] [--agentis <bin>] [--json] [-h]
+#                            [--zone-depth-cells <N>] [--zone-depth-lens-quota <N>] [--total-depth-cells <N>]
+#                            [--zone-cell-budget <N>] [--run-cell-budget <N>]
 #                            [--judge <off|cache|cmd>] [--judge-cmd <path>] [--judge-cache <file.jsonl>]
 #                            [--judge-log <file.jsonl>] [--judge-batch <N>] [--judge-min-confidence <N>]
 #                            [--gt-dupes <file>] [--gt-dupes-min-confidence <N>] [--no-gt-dupes]
@@ -58,6 +60,17 @@
 #                     depth plan moves on, forwarded verbatim to run-zone-hunt.sh. Unset (default) = the
 #                     hunt stage's own default, and the invocation gains NO argument. N=1 reproduces #1827's
 #                     breadth-first spread, so the two A/B arms differ by exactly this one flag.
+#   --total-depth-cells <N>  #1880 RUNTIME BOUND: TOTAL depth cells admitted for the whole sweep of ONE
+#                     contest, forwarded to run-zone-hunt.sh ONLY when depth is on. Default 36. The effective
+#                     per-zone allowance becomes min(--zone-depth-cells, N / zone count), so a 9-zone contest
+#                     at --zone-depth-cells 12 is hunted at 4 instead of 108 admitted depth cells. 0 = OFF =
+#                     the uncapped pre-#1880 behaviour, which is how a pre-#1880 arm is re-derived exactly.
+#                     A depth recall number must be quoted with the EFFECTIVE per-zone depth from the run's
+#                     coverage/zone-coverage.json (`budget.depth_per_zone`), not with the nominal flag.
+#   --zone-cell-budget <N> / --run-cell-budget <N>  #1830 BREADTH-SIDE caps (cells per zone / per run),
+#                     forwarded verbatim to run-zone-hunt.sh. Both default 0 = OFF = the invocation gains NO
+#                     argument. Pure pass-through: the bench sets no policy on them, unlike the depth bound
+#                     above — a run pool DENIES whole zones, which pays for runtime out of breadth coverage.
 #   --min-overlap <N> Overlap threshold for scoring's LOCATION-UNAVAILABLE FALLBACK ONLY (a lead with no
 #                     parseable function); location-resolvable leads are threshold-independent. Default 2.
 #   --agentis <bin>   agentis binary (default: `agentis` on PATH).
@@ -104,6 +117,17 @@ JUDGE_MINCONF_DEFAULT=60
 IDS="" ; BACKEND="flat-cyborg" ; JOBS="1" ; MINOV="2" ; AGENTIS="agentis" ; JSON=0 ; ZONE_DEPTH_CELLS="0"
 # #1850: EMPTY = unset = run-discovery.sh owns the default; only a set value is forwarded to the hunt stage.
 ZONE_DEPTH_LENS_QUOTA=""
+# #1880 THE ONE OPINIONATED DEFAULT ON THIS PATH. --zone-depth-cells is a PER-ZONE maximum, so the sweep cost
+# is depth x zone count: the #1872 Stage C `notional` run (9 zones at --zone-depth-cells 12) admitted up to 108
+# depth cells and projected ~18-24 h. #1879 then named --zone-depth-cells 4 on that same 9-zone contest as the
+# tractable config = 36 cells, so 36 admits exactly the configuration the operator already judged tractable,
+# leaves 2-3-zone contests at depth 12 completely unchanged (24-36 <= 36), and cuts the measured trap to a
+# third. Forwarded ONLY when depth is on; 0 restores the uncapped pre-#1880 behaviour byte-for-byte.
+# tools/colony-lint.sh greps THIS assignment and pins the value — move the bound and update both in one commit.
+TOTAL_DEPTH_CELLS="36"
+# #1830 breadth-side caps: pure pass-through, no bench policy. 0 = OFF = not forwarded = byte-identical.
+ZONE_CELL_BUDGET="0"
+RUN_CELL_BUDGET="0"
 JUDGE="off" ; JUDGE_CMD="" ; JUDGE_CACHE="" ; JUDGE_LOG="" ; JUDGE_BATCH="" ; JUDGE_MINCONF=""
 GT_DUPES="" ; GT_DUPES_MINCONF="" ; NO_GT_DUPES=0
 DO_SELFTEST=0 ; DO_FETCH=0 ; DO_GT=0 ; DO_DUPES=0 ; DO_HUNT=0 ; DO_SCORE=0 ; ANY_ACTION=0
@@ -125,6 +149,9 @@ while [ $# -gt 0 ]; do case "$1" in
   --jobs)        nv "$#" "$1"; JOBS="$2"; shift 2;;
   --zone-depth-cells) nv "$#" "$1"; ZONE_DEPTH_CELLS="$2"; shift 2;;
   --zone-depth-lens-quota) nv "$#" "$1"; ZONE_DEPTH_LENS_QUOTA="$2"; shift 2;;
+  --total-depth-cells) nv "$#" "$1"; TOTAL_DEPTH_CELLS="$2"; shift 2;;
+  --zone-cell-budget) nv "$#" "$1"; ZONE_CELL_BUDGET="$2"; shift 2;;
+  --run-cell-budget) nv "$#" "$1"; RUN_CELL_BUDGET="$2"; shift 2;;
   --min-overlap) nv "$#" "$1"; MINOV="$2"; shift 2;;
   --agentis)     nv "$#" "$1"; AGENTIS="$2"; shift 2;;
   --json)        JSON=1; shift;;
@@ -153,6 +180,16 @@ if [ -n "$ZONE_DEPTH_LENS_QUOTA" ]; then
   esac
   [ "$ZONE_DEPTH_LENS_QUOTA" -ge 1 ] || { echo "run-corpus-bench.sh: --zone-depth-lens-quota must be >= 1 (got '$ZONE_DEPTH_LENS_QUOTA')" >&2; exit 2; }
 fi
+# #1880 + #1830: same block, same shape, same fail-fast posture as the two knobs above.
+case "$TOTAL_DEPTH_CELLS" in
+  ''|*[!0-9]*) echo "run-corpus-bench.sh: --total-depth-cells must be a non-negative integer (got '$TOTAL_DEPTH_CELLS')" >&2; exit 2 ;;
+esac
+case "$ZONE_CELL_BUDGET" in
+  ''|*[!0-9]*) echo "run-corpus-bench.sh: --zone-cell-budget must be a non-negative integer (got '$ZONE_CELL_BUDGET')" >&2; exit 2 ;;
+esac
+case "$RUN_CELL_BUDGET" in
+  ''|*[!0-9]*) echo "run-corpus-bench.sh: --run-cell-budget must be a non-negative integer (got '$RUN_CELL_BUDGET')" >&2; exit 2 ;;
+esac
 [ "$ANY_ACTION" -eq 1 ] || DO_SELFTEST=1
 
 say() { echo "run-corpus-bench.sh: $*" >&2; }
@@ -278,8 +315,19 @@ if [ "$DO_HUNT" -eq 1 ]; then
   # and the measured pipeline is byte-identical to a pre-depth run. Only a positive value turns depth on.
   DEPTH_ARG=""
   [ "$ZONE_DEPTH_CELLS" -gt 0 ] 2>/dev/null && DEPTH_ARG="$ZONE_DEPTH_CELLS"
+  # #1880: the ceiling rides the SAME admission gate as the #1850 quota — it reaches the hunt stage only when
+  # depth is genuinely on (a ceiling with depth off is a no-op the hunt stage rejects), and only when > 0. So a
+  # depth-off contest's run-zone-hunt.sh argv, and a --total-depth-cells 0 run, are byte-identical to before.
+  TOTAL_DEPTH_ARG=""
+  if [ -n "$DEPTH_ARG" ] && [ "$TOTAL_DEPTH_CELLS" -gt 0 ] 2>/dev/null; then TOTAL_DEPTH_ARG="$TOTAL_DEPTH_CELLS"; fi
+  # #1830 breadth-side caps: forwarded verbatim when set, absent when 0.
+  ZONE_BUDGET_ARG="" ; RUN_BUDGET_ARG=""
+  [ "$ZONE_CELL_BUDGET" -gt 0 ] 2>/dev/null && ZONE_BUDGET_ARG="$ZONE_CELL_BUDGET"
+  [ "$RUN_CELL_BUDGET" -gt 0 ] 2>/dev/null && RUN_BUDGET_ARG="$RUN_CELL_BUDGET"
   [ -n "$DEPTH_ARG" ] && say "HUNT: within-contract DEPTH pass ON (--zone-depth-cells $DEPTH_ARG, #1827) — this ADDS cells; a recall number from this run is not cost-comparable to a depth-off one"
   [ -n "$ZONE_DEPTH_LENS_QUOTA" ] && say "HUNT: depth allocation pinned to --zone-depth-lens-quota $ZONE_DEPTH_LENS_QUOTA (#1850) — lenses per location per round; state it next to any recall number"
+  [ -n "$TOTAL_DEPTH_ARG" ] && say "HUNT: total depth bounded at $TOTAL_DEPTH_ARG cell(s) per contest (--total-depth-cells, #1880) — the EFFECTIVE per-zone depth is min($DEPTH_ARG, $TOTAL_DEPTH_ARG / zone count) and is recorded in coverage/zone-coverage.json as budget.depth_per_zone; quote THAT, not the nominal flag. Pass --total-depth-cells 0 for the uncapped pre-#1880 behaviour"
+  { [ -n "$ZONE_BUDGET_ARG" ] || [ -n "$RUN_BUDGET_ARG" ]; } && say "HUNT: breadth cell budget forwarded (#1830): zone ${ZONE_BUDGET_ARG:-off}, run ${RUN_BUDGET_ARG:-off} — a run pool DENIES whole zones, so state the coverage record with any recall number"
   while IFS=$'\t' read -r id _code _judging project_subdir scope_hint; do
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
@@ -291,6 +339,9 @@ if [ "$DO_HUNT" -eq 1 ]; then
       --agentis "$AGENTIS" ${scope_hint:+--scope-hint "$scope_hint"} \
       ${DEPTH_ARG:+--zone-depth-cells "$DEPTH_ARG"} \
       ${ZONE_DEPTH_LENS_QUOTA:+--zone-depth-lens-quota "$ZONE_DEPTH_LENS_QUOTA"} \
+      ${TOTAL_DEPTH_ARG:+--total-depth-cells "$TOTAL_DEPTH_ARG"} \
+      ${ZONE_BUDGET_ARG:+--zone-cell-budget "$ZONE_BUDGET_ARG"} \
+      ${RUN_BUDGET_ARG:+--run-cell-budget "$RUN_BUDGET_ARG"} \
       || say "  [$id] run-zone-hunt.sh exited non-zero; scoring whatever it produced"
   done < "$CORPUS"
 fi

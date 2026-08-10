@@ -431,6 +431,46 @@ Exit `0` = requested stage(s) ran (a low/zero recall is DATA, not a failure — 
 `run-capability-bench.sh`'s live stage); `1` = `--self-test` regressed; `2` = bad args; `3` = missing
 prerequisite (repo not fetched yet, `agentis` missing, etc).
 
+## Runtime bound: depth × zone-count (#1880)
+
+`--zone-depth-cells` is a **per-zone** maximum, so the sweep admits `depth × zone count` depth cells and a
+many-zone contest silently costs a multiple of what the flag reads. `--total-depth-cells N` (default **36**
+on this bench) bounds the whole sweep of one contest instead: the effective per-zone allowance becomes
+
+```
+min(--zone-depth-cells, 36 / zone_count)      # integer division; the remainder is left unspent
+```
+
+so every zone of one scored contest is hunted on the same ruler. Worked examples:
+
+| zones | `--zone-depth-cells` | effective per-zone depth | effect |
+|---|---|---|---|
+| 3 | 12 | 12 (`36/3 = 12`) | unchanged — a small contest never notices the bound |
+| 9 | 12 | 4 (`36/9 = 4`) | the #1872 trap: 108 admitted depth cells become 36 |
+| 9 | 4 | 4 (nominal already ≤ `36/9`) | unchanged — this is the #1879 config the bound is derived from |
+
+**Where 36 comes from.** #1872 Stage C ran `notional` (9 zones) at `--zone-depth-cells 12` — up to 108 depth
+cells, projected ~18–24 h — and #1879 named `--zone-depth-cells 4` on that same 9-zone contest as the
+tractable configuration, i.e. 36 cells. So 36 admits exactly the configuration the operator already judged
+tractable and leaves 2–3-zone contests at depth 12 completely unchanged. `tools/colony-lint.sh` pins the
+value statically; move the bound and update this section in the same commit.
+
+**The bound is exact in CELLS ONLY.** Per-cell wall clock varies (payload size, retries, backend), the same
+caveat the #1830 cell budget already carries — the wall-clock figures above are advisory provenance, never
+enforced. The bound is also an UPPER one: zones that turn out `no_brief` / `unscoped` / denied are counted in
+`zone_count` but spend nothing, so a sweep can finish under the ceiling.
+
+**Quote the effective depth, not the flag.** A depth recall number must be reported with
+`budget.depth_per_zone` from that run's `<work>/<id>/zone-hunt-out/coverage/zone-coverage.json` (present only
+when the ceiling is on), and each zone's coverage `detail` names the scaling. Passing `--total-depth-cells 0`
+turns the ceiling OFF and restores the uncapped pre-#1880 behaviour byte-for-byte — that is how the #1858 /
+#1860 / #1879 / #1831 arms stay exactly re-derivable.
+
+The bench also passes the two #1830 breadth-side caps straight through (`--zone-cell-budget` /
+`--run-cell-budget`, both default `0` = OFF = not forwarded). They carry **no** bench policy on purpose: a run
+cell pool denies whole zones, which would pay for runtime out of the #1824/#1825/#1826 breadth-coverage
+investment, whereas depth is trimmed to 0 before a single breadth class is dropped.
+
 ## Fitness feedback loop (bench → hunter, #1711)
 
 The bench does not just *measure* — it now **teaches the hunt**. The same HIT/MISS matching that scores recall

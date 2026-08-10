@@ -554,6 +554,12 @@ ordered by, and always the same length as, the #1826 priority order; paths in `r
 }
 ```
 
+`budget` gains **two optional keys**, `depth_total` and `depth_per_zone` (the #1880 sweep-level depth ceiling
+and the effective per-zone allowance it produced). They are **present only when depth is on** — specifically
+only when `--total-depth-cells` is set — exactly like `totals.depth_cells`, so a run without the ceiling keeps
+a byte-identical `budget` object and the one external reader (`lib/gap-policy.py`, which touches `budget.run`
+only) is unaffected. See the #1880 paragraph under *M3 within-contract depth* below.
+
 **The state vocabulary is closed** — a consumer branches on `status`, and each state licenses exactly one
 conclusion:
 
@@ -842,6 +848,34 @@ its cap charged and 0 depth cells spent. `cells_planned` keeps meaning "what `--
 one, the lens quota). **No new coverage status** — the state vocabulary above is untouched. The quota is an
 *ordering*, never a cost: `--zone-depth-lens-quota` is forwarded only when depth is genuinely admitted, and it
 never moves `cells_charged`, so the two A/B arms remain cost-comparable.
+
+**The zone-count-aware ceiling (#1880).** `--zone-depth-cells` is a **per-zone** maximum, so the sweep's depth
+cost is `depth × zone count` — a 9-zone contest at depth 12 admits **108** depth cells, which is the runtime
+trap the #1872 Stage C `notional` run hit (projected ~18–24 h). `run-zone-hunt.sh --total-depth-cells N`
+(default `0` = OFF, so every pre-#1880 arm is re-derivable by leaving it alone) bounds the WHOLE sweep
+instead: the per-zone allowance entering the formula above becomes
+
+```
+min(--zone-depth-cells, N / zone_count)     # integer division
+```
+
+applied **uniformly** — the division remainder is deliberately left unspent, and no zone is front-loaded at
+the expense of a later one, because two zones of the SAME scored contest must be hunted on one ruler to be
+comparable. It requires `--zone-depth-cells > 0` (a ceiling with depth off is a no-op, exit 2), and it is
+**per invocation**: a `--rehunt-gaps` pass gets its own ceiling, computed over the gap set (there is no
+cross-invocation depth accounting). The zone count is taken from the work list, so it counts zones that may
+later turn out `no_brief` / `unscoped` / denied — the bound therefore holds as an UPPER bound and a sweep can
+finish under it. The ceiling is decided ONCE, at sweep level, because the zone count only exists after STAGE
+1 mapping; a caller cannot compute it, which is why the opinionated default lives one level up in
+`bench/corpus-bench/run-corpus-bench.sh` (`--total-depth-cells 36`, forwarded only when depth is on — see its
+README's *Runtime bound* section) and never in the hunt stage itself.
+
+Where the ceiling scaled a zone's allowance down but left it > 0 the coverage `detail` appends
+`scaled from <nominal> by the #1880 total depth budget (…)`; where it scaled it to **0** the detail names the
+total budget explicitly, deliberately distinct from the cell-budget headroom message above — the two causes
+of "depth 0" have different remedies and must never be conflated by a debugger. A one-line stderr banner is
+printed when the ceiling bites, and the record carries `budget.depth_total` + `budget.depth_per_zone`, which
+is the number a depth recall figure must be quoted against (never the nominal flag).
 
 **Substrate cost.** `DEPTH_KNOWN` is consumed as **one opaque string**: never `regex_split`/`reduce`d, so the
 CB cost is O(1) in the number of known leads. That is the recidivist trap here — an interpreted per-element

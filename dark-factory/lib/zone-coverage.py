@@ -61,6 +61,13 @@
 #       Atomic in-place update (tmp + os.replace), recomputes totals/complete/gap_zones. With `--results` it
 #       reads `totals.{cells,candidates,failed}` and DERIVES the terminal status itself — the derivation
 #       exists in exactly one place. Omitted fields keep their current value.
+#   budget --file <coverage.json> --depth-total N --depth-per-zone M
+#       #1880: record the sweep-level DEPTH ceiling that was actually in force — `budget.depth_total` (the
+#       whole sweep's admitted depth cells) and `budget.depth_per_zone` (the EFFECTIVE per-zone allowance,
+#       = min(--zone-depth-cells, depth_total / zone count)). run-zone-hunt.sh calls this ONCE, right after it
+#       computes the allowance, and ONLY when the ceiling is on — so a run without it keeps a byte-identical
+#       `budget` object (the `totals.depth_cells` precedent: a key that exists only where it means something).
+#       A depth recall figure must be quoted against `depth_per_zone`, never against the nominal flag.
 #   gaps --file <coverage.json> [--include-partial] [--max-attempts N]
 #       The re-hunt work list in priority order, TSV `<zid>\t<name>\t<action>` where action is
 #         hunt      a plain first attempt (not_reached / budget_exhausted) — nothing to preserve
@@ -382,6 +389,26 @@ def cmd_set(argv):
 
 
 # ----------------------------------------------------------------------------------------------------------
+# budget — #1880: record the sweep-level depth ceiling in force. Additive, and only ever called when it is on.
+# ----------------------------------------------------------------------------------------------------------
+def cmd_budget(argv):
+    f = parse_flags(argv, ("--file", "--depth-total", "--depth-per-zone"), ())
+    for req in ("--file", "--depth-total", "--depth-per-zone"):
+        if req not in f:
+            die(2, "budget requires " + req)
+    rec = load_record(f["--file"])
+    budget = rec.get("budget")
+    if not isinstance(budget, dict):
+        budget = {}
+        rec["budget"] = budget
+    budget["depth_total"] = int(f["--depth-total"])
+    budget["depth_per_zone"] = int(f["--depth-per-zone"])
+    recompute(rec)
+    write_record(f["--file"], rec)
+    return 0
+
+
+# ----------------------------------------------------------------------------------------------------------
 # gaps — the re-hunt work list. `no_brief` is NEVER selected; `failed`/`in_flight` are NEVER collapsed into
 # `not_reached` (their remedy differs and their artifacts must be preserved first).
 # ----------------------------------------------------------------------------------------------------------
@@ -485,6 +512,7 @@ def cmd_summary(argv):
 COMMANDS = {
     "init": cmd_init,
     "set": cmd_set,
+    "budget": cmd_budget,
     "gaps": cmd_gaps,
     "retry": cmd_retry,
     "summary": cmd_summary,
@@ -493,7 +521,7 @@ COMMANDS = {
 
 def main(argv):
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
-        sys.stdout.write("usage: zone-coverage.py <init|set|gaps|retry|summary> [flags]\n")
+        sys.stdout.write("usage: zone-coverage.py <init|set|budget|gaps|retry|summary> [flags]\n")
         return 0 if len(argv) >= 2 else 2
     cmd = COMMANDS.get(argv[1])
     if cmd is None:

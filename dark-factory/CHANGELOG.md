@@ -15,6 +15,29 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **ZONE-COUNT-AWARE TOTAL DEPTH BUDGET** (#1880). `--zone-depth-cells` is a PER-ZONE maximum, so a sweep
+  admits `depth x zone count` depth cells: the #1872 Stage C `notional` run (9 zones at `--zone-depth-cells
+  12`) admitted up to 108 depth cells and projected ~18-24 h, with nothing in the pipeline naming the product.
+  - `run-zone-hunt.sh --total-depth-cells <N>` (default **0 = OFF = byte-identical**) is a new, separate
+    ceiling over the WHOLE STAGE 3 sweep: with depth on, the per-zone allowance becomes
+    `min(--zone-depth-cells, N / zone count)` (integer division, remainder deliberately unspent so every zone
+    of one contest is hunted on the same ruler). It requires `--zone-depth-cells > 0` (exit 2), and it is PER
+    INVOCATION — a `--rehunt-gaps` pass gets its own, computed over the gap set.
+  - **`--zone-depth-cells` semantics did NOT change**, and no other default moved: every earlier arm
+    (#1858/#1860/#1879, the #1831 baseline) is re-derived exactly with `--total-depth-cells 0`.
+  - `bench/corpus-bench/run-corpus-bench.sh` carries the one opinionated default, `--total-depth-cells 36`,
+    forwarded ONLY when depth is on. 36 is the record's number: #1879 named `--zone-depth-cells 4` on that
+    same 9-zone contest as the tractable config = 36 cells, so the bound admits the configuration already
+    judged tractable and leaves 2-3-zone contests at depth 12 unchanged. The bench also gained pure
+    pass-throughs for the two #1830 breadth-side caps (`--zone-cell-budget` / `--run-cell-budget`, both
+    default 0 = OFF).
+  - Visibility, so a silently different arm cannot happen: a one-line stderr banner when the ceiling bites, a
+    bench line stating the bound on every depth-on hunt, distinct coverage `detail` strings for the two causes
+    of "depth 0" (sweep ceiling vs. cell-budget headroom), and the durable `budget.depth_total` /
+    `budget.depth_per_zone` in `zone-coverage.json` (`zone-coverage.py budget`, emitted only when the ceiling
+    is on) — the effective per-zone depth is what a recall number must be quoted against, never the flag.
+  - Guards: `demo-run-zone-hunt.sh` block (v) (scaling, a ceiling below the zone count, the depth-off record
+    identity, flag validation) plus a STATIC `tools/colony-lint.sh` pin on the bench default.
 - **EXTERNAL-ASSUMPTION HUNT LENS — bug classes `C22` + `C23`** (#1872, STAGE A / authoring only). The
   corpus-bench `notional` contest exposed a bug shape the taxonomy had no lens for: the target's own code is
   internally consistent, and the bug is an ASSUMPTION it makes about a SECOND protocol. Seven ground-truth
