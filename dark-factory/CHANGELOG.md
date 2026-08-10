@@ -58,6 +58,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     authoring probe on the target they were derived from; the held-out transfer measurement and the
     full-pipeline recall/cell-cost numbers are separate, later stages, and no `VERSION` bump or class-coverage
     retag happens here.
+  - **Stage C measured (partial, 2026-08-10, #1879).** The full `--live` corpus-bench run (frozen at this
+    commit, `--zone-depth-cells 12 --judge cmd --judge-min-confidence 60`, #1831 arm) was stopped at
+    `notional` 4/9 zones after ~11h (a ~18–24h projected full run). On the two fully-hunted contests, judged:
+    `crestal` (the CONTROL) rare recall **2/3 = its 2/3 baseline — no regression**, and **zero `C22`/`C23`
+    candidates or verified leads there (no catch-all)**; `plaza` rare `0/5` vs a `1/5` baseline, but the lens
+    fired **0** candidates on it, so that drop is hunt variance, not lens-caused. On `notional` the zone-mapper
+    assigned `C22`/`C23` to **6 of 9 zones** — the Pendle/Curve/Ethena integration zones where the ground-truth
+    rows live — and `C23` produced candidates at real GT locations (`PendlePTOracle._getPTRate`,
+    `Curve2TokenOracle._lpTokenValue`); the dispatch-gap risk did NOT materialise. **Not yet shown:** a
+    judge-confirmed rare-row CATCH by either class (`notional` was not scored). So the lens lands **proven
+    clean and discriminative, recall payoff unproven** — the `notional` judged recall + the class-coverage
+    retag are the follow-up (#1879).
 
 ## [0.6.0] - 2026-08-01
 
