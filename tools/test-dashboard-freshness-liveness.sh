@@ -40,6 +40,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 COLLECTOR="$REPO_ROOT/federation-dashboard/lib/federation-dashboard-collector.py"
 
+# Test 6 launches a real `agentis daemon`; the guard owns its launch and its
+# teardown (#1750, #1869).
+# shellcheck source=tools/lib/daemon-guard.sh
+. "$REPO_ROOT/tools/lib/daemon-guard.sh"
+
 PASS=0
 FAIL=0
 TMPDIR_TEST="$(mktemp -d)"
@@ -58,7 +63,11 @@ cleanup() {
         # Scope the server reap to this test's temp dir so a real production
         # dashboard is never touched (#1300).
         pkill -f "federation-dashboard-server.py.*$T6_DIR" 2>/dev/null || true
-        (cd "$T6_DIR" && agentis daemon stop --all >/dev/null 2>&1) || true
+        # `agentis daemon stop --all` is registry-mediated and (per
+        # tools/kill-federation.sh's own header) unreliable — it left the
+        # watchdog + daemon-inner pair alive past this run (#1750). The guard
+        # kills the process GROUP it launched and then sweeps T6_DIR.
+        daemon_guard_reap >/dev/null 2>&1 || true
     fi
     rm -rf "$TMPDIR_TEST"
 }
@@ -375,16 +384,18 @@ AG
         # Launch the actual agent daemon with a huge tick interval so it
         # does not overwrite our seeded last_check during the test window.
         # 86_400_000ms = 24h between ticks. The daemon process is a
-        # long-running supervisor (watchdog + inner), so we MUST background
-        # it and disconnect stdin — bare `agentis daemon` is foreground
-        # and would deadlock the test. </dev/null shields it from any
-        # parent-shell job-control surprise.
+        # long-running supervisor (watchdog + inner), so it MUST be
+        # backgrounded with stdin disconnected — bare `agentis daemon` is
+        # foreground and would deadlock the test. daemon_guard_spawn does
+        # both, and additionally puts the pair in its own session so
+        # cleanup() can reap the whole group (#1750).
         DAEMON_OUT="$T6_DIR/daemon.start.out"
-        ( cd "$T6_DIR" && agentis daemon \
-             "regen-colony/agents/regen_agent.ag" \
-             --colony regen-colony \
-             --tick-interval 86400000 \
-             </dev/null > "$DAEMON_OUT" 2>&1 & )
+        daemon_guard_init "$T6_DIR"
+        daemon_guard_spawn --cwd "$T6_DIR" --log "$DAEMON_OUT" \
+            -- agentis daemon \
+               "regen-colony/agents/regen_agent.ag" \
+               --colony regen-colony \
+               --tick-interval 86400000 >/dev/null
         sleep 2
 
         # Pick an unused port for the wrapper. Python helper avoids the

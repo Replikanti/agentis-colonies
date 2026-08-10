@@ -24,10 +24,17 @@ export AGENTIS_COLONY_LINT_NESTED="${AGENTIS_COLONY_LINT_NESTED:-0}"
 # That test spawns a real ~45s research-foundry container, so it is NOT
 # part of the default discovery loop -- only invoked when the flag is set.
 # Everything else stays a positional REPO_ROOT for backward compat.
+#
+# `--no-live-daemon` (or COLONY_LINT_SKIP_LIVE_DAEMON=1) opts OUT of the three
+# tools tests that launch a real `agentis daemon` (#1750/#1869). Default is
+# still to run them — they reap themselves via tools/lib/daemon-guard.sh — but
+# an operator linting next to a live federation may want them out of the way.
 BOOT_SMOKE=0
+NO_LIVE_DAEMON="${COLONY_LINT_SKIP_LIVE_DAEMON:-0}"
 while [ $# -gt 0 ]; do
     case "$1" in
         --boot-smoke) BOOT_SMOKE=1; shift ;;
+        --no-live-daemon) NO_LIVE_DAEMON=1; shift ;;
         --) shift; break ;;
         -*) echo "colony-lint: unknown flag: $1" >&2; exit 2 ;;
         *) break ;;
@@ -2057,6 +2064,48 @@ while IFS= read -r -d '' f; do
     test_scripts+=("$f")
 done < <(find "$REPO_ROOT/tools" -name "test-*.sh" -print0 2>/dev/null)
 
+# #1750: each test runs EXACTLY ONCE. The old runner executed `bash "$t"`
+# for the verdict and then re-ran it to display `tail -20` — which doubled
+# the daemons a live-daemon test spawns and printed a transcript belonging
+# to a DIFFERENT execution than the verdict. Capture once, display that.
+# The run is also wall-clock bounded so one hung test cannot hold the whole
+# suite (override with COLONY_LINT_TEST_TIMEOUT_S).
+TEST_TIMEOUT_S="${COLONY_LINT_TEST_TIMEOUT_S:-300}"
+run_tools_test() {
+    local t="$1" label="$2" out rc
+    out="$(mktemp "${TMPDIR:-/tmp}/colony-lint-test.XXXXXX")"
+    rc=0
+    if command -v timeout >/dev/null 2>&1; then
+        AGENTIS_COLONY_LINT_NESTED=1 timeout "$TEST_TIMEOUT_S" bash "$t" >"$out" 2>&1 || rc=$?
+    else
+        AGENTIS_COLONY_LINT_NESTED=1 bash "$t" >"$out" 2>&1 || rc=$?
+    fi
+    if [ "$rc" -eq 0 ]; then
+        pass "tools: $label unit tests"
+    else
+        if [ "$rc" -eq 124 ]; then
+            fail "tools: $label unit tests (timed out after ${TEST_TIMEOUT_S}s)"
+        else
+            fail "tools: $label unit tests"
+        fi
+        # Display-only: the tail of the run that actually produced the
+        # verdict above. `|| true` keeps set -e/pipefail from aborting the
+        # lint before the summary line.
+        tail -20 "$out" || true
+    fi
+    rm -f "$out"
+    return 0
+}
+
+# Leak guard (#1750/#1869): set-difference of the `agentis daemon` pid set
+# before vs after the loop. Pre-existing operator federations appear in BOTH
+# snapshots and are therefore neither flagged nor touched — this reports, it
+# never signals anything.
+daemon_pid_snapshot() {
+    pgrep -f 'agentis daemon' 2>/dev/null | sort -u | tr '\n' ' ' || true
+}
+daemon_pids_before="$(daemon_pid_snapshot)"
+
 for t in "${test_scripts[@]}"; do
     # #272: Re-entrancy marker so test scripts that re-invoke
     # colony-lint.sh (e.g. test-colony-lint-bash32.sh test 4) can
@@ -2071,14 +2120,7 @@ for t in "${test_scripts[@]}"; do
             # explicitly requested via AGENTIS_RUN_KILL_TESTS=1 (CI-only
             # in isolated environments).
             if [ "${AGENTIS_RUN_KILL_TESTS:-0}" = "1" ]; then
-                if AGENTIS_COLONY_LINT_NESTED=1 bash "$t" &>/dev/null; then
-                    pass "tools: $(basename "$t") unit tests"
-                else
-                    fail "tools: $(basename "$t") unit tests"
-                    # Display-only re-run: `|| true` keeps set -e/pipefail
-                    # from aborting the lint on the failing test's rc.
-                    AGENTIS_COLONY_LINT_NESTED=1 bash "$t" 2>&1 | tail -20 || true
-                fi
+                run_tools_test "$t" "$(basename "$t")"
             else
                 skip "tools: $(basename "$t") (destructive — set AGENTIS_RUN_KILL_TESTS=1 to run)"
             fi
@@ -2092,18 +2134,42 @@ for t in "${test_scripts[@]}"; do
             # invokes the script with its full output captured.
             skip "tools: $(basename "$t") (boot-level smoke — use --boot-smoke to opt in)"
             ;;
-        *)
-            if AGENTIS_COLONY_LINT_NESTED=1 bash "$t" &>/dev/null; then
-                pass "tools: $(basename "$t") unit tests"
+        test-ag-decompose-burnin.sh|test-dashboard-freshness-liveness.sh|test-single-block-byte-identity.sh)
+            # #1750/#1869: the only three tools tests that launch a REAL
+            # `agentis daemon`. They now spawn + reap through
+            # tools/lib/daemon-guard.sh, so the default stays RUN (coverage
+            # must not drop silently) — the knob only exists for operators
+            # linting next to a live federation.
+            if [ "$NO_LIVE_DAEMON" = "1" ]; then
+                skip "tools: $(basename "$t") (live daemon — unset COLONY_LINT_SKIP_LIVE_DAEMON to run)"
             else
-                fail "tools: $(basename "$t") unit tests"
-                # Display-only re-run: `|| true` keeps set -e/pipefail
-                # from aborting the lint on the failing test's rc.
-                AGENTIS_COLONY_LINT_NESTED=1 bash "$t" 2>&1 | tail -20 || true
+                run_tools_test "$t" "$(basename "$t")"
             fi
+            ;;
+        *)
+            run_tools_test "$t" "$(basename "$t")"
             ;;
     esac
 done
+
+daemon_pids_after="$(daemon_pid_snapshot)"
+leaked_daemon_pids=""
+for p in $daemon_pids_after; do
+    case " $daemon_pids_before " in
+        *" $p "*) continue ;;
+    esac
+    kill -0 "$p" 2>/dev/null || continue
+    leaked_daemon_pids="$leaked_daemon_pids $p"
+done
+if [ -z "$leaked_daemon_pids" ]; then
+    pass "tools: no agentis daemon leaked by tools tests"
+else
+    fail "tools: no agentis daemon leaked by tools tests"
+    for p in $leaked_daemon_pids; do
+        printf '  leaked pid=%s argv=%s\n' \
+            "$p" "$(ps -o args= -p "$p" 2>/dev/null | head -1 || true)"
+    done
+fi
 
 # --- Boot-level smoke (#760, opt-in via --boot-smoke) ---
 # tools/test-boot-smoke.sh spawns a real research-foundry container and

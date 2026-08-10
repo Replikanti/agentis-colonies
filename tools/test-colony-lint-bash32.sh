@@ -124,6 +124,50 @@ else
     fail "kill-tests guard missing or malformed in colony-lint.sh"
 fi
 
+# --- Test 6: tools-test runner shape (#1750/#1869) ---
+# Same source-assertion technique as test 5 (spawning the loop here would
+# re-run every tools test, including the live-daemon ones). Four invariants:
+#   a) each test is wall-clock bounded, with an operator override;
+#   b) the failure branch prints the captured output instead of RE-RUNNING
+#      the script — a re-run doubles a live-daemon test's daemons and shows
+#      a transcript from a different execution than the verdict;
+#   c) the three live-daemon tests are gated behind an explicit skip knob
+#      (default: run);
+#   d) the loop is bracketed by the daemon leak guard.
+test6_ok=1
+test6_why=""
+if ! grep -q 'COLONY_LINT_TEST_TIMEOUT_S' "$LINT"; then
+    test6_ok=0; test6_why="$test6_why no-timeout-knob"
+fi
+# shellcheck disable=SC2016 # matching the literal source text, not expanding
+if ! grep -q 'timeout "\$TEST_TIMEOUT_S" bash "\$t"' "$LINT"; then
+    test6_ok=0; test6_why="$test6_why no-timeout-wrapper"
+fi
+# shellcheck disable=SC2016 # matching the literal source text, not expanding
+if grep -q 'bash "\$t" 2>&1 | tail' "$LINT"; then
+    test6_ok=0; test6_why="$test6_why display-only-rerun-back"
+fi
+if ! grep -q 'COLONY_LINT_SKIP_LIVE_DAEMON' "$LINT"; then
+    test6_ok=0; test6_why="$test6_why no-live-daemon-env"
+fi
+if ! grep -q -- '--no-live-daemon' "$LINT"; then
+    test6_ok=0; test6_why="$test6_why no-live-daemon-flag"
+fi
+if ! grep -q 'test-ag-decompose-burnin.sh|test-dashboard-freshness-liveness.sh|test-single-block-byte-identity.sh' "$LINT"; then
+    test6_ok=0; test6_why="$test6_why no-live-daemon-case"
+fi
+if ! grep -q 'no agentis daemon leaked by tools tests' "$LINT"; then
+    test6_ok=0; test6_why="$test6_why no-leak-guard"
+fi
+if ! grep -q 'daemon_pids_before' "$LINT" || ! grep -q 'daemon_pids_after' "$LINT"; then
+    test6_ok=0; test6_why="$test6_why no-leak-snapshot"
+fi
+if [ "$test6_ok" = "1" ]; then
+    pass "tools-test runner: bounded, single-run, live-daemon skip knob + leak guard (#1750/#1869)"
+else
+    fail "tools-test runner shape drifted in colony-lint.sh:$test6_why"
+fi
+
 # --- Test 4: missing tomllib/tomli triggers [SKIP], no traceback (#272) ---
 # Skip when this script is invoked from inside colony-lint.sh — running
 # the lint again from here would recurse (lint discovers this test, runs
