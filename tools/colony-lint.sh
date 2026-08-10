@@ -1154,6 +1154,26 @@ if [ -x "$REPO_ROOT/dark-factory/demo-seam-lens.sh" ]; then
     fi
 fi
 
+# --- dark-factory external-assumption lens: the C22/C23 bug classes (#1872) ---
+# Two taxonomy classes for the shape corpus-bench notional exposed — the target's own code is internally
+# consistent and the bug is an ASSUMPTION about a SECOND protocol: C22 (two DIFFERENT externally-issued assets
+# treated as one at a hardcoded 1:1 rate) and C23 (a literal/constant argument to an external call that is
+# correct for exactly one external configuration). Content-only: the class text plus two PROMPT-ONLY
+# zone-mapper detection rules, deliberately WITHOUT a deterministic force-include and with the 1-4 class cap
+# untouched (the #1830 cell-budget guard). demo-external-assumption-lens.sh is pure awk/grep (no network, no
+# LLM, no agentis): it guards the anti-catch-all contract in each class (NOT-this-class + the three-part
+# required-evidence rule + the enumerate-the-artefacts hunt), replays hunter.ag's own `## <cls> ` awk anchor
+# so `C2` cannot swallow `C22`/`C23`, and pins the budget decision against a silent regression.
+if [ -x "$REPO_ROOT/dark-factory/demo-external-assumption-lens.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-external-assumption-lens.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: external-assumption lens (C22/C23 guarded class text + prompt-only zone-mapper rules, class_section extraction pin, no force-include) (#1872)"
+    else
+        fail "dark-factory: external-assumption lens regressed (#1872)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory new-listing watcher: freshness-first Immunefi target selection (#1623) ---
 if [ -x "$REPO_ROOT/dark-factory/demo-watch-new-listings.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-watch-new-listings.sh" 2>&1)" && check_rc=0 || check_rc=$?

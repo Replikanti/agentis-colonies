@@ -19,7 +19,7 @@ directory, that an attacker would probe as a unit. Each zone carries:
 - its **files** (relative to the repo; a big contract is function-sliced — see below),
 - **loc** (lines of code across the zone),
 - an advisory **hardening_score**,
-- **bug_classes_likely** — the subset of the taxonomy's `C1..C15` classes the substrate picked.
+- **bug_classes_likely** — the subset of the taxonomy's `C1..C23` classes the substrate picked.
 
 ### `.ag` vs shell split
 
