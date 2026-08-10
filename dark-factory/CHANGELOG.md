@@ -71,6 +71,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     clean and discriminative, recall payoff unproven** — the `notional` judged recall + the class-coverage
     retag are the follow-up (#1879).
 
+### Fixed
+- **`experience.enabled` / `learning.enabled` regression on the hunt + refute paths** (#1881, from #1866/#1877).
+  #1877 flipped both flags to `false` on `run-discovery.sh` (STAGE 3 hunter) and `run-refute.sh` (STAGE 4 refute
+  gate) as "structurally inert" — but the hunter AND the refuter READ experience *within* a run, so agentis
+  hard-errors `experience not enabled`, FAILING every hunt cell and ERRORING every refute gate. The whole
+  discover→verify pipeline returned a silent **false zero** (0 candidates / 0 verified) regardless of the target,
+  and the stub-`agentis` demos never caught it (they never interpret the `.ag`). Restored both to `true`,
+  corrected the "proven inert" comments, and added `demo-experience-flags.sh` (wired into `colony-lint`): a
+  source-guard on both scripts plus, when `agentis` is present, a real hunter + refuter cell run through
+  `--backend mock` asserting neither hits the runtime error — the output-level mutation guard the change lacked.
+
 ## [0.6.0] - 2026-08-01
 
 ### Added

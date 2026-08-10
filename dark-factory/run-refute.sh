@@ -114,11 +114,13 @@ fi
   # refuting abstract bases in isolation with no visible failure at all.
   echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH"
   echo "exec.default_timeout_ms = 30000"
-  # Learning/experience recording is OFF: the store above is `rm -rf`'d (line 90) immediately before
-  # every invocation, so any `learn()` write here is never read back — proven zero cross-candidate
-  # reweighting (docs/zone-split-orchestration.md). See #1866.
-  echo "learning.enabled = false"
-  echo "experience.enabled = false"
+  # Learning/experience are ENABLED: the refuter READS experience WITHIN a run, and agentis hard-errors
+  # `experience not enabled` on that read when the feature is off — so #1866/#1877's "proven inert" premise
+  # was wrong for this script too (same as run-discovery.sh). Disabling them makes every refute cell fail
+  # (no VERDICT| sentinel -> 5 attempts -> ERROR), so nothing survives the gate and verified_findings.json
+  # is empty regardless of the candidates. Regression restored here.
+  echo "learning.enabled = true"
+  echo "experience.enabled = true"
 } > "$RUN/.agentis/config"
 
 REPORT="$OUT/refute-report.md"
