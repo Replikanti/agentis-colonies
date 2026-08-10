@@ -52,7 +52,7 @@ bash <repo>/dark-factory/bench/corpus-bench/run-corpus-bench.sh \
 
 | anchor | GT class | generated? | refute verdict | judge → GT | cause |
 |---|---|---|---|---|---|
-| **H-9** hardcoded `useEth` (`CurveConvex2Token`) | C22/C23 | YES (4 sibling variants) | **1 REAL** (gate 13, `unstakeAndExitPool`, C22) **+ 3 REFUTED** (gates 11/12/18) | **MATCH → H-9** | **CAUGHT**, but framing-fragile — refuter killed 3 of 4 framings of the same bug as "privileged deployer config"; one precise framing (`coins(i)` returns WETH ERC-20 on a V2 crypto pool) survived |
+| **H-9** hardcoded `useEth` (`CurveConvex2Token`) | C22/C23 | YES (4 sibling framings) | **1 REAL** (gate 13, `unstakeAndExitPool`, C22) **+ 3 REFUTED** siblings on the same `_exitPool`/`unstakeAndExitPool` use_eth surface | **MATCH → H-9** | **CAUGHT**, but framing-fragile — refuter killed 3 of 4 framings of the same bug as "privileged deployer config"; one precise framing (`coins(i)` returns WETH ERC-20 on a V2 crypto pool) survived |
 | **H-8** Pendle SY 1:1 (`PendlePTOracle`) | C22 | **NO** | — | — | **generation miss** — no `PendlePTOracle` SY-rate candidate produced in any zone (it *was* generated in #1879) |
 | **H-4** Morpho direct-borrow (`AbstractSingleSidedLP.convertToAssets:196`) | C21 | YES (gate 7) | **REFUTED** | — | **refute false-negative** — refuter rebutted a *different* attack path (deposit re-entry blocked by `CannotEnterPosition`) than the GT mechanism (direct Morpho borrow, `t_currentAccount` unset) |
 | **M-12** `PendlePTOracle._getPTRate` decimals | C2 | **NO** | — | — | **generation miss** — same as H-8, no `PendlePTOracle` candidate |
