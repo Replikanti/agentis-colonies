@@ -1,0 +1,1 @@
+REFUTED	The redeemed TOKEN_OUT_SY is escrowed in a per-account withdraw request created in the same call that removes that account's PT and its sharesHeld from PT-denominated accounting, so those shares are valued off the request rather than the vault's PT balance and no shortfall is left to socialise onto other depositors.

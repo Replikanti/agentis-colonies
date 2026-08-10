@@ -1,0 +1,1 @@
+REFUTED	latestAnswer() is an unused legacy AggregatorV2 view (its siblings getRoundData/getAnswer/getTimestamp hard-revert and are annotated "Unused in the trading module"), while every actual protocol consumer prices through latestRoundData(), which does call _checkSequencer() — so no unprivileged state-changing path bypasses the sequencer gate.

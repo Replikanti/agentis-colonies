@@ -1,0 +1,61 @@
+[genesis] b002065b43ad
+[prompt] "You are an INDEPENDENT, skeptical smart-contract auditor...." -> string
+[llm] requesting flat-cyborg  ...
+[llm] still waiting ... (4.0s)
+[llm] still waiting ... (8.0s)
+[llm] still waiting ... (12.0s)
+[llm] still waiting ... (16.0s)
+[llm] still waiting ... (20.0s)
+[llm] still waiting ... (24.0s)
+[llm] still waiting ... (28.0s)
+[llm] still waiting ... (32.1s)
+[llm] still waiting ... (36.1s)
+[llm] still waiting ... (40.1s)
+[llm] still waiting ... (44.1s)
+[llm] still waiting ... (48.1s)
+[llm] still waiting ... (52.1s)
+[llm] still waiting ... (56.1s)
+[llm] still waiting ... (60.1s)
+[llm] still waiting ... (64.1s)
+[llm] still waiting ... (68.0s)
+[llm] still waiting ... (72.0s)
+[llm] received (74.0s)
+Trace:
+
+  1. unstakeAndExitPool runs in the library, but it is reached by _delegateCall(LP_LIB, ...) from the vault (same
+  pattern as _transferYieldTokenToOwner), so all exit proceeds — ERC20 or native — land in the vault's own
+  storage/balance context. Nothing is "left behind" in a foreign contract.
+  2. The re-wrap block is not a general ETH handler; it is a representation converter. The constructor deliberately
+  rewrites Curve's ALT_ETH_ADDRESS (0xEeee…) to ETH_ADDRESS (0x0) because "which is used by the vault internally to
+  represent ETH". So when TOKEN_x == ETH_ADDRESS, the vault's own accounting already denominates that leg in native ETH,
+  and TokenUtils.tokenBalance(ETH_ADDRESS) resolves to address(this).balance. The only case where the on-hand asset
+  must be converted is when the vault's ASSET is WETH while the pool leg is native ETH — exactly the condition ASSET ==
+  address(WETH) && TOKEN_x == ETH_ADDRESS that the code gates on. For a [ETH, USDC] pool with ASSET == USDC, native ETH
+  is the correct internal form of the TOKEN_1 leg; there is no mis-accounting, so the premise "raw ETH left in the
+  vault" is not an invariant break, it is the intended representation.
+  3. The claimed leg can't even be produced on the ordinary redemption path. With pool [ETH, USDC] and _asset == USDC,
+  TOKEN_2 == _asset so _PRIMARY_INDEX = 1. A single-sided exit calls remove_liquidity_one_coin(...,
+  int8(_PRIMARY_INDEX), ...) and writes only exitBalances[1] — exitBalances[0] stays zero. A non-zero ETH-leg balance
+  requires isSingleSided == false, i.e. the proportional/emergency path, which is not the unprivileged user-redemption
+  flow the claim describes.
+  4. The heart of the claim — __initiateWithdraw passing a non-zero yieldTokenAmount for the ETH leg to
+  manager.initiateWithdraw with no msg.value and no approval, and convertToAssets then valuing a phantom escrow — rests
+  entirely on code that is not in the file under review. AbstractSingleSidedLP.__initiateWithdraw, the per-token
+  withdraw-request-manager lookup, and the convertToAssets escrow branch are all unshown. The one manager reference
+  visible here is a single IWithdrawRequestManager _withdrawRequestManager constructor arg on the vault (not a per-token
+  map), and there is no evidence in the shown code that a native-ETH leg is ever routed to a withdraw request manager
+  at all — withdraw-request managers exist for tokens with redemption queues (LSTs, etc.), and a pool's raw ETH leg with
+  a USDC asset has no such manager. I cannot point to the exact line that turns leftover ETH into a recorded, valued
+  withdraw request, because that line is not shown.
+  5. Finally, the whole scenario is deployment-shaped: it requires governance to deploy a vault whose ASSET is a
+  non-WETH token against a pool with a native-ETH leg and to wire a withdraw request manager onto that ETH leg. That is
+  a trusted deployment configuration choice, not something an unprivileged external actor can bring about.
+
+  Points 2, 3, and 4 each independently defeat the claim; the tie-break rule (unshown __initiateWithdraw /
+  convertToAssets, ambiguous path) settles it.
+
+  VERDICT|REFUTED|src/single-sided-lp/CurveConvex2Token.sol:unstakeAndExitPool|class=C23|The ASSET == address(WETH) gate
+  is a WETH-representation converter, not a leak: for a non-WETH asset the constructor's ALT_ETH→ETH_ADDRESS rewrite
+  makes native ETH the vault's correct internal form of that leg (and with _PRIMARY_INDEX pointing at the non-ETH asset
+  the single-sided exit writes zero to the ETH leg anyway), while the claimed phantom escrow depends entirely on
+  __initiateWithdraw/convertToAssets code not present in the reviewed file.

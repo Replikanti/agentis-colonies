@@ -1,0 +1,52 @@
+[genesis] 30c7ee015b2a
+[prompt] "You are an INDEPENDENT, skeptical smart-contract auditor...." -> string
+[llm] requesting flat-cyborg  ...
+[llm] still waiting ... (4.0s)
+[llm] still waiting ... (8.0s)
+[llm] still waiting ... (12.0s)
+[llm] still waiting ... (16.0s)
+[llm] still waiting ... (20.0s)
+[llm] still waiting ... (24.0s)
+[llm] still waiting ... (28.0s)
+[llm] still waiting ... (32.0s)
+[llm] still waiting ... (36.0s)
+[llm] still waiting ... (40.0s)
+[llm] still waiting ... (44.1s)
+[llm] still waiting ... (48.1s)
+[llm] still waiting ... (52.1s)
+[llm] still waiting ... (56.1s)
+[llm] still waiting ... (60.1s)
+[llm] still waiting ... (64.1s)
+[llm] received (67.4s)
+Trace:
+
+
+  1. unstakeAndExitPool → _exitPool runs in the vault's storage context (the lib is reached via _delegateCall), so
+  address(this) is the vault. The Curve V2 calls remove_liquidity_one_coin(..., true, address(this)) and
+  remove_liquidity(..., true, address(this)) therefore instruct Curve to push native ETH to the vault itself.
+  2. That is the whole of the "reentrancy window": Curve performs a value transfer whose recipient is the vault. The
+  only code that executes during that transfer is the vault's own receive() — a plain payable sink. No attacker-supplied
+  address is ever passed as the receiver, and neither TOKEN_1 nor TOKEN_2 is attacker-controlled (both are immutables
+  read from ICurvePool.coins() at construction). There is no callback, no hook, no onERC777-style handoff, and nothing
+  in this path that hands execution to an unprivileged third party's contract.
+  3. A reentrancy finding requires an attacker-controlled frame to execute while protocol state is mid-flight. Here the
+  only frame that executes is the vault's empty receive(), which immediately returns to Curve, which returns to
+  _exitPool. The attacker cannot make the money market read convertToAssets from inside that frame, because the attacker
+  has no frame — the ETH lands in the vault, not in a contract the attacker wrote. The claim's premise ("Curve pushes
+  native ETH into the vault's receive() … giving a permissionless reentrancy window") confuses the vault receiving ETH
+  with the attacker gaining control flow; those are not the same thing, and only the former happens.
+  4. The _checkReentrancyContext() / checkReentrancyContext() machinery is not even on this path — it is a separate
+  external (non-delegate) call used to assert Curve's own lock is free before pricing, and it is what makes the lib's
+  receive() necessary (there address(this) is the lib). Its scope is irrelevant to _exitPool, so "only guards Curve's
+  own lock" does not establish an exploit in _exitPool.
+  5. Independently, Curve V2's remove_liquidity/remove_liquidity_one_coin are @nonreentrant('lock'), so even if some
+  frame did execute during the ETH push, re-entering the pool (the thing the escrow/convertToAssets pricing path would
+  touch) reverts.
+
+  No step exists at which an unprivileged external attacker obtains execution during _exitPool. The claim is not backed
+  by the actual control flow.
+
+  VERDICT|REFUTED|src/single-sided-lp/CurveConvex2Token.sol:_exitPool:263|C21|The Curve V2 exit passes receiver =
+  address(this) (the vault under delegatecall), so the ETH push only invokes the vault's own empty payable receive() —
+  no attacker-controlled contract ever gains execution, and Curve's @nonreentrant('lock') on remove_liquidity* would
+  block re-entry regardless, so there is no reentrancy window to price the position through.

@@ -1,0 +1,1 @@
+REFUTED	The claimed revert depends on unshown Curve V2 pool internals (whether it burns _amount=1 or the decremented amount=0 from msg.sender), and even if it did, LP_LIB's LP balance is permissionlessly toppable up by a 1-wei ERC20 transfer that no code in this file rejects, so no permanent, unliquidatable-position brick is established.
