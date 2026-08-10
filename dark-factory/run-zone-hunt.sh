@@ -126,6 +126,14 @@
 #                       be >= 1; N=1 reproduces #1827's breadth-first spread exactly. Forwarded ONLY when the
 #                       operator set it AND depth is genuinely admitted, so a depth-off zone's argv — and a
 #                       default depth-on zone's argv — are byte-identical to before.
+#   --total-depth-cells <N>  #1880: TOTAL depth cells admitted for the WHOLE STAGE 3 sweep. 0 (default) = OFF
+#                       and nothing changes. With depth on, the per-zone allowance becomes
+#                       min(--zone-depth-cells, N / zone count) — integer division, and the remainder is
+#                       deliberately left unspent so every zone of one contest is hunted on the same ruler.
+#                       Requires --zone-depth-cells > 0 (a total ceiling with depth off is a no-op, exit 2).
+#                       The ceiling is PER INVOCATION: a --rehunt-gaps pass gets its own, computed over the
+#                       gap set. WHY: --zone-depth-cells is per zone, so the sweep cost is depth x zone count
+#                       and a 9-zone contest at depth 12 admits 108 depth cells — the runtime trap #1880 names.
 #   --require-coverage <pct>  #1830: after STAGE 3, exit 4 BEFORE STAGE 4/5 when the covered fraction is below
 #                       <pct> (0-100). Default empty = OFF. A degraded run must not be able to publish a
 #                       plausible-looking result; the coverage record is already on disk when it aborts.
@@ -169,6 +177,9 @@ DEEP_HUNT_ONLY=0  # #1774: apply ONLY the STAGE 4.5 lens over an existing breadt
 ZONE_CELL_BUDGET=0 ; RUN_CELL_BUDGET=0 ; REQUIRE_COVERAGE=""
 # #1827: per-zone within-contract depth allowance. 0 (default) = OFF; the STAGE 3 invocation gains no argument.
 ZONE_DEPTH_CELLS=0
+# #1880: zone-count-aware ceiling over the WHOLE sweep's depth cells. 0 (default) = OFF = the per-zone
+# allowance above is used verbatim, so every pre-#1880 arm is re-derivable by leaving this at 0.
+TOTAL_DEPTH_CELLS=0
 # #1850: depth allocation. EMPTY = "the operator did not set it" — run-discovery.sh owns the default, so an
 # unset knob forwards NOTHING and the STAGE 3 argv is byte-identical to a pre-#1850 depth-on run.
 ZONE_DEPTH_LENS_QUOTA=""
@@ -211,6 +222,7 @@ while [ $# -gt 0 ]; do
     --zone-cell-budget) nv "$#"; ZONE_CELL_BUDGET="$2"; shift 2 ;;
     --run-cell-budget)  nv "$#"; RUN_CELL_BUDGET="$2"; shift 2 ;;
     --zone-depth-cells) nv "$#"; ZONE_DEPTH_CELLS="$2"; shift 2 ;;
+    --total-depth-cells) nv "$#"; TOTAL_DEPTH_CELLS="$2"; shift 2 ;;
     --zone-depth-lens-quota) nv "$#"; ZONE_DEPTH_LENS_QUOTA="$2"; shift 2 ;;
     --require-coverage) nv "$#"; REQUIRE_COVERAGE="$2"; shift 2 ;;
     --rehunt-gaps)      REHUNT_GAPS=1; shift ;;
@@ -242,6 +254,10 @@ case "$ZONE_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-cell-bud
 case "$RUN_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --run-cell-budget must be a non-negative integer (got '$RUN_CELL_BUDGET')" >&2; exit 2 ;; esac
 # #1827: the depth allowance is a cell count, validated in the same block/shape as the budgets above.
 case "$ZONE_DEPTH_CELLS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-depth-cells must be a non-negative integer (got '$ZONE_DEPTH_CELLS')" >&2; exit 2 ;; esac
+# #1880: the sweep-level ceiling is validated in the same block/shape, plus the pairing rule — a ceiling with
+# depth off would silently do nothing, so it is a usage error (the --depth-from / --depth-max-cells precedent).
+case "$TOTAL_DEPTH_CELLS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --total-depth-cells must be a non-negative integer (got '$TOTAL_DEPTH_CELLS')" >&2; exit 2 ;; esac
+[ "$TOTAL_DEPTH_CELLS" -eq 0 ] || [ "$ZONE_DEPTH_CELLS" -gt 0 ] || { echo "run-zone-hunt.sh: --total-depth-cells needs --zone-depth-cells > 0: a total depth ceiling with depth off is a no-op" >&2; exit 2; }
 # #1850: the allocation quota is validated only when SET (empty = unset = run-discovery.sh's own default), and
 # then with the positive-integer shape run-discovery.sh itself enforces — a typo must fail here, not 9 zones in.
 if [ -n "$ZONE_DEPTH_LENS_QUOTA" ]; then
@@ -381,6 +397,27 @@ CELL_PROBE="$OUT/.zone-cell-probe.txt"
 # and the sidecar cannot change the cell set.
 ZAPX_ARG=""
 if [ -f "$MAP/appendix.tsv" ]; then ZAPX_ARG="$MAP/appendix.tsv"; fi
+# #1880 TOTAL DEPTH BUDGET — the ONE sweep-level depth decision, taken here because the zone count only exists
+# after STAGE 1 (a caller cannot compute it). The work list is the authority for "how many zones this
+# invocation will hunt", so the same arithmetic covers the full sweep and a --rehunt-gaps pass over the gap
+# set. The remainder of the division is deliberately left unspent: every zone of one scored contest is then
+# hunted at the SAME depth, which is what makes two of its zones comparable.
+ZONE_COUNT="$(grep -c '[^[:space:]]' "$ZONE_WORK" || true)"
+[ -n "$ZONE_COUNT" ] || ZONE_COUNT=0
+DEPTH_PER_ZONE="$ZONE_DEPTH_CELLS"
+if [ "$TOTAL_DEPTH_CELLS" -gt 0 ] && [ "$ZONE_COUNT" -gt 0 ]; then
+  DEPTH_CEIL=$((TOTAL_DEPTH_CELLS / ZONE_COUNT))
+  if [ "$DEPTH_CEIL" -lt "$DEPTH_PER_ZONE" ]; then
+    DEPTH_PER_ZONE="$DEPTH_CEIL"
+    echo "run-zone-hunt.sh: [M3] #1880 total depth budget BITES: --zone-depth-cells $ZONE_DEPTH_CELLS over $ZONE_COUNT zone(s) would admit $((ZONE_DEPTH_CELLS * ZONE_COUNT)) depth cell(s), above the --total-depth-cells $TOTAL_DEPTH_CELLS ceiling; the effective per-zone depth allowance is $DEPTH_PER_ZONE cell(s)" >&2
+  fi
+fi
+# The record carries the ceiling that was actually in force, so a depth recall number is quotable against the
+# EFFECTIVE ruler instead of the nominal flag. Written only when the ceiling is on, so a run without it keeps
+# a byte-identical `budget` object (the shipped `totals.depth_cells` precedent).
+if [ "$TOTAL_DEPTH_CELLS" -gt 0 ]; then
+  "$ZONECOV" budget --file "$COVERAGE_JSON" --depth-total "$TOTAL_DEPTH_CELLS" --depth-per-zone "$DEPTH_PER_ZONE"
+fi
 RUN_SPENT=0 ; BUDGET_STOP=0
 while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
   [ -n "$ZID" ] || continue
@@ -459,9 +496,12 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
   # depth is trimmed to 0 and the (unchanged) breadth truncation path runs exactly as before. Breadth coverage
   # is the #1824/#1825/#1826 investment and is never traded for depth. An UNMEASURABLE zone (probe failed)
   # gets no depth either — an unknown cost may not be topped up with a second unknown one.
+  # #1880: the nominal --zone-depth-cells enters this block already lowered by the sweep-level ceiling
+  # (DEPTH_PER_ZONE == ZONE_DEPTH_CELLS whenever the ceiling is off), so everything below — the headroom trim,
+  # the charge, the argv, the #1850 quota gating — is untouched by the new knob.
   ZDEPTH_EFF=0
-  if [ "$ZONE_DEPTH_CELLS" -gt 0 ] && [ -n "$CELLS_PLANNED" ]; then
-    ZDEPTH_EFF="$ZONE_DEPTH_CELLS"
+  if [ "$DEPTH_PER_ZONE" -gt 0 ] && [ -n "$CELLS_PLANNED" ]; then
+    ZDEPTH_EFF="$DEPTH_PER_ZONE"
     if [ -n "$ZCAP" ]; then
       ZHEAD=$((ZCAP - CELLS_PLANNED))
       if [ "$ZHEAD" -lt 0 ]; then ZHEAD=0; fi
@@ -540,8 +580,20 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
     ZQUOTA_ARG="$ZONE_DEPTH_LENS_QUOTA"
     ZCHARGE=$((ZCHARGE + ZDEPTH_EFF))
     ZDETAIL="${ZDETAIL:+$ZDETAIL; }charged ${CELLS_PLANNED:-0} breadth + $ZDEPTH_EFF depth cell(s) (#1827 within-contract depth pass)${ZQUOTA_ARG:+, lens quota $ZQUOTA_ARG per location per round (#1850)}"
+    # #1880: name the sweep-level scaling wherever it moved the allowance, so a reader of the record can never
+    # mistake a scaled allowance for the nominal flag value.
+    if [ "$TOTAL_DEPTH_CELLS" -gt 0 ] && [ "$DEPTH_PER_ZONE" -lt "$ZONE_DEPTH_CELLS" ]; then
+      ZDETAIL="$ZDETAIL, scaled from $ZONE_DEPTH_CELLS by the #1880 total depth budget ($TOTAL_DEPTH_CELLS cells over $ZONE_COUNT zone(s))"
+    fi
   elif [ "$ZONE_DEPTH_CELLS" -gt 0 ]; then
-    ZDETAIL="${ZDETAIL:+$ZDETAIL; }depth pass trimmed to 0 cell(s) — the cell budget leaves no headroom above breadth (#1827)"
+    # The two causes of "depth 0" get DISTINCT details: a cell-budget headroom trim is a per-zone verdict with
+    # a per-zone remedy, while an exhausted total ceiling is a sweep-level one. Conflating them would send a
+    # debugger to the wrong knob.
+    if [ "$TOTAL_DEPTH_CELLS" -gt 0 ] && [ "$DEPTH_PER_ZONE" -eq 0 ]; then
+      ZDETAIL="${ZDETAIL:+$ZDETAIL; }depth pass trimmed to 0 cell(s) — the total depth budget ($TOTAL_DEPTH_CELLS cells) cannot give even 1 cell to each of $ZONE_COUNT zone(s) (#1880)"
+    else
+      ZDETAIL="${ZDETAIL:+$ZDETAIL; }depth pass trimmed to 0 cell(s) — the cell budget leaves no headroom above breadth (#1827)"
+    fi
   fi
   if [ "$ZACTION" = "retry" ]; then
     # failed / in_flight (and an --rehunt-include-partial partial) carry PRIOR ARTIFACTS that run-discovery.sh

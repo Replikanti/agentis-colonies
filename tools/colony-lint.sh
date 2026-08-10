@@ -1020,6 +1020,30 @@ if [ -f "$DF_DISCOVERY" ]; then
     fi
 fi
 
+# --- dark-factory: the corpus-bench total depth budget is a MEASURED default, pinned statically (#1880) ---
+# The behavioural guard is demo-run-zone-hunt.sh block (v) (it RUNS the hunt stage and reads the scaled
+# allowance off the argv + the coverage record). This is its orthogonal twin — STATIC (it reads the source,
+# spawns nothing) and one level up, on the BENCH's policy default rather than the mechanism: block (v) would
+# still pass with the bench default silently moved to 0, which is exactly the regression that re-introduces the
+# runtime trap. Deleting either leaves the other standing. The regex pins the VALUE, tolerating indentation,
+# quoting and a trailing comment.
+DF_CORPUS_BENCH="$REPO_ROOT/dark-factory/bench/corpus-bench/run-corpus-bench.sh"
+if [ -f "$DF_CORPUS_BENCH" ]; then
+    tdc_assigns="$(grep -cE '^[[:space:]]*TOTAL_DEPTH_CELLS=' "$DF_CORPUS_BENCH" || true)"
+    if [ "$tdc_assigns" -ne 1 ]; then
+        fail "dark-factory: expected exactly ONE TOTAL_DEPTH_CELLS default assignment in run-corpus-bench.sh, found $tdc_assigns (#1880)"
+        echo "      If you moved or renamed the default, update this pin in tools/colony-lint.sh in the same commit."
+    elif grep -qE '^[[:space:]]*TOTAL_DEPTH_CELLS=["'"'"']?36["'"'"']?[[:space:]]*(#.*)?$' "$DF_CORPUS_BENCH"; then
+        pass "dark-factory: the corpus-bench --total-depth-cells default is still the derived 36 (static pin, #1880)"
+    else
+        fail "dark-factory: the corpus-bench --total-depth-cells default drifted away from 36 (run-corpus-bench.sh, TOTAL_DEPTH_CELLS=; #1880)"
+        echo "      36 is derived from the record: #1872 Stage C ran notional (9 zones) at --zone-depth-cells 12"
+        echo "      = up to 108 depth cells and projected ~18-24 h; #1879 named --zone-depth-cells 4 on that same"
+        echo "      9-zone contest as the tractable config = 36 cells. Moving the bound means updating the"
+        echo "      'Runtime bound' section of bench/corpus-bench/README.md and this pin in the same commit."
+    fi
+fi
+
 # --- dark-factory depth-only re-entry: replay a recorded breadth pass, hunt only depth (#1857) ---
 # run-discovery.sh gains an opt-in --depth-from <discovery-results.json>: seed the cell accumulator with a
 # RECORDED run's BREADTH cells and fall into the unchanged #1827 depth block, so two arms differing only in
