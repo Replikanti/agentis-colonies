@@ -124,6 +124,18 @@ cp "$AGENT" "$RUN/$(basename "$AGENT")"
   # The gates read the finding facts + threaded verdicts via getenv; each must be on the passthrough allowlist.
   echo "exec.env_passthrough = FINDING_LOCATION,FINDING_IMPACT,SCOPE_FILE,TARGET_DIR,IN_SCOPE,AUDIT_DIR,MECHANISM_NOTES,POC_FILE,FINDING_FILE,FINDING_ANCHOR,FINDING_TITLE,SEVERITY_BAND,SCOPE_VERDICT,IMPACT_VERDICT,DUP_RISK,DUP_RISK_LINE,REVIEWER_FEEDBACK"
   echo "exec.default_timeout_ms = 600000"
+  # Experience is ENABLED because `learn()` is a WRITE this flag GATES (#1878, measured on agentis v1.28.0):
+  # ALL SIX dispatchable gates end their tick with one — scope-gate.ag learn("scope-gate"), impact-gate.ag
+  # learn("impact-gate"), poc-writer.ag learn("poc-write"), dup-scout.ag learn("dup-risk"), audit-scout.ag
+  # learn("devise"), report-writer.ag learn("report-writer") — so this single config block is load-bearing for
+  # EVERY --verdict-prefix. With `experience.enabled = false` agentis raises `runtime error: experience not
+  # enabled` on that call, and a runtime error DISCARDS the gate's whole accumulated stdout: extract_verdict
+  # below then greps an empty log and this runner prints NOTHING, which coordinator.ag normalizes to
+  # `incomplete` -> a false INCOMPLETE halt of the submission pass with no error anywhere (#1877's shape).
+  # `learning.enabled` gates recommend()/adapt()/score_options() only — no gate calls them — and is kept
+  # paired so a future adaptive call cannot make `agentis go` refuse to start. There is no bookkeeping value
+  # to preserve here: this runner's store is a mktemp -d thrown away by the EXIT trap, and the extracted
+  # verdict line is its ONLY observable. Guard: demo-experience-flags.sh.
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"

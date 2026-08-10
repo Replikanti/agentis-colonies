@@ -7,10 +7,11 @@
 # (file:fn + claimed exploit + class) and the relevant code, `prompt()` a hostile reader that tries to
 # REFUTE it against the actual control-flow (defaulting to REFUTED on any doubt), `emit` the verdict, and
 # `print` a `VERDICT|REAL|...` / `VERDICT|REFUTED|...` line. It runs ENTIRELY through the substrate
-# (prompt/emit/learn). Learning/experience are ENABLED below: the refuter READS experience WITHIN a run
-# (agentis hard-errors `experience not enabled` on that read when the feature is off — #1881), even though
-# the per-run store is wiped fresh on every invocation and so carries no CROSS-candidate reweighting
-# (#1866). This is the colony-native form of the `adversarial-refute` step (auditor/methods/registry.md) that previously ran as
+# (prompt/emit/learn). Learning/experience are ENABLED below: refuter.ag ends its tick with
+# `learn("refute", ...)`, and it is that WRITE the flag gates — agentis hard-errors `experience not enabled`
+# on the call and then DISCARDS the cell's whole stdout, so the VERDICT| sentinel vanishes (#1881/#1878) —
+# even though the per-run store is wiped fresh on every invocation and so carries no CROSS-candidate
+# reweighting (#1866). This is the colony-native form of the `adversarial-refute` step (auditor/methods/registry.md) that previously ran as
 # an externally-orchestrated subagent. This is the proven pattern (#999) for porting the colony's other
 # deep capabilities (deep cross-function audit, build-and-run PoC, fork-differential) onto the substrate.
 #
@@ -114,11 +115,12 @@ fi
   # refuting abstract bases in isolation with no visible failure at all.
   echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH"
   echo "exec.default_timeout_ms = 30000"
-  # Learning/experience are ENABLED: the refuter READS experience WITHIN a run, and agentis hard-errors
-  # `experience not enabled` on that read when the feature is off — so #1866/#1877's "proven inert" premise
-  # was wrong for this script too (same as run-discovery.sh). Disabling them makes every refute cell fail
-  # (no VERDICT| sentinel -> 5 attempts -> ERROR), so nothing survives the gate and verified_findings.json
-  # is empty regardless of the candidates. Regression restored here.
+  # Learning/experience are ENABLED: refuter.ag ends its tick with `learn("refute", ...)`, and it is that
+  # WRITE the flag gates (#1878, agentis v1.28.0: learn() raises `runtime error: experience not enabled`, and
+  # ANY runtime error discards the program's whole accumulated stdout). So #1866/#1877's "proven inert"
+  # premise was wrong for this script too (same as run-discovery.sh): disabling them makes every refute cell
+  # fail (no VERDICT| sentinel -> 5 attempts -> ERROR), so nothing survives the gate and
+  # verified_findings.json is empty regardless of the candidates. Regression restored here.
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"

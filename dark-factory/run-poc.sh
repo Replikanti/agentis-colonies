@@ -167,7 +167,15 @@ fi
   echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,BUG_HYPOTHESIS,POC_KIND,POC_REPO,POC_OUT,POC_HARNESS,POC_FIXTURE,CODE_PATH,TARGET_FIXTURES_DIR,POC_MATCH,POC_REPAIR_ROUNDS"
   # A hardhat npm install + compile + test (or a forge build + concrete run) far exceeds the 10s default.
   echo "exec.default_timeout_ms = 600000"
-  # Each verify is recorded as experience; poc-writer fitness reweights over targets.
+  # Experience is ENABLED because `learn()` is a WRITE this flag GATES (#1878, measured on agentis v1.28.0):
+  # poc-writer.ag ends every generate-and-verify with learn("poc-write", ...), and with `experience.enabled =
+  # false` agentis raises `runtime error: experience not enabled` on that call — and a runtime error DISCARDS
+  # the cell's whole accumulated stdout, so NEITHER the `POC|<target>|<verdict>` line NOR the `POC-FILE|` path
+  # this script parses reaches the cell log: no verdict at all, not even HARNESS_ERROR (#1877's silent false
+  # zero). `learning.enabled` gates recommend()/adapt()/score_options() only — nothing on this path calls them
+  # — and is kept paired so a future adaptive call cannot make `agentis go` refuse to start. It is NOT fitness
+  # reweighting: the store is per-invocation and write-only, so no writer fitness accrues over targets.
+  # Guard: demo-experience-flags.sh.
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"

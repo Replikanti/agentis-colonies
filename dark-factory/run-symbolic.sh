@@ -7,7 +7,8 @@
 # (verbatim from a supplied SPEC_FIXTURE on the offline path, or via `prompt()` on the live path), VERIFIES
 # it with the SOUND M1 gate `evm-harness/halmos-verify.sh`, and `print`s a `SYMBOLIC|<file:fn>|<verdict>`
 # line whose verdict is HALMOS's exit code — never the LLM's opinion. Every run is recorded as experience
-# (`learn` + `emit dark-factory:symbolic_verdict`) so symbolic-prover fitness reweights over candidates.
+# (`learn` + `emit dark-factory:symbolic_verdict`); that write is what `experience.enabled` gates (see the
+# config block below), NOT a fitness reweighting — the store is per-invocation and nothing reads it back.
 # It mirrors run-refute.sh's per-candidate substrate loop; the difference is the verdict's SOURCE.
 #
 # This composes with M1: M1 shipped the callable Halmos gate + example specs + demo-halmos.sh; M2 closes
@@ -112,7 +113,15 @@ mkdir -p "$REPO_IN_RUN/test"
   echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_INVARIANT,SPEC_REPO,SPEC_OUT,SPEC_FUNCTION,SPEC_FIXTURE,CODE_PATH,HALMOS_VERIFY"
   # A cargo-free halmos run is fast, but forge build + z3 over a spec exceeds the 10s default.
   echo "exec.default_timeout_ms = 180000"
-  # Each verify is recorded as experience; symbolic-prover fitness reweights over candidates.
+  # Experience is ENABLED because `learn()` is a WRITE this flag GATES (#1878, measured on agentis v1.28.0):
+  # symbolic-prover.ag ends every verify with learn("symbolic-prove", ...), and with `experience.enabled =
+  # false` agentis raises `runtime error: experience not enabled` on that call — and a runtime error DISCARDS
+  # the cell's whole accumulated stdout, so the `SYMBOLIC|<file:fn>|<verdict>` line this script parses never
+  # appears and every candidate degrades to HARNESS_ERROR (#1877's silent false zero). `learning.enabled` gates
+  # recommend()/adapt()/score_options() only — nothing on this path calls them — and is kept paired so a future
+  # adaptive call cannot make `agentis go` refuse to start. It is NOT fitness reweighting: the store is
+  # per-invocation and write-only, so no prover fitness accrues over candidates. Guard:
+  # demo-experience-flags.sh.
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"
