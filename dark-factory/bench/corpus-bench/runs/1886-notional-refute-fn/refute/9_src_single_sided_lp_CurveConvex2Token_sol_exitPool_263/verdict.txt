@@ -1,0 +1,1 @@
+REFUTED	The Curve V2 exit passes receiver = address(this) (the vault under delegatecall), so the ETH push only invokes the vault's own empty payable receive() — no attacker-controlled contract ever gains execution, and Curve's @nonreentrant('lock') on remove_liquidity* would block re-entry regardless, so there is no reentrancy window to price the position through.

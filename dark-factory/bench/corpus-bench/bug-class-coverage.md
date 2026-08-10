@@ -20,6 +20,21 @@ auto-derived; refine as `tag-bug-classes` (a #1787 deliverable) is built.
 
 > **Measured lens status is from the #1879 re-run (2026-08-10), not the 2026-07-23 A/B.** Ruler: `--zone-depth-cells 4`, semantic judge `--judge-min-confidence 60`, GT-equivalence off, scoped to the 3 lens-target notional zones. Result: **notional rare recall 1/14 (was 0/14)** — **H-9 CAUGHT by C23** (judge conf 93; the same candidate was REFUTED under the C22 framing, CONFIRMED under C23), **H-8 REFUTED** (C22 fired + generated PT/sUSDe-accounting candidates, but not H-8's oracle SY==YT bug, and the refute gate dropped them), **M-12 REFUTED** (C2 candidate at `PendlePTOracle._getPTRate`, dropped). The bottleneck for the rest is the refute gate, not coverage/generation. NB: this run required restoring the #1877/#1881 `experience.enabled` regression on `run-discovery.sh` + `run-refute.sh`, which otherwise zeroes the whole pipeline.
 
+### Refute-gate false-negative measurement (#1886, 2026-08-10)
+
+A fresh live re-run scoped to the same 3 zones (same ruler; effective per-zone depth **4**, semantic judge min-conf 60, GT-equivalence off) to characterize the refute-gate false-negatives per anchor. Durable, scrubbed artifacts (verified_findings, judge-log, all 29 per-candidate refute rationales): [`runs/1886-notional-refute-fn/`](runs/1886-notional-refute-fn/). Headline: **rare recall 2/14** (29 candidates → 2 REAL; overall 3/37; the confidence gate @60 dropped 1 MATCH at conf 55, costing 1 row — #1841). This run's per-anchor picture is **not** the "all-refute-gate" read #1879's single row suggested:
+
+| anchor | GT class | generated? | refute | credited | cause |
+|---|---|---|---|---|---|
+| H-9 hardcoded `useEth` | C23/**C22** | yes (4 sibling framings) | 1 REAL + 3 REFUTED | **HIT H-9** | **CAUGHT but framing-fragile** — refuter killed 3 of 4 framings as "privileged config"; one precise framing survived (CONFIRMED under C22 here, vs C23 in #1879) |
+| H-8 Pendle SY 1:1 | C22 | **no** | — | miss | **generation miss** (was generated in #1879) |
+| H-4 Morpho direct-borrow | C21 | yes | REFUTED | miss | **refute false-negative** — refuter rebutted a different attack path (deposit re-entry) than the GT mechanism (direct Morpho borrow) |
+| M-12 `_getPTRate` decimals | C2 | **no** | — | miss | **generation miss** |
+
+Plus two non-anchor confirms: **M-2** (consensus — `Ethena._finalizeCooldown` zero-payout, REAL) and **M-22** (rare — credited from the H-9 lead, mechanically adjacent WETH/Curve loss).
+
+**Conclusion (updates the #1879 read):** the refute-gate false-negative is real (H-4) but is **not the dominant loss** — of the 4 anchors, generation miss (H-8, M-12) cost as many as the refute gate (H-4), and the one catch (H-9) was framing-fragile. So the store row for H-8/M-12 is a **generation/coverage** gap this run, not a refute-gate `REFUTED` — the #1879 `REFUTED` tags for those two are stochastic-run-specific, not stable. The candidate-side half (H-4 refute-FN + H-9 framing-fragility) is what **#1887** (refuter→hunter knowledge transfer) targets; the generation-miss half is upstream of the refute gate and #1887 does not address it.
+
 ## Per-finding tags (5 of 8 contests run so far)
 
 | Contest | Finding | fb | Class | Lens status |

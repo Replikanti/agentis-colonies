@@ -1,0 +1,1 @@
+REFUTED	The pro-rata uses the account's own per-(vault,account) w.yieldTokenAmount/w.sharesAmount and truncates down, and any sharesToRedeem > w.sharesAmount must still pass finalizeAndRedeemWithdrawRequest, which debits the request in checked arithmetic and reverts on underflow — the claim rests on unshown manager code the reviewer never traced.

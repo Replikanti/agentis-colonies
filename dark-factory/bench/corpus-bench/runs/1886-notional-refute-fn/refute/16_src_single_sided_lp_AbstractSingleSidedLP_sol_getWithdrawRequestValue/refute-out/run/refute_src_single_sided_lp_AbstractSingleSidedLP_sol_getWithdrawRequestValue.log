@@ -1,0 +1,61 @@
+[genesis] 8978977bcaed
+[prompt] "You are an INDEPENDENT, skeptical smart-contract auditor...." -> string
+[llm] requesting flat-cyborg  ...
+[llm] still waiting ... (4.0s)
+[llm] still waiting ... (8.0s)
+[llm] still waiting ... (12.0s)
+[llm] still waiting ... (16.0s)
+[llm] still waiting ... (20.0s)
+[llm] still waiting ... (24.0s)
+[llm] still waiting ... (28.0s)
+[llm] still waiting ... (32.0s)
+[llm] still waiting ... (36.0s)
+[llm] still waiting ... (40.1s)
+[llm] still waiting ... (44.1s)
+[llm] still waiting ... (48.1s)
+[llm] still waiting ... (52.1s)
+[llm] still waiting ... (56.1s)
+[llm] still waiting ... (60.1s)
+[llm] still waiting ... (64.1s)
+[llm] still waiting ... (68.1s)
+[llm] still waiting ... (72.1s)
+[llm] still waiting ... (76.1s)
+[llm] still waiting ... (80.0s)
+[llm] still waiting ... (84.0s)
+[llm] still waiting ... (88.0s)
+[llm] still waiting ... (92.0s)
+[llm] still waiting ... (96.0s)
+[llm] received (98.9s)
+AUX-CONTEXT|<work>/notional/zone-hunt-out/verify/gates/16_src_single_sided_lp_AbstractSingleSidedLP_sol_getWithdrawRequestValue/refute-out/run/aux_src_single_sided_lp_AbstractSingleSidedLP_sol_getWithdrawRequestValue.txt
+Tracing the claimed path:
+
+  1. __initiateWithdraw → _unstakeAndExitPool(poolClaim, params.minAmounts, isSingleSided: false) — this is a
+  proportional exit (Curve remove_liquidity), so each leg is exitBalances[i] = poolBalance_i * poolClaim / totalSupply.
+  For exitBalances[i] to truncate to 0, the attacker must drive poolBalance_i below totalSupply / poolClaim, i.e. below
+  a handful of wei given that the vault's LP claim is a material fraction of supply (bounded above by MAX_POOL_SHARE in
+  _checkPoolShare, but bounded below by the position actually being "maxed out" as the claim requires). Under both the
+  constant-product and the StableSwap invariant, driving one reserve of a 2-token pool to single-digit wei requires the
+  counter-token reserve to grow ~`D²/(4·x₁)— unbounded. A flash-swap cannot do this; a proportional exit from a live
+  Curve pool cannot yield a 0 leg for a non-dust claim. The only regime where a leg truncates to zero is a dust-sized
+  withdrawal (or a token with very low decimals combined with a tinypoolClaim`), which is not the "maxed-out leveraged
+  position" the impact rests on, and is well below Medium.
+  2. The attacker also cannot inflict this on a third party: initiateWithdraw is reached through the vault's
+  __initiateWithdraw for the caller's own account (account is the shares owner), so the flash-swap-plus-initiate
+  sequence can only strand the attacker's own collateral — they gain nothing, since a bricked convertToAssets equally
+  blocks their own redemption and any value extraction; the borrowed principal is not released to them by this path.
+  3. Even granting the zeroed leg, the returned requestId = requestIds[0] would be 0 whenever the skipped leg is index
+  0, and the calling layer records/keys the request off that id — so the claimed "silently succeeds and leaves a
+  half-request" step is not established by the code shown.
+  4. The genuine asymmetry visible here — hasPendingWithdrawals has if (address(manager) == address(0)) continue; while
+  getWithdrawRequestValue does not — is a deployment-configuration issue (a pool where one token has no registered
+  manager), not the claimed unprivileged flash-swap exploit, and it is not the finding under review.
+
+  The claimed control-flow step that must break the invariant (attacker-forced exitBalances[i] == 0 on a proportional
+  exit of a material position) is not achievable against the actual Curve exit math, so the require(hasRequest) loop is
+  never reached in the asymmetric state the claim depends on.
+
+  VERDICT|REFUTED|src/single-sided-lp/AbstractSingleSidedLP.sol:getWithdrawRequestValue|class=C15|The withdraw path uses
+  a proportional remove_liquidity exit (isSingleSided: false), whose per-leg amount poolBalance_i * poolClaim /
+  totalSupply cannot be flash-swapped to zero for a material position without driving a Curve reserve to single-digit
+  wei (unbounded cost under the invariant), and initiateWithdraw only acts on the caller's own account, so no
+  unprivileged attacker can create the one-legged request that would make require(hasRequest) revert.

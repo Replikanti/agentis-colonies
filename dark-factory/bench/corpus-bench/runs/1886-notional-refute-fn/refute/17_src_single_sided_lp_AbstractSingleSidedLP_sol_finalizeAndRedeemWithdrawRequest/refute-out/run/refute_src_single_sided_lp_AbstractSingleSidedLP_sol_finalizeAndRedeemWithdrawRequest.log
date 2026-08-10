@@ -1,0 +1,45 @@
+[genesis] 669727109807
+[prompt] "You are an INDEPENDENT, skeptical smart-contract auditor...." -> string
+[llm] requesting flat-cyborg  ...
+[llm] still waiting ... (4.0s)
+[llm] still waiting ... (8.0s)
+[llm] still waiting ... (12.0s)
+[llm] still waiting ... (16.0s)
+[llm] still waiting ... (20.0s)
+[llm] still waiting ... (24.0s)
+[llm] still waiting ... (28.0s)
+[llm] still waiting ... (32.0s)
+[llm] still waiting ... (36.0s)
+[llm] still waiting ... (40.1s)
+[llm] still waiting ... (44.1s)
+[llm] still waiting ... (48.1s)
+[llm] still waiting ... (52.1s)
+[llm] still waiting ... (56.1s)
+[llm] still waiting ... (60.1s)
+[llm] still waiting ... (64.1s)
+[llm] still waiting ... (68.1s)
+[llm] still waiting ... (72.1s)
+[llm] received (72.8s)
+AUX-CONTEXT|<work>/notional/zone-hunt-out/verify/gates/17_src_single_sided_lp_AbstractSingleSidedLP_sol_finalizeAndRedeemWithdrawRequest/refute-out/run/aux_src_single_sided_lp_AbstractSingleSidedLP_sol_finalizeAndRedeemWithdrawRequest.txt
+Trace: the only route into BaseLPLib.finalizeAndRedeemWithdrawRequest is _redeemShares(isEscrowed=true) →
+  _withdrawPendingRequests, and escrowed redemption only applies to an account that already holds a pending withdraw
+  request (_isWithdrawRequestPending → hasPendingWithdrawals). That state can only be created by __initiateWithdraw →
+  BaseLPLib.initiateWithdraw, which exits the pool proportionally (isSingleSided: false) and then, for every leg with a
+  non‑zero exit balance, does ADDRESS_REGISTRY.getWithdrawRequestManager(tokens[i]) followed by
+  tokens[i].checkApprove(address(manager), …) and manager.initiateWithdraw(...) — with no zero-manager guard either. So
+  on a two-token Curve pool where one leg has no registered manager, the proportional exit yields a non-zero balance on
+  that leg and initiateWithdraw reverts (approve/call into address(0)) before any request is ever recorded. No account
+  can end up escrowed with a request on one leg and a zero manager on the other; the "one-legged request state" the
+  claim depends on is not reachable through the code's own entry point. The same all-legs-have-requests premise is baked
+  into getWithdrawRequestValue, which require(hasRequest) for every token — the design uniformly assumes each pool
+  token has a manager, and whether a manager is registered is controlled by ADDRESS_REGISTRY (a
+  privileged/governance-controlled registry), so the only way to produce the claimed asymmetry is a misconfigured
+  deployment, not an unprivileged action. The residual sub-case (both managers registered but one leg's proportional
+  exit balance is exactly 0, so initiateWithdraw skips it and w.sharesAmount == 0 later divides by zero) is not
+  demonstrated to be reachable for a real Curve 2-token pool and is not the exploit as filed. Per the tie-break, no
+  unambiguous unprivileged path exists.
+  VERDICT|REFUTED|src/single-sided-lp/AbstractSingleSidedLP.sol:finalizeAndRedeemWithdrawRequest|class=C15|The escrowed
+  state the claim needs is unreachable: BaseLPLib.initiateWithdraw itself has no zero-manager guard and reverts on the
+  proportional (non-zero) exit balance of any leg lacking a manager, so no withdraw request can ever be recorded in the
+  "one-legged" configuration, which in any case is a privileged ADDRESS_REGISTRY/deployment misconfiguration rather than
+  an unprivileged attack.

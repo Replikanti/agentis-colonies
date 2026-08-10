@@ -1,0 +1,1 @@
+REFUTED	The oracle never reads get_virtual_price — it prices via raw balances cross-checked by a get_dy spot-price deviation band enforced in AbstractLPOracle._calculateLPTokenValue, which is not shown, so the claim's core assertion (a 5–15% value error that simultaneously passes the deviation limits) cannot be traced to any guard-free step in the actual code.

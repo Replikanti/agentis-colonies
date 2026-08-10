@@ -1,0 +1,34 @@
+{
+  "repo": "notional-v4",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "Curve/Convex single-sided LP yield strategy",
+      "location": "src/single-sided-lp/CurveConvex2Token.sol:unstakeAndExitPool",
+      "file": "src/single-sided-lp/CurveConvex2Token.sol",
+      "class": "class=C22",
+      "severity": "High",
+      "exploit": "On any CurveInterface.V2 vault whose Curve coin is the WETH ERC-20 (the standard crypto-v2 layout), _exitPool hardcodes use_eth=true so the pool unwraps and pushes native ETH, but the re-wrap in unstakeAndExitPool only fires when TOKEN_i == ETH_ADDRESS, so the vault treats the native ETH it received as an increase in its WETH balance \u2014 the two-sided delta tokenBalance(TOKEN_1) - before reads 0 and the redeemer is credited nothing while the ETH is stranded, and the single-sided path credits an amount of asset=WETH the vault never received and pays it out of other users' WETH until redemptions revert.",
+      "poc_sketch": "Fork mainnet; deploy CurveConvex2Token against a crypto-v2 2-token pool whose coins(0) is WETH (e.g. a WETH/x cryptoswap) with curveInterface = V2, asset = WETH, PRIMARY_INDEX = 0; user A and user B each deposit 10 WETH; vm.record A's redeem: assert address(vault).balance increased by the removed amount, assert WETH.balanceOf(vault) unchanged, assert the two-sided path returns exitBalances[0] == 0, and assert B's subsequent full redeem reverts / A's single-sided redeem drained B's WETH.",
+      "verdict": "REAL",
+      "reason": "For a CurveInterface.V2 crypto pool the coin address returned by coins(i) is the WETH ERC-20 (not ALT_ETH), so _rewriteAltETH leaves TOKEN_i == WETH and the ETH_ADDRESS-gated WETH.deposit re-wrap in unstakeAndExitPool never fires, yet _exitPool passes the hardcoded use_eth=true to both remove_liquidity_one_coin and remove_liquidity, which makes the pool unwrap and push native ETH to the vault \u2014 leaving the two-sided delta tokenBalance(WETH)-before at 0 and the single-sided branch crediting a WETH amount the vault never actually received."
+    },
+    {
+      "subsystem": "Pendle PT staking strategy vaults",
+      "location": "src/withdraws/Ethena.sol:_finalizeCooldown:39",
+      "file": "src/withdraws/Ethena.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "While Ethena's sUSDe.cooldownDuration() is 0, any unprivileged actor calls the permissionless AbstractLendingRouter.forceWithdraw on an unhealthy PendlePT_sUSDe position (which enters PendlePT._initiateWithdraw and hands sUSDe to EthenaWithdrawRequestManager, whose holder instantly redeems it to USDe), then triggers finalization: _finalizeCooldown snapshots balanceBefore after the USDe has already landed and skips unstake because cooldownEnd==0, so tokensClaimed = 0 with finalized = true, which _finalizeWithdraw latches permanently via s.totalWithdraw = 0 / require(s.finalized == false), causing _redeemShares to burn the victim's shares for zero assets and strand the USDe on the clone.",
+      "poc_sketch": "Fork mainnet past the PT-sUSDe maturity; deploy PendlePT_sUSDe with the real market and EthenaWithdrawRequestManager, approve the vault; victim V opens a leveraged position via the lending router; vm.prank(sUSDe owner) setCooldownDuration(0); assert sUSDe.cooldownDuration()==0; push V under water (or use V's own initiateWithdraw) so an unprivileged attacker A can call lendingRouter.forceWithdraw(V, vault, \"\"); read the requestId (holder clone address) and assert USDe.balanceOf(holder) == the redeemed amount > 0 and sUSDe.cooldowns(holder).cooldownEnd == 0; then call the finalize path and assert (a) finalizeRequestManual/finalizeAndRedeemWithdrawRequest returns tokensWithdrawn == 0 with finalized == true, (b) the TokenizedWithdrawRequest now has totalWithdraw == 0 and finalized == true so any retry is permanently pinned at zero, (c) V's exitPosition burns all of V's shares while delivering 0 asset, and (d) USDe.balanceOf(holder) is still the full amount, unreachable except through the onlyOwner rescueTokens.",
+      "verdict": "REAL",
+      "reason": "When cooldownDuration()==0 the USDe is already redeemed onto the holder during _startCooldown, so balanceBefore is snapshotted after the funds arrive and the if (0 < userCooldown.cooldownEnd) unstake branch is skipped (cooldownEnd==0), making balanceAfter == balanceBefore and returning tokensClaimed=0 with finalized=true \u2014 no guard in the shown flow (canFinalizeWithdrawRequest even returns true whenever duration==0) prevents this permanent zero-payout finalization that strands the USDe on the clone."
+    }
+  ],
+  "errors": [],
+  "totals": {
+    "candidates": 29,
+    "verified": 2,
+    "errored": 0
+  }
+}

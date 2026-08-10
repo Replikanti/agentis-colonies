@@ -1,0 +1,53 @@
+[genesis] 19edfdfd8293
+[prompt] "You are an INDEPENDENT, skeptical smart-contract auditor...." -> string
+[llm] requesting flat-cyborg  ...
+[llm] still waiting ... (4.0s)
+[llm] still waiting ... (8.0s)
+[llm] still waiting ... (12.0s)
+[llm] still waiting ... (16.0s)
+[llm] still waiting ... (20.0s)
+[llm] still waiting ... (24.0s)
+[llm] still waiting ... (28.0s)
+[llm] still waiting ... (32.0s)
+[llm] still waiting ... (36.0s)
+[llm] still waiting ... (40.1s)
+[llm] still waiting ... (44.1s)
+[llm] still waiting ... (48.1s)
+[llm] still waiting ... (52.1s)
+[llm] still waiting ... (56.1s)
+[llm] still waiting ... (60.1s)
+[llm] received (62.4s)
+Tracing the actual code: unstakeAndExitPool is not a member of the vault CurveConvex2Token at all — it is declared on
+  the separate CurveConvexLib contract, which is deployed in the vault's constructor and stored as LP_LIB. The vault
+  reaches it only through _delegateCall(LP_LIB, ...) from AbstractSingleSidedLP's internal redemption path, so the
+  selector unstakeAndExitPool is not part of the vault's external ABI and a direct call to the vault address hits no
+  such function (it reverts on dispatch). The only address at which unstakeAndExitPool is directly callable is the
+  CurveConvexLib deployment itself, and calling it there executes in the library contract's own storage and, critically,
+  under the library's own address(this). The Convex/gauge staked position and the Curve LP tokens are held by the vault
+  (the delegatecall context), never by the library instance. So an unprivileged direct call to
+  CurveConvexLib.unstakeAndExitPool(poolClaim, [0,0], ...) runs _unstakeLpTokens(poolClaim) →
+  IConvexRewardPool.withdrawAndUnwrap(poolClaim, false) (or ICurveGauge.withdraw) against the library's zero staked
+  balance, which reverts on underflow for any poolClaim > 0; with poolClaim == 0 nothing is unstaked and _exitPool burns
+  zero LP, returning zeros. Either way the vault's position is untouched: there is no code path by which a call to the
+  library address can move the vault's staked LP, because the reward-pool/gauge accounting is keyed on msg.sender, which
+  is the library, not the vault.
+
+  The claimed downstream consequences follow only from the premise that the vault's staked balance goes to zero, and
+  that premise fails at the first step. super.convertToAssets never sees a drained position, honest redemptions do not
+  revert, and there is no sandwichable forced exit of vault funds. The _minAmounts = [0,0] argument is only
+  attacker-controlled on a call that can never move vault-owned LP; on the real path the min amounts are supplied by the
+  vault's own redemption logic in AbstractSingleSidedLP, which is not shown here but is reached only through the
+  vault's authenticated entry points.
+
+  The finding is a delegatecall-library-mistaken-for-vault-entrypoint error: it attributes an external, unauthenticated
+  helper on a stateless delegatecall target to the vault's ABI, and it assumes the helper operating on its own
+  address(this) can dispatch the vault's Convex withdrawal. Neither holds. Additionally, even on the library address,
+  transferYieldTokenToOwner and joinPoolAndStake are equally unauthenticated for the same architectural reason and are
+  equally inert — the pattern is deliberate, and the absence of access control on the library is not exploitable absent
+  a way to make the library's own token/stake balances non-zero, which nothing in the shown code provides (tokens
+  transit the vault's context, and any stray balance would be a separate, non-High issue).
+
+  VERDICT|REFUTED|src/single-sided-lp/CurveConvex2Token.sol:unstakeAndExitPool|class=C15|unstakeAndExitPool exists only
+  on the delegatecall-target CurveConvexLib, not on the vault's external ABI, and a direct call to the library executes
+  with address(this) = the library, whose Convex/gauge staked balance is zero — so withdrawAndUnwrap/gauge.withdraw
+  reverts (or unstakes nothing) and the vault's LP position is unreachable.
