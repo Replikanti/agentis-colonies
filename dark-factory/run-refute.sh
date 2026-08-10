@@ -7,10 +7,10 @@
 # (file:fn + claimed exploit + class) and the relevant code, `prompt()` a hostile reader that tries to
 # REFUTE it against the actual control-flow (defaulting to REFUTED on any doubt), `emit` the verdict, and
 # `print` a `VERDICT|REAL|...` / `VERDICT|REFUTED|...` line. It runs ENTIRELY through the substrate
-# (prompt/emit/learn), but learning/experience recording stays OFF below: the per-run store is wiped
-# fresh on every invocation (see the `rm -rf "$RUN"` before the store is initialized), so no refutation
-# `learn()` write is ever read back — there is no cross-candidate reweighting to speak of (#1866). This is
-# the colony-native form of the `adversarial-refute` step (auditor/methods/registry.md) that previously ran as
+# (prompt/emit/learn). Learning/experience are ENABLED below: the refuter READS experience WITHIN a run
+# (agentis hard-errors `experience not enabled` on that read when the feature is off — #1881), even though
+# the per-run store is wiped fresh on every invocation and so carries no CROSS-candidate reweighting
+# (#1866). This is the colony-native form of the `adversarial-refute` step (auditor/methods/registry.md) that previously ran as
 # an externally-orchestrated subagent. This is the proven pattern (#999) for porting the colony's other
 # deep capabilities (deep cross-function audit, build-and-run PoC, fork-differential) onto the substrate.
 #

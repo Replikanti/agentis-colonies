@@ -5,10 +5,10 @@
 # known-bug pattern, so it returns nothing on a bespoke protocol. run-discovery.sh drives the colony's
 # DISCOVERY agent (auditor/agents/hunter.ag): a taxonomy-driven, adversarial, per-(subsystem x bug-class)
 # audit of CUSTOM multi-contract code — the colony-native, substrate-driven version of a hand-run
-# multi-agent pass. The hunter runs ENTIRELY through the agentis substrate (prompt/emit/learn), but
-# learning/experience recording stays OFF below: the per-run store is wiped fresh on every invocation
-# (see the `rm -rf "$RUN"` before the store is initialized), so nothing `learn()` writes is ever read
-# back — there is no cross-run reweighting to speak of (#1866).
+# multi-agent pass. The hunter runs ENTIRELY through the agentis substrate (prompt/emit/learn). Learning/
+# experience are ENABLED below: the hunter READS experience WITHIN a single run (agentis hard-errors
+# `experience not enabled` on that read when the feature is off — #1881), even though the per-run store
+# is wiped fresh on every invocation and so carries no CROSS-run reweighting (#1866).
 #
 # A surfaced CANDIDATE is a LEAD, not a finding. It is UNVERIFIED until the operator reproduces it through
 # evm-harness/forge-verify.sh (a real Foundry PoC that PASSES only if the exploit fires). Only a forge-
