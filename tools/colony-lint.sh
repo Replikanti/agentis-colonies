@@ -1174,6 +1174,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-external-assumption-lens.sh" ]; then
     fi
 fi
 
+# --- dark-factory experience/learning flags regression guard (#1881, the #1866/#1877 flip) ---
+# #1877 flipped experience.enabled/learning.enabled to false on run-discovery.sh (STAGE 3 hunter) and
+# run-refute.sh (STAGE 4 refute gate) as "structurally inert" — but the .ag READS experience intra-run, so
+# agentis hard-errors `experience not enabled`, FAILING every hunt cell and ERRORING every refute gate: a
+# silent false-zero across the whole discover->verify pipeline that the stub-`agentis` demos never caught.
+# demo-experience-flags.sh source-guards both scripts (always, CI-safe) and, when agentis is on PATH, runs a
+# real hunter + refuter cell via --backend mock (offline; the mock LLM returns instantly) and asserts neither
+# hits the runtime error — the output-level mutation guard the #1877 change lacked.
+if [ -x "$REPO_ROOT/dark-factory/demo-experience-flags.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-experience-flags.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: experience/learning flags on the hunt + refute paths (no experience-not-enabled) (#1881)"
+    else
+        fail "dark-factory: experience/learning flags regressed — pipeline returns a false zero (#1881)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory new-listing watcher: freshness-first Immunefi target selection (#1623) ---
 if [ -x "$REPO_ROOT/dark-factory/demo-watch-new-listings.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-watch-new-listings.sh" 2>&1)" && check_rc=0 || check_rc=$?
