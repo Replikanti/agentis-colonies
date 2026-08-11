@@ -522,6 +522,53 @@ the hunt can *already* do; it does not change the underlying hunt quality. agent
 `knowledge list` visibility + fitness-driven reorder that flips when the fitness flips). Every functional part
 runs on `--backend mock` (no LLM), so it never contends with a live corpus-bench run.
 
+## Refuter → hunter constraint transfer (#1887)
+
+A second feedback channel, the same shape as the one above but fed by the **refute gate** instead of the
+scorer. Each REFUTED verdict now also states the GENERALISABLE standard the claim failed; those standards are
+distilled into a knowledge corpus and read by the hunter of a **different** target:
+
+```
+refuter.ag CONSTRAINT|   →   run-refute.sh / verify-findings.sh   →   refute-to-knowledge.sh
+(one per REFUTED verdict)    (refute-constraints.tsv, gate-ordered)    (refute-constraint entries)
+                         →   REFUTE_CONSTRAINTS_JSON + run-discovery.sh knowledge import --replace
+                         →   hunter.ag query_knowledge("refute-constraint", 32)
+```
+
+Building a corpus from an already-archived refute pass, then hunting a DIFFERENT contest with it:
+
+```bash
+# 1. LEARN — from a verify-findings.sh output dir (or one or more refute-constraints.tsv files directly)
+dark-factory/refute-to-knowledge.sh \
+  --from-verify <verify-out-dir> --out refute-constraints.json
+
+# 2. ACT — the ON arm differs from the OFF arm by this ONE exported variable, nothing else
+REFUTE_CONSTRAINTS_JSON=$PWD/refute-constraints.json \
+  dark-factory/bench/corpus-bench/run-corpus-bench.sh --live --id <held-out-contest> ...
+```
+
+**`--replace` is mandatory** (and always used by the feeder and by the importer): a re-import WITHOUT it
+accumulates samples. With the variable unset the whole path is an **identity** — `query_knowledge` returns
+nothing, the block renders empty and the hunter's prompt is byte-identical to today.
+
+**Measurement rules (the acceptance contract, fixed before the code):**
+
+- **Derivation and held-out targets must differ.** Constraints derived from contest X are only meaningful
+  when measured on contest Y. Iterating the corpus text against the held-out target BURNS it — move the
+  measurement to the next contest.
+- **Metric = rare-bug recall** (GT rows with `found-by` ≤ 2, the existing `rare(1-2)` bucket). Confirm rate
+  is secondary and does NOT constitute a pass: *a rise in confirm rate with flat rare recall is a FAIL and is
+  recorded as one.* A hunter told what the gate rejects can learn to produce gate-pleasing claims; the block
+  carries an explicit anti-Goodhart clause, and the metric is the real defence.
+- **Equal cell counts.** The import adds no cells; unequal counts between arms VOID the comparison.
+- **Quote the ruler with every number**, and state "one run per arm, stochastic" — the #1886 archive's
+  convention. A flat-or-worse result is a legitimate, publishable outcome: the default stays off.
+
+`dark-factory/demo-refute-feedback.sh` pins the whole chain offline (report byte-identity with and without
+the constraint line, the harvested TSV, the feeder's aggregation/determinism, and a REAL hunter cell's
+prompt ON vs OFF); `demo-discovery-parallel.sh` block 19 pins default inertness, `knowledge.enabled`, the
+`--jobs N == serial` equality WITH a corpus imported, and the fold's CB.
+
 ## Adding a contest
 
 Append a row to `corpus.tsv` (`id  code_repo  judging_repo  scope_hint`) for any CONCLUDED Sherlock contest

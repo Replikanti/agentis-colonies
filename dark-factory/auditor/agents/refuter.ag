@@ -27,6 +27,12 @@ cb 300000;
 // Stdout: exactly one verdict line —
 //   VERDICT|REAL|<file:fn>|<class>|<one-sentence why the refutation FAILED: the exploit holds>
 //   VERDICT|REFUTED|<file:fn>|<class>|<one-sentence the specific guard / control-flow fact that kills it>
+// plus, on a REFUTED verdict ONLY and IMMEDIATELY BEFORE it (#1887) —
+//   CONSTRAINT|<class>|<one target-independent sentence: the generalisable requirement the claim failed>
+// The ORDER is load-bearing: run-refute.sh's _join_wrapped_verdict() treats every non-boundary line AFTER a
+// `VERDICT|` line as a PTY-wrap continuation of the verdict's reason, so a CONSTRAINT| line emitted after the
+// verdict would be swallowed into that reason and would then shift verify-findings.sh's `awk -F'|'` field
+// read. Before the verdict it is invisible to that scraper and is picked up by _join_wrapped_constraint().
 
 // --- file reader (dynamic path -> safe-exec-concat, per hunter.ag / recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -68,6 +74,29 @@ fn appendix_rule(aux: string) -> string {
       + "(base + override): \"this file does not implement X\" is NOT by itself a refutation when X is "
       + "implemented below. It REMAINS a refutation if the derived override provably guards the path, or if "
       + "the claim needs behaviour absent from BOTH files.\n";
+}
+
+// --- #1887 refuter -> hunter CONSTRAINT channel --------------------------------------------------------
+// A refutation currently dies with the candidate: the hostile reader states the standard the claim failed to
+// meet, and that standard — the GENERALISABLE half, stripped of this protocol's nouns — is exactly what the
+// hunter of the NEXT target would need to pre-empt the objection. This block asks for it as one extra line
+// on the REFUTED path only. Two properties make it safe rather than merely tempting:
+//   ORDER   — the line comes BEFORE the verdict, because run-refute.sh's _join_wrapped_verdict() glues every
+//             following non-boundary line into the verdict's reason (see the header note).
+//   SCOPE   — it must be target-INDEPENDENT. A constraint naming this protocol's contracts/functions cannot
+//             transfer, and would leak one target's specifics into another target's prompt; the feeder
+//             (refute-to-knowledge.sh) keys entries by CLASS only, so the sentence is all that travels.
+// A REAL verdict emits nothing: the gate learned no new standard from a claim that survived it.
+fn constraint_rule(cls: string) -> string {
+    return "IF — and only if — your verdict is REFUTED, write ONE MORE line IMMEDIATELY BEFORE the "
+      + "VERDICT| line (never after it):\n"
+      + "CONSTRAINT|" + cls + "|<one sentence: the GENERALISABLE requirement this claim failed to meet>\n"
+      + "That sentence must be TARGET-INDEPENDENT — the standard a hostile reader applies, reusable on any "
+      + "protocol. NO contract, function, variable, token or protocol names, no addresses, no numbers taken "
+      + "from this code: write the RULE, not this instance of it. Example of the right shape: \"an "
+      + "externally-set integration parameter is treated as privileged configuration unless the candidate "
+      + "names the unprivileged trigger and the concrete divergence it causes\".\n"
+      + "On a REAL verdict write NO CONSTRAINT| line at all.\n";
 }
 
 let candFn = getenv("CAND_FILE_FN");
@@ -113,6 +142,7 @@ let instruction =
   + "or\n"
   + "VERDICT|REFUTED|" + candFn + "|" + candClass + "|<one sentence: the specific guard / control-flow fact / "
   + "scope rule that kills the claim>\n"
+  + constraint_rule(candClass)
   + "Reason for as long as you need first; ONLY the final VERDICT| line is parsed, so your analysis above it "
   + "is free. If you are unsure, the line MUST be VERDICT|REFUTED|...";
 

@@ -58,6 +58,58 @@ cost; it is a finding only after the full `forge-verify.sh` Foundry repro passes
 human-gated. Run it: `./screen-leads.sh --demo` (3 leads → 1 reproduced, 1 held, 1 indeterminate, zero
 external prerequisites).
 
+## Adopted: `knowledge import/export` — the refuter → hunter constraint channel (#1887)
+
+**Where:** `auditor/agents/refuter.ag` (emit) → `run-refute.sh` / `verify-findings.sh` (harvest) →
+`refute-to-knowledge.sh` (feeder) → `run-discovery.sh` (import) → `auditor/agents/hunter.ag` (read).
+
+**The gap it fills.** The refute gate is where most candidates die, and the reason died with them. A hostile
+reader does not just say "no" — it states the STANDARD the claim failed to meet, and the generalisable half
+of that standard ("an externally-set integration parameter counts as privileged configuration unless the
+claim names the unprivileged trigger and the concrete divergence it causes") is exactly what a hunter on the
+NEXT target needs in order to pre-empt the objection. `refuter.ag` now emits one target-independent
+`CONSTRAINT|<class>|<sentence>` line per REFUTED verdict, **immediately before** the `VERDICT|` line — the
+ordering is load-bearing, because `run-refute.sh::_join_wrapped_verdict` treats every following non-boundary
+line as a PTY-wrap continuation of the verdict's reason and would otherwise shift `verify-findings.sh`'s
+`awk -F'|'` field read.
+
+**Why `knowledge`, not `learn`/`distill`.** `learn()` writes the agent's OWN experience (hunter fitness:
+"this class surfaced a candidate here"); mixing an externally-derived standard into it would entangle two
+signals that must stay separable. `knowledge` is the substrate's separate, inspectable (`agentis knowledge
+list`), importable store, which is what the shipped #1711 hunt-fitness channel already uses — this reuses
+that exact pattern rather than inventing one. `distill()` was evaluated and **rejected on a measured
+reason**: it hard-requires ≥ 3 *successful* experience records of the same `action_type`, while each refute
+gate is a single-shot run against a freshly wiped store, so it raises `insufficient experience` — and ANY
+runtime error makes agentis discard the program's whole stdout, i.e. the exact #1877/#1878 false zero that
+once zeroed this pipeline.
+
+**Store scope — the #1866 DECISION, recorded.** The question #1866 left open was whether the store should
+persist across targets. The answer here is split by context and is deliberately conservative:
+
+| Context | Store | Default |
+|---|---|---|
+| Bench / measurement | a **frozen, checked-in corpus file**, imported read-only, identical for every cell | **off** (`REFUTE_CONSTRAINTS_JSON` unset) |
+| Production hunts | the same corpus, plus the opt-in accumulating merge `refute-to-knowledge.sh --store <file>` | **off** |
+
+No agent ever writes knowledge; nothing calls `distill()`; the corpus is imported ONCE, before the cell
+loop, so every cell's isolated `cp -r` copy is identical. That is what keeps a run **order-independent** —
+`--jobs N` stays byte-equal to serial (#1857/#1858) — while still letting one target's refutations teach the
+next one's hunt. A store that accumulated *within* a run would have broken exactly that.
+
+**Inertness is structural, not promised.** With no corpus imported `query_knowledge` returns an empty list,
+the block renders as `""`, and the hunter's prompt is byte-identical to the pre-#1887 one
+(`demo-discovery-parallel.sh` 19a/19e-C measure it). The one thing that is NOT optional is
+`knowledge.enabled = true` in the run config: without it the read raises and the cell's whole stdout is
+discarded, so that config line ships in the same change as the call and is guarded at OUTPUT level by
+`demo-experience-flags.sh`'s live hunter cell.
+
+**Anti-Goodhart.** A hunter told what the gate rejects can learn to produce gate-*pleasing* claims. The block
+therefore carries an explicit clause ("NEVER weaken, re-frame or invent a claim to satisfy the gate — if the
+mechanism does not hold, answer SAFE"), and the metric the channel is judged on is ground-truth **rare-bug
+recall**, never confirm rate: a rise in confirm rate with flat rare recall is recorded as a FAIL.
+
+Run it: `./demo-refute-feedback.sh` (offline; emit → scrape → feed → import → a real hunter cell's prompt).
+
 ## Not adopted (and the honest reason)
 
 ### `replicate` — conceptual fit, not runnable, and would add a fatal failure mode

@@ -24,6 +24,11 @@
 # Three layers:
 #   1)  SOURCE GUARD (always, CI-safe): each of the eight scripts must emit `experience.enabled = true` and
 #       `learning.enabled = true`, and MUST NOT emit the `= false` form.
+#   1c) KNOWLEDGE FLAG (always, CI-safe, #1887): the two scripts whose agents call an adaptive READ builtin —
+#       run-discovery.sh (hunter.ag's `query_knowledge("refute-constraint", …)`) and map-zones.sh
+#       (zone-mapper.ag's `recommend`/`query_knowledge("hunt-fitness", …)`) — must emit
+#       `knowledge.enabled = true`. Same failure curve as above: without it the call raises `knowledge base
+#       not enabled`, the cell's stdout is discarded, and the stage reports a false zero.
 #   1b) NO-`= false` RATCHET (always, CI-safe): NO script in dark-factory/ or dark-factory/auditor/scripts/
 #       may emit `experience.enabled = false` / `learning.enabled = false` unless the line carries the
 #       annotation `# experience-flags: intentional-off (<reason>)`. Catches a flip in a script that is not
@@ -55,6 +60,9 @@ SYMBOLIC="$HERE/run-symbolic.sh"
 POC="$HERE/run-poc.sh"
 PASS="$HERE/run-audit-pass.sh"
 GATE="$HERE/auditor/scripts/run-gate-agent.sh"
+# #1887: not on the eight-script experience list — map-zones.sh is here only for the knowledge-flag guard
+# below, because zone-mapper.ag calls recommend()/query_knowledge().
+MAPZONES="$HERE/map-zones.sh"
 
 FAILS=0
 note() { echo "demo-experience-flags.sh: $*"; }
@@ -62,7 +70,7 @@ ok()   { echo "  [PASS] $*"; }
 bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 skip() { echo "  [SKIP] $*"; }
 
-for s in "$DISCOVERY" "$REFUTE" "$SCREEN" "$BRIEFS" "$SYMBOLIC" "$POC" "$PASS" "$GATE"; do
+for s in "$DISCOVERY" "$REFUTE" "$SCREEN" "$BRIEFS" "$SYMBOLIC" "$POC" "$PASS" "$GATE" "$MAPZONES"; do
   [ -x "$s" ] || { note "script not found / not executable: $s" >&2; exit 3; }
 done
 
@@ -90,6 +98,26 @@ guard_script "$POC"
 guard_script "$PASS"
 guard_script "$GATE"
 
+# 1c) KNOWLEDGE FLAG (#1887): a THIRD flag on exactly the same failure curve. `knowledge.enabled` gates the
+#     adaptive READ primitives — `query_knowledge()` / `recommend()` — and with it off the call raises
+#     `runtime error: knowledge base not enabled`, which (like every runtime error) makes agentis DISCARD the
+#     cell's whole stdout. Two scripts run an agent that calls one: run-discovery.sh (hunter.ag's #1887
+#     refute-constraint read) and map-zones.sh (zone-mapper.ag's #1711 hunt-fitness read). Dropping the flag
+#     from either is a silent FALSE ZERO for that whole stage, not a lost feature.
+note "1c) source-guard: the 2 scripts whose agents call an adaptive READ builtin emit knowledge.enabled = true ..."
+guard_knowledge() {
+  s="$1"; base="$(basename "$s")"
+  if grep -Eq 'echo "knowledge\.enabled = false"' "$s"; then
+    bad "$base emits knowledge.enabled = FALSE — query_knowledge()/recommend() then hard-errors and the cell's stdout is discarded (#1887, the #1877 class)"
+  elif grep -Eq 'echo "knowledge\.enabled = true"' "$s"; then
+    ok "$base emits knowledge.enabled = true"
+  else
+    bad "$base does not emit knowledge.enabled = true, but its agent calls an adaptive READ builtin — every cell would hard-error and return a false zero"
+  fi
+}
+guard_knowledge "$DISCOVERY"
+guard_knowledge "$MAPZONES"
+
 # ----------------------------------------------------------------------------------------------------------
 # 1b) NO-`= false` RATCHET (always): no script anywhere in this federation may silently flip a flag off. The
 #     escape hatch is an explicit annotation on the same line, so an intentional off is a reviewed decision.
@@ -116,6 +144,10 @@ else
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/demo-experience-flags.XXXXXX")"
   trap 'rm -rf "$WORK"' EXIT
   ERR="experience not enabled"
+  # #1887: the knowledge store's twin error. hunter.ag now calls query_knowledge(), so a dropped
+  # `knowledge.enabled` produces the SAME output-level symptom through a DIFFERENT message — the live
+  # discovery cell below is therefore the mutation-proof gate for the new read, not just for learn().
+  KERR="knowledge base not enabled"
 
   # assert_cell <label> <out-dir> <expected-action>: (a) no runtime error under the out-dir, and (b) the
   # positive control — the experience row the agent's learn() wrote, which proves the cell REALLY ran.
@@ -124,6 +156,11 @@ else
     if grep -rq "$ERR" "$_dir" 2>/dev/null; then
       bad "$_label cell hit '$ERR' — the flag is off / learn() is gated"
       grep -rh "$ERR" "$_dir" 2>/dev/null | head -2 | sed 's/^/      /' >&2
+      return
+    fi
+    if grep -rq "$KERR" "$_dir" 2>/dev/null; then
+      bad "$_label cell hit '$KERR' — knowledge.enabled is off and the cell's stdout was discarded (#1887)"
+      grep -rh "$KERR" "$_dir" 2>/dev/null | head -2 | sed 's/^/      /' >&2
       return
     fi
     if grep -rq "\"action\":\"$_action\"" "$_dir" 2>/dev/null; then

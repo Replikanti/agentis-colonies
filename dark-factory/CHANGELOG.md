@@ -15,6 +15,35 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **REFUTER -> HUNTER CONSTRAINT CHANNEL** (#1887, mechanism only — default OFF everywhere). The refute gate
+  is where most candidates die and its reason died with them. `refuter.ag` now emits, on a REFUTED verdict
+  only and IMMEDIATELY BEFORE the verdict line, one target-independent `CONSTRAINT|<class>|<sentence>` naming
+  the GENERALISABLE standard the claim failed. That ordering is load-bearing: after the verdict,
+  `run-refute.sh::_join_wrapped_verdict` would swallow the line into the reason and shift
+  `verify-findings.sh`'s `awk -F'|'` field read. `refute-report.md`'s row shape and
+  `verified_findings.json`'s schema are UNCHANGED — the channel adds files, never keys.
+  - `run-refute.sh` harvests `<out>/refute-constraints.tsv` (`<class>\t<file:fn>\t<constraint>`, PTY-wrap
+    rejoined); a REAL verdict and a candidate the #1699 C6 fallback RECOVERS harvest nothing.
+  - `verify-findings.sh` concatenates the per-gate files into one `<out>/refute-constraints.tsv` in numeric
+    GATE order — byte-identical under `--jobs 1` and `--jobs > 1`.
+  - NEW `refute-to-knowledge.sh` (modelled on `bench/corpus-bench/bench-to-knowledge.sh`) turns those rows
+    into `refute-constraint` `KnowledgeEntry` entries (deduped by `(class, sentence)`, `--replace` mandatory,
+    empty input => valid `[]` at exit 0), with an opt-in accumulating `--store` merge for production hunts.
+  - `run-discovery.sh` writes `knowledge.enabled = true` and, when `REFUTE_CONSTRAINTS_JSON` is set and
+    readable, imports that corpus ONCE before the cell loop; `hunter.ag` reads it back with
+    `query_knowledge("refute-constraint", 32)`, filters to the cell's class, sorts + caps at 6 bullets and
+    prepends a block carrying an explicit anti-Goodhart clause. Unset => the prompt is BYTE-IDENTICAL.
+  - The store scope is the #1866 decision, recorded in `docs/SUBSTRATE-PRIMITIVES.md`: a **frozen,
+    read-only** corpus imported once, never written by an agent, no `distill()` anywhere — which is what
+    keeps `--jobs N` byte-equal to serial. `distill()` was rejected on a measured reason (it needs >= 3
+    successful same-action experience records; a refute gate is single-shot against a wiped store, and the
+    resulting runtime error would discard the cell's stdout — the #1877 false zero).
+  - Tests: NEW `demo-refute-feedback.sh` (emit -> scrape -> feed -> import -> a REAL hunter cell's PROMPT,
+    ON vs OFF), `demo-discovery-parallel.sh` block 19 (inertness, the config line, `--jobs 3 == serial` WITH
+    a corpus, sentinel-as-record-boundary, measured CB), `demo-verify-findings.sh` block 9 (gate-ordered
+    aggregate, `verified_findings.json` byte-unchanged), `demo-experience-flags.sh` layer 1c + the live
+    hunter cell (a dropped `knowledge.enabled` fails at output level). Measurement (derivation on one
+    target, held-out A/B on another) is deliberately NOT in this change.
 - **ZONE-COUNT-AWARE TOTAL DEPTH BUDGET** (#1880). `--zone-depth-cells` is a PER-ZONE maximum, so a sweep
   admits `depth x zone count` depth cells: the #1872 Stage C `notional` run (9 zones at `--zone-depth-cells
   12`) admitted up to 108 depth cells and projected ~18-24 h, with nothing in the pipeline naming the product.

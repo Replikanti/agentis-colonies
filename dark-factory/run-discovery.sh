@@ -112,6 +112,16 @@
 #                       #1827: depth cells are NOT enumerable ex ante (they depend on the breadth RESULTS),
 #                       so --list-cells still prints the breadth cells only; run-zone-hunt.sh charges the
 #                       depth CAP up front instead — the conservative choice.
+#
+# Env:
+#   REFUTE_CONSTRAINTS_JSON  #1887 OPT-IN, default UNSET = OFF = byte-identical behaviour. Path to a
+#                       refute-to-knowledge.sh corpus (`refute-constraint` KnowledgeEntry rows distilled from
+#                       an EARLIER target's REFUTED verdicts). When set and readable it is imported into the
+#                       run store ONCE, before the cell loop, so every cell's isolated copy carries the SAME
+#                       frozen, read-only corpus; hunter.ag then prepends the constraints filed under that
+#                       cell's class. Nothing writes knowledge, so `--jobs N` stays equal to serial. A shell
+#                       env read here — deliberately NOT an exec.env_passthrough entry (mirrors
+#                       map-zones.sh's HUNT_FITNESS_JSON). An import failure is logged and the hunt continues.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -352,7 +362,25 @@ cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (s
   # FAILED), even though the cp -r isolation means nothing is ever read back. Regression restored here.
   echo "learning.enabled = true"
   echo "experience.enabled = true"
+  # #1887: the knowledge store must be enabled for hunter.ag's query_knowledge("refute-constraint", …) read.
+  # This is MANDATORY, not a nicety: without it the call raises `knowledge base not enabled`, and — exactly
+  # like the experience flag above — a runtime error makes agentis DISCARD the cell's whole stdout, so every
+  # cell would report a false SAFE/FAILED (#1877's silent zero). It therefore ships in the SAME change as the
+  # query_knowledge call. Harmless with no corpus imported: query_knowledge returns [] and the block is "".
+  # (map-zones.sh:knowledge.enabled does the same for zone-mapper.ag's #1711 read.)
+  echo "knowledge.enabled = true"
 } > "$RUN/.agentis/config"
+
+# #1887 LEARN->ACT bridge: if the operator points REFUTE_CONSTRAINTS_JSON at a refute-to-knowledge.sh output,
+# import it into THIS run's store (just wiped + re-init'd above) BEFORE the cell loop — and therefore before
+# the per-cell `cp -r "$RUN/.agentis"`, so every cell gets the SAME corpus and no cell can accumulate into a
+# sibling's. Unset/unreadable -> skipped -> today's behaviour exactly. --replace is mandatory (a re-import
+# without it accumulates samples). Not an exec.env_passthrough entry: this is a shell-level env read here,
+# not an `.ag` getenv() — the same wiring as map-zones.sh's HUNT_FITNESS_JSON.
+if [ -n "${REFUTE_CONSTRAINTS_JSON:-}" ] && [ -r "${REFUTE_CONSTRAINTS_JSON:-}" ]; then
+  ( cd "$RUN" && "$AGENTIS" knowledge import "$REFUTE_CONSTRAINTS_JSON" --replace ) \
+    || echo "run-discovery.sh: refute-constraint import failed (continuing)" >&2
+fi
 
 REPORT="$OUT/discovery-report.md"
 {
@@ -406,7 +434,8 @@ _json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
 # record's exploit/poc_sketch prose routinely exceeds one physical line; the raw log then carries the tail
 # as continuation lines with no `CANDIDATE|` prefix, which a bare `grep 'CANDIDATE|'` silently drops. Here a
 # `CANDIDATE|` line opens/flushes a record; a `BLACKBOARD-*` line, a `DEPTH-CELL|` line (#1827), an
-# `APPENDIX-CONTEXT|` line (#1865) or a blank line closes the current record without starting a new one
+# `APPENDIX-CONTEXT|` line (#1865), a `REFUTE-CONSTRAINTS|` line (#1887) or a blank line closes the current
+# record without starting a new one
 # (these are the only meaningful boundary tokens in a hunt log — see hunter.ag's own framing); any other line
 # while a record is open is a continuation, appended with a single space (terminal wrap breaks on column
 # width, not on meaningful newlines — a stray space is a cosmetic artifact, not data loss). Emits one
@@ -419,7 +448,7 @@ _join_wrapped_candidates() {
       rec = $0
       next
     }
-    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*$/ {
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*$/ {
       if (rec != "") { print rec; rec = "" }
       next
     }
