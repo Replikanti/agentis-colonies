@@ -16,6 +16,22 @@ comparison), never an LLM opinion. Emission is gated purely on each agent's
 false-positive control: a watcher learns the protocol's normal state in `shadow`
 before it is ever trusted to page.
 
+## Proof of value
+
+The colony's detect → deliver claim is backed by runnable artifacts (#1889):
+
+- [`scorecard.md`](./scorecard.md) — the backtest scorecard (lead time + quiet-window
+  false-positive rate), self-test row reproducible from the shipped verdict logic.
+- [`backtest-self-test.sh`](./backtest-self-test.sh) — one command, no archive RPC:
+  boots a local anvil, deploys a synthetic solvency break, and drives the **unmodified**
+  [`backtest.sh`](./backtest.sh) to a PASS (pages at lead +1 block, 0/10 false pages).
+- [`../demo-monitor.sh`](../demo-monitor.sh) — a two-layer regression guard: source-guards the
+  wiring (CI-safe) and, with the toolchain present, runs the **real** `invariant-watcher.ag` +
+  `notifier.ag` over a local fixture and asserts a broken invariant is **delivered** to a webhook sink.
+- [`samples/`](./samples/) — example [`alert.json`](./samples/alert.json) /
+  [`heartbeat.json`](./samples/heartbeat.json) payloads (verbatim the agents' shapes) and an
+  illustrative [`report.md`](./samples/report.md) periodic summary.
+
 ## Agents
 
 | Agent | Role | Output |

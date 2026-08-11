@@ -53,21 +53,24 @@ The harness never signs, never sends a transaction, never touches funds, and hol
      an operator running `backtest.sh --incident-block <N> --rpc-url <archive>` against an ARCHIVE
      node pinned to that protocol's incident block (a public archive endpoint, or a pinned `anvil
      --fork-url <archive> --fork-block-number <N>`). The replays are ARCHIVE-RPC-GATED, not
-     code-gated — the verdict logic is the invariant-watcher's own, proven on a deterministic fork
-     in `backtest.sh`'s self-test (a synthetic solvency break: PAGE at lead +1 block, quiet window
-     0/N false pages, result PASS). Drop in real numbers + the `which watcher` token when an archive
-     node is wired, and overwrite this section. -->
+     code-gated — the verdict logic is the invariant-watcher's own, reproduced end to end (no archive
+     node) by the committed `./backtest-self-test.sh`: it boots a local anvil, deploys a synthetic
+     solvency break, and drives the SAME unmodified `backtest.sh`. Drop in real numbers + the `which
+     watcher` token when an archive node is wired, and overwrite this section. -->
 
 | Incident (date) | Class / invariant watched | Which watcher fired | Detection lead time (before the event) | Quiet-window false-positive rate |
 |---|---|---|---|---|
-| **Self-test (synthetic)** — solvency break on a deterministic fork | `invariant` — `totalSupply() <= totalAssets()` | `invariant-watcher` | **+1 block** (paged on the pre-exploit ramp block) | **0 / N** (rate 0.0000) — **PASS** |
+| **Self-test (synthetic)** — reproduced by [`./backtest-self-test.sh`](./backtest-self-test.sh) (one command, local anvil, no archive RPC) | `invariant` — `totalSupply() <= totalAssets()` | `invariant-watcher` | **+1 block** (paged on the pre-exploit ramp block) | **0 / 10** (rate 0.0000) — **PASS** |
 | Beanstalk (Apr 2022) — governance-flash-loan takeover | `governance` — emergencyCommit / new admin proposal | `governance-watcher` _(PENDING archive run)_ | _PENDING_ — replay `--incident-block` at the malicious-proposal execution block | _PENDING_ |
 | Euler (Mar 2023) — donation/self-liquidation solvency break | `invariant` — protocol solvency (assets vs liabilities) | `invariant-watcher` _(PENDING archive run)_ | _PENDING_ — replay around the first drain block | _PENDING_ |
 | bZx / Harvest-style oracle manipulation (2020) — spot-price feed deviation | `oracle` — price deviation vs anchor / TWAP bound | `oracle-watcher` _(PENDING archive run)_ | _PENDING_ — replay around the manipulated-price block | _PENDING_ |
 
-**Self-test: 1/1 true-positive PAGE (lead +1 block), 0 false pages on the quiet window, result PASS
-(deterministic fork, no archive node needed). Three real historical incidents are pre-filled by
-class and operator-runnable via `backtest.sh` against an archive node.**
+**Self-test: reproducible from the shipped verdict logic by [`./backtest-self-test.sh`](./backtest-self-test.sh)
+— one command, a local anvil, no archive node needed. It boots anvil, deploys a synthetic solvency
+break, and drives the SAME unmodified `backtest.sh`; the current run pages at lead +1 block with a
+clean 0/10 quiet window (result PASS). See that script's output for the live numbers. Three real
+historical incidents are pre-filled by class and operator-runnable via `backtest.sh` against an
+archive node.**
 
 _Done-criterion (#1101): documented true-positive (page-before-incident) on ≥3 real historical
 incidents, with near-zero false pages on the quiet windows; reproducible via `backtest.sh`._
