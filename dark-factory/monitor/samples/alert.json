@@ -1,0 +1,1 @@
+{"watcher":"invariant","invariant":"ExampleVault: totalSupply() <= totalAssets()","verdict":"violated","lhs":"1500000000000000000000","rhs":"1000000000000000000000","rel":"le","target":"0x1111111111111111111111111111111111111111","severity":"high"}
