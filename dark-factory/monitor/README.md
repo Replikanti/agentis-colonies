@@ -3,12 +3,14 @@
 > Part of the [Dark Factory](../) federation.
 
 A continuous **protocol monitor**. Cooperating agents watch a target EVM
-protocol on-chain and emit reasoned, high-signal anomaly alerts on the colony bus
-(`monitor:alert`); the **notifier** bridges the bus to the configured webhook so a
-page is actually **delivered**, not just emitted. The colony is **non-custodial /
-read-only**: every watcher only **reads** chain state via `cast`/RPC and the
-notifier only sends an **outbound** notification — no agent signs a transaction
-and none ever touches funds.
+protocol on-chain and post reasoned, high-signal anomaly verdicts to a shared
+blackboard (`monitor:signal:*`); the **coordinator** fuses them and writes ONE
+consolidated alert to the `monitor:alert:pending` store key, and the **notifier**
+reads that key and forwards the page to the configured webhook so it is actually
+**delivered**, not just emitted. The colony is **non-custodial / read-only**:
+every watcher only **reads** chain state via `cast`/RPC and the notifier only
+sends an **outbound** notification — no agent signs a transaction and none ever
+touches funds.
 
 The hot-path verdicts are **facts** (an on-chain read + a deterministic
 comparison), never an LLM opinion. Emission is gated purely on each agent's
@@ -27,7 +29,9 @@ The colony's detect → deliver claim is backed by runnable artifacts (#1889):
   [`backtest.sh`](./backtest.sh) to a PASS (pages at lead +1 block, 0/10 false pages).
 - [`../demo-monitor.sh`](../demo-monitor.sh) — a two-layer regression guard: source-guards the
   wiring (CI-safe) and, with the toolchain present, runs the **real** `invariant-watcher.ag` +
-  `notifier.ag` over a local fixture and asserts a broken invariant is **delivered** to a webhook sink.
+  `coordinator.ag` + `notifier.ag` as three separate daemons over a local fixture and asserts a
+  broken invariant is **delivered** to a webhook sink through the store hand-off — paged exactly
+  once while it persists, and again when the fused picture changes (#1891).
 - [`samples/`](./samples/) — example [`alert.json`](./samples/alert.json) /
   [`heartbeat.json`](./samples/heartbeat.json) payloads (verbatim the agents' shapes) and an
   illustrative [`report.md`](./samples/report.md) periodic summary.
@@ -36,19 +40,31 @@ The colony's detect → deliver claim is backed by runnable artifacts (#1889):
 
 | Agent | Role | Output |
 |-------|------|--------|
-| `invariant-watcher` | Evaluates the target's protocol invariant(s) against current on-chain state; flags a violation or a thin margin-to-violation. Evaluates a single env-configured invariant, OR — when a derived watch-spec is supplied (`MONITOR_INV_SPEC`, #1086) — the WHOLE derived invariant SET | `monitor:signal:invariant` (fused), `monitor:signal:invariant:<label>` (per-invariant), `monitor:alert` (tier-gated) |
-| `oracle-watcher` | Watches a price feed for deviation / staleness / out-of-bounds price | `monitor:signal:oracle`, `monitor:alert` (tier-gated) |
-| `governance-watcher` | Watches the governance / upgrade surface (the two EIP-1967 proxy slots — implementation + admin — plus an optional `owner()`/`admin()` view, a role-grant indicator, and a timelock-queue indicator); flags a CHANGE vs the learned baseline — the highest-value pre-exploit early-warning (#1095) | `monitor:signal:governance`, `monitor:alert` (tier-gated) |
-| `liquidity-watcher` | Watches a pool / vault reserve or TVL proxy (`totalAssets()` / native balance); flags a drop beyond a learned band (sudden drain) (#1096) | `monitor:signal:liquidity`, `monitor:alert` (tier-gated) |
-| `flow-watcher` | Watches net flow over a window; flags an abnormal net outflow burst vs the previous window (large outflow) (#1096) | `monitor:signal:flow`, `monitor:alert` (tier-gated) |
-| `pause-state-watcher` | Watches the `paused()` / circuit-breaker boolean; flags a state transition (a protocol pausing itself is signal) (#1096) | `monitor:signal:pause`, `monitor:alert` (tier-gated) |
-| `coordinator` | Fuses ALL watcher signals off the shared blackboard, dedups a persistent condition, decides fused severity, emits one consolidated alert carrying the per-signal dossier | `monitor:alert` (tier-gated) |
-| `notifier` | The bus→webhook **bridge** (#1092): `listen()`s for `monitor:alert` and forwards each to `scripts/notify.sh` so a page is delivered. Owns the liveness **heartbeat** + **dead-man's switch** (#1093) | webhook page (via `notify.sh`), `monitor:alert` (the dead-man's-switch meta-alert, severity `high` / kind `liveness`) |
+| `invariant-watcher` | Evaluates the target's protocol invariant(s) against current on-chain state; flags a violation or a thin margin-to-violation. Evaluates a single env-configured invariant, OR — when a derived watch-spec is supplied (`MONITOR_INV_SPEC`, #1086) — the WHOLE derived invariant SET | `monitor:signal:invariant` (fused), `monitor:signal:invariant:<label>` (per-invariant) |
+| `oracle-watcher` | Watches a price feed for deviation / staleness / out-of-bounds price | `monitor:signal:oracle` |
+| `governance-watcher` | Watches the governance / upgrade surface (the two EIP-1967 proxy slots — implementation + admin — plus an optional `owner()`/`admin()` view, a role-grant indicator, and a timelock-queue indicator); flags a CHANGE vs the learned baseline — the highest-value pre-exploit early-warning (#1095) | `monitor:signal:governance` |
+| `liquidity-watcher` | Watches a pool / vault reserve or TVL proxy (`totalAssets()` / native balance); flags a drop beyond a learned band (sudden drain) (#1096) | `monitor:signal:liquidity` |
+| `flow-watcher` | Watches net flow over a window; flags an abnormal net outflow burst vs the previous window (large outflow) (#1096) | `monitor:signal:flow` |
+| `pause-state-watcher` | Watches the `paused()` / circuit-breaker boolean; flags a state transition (a protocol pausing itself is signal) (#1096) | `monitor:signal:pause` |
+| `coordinator` | Fuses ALL watcher signals off the shared blackboard, dedups a persistent condition, decides fused severity, and writes ONE consolidated alert carrying the per-signal dossier — the SOLE writer of the delivery key | `monitor:alert:pending` (tier-gated) |
+| `notifier` | The store→webhook **bridge** (#1092, #1891): reads `monitor:alert:pending`, dedups against the last successfully delivered payload, and forwards a new page to `scripts/notify.sh`. Owns the liveness **heartbeat** + **dead-man's switch** (#1093) | webhook page (via `notify.sh`), `notifier:last_delivered` (the dedup marker) |
 
 Each agent runs as its own `agentis daemon`. The watchers post their latest
-verdict to a durable blackboard memo (`monitor:signal:*`); the coordinator reads
-every signal each tick and fuses them. The notifier consumes the consolidated
-`monitor:alert` off the bus and forwards it to the configured sink.
+verdict to a durable blackboard memo (`monitor:signal:*`) — that is their only
+output; the coordinator reads every signal each tick, fuses them, and writes the
+consolidated alert to `monitor:alert:pending`. The notifier reads that key and
+forwards a NEW alert to the configured sink.
+
+Every hop is a **shared store** memo, never the bus: `agentis daemon` runs one
+`.ag` per process and `emit()`/`listen()` are in-process only (agentis-core
+#961), so a bus event never crosses the daemon boundary the shipped
+`start-colony.sh` layout creates. #1891 moved the last-mile delivery hop onto the
+same blackboard the watcher→coordinator hop already used. Two properties make
+that safe: the coordinator is the **only** writer of `monitor:alert:pending` (no
+last-writer-wins race), and the notifier dedups on the **full payload** via
+`notifier:last_delivered`, advanced **only after a successful** `notify.sh`
+delivery — a store read has no implicit dequeue, so a persistent condition pages
+once, a failed page is retried on the next tick, and a changed alert pages again.
 
 ```mermaid
 flowchart LR
@@ -64,29 +80,23 @@ flowchart LR
     LW -->|monitor:signal:liquidity| CO
     FW -->|monitor:signal:flow| CO
     PW -->|monitor:signal:pause| CO
-    IW -->|monitor:alert| BUS[(bus)]
-    OW -->|monitor:alert| BUS
-    GW -->|monitor:alert| BUS
-    LW -->|monitor:alert| BUS
-    FW -->|monitor:alert| BUS
-    PW -->|monitor:alert| BUS
-    CO -->|monitor:alert<br/>fused + deduped| BUS
-    BUS -->|monitor:alert| NF[notifier<br/>bridge + heartbeat<br/>+ dead-man's switch]
-    NF -->|monitor:alert<br/>liveness meta-alert| BUS
-    NF --> N[notify.sh<br/>retry · dedup · severity routing]
+    CO -->|monitor:alert:pending<br/>fused + deduped<br/>sole writer| STORE[(shared store<br/>cross-daemon-safe)]
+    STORE -->|monitor:alert:pending| NF[notifier<br/>bridge + heartbeat<br/>+ dead-man's switch]
+    NF -->|fused page · heartbeat<br/>liveness meta-alert inline| N[notify.sh<br/>retry · dedup · severity routing]
     N --> W[Discord / Slack / PagerDuty<br/>webhook sink]
 ```
 
 ## Confidence-tiered alerting (ADR-0001)
 
 Every agent makes ONE `tier()` call per tick and branches once. The tier gates
-**emission only** — the verdict is computed identically at every tier:
+**alerting only** — the verdict is computed identically at every tier:
 
 - `shadow` / `dormant` — observe + `learn()` a baseline (record the normal
-  state); **no emit, no external write**.
-- `propose` — emit a **draft** `monitor:alert` (low severity) for review.
-- `review-gated` / `autonomous` — emit a **direct-page** `monitor:alert` (high
-  severity), once the detector has proven reliable.
+  state); **no alert write, no external write**.
+- `propose` — the coordinator writes a **draft** consolidated alert (low
+  severity) to `monitor:alert:pending`; the notifier's bridge is live.
+- `review-gated` / `autonomous` — the coordinator writes a **direct-page**
+  consolidated alert (fused severity), once the detectors have proven reliable.
 
 This is the false-positive control: a fresh watcher seeded at `shadow` learns the
 protocol's normal state before it can page, and auto-promotion lifts it as its
@@ -129,35 +139,48 @@ every `exec sh` dynamic value `shell_escape()`d):
   (warn) / `ok` / `no-read`. Posts `monitor:signal:pause`.
 
 The `coordinator` fuses these new `monitor:signal:*` kinds into the consolidated
-severity score, the dedup signature, **and the per-signal dossier** (the emitted
-`monitor:alert` carries a `"signals"` map of every watcher's verdict) — alongside
-the existing `invariant` / `oracle` signals, keeping its single-`tier()`-per-tick
-discipline.
+severity score, the dedup signature, **and the per-signal dossier** (the written
+`monitor:alert:pending` payload carries a `"signals"` map of every watcher's
+verdict) — alongside the existing `invariant` / `oracle` signals, keeping its
+single-`tier()`-per-tick discipline.
 
-## Alert delivery — the bus→webhook bridge (#1092 / #1093 / #1094)
+## Alert delivery — the store→webhook bridge (#1092 / #1093 / #1094 / #1891)
 
-Emitting `monitor:alert` on the in-process bus is not the same as **delivering** a
-page. The `notifier` agent closes that last-mile gap and turns the colony into a
-real 24/7 pager.
+Fusing an alert is not the same as **delivering** a page. The `notifier` agent
+closes that last-mile gap and turns the colony into a real 24/7 pager.
 
-- **Bridge (#1092)** — the `notifier` `listen()`s for `monitor:alert` each tick
-  and forwards each alert to `scripts/notify.sh`. The alert JSON is passed to
-  `notify.sh` through an **exported env var** (`MONITOR_ALERT_BODY`), never
-  interpolated into the shell text, and every other dynamic value is
-  `shell_escape()`d. Forwarding is gated on the notifier's ADR-0001 tier (the same
-  shadow → propose → review-gated/autonomous gradient as the watchers): at
-  `shadow`/`dormant` it observes only; at `propose`+ the bridge is live.
+- **Bridge (#1092, #1891)** — the `notifier` reads the `monitor:alert:pending`
+  store key each tick and forwards a NEW alert to `scripts/notify.sh`. The alert
+  JSON is passed to `notify.sh` through an **exported env var**
+  (`MONITOR_ALERT_BODY`), never interpolated into the shell text, and every other
+  dynamic value is `shell_escape()`d. Forwarding is gated on the notifier's
+  ADR-0001 tier (the same shadow → propose → review-gated/autonomous gradient as
+  the watchers): at `shadow`/`dormant` it observes only; at `propose`+ the bridge
+  is live.
+- **Delivery dedup (#1891)** — the transport is a store key, not a bus queue, so
+  a read does not consume the alert. The notifier compares the pending payload
+  against `notifier:last_delivered` (the last payload the sink **accepted**) and
+  advances that marker **only** when `notify.sh` exits 0. Consequences, all
+  intended: a persistent condition is paged exactly once; a page the sink
+  rejected is retried on the next tick (which the old `listen()` dequeue could
+  not do); a changed fused alert pages again. The coordinator's payload carries a
+  per-write `ts`, so a genuine re-fire of an identical condition after a quiet gap
+  is distinguishable from the page already delivered.
 - **Heartbeat (#1093)** — when due (every `MONITOR_HEARTBEAT_INTERVAL_S`, default
   daily), the notifier sends a low-severity `heartbeat` payload through
   `notify.sh`. A missing heartbeat at the sink is itself a signal: **silence is
   meaningful**.
 - **Dead-man's switch (#1093)** — if no watcher tick / no fresh `*:last_check`
   memo is observed within `MONITOR_DEADMAN_WINDOW_S` (unset / `0` ⇒ disabled), the
-  notifier emits a meta-alert (`monitor:alert`, severity `high`, kind `liveness`)
-  — the RPC-blind / colony-down case. This check is a memo-freshness **fact** and
-  runs independent of tier (a down colony must page regardless of the bridge's
-  confidence); it dedups against the last liveness signature so a persistent
-  outage pages once, not every tick, and re-pages after a recovery.
+  notifier raises a meta-alert (severity `high`, kind `liveness`) — the RPC-blind
+  / colony-down case. This check is a memo-freshness **fact** and runs independent
+  of tier (a down colony must page regardless of the bridge's confidence); it
+  dedups against the last liveness signature so a persistent outage pages once,
+  not every tick, and re-pages after a recovery. Since #1891 the notifier
+  **forwards the meta-alert inline** — it is its own producer and consumer here,
+  so it needs no transport (and never writes `monitor:alert:pending`, whose sole
+  writer is the coordinator). The decision, the dedup, and the payload are
+  unchanged; the page simply arrives one tick sooner.
 - **Hardened sink (#1094)** — `notify.sh` adds, all opt-in and dash-safe:
   bounded **exponential retry/backoff** on a transient webhook failure
   (`5xx`/network; a `4xx` is not retried); **sink-side dedup** keyed on the alert
@@ -167,7 +190,7 @@ real 24/7 pager.
   falling back to `MONITOR_WEBHOOK_URL`). Unset config preserves the original
   single-webhook stdout-fallback behaviour exactly.
 
-Read-only / non-custodial throughout: the notifier only reads the bus and sends an
+Read-only / non-custodial throughout: the notifier only reads memos and sends an
 outbound notification — it never signs and never touches funds.
 
 ## Derive → watch the whole invariant set (#1086)
@@ -267,7 +290,7 @@ without saying so. Two pieces close that gap:
   hash (`cast code`) and the EIP-1967 implementation slot value (`cast storage`).
 - **Drift check** — [`scripts/check-drift.sh`](scripts/check-drift.sh) (a periodic
   job / cron) re-reads that fingerprint through `cast-read.sh` (so the failover +
-  consensus apply) and raises a `monitor:alert` (kind `drift`, severity **high**,
+  consensus apply) and pages through `notify.sh` (kind `drift`, severity **high**,
   verdict `spec-stale`) when the deployed code / impl no longer matches — the
   monitor **says** it has gone blind on a stale spec. No drift ⇒ no alert; a blind
   RPC re-read ⇒ quiet (never a false drift); an empty captured fingerprint ⇒ quiet.
@@ -298,8 +321,8 @@ code` / `cast storage` only).
 
 3. (Optional) Wire an alert sink. Export `MONITOR_WEBHOOK_URL` (a Discord / Slack
    / PagerDuty incoming-webhook URL) **before** starting the colony and the
-   `notifier` agent forwards every `monitor:alert` to it automatically — no manual
-   step (#1092). Unset, the colony still runs and `notify.sh` prints each alert to
+   `notifier` agent forwards every consolidated alert to it automatically — no
+   manual step (#1092). Unset, the colony still runs and `notify.sh` prints each alert to
    stdout (a no-op sink). You can also drive `notify.sh` by hand for a smoke test:
    ```bash
    echo '<alert payload>' | ./scripts/notify.sh
@@ -372,8 +395,9 @@ watchers + the fusion coordinator + a webhook sink shipped in
 **live-watch runtime** (`run-live-watch.sh` + the `invariant-watcher`'s
 `MONITOR_INV_SPEC` derived-set path) shipped in
 [#1086](https://github.com/Replikanti/agentis-colonies/issues/1086); the
-**alert-delivery pipeline** — the `notifier` bus→webhook bridge
-([#1092](https://github.com/Replikanti/agentis-colonies/issues/1092)), the
+**alert-delivery pipeline** — the `notifier` store→webhook bridge
+([#1092](https://github.com/Replikanti/agentis-colonies/issues/1092),
+[#1891](https://github.com/Replikanti/agentis-colonies/issues/1891)), the
 liveness heartbeat + dead-man's switch
 ([#1093](https://github.com/Replikanti/agentis-colonies/issues/1093)), and the
 hardened `notify.sh` (retry/backoff, sink-side dedup, severity routing,

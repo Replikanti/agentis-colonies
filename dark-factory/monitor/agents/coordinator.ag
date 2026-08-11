@@ -3,29 +3,33 @@
 // The fusion + dedup + severity-decision agent. The watchers (invariant-watcher,
 // oracle-watcher, governance-watcher, liquidity-watcher, flow-watcher,
 // pause-state-watcher) each post their latest verdict to a shared blackboard
-// memo (`monitor:signal:<watcher>`); each ALSO emits its own per-watcher
-// `monitor:alert`. This coordinator reads ALL blackboard signals every tick,
-// FUSES them into one consolidated picture, DEDUPS against the last consolidated
-// signature it emitted (so a persistent condition pages once, not every tick),
-// DECIDES the fused severity, and emits ONE consolidated `monitor:alert`.
-// NON-custodial / read-only: it reads memos + emits on the bus only — no signing,
-// no fund access, no `exec sh`.
+// memo (`monitor:signal:<watcher>`). This coordinator reads ALL blackboard
+// signals every tick, FUSES them into one consolidated picture, DEDUPS against
+// the last consolidated signature it acted on (so a persistent condition pages
+// once, not every tick), DECIDES the fused severity, and writes the fused alert
+// to the `monitor:alert:pending` store key (#1891) — a cross-daemon-safe
+// hand-off the notifier reads, because the in-process bus is #961-blind across
+// separate `agentis daemon` processes. The coordinator is the SOLE writer of that
+// key, so there is no multi-writer last-writer-wins race.
+// NON-custodial / read-only: it reads + writes memos only — no signing, no fund
+// access, no `exec sh`.
 //
 // Pattern (per dark-factory/auditor/agents/coordinator.ag): single-assignment
 // helpers (no `let` reassignment), reduce/recursion instead of loops. The fused
 // verdict is a deterministic function of the watchers' FACTS — never an LLM call.
 //
-// Emission is gated PURELY on the ADR-0001 tier of this agent:
-//   shadow / dormant -> observe + learn the fused picture, NO emit;
-//   propose          -> emit a DRAFT consolidated `monitor:alert` (low severity);
-//   review-gated /    -> emit a DIRECT-page consolidated `monitor:alert`.
+// Alerting is gated PURELY on the ADR-0001 tier of this agent:
+//   shadow / dormant -> observe + learn the fused picture, NO alert write;
+//   propose          -> write a DRAFT consolidated alert (low severity);
+//   review-gated /    -> write a DIRECT-page consolidated alert.
 //   autonomous
 // One tier() call per tick, branch once, fall through to shadow/dormant.
 //
 // Reads (durable memos written by the watchers): monitor:signal:invariant,
 //   monitor:signal:oracle, monitor:signal:governance, monitor:signal:liquidity,
 //   monitor:signal:flow, monitor:signal:pause.
-// Emits: "monitor:alert" (the colony bus contract).
+// Writes: "monitor:alert:pending" (the store hand-off the notifier consumes;
+//   cross-daemon-safe, unlike the #961-blind in-process bus).
 
 cb 120000;
 
@@ -167,13 +171,18 @@ fn fused_dossier(names: list<string>, verdicts: list<string>) -> string {
 }
 
 // The consolidated alert payload (JSON). All fields are facts the coordinator
-// fused from the watchers; none is LLM text. `sev` is set per tier on emit. The
+// fused from the watchers; none is LLM text. `sev` is set per tier on write. The
 // per-signal dossier carries every watcher's verdict so a reader sees the
-// breakdown that produced the score + signature.
-fn fused_payload(names: list<string>, verdicts: list<string>, score: int, sig: string, sev: string) -> string {
+// breakdown that produced the score + signature. `ts` is this tick's clock: the
+// notifier dedups on the FULL payload, and a store key (unlike a bus queue) has
+// no implicit dequeue, so the timestamp is what makes a genuine RE-fire of an
+// identical condition (after a quiet gap) distinguishable from the page already
+// delivered. A persistent condition is never re-written (see `emitWorthy`), so
+// this does NOT re-page every tick.
+fn fused_payload(names: list<string>, verdicts: list<string>, score: int, sig: string, sev: string, ts: string) -> string {
     return "{\"watcher\":\"coordinator\",\"kind\":\"fused\",\"signals\":{" + fused_dossier(names, verdicts)
          + "},\"score\":" + to_string(score)
-         + ",\"signature\":\"" + sig + "\",\"severity\":\"" + sev + "\"}";
+         + ",\"signature\":\"" + sig + "\",\"severity\":\"" + sev + "\",\"ts\":\"" + ts + "\"}";
 }
 
 // learn() outcome enum {success,failure,partial,timeout,error}. A high-severity
@@ -222,17 +231,17 @@ fn tick(reason: string) -> void {
 
     let key = "fused:" + sig;
     let desc = "fused " + sig + " score=" + to_string(score);
-    // Worth emitting only when there is an anomaly AND it is a NEW signature.
+    // Worth paging only when there is an anomaly AND it is a NEW signature.
     let emitWorthy = anomaly_and_novel(anomaly, novel);
 
-    // ONE tier() call, branch ONCE (ADR-0001). The tier gates EMISSION only; the
-    // fused verdict above is unchanged by tier. shadow/dormant fall through.
-    // (.ag has no `else if`; the tiers nest as `else { if ... { } else { } }`.)
+    // ONE tier() call, branch ONCE (ADR-0001). The tier gates the ALERT WRITE
+    // only; the fused verdict above is unchanged by tier. shadow/dormant fall
+    // through. (.ag has no `else if`; the tiers nest as `else { if ... { } else { } }`.)
     let my_tier = tier("coordinator");
     if my_tier == "autonomous" {
         // Proven reliable -> a DIRECT consolidated page on a new anomaly.
         if emitWorthy {
-            emit("monitor:alert", fused_payload(names, verdicts, score, sig, sevLabel));
+            memo_write("monitor:alert:pending", fused_payload(names, verdicts, score, sig, sevLabel, now));
             learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "acted"]);
         } else {
             learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "observed"]);
@@ -241,7 +250,7 @@ fn tick(reason: string) -> void {
         if my_tier == "review-gated" {
             // Trusted to page under a review gate -> a DIRECT consolidated page.
             if emitWorthy {
-                emit("monitor:alert", fused_payload(names, verdicts, score, sig, sevLabel));
+                memo_write("monitor:alert:pending", fused_payload(names, verdicts, score, sig, sevLabel, now));
                 learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "review-gated"]);
             } else {
                 learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "observed"]);
@@ -250,13 +259,13 @@ fn tick(reason: string) -> void {
             if my_tier == "propose" {
                 // Enough signal to contribute -> a DRAFT consolidated alert (low).
                 if emitWorthy {
-                    emit("monitor:alert", fused_payload(names, verdicts, score, sig, "low"));
+                    memo_write("monitor:alert:pending", fused_payload(names, verdicts, score, sig, "low", now));
                     learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "emitted"]);
                 } else {
                     learn("monitor-fuse", key, desc, outcome, [sevLabel, outcome, "observed"]);
                 };
             } else {
-                // shadow / dormant: learn the fused picture ONLY — no emit.
+                // shadow / dormant: learn the fused picture ONLY — no alert write.
                 learn("monitor-fuse", key, desc + " (baseline)", outcome, [sevLabel, outcome, "observed"]);
                 print("coordinator: observing (tier: " + my_tier + ") — no emit");
             };
