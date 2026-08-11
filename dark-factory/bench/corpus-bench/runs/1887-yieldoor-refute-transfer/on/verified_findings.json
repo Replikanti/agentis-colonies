@@ -1,0 +1,144 @@
+{
+  "repo": "yieldoor",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "Leveraged Uniswap V3 LP vault and lending market",
+      "location": "src/Strategy.sol:checkPoolActivity",
+      "file": "src/Strategy.sol",
+      "class": "class=C19",
+      "severity": "severity=High",
+      "exploit": "uint256 index = (observationCardinality + currentIndex - i) % observationCardinality; evaluates uint16 + uint16 in uint16 (the uint256 target does NOT widen the operands), so any pool whose slot0.observationCardinality + slot0.observationIndex >= 65536 makes the very first loop iteration revert on checked overflow \u2014 and increaseObservationCardinalityNext is permissionless, so an external attacker grows the target pool's observation buffer toward 65535 (chunked across txs, then one swap to make it effective with index>=1), permanently bricking checkPoolActivity() and hence _priceWithinRange() \u2192 Strategy.rebalance()/compound() and IVault.checkPoolActivity() \u2192 Leverager.openLeveragedPosition(), freezing rebalancing/compounding and all new leveraged positions with no admin recovery path.",
+      "poc_sketch": "Deploy a mock IUniswapV3Pool whose slot0() returns (sqrtP, tick, observationIndex=1, observationCardinality=65535, ...) and whose observations(i) returns plausible increasing (blockTimestamp, tickCumulative); point Strategy/Vault/Leverager at it. Assert vm.expectRevert(stdError.arithmeticError); strategy.checkPoolActivity();, then vm.expectRevert(); vault.checkPoolActivity();, vm.prank(rebalancer); vm.expectRevert(); strategy.rebalance();, vm.expectRevert(); strategy.compound();, and vm.expectRevert(); leverager.openLeveragedPosition(lp); while the same calls succeed with observationCardinality=1000, observationIndex=1. Optionally fork-test against a real V3 pool: pool.increaseObservationCardinalityNext(65535) in a loop, vm.roll+1-wei swap to activate, then assert strategy.checkPoolActivity() reverts.",
+      "verdict": "REAL",
+      "reason": "The index expression (observationCardinality + currentIndex - i) is evaluated entirely in uint16 (the uint256 declaration does not widen the operands), so once a permissionless increaseObservationCardinalityNext pushes the pool's cardinality high enough that cardinality + index >= 65536, the checked uint16 addition panics on loop iteration i=1 with no guard, try/catch, or admin setter able to bypass or recover, permanently reverting _priceWithinRange() and every caller of it."
+    },
+    {
+      "subsystem": "Leveraged Uniswap V3 LP vault and lending market",
+      "location": "src/Leverager.sol:withdraw",
+      "file": "src/Leverager.sol",
+      "class": "class=C19",
+      "severity": "severity=High",
+      "exploit": "In the borrowed == up.token1 branch the ternary reads the wrong variable \u2014 repayFromWithdraw = amountOut1 < owedAmount ? amountOut0 : owedAmount \u2014 so when amountOut1 < owedAmount and amountOut0 > amountOut1, the subsequent amountOut1 -= repayFromWithdraw underflows and reverts, permanently bricking withdraw() for that position (the owner can never exit; the only escape is liquidation), and when amountOut0 < amountOut1 it under-deducts so the wrong owedAmount is pulled from the caller while repay(amountToRepay) still drains the full amount from the Leverager's balance.",
+      "poc_sketch": "Deploy Vault+Strategy+LendingPool+Leverager with denomination == token1 (e.g. token1 = USDC borrowed asset); open a position via openLeveragedPosition, then call withdraw with pctWithdraw = 1e18 in a state where the vault returns amountOut0 > amountOut1 and amountOut1 < owedAmount (skew the pool so the LP is mostly token0). Assert vm.expectRevert(stdError.arithmeticError); leverager.withdraw(wp); and assert the identical block in liquidatePosition (which uses amount1 correctly) succeeds on the same position, proving the copy-paste asymmetry and the resulting fund freeze.",
+      "verdict": "REAL",
+      "reason": "The borrowed == up.token1 branch assigns repayFromWithdraw = amountOut0 when amountOut1 < owedAmount, so the immediately following amountOut1 -= repayFromWithdraw subtracts a raw amount of the other token and reverts under checked arithmetic for any position whose token1 leg is below the accrued debt \u2014 a condition invariant under every admissible pctWithdraw and reached before any swap logic, permanently blocking the owner's only exit."
+    },
+    {
+      "subsystem": "Leveraged Uniswap V3 LP vault and lending market",
+      "location": "src/Leverager.sol:withdraw:232",
+      "file": "src/Leverager.sol",
+      "class": "class=C10",
+      "severity": "severity=High",
+      "exploit": "In a vault where the denomination is token1 and token0's raw amounts exceed token1's (e.g. WETH(18d)=token0 / USDT(6d)=token1), the in-kind offset uses amountOut0 instead of amountOut1, so any position whose debt exceeds its token1 share underflows at owedAmount -= repayFromWithdraw / amountOut1 -= repayFromWithdraw for every legal pctWithdraw, permanently bricking the owner's only exit and handing the whole collateral surplus to whatever external liquidator calls the correctly-written liquidatePosition once interest pushes the position past isLiquidateable.",
+      "poc_sketch": "Fork mainnet; deploy Vault(WETH,USDT) + Strategy on the 0.05% WETH/USDT pool, LendingPool.initReserve(USDT), seed the reserve, Leverager.initVault(vault, 1_000_000e18, 5e18, 0.1e18, 1e27), PriceFeed for WETH/USDT; open a position with denomination=USDT and maxBorrowAmount large enough that owed > the USDT half (e.g. vault0In=10e18 WETH, vault1In=30_000e6 USDT, maxBorrowAmount=60_000e6); then vm.expectRevert(stdError.arithmeticError); leverager.withdraw(wp) for wp.pctWithdraw = 1e18, 0.5e18 and 0.02e18; assert the same position liquidates fine via liquidatePosition after skip() accrues interest, and assert the liquidator's net token0+token1 gain equals the full surplus. Isolated arithmetic replication already reproduced: test/PoC_C10.t.sol::test_withdraw_permanently_reverts_when_denom_is_token1 and ::test_withdraw_revert_is_pct_invariant, both PASS.",
+      "verdict": "REAL",
+      "reason": "The token1 denomination branch tests amountOut1 < owedAmount but assigns amountOut0, so for any position whose pro-rata debt exceeds its token1 share \u2014 a scale-invariant condition that holds for every legal pctWithdraw and is guaranteed once interest accrues \u2014 the checked subtraction owedAmount -= repayFromWithdraw or amountOut1 -= repayFromWithdraw underflows and reverts, permanently bricking the only owner exit while the correctly-written liquidatePosition lets any external liquidator seize the collateral surplus."
+    },
+    {
+      "subsystem": "Leveraged Uniswap V3 LP vault and lending market",
+      "location": "src/Leverager.sol:liquidatePosition:318",
+      "file": "src/Leverager.sol",
+      "class": "class=C10",
+      "severity": "severity=Medium",
+      "exploit": "borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals() divides by decimals() instead of 10 ** decimals() (every other site in the file uses 10 **), inflating the comparison operand by 10**d/d so totalValueUSD > borrowedValue never holds, the protocol-fee branch is dead code, and every unprivileged liquidator keeps 100% of the liquidation surplus that should have been shared with feeRecipient.",
+      "poc_sketch": "Fork mainnet, stand up the existing Leverager.t.sol fixture, setLiquidationFee(1000), open a leveraged position, push it underwater (mock the Chainlink aggregator's latestRoundData answer down), record token0.balanceOf(feeRecipient)/token1.balanceOf(feeRecipient), call liquidatePosition, and assert both are still 0 while totalValueUSD > owedAmount*bPrice/10**decimals() holds; then patch line 318 to 10 ** ERC20(...).decimals() and assert feeRecipient receives non-zero pf0/pf1. Isolated arithmetic replication already reproduced: test/PoC_C10.t.sol::test_liquidation_protocol_fee_never_charged, PASS.",
+      "verdict": "REAL",
+      "reason": "Dividing by ERC20(up.denomination).decimals() (the raw count) instead of 10 ** decimals() \u2014 the form used at every other conversion site in the file \u2014 inflates borrowedValue by ~10**d/d, so the unguarded if (totalValueUSD > borrowedValue) fee branch is permanently unreachable and amount0/amount1 are transferred in full to the unprivileged msg.sender liquidator, zeroing the protocol's liquidation fee on every liquidation."
+    },
+    {
+      "subsystem": "Leveraged Uniswap V3 LP vault and lending market",
+      "location": "src/Leverager.sol:liquidatePosition",
+      "file": "src/Leverager.sol",
+      "class": "class=C6",
+      "severity": "severity=Medium",
+      "exploit": "Any unprivileged liquidator calls liquidatePosition and keeps 100% of the liquidation surplus, because borrowedValue = owedAmount * bPrice / ERC20(denomination).decimals() divides by decimals() (18) instead of 10 ** decimals() (1e18), inflating borrowedValue ~5.55e16\u00d7 so that totalValueUSD > borrowedValue is never true and the protocol-fee transfers to feeRecipient never execute.",
+      "poc_sketch": "Deploy LendingPool + yToken for an 18-decimal denomination, a Vault+Strategy over a mock/forked UniV3 pool, a mock AggregatorV3 feed per token, and Leverager with setLiquidationFee(1000) (10%) and a non-zero feeRecipient; open a leveraged position via openLeveragedPosition, then push the denomination feed price up (or the collateral feed down) just enough that isLiquidateable(id) is true while the withdrawn LP value still exceeds the debt (i.e. totalValueUSD > owedAmount*bPrice/1e18); snapshot token0.balanceOf(feeRecipient) and token1.balanceOf(feeRecipient), call liquidatePosition from a fresh unprivileged EOA, then assert (a) both feeRecipient balances are unchanged (assertEq(after, before)), (b) the liquidator received the full amount0/amount1 surplus, and (c) the branch should have fired by asserting totalValueUSD > owedAmount*bPrice/(10**18) while totalValueUSD < owedAmount*bPrice/18; re-run with the divisor patched to 10 ** ERC20(up.denomination).decimals() and assert feeRecipient balance strictly increases, proving the loss.",
+      "verdict": "REAL",
+      "reason": "borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals() divides by the raw decimals value (18) rather than 10 ** decimals() as every other scaling site in the contract does, inflating borrowedValue ~5.55e16\u00d7 so the unguarded if (totalValueUSD > borrowedValue) fee branch is unreachable and any unprivileged caller of this permissionless function receives the entire liquidation surplus with no transfer to feeRecipient."
+    },
+    {
+      "subsystem": "Lending reserve accounting and Uniswap V3 math libraries",
+      "location": "src/Leverager.sol:withdraw:232",
+      "file": "src/Leverager.sol",
+      "class": "C10",
+      "severity": "High",
+      "exploit": "On a vault whose token0 has the larger raw magnitude (e.g. WETH/USDT, WETH sorts first) with the position denominated in token1, once accrued interest or a price dip pushes owedAmount above the token1 leg of the LP, the branch computes r = amountOut0 and owedAmount -= r / amountOut1 -= r underflow, so withdraw() reverts for every legal pctWithdraw and the borrower can never close \u2014 leaving liquidation as the only exit, where any unprivileged liquidator takes 100% of the residual equity.",
+      "poc_sketch": "Deploy the real Leverager against an 18-dec token0 / 6-dec token1 pair plus a minimal vault (returns 10e18 + 30_000e6 on withdraw) and a flat-index lending-pool mock; install a position with denomination=token1, borrowedAmount=60_000e6, borrowedIndex=1e27; fund and approve the borrower fully, then vm.expectRevert(stdError.arithmeticError); lev.withdraw(wp) with pctWithdraw=1e18, and fuzz pctWithdraw over [0.0101e18,1e18] asserting the same revert; assert the control (denomination=token0) and the sanity case (debt 20_000e6 < amountOut1) both close and repay in full, pinning the revert to this ternary.",
+      "verdict": "REAL",
+      "reason": "The borrowed == up.token1 branch tests amountOut1 < owedAmount but assigns amountOut0 as repayFromWithdraw, so on any vault whose token0 leg has the larger raw magnitude the subsequent checked owedAmount -= r / amountOut1 -= r underflows and reverts for every legal pctWithdraw \u2014 the branch executes before the swap block, so no calldata avoids it, permanently blocking the only borrower exit while the correctly-written liquidatePosition still lets any unprivileged liquidator take the residual equity."
+    },
+    {
+      "subsystem": "Lending reserve accounting and Uniswap V3 math libraries",
+      "location": "src/Leverager.sol:liquidatePosition:318",
+      "file": "src/Leverager.sol",
+      "class": "C10",
+      "severity": "Medium",
+      "exploit": "borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals() divides by the decimals count instead of 10decimals, inflating it by ~10*d/d, so totalValueUSD > borrowedValue is never true and every external liquidator keeps the protocol's entire liquidation cut on every profitable liquidation (and a 0-decimal denomination makes the division revert, bricking liquidation outright).",
+      "poc_sketch": "In Foundry compute both forms for a USDC-denominated 2x position (owedAmount=100_000e6, bPrice=1e8, totalValueUSD=150_000e61e8/1e6) and assert `totalValueUSD > owedAmount*bPrice/106while!(totalValueUSD > owedAmount*bPrice/6), i.e. the fee branch is skipped; then drive the full path with mocked vault/strategy/pricefeed, setLiquidationFee(500), liquidate a profitable position and assert feeRecipient(whichLeverager` never assigns \u2014 permanently address(0)) receives zero of token0/token1 while the liquidator receives all the surplus collateral.",
+      "verdict": "REAL",
+      "reason": "borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals() divides by the decimals count instead of 10 ** decimals, inflating it by ~10^d/d so that totalValueUSD > borrowedValue is unreachable for any position that passed the require(isLiquidateable(...)) check, permanently skipping the feeRecipient transfers and letting any unprivileged liquidator keep the protocol's entire liquidation cut."
+    },
+    {
+      "subsystem": "Lending reserve data structs",
+      "location": "src/Leverager.sol:withdraw:232",
+      "file": "src/Leverager.sol",
+      "class": "<class=C10>",
+      "severity": "Severity=High",
+      "exploit": "Any position whose denomination is the vault's token1 hits the copy-paste branch amountOut1 < owedAmount ? amountOut0 : owedAmount, which subtracts the raw token0 amount from a token1-denominated owedAmount/amountOut1 \u2014 for any 18-dec/6-dec pair (WETH/USDC, WETH/USDT) that underflows for every legal pctWithdraw, so the owner can never close or partially withdraw the position and the collateral is locked until a liquidator takes the residual equity.",
+      "poc_sketch": "Deploy TestToken t0(18d)/t1(6d), a MockVault returning (10e18, 30_000e6) on withdraw, a MockLendingPool with getCurrentBorrowingIndex()==1e27, and the real Leverager via a harness exposing installPosition; install Position{denomination:t1, borrowedAmount:60_000e6, borrowedIndex:1e27, shares:1e18, token0:t0, token1:t1}; fund+approve the borrower with 1_000_000e6 t1 then vm.expectRevert(stdError.arithmeticError); lev.withdraw(wp) with wp.pctWithdraw=1e18, and fuzz pctWithdraw over [0.0101e18,1e18] scaling the mock vault outputs by the same factor to assert the revert is pct-invariant; control test with denomination:t0 and debt 5e18 must succeed and assert t0.balanceOf(pool)==5e18.",
+      "verdict": "REAL",
+      "reason": "The borrowed == up.token1 arm computes repayFromWithdraw as amountOut0 (a token0-unit value) and then subtracts it from both owedAmount and amountOut1, and since the arm's guard amountOut1 < owedAmount is pctWithdraw-invariant and holds for any position above ~2x leverage, a decimal-asymmetric vault (18-dec token0 / 6-dec token1) makes both checked subtractions underflow on every legal withdrawal, leaving the owner no exit path while liquidatePosition \u2014 which uses amount1 correctly \u2014 remains gated behind isLiquidateable."
+    },
+    {
+      "subsystem": "Lending reserve data structs",
+      "location": "src/Leverager.sol:liquidatePosition:318",
+      "file": "src/Leverager.sol",
+      "class": "<class=C10>",
+      "severity": "Severity=Medium",
+      "exploit": "borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals() divides by decimals() instead of 10 ** decimals(), inflating the debt value by 10^d/d (5.55e16x at 18 decimals) so the totalValueUSD > borrowedValue gate on line 320 never fires and an unprivileged liquidator keeps the entire liquidation profit that should have been split with feeRecipient.",
+      "poc_sketch": "Deploy t0(18d,$2500)/t1(6d,$1), MockPriceFeed, MockStrategy, MockVault holding 20e18 t0 + 10_000e6 t1 with totalSupply 1e18, MockLendingPool, and the real Leverager via a harness; call initVault(vault, max, 5e18, 1e18, max) and setLiquidationFee(1000); install Position{denomination:t0, borrowedAmount:20e18, borrowedIndex:1e27, initCollateralValue:40e18, initBorrowedUsd:0, shares:1e18}; assert isLiquidateable(id), then prank an unprivileged liquidator through liquidatePosition and assert t1.balanceOf(liquidator) increased by the full 10_000e6 and t0/t1.balanceOf(lev.feeRecipient()) == 0, while the correctly scaled gate (owedbPrice/1e18 == 50_000e18 < totalValueUSD 60_000e18) would have charged protocolFeePctamounts \u2248 0.333e18 t0 + 166.67e6 t1.",
+      "verdict": "REAL",
+      "reason": "Line 318 divides by decimals() instead of 10 ** decimals() (contradicting every other scaling site in the same contract), inflating borrowedValue ~5.5e16\u00d7 so the totalValueUSD > borrowedValue branch on line 320 is unreachable for any position that passed the isLiquidateable require on line 305, making the feeRecipient transfers dead code and leaving the entire liquidation surplus to the unprivileged msg.sender."
+    },
+    {
+      "subsystem": "Lending reserve data structs",
+      "location": "src/Leverager.sol:liquidatePosition:318",
+      "file": "src/Leverager.sol",
+      "class": "<class=C9>",
+      "severity": "Medium",
+      "exploit": "borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals() divides by the decimals count instead of 10 ** decimals() (as L131/L178/L401 correctly do), inflating borrowedValue ~5.56e16x so the L320 profit gate never opens and any unprivileged liquidator keeps 100% of the residual equity that should have been shared with feeRecipient.",
+      "poc_sketch": "Deploy Leverager with mock vault/pricefeed/lendingpool, setLiquidationFee(1000), install a liquidateable position (denomination = 18-dec token, borrowedAmount 20e18 @ $2500, collateral 20e18 token0 + 10_000e6 token1 = $60k vs $50k debt), call liquidatePosition from an unprivileged address; assert token1.balanceOf(feeRecipient) == 0 and token0.balanceOf(feeRecipient) == 0 while the liquidator receives the full 10_000e6 surplus, and assert owed*bPrice/decimals() > totalValueUSD > owed*bPrice/10**decimals(). (test/PoC_C10_LiqFee.t.sol, 2 passed)",
+      "verdict": "REAL",
+      "reason": "borrowedValue divides by decimals() (the count) rather than 10 ** decimals() while totalValueUSD is 1e18-scaled, so the totalValueUSD > borrowedValue gate at L320 is unreachable and the unprivileged msg.sender liquidator receives the entire residual amount0/amount1 in the tail transfers with feeRecipient paid nothing."
+    },
+    {
+      "subsystem": "Lending reserve data structs",
+      "location": "src/Strategy.sol:checkPoolActivity:320",
+      "file": "src/Strategy.sol",
+      "class": "<class=C19>",
+      "severity": "High",
+      "exploit": "An unprivileged attacker calls the Uniswap pool's permissionless increaseObservationCardinalityNext to push observationCardinality past 32768 and advances the write index with swaps until observationCardinality + currentIndex >= 65536, at which point the uint16-typed addition on line 320 panics, permanently reverting checkPoolActivity() and therefore Strategy.rebalance() (via _priceWithinRange) and Leverager.openLeveragedPosition() (via Vault.checkPoolActivity), freezing the strategy's liquidity in a stale range.",
+      "poc_sketch": "Deploy two ERC20s and a MockPool exposing slot0() (settable observationIndex/observationCardinality), observations(uint256) returning (uint32(1e6+index), int56(0), 0, true), observe() returning flat cumulatives, and tickSpacing()==60; deploy the real Strategy(pool, vault, rebalancer, feeRecipient); assert strat.checkPoolActivity() succeeds at setObs(32767, 32768) (sum 65535); then setObs(32768, 32769) (sum 65536) and assert vm.expectRevert(stdError.arithmeticError); strat.checkPoolActivity(); and likewise for strat.rebalance(); add setObs(0, 65535) and assert the same panic from the i++ loop-counter overflow.",
+      "verdict": "REAL",
+      "reason": "The sum observationCardinality + currentIndex on line 320 is evaluated in uint16 (operand type governs, not the uint256 assignment target), so once anyone permissionlessly grows the pool's cardinality above 32768 via increaseObservationCardinalityNext and the write index advances such that the sum reaches 65536, the checked-arithmetic panic fires on the very first loop iteration with no require, try/catch, unchecked block, or cardinality bound anywhere in the path, permanently bricking checkPoolActivity() and every caller that routes through _requirePriceWithinRange."
+    },
+    {
+      "subsystem": "Lending reserve data structs",
+      "location": "src/Leverager.sol:liquidatePosition:318",
+      "file": "src/Leverager.sol",
+      "class": "<class=C9>",
+      "severity": "Medium",
+      "exploit": "Any unprivileged liquidator calls liquidatePosition on a healthy-equity underwater position; because borrowedValue = owedAmount * bPrice / ERC20(denomination).decimals() divides by d instead of 10 ** d (unlike :131 and :401), borrowedValue is over-scaled by 10^d/d, the totalValueUSD > borrowedValue branch at :320 is never taken, protocolFeePct/pf0/pf1 are never computed, and the liquidator keeps 100% of the residual equity while feeRecipient is permanently paid zero on every liquidation.",
+      "poc_sketch": "Deploy TestToken t0(18d)/t1(18d) with denomination t0, a MockStrategy{collectFees()} and MockVault returning balances()/totalSupply()/twapPrice()/strategy() and a withdraw(shares,min0,min1) that pays out (100e18, 100e18); a MockPriceFeed with hasPriceFeed()==true and getPrice()==1e18 (1e18-scaled, matching _calculateTokenValues); a MockLendingPool with getCurrentBorrowingIndex()==1e27, getLeverageParams() and a repay that pulls tokens; install via a harness Position{denomination:t0, borrowedAmount:10e18, borrowedIndex:1e27, initCollateralValue:\u2026, shares:1e18, token0:t0, token1:t1} sized so isLiquidateable(id) is true while collateral is worth ~200e18 USD against ~10e18 USD of debt; lev.setLiquidationFee(10_000) and set feeRecipient; then from an unprivileged liquidator call lev.liquidatePosition(...) and assert t0.balanceOf(feeRecipient)==0 && t1.balanceOf(feeRecipient)==0 while t0.balanceOf(liquidator)+t1.balanceOf(liquidator) captures the full surplus; add a pure control asserting totalValueUSD > owedAmount*bPrice/(10**18) is true while totalValueUSD > owedAmount*bPrice/18 is false, and fuzz the denomination decimals over {6,8,18} to show the gate is dead for every decimal choice.",
+      "verdict": "REAL",
+      "reason": "borrowedValue = owedAmount * bPrice / ERC20(denomination).decimals() divides by the decimals count rather than 10 ** decimals (as :131/:401 correctly do), inflating the debt figure by a price-independent 10^d/d so the totalValueUSD > borrowedValue branch at :320 is unreachable for any position that passes isLiquidateable, permanently zeroing the fee transfers to feeRecipient and routing all residual equity to the unprivileged msg.sender liquidator."
+    }
+  ],
+  "errors": [],
+  "totals": {
+    "candidates": 19,
+    "verified": 12,
+    "errored": 0
+  }
+}

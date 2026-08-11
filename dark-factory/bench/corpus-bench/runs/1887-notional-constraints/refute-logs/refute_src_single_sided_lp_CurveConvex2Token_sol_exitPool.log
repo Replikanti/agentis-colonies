@@ -1,0 +1,86 @@
+[genesis] 300e30b55493
+[prompt] "You are an INDEPENDENT, skeptical smart-contract auditor...." -> string
+[llm] requesting flat-cyborg  ...
+[llm] still waiting ... (4.0s)
+[llm] still waiting ... (8.0s)
+[llm] still waiting ... (12.0s)
+[llm] still waiting ... (16.0s)
+[llm] still waiting ... (20.0s)
+[llm] still waiting ... (24.0s)
+[llm] still waiting ... (28.0s)
+[llm] still waiting ... (32.0s)
+[llm] still waiting ... (36.0s)
+[llm] still waiting ... (40.0s)
+[llm] still waiting ... (44.1s)
+[llm] still waiting ... (48.1s)
+[llm] still waiting ... (52.1s)
+[llm] still waiting ... (56.1s)
+[llm] still waiting ... (60.1s)
+[llm] still waiting ... (64.1s)
+[llm] still waiting ... (68.1s)
+[llm] still waiting ... (72.1s)
+[llm] still waiting ... (76.1s)
+[llm] still waiting ... (80.1s)
+[llm] still waiting ... (84.0s)
+[llm] still waiting ... (88.0s)
+[llm] still waiting ... (92.0s)
+[llm] still waiting ... (96.0s)
+[llm] still waiting ... (100.0s)
+[llm] still waiting ... (104.0s)
+[llm] still waiting ... (108.0s)
+[llm] still waiting ... (112.0s)
+[llm] still waiting ... (116.0s)
+[llm] still waiting ... (120.0s)
+[llm] still waiting ... (124.1s)
+[llm] still waiting ... (128.1s)
+[llm] still waiting ... (132.1s)
+[llm] still waiting ... (136.1s)
+[llm] still waiting ... (140.1s)
+[llm] still waiting ... (144.1s)
+[llm] still waiting ... (148.1s)
+[llm] still waiting ... (152.1s)
+[llm] still waiting ... (156.1s)
+[llm] still waiting ... (160.0s)
+[llm] still waiting ... (164.0s)
+[llm] still waiting ... (168.0s)
+[llm] still waiting ... (172.0s)
+[llm] still waiting ... (176.0s)
+[llm] still waiting ... (180.0s)
+[llm] still waiting ... (184.0s)
+[llm] still waiting ... (188.0s)
+[llm] still waiting ... (192.0s)
+[llm] received (195.4s)
+Trace:
+
+  1. Token identity is fixed at construction from ICurvePool(pool).coins(0/1) and passed through _rewriteAltETH, which
+  maps only the 0xEeee… sentinel to the internal ETH sentinel. So TOKEN_1/TOKEN_2 equal exactly what the pool reports,
+  and the whole ETH-handling design of this contract keys off the sentinel: joinPoolAndStake sets msgValue only when a
+  leg is the sentinel, WETH.withdraw runs only then, and unstakeAndExitPool re-wraps only when a leg is the sentinel.
+  2. For the configuration this V2 branch is written against — a pool whose ETH leg reports the alt-ETH sentinel — entry
+  and exit are symmetric: msgValue > 0 ⇒ use_eth = true on add_liquidity, use_eth = true on
+  remove_liquidity/remove_liquidity_one_coin, native ETH received, then WETH.deposit{value: exitBalances[i]}() when
+  ASSET == WETH. TokenUtils.tokenBalance on the sentinel leg measures the native balance, so the two-sided delta is
+  correct. No leg is dropped and no payout bricks.
+  3. The claimed divergence therefore requires a pool that both (i) is driven through the CurveInterface.V2 branch and
+  (ii) reports a wrapped-ERC20 address for its ETH leg. Which interface enum a given pool is driven with, and which pool
+  address is used at all, are DeploymentParams fields burned into immutables by the deployer at construction. There is
+  no unprivileged call that changes CURVE_INTERFACE, CURVE_POOL, TOKEN_1, TOKEN_2, or _PRIMARY_INDEX — they are
+  immutable. An ordinary depositor cannot induce the pairing; they can only redeem from a vault that the deployer
+  already wired to a pool whose out-transfer semantics do not match the interface variant selected for it.
+  4. The claim also rests entirely on external pool behavior that is not in the reviewed input: nothing shown
+  establishes what the target pool's out-transfer does with the flag, nor that any such pairing exists. The internal
+  accounting shown is self-consistent for the configuration the constructor's rewrite logic, the entry unwrap, and the
+  exit re-wrap were jointly written for.
+
+  So the failure mode described is a deployment-time interface/pool mismatch chosen by privileged configuration, not an
+  unprivileged exploit path, and the code contains no unprivileged trigger that produces the asymmetry.
+
+  CONSTRAINT|class=C23|A behavioral divergence that can only arise from a deployment-time pairing of an integration
+  target with an interface variant, both fixed in immutable constructor configuration, counts as privileged
+  configuration unless the candidate identifies an unprivileged action that induces the mismatch and demonstrates the
+  external counterparty's differing behavior rather than assuming it.
+  VERDICT|REFUTED|src/single-sided-lp/CurveConvex2Token.sol:_exitPool|class=C23|The flag asymmetry only bites if a
+  deployer pairs the V2 interface branch with a pool whose ETH leg is not the alt-ETH sentinel, and every relevant value
+  (pool, interface enum, token addresses, primary index) is an immutable constructor parameter no unprivileged caller
+  can influence, while for the sentinel-reporting pools the branch is written for, entry, exit, balance measurement, and
+  re-wrapping are all symmetric.
