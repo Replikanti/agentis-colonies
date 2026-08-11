@@ -1219,6 +1219,27 @@ if [ -x "$REPO_ROOT/dark-factory/demo-experience-flags.sh" ]; then
     fi
 fi
 
+# --- dark-factory refuter -> hunter constraint channel (#1887) ---
+# The refute gate is where most candidates die and its reason used to die with them. refuter.ag now emits the
+# GENERALISABLE half of each REFUTED verdict as a `CONSTRAINT|` line placed BEFORE the verdict (after it,
+# run-refute.sh's _join_wrapped_verdict would swallow it into the reason and shift verify-findings.sh's
+# `awk -F'|'` field read); run-refute.sh harvests it, verify-findings.sh aggregates it in gate order,
+# refute-to-knowledge.sh turns it into a `refute-constraint` knowledge corpus and run-discovery.sh imports
+# that corpus — opt-in via REFUTE_CONSTRAINTS_JSON, default OFF — so hunter.ag can pre-empt the objection on
+# the NEXT target. demo-refute-feedback.sh pins the whole chain offline: the report stays byte-identical with
+# and without the constraint line, the harvested TSV row (incl. a PTY-wrapped sentence and the #1699
+# C6-recovery exclusion), the feeder's aggregation/determinism/empty-input/--store behaviour and — when
+# agentis is on PATH — a REAL hunter.ag cell whose PROMPT is asserted ON vs OFF (the #1885 output-level rule).
+if [ -x "$REPO_ROOT/dark-factory/demo-refute-feedback.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-refute-feedback.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: refuter -> hunter constraint channel (emit -> scrape -> feed -> import -> consume) (#1887)"
+    else
+        fail "dark-factory: refuter -> hunter constraint channel regressed (#1887)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory monitor colony proof-of-value: detect -> deliver (#1889, #1891) ---
 # The Path C monitoring proposition must DETECT a protocol invariant breaking on live chain state and
 # DELIVER it as a page. demo-monitor.sh source-guards the monitor wiring (the 8 agents, notifier.ag ->

@@ -42,6 +42,12 @@
 #   --model <id>         Optional model id (claude: passed to the CLI; flat-cyborg: set as llm.model).
 #   --out <dir>          Output dir for the run + verdicts (default: ./refute-out).
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
+#
+# Outputs: `<out>/refute-report.md` (the verdict table, an unchanged downstream contract) and — #1887 —
+# `<out>/refute-constraints.tsv`, one `<class>\t<file:fn>\t<constraint>` row per REFUTED candidate whose
+# reply carried the generalisable `CONSTRAINT|` line. That file is the input of refute-to-knowledge.sh, which
+# turns it into an agentis knowledge corpus a LATER target's hunter can read. Always written (empty = no
+# refutation produced a constraint); nothing in this script consumes it.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -138,6 +144,14 @@ REPORT="$OUT/refute-report.md"
   echo "|---|---|---|---|"
 } > "$REPORT"
 
+# #1887: the harvested generalisable constraints, one `<class>\t<file:fn>\t<constraint>` row per REFUTED
+# candidate whose reply carried a CONSTRAINT| line. A SEPARATE artifact on purpose: refute-report.md's row
+# shape is a downstream contract (verify-findings.sh reads field 4/5 of its first data row with `awk -F'|'`),
+# so the channel adds a file rather than a column. Always created — an empty file is the honest record of
+# "no candidate was refuted with a constraint", and refute-to-knowledge.sh turns it into a valid empty corpus.
+CONSTRAINTS="$OUT/refute-constraints.tsv"
+: > "$CONSTRAINTS"
+
 # --- #1699 bounded single-class C6 fallback -------------------------------------------------------------
 # A candidate REFUTED under its ASSIGNED class is not dropped outright when its own code file trips a
 # conservative accounting signal. The hunter routinely mislabels a value-moving-function accounting bug (the
@@ -183,6 +197,29 @@ _join_wrapped_verdict() {
     }
     END { if (rec != "") print rec }
   ' "$jwv_log"
+}
+
+# _join_wrapped_constraint <log> — the #1887 twin of the above, for the `CONSTRAINT|<class>|<sentence>` line
+# the refuter prints IMMEDIATELY BEFORE a REFUTED verdict. Same PTY-wrap problem, same joining rules, one
+# extra boundary: a `VERDICT|` line CLOSES an open constraint record (the constraint always precedes the
+# verdict, so the verdict line is the natural terminator and must never be glued into the sentence). A blank
+# line, EOF or 12 continuation lines also close it. The LAST constraint record in the log wins, mirroring
+# _join_wrapped_verdict's "last record" rule — and note this scraper is deliberately SEPARATE: touching
+# _join_wrapped_verdict would put the verdict row (which verify-findings.sh reads with `awk -F'|'`) at risk.
+_join_wrapped_constraint() {
+  jwc_log="$1"
+  awk '
+    /CONSTRAINT\|/ { rec = $0; open = 1; cont = 0; next }
+    open && (/VERDICT\|/ || /^[[:space:]]*$/) { open = 0; next }
+    open {
+      if (cont >= 12) { open = 0; next }
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      rec = rec " " line
+      cont++
+    }
+    END { if (rec != "") print rec }
+  ' "$jwc_log"
 }
 
 # _clean_reason <reason> — normalise a scraped verdict reason for the pipe-delimited report row. A literal `|`
@@ -276,6 +313,14 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
     V="$(printf '%s' "$VLINE" | sed 's/^.*\(VERDICT|\)/\1/')"
     VERD="$(printf '%s' "$V" | cut -d'|' -f2)"
     REASON="$(_clean_reason "$(printf '%s' "$V" | cut -d'|' -f5-)")"
+    # #1887: the generalisable constraint that rode ahead of this verdict (empty on a REAL verdict, and on a
+    # REFUTED one whose reply omitted the line — the channel is best-effort, never a gate on the verdict).
+    CLINE="$(_join_wrapped_constraint "$CELL_LOG" || true)"
+    CONSTRAINT=""
+    if [ -n "$CLINE" ]; then
+      C="$(printf '%s' "$CLINE" | sed 's/^.*\(CONSTRAINT|\)/\1/')"
+      CONSTRAINT="$(_clean_reason "$(printf '%s' "$C" | cut -d'|' -f3-)")"
+    fi
   else
     echo "run-refute.sh: '$CFN' produced no VERDICT| reply after $DF_AGENT_MAX_ATTEMPTS attempts; recording as ERROR (UNASSESSED — not refuted)" >&2
     printf '| %s | %s | ERROR | no VERDICT| reply after %s attempts (UNASSESSED — not refuted) |\n' \
@@ -325,6 +370,13 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
   # row per candidate carrying the WINNING class (ROW_CLS) — verify-findings.sh reads the first data row + exits.
   if [ "$VERD" = "REAL" ]; then REAL=$((REAL + 1)); else REFUTED=$((REFUTED + 1)); fi
   printf '| %s | %s | %s | %s |\n' "$CFN" "$ROW_CLS" "$VERD" "$REASON" >> "$REPORT"
+  # #1887: harvest the constraint of the call that produced the FINAL verdict. A candidate the #1699 C6
+  # fallback RECOVERED to REAL contributes nothing — the gate's own second read overturned the standard the
+  # first one applied, so teaching that standard forward would teach a mistake. A candidate whose fallback
+  # also refuted keeps the ASSIGNED-class constraint, because that is the verdict the report row carries.
+  if [ "$VERD" = "REFUTED" ] && [ -n "$CONSTRAINT" ]; then
+    printf '%s\t%s\t%s\n' "$ROW_CLS" "$CFN" "$CONSTRAINT" >> "$CONSTRAINTS"
+  fi
 done < "$CANDS"
 
 {

@@ -78,6 +78,22 @@
 #           and NEITHER reaches an appendix-free one — the regression 18a-18g are structurally blind to,
 #           since they drive a stub or a synthetic fold. The `appendix` record is asserted in the same
 #           breath: it is derived from the assembled prompt, so it disappears with the framing.
+#   19) #1887 REFUTER -> HUNTER CONSTRAINT CHANNEL (`REFUTE_CONSTRAINTS_JSON`, unset = OFF):
+#      19a) INERTNESS: with the env var unset no cell log carries a `REFUTE-CONSTRAINTS|` sentinel (report
+#           byte-identity is assertion 1).
+#      19b) CONFIG: the written run config carries `knowledge.enabled = true` — without it hunter.ag's
+#           `query_knowledge` raises and the cell's whole stdout is discarded (the #1877 false zero).
+#      19c) ORDER INDEPENDENCE: with a corpus built by the SHIPPED refute-to-knowledge.sh feeder and
+#           imported, `--jobs 3` still equals serial AND the cell count is unchanged — the structural answer
+#           to #1866 (a frozen, read-only corpus imported once cannot make a run order-dependent).
+#      19d) WRAP SAFETY: a `REFUTE-CONSTRAINTS|` line following a wrapped CANDIDATE is a record BOUNDARY.
+#      19e) CB (needs the agentis binary; clean [SKIP] otherwise), on the constraint helpers EXTRACTED FROM
+#           hunter.ag BY LINE RANGE and fed a REAL imported corpus (the rows cannot be synthesized in `.ag`):
+#           (A) under the `cb 300000;` hunter.ag declares — what `agentis go` honours — the fold completes at
+#           corpora of 1/8/32/128 entries, 4x the 32-row read cap; (B) the `cb 2000` cb_per_tick ceiling is
+#           binary-searched and pinned against hunter.ag's cost comment, because this fold is an interpreted
+#           per-row walk and does NOT clear the full read cap at that (daemon-only) budget; (C) an EMPTY
+#           store yields an empty block from a COMPLETED call — the byte-identical-prompt claim, measured.
 #
 # The parallel-only assertions [SKIP] cleanly when the bash that runs run-discovery.sh lacks `wait -n`
 # (needs bash >= 4.3) — run-discovery.sh then degrades to serial, which the demo does not misreport.
@@ -181,6 +197,22 @@ case "$cmd" in
         "$(printf '%s' "${IN_SCOPE:-}" | tr '\n' ' ')" "${DEPTH_TARGET:-}" \
         "${APPENDIX_FILE:-}" "${APPENDIX_BASE:-}" \
         "$(printf '%s' "${DEPTH_KNOWN:-}" | tr '\n' ' ')" >> "$STUB_ENVLOG"
+    fi
+    # #1887: a cell whose run store carries an imported refute-constraint corpus. hunter.ag prints its
+    # REFUTE-CONSTRAINTS| sentinel whenever the class-filtered corpus is non-empty; the stub mirrors that,
+    # keyed on the operator env var run-discovery.sh reads (which the cell inherits), so the demo can prove
+    # the sentinel is ABSENT with no corpus and a record BOUNDARY with one. STUB_CONS_WRAP emits a PTY-wrapped
+    # CANDIDATE record whose continuation lines are FOLLOWED by the sentinel — the shape that would glue it
+    # onto the open record as prose without the boundary.
+    if [ -n "${REFUTE_CONSTRAINTS_JSON:-}" ]; then
+      if [ "${STUB_CONS_WRAP:-}" = "1" ]; then
+        printf 'CANDIDATE|contracts/vault/Vault.sol:withdraw:7|%s|High|a constraint-informed lead whose exploit\n' "${HUNT_CLASS:-}"
+        printf 'prose wraps across several physical lines before the sentinel|1. deploy Attacker; 2. call\n'
+        printf 'withdraw() before the accounting update; 3. assert vm.assertEq(total, 0, "constraint-lead");\n'
+        printf 'REFUTE-CONSTRAINTS|%s|%s|1\n' "${SUBSYSTEM:-}" "${HUNT_CLASS:-}"
+        exit 0
+      fi
+      printf 'REFUTE-CONSTRAINTS|%s|%s|1\n' "${SUBSYSTEM:-}" "${HUNT_CLASS:-}"
     fi
     # #1827: a DEPTH cell. Mirror hunter.ag's own DEPTH-CELL| diagnostic line, then answer. STUB_DEPTH_WRAP
     # emits a PTY-wrapped CANDIDATE record whose continuation lines are FOLLOWED by that diagnostic line —
@@ -1363,6 +1395,254 @@ for c in d["cells"]:
 PY
   then ok "18h) a REAL agentis interpreting the REAL hunter.ag puts BOTH halves of the framing in the prompt of the framed zone only (the labelled header attached to the appendix section, the ANCHORING/resolved-behaviour block in the instruction) and records appendix=<token> for exactly those cells"
   else bad "18h) the live hunter did not frame the appendix payload (or framed a zone that has none)"
+  fi
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (19) #1887 REFUTER -> HUNTER CONSTRAINT CHANNEL (`REFUTE_CONSTRAINTS_JSON`, unset = OFF).
+#      run-refute.sh harvests the GENERALISABLE half of each REFUTED verdict, refute-to-knowledge.sh turns it
+#      into a `refute-constraint` knowledge corpus, and run-discovery.sh imports that corpus into the run
+#      store ONCE, before the cell loop, so hunter.ag can prepend the constraints filed under the cell's
+#      class. What this block pins is the SHELL side of it: default inertness, the config line the read needs,
+#      order-independence WITH a corpus, the sentinel's record-boundary behaviour, and the CB of the new fold.
+#      (The agent side — the corpus really reaching a real hunter's prompt — is demo-refute-feedback.sh's
+#      live cell; a stub cannot prove that, which is the #1885 lesson.)
+# ----------------------------------------------------------------------------------------------------------
+note "19) #1887: the refute-constraint channel is inert by default and order-independent when imported ..."
+
+# (19a) INERTNESS: the block-1 serial run set no REFUTE_CONSTRAINTS_JSON, so no cell may carry the sentinel.
+# The report's byte-identity to the golden is already pinned by assertion 1 — together those two are the
+# "an absent corpus leaves the hunt byte-identical" claim.
+if grep -l 'REFUTE-CONSTRAINTS|' "$SER_OUT"/run/hunt_*.log >/dev/null 2>&1; then
+  bad "19a) a cell log carries REFUTE-CONSTRAINTS| with no corpus set — the channel is not inert by default"
+else
+  ok "19a) with REFUTE_CONSTRAINTS_JSON unset no cell log carries a REFUTE-CONSTRAINTS| sentinel (and the report is byte-identical to the golden, assertion 1)"
+fi
+
+# (19b) CONFIG PIN: query_knowledge() hard-errors without `knowledge.enabled = true`, and a runtime error
+# makes agentis discard the cell's whole stdout — the #1877 false zero. The flag must be written even on a
+# corpus-free run, because the .ag calls the read unconditionally. (Input-level only: the OUTPUT-level guard
+# is demo-experience-flags.sh's live hunter cell, which fails outright if this line is dropped.)
+SER_CFG="$SER_OUT/run/.agentis/config"
+if [ -f "$SER_CFG" ] && grep -q '^knowledge.enabled = true' "$SER_CFG"; then
+  ok "19b) the written run config carries knowledge.enabled = true (without it hunter.ag's query_knowledge raises and the cell's stdout is discarded)"
+else
+  bad "19b) knowledge.enabled = true missing from $SER_CFG — every hunt cell would hard-error and return a false zero"
+fi
+
+# (19c) ORDER INDEPENDENCE WITH A CORPUS. The whole #1866 tension is "a store that accumulates across cells
+# would make a run order-dependent". This channel avoids it structurally — a static file, imported once,
+# copied identically into every cell store, never written by a cell — and the measurable consequence is that
+# `--jobs 3` must still equal serial WITH a corpus present. The corpus is built by the SHIPPED feeder from a
+# fixture TSV, so the run-refute.sh -> feeder -> run-discovery.sh file contract is pinned here too.
+FEEDER="$HERE/refute-to-knowledge.sh"
+CONS_TSV="$WORK/refute-constraints.tsv"
+{
+  printf 'C1\tcontracts/vault/Vault.sol:deposit\tan accounting claim must name the unprivileged call sequence that reaches the divergence\n'
+  printf 'C1\tcontracts/other/Other.sol:pull\tan accounting claim must name the unprivileged call sequence that reaches the divergence\n'
+  printf 'C6\tcontracts/vault/Vault.sol:withdraw\ta short deduction is only a bug when the shortfall is shown to leave the system\n'
+} > "$CONS_TSV"
+CONS_JSON="$WORK/refute-constraints.json"
+if [ ! -x "$FEEDER" ]; then
+  bad "19c) refute-to-knowledge.sh not found / not executable: $FEEDER"
+else
+  "$FEEDER" --in "$CONS_TSV" --out "$CONS_JSON" >/dev/null 2>"$WORK/feeder.err"
+  FRC=$?
+  if [ "$FRC" -ne 0 ] || [ ! -s "$CONS_JSON" ]; then
+    bad "19c) refute-to-knowledge.sh exited $FRC / produced no corpus"; sed 's/^/      /' "$WORK/feeder.err" >&2
+  else
+    ok "19c) refute-to-knowledge.sh turned the harvested TSV into a corpus JSON"
+  fi
+fi
+
+CONS_SER="$WORK/out-cons-serial"
+REFUTE_CONSTRAINTS_JSON="$CONS_JSON" \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$CONS_SER" --jobs 1 >/dev/null 2>"$WORK/cons-serial.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "19c) run-discovery.sh with REFUTE_CONSTRAINTS_JSON exits 0" \
+  || { bad "19c) the corpus run exited $RC"; sed 's/^/      /' "$WORK/cons-serial.err" >&2; }
+if grep -l 'REFUTE-CONSTRAINTS|' "$CONS_SER"/run/hunt_*.log >/dev/null 2>&1; then
+  ok "19c) with a corpus set the cells log the REFUTE-CONSTRAINTS| sentinel (the arm is really ON)"
+else
+  bad "19c) no cell logged REFUTE-CONSTRAINTS| even with a corpus set — the ON arm is indistinguishable from OFF"
+fi
+
+if [ "$PAR_OK" -ne 1 ]; then
+  skip "19c) --jobs 3 == serial with a corpus — the bash running run-discovery.sh lacks 'wait -n'"
+else
+  CONS_PAR="$WORK/out-cons-par3"
+  STUB_CTR="$WORK/ctr-cons"; mkdir -p "$STUB_CTR"
+  REFUTE_CONSTRAINTS_JSON="$CONS_JSON" STUB_CTR="$STUB_CTR" STUB_SLEEP=0.2 \
+    "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+    --out "$CONS_PAR" --jobs 3 >/dev/null 2>"$WORK/cons-par3.err"
+  RC=$?
+  [ "$RC" -eq 0 ] && ok "19c) run-discovery.sh --jobs 3 with a corpus exits 0" \
+    || { bad "19c) the parallel corpus run exited $RC"; sed 's/^/      /' "$WORK/cons-par3.err" >&2; }
+  if python3 - "$CONS_SER/discovery-results.json" "$CONS_PAR/discovery-results.json" "$SER_OUT/discovery-results.json" <<'PY'
+import sys, json
+a = json.load(open(sys.argv[1], encoding="utf-8"))
+b = json.load(open(sys.argv[2], encoding="utf-8"))
+base = json.load(open(sys.argv[3], encoding="utf-8"))
+
+
+def cands(d):
+    out = []
+    for c in d["cells"]:
+        out.extend(c["candidates"])
+    return sorted(out)
+
+
+assert cands(a) == cands(b), "with a corpus imported, --jobs 3 diverged from serial: %r != %r" % (cands(a), cands(b))
+assert a["totals"]["cells"] == b["totals"]["cells"], "cell totals differ between serial and --jobs 3"
+# The import must add no cells: an ON/OFF arm with different cell counts is not a comparison (the #1887
+# acceptance contract says unequal counts VOID the measurement).
+assert a["totals"]["cells"] == base["totals"]["cells"], \
+    "importing a corpus changed the cell count: %r vs %r" % (a["totals"]["cells"], base["totals"]["cells"])
+PY
+  then ok "19c) with a corpus imported the --jobs 3 candidate multiset still equals serial, and the import adds no cells (the corpus is read-only and identical in every cell store)"
+  else bad "19c) the corpus made the run order-dependent, or changed the cell count"
+  fi
+fi
+
+# (19d) WRAP SAFETY: a REFUTE-CONSTRAINTS| line following a PTY-wrapped CANDIDATE record is a record
+# BOUNDARY. Without it the sentinel is appended to the open record as prose and adds phantom pipe fields.
+CWRAP_OUT="$WORK/out-cons-wrap"
+REFUTE_CONSTRAINTS_JSON="$CONS_JSON" STUB_CONS_WRAP=1 \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$CWRAP_OUT" --jobs 1 >/dev/null 2>"$WORK/cons-wrap.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "19d) run-discovery.sh with a wrapped constraint-cell reply exits 0" \
+  || { bad "19d) the wrapped constraint run exited $RC"; sed 's/^/      /' "$WORK/cons-wrap.err" >&2; }
+if grep -q 'REFUTE-CONSTRAINTS' "$CWRAP_OUT/discovery-report.md"; then
+  bad "19d) the REFUTE-CONSTRAINTS| sentinel was glued onto the wrapped CANDIDATE record and reached the report"
+elif python3 - "$CWRAP_OUT/discovery-results.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+seen = 0
+for c in d["cells"]:
+    assert len(c["candidates"]) == 1, "the wrap + sentinel split into %d candidate(s)" % len(c["candidates"])
+    body = c["candidates"][0]
+    assert "REFUTE-CONSTRAINTS" not in body, "the sentinel was appended to the candidate: %r" % body
+    assert body.count("|") == 4, "expected 5 pipe-delimited fields, got %d: %r" % (body.count("|") + 1, body)
+    assert 'vm.assertEq(total, 0, "constraint-lead");' in body, "the wrapped poc_sketch tail was lost: %r" % body
+    seen += 1
+assert seen == 4, "expected 4 cells, got %d" % seen
+PY
+then ok "19d) a REFUTE-CONSTRAINTS| line after a wrapped CANDIDATE closes the record: one fully-joined 5-field candidate, no sentinel text in it and none in the report"
+else bad "19d) the wrapped constraint-cell candidate is malformed (glued sentinel / phantom fields / lost tail)"
+fi
+
+# (19e) CB of the new fold, under the `cb 2000;` cb_per_tick ceiling (the block-17 shape). The helpers are
+# EXTRACTED FROM hunter.ag BY LINE RANGE — a copy-pasted twin would drift from the agent it claims to
+# measure. The swept dimension is the CORPUS SIZE, because that is what the new reduce walks per element;
+# the rows cannot be synthesized in `.ag` (no map literal), so the probe imports a REAL corpus of N entries
+# and reads it back with the shipped `query_knowledge("refute-constraint", 32)` call — the read cap is part
+# of what is being measured, which is exactly why the fold stays flat past 32.
+if ! command -v agentis >/dev/null 2>&1; then
+  skip "19e) constraint_block() CB sweep — no agentis binary on PATH"
+elif [ ! -f "$HUNTER_AG" ]; then
+  bad "19e) hunter.ag not found at $HUNTER_AG"
+elif [ ! -x "$FEEDER" ]; then
+  bad "19e) refute-to-knowledge.sh not found / not executable: $FEEDER"
+else
+  CONS_FRAG="$WORK/constraint_helpers.frag"
+  : > "$CONS_FRAG"
+  CONS_HELPERS="class_constraints join_bullets capped_count constraint_block"
+  for _fn in $CONS_HELPERS; do
+    awk -v want="^fn $_fn\\\\(" '$0 ~ want {f=1} f{print} f&&/^}$/{exit}' "$HUNTER_AG" >> "$CONS_FRAG"
+    printf '\n' >> "$CONS_FRAG"
+  done
+  MISSING_FN=""
+  for _fn in $CONS_HELPERS; do
+    grep -q "^fn $_fn(" "$CONS_FRAG" || MISSING_FN="$MISSING_FN $_fn"
+  done
+  if [ -n "$MISSING_FN" ]; then
+    bad "19e) could not extract from hunter.ag by line range (renamed?):$MISSING_FN"
+  else
+    # _cons_cb_probe <N> <budget> — import an N-entry single-class corpus, run the extracted fold under
+    # <budget>, and print the resulting block length, or NOTHING when the fold did not complete.
+    _cons_cb_probe() {
+      _n="$1"; _budget="$2"
+      _tsv="$WORK/cb-cons-$_n.tsv"; : > "$_tsv"
+      _i=0
+      while [ "$_i" -lt "$_n" ]; do
+        printf 'C1\tcontracts/z/File%s.sol:fn\tconstraint sentence number %s that a claim of this class must meet\n' "$_i" "$_i" >> "$_tsv"
+        _i=$((_i + 1))
+      done
+      _json="$WORK/cb-cons-$_n.json"
+      "$FEEDER" --in "$_tsv" --out "$_json" >/dev/null 2>&1
+      _sb="$WORK/cb-cons-$_budget-$_n.d"; rm -rf "$_sb"; mkdir -p "$_sb"
+      ( cd "$_sb" && agentis init >/dev/null 2>&1 ) || true
+      printf 'knowledge.enabled = true\n' > "$_sb/.agentis/config"
+      ( cd "$_sb" && agentis knowledge import "$_json" --replace >/dev/null 2>&1 ) || true
+      {
+        printf 'cb %s;\n\n' "$_budget"
+        cat "$CONS_FRAG"
+        printf '\nlet b = sort_unique_strings(class_constraints(query_knowledge("refute-constraint", 32), "C1"));\n'
+        printf 'print("CONSLEN=" + to_string(len(constraint_block(b))));\n'
+      } > "$_sb/probe.ag"
+      ( cd "$_sb" && agentis go probe.ag 2>&1 | grep '^CONSLEN=' | tail -1 ) | sed 's/^CONSLEN=//'
+    }
+    # _cons_cb_max <budget> — the largest single-class corpus the fold still completes on. Bounded at 32
+    # because that is the `query_knowledge(..., 32)` read cap: a bigger corpus cannot cost the fold more.
+    _cons_cb_max() {
+      _lo=1; _hi=32
+      while [ "$_lo" -lt "$_hi" ]; do
+        _mid=$(( (_lo + _hi + 1) / 2 ))
+        if [ -n "$(_cons_cb_probe "$_mid" "$1")" ]; then _lo="$_mid"; else _hi=$(( _mid - 1 )); fi
+      done
+      printf '%s' "$_lo"
+    }
+
+    # --- (A) the budget that actually runs. `agentis go hunter.ag` honours the source's own `cb 300000;`,
+    # and this agent is ONLY ever invoked that way (run-discovery.sh; it is never a daemon), so this — not
+    # the cb_per_tick default — is the production number. 128 is 4x the read cap, i.e. the fold is bounded
+    # by that cap long before it is bounded by CB.
+    CONS_CB_OK=1
+    for N in 1 8 32 128; do
+      A_LEN="$(_cons_cb_probe "$N" 300000)"
+      case "$A_LEN" in
+        ''|*[!0-9]*) bad "19e-A) the fold did NOT complete under the production cb 300000 with a $N-entry corpus"; CONS_CB_OK=0 ;;
+        *) [ "$A_LEN" -gt 0 ] || { bad "19e-A) the fold returned an EMPTY block with a $N-entry corpus"; CONS_CB_OK=0; } ;;
+      esac
+    done
+    [ "$CONS_CB_OK" -eq 1 ] && ok "19e-A) under the cb 300000 hunter.ag declares (what \`agentis go\` honours), the constraint fold completes with a non-empty block at corpora of 1/8/32/128 entries — 4x the 32-row read cap"
+
+    # --- (B) the stress band under the cb_per_tick default, MEASURED rather than assumed. The fold is an
+    # interpreted per-row walk (get/to_string/index_of/trim/substring per entry), which is the expensive
+    # substrate shape; at `cb 2000` it therefore does NOT clear the full 32-row read cap. That is a fact
+    # about a budget this agent never runs under, and it is recorded rather than hidden — the number below
+    # is pinned against hunter.ag's own cost comment so the claim cannot go stale.
+    CONS_CB_MAX="$(_cons_cb_max 2000)"
+    if [ "$CONS_CB_MAX" -ge 8 ]; then
+      ok "19e-B) measured under cb 2000 (the cb_per_tick default, NOT this agent's budget): the fold clears a $CONS_CB_MAX-entry single-class corpus — above the handful a derived corpus holds per class after dedupe, below the 32-row read cap"
+    else
+      bad "19e-B) the fold's cb 2000 ceiling is only $CONS_CB_MAX entries — the per-element cost regressed"
+    fi
+    if grep -q "clears a $CONS_CB_MAX-entry single-class corpus" "$HUNTER_AG"; then
+      ok "19e-B2) hunter.ag's cost comment quotes the MEASURED cb 2000 ceiling ($CONS_CB_MAX entries), not an assumed one"
+    else
+      bad "19e-B2) hunter.ag's cost comment does not match the measured cb 2000 ceiling ($CONS_CB_MAX entries with $(agentis version 2>/dev/null | head -1)) — update the comment"
+    fi
+
+    # --- (C) inertness at the CB level: an EMPTY store must cost a COMPLETED call returning the empty
+    # string, never an error — that is the "byte-identical prompt" claim measured rather than asserted.
+    EMPTY_SB="$WORK/cb-cons-empty.d"; rm -rf "$EMPTY_SB"; mkdir -p "$EMPTY_SB"
+    ( cd "$EMPTY_SB" && agentis init >/dev/null 2>&1 ) || true
+    printf 'knowledge.enabled = true\n' > "$EMPTY_SB/.agentis/config"
+    {
+      printf 'cb 2000;\n\n'
+      cat "$CONS_FRAG"
+      printf '\nlet b = sort_unique_strings(class_constraints(query_knowledge("refute-constraint", 32), "C1"));\n'
+      printf 'print("CONSLEN=" + to_string(len(constraint_block(b))));\n'
+    } > "$EMPTY_SB/probe.ag"
+    EMPTY_OUT="$( cd "$EMPTY_SB" && agentis go probe.ag 2>&1 | grep '^CONSLEN=' | tail -1 )"
+    if [ "$EMPTY_OUT" = "CONSLEN=0" ]; then
+      ok "19e-C) with an EMPTY knowledge store the block is the empty string (a completed call, not an error) — the prompt stays byte-identical"
+    else
+      bad "19e-C) an empty knowledge store did not yield an empty block (got '$EMPTY_OUT')"
+    fi
   fi
 fi
 

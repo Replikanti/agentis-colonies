@@ -23,6 +23,8 @@ cb 300000;
 //               abstract. Empty (the default) => every helper below returns "" and the prompt is byte-identical.
 //   APPENDIX_BASE #1865 (optional, default ""): the abstract base that token implements (rel path).
 // Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
+//         Diagnostics that may precede it: `BLACKBOARD-FOCUS|`, `DEPTH-CELL|`, `APPENDIX-CONTEXT|` and —
+//         #1887, only when a refute-constraint corpus is imported — `REFUTE-CONSTRAINTS|<subsystem>|<cls>|<n>`.
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -275,6 +277,81 @@ fn depth_block(target: string, known: string) -> string {
          + "there is no second qualifying bug, answer SAFE. A rigorous SAFE here is a valid, useful result.\n\n";
 }
 
+// --- #1887 REFUTER -> HUNTER CONSTRAINT CHANNEL (the read half) --------------------------------------------
+// The refute gate is where most candidates die, and its reason is thrown away with the candidate. refuter.ag
+// now emits the GENERALISABLE half of each refutation (`CONSTRAINT|<class>|<sentence>`, target-independent by
+// contract); refute-to-knowledge.sh turns those into `refute-constraint` KnowledgeEntry rows and
+// run-discovery.sh imports them into the run store BEFORE the cell loop. This block reads them back.
+//
+// The channel is a deliberate IMPORTED-KNOWLEDGE read, the same shape zone-mapper.ag's #1711 hunt-fitness
+// read has — NOT an in-agent learn->recommend loop: nothing here writes knowledge, no cell writes knowledge,
+// and the corpus is a static file identical in every cell's `cp -r` copy. That is what keeps `--jobs N`
+// byte-equal to serial (#1857/#1858) while still letting one target's refutations teach the next one's hunt.
+//
+// INERTNESS is structural: with no corpus imported query_knowledge returns an empty list, every helper below
+// returns "" / [], and the instruction is BYTE-IDENTICAL to the pre-#1887 one. The config flag, however, is
+// NOT optional — without `knowledge.enabled = true` the query raises the runtime knowledge-store gate error,
+// and ANY runtime error makes agentis discard this cell's whole stdout (the #1877 false zero), which is why
+// run-discovery.sh ships that config line in the same change as this call. (The exact error string is
+// deliberately NOT quoted here: this file is STAGED into the run dir, and demo-experience-flags.sh asserts
+// the message is absent from that directory tree — a verbatim quote would make its grep self-match.)
+
+// COST — measured, not asserted (agentis v1.28.0, demo-discovery-parallel.sh 19e reproduces it). This IS an
+// interpreted per-element walk over the knowledge rows, the shape the substrate charges most for, so it is
+// deliberately bounded twice: the read is capped at 32 rows and the rendered block at 6 bullets. Under the
+// `cb 300000;` this file declares — what `agentis go` honours, and run-discovery.sh is the only caller, so
+// that is the budget that actually runs — the fold completes on corpora of 1/8/32/128 entries, i.e. it is
+// bounded by the read cap long before CB. Under the `cb 2000` cb_per_tick DEFAULT (a daemon budget this
+// agent never runs under) it clears a 16-entry single-class corpus and no more. A larger per-class corpus
+// than that is itself a smell: constraints are deduped standards, not a log.
+
+// The `  - <sentence>` bullets for the constraints filed under `cls`. Entry `condition` is "class <CLS>",
+// parsed with the same idiom as zone-mapper.ag::rate_of so the two readers cannot drift.
+fn class_constraints(rows: list, cls: string) -> list {
+    return reduce(rows, |acc: list, row: map| -> list {
+        let cond = to_string(get(row, "condition"));
+        let at = index_of(cond, "class ");
+        if at < 0 { return acc; }
+        let rc = trim(substring(cond, at + 6, len(cond)));
+        if rc != cls { return acc; }
+        let rec = trim(to_string(get(row, "recommendation")));
+        if len(rec) == 0 { return acc; }
+        return push(acc, "  - " + rec);
+    }, []);
+}
+
+// The first `n` bullets, newline-joined. `sort_unique_strings` upstream makes the selection deterministic:
+// the knowledge store's iteration order is NOT stable across imports, and an unsorted cap would silently
+// hand two otherwise-identical cells two different prompts.
+fn join_bullets(items: list, i: int, n: int, acc: string) -> string {
+    if i >= n { return acc; }
+    if i >= len(items) { return acc; }
+    let line = to_string(get(items, i));
+    if len(acc) == 0 { return join_bullets(items, i + 1, n, line); }
+    return join_bullets(items, i + 1, n, acc + "\n" + line);
+}
+
+// min(len(items), n) — the number of bullets the block actually renders (the sentinel's <n> field).
+fn capped_count(items: list, n: int) -> int {
+    if len(items) < n { return len(items); }
+    return n;
+}
+
+// The prompt block. "" for an empty corpus or a class with no constraint => byte-identical prompt.
+// The anti-Goodhart clause is part of the block, not a comment: a hunter told what the gate rejects can
+// learn to produce gate-PLEASING claims, and the measurement that judges this channel is ground-truth rare
+// recall, not confirm rate. Capped at 6 bullets so the fold cannot grow without bound.
+fn constraint_block(bullets: list) -> string {
+    if len(bullets) == 0 { return ""; }
+    return "=== WHAT AN INDEPENDENT SKEPTIC REJECTED IN EARLIER HUNTS OF THIS CLASS ===\n"
+         + "A hostile reviewer killed earlier claims of this bug class for the reasons below. They are "
+         + "STANDARDS a claim must meet, not facts about THIS code:\n"
+         + join_bullets(bullets, 0, 6, "") + "\n"
+         + "Pre-empt these objections: name the exact UNPRIVILEGED call sequence and the guard that fails to "
+         + "stop it. NEVER weaken, re-frame or invent a claim to satisfy the gate — if the mechanism does not "
+         + "hold, answer SAFE. A rigorous SAFE is worth more than a claim dressed to survive a review.\n\n";
+}
+
 let dir = getenv("TARGET_DIR");
 let files = getenv("IN_SCOPE");
 let cls = getenv("HUNT_CLASS");
@@ -316,6 +393,17 @@ if len(depth) > 0 {
 // framing having actually been assembled into the prompt (see framing_emitted), not on the token being set.
 let appx = appendix_rule(appendix_file, appendix_base);
 
+// #1887 CONSTRAINT read: the imported corpus, filtered to THIS cell's class, sorted+deduped for determinism.
+// Empty corpus => `cons` is "" => the instruction below is byte-identical to the pre-#1887 one. The printed
+// sentinel makes the injection observable in the cell log (mirroring BLACKBOARD-FOCUS| / DEPTH-CELL|) and
+// carries no `CANDIDATE|` substring, so lib/run-agent-validated.sh's sentinel predicate cannot false-accept
+// a cell on it; run-discovery.sh treats it as a record BOUNDARY in _join_wrapped_candidates.
+let cons_bullets = sort_unique_strings(class_constraints(query_knowledge("refute-constraint", 32), cls));
+let cons = constraint_block(cons_bullets);
+if len(cons) > 0 {
+    print("REFUTE-CONSTRAINTS|" + subsystem + "|" + cls + "|" + to_string(capped_count(cons_bullets, 6)));
+}
+
 // The instruction carries the lens (taxonomy class), the brief (invariants + known-issues), and the
 // strict output contract; the code is the prompt payload (matches auditor.ag::classify_evm_llm shape).
 // The (possibly empty) blackboard FOCUS block sits up top so prior siblings' leads bias the hunt.
@@ -327,6 +415,7 @@ let instruction =
   + focus
   + depth
   + appx
+  + cons
   + "=== HUNT THIS BUG CLASS (the lens) ===\n" + classDoc + "\n\n"
   + "=== PROTOCOL BRIEF — invariants whose violation is a valid finding, and KNOWN ISSUES you MUST NOT report ===\n"
   + brief + "\n\n"

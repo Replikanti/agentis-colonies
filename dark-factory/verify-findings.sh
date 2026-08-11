@@ -15,6 +15,11 @@
 # A candidate the gate cannot CONFIRM is DROPPED (unverified, never fatal). Per-candidate isolation: each gate
 # call is wrapped so a gate that errors on one candidate is logged and SKIPPED, never aborting the batch.
 #
+# #1887 SIDECAR. On `--gate refute` the per-gate `refute-constraints.tsv` files are concatenated, in NUMERIC
+# GATE ORDER, into `<out>/refute-constraints.tsv`: the generalisable standard each refuted claim failed, which
+# refute-to-knowledge.sh turns into a knowledge corpus a LATER target's hunter can read. It is an additional
+# FILE, never a new key — verified_findings.json's schema is unchanged.
+#
 # WHAT IT IS NOT. It is READ-ONLY over discovery-results.json (never mutates it), touches no network, and has NO
 # submit verb anywhere — a CONFIRMED finding is still a LEAD a human triages. Surfacing the verified subset is
 # the whole job; verification's downstream (packaging + the human-gated submission pass) is M5's capstone.
@@ -454,6 +459,29 @@ if [ "$JOBS" -gt 1 ]; then
     fi
     pidx=$((pidx + 1))
   done
+fi
+
+# --- #1887: aggregate the per-gate `refute-constraints.tsv` files into ONE <out>/refute-constraints.tsv.
+#     Concatenated in NUMERIC GATE ORDER (gates/<n>_<slug>, the manifest order the candidates were recorded
+#     in), so the aggregate is byte-identical under --jobs 1 and --jobs > 1: completion order must not reach
+#     an artifact that feeds a knowledge corpus, or the corpus itself would stop being reproducible. Only the
+#     refute gate produces constraints; the poc/symbolic gates leave the file empty, which is a valid corpus.
+#     verified_findings.json's schema is deliberately UNTOUCHED — this is a sidecar, not a new key.
+CONSTRAINTS_TSV="$OUT/refute-constraints.tsv"
+: > "$CONSTRAINTS_TSV"
+if [ "$GATE" = "refute" ]; then
+  CT_ORDER="$WORK/constraint-order.tsv"; : > "$CT_ORDER"
+  for ct_dir in "$CELLS"/*/; do
+    [ -d "$ct_dir" ] || continue
+    ct_n="$(basename "$ct_dir" | cut -d'_' -f1)"
+    case "$ct_n" in ''|*[!0-9]*) continue ;; esac
+    printf '%s\t%s\n' "$ct_n" "$ct_dir" >> "$CT_ORDER"
+  done
+  sort -k1,1n "$CT_ORDER" | cut -f2 > "$CT_ORDER.sorted"
+  while IFS= read -r ct_dir; do
+    ct_file="$ct_dir/refute-out/refute-constraints.tsv"
+    if [ -s "$ct_file" ]; then cat "$ct_file" >> "$CONSTRAINTS_TSV"; fi
+  done < "$CT_ORDER.sorted"
 fi
 
 # --- aggregate CONFIRMED-only -> verified_findings.json (python3 json.dumps, the repo convention; seam-3 schema).

@@ -18,6 +18,10 @@
 #      is ABSENT from verified[], and is never conflated with a rigorous REFUTED verdict. The run still exits 0
 #      and the healthy candidates are still verified. Bookkeeping: candidates == verified + errored + refuted.
 #   5) READ-ONLY / NEVER-SUBMIT: no network / no submission verb on verify-findings.sh's executable lines.
+#   9) #1887 CONSTRAINT AGGREGATION: the per-gate refute-constraints.tsv files are concatenated into one
+#      <out>/refute-constraints.tsv in numeric GATE order, byte-identically under --jobs 1 and --jobs 3
+#      (completion order must not reach a knowledge-corpus input), a REAL candidate contributes nothing, and
+#      verified_findings.json is BYTE-IDENTICAL with and without the refuter's CONSTRAINT| lines.
 #
 # Usage:  dark-factory/demo-verify-findings.sh
 # Requires: python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression.
@@ -675,6 +679,133 @@ assert len(d["verified"]) == ver, "verified[] length disagrees with totals.verif
 PY
 then ok "B8: candidates == verified + errored + refuted (6 == 5 + 0 + 1) over the appendix-carrying run, and discovery-results.json is byte-unchanged"
 else bad "B8: bookkeeping or the read-only invariant broke under the appendix"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (9) #1887 CONSTRAINT AGGREGATION. run-refute.sh harvests the generalisable standard behind each REFUTED
+#     verdict into its own `refute-constraints.tsv`; verify-findings.sh concatenates the per-gate files into
+#     ONE <out>/refute-constraints.tsv in NUMERIC GATE ORDER. Two properties matter and both are asserted:
+#     (a) the aggregate is DETERMINISTIC — byte-identical under --jobs 1 and --jobs > 1, because completion
+#         order must never reach an artifact that feeds a knowledge corpus (the corpus would stop being
+#         reproducible, and with it the #1887 A/B arm);
+#     (b) verified_findings.json is UNCHANGED by the whole channel — the same inputs with and without the
+#         refuter's CONSTRAINT| lines must produce a byte-identical findings file. This is the schema
+#         promise: the channel adds a FILE, never a key, and never perturbs the verdict scrape.
+#     Self-contained: its own repo, stub and results.json, so the fixtures above are untouched.
+# ----------------------------------------------------------------------------------------------------------
+note "9) #1887: the aggregated refute-constraints.tsv is gate-ordered and verified_findings.json is unchanged ..."
+CREPO="$WORK/target-constraints"
+mkdir -p "$CREPO/contracts"
+printf 'contract A { function f() public {} }\n' > "$CREPO/contracts/A.sol"
+printf 'contract B { function g() public {} }\n' > "$CREPO/contracts/B.sol"
+printf 'contract C { function h() public {} }\n' > "$CREPO/contracts/C.sol"
+printf 'contract D { function i() public {} }\n' > "$CREPO/contracts/D.sol"
+
+# STUB_CONS=1 makes the refuted candidates carry a per-candidate CONSTRAINT| line BEFORE their verdict;
+# unset reproduces the pre-#1887 reply exactly. Both arms answer the SAME verdicts.
+CSTUB="$WORK/agentis-stub-constraints"
+cat > "$CSTUB" <<'STUBEOF'
+#!/bin/sh
+set -u
+cmd="${1:-}"
+case "$cmd" in
+  init) mkdir -p .agentis; exit 0 ;;
+  go)
+    fn="${CAND_FILE_FN:-}"
+    cls="${CAND_CLASS:-}"
+    case "$cls" in
+      *refuted*)
+        if [ "${STUB_CONS:-}" = "1" ]; then
+          echo "CONSTRAINT|$cls|standard for $fn: the claim must name the unprivileged trigger"
+        fi
+        echo "VERDICT|REFUTED|$fn|$cls|a hostile read killed it"
+        ;;
+      *) echo "VERDICT|REAL|$fn|$cls|survived a hostile read" ;;
+    esac
+    exit 0 ;;
+  *) exit 0 ;;
+esac
+STUBEOF
+chmod +x "$CSTUB"
+
+CRES="$WORK/constraint-results.json"
+python3 - > "$CRES" <<'PY'
+import json
+
+
+def cell(sub, cls, f, loc):
+    return {"subsystem": sub, "class": cls, "files": f,
+            "candidates": ["%s|%s|High|an exploit sentence|sketch" % (loc, cls)], "coordination": []}
+
+
+# Gate order is the MANIFEST order below: A (refuted), B (real), C (refuted), D (refuted). The three
+# constraint rows must therefore come out A, C, D — never in completion order.
+data = {
+    "repo": "target-constraints", "backend": "mock", "jobs": 1,
+    "cells": [
+        cell("alpha", "C-refuted", "contracts/A.sol", "contracts/A.sol:f:1"),
+        cell("beta", "C1", "contracts/B.sol", "contracts/B.sol:g:1"),
+        cell("gamma", "C-refuted", "contracts/C.sol", "contracts/C.sol:h:1"),
+        cell("delta", "C-refuted", "contracts/D.sol", "contracts/D.sol:i:1"),
+    ],
+    "totals": {"cells": 4, "candidates": 4, "steers": 0},
+}
+print(json.dumps(data, indent=2))
+PY
+
+CON_OUT="$WORK/out-constraints"
+STUB_CONS=1 "$VERIFY" --results "$CRES" --repo "$CREPO" --out "$CON_OUT" --gate refute \
+  --backend mock --agentis "$CSTUB" >"$WORK/con.out" 2>"$WORK/con.err"
+RC=$?
+NOCON_OUT="$WORK/out-noconstraints"
+"$VERIFY" --results "$CRES" --repo "$CREPO" --out "$NOCON_OUT" --gate refute \
+  --backend mock --agentis "$CSTUB" >"$WORK/nocon.out" 2>"$WORK/nocon.err"
+RC2=$?
+PAR_CON_OUT="$WORK/out-constraints-par"
+STUB_CONS=1 "$VERIFY" --results "$CRES" --repo "$CREPO" --out "$PAR_CON_OUT" --gate refute --jobs 3 \
+  --backend mock --agentis "$CSTUB" >"$WORK/conpar.out" 2>"$WORK/conpar.err"
+RC3=$?
+if [ "$RC" -eq 0 ] && [ "$RC2" -eq 0 ] && [ "$RC3" -eq 0 ]; then
+  ok "9) all three verify runs (constraints on / off / --jobs 3) exit 0"
+else
+  bad "9) a verify run exited non-zero (on $RC / off $RC2 / parallel $RC3)"
+  sed 's/^/      /' "$WORK/con.err" >&2
+fi
+
+if python3 - "$CON_OUT/refute-constraints.tsv" <<'PY'
+import sys
+rows = [l.rstrip("\n").split("\t") for l in open(sys.argv[1], encoding="utf-8") if l.strip()]
+assert len(rows) == 3, "expected 3 harvested constraints (A, C, D), got %d" % len(rows)
+locs = [r[1] for r in rows]
+assert locs == ["contracts/A.sol:f:1", "contracts/C.sol:h:1", "contracts/D.sol:i:1"], \
+    "the aggregate is not in numeric GATE (manifest) order: %r" % locs
+for r in rows:
+    assert r[0] == "C-refuted", "wrong class column: %r" % r[0]
+    assert r[2].startswith("standard for "), "wrong constraint column: %r" % r[2]
+assert not any("B.sol" in l for l in locs), "a REAL candidate contributed a constraint"
+PY
+then ok "9a) the aggregated <out>/refute-constraints.tsv carries one row per REFUTED candidate, in numeric gate order, and none for the REAL one"
+else bad "9a) the aggregated refute-constraints.tsv is missing, mis-ordered or contains a REAL candidate"
+fi
+
+if cmp -s "$CON_OUT/refute-constraints.tsv" "$PAR_CON_OUT/refute-constraints.tsv"; then
+  ok "9b) the aggregate is BYTE-IDENTICAL under --jobs 3 — gate completion order never reaches the corpus input"
+else
+  bad "9b) --jobs 3 produced a different aggregate (the corpus would stop being reproducible):"
+  diff "$CON_OUT/refute-constraints.tsv" "$PAR_CON_OUT/refute-constraints.tsv" | sed 's/^/      /' >&2
+fi
+
+if [ -f "$NOCON_OUT/refute-constraints.tsv" ] && [ ! -s "$NOCON_OUT/refute-constraints.tsv" ]; then
+  ok "9c) with no CONSTRAINT| line in any reply the aggregate is an EMPTY (but present) file — refute-to-knowledge.sh turns that into a valid empty corpus"
+else
+  bad "9c) the constraint-free run did not produce an empty aggregate file"
+fi
+
+if cmp -s "$CON_OUT/verified_findings.json" "$NOCON_OUT/verified_findings.json"; then
+  ok "9d) verified_findings.json is BYTE-IDENTICAL with and without the constraint lines — the channel adds a FILE, never a key, and never perturbs the verdict scrape"
+else
+  bad "9d) the constraint lines changed verified_findings.json:"
+  diff "$NOCON_OUT/verified_findings.json" "$CON_OUT/verified_findings.json" | sed 's/^/      /' >&2
 fi
 
 # ----------------------------------------------------------------------------------------------------------
