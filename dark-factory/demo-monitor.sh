@@ -132,7 +132,7 @@ else
 
   # One EXIT trap reaps every live resource: the two daemons (group-scoped via
   # daemon-guard), anvil, the sink, and the workspace — no orphan survives.
-  # shellcheck disable=SC2329  # invoked indirectly via the trap below
+  # shellcheck disable=SC2317,SC2329  # trap-invoked cleanup; older shellcheck flags SC2317, newer SC2329
   cleanup() {
     _rc=$?
     daemon_guard_teardown "$WORK" >/dev/null 2>&1 || true

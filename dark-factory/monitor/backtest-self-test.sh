@@ -52,7 +52,7 @@ REPORT="$WORK/self-test-report.txt"
 ANVIL_LOG="$WORK/anvil.log"
 # Reap anvil (fixture_stop) and the workdir on ANY exit, so no local chain and no
 # temp files survive the run.
-# shellcheck disable=SC2329  # invoked indirectly via the trap below
+# shellcheck disable=SC2317,SC2329  # trap-invoked cleanup; older shellcheck flags SC2317, newer SC2329
 cleanup() {
     fixture_stop "${FIXTURE_ANVIL_PID:-}"
     rm -rf "$WORK" 2>/dev/null || true
