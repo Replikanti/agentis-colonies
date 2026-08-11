@@ -35,6 +35,23 @@ Plus two non-anchor confirms: **M-2** (consensus — `Ethena._finalizeCooldown` 
 
 **Conclusion (updates the #1879 read):** the refute-gate false-negative is real (H-4) but is **not the dominant loss** — of the 4 anchors, generation miss (H-8, M-12) cost as many as the refute gate (H-4), and the one catch (H-9) was framing-fragile. So the store row for H-8/M-12 is a **generation/coverage** gap this run, not a refute-gate `REFUTED` — the #1879 `REFUTED` tags for those two are stochastic-run-specific, not stable. The candidate-side half (H-4 refute-FN + H-9 framing-fragility) is what **#1887** (refuter→hunter knowledge transfer) targets; the generation-miss half is upstream of the refute gate and #1887 does not address it.
 
+### Refuter→hunter constraint transfer (#1887, 2026-08-11)
+
+Held-out A/B of the #1887 refuter→hunter channel: a constraint corpus **derived on `notional`** (27 rows, frozen at `8e5476c`) injected into a **`yieldoor`** hunt (treatment) vs. the same hunt with no corpus (control). Durable, scrubbed artifacts (both arms' scorecards, verified_findings, judge-logs, GT): [`runs/1887-yieldoor-refute-transfer/`](runs/1887-yieldoor-refute-transfer/). Ruler (identical both arms): `--zone-depth-cells 4 --total-depth-cells 36`, semantic judge `--judge-min-confidence 60`, GT-equivalence off, `--backend flat-cyborg`. One run per arm (stochastic).
+
+**The result is class-mismatch-bounded, not a transfer verdict.** The corpus carries constraints only in C15/C21/C23/C2/C22 (the classes `notional`'s refutations exercised). `yieldoor` hunts C20/C19/C10/C15/C6/C5/C11/C14, and its rare money-tier Highs are **H-2 (C20 slot0 tick-centering)** and **H-3 (C19 uint16-overflow DoS)** — classes with **zero corpus constraints**. The hunter injects class-filtered, so overlap is **C15 only** (and `yieldoor` has no C15 GT). The treatment therefore had no reachable rare-bug surface, and the primary number cannot move by construction.
+
+| bucket | OFF (control) | ON (treatment) | Δ |
+|---|---|---|---|
+| **rare(1-2) — primary** | **1/8** | **1/8** | **0** |
+| overall | 6/17 | 3/17 | −3 |
+| High | 4/7 | 2/7 | −2 |
+| consensus(9+) | 4/6 | 1/6 | −3 |
+| confirm rate | 64.3% | 63.2% | −1.1 |
+| cells | 19 | 24 | +5 |
+
+**Verdict:** primary rare recall **flat, Δ=0** — no transfer, structurally impossible here. **Goodhart gate not triggered** (confirm rate did not rise). Overall/consensus came out lower on this single run, but it is confounded and NOT attributed as treatment harm: **cell-count parity failed** (24 vs 19 — the plan voids the strict comparison on unequal counts; the ON arm's 12 confirmed leads collapsed onto 3 distinct GT rows vs OFF's 9→6), plus n=1 stochasticity. **Outcome: a structurally-bounded null** — the mechanism imports+injects correctly (verified: 27 rows in the run store), but derivation↔held-out class profiles are disjoint. Default stays off, corpus stays checked in, #1887 closes on this negative. The lever is a **multi-target / class-broad corpus** so a held-out target's money classes are covered → **#1895**.
+
 ## Per-finding tags (5 of 8 contests run so far)
 
 | Contest | Finding | fb | Class | Lens status |

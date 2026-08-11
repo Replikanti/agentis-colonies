@@ -44,6 +44,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     aggregate, `verified_findings.json` byte-unchanged), `demo-experience-flags.sh` layer 1c + the live
     hunter cell (a dropped `knowledge.enabled` fails at output level). Measurement (derivation on one
     target, held-out A/B on another) is deliberately NOT in this change.
+- **REFUTER -> HUNTER TRANSFER — HELD-OUT MEASUREMENT** (#1887). The measurement half of the channel above:
+  a corpus derived on `notional` (27 rows, frozen `8e5476c`) measured on held-out `yieldoor`, control (no
+  corpus) vs treatment (`REFUTE_CONSTRAINTS_JSON`) under an identical ruler (`--zone-depth-cells 4
+  --total-depth-cells 36`, semantic judge min-conf 60, `--backend flat-cyborg`). Primary **rare(1-2) recall
+  flat 1/8 -> 1/8 (Δ=0)**; the Goodhart gate did not trigger (confirm rate 64.3% -> 63.2%). The result is
+  **class-mismatch-bounded, not a transfer verdict**: the notional-derived corpus classes
+  (C15/C21/C23/C2/C22) do not cover yieldoor's rare-bug classes (C19 uint16-overflow, C20 tick-centering),
+  and injection is class-filtered, so the treatment had no reachable rare-bug surface — a structurally-bounded
+  null. Default stays OFF, the corpus stays checked in. Scrubbed archives of both arms:
+  `bench/corpus-bench/runs/1887-yieldoor-refute-transfer/` (+ the derivation archive
+  `1887-notional-constraints/`); `bench/corpus-bench/bug-class-coverage.md` gains the measurement section. The
+  transfer lever moves to a multi-target / class-broad corpus so a held-out target's money classes are
+  covered (#1895).
 - **ZONE-COUNT-AWARE TOTAL DEPTH BUDGET** (#1880). `--zone-depth-cells` is a PER-ZONE maximum, so a sweep
   admits `depth x zone count` depth cells: the #1872 Stage C `notional` run (9 zones at `--zone-depth-cells
   12`) admitted up to 108 depth cells and projected ~18-24 h, with nothing in the pipeline naming the product.
