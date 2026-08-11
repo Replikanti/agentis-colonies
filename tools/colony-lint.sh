@@ -1219,21 +1219,25 @@ if [ -x "$REPO_ROOT/dark-factory/demo-experience-flags.sh" ]; then
     fi
 fi
 
-# --- dark-factory monitor colony proof-of-value: detect -> deliver (#1889) ---
+# --- dark-factory monitor colony proof-of-value: detect -> deliver (#1889, #1891) ---
 # The Path C monitoring proposition must DETECT a protocol invariant breaking on live chain state and
 # DELIVER it as a page. demo-monitor.sh source-guards the monitor wiring (the 8 agents, notifier.ag ->
-# scripts/notify.sh, the invariant-watcher MONITOR_* env contract, start-colony.sh exports) — CI-safe,
-# no toolchain — and, when agentis + anvil + cast are all present, boots a local anvil + the minimal
-# SolvencyFixture and runs the REAL invariant-watcher.ag + notifier.ag: it asserts the watcher reads the
-# fixture live as `ok`, flips to `violated` once mintUnbacked() breaks solvency, the notifier delivers a
-# heartbeat to a local sink through the real notify.sh, and the violation is delivered as a page (an
-# OUTPUT-level POST a sink receives). Layer 2 [SKIP]s cleanly on CI runners (no agentis).
+# scripts/notify.sh, the invariant-watcher MONITOR_* env contract, start-colony.sh exports) plus the
+# #1891 store hand-off shape (coordinator writes `monitor:alert:pending` and is its SOLE writer; the
+# notifier reads it and no longer listen()s on the #961-blind bus; no watcher emits a dead direct page)
+# — CI-safe, no toolchain — and, when agentis + anvil + cast are all present, boots a local anvil + the
+# minimal SolvencyFixture and runs the REAL invariant-watcher.ag + coordinator.ag + notifier.ag as THREE
+# separate daemons (the shipped start-colony.sh layout): it asserts the watcher reads the fixture live as
+# `ok`, flips to `violated` once mintUnbacked() breaks solvency, the notifier delivers a heartbeat to a
+# local sink through the real notify.sh, the fused page crosses the daemon boundary through the store and
+# lands in the sink, a PERSISTENT violation pages exactly once, and a CHANGED fused picture pages again —
+# all OUTPUT-level POSTs a sink receives. Layer 2 [SKIP]s cleanly on CI runners (no agentis).
 if [ -x "$REPO_ROOT/dark-factory/demo-monitor.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-monitor.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
-        pass "dark-factory: monitor colony proof-of-value (detect -> deliver on the real agents) (#1889)"
+        pass "dark-factory: monitor colony proof-of-value (detect -> deliver across 3 real daemons via the store hand-off) (#1889, #1891)"
     else
-        fail "dark-factory: monitor colony proof-of-value regressed (#1889)"
+        fail "dark-factory: monitor colony proof-of-value regressed (#1889, #1891)"
         printf '%s\n' "$check_out"
     fi
 fi

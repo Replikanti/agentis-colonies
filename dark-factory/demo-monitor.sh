@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# demo-monitor.sh — proof of value for the Dark Factory monitor colony (#1889).
+# demo-monitor.sh — proof of value for the Dark Factory monitor colony
+# (#1889, extended to the real cross-daemon delivery path by #1891).
 #
 # The monitor colony is a paid-monitoring proposition: it must (a) DETECT a
 # protocol invariant breaking on live chain state and (b) DELIVER that as a page
@@ -12,12 +13,17 @@
 # Two layers, modelled on demo-experience-flags.sh:
 #   1) SOURCE GUARD (always, CI-safe): the wiring must exist regardless of
 #      toolchain — the 8 agent files, notifier.ag -> scripts/notify.sh, the
-#      invariant-watcher's MONITOR_* env contract, and start-colony.sh exporting
-#      it. Holds even with no runtime installed.
+#      invariant-watcher's MONITOR_* env contract, start-colony.sh exporting it,
+#      and the #1891 store hand-off SHAPE: the coordinator writes
+#      `monitor:alert:pending`, the notifier READS it (and no longer `listen()`s
+#      for `monitor:alert`), and nothing else writes the delivery key — the
+#      single-writer property the dedup design rests on. Holds with no runtime.
 #   2) LIVE ([SKIP] unless agentis + anvil + cast are all present): boot anvil,
 #      deploy the fixture, derive a real watch-spec via run-live-watch.sh
-#      --spec-fixture, and daemon_guard_spawn the REAL invariant-watcher.ag +
-#      notifier.ag. It asserts, at OUTPUT level:
+#      --spec-fixture, and daemon_guard_spawn THREE real daemons — the shipped
+#      invariant-watcher.ag + coordinator.ag + notifier.ag, one process each,
+#      exactly the layout scripts/start-colony.sh creates. It asserts, at OUTPUT
+#      level:
 #        (a) the live notifier.ag delivers a page to the sink through the real
 #            scripts/notify.sh (its heartbeat POST arrives — notifier.ag's
 #            forward() -> notify.sh -> sink proven end to end);
@@ -26,23 +32,25 @@
 #            not stuck), then FLIPS to `verdict":"violated"` in its durable
 #            blackboard memo once mintUnbacked() breaks solvency (the real agent
 #            DETECTING the live break);
-#        (c) that exact violation payload the watcher produced is DELIVERED to
-#            the sink through the real scripts/notify.sh — invoked exactly as
-#            notifier.ag invokes it — so a broken invariant becomes a delivered
-#            page (`verdict":"violated"` lands in the sink).
+#        (c) DELIVERED THROUGH THE STORE: the coordinator daemon fuses that
+#            signal, writes `monitor:alert:pending`, and the SEPARATE notifier
+#            daemon reads it and pages the sink — a `"kind":"fused"` body lands
+#            in the sink with no bypass anywhere in the chain;
+#        (d) DEDUP: with the invariant still violated, further ticks do NOT
+#            re-page — the fused count stays exactly 1 (a store read has no
+#            implicit dequeue, so `notifier:last_delivered` is load-bearing);
+#        (e) NEW ALERT: posting a second blackboard signal (`monitor:signal:pause`
+#            = paused, as the pause-state-watcher would) changes the fused
+#            signature, so the coordinator re-pages and the sink count reaches 2.
 #
-# LIMITATION (stated, not hidden): on agentis v1.28.0 the emit()/listen() bus is
-# IN-PROCESS — an emit() from the invariant-watcher daemon is NOT delivered to
-# the separately-spawned notifier daemon's listen() (verified: a minimal
-# cross-daemon emit/listen pair never delivers; `agentis colony send` rejects the
-# `monitor:alert` event name). So the demo does NOT rely on that cross-process
-# hop: it proves the watcher's live detection (b) and the notifier's live
-# delivery (a) independently on the real agents, and bridges them (c) with the
-# watcher's REAL output payload driven through the notifier's REAL delivery call.
-# Every piece — fixture, anvil, watch-spec derivation, cast reads, verdict logic,
-# notify.sh delivery, sink receipt — is the shipped code; only the in-process bus
-# hop between two daemons (an agentis runtime limitation, not this colony's code)
-# is bypassed.
+# Why a store hand-off and not the bus (#1891): on agentis v1.28.0 emit()/listen()
+# are IN-PROCESS, so a bus event never crosses the daemon boundary that the
+# shipped one-.ag-per-process layout creates (agentis-core #961, rigorously
+# reproduced). The colony therefore routes the last mile over the same shared
+# blackboard the watcher -> coordinator hop already used. Cells (c)-(e) exercise
+# that hop for real across three separate daemons; nothing is bypassed. (The
+# #1889 revision of this demo drove notify.sh by hand at this point because the
+# bus hop was dead — that stopgap is gone.)
 #
 # Read-only / non-custodial: the only chain is a local anvil this demo boots and
 # tears down; the fixture is self-test scaffolding, never a real target.
@@ -81,9 +89,58 @@ else
 fi
 
 if grep -q 'scripts/notify.sh' "$AGENTS/notifier.ag"; then
-  ok "notifier.ag forwards each alert to scripts/notify.sh (the bus -> webhook bridge)"
+  ok "notifier.ag forwards each alert to scripts/notify.sh (the store -> webhook bridge)"
 else
   bad "notifier.ag does not reference scripts/notify.sh — the delivery bridge is gone"
+fi
+
+# --- the #1891 store hand-off SHAPE (the cross-daemon-safe delivery contract) ---
+# The bus is #961-blind between daemons, so the last mile MUST ride the shared
+# blackboard: the coordinator writes `monitor:alert:pending`, the notifier reads
+# it, and nothing else writes it (single writer => no last-writer-wins drop).
+if grep -qF 'memo_write("monitor:alert:pending"' "$AGENTS/coordinator.ag"; then
+  ok "coordinator.ag writes the fused alert to the monitor:alert:pending store key (#1891)"
+else
+  bad "coordinator.ag no longer writes monitor:alert:pending — the delivery hand-off is gone (#1891)"
+fi
+
+if grep -qF 'recall_latest("monitor:alert:pending")' "$AGENTS/notifier.ag"; then
+  ok "notifier.ag reads the fused alert off monitor:alert:pending (the cross-daemon-safe inbox)"
+else
+  bad "notifier.ag does not read monitor:alert:pending — the notifier inbox is disconnected (#1891)"
+fi
+
+if grep -qF 'listen("monitor:alert"' "$AGENTS/notifier.ag"; then
+  bad "notifier.ag still listen()s for monitor:alert — the in-process bus never delivers across daemons (#961)"
+else
+  ok "notifier.ag does NOT listen() on the bus (the #961-blind hop is gone)"
+fi
+
+if grep -qF 'memo_write("notifier:last_delivered"' "$AGENTS/notifier.ag"; then
+  ok "notifier.ag records notifier:last_delivered (a store read has no dequeue — dedup is load-bearing)"
+else
+  bad "notifier.ag has no notifier:last_delivered marker — a persisted alert would re-page every tick (#1891)"
+fi
+
+WATCHER_AGENTS="flow-watcher governance-watcher invariant-watcher liquidity-watcher oracle-watcher pause-state-watcher"
+stray_emit=""
+for a in $WATCHER_AGENTS; do
+  grep -qF 'emit("monitor:alert"' "$AGENTS/$a.ag" && stray_emit="$stray_emit $a"
+done
+if [ -z "$stray_emit" ]; then
+  ok "no watcher emits a direct monitor:alert — every signal reaches the page via the coordinator's fusion"
+else
+  bad "watcher(s) still emit a dead direct monitor:alert on the #961-blind bus:$stray_emit"
+fi
+
+stray_writer=""
+for a in $WATCHER_AGENTS notifier; do
+  grep -qF 'memo_write("monitor:alert:pending"' "$AGENTS/$a.ag" && stray_writer="$stray_writer $a"
+done
+if [ -z "$stray_writer" ]; then
+  ok "the coordinator is the SOLE writer of monitor:alert:pending (no last-writer-wins race)"
+else
+  bad "second writer(s) of monitor:alert:pending break the single-writer contract:$stray_writer"
 fi
 
 miss_env=""
@@ -117,7 +174,7 @@ done
 if [ "$have_all" -eq 0 ]; then
   skip "agentis / anvil / cast not all on PATH — install the toolchain to run the live detect+deliver cells"
 else
-  note "2) live: real invariant-watcher.ag + notifier.ag over a local anvil + SolvencyFixture ..."
+  note "2) live: real invariant-watcher.ag + coordinator.ag + notifier.ag (3 daemons) over a local anvil + SolvencyFixture ..."
 
   # shellcheck source=/dev/null
   . "$LIB"
@@ -130,7 +187,7 @@ else
   SINK_PID=""
   : > "$SINK_LOG"
 
-  # One EXIT trap reaps every live resource: the two daemons (group-scoped via
+  # One EXIT trap reaps every live resource: the three daemons (group-scoped via
   # daemon-guard), anvil, the sink, and the workspace — no orphan survives.
   # shellcheck disable=SC2317,SC2329  # trap-invoked cleanup; older shellcheck flags SC2317, newer SC2329
   cleanup() {
@@ -201,15 +258,23 @@ PY
       echo "exec.env_passthrough = MONITOR_CAST,MONITOR_RPC_URL,MONITOR_TARGET,MONITOR_INV_SPEC,COLONY_DIR,MONITOR_WEBHOOK_URL"
     } >> "$WORK/.agentis/config"
     ( cd "$WORK" && agentis memo set "invariant-watcher:confidence" "0.7" >/dev/null 2>&1 || true )
+    ( cd "$WORK" && agentis memo set "coordinator:confidence" "0.7" >/dev/null 2>&1 || true )
     ( cd "$WORK" && agentis memo set "notifier:confidence" "0.7" >/dev/null 2>&1 || true )
 
     # --- e) spawn the REAL, checked-in agents (absolute paths, no copy) ---
+    # THREE separate daemons under one daemon-guard scope — the exact layout
+    # scripts/start-colony.sh creates, so the watcher -> coordinator -> notifier
+    # chain is exercised across process boundaries, not inside one runtime.
     CASTBIN="$(command -v cast)"
     daemon_guard_init "$WORK"
     IW_ENV="MONITOR_CAST=$CASTBIN MONITOR_RPC_URL=$RPC MONITOR_TARGET=$ADDR MONITOR_INV_SPEC=$WORK/watch-spec.json COLONY_DIR=$MON MONITOR_WEBHOOK_URL=$SINK_URL"
     # shellcheck disable=SC2086 # IW_ENV is a deliberate space-separated env prefix
     daemon_guard_spawn --cwd "$WORK" --log "$WORK/iw.log" -- \
       env $IW_ENV agentis daemon "$AGENTS/invariant-watcher.ag" \
+        --colony monitor --enable-exec --enable-messaging --tick-interval 3000 >/dev/null
+    # shellcheck disable=SC2086
+    daemon_guard_spawn --cwd "$WORK" --log "$WORK/co.log" -- \
+      env $IW_ENV agentis daemon "$AGENTS/coordinator.ag" \
         --colony monitor --enable-exec --enable-messaging --tick-interval 3000 >/dev/null
     # shellcheck disable=SC2086
     daemon_guard_spawn --cwd "$WORK" --log "$WORK/nf.log" -- \
@@ -271,35 +336,69 @@ PY
       bad "invariant-watcher.ag never flipped to \"verdict\":\"violated\" after the break (see $WORK/iw.log)"
     fi
 
-    # --- i) DELIVER that exact violation payload through the real notify.sh (the ---
-    #        notifier's own delivery call) -> assert it lands in the sink. ---
+    # --- i) DELIVERED THROUGH THE STORE (#1891): the coordinator daemon fuses the ---
+    #        watcher's signal, writes monitor:alert:pending, and the SEPARATE
+    #        notifier daemon reads it and pages the sink. Nothing in this cell is
+    #        driven by the demo — every hop is a live daemon. The delivered POST
+    #        body is JSON-in-JSON escaped, so match the `fused` token (unique to
+    #        the coordinator's consolidated payload, `"kind":"fused"`).
+    fused_found=0
     if [ -n "$ALERT" ]; then
-      MONITOR_WEBHOOK_URL="$SINK_URL" MONITOR_ALERT_BODY="$ALERT" \
-        sh "$MON/scripts/notify.sh" "$ALERT" >"$WORK/deliver.log" 2>&1 || true
-      # `violated` appears in the sink only for this delivered violation page (the
-      # body is JSON-in-JSON escaped, so match the token, not an unescaped field form).
-      del_found=0
       i=0
-      while [ "$i" -lt 10 ]; do
-        grep -q 'violated' "$SINK_LOG" 2>/dev/null && { del_found=1; break; }
+      while [ "$i" -lt 40 ]; do
+        grep -q 'fused' "$SINK_LOG" 2>/dev/null && { fused_found=1; break; }
         sleep 1
         i=$((i + 1))
       done
-      if [ "$del_found" -eq 1 ]; then
-        ok "the violation was DELIVERED to the sink through the real scripts/notify.sh — a broken invariant becomes a delivered page"
+      if [ "$fused_found" -eq 1 ]; then
+        ok "the fused page was DELIVERED across THREE daemons via the store hand-off (coordinator -> monitor:alert:pending -> notifier -> notify.sh -> sink) — no bypass"
       else
-        bad "the violation payload did not reach the sink through notify.sh (see $WORK/deliver.log)"
+        bad "no fused page reached the sink through monitor:alert:pending (see $WORK/co.log and $WORK/nf.log)"
       fi
     else
-      skip "no violation payload captured — delivery assertion skipped (upstream detection failed)"
+      skip "no violation detected upstream — the store-delivery assertions are skipped"
+    fi
+
+    # --- j) DEDUP: the condition PERSISTS, so further ticks must NOT re-page. ---
+    #        A store read has no implicit dequeue: without notifier:last_delivered
+    #        the same pending alert would be forwarded on every single tick.
+    if [ "$fused_found" -eq 1 ]; then
+      sleep 18   # ~6 further ticks at --tick-interval 3000
+      fused_n="$(grep -c 'fused' "$SINK_LOG" 2>/dev/null || true)"
+      if [ "${fused_n:-0}" -eq 1 ]; then
+        ok "a persistent violation paged EXACTLY ONCE over ~6 further ticks (notifier:last_delivered dedup holds)"
+      else
+        bad "a persistent violation was re-paged ${fused_n:-0} times — the delivery dedup is broken (see $WORK/nf.log)"
+      fi
+
+      # --- k) NEW ALERT: a second blackboard signal (as the pause-state-watcher ---
+      #        would post) changes the fused signature, so the coordinator must
+      #        re-page and the notifier must deliver again.
+      ( cd "$WORK" && agentis memo set "monitor:signal:pause" \
+          '{"watcher":"pause","verdict":"paused","severity":"high"}' >/dev/null 2>&1 || true )
+      repage=0
+      i=0
+      while [ "$i" -lt 40 ]; do
+        fused_n="$(grep -c 'fused' "$SINK_LOG" 2>/dev/null || true)"
+        [ "${fused_n:-0}" -ge 2 ] && { repage=1; break; }
+        sleep 1
+        i=$((i + 1))
+      done
+      if [ "$repage" -eq 1 ]; then
+        ok "a CHANGED fused picture (a second watcher signal) paged again — the dedup suppresses repeats, not new alerts"
+      else
+        bad "a changed fused picture never re-paged (count stuck at ${fused_n:-0}) — new alerts are being swallowed (see $WORK/co.log)"
+      fi
+    else
+      skip "no fused page delivered — the dedup / new-alert assertions are skipped"
     fi
   fi
 fi
 
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
-  note "PASS — the monitor colony's detect -> deliver path holds on the real agents (#1889)"
+  note "PASS — the monitor colony's detect -> deliver path holds on the real agents (#1889, #1891)"
   exit 0
 fi
-note "FAIL — $FAILS assertion(s) regressed (#1889)" >&2
+note "FAIL — $FAILS assertion(s) regressed (#1889, #1891)" >&2
 exit 1

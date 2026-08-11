@@ -13,9 +13,12 @@
 // signal is a FACT (an on-chain read + a deterministic comparison), never an LLM
 // opinion. Emission is gated PURELY on the ADR-0001 tier of this agent:
 //   shadow / dormant -> observe + learn a baseline (record the price), NO emit;
-//   propose          -> emit a DRAFT `monitor:alert` (low severity);
-//   review-gated /    -> emit a DIRECT-page `monitor:alert` (high severity).
-//   autonomous
+//   propose          -> contribute the signal to the coordinator's fused
+//   review-gated /       alert (a DRAFT-grade contribution at propose, a
+//   autonomous           page-grade one at review-gated+). NO direct page:
+//                        the cross-daemon bus is #961-blind, so the
+//                        coordinator's `monitor:alert:pending` store
+//                        hand-off is the ONE delivery path (#1891).
 // One tier() call per tick, branch once, fall through to shadow/dormant.
 //
 // Env contract (all read via getenv; exported by scripts/start-colony.sh; add
@@ -42,7 +45,9 @@
 //   MONITOR_ORACLE_MIN    lower sanity bound on the price; "" => no lower bound.
 //   MONITOR_ORACLE_MAX    upper sanity bound on the price; "" => no upper bound.
 //   MONITOR_ORACLE_LABEL  a human label for the feed (for the alert body).
-// Emits: "monitor:alert" (the colony bus contract).
+// Writes: "monitor:signal:oracle" (the coordinator's blackboard fusion input
+//   — the ONLY output of this watcher; the coordinator alone writes the
+//   delivered alert to `monitor:alert:pending`, #1891).
 
 cb 90000;
 
@@ -394,33 +399,30 @@ fn tick(reason: string) -> void {
     // (.ag has no `else if`; the tiers nest as `else { if ... { } else { } }`.)
     let my_tier = tier("oracle-watcher");
     if my_tier == "autonomous" {
-        // Proven reliable -> a DIRECT page on a real anomaly (high severity).
+        // Proven reliable -> the anomaly feeds the coordinator's fused page.
         if anomaly {
-            emit("monitor:alert", alert_payload(label, verdict, priceDec, baseDec, addr, "high"));
             learn("oracle-watch", key, desc, outcome, [verdict, outcome, "acted"]);
         } else {
             learn("oracle-watch", key, desc, outcome, [verdict, outcome, "observed"]);
         };
     } else {
         if my_tier == "review-gated" {
-            // Trusted to page under a review gate -> a DIRECT page (high severity).
+            // Trusted under a review gate -> the anomaly feeds the fused page.
             if anomaly {
-                emit("monitor:alert", alert_payload(label, verdict, priceDec, baseDec, addr, "high"));
                 learn("oracle-watch", key, desc, outcome, [verdict, outcome, "review-gated"]);
             } else {
                 learn("oracle-watch", key, desc, outcome, [verdict, outcome, "observed"]);
             };
         } else {
             if my_tier == "propose" {
-                // Enough signal to contribute -> a DRAFT alert (low severity).
+                // Enough signal to contribute -> a DRAFT-grade contribution.
                 if anomaly {
-                    emit("monitor:alert", alert_payload(label, verdict, priceDec, baseDec, addr, "low"));
                     learn("oracle-watch", key, desc, outcome, [verdict, outcome, "emitted"]);
                 } else {
                     learn("oracle-watch", key, desc, outcome, [verdict, outcome, "observed"]);
                 };
             } else {
-                // shadow / dormant: learn the baseline ONLY — no emit, no write.
+                // shadow / dormant: learn the baseline ONLY — no contribution.
                 learn("oracle-watch", key, desc + " (baseline)", outcome, [verdict, outcome, "observed"]);
                 print("oracle-watcher: observing (tier: " + my_tier + ") — no emit");
             };

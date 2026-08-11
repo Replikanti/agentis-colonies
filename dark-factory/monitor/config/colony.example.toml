@@ -1,8 +1,10 @@
 # Monitor Colony Configuration
 #
 # Part of the Dark Factory federation. The monitor colony continuously WATCHES a
-# target EVM protocol and emits reasoned, high-signal anomaly alerts on the
-# colony bus (`monitor:alert`). NON-custodial / read-only: every watcher only
+# target EVM protocol; the watchers post their verdicts to the `monitor:signal:*`
+# blackboard, the coordinator fuses them into ONE consolidated alert on the
+# `monitor:alert:pending` store key, and the notifier delivers it (#1891).
+# NON-custodial / read-only: every watcher only
 # READS chain state via `cast`/RPC; no agent signs a transaction or touches
 # funds. Copy to colony.toml and edit for your environment.
 
@@ -28,8 +30,9 @@ backend = "cli"
 
 # Agent definitions. Each agent runs as a separate `agentis daemon` process,
 # launched by scripts/start-colony.sh with a per-agent tick interval. They
-# coordinate via durable memos (the `monitor:signal:*` blackboard) and emit over
-# the bus. cb_budget MUST match the `cb <N>;` decl at the top of each .ag file.
+# coordinate ONLY via durable memos (the `monitor:signal:*` blackboard and the
+# `monitor:alert:pending` delivery key) — the in-process bus does not cross the
+# daemon boundary (agentis-core #961). cb_budget MUST match the `cb <N>;` decl at the top of each .ag file.
 
 # Evaluates derived protocol invariants against current on-chain state and flags
 # a violation / margin-to-violation. Posts monitor:signal:invariant.
