@@ -15,6 +15,14 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **PER-SEVERITY PAYABILITY FILTER** (#1897, epic #1894 M1). New `bounty-payability-gate.sh` — a queue
+  -> queue gate dropping rows whose Medium/High reward is a confirmed $0 (`--pay-floor`, default $1000),
+  so a program that pays $1M Critical but nothing Medium/High never reaches a hunt. Source of truth, in
+  order: the feed's `rewardsBody` (already fetched by `run-immunefi-intake.sh`, no new network for the
+  common case), a per-program-page `__NEXT_DATA__` JSON-island fallback (`--page`), then an operator
+  `--table` paste hatch. Unresolved rows (no source matched) are kept unchanged — fail-open, never a
+  false drop. Re-emits the SAME 5-col TSV `run-batch.sh` consumes, unchanged for every surviving row.
+
 - **REFUTER -> HUNTER CONSTRAINT CHANNEL** (#1887, mechanism only — default OFF everywhere). The refute gate
   is where most candidates die and its reason died with them. `refuter.ag` now emits, on a REFUTED verdict
   only and IMMEDIATELY BEFORE the verdict line, one target-independent `CONSTRAINT|<class>|<sentence>` naming

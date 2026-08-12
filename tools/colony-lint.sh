@@ -939,6 +939,17 @@ if [ -x "$REPO_ROOT/dark-factory/demo-audit-history-probe.sh" ]; then
     fi
 fi
 
+# --- dark-factory per-severity payability filter (#1897, epic #1894 M1) ---
+if [ -x "$REPO_ROOT/dark-factory/demo-bounty-payability-gate.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-bounty-payability-gate.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: per-severity payability filter (bounty-payability-gate) (#1897)"
+    else
+        fail "dark-factory: per-severity payability filter regressed (#1897)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory zone-mapping: auto-derive scope.tsv from a target (#1612, epic #1611 M1) ---
 # map-zones.sh (shell plumbing) + auditor/agents/zone-mapper.ag (substrate classification) auto-derive a
 # target's DISCOVERY manifest: locate/group in-scope sources into ZONES, LOC + advisory hardening_score
