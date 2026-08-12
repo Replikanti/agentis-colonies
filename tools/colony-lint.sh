@@ -306,10 +306,13 @@ if errors:
             md_files+=("$f")
         done < <(find "$col_path" -name "*.md" -print0 2>/dev/null)
 
-        # Also check federation README
-        if [ -f "$fed_path/README.md" ]; then
-            md_files+=("$fed_path/README.md")
-        fi
+        # Also check every top-level federation *.md (README, CHANGELOG,
+        # runbooks, scorecards, ...) — not just README.md. Pre-#1910 this
+        # only looked at $fed_path/README.md, so link rot in e.g.
+        # dark-factory/FUNNEL-RUNBOOK.md never failed CI.
+        while IFS= read -r -d '' f; do
+            md_files+=("$f")
+        done < <(find "$fed_path" -maxdepth 1 -name "*.md" -print0 2>/dev/null)
 
         links_ok=true
         for md in "${md_files[@]}"; do

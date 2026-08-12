@@ -33,7 +33,7 @@ is asserted until multi-version CI is in place.
 - **Reality-check feedback loop — Wave 2 M1 (code-review, 5 agents)** ([#1453](https://github.com/Replikanti/agentis-colonies/issues/1453)):
   the four line reviewers (`logic_reviewer`, `security_reviewer`,
   `style_reviewer`, `test_reviewer`) and `qa_reviewer` now close the
-  [doc/feedback-loop.md](./doc/feedback-loop.md) loop. Each acting tier that
+  [doc/feedback-loop.md](../doc/feedback-loop.md) loop. Each acting tier that
   posts a note stashes a single-slot `<agent>:pending_verdict` memo; a later
   tick mechanically cross-references the MR's terminal forge state (a bounded
   `merge-requests --state merged|closed --per-page 50` scan via a native
