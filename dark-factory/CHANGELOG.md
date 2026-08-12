@@ -15,6 +15,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **SUBMISSION-OUTCOME MEASUREMENT VIEW** (#1901, epic #1894 M5). New `submission-outcomes.sh --summary` — a
+  read-only, zero-egress aggregator over the drop-dir's `manifest.json` + `.outcome-ingested` /
+  `.pending-confirmation` markers (never `OUTCOME.md`'s own `verdict:` override line, which is present only
+  when hand-filled and is not the authoritative record). Emits one TSV row per submission
+  (`submission_id`/`target`/`severity`/`outcome`/`payout`/`reason`) plus a rollup-counts line, matching the
+  epic's KPI: how many real submissions, with what outcomes.
+
 - **PRE-HUNT GATE + FLAT-CYBORG HUNT WIRED INTO THE BATCH RUNNER** (#1900, epic #1894 M4). `run-batch.sh`
   gains an optional `--pre-hunt-gate <cmd>` seam (default empty = today's behaviour, byte-identical):
   before a hunt is spent, the cmd receives the same `BATCH_KEY`/`BATCH_URL`/`BATCH_SCOPE` env `--hunt-cmd`

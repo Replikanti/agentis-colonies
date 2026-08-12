@@ -983,6 +983,17 @@ if [ -x "$REPO_ROOT/dark-factory/demo-pre-hunt-gate.sh" ]; then
     fi
 fi
 
+# --- dark-factory submission-outcome measurement view (#1901, epic #1894 M5) ---
+if [ -x "$REPO_ROOT/dark-factory/demo-submission-outcomes.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-submission-outcomes.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: submission-outcome measurement view (submission-outcomes.sh --summary) (#1901)"
+    else
+        fail "dark-factory: submission-outcome measurement view regressed (#1901)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory batch-runner default path (no --pre-hunt-gate) pinned byte-identical (#1055, pinned by #1900) ---
 if [ -x "$REPO_ROOT/dark-factory/demo-batch.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-batch.sh" 2>&1)" && check_rc=0 || check_rc=$?
