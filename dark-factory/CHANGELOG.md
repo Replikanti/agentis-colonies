@@ -15,6 +15,27 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **PRE-HUNT TARGET-LEVEL UNIQUENESS GATE** (#1899, epic #1894 M3). New `target-uniqueness-gate.sh` — before
+  a hunt is spent, decide whether a TARGET is worth hunting given how known/audited its surface already is,
+  and in the same pass PRODUCE the exclusion set the finding-level gate needs. Emits exactly ONE stdout line
+  `TARGET-UNIQUENESS|<GO|FLAG|SKIP>|<density|-1>|<rationale>` (rationale pipe-free, all chatter on stderr)
+  and exits `0 = GO`, `1 = FLAG`, `3 = SKIP`, `2 = bad args` — a non-zero exit is a VERDICT, not an error.
+  It ALWAYS writes an exclusion file (`--exclusion-out`, default
+  `<DIR>/uniqueness/<owner__name>/exclusion.txt`) in the exact free-text-per-line format
+  `novelty-gate.sh --exclusion` already consumes — on every verdict, including SKIP and the no-signal path —
+  so this gate is the PRODUCER and `novelty-gate.sh` stays the untouched CONSUMER. Three uniqueness legs,
+  each degrading independently: (a) security-relevant issues + PRs and (c) security advisories in the target
+  repo, both through a `--gh-cmd` seam (`UQ_ENDPOINT` in env, `gh api` by default); (b) prior audit reports
+  via `fetch-audits.sh --manifest` or a pre-populated `--audits-dir` — never assuming auth-gated
+  Sherlock/Cantina/C4 judge reports are reachable; plus the `audit-history-probe.sh` density signal through
+  a `--probe-cmd` seam (`-1` = unknown, never to be read as 0). The verdict errs toward FLAG: missing
+  signals push to FLAG and a **GO is structurally impossible without at least two independent sources of
+  real data**, so no-data can never yield a silent GO. A candidate signature with no function/CamelCase
+  identifier and no vuln-class term is DROPPED, keeping the downstream consumer from false-KNOWN.
+  `novelty-gate.sh`, `fetch-audits.sh` and `audit-history-probe.sh` are reused VERBATIM and untouched;
+  `demo-target-uniqueness-gate.sh` proves the whole contract offline (including the end-to-end
+  gate -> exclusion file -> `novelty-gate.sh` KNOWN/NOVEL handshake) with no network and no `gh` auth.
+
 - **FRESHNESS-FIRST DE-RANK BY TARGET AUDIT-DENSITY** (#1898, epic #1894 M2). New `apply-audit-density.sh`
   — a queue -> queue RE-RANK (never a gate; every input row survives, only the order changes): for each row
   whose `scope_hint` carries a resolvable `repo:` token, it runs `audit-history-probe.sh` (reused VERBATIM,
