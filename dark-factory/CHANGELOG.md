@@ -15,6 +15,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **OFFLINE END-TO-END FUNNEL COMPOSITION + OPERATOR RUNBOOK** (#1902, epic #1894 M6). New
+  `demo-funnel-e2e.sh` runs the assembled M1–M5 chain on synthetic fixtures and asserts the CROSS-STAGE
+  handoffs (payability → audit-density re-rank → uniqueness GO → gated MOCK hunt → human-gated staging →
+  outcome rollup) that no single-stage demo covers — offline, deterministic, `[SKIP]` without python3, hooked
+  into `colony-lint.sh`. New `FUNNEL-RUNBOOK.md` documents the offline composition, the real operator run,
+  target selection (fresh AND permissionless AND pays Medium/High AND KYC-at-payout), and the human-gate /
+  never-submit / flat-cyborg / content-scrub invariants. The hunt in the demo is a MOCK (plumbing only — the
+  real hunt is flat-cyborg-only via `hunt-flat-cyborg.sh`); the real Medium/High submission remains a human
+  click and is NOT part of this change (M6 acceptance stays open until that real outcome is recorded).
+
 - **SUBMISSION-OUTCOME MEASUREMENT VIEW** (#1901, epic #1894 M5). New `submission-outcomes.sh --summary` — a
   read-only, zero-egress aggregator over the drop-dir's `manifest.json` + `.outcome-ingested` /
   `.pending-confirmation` markers (never `OUTCOME.md`'s own `verdict:` override line, which is present only

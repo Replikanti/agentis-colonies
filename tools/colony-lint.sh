@@ -994,6 +994,17 @@ if [ -x "$REPO_ROOT/dark-factory/demo-submission-outcomes.sh" ]; then
     fi
 fi
 
+# --- dark-factory offline end-to-end funnel composition (#1902, epic #1894 M6) ---
+if [ -x "$REPO_ROOT/dark-factory/demo-funnel-e2e.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-funnel-e2e.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: offline end-to-end funnel composition (demo-funnel-e2e.sh) (#1902)"
+    else
+        fail "dark-factory: offline end-to-end funnel composition regressed (#1902)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory batch-runner default path (no --pre-hunt-gate) pinned byte-identical (#1055, pinned by #1900) ---
 if [ -x "$REPO_ROOT/dark-factory/demo-batch.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-batch.sh" 2>&1)" && check_rc=0 || check_rc=$?
