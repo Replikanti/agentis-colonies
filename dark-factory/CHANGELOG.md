@@ -15,6 +15,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **MULTI-TARGET REFUTE-CORPUS COVERAGE GATE** (#1895). New `bench/corpus-bench/refute-corpus-coverage.sh` — an
+  offline, network/LLM-free probe that GATEs the expensive #1887 refute derivation + held-out A/B on whether a
+  constraint corpus can move a held-out target's rare recall at all. It computes the triple intersection
+  `{∪ derivation classes} ∩ {held-out hunted classes} ∩ {held-out rare(1-2) GT classes}` from checked-in /
+  archived data and prints `COVERAGE-GATE: GO` only when non-empty (else `NO-GO` + the named empty leg, non-zero
+  exit) — the precheck the #1887 notional→yieldoor null would have failed. `--self-test` (three fixtures: a GO,
+  the #1887 NO-GO repro, and a hunted-but-not-rare-GT NO-GO) is wired into `colony-lint.sh`. The multi-target
+  corpus is built with no mechanism change (multiple `--in` into `refute-to-knowledge.sh`); `demo-refute-feedback.sh`
+  gains a multi-`--in` merge assertion (summed `samples` on a shared `(class, sentence)`, distinct sentences
+  separate, byte-stable modulo `created_ms`, order-independent), preserving the #1887 determinism invariant.
+  Docs: `bug-class-coverage.md` (the coverage matrix + C2 transfer axis + C2/C20 granularity crux) and the
+  corpus-bench README. The fresh derivation + held-out A/B are human-gated and NOT part of this change.
+
 - **OFFLINE END-TO-END FUNNEL COMPOSITION + OPERATOR RUNBOOK** (#1902, epic #1894 M6). New
   `demo-funnel-e2e.sh` runs the assembled M1–M5 chain on synthetic fixtures and asserts the CROSS-STAGE
   handoffs (payability → audit-density re-rank → uniqueness GO → gated MOCK hunt → human-gated staging →

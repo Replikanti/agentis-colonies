@@ -24,6 +24,9 @@
 #      higher `samples`, sorts deterministically, and produces a corpus that is byte-stable across two runs
 #      (modulo the wall-clock `created_ms` stamp, the sibling bench feeder's convention). Empty input is a
 #      valid empty corpus at exit 0, and `--store` merges into an accumulating corpus without losing samples.
+#      MULTI-TARGET MERGE (#1895): two `--in` TSVs merge into ONE corpus with summed `samples` on a shared
+#      (class, sentence), distinct sentences kept separate, byte-stable modulo `created_ms` AND independent of
+#      `--in` order — proving the multi-target corpus mechanism preserves the #1887 determinism invariant.
 #   4) LIVE CONSUME (needs the agentis binary; clean [SKIP] otherwise). A real `agentis` runs the real
 #      `hunter.ag` against a fake `claude` that DUMPS the prompt (the demo-blackboard.sh / block-18h idiom).
 #      ON arm (`REFUTE_CONSTRAINTS_JSON` set): the cell logs `REFUTE-CONSTRAINTS|` and the prompt carries the
@@ -288,6 +291,55 @@ assert by["class C6"]["samples"] == 2, "samples did not accumulate across merges
 PY
 then ok "3d) the opt-in --store merge accumulates samples into a stable row set (default OFF; the bench arm never uses it — a frozen corpus is what keeps a measurement re-derivable)"
 else bad "3d) the --store merge lost or duplicated rows"
+fi
+
+# Multi-target MERGE (#1895): the multi-target corpus is built by handing the feeder several targets' TSVs at
+# once (multiple --in), NOT by a code change. This asserts that mechanism keeps every #1887 invariant: a
+# (class, sentence) shared across two targets' files sums its samples, a sentence unique to one file stays its
+# own entry, and the result is byte-stable modulo created_ms AND independent of --in order (so a two-target
+# corpus is as re-derivable as a one-target one). S2 (C6) is deliberately shared across both files; A's C15 and
+# B's C2 are each single-file. Order-independence is the load-bearing determinism pin the held-out A/B needs.
+note "3e) refute-to-knowledge.sh multi--in merge: summed samples on the shared pair, distinct sentences separate, order-independent (#1895) ..."
+MERGE_A="$WORK/target-a.tsv"; MERGE_B="$WORK/target-b.tsv"
+S2="a short deduction is only a bug when the shortfall is shown to leave the system"
+S3="a price read on a pausable feed is stale unless the claim names the unpaused path that still consumes it"
+{
+  printf 'C15\tAdapter.sol:setParam\t%s\n' "$SENTENCE"
+  printf 'C6\tGateway.sol:swap\t%s\n' "$S2"
+} > "$MERGE_A"
+{
+  printf 'C6\tOther.sol:settle\t%s\n' "$S2"
+  printf 'C2\tOracle.sol:price\t%s\n' "$S3"
+} > "$MERGE_B"
+"$FEEDER" --in "$MERGE_A" --in "$MERGE_B" --out "$WORK/merge-ab.json" >/dev/null 2>&1
+MRC_AB=$?
+"$FEEDER" --in "$MERGE_B" --in "$MERGE_A" --out "$WORK/merge-ba.json" >/dev/null 2>&1
+MRC_BA=$?
+if [ "$MRC_AB" -eq 0 ] && [ "$MRC_BA" -eq 0 ] && python3 - "$WORK/merge-ab.json" "$SENTENCE" "$S2" "$S3" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+sentence, s2, s3 = sys.argv[2], sys.argv[3], sys.argv[4]
+assert len(d) == 3, "expected 3 merged entries (C15, C6, C2), got %d" % len(d)
+by_rec = {e["recommendation"]: e for e in d}
+assert by_rec[s2]["samples"] == 2, "the shared (C6, S2) pair did not sum across --in files: %r" % by_rec[s2]
+assert by_rec[s2]["condition"] == "class C6", "the shared entry lost its class: %r" % by_rec[s2]
+assert by_rec[sentence]["samples"] == 1, "the C15 sentence unique to file A did not stay a singleton: %r" % by_rec[sentence]
+assert by_rec[s3]["samples"] == 1, "the C2 sentence unique to file B did not stay a singleton: %r" % by_rec[s3]
+# Determinism: entries sorted by (condition, id), exactly as the single-file path.
+assert [e["condition"] for e in d] == sorted(e["condition"] for e in d), "the merged corpus is not sorted by class"
+PY
+then ok "3e) two --in files merge into one corpus: the shared (C6, sentence) pair sums to samples=2, the C15 and C2 singletons stay separate, sorted deterministically"
+else bad "3e) the multi--in merge did not sum the shared pair / keep the singletons / sort (#1895)"
+fi
+# Order-independence: the same two files in the OTHER order must give a byte-identical corpus (modulo the
+# created_ms wall-clock stamp) — the property the frozen multi-target corpus relies on to stay re-derivable.
+grep -v '"created_ms"' "$WORK/merge-ab.json" > "$WORK/merge-ab.norm"
+grep -v '"created_ms"' "$WORK/merge-ba.json" > "$WORK/merge-ba.norm"
+if cmp -s "$WORK/merge-ab.norm" "$WORK/merge-ba.norm"; then
+  ok "3f) reversing the --in order produces a byte-identical merged corpus (modulo created_ms) — the multi-target merge is order-independent, preserving the #1887 determinism pin"
+else
+  bad "3f) the merged corpus depends on --in order — the multi-target corpus would not be re-derivable:"
+  diff "$WORK/merge-ab.norm" "$WORK/merge-ba.norm" | sed 's/^/      /' >&2
 fi
 
 # ----------------------------------------------------------------------------------------------------------

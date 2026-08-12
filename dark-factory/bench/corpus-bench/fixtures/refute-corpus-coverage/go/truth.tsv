@@ -1,0 +1,3 @@
+H-2	1	C2	oracle mispricing lets an attacker mint against a stale price
+H-1	7	C9	liquidation fee decimal handling
+H-4	2	C10	isLiquidateable base calc underestimates the base

@@ -1320,6 +1320,23 @@ if [ -x "$REPO_ROOT/dark-factory/demo-refute-feedback.sh" ]; then
     fi
 fi
 
+# --- dark-factory multi-target coverage gate (#1895) ---
+# A single-target-derived constraint corpus is class-idiosyncratic, so it can move a held-out target's rare
+# recall only where derivation-classes ∩ held-out-hunted ∩ held-out-rare-GT ≠ ∅ (the class-filtered hunter
+# read). refute-corpus-coverage.sh computes that triple offline and GATEs any expensive derivation / held-out
+# A/B on a non-empty result — the precheck the #1887 notional->yieldoor null would have failed. --self-test
+# drives three fixtures (a GO with a C2 triple, the #1887 NO-GO repro, and a hunted-but-not-rare-GT NO-GO),
+# CI-safe (python3 only, no network / no LLM).
+if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/refute-corpus-coverage.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/bench/corpus-bench/refute-corpus-coverage.sh" --self-test 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: multi-target refute-corpus coverage gate (triple-intersection GO/NO-GO precheck) (#1895)"
+    else
+        fail "dark-factory: refute-corpus coverage gate regressed (#1895)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory monitor colony proof-of-value: detect -> deliver (#1889, #1891) ---
 # The Path C monitoring proposition must DETECT a protocol invariant breaking on live chain state and
 # DELIVER it as a page. demo-monitor.sh source-guards the monitor wiring (the 8 agents, notifier.ag ->

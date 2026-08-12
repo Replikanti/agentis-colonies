@@ -1,0 +1,4 @@
+H-2	1	C20	strategy main ticks set from slot0 tick-centering
+H-3	1	C19	uint16 overflow in observation index leads to DoS
+H-4	3	C10	isLiquidateable base calc is incorrect
+H-1	7	C9	liquidation fee will not be claimed (decimal handling)

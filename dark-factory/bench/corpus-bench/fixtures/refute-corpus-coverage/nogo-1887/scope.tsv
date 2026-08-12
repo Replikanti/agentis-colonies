@@ -1,0 +1,6 @@
+ZONE1|z1|strategy slot0 tick|C20|main ticks set from slot0 tick
+ZONE2|z2|observation index|C19|uint16 overflow DoS
+ZONE3|z3|liquidation|C10|isLiquidateable base calc
+ZONE4|z4|integration seam|C15|balancer router funds locked
+ZONE5|z5|accounting|C6|protocol fee accrual
+ZONE6|z6|access control|C5|uninitialized feeRecipient
