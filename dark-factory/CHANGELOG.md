@@ -15,6 +15,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **PRE-HUNT GATE + FLAT-CYBORG HUNT WIRED INTO THE BATCH RUNNER** (#1900, epic #1894 M4). `run-batch.sh`
+  gains an optional `--pre-hunt-gate <cmd>` seam (default empty = today's behaviour, byte-identical):
+  before a hunt is spent, the cmd receives the same `BATCH_KEY`/`BATCH_URL`/`BATCH_SCOPE` env `--hunt-cmd`
+  already gets and must print a `TARGET-UNIQUENESS|<GO|FLAG|SKIP>|...` line (the M3 `target-uniqueness-gate.sh`
+  contract); anything other than `GO` records `skipped-known` to the funnel ledger and spends no hunt. New
+  `hunt-flat-cyborg.sh` — a thin `--hunt-cmd` wrapper that drives the `auditor` colony's one-shot
+  `agentis go` under a hardcoded `llm.backend = flat-cyborg` config and translates its
+  `Verdict: VERIFIED|SAFE|INCONCLUSIVE` terminal line into `VERDICT|confirmed|refuted|dry`. Never `claude -p`.
+
 - **PRE-HUNT TARGET-LEVEL UNIQUENESS GATE** (#1899, epic #1894 M3). New `target-uniqueness-gate.sh` — before
   a hunt is spent, decide whether a TARGET is worth hunting given how known/audited its surface already is,
   and in the same pass PRODUCE the exclusion set the finding-level gate needs. Emits exactly ONE stdout line

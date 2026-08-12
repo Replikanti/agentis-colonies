@@ -972,6 +972,28 @@ if [ -x "$REPO_ROOT/dark-factory/demo-target-uniqueness-gate.sh" ]; then
     fi
 fi
 
+# --- dark-factory pre-hunt gate + flat-cyborg hunt wired into the batch runner (#1900, epic #1894 M4) ---
+if [ -x "$REPO_ROOT/dark-factory/demo-pre-hunt-gate.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-pre-hunt-gate.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: pre-hunt gate wired into the batch runner (run-batch --pre-hunt-gate) (#1900)"
+    else
+        fail "dark-factory: pre-hunt-gate batch-runner wiring regressed (#1900)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- dark-factory batch-runner default path (no --pre-hunt-gate) pinned byte-identical (#1055, pinned by #1900) ---
+if [ -x "$REPO_ROOT/dark-factory/demo-batch.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-batch.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: batch runner default path (no --pre-hunt-gate) is byte-identical (#1055, pinned by #1900)"
+    else
+        fail "dark-factory: run-batch.sh default (no-flag) behaviour regressed (#1055/#1900)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory zone-mapping: auto-derive scope.tsv from a target (#1612, epic #1611 M1) ---
 # map-zones.sh (shell plumbing) + auditor/agents/zone-mapper.ag (substrate classification) auto-derive a
 # target's DISCOVERY manifest: locate/group in-scope sources into ZONES, LOC + advisory hardening_score
