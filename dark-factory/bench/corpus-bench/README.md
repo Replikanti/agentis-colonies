@@ -564,6 +564,20 @@ nothing, the block renders empty and the hunter's prompt is byte-identical to to
 - **Quote the ruler with every number**, and state "one run per arm, stochastic" — the #1886 archive's
   convention. A flat-or-worse result is a legitimate, publishable outcome: the default stays off.
 
+**Multi-target corpus (#1895) — the coverage gate is now the mandatory precheck.** The #1887 held-out came out
+null because the notional-derived corpus and yieldoor's rare money classes did not overlap. Before spending any
+fresh derivation or held-out A/B, run `refute-corpus-coverage.sh` — it computes the triple intersection
+`{∪ derivation classes} ∩ {held-out hunted classes} ∩ {held-out rare(1-2) GT classes}` from checked-in / archived
+data (manifest `cut -d'|' -f2`, `map-zones` scope.tsv field 4, class-tagged truth.tsv `found-by ≤ 2` rows) and
+prints `COVERAGE-GATE: GO` only when it is non-empty; a `NO-GO` names the empty leg and exits non-zero, and no
+expensive step runs on a `NO-GO` (`--self-test` pins a GO, the #1887 NO-GO repro, and a hunted-but-not-rare-GT
+NO-GO; wired into `colony-lint.sh`). The corpus itself is still built the same way — multiple `--in` TSVs into
+`refute-to-knowledge.sh`, which sums `samples` on a shared `(class, sentence)`, keeps distinct sentences
+separate, and stays byte-stable modulo `created_ms` and independent of `--in` order (`demo-refute-feedback.sh`
+3e/3f) — so the burn rule, equal-cell-count, rare(1-2)-primary and anti-Goodhart rules above are all unchanged;
+multi-target is *just more `--in`*. Rationale, the C2 transfer axis, and the C2/C20 granularity crux:
+[`bug-class-coverage.md`](bug-class-coverage.md#multi-target-constraint-corpus-1895).
+
 `dark-factory/demo-refute-feedback.sh` pins the whole chain offline (report byte-identity with and without
 the constraint line, the harvested TSV, the feeder's aggregation/determinism, and a REAL hunter cell's
 prompt ON vs OFF); `demo-discovery-parallel.sh` block 19 pins default inertness, `knowledge.enabled`, the

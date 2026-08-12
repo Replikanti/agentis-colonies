@@ -1,0 +1,2 @@
+src/oracles/Oracle.sol:price:10|C2|High|an oracle read must name the unprivileged trigger and the concrete divergence it causes|src/oracles/Oracle.sol
+src/vault/Vault.sol:convertToAssets:20|class=C15|Medium|an integration seam counts as trusted config unless the claim names the crossing that breaks it|src/vault/Vault.sol

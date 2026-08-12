@@ -52,6 +52,55 @@ Held-out A/B of the #1887 refuter→hunter channel: a constraint corpus **derive
 
 **Verdict:** primary rare recall **flat, Δ=0** — no transfer, structurally impossible here. **Goodhart gate not triggered** (confirm rate did not rise). Overall/consensus came out lower on this single run, but it is confounded and NOT attributed as treatment harm: **cell-count parity failed** (24 vs 19 — the plan voids the strict comparison on unequal counts; the ON arm's 12 confirmed leads collapsed onto 3 distinct GT rows vs OFF's 9→6), plus n=1 stochasticity. **Outcome: a structurally-bounded null** — the mechanism imports+injects correctly (verified: 27 rows in the run store), but derivation↔held-out class profiles are disjoint. Default stays off, corpus stays checked in, #1887 closes on this negative. The lever is a **multi-target / class-broad corpus** so a held-out target's money classes are covered → **#1895**.
 
+### Multi-target constraint corpus (#1895)
+
+The #1887 null was a **class non-overlap**, not a mechanism failure, so the lever is a corpus derived across a
+class-broad set of targets and a **precheck that refuses to spend compute on a null-by-construction pairing**.
+The precheck is `refute-corpus-coverage.sh` — an offline gate that computes the triple intersection
+
+```
+{ ∪ derivation-corpus classes }  ∩  { held-out hunted classes }  ∩  { held-out rare(1-2) GT classes }
+```
+
+and prints `COVERAGE-GATE: GO` **iff** it is non-empty (and therefore carries at least one class with a
+`found-by ≤ 2` GT row on the held-out — the only classes on which the primary metric can move). Otherwise it
+prints `NO-GO`, names the empty leg, and exits non-zero. All three legs are cheap and checked-in / archived:
+derivation classes from the refute-derivation manifests (`cut -d'|' -f2`), the held-out's hunted classes from
+field 4 of a `map-zones` `scope.tsv`, and its rare-GT classes from a class-tagged `truth.tsv` (`found-by ≤ 2`
+rows) — the same human-checkable `bug-taxonomy.md` assignment this table records, materialised into a column.
+The corpus is still built the #1887 way — multiple `--in` TSVs into `refute-to-knowledge.sh`, which sums
+`samples` on a shared `(class, sentence)`, keeps distinct sentences separate, and stays byte-stable modulo
+`created_ms` and independent of `--in` order (asserted by `demo-refute-feedback.sh` 3e/3f) — so every #1887
+invariant (frozen/checked-in, class-keyed injection, byte-identical prompt when a class has no constraints,
+determinism, default-off) is preserved for free; multi-target is *just more `--in`*, not a code change.
+
+**The C2 transfer axis.** Across the 8 corpus contests the only class carrying a `found-by ≤ 2` money bug on
+**more than one** target is **C2 (oracle integrity)** — notional (H-2 fb1, H-4 fb2), yieldoor (H-2 fb1), plaza
+(H-4, H-11). Every other rare class is target-idiosyncratic (C19/C20 only on yieldoor, C11 only on yearn,
+C22/C23 only on notional). So C2 is the one axis on which a derived-here → measured-there transfer test is not
+null by construction; the recommended config derives C2 from notional (archived, free) + plaza (fresh) and
+holds out yieldoor's oracle zone.
+
+**The C2/C20 granularity crux (the load-bearing empirical fact).** Whether that config actually clears the gate
+hinges on how yieldoor's oracle/slot0 zone resolves: this table tags H-2 as **C2 oracle** (coarse), but the
+#1887 `map-zones` pass produced the granular **C20 (Uniswap-V3 slot0 tick-centering)**, and H-3 as **C19
+(uint16 overflow)** rather than C17. The probe run on the archived data confirms the split is decisive:
+
+| Candidate config (held-out = yieldoor) | oracle-zone tag | TRIPLE | Gate |
+|---|---|---|---|
+| notional-only corpus | granular (C20/C19) | ∅ (overlap is C15 only, no rare GT) | **NO-GO** — reproduces #1887 |
+| notional + plaza(C2 predicted) | granular (C20/C19) | ∅ (rare GT C20/C19 in no derivation source) | **NO-GO** |
+| notional + plaza(C2 predicted) | coarse (C2) | {C2} | GO |
+
+Under the granular reality the map-zones run actually produced, yieldoor is **unreachable** — its rare Highs
+are C20/C19 and no *other* corpus target produces C20/C19 candidates. The probe therefore (correctly) refuses
+yieldoor, and the documented fallback is **held-out = notional**, with C2 derived from **plaza + mellow** (both
+fresh, higher compute; notional's fb1/fb2 C2 GT becomes the held-out ground truth). The decision is made before
+compute, not after. The fresh plaza/mellow derivation and the held-out A/B are gated on a human/orchestrator
+seeing a `GO`, and the A/B result (rare(1-2) OFF vs ON, the Goodhart confirm-rate fail-gate, cell-count parity)
+will be appended here under the #1887 burn rule (frozen corpus + this coverage report committed before either
+arm).
+
 ## Per-finding tags (5 of 8 contests run so far)
 
 | Contest | Finding | fb | Class | Lens status |
