@@ -950,6 +950,17 @@ if [ -x "$REPO_ROOT/dark-factory/demo-bounty-payability-gate.sh" ]; then
     fi
 fi
 
+# --- dark-factory freshness-first de-rank by target audit-density (#1898, epic #1894 M2) ---
+if [ -x "$REPO_ROOT/dark-factory/demo-apply-audit-density.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-apply-audit-density.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: freshness-first de-rank by target audit-density (apply-audit-density) (#1898)"
+    else
+        fail "dark-factory: freshness-first de-rank by audit-density regressed (#1898)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory zone-mapping: auto-derive scope.tsv from a target (#1612, epic #1611 M1) ---
 # map-zones.sh (shell plumbing) + auditor/agents/zone-mapper.ag (substrate classification) auto-derive a
 # target's DISCOVERY manifest: locate/group in-scope sources into ZONES, LOC + advisory hardening_score

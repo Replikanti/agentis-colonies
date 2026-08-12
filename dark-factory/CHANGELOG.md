@@ -15,6 +15,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **FRESHNESS-FIRST DE-RANK BY TARGET AUDIT-DENSITY** (#1898, epic #1894 M2). New `apply-audit-density.sh`
+  — a queue -> queue RE-RANK (never a gate; every input row survives, only the order changes): for each row
+  whose `scope_hint` carries a resolvable `repo:` token, it runs `audit-history-probe.sh` (reused VERBATIM,
+  via a `--probe-cmd` seam mirroring `run-batch.sh`'s `--hunt-cmd`) and subtracts a flat bounded penalty
+  (`--penalty`, default 20, floored at 0) from the row's score when the probe verdict is
+  `heavily_audited=true`, then re-sorts DESC-then-key-ASC — the same tie-break `run-immunefi-intake.sh`
+  already uses. A missing/unreachable repo or no repo signal at all leaves the score untouched (fail-safe:
+  no signal, no de-rank). Standalone tool; `run-immunefi-intake.sh`/`run-batch.sh` are untouched — chained
+  manually by the operator.
+
 - **PER-SEVERITY PAYABILITY FILTER** (#1897, epic #1894 M1). New `bounty-payability-gate.sh` — a queue
   -> queue gate dropping rows whose Medium/High reward is a confirmed $0 (`--pay-floor`, default $1000),
   so a program that pays $1M Critical but nothing Medium/High never reaches a hunt. Source of truth, in
