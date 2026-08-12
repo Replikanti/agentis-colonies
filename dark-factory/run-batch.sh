@@ -24,10 +24,18 @@
 #
 # This tool NEVER contacts a platform to submit. Offline / no-queue behaviour matches the sibling scripts.
 #
-# Usage: run-batch.sh [--queue <file>] [--hunt-cmd "<cmd>"] [--max-targets N] [--out <dir>] [--timeout S] [-h]
+# Usage: run-batch.sh [--queue <file>] [--hunt-cmd "<cmd>"] [--pre-hunt-gate "<cmd>"] [--max-targets N]
+#                      [--out <dir>] [--timeout S] [-h]
 #   --queue        : the ranked queue to consume (default ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/targets.queue).
 #   --hunt-cmd     : a command run per target (BATCH_KEY/BATCH_URL/BATCH_SCOPE in env) that prints a
 #                    `VERDICT|<confirmed|dry|refuted>[|detail]` line. Default = best-effort autoharness.
+#   --pre-hunt-gate: OPTIONAL (epic #1894 M4). A command run per target BEFORE the hunt, same env contract
+#                    as --hunt-cmd (BATCH_KEY/BATCH_URL/BATCH_SCOPE), that MUST print one
+#                    `TARGET-UNIQUENESS|<GO|FLAG|SKIP>|...` line (the #1899 target-uniqueness-gate.sh
+#                    contract verbatim). GO -> proceed to the hunt. Anything else — FLAG/SKIP, no line,
+#                    or a non-zero exit — records `skipped-known` to the ledger and spends NO hunt. Default
+#                    "" (absent flag) = today's behaviour, byte-identical; this is a pure operator-wired
+#                    seam, not auto-invoking any specific gate script.
 #   --max-targets  : process at most N targets this run (default 5). Alias: --budget.
 #   --out          : staging root for confirmed findings (default $PWD/batch-out).
 #   --timeout      : per-target timeout in seconds when `timeout` is available (default 600).
@@ -42,14 +50,15 @@ POLICY_LOG="$DIR/policy-outcomes.log"
 # nv: a value-taking flag must be followed by a value; under `set -u` a bare trailing flag would
 # otherwise crash on $2 (unbound) instead of the promised exit 2. $1 = remaining argc, $2 = flag name.
 nv() { [ "$1" -ge 2 ] || { echo "run-batch.sh: $2 requires a value" >&2; exit 2; }; }
-QUEUE="$DIR/targets.queue" ; HUNT_CMD="" ; MAX_TARGETS="5" ; OUT="$PWD/batch-out" ; PER_TIMEOUT="600"
+QUEUE="$DIR/targets.queue" ; HUNT_CMD="" ; PRE_HUNT_GATE="" ; MAX_TARGETS="5" ; OUT="$PWD/batch-out" ; PER_TIMEOUT="600"
 while [ $# -gt 0 ]; do case "$1" in
   --queue)        nv "$#" "$1"; QUEUE="$2"; shift 2;;
   --hunt-cmd)     nv "$#" "$1"; HUNT_CMD="$2"; shift 2;;
+  --pre-hunt-gate) nv "$#" "$1"; PRE_HUNT_GATE="$2"; shift 2;;
   --max-targets|--budget) nv "$#" "$1"; MAX_TARGETS="$2"; shift 2;;
   --out)          nv "$#" "$1"; OUT="$2"; shift 2;;
   --timeout)      nv "$#" "$1"; PER_TIMEOUT="$2"; shift 2;;
-  -h|--help)      sed -n '2,33p' "$0"; exit 0;;
+  -h|--help)      sed -n '2,41p' "$0"; exit 0;;
   *) echo "run-batch.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
 
@@ -118,6 +127,18 @@ for line in "${LINES[@]}"; do
     break
   fi
   processed=$((processed+1))
+  if [ -n "$PRE_HUNT_GATE" ]; then
+    gline="$(BATCH_KEY="$key" BATCH_URL="${url:-}" BATCH_SCOPE="${scope:-}" \
+              with_timeout sh -c "$PRE_HUNT_GATE" 2>/dev/null | grep -m1 '^TARGET-UNIQUENESS|' || true)"
+    gverdict="$(printf '%s' "$gline" | cut -d'|' -f2)"
+    if [ "$gverdict" != "GO" ]; then
+      echo "run-batch: pre-hunt-gate $key -> ${gverdict:-FLAG(no-verdict)} — skipping (no hunt spent)" >&2
+      record "$key" "skipped-known"
+      printf '%s\t%s\n' "$key" "skipped-known"
+      continue
+    fi
+    echo "run-batch: pre-hunt-gate $key -> GO" >&2
+  fi
   echo "run-batch: hunting $key (${url:-no-url}) ..." >&2
   v="$(run_hunt "$key" "${url:-}" "${scope:-}")"
   verdict="$(printf '%s' "$v" | cut -d'|' -f2)"; [ -n "$verdict" ] || verdict="dry"
