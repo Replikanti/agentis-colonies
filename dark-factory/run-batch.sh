@@ -58,7 +58,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --max-targets|--budget) nv "$#" "$1"; MAX_TARGETS="$2"; shift 2;;
   --out)          nv "$#" "$1"; OUT="$2"; shift 2;;
   --timeout)      nv "$#" "$1"; PER_TIMEOUT="$2"; shift 2;;
-  -h|--help)      sed -n '2,41p' "$0"; exit 0;;
+  -h|--help)      sed -n '2,42p' "$0"; exit 0;;
   *) echo "run-batch.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
 
