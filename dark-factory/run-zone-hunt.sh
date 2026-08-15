@@ -307,6 +307,10 @@ done
 # #1830: the coverage record's sole owner (schema, the eight-state vocabulary, the #1826 priority sort).
 ZONECOV="$HERE/lib/zone-coverage.py"
 [ -f "$ZONECOV" ] || { echo "run-zone-hunt.sh: required helper not found: $ZONECOV" >&2; exit 3; }
+# #1914 M3: the lens x surface matrix's sole owner (schema, the closed lens-depth vocabulary + verdict, the
+# HARNESS_ERROR-is-a-gap rule). Independent of the zone-coverage record above (separate schema + state words).
+LENSMATRIX="$HERE/lib/lens-surface-matrix.py"
+[ -f "$LENSMATRIX" ] || { echo "run-zone-hunt.sh: required helper not found: $LENSMATRIX" >&2; exit 3; }
 
 REPO="$(cd "$REPO" && pwd)"
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
@@ -666,10 +670,19 @@ MERGED="$DISC/discovery-results.merged.json"
 # that reads only the merged file can see a truncation, and propagates the per-zone totals.failed the merge
 # used to drop (#1707 degraded cells vanished with it).
 COVERAGE_FRAGMENT="$("$ZONECOV" summary --file "$COVERAGE_JSON" --json)"
-python3 - "$MERGED" "$DISC" "$REPO_NAME" "$BACKEND" "$JOBS" "$COVERAGE_FRAGMENT" <<'PY'
+# #1914 M3: point consumers at the lens x surface matrix path — but ONLY when the deep-hunt block will emit it
+# (--deep-hunt on). Empty otherwise, so a breadth-only merged file is byte-identical to a pre-#1914 run.
+MATRIX_REL=""; [ "$DEEP_HUNT" -eq 1 ] && MATRIX_REL="coverage/lens-surface-matrix.json"
+python3 - "$MERGED" "$DISC" "$REPO_NAME" "$BACKEND" "$JOBS" "$COVERAGE_FRAGMENT" "$MATRIX_REL" <<'PY'
 import sys, os, json
 merged_path, disc_dir, repo, backend, jobs = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5])
 coverage = json.loads(sys.argv[6])
+# #1914 M3: additively surface the matrix path in the SAME coverage object (deep-hunt only). Empty => no key is
+# added, so the zone-coverage fields are untouched and a no-deep-hunt merged file is unchanged.
+matrix_rel = sys.argv[7] if len(sys.argv) > 7 else ""
+if matrix_rel:
+    coverage = dict(coverage)
+    coverage["lens_surface_matrix"] = matrix_rel
 # #1830 MERGE POLICY — UNION ACROSS ATTEMPTS. A re-hunt moves `discovery/<zid>` to `<zid>.attempt-<n>`, so
 # excluding those dirs would let a re-hunt that yields LESS than the attempt it archived silently DELETE real
 # candidates from this file — while reporting a cleaner coverage verdict. That is a worse failure than the one
@@ -791,6 +804,15 @@ if [ "$DEEP_HUNT" -eq 1 ]; then
     INVHUNT="$HERE/run-invariant-hunt.sh"
     [ -x "$INVHUNT" ] || { echo "run-zone-hunt.sh: [deep-hunt] required entrypoint not found/executable: $INVHUNT" >&2; exit 3; }
     DEEP="$OUT/deep-hunt"; mkdir -p "$DEEP"
+    # #1914 M3: SEED the lens x surface matrix BEFORE the deep-hunt loop, so a surface can never be silently
+    # missing — only visibly at its floor. The surface set (value-custody OR composition_surfaces zones) is
+    # derived inside the helper. We seed AFTER STAGE 3 breadth, so the floor is `discovery-only` (breadth-seen,
+    # no deep lens yet), which each per-class/general row upgrades in place. Path is fixed by contract:
+    # <out>/coverage/lens-surface-matrix.json (independent of the #1830 zone-coverage record in the same dir).
+    MATRIX_JSON="$OUT/coverage/lens-surface-matrix.json"
+    mkdir -p "$OUT/coverage"
+    "$LENSMATRIX" init --zones "$MAP/zones.json" --out "$MATRIX_JSON" --seed-state discovery-only \
+      --repo "$REPO_NAME" --commit "$COMMIT"
     # Enumerate the value-custody zones + their ONE primary target (the largest-by-line-count .sol in the
     # zone's files, lexicographic tie-break; bounded to --deep-hunt-max-targets per zone) + the zone's
     # dominant custody class (prefer C6/C10/C11, else the literal C-invariant). TSV: zid \t relfile \t class.
@@ -1064,6 +1086,38 @@ PY
         echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> FINDING merged into verified_findings.json (source=invariant-hunt)" >&2
       else
         echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> no FINDING to merge (CLEAN / HARNESS_ERROR)" >&2
+      fi
+      # #1914 M3: record this row's lens depth into the lens x surface matrix (surface = the zone $ZID). For the
+      # class-agnostic SYS-solvency (general) lens we READ THE RAW VERDICT from the aggregate invariant log
+      # OURSELVES: the #1780 merge adapter above collapses CLEAN and HARNESS_ERROR into one no-op branch, so
+      # $MERGED_ADD cannot tell an un-probed seam (HARNESS_ERROR — a GAP) from a clean negative (CLEAN). A
+      # per-class row records `narrow-per-class` (no verdict); the helper's depth precedence keeps a general row
+      # from being overwritten by a later narrow row of the same zone, and vice-versa, regardless of row order.
+      if [ "$DCLASS" = "SYS-solvency" ]; then
+        LENS_VERDICT="$(python3 - "$DZOUT" <<'PY'
+import sys, os, glob, re
+dzout = sys.argv[1]
+logs = sorted(glob.glob(os.path.join(dzout, "run", "invariant_*.log")))
+# #1778: read the AGGREGATE log, never a per-candidate `invariant_<t>_c<N>.log` (the #1780 adapter's own filter).
+logs = [p for p in logs if not re.search(r"_c[0-9]+\.log$", os.path.basename(p))]
+# No aggregate log / no INVARIANT| line => the harness never produced a verdict: a HARNESS_ERROR GAP, distinct
+# from a CLEAN. This is the whole point of the matrix, so the pessimistic default is HARNESS_ERROR, never CLEAN.
+verdict = "HARNESS_ERROR"
+if logs:
+    with open(logs[-1], encoding="utf-8", errors="ignore") as fh:
+        for line in fh:
+            if "INVARIANT|" in line:
+                cols = line.split("INVARIANT|", 1)[1].strip().split("|")
+                if len(cols) >= 2:
+                    verdict = cols[1].strip()
+sys.stdout.write(verdict if verdict in ("FINDING", "CLEAN", "HARNESS_ERROR") else "HARNESS_ERROR")
+PY
+)"
+        "$LENSMATRIX" set --file "$MATRIX_JSON" --surface "$ZID" \
+          --lens-depth general-solvency --verdict "$LENS_VERDICT"
+        echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' general-solvency lens -> $LENS_VERDICT (matrix)" >&2
+      else
+        "$LENSMATRIX" set --file "$MATRIX_JSON" --surface "$ZID" --lens-depth narrow-per-class
       fi
     done < "$DEEP_TARGETS"
     echo "run-zone-hunt.sh: [deep-hunt] merged $DEEP_FINDINGS invariant-hunt finding(s) into verified_findings.json" >&2
