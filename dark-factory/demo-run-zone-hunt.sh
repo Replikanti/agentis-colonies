@@ -392,6 +392,36 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# #1914 (M1): --composable-lens adds ONE class-agnostic general-solvency row (`SYS-solvency`) per custody /
+# composition surface to the STAGE 4.5 selection, on top of the per-class rows. Source guard + the CLI badval
+# check (same shape as the --deep-hunt-repair-rounds block above): the knob is declared DEFAULT-OFF, is threaded
+# as the 6th argv of the selection python, and is a usage error without --deep-hunt. The BEHAVIOURAL contract
+# (default-OFF byte-identity of .deep-hunt-targets.tsv, the additive SYS-solvency row with its aux column, and
+# the routing into composable-fresh mode) is pinned offline by tools/test-deep-hunt-composable-lens.sh.
+# ----------------------------------------------------------------------------------------------------------
+note "#1914 --composable-lens wiring ..."
+if grep -q '^DEEP_HUNT_COMPOSABLE_LENS=0$' "$ZONEHUNT"; then
+  ok "run-zone-hunt.sh declares DEEP_HUNT_COMPOSABLE_LENS with default 0 (the general lens is OFF by default)"
+else
+  bad "run-zone-hunt.sh missing the DEEP_HUNT_COMPOSABLE_LENS=0 default"
+fi
+# shellcheck disable=SC2016  # matching the literal argv line, $ must not expand
+if grep -q -- '"\$DEEP_HUNT_COMPOSABLE_LENS" > "\$DEEP_TARGETS"' "$ZONEHUNT"; then
+  ok "run-zone-hunt.sh threads \$DEEP_HUNT_COMPOSABLE_LENS into the STAGE 4.5 selection python"
+else
+  bad "run-zone-hunt.sh does not thread \$DEEP_HUNT_COMPOSABLE_LENS into the STAGE 4.5 selection python"
+fi
+CL_REQ_ERR="$WORK/composable-lens-requires.err"
+"$ZONEHUNT" --repo "$HERE" --composable-lens >/dev/null 2>"$CL_REQ_ERR"
+CL_REQ_RC=$?
+if [ "$CL_REQ_RC" -eq 2 ] && grep -q -- '--composable-lens requires --deep-hunt' "$CL_REQ_ERR"; then
+  ok "run-zone-hunt.sh --composable-lens WITHOUT --deep-hunt fails fast with exit 2 + the usage error"
+else
+  bad "run-zone-hunt.sh --composable-lens without --deep-hunt did not fail fast as expected (exit $CL_REQ_RC):"
+  sed 's/^/      /' "$CL_REQ_ERR" | head -10 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # #1774: --deep-hunt-only applies ONLY the STAGE 4.5 lens over an EXISTING breadth --out (the seam
 # deep-hunt-ab.sh --live uses to SHARE one breadth pass across OFF/ON). Two offline, LLM-free CLI guards pin its
 # contract (mirroring the --deep-hunt-repair-rounds badval pattern above): (i) it REQUIRES --deep-hunt, and
