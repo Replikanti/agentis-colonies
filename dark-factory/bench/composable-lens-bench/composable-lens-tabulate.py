@@ -53,9 +53,13 @@ VERDICTS = ("FINDING", "CLEAN", "HARNESS_ERROR")
 ACTOR_RE = re.compile(
     r"\bnew\s+(\w*(?:Handler|Hook|Adapter|Attacker|Adversary|Actor)\w*)\s*\(", re.IGNORECASE)
 # A hook/adapter/attacker/actor wired to the ZERO address — the exact vacuous-CLEAN caveat this bench guards.
-# Matches `hooks: address(0)`, `IHook(address(0))`, `hook = address(0)`, `adapter := address(0)`.
+# Matches every enumerated form: `hooks: address(0)`, `IHook(address(0))`, `hook = address(0)`, and the
+# Yul/assembly-style `adapter := address(0)`. The operator alternation lists `:=` FIRST so it wins over the
+# single-char `:` (a bare `[=:(]` class silently can't match the two-char `:=`, #1924). Bias: err toward
+# FLAGGING more zero-hook forms — a missed zero-hook = a vacuous run wrongly counted as meaningful.
 ZERO_HOOK_RE = re.compile(
-    r"(?:hook|adapter|attacker|adversary|actor)\w*\s*[=:(]\s*(?:I?\w+\s*\(\s*)?address\(0\)", re.IGNORECASE)
+    r"(?:hook|adapter|attacker|adversary|actor)\w*\s*(?::=|[=:(])\s*(?:I?\w+\s*\(\s*)?address\(0\)",
+    re.IGNORECASE)
 # The #1778 ensemble writes per-candidate `invariant_<t>_c<N>.log` alongside the aggregate `invariant_<t>.log`;
 # read only the aggregate (the #1780 merge adapter's own filter).
 PER_CANDIDATE_RE = re.compile(r"_c[0-9]+\.log$")

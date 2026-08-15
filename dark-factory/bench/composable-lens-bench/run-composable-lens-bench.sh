@@ -277,6 +277,38 @@ else
   echo "  [SKIP] deep-hunt fixture handler not present at $FIX"
 fi
 
+# (2) QA #1924 regression: the Yul/assembly-style `hook := address(0)` wiring (two-char `:=`, NOT a bare `=`)
+# alongside a real `new Handler(...)` MUST be FLAGGED vacuous — a `[=:(]` class silently missed `:=`, so this
+# exact source was mis-scored a driven catch. A FINDING over it must therefore NOT count as a catch.
+TQA="$WORK/target-qa-assign"; write_matrix "$TQA" FINDING
+mkdir -p "$TQA/deep-hunt/src-SYS-solvency/run"
+cat > "$TQA/deep-hunt/src-SYS-solvency/run/Composable.t.sol" <<'SOL'
+// QA #1924 repro: a real adversarial actor is instantiated, but its hook is nulled with the assembly-style
+// `:=` assignment — a vacuous run the `[=:(]` class let slip through as a false catch.
+contract Handler { function attack() external {} }
+contract SysInvariantTest {
+    address hook;
+    function setUp() public {
+        Handler h = new Handler();
+        assembly { sstore(hook.slot, 0) }
+        hook := address(0);
+    }
+    function invariant_no_free_value() public view {}
+}
+SOL
+python3 "$TABULATE" eval-target --id target-qa-assign --out "$TQA" --out-record "$WORK/target-qa-assign.json"
+if python3 - "$WORK/target-qa-assign.json" <<'PY'
+import sys, json
+r = json.load(open(sys.argv[1]))
+assert r["verdicts"]["FINDING"] == 1, r["verdicts"]
+assert r["adversary_path"]["zero_hook_seen"] is True, r["adversary_path"]      # the `:=` form is now detected
+assert r["adversary_path"]["driven"] is False, r["adversary_path"]
+assert r["meaningful"] is False and r["catch"] is False, r                     # vacuous => NOT a catch
+PY
+then ok "(2) QA #1924: a FINDING over 'new Handler(...) + hook := address(0)' is FLAGGED vacuous, NOT a catch (:= assembly-assignment form now detected)"
+else bad "(2) QA #1924 assembly-assignment ':=' zero-hook slipped through as a false catch"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # (3) CATCH-COUNTING + the M4 gate (>=2 distinct catch targets).
 # ----------------------------------------------------------------------------------------------------------
