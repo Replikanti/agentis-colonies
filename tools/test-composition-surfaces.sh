@@ -69,7 +69,8 @@ trap 'rm -rf "$WORK"' EXIT
 
 # ----------------------------------------------------------------------------------------------------------
 # The seam fixture. A CONSUMER (PoolManager) reads a per-share price PRODUCED by a DIFFERENT zone file
-# (Strategy) through an interface (IStrategy) and settles on it (a balance-write on the returned amount) -- the
+# (Strategy) through an interface (IStrategy), derives an `owed` amount from it, and SETTLES that derived value
+# into a credit balance -- a real dataflow link (#1921): the producer return flows pps -> owed -> the sink RHS.
 # return-sink seam class, adversarial_actor "integrator" (the producer is pluggable via the interface). The
 # PRODUCER is deliberately the LARGER .sol, so M1's largest-first bootstrap would pick Strategy as the target;
 # a SYS-solvency row that targets PoolManager instead proves the seam detection overrode the bootstrap. Both
@@ -81,21 +82,22 @@ cp "$FIX/foundry.toml" "$SEAM/foundry.toml"
 cat > "$SEAM/src/PoolManager.sol" <<'SOL'
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
-// Value-CONSUMING contract of the pool: it reads a per-share price the Strategy PRODUCES and settles user
-// balances against it. An adversary controlling the Strategy return can skew what a withdraw pays out.
+// Value-CONSUMING contract of the pool: it reads a per-share price the Strategy PRODUCES and settles a value
+// DERIVED FROM IT into a user balance. An adversary controlling the Strategy return skews what is credited --
+// the composability drain the seam names. The dataflow link (#1921) is real: pps -> owed -> the sink RHS.
 interface IStrategy {
     function pricePerShare() external view returns (uint256);
 }
 contract PoolManager {
     IStrategy public strategy;
-    mapping(address => uint256) public shares;
-    uint256 public totalShares;
+    mapping(address => uint256) public credit;
+    uint256 public totalCredit;
     constructor(IStrategy s) { strategy = s; }
-    function withdraw(uint256 amt) external returns (uint256 assets) {
+    function settle(uint256 shares) external {
         uint256 pps = strategy.pricePerShare(); // external producer read, captured...
-        assets = amt * pps / 1e18;
-        shares[msg.sender] -= amt;              // ...then settled on a balance write (the sink)
-        totalShares -= amt;
+        uint256 owed = shares * pps / 1e18;     // ...derived (one hop) into `owed`...
+        credit[msg.sender] += owed;             // ...then settled on the balance write (sink RHS = owed)
+        totalCredit += owed;
     }
 }
 SOL
@@ -175,6 +177,42 @@ ZERO_MAP="$WORK/zero-zones.fixture.txt"
     echo "CUSTODY|src|true"
 } > "$ZERO_MAP"
 
+# The #1921 NEGATIVE repro: a consumer that DOES capture a cross-file producer-call return, and DOES contain a
+# settlement sink, but the two are UNRELATED -- the captured `bal` feeds only a require() sanity check while the
+# mint is driven by the deposit ARGUMENT. Before #1921 `has_sink` + "some capture exists" fired `return-sink`
+# here spuriously; with the dataflow link required, the captured value never reaches the sink, so NO seam.
+NEG="$WORK/neg-target"
+mkdir -p "$NEG/src"
+cp "$FIX/foundry.toml" "$NEG/foundry.toml"
+cp "$SEAM/src/Strategy.sol" "$NEG/src/Strategy.sol"   # same interface-typed producer, so ONLY the dataflow gate differs
+cat > "$NEG/src/DisjointVault.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+// #1921 false-positive repro: the producer read (`bal`) is used ONLY in a sanity require; the minted shares
+// come from the `amount` ARGUMENT, not from `bal`. Capture and sink both exist but are causally disjoint, so
+// this is NOT a composition seam -- the dataflow-link requirement must reject it.
+interface IStrategy {
+    function pricePerShare() external view returns (uint256);
+    function balanceOf(address) external view returns (uint256);
+}
+contract DisjointVault {
+    IStrategy public strategy;
+    mapping(address => uint256) public shares;
+    uint256 public totalShares;
+    constructor(IStrategy s) { strategy = s; }
+    function deposit(uint256 amount) external returns (uint256 minted) {
+        uint256 bal = strategy.balanceOf(address(this)); // captured producer return, unrelated to minting
+        minted = amount;                                  // minted from the ARGUMENT, not from `bal`
+        shares[msg.sender] += minted;                     // settlement sink present, but fed by `amount`
+        totalShares += minted;
+        require(bal >= 0, "sanity");                      // `bal` reaches only this check, never the sink
+    }
+}
+SOL
+cat > "$WORK/neg-mech.json" <<'JSON'
+[{"id":"src","name":"src","files":["src/DisjointVault.sol","src/Strategy.sol"],"scope_files":["src/DisjointVault.sol","src/Strategy.sol"],"loc":40,"hardening_score":50}]
+JSON
+
 STUB="$WORK/agentis-stub"
 cp "$FIX/agentis-stub.sh" "$STUB"; chmod +x "$STUB"
 
@@ -206,6 +244,23 @@ assert "composition_surfaces" not in zz, "zero-seam zone wrongly gained a compos
 PY
 then pass "(u) composition-surfaces.py fires on the A-consumes-B fixture (consumer PoolManager, producer Strategy, integrator adversary) and is silent (no key) on the zero-seam fixture"
 else fail "(u) unit detection" "the helper's fire/no-fire behaviour is wrong"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (n) #1921 DATAFLOW LINK: the QA false-positive repro (a captured producer return + an UNRELATED same-file
+# sink) must NOT be flagged -- the captured value has to actually flow into the sink. This is the negative
+# guard that would have failed before the #1921 fix (has_sink + some-capture fired return-sink independently).
+# ----------------------------------------------------------------------------------------------------------
+python3 "$HELPER" annotate --zones "$WORK/neg-mech.json" --repo "$NEG" >"$WORK/neg-annot.json" 2>/dev/null
+if python3 - "$WORK/neg-annot.json" <<'PY'
+import sys, json
+z = {x["id"]: x for x in json.load(open(sys.argv[1], encoding="utf-8"))}["src"]
+assert "composition_surfaces" not in z, \
+    "the #1921 repro (producer read used only in a require, mint from the argument) wrongly fired a seam: %r" \
+    % z.get("composition_surfaces")
+PY
+then pass "(n) #1921 dataflow link: the disjoint-capture repro (bal read only in a require, mint from the argument) is NOT flagged -- capture and sink must be dataflow-linked, not two independent whole-file predicates"
+else fail "(n) #1921 disjoint capture rejected" "the captured-but-unrelated producer read still over-fires return-sink"
 fi
 
 # ----------------------------------------------------------------------------------------------------------

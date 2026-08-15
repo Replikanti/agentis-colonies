@@ -74,12 +74,8 @@ _TYPED_ID_RE = re.compile(
     r"([a-z_$][A-Za-z0-9_$]*)\s*[;=,)]"
 )
 _FUNCTION_RE = re.compile(r"^\s*function\s+([A-Za-z0-9_$]+)\s*\(")
-# A settlement sink: an external value move OR a balance/accounting slot write.
-_SINK_RE = re.compile(
-    r"\.\s*(?:safeTransferFrom|safeTransfer|transferFrom|transfer|_mint|_burn|mint|burn)\s*\("
-    r"|[A-Za-z_$][A-Za-z0-9_$]*\s*\[[^\]]*\]\s*(?:\+=|-=|=[^=])"
-    r"|\b(?:totalSupply|totalShares|totalAssets|totalDebt|totalCollateral)\s*(?:\+=|-=)"
-)
+# The settlement sinks a producer-return value must flow into (#1921) are defined near _producer_return_settled
+# below (an external value move, a mapping/array slot write, an accounting-accumulator +=/-=).
 # The coarse pre-filter: the adapter/wrapper/oracle naming + import prior zone-mapper.ag keys its C10/C11 and
 # C6 nets on (import/type-line signals, not just contract names). Case-insensitive.
 _PRIOR_RE = re.compile(
@@ -194,6 +190,68 @@ def parse_source(text):
     return contracts
 
 
+# --- #1921 dataflow link -----------------------------------------------------------------------------------
+# A producer call `b.foo()` assigned into a variable that is then a settlement operand. Capture the LHS.
+_CAPTURE_RE = re.compile(
+    r"([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*[A-Za-z0-9_$]+\s*\("
+)
+# Any assignment `<lhs> (=|+=|-=) <rhs>` — used to propagate taint ONE hop (a value derived from a captured
+# var). The LHS token is the identifier immediately before the operator (a bare local; a mapping/array write
+# `x[..] = ..` is handled separately as a sink, not a taint source).
+_ASSIGN_RE = re.compile(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:\+=|-=|=)\s*(.+)$")
+# An external value MOVE whose amount argument(s) may carry the tainted value.
+_MOVE_SINK_RE = re.compile(
+    r"\.\s*(?:safeTransferFrom|safeTransfer|transferFrom|transfer|_mint|_burn|mint|burn)\s*\((.*)\)"
+)
+# A balance/accounting WRITE: a mapping/array slot write, or a `+=`/`-=` accumulator on a bare identifier
+# (a plain `=` on a bare local is an intermediate value, NOT a settlement, so it is deliberately excluded).
+_SLOT_SINK_RE = re.compile(r"[A-Za-z_$][A-Za-z0-9_$]*\s*\[[^\]]*\]\s*(?:\+=|-=|=[^=])(.+)$")
+_ACC_SINK_RE = re.compile(r"\b[A-Za-z_$][A-Za-z0-9_$]*\s*(?:\+=|-=)\s*(.+)$")
+
+
+def _producer_return_settled(text, called_vars):
+    """True when the return of a producer call (a call on a var in `called_vars`) FLOWS into a settlement sink
+    (#1921). Flow set = the captured LHS plus one-hop derivations (the LHS of an assignment whose RHS mentions a
+    captured var). Settlement = a flow var appearing inside a transfer/mint/burn amount, or on the RHS of a
+    balance/accounting slot write. No flow-to-sink => not a return-sink seam (a missed seam degrades to the M1
+    bootstrap; a false seam is the harm)."""
+    stmts = re.split(r"[;{}\n]", text)
+    seeds = set()
+    for st in stmts:
+        m = _CAPTURE_RE.search(st)
+        if m and m.group(2) in called_vars:
+            seeds.add(m.group(1))
+    if not seeds:
+        return False
+
+    def mentions(expr, names):
+        return any(re.search(r"\b" + re.escape(n) + r"\b", expr) for n in names)
+
+    # One-hop derivations: the bare-LHS of an assignment whose RHS mentions a seed (never the capture stmt
+    # itself, whose RHS is the producer call).
+    flow = set(seeds)
+    for st in stmts:
+        if _CAPTURE_RE.search(st):
+            continue
+        am = _ASSIGN_RE.search(st)
+        if am and mentions(am.group(2), seeds):
+            flow.add(am.group(1))
+
+    for st in stmts:
+        if _CAPTURE_RE.search(st):
+            continue  # the capture line is the SOURCE of the value, never its settlement
+        mv = _MOVE_SINK_RE.search(st)
+        if mv and mentions(mv.group(1), flow):
+            return True
+        sw = _SLOT_SINK_RE.search(st)
+        if sw and mentions(sw.group(1), flow):
+            return True
+        ac = _ACC_SINK_RE.search(st)
+        if ac and mentions(ac.group(1), flow):
+            return True
+    return False
+
+
 class ZoneScan(object):
     """A source cache + declaration index over ONE zone's own Solidity files."""
 
@@ -270,25 +328,24 @@ class ZoneScan(object):
                 called_vars.add(var)
         if not producers:
             return None
-        # Seam class: at least one of the three shapes must hold, all requiring a settlement sink (the value
-        # the consumer moves ON the producer's return — the object of a composability drain).
-        has_sink = bool(_SINK_RE.search(text))
-        lines = text.splitlines()
-        seam_class = None
-        if has_sink:
-            # return-sink: the return of a producer call is CAPTURED (assigned / declared) in the consumer.
-            for var in called_vars:
-                cap = re.compile(r"=\s*" + re.escape(var) + r"\s*\.\s*[A-Za-z0-9_$]+\s*\(")
-                if cap.search(text):
-                    seam_class = "return-sink"
-                    break
-            if seam_class is None and any(_HOOK_RE.match(l) for l in lines):
-                seam_class = "hook-delta"
-            if seam_class is None and any(_DEPOSIT_RE.match(l) for l in lines) \
-                    and any(_WITHDRAW_RE.match(l) for l in lines):
-                seam_class = "adapter-roundtrip"
-        if seam_class is None:
+        # #1921 dataflow link: the value a producer call RETURNS must actually FLOW into a settlement sink.
+        # "some sink exists anywhere" and "some producer-call return is captured" are
+        # INDEPENDENT whole-file predicates — a balance/price read used only in a sanity check, next to an
+        # UNRELATED mint/transfer from a function argument, is NOT a composition seam. Require the captured
+        # variable (or a one-hop derivation of it) to appear as an OPERAND of the sink; if it never reaches the
+        # sink, this is not a return-sink seam. Conservative by design: a missed seam degrades to the M1
+        # bootstrap (acceptable) — a false seam is the harm. The hook-delta and adapter-roundtrip labels share
+        # the SAME independent-predicate weakness, so they are gated on the same dataflow link and only relabel
+        # a genuinely-settled seam that additionally carries a hook / deposit+withdraw shape.
+        if not _producer_return_settled(text, called_vars):
             return None
+        lines = text.splitlines()
+        if any(_HOOK_RE.match(l) for l in lines):
+            seam_class = "hook-delta"
+        elif any(_DEPOSIT_RE.match(l) for l in lines) and any(_WITHDRAW_RE.match(l) for l in lines):
+            seam_class = "adapter-roundtrip"
+        else:
+            seam_class = "return-sink"
         return {
             "consumer": consumer_rel,
             "producers": sorted(producers),
