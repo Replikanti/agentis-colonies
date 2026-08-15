@@ -1575,6 +1575,25 @@ if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/deep-hunt-ab.sh" ]; then
     fi
 fi
 
+# --- dark-factory composable-lens TRANSFER bench (#1914 M4) ---
+# run-composable-lens-bench.sh is the ONLY harness that exercises run-zone-hunt.sh --deep-hunt --composable-lens
+# (run-corpus-bench.sh --hunt never passes --deep-hunt, so the general-solvency SYS-solvency lens is never hit
+# there). Its --self-test (CI-safe, no network / LLM / forge) drives composable-lens-tabulate.py — the per-target
+# {FINDING, CLEAN, HARNESS_ERROR} tabulation (HARNESS_ERROR distinct from CLEAN, a GAP not a clean negative), the
+# ADVERSARY-PATH assertion (a `hooks: address(0)` run is a VACUOUS CLEAN, never a meaningful catch), and the M4
+# catch-counting gate (>=2 distinct catch targets) — over SYNTHETIC inputs, then runs ONE real OFFLINE deep-hunt
+# --composable-lens over fixtures/deep-hunt/ through the --invariant-fixture + --agentis stub seam. The real
+# transfer MEASUREMENT is the harness's --live path, operator-run on cloned corpus targets, never on CI.
+if [ -x "$REPO_ROOT/dark-factory/bench/composable-lens-bench/run-composable-lens-bench.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/bench/composable-lens-bench/run-composable-lens-bench.sh" --self-test 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: composable-lens transfer bench self-test (#1914 M4)"
+    else
+        fail "dark-factory: composable-lens transfer bench self-test regressed (#1914 M4)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory generation-recall harness (#1730) ---
 # generation-recall.sh scores the GENERATOR's hypotheses (the breadth hunter's pre-refute candidates + the
 # deep-hunt lens's INVARIANT|<file:fn>|<verdict> targets, verdict IGNORED) against ground truth, isolating the
