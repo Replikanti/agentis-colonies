@@ -607,8 +607,11 @@ cat > "$_ml_tmp/zones.json" <<'JSON'
    "files": ["src/interfaces/IPool.sol"]}
 ]
 JSON
-_rows_n2="$(python3 "$_ml_tmp/select.py" "$_ml_tmp/zones.json" "$_ml_tmp/repo" 1 0 2)"
-_rows_n1="$(python3 "$_ml_tmp/select.py" "$_ml_tmp/zones.json" "$_ml_tmp/repo" 1 0 1)"
+# The trailing 0 is #1914's --composable-lens argv (OFF) — this block guards the PER-CLASS #1795 selection, and
+# with the general lens off the emitted rows are exactly the pre-#1914 ones. Its own guard: #1914 M1's
+# tools/test-deep-hunt-composable-lens.sh.
+_rows_n2="$(python3 "$_ml_tmp/select.py" "$_ml_tmp/zones.json" "$_ml_tmp/repo" 1 0 2 0)"
+_rows_n1="$(python3 "$_ml_tmp/select.py" "$_ml_tmp/zones.json" "$_ml_tmp/repo" 1 0 1 0)"
 
 # (i) the value-custody zone emits its CUSTODY row FIRST (byte-identical to the pre-#1795 single row) ...
 if [ "$(printf '%s\n' "$_rows_n2" | head -1)" = "$(printf 'src\tsrc/Pool.sol\tC6')" ]; then

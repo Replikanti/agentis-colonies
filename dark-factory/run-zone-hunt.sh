@@ -74,6 +74,17 @@
 #                       longer shadowed by the custody-first routing on a value-custody zone. Rows are ordered
 #                       custody-primary first, then C2, C16, C5 (the coverage-map rarity order) and truncated to
 #                       N — so N=1 reproduces the pre-#1795 single-lens fan-out.
+#   --composable-lens   #1914 (M1): emit ONE ADDITIONAL class-agnostic GENERAL-SOLVENCY row (stable class token
+#                       `SYS-solvency`) per custody/composition surface, in ADDITION to the per-class rows —
+#                       target = the zone's primary .sol, aux = its next-largest co-system .sol — so the
+#                       composition seam is probed by a NAMED lens instead of only as an aux modifier on a
+#                       per-class row. The row flows through the unchanged STAGE 4.5 loop into
+#                       run-invariant-hunt.sh --class SYS-solvency --aux ... (composable-fresh mode; the prover's
+#                       class_to_keyword() passes an unknown token through to its generic menus, so no .ag
+#                       change). It COUNTS against --deep-hunt-max-lenses (emitted only when the zone's
+#                       per-class rows leave headroom under the cap) and its aux breadth honours
+#                       --deep-hunt-aux-max. Requires --deep-hunt. DEFAULT OFF => `.deep-hunt-targets.tsv` and
+#                       every downstream artifact are byte-identical to a pre-#1914 run.
 #   --deep-hunt-repair-rounds <N>  #1717: run-invariant-hunt.sh --repair-rounds for every deep-hunt target
 #                       (default 4 — a value-custody zone whose first harness draft doesn't compile gets
 #                       more bounded compile-repair attempts before HARNESS_ERROR; the loop still
@@ -171,6 +182,10 @@ IN_SCOPE="" ; ASSET_CONTRACTS="" ; IMPACT_THRESHOLD=""
 MAP_FIXTURE="" ; BRIEF_FIXTURE="" ; PASS_FIXTURE="" ; DROP_DIR=""
 DEEP_HUNT=0 ; INV_FIXTURE="" ; DEEP_HUNT_MAX_TARGETS=1 ; DEEP_HUNT_REPAIR_ROUNDS=4 ; DEEP_HUNT_AUX_MAX=0
 DEEP_HUNT_MAX_LENSES=2  # #1795: max lens classes per deep-hunt zone (custody-primary first, then C2/C16/C5).
+# #1914 (M1): the class-agnostic GENERAL-SOLVENCY lens (`SYS-solvency`). 0 (default) = OFF = STAGE 4.5 emits
+# exactly the per-class rows it emitted before, so `.deep-hunt-targets.tsv` is byte-identical. The default-on
+# flip is deferred to M4 (gated on the transfer validation); the disable path stays byte-identical forever.
+DEEP_HUNT_COMPOSABLE_LENS=0
 DEEP_HUNT_ONLY=0  # #1774: apply ONLY the STAGE 4.5 lens over an existing breadth --out (requires --deep-hunt).
 # #1830: per-zone hunt budget + targeted re-hunt. Every knob here defaults OFF/inert — with them off STAGE 3's
 # run-discovery.sh invocation gains no argument. The COVERAGE RECORD itself is NOT gated on any of them.
@@ -211,6 +226,7 @@ while [ $# -gt 0 ]; do
     --deep-hunt-max-targets) nv "$#"; DEEP_HUNT_MAX_TARGETS="$2"; shift 2 ;;
     --deep-hunt-aux-max) nv "$#"; DEEP_HUNT_AUX_MAX="$2"; shift 2 ;;
     --deep-hunt-max-lenses) nv "$#"; DEEP_HUNT_MAX_LENSES="$2"; shift 2 ;;
+    --composable-lens)  DEEP_HUNT_COMPOSABLE_LENS=1; shift ;;
     --deep-hunt-repair-rounds) nv "$#"; DEEP_HUNT_REPAIR_ROUNDS="$2"; shift 2 ;;
     --pattern-store)    nv "$#"; DEEP_FWD+=(--pattern-store "$2"); shift 2 ;;
     --replay-corpus)    DEEP_FWD+=(--replay-corpus); shift ;;
@@ -249,6 +265,9 @@ case "$DEEP_HUNT_MAX_LENSES" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt
 case "$DEEP_HUNT_REPAIR_ROUNDS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be a positive integer (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2 ;; esac
 [ "$DEEP_HUNT_REPAIR_ROUNDS" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be >= 1 (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2; }
 [ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires --deep-hunt" >&2; exit 2; }
+# #1914 (M1): the general-solvency lens is a STAGE 4.5 selection knob — boolean, so it needs no integer
+# validation, but it is meaningless without the stage that consumes it (the --deep-hunt-only precedent above).
+[ "$DEEP_HUNT_COMPOSABLE_LENS" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --composable-lens requires --deep-hunt" >&2; exit 2; }
 # #1830: the budget/re-hunt knobs use the same integer validation + exit-2 shape as every flag above.
 case "$ZONE_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-cell-budget must be a non-negative integer (got '$ZONE_CELL_BUDGET')" >&2; exit 2 ;; esac
 case "$RUN_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --run-cell-budget must be a non-negative integer (got '$RUN_CELL_BUDGET')" >&2; exit 2 ;; esac
@@ -780,12 +799,17 @@ if [ "$DEEP_HUNT" -eq 1 ]; then
     # emitted — every row is byte-identical to before, so single-target deep-hunt runs are unchanged.
     # #1795: a zone now emits ONE ROW PER APPLICABLE LENS CLASS (bounded by --deep-hunt-max-lenses), not one row
     # for its single dominant class — see lens_classes() below.
+    # #1914 (M1): with --composable-lens a custody/composition surface additionally emits ONE class-agnostic
+    # `SYS-solvency` row (4 columns, aux always populated) — the NAMED general-solvency lens. Flag off (the
+    # default) => not a single byte of this file changes.
     DEEP_TARGETS="$OUT/.deep-hunt-targets.tsv"
-    python3 - "$MAP/zones.json" "$REPO" "$DEEP_HUNT_MAX_TARGETS" "$DEEP_HUNT_AUX_MAX" "$DEEP_HUNT_MAX_LENSES" > "$DEEP_TARGETS" <<'PY'
+    python3 - "$MAP/zones.json" "$REPO" "$DEEP_HUNT_MAX_TARGETS" "$DEEP_HUNT_AUX_MAX" "$DEEP_HUNT_MAX_LENSES" \
+             "$DEEP_HUNT_COMPOSABLE_LENS" > "$DEEP_TARGETS" <<'PY'
 import sys, os, json
 zones = json.load(open(sys.argv[1], encoding="utf-8"))
 repo, max_targets, aux_max = sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 max_lenses = int(sys.argv[5])
+composable = int(sys.argv[6])  # #1914 (M1): 0 = OFF = every row below is byte-identical to a pre-#1914 run.
 if not isinstance(zones, list):
     zones = []
 def loc(rel):
@@ -805,6 +829,11 @@ CUSTODY_PRIMARY_CLASSES = ("C6", "C10", "C11")
 # #1785) join C2 here so their zones are actually selected and hunted.
 IMPLEMENTED_NONCUSTODY = ("C2", "C16", "C5")
 IMPLEMENTED_LENS_CLASSES = CUSTODY_PRIMARY_CLASSES + IMPLEMENTED_NONCUSTODY
+# #1914 (M1): the CLASS-AGNOSTIC general-solvency lens token. Deliberately NOT a coverage-map C-code — it names
+# a SURFACE (the composition/custody seam), not a bug class, and the prover's class_to_keyword() passes an
+# unknown token straight through to its generic menus, so the routing needs no .ag change. It is never part of
+# IMPLEMENTED_LENS_CLASSES: the per-class precedence above (dominant_class / lens_classes) stays untouched.
+SYS_SOLVENCY_CLASS = "SYS-solvency"
 def dominant_class(classes):
     # #1783: C2 (Oracle integrity) is appended AFTER the C6/C10/C11 value-custody-primary codes, so it wins
     # only when no value-custody-primary class is present — byte-identical routing for every zone that has
@@ -881,6 +910,29 @@ for z in zones:
                 print("%s\t%s\t%s\t%s" % (zid.replace("\t", " "), rel.replace("\t", " "), dclass, auxcol))
             else:
                 print("%s\t%s\t%s" % (zid.replace("\t", " "), rel.replace("\t", " "), dclass))
+    # #1914 (M1): the GENERAL-SOLVENCY row — ONE extra, class-agnostic row per custody/composition surface,
+    # emitted AFTER (and in ADDITION to) the per-class rows above, for the zone's PRIMARY .sol only. Bootstrap
+    # surface set: `value_custody` (M2 replaces this with real seam detection). Its aux column carries the
+    # zone's next-largest co-system .sol, which is what puts run-invariant-hunt.sh into composable-fresh mode.
+    if not composable or not z.get("value_custody"):
+        continue
+    # CAP RULE (--deep-hunt-max-lenses): the SYS-solvency row COUNTS against the cap, so it is emitted only when
+    # the zone's per-class rows leave headroom under it (len(lenses) < max_lenses). At the default max_lenses=2 a
+    # single-lens custody zone gains the general lens; a zone already fanned out to the cap keeps its per-class
+    # rows and is NOT pushed over it. N=1 therefore stays exactly one lens row per zone, as before.
+    if len(lenses) >= max_lenses:
+        continue
+    primary = ranked[0]
+    # AUX BREADTH: bounded by --deep-hunt-aux-max like the per-class rows — EXCEPT that aux-max 0 (the default)
+    # means "per-class rows stay single-target", not "the general lens has no co-system". An empty aux column
+    # would drop this row out of composable-fresh mode and make the lens vacuous, so with the flag on it takes
+    # its OWN minimal breadth of 1 co-system contract; an operator-set aux-max is honoured verbatim.
+    sys_aux_max = aux_max if aux_max > 0 else 1
+    sys_aux = [f for f in ranked if f != primary][:sys_aux_max]
+    if not sys_aux:
+        continue  # single-.sol zone: no co-system contract, so a SYS-solvency row would be vacuous — skip it.
+    sys_auxcol = ",".join(a.replace("\t", " ") for a in sys_aux)
+    print("%s\t%s\t%s\t%s" % (zid.replace("\t", " "), primary.replace("\t", " "), SYS_SOLVENCY_CLASS, sys_auxcol))
 PY
     DEEP_FINDINGS=0
     while IFS='	' read -r ZID RELFILE DCLASS AUXFILES || [ -n "${ZID:-}" ]; do
