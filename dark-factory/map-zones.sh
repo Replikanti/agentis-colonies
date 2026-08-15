@@ -337,6 +337,32 @@ else
   echo "map-zones.sh: lib/inheritance.py not found (continuing without the inheritance appendix)" >&2
 fi
 
+# --- #1914 M2 composition surfaces: route the general-solvency lens onto the real consumer->producer seam ---
+# A value_custody zone's SYS-solvency deep-hunt row (run-zone-hunt.sh --composable-lens) targets the largest
+# .sol by BOOTSTRAP (M1). lib/composition-surfaces.py replaces that with a static seam scan: when the zone holds
+# a contract A that consumes a value another zone contract B produces (an external call return settled through a
+# transfer/mint/burn/balance-write, a hook-return delta, or a deposit/withdraw adapter round-trip), it attaches
+# an additive `composition_surfaces` record naming A (consumer) + B (producer[s]) that the merge below copies
+# through and run-zone-hunt.sh reads to aim the lens. Follows the inheritance-appendix precedent for a degrade-
+# to-no-op helper: absent or failing => one stderr line + the UNTOUCHED zone model (M1's bootstrap, exactly).
+# Option C: a zone with NO detected seam gains NO key, so a target without a composition seam is byte-identical.
+# `files`, `loc`, `hardening_score` and `scope_files` are never touched, so zone identity — and scope.tsv — is
+# byte-identical either way.
+COMPOSITION="$HERE/lib/composition-surfaces.py"
+COMPOSITION_LOG="$OUT/.composition-surfaces.log"
+: > "$COMPOSITION_LOG"
+if [ -f "$COMPOSITION" ]; then
+  if MECH_COMPOSED="$(python3 "$COMPOSITION" annotate --zones "$MECH_JSON" --repo "$REPO" 2>"$COMPOSITION_LOG")" \
+     && [ -n "$MECH_COMPOSED" ]; then
+    printf '%s' "$MECH_COMPOSED" > "$MECH_JSON"
+    if [ -s "$COMPOSITION_LOG" ]; then cat "$COMPOSITION_LOG" >&2; fi
+  else
+    echo "map-zones.sh: composition-surfaces helper failed (continuing with the untouched zone model; see $COMPOSITION_LOG)" >&2
+  fi
+else
+  echo "map-zones.sh: lib/composition-surfaces.py not found (continuing without composition-surface detection)" >&2
+fi
+
 # --- classification: --fixture -> substrate (agentis) -> mechanical skeleton --------------------------
 CLASS_LINES="$OUT/.zone-classes.txt"
 : > "$CLASS_LINES"
@@ -557,6 +583,11 @@ for z in mech:
     if z.get("abstract_base"):
         z_out["abstract_base"] = True
         z_out["implementation_appendix"] = z.get("implementation_appendix", [])
+    # #1914 M2: the composition-surface record, copied through ONLY when lib/composition-surfaces.py actually
+    # detected a consumer->producer seam. A target with no seam emits a byte-identical zones.json (option C).
+    # run-zone-hunt.sh --composable-lens reads it to target the CONSUMER and thread the PRODUCER(s) as --aux.
+    if z.get("composition_surfaces"):
+        z_out["composition_surfaces"] = z["composition_surfaces"]
     if z["id"] in failed_zones:
         z_out["classification_failed"] = True
     zones.append(z_out)
