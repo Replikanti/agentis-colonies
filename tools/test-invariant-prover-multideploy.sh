@@ -144,6 +144,8 @@ printf '%s\n' "$seed_body" | grep -Fq '=== AUX CONTRACT (' \
     || d_fail="${d_fail} no-aux-delimiter"
 printf '%s\n' "$seed_body" | grep -Eq 'budget grows to ~?180 lines' \
     || d_fail="${d_fail} no-grown-budget"
+printf '%s\n' "$seed_body" | grep -Fq 'adversarial implementation of it' \
+    || d_fail="${d_fail} no-adversarial-actor-mandate"
 
 if [ -z "$d_fail" ]; then
     pass "(d) compose_fresh_seed() emits the deploy+wire directive + the cross-contract invariant + the ~180-line budget"
