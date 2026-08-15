@@ -85,6 +85,13 @@
 #                       per-class rows leave headroom under the cap) and its aux breadth honours
 #                       --deep-hunt-aux-max. Requires --deep-hunt. DEFAULT OFF => `.deep-hunt-targets.tsv` and
 #                       every downstream artifact are byte-identical to a pre-#1914 run.
+#   --no-composable-lens #1914 (M4): explicitly FORCE the general-solvency lens OFF (DEEP_HUNT_COMPOSABLE_LENS=0),
+#                       the mirror of --composable-lens. INERT TODAY — the default is already 0, so
+#                       `--deep-hunt --no-composable-lens` is byte-identical to `--deep-hunt`. It exists so the
+#                       later default-ON flip (gated on the M4 transfer validation) is a one-line default change:
+#                       once the default is 1, this flag is the documented, byte-identical opt-out that keeps
+#                       every pre-flip run reproducible. Last flag wins (`--composable-lens --no-composable-lens`
+#                       => OFF), so an A/B harness can pin either polarity explicitly.
 #   --deep-hunt-repair-rounds <N>  #1717: run-invariant-hunt.sh --repair-rounds for every deep-hunt target
 #                       (default 4 — a value-custody zone whose first harness draft doesn't compile gets
 #                       more bounded compile-repair attempts before HARNESS_ERROR; the loop still
@@ -227,6 +234,7 @@ while [ $# -gt 0 ]; do
     --deep-hunt-aux-max) nv "$#"; DEEP_HUNT_AUX_MAX="$2"; shift 2 ;;
     --deep-hunt-max-lenses) nv "$#"; DEEP_HUNT_MAX_LENSES="$2"; shift 2 ;;
     --composable-lens)  DEEP_HUNT_COMPOSABLE_LENS=1; shift ;;
+    --no-composable-lens) DEEP_HUNT_COMPOSABLE_LENS=0; shift ;;
     --deep-hunt-repair-rounds) nv "$#"; DEEP_HUNT_REPAIR_ROUNDS="$2"; shift 2 ;;
     --pattern-store)    nv "$#"; DEEP_FWD+=(--pattern-store "$2"); shift 2 ;;
     --replay-corpus)    DEEP_FWD+=(--replay-corpus); shift ;;
