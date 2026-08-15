@@ -911,9 +911,8 @@ for z in zones:
             else:
                 print("%s\t%s\t%s" % (zid.replace("\t", " "), rel.replace("\t", " "), dclass))
     # #1914 (M1): the GENERAL-SOLVENCY row — ONE extra, class-agnostic row per custody/composition surface,
-    # emitted AFTER (and in ADDITION to) the per-class rows above, for the zone's PRIMARY .sol only. Bootstrap
-    # surface set: `value_custody` (M2 replaces this with real seam detection). Its aux column carries the
-    # zone's next-largest co-system .sol, which is what puts run-invariant-hunt.sh into composable-fresh mode.
+    # emitted AFTER (and in ADDITION to) the per-class rows above. Its aux column carries a co-system .sol,
+    # which is what puts run-invariant-hunt.sh into composable-fresh mode.
     if not composable or not z.get("value_custody"):
         continue
     # CAP RULE (--deep-hunt-max-lenses): the SYS-solvency row COUNTS against the cap, so it is emitted only when
@@ -922,15 +921,34 @@ for z in zones:
     # rows and is NOT pushed over it. N=1 therefore stays exactly one lens row per zone, as before.
     if len(lenses) >= max_lenses:
         continue
-    primary = ranked[0]
     # AUX BREADTH: bounded by --deep-hunt-aux-max like the per-class rows — EXCEPT that aux-max 0 (the default)
     # means "per-class rows stay single-target", not "the general lens has no co-system". An empty aux column
     # would drop this row out of composable-fresh mode and make the lens vacuous, so with the flag on it takes
     # its OWN minimal breadth of 1 co-system contract; an operator-set aux-max is honoured verbatim.
     sys_aux_max = aux_max if aux_max > 0 else 1
-    sys_aux = [f for f in ranked if f != primary][:sys_aux_max]
+    # #1914 (M2): prefer the REAL composition seam over M1's largest/next-largest bootstrap. When
+    # lib/composition-surfaces.py (via map-zones.sh) attached `composition_surfaces`, aim the lens at the
+    # value-CONSUMING contract A (target) and thread the value-PRODUCING contract(s) B as --aux, so the
+    # composable-fresh harness wires B as the (possibly adversarial) counterparty. Pick ONE seam deterministically
+    # (most producers, then consumer path, then joined producers) so the row count per zone stays <= 1, mirroring
+    # the helper's own ordering. Only files that are real .sol of THIS zone (in `sols`) are eligible, and a
+    # producer can never be the consumer itself. When NO seam was attached (option C), or none resolves against
+    # this zone's files, fall through to the EXACT M1 bootstrap below — byte-identical to a pre-M2 run.
+    seam = None
+    for s in (z.get("composition_surfaces") or []):
+        cons = s.get("consumer")
+        prods = [p for p in (s.get("producers") or []) if p in sols and p != cons]
+        if cons in sols and prods:
+            if seam is None or (-len(prods), cons, ",".join(prods)) \
+                    < (-len(seam[1]), seam[0], ",".join(seam[1])):
+                seam = (cons, prods)
+    if seam is not None:
+        primary, sys_aux = seam[0], seam[1][:sys_aux_max]
+    else:
+        primary = ranked[0]
+        sys_aux = [f for f in ranked if f != primary][:sys_aux_max]
     if not sys_aux:
-        continue  # single-.sol zone: no co-system contract, so a SYS-solvency row would be vacuous — skip it.
+        continue  # single-.sol zone / unresolvable seam: no co-system contract, so the row would be vacuous.
     sys_auxcol = ",".join(a.replace("\t", " ") for a in sys_aux)
     print("%s\t%s\t%s\t%s" % (zid.replace("\t", " "), primary.replace("\t", " "), SYS_SOLVENCY_CLASS, sys_auxcol))
 PY
