@@ -510,19 +510,33 @@ for entry in ${AUX_ABS_SPECS+"${AUX_ABS_SPECS[@]}"}; do
   _aux_idx=$((_aux_idx + 1))
 done
 
+# #1915: composable-fresh generation (INV_AUX non-empty) deploys+wires the target AND every aux contract
+# in one prompt -- materially heavier than the single-target read the flat 600s budget (line ~517 below)
+# was sized for. Scale by aux count (600s base + 600s per staged aux contract), capped at 1_800_000ms
+# (30 min) so a large --aux set cannot grow the budget unboundedly. INV_AUX empty (no --aux) => stays
+# 600000 => byte-identical to today. agentis-core's retry re-issues the SAME prompt against the SAME
+# budget (no escalation) -- the initial value must be sufficient on its own, a retry is not a rescue.
+GEN_TIMEOUT_MS=600000
+if [ -n "$INV_AUX" ]; then
+  GEN_TIMEOUT_MS=$((600000 + 600000 * _aux_idx))
+  [ "$GEN_TIMEOUT_MS" -gt 1800000 ] && GEN_TIMEOUT_MS=1800000
+fi
+
 # init the agentis store FIRST (before any .agentis/ subdir exists), else HEAD is not set.
 ( cd "$RUN" && "$AGENTIS" init >/dev/null 2>&1 )
 {
   echo "llm.backend = $BACKEND"
-  # 600s: writing a stateful-invariant handler for a real protocol is the same order of cost as a discovery read.
-  [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = 600000"; }
+  # 600s base: writing a stateful-invariant handler for a real protocol is the same order of cost as a
+  # discovery read; #1915 scales this up via GEN_TIMEOUT_MS (computed above) for composable-fresh mode.
+  [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = $GEN_TIMEOUT_MS"; }
   # idle_ms 12000 (> native 4000 default): with 4000, flat-cyborg fires IDLE during claude's think-pause while
   # it writes a stateful-invariant handler and scrapes a TUI chrome element (e.g. the model-name "Fable 5") as
   # the "reply" instead of the generated Solidity — forge then cannot compile it and the run degrades to
   # HARNESS_ERROR. Same failure #1707 fixed for run-discovery.sh; the deep-hunt wiring (#1714) never propagated
   # the fix to this path. Default the model to opus so the invariant path is never silently left on the weaker
   # default model when no --model is threaded through by the caller (run-zone-hunt.sh --deep-hunt does not).
-  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"; }
+  # #1915: same GEN_TIMEOUT_MS (scaled for composable-fresh mode) as the claude branch above.
+  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = $GEN_TIMEOUT_MS"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"; }
   echo "trace.level = normal"
   # The prover reads code + the fixture and writes/runs the test through exec sh; pass its whole env contract.
   # FM1 (#1041): FORK_URL/FORK_BLOCK thread the fork into the gate; FORK_TARGET is the deployed address the
@@ -540,6 +554,9 @@ done
   # APPENDED at the END so every existing demo's substring/allowlist assertion stays green.
   echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_MATCH,HANDLER_FIXTURE,CODE_PATH,INV_RUNS,INV_DEPTH,INV_SEED,FORGE_INVARIANT,FORK_URL,FORK_BLOCK,FORK_TARGET,FORK_CONTEXT,INV_REPAIR_ROUNDS,INV_AUX,INV_AUDIT_CONTEXT,MUTANT_KILL,INV_CORPUS,INV_CORE_DEP,INV_CORE_FEATURES,INV_ENSEMBLE_VARIANT"
   # A forge invariant run (build + a few hundred fuzzed sequences) far exceeds the 10s default.
+  # #1915: intentionally left UNSCALED -- the observed composable-fresh timeout is on the generation LLM
+  # call (GEN_TIMEOUT_MS above), not the forge-run budget; bump this only if a future run shows a
+  # forge-run-side (not generation-side) timeout under composable mode.
   echo "exec.default_timeout_ms = 600000"
   # Each verify is recorded as experience; invariant-prover fitness reweights over targets.
   echo "learning.enabled = true"
@@ -741,6 +758,11 @@ run_one_candidate() {  # $1 = variant ("" = OFF/single), $2 = INV_OUT path, $3 =
   _vline="$(grep 'INVARIANT|' "$_celllog" | tail -1 || true)"
   if [ -z "$_vline" ]; then
     _cverd="HARNESS_ERROR"
+    # #1915: purely diagnostic -- never changes _cverd -- distinguishes a generation LLM call timeout
+    # (agentis-core's LlmError::Timeout message) from other HARNESS_ERROR causes in the run's own stderr.
+    if grep -q 'LLM call timed out after' "$_celllog" 2>/dev/null; then
+      echo "run-invariant-hunt.sh: [harness-error] generation LLM call timed out (see $_celllog) -- raise GEN_TIMEOUT_MS if this recurs" >&2
+    fi
   else
     _cverd="$(printf '%s' "$_vline" | sed 's/.*INVARIANT|//' | cut -d'|' -f2)"
   fi
