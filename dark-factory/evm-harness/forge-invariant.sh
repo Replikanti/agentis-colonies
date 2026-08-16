@@ -121,6 +121,17 @@ case "$FORK_BLOCK" in '') ;; *[!0-9]*) echo "forge-invariant: --fork-block must 
 command -v forge >/dev/null 2>&1 || {
   echo "forge-invariant: forge not installed (run foundryup; https://getfoundry.sh)" >&2; exit 2; }
 
+# --- #1926 PRE-COMPILE ADJACENT-DUPLICATE-LINE GUARD --------------------------------------------
+# The harness generator occasionally streams a duplication artifact — an unbalanced statement-opener
+# (`bond = BondToken(address(new InvProxy(`) emitted on two adjacent byte-identical lines, leaving the first
+# unclosed → a guaranteed syntax error the repair rounds thrash on. dedup-harness-lines.sh removes only such a
+# provably-broken duplicate (unbalanced-paren, substantive, adjacent, byte-identical — imports/balanced
+# statements are never touched), so BOTH the #1471 grep below and forge operate on the normalized file. Called
+# best-effort: it is a no-op (target left bit-for-bit identical) on every well-formed harness, and a missing
+# helper degrades to today's behaviour, so it can never turn a valid harness into a spurious HARNESS_ERROR.
+_dedup_sh="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/dedup-harness-lines.sh"
+[ -f "$_dedup_sh" ] && sh "$_dedup_sh" "$TARGET_PATH" || true
+
 # --- #1471 TARGET-LINKAGE GATE (fresh-deploy only) ----------------------------------------------
 # When --require-import is set the generated/staged test MUST structurally reference the in-scope target
 # BEFORE we spend a fuzzing budget on it — otherwise a test that imports NOTHING and defines its OWN toy
