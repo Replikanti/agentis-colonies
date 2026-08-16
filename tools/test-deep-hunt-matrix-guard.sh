@@ -42,6 +42,7 @@ summary_exit() {
 run_src="$(cat "$RUNNER")"
 
 # (a) both set call sites guarded with `if ! "$LENSMATRIX" set ... --surface "$ZID"`
+# shellcheck disable=SC2016  # matching the literal source line; $vars must NOT expand
 guarded="$(printf '%s\n' "$run_src" | grep -Fc 'if ! "$LENSMATRIX" set --file "$MATRIX_JSON" --surface "$ZID"' || true)"
 if [ "${guarded:-0}" -ge 2 ]; then
     pass "(a) both lens-surface-matrix 'set' call sites are guarded (if ! ...) -- found $guarded"
@@ -51,6 +52,7 @@ fi
 
 # no BARE (unguarded, start-of-statement) `"$LENSMATRIX" set` may remain -- a line whose first token is
 # the invocation (not preceded by `if ! `) is exactly the pre-fix abort hazard.
+# shellcheck disable=SC2016  # matching the literal source line; $LENSMATRIX must NOT expand
 bare="$(printf '%s\n' "$run_src" | grep -nE '^[[:space:]]*"\$LENSMATRIX" set ' || true)"
 if [ -z "$bare" ]; then
     pass "(a2) no bare/unguarded '\"\$LENSMATRIX\" set' invocation remains"
