@@ -522,15 +522,15 @@ for entry in ${AUX_ABS_SPECS+"${AUX_ABS_SPECS[@]}"}; do
   _aux_idx=$((_aux_idx + 1))
 done
 
-# #1915: composable-fresh generation (INV_AUX non-empty) deploys+wires the target AND every aux contract
-# in one prompt -- materially heavier than the single-target read the flat 600s budget (line ~517 below)
-# was sized for. Scale by aux count (600s base + 600s per staged aux contract), capped at 1_800_000ms
-# (30 min) so a large --aux set cannot grow the budget unboundedly. INV_AUX empty (no --aux) => stays
-# 600000 => byte-identical to today. agentis-core's retry re-issues the SAME prompt against the SAME
+# #1915/#1932: composable-fresh generation (INV_AUX non-empty) deploys+wires the target AND every aux
+# contract in one prompt -- materially heavier than the single-target read the flat 1200s budget (line
+# ~517 below) was sized for. Scale by aux count (1200s base + 600s per staged aux contract), capped at
+# 1_800_000ms (30 min) so a large --aux set cannot grow the budget unboundedly. INV_AUX empty (no --aux)
+# => stays at the flat 1200000 base. agentis-core's retry re-issues the SAME prompt against the SAME
 # budget (no escalation) -- the initial value must be sufficient on its own, a retry is not a rescue.
-GEN_TIMEOUT_MS=600000
+GEN_TIMEOUT_MS=1200000
 if [ -n "$INV_AUX" ]; then
-  GEN_TIMEOUT_MS=$((600000 + 600000 * _aux_idx))
+  GEN_TIMEOUT_MS=$((1200000 + 600000 * _aux_idx))
   [ "$GEN_TIMEOUT_MS" -gt 1800000 ] && GEN_TIMEOUT_MS=1800000
 fi
 
@@ -538,7 +538,7 @@ fi
 ( cd "$RUN" && "$AGENTIS" init >/dev/null 2>&1 )
 {
   echo "llm.backend = $BACKEND"
-  # 600s base: writing a stateful-invariant handler for a real protocol is the same order of cost as a
+  # 1200s base: writing a stateful-invariant handler for a real protocol is the same order of cost as a
   # discovery read; #1915 scales this up via GEN_TIMEOUT_MS (computed above) for composable-fresh mode.
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = $GEN_TIMEOUT_MS"; }
   # idle_ms 12000 (> native 4000 default): with 4000, flat-cyborg fires IDLE during claude's think-pause while
