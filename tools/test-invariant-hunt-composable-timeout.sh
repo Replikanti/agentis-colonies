@@ -5,11 +5,18 @@
 # live to blow the flat 600s `llm.cli_timeout_ms` budget that was sized for a single-
 # target discovery-style read (both on the initial call and agentis-core's retry,
 # which re-issues the SAME prompt against the SAME budget -- no rescue). The fix
-# computes a GEN_TIMEOUT_MS value (600s base + 600s per staged aux contract, capped
+# computes a GEN_TIMEOUT_MS value (1200s base + 600s per staged aux contract, capped
 # at 1_800_000ms) and wires it into BOTH backend config branches; INV_AUX empty (no
-# --aux) stays 600000 => byte-identical single-target path. exec.default_timeout_ms
-# (the forge-run budget) is intentionally left unscaled -- the observed failure is
-# generation-side, not forge-run-side.
+# --aux) stays at the flat 1200000 base. exec.default_timeout_ms (the forge-run
+# budget) is intentionally left unscaled -- the observed failure is generation-side,
+# not forge-run-side.
+#
+# #1932: the base was raised again from 600000 to 1200000 (the exact budget that
+# already succeeded live for the aux=1 case) after the 600s-based scaling still
+# produced HARNESS_ERROR fast-fails on real runs. As a side effect, aux=1 now
+# saturates the 1_800_000ms cap (1200000 + 600000*1 = 1800000), the same value as
+# aux=2 and aux=5 -- not a broken cap, just the formula landing exactly on the
+# guard's boundary one increment earlier than before.
 #
 # Pure bash/awk/grep over the runner -- no agentis runtime, no LLM, no forge
 # required. Auto-discovered and run by tools/colony-lint.sh's `tools/test-*.sh` loop.
@@ -17,11 +24,11 @@
 # Assertions:
 #   (a) The runner defines the GEN_TIMEOUT_MS base/scale/cap computation AND wires
 #       it into BOTH the claude-branch and flat-cyborg-branch `cli_timeout_ms` lines
-#       (not a bare 600000 literal).
+#       (not a bare 1200000 literal).
 #   (b) The extracted GEN_TIMEOUT_MS computation, executed with stubbed INV_AUX /
-#       _aux_idx, yields: 600000 (INV_AUX empty, byte-identical single-target case);
-#       1200000 (_aux_idx=1); 1800000 (_aux_idx=2, cap boundary); 1800000
-#       (_aux_idx=5, cap holds -- doesn't grow unboundedly).
+#       _aux_idx, yields: 1200000 (INV_AUX empty, flat single-target base);
+#       1800000 (_aux_idx=1, now saturates the cap); 1800000 (_aux_idx=2, cap
+#       boundary); 1800000 (_aux_idx=5, cap holds -- doesn't grow unboundedly).
 #   (c) exec.default_timeout_ms = 600000 is still a bare literal (intentionally
 #       unscaled per this plan).
 #
@@ -59,10 +66,10 @@ run_src="$(cat "$RUNNER")"
 # variable into BOTH backend branches' cli_timeout_ms line (a pre-change bare
 # `llm.cli_timeout_ms = 600000` literal on either branch fails here).
 a_fail=""
-printf '%s\n' "$run_src" | grep -Fq 'GEN_TIMEOUT_MS=600000' \
+printf '%s\n' "$run_src" | grep -Fq 'GEN_TIMEOUT_MS=1200000' \
     || a_fail="${a_fail} no-base"
 # shellcheck disable=SC2016  # matching the literal assignment line, $ must not expand
-printf '%s\n' "$run_src" | grep -Fq 'GEN_TIMEOUT_MS=$((600000 + 600000 * _aux_idx))' \
+printf '%s\n' "$run_src" | grep -Fq 'GEN_TIMEOUT_MS=$((1200000 + 600000 * _aux_idx))' \
     || a_fail="${a_fail} no-scale"
 # shellcheck disable=SC2016  # matching the literal cap-guard line, $ must not expand
 printf '%s\n' "$run_src" | grep -Fq '[ "$GEN_TIMEOUT_MS" -gt 1800000 ] && GEN_TIMEOUT_MS=1800000' \
@@ -89,13 +96,13 @@ fi
 # code the runner ships (not a re-implementation), same technique the slim-source
 # test uses on slim_sol_source().
 GEN_BLOCK="$(awk '
-  /^GEN_TIMEOUT_MS=600000$/ { f=1 }
+  /^GEN_TIMEOUT_MS=1200000$/ { f=1 }
   f { print }
   f && /^fi$/ { exit }
 ' "$RUNNER")"
 
 if [ -z "$GEN_BLOCK" ]; then
-    fail "GEN_TIMEOUT_MS block extracted" "no 'GEN_TIMEOUT_MS=600000 ... fi' block in the runner"
+    fail "GEN_TIMEOUT_MS block extracted" "no 'GEN_TIMEOUT_MS=1200000 ... fi' block in the runner"
     summary_exit
 fi
 
@@ -109,10 +116,10 @@ compute_gen_timeout() {  # $1 = INV_AUX value, $2 = _aux_idx value
 b_fail=""
 
 got="$(compute_gen_timeout "" 0)"
-[ "$got" = "600000" ] || b_fail="${b_fail} empty-INV_AUX-got-${got}-want-600000"
+[ "$got" = "1200000" ] || b_fail="${b_fail} empty-INV_AUX-got-${got}-want-1200000"
 
 got="$(compute_gen_timeout "x" 1)"
-[ "$got" = "1200000" ] || b_fail="${b_fail} aux1-got-${got}-want-1200000"
+[ "$got" = "1800000" ] || b_fail="${b_fail} aux1-got-${got}-want-1800000"
 
 got="$(compute_gen_timeout "x" 2)"
 [ "$got" = "1800000" ] || b_fail="${b_fail} aux2-cap-got-${got}-want-1800000"
@@ -121,7 +128,7 @@ got="$(compute_gen_timeout "x" 5)"
 [ "$got" = "1800000" ] || b_fail="${b_fail} aux5-cap-holds-got-${got}-want-1800000"
 
 if [ -z "$b_fail" ]; then
-    pass "(b) GEN_TIMEOUT_MS computes 600000 (empty)/1200000 (aux=1)/1800000 (aux=2, cap)/1800000 (aux=5, cap holds)"
+    pass "(b) GEN_TIMEOUT_MS computes 1200000 (empty)/1800000 (aux=1, saturates cap)/1800000 (aux=2, cap)/1800000 (aux=5, cap holds)"
 else
     fail "(b) GEN_TIMEOUT_MS base/scale/cap values" \
          "mismatch(es):$b_fail"
