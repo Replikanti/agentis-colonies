@@ -1699,6 +1699,23 @@ if [ -x "$REPO_ROOT/dark-factory/demo-invariant-repair.sh" ]; then
     fi
 fi
 
+# --- dark-factory invariant-hunt pre-compile adjacent-duplicate-line guard (#1926) ---
+# forge-invariant.sh runs evm-harness/dedup-harness-lines.sh on the generated *.t.sol BEFORE compile, stripping
+# ONLY an adjacent byte-identical, substantive, unbalanced-paren line (a streaming duplication artifact that is
+# a guaranteed syntax error the repair rounds thrash on). Imports and balanced statements are never touched, so
+# the guard is a byte-identical no-op on every well-formed harness and cannot weaken the #1471/#1077 gates.
+# demo-invariant-dedup.sh drives the guard over five fixtures + source-guards the call site (CI-safe, no
+# LLM/forge/agentis).
+if [ -x "$REPO_ROOT/dark-factory/demo-invariant-dedup.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-invariant-dedup.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: invariant-hunt pre-compile adjacent-duplicate-line guard (#1926)"
+    else
+        fail "dark-factory: invariant-hunt pre-compile adjacent-duplicate-line guard regressed (#1926)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory invariant-hunt audit-informed invariant seeding (#1722) ---
 # The #1716 A/B isolated invariant EXPRESSIVENESS (not plumbing) as the deep-hunt limit. run-invariant-hunt.sh
 # gains an optional --audit-context <file> (a target's spec / audit-scope doc); it is staged into the rundir and
