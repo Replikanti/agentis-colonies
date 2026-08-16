@@ -12,8 +12,12 @@
 # fetch degrades to `[SKIP]` + exit 0 with the queue file UNTOUCHED. Section 3 (#1599) adds a controlled PAIR —
 # two EVM Solidity programs with EQUAL bounty + EQUAL freshness, one clean and one citing a finished audit
 # competition + Sherlock/Cantina reviews — and asserts the competition-hardened one ranks BELOW the clean one and
-# surfaces `comp:yes`/`aud:<n>` while the clean one surfaces `comp:no`/`aud:0`. Mirrors the other dark-factory
-# demo-*.sh (assert-based PASS/FAIL lines, a trap-cleaned temp dir, exit non-zero on failure). Dash-safe: `sh`.
+# surfaces `comp:yes`/`aud:<n>` while the clean one surfaces `comp:no`/`aud:0`. Section 4 (#1930) adds the
+# PAYABILITY derivation — a Critical+High-only rewards table surfaces `payfloor:high` and a sidecar carrying the
+# payable impact titles (the sub-floor Medium one excluded), a program that also pays Medium derives
+# `payfloor:medium`, and a program with NO reward data asserts NO floor and writes no sidecar row. Mirrors the
+# other dark-factory demo-*.sh (assert-based PASS/FAIL lines, a trap-cleaned temp dir, exit non-zero on
+# failure). Dash-safe: `sh`.
 #
 # Usage:  dark-factory/demo-immunefi-live.sh
 # Requires: python3 (the mapper's floor). Exit: 0 = all assertions held; non-zero = a failure.
@@ -224,13 +228,123 @@ else
   bad "a pair row is not exactly 5 tab-separated columns"
 fi
 
+# ----------------------------------------------------------------------------------------------------------
+# 4) PAYABILITY derivation (#1930): the intake must self-determine what a program actually PAYS, so a hunt is
+#    never spent on a severity worth $0 there. The canned array pairs:
+#      pays-high-only : rewards[] lists smart_contract Critical + High ONLY (no Medium/Low entry), plus a
+#                       websites_and_applications Medium that must NOT lower the smart-contract floor, and an
+#                       impacts[] spanning Critical/High/Medium. Expected: payfloor:high in scope_hint, a
+#                       sidecar carrying pay_floor=high + the Critical/High impact titles and NOT the Medium
+#                       one (which is unpayable and would mis-steer the hunt).
+#      pays-everything: a Medium entry with a real reward -> the floor is medium, proving the derivation is
+#                       not hardcoded to `high` (a constant would pass the first case vacuously).
+#      no-reward-data : NO rewards[]/rewardsBody at all -> NO payfloor: token, NO sidecar row, no crash.
+#    The fixture is an APPROXIMATION of the public feed's shape, not a contract: the derivation is deliberately
+#    key-name-tolerant, and an unresolvable program degrades to "no floor asserted" rather than a guess.
+# ----------------------------------------------------------------------------------------------------------
+note "4) the intake derives pay_floor + payable impacts from the reward/impact data (#1930) ..."
+PAYJSON="$WORK/payability.json"
+cat > "$PAYJSON" <<'JSON'
+[
+  {"slug":"pays-high-only","project":"High Floor Protocol","language":["Solidity"],"ecosystem":["Ethereum"],
+   "maxBounty":50000,
+   "rewards":[{"assetType":"smart_contract","level":"critical","maxReward":50000},
+              {"assetType":"smart_contract","level":"high","maxReward":25000},
+              {"assetType":"websites_and_applications","level":"medium","maxReward":1000}],
+   "impacts":[{"severity":"critical","title":"Direct theft of user funds"},
+              {"severity":"critical","title":"Protocol insolvency"},
+              {"severity":"high","title":"Theft of unclaimed yield"},
+              {"severity":"medium","title":"Contract fails to deliver promised returns"}]},
+  {"slug":"pays-everything","project":"Broad Floor Protocol","language":["Solidity"],"ecosystem":["Ethereum"],
+   "maxBounty":40000,
+   "rewards":[{"assetType":"smart_contract","level":"critical","maxReward":40000},
+              {"assetType":"smart_contract","level":"medium","maxReward":2000}],
+   "impacts":[{"severity":"medium","title":"Temporary freezing of funds"}]},
+  {"slug":"no-reward-data","project":"Opaque Protocol","language":["Solidity"],"ecosystem":["Ethereum"],
+   "maxBounty":30000}
+]
+JSON
+PAYQUEUE="$DFD/payability.queue"
+PAYINFO="$DFD/payability.payinfo.json"
+rm -f "$PAYINFO"
+YOUT="$(DARK_FACTORY_DIR="$DFD" "$INTAKE" --bounties "$PAYJSON" --floor 10000 --out "$PAYQUEUE" \
+        --payinfo-out "$PAYINFO" 2>/dev/null)"; RC=$?
+echo "----- payability queue -----"
+printf '%s\n' "$YOUT" | sed 's/^/    /'
+echo "----------------------------"
+[ "$RC" -eq 0 ] && ok "intake exits 0 on the payability array (a program with no reward data does not crash it)" \
+  || bad "intake exited $RC on the payability array (expected 0)"
+
+scope_of() { printf '%s\n' "$YOUT" | awk -F'\t' -v k="$1" '$2==k{print $5}'; }
+HIGH_SCOPE="$(scope_of immunefi:pays-high-only)"
+case "$HIGH_SCOPE" in
+  *"payfloor:high"*) ok "a Critical+High-only rewards table surfaces payfloor:high in scope_hint";;
+  *) bad "expected payfloor:high in the pays-high-only scope_hint: [$HIGH_SCOPE]";;
+esac
+EVERY_SCOPE="$(scope_of immunefi:pays-everything)"
+case "$EVERY_SCOPE" in
+  *"payfloor:medium"*) ok "a program that also pays Medium surfaces payfloor:medium (the floor is derived, not hardcoded)";;
+  *) bad "expected payfloor:medium in the pays-everything scope_hint: [$EVERY_SCOPE]";;
+esac
+NONE_SCOPE="$(scope_of immunefi:no-reward-data)"
+case "$NONE_SCOPE" in
+  *"payfloor:"*) bad "a program with NO reward data asserted a floor anyway: [$NONE_SCOPE]";;
+  *) ok "a program with NO reward data emits NO payfloor: token (no floor is ever invented)";;
+esac
+
+# The TSV contract is unchanged: still exactly 5 columns, and the pre-existing carries still ride along.
+if [ -n "$YOUT" ] && printf '%s\n' "$YOUT" | awk -F'\t' 'NF!=5{exit 1}'; then
+  ok "every payability row is still a 5-column TSV (payfloor rides inside scope_hint col 5)"
+else
+  bad "a payability row is not exactly 5 tab-separated columns"
+fi
+case "$HIGH_SCOPE" in
+  *"kyc:"*aud:*comp:*) ok "the pre-existing kyc:/aud:/comp: carries are untouched by the payfloor addition";;
+  *) bad "a pre-existing scope_hint carry disappeared: [$HIGH_SCOPE]";;
+esac
+
+if [ -f "$PAYINFO" ] && python3 - "$PAYINFO" <<'PY'
+import sys, json
+side = json.load(open(sys.argv[1], encoding="utf-8"))
+hi = side["immunefi:pays-high-only"]
+assert hi["pay_floor"] == "high", "pay_floor %r != high" % hi["pay_floor"]
+titles = " | ".join(hi["payable_impacts"])
+for want in ("Direct theft of user funds", "Protocol insolvency", "Theft of unclaimed yield"):
+    assert want in titles, "payable impact %r missing: %r" % (want, titles)
+# THE POINT: the sub-floor (Medium) impact is NOT surfaced — steering the hunt at it would spend depth on $0.
+assert "promised returns" not in titles, "a sub-floor Medium impact leaked into payable_impacts: %r" % titles
+assert hi["rewards"].get("high") == 25000, "rewards.high %r" % hi["rewards"].get("high")
+assert "medium" not in hi["rewards"], \
+    "a non-smart-contract Medium reward lowered the smart-contract floor: %r" % hi["rewards"]
+# A program with no reward data has NO sidecar row at all (absence, not a null floor).
+assert "immunefi:no-reward-data" not in side, "an unresolved program got a sidecar row: %r" % list(side)
+assert "immunefi:pays-everything" in side, "the medium-floor program is missing from the sidecar"
+PY
+then ok "the sidecar carries pay_floor=high + the Critical/High impact titles, drops the sub-floor Medium one, and skips the unresolved program"
+else bad "the payability sidecar assertion failed"
+fi
+
+# With ZERO payinfo-bearing programs no sidecar file is created (no empty-file churn).
+NOPAY_QUEUE="$DFD/nopay.queue"
+NOPAY_SIDE="$DFD/nopay.payinfo.json"
+rm -f "$NOPAY_SIDE"
+DARK_FACTORY_DIR="$DFD" "$INTAKE" --bounties "$BOUNTIES" --floor 10000 --out "$NOPAY_QUEUE" \
+  --payinfo-out "$NOPAY_SIDE" >/dev/null 2>&1
+if [ ! -e "$NOPAY_SIDE" ]; then
+  ok "an array where no program resolves a floor writes NO sidecar file (no empty-file churn)"
+else
+  bad "a sidecar file was created with zero payinfo-bearing programs: $(cat "$NOPAY_SIDE")"
+fi
+
 echo
 if [ "$FAILS" -eq 0 ]; then
   note "PASS: the --live/--bounties mapper kept only EVM programs (dropping Solana/Rust, Move, inviteOnly, a"
   note "      past-endDate and a below-floor one), surfaced kyc without filtering it, penalized a competition-"
   note "      hardened target below an equal-bounty clean one (aud:/comp: surfaced, #1599), ranked survivors by"
-  note "      the discovery-bonus-adjusted score DESC as a 5-column TSV with file==stdout parity, and degraded an"
-  note "      unreachable --live to a clean [SKIP] + exit 0 with the queue untouched. Offline; never submits."
+  note "      the discovery-bonus-adjusted score DESC as a 5-column TSV with file==stdout parity, degraded an"
+  note "      unreachable --live to a clean [SKIP] + exit 0 with the queue untouched, and derived each program's"
+  note "      pay floor + payable impacts (#1930) without inventing one where the reward data is absent."
+  note "      Offline; never submits."
   exit 0
 fi
 note "DEMO FAILED: $FAILS assertion(s) did not hold — see above." >&2

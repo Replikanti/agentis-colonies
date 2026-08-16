@@ -15,6 +15,30 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **FINDING-LEVEL PAYABILITY GATE + PAYABLE-IMPACT DISCOVERY STEERING** (#1930). The funnel now self-determines
+  what a target actually PAYS and acts on it, instead of surfacing sub-floor leads as progress.
+  `run-immunefi-intake.sh` derives, per discovered program, the **pay_floor** (the lowest severity with a
+  non-zero smart-contract reward) and the program's published **payable impact titles** from `bounties.json` —
+  shape-tolerant (a recursive severity/amount walk plus a `rewardsBody` free-text fallback), and degrade-safe:
+  nothing resolvable means no floor is asserted at all. The floor rides in the queue's `scope_hint` as
+  `payfloor:<sev>` (the TSV stays 5 columns) and the impact titles go to a new `--payinfo-out` sidecar
+  (default `<queue>.payinfo.json`), written only when something resolved. New
+  `finding-payability-gate.sh` re-shapes `verified_findings.json` against that floor: sub-floor findings gain
+  `pay_verdict: unpayable` + a `$0` note and are MOVED into an `unpayable[]` array (`--mode flag` only
+  annotates); an unrankable severity is never dropped (fail-open). New `lib/impact-lens.py` is the SOLE owner
+  of the impact→lens map (`annotate` / `classes` / `--self-test`) — an unmapped impact title is emitted verbatim
+  with an empty lens column, never a guessed class. `gen-briefs.sh` gains `--pay-floor` / `--payable-impacts`
+  and renders a deterministic `## Payable impacts` section plus a floor-derived in-scope severity bar;
+  `run-zone-hunt.sh` gains `--pay-floor` / `--pay-mode` / `--payable-impacts`, threads them into STAGE 2, uses
+  the lens map in STAGE 4.5 to PREFER the payable-impact lenses when `--deep-hunt-max-lenses` truncates the
+  fan-out, and gates the findings into `verify/verified_findings.payable.json` before STAGE 5 — so a $0 finding
+  never consumes an audit pass, a staged draft or a human review. `verify/verified_findings.json` is never
+  overwritten (corpus-bench / dashboard readers keep the full verification record). Every flag defaults off and
+  a flagless run is byte-identical: new `demo-finding-payability-gate.sh` + `demo-payable-impact-steering.sh`
+  (both hooked into `colony-lint.sh`) and new sections in `demo-immunefi-live.sh` / `demo-run-zone-hunt.sh`
+  assert the inertness explicitly. `bounty-payability-gate.sh` (#1897) is unchanged and stays the PROGRAM-level
+  filter; dashboard rendering of the floor / `$0-unpayable` badge is out of scope (#1913).
+
 - **MULTI-TARGET REFUTE-CORPUS COVERAGE GATE** (#1895). New `bench/corpus-bench/refute-corpus-coverage.sh` — an
   offline, network/LLM-free probe that GATEs the expensive #1887 refute derivation + held-out A/B on whether a
   constraint corpus can move a held-out target's rare recall at all. It computes the triple intersection

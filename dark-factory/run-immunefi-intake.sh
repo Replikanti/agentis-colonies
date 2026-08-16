@@ -10,7 +10,7 @@
 #
 # Usage: run-immunefi-intake.sh (--programs <file> | --live | --bounties <file>) [--url <endpoint>] [--floor <usd>]
 #                               [--min-score N] [--limit N] [--out <file>] [--audit-delta <path>]
-#                               [--dead-targets <file>] [-h]
+#                               [--dead-targets <file>] [--payinfo-out <file>] [-h]
 #   --programs    : an OPERATOR-SUPPLIED JSON array of program objects (schema below). Missing / unreadable and
 #                   no --live/--bounties -> exit 2. Mutually complementary with the discovery flags below.
 #   --live        : DISCOVERY — fetch the public bounties.json from --url, MAP it into the programs schema, then
@@ -34,6 +34,12 @@
 #                   out-of-scope / as a known-issue is never re-queued. The `target@commit` key contract holds when
 #                   the operator's program `id` equals the `--target` passed to deliver-submission.sh (the fixture
 #                   convention, e.g. `enzyme-onyx`); a missing / unreadable ledger drops nothing (no crash).
+#   --payinfo-out : PAYABILITY sidecar path (default `<--out>.payinfo.json`, #1930). Written ONLY when at least
+#                   one queued program resolved a pay_floor, so a run that resolves none produces no empty-file
+#                   churn. Shape: `{"immunefi:<id>": {"pay_floor": "<sev>", "rewards": {"<sev>": <usd>, ...},
+#                   "payable_impacts": ["<Severity>: <title>", ...]}}` — the free-text impact titles do not fit
+#                   the 5-col TSV, so the queue carries only the machine-readable `payfloor:<sev>` token and the
+#                   sidecar carries the rest. Consumed by run-zone-hunt.sh --pay-floor / --payable-impacts.
 #
 # Programs-file schema (a JSON array; all fields OPTIONAL except `id`):
 #   {"id":"lombard","name":"Lombard Finance","url":"https://immunefi.com/bug-bounty/lombard/",
@@ -54,6 +60,20 @@
 #   `audit_density`/`competition_audited` signals. The mapper writes the mapped array to a temp file and points
 #   PROGRAMS at it, so the SAME require/readable checks and ranking block run verbatim. A missing/garbled field
 #   ranks at its lever's 0, never a crash (matches the operator path's rule).
+#
+# PAYABILITY (#1930, live-only): the mapper also derives, per program, the `pay_floor` — the LOWEST severity the
+#   program actually PAYS (rank low<medium<high<critical; the lowest one whose max reward > 0) — and the
+#   `payable_impacts`, the program's own published impact titles at or above that floor. The derivation is
+#   SHAPE-TOLERANT (the feed's reward key names are not pinned in this repo): a recursive walk collects
+#   (severity, amount) pairs wherever a dict carries a key matching /severity|level/i with a value in
+#   {critical,high,medium,low} and a sibling key matching /amount|usd|payout|reward|max/i (the proven
+#   walk_next_data() shape from bounty-payability-gate.sh); where an asset-type-ish key exists only
+#   `smart_contract` entries count, and an entry with NO asset-type key at all is kept (fail-open). If the
+#   structured walk yields nothing, a free-text `rewardsBody` scan (mirroring bounty-payability-gate.sh's
+#   rewards_from_body()) is the fallback. NOTHING RESOLVABLE => no floor asserted: no `payfloor:` token, no
+#   sidecar row, never a crash (the file's "a missing field contributes 0" rule). WHY it matters: a Medium
+#   finding on a program whose rewards table starts at High earns $0, so the floor is what makes the hunt spend
+#   its depth on PAYABLE severities, and the impact titles are the targeting signal for WHICH lens pays.
 #
 # FRESHNESS : keep only programs whose `status` is case-insensitively "active" (mirrors run-funnel.sh's RUNNING),
 #             AND whose `<id>@<in_scope_commit>` key is NOT in the --dead-targets ledger (the #1562 loop closer).
@@ -85,8 +105,9 @@
 #          `chain:<chain> repo:<asset_repo> commit:<in_scope_commit> delta:<files>f/<days>d fee:<fee>
 #          vault:<vault>` (preserves the fee/vault EV-gating data for a future evaluate stage without a 6th
 #          column). On the live path col 5 also carries `kyc:<yes|no> aud:<n> comp:<yes|no>` (n = audit_density =
-#          competition + named-firm hits) — the flags ride INSIDE scope_hint, so the row stays exactly 5 columns.
-#          Written to stdout AND --out.
+#          competition + named-firm hits) and, when one resolved, `payfloor:<sev>` (#1930) — the flags ride
+#          INSIDE scope_hint, so the row stays exactly 5 columns. Written to stdout AND --out. The free-text
+#          payable impact titles go to the --payinfo-out sidecar, never into the TSV.
 #
 # Requires: python3; curl only on the --live path (a read-only public GET); git only reached indirectly via
 # audit-delta.sh when a program carries a local_repo. Exit 0 on success or a clean [SKIP] (no network on --live);
@@ -101,6 +122,8 @@ DIR="${DARK_FACTORY_DIR:-$HOME/.dark-factory}"
 nv() { [ "$1" -ge 2 ] || { echo "run-immunefi-intake.sh: $2 requires a value" >&2; exit 2; }; }
 PROGRAMS="" ; MIN_SCORE="0" ; LIMIT="0" ; OUT="$DIR/immunefi.queue" ; AUDIT_DELTA="$HERE/audit-delta.sh"
 DEAD_TARGETS="$DIR/dead-targets.txt"
+# #1930: empty = "derive it from --out" (resolved after the flag walk, so --out order does not matter).
+PAYINFO_OUT=""
 LIVE="" ; BOUNTIES="" ; URL="https://immunefi.com/public-api/bounties.json" ; FLOOR="10000" ; MAX_TIME="30"
 while [ $# -gt 0 ]; do case "$1" in
   --programs)     nv "$#" "$1"; PROGRAMS="$2"; shift 2;;
@@ -113,9 +136,12 @@ while [ $# -gt 0 ]; do case "$1" in
   --out)          nv "$#" "$1"; OUT="$2"; shift 2;;
   --audit-delta)  nv "$#" "$1"; AUDIT_DELTA="$2"; shift 2;;
   --dead-targets) nv "$#" "$1"; DEAD_TARGETS="$2"; shift 2;;
-  -h|--help)      sed -n '2,92p' "$0"; exit 0;;
+  --payinfo-out)  nv "$#" "$1"; PAYINFO_OUT="$2"; shift 2;;
+  -h|--help)      sed -n '2,113p' "$0"; exit 0;;
   *) echo "run-immunefi-intake.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
+# #1930: the sidecar rides next to the queue by default, so the two artifacts of one intake stay together.
+[ -n "$PAYINFO_OUT" ] || PAYINFO_OUT="$OUT.payinfo.json"
 
 # DISCOVERY (#1592): --live fetches the public bounties.json, --bounties reads a raw array from a file (the
 # offline/test hatch). Either way the MAPPER transforms the raw array into the operator-programs schema, writes
@@ -198,6 +224,148 @@ def looks_like_repo(u):
     return any(h in u for h in ("github.com", "bitbucket.org", "sourcehut.org", "sr.ht", "git."))
 
 
+# --- PAYABILITY derivation (#1930) -------------------------------------------------------------------------
+# The feed's reward/impact key NAMES are not pinned in this repo, so both walks match keys by REGEX and tolerate
+# nesting — the same shape bounty-payability-gate.sh's walk_next_data() already uses on __NEXT_DATA__ trees.
+SEV_KEY = re.compile(r"severity|level", re.I)
+AMT_KEY = re.compile(r"amount|usd|payout|reward|max", re.I)
+ASSET_KEY = re.compile(r"asset.?type|assetstype|^type$", re.I)
+IMPACT_KEY = re.compile(r"impact", re.I)
+TITLE_KEYS = ("title", "impact", "name", "description")
+SEV_VALUES = ("critical", "high", "medium", "low")
+SEV_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+MAX_IMPACTS = 20
+MAX_IMPACT_CHARS = 200
+
+
+def is_smart_contract(v):
+    """`Smart Contract` / `smart_contract` / `smart-contract` all normalise to the same token."""
+    return "smart_contract" in re.sub(r"[^a-z0-9]+", "_", str(v or "").lower())
+
+
+def walk_rewards(node, found):
+    """Collect {severity: max usd} wherever a dict carries a severity-ish key with a known severity value AND a
+    sibling amount-ish key. Where the SAME dict also carries an asset-type-ish key, only smart_contract entries
+    count; a dict with NO asset-type key at all is kept (fail-open — an over-strict filter would silently assert
+    'this program pays nothing', the one verdict that must never be invented)."""
+    if isinstance(node, dict):
+        sev_val = None
+        amt_val = None
+        asset_ok = True
+        for k, v in node.items():
+            if SEV_KEY.search(k) and isinstance(v, str) and v.strip().lower() in SEV_VALUES:
+                sev_val = v.strip().lower()
+            if AMT_KEY.search(k) and isinstance(v, (int, float, str)):
+                cand = usd(v)
+                if cand > 0:
+                    amt_val = max(amt_val or 0.0, cand)
+            if ASSET_KEY.search(k) and isinstance(v, str) and v.strip():
+                asset_ok = is_smart_contract(v)
+        if sev_val is not None and amt_val is not None and asset_ok:
+            if amt_val > found.get(sev_val, 0.0):
+                found[sev_val] = amt_val
+        for v in node.values():
+            walk_rewards(v, found)
+    elif isinstance(node, list):
+        for v in node:
+            walk_rewards(v, found)
+
+
+def rewards_from_body(text):
+    """Free-text `rewardsBody` fallback — mirrors bounty-payability-gate.sh's rewards_from_body() verbatim:
+    scan for `<Severity>: ... $<amount>` mentions; never invents an entry for a severity that is not mentioned."""
+    out = {}
+    if not text:
+        return out
+    for sev in SEV_VALUES:
+        for m in re.finditer(sev, text, re.I):
+            tail = text[m.end():m.end() + 80]
+            am = re.search(r"\$?\s*([0-9][0-9,]*\.?[0-9]*)\s*([kmb]?)\b", tail, re.I)
+            if am:
+                val = usd(am.group(1) + am.group(2))
+                if val > out.get(sev, 0.0):
+                    out[sev] = val
+    return out
+
+
+def rewards_of(b):
+    """{severity: max usd} for a program: the structured walk first, the rewardsBody scan as the fallback."""
+    found = {}
+    for key in b:
+        if re.search(r"reward|bount|payout", key, re.I) and isinstance(b[key], (dict, list)):
+            walk_rewards(b[key], found)
+    if not found:
+        walk_rewards(b, found)
+    if not found:
+        found = rewards_from_body(str(b.get("rewardsBody") or ""))
+    return {s: a for s, a in found.items() if a > 0}
+
+
+def pay_floor_of(rewards):
+    """The LOWEST severity by rank whose max reward is > 0; "" when nothing resolved (no floor asserted)."""
+    ranked = sorted((SEV_RANK[s], s) for s in rewards if s in SEV_RANK)
+    return ranked[0][1] if ranked else ""
+
+
+def impact_title(entry):
+    """A published impact entry -> its title. A plain string IS the title; a dict yields its first title-ish
+    non-empty string field. Anything else contributes nothing (never a stringified dict)."""
+    if isinstance(entry, str):
+        return entry.strip()
+    if isinstance(entry, dict):
+        for k in TITLE_KEYS:
+            for kk, vv in entry.items():
+                if kk.lower() == k and isinstance(vv, str) and vv.strip():
+                    return vv.strip()
+    return ""
+
+
+def impact_severity(entry):
+    if isinstance(entry, dict):
+        for k, v in entry.items():
+            if SEV_KEY.search(k) and isinstance(v, str) and v.strip().lower() in SEV_VALUES:
+                return v.strip().lower()
+    return ""
+
+
+def walk_impacts(node, out):
+    """Every element of every `impacts`-ish list anywhere in the program object (the feed nests them per asset
+    type on some shapes), in document order."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if IMPACT_KEY.search(k) and isinstance(v, list):
+                out.extend(v)
+            walk_impacts(v, out)
+    elif isinstance(node, list):
+        for v in node:
+            walk_impacts(v, out)
+
+
+def payable_impacts_of(b, floor):
+    """The program's OWN published impact titles at or above the pay floor, as `"<Severity>: <title>"` (or the
+    bare title when the entry claims no severity — a title that makes no severity claim is SURFACED, not
+    filtered). Deduped, order-preserving, capped; scrubbed of tabs/newlines/NUL so it is TSV/JSON-safe."""
+    floor_rank = SEV_RANK.get(floor, 0)
+    entries = []
+    walk_impacts(b, entries)
+    out, seen = [], set()
+    for e in entries:
+        title = re.sub(r"[\t\r\n\x00]+", " ", impact_title(e)).strip()[:MAX_IMPACT_CHARS].strip()
+        if not title:
+            continue
+        sev = impact_severity(e)
+        if sev and SEV_RANK[sev] < floor_rank:
+            continue
+        label = ("%s: %s" % (sev.capitalize(), title)) if sev else title
+        if label.lower() in seen:
+            continue
+        seen.add(label.lower())
+        out.append(label)
+        if len(out) >= MAX_IMPACTS:
+            break
+    return out
+
+
 try:
     raw = json.load(open(raw_path, encoding="utf-8", errors="ignore"))
 except Exception:
@@ -264,6 +432,10 @@ for b in raw:
     # negative bonus would corrupt the additive score / DESC sort). score_of is untouched: absent on operator
     # programs -> +0, so the operator-path score stays byte-identical.
     discovery_bonus = int(round(max(0.0, freshness + audit_scarcity + accounting_fit - penalty)))
+    # #1930 PAYABILITY: nothing resolvable -> pay_floor "" -> no scope token, no sidecar row, no crash.
+    pay_rewards = rewards_of(b)
+    pay_floor = pay_floor_of(pay_rewards)
+    payable_impacts = payable_impacts_of(b, pay_floor) if pay_floor else []
     out.append({
         "id": slug,
         "name": str(b.get("project") or slug),
@@ -277,6 +449,9 @@ for b in raw:
         "discovery_bonus": discovery_bonus,
         "audit_density": audit_density,
         "competition_audited": competition_audited,
+        "pay_floor": pay_floor,
+        "pay_rewards": pay_rewards,
+        "payable_impacts": payable_impacts,
     })
 
 json.dump(out, open(mapped_path, "w", encoding="utf-8"))
@@ -296,12 +471,14 @@ mkdir -p "$(dirname "$OUT")" 2>/dev/null || true
 # per program that carries a local_repo (git diff, no network). A malformed program contributes nothing; a
 # missing/garbled field ranks at the appropriate lever's 0 (never crashes the rank).
 # ----------------------------------------------------------------------------------------------------------
-PROGRAMS="$PROGRAMS" MIN_SCORE="$MIN_SCORE" LIMIT="$LIMIT" AUDIT_DELTA="$AUDIT_DELTA" DEAD_TARGETS="$DEAD_TARGETS" python3 - > "$OUT" <<'PY'
+PROGRAMS="$PROGRAMS" MIN_SCORE="$MIN_SCORE" LIMIT="$LIMIT" AUDIT_DELTA="$AUDIT_DELTA" DEAD_TARGETS="$DEAD_TARGETS" \
+PAYINFO_OUT="$PAYINFO_OUT" python3 - > "$OUT" <<'PY'
 import os, json, math, re, subprocess
 
 programs_path = os.environ["PROGRAMS"]
 audit_delta = os.environ.get("AUDIT_DELTA", "")
 dead_targets_path = os.environ.get("DEAD_TARGETS", "")
+payinfo_out = os.environ.get("PAYINFO_OUT", "")
 
 
 def load_dead_keys(path):
@@ -394,6 +571,7 @@ if not isinstance(progs, list):
     progs = []
 
 rows = []
+payinfo = {}   # #1930: `immunefi:<id>` -> the payability sidecar row, filled only for a RESOLVED pay_floor.
 for p in progs:
     if not isinstance(p, dict):
         continue
@@ -431,6 +609,17 @@ for p in progs:
         scope += " aud:%d" % int(p.get("audit_density", 0) or 0)
     if "competition_audited" in p:
         scope += " comp:%s" % ("yes" if p.get("competition_audited") else "no")
+    # payfloor (#1930): the LOWEST severity this program actually pays. Live-only, and only when the mapper
+    # RESOLVED one — an unresolved floor emits NO token, so a row whose reward data is absent/garbled looks
+    # exactly like a pre-#1930 row and nothing downstream can mistake "unknown" for "pays everything".
+    pay_floor = str(p.get("pay_floor", "") or "").strip().lower()
+    if pay_floor:
+        scope += " payfloor:%s" % pay_floor
+        payinfo[key] = {
+            "pay_floor": pay_floor,
+            "rewards": p.get("pay_rewards", {}) if isinstance(p.get("pay_rewards"), dict) else {},
+            "payable_impacts": [clean(t) for t in (p.get("payable_impacts") or []) if clean(t)],
+        }
     rows.append((s, key, url, name, scope))
 
 # RANK: score DESC, then key ASC (deterministic tie-break). run-batch consumes highest first.
@@ -451,10 +640,31 @@ if limit > 0:
     rows = rows[:limit]
 for s, key, url, name, scope in rows:
     print("%d\t%s\t%s\t%s\t%s" % (s, key, url, name, scope))
+
+# PAYABILITY SIDECAR (#1930): mirrors EXACTLY the rows that survived rank/dedup/limit, so the sidecar and the
+# queue can never disagree about which targets were queued. Written ONLY when at least one row resolved a
+# pay_floor — a run that resolves none leaves no empty file behind. A write failure is never fatal: the queue
+# (the durable artifact run-batch.sh consumes) is already on stdout by this point.
+emitted = {key for _s, key, _u, _n, _sc in rows}
+payinfo = {k: v for k, v in payinfo.items() if k in emitted}
+if payinfo and payinfo_out:
+    try:
+        d = os.path.dirname(payinfo_out)
+        if d:
+            os.makedirs(d, exist_ok=True)
+        with open(payinfo_out, "w", encoding="utf-8") as fh:
+            json.dump(payinfo, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+    except Exception as exc:
+        import sys
+        sys.stderr.write("run-immunefi-intake: could not write the payability sidecar %s (%s); the queue is "
+                         "unaffected\n" % (payinfo_out, exc.__class__.__name__))
 PY
 
 # Mirror the queue to stdout (the file is the durable artifact; stdout is the live view), matching run-funnel.
 cat "$OUT"
 N="$(grep -c . "$OUT" 2>/dev/null || true)"
 echo "run-immunefi-intake: ranked ${N:-0} active program(s) by bounty + post-audit delta -> $OUT" >&2
+# #1930: name the sidecar when one was written, so the operator knows where the pay floor + payable impacts are.
+[ -s "$PAYINFO_OUT" ] && echo "run-immunefi-intake: payability sidecar (pay_floor + payable impacts) -> $PAYINFO_OUT" >&2
 echo "run-immunefi-intake: consume with  run-batch.sh --queue $OUT  (human reviews + submits; never auto-posted)" >&2

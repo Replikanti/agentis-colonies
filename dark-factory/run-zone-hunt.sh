@@ -166,6 +166,23 @@
 #                       --rehunt-gaps (exit 2).
 #   --rehunt-max-attempts <N>  #1830: leave a zone alone once its coverage record carries >= N attempts
 #                       (default 2). ONE --rehunt-gaps pass is exactly ONE pass over the gap set, never a loop.
+#   --pay-floor <sev>   #1930: the LOWEST severity the target program actually PAYS (critical|high|medium|low),
+#                       as derived by run-immunefi-intake.sh (the queue row's `payfloor:<sev>` token / the
+#                       payinfo sidecar). TWO effects, both default-off: STAGE 2's briefs state the floor and
+#                       derive their in-scope severity bar from it, and BEFORE STAGE 5 the shipped
+#                       finding-payability-gate.sh re-shapes the verified findings into
+#                       <out>/verify/verified_findings.payable.json so a sub-floor ($0) finding is NOT packaged
+#                       and delivered. `verify/verified_findings.json` is NEVER overwritten — the verification
+#                       result stays intact for corpus-bench / dashboard readers. Absent => byte-identical.
+#   --pay-mode <mode>   #1930: `drop` (default) MOVES sub-floor findings into the gated artifact's unpayable[]
+#                       so they are not delivered; `flag` only annotates them and still delivers. Requires
+#                       --pay-floor (a mode with no floor is a no-op, exit 2).
+#   --payable-impacts <text>  #1930: the program's OWN published payable impact titles (comma/newline
+#                       separated, each optionally `"<Severity>: <title>"`). Threaded into STAGE 2's briefs as
+#                       the `## Payable impacts` section, and — via lib/impact-lens.py — used in STAGE 4.5 to
+#                       PREFER the lens classes those impacts imply when --deep-hunt-max-lenses truncates the
+#                       fan-out. It never adds or removes a lens row, only reorders which survive the cap; an
+#                       empty/unmapped set is a provable no-op. Absent => byte-identical.
 #   --drop-dir <dir>    deliver-submission.sh drop-dir (default: <out>/drop).
 #   -h, --help          This help.
 #
@@ -206,6 +223,9 @@ TOTAL_DEPTH_CELLS=0
 # unset knob forwards NOTHING and the STAGE 3 argv is byte-identical to a pre-#1850 depth-on run.
 ZONE_DEPTH_LENS_QUOTA=""
 REHUNT_GAPS=0 ; REHUNT_INCLUDE_PARTIAL=0 ; REHUNT_MAX_ATTEMPTS=2
+# #1930: payability. EMPTY floor = OFF = no brief section, no lens steering, no finding gate — every artifact
+# is byte-identical to a pre-#1930 run. PAY_MODE is only meaningful with a floor (validated below).
+PAY_FLOOR="" ; PAY_MODE="drop" ; PAYABLE_IMPACTS="" ; PAY_MODE_SET=0
 # #1731: cross-run ensemble/union flags — a THIN pass-through: collected verbatim into DEEP_FWD and appended to
 # both --deep-hunt run-invariant-hunt.sh invocations. Empty (the default) => the arg lists are byte-identical.
 DEEP_FWD=()
@@ -252,6 +272,9 @@ while [ $# -gt 0 ]; do
     --rehunt-gaps)      REHUNT_GAPS=1; shift ;;
     --rehunt-include-partial) REHUNT_INCLUDE_PARTIAL=1; shift ;;
     --rehunt-max-attempts) nv "$#"; REHUNT_MAX_ATTEMPTS="$2"; shift 2 ;;
+    --pay-floor)        nv "$#"; PAY_FLOOR="$2"; shift 2 ;;
+    --pay-mode)         nv "$#"; PAY_MODE="$2"; PAY_MODE_SET=1; shift 2 ;;
+    --payable-impacts)  nv "$#"; PAYABLE_IMPACTS="$2"; shift 2 ;;
     --drop-dir)         nv "$#"; DROP_DIR="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-zone-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -301,6 +324,17 @@ fi
 # The two re-use modes are deliberately NOT combinable: --deep-hunt-only re-applies the lens over a breadth
 # --out while --rehunt-gaps re-enters breadth itself, and STAGE 4 would overwrite the lens's merged findings.
 [ "$REHUNT_GAPS" -eq 0 ] || [ "$DEEP_HUNT_ONLY" -eq 0 ] || { echo "run-zone-hunt.sh: --rehunt-gaps cannot be combined with --deep-hunt-only" >&2; exit 2; }
+# #1930: the pay floor is a CLOSED vocabulary — a typo must fail here, not silently gate nothing 40 minutes in.
+case "$PAY_FLOOR" in
+  ""|critical|high|medium|low) : ;;
+  *) echo "run-zone-hunt.sh: --pay-floor must be one of critical|high|medium|low (got '$PAY_FLOOR')" >&2; exit 2 ;;
+esac
+case "$PAY_MODE" in
+  drop|flag) : ;;
+  *) echo "run-zone-hunt.sh: --pay-mode must be drop or flag (got '$PAY_MODE')" >&2; exit 2 ;;
+esac
+# A mode with no floor gates nothing — a usage error, the --total-depth-cells-needs-depth precedent.
+[ "$PAY_MODE_SET" -eq 0 ] || [ -n "$PAY_FLOOR" ] || { echo "run-zone-hunt.sh: --pay-mode needs --pay-floor: a finding pay mode with no floor is a no-op" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "run-zone-hunt.sh: python3 not installed" >&2; exit 3; }
 
 MAPZONES="$HERE/map-zones.sh"
@@ -377,12 +411,18 @@ fi
 # STAGE 2 (M2): gen-briefs.sh -> <out>/briefs/briefs/brief_<id>.md per zone. --brief-fixture => offline.
 # ----------------------------------------------------------------------------------------------------------
 echo "run-zone-hunt.sh: [M2] generating per-zone briefs -> $BRIEFS ..." >&2
+# #1930: the payability flags ride the SAME ${VAR:+...} idiom as --audit-residuals, so an unset flag adds no
+# argument at all and the gen-briefs.sh argv is byte-identical to a pre-#1930 run.
 if [ -n "$BRIEF_FIXTURE" ]; then
   "$GENBRIEFS" --zones "$MAP/zones.json" --scope "$MAP/scope.tsv" --out "$BRIEFS" --repo "$REPO" \
-    ${RESIDUALS:+--audit-residuals "$RESIDUALS"} --fixture "$BRIEF_FIXTURE"
+    ${RESIDUALS:+--audit-residuals "$RESIDUALS"} \
+    ${PAY_FLOOR:+--pay-floor "$PAY_FLOOR"} ${PAYABLE_IMPACTS:+--payable-impacts "$PAYABLE_IMPACTS"} \
+    --fixture "$BRIEF_FIXTURE"
 else
   "$GENBRIEFS" --zones "$MAP/zones.json" --scope "$MAP/scope.tsv" --out "$BRIEFS" --repo "$REPO" \
-    ${RESIDUALS:+--audit-residuals "$RESIDUALS"} --backend "$BACKEND" --agentis "$AGENTIS"
+    ${RESIDUALS:+--audit-residuals "$RESIDUALS"} \
+    ${PAY_FLOOR:+--pay-floor "$PAY_FLOOR"} ${PAYABLE_IMPACTS:+--payable-impacts "$PAYABLE_IMPACTS"} \
+    --backend "$BACKEND" --agentis "$AGENTIS"
 fi
 [ -f "$BRIEFS/briefs/zone_briefs.json" ] || { echo "run-zone-hunt.sh: gen-briefs.sh did not emit zone_briefs.json" >&2; exit 3; }
 fi
@@ -833,13 +873,25 @@ if [ "$DEEP_HUNT" -eq 1 ]; then
     # `SYS-solvency` row (4 columns, aux always populated) — the NAMED general-solvency lens. Flag off (the
     # default) => not a single byte of this file changes.
     DEEP_TARGETS="$OUT/.deep-hunt-targets.tsv"
+    # #1930 PAYABLE-IMPACT STEERING: the lens classes the program's OWN published payable impacts imply, from
+    # lib/impact-lens.py (the sole owner of that map — gen-briefs.sh's brief text is its other consumer). Empty
+    # when --payable-impacts is absent, when the helper is missing, or when nothing maps, and an empty preferred
+    # set makes the partition below a provable no-op.
+    PREFERRED_LENSES=""
+    if [ -n "$PAYABLE_IMPACTS" ] && [ -x "$HERE/lib/impact-lens.py" ]; then
+      PREFERRED_LENSES="$(printf '%s\n' "$PAYABLE_IMPACTS" | "$HERE/lib/impact-lens.py" classes --impacts - 2>/dev/null || true)"
+      [ -z "$PREFERRED_LENSES" ] || echo "run-zone-hunt.sh: [deep-hunt] payable-impact lens preference: $PREFERRED_LENSES (#1930)" >&2
+    fi
     python3 - "$MAP/zones.json" "$REPO" "$DEEP_HUNT_MAX_TARGETS" "$DEEP_HUNT_AUX_MAX" "$DEEP_HUNT_MAX_LENSES" \
-             "$DEEP_HUNT_COMPOSABLE_LENS" > "$DEEP_TARGETS" <<'PY'
+             "$DEEP_HUNT_COMPOSABLE_LENS" "$PREFERRED_LENSES" > "$DEEP_TARGETS" <<'PY'
 import sys, os, json
 zones = json.load(open(sys.argv[1], encoding="utf-8"))
 repo, max_targets, aux_max = sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 max_lenses = int(sys.argv[5])
 composable = int(sys.argv[6])  # #1914 (M1): 0 = OFF = every row below is byte-identical to a pre-#1914 run.
+# #1930: the payable-impact lens preference (comma-joined, possibly empty). EMPTY => the stable partition in
+# lens_classes() is the identity, so `.deep-hunt-targets.tsv` is byte-identical to a pre-#1930 run.
+preferred = [c for c in (sys.argv[7] if len(sys.argv) > 7 else "").split(",") if c]
 if not isinstance(zones, list):
     zones = []
 def loc(rel):
@@ -900,6 +952,13 @@ def lens_classes(z):
     for c in IMPLEMENTED_NONCUSTODY:
         if c in classes and c not in out:
             out.append(c)
+    # #1930 PAYABLE-IMPACT STEERING: a STABLE partition of the already-computed list — the lenses the program's
+    # payable impacts imply move to the front, everything else keeps its relative order. This changes only WHICH
+    # lenses survive the --deep-hunt-max-lenses truncation below; it never adds, removes or rewrites a row. It
+    # DELIBERATELY relaxes #1795's "row 1 is the zone's dominant class" rule, but ONLY under --payable-impacts:
+    # with the flag absent `preferred` is empty and the partition is provably the identity.
+    if preferred:
+        out = [c for c in out if c in preferred] + [c for c in out if c not in preferred]
     return out[:max_lenses]
 def has_impl_sol(z):
     # a fuzzable IMPLEMENTATION contract exists in the zone — not an interface-only zone. Interface .sol
@@ -1140,11 +1199,54 @@ if [ "$DEEP_HUNT_ONLY" -eq 1 ]; then
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# STAGE 4.75 (#1930): FINDING-LEVEL PAYABILITY GATE. Placed AFTER the --deep-hunt-only exit above (so the
+# lens-only path, which delivers nothing, is untouched) and AFTER STAGE 4.5 (so a deep-hunt-merged finding is
+# gated too), BEFORE STAGE 5 packages anything. A Medium lead on a High-floor program earns $0 — packaging and
+# staging it spends a human review on money that does not exist.
+#
+# It writes a SEPARATE artifact: verify/verified_findings.json is NEVER overwritten, so corpus-bench /
+# generation-recall / dashboard readers still see the full verification result and only DELIVERY is narrowed.
+# Skipped entirely without --pay-floor, so a floor-less run gains no prerequisite and no new file.
+# ----------------------------------------------------------------------------------------------------------
+FINDINGS_SRC="$VERIFIED_JSON"
+PAY_PAYABLE="" ; PAY_UNPAYABLE=""
+if [ -n "$PAY_FLOOR" ]; then
+  PAYGATE="$HERE/finding-payability-gate.sh"
+  [ -x "$PAYGATE" ] || { echo "run-zone-hunt.sh: [pay-gate] required entrypoint not found/executable: $PAYGATE" >&2; exit 3; }
+  PAYABLE_JSON="$VER/verified_findings.payable.json"
+  "$PAYGATE" --findings "$VERIFIED_JSON" --pay-floor "$PAY_FLOOR" --mode "$PAY_MODE" --out "$PAYABLE_JSON" \
+    || echo "run-zone-hunt.sh: [pay-gate] finding-payability-gate.sh failed; delivering the UNGATED findings" >&2
+  if [ -f "$PAYABLE_JSON" ]; then
+    FINDINGS_SRC="$PAYABLE_JSON"
+    # Count the VERDICTS, not the array lengths: in --pay-mode flag the sub-floor findings stay in verified[],
+    # so a length-based count would report them as payable.
+    PAY_COUNTS="$(python3 - "$PAYABLE_JSON" <<'PY'
+import sys, json
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+rows = [f for f in (d.get("verified") or []) + (d.get("unpayable") or []) if isinstance(f, dict)]
+print("%d %d" % (sum(1 for f in rows if f.get("pay_verdict") == "payable"),
+                 sum(1 for f in rows if f.get("pay_verdict") == "unpayable")))
+PY
+)"
+    PAY_PAYABLE="${PAY_COUNTS%% *}" ; PAY_UNPAYABLE="${PAY_COUNTS##* }"
+  else
+    # A [SKIP] (empty/unparseable verified_findings.json) leaves --out unwritten: fail OPEN onto the ungated
+    # file rather than deliver nothing at all.
+    echo "run-zone-hunt.sh: [pay-gate] no gated artifact was produced; delivering the UNGATED findings" >&2
+  fi
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # STAGE 5 (M5): per verified finding -> run-audit-pass.sh (HALTS at PENDING-HUMAN-REVIEW) -> deliver-submission.sh
 # (stages the marked draft into the drop-dir). Per-finding body is wrapped so one bad finding is skipped, not fatal.
 # ----------------------------------------------------------------------------------------------------------
 FINDING_TSV="$OUT/.verified-findings.tsv"
-python3 - "$VERIFIED_JSON" > "$FINDING_TSV" <<'PY'
+python3 - "$FINDINGS_SRC" > "$FINDING_TSV" <<'PY'
 import sys, json
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 for f in data.get("verified", []):
@@ -1224,6 +1326,11 @@ while IFS='	' read -r LOCATION CODEFILE CLASS SEVERITY EXPLOIT || [ -n "${LOCATI
 done < "$FINDING_TSV"
 
 echo >&2
+# #1930: name the drop EXPLICITLY. Without this line a gated run is indistinguishable from a run that simply
+# found fewer findings — the same silent-absence defect #1830 fixed for zone coverage.
+if [ -n "$PAY_FLOOR" ] && [ -n "$PAY_PAYABLE" ]; then
+  echo "run-zone-hunt.sh: [pay-gate] payable $PAY_PAYABLE, unpayable $PAY_UNPAYABLE (floor=$PAY_FLOOR, mode=$PAY_MODE) — sub-floor findings are \$0 on this program and are not delivered" >&2
+fi
 # #1830: the banner reports COVERAGE (covered/total), not the old "zones hunted" count — that counted only the
 # zones that started, so a truncated run's banner was indistinguishable from a clean sweep's.
 echo "================ ZONE-HUNT: $ZONES_COVERED/$ZONES_TOTAL zone(s) covered, $FINDINGS verified finding(s) ================" >&2

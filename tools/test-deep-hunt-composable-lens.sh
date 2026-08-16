@@ -72,7 +72,9 @@ a_fail=""
 grep -q '^DEEP_HUNT_COMPOSABLE_LENS=0$' "$ZONEHUNT" || a_fail="${a_fail} no-default-0"
 grep -q -- '--composable-lens)  *DEEP_HUNT_COMPOSABLE_LENS=1; shift ;;' "$ZONEHUNT" || a_fail="${a_fail} no-parse-arm"
 # shellcheck disable=SC2016  # matching the literal argv line, $ must not expand
-grep -q -- '"\$DEEP_HUNT_COMPOSABLE_LENS" > "\$DEEP_TARGETS"' "$ZONEHUNT" || a_fail="${a_fail} not-threaded-as-argv"
+# (#1930 appended "$PREFERRED_LENSES" as the next positional of the SAME argv line; the composable flag stays
+# the argument immediately before it, so this still pins the 6th-argv threading it was written for.)
+grep -q -- '"\$DEEP_HUNT_COMPOSABLE_LENS" "\$PREFERRED_LENSES" > "\$DEEP_TARGETS"' "$ZONEHUNT" || a_fail="${a_fail} not-threaded-as-argv"
 grep -q 'composable = int(sys.argv\[6\])' "$ZONEHUNT" || a_fail="${a_fail} not-read-in-python"
 if [ -z "$a_fail" ]; then
     pass "(a) run-zone-hunt.sh declares/parses --composable-lens (default 0) and threads it into STAGE 4.5"
