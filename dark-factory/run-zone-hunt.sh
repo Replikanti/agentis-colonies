@@ -56,6 +56,16 @@
 #                       --live uses to SHARE one breadth pass across OFF and ON: breadth once -> OFF, clone ->
 #                       ON, lens-only over the clone, so ON is a superset of OFF and the A/B delta isolates the
 #                       lens. DEFAULT OFF => the full M1..M4 -> (4.5) -> M5 path is byte-identical to before.
+#   --deep-hunt-resume  #1934: IDEMPOTENT SKIP-COMPLETED. Before invoking run-invariant-hunt.sh for a STAGE 4.5
+#                       (zone, class) row, check whether $OUT/deep-hunt/<zone>-<class>/run already holds a
+#                       TERMINAL lens verdict (an aggregate `invariant_*.log`, excluding per-candidate
+#                       `_c<N>.log`, with an `INVARIANT|...|CLEAN` or `INVARIANT|...|FINDING` line) and, if so,
+#                       skip that row (logged) instead of re-invoking the engine. A HARNESS_ERROR / interrupted
+#                       lens (no terminal verdict line) is NOT skipped — it re-runs, same as a never-reached
+#                       row. Lets a crashed/partial deep-hunt be completed by simply re-invoking with this flag:
+#                       already-settled (CLEAN/FINDING) zones are skipped and only gaps + unreached zones cost
+#                       LLM budget. Requires --deep-hunt. DEFAULT OFF => the STAGE 4.5 loop is byte-identical to
+#                       before (every row re-runs unconditionally, as today).
 #   --invariant-fixture <f>  run-invariant-hunt.sh --handler-fixture (the OFFLINE/deterministic deep-hunt
 #                       path — no LLM). Only meaningful with --deep-hunt.
 #   --deep-hunt-max-targets <N>  Max primary targets per value-custody zone (default 1 — the largest .sol).
@@ -211,6 +221,7 @@ DEEP_HUNT_MAX_LENSES=2  # #1795: max lens classes per deep-hunt zone (custody-pr
 # flip is deferred to M4 (gated on the transfer validation); the disable path stays byte-identical forever.
 DEEP_HUNT_COMPOSABLE_LENS=0
 DEEP_HUNT_ONLY=0  # #1774: apply ONLY the STAGE 4.5 lens over an existing breadth --out (requires --deep-hunt).
+DEEP_HUNT_RESUME=0  # #1934: idempotent skip-completed over STAGE 4.5's (zone, class) rows (requires --deep-hunt).
 # #1830: per-zone hunt budget + targeted re-hunt. Every knob here defaults OFF/inert — with them off STAGE 3's
 # run-discovery.sh invocation gains no argument. The COVERAGE RECORD itself is NOT gated on any of them.
 ZONE_CELL_BUDGET=0 ; RUN_CELL_BUDGET=0 ; REQUIRE_COVERAGE=""
@@ -249,6 +260,7 @@ while [ $# -gt 0 ]; do
     --pass-fixture)     nv "$#"; PASS_FIXTURE="$2"; shift 2 ;;
     --deep-hunt)        DEEP_HUNT=1; shift ;;
     --deep-hunt-only)   DEEP_HUNT_ONLY=1; shift ;;
+    --deep-hunt-resume) DEEP_HUNT_RESUME=1; shift ;;
     --invariant-fixture) nv "$#"; INV_FIXTURE="$2"; shift 2 ;;
     --deep-hunt-max-targets) nv "$#"; DEEP_HUNT_MAX_TARGETS="$2"; shift 2 ;;
     --deep-hunt-aux-max) nv "$#"; DEEP_HUNT_AUX_MAX="$2"; shift 2 ;;
@@ -296,6 +308,9 @@ case "$DEEP_HUNT_MAX_LENSES" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt
 case "$DEEP_HUNT_REPAIR_ROUNDS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be a positive integer (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2 ;; esac
 [ "$DEEP_HUNT_REPAIR_ROUNDS" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be >= 1 (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2; }
 [ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires --deep-hunt" >&2; exit 2; }
+# #1934: idempotent skip-completed is a STAGE 4.5 selection knob, same "meaningless without the stage that
+# consumes it" gate as --composable-lens above.
+[ "$DEEP_HUNT_RESUME" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-resume requires --deep-hunt" >&2; exit 2; }
 # #1914 (M1): the general-solvency lens is a STAGE 4.5 selection knob — boolean, so it needs no integer
 # validation, but it is meaningless without the stage that consumes it (the --deep-hunt-only precedent above).
 [ "$DEEP_HUNT_COMPOSABLE_LENS" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --composable-lens requires --deep-hunt" >&2; exit 2; }
@@ -1067,6 +1082,29 @@ PY
       # `_c<N>.log`) would read the wrong lens's verdict. The `deep-hunt/*/run/invariant_*.log` consumers
       # (generation-recall.sh, generalization-bench.sh) glob the zone level, so the suffix is transparent to them.
       DZOUT="$DEEP/$ZID-$DCLASS"
+      # #1934: idempotent skip-completed (--deep-hunt-resume). Before invoking the engine, check whether this
+      # (zone, class) row already has a TERMINAL verdict on disk — an aggregate `invariant_*.log` (never a
+      # per-candidate `_c<N>.log`, the SAME log-selection the #1780 merge adapter below uses) carrying an
+      # `INVARIANT|...|CLEAN` or `INVARIANT|...|FINDING` line. A HARNESS_ERROR / interrupted lens (no such
+      # line) is NOT terminal and re-runs; a missing $DZOUT is NOT terminal either — both fall through to the
+      # unchanged invocation below. Default OFF (DEEP_HUNT_RESUME=0) => this block never executes and the loop
+      # stays byte-identical to before.
+      if [ "$DEEP_HUNT_RESUME" = 1 ] && [ -d "$DZOUT/run" ]; then
+        _dhr_terminal=0
+        for _dhr_log in "$DZOUT"/run/invariant_*.log; do
+          [ -e "$_dhr_log" ] || continue
+          case "$_dhr_log" in
+            *_c[0-9]*.log) continue ;;  # per-candidate ensemble log — never the aggregate verdict
+          esac
+          if grep -Eq 'INVARIANT\|[^|]*\|(CLEAN|FINDING)([[:space:]]|$)' "$_dhr_log" 2>/dev/null; then
+            _dhr_terminal=1
+          fi
+        done
+        if [ "$_dhr_terminal" = 1 ]; then
+          echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> already hunted (terminal verdict), skipping [--deep-hunt-resume]" >&2
+          continue
+        fi
+      fi
       if [ -n "$INV_FIXTURE" ]; then
         "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
           --handler-fixture "$INV_FIXTURE" --backend "$BACKEND" --agentis "$AGENTIS" --out "$DZOUT" \
