@@ -39,12 +39,14 @@ count_char() { tr -cd "$1" < "$2" | wc -c | tr -d ' '; }
 # ----------------------------------------------------------------------------------------------------------
 # 1) POSITIVE — the plaza artifact: two adjacent identical unbalanced openers collapse to one, restoring balance.
 # ----------------------------------------------------------------------------------------------------------
-note "positive: adjacent duplicated unbalanced opener (the plaza streaming artifact) ..."
+# NOTE: the two duplicated openers carry DIFFERENT leading indentation (10 spaces then 6) — the real streaming
+# artifact re-indents the duplicate, so the guard must match on CODE CONTENT, not byte-identity-with-indent.
+note "positive: adjacent duplicated unbalanced opener at DIFFERENT indentation (the plaza streaming artifact) ..."
 POS="$WORK/pos.t.sol"
 cat > "$POS" <<'EOF'
         InvProxy impl = new InvProxy();
-        bond = BondToken(address(new InvProxy(
-        bond = BondToken(address(new InvProxy(
+          bond = BondToken(address(new InvProxy(
+      bond = BondToken(address(new InvProxy(
             address(impl), admin, initData
         )));
 EOF
@@ -100,6 +102,21 @@ if cmp -s "$WORK/bal.orig" "$BAL"; then
   ok "a duplicated balanced statement is left byte-identical (semantic-safety case)"
 else
   bad "a duplicated balanced statement was stripped — condition 4 (unbalanced parens) not enforced"
+fi
+
+# Content-identical BALANCED statements at DIFFERENT indentation: relaxing condition 2 to content-identity
+# must NOT let a balanced pair through — condition 4 (unbalanced parens) still excludes it, indentation aside.
+BALIND="$WORK/bal_indent.t.sol"
+cat > "$BALIND" <<'EOF'
+        token.mint(user, 1e18);
+            token.mint(user, 1e18);
+EOF
+cp "$BALIND" "$WORK/bal_indent.orig"
+sh "$DEDUP" "$BALIND" 2>/dev/null || true
+if cmp -s "$WORK/bal_indent.orig" "$BALIND"; then
+  ok "content-identical BALANCED statements at different indentation are left byte-identical (condition 4 holds)"
+else
+  bad "a balanced content-duplicate was stripped — content-identity relaxation weakened condition 4"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -175,7 +192,7 @@ fi
 
 echo
 if [ "$FAILS" -eq 0 ]; then
-  note "PASS: the #1926 dedup guard strips ONLY an adjacent byte-identical, substantive, unbalanced-paren line"
+  note "PASS: the #1926 dedup guard strips ONLY an adjacent content-identical, substantive, unbalanced-paren line"
   note "      (a guaranteed syntax error), is a byte-identical no-op on well-formed / structural / balanced"
   note "      harnesses, preserves the #1077 deploy marker, and runs before the #1471 gate in forge-invariant.sh."
   exit 0

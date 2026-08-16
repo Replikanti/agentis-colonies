@@ -4,33 +4,37 @@
 # The problem (proven live on the plaza Distributor<-BondToken composable seam): the harness generator
 # occasionally STREAMS a duplication artifact — it emits an unbalanced statement-opener such as
 #     bond = BondToken(address(new InvProxy(
-# on two adjacent, byte-identical lines. The first opener is then left unclosed, so the downstream `)));`
-# no longer balances and the file fails to compile (`Error (2314): Expected ',' but got ';'`). The
-# --repair-rounds loop hands the model a full ~190-line rewrite each round, which re-exposes it to the same
-# streaming artifact and thrashes instead of converging. Deleting the single duplicated line was proven to
-# flip the harness to `Compiler run successful`, exit 0 — so a mechanical pre-compile pass fixes the artifact
-# class deterministically, before the compiler (and the #1471 linkage grep) ever see the file.
+# on two adjacent lines with the SAME code content but (often) DIFFERENT leading indentation. The first
+# opener is then left unclosed, so the downstream `)));` no longer balances and the file fails to compile
+# (`Error (2314): Expected ',' but got ';'`). The --repair-rounds loop hands the model a full ~190-line
+# rewrite each round, which re-exposes it to the same streaming artifact and thrashes instead of converging.
+# Deleting the single duplicated line was proven to flip the harness to `Compiler run successful`, exit 0 —
+# so a mechanical pre-compile pass fixes the artifact class deterministically, before the compiler (and the
+# #1471 linkage grep) ever see the file.
 #
 # THE SAFE DEDUP PREDICATE — strip the current line L iff ALL FOUR hold:
 #   1. L is non-blank.
-#   2. L (with trailing whitespace trimmed, LEADING indentation preserved and compared) is byte-identical to
-#      the immediately preceding NON-BLANK line. Blank lines are kept, are never themselves stripped, and do
-#      NOT reset the "preceding non-blank" adjacency (so a blank line can't hide a duplicate).
+#   2. L is CONTENT-IDENTICAL (leading AND trailing whitespace trimmed) to the immediately preceding
+#      NON-BLANK line. Indentation is NOT compared — the real streaming artifact re-indents the duplicated
+#      line, so a byte-identical-with-indentation test would miss it. Blank lines are kept, are never
+#      themselves stripped, and do NOT reset the "preceding non-blank" adjacency (so a blank can't hide a dup).
 #   3. L is SUBSTANTIVE — it contains at least one alphanumeric char. Pure structural / closing punctuation
 #      (`}`, `)`, `);`, `));`, `{`, `,`) is therefore NEVER eligible; those legitimately repeat in nested code.
 #   4. L has UNBALANCED parentheses — count('(') != count(')') within L.
 #
-# WHY THIS CAN ONLY REMOVE A COMPILE ERROR, NEVER VALID CODE (condition 4 is the load-bearing safety):
+# WHY THIS CAN ONLY REMOVE A COMPILE ERROR, NEVER VALID CODE (condition 4 is the load-bearing safety, and it
+# is INDENTATION-INDEPENDENT — so relaxing condition 2 to content-identity does not weaken it):
 #   A duplicated line that is a BALANCED complete statement (`token.mint(user, 1e18);`) or an import
 #   (`import "../src/BondToken.sol";` — zero parens, balanced) compiles fine when duplicated, so it is left
-#   untouched. Only an UNBALANCED fragment is eligible, and a duplicated unbalanced fragment at the same
-#   indentation is a guaranteed syntax error EVERY time it appears. Imports carry no parens, so they are
-#   provably never stripped → the #1471 target-linkage gate is untouched by construction.
+#   untouched regardless of indentation. Only an UNBALANCED fragment is eligible, and a duplicated unbalanced
+#   fragment leaves the first copy unclosed — a guaranteed syntax error EVERY time it appears, whether or not
+#   the two copies share indentation. Imports carry no parens, so they are provably never stripped → the
+#   #1471 target-linkage gate is untouched by construction.
 #
 # STRING/COMMENT-LITERAL CAVEAT: the paren balance in condition 4 is a naive character count and does not
 # skip parens inside string or comment literals (e.g. `require(x, "(")`). This is negligible here: the guard
-# only fires on ADJACENT BYTE-IDENTICAL lines — the artifact signature — so at worst it would collapse an
-# intentional pair of identical unbalanced-literal lines, which itself would already be a syntax error.
+# only fires on ADJACENT CONTENT-IDENTICAL lines — the artifact signature — so at worst it would collapse an
+# intentional pair of content-identical unbalanced-literal lines, which itself would already be a syntax error.
 #
 # The pass is a single linear scan, idempotent (a second run drops nothing), and O(lines) with no growth.
 #
@@ -60,7 +64,8 @@ count="$(awk -v out="$tmp" '
       next
     }
     t = line
-    sub(/[ \t]+$/, "", t)             # trim trailing whitespace only; leading indentation preserved/compared
+    sub(/^[ \t]+/, "", t)             # trim LEADING indentation ...
+    sub(/[ \t]+$/, "", t)             # ... and trailing whitespace -> compare CODE CONTENT only (condition 2)
     substantive = (t ~ /[A-Za-z0-9]/)
     s = t; no = gsub(/[(]/, "", s)    # gsub returns the substitution count
     s = t; nc = gsub(/[)]/, "", s)
