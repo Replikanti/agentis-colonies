@@ -1008,6 +1008,28 @@ if [ -x "$REPO_ROOT/dark-factory/demo-funnel-e2e.sh" ]; then
     fi
 fi
 
+# --- dark-factory finding-level payability gate (#1930) ---
+if [ -x "$REPO_ROOT/dark-factory/demo-finding-payability-gate.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-finding-payability-gate.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: finding-level payability gate (finding-payability-gate) (#1930)"
+    else
+        fail "dark-factory: finding-level payability gate regressed (#1930)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- dark-factory payable-impact discovery steering (#1930) ---
+if [ -x "$REPO_ROOT/dark-factory/demo-payable-impact-steering.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-payable-impact-steering.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: payable-impact discovery steering (impact-lens + briefs) (#1930)"
+    else
+        fail "dark-factory: payable-impact discovery steering regressed (#1930)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory batch-runner default path (no --pre-hunt-gate) pinned byte-identical (#1055, pinned by #1900) ---
 if [ -x "$REPO_ROOT/dark-factory/demo-batch.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-batch.sh" 2>&1)" && check_rc=0 || check_rc=$?

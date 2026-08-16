@@ -30,7 +30,21 @@
 #                       substrate step is skipped entirely (deterministic, no LLM).
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the live substrate step (default: flat-cyborg).
 #   --agentis <bin>     agentis binary (default: `agentis` on PATH).
+#   --pay-floor <sev>   #1930: the LOWEST severity the target program actually PAYS (critical|high|medium|low),
+#                       as derived by run-immunefi-intake.sh (the queue's `payfloor:<sev>` token / its payinfo
+#                       sidecar). Renders the floor sentence into every brief and makes the in-scope severity
+#                       bar floor-derived instead of the hardcoded Medium/High one.
+#   --payable-impacts <text>  #1930: the program's OWN published payable impact titles (comma/newline separated,
+#                       each optionally `"<Severity>: <title>"`). Rendered as a deterministic `## Payable
+#                       impacts` section — one bullet per title with its lens classes from lib/impact-lens.py —
+#                       so the hunter looks for the impacts that actually pay instead of generic bugs.
+#                       An UNMAPPED title is rendered verbatim with no lens suffix; no class is ever invented.
 #   -h, --help          This help.
+#
+# BOTH #1930 flags default EMPTY and every byte of the brief is unchanged when they are absent — the payability
+# steering is an OVERLAY on the shipped scaffold, never a rewrite of it. The section is rendered in the
+# DETERMINISTIC assembly pass (not in the substrate body), so it is greppable as a source guard and identical
+# across runs regardless of what the LLM answered.
 #
 # Body-source resolution order: --fixture -> `agentis go brief-writer.ag` per zone (when agentis is present) ->
 # a mechanical fallback body (the zone's class titles only) with `[SKIP] substrate unavailable — emitting
@@ -46,6 +60,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
 AGENTIS="agentis"
 ZONES="" ; SCOPE="" ; OUT="" ; REPO="" ; RESIDUALS="" ; FIXTURE="" ; BACKEND="flat-cyborg"
+# #1930: both EMPTY = OFF; with them off the assembled brief is byte-identical to a pre-#1930 one.
+PAY_FLOOR="" ; PAYABLE_IMPACTS=""
+IMPACT_LENS="$HERE/lib/impact-lens.py"
 
 need() { [ "$1" -ge 2 ] || { echo "gen-briefs.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -58,6 +75,8 @@ while [ $# -gt 0 ]; do
     --fixture) need "$#"; FIXTURE="$2"; shift 2 ;;
     --backend) need "$#"; BACKEND="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
+    --pay-floor) need "$#"; PAY_FLOOR="$2"; shift 2 ;;
+    --payable-impacts) need "$#"; PAYABLE_IMPACTS="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "gen-briefs.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -67,6 +86,12 @@ done
 [ -n "$OUT" ] || { echo "gen-briefs.sh: --out <output dir> required" >&2; exit 2; }
 [ -z "$FIXTURE" ]   || [ -f "$FIXTURE" ]   || { echo "gen-briefs.sh: --fixture not found: $FIXTURE" >&2; exit 2; }
 [ -z "$RESIDUALS" ] || [ -f "$RESIDUALS" ] || { echo "gen-briefs.sh: --audit-residuals not found: $RESIDUALS" >&2; exit 2; }
+# #1930: the pay floor is a CLOSED vocabulary — a typo must fail here, not render `Pay floor: TOMATO` into
+# every brief and silently mis-instruct the hunter.
+case "$PAY_FLOOR" in
+  ""|critical|high|medium|low) : ;;
+  *) echo "gen-briefs.sh: --pay-floor must be one of critical|high|medium|low (got '$PAY_FLOOR')" >&2; exit 2 ;;
+esac
 command -v python3 >/dev/null 2>&1 || { echo "[SKIP] python3 not installed" >&2; exit 0; }
 [ -n "$ZONES" ] && [ -f "$ZONES" ] || { echo "[SKIP] gen-briefs.sh: --zones <zones.json> not found (run map-zones.sh first)" >&2; exit 0; }
 [ -z "$REPO" ] || REPO="$(cd "$REPO" && pwd)"
@@ -276,11 +301,21 @@ done <<EOF
 $ZONE_LIST
 EOF
 
+# --- #1930 payable-impact annotation. lib/impact-lens.py is the SOLE owner of the impact -> lens map (the brief
+#     text here and run-zone-hunt.sh's STAGE 4.5 lens ordering are its two consumers; a second keyword table
+#     would drift). Missing/failing helper -> empty, and the assembly below falls back to rendering the raw
+#     titles with no lens column: the payable impacts still reach the hunter, just without the lens hint.
+PAY_IMPACT_LINES=""
+if [ -n "$PAYABLE_IMPACTS" ] && [ -x "$IMPACT_LENS" ]; then
+  PAY_IMPACT_LINES="$(printf '%s\n' "$PAYABLE_IMPACTS" | "$IMPACT_LENS" annotate --impacts - 2>/dev/null || true)"
+fi
+
 # --- assembly (python3): wrap each zone's body in the deterministic scaffold + fold the residual + seed the
 #     out-of-scope boundary -> briefs/brief_<id>.md, and write briefs/zone_briefs.json (the index). The body is
 #     sanitised (no NUL, no bare CANDIDATE|/BLACKBOARD- token, no leaked sentinel) and the whole brief capped at
 #     the sed -n '1,2000p' window hunter.ag reads.
-COUNT="$(MODEL="$WORK/model.json" TAXO="$TAXONOMY" BODIES="$WORK/bodies" BRIEFS="$BRIEFS" python3 - <<'PY'
+COUNT="$(MODEL="$WORK/model.json" TAXO="$TAXONOMY" BODIES="$WORK/bodies" BRIEFS="$BRIEFS" \
+  PAY_FLOOR="$PAY_FLOOR" PAYABLE_IMPACTS="$PAYABLE_IMPACTS" PAY_IMPACT_LINES="$PAY_IMPACT_LINES" python3 - <<'PY'
 import os, re, json
 
 model = json.load(open(os.environ["MODEL"], encoding="utf-8"))
@@ -308,6 +343,65 @@ def sanitize(body):
         l = l.replace("BLACKBOARD-", "BLACKBOARD ")
         out.append(l)
     return "\n".join(out).strip("\n")
+
+# --- #1930 payable-impact section (deterministic, identical in every zone's brief) ------------------------
+# PAY_IMPACT_LINES is lib/impact-lens.py's `annotate` output: `<severity>|<title>|<classes csv>|<label>` per
+# impact. When the helper produced nothing (absent / errored) the raw --payable-impacts text is split here so
+# the titles still reach the hunter, just without a lens hint. Titles go through the SAME sanitize() rules as
+# the substrate body, so a hostile title can never masquerade as a hunter output token.
+pay_floor = os.environ.get("PAY_FLOOR", "").strip().lower()
+pay_lines = [l for l in os.environ.get("PAY_IMPACT_LINES", "").split("\n") if l.strip()]
+if not pay_lines:
+    for chunk in os.environ.get("PAYABLE_IMPACTS", "").replace(",", "\n").split("\n"):
+        if chunk.strip():
+            pay_lines.append("||%s||" % chunk.strip())
+
+
+def payable_impact_bullets():
+    """[(display title, lens suffix)] for the section, or [] when --payable-impacts was not supplied."""
+    out = []
+    for line in pay_lines:
+        cols = line.split("|")
+        while len(cols) < 4:
+            cols.append("")
+        sev, title, classes, label = cols[0].strip(), cols[1].strip(), cols[2].strip(), cols[3].strip()
+        if not title:
+            # The raw-fallback shape packs the whole entry into the 3rd field (`||<entry>||`).
+            title = cols[2].strip()
+            classes, label = "", ""
+        title = sanitize(title).replace("\n", " ").strip()
+        if not title:
+            continue
+        head = ("%s: %s" % (sev.capitalize(), title)) if sev else title
+        suffix = ("  -> lens: %s (%s)" % (classes, label)) if classes else ""
+        out.append(head + suffix)
+    return out
+
+
+def payable_impacts_section():
+    """The `## Payable impacts` block, or [] when neither #1930 flag was supplied (byte-identical brief)."""
+    bullets = payable_impact_bullets()
+    if not pay_floor and not bullets:
+        return []
+    out = ["", "## Payable impacts — what this program pays for"]
+    if pay_floor:
+        out.append("Pay floor: %s — a finding below %s severity earns $0 on this program; do not report it."
+                   % (pay_floor.upper(), pay_floor.upper()))
+    for b in bullets:
+        out.append("- %s" % b)
+    return out
+
+
+def in_scope_sentence():
+    """The severity bar. With no --pay-floor this is the shipped sentence, byte for byte."""
+    if not pay_floor:
+        return ("Only Medium/High severity, exploitable by an external attacker holding NO privileged role. A "
+                "trusted role acting WITHIN its documented permissions is OUT OF SCOPE; a role EXCEEDING its "
+                "permissions, or any unprivileged user, IS in scope.")
+    return ("Only %s severity and above, exploitable by an external attacker holding NO privileged role. A "
+            "trusted role acting WITHIN its documented permissions is OUT OF SCOPE; a role EXCEEDING its "
+            "permissions, or any unprivileged user, IS in scope." % pay_floor.capitalize())
+
 
 def mechanical_body(classes):
     lines = ["Probe each applicable bug class against this zone's in-scope functions and try to BREAK its core invariant:"]
@@ -348,11 +442,12 @@ for z in model:
             sketch = f[4].strip() if len(f) > 4 else ""
             hint = " — ".join(x for x in (why, sketch) if x)
             out.append("- %s" % hint)
+    # #1930: the payable-impact steering sits immediately BEFORE the in-scope boundary, so the hunter reads
+    # "what pays" and then "what counts" in one place. Empty list when neither flag was supplied.
+    out.extend(payable_impacts_section())
     out.append("")
     out.append("## In scope — a valid finding")
-    out.append("Only Medium/High severity, exploitable by an external attacker holding NO privileged role. A "
-               "trusted role acting WITHIN its documented permissions is OUT OF SCOPE; a role EXCEEDING its "
-               "permissions, or any unprivileged user, IS in scope.")
+    out.append(in_scope_sentence())
     out.append("")
     out.append("## Out of scope — NEVER report")
     if boundary:

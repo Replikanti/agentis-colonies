@@ -65,6 +65,13 @@
 #      v3) INERTNESS: with --total-depth-cells absent, depth behaves exactly as #1827 shipped it and the
 #          record's `budget` object gains NO depth keys (the exact-dict pin in block (f) is the twin guard).
 #      v4) VALIDATION: a bad value and a ceiling with depth off both fail fast with exit 2.
+#   w) #1930 FINDING-LEVEL PAYABILITY GATE (`--pay-floor`, default unset = OFF): with `--pay-floor high` the
+#      stub's MEDIUM finding lands in `unpayable[]` of verify/verified_findings.payable.json and gets NO
+#      audit-pass dir and NO staged draft, the two HIGH findings keep their shipped behaviour,
+#      verify/verified_findings.json is UNCHANGED (delivery is narrowed, the verification record is not), the
+#      drop is named on stderr rather than showing up as a silently shorter banner, the floor also reaches the
+#      STAGE 2 briefs, and `--pay-floor`/`--pay-mode` misuse exits 2. Every other block in this file runs
+#      WITHOUT the flag and therefore doubles as the byte-identity guarantee.
 #   u) #1863 --jobs FORWARDING: --jobs reaches BOTH substrate-heavy stages — STAGE 3's run-discovery.sh AND
 #      STAGE 4's verify-findings.sh (static, over the source) — and an end-to-end --jobs 2 stub run produces a
 #      verify/verified_findings.json byte-identical to the default run's (the fan-out changes wall-clock, never
@@ -406,7 +413,9 @@ else
   bad "run-zone-hunt.sh missing the DEEP_HUNT_COMPOSABLE_LENS=0 default"
 fi
 # shellcheck disable=SC2016  # matching the literal argv line, $ must not expand
-if grep -q -- '"\$DEEP_HUNT_COMPOSABLE_LENS" > "\$DEEP_TARGETS"' "$ZONEHUNT"; then
+# (#1930 appended "$PREFERRED_LENSES" as the next positional of the SAME argv line — the composable flag is
+# still the argument immediately before it, so this guard keeps pinning the threading it was written for.)
+if grep -q -- '"\$DEEP_HUNT_COMPOSABLE_LENS" "\$PREFERRED_LENSES" > "\$DEEP_TARGETS"' "$ZONEHUNT"; then
   ok "run-zone-hunt.sh threads \$DEEP_HUNT_COMPOSABLE_LENS into the STAGE 4.5 selection python"
 else
   bad "run-zone-hunt.sh does not thread \$DEEP_HUNT_COMPOSABLE_LENS into the STAGE 4.5 selection python"
@@ -1530,6 +1539,81 @@ badflag "--total-depth-cells notanumber" 'must be a non-negative integer' \
   --zone-depth-cells 3 --total-depth-cells notanumber
 badflag "--total-depth-cells without --zone-depth-cells" 'a total depth ceiling with depth off is a no-op' \
   --total-depth-cells 8
+
+# ----------------------------------------------------------------------------------------------------------
+# (w) #1930 FINDING-LEVEL PAYABILITY GATE. The offline capstone's hunter stub yields exactly one MEDIUM
+#     candidate (OOSCOPE/Thing.sol:foo:1) alongside two HIGH ones, and all three are verified — so
+#     --pay-floor high has a real, uniquely-identifiable sub-floor finding to gate. THE POINT: a Medium lead on
+#     a program whose rewards table starts at High earns $0, so it must not consume an audit pass, a staged
+#     draft or a human review — while the verification record itself stays intact for corpus-bench/dashboard
+#     readers.
+# ----------------------------------------------------------------------------------------------------------
+note "w) #1930 --pay-floor high keeps the Medium finding out of delivery without touching the verify record ..."
+OUTW="$WORK/zh-pay-floor"
+"$ZONEHUNT" --repo "$REPO" --out "$OUTW" --drop-dir "$OUTW/drop" --scope-hint contracts \
+  --backend mock --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" --pay-floor high \
+  >"$WORK/zhw.out" 2>"$WORK/zhw.err"
+RCW=$?
+[ "$RCW" -eq 0 ] && ok "w) the --pay-floor high run exits 0" \
+  || { bad "w) the --pay-floor run exited $RCW"; sed 's/^/      /' "$WORK/zhw.err" | tail -20 >&2; }
+
+if python3 - "$OUTW" <<'PY'
+import sys, os, json
+out = sys.argv[1]
+ver = os.path.join(out, "verify")
+gated_path = os.path.join(ver, "verified_findings.payable.json")
+assert os.path.isfile(gated_path), "the gate wrote no verified_findings.payable.json"
+gated = json.load(open(gated_path, encoding="utf-8"))
+unpay = {v["location"] for v in gated.get("unpayable", [])}
+kept = {v["location"] for v in gated.get("verified", [])}
+assert "OOSCOPE/Thing.sol:foo:1" in unpay, "the Medium finding is not in unpayable[]: %r" % unpay
+assert kept == {"contracts/vault/Vault.sol:deposit:10", "EXPLODE/Boom.sol:bang:1"}, \
+    "the payable set is wrong: %r" % kept
+assert gated["pay_floor"] == "high", "pay_floor %r" % gated.get("pay_floor")
+assert gated["totals"]["verified"] == 2 and gated["totals"]["unpayable"] == 1, "totals %r" % gated["totals"]
+# THE INVARIANT: the verification record itself is UNTOUCHED — only DELIVERY is narrowed.
+raw = json.load(open(os.path.join(ver, "verified_findings.json"), encoding="utf-8"))
+assert raw["totals"]["verified"] == 3, "verified_findings.json was rewritten by the gate: %r" % raw["totals"]
+assert "unpayable" not in raw and "pay_floor" not in raw, "the gate leaked keys into verified_findings.json"
+assert all("pay_verdict" not in v for v in raw["verified"]), "the gate annotated verified_findings.json in place"
+PY
+then ok "w) the Medium finding is moved to unpayable[] of verify/verified_findings.payable.json; verify/verified_findings.json is UNCHANGED"
+else bad "w) the pay-gate artifact assertion failed"
+fi
+
+# The sub-floor finding gets NO audit pass and NO staged draft — the whole point of gating before STAGE 5.
+if [ ! -d "$OUTW/audit-pass/OOSCOPE-Thing-sol-foo-1" ] \
+   && ! ls -d "$OUTW/drop"/*OOSCOPE* >/dev/null 2>&1 && ! ls -d "$OUTW/drop"/*Thing* >/dev/null 2>&1; then
+  ok "w) the unpayable Medium finding gets NO audit-pass dir and NO staged draft (no human review spent on \$0)"
+else
+  bad "w) the unpayable Medium finding still consumed an audit pass / staged a draft"
+fi
+# The payable findings keep their shipped behaviour exactly (one delivered, one per-finding failure).
+if grep -q 'delivered (staged, PENDING HUMAN REVIEW): 1' "$WORK/zhw.err" \
+   && grep -q 'per-finding failures (skipped): 1' "$WORK/zhw.err" \
+   && grep -q '2 verified finding(s)' "$WORK/zhw.err"; then
+  ok "w) the two payable findings keep their shipped behaviour (1 delivered, 1 per-finding failure)"
+else
+  bad "w) the payable findings' delivery behaviour changed under the gate"
+fi
+# The drop must be VISIBLE: a silently shorter banner is the same defect #1830 fixed for zone coverage.
+if grep -q '\[pay-gate\] payable 2, unpayable 1 (floor=high, mode=drop)' "$WORK/zhw.err"; then
+  ok "w) the run names the drop on stderr ([pay-gate] payable 2, unpayable 1)"
+else
+  bad "w) no [pay-gate] summary line on stderr:"; grep -i 'pay-gate' "$WORK/zhw.err" | sed 's/^/      /' >&2
+fi
+# The briefs carry the floor, so the hunter is steered by the same number that gates the delivery.
+if grep -q 'Pay floor: HIGH' "$OUTW/briefs/briefs/brief_contracts_vault.md" 2>/dev/null; then
+  ok "w) --pay-floor also reaches STAGE 2: the zone briefs state the floor"
+else
+  bad "w) the zone briefs do not carry the pay floor"
+fi
+
+badflag "--pay-floor notaseverity" 'must be one of critical|high|medium|low' --pay-floor notaseverity
+badflag "--pay-mode without --pay-floor" 'a finding pay mode with no floor is a no-op' --pay-mode flag
 
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then

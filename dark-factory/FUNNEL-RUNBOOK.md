@@ -122,6 +122,50 @@ draft), deliver→M5 (the staged submission rolls up as pending).
 9. **M5 — record it:** `submission-outcomes.sh --summary` rolls the recorded
    outcome (accepted / dup / OOS + payout + reason) into the measurement view.
 
+### Finding-level payability (#1930)
+
+Step 2's [`bounty-payability-gate.sh`](./bounty-payability-gate.sh) (#1897) is the
+**PROGRAM-level** filter — it decides which *target* is worth a hunt. Once a
+target is chosen, a second, independent question remains: **which of ITS findings
+are worth delivering?** A Medium lead on a program whose rewards table starts at
+High earns $0, so packaging it spends a human review on money that does not exist.
+
+**Where the floor comes from.** The intake derives it — no manual lookup:
+
+```sh
+run-immunefi-intake.sh --live --out <queue> --payinfo-out <queue>.payinfo.json
+```
+
+- the queue row's `scope_hint` (col 5) carries `payfloor:<critical|high|medium|low>`;
+- the sidecar carries the same floor plus the program's **published payable impact
+  titles** (`{"immunefi:<id>": {"pay_floor": ..., "rewards": {...}, "payable_impacts": [...]}}`).
+
+A program whose reward data is absent or unparseable asserts **no floor at all**
+(no token, no sidecar row) — the pipeline never invents one.
+
+**Using it in the hunt:**
+
+```sh
+run-zone-hunt.sh --repo <clone> --out <dir> \
+    --pay-floor high \
+    --payable-impacts "Critical: Protocol insolvency, Critical: Direct theft of user funds"
+```
+
+- **STAGE 2** — every zone brief states the floor and lists the payable impacts
+  with the bug-class lenses they imply ([`lib/impact-lens.py`](./lib/impact-lens.py)
+  owns that map), so the hunter looks for what pays.
+- **STAGE 4.5** — when `--deep-hunt-max-lenses` truncates the lens fan-out, the
+  lenses those impacts imply are preferred. Never adds or removes a lens row.
+- **before STAGE 5** — [`finding-payability-gate.sh`](./finding-payability-gate.sh)
+  writes `verify/verified_findings.payable.json`; sub-floor findings move into
+  `unpayable[]` and are **not** delivered (`--pay-mode flag` annotates instead of
+  moving). `verify/verified_findings.json` is never overwritten, so the
+  verification record stays whole for corpus-bench and the dashboard.
+
+Both flags default off — omit them and every artifact is byte-identical to a
+pre-#1930 run. Dashboard rendering of the floor and a `$0 / unpayable` badge is
+tracked separately (#1913) and is not implemented here.
+
 ---
 
 ## (c) Target selection
