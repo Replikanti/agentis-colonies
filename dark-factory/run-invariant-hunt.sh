@@ -35,8 +35,11 @@
 #                        compose calls ACROSS the system (the FRESH-DEPLOY composability path — oracle ->
 #                        manager mispricing, reward accrual -> vault share inflation, ...). REPEATABLE. Each
 #                        value is validated like --target (exists, is a *.sol) and exported to the prover as
-#                        one entry of INV_AUX (a sentinel-joined list of `<abs_path>:<Name>` entries, sentinel
-#                        `@@A@@` — it cannot occur in a filesystem path or a Solidity identifier). No --aux =>
+#                        one entry of INV_AUX (a sentinel-joined list of 3-field
+#                        `<staged_slim_abs>@@F@@<Name>@@F@@<real_repo_file>` entries (#1926 — field 2 is the aux's
+#                        real in-repo file so the harness imports the compilable `../src/<Name>.sol`), entry
+#                        sentinel `@@A@@` + field sentinel `@@F@@` — neither can occur in a filesystem path or a
+#                        Solidity identifier). No --aux =>
 #                        INV_AUX empty => the single-target generation prompt is byte-identical to today. This
 #                        is the FRESH-DEPLOY sibling of the FORK-mode --fork-target composability set: --aux
 #                        deploys the auxiliaries from SOURCE, --fork-target references them by on-chain address.
@@ -288,6 +291,10 @@ fi
 # `<abs_file>:<Name>` in AUX_ABS_SPECS; staging into the rundir + the INV_AUX encoding happen below (once the
 # rundir exists). Empty AUX_SPECS leaves AUX_ABS_SPECS empty => INV_AUX empty => single-target behaviour.
 AUX_ABS_SPECS=()
+# #1926: parallel to AUX_ABS_SPECS — each aux's REAL in-repo file part (the pre-slim `--aux` file, `<repo>`-
+# relative, which the prover's resolve_in_repo_src re-resolves inside the STAGED repo). Threaded into INV_AUX
+# field 2 below so the composable harness imports the compilable `../src/<Name>.sol`, not the slimmed copy.
+AUX_REL_FILES=()
 for aspec in ${AUX_SPECS+"${AUX_SPECS[@]}"}; do
   case "$aspec" in
     *:*) _afile="${aspec%%:*}"; _aname="${aspec#*:}" ;;
@@ -303,6 +310,7 @@ for aspec in ${AUX_SPECS+"${AUX_SPECS[@]}"}; do
   else echo "run-invariant-hunt.sh: --aux not found under --repo: $_afile" >&2; exit 2; fi
   _aabs="$(cd "$(dirname "$_aabs")" && pwd)/$(basename "$_aabs")"
   AUX_ABS_SPECS+=("$_aabs:$_aname")
+  AUX_REL_FILES+=("$_afile")  # #1926: index-aligned with AUX_ABS_SPECS (the real in-repo file part)
 done
 
 PROVER="$HERE/auditor/agents/invariant-prover.ag"
@@ -493,10 +501,10 @@ if [ -n "$AUDIT_CONTEXT" ]; then
 fi
 
 # FM2 (#1075): stage each resolved --aux source into the rundir (so the sandboxed reader can reach it) and
-# build INV_AUX — a sentinel-joined list of `<abs_path_in_run>:<Name>` entries, sentinel `@@A@@`. The sentinel
-# cannot occur in a filesystem path (it stages each aux under a colony-controlled `aux-code-<n>.sol` name, all
-# ASCII alnum + `-`) nor in a Solidity identifier, so the prover can split the list and each entry on the FIRST
-# `:` unambiguously. No --aux => AUX_ABS_SPECS empty => INV_AUX stays "" => the prover's single-target prompt
+# build INV_AUX — a sentinel-joined list of 3-field `<abs_path_in_run>@@F@@<Name>@@F@@<real_repo_file>` entries
+# (#1926), entry sentinel `@@A@@`, field sentinel `@@F@@`. Neither sentinel can occur in a filesystem path (it
+# stages each aux under a colony-controlled `aux-code-<n>.sol` name, all ASCII alnum + `-`) nor in a Solidity
+# identifier, so the prover splits the list and each entry's fields unambiguously. No --aux => AUX_ABS_SPECS empty => INV_AUX stays "" => the prover's single-target prompt
 # is byte-identical. The aux SOURCES + names flow only into the prover's plain-string prompt (never a shell).
 INV_AUX=""
 _aux_idx=0
@@ -506,7 +514,11 @@ for entry in ${AUX_ABS_SPECS+"${AUX_ABS_SPECS[@]}"}; do
   # #1079: SLIM each aux source too — a cross-contract PAIR (two full sources in one prompt) was the worst
   # offender for the gen-call timeout, so the aux staging goes through the same slimmer as the target.
   slim_sol_source "$_aabs" "$_aux_in_run"
-  if [ -z "$INV_AUX" ]; then INV_AUX="$_aux_in_run:$_aname"; else INV_AUX="$INV_AUX@@A@@$_aux_in_run:$_aname"; fi
+  # #1926: encode each aux as the 3-field `<staged_slim_abs>@@F@@<Name>@@F@@<real_repo_file>` so the prover can
+  # IMPORT the compilable `../src/<Name>.sol` (field 2) while still reading the slim staged copy (field 0) for the
+  # PROMPT source block. AUX_REL_FILES is index-aligned with AUX_ABS_SPECS, so `_aux_idx` selects this aux's file.
+  _aentry="$_aux_in_run@@F@@$_aname@@F@@${AUX_REL_FILES[$_aux_idx]}"
+  if [ -z "$INV_AUX" ]; then INV_AUX="$_aentry"; else INV_AUX="$INV_AUX@@A@@$_aentry"; fi
   _aux_idx=$((_aux_idx + 1))
 done
 
@@ -542,8 +554,9 @@ fi
   # FM1 (#1041): FORK_URL/FORK_BLOCK thread the fork into the gate; FORK_TARGET is the deployed address the
   # generated handler/invariant references against the forked state. FM2 (#1041): FORK_CONTEXT carries the
   # role->address context set so the generation prompt can compose calls across the deployed protocols.
-  # FM2 (#1075): INV_AUX carries the sentinel-joined `<abs_path>:<Name>` auxiliary-contract list so the prover
-  # can deploy + WIRE the whole system (fresh-deploy composability).
+  # FM2 (#1075): INV_AUX carries the sentinel-joined `<abs_path>@@F@@<Name>@@F@@<real_repo_file>` auxiliary-contract
+  # list (#1926 3-field form) so the prover can deploy + WIRE the whole system (fresh-deploy composability) AND
+  # import each aux from its compilable real in-repo source.
   # #1728: MUTANT_KILL threads the staged #1724 mutant-kill.sh path so the prover's TEETH-GATE can measure a CLEAN.
   # #1731: INV_CORPUS (=1 only under --replay-corpus + --pattern-store) arms the prover's persist_corpus so it
   # accumulates EVERY generated invariant's descriptor into the invpat:corpus:<class> recall tier.

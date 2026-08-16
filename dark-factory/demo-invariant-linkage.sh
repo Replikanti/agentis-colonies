@@ -78,12 +78,13 @@ fi
 # #1776 — GENERAL single-target fresh-deploy generalization: the prover must resolve the target's REAL in-repo
 # source (targetInRepoRel via resolve_in_repo_src) and, on the singleFresh path, (a) pin the skeleton import to it
 # (effImport) and (b) arm the #1471 gate with the in-repo target basename (targetImport) instead of the staged
-# `../../target-code.sol`. Off that path (fork / fork-context / composable-fresh) the generation + gate stay
-# byte-identical. A refactor dropping this regresses the non-yearn HARNESS_ERROR (#1776), so pin it here.
+# `../../target-code.sol`. Off the singleFresh path fork / fork-context stay byte-identical; composable-fresh
+# gets its OWN in-repo global-import pin (#1926) — the singleFresh else-branch import is still `import_line(
+# targetName, effImport)`. A refactor dropping this regresses the non-yearn HARNESS_ERROR (#1776), so pin it here.
 if grep -q 'fn resolve_in_repo_src(repo: string, file: string) -> string' "$PROVER" \
    && grep -q 'let targetInRepoRel = rel_import_path(invOut, targetSrcAbs);' "$PROVER" \
    && grep -q 'let effImport = ' "$PROVER" \
-   && grep -q 'let importLine = import_line(targetName, effImport);' "$PROVER"; then
+   && grep -q 'else { import_line(targetName, effImport) };' "$PROVER"; then
   ok "invariant-prover.ag resolves the in-repo target source + pins the skeleton import to it on singleFresh (effImport)"
 else
   bad "invariant-prover.ag does not compute targetInRepoRel/effImport for the single-target fresh-deploy import (#1776)"

@@ -14,7 +14,9 @@
 #   (2) STAGE 4.5 emits the AUXFILES column ONLY when aux-max > 0, and both $INVHUNT invocations build --aux from
 #       it, with the aux-max=0 path byte-identical to single-target;
 #   (3) M2 REUSED — did not modify — the safety-gated composable-fresh + #1077 both-real + #1471 link_args path in
-#       invariant-prover.ag / run-invariant-hunt.sh (the strings are all still present).
+#       invariant-prover.ag / run-invariant-hunt.sh (the strings are all still present);
+#   (4) #1926 the composable-fresh harness imports the target AND every aux from their REAL in-repo sources
+#       (GLOBAL imports of `../src/<Name>.sol`), via the 3-field @@F@@ INV_AUX encoding — not the slim staged copies.
 #
 # Usage:  dark-factory/demo-invariant-multi-target.sh
 # Exit: 0 = all assertions hold ; non-zero = a regression.
@@ -146,6 +148,33 @@ if grep -q 'exec.env_passthrough = TARGET_FN,TARGET_CLASS,INV_REPO,INV_OUT,INV_M
   ok "run-invariant-hunt.sh's exec.env_passthrough allowlist (incl. INV_AUX) is unchanged — no new env surface"
 else
   bad "run-invariant-hunt.sh's exec.env_passthrough allowlist changed unexpectedly"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# 4) #1926 SOURCE-IMPORT FIX — the composable-fresh harness imports the target AND every aux from their REAL
+#    in-repo sources (GLOBAL imports of the compilable `../src/<Name>.sol`), not the slimmed staged flat copies
+#    (`../../target-code.sol` / `aux-code-<n>.sol`, which are dependency-stripped and do not compile). These
+#    pin the staging/import-bug fix that flips composable-fresh / complex targets from HARNESS_ERROR to a verdict.
+# ----------------------------------------------------------------------------------------------------------
+note "source-guarding the #1926 composable-fresh real-src import fix ..."
+
+if grep -q 'fn global_import_line(rel: string) -> string' "$PROVER" \
+   && grep -q 'let auxSrcAbs = resolve_in_repo_src(invRepo, aux_field(entry, 2))' "$PROVER"; then
+  ok "invariant-prover.ag aux import reduce resolves each aux from its REAL in-repo src (global_import_line)"
+else
+  bad "the #1926 aux real-src import (resolve_in_repo_src(invRepo, aux_field(entry, 2)) + global_import_line) is missing"
+fi
+
+if grep -q 'global_import_line(targetInRepoRel)' "$PROVER"; then
+  ok "invariant-prover.ag composable-fresh target import uses global_import_line(targetInRepoRel)"
+else
+  bad "the #1926 composable-fresh target import (global_import_line(targetInRepoRel)) is missing"
+fi
+
+if grep -q '_aentry="$_aux_in_run@@F@@$_aname@@F@@${AUX_REL_FILES\[$_aux_idx\]}"' "$INVHUNT"; then
+  ok "run-invariant-hunt.sh emits the #1926 3-field @@F@@ INV_AUX entry (staged slim / Name / real repo file)"
+else
+  bad "run-invariant-hunt.sh's #1926 3-field @@F@@ INV_AUX entry encoding is missing"
 fi
 
 echo

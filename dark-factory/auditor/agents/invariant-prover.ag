@@ -170,15 +170,29 @@ fn import_line(name: string, rel: string) -> string {
     }
     return "  - Import the target from \"" + rel + "\" — import the contract you see DECLARED in the source below.\n";
 }
+// #1926 — GLOBAL (un-named) import directive. A named `import {Name} from "<rel>";` brings ONLY `Name` into scope,
+// not the source unit's SIBLING interfaces/structs (`ILeverager`, `ILeverager.LeverageParams`, ...) the harness
+// also references — so the composable-fresh harness fails to compile. Emit a GLOBAL `import "<rel>";` so EVERY
+// declared type in that source unit is in scope. Load-bearing: replacing the two slim named imports with global
+// imports of the full staged repo copies is exactly the edit that flipped the real failed harness to
+// `Compiler run successful`. Empty rel => "" (no import line), same as import_line.
+fn global_import_line(rel: string) -> string {
+    if len(rel) == 0 { return ""; }
+    return "  - Import from \"" + rel + "\" with a GLOBAL import: import \"" + rel + "\"; (NOT a named "
+         + "`{..}` import — the whole source unit, including its sibling interfaces/structs, must be in scope).\n";
+}
 
 // FM2 (#1075) — COMPOSABLE-FRESH MODE. INV_AUX is the FRESH-DEPLOY sibling of FORK_CONTEXT: a sentinel-joined
 // list of AUXILIARY in-scope contracts the prover should ALSO deploy + WIRE alongside the target so the
 // generated handler can compose calls ACROSS the system (oracle -> manager mispricing, reward accrual ->
 // vault share inflation — the cross-contract bug a single-contract harness is structurally blind to). Each
-// entry is `<abs_path>:<Name>` (the staged rundir source path + the optional contract Name), entries joined by
+// entry is `<staged_slim_abs>@@F@@<Name>@@F@@<real_repo_file>` (#1926: field 0 = the staged rundir slim source
+// path used for the PROMPT source block; field 1 = the optional contract Name; field 2 = the aux's REAL in-repo
+// file part, relative to --repo, so the harness can IMPORT the compilable `../src/<Name>.sol` instead of the
+// dependency-stripped staged copy). Fields are joined by the 5-char intra-entry sentinel `@@F@@` and entries by
 // the 5-char sentinel `@@A@@` (run-invariant-hunt.sh stages each aux under an ASCII `aux-code-<n>.sol` name, so
-// the sentinel can occur in neither a path nor a Solidity identifier — entries and the path:Name split are
-// unambiguous). INV_AUX is UNTRUSTED operator input that flows ONLY into the plain-string generation prompt
+// neither sentinel can occur in a path or a Solidity identifier — entries and their fields split unambiguously
+// regardless of any colon in a field). INV_AUX is UNTRUSTED operator input that flows ONLY into the plain-string generation prompt
 // below (the aux SOURCES, import paths, and names — exactly like the target source), never into a verdict and
 // never into a shell as an unescaped concat (the rel-import realpath is read back from a shell_escape()d exec,
 // as for the target). Empty INV_AUX => composable-fresh is OFF => the single-target prompt is byte-identical.
@@ -187,28 +201,40 @@ fn composable_fresh(aux: string) -> bool {
     return len(aux) > 0;
 }
 let composableFresh = composable_fresh(invAux);
-// Split one `<abs_path>:<Name>` entry on its FIRST `:` (the Name, a Solidity identifier, carries none; an abs
-// path may, so we split on the first colon only and keep the remainder as the Name). field 0 = path, 1 = name.
+// Split one `<staged_slim_abs>@@F@@<Name>@@F@@<real_repo_file>` entry on the `@@F@@` intra-entry sentinel
+// (#1926 — collision-free with paths/identifiers, same philosophy as the `@@A@@` entry sentinel, so a field
+// carrying a colon splits cleanly). field 0 = staged slim abs (unchanged semantics), 1 = Name (unchanged),
+// 2 = real in-repo file (new). regex_split yields the field list; an entry with fewer fields (a legacy or
+// name-less aux) returns "" for a missing field, so callers that read only fields 0/1 are unchanged.
 fn aux_field(entry: string, n: int) -> string {
-    let c = index_of(entry, ":");
-    if c < 0 {
-        if n == 0 { return entry; }
-        return "";
-    }
-    if n == 0 { return substring(entry, 0, c); }
-    return substring(entry, c + 1, len(entry));
+    let segs = regex_split("@@F@@", entry);
+    let acc = reduce(segs, |a: string, seg: string| -> string {
+        let bar = index_of(a, "\t");
+        let idx = parse_int(substring(a, 0, bar));
+        let cap = substring(a, bar + 1, len(a));
+        if idx == n { return to_string(idx + 1) + "\t" + seg; }
+        return to_string(idx + 1) + "\t" + cap;
+    }, "0\t");
+    return substring(acc, index_of(acc, "\t") + 1, len(acc));
 }
-// The list of `<abs_path>:<Name>` entries. regex_split on the empty string would yield a spurious [""] entry,
+// The list of `<staged_slim_abs>@@F@@<Name>@@F@@<real_repo_file>` entries. regex_split on the empty string would yield a spurious [""] entry,
 // so an empty INV_AUX returns the empty list -> the reduces below produce "" -> the prompt is byte-identical.
 fn aux_entries(aux: string) -> list<string> {
     if len(aux) == 0 { return []; }
     return regex_split("@@A@@", aux);
 }
 let auxEntries = aux_entries(invAux);
-// The concatenated import-line directives for EVERY auxiliary (reusing the SAME import_line + rel_import_path
-// helpers as the target). Each aux source is staged in the rundir, so rel_import_path() computes its path
-// relative to dirname(INV_OUT) exactly as for the target. Empty list => "".
+// The concatenated import-line directives for EVERY auxiliary. #1926: prefer each aux's REAL in-repo source
+// (field 2, resolved inside the staged repo via resolve_in_repo_src — the SAME machinery the target uses) and
+// emit a GLOBAL import of the COMPILABLE `../src/<Name>.sol`, so the composable harness compiles (the staged
+// slim copy is dependency-stripped and does not). Fallback when the real src does NOT resolve (a flattened aux
+// with no in-repo `src/` file): keep today's behaviour — the staged-slim NAMED import (field 0/1). The slim
+// staged copies stay for the PROMPT source block (auxBlock, context economy); only the harness IMPORT changes.
 let auxImportLines = reduce(auxEntries, |acc: string, entry: string| -> string {
+    let auxSrcAbs = resolve_in_repo_src(invRepo, aux_field(entry, 2));
+    if len(auxSrcAbs) > 0 {
+        return acc + global_import_line(rel_import_path(invOut, auxSrcAbs));
+    }
     return acc + import_line(aux_field(entry, 1), rel_import_path(invOut, aux_field(entry, 0)));
 }, "");
 // The concatenated aux SOURCE block — one clearly delimited `=== AUX CONTRACT (<name>) ===` section per
@@ -309,7 +335,11 @@ fn single_fresh(fork: bool, compose: bool, composeFresh: bool) -> bool {
 }
 let singleFresh = single_fresh(forkMode, composableMode, composableFresh);
 let effImport = if singleFresh { if len(targetInRepoRel) > 0 { targetInRepoRel } else { relImport } } else { relImport };
-let importLine = import_line(targetName, effImport);
+// #1926: composable-fresh gets the in-repo pin the singleFresh branch already had (M5/#1776), but via a GLOBAL
+// import (so the target's sibling interfaces/structs come along, per the proven fix). When the in-repo source
+// did NOT resolve, fall back to today's composable-fresh named import (effImport == relImport here). singleFresh
+// / fork / fork-context are untouched — they never see composableFresh — so those paths stay byte-identical.
+let importLine = if composableFresh { if len(targetInRepoRel) > 0 { global_import_line(targetInRepoRel) } else { import_line(targetName, effImport) } } else { import_line(targetName, effImport) };
 
 // --- RECALL a prior winning invariant pattern (Int M3, #1037) ------------------------------------
 // Before GENERATE, recall the latest invariant pattern that produced a FINDING on THIS bug class from the
@@ -460,7 +490,12 @@ fn compose_fresh_seed(active: bool) -> string {
          + "check the vault), and EXACTLY ONE deep CROSS-CONTRACT invariant: NO free value extraction / system "
          + "solvency holds across any sequence — an actor who starts and ends with the SAME external position "
          + "must not have drained the system. In this composable-fresh mode the size budget grows to ~180 lines "
-         + "(still bounded) to fit the multi-deploy + wiring `setUp()`.\n";
+         + "(still bounded) to fit the multi-deploy + wiring `setUp()`.\n"
+         + "IMPORT THE TARGET AND EACH AUXILIARY with a GLOBAL import from its REAL in-repo source path shown in "
+         + "the skeleton above (e.g. import \"../src/<Name>.sol\"; — NOT a named `{..}` import, so each source "
+         + "unit's sibling interfaces/structs are all in scope). NEVER import the flattened staged copies "
+         + "`target-code.sol` / `aux-code-*.sol` (they live one directory ABOVE the Foundry root and are "
+         + "dependency-stripped, so importing them fails to compile).\n";
 }
 // #1755 — CORE-DEPENDENCY HARNESS-GEN. For yearn-v3 targets the ERC4626 share logic (deposit/mint/withdraw/
 // redeem, PPS, totalSupply/totalAssets) does NOT live in the target contract — the target inherits `BaseStrategy`
@@ -1565,7 +1600,13 @@ fn link_args(fUrl: string, fTarget: string, fContext: string, cPath: string, tNa
 // source-guards hold), else the target file basename on singleFresh, else "" (fork / fork-context / composable —
 // link_args also self-guards to ""). The #1471 anti-fabrication property is preserved: a real in-scope-target
 // import (basename `<Target>.sol`) is still MANDATORY, and `--require-contract <Name>` still forbids a shadow.
-let targetImport = if len(vaultTargetImport) > 0 { vaultTargetImport } else { if singleFresh { targetFile } else { "" } };
+// #1926: arm the gate for composable-fresh in lockstep with change 4's import — when the in-repo target
+// resolved, the harness now GLOBAL-imports `../src/<Target>.sol`, so require its basename `targetFile` (the gate
+// basenames its arg, so `import "../src/Strategy.sol";` satisfies `--require-import Strategy.sol`); when it did
+// NOT resolve, "" falls through to `--require-import <codePath>` matching change 4's staged-slim fallback. The
+// anti-fabrication property holds — a harness importing NEITHER the real in-repo target NOR the staged copy
+// still HARNESS_ERRORs. (fork / fork-context are still `link_args`-self-guarded to "".)
+let targetImport = if len(vaultTargetImport) > 0 { vaultTargetImport } else { if singleFresh { targetFile } else { if composableFresh { if len(targetInRepoRel) > 0 { targetFile } else { "" } } else { "" } } };
 let linkArgs = link_args(forkUrl, forkTarget, forkContext, codePath, targetName, targetImport);
 // The extra gate args appended to EVERY gate invocation (the first attempt AND each repair round) so a
 // substituted-target test is rejected as HARNESS_ERROR no matter which attempt produced it.
