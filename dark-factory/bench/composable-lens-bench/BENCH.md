@@ -55,20 +55,39 @@ summary lands at `<work>/summary.json` (also printed with `--json`).
 
 ## RESULTS
 
-> **Placeholder — to be filled from the LIVE run.** The default `--composable-lens` flip is gated on this
-> measurement; do not fabricate numbers. Fill the table below from a `--live` run's `<work>/summary.json`, one
-> row per target, and record the effective `depth_per_zone` (not the nominal flag) plus the backend used.
+Backend: flat-cyborg / opus · targets: yieldoor, plaza · date: 2026-08-16
 
-Backend: _TBD_ · targets: _TBD_ · date: _TBD_
+| Target   | FINDING | CLEAN | HARNESS_ERROR | Catch | Adversary actor        | depth/zone |
+|----------|--------:|------:|--------------:|:-----:|-------------------------|-----------:|
+| yieldoor |       0 |     0 |              1 |   no  | Handler unset (nominal) | nominal (no within-contract depth pass) |
+| plaza    |       0 |     0 |              1 |   no  | Handler unset (nominal) | nominal (no within-contract depth pass) |
 
-| Target | FINDING | CLEAN | HARNESS_ERROR | Catch | Adversary actor | depth/zone |
-|--------|--------:|------:|--------------:|:-----:|-----------------|-----------:|
-| _TBD_  |         |       |               |       |                 |            |
-| _TBD_  |         |       |               |       |                 |            |
+- **yieldoor**: SYS-solvency lens on `src/Leverager.sol` (aux `src/Strategy.sol`; M2 detected no seam here, so
+  M1 bootstrap selection was used).
+- **plaza**: M2 detected a real composition seam — `src/Distributor.sol` (consumer) ← `src/BondToken.sol`
+  (producer), class `return-sink` — and routed the SYS-solvency lens onto it.
 
-**Distinct catch targets:** _TBD_ / gate ≥2 → _MET / NOT MET_.
+**Distinct catch targets:** 0 / gate ≥2 → **NOT MET**.
 
-HARNESS_ERROR gaps: _TBD_. Vacuous (adversary path not driven): _TBD_.
+HARNESS_ERROR gaps: both targets (un-probed seams, not clean negatives). Vacuous-adversary count: n/a — neither
+run reached a CLEAN verdict; both failed at harness compilation before any fuzzing ran.
+
+### What this run established
+
+- **Routing + seam detection (M1–M3) are validated end-to-end.** On plaza, M2 correctly detected a real
+  consumer→producer settlement seam and routed the SYS-solvency lens onto it; M3's matrix recorded the
+  HARNESS_ERROR as an explicit GAP distinct from CLEAN, exactly as designed.
+- **The blocker is composable-fresh stateful-harness GENERATION, not the invariant idea or the routing.** On
+  both targets the generator completed its compile-repair LLM rounds (real replies — not a timeout, not
+  flat-cyborg chrome) but produced no compilable harness. A consistent pattern held across the wider corpus
+  bench: the simple accounting class (C6) generates compilable harnesses and FINDINGs, while the complex
+  multi-contract/oracle classes (C2, SYS-solvency) HARNESS_ERROR — the gap is specifically complex
+  multi-contract settlement/oracle wiring, exactly where this lens operates.
+- **Decision: `--composable-lens` default stays OFF.** The flip is gated on the catch result; the gate is NOT
+  MET, so the default is not flipped. `--deep-hunt --no-composable-lens` remains byte-identical to pre-#1914.
+- Harness-generation robustness for that wiring class is tracked in **#1926** (the single barrier to flipping
+  the default). The refute-gate flat-cyborg chrome issue **#1925** is a separate breadth-side backend concern
+  and does not affect these composable-lens verdicts.
 
 Once the gate is MET on ≥2 distinct targets, the coordinator flips the `run-zone-hunt.sh` default
 (`DEEP_HUNT_COMPOSABLE_LENS=1`) in a follow-up commit and refreshes the demo goldens; `--no-composable-lens`
