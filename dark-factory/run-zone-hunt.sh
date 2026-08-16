@@ -1218,11 +1218,20 @@ if logs:
 sys.stdout.write(verdict if verdict in ("FINDING", "CLEAN", "HARNESS_ERROR") else "HARNESS_ERROR")
 PY
 )"
-        "$LENSMATRIX" set --file "$MATRIX_JSON" --surface "$ZID" \
-          --lens-depth general-solvency --verdict "$LENS_VERDICT"
+        # #1936: the lens-surface matrix only tracks custody/composition SURFACES (is_surface). Since #1790
+        # the deep-hunt also targets non-custody zones, whose `set` hits `die(2, "surface not in the matrix")`
+        # — under `set -e` that aborted the WHOLE deep-hunt (every later zone lost). Recording a non-surface
+        # zone is a category mismatch: skip it (its verdict still lives in the invariant log), never abort.
+        if ! "$LENSMATRIX" set --file "$MATRIX_JSON" --surface "$ZID" \
+          --lens-depth general-solvency --verdict "$LENS_VERDICT"; then
+          echo "run-zone-hunt.sh: [deep-hunt] matrix record skipped for zone '$ZID' (not a custody/composition surface — #1936); deep-hunt continues" >&2
+        fi
         echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' general-solvency lens -> $LENS_VERDICT (matrix)" >&2
       else
-        "$LENSMATRIX" set --file "$MATRIX_JSON" --surface "$ZID" --lens-depth narrow-per-class
+        # #1936: same non-surface guard as the general-solvency branch above.
+        if ! "$LENSMATRIX" set --file "$MATRIX_JSON" --surface "$ZID" --lens-depth narrow-per-class; then
+          echo "run-zone-hunt.sh: [deep-hunt] matrix record skipped for zone '$ZID' (not a custody/composition surface — #1936); deep-hunt continues" >&2
+        fi
       fi
     done < "$DEEP_TARGETS"
     echo "run-zone-hunt.sh: [deep-hunt] merged $DEEP_FINDINGS invariant-hunt finding(s) into verified_findings.json" >&2
