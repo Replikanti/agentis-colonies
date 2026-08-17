@@ -1,6 +1,6 @@
 #!/bin/bash
 # test-run-ab-experiment.sh -- smoke test for run-ab-experiment.sh
-# --dry-run mode (#573 PR-5).
+# --dry-run mode (#573 PR-5) plus a staged real-run section (#1947).
 #
 # 8 assertions covering the harness control surface:
 #   1. --help works (returns 0, prints usage).
@@ -15,6 +15,18 @@
 #   6. experiment-manifest.json path is emitted in the plan.
 #   7. analyze-ab-results.py invocation emitted after the runs.
 #   8. Unknown flag exits non-zero (2).
+#
+# Plus a real-run (AB_DRY_RUN=0) integration section (#1947) driven
+# against a staged federation root (mktemp tree + stub run-replay.sh),
+# which is where the empty-`runs` manifest bug lived:
+#   9.  Happy path: exit 0, manifest carries one entry per replicate with
+#       the right arm / run_idx / run_dir / threshold / exit_code, the
+#       analyser maps every run dir and comparison.md is written.
+#   10. A replicate failing with exit 7 round-trips into the manifest and
+#       the harness exits 4.
+#   11. Missing write-ab-manifest.py -> exit 3 + `missing dependent script`.
+#   12. Failing write-ab-manifest.py -> exit 6 + `manifest assembly failed`.
+#   13. The dry-run plan names the real manifest writer.
 #
 # Standard library only -- no pytest, no live LLM, no podman.
 #
@@ -130,6 +142,161 @@ fi
 UNK_RC=0
 bash "$HARNESS" --no-such-flag >/dev/null 2>&1 || UNK_RC=$?
 assert_eq "8. unknown flag exits 2" "2" "$UNK_RC"
+
+# ---------------------------------------------------------------------------
+# 13. Dry-run plan names the real manifest writer (#1947).
+# ---------------------------------------------------------------------------
+assert_contains "13. dry-run plan names write-ab-manifest.py" "$DRY_OUT" \
+    "write-ab-manifest.py"
+
+# ---------------------------------------------------------------------------
+# 9-12. Real-run (AB_DRY_RUN=0) integration against a staged federation
+#       root: mktemp tree carrying copies of the harness, the analyser and
+#       the manifest writer plus a stub run-replay.sh. No podman, no
+#       agentis binary, no network, no LLM.
+# ---------------------------------------------------------------------------
+STAGED_ROOTS=""
+cleanup_staged() {
+    for staged in $STAGED_ROOTS; do
+        [ -n "$staged" ] && rm -rf "$staged"
+    done
+}
+trap cleanup_staged EXIT
+
+# _stage_fed_root <replay-exit-code> -> prints the staged FED_ROOT path.
+_stage_fed_root() {
+    stage_rc="$1"
+    staged_root="$(mktemp -d)"
+    STAGED_ROOTS="$STAGED_ROOTS $staged_root"
+    mkdir -p "$staged_root/tools"
+    cp "$HARNESS" "$staged_root/tools/run-ab-experiment.sh"
+    cp "$SCRIPT_DIR/analyze-ab-results.py" "$staged_root/tools/analyze-ab-results.py"
+    cp "$SCRIPT_DIR/write-ab-manifest.py" "$staged_root/tools/write-ab-manifest.py"
+    {
+        echo '#!/bin/bash'
+        echo '# Stub run-replay.sh: creates the pinned run dir, then exits.'
+        echo 'mkdir -p "$REPLAY_RUN_DIR"'
+        echo "exit $stage_rc"
+    } > "$staged_root/tools/run-replay.sh"
+    chmod +x "$staged_root/tools/run-ab-experiment.sh" \
+             "$staged_root/tools/run-replay.sh" \
+             "$staged_root/tools/write-ab-manifest.py"
+    printf '%s' "$staged_root"
+}
+
+# Repo-local runs/ must stay untouched by the staged runs.
+REPO_RUNS_DIR="$(dirname "$SCRIPT_DIR")/runs"
+repo_runs_before="$(ls -1 "$REPO_RUNS_DIR" 2>/dev/null | wc -l | tr -d ' ')"
+
+# --- 9. Happy path -----------------------------------------------------------
+FED_OK="$(_stage_fed_root 0)"
+OK_RC=0
+OK_ERR="$(FED_ROOT="$FED_OK" AB_DRY_RUN=0 AB_N_REPLICATES=2 \
+          AB_SYMBOL=BTCUSDT AB_TIMEFRAME=1h \
+          bash "$FED_OK/tools/run-ab-experiment.sh" 2>&1 >/dev/null)" || OK_RC=$?
+assert_eq "9a. staged real run exits 0" "0" "$OK_RC"
+
+OK_EXP_DIR="$(find "$FED_OK/runs" -mindepth 1 -maxdepth 1 -type d -name 'ab-trading-*' 2>/dev/null | head -1)"
+OK_MANIFEST="$OK_EXP_DIR/experiment-manifest.json"
+if [ -f "$OK_MANIFEST" ]; then
+    echo "[PASS] 9b. experiment-manifest.json written"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] 9b. experiment-manifest.json missing at $OK_MANIFEST"
+    FAIL=$((FAIL + 1))
+fi
+
+# Flatten the manifest to one grep-able line per run entry.
+MANIFEST_SUMMARY="$(python3 -c '
+import json, os, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    m = json.load(f)
+runs = m["runs"]
+print("nruns=" + str(len(runs)))
+for r in runs:
+    print("|".join([
+        r["arm"],
+        str(r["run_idx"]),
+        os.path.basename(r["run_dir"].rstrip("/")),
+        str(r["strategist_prompt_evolution_threshold"]),
+        str(r["exit_code"]),
+    ]))
+' "$OK_MANIFEST")"
+
+assert_contains "9c. manifest records all 4 replicates" "$MANIFEST_SUMMARY" "nruns=4"
+assert_contains "9d. control run 1 recorded with threshold 999 + exit 0" \
+    "$MANIFEST_SUMMARY" "control|1|ab-trading-"
+assert_contains "9e. control rows carry threshold 999" "$MANIFEST_SUMMARY" \
+    "-control-run-2|999|0"
+assert_contains "9f. treatment rows carry threshold 3" "$MANIFEST_SUMMARY" \
+    "-treatment-run-2|3|0"
+
+if printf '%s' "$OK_ERR" | grep -Fq 'cannot be mapped to an arm'; then
+    echo "[FAIL] 9g. analyser reported unmapped run dirs"
+    echo "       output: $OK_ERR"
+    FAIL=$((FAIL + 1))
+else
+    echo "[PASS] 9g. analyser mapped every run dir to an arm"
+    PASS=$((PASS + 1))
+fi
+
+if [ -f "$OK_EXP_DIR/comparison.md" ]; then
+    echo "[PASS] 9h. comparison.md written by the analyse step"
+    PASS=$((PASS + 1))
+else
+    echo "[FAIL] 9h. comparison.md missing in $OK_EXP_DIR"
+    FAIL=$((FAIL + 1))
+fi
+
+# --- 10. Replicate exit codes round-trip ------------------------------------
+FED_FAIL="$(_stage_fed_root 7)"
+FAIL_RC=0
+FED_ROOT="$FED_FAIL" AB_DRY_RUN=0 AB_N_REPLICATES=1 \
+    bash "$FED_FAIL/tools/run-ab-experiment.sh" >/dev/null 2>&1 || FAIL_RC=$?
+assert_eq "10a. failing replicates exit 4" "4" "$FAIL_RC"
+
+FAIL_MANIFEST="$(find "$FED_FAIL/runs" -mindepth 2 -maxdepth 2 -name 'experiment-manifest.json' 2>/dev/null | head -1)"
+FAIL_SUMMARY="$(python3 -c '
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    m = json.load(f)
+codes = sorted(set(str(r["exit_code"]) for r in m["runs"]))
+print("nruns=" + str(len(m["runs"])) + " codes=" + ",".join(codes))
+' "$FAIL_MANIFEST")"
+assert_contains "10b. every manifest row records exit_code 7" "$FAIL_SUMMARY" \
+    "nruns=2 codes=7"
+
+# --- 11. Missing manifest writer --------------------------------------------
+FED_NOWRITER="$(_stage_fed_root 0)"
+rm -f "$FED_NOWRITER/tools/write-ab-manifest.py"
+NOWRITER_RC=0
+NOWRITER_ERR="$(FED_ROOT="$FED_NOWRITER" AB_DRY_RUN=0 AB_N_REPLICATES=1 \
+                bash "$FED_NOWRITER/tools/run-ab-experiment.sh" 2>&1 >/dev/null)" || NOWRITER_RC=$?
+assert_eq "11a. missing write-ab-manifest.py exits 3" "3" "$NOWRITER_RC"
+assert_contains "11b. missing writer names the dependency" "$NOWRITER_ERR" \
+    "missing dependent script"
+
+# --- 12. Failing manifest writer --------------------------------------------
+FED_BADWRITER="$(_stage_fed_root 0)"
+{
+    echo '#!/usr/bin/env python3'
+    echo '# Stub writer: consumes the record stream, then fails.'
+    echo 'import sys'
+    echo 'sys.stdin.buffer.read()'
+    echo 'sys.exit(1)'
+} > "$FED_BADWRITER/tools/write-ab-manifest.py"
+chmod +x "$FED_BADWRITER/tools/write-ab-manifest.py"
+BADWRITER_RC=0
+BADWRITER_ERR="$(FED_ROOT="$FED_BADWRITER" AB_DRY_RUN=0 AB_N_REPLICATES=1 \
+                 bash "$FED_BADWRITER/tools/run-ab-experiment.sh" 2>&1 >/dev/null)" || BADWRITER_RC=$?
+assert_eq "12a. failing manifest writer exits 6" "6" "$BADWRITER_RC"
+assert_contains "12b. failing writer reports manifest assembly failure" \
+    "$BADWRITER_ERR" "manifest assembly failed"
+
+# --- Staged runs never touch the repo's own runs/ ---------------------------
+repo_runs_after="$(ls -1 "$REPO_RUNS_DIR" 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "staged runs leave trading-binance/runs/ untouched" \
+    "$repo_runs_before" "$repo_runs_after"
 
 # Header-doc sanity.
 SRC="$(cat "$HARNESS")"

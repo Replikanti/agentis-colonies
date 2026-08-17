@@ -832,6 +832,35 @@ if [ -x "$REPO_ROOT/trading-binance/tools/test-invariants.sh" ]; then
     fi
 fi
 
+# --- trading-binance A/B experiment manifest (#1947) ---
+# run-ab-experiment.sh used to feed its NUL-separated record stream into a
+# `python3 - <<'PYMANIFEST'` heredoc, so the stream was discarded and
+# experiment-manifest.json always carried an empty `runs` array (SC2259).
+# The manifest writer now lives in tools/write-ab-manifest.py; these two
+# tests pin its stdin/argv contract and the harness's real-run behaviour
+# (staged FED_ROOT + stub run-replay.sh, no podman / agentis / network).
+# Per-federation tools/test-*.sh are NOT auto-discovered by the loops above
+# (only root tools/test-*.sh is globbed) so they need explicit hooks.
+if [ -x "$REPO_ROOT/trading-binance/tools/test-run-ab-experiment.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/trading-binance/tools/test-run-ab-experiment.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "test-run-ab-experiment: A/B harness dry-run plan + staged real-run manifest (#1947)"
+    else
+        fail "test-run-ab-experiment: A/B harness plan / real-run manifest assembly drifted (#1947)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+if [ -x "$REPO_ROOT/trading-binance/tools/test-write-ab-manifest.py" ]; then
+    check_out="$(python3 "$REPO_ROOT/trading-binance/tools/test-write-ab-manifest.py" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "test-write-ab-manifest: manifest writer stdin record stream + argv header contract (#1947)"
+    else
+        fail "test-write-ab-manifest: manifest writer record-stream / header contract drifted (#1947)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- tribes-bench reputation-floor environmental invariants (#1735) ---
 # tribes-bench/config/invariants/*.inv formalize the ad-hoc reputation
 # penalties as one <colony>-scoped signal (agentis-core #950/#953) expressed at

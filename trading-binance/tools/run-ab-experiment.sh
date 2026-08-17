@@ -12,7 +12,9 @@
 #              the body. Emergence arm.
 #
 # Each replicate invokes `tools/run-replay.sh` with a fresh hermetic
-# run dir under <federation>/runs/ab-trading-<ts>/ and writes a single
+# run dir under <federation>/runs/ab-trading-<ts>/. The 5-tuple record
+# stream for all replicates is then piped into
+# `tools/write-ab-manifest.py`, which emits a single
 # `experiment-manifest.json` mapping every run dir back to its arm.
 # After all replicates finish, `tools/analyze-ab-results.py` walks the
 # manifest, parses per-run trade ledgers + experience rows, and emits
@@ -59,6 +61,7 @@
 #   3   missing required input (data dir / dependent script)
 #   4   one or more replicate runs failed in real-run mode
 #   5   reserved — budget cap exceeded (currently warns + continues)
+#   6   manifest assembly failed (write-ab-manifest.py)
 
 set -euo pipefail
 
@@ -66,6 +69,10 @@ SCRIPT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))'
 TOOLS_DIR="$(dirname "$SCRIPT_PATH")"
 FED_DIR="$(dirname "$TOOLS_DIR")"
 FED_ROOT="${FED_ROOT:-$FED_DIR}"
+# Manifest writer: an internal implementation detail of this harness, so it
+# is resolved next to this script ($TOOLS_DIR) rather than under the
+# operator-swappable $FED_ROOT/tools/ where run-replay.sh lives.
+WRITE_MANIFEST="$TOOLS_DIR/write-ab-manifest.py"
 
 # --- Argument parsing ---
 DRY_RUN="${AB_DRY_RUN:-0}"
@@ -211,13 +218,15 @@ done
 
 # --- Manifest assembly ---
 emit_step "writing experiment-manifest.json"
-emit_cmd "python3 -c 'write_manifest($MANIFEST)'"
+emit_cmd "python3 $WRITE_MANIFEST $MANIFEST"
 
 if [ "$DRY_RUN" = "0" ]; then
-    # Pipe the 5-tuple stream into a Python helper that emits the
-    # JSON manifest. Use NUL-separation so run-dir paths with spaces
-    # do not corrupt the stream.
-    # shellcheck disable=SC2259  # WAIVER (#1947): the heredoc overrides the piped record stream — real bug, tracked separately; remove this directive with the fix.
+    if [ ! -f "$WRITE_MANIFEST" ]; then
+        echo "run-ab-experiment: missing dependent script: $WRITE_MANIFEST" >&2
+        exit 3
+    fi
+    # Pipe the 5-tuple stream into the manifest writer. Use NUL-separation
+    # so run-dir paths with spaces do not corrupt the stream.
     {
         rec_i=0
         rec_len=${#RUNS_RECORD[@]}
@@ -230,63 +239,10 @@ if [ "$DRY_RUN" = "0" ]; then
                 "${RUNS_RECORD[$((rec_i + 4))]}"
             rec_i=$((rec_i + 5))
         done
-    } | python3 - "$MANIFEST" "$EXP_TS" "$SYMBOL" "$TIMEFRAME" "$START" "$END" "$SPEED" "$N_REPLICATES" "${REPLAY_OPENAI_MODEL:-}" <<'PYMANIFEST'
-import json
-import os
-import sys
-
-out_path = sys.argv[1]
-manifest = {
-    "experiment_ts": sys.argv[2],
-    "symbol": sys.argv[3],
-    "timeframe": sys.argv[4],
-    "start": sys.argv[5],
-    "end": sys.argv[6],
-    "replay_speed": int(sys.argv[7]),
-    "n_replicates_per_arm": int(sys.argv[8]),
-    "llm_model": sys.argv[9],
-    "arms": {
-        "control": {
-            "strategist_prompt_evolution_threshold": 999,
-            "description": "prompt evolution effectively off (baseline)",
-        },
-        "treatment": {
-            "strategist_prompt_evolution_threshold": 3,
-            "description": "prompt evolution armed (emergence)",
-        },
-    },
-    "runs": [],
-}
-data = sys.stdin.buffer.read()
-if data:
-    parts = data.split(b"\x00")
-    # Trailing empty element from final NUL.
-    if parts and parts[-1] == b"":
-        parts = parts[:-1]
-    if len(parts) % 5 != 0:
-        sys.stderr.write(
-            "run-ab-experiment: malformed RUNS_RECORD stream "
-            "(len=" + str(len(parts)) + ", expected multiple of 5)\n"
-        )
-        sys.exit(1)
-    for i in range(0, len(parts), 5):
-        arm = parts[i].decode("utf-8")
-        run_idx = int(parts[i + 1])
-        run_dir = parts[i + 2].decode("utf-8")
-        threshold = int(parts[i + 3])
-        exit_code = int(parts[i + 4])
-        manifest["runs"].append({
-            "arm": arm,
-            "run_idx": run_idx,
-            "run_dir": run_dir,
-            "strategist_prompt_evolution_threshold": threshold,
-            "exit_code": exit_code,
-        })
-os.makedirs(os.path.dirname(out_path), exist_ok=True)
-with open(out_path, "w", encoding="utf-8") as f:
-    json.dump(manifest, f, indent=2)
-    f.write("\n")
-PYMANIFEST
+    } | python3 "$WRITE_MANIFEST" "$MANIFEST" "$EXP_TS" "$SYMBOL" "$TIMEFRAME" "$START" "$END" "$SPEED" "$N_REPLICATES" "${REPLAY_OPENAI_MODEL:-}" || {
+        echo "run-ab-experiment: manifest assembly failed" >&2
+        exit 6
+    }
 fi
 
 emit_step "manifest path: $MANIFEST"
