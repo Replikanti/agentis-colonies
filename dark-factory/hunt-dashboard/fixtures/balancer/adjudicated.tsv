@@ -1,0 +1,1 @@
+pkg/vault/contracts/VaultAdmin.sol:setStaticSwapFeePercentage	C5	Medium	REFUTED	Permissioned admin setter; only the authorized fee manager can call it, so no unprivileged path exists.

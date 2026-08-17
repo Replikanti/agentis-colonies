@@ -1,0 +1,30 @@
+{
+  "repo": "repo",
+  "gate": "refute",
+  "verified": [
+    {
+      "location": "pkg/vault/contracts/Vault.sol:honestPushIn",
+      "file": "pkg/vault/contracts/Vault.sol",
+      "class": "C6",
+      "severity": "High",
+      "exploit": "stateful invariant broken on pkg/vault/contracts/Vault.sol",
+      "poc_sketch": "honestPushIn(...) ; attackerSweep(...)",
+      "verdict": "FINDING",
+      "reason": "stateful-invariant fuzzer reproduced a shrunk exploit sequence",
+      "source": "invariant-hunt"
+    },
+    {
+      "location": "pkg/vault/contracts/Vault.sol:setHookFee",
+      "file": "pkg/vault/contracts/Vault.sol",
+      "class": "SYS-solvency",
+      "severity": "High",
+      "exploit": "stateful invariant broken on pkg/vault/contracts/Vault.sol",
+      "poc_sketch": "setHookFee(...) ; swapExactIn(...)",
+      "verdict": "FINDING",
+      "reason": "stateful-invariant fuzzer reproduced a shrunk exploit sequence",
+      "source": "invariant-hunt"
+    }
+  ],
+  "errors": [],
+  "totals": { "candidates": 3, "verified": 2, "errored": 0 }
+}

@@ -1259,6 +1259,27 @@ if [ -x "$REPO_ROOT/dark-factory/demo-gap-policy.sh" ]; then
     fi
 fi
 
+# --- dark-factory hunt-dashboard: the reusable read-only single-hunt view (#1913 M1) ---
+# hunt-dashboard/hunt-dashboard.py is a verbatim behavioural port of the operator-approved per-hunt dashboard
+# whose ONLY functional change is config-driven paths (a descriptor JSON / CLI flags instead of hardcoded
+# ROOT/OUT/LOG + one target's chrome). demo-hunt-dashboard.sh is pure bash/python3 over a checked-in, scrubbed
+# zone-hunt-out/ snapshot copied into a mktemp $WORK (no agentis / LLM / forge / network / server): drives
+# `--emit-model` (the JSON assertion surface) + `--render` (an HTML smoke parse) and pins the load-bearing
+# model — phase tracks + honest progress, the unified breadth+depth LEADS verdicts (REFUTED-struck /
+# CONFIRMED / pending; deep FINDING / triaged-FP / CLEAN-struck / HARNESS_ERROR-gap / queued; severity join),
+# the (file,class) adjudication overlay, zone-result agreement, the four liveness classes via
+# HUNT_DASHBOARD_FAKE_* (incl. the hidden .gen-briefs heartbeat fix), and honest completion (STOPPED
+# INCOMPLETE, failed excluded from covered). Multi-hunt tabs / registry / overview are M2 (a follow-on).
+if [ -x "$REPO_ROOT/dark-factory/demo-hunt-dashboard.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-hunt-dashboard.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: hunt-dashboard M1 (verbatim port, config-driven paths: unified LEADS + liveness + honest completion over a scrubbed fixture) (#1913)"
+    else
+        fail "dark-factory: hunt-dashboard M1 regressed (#1913)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory self-tuning breadth: the gap-remediation loop above run-zone-hunt.sh (#1828 M3) ---
 # run-zone-sweep.sh runs a breadth pass, asks gap-policy.py what to do with the resulting coverage record, and
 # re-enters through the shipped --rehunt-gaps until the rule says stop — with NO operator step in the loop.

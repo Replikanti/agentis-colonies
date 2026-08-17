@@ -1,0 +1,1 @@
+REFUTED	Under _isPrepaid, _prepayIfNeededExactOut already took/settled the full path.maxAmountIn before any step runs, so the unconditional refund returns only the unconsumed remainder of funds the sender itself supplied. Not a Vault vulnerability.
