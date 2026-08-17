@@ -1616,6 +1616,54 @@ badflag "--pay-floor notaseverity" 'must be one of critical|high|medium|low' --p
 badflag "--pay-mode without --pay-floor" 'a finding pay mode with no floor is a no-op' --pay-mode flag
 
 # ----------------------------------------------------------------------------------------------------------
+# (x) #1925 soft preflight: --backend flat-cyborg probes a `flat-cyborg` binary on PATH plus its reported
+#     version against the 0.13.0 completion-contract floor. Below the floor it warns loudly on stderr and the
+#     hunt still exits 0 (never abort a hunt on a version probe); at/above the floor it stays silent. Both
+#     runs are otherwise byte-identical to the (a) capstone run, just with --backend flat-cyborg and a stub
+#     `flat-cyborg` prepended onto PATH (the real substrate work is still driven by the --agentis stub).
+# ----------------------------------------------------------------------------------------------------------
+note "x) #1925 flat-cyborg version preflight (--backend flat-cyborg only) ..."
+FCBIN="$WORK/fcbin"
+mkdir -p "$FCBIN"
+cat > "$FCBIN/flat-cyborg" <<'FCEOF'
+#!/bin/sh
+echo "flat-cyborg ${FC_STUB_VERSION:-0.12.1}"
+FCEOF
+chmod +x "$FCBIN/flat-cyborg"
+
+OUTX="$WORK/zhx"
+FC_STUB_VERSION=0.12.1 PATH="$FCBIN:$PATH" \
+  "$ZONEHUNT" --repo "$REPO" --out "$OUTX" --drop-dir "$OUTX/drop" --scope-hint contracts \
+  --backend flat-cyborg --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" \
+  >"$WORK/zhx.out" 2>"$WORK/zhx.err"
+RCX=$?
+if [ "$RCX" -eq 0 ] && grep -q 'WARNING.*0\.13\.0' "$WORK/zhx.err"; then
+  ok "x) an old flat-cyborg (0.12.1) on PATH prints the version-floor WARNING and the hunt still exits 0"
+else
+  bad "x) old-flat-cyborg warning/exit-0 assertion failed (exit $RCX):"
+  grep -i 'flat-cyborg' "$WORK/zhx.err" | sed 's/^/      /' >&2
+fi
+
+OUTX2="$WORK/zhx2"
+FC_STUB_VERSION=0.13.0 PATH="$FCBIN:$PATH" \
+  "$ZONEHUNT" --repo "$REPO" --out "$OUTX2" --drop-dir "$OUTX2/drop" --scope-hint contracts \
+  --backend flat-cyborg --agentis "$STUB" \
+  --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" \
+  --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" \
+  >"$WORK/zhx2.out" 2>"$WORK/zhx2.err"
+RCX2=$?
+if [ "$RCX2" -eq 0 ] && ! grep -q 'WARNING' "$WORK/zhx2.err"; then
+  ok "x) negative control: a 0.13.0 flat-cyborg on PATH emits NO version-floor warning"
+else
+  bad "x) negative control failed (exit $RCX2, unexpected WARNING present?):"
+  grep -i 'flat-cyborg\|WARNING' "$WORK/zhx2.err" | sed 's/^/      /' >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — M5 capstone (run-zone-hunt.sh: map -> brief -> discovery -> verify -> audit-pass -> deliver, HALT) holds"
   exit 0

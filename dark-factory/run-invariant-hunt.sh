@@ -576,12 +576,13 @@ fi
   # 1200s base: writing a stateful-invariant handler for a real protocol is the same order of cost as a
   # discovery read; #1915 scales this up via GEN_TIMEOUT_MS (computed above) for composable-fresh mode.
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = $GEN_TIMEOUT_MS"; }
-  # idle_ms 12000 (> native 4000 default): with 4000, flat-cyborg fires IDLE during claude's think-pause while
-  # it writes a stateful-invariant handler and scrapes a TUI chrome element (e.g. the model-name "Fable 5") as
-  # the "reply" instead of the generated Solidity — forge then cannot compile it and the run degrades to
-  # HARNESS_ERROR. Same failure #1707 fixed for run-discovery.sh; the deep-hunt wiring (#1714) never propagated
-  # the fix to this path. Default the model to opus so the invariant path is never silently left on the weaker
-  # default model when no --model is threaded through by the caller (run-zone-hunt.sh --deep-hunt does not).
+  # idle_ms 12000 (> native 4000 default): kept as a latency knob only (#1925) -- do NOT ratchet it further.
+  # Completion is gated on the wrapper's closing sentinel from flat-cyborg >= 0.13.0 (idle_gate_open()); idle_ms
+  # only bounds how fast a marker-less (sentinel-less) reply is accepted once the screen goes quiet, so a
+  # premature scrape of a TUI chrome element (e.g. the model-name "Fable 5") mid-generation no longer degrades
+  # the run to HARNESS_ERROR the way the pre-#1925 4000ms default did. Default the model to opus so the
+  # invariant path is never silently left on the weaker default model when no --model is threaded through by
+  # the caller (run-zone-hunt.sh --deep-hunt does not).
   # #1915: same GEN_TIMEOUT_MS (scaled for composable-fresh mode) as the claude branch above.
   [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = $GEN_TIMEOUT_MS"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"; }
   echo "trace.level = normal"

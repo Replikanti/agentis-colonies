@@ -34,6 +34,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `colony-lint.sh`) pins registry discovery, the overview card set + per-hunt liveness, `?hunt=<id>` detail
   routing, the empty-registry path, and the opt-in atomic registration (byte-identical hunt artifacts when off).
 
+### Changed
+- **`flat-cyborg` >= 0.13.0 floor for the flat-cyborg backend** (#1925). The stage `idle_ms` knobs
+  (`run-refute.sh`, `run-discovery.sh`, `run-invariant-hunt.sh`, `map-zones.sh`, `gen-briefs.sh`, `run-poc.sh`)
+  were never a correctness fix — completion is gated on the wrapper's closing sentinel from flat-cyborg
+  `--extract-structural` mode (>= 0.13.0); `idle_ms` only bounds how fast a marker-less reply is accepted, and
+  ratcheting it further does not address a completion-path regression. `run-zone-hunt.sh` now runs a soft
+  preflight (active only for `--backend flat-cyborg`): a missing `flat-cyborg` binary or a version below
+  0.13.0 prints a loud warning (marker-less completion can silently lose leads) and the hunt continues.
+
 ## [0.7.0] - 2026-08-17
 
 **Requires:** agentis >= `1.22.7`
