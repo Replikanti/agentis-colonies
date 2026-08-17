@@ -15,8 +15,9 @@
 # HUNT_DASHBOARD_FAKE_PROC_ALIVE / HUNT_DASHBOARD_FAKE_LLM_INFLIGHT replace the /proc liveness scan for
 # fixtures only (unset in production => the real scan runs). The /proc glob is guarded so a non-Linux host
 # degrades to freshness-only instead of crashing.
-import json, os, re, glob, datetime, html, sys, argparse
+import json, os, re, glob, datetime, html, sys, argparse, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 
 # ---- config-driven paths + chrome (the ONE functional delta vs the reference) ---------------------------
 # The reference hardcoded ROOT/OUT/LOG at module scope and one target's header/reward/links in page(). Here
@@ -31,6 +32,16 @@ BOUNTY_URL = ""     # optional program URL
 REPO_URL = ""       # optional in-scope repo URL
 PROJECT_URL = ""    # optional project URL
 HOST, PORT = "127.0.0.1", 8420
+
+# ---- M2 multi-hunt (overview -> detail over a descriptor registry) --------------------------------------
+# REGISTRY_MODE flips the server from the M1 single-hunt view to the M2 overview grid + per-hunt detail. It is
+# set ONLY when the launcher gives neither a descriptor nor path flags (see main()); the M1 single-hunt path
+# is otherwise byte-for-byte unchanged. REGISTRY_DIR defaults to ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/hunts
+# (the opt-in dir the run-zone-hunt.sh hook writes into). CUR_HUNT_ID scopes the test-only liveness fakes to
+# ONE hunt so a fixture registry can render a finished card and a live card in the SAME overview.
+REGISTRY_MODE = False
+REGISTRY_DIR = ""
+CUR_HUNT_ID = ""
 
 PHASES = [
     ("M1 · map zones",        3),
@@ -147,6 +158,22 @@ def deep_hunt():
                     "verdict": verdict, "steps": steps, "severity": vf.get(target, ""),
                     "adj": adj.get((target, cls)) or adj.get((target, "*"))})
     return out
+
+def deep_hunt_state():
+    # STAGE 4.5 has THREE distinct states the panel must not conflate (issue comment 5308547720): a DONE hunt on
+    # a non-custody target with no composition seam REACHES 4.5 but routes 0 lenses (empty .deep-hunt-targets.tsv),
+    # producing no invariant logs — which must NOT read as "not reached yet".
+    #   not_reached       -> no deep-hunt/ dir (still in breadth).
+    #   reached_no_lenses -> deep-hunt/ dir exists but no lens was routed (no slot dir, no non-empty targets tsv).
+    #   ran               -> at least one lens slot exists (running/queued/verdict).
+    dh = os.path.join(OUT, "deep-hunt")
+    if not os.path.isdir(dh): return "not_reached"
+    slot_dirs = [d for d in glob.glob(os.path.join(dh, "*")) if os.path.isdir(d)]
+    tgt = os.path.join(OUT, ".deep-hunt-targets.tsv")
+    targets_routed = any(l.strip() and not l.lstrip().startswith("#")
+                         for l in read(tgt).splitlines()) if os.path.isfile(tgt) else False
+    if not slot_dirs and not targets_routed: return "reached_no_lenses"
+    return "ran"
 
 def leads():
     out = []
@@ -274,7 +301,12 @@ def _is_wrapper(cl):
     return (" -c " in cl) or ("grep" in cl) or ("pgrep" in cl) or ("tail " in cl) or ("/cmdline" in cl)
 
 def _fake_env(name):
-    # test-only override of the /proc scan (fixtures cannot spawn a real hunt): unset => real scan.
+    # test-only override of the /proc scan (fixtures cannot spawn a real hunt): unset => real scan. In the M2
+    # overview a per-hunt suffix (`<NAME>_<ID>`) is honoured FIRST so one fixture registry can carry a finished
+    # card and a live card in the same render; the un-suffixed var stays the M1 single-hunt seam.
+    if CUR_HUNT_ID:
+        v = os.environ.get(name + "_" + re.sub(r'[^A-Za-z0-9]+', '_', CUR_HUNT_ID).upper())
+        if v is not None: return v
     return os.environ.get(name)
 
 def _proc_glob():
@@ -493,7 +525,9 @@ def _links_row():
     if not parts: return ""
     return '<div class="sub">🔗 ' + ' &nbsp;·&nbsp; '.join(parts) + '</div>'
 
-def page():
+def page(nav=""):
+    # `nav` is the M2 detail-view chrome (a `← overview` link + hunt switcher pills) injected at the top of the
+    # page. It defaults to "" so the M1 single-hunt render is byte-for-byte unchanged.
     now=datetime.datetime.now(); start=start_dt(); elapsed=now-start
     st,prog,covered,failed,total_z = phase_status()
     zs=coverage(); L=leads(); vs=verify_state(); log=read(LOG); A=adjudicated()
@@ -731,6 +765,18 @@ def page():
                    f'<td style="font-family:monospace;font-size:12px;{strike}">{html.escape(loc)}</td>'
                    f'<td style="white-space:nowrap">{gate}</td>'
                    f'<td>{detail}</td></tr>')
+    # STAGE 4.5 three-state annotation (issue comment 5308547720): distinguish "not reached yet" from "reached
+    # but 0 lenses routed" so a DONE non-custody hunt never contradicts the finished banner with a false
+    # "not reached". Only annotate when the depth track has NO rows to show (else the rows themselves are the state).
+    _dh_state = deep_hunt_state()
+    if not order and _dh_state == "not_reached":
+        _dh_note = ' &nbsp;·&nbsp; <span style="color:#8b949e">STAGE 4.5 not reached yet (still in breadth)</span>'
+    elif not order and _dh_state == "reached_no_lenses":
+        _dh_note = (' &nbsp;·&nbsp; <span style="color:#f0a800" title="STAGE 4.5 ran but the zone is not '
+                    'value-custody and no composition seam was detected, so no deep-hunt/composable-solvency lens '
+                    'applied">STAGE 4.5 reached — 0 lenses routed (not value-custody, no composition seam)</span>')
+    else:
+        _dh_note = ""
     # NOTE: the reference built a stand-alone `dhblock` here (a separate DEPTH LEADS card) that it NEVER
     # emitted — the live UI is the unified {lrows}{dhrows} LEADS table below. That vestigial dead block is
     # dropped in this port (plan #1913 M1); the rendered behaviour is preserved by the one unified table.
@@ -755,6 +801,7 @@ table{{width:100%;border-collapse:collapse;font-size:14px}} td{{padding:4px 6px;
 .meta{{color:#666;font-size:12px;margin-top:14px}}
 a{{color:#58a6ff;text-decoration:none}} a:hover{{text-decoration:underline}}
 </style></head><body><div class="wrap">
+{nav}
 <h1>🎯 {html.escape(LABEL)}{(' <span style="color:#666;font-weight:400;font-size:14px">· ' + html.escape(REWARD_LINE) + '</span>') if REWARD_LINE else ''}</h1>
 <div class="sub">dark-factory capstone · flat-cyborg/opus · deep-hunt · composable-solvency lens · human-gated (never auto-submit)</div>
 {_links_row()}
@@ -766,7 +813,7 @@ a{{color:#58a6ff;text-decoration:none}} a:hover{{text-decoration:underline}}
 <div class="card"><h2>Phases</h2><table>{prows}</table></div>
 <div class="card"><h2>Zones ({covered}/{total_z} hunted{f' · {failed} errored' if failed else ''})</h2><table><tr style="color:#7d8590;font-size:11px"><td></td><td>Zone</td><td>State</td><td>Result</td></tr>{zrows}</table></div>
 </div>
-<div class="card" style="margin-top:20px"><h2>LEADS &nbsp;<span style="font-weight:400;font-size:12px;color:#7d8590">breadth {len(L)} ({n_surv} survived · {n_ref} refuted · {n_pend} pending) &nbsp;·&nbsp; depth {len(completed)}/{len(order)} lens rows{f' · {n_dh_find} FINDING' if n_dh_find else ''}</span></h2><table>
+<div class="card" style="margin-top:20px"><h2>LEADS &nbsp;<span style="font-weight:400;font-size:12px;color:#7d8590">breadth {len(L)} ({n_surv} survived · {n_ref} refuted · {n_pend} pending) &nbsp;·&nbsp; depth {len(completed)}/{len(order)} lens rows{f' · {n_dh_find} FINDING' if n_dh_find else ''}{_dh_note}</span></h2><table>
 <tr style="color:#7d8590"><td>Type</td><td>Sev</td><td>Class</td><td>Location</td><td>Refute gate</td><td>Detail</td></tr>{lrows}{dhrows}</table></div>
 {('<div class="card" style="margin-top:16px"><h2>Adjudicated — verified, NOT a bug (' + str(len(A)) + ') · removed from refute queue</h2><table><tr style="color:#7d8590"><td>Sev</td><td>Class</td><td>Location</td><td>Verdict</td></tr>' + arows + '</table></div>') if A else ''}
 <div class="meta">auto-refresh 10s · {now.strftime('%H:%M:%S')} · localhost:{PORT}</div>
@@ -867,6 +914,7 @@ def emit_model():
         "leads_summary":{"total":len(L),"survived":n_surv,"refuted":n_ref,"pending":n_pend},
         "deep_rows":deep_out,
         "deep_summary":{"planned":len(order),"completed":len(completed),"findings":n_dh_find},
+        "deep_state":deep_hunt_state(),
         "zones":zones_out,
         "verify_state":(dict(vs) if vs is not None else None),
         "adjudicated":len(A),
@@ -876,10 +924,168 @@ def emit_model():
     }
     return model
 
+# ---- M2 multi-hunt: registry discovery + overview grid -> per-hunt detail ---------------------------------
+# The globals every reader above uses are re-pointed per hunt (apply_hunt); ThreadingHTTPServer would race on
+# that, so the registry render path is serialized by _RENDER_LOCK. The M1 single-hunt path never mutates the
+# globals after startup, so it needs no lock.
+_RENDER_LOCK = threading.Lock()
+
+def default_registry_dir():
+    base = os.environ.get("DARK_FACTORY_DIR") or os.path.join(os.path.expanduser("~"), ".dark-factory")
+    return os.path.join(base, "hunts")
+
+def discover_hunts(registry_dir=None):
+    # Best-effort read of the opt-in descriptor registry. Static metadata ONLY — liveness + artifacts are ALWAYS
+    # re-derived live per request (never trusted from the descriptor). A missing/empty dir yields [] (a graceful
+    # empty overview, never a crash); a malformed or id-less descriptor is skipped. Returns (descriptor, base-dir)
+    # pairs so relative root/out/log paths resolve against each descriptor's own directory.
+    rd = registry_dir or REGISTRY_DIR or default_registry_dir()
+    try: names = sorted(os.listdir(rd))
+    except OSError: return []
+    out = []
+    for name in names:
+        if not name.endswith(".json"): continue
+        p = os.path.join(rd, name)
+        try:
+            with open(p) as f: desc = json.load(f)
+        except Exception: continue
+        if not isinstance(desc, dict) or not desc.get("id"): continue
+        out.append((desc, os.path.dirname(os.path.abspath(p))))
+    return out
+
+def apply_hunt(desc, base=None):
+    # Point the module globals at one registry hunt, resetting the chrome first so a previous hunt's links/label
+    # never leak into this one. Every reader (coverage/leads/deep_hunt/liveness) then works exactly as in M1.
+    global ROOT, OUT, LOG, LABEL, REWARD_LINE, BOUNTY_URL, REPO_URL, PROJECT_URL, CUR_HUNT_ID
+    ROOT = OUT = LOG = ""; LABEL = "hunt"; REWARD_LINE = BOUNTY_URL = REPO_URL = PROJECT_URL = ""
+    CUR_HUNT_ID = desc.get("id", "")
+    _apply_descriptor(desc)
+    _resolve_paths(base)
+
+def hunt_card(desc, base):
+    # The compact overview-card model for one hunt — computed live from artifacts + process, reusing the SAME
+    # phase/leads/deep/liveness helpers as the detail view so a card can never disagree with its own detail page.
+    apply_hunt(desc, base)
+    st, prog, covered, failed, total_z = phase_status()
+    L = leads(); DH = deep_hunt(); log = read(LOG)
+    n_find = sum(1 for d in DH if "FINDING" in d["verdict"] and (d.get("adj") or {}).get("verdict") != "REFUTED")
+    hunt_live = proc_alive() or llm_child()[0]
+    exited = ("__EXIT__=" in log) and not hunt_live
+    complete = exited and failed == 0 and covered == total_z
+    fm, _fp = freshest()
+    age = (datetime.datetime.now() - datetime.datetime.fromtimestamp(fm)).total_seconds() if fm else 9e9
+    alive = proc_alive(); inflight, think = llm_child()
+    dot, txt, col, is_live, lcls = classify_liveness(exited, complete, alive, inflight, think, age)
+    return {"id": desc.get("id", ""), "label": LABEL, "prog": prog,
+            "covered": covered, "failed": failed, "total": total_z,
+            "leads": len(L), "deep_findings": n_find,
+            "bounty_url": BOUNTY_URL, "repo_url": REPO_URL,
+            "liveness_class": lcls, "is_live": is_live, "dot": dot, "dot_col": col,
+            "status_text": txt, "deep_state": deep_hunt_state()}
+
+def overview_model(registry_dir=None):
+    hunts = [hunt_card(d, b) for d, b in discover_hunts(registry_dir)]
+    hunts.sort(key=lambda h: h["id"])
+    return {"registry_dir": registry_dir or REGISTRY_DIR or default_registry_dir(),
+            "count": len(hunts), "hunts": hunts}
+
+def _card_bar_col(lcls):
+    if lcls == "FINISHED": return "#39d353"
+    if lcls in ("STOPPED", "PROCESS_GONE"): return "#e5737b"
+    return "#f0a800"
+
+def overview_page():
+    m = overview_model(); hunts = m["hunts"]; now = datetime.datetime.now()
+    if hunts:
+        cardhtml = ""
+        for h in hunts:
+            _anim = "" if h["is_live"] else "animation:none;"
+            dot = f'<span class="pulse" style="background:{h["dot_col"]};box-shadow:0 0 8px {h["dot_col"]};{_anim}"></span>'
+            link = (f'<span class="bl" onclick="event.preventDefault();event.stopPropagation();window.open(this.dataset.u,\'_blank\',\'noopener\')" '
+                    f'data-u="{html.escape(h["bounty_url"], quote=True)}" title="open the bounty program">🔗 bounty</span>'
+                    if h["bounty_url"] else "")
+            summary = (f'zones {h["covered"]}/{h["total"]} &nbsp;·&nbsp; {h["leads"]} leads'
+                       + (f' &nbsp;·&nbsp; {h["deep_findings"]} deep FINDING' if h["deep_findings"] else "")
+                       + (f' &nbsp;·&nbsp; <span style="color:#f0a800">{h["failed"]} errored</span>' if h["failed"] else ""))
+            barcol = _card_bar_col(h["liveness_class"])
+            cardhtml += (f'<a class="hc" href="?hunt={html.escape(h["id"], quote=True)}">'
+                         f'<div class="hch">{dot}<span class="hcl">{html.escape(h["label"])}</span>{link}</div>'
+                         f'<div class="hcbar"><div class="hcbf" style="width:{h["prog"]}%;background:{barcol}"></div>'
+                         f'<div class="hcbl">{h["prog"]:.0f}%</div></div>'
+                         f'<div class="hcs" style="color:{h["dot_col"]}">{html.escape(h["status_text"][:90])}</div>'
+                         f'<div class="hcm">{summary}</div></a>')
+        grid = f'<div class="hgrid">{cardhtml}</div>'
+    else:
+        grid = ('<div class="empty">No active hunts registered.<br><span style="color:#8b949e;font-size:13px">'
+                f'Registry: <code>{html.escape(m["registry_dir"])}</code> — a hunt registers itself when this dir '
+                'exists (create it to opt in); or open a single hunt with '
+                '<code>hunt-dashboard.sh --descriptor &lt;file&gt;</code>.</span></div>')
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="5">
+<title>hunts · overview</title><style>
+body{{background:#0d1117;color:#e8e8e8;font-family:-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:24px}}
+.wrap{{max-width:1100px;margin:auto}}
+h1{{font-size:20px;margin:0 0 2px}} .sub{{color:#888;font-size:13px;margin-bottom:16px}}
+.hgrid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}}
+@media(max-width:680px){{.hgrid{{grid-template-columns:1fr}}}}
+.hc{{display:block;background:#161b22;border:1px solid #21262d;border-radius:10px;padding:14px;text-decoration:none;color:#e8e8e8;overflow:hidden}}
+.hc:hover{{border-color:#30363d;background:#1a2029}}
+.hch{{display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap}}
+.hcl{{font-weight:600;font-size:15px;word-break:break-word;flex:1 1 auto}}
+.bl{{color:#58a6ff;font-size:12px;cursor:pointer;white-space:nowrap}}
+.hcbar{{background:#21262d;border-radius:6px;height:22px;overflow:hidden;position:relative;margin:6px 0}}
+.hcbf{{height:100%;transition:width .4s;border-radius:6px}}
+.hcbl{{position:absolute;inset:0;line-height:22px;text-align:center;font-weight:700;color:#0d1117;font-size:12px}}
+.hcs{{font-size:12.5px;font-weight:600;margin-top:6px}}
+.hcm{{color:#8b949e;font-size:12px;margin-top:4px}}
+.empty{{background:#161b22;border:1px solid #21262d;border-radius:10px;padding:24px;color:#e8e8e8;font-size:15px}}
+.pulse{{display:inline-block;width:9px;height:9px;border-radius:50%;flex:0 0 auto;animation:bl 1.4s ease-in-out infinite}}
+@keyframes bl{{0%,100%{{opacity:1}}50%{{opacity:.25}}}}
+code{{background:#21262d;padding:1px 5px;border-radius:4px;font-size:12px}}
+a{{color:#58a6ff}}
+</style></head><body><div class="wrap">
+<h1>🎯 dark-factory hunts</h1>
+<div class="sub">{m["count"]} registered hunt(s) · read-only · localhost:{PORT} · click a card for the full dashboard</div>
+{grid}
+<div class="sub" style="margin-top:16px">auto-refresh 5s · {now.strftime('%H:%M:%S')} · registry {html.escape(m["registry_dir"])}</div>
+</div></body></html>"""
+
+def _detail_nav(cur_id):
+    # The detail-view chrome: a `← overview` link + a compact switcher pill per registered hunt (current pill
+    # highlighted). Reads only id/label from the registry (no per-hunt liveness recompute on a detail load).
+    pills = ""
+    for d, _b in discover_hunts():
+        hid = d.get("id", ""); lbl = str(d.get("label", hid))
+        style = ("background:#1f6feb33;border:1px solid #1f6feb;color:#58a6ff"
+                 if hid == cur_id else "border:1px solid #30363d;color:#8b949e")
+        pills += (f'<a href="?hunt={html.escape(hid, quote=True)}" style="{style};border-radius:10px;'
+                  f'padding:2px 9px;font-size:12px;text-decoration:none;white-space:nowrap">{html.escape(lbl[:28])}</a>')
+    return ('<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
+            '<a href="/" style="color:#58a6ff;text-decoration:none;font-size:13px;font-weight:600">← overview</a>'
+            f'<span style="color:#30363d">|</span>{pills}</div>')
+
+def _render_detail(hid):
+    match = None
+    for d, b in discover_hunts():
+        if d.get("id") == hid: match = (d, b); break
+    if match is None:
+        return (f'<!doctype html><meta charset="utf-8"><body style="background:#0d1117;color:#e8e8e8;'
+                f'font-family:sans-serif;padding:24px"><p><a href="/" style="color:#58a6ff">← overview</a></p>'
+                f'<p>Hunt <code>{html.escape(hid)}</code> is not registered.</p></body>')
+    nav = _detail_nav(hid)
+    apply_hunt(match[0], match[1])
+    return page(nav)
+
 class H(BaseHTTPRequestHandler):
     def log_message(self,*a): pass
     def do_GET(self):
-        try: body=page().encode("utf-8")
+        try:
+            if REGISTRY_MODE:
+                hid = (parse_qs(urlparse(self.path).query).get("hunt") or [None])[0]
+                with _RENDER_LOCK:
+                    body = (_render_detail(hid) if hid else overview_page()).encode("utf-8")
+            else:
+                body = page().encode("utf-8")
         except Exception as e: body=f"<pre>dashboard error: {html.escape(str(e))}</pre>".encode()
         self.send_response(200); self.send_header("Content-Type","text/html; charset=utf-8")
         self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
@@ -909,17 +1115,48 @@ def _resolve_paths(base):
 
 def main(argv=None):
     global ROOT, OUT, LOG, LABEL, REWARD_LINE, BOUNTY_URL, REPO_URL, PROJECT_URL, HOST, PORT
-    ap = argparse.ArgumentParser(description="Read-only, loopback-only single-hunt dashboard (#1913 M1).")
+    global REGISTRY_MODE, REGISTRY_DIR
+    ap = argparse.ArgumentParser(description="Read-only, loopback-only hunt dashboard (#1913). "
+                                             "Single-hunt with --descriptor/paths (M1); multi-hunt overview over "
+                                             "the descriptor registry when given neither (M2).")
     ap.add_argument("--descriptor", help="hunt descriptor JSON (id/label/root/out/log + optional links/reward)")
     ap.add_argument("--root"); ap.add_argument("--out"); ap.add_argument("--log")
     ap.add_argument("--label"); ap.add_argument("--reward-line")
     ap.add_argument("--bounty-url"); ap.add_argument("--repo-url"); ap.add_argument("--project-url")
+    ap.add_argument("--registry", action="store_true",
+                    help="multi-hunt registry mode: serve an overview of every registered hunt (implied when no "
+                         "--descriptor/--root is given)")
+    ap.add_argument("--registry-dir", help="override the registry dir (default ${DARK_FACTORY_DIR:-~/.dark-factory}/hunts)")
+    ap.add_argument("--hunt", help="registry mode: render/emit ONE hunt's detail by id (offline test seam)")
     ap.add_argument("--host", default=HOST)
     ap.add_argument("--port", type=int, default=int(os.environ.get("HUNT_DASHBOARD_PORT", PORT)))
     ap.add_argument("--render", action="store_true", help="emit the HTML once to stdout and exit (no server)")
     ap.add_argument("--emit-model", action="store_true", help="emit the computed facts as JSON and exit")
     a = ap.parse_args(argv)
+    HOST = a.host; PORT = a.port
 
+    # Registry (multi-hunt) mode: explicit --registry/--registry-dir/--hunt, OR the bare invocation with no
+    # single-hunt selector. A descriptor or --root always means the M1 single-hunt path (back-compat).
+    registry = a.registry or bool(a.registry_dir) or bool(a.hunt) or (not a.descriptor and not a.root)
+    if registry:
+        REGISTRY_MODE = True
+        REGISTRY_DIR = a.registry_dir or default_registry_dir()
+        if a.emit_model:
+            if a.hunt:
+                m = None
+                for d, b in discover_hunts():
+                    if d.get("id") == a.hunt: apply_hunt(d, b); m = emit_model(); break
+                if m is None: sys.stderr.write("hunt-dashboard: no such hunt id: %s\n" % a.hunt); return 4
+                json.dump(m, sys.stdout, indent=2, sort_keys=True)
+            else:
+                json.dump(overview_model(), sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n"); return 0
+        if a.render:
+            sys.stdout.write(_render_detail(a.hunt) if a.hunt else overview_page()); return 0
+        ThreadingHTTPServer((HOST, PORT), H).serve_forever()
+        return 0
+
+    # ---- M1 single-hunt path (unchanged) ----
     base = None
     if a.descriptor:
         with open(a.descriptor) as f: _apply_descriptor(json.load(f))
@@ -934,7 +1171,6 @@ def main(argv=None):
     if a.repo_url: REPO_URL = a.repo_url
     if a.project_url: PROJECT_URL = a.project_url
     _resolve_paths(base)
-    HOST = a.host; PORT = a.port
 
     if a.emit_model:
         json.dump(emit_model(), sys.stdout, indent=2, sort_keys=True); sys.stdout.write("\n"); return 0
