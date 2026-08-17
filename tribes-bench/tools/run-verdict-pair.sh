@@ -82,7 +82,7 @@ run() {
 # Resolve "the latest runs/<ts>/ that is NOT a baseline-* dir" via
 # `ls -td`. Mirrors the ad-hoc procedure operators already use.
 latest_eco_dir() {
-    # shellcheck disable=SC2012
+    # shellcheck disable=SC2012,SC2010  # deliberate `ls -td` recency ordering + baseline filter; run dirs are timestamped, no exotic names.
     ls -td "$FED_DIR"/runs/*/ 2>/dev/null \
         | grep -v '/runs/baseline-' \
         | head -1 \

@@ -107,6 +107,7 @@ PY
 }
 
 while [ $# -gt 0 ]; do
+  # shellcheck disable=SC2034  # MATCH is accepted-and-ignored on purpose (CLI parity with forge-poc.sh).
   case "$1" in
     --repo)   REPO="${2:-}"; shift 2 ;;
     --target) TARGET="${2:-}"; shift 2 ;;

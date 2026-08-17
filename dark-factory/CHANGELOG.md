@@ -43,6 +43,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   preflight (active only for `--backend flat-cyborg`): a missing `flat-cyborg` binary or a version below
   0.13.0 prints a loud warning (marker-less completion can silently lose leads) and the hunt continues.
 
+### Fixed
+- **Component subdirs are shellchecked** (#1945). `tools/colony-lint.sh` extends the #1554 federation-root
+  sweep to also walk federation subdirectories that are NOT colonies (no `config/`, e.g.
+  `dark-factory/hunt-dashboard/`) at unbounded depth, so `hunt-dashboard.sh` and any future
+  `<federation>/<component>/**/*.sh` gets automatic regression coverage instead of none. Colony dirs stay
+  owned by the per-colony sweep (no double-linting) and dot-dirs are pruned. Along the way,
+  `evm-harness/hardhat-poc.sh` annotates its accepted-and-ignored `MATCH` flag (`SC2034`, kept for CLI
+  parity with `forge-poc.sh`).
+
 ## [0.7.0] - 2026-08-17
 
 **Requires:** agentis >= `1.22.7`
