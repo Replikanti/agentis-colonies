@@ -1,0 +1,21 @@
+# Ground-truth SYMBOL INVENTORY for the symbol-grounding fixture (FM-B, #1939 M2).
+# Each non-comment / non-blank line MUST appear (as a full line) in the output of
+# extract-solidity-symbols.sh run over src/*.sol. The extractor may surface MORE than these; the test
+# asserts CONTAINMENT (every truth line is present), not exact equality.
+#
+# --- contract / interface / library / struct / enum NAMES ---
+contract Singleton
+contract MockToken
+interface IDelegateTarget
+library MathLib
+struct Position
+enum PoolKind
+# --- external / public function SIGNATURES ---
+function deposit(uint256,address)
+function withdraw(uint256)
+function settle(IDelegateTarget,PoolKind)
+function onSettle(uint256)
+function previewAccrual(uint256)
+function mint(address,uint256)
+function transfer(address,uint256)
+function mulDown(uint256,uint256)
