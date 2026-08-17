@@ -5,13 +5,16 @@ regenerates the whole page on every request (the browser auto-refreshes), so it 
 file. It is **read-only** — it only READS the hunt's output files and serves HTML — and binds `127.0.0.1`
 only, never the network.
 
-This is the #1913 **M1** productization of the operator-approved per-hunt dashboard: a verbatim behavioural
-port whose only functional change is **config-driven paths** — the hunt root / out dir / run log and the
-header chrome (label, reward line, program/repo/project links) come from a descriptor JSON or CLI flags
-instead of being hardcoded to one target. Multi-hunt tabs / an overview grid / a registry are **M2** (a
-follow-on), not here.
+It runs in two modes on the same fixed port:
 
-## Run it
+- **Single-hunt (#1913 M1)** — a verbatim behavioural port of the operator-approved per-hunt dashboard whose
+  only functional change is **config-driven paths**: the hunt root / out dir / run log and the header chrome
+  (label, reward line, program/repo/project links) come from a descriptor JSON or CLI flags instead of being
+  hardcoded to one target.
+- **Multi-hunt (#1913 M2)** — an **overview → detail** view of every hunt registered under a descriptor
+  registry, so one server tracks a whole intake queue. See [Multi-hunt](#multi-hunt-overview--detail-m2).
+
+## Run it — single hunt
 
 ```sh
 # from a descriptor (recommended):
@@ -70,13 +73,43 @@ given, `out` defaults to `<root>/zone-hunt-out` and `log` to `<root>/hunt.log`.
 - **Honest completion** — the process-exit marker alone never renders 100%; `HARNESS_ERROR` / `failed` zones
   are excluded from the hunted count, and an incomplete exit renders distinctly from full coverage.
 
+## Multi-hunt (overview → detail) [M2]
+
+Invoked with **neither** a descriptor nor path flags (or with `--registry`), the dashboard serves a multi-hunt
+view over a descriptor **registry**, so one server on the single fixed port tracks a whole intake queue:
+
+```sh
+# create the opt-in registry dir once, then launch the multi-hunt server:
+mkdir -p "${DARK_FACTORY_DIR:-$HOME/.dark-factory}/hunts"
+setsid dark-factory/hunt-dashboard/hunt-dashboard.sh >/tmp/hunt-dashboard.log 2>&1 &
+# then open http://127.0.0.1:8420
+```
+
+- **Landing = an overview grid** — one clickable card per registered hunt: label, an optional bounty link, a
+  mini progress bar + %, the live status dot (working / quiet / stalled / process-gone / done, re-derived
+  live), and a compact `zones X/Y · N leads · K deep FINDING` summary. A finished hunt's card is a static
+  slate; a live one pulses.
+- **Click a card → that hunt's full detail dashboard** (the single-hunt view above), routed via `?hunt=<id>`
+  (bookmarkable). The detail view carries a `← overview` control and a compact hunt-switcher pill row.
+- **Registry** — `${DARK_FACTORY_DIR:-$HOME/.dark-factory}/hunts/<id>.json`, each descriptor using the schema
+  above. Discovery reads the dir best-effort (a malformed file is skipped); **liveness and every artifact are
+  always re-derived live** — descriptors carry static metadata only. A missing/empty registry dir renders a
+  graceful empty overview, never a crash. Override the dir with `--registry-dir`.
+- **Automatic registration** — `run-zone-hunt.sh` registers each hunt's descriptor at launch **only when the
+  registry dir exists** (create it to opt in). The write is atomic (`tmp` + `mv`); with the dir absent the
+  launch writes nothing and is byte-identical to before.
+
 ## Offline / test surface
 
-- `--render` emits the HTML once to stdout and exits (no server) — a smoke check.
+- `--render` emits the HTML once to stdout and exits (no server) — a smoke check. In registry mode it emits
+  the overview page; add `--hunt <id>` for one hunt's detail page.
 - `--emit-model` emits the computed facts as JSON (the deterministic assertion surface used by
-  `dark-factory/demo-hunt-dashboard.sh`).
+  `dark-factory/demo-hunt-dashboard.sh` and `demo-hunt-dashboard-multi.sh`). In registry mode it emits the
+  overview model; add `--hunt <id>` for one hunt's detail model.
 - `HUNT_DASHBOARD_FAKE_PROC_ALIVE` / `HUNT_DASHBOARD_FAKE_LLM_INFLIGHT` override the `/proc` liveness scan for
-  fixtures only (unset in production → the real scan runs).
+  fixtures only (unset in production → the real scan runs). A per-hunt suffix
+  (`HUNT_DASHBOARD_FAKE_PROC_ALIVE_<ID>`) scopes the override to one registry hunt, so a fixture registry can
+  render a finished card and a live card in the same overview.
 
 ## Portability
 

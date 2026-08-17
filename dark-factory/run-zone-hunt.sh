@@ -410,6 +410,45 @@ mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 REPO_NAME="$(basename "$REPO")"
 COMMIT="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
+# ----------------------------------------------------------------------------------------------------------
+# #1913 M2: OPT-IN hunt-dashboard registry. When — and ONLY when — the operator has created the registry dir
+# ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/hunts, atomically register this hunt's descriptor so the multi-hunt
+# dashboard (hunt-dashboard/) can discover it. Absent that dir this whole block is a pure NO-OP — it writes no
+# file and emits no output — so a default run is BYTE-IDENTICAL to before (the dir is the operator's opt-in
+# switch, mirroring how every #1830/#1930/#1914 knob defaults inert). The descriptor carries STATIC metadata
+# only (id/label/root/out/log + repo URL); the dashboard ALWAYS re-derives liveness + every artifact live and
+# never trusts anything stored here. Best-effort: a registration failure NEVER aborts the hunt.
+_HUNT_REGISTRY_DIR="${DARK_FACTORY_DIR:-$HOME/.dark-factory}/hunts"
+if [ -d "$_HUNT_REGISTRY_DIR" ]; then
+  # id = a stable slug of the target repo, so a re-run of the same target overwrites its own card (never piles up).
+  _HUNT_ID="$(printf '%s' "$REPO_NAME" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^-*//;s/-*$//')"
+  [ -n "$_HUNT_ID" ] || _HUNT_ID="hunt"
+  # repo URL: zero new plumbing — parse the `repo:<url>` token the intake queue already packs into --scope-hint
+  # (col 5). A non-URL value (e.g. "-") is ignored. The bounty/program URL is not among run-zone-hunt.sh's args.
+  _HUNT_REPO_URL="$(printf '%s\n' "$SCOPE_HINT" | tr ' ' '\n' | sed -n 's|^repo:\(https\{0,1\}://.*\)$|\1|p' | head -n1 || true)"
+  # root = the parent of --out (where the operator keeps the run log + adjudicated.tsv overlays the dashboard reads).
+  _HUNT_ROOT="$(dirname "$OUT")"
+  _HUNT_TMP="$_HUNT_REGISTRY_DIR/.$_HUNT_ID.json.tmp.$$"
+  if REG_ID="$_HUNT_ID" REG_LABEL="$REPO_NAME" REG_ROOT="$_HUNT_ROOT" REG_OUT="$OUT" \
+     REG_LOG="$_HUNT_ROOT/hunt.log" REG_REPO_URL="$_HUNT_REPO_URL" \
+     python3 - >"$_HUNT_TMP" 2>/dev/null <<'PY'
+import json, os
+d = {"id": os.environ["REG_ID"], "label": os.environ["REG_LABEL"],
+     "root": os.environ["REG_ROOT"], "out": os.environ["REG_OUT"], "log": os.environ["REG_LOG"]}
+u = os.environ.get("REG_REPO_URL", "")
+if u:
+    d["repo_url"] = u
+print(json.dumps(d, indent=2, sort_keys=True))
+PY
+  then
+    mv -f "$_HUNT_TMP" "$_HUNT_REGISTRY_DIR/$_HUNT_ID.json" 2>/dev/null \
+      && echo "run-zone-hunt.sh: [registry] registered hunt '$_HUNT_ID' -> $_HUNT_REGISTRY_DIR/$_HUNT_ID.json" >&2 \
+      || rm -f "$_HUNT_TMP" 2>/dev/null || true
+  else
+    rm -f "$_HUNT_TMP" 2>/dev/null || true
+  fi
+fi
+
 # The scope context handed to run-audit-pass.sh's scope gate (--in-scope): the in-scope program facts, plus the
 # optional asset-contract and impact-threshold intake facts when supplied (they inform the scope decision).
 SCOPE_CONTEXT="$IN_SCOPE"

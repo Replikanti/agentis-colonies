@@ -1280,6 +1280,27 @@ if [ -x "$REPO_ROOT/dark-factory/demo-hunt-dashboard.sh" ]; then
     fi
 fi
 
+# --- dark-factory hunt-dashboard M2: multi-hunt overview -> detail + opt-in registration (#1913 M2) ---
+# M2 generalizes the M1 single-hunt view to a multi-hunt server on ONE fixed port over a
+# ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/hunts/ descriptor registry: the landing page is an OVERVIEW grid of
+# clickable cards (one per registered hunt), each deep-linking (?hunt=<id>) to that hunt's full M1 detail
+# dashboard + a `← overview` switcher. run-zone-hunt.sh grows a DEFAULT-SAFE, opt-in registration hook that
+# atomically writes a hunt's descriptor ONLY when the operator has created the registry dir (byte-identical to
+# before when absent). demo-hunt-dashboard-multi.sh is pure bash/python3/git over the same scrubbed snapshot +
+# the offline --agentis/--map-fixture seam (no agentis / LLM / forge / network / server): asserts registry
+# discovery, the overview card set with per-hunt liveness (finished static slate vs live pulse), ?hunt=<id>
+# detail routing, the graceful empty-registry overview, and that the registration hook is opt-in + atomic +
+# a byte-identical no-op for the hunt's OWN artifacts when the registry dir is absent.
+if [ -x "$REPO_ROOT/dark-factory/demo-hunt-dashboard-multi.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-hunt-dashboard-multi.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: hunt-dashboard M2 (multi-hunt overview->detail registry + opt-in atomic registration, byte-identical when off) (#1913)"
+    else
+        fail "dark-factory: hunt-dashboard M2 regressed (#1913)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory self-tuning breadth: the gap-remediation loop above run-zone-hunt.sh (#1828 M3) ---
 # run-zone-sweep.sh runs a breadth pass, asks gap-policy.py what to do with the resulting coverage record, and
 # re-enters through the shipped --rehunt-gaps until the rule says stop — with NO operator step in the loop.

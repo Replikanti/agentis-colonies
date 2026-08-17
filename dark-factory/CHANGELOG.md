@@ -14,6 +14,26 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **HUNT-DASHBOARD — multi-hunt overview → detail, M2** (#1913). Generalizes the M1 single-hunt view to a
+  multi-hunt server on ONE fixed port over a `${DARK_FACTORY_DIR:-$HOME/.dark-factory}/hunts/<id>.json`
+  descriptor registry. The landing page is now an **overview grid** — one clickable card per registered hunt
+  (label, optional bounty link, mini progress bar + %, the live status dot, and a compact
+  `zones X/Y · N leads · K deep FINDING` summary); a finished hunt's card is a static slate, a live one
+  pulses. Clicking a card opens that hunt's full M1 detail dashboard (routed via `?hunt=<id>`, bookmarkable)
+  with a `← overview` control + a compact hunt-switcher pill row. Discovery reads the registry best-effort
+  (a malformed descriptor is skipped) and **always re-derives liveness + artifacts live** — descriptors carry
+  static metadata only; a missing/empty registry dir renders a graceful empty overview rather than crashing.
+  `run-zone-hunt.sh` grows a **default-safe, opt-in registration hook**: at launch it atomically (`tmp` + `mv`)
+  writes the hunt's descriptor into the registry **only when the operator has created the registry dir** — with
+  that dir absent the launch writes nothing and is byte-identical to before (the hook derives the repo URL from
+  the intake queue's existing `--scope-hint repo:<url>` token, zero new plumbing). Also folds in the STAGE 4.5
+  three-state deep-hunt annotation (*not reached yet* / *reached — 0 lenses routed* / *N ran*, #1913 comment
+  5308547720). The launcher `hunt-dashboard.sh` serves the registry when invoked with neither a descriptor nor
+  path flags (single-hunt invocation preserved). New offline demo `demo-hunt-dashboard-multi.sh` (hooked into
+  `colony-lint.sh`) pins registry discovery, the overview card set + per-hunt liveness, `?hunt=<id>` detail
+  routing, the empty-registry path, and the opt-in atomic registration (byte-identical hunt artifacts when off).
+
 ## [0.7.0] - 2026-08-17
 
 **Requires:** agentis >= `1.22.7`
