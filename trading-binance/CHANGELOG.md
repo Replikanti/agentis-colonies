@@ -100,6 +100,29 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- `tools/run-ab-experiment.sh` real runs could not produce `comparison.md`
+  ([#1947](https://github.com/Replikanti/agentis-colonies/issues/1947)). The
+  harness piped its NUL-separated 5-tuple record stream into
+  `python3 - ... <<'PYMANIFEST'`, but a heredoc IS python's stdin, so the piped
+  stream was discarded and `sys.stdin.buffer.read()` returned nothing —
+  `experiment-manifest.json` always carried an empty `runs` array (shellcheck
+  `SC2259`). `analyze-ab-results.py` then found every run dir unmapped and
+  refused to emit the report (`SystemExit(2)` → harness exit 4); when the record
+  stream outgrew the pipe buffer the harness instead died even earlier at
+  exit 141, the producer taking `SIGPIPE` from a reader that never read. Only
+  the `AB_DRY_RUN=0` branch was affected, which is why the dry-run-only smoke
+  test never caught it. The manifest program is now the standalone
+  `tools/write-ab-manifest.py` (stdlib only, same JSON shape) and the record
+  stream reaches its stdin unobstructed; the `SC2259` waiver is gone. Two new
+  guards make the failure diagnosable instead of a bare `set -e` abort: a
+  missing writer exits 3 (`missing dependent script`) and a failing writer exits
+  6 (`manifest assembly failed`, a new documented exit code). New
+  `tools/test-write-ab-manifest.py` pins the writer's stdin/argv contract (record
+  round-trip, spaced run dirs, empty and malformed streams, argv → header
+  mapping) and `tools/test-run-ab-experiment.sh` gains a staged real-run section
+  (`mktemp` federation root + stub `run-replay.sh`, no podman/agentis/network)
+  asserting a populated manifest and a written `comparison.md`; both are wired
+  into `tools/colony-lint.sh`.
 - The 6 replay strategists (`tribe-{alpha,beta,gamma,delta,epsilon,zeta}/agents/strategist.ag`)
   now append a strict JSON-only output directive (`_output_format_directive()`)
   at the `prompt() -> Decision` call site, OUTSIDE the evolvable prompt body so
