@@ -1221,6 +1221,25 @@ if [ -x "$REPO_ROOT/dark-factory/demo-run-zone-hunt.sh" ]; then
     fi
 fi
 
+# --- dark-factory STAGE 4.5 refute gate: adversarial validity check over invariant-hunt findings (#1938) ---
+# deep-hunt-gate.sh factors the STAGE 4.5 inline merge adapter out of run-zone-hunt.sh and runs an INVARIANT-MODE
+# refuter (run-refute.sh --invariant-mode, refuter.ag's CAND_INVARIANT branch) over each FINDING before it is
+# recorded: survivors -> verified[], refuted findings -> a NEW additive refuted[] bucket (with the reason), a
+# gate error -> verified[] tagged refute_gate=unassessed (fail-open). demo-deep-hunt-refute-gate.sh is pure
+# bash/python3 driving a fast offline stub through the existing --agentis seam (no live agentis / forge /
+# network): asserts the three false-positive anchors land in refuted[] and the positive control in verified[],
+# the byte-identity of --no-refute against the pre-#1938 adapter + the checked-in golden, the CLEAN no-op, the
+# fail-open tag, and never-submit.
+if [ -x "$REPO_ROOT/dark-factory/demo-deep-hunt-refute-gate.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-deep-hunt-refute-gate.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: STAGE 4.5 refute gate (deep-hunt-gate.sh: invariant-mode refuter -> verified[]/refuted[], byte-identical --no-refute) (#1938)"
+    else
+        fail "dark-factory: STAGE 4.5 refute gate regressed (#1938)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory gap-remediation policy: classification contract + decision rule (#1828 M1/M2) ---
 # lib/gap-policy.py turns a #1830 coverage record into one of four verbs (rehunt_now / raise_budget_and_rehunt /
 # remap_target / give_up). It NEVER re-derives #1830's classification — it shells out to lib/zone-coverage.py —

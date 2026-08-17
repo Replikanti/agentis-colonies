@@ -1,0 +1,51 @@
+{
+  "verified": [
+    {
+      "location": "contracts/utils/RebalancingLib.sol:openAuction",
+      "file": "contracts/utils/RebalancingLib.sol",
+      "class": "C6",
+      "severity": "High",
+      "exploit": "stateful invariant broken on RebalancingLib.maxAuctionSize <= budget | openAuction(1000) ; bid(500)",
+      "poc_sketch": "openAuction(1000) ; bid(500)",
+      "verdict": "FINDING",
+      "reason": "stateful-invariant fuzzer reproduced a shrunk exploit sequence",
+      "source": "invariant-hunt"
+    },
+    {
+      "location": "pkg/vault/contracts/Vault.sol:settle",
+      "file": "pkg/vault/contracts/Vault.sol",
+      "class": "C6",
+      "severity": "High",
+      "exploit": "stateful invariant broken on Vault settle credit conserves tokens | settle(token, 0)",
+      "poc_sketch": "settle(token, 0)",
+      "verdict": "FINDING",
+      "reason": "stateful-invariant fuzzer reproduced a shrunk exploit sequence",
+      "source": "invariant-hunt"
+    },
+    {
+      "location": "pkg/vault/contracts/VaultHooks.sol:onAfterSwap",
+      "file": "pkg/vault/contracts/VaultHooks.sol",
+      "class": "SYS-solvency",
+      "severity": "High",
+      "exploit": "stateful invariant broken on Vault total assets >= total liabilities | onAfterSwap(999999999)",
+      "poc_sketch": "onAfterSwap(999999999)",
+      "verdict": "FINDING",
+      "reason": "stateful-invariant fuzzer reproduced a shrunk exploit sequence",
+      "source": "invariant-hunt"
+    },
+    {
+      "location": "contracts/LendingPool.sol:redeem",
+      "file": "contracts/LendingPool.sol",
+      "class": "C6",
+      "severity": "High",
+      "exploit": "stateful invariant broken on LendingPool solvency: assets >= shares | redeem(1) ; drain()",
+      "poc_sketch": "redeem(1) ; drain()",
+      "verdict": "FINDING",
+      "reason": "stateful-invariant fuzzer reproduced a shrunk exploit sequence",
+      "source": "invariant-hunt"
+    }
+  ],
+  "totals": {
+    "verified": 4
+  }
+}

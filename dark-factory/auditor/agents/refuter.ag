@@ -99,6 +99,80 @@ fn constraint_rule(cls: string) -> string {
       + "On a REAL verdict write NO CONSTRAINT| line at all.\n";
 }
 
+// --- #1938 invariant-hunt judgment mode -----------------------------------------------------------------
+// STAGE 4.5 (--deep-hunt) surfaces a BROKEN STATEFUL invariant carrying a fuzzer-reproduced shrunk witness —
+// a different object from a discovery LEAD (an unproven exploit claim). When CAND_INVARIANT is set
+// (run-refute.sh --invariant-mode) this gate judges the WITNESSED invariant on two axes rather than the stock
+// (a)/(b)/(c) exploit trace. Both helpers below return the pre-#1938 text VERBATIM when the invariant string is
+// empty, so an unset CAND_INVARIANT reproduces the discovery-lead prompt BYTE-for-BYTE (mirrors the #1861
+// AUX_CODE_PATH opt-in). The output contract (VERDICT|/CONSTRAINT| lines + ordering) is unchanged in both modes.
+
+// finding_header — the reviewed-object framing. Empty inv => the stock "candidate finding" header.
+fn finding_header(inv: string, loc: string, cls: string, sev: string, exploit: string) -> string {
+    if len(inv) == 0 {
+        return "=== THE CANDIDATE FINDING UNDER REVIEW ===\n"
+          + "Location: " + loc + "\n"
+          + "Bug class: " + cls + "\n"
+          + "Claimed severity: " + sev + "\n"
+          + "Claimed external exploit path: " + exploit + "\n\n";
+    }
+    return "=== THE BROKEN INVARIANT UNDER REVIEW ===\n"
+      + "Location: " + loc + "\n"
+      + "Bug class: " + cls + "\n"
+      + "Claimed severity: " + sev + "\n"
+      + "Broken invariant + shrunk witness: " + inv + "\n\n";
+}
+
+// judge_body — the HOW-TO-JUDGE body (from the first decision sentence through the tie-break paragraph, with
+// its trailing blank line). Empty inv => the pre-#1938 (a)/(b)/(c) exploit-trace block, byte-for-byte.
+fn judge_body(inv: string, aux: string) -> string {
+    if len(inv) == 0 {
+        return "Walk the relevant function(s) and decide which holds:\n"
+          + "  (a) A guard, require/revert, checks-effects-interactions order, access-control modifier, rounding "
+          + "direction, or other control-flow fact in the ACTUAL code provably stops the claimed exploit. -> REFUTED.\n"
+          + "  (b) The exploit relies on a privileged/trusted role acting within its documented permissions, or it "
+          + "restates a listed KNOWN ISSUE, or it is below Medium severity. -> REFUTED (out of scope).\n"
+          + "  (c) You traced the code and the claimed exploit genuinely holds for an UNPRIVILEGED external attacker, "
+          + "with no guard stopping it. -> REAL.\n"
+          + appendix_rule(aux)
+          + "TIE-BREAK: if after an honest trace you are NOT confident the exploit holds — the relevant code is not "
+          + "shown, the path is ambiguous, or you cannot point to the exact step that breaks an invariant — answer "
+          + "REFUTED. Surviving this gate must require the claim to be unambiguously real; uncertainty kills it.\n\n";
+    }
+    // Invariant-hunt mode: a fuzzer ALREADY broke this invariant with the shrunk witness above. Judge two axes;
+    // REAL only if BOTH hold. The tie-break is INVERTED relative to the discovery-lead gate (see below).
+    return "This finding is a STATEFUL invariant a property-fuzzer ALREADY BROKE with the shrunk witness above — "
+      + "not an unproven lead. Judge it on TWO axes, and answer REAL only if BOTH hold:\n"
+      + "  (a) INVARIANT VALIDITY — is the asserted invariant a REAL protocol guarantee? -> REFUTED if it is "
+      + "mis-specified: e.g. a CUMULATIVE cap asserted against a PER-OPERATION budget (or vice-versa), a "
+      + "documented BY-DESIGN behaviour, or a USER-ERROR precondition the protocol never promised to prevent. A "
+      + "predicate the protocol never guaranteed is not a bug no matter how the witness breaks it.\n"
+      + "  (b) WITNESS REACHABILITY — can an UNPRIVILEGED external attacker actually drive the shrunk-witness call "
+      + "sequence? -> REFUTED if any step needs a TRUSTED role (an RBAC/access-control-gated entrypoint) or a "
+      + "malicious TRUSTED component (e.g. a hook/adapter/callback that is itself pool or protocol configuration — "
+      + "a malicious hook is a malicious pool, out of scope).\n"
+      + "  REAL requires BOTH: the invariant is a genuine guarantee AND the witness is reachable by an "
+      + "unprivileged attacker.\n"
+      + appendix_rule(aux)
+      + "TIE-BREAK (INVERTED for a witnessed finding): the fuzzer already reproduced this exact exploit sequence, "
+      + "so — UNLIKE an unproven discovery lead — DEFAULT TO REAL on genuine uncertainty. REFUTE only when you can "
+      + "NAME the specific mis-specification (axis a) or the specific privileged/trusted step the witness needs "
+      + "(axis b). Do NOT kill a fuzzer-witnessed finding merely because the code is not fully shown or the path "
+      + "is ambiguous — that would discard the rare bug this deep-hunt gate exists to keep.\n\n";
+}
+
+// harness_payload — append the generated invariant *.t.sol (the ACTUAL asserted predicate) to the code payload
+// under a labelled header when INV_HARNESS_PATH is staged. Empty harness => the payload is byte-identical.
+fn harness_payload(payload: string, harness: string, harnessPath: string) -> string {
+    if len(harness) == 0 { return payload; }
+    return payload
+      + "\n\n// ========== " + harnessPath + " ==========\n"
+      + "// INVARIANT HARNESS: the generated Foundry invariant test whose predicate the fuzzer BROKE. This is the\n"
+      + "// ACTUAL asserted invariant (the property under an `invariant_*`/`assert`) plus its setup — judge axis\n"
+      + "// (a) INVARIANT VALIDITY against what this predicate really claims, not against a paraphrase of it.\n"
+      + harness;
+}
+
 let candFn = getenv("CAND_FILE_FN");
 let candClass = getenv("CAND_CLASS");
 let candSev = getenv("CAND_SEVERITY");
@@ -107,6 +181,12 @@ let auxPath = getenv("AUX_CODE_PATH");
 let code = cat_file(getenv("CODE_PATH"));
 let aux = cat_file(auxPath);
 let brief = cat_file(getenv("BRIEF_PATH"));
+// #1938: the invariant-hunt toggle + optional harness. Both empty (unset) => the discovery-lead prompt is
+// reproduced byte-for-byte. candInvariant carries the broken-invariant + shrunk-witness sentence (== the
+// manifest exploit column under --invariant-mode); harness is the generated predicate *.t.sol when staged.
+let candInvariant = getenv("CAND_INVARIANT");
+let harnessPath = getenv("INV_HARNESS_PATH");
+let harness = cat_file(harnessPath);
 
 // The instruction carries the skeptic role + the conservative tie-break (default REFUTED) + the strict
 // output contract; the code under review is the prompt payload (matches auditor.ag::classify_evm_llm and
@@ -116,25 +196,11 @@ let instruction =
   + "You have NO stake in it being real — your job is to REFUTE it: prove, against the ACTUAL control and data "
   + "flow in the code, that the claimed exploit does NOT work. Trace the real code yourself; do not take the "
   + "claim on faith and do not invent guards that are not in the code.\n\n"
-  + "=== THE CANDIDATE FINDING UNDER REVIEW ===\n"
-  + "Location: " + candFn + "\n"
-  + "Bug class: " + candClass + "\n"
-  + "Claimed severity: " + candSev + "\n"
-  + "Claimed external exploit path: " + candExploit + "\n\n"
+  + finding_header(candInvariant, candFn, candClass, candSev, candExploit)
   + "=== PROTOCOL BRIEF — invariants + KNOWN ISSUES (a finding that restates a listed known issue is NOT real) ===\n"
   + brief + "\n\n"
   + "=== HOW TO JUDGE ===\n"
-  + "Walk the relevant function(s) and decide which holds:\n"
-  + "  (a) A guard, require/revert, checks-effects-interactions order, access-control modifier, rounding "
-  + "direction, or other control-flow fact in the ACTUAL code provably stops the claimed exploit. -> REFUTED.\n"
-  + "  (b) The exploit relies on a privileged/trusted role acting within its documented permissions, or it "
-  + "restates a listed KNOWN ISSUE, or it is below Medium severity. -> REFUTED (out of scope).\n"
-  + "  (c) You traced the code and the claimed exploit genuinely holds for an UNPRIVILEGED external attacker, "
-  + "with no guard stopping it. -> REAL.\n"
-  + appendix_rule(aux)
-  + "TIE-BREAK: if after an honest trace you are NOT confident the exploit holds — the relevant code is not "
-  + "shown, the path is ambiguous, or you cannot point to the exact step that breaks an invariant — answer "
-  + "REFUTED. Surviving this gate must require the claim to be unambiguously real; uncertainty kills it.\n\n"
+  + judge_body(candInvariant, aux)
   + "=== HOW TO ANSWER ===\n"
   + "FIRST reason step by step through the actual control flow. THEN write EXACTLY ONE final line:\n"
   + "VERDICT|REAL|" + candFn + "|" + candClass + "|<one sentence: why your refutation FAILED — the precise "
@@ -150,8 +216,11 @@ let instruction =
 // a verdict can tell which of the two payload shapes produced it. run-refute.sh's verdict scraper closes a
 // wrapped record on this sentinel, exactly as the hunter's scraper closes on BLACKBOARD-/DEPTH-CELL|.
 if len(aux) > 0 { print("AUX-CONTEXT|" + auxPath); }
+// #1938: same observability marker for the staged invariant harness (printed BEFORE the verdict, so it never
+// perturbs run-refute.sh's verdict/constraint scrapers, which only read from the VERDICT|/CONSTRAINT| line on).
+if len(harness) > 0 { print("INV-HARNESS|" + harnessPath); }
 
-let verdict = prompt(instruction, appendix_payload(code, aux, auxPath)) -> string;
+let verdict = prompt(instruction, harness_payload(appendix_payload(code, aux, auxPath), harness, harnessPath)) -> string;
 
 // Surface the verdict (stdout, parsed by run-refute.sh) and record the attempt so refuter fitness reweights.
 print(verdict);

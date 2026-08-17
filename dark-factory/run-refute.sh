@@ -42,6 +42,13 @@
 #   --model <id>         Optional model id (claude: passed to the CLI; flat-cyborg: set as llm.model).
 #   --out <dir>          Output dir for the run + verdicts (default: ./refute-out).
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
+#   --invariant-mode     #1938: judge each candidate as a fuzzer-WITNESSED broken STATEFUL invariant (deep-hunt
+#                        STAGE 4.5) rather than an unproven discovery lead — a two-axis rubric (invariant
+#                        VALIDITY + witness REACHABILITY) with an INVERTED tie-break (default REAL on genuine
+#                        uncertainty, since the witness is already reproduced). Sets CAND_INVARIANT to the
+#                        candidate's exploit/broken-invariant sentence. Absent => byte-identical to before.
+#   --invariant-harness <file>  #1938: optional generated invariant *.t.sol (the actual asserted predicate),
+#                        staged into the rundir and appended to the payload for axis (a). Absent => no change.
 #
 # Outputs: `<out>/refute-report.md` (the verdict table, an unchanged downstream contract) and — #1887 —
 # `<out>/refute-constraints.tsv`, one `<class>\t<file:fn>\t<constraint>` row per REFUTED candidate whose
@@ -60,6 +67,9 @@ DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
 AGENTIS="agentis"
 CANDS="" ; CODE_DIR="" ; BRIEF="" ; ONLY=""
 BACKEND="flat-cyborg" ; MODEL="" ; OUT="$PWD/refute-out"
+# #1938: invariant-hunt judgment mode. OFF (default) => CAND_INVARIANT/INV_HARNESS_PATH are exported EMPTY, and
+# refuter.ag reproduces the discovery-lead prompt byte-for-byte, so every existing manifest/fixture is unchanged.
+INVARIANT_MODE=0 ; INV_HARNESS=""
 
 need() { [ "$1" -ge 2 ] || { echo "run-refute.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -72,6 +82,8 @@ while [ $# -gt 0 ]; do
     --model) need "$#"; MODEL="$2"; shift 2 ;;
     --out) need "$#"; OUT="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
+    --invariant-mode) INVARIANT_MODE=1; shift ;;
+    --invariant-harness) need "$#"; INV_HARNESS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-refute.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -90,6 +102,12 @@ if [ -n "$BRIEF" ]; then
   [ -f "$BRIEF" ] || { echo "run-refute.sh: --brief not found: $BRIEF" >&2; exit 2; }
   BRIEF="$(cd "$(dirname "$BRIEF")" && pwd)/$(basename "$BRIEF")"
 fi
+# #1938: the optional invariant harness, resolved to ABSOLUTE and staged like --brief below (the sandbox cannot
+# read $HOME). Empty => no harness is staged and INV_HARNESS_PATH is exported empty (a provable no-op).
+if [ -n "$INV_HARNESS" ]; then
+  [ -f "$INV_HARNESS" ] || { echo "run-refute.sh: --invariant-harness not found: $INV_HARNESS" >&2; exit 2; }
+  INV_HARNESS="$(cd "$(dirname "$INV_HARNESS")" && pwd)/$(basename "$INV_HARNESS")"
+fi
 
 REFUTER="$HERE/auditor/agents/refuter.ag"
 [ -f "$REFUTER" ] || { echo "run-refute.sh: refuter agent not found at $REFUTER" >&2; exit 3; }
@@ -103,6 +121,12 @@ BRIEF_IN_RUN=""
 if [ -n "$BRIEF" ]; then
   cp "$BRIEF" "$RUN/brief.md"
   BRIEF_IN_RUN="$RUN/brief.md"
+fi
+# #1938: stage the invariant harness into the rundir (same reason as the brief). Empty => nothing staged.
+INV_HARNESS_IN_RUN=""
+if [ -n "$INV_HARNESS" ]; then
+  cp "$INV_HARNESS" "$RUN/invariant-harness.t.sol"
+  INV_HARNESS_IN_RUN="$RUN/invariant-harness.t.sol"
 fi
 
 # init the agentis store FIRST (before any .agentis/ subdir exists), else HEAD is not set.
@@ -119,7 +143,10 @@ fi
   # AUX_CODE_PATH (#1861) MUST be on this allowlist: getenv() reads the SANITIZED env, so an unregistered
   # knob is silently inert — the implementation appendix would be staged, never read, and the gate would keep
   # refuting abstract bases in isolation with no visible failure at all.
-  echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH"
+  # #1938: CAND_INVARIANT + INV_HARNESS_PATH MUST be on this allowlist too — getenv() reads the SANITIZED env,
+  # so an unregistered knob is staged and never read (the whole invariant mode would be silently inert). Both are
+  # exported EMPTY when --invariant-mode is off, so their presence on the line is a no-op for every legacy run.
+  echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH,CAND_INVARIANT,INV_HARNESS_PATH"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: refuter.ag ends its tick with `learn("refute", ...)`, and it is that
   # WRITE the flag gates (#1878, agentis v1.28.0: learn() raises `runtime error: experience not enabled`, and
@@ -241,6 +268,10 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
   EXPL="$(printf '%s' "$EXPL" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   CODEF="$(printf '%s' "$CODEF" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
   AUXF="$(printf '%s' "${AUXF:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  # #1938: under --invariant-mode the skeptic judges the BROKEN INVARIANT (the exploit column carries it); OFF
+  # => CAND_INV stays empty and the refuter reproduces the discovery-lead prompt byte-for-byte.
+  CAND_INV=""
+  [ "$INVARIANT_MODE" = 1 ] && CAND_INV="$EXPL"
   [ -n "$ONLY" ] && [ "$CFN" != "$ONLY" ] && continue
   # A candidate whose code file cannot be resolved is ERRORED, not silently dropped: an unresolvable candidate
   # was never assessed, so it must be DISTINGUISHABLE from a rigorous REFUTED verdict in the report (#1691).
@@ -295,6 +326,8 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
         CAND_CLASS="$CLS" \
         CAND_SEVERITY="$SEV" \
         CAND_EXPLOIT="$EXPL" \
+        CAND_INVARIANT="$CAND_INV" \
+        INV_HARNESS_PATH="$INV_HARNESS_IN_RUN" \
         CODE_PATH="$STAGED" \
         AUX_CODE_PATH="$AUX_STAGED" \
         BRIEF_PATH="$BRIEF_IN_RUN" \
@@ -348,6 +381,8 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
           CAND_CLASS="$FB" \
           CAND_SEVERITY="$SEV" \
           CAND_EXPLOIT="$EXPL" \
+          CAND_INVARIANT="$CAND_INV" \
+          INV_HARNESS_PATH="$INV_HARNESS_IN_RUN" \
           CODE_PATH="$STAGED" \
           AUX_CODE_PATH="$AUX_STAGED" \
           BRIEF_PATH="$BRIEF_IN_RUN" \
