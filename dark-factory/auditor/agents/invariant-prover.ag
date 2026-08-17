@@ -46,6 +46,33 @@ fn cat_file(path: string) -> string {
     return exec sh "sed -n '1,4000p' ${path} 2>/dev/null || true";
 }
 
+// FM-B (#1939 M2) — SYMBOL GROUNDING reader. run-invariant-hunt.sh --ground-symbols writes the target + aux
+// SYMBOL INVENTORY (contract/interface/library/struct/enum NAMES + external/public signatures) to
+// $RUN/symbol-inventory.txt (a FIXED rundir-relative file, chosen over a new passthrough env var to avoid the
+// exec.env_passthrough exact-string ripple). The prover cds into $RUN, so it reads the file by its relative
+// name. Mechanical `cat` — the SAME sandboxed-exec idiom as cat_file/rel_import_path, path shell_escape()d.
+// The file is ABSENT when --ground-symbols is off => "" => the grounding seed below is "" => byte-identical.
+fn read_symbol_inventory(path: string) -> string {
+    if len(path) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "cat " + shell_escape(path) + " 2>/dev/null || true";
+}
+// The grounding PROMPT block. A non-empty inventory becomes a HARD constraint injected into generation AND every
+// repair round: reference ONLY real in-scope identifiers — the fix for solc `Error (7920): Identifier not found
+// or not unique`, which the composable-fresh multi-contract harness hit and survived all repair rounds on. The
+// inventory is deterministic source-parsed text that flows only into this plain-string prompt (never a shell).
+// Empty inventory (file absent, i.e. grounding OFF) => "" => the prompts are byte-identical to today.
+fn symbol_inventory_seed(inv: string) -> string {
+    if len(inv) == 0 { return ""; }
+    return "IN-SCOPE SYMBOL INVENTORY: the list below is the COMPLETE set of contract/interface/library/struct/"
+         + "enum NAMES and external/public function signatures that exist in the target + auxiliary sources. When "
+         + "you deploy, import, cast, or compose calls ACROSS the system, reference ONLY these identifiers. Do NOT "
+         + "invent or reference any contract/type/function name that is NOT in this list — a name absent from the "
+         + "inventory does not exist in scope and the harness will fail to compile with solc 'Identifier not found "
+         + "or not unique' (Error 7920).\n"
+         + "--- IN-SCOPE SYMBOLS ---\n" + inv + "\n";
+}
+
 // Map the forge-invariant.sh exit code to the colony verdict token. This is the ONLY source of the verdict
 // — the LLM never decides it. The exit contract mirrors evm-harness/forge-invariant.sh exactly:
 //   1 -> FINDING        (>=1 invariant broken by a multi-step sequence -> a CANDIDATE with a shrunk witness)
@@ -103,6 +130,11 @@ let code = cat_file(codePath);
 // plain-string prompt (never a shell), exactly like `code`, so no shell_escape. Empty => "" => byte-identical prompt.
 let auditPath = getenv("INV_AUDIT_CONTEXT");
 let auditText = cat_file(auditPath);
+// FM-B (#1939 M2) — read the (optional) staged symbol inventory ONCE and build the grounding seed. The prover
+// cds into $RUN, so the fixed relative name resolves inside the rundir. Absent (--ground-symbols off) => "" =>
+// symbolInventorySeed == "" => the generation + repair prompts are byte-identical to a non-grounded run.
+let symbolInventory = read_symbol_inventory("symbol-inventory.txt");
+let symbolInventorySeed = symbol_inventory_seed(symbolInventory);
 
 // #1070-B1 — drive the REAL target. The generated test is written to INV_OUT (under <repo>/test/...) and the
 // target source is CODE_PATH; the model needs the CORRECT relative import path so it can `import` and DEPLOY
@@ -1513,6 +1545,7 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
     let instruction =
         metamorphic_variant_seed(effClass, ensembleVariant)
       + audit_seed(auditText)
+      + symbolInventorySeed
       + recall_seed(klass, prior)
       + fork_seed(forkActive, forkTarget, forkUrl, forkBlock)
       + compose_seed(composeActive, forkContext)
@@ -1804,7 +1837,11 @@ let initState = rstate(initStopped, test, firstOut);
 // disable path) and the fixture path both leave `finalState` == `initState` (today's one-shot behaviour). The
 // composeFresh flag + requiredNames are threaded so a both-real violation also drives a round (and the pointed
 // repair prompt) in composable-fresh mode; outside it they are inert (composeFresh false => no extra trigger).
-let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, gateExtra, composableFresh, requiredNames, sharedScaffold);
+// FM-B (#1939 M2): the repair rounds re-inject the SAME grounding as the first attempt — the scaffold passed to
+// repair_loop is `sharedScaffold + symbolInventorySeed`, so every repaired harness is grounded against the real
+// symbol inventory too. symbolInventorySeed == "" (grounding off) => `sharedScaffold + ""` == sharedScaffold =>
+// byte-identical to today.
+let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, gateExtra, composableFresh, requiredNames, sharedScaffold + symbolInventorySeed);
 
 // The verdict is the gate's exit code on the LAST attempt — NEVER the LLM's opinion (unchanged contract) —
 // EXCEPT the #1077 both-real override: in composable-fresh mode, if the FINAL harness STILL mocked/omitted a

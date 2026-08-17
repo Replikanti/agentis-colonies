@@ -115,6 +115,11 @@
 #   --deep-hunt-depth <N>  Sets the Forge invariant DEPTH budget (calls per sequence, --depth) for EVERY
 #                       deep-hunt target. Forwarded verbatim to both --deep-hunt $INVHUNT invocations.
 #                       Absent => DEEP_FWD unchanged => both argv byte-identical to today.
+#   --deep-hunt-ground-symbols  FM-B (#1939 M2): thread run-invariant-hunt.sh --ground-symbols into EVERY
+#                       deep-hunt target so the generated (and every repaired) harness is grounded against the
+#                       target + aux REAL symbol inventory — no hallucinated identifier (the Error 7920 the
+#                       composable-fresh multi-contract shape hit). Forwarded verbatim to both --deep-hunt
+#                       $INVHUNT invocations; absent => DEEP_FWD unchanged => both argv byte-identical to today.
 #   --pattern-store <dir>  #1731 (also #1037): PERSISTENT cross-run pattern-DAG + corpus store. Forwarded
 #                       verbatim to both --deep-hunt run-invariant-hunt.sh invocations. Absent => byte-identical.
 #   --replay-corpus     #1731: enable the CROSS-RUN ENSEMBLE / UNION replay in the deep-hunt (accumulate every
@@ -285,6 +290,7 @@ while [ $# -gt 0 ]; do
     --ensemble-candidates) nv "$#"; DEEP_FWD+=(--ensemble-candidates "$2"); shift 2 ;;
     --deep-hunt-runs)  nv "$#"; DEEP_FWD+=(--runs "$2"); shift 2 ;;
     --deep-hunt-depth) nv "$#"; DEEP_FWD+=(--depth "$2"); shift 2 ;;
+    --deep-hunt-ground-symbols) DEEP_FWD+=(--ground-symbols); shift ;;
     --zone-cell-budget) nv "$#"; ZONE_CELL_BUDGET="$2"; shift 2 ;;
     --run-cell-budget)  nv "$#"; RUN_CELL_BUDGET="$2"; shift 2 ;;
     --zone-depth-cells) nv "$#"; ZONE_DEPTH_CELLS="$2"; shift 2 ;;

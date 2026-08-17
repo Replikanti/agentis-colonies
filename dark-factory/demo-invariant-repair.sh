@@ -94,8 +94,10 @@ else
   bad "repair_loop does not thread scaffold into repair_step"
 fi
 
-if grep -q 'repair_loop(initState, repairRounds,.*requiredNames, sharedScaffold)' "$PROVER"; then
-  ok "the repair_loop call site passes sharedScaffold (re-inject every round)"
+# Since #1939 M2 (FM-B symbol grounding) the trailing scaffold arg is `sharedScaffold + symbolInventorySeed`, so
+# every repair round is also grounded against the real symbol inventory (empty seed => `+ ""` => byte-identical).
+if grep -q 'repair_loop(initState, repairRounds,.*requiredNames, sharedScaffold + symbolInventorySeed)' "$PROVER"; then
+  ok "the repair_loop call site passes sharedScaffold (re-inject every round, #1939 M2 grounded)"
 else
   bad "the repair_loop call site does not pass sharedScaffold"
 fi

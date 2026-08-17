@@ -133,6 +133,17 @@
 #                        consumers (this runner + run-zone-hunt.sh's last-wins adapter) read it unchanged;
 #                        per-candidate diagnostics use a `CANDIDATE|` prefix. Default 0 (= OFF); N < 2 or the
 #                        offline --handler-fixture path => the single verbatim run (byte-identical to today).
+#   --ground-symbols     FM-B (#1939 M2): SYMBOL GROUNDING. Before the prover runs, extract the REAL SYMBOL
+#                        INVENTORY (contract/interface/library/struct/enum NAMES + external/public function
+#                        signatures) from the STAGED target + aux sources with evm-harness/extract-solidity-
+#                        symbols.sh and write it to `$RUN/symbol-inventory.txt`. The prover reads that FIXED
+#                        rundir-relative file (NOT a new passthrough env var — chosen to avoid the
+#                        exec.env_passthrough exact-string ripple) and folds the inventory into BOTH the first
+#                        generation prompt AND every repair round, so the harness references ONLY names that
+#                        exist in scope (the Error 7920 "Identifier not found or not unique" the composable-fresh
+#                        multi-contract shape hit and survived all repair rounds). Default OFF => the file is NOT
+#                        written => the prover's grounding block is empty => the prompts are byte-identical to
+#                        today. Source-parsing only (no forge build / network) so it is deterministic in CI.
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
 set -eu
 
@@ -146,6 +157,7 @@ SYMBOLIC_ORACLE=""  # #1732: complementary symbolic/BMC (halmos) oracle; "" => O
 SYMBOLIC_TIMEOUT="" # #1732: per-assertion halmos solver timeout (seconds); "" => the gate's own default (60)
 CORE_DEP_HARNESS="" # #1755: deploy the REAL delegatecall singleton (yearn-v3 TokenizedStrategy); "" => OFF (byte-identical)
 ENSEMBLE_CANDIDATES="0"  # #1778: single-run metamorphic-ensemble candidate count; 0/1 => OFF (byte-identical to today)
+GROUND_SYMBOLS=0  # FM-B (#1939 M2): symbol grounding; 0 => OFF (no symbol-inventory.txt written; byte-identical prompts)
 REPAIR_ROUNDS=""  # #1073: extra compile-repair rounds; "" => the prover's own default (2)
 AUDIT_CONTEXT=""  # #1722: optional spec / audit-scope doc; "" => no audit seed (byte-identical prompt)
 FORK_URL="" ; FORK_BLOCK="" ; FORK_TARGET=""
@@ -184,6 +196,7 @@ while [ $# -gt 0 ]; do
     --symbolic-timeout) need "$#"; SYMBOLIC_TIMEOUT="$2"; shift 2 ;;
     --core-dep-harness) CORE_DEP_HARNESS=1; shift ;;
     --ensemble-candidates) need "$#"; ENSEMBLE_CANDIDATES="$2"; shift 2 ;;
+    --ground-symbols) GROUND_SYMBOLS=1; shift ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-invariant-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -325,6 +338,9 @@ MUTANTS_SRC="$HERE/evm-harness/mutants"
 # project below so the prover can IMPORT a ready dependency mock instead of hand-authoring one per run — the
 # failure mode that turned complex targets (LP oracles, modular vaults) into HARNESS_ERROR. A pure variable here.
 HARNESS_MOCKS_SRC="$HERE/auditor/harness-mocks"
+# FM-B (#1939 M2) — the deterministic source-parsing symbol extractor. A pure variable here (no side effect =>
+# byte-identical when --ground-symbols is off); it is invoked ONLY inside the flag-gated grounding block below.
+SYMBOL_EXTRACT="$HERE/evm-harness/extract-solidity-symbols.sh"
 [ -f "$PROVER" ] || { echo "run-invariant-hunt.sh: invariant-prover agent not found at $PROVER" >&2; exit 3; }
 [ -f "$GATE" ] || { echo "run-invariant-hunt.sh: forge-invariant gate not found at $GATE" >&2; exit 3; }
 
@@ -521,6 +537,25 @@ for entry in ${AUX_ABS_SPECS+"${AUX_ABS_SPECS[@]}"}; do
   if [ -z "$INV_AUX" ]; then INV_AUX="$_aentry"; else INV_AUX="$INV_AUX@@A@@$_aentry"; fi
   _aux_idx=$((_aux_idx + 1))
 done
+
+# FM-B (#1939 M2) — SYMBOL GROUNDING. With --ground-symbols set, extract the REAL symbol inventory from the
+# already-STAGED target + aux sources (the slim copies written above) and write it to the FIXED rundir-relative
+# `$RUN/symbol-inventory.txt`. The prover cds into $RUN and reads that file directly — a fixed file, NOT a new
+# exec.env_passthrough entry, precisely so this change does not ripple the 7 pinners of that exact string. Absent
+# the flag the file is NEVER written => the prover's grounding block is empty => the generation + repair prompts
+# are byte-identical to today. A missing extractor or an empty inventory degrades to the un-grounded prompt.
+if [ "$GROUND_SYMBOLS" = "1" ] && [ -f "$SYMBOL_EXTRACT" ]; then
+  GROUND_SRCS=()
+  [ -n "$CODE_IN_RUN" ] && [ -f "$CODE_IN_RUN" ] && GROUND_SRCS+=("$CODE_IN_RUN")
+  _gi=0
+  while [ "$_gi" -lt "$_aux_idx" ]; do
+    _gaux="$RUN/aux-code-${_gi}.sol"
+    [ -f "$_gaux" ] && GROUND_SRCS+=("$_gaux")
+    _gi=$((_gi + 1))
+  done
+  sh "$SYMBOL_EXTRACT" ${GROUND_SRCS[@]+"${GROUND_SRCS[@]}"} > "$RUN/symbol-inventory.txt" 2>/dev/null || true
+  echo "run-invariant-hunt.sh: [ground-symbols] wrote $(grep -c . "$RUN/symbol-inventory.txt" 2>/dev/null || echo 0) in-scope symbols to symbol-inventory.txt" >&2
+fi
 
 # #1915/#1932: composable-fresh generation (INV_AUX non-empty) deploys+wires the target AND every aux
 # contract in one prompt -- materially heavier than the single-target read the flat 1200s budget (line
