@@ -107,6 +107,14 @@
 #                       more bounded compile-repair attempts before HARNESS_ERROR; the loop still
 #                       short-circuits on the first successful verdict, so a clean-compiling harness pays
 #                       nothing extra). Threaded into both --deep-hunt $INVHUNT invocations.
+#   --deep-hunt-runs <N>  Sets the Forge invariant RUNS budget (search width, --runs) for EVERY deep-hunt
+#                       target. Forwarded verbatim to both --deep-hunt $INVHUNT invocations. Absent =>
+#                       DEEP_FWD unchanged => both argv byte-identical to today. Fits a gas-heavy target's
+#                       campaign inside the existing gate ceiling (exec.default_timeout_ms) instead of
+#                       raising the ceiling itself.
+#   --deep-hunt-depth <N>  Sets the Forge invariant DEPTH budget (calls per sequence, --depth) for EVERY
+#                       deep-hunt target. Forwarded verbatim to both --deep-hunt $INVHUNT invocations.
+#                       Absent => DEEP_FWD unchanged => both argv byte-identical to today.
 #   --pattern-store <dir>  #1731 (also #1037): PERSISTENT cross-run pattern-DAG + corpus store. Forwarded
 #                       verbatim to both --deep-hunt run-invariant-hunt.sh invocations. Absent => byte-identical.
 #   --replay-corpus     #1731: enable the CROSS-RUN ENSEMBLE / UNION replay in the deep-hunt (accumulate every
@@ -275,6 +283,8 @@ while [ $# -gt 0 ]; do
     --symbolic-timeout) nv "$#"; DEEP_FWD+=(--symbolic-timeout "$2"); shift 2 ;;
     --core-dep-harness) DEEP_FWD+=(--core-dep-harness); shift ;;
     --ensemble-candidates) nv "$#"; DEEP_FWD+=(--ensemble-candidates "$2"); shift 2 ;;
+    --deep-hunt-runs)  nv "$#"; DEEP_FWD+=(--runs "$2"); shift 2 ;;
+    --deep-hunt-depth) nv "$#"; DEEP_FWD+=(--depth "$2"); shift 2 ;;
     --zone-cell-budget) nv "$#"; ZONE_CELL_BUDGET="$2"; shift 2 ;;
     --run-cell-budget)  nv "$#"; RUN_CELL_BUDGET="$2"; shift 2 ;;
     --zone-depth-cells) nv "$#"; ZONE_DEPTH_CELLS="$2"; shift 2 ;;
