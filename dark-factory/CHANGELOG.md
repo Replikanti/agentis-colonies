@@ -14,6 +14,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-17
+
+**Requires:** agentis >= `1.22.7`
+
 ### Added
 - **REFUTE/VALIDITY GATE OVER STAGE 4.5 INVARIANT-HUNT FINDINGS** (#1938). A fuzzer reproducing a broken
   predicate is necessary but NOT sufficient: the predicate may be a mis-specified invariant (a per-operation
