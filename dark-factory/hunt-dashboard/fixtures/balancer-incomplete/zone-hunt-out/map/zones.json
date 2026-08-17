@@ -1,0 +1,18 @@
+[
+  {
+    "id": "pkg_vault_contracts",
+    "name": "Vault core and routers",
+    "files": ["pkg/vault/contracts/Vault.sol", "pkg/vault/contracts/VaultAdmin.sol"],
+    "loc": 5394,
+    "bug_classes_likely": ["C6", "C5"],
+    "value_custody": true
+  },
+  {
+    "id": "pkg_pool_weighted_contracts",
+    "name": "Weighted pool math",
+    "files": ["pkg/pool-weighted/contracts/WeightedPool.sol"],
+    "loc": 1200,
+    "bug_classes_likely": ["C9"],
+    "value_custody": false
+  }
+]

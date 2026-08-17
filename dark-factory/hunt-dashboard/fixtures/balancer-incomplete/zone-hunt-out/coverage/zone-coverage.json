@@ -1,0 +1,45 @@
+{
+  "schema": "zone-coverage/v1",
+  "repo": "repo",
+  "commit": "0000000",
+  "started_at": "2026-01-01T10:50:32Z",
+  "updated_at": "2026-01-01T11:47:24Z",
+  "budget": { "unit": "cells", "per_zone": 0, "run": 0 },
+  "zones": [
+    {
+      "id": "pkg_vault_contracts",
+      "name": "Vault core and routers",
+      "value_custody": true,
+      "order": 1,
+      "status": "hunted",
+      "classes_hunted": ["C6", "C5"],
+      "candidates": 0,
+      "failed_cells": 0,
+      "attempts": []
+    },
+    {
+      "id": "pkg_pool_weighted_contracts",
+      "name": "Weighted pool math",
+      "value_custody": false,
+      "order": 2,
+      "status": "failed",
+      "classes_hunted": ["C9"],
+      "candidates": 0,
+      "failed_cells": 3,
+      "detail": "HARNESS_ERROR across every cell — the test did not compile; no verdict produced.",
+      "attempts": [{"n": 1, "exit_code": 2}]
+    }
+  ],
+  "totals": {
+    "zones": 2,
+    "candidates": 0,
+    "failed_cells": 3,
+    "by_status": {
+      "hunted": 1, "hunted_empty": 0, "hunted_degraded": 0, "failed": 1,
+      "budget_exhausted": 0, "budget_unenforceable": 0, "in_flight": 0,
+      "no_brief": 0, "unscoped": 0, "not_reached": 0
+    }
+  },
+  "complete": false,
+  "gap_zones": ["pkg_pool_weighted_contracts"]
+}

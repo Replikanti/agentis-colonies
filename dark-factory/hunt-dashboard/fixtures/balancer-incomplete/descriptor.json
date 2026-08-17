@@ -1,0 +1,7 @@
+{
+  "id": "vault-v3-incomplete",
+  "label": "Vault V3 (pkg/vault) — incomplete run",
+  "root": ".",
+  "out": "zone-hunt-out",
+  "log": "hunt.log"
+}

@@ -1,0 +1,1 @@
+CONFIRMED	The unsettled-donation path survived the refute gate; a forge PoC is the next human-gated step.

@@ -19,6 +19,27 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 **Requires:** agentis >= `1.22.7`
 
 ### Added
+- **HUNT-DASHBOARD — reusable read-only single-hunt view, M1** (#1913). A new `hunt-dashboard/` component: a
+  localhost-only HTTP dashboard that renders a live zone-hunt from its on-disk artifacts (regenerated per
+  request, read-only, `127.0.0.1` only). This is a **verbatim behavioural port** of the operator-approved
+  per-hunt dashboard — grouped phase tracks (MAP / BREADTH / DEPTH / DELIVER) with dual refute gates and
+  phase-weighted progress; a single unified LEADS table (`Type | Sev | Class | Location | Refute gate |
+  Detail`) carrying both breadth discovery leads (with their per-lead refute-gate verdict) and depth STAGE
+  4.5 deep-hunt rows (the full planned lens matrix, done/running/queued, with the `verified_findings.json`
+  severity join and the `(file,class)` `deep-hunt-adjudicated.tsv` triage overlay); struck-through =
+  no-live-bug (refuted / CLEAN) vs open FINDING / HARNESS_ERROR-gap; a live-process (`/proc`) liveness pulse
+  that stays green only while genuinely working (buffered-LLM safe, hidden `.gen-briefs/` traversal) and a
+  static slate when finished; a Zones panel whose Result agrees with the LEADS table; and honest completion
+  (the `__EXIT__` marker alone never renders 100%, `HARNESS_ERROR`/`failed` zones excluded from the hunted
+  count). The **only** functional change vs the reference is **config-driven paths**: the hunt root / out /
+  log and the header chrome (label, reward line, program/repo/project links) come from a descriptor JSON or
+  CLI flags (`--descriptor`, or `--root/--out/--log/--label/--reward-line/--bounty-url/--repo-url/
+  --project-url`) instead of being hardcoded to one target — no host paths, no target specifics. Loopback
+  launcher `hunt-dashboard.sh` (default port `8420`, override `--port`/`$HUNT_DASHBOARD_PORT`). Offline test
+  seams: `--render` (HTML to stdout), `--emit-model` (facts as JSON), and `HUNT_DASHBOARD_FAKE_*` overrides
+  for the `/proc` scan; non-Linux degrades to freshness-only. New `demo-hunt-dashboard.sh` (hooked into
+  `colony-lint.sh`) pins the model over a checked-in, scrubbed fixture snapshot. Multi-hunt tabs / a hunt
+  registry / the overview→detail navigation are **M2** (a follow-on PR).
 - **REFUTE/VALIDITY GATE OVER STAGE 4.5 INVARIANT-HUNT FINDINGS** (#1938). A fuzzer reproducing a broken
   predicate is necessary but NOT sufficient: the predicate may be a mis-specified invariant (a per-operation
   budget read as a cumulative cap), a documented by-design behaviour, or a witness only a TRUSTED role can

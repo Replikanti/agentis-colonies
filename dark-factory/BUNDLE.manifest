@@ -30,6 +30,15 @@ dark-factory/solana-harness/README.md
 dark-factory/solana-harness/src/
 dark-factory/fixtures/
 
+# ----- hunt-dashboard component (#1913) -----
+# The reusable read-only, loopback-only single-hunt dashboard: the Python server + its loopback launcher
+# + usage docs. A RUNTIME operator tool. Its `fixtures/` are test-only (driven by the top-level
+# `demo-hunt-dashboard.sh`, which — like every `demo-*.sh` — is contributor-only and stays out of the
+# tarball), so they are deliberately NOT listed here.
+dark-factory/hunt-dashboard/hunt-dashboard.py
+dark-factory/hunt-dashboard/hunt-dashboard.sh
+dark-factory/hunt-dashboard/README.md
+
 # ----- auditor colony surface -----
 # Explicitly excludes `config/colony.toml` (operator-edited) — only the
 # `colony.example.toml` template is shipped.

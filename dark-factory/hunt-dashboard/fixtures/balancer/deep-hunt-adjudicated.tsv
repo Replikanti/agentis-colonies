@@ -1,0 +1,3 @@
+# Manual triage of STAGE 4.5 deep-hunt findings (the refute gate #1938 will automate).
+# <target-file>\t<class>\t<verdict>\t<reason>   (class "*" = applies to any lens class on that file)
+pkg/vault/contracts/Vault.sol	SYS-solvency	REFUTED	Malicious-hook scenario, out of scope. Hooks are trusted pool components; an unprivileged actor cannot register an EvilHook on a pool it does not control. RESIDUAL for a human: confirm cross-pool isolation before fully closing.
