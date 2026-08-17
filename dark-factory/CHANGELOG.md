@@ -15,6 +15,26 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **REFUTE/VALIDITY GATE OVER STAGE 4.5 INVARIANT-HUNT FINDINGS** (#1938). A fuzzer reproducing a broken
+  predicate is necessary but NOT sufficient: the predicate may be a mis-specified invariant (a per-operation
+  budget read as a cumulative cap), a documented by-design behaviour, or a witness only a TRUSTED role can
+  drive — three such findings shipped as "verified" false positives this session (reserve RebalancingLib,
+  balancer Vault.settle, balancer Vault SYS-solvency). STAGE 4.5 (`run-zone-hunt.sh --deep-hunt`) now runs an
+  adversarial gate over each `INVARIANT|...|FINDING` BEFORE recording it. `refuter.ag` gains an invariant-hunt
+  judgment mode gated on a new `CAND_INVARIANT` env var (byte-identical to the discovery-lead prompt when
+  unset): a two-axis rubric — invariant VALIDITY and witness REACHABILITY, REAL only if BOTH hold — with an
+  INVERTED tie-break (default REAL on genuine uncertainty, since the witness is already reproduced) so a rare
+  witnessed finding is not lost to doubt. `run-refute.sh` gains `--invariant-mode` (and optional
+  `--invariant-harness` to append the generated predicate `*.t.sol`), registering `CAND_INVARIANT` /
+  `INV_HARNESS_PATH` on `exec.env_passthrough`. New `deep-hunt-gate.sh` is a verbatim port of the STAGE 4.5
+  inline merge adapter plus the gate: survivors -> `verified[]`, refuted findings -> a NEW additive `refuted[]`
+  bucket with the `refute_reason`, a gate error -> `verified[]` tagged `refute_gate: unassessed` (fail-open, so
+  a transient gate flake never silently deletes a fuzzer-witnessed finding). The gate is ON by default within
+  `--deep-hunt` (itself opt-in, so the true default run stays byte-identical); `--no-deep-hunt-refute`
+  reproduces the raw pre-gate merge byte-for-byte (golden-pinned). New `demo-deep-hunt-refute-gate.sh` (hooked
+  into `colony-lint.sh`) drives the gate offline through the `--agentis` stub seam and asserts the anchors are
+  refuted, the positive control survives, the byte-identity of `--no-refute`, the CLEAN no-op and the fail-open
+  tag; `demo-verify-findings.sh` (M4 path) and `demo-run-zone-hunt.sh` (deep-hunt CLI coverage) stay green.
 - **FINDING-LEVEL PAYABILITY GATE + PAYABLE-IMPACT DISCOVERY STEERING** (#1930). The funnel now self-determines
   what a target actually PAYS and acts on it, instead of surfacing sub-floor leads as progress.
   `run-immunefi-intake.sh` derives, per discovered program, the **pay_floor** (the lowest severity with a

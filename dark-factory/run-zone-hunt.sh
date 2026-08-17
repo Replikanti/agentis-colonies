@@ -66,6 +66,12 @@
 #                       already-settled (CLEAN/FINDING) zones are skipped and only gaps + unreached zones cost
 #                       LLM budget. Requires --deep-hunt. DEFAULT OFF => the STAGE 4.5 loop is byte-identical to
 #                       before (every row re-runs unconditionally, as today).
+#   --no-deep-hunt-refute  #1938: DISABLE the STAGE 4.5 refute gate (ON by default within --deep-hunt). The gate
+#                       runs deep-hunt-gate.sh's invariant-mode refuter over each invariant-hunt FINDING before
+#                       recording it: survivors -> verified[], refuted findings -> an additive refuted[] bucket
+#                       (with the reason), a gate error -> verified[] tagged `refute_gate: unassessed`
+#                       (fail-open). With this flag STAGE 4.5 does the RAW pre-#1938 merge, byte-for-byte.
+#                       Requires --deep-hunt.
 #   --invariant-fixture <f>  run-invariant-hunt.sh --handler-fixture (the OFFLINE/deterministic deep-hunt
 #                       path — no LLM). Only meaningful with --deep-hunt.
 #   --deep-hunt-max-targets <N>  Max primary targets per value-custody zone (default 1 — the largest .sol).
@@ -235,6 +241,10 @@ DEEP_HUNT_MAX_LENSES=2  # #1795: max lens classes per deep-hunt zone (custody-pr
 DEEP_HUNT_COMPOSABLE_LENS=0
 DEEP_HUNT_ONLY=0  # #1774: apply ONLY the STAGE 4.5 lens over an existing breadth --out (requires --deep-hunt).
 DEEP_HUNT_RESUME=0  # #1934: idempotent skip-completed over STAGE 4.5's (zone, class) rows (requires --deep-hunt).
+# #1938: adversarial refute/validity gate over each STAGE 4.5 invariant-hunt FINDING before it is recorded as
+# verified. Default ON *within* --deep-hunt (itself opt-in, so the true default run stays byte-identical);
+# --no-deep-hunt-refute reproduces the raw pre-gate merge byte-for-byte (golden-pinned). Requires --deep-hunt.
+DEEP_HUNT_REFUTE=1
 # #1830: per-zone hunt budget + targeted re-hunt. Every knob here defaults OFF/inert — with them off STAGE 3's
 # run-discovery.sh invocation gains no argument. The COVERAGE RECORD itself is NOT gated on any of them.
 ZONE_CELL_BUDGET=0 ; RUN_CELL_BUDGET=0 ; REQUIRE_COVERAGE=""
@@ -274,6 +284,7 @@ while [ $# -gt 0 ]; do
     --deep-hunt)        DEEP_HUNT=1; shift ;;
     --deep-hunt-only)   DEEP_HUNT_ONLY=1; shift ;;
     --deep-hunt-resume) DEEP_HUNT_RESUME=1; shift ;;
+    --no-deep-hunt-refute) DEEP_HUNT_REFUTE=0; shift ;;
     --invariant-fixture) nv "$#"; INV_FIXTURE="$2"; shift 2 ;;
     --deep-hunt-max-targets) nv "$#"; DEEP_HUNT_MAX_TARGETS="$2"; shift 2 ;;
     --deep-hunt-aux-max) nv "$#"; DEEP_HUNT_AUX_MAX="$2"; shift 2 ;;
@@ -330,6 +341,9 @@ case "$DEEP_HUNT_REPAIR_ROUNDS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-h
 # #1914 (M1): the general-solvency lens is a STAGE 4.5 selection knob — boolean, so it needs no integer
 # validation, but it is meaningless without the stage that consumes it (the --deep-hunt-only precedent above).
 [ "$DEEP_HUNT_COMPOSABLE_LENS" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --composable-lens requires --deep-hunt" >&2; exit 2; }
+# #1938: --no-deep-hunt-refute is a STAGE 4.5 opt-out — meaningless without the stage it gates (same shape as
+# the --composable-lens / --deep-hunt-resume guards above).
+[ "$DEEP_HUNT_REFUTE" -eq 1 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --no-deep-hunt-refute requires --deep-hunt" >&2; exit 2; }
 # #1830: the budget/re-hunt knobs use the same integer validation + exit-2 shape as every flag above.
 case "$ZONE_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-cell-budget must be a non-negative integer (got '$ZONE_CELL_BUDGET')" >&2; exit 2 ;; esac
 case "$RUN_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --run-cell-budget must be a non-negative integer (got '$RUN_CELL_BUDGET')" >&2; exit 2 ;; esac
@@ -1132,79 +1146,24 @@ PY
           --repair-rounds "$DEEP_HUNT_REPAIR_ROUNDS" "$@" ${DEEP_FWD[@]+"${DEEP_FWD[@]}"} \
           || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID' ($DCLASS); continuing" >&2; continue; }
       fi
-      # Adapter: convert the engine's INVARIANT|<target>|FINDING + STEP| witness into a schema-compatible
-      # verified[] entry (source=invariant-hunt) and APPEND it to verified_findings.json. Only a FINDING
-      # verdict merges; CLEAN/HARNESS_ERROR is a logged no-op. score-match.py keys on verified[].location,
-      # so location = <relfile>:<fn> (fn = first identifier-before-( in the STEP| sequence).
-      MERGED_ADD="$(python3 - "$VERIFIED_JSON" "$DZOUT" "$RELFILE" "$DCLASS" <<'PY'
-import sys, os, json, glob, re
-verified_json, dzout, relfile, dclass = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-logs = sorted(glob.glob(os.path.join(dzout, "run", "invariant_*.log")))
-# #1778 ensemble writes per-candidate logs `invariant_<t>_c<N>.log` ALONGSIDE the canonical
-# aggregate `invariant_<t>.log` (which carries the ensemble-VOTE verdict + the winning candidate's
-# STEP| witness). Read the AGGREGATE, never a per-candidate: `sorted()` is codepoint order, where
-# `_` (0x5F) > `.` (0x2E), so `sorted()[-1]` would otherwise land on the last `_c<N>` CLEAN log and
-# silently drop a real ensemble FINDING. Single-candidate/OFF runs emit only the aggregate, so this
-# filter is a no-op there.
-logs = [p for p in logs if not re.search(r"_c[0-9]+\.log$", os.path.basename(p))]
-if not logs:
-    print("0"); sys.exit(0)
-verdict = None
-inv_target = ""
-steps = []
-with open(logs[-1], encoding="utf-8", errors="ignore") as fh:
-    for line in fh:
-        if "INVARIANT|" in line:
-            seg = line.split("INVARIANT|", 1)[1].strip()
-            cols = seg.split("|")
-            inv_target = cols[0].strip()
-            if len(cols) >= 2:
-                verdict = cols[1].strip()
-        if line.startswith("STEP|"):
-            steps.append(line[len("STEP|"):].rstrip("\n"))
-if verdict != "FINDING":
-    print("0"); sys.exit(0)
-# fn = first identifier-before-( in the shrunk STEP| sequence; fall back to the contract-file stem.
-fn = ""
-for s in steps:
-    m = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", s)
-    if m:
-        fn = m.group(1); break
-if not fn:
-    fn = os.path.splitext(os.path.basename(relfile))[0]
-steps_joined = " ; ".join(steps)
-broken = "stateful invariant broken on " + (inv_target or relfile)
-entry = {
-    "location": "%s:%s" % (relfile, fn),
-    "file": relfile,
-    "class": dclass,
-    "severity": "High",
-    # exploit carries the broken-invariant text AND the joined STEP| names so score-match's technical-token
-    # FALLBACK still matches when the primary location fn is imperfect.
-    "exploit": (broken + " | " + steps_joined) if steps_joined else broken,
-    "poc_sketch": steps_joined,
-    "verdict": "FINDING",
-    "reason": "stateful-invariant fuzzer reproduced a shrunk exploit sequence",
-    "source": "invariant-hunt",
-}
-try:
-    data = json.load(open(verified_json, encoding="utf-8"))
-except Exception:
-    data = {}
-if not isinstance(data, dict):
-    data = {}
-data.setdefault("verified", []).append(entry)
-totals = data.setdefault("totals", {})
-totals["verified"] = int(totals.get("verified", 0)) + 1
-with open(verified_json, "w", encoding="utf-8") as fh:
-    json.dump(data, fh, indent=2)
-    fh.write("\n")
-print("1")
-PY
-)"
+      # Adapter + gate (#1938): deep-hunt-gate.sh is a VERBATIM port of the pre-#1938 inline merge adapter (the
+      # #1778 aggregate-log filter, the fn/STEP/verdict extraction, the entry shape) PLUS an adversarial refute
+      # gate over the FINDING before it is recorded. It prints a THREE-value contract: `1` (merged into
+      # verified[]), `refuted` (the invariant-mode refuter killed it -> the new refuted[] bucket) or `0` (no
+      # FINDING — CLEAN/HARNESS_ERROR, a no-op as before). The gate is ON by default; --no-deep-hunt-refute
+      # (DEEP_HUNT_REFUTE=0) passes --no-refute, which reproduces the raw pre-gate merge byte-for-byte.
+      DHG_NOREFUTE=""
+      [ "$DEEP_HUNT_REFUTE" = 0 ] && DHG_NOREFUTE="--no-refute"
+      # shellcheck disable=SC2086  # $DHG_NOREFUTE is a single optional flag; intentional (empty = no arg)
+      MERGED_ADD="$("$HERE/deep-hunt-gate.sh" \
+        --deep-out "$DZOUT" --relfile "$RELFILE" --class "$DCLASS" \
+        --repo "$REPO" --verified-json "$VERIFIED_JSON" \
+        --backend "$BACKEND" --agentis "$AGENTIS" $DHG_NOREFUTE)"
       if [ "$MERGED_ADD" = "1" ]; then
         DEEP_FINDINGS=$((DEEP_FINDINGS + 1))
         echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> FINDING merged into verified_findings.json (source=invariant-hunt)" >&2
+      elif [ "$MERGED_ADD" = "refuted" ]; then
+        echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> FINDING refuted by the invariant-mode gate -> refuted[] (not counted as a finding)" >&2
       else
         echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> no FINDING to merge (CLEAN / HARNESS_ERROR)" >&2
       fi
