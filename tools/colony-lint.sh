@@ -2326,9 +2326,10 @@ if command -v shellcheck &>/dev/null; then
     fi
 fi
 
-# --- Lint federation-root scripts (#1554) ---
-# Federation-root `*.sh` (e.g. dark-factory/run-audit.sh) sit outside any
-# colony's `config/`-having subdirectory, so the per-colony shellcheck block
+# --- Lint federation-root + component scripts (#1554, #1945) ---
+# Federation-root `*.sh` (e.g. dark-factory/run-audit.sh) and component
+# subdir `*.sh` (e.g. dark-factory/hunt-dashboard/hunt-dashboard.sh) sit
+# outside any colony's `config/`-having subdirectory, so the per-colony block
 # above never sees them. Lint them here at `-S warning` (error + warning
 # only), NOT the default severity used by the per-colony/tools blocks above:
 # at default severity these 82 previously-unlinted scripts across 6
@@ -2345,9 +2346,26 @@ if command -v shellcheck &>/dev/null; then
             fed_root_scripts+=("$f")
         done < <(find "$fed_path" -maxdepth 1 -name "*.sh" -print0 2>/dev/null)
 
+        # #1945: component subdirs — a federation subdir that is NOT a colony
+        # (no config/, e.g. dark-factory/hunt-dashboard/, tribes-bench/tools/).
+        # The per-colony sweep above only walks colonies, so these were the
+        # last unlinted shell in the repo. Walked at unbounded depth so a
+        # component's own nested tools/ is covered too; dot-dirs are pruned so
+        # local runtime state (.agentis/) never enters the lint. Colony dirs
+        # are skipped here on purpose: the per-colony sweep already lints them
+        # at DEFAULT severity, and linting them twice would report the same
+        # file under two different verdict lines.
+        for sub in "$fed_path"/*/; do
+            [ -d "$sub" ] || continue
+            if [ -d "$sub/config" ]; then continue; fi
+            while IFS= read -r -d '' f; do
+                fed_root_scripts+=("$f")
+            done < <(find "$sub" -name '.*' -prune -o -type f -name "*.sh" -print0 2>/dev/null)
+        done
+
         if [ ${#fed_root_scripts[@]} -gt 0 ]; then
             if shellcheck -S warning "${fed_root_scripts[@]}" &>/dev/null; then
-                pass "$fed: shellcheck OK (root, -S warning)"
+                pass "$fed: shellcheck OK (root + components, -S warning)"
             else
                 fail "$fed: shellcheck errors"
                 # Display-only re-run (see the per-colony shellcheck block):

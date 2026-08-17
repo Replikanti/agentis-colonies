@@ -47,7 +47,11 @@ run_case() {
     local input="$4"
 
     local out
-    out="$(printf '%s' "$input" | TARGET_DIR="$TARGET_DIR" BUGS_MANIFEST="$TARGET_DIR/bugs.json" bash "$VERIFIER")"
+    # Hoisted out of the env-assignment prefix: referencing $TARGET_DIR in a
+    # later word of the same command reads the OUTER value, which is what is
+    # meant here, but shellcheck flags the ambiguity (SC2097/SC2098).
+    local bugs_manifest="$TARGET_DIR/bugs.json"
+    out="$(printf '%s' "$input" | TARGET_DIR="$TARGET_DIR" BUGS_MANIFEST="$bugs_manifest" bash "$VERIFIER")"
 
     local got_verified
     got_verified="$(printf '%s' "$out" | jq -r '.verified')"

@@ -145,9 +145,9 @@ assert_contains "8b. zero-ticks stderr names the variable" "$INVALID_OUT" \
 # 9. Empty RESEARCH_TOPICS rejected.
 # ---------------------------------------------------------------------------
 EMPTY_RC=0
-EMPTY_OUT="$(RESEARCH_DRY_RUN=1 RESEARCH_TOPICS= \
+EMPTY_OUT="$(RESEARCH_DRY_RUN=1 RESEARCH_TOPICS='' \
              bash "$ORCH" 2>&1 || true)"
-RESEARCH_DRY_RUN=1 RESEARCH_TOPICS= bash "$ORCH" >/dev/null 2>&1 || EMPTY_RC=$?
+RESEARCH_DRY_RUN=1 RESEARCH_TOPICS='' bash "$ORCH" >/dev/null 2>&1 || EMPTY_RC=$?
 assert_eq "9a. empty RESEARCH_TOPICS exits 2" "2" "$EMPTY_RC"
 assert_contains "9b. empty-topics stderr names the variable" "$EMPTY_OUT" \
     "RESEARCH_TOPICS must be a non-empty comma-separated list"

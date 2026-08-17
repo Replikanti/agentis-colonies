@@ -217,6 +217,7 @@ if [ "$DRY_RUN" = "0" ]; then
     # Pipe the 5-tuple stream into a Python helper that emits the
     # JSON manifest. Use NUL-separation so run-dir paths with spaces
     # do not corrupt the stream.
+    # shellcheck disable=SC2259  # WAIVER (#1947): the heredoc overrides the piped record stream — real bug, tracked separately; remove this directive with the fix.
     {
         rec_i=0
         rec_len=${#RUNS_RECORD[@]}

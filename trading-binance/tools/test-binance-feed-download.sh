@@ -272,6 +272,7 @@ fi
 # ---------------------------------------------------------------------------
 first_shard="$(find "$SHARD_ROOT" -name '*.csv' -type f | sort | head -n 1)"
 first_row="$(sed -n '2p' "$first_shard")"
+# shellcheck disable=SC2034  # positional placeholders: only c_ts/c_open/c_qv/c_trades are asserted below.
 IFS=',' read -r c_ts c_open c_high c_low c_close c_vol c_qv c_trades c_tbv c_tbqv <<< "$first_row"
 if [ "$c_ts" = "1700000000000" ] \
     && [ "$c_open" = "30000.00" ] \
