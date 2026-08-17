@@ -157,10 +157,12 @@ fi
   echo "llm.backend = $BACKEND"
   # 600s: writing a concrete exploit PoC for a real protocol is the same order of cost as a discovery read.
   [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = 600000"; }
-  # #1810: idle_ms 12000 (> native 4000 default) — with 4000, flat-cyborg fires IDLE during claude's think-pause
-  # on the large PoC-generation prompt and captures chrome / no fenced reply ("--extract found no fenced reply"),
-  # so the generated test is garbled/truncated and never compiles -> HARNESS_ERROR. Every sibling flat-cyborg
-  # driver (run-discovery/gen-briefs/map-zones/run-refute/run-invariant-hunt) already sets 12000; run-poc missed it.
+  # #1810: idle_ms 12000 (> native 4000 default), kept as a latency knob only (#1925) -- do NOT ratchet it
+  # further. Completion is gated on the wrapper's closing sentinel from flat-cyborg >= 0.13.0
+  # (idle_gate_open()); idle_ms only bounds how fast a marker-less (sentinel-less) reply is accepted once
+  # the screen goes quiet, so a premature capture of chrome / no fenced reply ("--extract found no fenced
+  # reply") no longer garbles the generated test into HARNESS_ERROR. Every sibling flat-cyborg driver
+  # (run-discovery/gen-briefs/map-zones/run-refute/run-invariant-hunt) already sets 12000.
   [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"; }
   echo "trace.level = normal"
   # The poc-writer reads code + the fixture and writes/runs the test through exec sh; pass its whole env contract.

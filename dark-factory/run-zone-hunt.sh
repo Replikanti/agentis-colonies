@@ -381,6 +381,19 @@ esac
 # A mode with no floor gates nothing — a usage error, the --total-depth-cells-needs-depth precedent.
 [ "$PAY_MODE_SET" -eq 0 ] || [ -n "$PAY_FLOOR" ] || { echo "run-zone-hunt.sh: --pay-mode needs --pay-floor: a finding pay mode with no floor is a no-op" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "run-zone-hunt.sh: python3 not installed" >&2; exit 3; }
+# #1925: soft preflight -- flat-cyborg's completion contract (closing sentinel over marker-less screen-scrape)
+# only holds >= 0.13.0. Below that floor (or the binary missing), the run does not abort -- it degrades to the
+# pre-#1925 marker-less fallback, which can silently drop leads -- so warn loudly and continue.
+if [ "$BACKEND" = "flat-cyborg" ]; then
+  if ! command -v flat-cyborg >/dev/null 2>&1; then
+    echo "run-zone-hunt.sh: WARNING: --backend flat-cyborg but 'flat-cyborg' is not on PATH -- completion falls back to marker-less screen-scrape and can silently lose leads (#1925); continuing" >&2
+  else
+    FC_VER="$(flat-cyborg version 2>/dev/null | head -n1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+    if [ -z "$FC_VER" ] || [ "$(printf '%s\n%s\n' "$FC_VER" "0.13.0" | sort -V | head -n1)" != "0.13.0" ]; then
+      echo "run-zone-hunt.sh: WARNING: flat-cyborg ${FC_VER:-<unparseable version>} is below the 0.13.0 completion-contract floor -- marker-less completion can silently lose leads (#1925); continuing" >&2
+    fi
+  fi
+fi
 
 MAPZONES="$HERE/map-zones.sh"
 GENBRIEFS="$HERE/gen-briefs.sh"
