@@ -99,10 +99,15 @@ for slot, state, struck, sev in [
     ("pkg_vault_contracts-SYS-solvency", "triaged_fp", True, "High"),
     ("pkg_vault_contracts-C10", "clean", True, "High"),           # CLEAN struck, Sev still shown (intrinsic)
     ("pkg_vault_contracts-C8", "harness_error", False, "High"),   # GAP, NOT struck, amber; Sev shown
-    ("pkg_vault_contracts-C5", "queued", False, ""),              # planned lens, not run
+    ("pkg_vault_contracts-C5", "queued", False, "High"),           # planned lens, not run — intrinsic
+                                                                    # High from the zone's value_custody:true
 ]:
     r = chk(slot, state, struck, sev)
     if r: e.append(r)
+# a planned row carrying an intrinsic severity must still read as "queued" (not "finding"/"running") in the
+# machine-readable state field — the JSON model keeps a planned row distinct from a real verdict (#1953).
+c5 = ds.get("pkg_vault_contracts-C5")
+if not (c5 and c5["state"] == "queued"): e.append("C5 state should stay queued (distinct from finding/running): %s" % c5)
 if m["deep_summary"] != {"planned": 5, "completed": 4, "findings": 1}: e.append("deep_summary=%s" % m["deep_summary"])
 # (4) zone RESULT agrees with the panels (deep finding wins the precedence)
 z = m["zones"][0]
@@ -206,6 +211,31 @@ if python3 "$DASH" --descriptor "$MAIN_DESC" --render > "$WORK/page.html" 2>"$WO
     ok "rendered page carries the label, the unified 6-column LEADS header, self-refresh + noopener links"
   else
     bad "rendered HTML is missing a load-bearing element (label / unified header / refresh / noopener)"
+  fi
+  # (#1953) the queued C5 row's Sev cell must show the intrinsic-severity fallback (High, from the zone's
+  # value_custody:true), but visibly lighter than a confirmed FINDING's bold Sev cell — never font-weight:600.
+  if python3 - "$WORK/page.html" <<'PY'
+import sys
+html = open(sys.argv[1]).read()
+marker = "planned lens row — not yet run"
+i = html.find(marker)
+if i < 0:
+    print("marker not found: %r" % marker); sys.exit(1)
+row_start = html.rfind("<tr", 0, i)
+row_end = html.find("</tr>", i)
+if row_start < 0 or row_end < 0:
+    print("could not locate the enclosing <tr> for the queued row"); sys.exit(1)
+row = html[row_start:row_end]
+sev_end = row.find(">High<")
+if sev_end < 0:
+    print("queued row missing intrinsic High severity: %r" % row); sys.exit(1)
+sev_span_start = row.rfind("<span", 0, sev_end)  # the Sev cell's own span, not the DEPTH type-badge span
+sev_span = row[sev_span_start:sev_end]
+if "font-weight:600" in sev_span:
+    print("queued row's Sev cell must not be bold like a confirmed FINDING: %r" % sev_span); sys.exit(1)
+PY
+  then ok "queued row shows intrinsic High severity, styled lighter (no font-weight:600) than a real FINDING"
+  else bad "queued-row intrinsic-severity styling regressed"
   fi
 else
   bad "--render failed"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2

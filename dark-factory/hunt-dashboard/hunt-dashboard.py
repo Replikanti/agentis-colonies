@@ -481,6 +481,9 @@ CLASS_INFO={
 def _title_attr(s): return html.escape(s, quote=True)  # safe for a title="" attribute
 def _sev_title(sev): return SEV_INFO.get((sev or "").split()[0] if sev else "", "Bug severity (bounty tier).")
 def _cls_title(cls): return CLASS_INFO.get(cls, "Bug class (coverage-map taxonomy).")
+def _intrinsic_sev(custody): return "High" if custody else ""  # planned-row severity fallback (#1953): a
+    # value-custody zone's queued/fuzzing DEPTH row is already known to be High-severity surface — page()
+    # and emit_model() both use this single mapping so their Sev cells never disagree.
 def _type_badge(t):  # BREADTH (discovery) / DEPTH (deep-hunt) pill for the unified LEADS table
     c = {"BREADTH":("#58a6ff","#1f6feb"), "DEPTH":("#a371f7","#8957e5")}.get(t, ("#8b949e","#484f58"))
     return (f'<span title="{_title_attr(TYPE_INFO.get(t,""))}" style="background:{c[1]}26;color:{c[0]};'
@@ -682,9 +685,10 @@ def page(nav=""):
     DH = deep_hunt(); dh_dir = os.path.join(OUT, "deep-hunt")
     completed = {d["slot"]: d for d in DH}
     # full planned lens matrix (reconstructed) so pending/queued rows show too, not only completed slots
-    order = []; seen = set()
-    for zone, cls, _cust in planned_deep_rows():
+    order = []; seen = set(); slot_custody = {}
+    for zone, cls, cust in planned_deep_rows():
         slot = f"{zone}-{cls}"
+        slot_custody[slot] = cust
         if slot not in seen: order.append(slot); seen.add(slot)
     for slot in completed:            # safety: any completed slot the reconstruction didn't predict
         if slot not in seen: order.append(slot); seen.add(slot)
@@ -750,7 +754,12 @@ def page(nav=""):
                 rowop = "opacity:.6"
         else:
             cls = clsname; loc = zid   # exact target file is only known once the row runs
-            sev = '<span style="color:#5a6270">—</span>'
+            sevtxt = _intrinsic_sev(slot_custody.get(slot, False))
+            if sevtxt:
+                scol = SEVCOL.get(sevtxt, "#5a6270")
+                sev = f'<span style="color:{scol};opacity:.75">{html.escape(sevtxt)}</span>'
+            else:
+                sev = '<span style="color:#5a6270">—</span>'
             if os.path.isdir(os.path.join(dh_dir, slot)):
                 gate = '<span style="color:#58a6ff">🔄 fuzzing…</span>'
                 detail = '<span style="color:#8b949e;font-size:12px">opus generating handler + stateful fuzzing</span>'
@@ -843,9 +852,10 @@ def emit_model():
     # deep rows — the reconstructed matrix + verdict per slot (mirrors the render branches)
     DH=deep_hunt(); dh_dir=os.path.join(OUT,"deep-hunt")
     completed={d["slot"]:d for d in DH}
-    order=[]; seen=set()
-    for zone,cls,_cust in planned_deep_rows():
+    order=[]; seen=set(); slot_custody={}
+    for zone,cls,cust in planned_deep_rows():
         slot=f"{zone}-{cls}"
+        slot_custody[slot]=cust
         if slot not in seen: order.append(slot); seen.add(slot)
     for slot in completed:
         if slot not in seen: order.append(slot); seen.add(slot)
@@ -866,7 +876,7 @@ def emit_model():
             else:
                 state="harness_error"; struck=False
         else:
-            sev=""
+            sev=_intrinsic_sev(slot_custody.get(slot, False))
             if os.path.isdir(os.path.join(dh_dir,slot)): state="running"; struck=False
             else: state="queued"; struck=False
         m=re.match(r'^(.*)-(C\d+|SYS-solvency)$', slot)
