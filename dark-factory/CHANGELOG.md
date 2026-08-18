@@ -14,6 +14,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-18
+
+**Requires:** agentis >= `1.22.7`
+
 ### Added
 - **HUNT-DASHBOARD — multi-hunt overview → detail, M2** (#1913). Generalizes the M1 single-hunt view to a
   multi-hunt server on ONE fixed port over a `${DARK_FACTORY_DIR:-$HOME/.dark-factory}/hunts/<id>.json`
@@ -35,6 +39,9 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   routing, the empty-registry path, and the opt-in atomic registration (byte-identical hunt artifacts when off).
 
 ### Changed
+- **Zone-weighted per-cell hunt timeout + fail-fast on timeout** (#1956). Per-zone timeout is now weighted by
+  zone `cost` (in cell counts), preventing pathological LLM hangs from blocking discovery. On `[llm.timeout]`,
+  the hunt immediately advances to the next zone rather than logging and retrying.
 - **`flat-cyborg` >= 0.13.0 floor for the flat-cyborg backend** (#1925). The stage `idle_ms` knobs
   (`run-refute.sh`, `run-discovery.sh`, `run-invariant-hunt.sh`, `map-zones.sh`, `gen-briefs.sh`, `run-poc.sh`)
   were never a correctness fix — completion is gated on the wrapper's closing sentinel from flat-cyborg
@@ -44,6 +51,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   0.13.0 prints a loud warning (marker-less completion can silently lose leads) and the hunt continues.
 
 ### Fixed
+- **DEPTH rows show intrinsic severity, not placeholder** (#1954). Planned deep-hunt rows now correctly
+  reflect the per-lens severity discovered in the hunt rather than a placeholder value.
+- **Strip severity prefix from breadth LEADS** (#1959). Breadth discovery leads now display severity without
+  the redundant `severity=` prefix in the leads table.
+- **Payability badge on sub-floor leads** (#1961). Added display-only `$0` badge to mark findings below the
+  program's pay floor, clarifying which leads are ineligible for payout.
 - **Component subdirs are shellchecked** (#1945). `tools/colony-lint.sh` extends the #1554 federation-root
   sweep to also walk federation subdirectories that are NOT colonies (no `config/`, e.g.
   `dark-factory/hunt-dashboard/`) at unbounded depth, so `hunt-dashboard.sh` and any future
