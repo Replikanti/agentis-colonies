@@ -779,7 +779,7 @@ def page(nav=""):
             else:
                 # HARNESS_ERROR — a coverage GAP (not "no bug", so NOT struck), but the target still carries
                 # its severity class; the gap is flagged amber in the gate column.
-                sev = f'<span style="color:{scol};font-weight:600;opacity:.7">{html.escape(sevtxt or "?")}</span>'
+                sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt or "?")}</span>'
                 gate = '<span style="color:#f0a800;font-size:12px">⚠ harness error — no verdict</span>'
                 detail = '<span style="color:#f0a800;font-size:12px">harness error is not a verdict — a coverage gap</span>'
                 rowop = "opacity:.6"
