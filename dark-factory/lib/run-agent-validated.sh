@@ -86,6 +86,15 @@ df_sentinel_present() {
   esac
 }
 
+# df_llm_timeout_in_log <log> — #1955: was the reply a genuine LLM-call timeout (not a render flake)?
+# Fixed-string grep for the substring agentis-core prints on BOTH the internal-retry line
+# (`[LLM retry N/M: LLM call timed out after ...]`) and the terminal error (`Error: runtime error:
+# [llm.timeout] LLM call timed out after ...`). A heavy prompt times out IDENTICALLY on retry, so this
+# distinguishes "spend another attempt" (render chrome) from "stop now" (a real timeout).
+df_llm_timeout_in_log() {
+  grep -Fq 'LLM call timed out' "$1"
+}
+
 # df_run_agent_validated <max_attempts> <label> <log> <stage> <zone_id> <attempt_fn> — run <attempt_fn>
 # (which writes ONE `agentis go` invocation's output to its "$1" log arg) up to <max_attempts> times,
 # validating each reply with df_sentinel_present. On the FIRST valid reply: clear any stale "$log.novalid"
@@ -102,6 +111,17 @@ df_run_agent_validated() {
       rm -f "$drav_log.novalid"
       [ "$drav_k" -gt 1 ] && echo "$drav_label: valid $drav_stage sentinel on attempt $drav_k/$drav_max" >&2
       return 0
+    fi
+    # #1955 Lever 1b: a GENUINE [llm.timeout] (as opposed to TUI chrome) will time out identically on retry —
+    # burning the remaining outer attempts buys nothing but a multiplied worst case. Stop after this one:
+    # drop BOTH the .novalid marker (a timeout IS a no-valid-sentinel failure — every existing .novalid
+    # consumer/counter is preserved) AND the .timeout reason discriminator (only run-discovery.sh reads it,
+    # for a DISTINCT FAILED row; the other scrapers keep their existing .novalid handling untouched).
+    if df_llm_timeout_in_log "$drav_log"; then
+      echo "$drav_label: $drav_stage LLM call timed out — a heavy prompt will time out identically on retry; not retrying (re-map or re-hunt)" >&2
+      : > "$drav_log.novalid"
+      : > "$drav_log.timeout"
+      return 1
     fi
   done
   echo "$drav_label: no valid $drav_stage sentinel after $drav_max attempts (reply was TUI chrome / no answer) — FAILED" >&2
