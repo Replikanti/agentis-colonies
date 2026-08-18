@@ -64,9 +64,12 @@
       "reason": "malformed candidate (blank class/severity \u2014 truncated record)"
     }
   ],
+  "dropped_subfloor": [],
+  "pay_floor": "",
   "totals": {
     "candidates": 8,
     "verified": 4,
-    "errored": 3
+    "errored": 3,
+    "dropped_subfloor": 0
   }
 }

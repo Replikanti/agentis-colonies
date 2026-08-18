@@ -65,13 +65,17 @@
 #      v3) INERTNESS: with --total-depth-cells absent, depth behaves exactly as #1827 shipped it and the
 #          record's `budget` object gains NO depth keys (the exact-dict pin in block (f) is the twin guard).
 #      v4) VALIDATION: a bad value and a ceiling with depth off both fail fast with exit 2.
-#   w) #1930 FINDING-LEVEL PAYABILITY GATE (`--pay-floor`, default unset = OFF): with `--pay-floor high` the
-#      stub's MEDIUM finding lands in `unpayable[]` of verify/verified_findings.payable.json and gets NO
-#      audit-pass dir and NO staged draft, the two HIGH findings keep their shipped behaviour,
-#      verify/verified_findings.json is UNCHANGED (delivery is narrowed, the verification record is not), the
-#      drop is named on stderr rather than showing up as a silently shorter banner, the floor also reaches the
-#      STAGE 2 briefs, and `--pay-floor`/`--pay-mode` misuse exits 2. Every other block in this file runs
-#      WITHOUT the flag and therefore doubles as the byte-identity guarantee.
+#   w) #1930 FINDING-LEVEL PAYABILITY GATE (`--pay-floor`, default unset = OFF), UPDATED for #1962: with
+#      `--pay-floor high` now threaded into BOTH STAGE 4 (verify-findings.sh, #1962) and STAGE 5
+#      (finding-payability-gate.sh, #1930), the stub's MEDIUM finding is caught at the EARLIER gate — it lands
+#      in `dropped_subfloor[]` of verify/verified_findings.json itself (never reaching the refute stub, per
+#      #1962) rather than in STAGE 5's `unpayable[]`. STAGE 5 still runs and still writes
+#      verify/verified_findings.payable.json, but sees an already-narrowed verified[] and gates 0 findings
+#      (payable 2, unpayable 0) — a NO-OP composition, exactly as #1962's plan predicted for a --pay-floor that
+#      is set once and threaded to both stages. No audit-pass dir / staged draft for the Medium finding either
+#      way, the two HIGH findings keep their shipped behaviour, the drop is named on stderr, the floor also
+#      reaches the STAGE 2 briefs, and `--pay-floor`/`--pay-mode` misuse exits 2. Every other block in this
+#      file runs WITHOUT the flag and therefore doubles as the byte-identity guarantee.
 #   u) #1863 --jobs FORWARDING: --jobs reaches BOTH substrate-heavy stages — STAGE 3's run-discovery.sh AND
 #      STAGE 4's verify-findings.sh (static, over the source) — and an end-to-end --jobs 2 stub run produces a
 #      verify/verified_findings.json byte-identical to the default run's (the fan-out changes wall-clock, never
@@ -1541,14 +1545,17 @@ badflag "--total-depth-cells without --zone-depth-cells" 'a total depth ceiling 
   --total-depth-cells 8
 
 # ----------------------------------------------------------------------------------------------------------
-# (w) #1930 FINDING-LEVEL PAYABILITY GATE. The offline capstone's hunter stub yields exactly one MEDIUM
-#     candidate (OOSCOPE/Thing.sol:foo:1) alongside two HIGH ones, and all three are verified — so
-#     --pay-floor high has a real, uniquely-identifiable sub-floor finding to gate. THE POINT: a Medium lead on
-#     a program whose rewards table starts at High earns $0, so it must not consume an audit pass, a staged
-#     draft or a human review — while the verification record itself stays intact for corpus-bench/dashboard
-#     readers.
+# (w) #1930 FINDING-LEVEL PAYABILITY GATE, UPDATED for #1962. The offline capstone's hunter stub yields
+#     exactly one MEDIUM candidate (OOSCOPE/Thing.sol:foo:1) alongside two HIGH ones — so --pay-floor high
+#     has a real, uniquely-identifiable sub-floor finding to gate. THE POINT: a Medium lead on a program whose
+#     rewards table starts at High earns $0, so it must not consume a refute pass (#1962, STAGE 4), an audit
+#     pass, a staged draft or a human review (#1930, STAGE 5) either way. With the SAME floor now threaded to
+#     BOTH stages, the Medium candidate is caught at the EARLIER one: it never reaches the refute gate and
+#     lands in `dropped_subfloor[]` of verify/verified_findings.json itself, so by the time STAGE 5's
+#     finding-payability-gate.sh runs it has nothing left to move — a NO-OP composition (payable 2,
+#     unpayable 0), exactly as #1962's plan predicted.
 # ----------------------------------------------------------------------------------------------------------
-note "w) #1930 --pay-floor high keeps the Medium finding out of delivery without touching the verify record ..."
+note "w) #1930+#1962 --pay-floor high keeps the Medium finding out of delivery (caught at STAGE 4, not STAGE 5) ..."
 OUTW="$WORK/zh-pay-floor"
 "$ZONEHUNT" --repo "$REPO" --out "$OUTW" --drop-dir "$OUTW/drop" --scope-hint contracts \
   --backend mock --agentis "$STUB" \
@@ -1564,23 +1571,29 @@ if python3 - "$OUTW" <<'PY'
 import sys, os, json
 out = sys.argv[1]
 ver = os.path.join(out, "verify")
+# #1962: the Medium candidate is caught at STAGE 4 — never gated, never in the raw verify record's verified[].
+raw = json.load(open(os.path.join(ver, "verified_findings.json"), encoding="utf-8"))
+assert raw["pay_floor"] == "high", "verify's own pay_floor %r" % raw.get("pay_floor")
+droplocs = {d["location"] for d in raw.get("dropped_subfloor", [])}
+assert "OOSCOPE/Thing.sol:foo:1" in droplocs, "the Medium finding is not in verify's dropped_subfloor[]: %r" % droplocs
+rawkept = {v["location"] for v in raw["verified"]}
+assert rawkept == {"contracts/vault/Vault.sol:deposit:10", "EXPLODE/Boom.sol:bang:1"}, \
+    "verify's own verified[] is wrong: %r" % rawkept
+assert raw["totals"]["verified"] == 2 and raw["totals"]["dropped_subfloor"] == 1, \
+    "verify's own totals %r" % raw["totals"]
+assert all("pay_verdict" not in v for v in raw["verified"]), "STAGE 4 annotated verified_findings.json with a STAGE 5 key"
+# STAGE 5's finding-payability-gate.sh still runs (PAY_FLOOR is set) but has nothing left to gate: a
+# NO-OP composition over the already-narrowed verified[] (2 payable, 0 unpayable).
 gated_path = os.path.join(ver, "verified_findings.payable.json")
 assert os.path.isfile(gated_path), "the gate wrote no verified_findings.payable.json"
 gated = json.load(open(gated_path, encoding="utf-8"))
-unpay = {v["location"] for v in gated.get("unpayable", [])}
+assert gated.get("unpayable", []) == [], "STAGE 5 found something unpayable, but STAGE 4 should have caught it already: %r" % gated.get("unpayable")
 kept = {v["location"] for v in gated.get("verified", [])}
-assert "OOSCOPE/Thing.sol:foo:1" in unpay, "the Medium finding is not in unpayable[]: %r" % unpay
-assert kept == {"contracts/vault/Vault.sol:deposit:10", "EXPLODE/Boom.sol:bang:1"}, \
-    "the payable set is wrong: %r" % kept
+assert kept == rawkept, "STAGE 5 changed the payable set vs. STAGE 4's already-narrowed verified[]: %r" % kept
 assert gated["pay_floor"] == "high", "pay_floor %r" % gated.get("pay_floor")
-assert gated["totals"]["verified"] == 2 and gated["totals"]["unpayable"] == 1, "totals %r" % gated["totals"]
-# THE INVARIANT: the verification record itself is UNTOUCHED — only DELIVERY is narrowed.
-raw = json.load(open(os.path.join(ver, "verified_findings.json"), encoding="utf-8"))
-assert raw["totals"]["verified"] == 3, "verified_findings.json was rewritten by the gate: %r" % raw["totals"]
-assert "unpayable" not in raw and "pay_floor" not in raw, "the gate leaked keys into verified_findings.json"
-assert all("pay_verdict" not in v for v in raw["verified"]), "the gate annotated verified_findings.json in place"
+assert gated["totals"]["verified"] == 2 and gated["totals"]["unpayable"] == 0, "totals %r" % gated["totals"]
 PY
-then ok "w) the Medium finding is moved to unpayable[] of verify/verified_findings.payable.json; verify/verified_findings.json is UNCHANGED"
+then ok "w) the Medium finding is caught at STAGE 4 (verify's own dropped_subfloor[]) with a matching STAGE 5 no-op pass (payable 2, unpayable 0) over the already-narrowed verified[]"
 else bad "w) the pay-gate artifact assertion failed"
 fi
 
@@ -1599,11 +1612,14 @@ if grep -q 'delivered (staged, PENDING HUMAN REVIEW): 1' "$WORK/zhw.err" \
 else
   bad "w) the payable findings' delivery behaviour changed under the gate"
 fi
-# The drop must be VISIBLE: a silently shorter banner is the same defect #1830 fixed for zone coverage.
-if grep -q '\[pay-gate\] payable 2, unpayable 1 (floor=high, mode=drop)' "$WORK/zhw.err"; then
-  ok "w) the run names the drop on stderr ([pay-gate] payable 2, unpayable 1)"
+# #1962: the drop itself is still VISIBLE, just earlier — verify-findings.sh's own sub-floor log line names it
+# (STAGE 4), and STAGE 5's [pay-gate] line now correctly reports a no-op pass over the already-narrowed set
+# (a silently shorter banner would be the same defect #1830 fixed for zone coverage).
+if grep -q 'skipped 1 sub-floor candidate(s) (below pay-floor high)' "$WORK/zhw.err" \
+   && grep -q '\[pay-gate\] payable 2, unpayable 0 (floor=high, mode=drop)' "$WORK/zhw.err"; then
+  ok "w) STAGE 4 names the sub-floor drop and STAGE 5's [pay-gate] line correctly reports the no-op pass (payable 2, unpayable 0)"
 else
-  bad "w) no [pay-gate] summary line on stderr:"; grep -i 'pay-gate' "$WORK/zhw.err" | sed 's/^/      /' >&2
+  bad "w) no sub-floor / [pay-gate] summary line on stderr:"; grep -Ei 'sub-floor|pay-gate' "$WORK/zhw.err" | sed 's/^/      /' >&2
 fi
 # The briefs carry the floor, so the hunter is steered by the same number that gates the delivery.
 if grep -q 'Pay floor: HIGH' "$OUTW/briefs/briefs/brief_contracts_vault.md" 2>/dev/null; then
