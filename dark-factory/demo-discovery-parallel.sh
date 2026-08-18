@@ -94,6 +94,18 @@
 #           binary-searched and pinned against hunter.ag's cost comment, because this fold is an interpreted
 #           per-row walk and does NOT clear the full read cap at that (daemon-only) budget; (C) an EMPTY
 #           store yields an empty block from a COMPLETED call — the byte-identical-prompt claim, measured.
+#   #1955) ZONE-WEIGHTED PER-CELL TIMEOUT + TIMEOUT-VS-CHROME DISCRIMINATOR:
+#      SCALE: the written `llm.cli_timeout_ms` scales with the DISTINCT in-scope LOC this run hunts — floor
+#          600000 (<=399 LOC), 1200000 at exactly 800 LOC, capped 1800000 (>=1600 LOC) — asserted per
+#          backend (flat-cyborg AND claude) so BOTH config-write sites are pinned. The weight probe is
+#          side-effect-free, so the --backend mock golden (assertion 1) is unaffected.
+#      TIMEOUT-EARLY-EXIT: a GENUINE terminal [llm.timeout] (STUB_TIMEOUT=1) stops the outer retry loop after
+#          ONE attempt (not DF_AGENT_MAX_ATTEMPTS), drops a `.timeout` reason marker, and yields a DISTINCT
+#          `FAILED — LLM call timed out` report row — NOT the chrome `FAILED — no CANDIDATE|/SAFE reply` row.
+#      RECOVERED-RETRY: a NON-terminal `[LLM retry N/M: LLM call timed out ...]` line (STUB_RETRY_RECOVER=1)
+#          that recovers into a chrome reply (exit 0, the #1707 flake) does NOT trip the early-exit — it is
+#          retried the full DF_AGENT_MAX_ATTEMPTS, writes NO `.timeout` marker, and takes the chrome row. The
+#          discriminator is anchored to the terminal `[llm.timeout]` token, absent from the retry line.
 #
 # The parallel-only assertions [SKIP] cleanly when the bash that runs run-discovery.sh lacks `wait -n`
 # (needs bash >= 4.3) — run-discovery.sh then degrades to serial, which the demo does not misreport.
@@ -119,6 +131,12 @@ command -v python3 >/dev/null 2>&1 || { echo "[SKIP] python3 not installed" >&2;
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/demo-discovery-parallel.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+
+# #1955: write a file of EXACTLY <n> newline-terminated lines (so `wc -l` == n) — deterministic source
+# weight for the SCALE assertions. dash-safe: no arrays, no seq, one redirect.
+mk_lines() {
+  { ml_i=0; while [ "$ml_i" -lt "$2" ]; do printf 'x\n'; ml_i=$((ml_i + 1)); done; } > "$1"
+}
 
 # ----------------------------------------------------------------------------------------------------------
 # (a) Build the offline inputs: a throwaway target tree, the pinned scope.tsv + brief.md, and the fast stub.
@@ -186,6 +204,37 @@ case "$cmd" in
         printf 'esc to interrupt\n'
         exit 0
       fi
+    fi
+    # #1955: optional [llm.timeout] injection — emit agentis-core's genuine timeout error and EXIT NONZERO,
+    # incrementing a per-cell counter (keyed by subsystem+class via STUB_TIMEOUT_CTR) each call. Unlike TUI
+    # chrome, a real timeout recurs identically on retry, so the demo can prove df_run_agent_validated STOPS
+    # after ONE attempt (counter == 1, not DF_AGENT_MAX_ATTEMPTS) and routes it to the DISTINCT timeout row.
+    if [ "${STUB_TIMEOUT:-}" = "1" ]; then
+      if [ -n "${STUB_TIMEOUT_CTR:-}" ]; then
+        tkey="$(printf '%s' "${SUBSYSTEM:-s}_${HUNT_CLASS:-c}" | tr -cs 'A-Za-z0-9' '_')"
+        tf="$STUB_TIMEOUT_CTR/$tkey"
+        tn=0; [ -f "$tf" ] && tn="$(cat "$tf")"
+        tn=$((tn + 1)); printf '%s' "$tn" > "$tf"
+      fi
+      echo "Error: runtime error: [llm.timeout] LLM call timed out after 600000ms" >&2
+      exit 1
+    fi
+    # #1955 (review #1956): optional RECOVERED-INTERNAL-RETRY injection — emit agentis-core's NON-terminal
+    # internal-retry line (which carries `LLM call timed out` but NOT the terminal `[llm.timeout]` token,
+    # llm.rs:539/820) and THEN a sentinel-less chrome reply, exiting 0. This is the #1707 flake shape: a call
+    # that timed out on its FIRST internal attempt but RECOVERED into a chrome reply. It must be routed to the
+    # chrome retry path, NOT the terminal-timeout early-exit — a bare-substring discriminator would misfire.
+    if [ "${STUB_RETRY_RECOVER:-}" = "1" ]; then
+      if [ -n "${STUB_RETRY_CTR:-}" ]; then
+        rkey="$(printf '%s' "${SUBSYSTEM:-s}_${HUNT_CLASS:-c}" | tr -cs 'A-Za-z0-9' '_')"
+        rf="$STUB_RETRY_CTR/$rkey"
+        rn=0; [ -f "$rf" ] && rn="$(cat "$rf")"
+        rn=$((rn + 1)); printf '%s' "$rn" > "$rf"
+      fi
+      printf '[LLM retry 1/2: LLM call timed out after 600000ms]\n'
+      printf 'high · /effort\n'
+      printf 'esc to interrupt\n'
+      exit 0
     fi
     # #1827: record THIS cell's depth-relevant env so the demo can prove run-discovery.sh really handed
     # DEPTH_TARGET / DEPTH_KNOWN / a narrowed IN_SCOPE through (i.e. that they are on exec.env_passthrough).
@@ -610,6 +659,112 @@ if grep -q 'no valid hunter sentinel after 2 attempts' "$WORK/chrome-fail.err"; 
   ok "the loud FAILED line was logged to stderr (not a silent 0)"
 else
   bad "no loud FAILED line logged for the all-chrome cells"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (#1955 SCALE) ZONE-WEIGHTED PER-CELL TIMEOUT: the written llm.cli_timeout_ms scales with the DISTINCT
+# in-scope LOC this run hunts — floor 600000 (<=399 LOC), +300000/400 LOC step, capped 1800000. Asserted per
+# backend (flat-cyborg AND claude) so BOTH config-write sites are pinned. The weight probe is side-effect-free,
+# so the --backend mock golden (assertion 1) is unaffected (mock writes no cli_timeout_ms).
+note "#1955 SCALE) the per-cell timeout scales with the zone's in-scope LOC (floor / mid / cap), per backend ..."
+assert_scale() {  # <loc> <expected_ms>
+  as_loc="$1"; as_exp="$2"
+  as_dir="$WORK/scale-$as_loc"
+  mkdir -p "$as_dir/target/contracts"
+  mk_lines "$as_dir/target/contracts/Big.sol" "$as_loc"
+  printf 'big subsystem | C1 | contracts/Big.sol\n' > "$as_dir/scope.tsv"
+  for as_bk in flat-cyborg claude; do
+    as_out="$as_dir/out-$as_bk"
+    "$DISCOVERY" --repo "$as_dir/target" --scope "$as_dir/scope.tsv" --brief "$BRIEF" \
+      --backend "$as_bk" --agentis "$STUB" --out "$as_out" --jobs 1 >/dev/null 2>"$as_dir/$as_bk.err"
+    as_cfg="$as_out/run/.agentis/config"
+    if [ -f "$as_cfg" ] && grep -q "^llm.cli_timeout_ms = $as_exp\$" "$as_cfg"; then
+      ok "SCALE $as_loc LOC ($as_bk): llm.cli_timeout_ms = $as_exp"
+    else
+      bad "SCALE $as_loc LOC ($as_bk): expected llm.cli_timeout_ms = $as_exp; got '$(grep '^llm.cli_timeout_ms' "$as_cfg" 2>/dev/null)'"
+    fi
+  done
+}
+assert_scale 100 600000    # SCALE-FLOOR: 100 LOC (<=399) -> the 600000 floor, unchanged from today
+assert_scale 800 1200000   # SCALE-MID:   exactly 800 LOC -> 600000 + 300000*(800/400) = 1200000
+assert_scale 2000 1800000  # SCALE-CAP:   2000 LOC -> 2100000 clamped to the 1800000 hard cap
+
+# ----------------------------------------------------------------------------------------------------------
+# (#1955 TIMEOUT-EARLY-EXIT) a GENUINE [llm.timeout] stops the outer retry loop after ONE attempt (not
+# DF_AGENT_MAX_ATTEMPTS), drops a .timeout reason marker, and yields a DISTINCT `FAILED — LLM call timed out`
+# report row — NOT the chrome `FAILED — no CANDIDATE|/SAFE reply` row. A heavy prompt times out identically
+# on retry, so retrying buys nothing but a multiplied worst case.
+note "#1955 TIMEOUT-EARLY-EXIT) a real [llm.timeout] fails FAST + distinguishably (1 attempt, distinct row) ..."
+TO_OUT="$WORK/out-timeout"
+TO_CTR="$WORK/ctr-timeout"; mkdir -p "$TO_CTR"
+DF_AGENT_MAX_ATTEMPTS=5 STUB_TIMEOUT=1 STUB_TIMEOUT_CTR="$TO_CTR" \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$TO_OUT" --jobs 1 >/dev/null 2>"$WORK/timeout.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "run-discovery.sh with all-timeout cells still exits 0 (marker/counters carry visibility)" \
+  || { bad "all-timeout run exited $RC"; sed 's/^/      /' "$WORK/timeout.err" >&2; }
+# (a) each cell's stub was invoked EXACTLY once — the outer loop did NOT spend all 5 attempts on a timeout.
+TO_OVER=0; TO_N=0
+for f in "$TO_CTR"/*; do
+  [ -f "$f" ] || continue
+  TO_N=$((TO_N + 1))
+  [ "$(cat "$f")" = "1" ] || TO_OVER=$((TO_OVER + 1))
+done
+if [ "$TO_N" -eq 4 ] && [ "$TO_OVER" -eq 0 ]; then
+  ok "each of the $TO_N cells timed out on attempt 1 and was NOT retried (early exit, not DF_AGENT_MAX_ATTEMPTS=5)"
+else
+  bad "timeout early-exit failed: $TO_N counters, $TO_OVER of them != 1 (expected 4 counters, all == 1)"
+fi
+# (b) the .timeout reason marker was dropped for each cell (alongside .novalid).
+TO_NM="$(ls "$TO_OUT/run/"*.timeout 2>/dev/null | wc -l | tr -d ' ')"
+[ "$TO_NM" -ge 4 ] && ok "each cell dropped a .timeout reason marker ($TO_NM markers)" \
+  || bad "expected >=4 .timeout markers, found $TO_NM"
+# (c) the report carries the DISTINCT timeout row, NOT the chrome no-sentinel row.
+if grep -qF 'FAILED — LLM call timed out' "$TO_OUT/discovery-report.md" \
+   && ! grep -qF 'FAILED — no CANDIDATE|/SAFE reply' "$TO_OUT/discovery-report.md"; then
+  ok "the report carries the DISTINCT 'FAILED — LLM call timed out' row (not the chrome no-sentinel row)"
+else
+  bad "the timeout cells did not get the distinct timeout row (or wrongly got the chrome row)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (#1955 RECOVERED-RETRY, review #1956) a NON-terminal `[LLM retry N/M: LLM call timed out ...]` line that
+# agentis emits and then RECOVERS from (into a sentinel-less chrome reply, exit 0 — the #1707 flake) must NOT
+# trip the terminal-timeout early-exit. The discriminator is anchored to the terminal `[llm.timeout]` token,
+# which the non-terminal retry line does NOT carry, so this cell takes the normal chrome retry path: retried
+# up to DF_AGENT_MAX_ATTEMPTS, NO .timeout marker, routed to the chrome FAILED row (#1707 recovery preserved).
+note "#1955 RECOVERED-RETRY) a non-terminal '[LLM retry .. timed out]' that recovers to chrome is NOT a timeout ..."
+RR_OUT="$WORK/out-retry-recover"
+RR_CTR="$WORK/ctr-retry-recover"; mkdir -p "$RR_CTR"
+DF_AGENT_MAX_ATTEMPTS=3 STUB_RETRY_RECOVER=1 STUB_RETRY_CTR="$RR_CTR" \
+  "$DISCOVERY" --repo "$REPO" --scope "$SCOPE" --brief "$BRIEF" --backend mock --agentis "$STUB" \
+  --out "$RR_OUT" --jobs 1 >/dev/null 2>"$WORK/retry-recover.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "run-discovery.sh with recovered-retry chrome cells still exits 0" \
+  || { bad "recovered-retry run exited $RC"; sed 's/^/      /' "$WORK/retry-recover.err" >&2; }
+# (a) the outer loop did NOT early-exit: each cell was retried the FULL DF_AGENT_MAX_ATTEMPTS (chrome path),
+#     not stopped after 1 (which is what a bare-substring timeout mis-fire would do).
+RR_OFF=0; RR_N=0
+for f in "$RR_CTR"/*; do
+  [ -f "$f" ] || continue
+  RR_N=$((RR_N + 1))
+  [ "$(cat "$f")" = "3" ] || RR_OFF=$((RR_OFF + 1))
+done
+if [ "$RR_N" -eq 4 ] && [ "$RR_OFF" -eq 0 ]; then
+  ok "each of the $RR_N cells was retried the full 3 attempts (the non-terminal retry line did NOT trip the timeout early-exit)"
+else
+  bad "recovered-retry early-exit misfire: $RR_N counters, $RR_OFF of them != 3 (a bare-substring match would stop at 1)"
+fi
+# (b) NO .timeout marker was written for any cell (it is not a terminal timeout).
+RR_NM="$(ls "$RR_OUT/run/"*.timeout 2>/dev/null | wc -l | tr -d ' ')"
+[ "$RR_NM" -eq 0 ] && ok "no .timeout marker written for a recovered internal retry" \
+  || bad "a recovered internal retry wrongly wrote $RR_NM .timeout marker(s)"
+# (c) the report carries the chrome no-sentinel FAILED row, NOT the distinct timeout row.
+if grep -qF 'FAILED — no CANDIDATE|/SAFE reply' "$RR_OUT/discovery-report.md" \
+   && ! grep -qF 'FAILED — LLM call timed out' "$RR_OUT/discovery-report.md"; then
+  ok "the report routes it to the chrome no-sentinel row (NOT the timeout row) — #1707 recovery path intact"
+else
+  bad "a recovered internal retry was wrongly routed to the timeout row (or lost the chrome row)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------

@@ -335,18 +335,70 @@ cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (s
 
 # init the agentis store FIRST (before any .agentis/ subdir exists), else HEAD is not set.
 ( cd "$RUN" && "$AGENTIS" init >/dev/null 2>&1 )
+
+# #1955 Lever 1a: SCALE the per-cell LLM timeout with the zone's SOURCE WEIGHT. A thin zone keeps the
+# 600s floor; a dense one (multi-contract market/order logic) gets proportionally more time, hard-capped at
+# 1800s. HUNT_SRC_LOC = sum of `wc -l` over the DISTINCT in-scope files this run will hunt — walked from
+# $SCOPE with the SAME filter the --list-cells path uses (trim SUBSYS, skip blank/comment, honour --only,
+# split FILES_CSV on commas, drop any `@fn` slice suffix, dedup). This is a side-effect-free WEIGHT PROBE:
+# a missing/unreadable file contributes 0 and never fails the hunt. Constants inline (no new env knob, the
+# #1915 style): floor 600000, +300000 ms per 400 LOC step, capped at 1800000 (mirrors run-invariant-hunt.sh).
+HUNT_TIMEOUT_FLOOR=600000
+HUNT_TIMEOUT_STEP_MS=300000
+HUNT_TIMEOUT_STEP_LOC=400
+HUNT_TIMEOUT_CAP=1800000
+HUNT_SCOPE_FILES=""
+# A --depth-from re-entry forbids --scope (line ~196): the plan comes from the recorded cells, so $SCOPE is
+# empty. Skip the probe then (HUNT_SRC_LOC stays 0 -> the floor timeout), never `< ""` (a crash). `_` discards
+# the class field (SC2034: it is deliberately unused — the weight is per FILE, independent of the lens).
+if [ -n "$SCOPE" ] && [ -f "$SCOPE" ]; then
+  while IFS='|' read -r WS_SUBSYS _ WS_FILES || [ -n "${WS_SUBSYS:-}" ]; do
+    WS_SUBSYS="$(printf '%s' "$WS_SUBSYS" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    case "$WS_SUBSYS" in ''|\#*) continue ;; esac
+    [ -n "$ONLY" ] && [ "$WS_SUBSYS" != "$ONLY" ] && continue
+    WS_FILES="$(printf '%s' "$WS_FILES" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [ -n "$WS_FILES" ] || continue
+    WS_OLDIFS="$IFS"; IFS=','
+    for WS_F in $WS_FILES; do
+      IFS="$WS_OLDIFS"
+      WS_F="$(printf '%s' "$WS_F" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+      WS_F="${WS_F%%@*}"                                 # strip any `file@fn1+fn2` slice suffix to the path
+      [ -n "$WS_F" ] || { IFS=','; continue; }
+      HUNT_SCOPE_FILES="$HUNT_SCOPE_FILES$WS_F
+"
+      IFS=','
+    done
+    IFS="$WS_OLDIFS"
+  done < "$SCOPE"
+fi
+HUNT_SRC_LOC=0
+while IFS= read -r WS_F; do
+  [ -n "$WS_F" ] || continue
+  WS_LOC=0
+  if [ -r "$REPO/$WS_F" ]; then WS_LOC="$(wc -l < "$REPO/$WS_F" 2>/dev/null | tr -d ' ')"; fi
+  case "$WS_LOC" in ''|*[!0-9]*) WS_LOC=0 ;; esac
+  HUNT_SRC_LOC=$((HUNT_SRC_LOC + WS_LOC))
+done <<EOF
+$(printf '%s' "$HUNT_SCOPE_FILES" | sort -u)
+EOF
+HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / HUNT_TIMEOUT_STEP_LOC) ))
+[ "$HUNT_TIMEOUT_MS" -gt "$HUNT_TIMEOUT_CAP" ] && HUNT_TIMEOUT_MS=$HUNT_TIMEOUT_CAP
+
 {
   echo "llm.backend = $BACKEND"
-  # 600s: a deep adversarial read of complex liquidation/redemption logic legitimately runs 4-8 min
-  # even on a function-level slice (the reasoning, not the payload, is the cost). 300s made the hard
-  # cells time out 3x and return nothing; one 600s attempt beats three wasted 300s retries. Keep
-  # cells focused with `file@fn` slicing so the common case stays fast.
-  [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = 600000"; }
+  # #1955: ONE attempt, now SIZED to the zone. A deep adversarial read of complex liquidation/redemption
+  # logic legitimately runs 4-8 min even on a function-level slice (the reasoning, not the payload, is the
+  # cost); 300s made the hard cells time out 3x and return nothing, so one longer attempt beats wasted
+  # retries. That attempt is scaled to $HUNT_SRC_LOC LOC of in-scope source (floor 600s, +300s / 400 LOC,
+  # hard-capped 1800s) so a dense zone gets proportionally more head-room while a thin one keeps a tight
+  # budget — and, per Lever 1b, a genuine [llm.timeout] now fails FAST + distinguishably instead of costing
+  # N wasted outer retries. Keep cells focused with `file@fn` slicing so the common case stays fast.
+  [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = $HUNT_TIMEOUT_MS"; }
   # idle_ms 12000 (> native 4000 default): kept as a latency knob only (#1925) -- do NOT ratchet it further.
   # Completion is gated on the wrapper's closing sentinel from flat-cyborg >= 0.13.0 (idle_gate_open()); idle_ms
   # only bounds how fast a marker-less (sentinel-less) reply is accepted once the screen goes quiet. If a stage
   # looks flaky, file it against the completion path, not this value.
-  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"; }
+  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = $HUNT_TIMEOUT_MS"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"; }
   echo "trace.level = normal"
   # The hunter reads source + the brief/taxonomy through exec sh; pass through its whole env contract.
   # #1827 DEPTH_TARGET/DEPTH_KNOWN MUST be on this allowlist: getenv() reads the SANITIZED env, so an
@@ -570,6 +622,20 @@ scrape_cell_log() {
   # (TUI chrome / no answer) carries a "$sc_log.novalid" marker. Do NOT treat its empty log as a rigorous
   # negative: surface it as a DISTINCT FAILED row + counter so it is visible, not silently folded into
   # "0 candidates". Recorded as "status":"failed" in the additive JSON.
+  # #1955 Lever 1b: a cell whose reply was a genuine `[llm.timeout]` (the per-cell prompt exceeded the scaled
+  # timeout budget) carries a "$sc_log.timeout" marker dropped by df_run_agent_validated. Surface it as a
+  # DISTINCT FAILED reason BEFORE the generic .novalid branch below — the timeout marker rides alongside
+  # .novalid (a timeout IS a no-valid-sentinel failure), so this ordering is what makes it distinguishable
+  # from TUI chrome. The JSON "status":"failed" is UNCHANGED (byte-compatible with zone-coverage derivation);
+  # the discriminator lives only in the row text + stderr line, and --rehunt-gaps is the recovery path.
+  if [ -f "$sc_log.timeout" ]; then
+    echo "run-discovery.sh:   ↳ FAILED: $sc_cls/'$sc_subsys' LLM call timed out (per-cell prompt exceeded the timeout budget; re-hunt with --rehunt-gaps)" >&2
+    printf '| %s | %s | FAILED — LLM call timed out (per-cell prompt exceeded the timeout budget; re-hunt with --rehunt-gaps) |\n' \
+      "$sc_subsys" "$sc_cls" >> "$REPORT"
+    FAILED_CELLS=$((FAILED_CELLS + 1))
+    _accumulate_cell "$sc_subsys" "$sc_cls" "$sc_files" "$sc_log" failed "$sc_phase"
+    return 0
+  fi
   if [ -f "$sc_log.novalid" ]; then
     echo "run-discovery.sh:   ↳ FAILED: $sc_cls/'$sc_subsys' produced no CANDIDATE|/SAFE reply after $DF_AGENT_MAX_ATTEMPTS attempts (NOT a rigorous negative)" >&2
     printf '| %s | %s | FAILED — no CANDIDATE|/SAFE reply after %s attempts (NOT a rigorous negative) |\n' \
