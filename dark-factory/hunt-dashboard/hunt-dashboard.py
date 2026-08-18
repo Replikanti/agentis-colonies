@@ -189,7 +189,7 @@ def leads():
                     p = c.split("|")
                     out.append({"zone": zone, "loc": p[0] if p else "?",
                                 "cls": (p[1] if len(p)>1 else "?").replace("class=",""),
-                                "sev": (p[2] if len(p)>2 else "?").strip(),
+                                "sev": (p[2] if len(p)>2 else "?").replace("severity=","").strip(),
                                 "title": p[3] if len(p)>3 else ""})
     return out
 

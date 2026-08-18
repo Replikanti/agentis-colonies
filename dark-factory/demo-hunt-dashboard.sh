@@ -82,6 +82,8 @@ ref = byloc.get("pkg/vault/contracts/BatchRouterHooks.sol:_erc4626BufferWrapOrUn
 con = byloc.get("pkg/vault/contracts/Vault.sol:settle")
 pen = byloc.get("pkg/vault/contracts/BufferRouter.sol:addLiquidityToBuffer")
 if not (ref and ref["verdict"] == "REFUTED" and ref["struck"]): e.append("breadth REFUTED/struck wrong: %s" % ref)
+if ref["sev"] != "High": e.append("breadth sev prefix leak: %r (want bare 'High')" % ref["sev"])
+if ref["cls"] != "C6": e.append("breadth cls prefix leak: %r (want bare 'C6')" % ref["cls"])
 if not (con and con["verdict"] == "CONFIRMED" and not con["struck"]): e.append("breadth CONFIRMED wrong: %s" % con)
 if not (pen and pen["verdict"] == "PENDING" and not pen["struck"]): e.append("breadth PENDING wrong: %s" % pen)
 if m["leads_summary"] != {"total": 3, "survived": 1, "refuted": 1, "pending": 1}: e.append("leads_summary=%s" % m["leads_summary"])
@@ -236,6 +238,31 @@ if "font-weight:600" in sev_span:
 PY
   then ok "queued row shows intrinsic High severity, styled lighter (no font-weight:600) than a real FINDING"
   else bad "queued-row intrinsic-severity styling regressed"
+  fi
+  # (#1958) breadth LEADS row must render bare severity, not the raw 'severity=High' parse artifact.
+  if python3 - "$WORK/page.html" <<'PY'
+import sys
+html = open(sys.argv[1]).read()
+if "severity=" in html:
+    print("page-wide severity= prefix leak found"); sys.exit(1)
+marker = "pkg/vault/contracts/BatchRouterHooks.sol:_erc4626BufferWrapOrUnwrapExactOut"
+i = html.find(marker)
+if i < 0:
+    print("marker not found: %r" % marker); sys.exit(1)
+row_start = html.rfind("<tr", 0, i)
+row_end = html.find("</tr>", i)
+if row_start < 0 or row_end < 0:
+    print("could not locate the enclosing <tr> for the breadth REFUTED row"); sys.exit(1)
+row = html[row_start:row_end]
+if "severity=" in row:
+    print("breadth row still carries a raw severity= token: %r" % row); sys.exit(1)
+if ">High<" not in row:
+    print("breadth row missing bare High severity: %r" % row); sys.exit(1)
+if "color:#ff5c5c" not in row:
+    print("breadth row missing the High SEVCOL colour: %r" % row); sys.exit(1)
+PY
+  then ok "breadth REFUTED row renders bare High severity with the correct SEVCOL colour, no severity= leak"
+  else bad "breadth-sev prefix leak in the rendered LEADS row"
   fi
 else
   bad "--render failed"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
