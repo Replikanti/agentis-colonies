@@ -33,6 +33,15 @@
 #   --out <dir>         Output dir for the per-candidate gate runs + verified_findings.json. REQUIRED.
 #   --gate <refute|poc|symbolic>  Verification gate (default: refute — the best manifest-shape match + it has
 #                       the offline --agentis/--backend mock stub seam).
+#   --pay-floor <critical|high|medium|low>  OPTIONAL (#1962). The lowest severity this program actually pays.
+#                       When set, a well-formed candidate BELOW the floor is dropped into `dropped_subfloor[]`
+#                       BEFORE it ever reaches the gate — saving a refute/PoC/symbolic pass on a lead that can
+#                       never pay on this program. Same closed severity vocabulary + rank as
+#                       finding-payability-gate.sh's --pay-floor (low < medium < high < critical), reused
+#                       verbatim so the two scripts never drift. FAIL-OPEN: a malformed candidate (#1691 blank
+#                       class/severity) or one with a blank/unrecognized severity is NEVER dropped by this
+#                       filter — only a well-formed, resolvable severity below the floor is. Default: unset =
+#                       inert = every artifact byte-identical to a pre-#1962 run.
 #   --brief <file>      Optional protocol brief handed to the refute gate (invariants + known issues).
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the gate (default: flat-cyborg).
 #   --agentis <bin>     agentis binary (default: `agentis` on PATH).
@@ -70,6 +79,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 RESULTS="" ; REPO="" ; OUT="" ; GATE="refute" ; BRIEF="" ; BACKEND="flat-cyborg"
 JOBS=1  # #1863: opt-in bounded-concurrency gate fan-out; 1 = serial, today's exact statement sequence.
+PAY_FLOOR=""  # #1962: unset = inert (see the header). Validated below with the closed severity vocabulary.
 
 nv() { [ "$1" -ge 2 ] || { echo "verify-findings.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -82,6 +92,7 @@ while [ $# -gt 0 ]; do
     --backend) nv "$#"; BACKEND="$2"; shift 2 ;;
     --agentis) nv "$#"; AGENTIS="$2"; shift 2 ;;
     --jobs)    nv "$#"; JOBS="$2"; shift 2 ;;
+    --pay-floor) nv "$#"; PAY_FLOOR="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "verify-findings.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -93,6 +104,12 @@ done
 case "$GATE" in
   refute|poc|symbolic) : ;;
   *) echo "verify-findings.sh: --gate must be one of refute|poc|symbolic (got '$GATE')" >&2; exit 2 ;;
+esac
+# #1962: --pay-floor closed vocabulary, same shape as run-zone-hunt.sh / finding-payability-gate.sh. Unset
+# (blank) is the default and means "inert" — the same as every other --pay-floor consumer in this pipeline.
+case "$PAY_FLOOR" in
+  ""|critical|high|medium|low) : ;;
+  *) echo "verify-findings.sh: --pay-floor must be one of critical|high|medium|low (got '$PAY_FLOOR')" >&2; exit 2 ;;
 esac
 # #1863: --jobs is a POSITIVE integer, validated before any side effect (same shape as run-discovery.sh).
 case "$JOBS" in ''|*[!0-9]*) echo "verify-findings.sh: --jobs must be a positive integer (got '$JOBS')" >&2; exit 2 ;; esac
@@ -197,6 +214,65 @@ sys.stdout.write("\n".join(rows))
 if rows:
     sys.stdout.write("\n")
 PY
+
+# --- #1962: --pay-floor PARTITION. Runs BEFORE the gate loop below (and therefore before any --jobs > 1
+#     PJ_* array split), so a sub-floor candidate never enters either the serial or parallel dispatch path —
+#     it never reaches gate_candidate at all, saving a refute/PoC/symbolic pass on a lead that can never pay
+#     on this program. SEV_RANK/rank_of mirror finding-payability-gate.sh's closed severity vocabulary
+#     VERBATIM (see that file's header + rank_of()) rather than re-deriving a second, driftable definition.
+#     FAIL-OPEN, in order: PAY_FLOOR unset/blank -> every candidate KEPT (this whole block is then a no-op:
+#     candidates.tsv is rewritten byte-identically and dropped-subfloor.tsv stays empty). A MALFORMED
+#     candidate (#1691 blank class/severity) is left untouched -> still routes to the existing ERRORED path,
+#     regardless of --pay-floor; the partition only ever looks at well-formed rows with a resolvable severity.
+#     A blank/unrecognized severity on a well-formed row -> KEPT (never dropped on missing data). Otherwise
+#     rank(severity) < rank(PAY_FLOOR) -> DROPPED into dropped-subfloor.tsv (same 8 columns); else KEPT.
+DROPPED_SUBFLOOR_TSV="$WORK/dropped-subfloor.tsv"; : > "$DROPPED_SUBFLOOR_TSV"
+SUBFLOOR=0
+if [ -n "$PAY_FLOOR" ]; then
+  KEPT_TSV="$WORK/candidates-kept.tsv"
+  PAY_FLOOR="$PAY_FLOOR" python3 - "$WORK/candidates.tsv" "$KEPT_TSV" "$DROPPED_SUBFLOOR_TSV" <<'PY'
+import sys, os
+
+# Closed severity rank — kept as a literal cross-referencing finding-payability-gate.sh's SEV_RANK (that
+# file's rank_of()) rather than a shared lib/ helper: this is a SMALL, self-contained partition (#1962) and a
+# second copy of one four-entry dict is not worth introducing a shared module for.
+SEV_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
+floor_rank = SEV_RANK[os.environ["PAY_FLOOR"].strip().lower()]
+
+src, kept_path, dropped_path = sys.argv[1], sys.argv[2], sys.argv[3]
+kept_lines, dropped_lines = [], []
+with open(src, encoding="utf-8") as fh:
+    for line in fh:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        f = line.split("\t")
+        while len(f) < 8:
+            f.append("")
+        severity, malformed = f[4], f[7]
+        if malformed == "1":
+            kept_lines.append(line)  # #1691 malformed: untouched, stays on the existing ERRORED path.
+            continue
+        rank = SEV_RANK.get(severity.strip().lower())
+        if rank is not None and rank < floor_rank:
+            dropped_lines.append(line)
+        else:
+            kept_lines.append(line)  # unknown/blank severity (rank is None) fails OPEN -> kept.
+
+with open(kept_path, "w", encoding="utf-8") as fh:
+    for l in kept_lines:
+        fh.write(l + "\n")
+with open(dropped_path, "w", encoding="utf-8") as fh:
+    for l in dropped_lines:
+        fh.write(l + "\n")
+PY
+  mv "$KEPT_TSV" "$WORK/candidates.tsv"
+  SUBFLOOR="$(wc -l < "$DROPPED_SUBFLOOR_TSV" | tr -d ' ')"
+  case "$SUBFLOOR" in ''|*[!0-9]*) SUBFLOOR=0 ;; esac
+  if [ "$SUBFLOOR" -gt 0 ]; then
+    echo "verify-findings.sh: skipped $SUBFLOOR sub-floor candidate(s) (below pay-floor $PAY_FLOOR), saved $SUBFLOOR refute/verify pass(es)" >&2
+  fi
+fi
 
 # resolve_aux_code <out> <relfile> -> prints the absolute path of a staged, function-sliced implementation
 # APPENDIX for <relfile>, or nothing (#1861). Fires only when <relfile> declares an `abstract contract` with
@@ -461,6 +537,12 @@ if [ "$JOBS" -gt 1 ]; then
   done
 fi
 
+# #1962: fold the sub-floor drops back into the total candidate count. CANDIDATES above only counted the rows
+# the loop actually walked (candidates.tsv was rewritten to KEPT-only rows before the loop ran), so the
+# counting invariant candidates == verified + errored + refuted + dropped_subfloor holds; SUBFLOOR is 0 (a
+# no-op add) whenever --pay-floor is unset.
+CANDIDATES=$((CANDIDATES + SUBFLOOR))
+
 # --- #1887: aggregate the per-gate `refute-constraints.tsv` files into ONE <out>/refute-constraints.tsv.
 #     Concatenated in NUMERIC GATE ORDER (gates/<n>_<slug>, the manifest order the candidates were recorded
 #     in), so the aggregate is byte-identical under --jobs 1 and --jobs > 1: completion order must not reach
@@ -488,9 +570,13 @@ fi
 #     totals.errored + errors[] (#1691) make a malformed/unresolvable candidate DISTINGUISHABLE from a rigorous
 #     REFUTED verdict — the true rigorous-refutation count = candidates - verified - errored. Additive only:
 #     existing keys are preserved, so verified[]-reading consumers (run-zone-hunt.sh, corpus-bench) are unaffected.
+#     #1962 ADDS (also additive; verified[]/errors[]/existing totals are unchanged on a floor-less run):
+#     dropped_subfloor[] (the well-formed, sub-floor candidates the --pay-floor partition removed before the
+#     gate loop), top-level pay_floor ("" when unset), and totals.dropped_subfloor (0 when unset).
 VERIFIED_JSON="$OUT/verified_findings.json"
 REPO_NAME="$REPO_NAME" GATE="$GATE" CANDIDATES="$CANDIDATES" VERIFIED="$VERIFIED" ERRORED="$ERRORED" \
-python3 - "$CONFIRMED_TSV" "$ERRORS_TSV" > "$VERIFIED_JSON" <<'PY'
+PAY_FLOOR="$PAY_FLOOR" SUBFLOOR="$SUBFLOOR" \
+python3 - "$CONFIRMED_TSV" "$ERRORS_TSV" "$DROPPED_SUBFLOOR_TSV" > "$VERIFIED_JSON" <<'PY'
 import sys, os, json
 verified = []
 with open(sys.argv[1], encoding="utf-8") as fh:
@@ -516,22 +602,44 @@ with open(sys.argv[2], encoding="utf-8") as fh:
         while len(f) < 3:
             f.append("")
         errors.append({"location": f[0], "file": f[1], "reason": f[2]})
+pay_floor = os.environ.get("PAY_FLOOR", "")
+dropped_subfloor = []
+with open(sys.argv[3], encoding="utf-8") as fh:
+    for line in fh:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        f = line.split("\t")
+        while len(f) < 8:
+            f.append("")
+        dropped_subfloor.append({
+            "subsystem": f[0], "location": f[1], "file": f[2], "class": f[3],
+            "severity": f[4],
+            "reason": "severity %s below pay-floor %s" % (f[4], pay_floor),
+        })
 out = {
     "repo": os.environ.get("REPO_NAME", ""),
     "gate": os.environ.get("GATE", ""),
     "verified": verified,
     "errors": errors,
+    "dropped_subfloor": dropped_subfloor,
+    "pay_floor": pay_floor,
     "totals": {
         "candidates": int(os.environ.get("CANDIDATES", "0")),
         "verified": int(os.environ.get("VERIFIED", "0")),
         "errored": int(os.environ.get("ERRORED", "0")),
+        "dropped_subfloor": int(os.environ.get("SUBFLOOR", "0")),
     },
 }
 print(json.dumps(out, indent=2))
 PY
 
 echo >&2
-echo "================ VERIFY [$GATE]: $CANDIDATES candidate(s), $VERIFIED confirmed, $ERRORED errored (malformed/unresolvable), $SKIPPED skipped ================" >&2
+SUBFLOOR_SUFFIX=""
+if [ -n "$PAY_FLOOR" ] && [ "$SUBFLOOR" -gt 0 ]; then
+  SUBFLOOR_SUFFIX=", $SUBFLOOR sub-floor"
+fi
+echo "================ VERIFY [$GATE]: $CANDIDATES candidate(s), $VERIFIED confirmed, $ERRORED errored (malformed/unresolvable), $SKIPPED skipped$SUBFLOOR_SUFFIX ================" >&2
 echo "verify-findings.sh: verified findings at $VERIFIED_JSON" >&2
 if [ "$VERIFIED" -gt 0 ]; then
   echo "verify-findings.sh: NEXT = run the human-gated submission pass over each verified finding (run-audit-pass.sh); submission stays human-gated." >&2

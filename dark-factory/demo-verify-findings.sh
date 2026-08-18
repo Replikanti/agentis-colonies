@@ -22,6 +22,12 @@
 #      <out>/refute-constraints.tsv in numeric GATE order, byte-identically under --jobs 1 and --jobs 3
 #      (completion order must not reach a knowledge-corpus input), a REAL candidate contributes nothing, and
 #      verified_findings.json is BYTE-IDENTICAL with and without the refuter's CONSTRAINT| lines.
+#   10) #1962 --pay-floor: a Medium/Low candidate below --pay-floor high is dropped into dropped_subfloor[]
+#      BEFORE the gate ever runs (no gate-cell side effect for it), a High candidate is gated normally, and a
+#      blank/unrecognized-severity candidate is KEPT (fail-open — reaches the gate, never counted as dropped).
+#      totals.dropped_subfloor == 2, top-level pay_floor == "high". The SAME discovery-results.json WITHOUT
+#      --pay-floor flows every candidate through unchanged (default inertness): dropped_subfloor is empty,
+#      totals.dropped_subfloor == 0, and the pre-existing totals stay exactly what assertion (1) already pins.
 #
 # Usage:  dark-factory/demo-verify-findings.sh
 # Requires: python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression.
@@ -806,6 +812,124 @@ if cmp -s "$CON_OUT/verified_findings.json" "$NOCON_OUT/verified_findings.json";
 else
   bad "9d) the constraint lines changed verified_findings.json:"
   diff "$NOCON_OUT/verified_findings.json" "$CON_OUT/verified_findings.json" | sed 's/^/      /' >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (10) #1962 --pay-floor: a well-formed candidate BELOW the floor is dropped into dropped_subfloor[] BEFORE it
+#     ever reaches the gate (no per-candidate gate-cell side effect for it, no verify/refute pass spent on it);
+#     a candidate AT/ABOVE the floor is gated normally; an UNRECOGNIZED-severity candidate (well-formed, not
+#     one of low/medium/high/critical) fails OPEN — it is KEPT and reaches the gate, never counted as dropped.
+#     Self-contained: its own throwaway repo + results.json; the fixtures above are untouched. The same
+#     discovery-results.json WITHOUT --pay-floor proves default inertness (every candidate flows through
+#     unchanged, dropped_subfloor empty/0).
+# ----------------------------------------------------------------------------------------------------------
+note "10) #1962: --pay-floor drops sub-floor candidates before the gate; default (no flag) is byte-inert ..."
+PFREPO="$WORK/target-payfloor"
+mkdir -p "$PFREPO/contracts"
+printf 'contract High { function f() public {} }\n'    > "$PFREPO/contracts/High.sol"
+printf 'contract Medium { function f() public {} }\n'  > "$PFREPO/contracts/Medium.sol"
+printf 'contract Low { function f() public {} }\n'      > "$PFREPO/contracts/Low.sol"
+printf 'contract Unknown { function f() public {} }\n'  > "$PFREPO/contracts/Unknown.sol"
+
+PFRES="$WORK/payfloor-results.json"
+python3 - > "$PFRES" <<'PY'
+import json
+
+
+def cell(sub, cls, f, loc, sev):
+    return {"subsystem": sub, "class": cls, "files": f,
+            "candidates": ["%s|%s|%s|an exploit sentence|sketch" % (loc, cls, sev)], "coordination": []}
+
+
+# None of these classes match the stub's *refuted*/*REFUTED* pattern, so every GATED candidate comes back REAL.
+data = {
+    "repo": "target-payfloor", "backend": "mock", "jobs": 1,
+    "cells": [
+        cell("high severity", "C1", "contracts/High.sol", "contracts/High.sol:f:1", "High"),
+        cell("medium severity", "C2", "contracts/Medium.sol", "contracts/Medium.sol:f:1", "Medium"),
+        cell("low severity", "C3", "contracts/Low.sol", "contracts/Low.sol:f:1", "Low"),
+        cell("unknown severity", "C4", "contracts/Unknown.sol", "contracts/Unknown.sol:f:1", "Informational"),
+    ],
+    "totals": {"cells": 4, "candidates": 4, "steers": 0},
+}
+print(json.dumps(data, indent=2))
+PY
+cp "$PFRES" "$WORK/payfloor-results.orig"
+
+PF_OUT="$WORK/out-payfloor"
+"$VERIFY" --results "$PFRES" --repo "$PFREPO" --out "$PF_OUT" --gate refute --backend mock --agentis "$STUB" \
+  --pay-floor high >"$WORK/pf.out" 2>"$WORK/pf.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "10a) verify-findings.sh --pay-floor high exits 0" \
+  || { bad "10a) --pay-floor high run exited $RC"; sed 's/^/      /' "$WORK/pf.err" >&2; }
+
+if python3 - "$PF_OUT/verified_findings.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d.get("pay_floor") == "high", "top-level pay_floor != 'high': %r" % d.get("pay_floor")
+assert d["totals"].get("dropped_subfloor") == 2, "totals.dropped_subfloor != 2: %r" % d["totals"].get("dropped_subfloor")
+assert len(d.get("dropped_subfloor", [])) == 2, "dropped_subfloor[] len != 2: %d" % len(d.get("dropped_subfloor", []))
+droplocs = sorted(x["location"] for x in d["dropped_subfloor"])
+assert droplocs == ["contracts/Low.sol:f:1", "contracts/Medium.sol:f:1"], "wrong candidates dropped: %r" % droplocs
+for x in d["dropped_subfloor"]:
+    assert "below pay-floor high" in x["reason"], "dropped entry missing floor reason: %r" % x["reason"]
+verlocs = sorted(v["location"] for v in d["verified"])
+assert verlocs == ["contracts/High.sol:f:1", "contracts/Unknown.sol:f:1"], \
+    "verified[] should be exactly High + Unknown (unrecognized-severity fails OPEN): %r" % verlocs
+assert "contracts/Medium.sol:f:1" not in verlocs and "contracts/Low.sol:f:1" not in verlocs, \
+    "a dropped sub-floor candidate leaked into verified[]"
+errlocs = " ".join(e["location"] for e in d.get("errors", []))
+assert "Medium.sol" not in errlocs and "Low.sol" not in errlocs, \
+    "a dropped sub-floor candidate was mis-filed as errored instead of dropped_subfloor"
+# candidates == verified + errored + refuted + dropped_subfloor (refuted = 0, nothing here is a REFUTED class)
+cand = d["totals"]["candidates"]; ver = d["totals"]["verified"]; err = d["totals"]["errored"]; sub = d["totals"]["dropped_subfloor"]
+assert cand == 4, "candidates != 4: %r" % cand
+assert cand == ver + err + sub, "counting invariant broken: %d != %d + %d + %d (refuted=0)" % (cand, ver, err, sub)
+PY
+then ok "10b) Medium + Low land in dropped_subfloor (by location), are absent from verified[]/errors[], High + the unrecognized-severity candidate are kept, totals.dropped_subfloor == 2, pay_floor == 'high', and candidates == verified + errored + dropped_subfloor (4 == 2 + 0 + 2)"
+else bad "10b) --pay-floor high partition/aggregation assertion failed"
+fi
+
+# no gate cell (and therefore no stub invocation / side effect) exists for either dropped candidate — the
+# partition removed them from candidates.tsv BEFORE the gate loop ever ran, serial or parallel.
+if python3 - "$PF_OUT" <<'PY'
+import sys, os, glob
+cells = glob.glob(os.path.join(sys.argv[1], "gates", "*"))
+names = " ".join(os.path.basename(c) for c in cells)
+assert "Medium_sol" not in names, "a gate cell exists for the dropped Medium candidate: %r" % names
+assert "Low_sol" not in names, "a gate cell exists for the dropped Low candidate: %r" % names
+assert any("High_sol" in os.path.basename(c) for c in cells), "no gate cell for the kept High candidate"
+assert any("Unknown_sol" in os.path.basename(c) for c in cells), "no gate cell for the kept unrecognized-severity candidate"
+PY
+then ok "10c) NO gate cell (no stub invocation) exists under <out>/gates/ for either sub-floor candidate — the refute/verify pass was actually saved, not just hidden from the aggregate"
+else bad "10c) a sub-floor candidate still produced a gate-cell side effect"
+fi
+
+note "10d) the SAME discovery-results.json WITHOUT --pay-floor is byte-inert (default = every candidate flows through) ..."
+PF_NOFLOOR_OUT="$WORK/out-payfloor-noflag"
+"$VERIFY" --results "$PFRES" --repo "$PFREPO" --out "$PF_NOFLOOR_OUT" --gate refute --backend mock --agentis "$STUB" \
+  >"$WORK/pf-noflag.out" 2>"$WORK/pf-noflag.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "10d) the no-floor run exits 0" \
+  || { bad "10d) the no-floor run exited $RC"; sed 's/^/      /' "$WORK/pf-noflag.err" >&2; }
+if python3 - "$PF_NOFLOOR_OUT/verified_findings.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+assert d.get("pay_floor") == "", "pay_floor should be '' when --pay-floor is unset: %r" % d.get("pay_floor")
+assert not d.get("dropped_subfloor"), "dropped_subfloor should be empty when --pay-floor is unset: %r" % d.get("dropped_subfloor")
+assert d["totals"].get("dropped_subfloor", 0) == 0, "totals.dropped_subfloor != 0: %r" % d["totals"].get("dropped_subfloor")
+assert d["totals"]["candidates"] == 4, "candidates != 4: %r" % d["totals"]["candidates"]
+assert d["totals"]["verified"] == 4, "verified != 4 (every candidate should flow through without a floor): %r" % d["totals"]["verified"]
+assert d["totals"]["errored"] == 0, "errored != 0: %r" % d["totals"]["errored"]
+assert len(d["verified"]) == 4, "verified[] len != 4: %d" % len(d["verified"])
+PY
+then ok "10e) without --pay-floor every candidate flows through unchanged (candidates=4, verified=4, errored=0), dropped_subfloor is empty and totals.dropped_subfloor == 0 -- default inertness"
+else bad "10e) the no-floor run did not stay byte-inert"
+fi
+if cmp -s "$PFRES" "$WORK/payfloor-results.orig"; then
+  ok "10f) discovery-results.json is still byte-for-byte unchanged after the --pay-floor partition (read-only invariant holds)"
+else
+  bad "10f) the --pay-floor partition mutated discovery-results.json"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
