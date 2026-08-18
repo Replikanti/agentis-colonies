@@ -1,8 +1,8 @@
 # Dark Factory
 
-![Version: 0.3.0](https://img.shields.io/badge/version-0.3.0-blue) ![Status: Experimental](https://img.shields.io/badge/status-experimental-purple)
+![Version: 0.9.0](https://img.shields.io/badge/version-0.9.0-blue) ![Status: Experimental](https://img.shields.io/badge/status-experimental-purple)
 
-**Version:** `0.3.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.18.0` · **Status:** Experimental
+**Version:** `0.9.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.22.7` · **Status:** Experimental
 
 > An EVM + Solana/Anchor **bounty-hunt** federation on the agentis substrate. Three
 > colonies cooperate: `auditor` runs an end-to-end **gated bounty-hunt chain**
