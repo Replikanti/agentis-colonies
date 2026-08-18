@@ -86,13 +86,16 @@ df_sentinel_present() {
   esac
 }
 
-# df_llm_timeout_in_log <log> — #1955: was the reply a genuine LLM-call timeout (not a render flake)?
-# Fixed-string grep for the substring agentis-core prints on BOTH the internal-retry line
-# (`[LLM retry N/M: LLM call timed out after ...]`) and the terminal error (`Error: runtime error:
-# [llm.timeout] LLM call timed out after ...`). A heavy prompt times out IDENTICALLY on retry, so this
-# distinguishes "spend another attempt" (render chrome) from "stop now" (a real timeout).
+# df_llm_timeout_in_log <log> — #1955: did the call TERMINALLY time out (not merely recover from an internal
+# retry)? Anchored to the terminal `[llm.timeout]` marker classify_llm_error() prints (agentis-core
+# exec.rs:2795 -> `Error: runtime error: [llm.timeout] LLM call timed out after ...`). It must NOT match the
+# NON-terminal internal-retry line (`[LLM retry N/M: LLM call timed out after ...]`, llm.rs:539/820/…), which
+# agentis emits and then RECOVERS from with exit 0 — a bare `LLM call timed out` substring would misclassify
+# such a recovered-then-chrome reply as a genuine timeout and DEFEAT the #1707 outer-retry recovery. The
+# `[llm.timeout]` token is present on the terminal path only, so it is the safe discriminator: a heavy prompt
+# that terminally times out will do so identically on retry, so "stop now" beats "spend another attempt".
 df_llm_timeout_in_log() {
-  grep -Fq 'LLM call timed out' "$1"
+  grep -Fq '[llm.timeout] LLM call timed out' "$1"
 }
 
 # df_run_agent_validated <max_attempts> <label> <log> <stage> <zone_id> <attempt_fn> — run <attempt_fn>
