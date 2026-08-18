@@ -269,9 +269,13 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
-# (8) PAY-FLOOR MARKER (#1960) — a display-only "$0" badge on any lead whose intrinsic severity ranks BELOW the
-# program's pay-floor, threaded in as the descriptor's `pay_floor`. Asserted on the machine-readable `unpayable`
-# flags (leads[]/deep_rows[]), top-level `pay_floor`, and the `payfloor-x0` render sentinel — never
+# (8) PAY-FLOOR MARKER (#1960) + HIDE (#1966) — a lead whose intrinsic severity ranks BELOW the program's
+# pay-floor is unpayable (threaded in as the descriptor's `pay_floor`). Model-level assertions are on the
+# machine-readable `unpayable` flags (leads[]/deep_rows[]) and top-level `pay_floor` — emit_model()'s output
+# is unchanged by #1966. Render behaviour changed: #1960 originally annotated sub-floor rows in place with a
+# `payfloor-x0` "$0" badge; #1966 instead OMITS sub-floor rows from the rendered table entirely and collapses
+# them into one "N sub-floor leads hidden" summary line, so `payfloor-x0` is now a dead sentinel (never
+# rendered) and the render assertions below check row absence + the summary count instead. Never
 # complete/banner/liveness, so these hold regardless of any concurrent live hunt on the host.
 # ----------------------------------------------------------------------------------------------------------
 note "5) pay-floor marker (sub-floor '\$0' annotation) ..."
@@ -317,32 +321,38 @@ else
   bad "8a: emit-model failed on the floor=high descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
 fi
 
-# (8a-render) the Medium+Low breadth Sev cells carry the $0 sentinel; the High Sev cell does not.
+# (8a-render) #1966: Medium+Low breadth rows are HIDDEN (absent) at floor=high, not badged in place; the High
+# row still renders; `payfloor-x0` (the superseded #1960 badge sentinel) appears nowhere on the page; and a
+# "N sub-floor leads hidden" summary line is present whose count is derived from the (8a) model JSON, not
+# hand-hardcoded — robust to fixture edits.
 if python3 "$DASH" --descriptor "$HIGH_DESC" --render > "$WORK/page.html" 2>"$WORK/render.err"; then
-  if python3 - "$WORK/page.html" <<'PY'
-import sys
+  if python3 - "$WORK/page.html" "$WORK/model.json" <<'PY'
+import sys, re, json
 html = open(sys.argv[1]).read()
+m = json.load(open(sys.argv[2]))
 def row_for(marker):
     i = html.find(marker)
     if i < 0: return None
     s = html.rfind("<tr", 0, i); en = html.find("</tr>", i)
     return html[s:en] if s >= 0 and en >= 0 else None
 e = []
-rows = {n: row_for(loc) for n, loc in [
-    ("High", "pkg/vault/contracts/BatchRouterHooks.sol:_erc4626BufferWrapOrUnwrapExactOut"),
-    ("Medium", "pkg/vault/contracts/Vault.sol:settle"),
-    ("Low", "pkg/vault/contracts/BufferRouter.sol:addLiquidityToBuffer")]}
-for n, r in rows.items():
-    if r is None: e.append("breadth row not found: %s" % n)
-if not e:
-    if "payfloor-x0" in rows["High"]: e.append("High breadth row must NOT carry the $0 marker at floor=high")
-    if "payfloor-x0" not in rows["Medium"]: e.append("Medium breadth row must carry the $0 marker at floor=high")
-    if "payfloor-x0" not in rows["Low"]: e.append("Low breadth row must carry the $0 marker at floor=high")
+hi = row_for("pkg/vault/contracts/BatchRouterHooks.sol:_erc4626BufferWrapOrUnwrapExactOut")
+med = row_for("pkg/vault/contracts/Vault.sol:settle")
+lo = row_for("pkg/vault/contracts/BufferRouter.sol:addLiquidityToBuffer")
+if hi is None: e.append("High breadth row must still render at floor=high")
+if med is not None: e.append("Medium breadth row must be HIDDEN (absent) at floor=high, not badged")
+if lo is not None: e.append("Low breadth row must be HIDDEN (absent) at floor=high, not badged")
+if "payfloor-x0" in html: e.append("payfloor-x0 badge sentinel must not appear anywhere (superseded by hide+count)")
+want = sum(1 for l in m["leads"] if l["unpayable"]) + sum(1 for d in m["deep_rows"] if d["unpayable"])
+match = re.search(r"(\d+) sub-floor leads? hidden", html)
+if not match: e.append("expected a 'N sub-floor lead(s) hidden' summary line, found none")
+elif int(match.group(1)) != want:
+    e.append("summary line count %s != model-derived unpayable total %d" % (match.group(1), want))
 if e:
     print("\n".join(e)); sys.exit(1)
 PY
-  then ok "8a-render: Medium+Low breadth Sev cells carry the payfloor-x0 marker; High does not"
-  else bad "8a-render: pay-floor marker placement wrong"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
+  then ok "8a-render: Medium+Low breadth rows hidden, High still renders, summary count matches model (#1966)"
+  else bad "8a-render: sub-floor hide+count rendering wrong"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
   fi
 else
   bad "8a-render: --render failed on the floor=high descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
@@ -373,12 +383,16 @@ else
   bad "8b: emit-model failed on the floor=critical descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
 fi
 
-# (8b-render) the C6 DEPTH Sev cell carries the marker; the refuted High breadth row carries BOTH line-through
-# AND payfloor-x0 (coexistence — the additive inline text-decoration:none badge is not struck by the row strike).
+# (8b-render) #1966: at floor=critical EVERY row in this fixture is sub-floor (even High), so both the C6
+# DEPTH FINDING row and the refuted High breadth row are now HIDDEN (absent), not badged — the old "strike +
+# $0 badge coexistence" assertion no longer applies since neither row renders at all. The summary line's
+# count is derived from the (8b) model JSON and covers ALL unpayable rows at this floor (breadth + DEPTH),
+# not just these two.
 if python3 "$DASH" --descriptor "$CRIT_DESC" --render > "$WORK/page.html" 2>"$WORK/render.err"; then
-  if python3 - "$WORK/page.html" <<'PY'
-import sys
+  if python3 - "$WORK/page.html" "$WORK/model.json" <<'PY'
+import sys, re, json
 html = open(sys.argv[1]).read()
+m = json.load(open(sys.argv[2]))
 def row_for(marker):
     i = html.find(marker)
     if i < 0: return None
@@ -387,17 +401,19 @@ def row_for(marker):
 e = []
 c6 = row_for("◆ FINDING · pending forge PoC + triage")   # unique to the single C6 DEPTH finding row
 ref = row_for("pkg/vault/contracts/BatchRouterHooks.sol:_erc4626BufferWrapOrUnwrapExactOut")
-if c6 is None: e.append("C6 DEPTH finding row not found")
-elif "payfloor-x0" not in c6: e.append("C6 DEPTH Sev cell must carry the $0 marker at floor=critical")
-if ref is None: e.append("refuted High breadth row not found")
-else:
-    if "line-through" not in ref: e.append("refuted High breadth row lost its line-through")
-    if "payfloor-x0" not in ref: e.append("refuted High breadth row must ALSO carry the $0 marker (coexistence)")
+if c6 is not None: e.append("C6 DEPTH finding row must be HIDDEN (absent) at floor=critical, not badged")
+if ref is not None: e.append("refuted High breadth row must be HIDDEN (absent) at floor=critical, not badged")
+if "payfloor-x0" in html: e.append("payfloor-x0 badge sentinel must not appear anywhere (superseded by hide+count)")
+want = sum(1 for l in m["leads"] if l["unpayable"]) + sum(1 for d in m["deep_rows"] if d["unpayable"])
+match = re.search(r"(\d+) sub-floor leads? hidden", html)
+if not match: e.append("expected a 'N sub-floor lead(s) hidden' summary line, found none")
+elif int(match.group(1)) != want:
+    e.append("summary line count %s != model-derived unpayable total %d" % (match.group(1), want))
 if e:
     print("\n".join(e)); sys.exit(1)
 PY
-  then ok "8b-render: C6 DEPTH Sev marked; refuted High breadth row carries BOTH line-through AND payfloor-x0"
-  else bad "8b-render: coexistence of strike + $0 marker wrong"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
+  then ok "8b-render: C6 DEPTH + refuted High breadth rows both hidden at floor=critical, summary count matches model (#1966)"
+  else bad "8b-render: sub-floor hide+count rendering wrong at floor=critical"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
   fi
 else
   bad "8b-render: --render failed on the floor=critical descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
@@ -443,10 +459,21 @@ PY
 else
   bad "8d: emit-model failed on the floor-less descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
 fi
+# #1966: fold in the no-floor render case for the "N sub-floor leads hidden" summary line — with pay_floor
+# unset, all three (High/Medium/Low) breadth rows must still render and no summary line may appear.
 if python3 "$DASH" --descriptor "$MAIN_DESC" --render > "$WORK/page.html" 2>"$WORK/render.err"; then
-  if grep -q "payfloor-x0" "$WORK/page.html"; then
-    bad "8d-render: a floor-less render must carry no payfloor-x0 sentinel"
-  else ok "8d-render: floor-less render carries no payfloor-x0 sentinel (byte-behaviour identical to today)"
+  if python3 - "$WORK/page.html" <<'PY'
+import sys, re
+html = open(sys.argv[1]).read()
+e = []
+if "payfloor-x0" in html: e.append("a floor-less render must carry no payfloor-x0 sentinel")
+if re.search(r"\d+ sub-floor leads? hidden", html):
+    e.append("a floor-less render must carry no 'sub-floor ... hidden' summary line")
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+  then ok "8d-render: floor-less render carries no payfloor-x0 sentinel and no sub-floor-hidden line (byte-behaviour identical to today, #1966)"
+  else bad "8d-render: default (no floor) render regressed"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
   fi
 else
   bad "8d-render: --render failed on the floor-less descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
