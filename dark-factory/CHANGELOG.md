@@ -14,6 +14,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-18
+
+**Requires:** agentis >= `1.22.7`
+
+### Added
+- **Early pay-floor filter** (#1964). `verify-findings.sh` now filters out candidates below the program's
+  pay floor BEFORE the resource-intensive refute, PoC, and verify gates, reducing unnecessary LLM usage.
+  The hunt intake chain gains a `--pay-floor <N>` parameter threaded from `run-zone-hunt.sh`, and the
+  `verified_findings.json` report now carries additive `pay_floor`, `dropped_subfloor[]`, and
+  `totals.dropped_subfloor` fields to track early-rejected candidates without consuming the full audit depth.
+
 ## [0.8.0] - 2026-08-18
 
 **Requires:** agentis >= `1.22.7`
