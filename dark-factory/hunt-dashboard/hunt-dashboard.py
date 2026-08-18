@@ -637,8 +637,12 @@ def page(nav=""):
     n_surv=sum(1 for x in L if (_rv(x) or {}).get("verdict")=="CONFIRMED")
     n_pend=len(L)-n_ref-n_surv
     pf_rank=_pay_floor_rank()   # #1960: resolved once; None ⇒ pay-floor marker OFF
+    n_hidden=0   # #1966: sub-floor leads are hidden from the table, not badged; counted here
     lrows=""
     for x in sorted(L,key=lambda a:(0 if ("High" in a["sev"] or "Crit" in a["sev"]) else 1)):
+        if _is_unpayable(x["sev"], pf_rank):   # #1966: hide sub-floor rows, tally instead of rendering
+            n_hidden += 1
+            continue
         col=SEVCOL.get(x["sev"].split()[0] if x["sev"] else "","#ccc")
         rv=_rv(x); v=(rv or {}).get("verdict","")
         if v=="REFUTED":
@@ -654,7 +658,7 @@ def page(nav=""):
             vcell='<span style="color:#f0a800">… pending refute</span>'
             detail=f'<span style="color:#bbb;font-size:12px">{html.escape(x["title"][:200])}</span>'
         lrows+=(f'<tr style="{rowop}"><td style="white-space:nowrap">{_type_badge("BREADTH")}</td>'
-                f'<td title="{_title_attr(_sev_title(x["sev"]))}" style="color:{col};font-weight:600;cursor:help;{strike}">{html.escape(x["sev"])}{_unpay_badge(PAY_FLOOR) if _is_unpayable(x["sev"], pf_rank) else ""}</td>'
+                f'<td title="{_title_attr(_sev_title(x["sev"]))}" style="color:{col};font-weight:600;cursor:help;{strike}">{html.escape(x["sev"])}</td>'
                 f'<td title="{_title_attr(_cls_title(x["cls"]))}" style="color:#9fd;cursor:help;{strike}">{html.escape(x["cls"])}</td>'
                 f'<td style="font-family:monospace;font-size:12px;{strike}">{html.escape(x["loc"])}</td>'
                 f'<td style="white-space:nowrap">{vcell}</td>'
@@ -796,8 +800,11 @@ def page(nav=""):
                 detail = '<span style="color:#6e7681;font-size:12px">planned lens row — not yet run</span>'
                 rowop = "opacity:.5"
         dh_unpay = _is_unpayable(sevtxt, pf_rank)   # #1960: sevtxt is defined in every branch above
+        if dh_unpay:   # #1966: hide sub-floor rows, tally instead of rendering
+            n_hidden += 1
+            continue
         dhrows += (f'<tr style="{rowop}"><td style="white-space:nowrap">{_type_badge("DEPTH")}</td>'
-                   f'<td title="{_title_attr(_sev_title(sevtxt))}" style="white-space:nowrap;cursor:help">{sev}{_unpay_badge(PAY_FLOOR) if dh_unpay else ""}</td>'
+                   f'<td title="{_title_attr(_sev_title(sevtxt))}" style="white-space:nowrap;cursor:help">{sev}</td>'
                    f'<td title="{_title_attr(_cls_title(cls))}" style="color:#9fd;cursor:help;{strike}">{html.escape(cls)}</td>'
                    f'<td style="font-family:monospace;font-size:12px;{strike}">{html.escape(loc)}</td>'
                    f'<td style="white-space:nowrap">{gate}</td>'
@@ -817,6 +824,11 @@ def page(nav=""):
     # NOTE: the reference built a stand-alone `dhblock` here (a separate DEPTH LEADS card) that it NEVER
     # emitted — the live UI is the unified {lrows}{dhrows} LEADS table below. That vestigial dead block is
     # dropped in this port (plan #1913 M1); the rendered behaviour is preserved by the one unified table.
+    # #1966: sub-floor rows are hidden from the LEADS table body, collapsed into one summary row instead
+    # of a per-row badge; colspan=6 matches the 6-column header below (Type/Sev/Class/Location/Refute gate/Detail).
+    hidden_row = (f'<tr><td colspan="6" style="color:#7d8590;font-size:12px;padding:6px 8px">'
+                  f'{n_hidden} sub-floor lead{"s" if n_hidden!=1 else ""} hidden (below pay-floor '
+                  f'{html.escape(PAY_FLOOR)} — $0 on this program)</td></tr>') if n_hidden else ""
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="5">
 <title>{html.escape(LABEL)}</title><style>
@@ -851,7 +863,7 @@ a{{color:#58a6ff;text-decoration:none}} a:hover{{text-decoration:underline}}
 <div class="card"><h2>Zones ({covered}/{total_z} hunted{f' · {failed} errored' if failed else ''})</h2><table><tr style="color:#7d8590;font-size:11px"><td></td><td>Zone</td><td>State</td><td>Result</td></tr>{zrows}</table></div>
 </div>
 <div class="card" style="margin-top:20px"><h2>LEADS &nbsp;<span style="font-weight:400;font-size:12px;color:#7d8590">breadth {len(L)} ({n_surv} survived · {n_ref} refuted · {n_pend} pending) &nbsp;·&nbsp; depth {len(completed)}/{len(order)} lens rows{f' · {n_dh_find} FINDING' if n_dh_find else ''}{_dh_note}</span></h2><table>
-<tr style="color:#7d8590"><td>Type</td><td>Sev</td><td>Class</td><td>Location</td><td>Refute gate</td><td>Detail</td></tr>{lrows}{dhrows}</table></div>
+<tr style="color:#7d8590"><td>Type</td><td>Sev</td><td>Class</td><td>Location</td><td>Refute gate</td><td>Detail</td></tr>{lrows}{dhrows}{hidden_row}</table></div>
 {('<div class="card" style="margin-top:16px"><h2>Adjudicated — verified, NOT a bug (' + str(len(A)) + ') · removed from refute queue</h2><table><tr style="color:#7d8590"><td>Sev</td><td>Class</td><td>Location</td><td>Verdict</td></tr>' + arows + '</table></div>') if A else ''}
 <div class="meta">auto-refresh 10s · {now.strftime('%H:%M:%S')} · localhost:{PORT}</div>
 </div></body></html>"""
