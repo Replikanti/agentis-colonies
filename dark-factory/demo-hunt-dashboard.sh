@@ -214,8 +214,10 @@ if python3 "$DASH" --descriptor "$MAIN_DESC" --render > "$WORK/page.html" 2>"$WO
   else
     bad "rendered HTML is missing a load-bearing element (label / unified header / refresh / noopener)"
   fi
-  # (#1953) the queued C5 row's Sev cell must show the intrinsic-severity fallback (High, from the zone's
-  # value_custody:true), but visibly lighter than a confirmed FINDING's bold Sev cell — never font-weight:600.
+  # (#1972) the queued C5 row's Sev cell must show the intrinsic-severity fallback (High, from the zone's
+  # value_custody:true) styled UNIFORMLY with a confirmed FINDING's Sev cell (color:{SEVCOL}, font-weight:600,
+  # no span-level opacity) — the "this row is not a live result" cue now lives entirely at the row level
+  # (the enclosing <tr>'s opacity:.5), not on the Sev span itself.
   if python3 - "$WORK/page.html" <<'PY'
 import sys
 html = open(sys.argv[1]).read()
@@ -228,16 +230,56 @@ row_end = html.find("</tr>", i)
 if row_start < 0 or row_end < 0:
     print("could not locate the enclosing <tr> for the queued row"); sys.exit(1)
 row = html[row_start:row_end]
+tr_tag_end = row.find(">")
+tr_tag = row[:tr_tag_end]
+if "opacity:.5" not in tr_tag:
+    print("queued row's <tr> must still carry opacity:.5 (row-level dimming cue): %r" % tr_tag); sys.exit(1)
 sev_end = row.find(">High<")
 if sev_end < 0:
     print("queued row missing intrinsic High severity: %r" % row); sys.exit(1)
 sev_span_start = row.rfind("<span", 0, sev_end)  # the Sev cell's own span, not the DEPTH type-badge span
 sev_span = row[sev_span_start:sev_end]
-if "font-weight:600" in sev_span:
-    print("queued row's Sev cell must not be bold like a confirmed FINDING: %r" % sev_span); sys.exit(1)
+if "font-weight:600" not in sev_span:
+    print("queued row's Sev cell must be bold like a confirmed FINDING: %r" % sev_span); sys.exit(1)
+if "opacity:" in sev_span:
+    print("queued row's Sev cell must not carry span-level opacity (row-level only): %r" % sev_span); sys.exit(1)
 PY
-  then ok "queued row shows intrinsic High severity, styled lighter (no font-weight:600) than a real FINDING"
+  then ok "queued row shows intrinsic High severity, styled uniformly (font-weight:600, no span opacity); row-level opacity:.5 preserved"
   else bad "queued-row intrinsic-severity styling regressed"
+  fi
+  # (#1972) companion: the C8 HARNESS_ERROR row's Sev cell must ALSO read uniformly bold (no span-level
+  # opacity); the "this is a coverage gap, not a live result" cue lives at the row level (<tr opacity:.6>).
+  if python3 - "$WORK/page.html" <<'PY'
+import sys
+html = open(sys.argv[1]).read()
+marker = "harness error is not a verdict &#x2014; a coverage gap"
+i = html.find(marker)
+if i < 0:
+    marker = "harness error is not a verdict"
+    i = html.find(marker)
+if i < 0:
+    print("marker not found (harness-error detail text)"); sys.exit(1)
+row_start = html.rfind("<tr", 0, i)
+row_end = html.find("</tr>", i)
+if row_start < 0 or row_end < 0:
+    print("could not locate the enclosing <tr> for the HARNESS_ERROR row"); sys.exit(1)
+row = html[row_start:row_end]
+tr_tag_end = row.find(">")
+tr_tag = row[:tr_tag_end]
+if "opacity:.6" not in tr_tag:
+    print("HARNESS_ERROR row's <tr> must still carry opacity:.6 (row-level dimming cue): %r" % tr_tag); sys.exit(1)
+sev_end = row.find(">High<")
+if sev_end < 0:
+    print("HARNESS_ERROR row missing High severity: %r" % row); sys.exit(1)
+sev_span_start = row.rfind("<span", 0, sev_end)
+sev_span = row[sev_span_start:sev_end]
+if "font-weight:600" not in sev_span:
+    print("HARNESS_ERROR row's Sev cell must be bold like a confirmed FINDING: %r" % sev_span); sys.exit(1)
+if "opacity:" in sev_span:
+    print("HARNESS_ERROR row's Sev cell must not carry span-level opacity (row-level only): %r" % sev_span); sys.exit(1)
+PY
+  then ok "HARNESS_ERROR row shows High severity, styled uniformly (font-weight:600, no span opacity); row-level opacity:.6 preserved"
+  else bad "HARNESS_ERROR-row severity styling regressed"
   fi
   # (#1958) breadth LEADS row must render bare severity, not the raw 'severity=High' parse artifact.
   if python3 - "$WORK/page.html" <<'PY'
