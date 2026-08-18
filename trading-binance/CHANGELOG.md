@@ -157,6 +157,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   loops `can only create exec sessions on running containers`. `:z` is a
   no-op on SELinux-disabled hosts. `tools/test-run-replay.sh` asserts both
   mounts carry `:z` (#1159).
+- `REPLAY_FLAT_CYBORG_IDLE_MS` never reached the flat-cyborg wrapper
+  ([#1948](https://github.com/Replikanti/agentis-colonies/issues/1948)). The
+  variable was assigned but never referenced anywhere else in
+  `tools/run-replay.sh` (shellcheck `SC2034`, waived instead of fixed), so a
+  flat-cyborg replay run always fell back to the wrapper's own hardcoded
+  default regardless of the operator's override. It now reaches the
+  container as `-e FLAT_CYBORG_IDLE_MS=...` on the `podman run` invocation
+  (the wrapper reads its idle timeout from the process environment, not
+  agentis config — the native `llm.flat_cyborg.idle_ms` key stays
+  deliberately unemitted on both subscription-claude paths), gated on the
+  same `flat-cyborg|flat_cyborg` backend match already used for
+  `LLM_COMMAND` and the `llm.model` config-emit. Its documented default is
+  also corrected `4000` → `30000` to match the wrapper's own default. New
+  assertions in `tools/test-run-replay.sh` pin the flag's absence on
+  claude-p/openai, its default value on flat-cyborg, and that an explicit
+  override threads through to the container command line; `test-run-replay.sh`
+  is now also wired into `colony-lint.sh` (it existed but was never hooked
+  in, unlike its `test-invariants.sh` / `test-run-ab-experiment.sh` siblings).
 
 ### Added
 

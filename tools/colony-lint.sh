@@ -861,6 +861,21 @@ if [ -x "$REPO_ROOT/trading-binance/tools/test-write-ab-manifest.py" ]; then
     fi
 fi
 
+# --- trading-binance replay orchestrator (#1948) ---
+# test-run-replay.sh was running out-of-band: it exists but, unlike the
+# test-invariants.sh / test-run-ab-experiment.sh / test-write-ab-manifest.py
+# hooks above, was never wired into an explicit colony-lint.sh hook. Same
+# per-federation tools/test-*.sh non-auto-discovery caveat noted above.
+if [ -x "$REPO_ROOT/trading-binance/tools/test-run-replay.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/trading-binance/tools/test-run-replay.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "test-run-replay: trading-binance replay orchestrator dry-run plan + backend wiring (#1948)"
+    else
+        fail "test-run-replay: trading-binance replay orchestrator dry-run plan / backend wiring drifted (#1948)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- tribes-bench reputation-floor environmental invariants (#1735) ---
 # tribes-bench/config/invariants/*.inv formalize the ad-hoc reputation
 # penalties as one <colony>-scoped signal (agentis-core #950/#953) expressed at
