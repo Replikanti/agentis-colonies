@@ -65,8 +65,10 @@ given, `out` defaults to `<root>/zone-hunt-out` and `log` to `<root>/hunt.log`.
   rows carry a blue `BREADTH` pill and their per-lead refute-gate verdict (survived / refuted / pending);
   depth (STAGE 4.5 deep-hunt) rows carry a purple `DEPTH` pill and the fuzzer's verdict (FINDING / clean /
   harness-error), plus every planned lens row (done / running / queued). Severity is intrinsic to the target
-  and shown on every row. A refuted lead, a triaged-FP deep finding, and a CLEAN deep row are struck through;
-  an open FINDING and a HARNESS_ERROR (a coverage gap) are not.
+  and shown on every row: for a not-yet-run row this is the zone's value-custody classification (High) where
+  known; a row with no resolvable custody signal still shows an em-dash. A refuted lead, a triaged-FP deep
+  finding, and a CLEAN deep row are struck through; an open FINDING and a HARNESS_ERROR (a coverage gap) are
+  not.
 - **Liveness** — a pulse that is green only while the hunt is genuinely live (a running hunt process / LLM
   child, detected from `/proc`), amber when quiet, red when the process is gone without an exit marker, and a
   static slate when finished. "Finished" requires BOTH the `__EXIT__` marker AND no live process.
