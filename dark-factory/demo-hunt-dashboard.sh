@@ -269,6 +269,190 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (8) PAY-FLOOR MARKER (#1960) — a display-only "$0" badge on any lead whose intrinsic severity ranks BELOW the
+# program's pay-floor, threaded in as the descriptor's `pay_floor`. Asserted on the machine-readable `unpayable`
+# flags (leads[]/deep_rows[]), top-level `pay_floor`, and the `payfloor-x0` render sentinel — never
+# complete/banner/liveness, so these hold regardless of any concurrent live hunt on the host.
+# ----------------------------------------------------------------------------------------------------------
+note "5) pay-floor marker (sub-floor '\$0' annotation) ..."
+
+# stage_floor <src-fixture> <dst-name> <floor> — stage a fixture, then patch `pay_floor` into its STAGED
+# descriptor (this doubles as proof a MANUALLY-written descriptor carries the field); echo the descriptor path.
+stage_floor() {
+  sf_desc="$(stage_as "$1" "$2")"
+  python3 - "$sf_desc" "$3" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["pay_floor"] = sys.argv[2]
+json.dump(d, open(p, "w"), indent=2, sort_keys=True)
+PY
+  echo "$sf_desc"
+}
+
+# (8a) floor=high over balancer: High payable, Medium+Low sub-floor; every intrinsic-High DEPTH row payable.
+HIGH_DESC="$(stage_floor balancer balancer-payfloor-high high)"
+if emit_model "$HIGH_DESC"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+e = []
+if m["pay_floor"] != "high": e.append("pay_floor=%r want 'high'" % m["pay_floor"])
+byloc = {l["loc"]: l for l in m["leads"]}
+hi  = byloc.get("pkg/vault/contracts/BatchRouterHooks.sol:_erc4626BufferWrapOrUnwrapExactOut")  # High
+med = byloc.get("pkg/vault/contracts/Vault.sol:settle")                                          # Medium
+lo  = byloc.get("pkg/vault/contracts/BufferRouter.sol:addLiquidityToBuffer")                     # Low
+if not (hi and hi["unpayable"] is False): e.append("High breadth lead must be payable at floor=high: %s" % hi)
+if not (med and med["unpayable"] is True): e.append("Medium breadth lead must be sub-floor at floor=high: %s" % med)
+if not (lo and lo["unpayable"] is True): e.append("Low breadth lead must be sub-floor at floor=high: %s" % lo)
+sub = [d["slot"] for d in m["deep_rows"] if d["unpayable"]]
+if sub: e.append("no intrinsic-High DEPTH row may be sub-floor at floor=high: %s" % sub)
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+  then ok "8a: floor=high — High payable, Medium+Low sub-floor(unpayable), all intrinsic-High DEPTH payable, pay_floor=='high'"
+  else bad "8a: floor=high unpayable flags wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "8a: emit-model failed on the floor=high descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+# (8a-render) the Medium+Low breadth Sev cells carry the $0 sentinel; the High Sev cell does not.
+if python3 "$DASH" --descriptor "$HIGH_DESC" --render > "$WORK/page.html" 2>"$WORK/render.err"; then
+  if python3 - "$WORK/page.html" <<'PY'
+import sys
+html = open(sys.argv[1]).read()
+def row_for(marker):
+    i = html.find(marker)
+    if i < 0: return None
+    s = html.rfind("<tr", 0, i); en = html.find("</tr>", i)
+    return html[s:en] if s >= 0 and en >= 0 else None
+e = []
+rows = {n: row_for(loc) for n, loc in [
+    ("High", "pkg/vault/contracts/BatchRouterHooks.sol:_erc4626BufferWrapOrUnwrapExactOut"),
+    ("Medium", "pkg/vault/contracts/Vault.sol:settle"),
+    ("Low", "pkg/vault/contracts/BufferRouter.sol:addLiquidityToBuffer")]}
+for n, r in rows.items():
+    if r is None: e.append("breadth row not found: %s" % n)
+if not e:
+    if "payfloor-x0" in rows["High"]: e.append("High breadth row must NOT carry the $0 marker at floor=high")
+    if "payfloor-x0" not in rows["Medium"]: e.append("Medium breadth row must carry the $0 marker at floor=high")
+    if "payfloor-x0" not in rows["Low"]: e.append("Low breadth row must carry the $0 marker at floor=high")
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+  then ok "8a-render: Medium+Low breadth Sev cells carry the payfloor-x0 marker; High does not"
+  else bad "8a-render: pay-floor marker placement wrong"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
+  fi
+else
+  bad "8a-render: --render failed on the floor=high descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+
+# (8b) floor=critical over balancer: the DEPTH track marks too (C6 High FINDING sub-floor) and the refuted High
+# breadth lead is sub-floor; render proves the $0 badge COEXISTS with the refuted line-through (no collision).
+CRIT_DESC="$(stage_floor balancer balancer-payfloor-crit critical)"
+if emit_model "$CRIT_DESC"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+e = []
+if m["pay_floor"] != "critical": e.append("pay_floor=%r want 'critical'" % m["pay_floor"])
+c6 = next((d for d in m["deep_rows"] if d["slot"] == "pkg_vault_contracts-C6"), None)
+if not (c6 and c6["state"] == "finding" and c6["unpayable"] is True):
+    e.append("DEPTH C6 High FINDING must be sub-floor at floor=critical: %s" % c6)
+ref = next((l for l in m["leads"] if l["verdict"] == "REFUTED"), None)
+if not (ref and ref["struck"] and ref["unpayable"] is True):
+    e.append("refuted High breadth lead must be sub-floor AND struck at floor=critical: %s" % ref)
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+  then ok "8b: floor=critical — DEPTH C6 High FINDING sub-floor AND breadth High REFUTED sub-floor"
+  else bad "8b: floor=critical DEPTH/breadth unpayable flags wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "8b: emit-model failed on the floor=critical descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+# (8b-render) the C6 DEPTH Sev cell carries the marker; the refuted High breadth row carries BOTH line-through
+# AND payfloor-x0 (coexistence — the additive inline text-decoration:none badge is not struck by the row strike).
+if python3 "$DASH" --descriptor "$CRIT_DESC" --render > "$WORK/page.html" 2>"$WORK/render.err"; then
+  if python3 - "$WORK/page.html" <<'PY'
+import sys
+html = open(sys.argv[1]).read()
+def row_for(marker):
+    i = html.find(marker)
+    if i < 0: return None
+    s = html.rfind("<tr", 0, i); en = html.find("</tr>", i)
+    return html[s:en] if s >= 0 and en >= 0 else None
+e = []
+c6 = row_for("◆ FINDING · pending forge PoC + triage")   # unique to the single C6 DEPTH finding row
+ref = row_for("pkg/vault/contracts/BatchRouterHooks.sol:_erc4626BufferWrapOrUnwrapExactOut")
+if c6 is None: e.append("C6 DEPTH finding row not found")
+elif "payfloor-x0" not in c6: e.append("C6 DEPTH Sev cell must carry the $0 marker at floor=critical")
+if ref is None: e.append("refuted High breadth row not found")
+else:
+    if "line-through" not in ref: e.append("refuted High breadth row lost its line-through")
+    if "payfloor-x0" not in ref: e.append("refuted High breadth row must ALSO carry the $0 marker (coexistence)")
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+  then ok "8b-render: C6 DEPTH Sev marked; refuted High breadth row carries BOTH line-through AND payfloor-x0"
+  else bad "8b-render: coexistence of strike + $0 marker wrong"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
+  fi
+else
+  bad "8b-render: --render failed on the floor=critical descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+
+# (8c) floor=high over balancer-incomplete: its completed C6 row is HARNESS_ERROR with BLANK severity — an
+# unknown severity is NOT sub-floor (a coverage gap is not a $0 payout), so it must stay payable.
+INCH_DESC="$(stage_floor balancer-incomplete balancer-incomplete-payfloor-high high)"
+if emit_model "$INCH_DESC"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+e = []
+c6 = next((d for d in m["deep_rows"] if d["slot"] == "pkg_vault_contracts-C6"), None)
+if not (c6 and c6["state"] == "harness_error" and c6["severity"] == "" and c6["unpayable"] is False):
+    e.append("blank-sev HARNESS_ERROR row must be payable (unknown != sub-floor) at floor=high: %s" % c6)
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+  then ok "8c: floor=high over incomplete — blank-sev HARNESS_ERROR C6 row stays payable (unknown != sub-floor)"
+  else bad "8c: blank-severity row wrongly marked sub-floor"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "8c: emit-model failed on the incomplete floor=high descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+# (8d) default (no pay_floor over MAIN_DESC): pay_floor is null, no row is unpayable, and the render carries no
+# payfloor-x0 sentinel anywhere — the feature is behaviourally identical to today when no floor is set.
+if emit_model "$MAIN_DESC"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+e = []
+if m["pay_floor"] is not None: e.append("pay_floor must be null with no floor set: %r" % m["pay_floor"])
+if any(l["unpayable"] for l in m["leads"]): e.append("no breadth lead may be unpayable with no floor")
+if any(d["unpayable"] for d in m["deep_rows"]): e.append("no DEPTH row may be unpayable with no floor")
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+  then ok "8d: no floor — pay_floor null, no unpayable rows (model identical to today)"
+  else bad "8d: default (no floor) model regressed"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "8d: emit-model failed on the floor-less descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+if python3 "$DASH" --descriptor "$MAIN_DESC" --render > "$WORK/page.html" 2>"$WORK/render.err"; then
+  if grep -q "payfloor-x0" "$WORK/page.html"; then
+    bad "8d-render: a floor-less render must carry no payfloor-x0 sentinel"
+  else ok "8d-render: floor-less render carries no payfloor-x0 sentinel (byte-behaviour identical to today)"
+  fi
+else
+  bad "8d-render: --render failed on the floor-less descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
   exit 0

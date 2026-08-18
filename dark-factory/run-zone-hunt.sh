@@ -443,7 +443,7 @@ if [ -d "$_HUNT_REGISTRY_DIR" ]; then
   _HUNT_ROOT="$(dirname "$OUT")"
   _HUNT_TMP="$_HUNT_REGISTRY_DIR/.$_HUNT_ID.json.tmp.$$"
   if REG_ID="$_HUNT_ID" REG_LABEL="$REPO_NAME" REG_ROOT="$_HUNT_ROOT" REG_OUT="$OUT" \
-     REG_LOG="$_HUNT_ROOT/hunt.log" REG_REPO_URL="$_HUNT_REPO_URL" \
+     REG_LOG="$_HUNT_ROOT/hunt.log" REG_REPO_URL="$_HUNT_REPO_URL" REG_PAY_FLOOR="$PAY_FLOOR" \
      python3 - >"$_HUNT_TMP" 2>/dev/null <<'PY'
 import json, os
 d = {"id": os.environ["REG_ID"], "label": os.environ["REG_LABEL"],
@@ -451,6 +451,9 @@ d = {"id": os.environ["REG_ID"], "label": os.environ["REG_LABEL"],
 u = os.environ.get("REG_REPO_URL", "")
 if u:
     d["repo_url"] = u
+pf = os.environ.get("REG_PAY_FLOOR", "")
+if pf:
+    d["pay_floor"] = pf
 print(json.dumps(d, indent=2, sort_keys=True))
 PY
   then

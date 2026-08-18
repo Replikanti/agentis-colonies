@@ -31,6 +31,7 @@ REWARD_LINE = ""    # optional chrome line (program · reward · KYC · surface)
 BOUNTY_URL = ""     # optional program URL
 REPO_URL = ""       # optional in-scope repo URL
 PROJECT_URL = ""    # optional project URL
+PAY_FLOOR = ""      # optional program pay-floor severity (low|medium|high|critical) — display-only sub-floor marker
 HOST, PORT = "127.0.0.1", 8420
 
 # ---- M2 multi-hunt (overview -> detail over a descriptor registry) --------------------------------------
@@ -456,6 +457,31 @@ def hms(td):
 
 ICON={"done":"✅","run":"🔄","wait":"⬜","gap":"⚠️"}
 SEVCOL={"High":"#ff5c5c","Critical":"#ff2d2d","Medium":"#ffb020","Low":"#8fb8ff"}
+# Pay-floor marker (#1960): a display-only "$0" badge on any lead whose intrinsic severity ranks BELOW the
+# program's --pay-floor (threaded in as the descriptor's `pay_floor`). The delivery-time payability gate remains
+# the sole authority that actually drops sub-floor findings; this only annotates the dashboard.
+SEV_RANK={"low":0,"medium":1,"high":2,"critical":3}
+def _pay_floor_rank():
+    # Resolve PAY_FLOOR to an integer rank; None (feature OFF) for blank/unrecognized.
+    return SEV_RANK.get((PAY_FLOOR or "").strip().lower())
+def _sev_rank(sev):
+    # Rank of a severity string's leading token; None for em-dash/blank/unknown.
+    parts=(sev or "").split()
+    return SEV_RANK.get(parts[0].lower()) if parts else None
+def _is_unpayable(sev, floor_rank):
+    # True only when the floor is set AND the severity is a KNOWN tier strictly below it. Unknown/blank
+    # severity is never marked (a coverage gap is not a sub-floor payout).
+    if floor_rank is None: return False
+    r=_sev_rank(sev)
+    return r is not None and r < floor_rank
+def _unpay_badge(floor):
+    # Additive pill appended AFTER the Sev text (not a mutation): inline text-decoration:none so it survives an
+    # enclosing refuted {strike}; muted red-brown palette distinct from every SEVCOL; class `payfloor-x0` is the
+    # stable test sentinel.
+    return (f' <span class="payfloor-x0" title="below the program pay-floor ({html.escape(floor)}) — $0 payout on '
+            f'this program, dropped at delivery by the payability gate" style="text-decoration:none;'
+            f'background:#3a2a2a;color:#c98a8a;font-size:10px;font-weight:600;padding:1px 4px;border-radius:3px;'
+            f'vertical-align:middle">$0</span>')
 TYPE_INFO={
  "BREADTH":"Breadth track — discovery hunt: the LLM proposes candidate leads across mapped zones; each is killed or promoted by the M4 refute gate.",
  "DEPTH":"Depth track — deep-hunt: a stateful-invariant fuzzer BREAKS a hypothesized property and returns a reproducible shrunk call-sequence witness.",
@@ -610,6 +636,7 @@ def page(nav=""):
     n_ref=sum(1 for x in L if (_rv(x) or {}).get("verdict")=="REFUTED")
     n_surv=sum(1 for x in L if (_rv(x) or {}).get("verdict")=="CONFIRMED")
     n_pend=len(L)-n_ref-n_surv
+    pf_rank=_pay_floor_rank()   # #1960: resolved once; None ⇒ pay-floor marker OFF
     lrows=""
     for x in sorted(L,key=lambda a:(0 if ("High" in a["sev"] or "Crit" in a["sev"]) else 1)):
         col=SEVCOL.get(x["sev"].split()[0] if x["sev"] else "","#ccc")
@@ -627,7 +654,7 @@ def page(nav=""):
             vcell='<span style="color:#f0a800">… pending refute</span>'
             detail=f'<span style="color:#bbb;font-size:12px">{html.escape(x["title"][:200])}</span>'
         lrows+=(f'<tr style="{rowop}"><td style="white-space:nowrap">{_type_badge("BREADTH")}</td>'
-                f'<td title="{_title_attr(_sev_title(x["sev"]))}" style="color:{col};font-weight:600;cursor:help;{strike}">{html.escape(x["sev"])}</td>'
+                f'<td title="{_title_attr(_sev_title(x["sev"]))}" style="color:{col};font-weight:600;cursor:help;{strike}">{html.escape(x["sev"])}{_unpay_badge(PAY_FLOOR) if _is_unpayable(x["sev"], pf_rank) else ""}</td>'
                 f'<td title="{_title_attr(_cls_title(x["cls"]))}" style="color:#9fd;cursor:help;{strike}">{html.escape(x["cls"])}</td>'
                 f'<td style="font-family:monospace;font-size:12px;{strike}">{html.escape(x["loc"])}</td>'
                 f'<td style="white-space:nowrap">{vcell}</td>'
@@ -768,8 +795,9 @@ def page(nav=""):
                 gate = '<span style="color:#6e7681">⬜ queued</span>'
                 detail = '<span style="color:#6e7681;font-size:12px">planned lens row — not yet run</span>'
                 rowop = "opacity:.5"
+        dh_unpay = _is_unpayable(sevtxt, pf_rank)   # #1960: sevtxt is defined in every branch above
         dhrows += (f'<tr style="{rowop}"><td style="white-space:nowrap">{_type_badge("DEPTH")}</td>'
-                   f'<td title="{_title_attr(_sev_title(sevtxt))}" style="white-space:nowrap;cursor:help">{sev}</td>'
+                   f'<td title="{_title_attr(_sev_title(sevtxt))}" style="white-space:nowrap;cursor:help">{sev}{_unpay_badge(PAY_FLOOR) if dh_unpay else ""}</td>'
                    f'<td title="{_title_attr(_cls_title(cls))}" style="color:#9fd;cursor:help;{strike}">{html.escape(cls)}</td>'
                    f'<td style="font-family:monospace;font-size:12px;{strike}">{html.escape(loc)}</td>'
                    f'<td style="white-space:nowrap">{gate}</td>'
@@ -840,6 +868,7 @@ def emit_model():
     complete = exited and failed==0 and covered==total_z
     RV=refute_verdicts()
     def _rv(x): return RV.get(_normloc(x["loc"]))
+    pf_rank=_pay_floor_rank()   # #1960: resolved once; None ⇒ every `unpayable` is False
     # breadth leads
     leads_out=[]; n_ref=n_surv=n_pend=0
     for x in L:
@@ -848,7 +877,7 @@ def emit_model():
         elif v=="CONFIRMED": state="CONFIRMED"; n_surv+=1
         else:                state="PENDING"; n_pend+=1
         leads_out.append({"loc":x["loc"],"cls":x["cls"],"sev":x["sev"],"verdict":state,
-                          "struck":state=="REFUTED"})
+                          "struck":state=="REFUTED","unpayable":_is_unpayable(x["sev"], pf_rank)})
     # deep rows — the reconstructed matrix + verdict per slot (mirrors the render branches)
     DH=deep_hunt(); dh_dir=os.path.join(OUT,"deep-hunt")
     completed={d["slot"]:d for d in DH}
@@ -882,7 +911,8 @@ def emit_model():
         m=re.match(r'^(.*)-(C\d+|SYS-solvency)$', slot)
         cls=(d["cls"] if d else (m.group(2) if m else "?"))
         loc=(d["target"] if d else (m.group(1) if m else slot))
-        deep_out.append({"slot":slot,"cls":cls,"loc":loc,"severity":sev,"state":state,"struck":struck})
+        deep_out.append({"slot":slot,"cls":cls,"loc":loc,"severity":sev,"state":state,"struck":struck,
+                         "unpayable":_is_unpayable(sev, pf_rank)})
     # zones — the Result label that must agree with the LEADS table
     import collections as _cl
     z_surv=_cl.Counter(); z_ref=_cl.Counter(); z_pend=_cl.Counter()
@@ -917,7 +947,7 @@ def emit_model():
     dot,txt,colr,is_live,lcls=classify_liveness(exited, complete, alive, inflight, think, age)
     model={
         "label":LABEL, "prog":prog, "covered":covered, "failed":failed, "total":total_z,
-        "complete":complete, "exited":exited,
+        "complete":complete, "exited":exited, "pay_floor":(PAY_FLOOR or None),
         "banner":("DONE" if complete else ("STOPPED_INCOMPLETE" if exited else "RUNNING")),
         "phases":st,
         "leads":leads_out,
@@ -966,8 +996,8 @@ def discover_hunts(registry_dir=None):
 def apply_hunt(desc, base=None):
     # Point the module globals at one registry hunt, resetting the chrome first so a previous hunt's links/label
     # never leak into this one. Every reader (coverage/leads/deep_hunt/liveness) then works exactly as in M1.
-    global ROOT, OUT, LOG, LABEL, REWARD_LINE, BOUNTY_URL, REPO_URL, PROJECT_URL, CUR_HUNT_ID
-    ROOT = OUT = LOG = ""; LABEL = "hunt"; REWARD_LINE = BOUNTY_URL = REPO_URL = PROJECT_URL = ""
+    global ROOT, OUT, LOG, LABEL, REWARD_LINE, BOUNTY_URL, REPO_URL, PROJECT_URL, PAY_FLOOR, CUR_HUNT_ID
+    ROOT = OUT = LOG = ""; LABEL = "hunt"; REWARD_LINE = BOUNTY_URL = REPO_URL = PROJECT_URL = PAY_FLOOR = ""
     CUR_HUNT_ID = desc.get("id", "")
     _apply_descriptor(desc)
     _resolve_paths(base)
@@ -1101,7 +1131,7 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
 
 def _apply_descriptor(d):
-    global ROOT, OUT, LOG, LABEL, REWARD_LINE, BOUNTY_URL, REPO_URL, PROJECT_URL
+    global ROOT, OUT, LOG, LABEL, REWARD_LINE, BOUNTY_URL, REPO_URL, PROJECT_URL, PAY_FLOOR
     if d.get("root"):  ROOT = d["root"]
     if d.get("out"):   OUT = d["out"]
     if d.get("log"):   LOG = d["log"]
@@ -1110,6 +1140,7 @@ def _apply_descriptor(d):
     if d.get("bounty_url"):  BOUNTY_URL = d["bounty_url"]
     if d.get("repo_url"):    REPO_URL = d["repo_url"]
     if d.get("project_url"): PROJECT_URL = d["project_url"]
+    if d.get("pay_floor"):   PAY_FLOOR = d["pay_floor"]
 
 def _resolve_paths(base):
     # descriptor paths may be relative to the descriptor's own dir (the fixtures ship placeholder/relative
