@@ -523,6 +523,81 @@ else
   bad "8d-render: --render failed on the floor-less descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
 fi
 
+# (8e) #depth-sev boundary — a NON-CUSTODY, not-yet-run (queued) DEPTH row is the exact pair this PR turns on:
+#   - over a pay-floor program it has no join and no intrinsic custody severity, so it falls back to the
+#     program floor (previously it was BLANK — the behaviour this PR ADDS); at the floor it stays PAYABLE.
+#   - over a FLOOR-LESS program there is nothing to fall back to, so it stays BLANK (em-dash) — the pre-#depth-sev
+#     boundary this PR preserves. Both halves get explicit coverage since the PR reverses the earlier gating.
+# stage_noncustody <dst-name> <floor-or-empty> — stage balancer, optionally patch pay_floor, and APPEND a
+# value_custody:false zone whose dominant class (C2, in the NONCUST lens set) yields one queued `oracle_pricing-C2`
+# row; echo the staged descriptor path.
+stage_noncustody() {
+  snc_desc="$(stage_as balancer "$1")"
+  python3 - "$snc_desc" "$2" <<'PY'
+import json, os, sys
+desc = sys.argv[1]; floor = sys.argv[2]
+d = json.load(open(desc))
+if floor: d["pay_floor"] = floor
+json.dump(d, open(desc, "w"), indent=2, sort_keys=True)
+zp = os.path.join(os.path.dirname(desc), "zone-hunt-out", "map", "zones.json")
+zs = json.load(open(zp))
+zs.append({
+    "id": "oracle_pricing", "name": "Oracle pricing adapters",
+    "files": ["contracts/oracle/PriceAdapter.sol", "contracts/oracle/Feed.sol"],
+    "loc": 800, "hardening_score": 60, "bug_classes_likely": ["C2"],
+    "description": "Read-only price oracle adapters; no funds held.",
+    "value_custody": False,
+})
+json.dump(zs, open(zp, "w"), indent=2)
+PY
+  echo "$snc_desc"
+}
+
+NC_HIGH_DESC="$(stage_noncustody balancer-noncustody-high high)"
+if emit_model "$NC_HIGH_DESC"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+e = []
+q = next((d for d in m["deep_rows"] if d["slot"] == "oracle_pricing-C2"), None)
+# NEW #depth-sev path: no join + no custody + a program floor -> falls back to the floor ("High"), still a
+# queued (not-yet-run) row, and being AT the floor it is payable.
+if not (q and q["state"] == "queued"):
+    e.append("expected a queued oracle_pricing-C2 row over floor=high: %s" % q)
+elif not (q["severity"] == "High" and q["unpayable"] is False):
+    e.append("non-custody queued row over floor=high must resolve the pay-floor 'High' and stay payable: %s" % q)
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+  then ok "8e: non-custody queued row over floor=high resolves the pay-floor severity (High) and stays payable (#depth-sev NEW path)"
+  else bad "8e: non-custody queued pay-floor fallback wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "8e: emit-model failed on the non-custody floor=high descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+NC_NONE_DESC="$(stage_noncustody balancer-noncustody-none "")"
+if emit_model "$NC_NONE_DESC"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+e = []
+q = next((d for d in m["deep_rows"] if d["slot"] == "oracle_pricing-C2"), None)
+# BOUNDARY the PR preserves: no floor + no custody -> nothing to fall back to -> the queued row stays blank.
+if not (q and q["state"] == "queued"):
+    e.append("expected a queued oracle_pricing-C2 row over a floor-less program: %s" % q)
+elif not (q["severity"] == "" and q["unpayable"] is False):
+    e.append("non-custody queued row over a FLOOR-LESS program must stay blank and payable: %s" % q)
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+  then ok "8e-boundary: non-custody queued row over a floor-less program stays blank (em-dash), payable — pre-#depth-sev boundary preserved"
+  else bad "8e-boundary: floor-less non-custody queued row not blank"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "8e-boundary: emit-model failed on the non-custody floor-less descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # (9) SEVERITY/CLASS NORMALIZATION (#1974) — an LLM-emitted candidate carrying whitespace-mangled severity
 # ("H igh") and class ("C 22") tokens must normalize to the canonical "High"/"C22" at parse time (leads()),
