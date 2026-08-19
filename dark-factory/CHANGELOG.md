@@ -14,6 +14,29 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-19
+
+**Requires:** agentis >= `1.22.7`
+
+### Added
+- **Hide sub-floor leads from the LEADS table** (#1968). Hunt-dashboard now filters out findings below the
+  program's pay floor from the main LEADS display, reducing visual clutter and focusing operator attention on
+  payable candidates. Early pay-floor filtering remains active upstream in `verify-findings.sh` (#1964).
+
+### Fixed
+- **Deep-hunt DEPTH rows always show normalized severity** (#1978). DEPTH phase rows now display the actual
+  discovered severity value (normalized across lenses) instead of placeholder text, making deep-hunt findings
+  actionable without opening the detail view.
+- **Severity/class normalizer whitespace-position-agnostic** (#1977). The hunt-dashboard normalizer now
+  correctly handles malformed LLM outputs where severity/class markers appear in unexpected positions or with
+  variable whitespace, improving robustness on real-world LLM variance.
+- **Normalize malformed LLM severity/class values in hunt-dashboard leads** (#1975). Adds defensive parsing
+  for severity and classification fields extracted from hunt results, preventing display corruption when LLMs
+  emit unexpected formatting.
+- **Drop span-level opacity from HARNESS_ERROR/queued Sev spans** (#1973). Hunt-dashboard severity spans for
+  HARNESS_ERROR and queued states no longer apply redundant opacity, improving visual clarity and reducing
+  CSS complexity.
+
 ## [0.9.0] - 2026-08-18
 
 **Requires:** agentis >= `1.22.7`
