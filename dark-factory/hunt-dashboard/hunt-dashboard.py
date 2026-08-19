@@ -275,6 +275,27 @@ def active_deep_slot():
     if best is None: return None
     return best if (datetime.datetime.now().timestamp()-bestm) < 90 else None
 
+DEEP_CELL_STALE_S = 600   # a deep-hunt cell dir silent this long is abandoned, not running (see below)
+def deep_cell_status(slot):
+    # State of a NON-completed deep-hunt cell from its on-disk dir. A cell that is genuinely fuzzing writes
+    # into its own deep-hunt/<slot>/ tree constantly (the LLM sub-log appends a `still waiting (Xs)` heartbeat
+    # every ~4s — the same pulse active_deep_slot()/freshest() rely on), so a live cell is NEVER silent for
+    # even 90s. A cell whose process was killed or whose flat-cyborg session hung leaves its dir on disk but
+    # goes silent. So: no dir -> "queued"; dir with a fresh write -> "running"; dir silent past the stale
+    # bound (or empty) -> "abandoned" (a coverage GAP == harness_error, NOT a perpetual "running"). Without
+    # this, a force-advanced / crashed cell shows "🔄 fuzzing…" forever because os.path.isdir() alone is true.
+    cell = os.path.join(OUT, "deep-hunt", slot)
+    if not os.path.isdir(cell): return "queued"
+    newest = 0.0
+    for root, _dirs, files in os.walk(cell):
+        for fn in files:
+            try:
+                mm = os.path.getmtime(os.path.join(root, fn))
+                if mm > newest: newest = mm
+            except OSError: pass
+    if newest == 0.0: return "abandoned"
+    return "running" if (datetime.datetime.now().timestamp() - newest) < DEEP_CELL_STALE_S else "abandoned"
+
 def freshest():
     # The newest write across ALL hunt artifacts = the liveness pulse. The LLM sub-logs
     # append a `still waiting ... (Xs)` heartbeat every ~4s while a call is in flight, so a
@@ -744,7 +765,8 @@ def page(nav=""):
             if "FINDING" in d["verdict"] and (d.get("adj") or {}).get("verdict") != "REFUTED": return 0
             if "FINDING" in d["verdict"]: return 1
             return 2
-        return 3 if os.path.isdir(os.path.join(dh_dir, slot)) else 4
+        cs = deep_cell_status(slot)                # an abandoned cell ranks with the harness-error gaps (2),
+        return {"running": 3, "abandoned": 2}.get(cs, 4)   # a live cell above queued (3), queued last (4)
     active = active_deep_slot()
     n_dh_find = 0; dhrows = ""
     for slot in sorted(order, key=_rank):
@@ -814,10 +836,17 @@ def page(nav=""):
                 sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt)}</span>'
             else:
                 sev = '<span style="color:#5a6270">—</span>'
-            if os.path.isdir(os.path.join(dh_dir, slot)):
+            _cs = deep_cell_status(slot)
+            if _cs == "running":
                 gate = '<span style="color:#58a6ff">🔄 fuzzing…</span>'
                 detail = '<span style="color:#8b949e;font-size:12px">opus generating handler + stateful fuzzing</span>'
                 rowop = ""
+            elif _cs == "abandoned":
+                # dir exists but silent — the cell was force-advanced or its session died: a coverage GAP,
+                # rendered like a harness_error (amber, dimmed), NOT a perpetual "fuzzing…".
+                gate = '<span style="color:#f0a800;font-size:12px">⚠ harness error — no verdict</span>'
+                detail = '<span style="color:#f0a800;font-size:12px">deep-hunt cell ended without a verdict — a coverage gap</span>'
+                rowop = "opacity:.6"
             else:
                 gate = '<span style="color:#6e7681">⬜ queued</span>'
                 detail = '<span style="color:#6e7681;font-size:12px">planned lens row — not yet run</span>'
@@ -945,7 +974,10 @@ def emit_model():
                 state="harness_error"; struck=False
         else:
             sev=_sv
-            if os.path.isdir(os.path.join(dh_dir,slot)): state="running"; struck=False
+            # #deep-cell-stale: a dir alone is not "running" — a killed/hung cell leaves a silent dir behind.
+            _cs = deep_cell_status(slot)
+            if _cs == "running": state="running"; struck=False
+            elif _cs == "abandoned": state="harness_error"; struck=False   # coverage gap, not perpetual running
             else: state="queued"; struck=False
         m=re.match(r'^(.*)-(C\d+|SYS-solvency)$', slot)
         cls=(d["cls"] if d else (m.group(2) if m else "?"))

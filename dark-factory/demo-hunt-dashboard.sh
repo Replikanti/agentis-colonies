@@ -598,6 +598,68 @@ else
   bad "8e-boundary: emit-model failed on the non-custody floor-less descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
 fi
 
+# (8f) #deep-cell-stale: a deep-hunt cell DIR alone must NOT read "running" forever. A cell that was
+# force-advanced (watchdog) or whose flat-cyborg session hung leaves a SILENT dir on disk; `os.path.isdir()`
+# alone would keep rendering it "🔄 fuzzing…" indefinitely. The fix: a live cell writes an LLM heartbeat into
+# its dir every ~4s, so a dir silent past the stale bound (default 600s) is ABANDONED -> harness_error (a
+# coverage gap); a freshly-written dir is genuinely running. The balancer fixture has no C5 cell dir (C5 is
+# the queued lens), so plant one with a controllable mtime to exercise both arms.
+# plant_c5 <dst-name> <age-seconds> -> stage balancer, create a pkg_vault_contracts-C5/run/ dir whose newest
+# write is <age>s old; echo the staged descriptor.
+plant_c5() {
+  p5_desc="$(stage_as balancer "$1")"
+  p5_run="$WORK/$1/zone-hunt-out/deep-hunt/pkg_vault_contracts-C5/run"
+  mkdir -p "$p5_run"
+  printf 'still waiting (heartbeat)\n' > "$p5_run/llm.log"
+  p5_t=$(( $(date +%s) - $2 ))
+  touch -d "@$p5_t" "$p5_run/llm.log" "$p5_run" "$WORK/$1/zone-hunt-out/deep-hunt/pkg_vault_contracts-C5"
+  echo "$p5_desc"
+}
+
+STALE_C5_DESC="$(plant_c5 balancer-cell-stale 1200)"   # 20 min silent => abandoned
+if emit_model "$STALE_C5_DESC"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+d = next((x for x in m["deep_rows"] if x["slot"] == "pkg_vault_contracts-C5"), None)
+e = []
+if not d: e.append("planted C5 row missing")
+elif d["state"] != "harness_error":
+    e.append("a silent (20-min-stale) deep-hunt cell dir must read harness_error (coverage gap), not running: %s" % d)
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "8f: a stale/silent deep-hunt cell dir reads harness_error (coverage gap), not a perpetual 'running' (#deep-cell-stale)"
+  else bad "8f: stale deep-hunt cell not classified as harness_error"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "8f: emit-model failed on the stale-cell descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+FRESH_C5_DESC="$(plant_c5 balancer-cell-fresh 5)"      # 5 s ago => genuinely live (running)
+if emit_model "$FRESH_C5_DESC"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+d = next((x for x in m["deep_rows"] if x["slot"] == "pkg_vault_contracts-C5"), None)
+e = []
+if not d:
+    e.append("planted C5 row missing")
+# The point: a FRESH dir is LIVE, never the abandoned/harness_error the stale case is, and never queued.
+# In a clean env active_deep_slot() is None (no live hunt proc) so deep_cell_status() -> "running"; on a
+# host that happens to be running an UNRELATED live hunt, active_deep_slot() may instead claim the freshest
+# slot as "rerunning". Both are the correct "cell is live" outcome, so accept either (keeps this host-robust,
+# unlike the 4 liveness assertions above which are known to be perturbed by a concurrent host hunt).
+elif d["state"] not in ("running", "rerunning"):
+    e.append("a freshly-written deep-hunt cell dir must read live (running/rerunning), not queued/harness_error: %s" % d)
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "8f-fresh: a freshly-written deep-hunt cell dir reads live (running/rerunning), never abandoned (#deep-cell-stale)"
+  else bad "8f-fresh: fresh deep-hunt cell not classified as live"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "8f-fresh: emit-model failed on the fresh-cell descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # (9) SEVERITY/CLASS NORMALIZATION (#1974) — an LLM-emitted candidate carrying whitespace-mangled severity
 # ("H igh") and class ("C 22") tokens must normalize to the canonical "High"/"C22" at parse time (leads()),
