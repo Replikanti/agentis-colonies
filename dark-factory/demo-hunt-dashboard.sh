@@ -729,6 +729,32 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (10) #1981: the refute gate's verdict contract emits `REAL` for a lead that survived the hostile read; the
+# dashboard must canonicalize that to its survived/CONFIRMED verdict. Before the fix a `REAL` verdict fell
+# through to PENDING, so a genuinely-confirmed breadth lead showed as un-triaged forever. Stage balancer, rewrite
+# the settle gate's verdict.txt from CONFIRMED to REAL, and assert the settle lead STILL reads CONFIRMED.
+REAL_DESC="$(stage_as balancer balancer-real-verdict)"
+echo "REAL	survived a hostile read" > "$WORK/balancer-real-verdict/zone-hunt-out/verify/gates/2_pkg_vault_contracts_Vault_sol_settle/verdict.txt"
+if emit_model "$REAL_DESC"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+con = next((l for l in m["leads"] if l["loc"] == "pkg/vault/contracts/Vault.sol:settle"), None)
+e = []
+if not con:
+    e.append("settle lead missing")
+elif con["verdict"] != "CONFIRMED":
+    e.append("a `REAL` gate verdict must canonicalize to CONFIRMED (survived), not fall through to PENDING: %s" % con)
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "10: a gate `REAL` verdict canonicalizes to CONFIRMED/survived — never stuck at PENDING (#1981)"
+  else bad "10: REAL-verdict lead not confirmed"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "10: emit-model failed on the REAL-verdict descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
   exit 0

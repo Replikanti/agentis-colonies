@@ -1679,6 +1679,17 @@ else
   grep -i 'flat-cyborg\|WARNING' "$WORK/zhx2.err" | sed 's/^/      /' >&2
 fi
 
+note "e) exit-marker: run-zone-hunt.sh writes __EXIT__=<code> on ANY exit (#1981) ..."
+# A no-arg invocation fails the required-repo check and exits fast; the EXIT trap must still print the marker to
+# stdout (the hunt log the dashboard reads), so a DIRECT `bash run-zone-hunt.sh` launch is detectable as finished
+# — previously only a launch wrapper wrote it, so a directly-launched hunt showed "RUNNING" forever.
+"$ZONEHUNT" >"$WORK/zhexit.out" 2>"$WORK/zhexit.err" || true
+if grep -q '__EXIT__=' "$WORK/zhexit.out"; then
+  ok "e) run-zone-hunt.sh emits __EXIT__=<code> on exit (dashboard can detect finish on a direct launch)"
+else
+  bad "e) run-zone-hunt.sh did not emit an __EXIT__ marker on exit"; sed 's/^/      /' "$WORK/zhexit.out" | tail -5 >&2
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — M5 capstone (run-zone-hunt.sh: map -> brief -> discovery -> verify -> audit-pass -> deliver, HALT) holds"

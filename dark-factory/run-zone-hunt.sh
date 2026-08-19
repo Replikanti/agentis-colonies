@@ -227,6 +227,12 @@
 #       4 --require-coverage was set and STAGE 3 covered less than that fraction of the zones (#1830).
 set -eu
 
+# #1981: emit an `__EXIT__=<code>` marker on ANY exit (clean, error, or signal) so the dashboard can tell a
+# FINISHED / crashed hunt from a live one even on a DIRECT `bash run-zone-hunt.sh` launch — previously only a
+# launch wrapper wrote the marker, so a directly-launched hunt showed "RUNNING" forever after it finished.
+# stdout is the hunt log the dashboard reads, so an echo here lands in it; the trap never alters the exit code.
+trap 'echo "run-zone-hunt.sh: __EXIT__=$?"' EXIT
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 REPO="" ; OUT="$PWD/zone-hunt-out" ; JOBS=1 ; BACKEND="flat-cyborg"
