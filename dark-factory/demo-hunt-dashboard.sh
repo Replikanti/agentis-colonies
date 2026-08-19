@@ -461,8 +461,8 @@ else
   bad "8b-render: --render failed on the floor=critical descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
 fi
 
-# (8c) floor=high over balancer-incomplete: its completed C6 row is HARNESS_ERROR with BLANK severity — an
-# unknown severity is NOT sub-floor (a coverage gap is not a $0 payout), so it must stay payable.
+# (8c) floor=high over balancer-incomplete: C6 is HARNESS_ERROR. #depth-sev: every DEPTH row now resolves a
+# severity (intrinsic custody / pay-floor) -> C6 reads 'High' and, being AT the floor, stays PAYABLE.
 INCH_DESC="$(stage_floor balancer-incomplete balancer-incomplete-payfloor-high high)"
 if emit_model "$INCH_DESC"; then
   if python3 - "$WORK/model.json" <<'PY'
@@ -470,13 +470,15 @@ import sys, json
 m = json.load(open(sys.argv[1]))
 e = []
 c6 = next((d for d in m["deep_rows"] if d["slot"] == "pkg_vault_contracts-C6"), None)
-if not (c6 and c6["state"] == "harness_error" and c6["severity"] == "" and c6["unpayable"] is False):
-    e.append("blank-sev HARNESS_ERROR row must be payable (unknown != sub-floor) at floor=high: %s" % c6)
+# #depth-sev: every DEPTH row now resolves a severity (intrinsic custody / pay-floor), so a HARNESS_ERROR row
+# reads "High" — and, being AT the high floor, it stays PAYABLE (a coverage gap on a High surface is not $0).
+if not (c6 and c6["state"] == "harness_error" and c6["severity"] == "High" and c6["unpayable"] is False):
+    e.append("HARNESS_ERROR row must show a resolved severity and stay payable at floor=high: %s" % c6)
 if e:
     print("\n".join(e)); sys.exit(1)
 PY
-  then ok "8c: floor=high over incomplete — blank-sev HARNESS_ERROR C6 row stays payable (unknown != sub-floor)"
-  else bad "8c: blank-severity row wrongly marked sub-floor"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  then ok "8c: floor=high over incomplete — HARNESS_ERROR C6 row resolves to High severity and stays payable (#depth-sev)"
+  else bad "8c: HARNESS_ERROR severity/payability wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
   fi
 else
   bad "8c: emit-model failed on the incomplete floor=high descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
