@@ -759,8 +759,12 @@ def page(nav=""):
         # behaviour below (intrinsic custody or the em-dash) — never coerced to the floor.
         if d:
             _dv = d.get("verdict", "")
-            sevtxt = (_norm_sev(d.get("severity", "")) or _intrinsic_sev(slot_custody.get(slot, False))
-                      or (PAY_FLOOR.title() if (PAY_FLOOR and ("FINDING" in _dv or "VIOLAT" in _dv)) else ""))
+            sevtxt = _norm_sev(d.get("severity", ""))
+            # A confirmed FINDING must never render without a severity — fall back to the zone's intrinsic
+            # custody severity, then the program pay-floor. Non-finding rows (CLEAN/HARNESS_ERROR) keep the
+            # plain join, so a blank severity stays blank (#1966: unknown != sub-floor).
+            if not sevtxt and ("FINDING" in _dv or "VIOLAT" in _dv):
+                sevtxt = _intrinsic_sev(slot_custody.get(slot, False)) or (PAY_FLOOR.title() if PAY_FLOOR else "")
         else:
             sevtxt = _intrinsic_sev(slot_custody.get(slot, False))
         if slot == active:
@@ -930,9 +934,10 @@ def emit_model():
         d=completed.get(slot); adj=(d.get("adj") if d else None) or {}
         # #depth-sev: same resolution as page() — a result row (has d) resolves normalized-join / intrinsic
         # custody / pay-floor so it never emits an empty severity; a not-yet-run row keeps intrinsic-or-empty.
-        _sv=((_norm_sev(d.get("severity","")) or _intrinsic_sev(slot_custody.get(slot, False))
-              or (PAY_FLOOR.title() if (PAY_FLOOR and ("FINDING" in d.get("verdict","") or "VIOLAT" in d.get("verdict",""))) else ""))
-             if d else _intrinsic_sev(slot_custody.get(slot, False)))
+        _dv = d.get("verdict","") if d else ""
+        _sv = _norm_sev(d.get("severity","")) if d else _intrinsic_sev(slot_custody.get(slot, False))
+        if d and not _sv and ("FINDING" in _dv or "VIOLAT" in _dv):
+            _sv = _intrinsic_sev(slot_custody.get(slot, False)) or (PAY_FLOOR.title() if PAY_FLOOR else "")
         if slot==active:
             state="rerunning"; struck=False; sev=_sv
         elif d:
