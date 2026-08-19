@@ -533,7 +533,7 @@ SEVNORM_DESC="$(stage_as balancer balancer-sevnorm)"
 SEVNORM_DIR="$(dirname "$SEVNORM_DESC")"
 SEVNORM_CELLS="$SEVNORM_DIR/zone-hunt-out/discovery/pkg_vault_contracts/run/results-cells.jsonl"
 cat >>"$SEVNORM_CELLS" <<'EOF'
-{"subsystem":"Vault core and routers","class":"C22","files":"pkg/vault/contracts/SevNormExample.sol","status":"ok","candidates":["pkg/vault/contracts/SevNormExample.sol:sevNormProbe|class=C 22|severity=H igh|Whitespace/prefix normalization probe candidate exercising #1974."],"coordination":[]}
+{"subsystem":"Vault core and routers","class":"C22","files":"pkg/vault/contracts/SevNormExample.sol","status":"ok","candidates":["pkg/vault/contracts/SevNormExample.sol:sevNormProbe|class=C 22|severity=H igh|Whitespace/prefix normalization probe candidate exercising #1974.","pkg/vault/contracts/SevNormExample.sol:prefixWsProbe|class=C22|se verity=High|#1976 probe: whitespace INSIDE the severity= prefix word must still normalize."],"coordination":[]}
 EOF
 
 if emit_model "$SEVNORM_DESC"; then
@@ -547,6 +547,9 @@ if not probe: e.append("normalization probe lead not found in leads[]")
 else:
     if probe["sev"] != "High": e.append("mangled 'H igh' severity did not normalize: %r (want 'High')" % probe["sev"])
     if probe["cls"] != "C22": e.append("mangled 'C 22' class did not normalize: %r (want 'C22')" % probe["cls"])
+pfx = byloc.get("pkg/vault/contracts/SevNormExample.sol:prefixWsProbe")
+if not pfx: e.append("#1976 prefix-whitespace probe lead not found in leads[]")
+elif pfx["sev"] != "High": e.append("#1976 'se verity=High' (whitespace in prefix word) did not normalize: %r (want 'High')" % pfx["sev"])
 if e:
     print("\n".join(e)); sys.exit(1)
 PY
