@@ -189,8 +189,8 @@ def leads():
                 if isinstance(c, str):
                     p = c.split("|")
                     out.append({"zone": zone, "loc": p[0] if p else "?",
-                                "cls": (p[1] if len(p)>1 else "?").replace("class=",""),
-                                "sev": (p[2] if len(p)>2 else "?").replace("severity=","").strip(),
+                                "cls": _norm_cls(p[1] if len(p)>1 else "?"),
+                                "sev": _norm_sev(p[2] if len(p)>2 else "?"),
                                 "title": p[3] if len(p)>3 else ""})
     return out
 
@@ -457,6 +457,22 @@ def hms(td):
 
 ICON={"done":"✅","run":"🔄","wait":"⬜","gap":"⚠️"}
 SEVCOL={"High":"#ff5c5c","Critical":"#ff2d2d","Medium":"#ffb020","Low":"#8fb8ff"}
+def _norm_sev(raw):
+    # Normalize an LLM-emitted severity value (#1974): strip a stray "severity="/"SEVERITY ="
+    # prefix, then canonicalize against the 4-tier set with internal whitespace ignored for the
+    # match ("H igh" -> "High"). An unrecognized value is returned whitespace-collapsed but
+    # otherwise unchanged — never invent a tier.
+    s = re.sub(r'(?i)^\s*severity\s*=\s*', '', raw or '')
+    key = re.sub(r'\s+', '', s).lower()
+    for tier in ("Critical", "High", "Medium", "Low"):
+        if key == tier.lower(): return tier
+    return re.sub(r'\s+', ' ', s).strip()
+def _norm_cls(raw):
+    # Normalize an LLM-emitted class value (#1974): strip a stray "class="/"CLASS =" prefix, then
+    # remove all internal whitespace and uppercase ("C 22" -> "C22"). No membership validation —
+    # class codes are open-ended (C1..C23, SYS-solvency, C-invariant).
+    s = re.sub(r'(?i)^\s*class\s*=\s*', '', raw or '')
+    return re.sub(r'\s+', '', s).upper()
 # Pay-floor marker (#1960): a display-only "$0" badge on any lead whose intrinsic severity ranks BELOW the
 # program's --pay-floor (threaded in as the descriptor's `pay_floor`). The delivery-time payability gate remains
 # the sole authority that actually drops sub-floor findings; this only annotates the dashboard.
