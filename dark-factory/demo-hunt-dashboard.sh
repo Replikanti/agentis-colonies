@@ -522,6 +522,71 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (9) SEVERITY/CLASS NORMALIZATION (#1974) — an LLM-emitted candidate carrying whitespace-mangled severity
+# ("H igh") and class ("C 22") tokens must normalize to the canonical "High"/"C22" at parse time (leads()),
+# not leak through raw. Staged into a SEPARATE copy of the balancer fixture (balancer-sevnorm) so the
+# count-exact assertions in (1)-(8) above, which run against the shared MAIN_DESC/HIGH_DESC/CRIT_DESC
+# staged dirs, are unaffected.
+# ----------------------------------------------------------------------------------------------------------
+note "6) severity/class normalization (#1974: whitespace + prefix mangling) ..."
+SEVNORM_DESC="$(stage_as balancer balancer-sevnorm)"
+SEVNORM_DIR="$(dirname "$SEVNORM_DESC")"
+SEVNORM_CELLS="$SEVNORM_DIR/zone-hunt-out/discovery/pkg_vault_contracts/run/results-cells.jsonl"
+cat >>"$SEVNORM_CELLS" <<'EOF'
+{"subsystem":"Vault core and routers","class":"C22","files":"pkg/vault/contracts/SevNormExample.sol","status":"ok","candidates":["pkg/vault/contracts/SevNormExample.sol:sevNormProbe|class=C 22|severity=H igh|Whitespace/prefix normalization probe candidate exercising #1974."],"coordination":[]}
+EOF
+
+if emit_model "$SEVNORM_DESC"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+e = []
+byloc = {l["loc"]: l for l in m["leads"]}
+probe = byloc.get("pkg/vault/contracts/SevNormExample.sol:sevNormProbe")
+if not probe: e.append("normalization probe lead not found in leads[]")
+else:
+    if probe["sev"] != "High": e.append("mangled 'H igh' severity did not normalize: %r (want 'High')" % probe["sev"])
+    if probe["cls"] != "C22": e.append("mangled 'C 22' class did not normalize: %r (want 'C22')" % probe["cls"])
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+  then ok "6a: mangled 'severity=H igh'/'class=C 22' normalize to canonical 'High'/'C22' in the model"
+  else bad "6a: severity/class normalization model assertion failed"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "6a: emit-model failed on the severity-normalization descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+if python3 "$DASH" --descriptor "$SEVNORM_DESC" --render > "$WORK/page.html" 2>"$WORK/render.err"; then
+  if python3 - "$WORK/page.html" <<'PY'
+import sys
+html = open(sys.argv[1]).read()
+marker = "pkg/vault/contracts/SevNormExample.sol:sevNormProbe"
+i = html.find(marker)
+if i < 0:
+    print("normalization probe row not found in rendered HTML: %r" % marker); sys.exit(1)
+row_start = html.rfind("<tr", 0, i)
+row_end = html.find("</tr>", i)
+if row_start < 0 or row_end < 0:
+    print("could not locate the enclosing <tr> for the normalization probe row"); sys.exit(1)
+row = html[row_start:row_end]
+sev_end = row.find(">High<")
+if sev_end < 0:
+    print("normalization probe row missing bare 'High' severity text: %r" % row); sys.exit(1)
+sev_td_start = row.rfind("<td", 0, sev_end)
+sev_td = row[sev_td_start:sev_end]
+if "color:#ff5c5c" not in sev_td: e = "normalization probe Sev cell missing SEVCOL High colour (#ff5c5c): %r" % sev_td; print(e); sys.exit(1)
+if "font-weight:600" not in sev_td: print("normalization probe Sev cell missing font-weight:600: %r" % sev_td); sys.exit(1)
+if "#ccc" in sev_td: print("normalization probe Sev cell fell back to the grey SEVCOL-miss colour (#ccc) — normalization not applied at render time: %r" % sev_td); sys.exit(1)
+PY
+  then ok "6b: normalization probe row renders with the canonical High SEVCOL colour (#ff5c5c) + font-weight:600, no grey #ccc fallback"
+  else bad "6b: severity/class normalization render assertion failed"
+  fi
+else
+  bad "6b: --render failed on the severity-normalization descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
   exit 0
