@@ -752,13 +752,21 @@ def page(nav=""):
         m = re.match(r'^(.*)-(C\d+|SYS-solvency)$', slot)
         zid = m.group(1) if m else slot; clsname = m.group(2) if m else "?"
         strike = ""   # set on a triaged-FP row, applied to Sev/Class/Location — same look as a refuted LEAD
-        sevtxt = (d.get("severity", "") if d else "")   # for the Sev tooltip (always defined)
+        # #depth-sev: a deep-hunt result row (FINDING/CLEAN/HARNESS/refuted) must ALWAYS show a severity.
+        # Resolve it: (1) the normalized joined severity from verified_findings.json (drops any "severity="
+        # prefix/whitespace); else (2) the zone's intrinsic custody severity; else (3) the program pay-floor
+        # (a confirmed finding is at least payable-floor severity). A not-yet-run row (no d) keeps the queued
+        # behaviour below (intrinsic custody or the em-dash) — never coerced to the floor.
+        # Operator directive: EVERY DEPTH row shows a clearly-defined severity — the normalized joined
+        # severity, else the zone's intrinsic custody severity, else the program pay-floor. Only a floor-less
+        # program (no pay_floor in the descriptor) can leave a non-custody row without one (em-dash).
+        sevtxt = (_norm_sev(d.get("severity", "") if d else "") or _intrinsic_sev(slot_custody.get(slot, False))
+                  or (PAY_FLOOR.title() if PAY_FLOOR else ""))
         if slot == active:
             # this slot is re-executing RIGHT NOW — override only the VERDICT with in-progress. Sev is the
             # TARGET's severity class (intrinsic, known regardless of the re-run) — always show it, coloured.
             cls = d["cls"] if d else clsname
             loc = d["target"] if d else zid
-            sevtxt = d.get("severity", "") if d else ""
             scol = SEVCOL.get(sevtxt.split()[0] if sevtxt else "", "#58a6ff")
             sev = (f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt)}</span>' if sevtxt
                    else '<span style="color:#58a6ff">…</span>')
@@ -766,7 +774,7 @@ def page(nav=""):
             detail = '<span style="color:#8b949e;font-size:12px">re-hunting with fitted fuzz budget — verdict pending</span>'
             rowop = ""
         elif d:
-            v = d["verdict"]; sevtxt = d.get("severity", ""); adj = d.get("adj") or {}
+            v = d["verdict"]; adj = d.get("adj") or {}
             cls = d["cls"]; loc = d["target"]
             scol = SEVCOL.get(sevtxt.split()[0] if sevtxt else "", "#ccc")
             if ("FINDING" in v or "VIOLAT" in v) and adj.get("verdict") == "REFUTED":
@@ -800,7 +808,7 @@ def page(nav=""):
                 rowop = "opacity:.6"
         else:
             cls = clsname; loc = zid   # exact target file is only known once the row runs
-            sevtxt = _intrinsic_sev(slot_custody.get(slot, False))
+            sevtxt = _intrinsic_sev(slot_custody.get(slot, False)) or (PAY_FLOOR.title() if PAY_FLOOR else "")
             if sevtxt:
                 scol = SEVCOL.get(sevtxt, "#5a6270")
                 sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt)}</span>'
@@ -919,10 +927,14 @@ def emit_model():
     deep_out=[]; n_dh_find=0
     for slot in order:
         d=completed.get(slot); adj=(d.get("adj") if d else None) or {}
+        # #depth-sev: same resolution as page() — a result row (has d) resolves normalized-join / intrinsic
+        # custody / pay-floor so it never emits an empty severity; a not-yet-run row keeps intrinsic-or-empty.
+        _sv = (_norm_sev(d.get("severity","") if d else "") or _intrinsic_sev(slot_custody.get(slot, False))
+               or (PAY_FLOOR.title() if PAY_FLOOR else ""))
         if slot==active:
-            state="rerunning"; struck=False; sev=(d.get("severity","") if d else "")
+            state="rerunning"; struck=False; sev=_sv
         elif d:
-            v=d["verdict"]; sev=d.get("severity","")
+            v=d["verdict"]; sev=_sv
             if ("FINDING" in v or "VIOLAT" in v) and adj.get("verdict")=="REFUTED":
                 state="triaged_fp"; struck=True
             elif "FINDING" in v or "VIOLAT" in v:
@@ -932,7 +944,7 @@ def emit_model():
             else:
                 state="harness_error"; struck=False
         else:
-            sev=_intrinsic_sev(slot_custody.get(slot, False))
+            sev=_sv
             if os.path.isdir(os.path.join(dh_dir,slot)): state="running"; struck=False
             else: state="queued"; struck=False
         m=re.match(r'^(.*)-(C\d+|SYS-solvency)$', slot)
