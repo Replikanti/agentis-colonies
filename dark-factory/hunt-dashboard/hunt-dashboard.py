@@ -758,8 +758,9 @@ def page(nav=""):
         # (a confirmed finding is at least payable-floor severity). A not-yet-run row (no d) keeps the queued
         # behaviour below (intrinsic custody or the em-dash) — never coerced to the floor.
         if d:
+            _dv = d.get("verdict", "")
             sevtxt = (_norm_sev(d.get("severity", "")) or _intrinsic_sev(slot_custody.get(slot, False))
-                      or (PAY_FLOOR.title() if PAY_FLOOR else ""))
+                      or (PAY_FLOOR.title() if (PAY_FLOOR and ("FINDING" in _dv or "VIOLAT" in _dv)) else ""))
         else:
             sevtxt = _intrinsic_sev(slot_custody.get(slot, False))
         if slot == active:
@@ -930,7 +931,8 @@ def emit_model():
         # #depth-sev: same resolution as page() — a result row (has d) resolves normalized-join / intrinsic
         # custody / pay-floor so it never emits an empty severity; a not-yet-run row keeps intrinsic-or-empty.
         _sv=((_norm_sev(d.get("severity","")) or _intrinsic_sev(slot_custody.get(slot, False))
-              or (PAY_FLOOR.title() if PAY_FLOOR else "")) if d else _intrinsic_sev(slot_custody.get(slot, False)))
+              or (PAY_FLOOR.title() if (PAY_FLOOR and ("FINDING" in d.get("verdict","") or "VIOLAT" in d.get("verdict",""))) else ""))
+             if d else _intrinsic_sev(slot_custody.get(slot, False)))
         if slot==active:
             state="rerunning"; struck=False; sev=_sv
         elif d:
