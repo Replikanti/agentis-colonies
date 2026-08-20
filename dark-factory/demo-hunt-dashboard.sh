@@ -889,19 +889,19 @@ e = []
 # chip bar: sel -> count
 chips = dict((m.group(1), int(m.group(2))) for m in
              re.finditer(r'data-sel="(\w+)"[^>]*>[^<]*<b>(\d+)</b>', html))
-for want in ("all", "confirmed", "pending", "refuted"):
+for want in ("all", "confirmed", "pending", "duplicate", "refuted"):
     if want not in chips: e.append("missing filter chip %r" % want)
 # rendered row buckets
 rows = re.findall(r'<tr data-st="(\w+)"', html)
 buckets = collections.Counter(rows)
 if not rows: e.append("no data-st rows rendered — filter would be vacuous")
-VOCAB = {"confirmed", "pending", "refuted", "other"}
+VOCAB = {"confirmed", "pending", "duplicate", "refuted", "other"}
 bad = set(buckets) - VOCAB
 if bad: e.append("data-st outside vocabulary: %r" % sorted(bad))
 # consistency: All == total rows; each named chip == its bucket count
 if chips.get("all") != len(rows):
     e.append("chip All=%r != rendered rows=%d" % (chips.get("all"), len(rows)))
-for k in ("confirmed", "pending", "refuted"):
+for k in ("confirmed", "pending", "duplicate", "refuted"):
     if chips.get(k) != buckets.get(k, 0):
         e.append("chip %s=%r != bucket count %d" % (k, chips.get(k), buckets.get(k, 0)))
 # plumbing present
@@ -1075,6 +1075,37 @@ PY
   fi
 else
   bad "19b: --render failed on the confirmed fixture"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+
+# (20) #2007: a DUPLICATE verdict = a real, PoC-verified bug that was ALREADY REPORTED ($0). It gets its OWN
+# bucket + "Duplicate" chip — it is NOT Confirmed (unpayable), NOT Pending (fully worked: PoC done + triaged),
+# and NOT Refuted (it IS a real bug, so never struck-through as "not a bug" nor double-listed there).
+DUP_DESC="$(stage_as balancer balancer-duplicate)"
+printf 'pkg/vault/contracts/Vault.sol\tC6\tDUPLICATE\treal + PoC-verified; already reported as #12345 -> $0\n' >> "$WORK/balancer-duplicate/deep-hunt-adjudicated.tsv"
+if python3 "$DASH" --descriptor "$DUP_DESC" --render > "$WORK/pagedup.html" 2>"$WORK/render.err"; then
+  if python3 - "$WORK/pagedup.html" <<'PY'
+import sys, re
+html = open(sys.argv[1]).read()
+e = []
+if html.count('data-st="duplicate"') < 1:
+    e.append("a DUPLICATE adjudication produced no duplicate-bucket row")
+m = re.search(r'data-sel="duplicate"[^>]*>\s*(\w+)\s*<b>(\d+)</b>', html)
+if not m: e.append("Duplicate chip missing")
+else:
+    if m.group(1) != "Duplicate": e.append('duplicate chip label %r, must be "Duplicate"' % m.group(1))
+    if int(m.group(2)) < 1: e.append("Duplicate chip count did not rise after a DUPLICATE adjudication")
+if "◆ real · DUPLICATE ($0)" not in html: e.append("expected the duplicate gate label with the $0 marker")
+# the promoted duplicate must NOT be struck-through (it is a REAL bug, not a refuted 'not a bug')
+row = re.search(r'<tr data-st="duplicate".*?</tr>', html, re.S)
+if row and "line-through" in row.group(0):
+    e.append("a duplicate row is struck-through like a refuted row — a duplicate is a REAL bug")
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "20: a DUPLICATE verdict lands in its own Duplicate bucket — real + PoC-verified but already reported (\$0), not struck like a refuted row, never Confirmed/Pending (#2007)"
+  else bad "20: duplicate-state wrong"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
+  fi
+else
+  bad "20: --render failed on the duplicate fixture"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
 fi
 
 # ----------------------------------------------------------------------------------------------------------
