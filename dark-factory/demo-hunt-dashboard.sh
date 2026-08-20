@@ -920,6 +920,53 @@ else
   bad "15: --render failed on the lead-filter descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
 fi
 
+# (16) #1999: two dashboard-honesty fixes.
+#  (a) phase_status must treat "exited" the SAME way page() does — __EXIT__ marker AND no live hunt process.
+#      A re-hunt appends fresh [M3] lines after a prior run's stale __EXIT__ marker; keying off the marker
+#      alone wrongly paints the discovery phase a "gap" while Zones (via proc_alive) show a zone in_flight.
+#      Same exited+incomplete fixture: fake-alive=0 => discovery "gap" + STOPPED_INCOMPLETE (preserved);
+#      fake-alive=1 => discovery NOT "gap" + banner RUNNING (the fix).
+#  (b) the "confirmed" chip is labelled "Survived" (survived its gate, pending PoC), never "Confirmed" —
+#      a lead here is NOT PoC-verified, so the label must not imply it.
+# Fake BOTH liveness sources (proc scan AND llm-inflight) so the assertion is host-independent — otherwise a
+# real hunt's claude/flat-cyborg children on the same host leak into llm_child() and perturb hunt_live.
+emit_model "$INC_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0 && cp "$WORK/model.json" "$WORK/m-dead.json"
+emit_model "$INC_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=1 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0 && cp "$WORK/model.json" "$WORK/m-live.json"
+if python3 - "$WORK/m-dead.json" "$WORK/m-live.json" <<'PY'
+import sys, json
+dead = json.load(open(sys.argv[1])); live = json.load(open(sys.argv[2]))
+e = []
+dph = dead["phases"].get("M3 · discovery"); lph = live["phases"].get("M3 · discovery")
+# dead (no live process, __EXIT__, incomplete): the preserved "gap" behaviour
+if dph != "gap": e.append('exited+incomplete+process-gone: discovery phase should be "gap", got %r' % dph)
+if dead["banner"] != "STOPPED_INCOMPLETE": e.append("process-gone banner=%r (want STOPPED_INCOMPLETE)" % dead["banner"])
+# live (same fixture, but a hunt process is detected): NOT a gap, and the banner reflects a running hunt
+if lph == "gap": e.append('__EXIT__ + LIVE process: discovery phase must NOT be "gap" (that is the #1999 bug)')
+if live["banner"] != "RUNNING": e.append("live banner=%r (want RUNNING — a detected process is not 'exited')" % live["banner"])
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "16a: phase_status keys 'exited' on __EXIT__ AND no-live-process — a re-hunt over a stale marker shows discovery running, not a false gap (#1999)"
+  else bad "16a: phase-live guard wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+# (16b) the chip label is honest — "Survived", not "Confirmed"
+if python3 "$DASH" --descriptor "$MAIN_DESC" --render > "$WORK/page.html" 2>"$WORK/render.err"; then
+  if python3 - "$WORK/page.html" <<'PY'
+import sys, re
+html = open(sys.argv[1]).read()
+e = []
+m = re.search(r'data-sel="confirmed"[^>]*>\s*([A-Za-z]+)\s*<b>', html)
+if not m: e.append("could not find the confirmed chip label")
+elif m.group(1) != "Survived": e.append('confirmed chip label is %r, must be "Survived" (never "Confirmed" — not PoC-verified)' % m.group(1))
+if "Confirmed <b>" in html or 'confirmed")>Confirmed' in html: e.append('the misleading "Confirmed" label is still present')
+if e: print("\n".join(e)); sys.exit(1)
+PY
+    then ok "16b: the survived-a-gate chip is labelled 'Survived' (pending PoC), never the PoC-implying 'Confirmed' (#1999)"
+    else bad "16b: chip label not honest"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
+    fi
+else
+  bad "16b: --render failed"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
