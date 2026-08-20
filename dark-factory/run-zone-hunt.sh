@@ -240,6 +240,12 @@ SCOPE_HINT="" ; SINCE="" ; RESIDUALS=""
 IN_SCOPE="" ; ASSET_CONTRACTS="" ; IMPACT_THRESHOLD=""
 MAP_FIXTURE="" ; BRIEF_FIXTURE="" ; PASS_FIXTURE="" ; DROP_DIR=""
 DEEP_HUNT=0 ; INV_FIXTURE="" ; DEEP_HUNT_MAX_TARGETS=1 ; DEEP_HUNT_REPAIR_ROUNDS=4 ; DEEP_HUNT_AUX_MAX=0
+# #1982: per-cell staleness watchdog bounds. A live deep-hunt cell writes into its own dir every few seconds;
+# a flat-cyborg hang (#1925) leaves it silent while agentis-core retries the transport error forever. If a
+# cell's dir is silent longer than DEEP_CELL_STALE_S (default 15 min — generous vs one 20-min GEN_TIMEOUT so a
+# working cell is never false-killed) the engine's process group is killed and the loop fail-forwards to
+# HARNESS_ERROR instead of wedging. env-overridable; 0 disables the watchdog (pass-through).
+DEEP_CELL_STALE_S="${DEEP_CELL_STALE_S:-900}" ; DEEP_CELL_POLL_S="${DEEP_CELL_POLL_S:-45}"
 DEEP_HUNT_MAX_LENSES=2  # #1795: max lens classes per deep-hunt zone (custody-primary first, then C2/C16/C5).
 # #1914 (M1): the class-agnostic GENERAL-SOLVENCY lens (`SYS-solvency`). 0 (default) = OFF = STAGE 4.5 emits
 # exactly the per-class rows it emitted before, so `.deep-hunt-targets.tsv` is byte-identical. The default-on
@@ -958,6 +964,7 @@ if [ "$DEEP_HUNT" -eq 1 ]; then
     echo "run-zone-hunt.sh: [deep-hunt] --deep-hunt set but $REPO has no foundry.toml (EVM invariant-fuzzing is Foundry-specific) — skipping deep-hunt" >&2
   else
     INVHUNT="$HERE/run-invariant-hunt.sh"
+    CELLWD="$HERE/lib/cell-watchdog.sh"   # #1982 per-cell staleness watchdog wrapper
     [ -x "$INVHUNT" ] || { echo "run-zone-hunt.sh: [deep-hunt] required entrypoint not found/executable: $INVHUNT" >&2; exit 3; }
     DEEP="$OUT/deep-hunt"; mkdir -p "$DEEP"
     # #1914 M3: SEED the lens x surface matrix BEFORE the deep-hunt loop, so a surface can never be silently
@@ -1204,10 +1211,15 @@ PY
           --repair-rounds "$DEEP_HUNT_REPAIR_ROUNDS" "$@" ${DEEP_FWD[@]+"${DEEP_FWD[@]}"} \
           || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID' ($DCLASS); continuing" >&2; continue; }
       else
-        "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
+        # #1982: the REAL (LLM) engine can hang on a flat-cyborg session (#1925) and loop forever; run it under
+        # the per-cell staleness watchdog so a silent cell is force-advanced to HARNESS_ERROR instead of wedging
+        # the whole run. (The offline --invariant-fixture path above is deterministic + fast, so it is left
+        # unwrapped — byte-identical.) A watchdog kill exits non-zero and falls into the same `continuing` path.
+        "$CELLWD" "$DZOUT" "$DEEP_CELL_STALE_S" "$DEEP_CELL_POLL_S" -- \
+          "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
           --backend "$BACKEND" --agentis "$AGENTIS" --out "$DZOUT" \
           --repair-rounds "$DEEP_HUNT_REPAIR_ROUNDS" "$@" ${DEEP_FWD[@]+"${DEEP_FWD[@]}"} \
-          || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID' ($DCLASS); continuing" >&2; continue; }
+          || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed or was watchdog-killed for zone '$ZID' ($DCLASS); continuing" >&2; continue; }
       fi
       # Adapter + gate (#1938): deep-hunt-gate.sh is a VERBATIM port of the pre-#1938 inline merge adapter (the
       # #1778 aggregate-log filter, the fn/STEP/verdict extraction, the entry shape) PLUS an adversarial refute
