@@ -127,6 +127,23 @@ case "$DRAFT" in
   *) echo "deliver-submission.sh: draft is missing the SUBMISSION-DRAFT|PENDING-HUMAN-REVIEW human-gate marker; refusing to stage" >&2; exit 3;;
 esac
 
+# #1983: auto-populate the dup-risk band from the target's git history when the operator did not pass --dup-risk.
+# No LLM, no network — pure local `git log` on the staged target checkout — so it stays "pure muscle". A HIGH
+# band means the vulnerable surface has sat unchanged on a mature target and is likely ALREADY REPORTED: the
+# exact miss behind the TermMax C15 submission (Immunefi-rated Critical, but a 139-day-old duplicate). It is a
+# WARNING recorded into the manifest, never a gate — the human still decides. Best-effort: any failure leaves
+# DUP_RISK untouched.
+if [ -z "$DUP_RISK" ] && [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR/.git" ] && [ -x "$SCRIPT_DIR/lib/dup-risk-gate.sh" ]; then
+  _dr_args=(--repo "$TARGET_DIR")
+  [ -n "$COMMIT" ] && _dr_args+=(--commit "$COMMIT")
+  case "$LOCATION" in *:*) _dr_args+=(--file "${LOCATION%%:*}");; esac
+  _dr_line="$("$SCRIPT_DIR/lib/dup-risk-gate.sh" "${_dr_args[@]}" 2>/dev/null || true)"
+  case "$_dr_line" in
+    DUP-RISK\|*) DUP_RISK="$(printf '%s' "$_dr_line" | cut -d'|' -f2)"
+      echo "deliver-submission.sh: auto dup-risk from git history -> $_dr_line" >&2 ;;
+  esac
+fi
+
 # Filesystem-safe slug of the submission id for the on-disk subdir name (the canonical id lives in manifest.json).
 SLUG="$(printf '%s' "$ID" | sed 's/[^A-Za-z0-9._@-]/-/g')"
 [ -n "$SLUG" ] || { echo "deliver-submission.sh: --id produced an empty slug" >&2; exit 2; }
