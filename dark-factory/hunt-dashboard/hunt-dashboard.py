@@ -279,6 +279,15 @@ def planned_deep_rows():
             rows.append((z.get("id"), "SYS-solvency", True))
     return rows
 
+# #2003: subdirs that hold a CLONED TARGET REPO or build artifacts — never a liveness heartbeat. A deep-hunt
+# cell clones the whole target repo (+ forge lib/out/cache) under run/repo/, so a single cell's run/ tree can
+# hold ~6k files and a full re-hunt ~120k. The freshness walks below only need the newest LLM-log / .agentis
+# heartbeat, so pruning these keeps a render O(hundreds) instead of O(100k) (a 19s render dropped to <1s).
+_WALK_SKIP = {"repo", "out", "cache", "lib", "node_modules", ".git", "target", "artifacts", "broadcast"}
+def _prune(dirs):
+    # in-place prune for os.walk (top-down) so it never descends into the heavy target/build trees
+    dirs[:] = [d for d in dirs if d not in _WALK_SKIP]
+
 def active_deep_slot():
     # The ONE deep-hunt slot being (re-)hunted RIGHT NOW: the slot whose run/ dir has the freshest write
     # (< 90s) while a hunt process / LLM child is alive. A re-run (--deep-hunt-resume) regenerates a slot
@@ -289,7 +298,8 @@ def active_deep_slot():
     for d in glob.glob(os.path.join(OUT,"deep-hunt","*")):
         rd=os.path.join(d,"run")
         if not os.path.isdir(rd): continue
-        for root,_dirs,files in os.walk(rd):
+        for root,dirs,files in os.walk(rd):
+            _prune(dirs)
             for fn in files:
                 try:
                     mm=os.path.getmtime(os.path.join(root,fn))
@@ -310,7 +320,8 @@ def deep_cell_status(slot):
     cell = os.path.join(OUT, "deep-hunt", slot)
     if not os.path.isdir(cell): return "queued"
     newest = 0.0
-    for root, _dirs, files in os.walk(cell):
+    for root, dirs, files in os.walk(cell):
+        _prune(dirs)
         for fn in files:
             try:
                 mm = os.path.getmtime(os.path.join(root, fn))
@@ -329,7 +340,8 @@ def freshest():
     # os.walk (NOT glob '**'): the gen-briefs / .agentis heartbeats live under HIDDEN dirs
     # (.gen-briefs/run/, .agentis/) that glob '**' silently skips — which made M2 look stalled
     # while briefs were actively being written. walk descends into dot-dirs, so the pulse is real.
-    for root,_dirs,files in os.walk(OUT):
+    for root,dirs,files in os.walk(OUT):
+        _prune(dirs)
         for fn in files:
             if fn.endswith((".log",".json",".jsonl")):
                 try:
@@ -415,7 +427,8 @@ def sublog_activity():
     # The newest per-stage sub-log tells us WHAT is happening right now and, if an LLM call is
     # in flight, HOW LONG it has been thinking — the concrete "it's not frozen" evidence.
     logs=[]
-    for root,_dirs,files in os.walk(OUT):   # walk sees hidden .gen-briefs/run/ that glob '**' skips
+    for root,dirs,files in os.walk(OUT):   # walk sees hidden .gen-briefs/run/ that glob '**' skips
+        _prune(dirs)
         if os.path.basename(root)=="run":
             logs+=[os.path.join(root,fn) for fn in files if fn.endswith(".log")]
     if not logs: return None
