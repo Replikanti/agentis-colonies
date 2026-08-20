@@ -54,9 +54,11 @@ elif has "insolven" || has "direct theft" || has "theft of any" || has "theft of
      || has "permanent freez" || has "permanently freez" || has "govern" || has "unauthorized mint" \
      || has "unauthorised mint" || { has "theft" && has "fund"; } || { has "theft" && has "nft"; }; then
   band="Critical"; rule="direct theft / permanent freeze of funds/NFTs, insolvency, governance, or unauthorized minting"
-elif has "griefing" || has "block stuffing" || has "theft of gas" || has "unbounded gas" \
-     || has "unable to operate" || has "lack of token funds" || has "lack of funds"; then
-  band="Medium"; rule="griefing / block-stuffing / gas / SC-unable-to-operate"
+elif has "griefing" || has "grief" || has "denial of service" || has "denial-of-service" \
+     || has "block stuffing" || has "theft of gas" || has "unbounded gas" \
+     || has "unable to operate" || has "lack of token funds" || has "lack of funds" \
+     || { has "burn" && has "nonce"; } || has "bricked" || has "brick the" || has "permanently disable"; then
+  band="Medium"; rule="griefing / DoS / block-stuffing / gas / SC-unable-to-operate"
 elif has "fails to deliver" || has "promised return"; then
   band="Low"; rule="fails to deliver promised returns without value loss"
 else
