@@ -747,7 +747,7 @@ elif con["verdict"] != "CONFIRMED":
     e.append("a `REAL` gate verdict must canonicalize to CONFIRMED (survived), not fall through to PENDING: %s" % con)
 if e: print("\n".join(e)); sys.exit(1)
 PY
-  then ok "10: a gate `REAL` verdict canonicalizes to CONFIRMED/survived — never stuck at PENDING (#1981)"
+  then ok "10: a gate 'REAL' verdict canonicalizes to CONFIRMED/survived — never stuck at PENDING (#1981)"
   else bad "10: REAL-verdict lead not confirmed"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
   fi
 else
