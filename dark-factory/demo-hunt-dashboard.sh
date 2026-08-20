@@ -998,6 +998,34 @@ PY
   else bad "17: deep-live phase signal wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
   fi
 
+# (18) #2003: the deep-hunt freshness walk must SKIP the cloned-target/build subtrees (run/repo/, out/, cache/,
+# lib/ ...). A deep cell clones the whole target repo under run/repo/ (~6k files/cell, ~120k on a full re-hunt),
+# and walking it made a render take ~19s. Correctness guard: a cell whose ONLY fresh write is under run/repo/
+# while its LLM heartbeat (run/llm.log) is 20-min stale must still read abandoned (harness_error) — i.e. the
+# fresh repo/ file is ignored. Without the prune, repo/ freshness would flip it to a false "running".
+REPO_DESC="$(plant_c5 phase-repo-prune 1200)"   # heartbeat (run/llm.log) 20-min stale => cell is abandoned
+REPO_CELL="$WORK/phase-repo-prune/zone-hunt-out/deep-hunt/pkg_vault_contracts-C5/run/repo"
+mkdir -p "$REPO_CELL"
+printf 'pragma solidity ^0.8.0;\ncontract Target {}\n' > "$REPO_CELL/Target.sol"   # FRESH write, but under repo/
+if emit_model "$REPO_DESC"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+d = next((x for x in m["deep_rows"] if x["slot"] == "pkg_vault_contracts-C5"), None)
+e = []
+if not d: e.append("planted C5 row missing")
+elif d["state"] != "harness_error":
+    e.append('a cell with a fresh file only under run/repo/ (heartbeat stale) must read harness_error — '
+             'the freshness walk is descending the pruned target clone: %s' % d)
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "18: the freshness walk skips run/repo/ (cloned target) — a fresh repo/ file does not resurrect a heartbeat-stale cell (#2003 perf prune, correctness-preserving)"
+  else bad "18: repo/ prune changed liveness verdict"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "18: emit-model failed on the repo-prune fixture"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
