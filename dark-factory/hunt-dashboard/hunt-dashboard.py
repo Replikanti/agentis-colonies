@@ -804,8 +804,8 @@ def page(nav=""):
             detail=f'<span style="color:#bbb;font-size:12px">{html.escape(x["title"][:200])}</span>'
         elif _dupr is not None:
             strike=""; rowop="opacity:.8"; st="duplicate"   # #2007: real + PoC-verified, but already reported → $0
-            vcell='<span style="color:#c9a227;font-weight:700">◆ real · DUPLICATE ($0)</span>'
-            detail=f'<span style="color:#c9a227;font-size:12px">confirmed real bug, already reported: {html.escape(_dupr[:260])}</span>'
+            vcell='<span style="color:#ff5c5c;font-weight:700">◆ real · DUPLICATE ($0)</span>'
+            detail=f'<span style="color:#ff5c5c;font-size:12px">confirmed real bug, already reported: {html.escape(_dupr[:260])}</span>'
         elif v=="CONFIRMED":
             strike=""; rowop=""; st="pending"   # #2005: survived the refute gate, but NOT PoC-verified → Pending
             vcell='<span style="color:#f0a800">◆ survived refute · needs PoC</span>'
@@ -945,8 +945,8 @@ def page(nav=""):
             elif ("FINDING" in v or "VIOLAT" in v) and adj.get("verdict") == "DUPLICATE":
                 # #2007: real + PoC-verified, but already reported → $0 (its own state, not needs-PoC/refuted)
                 sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt or "?")}</span>'
-                gate = '<span style="color:#c9a227;font-weight:700">◆ real · DUPLICATE ($0)</span>'
-                detail = f'<span style="color:#c9a227;font-size:12px">confirmed real bug, already reported: {html.escape(adj.get("reason", "")[:260])}</span>'
+                gate = '<span style="color:#ff5c5c;font-weight:700">◆ real · DUPLICATE ($0)</span>'
+                detail = f'<span style="color:#ff5c5c;font-size:12px">confirmed real bug, already reported: {html.escape(adj.get("reason", "")[:260])}</span>'
                 rowop = "opacity:.8"; st = "duplicate"
             elif "FINDING" in v or "VIOLAT" in v:
                 n_dh_find += 1
