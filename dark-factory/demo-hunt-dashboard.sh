@@ -848,6 +848,34 @@ else
   bad "13: emit-model failed on the abandoned descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
 fi
 
+# (14) #1994: every lead + deep-hunt finding carries a short, STABLE, referenceable id derived deterministically
+# from its identity (loc + class). Two emits over the same fixture must yield IDENTICAL ids per (loc,class)
+# (refresh-stable), every id is 6-hex (or the blank sentinel), and DISTINCT (loc,class) never collide.
+emit_model "$MAIN_DESC" && cp "$WORK/model.json" "$WORK/model-a.json"
+emit_model "$MAIN_DESC" && cp "$WORK/model.json" "$WORK/model-b.json"
+if python3 - "$WORK/model-a.json" "$WORK/model-b.json" <<'PY'
+import sys, json, re
+a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2]))
+ra = a["leads"] + a["deep_rows"]; rb = b["leads"] + b["deep_rows"]
+e = []
+for r in ra:
+    if not re.fullmatch(r"[0-9a-f]{6}|-{6}", r.get("id", "") or ""):
+        e.append("bad id %r on %s" % (r.get("id"), r.get("loc")))
+km = lambda rows: {(r["loc"], r.get("cls", "")): r["id"] for r in rows}
+ka, kb = km(ra), km(rb)
+for k in ka:
+    if ka[k] != kb.get(k): e.append("id not refresh-stable for %s: %r vs %r" % (k, ka[k], kb.get(k)))
+seen = {}
+for k, i in ka.items():
+    if i != "------" and i in seen and seen[i] != k:
+        e.append("hash collision: %s and %s share id %s" % (seen[i], k, i))
+    seen[i] = k
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "14: every lead/finding has a stable 6-hex id — refresh-stable per (loc,class), no collision on distinct surfaces (#1994)"
+  else bad "14: finding-id contract wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
