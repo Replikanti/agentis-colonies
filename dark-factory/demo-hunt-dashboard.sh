@@ -876,6 +876,50 @@ PY
   else bad "14: finding-id contract wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
   fi
 
+# (15) #1996: the LEADS table carries a client-side filter. Every rendered lead/deep row is tagged with a
+# data-st bucket (confirmed / pending / refuted / other); a chip bar exposes All/Confirmed/Pending/Refuted
+# with per-bucket counts; the filter JS + table id are present; and the column-header row is NOT tagged (so
+# it never hides). Assertions are CONSISTENCY-based (chip counts must equal the actual rendered bucket
+# counts) so they hold regardless of the fixture's exact numbers.
+if python3 "$DASH" --descriptor "$MAIN_DESC" --render > "$WORK/page.html" 2>"$WORK/render.err"; then
+  if python3 - "$WORK/page.html" <<'PY'
+import sys, re, collections
+html = open(sys.argv[1]).read()
+e = []
+# chip bar: sel -> count
+chips = dict((m.group(1), int(m.group(2))) for m in
+             re.finditer(r'data-sel="(\w+)"[^>]*>[^<]*<b>(\d+)</b>', html))
+for want in ("all", "confirmed", "pending", "refuted"):
+    if want not in chips: e.append("missing filter chip %r" % want)
+# rendered row buckets
+rows = re.findall(r'<tr data-st="(\w+)"', html)
+buckets = collections.Counter(rows)
+if not rows: e.append("no data-st rows rendered — filter would be vacuous")
+VOCAB = {"confirmed", "pending", "refuted", "other"}
+bad = set(buckets) - VOCAB
+if bad: e.append("data-st outside vocabulary: %r" % sorted(bad))
+# consistency: All == total rows; each named chip == its bucket count
+if chips.get("all") != len(rows):
+    e.append("chip All=%r != rendered rows=%d" % (chips.get("all"), len(rows)))
+for k in ("confirmed", "pending", "refuted"):
+    if chips.get(k) != buckets.get(k, 0):
+        e.append("chip %s=%r != bucket count %d" % (k, chips.get(k), buckets.get(k, 0)))
+# plumbing present
+if "function hfilter" not in html: e.append("filter JS (hfilter) missing")
+if '<table id="leadtbl">' not in html: e.append('table id="leadtbl" missing (JS could not scope)')
+# the column-header row must NOT be filterable (else the header hides under a chip)
+hdr = re.search(r'(<tr[^>]*>\s*<td>Type</td>)', html)
+if not hdr: e.append("LEADS column-header row not found")
+elif "data-st" in hdr.group(1): e.append("column-header row is data-st tagged — it would hide under a filter")
+if e: print("\n".join(e)); sys.exit(1)
+PY
+    then ok "15: LEADS filter — every row bucketed (confirmed/pending/refuted/other), chip counts match rendered buckets, header untagged, JS+table-id present (#1996)"
+    else bad "15: lead-filter contract wrong"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
+    fi
+else
+  bad "15: --render failed on the lead-filter descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
