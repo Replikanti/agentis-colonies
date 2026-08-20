@@ -961,8 +961,8 @@ def page(nav=""):
     # #1996: LEADS filter chips — client-side show/hide by data-st bucket. Built as plain strings (not inside
     # the f-string template) so the JS braces need no escaping. Selection persists in localStorage and is
     # re-applied on every 5s meta-refresh; the column-header row + sub-floor summary carry no data-st so they
-    # never hide. "other" (clean / harness-gap) rows are visible under "Vše" only — no dedicated chip.
-    _chipdefs=[("all","Vše",sum(_stc.values())),("confirmed","Confirmed",_stc.get("confirmed",0)),
+    # never hide. "other" (clean / harness-gap) rows are visible under "All" only — no dedicated chip.
+    _chipdefs=[("all","All",sum(_stc.values())),("confirmed","Confirmed",_stc.get("confirmed",0)),
                ("pending","Pending",_stc.get("pending",0)),("refuted","Refuted",_stc.get("refuted",0))]
     chipbar=('<div class="chips">'+''.join(
         '<span class="chip" data-sel="%s" onclick="hfilter(\'%s\')">%s <b>%d</b></span>'%(k,k,lbl,n)
