@@ -441,6 +441,11 @@ def sublog_activity():
 def phase_status():
     log = read(LOG); zs = coverage()
     total_z = len(zs) or 4
+    # #1999: "exited" must mean the SAME thing here as in page() — the __EXIT__ marker AND no live hunt
+    # process. A re-hunt appends fresh [M3] lines AFTER an earlier run's stale __EXIT__ marker, so keying
+    # off the marker's mere presence would wrongly show the discovery phase as a "gap" while Zones (which
+    # go through proc_alive) correctly show a zone in_flight. Gate both exit branches on liveness.
+    hunt_live = proc_alive() or llm_child()[0]
     # covered = a zone that actually produced a verdict (clean or with leads).
     # failed  = HARNESS_ERROR: no verdict at all — a GAP, not a result. Never counts as hunted.
     covered = sum(1 for z in zs if z.get("status") in ("hunted","hunted_empty"))
@@ -450,7 +455,7 @@ def phase_status():
     # PRIOR breadth run whose out we are layered on. Mark the breadth phases done from the prereq
     # artifacts (they must exist for --deep-hunt-only to start), and drive progress off the 4.5 slots.
     if ("[deep-hunt]" in log) and ("[M1]" not in log) and ("[M3]" not in log):
-        exited = "__EXIT__=" in log
+        exited = ("__EXIT__=" in log) and not hunt_live
         st = {"M1 · map zones":"done","M2 · briefs":"done","M3 · discovery":"done",
               "M4 · refute gate":"done",
               "4.5 · deep-hunt": "done" if exited else "run",
@@ -466,7 +471,7 @@ def phase_status():
     # where nothing else has a marker yet — show 🔄 on it instead of a premature ✅ + no running row).
     st["M1 · map zones"] = "done" if "[M2]" in log else ("run" if "[M1]" in log else "wait")
     st["M2 · briefs"]    = "done" if "[M3]" in log else ("run" if "[M2]" in log else "wait")
-    if "__EXIT__=" in log:
+    if ("__EXIT__=" in log) and not hunt_live:
         # The process exited — but "exited" is NOT "fully hunted". Only call the run
         # complete when every zone produced a verdict and none errored out. Otherwise
         # the coverage has holes and the bar must reflect them, not a green 100 %.
@@ -962,11 +967,20 @@ def page(nav=""):
     # the f-string template) so the JS braces need no escaping. Selection persists in localStorage and is
     # re-applied on every 5s meta-refresh; the column-header row + sub-floor summary carry no data-st so they
     # never hide. "other" (clean / harness-gap) rows are visible under "All" only — no dedicated chip.
-    _chipdefs=[("all","All",sum(_stc.values())),("confirmed","Confirmed",_stc.get("confirmed",0)),
-               ("pending","Pending",_stc.get("pending",0)),("refuted","Refuted",_stc.get("refuted",0))]
+    # #1999: the "confirmed" bucket is labelled "Survived", NOT "Confirmed" — a lead here has SURVIVED its
+    # gate (refute for breadth, invariant-fuzz for depth) but is still PENDING a forge PoC + triage; it is
+    # NOT PoC-verified. Only a hand-written PoC (tracked off-dashboard) confirms exploitability. The tuple's
+    # 4th field is an optional chip tooltip. data-sel/data-st stays "confirmed" (internal key; the filter and
+    # test key on it) — only the human-facing label changed.
+    _chipdefs=[("all","All",sum(_stc.values()),""),
+               ("confirmed","Survived",_stc.get("confirmed",0),
+                "survived its gate (refute / invariant-fuzz) — pending forge PoC + triage; NOT yet PoC-verified"),
+               ("pending","Pending",_stc.get("pending",0),""),
+               ("refuted","Refuted",_stc.get("refuted",0),"")]
     chipbar=('<div class="chips">'+''.join(
-        '<span class="chip" data-sel="%s" onclick="hfilter(\'%s\')">%s <b>%d</b></span>'%(k,k,lbl,n)
-        for k,lbl,n in _chipdefs)+'</div>')
+        '<span class="chip" data-sel="%s" onclick="hfilter(\'%s\')"%s>%s <b>%d</b></span>'
+        %(k,k,(' title="%s"'%html.escape(t) if t else ''),lbl,n)
+        for k,lbl,n,t in _chipdefs)+'</div>')
     filter_js=("<script>function hfilter(s){"
                "try{localStorage.setItem('huntLeadFilter',s);}catch(e){}"
                "var rs=document.querySelectorAll('#leadtbl tr[data-st]');"
