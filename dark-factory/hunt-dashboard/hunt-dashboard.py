@@ -486,9 +486,19 @@ def phase_status():
     st["M3 · discovery"] = ("done" if reached>=total_z else "run") if "[M3]" in log else "wait"
     vs = verify_state()
     deep = bool(re.search(r"STAGE 4\.5|\[deep-hunt\]", log))
+    # #2001: a phase shows "run" only when its work is LIVE right now — not merely because its marker appeared
+    # once in the append-only log. A re-hunt re-enters discovery after a prior full pass, so the deep-hunt +
+    # refute-deep markers persist while the actual deep-hunt cells sit idle (hours-stale) and only discovery is
+    # working. Key the deep-hunt "run" state on active_deep_slot() (a deep cell writing within 90s AND a live
+    # process), NOT on the mere presence of `deep`. Idle-but-ran => "done" (findings are listed below); the
+    # normal live deep-hunt keeps active_deep_slot() truthy (cells heartbeat every ~4s) so it still reads "run".
+    deep_live = active_deep_slot() is not None
     st["M4 · refute gate"] = ("done" if deep else ("run" if vs is not None else "wait"))
-    st["4.5 · deep-hunt"]  = "run" if deep else "wait"
-    st["4.6 · refute deep-hunt"] = _dh_refute_state(deep)
+    st["4.5 · deep-hunt"]  = "run" if deep_live else ("done" if deep else "wait")
+    _rf = _dh_refute_state(deep)
+    # an idle backlog of un-triaged deep findings is NOT "running triage" — only call refute-deep "run" while
+    # deep-hunt is genuinely live; otherwise its "run" (open findings) reads as "wait" (awaiting triage).
+    st["4.6 · refute deep-hunt"] = _rf if deep_live else ("wait" if _rf == "run" else _rf)
     st["deliver · stage"]  = "run" if re.search(r"deliver-submission|PENDING-HUMAN-REVIEW", log) else "wait"
     prog = 0.0
     for name,w in PHASES:

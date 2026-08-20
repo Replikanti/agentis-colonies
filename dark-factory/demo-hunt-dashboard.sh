@@ -967,6 +967,37 @@ else
   bad "16b: --render failed"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
 fi
 
+# (17) #2001: the deep-hunt (4.5) + refute-deep (4.6) phases show "run" only when deep-hunt is LIVE right now
+# (an active_deep_slot: a deep cell writing within 90s), NOT merely because a `STAGE 4.5`/`[deep-hunt]` marker
+# appeared once in the append-only log. A re-hunt re-enters discovery after a full prior pass, so those markers
+# persist while the deep cells sit hours-stale and only discovery is working — the phase panel must not then
+# claim the fuzzer is running. Both fixtures force the RUNNING branch (fake-alive=1); they differ ONLY in the
+# planted deep cell's freshness, isolating the live signal.
+DLIVE_DESC="$(plant_c5 phase-deep-live 5)"      # deep cell written 5s ago  => deep-hunt IS live
+DIDLE_DESC="$(plant_c5 phase-deep-idle 1200)"   # deep cell 20-min stale    => deep-hunt idle (markers persist)
+emit_model "$DLIVE_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=1 && cp "$WORK/model.json" "$WORK/m-dlive.json"
+emit_model "$DIDLE_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=1 && cp "$WORK/model.json" "$WORK/m-didle.json"
+if python3 - "$WORK/m-dlive.json" "$WORK/m-didle.json" <<'PY'
+import sys, json
+live = json.load(open(sys.argv[1])); idle = json.load(open(sys.argv[2]))
+e = []
+# a genuinely live deep cell => deep-hunt reads "run"
+if live["phases"].get("4.5 · deep-hunt") != "run":
+    e.append('fresh deep cell: 4.5 deep-hunt should be "run", got %r' % live["phases"].get("4.5 · deep-hunt"))
+# an idle (stale) deep cell, markers still in the log => must NOT read "run" (that is the #2001 bug); "done"
+if idle["phases"].get("4.5 · deep-hunt") == "run":
+    e.append('idle deep-hunt still reads "run" — log-presence is forcing a false running state (#2001)')
+if idle["phases"].get("4.5 · deep-hunt") != "done":
+    e.append('idle-but-ran deep-hunt should be "done", got %r' % idle["phases"].get("4.5 · deep-hunt"))
+# refute-deep must not claim active triage while deep-hunt is idle
+if idle["phases"].get("4.6 · refute deep-hunt") == "run":
+    e.append('idle refute-deep still reads "run" — an un-triaged backlog is not active triage (#2001)')
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "17: deep-hunt/refute-deep read 'run' only when a deep cell is LIVE now, not from a stale log marker — a re-hunt in discovery no longer shows a phantom running fuzzer (#2001)"
+  else bad "17: deep-live phase signal wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
