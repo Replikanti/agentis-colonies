@@ -787,6 +787,35 @@ else
   bad "11: emit-model failed on the over-claim descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
 fi
 
+# (12) #1989: an INDETERMINATE impact (no in-scope keyword) must KEEP the hunter's claim — the reconciler only
+# LOWERS on a POSITIVE lower-tier classification, never on absence of a match (the Python `_rules_severity`
+# returns "" here, unlike the shell's assumed-in-scope Medium default). Pins that a genuine High whose prose the
+# keyword matcher can't classify is never wrongly demoted. Reuse the (11) staged copy + append an indeterminate
+# High candidate.
+if [ -n "$_zc" ]; then
+  printf '%s\n' '{"candidates":["contracts/Y.sol:f:9|class=C6|severity=High|an unusual interaction in the accounting path produces an inconsistent internal counter under a specific ordering|PoC recipe"]}' >> "$_zc"
+fi
+if emit_model "$OC_DESC"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+ind = next((l for l in m["leads"] if l["loc"] == "contracts/Y.sol:f:9"), None)
+e = []
+if not ind:
+    e.append("injected indeterminate lead missing from the model")
+else:
+    if ind["sev"] != "High": e.append("an indeterminate impact must KEEP the High claim, got %r" % ind["sev"])
+    if ind.get("overclaim"): e.append("indeterminate impact wrongly flagged as an over-claim")
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+  then ok "12: an indeterminate impact keeps the hunter's claim (High), no demotion, no over-claim flag (#1989)"
+  else bad "12: indeterminate-impact reconciliation wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "12: emit-model failed on the indeterminate descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
