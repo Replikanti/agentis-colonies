@@ -712,6 +712,7 @@ def page(nav=""):
             elif z_pend.get(zid,0): rlbl,rcol=f"… {z_pend[zid]} pending","#f0a800"
             else:                   rlbl,rcol="∅ empty","#8a94a0"
         elif s=="failed": rlbl,rcol="✗ no result (gap)","#c07a7a"
+        elif s=="abandoned": rlbl,rcol="⚫ stopped mid-hunt (gap)","#8a94a0"   # #1991: match emit_model()'s result text
         else:             rlbl,rcol="— pending","#5a6270"
         cust=' <span title="value-custody: funds live here — deep-hunt aims its value-conservation lens here">💰</span>' if z.get("value_custody") else ""
         w="700" if s=="failed" else "400"
