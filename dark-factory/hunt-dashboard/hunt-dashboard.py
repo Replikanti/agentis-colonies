@@ -738,6 +738,11 @@ def page(nav=""):
     n_pend=len(L)-n_ref-n_surv
     pf_rank=_pay_floor_rank()   # #1960: resolved once; None ⇒ pay-floor marker OFF
     n_hidden=0   # #1966: sub-floor leads are hidden from the table, not badged; counted here
+    # #1996: per-status tally for the LEADS filter chips — counts what is actually RENDERED (sub-floor rows
+    # are skipped below, so they never inflate a chip). One shared Counter across breadth + depth so the
+    # chip totals match the single unified table the operator filters. Buckets: confirmed (◆ survived a gate),
+    # pending (gate undecided), refuted (✗ killed), other (clean / harness-gap — visible under "All" only).
+    _stc=_cl.Counter()
     lrows=""
     for x in sorted(L,key=lambda a:(0 if ("High" in a["sev"] or "Crit" in a["sev"]) else 1)):
         if _is_unpayable(x["sev"], pf_rank):   # #1966: hide sub-floor rows, tally instead of rendering
@@ -746,15 +751,15 @@ def page(nav=""):
         col=SEVCOL.get(x["sev"].split()[0] if x["sev"] else "","#ccc")
         rv=_rv(x); v=(rv or {}).get("verdict","")
         if v=="REFUTED":
-            strike="text-decoration:line-through;"; rowop="opacity:.6"
+            strike="text-decoration:line-through;"; rowop="opacity:.6"; st="refuted"
             vcell='<span style="color:#e5737b;font-weight:600">✗ REFUTED</span>'
             detail=f'<span style="color:#e5737b;font-size:12px">verified → not a bug: {html.escape(rv["reason"][:260])}</span>'
         elif v=="CONFIRMED":
-            strike=""; rowop=""
+            strike=""; rowop=""; st="confirmed"
             vcell='<span style="color:#39d353;font-weight:700">◆ SURVIVED → PoC</span>'
             detail=f'<span style="color:#bbb;font-size:12px">{html.escape(x["title"][:200])}</span>'
         else:
-            strike=""; rowop=""
+            strike=""; rowop=""; st="pending"
             vcell='<span style="color:#f0a800">… pending refute</span>'
             detail=f'<span style="color:#bbb;font-size:12px">{html.escape(x["title"][:200])}</span>'
         # #1989: when the shown Sev was reclassified DOWN from the hunter's over-claim, flag it inline so the
@@ -763,7 +768,8 @@ def page(nav=""):
                  f'{html.escape(x["sev"])} by the platform impact-&gt;tier rules" style="color:#f0a800;'
                  f'font-weight:400;font-size:11px;cursor:help">&nbsp;⚠ claimed {html.escape(x.get("sev_claimed",""))}</span>'
                  ) if x.get("overclaim") else ""
-        lrows+=(f'<tr style="{rowop}"><td style="white-space:nowrap">{_type_badge("BREADTH")}</td>'
+        _stc[st]+=1
+        lrows+=(f'<tr data-st="{st}" style="{rowop}"><td style="white-space:nowrap">{_type_badge("BREADTH")}</td>'
                 f'<td title="{_title_attr(_sev_title(x["sev"]))}" style="color:{col};font-weight:600;cursor:help;{strike}">{html.escape(x["sev"])}{_ocflag}</td>'
                 f'<td title="{_title_attr(_cls_title(x["cls"]))}" style="color:#9fd;cursor:help;{strike}">{html.escape(x["cls"])}</td>'
                 f'<td style="font-family:monospace;font-size:12px;{strike}"><span title="stable finding id — cite this" style="color:#8a94a0;font-weight:600">{_finding_id(x["loc"], x["cls"])}</span>&nbsp;{html.escape(x["loc"])}</td>'
@@ -864,7 +870,7 @@ def page(nav=""):
                    else '<span style="color:#58a6ff">…</span>')
             gate = '<span style="color:#58a6ff;font-weight:600">🔄 re-running (in progress)</span>'
             detail = '<span style="color:#8b949e;font-size:12px">re-hunting with fitted fuzz budget — verdict pending</span>'
-            rowop = ""
+            rowop = ""; st = "pending"   # #1996: verdict undecided → pending bucket
         elif d:
             v = d["verdict"]; adj = d.get("adj") or {}
             cls = d["cls"]; loc = d["target"]
@@ -875,14 +881,14 @@ def page(nav=""):
                 sev = f'<span style="color:{scol};font-weight:600;text-decoration:line-through">{html.escape(sevtxt or "?")}</span>'
                 gate = '<span style="color:#e5737b;font-weight:600">✗ REFUTED (triaged FP)</span>'
                 detail = f'<span style="color:#e5737b;font-size:12px">verified → not a bug: {html.escape(adj.get("reason", "")[:280])}</span>'
-                rowop = "opacity:.6"; strike = "text-decoration:line-through;"
+                rowop = "opacity:.6"; strike = "text-decoration:line-through;"; st = "refuted"   # #1996
             elif "FINDING" in v or "VIOLAT" in v:
                 n_dh_find += 1
                 sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt or "?")}</span>'
                 gate = '<span style="color:#f0a800">◆ FINDING · pending forge PoC + triage</span>'
                 detail = (f'<span style="color:#bbb;font-size:12px">multi-step invariant broken — shrunk witness '
                           f'({d["steps"]} steps); LLM-hypothesized invariant, verify before any submit</span>')
-                rowop = ""
+                rowop = ""; st = "confirmed"   # #1996: ◆ survived the fuzz gate → confirmed lead bucket
             elif "CLEAN" in v:
                 # no bug confirmed on this High-value surface — struck through, like a refuted lead. The Sev
                 # is the TARGET's severity class (intrinsic, same as a LEAD keeps its Sev when refuted).
@@ -890,14 +896,14 @@ def page(nav=""):
                 gate = '<span style="color:#8a94a0;font-size:12px">∅ clean (held in budget)</span>'
                 detail = ('<span style="color:#8a94a0;font-size:12px">every deep invariant held across the fuzzed '
                           'search (not a proof of safety)</span>')
-                rowop = "opacity:.6"; strike = "text-decoration:line-through;"
+                rowop = "opacity:.6"; strike = "text-decoration:line-through;"; st = "other"   # #1996: clean, no open lead
             else:
                 # HARNESS_ERROR — a coverage GAP (not "no bug", so NOT struck), but the target still carries
                 # its severity class; the gap is flagged amber in the gate column.
                 sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt or "?")}</span>'
                 gate = '<span style="color:#f0a800;font-size:12px">⚠ harness error — no verdict</span>'
                 detail = '<span style="color:#f0a800;font-size:12px">harness error is not a verdict — a coverage gap</span>'
-                rowop = "opacity:.6"
+                rowop = "opacity:.6"; st = "other"   # #1996: coverage gap, not an open lead
         else:
             cls = clsname; loc = zid   # exact target file is only known once the row runs
             sevtxt = _intrinsic_sev(slot_custody.get(slot, False)) or (PAY_FLOOR.title() if PAY_FLOOR else "")
@@ -910,22 +916,23 @@ def page(nav=""):
             if _cs == "running":
                 gate = '<span style="color:#58a6ff">🔄 fuzzing…</span>'
                 detail = '<span style="color:#8b949e;font-size:12px">opus generating handler + stateful fuzzing</span>'
-                rowop = ""
+                rowop = ""; st = "pending"   # #1996: in progress → pending
             elif _cs == "abandoned":
                 # dir exists but silent — the cell was force-advanced or its session died: a coverage GAP,
                 # rendered like a harness_error (amber, dimmed), NOT a perpetual "fuzzing…".
                 gate = '<span style="color:#f0a800;font-size:12px">⚠ harness error — no verdict</span>'
                 detail = '<span style="color:#f0a800;font-size:12px">deep-hunt cell ended without a verdict — a coverage gap</span>'
-                rowop = "opacity:.6"
+                rowop = "opacity:.6"; st = "other"   # #1996: coverage gap
             else:
                 gate = '<span style="color:#6e7681">⬜ queued</span>'
                 detail = '<span style="color:#6e7681;font-size:12px">planned lens row — not yet run</span>'
-                rowop = "opacity:.5"
+                rowop = "opacity:.5"; st = "pending"   # #1996: not yet run → pending
         dh_unpay = _is_unpayable(sevtxt, pf_rank)   # #1960: sevtxt is defined in every branch above
         if dh_unpay:   # #1966: hide sub-floor rows, tally instead of rendering
             n_hidden += 1
             continue
-        dhrows += (f'<tr style="{rowop}"><td style="white-space:nowrap">{_type_badge("DEPTH")}</td>'
+        _stc[st]+=1   # #1996: count the RENDERED deep row into its filter bucket
+        dhrows += (f'<tr data-st="{st}" style="{rowop}"><td style="white-space:nowrap">{_type_badge("DEPTH")}</td>'
                    f'<td title="{_title_attr(_sev_title(sevtxt))}" style="white-space:nowrap;cursor:help">{sev}</td>'
                    f'<td title="{_title_attr(_cls_title(cls))}" style="color:#9fd;cursor:help;{strike}">{html.escape(cls)}</td>'
                    f'<td style="font-family:monospace;font-size:12px;{strike}"><span title="stable finding id — cite this" style="color:#8a94a0;font-weight:600">{_finding_id(loc, cls)}</span>&nbsp;{html.escape(loc)}</td>'
@@ -951,6 +958,24 @@ def page(nav=""):
     hidden_row = (f'<tr><td colspan="6" style="color:#7d8590;font-size:12px;padding:6px 8px">'
                   f'{n_hidden} sub-floor lead{"s" if n_hidden!=1 else ""} hidden (below pay-floor '
                   f'{html.escape(PAY_FLOOR)} — $0 on this program)</td></tr>') if n_hidden else ""
+    # #1996: LEADS filter chips — client-side show/hide by data-st bucket. Built as plain strings (not inside
+    # the f-string template) so the JS braces need no escaping. Selection persists in localStorage and is
+    # re-applied on every 5s meta-refresh; the column-header row + sub-floor summary carry no data-st so they
+    # never hide. "other" (clean / harness-gap) rows are visible under "Vše" only — no dedicated chip.
+    _chipdefs=[("all","Vše",sum(_stc.values())),("confirmed","Confirmed",_stc.get("confirmed",0)),
+               ("pending","Pending",_stc.get("pending",0)),("refuted","Refuted",_stc.get("refuted",0))]
+    chipbar=('<div class="chips">'+''.join(
+        '<span class="chip" data-sel="%s" onclick="hfilter(\'%s\')">%s <b>%d</b></span>'%(k,k,lbl,n)
+        for k,lbl,n in _chipdefs)+'</div>')
+    filter_js=("<script>function hfilter(s){"
+               "try{localStorage.setItem('huntLeadFilter',s);}catch(e){}"
+               "var rs=document.querySelectorAll('#leadtbl tr[data-st]');"
+               "for(var i=0;i<rs.length;i++){var m=(s==='all'||rs[i].getAttribute('data-st')===s);"
+               "rs[i].style.display=m?'':'none';}"
+               "var cs=document.querySelectorAll('.chip');"
+               "for(var j=0;j<cs.length;j++){cs[j].classList.toggle('on',cs[j].getAttribute('data-sel')===s);}}"
+               "(function(){var s='all';try{s=localStorage.getItem('huntLeadFilter')||'all';}catch(e){}hfilter(s);})();"
+               "</script>")
     return f"""<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="refresh" content="5">
 <title>{html.escape(LABEL)}</title><style>
@@ -971,6 +996,10 @@ table{{width:100%;border-collapse:collapse;font-size:14px}} td{{padding:4px 6px;
 @keyframes bl{{0%,100%{{opacity:1}}50%{{opacity:.25}}}}
 .meta{{color:#666;font-size:12px;margin-top:14px}}
 a{{color:#58a6ff;text-decoration:none}} a:hover{{text-decoration:underline}}
+.chips{{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px}}
+.chip{{cursor:pointer;user-select:none;font-size:12px;padding:3px 10px;border-radius:12px;background:#21262d;color:#9da7b1;border:1px solid #30363d}}
+.chip:hover{{border-color:#484f58;color:#e8e8e8}}
+.chip.on{{background:#1f6feb;color:#fff;border-color:#1f6feb;font-weight:600}}
 </style></head><body><div class="wrap">
 {nav}
 <h1>🎯 {html.escape(LABEL)}{(' <span style="color:#666;font-weight:400;font-size:14px">· ' + html.escape(REWARD_LINE) + '</span>') if REWARD_LINE else ''}</h1>
@@ -984,11 +1013,11 @@ a{{color:#58a6ff;text-decoration:none}} a:hover{{text-decoration:underline}}
 <div class="card"><h2>Phases</h2><table>{prows}</table></div>
 <div class="card"><h2>Zones ({covered}/{total_z} hunted{f' · {failed} errored' if failed else ''})</h2><table><tr style="color:#7d8590;font-size:11px"><td></td><td>Zone</td><td>State</td><td>Result</td></tr>{zrows}</table></div>
 </div>
-<div class="card" style="margin-top:20px"><h2>LEADS &nbsp;<span style="font-weight:400;font-size:12px;color:#7d8590">breadth {len(L)} ({n_surv} survived · {n_ref} refuted · {n_pend} pending) &nbsp;·&nbsp; depth {len(completed)}/{len(order)} lens rows{f' · {n_dh_find} FINDING' if n_dh_find else ''}{_dh_note}</span></h2><table>
+<div class="card" style="margin-top:20px"><h2>LEADS &nbsp;<span style="font-weight:400;font-size:12px;color:#7d8590">breadth {len(L)} ({n_surv} survived · {n_ref} refuted · {n_pend} pending) &nbsp;·&nbsp; depth {len(completed)}/{len(order)} lens rows{f' · {n_dh_find} FINDING' if n_dh_find else ''}{_dh_note}</span></h2>{chipbar}<table id="leadtbl">
 <tr style="color:#7d8590"><td>Type</td><td>Sev</td><td>Class</td><td>Location</td><td>Refute gate</td><td>Detail</td></tr>{lrows}{dhrows}{hidden_row}</table></div>
 {('<div class="card" style="margin-top:16px"><h2>Adjudicated — verified, NOT a bug (' + str(len(A)) + ') · removed from refute queue</h2><table><tr style="color:#7d8590"><td>Sev</td><td>Class</td><td>Location</td><td>Verdict</td></tr>' + arows + '</table></div>') if A else ''}
 <div class="meta">auto-refresh 10s · {now.strftime('%H:%M:%S')} · localhost:{PORT}</div>
-</div></body></html>"""
+</div>{filter_js}</body></html>"""
 
 def emit_model():
     # Deterministic assertion surface (NOT rendered by the browser): the computed facts as JSON, so the
