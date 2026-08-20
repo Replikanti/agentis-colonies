@@ -188,10 +188,16 @@ def leads():
             for c in (o.get("candidates") or []):
                 if isinstance(c, str):
                     p = c.split("|")
+                    _title = p[3] if len(p)>3 else ""
+                    _claimed = _norm_sev(p[2] if len(p)>2 else "?")
+                    # #1989: reconcile the hunter's self-claimed severity against the rules-based tier for the
+                    # impact text, so an over-claim (e.g. a Medium griefing bug tagged High) shows — and is
+                    # gated for payability — at its true tier, not the inflated claim.
+                    _eff, _over = _reconcile_sev(_claimed, _title)
                     out.append({"zone": zone, "loc": p[0] if p else "?",
                                 "cls": _norm_cls(p[1] if len(p)>1 else "?"),
-                                "sev": _norm_sev(p[2] if len(p)>2 else "?"),
-                                "title": p[3] if len(p)>3 else ""})
+                                "sev": _eff, "sev_claimed": _claimed, "overclaim": _over,
+                                "title": _title})
     return out
 
 def adjudicated():
@@ -510,6 +516,41 @@ def _sev_rank(sev):
     # Rank of a severity string's leading token; None for em-dash/blank/unknown.
     parts=(sev or "").split()
     return SEV_RANK.get(parts[0].lower()) if parts else None
+def _rules_severity(impact):
+    # #1989: a Python mirror of lib/severity-classify.sh's Immunefi Smart-Contract impact->tier rules, so a
+    # LEAD's severity can be reconciled against what the platform's own rules say rather than trusting the LLM
+    # hunter's self-claim (which over-claims — e.g. a griefing nonce-burn tagged "High"). Returns Critical/High/
+    # Medium/Low, or "" when NO in-scope keyword matches (indeterminate -> the caller keeps the claim; unlike the
+    # shell, which defaults an assumed-in-scope impact to Medium). The demo pins agreement with the shell on the
+    # load-bearing cases so the two never drift.
+    t=(impact or "").lower()
+    def h(s): return s in t
+    if (h("unclaimed yield") or h("unclaimed royalt") or h("unclaimed")) and not h("than unclaimed"):
+        return "High"                                   # theft/permanent-freeze of UNCLAIMED yield/royalties
+    if h("temporary freez") or h("temporarily freez"):
+        return "High"                                   # TEMPORARY freezing of funds/NFTs
+    if (h("insolven") or h("direct theft") or h("theft of any") or h("theft of user fund")
+        or h("theft of funds") or h("steal") or h("drain")
+        or h("permanent freez") or h("permanently freez") or h("govern") or h("unauthorized mint")
+        or h("unauthorised mint") or (h("theft") and h("fund")) or (h("theft") and h("nft"))):
+        return "Critical"
+    if (h("griefing") or h("grief") or h("denial of service") or h("denial-of-service")
+        or h("block stuffing") or h("theft of gas") or h("unbounded gas")
+        or h("unable to operate") or h("lack of token funds") or h("lack of funds")
+        or (h("burn") and h("nonce")) or h("bricked") or h("brick the") or h("permanently disable")):
+        return "Medium"                                 # griefing / DoS (no funds stolen or frozen)
+    if h("fails to deliver") or h("promised return"):
+        return "Low"
+    return ""                                           # indeterminate — never override the hunter's claim
+def _reconcile_sev(claimed, impact):
+    # Reconcile a hunter's CLAIMED severity against the rules-based tier for its impact text. Returns
+    # (effective, overclaim): only ever LOWERS (rules strictly below the claim) — an under-claim or an
+    # indeterminate impact keeps the claim (conservative), so a genuine finding is never wrongly demoted.
+    rules=_rules_severity(impact)
+    cr=_sev_rank(claimed); rr=_sev_rank(rules)
+    if rules and cr is not None and rr is not None and rr < cr:
+        return rules, True
+    return claimed, False
 def _is_unpayable(sev, floor_rank):
     # True only when the floor is set AND the severity is a KNOWN tier strictly below it. Unknown/blank
     # severity is never marked (a coverage gap is not a sub-floor payout).
@@ -699,8 +740,14 @@ def page(nav=""):
             strike=""; rowop=""
             vcell='<span style="color:#f0a800">… pending refute</span>'
             detail=f'<span style="color:#bbb;font-size:12px">{html.escape(x["title"][:200])}</span>'
+        # #1989: when the shown Sev was reclassified DOWN from the hunter's over-claim, flag it inline so the
+        # operator sees the hunter said more (and why this row may now be sub-floor), not a silent rewrite.
+        _ocflag=(f'<span title="hunter self-claimed {html.escape(x.get("sev_claimed",""))}; reclassified to '
+                 f'{html.escape(x["sev"])} by the platform impact-&gt;tier rules" style="color:#f0a800;'
+                 f'font-weight:400;font-size:11px;cursor:help">&nbsp;⚠ claimed {html.escape(x.get("sev_claimed",""))}</span>'
+                 ) if x.get("overclaim") else ""
         lrows+=(f'<tr style="{rowop}"><td style="white-space:nowrap">{_type_badge("BREADTH")}</td>'
-                f'<td title="{_title_attr(_sev_title(x["sev"]))}" style="color:{col};font-weight:600;cursor:help;{strike}">{html.escape(x["sev"])}</td>'
+                f'<td title="{_title_attr(_sev_title(x["sev"]))}" style="color:{col};font-weight:600;cursor:help;{strike}">{html.escape(x["sev"])}{_ocflag}</td>'
                 f'<td title="{_title_attr(_cls_title(x["cls"]))}" style="color:#9fd;cursor:help;{strike}">{html.escape(x["cls"])}</td>'
                 f'<td style="font-family:monospace;font-size:12px;{strike}">{html.escape(x["loc"])}</td>'
                 f'<td style="white-space:nowrap">{vcell}</td>'
@@ -946,7 +993,9 @@ def emit_model():
         if   v=="REFUTED":   state="REFUTED"; n_ref+=1
         elif v=="CONFIRMED": state="CONFIRMED"; n_surv+=1
         else:                state="PENDING"; n_pend+=1
-        leads_out.append({"loc":x["loc"],"cls":x["cls"],"sev":x["sev"],"verdict":state,
+        leads_out.append({"loc":x["loc"],"cls":x["cls"],"sev":x["sev"],
+                          "sev_claimed":x.get("sev_claimed",x["sev"]),"overclaim":bool(x.get("overclaim")),
+                          "verdict":state,
                           "struck":state=="REFUTED","unpayable":_is_unpayable(x["sev"], pf_rank)})
     # deep rows — the reconstructed matrix + verdict per slot (mirrors the render branches)
     DH=deep_hunt(); dh_dir=os.path.join(OUT,"deep-hunt")

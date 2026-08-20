@@ -38,6 +38,8 @@ High|Permanent freezing of unclaimed yield
 High|Temporary freezing of funds
 Medium|Griefing — no profit motive, damage to the protocol
 Medium|Unbounded gas consumption
+Medium|Any zero-privilege address can burn the factory's mined nonce, permanently destroying the canonical deploy address; no funds stolen or frozen
+Medium|Permissionless denial of service bricks the router for all users
 Low|Contract fails to deliver promised returns, but doesn't lose value
 EOF
 

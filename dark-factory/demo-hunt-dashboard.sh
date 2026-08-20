@@ -754,6 +754,39 @@ else
   bad "10: emit-model failed on the REAL-verdict descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
 fi
 
+# (11) #1989: a breadth lead's severity is RECONCILED down from the LLM hunter's over-claim to the rules-based
+# tier for its impact text, so an over-claimed sub-floor finding stops looking payable. Inject a candidate
+# claimed `High` whose impact is a griefing nonce-burn (rules => Medium) into a pay-floor=high staged copy, and
+# assert emit-model shows it at Medium, preserves the claim, flags the over-claim, and marks it sub-floor —
+# the exact TermMax UniversalFactory:deploy:28 case.
+OC_DESC="$(stage_floor balancer balancer-overclaim high)"
+_zc="$(ls "$WORK/balancer-overclaim/zone-hunt-out/discovery/"*/run/results-cells.jsonl 2>/dev/null | head -1)"
+if [ -n "$_zc" ]; then
+  printf '%s\n' '{"candidates":["contracts/X.sol:deploy:1|class=C5|severity=High|any zero-privilege address can burn the factory mined nonce, permanently destroying the canonical deploy address; no funds are stolen or frozen|PoC recipe here"]}' >> "$_zc"
+fi
+if emit_model "$OC_DESC"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+oc = next((l for l in m["leads"] if l["loc"] == "contracts/X.sol:deploy:1"), None)
+e = []
+if not oc:
+    e.append("injected over-claim lead missing from the model")
+else:
+    if oc["sev"] != "Medium": e.append("over-claimed High should reconcile to Medium (griefing rules), got %r" % oc["sev"])
+    if oc.get("sev_claimed") != "High": e.append("hunter's claim not preserved in sev_claimed: %r" % oc.get("sev_claimed"))
+    if not oc.get("overclaim"): e.append("overclaim flag not set on a reclassified-down lead")
+    if not oc.get("unpayable"): e.append("reconciled Medium not marked sub-floor at floor=high")
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+  then ok "11: an over-claimed High lead (griefing impact) reconciles to Medium, preserves+flags the claim, and is sub-floor at floor=high (#1989)"
+  else bad "11: severity reconciliation wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "11: emit-model failed on the over-claim descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
