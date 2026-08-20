@@ -15,7 +15,7 @@
 # HUNT_DASHBOARD_FAKE_PROC_ALIVE / HUNT_DASHBOARD_FAKE_LLM_INFLIGHT replace the /proc liveness scan for
 # fixtures only (unset in production => the real scan runs). The /proc glob is guarded so a non-Linux host
 # degrades to freshness-only instead of crashing.
-import json, os, re, glob, datetime, html, sys, argparse, threading
+import json, os, re, glob, datetime, html, sys, argparse, threading, hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -175,6 +175,17 @@ def deep_hunt_state():
                          for l in read(tgt).splitlines()) if os.path.isfile(tgt) else False
     if not slot_dirs and not targets_routed: return "reached_no_lenses"
     return "ran"
+
+def _finding_id(loc, cls=""):
+    # #1994: a short, STABLE, human-referenceable id for a lead/finding, derived deterministically from its
+    # identity (location + bug class) — so the same finding keeps the same id across refreshes and runs (even
+    # as the set changes) and can be cited in conversation / a submission ("what about a3f2b1?"). The CLASS is
+    # part of the key so two lenses on the SAME file (a deep-hunt loc is just the file) get distinct ids; class
+    # is stable (severity reconciliation #1989 changes sev, never cls). 6 hex ≈ 16.7M space -> collisions are
+    # negligible for a hunt's findings. A blank/`?` loc yields "------". sha1 = a stable short digest, not security.
+    loc=(loc or "").strip()
+    if not loc or loc=="?": return "------"
+    return hashlib.sha1((loc+"|"+(cls or "").strip()).encode("utf-8")).hexdigest()[:6]
 
 def leads():
     out = []
@@ -755,7 +766,7 @@ def page(nav=""):
         lrows+=(f'<tr style="{rowop}"><td style="white-space:nowrap">{_type_badge("BREADTH")}</td>'
                 f'<td title="{_title_attr(_sev_title(x["sev"]))}" style="color:{col};font-weight:600;cursor:help;{strike}">{html.escape(x["sev"])}{_ocflag}</td>'
                 f'<td title="{_title_attr(_cls_title(x["cls"]))}" style="color:#9fd;cursor:help;{strike}">{html.escape(x["cls"])}</td>'
-                f'<td style="font-family:monospace;font-size:12px;{strike}">{html.escape(x["loc"])}</td>'
+                f'<td style="font-family:monospace;font-size:12px;{strike}"><span title="stable finding id — cite this" style="color:#8a94a0;font-weight:600">{_finding_id(x["loc"], x["cls"])}</span>&nbsp;{html.escape(x["loc"])}</td>'
                 f'<td style="white-space:nowrap">{vcell}</td>'
                 f'<td>{detail}</td></tr>')
     arows=""
@@ -917,7 +928,7 @@ def page(nav=""):
         dhrows += (f'<tr style="{rowop}"><td style="white-space:nowrap">{_type_badge("DEPTH")}</td>'
                    f'<td title="{_title_attr(_sev_title(sevtxt))}" style="white-space:nowrap;cursor:help">{sev}</td>'
                    f'<td title="{_title_attr(_cls_title(cls))}" style="color:#9fd;cursor:help;{strike}">{html.escape(cls)}</td>'
-                   f'<td style="font-family:monospace;font-size:12px;{strike}">{html.escape(loc)}</td>'
+                   f'<td style="font-family:monospace;font-size:12px;{strike}"><span title="stable finding id — cite this" style="color:#8a94a0;font-weight:600">{_finding_id(loc, cls)}</span>&nbsp;{html.escape(loc)}</td>'
                    f'<td style="white-space:nowrap">{gate}</td>'
                    f'<td>{detail}</td></tr>')
     # STAGE 4.5 three-state annotation (issue comment 5308547720): distinguish "not reached yet" from "reached
@@ -999,7 +1010,7 @@ def emit_model():
         if   v=="REFUTED":   state="REFUTED"; n_ref+=1
         elif v=="CONFIRMED": state="CONFIRMED"; n_surv+=1
         else:                state="PENDING"; n_pend+=1
-        leads_out.append({"loc":x["loc"],"cls":x["cls"],"sev":x["sev"],
+        leads_out.append({"id":_finding_id(x["loc"], x["cls"]),"loc":x["loc"],"cls":x["cls"],"sev":x["sev"],
                           "sev_claimed":x.get("sev_claimed",x["sev"]),"overclaim":bool(x.get("overclaim")),
                           "verdict":state,
                           "struck":state=="REFUTED","unpayable":_is_unpayable(x["sev"], pf_rank)})
@@ -1043,7 +1054,7 @@ def emit_model():
         m=re.match(r'^(.*)-(C\d+|SYS-solvency)$', slot)
         cls=(d["cls"] if d else (m.group(2) if m else "?"))
         loc=(d["target"] if d else (m.group(1) if m else slot))
-        deep_out.append({"slot":slot,"cls":cls,"loc":loc,"severity":sev,"state":state,"struck":struck,
+        deep_out.append({"id":_finding_id(loc, cls),"slot":slot,"cls":cls,"loc":loc,"severity":sev,"state":state,"struck":struck,
                          "unpayable":_is_unpayable(sev, pf_rank)})
     # zones — the Result label that must agree with the LEADS table
     import collections as _cl
