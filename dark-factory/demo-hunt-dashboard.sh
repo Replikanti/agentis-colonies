@@ -816,6 +816,38 @@ else
   bad "12: emit-model failed on the indeterminate descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
 fi
 
+# (13) #1991: a zone left 'in_flight' when the hunt EXITED must render as ABANDONED (a coverage gap), never
+# 'running' — the zone-level twin of the #1980 abandoned-cell fix. Stage the exited fixture (balancer-incomplete
+# carries the __EXIT__ marker), flip a zone's coverage status to in_flight, and force proc-gone so `exited` is
+# deterministic regardless of any live hunt on the host; assert no zone stays in_flight/running and the one
+# reads 'abandoned'.
+AB_DESC="$(stage_as balancer-incomplete balancer-abandoned)"
+python3 - "$WORK/balancer-abandoned/zone-hunt-out/coverage/zone-coverage.json" <<'PY'
+import json, sys
+p = sys.argv[1]; c = json.load(open(p))
+zs = c.get("zones", c)
+lst = list(zs.values()) if isinstance(zs, dict) else zs
+lst[0]["status"] = "in_flight"     # simulate a zone the hunt was mid-flight on when it exited
+json.dump(c, open(p, "w"))
+PY
+if emit_model "$AB_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+e = []
+if not m.get("exited"): e.append("fixture with __EXIT__ + proc-gone should read exited=True")
+running = [z["id"] for z in m["zones"] if z["status"] == "in_flight"]
+if running: e.append("an exited hunt still has in_flight/running zones: %s" % running)
+if not any(z["status"] == "abandoned" for z in m["zones"]): e.append("the mid-flight zone was not reclassified to 'abandoned'")
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "13: a zone left in_flight when the hunt exited renders as abandoned (gap), never running (#1991)"
+  else bad "13: exited in_flight zone not reclassified"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "13: emit-model failed on the abandoned descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"

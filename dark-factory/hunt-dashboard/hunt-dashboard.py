@@ -692,9 +692,14 @@ def page(nav=""):
     # AXIS 1 — execution STATE (square icons, like the PHASES section)
     ZSTATE={"hunted":("✅","#39d353","done"),"hunted_empty":("✅","#39d353","done"),
             "in_flight":("🔄","#f0a800","running"),"not_reached":("⬜","#5a6270","queued"),
-            "failed":("🟥","#ff4d4d","failed"),"hunted_degraded":("⚠️","#f0a800","degraded")}
+            "failed":("🟥","#ff4d4d","failed"),"hunted_degraded":("⚠️","#f0a800","degraded"),
+            # #1991: a zone the hunt was mid-flight on when the run EXITED is abandoned (a coverage gap), NOT
+            # running — a calm slate, like the abandoned deep-hunt cell in #1980.
+            "abandoned":("⚫","#8a94a0","stopped mid-hunt")}
     for z in zs:
-        s=z.get("status","?"); ic,scol,slbl=ZSTATE.get(s,("⬜","#888",s))
+        s=z.get("status","?")
+        if exited and s=="in_flight": s="abandoned"   # #1991: no zone renders "running" after the hunt exited
+        ic,scol,slbl=ZSTATE.get(s,("⬜","#888",s))
         zid=z.get("id","?")
         # AXIS 2 — RESULT: deep-hunt finding > surviving lead > refuted > pending > empty
         if s in ("hunted","hunted_empty","hunted_degraded"):
@@ -1056,6 +1061,7 @@ def emit_model():
     zones_out=[]
     for z in zs:
         s=z.get("status","?"); zid=z.get("id","?")
+        if exited and s=="in_flight": s="abandoned"   # #1991: an exited hunt has no running zone — it's a gap
         if s in ("hunted","hunted_empty","hunted_degraded"):
             if z_dh.get(zid,0): result=f"◆ {z_dh[zid]} deep finding"+(f" ({z_dhsev.get(zid,'')})" if z_dhsev.get(zid,'') else "")
             elif z_dhref.get(zid,0): result=f"✗ {z_dhref[zid]} deep FP (triaged)"
@@ -1064,6 +1070,7 @@ def emit_model():
             elif z_pend.get(zid,0): result=f"… {z_pend[zid]} pending"
             else: result="∅ empty"
         elif s=="failed": result="✗ no result (gap)"
+        elif s=="abandoned": result="⚫ stopped mid-hunt (gap)"   # #1991
         else: result="— pending"
         zones_out.append({"id":zid,"status":s,"custody":bool(z.get("value_custody")),"result":result})
     # liveness — same pure classifier as page()
