@@ -778,6 +778,12 @@ def page(nav=""):
     # for depth). Nothing is confirmed by the machine alone; today this set is empty (honest).
     _confirmed_breadth = {(_normloc(a["loc"]), _norm_cls(a.get("cls","")))
                           for a in A if a.get("verdict","").strip().upper() == "CONFIRMED"}
+    # #2007: a DUPLICATE verdict = a real, PoC-verified bug that was ALREADY REPORTED (submitted → marked a
+    # duplicate → $0). It is neither Confirmed (not payable), nor Pending (fully worked — PoC done + triaged),
+    # nor Refuted (it IS a real bug, not a false positive). Its own bucket keyed by the operator's DUPLICATE
+    # verdict + the reason (the prior report id).
+    _dup_breadth = {(_normloc(a["loc"]), _norm_cls(a.get("cls",""))): a.get("reason","")
+                    for a in A if a.get("verdict","").strip().upper() == "DUPLICATE"}
     lrows=""
     for x in sorted(L,key=lambda a:(0 if ("High" in a["sev"] or "Crit" in a["sev"]) else 1)):
         if _is_unpayable(x["sev"], pf_rank):   # #1966: hide sub-floor rows, tally instead of rendering
@@ -785,7 +791,9 @@ def page(nav=""):
             continue
         col=SEVCOL.get(x["sev"].split()[0] if x["sev"] else "","#ccc")
         rv=_rv(x); v=(rv or {}).get("verdict","")
-        _opc = (_normloc(x["loc"]), x["cls"]) in _confirmed_breadth   # #2005 operator-confirmed real+non-dup
+        _opck = (_normloc(x["loc"]), x["cls"])
+        _opc = _opck in _confirmed_breadth   # #2005 operator-confirmed real+non-dup
+        _dupr = _dup_breadth.get(_opck)      # #2007 operator-marked duplicate (real but already reported → $0)
         if v=="REFUTED":
             strike="text-decoration:line-through;"; rowop="opacity:.6"; st="refuted"
             vcell='<span style="color:#e5737b;font-weight:600">✗ REFUTED</span>'
@@ -794,6 +802,10 @@ def page(nav=""):
             strike=""; rowop=""; st="confirmed"   # #2005: only an operator CONFIRMED verdict reaches Survived
             vcell='<span style="color:#39d353;font-weight:700">◆ CONFIRMED — real, non-dup</span>'
             detail=f'<span style="color:#bbb;font-size:12px">{html.escape(x["title"][:200])}</span>'
+        elif _dupr is not None:
+            strike=""; rowop="opacity:.8"; st="duplicate"   # #2007: real + PoC-verified, but already reported → $0
+            vcell='<span style="color:#c9a227;font-weight:700">◆ real · DUPLICATE ($0)</span>'
+            detail=f'<span style="color:#c9a227;font-size:12px">confirmed real bug, already reported: {html.escape(_dupr[:260])}</span>'
         elif v=="CONFIRMED":
             strike=""; rowop=""; st="pending"   # #2005: survived the refute gate, but NOT PoC-verified → Pending
             vcell='<span style="color:#f0a800">◆ survived refute · needs PoC</span>'
@@ -817,7 +829,7 @@ def page(nav=""):
                 f'<td>{detail}</td></tr>')
     arows=""
     for x in A:
-        if x.get("verdict","").strip().upper()=="CONFIRMED": continue   # #2005: CONFIRMED = a real bug (Survived/Confirmed bucket), NOT a "not-a-bug" adjudication
+        if x.get("verdict","").strip().upper() in ("CONFIRMED","DUPLICATE"): continue   # #2005/#2007: CONFIRMED + DUPLICATE are REAL bugs (own buckets), NOT "not-a-bug" adjudications
         arows+=(f'<tr style="opacity:.55"><td style="color:#777;font-weight:600;text-decoration:line-through">{html.escape(x["sev"])}</td>'
                 f'<td style="color:#678;text-decoration:line-through">{html.escape(x["cls"])}</td>'
                 f'<td style="font-family:monospace;font-size:12px;text-decoration:line-through;color:#889">{html.escape(x["loc"])}</td>'
@@ -930,6 +942,12 @@ def page(nav=""):
                 gate = '<span style="color:#39d353;font-weight:700">◆ CONFIRMED — real, non-dup</span>'
                 detail = f'<span style="color:#bbb;font-size:12px">{html.escape(adj.get("reason", "")[:280])}</span>'
                 rowop = ""; st = "confirmed"
+            elif ("FINDING" in v or "VIOLAT" in v) and adj.get("verdict") == "DUPLICATE":
+                # #2007: real + PoC-verified, but already reported → $0 (its own state, not needs-PoC/refuted)
+                sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt or "?")}</span>'
+                gate = '<span style="color:#c9a227;font-weight:700">◆ real · DUPLICATE ($0)</span>'
+                detail = f'<span style="color:#c9a227;font-size:12px">confirmed real bug, already reported: {html.escape(adj.get("reason", "")[:260])}</span>'
+                rowop = "opacity:.8"; st = "duplicate"
             elif "FINDING" in v or "VIOLAT" in v:
                 n_dh_find += 1
                 sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt or "?")}</span>'
@@ -1020,6 +1038,9 @@ def page(nav=""):
                 "confirmed real bug, NOT a duplicate — appears only after an operator records a CONFIRMED "
                 "verdict (forge PoC + dedup done); surviving an automated gate alone is not confirmation"),
                ("pending","Pending",_stc.get("pending",0),""),
+               ("duplicate","Duplicate",_stc.get("duplicate",0),
+                "confirmed real bug that was ALREADY REPORTED — PoC-verified + submitted, but marked a "
+                "duplicate → $0. Real (not refuted), done (not pending), unpayable (not Confirmed)."),
                ("refuted","Refuted",_stc.get("refuted",0),"")]
     chipbar=('<div class="chips">'+''.join(
         '<span class="chip" data-sel="%s" onclick="hfilter(\'%s\')"%s>%s <b>%d</b></span>'
