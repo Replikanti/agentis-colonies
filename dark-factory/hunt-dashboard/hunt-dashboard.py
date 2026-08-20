@@ -232,7 +232,13 @@ def refute_verdicts():
         if not raw: continue
         parts=raw.split("\t")
         key=re.sub(r'^\d+_','',os.path.basename(d))
-        out[key]={"verdict":parts[0].strip().upper(),"reason":(parts[1].strip() if len(parts)>1 else "")}
+        # #1981: canonicalize the gate's verdict token to the dashboard's survived/refuted vocabulary. The
+        # refute gate's contract emits exactly `REAL` (survived a hostile read) or `REFUTED` (killed); the
+        # downstream renderers/counters only understand CONFIRMED/REFUTED, so a `REAL` lead was silently
+        # falling through to PENDING and showing as un-triaged forever. `REAL` == the dashboard's "survived".
+        v=parts[0].strip().upper()
+        if v=="REAL": v="CONFIRMED"
+        out[key]={"verdict":v,"reason":(parts[1].strip() if len(parts)>1 else "")}
     return out
 
 def planned_deep_rows():
