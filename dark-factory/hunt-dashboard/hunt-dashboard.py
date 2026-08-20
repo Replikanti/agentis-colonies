@@ -771,6 +771,13 @@ def page(nav=""):
     # chip totals match the single unified table the operator filters. Buckets: confirmed (◆ survived a gate),
     # pending (gate undecided), refuted (✗ killed), other (clean / harness-gap — visible under "All" only).
     _stc=_cl.Counter()
+    # #2005: the "Survived" bucket = operator-CONFIRMED real + NON-DUPLICATE findings ONLY. Surviving an
+    # AUTOMATED gate (the refute gate for breadth, the invariant-fuzz for depth) is NOT confirmation — such a
+    # lead still needs a forge PoC and a duplicate check, so it stays in Pending until the operator records a
+    # `CONFIRMED` verdict in the adjudication overlay (adjudicated.tsv for breadth, deep-hunt-adjudicated.tsv
+    # for depth). Nothing is confirmed by the machine alone; today this set is empty (honest).
+    _confirmed_breadth = {(_normloc(a["loc"]), _norm_cls(a.get("cls","")))
+                          for a in A if a.get("verdict","").strip().upper() == "CONFIRMED"}
     lrows=""
     for x in sorted(L,key=lambda a:(0 if ("High" in a["sev"] or "Crit" in a["sev"]) else 1)):
         if _is_unpayable(x["sev"], pf_rank):   # #1966: hide sub-floor rows, tally instead of rendering
@@ -778,13 +785,18 @@ def page(nav=""):
             continue
         col=SEVCOL.get(x["sev"].split()[0] if x["sev"] else "","#ccc")
         rv=_rv(x); v=(rv or {}).get("verdict","")
+        _opc = (_normloc(x["loc"]), x["cls"]) in _confirmed_breadth   # #2005 operator-confirmed real+non-dup
         if v=="REFUTED":
             strike="text-decoration:line-through;"; rowop="opacity:.6"; st="refuted"
             vcell='<span style="color:#e5737b;font-weight:600">✗ REFUTED</span>'
             detail=f'<span style="color:#e5737b;font-size:12px">verified → not a bug: {html.escape(rv["reason"][:260])}</span>'
+        elif _opc:
+            strike=""; rowop=""; st="confirmed"   # #2005: only an operator CONFIRMED verdict reaches Survived
+            vcell='<span style="color:#39d353;font-weight:700">◆ CONFIRMED — real, non-dup</span>'
+            detail=f'<span style="color:#bbb;font-size:12px">{html.escape(x["title"][:200])}</span>'
         elif v=="CONFIRMED":
-            strike=""; rowop=""; st="confirmed"
-            vcell='<span style="color:#39d353;font-weight:700">◆ SURVIVED → PoC</span>'
+            strike=""; rowop=""; st="pending"   # #2005: survived the refute gate, but NOT PoC-verified → Pending
+            vcell='<span style="color:#f0a800">◆ survived refute · needs PoC</span>'
             detail=f'<span style="color:#bbb;font-size:12px">{html.escape(x["title"][:200])}</span>'
         else:
             strike=""; rowop=""; st="pending"
@@ -805,6 +817,7 @@ def page(nav=""):
                 f'<td>{detail}</td></tr>')
     arows=""
     for x in A:
+        if x.get("verdict","").strip().upper()=="CONFIRMED": continue   # #2005: CONFIRMED = a real bug (Survived/Confirmed bucket), NOT a "not-a-bug" adjudication
         arows+=(f'<tr style="opacity:.55"><td style="color:#777;font-weight:600;text-decoration:line-through">{html.escape(x["sev"])}</td>'
                 f'<td style="color:#678;text-decoration:line-through">{html.escape(x["cls"])}</td>'
                 f'<td style="font-family:monospace;font-size:12px;text-decoration:line-through;color:#889">{html.escape(x["loc"])}</td>'
@@ -910,13 +923,20 @@ def page(nav=""):
                 gate = '<span style="color:#e5737b;font-weight:600">✗ REFUTED (triaged FP)</span>'
                 detail = f'<span style="color:#e5737b;font-size:12px">verified → not a bug: {html.escape(adj.get("reason", "")[:280])}</span>'
                 rowop = "opacity:.6"; strike = "text-decoration:line-through;"; st = "refuted"   # #1996
+            elif ("FINDING" in v or "VIOLAT" in v) and adj.get("verdict") == "CONFIRMED":
+                # #2005: operator-CONFIRMED — real bug, non-duplicate (forge PoC + dedup done) → Survived
+                n_dh_find += 1
+                sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt or "?")}</span>'
+                gate = '<span style="color:#39d353;font-weight:700">◆ CONFIRMED — real, non-dup</span>'
+                detail = f'<span style="color:#bbb;font-size:12px">{html.escape(adj.get("reason", "")[:280])}</span>'
+                rowop = ""; st = "confirmed"
             elif "FINDING" in v or "VIOLAT" in v:
                 n_dh_find += 1
                 sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt or "?")}</span>'
-                gate = '<span style="color:#f0a800">◆ FINDING · pending forge PoC + triage</span>'
+                gate = '<span style="color:#f0a800">◆ FINDING · needs forge PoC + triage</span>'
                 detail = (f'<span style="color:#bbb;font-size:12px">multi-step invariant broken — shrunk witness '
                           f'({d["steps"]} steps); LLM-hypothesized invariant, verify before any submit</span>')
-                rowop = ""; st = "confirmed"   # #1996: ◆ survived the fuzz gate → confirmed lead bucket
+                rowop = ""; st = "pending"   # #2005: survived the fuzz gate but NOT confirmed → Pending (needs PoC)
             elif "CLEAN" in v:
                 # no bug confirmed on this High-value surface — struck through, like a refuted lead. The Sev
                 # is the TARGET's severity class (intrinsic, same as a LEAD keeps its Sev when refuted).
@@ -990,14 +1010,15 @@ def page(nav=""):
     # the f-string template) so the JS braces need no escaping. Selection persists in localStorage and is
     # re-applied on every 5s meta-refresh; the column-header row + sub-floor summary carry no data-st so they
     # never hide. "other" (clean / harness-gap) rows are visible under "All" only — no dedicated chip.
-    # #1999: the "confirmed" bucket is labelled "Survived", NOT "Confirmed" — a lead here has SURVIVED its
-    # gate (refute for breadth, invariant-fuzz for depth) but is still PENDING a forge PoC + triage; it is
-    # NOT PoC-verified. Only a hand-written PoC (tracked off-dashboard) confirms exploitability. The tuple's
-    # 4th field is an optional chip tooltip. data-sel/data-st stays "confirmed" (internal key; the filter and
-    # test key on it) — only the human-facing label changed.
+    # #2005: the "confirmed" bucket is labelled "Confirmed" and holds ONLY operator-confirmed real + NON-dup
+    # findings — a `CONFIRMED` verdict recorded in the adjudication overlay after a forge PoC + a duplicate
+    # check. Surviving an automated gate (refute / invariant-fuzz) is NOT confirmation: those leads stay in
+    # Pending until verified. So a deep FINDING or a survived-refute lead is Pending, never Confirmed, until
+    # the operator confirms it. data-sel/data-st stays "confirmed" (internal key; the filter + test key on it).
     _chipdefs=[("all","All",sum(_stc.values()),""),
-               ("confirmed","Survived",_stc.get("confirmed",0),
-                "survived its gate (refute / invariant-fuzz) — pending forge PoC + triage; NOT yet PoC-verified"),
+               ("confirmed","Confirmed",_stc.get("confirmed",0),
+                "confirmed real bug, NOT a duplicate — appears only after an operator records a CONFIRMED "
+                "verdict (forge PoC + dedup done); surviving an automated gate alone is not confirmation"),
                ("pending","Pending",_stc.get("pending",0),""),
                ("refuted","Refuted",_stc.get("refuted",0),"")]
     chipbar=('<div class="chips">'+''.join(

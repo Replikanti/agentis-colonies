@@ -926,8 +926,9 @@ fi
 #      alone wrongly paints the discovery phase a "gap" while Zones (via proc_alive) show a zone in_flight.
 #      Same exited+incomplete fixture: fake-alive=0 => discovery "gap" + STOPPED_INCOMPLETE (preserved);
 #      fake-alive=1 => discovery NOT "gap" + banner RUNNING (the fix).
-#  (b) the "confirmed" chip is labelled "Survived" (survived its gate, pending PoC), never "Confirmed" —
-#      a lead here is NOT PoC-verified, so the label must not imply it.
+#  (b) the "confirmed" chip is labelled "Confirmed" — honest under #2005 because membership is now gated on an
+#      operator CONFIRMED verdict (real + non-dup), so the label no longer over-claims (superseded the #1999
+#      "Survived" label once the bucket stopped auto-including survived-a-gate leads).
 # Fake BOTH liveness sources (proc scan AND llm-inflight) so the assertion is host-independent — otherwise a
 # real hunt's claude/flat-cyborg children on the same host leak into llm_child() and perturb hunt_live.
 emit_model "$INC_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0 && cp "$WORK/model.json" "$WORK/m-dead.json"
@@ -948,7 +949,7 @@ PY
   then ok "16a: phase_status keys 'exited' on __EXIT__ AND no-live-process — a re-hunt over a stale marker shows discovery running, not a false gap (#1999)"
   else bad "16a: phase-live guard wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
   fi
-# (16b) the chip label is honest — "Survived", not "Confirmed"
+# (16b) the confirmed chip is labelled "Confirmed" (honest under #2005 — membership is gated, see test 19)
 if python3 "$DASH" --descriptor "$MAIN_DESC" --render > "$WORK/page.html" 2>"$WORK/render.err"; then
   if python3 - "$WORK/page.html" <<'PY'
 import sys, re
@@ -956,11 +957,10 @@ html = open(sys.argv[1]).read()
 e = []
 m = re.search(r'data-sel="confirmed"[^>]*>\s*([A-Za-z]+)\s*<b>', html)
 if not m: e.append("could not find the confirmed chip label")
-elif m.group(1) != "Survived": e.append('confirmed chip label is %r, must be "Survived" (never "Confirmed" — not PoC-verified)' % m.group(1))
-if "Confirmed <b>" in html or 'confirmed")>Confirmed' in html: e.append('the misleading "Confirmed" label is still present')
+elif m.group(1) != "Confirmed": e.append('confirmed chip label is %r, must be "Confirmed"' % m.group(1))
 if e: print("\n".join(e)); sys.exit(1)
 PY
-    then ok "16b: the survived-a-gate chip is labelled 'Survived' (pending PoC), never the PoC-implying 'Confirmed' (#1999)"
+    then ok "16b: the confirmed chip is labelled 'Confirmed' — honest now that membership is gated on an operator CONFIRMED verdict (#2005 supersedes #1999)"
     else bad "16b: chip label not honest"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
     fi
 else
@@ -1024,6 +1024,57 @@ PY
   fi
 else
   bad "18: emit-model failed on the repo-prune fixture"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+# (19) #2005: the "Confirmed" bucket holds ONLY operator-confirmed real + non-duplicate findings. Surviving an
+# automated gate is NOT confirmation, so by default nothing is Confirmed — a deep FINDING and a survived-refute
+# lead both sit in Pending. A `CONFIRMED` verdict in the adjudication overlay is the ONLY path into Confirmed.
+# (19a) default: nothing auto-confirmed
+if python3 "$DASH" --descriptor "$MAIN_DESC" --render > "$WORK/page.html" 2>"$WORK/render.err"; then
+  if python3 - "$WORK/page.html" <<'PY'
+import sys, re
+html = open(sys.argv[1]).read()
+e = []
+n_conf = html.count('data-st="confirmed"')
+if n_conf != 0:
+    e.append("default fixture has %d confirmed rows — surviving a gate must NOT auto-confirm" % n_conf)
+m = re.search(r'data-sel="confirmed"[^>]*>\s*(\w+)\s*<b>(\d+)</b>', html)
+if not m: e.append("confirmed chip missing")
+else:
+    if m.group(1) != "Confirmed": e.append('chip label is %r, must be "Confirmed"' % m.group(1))
+    if m.group(2) != "0": e.append("confirmed chip count is %s, must be 0 by default" % m.group(2))
+if "needs forge PoC + triage" not in html:
+    e.append("a deep FINDING should render as a Pending 'needs forge PoC + triage' row")
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "19a: nothing is Confirmed by default — surviving a gate is not confirmation; deep FINDINGs + survived-refute leads sit in Pending (#2005)"
+  else bad "19a: confirmed-bucket default wrong"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
+  fi
+else
+  bad "19a: --render failed"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+# (19b) an operator CONFIRMED adjudication promotes exactly that finding into Confirmed
+CONF_DESC="$(stage_as balancer balancer-confirmed)"
+printf 'pkg/vault/contracts/Vault.sol\tC6\tCONFIRMED\treal bug, not a duplicate\n' >> "$WORK/balancer-confirmed/deep-hunt-adjudicated.tsv"
+if python3 "$DASH" --descriptor "$CONF_DESC" --render > "$WORK/page2.html" 2>"$WORK/render.err"; then
+  if python3 - "$WORK/page2.html" <<'PY'
+import sys, re
+html = open(sys.argv[1]).read()
+e = []
+if html.count('data-st="confirmed"') < 1:
+    e.append("a CONFIRMED adjudication did not promote any row into Confirmed")
+m = re.search(r'data-sel="confirmed"[^>]*>\s*\w+\s*<b>(\d+)</b>', html)
+if not m or int(m.group(1)) < 1:
+    e.append("confirmed chip count did not rise after a CONFIRMED adjudication")
+if "◆ CONFIRMED — real, non-dup" not in html:
+    e.append("expected the confirmed gate label on the promoted row")
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "19b: an operator CONFIRMED verdict (deep-hunt-adjudicated.tsv) is the only path that promotes a finding into Confirmed (#2005)"
+  else bad "19b: CONFIRMED adjudication not honoured"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
+  fi
+else
+  bad "19b: --render failed on the confirmed fixture"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
 fi
 
 # ----------------------------------------------------------------------------------------------------------
