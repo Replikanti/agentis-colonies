@@ -144,6 +144,18 @@ if [ -z "$DUP_RISK" ] && [ -n "$TARGET_DIR" ] && [ -d "$TARGET_DIR/.git" ] && [ 
   esac
 fi
 
+# #1984: derive the severity BAND from the selected impact via the platform's impact->tier table when the
+# operator passes no --severity, so the claimed severity always matches the impact (and the platform's rules)
+# instead of a hand-set guess. The TermMax C15 stage was hand-set `high`; the table yields `Critical` (which
+# Immunefi confirmed). Pure lookup, no LLM/network. Best-effort: any failure leaves SEVERITY untouched.
+if [ -z "$SEVERITY" ] && [ -n "$IMPACT" ] && [ -x "$SCRIPT_DIR/lib/severity-classify.sh" ]; then
+  _sv_line="$("$SCRIPT_DIR/lib/severity-classify.sh" --impact "$IMPACT" 2>/dev/null || true)"
+  case "$_sv_line" in
+    SEVERITY\|*) SEVERITY="$(printf '%s' "$_sv_line" | cut -d'|' -f2)"
+      echo "deliver-submission.sh: auto severity from impact->tier table -> $_sv_line" >&2 ;;
+  esac
+fi
+
 # Filesystem-safe slug of the submission id for the on-disk subdir name (the canonical id lives in manifest.json).
 SLUG="$(printf '%s' "$ID" | sed 's/[^A-Za-z0-9._@-]/-/g')"
 [ -n "$SLUG" ] || { echo "deliver-submission.sh: --id produced an empty slug" >&2; exit 2; }
