@@ -50,6 +50,18 @@ REPO="" ; OUT="" ; SCOPE_HINT="" ; SINCE="" ; FIXTURE="" ; BACKEND="flat-cyborg"
 # A contract above this many lines is emitted function-sliced (`file@fn1+fn2`, slice-fns.sh format) in
 # scope.tsv so a deep per-cell read fits the hunter's per-call budget (mirrors run-discovery.sh's guidance).
 LOC_SLICE_THRESHOLD=120
+# #1957 (Lever 2 of the #1955 dense-zone timeout work): a directory zone whose AGGREGATE in-scope LOC exceeds
+# this cap is split into deterministic sub-zones each under it, so each sub-zone's #1955 per-cell hunt timeout
+# lands in the LINEAR region of run-discovery.sh's weight-scaled budget instead of saturating (and relying on)
+# its 1800000 ms ceiling. Default 1600 = the LOC at which that budget hits the cap: run-discovery.sh uses
+# FLOOR=600000 + STEP_MS=300000 per STEP_LOC=400 LOC, CAP=1800000, so saturation LOC = 400 * (1800000-600000)
+# / 300000 = 1600. These are two INDEPENDENTLY-MAINTAINED values that can drift; if you change run-discovery.sh's
+# HUNT_TIMEOUT_* constants, recompute this default (same keep-in-sync convention as VALUE_MOVING_KEYWORDS /
+# zone-mapper.ag). Below the cap the split is a NO-OP: an un-split zone's zones.json/scope.tsv output is
+# byte-identical to before this issue. Operator override via the ZONE_SPLIT_LOC env — a shell-level read here,
+# NOT an `.ag` getenv(), so it needs no exec.env_passthrough entry (same style as HUNT_FITNESS_JSON below); set
+# 0 to disable splitting entirely.
+ZONE_SPLIT_LOC="${ZONE_SPLIT_LOC:-1600}"
 
 need() { [ "$1" -ge 2 ] || { echo "map-zones.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -101,8 +113,8 @@ fi
 # --- mechanical pass: group by directory, LOC, hardening_score, slice tokens (python3, per convention) --
 MECH_JSON="$OUT/.zones-mechanical.json"
 ZONE_LIST="$(REPO_ABS="$REPO" SOURCES="$SOURCES" SCOPE_HINT="$SCOPE_HINT" DELTA_JSON="$DELTA_JSON" \
-  LOC_SLICE_THRESHOLD="$LOC_SLICE_THRESHOLD" MECH_JSON="$MECH_JSON" python3 - <<'PY'
-import os, re, json, time, subprocess
+  LOC_SLICE_THRESHOLD="$LOC_SLICE_THRESHOLD" ZONE_SPLIT_LOC="$ZONE_SPLIT_LOC" MECH_JSON="$MECH_JSON" python3 - <<'PY'
+import os, re, json, time, subprocess, sys
 from collections import OrderedDict
 
 repo = os.environ["REPO_ABS"]
@@ -110,6 +122,12 @@ sources = [l for l in os.environ.get("SOURCES", "").splitlines() if l.strip()]
 hint_raw = os.environ.get("SCOPE_HINT", "").strip()
 delta_json = os.environ.get("DELTA_JSON", "").strip()
 thr = int(os.environ.get("LOC_SLICE_THRESHOLD", "120"))
+# #1957: aggregate-LOC split cap (default 1600, 0 disables). A malformed override degrades to the default
+# rather than crashing the whole map.
+try:
+    split_cap = int(os.environ.get("ZONE_SPLIT_LOC", "1600"))
+except ValueError:
+    split_cap = 1600
 mech_json = os.environ["MECH_JSON"]
 
 # --scope-hint intersection: keep a source that equals a hint or sits under one as a directory prefix
@@ -277,10 +295,11 @@ def age_days(f):
         pass
     return None
 
-zones = []
-listing = []
-for d, files in groups.items():
-    zid = slug(d)
+def build_zone(zid, name, files):
+    # Build ONE zone dict (mechanical fields only) from an id/name and a file list. Factored out of the
+    # per-group loop so both an un-split directory zone and a #1957 sub-zone are built identically -- an
+    # un-split zone's output is therefore byte-identical to before #1957. The key order is pinned so
+    # zones.json diffs stay stable.
     zloc = sum(loc(f) for f in files)
     # scope tokens: function-slice a contract above the threshold, else feed the whole file
     scope_tokens = []
@@ -298,12 +317,70 @@ for d, files in groups.items():
     # file age. Pinned formula; a hunt NEVER branches on it (a low score is a hint, not a skip).
     hardening = round((1.0 - churn_ratio) * 60 + (age / 30.0) * 40)
     hardening = max(0, min(hardening, 100))
-    zones.append({
-        "id": zid, "name": os.path.basename(d) or zid,
+    return {
+        "id": zid, "name": name,
         "files": files, "scope_files": scope_tokens,
         "loc": zloc, "hardening_score": hardening,
-    })
-    listing.append(zid + "\t" + ",".join(scope_tokens))
+    }
+
+
+def split_bins(files, flocs, cap):
+    # #1957: deterministic NEXT-FIT bin-packing over the group's already-lexically-sorted files. Walk in
+    # order, accumulate LOC into the current bin until adding the next file would exceed `cap`, then open a
+    # new bin. A SINGLE file already above the cap cannot be packed smaller -- it starts its own bin and the
+    # next file always flushes it, so it ends up alone (its prompt is separately bounded by FN_SLICE_CAP
+    # function-slicing). Lexical order keeps related files (Vault.sol + VaultStorage.sol) together, and every
+    # file in a group shares one directory so a bin stays subsystem-coherent. NO file is ever dropped.
+    bins = []
+    cur = []
+    cur_loc = 0
+    for f in files:
+        fl = flocs[f]
+        if cur and cur_loc + fl > cap:
+            bins.append(cur)
+            cur = []
+            cur_loc = 0
+        cur.append(f)
+        cur_loc += fl
+    if cur:
+        bins.append(cur)
+    return bins
+
+
+zones = []
+listing = []
+for d, files in groups.items():
+    zid = slug(d)
+    flocs = {f: loc(f) for f in files}
+    zloc = sum(flocs.values())
+    if split_cap > 0 and zloc > split_cap:
+        # #1957: this directory zone's aggregate prompt would saturate the #1955 timeout budget -> split it
+        # into sub-zones, each a first-class zones.json entry carrying `split_of` = the parent zone id so
+        # classification/custody inherit and the dashboard can group later (deferred). Log the split (and any
+        # single over-cap file) to stderr -- no silent truncation, mirroring the exclusion-logging convention.
+        base_name = os.path.basename(d) or zid
+        bins = split_bins(files, flocs, split_cap)
+        total = len(bins)
+        for k, bfiles in enumerate(bins, 1):
+            sub_id = "%s__p%d" % (zid, k)
+            sub_name = "%s (part %d/%d)" % (base_name, k, total)
+            z = build_zone(sub_id, sub_name, bfiles)
+            z["split_of"] = zid
+            zones.append(z)
+            listing.append(sub_id + "\t" + ",".join(z["scope_files"]))
+        print("map-zones.sh: zone '%s' (%d LOC) exceeds ZONE_SPLIT_LOC=%d -> split into %d sub-zone(s) "
+              "%s; no in-scope file dropped"
+              % (zid, zloc, split_cap, total,
+                 ",".join("%s__p%d" % (zid, k) for k in range(1, total + 1))), file=sys.stderr)
+        for f in files:
+            if flocs[f] > split_cap:
+                print("map-zones.sh: single file %s (%d LOC) is above ZONE_SPLIT_LOC=%d and cannot be packed "
+                      "smaller -> its own sub-zone (FN_SLICE_CAP function-slicing still bounds its per-cell "
+                      "prompt)" % (f, flocs[f], split_cap), file=sys.stderr)
+    else:
+        z = build_zone(zid, os.path.basename(d) or zid, files)
+        zones.append(z)
+        listing.append(zid + "\t" + ",".join(z["scope_files"]))
 
 with open(mech_json, "w", encoding="utf-8") as fh:
     json.dump(zones, fh)
@@ -561,8 +638,18 @@ zones = []
 scope_lines = []
 appendix_lines = []
 for z in mech:
-    c = classmap.get(z["id"], {})
-    name = c.get("name") or z["name"]
+    # #1957: a split sub-zone inherits the PARENT's classification. On the --fixture path the operator
+    # declares ONE parent-keyed `ZONE|`/`CUSTODY|` line and every sub-zone falls back to it via `split_of`;
+    # on the live substrate path each sub-zone is classified directly (its own smaller-prompt `ZONE|` id) and
+    # the fallback is simply never taken. An un-split zone has no `split_of`, so this is a no-op for it.
+    c = classmap.get(z["id"]) or classmap.get(z.get("split_of")) or {}
+    # #1957: a split sub-zone KEEPS its distinct mechanical `<basename> (part k/N)` name and never adopts the
+    # classification name -- run-zone-hunt.sh maps zone -> hunt via `--only "$ZNAME"` and DENIES the per-zone
+    # cap (budget_unenforceable) when a name matches several scope.tsv lines, so a parent-inherited (fixture
+    # path) or LLM-returned (substrate path) name shared across sub-zones would break cap enforcement. The
+    # classification still supplies classes/desc/custody; only the NAME is pinned to stay unique. An un-split
+    # zone has no `split_of`, so its name resolution is byte-identical to before #1957.
+    name = z["name"] if z.get("split_of") else (c.get("name") or z["name"])
     classes = [x.strip() for x in c.get("classes", "").split(",") if x.strip()]
     desc = c.get("desc", "")
     z_out = {
@@ -574,8 +661,10 @@ for z in mech:
         "bug_classes_likely": classes,
         "description": desc,
         # #1713: the severity-first deep-hunt gate. run-zone-hunt.sh --deep-hunt runs the stateful-invariant
-        # engine only on value_custody zones. Default False for any zone with no CUSTODY| line.
-        "value_custody": custodymap.get(z["id"], False),
+        # engine only on value_custody zones. Default False for any zone with no CUSTODY| line. #1957: a split
+        # sub-zone inherits the parent's flag via `split_of` (fixture path keys the parent; substrate path
+        # keys each sub-zone) so a value-custody parent's sub-zones stay deep-hunt-eligible.
+        "value_custody": custodymap.get(z["id"], custodymap.get(z.get("split_of"), False)),
     }
     # #1861: the inheritance-appendix record, copied through ONLY when lib/inheritance.py actually set it —
     # a target with no cross-zone abstract base emits a byte-identical zones.json. `implementor: null` inside
@@ -589,6 +678,12 @@ for z in mech:
     # run-zone-hunt.sh --composable-lens reads it to target the CONSUMER and thread the PRODUCER(s) as --aux.
     if z.get("composition_surfaces"):
         z_out["composition_surfaces"] = z["composition_surfaces"]
+    # #1957: the sub-zone -> parent link, copied through ADDITIVELY for split sub-zones only. An un-split zone
+    # has no `split_of` key, so its zones.json entry is byte-identical to before #1957. Downstream consumers
+    # read it generically (dashboard parent-grouping is deferred/out of scope); it exists so the sub-zone
+    # carries its parent for that future grouping.
+    if z.get("split_of"):
+        z_out["split_of"] = z["split_of"]
     if z["id"] in failed_zones:
         z_out["classification_failed"] = True
     zones.append(z_out)
