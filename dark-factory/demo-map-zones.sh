@@ -89,14 +89,22 @@ import sys, json
 zones = json.load(open(sys.argv[1], encoding="utf-8"))
 assert isinstance(zones, list) and zones, "zones.json is not a non-empty array"
 need = {"id", "name", "files", "loc", "hardening_score", "bug_classes_likely", "description", "value_custody"}
+# #1957 relaxed the strict `== need` to `need.issubset(...)`: a zone MAY carry additive keys (`split_of` for a
+# split sub-zone, plus the pre-existing #1861/#1914/#1707 optionals). The upper bound still pins that no STRAY
+# key leaks in. The shipped fixture is small (every zone under the default 1600-LOC cap), so the default-cap run
+# must produce NO split_of at all -- proof that splitting is a no-op below the cap (un-split == byte-identical).
+optional = {"split_of", "abstract_base", "implementation_appendix", "composition_surfaces", "classification_failed"}
 for z in zones:
-    assert set(z.keys()) == need, "zone %r keys %r != %r" % (z.get("id"), set(z.keys()), need)
+    keys = set(z.keys())
+    assert need.issubset(keys), "zone %r missing required keys %r" % (z.get("id"), need - keys)
+    assert keys.issubset(need | optional), "zone %r has unexpected keys %r" % (z.get("id"), keys - (need | optional))
+    assert "split_of" not in z, "default-cap run split a zone %r -- splitting must be a no-op below the cap" % z.get("id")
     assert isinstance(z["files"], list) and z["files"], "zone %r has no files" % z.get("id")
     assert isinstance(z["bug_classes_likely"], list), "bug_classes_likely not a list"
     assert isinstance(z["loc"], int) and isinstance(z["hardening_score"], int), "loc/hardening not ints"
     assert isinstance(z["value_custody"], bool), "value_custody not a bool"
 PY
-then ok "zones.json is a valid JSON array; every zone has exactly the 8 keys (id/name/files/loc/hardening_score/bug_classes_likely/description/value_custody)"
+then ok "zones.json is a valid JSON array; every zone has the 8 required keys (id/name/files/loc/hardening_score/bug_classes_likely/description/value_custody) + no stray key, and the default-cap run carries no split_of (splitting is a no-op below the cap)"
 else bad "zones.json schema assertion failed"
 fi
 
@@ -996,6 +1004,127 @@ for sub, (tok, base) in by_sub.items():
 PY
 then ok "A9: appendix.tsv records <subsystem>TAB<token>TAB<base> for exactly the 5 attaching zones (base -> staking/StakingStrategy.sol@... / base/AbstractYield.sol), no row for the in-zone-implementor / descendant-less / ambiguous zones, every token present in that subsystem's own scope.tsv line, and the no-helper control writes no appendix.tsv at all"
 else bad "A9: the #1865 appendix sidecar is missing, mis-keyed, or names a zone that attached nothing"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (6) #1957 (Lever 2): a directory zone whose AGGREGATE in-scope LOC exceeds ZONE_SPLIT_LOC is split into
+#     deterministic next-fit sub-zones each within the cap, so each sub-zone's #1955 per-cell hunt timeout
+#     stays in the linear region of run-discovery.sh's weight-scaled budget instead of saturating its
+#     1800000 ms ceiling. SELF-CONTAINED (its own throwaway repo + inline ZONE|/CUSTODY| fixture, so
+#     fixtures/zone-map/ and every other demo that reads it are untouched). Proves: (a) an over-cap
+#     value-custody zone splits into <basename> (part k/N) sub-zones each <= cap, ids <parent>__pK, each
+#     carrying split_of=<parent> and INHERITING the parent's classification + value_custody; (b) sub-zone ids
+#     are stable + collision-free; (c) each sub-zone is a distinct scope.tsv row (so run-zone-hunt.sh's
+#     `--only "$ZNAME"` cap stays enforceable); (d) a thin under-cap zone in the SAME run is untouched (no
+#     split_of); (e) the split zones.json round-trips through lib/zone-coverage.py init as one coverage entry
+#     per sub-zone (the downstream contract does not break on sub-zones).
+# ----------------------------------------------------------------------------------------------------------
+note "6) #1957: an over-cap zone splits into per-cap sub-zones inheriting the parent classification ..."
+SPLIT_REPO="$WORK/target-split"
+mkdir -p "$SPLIT_REPO/market" "$SPLIT_REPO/tiny"
+# Deterministic line counts drive the next-fit packing (loc = line count). At ZONE_SPLIT_LOC=80: market/
+# aggregates 90 LOC (Aaa 20 + Bbb 20 + Ccc 50) -> Aaa+Bbb pack into p1 (40), Ccc opens p2 (50); tiny/ is
+# 10 LOC and stays a single un-split zone. Every file is individually under the cap (no over-cap single file).
+python3 - "$SPLIT_REPO" <<'PY'
+import os, sys
+root = sys.argv[1]
+
+
+def write(rel, nlines):
+    with open(os.path.join(root, rel), "w", encoding="utf-8") as fh:
+        fh.write("// SPDX-License-Identifier: MIT\n")
+        fh.write("pragma solidity ^0.8.19;\n")
+        for i in range(nlines - 2):
+            fh.write("// filler line %d\n" % i)
+
+
+write("market/Aaa.sol", 20)
+write("market/Bbb.sol", 20)
+write("market/Ccc.sol", 50)
+write("tiny/Tiny.sol", 10)
+PY
+git -C "$SPLIT_REPO" init -q
+git -C "$SPLIT_REPO" config user.email demo@example.invalid
+git -C "$SPLIT_REPO" config user.name "demo"
+git -C "$SPLIT_REPO" add -A
+git -C "$SPLIT_REPO" commit -qm "split fixture"
+
+# One parent-keyed ZONE|/CUSTODY| line per directory zone (the sub-zones inherit market's via split_of).
+SPLIT_FIXTURE="$WORK/split.fixture.txt"
+printf 'ZONE|market|market subsystem|C1,C6|value-custody market accounting\n' > "$SPLIT_FIXTURE"
+printf 'CUSTODY|market|true\n' >> "$SPLIT_FIXTURE"
+printf 'ZONE|tiny|tiny helper|C5|read-only helper\n' >> "$SPLIT_FIXTURE"
+printf 'CUSTODY|tiny|false\n' >> "$SPLIT_FIXTURE"
+
+OUT_SPLIT="$WORK/out-split"
+ZONE_SPLIT_LOC=80 "$MAPZONES" --repo "$SPLIT_REPO" --out "$OUT_SPLIT" --fixture "$SPLIT_FIXTURE" \
+  >/dev/null 2>"$WORK/split.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "map-zones.sh exits 0 with ZONE_SPLIT_LOC=80 on the over-cap fixture" \
+  || { bad "map-zones.sh exited $RC on the split fixture"; sed 's/^/      /' "$WORK/split.err" >&2; }
+if grep -q "zone 'market'.*exceeds ZONE_SPLIT_LOC=80 -> split into 2 sub-zone(s)" "$WORK/split.err"; then
+  ok "the split is logged to stderr (no silent truncation)"
+else
+  bad "the split was not logged to stderr"
+fi
+if python3 - "$OUT_SPLIT/zones.json" "$OUT_SPLIT/scope.tsv" <<'PY'
+import sys, json
+zones = json.load(open(sys.argv[1], encoding="utf-8"))
+by_id = {z["id"]: z for z in zones}
+cap = 80
+
+# market/ split into exactly market__p1 + market__p2, each <= cap, split_of=market, inheriting classification.
+subs = sorted(zid for zid in by_id if zid.startswith("market__p"))
+assert subs == ["market__p1", "market__p2"], "expected market__p1/__p2, got %r" % subs
+assert "market" not in by_id, "the parent zone id survived alongside its sub-zones"
+seen_names = set()
+for k, zid in enumerate(subs, 1):
+    z = by_id[zid]
+    assert z["loc"] <= cap, "sub-zone %r loc %d exceeds the cap %d" % (zid, z["loc"], cap)
+    assert z.get("split_of") == "market", "sub-zone %r missing/ wrong split_of: %r" % (zid, z.get("split_of"))
+    assert z["name"] == "market (part %d/2)" % k, "sub-zone %r name is not distinct part-k/N: %r" % (zid, z["name"])
+    assert z["bug_classes_likely"] == ["C1", "C6"], "sub-zone %r did not inherit parent classes: %r" % (zid, z["bug_classes_likely"])
+    assert z["value_custody"] is True, "sub-zone %r did not inherit parent value_custody" % zid
+    seen_names.add(z["name"])
+assert len(seen_names) == 2, "sub-zone names are not collision-free: %r" % seen_names
+# No file is dropped: the two sub-zones together hold all three market files.
+allfiles = sorted(f for zid in subs for f in by_id[zid]["files"])
+assert allfiles == ["market/Aaa.sol", "market/Bbb.sol", "market/Ccc.sol"], "a market file was dropped: %r" % allfiles
+
+# The thin under-cap zone is UNTOUCHED: single zone, no split_of.
+assert "tiny" in by_id, "the under-cap tiny zone disappeared"
+assert "split_of" not in by_id["tiny"], "the under-cap zone was wrongly split"
+assert by_id["tiny"]["value_custody"] is False, "the tiny zone's own custody flag was clobbered"
+
+# Each sub-zone is a DISTINCT scope.tsv row (unique subsystem name -> --only cap stays enforceable).
+subsys = [l.split("|")[0].strip() for l in open(sys.argv[2], encoding="utf-8")
+          if l.strip() and not l.lstrip().startswith("#")]
+assert "market (part 1/2)" in subsys and "market (part 2/2)" in subsys, "sub-zone rows missing from scope.tsv: %r" % subsys
+assert len({s for s in subsys if s.startswith("market (part")}) == 2, "sub-zone scope.tsv rows are not distinct: %r" % subsys
+PY
+then ok "market/ (90 LOC) split into market__p1/__p2 (<=80 LOC each), distinct 'market (part k/2)' names + scope.tsv rows, split_of=market, inheriting C1,C6 + value_custody; no file dropped; tiny/ untouched"
+else bad "#1957 split assertion failed"
+fi
+
+# (6b) the split zones.json round-trips through lib/zone-coverage.py init as one entry per sub-zone.
+if [ -f "$HERE/lib/zone-coverage.py" ]; then
+  python3 "$HERE/lib/zone-coverage.py" init --zones "$OUT_SPLIT/zones.json" --out "$WORK/split-cov.json" \
+    --zone-list "$WORK/split-zonelist.tsv" --repo split-fixture --commit deadbeef >/dev/null 2>"$WORK/split-cov.err"
+  RC=$?
+  if [ "$RC" -eq 0 ] && python3 - "$WORK/split-cov.json" <<'PY'
+import sys, json
+rec = json.load(open(sys.argv[1], encoding="utf-8"))
+ids = {z["id"]: z for z in rec.get("zones", [])}
+for zid in ("market__p1", "market__p2", "tiny"):
+    assert zid in ids, "sub-zone %r is not its own coverage entry: %r" % (zid, sorted(ids))
+assert ids["market__p1"]["value_custody"] is True and ids["market__p2"]["value_custody"] is True, "sub-zone lost custody in the coverage record"
+assert ids["tiny"]["value_custody"] is False, "the un-split zone's custody flag changed in the coverage record"
+PY
+  then ok "the split zones.json round-trips through zone-coverage.py init: market__p1/__p2/tiny are each a separate coverage entry (downstream contract holds)"
+  else bad "#1957: the split zones.json broke the zone-coverage.py init round-trip"; sed 's/^/      /' "$WORK/split-cov.err" >&2
+  fi
+else
+  skip "lib/zone-coverage.py not found -- skipping the coverage round-trip"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
