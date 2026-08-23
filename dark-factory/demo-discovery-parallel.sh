@@ -96,7 +96,7 @@
 #           store yields an empty block from a COMPLETED call — the byte-identical-prompt claim, measured.
 #   #1955) ZONE-WEIGHTED PER-CELL TIMEOUT + TIMEOUT-VS-CHROME DISCRIMINATOR:
 #      SCALE: the written `llm.cli_timeout_ms` scales with the DISTINCT in-scope LOC this run hunts — floor
-#          600000 (<=399 LOC), 1200000 at exactly 800 LOC, capped 1800000 (>=1600 LOC) — asserted per
+#          1200000 (<=399 LOC), 1500000 at exactly 400 LOC, capped 1800000 (>=800 LOC) — asserted per
 #          backend (flat-cyborg AND claude) so BOTH config-write sites are pinned. The weight probe is
 #          side-effect-free, so the --backend mock golden (assertion 1) is unaffected.
 #      TIMEOUT-EARLY-EXIT: a GENUINE terminal [llm.timeout] (STUB_TIMEOUT=1) stops the outer retry loop after
@@ -663,7 +663,7 @@ fi
 
 # ----------------------------------------------------------------------------------------------------------
 # (#1955 SCALE) ZONE-WEIGHTED PER-CELL TIMEOUT: the written llm.cli_timeout_ms scales with the DISTINCT
-# in-scope LOC this run hunts — floor 600000 (<=399 LOC), +300000/400 LOC step, capped 1800000. Asserted per
+# in-scope LOC this run hunts — floor 1200000 (<=399 LOC), +300000/400 LOC step, capped 1800000. Asserted per
 # backend (flat-cyborg AND claude) so BOTH config-write sites are pinned. The weight probe is side-effect-free,
 # so the --backend mock golden (assertion 1) is unaffected (mock writes no cli_timeout_ms).
 note "#1955 SCALE) the per-cell timeout scales with the zone's in-scope LOC (floor / mid / cap), per backend ..."
@@ -685,9 +685,15 @@ assert_scale() {  # <loc> <expected_ms>
     fi
   done
 }
-assert_scale 100 600000    # SCALE-FLOOR: 100 LOC (<=399) -> the 600000 floor, unchanged from today
-assert_scale 800 1200000   # SCALE-MID:   exactly 800 LOC -> 600000 + 300000*(800/400) = 1200000
-assert_scale 2000 1800000  # SCALE-CAP:   2000 LOC -> 2100000 clamped to the 1800000 hard cap
+assert_scale 100 1200000   # SCALE-FLOOR: 100 LOC (<=399) -> the raised 1200000 floor (#2012)
+assert_scale 400 1500000   # SCALE-MID:   exactly 400 LOC -> 1200000 + 300000*(400/400) = 1500000
+assert_scale 2000 1800000  # SCALE-CAP:   2000 LOC -> 1200000 + 300000*5 = 2700000 clamped to the 1800000 hard cap
+
+# TermMax (#2012 root cause): 3 small zones that timed out at the OLD 600000 floor despite heavy lenses
+# (C5/C15/C1) needing lens-base reasoning time independent of zone size — pin the exact LOCs from the issue.
+assert_scale 343 1200000   # contracts_v2_access (343 LOC / 6 files, C5 timed out)
+assert_scale 180 1200000   # contracts_v2_oracle_adapters_beefy (180 LOC / 3 files, C15 timed out)
+assert_scale 36 1200000    # contracts_v2_storage (36 LOC / 1 file, C1 + C15 timed out)
 
 # ----------------------------------------------------------------------------------------------------------
 # (#1955 TIMEOUT-EARLY-EXIT) a GENUINE [llm.timeout] stops the outer retry loop after ONE attempt (not
