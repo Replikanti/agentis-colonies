@@ -337,13 +337,13 @@ cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (s
 ( cd "$RUN" && "$AGENTIS" init >/dev/null 2>&1 )
 
 # #1955 Lever 1a: SCALE the per-cell LLM timeout with the zone's SOURCE WEIGHT. A thin zone keeps the
-# 600s floor; a dense one (multi-contract market/order logic) gets proportionally more time, hard-capped at
+# 1200s floor; a dense one (multi-contract market/order logic) gets proportionally more time, hard-capped at
 # 1800s. HUNT_SRC_LOC = sum of `wc -l` over the DISTINCT in-scope files this run will hunt — walked from
 # $SCOPE with the SAME filter the --list-cells path uses (trim SUBSYS, skip blank/comment, honour --only,
 # split FILES_CSV on commas, drop any `@fn` slice suffix, dedup). This is a side-effect-free WEIGHT PROBE:
 # a missing/unreadable file contributes 0 and never fails the hunt. Constants inline (no new env knob, the
-# #1915 style): floor 600000, +300000 ms per 400 LOC step, capped at 1800000 (mirrors run-invariant-hunt.sh).
-HUNT_TIMEOUT_FLOOR=600000
+# #1915 style): floor 1200000, +300000 ms per 400 LOC step, capped at 1800000 (mirrors run-invariant-hunt.sh).
+HUNT_TIMEOUT_FLOOR=1200000
 HUNT_TIMEOUT_STEP_MS=300000
 HUNT_TIMEOUT_STEP_LOC=400
 HUNT_TIMEOUT_CAP=1800000
@@ -389,7 +389,7 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # #1955: ONE attempt, now SIZED to the zone. A deep adversarial read of complex liquidation/redemption
   # logic legitimately runs 4-8 min even on a function-level slice (the reasoning, not the payload, is the
   # cost); 300s made the hard cells time out 3x and return nothing, so one longer attempt beats wasted
-  # retries. That attempt is scaled to $HUNT_SRC_LOC LOC of in-scope source (floor 600s, +300s / 400 LOC,
+  # retries. That attempt is scaled to $HUNT_SRC_LOC LOC of in-scope source (floor 1200s, +300s / 400 LOC,
   # hard-capped 1800s) so a dense zone gets proportionally more head-room while a thin one keeps a tight
   # budget — and, per Lever 1b, a genuine [llm.timeout] now fails FAST + distinguishably instead of costing
   # N wasted outer retries. Keep cells focused with `file@fn` slicing so the common case stays fast.
