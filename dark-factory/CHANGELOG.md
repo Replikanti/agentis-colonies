@@ -22,6 +22,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `in_flight`, or the newest active sub-log is a discovery cell); a terminated incomplete sweep is a `gap` (⚠️)
   with an accurate `zone N/total · K degraded` label, mirroring the deep-hunt `active_deep_slot()` liveness gate
   (#2001). The progress bar is unchanged across the run→gap transition (`reached` is preserved).
+- **Discovery fail-fast on a runaway hunter cell** (#2017). A non-terminating value-seam read (the storage C15
+  case) blows through the per-cell `llm.cli_timeout_ms` with ZERO output; agentis-core then re-runs the
+  `[llm.timeout]` `1 + llm.max_retries` times (default 3 attempts), so a single hang cost ~3x the budget — up to
+  ~90 min on an 1800s-capped dense zone. Two changes cap it: (a) `hunter.ag` gains a bounded-termination clause
+  that forces the lens to CONVERGE — it still makes the cross-file / consumer-misuse hop that finds the real
+  bugs (a params/declaration file is attackable through how other contracts consume its fields), but bounds the
+  effort to ~1-3 seams and then emits a terminal verdict (the substantiated `CANDIDATE`, or `SAFE`) instead of
+  chasing consumers forever; and (b) `run-discovery.sh` now writes `llm.max_retries = 1` into each hunter cell's
+  `.agentis/config`, capping the residual timeout path at 2x the budget (down from 3x) while KEEPING one
+  in-process retry so a transient timeout (host-overheat de-bunch, session-slot wait, one-off PTY/API spike)
+  still recovers on attempt 2 rather than becoming an immediate FAILED cell + false `hunted_degraded` zone.
+  Backend-agnostic, colonies-side only — no core change. `demo-discovery-fail-fast.sh` (registered in
+  `colony-lint`) source-guards the `= 1` emission and mechanically proves the one-retry cap plus transient
+  recovery over a real `agentis go`; the (a) recall-preservation + termination is verified by a live
+  flat-cyborg C1/C11/C15 triple against the storage file. This addresses the retry-COST multiplier and the
+  reasoning non-termination, distinct from the timeout-SIZE tuning (#1955/#2013) and the dense-zone file-split
+  (#1957).
 - **Durable re-hunt launcher** (#1992). `run-zone-sweep.sh` now launches each re-hunt pass detached under
   `setsid` (its own session + a `<out>/coverage/.rehunt-pid` file), so a teardown of the sweep's process group
   (e.g. the operator's shell exiting) no longer kills the re-hunt mid-zone-iteration — previously only the first
