@@ -24,17 +24,21 @@
 #       names it in the plan, routes through the tools/claude-p.sh wrapper
 #       under agentis's `claude` backend (CONFIG_BACKEND="claude" +
 #       llm.command=/repo/tools/claude-p.sh), bind-mounts BOTH /root/.claude
-#       AND /root/.claude.json, and emits no OPENROUTER_API_KEY error. The
-#       default flipped from flat-cyborg because its --extract-structural TUI
-#       screen-scrape is unreliable for the strategist's structured JSON
+#       AND /root/.claude.json, emits no OPENROUTER_API_KEY error, and never
+#       sets FLAT_CYBORG_IDLE_MS on the podman command line (#1948).
+#       The default flipped from flat-cyborg because its --extract-structural
+#       TUI screen-scrape is unreliable for the strategist's structured JSON
 #       (#1163; cf #1152). claude-p is clean single-shot stdout + flat-rate.
 #  T-fc. REPLAY_LLM_BACKEND=flat-cyborg (opt-in) regression: still names the
 #       flat-cyborg backend and still wires
 #       llm.command=/repo/tools/flat-cyborg-claude.sh under CONFIG_BACKEND=
-#       claude, bind-mounting both ~/.claude mounts (#1161 parity).
+#       claude, bind-mounting both ~/.claude mounts (#1161 parity), and sets
+#       `-e FLAT_CYBORG_IDLE_MS=30000` (default) on the podman command line;
+#       REPLAY_FLAT_CYBORG_IDLE_MS overrides thread through (#1948).
 #  T-b. REPLAY_LLM_BACKEND=openai fallback still names the openai backend,
-#       omits the /root/.claude AND /root/.claude.json mounts, and the script
-#       source keeps the llm.openai.api_key_env injection + the openai key
+#       omits the /root/.claude AND /root/.claude.json mounts (and
+#       FLAT_CYBORG_IDLE_MS, #1948), and the script source keeps the
+#       llm.openai.api_key_env injection + the openai key
 #       enforcement (#1133, #1161)
 #  T-seed. Walk-forward seed-prompt injection (#1167): with
 #       REPLAY_SEED_PROMPTS_DIR set, the dry-run emits the seed-prompt
@@ -292,6 +296,15 @@ assert_contains "T-a5. subscription-claude path config backend is claude" "$SRC"
     'CONFIG_BACKEND="claude"'
 assert_contains "T-a6. claude-p dry-run bind-mounts /root/.claude.json" "$OUT" \
     ":/root/.claude.json:rw,z"
+# #1948: FLAT_CYBORG_IDLE_MS is a flat-cyborg-only container env var; the
+# claude-p podman command line must stay byte-identical without it.
+if printf '%s' "$OUT" | grep -Fq -- "FLAT_CYBORG_IDLE_MS"; then
+    echo "[FAIL] T-a7. claude-p dry-run does not set FLAT_CYBORG_IDLE_MS"
+    FAIL=$((FAIL + 1))
+else
+    echo "[PASS] T-a7. claude-p dry-run does not set FLAT_CYBORG_IDLE_MS"
+    PASS=$((PASS + 1))
+fi
 
 # ---------------------------------------------------------------------------
 # T-fc. flat-cyborg opt-in regression: REPLAY_LLM_BACKEND=flat-cyborg still
@@ -318,6 +331,29 @@ assert_contains "T-fc3. flat-cyborg opt-in bind-mounts /root/.claude" "$FC_OUT" 
     ":/root/.claude:rw,z"
 assert_contains "T-fc4. flat-cyborg opt-in bind-mounts /root/.claude.json" "$FC_OUT" \
     ":/root/.claude.json:rw,z"
+# #1948: flat-cyborg's wrapper reads its idle timeout from the
+# FLAT_CYBORG_IDLE_MS process env var; it must reach the container as a
+# podman -e flag. Default (no override) is 30000.
+assert_contains "T-fc5. flat-cyborg opt-in sets the default FLAT_CYBORG_IDLE_MS" "$FC_OUT" \
+    "-e FLAT_CYBORG_IDLE_MS=30000"
+
+# ---------------------------------------------------------------------------
+# T-fc-idle. REPLAY_FLAT_CYBORG_IDLE_MS override (#1948): threads through to
+# the container spawn command line, not just the default.
+# ---------------------------------------------------------------------------
+FC_IDLE_OUT="$(REPLAY_DRY_RUN=1 \
+               REPLAY_LLM_BACKEND=flat-cyborg \
+               REPLAY_FLAT_CYBORG_IDLE_MS=45000 \
+               REPLAY_SYMBOL=BTCUSDT \
+               REPLAY_TIMEFRAME=30m \
+               REPLAY_DAEMON_COUNT=5 \
+               REPLAY_LOOKBACK_WINDOW=200 \
+               REPLAY_HOLD_PERIOD=8 \
+               REPLAY_SPEED=100 \
+               REPLAY_RUN_DIR="$WORK_DIR/run-flat-cyborg-idle" \
+               bash "$ORCH" 2>&1)"
+assert_contains "T-fc-idle1. REPLAY_FLAT_CYBORG_IDLE_MS override threads through" "$FC_IDLE_OUT" \
+    "-e FLAT_CYBORG_IDLE_MS=45000"
 
 # ---------------------------------------------------------------------------
 # T-b. openai fallback regression: REPLAY_LLM_BACKEND=openai still names the
@@ -356,6 +392,15 @@ assert_contains "T-b3. script source injects llm.openai.api_key_env" "$SRC" \
     "llm.openai.api_key_env"
 assert_contains "T-b4. script source enforces the openai key" "$SRC" \
     "required for llm.backend=openai"
+# #1948: FLAT_CYBORG_IDLE_MS is a flat-cyborg-only container env var; the
+# openai podman command line must not set it either.
+if printf '%s' "$OPENAI_OUT" | grep -Fq -- "FLAT_CYBORG_IDLE_MS"; then
+    echo "[FAIL] T-b5. openai fallback does not set FLAT_CYBORG_IDLE_MS"
+    FAIL=$((FAIL + 1))
+else
+    echo "[PASS] T-b5. openai fallback does not set FLAT_CYBORG_IDLE_MS"
+    PASS=$((PASS + 1))
+fi
 
 # ---------------------------------------------------------------------------
 # T-seed. Walk-forward seed-prompt injection (#1167). With

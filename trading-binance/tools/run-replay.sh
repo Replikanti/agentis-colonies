@@ -57,8 +57,13 @@
 #   REPLAY_OPENAI_TIMEOUT_MS     Per-request timeout (ms). Default: 180000
 #   REPLAY_FLAT_CYBORG_MODEL     flat-cyborg llm.model when
 #                                backend=flat-cyborg. Default: unset
-#   REPLAY_FLAT_CYBORG_IDLE_MS   flat-cyborg llm.flat_cyborg.idle_ms when
-#                                backend=flat-cyborg. Default: 4000
+#   REPLAY_FLAT_CYBORG_IDLE_MS   flat-cyborg wrapper idle timeout (ms) when
+#                                backend=flat-cyborg. Reaches the container
+#                                as `-e FLAT_CYBORG_IDLE_MS=...` on the
+#                                podman run invocation (the native
+#                                llm.flat_cyborg.idle_ms config key stays
+#                                unemitted — the wrapper reads the process
+#                                env var, not agentis config). Default: 30000
 #   REPLAY_HOST_CLAUDE_DIR       Host ~/.claude dir bind-mounted to
 #                                /root/.claude on any subscription-claude
 #                                backend (claude-p or flat-cyborg).
@@ -225,8 +230,7 @@ OPENAI_MODEL="${REPLAY_OPENAI_MODEL:-qwen/qwen3-coder-30b-a3b-instruct}"
 OPENAI_KEY_ENV="${REPLAY_OPENAI_KEY_ENV:-OPENROUTER_API_KEY}"
 OPENAI_TIMEOUT_MS="${REPLAY_OPENAI_TIMEOUT_MS:-180000}"
 FLAT_CYBORG_MODEL="${REPLAY_FLAT_CYBORG_MODEL:-}"
-# shellcheck disable=SC2034  # WAIVER (#1948): documented REPLAY_FLAT_CYBORG_IDLE_MS knob is not plumbed to the wrapper yet — tracked separately; remove this directive with the fix.
-FLAT_CYBORG_IDLE_MS="${REPLAY_FLAT_CYBORG_IDLE_MS:-4000}"
+FLAT_CYBORG_IDLE_MS="${REPLAY_FLAT_CYBORG_IDLE_MS:-30000}"
 HOST_CLAUDE_DIR="${REPLAY_HOST_CLAUDE_DIR:-$HOME/.claude}"
 HOST_CLAUDE_JSON="${REPLAY_HOST_CLAUDE_JSON:-$HOME/.claude.json}"
 DAEMON_CB_PER_TICK="${REPLAY_DAEMON_CB_PER_TICK:-2000}"
@@ -632,8 +636,20 @@ spawn_container() {
     if is_subscription_claude_backend "$LLM_BACKEND"; then
         CLAUDE_MOUNT_FLAG="-v $HOST_CLAUDE_DIR:/root/.claude:rw,z -v $HOST_CLAUDE_JSON:/root/.claude.json:rw,z "
     fi
+    # #1948: flat-cyborg's wrapper (tools/flat-cyborg-claude.sh) reads its
+    # idle timeout from the FLAT_CYBORG_IDLE_MS process env var, not from
+    # agentis config, so it must reach the container as a podman -e flag
+    # rather than a config key. Empty on claude-p/openai (byte-identical
+    # command line on those paths), same conditional-arg idiom as
+    # CLAUDE_MOUNT_FLAG above.
+    IDLE_MS_FLAG=""
+    case "$LLM_BACKEND" in
+        flat-cyborg|flat_cyborg)
+            IDLE_MS_FLAG="-e FLAT_CYBORG_IDLE_MS=$FLAT_CYBORG_IDLE_MS "
+            ;;
+    esac
     emit_step "spawning replay-laptop container (image=$IMAGE_TAG)"
-    emit_cmd "podman run -d --replace --name replay-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" -v $REPO_ROOT:/repo:ro,z -v $LAPTOP_DIR:/run-root:rw,z ${CLAUDE_MOUNT_FLAG}$IMAGE_TAG /run-root/bootstrap.sh"
+    emit_cmd "podman run -d --replace --name replay-laptop -e $OPENAI_KEY_ENV=\"\${$OPENAI_KEY_ENV:-}\" ${IDLE_MS_FLAG}-v $REPO_ROOT:/repo:ro,z -v $LAPTOP_DIR:/run-root:rw,z ${CLAUDE_MOUNT_FLAG}$IMAGE_TAG /run-root/bootstrap.sh"
 }
 
 # --- 5) Cleanup trap ---
