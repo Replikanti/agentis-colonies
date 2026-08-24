@@ -26,6 +26,10 @@
 #   (F) FLAG VALIDATION + ABORT HONESTY — the flags the sweep owns are rejected in the passthrough (exit 2),
 #       bad integers fail fast (exit 2), and an ABORTED inner pass still leaves the ledger AND the report on
 #       disk (an incomplete sweep is never silent).
+#   (G) DURABILITY (#1992) — the re-hunt pass launches detached under `setsid`; a SIGKILL of the sweep's own
+#       process group (a session teardown) kills the parent but NOT the detached re-hunt, which — once released
+#       — completes the FULL gap set (>1 zone), not just the first zone the pre-fix synchronous launch managed.
+#       Skipped where setsid is unavailable (macOS); the launch shape is still pinned by a SOURCE assertion.
 #
 # Usage:  dark-factory/demo-run-zone-sweep.sh
 # Requires: git + python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression.
@@ -53,7 +57,17 @@ command -v git >/dev/null 2>&1 || { echo "[SKIP] git not installed" >&2; exit 0;
 [ -f "$BRIEFS_FIXTURE" ] || { note "briefs.fixture.txt not found: $BRIEFS_FIXTURE" >&2; exit 3; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/demo-run-zone-sweep.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+# Block (G) deliberately spawns a detached re-hunt child (its own session); DUR_CHILD_PID lets cleanup reap it
+# (and its whole process group) on ANY exit path so nothing this demo started outlives it.
+DUR_CHILD_PID=""
+cleanup() {
+  if [ -n "$DUR_CHILD_PID" ]; then
+    kill -KILL -- -"$DUR_CHILD_PID" 2>/dev/null || true
+    kill -KILL "$DUR_CHILD_PID" 2>/dev/null || true
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
 
 # ----------------------------------------------------------------------------------------------------------
 # The throwaway git target: the same fixture contracts/ tree the capstone demo uses (minus the isolated #1834
@@ -87,7 +101,20 @@ case "${1:-}" in
     mkdir -p .agentis; exit 0 ;;
   memo) exit 0 ;;
   go)
-    case "${2:-}" in hunter.ag) echo "SAFE" ;; esac
+    case "${2:-}" in
+      hunter.ag)
+        # (#1992) Durability latch: block ONLY the re-hunt pass, keyed on rehunt-pass-1.log — an artifact that
+        # ONLY the detached #1992 launch creates — so demo block (G) can tear down the sweep's process group
+        # mid-re-hunt and prove the detached child survives. A no-op for every other block (DEMO_REHUNT_LOG unset).
+        if [ -n "${DEMO_REHUNT_LOG:-}" ] && [ -f "$DEMO_REHUNT_LOG" ]; then
+          printf 'rehunt-hunter-start\n' >> "${DEMO_HEARTBEAT:-/dev/null}"
+          g_i=0
+          while [ ! -f "${DEMO_RELEASE:-/nonexistent}" ] && [ "$g_i" -lt 300 ]; do
+            sleep 1; g_i=$((g_i + 1))
+          done
+        fi
+        echo "SAFE" ;;
+    esac
     exit 0 ;;
 esac
 exit 0
@@ -501,8 +528,98 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (G) DURABILITY (#1992). The re-hunt pass launches detached under `setsid`, so a teardown of the sweep's OWN
+#     process group can no longer kill it mid-zone-set (the observed bug: only the first gap zone got hunted).
+#     This proves it end-to-end — drive the sweep to a re-hunt (block A's config), block the FIRST re-hunt zone
+#     via the stub latch, SIGKILL the sweep's whole process group (a faithful session teardown), then assert
+#     (a) the parent sweep is dead, (b) the detached re-hunt child is STILL alive, and (c) once released it
+#     re-enters STAGE 3 for the FULL gap set (>1 zone) and exits — not just the first. The latch is keyed on the
+#     fix's own rehunt-pass-1.log artifact, so it is race-free (no fixed sleeps on the happy path). SKIPPED where
+#     `setsid` is unavailable (macOS) — the fix falls back to a synchronous invocation there, pinned by SOURCE.
+# ----------------------------------------------------------------------------------------------------------
+note "G) durability: a detached re-hunt survives a teardown of the sweep's process group ..."
+# SOURCE: the launch site must be setsid + detached fds + a .rehunt-pid file, with a command -v setsid fallback.
+if grep -qF 'command -v setsid' "$SWEEP" \
+   && grep -qF 'setsid "$ZONEHUNT"' "$SWEEP" \
+   && grep -qF '</dev/null >"$REHUNT_LOG" 2>&1 &' "$SWEEP" \
+   && grep -qF 'rm -f "$COVERAGE_DIR/.rehunt-pid"' "$SWEEP"; then
+  ok "G: the re-hunt launch site is setsid + detached fds + a .rehunt-pid file, with a no-setsid fallback"
+else
+  bad "G: the re-hunt launch site is not the durable setsid shape #1992 requires"
+fi
+
+if ! command -v setsid >/dev/null 2>&1; then
+  ok "G: setsid unavailable — the behavioral durability half is skipped (SOURCE assertion still pins the shape)"
+else
+  OUTDUR="$WORK/g-durable"
+  DUR_HEARTBEAT="$WORK/g.heartbeat"
+  DUR_RELEASE="$WORK/g.release"
+  DUR_REHUNT_LOG="$OUTDUR/coverage/rehunt-pass-1.log"
+  rm -f "$DUR_HEARTBEAT" "$DUR_RELEASE"
+  # Launch the sweep in ITS OWN session so a group SIGKILL is a faithful session teardown that leaves the
+  # detached re-hunt (a DIFFERENT session, created by the fix) untouched. Block A's exact budget config reaches a
+  # raise_budget_and_rehunt over a 2-zone gap set (>1), so "the FULL set" is a real, falsifiable claim.
+  DEMO_REHUNT_LOG="$DUR_REHUNT_LOG" DEMO_HEARTBEAT="$DUR_HEARTBEAT" DEMO_RELEASE="$DUR_RELEASE" \
+    setsid "$SWEEP" --repo "$REPO" --out "$OUTDUR" --budget-ceiling 9 -- \
+    --drop-dir "$OUTDUR/drop" --scope-hint contracts --backend mock --agentis "$STUB" \
+    --map-fixture "$ZONES_FIXTURE" --brief-fixture "$BRIEFS_FIXTURE" --pass-fixture "$PASS_FIXTURE" \
+    --in-scope "the whole in-scope program" --run-cell-budget 5 \
+    >"$WORK/g-sweep.out" 2>"$WORK/g-sweep.err" &
+  sweep_pid=$!
+  # Wait (bounded) for the re-hunt hunter to actually START inside the detached child.
+  dur_i=0
+  while [ ! -f "$DUR_HEARTBEAT" ] && [ "$dur_i" -lt 120 ] && kill -0 "$sweep_pid" 2>/dev/null; do
+    sleep 1; dur_i=$((dur_i + 1))
+  done
+  rehunt_pid=""
+  [ -f "$OUTDUR/coverage/.rehunt-pid" ] && rehunt_pid="$(tr -d '[:space:]' < "$OUTDUR/coverage/.rehunt-pid")"
+  DUR_CHILD_PID="$rehunt_pid"
+  if [ ! -f "$DUR_HEARTBEAT" ] || [ -z "$rehunt_pid" ]; then
+    bad "G: the sweep never reached a detached re-hunt (heartbeat/.rehunt-pid missing) — cannot test durability"
+    sed 's/^/      /' "$WORK/g-sweep.err" | tail -20 >&2
+    kill -KILL -- -"$sweep_pid" 2>/dev/null || true
+  else
+    # SESSION TEARDOWN: SIGKILL the sweep's whole process group. The detached re-hunt is in its OWN session.
+    kill -KILL -- -"$sweep_pid" 2>/dev/null || true
+    sleep 1
+    parent_dead=no; child_alive=no
+    kill -0 "$sweep_pid" 2>/dev/null || parent_dead=yes
+    kill -0 "$rehunt_pid" 2>/dev/null && child_alive=yes
+    if [ "$parent_dead" = yes ] && [ "$child_alive" = yes ]; then
+      ok "G: the sweep group is dead but the detached re-hunt (pid $rehunt_pid) survived the teardown"
+    else
+      bad "G: teardown outcome wrong (parent_dead=$parent_dead child_alive=$child_alive)"
+    fi
+    # Release the latch and let the survivor finish the FULL gap set.
+    : > "$DUR_RELEASE"
+    dur_j=0
+    while kill -0 "$rehunt_pid" 2>/dev/null && [ "$dur_j" -lt 120 ]; do
+      sleep 1; dur_j=$((dur_j + 1))
+    done
+    zones_hunted="$(hunt_zone_count "$DUR_REHUNT_LOG")"
+    if ! kill -0 "$rehunt_pid" 2>/dev/null && [ "${zones_hunted:-0}" -gt 1 ]; then
+      ok "G: after release the survivor hunted the FULL gap set ($zones_hunted zones) and exited — not just the first"
+    else
+      bad "G: the survivor did not complete the full gap set (still alive? $(kill -0 "$rehunt_pid" 2>/dev/null && echo yes || echo no); zones=$zones_hunted)"
+      [ -f "$DUR_REHUNT_LOG" ] && sed 's/^/      /' "$DUR_REHUNT_LOG" | tail -20 >&2
+    fi
+    # Process hygiene: nothing this block spawned may outlive it (kill -0 + pgrep -g on the child's session).
+    kill -KILL -- -"$rehunt_pid" 2>/dev/null || true
+    kill -KILL "$rehunt_pid" 2>/dev/null || true
+    sleep 1
+    if kill -0 "$rehunt_pid" 2>/dev/null \
+       || { command -v pgrep >/dev/null 2>&1 && pgrep -g "$rehunt_pid" >/dev/null 2>&1; }; then
+      bad "G: a process the durability block spawned is still alive after teardown (pid/group $rehunt_pid) — leak"
+    else
+      ok "G: no process the durability block spawned outlived it (verified via kill -0 + pgrep -g)"
+    fi
+    DUR_CHILD_PID=""
+  fi
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
-  note "PASS — run-zone-sweep.sh (#1828 M3: autonomy, inertness, boundedness, defects, ceiling, validation) holds"
+  note "PASS — run-zone-sweep.sh (#1828 M3: autonomy, inertness, boundedness, defects, ceiling, validation, durability) holds"
   exit 0
 fi
 note "FAIL — $FAILS assertion(s) regressed" >&2
