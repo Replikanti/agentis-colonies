@@ -1108,6 +1108,50 @@ else
   bad "20: --render failed on the duplicate fixture"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
 fi
 
+# (21) #2009: the "Adjudicated — verified, NOT a bug (N)" header badge must count only rows actually rendered
+# in that card's table body. The arows-building loop already skips CONFIRMED/DUPLICATE breadth adjudications
+# (#2005/#2007 gave those their own buckets), but before this fix the header badge counted len(A) — the
+# pre-filter total — so a DUPLICATE row inflated the header past the actual row count. Append a DUPLICATE row
+# (keyed to the fixture's real C8 lead) to the BREADTH adjudicated.tsv (NOT deep-hunt-adjudicated.tsv — that
+# overlay feeds the DEPTH matrix, not A/arows), so A holds 2 rows (the fixture's pre-existing REFUTED
+# VaultAdmin.sol row + this new DUPLICATE one) of which only the REFUTED one should render.
+ADJN_DESC="$(stage_as balancer balancer-adjudicated-count)"
+printf 'pkg/vault/contracts/BufferRouter.sol:addLiquidityToBuffer\tC8\tLow\tDUPLICATE\treal + PoC-verified; already reported as #6789 -> $0\n' >> "$WORK/balancer-adjudicated-count/adjudicated.tsv"
+if python3 "$DASH" --descriptor "$ADJN_DESC" --render > "$WORK/pageadjn.html" 2>"$WORK/render.err"; then
+  if python3 - "$WORK/pageadjn.html" "$WORK/page.html" <<'PY'
+import sys, re
+html = open(sys.argv[1]).read()
+baseline = open(sys.argv[2]).read()
+e = []
+m = re.search(r'Adjudicated — verified, NOT a bug \((\d+)\)', html)
+if not m:
+    e.append("Adjudicated header badge not found")
+else:
+    n = int(m.group(1))
+    tm = re.search(r'Adjudicated — verified, NOT a bug \(\d+\)[^<]*</h2><table>(.*?)</table>', html, re.S)
+    if not tm:
+        e.append("Adjudicated card table not found")
+    else:
+        actual = tm.group(1).count("<tr") - 1   # minus the column-label row
+        if n != actual:
+            e.append("header badge says (%d) but the table body actually renders %d row(s) — a "
+                     "CONFIRMED/DUPLICATE-skipped row inflated the header" % (n, actual))
+        if actual != 1:
+            e.append("expected exactly 1 rendered adjudicated row (the pre-existing REFUTED one), got %d" % actual)
+base_dup = baseline.count('data-st="duplicate"')
+new_dup = html.count('data-st="duplicate"')
+if new_dup != base_dup + 1:
+    e.append("duplicate-bucket row count did not rise by 1 relative to (19a)'s baseline (baseline=%d, now=%d) "
+             "— the DUPLICATE-keyed lead was not routed into the Duplicate bucket" % (base_dup, new_dup))
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "21: the Adjudicated header (N) badge counts only rows actually rendered in its table — a DUPLICATE row (own bucket, #2007) no longer inflates it (#2009)"
+  else bad "21: Adjudicated header count wrong"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
+  fi
+else
+  bad "21: --render failed on the adjudicated-count fixture"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"

@@ -827,9 +827,10 @@ def page(nav=""):
                 f'<td style="font-family:monospace;font-size:12px;{strike}"><span title="stable finding id — cite this" style="color:#8a94a0;font-weight:600">{_finding_id(x["loc"], x["cls"])}</span>&nbsp;{html.escape(x["loc"])}</td>'
                 f'<td style="white-space:nowrap">{vcell}</td>'
                 f'<td>{detail}</td></tr>')
-    arows=""
+    arows=""; n_arows=0
     for x in A:
         if x.get("verdict","").strip().upper() in ("CONFIRMED","DUPLICATE"): continue   # #2005/#2007: CONFIRMED + DUPLICATE are REAL bugs (own buckets), NOT "not-a-bug" adjudications
+        n_arows+=1
         arows+=(f'<tr style="opacity:.55"><td style="color:#777;font-weight:600;text-decoration:line-through">{html.escape(x["sev"])}</td>'
                 f'<td style="color:#678;text-decoration:line-through">{html.escape(x["cls"])}</td>'
                 f'<td style="font-family:monospace;font-size:12px;text-decoration:line-through;color:#889">{html.escape(x["loc"])}</td>'
@@ -1094,7 +1095,7 @@ a{{color:#58a6ff;text-decoration:none}} a:hover{{text-decoration:underline}}
 </div>
 <div class="card" style="margin-top:20px"><h2>LEADS &nbsp;<span style="font-weight:400;font-size:12px;color:#7d8590">breadth {len(L)} ({n_surv} survived · {n_ref} refuted · {n_pend} pending) &nbsp;·&nbsp; depth {len(completed)}/{len(order)} lens rows{f' · {n_dh_find} FINDING' if n_dh_find else ''}{_dh_note}</span></h2>{chipbar}<table id="leadtbl">
 <tr style="color:#7d8590"><td>Type</td><td>Sev</td><td>Class</td><td>Location</td><td>Refute gate</td><td>Detail</td></tr>{lrows}{dhrows}{hidden_row}</table></div>
-{('<div class="card" style="margin-top:16px"><h2>Adjudicated — verified, NOT a bug (' + str(len(A)) + ') · removed from refute queue</h2><table><tr style="color:#7d8590"><td>Sev</td><td>Class</td><td>Location</td><td>Verdict</td></tr>' + arows + '</table></div>') if A else ''}
+{('<div class="card" style="margin-top:16px"><h2>Adjudicated — verified, NOT a bug (' + str(n_arows) + ') · removed from refute queue</h2><table><tr style="color:#7d8590"><td>Sev</td><td>Class</td><td>Location</td><td>Verdict</td></tr>' + arows + '</table></div>') if A else ''}
 <div class="meta">auto-refresh 10s · {now.strftime('%H:%M:%S')} · localhost:{PORT}</div>
 </div>{filter_js}</body></html>"""
 
