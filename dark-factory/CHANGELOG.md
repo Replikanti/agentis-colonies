@@ -15,6 +15,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **An operator adjudication now WINS over an automated refute verdict — a confirmed finding can no longer be
+  silently downgraded to REFUTED** (#2023). Two complementary fixes for one root cause (the operator
+  adjudication overlay `adjudicated.tsv` was not authoritative over the STAGE-4 refute gate's
+  `verify/gates/*/verdict.txt`). (1) `hunt-dashboard.py`: a single shared `_lead_state()` classifier now drives
+  EVERY breadth verdict-selection site (render leads + zone counters + header tally AND the `--emit-model`
+  assertion surface), applying operator precedence FIRST and the gate verdict only for un-adjudicated leads —
+  closing the drift that let `#2005/#2007` fix the render path while the model path still tested the gate's
+  REFUTED first. (2) `verify-findings.sh` gains an optional `--adjudicated <file>`: a candidate whose normalized
+  location matches an operator adjudication is NOT re-refuted (saving a gate pass and removing the risk of the
+  machine overriding the human) and its verdict is PRESERVED — a real-bug CONFIRMED/DUPLICATE stays in
+  `verified_findings.json`, so a `--rehunt-gaps` pass (which `rm -rf`s the gates dir every run) can never
+  downgrade it. `run-zone-hunt.sh` forwards the overlay only when it exists, keeping a first run byte-identical.
+  Both surfaces are pinned by `demo-hunt-dashboard.sh` (`--emit-model` + `--render`) and `demo-verify-findings.sh`
+  (skip + preserve-across-wipe); the whole feature is inert without the overlay/flag.
 - **hunt-dashboard: "Discovery hunt" no longer shows 🔄 running once the sweep has ended incomplete** (#2020).
   `phase_status()` keyed the M3 phase off `reached < total_z`, so a terminated-but-incomplete sweep — a
   `hunted_degraded` (or `failed`) zone that leaves `covered < total_z` while the run has already moved on to

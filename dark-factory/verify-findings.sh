@@ -42,6 +42,14 @@
 #                       class/severity) or one with a blank/unrecognized severity is NEVER dropped by this
 #                       filter — only a well-formed, resolvable severity below the floor is. Default: unset =
 #                       inert = every artifact byte-identical to a pre-#1962 run.
+#   --adjudicated <file>  OPTIONAL (#2023). Operator adjudication overlay (adjudicated.tsv: loc \t class \t
+#                       sev \t verdict \t reason). A candidate whose normalized location matches an adjudicated
+#                       row is NOT re-refuted — a human has already ruled that location, and that ruling is
+#                       authoritative. Its cell verdict is PRESERVED (a real-bug CONFIRMED/DUPLICATE stays in
+#                       verified_findings.json; any other verdict is dropped), so a --rehunt-gaps pass — which
+#                       rm -rf's the gates dir every run — can never silently downgrade a confirmed finding to
+#                       REFUTED. Match keying is normalized-location-only (protects the location regardless of
+#                       class). Default: unset/absent = inert = every artifact byte-identical to a pre-#2023 run.
 #   --brief <file>      Optional protocol brief handed to the refute gate (invariants + known issues).
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the gate (default: flat-cyborg).
 #   --agentis <bin>     agentis binary (default: `agentis` on PATH).
@@ -80,6 +88,7 @@ AGENTIS="agentis"
 RESULTS="" ; REPO="" ; OUT="" ; GATE="refute" ; BRIEF="" ; BACKEND="flat-cyborg"
 JOBS=1  # #1863: opt-in bounded-concurrency gate fan-out; 1 = serial, today's exact statement sequence.
 PAY_FLOOR=""  # #1962: unset = inert (see the header). Validated below with the closed severity vocabulary.
+ADJUDICATED=""  # #2023: unset/absent = inert; operator adjudication overlay that pre-empts the refute gate.
 
 nv() { [ "$1" -ge 2 ] || { echo "verify-findings.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -93,6 +102,7 @@ while [ $# -gt 0 ]; do
     --agentis) nv "$#"; AGENTIS="$2"; shift 2 ;;
     --jobs)    nv "$#"; JOBS="$2"; shift 2 ;;
     --pay-floor) nv "$#"; PAY_FLOOR="$2"; shift 2 ;;
+    --adjudicated) nv "$#"; ADJUDICATED="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "verify-findings.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -275,6 +285,32 @@ PY
     echo "verify-findings.sh: skipped $SUBFLOOR sub-floor candidate(s) (below pay-floor $PAY_FLOOR), saved $SUBFLOOR refute/verify pass(es)" >&2
   fi
 fi
+
+# --- #2023: OPERATOR-ADJUDICATION lookup. Normalize each row of the adjudication overlay (adjudicated.tsv:
+#     loc \t class \t sev \t verdict \t reason) to the SAME slug the cell dir uses at the candidate loop
+#     (tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//') so a candidate's SLUG matches an adjudicated location EXACTLY as
+#     the dashboard's _normloc does — location-only keying (protect the location regardless of class). Absent,
+#     blank, or unset --adjudicated leaves ADJ_KEYS empty and the whole feature inert (a byte-identical run).
+ADJ_KEYS="$WORK/adjudicated-keys.tsv"; : > "$ADJ_KEYS"
+if [ -n "$ADJUDICATED" ] && [ -f "$ADJUDICATED" ]; then
+  while IFS= read -r ADJROW || [ -n "${ADJROW:-}" ]; do
+    [ -n "$ADJROW" ] || continue
+    ADJ_LOC="$(printf '%s\n' "$ADJROW" | cut -f1)"
+    ADJ_V="$(printf '%s\n' "$ADJROW" | cut -f4)"
+    [ -n "$ADJ_LOC" ] || continue
+    ADJ_K="$(printf '%s' "$ADJ_LOC" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
+    [ -n "$ADJ_K" ] || continue
+    printf '%s\t%s\n' "$ADJ_K" "$ADJ_V" >> "$ADJ_KEYS"
+  done < "$ADJUDICATED"
+fi
+
+# adj_lookup <slug> -> prints the operator verdict adjudicated for that normalized location, or nothing. Empty
+# ADJ_KEYS (the inert default) always prints nothing, so every caller degrades to today's gate path.
+adj_lookup() {
+  al_key="$1"
+  [ -s "$ADJ_KEYS" ] || return 0
+  awk -F'\t' -v k="$al_key" '$1==k{print $2; exit}' "$ADJ_KEYS"
+}
 
 # resolve_aux_code <out> <relfile> -> prints the absolute path of a staged, function-sliced implementation
 # APPENDIX for <relfile>, or nothing (#1861). Fires only when <relfile> declares an `abstract contract` with
@@ -469,6 +505,35 @@ while IFS= read -r CANDROW || [ -n "${CANDROW:-}" ]; do
   CANDIDATES=$((CANDIDATES + 1))
   SLUG="$(printf '%s' "$LOCATION" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
   CELL_OUT="$CELLS/${CANDIDATES}_${SLUG}"
+  # #2023: operator adjudication PRE-EMPTS the gate. If a human has already ruled this location, do NOT
+  # re-refute it (waste + risk of overriding the human) — write a PRESERVED verdict.txt and route it through
+  # classify_candidate so the gates dir + verified_findings.json stay self-consistent even across a
+  # --rehunt-gaps pass that wipes gates/. A real-bug verdict (CONFIRMED/DUPLICATE) is preserved as the gate's
+  # CONFIRMED token (kept in verified_findings.json); anything else is preserved as REFUTED (dropped). This runs
+  # BEFORE the preflight so an adjudicated location is protected regardless of its class/severity fields.
+  ADJ_VERD="$(adj_lookup "$SLUG")"
+  if [ -n "$ADJ_VERD" ]; then
+    mkdir -p "$CELL_OUT"
+    ADJ_VU="$(printf '%s' "$ADJ_VERD" | tr '[:lower:]' '[:upper:]')"
+    case "$ADJ_VU" in
+      CONFIRMED|DUPLICATE)
+        printf '%s\toperator-adjudicated (%s): refute skipped (#2023)\n' "$CONFIRM_TOKEN" "$ADJ_VERD" > "$CELL_OUT/verdict.txt" ;;
+      *)
+        printf 'REFUTED\toperator-adjudicated (%s): refute skipped (#2023)\n' "$ADJ_VERD" > "$CELL_OUT/verdict.txt" ;;
+    esac
+    echo "verify-findings.sh: [$GATE] skipping $LOCATION — operator-adjudicated ($ADJ_VERD), refute skipped (#2023)" >&2
+    if [ "$JOBS" -le 1 ]; then
+      classify_candidate 0 "$CELL_OUT" "$SUBSYS" "$LOCATION" "$CODEFILE" "$CLASS" "$SEVERITY" "$EXPLOIT" "$SKETCH"
+      continue
+    fi
+    # Parallel path: pre-write the rc + verdict and record the row with an EMPTY preflight so the drain pass
+    # classifies it from the pre-written verdict.txt WITHOUT launching a gate subshell (never touches `live`).
+    PJ_OUT+=("$CELL_OUT") ; PJ_SUBSYS+=("$SUBSYS") ; PJ_LOC+=("$LOCATION") ; PJ_FILE+=("$CODEFILE")
+    PJ_CLS+=("$CLASS") ; PJ_SEV+=("$SEVERITY") ; PJ_EXPL+=("$EXPLOIT") ; PJ_SKETCH+=("$SKETCH")
+    PJ_PREFLIGHT+=("")
+    printf 0 > "$CELL_OUT/gate.rc"
+    continue
+  fi
   EREASON=""
   if [ "${MALFORMED:-0}" = "1" ] || [ ! -f "$REPO/$CODEFILE" ]; then
     if [ "${MALFORMED:-0}" = "1" ]; then

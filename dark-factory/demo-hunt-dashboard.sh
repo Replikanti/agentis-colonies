@@ -1153,6 +1153,112 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (22) #2023: an operator adjudication MUST win over an automated refute-gate verdict at BOTH verdict-selection
+# surfaces — --emit-model (the JSON model) AND --render (the HTML). The fixture's C6 breadth lead
+# BatchRouterHooks.sol:_erc4626BufferWrapOrUnwrapExactOut carries a gate REFUTED verdict (asserted struck in
+# (1)/(2)). Append a CONFIRMED row for THAT SAME location to the breadth adjudicated.tsv and assert the gate
+# REFUTED is overridden everywhere: the model reads CONFIRMED/not-struck with survived↑ refuted↓, and the row
+# renders ◆ CONFIRMED — real, non-dup, never ✗ REFUTED. This is the exact regression #2005/#2007 left on the
+# emit_model path (render honoured operator precedence; the model did not).
+C2023_LOC="pkg/vault/contracts/BatchRouterHooks.sol:_erc4626BufferWrapOrUnwrapExactOut"
+note "22) #2023: operator CONFIRMED/DUPLICATE overrides a gate REFUTED at both emit-model and render ..."
+C2023_DESC="$(stage_as balancer balancer-2023-confirmed)"
+printf '%s\tC6\tHigh\tCONFIRMED\treal bug, operator PoC-verified\n' "$C2023_LOC" >> "$WORK/balancer-2023-confirmed/adjudicated.tsv"
+if emit_model "$C2023_DESC"; then
+  if C2023_LOC="$C2023_LOC" python3 - "$WORK/model.json" <<'PY'
+import sys, os, json
+m = json.load(open(sys.argv[1]))
+loc = os.environ["C2023_LOC"]
+e = []
+byloc = {l["loc"]: l for l in m["leads"]}
+lead = byloc.get(loc)
+if not lead:
+    e.append("C6 lead not in model")
+elif not (lead["verdict"] == "CONFIRMED" and not lead["struck"]):
+    e.append("emit-model did NOT honour the operator CONFIRMED over the gate REFUTED: %s" % lead)
+# survived rose to 2, refuted fell to 0 (the gate REFUTED no longer counts against the operator's ruling).
+if m["leads_summary"] != {"total": 3, "survived": 2, "refuted": 0, "pending": 1}:
+    e.append("leads_summary did not shift refuted->survived: %s" % m["leads_summary"])
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "22a: emit-model — operator CONFIRMED wins over the gate REFUTED (verdict CONFIRMED, not struck, survived↑/refuted↓)"
+  else bad "22a: emit-model still shows the gate REFUTED for an operator-CONFIRMED location"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "22a: emit-model failed on the #2023 confirmed fixture"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+if python3 "$DASH" --descriptor "$C2023_DESC" --render > "$WORK/page2023c.html" 2>"$WORK/render.err"; then
+  if C2023_LOC="$C2023_LOC" python3 - "$WORK/page2023c.html" <<'PY'
+import sys, os
+html = open(sys.argv[1]).read()
+loc = os.environ["C2023_LOC"]
+e = []
+i = html.find(loc)
+if i < 0:
+    print("C6 lead location not found in the rendered page"); sys.exit(1)
+row = html[html.rfind("<tr", 0, i):html.find("</tr>", i)]
+if "◆ CONFIRMED — real, non-dup" not in row:
+    e.append("render did NOT show ◆ CONFIRMED for the operator-adjudicated location: %r" % row)
+if "✗ REFUTED" in row:
+    e.append("render still shows ✗ REFUTED for an operator-CONFIRMED location: %r" % row)
+if 'data-st="confirmed"' not in row:
+    e.append("row is not bucketed as confirmed: %r" % row)
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "22b: render — the operator-CONFIRMED location shows ◆ CONFIRMED, never ✗ REFUTED (bucketed confirmed)"
+  else bad "22b: render still strikes the operator-CONFIRMED location as REFUTED"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
+  fi
+else
+  bad "22b: --render failed on the #2023 confirmed fixture"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+# DUPLICATE variant — a real, already-reported bug also overrides the gate REFUTED (its own bucket, $0).
+C2023_DDESC="$(stage_as balancer balancer-2023-duplicate)"
+printf '%s\tC6\tHigh\tDUPLICATE\treal + PoC-verified; already reported as #99999 -> $0\n' "$C2023_LOC" >> "$WORK/balancer-2023-duplicate/adjudicated.tsv"
+if emit_model "$C2023_DDESC"; then
+  if C2023_LOC="$C2023_LOC" python3 - "$WORK/model.json" <<'PY'
+import sys, os, json
+m = json.load(open(sys.argv[1]))
+loc = os.environ["C2023_LOC"]
+e = []
+lead = {l["loc"]: l for l in m["leads"]}.get(loc)
+if not (lead and lead["verdict"] == "DUPLICATE" and not lead["struck"]):
+    e.append("emit-model did NOT honour the operator DUPLICATE over the gate REFUTED: %s" % lead)
+if m["leads_summary"] != {"total": 3, "survived": 2, "refuted": 0, "pending": 1}:
+    e.append("leads_summary did not count the DUPLICATE as survived: %s" % m["leads_summary"])
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "22c: emit-model — operator DUPLICATE wins over the gate REFUTED (verdict DUPLICATE, not struck)"
+  else bad "22c: emit-model still shows the gate REFUTED for an operator-DUPLICATE location"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "22c: emit-model failed on the #2023 duplicate fixture"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+if python3 "$DASH" --descriptor "$C2023_DDESC" --render > "$WORK/page2023d.html" 2>"$WORK/render.err"; then
+  if C2023_LOC="$C2023_LOC" python3 - "$WORK/page2023d.html" <<'PY'
+import sys, os
+html = open(sys.argv[1]).read()
+loc = os.environ["C2023_LOC"]
+i = html.find(loc)
+if i < 0:
+    print("C6 lead location not found in the rendered page"); sys.exit(1)
+row = html[html.rfind("<tr", 0, i):html.find("</tr>", i)]
+e = []
+if "◆ real · DUPLICATE ($0)" not in row:
+    e.append("render did NOT show the DUPLICATE bucket for the operator-adjudicated location: %r" % row)
+if "✗ REFUTED" in row:
+    e.append("render still shows ✗ REFUTED for an operator-DUPLICATE location: %r" % row)
+if 'data-st="duplicate"' not in row:
+    e.append("row is not bucketed as duplicate: %r" % row)
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "22d: render — the operator-DUPLICATE location shows the DUPLICATE bucket, never ✗ REFUTED"
+  else bad "22d: render still strikes the operator-DUPLICATE location as REFUTED"; sed 's/^/      /' "$WORK/render.err" | head -3 >&2
+  fi
+else
+  bad "22d: --render failed on the #2023 duplicate fixture"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
   exit 0
