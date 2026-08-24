@@ -371,7 +371,12 @@ gaps **by itself**: it runs a breadth pass, asks `lib/gap-policy.py` what the re
 warrants (`rehunt_now` / `raise_budget_and_rehunt` / `remap_target` / `give_up`), re-enters through the same
 `--rehunt-gaps` machinery, and stops under three independent bounds — with no operator step in the loop.
 `run-zone-hunt.sh` stays the **single-pass** entrypoint and is unchanged by #1828. Exit 0 only when coverage
-is complete, exit 5 when gaps remain (the report is always written to `<out>/coverage/gap-report.md`).
+is complete, exit 5 when gaps remain (the report is always written to `<out>/coverage/gap-report.md`). Each
+re-hunt pass runs **detached under `setsid`** (its own session, `<out>/coverage/.rehunt-pid`), so a teardown of
+the sweep's process group cannot kill it mid-zone-set and only the first gap zone gets hunted (#1992); the
+sweep still `wait`s on it, so the happy path is unchanged (a synchronous fallback covers hosts without `setsid`).
+A durable re-hunt removes only that process-lifecycle failure — it does **not** cover zones that re-degrade on
+the STAGE 3 discovery LLM timeout regardless of a correct re-hunt set; that coverage cap is tracked in #1957.
 
 ```bash
 dark-factory/run-zone-sweep.sh --repo "$PWD/target" --out "$PWD/zone-hunt-out" \

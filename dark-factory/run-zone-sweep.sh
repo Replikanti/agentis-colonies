@@ -248,12 +248,40 @@ while : ; do
   PASSES_DONE=$((PASSES_DONE + 1))
   echo "run-zone-sweep.sh: [pass $((PASSES_DONE + 1))] $VERB: re-hunting the gap set ..." >&2
   PASS_RC=0
+  # DURABILITY (#1992): the re-hunt pass iterates the WHOLE gap set (one STAGE-3 hunt per gap zone), so it is
+  # long-lived. Run synchronously in the sweep's own process group, a session teardown (SIGHUP/SIGTERM to that
+  # group — e.g. the operator's shell exiting) reaches the running run-zone-hunt.sh mid-iteration and only the
+  # first gap zone gets hunted. So we launch the pass under `setsid` (its own session => a group teardown of the
+  # sweep does NOT reach it) with detached fds + a `.rehunt-pid` file, then `wait` on it — the happy path is
+  # unchanged (same exit code threads into PASS_RC, same ledger bookkeeping below) but the WORK now survives a
+  # teardown of the sweep's group and completes the full zone set. This mirrors the in-repo setsid conventions
+  # (lib/cell-watchdog.sh own-session + `wait "$!"`; ingest-slack-outcome.sh detached `</dev/null` + `.re-hunt-pid`).
+  # `wait "$!"` returns the child's exit code because job control is OFF in this non-interactive script, so
+  # `setsid cmd &` does not fork an extra level (`$!` IS the child) — the exact assumption cell-watchdog.sh relies
+  # on and is test-proven. We deliberately do NOT use `setsid -w`/`--wait` to recover the code: `-w` is
+  # util-linux-only and breaks macOS portability. When `setsid` is absent (macOS) we keep the original synchronous
+  # invocation verbatim (inherits fds, byte-equivalent to pre-#1992, not teardown-durable).
+  # NOTE: a durable launch removes the process-lifecycle failure only; it still cannot COVER zones that re-degrade
+  # on the STAGE 3 discovery LLM timeout regardless of a correct re-hunt set — that coverage cap is tracked in #1957.
   # The sweep's own flags come AFTER the passthrough so they win (run-zone-hunt.sh's arg loop is last-wins) —
   # that is how a raise overrides a passthrough --run-cell-budget without rewriting the operator's arguments.
-  "$ZONEHUNT" --repo "$REPO" --out "$OUT" ${PASSTHRU+"${PASSTHRU[@]}"} \
-    --rehunt-gaps --rehunt-max-attempts "$REHUNT_MAX_ATTEMPTS" \
-    ${RUNNER_PARTIAL+"${RUNNER_PARTIAL[@]}"} ${BUDGET_ARG+"${BUDGET_ARG[@]}"} \
-    || PASS_RC=$?
+  if command -v setsid >/dev/null 2>&1; then
+    REHUNT_LOG="$COVERAGE_DIR/rehunt-pass-$PASSES_DONE.log"
+    setsid "$ZONEHUNT" --repo "$REPO" --out "$OUT" ${PASSTHRU+"${PASSTHRU[@]}"} \
+      --rehunt-gaps --rehunt-max-attempts "$REHUNT_MAX_ATTEMPTS" \
+      ${RUNNER_PARTIAL+"${RUNNER_PARTIAL[@]}"} ${BUDGET_ARG+"${BUDGET_ARG[@]}"} \
+      </dev/null >"$REHUNT_LOG" 2>&1 &
+    REHUNT_PID=$!
+    printf '%s' "$REHUNT_PID" > "$COVERAGE_DIR/.rehunt-pid"
+    echo "run-zone-sweep.sh: [pass $((PASSES_DONE + 1))] re-hunt detached under setsid (pid $REHUNT_PID) -> $REHUNT_LOG" >&2
+    wait "$REHUNT_PID" || PASS_RC=$?
+    rm -f "$COVERAGE_DIR/.rehunt-pid"
+  else
+    "$ZONEHUNT" --repo "$REPO" --out "$OUT" ${PASSTHRU+"${PASSTHRU[@]}"} \
+      --rehunt-gaps --rehunt-max-attempts "$REHUNT_MAX_ATTEMPTS" \
+      ${RUNNER_PARTIAL+"${RUNNER_PARTIAL[@]}"} ${BUDGET_ARG+"${BUDGET_ARG[@]}"} \
+      || PASS_RC=$?
+  fi
   GAPS_AFTER="$(gap_list)"
   python3 "$GAPPOLICY" ledger append --file "$LEDGER" --decision "$VERB" --exit-code "$PASS_RC" \
     --gaps-before "$GAPS_BEFORE" --gaps-after "$GAPS_AFTER" \

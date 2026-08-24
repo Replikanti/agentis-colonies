@@ -14,6 +14,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **Durable re-hunt launcher** (#1992). `run-zone-sweep.sh` now launches each re-hunt pass detached under
+  `setsid` (its own session + a `<out>/coverage/.rehunt-pid` file), so a teardown of the sweep's process group
+  (e.g. the operator's shell exiting) no longer kills the re-hunt mid-zone-iteration — previously only the first
+  gap zone got hunted. The sweep still `wait`s on the child, so the happy-path exit code and ledger bookkeeping
+  are unchanged; a synchronous fallback covers hosts without `setsid` (macOS). This removes only the
+  process-lifecycle failure — the remaining discovery-timeout coverage cap (dense zones re-degrade on the
+  STAGE 3 discovery LLM timeout regardless of a correct re-hunt set) is tracked in #1957.
+
 ## [0.10.0] - 2026-08-19
 
 **Requires:** agentis >= `1.22.7`
