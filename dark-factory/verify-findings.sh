@@ -224,6 +224,8 @@ PY
 #     candidates.tsv is rewritten byte-identically and dropped-subfloor.tsv stays empty). A MALFORMED
 #     candidate (#1691 blank class/severity) is left untouched -> still routes to the existing ERRORED path,
 #     regardless of --pay-floor; the partition only ever looks at well-formed rows with a resolvable severity.
+#     A BLANK LOCATION (#1965) is likewise left untouched -> it reaches the gate loop's existing uncounted
+#     skip, never entering dropped_subfloor.
 #     A blank/unrecognized severity on a well-formed row -> KEPT (never dropped on missing data). Otherwise
 #     rank(severity) < rank(PAY_FLOOR) -> DROPPED into dropped-subfloor.tsv (same 8 columns); else KEPT.
 DROPPED_SUBFLOOR_TSV="$WORK/dropped-subfloor.tsv"; : > "$DROPPED_SUBFLOOR_TSV"
@@ -249,10 +251,10 @@ with open(src, encoding="utf-8") as fh:
         f = line.split("\t")
         while len(f) < 8:
             f.append("")
-        severity, malformed = f[4], f[7]
-        if malformed == "1":
-            kept_lines.append(line)  # #1691 malformed: untouched, stays on the existing ERRORED path.
-            continue
+        location, severity, malformed = f[1], f[4], f[7]
+        if malformed == "1" or location.strip() == "":
+            kept_lines.append(line)  # #1691 malformed OR #1965 blank location: untouched, mirrors the
+            continue                 # gate loop's line-466 uncounted skip so both stages agree on 'well-formed'.
         rank = SEV_RANK.get(severity.strip().lower())
         if rank is not None and rank < floor_rank:
             dropped_lines.append(line)
