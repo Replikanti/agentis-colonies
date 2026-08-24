@@ -15,6 +15,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **Discovery fail-fast on a runaway hunter cell** (#2017). A non-terminating value-seam read on a logic-free
+  struct file (the storage C15 case) blows through the per-cell `llm.cli_timeout_ms` with ZERO output;
+  agentis-core then re-runs the `[llm.timeout]` `1 + llm.max_retries` times (default 3 attempts), so a single
+  hang cost ~3x the budget — up to ~90 min on an 1800s-capped dense zone. Two changes cap it: (b)
+  `run-discovery.sh` now writes `llm.max_retries = 0` into each hunter cell's `.agentis/config`, so a timed-out
+  cell fails after ONE attempt instead of three (backend-agnostic, colonies-side only — no core change); and
+  (a) `hunter.ag` now carries a bounded-termination clause so a value-conservation lens on a logic-free
+  declaration file (only struct/enum/interface/constant declarations, no executable bodies) returns a terminal
+  `SAFE` within its budget instead of chasing unbounded cross-contract reasoning. `demo-discovery-fail-fast.sh`
+  (registered in `colony-lint`) source-guards the emission and mechanically proves the 1-vs-3 attempt effect
+  over a real `agentis go`. This addresses the retry-COST multiplier, distinct from the timeout-SIZE tuning
+  (#1955/#2013) and the dense-zone file-split (#1957).
 - **Durable re-hunt launcher** (#1992). `run-zone-sweep.sh` now launches each re-hunt pass detached under
   `setsid` (its own session + a `<out>/coverage/.rehunt-pid` file), so a teardown of the sweep's process group
   (e.g. the operator's shell exiting) no longer kills the re-hunt mid-zone-iteration — previously only the first

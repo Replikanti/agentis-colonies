@@ -1426,6 +1426,23 @@ if [ -x "$REPO_ROOT/dark-factory/demo-experience-flags.sh" ]; then
     fi
 fi
 
+# --- dark-factory discovery fail-fast (#2017) ---
+# A runaway / non-terminating hunter generation busts llm.cli_timeout_ms with ZERO output; agentis-core then
+# re-runs the `[llm.timeout]` `1 + llm.max_retries` times (src/llm.rs, default 3 attempts), so one hang costs
+# ~3x the per-cell budget. run-discovery.sh now emits `llm.max_retries = 0` so a timed-out cell fails after ONE
+# attempt. demo-discovery-fail-fast.sh source-guards that emission (always, CI-safe) and, when agentis is on
+# PATH, drives a real `agentis go` twice over a sleep-stub backend to prove the 1-vs-3 attempt effect at
+# OUTPUT level (retry-line count + wall-time). Layer 1 runs on CI runners; layer 2 [SKIP]s without agentis.
+if [ -x "$REPO_ROOT/dark-factory/demo-discovery-fail-fast.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-discovery-fail-fast.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: discovery fail-fast — run-discovery.sh caps a runaway hunter cell at one budget (#2017)"
+    else
+        fail "dark-factory: discovery fail-fast regressed — a timed-out cell re-runs the same hang N times (#2017)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory refuter -> hunter constraint channel (#1887) ---
 # The refute gate is where most candidates die and its reason used to die with them. refuter.ag now emits the
 # GENERALISABLE half of each REFUTED verdict as a `CONSTRAINT|` line placed BEFORE the verdict (after it,

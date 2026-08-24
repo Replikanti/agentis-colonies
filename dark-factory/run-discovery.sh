@@ -399,6 +399,18 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # only bounds how fast a marker-less (sentinel-less) reply is accepted once the screen goes quiet. If a stage
   # looks flaky, file it against the completion path, not this value.
   [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = $HUNT_TIMEOUT_MS"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"; }
+  # #2017: ONE attempt per hunter cell — no in-process retry of a busted budget. A runaway / non-terminating
+  # generation (the #1955/#1957 class) blows through llm.cli_timeout_ms with ZERO output; agentis-core then
+  # re-runs a `[llm.timeout]` `1 + llm.max_retries` times (default max_retries = 2 => 3 attempts, so ~3x the
+  # per-cell budget — up to ~90 min on a 1800s-capped dense zone — all wasted on the same hang). Setting
+  # `llm.max_retries = 0` caps a timed-out cell at ONE budget: it fails FAST and distinguishably instead of
+  # burning two more empty attempts. Verified against the runtime (src/llm.rs `attempts = 1 + max_retries`,
+  # honoured by both the `claude` (CliBackend) and `flat-cyborg` branches above), so this stays backend-agnostic
+  # and entirely colonies-side — no core change. It only shortens the TIMEOUT path: non-timeout TUI-chrome
+  # flakes (a marker-less reply, a hard crash) still recover through the #1707 outer loop's 5 attempts in
+  # lib/run-agent-validated.sh, and the #1955 Lever 1b guard already refuses to re-run that outer loop on a
+  # genuine `[llm.timeout]`. demo-discovery-fail-fast.sh pins both this emission and the 1-vs-3 attempt effect.
+  echo "llm.max_retries = 0"
   echo "trace.level = normal"
   # The hunter reads source + the brief/taxonomy through exec sh; pass through its whole env contract.
   # #1827 DEPTH_TARGET/DEPTH_KNOWN MUST be on this allowlist: getenv() reads the SANITIZED env, so an
