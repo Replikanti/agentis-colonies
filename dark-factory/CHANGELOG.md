@@ -15,6 +15,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **hunt-dashboard: "Discovery hunt" no longer shows 🔄 running once the sweep has ended incomplete** (#2020).
+  `phase_status()` keyed the M3 phase off `reached < total_z`, so a terminated-but-incomplete sweep — a
+  `hunted_degraded` (or `failed`) zone that leaves `covered < total_z` while the run has already moved on to
+  deep-hunt — read as discovery still churning. M3 is now `run` only while discovery is genuinely LIVE (a zone
+  `in_flight`, or the newest active sub-log is a discovery cell); a terminated incomplete sweep is a `gap` (⚠️)
+  with an accurate `zone N/total · K degraded` label, mirroring the deep-hunt `active_deep_slot()` liveness gate
+  (#2001). The progress bar is unchanged across the run→gap transition (`reached` is preserved).
 - **Discovery fail-fast on a runaway hunter cell** (#2017). A non-terminating value-seam read (the storage C15
   case) blows through the per-cell `llm.cli_timeout_ms` with ZERO output; agentis-core then re-runs the
   `[llm.timeout]` `1 + llm.max_retries` times (default 3 attempts), so a single hang cost ~3x the budget — up to
