@@ -938,8 +938,12 @@ VER="$OUT/verify"
 echo "run-zone-hunt.sh: [M4] verifying candidates (refute gate) -> $VER ..." >&2
 # #1962: the already-parsed --pay-floor rides the SAME ${VAR:+...} idiom as the STAGE 2 forwarding above
 # (lines ~519/524) — an unset floor adds no argument at all, so the argv is byte-identical to a pre-#1962 run.
+# #2023: forward the operator adjudication overlay ONLY when it exists (root = dirname of --out, where the
+# dashboard also reads it). A first run has no overlay yet, so ADJ_ARG stays empty and the argv is byte-identical
+# to a pre-#2023 run; a --rehunt-gaps pass over an adjudicated run pre-empts re-refuting those locations.
+ADJ_ARG=""; _ADJ="$(dirname "$OUT")/adjudicated.tsv"; [ -f "$_ADJ" ] && ADJ_ARG="$_ADJ"
 "$VERIFY" --results "$MERGED" --repo "$REPO" --gate refute --backend "$BACKEND" --agentis "$AGENTIS" \
-  --jobs "$JOBS" ${PAY_FLOOR:+--pay-floor "$PAY_FLOOR"} --out "$VER"
+  --jobs "$JOBS" ${PAY_FLOOR:+--pay-floor "$PAY_FLOOR"} ${ADJ_ARG:+--adjudicated "$ADJ_ARG"} --out "$VER"
 VERIFIED_JSON="$VER/verified_findings.json"
 [ -f "$VERIFIED_JSON" ] || { echo "run-zone-hunt.sh: verify-findings.sh did not emit verified_findings.json" >&2; exit 3; }
 else

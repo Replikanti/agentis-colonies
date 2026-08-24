@@ -100,6 +100,9 @@ case "$cmd" in
         exit 0
       fi
     fi
+    # #2023: optional record of every location the gate ACTUALLY sends to `go` — a location the operator
+    # adjudicated must be ABSENT here (it never reached the gate). Unset STUB_SEEN_LOG leaves this inert.
+    [ -n "${STUB_SEEN_LOG:-}" ] && printf '%s\n' "$fn" >> "$STUB_SEEN_LOG"
     case "$cls" in
       *refuted*|*REFUTED*) echo "VERDICT|REFUTED|$fn|$cls|a hostile read killed it" ;;
       *)                   echo "VERDICT|REAL|$fn|$cls|survived a hostile read" ;;
@@ -1021,6 +1024,94 @@ for out_dir in sys.argv[1:]:
 PY
 then ok "11d) exactly ONE gate cell exists (the control candidate) in both out dirs -- the blank-location candidate never produced a gate-cell side effect in either run"
 else bad "11d) an unexpected gate-cell count/shape for the blank-location candidate"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (12) #2023: an operator adjudication PRE-EMPTS the refute gate. A location a human has already ruled must NOT
+#     be re-refuted (waste + risk of the gate overriding the human), and its adjudicated verdict must be
+#     PRESERVED through the merge — including across a re-run that rm -rf's the gates dir (the wipe a
+#     --rehunt-gaps pass triggers). We adjudicate the Token candidate CONFIRMED: normally it is REFUTED under
+#     its C-refuted class and DROPPED (assertion 2), so preservation-over-refute is the sharp proof.
+# ----------------------------------------------------------------------------------------------------------
+note "12) #2023: operator adjudication skips the refute gate and preserves its verdict across the gates-dir wipe ..."
+ADJ_TSV="$WORK/adjudicated.tsv"
+printf 'contracts/Token.sol:transfer:5\tC-refuted\tLow\tCONFIRMED\toperator PoC-verified this real bug\n' > "$ADJ_TSV"
+ADJ_OUT="$WORK/out-adjudicated"
+: > "$WORK/adj-seen.log"
+STUB_SEEN_LOG="$WORK/adj-seen.log" "$VERIFY" --results "$RES" --repo "$REPO" --out "$ADJ_OUT" --gate refute \
+  --backend mock --agentis "$STUB" --adjudicated "$ADJ_TSV" >"$WORK/adj.out" 2>"$WORK/adj.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "12a) the --adjudicated run exits 0" \
+  || { bad "12a) the --adjudicated run exited $RC"; sed 's/^/      /' "$WORK/adj.err" >&2; }
+
+# (a) the adjudicated location was NEVER sent to the gate; the other (un-adjudicated) candidates still were.
+if [ -f "$WORK/adj-seen.log" ] && ! grep -q 'Token.sol:transfer' "$WORK/adj-seen.log" \
+   && grep -q 'Vault.sol:deposit' "$WORK/adj-seen.log"; then
+  ok "12b) the adjudicated location was NOT sent to the refute stub (a real refute pass was saved), while un-adjudicated candidates still were"
+else
+  bad "12b) the adjudicated location was re-refuted (present in the gate seen-log) or the gate was skipped for everything"
+  sed 's/^/      seen: /' "$WORK/adj-seen.log" >&2
+fi
+
+# (b) its gate cell carries the PRESERVED verdict, and (c) it is present in verified_findings.json.
+if python3 - "$ADJ_OUT" <<'PY'
+import sys, os, glob
+out = sys.argv[1]
+cell = None
+for c in glob.glob(os.path.join(out, "gates", "*contracts_Token_sol_transfer_5")):
+    cell = c
+assert cell, "no gates cell for the adjudicated Token location: %r" % os.listdir(os.path.join(out, "gates"))
+verd = open(os.path.join(cell, "verdict.txt"), encoding="utf-8").read().rstrip("\n")
+tok, _, reason = verd.partition("\t")
+assert tok == "REAL", "preserved verdict token is not the gate CONFIRMED token REAL: %r" % verd
+assert "operator-adjudicated" in reason and "CONFIRMED" in reason, "verdict.txt reason is not the preserved operator note: %r" % verd
+d = __import__("json").load(open(os.path.join(out, "verified_findings.json"), encoding="utf-8"))
+locs = [v["location"] for v in d["verified"]]
+assert "contracts/Token.sol:transfer:5" in locs, "the adjudicated CONFIRMED finding is NOT preserved in verified[]: %r" % locs
+# counting invariant still holds: candidates == verified + errored + refuted + dropped_subfloor.
+t = d["totals"]
+refuted = t["candidates"] - t["verified"] - t["errored"] - t.get("dropped_subfloor", 0)
+assert refuted >= 0, "counting invariant broken (negative refuted): %r" % t
+assert t["candidates"] == 7 and t["verified"] == 5, "expected candidates=7 verified=5 with Token preserved: %r" % t
+PY
+then ok "12c) the adjudicated cell's verdict.txt is the PRESERVED 'REAL\\toperator-adjudicated (CONFIRMED)...', the finding stays in verified_findings.json, and the counting invariant holds (verified rose 4->5)"
+else bad "12c) the adjudicated verdict was not preserved into the cell / verified_findings.json"
+fi
+
+# (d) DEFAULT INERTNESS: the SAME results WITHOUT --adjudicated drops Token exactly as assertion (2) pins.
+NOADJ_OUT="$WORK/out-noadj"
+"$VERIFY" --results "$RES" --repo "$REPO" --out "$NOADJ_OUT" --gate refute --backend mock --agentis "$STUB" \
+  >"$WORK/noadj.out" 2>"$WORK/noadj.err"
+if python3 - "$NOADJ_OUT" <<'PY'
+import sys, os, json
+d = json.load(open(os.path.join(sys.argv[1], "verified_findings.json"), encoding="utf-8"))
+locs = " ".join(v["location"] for v in d["verified"])
+assert "Token.sol" not in locs, "without --adjudicated the Token candidate should stay dropped (refuted): %r" % locs
+assert d["totals"]["verified"] == 4, "no-adjudication run must match the baseline verified=4: %r" % d["totals"]
+PY
+then ok "12d) WITHOUT --adjudicated the run is byte-inert — Token is refuted+dropped and verified=4 (the assertion-2 baseline)"
+else bad "12d) the no-adjudication run did not match the baseline (default inertness broken)"
+fi
+
+# (e) SURVIVES THE WIPE: re-run --adjudicated into the SAME out dir. verify-findings.sh rm -rf's gates/ at the
+#     start of every run (the wipe a --rehunt-gaps pass triggers), so this proves the preserved verdict is
+#     REBUILT from the adjudication overlay, not merely a stale artifact left over from the first run.
+STUB_SEEN_LOG="$WORK/adj-seen2.log" "$VERIFY" --results "$RES" --repo "$REPO" --out "$ADJ_OUT" --gate refute \
+  --backend mock --agentis "$STUB" --adjudicated "$ADJ_TSV" >"$WORK/adj2.out" 2>"$WORK/adj2.err"
+if python3 - "$ADJ_OUT" <<'PY'
+import sys, os, glob, json
+out = sys.argv[1]
+cell = None
+for c in glob.glob(os.path.join(out, "gates", "*contracts_Token_sol_transfer_5")):
+    cell = c
+assert cell, "after the re-run the adjudicated gate cell is gone (the wipe lost it): %r" % os.listdir(os.path.join(out, "gates"))
+verd = open(os.path.join(cell, "verdict.txt"), encoding="utf-8").read()
+assert verd.startswith("REAL\t") and "operator-adjudicated" in verd, "the preserved verdict did not survive the gates-dir wipe: %r" % verd
+d = json.load(open(os.path.join(out, "verified_findings.json"), encoding="utf-8"))
+assert "contracts/Token.sol:transfer:5" in [v["location"] for v in d["verified"]], "the finding was lost across the re-run wipe"
+PY
+then ok "12e) a re-run (which rm -rf's gates/) REBUILDS the preserved verdict from the overlay — the adjudicated finding survives the wipe a --rehunt-gaps pass triggers"
+else bad "12e) the adjudicated verdict did not survive a gates-dir-wiping re-run"
 fi
 
 # ----------------------------------------------------------------------------------------------------------

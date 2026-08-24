@@ -258,6 +258,31 @@ def refute_verdicts():
         out[key]={"verdict":v,"reason":(parts[1].strip() if len(parts)>1 else "")}
     return out
 
+def _breadth_adjudication(A):
+    # #2023: the operator's breadth adjudications (adjudicated.tsv), keyed exactly like the dashboard's
+    # #2005/#2007 sets — (normloc, norm_cls). CONFIRMED = a real, non-duplicate bug; DUPLICATE = a real
+    # bug already reported ($0). Both are authoritative HUMAN rulings on a location.
+    confirmed = {(_normloc(a["loc"]), _norm_cls(a.get("cls","")))
+                 for a in A if a.get("verdict","").strip().upper() == "CONFIRMED"}
+    dup = {(_normloc(a["loc"]), _norm_cls(a.get("cls",""))): a.get("reason","")
+           for a in A if a.get("verdict","").strip().upper() == "DUPLICATE"}
+    return confirmed, dup
+
+def _lead_state(x, RV, confirmed_set, dup_map):
+    # #2023: the SINGLE breadth verdict-selection classifier, shared by BOTH the renderer (page()) and the
+    # assertion surface (emit_model()) so the two can never disagree again. An operator adjudication is
+    # authoritative and is applied FIRST; the automated refute-gate verdict (RV) only decides a lead the
+    # operator has NOT adjudicated. This is exactly the drift that caused #2023: the render path honoured
+    # operator precedence (since #2005/#2007) but the model path tested the gate's REFUTED first, silently
+    # downgrading an operator-CONFIRMED finding. Returns: op_confirmed | op_duplicate | refuted | survived | pending.
+    key = (_normloc(x["loc"]), x["cls"])
+    if key in confirmed_set: return "op_confirmed"
+    if key in dup_map:       return "op_duplicate"
+    v = (RV.get(_normloc(x["loc"])) or {}).get("verdict","")
+    if v == "REFUTED":   return "refuted"
+    if v == "CONFIRMED": return "survived"
+    return "pending"
+
 def planned_deep_rows():
     # Client-side reconstruction of the STAGE 4.5 lens matrix (mirrors run-zone-hunt.sh lens_classes
     # gating) so the deep-hunt table can list PENDING/queued rows, not only completed slots. Best-effort:
@@ -740,12 +765,15 @@ def page(nav=""):
     #      NOT an open lead), keyed by the zone id leads() tags (matches the coverage zid);
     #  (b) deep-hunt (4.5) FINDINGs per zone, carrying the finding's severity.
     RV=refute_verdicts()
+    # #2023: operator adjudication wins over the gate at the zone-result site too, so an op-CONFIRMED/DUPLICATE
+    # lead counts as z_surv (survived), never z_ref — keeping AXIS-2 "zone result agrees with the panels below".
+    _confirmed_breadth, _dup_breadth = _breadth_adjudication(A)
     z_surv=_cl.Counter(); z_ref=_cl.Counter(); z_pend=_cl.Counter()
     for x in L:
-        v=(RV.get(_normloc(x["loc"])) or {}).get("verdict","")
-        if   v=="REFUTED":   z_ref[x["zone"]]+=1
-        elif v=="CONFIRMED": z_surv[x["zone"]]+=1
-        else:                z_pend[x["zone"]]+=1
+        s=_lead_state(x, RV, _confirmed_breadth, _dup_breadth)
+        if   s=="refuted": z_ref[x["zone"]]+=1
+        elif s=="pending": z_pend[x["zone"]]+=1
+        else:              z_surv[x["zone"]]+=1   # op_confirmed / op_duplicate / survived
     z_dh=_cl.Counter(); z_dhsev={}; z_dhref=_cl.Counter()
     for d in deep_hunt():
         if "FINDING" in d["verdict"]:
@@ -787,8 +815,11 @@ def page(nav=""):
                 f'<td style="color:{rcol};font-size:12px">{rlbl}</td></tr>')
     RV=refute_verdicts()
     def _rv(x): return RV.get(_normloc(x["loc"]))
-    n_ref=sum(1 for x in L if (_rv(x) or {}).get("verdict")=="REFUTED")
-    n_surv=sum(1 for x in L if (_rv(x) or {}).get("verdict")=="CONFIRMED")
+    # #2023: header tally uses the shared classifier so it matches the rows below AND emit_model()'s
+    # leads_summary — an operator CONFIRMED/DUPLICATE counts as survived, not refuted.
+    _lstates=[_lead_state(x, RV, _confirmed_breadth, _dup_breadth) for x in L]
+    n_ref=sum(1 for s in _lstates if s=="refuted")
+    n_surv=sum(1 for s in _lstates if s in ("op_confirmed","op_duplicate","survived"))
     n_pend=len(L)-n_ref-n_surv
     pf_rank=_pay_floor_rank()   # #1960: resolved once; None ⇒ pay-floor marker OFF
     n_hidden=0   # #1966: sub-floor leads are hidden from the table, not badged; counted here
@@ -801,38 +832,34 @@ def page(nav=""):
     # AUTOMATED gate (the refute gate for breadth, the invariant-fuzz for depth) is NOT confirmation — such a
     # lead still needs a forge PoC and a duplicate check, so it stays in Pending until the operator records a
     # `CONFIRMED` verdict in the adjudication overlay (adjudicated.tsv for breadth, deep-hunt-adjudicated.tsv
-    # for depth). Nothing is confirmed by the machine alone; today this set is empty (honest).
-    _confirmed_breadth = {(_normloc(a["loc"]), _norm_cls(a.get("cls","")))
-                          for a in A if a.get("verdict","").strip().upper() == "CONFIRMED"}
+    # for depth). Nothing is confirmed by the machine alone.
     # #2007: a DUPLICATE verdict = a real, PoC-verified bug that was ALREADY REPORTED (submitted → marked a
-    # duplicate → $0). It is neither Confirmed (not payable), nor Pending (fully worked — PoC done + triaged),
-    # nor Refuted (it IS a real bug, not a false positive). Its own bucket keyed by the operator's DUPLICATE
-    # verdict + the reason (the prior report id).
-    _dup_breadth = {(_normloc(a["loc"]), _norm_cls(a.get("cls",""))): a.get("reason","")
-                    for a in A if a.get("verdict","").strip().upper() == "DUPLICATE"}
+    # duplicate → $0). It is neither Confirmed (not payable), nor Pending (fully worked), nor Refuted (it IS a
+    # real bug). Its own bucket, keyed by the operator's DUPLICATE verdict + the reason (the prior report id).
+    # #2023: both sets come from _breadth_adjudication(A) above (shared with the zone-result site), and the
+    # per-row verdict is chosen by the shared _lead_state() so operator precedence can never drift off again.
     lrows=""
     for x in sorted(L,key=lambda a:(0 if ("High" in a["sev"] or "Crit" in a["sev"]) else 1)):
         if _is_unpayable(x["sev"], pf_rank):   # #1966: hide sub-floor rows, tally instead of rendering
             n_hidden += 1
             continue
         col=SEVCOL.get(x["sev"].split()[0] if x["sev"] else "","#ccc")
-        rv=_rv(x); v=(rv or {}).get("verdict","")
-        _opck = (_normloc(x["loc"]), x["cls"])
-        _opc = _opck in _confirmed_breadth   # #2005 operator-confirmed real+non-dup
-        _dupr = _dup_breadth.get(_opck)      # #2007 operator-marked duplicate (real but already reported → $0)
-        if v=="REFUTED":
+        rv=_rv(x)
+        _state=_lead_state(x, RV, _confirmed_breadth, _dup_breadth)
+        if _state=="refuted":
             strike="text-decoration:line-through;"; rowop="opacity:.6"; st="refuted"
             vcell='<span style="color:#e5737b;font-weight:600">✗ REFUTED</span>'
             detail=f'<span style="color:#e5737b;font-size:12px">verified → not a bug: {html.escape(rv["reason"][:260])}</span>'
-        elif _opc:
+        elif _state=="op_confirmed":
             strike=""; rowop=""; st="confirmed"   # #2005: only an operator CONFIRMED verdict reaches Survived
             vcell='<span style="color:#39d353;font-weight:700">◆ CONFIRMED — real, non-dup</span>'
             detail=f'<span style="color:#bbb;font-size:12px">{html.escape(x["title"][:200])}</span>'
-        elif _dupr is not None:
+        elif _state=="op_duplicate":
+            _dupr=_dup_breadth.get((_normloc(x["loc"]), x["cls"]),"")
             strike=""; rowop="opacity:.8"; st="duplicate"   # #2007: real + PoC-verified, but already reported → $0
             vcell='<span style="color:#ff5c5c;font-weight:700">◆ real · DUPLICATE ($0)</span>'
             detail=f'<span style="color:#ff5c5c;font-size:12px">confirmed real bug, already reported: {html.escape(_dupr[:260])}</span>'
-        elif v=="CONFIRMED":
+        elif _state=="survived":
             strike=""; rowop=""; st="pending"   # #2005: survived the refute gate, but NOT PoC-verified → Pending
             vcell='<span style="color:#f0a800">◆ survived refute · needs PoC</span>'
             detail=f'<span style="color:#bbb;font-size:12px">{html.escape(x["title"][:200])}</span>'
@@ -1139,16 +1166,22 @@ def emit_model():
     def _rv(x): return RV.get(_normloc(x["loc"]))
     pf_rank=_pay_floor_rank()   # #1960: resolved once; None ⇒ every `unpayable` is False
     # breadth leads
+    # #2023: dispatch on the SAME shared _lead_state() the renderer uses, so an operator CONFIRMED/DUPLICATE
+    # adjudication wins over the automated refute-gate verdict here too (this model path had NO operator
+    # awareness before — it only knew REFUTED/CONFIRMED/PENDING, which is the exact bug #2023 reports).
+    _confirmed_breadth, _dup_breadth = _breadth_adjudication(A)
     leads_out=[]; n_ref=n_surv=n_pend=0
     for x in L:
-        v=(_rv(x) or {}).get("verdict","")
-        if   v=="REFUTED":   state="REFUTED"; n_ref+=1
-        elif v=="CONFIRMED": state="CONFIRMED"; n_surv+=1
-        else:                state="PENDING"; n_pend+=1
+        s=_lead_state(x, RV, _confirmed_breadth, _dup_breadth)
+        if   s=="refuted":      state="REFUTED";   struck=True;  n_ref+=1
+        elif s=="op_confirmed": state="CONFIRMED"; struck=False; n_surv+=1
+        elif s=="op_duplicate": state="DUPLICATE"; struck=False; n_surv+=1
+        elif s=="survived":     state="CONFIRMED"; struck=False; n_surv+=1
+        else:                   state="PENDING";   struck=False; n_pend+=1
         leads_out.append({"id":_finding_id(x["loc"], x["cls"]),"loc":x["loc"],"cls":x["cls"],"sev":x["sev"],
                           "sev_claimed":x.get("sev_claimed",x["sev"]),"overclaim":bool(x.get("overclaim")),
                           "verdict":state,
-                          "struck":state=="REFUTED","unpayable":_is_unpayable(x["sev"], pf_rank)})
+                          "struck":struck,"unpayable":_is_unpayable(x["sev"], pf_rank)})
     # deep rows — the reconstructed matrix + verdict per slot (mirrors the render branches)
     DH=deep_hunt(); dh_dir=os.path.join(OUT,"deep-hunt")
     completed={d["slot"]:d for d in DH}
@@ -1194,11 +1227,11 @@ def emit_model():
     # zones — the Result label that must agree with the LEADS table
     import collections as _cl
     z_surv=_cl.Counter(); z_ref=_cl.Counter(); z_pend=_cl.Counter()
-    for x in L:
-        v=(_rv(x) or {}).get("verdict","")
-        if   v=="REFUTED":   z_ref[x["zone"]]+=1
-        elif v=="CONFIRMED": z_surv[x["zone"]]+=1
-        else:                z_pend[x["zone"]]+=1
+    for x in L:   # #2023: same operator-precedence classifier as the render zone-result site
+        s=_lead_state(x, RV, _confirmed_breadth, _dup_breadth)
+        if   s=="refuted": z_ref[x["zone"]]+=1
+        elif s=="pending": z_pend[x["zone"]]+=1
+        else:              z_surv[x["zone"]]+=1   # op_confirmed / op_duplicate / survived
     z_dh=_cl.Counter(); z_dhsev={}; z_dhref=_cl.Counter()
     for d in DH:
         if "FINDING" in d["verdict"]:
