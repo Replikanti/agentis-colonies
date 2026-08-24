@@ -507,7 +507,11 @@ def phase_status():
     else:
         _act = sublog_activity()
         _disc_live = any(z.get("status") == "in_flight" for z in zs) or (_act is not None and _act.get("kind") == "discovery")
-        st["M3 · discovery"] = "run" if _disc_live else ("done" if covered >= total_z else "gap")
+        # done vs gap uses `reached` (covered + failed), matching the exited-branch + the #1999 live-over-stale-
+        # marker test: a run whose every zone reached a terminal status is not "running", and a still-open
+        # coverage hole (a hunted_degraded zone leaves reached < total_z) is the gap. `covered` alone would mis-
+        # flag a live re-hunt over a failed-zone exit as a gap.
+        st["M3 · discovery"] = "run" if _disc_live else ("done" if reached >= total_z else "gap")
     vs = verify_state()
     deep = bool(re.search(r"STAGE 4\.5|\[deep-hunt\]", log))
     # #2001: a phase shows "run" only when its work is LIVE right now — not merely because its marker appeared
