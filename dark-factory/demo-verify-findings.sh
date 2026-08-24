@@ -28,6 +28,11 @@
 #      totals.dropped_subfloor == 2, top-level pay_floor == "high". The SAME discovery-results.json WITHOUT
 #      --pay-floor flows every candidate through unchanged (default inertness): dropped_subfloor is empty,
 #      totals.dropped_subfloor == 0, and the pre-existing totals stay exactly what assertion (1) already pins.
+#   11) #1965: a BLANK-LOCATION candidate (valid class + severity) is treated identically to the no-floor path
+#      under --pay-floor high — it is left untouched by the partition and dies at the pre-existing gate-loop
+#      skip uncounted, NEVER landing in dropped_subfloor[]. totals.candidates is identical with and without
+#      --pay-floor, and the #1962 counting invariant (candidates == verified + errored + refuted +
+#      dropped_subfloor) holds in both runs.
 #
 # Usage:  dark-factory/demo-verify-findings.sh
 # Requires: python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression.
@@ -930,6 +935,92 @@ if cmp -s "$PFRES" "$WORK/payfloor-results.orig"; then
   ok "10f) discovery-results.json is still byte-for-byte unchanged after the --pay-floor partition (read-only invariant holds)"
 else
   bad "10f) the --pay-floor partition mutated discovery-results.json"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (11) #1965: a BLANK-LOCATION candidate (valid class + severity) must be treated exactly like the no-floor
+#     path under --pay-floor -- it flows to candidates.tsv untouched and dies at the pre-existing gate-loop's
+#     `[ -n "$LOCATION" ] || continue` skip, UNCOUNTED, rather than being misclassified as sub-floor by the
+#     partition (which, before #1965, only ever looked at class/severity, never location). Self-contained: its
+#     own throwaway repo + results.json; the fixtures above are untouched.
+# ----------------------------------------------------------------------------------------------------------
+note "11) #1965: a blank-location candidate stays uncounted regardless of --pay-floor ..."
+BLREPO="$WORK/target-blankloc"
+mkdir -p "$BLREPO/contracts"
+printf 'contract Ctrl { function f() public {} }\n' > "$BLREPO/contracts/Ctrl.sol"
+
+BLRES="$WORK/blankloc-results.json"
+python3 - > "$BLRES" <<'PY'
+import json
+
+
+def cell(sub, cls, f, loc, sev):
+    return {"subsystem": sub, "class": cls, "files": f,
+            "candidates": ["%s|%s|%s|an exploit sentence|sketch" % (loc, cls, sev)], "coordination": []}
+
+
+data = {
+    "repo": "target-blankloc", "backend": "mock", "jobs": 1,
+    "cells": [
+        cell("control", "C9", "contracts/Ctrl.sol", "contracts/Ctrl.sol:f:1", "High"),
+        cell("degenerate", "C9", "contracts/Ctrl.sol", "", "Medium"),
+    ],
+    "totals": {"cells": 2, "candidates": 2, "steers": 0},
+}
+print(json.dumps(data, indent=2))
+PY
+
+BL_OUT="$WORK/out-blankloc"
+"$VERIFY" --results "$BLRES" --repo "$BLREPO" --out "$BL_OUT" --gate refute --backend mock --agentis "$STUB" \
+  >"$WORK/bl.out" 2>"$WORK/bl.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "11a) the no-floor run exits 0" \
+  || { bad "11a) the no-floor run exited $RC"; sed 's/^/      /' "$WORK/bl.err" >&2; }
+
+BL_PF_OUT="$WORK/out-blankloc-payfloor"
+"$VERIFY" --results "$BLRES" --repo "$BLREPO" --out "$BL_PF_OUT" --gate refute --backend mock --agentis "$STUB" \
+  --pay-floor high >"$WORK/bl-pf.out" 2>"$WORK/bl-pf.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "11b) the --pay-floor high run exits 0" \
+  || { bad "11b) the --pay-floor high run exited $RC"; sed 's/^/      /' "$WORK/bl-pf.err" >&2; }
+
+if python3 - "$BL_OUT/verified_findings.json" "$BL_PF_OUT/verified_findings.json" <<'PY'
+import sys, json
+noflr = json.load(open(sys.argv[1], encoding="utf-8"))
+pf = json.load(open(sys.argv[2], encoding="utf-8"))
+cand_noflr = noflr["totals"]["candidates"]
+cand_pf = pf["totals"]["candidates"]
+assert cand_noflr == cand_pf, \
+    "totals.candidates differs between no-floor (%r) and --pay-floor high (%r)" % (cand_noflr, cand_pf)
+assert cand_noflr == 1, "totals.candidates != 1 (only the control candidate should ever be counted): %r" % cand_noflr
+for entry in pf.get("dropped_subfloor", []):
+    assert entry.get("location", "") != "", "a blank-location candidate leaked into dropped_subfloor[]: %r" % entry
+    assert entry.get("file", "") != "", "a blank-file candidate leaked into dropped_subfloor[]: %r" % entry
+assert pf["totals"]["dropped_subfloor"] == 0, \
+    "totals.dropped_subfloor != 0 under --pay-floor high: %r" % pf["totals"]["dropped_subfloor"]
+# #1962 counting invariant: candidates == verified + errored + refuted + dropped_subfloor (refuted = 0 here,
+# nothing is under a *refuted* class). Must hold in BOTH runs.
+for label, d in (("no-floor", noflr), ("--pay-floor high", pf)):
+    cand = d["totals"]["candidates"]; ver = d["totals"]["verified"]; err = d["totals"]["errored"]; sub = d["totals"]["dropped_subfloor"]
+    assert cand == ver + err + sub, "%s: counting invariant broken: %d != %d + %d + %d (refuted=0)" % (label, cand, ver, err, sub)
+PY
+then ok "11c) totals.candidates == 1 identically with and without --pay-floor high, dropped_subfloor[] never carries a blank-location entry, totals.dropped_subfloor == 0 under the floor, and candidates == verified + errored + dropped_subfloor holds in both runs"
+else bad "11c) blank-location candidate assertion failed"
+fi
+
+# the blank-location candidate never reaches gate_candidate in EITHER run -- it dies at the pre-existing
+# gate-loop skip before any gate cell is created, in both the no-floor path and the --pay-floor partition path.
+if python3 - "$BL_OUT" "$BL_PF_OUT" <<'PY'
+import sys, os, glob
+for out_dir in sys.argv[1:]:
+    cells = glob.glob(os.path.join(out_dir, "gates", "*"))
+    names = " ".join(os.path.basename(c) for c in cells)
+    assert any("Ctrl_sol" in os.path.basename(c) for c in cells), \
+        "%s: no gate cell for the kept control candidate" % out_dir
+    assert len(cells) == 1, "%s: expected exactly 1 gate cell (control only), got %d: %r" % (out_dir, len(cells), names)
+PY
+then ok "11d) exactly ONE gate cell exists (the control candidate) in both out dirs -- the blank-location candidate never produced a gate-cell side effect in either run"
+else bad "11d) an unexpected gate-cell count/shape for the blank-location candidate"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
