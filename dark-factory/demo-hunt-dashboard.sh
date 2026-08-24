@@ -67,7 +67,7 @@ MAIN_DESC="$(stage balancer)"
 # (1)-(4) the COMPLETE run: phases, unified leads, deep matrix, zone-result agreement.
 # ----------------------------------------------------------------------------------------------------------
 note "1) complete run: phase tracks + unified LEADS + deep-hunt matrix + zone agreement ..."
-if emit_model "$MAIN_DESC"; then
+if emit_model "$MAIN_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0; then
   if python3 - "$WORK/model.json" <<'PY'
 import sys, json
 m = json.load(open(sys.argv[1]))
@@ -137,7 +137,7 @@ HB="$LIVE_DIR/zone-hunt-out/briefs/.gen-briefs/run/brief_pkg_vault_contracts.log
 touch "$HB"
 
 # (5a) exited + no live process -> FINISHED, static slate (is_live false)
-emit_model "$MAIN_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0
+emit_model "$MAIN_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0
 if python3 - "$WORK/model.json" <<'PY'
 import sys, json
 m = json.load(open(sys.argv[1]))
@@ -155,7 +155,7 @@ PY
 then ok "5b: __EXIT__ + live process -> running + LIVE pulse (deep-hunt-resume case, no calm 'finished')"; else bad "5b: exit+live-process classification wrong"; fi
 
 # (5c) no __EXIT__ + process gone -> PROCESS_GONE (crash, not finish)
-emit_model "$LIVE_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0
+emit_model "$LIVE_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0
 if python3 - "$WORK/model.json" <<'PY'
 import sys, json
 m = json.load(open(sys.argv[1]))
@@ -178,7 +178,7 @@ then ok "5d: fresh HIDDEN .gen-briefs heartbeat + live -> LIVE (os.walk traversa
 # ----------------------------------------------------------------------------------------------------------
 note "3) honest completion (exited != fully hunted) ..."
 INC_DESC="$(stage balancer-incomplete)"
-if emit_model "$INC_DESC"; then
+if emit_model "$INC_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0; then
   if python3 - "$WORK/model.json" <<'PY'
 import sys, json
 m = json.load(open(sys.argv[1]))
