@@ -1429,16 +1429,18 @@ fi
 # --- dark-factory discovery fail-fast (#2017) ---
 # A runaway / non-terminating hunter generation busts llm.cli_timeout_ms with ZERO output; agentis-core then
 # re-runs the `[llm.timeout]` `1 + llm.max_retries` times (src/llm.rs, default 3 attempts), so one hang costs
-# ~3x the per-cell budget. run-discovery.sh now emits `llm.max_retries = 0` so a timed-out cell fails after ONE
-# attempt. demo-discovery-fail-fast.sh source-guards that emission (always, CI-safe) and, when agentis is on
-# PATH, drives a real `agentis go` twice over a sleep-stub backend to prove the 1-vs-3 attempt effect at
-# OUTPUT level (retry-line count + wall-time). Layer 1 runs on CI runners; layer 2 [SKIP]s without agentis.
+# ~3x the per-cell budget. hunter.ag's #2017 bounded-termination clause converges to a terminal verdict at the
+# SOURCE, and run-discovery.sh emits `llm.max_retries = 1` so the residual timeout path caps at 2x the budget
+# while STILL recovering a transient timeout on attempt 2 (dropping to 0 would turn every blip into a FAILED
+# cell). demo-discovery-fail-fast.sh source-guards the `= 1` emission (always, CI-safe) and, when agentis is on
+# PATH, drives a real `agentis go` over stub backends to prove the one-retry cap AND transient recovery at
+# OUTPUT level (retry-line count + wall-time + recovered reply). Layer 1 runs on CI; layer 2 [SKIP]s w/o agentis.
 if [ -x "$REPO_ROOT/dark-factory/demo-discovery-fail-fast.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-discovery-fail-fast.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
-        pass "dark-factory: discovery fail-fast — run-discovery.sh caps a runaway hunter cell at one budget (#2017)"
+        pass "dark-factory: discovery fail-fast — run-discovery.sh caps a runaway at 2x budget, keeps transient recovery (#2017)"
     else
-        fail "dark-factory: discovery fail-fast regressed — a timed-out cell re-runs the same hang N times (#2017)"
+        fail "dark-factory: discovery fail-fast regressed — retry budget uncapped or transient recovery lost (#2017)"
         printf '%s\n' "$check_out"
     fi
 fi
