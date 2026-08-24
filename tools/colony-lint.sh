@@ -1426,6 +1426,25 @@ if [ -x "$REPO_ROOT/dark-factory/demo-experience-flags.sh" ]; then
     fi
 fi
 
+# --- dark-factory discovery fail-fast (#2017) ---
+# A runaway / non-terminating hunter generation busts llm.cli_timeout_ms with ZERO output; agentis-core then
+# re-runs the `[llm.timeout]` `1 + llm.max_retries` times (src/llm.rs, default 3 attempts), so one hang costs
+# ~3x the per-cell budget. hunter.ag's #2017 bounded-termination clause converges to a terminal verdict at the
+# SOURCE, and run-discovery.sh emits `llm.max_retries = 1` so the residual timeout path caps at 2x the budget
+# while STILL recovering a transient timeout on attempt 2 (dropping to 0 would turn every blip into a FAILED
+# cell). demo-discovery-fail-fast.sh source-guards the `= 1` emission (always, CI-safe) and, when agentis is on
+# PATH, drives a real `agentis go` over stub backends to prove the one-retry cap AND transient recovery at
+# OUTPUT level (retry-line count + wall-time + recovered reply). Layer 1 runs on CI; layer 2 [SKIP]s w/o agentis.
+if [ -x "$REPO_ROOT/dark-factory/demo-discovery-fail-fast.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-discovery-fail-fast.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: discovery fail-fast — run-discovery.sh caps a runaway at 2x budget, keeps transient recovery (#2017)"
+    else
+        fail "dark-factory: discovery fail-fast regressed — retry budget uncapped or transient recovery lost (#2017)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory refuter -> hunter constraint channel (#1887) ---
 # The refute gate is where most candidates die and its reason used to die with them. refuter.ag now emits the
 # GENERALISABLE half of each REFUTED verdict as a `CONSTRAINT|` line placed BEFORE the verdict (after it,
