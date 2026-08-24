@@ -496,7 +496,18 @@ def phase_status():
             st["deliver · stage"] = "gap"
         prog = 100.0 if complete else round(100.0 * covered / max(1, total_z), 1)
         return st, prog, covered, failed, total_z
-    st["M3 · discovery"] = ("done" if reached>=total_z else "run") if "[M3]" in log else "wait"
+    # #2020: M3 discovery is "run" only while it is genuinely LIVE — a zone actively hunting (in_flight) or
+    # the newest active sub-log is a discovery cell. Once every zone has reached a TERMINAL status, discovery
+    # is over even if the sweep is incomplete: a hunted_degraded / failed zone leaves covered < total_z, and
+    # that is a GAP (⚠️), NOT "running" — the run has already moved on to the refute gate / deep-hunt. Mirrors
+    # the deep-hunt active_deep_slot() liveness gate (#2001): a re-hunt's stale [M4]/[deep-hunt] markers and a
+    # not-yet-cleared coverage hole must never be read as discovery still churning.
+    if "[M3]" not in log:
+        st["M3 · discovery"] = "wait"
+    else:
+        _act = sublog_activity()
+        _disc_live = any(z.get("status") == "in_flight" for z in zs) or (_act is not None and _act.get("kind") == "discovery")
+        st["M3 · discovery"] = "run" if _disc_live else ("done" if covered >= total_z else "gap")
     vs = verify_state()
     deep = bool(re.search(r"STAGE 4\.5|\[deep-hunt\]", log))
     # #2001: a phase shows "run" only when its work is LIVE right now — not merely because its marker appeared
@@ -522,6 +533,10 @@ def phase_status():
             elif name=="M4 · refute gate" and vs is not None:
                 prog += w*min(1.0, sum(vs.values())/max(1,len(leads())))
             else: prog += w*0.4
+        elif s=="gap" and name=="M3 · discovery":
+            # a terminated-but-incomplete discovery still contributes the coverage it DID reach (#2020) —
+            # `reached` is unchanged across the run->gap transition, so the bar never jumps backward.
+            prog += w*(reached/total_z)
     return st, round(prog,1), covered, failed, total_z
 
 def hms(td):
@@ -695,8 +710,15 @@ def page(nav=""):
             prows+=(f'<tr><td></td><td colspan="2" style="color:#7d8590;font-size:11px;font-weight:600;'
                     f'letter-spacing:.06em;padding-top:8px;border-top:1px solid #21262d">{html.escape(group)}</td></tr>')
         s=st.get(name,"wait"); est=EST_MIN.get(name,0)
-        if s=="gap": extra=f"{failed} zone(s) errored — not hunted"
-        elif name=="M3 · discovery" and s=="run": extra=f"zone {covered}/{total_z}"
+        if name=="M3 · discovery" and s in ("run","gap"):
+            # #2020: show the real coverage (incl. degraded/errored zones) — a degraded zone is NOT a
+            # "{failed} zone(s) errored" gap (failed counts only HARNESS_ERROR), it is an incomplete sweep.
+            _deg = sum(1 for z in zs if z.get("status")=="hunted_degraded")
+            _fl  = sum(1 for z in zs if z.get("status")=="failed")
+            extra=f"zone {covered}/{total_z}"
+            if _deg: extra+=f" · {_deg} degraded"
+            if _fl:  extra+=f" · {_fl} errored"
+        elif s=="gap": extra=f"{failed} zone(s) errored — not hunted"
         elif name=="M4 · refute gate" and vs is not None: extra=f"{sum(vs.values())}/{len(L)} gate"
         elif name=="4.6 · refute deep-hunt":
             _dhf=[d for d in deep_hunt() if "FINDING" in d["verdict"]]
