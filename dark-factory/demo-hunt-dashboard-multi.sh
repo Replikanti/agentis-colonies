@@ -76,6 +76,7 @@ EOF
 # ----------------------------------------------------------------------------------------------------------
 note "1) registry discovery + overview (finished static slate vs live pulse) ..."
 if env HUNT_DASHBOARD_FAKE_PROC_ALIVE_VAULT_FINISHED=0 HUNT_DASHBOARD_FAKE_PROC_ALIVE_VAULT_LIVE=1 \
+    HUNT_DASHBOARD_FAKE_LLM_INFLIGHT_VAULT_FINISHED=0 \
     python3 "$DASH" --registry-dir "$REG" --emit-model > "$WORK/overview.json" 2>"$WORK/overview.err" \
    && python3 - "$WORK/overview.json" <<'PY'
 import sys, json
@@ -105,6 +106,7 @@ fi
 # ----------------------------------------------------------------------------------------------------------
 note "2) detail routing (?hunt=<id> -> the per-hunt M1 dashboard) ..."
 env HUNT_DASHBOARD_FAKE_PROC_ALIVE_VAULT_FINISHED=0 \
+    HUNT_DASHBOARD_FAKE_LLM_INFLIGHT_VAULT_FINISHED=0 \
     python3 "$DASH" --registry-dir "$REG" --hunt vault-finished --emit-model > "$WORK/d_fin.json" 2>/dev/null
 env HUNT_DASHBOARD_FAKE_PROC_ALIVE_VAULT_LIVE=1 \
     python3 "$DASH" --registry-dir "$REG" --hunt vault-live --emit-model > "$WORK/d_liv.json" 2>/dev/null
