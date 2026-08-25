@@ -1259,6 +1259,92 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (23) #2024: raw discovery candidates that land at the EXACT SAME normalized location (a --rehunt-gaps
+# re-find or a second lens pass re-flagging the identical seam) must FOLD into ONE row at both verdict-selection
+# surfaces, and a verified-PoC / operator adjudication on ANY copy must apply to the whole folded location —
+# never leave sibling copies (raised by a different class) still reading "needs PoC". Append 3 raw candidates
+# at ONE new location (two C11, one C15 — mirrors a re-find + a second lens pass), a pre-fix gate REAL verdict
+# for that location (so, un-folded, all 3 would read "◆ survived refute · needs PoC"), and an operator
+# CONFIRMED adjudication on the C15 copy only. Also re-checks a pre-existing SINGLETON location (Vault.sol:
+# settle) is untouched by grouping (n_folded==1) — the no-op-for-distinct-locations regression guard.
+# ----------------------------------------------------------------------------------------------------------
+C2024_LOC="pkg/vault/contracts/TermMax4626Factory.sol:createVariableERC4626ForAave"
+note "23) #2024: same-location cross-class breadth candidates fold into one row at both emit-model and render ..."
+C2024_DESC="$(stage_as balancer balancer-2024-dedup)"
+C2024_DIR="$(dirname "$C2024_DESC")"
+C2024_CELLS="$C2024_DIR/zone-hunt-out/discovery/pkg_vault_contracts/run/results-cells.jsonl"
+cat >>"$C2024_CELLS" <<'EOF'
+{"subsystem":"Vault core and routers","class":"C11","files":"pkg/vault/contracts/TermMax4626Factory.sol","status":"ok","candidates":["pkg/vault/contracts/TermMax4626Factory.sol:createVariableERC4626ForAave|C11|High|rehunt-gaps re-find, pass 1: custody-invariant break on factory-minted ERC4626."],"coordination":[]}
+{"subsystem":"Vault core and routers","class":"C11","files":"pkg/vault/contracts/TermMax4626Factory.sol","status":"ok","candidates":["pkg/vault/contracts/TermMax4626Factory.sol:createVariableERC4626ForAave|C11|High|rehunt-gaps re-find, pass 2: same seam re-flagged on a coverage gap re-hunt."],"coordination":[]}
+{"subsystem":"Vault core and routers","class":"C15","files":"pkg/vault/contracts/TermMax4626Factory.sol","status":"ok","candidates":["pkg/vault/contracts/TermMax4626Factory.sol:createVariableERC4626ForAave|C15|Critical|second lens pass: the same factory seam also trips the composition-seam lens."],"coordination":[]}
+EOF
+mkdir -p "$C2024_DIR/zone-hunt-out/verify/gates/3_pkg_vault_contracts_TermMax4626Factory_sol_createVariableERC4626ForAave"
+printf 'REAL\tsurvived the hostile read; a forge PoC is the next human-gated step.\n' \
+  > "$C2024_DIR/zone-hunt-out/verify/gates/3_pkg_vault_contracts_TermMax4626Factory_sol_createVariableERC4626ForAave/verdict.txt"
+printf '%s\tC15\tCritical\tCONFIRMED\treal bug, operator PoC-verified\n' "$C2024_LOC" >> "$C2024_DIR/adjudicated.tsv"
+if emit_model "$C2024_DESC"; then
+  if C2024_LOC="$C2024_LOC" python3 - "$WORK/model.json" <<'PY'
+import sys, os, json
+m = json.load(open(sys.argv[1]))
+loc = os.environ["C2024_LOC"]
+e = []
+matches = [l for l in m["leads"] if l["loc"] == loc]
+if len(matches) != 1:
+    e.append("expected exactly ONE grouped lead for the folded location, got %d: %s" % (len(matches), matches))
+else:
+    lead = matches[0]
+    if lead["verdict"] != "CONFIRMED":
+        e.append("folded location did not resolve to CONFIRMED (an adjudicated copy anywhere must win): %s" % lead)
+    if lead["struck"]:
+        e.append("folded CONFIRMED location rendered struck: %s" % lead)
+    if lead.get("n_folded") != 3:
+        e.append("n_folded != 3 (two C11 re-finds + one C15 second-lens hit): %s" % lead)
+    if set(lead.get("classes") or []) != {"C11", "C15"}:
+        e.append("classes did not carry both raised classes: %s" % lead)
+if m["leads_summary"] != {"total": 4, "survived": 2, "refuted": 1, "pending": 1}:
+    e.append("leads_summary counted by DISTINCT location wrong (want total 3+1=4, not 3+3=6): %s" % m["leads_summary"])
+singleton = {l["loc"]: l for l in m["leads"]}.get("pkg/vault/contracts/Vault.sol:settle")
+if not singleton or singleton.get("n_folded") != 1:
+    e.append("grouping is NOT a no-op for a genuinely distinct (unduplicated) location: %s" % singleton)
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "23a: emit-model — 3 raw candidates at one location fold into 1 grouped lead (CONFIRMED, n_folded=3, classes={C11,C15}); leads_summary counts distinct locations; a singleton location stays n_folded=1"
+  else bad "23a: emit-model did not fold the same-location cross-class candidates correctly"; sed 's/^/      /' "$WORK/model.err" | head -6 >&2
+  fi
+else
+  bad "23a: emit-model failed on the #2024 dedup fixture"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+if python3 "$DASH" --descriptor "$C2024_DESC" --render > "$WORK/page2024.html" 2>"$WORK/render.err"; then
+  if C2024_LOC="$C2024_LOC" python3 - "$WORK/page2024.html" <<'PY'
+import sys, os
+html = open(sys.argv[1]).read()
+loc = os.environ["C2024_LOC"]
+e = []
+n = html.count(loc)
+if n != 1:
+    e.append("expected the folded location to appear in exactly ONE row, found it %d time(s)" % n)
+i = html.find(loc)
+if i < 0:
+    print("folded location not found in the rendered page at all"); sys.exit(1)
+row = html[html.rfind("<tr", 0, i):html.find("</tr>", i)]
+if "◆ CONFIRMED — real, non-dup" not in row:
+    e.append("render did NOT show ◆ CONFIRMED for the folded location: %r" % row)
+if "◆ survived refute · needs PoC" in row:
+    e.append("render still shows the pre-fix 'needs PoC' text for a location with a verified-PoC copy: %r" % row)
+if 'data-st="confirmed"' not in row:
+    e.append("folded row is not bucketed as confirmed: %r" % row)
+if "folded from 3 copies" not in row:
+    e.append("folded row's Detail cell does not disclose the folded-copy count: %r" % row)
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "23b: render — the folded location shows exactly ONE row, ◆ CONFIRMED (never 'needs PoC'), with a visible folded-copy count"
+  else bad "23b: render did not fold the same-location cross-class candidates into one confirmed row"; sed 's/^/      /' "$WORK/render.err" | head -6 >&2
+  fi
+else
+  bad "23b: --render failed on the #2024 dedup fixture"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
   exit 0

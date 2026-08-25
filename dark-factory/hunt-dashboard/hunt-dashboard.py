@@ -283,6 +283,44 @@ def _lead_state(x, RV, confirmed_set, dup_map):
     if v == "CONFIRMED": return "survived"
     return "pending"
 
+# #2024: precedence for folding raw breadth candidates that land at the SAME normalized location — a
+# --rehunt-gaps re-find or a second lens pass re-flagging the identical seam. Most-actionable state wins;
+# a location is "refuted" only when EVERY copy at that location was refuted (min-precedence selection below).
+_GROUP_STATE_PREC = {"op_confirmed": 0, "op_duplicate": 1, "survived": 2, "pending": 3, "refuted": 4}
+
+def _group_leads(L, RV, confirmed_set, dup_map):
+    # #2024: fold raw discovery candidates by EXACT normalized location (_normloc) ONLY — no class in the key,
+    # so a re-find/second-lens hit at the identical file:fn folds even across classes, and a location a copy of
+    # which is operator-CONFIRMED never still shows "needs PoC" on its siblings. Deliberately NOT fuzzy — two
+    # candidates at genuinely different locations never collapse (cf. #861/#1894 FUNNEL, out of scope here).
+    # Reuses the SAME _lead_state() classifier the ungrouped path used, so render/emit_model can't drift again.
+    groups = {}
+    order = []
+    for x in L:
+        s = _lead_state(x, RV, confirmed_set, dup_map)
+        key = _normloc(x["loc"])
+        g = groups.get(key)
+        if g is None:
+            g = {"loc": x["loc"], "zone": x["zone"], "cls": x["cls"], "clss": [x["cls"]],
+                 "sev": x["sev"], "sev_claimed": x.get("sev_claimed", x["sev"]),
+                 "overclaim": bool(x.get("overclaim")), "title": x["title"],
+                 "state": s, "n_folded": 1, "_win_cls": x["cls"]}
+            groups[key] = g
+            order.append(key)
+        else:
+            g["n_folded"] += 1
+            if x["cls"] not in g["clss"]: g["clss"].append(x["cls"])
+            if _GROUP_STATE_PREC[s] < _GROUP_STATE_PREC[g["state"]]:
+                # a more-actionable copy wins: its sev/title/class become the group's representative facts
+                g["state"] = s; g["sev"] = x["sev"]; g["sev_claimed"] = x.get("sev_claimed", x["sev"])
+                g["overclaim"] = bool(x.get("overclaim")); g["title"] = x["title"]; g["_win_cls"] = x["cls"]
+    out = []
+    for key in order:
+        g = groups[key]
+        g["cls"] = "+".join(g["clss"]) if len(g["clss"]) > 1 else g["clss"][0]
+        out.append(g)
+    return out
+
 def planned_deep_rows():
     # Client-side reconstruction of the STAGE 4.5 lens matrix (mirrors run-zone-hunt.sh lens_classes
     # gating) so the deep-hunt table can list PENDING/queued rows, not only completed slots. Best-effort:
@@ -768,12 +806,15 @@ def page(nav=""):
     # #2023: operator adjudication wins over the gate at the zone-result site too, so an op-CONFIRMED/DUPLICATE
     # lead counts as z_surv (survived), never z_ref — keeping AXIS-2 "zone result agrees with the panels below".
     _confirmed_breadth, _dup_breadth = _breadth_adjudication(A)
+    # #2024: fold same-location raw candidates into one row BEFORE every tally below — page() and emit_model()
+    # both group off this single G, so the collapse can never drift between the two surfaces.
+    G=_group_leads(L, RV, _confirmed_breadth, _dup_breadth)
     z_surv=_cl.Counter(); z_ref=_cl.Counter(); z_pend=_cl.Counter()
-    for x in L:
-        s=_lead_state(x, RV, _confirmed_breadth, _dup_breadth)
-        if   s=="refuted": z_ref[x["zone"]]+=1
-        elif s=="pending": z_pend[x["zone"]]+=1
-        else:              z_surv[x["zone"]]+=1   # op_confirmed / op_duplicate / survived
+    for g in G:
+        s=g["state"]
+        if   s=="refuted": z_ref[g["zone"]]+=1
+        elif s=="pending": z_pend[g["zone"]]+=1
+        else:              z_surv[g["zone"]]+=1   # op_confirmed / op_duplicate / survived
     z_dh=_cl.Counter(); z_dhsev={}; z_dhref=_cl.Counter()
     for d in deep_hunt():
         if "FINDING" in d["verdict"]:
@@ -815,12 +856,13 @@ def page(nav=""):
                 f'<td style="color:{rcol};font-size:12px">{rlbl}</td></tr>')
     RV=refute_verdicts()
     def _rv(x): return RV.get(_normloc(x["loc"]))
-    # #2023: header tally uses the shared classifier so it matches the rows below AND emit_model()'s
-    # leads_summary — an operator CONFIRMED/DUPLICATE counts as survived, not refuted.
-    _lstates=[_lead_state(x, RV, _confirmed_breadth, _dup_breadth) for x in L]
+    # #2023/#2024: header tally uses the shared classifier over the GROUPED (distinct-location) list, so it
+    # matches the rows below AND emit_model()'s leads_summary — an operator CONFIRMED/DUPLICATE counts as
+    # survived, not refuted, and a folded location counts once, not once per raw copy.
+    _lstates=[g["state"] for g in G]
     n_ref=sum(1 for s in _lstates if s=="refuted")
     n_surv=sum(1 for s in _lstates if s in ("op_confirmed","op_duplicate","survived"))
-    n_pend=len(L)-n_ref-n_surv
+    n_pend=len(G)-n_ref-n_surv
     pf_rank=_pay_floor_rank()   # #1960: resolved once; None ⇒ pay-floor marker OFF
     n_hidden=0   # #1966: sub-floor leads are hidden from the table, not badged; counted here
     # #1996: per-status tally for the LEADS filter chips — counts what is actually RENDERED (sub-floor rows
@@ -839,13 +881,13 @@ def page(nav=""):
     # #2023: both sets come from _breadth_adjudication(A) above (shared with the zone-result site), and the
     # per-row verdict is chosen by the shared _lead_state() so operator precedence can never drift off again.
     lrows=""
-    for x in sorted(L,key=lambda a:(0 if ("High" in a["sev"] or "Crit" in a["sev"]) else 1)):
+    for x in sorted(G,key=lambda a:(0 if ("High" in a["sev"] or "Crit" in a["sev"]) else 1)):
         if _is_unpayable(x["sev"], pf_rank):   # #1966: hide sub-floor rows, tally instead of rendering
             n_hidden += 1
             continue
         col=SEVCOL.get(x["sev"].split()[0] if x["sev"] else "","#ccc")
         rv=_rv(x)
-        _state=_lead_state(x, RV, _confirmed_breadth, _dup_breadth)
+        _state=x["state"]   # #2024: precomputed per group by _group_leads(), not recalled per-row
         if _state=="refuted":
             strike="text-decoration:line-through;"; rowop="opacity:.6"; st="refuted"
             vcell='<span style="color:#e5737b;font-weight:600">✗ REFUTED</span>'
@@ -855,7 +897,7 @@ def page(nav=""):
             vcell='<span style="color:#39d353;font-weight:700">◆ CONFIRMED — real, non-dup</span>'
             detail=f'<span style="color:#bbb;font-size:12px">{html.escape(x["title"][:200])}</span>'
         elif _state=="op_duplicate":
-            _dupr=_dup_breadth.get((_normloc(x["loc"]), x["cls"]),"")
+            _dupr=_dup_breadth.get((_normloc(x["loc"]), x["_win_cls"]),"")
             strike=""; rowop="opacity:.8"; st="duplicate"   # #2007: real + PoC-verified, but already reported → $0
             vcell='<span style="color:#ff5c5c;font-weight:700">◆ real · DUPLICATE ($0)</span>'
             detail=f'<span style="color:#ff5c5c;font-size:12px">confirmed real bug, already reported: {html.escape(_dupr[:260])}</span>'
@@ -867,6 +909,11 @@ def page(nav=""):
             strike=""; rowop=""; st="pending"
             vcell='<span style="color:#f0a800">… pending refute</span>'
             detail=f'<span style="color:#bbb;font-size:12px">{html.escape(x["title"][:200])}</span>'
+        # #2024: a folded row (n_folded > 1) shows how many raw copies + which classes collapsed into it — the
+        # collapse is visible, not silent.
+        if x["n_folded"]>1:
+            detail+=(f' <span style="color:#7d8590;font-size:11px">· folded from {x["n_folded"]} copies '
+                      f'({html.escape(", ".join(x["clss"]))})</span>')
         # #1989: when the shown Sev was reclassified DOWN from the hunter's over-claim, flag it inline so the
         # operator sees the hunter said more (and why this row may now be sub-floor), not a silent rewrite.
         _ocflag=(f'<span title="hunter self-claimed {html.escape(x.get("sev_claimed",""))}; reclassified to '
@@ -1146,7 +1193,7 @@ a{{color:#58a6ff;text-decoration:none}} a:hover{{text-decoration:underline}}
 <div class="card"><h2>Phases</h2><table>{prows}</table></div>
 <div class="card"><h2>Zones ({covered}/{total_z} hunted{f' · {failed} errored' if failed else ''})</h2><table><tr style="color:#7d8590;font-size:11px"><td></td><td>Zone</td><td>State</td><td>Result</td></tr>{zrows}</table></div>
 </div>
-<div class="card" style="margin-top:20px"><h2>LEADS &nbsp;<span style="font-weight:400;font-size:12px;color:#7d8590">breadth {len(L)} ({n_surv} survived · {n_ref} refuted · {n_pend} pending) &nbsp;·&nbsp; depth {len(completed)}/{len(order)} lens rows{f' · {n_dh_find} FINDING' if n_dh_find else ''}{_dh_note}</span></h2>{chipbar}<table id="leadtbl">
+<div class="card" style="margin-top:20px"><h2>LEADS &nbsp;<span style="font-weight:400;font-size:12px;color:#7d8590">breadth {len(G)} ({n_surv} survived · {n_ref} refuted · {n_pend} pending) &nbsp;·&nbsp; depth {len(completed)}/{len(order)} lens rows{f' · {n_dh_find} FINDING' if n_dh_find else ''}{_dh_note}</span></h2>{chipbar}<table id="leadtbl">
 <tr style="color:#7d8590"><td>Type</td><td>Sev</td><td>Class</td><td>Location</td><td>Refute gate</td><td>Detail</td></tr>{lrows}{dhrows}{hidden_row}</table></div>
 {('<div class="card" style="margin-top:16px"><h2>Adjudicated — verified, NOT a bug (' + str(n_arows) + ') · removed from refute queue</h2><table><tr style="color:#7d8590"><td>Sev</td><td>Class</td><td>Location</td><td>Verdict</td></tr>' + arows + '</table></div>') if A else ''}
 <div class="meta">auto-refresh 10s · {now.strftime('%H:%M:%S')} · localhost:{PORT}</div>
@@ -1170,9 +1217,12 @@ def emit_model():
     # adjudication wins over the automated refute-gate verdict here too (this model path had NO operator
     # awareness before — it only knew REFUTED/CONFIRMED/PENDING, which is the exact bug #2023 reports).
     _confirmed_breadth, _dup_breadth = _breadth_adjudication(A)
+    # #2024: fold same-location raw candidates BEFORE building leads_out/leads_summary/zones_out below — the
+    # IDENTICAL G that page() computes, so the two surfaces can never disagree on what got folded.
+    G=_group_leads(L, RV, _confirmed_breadth, _dup_breadth)
     leads_out=[]; n_ref=n_surv=n_pend=0
-    for x in L:
-        s=_lead_state(x, RV, _confirmed_breadth, _dup_breadth)
+    for x in G:
+        s=x["state"]
         if   s=="refuted":      state="REFUTED";   struck=True;  n_ref+=1
         elif s=="op_confirmed": state="CONFIRMED"; struck=False; n_surv+=1
         elif s=="op_duplicate": state="DUPLICATE"; struck=False; n_surv+=1
@@ -1181,7 +1231,8 @@ def emit_model():
         leads_out.append({"id":_finding_id(x["loc"], x["cls"]),"loc":x["loc"],"cls":x["cls"],"sev":x["sev"],
                           "sev_claimed":x.get("sev_claimed",x["sev"]),"overclaim":bool(x.get("overclaim")),
                           "verdict":state,
-                          "struck":struck,"unpayable":_is_unpayable(x["sev"], pf_rank)})
+                          "struck":struck,"unpayable":_is_unpayable(x["sev"], pf_rank),
+                          "n_folded":x["n_folded"],"classes":x["clss"]})
     # deep rows — the reconstructed matrix + verdict per slot (mirrors the render branches)
     DH=deep_hunt(); dh_dir=os.path.join(OUT,"deep-hunt")
     completed={d["slot"]:d for d in DH}
@@ -1227,8 +1278,8 @@ def emit_model():
     # zones — the Result label that must agree with the LEADS table
     import collections as _cl
     z_surv=_cl.Counter(); z_ref=_cl.Counter(); z_pend=_cl.Counter()
-    for x in L:   # #2023: same operator-precedence classifier as the render zone-result site
-        s=_lead_state(x, RV, _confirmed_breadth, _dup_breadth)
+    for x in G:   # #2023/#2024: same operator-precedence classifier, over the same GROUPED list as page()
+        s=x["state"]
         if   s=="refuted": z_ref[x["zone"]]+=1
         elif s=="pending": z_pend[x["zone"]]+=1
         else:              z_surv[x["zone"]]+=1   # op_confirmed / op_duplicate / survived
@@ -1264,7 +1315,7 @@ def emit_model():
         "banner":("DONE" if complete else ("STOPPED_INCOMPLETE" if exited else "RUNNING")),
         "phases":st,
         "leads":leads_out,
-        "leads_summary":{"total":len(L),"survived":n_surv,"refuted":n_ref,"pending":n_pend},
+        "leads_summary":{"total":len(G),"survived":n_surv,"refuted":n_ref,"pending":n_pend},
         "deep_rows":deep_out,
         "deep_summary":{"planned":len(order),"completed":len(completed),"findings":n_dh_find},
         "deep_state":deep_hunt_state(),
