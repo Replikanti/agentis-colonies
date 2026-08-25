@@ -492,15 +492,28 @@ def llm_child():
     except Exception: clk=100
     try: uptime=float(open('/proc/uptime').read().split()[0])
     except Exception: uptime=None
+    # #2026: unlike proc_alive() (scoped by --repo/--out substrings on the run-zone-hunt.sh
+    # cmdline itself), every stage script spawns its "agentis go"/"flat-cyborg --tui" child
+    # via `cd "$RUN_OR_CELL_DIR" && ... agentis go ...` — the CHILD's own argv never carries
+    # --repo/--out, so there is no descriptor substring to match here. What IS invariant is
+    # that $RUN_OR_CELL_DIR is always a subdirectory of this hunt's own $OUT tree, i.e. the
+    # child's CWD is filesystem-scoped even though its argv isn't. So we scope by CWD
+    # containment under OUT instead — this is what keeps a concurrent/sibling hunt on the
+    # same host from tripping THIS hunt's liveness (unscoped before this fix).
+    out_root = os.path.realpath(OUT) if OUT else None
     best=None; found=False
     for c in _proc_glob():
         try: cl=open(c,"rb").read().replace(b"\x00",b" ").decode("utf-8","replace")
         except OSError: continue
         if _is_wrapper(cl): continue
         if ("agentis go " in cl) or ("flat-cyborg" in cl and "--tui" in cl):
+            pid=c.split("/")[2]
+            if out_root:
+                try: cwd=os.path.realpath(os.readlink("/proc/%s/cwd"%pid))
+                except OSError: continue  # gone/unreadable -> not verifiably ours, don't count it
+                if cwd != out_root and not cwd.startswith(out_root+os.sep): continue
             found=True
             if uptime is None: continue
-            pid=c.split("/")[2]
             try:
                 stat=open("/proc/%s/stat"%pid,"rb").read().decode("utf-8","replace")
                 starttime=float(stat.rsplit(")",1)[1].split()[19])  # field 22 (0-indexed 19 after comm ')')

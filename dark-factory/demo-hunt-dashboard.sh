@@ -1376,6 +1376,73 @@ else
   bad "24: emit-model failed on the fresh refute-gate/ fixture"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
 fi
 
+# (25) #2026: llm_child()'s /proc scan must be scoped to THIS hunt, not to ANY host process whose cmdline
+# matches "agentis go "/"flat-cyborg --tui" — unlike proc_alive() (already scoped via --repo/--out substrings
+# on the run-zone-hunt.sh cmdline itself, #2019), a stage-script's spawned child never carries --repo/--out in
+# its OWN argv (it's invoked as `cd "$RUN_DIR" && ... agentis go ...`), so the fix scopes by CWD containment
+# under the hunt's --out tree instead. Reuses MAIN_DESC/$WORK/balancer (a COMPLETE, exited run staged by test
+# 1: root=$WORK/balancer, out=$WORK/balancer/zone-hunt-out). Both probes unset BOTH HUNT_DASHBOARD_FAKE_*
+# seams so the REAL /proc scan runs — a dash-safe decoy under a directory literally named "agentis" gives the
+# real cmdline scan a genuine "agentis go " match to find (avoids the bash-only `exec -a`).
+# ----------------------------------------------------------------------------------------------------------
+note "25) llm_child() CWD-scoping: a sibling hunt's LLM child must not trip THIS hunt's liveness (#2026) ..."
+mkdir -p "$WORK/decoy-bin"
+printf '#!/bin/sh\nsleep 6\n' > "$WORK/decoy-bin/agentis"
+chmod +x "$WORK/decoy-bin/agentis"
+
+# 25a (sibling exclusion, the #2026 regression): decoy CWD = $WORK, OUTSIDE this hunt's own --out tree.
+( cd "$WORK" && exec "$WORK/decoy-bin/agentis" go decoy-sibling-hunt ) &
+DECOY_PID=$!
+sleep 1
+if env -u HUNT_DASHBOARD_FAKE_PROC_ALIVE -u HUNT_DASHBOARD_FAKE_LLM_INFLIGHT \
+    python3 "$DASH" --descriptor "$MAIN_DESC" --emit-model > "$WORK/model.json" 2>"$WORK/model.err"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+lv = m["liveness"]
+e = []
+if lv["class"] != "FINISHED":
+    e.append("class expected FINISHED (a sibling's LLM child must not count), got %r" % lv["class"])
+if lv["is_live"] is not False:
+    e.append("is_live expected False, got %r" % lv["is_live"])
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "25a: a sibling hunt's LLM child (CWD outside this hunt's --out) no longer trips liveness — real FINISHED/is_live=False"
+  else bad "25a: a sibling hunt's LLM child still trips this hunt's liveness"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+  fi
+else
+  bad "25a: emit-model failed with the sibling decoy running"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+kill "$DECOY_PID" 2>/dev/null
+wait "$DECOY_PID" 2>/dev/null
+
+# 25b (own-child detection preserved, converse): decoy CWD nested UNDER this hunt's own --out tree.
+mkdir -p "$WORK/balancer/zone-hunt-out/run"
+( cd "$WORK/balancer/zone-hunt-out/run" && exec "$WORK/decoy-bin/agentis" go real-child ) &
+DECOY_PID=$!
+sleep 1
+if env -u HUNT_DASHBOARD_FAKE_PROC_ALIVE -u HUNT_DASHBOARD_FAKE_LLM_INFLIGHT \
+    python3 "$DASH" --descriptor "$MAIN_DESC" --emit-model > "$WORK/model.json" 2>"$WORK/model.err"; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+lv = m["liveness"]
+e = []
+if lv["is_live"] is not True:
+    e.append("is_live expected True (own-hunt LLM child under --out), got %r" % lv["is_live"])
+if lv["inflight"] is not True:
+    e.append("inflight expected True, got %r" % lv["inflight"])
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "25b: an own-hunt LLM child (CWD under this hunt's --out) is still detected — CWD scoping is not a blanket exclusion"
+  else bad "25b: an own-hunt LLM child under --out was not detected as in-flight"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+  fi
+else
+  bad "25b: emit-model failed with the own-child decoy running"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+kill "$DECOY_PID" 2>/dev/null
+wait "$DECOY_PID" 2>/dev/null
+
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
