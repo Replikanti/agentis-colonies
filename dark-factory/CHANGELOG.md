@@ -15,6 +15,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **hunt-dashboard: raw breadth candidates at the same location no longer show duplicate rows with stale
+  "needs PoC" siblings once one copy is verified/adjudicated** (#2024). A `--rehunt-gaps` re-find or a second
+  lens pass re-flagging the identical file:fn appended another raw `leads()` entry with no dedup, and the
+  operator-adjudication lookup in `_lead_state()` was keyed on `(location, class)` — so a `CONFIRMED` verdict
+  recorded against one class did not apply to a sibling raw candidate at the SAME location tagged a different
+  class, leaving it stuck reading "◆ survived refute · needs PoC". A new `_group_leads()` folds raw candidates
+  by EXACT normalized location only (`_normloc`, no fuzzy match — two genuinely different locations never
+  collapse), resolving the collapsed row's state by precedence (`op_confirmed > op_duplicate > survived >
+  pending > refuted`, i.e. any verified copy wins, and a location reads refuted only when EVERY copy was) via
+  the SAME shared `_lead_state()` classifier so render and `--emit-model` stay in lockstep (per #2023/#2027).
+  Both `page()` and `emit_model()` now tally zones/header/chips/rows over the grouped list; a folded row's
+  Detail cell discloses the fold (`· folded from N copies (...)`) and the JSON model carries additive
+  `n_folded`/`classes` fields — never a silent collapse. Pinned by `demo-hunt-dashboard.sh` (block 23,
+  `--emit-model` + `--render`).
 - **An operator adjudication now WINS over an automated refute verdict — a confirmed finding can no longer be
   silently downgraded to REFUTED** (#2023). Two complementary fixes for one root cause (the operator
   adjudication overlay `adjudicated.tsv` was not authoritative over the STAGE-4 refute gate's
