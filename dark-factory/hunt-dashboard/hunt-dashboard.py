@@ -371,6 +371,29 @@ def active_deep_slot():
     if best is None: return None
     return best if (datetime.datetime.now().timestamp()-bestm) < 90 else None
 
+def active_deep_refute_slot():
+    # #2025: active_deep_slot() only walks deep-hunt/<slot>/run/ — the FUZZER's heartbeat tree. The automated
+    # invariant-mode refute gate (deep-hunt-gate.sh, #1938, default-ON) is a separate, synchronous step run
+    # inline by run-zone-hunt.sh right after a fuzz FINDING; it writes to a SIBLING subtree,
+    # deep-hunt/<slot>/refute-gate/{gate.log,candidate.manifest,refute-out/*}, which active_deep_slot() never
+    # sees. Without this, an idle un-triaged refute backlog reads "run" merely because the fuzzer is mid-cell
+    # on a DIFFERENT slot (deep_live true) — this probe is the narrow signal scoped to refute-gate/ itself, same
+    # <90s-fresh-write + proc-alive liveness gate as active_deep_slot().
+    if not (proc_alive() or llm_child()[0]): return None
+    best=None; bestm=0.0
+    for d in glob.glob(os.path.join(OUT,"deep-hunt","*")):
+        rd=os.path.join(d,"refute-gate")
+        if not os.path.isdir(rd): continue
+        for root,dirs,files in os.walk(rd):
+            _prune(dirs)
+            for fn in files:
+                try:
+                    mm=os.path.getmtime(os.path.join(root,fn))
+                    if mm>bestm: bestm=mm; best=os.path.basename(d)
+                except OSError: pass
+    if best is None: return None
+    return best if (datetime.datetime.now().timestamp()-bestm) < 90 else None
+
 DEEP_CELL_STALE_S = 600   # a deep-hunt cell dir silent this long is abandoned, not running (see below)
 def deep_cell_status(slot):
     # State of a NON-completed deep-hunt cell from its on-disk dir. A cell that is genuinely fuzzing writes
@@ -587,9 +610,13 @@ def phase_status():
     st["M4 · refute gate"] = ("done" if deep else ("run" if vs is not None else "wait"))
     st["4.5 · deep-hunt"]  = "run" if deep_live else ("done" if deep else "wait")
     _rf = _dh_refute_state(deep)
-    # an idle backlog of un-triaged deep findings is NOT "running triage" — only call refute-deep "run" while
-    # deep-hunt is genuinely live; otherwise its "run" (open findings) reads as "wait" (awaiting triage).
-    st["4.6 · refute deep-hunt"] = _rf if deep_live else ("wait" if _rf == "run" else _rf)
+    # #2025: an idle backlog of un-triaged deep findings is NOT "running triage" — only call refute-deep "run"
+    # while the refute-gate pass itself is genuinely live (active_deep_refute_slot()), NOT merely because the
+    # fuzzer (deep_live) is mid-cell on some other slot — deep_live was the wrong liveness signal for this row
+    # (the automated gate writes to a sibling refute-gate/ subtree active_deep_slot() never walks); otherwise
+    # its "run" (open findings) reads as "wait" (awaiting triage).
+    refute_live = active_deep_refute_slot() is not None
+    st["4.6 · refute deep-hunt"] = _rf if refute_live else ("wait" if _rf == "run" else _rf)
     st["deliver · stage"]  = "run" if re.search(r"deliver-submission|PENDING-HUMAN-REVIEW", log) else "wait"
     prog = 0.0
     for name,w in PHASES:

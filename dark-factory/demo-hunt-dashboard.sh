@@ -992,9 +992,15 @@ if idle["phases"].get("4.5 · deep-hunt") != "done":
 # refute-deep must not claim active triage while deep-hunt is idle
 if idle["phases"].get("4.6 · refute deep-hunt") == "run":
     e.append('idle refute-deep still reads "run" — an un-triaged backlog is not active triage (#2001)')
+# #2025: even while the FUZZER is genuinely live (m-dlive, 4.5 correctly "run"), an un-triaged refute-deep
+# backlog with NO fresh write under any deep-hunt/*/refute-gate/ must still read "wait" — fuzz liveness
+# (deep_live) is the wrong signal for the 4.6 row; only a live refute-gate pass itself should flip it to "run".
+if live["phases"].get("4.6 · refute deep-hunt") == "run":
+    e.append('refute-deep reads "run" merely because the fuzzer is live on another slot, with no fresh '
+              'refute-gate/ write anywhere — deep_live is the wrong liveness signal for this row (#2025)')
 if e: print("\n".join(e)); sys.exit(1)
 PY
-  then ok "17: deep-hunt/refute-deep read 'run' only when a deep cell is LIVE now, not from a stale log marker — a re-hunt in discovery no longer shows a phantom running fuzzer (#2001)"
+  then ok "17: deep-hunt/refute-deep read 'run' only when a deep cell is LIVE now, not from a stale log marker — a re-hunt in discovery no longer shows a phantom running fuzzer (#2001); refute-deep no longer piggybacks on fuzz liveness either (#2025)"
   else bad "17: deep-live phase signal wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
   fi
 
@@ -1342,6 +1348,32 @@ PY
   fi
 else
   bad "23b: --render failed on the #2024 dedup fixture"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+
+# (24) #2025: the converse of the 4.6 assertion added to test 17 above — a genuinely FRESH-ACTIVE write under
+# a deep-hunt/*/refute-gate/ subtree (the automated invariant-mode refute gate's own output location, #1938)
+# must flip 4.6 to "run", proving the new active_deep_refute_slot() signal is a real detector and not a
+# blanket "always wait" regression. No deep-hunt/*/run/ cell is planted here (deep-hunt itself is NOT live),
+# isolating the refute-gate-specific liveness path from the fuzz-liveness path exercised in test 17.
+RGATE_DESC="$(stage_as balancer phase-refute-gate-live)"
+RGATE_DIR="$(dirname "$RGATE_DESC")/zone-hunt-out/deep-hunt/pkg_vault_contracts-C5/refute-gate"
+mkdir -p "$RGATE_DIR"
+printf 'invariant-mode refute pass starting\n' > "$RGATE_DIR/gate.log"
+touch -d "@$(( $(date +%s) - 5 ))" "$RGATE_DIR/gate.log" "$RGATE_DIR"   # 5s old => fresh
+if emit_model "$RGATE_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=1; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+got = m["phases"].get("4.6 · refute deep-hunt")
+if got != "run":
+    print('a fresh (5s-old) refute-gate/ write with a live process should read "run", got %r' % got)
+    sys.exit(1)
+PY
+  then ok "24: a genuinely fresh-active deep-hunt/*/refute-gate/ write reads 4.6 as 'run' — active_deep_refute_slot() detects real refute-gate liveness, not a blanket always-wait (#2025)"
+  else bad "24: fresh refute-gate/ write did not flip 4.6 to 'run'"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "24: emit-model failed on the fresh refute-gate/ fixture"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
 fi
 
 # ----------------------------------------------------------------------------------------------------------
