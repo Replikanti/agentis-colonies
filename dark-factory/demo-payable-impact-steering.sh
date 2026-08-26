@@ -57,6 +57,9 @@ done
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/demo-payable-impact.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+# Isolate the hunt registry so this demo never writes into a live operator's
+# ~/.dark-factory/hunts (run-zone-hunt.sh only registers when the dir exists).
+export DARK_FACTORY_DIR="$WORK"
 
 # ==========================================================================================================
 # 1) lib/impact-lens.py — the single mapping table.

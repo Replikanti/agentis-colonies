@@ -139,6 +139,9 @@ bad() { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/composable-lens-bench.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+# Isolate the hunt registry so this bench never writes into a live operator's
+# ~/.dark-factory/hunts (run-zone-hunt.sh only registers when the dir exists).
+export DARK_FACTORY_DIR="$WORK"
 
 # --- synthetic out-dir builders ---------------------------------------------------------------------------
 # A minimal M3 lens-surface-matrix with ONE general-solvency surface at $verd, plus one narrow surface (which
