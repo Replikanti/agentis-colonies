@@ -23,6 +23,11 @@
 #                       HARNESS_ERROR  the harness failed to compile/generate — the seam stayed UN-PROBED. A
 #                                      GAP, NOT a clean negative. It MUST read distinct from CLEAN: the #1780
 #                                      adapter merges neither, so without this record the two are lost together.
+#                       TRANSIENT_ERROR (#2033) the forge run was STARVED/killed/timed out under concurrent batch
+#                                      load AFTER the gate's retries — the harness is VALID and the seam is
+#                                      RE-RUNNABLE. Recorded in its OWN by_verdict bucket, distinct from a
+#                                      permanent HARNESS_ERROR; NOT enrolled in the permanent
+#                                      `harness_error_surfaces` GAP list (a transient is re-hunted, not un-probed).
 #   narrow-per-class  the surface only ever saw a per-class lens (C6/C2/C16/...), never the general lens. The
 #                     custody seam was probed for a SPECIFIC bug class, not for system solvency. NOT a verdict.
 #   discovery-only    the surface was seen at STAGE 3 breadth but NO deep lens reached it (single-.sol zone,
@@ -42,7 +47,7 @@
 #        `composition_surfaces` field (#1914 M2). Priority order mirrors zone-coverage.py: value-custody first,
 #        tie-broken by id. `--seed-state` (default `not_reached`) is the floor every surface starts at.
 #   set --file <matrix.json> --surface <id> --lens-depth <general-solvency|narrow-per-class|discovery-only>
-#       [--verdict <FINDING|CLEAN|HARNESS_ERROR>]
+#       [--verdict <FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR>]
 #       Update ONE surface, in place (tmp + os.replace). `general-solvency` REQUIRES `--verdict`; the other depths
 #       REJECT one. A `set` shallower-or-equal to the surface's current depth is a NO-OP (never downgrades).
 #   summary --file <matrix.json> [--counts | --json]
@@ -73,7 +78,10 @@ DEPTH_RANK = {
 SETTABLE_DEPTHS = ("general-solvency", "narrow-per-class", "discovery-only")
 # The closed verdict vocabulary — carried ONLY by a `general-solvency` surface. HARNESS_ERROR is a GAP, not a
 # negative: it is recorded DISTINCT from CLEAN precisely because the STAGE 4.5 merge adapter drops both.
-VERDICTS = ("FINDING", "CLEAN", "HARNESS_ERROR")
+# #2033: TRANSIENT_ERROR is a re-runnable run failure (forge starved/killed/timed out under load) — a distinct
+# by_verdict bucket, DISTINCT from a permanent HARNESS_ERROR, and (by the recompute_totals guard) NOT enrolled
+# in the permanent harness_error_surfaces GAP list.
+VERDICTS = ("FINDING", "CLEAN", "HARNESS_ERROR", "TRANSIENT_ERROR")
 
 SCHEMA = "lens-surface-matrix/v1"
 

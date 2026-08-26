@@ -1244,7 +1244,7 @@ PY
       elif [ "$MERGED_ADD" = "refuted" ]; then
         echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> FINDING refuted by the invariant-mode gate -> refuted[] (not counted as a finding)" >&2
       else
-        echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> no FINDING to merge (CLEAN / HARNESS_ERROR)" >&2
+        echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> no FINDING to merge (CLEAN / HARNESS_ERROR / TRANSIENT_ERROR)" >&2
       fi
       # #1914 M3: record this row's lens depth into the lens x surface matrix (surface = the zone $ZID). For the
       # class-agnostic SYS-solvency (general) lens we READ THE RAW VERDICT from the aggregate invariant log
@@ -1261,6 +1261,9 @@ logs = sorted(glob.glob(os.path.join(dzout, "run", "invariant_*.log")))
 logs = [p for p in logs if not re.search(r"_c[0-9]+\.log$", os.path.basename(p))]
 # No aggregate log / no INVARIANT| line => the harness never produced a verdict: a HARNESS_ERROR GAP, distinct
 # from a CLEAN. This is the whole point of the matrix, so the pessimistic default is HARNESS_ERROR, never CLEAN.
+# #2033: TRANSIENT_ERROR is accepted + passed through so the matrix tabulates a starved/killed run as a
+# re-runnable GAP DISTINCT from a permanent HARNESS_ERROR (the lens-surface matrix records it in its own
+# by_verdict bucket); anything unrecognized still collapses to the pessimistic HARNESS_ERROR default.
 verdict = "HARNESS_ERROR"
 if logs:
     with open(logs[-1], encoding="utf-8", errors="ignore") as fh:
@@ -1269,7 +1272,7 @@ if logs:
                 cols = line.split("INVARIANT|", 1)[1].strip().split("|")
                 if len(cols) >= 2:
                     verdict = cols[1].strip()
-sys.stdout.write(verdict if verdict in ("FINDING", "CLEAN", "HARNESS_ERROR") else "HARNESS_ERROR")
+sys.stdout.write(verdict if verdict in ("FINDING", "CLEAN", "HARNESS_ERROR", "TRANSIENT_ERROR") else "HARNESS_ERROR")
 PY
 )"
         # #1936: the lens-surface matrix only tracks custody/composition SURFACES (is_surface). Since #1790

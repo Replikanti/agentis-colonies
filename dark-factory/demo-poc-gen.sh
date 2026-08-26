@@ -67,12 +67,17 @@ else
 fi
 
 # The verdict_of mapping must be BYTE-IDENTICAL to invariant-prover.ag (the gate owns the inversion, not the .ag).
+# #2033: the rc==3 -> TRANSIENT_ERROR branch is part of that byte-identity — poc-writer mirrors it inertly (the
+# PoC gates do not emit exit 3 today) so a refactor cannot split the two provers' verdict_of.
+INVPROVER="$HERE/auditor/agents/invariant-prover.ag"
 if grep -q 'if rc == 1 { return "FINDING"; }' "$PROVER" \
    && grep -q 'if rc == 0 { return "CLEAN"; }' "$PROVER" \
-   && grep -q 'return "HARNESS_ERROR";' "$PROVER"; then
-  ok "poc-writer.ag verdict_of(rc) is byte-identical to invariant-prover.ag (1->FINDING, 0->CLEAN, else->HARNESS_ERROR)"
+   && grep -q 'if rc == 3 { return "TRANSIENT_ERROR"; }' "$PROVER" \
+   && grep -q 'return "HARNESS_ERROR";' "$PROVER" \
+   && grep -q 'if rc == 3 { return "TRANSIENT_ERROR"; }' "$INVPROVER"; then
+  ok "poc-writer.ag verdict_of(rc) is byte-identical to invariant-prover.ag (1->FINDING, 0->CLEAN, 3->TRANSIENT_ERROR, else->HARNESS_ERROR)"
 else
-  bad "poc-writer.ag verdict_of mapping drifted from invariant-prover.ag"
+  bad "poc-writer.ag verdict_of mapping drifted from invariant-prover.ag (incl. the #2033 rc==3 -> TRANSIENT_ERROR branch)"
 fi
 
 # The fresh-deploy-only #1471 link_args guard + the gate threading.

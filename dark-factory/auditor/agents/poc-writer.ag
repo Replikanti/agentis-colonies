@@ -57,10 +57,15 @@ fn cat_file(path: string) -> string {
 // pass/fail so a passing exploit test = FINDING); this mapping is byte-identical to invariant-prover.ag:
 //   1 -> FINDING        (the concrete exploit test RAN and PASSED -> the exploit reproduced -> a CANDIDATE)
 //   0 -> CLEAN          (the test RAN and FAILED -> the exploit assertion did not hold -> refuted, no finding)
+//   3 -> TRANSIENT_ERROR (#2033: mirrors invariant-prover.ag to keep verdict_of BYTE-IDENTICAL between the two
+//                        provers — demo-poc-gen.sh asserts that. The PoC gates forge-poc.sh/hardhat-poc.sh do
+//                        NOT emit exit 3 today, so this branch is INERT on the PoC path; wiring the transient
+//                        retry into those gates is the follow-up named in issue #2033's Out of scope.)
 //   else (2, etc.) -> HARNESS_ERROR (compile/tooling error / no test ran / repo not the right kind / linkage reject)
 fn verdict_of(rc: int) -> string {
     if rc == 1 { return "FINDING"; }
     if rc == 0 { return "CLEAN"; }
+    if rc == 3 { return "TRANSIENT_ERROR"; }
     return "HARNESS_ERROR";
 }
 
