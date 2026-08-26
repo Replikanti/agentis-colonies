@@ -816,7 +816,7 @@ run_one_candidate() {  # $1 = variant ("" = OFF/single), $2 = INV_OUT path, $3 =
     _cverd="$(printf '%s' "$_vline" | sed 's/.*INVARIANT|//' | cut -d'|' -f2)"
   fi
   case "$_cverd" in
-    FINDING|CLEAN|HARNESS_ERROR) ;;
+    FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR) ;;  # #2033: TRANSIENT_ERROR is a re-runnable verdict, distinct from HARNESS_ERROR
     *) _cverd="HARNESS_ERROR" ;;
   esac
   printf '%s\n' "$_cverd"
@@ -834,7 +834,7 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
 # aggregate with ZERO parser change.
 if [ "$ENSEMBLE_CANDIDATES" -ge 2 ] && [ -z "$FIXTURE_IN_RUN" ]; then
   echo "run-invariant-hunt.sh: [ensemble] $ENSEMBLE_CANDIDATES metamorphic candidates for $TARGET ..." >&2
-  ENS_AGG="CLEAN"; ENS_HAD_HARNESS=""; ENS_WIN_LOG=""; ENS_WIN_INVOUT=""
+  ENS_AGG="CLEAN"; ENS_HAD_HARNESS=""; ENS_HAD_TRANSIENT=""; ENS_WIN_LOG=""; ENS_WIN_INVOUT=""
   ENS_ROWS=()
   ens_i=0
   while [ "$ens_i" -lt "$ENSEMBLE_CANDIDATES" ]; do
@@ -847,12 +847,18 @@ if [ "$ENSEMBLE_CANDIDATES" -ge 2 ] && [ -z "$FIXTURE_IN_RUN" ]; then
     ENS_ROWS+=("CANDIDATE|$TARGET|$ens_i|$ens_i|$ens_verd")
     if [ "$ens_verd" = "FINDING" ]; then
       if [ "$ENS_AGG" != "FINDING" ]; then ENS_AGG="FINDING"; ENS_WIN_LOG="$ens_celllog"; ENS_WIN_INVOUT="$ens_invout"; fi
+    elif [ "$ens_verd" = "TRANSIENT_ERROR" ]; then
+      ENS_HAD_TRANSIENT=1
     elif [ "$ens_verd" = "HARNESS_ERROR" ]; then
       ENS_HAD_HARNESS=1
     fi
     ens_i=$((ens_i + 1))
   done
-  if [ "$ENS_AGG" != "FINDING" ] && [ -n "$ENS_HAD_HARNESS" ]; then ENS_AGG="HARNESS_ERROR"; fi
+  # #2033 ensemble precedence: FINDING > TRANSIENT_ERROR > HARNESS_ERROR > CLEAN. A real FINDING still wins; a
+  # re-runnable TRANSIENT_ERROR (forge starved/killed under load, the harness is valid) beats a permanent
+  # HARNESS_ERROR so the cell is re-hunted rather than finalized as an untestable zone.
+  if [ "$ENS_AGG" != "FINDING" ] && [ -n "$ENS_HAD_TRANSIENT" ]; then ENS_AGG="TRANSIENT_ERROR"
+  elif [ "$ENS_AGG" != "FINDING" ] && [ -n "$ENS_HAD_HARNESS" ]; then ENS_AGG="HARNESS_ERROR"; fi
   VERD="$ENS_AGG"
   # Point INV_OUT at the winning candidate's generated test (a real file for the #1731 corpus accumulation); on a
   # non-FINDING aggregate, fall back to the LAST candidate's INV_OUT so the corpus/teeth path references a real test.
@@ -897,7 +903,9 @@ REPORT="$OUT/invariant-report.md"
   echo "  its exit code over randomized multi-call sequences, never the LLM's opinion). FINDING = an invariant"
   echo "  broke under a concrete SHRUNK call-sequence (a CANDIDATE with a reproducible witness); CLEAN = every"
   echo "  invariant held across the fuzzed search (no finding in this budget, NOT a proof); HARNESS_ERROR is"
-  echo "  not a verdict. A FINDING is a LEAD a human triages — this colony NEVER auto-submits."
+  echo "  not a verdict. TRANSIENT_ERROR (#2033) means forge was starved/killed/timed out under concurrent batch"
+  echo "  load AFTER the gate's retries — the harness is VALID and this cell is RE-RUN, distinct from HARNESS_ERROR."
+  echo "  A FINDING is a LEAD a human triages — this colony NEVER auto-submits."
   echo
   echo "| Target | Class | Handler | Verdict |"
   echo "|---|---|---|---|"
@@ -978,6 +986,8 @@ if [ "$VERD" = "FINDING" ]; then
   echo "run-invariant-hunt.sh: a multi-step invariant was BROKEN — the shrunk exploit sequence is a reproducible witness a human triages. This colony never auto-submits." >&2
 elif [ "$VERD" = "CLEAN" ]; then
   echo "run-invariant-hunt.sh: every deep invariant held across the fuzzed search — no finding in this budget (not a proof of safety). Nothing to triage." >&2
+elif [ "$VERD" = "TRANSIENT_ERROR" ]; then
+  echo "run-invariant-hunt.sh: TRANSIENT_ERROR (#2033) — forge was starved/killed/timed out under concurrent batch load; the harness is VALID and this cell is RE-RUNNABLE (re-hunted on resume), NOT an untestable zone. Distinct from HARNESS_ERROR." >&2
 else
   echo "run-invariant-hunt.sh: HARNESS_ERROR — the test did not compile / no invariant matched / forge absent. No verdict was produced." >&2
 fi

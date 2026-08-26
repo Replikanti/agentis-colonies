@@ -77,10 +77,14 @@ fn symbol_inventory_seed(inv: string) -> string {
 // — the LLM never decides it. The exit contract mirrors evm-harness/forge-invariant.sh exactly:
 //   1 -> FINDING        (>=1 invariant broken by a multi-step sequence -> a CANDIDATE with a shrunk witness)
 //   0 -> CLEAN          (every invariant held across the whole fuzzed search -> no finding in this budget)
+//   3 -> TRANSIENT_ERROR (#2033: forge run starved/killed/timed out under concurrent batch load AFTER the
+//                        gate's retries — the harness is VALID and this cell is RE-RUNNABLE, distinct from a
+//                        broken harness; never finalized as an untestable zone)
 //   else (2, etc.) -> HARNESS_ERROR (compile/setup error / no invariant matched / repo not foundry / forge missing)
 fn verdict_of(rc: int) -> string {
     if rc == 1 { return "FINDING"; }
     if rc == 0 { return "CLEAN"; }
+    if rc == 3 { return "TRANSIENT_ERROR"; }
     return "HARNESS_ERROR";
 }
 
@@ -1759,10 +1763,14 @@ fn rstate(stopped: string, testSrc: string, runOut: string) -> string {
     return stopped + "@@F@@" + testSrc + "@@F@@" + runOut;
 }
 // Flip `stopped` to "1" iff the gate produced a TERMINAL verdict (rc 1 FINDING / rc 0 CLEAN); a HARNESS_ERROR
-// (any other rc) leaves it "0" so the loop keeps repairing.
+// (any other rc) leaves it "0" so the loop keeps repairing. #2033: a TRANSIENT_ERROR (rc 3) ALSO stops the
+// loop — the harness is valid and the gate already retried the starved run, so regenerating it via the #1073
+// LLM compile-repair loop would waste a call and can break a good harness. The run's final-verdict path maps
+// rc 3 to the re-runnable TRANSIENT_ERROR token, so the cell is re-hunted on resume rather than repaired here.
 fn stop_flag(rc: int) -> string {
     if rc == 1 { return "1"; }
     if rc == 0 { return "1"; }
+    if rc == 3 { return "1"; }
     return "0";
 }
 // FM2 (#1077) — the BOTH-REAL-AWARE stop flag. In composable-fresh mode a TERMINAL verdict (rc 0/1) is NOT a

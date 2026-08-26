@@ -50,6 +50,15 @@
 #                            unreachable / could not instantiate the forked environment, or (#1471) the test
 #                            failed the target-linkage gate (did not import the in-scope target, or shadowed
 #                            it with a same-named toy contract).
+#   TRANSIENT_ERROR exit 3 — (#2033) fresh-deploy only: forge produced NO parseable result, but the harness
+#                            STATICALLY declares an invariant_* function AND the failure carries no compile-error
+#                            signature (or forge was signal-killed — 137 SIGKILL/OOM, 143 SIGTERM). That is a run
+#                            STARVED / killed / timed out under concurrent batch load, not a broken harness: the
+#                            cell is VALID and RE-RUNNABLE and must NOT be finalized as HARNESS_ERROR (the false
+#                            negative #2033 fixes). Returned only after FORGE_INVARIANT_RETRIES (default 1) extra
+#                            attempts still fail. A genuine compile error (deterministic solc/forge signature)
+#                            short-circuits to HARNESS_ERROR (2) with today's single-shot cost; FORK MODE is
+#                            excluded entirely (the no-result path there stays byte-identical to today).
 set -uo pipefail
 
 REPO=""
@@ -211,26 +220,44 @@ fi
 TMPD="$(mktemp -d "${TMPDIR:-/tmp}/forge-invariant.XXXXXX")" || { echo "forge-invariant: cannot create temp dir" >&2; exit 2; }
 trap 'rm -rf "$TMPD"' EXIT
 
-# Capture forge's JSON to a file (forge prints the suite object to stdout on --json; build/setup errors go
-# to stderr). forge's own exit status is 1 on a failing test, but we parse the structured output for the
-# verdict rather than trust the code (a compile error and a real finding both exit non-zero — only the
-# parse distinguishes them).
-( cd "$REPO" && forge "${ARGS[@]}" ) >"$TMPD/out.json" 2>"$TMPD/err.txt" || true
-# Re-run WITHOUT --json so the shrunk sequence + traces are visible in logs (stderr). Build the no-json arg
-# list by element so we never mangle a flag (a `${ARR[@]/--json/}` substring substitution leaves an empty
-# element behind). A fixed seed keeps the human run aligned with the json run.
-HUMAN_ARGS=()
-for a in "${ARGS[@]}"; do [ "$a" = "--json" ] || HUMAN_ARGS+=("$a"); done
-# Append a fallback --fuzz-seed ONLY when SEED is unset — when SEED is set it is ALREADY in ARGS/HUMAN_ARGS, and
-# forge rejects a repeated --fuzz-seed ("cannot be used multiple times"), which would suppress the readable
-# table. A fixed seed keeps the human run aligned with the json run either way.
-if [ -n "$SEED" ]; then
-  ( cd "$REPO" && forge "${HUMAN_ARGS[@]}" 1>&2 2>&1 ) || true
-else
-  ( cd "$REPO" && forge "${HUMAN_ARGS[@]}" --fuzz-seed 1 1>&2 2>&1 ) || true
-fi
-
 banner() { echo "================ FORGE-INVARIANT: $1 ================" >&2; }
+
+# --- #2033 TRANSIENT vs. GENUINE run-failure classification -------------------------------------
+# A forge run STARVED under concurrent batch load (OOM-killed, SIGTERM'd, or timed out) leaves the SAME "no
+# parseable result" footprint as a genuine compile error, so today both collapse to HARNESS_ERROR (2) — the
+# false negative #2033 fixes (3 valid enzyme-onyx harnesses were recorded HARNESS_ERROR yet pass standalone).
+# The two helpers below tell them apart deterministically. A GENUINE compile error still fails fast and
+# byte-identically (its stderr carries a solc/forge signature, so _transient_candidate is false and it is
+# never retried); FORK MODE is excluded entirely (the no-result path there stays byte-identical to today).
+#
+# _compile_error_sig <errfile>: TRUE (0) when forge/solc stderr carries a deterministic compile-error marker.
+_compile_error_sig() {
+  grep -Eq 'Compiler run failed|Error \([0-9]+\):|ParserError|DeclarationError|TypeError|Identifier not found|Source .* not found' "$1" 2>/dev/null
+}
+# _declares_invariant: TRUE (0) when the harness STATICALLY declares a `function <MATCH>...(` — i.e. there IS
+# an invariant to run, so a no-result outcome is a RUN failure, not a "nothing to check" harness defect.
+_declares_invariant() {
+  grep -Eq "function[[:space:]]+${MATCH}[A-Za-z0-9_]*[[:space:]]*\(" "$TARGET_PATH" 2>/dev/null
+}
+# _transient_candidate: fresh-deploy only, harness declares an invariant, AND EITHER forge was signal-killed
+# (137 SIGKILL/OOM, 143 SIGTERM — any 128+signum, from the captured FORGE_RC) OR its stderr lacks every
+# compile-error signature. The SOLE gate for both the retry decision and the exit-3 TRANSIENT_ERROR verdict.
+_transient_candidate() {
+  [ -z "$FORK_URL" ] || return 1
+  _declares_invariant || return 1
+  [ "${FORGE_RC:-0}" -ge 128 ] && return 0
+  _compile_error_sig "$TMPD/err.txt" && return 1
+  return 0
+}
+
+# Retry knobs (#2033). Both default to today's single-shot cost on the compile-error path (which short-
+# circuits via _compile_error_sig and is never retried): FORGE_INVARIANT_RETRIES extra attempts on a suspected
+# transient, FORGE_INVARIANT_RETRY_BACKOFF_S seconds of backoff between them (giving contention a window to
+# clear). Non-numeric overrides fall back to the defaults.
+FORGE_INVARIANT_RETRIES="${FORGE_INVARIANT_RETRIES:-1}"
+FORGE_INVARIANT_RETRY_BACKOFF_S="${FORGE_INVARIANT_RETRY_BACKOFF_S:-5}"
+case "$FORGE_INVARIANT_RETRIES" in ''|*[!0-9]*) FORGE_INVARIANT_RETRIES=1 ;; esac
+case "$FORGE_INVARIANT_RETRY_BACKOFF_S" in ''|*[!0-9]*) FORGE_INVARIANT_RETRY_BACKOFF_S=5 ;; esac
 
 # --- parse the verdict from forge's --json ------------------------------------------------------
 # forge --json emits a per-suite object (sometimes several concatenated values): { "<path>:<Contract>": {
@@ -337,8 +364,43 @@ for label, steps in seqs:
         print("  step %d: %s" % (i, s))
     print("SEQEND")
 PY
-PARSE="$(python3 "$TMPD/parse.py" "$MATCH" "$TMPD/out.json" 2>/dev/null || true)"
-ERROUT="$(cat "$TMPD/err.txt" 2>/dev/null || true)"
+# --- run forge (--json) with a bounded retry on a suspected transient (#2033) -------------------
+# forge prints the suite object to stdout on --json; build/setup errors go to stderr. forge's own exit status
+# is 1 on a failing test, but we parse the structured output for the verdict rather than trust the code (a
+# compile error and a real finding both exit non-zero — only the parse distinguishes them). We DO capture the
+# code (FORGE_RC, no `|| true`) so a signal kill (137/143) is a positive transient signal for
+# _transient_candidate. When the result is unparseable AND it looks transient (fresh-deploy, harness declares
+# an invariant, no compile-error signature or signal-killed) we re-run up to FORGE_INVARIANT_RETRIES times with
+# a short backoff — a genuine compile error short-circuits and is never retried (byte-identical cost to today).
+_attempt=0
+while : ; do
+  ( cd "$REPO" && forge "${ARGS[@]}" ) >"$TMPD/out.json" 2>"$TMPD/err.txt"
+  FORGE_RC=$?
+  PARSE="$(python3 "$TMPD/parse.py" "$MATCH" "$TMPD/out.json" 2>/dev/null || true)"
+  ERROUT="$(cat "$TMPD/err.txt" 2>/dev/null || true)"
+  if { printf '%s' "$PARSE" | grep -q 'PARSE_ERROR' || [ ! -s "$TMPD/out.json" ]; } \
+     && _transient_candidate && [ "$_attempt" -lt "$FORGE_INVARIANT_RETRIES" ]; then
+    _attempt=$((_attempt + 1))
+    echo "== forge-invariant: no parseable result, no compile-error signature, harness declares ${MATCH}* (forge rc=${FORGE_RC}); suspected transient starvation — retry ${_attempt}/${FORGE_INVARIANT_RETRIES} after ${FORGE_INVARIANT_RETRY_BACKOFF_S}s ==" >&2
+    sleep "$FORGE_INVARIANT_RETRY_BACKOFF_S"
+    continue
+  fi
+  break
+done
+
+# Re-run WITHOUT --json so the shrunk sequence + traces are visible in logs (stderr). Build the no-json arg
+# list by element so we never mangle a flag (a `${ARR[@]/--json/}` substring substitution leaves an empty
+# element behind). A fixed seed keeps the human run aligned with the json run.
+HUMAN_ARGS=()
+for a in "${ARGS[@]}"; do [ "$a" = "--json" ] || HUMAN_ARGS+=("$a"); done
+# Append a fallback --fuzz-seed ONLY when SEED is unset — when SEED is set it is ALREADY in ARGS/HUMAN_ARGS, and
+# forge rejects a repeated --fuzz-seed ("cannot be used multiple times"), which would suppress the readable
+# table. A fixed seed keeps the human run aligned with the json run either way.
+if [ -n "$SEED" ]; then
+  ( cd "$REPO" && forge "${HUMAN_ARGS[@]}" 1>&2 2>&1 ) || true
+else
+  ( cd "$REPO" && forge "${HUMAN_ARGS[@]}" --fuzz-seed 1 1>&2 2>&1 ) || true
+fi
 
 RAN="$(printf '%s\n' "$PARSE" | sed -n 's/^RAN=//p' | head -1)"
 FAILED="$(printf '%s\n' "$PARSE" | sed -n 's/^FAILED=//p' | head -1)"
@@ -352,6 +414,17 @@ case "$SETUP_ERR" in ''|*[!0-9]*) SETUP_ERR=0 ;; esac
 # environment" — forge emits no parseable suite object, so the verdict is HARNESS_ERROR (2), NEVER a false
 # CLEAN/FINDING (the FM1 #1041 safety contract).
 if printf '%s' "$PARSE" | grep -q 'PARSE_ERROR' || [ ! -s "$TMPD/out.json" ]; then
+  # #2033: the retry loop above has already exhausted FORGE_INVARIANT_RETRIES (it breaks only when out of
+  # attempts or the failure is not a transient candidate). A fresh-deploy no-result that STILL looks transient
+  # (harness declares an invariant AND either forge was signal-killed or its stderr carries no compile-error
+  # signature) is a re-runnable TRANSIENT_ERROR (3), NOT a broken harness — the run was starved/killed under
+  # concurrent batch load. Every OTHER no-result outcome (fork mode, genuine compile error, no invariant
+  # declared) stays HARNESS_ERROR (2), byte-identical to today.
+  if _transient_candidate; then
+    banner "TRANSIENT_ERROR (forge produced no parseable result after ${_attempt} retry attempt(s) — no compile-error signature and the harness declares ${MATCH}* (forge rc=${FORGE_RC}); the run was starved/killed/timed out under concurrent batch load, this cell is VALID and RE-RUNNABLE, NOT a broken harness)"
+    printf '%s\n' "$ERROUT" | grep -iE 'killed|out of memory|oom|tim(e|ed) out|signal|error' | head -5 >&2 || true
+    exit 3
+  fi
   if [ -n "$FORK_URL" ]; then
     banner "HARNESS_ERROR (forge produced no parseable result — compile/setup error, no test ran, or the fork RPC was unreachable / could not instantiate the forked environment)"
   else
