@@ -1,0 +1,13 @@
+Synthetic clinical vignette (NOT a real proband).
+
+This free-text file is the source content that demo-baseline-live.sh packs into
+a Word document (.docx) at test time — no .docx is ever committed. It contains
+no HPO identifiers and no gated clinical data; it exists only to exercise the
+phenotype stage's text extraction and LLM-driven HPO derivation on a synthetic
+input.
+
+Clinical summary: A child presenting with pronounced microcephaly, global
+developmental delay, and short stature. Repeat cytogenetic studies show mosaic
+variegated aneuploidy with multiple trisomies and monosomies across cell lines.
+Growth parameters are consistently below the third centile. There is a history
+of intellectual disability in the family. No parental samples are available.

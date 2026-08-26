@@ -2580,6 +2580,52 @@ if [ "$BOOT_SMOKE" = "1" ]; then
     fi
 fi
 
+# --- grand-rounds gated-data leak guard (#2032) ---
+# check-no-gated-data.sh greps the tracked tree for anything that must never be
+# committed (gated file extensions, a concrete HPO id, absolute home paths, the
+# SDLC content-rule needles). --static is pure git/grep (no agentis, no gated
+# data) so it runs on CI runners.
+if [ -x "$REPO_ROOT/tools/check-no-gated-data.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/tools/check-no-gated-data.sh" --static 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "grand-rounds: no gated data in the tracked tree (#2032)"
+    else
+        fail "grand-rounds: gated-data leak guard tripped (#2032)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- grand-rounds baseline offline demo (#2032) ---
+# demo-baseline.sh is pure bash over fixtures/ + source-guards on pipeline.ag
+# (no agentis / no network / no gated data), incl. the leak-guard mutation test.
+if [ -x "$REPO_ROOT/grand-rounds/baseline/demo-baseline.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/grand-rounds/baseline/demo-baseline.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "grand-rounds: baseline offline demo (fixture purity + .ag source-guards + leak mutation) (#2032)"
+    else
+        fail "grand-rounds: baseline offline demo regressed (#2032)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- grand-rounds baseline live-agent mutation test (#2032) ---
+# demo-baseline-live.sh runs the REAL agents through `agentis go`; it needs
+# agentis + bcftools + samtools + zip and SKIPs LOUDLY otherwise (exit 0), so it
+# is a no-op on CI runners and a real behaviour gate where the toolchain exists.
+if [ -x "$REPO_ROOT/grand-rounds/baseline/demo-baseline-live.sh" ]; then
+    if command -v agentis >/dev/null 2>&1 && command -v bcftools >/dev/null 2>&1; then
+        check_out="$(bash "$REPO_ROOT/grand-rounds/baseline/demo-baseline-live.sh" 2>&1)" && check_rc=0 || check_rc=$?
+        if [ "$check_rc" -eq 0 ]; then
+            pass "grand-rounds: baseline live-agent mutation test (#2032)"
+        else
+            fail "grand-rounds: baseline live-agent mutation test failed (#2032)"
+            printf '%s\n' "$check_out"
+        fi
+    else
+        skip "grand-rounds: baseline live-agent mutation test (agentis/bcftools not present)"
+    fi
+fi
+
 # --- Summary ---
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"

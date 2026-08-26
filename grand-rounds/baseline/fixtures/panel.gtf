@@ -1,0 +1,6 @@
+##description: synthetic GENCODE-style panel fixture (NOT real annotation)
+##provider: grand-rounds baseline test fixture
+chr15	SYNTH	gene	50	250	.	+	.	gene_id "SYNG15"; gene_type "protein_coding"; gene_name "BUB1B";
+chr15	SYNTH	exon	60	240	.	+	.	gene_id "SYNG15"; gene_type "protein_coding"; gene_name "BUB1B";
+chr11	SYNTH	gene	50	250	.	+	.	gene_id "SYNG11"; gene_type "protein_coding"; gene_name "CEP57";
+chr11	SYNTH	exon	60	240	.	+	.	gene_id "SYNG11"; gene_type "protein_coding"; gene_name "CEP57";

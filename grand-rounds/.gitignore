@@ -1,0 +1,41 @@
+# grand-rounds federation — local gated-data guard.
+#
+# The unrecoverable failure mode for this federation is committing gated
+# clinical data (or anything derived from it). Gated inputs and all
+# intermediate/output artifacts live OUTSIDE the checkout, reached only via
+# $MVA_DATA_DIR / $MVA_WORK_DIR / $MVA_OUT_DIR. This file is a local
+# belt-and-braces guard; tools/check-no-gated-data.sh is the enforced gate
+# (it runs on CI, where the agentis runtime is absent by design).
+#
+# The synthetic, gated-data-free fixtures under baseline/fixtures/ are the one
+# exception — they carry synthetic sample names and no HPO literals, and their
+# purity is asserted by baseline/demo-baseline.sh.
+
+*.vcf
+*.vcf.*
+*.bcf
+*.bcf.*
+*.fastq
+*.fastq.*
+*.fq
+*.fq.*
+*.bam
+*.bam.*
+*.cram
+*.cram.*
+*.docx
+*.gtf
+*.gtf.*
+*.fa
+*.fa.gz
+*.fna
+*.fna.gz
+*.fai
+*.obo
+data/
+work/
+refdata/
+out/
+agentis-federation_*.csv
+
+!baseline/fixtures/**

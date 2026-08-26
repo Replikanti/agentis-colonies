@@ -37,6 +37,7 @@ COMPONENTS=(
     "trading-binance/"
     "research-foundry/"
     "dark-factory/"
+    "grand-rounds/"
 )
 
 if [ -z "${GITHUB_BASE_REF:-}" ]; then
