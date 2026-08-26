@@ -126,7 +126,7 @@ fi
 if [ "$need_wire" -ne 0 ]; then
     echo "start-colony.sh: exec.env_passthrough allowlist is not wired in $CONFIG_FILE." >&2
     echo "      Run ./install.sh, or add these lines to $CONFIG_FILE:" >&2
-    echo "  exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_BCFTOOLS,MVA_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR" >&2
+    echo "  exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR" >&2
     echo "  exec.default_timeout_ms = 21600000" >&2
     exit 5
 fi
@@ -135,6 +135,12 @@ fi
 : "${MVA_REF_FASTA:=$MVA_WORK_DIR/refdata/${MVA_REF_FASTA_NAME:-GCA_000001405.15_GRCh38_no_alt_analysis_set.fna}}"
 : "${MVA_HPO_OBO:=$MVA_WORK_DIR/refdata/hp.obo}"
 : "${MVA_GTF:=$MVA_WORK_DIR/refdata/gencode.gtf.gz}"
+# Primary GRCh38 assembly (chr-prefixed, post-rename). The .ag also defaults
+# this, but exporting it keeps the operator-visible contract explicit.
+: "${MVA_PRIMARY_CONTIGS:=chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chr20,chr21,chr22,chrX,chrY,chrM}"
+# The Exomiser stage is opt-in (its output is not yet consumed by reconcile).
+: "${MVA_RUN_EXOMISER:=0}"
+: "${MVA_EXOMISER_ASSEMBLY:=hg38}"
 : "${MVA_BCFTOOLS:=$MVA_WORK_DIR/tools/bin/bcftools}"
 if [ ! -x "$MVA_BCFTOOLS" ]; then
     MVA_BCFTOOLS="bcftools"
@@ -151,7 +157,9 @@ fi
 : "${EXOMISER_JAVA_OPTS:=-Xmx16g}"
 
 export MVA_DATA_DIR MVA_WORK_DIR MVA_OUT_DIR MVA_REF_FASTA MVA_HPO_OBO MVA_GTF
-export MVA_BCFTOOLS MVA_EXOMISER MVA_CONTAINER_CMD MVA_APPROVAL_FILE MVA_APPROACH
+export MVA_PRIMARY_CONTIGS
+export MVA_BCFTOOLS MVA_EXOMISER MVA_EXOMISER_ASSEMBLY MVA_RUN_EXOMISER
+export MVA_CONTAINER_CMD MVA_APPROVAL_FILE MVA_APPROACH
 export PANEL_PAD EXOMISER_TIMEOUT_MS EXOMISER_JAVA_OPTS
 export COLONY_DIR
 [ -n "${MVA_VCF:-}" ] && export MVA_VCF

@@ -2609,11 +2609,25 @@ if [ -x "$REPO_ROOT/grand-rounds/baseline/demo-baseline.sh" ]; then
 fi
 
 # --- grand-rounds baseline live-agent mutation test (#2032) ---
-# demo-baseline-live.sh runs the REAL agents through `agentis go`; it needs
-# agentis + bcftools + samtools + zip and SKIPs LOUDLY otherwise (exit 0), so it
-# is a no-op on CI runners and a real behaviour gate where the toolchain exists.
+# demo-baseline-live.sh runs the REAL agents through `agentis go` and needs
+# agentis + zip plus bcftools — the latter native OR the pinned biocontainer
+# (run via podman/docker when it is already present locally, never pulled). It
+# SKIPs LOUDLY otherwise (exit 0), so it is a no-op on CI runners (no agentis)
+# and a real behaviour gate where the toolchain exists.
 if [ -x "$REPO_ROOT/grand-rounds/baseline/demo-baseline-live.sh" ]; then
-    if command -v agentis >/dev/null 2>&1 && command -v bcftools >/dev/null 2>&1; then
+    gr_bcftools_ok=0
+    if command -v bcftools >/dev/null 2>&1; then
+        gr_bcftools_ok=1
+    else
+        gr_img="quay.io/biocontainers/bcftools:1.19--h8b25389_0"
+        for gr_cr in podman docker; do
+            if command -v "$gr_cr" >/dev/null 2>&1 && "$gr_cr" image inspect "$gr_img" >/dev/null 2>&1; then
+                gr_bcftools_ok=1
+                break
+            fi
+        done
+    fi
+    if command -v agentis >/dev/null 2>&1 && [ "$gr_bcftools_ok" -eq 1 ]; then
         check_out="$(bash "$REPO_ROOT/grand-rounds/baseline/demo-baseline-live.sh" 2>&1)" && check_rc=0 || check_rc=$?
         if [ "$check_rc" -eq 0 ]; then
             pass "grand-rounds: baseline live-agent mutation test (#2032)"

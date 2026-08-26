@@ -22,8 +22,9 @@ set -euo pipefail
 BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 FIX="$BASE_DIR/fixtures"
 
+# agentis + zip are hard prerequisites (no container substitute).
 missing=""
-for t in agentis bcftools samtools zip; do
+for t in agentis zip; do
     command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
 done
 if [ -n "$missing" ]; then
@@ -33,6 +34,43 @@ fi
 
 WORKROOT="$(mktemp -d)"
 trap 'rm -rf "$WORKROOT"' EXIT
+
+# Resolve bcftools. Prefer a native install; otherwise wrap the PINNED
+# biocontainer so the happy path is exercisable without a native toolchain (the
+# reason this test used to SKIP on every machine that lacked bcftools). The
+# image must already be present locally — we never pull over the network here.
+# samtools is NOT required: the .ag's `bcftools norm -f` lets htslib auto-build
+# the reference .fai, so the explicit faidx below is best-effort only.
+BCFTOOLS_BIN="bcftools"
+if command -v bcftools >/dev/null 2>&1; then
+    :
+else
+    CIMG="${MVA_BCFTOOLS_IMAGE:-quay.io/biocontainers/bcftools:1.19--h8b25389_0}"
+    CRUN="${MVA_CONTAINER_CMD:-}"
+    if [ -z "$CRUN" ]; then
+        if command -v podman >/dev/null 2>&1; then CRUN="podman"
+        elif command -v docker >/dev/null 2>&1; then CRUN="docker"; fi
+    fi
+    if [ -z "$CRUN" ] || ! "$CRUN" image exists "$CIMG" >/dev/null 2>&1; then
+        echo "[SKIP] demo-baseline-live: no native bcftools and no local biocontainer ($CIMG) — behaviour check is operator-run."
+        exit 0
+    fi
+    TOOLBIN="$WORKROOT/toolbin"
+    mkdir -p "$TOOLBIN"
+    # Wrap bcftools so every invocation runs in the container with $WORKROOT
+    # bind-mounted at the SAME absolute path (all .ag I/O is absolute + under
+    # $WORKROOT). -i keeps stdin attached for piped stages; :z is the SELinux
+    # shared-relabel needed on Fedora.
+    {
+        printf '#!/bin/sh\n'
+        printf 'exec %s run --rm -i -v "%s:%s:z" %s bcftools "$@"\n' "$CRUN" "$WORKROOT" "$WORKROOT" "$CIMG"
+    } > "$TOOLBIN/bcftools"
+    chmod +x "$TOOLBIN/bcftools"
+    PATH="$TOOLBIN:$PATH"
+    BCFTOOLS_BIN="$TOOLBIN/bcftools"
+    echo "  (using containerized bcftools: $CRUN $CIMG)"
+fi
+
 pass=0; fail=0
 ok() { echo "  [ok] $1"; pass=$((pass + 1)); }
 bad() { echo "  [FAIL] $1" >&2; fail=$((fail + 1)); }
@@ -41,8 +79,12 @@ bad() { echo "  [FAIL] $1" >&2; fail=$((fail + 1)); }
 build_data_dir() {
     dd="$1"; vcf_src="$2"
     mkdir -p "$dd"
-    bcftools view -Oz -o "$dd/proband.vcf.gz" "$vcf_src" >/dev/null 2>&1
-    bcftools index -t "$dd/proband.vcf.gz" >/dev/null 2>&1
+    # Stage the source VCF INTO $dd (under $WORKROOT) so the containerized
+    # bcftools — which only bind-mounts $WORKROOT — can read it even when the
+    # source is a repo fixture outside the mount.
+    cp "$vcf_src" "$dd/src.vcf"
+    "$BCFTOOLS_BIN" view -Oz -o "$dd/proband.vcf.gz" "$dd/src.vcf" >/dev/null 2>&1
+    "$BCFTOOLS_BIN" index -t "$dd/proband.vcf.gz" >/dev/null 2>&1
     # Minimal .docx: a zip whose word/document.xml wraps the phenotype text.
     ddoc="$WORKROOT/docx"; rm -rf "$ddoc"; mkdir -p "$ddoc/word"
     {
@@ -65,7 +107,11 @@ run_pipeline() {
     OUTDIR="$RUN/out"; WORKDIR="$RUN/work"
     mkdir -p "$OUTDIR" "$WORKDIR/refdata"
     cp "$FIX/mini.fa" "$WORKDIR/refdata/ref.fa"
-    samtools faidx "$WORKDIR/refdata/ref.fa" >/dev/null 2>&1
+    # Best-effort faidx; if samtools is absent the .ag's `bcftools norm -f` makes
+    # htslib auto-build ref.fa.fai on first use, so this is not required.
+    if command -v samtools >/dev/null 2>&1; then
+        samtools faidx "$WORKDIR/refdata/ref.fa" >/dev/null 2>&1 || true
+    fi
     cp "$FIX/panel.gtf" "$WORKDIR/refdata/panel.gtf"
     # Synthetic hp.obo (built here, never committed). The ids are assembled from
     # fragments so this SOURCE carries no concrete HP:<7 digits> literal.
@@ -76,12 +122,12 @@ run_pipeline() {
     } > "$WORKDIR/refdata/hp.obo"
     ( cd "$RUN" && agentis init >/dev/null 2>&1 )
     cat > "$RUN/.agentis/config" <<CFG
-exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_HPO_OBO,MVA_GTF,MVA_BCFTOOLS,MVA_APPROVAL_FILE,MVA_APPROACH,PANEL_PAD,EXOMISER_TIMEOUT_MS,COLONY_DIR
+exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_APPROVAL_FILE,MVA_APPROACH,PANEL_PAD,EXOMISER_TIMEOUT_MS,COLONY_DIR
 exec.default_timeout_ms = 120000
 CFG
     export MVA_DATA_DIR="$dd" MVA_WORK_DIR="$WORKDIR" MVA_OUT_DIR="$OUTDIR"
     export MVA_REF_FASTA="$WORKDIR/refdata/ref.fa" MVA_HPO_OBO="$WORKDIR/refdata/hp.obo"
-    export MVA_GTF="$WORKDIR/refdata/panel.gtf" MVA_BCFTOOLS="bcftools"
+    export MVA_GTF="$WORKDIR/refdata/panel.gtf" MVA_BCFTOOLS="$BCFTOOLS_BIN"
     export MVA_APPROVAL_FILE="$WORKDIR/phenotype/hpo-approved.txt"
     export MVA_APPROACH="baseline" PANEL_PAD="10" EXOMISER_TIMEOUT_MS="1000"
     export COLONY_DIR="$RUN"
@@ -134,8 +180,10 @@ else
     bad "M2: mismatched approval hash produced a CSV"
 fi
 
-# --- M3: removing the CEP57 panel hit removes exactly that row -------------
-grep -v '^11\t130' "$FIX/proband.vcf" > "$WORKROOT/m3.vcf"
+# --- M3: removing the CEP57 panel hits removes its candidate row -----------
+# CEP57 carries two het variants (a candidate compound-het); dropping every
+# chr11 record must remove the CEP57 candidate entirely.
+grep -vP '^11\t' "$FIX/proband.vcf" > "$WORKROOT/m3.vcf"
 DD3="$WORKROOT/data.m3"; build_data_dir "$DD3" "$WORKROOT/m3.vcf"
 run_pipeline "$DD3" approve
 if [ -f "$CSV" ] && ! grep -q 'CEP57' "$CSV"; then

@@ -36,7 +36,7 @@ The one unrecoverable failure mode here is committing gated clinical data.
 
 | Colony | Description | Agents |
 |--------|-------------|--------|
-| [baseline](./baseline/) | One-shot `agentis go` pipeline: preprocess → phenotype (hash-pinned operator gate) → Exomiser → panel review → reconcile → emit + validate. | 1 (`pipeline.ag`, six cooperating bus agents) |
+| [baseline](./baseline/) | One-shot `agentis go` pipeline: preprocess → phenotype (hash-pinned operator gate) → Exomiser (opt-in) → panel review → reconcile → emit + validate. | 1 (`pipeline.ag`, seven cooperating bus agents: a coordinator + six stages) |
 
 The M3 **lens colonies** (inheritance / mosaicism-VAF / HPO-overlap /
 known-gene / pathway lenses + a refute gate) will land inside this federation

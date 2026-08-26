@@ -36,11 +36,15 @@ Initial baseline colony for the MVA Hackathon 2026 (Track 1). Conforms to
 ### Added
 
 - `baseline/` colony: a one-shot `agentis go` clinical-genomics prioritization
-  pipeline (`agents/pipeline.ag`) wiring six cooperating agents over the
-  substrate emit/listen bus — preprocess, phenotype (with a hash-pinned
-  operator review gate), Exomiser, panel review, reconcile, emit + validate.
-  `.ag` owns the whole decision surface; `bcftools` and the pinned Exomiser
-  container do only bulk data transforms.
+  pipeline (`agents/pipeline.ag`) wiring seven cooperating agents (a coordinator
+  + six stage agents) over the substrate emit/listen bus — preprocess, phenotype
+  (with a hash-pinned operator review gate), Exomiser (opt-in via
+  `MVA_RUN_EXOMISER`), panel review, reconcile, emit + validate. `.ag` owns the
+  whole decision surface; `bcftools` and the pinned Exomiser container do only
+  bulk data transforms. String helpers (`replace_all`, `join_str`, `take`) are
+  in-`.ag` because agentis has no `replace`/`join`/`range` builtins; the
+  normalized-VCF path fans out to four stages via the memo (broadcast) since
+  `listen` is consume-once.
 - `baseline/scripts/start-colony.sh` — env-contract + safe-work-dir launcher
   (execs `agentis go`, never `agentis daemon`).
 - `baseline/scripts/fetch-reference-data.sh` — idempotent, verify-then-skip

@@ -1,5 +1,6 @@
 # Exomiser analysis template -- rendered by stage 3 (exomiser_runner) of
-# agents/pipeline.ag with the regex_* / replace builtins.
+# agents/pipeline.ag with the .ag `replace_all` helper (agentis has no native
+# `replace` builtin; the helper is literal index_of/substring recursion).
 #
 # Placeholders: {{ASSEMBLY}} {{VCF}} {{PROBAND}} {{HPO_IDS}}
 #               {{FAILED_VARIANT_FILTER}} {{OUTPUT_DIR}} {{OUTPUT_PREFIX}}
