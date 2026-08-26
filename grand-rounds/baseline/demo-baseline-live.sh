@@ -132,10 +132,10 @@ CFG
     export MVA_APPROACH="baseline" PANEL_PAD="10" EXOMISER_TIMEOUT_MS="1000"
     export COLONY_DIR="$RUN"
     # Small panel windows: the synthetic contigs are 300 bp.
-    ( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 || true )
+    ( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
     if [ "$approve" = "approve" ] && [ -f "$WORKDIR/phenotype/hpo-draft.txt" ]; then
         sha256sum "$WORKDIR/phenotype/hpo-draft.txt" | cut -d' ' -f1 > "$MVA_APPROVAL_FILE"
-        ( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 || true )
+        ( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
     fi
     CSV="$OUTDIR/agentis-federation_baseline.csv"
 }
@@ -173,7 +173,7 @@ fi
 run_pipeline "$DD2" noapprove
 printf 'deadbeef\n' > "$WORKROOT/data.m2.wrong"
 mkdir -p "$WORKDIR/phenotype"; printf 'deadbeef\n' > "$MVA_APPROVAL_FILE"
-( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 || true )
+( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
 if [ ! -f "$CSV" ]; then
     ok "M2: mismatched approval hash still refuses"
 else
@@ -199,7 +199,7 @@ run_pipeline "$DD4" approve
 # Re-run with a corrupted ladder in the SAME run copy.
 sed -i 's/epcr: 0.90/epcr: 0/' "$RUN/settings/epcr.yml"
 rm -f "$CSV"
-( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 || true )
+( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
 if [ ! -f "$CSV" ] && grep -q 'epcr-out-of-range' "$RUN/run.log"; then
     ok "M4: epcr=0 -> stage 6 refuses and names 'epcr-out-of-range'"
 else
