@@ -66,6 +66,9 @@ done
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/composition-surfaces.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+# Isolate the hunt registry so this test never writes into a live operator's
+# ~/.dark-factory/hunts (run-zone-hunt.sh only registers when the dir exists).
+export DARK_FACTORY_DIR="$WORK"
 
 # ----------------------------------------------------------------------------------------------------------
 # The seam fixture. A CONSUMER (PoolManager) reads a per-share price PRODUCED by a DIFFERENT zone file

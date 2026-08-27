@@ -105,6 +105,9 @@ command -v git >/dev/null 2>&1 || { echo "[SKIP] git not installed" >&2; exit 0;
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/demo-run-zone-hunt.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
+# Isolate the hunt registry so this demo never writes into a live operator's
+# ~/.dark-factory/hunts (run-zone-hunt.sh only registers when the dir exists).
+export DARK_FACTORY_DIR="$WORK"
 
 # ----------------------------------------------------------------------------------------------------------
 # (a) A throwaway git target: the fixture contracts/ tree (zoned) + two OUT-OF-ZONE files the two sentinel

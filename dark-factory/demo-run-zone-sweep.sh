@@ -57,6 +57,9 @@ command -v git >/dev/null 2>&1 || { echo "[SKIP] git not installed" >&2; exit 0;
 [ -f "$BRIEFS_FIXTURE" ] || { note "briefs.fixture.txt not found: $BRIEFS_FIXTURE" >&2; exit 3; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/demo-run-zone-sweep.XXXXXX")"
+# Isolate the hunt registry so this demo never writes into a live operator's
+# ~/.dark-factory/hunts (run-zone-hunt.sh only registers when the dir exists).
+export DARK_FACTORY_DIR="$WORK"
 # Block (G) deliberately spawns a detached re-hunt child (its own session); DUR_CHILD_PID lets cleanup reap it
 # (and its whole process group) on ANY exit path so nothing this demo started outlives it.
 DUR_CHILD_PID=""

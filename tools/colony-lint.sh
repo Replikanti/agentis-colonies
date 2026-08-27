@@ -50,6 +50,27 @@ pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
 skip() { echo "[SKIP] $1"; SKIP=$((SKIP + 1)); }
 
+# --- Dark Factory registry isolation ---
+# dark-factory demo/test/bench scripts invoked below (directly or via the
+# tools/test-*.sh auto-discovery loop) call run-zone-hunt.sh, which
+# registers hunts into ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/hunts when
+# that directory exists. On a host where an operator is running the live
+# hunt-dashboard, that directory exists, so a plain lint run would silently
+# pollute the real registry. Point every child script at a scratch
+# registry for the whole lint run, and snapshot the *real* registry
+# before/after so a future script that forgets to self-isolate fails the
+# lint instead of polluting silently.
+REAL_DF_HUNTS_DIR="${DARK_FACTORY_DIR:-$HOME/.dark-factory}/hunts"
+_df_hunts_snapshot() {
+    if [ -d "$REAL_DF_HUNTS_DIR" ]; then
+        (cd "$REAL_DF_HUNTS_DIR" && find . -mindepth 1 | LC_ALL=C sort)
+    fi
+}
+DF_HUNTS_BEFORE="$(_df_hunts_snapshot)"
+DF_LINT_SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/colony-lint-df.XXXXXX")"
+export DARK_FACTORY_DIR="$DF_LINT_SCRATCH"
+trap 'rm -rf "$DF_LINT_SCRATCH"' EXIT
+
 # --- Discover federations ---
 # A federation is a top-level directory with a README.md, excluding dotdirs,
 # tools/, and templates/ (the templates/ tree from #322 is a contributor-only
@@ -420,7 +441,7 @@ if command -v agentis &>/dev/null; then
     echo ""
     echo "Agentis found: $agentis_version"
     lint_tmp=$(mktemp -d)
-    trap 'rm -rf "$lint_tmp"' EXIT
+    trap 'rm -rf "$lint_tmp" "$DF_LINT_SCRATCH"' EXIT
     (cd "$lint_tmp" && agentis init &>/dev/null) || true
 
     # --- Capability probe: tier() builtin (#177) ---
@@ -2638,6 +2659,19 @@ if [ -x "$REPO_ROOT/grand-rounds/baseline/demo-baseline-live.sh" ]; then
     else
         skip "grand-rounds: baseline live-agent mutation test (agentis/bcftools not present)"
     fi
+fi
+
+# --- Dark Factory registry isolation regression check ---
+# If any script run above (now or added later) forgot to isolate its own
+# DARK_FACTORY_DIR and fell back to writing through this process's
+# exported override, that write landed in $DF_LINT_SCRATCH, not the real
+# registry -- so this compares the real registry's *own* state, which
+# should be untouched since the snapshot taken at the top of this script.
+DF_HUNTS_AFTER="$(_df_hunts_snapshot)"
+if [ "$DF_HUNTS_BEFORE" = "$DF_HUNTS_AFTER" ]; then
+    pass "dark-factory: lint run did not touch the live hunt registry"
+else
+    fail "dark-factory: lint run modified the live hunt registry ($REAL_DF_HUNTS_DIR) -- a script invoked by colony-lint wrote there instead of respecting DARK_FACTORY_DIR. Diff of changed entries: $(diff <(printf '%s\n' "$DF_HUNTS_BEFORE") <(printf '%s\n' "$DF_HUNTS_AFTER") || true). Note: if you just ran a live 'run-zone-hunt.sh' by hand concurrently with this lint, that legitimate write can trigger this failure too -- re-run colony-lint alone to confirm."
 fi
 
 # --- Summary ---
