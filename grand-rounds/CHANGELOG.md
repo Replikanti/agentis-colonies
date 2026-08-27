@@ -16,6 +16,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **M3 variant-triage lens federation** (opt-in via `MVA_LENS_MODE=1`,
+  [#2040](https://github.com/Replikanti/agentis-colonies/issues/2040)): a
+  five-lens fan-out + an independent refute gate + a reconciler layered onto the
+  M1 candidate pool in `baseline/agents/pipeline.ag`, replaying the dark-factory
+  `refuter.ag` devise→refute pattern in genomics. Five blind lenses
+  (inheritance-model, mosaicism/low-VAF, HPO phenotype-overlap, known-MVA-gene,
+  pathway/novel-gene) each score the whole pool from one angle over the substrate
+  memo bus; an adversarial `refuter` judges each candidate on four axes
+  (benign-in-population, wrong inheritance fit, phenotype mismatch, artifact),
+  fail-open-tagging what it cannot assess; a `lens_reconciler` merges lens
+  agreement (promotes a rung) + refutation (demotes into `refuted.tsv`) via the
+  substrate `decide()`, and `lens_emitter` writes a second submission
+  `agentis-federation_lens.csv` REUSING M1's schema validator/writer. Additive
+  `settings/epcr.yml` knobs (`lens_score_threshold`, `lens_agreement_promote_min`,
+  `benign_population_af`). Default off leaves the baseline submission
+  byte-for-byte identical. Live-agent mutation coverage L1–L4 in
+  `baseline/demo-baseline-live.sh`.
+
 ### Changed
 
 ### Deprecated
