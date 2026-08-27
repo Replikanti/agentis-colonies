@@ -8,9 +8,9 @@ the one allowlisted exception in
 
 | Fixture | Purpose |
 |---------|---------|
-| `mini.fa` | Two synthetic mini-contigs (`chr15`, `chr11`, 300 bp each). The reference the live test normalises against; REF alleles in `proband.vcf` were derived from this sequence so `bcftools norm -f` is internally consistent. |
-| `proband.vcf` | Synthetic proband VCF, sample `SAMPLE_SYNTH`, contigs unprefixed (`15`/`11`) to exercise stage 1's contig rename. Six variants across the two synthetic panel windows: a hom-alt and a candidate compound-het pair in `BUB1B`, a hard-filter-FAILED (`LowVAF`) record, a `CEP57` monoallelic hit, and a benign call. |
-| `panel.gtf` | Synthetic GENCODE-style GTF placing `BUB1B` on `chr15` and `CEP57` on `chr11`, so stage 4 can derive the panel BED by gene name. |
+| `mini.fa` | Three synthetic mini-contigs (`chr15`, `chr11` 300 bp; `chr5` 480 bp). The reference the live test normalises against; REF alleles in `proband.vcf` were derived from this sequence so `bcftools norm -f` is internally consistent. |
+| `proband.vcf` | Synthetic proband VCF, sample `SAMPLE_SYNTH`, contigs unprefixed (`15`/`11`/`5`) to exercise stage 1's contig rename. The `chr15`/`chr11` variants (`BUB1B` hom-alt + compound-het, a `LowVAF` hard-filter record, `CEP57` compound-het) drive the baseline M1–M6 checks. The `chr5` `TRIP13` + `CENATAC` compound-het pairs (with a synthetic `INFO/AF` on every record) drive the M3 lens checks (L1–L4): the AF is the benign-in-population refute signal and one `TRIP13` variant is low-VAF so the mosaicism lens promotes it. `INFO/AF` is a synthetic population frequency, NOT a real annotation. |
+| `panel.gtf` | Synthetic GENCODE-style GTF placing `BUB1B` on `chr15`, `CEP57` on `chr11`, and (for the lens checks) `TRIP13` + `CENATAC` on `chr5`, so stage 4 can derive the panel BED by gene name. The `chr5` placement is a test-fixture convenience (the GTF, not `mva-genes.tsv`, supplies the coordinates). |
 | `phenotype-source.txt` | Free-text synthetic vignette. The live test packs it into a `.docx` at run time (no `.docx` is committed) to exercise the phenotype stage. Contains no HPO ids. |
 
 The synthetic `hp.obo` and the `.docx` are built at test time by
