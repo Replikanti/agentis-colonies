@@ -1455,7 +1455,8 @@ fi
 # while STILL recovering a transient timeout on attempt 2 (dropping to 0 would turn every blip into a FAILED
 # cell). demo-discovery-fail-fast.sh source-guards the `= 1` emission (always, CI-safe) and, when agentis is on
 # PATH, drives a real `agentis go` over stub backends to prove the one-retry cap AND transient recovery at
-# OUTPUT level (retry-line count + wall-time + recovered reply). Layer 1 runs on CI; layer 2 [SKIP]s w/o agentis.
+# OUTPUT level (retry-line count + recovered reply, wall-time reported as corroboration only). Layer 1 runs on
+# CI; layer 2 [SKIP]s w/o agentis.
 if [ -x "$REPO_ROOT/dark-factory/demo-discovery-fail-fast.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-discovery-fail-fast.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then

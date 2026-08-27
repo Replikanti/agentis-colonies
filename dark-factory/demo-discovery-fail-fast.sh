@@ -21,8 +21,12 @@
 #   2) END-TO-END MUTATION (agentis-gated, [SKIP] without agentis): drive a REAL offline `agentis go` over a
 #      trivial `prompt()` probe with a stub backend, and assert the ATTEMPT budget at OUTPUT level —
 #        (2a) PERSISTENT timeout, max_retries=1 -> exactly ONE `[LLM retry` line, ~2x the budget (cap holds);
-#        (2b) PERSISTENT timeout, max_retries=2 -> TWO `[LLM retry` lines, ~3x the budget (strictly worse — the
-#             default this fix replaces), proving `= 1` bounds the waste;
+#        (2b) PERSISTENT timeout, max_retries=2 -> TWO `[LLM retry` lines (vs ONE at max_retries=1), proving `= 1`
+#             bounds the waste. The assertion is the retry-line COUNT (2 vs 1) — it comes straight from
+#             agentis-core's `attempts = 1 + max_retries`. Elapsed wall time is reported alongside for human
+#             corroboration only; it is NOT a pass/fail input (a single `llm.cli_timeout_ms` interval routinely
+#             rounds to the same whole second under `date +%s` scheduler jitter, so a strict wall-time
+#             inequality flaked here — see #2036);
 #        (2c) TRANSIENT timeout (a stateful stub that times out on attempt 1, then returns a reply on attempt 2),
 #             max_retries=1 -> RECOVERS: the probe prints its REPLY, no error, exactly ONE retry line. This is
 #             the load-bearing reason for `= 1` over `= 0`.
@@ -123,8 +127,11 @@ EOF
   # --- (2b) persistent timeout, max_retries = 2 (the OLD default) -> TWO retry lines, ~3x the budget -----
   EL2="$(run_probe 2 sleep 30 "$WORK/retry2.log")"
   RETRIES2="$(grep -c '\[LLM retry' "$WORK/retry2.log" 2>/dev/null || true)"
-  if [ "$RETRIES2" -eq 2 ] && [ "$RETRIES1" -eq 1 ] && [ "$EL1" -lt "$EL2" ]; then
-    ok "the same hang cost ${EL1}s at max_retries=1 (1 retry) vs ${EL2}s at the default max_retries=2 (2 retries) — the cap bounds the waste"
+  if [ "$RETRIES2" -eq 2 ] && [ "$RETRIES1" -eq 1 ]; then
+    if [ "$EL1" -ge "$EL2" ]; then
+      note "elapsed-time note: ${EL1}s at max_retries=1 vs ${EL2}s at max_retries=2 did not order as expected — scheduler jitter/contention, not a regression (retry-line counts are the assertion)"
+    fi
+    ok "the retry-line counts bound the waste: 1 '[LLM retry' line at max_retries=1 (${EL1}s) vs 2 lines at the default max_retries=2 (${EL2}s)"
   else
     bad "the one-retry cap did not bound the waste (max_retries=1 ${EL1}s/${RETRIES1} retries vs max_retries=2 ${EL2}s/${RETRIES2} retries)"
   fi
