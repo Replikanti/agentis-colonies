@@ -12,7 +12,10 @@
 # Stage 3 (Exomiser) is deliberately NOT covered here (multi-tens-of-GB bundle,
 # hour-scale run) — it is covered by the operator end-to-end run on real data.
 # The panel -> reconcile -> emit chain does not depend on the Exomiser output,
-# so these checks exercise stages 1, 2, 4, 5, 6.
+# so these checks exercise stages 1, 2, 4, 5, 6 (M1-M6) plus the opt-in M3 lens
+# mode (MVA_LENS_MODE=1): the lens fan-out + refute gate + reconcile (L1-L4).
+# Every lens assertion keys on an input-driven STRUCTURAL consequence, never an
+# exact LLM score, so it is deterministic under a mock/offline backend too.
 #
 # Exit 0 all pass, 1 a mutation check failed, 0 with a SKIP notice if prereqs
 # are missing.
@@ -98,9 +101,10 @@ build_data_dir() {
 }
 
 # Build a run copy of the colony + refdata + .agentis/config, then run it.
-# Populates $RUN and $OUTDIR; approval is applied when $2 = "approve".
+# Populates $RUN and $OUTDIR; approval is applied when $2 = "approve"; M3 lens
+# mode is on when $3 = "1" (default off, so the baseline runs are unchanged).
 run_pipeline() {
-    dd="$1"; approve="$2"
+    dd="$1"; approve="$2"; lens="${3:-0}"
     RUN="$WORKROOT/run.$RANDOM"
     cp -r "$BASE_DIR" "$RUN"
     rm -rf "$RUN/.agentis"
@@ -122,14 +126,16 @@ run_pipeline() {
     } > "$WORKDIR/refdata/hp.obo"
     ( cd "$RUN" && agentis init >/dev/null 2>&1 )
     cat > "$RUN/.agentis/config" <<CFG
-exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_APPROVAL_FILE,MVA_APPROACH,PANEL_PAD,EXOMISER_TIMEOUT_MS,COLONY_DIR
+exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_LENS_MODE,PANEL_PAD,EXOMISER_TIMEOUT_MS,COLONY_DIR
 exec.default_timeout_ms = 120000
+experience.enabled = true
 CFG
     export MVA_DATA_DIR="$dd" MVA_WORK_DIR="$WORKDIR" MVA_OUT_DIR="$OUTDIR"
     export MVA_REF_FASTA="$WORKDIR/refdata/ref.fa" MVA_HPO_OBO="$WORKDIR/refdata/hp.obo"
     export MVA_GTF="$WORKDIR/refdata/panel.gtf" MVA_BCFTOOLS="$BCFTOOLS_BIN"
     export MVA_APPROVAL_FILE="$WORKDIR/phenotype/hpo-approved.txt"
     export MVA_APPROACH="baseline" PANEL_PAD="10" EXOMISER_TIMEOUT_MS="1000"
+    export MVA_LENS_MODE="$lens"
     export COLONY_DIR="$RUN"
     # Small panel windows: the synthetic contigs are 300 bp.
     ( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
@@ -138,7 +144,13 @@ CFG
         ( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
     fi
     CSV="$OUTDIR/agentis-federation_baseline.csv"
+    LENSCSV="$OUTDIR/agentis-federation_lens.csv"
+    MEMODIR="$RUN/.agentis/memo"
+    RUNLOG="$RUN/run.log"
 }
+
+# Line number of the first CSV row whose notes name $1 ("" if absent).
+gene_line() { grep -nF "$1" "$2" 2>/dev/null | head -1 | cut -d: -f1; }
 
 echo "grand-rounds/baseline: live-agent mutation test"
 
@@ -225,6 +237,98 @@ if [ -f "$WORKDIR/stage-rows.tsv" ]; then
     fi
 else
     bad "M6: stage-rows.tsv was not produced"
+fi
+
+# ============================================================================
+# M3 lens mode (MVA_LENS_MODE=1): lens fan-out + refute gate + reconcile.
+# Every assertion keys on an input-driven STRUCTURAL consequence (population-AF
+# membership in refuted.tsv, VAF-driven promotion ordering), never on an exact
+# LLM score — so the checks are deterministic under a mock/offline backend and
+# genuine under a live one (the same M1-precedent).
+# ============================================================================
+
+# --- L1: wiring + schema — the fan-out runs end-to-end and emits a valid CSV --
+DDL="$WORKROOT/data.lens"; build_data_dir "$DDL" "$FIX/proband.vcf"
+run_pipeline "$DDL" approve 1
+l1_ok=1
+for a in lens_inheritance lens_mosaicism lens_hpo lens_known_gene lens_pathway; do
+    grep -q "$a: scored" "$RUNLOG" || l1_ok=0
+done
+grep -q 'refuter:' "$RUNLOG" || l1_ok=0
+grep -q 'lens_reconciler:' "$RUNLOG" || l1_ok=0
+grep -q 'Verdict: LENS-EMITTED' "$RUNLOG" || l1_ok=0
+for k in inheritance mosaicism hpo known_gene pathway; do
+    [ -f "$MEMODIR/lens:score:$k.jsonl" ] || l1_ok=0
+done
+hdr="proband_id,chrom_1,pos_1,ref_1,alt_1,chrom_2,pos_2,ref_2,alt_2,epcr,finding_type,notes"
+if [ -f "$LENSCSV" ] && [ "$(head -1 "$LENSCSV")" = "$hdr" ] \
+   && [ -f "$WORKDIR/refuted.tsv" ] && [ "$l1_ok" -eq 1 ]; then
+    rows="$(tail -n +2 "$LENSCSV" | grep -c . || true)"
+    if [ "$rows" -le 10 ] && [ "$rows" -ge 1 ]; then
+        ok "L1: five lenses + refuter + reconciler ran; schema-valid lens CSV ($rows rows) + refuted.tsv + score memos"
+    else
+        bad "L1: lens CSV row count out of range ($rows)"
+    fi
+else
+    bad "L1: lens fan-out did not produce a schema-valid CSV + refuted.tsv + score memos"
+fi
+
+# --- L2: refute demotes — a common-population-AF candidate is REFUTED out ----
+# Base (rare AF): TRIP13 survives into the lens CSV. Mutate its representative
+# variant to a COMMON population AF: the benign-in-population axis must REFUTE it
+# into refuted.tsv and OUT of the ranked CSV. A no-op refuter leaves it primary.
+if [ -n "$(gene_line TRIP13 "$LENSCSV")" ]; then
+    ok "L2 base: TRIP13 (rare AF) survives into the lens CSV"
+else
+    bad "L2 base: TRIP13 missing from the lens CSV before the AF mutation"
+fi
+sed '/^5\t80\t/ s/AF=0.0005/AF=0.2/' "$FIX/proband.vcf" > "$WORKROOT/l2.vcf"
+DD2="$WORKROOT/data.l2"; build_data_dir "$DD2" "$WORKROOT/l2.vcf"
+run_pipeline "$DD2" approve 1
+if grep -q '^TRIP13.*REFUTED.*benign-in-population' "$WORKDIR/refuted.tsv" 2>/dev/null \
+   && [ -z "$(gene_line TRIP13 "$LENSCSV")" ]; then
+    ok "L2 mutation: common-AF TRIP13 REFUTED into refuted.tsv and dropped from the lens CSV"
+else
+    bad "L2 mutation: common-AF TRIP13 was not refuted out of the lens CSV (refute gate a no-op?)"
+fi
+
+# --- L3: lens agreement reorders — mutating away an upvote flips the ranking --
+# Base: TRIP13's representative variant is low-VAF, so the mosaicism lens upvotes
+# it -> lens agreement promotes it one rung ABOVE the normal-VAF CENATAC. Strip
+# that upvote (low-VAF -> normal-VAF, still the same comphet tier) and the
+# promotion is lost, so CENATAC out-ranks TRIP13: the CSV ordering flips. A
+# no-op lens leaves the order unchanged.
+run_pipeline "$DDL" approve 1   # base again (fresh run dir)
+t_base="$(gene_line TRIP13 "$LENSCSV")"; c_base="$(gene_line CENATAC "$LENSCSV")"
+sed '/^5\t80\t/ s#0/1:90,8#0/1:30,28#' "$FIX/proband.vcf" > "$WORKROOT/l3.vcf"
+DD3="$WORKROOT/data.l3"; build_data_dir "$DD3" "$WORKROOT/l3.vcf"
+run_pipeline "$DD3" approve 1
+t_mut="$(gene_line TRIP13 "$LENSCSV")"; c_mut="$(gene_line CENATAC "$LENSCSV")"
+if [ -n "$t_base" ] && [ -n "$c_base" ] && [ -n "$t_mut" ] && [ -n "$c_mut" ] \
+   && [ "$t_base" -lt "$c_base" ] && [ "$t_mut" -gt "$c_mut" ]; then
+    ok "L3: TRIP13 out-ranks CENATAC on lens agreement; stripping the low-VAF upvote flips the order"
+else
+    bad "L3: ordering did not flip on the agreement mutation (base T<$t_base> C<$c_base>, mut T<$t_mut> C<$c_mut>)"
+fi
+
+# --- L4: fail-open — an unassessable candidate is KEPT + refuter-error-tagged -
+# Remove CENATAC's representative population AF: the refuter cannot judge
+# benign-in-population, so it must KEEP the candidate (never silently drop it)
+# and tag it refuter-error. Base (AF present) leaves it un-tagged.
+if [ -n "$(gene_line CENATAC "$LENSCSV")" ] && ! grep -q 'CENATAC.*refuter-error' "$LENSCSV"; then
+    ok "L4 base: CENATAC (AF present) is assessed and carries no refuter-error tag"
+else
+    bad "L4 base: CENATAC unexpectedly tagged refuter-error before the AF was removed"
+fi
+sed '/^5\t300\t/ s/AF=0.0005/./' "$FIX/proband.vcf" > "$WORKROOT/l4.vcf"
+DD4="$WORKROOT/data.l4"; build_data_dir "$DD4" "$WORKROOT/l4.vcf"
+run_pipeline "$DD4" approve 1
+if [ -n "$(gene_line CENATAC "$LENSCSV")" ] \
+   && grep -q 'CENATAC.*\[refuter-error\]' "$LENSCSV" \
+   && grep -q '^CENATAC.*refuter-error' "$WORKDIR/refuted.tsv" 2>/dev/null; then
+    ok "L4: AF-less CENATAC is KEPT in the lens CSV, tagged refuter-error (fail-open, never dropped)"
+else
+    bad "L4: fail-open broken — the unassessable CENATAC was dropped or left untagged"
 fi
 
 echo "grand-rounds/baseline live: $pass ok, $fail failed"

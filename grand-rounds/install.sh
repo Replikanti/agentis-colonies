@@ -24,7 +24,7 @@ CONFIG="$AGENTIS_DIR/config"
 # The env knobs agents/pipeline.ag reads via getenv(). Keep this list in sync
 # with the getenv() calls in the .ag and the [baseline] block in
 # config/colony.example.toml. start-colony.sh asserts the same set.
-ENV_PASSTHROUGH="MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR"
+ENV_PASSTHROUGH="MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_LENS_MODE,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR"
 
 # Exomiser is an hour-scale run; the sandboxed-exec default of 10 s would abort
 # it. This raises the default so every exec sh stage has headroom; the Exomiser
@@ -80,13 +80,17 @@ touch "$CONFIG"
 # Rewrite the two managed keys idempotently: strip any prior line, then append
 # the current value. Every other line the operator added is preserved.
 tmp="$(mktemp)"
-grep -vE '^[[:space:]]*(exec\.env_passthrough|exec\.default_timeout_ms)[[:space:]]*=' "$CONFIG" > "$tmp" || true
+grep -vE '^[[:space:]]*(exec\.env_passthrough|exec\.default_timeout_ms|experience\.enabled)[[:space:]]*=' "$CONFIG" > "$tmp" || true
 {
     printf 'exec.env_passthrough = %s\n' "$ENV_PASSTHROUGH"
     printf 'exec.default_timeout_ms = %s\n' "$DEFAULT_TIMEOUT_MS"
+    # M3 lens mode's refute gate records a best-effort learn() outcome; enabling
+    # the experience store lets that telemetry persist (a no-op when lens mode is
+    # off, and the refuter wraps learn() in try/catch so it is never fatal).
+    printf 'experience.enabled = true\n'
 } >> "$tmp"
 mv "$tmp" "$CONFIG"
-log "wrote exec.env_passthrough allowlist + exec.default_timeout_ms to $CONFIG"
+log "wrote exec.env_passthrough allowlist + exec.default_timeout_ms + experience.enabled to $CONFIG"
 
 # --- 3. Reference data (opt-in) --------------------------------------------
 

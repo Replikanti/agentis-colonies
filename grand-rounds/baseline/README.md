@@ -55,6 +55,45 @@ until an operator reviews `$MVA_WORK_DIR/phenotype/hpo-draft.txt` and stores its
 SHA-256 in `$MVA_APPROVAL_FILE`. Editing the draft after approval changes its
 hash and re-arms the gate, so an approval can never be silently stale.
 
+## M3 lens fan-out + refute gate (opt-in: `MVA_LENS_MODE=1`)
+
+The M3 differentiator ([#2040](https://github.com/Replikanti/agentis-colonies/issues/2040))
+layers a devise→refute reasoning stage onto the M1 candidate pool, replaying the
+dark-factory `refuter.ag` pattern in genomics. It is **opt-in** (default off, so
+the baseline submission is byte-for-byte unchanged) and adds a SECOND submission
+`agentis-federation_lens.csv` alongside the baseline one. All lens/refute/
+reconcile LOGIC lives in `agents/pipeline.ag`; it reuses the M1 schema validator
++ writer (`emit_submission`) rather than duplicating it.
+
+| Agent | Owns (decision-shaped) |
+|-------|------------------------|
+| `lens_inheritance` | de-novo vs biallelic/comp-het vs X-linked fit (single proband, no parents) |
+| `lens_mosaicism` | somatic/mosaic support from VAF + the `LowVAF` hard-filter (MVA is mosaic) |
+| `lens_hpo` | gene↔phenotype overlap against the approved HPO set |
+| `lens_known_gene` | known-MVA-gene / spindle-assembly-checkpoint priority |
+| `lens_pathway` | plausible novel gene outside the known panel |
+| `refuter` | per-candidate adversarial refutation on four axes (benign-in-population, wrong inheritance fit, phenotype mismatch, artifact); fail-open-tags what it cannot assess |
+| `lens_reconciler` | merge lens agreement (promotes a rung) + refutation (demotes into `refuted.tsv`) via the substrate `decide()`; re-rank, cap ≤10 |
+| `lens_emitter` | write + validate `agentis-federation_lens.csv` (reusing M1's `emit_submission`) |
+
+```mermaid
+graph LR
+    reconciler -. lens:pool .-> lens_inheritance & lens_mosaicism & lens_hpo & lens_known_gene & lens_pathway & refuter
+    lens_inheritance & lens_mosaicism & lens_hpo & lens_known_gene & lens_pathway -. lens:score:* .-> lens_reconciler
+    refuter -. lens:refute .-> lens_reconciler
+    lens_reconciler --> lens_emitter
+```
+
+Each lens is blind to the others and makes ONE scoring `prompt()` over the whole
+≤10-candidate pool (never per-element); the refuter runs one bounded `prompt()`
+per candidate. The candidate pool + approved HPO set fan out on the memo bus
+(`lens:pool` / `lens:hpo`) because `listen` is consume-once. Lens tunables live
+in [`settings/epcr.yml`](./settings/epcr.yml) next to the evidence-tier ladder:
+`lens_score_threshold`, `lens_agreement_promote_min`, `benign_population_af`.
+The D6 approval gate governs the lens submission too (the HPO set feeds
+`lens_hpo`). Refuted candidates are excluded from the ranked CSV and recorded in
+`$MVA_WORK_DIR/refuted.tsv` for transparency.
+
 ## Setup
 
 1. Wire the environment allowlist + timeout (writes `.agentis/config`):
@@ -72,7 +111,8 @@ hash and re-arms the gate, so an approval can never be silently stale.
    ```
    Review the HPO draft, store its hash in `$MVA_APPROVAL_FILE`, then re-run to
    resume. The schema-valid CSV lands at
-   `$MVA_OUT_DIR/agentis-federation_baseline.csv`.
+   `$MVA_OUT_DIR/agentis-federation_baseline.csv`. Set `MVA_LENS_MODE=1` to also
+   run the M3 lens fan-out and emit `agentis-federation_lens.csv` (above).
 
 Config keys: [`config/colony.example.toml`](./config/colony.example.toml).
 Tool pins + the EPCR ladder + the gene panel:
@@ -88,7 +128,10 @@ CI cannot execute `.ag` (no `agentis` binary on runners), so coverage is split:
 - [`demo-baseline-live.sh`](./demo-baseline-live.sh) — runs the REAL agents
   through `agentis go` against a synthetic data dir and asserts on OUTPUT
   artifacts, every assertion a mutation check (a no-op stage produces an
-  identical output and fails). Requires `agentis` + `zip` and `bcftools` — the
+  identical output and fails). Covers the baseline chain (M1–M6) AND the M3 lens
+  mode (L1 wiring+schema, L2 refute-demotes, L3 lens-agreement reorder, L4
+  fail-open), each keyed on an input-driven structural consequence, never an
+  exact LLM score. Requires `agentis` + `zip` and `bcftools` — the
   latter either native OR the pinned biocontainer
   (`quay.io/biocontainers/bcftools:1.19--h8b25389_0`, run via `podman`/`docker`
   when it is already present locally; it is never pulled over the network here).
