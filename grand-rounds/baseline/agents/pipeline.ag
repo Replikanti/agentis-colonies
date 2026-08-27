@@ -130,6 +130,225 @@ fn bcftools_bin() -> string {
     return getenv_or("MVA_BCFTOOLS", "bcftools");
 }
 
+// Is M3 lens mode requested? (opt-in, default off — the Exomiser opt-in
+// precedent. Every M3 agent early-returns on the default so the baseline
+// submission stays byte-for-byte identical.)
+fn lens_mode() -> bool {
+    return getenv_or("MVA_LENS_MODE", "0") == "1";
+}
+
+// ======================================================================
+// M3 lens fan-out + refute gate — shared helpers (leaf-heavy, flat builtins)
+// ======================================================================
+
+// First whitespace-delimited token of a string (the gene symbol leads a notes
+// field like "BUB1B biallelic (hom-alt)").
+fn first_token(s: string) -> string {
+    let sp = index_of(s, " ");
+    if sp < 0 { return s; }
+    return substring(s, 0, sp);
+}
+
+// Left-pad a numeric string to `width` with zeros (there is no format builtin;
+// leaf recursion, like `take`). Only the lexicographic rank keys below need it.
+fn zpad(s: string, width: int) -> string {
+    if len(s) >= width { return s; }
+    return zpad("0" + s, width);
+}
+
+fn clamp01(x: float) -> float {
+    if x < 0.0 { return 0.0; }
+    if x > 1.0 { return 1.0; }
+    return x;
+}
+
+// The whole epcr.yml text (one grep-free read; the lens keys are then extracted
+// with regex_capture, no YAML library — the M1 epcr_for pattern).
+fn epcr_yml() -> string {
+    let cdir = getenv("COLONY_DIR");
+    // colony-lint: safe-exec-concat
+    return exec sh "cat " + shell_escape(cdir + "/settings/epcr.yml") + " 2>/dev/null || true";
+}
+
+// A top-level scalar key ("key: <number>") from the epcr.yml blob, or a default.
+// Only real key lines carry "<key>: <num>"; the documentation lines use an em
+// dash, so they never match.
+fn yaml_num(blob: string, key: string, dflt: string) -> string {
+    let v = trim(regex_capture(key + ":[ ]*([0-9.]+)", blob, 1));
+    if len(v) == 0 { return dflt; }
+    return v;
+}
+
+// Is `gene` a member of the known MVA panel (mva-genes.tsv)? Mechanical grep,
+// the .ag reads the count. Every candidate the baseline surfaces is a panel
+// gene, so this is 1.0 for the known-gene lens and the discriminator the
+// pathway/novel-gene lens inverts.
+fn in_known_panel(gene: string) -> bool {
+    if len(trim(gene)) == 0 { return false; }
+    let cdir = getenv("COLONY_DIR");
+    // colony-lint: safe-exec-concat
+    let hit = exec sh "grep -v '^#' " + shell_escape(cdir + "/settings/mva-genes.tsv")
+        + " 2>/dev/null | grep -c -w -F " + shell_escape(gene) + " 2>/dev/null || echo 0";
+    return parse_int(trim(hit)) > 0;
+}
+
+// Population allele frequency of a variant (INFO/AF) from the normalized VCF.
+// "" / "." when the field is unset — the refuter treats that as unassessable
+// (fail-open), never as a refutation.
+fn pop_af(nvcf: string, chrom: string, pos: string) -> string {
+    let bcftools = bcftools_bin();
+    // colony-lint: safe-exec-concat
+    return trim(exec sh shell_escape(bcftools) + " query -f '%INFO/AF\\n' -r "
+        + shell_escape(chrom + ":" + pos + "-" + pos) + " " + shell_escape(nvcf)
+        + " 2>/dev/null | head -1 || true");
+}
+
+// --- the pool fact bundle the five lenses reason over --------------------
+// One pool line per candidate: gene, chrom, pos, zygosity, vaf, filter, tierid
+// (built by the reconciler from the panel-review evidence). The lenses read a
+// COMPACT projection of it (facts only, tens of rows).
+fn lens_payload(rows: list<string>) -> string {
+    let lines = map(rows, |r: string| -> string {
+        return "gene=" + field(r, 0) + " zygosity=" + field(r, 3) + " vaf=" + field(r, 4)
+            + " filter=" + field(r, 5) + " tier=" + field(r, 6);
+    });
+    return join_str(lines, "\n");
+}
+
+// Parse the LLM's score for `gene` from a reply of "gene<TAB>score<TAB>..."
+// lines, clamped to [0,1]. Falls back to the deterministic `prior` when the
+// reply carries no parseable line for the gene (an offline/mock backend, or a
+// model that ignored the format): the pipeline stays deterministic without a
+// live model, and the lens is genuine with one. Returned as a string (memo).
+fn lens_score(reply: string, gene: string, prior: float) -> string {
+    let lines = nonempty_lines(reply);
+    let hit = filter(lines, |l: string| -> bool { return field(l, 0) == gene; });
+    if len(hit) == 0 { return to_string(clamp01(prior)); }
+    let raw = trim(field(get(hit, 0), 1));
+    if len(raw) == 0 { return to_string(clamp01(prior)); }
+    return to_string(clamp01(parse_float(raw)));
+}
+
+// Deterministic lens priors — grounded in machine-checkable facts so the lens
+// fan-out has a defined, input-driven signal even offline (the LLM refines it).
+fn prior_inheritance(r: string) -> float {
+    let tier = field(r, 6);
+    if tier == "biallelic" { return 0.9; }
+    if tier == "comphet" { return 0.8; }
+    return 0.3;
+}
+fn prior_mosaicism(r: string) -> float {
+    if index_of(field(r, 5), "LowVAF") >= 0 { return 0.9; }
+    let vaf = parse_float(field(r, 4));
+    if vaf > 0.0 { if vaf < 0.15 { return 0.9; } }
+    return 0.3;
+}
+fn prior_known_gene(r: string) -> float {
+    if in_known_panel(field(r, 0)) { return 1.0; }
+    return 0.2;
+}
+fn prior_hpo(r: string, hpo: string) -> float {
+    if len(trim(hpo)) == 0 { return 0.3; }
+    if in_known_panel(field(r, 0)) { return 0.8; }
+    return 0.4;
+}
+fn prior_pathway(r: string) -> float {
+    if in_known_panel(field(r, 0)) { return 0.2; }
+    return 0.7;
+}
+
+// --- the reconcile step: agreement count, refute verdict, promotion ------
+// A single lens's score for `gene` (0.0 when the memo has no line for it).
+fn score_of(blob: string, gene: string) -> float {
+    let hit = filter(nonempty_lines(blob), |l: string| -> bool { return field(l, 0) == gene; });
+    if len(hit) == 0 { return 0.0; }
+    return parse_float(field(get(hit, 0), 1));
+}
+
+// How many of the five lenses scored `gene` at or above the agreement threshold.
+fn count_agree(gene: string, thr: float, a: string, b: string, c: string, d: string, e: string) -> int {
+    let g1 = if score_of(a, gene) >= thr { 1 } else { 0 };
+    let g2 = if score_of(b, gene) >= thr { g1 + 1 } else { g1 };
+    let g3 = if score_of(c, gene) >= thr { g2 + 1 } else { g2 };
+    let g4 = if score_of(d, gene) >= thr { g3 + 1 } else { g3 };
+    let g5 = if score_of(e, gene) >= thr { g4 + 1 } else { g4 };
+    return g5;
+}
+
+// The refute verdict recorded for `gene` (REAL when absent — nothing refuted it).
+fn refute_verdict_for(gene: string, refute: string) -> string {
+    let hit = filter(nonempty_lines(refute), |l: string| -> bool { return field(l, 0) == gene; });
+    if len(hit) == 0 { return "REAL"; }
+    return field(get(hit, 0), 1);
+}
+
+// The two leading annotation columns (agreement, verdict) stripped back to the
+// 12-field candidate row.
+fn strip_fields(s: string, n: int) -> string {
+    if n <= 0 { return s; }
+    let t = index_of(s, "\t");
+    if t < 0 { return ""; }
+    return strip_fields(substring(s, t + 1, len(s)), n - 1);
+}
+
+// Rebuild a tab row with field `n` replaced by `val` (no in-place mutation).
+fn set_field_rec(parts: list<string>, n: int, val: string, i: int, acc: list<string>) -> list<string> {
+    if i >= len(parts) { return acc; }
+    let e = if i == n { val } else { get(parts, i) };
+    return set_field_rec(parts, n, val, i + 1, push(acc, e));
+}
+fn set_field(row: string, n: int, val: string) -> string {
+    let parts = regex_split("\t", row);
+    let empty = filter(parts, |x: string| -> bool { return false; });
+    return join_str(set_field_rec(parts, n, val, 0, empty), "\t");
+}
+fn note_append(row: string, extra: string) -> string {
+    return set_field(row, 11, field(row, 11) + extra);
+}
+
+// The epcr of a candidate row as an integer in centi (0.90 -> 90), for a
+// deterministic rank key. epcr never reaches 1.0 in this ladder (max 0.90).
+fn epcr_centi(row: string) -> int {
+    let e = field(row, 9);
+    let dot = index_of(e, ".");
+    if dot < 0 { return parse_int(e) * 100; }
+    let dec = substring(e, dot + 1, len(e));
+    let d2 = if len(dec) >= 2 { substring(dec, 0, 2) } else { dec + "0" };
+    return parse_int(d2);
+}
+
+// Promote a candidate ONE rung up the epcr ladder (comphet -> biallelic, etc.),
+// reading the target epcr from the same epcr.yml the baseline reconciler uses
+// (never a fabricated number). The top rung (biallelic) has no higher rung.
+fn promote_row(row: string) -> string {
+    let cur = epcr_centi(row);
+    let up = if cur >= 90 { "" }
+        else { if cur >= 75 { epcr_for("known_gene_biallelic") }
+        else { if cur >= 35 { epcr_for("known_gene_comphet") }
+        else { if cur >= 20 { epcr_for("known_gene_monoallelic") }
+        else { epcr_for("phenotype_novel_gene") } } } };
+    if len(up) == 0 { return note_append(row, " [lens-promoted]"); }
+    return note_append(set_field(row, 9, up), " [lens-promoted]");
+}
+
+// Lexicographic rank key: epcr DESC, then agreement DESC, then gene ASC. Built
+// so sort_strings (ascending) yields the intended order; the key is stripped
+// back off after the sort.
+fn order_key(row: string, agree: int) -> string {
+    return zpad(to_string(100 - epcr_centi(row)), 3) + "\t"
+        + zpad(to_string(100 - agree), 3) + "\t"
+        + first_token(field(row, 11));
+}
+
+// Proband sample name from the normalized VCF (mechanical), "PROBAND" fallback.
+fn resolve_proband(nvcf: string) -> string {
+    let bcftools = bcftools_bin();
+    // colony-lint: safe-exec-concat
+    let p0 = trim(exec sh shell_escape(bcftools) + " query -l " + shell_escape(nvcf) + " 2>/dev/null | head -1 || true");
+    if len(p0) == 0 { return "PROBAND"; }
+    return p0;
+}
+
 // ======================================================================
 // stage 0 — coordinator: resolve inputs, seed the bus
 // ======================================================================
@@ -358,6 +577,10 @@ agent phenotyper() -> void {
     }
     print("phenotyper: HPO set approved (hash matches) — proceeding");
     memo_write("pipeline:gate", "approved");
+    // M3: broadcast the approved HPO set so the HPO-overlap lens can re-read it
+    // (memo, not the consume-once baseline:hpo_ids emit). Gated behind lens mode
+    // so the baseline path writes nothing extra.
+    if lens_mode() { memo_write("lens:hpo", draft); }
     emit("baseline:hpo_ids", draft);
 }
 
@@ -633,6 +856,34 @@ agent reconciler() -> void {
     exec sh "printf %s " + shell_escape(join_str(capped, "\n") + "\n") + " > " + shell_escape(cand_tsv);
     print("reconciler: ", len(capped), " candidate(s) after EPCR ladder + cap(", cap, ")");
     emit("baseline:candidates", cand_tsv);
+
+    // M3 (lens mode): broadcast the candidate set for the lens fan-out. `listen`
+    // is consume-once, so the full candidate rows AND a per-gene fact bundle go
+    // on the memo where all five lenses + the refuter + the lens reconciler can
+    // re-read them. Nothing here touches the baseline submission.
+    if lens_mode() {
+        memo_write("lens:candidates", join_str(capped, "\n"));
+        let pool = map(capped, |row: string| -> string {
+            let notes = field(row, 11);
+            let gene = first_token(notes);
+            let chrom = field(row, 1);
+            let pos = field(row, 2);
+            let tierid = if index_of(notes, "biallelic") >= 0 { "biallelic" }
+                else { if index_of(notes, "compound-het") >= 0 { "comphet" } else { "monoallelic" } };
+            // representative-variant evidence (the candidate's chrom_1:pos_1).
+            let h = filter(hits, |x: string| -> bool {
+                if field(x, 0) != chrom { return false; }
+                return field(x, 1) == pos;
+            });
+            let hit = if len(h) > 0 { get(h, 0) } else { "" };
+            let zyg = if len(hit) > 0 { field(hit, 8) } else { "" };
+            let vaf = if len(hit) > 0 { field(hit, 6) } else { "NA" };
+            let flt = if len(hit) > 0 { field(hit, 4) } else { "" };
+            return gene + "\t" + chrom + "\t" + pos + "\t" + zyg + "\t" + vaf + "\t" + flt + "\t" + tierid;
+        });
+        memo_write("lens:pool", join_str(pool, "\n"));
+        print("reconciler: lens mode — broadcast lens:pool (", len(pool), " candidate(s))");
+    }
 }
 
 // ======================================================================
@@ -671,6 +922,40 @@ fn validate_row(row: string) -> string {
     return "";
 }
 
+// Shared submission writer (M1 emitter core, extracted so the M3 lens_emitter
+// reuses the SAME schema validator + writer instead of duplicating it). Injects
+// the proband id into each candidate row, validates the 12-field schema
+// (short-circuit on the first violation), refuses duplicate variant keys, then
+// writes header + rows (tabs -> commas) to
+// <outdir>/agentis-federation_<approach>.csv. Returns "" on success, else a
+// short reason tag ("too-many-rows" | "schema-invalid:<rule>" | "dup-key") the
+// caller surfaces. Byte-identical to the pre-refactor emitter for `baseline`.
+fn emit_submission(rows: list<string>, proband: string, outdir: string, approach: string) -> string {
+    if len(rows) > 10 { return "too-many-rows"; }
+    let validated = reduce(rows, |acc: string, row: string| -> string {
+        if index_of(acc, "VIOLATION:") == 0 { return acc; }
+        let withid = replace_first_field(row, proband);
+        let v = validate_row(withid);
+        if len(v) > 0 { return "VIOLATION:" + v; }
+        return acc + withid + "\n";
+    }, "");
+    if index_of(validated, "VIOLATION:") == 0 {
+        return "schema-invalid:" + substring(validated, 10, len(validated));
+    }
+    let body_rows = nonempty_lines(validated);
+    let keys = map(body_rows, |r: string| -> string { return field(r, 1) + ":" + field(r, 2); });
+    if len(sort_unique_strings(keys)) != len(keys) { return "dup-key"; }
+    let header = "proband_id,chrom_1,pos_1,ref_1,alt_1,chrom_2,pos_2,ref_2,alt_2,epcr,finding_type,notes";
+    let csv_rows = map(body_rows, |r: string| -> string { return replace_all(r, "\t", ","); });
+    let csv = header + "\n" + join_str(csv_rows, "\n") + "\n";
+    // colony-lint: safe-exec-concat
+    exec sh "mkdir -p " + shell_escape(outdir);
+    let outfile = outdir + "/agentis-federation_" + approach + ".csv";
+    // colony-lint: safe-exec-concat
+    exec sh "printf %s " + shell_escape(csv) + " > " + shell_escape(outfile);
+    return "";
+}
+
 agent emitter() -> void {
     let cand_tsv = listen("baseline:candidates");
     if len(cand_tsv) == 0 { print("emitter: no candidates — nothing to emit"); return; }
@@ -683,61 +968,300 @@ agent emitter() -> void {
         emit("baseline:abort", "gate-blocked");
         return;
     }
-    let wd = getenv("MVA_WORK_DIR");
     let outdir = getenv("MVA_OUT_DIR");
     let nvcf = recall_latest("baseline:nvcf");
     let approach = getenv_or("MVA_APPROACH", "baseline");
-    let bcftools = bcftools_bin();
-    // colony-lint: safe-exec-concat
-    let proband0 = trim(exec sh shell_escape(bcftools) + " query -l " + shell_escape(nvcf) + " 2>/dev/null | head -1 || true");
-    let proband = if len(proband0) == 0 { "PROBAND" } else { proband0 };
+    let proband = resolve_proband(nvcf);
 
     // colony-lint: safe-exec-concat
     let raw = exec sh "cat " + shell_escape(cand_tsv) + " 2>/dev/null || true";
     let rows = nonempty_lines(raw);
     record_rows("emit", len(rows));
 
-    // <= 10 rows hard cap (schema rule).
-    if len(rows) > 10 {
-        print("emitter: REFUSING — ", len(rows), " rows exceed the schema cap of 10");
-        emit("baseline:abort", "too-many-rows");
-        return;
-    }
-
-    // Inject the proband id + validate each row (short-circuit on first bad row).
-    let validated = reduce(rows, |acc: string, row: string| -> string {
-        if index_of(acc, "VIOLATION:") == 0 { return acc; }
-        let withid = replace_first_field(row, proband);
-        let v = validate_row(withid);
-        if len(v) > 0 { return "VIOLATION:" + v; }
-        return acc + withid + "\n";
-    }, "");
-    if index_of(validated, "VIOLATION:") == 0 {
-        print("emitter: REFUSING to emit — schema violation:", substring(validated, 10, len(validated)));
-        emit("baseline:abort", "schema-invalid");
-        return;
-    }
-
-    let body_rows = nonempty_lines(validated);
-    // No duplicate chrom_1:pos_1 keys (schema rule).
-    let keys = map(body_rows, |r: string| -> string { return field(r, 1) + ":" + field(r, 2); });
-    if len(sort_unique_strings(keys)) != len(keys) {
+    let err = emit_submission(rows, proband, outdir, approach);
+    if len(err) > 0 {
+        if index_of(err, "too-many-rows") == 0 {
+            print("emitter: REFUSING — ", len(rows), " rows exceed the schema cap of 10");
+            emit("baseline:abort", "too-many-rows");
+            return;
+        }
+        if index_of(err, "schema-invalid:") == 0 {
+            print("emitter: REFUSING to emit — schema violation:", substring(err, 15, len(err)));
+            emit("baseline:abort", "schema-invalid");
+            return;
+        }
         print("emitter: REFUSING to emit — duplicate variant keys");
         emit("baseline:abort", "dup-key");
         return;
     }
-
-    // Build the CSV (header + rows, tabs -> commas).
-    let header = "proband_id,chrom_1,pos_1,ref_1,alt_1,chrom_2,pos_2,ref_2,alt_2,epcr,finding_type,notes";
-    let csv_rows = map(body_rows, |r: string| -> string { return replace_all(r, "\t", ","); });
-    let csv = header + "\n" + join_str(csv_rows, "\n") + "\n";
-    // colony-lint: safe-exec-concat
-    exec sh "mkdir -p " + shell_escape(outdir);
-    let outfile = outdir + "/agentis-federation_" + approach + ".csv";
-    // colony-lint: safe-exec-concat
-    exec sh "printf %s " + shell_escape(csv) + " > " + shell_escape(outfile);
-    print("emitter: wrote schema-valid submission CSV (", len(body_rows), " rows) ->", outfile);
+    print("emitter: wrote schema-valid submission CSV ->", outdir + "/agentis-federation_" + approach + ".csv");
     print("Verdict: EMITTED");
+}
+
+// ======================================================================
+// M3 — lens fan-out: five independent lenses, each ONE prompt over the whole
+// candidate pool, blind to the others. Every lens early-returns unless lens
+// mode is on (the Exomiser opt-in precedent), reads the broadcast pool + HPO
+// (recall_latest, never the consume-once listen), makes one scoring prompt, and
+// memo_writes a per-candidate score TSV (gene<TAB>score) on its own key.
+// ======================================================================
+
+agent lens_inheritance() -> void {
+    if !lens_mode() { return; }
+    let pool = recall_latest("lens:pool");
+    if len(pool) == 0 { print("lens_inheritance: empty pool (lens mode)"); return; }
+    let rows = nonempty_lines(pool);
+    let reply = prompt(
+        "You are a clinical geneticist scoring candidate genes on ONE axis: INHERITANCE-MODEL FIT for a single "
+      + "proband with mosaic variegated aneuploidy and NO parental samples. For each candidate line (gene, "
+      + "zygosity, VAF, FILTER, evidence tier) reply with EXACTLY one line: the gene, a TAB, a score in [0,1] "
+      + "(1 = zygosity/segregation strongly fits a causal biallelic or de-novo model, 0 = poor fit), a TAB, a "
+      + "one-clause rationale. Nothing else.", lens_payload(rows)) -> string;
+    let scored = map(rows, |r: string| -> string {
+        return field(r, 0) + "\t" + lens_score(reply, field(r, 0), prior_inheritance(r));
+    });
+    memo_write("lens:score:inheritance", join_str(scored, "\n"));
+    emit("baseline:lens_done", "inheritance");
+    print("lens_inheritance: scored", len(rows), "candidate(s)");
+}
+
+agent lens_mosaicism() -> void {
+    if !lens_mode() { return; }
+    let pool = recall_latest("lens:pool");
+    if len(pool) == 0 { print("lens_mosaicism: empty pool (lens mode)"); return; }
+    let rows = nonempty_lines(pool);
+    let reply = prompt(
+        "You are a clinical geneticist scoring candidate genes on ONE axis: MOSAIC / LOW-VAF support. Mosaic "
+      + "variegated aneuploidy is mosaic by definition, so a low variant allele fraction or a LowVAF hard-filter "
+      + "is EVIDENCE, not noise. For each candidate line reply with EXACTLY one line: gene, TAB, score in [0,1] "
+      + "(1 = strong somatic/mosaic support, 0 = a clean germline-fraction call), TAB, one-clause rationale.",
+        lens_payload(rows)) -> string;
+    let scored = map(rows, |r: string| -> string {
+        return field(r, 0) + "\t" + lens_score(reply, field(r, 0), prior_mosaicism(r));
+    });
+    memo_write("lens:score:mosaicism", join_str(scored, "\n"));
+    emit("baseline:lens_done", "mosaicism");
+    print("lens_mosaicism: scored", len(rows), "candidate(s)");
+}
+
+agent lens_hpo() -> void {
+    if !lens_mode() { return; }
+    let pool = recall_latest("lens:pool");
+    if len(pool) == 0 { print("lens_hpo: empty pool (lens mode)"); return; }
+    let hpo = recall_latest("lens:hpo");
+    let rows = nonempty_lines(pool);
+    let reply = prompt(
+        "You are a clinical geneticist scoring candidate genes on ONE axis: GENE-PHENOTYPE OVERLAP against the "
+      + "approved HPO set for this proband (below). For each candidate line reply with EXACTLY one line: gene, "
+      + "TAB, score in [0,1] (1 = the gene's known disease phenotype matches the HPO set strongly, 0 = no "
+      + "overlap), TAB, one-clause rationale. Approved HPO ids: " + hpo, lens_payload(rows)) -> string;
+    let scored = map(rows, |r: string| -> string {
+        return field(r, 0) + "\t" + lens_score(reply, field(r, 0), prior_hpo(r, hpo));
+    });
+    memo_write("lens:score:hpo", join_str(scored, "\n"));
+    emit("baseline:lens_done", "hpo");
+    print("lens_hpo: scored", len(rows), "candidate(s)");
+}
+
+agent lens_known_gene() -> void {
+    if !lens_mode() { return; }
+    let pool = recall_latest("lens:pool");
+    if len(pool) == 0 { print("lens_known_gene: empty pool (lens mode)"); return; }
+    let rows = nonempty_lines(pool);
+    let reply = prompt(
+        "You are a clinical geneticist scoring candidate genes on ONE axis: KNOWN-MVA-GENE priority. Rank "
+      + "BUB1B, CEP57, TRIP13, CENATAC and other spindle-assembly-checkpoint / chromosome-segregation genes "
+      + "higher. For each candidate line reply with EXACTLY one line: gene, TAB, score in [0,1] (1 = an "
+      + "established MVA gene, 0 = no segregation-machinery link), TAB, one-clause rationale.",
+        lens_payload(rows)) -> string;
+    let scored = map(rows, |r: string| -> string {
+        return field(r, 0) + "\t" + lens_score(reply, field(r, 0), prior_known_gene(r));
+    });
+    memo_write("lens:score:known_gene", join_str(scored, "\n"));
+    emit("baseline:lens_done", "known_gene");
+    print("lens_known_gene: scored", len(rows), "candidate(s)");
+}
+
+agent lens_pathway() -> void {
+    if !lens_mode() { return; }
+    let pool = recall_latest("lens:pool");
+    if len(pool) == 0 { print("lens_pathway: empty pool (lens mode)"); return; }
+    let rows = nonempty_lines(pool);
+    let reply = prompt(
+        "You are a clinical geneticist scoring candidate genes on ONE axis: PLAUSIBLE-PATHWAY NOVEL gene. Reward "
+      + "genes OUTSIDE the known MVA panel that sit in a disrupted mitotic / spindle-checkpoint / DNA-damage "
+      + "pathway (a candidate for a NEW MVA gene). For each candidate line reply with EXACTLY one line: gene, "
+      + "TAB, score in [0,1] (1 = a strong novel-pathway candidate, 0 = an already-known panel gene), TAB, a "
+      + "one-clause rationale.", lens_payload(rows)) -> string;
+    let scored = map(rows, |r: string| -> string {
+        return field(r, 0) + "\t" + lens_score(reply, field(r, 0), prior_pathway(r));
+    });
+    memo_write("lens:score:pathway", join_str(scored, "\n"));
+    emit("baseline:lens_done", "pathway");
+    print("lens_pathway: scored", len(rows), "candidate(s)");
+}
+
+// ======================================================================
+// M3 — refute gate: an INDEPENDENT skeptic per candidate (<=10, bounded),
+// replaying dark-factory/auditor/agents/refuter.ag in the genomics domain.
+// The benign-in-population axis is a hard, machine-checkable fact (population
+// AF), so it is decided in .ag; the other axes (wrong inheritance fit,
+// phenotype mismatch, artifact call) are the LLM skeptic's genuine devise->
+// refute. On any failure to assess (no population AF, malformed row) the
+// candidate is KEPT and tagged `refuter-error` — the dark-factory fail-open,
+// never a silent drop.
+// ======================================================================
+
+// One candidate -> "gene<TAB>verdict<TAB>axis<TAB>detail", verdict in
+// {REAL, REFUTED, refuter-error}.
+fn refute_one(nvcf: string, benign_af: float, r: string) -> string {
+    let gene = field(r, 0);
+    if len(trim(gene)) == 0 { return "\trefuter-error\tmalformed\tempty candidate row"; }
+    let afRaw = pop_af(nvcf, field(r, 1), field(r, 2));
+    // Fail-open: nothing to judge benign-in-population by -> KEEP + tag.
+    if len(afRaw) == 0 { return gene + "\trefuter-error\tbenign-in-population\tno population AF for the representative variant"; }
+    if afRaw == "." { return gene + "\trefuter-error\tbenign-in-population\tno population AF for the representative variant"; }
+    // Deterministic hard axis: a common population allele is not a penetrant cause.
+    if parse_float(afRaw) >= benign_af {
+        return gene + "\tREFUTED\tbenign-in-population\tpopulation AF " + afRaw + " at/above the common-variant cutoff";
+    }
+    // Genuine LLM skeptic on the soft axes (a parseable REFUTED demotes).
+    // colony-lint: prompt-gate-ok
+    let verdict = prompt(
+        "You are an INDEPENDENT clinical geneticist with NO stake in this candidate being causal. Try to REFUTE "
+      + "its causality for a single proband with mosaic variegated aneuploidy (no parental samples) on: wrong "
+      + "inheritance fit, phenotype mismatch, or a low-quality/artifact call. The representative variant is NOT "
+      + "common in the population (already checked). Reply with EXACTLY ONE final line: VERDICT|REAL|" + gene
+      + "|<axis>|<why the refutation failed> or VERDICT|REFUTED|" + gene + "|<axis>|<the fact that kills "
+      + "causality>. If unsure, answer REAL.",
+        "gene=" + gene + " zygosity=" + field(r, 3) + " vaf=" + field(r, 4) + " filter=" + field(r, 5)
+      + " tier=" + field(r, 6)) -> string;
+    if index_of(verdict, "VERDICT|REFUTED|") >= 0 {
+        let why = trim(regex_capture("VERDICT\\|REFUTED\\|[^|]*\\|([^|]*)", verdict, 1));
+        return gene + "\tREFUTED\tllm-skeptic\t" + why;
+    }
+    return gene + "\tREAL\tsurvived\tno refuting fact found";
+}
+fn refute_rec(nvcf: string, benign_af: float, rows: list<string>, i: int, acc: string) -> string {
+    if i >= len(rows) { return acc; }
+    return refute_rec(nvcf, benign_af, rows, i + 1, acc + refute_one(nvcf, benign_af, get(rows, i)) + "\n");
+}
+
+agent refuter() -> void {
+    if !lens_mode() { return; }
+    let pool = recall_latest("lens:pool");
+    if len(pool) == 0 { print("refuter: empty pool (lens mode)"); return; }
+    let nvcf = recall_latest("baseline:nvcf");
+    let wd = getenv("MVA_WORK_DIR");
+    let benign = parse_float(yaml_num(epcr_yml(), "benign_population_af", "0.01"));
+    // Per-candidate, bounded at <=10 — the refute gate's intentional cost.
+    let rows = take(nonempty_lines(pool), 10);
+    let verdicts = refute_rec(nvcf, benign, rows, 0, "");
+    memo_write("lens:refute", verdicts);
+    record_rows("refute", len(rows));
+    // Transparency bucket: everything not a clean REAL (REFUTED + refuter-error).
+    let vlines = nonempty_lines(verdicts);
+    let bucket = filter(vlines, |l: string| -> bool { return field(l, 1) != "REAL"; });
+    // colony-lint: safe-exec-concat
+    exec sh "printf %s " + shell_escape(join_str(bucket, "\n") + "\n") + " > " + shell_escape(wd + "/refuted.tsv");
+    let refuted_n = len(filter(vlines, |l: string| -> bool { return field(l, 1) == "REFUTED"; }));
+    // learn() is best-effort telemetry — a no-op unless experience.enabled.
+    let learned = try {
+        learn("refute", "grand-rounds", "adversarial refutation of " + to_string(len(rows)) + " candidate(s) ("
+          + to_string(refuted_n) + " refuted)", "success", ["refute", "grand-rounds"]);
+        "on";
+    } catch e { "off"; };
+    emit("baseline:refute_verdict", to_string(refuted_n));
+    print("refuter:", len(rows), "candidate(s) judged,", refuted_n, "refuted ->", wd + "/refuted.tsv");
+}
+
+// ======================================================================
+// M3 — lens reconciler: merge the five lens scores + the refute verdicts into
+// one EPCR-ranked candidate set. Lens AGREEMENT (>= promote_min lenses above
+// threshold) promotes a candidate one rung up the SAME epcr.yml ladder the
+// baseline uses; REFUTATION removes it into refuted.tsv. Uses the substrate
+// `decide()` to select each candidate's final tier from the fact-ranked
+// options (proven in dark-factory/auditor). Then lens_emitter reuses M1's
+// validator + writer to emit agentis-federation_lens.csv.
+// ======================================================================
+
+agent lens_reconciler() -> void {
+    if !lens_mode() { return; }
+    let candraw = recall_latest("lens:candidates");
+    if len(candraw) == 0 { print("lens_reconciler: no candidates (lens mode)"); return; }
+    let rows = nonempty_lines(candraw);
+    let blob = epcr_yml();
+    let thr = parse_float(yaml_num(blob, "lens_score_threshold", "0.6"));
+    let promote_min = parse_int(yaml_num(blob, "lens_agreement_promote_min", "3"));
+    let s_inh = recall_latest("lens:score:inheritance");
+    let s_mos = recall_latest("lens:score:mosaicism");
+    let s_hpo = recall_latest("lens:score:hpo");
+    let s_kg = recall_latest("lens:score:known_gene");
+    let s_pw = recall_latest("lens:score:pathway");
+    let refute = recall_latest("lens:refute");
+
+    // Annotate: "<agree>\t<verdict>\t<row>".
+    let annotated = map(rows, |row: string| -> string {
+        let gene = first_token(field(row, 11));
+        return to_string(count_agree(gene, thr, s_inh, s_mos, s_hpo, s_kg, s_pw))
+            + "\t" + refute_verdict_for(gene, refute) + "\t" + row;
+    });
+    // REFUTED candidates leave the ranked submission (kept in refuted.tsv).
+    let kept = filter(annotated, |a: string| -> bool { return field(a, 1) != "REFUTED"; });
+    // Apply promotion (agreement) + refuter-error tag, and select the final tier
+    // with the substrate decide() over fact-ranked options; prefix the sort key.
+    let adjusted = map(kept, |a: string| -> string {
+        let agree = parse_int(field(a, 0));
+        let verdict = field(a, 1);
+        let row = strip_fields(a, 2);
+        let promoted = if agree >= promote_min { promote_row(row) } else { row };
+        // Substrate selection: the fact-ranked option is first; decide() returns
+        // it offline and may arbitrate a near-tie on a real backend. Either way
+        // the ORDERING is ours (agreement + refute), not an opaque pick.
+        let picked = decide([promoted, row],
+            "Select the final EPCR tier for this MVA candidate. The first option already encodes lens "
+          + "agreement (" + to_string(agree) + " of five lenses) and the refute verdict; keep it unless the "
+          + "runner-up is clearly better supported. Prefer the first.");
+        let chosen = if len(trim(picked)) == 0 { promoted } else { picked };
+        let tagged = if verdict == "refuter-error" { note_append(chosen, " [refuter-error]") } else { chosen };
+        return order_key(tagged, agree) + "\t" + tagged;
+    });
+    let ranked = sort_strings(adjusted);
+    let cap = parse_int(yaml_num(blob, "max_rows", "10"));
+    let capped = if len(ranked) > cap { take(ranked, cap) } else { ranked };
+    let final_rows = map(capped, |x: string| -> string { return strip_fields(x, 3); });
+    memo_write("lens:ranked", join_str(final_rows, "\n"));
+    record_rows("lens-reconcile", len(final_rows));
+    emit("baseline:lens_ranked", to_string(len(final_rows)));
+    print("lens_reconciler:", len(final_rows), "ranked candidate(s) after lens agreement + refute");
+}
+
+agent lens_emitter() -> void {
+    if !lens_mode() { return; }
+    let ranked = recall_latest("lens:ranked");
+    if len(ranked) == 0 { print("lens_emitter: no ranked lens candidates"); return; }
+    // The D6 operator review gate governs the lens submission too (the HPO set
+    // feeds lens_hpo, so lens emission is legitimately phenotype-gated).
+    let gate = recall_latest("pipeline:gate");
+    if gate != "approved" {
+        print("lens_emitter: REFUSING to emit — HPO set not approved (D6 gate:", gate, ").");
+        emit("baseline:abort", "lens-gate-blocked");
+        return;
+    }
+    let outdir = getenv("MVA_OUT_DIR");
+    let nvcf = recall_latest("baseline:nvcf");
+    let proband = resolve_proband(nvcf);
+    let rows = nonempty_lines(ranked);
+    record_rows("lens-emit", len(rows));
+    let err = emit_submission(rows, proband, outdir, "lens");
+    if len(err) > 0 {
+        print("lens_emitter: REFUSING to emit lens submission —", err);
+        emit("baseline:abort", "lens-schema-invalid");
+        return;
+    }
+    print("lens_emitter: wrote schema-valid LENS submission CSV (", len(rows), " rows) ->",
+        outdir + "/agentis-federation_lens.csv");
+    print("Verdict: LENS-EMITTED");
 }
 
 // ======================================================================
@@ -750,6 +1274,19 @@ memo_write("pipeline:gate", "reset");
 // MISSING key (which would crash len()), so a same-run write guarantees the
 // fan-out readers always see a string ("" until the preprocessor succeeds).
 memo_write("baseline:nvcf", "");
+// Seed every M3 lens memo empty for the same reason: the lens agents + the lens
+// reconciler recall_latest these keys, and a missing key would crash len(). The
+// reconciler/lenses overwrite them in lens mode; in baseline mode they stay "".
+memo_write("lens:pool", "");
+memo_write("lens:candidates", "");
+memo_write("lens:hpo", "");
+memo_write("lens:score:inheritance", "");
+memo_write("lens:score:mosaicism", "");
+memo_write("lens:score:hpo", "");
+memo_write("lens:score:known_gene", "");
+memo_write("lens:score:pathway", "");
+memo_write("lens:refute", "");
+memo_write("lens:ranked", "");
 coordinator();
 preprocessor();
 phenotyper();
@@ -757,5 +1294,15 @@ exomiser_runner();
 panel_reviewer();
 reconciler();
 emitter();
+// M3 lens fan-out + refute gate + reconcile (each no-ops unless MVA_LENS_MODE=1,
+// so the baseline chain above is byte-for-byte unchanged when lens mode is off).
+lens_inheritance();
+lens_mosaicism();
+lens_hpo();
+lens_known_gene();
+lens_pathway();
+refuter();
+lens_reconciler();
+lens_emitter();
 memo_write("pipeline:last_check", now_iso());
 print("baseline: pipeline done");
