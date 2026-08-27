@@ -1,0 +1,68 @@
+# Baseline Colony Configuration
+#
+# Part of the Grand Rounds federation (MVA Hackathon 2026, Track 1).
+# Copy to colony.toml and edit for your environment.
+
+[colony]
+name = "baseline"
+tick_interval_ms = 60000
+
+# grand-rounds is a non-forge federation (ADR-0003). The baseline pipeline
+# ingests a proband VCF + clinical phenotype document (reached via the
+# environment, never a forge API) and emits a ranked candidate CSV. No agent
+# calls a GitLab/GitHub forge. `forge.type = "none"` is the explicit non-forge
+# marker recognised by colony-lint — no [forge.gitlab] / [forge.github]
+# sub-block is required. See ADR-0002 for the forge-bound contract this opts
+# out of.
+[forge]
+type = "none"
+
+[llm]
+# Only "backend" is read today. Keep "cli" — it means "use the agentis daemon
+# default CLI adapter", which INHERITS the federation backend from
+# .agentis/config (typically flat-cyborg). Never hardcode "flat-cyborg" here.
+backend = "cli"
+
+# Agent definition. The baseline colony is a one-shot `agentis go` pipeline: a
+# single .ag file wires six cooperating agents (preprocessor / phenotyper /
+# exomiser_runner / panel_reviewer / reconciler / emitter) over the substrate
+# emit/listen bus. cb_budget MUST match the `cb <N>;` declaration at the top of
+# agents/pipeline.ag (asserted by baseline/demo-baseline.sh).
+[[agents]]
+name = "pipeline"
+source = "agents/pipeline.ag"
+cb_budget = 2000000
+tick_interval_ms = 60000
+
+# Environment contract consumed by agents/pipeline.ag via getenv(). Operators
+# export these before launching; install.sh adds every one to
+# exec.env_passthrough in baseline/.agentis/config, and start-colony.sh
+# re-asserts the allowlist (getenv() reads the SANITIZED env, so an
+# unallowlisted knob is silently empty). Paths point OUTSIDE this checkout —
+# gated clinical data never enters the repo.
+#
+#   MVA_DATA_DIR       gated inputs, read-only (default $HOME/.mva-hackathon/data)
+#   MVA_WORK_DIR       intermediate artifacts (default $HOME/.mva-hackathon/work)
+#   MVA_OUT_DIR        submission CSVs         (default $MVA_WORK_DIR/out)
+#   MVA_REF_FASTA      chr-prefixed GRCh38 analysis-set FASTA (+ .fai beside it)
+#   MVA_VCF            explicit proband VCF (else the single *.vcf.gz in DATA_DIR)
+#   MVA_PHENOTYPE_DOC  explicit clinical .docx (else the single *.docx in DATA_DIR)
+#   MVA_HPO_OBO        path to hp.obo (HPO id existence verification)
+#   MVA_GTF            GENCODE GTF (panel BED is derived from it at runtime)
+#   MVA_PRIMARY_CONTIGS  chr-prefixed primary assembly to keep (default chr1..22,X,Y,M);
+#                        MUST be non-empty — `bcftools view -t ''` drops every record
+#   MVA_BCFTOOLS       bcftools binary/wrapper (default: bcftools on PATH)
+#   MVA_EXOMISER       Exomiser CLI wrapper (default: exomiser on PATH)
+#   MVA_EXOMISER_ASSEMBLY  Exomiser genome assembly (default hg38)
+#   MVA_RUN_EXOMISER   set to 1 to run the opt-in Exomiser stage (default 0 —
+#                        its output is not yet consumed by reconcile, see #2031)
+#   MVA_CONTAINER_CMD  podman|docker (Exomiser/bcftools container runtime)
+#   MVA_APPROVAL_FILE  operator HPO-approval file (default $MVA_WORK_DIR/phenotype/hpo-approved.txt)
+#   MVA_APPROACH       output-name suffix (default "baseline")
+#   PANEL_PAD          bp padding around each panel gene (default 5000)
+#   EXOMISER_TIMEOUT_MS  inline timeout for the Exomiser stage (default 21600000 = 6 h)
+#   EXOMISER_JAVA_OPTS   Java heap for Exomiser (default -Xmx16g)
+[baseline]
+approach = "baseline"
+panel_pad = 5000
+exomiser_timeout_ms = 21600000

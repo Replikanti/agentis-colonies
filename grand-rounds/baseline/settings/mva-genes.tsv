@@ -1,0 +1,18 @@
+# Known mosaic-variegated-aneuploidy (MVA) gene panel.
+#
+# Columns (tab-separated): symbol  ensembl_gene_id  chrom  mva_locus  aliases
+#
+# The RUNTIME BED is derived from the GENCODE GTF by matching `gene_name` (the
+# `symbol` column) against $MVA_GTF, then padding each gene by $PANEL_PAD bp —
+# coordinates are NEVER hardcoded here, so this file stays assembly-agnostic.
+# The `symbol` column is therefore the authoritative match key; ensembl_gene_id
+# and aliases are informational. A `-` in ensembl_gene_id means "resolve via the
+# GTF symbol" (kept blank rather than fabricate an unverified stable id).
+#
+# `chrom` is the chr-prefixed primary contig the gene lives on (documentation
+# only; the real region comes from the GTF).
+symbol	ensembl_gene_id	chrom	mva_locus	aliases
+BUB1B	ENSG00000156970	chr15	MVA1	BUBR1,SSK1,MAD3L
+CEP57	ENSG00000166037	chr11	MVA2	TRANSLOKIN,PIG8,LAP
+TRIP13	ENSG00000071539	chr5	MVA3	16E1BP,PCH2
+CENATAC	-	chr11	MVA	CCDC84,C11orf82

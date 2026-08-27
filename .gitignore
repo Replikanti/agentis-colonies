@@ -28,3 +28,36 @@ tools/.cost-cap.lock
 /cross-fed-memo/*
 !/cross-fed-memo/.gitkeep
 !/cross-fed-memo/README.md
+
+# grand-rounds (#2032): gated clinical inputs and everything derived from them
+# live OUTSIDE the checkout (reached only via $MVA_DATA_DIR / $MVA_WORK_DIR /
+# $MVA_OUT_DIR). This block is a belt-and-braces guard so a stray gated file
+# under grand-rounds/ can never be staged; tools/check-no-gated-data.sh is the
+# enforced gate. The synthetic, gated-data-free fixtures are negated back in.
+grand-rounds/**/*.vcf
+grand-rounds/**/*.vcf.*
+grand-rounds/**/*.bcf
+grand-rounds/**/*.bcf.*
+grand-rounds/**/*.fastq
+grand-rounds/**/*.fastq.*
+grand-rounds/**/*.fq
+grand-rounds/**/*.fq.*
+grand-rounds/**/*.bam
+grand-rounds/**/*.bam.*
+grand-rounds/**/*.cram
+grand-rounds/**/*.cram.*
+grand-rounds/**/*.docx
+grand-rounds/**/*.gtf
+grand-rounds/**/*.gtf.*
+grand-rounds/**/*.fa
+grand-rounds/**/*.fa.gz
+grand-rounds/**/*.fna
+grand-rounds/**/*.fna.gz
+grand-rounds/**/*.fai
+grand-rounds/**/*.obo
+grand-rounds/**/data/
+grand-rounds/**/work/
+grand-rounds/**/refdata/
+grand-rounds/**/out/
+grand-rounds/**/agentis-federation_*.csv
+!grand-rounds/baseline/fixtures/**

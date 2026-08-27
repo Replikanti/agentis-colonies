@@ -1,0 +1,49 @@
+# EPCR ladder -- how a candidate becomes a number in the submission CSV.
+#
+# Exomiser's combined score is a RANKING score, not a probability: it is not
+# calibrated, and reading it as "probability of causal relevance" would make
+# every EPCR in the submission a fabricated number. So the ladder below drives
+# the EPCR from the EVIDENCE TIER (what kind of support the candidate has),
+# and the Exomiser score is used only to order candidates WITHIN a tier.
+#
+# Tier order in this file IS the ranking order. Editing a value here changes
+# the submission; grand-rounds/baseline/demo-baseline.sh pins the resulting
+# ordering against a golden CSV, so a change has to be deliberate.
+#
+# Read by the reconciler stage of agents/pipeline.ag (stage 5): the tiers are
+# extracted with the regex_* / index_of builtins (a mapping of scalars + one
+# list of scalar mappings), so no YAML library — or any interpreter — is
+# involved. Editing a value here changes the submission ordering.
+
+version: 1
+
+tiers:
+  - id: known_gene_biallelic
+    epcr: 0.90
+    finding_type: primary
+    label: known MVA gene, biallelic (hom-alt)
+  - id: known_gene_comphet
+    epcr: 0.75
+    finding_type: primary
+    label: known MVA gene, candidate compound-het (unphased)
+  - id: known_gene_monoallelic
+    epcr: 0.35
+    finding_type: primary
+    label: known MVA gene, single rare protein-altering allele
+  - id: phenotype_novel_gene
+    epcr: 0.20
+    finding_type: primary
+    label: phenotype-driven candidate outside the known-gene panel
+  - id: incidental
+    epcr: 0.05
+    finding_type: secondary
+    label: incidental / weak phenotype support
+
+# An Exomiser candidate outside the known-gene panel only reaches the
+# phenotype_novel_gene tier at or above this combined score; everything else
+# is reported as incidental (secondary).
+phenotype_novel_gene_min_score: 0.70
+
+# Hard cap from the submission schema. Kept here so the writer and the
+# validator agree on one number.
+max_rows: 10

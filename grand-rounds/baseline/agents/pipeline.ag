@@ -1,0 +1,761 @@
+// pipeline.ag — Grand Rounds "baseline" colony (MVA Hackathon 2026, Track 1).
+//
+// A one-shot `agentis go` clinical-genomics prioritization pipeline. SEVEN
+// cooperating agents (a coordinator + six stage agents) wired by the substrate
+// emit/listen bus own the WHOLE decision surface; external binaries (bcftools,
+// the Exomiser container) do only bulk, mechanical data transforms. Nothing
+// decision-shaped lives in a shell script.
+//
+//   coordinator --emit baseline:env--> preprocessor (stage 1)
+//   preprocessor --emit baseline:normalized_vcf--> phenotyper (stage 2 + D6 gate)
+//                                              \--> panel_reviewer (stage 4)
+//   phenotyper  --emit baseline:hpo_ids--> exomiser_runner (stage 3, OPT-IN)
+//   panel_reviewer --emit baseline:panel_hits--> reconciler (stage 5)
+//   reconciler  --emit baseline:candidates--> emitter (stage 6: build + validate + write)
+//
+//   The panel review reads the normalized VCF directly, NOT the Exomiser TSV.
+//   The Exomiser branch (stage 3) is OPT-IN (MVA_RUN_EXOMISER=1) and its output
+//   (baseline:exomiser_tsv) is not yet consumed by reconcile — the
+//   Exomiser->reconcile merge is a documented later revision (see #2031). It is
+//   left wired-but-idle so that merge is an evolution of this baseline, not a
+//   rewrite; gated OFF by default so a multi-hour run never burns for discarded
+//   output.
+//
+// The .ag / external boundary is drawn so NO bulk record stream ever enters
+// .ag: every stage narrows externally first (bcftools over ~5M records, the
+// Exomiser container), and .ag sees only tens-to-hundreds of rows; the final
+// candidate set (<= 10 rows) is entirely .ag-resident.
+//
+// Run: ./scripts/start-colony.sh   (execs `agentis go agents/pipeline.ag
+//   --enable-exec --enable-messaging` from the colony dir, with the env
+//   contract exported and exec.env_passthrough wired in .agentis/config).
+//
+// All external I/O goes through `exec sh` with shell_escape() on every dynamic
+// value: file_read/file_write are sandboxed to .agentis/sandbox, but the gated
+// inputs live outside it (reached via $MVA_DATA_DIR etc.).
+
+cb 2000000;
+
+// ======================================================================
+// shared helpers (shallow, leaf-heavy — flat builtins over per-element walks)
+// ======================================================================
+
+// getenv with a default (getenv reads the SANITIZED env; a knob missing from
+// exec.env_passthrough returns "").
+fn getenv_or(name: string, dflt: string) -> string {
+    let v = getenv(name);
+    if len(v) == 0 { return dflt; }
+    return v;
+}
+
+// nth tab-separated field of a line (0-based), "" if absent. Leaf recursion.
+fn field(line: string, n: int) -> string {
+    if n <= 0 {
+        let t = index_of(line, "\t");
+        if t < 0 { return line; }
+        return substring(line, 0, t);
+    }
+    let t = index_of(line, "\t");
+    if t < 0 { return ""; }
+    return field(substring(line, t + 1, len(line)), n - 1);
+}
+
+// Literal (non-regex) substring replacement of EVERY occurrence of `from`.
+// agentis has no `replace`/`replace_all` builtin (the typechecker defaults an
+// unknown name to Any, so a bogus builtin passes `agentis commit` but aborts at
+// runtime with "undefined function"); regex_split can't be used here because the
+// CSV/template needles contain regex metacharacters ({, }). Leaf recursion over
+// index_of/substring, like `field`.
+fn replace_all(s: string, from: string, to: string) -> string {
+    if len(from) == 0 { return s; }
+    let i = index_of(s, from);
+    if i < 0 { return s; }
+    let before = substring(s, 0, i);
+    let after = substring(s, i + len(from), len(s));
+    return before + to + replace_all(after, from, to);
+}
+
+// Join a list<string> with a separator. agentis has no `join` builtin either
+// (same Any-defaulting typechecker gap as `replace`); reduce is native/iterative
+// so this stays cheap on the ~hundreds-of-runs docx text list. Strips the one
+// leading separator the fold produces.
+fn join_str(xs: list<string>, sep: string) -> string {
+    let joined = reduce(xs, |acc: string, x: string| -> string { return acc + sep + x; }, "");
+    if len(joined) == 0 { return ""; }
+    return substring(joined, len(sep), len(joined));
+}
+
+// first n elements of a list<string> (there is no `range` builtin, so this is
+// push-recursion over an empty list<string> obtained via a false filter).
+fn take_acc(xs: list<string>, n: int, i: int, acc: list<string>) -> list<string> {
+    if i >= n { return acc; }
+    if i >= len(xs) { return acc; }
+    return take_acc(xs, n, i + 1, push(acc, get(xs, i)));
+}
+fn take(xs: list<string>, n: int) -> list<string> {
+    let empty = filter(xs, |x: string| -> bool { return false; });
+    return take_acc(xs, n, 0, empty);
+}
+
+// non-empty lines of a blob.
+fn nonempty_lines(blob: string) -> list<string> {
+    return filter(regex_split("\n", blob), |l: string| -> bool { return len(trim(l)) > 0; });
+}
+
+// Record the row count a stage handed to .ag (M6 boundary-table regression
+// guard). Written to $MVA_WORK_DIR/stage-rows.tsv, one line per stage.
+fn record_rows(stage: string, rows: int) -> void {
+    let wd = getenv("MVA_WORK_DIR");
+    let line = stage + "\t" + to_string(rows) + "\n";
+    // colony-lint: safe-exec-concat
+    exec sh "printf %s " + shell_escape(line) + " >> " + shell_escape(wd + "/stage-rows.tsv");
+    print("stage", stage, "rows into .ag:", rows);
+}
+
+// Map a raw VCF contig id to its chr-prefixed name (stage 1 decision).
+fn chr_name(id: string) -> string {
+    if index_of(id, "chr") == 0 { return id; }
+    if id == "MT" { return "chrM"; }
+    if id == "M" { return "chrM"; }
+    return "chr" + id;
+}
+
+// Is this a chr-prefixed PRIMARY contig (chr1..22, chrX/Y/M)? (stage 1 + 6)
+fn is_primary_contig(name: string) -> bool {
+    return regex_match("^chr([1-9]|1[0-9]|2[0-2]|X|Y|M)$", name);
+}
+
+// bcftools binary/wrapper (env or PATH default).
+fn bcftools_bin() -> string {
+    return getenv_or("MVA_BCFTOOLS", "bcftools");
+}
+
+// ======================================================================
+// stage 0 — coordinator: resolve inputs, seed the bus
+// ======================================================================
+
+// Resolve the proband VCF: explicit $MVA_VCF, else the single *.vcf.gz in
+// $MVA_DATA_DIR. Bulk file discovery is mechanical (exec sh ls), the choice
+// (exactly one, else refuse) is the decision.
+fn resolve_vcf() -> string {
+    let explicit = getenv("MVA_VCF");
+    if len(explicit) > 0 { return explicit; }
+    let dd = getenv("MVA_DATA_DIR");
+    // colony-lint: safe-exec-concat
+    let listing = exec sh "ls -1 " + shell_escape(dd) + "/*.vcf.gz 2>/dev/null || true";
+    let nonempty = nonempty_lines(listing);
+    if len(nonempty) == 1 { return get(nonempty, 0); }
+    return "";
+}
+
+// Resolve the clinical .docx: explicit $MVA_PHENOTYPE_DOC, else single *.docx.
+fn resolve_docx() -> string {
+    let explicit = getenv("MVA_PHENOTYPE_DOC");
+    if len(explicit) > 0 { return explicit; }
+    let dd = getenv("MVA_DATA_DIR");
+    // colony-lint: safe-exec-concat
+    let listing = exec sh "ls -1 " + shell_escape(dd) + "/*.docx 2>/dev/null || true";
+    let nonempty = nonempty_lines(listing);
+    if len(nonempty) == 1 { return get(nonempty, 0); }
+    return "";
+}
+
+agent coordinator() -> void {
+    let vcf = resolve_vcf();
+    let docx = resolve_docx();
+    let ref = getenv("MVA_REF_FASTA");
+    let wd = getenv("MVA_WORK_DIR");
+    if len(vcf) == 0 {
+        print("coordinator: ERROR — could not resolve exactly one proband VCF in MVA_DATA_DIR (set MVA_VCF). Refusing.");
+        emit("baseline:abort", "no-vcf");
+        return;
+    }
+    if len(ref) == 0 {
+        print("coordinator: ERROR — MVA_REF_FASTA is empty (allowlist not wired?). Refusing.");
+        emit("baseline:abort", "no-ref");
+        return;
+    }
+    // colony-lint: safe-exec-concat
+    exec sh "mkdir -p " + shell_escape(wd) + "/preproc " + shell_escape(wd) + "/phenotype " + shell_escape(wd) + "/exomiser";
+    emit("baseline:vcf", vcf);
+    emit("baseline:docx", docx);
+    emit("baseline:env", "ok");
+    print("coordinator: resolved inputs; seeding pipeline");
+}
+
+// ======================================================================
+// stage 1 — preprocessor: contig-rename + norm (bcftools bulk), .ag decides
+// ======================================================================
+
+// Build the rename-chrs map from the VCF header contig lines (decision).
+fn build_rename_map(header: string) -> string {
+    let lines = regex_split("\n", header);
+    let contig_lines = filter(lines, |l: string| -> bool {
+        return index_of(l, "##contig=<ID=") == 0;
+    });
+    return reduce(contig_lines, |acc: string, l: string| -> string {
+        let id = regex_capture("##contig=<ID=([^,>]+)", l, 1);
+        if len(id) == 0 { return acc; }
+        return acc + id + " " + chr_name(id) + "\n";
+    }, "");
+}
+
+agent preprocessor() -> void {
+    let ok = listen("baseline:env");
+    if ok != "ok" { print("preprocessor: no env — skipping"); return; }
+    let vcf = listen("baseline:vcf");
+    let ref = getenv("MVA_REF_FASTA");
+    let wd = getenv("MVA_WORK_DIR");
+    let bcftools = bcftools_bin();
+    // The GRCh38 primary assembly (chr-prefixed, post-rename). Defaulted in-.ag
+    // so a knob missing from exec.env_passthrough can NEVER collapse to
+    // `bcftools view -t ''` (which silently drops every record); the operator
+    // can still override via MVA_PRIMARY_CONTIGS.
+    let primary = getenv_or("MVA_PRIMARY_CONTIGS", "chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chr20,chr21,chr22,chrX,chrY,chrM");
+
+    // header is ~30 lines — the ONLY bulk-derived text .ag reads here.
+    // colony-lint: safe-exec-concat
+    let header = exec sh shell_escape(bcftools) + " view -h " + shell_escape(vcf) + " 2>/dev/null || true";
+    let contigs = regex_find_all("##contig=<ID=", header);
+    record_rows("preprocess", len(contigs));
+
+    let rename = build_rename_map(header);
+    let renamefile = wd + "/preproc/rename-chrs.txt";
+    // colony-lint: safe-exec-concat
+    exec sh "printf %s " + shell_escape(rename) + " > " + shell_escape(renamefile);
+
+    let out = wd + "/preproc/normalized.vcf.gz";
+    let stats = wd + "/preproc/norm.stats";
+    // Bulk transform over ~5M records: rename contigs, keep primary assembly,
+    // split multiallelics + left-align against the chr-prefixed reference, then
+    // re-sort (left-align can shift a POS leftward and unsort it, which would
+    // break `index -t`). `-c w` WARNS on a REF mismatch (never silently
+    // accepts) — a mismatch is the signature of the wrong assembly / bad rename.
+    // FILTER is preserved (never `-f PASS`): the hard filters drop exactly the
+    // low-VAF mosaic records the panel review looks for.
+    // colony-lint: safe-exec-concat
+    let cmd = shell_escape(bcftools) + " annotate --rename-chrs " + shell_escape(renamefile) + " " + shell_escape(vcf)
+        + " 2>/dev/null | " + shell_escape(bcftools) + " view -t " + shell_escape(primary)
+        + " 2>/dev/null | " + shell_escape(bcftools) + " norm -m -any -f " + shell_escape(ref) + " -c w -Oz 2> "
+        + shell_escape(stats) + " | " + shell_escape(bcftools) + " sort -Oz -o " + shell_escape(out)
+        + " 2>/dev/null ; " + shell_escape(bcftools) + " index -t "
+        + shell_escape(out) + " 2>/dev/null ; echo __rc=$?";
+    // colony-lint: safe-exec-concat
+    let run = exec sh cmd;
+
+    // Post-condition (decision): refuse on any REF mismatch. bcftools norm -c w
+    // reports a "ref mismatch" count to stderr; extract the leading integer.
+    // colony-lint: safe-exec-concat
+    let mism = exec sh "grep -oiE '[0-9]+ +[a-z ]*ref mismatch' " + shell_escape(stats) + " 2>/dev/null | grep -oE '^[0-9]+' | head -1 || true";
+    let mismatches = parse_int(trim(mism));
+    if mismatches > 0 {
+        print("preprocessor: REFUSING — ", mismatches, " REF mismatch(es) after norm (wrong assembly / bad contig rename). See", stats);
+        emit("baseline:abort", "ref-mismatch");
+        return;
+    }
+
+    // Post-condition (decision): refuse when ZERO records survived rename +
+    // contig filter + norm. An empty normalized VCF is the silent-inert failure
+    // (empty contig list, wrong contig names, unwritable ref) that would
+    // otherwise sail through to a header-only CSV — a scored zero. The
+    // REF-mismatch guard above passes vacuously on zero records, so this is the
+    // guard that actually bites the empty case.
+    // colony-lint: safe-exec-concat
+    let nrec = trim(exec sh shell_escape(bcftools) + " view -H " + shell_escape(out) + " 2>/dev/null | head -1 | wc -l || echo 0");
+    if parse_int(nrec) <= 0 {
+        print("preprocessor: REFUSING — zero records survived rename + primary-contig filter + norm (empty MVA_PRIMARY_CONTIGS, wrong contig names, or unreadable reference). See", stats);
+        emit("baseline:abort", "empty-after-filter");
+        return;
+    }
+    print("preprocessor: normalized VCF written (FILTER preserved, primary contigs, left-aligned)");
+    // The normalized-VCF path is read by FOUR downstream stages (phenotyper,
+    // exomiser_runner, panel_reviewer, emitter). `listen` is consume-once
+    // (a queue, not a broadcast), so only the first listener would get it and
+    // the rest would crash on a void. Publish the path on the memo (broadcast,
+    // re-readable) for the fan-out reads; keep the single emit/listen edge for
+    // the phenotyper proceed-signal.
+    memo_write("baseline:nvcf", out);
+    emit("baseline:normalized_vcf", out);
+}
+
+// ======================================================================
+// stage 2 — phenotyper: HPO derivation + the D6 hash-pinned operator gate
+// ======================================================================
+
+// Extract the free-text runs from the docx XML (<w:t>...</w:t>). The unzip is
+// mechanical; the regex extraction + join is .ag. ~200-600 short runs.
+fn docx_text(docx: string) -> string {
+    // colony-lint: safe-exec-concat
+    let xml = exec sh "unzip -p " + shell_escape(docx) + " word/document.xml 2>/dev/null || true";
+    let runs = regex_find_all("<w:t[^>]*>([^<]*)</w:t>", xml);
+    let texts = map(runs, |r: string| -> string {
+        return regex_capture("<w:t[^>]*>([^<]*)</w:t>", r, 1);
+    });
+    return join_str(texts, " ");
+}
+
+// Verify a proposed HP id exists in hp.obo (mechanical grep, .ag decides).
+fn hp_exists(id: string) -> bool {
+    let obo = getenv("MVA_HPO_OBO");
+    if len(obo) == 0 { return false; }
+    // colony-lint: safe-exec-concat
+    let hit = exec sh "grep -c -F " + shell_escape("id: " + id) + " " + shell_escape(obo) + " 2>/dev/null || echo 0";
+    return parse_int(trim(hit)) > 0;
+}
+
+agent phenotyper() -> void {
+    let nvcf = listen("baseline:normalized_vcf");
+    if len(nvcf) == 0 { print("phenotyper: no normalized VCF — upstream aborted"); return; }
+    let docx = listen("baseline:docx");
+    let wd = getenv("MVA_WORK_DIR");
+    if len(docx) == 0 {
+        print("phenotyper: ERROR — no clinical .docx resolved; cannot derive phenotype. Refusing.");
+        emit("baseline:abort", "no-docx");
+        return;
+    }
+    let text = docx_text(docx);
+    record_rows("phenotype", len(regex_find_all("<w:t", text)) + 1);
+
+    // Derive candidate HPO ids from the phenotype text (LLM decision). The
+    // prompt asks for a compact list; every id is then mechanically verified
+    // against hp.obo, so an hallucinated id is dropped rather than trusted.
+    let reply = prompt("You are a clinical geneticist. From the phenotype description below, list the most specific Human Phenotype Ontology terms that apply. Reply with one line per phenotype, each line an HPO id (the 'HP:' prefix followed by exactly seven digits), then a TAB, then the term label — nothing else, no prose.", text) -> string;
+    let proposed = regex_find_all("HP:[0-9]{7}", reply);
+    let verified = filter(proposed, |id: string| -> bool { return hp_exists(id); });
+    let ids = sort_unique_strings(verified);
+    record_rows("phenotype-hpo", len(ids));
+
+    let draft = join_str(ids, ",");
+    let draftfile = wd + "/phenotype/hpo-draft.txt";
+    // The draft FILE carries a trailing newline, and the operator approves by
+    // hashing that file (`sha256sum draftfile`). The gate must therefore hash
+    // the SAME bytes — `draft + "\n"` — or the hashes never match and the gate
+    // is fail-closed forever. Mutating the HPO payload changes `draft`, so the
+    // hash still moves: the gate stays real, not theatre.
+    let file_bytes = draft + "\n";
+    // colony-lint: safe-exec-concat
+    exec sh "printf %s " + shell_escape(file_bytes) + " > " + shell_escape(draftfile);
+    let draft_hash = sha256_hex(file_bytes);
+    print("phenotyper: HPO draft written (", len(ids), " verified terms) ->", draftfile);
+
+    // --- D6 operator review gate (hash-pinned) --------------------------
+    // The pipeline STOPS here until an operator reviews hpo-draft.txt and
+    // writes the SHA-256 of the reviewed draft into $MVA_APPROVAL_FILE.
+    // Editing the draft after approval changes its hash and re-arms the gate,
+    // so approval can never be silently stale (D6, strengthened).
+    let approval_file = getenv_or("MVA_APPROVAL_FILE", wd + "/phenotype/hpo-approved.txt");
+    // colony-lint: safe-exec-concat
+    let approved_hash = trim(exec sh "cat " + shell_escape(approval_file) + " 2>/dev/null || true");
+    if approved_hash != draft_hash {
+        print("phenotyper: REVIEW GATE — HPO set is NOT approved for this draft.");
+        print("  1. Review the HPO draft:   ", draftfile);
+        print("  2. Approve by storing its hash (this exact draft's hash is", draft_hash, "):");
+        print("       sha256sum", draftfile, "| cut -d' ' -f1 >", approval_file);
+        print("  3. Re-run ./scripts/start-colony.sh to resume.");
+        memo_write("pipeline:gate", "blocked");
+        emit("baseline:abort", "hpo-unapproved");
+        return;
+    }
+    print("phenotyper: HPO set approved (hash matches) — proceeding");
+    memo_write("pipeline:gate", "approved");
+    emit("baseline:hpo_ids", draft);
+}
+
+// ======================================================================
+// stage 3 — exomiser_runner: render YAML, idempotent run (blocking, N4)
+// ======================================================================
+
+// Render the analysis YAML from settings/exomiser-analysis.template.yml.
+// `failedVariantFilter` is rendered EMPTY (D4) so hard-filter-FAILED records
+// survive into the ranking.
+fn render_analysis(assembly: string, vcf: string, proband: string, hpo_quoted: string, outdir: string, prefix: string) -> string {
+    let cdir = getenv("COLONY_DIR");
+    // colony-lint: safe-exec-concat
+    let tmpl = exec sh "cat " + shell_escape(cdir + "/settings/exomiser-analysis.template.yml") + " 2>/dev/null || true";
+    let a = replace_all(tmpl, "{{ASSEMBLY}}", assembly);
+    let b = replace_all(a, "{{VCF}}", vcf);
+    let c = replace_all(b, "{{PROBAND}}", proband);
+    let d = replace_all(c, "{{HPO_IDS}}", hpo_quoted);
+    let e = replace_all(d, "{{FAILED_VARIANT_FILTER}}", "");
+    let f = replace_all(e, "{{OUTPUT_DIR}}", outdir);
+    return replace_all(f, "{{OUTPUT_PREFIX}}", prefix);
+}
+
+agent exomiser_runner() -> void {
+    // OPT-IN gate (default OFF), checked FIRST — before any listen(), so the
+    // default path returns without touching the (possibly unemitted) hpo_ids
+    // channel. The Exomiser->reconcile merge is a documented later revision
+    // (#2031): nothing consumes baseline:exomiser_tsv yet, so a multi-hour
+    // Exomiser run here only burns compute for discarded output. The scaffolding
+    // (YAML render, idempotent skip, blocking run, output check) stays intact so
+    // the future merge is an evolution — flip MVA_RUN_EXOMISER=1 to exercise it
+    // end-to-end on the real bundle.
+    // TODO(#2031): consume baseline:exomiser_tsv in the reconciler and default
+    // this stage back ON once the Exomiser top-N is merged into the EPCR ladder.
+    if getenv_or("MVA_RUN_EXOMISER", "0") != "1" {
+        print("exomiser_runner: SKIP — Exomiser stage is opt-in (set MVA_RUN_EXOMISER=1). Its output is not yet consumed by reconcile (#2031).");
+        return;
+    }
+    let hpo = listen("baseline:hpo_ids");
+    if len(hpo) == 0 { print("exomiser_runner: no approved HPO set — upstream gated/aborted"); return; }
+    let nvcf = recall_latest("baseline:nvcf");
+    let wd = getenv("MVA_WORK_DIR");
+    let exomiser = getenv_or("MVA_EXOMISER", "exomiser");
+    let assembly = getenv_or("MVA_EXOMISER_ASSEMBLY", "hg38");
+    let bcftools = bcftools_bin();
+    let outdir = wd + "/exomiser";
+    let prefix = "baseline";
+
+    // proband sample name from the normalized VCF (mechanical), 1 value.
+    // colony-lint: safe-exec-concat
+    let proband = trim(exec sh shell_escape(bcftools) + " query -l " + shell_escape(nvcf) + " 2>/dev/null | head -1 || true");
+
+    // Quote each HPO id for the YAML list.
+    let ids = regex_split(",", hpo);
+    let quoted = map(ids, |i: string| -> string { return "'" + i + "'"; });
+    let hpo_quoted = join_str(quoted, ", ");
+
+    let analysis = render_analysis(assembly, nvcf, proband, hpo_quoted, outdir, prefix);
+    let analysisfile = wd + "/exomiser/analysis.yml";
+    // colony-lint: safe-exec-concat
+    exec sh "printf %s " + shell_escape(analysis) + " > " + shell_escape(analysisfile);
+    record_rows("exomiser", 1);
+
+    // Idempotency: hash the input manifest (vcf + hpo + assembly). Skip a
+    // completed run whose marker matches (N4 idempotent skip).
+    let manifest = nvcf + "|" + hpo + "|" + assembly;
+    let mhash = sha256_hex(manifest);
+    let marker = wd + "/exomiser/.done." + mhash;
+    // colony-lint: safe-exec-concat
+    let done = trim(exec sh "test -f " + shell_escape(marker) + " && echo yes || echo no");
+    let tsv = outdir + "/" + prefix + ".variants.tsv";
+    if done == "yes" {
+        print("exomiser_runner: idempotent skip — completed run for this manifest exists");
+        emit("baseline:exomiser_tsv", tsv);
+        return;
+    }
+
+    // Blocking run with an explicit inline timeout (N4). EXOMISER_TIMEOUT_MS is
+    // a millisecond budget; the agentis inline `timeout` keyword bounds the exec
+    // (6 h hard ceiling), and the shell `timeout Ns` inside honours the operator
+    // knob within that ceiling.
+    let tms = parse_int(getenv("EXOMISER_TIMEOUT_MS"));
+    let tsec = if tms <= 0 { 21600 } else { tms / 1000 };
+    // colony-lint: safe-exec-concat
+    let run = exec sh timeout 21700000 "timeout " + shell_escape(to_string(tsec)) + "s " + shell_escape(exomiser)
+        + " --analysis " + shell_escape(analysisfile) + " 2>&1; echo __rc=$?";
+    let rc = parse_int(regex_capture("__rc=([0-9]+)", run, 1));
+    if rc != 0 {
+        print("exomiser_runner: Exomiser exited rc=", rc, " (timeout or error). Refusing to trust partial output.");
+        emit("baseline:abort", "exomiser-failed");
+        return;
+    }
+    // Verify the output parses (non-empty TSV) before trusting it.
+    // colony-lint: safe-exec-concat
+    let lines = trim(exec sh "wc -l < " + shell_escape(tsv) + " 2>/dev/null || echo 0");
+    if parse_int(lines) <= 0 {
+        print("exomiser_runner: Exomiser produced no variants TSV — refusing");
+        emit("baseline:abort", "exomiser-empty");
+        return;
+    }
+    // colony-lint: safe-exec-concat
+    exec sh "touch " + shell_escape(marker);
+    print("exomiser_runner: run complete (", lines, " TSV lines)");
+    emit("baseline:exomiser_tsv", tsv);
+}
+
+// ======================================================================
+// stage 4 — panel_reviewer: per-variant reasoning incl. FILTER-FAILED records
+// ======================================================================
+
+// Derive the panel BED line for one gene from the GTF (grep mechanical; the
+// span + padding is the decision). One region per gene.
+fn panel_bed_line(gtf: string, gene: string, pad: int) -> string {
+    // colony-lint: safe-exec-concat
+    let gline = exec sh "grep -F " + shell_escape("gene_name \"" + gene + "\"") + " " + shell_escape(gtf)
+        + " 2>/dev/null | grep -P '\\tgene\\t' | head -1 || true";
+    if len(gline) == 0 { return ""; }
+    let chrom = field(gline, 0);
+    let start0 = parse_int(field(gline, 3)) - pad;
+    let start = if start0 < 0 { 0 } else { start0 };
+    let end = parse_int(field(gline, 4)) + pad;
+    return chrom + "\t" + to_string(start) + "\t" + to_string(end) + "\t" + gene;
+}
+
+// Classify a single panel record. AD is "ref,alt"; VAF = alt/(ref+alt).
+// Returns a TSV row: chrom pos ref alt filter gt vaf gene zygosity.
+fn classify_record(line: string, gene: string) -> string {
+    let chrom = field(line, 0);
+    let pos = field(line, 1);
+    let ref = field(line, 2);
+    let alt = field(line, 3);
+    let flt = field(line, 4);
+    let gt = field(line, 5);
+    let ad = field(line, 6);
+    let refc = parse_int(regex_capture("([0-9]+),", ad, 1));
+    let altc = parse_int(regex_capture(",([0-9]+)", ad, 1));
+    let depth = refc + altc;
+    let vaf = if depth > 0 { to_string(parse_float(to_string(altc)) / parse_float(to_string(depth))) } else { "NA" };
+    let zyg = if index_of(gt, "1/1") >= 0 { "hom-alt" } else { if index_of(gt, "1|1") >= 0 { "hom-alt" } else { "het" } };
+    return chrom + "\t" + pos + "\t" + ref + "\t" + alt + "\t" + flt + "\t" + gt + "\t" + vaf + "\t" + gene + "\t" + zyg;
+}
+
+// Which panel gene's region does (chrom,pos) fall in? "" if none.
+fn gene_at(gene_lines: list<string>, gtf: string, pad: int, chrom: string, pos: int) -> string {
+    return reduce(gene_lines, |acc: string, gl: string| -> string {
+        if len(acc) > 0 { return acc; }
+        let bl = panel_bed_line(gtf, field(gl, 0), pad);
+        if len(bl) == 0 { return acc; }
+        if field(bl, 0) != chrom { return acc; }
+        let s = parse_int(field(bl, 1));
+        let e = parse_int(field(bl, 2));
+        if pos >= s { if pos <= e { return field(gl, 0); } }
+        return acc;
+    }, "");
+}
+
+agent panel_reviewer() -> void {
+    let nvcf = recall_latest("baseline:nvcf");
+    if len(nvcf) == 0 { print("panel_reviewer: no normalized VCF — skipping"); return; }
+    let wd = getenv("MVA_WORK_DIR");
+    let cdir = getenv("COLONY_DIR");
+    let gtf = getenv("MVA_GTF");
+    let bcftools = bcftools_bin();
+    let pad0 = parse_int(getenv("PANEL_PAD"));
+    let pad = if pad0 <= 0 { 5000 } else { pad0 };
+
+    // Read the known-gene panel (a handful of rows).
+    // colony-lint: safe-exec-concat
+    let genes_raw = exec sh "grep -v '^#' " + shell_escape(cdir + "/settings/mva-genes.tsv") + " 2>/dev/null || true";
+    let gene_lines = nonempty_lines(genes_raw);
+    let genes = map(gene_lines, |l: string| -> string { return field(l, 0); });
+
+    // Build the panel BED (one region per gene) — decision-shaped.
+    let bed = reduce(genes, |acc: string, g: string| -> string {
+        let bl = panel_bed_line(gtf, g, pad);
+        if len(bl) == 0 { return acc; }
+        return acc + bl + "\n";
+    }, "");
+    let bedfile = wd + "/preproc/panel.bed";
+    // colony-lint: safe-exec-concat
+    exec sh "printf %s " + shell_escape(bed) + " > " + shell_escape(bedfile);
+
+    // Pull panel records — NO `-f PASS`, so hard-filter-FAILED records survive.
+    // colony-lint: safe-exec-concat
+    let recs = exec sh shell_escape(bcftools) + " view -R " + shell_escape(bedfile) + " " + shell_escape(nvcf)
+        + " 2>/dev/null | " + shell_escape(bcftools) + " query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER[\\t%GT\\t%AD]\\n' 2>/dev/null || true";
+    let rec_lines = nonempty_lines(recs);
+    record_rows("panel", len(rec_lines));
+    if len(rec_lines) > 500 {
+        print("panel_reviewer: REFUSING — ", len(rec_lines), " records exceed the .ag boundary limit (500).");
+        emit("baseline:abort", "panel-too-wide");
+        return;
+    }
+
+    // Tag each record with the gene whose region it fell in, then classify.
+    let classified = map(rec_lines, |line: string| -> string {
+        let gene = gene_at(gene_lines, gtf, pad, field(line, 0), parse_int(field(line, 1)));
+        if len(gene) == 0 { return ""; }
+        return classify_record(line, gene);
+    });
+    let hits = filter(classified, |r: string| -> bool { return len(r) > 0; });
+    let panel_tsv = wd + "/panel-review.tsv";
+    // colony-lint: safe-exec-concat
+    exec sh "printf %s " + shell_escape(join_str(hits, "\n") + "\n") + " > " + shell_escape(panel_tsv);
+    print("panel_reviewer: ", len(hits), " panel record(s) reviewed (FILTER-failed included)");
+    emit("baseline:panel_hits", panel_tsv);
+}
+
+// ======================================================================
+// stage 5 — reconciler: EPCR evidence-tier ladder, dedup, cap at 10
+// ======================================================================
+
+// The epcr.yml block for a tier id (grep mechanical; reading the field is .ag).
+fn tier_block(tier_id: string) -> string {
+    let cdir = getenv("COLONY_DIR");
+    // colony-lint: safe-exec-concat
+    return exec sh "grep -A2 -F " + shell_escape("id: " + tier_id) + " " + shell_escape(cdir + "/settings/epcr.yml") + " 2>/dev/null || true";
+}
+
+fn epcr_for(tier_id: string) -> string {
+    return trim(regex_capture("epcr:[ ]*([0-9.]+)", tier_block(tier_id), 1));
+}
+
+agent reconciler() -> void {
+    let panel_tsv = listen("baseline:panel_hits");
+    if len(panel_tsv) == 0 { print("reconciler: no panel hits — skipping"); return; }
+    let wd = getenv("MVA_WORK_DIR");
+    let cdir = getenv("COLONY_DIR");
+    // colony-lint: safe-exec-concat
+    let panel_raw = exec sh "cat " + shell_escape(panel_tsv) + " 2>/dev/null || true";
+    let hits = nonempty_lines(panel_raw);
+    record_rows("reconcile", len(hits));
+
+    // Group per gene: hom-alt -> biallelic; >=2 het in a gene -> candidate
+    // compound-het (unphased, never asserted confirmed biallelic); single rare
+    // -> monoallelic. Fold each gene into ONE candidate row (proband injected
+    // by the emitter). The Exomiser top-N is merged in a later revision; the
+    // panel review is the evidence-tier anchor here.
+    let genes = sort_unique_strings(map(hits, |h: string| -> string { return field(h, 7); }));
+    let candidates = map(genes, |g: string| -> string {
+        let gene_hits = filter(hits, |h: string| -> bool { return field(h, 7) == g; });
+        let hom = filter(gene_hits, |h: string| -> bool { return field(h, 8) == "hom-alt"; });
+        let het = filter(gene_hits, |h: string| -> bool { return field(h, 8) == "het"; });
+        if len(hom) > 0 {
+            let v = get(hom, 0);
+            return "PROBAND\t" + field(v,0) + "\t" + field(v,1) + "\t" + field(v,2) + "\t" + field(v,3)
+                + "\t\t\t\t\t" + epcr_for("known_gene_biallelic") + "\tprimary\t" + g + " biallelic (hom-alt)";
+        }
+        if len(het) >= 2 {
+            let a = get(het, 0);
+            let b = get(het, 1);
+            return "PROBAND\t" + field(a,0) + "\t" + field(a,1) + "\t" + field(a,2) + "\t" + field(a,3)
+                + "\t" + field(b,0) + "\t" + field(b,1) + "\t" + field(b,2) + "\t" + field(b,3)
+                + "\t" + epcr_for("known_gene_comphet") + "\tprimary\t" + g + " candidate compound-het (unphased)";
+        }
+        if len(het) == 1 {
+            let v = get(het, 0);
+            return "PROBAND\t" + field(v,0) + "\t" + field(v,1) + "\t" + field(v,2) + "\t" + field(v,3)
+                + "\t\t\t\t\t" + epcr_for("known_gene_monoallelic") + "\tprimary\t" + g + " single rare protein-altering allele";
+        }
+        return "";
+    });
+    let rows = filter(candidates, |r: string| -> bool { return len(r) > 0; });
+
+    // Cap at max_rows from the ladder.
+    // colony-lint: safe-exec-concat
+    let maxs = trim(exec sh "grep -oiE 'max_rows:[ ]*[0-9]+' " + shell_escape(cdir + "/settings/epcr.yml") + " 2>/dev/null | grep -oE '[0-9]+' | head -1 || echo 10");
+    let cap0 = parse_int(maxs);
+    let cap = if cap0 <= 0 { 10 } else { cap0 };
+    let capped = if len(rows) > cap { take(rows, cap) } else { rows };
+    let cand_tsv = wd + "/candidates.tsv";
+    // colony-lint: safe-exec-concat
+    exec sh "printf %s " + shell_escape(join_str(capped, "\n") + "\n") + " > " + shell_escape(cand_tsv);
+    print("reconciler: ", len(capped), " candidate(s) after EPCR ladder + cap(", cap, ")");
+    emit("baseline:candidates", cand_tsv);
+}
+
+// ======================================================================
+// stage 6 — emitter: build the CSV, validate the schema, refuse on violation
+// ======================================================================
+
+// Replace field 0 (proband_id) of a tab row with a value.
+fn replace_first_field(row: string, val: string) -> string {
+    let t = index_of(row, "\t");
+    if t < 0 { return val; }
+    return val + substring(row, t, len(row));
+}
+
+// Validate ONE candidate row (tab-separated, 12 fields). "" if valid, else the
+// first violated rule: column count, chr-prefix primary contig, 0 < epcr <= 1,
+// pair columns all-or-nothing, finding_type set.
+fn validate_row(row: string) -> string {
+    let n = len(regex_split("\t", row));
+    if n != 12 { return "column-count"; }
+    if !is_primary_contig(field(row, 1)) { return "chrom_1-not-chr-primary"; }
+    let epcr = parse_float(field(row, 9));
+    if epcr <= 0.0 { return "epcr-out-of-range"; }
+    if epcr > 1.0 { return "epcr-out-of-range"; }
+    let ft = field(row, 10);
+    if ft != "primary" { if ft != "secondary" { return "finding_type"; } }
+    let c2 = field(row, 5);
+    let p2 = field(row, 6);
+    let r2 = field(row, 7);
+    let a2 = field(row, 8);
+    let filled = len(c2) + len(p2) + len(r2) + len(a2);
+    if len(c2) > 0 {
+        if len(p2) == 0 { return "pair-partial"; }
+        if !is_primary_contig(c2) { return "chrom_2-not-chr-primary"; }
+    }
+    if len(c2) == 0 { if filled > 0 { return "pair-partial"; } }
+    return "";
+}
+
+agent emitter() -> void {
+    let cand_tsv = listen("baseline:candidates");
+    if len(cand_tsv) == 0 { print("emitter: no candidates — nothing to emit"); return; }
+    // The D6 operator review gate governs emission: the submission CSV is
+    // written ONLY when the phenotype HPO set was approved for THIS run (a
+    // hash match). No approval -> refuse, no CSV (M2 proves this bites).
+    let gate = recall_latest("pipeline:gate");
+    if gate != "approved" {
+        print("emitter: REFUSING to emit — HPO set not approved (D6 gate:", gate, "). No CSV written.");
+        emit("baseline:abort", "gate-blocked");
+        return;
+    }
+    let wd = getenv("MVA_WORK_DIR");
+    let outdir = getenv("MVA_OUT_DIR");
+    let nvcf = recall_latest("baseline:nvcf");
+    let approach = getenv_or("MVA_APPROACH", "baseline");
+    let bcftools = bcftools_bin();
+    // colony-lint: safe-exec-concat
+    let proband0 = trim(exec sh shell_escape(bcftools) + " query -l " + shell_escape(nvcf) + " 2>/dev/null | head -1 || true");
+    let proband = if len(proband0) == 0 { "PROBAND" } else { proband0 };
+
+    // colony-lint: safe-exec-concat
+    let raw = exec sh "cat " + shell_escape(cand_tsv) + " 2>/dev/null || true";
+    let rows = nonempty_lines(raw);
+    record_rows("emit", len(rows));
+
+    // <= 10 rows hard cap (schema rule).
+    if len(rows) > 10 {
+        print("emitter: REFUSING — ", len(rows), " rows exceed the schema cap of 10");
+        emit("baseline:abort", "too-many-rows");
+        return;
+    }
+
+    // Inject the proband id + validate each row (short-circuit on first bad row).
+    let validated = reduce(rows, |acc: string, row: string| -> string {
+        if index_of(acc, "VIOLATION:") == 0 { return acc; }
+        let withid = replace_first_field(row, proband);
+        let v = validate_row(withid);
+        if len(v) > 0 { return "VIOLATION:" + v; }
+        return acc + withid + "\n";
+    }, "");
+    if index_of(validated, "VIOLATION:") == 0 {
+        print("emitter: REFUSING to emit — schema violation:", substring(validated, 10, len(validated)));
+        emit("baseline:abort", "schema-invalid");
+        return;
+    }
+
+    let body_rows = nonempty_lines(validated);
+    // No duplicate chrom_1:pos_1 keys (schema rule).
+    let keys = map(body_rows, |r: string| -> string { return field(r, 1) + ":" + field(r, 2); });
+    if len(sort_unique_strings(keys)) != len(keys) {
+        print("emitter: REFUSING to emit — duplicate variant keys");
+        emit("baseline:abort", "dup-key");
+        return;
+    }
+
+    // Build the CSV (header + rows, tabs -> commas).
+    let header = "proband_id,chrom_1,pos_1,ref_1,alt_1,chrom_2,pos_2,ref_2,alt_2,epcr,finding_type,notes";
+    let csv_rows = map(body_rows, |r: string| -> string { return replace_all(r, "\t", ","); });
+    let csv = header + "\n" + join_str(csv_rows, "\n") + "\n";
+    // colony-lint: safe-exec-concat
+    exec sh "mkdir -p " + shell_escape(outdir);
+    let outfile = outdir + "/agentis-federation_" + approach + ".csv";
+    // colony-lint: safe-exec-concat
+    exec sh "printf %s " + shell_escape(csv) + " > " + shell_escape(outfile);
+    print("emitter: wrote schema-valid submission CSV (", len(body_rows), " rows) ->", outfile);
+    print("Verdict: EMITTED");
+}
+
+// ======================================================================
+// orchestrator: seed the bus, run the event chain (no polling)
+// ======================================================================
+print("baseline: pipeline start");
+// Reset the review gate so a prior run's approval can never leak into this one.
+memo_write("pipeline:gate", "reset");
+// Reset the broadcast normalized-VCF path: recall_latest returns void for a
+// MISSING key (which would crash len()), so a same-run write guarantees the
+// fan-out readers always see a string ("" until the preprocessor succeeds).
+memo_write("baseline:nvcf", "");
+coordinator();
+preprocessor();
+phenotyper();
+exomiser_runner();
+panel_reviewer();
+reconciler();
+emitter();
+memo_write("pipeline:last_check", now_iso());
+print("baseline: pipeline done");

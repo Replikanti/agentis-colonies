@@ -1,0 +1,15 @@
+##fileformat=VCFv4.2
+##source=grand-rounds-synthetic-fixture
+##FILTER=<ID=PASS,Description="All filters passed">
+##FILTER=<ID=LowVAF,Description="Low variant allele fraction (synthetic hard-filter)">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">
+##contig=<ID=15,length=300>
+##contig=<ID=11,length=300>
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SAMPLE_SYNTH
+15	90	.	T	C	40	LowVAF	.	GT:AD	0/1:92,8
+15	120	.	A	G	200	PASS	.	GT:AD	1/1:0,58
+15	160	.	A	G	180	PASS	.	GT:AD	0/1:30,28
+15	200	.	G	A	175	PASS	.	GT:AD	0/1:33,25
+11	70	.	C	T	60	PASS	.	GT:AD	0/1:40,3
+11	130	.	G	A	190	PASS	.	GT:AD	0/1:29,27
