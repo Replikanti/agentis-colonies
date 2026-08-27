@@ -47,3 +47,26 @@ phenotype_novel_gene_min_score: 0.70
 # Hard cap from the submission schema. Kept here so the writer and the
 # validator agree on one number.
 max_rows: 10
+
+# --- M3 lens mode (opt-in via MVA_LENS_MODE=1) ------------------------------
+# These keys are read ONLY by the M3 lens agents (lens fan-out + refute gate +
+# lens reconciler in agents/pipeline.ag). They are additive: the baseline
+# reconciler never reads them, so lens mode leaves the baseline submission
+# byte-for-byte identical. Editing them changes the lens submission ordering
+# the same way the tier values above change the baseline ordering.
+#
+# lens_score_threshold      — a per-candidate lens score at or above this counts
+#                             as that lens "agreeing" the candidate is causal.
+# lens_agreement_promote_min — when at least this many of the five lenses agree,
+#                             the candidate is PROMOTED one rung up the ladder
+#                             above (comphet -> biallelic, monoallelic ->
+#                             comphet, ...). Refutation (below) demotes instead.
+# benign_population_af       — the refute gate's benign-in-population cutoff: a
+#                             candidate whose representative variant carries a
+#                             population allele frequency at or above this is a
+#                             common (non-penetrant) allele and is REFUTED out of
+#                             the ranked submission into refuted.tsv. 0.01 is the
+#                             conventional common-variant (BA1-style) threshold.
+lens_score_threshold: 0.6
+lens_agreement_promote_min: 3
+benign_population_af: 0.01
