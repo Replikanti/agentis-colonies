@@ -59,6 +59,14 @@ tick_interval_ms = 60000
 #   MVA_CONTAINER_CMD  podman|docker (Exomiser/bcftools container runtime)
 #   MVA_APPROVAL_FILE  operator HPO-approval file (default $MVA_WORK_DIR/phenotype/hpo-approved.txt)
 #   MVA_APPROACH       output-name suffix (default "baseline")
+#   MVA_LENS_MODE      set to 1 to run the opt-in M3 lens fan-out + refute gate
+#                        (five independent lenses + an adversarial refuter +
+#                        lens reconciler), emitting a SECOND submission
+#                        agentis-federation_lens.csv alongside the baseline one.
+#                        Default 0 leaves the baseline submission byte-for-byte
+#                        identical. Lens tunables (agreement threshold, promote
+#                        minimum, benign-population-AF cutoff) live in
+#                        settings/epcr.yml, next to the evidence-tier ladder.
 #   PANEL_PAD          bp padding around each panel gene (default 5000)
 #   EXOMISER_TIMEOUT_MS  inline timeout for the Exomiser stage (default 21600000 = 6 h)
 #   EXOMISER_JAVA_OPTS   Java heap for Exomiser (default -Xmx16g)
