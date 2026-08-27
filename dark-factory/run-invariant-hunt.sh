@@ -149,6 +149,15 @@ set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
+# #2038: host-wide forge-subprocess concurrency cap (K=${FORGE_MAX_SLOTS:-2}).
+# shellcheck source=lib/forge-slot.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/forge-slot.sh"
+# Backstop: free a held slot on ANY exit path (happy path, error, signal), not
+# only the explicit release calls around each forge subprocess below. Safe
+# no-op when no slot is held (fail-open path, or a run that never reached a
+# forge call).
+trap release_forge_slot EXIT
 REPO="" ; TARGET="" ; CLASS="" ; FIXTURE="" ; CODE="" ; MATCH="invariant"
 BACKEND="flat-cyborg" ; MODEL="" ; RUNS="" ; DEPTH="" ; SEED="" ; OUT="$PWD/invariant-out" ; PATTERN_STORE=""
 REPLAY_CORPUS=""  # #1731: cross-run ENSEMBLE/UNION replay; "" => OFF (default; byte-identical to today)
@@ -684,8 +693,13 @@ replay_corpus() {  # $1 = corpus class dir, $2 = report path
     rm -f "$REPO_IN_RUN/test/"*.t.sol 2>/dev/null || true
     cp "$_cf" "$REPO_IN_RUN/test/CorpusReplay.t.sol"
     set +e
+    # #2038: bound this forge subprocess against the same host-wide cap as the
+    # generation path below — a corpus replay loop is a second batch source of
+    # forge invocations, not a single-shot gate.
+    acquire_forge_slot
     sh "$RUN/forge-invariant.sh" --repo "$REPO_IN_RUN" --target "$REPO_IN_RUN/test/CorpusReplay.t.sol" --match "$MATCH" ${CORPUS_LINK_ARGS[@]+"${CORPUS_LINK_ARGS[@]}"} >/dev/null 2>&1
     _crc=$?
+    release_forge_slot
     set -e
     case "$_crc" in
       1) _cv="FINDING" ;;
@@ -776,6 +790,11 @@ fi
 # heuristic; input is benign public contract text (#1690).
 run_one_candidate() {  # $1 = variant ("" = OFF/single), $2 = INV_OUT path, $3 = cell log path -> echoes verdict
   _variant="$1"; _invout="$2"; _celllog="$3"
+  # #2038: this `agentis go invariant-prover.ag` call is the actual forge
+  # build+fuzz subprocess (via the gate's FORGE_INVARIANT exec sh) — bound it
+  # against the host-wide cap so concurrent candidates/hunts don't starve
+  # each other's forge runs.
+  acquire_forge_slot
   ( cd "$RUN" && env \
       TARGET_FN="$TARGET" \
       TARGET_CLASS="$CLASS" \
@@ -802,6 +821,7 @@ run_one_candidate() {  # $1 = variant ("" = OFF/single), $2 = INV_OUT path, $3 =
       INV_CORPUS="$INV_CORPUS_VAL" \
       "$AGENTIS" go invariant-prover.ag --enable-exec --enable-messaging --grant-pii ) >"$_celllog" 2>&1 || \
       echo "run-invariant-hunt.sh: invariant-prover run failed for '$TARGET' (see $_celllog)" >&2
+  release_forge_slot
   # The prover's contract: exactly one `INVARIANT|<file:fn>|<verdict>` line, then (on a FINDING) `STEP|...` lines.
   # Take the LAST verdict match. No line at all = HARNESS_ERROR (no verdict produced).
   _vline="$(grep 'INVARIANT|' "$_celllog" | tail -1 || true)"
