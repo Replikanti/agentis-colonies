@@ -139,6 +139,33 @@ CI cannot execute `.ag` (no `agentis` binary on runners), so coverage is split:
   the reference `.fai`). SKIPs loudly when `agentis` or a bcftools source is
   absent, so CI (no `agentis` binary) still skips.
 
+- [`demo-lens-smoke-real.sh`](./demo-lens-smoke-real.sh) — **the real-backend
+  gate** ([#2046](https://github.com/Replikanti/agentis-colonies/issues/2046)):
+  runs `MVA_LENS_MODE=1` end-to-end against the operator's own
+  `.agentis/config` (i.e. the real flat-cyborg backend) with the pool
+  restricted to a single candidate gene, and fails on any `[llm.timeout]`
+  abort or missing lens CSV. Operator-run only (~8 real LLM prompts,
+  ~10–60+ min); SKIPs loudly without a wired backend.
+
+> **⚠️ A green `demo-baseline-live.sh` does NOT certify the real-backend
+> path.** The live test wires no LLM backend, so `prompt()` returns
+> near-instantly and real flat-cyborg latency is never exercised — the exact
+> fidelity gap that let [#2046](https://github.com/Replikanti/agentis-colonies/issues/2046)
+> (every heavy lens prompt aborted with `[llm.timeout]`) pass a green live
+> test. Before trusting a lens run on real data, run
+> `./demo-lens-smoke-real.sh`.
+
+**Real-backend latency knobs** ([#2046](https://github.com/Replikanti/agentis-colonies/issues/2046)):
+a heavy clinical-genetics lens prompt takes **~630 s** on the real flat-cyborg
+backend, well past the agentis-core default LLM subprocess timeout (120 s).
+`../install.sh` therefore ships `llm.cli_timeout_ms = 1800000` in
+`.agentis/config` (override at install time via `MVA_LLM_CLI_TIMEOUT_MS`), and
+`scripts/start-colony.sh` defaults + exports the wrapper-path knobs
+`FLAT_CYBORG_TIMEOUT_MS=1800000` / `FLAT_CYBORG_IDLE_MS=600000` (an operator
+export wins). `start-colony.sh` refuses to launch (exit 5) when
+`llm.cli_timeout_ms` is missing from `.agentis/config` — re-run `../install.sh`
+on older installs.
+
 **Stage 3 (Exomiser) is deliberately NOT covered by the live test** — the
 multi-tens-of-GB bundle and hour-scale run put it in the operator end-to-end
 run on real data, not the fast mutation suite. Every OTHER stage (normalize →

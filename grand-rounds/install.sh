@@ -6,7 +6,9 @@
 #      bcftools (native, or a container wrapper written under $MVA_WORK_DIR).
 #   2. Writes/patches baseline/.agentis/config with the exec.env_passthrough
 #      allowlist every getenv() knob in agents/pipeline.ag depends on, plus a
-#      raised exec.default_timeout_ms. getenv() reads the SANITIZED env, so a
+#      raised exec.default_timeout_ms and a lens-viable llm.cli_timeout_ms
+#      (#2046 — the agentis-core 120 s default aborts every heavy lens prompt
+#      on the real flat-cyborg backend). getenv() reads the SANITIZED env, so a
 #      knob missing from this allowlist is silently inert — this repo has a
 #      documented history of that failure mode, so start-colony.sh re-asserts
 #      the allowlist and refuses to launch if it drifts.
@@ -30,6 +32,15 @@ ENV_PASSTHROUGH="MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA
 # it. This raises the default so every exec sh stage has headroom; the Exomiser
 # stage additionally carries an explicit inline timeout in the .ag.
 DEFAULT_TIMEOUT_MS="21600000"
+
+# LLM subprocess timeout (#2046). agentis-core's llm.cli_timeout_ms defaults to
+# 120 s, but a heavy clinical-genetics lens prompt driven through the real
+# flat-cyborg backend takes ~630 s — every M3 lens prompt aborted with
+# [llm.timeout] until the operator raised this to 1800 s. Ship the lens-viable
+# value; override at install time via MVA_LLM_CLI_TIMEOUT_MS. The related
+# wrapper-path knobs FLAT_CYBORG_TIMEOUT_MS / FLAT_CYBORG_IDLE_MS are
+# defaulted+exported by start-colony.sh (env overrides win).
+LLM_CLI_TIMEOUT_MS="${MVA_LLM_CLI_TIMEOUT_MS:-1800000}"
 
 log() { printf '[grand-rounds/install] %s\n' "$*"; }
 warn() { printf '[grand-rounds/install] warning: %s\n' "$*" >&2; }
@@ -80,17 +91,18 @@ touch "$CONFIG"
 # Rewrite the two managed keys idempotently: strip any prior line, then append
 # the current value. Every other line the operator added is preserved.
 tmp="$(mktemp)"
-grep -vE '^[[:space:]]*(exec\.env_passthrough|exec\.default_timeout_ms|experience\.enabled)[[:space:]]*=' "$CONFIG" > "$tmp" || true
+grep -vE '^[[:space:]]*(exec\.env_passthrough|exec\.default_timeout_ms|llm\.cli_timeout_ms|experience\.enabled)[[:space:]]*=' "$CONFIG" > "$tmp" || true
 {
     printf 'exec.env_passthrough = %s\n' "$ENV_PASSTHROUGH"
     printf 'exec.default_timeout_ms = %s\n' "$DEFAULT_TIMEOUT_MS"
+    printf 'llm.cli_timeout_ms = %s\n' "$LLM_CLI_TIMEOUT_MS"
     # M3 lens mode's refute gate records a best-effort learn() outcome; enabling
     # the experience store lets that telemetry persist (a no-op when lens mode is
     # off, and the refuter wraps learn() in try/catch so it is never fatal).
     printf 'experience.enabled = true\n'
 } >> "$tmp"
 mv "$tmp" "$CONFIG"
-log "wrote exec.env_passthrough allowlist + exec.default_timeout_ms + experience.enabled to $CONFIG"
+log "wrote exec.env_passthrough allowlist + exec.default_timeout_ms + llm.cli_timeout_ms + experience.enabled to $CONFIG"
 
 # --- 3. Reference data (opt-in) --------------------------------------------
 

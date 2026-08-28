@@ -34,6 +34,14 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   byte-for-byte identical. Live-agent mutation coverage L1–L4 in
   `baseline/demo-baseline-live.sh`.
 
+- **Real-backend smoke gate** `baseline/demo-lens-smoke-real.sh`
+  ([#2046](https://github.com/Replikanti/agentis-colonies/issues/2046)):
+  operator-run `MVA_LENS_MODE=1` end-to-end against the operator's own
+  `.agentis/config` (the real flat-cyborg backend) with a single-candidate
+  pool; fails on any `[llm.timeout]` abort or missing lens CSV.
+  `demo-baseline-live.sh` wires no LLM backend and cannot catch real-backend
+  latency regressions — its header and the README now say so loudly.
+
 ### Changed
 
 ### Deprecated
@@ -41,6 +49,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ### Removed
 
 ### Fixed
+
+- **Lens federation timed out on the real flat-cyborg backend**
+  ([#2046](https://github.com/Replikanti/agentis-colonies/issues/2046)): a
+  heavy clinical-genetics lens prompt takes ~630 s live, but the colony
+  inherited agentis-core's 120 s `llm.cli_timeout_ms` default, so every M3
+  lens prompt aborted with `[llm.timeout]` and the emitted ranking silently
+  degraded to baseline-only. `install.sh` now ships
+  `llm.cli_timeout_ms = 1800000` in `.agentis/config` (override via
+  `MVA_LLM_CLI_TIMEOUT_MS`), and `start-colony.sh` refuses to launch (exit 5)
+  when the key is missing (re-run `install.sh` on older installs) and
+  defaults + exports the wrapper-path knobs `FLAT_CYBORG_TIMEOUT_MS=1800000`
+  / `FLAT_CYBORG_IDLE_MS=600000` (operator exports win).
 
 ### Security
 
