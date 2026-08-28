@@ -16,6 +16,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Operator hackathon runbook** `doc/hackathon-runbook.md`
+  ([#2031](https://github.com/Replikanti/agentis-colonies/issues/2031)): the
+  operator-driven MVA Hackathon steps the automation cannot perform —
+  leaderboard submission (M4), the optional gated mosaicism deep-dive with a
+  robust `HF_HUB_DISABLE_XET=1` FASTQ-download recipe (M2), the Track 2 report
+  + video (M5), and post-hackathon data deletion (M7). README links it.
+
 ### Changed
 
 ### Deprecated

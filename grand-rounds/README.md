@@ -71,6 +71,9 @@ future ticking agent added here.
 
 - [Methods report](./doc/methods.md) — pipeline architecture, the EPCR
   evidence-tier ladder, reproduction steps, and honest caveats.
+- [Operator hackathon runbook](./doc/hackathon-runbook.md) — the operator-driven
+  steps (leaderboard submission, optional mosaicism deep-dive, Track 2 report +
+  video, post-hackathon data deletion).
 - [Changelog](./CHANGELOG.md).
 
 ## License
