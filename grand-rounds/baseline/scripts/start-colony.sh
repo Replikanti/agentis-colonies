@@ -21,7 +21,8 @@
 #
 # It does NOT invoke `agentis daemon`, so the daemon-flag allowlist does not
 # apply. Exit codes: 0 ok, 2 usage, 3 missing gated data, 4 unsafe work dir,
-# 5 unwired exec.env_passthrough allowlist.
+# 5 unwired managed .agentis/config keys (env allowlist / exec timeout /
+# llm.cli_timeout_ms).
 
 set -euo pipefail
 
@@ -122,13 +123,35 @@ if [ ! -f "$CONFIG_FILE" ]; then
 else
     grep -qE '^[[:space:]]*exec\.env_passthrough[[:space:]]*=.*MVA_DATA_DIR' "$CONFIG_FILE" || need_wire=1
     grep -qE '^[[:space:]]*exec\.default_timeout_ms[[:space:]]*=' "$CONFIG_FILE" || need_wire=1
+    # #2046: without a raised llm.cli_timeout_ms the agentis-core 120 s default
+    # aborts every heavy lens prompt on the real flat-cyborg backend, so the M3
+    # differentiator silently degrades to the baseline-only ranking.
+    grep -qE '^[[:space:]]*llm\.cli_timeout_ms[[:space:]]*=' "$CONFIG_FILE" || need_wire=1
 fi
 if [ "$need_wire" -ne 0 ]; then
-    echo "start-colony.sh: exec.env_passthrough allowlist is not wired in $CONFIG_FILE." >&2
-    echo "      Run ./install.sh, or add these lines to $CONFIG_FILE:" >&2
+    echo "start-colony.sh: the managed .agentis/config keys are not wired in $CONFIG_FILE." >&2
+    echo "      Run ./install.sh (idempotent), or add these lines to $CONFIG_FILE:" >&2
     echo "  exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_LENS_MODE,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR" >&2
     echo "  exec.default_timeout_ms = 21600000" >&2
+    echo "  llm.cli_timeout_ms = 1800000" >&2
     exit 5
+fi
+
+# A PRESENT but stale llm.cli_timeout_ms (e.g. a hand-written 120000) passes
+# the presence check above yet still aborts every heavy lens prompt — enforce
+# a sanity floor when the lens fan-out is actually on. install.sh ships
+# 1800000 (~630 s observed per prompt); anything below 600000 can only fail.
+if [ "${MVA_LENS_MODE:-0}" = "1" ]; then
+    cli_ms="$(grep -E '^[[:space:]]*llm\.cli_timeout_ms[[:space:]]*=' "$CONFIG_FILE" | tail -1 | sed 's/^[^=]*=[[:space:]]*//; s/#.*$//' | tr -d '[:space:]' || true)"
+    case "$cli_ms" in
+        ''|*[!0-9]*) cli_ms=0 ;;
+    esac
+    if [ "$cli_ms" -lt 600000 ]; then
+        echo "start-colony.sh: llm.cli_timeout_ms = $cli_ms is below the lens floor (600000 ms)." >&2
+        echo "      Heavy lens prompts take ~630 s on the real backend (#2046). Re-run ./install.sh" >&2
+        echo "      (ships 1800000), raise the key, or run without MVA_LENS_MODE=1." >&2
+        exit 5
+    fi
 fi
 
 # --- Resolve the rest of the env contract ----------------------------------
@@ -157,12 +180,20 @@ fi
 : "${PANEL_PAD:=${MVA_PANEL_PAD:-5000}}"
 : "${EXOMISER_TIMEOUT_MS:=21600000}"
 : "${EXOMISER_JAVA_OPTS:=-Xmx16g}"
+# flat-cyborg wrapper-path latency knobs (#2046). A heavy lens prompt takes
+# ~630 s on the real backend; the wrapper's own defaults (idle 30 s / total
+# 240 s) abort it long before llm.cli_timeout_ms even matters. These reach the
+# LLM subprocess via the daemon environment (NOT exec.env_passthrough — they
+# are read by the wrapper, not by .ag getenv()), and an operator export wins.
+: "${FLAT_CYBORG_TIMEOUT_MS:=1800000}"
+: "${FLAT_CYBORG_IDLE_MS:=600000}"
 
 export MVA_DATA_DIR MVA_WORK_DIR MVA_OUT_DIR MVA_REF_FASTA MVA_HPO_OBO MVA_GTF
 export MVA_PRIMARY_CONTIGS
 export MVA_BCFTOOLS MVA_EXOMISER MVA_EXOMISER_ASSEMBLY MVA_RUN_EXOMISER
 export MVA_CONTAINER_CMD MVA_APPROVAL_FILE MVA_APPROACH MVA_LENS_MODE
 export PANEL_PAD EXOMISER_TIMEOUT_MS EXOMISER_JAVA_OPTS
+export FLAT_CYBORG_TIMEOUT_MS FLAT_CYBORG_IDLE_MS
 export COLONY_DIR
 [ -n "${MVA_VCF:-}" ] && export MVA_VCF
 [ -n "${MVA_PHENOTYPE_DOC:-}" ] && export MVA_PHENOTYPE_DOC

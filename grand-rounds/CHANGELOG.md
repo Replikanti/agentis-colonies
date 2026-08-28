@@ -34,6 +34,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   byte-for-byte identical. Live-agent mutation coverage L1–L4 in
   `baseline/demo-baseline-live.sh`.
 
+- **Real-backend smoke gate** `baseline/demo-lens-smoke-real.sh`
+  ([#2046](https://github.com/Replikanti/agentis-colonies/issues/2046)):
+  operator-run `MVA_LENS_MODE=1` end-to-end against the operator's own
+  `.agentis/config` (the real flat-cyborg backend) with a single-candidate
+  pool; fails on any `[llm.timeout]`, any other LLM error, an implausibly
+  fast run (`lens_score()` silently falls back to its prior on a failed
+  reply, so a completing chain alone proves nothing —
+  `GR_SMOKE_MIN_ELAPSED_S`, default 60), or a missing lens CSV. Exports the
+  same `FLAT_CYBORG_*` knobs the real launcher uses, neutralizes inherited
+  `MVA_VCF`/`MVA_PHENOTYPE_DOC` so real clinical data can never enter the
+  synthetic run, and keeps the run tree on failure for post-mortem.
+  `demo-baseline-live.sh` wires no LLM backend and cannot catch real-backend
+  latency regressions — its header and the README now say so loudly.
+
 ### Changed
 
 ### Deprecated
@@ -41,6 +55,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ### Removed
 
 ### Fixed
+
+- **Lens federation timed out on the real flat-cyborg backend**
+  ([#2046](https://github.com/Replikanti/agentis-colonies/issues/2046)): a
+  heavy clinical-genetics lens prompt takes ~630 s live, but the colony
+  inherited agentis-core's 120 s `llm.cli_timeout_ms` default, so every M3
+  lens prompt aborted with `[llm.timeout]` and the emitted ranking silently
+  degraded to baseline-only. `install.sh` now ships
+  `llm.cli_timeout_ms = 1800000` (caps the subprocess on both backend styles)
+  and `llm.flat_cyborg.idle_ms = 600000` (native-backend idle cap) in
+  `.agentis/config` — existing operator-tuned values survive re-runs;
+  `MVA_LLM_CLI_TIMEOUT_MS` / `MVA_LLM_FC_IDLE_MS` override. `start-colony.sh`
+  refuses to launch (exit 5) when `llm.cli_timeout_ms` is missing (re-run
+  `install.sh` on older installs) or, under `MVA_LENS_MODE=1`, below a
+  600000 ms sanity floor (a stale hand-written 120000 reproduces the bug),
+  and defaults + exports the wrapper-path knobs
+  `FLAT_CYBORG_TIMEOUT_MS=1800000` / `FLAT_CYBORG_IDLE_MS=600000` (operator
+  exports win).
 
 ### Security
 

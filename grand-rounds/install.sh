@@ -6,7 +6,9 @@
 #      bcftools (native, or a container wrapper written under $MVA_WORK_DIR).
 #   2. Writes/patches baseline/.agentis/config with the exec.env_passthrough
 #      allowlist every getenv() knob in agents/pipeline.ag depends on, plus a
-#      raised exec.default_timeout_ms. getenv() reads the SANITIZED env, so a
+#      raised exec.default_timeout_ms and a lens-viable llm.cli_timeout_ms
+#      (#2046 — the agentis-core 120 s default aborts every heavy lens prompt
+#      on the real flat-cyborg backend). getenv() reads the SANITIZED env, so a
 #      knob missing from this allowlist is silently inert — this repo has a
 #      documented history of that failure mode, so start-colony.sh re-asserts
 #      the allowlist and refuses to launch if it drifts.
@@ -30,6 +32,27 @@ ENV_PASSTHROUGH="MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA
 # it. This raises the default so every exec sh stage has headroom; the Exomiser
 # stage additionally carries an explicit inline timeout in the .ag.
 DEFAULT_TIMEOUT_MS="21600000"
+
+# LLM timeouts (#2046). agentis-core's llm.cli_timeout_ms defaults to 120 s,
+# but a heavy clinical-genetics lens prompt driven through the real flat-cyborg
+# backend takes ~630 s — every M3 lens prompt aborted with [llm.timeout] until
+# the operator raised this to 1800 s. Ship lens-viable values for BOTH backend
+# styles: llm.cli_timeout_ms caps the whole subprocess either way, and
+# llm.flat_cyborg.idle_ms is the native-backend idle cap (the env knobs
+# FLAT_CYBORG_TIMEOUT_MS / FLAT_CYBORG_IDLE_MS only reach the WRAPPER path;
+# start-colony.sh defaults+exports those, env overrides win).
+#
+# Precedence per key: MVA_* install-time override > value already present in
+# the config (an operator tuning survives re-runs, but only a NUMERIC one at
+# or above the floor — keeping a sub-floor value would deadlock against
+# start-colony.sh's exit-5 "re-run install.sh" remediation) > shipped default.
+prior_key() { grep -E "^[[:space:]]*$1[[:space:]]*=" "$CONFIG" 2>/dev/null | tail -1 | sed 's/^[^=]*=[[:space:]]*//; s/#.*$//' | tr -d '[:space:]' || true; }
+# Echo $1 only when it is a plain integer >= $2; empty otherwise.
+numeric_at_least() {
+    case "$1" in ''|*[!0-9]*) return 0 ;; esac
+    if [ "$1" -ge "$2" ]; then printf '%s' "$1"; fi
+    return 0
+}
 
 log() { printf '[grand-rounds/install] %s\n' "$*"; }
 warn() { printf '[grand-rounds/install] warning: %s\n' "$*" >&2; }
@@ -72,18 +95,34 @@ if [ "$missing" -ne 0 ]; then
     warn "prerequisites incomplete; resolve the warnings above, then re-run."
 fi
 
-# --- 2. .agentis/config (exec.env_passthrough + timeout) --------------------
+# --- 2. .agentis/config (exec.env_passthrough + timeouts) -------------------
 
 mkdir -p "$AGENTIS_DIR"
 touch "$CONFIG"
 
-# Rewrite the two managed keys idempotently: strip any prior line, then append
+# Resolve the two LLM-timeout values BEFORE the rewrite: an existing operator
+# tuning is kept across re-runs; the MVA_* env override always wins. A prior
+# value that is non-numeric or below the lens floor start-colony.sh enforces
+# (600000) is MIGRATED to the shipped default — otherwise "re-run install.sh"
+# would be a no-op against the exit-5 refusal.
+prior_cli="$(prior_key 'llm\.cli_timeout_ms')"
+kept_cli="$(numeric_at_least "${prior_cli:-}" 600000)"
+LLM_CLI_TIMEOUT_MS="${MVA_LLM_CLI_TIMEOUT_MS:-${kept_cli:-1800000}}"
+if [ -n "${prior_cli:-}" ] && [ -z "$kept_cli" ]; then
+    log "migrating llm.cli_timeout_ms = $prior_cli (non-numeric or below the 600000 ms lens floor) -> $LLM_CLI_TIMEOUT_MS"
+fi
+kept_idle="$(numeric_at_least "$(prior_key 'llm\.flat_cyborg\.idle_ms')" 1)"
+LLM_FC_IDLE_MS="${MVA_LLM_FC_IDLE_MS:-${kept_idle:-600000}}"
+
+# Rewrite the managed keys idempotently: strip any prior line, then append
 # the current value. Every other line the operator added is preserved.
 tmp="$(mktemp)"
-grep -vE '^[[:space:]]*(exec\.env_passthrough|exec\.default_timeout_ms|experience\.enabled)[[:space:]]*=' "$CONFIG" > "$tmp" || true
+grep -vE '^[[:space:]]*(exec\.env_passthrough|exec\.default_timeout_ms|llm\.cli_timeout_ms|llm\.flat_cyborg\.idle_ms|experience\.enabled)[[:space:]]*=' "$CONFIG" > "$tmp" || true
 {
     printf 'exec.env_passthrough = %s\n' "$ENV_PASSTHROUGH"
     printf 'exec.default_timeout_ms = %s\n' "$DEFAULT_TIMEOUT_MS"
+    printf 'llm.cli_timeout_ms = %s\n' "$LLM_CLI_TIMEOUT_MS"
+    printf 'llm.flat_cyborg.idle_ms = %s\n' "$LLM_FC_IDLE_MS"
     # M3 lens mode's refute gate records a best-effort learn() outcome; enabling
     # the experience store lets that telemetry persist (a no-op when lens mode is
     # off, and the refuter wraps learn() in try/catch so it is never fatal).
@@ -91,6 +130,7 @@ grep -vE '^[[:space:]]*(exec\.env_passthrough|exec\.default_timeout_ms|experienc
 } >> "$tmp"
 mv "$tmp" "$CONFIG"
 log "wrote exec.env_passthrough allowlist + exec.default_timeout_ms + experience.enabled to $CONFIG"
+log "  llm.cli_timeout_ms = $LLM_CLI_TIMEOUT_MS, llm.flat_cyborg.idle_ms = $LLM_FC_IDLE_MS (existing values kept on re-runs; override via MVA_LLM_CLI_TIMEOUT_MS / MVA_LLM_FC_IDLE_MS)"
 
 # --- 3. Reference data (opt-in) --------------------------------------------
 

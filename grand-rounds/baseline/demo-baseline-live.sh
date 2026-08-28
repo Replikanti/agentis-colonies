@@ -9,6 +9,13 @@
 # Requires agentis + bcftools + samtools + zip; SKIPs LOUDLY otherwise (CI has
 # no agentis binary — behaviour is pinned here, on an operator's machine).
 #
+# *** A GREEN RUN HERE DOES NOT CERTIFY THE REAL-BACKEND PATH. *** This test
+# wires NO LLM backend, so prompt() returns near-instantly: real flat-cyborg
+# latency (~630 s per heavy lens prompt), llm.cli_timeout_ms, and the
+# FLAT_CYBORG_* knobs are never exercised — the exact fidelity gap that let
+# #2046 ([llm.timeout] on every lens prompt) and #2044 pass a green live test.
+# The real-backend gate is ./demo-lens-smoke-real.sh (operator-run).
+#
 # Stage 3 (Exomiser) is deliberately NOT covered here (multi-tens-of-GB bundle,
 # hour-scale run) — it is covered by the operator end-to-end run on real data.
 # The panel -> reconcile -> emit chain does not depend on the Exomiser output,
