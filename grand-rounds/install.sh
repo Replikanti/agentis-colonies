@@ -43,8 +43,16 @@ DEFAULT_TIMEOUT_MS="21600000"
 # start-colony.sh defaults+exports those, env overrides win).
 #
 # Precedence per key: MVA_* install-time override > value already present in
-# the config (an operator tuning survives re-runs) > the shipped default.
-prior_key() { grep -E "^[[:space:]]*$1[[:space:]]*=" "$CONFIG" 2>/dev/null | tail -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d '[:space:]' || true; }
+# the config (an operator tuning survives re-runs, but only a NUMERIC one at
+# or above the floor — keeping a sub-floor value would deadlock against
+# start-colony.sh's exit-5 "re-run install.sh" remediation) > shipped default.
+prior_key() { grep -E "^[[:space:]]*$1[[:space:]]*=" "$CONFIG" 2>/dev/null | tail -1 | sed 's/^[^=]*=[[:space:]]*//; s/#.*$//' | tr -d '[:space:]' || true; }
+# Echo $1 only when it is a plain integer >= $2; empty otherwise.
+numeric_at_least() {
+    case "$1" in ''|*[!0-9]*) return 0 ;; esac
+    if [ "$1" -ge "$2" ]; then printf '%s' "$1"; fi
+    return 0
+}
 
 log() { printf '[grand-rounds/install] %s\n' "$*"; }
 warn() { printf '[grand-rounds/install] warning: %s\n' "$*" >&2; }
@@ -93,11 +101,18 @@ mkdir -p "$AGENTIS_DIR"
 touch "$CONFIG"
 
 # Resolve the two LLM-timeout values BEFORE the rewrite: an existing operator
-# tuning is kept across re-runs; the MVA_* env override always wins.
-LLM_CLI_TIMEOUT_MS="${MVA_LLM_CLI_TIMEOUT_MS:-$(prior_key 'llm\.cli_timeout_ms')}"
-LLM_CLI_TIMEOUT_MS="${LLM_CLI_TIMEOUT_MS:-1800000}"
-LLM_FC_IDLE_MS="${MVA_LLM_FC_IDLE_MS:-$(prior_key 'llm\.flat_cyborg\.idle_ms')}"
-LLM_FC_IDLE_MS="${LLM_FC_IDLE_MS:-600000}"
+# tuning is kept across re-runs; the MVA_* env override always wins. A prior
+# value that is non-numeric or below the lens floor start-colony.sh enforces
+# (600000) is MIGRATED to the shipped default — otherwise "re-run install.sh"
+# would be a no-op against the exit-5 refusal.
+prior_cli="$(prior_key 'llm\.cli_timeout_ms')"
+kept_cli="$(numeric_at_least "${prior_cli:-}" 600000)"
+if [ -n "${prior_cli:-}" ] && [ -z "$kept_cli" ]; then
+    log "migrating llm.cli_timeout_ms = $prior_cli (non-numeric or below the 600000 ms lens floor) -> 1800000"
+fi
+LLM_CLI_TIMEOUT_MS="${MVA_LLM_CLI_TIMEOUT_MS:-${kept_cli:-1800000}}"
+kept_idle="$(numeric_at_least "$(prior_key 'llm\.flat_cyborg\.idle_ms')" 1)"
+LLM_FC_IDLE_MS="${MVA_LLM_FC_IDLE_MS:-${kept_idle:-600000}}"
 
 # Rewrite the managed keys idempotently: strip any prior line, then append
 # the current value. Every other line the operator added is preserved.

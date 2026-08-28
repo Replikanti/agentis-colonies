@@ -63,11 +63,12 @@ fi
 cmd_path="$(grep -E '^[[:space:]]*llm\.command[[:space:]]*=' "$FED_CONFIG" | head -1 | sed 's/^[^=]*=[[:space:]]*//' || true)"
 if [ -n "$cmd_path" ]; then
     case "$cmd_path" in
-        /*) : ;;
-        *)
+        /*) : ;;   # absolute — fine
+        */*)       # relative WITH a slash — resolves against the /tmp run copy
             echo "[SKIP] demo-lens-smoke-real: llm.command is a relative path ($cmd_path) — it breaks in this test's run copy; use an absolute path in $FED_CONFIG."
             exit 0
             ;;
+        *) : ;;    # bare command name — resolved via PATH, fine
     esac
 fi
 echo "  (backend: ${backend_line# })"
@@ -193,7 +194,7 @@ LENSCSV="$OUTDIR/agentis-federation_lens.csv"
 # --- The #2046 gate: no LLM subprocess timeout anywhere ---------------------
 if grep -hq 'llm\.timeout' "$RUN/run1.log" "$RUN/run2.log"; then
     bad "an LLM call timed out on the real backend (the #2046 regression):"
-    grep -h 'llm\.timeout' "$RUN/run1.log" "$RUN/run2.log" | head -3 >&2
+    grep -h 'llm\.timeout' "$RUN/run1.log" "$RUN/run2.log" | head -3 >&2 || true
 else
     ok "no [llm.timeout] across both passes"
 fi
@@ -202,12 +203,14 @@ fi
 # lens_score() silently falls back to its deterministic prior on an empty or
 # failed reply, so the chain "completing" proves nothing by itself: a wrapper
 # abort, auth failure, or empty reply still yields a schema-valid CSV — green
-# while degraded to baseline-only, the exact #2046 class.
-if grep -hEi 'llm' "$RUN/run1.log" "$RUN/run2.log" | grep -Eiq 'error|fail|abort'; then
+# while degraded to baseline-only, the exact #2046 class. Anchored on the
+# runtime's [llm.*] tag so ordinary log text mentioning "llm" cannot
+# false-FAIL; the latency floor below backstops failures that log nothing.
+if grep -hE '\[llm\.[a-z_]+\]' "$RUN/run1.log" "$RUN/run2.log" | grep -Eiq 'error|fail|abort|timed'; then
     bad "an LLM call failed (non-timeout) on the real backend:"
-    grep -hEi 'llm' "$RUN/run1.log" "$RUN/run2.log" | grep -Ei 'error|fail|abort' | head -3 >&2
+    grep -hE '\[llm\.[a-z_]+\]' "$RUN/run1.log" "$RUN/run2.log" | grep -Ei 'error|fail|abort|timed' | head -3 >&2 || true
 else
-    ok "no other LLM error/failure across both passes"
+    ok "no other [llm.*]-tagged error/failure across both passes"
 fi
 
 # --- Real-latency floor -----------------------------------------------------

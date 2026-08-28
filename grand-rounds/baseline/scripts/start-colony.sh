@@ -142,7 +142,7 @@ fi
 # a sanity floor when the lens fan-out is actually on. install.sh ships
 # 1800000 (~630 s observed per prompt); anything below 600000 can only fail.
 if [ "${MVA_LENS_MODE:-0}" = "1" ]; then
-    cli_ms="$(grep -E '^[[:space:]]*llm\.cli_timeout_ms[[:space:]]*=' "$CONFIG_FILE" | tail -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d '[:space:]')"
+    cli_ms="$(grep -E '^[[:space:]]*llm\.cli_timeout_ms[[:space:]]*=' "$CONFIG_FILE" | tail -1 | sed 's/^[^=]*=[[:space:]]*//; s/#.*$//' | tr -d '[:space:]' || true)"
     case "$cli_ms" in
         ''|*[!0-9]*) cli_ms=0 ;;
     esac

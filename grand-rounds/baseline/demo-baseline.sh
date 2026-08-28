@@ -143,21 +143,24 @@ if [ "$anno_lines" -ge "$concat_lines" ]; then
 else
     bad "an exec sh dynamic concat is not shell_escape-annotated ($anno_lines < $concat_lines)"
 fi
-# #2046 drift guard (CI-visible): the installer must keep shipping the
-# lens-viable LLM subprocess timeout, and the launcher must keep asserting it
+# #2046 drift guard (CI-visible): the installer must keep WRITING both
+# lens-viable LLM timeout keys (matched on the printf write lines, not mere
+# comments), and the launcher must keep asserting the key + its lens floor
 # (the real-backend behaviour itself is only testable operator-side, via
 # demo-lens-smoke-real.sh).
 INSTALL_SH="$BASE_DIR/../install.sh"
 START_SH="$BASE_DIR/scripts/start-colony.sh"
-if grep -qF 'llm.cli_timeout_ms' "$INSTALL_SH"; then
-    ok "install.sh ships llm.cli_timeout_ms (#2046)"
+if grep -qF "printf 'llm.cli_timeout_ms = %s" "$INSTALL_SH" \
+   && grep -qF "printf 'llm.flat_cyborg.idle_ms = %s" "$INSTALL_SH"; then
+    ok "install.sh writes llm.cli_timeout_ms + llm.flat_cyborg.idle_ms (#2046)"
 else
-    bad "install.sh no longer writes llm.cli_timeout_ms (#2046 regression)"
+    bad "install.sh no longer writes both LLM timeout keys (#2046 regression)"
 fi
-if grep -qE 'llm\\?\.cli_timeout_ms' "$START_SH"; then
-    ok "start-colony.sh asserts llm.cli_timeout_ms (#2046)"
+if grep -qF 'llm\.cli_timeout_ms[[:space:]]*=' "$START_SH" \
+   && grep -qE -- '-lt 600000' "$START_SH"; then
+    ok "start-colony.sh asserts llm.cli_timeout_ms + the 600000 lens floor (#2046)"
 else
-    bad "start-colony.sh no longer asserts llm.cli_timeout_ms (#2046 regression)"
+    bad "start-colony.sh no longer asserts llm.cli_timeout_ms / its lens floor (#2046 regression)"
 fi
 
 # --- 4. cb_budget matches the cb <N> declaration ---------------------------
