@@ -356,6 +356,17 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
       C="$(printf '%s' "$CLINE" | sed 's/^.*\(CONSTRAINT|\)/\1/')"
       CONSTRAINT="$(_clean_reason "$(printf '%s' "$C" | cut -d'|' -f3-)")"
     fi
+  elif [ -f "$CELL_LOG.transient" ]; then
+    # #2045: the refuter never produced a VERDICT| because flat-cyborg TRANSPORT-crashed on every attempt and the
+    # bounded fresh-session retries (df_run_agent_validated, DF_AGENT_TRANSPORT_RETRIES) were exhausted — this is
+    # INFRA instability, NOT an assessment. Emit a DISTINGUISHABLE row so the operator (and verify-findings.sh
+    # --rehunt-gaps) can tell a re-runnable transport flake apart from a genuine chrome/no-answer miss. The
+    # verdict cell stays ERROR (UNASSESSED, non-settled) so verify-findings.sh's field-4 contract is untouched.
+    echo "run-refute.sh: '$CFN' hit a persistent flat-cyborg LLM transport error (backend crashed mid-call) — recording as ERROR (TRANSIENT, RE-RUNNABLE — not assessed)" >&2
+    printf '| %s | %s | ERROR | LLM transport error (flat-cyborg exited) after %s attempts — TRANSIENT, RE-RUNNABLE (not assessed) |\n' \
+      "$CFN" "$CLS" "$DF_AGENT_MAX_ATTEMPTS" >> "$REPORT"
+    ERRORED=$((ERRORED + 1))
+    continue
   else
     echo "run-refute.sh: '$CFN' produced no VERDICT| reply after $DF_AGENT_MAX_ATTEMPTS attempts; recording as ERROR (UNASSESSED — not refuted)" >&2
     printf '| %s | %s | ERROR | no VERDICT| reply after %s attempts (UNASSESSED — not refuted) |\n' \

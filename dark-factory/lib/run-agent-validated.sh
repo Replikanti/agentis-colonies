@@ -51,6 +51,18 @@ df_max_attempts() {
   printf '%s' "$dma"
 }
 
+# df_transport_max_retries — #2045: the BUDGET-EXEMPT fresh-session retry ceiling for a flat-cyborg TRANSPORT
+# crash (`LLM transport error: flat-cyborg exited ...`). DF_AGENT_TRANSPORT_RETRIES env knob, default 2 (the
+# issue's "<=2 retries"), floor 0 (0 = classify-only, no retry). These retries are counted SEPARATELY from
+# df_max_attempts: a transport error is INFRA instability, not a content miss, so it must never consume one of
+# the semantic sentinel attempts (AC3). Validated exactly like df_max_attempts (garbage => default 2).
+df_transport_max_retries() {
+  dtr="${DF_AGENT_TRANSPORT_RETRIES:-2}"
+  case "$dtr" in ''|*[!0-9]*) dtr=2 ;; esac
+  [ "$dtr" -ge 0 ] || dtr=2
+  printf '%s' "$dtr"
+}
+
 # df_sentinel_present <stage> <log> [zone_id] — SINGLE SOURCE OF TRUTH for each stage's validity predicate,
 # each mirroring that scraper's own scrape grep. Returns 0 when the log carries the stage's sentinel.
 df_sentinel_present() {
@@ -98,6 +110,25 @@ df_llm_timeout_in_log() {
   grep -Fq '[llm.timeout] LLM call timed out' "$1"
 }
 
+# df_transport_error_in_log <log> — #2045: did the call TERMINALLY fail with a flat-cyborg/HTTP TRANSPORT error
+# (as opposed to a content miss, a terminal timeout, or a transport blip agentis RECOVERED from)? Anchored to the
+# `LlmError` Display prefix `LLM transport error:` (agentis-core src/llm.rs:45; the flat-cyborg backend surfaces
+# `flat-cyborg exited with ...` behind it at src/llm.rs:1306). Unlike Timeout/Cancelled, classify_llm_error()
+# tags a Transport error with NO `[llm.*]` marker (exec.rs:2789 `other => General(format!("{other}"))`), so this
+# Display prefix is the only signal a Transport error leaves. But — exactly as a bare `LLM call timed out`
+# substring would have defeated #1955 — the prefix ALSO appears in the NON-terminal internal-retry line
+# `[LLM retry N/M: LLM transport error: flat-cyborg exited]` (llm.rs:539/820/…) that agentis PRINTS and then
+# RECOVERS from with exit 0. A recovered-then-chrome reply (a genuine #1707 content miss whose log merely carries
+# that retry line) must NOT be laundered into a re-runnable transient. So the terminal transport error is the only
+# `LLM transport error:` occurrence NOT inside a `[LLM retry ` line — filter those out. When retries are exhausted
+# (the real #2045 crash), agentis emits both the `[LLM retry …]` lines AND a terminal bare `LLM transport error:`
+# line, so this still catches it. CRITICAL ORDERING: callers MUST check df_llm_timeout_in_log FIRST — a genuine
+# terminal timeout must still early-stop (#1955), and a log that carries a `[llm.timeout]` marker alongside a
+# transport-retry line is a timeout (the timeout won terminally).
+df_transport_error_in_log() {
+  grep -F 'LLM transport error:' "$1" | grep -qvF '[LLM retry'
+}
+
 # df_run_agent_validated <max_attempts> <label> <log> <stage> <zone_id> <attempt_fn> — run <attempt_fn>
 # (which writes ONE `agentis go` invocation's output to its "$1" log arg) up to <max_attempts> times,
 # validating each reply with df_sentinel_present. On the FIRST valid reply: clear any stale "$log.novalid"
@@ -106,12 +137,21 @@ df_llm_timeout_in_log() {
 # failure via a file, not a lost subshell exit code), and return 1.
 df_run_agent_validated() {
   drav_max="$1"; drav_label="$2"; drav_log="$3"; drav_stage="$4"; drav_zone="$5"; drav_fn="$6"
+  drav_tmax="$(df_transport_max_retries)"   # #2045: budget-exempt transport-retry ceiling
+  drav_t=0
   drav_k=0
+  # #2045 review: clear any reason markers left by a PRIOR run over the SAME log path before we start. Each
+  # terminal path below writes only the marker it owns, so a re-run whose failure mode CHANGED (e.g. a previous
+  # transient run left `.transient`, this run is a plain chrome miss) would otherwise let run-refute.sh /
+  # run-invariant-hunt.sh misread the new failure off the stale marker. The success path clears all three too.
+  rm -f "$drav_log.novalid" "$drav_log.timeout" "$drav_log.transient"
   while [ "$drav_k" -lt "$drav_max" ]; do
     drav_k=$((drav_k + 1))
     "$drav_fn" "$drav_log"
     if df_sentinel_present "$drav_stage" "$drav_log" "$drav_zone"; then
-      rm -f "$drav_log.novalid"
+      # A valid reply resolves every prior failure mode — clear ALL stale markers (.novalid, plus the #1955
+      # .timeout and #2045 .transient reason discriminators) so a re-run over the same log path reads clean.
+      rm -f "$drav_log.novalid" "$drav_log.timeout" "$drav_log.transient"
       [ "$drav_k" -gt 1 ] && echo "$drav_label: valid $drav_stage sentinel on attempt $drav_k/$drav_max" >&2
       return 0
     fi
@@ -120,10 +160,31 @@ df_run_agent_validated() {
     # drop BOTH the .novalid marker (a timeout IS a no-valid-sentinel failure — every existing .novalid
     # consumer/counter is preserved) AND the .timeout reason discriminator (only run-discovery.sh reads it,
     # for a DISTINCT FAILED row; the other scrapers keep their existing .novalid handling untouched).
+    # ORDER MATTERS: this MUST stay BEFORE the #2045 transport branch — a log carrying a terminal `[llm.timeout]`
+    # alongside a transport-retry line is a genuine timeout, and must early-stop, not get a fresh-session retry.
     if df_llm_timeout_in_log "$drav_log"; then
       echo "$drav_label: $drav_stage LLM call timed out — a heavy prompt will time out identically on retry; not retrying (re-map or re-hunt)" >&2
       : > "$drav_log.novalid"
       : > "$drav_log.timeout"
+      return 1
+    fi
+    # #2045 transport resilience: a flat-cyborg/HTTP TRANSPORT crash (`LLM transport error: flat-cyborg exited`)
+    # is INFRA instability, not a content miss — the next `agentis go` is already a fresh flat-cyborg process, so
+    # re-invoke on a fresh session. This retry is BUDGET-EXEMPT (AC3): refund the semantic attempt this iteration
+    # spent (drav_k--) so an infra flake never counts as one of the df_max_attempts content attempts, and bound
+    # it by its OWN counter (drav_tmax). On exhaustion, drop the .novalid marker (a transport crash IS a
+    # no-valid-sentinel failure — every existing .novalid consumer is preserved) AND the .transient reason
+    # discriminator (only run-refute.sh reads it, for a DISTINGUISHABLE RE-RUNNABLE row), then FAIL.
+    if df_transport_error_in_log "$drav_log"; then
+      if [ "$drav_t" -lt "$drav_tmax" ]; then
+        drav_t=$((drav_t + 1))
+        drav_k=$((drav_k - 1))
+        echo "$drav_label: $drav_stage LLM transport error (flat-cyborg exited / transport crash) — retrying on a fresh session ($drav_t/$drav_tmax), NOT consuming a semantic attempt" >&2
+        continue
+      fi
+      echo "$drav_label: $drav_stage LLM transport error persisted after $drav_tmax fresh-session retries — RE-RUNNABLE (not assessed), recording transient" >&2
+      : > "$drav_log.novalid"
+      : > "$drav_log.transient"
       return 1
     fi
   done

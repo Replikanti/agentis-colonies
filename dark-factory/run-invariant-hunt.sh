@@ -153,6 +153,12 @@ AGENTIS="agentis"
 # shellcheck source=lib/forge-slot.sh
 # shellcheck disable=SC1091
 . "$HERE/lib/forge-slot.sh"
+# #2045: the shared transport/timeout discriminators (df_transport_error_in_log, df_llm_timeout_in_log) so a
+# flat-cyborg TRANSPORT crash in a prover cell is classified as the re-runnable TRANSIENT_ERROR (#2033), not a
+# terminal HARNESS_ERROR. Sourcing is side-effect-free: the lib defines only df_* functions.
+# shellcheck source=lib/run-agent-validated.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/run-agent-validated.sh"
 # Backstop: free a held slot on ANY exit path (happy path, error, signal), not
 # only the explicit release calls around each forge subprocess below. Safe
 # no-op when no slot is held (fail-open path, or a run that never reached a
@@ -826,11 +832,21 @@ run_one_candidate() {  # $1 = variant ("" = OFF/single), $2 = INV_OUT path, $3 =
   # Take the LAST verdict match. No line at all = HARNESS_ERROR (no verdict produced).
   _vline="$(grep 'INVARIANT|' "$_celllog" | tail -1 || true)"
   if [ -z "$_vline" ]; then
-    _cverd="HARNESS_ERROR"
-    # #1915: purely diagnostic -- never changes _cverd -- distinguishes a generation LLM call timeout
-    # (agentis-core's LlmError::Timeout message) from other HARNESS_ERROR causes in the run's own stderr.
-    if grep -q 'LLM call timed out after' "$_celllog" 2>/dev/null; then
-      echo "run-invariant-hunt.sh: [harness-error] generation LLM call timed out (see $_celllog) -- raise GEN_TIMEOUT_MS if this recurs" >&2
+    # #2045: a flat-cyborg TRANSPORT crash (`LLM transport error: flat-cyborg exited`) that produced NO verdict is
+    # re-runnable INFRA instability, not a permanent harness bug — map it onto the #2033 TRANSIENT_ERROR verdict
+    # (already allowlisted, aggregated, and non-terminal on --deep-hunt-resume) so the cell re-hunts rather than
+    # finalizing as an untestable zone. Checked with the timeout discriminator FIRST: a terminal `[llm.timeout]`
+    # (a heavy prompt that will time out identically) stays HARNESS_ERROR with the #1915 diagnostic below.
+    if df_transport_error_in_log "$_celllog" && ! df_llm_timeout_in_log "$_celllog"; then
+      _cverd="TRANSIENT_ERROR"
+      echo "run-invariant-hunt.sh: [transient] LLM transport error (flat-cyborg exited mid-call) — RE-RUNNABLE, classifying as TRANSIENT_ERROR (re-hunt) (see $_celllog)" >&2
+    else
+      _cverd="HARNESS_ERROR"
+      # #1915: purely diagnostic -- never changes _cverd -- distinguishes a generation LLM call timeout
+      # (agentis-core's LlmError::Timeout message) from other HARNESS_ERROR causes in the run's own stderr.
+      if grep -q 'LLM call timed out after' "$_celllog" 2>/dev/null; then
+        echo "run-invariant-hunt.sh: [harness-error] generation LLM call timed out (see $_celllog) -- raise GEN_TIMEOUT_MS if this recurs" >&2
+      fi
     fi
   else
     _cverd="$(printf '%s' "$_vline" | sed 's/.*INVARIANT|//' | cut -d'|' -f2)"
