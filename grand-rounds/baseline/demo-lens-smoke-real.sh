@@ -58,10 +58,25 @@ if ! grep -qE '^[[:space:]]*llm\.cli_timeout_ms[[:space:]]*=' "$FED_CONFIG"; the
     # regression this smoke exists to catch — proceed and let it fail.
     echo "  (warning: llm.cli_timeout_ms missing from $FED_CONFIG — expect [llm.timeout] failures; run ../install.sh)"
 fi
+# A RELATIVE llm.command resolves against the run copy's cwd in /tmp and would
+# fail for reasons that have nothing to do with the backend under test.
+cmd_path="$(grep -E '^[[:space:]]*llm\.command[[:space:]]*=' "$FED_CONFIG" | head -1 | sed 's/^[^=]*=[[:space:]]*//' || true)"
+if [ -n "$cmd_path" ]; then
+    case "$cmd_path" in
+        /*) : ;;
+        *)
+            echo "[SKIP] demo-lens-smoke-real: llm.command is a relative path ($cmd_path) — it breaks in this test's run copy; use an absolute path in $FED_CONFIG."
+            exit 0
+            ;;
+    esac
+fi
 echo "  (backend: ${backend_line# })"
 
 WORKROOT="$(mktemp -d)"
-trap 'rm -rf "$WORKROOT"' EXIT
+# On failure the run tree (logs, memos, CSVs) is KEPT for inspection — after a
+# potentially hour-long real run, 20 tail lines are not enough post-mortem.
+KEEP_WORKROOT=0
+trap '[ "$KEEP_WORKROOT" = "1" ] && echo "  (run artifacts kept for inspection: $WORKROOT)" || rm -rf "$WORKROOT"' EXIT
 
 # Resolve bcftools exactly like demo-baseline-live.sh: native, else the PINNED
 # local biocontainer (never pulled over the network here).
@@ -146,6 +161,20 @@ export MVA_APPROVAL_FILE="$WORKDIR/phenotype/hpo-approved.txt"
 export MVA_APPROACH="baseline" PANEL_PAD="10" EXOMISER_TIMEOUT_MS="1000"
 export MVA_LENS_MODE="1"
 export COLONY_DIR="$RUN"
+# GATED-DATA HYGIENE: the operator's shell may export MVA_VCF /
+# MVA_PHENOTYPE_DOC pointing at REAL clinical data, pipeline.ag PREFERS them
+# over the data-dir scan, and the operator's copied config allowlists them —
+# left inherited, this "synthetic-only" smoke would push real clinical content
+# into LLM prompts. Neutralize everything not pinned to the fixtures above.
+unset MVA_VCF MVA_PHENOTYPE_DOC MVA_PRIMARY_CONTIGS || true
+export MVA_RUN_EXOMISER=0
+# Reproduce start-colony.sh's real-run wrapper knobs (#2046): without them the
+# tools/flat-cyborg-claude.sh defaults (idle 30 s / total 240 s) abort a heavy
+# prompt long before llm.cli_timeout_ms even matters, so the gate would not be
+# exercising the path the real run uses. Operator exports win.
+: "${FLAT_CYBORG_TIMEOUT_MS:=1800000}"
+: "${FLAT_CYBORG_IDLE_MS:=600000}"
+export FLAT_CYBORG_TIMEOUT_MS FLAT_CYBORG_IDLE_MS
 
 start_ts="$(date +%s)"
 ( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run1.log" 2>&1 ) || true
@@ -167,6 +196,30 @@ if grep -hq 'llm\.timeout' "$RUN/run1.log" "$RUN/run2.log"; then
     grep -h 'llm\.timeout' "$RUN/run1.log" "$RUN/run2.log" | head -3 >&2
 else
     ok "no [llm.timeout] across both passes"
+fi
+
+# --- No OTHER LLM failure either --------------------------------------------
+# lens_score() silently falls back to its deterministic prior on an empty or
+# failed reply, so the chain "completing" proves nothing by itself: a wrapper
+# abort, auth failure, or empty reply still yields a schema-valid CSV — green
+# while degraded to baseline-only, the exact #2046 class.
+if grep -hEi 'llm' "$RUN/run1.log" "$RUN/run2.log" | grep -Eiq 'error|fail|abort'; then
+    bad "an LLM call failed (non-timeout) on the real backend:"
+    grep -hEi 'llm' "$RUN/run1.log" "$RUN/run2.log" | grep -Ei 'error|fail|abort' | head -3 >&2
+else
+    ok "no other LLM error/failure across both passes"
+fi
+
+# --- Real-latency floor -----------------------------------------------------
+# ~8 real prompts cannot come back in seconds; a run this fast means a mock or
+# no-op backend answered, and this gate exists precisely to not be fooled by
+# that. Override the floor via GR_SMOKE_MIN_ELAPSED_S if a future backend is
+# legitimately faster.
+MIN_S="${GR_SMOKE_MIN_ELAPSED_S:-60}"
+if [ "$elapsed" -lt "$MIN_S" ]; then
+    bad "backend answered implausibly fast (${elapsed}s < ${MIN_S}s for ~8 real prompts) — mock/no-op backend? This gate requires the real one."
+else
+    ok "elapsed ${elapsed}s clears the real-latency floor (${MIN_S}s)"
 fi
 
 # --- The lens+refute chain actually completed on the real backend -----------
@@ -194,4 +247,5 @@ else
 fi
 
 echo "grand-rounds/baseline real-backend smoke: $pass ok, $fail failed"
+[ "$fail" -eq 0 ] || KEEP_WORKROOT=1
 [ "$fail" -eq 0 ]

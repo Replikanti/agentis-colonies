@@ -158,13 +158,19 @@ CI cannot execute `.ag` (no `agentis` binary on runners), so coverage is split:
 **Real-backend latency knobs** ([#2046](https://github.com/Replikanti/agentis-colonies/issues/2046)):
 a heavy clinical-genetics lens prompt takes **~630 s** on the real flat-cyborg
 backend, well past the agentis-core default LLM subprocess timeout (120 s).
-`../install.sh` therefore ships `llm.cli_timeout_ms = 1800000` in
-`.agentis/config` (override at install time via `MVA_LLM_CLI_TIMEOUT_MS`), and
-`scripts/start-colony.sh` defaults + exports the wrapper-path knobs
-`FLAT_CYBORG_TIMEOUT_MS=1800000` / `FLAT_CYBORG_IDLE_MS=600000` (an operator
-export wins). `start-colony.sh` refuses to launch (exit 5) when
-`llm.cli_timeout_ms` is missing from `.agentis/config` — re-run `../install.sh`
-on older installs.
+`../install.sh` therefore ships two `.agentis/config` keys covering both
+backend styles — `llm.cli_timeout_ms = 1800000` (caps the whole LLM subprocess
+either way) and `llm.flat_cyborg.idle_ms = 600000` (the **native**
+`llm.backend = flat-cyborg` idle cap). Existing operator-tuned values survive
+re-runs; `MVA_LLM_CLI_TIMEOUT_MS` / `MVA_LLM_FC_IDLE_MS` override at install
+time. The env knobs `FLAT_CYBORG_TIMEOUT_MS=1800000` /
+`FLAT_CYBORG_IDLE_MS=600000` reach only the **wrapper** path
+(`llm.command = tools/flat-cyborg-claude.sh`); `scripts/start-colony.sh`
+defaults + exports them (an operator export wins). `start-colony.sh` refuses
+to launch (exit 5) when `llm.cli_timeout_ms` is missing — re-run
+`../install.sh` on older installs — and, with `MVA_LENS_MODE=1`, when it is
+present but below the 600000 ms lens sanity floor (a stale hand-written
+120000 would reproduce #2046 verbatim).
 
 **Stage 3 (Exomiser) is deliberately NOT covered by the live test** — the
 multi-tens-of-GB bundle and hour-scale run put it in the operator end-to-end

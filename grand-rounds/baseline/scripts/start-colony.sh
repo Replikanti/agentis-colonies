@@ -137,6 +137,23 @@ if [ "$need_wire" -ne 0 ]; then
     exit 5
 fi
 
+# A PRESENT but stale llm.cli_timeout_ms (e.g. a hand-written 120000) passes
+# the presence check above yet still aborts every heavy lens prompt — enforce
+# a sanity floor when the lens fan-out is actually on. install.sh ships
+# 1800000 (~630 s observed per prompt); anything below 600000 can only fail.
+if [ "${MVA_LENS_MODE:-0}" = "1" ]; then
+    cli_ms="$(grep -E '^[[:space:]]*llm\.cli_timeout_ms[[:space:]]*=' "$CONFIG_FILE" | tail -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d '[:space:]')"
+    case "$cli_ms" in
+        ''|*[!0-9]*) cli_ms=0 ;;
+    esac
+    if [ "$cli_ms" -lt 600000 ]; then
+        echo "start-colony.sh: llm.cli_timeout_ms = $cli_ms is below the lens floor (600000 ms)." >&2
+        echo "      Heavy lens prompts take ~630 s on the real backend (#2046). Re-run ./install.sh" >&2
+        echo "      (ships 1800000), raise the key, or run without MVA_LENS_MODE=1." >&2
+        exit 5
+    fi
+fi
+
 # --- Resolve the rest of the env contract ----------------------------------
 : "${MVA_REF_FASTA:=$MVA_WORK_DIR/refdata/${MVA_REF_FASTA_NAME:-GCA_000001405.15_GRCh38_no_alt_analysis_set.fna}}"
 : "${MVA_HPO_OBO:=$MVA_WORK_DIR/refdata/hp.obo}"

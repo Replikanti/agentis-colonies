@@ -33,14 +33,18 @@ ENV_PASSTHROUGH="MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA
 # stage additionally carries an explicit inline timeout in the .ag.
 DEFAULT_TIMEOUT_MS="21600000"
 
-# LLM subprocess timeout (#2046). agentis-core's llm.cli_timeout_ms defaults to
-# 120 s, but a heavy clinical-genetics lens prompt driven through the real
-# flat-cyborg backend takes ~630 s — every M3 lens prompt aborted with
-# [llm.timeout] until the operator raised this to 1800 s. Ship the lens-viable
-# value; override at install time via MVA_LLM_CLI_TIMEOUT_MS. The related
-# wrapper-path knobs FLAT_CYBORG_TIMEOUT_MS / FLAT_CYBORG_IDLE_MS are
-# defaulted+exported by start-colony.sh (env overrides win).
-LLM_CLI_TIMEOUT_MS="${MVA_LLM_CLI_TIMEOUT_MS:-1800000}"
+# LLM timeouts (#2046). agentis-core's llm.cli_timeout_ms defaults to 120 s,
+# but a heavy clinical-genetics lens prompt driven through the real flat-cyborg
+# backend takes ~630 s — every M3 lens prompt aborted with [llm.timeout] until
+# the operator raised this to 1800 s. Ship lens-viable values for BOTH backend
+# styles: llm.cli_timeout_ms caps the whole subprocess either way, and
+# llm.flat_cyborg.idle_ms is the native-backend idle cap (the env knobs
+# FLAT_CYBORG_TIMEOUT_MS / FLAT_CYBORG_IDLE_MS only reach the WRAPPER path;
+# start-colony.sh defaults+exports those, env overrides win).
+#
+# Precedence per key: MVA_* install-time override > value already present in
+# the config (an operator tuning survives re-runs) > the shipped default.
+prior_key() { grep -E "^[[:space:]]*$1[[:space:]]*=" "$CONFIG" 2>/dev/null | tail -1 | sed 's/^[^=]*=[[:space:]]*//' | tr -d '[:space:]' || true; }
 
 log() { printf '[grand-rounds/install] %s\n' "$*"; }
 warn() { printf '[grand-rounds/install] warning: %s\n' "$*" >&2; }
@@ -83,26 +87,35 @@ if [ "$missing" -ne 0 ]; then
     warn "prerequisites incomplete; resolve the warnings above, then re-run."
 fi
 
-# --- 2. .agentis/config (exec.env_passthrough + timeout) --------------------
+# --- 2. .agentis/config (exec.env_passthrough + timeouts) -------------------
 
 mkdir -p "$AGENTIS_DIR"
 touch "$CONFIG"
 
-# Rewrite the two managed keys idempotently: strip any prior line, then append
+# Resolve the two LLM-timeout values BEFORE the rewrite: an existing operator
+# tuning is kept across re-runs; the MVA_* env override always wins.
+LLM_CLI_TIMEOUT_MS="${MVA_LLM_CLI_TIMEOUT_MS:-$(prior_key 'llm\.cli_timeout_ms')}"
+LLM_CLI_TIMEOUT_MS="${LLM_CLI_TIMEOUT_MS:-1800000}"
+LLM_FC_IDLE_MS="${MVA_LLM_FC_IDLE_MS:-$(prior_key 'llm\.flat_cyborg\.idle_ms')}"
+LLM_FC_IDLE_MS="${LLM_FC_IDLE_MS:-600000}"
+
+# Rewrite the managed keys idempotently: strip any prior line, then append
 # the current value. Every other line the operator added is preserved.
 tmp="$(mktemp)"
-grep -vE '^[[:space:]]*(exec\.env_passthrough|exec\.default_timeout_ms|llm\.cli_timeout_ms|experience\.enabled)[[:space:]]*=' "$CONFIG" > "$tmp" || true
+grep -vE '^[[:space:]]*(exec\.env_passthrough|exec\.default_timeout_ms|llm\.cli_timeout_ms|llm\.flat_cyborg\.idle_ms|experience\.enabled)[[:space:]]*=' "$CONFIG" > "$tmp" || true
 {
     printf 'exec.env_passthrough = %s\n' "$ENV_PASSTHROUGH"
     printf 'exec.default_timeout_ms = %s\n' "$DEFAULT_TIMEOUT_MS"
     printf 'llm.cli_timeout_ms = %s\n' "$LLM_CLI_TIMEOUT_MS"
+    printf 'llm.flat_cyborg.idle_ms = %s\n' "$LLM_FC_IDLE_MS"
     # M3 lens mode's refute gate records a best-effort learn() outcome; enabling
     # the experience store lets that telemetry persist (a no-op when lens mode is
     # off, and the refuter wraps learn() in try/catch so it is never fatal).
     printf 'experience.enabled = true\n'
 } >> "$tmp"
 mv "$tmp" "$CONFIG"
-log "wrote exec.env_passthrough allowlist + exec.default_timeout_ms + llm.cli_timeout_ms + experience.enabled to $CONFIG"
+log "wrote exec.env_passthrough allowlist + exec.default_timeout_ms + experience.enabled to $CONFIG"
+log "  llm.cli_timeout_ms = $LLM_CLI_TIMEOUT_MS, llm.flat_cyborg.idle_ms = $LLM_FC_IDLE_MS (existing values kept on re-runs; override via MVA_LLM_CLI_TIMEOUT_MS / MVA_LLM_FC_IDLE_MS)"
 
 # --- 3. Reference data (opt-in) --------------------------------------------
 
