@@ -35,6 +35,7 @@ on:
     tags:
       - 'dark-factory-v*'
       - 'dev-apprenticeship-v*'
+      - 'grand-rounds-v*'
       - 'research-foundry-v*'
       - 'tribes-bench-v*'
       - 'trading-binance-v*'
