@@ -1467,6 +1467,27 @@ if [ -x "$REPO_ROOT/dark-factory/demo-discovery-fail-fast.sh" ]; then
     fi
 fi
 
+# --- dark-factory transport resilience (#2045) ---
+# flat-cyborg exits mid-LLM-call under concurrent load; agentis-core surfaces this as an untagged
+# `LlmError::Transport` whose ONLY discriminator is the Display prefix `LLM transport error:` (unlike a Timeout,
+# tagged `[llm.timeout]`). Left unhandled it collapsed a refute candidate to terminal ERROR and a deep-hunt cell
+# to HARNESS_ERROR (alchemix-v3: 100% adjudication loss). lib/run-agent-validated.sh now treats a transport
+# crash as a BOUNDED, BUDGET-EXEMPT fresh-session retry (df_transport_error_in_log, DF_AGENT_TRANSPORT_RETRIES,
+# checked AFTER the #1955 timeout early-stop) and, on exhaustion, drops a .transient marker: run-refute.sh emits
+# a distinguishable RE-RUNNABLE ERROR row and run-invariant-hunt.sh maps it to the re-runnable #2033
+# TRANSIENT_ERROR. demo-transport-resilience.sh drives the helper over crafted logs (CI-safe, no agentis/
+# flat-cyborg binary): discriminator truth-table + the budget-exempt retry/marker semantics + #1955/#1707
+# non-regression, plus a source-guard for the two consumers' wiring.
+if [ -x "$REPO_ROOT/dark-factory/demo-transport-resilience.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-transport-resilience.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: transport resilience — a flat-cyborg transport crash is a budget-exempt fresh-session retry then a re-runnable transient (#2045)"
+    else
+        fail "dark-factory: transport resilience regressed — a flat-cyborg transport crash is not classified/retried correctly (#2045)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory refuter -> hunter constraint channel (#1887) ---
 # The refute gate is where most candidates die and its reason used to die with them. refuter.ag now emits the
 # GENERALISABLE half of each REFUTED verdict as a `CONSTRAINT|` line placed BEFORE the verdict (after it,
