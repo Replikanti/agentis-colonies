@@ -38,10 +38,12 @@ The one unrecoverable failure mode here is committing gated clinical data.
 |--------|-------------|--------|
 | [baseline](./baseline/) | One-shot `agentis go` pipeline: preprocess → phenotype (hash-pinned operator gate) → Exomiser (opt-in) → panel review → reconcile → emit + validate. | 1 (`pipeline.ag`, seven cooperating bus agents: a coordinator + six stages) |
 
-The M3 **lens colonies** (inheritance / mosaicism-VAF / HPO-overlap /
-known-gene / pathway lenses + a refute gate) will land inside this federation
-as siblings of `baseline/`; this baseline is the artifact those lenses must
-beat.
+The M3 **lens layer** (five blind lenses — inheritance / mosaicism-VAF /
+HPO-overlap / known-gene / pathway — plus an adversarial refute gate and a
+reconciler) is opt-in via `MVA_LENS_MODE=1` and layered onto the baseline
+candidate pool inside `baseline/agents/pipeline.ag`; default-off, it leaves the
+baseline submission byte-for-byte identical. See the
+[methods report](./doc/methods.md) for the full architecture.
 
 ## Quickstart
 
@@ -64,3 +66,16 @@ completion under a single declared `cb` budget rather than gating behaviour on
 the four-tier confidence ladder. The four-tier contract in
 [ADR-0001](../doc/adr/ADR-0001-confidence-tiers.md) remains normative for any
 future ticking agent added here.
+
+## Documentation
+
+- [Methods report](./doc/methods.md) — pipeline architecture, the EPCR
+  evidence-tier ladder, reproduction steps, and honest caveats.
+- [Changelog](./CHANGELOG.md).
+
+## License
+
+The `grand-rounds` federation deliverable is licensed under
+[Creative Commons Attribution 4.0 International (CC BY 4.0)](./LICENSE) — the
+license required for the MVA Hackathon 2026 submission — which is distinct from
+the repository-root Apache-2.0 that governs the rest of agentis-colonies.

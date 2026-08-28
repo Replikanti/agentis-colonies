@@ -48,6 +48,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `demo-baseline-live.sh` wires no LLM backend and cannot catch real-backend
   latency regressions — its header and the README now say so loudly.
 
+- **M6 public-deliverable readiness**
+  ([#2050](https://github.com/Replikanti/agentis-colonies/issues/2050)): a
+  scoped `grand-rounds/LICENSE` (Creative Commons Attribution 4.0 International,
+  the license the MVA Hackathon 2026 submission requires — distinct from the
+  repo-root Apache-2.0) and a reproducible `doc/methods.md` methods report
+  (pipeline architecture, the EPCR evidence-tier ladder, reproduction steps, and
+  honest caveats), grounded in the merged pipeline and carrying no proband data.
+  README now links both.
+
 ### Changed
 
 ### Deprecated
