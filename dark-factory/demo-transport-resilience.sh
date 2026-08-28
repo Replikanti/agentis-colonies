@@ -59,6 +59,8 @@ _seq_attempt() {
     timeout)   printf '%s\n' 'Error: runtime error: [llm.timeout] LLM call timed out after 600s' > "$1" ;;
     mixed)     printf '%s\n' '[LLM retry 1/2: LLM transport error: flat-cyborg exited]' \
                              'Error: runtime error: [llm.timeout] LLM call timed out after 600s' > "$1" ;;
+    recovered) printf '%s\n' '[LLM retry 2/2: LLM transport error: flat-cyborg exited]' \
+                             'high · /effort' 'esc to interrupt' > "$1" ;;
     chrome)    printf '%s\n' 'high · /effort' 'esc to interrupt' > "$1" ;;
     valid)     printf '%s\n' 'Reasoning about the candidate ...' 'VERDICT|REAL|C1|high|conservation of value broken' > "$1" ;;
     *)         printf '%s\n' 'high · /effort' > "$1" ;;
@@ -103,6 +105,15 @@ if df_sentinel_present refuter "$WORK/v.log" \
    && ! df_transport_error_in_log "$WORK/v.log" && ! df_llm_timeout_in_log "$WORK/v.log"; then
   ok "(1a-iv) VERDICT| log -> refuter sentinel present, transport=no, timeout=no"
 else bad "(1a-iv) valid sentinel log misclassified"; fi
+
+# A log whose ONLY `LLM transport error:` occurrence is a NON-terminal `[LLM retry N/M: …]` line = agentis
+# RECOVERED from a transport blip (exit 0). It is NOT a terminal crash and must read transport=NO, else a
+# recovered-then-chrome reply (a genuine #1707 content miss) is laundered into a re-runnable transient.
+printf '%s\n' '[LLM retry 2/2: LLM transport error: flat-cyborg exited]' 'high · /effort' > "$WORK/rec.log"
+if ! df_transport_error_in_log "$WORK/rec.log" && ! df_llm_timeout_in_log "$WORK/rec.log" \
+   && ! df_sentinel_present refuter "$WORK/rec.log"; then
+  ok "(1a-v) recovered internal-retry-line-only log -> transport=NO (agentis recovered; not a terminal crash)"
+else bad "(1a-v) recovered internal-retry-line log misclassified as a terminal transport crash"; fi
 
 # --- (1b) AC3: transport flakes do NOT consume the semantic attempt budget ---------------------------
 # max_attempts=2, transport_retries=2, sequence [transport, transport, valid] must RECOVER (0): the 2 infra
@@ -149,6 +160,23 @@ if [ "$(df_transport_max_retries)" = "2" ] \
    && [ "$(DF_AGENT_TRANSPORT_RETRIES=junk df_transport_max_retries)" = "2" ]; then
   ok "(1h) df_transport_max_retries: default 2, honours 0, coerces garbage back to 2"
 else bad "(1h) df_transport_max_retries validation broke"; fi
+
+# --- (1i) reviewer (PR #2048): a call that RECOVERED from an internal transport retry but ended in CHROME is a
+# genuine #1707 content miss, NOT a re-runnable transient — the leftover `[LLM retry …]` line must not launder it.
+DF_AGENT_MAX_ATTEMPTS=3 DF_AGENT_TRANSPORT_RETRIES=2 run_seq recovered recovered recovered
+if [ "$RC" -eq 1 ] && [ "$CALLS" -eq 3 ] && [ -f "$LOG.novalid" ] && [ ! -f "$LOG.transient" ]; then
+  ok "(1i) recovered-then-chrome consumes exactly 3 semantic attempts, drops .novalid, NO .transient (not laundered)"
+else bad "(1i) recovered-then-chrome laundered to transient: RC=$RC CALLS=$CALLS transient=$([ -f "$LOG.transient" ] && echo y)"; fi
+
+# --- (1j) reviewer (PR #2048, stale marker): a leftover .transient from a PRIOR run over the same log path must
+# not survive into a fresh run whose failure mode changed (entry-clear), else run-refute misreads a chrome miss.
+: > "$CALLC"; rm -f "$LOG" "$LOG.novalid" "$LOG.timeout" "$LOG.transient"
+: > "$LOG.transient"                        # plant a stale marker from an imagined prior transient run
+printf '%s\n' chrome chrome chrome > "$SEQFILE"
+df_run_agent_validated 3 "demo-transport" "$LOG" refuter "" _seq_attempt; RCJ=$?
+if [ "$RCJ" -eq 1 ] && [ -f "$LOG.novalid" ] && [ ! -f "$LOG.transient" ]; then
+  ok "(1j) stale .transient from a prior run is cleared at entry; a fresh chrome miss drops .novalid only"
+else bad "(1j) stale .transient leaked into a fresh chrome-miss run: transient=$([ -f "$LOG.transient" ] && echo y)"; fi
 
 # =====================================================================================================
 note "2) SOURCE-GUARD: the transient wiring in both consumers ..."

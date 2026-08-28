@@ -110,18 +110,23 @@ df_llm_timeout_in_log() {
   grep -Fq '[llm.timeout] LLM call timed out' "$1"
 }
 
-# df_transport_error_in_log <log> — #2045: did the call fail with a flat-cyborg/HTTP TRANSPORT error (as opposed
-# to a content miss or a terminal timeout)? Anchored to the `LlmError` Display prefix `LLM transport error:`
-# (agentis-core src/llm.rs:45; the flat-cyborg backend surfaces `flat-cyborg exited with ...` behind it at
-# src/llm.rs:1306). Unlike Timeout/Cancelled, classify_llm_error() tags a Transport error with NO `[llm.*]`
-# marker, so this Display prefix is the ONLY reliable discriminator — and it is BROAD by design: every
-# flat-cyborg/HTTP transport failure is re-runnable on a fresh session. The prefix matches BOTH the terminal
-# error AND the non-terminal `[LLM retry N/M: LLM transport error: flat-cyborg exited]` internal-retry line,
-# which is fine: both call for the same action (retry on a fresh session). CRITICAL ORDERING: callers MUST
-# check df_llm_timeout_in_log FIRST — a genuine terminal timeout must still early-stop (#1955), and a log that
-# carries a `[llm.timeout]` marker alongside a transport-retry line is a timeout (the timeout won terminally).
+# df_transport_error_in_log <log> — #2045: did the call TERMINALLY fail with a flat-cyborg/HTTP TRANSPORT error
+# (as opposed to a content miss, a terminal timeout, or a transport blip agentis RECOVERED from)? Anchored to the
+# `LlmError` Display prefix `LLM transport error:` (agentis-core src/llm.rs:45; the flat-cyborg backend surfaces
+# `flat-cyborg exited with ...` behind it at src/llm.rs:1306). Unlike Timeout/Cancelled, classify_llm_error()
+# tags a Transport error with NO `[llm.*]` marker (exec.rs:2789 `other => General(format!("{other}"))`), so this
+# Display prefix is the only signal a Transport error leaves. But — exactly as a bare `LLM call timed out`
+# substring would have defeated #1955 — the prefix ALSO appears in the NON-terminal internal-retry line
+# `[LLM retry N/M: LLM transport error: flat-cyborg exited]` (llm.rs:539/820/…) that agentis PRINTS and then
+# RECOVERS from with exit 0. A recovered-then-chrome reply (a genuine #1707 content miss whose log merely carries
+# that retry line) must NOT be laundered into a re-runnable transient. So the terminal transport error is the only
+# `LLM transport error:` occurrence NOT inside a `[LLM retry ` line — filter those out. When retries are exhausted
+# (the real #2045 crash), agentis emits both the `[LLM retry …]` lines AND a terminal bare `LLM transport error:`
+# line, so this still catches it. CRITICAL ORDERING: callers MUST check df_llm_timeout_in_log FIRST — a genuine
+# terminal timeout must still early-stop (#1955), and a log that carries a `[llm.timeout]` marker alongside a
+# transport-retry line is a timeout (the timeout won terminally).
 df_transport_error_in_log() {
-  grep -Fq 'LLM transport error:' "$1"
+  grep -F 'LLM transport error:' "$1" | grep -qvF '[LLM retry'
 }
 
 # df_run_agent_validated <max_attempts> <label> <log> <stage> <zone_id> <attempt_fn> — run <attempt_fn>
@@ -135,6 +140,11 @@ df_run_agent_validated() {
   drav_tmax="$(df_transport_max_retries)"   # #2045: budget-exempt transport-retry ceiling
   drav_t=0
   drav_k=0
+  # #2045 review: clear any reason markers left by a PRIOR run over the SAME log path before we start. Each
+  # terminal path below writes only the marker it owns, so a re-run whose failure mode CHANGED (e.g. a previous
+  # transient run left `.transient`, this run is a plain chrome miss) would otherwise let run-refute.sh /
+  # run-invariant-hunt.sh misread the new failure off the stale marker. The success path clears all three too.
+  rm -f "$drav_log.novalid" "$drav_log.timeout" "$drav_log.transient"
   while [ "$drav_k" -lt "$drav_max" ]; do
     drav_k=$((drav_k + 1))
     "$drav_fn" "$drav_log"
