@@ -110,8 +110,11 @@ build_data_dir() {
 # Build a run copy of the colony + refdata + .agentis/config, then run it.
 # Populates $RUN and $OUTDIR; approval is applied when $2 = "approve"; M3 lens
 # mode is on when $3 = "1" (default off, so the baseline runs are unchanged).
+# $4 mutates the GTF wiring for the #2044 fail-fast checks: "fixture" (default)
+# uses the panel fixture; "empty" unsets MVA_GTF; "missing" points at an absent
+# file; "gz" gzips the fixture; "nogenes" swaps in a GTF with no panel gene.
 run_pipeline() {
-    dd="$1"; approve="$2"; lens="${3:-0}"
+    dd="$1"; approve="$2"; lens="${3:-0}"; gtfmode="${4:-fixture}"
     RUN="$WORKROOT/run.$RANDOM"
     cp -r "$BASE_DIR" "$RUN"
     rm -rf "$RUN/.agentis"
@@ -139,7 +142,21 @@ experience.enabled = true
 CFG
     export MVA_DATA_DIR="$dd" MVA_WORK_DIR="$WORKDIR" MVA_OUT_DIR="$OUTDIR"
     export MVA_REF_FASTA="$WORKDIR/refdata/ref.fa" MVA_HPO_OBO="$WORKDIR/refdata/hp.obo"
-    export MVA_GTF="$WORKDIR/refdata/panel.gtf" MVA_BCFTOOLS="$BCFTOOLS_BIN"
+    case "$gtfmode" in
+        fixture) export MVA_GTF="$WORKDIR/refdata/panel.gtf" ;;
+        empty)   export MVA_GTF="" ;;
+        missing) export MVA_GTF="$WORKDIR/refdata/absent.gtf" ;;
+        gz)
+            gzip -c "$WORKDIR/refdata/panel.gtf" > "$WORKDIR/refdata/panel.gtf.gz"
+            export MVA_GTF="$WORKDIR/refdata/panel.gtf.gz"
+            ;;
+        nogenes)
+            printf 'chrZ\tSYNTH\tgene\t1\t100\t.\t+\t.\tgene_id "SYNGZ"; gene_name "NOTAPANELGENE";\n' \
+                > "$WORKDIR/refdata/nogenes.gtf"
+            export MVA_GTF="$WORKDIR/refdata/nogenes.gtf"
+            ;;
+    esac
+    export MVA_BCFTOOLS="$BCFTOOLS_BIN"
     export MVA_APPROVAL_FILE="$WORKDIR/phenotype/hpo-approved.txt"
     export MVA_APPROACH="baseline" PANEL_PAD="10" EXOMISER_TIMEOUT_MS="1000"
     export MVA_LENS_MODE="$lens"
@@ -244,6 +261,45 @@ if [ -f "$WORKDIR/stage-rows.tsv" ]; then
     fi
 else
     bad "M6: stage-rows.tsv was not produced"
+fi
+
+# ============================================================================
+# G1-G4 (#2044): GTF fail-fast — a broken GTF wiring must REFUSE loudly, never
+# emit a silently empty submission. Each mutation reuses the M1 base data (which
+# DOES produce a CSV with the fixture GTF — that is the mutation contrast) and
+# must (a) produce NO csv and (b) name its guard in the PERSISTED abort memo
+# (baseline:abort_reason — the print stream is lost when downstream agents
+# crash on the void left by an aborted coordinator, so the log is not enough).
+# ============================================================================
+
+DDG="$WORKROOT/data.gtf"; build_data_dir "$DDG" "$FIX/proband.vcf"
+
+run_pipeline "$DDG" noapprove 0 empty
+if [ ! -f "$CSV" ] && grep -q 'no-gtf' "$MEMODIR/baseline:abort_reason.jsonl" 2>/dev/null; then
+    ok "G1: empty MVA_GTF -> coordinator refuses (no-gtf), no CSV"
+else
+    bad "G1: empty MVA_GTF did not refuse loudly (silent-empty-submission guard broken)"
+fi
+
+run_pipeline "$DDG" noapprove 0 missing
+if [ ! -f "$CSV" ] && grep -q 'gtf-missing' "$MEMODIR/baseline:abort_reason.jsonl" 2>/dev/null; then
+    ok "G2: absent MVA_GTF file -> coordinator refuses (gtf-missing), no CSV"
+else
+    bad "G2: absent MVA_GTF file did not refuse loudly"
+fi
+
+run_pipeline "$DDG" noapprove 0 gz
+if [ ! -f "$CSV" ] && grep -q 'gtf-gzipped' "$MEMODIR/baseline:abort_reason.jsonl" 2>/dev/null; then
+    ok "G3: gzipped MVA_GTF -> coordinator refuses (gtf-gzipped), no CSV"
+else
+    bad "G3: gzipped MVA_GTF did not refuse (the real-run empty-submission trap)"
+fi
+
+run_pipeline "$DDG" noapprove 0 nogenes
+if [ ! -f "$CSV" ] && grep -q 'panel-genes-unresolved' "$MEMODIR/baseline:abort_reason.jsonl" 2>/dev/null; then
+    ok "G4: GTF without the panel genes -> coordinator refuses (panel-genes-unresolved), no CSV"
+else
+    bad "G4: panel-gene-free GTF did not refuse (empty-panel guard broken)"
 fi
 
 # ============================================================================

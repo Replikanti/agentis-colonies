@@ -120,6 +120,14 @@ fetch "$MVA_HPO_OBO_URL" "$REFDATA/hp.obo"
 : "${MVA_GENCODE_RELEASE:=45}"
 : "${MVA_GENCODE_GTF_URL:=https://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_${MVA_GENCODE_RELEASE}/gencode.v${MVA_GENCODE_RELEASE}.primary_assembly.annotation.gtf.gz}"
 fetch "$MVA_GENCODE_GTF_URL" "$REFDATA/gencode.gtf.gz"
+# The panel BED is derived from the GTF by a PLAIN-TEXT grep in the .ag; a
+# gzipped GTF resolves nothing and the pipeline refuses it (#2044) — provision
+# the decompressed form (same verify-then-skip idempotency as the FASTA above).
+GTF="$REFDATA/gencode.gtf"
+if [ ! -s "$GTF" ]; then
+    log "gunzip GENCODE GTF (the panel lookup greps plain text)"
+    gzip -dc "$REFDATA/gencode.gtf.gz" > "$GTF"
+fi
 
 # --- Container wrappers for the binary tools --------------------------------
 : "${MVA_CONTAINER_CMD:=podman}"
@@ -153,7 +161,7 @@ RESOLVED="$REFDATA/RESOLVED.env"
     echo "MVA_EXOMISER_DATA_DIR=${DATA_DIR}"
     echo "MVA_REF_FASTA=${FASTA}"
     echo "MVA_HPO_OBO=${REFDATA}/hp.obo"
-    echo "MVA_GTF=${REFDATA}/gencode.gtf.gz"
+    echo "MVA_GTF=${GTF}"
 } > "$RESOLVED"
 log "wrote $RESOLVED"
 log "Done."

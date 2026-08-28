@@ -146,5 +146,7 @@ fi
 
 log "Done. Next:"
 log "  1. ./baseline/scripts/fetch-reference-data.sh   # if not fetched above"
+log "     (provisions the GENCODE GTF *decompressed* — the pipeline refuses a"
+log "      .gz MVA_GTF and refuses to run without one, #2044)"
 log "  2. export MVA_DATA_DIR=... MVA_WORK_DIR=... MVA_OUT_DIR=..."
 log "  3. ./baseline/scripts/start-colony.sh"

@@ -104,6 +104,12 @@ The D6 approval gate governs the lens submission too (the HPO set feeds
    ```bash
    ./scripts/fetch-reference-data.sh
    ```
+   This also provisions the **GENCODE GTF decompressed**
+   ([#2044](https://github.com/Replikanti/agentis-colonies/issues/2044)): the
+   panel BED is derived from `$MVA_GTF` by a plain-text grep, so a `.gz` there
+   resolves nothing — the pipeline now **refuses to run** (rather than emit a
+   silently empty submission) when `MVA_GTF` is unset, missing, gzipped, or
+   does not resolve every symbol in `settings/mva-genes.tsv`.
 3. Export the data-dir contract and run:
    ```bash
    export MVA_DATA_DIR=... MVA_WORK_DIR=... MVA_OUT_DIR=...

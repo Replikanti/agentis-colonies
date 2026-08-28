@@ -394,6 +394,54 @@ agent coordinator() -> void {
         emit("baseline:abort", "no-ref");
         return;
     }
+    // GTF preflight (#2044). The panel stage derives its BED from the GTF via
+    // a PLAIN-TEXT grep (panel_bed_line): an unset, missing, or gzipped GTF —
+    // or one that resolves no panel symbol — used to sail through to a
+    // silently EMPTY submission (0-record panel -> 0-candidate reconcile ->
+    // degenerate CSV). Refuse HERE, before any expensive stage runs.
+    let gtf = getenv("MVA_GTF");
+    if len(trim(gtf)) == 0 {
+        print("coordinator: ERROR — MVA_GTF is empty/unset (allowlist not wired, or GTF not provisioned — run fetch-reference-data.sh). Refusing: no-gtf");
+        memo_write("baseline:abort_reason", "no-gtf");
+        emit("baseline:abort", "no-gtf");
+        return;
+    }
+    // colony-lint: safe-exec-concat
+    let gtf_present = trim(exec sh "test -f " + shell_escape(gtf) + " && echo yes || echo no");
+    if gtf_present != "yes" {
+        print("coordinator: ERROR — MVA_GTF does not exist: ", gtf, " (run fetch-reference-data.sh or point MVA_GTF at a GENCODE GTF). Refusing: gtf-missing");
+        memo_write("baseline:abort_reason", "gtf-missing");
+        emit("baseline:abort", "gtf-missing");
+        return;
+    }
+    if regex_match("\\.gz$", gtf) {
+        print("coordinator: ERROR — MVA_GTF is gzip-compressed (", gtf, "); the panel lookup greps plain text and resolves NOTHING on a .gz. Decompress it (fetch-reference-data.sh does since #2044). Refusing: gtf-gzipped");
+        memo_write("baseline:abort_reason", "gtf-gzipped");
+        emit("baseline:abort", "gtf-gzipped");
+        return;
+    }
+    // Every panel symbol must resolve through the SAME lookup the panel stage
+    // uses — a wrong-assembly or truncated GTF fails loudly here, not as an
+    // empty BED three stages later. mva-genes.tsv's own header row is not a
+    // symbol.
+    let cdir = getenv("COLONY_DIR");
+    // colony-lint: safe-exec-concat
+    let genes_raw = exec sh "grep -v '^#' " + shell_escape(cdir + "/settings/mva-genes.tsv") + " 2>/dev/null || true";
+    let panel_genes = filter(map(nonempty_lines(genes_raw), |l: string| -> string { return field(l, 0); }),
+        |g: string| -> bool { return g != "symbol"; });
+    if len(panel_genes) == 0 {
+        print("coordinator: ERROR — no panel symbols readable from settings/mva-genes.tsv. Refusing: empty-gene-panel");
+        memo_write("baseline:abort_reason", "empty-gene-panel");
+        emit("baseline:abort", "empty-gene-panel");
+        return;
+    }
+    let unresolved = filter(panel_genes, |g: string| -> bool { return len(panel_bed_line(gtf, g, 0)) == 0; });
+    if len(unresolved) > 0 {
+        print("coordinator: ERROR — ", len(unresolved), " panel gene(s) unresolvable in MVA_GTF (", join_str(unresolved, ","), ") — wrong or truncated GTF? Refusing: panel-genes-unresolved");
+        memo_write("baseline:abort_reason", "panel-genes-unresolved");
+        emit("baseline:abort", "panel-genes-unresolved");
+        return;
+    }
     // colony-lint: safe-exec-concat
     exec sh "mkdir -p " + shell_escape(wd) + "/preproc " + shell_escape(wd) + "/phenotype " + shell_escape(wd) + "/exomiser";
     emit("baseline:vcf", vcf);
@@ -759,6 +807,16 @@ agent panel_reviewer() -> void {
         if len(bl) == 0 { return acc; }
         return acc + bl + "\n";
     }, "");
+    // Belt-and-braces to the coordinator's #2044 GTF preflight: an empty BED
+    // here means EVERY gene lookup failed (GTF replaced/moved between stages,
+    // or a panel edit) — bcftools view -R over an empty BED matches 0 records
+    // and the run would end as a silently EMPTY submission.
+    if len(trim(bed)) == 0 {
+        print("panel_reviewer: REFUSING — panel BED is empty (no gene from settings/mva-genes.tsv resolved in MVA_GTF): empty-panel-bed");
+        memo_write("baseline:abort_reason", "empty-panel-bed");
+        emit("baseline:abort", "empty-panel-bed");
+        return;
+    }
     let bedfile = wd + "/preproc/panel.bed";
     // colony-lint: safe-exec-concat
     exec sh "printf %s " + shell_escape(bed) + " > " + shell_escape(bedfile);
@@ -769,6 +827,15 @@ agent panel_reviewer() -> void {
         + " 2>/dev/null | " + shell_escape(bcftools) + " query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER[\\t%GT\\t%AD]\\n' 2>/dev/null || true";
     let rec_lines = nonempty_lines(recs);
     record_rows("panel", len(rec_lines));
+    // Stage 1 already refused an empty normalized VCF, so 0 panel records over
+    // a NON-EMPTY VCF is a data mismatch (contig naming / assembly disagreement
+    // between the VCF and the GTF-derived panel), never a valid result (#2044).
+    if len(rec_lines) == 0 {
+        print("panel_reviewer: REFUSING — 0 panel records over a non-empty normalized VCF (contig-naming or assembly mismatch between the VCF and the GTF-derived panel): panel-zero-records");
+        memo_write("baseline:abort_reason", "panel-zero-records");
+        emit("baseline:abort", "panel-zero-records");
+        return;
+    }
     if len(rec_lines) > 500 {
         print("panel_reviewer: REFUSING — ", len(rec_lines), " records exceed the .ag boundary limit (500).");
         emit("baseline:abort", "panel-too-wide");

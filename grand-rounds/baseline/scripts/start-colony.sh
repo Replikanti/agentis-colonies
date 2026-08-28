@@ -157,7 +157,11 @@ fi
 # --- Resolve the rest of the env contract ----------------------------------
 : "${MVA_REF_FASTA:=$MVA_WORK_DIR/refdata/${MVA_REF_FASTA_NAME:-GCA_000001405.15_GRCh38_no_alt_analysis_set.fna}}"
 : "${MVA_HPO_OBO:=$MVA_WORK_DIR/refdata/hp.obo}"
-: "${MVA_GTF:=$MVA_WORK_DIR/refdata/gencode.gtf.gz}"
+# DECOMPRESSED GENCODE GTF (#2044): the panel BED is derived from it by a
+# plain-text grep in the .ag, so a .gz here resolves nothing — the old
+# gencode.gtf.gz default was exactly the silent-empty-submission trap.
+# fetch-reference-data.sh provisions the decompressed file.
+: "${MVA_GTF:=$MVA_WORK_DIR/refdata/gencode.gtf}"
 # Primary GRCh38 assembly (chr-prefixed, post-rename). The .ag also defaults
 # this, but exporting it keeps the operator-visible contract explicit.
 : "${MVA_PRIMARY_CONTIGS:=chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chr20,chr21,chr22,chrX,chrY,chrM}"
@@ -187,6 +191,24 @@ fi
 # are read by the wrapper, not by .ag getenv()), and an operator export wins.
 : "${FLAT_CYBORG_TIMEOUT_MS:=1800000}"
 : "${FLAT_CYBORG_IDLE_MS:=600000}"
+
+# GTF fail-fast (#2044). The .ag coordinator re-checks this (and symbol
+# coverage) as the authoritative gate; refusing here just fails minutes
+# earlier, before agentis even launches.
+if [ ! -f "$MVA_GTF" ]; then
+    echo "start-colony.sh: MVA_GTF does not exist: $MVA_GTF" >&2
+    echo "      Run ./scripts/fetch-reference-data.sh (fetches AND decompresses the GENCODE GTF)," >&2
+    echo "      or export MVA_GTF pointing at a DECOMPRESSED GENCODE GTF." >&2
+    exit 3
+fi
+case "$MVA_GTF" in
+    *.gz)
+        echo "start-colony.sh: MVA_GTF is gzip-compressed ($MVA_GTF) — the panel lookup greps" >&2
+        echo "      plain text and would resolve NOTHING (empty submission). Decompress it" >&2
+        echo "      (gzip -dk) and point MVA_GTF at the .gtf." >&2
+        exit 3
+        ;;
+esac
 
 export MVA_DATA_DIR MVA_WORK_DIR MVA_OUT_DIR MVA_REF_FASTA MVA_HPO_OBO MVA_GTF
 export MVA_PRIMARY_CONTIGS
