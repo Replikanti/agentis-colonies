@@ -96,7 +96,9 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   and the WHOLE run's print buffer (including the refusal message) was
   discarded, so every abort was silent to the operator. Live-agent mutations
   G0–G7 pin the contrast run, all six reachable refusal paths, and the
-  partial-panel waiver.
+  partial-panel waiver. **Migration:** existing installs hit the exit-5
+  re-wire once (`MVA_PANEL_ALLOW_PARTIAL` joins the managed allowlist) —
+  re-run `install.sh`.
 
 ### Security
 

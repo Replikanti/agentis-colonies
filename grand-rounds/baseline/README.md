@@ -112,8 +112,11 @@ The D6 approval gate governs the lens submission too (the HPO set feeds
    does not resolve every symbol in `settings/mva-genes.tsv`
    (`MVA_PANEL_ALLOW_PARTIAL=1` waives a *partial* miss — GENCODE gene-name
    drift — with a logged warning; a GTF resolving *no* symbol always refuses).
-   Every refusal names its guard in the log **and** persists it to
-   `.agentis/memo/baseline:abort_reason.jsonl` for post-mortem.
+   Each of these GTF/panel refusals names its guard in the log **and**
+   persists it to `.agentis/memo/baseline:abort_reason.jsonl` for post-mortem
+   (other pipeline refusals — e.g. the D6 gate, schema violations — log only:
+   they include the routine draft-approval pause, so recording them would make
+   a non-empty abort memo meaningless as a broken-run signal).
 3. Export the data-dir contract and run:
    ```bash
    export MVA_DATA_DIR=... MVA_WORK_DIR=... MVA_OUT_DIR=...
