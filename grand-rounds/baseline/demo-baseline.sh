@@ -168,6 +168,7 @@ fi
 # GTF DECOMPRESSED and the launcher must keep defaulting MVA_GTF to the plain
 # .gtf + refusing a .gz — the exact shipped-defaults trap behind #2044.
 FETCH_SH="$BASE_DIR/scripts/fetch-reference-data.sh"
+# shellcheck disable=SC2016  # grep -F matches the fetch script's SOURCE verbatim, $ must not expand
 if grep -qF 'gzip -dc "$REFDATA/gencode.gtf.gz"' "$FETCH_SH" \
    && grep -qF 'MVA_GTF=${GTF}' "$FETCH_SH"; then
     ok "fetch-reference-data.sh provisions the decompressed GTF (#2044)"
