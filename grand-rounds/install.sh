@@ -107,10 +107,10 @@ touch "$CONFIG"
 # would be a no-op against the exit-5 refusal.
 prior_cli="$(prior_key 'llm\.cli_timeout_ms')"
 kept_cli="$(numeric_at_least "${prior_cli:-}" 600000)"
-if [ -n "${prior_cli:-}" ] && [ -z "$kept_cli" ]; then
-    log "migrating llm.cli_timeout_ms = $prior_cli (non-numeric or below the 600000 ms lens floor) -> 1800000"
-fi
 LLM_CLI_TIMEOUT_MS="${MVA_LLM_CLI_TIMEOUT_MS:-${kept_cli:-1800000}}"
+if [ -n "${prior_cli:-}" ] && [ -z "$kept_cli" ]; then
+    log "migrating llm.cli_timeout_ms = $prior_cli (non-numeric or below the 600000 ms lens floor) -> $LLM_CLI_TIMEOUT_MS"
+fi
 kept_idle="$(numeric_at_least "$(prior_key 'llm\.flat_cyborg\.idle_ms')" 1)"
 LLM_FC_IDLE_MS="${MVA_LLM_FC_IDLE_MS:-${kept_idle:-600000}}"
 
