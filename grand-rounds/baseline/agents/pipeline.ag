@@ -102,6 +102,17 @@ fn nonempty_lines(blob: string) -> list<string> {
     return filter(regex_split("\n", blob), |l: string| -> bool { return len(trim(l)) > 0; });
 }
 
+// Total bus read (#2044). listen() returns Void when the producer aborted
+// before emitting; every consumer guard here keys on len() == 0, so normalize
+// Void ("void" after to_string) to "". Without this a post-abort tick dies
+// with a runtime type error and the WHOLE RUN's print buffer — including the
+// abort reason the operator needs — is discarded with it.
+fn bus_read(topic: string) -> string {
+    let v = to_string(listen(topic));
+    if v == "void" { return ""; }
+    return v;
+}
+
 // Record the row count a stage handed to .ag (M6 boundary-table regression
 // guard). Written to $MVA_WORK_DIR/stage-rows.tsv, one line per stage.
 fn record_rows(stage: string, rows: int) -> void {
@@ -437,10 +448,24 @@ agent coordinator() -> void {
     }
     let unresolved = filter(panel_genes, |g: string| -> bool { return len(panel_bed_line(gtf, g, 0)) == 0; });
     if len(unresolved) > 0 {
-        print("coordinator: ERROR — ", len(unresolved), " panel gene(s) unresolvable in MVA_GTF (", join_str(unresolved, ","), ") — wrong or truncated GTF? Refusing: panel-genes-unresolved");
-        memo_write("baseline:abort_reason", "panel-genes-unresolved");
-        emit("baseline:abort", "panel-genes-unresolved");
-        return;
+        // NOTHING resolving is never overridable; a PARTIAL miss (gene-name
+        // drift across GENCODE releases) can be waived with
+        // MVA_PANEL_ALLOW_PARTIAL=1, so one renamed symbol cannot hard-stop an
+        // otherwise-usable run under deadline.
+        if len(unresolved) == len(panel_genes) {
+            print("coordinator: ERROR — NO panel gene from mva-genes.tsv resolves in MVA_GTF (", join_str(unresolved, ","), ") — wrong or truncated GTF? Refusing: panel-genes-unresolved");
+            memo_write("baseline:abort_reason", "panel-genes-unresolved");
+            emit("baseline:abort", "panel-genes-unresolved");
+            return;
+        }
+        if getenv("MVA_PANEL_ALLOW_PARTIAL") == "1" {
+            print("coordinator: WARNING — ", len(unresolved), " panel gene(s) unresolvable in MVA_GTF (", join_str(unresolved, ","), ") — proceeding WITHOUT them on MVA_PANEL_ALLOW_PARTIAL=1");
+        } else {
+            print("coordinator: ERROR — ", len(unresolved), " panel gene(s) unresolvable in MVA_GTF (", join_str(unresolved, ","), ") — wrong or truncated GTF? Refusing: panel-genes-unresolved (set MVA_PANEL_ALLOW_PARTIAL=1 to proceed without them)");
+            memo_write("baseline:abort_reason", "panel-genes-unresolved");
+            emit("baseline:abort", "panel-genes-unresolved");
+            return;
+        }
     }
     // colony-lint: safe-exec-concat
     exec sh "mkdir -p " + shell_escape(wd) + "/preproc " + shell_escape(wd) + "/phenotype " + shell_escape(wd) + "/exomiser";
@@ -468,9 +493,9 @@ fn build_rename_map(header: string) -> string {
 }
 
 agent preprocessor() -> void {
-    let ok = listen("baseline:env");
+    let ok = bus_read("baseline:env");
     if ok != "ok" { print("preprocessor: no env — skipping"); return; }
-    let vcf = listen("baseline:vcf");
+    let vcf = bus_read("baseline:vcf");
     let ref = getenv("MVA_REF_FASTA");
     let wd = getenv("MVA_WORK_DIR");
     let bcftools = bcftools_bin();
@@ -571,9 +596,9 @@ fn hp_exists(id: string) -> bool {
 }
 
 agent phenotyper() -> void {
-    let nvcf = listen("baseline:normalized_vcf");
+    let nvcf = bus_read("baseline:normalized_vcf");
     if len(nvcf) == 0 { print("phenotyper: no normalized VCF — upstream aborted"); return; }
-    let docx = listen("baseline:docx");
+    let docx = bus_read("baseline:docx");
     let wd = getenv("MVA_WORK_DIR");
     if len(docx) == 0 {
         print("phenotyper: ERROR — no clinical .docx resolved; cannot derive phenotype. Refusing.");
@@ -667,7 +692,7 @@ agent exomiser_runner() -> void {
         print("exomiser_runner: SKIP — Exomiser stage is opt-in (set MVA_RUN_EXOMISER=1). Its output is not yet consumed by reconcile (#2031).");
         return;
     }
-    let hpo = listen("baseline:hpo_ids");
+    let hpo = bus_read("baseline:hpo_ids");
     if len(hpo) == 0 { print("exomiser_runner: no approved HPO set — upstream gated/aborted"); return; }
     let nvcf = recall_latest("baseline:nvcf");
     let wd = getenv("MVA_WORK_DIR");
@@ -831,7 +856,7 @@ agent panel_reviewer() -> void {
     // a NON-EMPTY VCF is a data mismatch (contig naming / assembly disagreement
     // between the VCF and the GTF-derived panel), never a valid result (#2044).
     if len(rec_lines) == 0 {
-        print("panel_reviewer: REFUSING — 0 panel records over a non-empty normalized VCF (contig-naming or assembly mismatch between the VCF and the GTF-derived panel): panel-zero-records");
+        print("panel_reviewer: REFUSING — 0 panel records over a non-empty normalized VCF (contig-naming/assembly mismatch between the VCF and the GTF-derived panel, or a failed `bcftools view -R` — e.g. a missing .tbi index; its stderr is swallowed above): panel-zero-records");
         memo_write("baseline:abort_reason", "panel-zero-records");
         emit("baseline:abort", "panel-zero-records");
         return;
@@ -872,7 +897,7 @@ fn epcr_for(tier_id: string) -> string {
 }
 
 agent reconciler() -> void {
-    let panel_tsv = listen("baseline:panel_hits");
+    let panel_tsv = bus_read("baseline:panel_hits");
     if len(panel_tsv) == 0 { print("reconciler: no panel hits — skipping"); return; }
     let wd = getenv("MVA_WORK_DIR");
     let cdir = getenv("COLONY_DIR");
@@ -1024,7 +1049,7 @@ fn emit_submission(rows: list<string>, proband: string, outdir: string, approach
 }
 
 agent emitter() -> void {
-    let cand_tsv = listen("baseline:candidates");
+    let cand_tsv = bus_read("baseline:candidates");
     if len(cand_tsv) == 0 { print("emitter: no candidates — nothing to emit"); return; }
     // The D6 operator review gate governs emission: the submission CSV is
     // written ONLY when the phenotype HPO set was approved for THIS run (a

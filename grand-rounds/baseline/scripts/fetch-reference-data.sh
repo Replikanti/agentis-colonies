@@ -126,7 +126,10 @@ fetch "$MVA_GENCODE_GTF_URL" "$REFDATA/gencode.gtf.gz"
 GTF="$REFDATA/gencode.gtf"
 if [ ! -s "$GTF" ]; then
     log "gunzip GENCODE GTF (the panel lookup greps plain text)"
-    gzip -dc "$REFDATA/gencode.gtf.gz" > "$GTF"
+    # Decompress to .part then mv: an interrupted ~1.5 GB gunzip must not leave
+    # a truncated gencode.gtf that passes the -s check on the next run.
+    gzip -dc "$REFDATA/gencode.gtf.gz" > "$GTF.part"
+    mv "$GTF.part" "$GTF"
 fi
 
 # --- Container wrappers for the binary tools --------------------------------

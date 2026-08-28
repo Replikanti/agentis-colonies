@@ -82,13 +82,21 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   degenerate CSV with no warning. Now: the `.ag` coordinator preflights the
   GTF (set, present, not `.gz`, resolves EVERY `settings/mva-genes.tsv`
   symbol via the same grep the panel stage uses) and refuses with a named
-  abort (`no-gtf` / `gtf-missing` / `gtf-gzipped` / `panel-genes-unresolved`);
-  `panel_reviewer` refuses an empty panel BED (`empty-panel-bed`) and 0 panel
+  abort (`no-gtf` / `gtf-missing` / `gtf-gzipped` / `empty-gene-panel` /
+  `panel-genes-unresolved` — the last waivable for a PARTIAL symbol miss via
+  `MVA_PANEL_ALLOW_PARTIAL=1`, never when nothing resolves); `panel_reviewer`
+  refuses an empty panel BED (`empty-panel-bed`, defense-in-depth) and 0 panel
   records over a non-empty normalized VCF (`panel-zero-records`);
   `fetch-reference-data.sh` provisions the GTF decompressed and points
   `RESOLVED.env` at it; `start-colony.sh` defaults `MVA_GTF` to the plain
-  `.gtf` and fails fast (exit 3) on a missing or `.gz` path. Live-agent
-  mutations G1–G4 pin all four refusal paths.
+  `.gtf` and fails fast (exit 3) on a missing or `.gz` path. Every guard
+  persists its reason to the `baseline:abort_reason` memo, and a new
+  `bus_read()` wrapper normalizes the Void an aborted producer leaves on the
+  bus — previously any abort crashed the downstream tick with a type error
+  and the WHOLE run's print buffer (including the refusal message) was
+  discarded, so every abort was silent to the operator. Live-agent mutations
+  G0–G7 pin the contrast run, all six reachable refusal paths, and the
+  partial-panel waiver.
 
 ### Security
 

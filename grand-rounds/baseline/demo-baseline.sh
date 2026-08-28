@@ -89,12 +89,14 @@ for a in coordinator preprocessor phenotyper exomiser_runner panel_reviewer reco
         bad "agent $a missing"
     fi
 done
-# Bus-wired: each stage listens and emits.
+# Bus-wired: each stage listens and emits. Consumers read via bus_read(), the
+# Void-normalizing listen() wrapper (#2044 — a raw listen() dies on the void an
+# aborted producer leaves and takes the whole run's print buffer with it).
 for ev in "baseline:normalized_vcf" "baseline:hpo_ids" "baseline:panel_hits" "baseline:candidates"; do
-    if grep -qF "emit(\"$ev\"" "$AG" && grep -qF "listen(\"$ev\"" "$AG"; then
-        ok "bus event $ev is both emitted and listened"
+    if grep -qF "emit(\"$ev\"" "$AG" && grep -qF "bus_read(\"$ev\"" "$AG"; then
+        ok "bus event $ev is both emitted and bus_read-consumed"
     else
-        bad "bus event $ev not fully wired"
+        bad "bus event $ev not fully wired (emit + bus_read)"
     fi
 done
 # Schema validator enforces all rules.
@@ -161,6 +163,22 @@ if grep -qF 'llm\.cli_timeout_ms[[:space:]]*=' "$START_SH" \
     ok "start-colony.sh asserts llm.cli_timeout_ms + the 600000 lens floor (#2046)"
 else
     bad "start-colony.sh no longer asserts llm.cli_timeout_ms / its lens floor (#2046 regression)"
+fi
+# #2044 drift guard (CI-visible): the fetch script must keep provisioning the
+# GTF DECOMPRESSED and the launcher must keep defaulting MVA_GTF to the plain
+# .gtf + refusing a .gz — the exact shipped-defaults trap behind #2044.
+FETCH_SH="$BASE_DIR/scripts/fetch-reference-data.sh"
+if grep -qF 'gzip -dc "$REFDATA/gencode.gtf.gz"' "$FETCH_SH" \
+   && grep -qF 'MVA_GTF=${GTF}' "$FETCH_SH"; then
+    ok "fetch-reference-data.sh provisions the decompressed GTF (#2044)"
+else
+    bad "fetch-reference-data.sh no longer decompresses the GTF / RESOLVED.env points elsewhere (#2044 regression)"
+fi
+if grep -qF 'refdata/gencode.gtf}' "$START_SH" \
+   && grep -qF '*.gz)' "$START_SH"; then
+    ok "start-colony.sh defaults MVA_GTF to the plain .gtf and refuses a .gz (#2044)"
+else
+    bad "start-colony.sh GTF default/.gz refusal regressed (#2044)"
 fi
 
 # --- 4. cb_budget matches the cb <N> declaration ---------------------------

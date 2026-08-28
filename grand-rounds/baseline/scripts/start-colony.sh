@@ -20,9 +20,9 @@
 #     the pipeline.
 #
 # It does NOT invoke `agentis daemon`, so the daemon-flag allowlist does not
-# apply. Exit codes: 0 ok, 2 usage, 3 missing gated data, 4 unsafe work dir,
-# 5 unwired managed .agentis/config keys (env allowlist / exec timeout /
-# llm.cli_timeout_ms).
+# apply. Exit codes: 0 ok, 2 usage, 3 missing gated data or missing/gzipped
+# GTF (#2044), 4 unsafe work dir, 5 unwired managed .agentis/config keys (env
+# allowlist / exec timeout / llm.cli_timeout_ms, incl. the lens-mode floor).
 
 set -euo pipefail
 
@@ -122,6 +122,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
     need_wire=1
 else
     grep -qE '^[[:space:]]*exec\.env_passthrough[[:space:]]*=.*MVA_DATA_DIR' "$CONFIG_FILE" || need_wire=1
+    # #2044: the partial-panel waiver knob must be allowlisted or it is
+    # silently inert (getenv() reads the SANITIZED env) — force the re-install.
+    grep -qE '^[[:space:]]*exec\.env_passthrough[[:space:]]*=.*MVA_PANEL_ALLOW_PARTIAL' "$CONFIG_FILE" || need_wire=1
     grep -qE '^[[:space:]]*exec\.default_timeout_ms[[:space:]]*=' "$CONFIG_FILE" || need_wire=1
     # #2046: without a raised llm.cli_timeout_ms the agentis-core 120 s default
     # aborts every heavy lens prompt on the real flat-cyborg backend, so the M3
@@ -131,7 +134,7 @@ fi
 if [ "$need_wire" -ne 0 ]; then
     echo "start-colony.sh: the managed .agentis/config keys are not wired in $CONFIG_FILE." >&2
     echo "      Run ./install.sh (idempotent), or add these lines to $CONFIG_FILE:" >&2
-    echo "  exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_LENS_MODE,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR" >&2
+    echo "  exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR" >&2
     echo "  exec.default_timeout_ms = 21600000" >&2
     echo "  llm.cli_timeout_ms = 1800000" >&2
     exit 5
@@ -181,6 +184,9 @@ fi
 : "${MVA_APPROACH:=baseline}"
 # M3 lens fan-out + refute gate — opt-in (default off; baseline output unchanged).
 : "${MVA_LENS_MODE:=0}"
+# #2044: waive a PARTIAL panel-symbol miss in the GTF preflight (gene-name
+# drift across GENCODE releases). NOTHING resolving still refuses.
+: "${MVA_PANEL_ALLOW_PARTIAL:=0}"
 : "${PANEL_PAD:=${MVA_PANEL_PAD:-5000}}"
 : "${EXOMISER_TIMEOUT_MS:=21600000}"
 : "${EXOMISER_JAVA_OPTS:=-Xmx16g}"
@@ -213,7 +219,7 @@ esac
 export MVA_DATA_DIR MVA_WORK_DIR MVA_OUT_DIR MVA_REF_FASTA MVA_HPO_OBO MVA_GTF
 export MVA_PRIMARY_CONTIGS
 export MVA_BCFTOOLS MVA_EXOMISER MVA_EXOMISER_ASSEMBLY MVA_RUN_EXOMISER
-export MVA_CONTAINER_CMD MVA_APPROVAL_FILE MVA_APPROACH MVA_LENS_MODE
+export MVA_CONTAINER_CMD MVA_APPROVAL_FILE MVA_APPROACH MVA_LENS_MODE MVA_PANEL_ALLOW_PARTIAL
 export PANEL_PAD EXOMISER_TIMEOUT_MS EXOMISER_JAVA_OPTS
 export FLAT_CYBORG_TIMEOUT_MS FLAT_CYBORG_IDLE_MS
 export COLONY_DIR

@@ -109,7 +109,11 @@ The D6 approval gate governs the lens submission too (the HPO set feeds
    panel BED is derived from `$MVA_GTF` by a plain-text grep, so a `.gz` there
    resolves nothing — the pipeline now **refuses to run** (rather than emit a
    silently empty submission) when `MVA_GTF` is unset, missing, gzipped, or
-   does not resolve every symbol in `settings/mva-genes.tsv`.
+   does not resolve every symbol in `settings/mva-genes.tsv`
+   (`MVA_PANEL_ALLOW_PARTIAL=1` waives a *partial* miss — GENCODE gene-name
+   drift — with a logged warning; a GTF resolving *no* symbol always refuses).
+   Every refusal names its guard in the log **and** persists it to
+   `.agentis/memo/baseline:abort_reason.jsonl` for post-mortem.
 3. Export the data-dir contract and run:
    ```bash
    export MVA_DATA_DIR=... MVA_WORK_DIR=... MVA_OUT_DIR=...
