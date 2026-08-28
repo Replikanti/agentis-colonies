@@ -102,6 +102,17 @@ fn nonempty_lines(blob: string) -> list<string> {
     return filter(regex_split("\n", blob), |l: string| -> bool { return len(trim(l)) > 0; });
 }
 
+// Total bus read (#2044). listen() returns Void when the producer aborted
+// before emitting; every consumer guard here keys on len() == 0, so normalize
+// Void ("void" after to_string) to "". Without this a post-abort tick dies
+// with a runtime type error and the WHOLE RUN's print buffer — including the
+// abort reason the operator needs — is discarded with it.
+fn bus_read(topic: string) -> string {
+    let v = to_string(listen(topic));
+    if v == "void" { return ""; }
+    return v;
+}
+
 // Record the row count a stage handed to .ag (M6 boundary-table regression
 // guard). Written to $MVA_WORK_DIR/stage-rows.tsv, one line per stage.
 fn record_rows(stage: string, rows: int) -> void {
@@ -394,6 +405,68 @@ agent coordinator() -> void {
         emit("baseline:abort", "no-ref");
         return;
     }
+    // GTF preflight (#2044). The panel stage derives its BED from the GTF via
+    // a PLAIN-TEXT grep (panel_bed_line): an unset, missing, or gzipped GTF —
+    // or one that resolves no panel symbol — used to sail through to a
+    // silently EMPTY submission (0-record panel -> 0-candidate reconcile ->
+    // degenerate CSV). Refuse HERE, before any expensive stage runs.
+    let gtf = getenv("MVA_GTF");
+    if len(trim(gtf)) == 0 {
+        print("coordinator: ERROR — MVA_GTF is empty/unset (allowlist not wired, or GTF not provisioned — run fetch-reference-data.sh). Refusing: no-gtf");
+        memo_write("baseline:abort_reason", "no-gtf");
+        emit("baseline:abort", "no-gtf");
+        return;
+    }
+    // colony-lint: safe-exec-concat
+    let gtf_present = trim(exec sh "test -f " + shell_escape(gtf) + " && echo yes || echo no");
+    if gtf_present != "yes" {
+        print("coordinator: ERROR — MVA_GTF does not exist: ", gtf, " (run fetch-reference-data.sh or point MVA_GTF at a GENCODE GTF). Refusing: gtf-missing");
+        memo_write("baseline:abort_reason", "gtf-missing");
+        emit("baseline:abort", "gtf-missing");
+        return;
+    }
+    if regex_match("\\.gz$", gtf) {
+        print("coordinator: ERROR — MVA_GTF is gzip-compressed (", gtf, "); the panel lookup greps plain text and resolves NOTHING on a .gz. Decompress it (fetch-reference-data.sh does since #2044). Refusing: gtf-gzipped");
+        memo_write("baseline:abort_reason", "gtf-gzipped");
+        emit("baseline:abort", "gtf-gzipped");
+        return;
+    }
+    // Every panel symbol must resolve through the SAME lookup the panel stage
+    // uses — a wrong-assembly or truncated GTF fails loudly here, not as an
+    // empty BED three stages later. mva-genes.tsv's own header row is not a
+    // symbol.
+    let cdir = getenv("COLONY_DIR");
+    // colony-lint: safe-exec-concat
+    let genes_raw = exec sh "grep -v '^#' " + shell_escape(cdir + "/settings/mva-genes.tsv") + " 2>/dev/null || true";
+    let panel_genes = filter(map(nonempty_lines(genes_raw), |l: string| -> string { return field(l, 0); }),
+        |g: string| -> bool { return g != "symbol"; });
+    if len(panel_genes) == 0 {
+        print("coordinator: ERROR — no panel symbols readable from settings/mva-genes.tsv. Refusing: empty-gene-panel");
+        memo_write("baseline:abort_reason", "empty-gene-panel");
+        emit("baseline:abort", "empty-gene-panel");
+        return;
+    }
+    let unresolved = filter(panel_genes, |g: string| -> bool { return len(panel_bed_line(gtf, g, 0)) == 0; });
+    if len(unresolved) > 0 {
+        // NOTHING resolving is never overridable; a PARTIAL miss (gene-name
+        // drift across GENCODE releases) can be waived with
+        // MVA_PANEL_ALLOW_PARTIAL=1, so one renamed symbol cannot hard-stop an
+        // otherwise-usable run under deadline.
+        if len(unresolved) == len(panel_genes) {
+            print("coordinator: ERROR — NO panel gene from mva-genes.tsv resolves in MVA_GTF (", join_str(unresolved, ","), ") — wrong or truncated GTF? Refusing: panel-genes-unresolved");
+            memo_write("baseline:abort_reason", "panel-genes-unresolved");
+            emit("baseline:abort", "panel-genes-unresolved");
+            return;
+        }
+        if getenv("MVA_PANEL_ALLOW_PARTIAL") == "1" {
+            print("coordinator: WARNING — ", len(unresolved), " panel gene(s) unresolvable in MVA_GTF (", join_str(unresolved, ","), ") — proceeding WITHOUT them on MVA_PANEL_ALLOW_PARTIAL=1");
+        } else {
+            print("coordinator: ERROR — ", len(unresolved), " panel gene(s) unresolvable in MVA_GTF (", join_str(unresolved, ","), ") — wrong or truncated GTF? Refusing: panel-genes-unresolved (set MVA_PANEL_ALLOW_PARTIAL=1 to proceed without them)");
+            memo_write("baseline:abort_reason", "panel-genes-unresolved");
+            emit("baseline:abort", "panel-genes-unresolved");
+            return;
+        }
+    }
     // colony-lint: safe-exec-concat
     exec sh "mkdir -p " + shell_escape(wd) + "/preproc " + shell_escape(wd) + "/phenotype " + shell_escape(wd) + "/exomiser";
     emit("baseline:vcf", vcf);
@@ -420,9 +493,9 @@ fn build_rename_map(header: string) -> string {
 }
 
 agent preprocessor() -> void {
-    let ok = listen("baseline:env");
+    let ok = bus_read("baseline:env");
     if ok != "ok" { print("preprocessor: no env — skipping"); return; }
-    let vcf = listen("baseline:vcf");
+    let vcf = bus_read("baseline:vcf");
     let ref = getenv("MVA_REF_FASTA");
     let wd = getenv("MVA_WORK_DIR");
     let bcftools = bcftools_bin();
@@ -523,9 +596,9 @@ fn hp_exists(id: string) -> bool {
 }
 
 agent phenotyper() -> void {
-    let nvcf = listen("baseline:normalized_vcf");
+    let nvcf = bus_read("baseline:normalized_vcf");
     if len(nvcf) == 0 { print("phenotyper: no normalized VCF — upstream aborted"); return; }
-    let docx = listen("baseline:docx");
+    let docx = bus_read("baseline:docx");
     let wd = getenv("MVA_WORK_DIR");
     if len(docx) == 0 {
         print("phenotyper: ERROR — no clinical .docx resolved; cannot derive phenotype. Refusing.");
@@ -619,7 +692,7 @@ agent exomiser_runner() -> void {
         print("exomiser_runner: SKIP — Exomiser stage is opt-in (set MVA_RUN_EXOMISER=1). Its output is not yet consumed by reconcile (#2031).");
         return;
     }
-    let hpo = listen("baseline:hpo_ids");
+    let hpo = bus_read("baseline:hpo_ids");
     if len(hpo) == 0 { print("exomiser_runner: no approved HPO set — upstream gated/aborted"); return; }
     let nvcf = recall_latest("baseline:nvcf");
     let wd = getenv("MVA_WORK_DIR");
@@ -759,6 +832,16 @@ agent panel_reviewer() -> void {
         if len(bl) == 0 { return acc; }
         return acc + bl + "\n";
     }, "");
+    // Belt-and-braces to the coordinator's #2044 GTF preflight: an empty BED
+    // here means EVERY gene lookup failed (GTF replaced/moved between stages,
+    // or a panel edit) — bcftools view -R over an empty BED matches 0 records
+    // and the run would end as a silently EMPTY submission.
+    if len(trim(bed)) == 0 {
+        print("panel_reviewer: REFUSING — panel BED is empty (no gene from settings/mva-genes.tsv resolved in MVA_GTF): empty-panel-bed");
+        memo_write("baseline:abort_reason", "empty-panel-bed");
+        emit("baseline:abort", "empty-panel-bed");
+        return;
+    }
     let bedfile = wd + "/preproc/panel.bed";
     // colony-lint: safe-exec-concat
     exec sh "printf %s " + shell_escape(bed) + " > " + shell_escape(bedfile);
@@ -769,6 +852,15 @@ agent panel_reviewer() -> void {
         + " 2>/dev/null | " + shell_escape(bcftools) + " query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%FILTER[\\t%GT\\t%AD]\\n' 2>/dev/null || true";
     let rec_lines = nonempty_lines(recs);
     record_rows("panel", len(rec_lines));
+    // Stage 1 already refused an empty normalized VCF, so 0 panel records over
+    // a NON-EMPTY VCF is a data mismatch (contig naming / assembly disagreement
+    // between the VCF and the GTF-derived panel), never a valid result (#2044).
+    if len(rec_lines) == 0 {
+        print("panel_reviewer: REFUSING — 0 panel records over a non-empty normalized VCF (contig-naming/assembly mismatch between the VCF and the GTF-derived panel, or a failed `bcftools view -R` — e.g. a missing .tbi index; its stderr is swallowed above): panel-zero-records");
+        memo_write("baseline:abort_reason", "panel-zero-records");
+        emit("baseline:abort", "panel-zero-records");
+        return;
+    }
     if len(rec_lines) > 500 {
         print("panel_reviewer: REFUSING — ", len(rec_lines), " records exceed the .ag boundary limit (500).");
         emit("baseline:abort", "panel-too-wide");
@@ -805,7 +897,7 @@ fn epcr_for(tier_id: string) -> string {
 }
 
 agent reconciler() -> void {
-    let panel_tsv = listen("baseline:panel_hits");
+    let panel_tsv = bus_read("baseline:panel_hits");
     if len(panel_tsv) == 0 { print("reconciler: no panel hits — skipping"); return; }
     let wd = getenv("MVA_WORK_DIR");
     let cdir = getenv("COLONY_DIR");
@@ -957,7 +1049,7 @@ fn emit_submission(rows: list<string>, proband: string, outdir: string, approach
 }
 
 agent emitter() -> void {
-    let cand_tsv = listen("baseline:candidates");
+    let cand_tsv = bus_read("baseline:candidates");
     if len(cand_tsv) == 0 { print("emitter: no candidates — nothing to emit"); return; }
     // The D6 operator review gate governs emission: the submission CSV is
     // written ONLY when the phenotype HPO set was approved for THIS run (a

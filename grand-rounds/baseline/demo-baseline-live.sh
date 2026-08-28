@@ -133,13 +133,14 @@ run_pipeline() {
     } > "$WORKDIR/refdata/hp.obo"
     ( cd "$RUN" && agentis init >/dev/null 2>&1 )
     cat > "$RUN/.agentis/config" <<CFG
-exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_LENS_MODE,PANEL_PAD,EXOMISER_TIMEOUT_MS,COLONY_DIR
+exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,PANEL_PAD,EXOMISER_TIMEOUT_MS,COLONY_DIR
 exec.default_timeout_ms = 120000
 experience.enabled = true
 CFG
     export MVA_DATA_DIR="$dd" MVA_WORK_DIR="$WORKDIR" MVA_OUT_DIR="$OUTDIR"
     export MVA_REF_FASTA="$WORKDIR/refdata/ref.fa" MVA_HPO_OBO="$WORKDIR/refdata/hp.obo"
     export MVA_GTF="$WORKDIR/refdata/panel.gtf" MVA_BCFTOOLS="$BCFTOOLS_BIN"
+    export MVA_PANEL_ALLOW_PARTIAL=0
     export MVA_APPROVAL_FILE="$WORKDIR/phenotype/hpo-approved.txt"
     export MVA_APPROACH="baseline" PANEL_PAD="10" EXOMISER_TIMEOUT_MS="1000"
     export MVA_LENS_MODE="$lens"
@@ -245,6 +246,86 @@ if [ -f "$WORKDIR/stage-rows.tsv" ]; then
 else
     bad "M6: stage-rows.tsv was not produced"
 fi
+
+# ============================================================================
+# G0-G7 (#2044): GTF fail-fast — a broken GTF wiring must REFUSE loudly, never
+# emit a silently empty submission. One APPROVED run copy first proves the
+# fixture GTF DOES produce a CSV (the mutation contrast, G0); each mutation
+# then deletes the CSV, breaks the GTF wiring, re-runs the SAME copy, and must
+# leave (a) NO regenerated CSV and (b) its guard token as the LAST entry of
+# the PERSISTED abort memo (baseline:abort_reason; the memo appends, so
+# `tail -1` attributes the abort to THIS mutation — with the bus_read fix the
+# refusal also prints, but the memo is the stable test key). `empty-panel-bed`
+# has no mutation: it is pure defense-in-depth, unreachable while the
+# coordinator preflight uses the SAME panel_bed_line lookup as the panel stage.
+# ============================================================================
+
+DDG="$WORKROOT/data.gtf"; build_data_dir "$DDG" "$FIX/proband.vcf"
+run_pipeline "$DDG" approve
+if [ -f "$CSV" ]; then
+    ok "G0 base: fixture GTF produces the baseline CSV (mutation contrast armed)"
+else
+    bad "G0 base: no CSV with a working GTF — G1-G7 would be vacuous"
+fi
+GRUN="$RUN"; GWORK="$WORKDIR"; GMEMO="$MEMODIR"; GCSV="$CSV"
+
+# Re-run the SAME approved copy after a wiring mutation.
+g_rerun() {
+    rm -f "$GCSV"
+    ( cd "$GRUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$GRUN/run.log" 2>&1 ) || true
+}
+g_check() { # $1 = expected token of THIS mutation, $2 = label
+    if [ ! -f "$GCSV" ] \
+       && tail -1 "$GMEMO/baseline:abort_reason.jsonl" 2>/dev/null | grep -q "$1"; then
+        ok "$2"
+    else
+        bad "$2 — guard did not bite (CSV regenerated, or last abort memo entry is not '$1')"
+    fi
+}
+
+export MVA_GTF=""
+g_rerun; g_check "no-gtf" "G1: empty MVA_GTF -> coordinator refuses (no-gtf), CSV not regenerated"
+
+export MVA_GTF="$GWORK/refdata/absent.gtf"
+g_rerun; g_check "gtf-missing" "G2: absent MVA_GTF file -> coordinator refuses (gtf-missing)"
+
+gzip -c "$GWORK/refdata/panel.gtf" > "$GWORK/refdata/panel.gtf.gz"
+export MVA_GTF="$GWORK/refdata/panel.gtf.gz"
+g_rerun; g_check "gtf-gzipped" "G3: gzipped MVA_GTF -> coordinator refuses (gtf-gzipped)"
+
+printf 'chrZ\tSYNTH\tgene\t1\t100\t.\t+\t.\tgene_id "SYNGZ"; gene_name "NOTAPANELGENE";\n' \
+    > "$GWORK/refdata/nogenes.gtf"
+export MVA_GTF="$GWORK/refdata/nogenes.gtf"
+g_rerun; g_check "panel-genes-unresolved" "G4: GTF resolving NO panel gene -> coordinator refuses (panel-genes-unresolved)"
+
+mv "$GRUN/settings/mva-genes.tsv" "$GRUN/settings/mva-genes.tsv.off"
+export MVA_GTF="$GWORK/refdata/panel.gtf"
+g_rerun; g_check "empty-gene-panel" "G5: unreadable mva-genes.tsv -> coordinator refuses (empty-gene-panel)"
+mv "$GRUN/settings/mva-genes.tsv.off" "$GRUN/settings/mva-genes.tsv"
+
+# Shift every gene span past the 300 bp synthetic contigs: the preflight still
+# resolves all four symbols, the BED is non-empty, but `bcftools view -R`
+# matches 0 records over the non-empty normalized VCF.
+sed -E 's/\tgene\t[0-9]+\t[0-9]+\t/\tgene\t400\t600\t/; s/\texon\t[0-9]+\t[0-9]+\t/\texon\t410\t590\t/' \
+    "$GWORK/refdata/panel.gtf" > "$GWORK/refdata/shifted.gtf"
+export MVA_GTF="$GWORK/refdata/shifted.gtf"
+g_rerun; g_check "panel-zero-records" "G6: panel windows past every variant -> panel_reviewer refuses (panel-zero-records)"
+
+# G7: PARTIAL resolution + the waiver knob — drop ONE gene (TRIP13) from the
+# GTF: strict mode must refuse; MVA_PANEL_ALLOW_PARTIAL=1 must proceed to a
+# CSV (one renamed GENCODE symbol must not hard-stop an otherwise-usable run)
+# and log the waiver warning.
+grep -v 'TRIP13' "$GWORK/refdata/panel.gtf" > "$GWORK/refdata/partial.gtf"
+export MVA_GTF="$GWORK/refdata/partial.gtf"
+g_rerun; g_check "panel-genes-unresolved" "G7a: one unresolved symbol, strict mode -> refuses (panel-genes-unresolved)"
+export MVA_PANEL_ALLOW_PARTIAL=1
+g_rerun
+if [ -f "$GCSV" ] && grep -q 'MVA_PANEL_ALLOW_PARTIAL' "$GRUN/run.log"; then
+    ok "G7b: MVA_PANEL_ALLOW_PARTIAL=1 proceeds to a CSV and logs the waiver warning"
+else
+    bad "G7b: the partial-panel waiver did not produce a CSV + warning"
+fi
+export MVA_PANEL_ALLOW_PARTIAL=0
 
 # ============================================================================
 # M3 lens mode (MVA_LENS_MODE=1): lens fan-out + refute gate + reconcile.

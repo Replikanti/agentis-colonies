@@ -48,7 +48,10 @@ tick_interval_ms = 60000
 #   MVA_VCF            explicit proband VCF (else the single *.vcf.gz in DATA_DIR)
 #   MVA_PHENOTYPE_DOC  explicit clinical .docx (else the single *.docx in DATA_DIR)
 #   MVA_HPO_OBO        path to hp.obo (HPO id existence verification)
-#   MVA_GTF            GENCODE GTF (panel BED is derived from it at runtime)
+#   MVA_GTF            DECOMPRESSED GENCODE GTF (panel BED is derived from it
+#                        at runtime by a plain-text grep — a .gz resolves
+#                        nothing and the pipeline refuses it, #2044;
+#                        fetch-reference-data.sh provisions the plain .gtf)
 #   MVA_PRIMARY_CONTIGS  chr-prefixed primary assembly to keep (default chr1..22,X,Y,M);
 #                        MUST be non-empty — `bcftools view -t ''` drops every record
 #   MVA_BCFTOOLS       bcftools binary/wrapper (default: bcftools on PATH)
@@ -67,6 +70,10 @@ tick_interval_ms = 60000
 #                        identical. Lens tunables (agreement threshold, promote
 #                        minimum, benign-population-AF cutoff) live in
 #                        settings/epcr.yml, next to the evidence-tier ladder.
+#   MVA_PANEL_ALLOW_PARTIAL  set to 1 to waive a PARTIAL panel-symbol miss in
+#                        the GTF preflight (#2044 — gene-name drift across
+#                        GENCODE releases); a GTF resolving NO panel symbol
+#                        still refuses. Default 0 (strict).
 #   PANEL_PAD          bp padding around each panel gene (default 5000)
 #   EXOMISER_TIMEOUT_MS  inline timeout for the Exomiser stage (default 21600000 = 6 h)
 #   EXOMISER_JAVA_OPTS   Java heap for Exomiser (default -Xmx16g)

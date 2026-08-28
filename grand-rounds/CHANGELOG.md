@@ -73,6 +73,33 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `FLAT_CYBORG_TIMEOUT_MS=1800000` / `FLAT_CYBORG_IDLE_MS=600000` (operator
   exports win).
 
+- **Silent empty submission on a broken GTF wiring**
+  ([#2044](https://github.com/Replikanti/agentis-colonies/issues/2044)): with
+  `MVA_GTF` unset, missing, gzipped (the panel lookup greps PLAIN text — and
+  both `fetch-reference-data.sh` and `start-colony.sh` used to hand it the
+  `.gz`), or pointing at a GTF that resolves no panel symbol, the panel BED
+  came out empty, `bcftools view -R` matched 0 records, and the run ended as a
+  degenerate CSV with no warning. Now: the `.ag` coordinator preflights the
+  GTF (set, present, not `.gz`, resolves EVERY `settings/mva-genes.tsv`
+  symbol via the same grep the panel stage uses) and refuses with a named
+  abort (`no-gtf` / `gtf-missing` / `gtf-gzipped` / `empty-gene-panel` /
+  `panel-genes-unresolved` — the last waivable for a PARTIAL symbol miss via
+  `MVA_PANEL_ALLOW_PARTIAL=1`, never when nothing resolves); `panel_reviewer`
+  refuses an empty panel BED (`empty-panel-bed`, defense-in-depth) and 0 panel
+  records over a non-empty normalized VCF (`panel-zero-records`);
+  `fetch-reference-data.sh` provisions the GTF decompressed and points
+  `RESOLVED.env` at it; `start-colony.sh` defaults `MVA_GTF` to the plain
+  `.gtf` and fails fast (exit 3) on a missing or `.gz` path. Every guard
+  persists its reason to the `baseline:abort_reason` memo, and a new
+  `bus_read()` wrapper normalizes the Void an aborted producer leaves on the
+  bus — previously any abort crashed the downstream tick with a type error
+  and the WHOLE run's print buffer (including the refusal message) was
+  discarded, so every abort was silent to the operator. Live-agent mutations
+  G0–G7 pin the contrast run, all six reachable refusal paths, and the
+  partial-panel waiver. **Migration:** existing installs hit the exit-5
+  re-wire once (`MVA_PANEL_ALLOW_PARTIAL` joins the managed allowlist) —
+  re-run `install.sh`.
+
 ### Security
 
 ## [0.1.0] — 2026-08-26

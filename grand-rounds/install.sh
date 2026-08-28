@@ -26,7 +26,7 @@ CONFIG="$AGENTIS_DIR/config"
 # The env knobs agents/pipeline.ag reads via getenv(). Keep this list in sync
 # with the getenv() calls in the .ag and the [baseline] block in
 # config/colony.example.toml. start-colony.sh asserts the same set.
-ENV_PASSTHROUGH="MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_LENS_MODE,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR"
+ENV_PASSTHROUGH="MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR"
 
 # Exomiser is an hour-scale run; the sandboxed-exec default of 10 s would abort
 # it. This raises the default so every exec sh stage has headroom; the Exomiser
@@ -146,5 +146,7 @@ fi
 
 log "Done. Next:"
 log "  1. ./baseline/scripts/fetch-reference-data.sh   # if not fetched above"
+log "     (provisions the GENCODE GTF *decompressed* — the pipeline refuses a"
+log "      .gz MVA_GTF and refuses to run without one, #2044)"
 log "  2. export MVA_DATA_DIR=... MVA_WORK_DIR=... MVA_OUT_DIR=..."
 log "  3. ./baseline/scripts/start-colony.sh"
