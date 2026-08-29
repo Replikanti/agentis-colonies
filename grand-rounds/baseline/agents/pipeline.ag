@@ -956,7 +956,10 @@ fn exo_candidate_row(r: string, g: string, ic: int, ip: int, ir: int, ia: int, i
     // alleles (<DEL>), non-numeric positions, and comma-carrying gene symbols
     // (readthrough annotations) would either fail validate_row — which
     // short-circuits the ENTIRE emit — or corrupt the bare tab->comma CSV.
-    let chrom = chr_name(trim(field(r, ic)));
+    let rawc = trim(field(r, ic));
+    // PLINK-style numeric sex chromosomes some tool builds emit.
+    let mappedc = if rawc == "23" { "X" } else { if rawc == "24" { "Y" } else { rawc } };
+    let chrom = chr_name(mappedc);
     if !is_primary_contig(chrom) { return ""; }
     let pos = trim(field(r, ip));
     if !regex_match("^[0-9]+$", pos) { return ""; }
@@ -1023,7 +1026,11 @@ fn exomiser_candidates(tsv: string, panel_genes: list<string>, panel_keys: strin
     let minscore = parse_float(yaml_num(epcr_yml(), "phenotype_novel_gene_min_score", "0.7"));
     let seen = "|" + join_str(panel_genes, "|") + "|" + panel_keys;
     record_rows("exo_merge", len(lines) - 1);
-    return exo_fold(lines, 1, seen, none, ig, ic, ip, ir, ia, isc, minscore, left);
+    let picked = exo_fold(lines, 1, seen, none, ig, ic, ip, ir, ia, isc, minscore, left);
+    // Operator observability on an hour-scale run: say how much of the TSV was
+    // actually understood, not just how much merged.
+    print("reconciler: Exomiser TSV — ", len(lines) - 1, " row(s) examined, ", len(picked), " merged (rest skipped: panel-owned / dup-key / contig / allele / malformed)");
+    return picked;
 }
 
 agent reconciler() -> void {
