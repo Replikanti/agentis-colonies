@@ -34,7 +34,11 @@ graph LR
 The panel → reconcile → emit chain is anchored on the normalized VCF (broadcast
 on the memo, since `listen` is consume-once and four stages read it), so it does
 not block on the Exomiser stage. `exomiser_runner` is **opt-in**
-(`MVA_RUN_EXOMISER=1`, default off only because of the hour-scale runtime).
+(`MVA_RUN_EXOMISER=1`, default off only because of the runtime cost;
+`fetch-reference-data.sh` provisions the CLI's `application.properties`
+(data directory, hg38+phenotype versions, hg19 disabled) and a container
+wrapper whose working directory is the CLI dir — Spring Boot only finds the
+properties there, [#2062](https://github.com/Replikanti/agentis-colonies/issues/2062)).
 Since [#2054](https://github.com/Replikanti/agentis-colonies/issues/2054) the
 reconciler **merges the Exomiser top-N**: genes outside the known-MVA panel
 join the pool AFTER the panel candidates (panel precedence is structural, the
