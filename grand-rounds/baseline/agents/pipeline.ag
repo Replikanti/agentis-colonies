@@ -350,6 +350,10 @@ fn promote_row(row: string) -> string {
     // row does not have. Lens agreement still orders it within its tier
     // (order_key sorts on agreement after epcr).
     if index_of(field(row, 11), "novel-gene") >= 0 { return row; }
+    // #2060 review: an alternate representation mirrors its primary — it is
+    // never promotable (from 0.15 the numeric ladder would land it on the
+    // phenotype_novel_gene rung, whose label asserts NON-panel membership).
+    if index_of(field(row, 11), "alternate representation") >= 0 { return row; }
     let cur = epcr_centi(row);
     let up = if cur >= 90 { "" }
         else { if cur >= 75 { epcr_for("known_gene_biallelic") }
@@ -1068,7 +1072,9 @@ fn exo_gene_keys(tsv: string, gene: string) -> string {
     if ip < 0 { return ""; }
     let mine = filter(lines, |l: string| -> bool { return trim(field(l, ig)) == gene; });
     return join_str(map(mine, |l: string| -> string {
-        return chr_name(trim(field(l, ic))) + ":" + trim(field(l, ip));
+        let rawc = trim(field(l, ic));
+        let mappedc = if rawc == "23" { "X" } else { if rawc == "24" { "Y" } else { rawc } };
+        return chr_name(mappedc) + ":" + trim(field(l, ip));
     }), "\n");
 }
 
@@ -1129,39 +1135,64 @@ agent reconciler() -> void {
     // per-variant ranking (when its manifest-pinned TSV exists) picks WHICH
     // variants represent the gene, the top-ranked hit decides WHICH
     // representation leads, and the other representation rides along as a
-    // secondary alt_representation row — the submission scores secondary
-    // rows for free, so a suppressed hypothesis costs nothing.
-    let exo_tsv0 = exomiser_tsv_path(wd);
+    // secondary alt_representation row. The official Track-1 instructions
+    // state: "Secondary or incidental findings won't hurt your automated
+    // score - include them if you want them considered." — a suppressed
+    // hypothesis costs nothing on the automated metric (slot accounting at
+    // the cap below counts primary rows only).
+    // Single resolve (#2060 review): baseline:exomiser_tsv is a consume-once
+    // bus topic — a second exomiser_tsv_path() call would find the bus empty
+    // and silently depend on the marker fallback alone.
+    let exo_tsv = exomiser_tsv_path(wd);
     let cand_blobs = map(genes, |g: string| -> string {
         let gene_hits = filter(hits, |h: string| -> bool { return field(h, 7) == g; });
         let hom = filter(gene_hits, |h: string| -> bool { return field(h, 8) == "hom-alt"; });
         let het = filter(gene_hits, |h: string| -> bool { return field(h, 8) == "het"; });
         let none_h = filter(gene_hits, |x: string| -> bool { return false; });
-        let keys = if len(exo_tsv0) > 0 { nonempty_lines(exo_gene_keys(exo_tsv0, g)) } else { none_h };
+        let keys = if len(exo_tsv) > 0 { nonempty_lines(exo_gene_keys(exo_tsv, g)) } else { none_h };
         if len(het) >= 2 {
             let a = pick_rep(het, keys, "");
-            let b = pick_rep(het, keys, a);
-            let pr = pair_row(g, a, b, "known_gene_comphet", "primary", " candidate compound-het (unphased)");
-            if len(hom) > 0 {
-                let v = pick_rep(hom, keys, "");
-                let hr = single_row(g, v, "known_gene_biallelic", "primary", " biallelic (hom-alt)");
-                let ar_pair = pair_row(g, a, b, "alt_representation", "secondary", " candidate compound-het (unphased) — alternate representation");
-                let ar_hom = single_row(g, v, "alt_representation", "secondary", " biallelic (hom-alt) — alternate representation");
-                // The top Exomiser-ranked hit decides which representation
-                // leads; without that evidence the PAIR leads (a padded
-                // window's hom-alts are overwhelmingly benign polymorphisms).
-                let top = first_by_exo(gene_hits, keys, 0, "");
-                if len(top) > 0 { if field(top, 8) == "hom-alt" { return hr + "\n" + ar_pair; } }
-                return pr + "\n" + ar_hom;
+            let akey = field(a, 0) + ":" + field(a, 1);
+            // Pair members must sit at DISTINCT positions: bcftools norm
+            // -m -any splits a multiallelic site into several het records at
+            // one pos, and a "pair" of those is one site, not compound-het
+            // (#2060 review). Exclude by KEY, not by row identity.
+            let het_b = filter(het, |h: string| -> bool { return field(h, 0) + ":" + field(h, 1) != akey; });
+            if len(het_b) > 0 {
+                let b = pick_rep(het_b, keys, "");
+                let pr = pair_row(g, a, b, "known_gene_comphet", "primary", " candidate compound-het (unphased)");
+                if len(hom) > 0 {
+                    let v = pick_rep(hom, keys, "");
+                    let vkey = field(v, 0) + ":" + field(v, 1);
+                    let hr = single_row(g, v, "known_gene_biallelic", "primary", " biallelic (hom-alt)");
+                    let ar_pair = pair_row(g, a, b, "alt_representation", "secondary", " candidate compound-het (unphased) — alternate representation");
+                    let ar_hom = single_row(g, v, "alt_representation", "secondary", " biallelic (hom-alt) — alternate representation");
+                    // The alternate must not collide with the primary on the
+                    // emitter's chrom_1:pos_1 dup-key check — a shared key
+                    // would refuse the WHOLE submission (#2060 review). On a
+                    // collision the alternate is dropped, not the submission.
+                    // The top Exomiser-ranked hit decides which representation
+                    // leads; without that evidence the PAIR leads (a padded
+                    // window's hom-alts are overwhelmingly benign
+                    // polymorphisms).
+                    let top = first_by_exo(gene_hits, keys, 0, "");
+                    let hom_leads = if len(top) > 0 { field(top, 8) == "hom-alt" } else { false };
+                    if hom_leads {
+                        if akey == vkey { return hr; }
+                        return hr + "\n" + ar_pair;
+                    }
+                    if vkey == akey { return pr; }
+                    return pr + "\n" + ar_hom;
+                }
+                return pr;
             }
-            return pr;
         }
         if len(hom) > 0 {
             let v = pick_rep(hom, keys, "");
             return single_row(g, v, "known_gene_biallelic", "primary", " biallelic (hom-alt)");
         }
-        if len(het) == 1 {
-            let v = get(het, 0);
+        if len(het) >= 1 {
+            let v = pick_rep(het, keys, "");
             return single_row(g, v, "known_gene_monoallelic", "primary", " single rare protein-altering allele");
         }
         return "";
@@ -1176,10 +1207,13 @@ agent reconciler() -> void {
 
     // #2054: merge the Exomiser top-N AFTER the panel candidates — novel genes
     // the panel cannot see. Panel precedence is structural: appended after,
-    // and the cap trims from the tail, so a full panel always survives.
-    let exo_tsv = exomiser_tsv_path(wd);
+    // and the strict EPCR sort + cap arbitrate the tail. Slot accounting
+    // counts PRIMARY rows only (#2060 review): a 0.15 secondary alternate
+    // must not displace a 0.20 primary novel-gene row — the sort below
+    // trims the lowest-EPCR rows when the total exceeds the cap.
     let none2 = filter(rows, |x: string| -> bool { return false; });
-    let exo_left = cap - len(rows);
+    let primary_rows = filter(rows, |r: string| -> bool { return field(r, 10) == "primary"; });
+    let exo_left = cap - len(primary_rows);
     let pkeys = reduce(rows, |acc: string, r: string| -> string {
         let k1 = field(r, 1) + ":" + field(r, 2) + "|";
         let c2 = field(r, 5);

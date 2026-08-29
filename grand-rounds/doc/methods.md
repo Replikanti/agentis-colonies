@@ -93,7 +93,17 @@ tier** (`settings/epcr.yml`), and any ranking score only orders candidates
 | known MVA gene, candidate compound-het (unphased) | 0.75 | primary |
 | known MVA gene, single rare protein-altering allele | 0.35 | primary |
 | phenotype-driven candidate outside the known-gene panel | 0.20 | primary |
+| alternate zygosity representation of a primary candidate | 0.15 | secondary |
 | incidental / weak phenotype support | 0.05 | secondary |
+
+Representative variants for each panel gene are selected by Exomiser's
+per-variant ranking when its output is available (which variants form the
+compound-het pair, which hom-alt represents the biallelic hypothesis, and
+which representation leads); without that evidence the pair leads, since a
+padded window's hom-alts are overwhelmingly benign polymorphisms. The
+non-leading representation is emitted as a secondary `alt_representation`
+row — the official instructions state secondary findings never hurt the
+automated score. Rows are strictly EPCR-ordered ([#2059](https://github.com/Replikanti/agentis-colonies/issues/2059)).
 
 `baseline/demo-baseline.sh` pins the resulting ordering against a golden CSV, so
 any change to this ladder is deliberate.

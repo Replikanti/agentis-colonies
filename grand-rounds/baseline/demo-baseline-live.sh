@@ -166,6 +166,8 @@ echo "grand-rounds/baseline: live-agent mutation test"
 DD="$WORKROOT/data.base"; build_data_dir "$DD" "$FIX/proband.vcf"
 run_pipeline "$DD" approve
 cp -f "$CSV" "$WORKROOT/m1-base.csv" 2>/dev/null || true
+# Presence check only since #2059 (the hom-alt rides as the secondary
+# alternate); R2 pins the leading classification + tiers exactly.
 if [ -f "$CSV" ] && grep -q 'biallelic (hom-alt)' "$CSV"; then
     ok "M1 base: BUB1B hom-alt classified biallelic"
 else
@@ -340,9 +342,9 @@ export MVA_PANEL_ALLOW_PARTIAL=0
 DDE="$WORKROOT/data.exo"; build_data_dir "$DDE" "$FIX/proband.vcf"
 run_pipeline "$DDE" approve
 if [ -f "$CSV" ] && cmp -s "$CSV" "$WORKROOT/m1-base.csv"; then
-    ok "E1 base: no Exomiser TSV -> CSV byte-identical to the pre-merge baseline"
+    ok "E1 base: no Exomiser TSV -> CSV byte-identical across runs (deterministic no-TSV path)"
 else
-    bad "E1 base: CSV differs from the pre-merge baseline without any Exomiser TSV"
+    bad "E1 base: no-TSV output not deterministic (differs from the M1 base run of the same code)"
 fi
 # R1 (#2059): the submission is ranked by epcr — rows must be sorted desc.
 if tail -n +2 "$CSV" | cut -d, -f10 | sort -rn -c 2>/dev/null; then
