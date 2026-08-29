@@ -516,7 +516,7 @@ fi
 # then a manifest-pinned TSV ranking TRIP13 top must lift TRIP13 above CEP57.
 DDO="$WORKROOT/data.o1"; build_data_dir "$DDO" "$FIX/proband.vcf"
 run_pipeline "$DDO" approve
-o1_pre_c="$(gene_line CEP57 "$CSV")"; o1_pre_t="$(gene_line TRIP13 "$CSV")"
+o1_pre_c="$(gene_line CEP57 "$CSV" || true)"; o1_pre_t="$(gene_line TRIP13 "$CSV" || true)"
 NVCF_O="$WORKDIR/preproc/normalized.vcf.gz"
 HPO_O="$(tr -d '\n' < "$WORKDIR/phenotype/hpo-draft.txt")"
 MH_O="$(printf '%s|%s|%s' "$NVCF_O" "$HPO_O" "hg38" | sha256sum | cut -d' ' -f1)"
@@ -528,7 +528,7 @@ touch "$WORKDIR/exomiser/.done.$MH_O"
 } > "$WORKDIR/exomiser/baseline.variants.tsv"
 rm -f "$CSV"
 ( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
-o1_post_c="$(gene_line CEP57 "$CSV")"; o1_post_t="$(gene_line TRIP13 "$CSV")"
+o1_post_c="$(gene_line CEP57 "$CSV" || true)"; o1_post_t="$(gene_line TRIP13 "$CSV" || true)"
 if [ -n "$o1_pre_c" ] && [ -n "$o1_pre_t" ] && [ "$o1_pre_c" -lt "$o1_pre_t" ] \
    && [ -n "$o1_post_c" ] && [ -n "$o1_post_t" ] && [ "$o1_post_t" -lt "$o1_post_c" ]; then
     ok "O1: Exomiser rank lifts TRIP13 above CEP57 within the 0.75 tie (text order without a TSV)"

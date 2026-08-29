@@ -1114,22 +1114,32 @@ fn pair_row(g: string, a: string, b: string, tier: string, ft: string, note: str
 
 
 // #2064: within-tier ordering evidence. Rank = index of the gene's FIRST row
-// in the (rank-ordered) Exomiser variants TSV head window; 999 when the gene
-// is absent or there is no TSV — those fall back to the deterministic text
-// tie-break AFTER every ranked gene. Implements epcr.yml's documented
-// "the Exomiser score is used only to order candidates WITHIN a tier".
+// in the rank-ordered Exomiser output; 999 when the gene is absent or there
+// is no TSV — those fall back to the deterministic text tie-break AFTER
+// every ranked gene. Implements epcr.yml's documented "the Exomiser score is
+// used only to order candidates WITHIN a tier".
+//
+// The rank SOURCE is resolved ONCE per reconcile (#2065 review): prefer the
+// GENES TSV (one row per gene in rank order — no truncation risk, ~50x
+// smaller scan) derived from the variants path; fall back to the variants
+// window when the genes file is absent (older outputs, planted test TSVs).
+fn exo_rank_lines(tsv: string) -> list<string> {
+    if len(tsv) == 0 { return nonempty_lines(""); }
+    let gtsv = replace_all(tsv, ".variants.tsv", ".genes.tsv");
+    // colony-lint: safe-exec-concat
+    let raw = exec sh "head -100 " + shell_escape(gtsv) + " 2>/dev/null || true";
+    let lines = nonempty_lines(raw);
+    if len(lines) >= 2 { return lines; }
+    // colony-lint: safe-exec-concat
+    let raw2 = exec sh "head -200 " + shell_escape(tsv) + " 2>/dev/null || true";
+    return nonempty_lines(raw2);
+}
 fn exo_gene_rank_rec(lines: list<string>, ig: int, gene: string, i: int) -> int {
     if i >= len(lines) { return 999; }
     if trim(field(get(lines, i), ig)) == gene { return i; }
     return exo_gene_rank_rec(lines, ig, gene, i + 1);
 }
-fn exo_gene_rank(tsv: string, gene: string) -> int {
-    if len(tsv) == 0 { return 999; }
-    // colony-lint: safe-exec-concat
-    let raw = exec sh "head -200 " + shell_escape(tsv) + " 2>/dev/null || true";
-    let lines = nonempty_lines(raw);
-    if len(lines) < 2 { return 999; }
-    let ig = col_idx(get(lines, 0), "GENE_SYMBOL");
+fn exo_gene_rank(lines: list<string>, ig: int, gene: string) -> int {
     if ig < 0 { return 999; }
     return exo_gene_rank_rec(lines, ig, gene, 1);
 }
@@ -1257,10 +1267,15 @@ agent reconciler() -> void {
     // real data); genes absent from the TSV (or no TSV at all) rank 999 and
     // keep the deterministic row-text fallback. Sorting BEFORE the cap keeps
     // the top-ranked rows.
+    let rank_lines = exo_rank_lines(exo_tsv);
+    let rank_ig = if len(rank_lines) >= 2 { col_idx(get(rank_lines, 0), "GENE_SYMBOL") } else { 0 - 1 };
+    if len(exo_tsv) > 0 {
+        print("reconciler: within-tier ranks from ", len(rank_lines), " Exomiser row(s) (genes TSV preferred; unranked genes = 999, text fallback)");
+    }
     let keyed = map(combined, |r: string| -> string {
         let g = first_token(field(r, 11));
         return zpad(to_string(100 - epcr_centi(r)), 3) + "\t"
-            + zpad(to_string(exo_gene_rank(exo_tsv, g)), 3) + "\t" + r;
+            + zpad(to_string(exo_gene_rank(rank_lines, rank_ig, g)), 3) + "\t" + r;
     });
     let sorted_rows = map(sort_strings(keyed), |k: string| -> string { return strip_fields(k, 2); });
     let capped = if len(sorted_rows) > cap { take(sorted_rows, cap) } else { sorted_rows };
