@@ -70,3 +70,12 @@ max_rows: 10
 lens_score_threshold: 0.6
 lens_agreement_promote_min: 3
 benign_population_af: 0.01
+
+# INFO tag carrying the POPULATION allele frequency for the benign axis.
+# MUST have population semantics: a raw caller VCF's INFO/AF is the SAMPLE's
+# allele fraction (~0.5 on every het) and reading it as a population
+# frequency refutes every real candidate (#2056). When the configured tag is
+# absent from the VCF, the hard axis is skipped and the LLM skeptic considers
+# population commonness from its own knowledge (candidate KEPT + tagged when
+# unrefuted — the L4 fail-open contract).
+benign_af_info_tag: GNOMAD_AF

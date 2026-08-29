@@ -134,6 +134,12 @@ for tok in 'exomiser_tsv_path' 'exomiser_candidates(' 'phenotype_novel_gene_min_
         bad "Exomiser merge marker '$tok' missing from the .ag (#2054 regression)"
     fi
 done
+# #2056: the benign axis must read a POPULATION-semantics tag, never caller AF.
+if grep -qF 'benign_af_info_tag' "$AG" && ! grep -qF '%INFO/AF' "$AG"; then
+    ok "benign axis reads the configurable population tag, not caller INFO/AF (#2056)"
+else
+    bad "benign axis reads caller INFO/AF again (#2056 regression)"
+fi
 # D6 gate compares a stored hash, not mere file presence.
 if grep -qF 'approved_hash != draft_hash' "$AG"; then
     ok "D6 gate compares a stored sha256 (not file presence)"

@@ -2,20 +2,20 @@
 ##source=grand-rounds-synthetic-fixture
 ##FILTER=<ID=PASS,Description="All filters passed">
 ##FILTER=<ID=LowVAF,Description="Low variant allele fraction (synthetic hard-filter)">
-##INFO=<ID=AF,Number=A,Type=Float,Description="Synthetic population allele frequency (NOT real; drives the benign-in-population refute axis)">
+##INFO=<ID=GNOMAD_AF,Number=A,Type=Float,Description="Synthetic POPULATION allele frequency (NOT real; drives the benign-in-population refute axis — deliberately NOT the caller AF tag, see #2056)">
 ##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
 ##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">
 ##contig=<ID=15,length=300>
 ##contig=<ID=11,length=300>
 ##contig=<ID=5,length=480>
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SAMPLE_SYNTH
-15	90	.	T	C	40	LowVAF	AF=0.0005	GT:AD	0/1:92,8
-15	120	.	A	G	200	PASS	AF=0.0005	GT:AD	1/1:0,58
-15	160	.	A	G	180	PASS	AF=0.0005	GT:AD	0/1:30,28
-15	200	.	G	A	175	PASS	AF=0.0005	GT:AD	0/1:33,25
-11	70	.	C	T	60	PASS	AF=0.0005	GT:AD	0/1:40,3
-11	130	.	G	A	190	PASS	AF=0.0005	GT:AD	0/1:29,27
-5	80	.	G	A	180	PASS	AF=0.0005	GT:AD	0/1:90,8
-5	160	.	C	T	185	PASS	AF=0.0005	GT:AD	0/1:30,28
-5	300	.	T	C	190	PASS	AF=0.0005	GT:AD	0/1:31,29
-5	380	.	T	C	188	PASS	AF=0.0005	GT:AD	0/1:28,30
+15	90	.	T	C	40	LowVAF	GNOMAD_AF=0.0005	GT:AD	0/1:92,8
+15	120	.	A	G	200	PASS	GNOMAD_AF=0.0005	GT:AD	1/1:0,58
+15	160	.	A	G	180	PASS	GNOMAD_AF=0.0005	GT:AD	0/1:30,28
+15	200	.	G	A	175	PASS	GNOMAD_AF=0.0005	GT:AD	0/1:33,25
+11	70	.	C	T	60	PASS	GNOMAD_AF=0.0005	GT:AD	0/1:40,3
+11	130	.	G	A	190	PASS	GNOMAD_AF=0.0005	GT:AD	0/1:29,27
+5	80	.	G	A	180	PASS	GNOMAD_AF=0.0005	GT:AD	0/1:90,8
+5	160	.	C	T	185	PASS	GNOMAD_AF=0.0005	GT:AD	0/1:30,28
+5	300	.	T	C	190	PASS	GNOMAD_AF=0.0005	GT:AD	0/1:31,29
+5	380	.	T	C	188	PASS	GNOMAD_AF=0.0005	GT:AD	0/1:28,30

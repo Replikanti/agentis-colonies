@@ -465,7 +465,7 @@ if [ -n "$(gene_line TRIP13 "$LENSCSV")" ]; then
 else
     bad "L2 base: TRIP13 missing from the lens CSV before the AF mutation"
 fi
-sed '/^5\t80\t/ s/AF=0.0005/AF=0.2/' "$FIX/proband.vcf" > "$WORKROOT/l2.vcf"
+sed '/^5\t80\t/ s/GNOMAD_AF=0.0005/GNOMAD_AF=0.2/' "$FIX/proband.vcf" > "$WORKROOT/l2.vcf"
 DD2="$WORKROOT/data.l2"; build_data_dir "$DD2" "$WORKROOT/l2.vcf"
 run_pipeline "$DD2" approve 1
 if grep -q '^TRIP13.*REFUTED.*benign-in-population' "$WORKDIR/refuted.tsv" 2>/dev/null \
@@ -503,7 +503,7 @@ if [ -n "$(gene_line CENATAC "$LENSCSV")" ] && ! grep -q 'CENATAC.*refuter-error
 else
     bad "L4 base: CENATAC unexpectedly tagged refuter-error before the AF was removed"
 fi
-sed '/^5\t300\t/ s/AF=0.0005/./' "$FIX/proband.vcf" > "$WORKROOT/l4.vcf"
+sed '/^5\t300\t/ s/GNOMAD_AF=0.0005/./' "$FIX/proband.vcf" > "$WORKROOT/l4.vcf"
 DD4="$WORKROOT/data.l4"; build_data_dir "$DD4" "$WORKROOT/l4.vcf"
 run_pipeline "$DD4" approve 1
 if [ -n "$(gene_line CENATAC "$LENSCSV")" ] \
@@ -512,6 +512,30 @@ if [ -n "$(gene_line CENATAC "$LENSCSV")" ] \
     ok "L4: AF-less CENATAC is KEPT in the lens CSV, tagged refuter-error (fail-open, never dropped)"
 else
     bad "L4: fail-open broken — the unassessable CENATAC was dropped or left untagged"
+fi
+
+# --- L5 (#2056): caller-style INFO/AF must NOT hard-refute ------------------
+# The real-data trap: a raw caller VCF carries INFO/AF = the SAMPLE's allele
+# fraction (~0.5 on every het). Swap the population tag for caller-style AF on
+# TRIP13's representative variant: the benign axis must NOT fire (no
+# population annotation -> LLM skeptic + fail-open KEEP), so TRIP13 stays in
+# the lens CSV, tagged — never `REFUTED benign-in-population` (contrast: L2
+# proved a genuine common POPULATION AF does refute).
+sed '/^5\t80\t/ s/GNOMAD_AF=0.0005/AF=0.5/' "$FIX/proband.vcf" > "$WORKROOT/l5.vcf"
+# Declare the caller AF tag with a COMPLETE header line (a prefix-match sed
+# here once produced a truncated header that only htslib leniency survived).
+sed -i 's/^##INFO=<ID=GNOMAD_AF,.*$/&\n##INFO=<ID=AF,Number=A,Type=Float,Description="caller allele fraction (synthetic)">/' "$WORKROOT/l5.vcf"
+DD5L="$WORKROOT/data.l5"; build_data_dir "$DD5L" "$WORKROOT/l5.vcf"
+run_pipeline "$DD5L" approve 1
+# Determinism note: offline the mock prompt() cannot answer REFUTED, so the
+# af-unknown path always lands on the fail-open refuter-error return; a REAL
+# backend may legitimately refute — this check belongs to the offline suite.
+if [ -n "$(gene_line TRIP13 "$LENSCSV")" ] \
+   && grep -q 'TRIP13.*\[refuter-error\]' "$LENSCSV" \
+   && ! grep -q '^TRIP13.*REFUTED.*benign-in-population' "$WORKDIR/refuted.tsv" 2>/dev/null; then
+    ok "L5: caller-style AF=0.5 (no population tag) does NOT hard-refute — TRIP13 kept + fail-open-tagged (the #2056 real-data trap)"
+else
+    bad "L5: caller AF read as population AF (TRIP13 refuted/dropped/untagged) — #2056 regression"
 fi
 
 echo "grand-rounds/baseline live: $pass ok, $fail failed"

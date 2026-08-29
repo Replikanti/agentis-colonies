@@ -179,6 +179,17 @@ fn epcr_yml() -> string {
     return exec sh "cat " + shell_escape(cdir + "/settings/epcr.yml") + " 2>/dev/null || true";
 }
 
+// Word-valued yaml key (tag names etc.; yaml_num below only matches
+// numerics). Anchored to line start via "\n" so a commented-out line
+// ("# key: ...") or another key's suffix ("x_key: ...") can never match —
+// a silent miss here degrades to "tag absent -> fail-open for all", the
+// exact #2056 failure class.
+fn yaml_word(blob: string, key: string, dflt: string) -> string {
+    let v = trim(regex_capture("\n[ ]*" + key + ":[ ]*([A-Za-z0-9_.:-]+)", blob, 1));
+    if len(v) == 0 { return dflt; }
+    return v;
+}
+
 // A top-level scalar key ("key: <number>") from the epcr.yml blob, or a default.
 // Only real key lines carry "<key>: <num>"; the documentation lines use an em
 // dash, so they never match.
@@ -201,13 +212,17 @@ fn in_known_panel(gene: string) -> bool {
     return parse_int(trim(hit)) > 0;
 }
 
-// Population allele frequency of a variant (INFO/AF) from the normalized VCF.
-// "" / "." when the field is unset — the refuter treats that as unassessable
-// (fail-open), never as a refutation.
-fn pop_af(nvcf: string, chrom: string, pos: string) -> string {
+// POPULATION allele frequency of the representative variant, read from the
+// caller-supplied `tag` ("" / "." = unassessable, fail-open — never a
+// refutation). The tag comes from epcr.yml benign_af_info_tag (default
+// GNOMAD_AF) and MUST have population semantics: a raw caller VCF carries
+// INFO/AF = the SAMPLE's allele fraction (~0.5/1.0 on every het), and
+// reading that as a population frequency refuted every real candidate on
+// the first real run (#2056).
+fn pop_af(nvcf: string, chrom: string, pos: string, tag: string) -> string {
     let bcftools = bcftools_bin();
     // colony-lint: safe-exec-concat
-    return trim(exec sh shell_escape(bcftools) + " query -f '%INFO/AF\\n' -r "
+    return trim(exec sh shell_escape(bcftools) + " query -f " + shell_escape("%INFO/" + tag + "\\n") + " -r "
         + shell_escape(chrom + ":" + pos + "-" + pos) + " " + shell_escape(nvcf)
         + " 2>/dev/null | head -1 || true");
 }
@@ -1365,37 +1380,49 @@ agent lens_pathway() -> void {
 
 // One candidate -> "gene<TAB>verdict<TAB>axis<TAB>detail", verdict in
 // {REAL, REFUTED, refuter-error}.
-fn refute_one(nvcf: string, benign_af: float, r: string) -> string {
+fn refute_one(nvcf: string, benign_af: float, aftag: string, r: string) -> string {
     let gene = field(r, 0);
     if len(trim(gene)) == 0 { return "\trefuter-error\tmalformed\tempty candidate row"; }
-    let afRaw = pop_af(nvcf, field(r, 1), field(r, 2));
-    // Fail-open: nothing to judge benign-in-population by -> KEEP + tag.
-    if len(afRaw) == 0 { return gene + "\trefuter-error\tbenign-in-population\tno population AF for the representative variant"; }
-    if afRaw == "." { return gene + "\trefuter-error\tbenign-in-population\tno population AF for the representative variant"; }
-    // Deterministic hard axis: a common population allele is not a penetrant cause.
-    if parse_float(afRaw) >= benign_af {
-        return gene + "\tREFUTED\tbenign-in-population\tpopulation AF " + afRaw + " at/above the common-variant cutoff";
+    let afRaw = pop_af(nvcf, field(r, 1), field(r, 2), aftag);
+    let af_known = if len(afRaw) == 0 { false } else { if afRaw == "." { false } else { true } };
+    // Deterministic hard axis — only when a genuine POPULATION AF annotation
+    // exists: a common population allele is not a penetrant cause.
+    if af_known {
+        if parse_float(afRaw) >= benign_af {
+            return gene + "\tREFUTED\tbenign-in-population\tpopulation AF " + afRaw + " at/above the common-variant cutoff";
+        }
     }
-    // Genuine LLM skeptic on the soft axes (a parseable REFUTED demotes).
+    // Genuine LLM skeptic (a parseable REFUTED demotes). A missing annotation
+    // must NOT disable the skeptic (#2056): the benign axis then falls to the
+    // LLM's own knowledge of common variants.
+    let afnote = if af_known {
+        "The representative variant is NOT common in the population (already checked against the population-AF annotation). Try to REFUTE on: wrong inheritance fit, phenotype mismatch, or a low-quality/artifact call. "
+    } else {
+        "No population-AF annotation is available, so ALSO consider benign-in-population from your own knowledge of common variants. Try to REFUTE on: benign-in-population, wrong inheritance fit, phenotype mismatch, or a low-quality/artifact call. "
+    };
     // colony-lint: prompt-gate-ok
     let verdict = prompt(
         "You are an INDEPENDENT clinical geneticist with NO stake in this candidate being causal. Try to REFUTE "
-      + "its causality for a single proband with mosaic variegated aneuploidy (no parental samples) on: wrong "
-      + "inheritance fit, phenotype mismatch, or a low-quality/artifact call. The representative variant is NOT "
-      + "common in the population (already checked). Reply with EXACTLY ONE final line: VERDICT|REAL|" + gene
+      + "its causality for a single proband with mosaic variegated aneuploidy (no parental samples). " + afnote
+      + "Reply with EXACTLY ONE final line: VERDICT|REAL|" + gene
       + "|<axis>|<why the refutation failed> or VERDICT|REFUTED|" + gene + "|<axis>|<the fact that kills "
       + "causality>. If unsure, answer REAL.",
         "gene=" + gene + " zygosity=" + field(r, 3) + " vaf=" + field(r, 4) + " filter=" + field(r, 5)
       + " tier=" + field(r, 6)) -> string;
     if index_of(verdict, "VERDICT|REFUTED|") >= 0 {
-        let why = trim(regex_capture("VERDICT\\|REFUTED\\|[^|]*\\|([^|]*)", verdict, 1));
+        // Capture "<axis>|<reason>" in one tab/newline-free group: the model
+        // text is untrusted and a TAB or NEWLINE here would inject columns or
+        // rows into refuted.tsv (#2057 review).
+        let why = trim(regex_capture("VERDICT\\|REFUTED\\|[^|]*\\|([^\\t\\n]*)", verdict, 1));
         return gene + "\tREFUTED\tllm-skeptic\t" + why;
     }
-    return gene + "\tREAL\tsurvived\tno refuting fact found";
+    if af_known { return gene + "\tREAL\tsurvived\tno refuting fact found"; }
+    // L4 fail-open contract: no annotation -> KEPT, visibly tagged.
+    return gene + "\trefuter-error\tbenign-in-population\tno population-AF annotation (" + aftag + ") — LLM skeptic found no refuting fact";
 }
-fn refute_rec(nvcf: string, benign_af: float, rows: list<string>, i: int, acc: string) -> string {
+fn refute_rec(nvcf: string, benign_af: float, aftag: string, rows: list<string>, i: int, acc: string) -> string {
     if i >= len(rows) { return acc; }
-    return refute_rec(nvcf, benign_af, rows, i + 1, acc + refute_one(nvcf, benign_af, get(rows, i)) + "\n");
+    return refute_rec(nvcf, benign_af, aftag, rows, i + 1, acc + refute_one(nvcf, benign_af, aftag, get(rows, i)) + "\n");
 }
 
 agent refuter() -> void {
@@ -1405,9 +1432,14 @@ agent refuter() -> void {
     let nvcf = recall_latest("baseline:nvcf");
     let wd = getenv("MVA_WORK_DIR");
     let benign = parse_float(yaml_num(epcr_yml(), "benign_population_af", "0.01"));
+    // Resolve the population-AF tag ONCE and log it — bcftools failures on an
+    // undeclared tag are silenced in pop_af, so this line is the operator's
+    // only signal about which annotation the benign axis is reading (#2056).
+    let aftag = yaml_word(epcr_yml(), "benign_af_info_tag", "GNOMAD_AF");
+    print("refuter: benign-in-population reads INFO/" + aftag + " (unannotated variants fall to the LLM skeptic, fail-open)");
     // Per-candidate, bounded at <=10 — the refute gate's intentional cost.
     let rows = take(nonempty_lines(pool), 10);
-    let verdicts = refute_rec(nvcf, benign, rows, 0, "");
+    let verdicts = refute_rec(nvcf, benign, aftag, rows, 0, "");
     memo_write("lens:refute", verdicts);
     record_rows("refute", len(rows));
     // Transparency bucket: everything not a clean REAL (REFUTED + refuter-error).
