@@ -165,6 +165,7 @@ echo "grand-rounds/baseline: live-agent mutation test"
 # --- baseline + M1: het -> hom-alt flips the stage-4 classification --------
 DD="$WORKROOT/data.base"; build_data_dir "$DD" "$FIX/proband.vcf"
 run_pipeline "$DD" approve
+cp -f "$CSV" "$WORKROOT/m1-base.csv" 2>/dev/null || true
 if [ -f "$CSV" ] && grep -q 'biallelic (hom-alt)' "$CSV"; then
     ok "M1 base: BUB1B hom-alt classified biallelic"
 else
@@ -326,6 +327,100 @@ else
     bad "G7b: the partial-panel waiver did not produce a CSV + warning"
 fi
 export MVA_PANEL_ALLOW_PARTIAL=0
+
+# ============================================================================
+# E1-E5 (#2054): Exomiser top-N merge. E1 pins BYTE-identity without a TSV;
+# E2 plants an ADVERSARIAL TSV (unprefixed contigs, a readthrough symbol on a
+# panel variant's position, a symbolic <DEL> allele, a comma-carrying gene) —
+# one bad row must SKIP, never kill the whole submission; E3 pins the cap;
+# E4 pins the manifest-pinned staleness guard (TSV without a matching .done
+# marker must NOT merge); E5 pins panel precedence/dedup.
+# ============================================================================
+
+DDE="$WORKROOT/data.exo"; build_data_dir "$DDE" "$FIX/proband.vcf"
+run_pipeline "$DDE" approve
+if [ -f "$CSV" ] && cmp -s "$CSV" "$WORKROOT/m1-base.csv"; then
+    ok "E1 base: no Exomiser TSV -> CSV byte-identical to the pre-merge baseline"
+else
+    bad "E1 base: CSV differs from the pre-merge baseline without any Exomiser TSV"
+fi
+
+# The canonical fallback is manifest-pinned: recreate exomiser_runner's
+# nvcf|hpo|assembly hash for THIS run (draft file carries a trailing newline;
+# the manifest hpo does not).
+NVCF_E="$WORKDIR/preproc/normalized.vcf.gz"
+HPO_E="$(tr -d '\n' < "$WORKDIR/phenotype/hpo-draft.txt")"
+MH_E="$(printf '%s|%s|%s' "$NVCF_E" "$HPO_E" "hg38" | sha256sum | cut -d' ' -f1)"
+mkdir -p "$WORKDIR/exomiser"
+
+# E4 first: a TSV WITHOUT the matching marker must not merge (staleness guard).
+{
+    printf '#RANK\tEXOMISER_GENE_COMBINED_SCORE\tGENE_SYMBOL\tCONTIG\tSTART\tREF\tALT\n'
+    printf '1\t0.85\tSYNNOVA\t11\t90\tC\tT\n'
+} > "$WORKDIR/exomiser/baseline.variants.tsv"
+rm -f "$CSV"
+( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
+if [ -f "$CSV" ] && ! grep -q 'novel-gene' "$CSV"; then
+    ok "E4: TSV without a matching .done manifest marker -> panel-only (stale output never merges)"
+else
+    bad "E4: unpinned Exomiser TSV merged (or no CSV) — staleness guard broken"
+fi
+
+# E2: marker planted; adversarial rows. Panel BUB1B sits at chr15:120 (its
+# hom-alt row), so the readthrough BUB1B-PAK6 at unprefixed 15:120 collides on
+# the variant key and must be SKIPPED, not refused at emit.
+touch "$WORKDIR/exomiser/.done.$MH_E"
+{
+    printf '#RANK\tEXOMISER_GENE_COMBINED_SCORE\tGENE_SYMBOL\tCONTIG\tSTART\tREF\tALT\n'
+    printf '1\t0.99\tBUB1B-PAK6\t15\t120\tG\tA\n'
+    printf '2\t0.90\tSYNDEL\t11\t80\tC\t<DEL>\n'
+    printf '3\t0.88\tSYNCOMMA,ALT\t11\t85\tC\tT\n'
+    printf '4\t0.85\tSYNNOVA\t11\t90\tC\tT\n'
+    printf '5\t0.30\tSYNNOVB\t5\t150\tA\tG\n'
+} > "$WORKDIR/exomiser/baseline.variants.tsv"
+rm -f "$CSV"
+( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
+if grep 'SYNNOVA' "$CSV" 2>/dev/null | grep -q 'chr11,90' \
+   && grep 'SYNNOVA' "$CSV" 2>/dev/null | grep -q '0.20,primary' \
+   && grep 'SYNNOVB' "$CSV" 2>/dev/null | grep -q '0.05,secondary'; then
+    ok "E2: adversarial TSV -> SYNNOVA merged chr-normalized (0.20,primary), SYNNOVB incidental (0.05,secondary)"
+else
+    bad "E2: novel genes missing, unnormalized contig, or wrong tiers"
+fi
+if [ -f "$CSV" ] && ! grep -q 'BUB1B-PAK6\|SYNDEL\|SYNCOMMA' "$CSV"; then
+    ok "E2b: readthrough dup-key, <DEL> allele and comma symbol each SKIPPED (submission survives)"
+else
+    bad "E2b: an adversarial row leaked into the CSV or killed the whole submission"
+fi
+if [ "$(grep -c 'BUB1B' "$CSV" 2>/dev/null)" = "1" ] \
+   && [ -n "$(gene_line BUB1B "$CSV")" ] && [ -n "$(gene_line SYNNOVA "$CSV")" ] \
+   && [ "$(gene_line BUB1B "$CSV")" -lt "$(gene_line SYNNOVA "$CSV")" ]; then
+    ok "E5: panel BUB1B kept once and precedes the novel gene (precedence + dedup)"
+else
+    bad "E5: panel precedence/dedup broken"
+fi
+
+# E3: 12 novel genes (unprefixed contigs) -> the cap (10) holds, every panel
+# candidate survives, the Exomiser tail is trimmed.
+{
+    printf '#RANK\tGENE_SYMBOL\tCONTIG\tSTART\tREF\tALT\tEXOMISER_GENE_COMBINED_SCORE\n'
+    for i in 01 02 03 04 05 06 07 08 09 10 11 12; do
+        printf '%s\tSYNN%s\t11\t%s\tC\tT\t0.9\n' "$i" "$i" "$((100 + 10#$i))"
+    done
+} > "$WORKDIR/exomiser/baseline.variants.tsv"
+rm -f "$CSV"
+( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
+e3_rows="$(tail -n +2 "$CSV" 2>/dev/null | grep -c . || true)"
+e3_panel=1
+for gpanel in BUB1B CEP57 TRIP13 CENATAC; do
+    grep -q "$gpanel" "$CSV" 2>/dev/null || e3_panel=0
+done
+if [ "$e3_rows" = "10" ] && [ "$e3_panel" = "1" ] \
+   && grep -q 'SYNN01' "$CSV" 2>/dev/null && ! grep -q 'SYNN12' "$CSV" 2>/dev/null; then
+    ok "E3: cap holds at 10, all panel candidates survive, Exomiser tail trimmed"
+else
+    bad "E3: cap/precedence broken (rows=$e3_rows panel_complete=$e3_panel)"
+fi
 
 # ============================================================================
 # M3 lens mode (MVA_LENS_MODE=1): lens fan-out + refute gate + reconcile.

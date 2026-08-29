@@ -25,6 +25,28 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **Exomiser top-N now merges into the reconciler**
+  ([#2054](https://github.com/Replikanti/agentis-colonies/issues/2054)):
+  closes the novel-gene blind spot — the candidate pool used to be built
+  exclusively from the known-MVA-gene panel, so a causal variant outside
+  BUB1B/CEP57/TRIP13/CENATAC could never rank. With `MVA_RUN_EXOMISER=1`
+  (still opt-in — hour-scale run) the reconciler appends one representative
+  variant per novel gene AFTER the panel candidates (panel precedence is
+  structural; `max_rows` trims the tail): combined score ≥
+  `phenotype_novel_gene_min_score` → `phenotype_novel_gene` (primary, 0.20),
+  below → `incidental` (secondary, 0.05) — the raw score never becomes an
+  EPCR, per the ladder's own contract. Header-driven TSV column resolution;
+  canonical-path fallback keeps the merge across the D6 two-pass flow and is
+  manifest-pinned (`.done.<nvcf|hpo|assembly>` must match — stale Exomiser
+  output from an earlier phenotype never merges); per-row hardening skips
+  non-primary/unprefixed contigs (chr-normalized first), symbolic alleles,
+  malformed positions, comma symbols, and panel variant-key collisions
+  (readthrough genes), so one bad row can never kill the whole submission;
+  lens promotion never relabels a novel-gene row into a `known_gene_*` rung;
+  removing `$MVA_WORK_DIR/exomiser/` forces panel-only. Without Exomiser
+  output the submission is byte-identical (pinned by `cmp` in the live
+  test). Live-agent mutations E1–E5.
+
 ### Deprecated
 
 ### Removed

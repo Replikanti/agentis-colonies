@@ -92,7 +92,7 @@ done
 # Bus-wired: each stage listens and emits. Consumers read via bus_read(), the
 # Void-normalizing listen() wrapper (#2044 — a raw listen() dies on the void an
 # aborted producer leaves and takes the whole run's print buffer with it).
-for ev in "baseline:normalized_vcf" "baseline:hpo_ids" "baseline:panel_hits" "baseline:candidates"; do
+for ev in "baseline:normalized_vcf" "baseline:hpo_ids" "baseline:panel_hits" "baseline:candidates" "baseline:exomiser_tsv"; do
     if grep -qF "emit(\"$ev\"" "$AG" && grep -qF "bus_read(\"$ev\"" "$AG"; then
         ok "bus event $ev is both emitted and bus_read-consumed"
     else
@@ -125,6 +125,15 @@ if grep -qE '^\s*failedVariantFilter\s*:' "$TMPL"; then
 else
     ok "template has no active failedVariantFilter step"
 fi
+# #2054: the Exomiser merge is wired end-to-end — the runner emits the TSV,
+# the reconciler consumes it, and the min-score knob routes the tier.
+for tok in 'exomiser_tsv_path' 'exomiser_candidates(' 'phenotype_novel_gene_min_score'; do
+    if grep -qF "$tok" "$AG"; then
+        ok "Exomiser merge marker '$tok' present (#2054)"
+    else
+        bad "Exomiser merge marker '$tok' missing from the .ag (#2054 regression)"
+    fi
+done
 # D6 gate compares a stored hash, not mere file presence.
 if grep -qF 'approved_hash != draft_hash' "$AG"; then
     ok "D6 gate compares a stored sha256 (not file presence)"

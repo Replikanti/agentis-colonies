@@ -14,12 +14,10 @@
 //   reconciler  --emit baseline:candidates--> emitter (stage 6: build + validate + write)
 //
 //   The panel review reads the normalized VCF directly, NOT the Exomiser TSV.
-//   The Exomiser branch (stage 3) is OPT-IN (MVA_RUN_EXOMISER=1) and its output
-//   (baseline:exomiser_tsv) is not yet consumed by reconcile — the
-//   Exomiser->reconcile merge is a documented later revision (see #2031). It is
-//   left wired-but-idle so that merge is an evolution of this baseline, not a
-//   rewrite; gated OFF by default so a multi-hour run never burns for discarded
-//   output.
+//   The Exomiser branch (stage 3) is OPT-IN (MVA_RUN_EXOMISER=1, hour-scale
+//   run) and since #2054 its output (baseline:exomiser_tsv) IS consumed: the
+//   reconciler appends the Exomiser top-N as novel-gene candidates AFTER the
+//   panel set, on the epcr.yml phenotype_novel_gene/incidental tiers.
 //
 // The .ag / external boundary is drawn so NO bulk record stream ever enters
 // .ag: every stage narrows externally first (bcftools over ~5M records, the
@@ -332,6 +330,11 @@ fn epcr_centi(row: string) -> int {
 // reading the target epcr from the same epcr.yml the baseline reconciler uses
 // (never a fabricated number). The top rung (biallelic) has no higher rung.
 fn promote_row(row: string) -> string {
+    // #2055 review: a novel-gene/incidental row must NOT climb into the
+    // known_gene_* rungs — their epcr.yml labels assert panel membership the
+    // row does not have. Lens agreement still orders it within its tier
+    // (order_key sorts on agreement after epcr).
+    if index_of(field(row, 11), "novel-gene") >= 0 { return row; }
     let cur = epcr_centi(row);
     let up = if cur >= 90 { "" }
         else { if cur >= 75 { epcr_for("known_gene_biallelic") }
@@ -680,16 +683,12 @@ fn render_analysis(assembly: string, vcf: string, proband: string, hpo_quoted: s
 agent exomiser_runner() -> void {
     // OPT-IN gate (default OFF), checked FIRST — before any listen(), so the
     // default path returns without touching the (possibly unemitted) hpo_ids
-    // channel. The Exomiser->reconcile merge is a documented later revision
-    // (#2031): nothing consumes baseline:exomiser_tsv yet, so a multi-hour
-    // Exomiser run here only burns compute for discarded output. The scaffolding
-    // (YAML render, idempotent skip, blocking run, output check) stays intact so
-    // the future merge is an evolution — flip MVA_RUN_EXOMISER=1 to exercise it
-    // end-to-end on the real bundle.
-    // TODO(#2031): consume baseline:exomiser_tsv in the reconciler and default
-    // this stage back ON once the Exomiser top-N is merged into the EPCR ladder.
+    // channel. Since #2054 the reconciler CONSUMES baseline:exomiser_tsv
+    // (novel-gene merge into the EPCR ladder), so flipping MVA_RUN_EXOMISER=1
+    // is now worth the hour-scale run. The default stays OFF only because of
+    // that runtime cost — the operator launch script is the place to enable it.
     if getenv_or("MVA_RUN_EXOMISER", "0") != "1" {
-        print("exomiser_runner: SKIP — Exomiser stage is opt-in (set MVA_RUN_EXOMISER=1). Its output is not yet consumed by reconcile (#2031).");
+        print("exomiser_runner: SKIP — Exomiser stage is opt-in (set MVA_RUN_EXOMISER=1). Since #2054 its top-N merges into the reconciler.");
         return;
     }
     let hpo = bus_read("baseline:hpo_ids");
@@ -896,6 +895,144 @@ fn epcr_for(tier_id: string) -> string {
     return trim(regex_capture("epcr:[ ]*([0-9.]+)", tier_block(tier_id), 1));
 }
 
+
+// --- #2054: Exomiser top-N merge (novel genes the panel cannot see) --------
+
+// Index of a named column in a tab-separated header (0 - 1 when absent) —
+// Exomiser's column layout varies by version, so never hardcode positions.
+fn col_idx_rec(cols: list<string>, name: string, i: int) -> int {
+    if i >= len(cols) { return 0 - 1; }
+    if get(cols, i) == name { return i; }
+    return col_idx_rec(cols, name, i + 1);
+}
+fn col_idx(hdr: string, name: string) -> int {
+    return col_idx_rec(regex_split("\t", hdr), name, 0);
+}
+
+// Append-concat two lists (push-recursion; reduce is only exercised with
+// string accumulators in this file, so stay with the take_acc idiom).
+fn concat_rec(xs: list<string>, i: int, acc: list<string>) -> list<string> {
+    if i >= len(xs) { return acc; }
+    return concat_rec(xs, i + 1, push(acc, get(xs, i)));
+}
+
+// Resolve the Exomiser variants TSV: the bus emit when the stage ran this
+// pass, else the canonical output path (survives the D6 two-pass flow and is
+// plantable by the live test). "" = no Exomiser output -> panel-only
+// reconcile, byte-identical to the pre-#2054 submission. Removing
+// $MVA_WORK_DIR/exomiser/ is the documented way to force panel-only.
+fn exomiser_tsv_path(wd: string) -> string {
+    let bus = bus_read("baseline:exomiser_tsv");
+    if len(bus) > 0 { return bus; }
+    let canonical = wd + "/exomiser/baseline.variants.tsv";
+    // Manifest-pinned fallback (#2055 review): only trust a canonical TSV
+    // whose .done.<mhash> marker matches THIS run's inputs — the same
+    // nvcf|hpo|assembly manifest exomiser_runner hashes. An Exomiser output
+    // computed for an earlier HPO set / VCF must never silently merge into a
+    // submission claiming the new approved phenotype. The bus hpo payload is
+    // the draft WITHOUT the file's trailing newline, hence the trim.
+    let nvcf = recall_latest("baseline:nvcf");
+    // colony-lint: safe-exec-concat
+    let hpo = trim(exec sh "cat " + shell_escape(wd + "/phenotype/hpo-draft.txt") + " 2>/dev/null || true");
+    let assembly = getenv_or("MVA_EXOMISER_ASSEMBLY", "hg38");
+    let mhash = sha256_hex(nvcf + "|" + hpo + "|" + assembly);
+    let marker = wd + "/exomiser/.done." + mhash;
+    // colony-lint: safe-exec-concat
+    let ok = trim(exec sh "test -f " + shell_escape(marker) + " && test -s " + shell_escape(canonical) + " && echo yes || echo no");
+    if ok == "yes" { return canonical; }
+    return "";
+}
+
+// One Exomiser data row -> ONE candidate row for a gene outside the panel.
+// The tier comes from the evidence ladder, never from the score itself:
+// Exomiser's combined score is a RANKING score, not a probability (epcr.yml
+// is explicit about this) — the score only picks the rung (>= min_score ->
+// phenotype_novel_gene, primary; below -> incidental, secondary) and is
+// quoted in the notes for transparency. "" = malformed row, skip.
+fn exo_candidate_row(r: string, g: string, ic: int, ip: int, ir: int, ia: int, isc: int, minscore: float) -> string {
+    // #2055 review hardening: one bad row must SKIP, never poison the whole
+    // submission. Exomiser may write UNPREFIXED contig names (svart assembly
+    // ids) -> chr_name-normalize and drop non-primary contigs; symbolic
+    // alleles (<DEL>), non-numeric positions, and comma-carrying gene symbols
+    // (readthrough annotations) would either fail validate_row — which
+    // short-circuits the ENTIRE emit — or corrupt the bare tab->comma CSV.
+    let rawc = trim(field(r, ic));
+    // PLINK-style numeric sex chromosomes some tool builds emit.
+    let mappedc = if rawc == "23" { "X" } else { if rawc == "24" { "Y" } else { rawc } };
+    let chrom = chr_name(mappedc);
+    if !is_primary_contig(chrom) { return ""; }
+    let pos = trim(field(r, ip));
+    if !regex_match("^[0-9]+$", pos) { return ""; }
+    let rf = trim(field(r, ir));
+    let al = trim(field(r, ia));
+    if !regex_match("^[ACGTNacgtn]+$", rf) { return ""; }
+    if !regex_match("^[ACGTNacgtn]+$", al) { return ""; }
+    if index_of(g, ",") >= 0 { return ""; }
+    let score = parse_float(trim(field(r, isc)));
+    if score >= minscore {
+        return "PROBAND\t" + chrom + "\t" + pos + "\t" + rf + "\t" + al + "\t\t\t\t\t"
+            + epcr_for("phenotype_novel_gene") + "\tprimary\t" + g
+            + " phenotype-driven novel-gene candidate (Exomiser combined score " + to_string(score) + ")";
+    }
+    return "PROBAND\t" + chrom + "\t" + pos + "\t" + rf + "\t" + al + "\t\t\t\t\t"
+        + epcr_for("incidental") + "\tsecondary\t" + g
+        + " incidental novel-gene (Exomiser combined score " + to_string(score) + " below threshold)";
+}
+
+// Rank-ordered walk over the TSV lines (index 0 is the header): ONE variant
+// per NEW gene — `seen` starts as the whole panel, so panel genes are never
+// duplicated — and at most `left` rows (the global cap's leftover).
+fn exo_fold(lines: list<string>, i: int, seen: string, acc: list<string>, ig: int, ic: int, ip: int, ir: int, ia: int, isc: int, minscore: float, left: int) -> list<string> {
+    if left <= 0 { return acc; }
+    if i >= len(lines) { return acc; }
+    let r = get(lines, i);
+    let g = trim(field(r, ig));
+    if len(g) == 0 { return exo_fold(lines, i + 1, seen, acc, ig, ic, ip, ir, ia, isc, minscore, left); }
+    if index_of(seen, "|" + g + "|") >= 0 { return exo_fold(lines, i + 1, seen, acc, ig, ic, ip, ir, ia, isc, minscore, left); }
+    let cand = exo_candidate_row(r, g, ic, ip, ir, ia, isc, minscore);
+    if len(cand) == 0 { return exo_fold(lines, i + 1, seen, acc, ig, ic, ip, ir, ia, isc, minscore, left); }
+    // #2055 review: the emitter refuses duplicate chrom_1:pos_1 keys and that
+    // refusal kills the WHOLE submission — so the registry also tracks variant
+    // keys (seeded with the panel's own), catching readthrough symbols
+    // (BUB1B-PAK6) and PANEL_PAD overlaps that carry a different gene name.
+    let key = field(cand, 1) + ":" + field(cand, 2);
+    if index_of(seen, "|" + key + "|") >= 0 { return exo_fold(lines, i + 1, seen, acc, ig, ic, ip, ir, ia, isc, minscore, left); }
+    return exo_fold(lines, i + 1, seen + g + "|" + key + "|", push(acc, cand), ig, ic, ip, ir, ia, isc, minscore, left - 1);
+}
+
+// The #2054 merge: bounded read (rank order is file order, so head keeps the
+// top), header-driven column resolution, panel precedence via `seen`.
+fn exomiser_candidates(tsv: string, panel_genes: list<string>, panel_keys: string, left: int) -> list<string> {
+    // head -200: bounds the .ag read (well under the 500-row boundary) while
+    // leaving room for numGenes:0 outputs where one gene owns dozens of rows.
+    // colony-lint: safe-exec-concat
+    let raw = exec sh "head -200 " + shell_escape(tsv) + " 2>/dev/null || true";
+    let lines = nonempty_lines(raw);
+    let none = filter(lines, |x: string| -> bool { return false; });
+    if len(lines) < 2 { return none; }
+    let hdr = get(lines, 0);
+    let ig = col_idx(hdr, "GENE_SYMBOL");
+    let ic = col_idx(hdr, "CONTIG");
+    let ip = col_idx(hdr, "START");
+    let ir = col_idx(hdr, "REF");
+    let ia = col_idx(hdr, "ALT");
+    let isc = col_idx(hdr, "EXOMISER_GENE_COMBINED_SCORE");
+    if ig < 0 { print("reconciler: Exomiser TSV lacks GENE_SYMBOL — skipping merge"); return none; }
+    if ic < 0 { print("reconciler: Exomiser TSV lacks CONTIG — skipping merge"); return none; }
+    if ip < 0 { print("reconciler: Exomiser TSV lacks START — skipping merge"); return none; }
+    if ir < 0 { print("reconciler: Exomiser TSV lacks REF — skipping merge"); return none; }
+    if ia < 0 { print("reconciler: Exomiser TSV lacks ALT — skipping merge"); return none; }
+    if isc < 0 { print("reconciler: Exomiser TSV lacks EXOMISER_GENE_COMBINED_SCORE — skipping merge"); return none; }
+    let minscore = parse_float(yaml_num(epcr_yml(), "phenotype_novel_gene_min_score", "0.7"));
+    let seen = "|" + join_str(panel_genes, "|") + "|" + panel_keys;
+    record_rows("exo_merge", len(lines) - 1);
+    let picked = exo_fold(lines, 1, seen, none, ig, ic, ip, ir, ia, isc, minscore, left);
+    // Operator observability on an hour-scale run: say how much of the TSV was
+    // actually understood, not just how much merged.
+    print("reconciler: Exomiser TSV — ", len(lines) - 1, " row(s) examined, ", len(picked), " merged (rest skipped: panel-owned / dup-key / contig / allele / malformed)");
+    return picked;
+}
+
 agent reconciler() -> void {
     let panel_tsv = bus_read("baseline:panel_hits");
     if len(panel_tsv) == 0 { print("reconciler: no panel hits — skipping"); return; }
@@ -909,8 +1046,8 @@ agent reconciler() -> void {
     // Group per gene: hom-alt -> biallelic; >=2 het in a gene -> candidate
     // compound-het (unphased, never asserted confirmed biallelic); single rare
     // -> monoallelic. Fold each gene into ONE candidate row (proband injected
-    // by the emitter). The Exomiser top-N is merged in a later revision; the
-    // panel review is the evidence-tier anchor here.
+    // by the emitter). The panel review is the evidence-tier anchor; the
+    // Exomiser top-N is appended AFTER it below (#2054).
     let genes = sort_unique_strings(map(hits, |h: string| -> string { return field(h, 7); }));
     let candidates = map(genes, |g: string| -> string {
         let gene_hits = filter(hits, |h: string| -> bool { return field(h, 7) == g; });
@@ -942,7 +1079,28 @@ agent reconciler() -> void {
     let maxs = trim(exec sh "grep -oiE 'max_rows:[ ]*[0-9]+' " + shell_escape(cdir + "/settings/epcr.yml") + " 2>/dev/null | grep -oE '[0-9]+' | head -1 || echo 10");
     let cap0 = parse_int(maxs);
     let cap = if cap0 <= 0 { 10 } else { cap0 };
-    let capped = if len(rows) > cap { take(rows, cap) } else { rows };
+
+    // #2054: merge the Exomiser top-N AFTER the panel candidates — novel genes
+    // the panel cannot see. Panel precedence is structural: appended after,
+    // and the cap trims from the tail, so a full panel always survives.
+    let exo_tsv = exomiser_tsv_path(wd);
+    let none2 = filter(rows, |x: string| -> bool { return false; });
+    let exo_left = cap - len(rows);
+    let pkeys = reduce(rows, |acc: string, r: string| -> string {
+        let k1 = field(r, 1) + ":" + field(r, 2) + "|";
+        let c2 = field(r, 5);
+        if len(c2) > 0 { return acc + k1 + c2 + ":" + field(r, 6) + "|"; }
+        return acc + k1;
+    }, "");
+    let exo_rows = if len(exo_tsv) == 0 { none2 }
+        else { if exo_left <= 0 { none2 } else { exomiser_candidates(exo_tsv, genes, pkeys, exo_left) } };
+    if len(exo_tsv) > 0 {
+        print("reconciler: Exomiser merge — ", len(exo_rows), " novel-gene candidate(s) from ", exo_tsv);
+    } else {
+        print("reconciler: no Exomiser TSV — panel-only reconcile");
+    }
+    let combined = concat_rec(exo_rows, 0, rows);
+    let capped = if len(combined) > cap { take(combined, cap) } else { combined };
     let cand_tsv = wd + "/candidates.tsv";
     // colony-lint: safe-exec-concat
     exec sh "printf %s " + shell_escape(join_str(capped, "\n") + "\n") + " > " + shell_escape(cand_tsv);
@@ -961,7 +1119,8 @@ agent reconciler() -> void {
             let chrom = field(row, 1);
             let pos = field(row, 2);
             let tierid = if index_of(notes, "biallelic") >= 0 { "biallelic" }
-                else { if index_of(notes, "compound-het") >= 0 { "comphet" } else { "monoallelic" } };
+                else { if index_of(notes, "compound-het") >= 0 { "comphet" }
+                else { if index_of(notes, "novel-gene") >= 0 { "novel" } else { "monoallelic" } } };
             // representative-variant evidence (the candidate's chrom_1:pos_1).
             let h = filter(hits, |x: string| -> bool {
                 if field(x, 0) != chrom { return false; }
