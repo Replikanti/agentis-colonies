@@ -476,6 +476,40 @@ else
     bad "E7: leading representation does not follow the top Exomiser hit (#2059 regression)"
 fi
 
+# --- E8 (#2060): same-position het+hom must never dup-key-kill the CSV ------
+# BUB1B reduced to het@120 + het@160 + hom@120: the pair leads (a=120) and the
+# hom alternate shares chrom_1:pos_1 with it — the alternate must be DROPPED
+# and the submission must survive (pre-fix: emitter refused the whole CSV on
+# the duplicate key and emitted nothing).
+awk -v OFS="\t" '!/^15\t90\t/ && !/^15\t200\t/ {print} /^15\t120\t/ {$4="A"; $5="T"; $6=190; $10="0/1:30,28"; print}' \
+    "$FIX/proband.vcf" > "$WORKROOT/e8.vcf"
+DD8="$WORKROOT/data.e8"; build_data_dir "$DD8" "$WORKROOT/e8.vcf"
+run_pipeline "$DD8" approve
+e8_pair="$(grep 'BUB1B candidate compound-het' "$CSV" 2>/dev/null || true)"
+if [ -f "$CSV" ] && [ "$(grep -c 'BUB1B' "$CSV")" = "1" ] \
+   && printf '%s' "$e8_pair" | grep -q ',120,' && printf '%s' "$e8_pair" | grep -q ',160,' \
+   && ! grep -q 'BUB1B.*alternate' "$CSV"; then
+    ok "E8: same-pos het+hom -> colliding alternate dropped, submission survives (pair 120+160)"
+else
+    bad "E8: dup-key collision killed the CSV or the alternate leaked (#2060 regression)"
+fi
+
+# --- E9 (#2060): a multiallelic split is ONE site, never a pair --------------
+# BUB1B's only hets are the two split alleles of a multiallelic 15:160
+# (A->G,T; GT 1/2): het_b (distinct-position filter) is empty, so the gene
+# must fall through to the hom representation — no compound-het row whose two
+# members share a position.
+sed -e 's#^15\t160\t\.\tA\tG\t180\tPASS\tGNOMAD_AF=0.0005\tGT:AD\t0/1:30,28#15\t160\t.\tA\tG,T\t180\tPASS\tGNOMAD_AF=0.0005,0.0005\tGT:AD\t1/2:0,28,30#' \
+    "$FIX/proband.vcf" | grep -vP '^15\t90\t|^15\t200\t' > "$WORKROOT/e9.vcf"
+DD9="$WORKROOT/data.e9"; build_data_dir "$DD9" "$WORKROOT/e9.vcf"
+run_pipeline "$DD9" approve
+if [ -f "$CSV" ] && grep 'BUB1B biallelic (hom-alt)' "$CSV" 2>/dev/null | grep -q '0.90,primary' \
+   && ! grep -q 'BUB1B candidate compound-het' "$CSV"; then
+    ok "E9: multiallelic split never forms a same-position pair — falls through to the hom (0.90,primary)"
+else
+    bad "E9: a one-site 'pair' leaked or the fall-through broke (#2060 regression)"
+fi
+
 # ============================================================================
 # M3 lens mode (MVA_LENS_MODE=1): lens fan-out + refute gate + reconcile.
 # Every assertion keys on an input-driven STRUCTURAL consequence (population-AF
