@@ -53,6 +53,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **Within-tier ordering was lexicographic by row text**
+  ([#2064](https://github.com/Replikanti/agentis-colonies/issues/2064)): all
+  known-gene comphet pairs tie on the 0.75 tier and the #2059 sort broke the
+  tie by row text (effectively chromosome string), putting an arbitrary gene
+  at rank 1 on real data — while `epcr.yml` documents that the Exomiser
+  score orders candidates WITHIN a tier. The sort key now inserts the
+  gene's Exomiser rank (first appearance in the rank-ordered variants TSV;
+  999 = absent/no TSV → deterministic text fallback) between the EPCR and
+  the row text. Live mutation O1 pins the reorder and the no-TSV fallback.
+
 - **Exomiser stage died at startup on a fresh install**
   ([#2062](https://github.com/Replikanti/agentis-colonies/issues/2062)):
   `fetch-reference-data.sh` unzipped the CLI + data bundles but never
