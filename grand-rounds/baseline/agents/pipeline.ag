@@ -1436,7 +1436,7 @@ agent refuter() -> void {
     // undeclared tag are silenced in pop_af, so this line is the operator's
     // only signal about which annotation the benign axis is reading (#2056).
     let aftag = yaml_word(epcr_yml(), "benign_af_info_tag", "GNOMAD_AF");
-    print("refuter: benign-in-population reads INFO/", aftag, " (unannotated variants fall to the LLM skeptic, fail-open)");
+    print("refuter: benign-in-population reads INFO/" + aftag + " (unannotated variants fall to the LLM skeptic, fail-open)");
     // Per-candidate, bounded at <=10 — the refute gate's intentional cost.
     let rows = take(nonempty_lines(pool), 10);
     let verdicts = refute_rec(nvcf, benign, aftag, rows, 0, "");
