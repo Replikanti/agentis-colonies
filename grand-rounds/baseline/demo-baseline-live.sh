@@ -596,11 +596,11 @@ fi
 # promotion is lost, so CENATAC out-ranks TRIP13: the CSV ordering flips. A
 # no-op lens leaves the order unchanged.
 run_pipeline "$DDL" approve 1   # base again (fresh run dir)
-t_base="$(gene_line TRIP13 "$LENSCSV")"; c_base="$(gene_line CENATAC "$LENSCSV")"
+t_base="$(gene_line TRIP13 "$LENSCSV" || true)"; c_base="$(gene_line CENATAC "$LENSCSV" || true)"
 sed '/^5\t80\t/ s#0/1:90,8#0/1:30,28#' "$FIX/proband.vcf" > "$WORKROOT/l3.vcf"
 DD3="$WORKROOT/data.l3"; build_data_dir "$DD3" "$WORKROOT/l3.vcf"
 run_pipeline "$DD3" approve 1
-t_mut="$(gene_line TRIP13 "$LENSCSV")"; c_mut="$(gene_line CENATAC "$LENSCSV")"
+t_mut="$(gene_line TRIP13 "$LENSCSV" || true)"; c_mut="$(gene_line CENATAC "$LENSCSV" || true)"
 if [ -n "$t_base" ] && [ -n "$c_base" ] && [ -n "$t_mut" ] && [ -n "$c_mut" ] \
    && [ "$t_base" -lt "$c_base" ] && [ "$t_mut" -gt "$c_mut" ]; then
     ok "L3: TRIP13 out-ranks CENATAC on lens agreement; stripping the low-VAF upvote flips the order"

@@ -1126,10 +1126,18 @@ fn pair_row(g: string, a: string, b: string, tier: string, ft: string, note: str
 fn exo_rank_lines(tsv: string) -> list<string> {
     if len(tsv) == 0 { return nonempty_lines(""); }
     let gtsv = replace_all(tsv, ".variants.tsv", ".genes.tsv");
-    // colony-lint: safe-exec-concat
-    let raw = exec sh "head -100 " + shell_escape(gtsv) + " 2>/dev/null || true";
-    let lines = nonempty_lines(raw);
-    if len(lines) >= 2 { return lines; }
+    // Guard both fallback conditions (#2065 review): a path not ending
+    // .variants.tsv leaves gtsv == tsv (skip the genes branch), and a genes
+    // file without a GENE_SYMBOL column must fall through to the variants
+    // window instead of pinning ig = -1.
+    if gtsv != tsv {
+        // colony-lint: safe-exec-concat
+        let raw = exec sh "head -100 " + shell_escape(gtsv) + " 2>/dev/null || true";
+        let lines = nonempty_lines(raw);
+        if len(lines) >= 2 {
+            if col_idx(get(lines, 0), "GENE_SYMBOL") >= 0 { return lines; }
+        }
+    }
     // colony-lint: safe-exec-concat
     let raw2 = exec sh "head -200 " + shell_escape(tsv) + " 2>/dev/null || true";
     return nonempty_lines(raw2);
