@@ -218,7 +218,7 @@ fi
 DD4="$WORKROOT/data.m4"; build_data_dir "$DD4" "$FIX/proband.vcf"
 run_pipeline "$DD4" approve
 # Re-run with a corrupted ladder in the SAME run copy.
-sed -i 's/epcr: 0.90/epcr: 0/' "$RUN/settings/epcr.yml"
+sed -i "s/epcr: 0.75/epcr: 0/" "$RUN/settings/epcr.yml"
 rm -f "$CSV"
 ( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
 if [ ! -f "$CSV" ] && grep -q 'epcr-out-of-range' "$RUN/run.log"; then
@@ -344,6 +344,22 @@ if [ -f "$CSV" ] && cmp -s "$CSV" "$WORKROOT/m1-base.csv"; then
 else
     bad "E1 base: CSV differs from the pre-merge baseline without any Exomiser TSV"
 fi
+# R1 (#2059): the submission is ranked by epcr — rows must be sorted desc.
+if tail -n +2 "$CSV" | cut -d, -f10 | sort -rn -c 2>/dev/null; then
+    ok "R1: rows are strictly EPCR-ordered (desc)"
+else
+    bad "R1: emitted rows are not EPCR-sorted (#2059 regression)"
+fi
+# R2 (#2059): no suppression — fixture BUB1B has a hom AND >=2 hets, so BOTH
+# representations must be emitted: the comphet pair leads (primary), the
+# hom-alt rides along as a secondary alternate representation.
+if grep 'BUB1B candidate compound-het' "$CSV" | grep -q 'primary' \
+   && grep 'BUB1B biallelic (hom-alt)' "$CSV" | grep -q 'alternate representation' \
+   && grep 'BUB1B biallelic' "$CSV" | grep -q '0.15,secondary'; then
+    ok "R2: pair leads primary, hom-alt kept as 0.15/secondary alternate (no suppression)"
+else
+    bad "R2: representation suppression or wrong tiers (#2059 regression)"
+fi
 
 # The canonical fallback is manifest-pinned: recreate exomiser_runner's
 # nvcf|hpo|assembly hash for THIS run (draft file carries a trailing newline;
@@ -392,12 +408,14 @@ if [ -f "$CSV" ] && ! grep -q 'BUB1B-PAK6\|SYNDEL\|SYNCOMMA' "$CSV"; then
 else
     bad "E2b: an adversarial row leaked into the CSV or killed the whole submission"
 fi
-if [ "$(grep -c 'BUB1B' "$CSV" 2>/dev/null)" = "1" ] \
+# BUB1B legitimately appears twice since #2059 (pair primary + hom alternate);
+# the Exomiser dedup check is that NO row came from the planted TSV rows.
+if [ "$(grep -c 'BUB1B' "$CSV" 2>/dev/null)" = "2" ] \
    && [ -n "$(gene_line BUB1B "$CSV")" ] && [ -n "$(gene_line SYNNOVA "$CSV")" ] \
    && [ "$(gene_line BUB1B "$CSV")" -lt "$(gene_line SYNNOVA "$CSV")" ]; then
-    ok "E5: panel BUB1B kept once and precedes the novel gene (precedence + dedup)"
+    ok "E5: both BUB1B representations kept, none Exomiser-duplicated, primary precedes the novel gene"
 else
-    bad "E5: panel precedence/dedup broken"
+    bad "E5: panel precedence/representation/dedup broken"
 fi
 
 # E3: 12 novel genes (unprefixed contigs) -> the cap (10) holds, every panel
@@ -420,6 +438,40 @@ if [ "$e3_rows" = "10" ] && [ "$e3_panel" = "1" ] \
     ok "E3: cap holds at 10, all panel candidates survive, Exomiser tail trimmed"
 else
     bad "E3: cap/precedence broken (rows=$e3_rows panel_complete=$e3_panel)"
+fi
+
+# --- E6/E7 (#2059): Exomiser-ranked representative selection ----------------
+# E6: a TSV ranking BUB1B's hets at chr15:160 + chr15:200 must re-pick the
+# pair MEMBERS (old behaviour blindly took the first two hets, 90+160).
+{
+    printf '#RANK\tGENE_SYMBOL\tCONTIG\tSTART\tREF\tALT\tEXOMISER_GENE_COMBINED_SCORE\n'
+    printf '1\tBUB1B\t15\t160\tA\tG\t0.95\n'
+    printf '2\tBUB1B\t15\t200\tG\tA\t0.94\n'
+} > "$WORKDIR/exomiser/baseline.variants.tsv"
+rm -f "$CSV"
+( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
+e6_row="$(grep 'BUB1B candidate compound-het (unphased)' "$CSV" 2>/dev/null | grep primary || true)"
+if printf '%s' "$e6_row" | grep -q ',160,' && printf '%s' "$e6_row" | grep -q ',200,' \
+   && ! printf '%s' "$e6_row" | grep -q ',90,'; then
+    ok "E6: Exomiser ranking re-picks the pair members (160+200, not first-two 90+160)"
+else
+    bad "E6: pair members not driven by the Exomiser ranking (#2059 regression)"
+fi
+
+# E7: when the TOP-ranked hit for the gene is the hom (chr15:120), the hom-alt
+# representation must LEAD (primary, 0.90) and the pair becomes the secondary
+# alternate.
+{
+    printf '#RANK\tGENE_SYMBOL\tCONTIG\tSTART\tREF\tALT\tEXOMISER_GENE_COMBINED_SCORE\n'
+    printf '1\tBUB1B\t15\t120\tA\tG\t0.97\n'
+} > "$WORKDIR/exomiser/baseline.variants.tsv"
+rm -f "$CSV"
+( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
+if grep 'BUB1B biallelic (hom-alt)' "$CSV" 2>/dev/null | grep -v 'alternate' | grep -q '0.90,primary' \
+   && grep 'BUB1B candidate compound-het' "$CSV" 2>/dev/null | grep -q 'alternate representation'; then
+    ok "E7: top-ranked hom flips the leading representation (hom primary, pair alternate)"
+else
+    bad "E7: leading representation does not follow the top Exomiser hit (#2059 regression)"
 fi
 
 # ============================================================================

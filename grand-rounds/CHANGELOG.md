@@ -116,6 +116,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **Representative-variant selection for panel genes + strict EPCR ordering**
+  ([#2059](https://github.com/Replikanti/agentis-colonies/issues/2059)):
+  Track-1 scoring is variant-level and the padded gene windows are full of
+  benign SNPs — the reconciler used to pick arbitrarily (first hom-alt /
+  first two hets) and let ANY hom-alt suppress the compound-het pair. Now:
+  when the manifest-pinned Exomiser variants TSV exists, its per-variant
+  ranking picks WHICH variants represent each panel gene (pair members and
+  the hom pick), and the gene's top-ranked hit decides which representation
+  LEADS; the other representation is emitted too, as a secondary
+  `alt_representation` row (new ladder tier, 0.15 — the submission scores
+  secondary rows for free, so a suppressed hypothesis costs nothing).
+  Without Exomiser evidence the pair leads by default. Emitted rows are now
+  strictly EPCR-ordered (desc, sorted before the cap) because the submission
+  ranking is the EPCR ordering. alt_representation rows stay OUT of the
+  lens pool (they would double-count the gene in every lens). Live-agent
+  mutations R1/R2 + E6/E7; existing E5 updated for the two-representation
+  shape.
+
 ### Deprecated
 
 ### Removed

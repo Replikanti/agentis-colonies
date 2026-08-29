@@ -38,6 +38,10 @@ tiers:
     epcr: 0.05
     finding_type: secondary
     label: incidental / weak phenotype support
+  - id: alt_representation
+    epcr: 0.15
+    finding_type: secondary
+    label: alternate zygosity representation of a primary candidate
 
 # An Exomiser candidate outside the known-gene panel only reaches the
 # phenotype_novel_gene tier at or above this combined score; everything else

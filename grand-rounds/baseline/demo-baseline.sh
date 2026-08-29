@@ -140,6 +140,20 @@ if grep -qF 'benign_af_info_tag' "$AG" && ! grep -qF '%INFO/AF' "$AG"; then
 else
     bad "benign axis reads caller INFO/AF again (#2056 regression)"
 fi
+# #2059: representative selection is Exomiser-evidence-driven and never
+# suppresses a representation; the alt tier must exist in the ladder.
+for tok in 'pick_rep(' 'first_by_exo(' 'alt_representation'; do
+    if grep -qF "$tok" "$AG"; then
+        ok "representative-selection marker '$tok' present (#2059)"
+    else
+        bad "representative-selection marker '$tok' missing (#2059 regression)"
+    fi
+done
+if grep -qF 'id: alt_representation' "$BASE_DIR/settings/epcr.yml"; then
+    ok "epcr.yml ships the alt_representation tier (#2059)"
+else
+    bad "epcr.yml lost the alt_representation tier (#2059 regression)"
+fi
 # D6 gate compares a stored hash, not mere file presence.
 if grep -qF 'approved_hash != draft_hash' "$AG"; then
     ok "D6 gate compares a stored sha256 (not file presence)"
