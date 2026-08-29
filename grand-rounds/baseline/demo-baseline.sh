@@ -160,8 +160,11 @@ fi
 FETCH2="$BASE_DIR/scripts/fetch-reference-data.sh"
 # shellcheck disable=SC2016  # grep -F matches the fetch script's SOURCE verbatim, $ must not expand
 if grep -qF 'exomiser.data-directory=$DATA_DIR' "$FETCH2" \
+   && grep -qF 'exomiser.phenotype.data-version=${MVA_EXOMISER_DATA_VERSION}' "$FETCH2" \
    && grep -qF "sed 's/^exomiser\.hg19\./#&/'" "$FETCH2" \
-   && grep -qF -e '-w "$CLI_DIR"' "$FETCH2"; then
+   && grep -qF -e '-w "$CLI_DIR"' "$FETCH2" \
+   && grep -qF -e '-jar "$CLI_DIR/exomiser-cli-' "$FETCH2" \
+   && grep -qF 'chmod +x "$BIN/exomiser"' "$FETCH2"; then
     ok "fetch provisions Exomiser properties + CLI-dir wrapper (#2062)"
 else
     bad "Exomiser provisioning regressed in fetch-reference-data.sh (#2062)"
