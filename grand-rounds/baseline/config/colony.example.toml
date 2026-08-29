@@ -57,8 +57,11 @@ tick_interval_ms = 60000
 #   MVA_BCFTOOLS       bcftools binary/wrapper (default: bcftools on PATH)
 #   MVA_EXOMISER       Exomiser CLI wrapper (default: exomiser on PATH)
 #   MVA_EXOMISER_ASSEMBLY  Exomiser genome assembly (default hg38)
-#   MVA_RUN_EXOMISER   set to 1 to run the opt-in Exomiser stage (default 0 —
-#                        its output is not yet consumed by reconcile, see #2031)
+#   MVA_RUN_EXOMISER   set to 1 to run the opt-in Exomiser stage (default 0
+#                        only because of the hour-scale runtime; since #2054 its
+#                        top-N MERGES into the reconciler — novel genes outside
+#                        the panel land on the phenotype_novel_gene/incidental
+#                        tiers, ordered by the ladder, never by the raw score)
 #   MVA_CONTAINER_CMD  podman|docker (Exomiser/bcftools container runtime)
 #   MVA_APPROVAL_FILE  operator HPO-approval file (default $MVA_WORK_DIR/phenotype/hpo-approved.txt)
 #   MVA_APPROACH       output-name suffix (default "baseline")

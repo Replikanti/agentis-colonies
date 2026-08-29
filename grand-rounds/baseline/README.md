@@ -34,9 +34,17 @@ graph LR
 The panel → reconcile → emit chain is anchored on the normalized VCF (broadcast
 on the memo, since `listen` is consume-once and four stages read it), so it does
 not block on the Exomiser stage. `exomiser_runner` is **opt-in**
-(`MVA_RUN_EXOMISER=1`): its output is not yet consumed by `reconcile` (the
-Exomiser → reconcile merge is a documented later revision, [#2031]), so it is
-gated OFF by default rather than burn a multi-hour run for discarded output.
+(`MVA_RUN_EXOMISER=1`, default off only because of the hour-scale runtime).
+Since [#2054](https://github.com/Replikanti/agentis-colonies/issues/2054) the
+reconciler **merges the Exomiser top-N**: genes outside the known-MVA panel
+join the pool AFTER the panel candidates (panel precedence is structural, the
+`max_rows` cap trims from the tail) on the ladder's receiving tiers —
+combined score ≥ `phenotype_novel_gene_min_score` → `phenotype_novel_gene`
+(primary, 0.20), below → `incidental` (secondary, 0.05). The raw Exomiser
+score never becomes an EPCR (it is a ranking score, not a probability); it
+only picks the rung and is quoted in the notes. Column positions are resolved
+from the TSV header (Exomiser's layout varies by version), and removing
+`$MVA_WORK_DIR/exomiser/` forces a strict panel-only reconcile.
 
 [#2031]: https://github.com/Replikanti/agentis-colonies/issues/2031
 

@@ -328,6 +328,66 @@ fi
 export MVA_PANEL_ALLOW_PARTIAL=0
 
 # ============================================================================
+# E1-E3 (#2054): Exomiser top-N merge — a planted variants TSV must add
+# novel-gene rows on the ladder's receiving tiers (0.20/primary above the
+# min-score, 0.05/secondary below), panel genes keep precedence and are never
+# duplicated, and the max_rows cap holds. No TSV = byte-identical baseline
+# (E1 is the mutation contrast).
+# ============================================================================
+
+DDE="$WORKROOT/data.exo"; build_data_dir "$DDE" "$FIX/proband.vcf"
+run_pipeline "$DDE" approve
+if [ -f "$CSV" ] && ! grep -q 'novel-gene' "$CSV"; then
+    ok "E1 base: no Exomiser TSV -> panel-only CSV (no novel-gene rows)"
+else
+    bad "E1 base: novel-gene rows without an Exomiser TSV (or no CSV at all)"
+fi
+
+# Plant a rank-ordered TSV with shuffled column order (header-driven parsing is
+# the contract): a panel gene that must be SKIPPED, one above-threshold novel
+# gene, one below-threshold.
+mkdir -p "$WORKDIR/exomiser"
+{
+    printf '#RANK\tEXOMISER_GENE_COMBINED_SCORE\tGENE_SYMBOL\tCONTIG\tSTART\tREF\tALT\n'
+    printf '1\t0.99\tBUB1B\tchr15\t120\tG\tA\n'
+    printf '2\t0.85\tSYNNOVA\tchr11\t90\tC\tT\n'
+    printf '3\t0.30\tSYNNOVB\tchr5\t150\tA\tG\n'
+} > "$WORKDIR/exomiser/baseline.variants.tsv"
+rm -f "$CSV"
+( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
+if grep 'SYNNOVA' "$CSV" 2>/dev/null | grep -q '0.20,primary'    && grep 'SYNNOVB' "$CSV" 2>/dev/null | grep -q '0.05,secondary'; then
+    ok "E2: planted TSV -> SYNNOVA on phenotype_novel_gene (0.20,primary), SYNNOVB incidental (0.05,secondary)"
+else
+    bad "E2: novel genes missing or on wrong tiers (merge or min-score routing broken)"
+fi
+if [ "$(grep -c 'BUB1B' "$CSV" 2>/dev/null)" = "1" ]    && [ -n "$(gene_line BUB1B "$CSV")" ] && [ -n "$(gene_line SYNNOVA "$CSV")" ]    && [ "$(gene_line BUB1B "$CSV")" -lt "$(gene_line SYNNOVA "$CSV")" ]; then
+    ok "E2b: panel BUB1B kept once (no Exomiser duplicate) and precedes the novel gene"
+else
+    bad "E2b: panel precedence/dedup broken (BUB1B duplicated, missing, or after the novel gene)"
+fi
+
+# E3: 12 novel genes -> the cap (10) holds, every panel candidate survives,
+# the Exomiser tail is trimmed.
+{
+    printf '#RANK\tGENE_SYMBOL\tCONTIG\tSTART\tREF\tALT\tEXOMISER_GENE_COMBINED_SCORE\n'
+    for i in 01 02 03 04 05 06 07 08 09 10 11 12; do
+        printf '%s\tSYNN%s\tchr11\t%s\tC\tT\t0.9\n' "$i" "$i" "$((100 + 10#$i))"
+    done
+} > "$WORKDIR/exomiser/baseline.variants.tsv"
+rm -f "$CSV"
+( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
+e3_rows="$(tail -n +2 "$CSV" 2>/dev/null | grep -c . || true)"
+e3_panel=1
+for gpanel in BUB1B CEP57 TRIP13 CENATAC; do
+    grep -q "$gpanel" "$CSV" 2>/dev/null || e3_panel=0
+done
+if [ "$e3_rows" = "10" ] && [ "$e3_panel" = "1" ]    && grep -q 'SYNN01' "$CSV" 2>/dev/null && ! grep -q 'SYNN12' "$CSV" 2>/dev/null; then
+    ok "E3: cap holds at 10, all panel candidates survive, Exomiser tail trimmed"
+else
+    bad "E3: cap/precedence broken (rows=$e3_rows panel_complete=$e3_panel)"
+fi
+
+# ============================================================================
 # M3 lens mode (MVA_LENS_MODE=1): lens fan-out + refute gate + reconcile.
 # Every assertion keys on an input-driven STRUCTURAL consequence (population-AF
 # membership in refuted.tsv, VAF-driven promotion ordering), never on an exact
