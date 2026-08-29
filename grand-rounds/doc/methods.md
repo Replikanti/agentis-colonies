@@ -160,3 +160,22 @@ guard.
   License: [`../LICENSE`](../LICENSE) (CC BY 4.0) ·
   Federation overview: [`../README.md`](../README.md)
 - Hackathon: https://sagebio-rare-disease-real-kid-mva-hackathon-2026.hf.space/
+
+## Acknowledgements
+
+This work was made possible through the Hackathon, organized by Sage
+Bionetworks in partnership with the MVA Society, Hugging Face, and BEACON
+(The Benchmarking, Evaluation, and Assessment Consortium for Science), with
+prize sponsorship from AWS and Anthropic. We are deeply grateful to the child
+and their family who generously contributed their data and their story to
+advance research into this rare disease. We acknowledge their trust in making
+this Hackathon possible.
+
+**Dataset citation:** the Hackathon dataset must be cited using the reference
+provided on the Hackathon Synapse page at the time of publication (check the
+Synapse page for the current citation string before any public communication).
+
+**Privacy note:** no publication or public communication may include
+information that could re-identify the data subject or their family beyond
+what the family has already shared publicly. This repository carries no
+individual-level data (see the leak guards in `tools/check-no-gated-data.sh`).

@@ -80,6 +80,20 @@ FASTA, and a tumor-only somatic caller (`gatk Mutect2` tumor-only, or
 2. **Video** — a ≤3-minute pitch (human step).
 3. **Submit once** before the deadline (1 Track 2 submission per team).
 
+## 3b. Publication compliance (M6 — any public communication)
+
+- Include the organizer acknowledgement paragraph verbatim (now in
+  [methods.md](./methods.md) §Acknowledgements) in any report, abstract, blog
+  post, or video description arising from participation.
+- Cite the dataset using the reference on the Hackathon Synapse page at the
+  time of publication.
+- Embargo: no peer-reviewed manuscript submissions using the dataset until the
+  organizers post their summary/preprint; code, models, and derived outputs
+  are shareable any time; conference abstracts/posters need prior written
+  organizer approval.
+- Never include anything that could re-identify the family beyond their own
+  public communications.
+
 ## 4. Post-hackathon compliance (M7) — do not skip
 
 1. **Delete all gated data** (`$MVA_DATA_DIR`, `$MVA_WORK_DIR`, `$MVA_OUT_DIR`
