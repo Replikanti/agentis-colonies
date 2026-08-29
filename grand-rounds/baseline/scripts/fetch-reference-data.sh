@@ -106,9 +106,15 @@ PROPS="$CLI_DIR/application.properties"
 if [ -f "$PROPS" ]; then
     tmp="$(mktemp)"
     trap 'rm -f "$tmp"' EXIT
+    # Comment out the NON-selected assembly (the distribution ships hg19
+    # active by default; with MVA_EXOMISER_ASSEMBLY=hg19 the mirror applies —
+    # hg38 must be disabled instead, and the SELECTED key must never be
+    # commented or the strip+append below would accumulate a line per run).
+    OTHER_ASSEMBLY=hg19
+    [ "$MVA_EXOMISER_ASSEMBLY" = hg19 ] && OTHER_ASSEMBLY=hg38
     # || true: grep -vE selecting ZERO lines (empty / all-managed file) must
     # not abort the whole fetch under pipefail — the resume contract above.
-    sed 's/^exomiser\.hg19\./#&/' "$PROPS" \
+    sed "s/^exomiser\.${OTHER_ASSEMBLY}\./#&/" "$PROPS" \
         | grep -vE "^(exomiser\.data-directory|exomiser\.${MVA_EXOMISER_ASSEMBLY}\.data-version|exomiser\.phenotype\.data-version)[= ]" > "$tmp" || true
     {
         echo "exomiser.data-directory=$DATA_DIR"
@@ -118,7 +124,7 @@ if [ -f "$PROPS" ]; then
     mv "$tmp" "$PROPS"
     chmod 644 "$PROPS"
     trap - EXIT
-    log "provisioned $PROPS (data-directory + ${MVA_EXOMISER_ASSEMBLY}/phenotype ${MVA_EXOMISER_DATA_VERSION}; hg19 defaults disabled)"
+    log "provisioned $PROPS (data-directory + ${MVA_EXOMISER_ASSEMBLY}/phenotype ${MVA_EXOMISER_DATA_VERSION}; ${OTHER_ASSEMBLY} defaults disabled)"
 fi
 # Spring Boot resolves ./application.properties from the WORKING DIRECTORY, so
 # the wrapper must run with -w "$CLI_DIR" (the exact operator fix from #2062).
