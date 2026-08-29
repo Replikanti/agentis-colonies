@@ -1112,6 +1112,28 @@ fn pair_row(g: string, a: string, b: string, tier: string, ft: string, note: str
         + "\t" + epcr_for(tier) + "\t" + ft + "\t" + g + note;
 }
 
+
+// #2064: within-tier ordering evidence. Rank = index of the gene's FIRST row
+// in the (rank-ordered) Exomiser variants TSV head window; 999 when the gene
+// is absent or there is no TSV — those fall back to the deterministic text
+// tie-break AFTER every ranked gene. Implements epcr.yml's documented
+// "the Exomiser score is used only to order candidates WITHIN a tier".
+fn exo_gene_rank_rec(lines: list<string>, ig: int, gene: string, i: int) -> int {
+    if i >= len(lines) { return 999; }
+    if trim(field(get(lines, i), ig)) == gene { return i; }
+    return exo_gene_rank_rec(lines, ig, gene, i + 1);
+}
+fn exo_gene_rank(tsv: string, gene: string) -> int {
+    if len(tsv) == 0 { return 999; }
+    // colony-lint: safe-exec-concat
+    let raw = exec sh "head -200 " + shell_escape(tsv) + " 2>/dev/null || true";
+    let lines = nonempty_lines(raw);
+    if len(lines) < 2 { return 999; }
+    let ig = col_idx(get(lines, 0), "GENE_SYMBOL");
+    if ig < 0 { return 999; }
+    return exo_gene_rank_rec(lines, ig, gene, 1);
+}
+
 agent reconciler() -> void {
     let panel_tsv = bus_read("baseline:panel_hits");
     if len(panel_tsv) == 0 { print("reconciler: no panel hits — skipping"); return; }
@@ -1229,11 +1251,18 @@ agent reconciler() -> void {
     }
     let combined = concat_rec(exo_rows, 0, rows);
     // #2059: STRICT EPCR ordering — the submission is ranked by epcr, so the
-    // emitted row order must follow it (desc). zpad keys make sort_strings
-    // (asc) yield the intended order, tie-broken deterministically by the row
-    // text; sorting BEFORE the cap keeps the top-ranked rows.
-    let keyed = map(combined, |r: string| -> string { return zpad(to_string(100 - epcr_centi(r)), 3) + "\t" + r; });
-    let sorted_rows = map(sort_strings(keyed), |k: string| -> string { return strip_fields(k, 1); });
+    // emitted row order must follow it (desc). #2064: ties within a tier are
+    // broken by the gene's EXOMISER RANK (epcr.yml's documented contract —
+    // an evidence-blind text tie-break put an arbitrary gene at rank 1 on
+    // real data); genes absent from the TSV (or no TSV at all) rank 999 and
+    // keep the deterministic row-text fallback. Sorting BEFORE the cap keeps
+    // the top-ranked rows.
+    let keyed = map(combined, |r: string| -> string {
+        let g = first_token(field(r, 11));
+        return zpad(to_string(100 - epcr_centi(r)), 3) + "\t"
+            + zpad(to_string(exo_gene_rank(exo_tsv, g)), 3) + "\t" + r;
+    });
+    let sorted_rows = map(sort_strings(keyed), |k: string| -> string { return strip_fields(k, 2); });
     let capped = if len(sorted_rows) > cap { take(sorted_rows, cap) } else { sorted_rows };
     let cand_tsv = wd + "/candidates.tsv";
     // colony-lint: safe-exec-concat
