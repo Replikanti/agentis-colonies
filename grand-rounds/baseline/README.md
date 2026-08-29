@@ -43,8 +43,15 @@ combined score ≥ `phenotype_novel_gene_min_score` → `phenotype_novel_gene`
 (primary, 0.20), below → `incidental` (secondary, 0.05). The raw Exomiser
 score never becomes an EPCR (it is a ranking score, not a probability); it
 only picks the rung and is quoted in the notes. Column positions are resolved
-from the TSV header (Exomiser's layout varies by version), and removing
-`$MVA_WORK_DIR/exomiser/` forces a strict panel-only reconcile.
+from the TSV header (Exomiser's layout varies by version); contigs are
+chr-normalized and rows with non-primary contigs, symbolic alleles, malformed
+positions, comma-carrying symbols, or a variant key colliding with a panel
+candidate are **skipped row-by-row** (one bad row must never kill the
+submission). The canonical-path fallback is **manifest-pinned**: a TSV is only
+merged when its `.done.<hash>` marker matches this run's nvcf|hpo|assembly, so
+an Exomiser output computed for an earlier phenotype never leaks into a new
+submission. Removing `$MVA_WORK_DIR/exomiser/` forces a strict panel-only
+reconcile.
 
 [#2031]: https://github.com/Replikanti/agentis-colonies/issues/2031
 

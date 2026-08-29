@@ -36,9 +36,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `phenotype_novel_gene_min_score` → `phenotype_novel_gene` (primary, 0.20),
   below → `incidental` (secondary, 0.05) — the raw score never becomes an
   EPCR, per the ladder's own contract. Header-driven TSV column resolution;
-  canonical-path fallback keeps the merge across the D6 two-pass flow;
+  canonical-path fallback keeps the merge across the D6 two-pass flow and is
+  manifest-pinned (`.done.<nvcf|hpo|assembly>` must match — stale Exomiser
+  output from an earlier phenotype never merges); per-row hardening skips
+  non-primary/unprefixed contigs (chr-normalized first), symbolic alleles,
+  malformed positions, comma symbols, and panel variant-key collisions
+  (readthrough genes), so one bad row can never kill the whole submission;
+  lens promotion never relabels a novel-gene row into a `known_gene_*` rung;
   removing `$MVA_WORK_DIR/exomiser/` forces panel-only. Without Exomiser
-  output the submission is byte-identical. Live-agent mutations E1–E3.
+  output the submission is byte-identical (pinned by `cmp` in the live
+  test). Live-agent mutations E1–E5.
 
 ### Deprecated
 
