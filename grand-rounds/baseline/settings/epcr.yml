@@ -34,6 +34,10 @@ tiers:
     epcr: 0.20
     finding_type: primary
     label: phenotype-driven candidate outside the known-gene panel
+  - id: alt_representation
+    epcr: 0.15
+    finding_type: secondary
+    label: alternate zygosity representation of a primary candidate
   - id: incidental
     epcr: 0.05
     finding_type: secondary

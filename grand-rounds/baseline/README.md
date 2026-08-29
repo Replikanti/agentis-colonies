@@ -19,7 +19,7 @@ one declared `cb` budget.
 | `phenotyper` | 2 | extract phenotype text, derive + verify the HPO set, enforce the hash-pinned operator gate (D6) | `unzip -p`, `grep` vs `hp.obo` |
 | `exomiser_runner` | 3 (opt-in) | render the analysis YAML, compute the idempotency hash, verify outputs | the pinned Exomiser container run (blocking, inline timeout) |
 | `panel_reviewer` | 4 | per-variant FILTER/GT/VAF classification, biallelic vs candidate compound-het (unphased) pairing — incl. hard-filter-FAILED records | `bcftools view -R` (no `-f PASS`) |
-| `reconciler` | 5 | apply the EPCR evidence-tier ladder, assign primary/secondary, cap at 10 | (reads already-narrowed TSVs) |
+| `reconciler` | 5 | representative-variant selection per panel gene (Exomiser-ranked when available; both zygosity representations emitted, the top-ranked one leads — [#2059](https://github.com/Replikanti/agentis-colonies/issues/2059)), EPCR evidence-tier ladder, Exomiser novel-gene merge, strict EPCR sort, cap at 10 | (reads already-narrowed TSVs) |
 | `emitter` | 6 | build the CSV, validate the schema, refuse to emit on any violation | one `printf` redirect |
 
 ```mermaid

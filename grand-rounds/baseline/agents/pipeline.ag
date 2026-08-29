@@ -350,6 +350,10 @@ fn promote_row(row: string) -> string {
     // row does not have. Lens agreement still orders it within its tier
     // (order_key sorts on agreement after epcr).
     if index_of(field(row, 11), "novel-gene") >= 0 { return row; }
+    // #2060 review: an alternate representation mirrors its primary — it is
+    // never promotable (from 0.15 the numeric ladder would land it on the
+    // phenotype_novel_gene rung, whose label asserts NON-panel membership).
+    if index_of(field(row, 11), "alternate representation") >= 0 { return row; }
     let cur = epcr_centi(row);
     let up = if cur >= 90 { "" }
         else { if cur >= 75 { epcr_for("known_gene_biallelic") }
@@ -1048,6 +1052,66 @@ fn exomiser_candidates(tsv: string, panel_genes: list<string>, panel_keys: strin
     return picked;
 }
 
+
+// --- #2059: representative-variant selection for panel genes ---------------
+
+// Exomiser-ranked variant keys ("chrom:pos", best first) for one panel gene;
+// "" when the TSV lacks the needed columns. Ordering EVIDENCE only — the
+// tiers stay ladder-driven.
+fn exo_gene_keys(tsv: string, gene: string) -> string {
+    // colony-lint: safe-exec-concat
+    let raw = exec sh "head -200 " + shell_escape(tsv) + " 2>/dev/null || true";
+    let lines = nonempty_lines(raw);
+    if len(lines) < 2 { return ""; }
+    let hdr = get(lines, 0);
+    let ig = col_idx(hdr, "GENE_SYMBOL");
+    let ic = col_idx(hdr, "CONTIG");
+    let ip = col_idx(hdr, "START");
+    if ig < 0 { return ""; }
+    if ic < 0 { return ""; }
+    if ip < 0 { return ""; }
+    let mine = filter(lines, |l: string| -> bool { return trim(field(l, ig)) == gene; });
+    return join_str(map(mine, |l: string| -> string {
+        let rawc = trim(field(l, ic));
+        let mappedc = if rawc == "23" { "X" } else { if rawc == "24" { "Y" } else { rawc } };
+        return chr_name(mappedc) + ":" + trim(field(l, ip));
+    }), "\n");
+}
+
+// First hit whose chrom:pos matches the best-ranked key, skipping `excl`
+// ("" = no exclusion); "" when nothing matches any key.
+fn first_by_exo(hits: list<string>, keys: list<string>, i: int, excl: string) -> string {
+    if i >= len(keys) { return ""; }
+    let k = get(keys, i);
+    let m = filter(hits, |h: string| -> bool {
+        if h == excl { return false; }
+        return field(h, 0) + ":" + field(h, 1) == k;
+    });
+    if len(m) > 0 { return get(m, 0); }
+    return first_by_exo(hits, keys, i + 1, excl);
+}
+
+// Representative pick: Exomiser-ranked when the evidence covers the pool,
+// else positional (the pre-#2059 behaviour), always excluding `excl`.
+fn pick_rep(pool: list<string>, keys: list<string>, excl: string) -> string {
+    let byexo = first_by_exo(pool, keys, 0, excl);
+    if len(byexo) > 0 { return byexo; }
+    let rest = filter(pool, |h: string| -> bool { return h != excl; });
+    if len(rest) > 0 { return get(rest, 0); }
+    return "";
+}
+
+// Row builders for the two representations (single-variant / comphet pair).
+fn single_row(g: string, v: string, tier: string, ft: string, note: string) -> string {
+    return "PROBAND\t" + field(v,0) + "\t" + field(v,1) + "\t" + field(v,2) + "\t" + field(v,3)
+        + "\t\t\t\t\t" + epcr_for(tier) + "\t" + ft + "\t" + g + note;
+}
+fn pair_row(g: string, a: string, b: string, tier: string, ft: string, note: string) -> string {
+    return "PROBAND\t" + field(a,0) + "\t" + field(a,1) + "\t" + field(a,2) + "\t" + field(a,3)
+        + "\t" + field(b,0) + "\t" + field(b,1) + "\t" + field(b,2) + "\t" + field(b,3)
+        + "\t" + epcr_for(tier) + "\t" + ft + "\t" + g + note;
+}
+
 agent reconciler() -> void {
     let panel_tsv = bus_read("baseline:panel_hits");
     if len(panel_tsv) == 0 { print("reconciler: no panel hits — skipping"); return; }
@@ -1064,30 +1128,76 @@ agent reconciler() -> void {
     // by the emitter). The panel review is the evidence-tier anchor; the
     // Exomiser top-N is appended AFTER it below (#2054).
     let genes = sort_unique_strings(map(hits, |h: string| -> string { return field(h, 7); }));
-    let candidates = map(genes, |g: string| -> string {
+    // #2059: representative-variant selection. Track-1 scoring is
+    // VARIANT-level and the padded windows are full of benign SNPs; the old
+    // fold picked arbitrarily (first hom / first two hets) AND let any
+    // hom-alt suppress the compound-het pair entirely. Now: Exomiser's
+    // per-variant ranking (when its manifest-pinned TSV exists) picks WHICH
+    // variants represent the gene, the top-ranked hit decides WHICH
+    // representation leads, and the other representation rides along as a
+    // secondary alt_representation row. The official Track-1 instructions
+    // state: "Secondary or incidental findings won't hurt your automated
+    // score - include them if you want them considered." — a suppressed
+    // hypothesis costs nothing on the automated metric (slot accounting at
+    // the cap below counts primary rows only).
+    // Single resolve (#2060 review): baseline:exomiser_tsv is a consume-once
+    // bus topic — a second exomiser_tsv_path() call would find the bus empty
+    // and silently depend on the marker fallback alone.
+    let exo_tsv = exomiser_tsv_path(wd);
+    let cand_blobs = map(genes, |g: string| -> string {
         let gene_hits = filter(hits, |h: string| -> bool { return field(h, 7) == g; });
         let hom = filter(gene_hits, |h: string| -> bool { return field(h, 8) == "hom-alt"; });
         let het = filter(gene_hits, |h: string| -> bool { return field(h, 8) == "het"; });
-        if len(hom) > 0 {
-            let v = get(hom, 0);
-            return "PROBAND\t" + field(v,0) + "\t" + field(v,1) + "\t" + field(v,2) + "\t" + field(v,3)
-                + "\t\t\t\t\t" + epcr_for("known_gene_biallelic") + "\tprimary\t" + g + " biallelic (hom-alt)";
-        }
+        let none_h = filter(gene_hits, |x: string| -> bool { return false; });
+        let keys = if len(exo_tsv) > 0 { nonempty_lines(exo_gene_keys(exo_tsv, g)) } else { none_h };
         if len(het) >= 2 {
-            let a = get(het, 0);
-            let b = get(het, 1);
-            return "PROBAND\t" + field(a,0) + "\t" + field(a,1) + "\t" + field(a,2) + "\t" + field(a,3)
-                + "\t" + field(b,0) + "\t" + field(b,1) + "\t" + field(b,2) + "\t" + field(b,3)
-                + "\t" + epcr_for("known_gene_comphet") + "\tprimary\t" + g + " candidate compound-het (unphased)";
+            let a = pick_rep(het, keys, "");
+            let akey = field(a, 0) + ":" + field(a, 1);
+            // Pair members must sit at DISTINCT positions: bcftools norm
+            // -m -any splits a multiallelic site into several het records at
+            // one pos, and a "pair" of those is one site, not compound-het
+            // (#2060 review). Exclude by KEY, not by row identity.
+            let het_b = filter(het, |h: string| -> bool { return field(h, 0) + ":" + field(h, 1) != akey; });
+            if len(het_b) > 0 {
+                let b = pick_rep(het_b, keys, "");
+                let pr = pair_row(g, a, b, "known_gene_comphet", "primary", " candidate compound-het (unphased)");
+                if len(hom) > 0 {
+                    let v = pick_rep(hom, keys, "");
+                    let vkey = field(v, 0) + ":" + field(v, 1);
+                    let hr = single_row(g, v, "known_gene_biallelic", "primary", " biallelic (hom-alt)");
+                    let ar_pair = pair_row(g, a, b, "alt_representation", "secondary", " candidate compound-het (unphased) — alternate representation");
+                    let ar_hom = single_row(g, v, "alt_representation", "secondary", " biallelic (hom-alt) — alternate representation");
+                    // The alternate must not collide with the primary on the
+                    // emitter's chrom_1:pos_1 dup-key check — a shared key
+                    // would refuse the WHOLE submission (#2060 review). On a
+                    // collision the alternate is dropped, not the submission.
+                    // The top Exomiser-ranked hit decides which representation
+                    // leads; without that evidence the PAIR leads (a padded
+                    // window's hom-alts are overwhelmingly benign
+                    // polymorphisms).
+                    let top = first_by_exo(gene_hits, keys, 0, "");
+                    let hom_leads = if len(top) > 0 { field(top, 8) == "hom-alt" } else { false };
+                    if hom_leads {
+                        if akey == vkey { return hr; }
+                        return hr + "\n" + ar_pair;
+                    }
+                    if vkey == akey { return pr; }
+                    return pr + "\n" + ar_hom;
+                }
+                return pr;
+            }
         }
-        if len(het) == 1 {
-            let v = get(het, 0);
-            return "PROBAND\t" + field(v,0) + "\t" + field(v,1) + "\t" + field(v,2) + "\t" + field(v,3)
-                + "\t\t\t\t\t" + epcr_for("known_gene_monoallelic") + "\tprimary\t" + g + " single rare protein-altering allele";
+        if len(hom) > 0 {
+            let v = pick_rep(hom, keys, "");
+            return single_row(g, v, "known_gene_biallelic", "primary", " biallelic (hom-alt)");
+        }
+        if len(het) >= 1 {
+            let v = pick_rep(het, keys, "");
+            return single_row(g, v, "known_gene_monoallelic", "primary", " single rare protein-altering allele");
         }
         return "";
     });
-    let rows = filter(candidates, |r: string| -> bool { return len(r) > 0; });
+    let rows = nonempty_lines(join_str(cand_blobs, "\n"));
 
     // Cap at max_rows from the ladder.
     // colony-lint: safe-exec-concat
@@ -1097,10 +1207,13 @@ agent reconciler() -> void {
 
     // #2054: merge the Exomiser top-N AFTER the panel candidates — novel genes
     // the panel cannot see. Panel precedence is structural: appended after,
-    // and the cap trims from the tail, so a full panel always survives.
-    let exo_tsv = exomiser_tsv_path(wd);
+    // and the strict EPCR sort + cap arbitrate the tail. Slot accounting
+    // counts PRIMARY rows only (#2060 review): a 0.15 secondary alternate
+    // must not displace a 0.20 primary novel-gene row — the sort below
+    // trims the lowest-EPCR rows when the total exceeds the cap.
     let none2 = filter(rows, |x: string| -> bool { return false; });
-    let exo_left = cap - len(rows);
+    let primary_rows = filter(rows, |r: string| -> bool { return field(r, 10) == "primary"; });
+    let exo_left = cap - len(primary_rows);
     let pkeys = reduce(rows, |acc: string, r: string| -> string {
         let k1 = field(r, 1) + ":" + field(r, 2) + "|";
         let c2 = field(r, 5);
@@ -1115,7 +1228,13 @@ agent reconciler() -> void {
         print("reconciler: no Exomiser TSV — panel-only reconcile");
     }
     let combined = concat_rec(exo_rows, 0, rows);
-    let capped = if len(combined) > cap { take(combined, cap) } else { combined };
+    // #2059: STRICT EPCR ordering — the submission is ranked by epcr, so the
+    // emitted row order must follow it (desc). zpad keys make sort_strings
+    // (asc) yield the intended order, tie-broken deterministically by the row
+    // text; sorting BEFORE the cap keeps the top-ranked rows.
+    let keyed = map(combined, |r: string| -> string { return zpad(to_string(100 - epcr_centi(r)), 3) + "\t" + r; });
+    let sorted_rows = map(sort_strings(keyed), |k: string| -> string { return strip_fields(k, 1); });
+    let capped = if len(sorted_rows) > cap { take(sorted_rows, cap) } else { sorted_rows };
     let cand_tsv = wd + "/candidates.tsv";
     // colony-lint: safe-exec-concat
     exec sh "printf %s " + shell_escape(join_str(capped, "\n") + "\n") + " > " + shell_escape(cand_tsv);
@@ -1128,7 +1247,11 @@ agent reconciler() -> void {
     // re-read them. Nothing here touches the baseline submission.
     if lens_mode() {
         memo_write("lens:candidates", join_str(capped, "\n"));
-        let pool = map(capped, |row: string| -> string {
+        // alt_representation rows are the SAME gene hypothesis in another
+        // zygosity dress — scoring them as separate pool members would
+        // double-count the gene in every lens, so they stay out of the pool.
+        let pool_src = filter(capped, |row: string| -> bool { return index_of(field(row, 11), "alternate representation") < 0; });
+        let pool = map(pool_src, |row: string| -> string {
             let notes = field(row, 11);
             let gene = first_token(notes);
             let chrom = field(row, 1);
