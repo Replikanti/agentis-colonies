@@ -53,6 +53,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **Refuter's benign-in-population axis read caller `INFO/AF` as a population
+  frequency** ([#2056](https://github.com/Replikanti/agentis-colonies/issues/2056)):
+  on the first real `MVA_LENS_MODE=1` run every candidate carried the caller's
+  sample allele fraction (~0.5) in `INFO/AF`, the hard axis fired on all of
+  them BEFORE the LLM skeptic ever ran, and the lens submission came out
+  empty. The population-AF source is now the configurable
+  `benign_af_info_tag` (default `GNOMAD_AF`; `epcr.yml`), a missing
+  annotation no longer short-circuits the skeptic (the benign axis falls to
+  the LLM's own knowledge; unrefuted candidates keep the L4 fail-open
+  `refuter-error` tag naming the missing tag), and the fixture's `INFO/AF`
+  — which always had population semantics — is renamed `GNOMAD_AF`. New
+  live mutation L5 pins the exact trap (caller-style `AF=0.5` must not
+  hard-refute).
+
 ### Security
 
 ## [0.1.0] - 2026-08-28

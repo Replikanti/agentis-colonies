@@ -104,7 +104,13 @@ Each lens is blind to the others and makes ONE scoring `prompt()` over the whole
 per candidate. The candidate pool + approved HPO set fan out on the memo bus
 (`lens:pool` / `lens:hpo`) because `listen` is consume-once. Lens tunables live
 in [`settings/epcr.yml`](./settings/epcr.yml) next to the evidence-tier ladder:
-`lens_score_threshold`, `lens_agreement_promote_min`, `benign_population_af`.
+`lens_score_threshold`, `lens_agreement_promote_min`, `benign_population_af`,
+`benign_af_info_tag` (the population-AF INFO tag, default `GNOMAD_AF` —
+**never** caller `INFO/AF`, which is the sample's allele fraction and refuted
+every real candidate on the first real run,
+[#2056](https://github.com/Replikanti/agentis-colonies/issues/2056); with no
+annotation the LLM skeptic judges commonness itself and unrefuted candidates
+are kept with the fail-open tag).
 The D6 approval gate governs the lens submission too (the HPO set feeds
 `lens_hpo`). Refuted candidates are excluded from the ranked CSV and recorded in
 `$MVA_WORK_DIR/refuted.tsv` for transparency.
