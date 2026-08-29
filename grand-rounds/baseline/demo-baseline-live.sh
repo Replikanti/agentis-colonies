@@ -522,14 +522,20 @@ fi
 # the lens CSV, tagged — never `REFUTED benign-in-population` (contrast: L2
 # proved a genuine common POPULATION AF does refute).
 sed '/^5\t80\t/ s/GNOMAD_AF=0.0005/AF=0.5/' "$FIX/proband.vcf" > "$WORKROOT/l5.vcf"
-sed -i 's/##INFO=<ID=GNOMAD_AF/##INFO=<ID=GNOMAD_AF\n##INFO=<ID=AF,Number=A,Type=Float,Description="caller allele fraction (synthetic)">/' "$WORKROOT/l5.vcf" 2>/dev/null || true
+# Declare the caller AF tag with a COMPLETE header line (a prefix-match sed
+# here once produced a truncated header that only htslib leniency survived).
+sed -i 's/^##INFO=<ID=GNOMAD_AF,.*$/&\n##INFO=<ID=AF,Number=A,Type=Float,Description="caller allele fraction (synthetic)">/' "$WORKROOT/l5.vcf"
 DD5L="$WORKROOT/data.l5"; build_data_dir "$DD5L" "$WORKROOT/l5.vcf"
 run_pipeline "$DD5L" approve 1
+# Determinism note: offline the mock prompt() cannot answer REFUTED, so the
+# af-unknown path always lands on the fail-open refuter-error return; a REAL
+# backend may legitimately refute — this check belongs to the offline suite.
 if [ -n "$(gene_line TRIP13 "$LENSCSV")" ] \
+   && grep -q 'TRIP13.*\[refuter-error\]' "$LENSCSV" \
    && ! grep -q '^TRIP13.*REFUTED.*benign-in-population' "$WORKDIR/refuted.tsv" 2>/dev/null; then
-    ok "L5: caller-style AF=0.5 (no population tag) does NOT hard-refute — TRIP13 kept (the #2056 real-data trap)"
+    ok "L5: caller-style AF=0.5 (no population tag) does NOT hard-refute — TRIP13 kept + fail-open-tagged (the #2056 real-data trap)"
 else
-    bad "L5: caller AF was read as population AF (TRIP13 refuted or dropped) — #2056 regression"
+    bad "L5: caller AF read as population AF (TRIP13 refuted/dropped/untagged) — #2056 regression"
 fi
 
 echo "grand-rounds/baseline live: $pass ok, $fail failed"

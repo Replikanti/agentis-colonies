@@ -65,7 +65,12 @@ Each lens score is anchored to a **deterministic prior** grounded in
 machine-checkable facts, so a lens is meaningful even before the live model
 refines it. An adversarial **refuter** then judges each candidate on four axes
 (benign-in-population, wrong-inheritance-fit, phenotype-mismatch, artifact),
-**failing open**: an unassessable axis is never counted as a refutation. A
+**failing open**: an unassessable axis is never counted as a refutation. The
+benign-in-population axis reads a POPULATION-semantics INFO tag
+(`benign_af_info_tag`, default `GNOMAD_AF`) — never the caller's `INFO/AF`,
+which is the sample allele fraction; on an unannotated VCF the hard axis is
+skipped and population commonness is weighed by the LLM skeptic from model
+knowledge, with unrefuted candidates kept and visibly tagged (#2056). A
 `lens_reconciler` merges lens *agreement* (promotes a candidate a rung) and
 *refutation* (demotes into `refuted.tsv`) through the substrate `decide()`, and
 `lens_emitter` writes a second submission `agentis-federation_lens.csv` reusing
