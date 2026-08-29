@@ -154,6 +154,18 @@ if grep -qF 'id: alt_representation' "$BASE_DIR/settings/epcr.yml"; then
 else
     bad "epcr.yml lost the alt_representation tier (#2059 regression)"
 fi
+# #2062: fetch must provision Exomiser's application.properties (data dir +
+# hg38/phenotype versions, hg19 disabled) and a runnable wrapper with the CLI
+# dir as the working directory — without these the stage dies at startup.
+FETCH2="$BASE_DIR/scripts/fetch-reference-data.sh"
+# shellcheck disable=SC2016  # grep -F matches the fetch script's SOURCE verbatim, $ must not expand
+if grep -qF 'exomiser.data-directory=$DATA_DIR' "$FETCH2" \
+   && grep -qF "sed 's/^exomiser\.hg19\./#&/'" "$FETCH2" \
+   && grep -qF -e '-w "$CLI_DIR"' "$FETCH2"; then
+    ok "fetch provisions Exomiser properties + CLI-dir wrapper (#2062)"
+else
+    bad "Exomiser provisioning regressed in fetch-reference-data.sh (#2062)"
+fi
 # D6 gate compares a stored hash, not mere file presence.
 if grep -qF 'approved_hash != draft_hash' "$AG"; then
     ok "D6 gate compares a stored sha256 (not file presence)"

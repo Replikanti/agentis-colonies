@@ -53,6 +53,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **Exomiser stage died at startup on a fresh install**
+  ([#2062](https://github.com/Replikanti/agentis-colonies/issues/2062)):
+  `fetch-reference-data.sh` unzipped the CLI + data bundles but never
+  provisioned `application.properties` (no `exomiser.data-directory`, no
+  assembly data-version — and the distribution default keeps hg19 ACTIVE,
+  which we do not download) nor any runnable `exomiser` wrapper. The first
+  real `MVA_RUN_EXOMISER=1` run failed with rc=1 ("No GenomeAnalysisService
+  instance provided"). Fetch now idempotently provisions the properties
+  (managed keys stripped + re-appended, hg19 commented out, distribution
+  lines preserved) and generates a podman wrapper running with the CLI dir
+  as its working directory (Spring Boot resolves `application.properties`
+  from CWD). Offline source-guard added.
+
 - **Refuter's benign-in-population axis read caller `INFO/AF` as a population
   frequency** ([#2056](https://github.com/Replikanti/agentis-colonies/issues/2056)):
   on the first real `MVA_LENS_MODE=1` run every candidate carried the caller's
