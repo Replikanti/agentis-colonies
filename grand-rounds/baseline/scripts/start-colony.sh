@@ -125,6 +125,8 @@ else
     # #2044: the partial-panel waiver knob must be allowlisted or it is
     # silently inert (getenv() reads the SANITIZED env) — force the re-install.
     grep -qE '^[[:space:]]*exec\.env_passthrough[[:space:]]*=.*MVA_PANEL_ALLOW_PARTIAL' "$CONFIG_FILE" || need_wire=1
+    # #2066: the proband-id knob must be allowlisted or it is silently inert.
+    grep -qE '^[[:space:]]*exec\.env_passthrough[[:space:]]*=.*MVA_PROBAND_ID' "$CONFIG_FILE" || need_wire=1
     grep -qE '^[[:space:]]*exec\.default_timeout_ms[[:space:]]*=' "$CONFIG_FILE" || need_wire=1
     # #2046: without a raised llm.cli_timeout_ms the agentis-core 120 s default
     # aborts every heavy lens prompt on the real flat-cyborg backend, so the M3
@@ -134,7 +136,7 @@ fi
 if [ "$need_wire" -ne 0 ]; then
     echo "start-colony.sh: the managed .agentis/config keys are not wired in $CONFIG_FILE." >&2
     echo "      Run ./install.sh (idempotent), or add these lines to $CONFIG_FILE:" >&2
-    echo "  exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR" >&2
+    echo "  exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_PROBAND_ID,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR" >&2
     echo "  exec.default_timeout_ms = 21600000" >&2
     echo "  llm.cli_timeout_ms = 1800000" >&2
     exit 5
@@ -182,6 +184,9 @@ fi
 : "${MVA_CONTAINER_CMD:=podman}"
 : "${MVA_APPROVAL_FILE:=$MVA_WORK_DIR/phenotype/hpo-approved.txt}"
 : "${MVA_APPROACH:=baseline}"
+# #2066: challenge-documented proband id literal (e.g. PROBAND01); empty =
+# use the VCF sample name.
+: "${MVA_PROBAND_ID:=}"
 # M3 lens fan-out + refute gate — opt-in (default off; baseline output unchanged).
 : "${MVA_LENS_MODE:=0}"
 # #2044: waive a PARTIAL panel-symbol miss in the GTF preflight (gene-name
@@ -220,6 +225,7 @@ export MVA_DATA_DIR MVA_WORK_DIR MVA_OUT_DIR MVA_REF_FASTA MVA_HPO_OBO MVA_GTF
 export MVA_PRIMARY_CONTIGS
 export MVA_BCFTOOLS MVA_EXOMISER MVA_EXOMISER_ASSEMBLY MVA_RUN_EXOMISER
 export MVA_CONTAINER_CMD MVA_APPROVAL_FILE MVA_APPROACH MVA_LENS_MODE MVA_PANEL_ALLOW_PARTIAL
+[ -n "${MVA_PROBAND_ID:-}" ] && export MVA_PROBAND_ID
 export PANEL_PAD EXOMISER_TIMEOUT_MS EXOMISER_JAVA_OPTS
 export FLAT_CYBORG_TIMEOUT_MS FLAT_CYBORG_IDLE_MS
 export COLONY_DIR

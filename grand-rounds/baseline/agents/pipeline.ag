@@ -375,6 +375,11 @@ fn order_key(row: string, agree: int) -> string {
 
 // Proband sample name from the normalized VCF (mechanical), "PROBAND" fallback.
 fn resolve_proband(nvcf: string) -> string {
+    // #2066: the challenge scorer accepts only the dataset-documented literal
+    // (e.g. PROBAND01), which need not equal the VCF sample name — the knob
+    // wins when set; the sample name stays the default.
+    let knob = getenv("MVA_PROBAND_ID");
+    if len(trim(knob)) > 0 { return trim(knob); }
     let bcftools = bcftools_bin();
     // colony-lint: safe-exec-concat
     let p0 = trim(exec sh shell_escape(bcftools) + " query -l " + shell_escape(nvcf) + " 2>/dev/null | head -1 || true");
@@ -1371,9 +1376,39 @@ fn validate_row(row: string) -> string {
 // <outdir>/agentis-federation_<approach>.csv. Returns "" on success, else a
 // short reason tag ("too-many-rows" | "schema-invalid:<rule>" | "dup-key") the
 // caller surfaces. Byte-identical to the pre-refactor emitter for `baseline`.
+// #2067: the submission metric measures a RANKING ("only your ranking
+// relative to your own guesses matters") and F-max needs a threshold that
+// isolates the top rows — tied EPCRs cap precision (measured live: two rows
+// at 0.90 -> F-max 0.667). After the ordering is FINAL, ties are separated
+// deterministically: the first row of a tie keeps its tier value, each
+// following row emits just below the previous one (-0.01, floored at 0.01).
+// Tier provenance stays in the notes; the ladder itself is untouched — this
+// expresses the total order the pipeline already computed, no new evidence.
+fn separate_epcr_rec(rows: list<string>, i: int, prev_centi: int, acc: list<string>) -> list<string> {
+    if i >= len(rows) { return acc; }
+    let r = get(rows, i);
+    let c0 = epcr_centi(r);
+    let c = if i == 0 { c0 } else { if c0 >= prev_centi { prev_centi - 1 } else { c0 } };
+    // The floor applies ONLY to values the separation itself lowered — an
+    // invalid original (e.g. a corrupted 0 tier) must reach the validator
+    // untouched so the epcr-out-of-range refusal still bites (M4 contract).
+    let cf = if c == c0 { c } else { if c < 1 { 1 } else { c } };
+    let sep = if cf == c0 { r } else {
+        set_field(r, 9, zpad_epcr(cf))
+    };
+    return separate_epcr_rec(rows, i + 1, cf, push(acc, sep));
+}
+fn zpad_epcr(centi: int) -> string {
+    if centi >= 100 { return "1.00"; }
+    if centi >= 10 { return "0." + to_string(centi); }
+    return "0.0" + to_string(centi);
+}
+
 fn emit_submission(rows: list<string>, proband: string, outdir: string, approach: string) -> string {
     if len(rows) > 10 { return "too-many-rows"; }
-    let validated = reduce(rows, |acc: string, row: string| -> string {
+    let none_r = filter(rows, |x: string| -> bool { return false; });
+    let rows2 = separate_epcr_rec(rows, 0, 0, none_r);
+    let validated = reduce(rows2, |acc: string, row: string| -> string {
         if index_of(acc, "VIOLATION:") == 0 { return acc; }
         let withid = replace_first_field(row, proband);
         let v = validate_row(withid);

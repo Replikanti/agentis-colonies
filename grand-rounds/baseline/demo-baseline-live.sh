@@ -133,7 +133,7 @@ run_pipeline() {
     } > "$WORKDIR/refdata/hp.obo"
     ( cd "$RUN" && agentis init >/dev/null 2>&1 )
     cat > "$RUN/.agentis/config" <<CFG
-exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,PANEL_PAD,EXOMISER_TIMEOUT_MS,COLONY_DIR
+exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_PROBAND_ID,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,PANEL_PAD,EXOMISER_TIMEOUT_MS,COLONY_DIR
 exec.default_timeout_ms = 120000
 experience.enabled = true
 CFG
@@ -534,6 +534,31 @@ if [ -n "$o1_pre_c" ] && [ -n "$o1_pre_t" ] && [ "$o1_pre_c" -lt "$o1_pre_t" ] \
     ok "O1: Exomiser rank lifts TRIP13 above CEP57 within the 0.75 tie (text order without a TSV)"
 else
     bad "O1: within-tier ordering does not follow the Exomiser rank (pre C<$o1_pre_c> T<$o1_pre_t>, post C<$o1_post_c> T<$o1_post_t>)"
+fi
+
+# --- S1 (#2067): tied EPCRs are separated at emit ---------------------------
+# The O1 base run carries four comphet pairs tied on 0.75: the emitted column
+# must be strictly decreasing with NO duplicate values (first of the tie keeps
+# the tier value).
+s1_col="$(tail -n +2 "$CSV" | cut -d, -f10)"
+if [ "$(printf '%s\n' "$s1_col" | sort -rn | head -1)" = "0.75" ] \
+   && [ "$(printf '%s\n' "$s1_col" | wc -l)" = "$(printf '%s\n' "$s1_col" | sort -u | wc -l)" ] \
+   && printf '%s\n' "$s1_col" | sort -rn -c 2>/dev/null; then
+    ok "S1: emitted EPCRs are strictly decreasing, no duplicates (tie separated below 0.75)"
+else
+    bad "S1: tied EPCRs not separated at emit (#2067 regression)"
+fi
+
+# --- S2 (#2066): MVA_PROBAND_ID overrides the VCF sample name ---------------
+export MVA_PROBAND_ID="PROBAND01"
+rm -f "$CSV"
+( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
+s2_ids="$(tail -n +2 "$CSV" 2>/dev/null | cut -d, -f1 | sort -u)"
+export MVA_PROBAND_ID=""
+if [ "$s2_ids" = "PROBAND01" ]; then
+    ok "S2: MVA_PROBAND_ID=PROBAND01 lands in every proband_id cell"
+else
+    bad "S2: proband knob not honored (got: $s2_ids)"
 fi
 
 # ============================================================================

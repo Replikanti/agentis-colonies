@@ -65,6 +65,9 @@ tick_interval_ms = 60000
 #   MVA_CONTAINER_CMD  podman|docker (Exomiser/bcftools container runtime)
 #   MVA_APPROVAL_FILE  operator HPO-approval file (default $MVA_WORK_DIR/phenotype/hpo-approved.txt)
 #   MVA_APPROACH       output-name suffix (default "baseline")
+#   MVA_PROBAND_ID     challenge-documented proband identifier for the CSV
+#                        proband_id column (e.g. PROBAND01, #2066); empty =
+#                        the VCF sample name
 #   MVA_LENS_MODE      set to 1 to run the opt-in M3 lens fan-out + refute gate
 #                        (five independent lenses + an adversarial refuter +
 #                        lens reconciler), emitting a SECOND submission
