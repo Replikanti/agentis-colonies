@@ -1,0 +1,132 @@
+# Track 2 report bibliography — verified with tools/verify-citations.py
+#
+# Columns: PMID <TAB> first author <TAB> year <TAB> report section the citation supports
+# The first three are re-derived from PubMed and compared; a mismatch fails the check.
+# The fourth is for a human spot-checking that the paper actually supports the claim,
+# which no script can decide.
+
+# --- 1.1 molecular lesion, genotype-phenotype, dose-response ---
+18932004	Bohers E	2008	1.1 molecular lesion, genotype-phenotype, dose-response
+28611924	Kato M	2017	1.1 molecular lesion, genotype-phenotype, dose-response
+16411201	Matsuura S	2006	1.1 molecular lesion, genotype-phenotype, dose-response
+24344301	Ochiai H	2014	1.1 molecular lesion, genotype-phenotype, dose-response
+40555658	Qu J	2025	1.1 molecular lesion, genotype-phenotype, dose-response
+20516114	Suijkerbuijk SJ	2010	1.1 molecular lesion, genotype-phenotype, dose-response
+
+# --- 1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase ---
+27509861	Alfieri C	2016	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+17369399	Burton JL	2007	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+22437499	Chao WC	2012	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+25669885	Di Fiore B	2015	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+17785528	Elowe S	2007	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+33207204	Gama Braga L	2020	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+23791783	Han JS	2013	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+25383541	Izawa D	2015	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+23345399	Kruse T	2013	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+15592459	Lampson MA	2005	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+22193957	Lara-Gonzalez P	2011	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+11535616	Sudakin V	2001	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+23079597	Suijkerbuijk SJ	2012	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+22698286	Suijkerbuijk SJ	2012	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+11702782	Tang Z	2001	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+30829571	Vallardi G	2019	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+23789096	Xu P	2013	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+
+# --- 1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress ---
+27731420	Andriani GA	2016	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+15208629	Baker DJ	2004	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+18516091	Baker DJ	2008	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+22048312	Baker DJ	2011	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+23242215	Baker DJ	2013	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+29342134	Bakhoum SF	2018	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+22258507	Crasta K	2012	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+25205676	Donnelly N	2014	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+28976970	Dou Z	2017	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+18192061	Geigl JB	2008	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+28759028	Gluck S	2017	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+22269907	Gordon DJ	2012	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+28759889	Harding SM	2017	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+23827674	Hatch EM	2013	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+11746029	Kajii T	2001	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+9121588	Lengauer C	1997	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+28738408	Mackenzie KJ	2017	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+23222101	Oromendia AB	2012	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+26876972	Passerini V	2016	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+26404941	Santaguida S	2015	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+26204159	Santaguida S	2015	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+24041940	Sheltzer JM	2013	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+31738183	Sieben CJ	2020	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+18974345	Williams BR	2008	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+26017310	Zhang CZ	2015	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+
+# --- 1.4 clinical phenotype and cancer spectrum ---
+15475955	Hanks S	2004	1.4 clinical phenotype and cancer spectrum
+16182441	Hanks S	2006	1.4 clinical phenotype and cancer spectrum
+11932988	Jacquemont S	2002	1.4 clinical phenotype and cancer spectrum
+39169218	Malumbres M	2024	1.4 clinical phenotype and cancer spectrum
+39264246	Nakano Y	2024	1.4 clinical phenotype and cancer spectrum
+16690728	Scott RH	2006	1.4 clinical phenotype and cancer spectrum
+28553959	Yost S	2017	1.4 clinical phenotype and cancer spectrum
+
+# --- C1 senolytics: rejected pharmacology and model ceiling ---
+16476774	Baker DJ	2006	C1 senolytics: rejected pharmacology and model ceiling
+26840489	Baker DJ	2016	C1 senolytics: rejected pharmacology and model ceiling
+26657143	Chang J	2016	C1 senolytics: rejected pharmacology and model ceiling
+31542391	Hickson LJ	2019	C1 senolytics: rejected pharmacology and model ceiling
+30616998	Justice JN	2019	C1 senolytics: rejected pharmacology and model ceiling
+34995493	Meharena HS	2022	C1 senolytics: rejected pharmacology and model ceiling
+19395653	Salmela AL	2009	C1 senolytics: rejected pharmacology and model ceiling
+12489117	Snyder RD	2002	C1 senolytics: rejected pharmacology and model ceiling
+30279143	Yousefzadeh MJ	2018	C1 senolytics: rejected pharmacology and model ceiling
+25754370	Zhu Y	2015	C1 senolytics: rejected pharmacology and model ceiling
+
+# --- C2 aneuploidy-selective compounds: human replication failure ---
+25198699	Ben-David U	2014	C2 aneuploidy-selective compounds: human replication failure
+22286062	Chen G	2012	C2 aneuploidy-selective compounds: human replication failure
+34352223	Ippolito MR	2021	C2 aneuploidy-selective compounds: human replication failure
+23084023	Li LB	2012	C2 aneuploidy-selective compounds: human replication failure
+34352222	Lukow DA	2021	C2 aneuploidy-selective compounds: human replication failure
+20962780	Pavelka N	2010	C2 aneuploidy-selective compounds: human replication failure
+33203674	Replogle JM	2020	C2 aneuploidy-selective compounds: human replication failure
+21315436	Tang YC	2011	C2 aneuploidy-selective compounds: human replication failure
+
+# --- C3/C4 mTOR inhibition and metformin ---
+19587680	Harrison DE	2009	C3/C4 mTOR inhibition and metformin
+26280535	Herranz N	2015	C3/C4 mTOR inhibition and metformin
+28087733	Izzo A	2017	C3/C4 mTOR inhibition and metformin
+26147250	Laberge RM	2015	C3/C4 mTOR inhibition and metformin
+
+# --- C5 antioxidants: mechanism and the cancer-promotion safety signal ---
+37288672	Chen G	2023	C5 antioxidants: mechanism and the cancer-promotion safety signal
+28343997	Cho MG	2017	C5 antioxidants: mechanism and the cancer-promotion safety signal
+38693434	Islam A	2024	C5 antioxidants: mechanism and the cancer-promotion safety signal
+26446958	Le Gal K	2015	C5 antioxidants: mechanism and the cancer-promotion safety signal
+20663956	Li M	2010	C5 antioxidants: mechanism and the cancer-promotion safety signal
+27815460	Matsuda D	2016	C5 antioxidants: mechanism and the cancer-promotion safety signal
+24477002	Sayin VI	2014	C5 antioxidants: mechanism and the cancer-promotion safety signal
+41290707	Zhu K	2025	C5 antioxidants: mechanism and the cancer-promotion safety signal
+
+# --- C6 JAK inhibition: pediatric growth, malignancy, precedent ---
+38849152	Brunner HI	2024	C6 JAK inhibition: pediatric growth, malignancy, precedent
+35944741	Campion SN	2022	C6 JAK inhibition: pediatric growth, malignancy, precedent
+36600185	Curtis JR	2023	C6 JAK inhibition: pediatric growth, malignancy, precedent
+41861528	Gilmore NK	2026	C6 JAK inhibition: pediatric growth, malignancy, precedent
+33222197	Polverelli N	2021	C6 JAK inhibition: pediatric growth, malignancy, precedent
+29907599	Porpaczy E	2018	C6 JAK inhibition: pediatric growth, malignancy, precedent
+37423231	Ramanan AV	2023	C6 JAK inhibition: pediatric growth, malignancy, precedent
+
+# --- C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency ---
+42009009	Lin KY	2026	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+37616468	McKay-Corkum GB	2023	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+24825348	North BJ	2014	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+37899683	Presterud R	2024	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+3155647	Rosenberg MR	1985	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+34515380	Veenhuis SJG	2021	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+38009412	Wu LE	2023	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+
+# --- 2.3 tumour surveillance guideline lineage ---
+34134020	Hol JA	2021	2.3 tumour surveillance guideline lineage
+28674120	Kalish JM	2017	2.3 tumour surveillance guideline lineage
+33209710	Liu EK	2020	2.3 tumour surveillance guideline lineage
+16857697	Scott RH	2006	2.3 tumour surveillance guideline lineage
+
