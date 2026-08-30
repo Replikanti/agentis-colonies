@@ -388,7 +388,7 @@ fn resolve_proband(nvcf: string) -> string {
     let knob = trim(getenv("MVA_PROBAND_ID"));
     if len(knob) > 0 {
         if regex_match("^[A-Za-z0-9_.-]+$", knob) { return knob; }
-        print("emitter: WARNING — MVA_PROBAND_ID contains unsafe characters; ignoring the knob and using the VCF sample name");
+        print("resolve_proband: WARNING — MVA_PROBAND_ID contains unsafe characters; ignoring the knob and using the VCF sample name");
     }
     let bcftools = bcftools_bin();
     // colony-lint: safe-exec-concat
