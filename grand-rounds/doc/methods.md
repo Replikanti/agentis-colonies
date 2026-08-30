@@ -96,6 +96,12 @@ tier** (`settings/epcr.yml`), and any ranking score only orders candidates
 | alternate zygosity representation of a primary candidate | 0.15 | secondary |
 | incidental / weak phenotype support | 0.05 | secondary |
 
+The **emitted** EPCR expresses the final total order: ties within a tier are
+separated deterministically at write-time (each following tied row emits
+0.001 below the previous; the tie leader keeps the tier value) because the
+submission metric measures the ranking and F-max needs a threshold that
+isolates the top row. Tier provenance stays in the notes column.
+
 Representative variants for each panel gene are selected by Exomiser's
 per-variant ranking when its output is available (which variants form the
 compound-het pair, which hom-alt represents the biallelic hypothesis, and

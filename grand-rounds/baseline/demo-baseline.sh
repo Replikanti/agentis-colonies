@@ -169,6 +169,14 @@ if grep -qF 'exomiser.data-directory=$DATA_DIR' "$FETCH2" \
 else
     bad "Exomiser provisioning regressed in fetch-reference-data.sh (#2062)"
 fi
+# #2066/#2067: the proband-id knob and the tie-separation emit path.
+for tok in 'MVA_PROBAND_ID' 'separate_epcr_rec(' 'zpad_epcr_milli('; do
+    if grep -qF "$tok" "$AG"; then
+        ok "submission-hardening marker '$tok' present (#2066/#2067)"
+    else
+        bad "submission-hardening marker '$tok' missing (#2066/#2067 regression)"
+    fi
+done
 # D6 gate compares a stored hash, not mere file presence.
 if grep -qF 'approved_hash != draft_hash' "$AG"; then
     ok "D6 gate compares a stored sha256 (not file presence)"

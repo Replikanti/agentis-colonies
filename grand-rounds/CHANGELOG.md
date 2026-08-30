@@ -53,6 +53,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **Tied EPCRs capped F-max; scorer-mandated proband id**
+  ([#2067](https://github.com/Replikanti/agentis-colonies/issues/2067),
+  [#2066](https://github.com/Replikanti/agentis-colonies/issues/2066)): the
+  first live submission scored rank points 100/100 (full match at rank 1)
+  but F-max 0.667 — two rows tied at 0.90 mean no threshold isolates the
+  true row. `emit_submission` now separates ties deterministically AFTER
+  the final ordering (first of a tie keeps the tier value, each following
+  row emits 0.01 below the previous, floored at 0.01) — presentation of
+  the already-computed total order, no new evidence; tiers stay in the
+  notes. And the emitted `proband_id` honors the new `MVA_PROBAND_ID` knob
+  (challenge scorers accept only the dataset-documented literal, e.g.
+  PROBAND01) with the VCF sample name as the fallback; allowlisted
+  end-to-end, exit-5 re-wire on old configs. Live mutations S1/S2.
+
 - **Within-tier ordering was lexicographic by row text**
   ([#2064](https://github.com/Replikanti/agentis-colonies/issues/2064)): all
   known-gene comphet pairs tie on the 0.75 tier and the #2059 sort broke the
