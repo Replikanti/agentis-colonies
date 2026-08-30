@@ -74,15 +74,16 @@ fn medline_value(line: string) -> string {
     return trim(substring(line, 6, len(line)));
 }
 
-// First whitespace-delimited token of an author string: "Baker DJ" -> "Baker".
-// Comparison is exact on this token; the bibliography is generated from PubMed,
-// so a difference means someone edited a citation without re-deriving it.
-fn surname(author: string) -> string {
-    let a = trim(author);
-    let s = index_of(a, " ");
-    if s < 0 { return a; }
-    return substring(a, 0, s);
-}
+// The verification key is (first author, year, journal, pages), compared in full.
+//
+// Surname+year alone is NOT unique enough to be a fabrication check: this very
+// bibliography contains three pairs sharing it, and swapping such a pair's
+// PMIDs — turning a review into a research paper — passed an earlier revision
+// of this agent silently. Adding the journal left one collision standing (two
+// Suijkerbuijk SJ 2012 papers both in Dev Cell), so pages are part of the key
+// too; that makes all 103 unique. Comparing the FULL author string rather than
+// the surname additionally checks initials. Pages may legitimately be empty
+// (journals using article numbers), so an empty value is compared, not required.
 
 // ======================================================================
 // bibliography parsing (decision surface: what counts as a citation)
@@ -97,6 +98,10 @@ fn is_citation_line(l: string) -> bool {
 fn all_digits(s: string, i: int) -> bool {
     if i >= len(s) { return len(s) > 0; }
     let c = substring(s, i, i + 1);
+    // substring is BYTE-indexed: slicing inside a UTF-8 sequence yields "",
+    // and index_of(haystack, "") is 0, so a non-ASCII PMID would pass as
+    // numeric and then surface as the misleading "PubMed returned nothing".
+    if len(c) == 0 { return false; }
     if index_of("0123456789", c) < 0 { return false; }
     return all_digits(s, i + 1);
 }
@@ -109,6 +114,7 @@ fn bad_rows_rec(rows: list<string>, i: int, seen: string, acc: list<string>) -> 
     let pmid = trim(field(r, 0));
     let author = trim(field(r, 1));
     let year = trim(field(r, 2));
+    let journal = trim(field(r, 3));
     let lineno = to_string(i + 1);
     // agentis has no infix boolean operators; conditions chain as nested/
     // sequential ifs, as elsewhere in this federation.
@@ -123,6 +129,10 @@ fn bad_rows_rec(rows: list<string>, i: int, seen: string, acc: list<string>) -> 
     if len(year) == 0 {
         let m3 = "row " + lineno + ": missing year; got: " + r;
         return bad_rows_rec(rows, i + 1, seen, push(acc, m3));
+    }
+    if len(journal) == 0 {
+        let m3b = "row " + lineno + ": missing journal (column 4); got: " + r;
+        return bad_rows_rec(rows, i + 1, seen, push(acc, m3b));
     }
     if !all_digits(pmid, 0) {
         let m4 = "row " + lineno + ": PMID must be numeric, got '" + pmid + "'";
@@ -146,30 +156,37 @@ fn join_ids_rec(rows: list<string>, i: int, acc: string) -> string {
 // MEDLINE -> "pmid \t first-author \t year" records
 // ======================================================================
 
-fn flush_rec(pmid: string, au: string, year: string, acc: list<string>) -> list<string> {
+fn flush_rec(pmid: string, au: string, year: string, ta: string, pg: string, acc: list<string>) -> list<string> {
     if len(pmid) == 0 { return acc; }
-    return push(acc, pmid + "\t" + au + "\t" + year);
+    return push(acc, pmid + "\t" + au + "\t" + year + "\t" + ta + "\t" + pg);
 }
 
-fn parse_medline_rec(ls: list<string>, i: int, pmid: string, au: string, yr: string, acc: list<string>) -> list<string> {
-    if i >= len(ls) { return flush_rec(pmid, au, yr, acc); }
+fn parse_medline_rec(ls: list<string>, i: int, pmid: string, au: string, yr: string, ta: string, pg: string, acc: list<string>) -> list<string> {
+    if i >= len(ls) { return flush_rec(pmid, au, yr, ta, pg, acc); }
     let line = get(ls, i);
     let tg = medline_tag(line);
     let vl = medline_value(line);
     if tg == "PMID" {
         // A new record starts: bank the previous one.
-        return parse_medline_rec(ls, i + 1, vl, "", "", flush_rec(pmid, au, yr, acc));
+        return parse_medline_rec(ls, i + 1, vl, "", "", "", "", flush_rec(pmid, au, yr, ta, pg, acc));
     }
     if tg == "DP" {
         let y = if len(vl) >= 4 { substring(vl, 0, 4) } else { vl };
-        return parse_medline_rec(ls, i + 1, pmid, au, y, acc);
+        return parse_medline_rec(ls, i + 1, pmid, au, y, ta, pg, acc);
+    }
+    if tg == "TA" {
+        return parse_medline_rec(ls, i + 1, pmid, au, yr, vl, pg, acc);
+    }
+    if tg == "PG" {
+        let g = if len(pg) == 0 { vl } else { pg };
+        return parse_medline_rec(ls, i + 1, pmid, au, yr, ta, g, acc);
     }
     if tg == "AU" {
         // Only the FIRST author line of a record is the first author.
         let a = if len(au) == 0 { vl } else { au };
-        return parse_medline_rec(ls, i + 1, pmid, a, yr, acc);
+        return parse_medline_rec(ls, i + 1, pmid, a, yr, ta, pg, acc);
     }
-    return parse_medline_rec(ls, i + 1, pmid, au, yr, acc);
+    return parse_medline_rec(ls, i + 1, pmid, au, yr, ta, pg, acc);
 }
 
 // efetch returns records in the order of the id list, so the two sides are
@@ -178,6 +195,15 @@ fn parse_medline_rec(ls: list<string>, i: int, pmid: string, au: string, yr: str
 // could not resolve is simply absent from the response, which shows up here as
 // a mismatch at position j — so seek forward for it, and if it is nowhere in
 // the remaining records it is genuinely NOT FOUND.
+// curl's exit status rides back on a sentinel line so a timeout or partial
+// read is distinguishable from a genuine empty response. Returns "" if absent.
+fn curl_rc(ls: list<string>, i: int) -> string {
+    if i >= len(ls) { return ""; }
+    let l = get(ls, i);
+    if index_of(l, "CURLRC:") == 0 { return trim(substring(l, 7, len(l))); }
+    return curl_rc(ls, i + 1);
+}
+
 fn seek_rec(recs: list<string>, j: int, pmid: string) -> int {
     if j >= len(recs) { return 0 - 1; }
     if field(get(recs, j), 0) == pmid { return j; }
@@ -194,6 +220,8 @@ fn check_rec(rows: list<string>, recs: list<string>, i: int, j: int, acc: list<s
     let pmid = trim(field(row, 0));
     let want_au = trim(field(row, 1));
     let want_yr = trim(field(row, 2));
+    let want_ta = trim(field(row, 3));
+    let want_pg = trim(field(row, 4));
     let at = seek_rec(recs, j, pmid);
     if at < 0 {
         let m0 = "  FAIL " + pmid + "  [NOT FOUND] PubMed returned no record for this PMID";
@@ -202,13 +230,23 @@ fn check_rec(rows: list<string>, recs: list<string>, i: int, j: int, acc: list<s
     let rec = get(recs, at);
     let got_au = field(rec, 1);
     let got_yr = field(rec, 2);
-    if surname(got_au) != surname(want_au) {
+    let got_ta = field(rec, 3);
+    if got_au != want_au {
         let m1 = "  FAIL " + pmid + "  [AUTHOR] bibliography says '" + want_au + "', PubMed says '" + got_au + "'";
         return check_rec(rows, recs, i + 1, at + 1, push(acc, m1));
     }
     if got_yr != want_yr {
         let m2 = "  FAIL " + pmid + "  [YEAR] bibliography says " + want_yr + ", PubMed says " + got_yr;
         return check_rec(rows, recs, i + 1, at + 1, push(acc, m2));
+    }
+    if got_ta != want_ta {
+        let m3 = "  FAIL " + pmid + "  [JOURNAL] bibliography says '" + want_ta + "', PubMed says '" + got_ta + "'";
+        return check_rec(rows, recs, i + 1, at + 1, push(acc, m3));
+    }
+    let got_pg = field(rec, 4);
+    if got_pg != want_pg {
+        let m4 = "  FAIL " + pmid + "  [PAGES] bibliography says '" + want_pg + "', PubMed says '" + got_pg + "'";
+        return check_rec(rows, recs, i + 1, at + 1, push(acc, m4));
     }
     return check_rec(rows, recs, i + 1, at + 1, acc);
 }
@@ -224,8 +262,21 @@ fn print_all_rec(msgs: list<string>, i: int) -> int {
 // ======================================================================
 
 agent verifier() -> void {
-    let bib = getenv_or("GR_BIBLIOGRAPHY", "doc/track2-bibliography.tsv");
+    let bib = getenv("GR_BIBLIOGRAPHY");
     let marker = getenv("GR_VERIFY_MARKER");
+    // Fail-closed: the marker says "failed" from the moment the agent starts,
+    // so an abort mid-run (CB exhaustion, runtime error) can never leave a
+    // stale "ok" behind for a caller reading a fixed path.
+    if len(marker) > 0 {
+        // colony-lint: safe-exec-concat
+        let w_init = exec sh "printf 'failed\\n' > " + shell_escape(marker);
+    }
+    if len(bib) == 0 {
+        print("verify-citations: REFUSING — GR_BIBLIOGRAPHY is unset.");
+        print("  exec runs in the colony sandbox, so a relative default path would not resolve;");
+        print("  pass an absolute path (tools/run-verify-citations.sh does this for you).");
+        return;
+    }
 
     // colony-lint: safe-exec-concat
     let raw = exec sh "cat " + shell_escape(bib) + " 2>/dev/null || true";
@@ -269,8 +320,19 @@ agent verifier() -> void {
     // three tags the decision needs, so no bulk stream enters .ag.
     let url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&retmode=text&rettype=medline&id=" + ids;
     // colony-lint: safe-exec-concat
-    let med = exec sh "curl -sS --max-time 180 " + shell_escape(url) + " 2>/dev/null | grep -E '^(PMID|DP  |AU  )' || true";
-    let mlines = nonempty_lines(med);
+    let med = exec sh "out=$(curl -sS --max-time 180 " + shell_escape(url) + " 2>/dev/null); rc=$?; printf '%s\n' \"$out\" | grep -E '^(PMID|DP  |TA  |PG  |AU  )' || true; echo \"CURLRC:$rc\"";
+    let all_lines = nonempty_lines(med);
+    let rc = curl_rc(all_lines, 0);
+    if rc != "0" {
+        print("verify-citations: REFUSING — curl exited", rc, "fetching PubMed.");
+        print("  A partial or failed fetch must not be read as 'these citations are fine'.");
+        if len(marker) > 0 {
+            // colony-lint: safe-exec-concat
+            let wrc = exec sh "printf 'failed\\n' > " + shell_escape(marker);
+        }
+        return;
+    }
+    let mlines = filter(all_lines, |l: string| -> bool { return index_of(l, "CURLRC:") != 0; });
     if len(mlines) == 0 {
         print("verify-citations: REFUSING — PubMed returned nothing (network down, or every PMID is bogus).");
         print("  A silent pass here would defeat the point of the check, so this is a failure.");
@@ -281,7 +343,7 @@ agent verifier() -> void {
         return;
     }
 
-    let recs = parse_medline_rec(mlines, 0, "", "", "", empty_strs(rows));
+    let recs = parse_medline_rec(mlines, 0, "", "", "", "", "", empty_strs(rows));
     print("verify-citations: PubMed returned", len(recs), "record(s)");
 
     let failures = check_rec(rows, recs, 0, 0, empty_strs(rows));

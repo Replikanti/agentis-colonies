@@ -21,11 +21,15 @@ if [ ! -d "$COLONY/.agentis" ]; then
     exit 2
 fi
 
+# The agent's `exec sh` runs inside the colony sandbox, so a relative path would
+# be validated here and then fail to resolve there. Always hand over an absolute
+# one — the agent refuses outright if the variable is unset.
 GR_BIBLIOGRAPHY="${1:-${GR_BIBLIOGRAPHY:-$GR/doc/track2-bibliography.tsv}}"
 if [ ! -s "$GR_BIBLIOGRAPHY" ]; then
     echo "verify-citations: bibliography not found or empty: $GR_BIBLIOGRAPHY" >&2
     exit 2
 fi
+GR_BIBLIOGRAPHY="$(realpath "$GR_BIBLIOGRAPHY")"
 export GR_BIBLIOGRAPHY
 
 GR_VERIFY_MARKER="$(mktemp)"
