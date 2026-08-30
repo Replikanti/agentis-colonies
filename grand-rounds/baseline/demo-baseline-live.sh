@@ -437,7 +437,12 @@ for gpanel in BUB1B CEP57 TRIP13 CENATAC; do
 done
 if [ "$e3_rows" = "10" ] && [ "$e3_panel" = "1" ] \
    && grep -q 'SYNN01' "$CSV" 2>/dev/null && ! grep -q 'SYNN12' "$CSV" 2>/dev/null; then
-    ok "E3: cap holds at 10, all panel candidates survive, Exomiser tail trimmed"
+    e3_col="$(tail -n +2 "$CSV" | cut -d, -f10)"
+    if [ "$(printf '%s\n' "$e3_col" | wc -l)" = "$(printf '%s\n' "$e3_col" | sort -u | wc -l)" ]; then
+        ok "E3: cap holds at 10, all panel candidates survive, Exomiser tail trimmed; epcr duplicate-free across the 6-way 0.20 tie"
+    else
+        bad "E3b: duplicate epcr values in the capped CSV (#2067 milli-separation regression)"
+    fi
 else
     bad "E3: cap/precedence broken (rows=$e3_rows panel_complete=$e3_panel)"
 fi
@@ -537,7 +542,7 @@ else
 fi
 
 # --- S1 (#2067): tied EPCRs are separated at emit ---------------------------
-# The O1 base run carries four comphet pairs tied on 0.75: the emitted column
+# The O1 post-TSV rerun carries four comphet pairs tied on 0.75: the emitted column
 # must be strictly decreasing with NO duplicate values (first of the tie keeps
 # the tier value).
 s1_col="$(tail -n +2 "$CSV" | cut -d, -f10)"
@@ -554,11 +559,20 @@ export MVA_PROBAND_ID="PROBAND01"
 rm -f "$CSV"
 ( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
 s2_ids="$(tail -n +2 "$CSV" 2>/dev/null | cut -d, -f1 | sort -u)"
-export MVA_PROBAND_ID=""
 if [ "$s2_ids" = "PROBAND01" ]; then
     ok "S2: MVA_PROBAND_ID=PROBAND01 lands in every proband_id cell"
 else
     bad "S2: proband knob not honored (got: $s2_ids)"
+fi
+# Reset must fall back to the VCF sample name (SAMPLE_SYNTH in the fixture).
+export MVA_PROBAND_ID=""
+rm -f "$CSV"
+( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
+s2b_ids="$(tail -n +2 "$CSV" 2>/dev/null | cut -d, -f1 | sort -u)"
+if [ "$s2b_ids" = "SAMPLE_SYNTH" ]; then
+    ok "S2b: empty knob falls back to the VCF sample name"
+else
+    bad "S2b: fallback to the sample name broken (got: $s2b_ids)"
 fi
 
 # ============================================================================

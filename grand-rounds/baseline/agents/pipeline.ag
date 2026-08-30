@@ -336,6 +336,10 @@ fn epcr_centi(row: string) -> int {
     let e = field(row, 9);
     let dot = index_of(e, ".");
     if dot < 0 { return parse_int(e) * 100; }
+    // "1.00" must not read as 0 — with tie-separation a 1.00 leader would
+    // collapse every following row to the floor (#2068 review; latent today,
+    // the ladder maxes at 0.90 and promote_row caps at >= 90).
+    if substring(e, 0, dot) == "1" { return 100; }
     let dec = substring(e, dot + 1, len(e));
     let d2 = if len(dec) >= 2 { substring(dec, 0, 2) } else { dec + "0" };
     return parse_int(d2);
@@ -377,9 +381,15 @@ fn order_key(row: string, agree: int) -> string {
 fn resolve_proband(nvcf: string) -> string {
     // #2066: the challenge scorer accepts only the dataset-documented literal
     // (e.g. PROBAND01), which need not equal the VCF sample name — the knob
-    // wins when set; the sample name stays the default.
-    let knob = getenv("MVA_PROBAND_ID");
-    if len(trim(knob)) > 0 { return trim(knob); }
+    // wins when set; the sample name stays the default. The knob is hand-set
+    // right before a real submission, so it is VALIDATED: a comma, tab,
+    // newline or other exotic character would ride through the tab->comma
+    // CSV join and bypass the column-count chokepoint (#2068 review).
+    let knob = trim(getenv("MVA_PROBAND_ID"));
+    if len(knob) > 0 {
+        if regex_match("^[A-Za-z0-9_.-]+$", knob) { return knob; }
+        print("emitter: WARNING — MVA_PROBAND_ID contains unsafe characters; ignoring the knob and using the VCF sample name");
+    }
     let bcftools = bcftools_bin();
     // colony-lint: safe-exec-concat
     let p0 = trim(exec sh shell_escape(bcftools) + " query -l " + shell_escape(nvcf) + " 2>/dev/null | head -1 || true");
@@ -1384,24 +1394,28 @@ fn validate_row(row: string) -> string {
 // following row emits just below the previous one (-0.01, floored at 0.01).
 // Tier provenance stays in the notes; the ladder itself is untouched — this
 // expresses the total order the pipeline already computed, no new evidence.
-fn separate_epcr_rec(rows: list<string>, i: int, prev_centi: int, acc: list<string>) -> list<string> {
+// Milli (0.001) steps: centi steps exhaust the band under the 0.05 tier
+// after five rows (#2068 review); with 0.001 steps the 10-row cap can never
+// collide (at most 9 decrements, ladder minimum 0.05 = 50 milli).
+fn separate_epcr_rec(rows: list<string>, i: int, prev_milli: int, acc: list<string>) -> list<string> {
     if i >= len(rows) { return acc; }
     let r = get(rows, i);
-    let c0 = epcr_centi(r);
-    let c = if i == 0 { c0 } else { if c0 >= prev_centi { prev_centi - 1 } else { c0 } };
+    let m0 = epcr_centi(r) * 10;
+    let m = if i == 0 { m0 } else { if m0 >= prev_milli { prev_milli - 1 } else { m0 } };
     // The floor applies ONLY to values the separation itself lowered — an
     // invalid original (e.g. a corrupted 0 tier) must reach the validator
     // untouched so the epcr-out-of-range refusal still bites (M4 contract).
-    let cf = if c == c0 { c } else { if c < 1 { 1 } else { c } };
-    let sep = if cf == c0 { r } else {
-        set_field(r, 9, zpad_epcr(cf))
+    let mf = if m == m0 { m } else { if m < 1 { 1 } else { m } };
+    let sep = if mf == m0 { r } else {
+        set_field(r, 9, zpad_epcr_milli(mf))
     };
-    return separate_epcr_rec(rows, i + 1, cf, push(acc, sep));
+    return separate_epcr_rec(rows, i + 1, mf, push(acc, sep));
 }
-fn zpad_epcr(centi: int) -> string {
-    if centi >= 100 { return "1.00"; }
-    if centi >= 10 { return "0." + to_string(centi); }
-    return "0.0" + to_string(centi);
+fn zpad_epcr_milli(milli: int) -> string {
+    if milli >= 1000 { return "1.000"; }
+    if milli >= 100 { return "0." + to_string(milli); }
+    if milli >= 10 { return "0.0" + to_string(milli); }
+    return "0.00" + to_string(milli);
 }
 
 fn emit_submission(rows: list<string>, proband: string, outdir: string, approach: string) -> string {

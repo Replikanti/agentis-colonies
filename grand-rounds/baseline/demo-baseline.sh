@@ -170,7 +170,7 @@ else
     bad "Exomiser provisioning regressed in fetch-reference-data.sh (#2062)"
 fi
 # #2066/#2067: the proband-id knob and the tie-separation emit path.
-for tok in 'MVA_PROBAND_ID' 'separate_epcr_rec(' 'zpad_epcr('; do
+for tok in 'MVA_PROBAND_ID' 'separate_epcr_rec(' 'zpad_epcr_milli('; do
     if grep -qF "$tok" "$AG"; then
         ok "submission-hardening marker '$tok' present (#2066/#2067)"
     else
