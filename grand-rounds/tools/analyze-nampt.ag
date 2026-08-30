@@ -1,0 +1,195 @@
+// analyze-nampt.ag — the DepMap check that refuted our own Track 2 claim.
+//
+// The Track 2 report rejected NAD+ precursors partly because rhabdomyosarcoma —
+// one of this genotype's two risk tumours — is reported NAD+-dependent
+// (McKay-Corkum 2023, PMID 37616468: NAMPT inhibition kills RMS lines, NMN
+// rescues them). We wrote that the objection was tumour-SPECIFIC, then tested
+// that specificity against public CRISPR dependency data.
+//
+// It did not hold. RMS lines are, if anything, LESS NAMPT-dependent than the
+// average cancer line. The report says so, and this agent is why: the number
+// that corrected us is re-derivable by anyone, not a claim to be taken on trust.
+//
+// The .ag / external boundary is the federation's usual one:
+// tools/fetch-depmap-nampt.sh streams a 429 MB matrix and narrows it to one
+// small TSV (bulk, mechanical); every judgement here — the dependency
+// threshold, the group split, what counts as a discordance — is .ag-resident.
+//
+// Run: ./tools/run-analyze-nampt.sh
+// Env: GR_NAMPT_TSV     absolute path to the narrowed TSV (required)
+//      GR_VERIFY_MARKER path to write "ok"/"failed" for the wrapper's exit code
+
+// Deliberately large. Parsing ~1200 signed decimals in .ag (no float builtin,
+// so each value is walked character by character) costs roughly 2000 CB per row
+// across five passes. Doing the arithmetic in the shell would be cheaper and
+// would also move the analysis itself out of .ag, which is exactly what this
+// federation's contract forbids: the shell narrows, the agent decides.
+cb 20000000;
+
+// DepMap Chronos convention: 0 = no effect, -1 ~ the median common-essential
+// gene. -0.5 is the customary "dependent" line; RPL5 is the pan-essential
+// positive control that proves the screen behaves.
+let DEPENDENCY_THRESHOLD_MILLI = 0 - 500;
+
+fn nonempty_lines(blob: string) -> list<string> {
+    return filter(regex_split("\n", blob), |l: string| -> bool { return len(trim(l)) > 0; });
+}
+
+fn empty_strs(seed: list<string>) -> list<string> {
+    return filter(seed, |x: string| -> bool { return false; });
+}
+
+fn field(line: string, n: int) -> string {
+    if n <= 0 {
+        let t = index_of(line, "\t");
+        if t < 0 { return line; }
+        return substring(line, 0, t);
+    }
+    let t = index_of(line, "\t");
+    if t < 0 { return ""; }
+    return field(substring(line, t + 1, len(line)), n - 1);
+}
+
+// agentis has no float parser here, and gene effects are small signed decimals,
+// so values are read as thousandths ("-0.239" -> -239). Guards on every shape
+// the matrix actually emits: "", "NA", bare "-", integers, short mantissas.
+fn digits_to_milli(frac: string, i: int, acc: int) -> int {
+    if i >= 3 { return acc; }
+    let c = if i < len(frac) { substring(frac, i, i + 1) } else { "0" };
+    let d = index_of("0123456789", c);
+    if d < 0 { return acc * 10; }
+    return digits_to_milli(frac, i + 1, acc * 10 + d);
+}
+
+fn parse_milli(raw: string) -> int {
+    let s = trim(raw);
+    if len(s) == 0 { return 0; }
+    if s == "NA" { return 0; }
+    let neg = substring(s, 0, 1) == "-";
+    let body = if neg { substring(s, 1, len(s)) } else { s };
+    if len(body) == 0 { return 0; }
+    let dot = index_of(body, ".");
+    let whole = if dot < 0 { body } else { substring(body, 0, dot) };
+    let frac = if dot < 0 { "" } else { substring(body, dot + 1, len(body)) };
+    let w = if len(whole) == 0 { 0 } else { parse_int(whole) };
+    let m = w * 1000 + digits_to_milli(frac, 0, 0);
+    if neg { return 0 - m; }
+    return m;
+}
+
+fn has_value(line: string, col: int) -> bool {
+    let v = trim(field(line, col));
+    if len(v) == 0 { return false; }
+    if v == "NA" { return false; }
+    return true;
+}
+
+fn sum_milli(rows: list<string>, col: int, i: int, acc: int) -> int {
+    if i >= len(rows) { return acc; }
+    return sum_milli(rows, col, i + 1, acc + parse_milli(field(get(rows, i), col)));
+}
+
+fn count_below(rows: list<string>, col: int, i: int, acc: int) -> int {
+    if i >= len(rows) { return acc; }
+    let v = parse_milli(field(get(rows, i), col));
+    let hit = if v < DEPENDENCY_THRESHOLD_MILLI { 1 } else { 0 };
+    return count_below(rows, col, i + 1, acc + hit);
+}
+
+// Integer permille mean rendered as a signed decimal, e.g. -239 -> "-0.239".
+fn zpad3(n: int) -> string {
+    if n >= 100 { return to_string(n); }
+    if n >= 10 { return "0" + to_string(n); }
+    return "00" + to_string(n);
+}
+
+fn milli_str(m: int) -> string {
+    let neg = m < 0;
+    let a = if neg { 0 - m } else { m };
+    let s = to_string(a / 1000) + "." + zpad3(a - (a / 1000) * 1000);
+    if neg { return "-" + s; }
+    return s;
+}
+
+fn pct_str(num: int, den: int) -> string {
+    if den == 0 { return "n/a"; }
+    let tenths = (num * 1000) / den;
+    return to_string(tenths / 10) + "." + to_string(tenths - (tenths / 10) * 10) + "%";
+}
+
+agent nampt_analyst() -> void {
+    let tsv = getenv("GR_NAMPT_TSV");
+    let marker = getenv("GR_VERIFY_MARKER");
+    if len(marker) > 0 {
+        // colony-lint: safe-exec-concat
+        let w0 = exec sh "printf 'failed\\n' > " + shell_escape(marker);
+    }
+    if len(tsv) == 0 {
+        print("analyze-nampt: REFUSING — GR_NAMPT_TSV is unset (needs an absolute path).");
+        return;
+    }
+
+    // colony-lint: safe-exec-concat
+    let raw = exec sh "tail -n +2 " + shell_escape(tsv) + " 2>/dev/null || true";
+    let all = nonempty_lines(raw);
+    if len(all) == 0 {
+        print("analyze-nampt: REFUSING — no data rows in", tsv, "(run tools/fetch-depmap-nampt.sh first).");
+        return;
+    }
+
+    // Column 2 is NAMPT, column 3 RPL5; a line without a NAMPT value was not
+    // screened and must be dropped rather than counted as zero effect.
+    let scored = filter(all, |l: string| -> bool { return has_value(l, 2); });
+    let rms = filter(scored, |l: string| -> bool { return trim(field(l, 1)) == "1"; });
+    let other = filter(scored, |l: string| -> bool { return trim(field(l, 1)) != "1"; });
+
+    if len(rms) == 0 {
+        print("analyze-nampt: REFUSING — no rhabdomyosarcoma lines carry a NAMPT score; nothing to compare.");
+        return;
+    }
+
+    let rms_mean = sum_milli(rms, 2, 0, 0) / len(rms);
+    let oth_mean = sum_milli(other, 2, 0, 0) / len(other);
+    let rms_below = count_below(rms, 2, 0, 0);
+    let oth_below = count_below(other, 2, 0, 0);
+
+    // Positive control: if the pan-essential gene does not read as essential,
+    // the matrix is not what we think it is and no conclusion may be drawn.
+    let ctl_rows = filter(scored, |l: string| -> bool { return has_value(l, 3); });
+    let ctl_mean = if len(ctl_rows) == 0 { 0 } else { sum_milli(ctl_rows, 3, 0, 0) / len(ctl_rows) };
+
+    print("analyze-nampt: screened lines with a NAMPT score:", len(scored));
+    print("  rhabdomyosarcoma  n=", len(rms), "  mean NAMPT gene effect ", milli_str(rms_mean));
+    print("  all other lines   n=", len(other), "  mean NAMPT gene effect ", milli_str(oth_mean));
+    print("  below -0.500  RMS:", rms_below, "/", len(rms), "=", pct_str(rms_below, len(rms)),
+          "  other:", oth_below, "/", len(other), "=", pct_str(oth_below, len(other)));
+    print("  control RPL5 (pan-essential) mean:", milli_str(ctl_mean));
+
+    if ctl_mean > 0 - 1000 {
+        print("analyze-nampt: REFUSING — RPL5 does not read as pan-essential (", milli_str(ctl_mean),
+              "), so this matrix cannot be interpreted.");
+        return;
+    }
+
+    // The verdict the report depends on. RMS being LESS dependent than the rest
+    // is what defeats the tumour-specificity claim; the direction is the result,
+    // not the exact number.
+    if rms_mean < oth_mean {
+        print("");
+        print("VERDICT: rhabdomyosarcoma is MORE NAMPT-dependent than other lines.");
+        print("  This would SUPPORT a tumour-specific objection to NAD+ precursors.");
+        print("  The Track 2 report states the opposite — re-check the report against this run.");
+        return;
+    }
+    print("");
+    print("VERDICT: rhabdomyosarcoma is NOT preferentially NAMPT-dependent.");
+    print("  Genetic dependency data does not support a tumour-SPECIFIC objection to");
+    print("  NAD+ precursors; the pharmacological result (PMID 37616468) stands on its");
+    print("  own, and the report's C7 rejection rests on its other three objections.");
+    if len(marker) > 0 {
+        // colony-lint: safe-exec-concat
+        let w1 = exec sh "printf 'ok\\n' > " + shell_escape(marker);
+    }
+}
+
+nampt_analyst();

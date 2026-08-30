@@ -94,6 +94,22 @@ It verifies *identity* — that a PMID is the paper we say it is. Whether the pa
 supports the claim stays a human judgement, which is why the bibliography carries
 the report section each citation serves.
 
+**The check that corrected us.** The report rejected NAD+ precursors partly on
+the claim that rhabdomyosarcoma — a risk tumour for this genotype — is
+*specifically* NAD+-dependent. We tested that against public DepMap CRISPR data
+and it did not hold, so the report now says so:
+
+```bash
+tools/run-analyze-nampt.sh            # wraps agents-side analyze-nampt.ag
+```
+
+Same boundary as above: `fetch-depmap-nampt.sh` streams a 429 MB dependency
+matrix and narrows it to one small TSV (bulk, mechanical), while
+[`tools/analyze-nampt.ag`](./tools/analyze-nampt.ag) owns the dependency
+threshold, the group comparison, a pan-essential positive control that refuses
+the run if the matrix does not behave, and the verdict. It prints a warning if
+the data ever starts supporting the claim we withdrew.
+
 The Track 2 report itself is a submission artifact and is not committed here; it
 is uploaded to the organizers. What lives in this repository is the tooling and
 the bibliography, so the report's central claim — that its citations are checked
