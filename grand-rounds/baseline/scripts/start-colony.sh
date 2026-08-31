@@ -22,7 +22,10 @@
 # It does NOT invoke `agentis daemon`, so the daemon-flag allowlist does not
 # apply. Exit codes: 0 ok, 2 usage, 3 missing gated data or missing/gzipped
 # GTF (#2044), 4 unsafe work dir, 5 unwired managed .agentis/config keys (env
-# allowlist / exec timeout / llm.cli_timeout_ms, incl. the lens-mode floor).
+# allowlist / exec timeout / llm.cli_timeout_ms, incl. the lens-mode floor),
+# 7 no real LLM backend (llm.backend is mock or unset; MVA_ALLOW_MOCK_BACKEND=1
+# overrides for deterministic-stages-only runs, whose output is NOT a valid
+# submission).
 
 set -euo pipefail
 
@@ -139,7 +142,7 @@ fi
 if [ "$need_wire" -ne 0 ]; then
     echo "start-colony.sh: the managed .agentis/config keys are not wired in $CONFIG_FILE." >&2
     echo "      Run ./install.sh (idempotent), or add these lines to $CONFIG_FILE:" >&2
-    echo "  exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_PROBAND_ID,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,MVA_ALLOW_MOCK_BACKEND,GR_BIBLIOGRAPHY,GR_VERIFY_MARKER,GR_NAMPT_TSV,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR" >&2
+    echo "  exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_PROBAND_ID,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,GR_BIBLIOGRAPHY,GR_VERIFY_MARKER,GR_NAMPT_TSV,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR" >&2
     echo "  exec.default_timeout_ms = 21600000" >&2
     echo "  llm.cli_timeout_ms = 1800000" >&2
     exit 5
@@ -158,8 +161,8 @@ if [ -z "$backend" ] || [ "$backend" = "mock" ]; then
     echo "      The mock backend returns nothing from prompt(), so the phenotyper would" >&2
     echo "      extract zero HPO terms and this run would produce a submission with no" >&2
     echo "      phenotype evidence behind it. Refusing to start." >&2
-    echo "      Wire a real backend (see doc/methods.md), for example:" >&2
-    echo "  llm.backend = cli" >&2
+    echo "      Wire a real backend (see doc/llm-backend.md), for example:" >&2
+    echo "  llm.backend = claude" >&2
     echo "  llm.command = /path/to/your/llm-wrapper.sh" >&2
     echo "      To run the deterministic stages only, without any LLM, set" >&2
     echo "      MVA_ALLOW_MOCK_BACKEND=1 — the result is NOT a valid submission." >&2

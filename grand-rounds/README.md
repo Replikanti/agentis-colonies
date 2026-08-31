@@ -63,7 +63,8 @@ export MVA_OUT_DIR="$HOME/.mva-hackathon/out"     # submission CSVs
 `start-colony.sh` refuses to start unless a real LLM backend is configured:
 `agentis init` writes `llm.backend = mock`, whose `prompt()` returns nothing, and
 a run under it would extract zero phenotype terms and still emit a schema-valid
-submission. Wire a backend (`llm.backend` / `llm.command`) before the first run.
+submission. Wire a backend before the first run — `llm.backend = claude` plus an
+`llm.command` wrapper; see `doc/llm-backend.md`.
 Set `MVA_ALLOW_MOCK_BACKEND=1` to exercise the deterministic stages only — the
 output is not a valid submission.
 
