@@ -51,6 +51,24 @@ report() { echo "[LEAK] $1" >&2; leaks=$((leaks + 1)); }
 # Tracked files, NUL-safe, honouring the git index of $ROOT.
 tracked() { git -C "$ROOT" ls-files -z; }
 
+# A guard that cannot READ the tree must refuse, not reassure. `git ls-files`
+# exits non-zero (or returns nothing) when git declines the directory —
+# safe.directory / "dubious ownership" on a bind-mounted or shared checkout, a
+# linked worktree whose gitfile dangles, a missing index. Every scan below is
+# driven by that listing, so in those cases the guard previously walked ZERO
+# files and printed "clean" over a tree containing a real leak. Verified: a
+# planted HP id under GIT_TEST_ASSUME_DIFFERENT_OWNER=1 reported clean, exit 0.
+if ! git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "check-no-gated-data: FATAL — git will not open a repository at $ROOT," >&2
+    echo "  so no file can be scanned. Refusing to report a tree clean that was" >&2
+    echo "  never read. If this is an ownership refusal, add it to safe.directory." >&2
+    exit 2
+fi
+if ! git -C "$ROOT" ls-files >/dev/null 2>&1; then
+    echo "check-no-gated-data: FATAL — cannot list tracked files in $ROOT." >&2
+    exit 2
+fi
+
 # --- 1. Forbidden extensions (outside the fixtures allowlist) ----------------
 # Gated data file types that must never be committed anywhere but fixtures/.
 forbidden_re='\.(vcf|bcf|fastq|fq|bam|cram|docx|gtf|fa|fna|fai|obo)(\.[A-Za-z0-9]+)?$'

@@ -15,6 +15,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **A guard that could not read the tree reported it clean.** Every scan is
+  driven by `git ls-files`, which returns nothing when git declines the
+  directory (safe.directory / "dubious ownership" on a bind-mounted or shared
+  checkout, a dangling worktree gitfile). Measured: a planted HP id under
+  `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` scanned zero files and exited 0 over a
+  real leak. The guard now refuses (exit 2) rather than reassuring.
+- **A locally built bundle shipped operator secrets.** `BUNDLE.manifest` was the
+  bare `grand-rounds/` directory and `make-federation-bundle` uses `cp -pR`,
+  which ignores `.gitignore` — so a tarball built on a working machine contained
+  `baseline/.agentis/` (an Ed25519 private key), a real `config/colony.toml` and
+  gated `work/*.vcf`, with all bundle tests green. Official releases build from
+  a fresh CI checkout and were unaffected, but the manifest no longer relies on
+  that: it enumerates paths, as dark-factory and tribes-bench already do.
 - **The released bundle was broken, and its privacy guard looked broken with
   it.** `BUNDLE.manifest` listed only `grand-rounds/`, so the tarball shipped
   without `tools/check-no-gated-data.sh`: inside it `demo-baseline.sh` reported
@@ -24,8 +37,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   non-zero exit as "the guard bit", but a missing script exits 127, so a guard
   that was not shipped at all read as a working one. The assertion had been dead
   for the whole life of the release. The guard now ships, 127 is treated as "did
-  not run", the repo-scoped tree scan skips explicitly outside a checkout
-  (a tarball has no git index), and `tools/test-make-federation-bundle.sh` gains
+  not run", the repo-scoped tree scan skips only where there is no `.git` entry at all
+  (an unpacked tarball), never merely because git declines to confirm a tree, and `tools/test-make-federation-bundle.sh` gains
   a test that runs the federation's own suite inside the built tarball and
   requires the mutation assertion to have actually executed.
 - **A cold clone could emit a submission built on zero phenotype evidence.**

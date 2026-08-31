@@ -16,6 +16,8 @@
 #           in and contributor-only files are out
 #
 # Tests 1-7 use an isolated mktemp repo; test 8 runs against the live
+# Test 8a builds the grand-rounds bundle and runs that federation's own suite
+# inside the extracted tarball, asserting the leak-guard mutation actually ran.
 # worktree but cleans up `dist/` after. No live file is modified.
 #
 # Usage: ./tools/test-make-federation-bundle.sh
