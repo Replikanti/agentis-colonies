@@ -146,8 +146,12 @@ run_pipeline() {
 # Contract (doc/llm-backend.md): prompt on STDIN, reply on stdout. The backend
 # also passes a `-p` flag, so $1 is not the prompt — read both and concatenate.
 prompt="$* $(cat 2>/dev/null || true)"
+# Matched on a string ONLY the phenotyper's prompt carries. A looser pattern
+# also answered lens_hpo ("the approved HPO set") and both refuter branches
+# ("phenotype mismatch"); behaviour was unchanged there only by parser accident,
+# which is not something a test should rely on.
 case "$prompt" in
-    *HPO*|*hpo*|*Human\ Phenotype*|*phenotype*|*Phenotype*)
+    *Human\ Phenotype\ Ontology*)
         printf 'HP:%s\tMicrocephaly\nHP:%s\tShort stature\n' '0000252' '0004322' ;;
     *) : ;;
 esac
@@ -210,17 +214,20 @@ fi
 # --- M2: stale/mismatched approval makes the pipeline refuse (no CSV) -------
 DD2="$WORKROOT/data.m2"; build_data_dir "$DD2" "$FIX/proband.vcf"
 run_pipeline "$DD2" noapprove
-if [ ! -f "$CSV" ]; then
+# Assert on the D6 gate's OWN log line, not merely on the CSV's absence: since
+# the phenotyper gained its empty-HPO refusal, "no CSV" no longer distinguishes
+# "the gate bit" from "the run stopped earlier for an unrelated reason".
+if [ ! -f "$CSV" ] && grep -q 'REFUSING to emit .* HPO set not approved' "$RUN/run.log"; then
     ok "M2: no approval -> D6 gate refuses, no CSV written"
 else
-    bad "M2: a CSV was written without an approved HPO set (gate did not bite)"
+    bad "M2: a CSV was written, or the refusal did not come from the D6 gate"
 fi
 # A deliberately WRONG approval hash must also refuse.
 run_pipeline "$DD2" noapprove
 printf 'deadbeef\n' > "$WORKROOT/data.m2.wrong"
 mkdir -p "$WORKDIR/phenotype"; printf 'deadbeef\n' > "$MVA_APPROVAL_FILE"
 ( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
-if [ ! -f "$CSV" ]; then
+if [ ! -f "$CSV" ] && grep -q 'REFUSING to emit .* HPO set not approved' "$RUN/run.log"; then
     ok "M2: mismatched approval hash still refuses"
 else
     bad "M2: mismatched approval hash produced a CSV"
