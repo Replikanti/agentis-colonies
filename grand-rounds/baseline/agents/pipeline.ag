@@ -818,17 +818,28 @@ agent exomiser_runner() -> void {
 // stage 4 — panel_reviewer: per-variant reasoning incl. FILTER-FAILED records
 // ======================================================================
 
-// Derive the panel BED line for one gene from the GTF (grep mechanical; the
-// span + padding is the decision). One region per gene.
+// Derive the panel BED line for one gene from the GTF. The shell does ONE
+// mechanical thing — narrow ~1.5M GTF lines to the few hundred mentioning this
+// gene_name — and every judgement after that is .ag-resident: which of those
+// rows is the gene row, which one wins if several are, and the span plus
+// padding. An earlier version pushed the row selection into the pipe as
+// `grep -P '\tgene\t' | head -1`, which was both a decision living in shell
+// and unrunnable on macOS, since BSD grep has no -P. Measured on GENCODE v45:
+// 75-265 lines per panel gene reach .ag, inside this federation's documented
+// tens-to-hundreds boundary.
+fn first_gene_row(lines: list<string>, i: int) -> string {
+    if i >= len(lines) { return ""; }
+    let l = get(lines, i);
+    // GTF column 3 (0-based field 2) is the feature type.
+    if trim(field(l, 2)) == "gene" { return l; }
+    return first_gene_row(lines, i + 1);
+}
+
 fn panel_bed_line(gtf: string, gene: string, pad: int) -> string {
     // colony-lint: safe-exec-concat
-    // BSD grep has no -P at all, so the previous PCRE form made the whole
-    // pipeline unrunnable on macOS. The tab is built with printf and matched
-    // with plain `grep -F`, which is POSIX everywhere — and stays a grep, so no
-    // awk/sed/python logic enters the .ag (demo-baseline.sh enforces that).
-    // colony-lint: safe-exec-concat
-    let gline = exec sh "grep -F " + shell_escape("gene_name \"" + gene + "\"") + " " + shell_escape(gtf)
-        + " 2>/dev/null | grep -F \"$(printf '\\tgene\\t')\" | head -1 || true";
+    let raw = exec sh "grep -F " + shell_escape("gene_name \"" + gene + "\"") + " " + shell_escape(gtf)
+        + " 2>/dev/null || true";
+    let gline = first_gene_row(nonempty_lines(raw), 0);
     if len(gline) == 0 { return ""; }
     let chrom = field(gline, 0);
     let start0 = parse_int(field(gline, 3)) - pad;
