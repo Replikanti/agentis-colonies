@@ -104,7 +104,7 @@ done
 # every other distribution line is preserved.
 PROPS="$CLI_DIR/application.properties"
 if [ -f "$PROPS" ]; then
-    tmp="$(mktemp)"
+    tmp="$(mktemp "${TMPDIR:-/tmp}/grand-rounds.XXXXXX")"
     trap 'rm -f "$tmp"' EXIT
     # Comment out the NON-selected assembly (the distribution ships hg19
     # active by default; with MVA_EXOMISER_ASSEMBLY=hg19 the mirror applies —

@@ -6,6 +6,12 @@
 # Exit: 0 verdict reached and matched the report · 1 refused or contradicted
 #       the report · 2 not installed / no data
 set -euo pipefail
+
+abs_path() {
+    # macOS has no realpath before 12.3; the rest of this federation resolves
+    # paths through python3 for exactly this reason (see start-colony.sh).
+    python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GR="$(dirname "$HERE")"
 COLONY="$GR/baseline"
@@ -15,8 +21,8 @@ TSV="${GR_NAMPT_TSV:-$GR/doc/depmap-nampt.tsv}"
 [ -s "$TSV" ] || "$HERE/fetch-depmap-nampt.sh" "$TSV"
 [ -s "$TSV" ] || { echo "run-analyze-nampt: no data at $TSV" >&2; exit 2; }
 
-GR_NAMPT_TSV="$(realpath "$TSV")"; export GR_NAMPT_TSV
-GR_VERIFY_MARKER="$(mktemp)"; export GR_VERIFY_MARKER
+GR_NAMPT_TSV="$(abs_path "$TSV")"; export GR_NAMPT_TSV
+GR_VERIFY_MARKER="$(mktemp "${TMPDIR:-/tmp}/grand-rounds.XXXXXX")"; export GR_VERIFY_MARKER
 trap 'rm -f "$GR_VERIFY_MARKER"' EXIT
 
 cd "$COLONY"
