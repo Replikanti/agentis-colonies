@@ -232,7 +232,20 @@ fn pop_af(nvcf: string, chrom: string, pos: string, tag: string) -> string {
         + " 2>/dev/null || true";
     let rows = nonempty_lines(raw);
     if len(rows) == 0 { return ""; }
-    if len(rows) == 1 { return trim(get(rows, 0)); }
+    if len(rows) == 1 {
+        let v = trim(get(rows, 0));
+        // A Number=. AF tag carries every allele's frequency, and `norm -m -any`
+        // copies the whole field to each split record: "0.0001,0.6000". Parsing
+        // that yields 0, so the candidate reads as ultra-rare AND the skeptic is
+        // told the population axis was "already checked" — the #2056 failure in
+        // reverse. Ambiguous means unassessable, not zero.
+        if index_of(v, ",") >= 0 {
+            print("pop_af: multi-allele frequency field at ", chrom, ":", pos,
+                  " ('", v, "'); which allele it refers to is ambiguous — treating as unassessable.");
+            return "";
+        }
+        return v;
+    }
     // Several records at one position: refuting on any single allele's
     // frequency would be arbitrary, and this axis is documented fail-open, so
     // treat it as unassessable and say so rather than guessing.
@@ -606,11 +619,51 @@ agent preprocessor() -> void {
     // colony-lint: safe-exec-concat
     let run = exec sh cmd;
 
+    // Post-condition (decision): the pipeline must have produced THIS run's
+    // output, not inherited a previous one. The take-2 submission run proved
+    // why: MVA_VCF pointed outside the bcftools container's bind-mounts, every
+    // stage of the pipe failed, `rename-chrs.txt` came out 0 bytes and
+    // `norm.stats` read "Failed to read from standard input: unknown file
+    // type" — and the record-count guard below then inspected the STALE
+    // normalized VCF left by the previous run, passed, and the run continued on
+    // an input nobody had asked for. It printed "normalized VCF written".
+    //
+    // Two independent checks, because either alone has a hole: the pipeline's
+    // own exit status, and whether the output is actually newer than the stats
+    // file this invocation just wrote.
+    let rc = trim(exec sh "printf %s " + shell_escape(run) + " | grep -oE '__rc=[0-9]+' | grep -oE '[0-9]+' || echo 1");
+    if parse_int(rc) != 0 {
+        print("preprocessor: REFUSING — the normalize pipeline exited", rc, "; see", stats);
+        memo_write("baseline:abort_reason", "normalize-failed");
+        emit("baseline:abort", "normalize-failed");
+        return;
+    }
+    // colony-lint: safe-exec-concat
+    let fresh = trim(exec sh "test " + shell_escape(out) + " -nt " + shell_escape(stats) + " && echo yes || echo no");
+    if fresh != "yes" {
+        print("preprocessor: REFUSING — ", out, " is older than the stats file this run just wrote,");
+        print("  so it is a STALE artifact from an earlier run, not this run's output. The most");
+        print("  likely cause is MVA_VCF pointing somewhere the bcftools wrapper cannot read");
+        print("  (a path outside its bind-mounts reads as an empty stream). Delete the work dir");
+        print("  or fix MVA_VCF; continuing would score an input nobody selected.");
+        memo_write("baseline:abort_reason", "normalize-stale");
+        emit("baseline:abort", "normalize-stale");
+        return;
+    }
+
     // Post-condition (decision): refuse on any REF mismatch. bcftools norm -c w
     // reports a "ref mismatch" count to stderr; extract the leading integer.
     // colony-lint: safe-exec-concat
-    let mism = exec sh "grep -oiE '[0-9]+ +[a-z ]*ref mismatch' " + shell_escape(stats) + " 2>/dev/null | grep -oE '^[0-9]+' | head -1 || true";
-    let mismatches = parse_int(trim(mism));
+    // The previous pattern ('[0-9]+ +[a-z ]*ref mismatch') matched NOTHING that
+    // bcftools actually writes: `norm -c w` emits one `REF_MISMATCH<TAB>...`
+    // line per site (underscore, no space). The guard was dead for the life of
+    // this pipeline. Worse, where a summary line did match twice, `head -1`
+    // could return the 0 from "Checked 0 ref mismatches" while a later line
+    // reported 12 — selecting among candidates, in shell, failing OPEN.
+    // Count the per-site records in .ag instead of parsing prose.
+    // colony-lint: safe-exec-concat
+    let mism_raw = exec sh "grep -c '^REF_MISMATCH' " + shell_escape(stats) + " 2>/dev/null || echo 0";
+    let mismatches = parse_int(trim(mism_raw));
     if mismatches > 0 {
         print("preprocessor: REFUSING — ", mismatches, " REF mismatch(es) after norm (wrong assembly / bad contig rename). See", stats);
         emit("baseline:abort", "ref-mismatch");
@@ -899,15 +952,20 @@ fn classify_record(line: string, gene: string) -> string {
 }
 
 // Which panel gene's region does (chrom,pos) fall in? "" if none.
-fn gene_at(gene_lines: list<string>, gtf: string, pad: int, chrom: string, pos: int) -> string {
-    return reduce(gene_lines, |acc: string, gl: string| -> string {
+// Takes the ALREADY-BUILT panel BED lines, never the GTF. Deriving the window
+// per record was affordable while the shell returned one line per gene; once
+// the row selection moved into .ag each call ingested 75-265 GTF lines, and a
+// 500-record loop hit CognitiveOverload at record 138 under cb 2000000 — i.e.
+// a real WGS proband would have died with a runtime error and no submission.
+// The BED is computed once per run a few lines below; this scans those five
+// entries. Measured before/after: ~5,495 CB per call versus a handful.
+fn gene_at(bed_lines: list<string>, chrom: string, pos: int) -> string {
+    return reduce(bed_lines, |acc: string, bl: string| -> string {
         if len(acc) > 0 { return acc; }
-        let bl = panel_bed_line(gtf, field(gl, 0), pad);
-        if len(bl) == 0 { return acc; }
         if field(bl, 0) != chrom { return acc; }
         let s = parse_int(field(bl, 1));
         let e = parse_int(field(bl, 2));
-        if pos >= s { if pos <= e { return field(gl, 0); } }
+        if pos >= s { if pos <= e { return field(bl, 3); } }
         return acc;
     }, "");
 }
@@ -938,6 +996,7 @@ agent panel_reviewer() -> void {
     // here means EVERY gene lookup failed (GTF replaced/moved between stages,
     // or a panel edit) — bcftools view -R over an empty BED matches 0 records
     // and the run would end as a silently EMPTY submission.
+    let bed_lines = nonempty_lines(bed);
     if len(trim(bed)) == 0 {
         print("panel_reviewer: REFUSING — panel BED is empty (no gene from settings/mva-genes.tsv resolved in MVA_GTF): empty-panel-bed");
         memo_write("baseline:abort_reason", "empty-panel-bed");
@@ -971,7 +1030,7 @@ agent panel_reviewer() -> void {
 
     // Tag each record with the gene whose region it fell in, then classify.
     let classified = map(rec_lines, |line: string| -> string {
-        let gene = gene_at(gene_lines, gtf, pad, field(line, 0), parse_int(field(line, 1)));
+        let gene = gene_at(bed_lines, field(line, 0), parse_int(field(line, 1)));
         if len(gene) == 0 { return ""; }
         return classify_record(line, gene);
     });

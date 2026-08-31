@@ -85,22 +85,27 @@ howto() { # howto <macos-cmd> <debian-cmd> <fedora-cmd>
 # through it (macOS has no realpath before 12.3) and the DepMap fetch uses it
 # to narrow a 429 MB matrix. Fail here rather than three scripts later.
 if ! command -v python3 >/dev/null 2>&1; then
-    howto "brew install python3" "sudo apt-get install -y python3" "sudo dnf install -y python3" >&2
     # Hard requirement, so exit rather than joining the warn-and-continue set:
     # path resolution, the DepMap fetch and start-colony.sh all need it, and a
     # later failure is far harder to diagnose than this line.
     echo "install: FATAL - python3 not found on PATH" >&2
+    howto "brew install python3" "sudo apt-get install -y python3" "sudo dnf install -y python3" >&2
     exit 2
 fi
 
+if ! command -v git >/dev/null 2>&1; then
+    # demo-baseline.sh builds a throwaway repo for the leak-guard mutation test
+    # and dies with a bare exit 127 without this.
+    warn "git not found on PATH — the offline test suite needs it."
+    howto "xcode-select --install" "sudo apt-get install -y git" "sudo dnf install -y git" >&2
+    missing=1
+fi
+
 if ! command -v agentis >/dev/null 2>&1; then
-    warn "agentis not found on PATH."
-    warn "  It is a Rust binary; install rustup first if you have no cargo:"
-    howto "brew install rustup-init && rustup-init -y" \
-          "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" \
-          "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh" >&2
-    warn "  then:  cargo install agentis   (>= 1.22.3; this federation was"
-    warn "  developed against 1.28.0), and make sure ~/.cargo/bin is on PATH."
+    warn "agentis not found on PATH. Install the prebuilt binary:"
+    warn "  curl -fsSL https://raw.githubusercontent.com/Replikanti/agentis/main/install.sh | sh"
+    warn "  (>= 1.22.3; this federation was developed against 1.28.0.)"
+    warn "  NOT \`cargo install agentis\` — it is not published on crates.io."
     missing=1
 fi
 
@@ -127,6 +132,8 @@ if command -v bcftools >/dev/null 2>&1; then
     log "bcftools: $(command -v bcftools)"
 elif [ -n "$container_cmd" ]; then
     log "bcftools: not native — fetch-reference-data.sh will write a container wrapper."
+    log "  (a native one is faster if you prefer:)"
+    howto "brew install bcftools" "sudo apt-get install -y bcftools" "sudo dnf install -y bcftools"
 else
     warn "bcftools not found and no container runtime to wrap it."
     missing=1
@@ -164,7 +171,15 @@ if [ ! -s "$AGENTIS_DIR/HEAD" ]; then
     # the only copy of the operator's config inside the backup — and the next
     # run would then init a default config with llm.backend = mock, which the
     # start-colony gate cannot detect because the managed keys are all present.
-    if ! command -v agentis >/dev/null 2>&1; then
+    if ! command -v git >/dev/null 2>&1; then
+    # demo-baseline.sh builds a throwaway repo for the leak-guard mutation test
+    # and dies with a bare exit 127 without this.
+    warn "git not found on PATH — the offline test suite needs it."
+    howto "xcode-select --install" "sudo apt-get install -y git" "sudo dnf install -y git" >&2
+    missing=1
+fi
+
+if ! command -v agentis >/dev/null 2>&1; then
         echo "install: FATAL — agentis is not on PATH; refusing to touch $AGENTIS_DIR" >&2
         exit 2
     fi

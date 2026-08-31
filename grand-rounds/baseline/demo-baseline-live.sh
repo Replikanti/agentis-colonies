@@ -143,7 +143,7 @@ run_pipeline() {
     # written against.
     cat > "$RUN/stub-llm.sh" <<'STUB'
 #!/usr/bin/env bash
-# Contract (doc/llm-backend.md): prompt on STDIN, reply on stdout. The backend
+# Contract (../doc/llm-backend.md): prompt on STDIN, reply on stdout. The backend
 # also passes a `-p` flag, so $1 is not the prompt — read both and concatenate.
 prompt="$* $(cat 2>/dev/null || true)"
 # Matched on a string ONLY the phenotyper's prompt carries. A looser pattern

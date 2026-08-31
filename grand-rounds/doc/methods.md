@@ -179,7 +179,7 @@ guard.
 
 ## Reproducibility of the submitted predictions
 
-The Track 1 predictions reproduce on current `main`. Three code paths changed
+The Track 1 predictions reproduce on the current code. Three code paths changed
 after the submission — how the panel window is derived from the GTF, how the
 proband's sample name is resolved, and how a population frequency is read at a
 multiallelic locus — and each was re-derived from the real inputs rather than

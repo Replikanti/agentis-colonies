@@ -55,16 +55,20 @@ LLM — if you are evaluating this repository, start there.
 ```bash
 ./install.sh                    # prerequisite check + agentis repo + config
 ./baseline/demo-baseline.sh     # offline test suite (a git clone: 50 ok, 0 failed;
-                                #  an unpacked tarball: 45 ok, 0 failed, 2 skipped,
+                                #  an unpacked tarball: 49 ok, 0 failed, 1 skipped,
                                 #  because the leak guard is repo-scoped)
 ./tools/run-verify-citations.sh # re-checks all 103 Track 2 citations against PubMed
 ./tools/run-analyze-nampt.sh    # re-derives the DepMap figure the Track 2 report cites
 ```
 
 `install.sh` names the exact install command for your operating system for
-anything that is missing. The only hard requirements for this path are
-**agentis** (`cargo install agentis`, >= 1.22.3) and **python3**; a container
-runtime is not needed here.
+anything that is missing. The only hard requirements for this path are **agentis**, **python3** and
+**git**; a container runtime is not needed. Install agentis with the upstream
+prebuilt binary — it is **not** on crates.io, so `cargo install agentis` fails:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Replikanti/agentis/main/install.sh | sh
+```
 
 ### B. The full diagnostic pipeline (needs gated data and an LLM backend)
 
@@ -80,7 +84,8 @@ export MVA_OUT_DIR="$HOME/.mva-hackathon/out"     # submission CSVs
 # 2. A real LLM backend in baseline/.agentis/config. `agentis init` writes
 #    llm.backend = mock, whose prompt() returns nothing, and start-colony.sh
 #    refuses to start on it (exit 7) rather than emitting a submission built on
-#    an empty phenotype set. See doc/llm-backend.md.
+#    an empty phenotype set. Backend reference: ../doc/llm-backend.md in a
+#    checkout (it is repository-level, so an unpacked bundle does not carry it).
 #      llm.backend = claude
 #      llm.command = /path/to/your/llm-wrapper.sh
 
@@ -95,11 +100,16 @@ the result is **not** a valid submission.
 
 ### Portability
 
-No GNU-only constructs: paths resolve through `python3` rather than `realpath`
-(absent on macOS before 12.3), every `mktemp` carries the template BSD requires,
-and neither the pipeline nor the test suites use `grep -P` or GNU `sed -i`
-semantics. **Not tested on macOS hardware** — the known divergences are removed,
-which is not the same as proof.
+Path A above is verified portable: the offline suite, the citation verification
+and the DepMap re-derivation all run under a real bash 3.2 (the version macOS
+ships), and paths resolve through `python3` rather than `realpath`, which macOS
+did not carry before 12.3.
+
+Path B is **not** portable yet. `demo-baseline-live.sh` and
+`demo-lens-smoke-real.sh` still use `grep -P` and `sha256sum`, neither of which
+exists on macOS, and the repository-wide lint (`tools/colony-lint.sh`) does not
+parse under bash 3.2. Those are tracked separately; do not expect the full
+pipeline to run on a Mac today.
 
 ## Track 2 — mechanism and drug repurposing
 
