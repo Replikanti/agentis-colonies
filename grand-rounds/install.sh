@@ -105,17 +105,26 @@ fi
 # initialising a fresh one. The config is the only thing worth preserving.
 if [ ! -e "$AGENTIS_DIR/HEAD" ]; then
     if [ -d "$AGENTIS_DIR" ]; then
-        echo "install: $AGENTIS_DIR exists but has no HEAD — reinitialising (config preserved)"
-        saved=""
-        if [ -s "$CONFIG" ]; then
-            saved="$(mktemp)"
-            cp "$CONFIG" "$saved"
-        fi
-        rm -rf "$AGENTIS_DIR"
+        # A directory with no HEAD is normally the stub this script used to
+        # leave behind (config, maybe an empty objects/). Repairing that is
+        # safe. Anything carrying real state is NOT ours to rebuild: identity/
+        # is an Ed25519 keypair, and memo/, experience/ and snapshots/ are
+        # persisted agent state. Refuse rather than guess, and never delete.
+        for keep in identity memo experience snapshots refs; do
+            if [ -e "$AGENTIS_DIR/$keep" ]; then
+                echo "install: FATAL — $AGENTIS_DIR has no HEAD but contains $keep/." >&2
+                echo "  That is a damaged repository with real state in it, not the empty" >&2
+                echo "  stub older versions of this script created. Refusing to touch it." >&2
+                echo "  Back it up and inspect before re-running: $AGENTIS_DIR" >&2
+                exit 6
+            fi
+        done
+        broken="$AGENTIS_DIR.broken-$(date +%Y%m%d%H%M%S)"
+        echo "install: $AGENTIS_DIR has no HEAD — moving it to $broken and initialising"
+        mv "$AGENTIS_DIR" "$broken"
         ( cd "$COLONY_DIR" && agentis init >/dev/null )
-        if [ -n "$saved" ]; then
-            cp "$saved" "$CONFIG"
-            rm -f "$saved"
+        if [ -s "$broken/config" ]; then
+            cp "$broken/config" "$CONFIG"
         fi
     else
         ( cd "$COLONY_DIR" && agentis init >/dev/null )
