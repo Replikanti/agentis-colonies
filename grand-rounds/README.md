@@ -47,36 +47,59 @@ baseline submission byte-for-byte identical. See the
 
 ## Quickstart
 
-```bash
-./install.sh                                   # prerequisite checks + agentis repo + config wiring
+Works on GNU/Linux and macOS. Two paths, and the first needs no data and no
+LLM — if you are evaluating this repository, start there.
 
-# The federation reads its inputs and writes its outputs OUTSIDE the checkout,
-# through these three variables. install.sh prints them too; they are required.
+### A. What anyone can run (no gated data, no LLM, no containers)
+
+```bash
+./install.sh                    # prerequisite check + agentis repo + config
+./baseline/demo-baseline.sh     # offline test suite (a git clone: 50 ok, 0 failed;
+                                #  an unpacked tarball: 45 ok, 0 failed, 2 skipped,
+                                #  because the leak guard is repo-scoped)
+./tools/run-verify-citations.sh # re-checks all 103 Track 2 citations against PubMed
+./tools/run-analyze-nampt.sh    # re-derives the DepMap figure the Track 2 report cites
+```
+
+`install.sh` names the exact install command for your operating system for
+anything that is missing. The only hard requirements for this path are
+**agentis** (`cargo install agentis`, >= 1.22.3) and **python3**; a container
+runtime is not needed here.
+
+### B. The full diagnostic pipeline (needs gated data and an LLM backend)
+
+Not runnable without the hackathon's gated dataset, which is not distributable.
+Two further prerequisites:
+
+```bash
+# 1. Inputs and outputs live OUTSIDE the checkout, via these three variables.
 export MVA_DATA_DIR="$HOME/.mva-hackathon/data"   # gated inputs (read-only)
 export MVA_WORK_DIR="$HOME/.mva-hackathon/work"   # intermediates + reference data
 export MVA_OUT_DIR="$HOME/.mva-hackathon/out"     # submission CSVs
 
-./baseline/scripts/fetch-reference-data.sh     # idempotent reference-data fetch
-./baseline/scripts/start-colony.sh             # runs `agentis go agents/pipeline.ag`
+# 2. A real LLM backend in baseline/.agentis/config. `agentis init` writes
+#    llm.backend = mock, whose prompt() returns nothing, and start-colony.sh
+#    refuses to start on it (exit 7) rather than emitting a submission built on
+#    an empty phenotype set. See doc/llm-backend.md.
+#      llm.backend = claude
+#      llm.command = /path/to/your/llm-wrapper.sh
+
+./baseline/scripts/fetch-reference-data.sh   # reference data; pulls the Exomiser
+                                             # bundles (tens of GB) even though
+                                             # that stage is default-off
+./baseline/scripts/start-colony.sh           # runs `agentis go agents/pipeline.ag`
 ```
 
-`start-colony.sh` refuses to start unless a real LLM backend is configured:
-`agentis init` writes `llm.backend = mock`, whose `prompt()` returns nothing, and
-a run under it would extract zero phenotype terms and still emit a schema-valid
-submission. Wire a backend before the first run — `llm.backend = claude` plus an
-`llm.command` wrapper; see `doc/llm-backend.md`.
-Set `MVA_ALLOW_MOCK_BACKEND=1` to exercise the deterministic stages only — the
-output is not a valid submission.
+`MVA_ALLOW_MOCK_BACKEND=1` exercises the deterministic stages without an LLM;
+the result is **not** a valid submission.
 
-The reference-data fetch downloads the Exomiser bundles (tens of GB) even though
-the Exomiser stage is opt-in (`MVA_RUN_EXOMISER=1`, default off). The Track 2
-tools below need none of it.
+### Portability
 
-The pipeline **stops** after drafting the HPO set and waits for an operator to
-review and approve it (a `sha256` of the reviewed draft is stored, so editing
-after approval invalidates the gate). Re-run `start-colony.sh` to resume; the
-schema-valid candidate CSV lands at
-`$MVA_OUT_DIR/agentis-federation_baseline.csv`.
+No GNU-only constructs: paths resolve through `python3` rather than `realpath`
+(absent on macOS before 12.3), every `mktemp` carries the template BSD requires,
+and neither the pipeline nor the test suites use `grep -P` or GNU `sed -i`
+semantics. **Not tested on macOS hardware** — the known divergences are removed,
+which is not the same as proof.
 
 ## Track 2 — mechanism and drug repurposing
 

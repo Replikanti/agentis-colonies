@@ -822,8 +822,13 @@ agent exomiser_runner() -> void {
 // span + padding is the decision). One region per gene.
 fn panel_bed_line(gtf: string, gene: string, pad: int) -> string {
     // colony-lint: safe-exec-concat
+    // BSD grep has no -P at all, so the previous PCRE form made the whole
+    // pipeline unrunnable on macOS. The tab is built with printf and matched
+    // with plain `grep -F`, which is POSIX everywhere — and stays a grep, so no
+    // awk/sed/python logic enters the .ag (demo-baseline.sh enforces that).
+    // colony-lint: safe-exec-concat
     let gline = exec sh "grep -F " + shell_escape("gene_name \"" + gene + "\"") + " " + shell_escape(gtf)
-        + " 2>/dev/null | grep -P '\\tgene\\t' | head -1 || true";
+        + " 2>/dev/null | grep -F \"$(printf '\\tgene\\t')\" | head -1 || true";
     if len(gline) == 0 { return ""; }
     let chrom = field(gline, 0);
     let start0 = parse_int(field(gline, 3)) - pad;
