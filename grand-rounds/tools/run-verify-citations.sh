@@ -12,6 +12,12 @@
 
 set -euo pipefail
 
+abs_path() {
+    # macOS has no realpath before 12.3; the rest of this federation resolves
+    # paths through python3 for exactly this reason (see start-colony.sh).
+    python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GR="$(dirname "$HERE")"
 COLONY="$GR/baseline"
@@ -29,10 +35,10 @@ if [ ! -s "$GR_BIBLIOGRAPHY" ]; then
     echo "verify-citations: bibliography not found or empty: $GR_BIBLIOGRAPHY" >&2
     exit 2
 fi
-GR_BIBLIOGRAPHY="$(realpath "$GR_BIBLIOGRAPHY")"
+GR_BIBLIOGRAPHY="$(abs_path "$GR_BIBLIOGRAPHY")"
 export GR_BIBLIOGRAPHY
 
-GR_VERIFY_MARKER="$(mktemp)"
+GR_VERIFY_MARKER="$(mktemp "${TMPDIR:-/tmp}/grand-rounds.XXXXXX")"
 export GR_VERIFY_MARKER
 cleanup() { rm -f "$GR_VERIFY_MARKER"; }
 trap cleanup EXIT

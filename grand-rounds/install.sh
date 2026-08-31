@@ -62,6 +62,14 @@ log "Installing grand-rounds federation..."
 # --- 1. Prerequisites -------------------------------------------------------
 
 missing=0
+# python3 is a hard prerequisite: this federation resolves absolute paths
+# through it (macOS has no realpath before 12.3) and the DepMap fetch uses it
+# to narrow a 429 MB matrix. Fail here rather than three scripts later.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "install: FATAL - python3 not found on PATH" >&2
+    missing=1
+fi
+
 if ! command -v agentis >/dev/null 2>&1; then
     warn "agentis not found on PATH — install it before running the pipeline."
     missing=1
@@ -168,7 +176,7 @@ if [ ! -s "$AGENTIS_DIR/HEAD" ]; then
         # Save the config BEFORE the mv, so a failing init cannot strand it.
         saved=""
         if [ -s "$CONFIG" ]; then
-            saved="$(mktemp)"
+            saved="$(mktemp "${TMPDIR:-/tmp}/grand-rounds.XXXXXX")"
             cp "$CONFIG" "$saved"
         fi
         broken="$AGENTIS_DIR.broken-$(date +%Y%m%d%H%M%S)"
@@ -219,7 +227,7 @@ LLM_FC_IDLE_MS="${MVA_LLM_FC_IDLE_MS:-${kept_idle:-600000}}"
 
 # Rewrite the managed keys idempotently: strip any prior line, then append
 # the current value. Every other line the operator added is preserved.
-tmp="$(mktemp)"
+tmp="$(mktemp "${TMPDIR:-/tmp}/grand-rounds.XXXXXX")"
 grep -vE '^[[:space:]]*(exec\.env_passthrough|exec\.default_timeout_ms|llm\.cli_timeout_ms|llm\.flat_cyborg\.idle_ms|experience\.enabled)[[:space:]]*=' "$CONFIG" > "$tmp" || true
 {
     printf 'exec.env_passthrough = %s\n' "$ENV_PASSTHROUGH"
