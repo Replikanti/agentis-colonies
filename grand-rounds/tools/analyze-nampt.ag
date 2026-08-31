@@ -229,6 +229,18 @@ agent nampt_analyst() -> void {
         return;
     }
 
+    // The group of interest needs its own floor. len(scored) protects the total,
+    // but a Model.csv from a different DepMap release silently misses labels,
+    // and a partial miss leaves a handful of RMS lines that still produce a
+    // fully confident verdict. DepMap 24Q4 screens 13; refuse well below that.
+    if len(rms) < 10 {
+        print("analyze-nampt: REFUSING — only", len(rms), "rhabdomyosarcoma line(s) with a NAMPT score.");
+        print("  DepMap 24Q4 screens 13. A smaller group usually means the cached Model.csv");
+        print("  is from a different release, so labels did not match. Delete the cache and");
+        print("  re-run the fetch; a verdict from a handful of lines would be meaningless.");
+        return;
+    }
+
     let rms_mean = sum_tenthou(rms, 2, 0, 0) / len(rms);
     let oth_mean = sum_tenthou(other, 2, 0, 0) / len(other);
     let rms_below = count_below(rms, 2, 0, 0);

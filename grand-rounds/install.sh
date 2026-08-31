@@ -66,8 +66,11 @@ missing=0
 # through it (macOS has no realpath before 12.3) and the DepMap fetch uses it
 # to narrow a 429 MB matrix. Fail here rather than three scripts later.
 if ! command -v python3 >/dev/null 2>&1; then
+    # Hard requirement, so exit rather than joining the warn-and-continue set:
+    # path resolution, the DepMap fetch and start-colony.sh all need it, and a
+    # later failure is far harder to diagnose than this line.
     echo "install: FATAL - python3 not found on PATH" >&2
-    missing=1
+    exit 2
 fi
 
 if ! command -v agentis >/dev/null 2>&1; then

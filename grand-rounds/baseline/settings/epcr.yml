@@ -8,7 +8,7 @@
 #
 # Tier order in this file IS the ranking order. Editing a value here changes
 # the submission; grand-rounds/baseline/demo-baseline.sh pins the resulting
-# ordering against a golden CSV, so a change has to be deliberate.
+# ordering through the R1/R2/S1/E1 assertions in demo-baseline-live.sh, so a change has to be deliberate.
 #
 # Read by the reconciler stage of agents/pipeline.ag (stage 5): the tiers are
 # extracted with the regex_* / index_of builtins (a mapping of scalars + one

@@ -43,7 +43,8 @@ if [ -n "$missing" ]; then
 fi
 
 WORKROOT="$(mktemp -d)"
-trap 'rm -rf "$WORKROOT"' EXIT
+# GR_KEEP_WORKROOT=1 keeps the run tree for debugging a failing assertion.
+trap '[ "${GR_KEEP_WORKROOT:-0}" = "1" ] || rm -rf "$WORKROOT"' EXIT
 
 # Resolve bcftools. Prefer a native install; otherwise wrap the PINNED
 # biocontainer so the happy path is exercisable without a native toolchain (the
@@ -132,10 +133,36 @@ run_pipeline() {
         printf '[Term]\nid: HP:%s\nname: Short stature\n' '0004322'
     } > "$WORKDIR/refdata/hp.obo"
     ( cd "$RUN" && agentis init >/dev/null 2>&1 )
+    # Deterministic stub LLM. Until the phenotyper gained its empty-HPO refusal
+    # this suite ran entirely on the agentis default mock backend, whose
+    # prompt() returns nothing — so all 40 assertions were passing against a
+    # ZERO-term phenotype set and no test here had ever exercised a non-empty
+    # one. The stub fixes that: it answers phenotype prompts with the two ids
+    # the synthetic hp.obo defines, and stays silent for every other prompt so
+    # the lens/refuter assertions keep testing the empty-reply path they were
+    # written against.
+    cat > "$RUN/stub-llm.sh" <<'STUB'
+#!/usr/bin/env bash
+# Contract (doc/llm-backend.md): prompt on STDIN, reply on stdout. The backend
+# also passes a `-p` flag, so $1 is not the prompt — read both and concatenate.
+prompt="$* $(cat 2>/dev/null || true)"
+# Matched on a string ONLY the phenotyper's prompt carries. A looser pattern
+# also answered lens_hpo ("the approved HPO set") and both refuter branches
+# ("phenotype mismatch"); behaviour was unchanged there only by parser accident,
+# which is not something a test should rely on.
+case "$prompt" in
+    *Human\ Phenotype\ Ontology*)
+        printf 'HP:%s\tMicrocephaly\nHP:%s\tShort stature\n' '0000252' '0004322' ;;
+    *) : ;;
+esac
+STUB
+    chmod +x "$RUN/stub-llm.sh"
     cat > "$RUN/.agentis/config" <<CFG
 exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_PROBAND_ID,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,PANEL_PAD,EXOMISER_TIMEOUT_MS,COLONY_DIR
 exec.default_timeout_ms = 120000
 experience.enabled = true
+llm.backend = claude
+llm.command = $RUN/stub-llm.sh
 CFG
     export MVA_DATA_DIR="$dd" MVA_WORK_DIR="$WORKDIR" MVA_OUT_DIR="$OUTDIR"
     export MVA_REF_FASTA="$WORKDIR/refdata/ref.fa" MVA_HPO_OBO="$WORKDIR/refdata/hp.obo"
@@ -187,17 +214,20 @@ fi
 # --- M2: stale/mismatched approval makes the pipeline refuse (no CSV) -------
 DD2="$WORKROOT/data.m2"; build_data_dir "$DD2" "$FIX/proband.vcf"
 run_pipeline "$DD2" noapprove
-if [ ! -f "$CSV" ]; then
+# Assert on the D6 gate's OWN log line, not merely on the CSV's absence: since
+# the phenotyper gained its empty-HPO refusal, "no CSV" no longer distinguishes
+# "the gate bit" from "the run stopped earlier for an unrelated reason".
+if [ ! -f "$CSV" ] && grep -q 'REFUSING to emit .* HPO set not approved' "$RUN/run.log"; then
     ok "M2: no approval -> D6 gate refuses, no CSV written"
 else
-    bad "M2: a CSV was written without an approved HPO set (gate did not bite)"
+    bad "M2: a CSV was written, or the refusal did not come from the D6 gate"
 fi
 # A deliberately WRONG approval hash must also refuse.
 run_pipeline "$DD2" noapprove
 printf 'deadbeef\n' > "$WORKROOT/data.m2.wrong"
 mkdir -p "$WORKDIR/phenotype"; printf 'deadbeef\n' > "$MVA_APPROVAL_FILE"
 ( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
-if [ ! -f "$CSV" ]; then
+if [ ! -f "$CSV" ] && grep -q 'REFUSING to emit .* HPO set not approved' "$RUN/run.log"; then
     ok "M2: mismatched approval hash still refuses"
 else
     bad "M2: mismatched approval hash produced a CSV"

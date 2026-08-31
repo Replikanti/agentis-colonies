@@ -22,7 +22,10 @@
 # It does NOT invoke `agentis daemon`, so the daemon-flag allowlist does not
 # apply. Exit codes: 0 ok, 2 usage, 3 missing gated data or missing/gzipped
 # GTF (#2044), 4 unsafe work dir, 5 unwired managed .agentis/config keys (env
-# allowlist / exec timeout / llm.cli_timeout_ms, incl. the lens-mode floor).
+# allowlist / exec timeout / llm.cli_timeout_ms, incl. the lens-mode floor),
+# 7 no real LLM backend (llm.backend is mock or unset; MVA_ALLOW_MOCK_BACKEND=1
+# overrides for deterministic-stages-only runs, whose output is NOT a valid
+# submission).
 
 set -euo pipefail
 
@@ -145,6 +148,30 @@ if [ "$need_wire" -ne 0 ]; then
     exit 5
 fi
 
+# The backend itself. `agentis init` writes llm.backend = mock, and install.sh
+# manages only the passthrough allowlist and the timeouts — so a colony can pass
+# every check above and still have no LLM at all. Under mock, prompt() returns
+# nothing: the phenotyper extracts zero HPO terms and (before the guard added
+# alongside this check) the run would go on to offer that empty draft for
+# approval and emit a schema-valid submission built on no phenotype evidence.
+# Refuse here, where it costs seconds instead of an hour.
+backend="$(sed -nE 's/^[[:space:]]*llm\.backend[[:space:]]*=[[:space:]]*//p' "$CONFIG_FILE" | tail -1 | tr -d '"'"'"' ')"
+if [ -z "$backend" ] || [ "$backend" = "mock" ]; then
+    echo "start-colony.sh: llm.backend is '${backend:-unset}' in $CONFIG_FILE." >&2
+    echo "      The mock backend returns nothing from prompt(), so the phenotyper would" >&2
+    echo "      extract zero HPO terms and this run would produce a submission with no" >&2
+    echo "      phenotype evidence behind it. Refusing to start." >&2
+    echo "      Wire a real backend (see doc/llm-backend.md), for example:" >&2
+    echo "  llm.backend = claude" >&2
+    echo "  llm.command = /path/to/your/llm-wrapper.sh" >&2
+    echo "      To run the deterministic stages only, without any LLM, set" >&2
+    echo "      MVA_ALLOW_MOCK_BACKEND=1 — the result is NOT a valid submission." >&2
+    if [ "${MVA_ALLOW_MOCK_BACKEND:-0}" != "1" ]; then
+        exit 7
+    fi
+    echo "start-colony.sh: MVA_ALLOW_MOCK_BACKEND=1 — continuing WITHOUT a real LLM." >&2
+fi
+
 # A PRESENT but stale llm.cli_timeout_ms (e.g. a hand-written 120000) passes
 # the presence check above yet still aborts every heavy lens prompt — enforce
 # a sanity floor when the lens fan-out is actually on. install.sh ships
@@ -173,7 +200,7 @@ fi
 # Primary GRCh38 assembly (chr-prefixed, post-rename). The .ag also defaults
 # this, but exporting it keeps the operator-visible contract explicit.
 : "${MVA_PRIMARY_CONTIGS:=chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chr20,chr21,chr22,chrX,chrY,chrM}"
-# The Exomiser stage is opt-in (its output is not yet consumed by reconcile).
+# The Exomiser stage is opt-in; since #2054 its output IS consumed by reconcile.
 : "${MVA_RUN_EXOMISER:=0}"
 : "${MVA_EXOMISER_ASSEMBLY:=hg38}"
 : "${MVA_BCFTOOLS:=$MVA_WORK_DIR/tools/bin/bcftools}"

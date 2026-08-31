@@ -14,6 +14,34 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **A cold clone could emit a submission built on zero phenotype evidence.**
+  `agentis init` writes `llm.backend = mock`, whose `prompt()` returns nothing;
+  nothing checked the backend, so the phenotyper produced a 1-byte HPO draft,
+  the run offered *that* draft for operator approval, and approving it yielded a
+  schema-valid CSV with no warning. `start-colony.sh` now refuses (exit 7) on a
+  mock/unset backend (`MVA_ALLOW_MOCK_BACKEND=1` overrides for
+  deterministic-stages-only runs), and the phenotyper refuses on zero verified
+  HPO terms whatever the cause, recording `phenotype-empty` in the abort memo.
+- `demo-baseline-live.sh` had **always run on an empty phenotype set** — all 40
+  assertions passed without ever exercising a non-empty one. It now wires a
+  deterministic stub backend (prompt on stdin, reply on stdout) returning the
+  two ids its synthetic `hp.obo` defines. Still 40 ok, now against real terms.
+- `install.sh` exited 0 after printing `FATAL - python3 not found`; python3 is a
+  hard requirement and it now exits 2. `agentis init` is also run when `.agentis`
+  has no HEAD, repairing only a provable stub and never deleting.
+- `analyze-nampt.ag` refuses when the rhabdomyosarcoma arm falls below 10 of the
+  expected 13 lines: a partial Oncotree-label loss previously produced a fully
+  confident verdict from n=1.
+- macOS portability: `realpath` replaced with the federation's python3 idiom,
+  and every bare `mktemp` given a template (BSD requires one).
+- README quickstart was not runnable (missing `MVA_*` exports); docs no longer
+  claim the Exomiser output is unconsumed or that a "golden CSV" exists.
+
+### Added
+- `tools/verify-citations.ag` + `tools/analyze-nampt.ag` — the Track 2
+  citation-verification contract and the DepMap check that corrected the report.
+
 ### Added
 
 - **Operator hackathon runbook** `doc/hackathon-runbook.md`
