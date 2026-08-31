@@ -18,6 +18,9 @@
 // Run: ./tools/run-analyze-nampt.sh   (install.sh wires the GR_* passthrough)
 // Env: GR_NAMPT_TSV     absolute path to the narrowed TSV (required)
 //      GR_VERIFY_MARKER path to write "ok"/"failed" for the wrapper's exit code
+//
+// TSV columns: ModelID, oncotree_label, NAMPT, RPL5. The label is raw input —
+// classifying it is this agent's job, not the fetch script's.
 
 // Deliberately large. Parsing ~1200 signed decimals in .ag (no float builtin,
 // so each value is walked character by character) costs roughly 2000 CB per row
@@ -33,6 +36,16 @@ let DEPENDENCY_THRESHOLD = 0 - 5000;
 
 fn nonempty_lines(blob: string) -> list<string> {
     return filter(regex_split("\n", blob), |l: string| -> bool { return len(trim(l)) > 0; });
+}
+
+// WHICH LINES ARE THE TUMOUR OF INTEREST — a classification decision, and
+// therefore .ag-resident. The fetch script passes Oncotree labels through
+// verbatim; this rule alone decides the group split that the whole comparison
+// rests on. DepMap spells the entity across several subtypes (embryonal,
+// alveolar, pleomorphic, spindle cell), all of which contain the stem, so a
+// substring match over the lowercased label is the correct and auditable rule.
+fn is_target_tumour(label: string) -> bool {
+    return index_of(label, "rhabdomyosarcoma") >= 0;
 }
 
 // Used to seed accumulator lists; agentis has no list literal.
@@ -200,8 +213,8 @@ agent nampt_analyst() -> void {
     // Column 2 is NAMPT, column 3 RPL5; a line without a NAMPT value was not
     // screened and must be dropped rather than counted as zero effect.
     let scored = filter(all, |l: string| -> bool { return has_value(l, 2); });
-    let rms = filter(scored, |l: string| -> bool { return trim(field(l, 1)) == "1"; });
-    let other = filter(scored, |l: string| -> bool { return trim(field(l, 1)) != "1"; });
+    let rms = filter(scored, |l: string| -> bool { return is_target_tumour(field(l, 1)); });
+    let other = filter(scored, |l: string| -> bool { return !is_target_tumour(field(l, 1)); });
 
     if len(rms) == 0 {
         print("analyze-nampt: REFUSING — no rhabdomyosarcoma lines carry a NAMPT score; nothing to compare.");

@@ -2,9 +2,15 @@
 # fetch-depmap-nampt.sh — bulk, mechanical data transform ONLY.
 #
 # Streams the DepMap 24Q4 CRISPR gene-effect matrix (429 MB, ~1200 x ~18000)
-# and emits one narrow TSV: ModelID, NAMPT, RPL5, plus an is_rms flag derived
-# from Model.csv. Nothing here decides anything — the group comparison and the
-# verdict live in tools/analyze-nampt.ag, per this federation's .ag-first rule.
+# and emits one narrow TSV: ModelID, the model's Oncotree label, NAMPT, RPL5.
+#
+# Nothing here decides anything. In particular this script does NOT decide which
+# lines are rhabdomyosarcoma — it passes the Oncotree label through verbatim
+# (lowercased, which is normalization, not judgement) and tools/analyze-nampt.ag
+# owns the classification rule, the group split, the threshold and the verdict.
+# An earlier revision matched "rhabdomyosarcoma" here, which put the decision
+# that determines the whole result in a shell script, against the federation's
+# .ag-first contract.
 # The matrix must be narrowed out here because no bulk record stream may enter
 # .ag (the same boundary the Track 1 pipeline draws around bcftools).
 #
@@ -40,11 +46,11 @@ curl -fsSL "$EFFECT_URL" | python3 -c '
 import sys, csv
 # Column extraction only: find the two gene columns by header name, stream rows.
 model_path, out_path = sys.argv[1], sys.argv[2]
-rms = set()
+labels = {}
 for r in csv.DictReader(open(model_path)):
-    label = (r.get("OncotreePrimaryDisease", "") + r.get("OncotreeSubtype", "")).lower()
-    if "rhabdomyosarcoma" in label:
-        rms.add(r["ModelID"])
+    # Passed through verbatim; no classification happens here.
+    labels[r["ModelID"]] = (r.get("OncotreePrimaryDisease", "") + " " +
+                            r.get("OncotreeSubtype", "")).lower().replace("\t", " ").strip()
 reader = csv.reader(sys.stdin)
 hdr = next(reader)
 idx = {}
@@ -58,9 +64,9 @@ if missing:
     sys.exit("fetch-depmap-nampt: gene column(s) not found in matrix: %s" % ", ".join(missing))
 n = 0
 with open(out_path, "w") as fh:
-    fh.write("ModelID\tis_rms\tNAMPT\tRPL5\n")
+    fh.write("ModelID\toncotree_label\tNAMPT\tRPL5\n")
     for row in reader:
-        fh.write("%s\t%s\t%s\t%s\n" % (row[0], "1" if row[0] in rms else "0",
+        fh.write("%s\t%s\t%s\t%s\n" % (row[0], labels.get(row[0], ""),
                                        row[idx["NAMPT"]], row[idx["RPL5"]]))
         n += 1
 sys.stderr.write("fetch-depmap-nampt: wrote %d model rows\n" % n)
