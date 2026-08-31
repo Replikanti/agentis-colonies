@@ -43,6 +43,13 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# An exported GIT_DIR / GIT_WORK_TREE / GIT_INDEX_FILE retargets every git
+# command below at ANOTHER repository: the guard then scans that one and
+# pronounces THIS tree clean. demo-baseline.sh unsets these for itself and this
+# script did not, so invoking it directly under such an environment reported a
+# tree carrying a planted HP id as clean, rc 0.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
 ROOT="$(cd "$ROOT" && pwd)"
 # The fixtures allowlist is now expressed ONLY as the `case` in the extension
 # loop below. The pathspec variables that used to exempt them from the content

@@ -41,12 +41,12 @@ fi
 # operator's. Without one this smoke would just re-run the mock path the live
 # test already covers, proving nothing.
 if [ ! -f "$FED_CONFIG" ]; then
-    echo "[SKIP] demo-lens-smoke-real: $FED_CONFIG not found — run ../install.sh and wire an LLM backend (doc/llm-backend.md)."
+    echo "[SKIP] demo-lens-smoke-real: $FED_CONFIG not found — run ../install.sh and wire an LLM backend (../doc/llm-backend.md in a checkout)."
     exit 0
 fi
 backend_line="$(grep -E '^[[:space:]]*llm\.(backend|command)[[:space:]]*=' "$FED_CONFIG" | grep -v '=[[:space:]]*mock[[:space:]]*$' | head -1 || true)"
 if [ -z "$backend_line" ]; then
-    echo "[SKIP] demo-lens-smoke-real: no real LLM backend in $FED_CONFIG (llm.backend/llm.command absent or mock) — wire flat-cyborg first (doc/llm-backend.md)."
+    echo "[SKIP] demo-lens-smoke-real: no real LLM backend in $FED_CONFIG (llm.backend/llm.command absent or mock) — wire flat-cyborg first (../doc/llm-backend.md in a checkout)."
     exit 0
 fi
 if ! grep -qE '^[[:space:]]*exec\.env_passthrough[[:space:]]*=.*MVA_DATA_DIR' "$FED_CONFIG"; then
@@ -118,7 +118,8 @@ echo "  (this drives ~8 real LLM prompts — expect ~10-60+ minutes)"
 # Keep only contig 15 (BUB1B, the hom-alt biallelic candidate) from the
 # fixture VCF: one gene -> a pool of one -> one refute prompt, the minimum
 # real-latency lens pass the #2046 gate calls for.
-grep -P '^#|^15\t' "$FIX/proband.vcf" > "$WORKROOT/single.vcf"
+# BSD grep has no -P; build the tab with printf and use POSIX -E.
+grep -E "^#|^15$(printf '\t')" "$FIX/proband.vcf" > "$WORKROOT/single.vcf"
 DD="$WORKROOT/data"
 mkdir -p "$DD"
 cp "$WORKROOT/single.vcf" "$DD/src.vcf"

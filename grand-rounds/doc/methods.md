@@ -177,6 +177,26 @@ guard.
   Federation overview: [`../README.md`](../README.md)
 - Hackathon: https://sagebio-rare-disease-real-kid-mva-hackathon-2026.hf.space/
 
+## Reproducibility of the submitted predictions
+
+The Track 1 predictions reproduce on the current code. Three code paths changed
+after the submission — how the panel window is derived from the GTF, how the
+proband's sample name is resolved, and how a population frequency is read at a
+multiallelic locus — and each was re-derived from the real inputs rather than
+assumed equivalent:
+
+- panel windows for BUB1B, CEP57, TRIP13 and CENATAC: identical, e.g. BUB1B
+  resolves to the same chrom/start/end on GENCODE v45;
+- proband sample resolution: identical (the VCF carries one sample, so the new
+  explicit handling of the multi-sample case does not engage);
+- population-frequency lookup at all eight submitted candidate positions:
+  identical, and each position holds exactly one record, so the new multiallelic
+  handling cannot alter them.
+
+The changes themselves are refusal paths that do not fire on a valid run (no LLM
+backend, empty phenotype set), portability fixes, and the relocation of those
+three decisions out of shell into the agent language.
+
 ## Acknowledgements
 
 This work was made possible through the Hackathon, organized by Sage

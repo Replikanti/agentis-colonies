@@ -221,10 +221,37 @@ fn in_known_panel(gene: string) -> bool {
 // the first real run (#2056).
 fn pop_af(nvcf: string, chrom: string, pos: string, tag: string) -> string {
     let bcftools = bcftools_bin();
+    // The query is position-scoped but a site may hold several records (a
+    // multiallelic locus split across rows). Choosing WHICH allele's frequency
+    // stands for the candidate is a judgement, so the shell returns every row
+    // and .ag decides — the previous `| head -1` made that choice invisibly, in
+    // the one code path whose job is deciding whether to refute a candidate.
     // colony-lint: safe-exec-concat
-    return trim(exec sh shell_escape(bcftools) + " query -f " + shell_escape("%INFO/" + tag + "\\n") + " -r "
+    let raw = exec sh shell_escape(bcftools) + " query -f " + shell_escape("%INFO/" + tag + "\\n") + " -r "
         + shell_escape(chrom + ":" + pos + "-" + pos) + " " + shell_escape(nvcf)
-        + " 2>/dev/null | head -1 || true");
+        + " 2>/dev/null || true";
+    let rows = nonempty_lines(raw);
+    if len(rows) == 0 { return ""; }
+    if len(rows) == 1 {
+        let v = trim(get(rows, 0));
+        // A Number=. AF tag carries every allele's frequency, and `norm -m -any`
+        // copies the whole field to each split record: "0.0001,0.6000". Parsing
+        // that yields 0, so the candidate reads as ultra-rare AND the skeptic is
+        // told the population axis was "already checked" — the #2056 failure in
+        // reverse. Ambiguous means unassessable, not zero.
+        if index_of(v, ",") >= 0 {
+            print("pop_af: multi-allele frequency field at ", chrom, ":", pos,
+                  " ('", v, "'); which allele it refers to is ambiguous — treating as unassessable.");
+            return "";
+        }
+        return v;
+    }
+    // Several records at one position: refuting on any single allele's
+    // frequency would be arbitrary, and this axis is documented fail-open, so
+    // treat it as unassessable and say so rather than guessing.
+    print("pop_af: ", len(rows), " records at ", chrom, ":", pos,
+          " (multiallelic split); population AF is ambiguous here — treating as unassessable.");
+    return "";
 }
 
 // --- the pool fact bundle the five lenses reason over --------------------
@@ -378,6 +405,28 @@ fn order_key(row: string, agree: int) -> string {
 }
 
 // Proband sample name from the normalized VCF (mechanical), "PROBAND" fallback.
+// The proband's sample name. `query -l` lists EVERY sample; picking one is a
+// decision, so the shell only lists and .ag chooses. A multi-sample VCF makes
+// "the proband" ambiguous, and silently taking the first (the previous
+// `| head -1`) would attach one person's identifier to another's variants — so
+// it is named loudly rather than guessed at.
+fn sample_names(nvcf: string) -> list<string> {
+    let bcftools = bcftools_bin();
+    // colony-lint: safe-exec-concat
+    let raw = exec sh shell_escape(bcftools) + " query -l " + shell_escape(nvcf) + " 2>/dev/null || true";
+    return nonempty_lines(raw);
+}
+
+fn sole_sample(nvcf: string) -> string {
+    let names = sample_names(nvcf);
+    if len(names) == 0 { return ""; }
+    if len(names) > 1 {
+        print("WARNING: the VCF carries", len(names), "samples; this pipeline assumes one proband.");
+        print("  Using the first (", trim(get(names, 0)), "). Set MVA_PROBAND_ID to be explicit.");
+    }
+    return trim(get(names, 0));
+}
+
 fn resolve_proband(nvcf: string) -> string {
     // #2066: the challenge scorer accepts only the dataset-documented literal
     // (e.g. PROBAND01), which need not equal the VCF sample name — the knob
@@ -390,9 +439,7 @@ fn resolve_proband(nvcf: string) -> string {
         if regex_match("^[A-Za-z0-9_.-]+$", knob) { return knob; }
         print("resolve_proband: WARNING — MVA_PROBAND_ID contains unsafe characters; ignoring the knob and using the VCF sample name");
     }
-    let bcftools = bcftools_bin();
-    // colony-lint: safe-exec-concat
-    let p0 = trim(exec sh shell_escape(bcftools) + " query -l " + shell_escape(nvcf) + " 2>/dev/null | head -1 || true");
+    let p0 = sole_sample(nvcf);
     if len(p0) == 0 { return "PROBAND"; }
     return p0;
 }
@@ -572,11 +619,51 @@ agent preprocessor() -> void {
     // colony-lint: safe-exec-concat
     let run = exec sh cmd;
 
+    // Post-condition (decision): the pipeline must have produced THIS run's
+    // output, not inherited a previous one. The take-2 submission run proved
+    // why: MVA_VCF pointed outside the bcftools container's bind-mounts, every
+    // stage of the pipe failed, `rename-chrs.txt` came out 0 bytes and
+    // `norm.stats` read "Failed to read from standard input: unknown file
+    // type" — and the record-count guard below then inspected the STALE
+    // normalized VCF left by the previous run, passed, and the run continued on
+    // an input nobody had asked for. It printed "normalized VCF written".
+    //
+    // Two independent checks, because either alone has a hole: the pipeline's
+    // own exit status, and whether the output is actually newer than the stats
+    // file this invocation just wrote.
+    let rc = trim(exec sh "printf %s " + shell_escape(run) + " | grep -oE '__rc=[0-9]+' | grep -oE '[0-9]+' || echo 1");
+    if parse_int(rc) != 0 {
+        print("preprocessor: REFUSING — the normalize pipeline exited", rc, "; see", stats);
+        memo_write("baseline:abort_reason", "normalize-failed");
+        emit("baseline:abort", "normalize-failed");
+        return;
+    }
+    // colony-lint: safe-exec-concat
+    let fresh = trim(exec sh "test " + shell_escape(out) + " -nt " + shell_escape(stats) + " && echo yes || echo no");
+    if fresh != "yes" {
+        print("preprocessor: REFUSING — ", out, " is older than the stats file this run just wrote,");
+        print("  so it is a STALE artifact from an earlier run, not this run's output. The most");
+        print("  likely cause is MVA_VCF pointing somewhere the bcftools wrapper cannot read");
+        print("  (a path outside its bind-mounts reads as an empty stream). Delete the work dir");
+        print("  or fix MVA_VCF; continuing would score an input nobody selected.");
+        memo_write("baseline:abort_reason", "normalize-stale");
+        emit("baseline:abort", "normalize-stale");
+        return;
+    }
+
     // Post-condition (decision): refuse on any REF mismatch. bcftools norm -c w
     // reports a "ref mismatch" count to stderr; extract the leading integer.
     // colony-lint: safe-exec-concat
-    let mism = exec sh "grep -oiE '[0-9]+ +[a-z ]*ref mismatch' " + shell_escape(stats) + " 2>/dev/null | grep -oE '^[0-9]+' | head -1 || true";
-    let mismatches = parse_int(trim(mism));
+    // The previous pattern ('[0-9]+ +[a-z ]*ref mismatch') matched NOTHING that
+    // bcftools actually writes: `norm -c w` emits one `REF_MISMATCH<TAB>...`
+    // line per site (underscore, no space). The guard was dead for the life of
+    // this pipeline. Worse, where a summary line did match twice, `head -1`
+    // could return the 0 from "Checked 0 ref mismatches" while a later line
+    // reported 12 — selecting among candidates, in shell, failing OPEN.
+    // Count the per-site records in .ag instead of parsing prose.
+    // colony-lint: safe-exec-concat
+    let mism_raw = exec sh "grep -c '^REF_MISMATCH' " + shell_escape(stats) + " 2>/dev/null || echo 0";
+    let mismatches = parse_int(trim(mism_raw));
     if mismatches > 0 {
         print("preprocessor: REFUSING — ", mismatches, " REF mismatch(es) after norm (wrong assembly / bad contig rename). See", stats);
         emit("baseline:abort", "ref-mismatch");
@@ -756,9 +843,7 @@ agent exomiser_runner() -> void {
     let outdir = wd + "/exomiser";
     let prefix = "baseline";
 
-    // proband sample name from the normalized VCF (mechanical), 1 value.
-    // colony-lint: safe-exec-concat
-    let proband = trim(exec sh shell_escape(bcftools) + " query -l " + shell_escape(nvcf) + " 2>/dev/null | head -1 || true");
+    let proband = sole_sample(nvcf);
 
     // Quote each HPO id for the YAML list.
     let ids = regex_split(",", hpo);
@@ -818,12 +903,28 @@ agent exomiser_runner() -> void {
 // stage 4 — panel_reviewer: per-variant reasoning incl. FILTER-FAILED records
 // ======================================================================
 
-// Derive the panel BED line for one gene from the GTF (grep mechanical; the
-// span + padding is the decision). One region per gene.
+// Derive the panel BED line for one gene from the GTF. The shell does ONE
+// mechanical thing — narrow ~1.5M GTF lines to the few hundred mentioning this
+// gene_name — and every judgement after that is .ag-resident: which of those
+// rows is the gene row, which one wins if several are, and the span plus
+// padding. An earlier version pushed the row selection into the pipe as
+// `grep -P '\tgene\t' | head -1`, which was both a decision living in shell
+// and unrunnable on macOS, since BSD grep has no -P. Measured on GENCODE v45:
+// 75-265 lines per panel gene reach .ag, inside this federation's documented
+// tens-to-hundreds boundary.
+fn first_gene_row(lines: list<string>, i: int) -> string {
+    if i >= len(lines) { return ""; }
+    let l = get(lines, i);
+    // GTF column 3 (0-based field 2) is the feature type.
+    if trim(field(l, 2)) == "gene" { return l; }
+    return first_gene_row(lines, i + 1);
+}
+
 fn panel_bed_line(gtf: string, gene: string, pad: int) -> string {
     // colony-lint: safe-exec-concat
-    let gline = exec sh "grep -F " + shell_escape("gene_name \"" + gene + "\"") + " " + shell_escape(gtf)
-        + " 2>/dev/null | grep -P '\\tgene\\t' | head -1 || true";
+    let raw = exec sh "grep -F " + shell_escape("gene_name \"" + gene + "\"") + " " + shell_escape(gtf)
+        + " 2>/dev/null || true";
+    let gline = first_gene_row(nonempty_lines(raw), 0);
     if len(gline) == 0 { return ""; }
     let chrom = field(gline, 0);
     let start0 = parse_int(field(gline, 3)) - pad;
@@ -851,15 +952,20 @@ fn classify_record(line: string, gene: string) -> string {
 }
 
 // Which panel gene's region does (chrom,pos) fall in? "" if none.
-fn gene_at(gene_lines: list<string>, gtf: string, pad: int, chrom: string, pos: int) -> string {
-    return reduce(gene_lines, |acc: string, gl: string| -> string {
+// Takes the ALREADY-BUILT panel BED lines, never the GTF. Deriving the window
+// per record was affordable while the shell returned one line per gene; once
+// the row selection moved into .ag each call ingested 75-265 GTF lines, and a
+// 500-record loop hit CognitiveOverload at record 138 under cb 2000000 — i.e.
+// a real WGS proband would have died with a runtime error and no submission.
+// The BED is computed once per run a few lines below; this scans those five
+// entries. Measured before/after: ~5,495 CB per call versus a handful.
+fn gene_at(bed_lines: list<string>, chrom: string, pos: int) -> string {
+    return reduce(bed_lines, |acc: string, bl: string| -> string {
         if len(acc) > 0 { return acc; }
-        let bl = panel_bed_line(gtf, field(gl, 0), pad);
-        if len(bl) == 0 { return acc; }
         if field(bl, 0) != chrom { return acc; }
         let s = parse_int(field(bl, 1));
         let e = parse_int(field(bl, 2));
-        if pos >= s { if pos <= e { return field(gl, 0); } }
+        if pos >= s { if pos <= e { return field(bl, 3); } }
         return acc;
     }, "");
 }
@@ -890,6 +996,7 @@ agent panel_reviewer() -> void {
     // here means EVERY gene lookup failed (GTF replaced/moved between stages,
     // or a panel edit) — bcftools view -R over an empty BED matches 0 records
     // and the run would end as a silently EMPTY submission.
+    let bed_lines = nonempty_lines(bed);
     if len(trim(bed)) == 0 {
         print("panel_reviewer: REFUSING — panel BED is empty (no gene from settings/mva-genes.tsv resolved in MVA_GTF): empty-panel-bed");
         memo_write("baseline:abort_reason", "empty-panel-bed");
@@ -923,7 +1030,7 @@ agent panel_reviewer() -> void {
 
     // Tag each record with the gene whose region it fell in, then classify.
     let classified = map(rec_lines, |line: string| -> string {
-        let gene = gene_at(gene_lines, gtf, pad, field(line, 0), parse_int(field(line, 1)));
+        let gene = gene_at(bed_lines, field(line, 0), parse_int(field(line, 1)));
         if len(gene) == 0 { return ""; }
         return classify_record(line, gene);
     });
@@ -1057,11 +1164,19 @@ fn exo_fold(lines: list<string>, i: int, seen: string, acc: list<string>, ig: in
 
 // The #2054 merge: bounded read (rank order is file order, so head keeps the
 // top), header-driven column resolution, panel precedence via `seen`.
+// How many Exomiser rows may enter .ag. This is NOT merely a boundary guard:
+// a gene ranked past the window is invisible to the within-tier ordering, so
+// the number changes results and belongs in the decision surface rather than
+// being a magic literal repeated in three shell strings. The variants window is
+// larger because a single gene can own dozens of variant rows; the genes TSV is
+// one row per gene.
+fn exo_variants_window() -> int { return 200; }
+fn exo_genes_window() -> int { return 100; }
+
 fn exomiser_candidates(tsv: string, panel_genes: list<string>, panel_keys: string, left: int) -> list<string> {
-    // head -200: bounds the .ag read (well under the 500-row boundary) while
-    // leaving room for numGenes:0 outputs where one gene owns dozens of rows.
     // colony-lint: safe-exec-concat
-    let raw = exec sh "head -200 " + shell_escape(tsv) + " 2>/dev/null || true";
+    // colony-lint: safe-exec-concat
+    let raw = exec sh "head -" + to_string(exo_variants_window()) + " " + shell_escape(tsv) + " 2>/dev/null || true";
     let lines = nonempty_lines(raw);
     let none = filter(lines, |x: string| -> bool { return false; });
     if len(lines) < 2 { return none; }
@@ -1096,7 +1211,8 @@ fn exomiser_candidates(tsv: string, panel_genes: list<string>, panel_keys: strin
 // tiers stay ladder-driven.
 fn exo_gene_keys(tsv: string, gene: string) -> string {
     // colony-lint: safe-exec-concat
-    let raw = exec sh "head -200 " + shell_escape(tsv) + " 2>/dev/null || true";
+    // colony-lint: safe-exec-concat
+    let raw = exec sh "head -" + to_string(exo_variants_window()) + " " + shell_escape(tsv) + " 2>/dev/null || true";
     let lines = nonempty_lines(raw);
     if len(lines) < 2 { return ""; }
     let hdr = get(lines, 0);
@@ -1168,14 +1284,14 @@ fn exo_rank_lines(tsv: string) -> list<string> {
     // window instead of pinning ig = -1.
     if gtsv != tsv {
         // colony-lint: safe-exec-concat
-        let raw = exec sh "head -100 " + shell_escape(gtsv) + " 2>/dev/null || true";
+        let raw = exec sh "head -" + to_string(exo_genes_window()) + " " + shell_escape(gtsv) + " 2>/dev/null || true";
         let lines = nonempty_lines(raw);
         if len(lines) >= 2 {
             if col_idx(get(lines, 0), "GENE_SYMBOL") >= 0 { return lines; }
         }
     }
     // colony-lint: safe-exec-concat
-    let raw2 = exec sh "head -200 " + shell_escape(tsv) + " 2>/dev/null || true";
+    let raw2 = exec sh "head -" + to_string(exo_variants_window()) + " " + shell_escape(tsv) + " 2>/dev/null || true";
     return nonempty_lines(raw2);
 }
 fn exo_gene_rank_rec(lines: list<string>, ig: int, gene: string, i: int) -> int {

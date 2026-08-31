@@ -62,6 +62,25 @@ log "Installing grand-rounds federation..."
 # --- 1. Prerequisites -------------------------------------------------------
 
 missing=0
+
+# Prerequisite messages name the exact command for THIS operating system.
+# "install it before running" is not actionable for someone meeting this
+# federation for the first time; a line they can paste is.
+case "$(uname -s)" in
+    Darwin) OS_KIND="macos" ;;
+    Linux)  OS_KIND="linux" ;;
+    *)      OS_KIND="other" ;;
+esac
+howto() { # howto <macos-cmd> <debian-cmd> <fedora-cmd>
+    case "$OS_KIND" in
+        macos) echo "      $1" ;;
+        linux)
+            if command -v apt-get >/dev/null 2>&1; then echo "      $2"
+            elif command -v dnf >/dev/null 2>&1; then echo "      $3"
+            else echo "      $2   (or your distribution's equivalent)"; fi ;;
+        *) echo "      $2   (or your platform's equivalent)" ;;
+    esac
+}
 # python3 is a hard prerequisite: this federation resolves absolute paths
 # through it (macOS has no realpath before 12.3) and the DepMap fetch uses it
 # to narrow a 429 MB matrix. Fail here rather than three scripts later.
@@ -70,11 +89,23 @@ if ! command -v python3 >/dev/null 2>&1; then
     # path resolution, the DepMap fetch and start-colony.sh all need it, and a
     # later failure is far harder to diagnose than this line.
     echo "install: FATAL - python3 not found on PATH" >&2
+    howto "brew install python3" "sudo apt-get install -y python3" "sudo dnf install -y python3" >&2
     exit 2
 fi
 
+if ! command -v git >/dev/null 2>&1; then
+    # demo-baseline.sh builds a throwaway repo for the leak-guard mutation test
+    # and dies with a bare exit 127 without this.
+    warn "git not found on PATH — the offline test suite needs it."
+    howto "xcode-select --install" "sudo apt-get install -y git" "sudo dnf install -y git" >&2
+    missing=1
+fi
+
 if ! command -v agentis >/dev/null 2>&1; then
-    warn "agentis not found on PATH — install it before running the pipeline."
+    warn "agentis not found on PATH. Install the prebuilt binary:"
+    warn "  curl -fsSL https://raw.githubusercontent.com/Replikanti/agentis/main/install.sh | sh"
+    warn "  (>= 1.22.3; this federation was developed against 1.28.0.)"
+    warn "  NOT \`cargo install agentis\` — it is not published on crates.io."
     missing=1
 fi
 
@@ -87,8 +118,12 @@ if [ -z "$container_cmd" ]; then
     fi
 fi
 if [ -z "$container_cmd" ]; then
-    warn "no container runtime (podman/docker) found — the Exomiser and bcftools"
-    warn "container wrappers need one. Set MVA_CONTAINER_CMD or install podman."
+    warn "no container runtime (podman/docker) found."
+    warn "  Needed only for the full pipeline (bcftools + Exomiser); the Track 2"
+    warn "  verification tools below do NOT need it."
+    howto "brew install podman && podman machine init && podman machine start" \
+          "sudo apt-get install -y podman" \
+          "sudo dnf install -y podman" >&2
 else
     log "container runtime: $container_cmd"
 fi
@@ -97,6 +132,8 @@ if command -v bcftools >/dev/null 2>&1; then
     log "bcftools: $(command -v bcftools)"
 elif [ -n "$container_cmd" ]; then
     log "bcftools: not native — fetch-reference-data.sh will write a container wrapper."
+    log "  (a native one is faster if you prefer:)"
+    howto "brew install bcftools" "sudo apt-get install -y bcftools" "sudo dnf install -y bcftools"
 else
     warn "bcftools not found and no container runtime to wrap it."
     missing=1
@@ -134,7 +171,15 @@ if [ ! -s "$AGENTIS_DIR/HEAD" ]; then
     # the only copy of the operator's config inside the backup — and the next
     # run would then init a default config with llm.backend = mock, which the
     # start-colony gate cannot detect because the managed keys are all present.
-    if ! command -v agentis >/dev/null 2>&1; then
+    if ! command -v git >/dev/null 2>&1; then
+    # demo-baseline.sh builds a throwaway repo for the leak-guard mutation test
+    # and dies with a bare exit 127 without this.
+    warn "git not found on PATH — the offline test suite needs it."
+    howto "xcode-select --install" "sudo apt-get install -y git" "sudo dnf install -y git" >&2
+    missing=1
+fi
+
+if ! command -v agentis >/dev/null 2>&1; then
         echo "install: FATAL — agentis is not on PATH; refusing to touch $AGENTIS_DIR" >&2
         exit 2
     fi

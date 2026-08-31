@@ -15,6 +15,37 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **The preprocessor could score an input it never read.** The take-2 submission
+  run pointed `MVA_VCF` outside the bcftools container's bind-mounts; every stage
+  of the normalize pipe failed on an empty stream, and the record-count
+  post-condition then inspected the STALE `normalized.vcf.gz` from the previous
+  run, passed, and printed "normalized VCF written". The run scored on an input
+  nobody selected, and the M2 ablation it was meant to test never happened. The
+  preprocessor now refuses on a non-zero pipeline status, and separately when its
+  output is older than the stats file the same invocation just wrote.
+- **The REF-mismatch guard was dead.** Its pattern (`[0-9]+ +[a-z ]*ref
+  mismatch`) matched nothing `bcftools norm -c w` writes, which is one
+  `REF_MISMATCH<TAB>` record per site. Where a summary line did match twice,
+  `head -1` could return the 0 from "Checked 0 ref mismatches" while a later line
+  reported 12 — failing open. Counted in .ag now.
+- **`pop_af` guarded multiple rows but not multiple values.** A `Number=.` AF tag
+  carries every allele's frequency and `norm -m -any` copies it whole to each
+  split record ("0.0001,0.6000"); that parsed as 0, so a common variant read as
+  ultra-rare AND the skeptic was told the population axis had been checked — the
+  #2056 failure inverted. An ambiguous field is now unassessable.
+- **Moving the GTF row selection into .ag blew the CB budget.** `gene_at`
+  re-derived the panel window per record, which was affordable while the shell
+  returned one line and cost ~5,495 CB per call once .ag ingested 75-265; a
+  500-record loop aborted at record 138, so a real WGS proband would have died
+  with a runtime error and no submission. The BED is built once and scanned.
+- The leak guard inherited `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE` and would
+  scan another repository while reporting this tree clean. `demo-baseline.sh`
+  already unset them for itself; the guard now does too.
+- `grep -P` in the runtime pipeline and in the smoke gate, and GNU-only `sed -i`
+  in the live suite, made the federation unrunnable on macOS. `cargo install
+  agentis` — documented here as the way to install the prerequisite — does not
+  exist; the upstream prebuilt installer does. `git` and `bcftools` join the
+  checked prerequisites.
 - **A guard that could not read the tree reported it clean.** Every scan is
   driven by `git ls-files`, which returns nothing when git declines the
   directory (safe.directory / "dubious ownership" on a bind-mounted or shared

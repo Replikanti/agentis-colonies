@@ -168,7 +168,7 @@ if [ -z "$backend" ] || [ "$backend" = "mock" ]; then
     echo "      The mock backend returns nothing from prompt(), so the phenotyper would" >&2
     echo "      extract zero HPO terms and this run would produce a submission with no" >&2
     echo "      phenotype evidence behind it. Refusing to start." >&2
-    echo "      Wire a real backend (see doc/llm-backend.md), for example:" >&2
+    echo "      Wire a real backend (see ../doc/llm-backend.md in a checkout), for example:" >&2
     echo "  llm.backend = claude" >&2
     echo "  llm.command = /path/to/your/llm-wrapper.sh" >&2
     echo "      To run the deterministic stages only, without any LLM, set" >&2

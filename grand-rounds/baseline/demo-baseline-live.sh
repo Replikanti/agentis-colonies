@@ -143,7 +143,7 @@ run_pipeline() {
     # written against.
     cat > "$RUN/stub-llm.sh" <<'STUB'
 #!/usr/bin/env bash
-# Contract (doc/llm-backend.md): prompt on STDIN, reply on stdout. The backend
+# Contract (../doc/llm-backend.md): prompt on STDIN, reply on stdout. The backend
 # also passes a `-p` flag, so $1 is not the prompt — read both and concatenate.
 prompt="$* $(cat 2>/dev/null || true)"
 # Matched on a string ONLY the phenotyper's prompt carries. A looser pattern
@@ -250,7 +250,9 @@ fi
 DD4="$WORKROOT/data.m4"; build_data_dir "$DD4" "$FIX/proband.vcf"
 run_pipeline "$DD4" approve
 # Re-run with a corrupted ladder in the SAME run copy.
-sed -i "s/epcr: 0.75/epcr: 0/" "$RUN/settings/epcr.yml"
+# `sed -i` without a suffix is GNU-only; BSD sed reads the next argument as the
+# backup suffix and eats the filename. `-i.bak` + rm works on both.
+sed -i.bak "s/epcr: 0.75/epcr: 0/" "$RUN/settings/epcr.yml" && rm -f "$RUN/settings/epcr.yml.bak"
 rm -f "$CSV"
 ( cd "$RUN" && agentis go agents/pipeline.ag --enable-exec --enable-messaging >"$RUN/run.log" 2>&1 ) || true
 if [ ! -f "$CSV" ] && grep -q 'epcr-out-of-range' "$RUN/run.log"; then
@@ -707,7 +709,11 @@ fi
 sed '/^5\t80\t/ s/GNOMAD_AF=0.0005/AF=0.5/' "$FIX/proband.vcf" > "$WORKROOT/l5.vcf"
 # Declare the caller AF tag with a COMPLETE header line (a prefix-match sed
 # here once produced a truncated header that only htslib leniency survived).
-sed -i 's/^##INFO=<ID=GNOMAD_AF,.*$/&\n##INFO=<ID=AF,Number=A,Type=Float,Description="caller allele fraction (synthetic)">/' "$WORKROOT/l5.vcf"
+# BSD sed also rejects `\n` in the replacement, so the second INFO line is
+# inserted with awk rather than a GNU-only substitution.
+awk '{ print }
+     /^##INFO=<ID=GNOMAD_AF,/ { print "##INFO=<ID=AF,Number=A,Type=Float,Description=\"caller allele fraction (synthetic)\">" }' \
+    "$WORKROOT/l5.vcf" > "$WORKROOT/l5.vcf.tmp" && mv "$WORKROOT/l5.vcf.tmp" "$WORKROOT/l5.vcf"
 DD5L="$WORKROOT/data.l5"; build_data_dir "$DD5L" "$WORKROOT/l5.vcf"
 run_pipeline "$DD5L" approve 1
 # Determinism note: offline the mock prompt() cannot answer REFUTED, so the
