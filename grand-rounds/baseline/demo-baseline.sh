@@ -20,14 +20,35 @@ GUARD="$REPO_ROOT/tools/check-no-gated-data.sh"
 
 pass=0
 fail=0
+skipped=0
 ok() { echo "  [ok] $1"; pass=$((pass + 1)); }
 bad() { echo "  [FAIL] $1" >&2; fail=$((fail + 1)); }
+skip() { echo "  [skip] $1"; skipped=$((skipped + 1)); }
 
 echo "grand-rounds/baseline: offline demo"
 
 # --- 1. Leak guard is not vacuous (mutation test) --------------------------
 echo "1. leak guard"
-if bash "$GUARD" --static >/dev/null 2>&1; then
+# The guard walks $ROOT's GIT INDEX, so its real-tree pass is meaningful only in
+# a checkout. A released bundle is an unpacked tarball with no index: running it
+# there reported a spurious failure in the privacy guard — the worst thing to
+# look broken on a clinical-genomics submission — while the mutation half below
+# passed vacuously because the script was not shipped at all. Skip the tree scan
+# when there is no index, and say so; the mutation test still runs, because it
+# builds its own git tree.
+if [ ! -f "$GUARD" ]; then
+    skip "leak guard: $GUARD not present (not a checkout); repo-CI enforces it"
+elif [ ! -e "$REPO_ROOT/.git" ]; then
+    # Test for the .git entry itself, NOT `git rev-parse --is-inside-work-tree`.
+    # That command also fails when git REFUSES a directory it distrusts
+    # (safe.directory / "dubious ownership" — a bind-mounted checkout owned by
+    # another uid, a shared machine, a run under sudo) and for a linked worktree
+    # copied away from its parent. Any of those would have silently skipped a
+    # real checkout's own leak guard and still exited 0, which is a worse bug
+    # than the one this block was added to fix. A `.git` entry (dir OR gitfile)
+    # separates every checkout shape from an unpacked tarball, which has none.
+    skip "leak guard tree scan: no .git in $REPO_ROOT (unpacked bundle); repo-CI enforces it"
+elif bash "$GUARD" --static >/dev/null 2>&1; then
     ok "check-no-gated-data --static clean on the real tracked tree"
 else
     bad "leak guard flags the real tree (should be clean)"
@@ -36,6 +57,10 @@ fi
 MUT="$(mktemp -d)"
 trap 'rm -rf "$MUT"' EXIT
 (
+    # An exported GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE would retarget these
+    # commands at the REAL repository: `git add -A` in the temp tree then stages
+    # a leak into the actual index and deletes everything else from it.
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
     cd "$MUT"
     git init -q
     git config user.email t@t; git config user.name t
@@ -46,10 +71,40 @@ trap 'rm -rf "$MUT"' EXIT
     printf '##fileformat=VCFv4.2\n' > proband.vcf
     git add -A >/dev/null 2>&1
 )
-if bash "$GUARD" --static --root "$MUT" >/dev/null 2>&1; then
-    bad "leak guard did NOT fail on a planted HP id + .vcf (a guard that cannot fail is not a guard)"
+# A MISSING guard must not read as a working one. `bash <nonexistent>` exits
+# 127, which is non-zero, so the naive "did it fail?" form below passed
+# vacuously in a bundle that never shipped the script — the exact way this
+# assertion was dead for the whole life of the released tarball. Require the
+# script to exist, and treat 127 as "did not run" rather than "detected a leak".
+if [ ! -f "$GUARD" ]; then
+    skip "leak guard mutation test: $GUARD not present (not a checkout); repo-CI enforces it"
 else
-    ok "check-no-gated-data --static fails on a planted leak"
+    # `|| guard_rc=$?` and not a bare call: this script runs under `set -e`,
+    # where a non-zero exit from the guard — the very thing being asserted —
+    # would abort the whole suite.
+    guard_rc=0
+    bash "$GUARD" --static --root "$MUT" >/dev/null 2>&1 || guard_rc=$?
+    # A CLEAN tree is the negative control. Without it "non-zero on a dirty
+    # tree" is satisfied by a guard that fails on everything — a stub of
+    # `exit 1`, or a real guard whose --root support broke — and in a bundle,
+    # where the tree scan is skipped, nothing else would notice.
+    CLEAN="$(mktemp -d)"
+    ( cd "$CLEAN" && git init -q && git config user.email t@t && git config user.name t \
+        && printf 'nothing to see\n' > ok.txt && git add -A >/dev/null 2>&1 )
+    clean_rc=0
+    bash "$GUARD" --static --root "$CLEAN" >/dev/null 2>&1 || clean_rc=$?
+    rm -rf "$CLEAN"
+    if [ "$guard_rc" -eq 0 ]; then
+        bad "leak guard did NOT fail on a planted HP id + .vcf (a guard that cannot fail is not a guard)"
+    elif [ "$guard_rc" -eq 127 ]; then
+        bad "leak guard could not be executed (exit 127) — the mutation test proves nothing"
+    elif [ "$guard_rc" -ne 1 ]; then
+        bad "leak guard exited $guard_rc on a planted leak (expected 1) — it errored rather than detecting"
+    elif [ "$clean_rc" -ne 0 ]; then
+        bad "leak guard also fails on a CLEAN tree (exit $clean_rc) — it flags everything, so it proves nothing"
+    else
+        ok "check-no-gated-data --static fails on a planted leak and passes a clean tree"
+    fi
 fi
 
 # --- 2. Fixture purity -----------------------------------------------------
@@ -244,5 +299,9 @@ else
     bad "cb ($cb_ag) != cb_budget ($cb_toml)"
 fi
 
-echo "grand-rounds/baseline demo: $pass ok, $fail failed"
+if [ "$skipped" -gt 0 ]; then
+    echo "grand-rounds/baseline demo: $pass ok, $fail failed, $skipped skipped"
+else
+    echo "grand-rounds/baseline demo: $pass ok, $fail failed"
+fi
 [ "$fail" -eq 0 ]

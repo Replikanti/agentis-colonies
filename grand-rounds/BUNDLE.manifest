@@ -1,1 +1,32 @@
-grand-rounds/
+# Paths staged into the release tarball, repo-relative.
+#
+# ENUMERATED, never the bare `grand-rounds/` directory. make-federation-bundle
+# uses `cp -pR`, which does not honour .gitignore, so a directory line packages
+# whatever the operator's working tree happens to contain — a locally built
+# tarball shipped baseline/.agentis/ (an Ed25519 private key), a real
+# config/colony.toml, and gated work/*.vcf, with every bundle test still green.
+# Official releases build from a fresh CI checkout and were unaffected, but a
+# manifest must not depend on that. dark-factory and tribes-bench enumerate for
+# the same reason.
+grand-rounds/README.md
+grand-rounds/CHANGELOG.md
+grand-rounds/LICENSE
+grand-rounds/VERSION
+grand-rounds/install.sh
+grand-rounds/.gitignore
+grand-rounds/doc/
+grand-rounds/tools/
+grand-rounds/baseline/README.md
+grand-rounds/baseline/demo-baseline.sh
+grand-rounds/baseline/demo-baseline-live.sh
+grand-rounds/baseline/demo-lens-smoke-real.sh
+grand-rounds/baseline/agents/
+grand-rounds/baseline/config/
+grand-rounds/baseline/fixtures/
+grand-rounds/baseline/scripts/
+grand-rounds/baseline/settings/
+
+# demo-baseline.sh mutation-tests the leak guard against a throwaway git tree,
+# so the guard must ship. Its repo-scoped tree scan skips in a bundle, which has
+# no .git — see demo-baseline.sh.
+tools/check-no-gated-data.sh

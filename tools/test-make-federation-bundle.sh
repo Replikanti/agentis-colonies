@@ -16,6 +16,8 @@
 #           in and contributor-only files are out
 #
 # Tests 1-7 use an isolated mktemp repo; test 8 runs against the live
+# Test 8a builds the grand-rounds bundle and runs that federation's own suite
+# inside the extracted tarball, asserting the leak-guard mutation actually ran.
 # worktree but cleans up `dist/` after. No live file is modified.
 #
 # Usage: ./tools/test-make-federation-bundle.sh
@@ -205,6 +207,50 @@ if [ "$SHELL_BROKEN" -eq 0 ]; then
     pass "extracted tree: bash -n clean on every .sh"
 else
     fail "extracted-bash-n" "$SHELL_BROKEN script(s) failed syntax check"
+fi
+
+# ----- Test 8a: a federation's OWN test suite must pass inside its bundle -----
+# The gap this closes: grand-rounds shipped a tarball in which demo-baseline.sh
+# reported 46 ok / 1 failed / exit 1, because the leak guard it invokes was not
+# in BUNDLE.manifest — and the guard's mutation half passed vacuously for the
+# same reason. Eleven green tests here missed it, because none of them ever RAN
+# the federation's suite from inside the extracted tarball. This does.
+GR_FED="grand-rounds"
+GR_SUITE="baseline/demo-baseline.sh"
+if [ ! -f "$REPO_ROOT/$GR_FED/$GR_SUITE" ]; then
+    fail "bundled-suite" "$GR_FED/$GR_SUITE missing from the live repo"
+else
+    set +e
+    OUT="$(cd "$REPO_ROOT" && ./tools/make-federation-bundle.sh "$GR_FED" 0.0.0-suite 2>&1)"; RC=$?
+    set -e
+    GR_TARBALL="$REPO_ROOT/dist/$GR_FED-v0.0.0-suite.tar.gz"
+    if [ "$RC" -ne 0 ] || [ ! -f "$GR_TARBALL" ]; then
+        fail "bundled-suite build" "rc=$RC, out=$OUT"
+    else
+        GR_X="$(mktemp -d)"
+        tar xzf "$GR_TARBALL" -C "$GR_X"
+        GR_ROOT="$GR_X/$GR_FED-v0.0.0-suite"
+        set +e
+        SUITE_OUT="$(cd "$GR_ROOT" && bash "./$GR_FED/$GR_SUITE" 2>&1)"; SUITE_RC=$?
+        set -e
+        if [ "$SUITE_RC" -ne 0 ]; then
+            fail "bundled-suite" "demo-baseline.sh exits $SUITE_RC inside the bundle:
+$(printf '%s' "$SUITE_OUT" | tail -5)"
+        elif ! printf '%s' "$SUITE_OUT" | grep -q '0 failed'; then
+            fail "bundled-suite" "no '0 failed' in the bundled run:
+$(printf '%s' "$SUITE_OUT" | tail -5)"
+        elif ! printf '%s' "$SUITE_OUT" | grep -q 'fails on a planted leak'; then
+            # "0 failed" alone is not enough: with the guard missing from the
+            # manifest the suite skips its leak-guard block and still reports
+            # 0 failed. Require the MUTATION assertion to have actually run,
+            # which it can only do when the guard script shipped.
+            fail "bundled-suite" "leak-guard mutation test did not run in the bundle (guard not shipped?):
+$(printf '%s' "$SUITE_OUT" | tail -5)"
+        else
+            pass "bundled-suite: grand-rounds demo-baseline.sh passes inside its own tarball, leak-guard mutation included"
+        fi
+        rm -rf "$GR_X" "$GR_TARBALL" "$GR_TARBALL.sha256" "$REPO_ROOT/dist/$GR_FED-v0.0.0-suite"
+    fi
 fi
 
 # ----- Test 8: real federation smoke (uses live repo) -----
