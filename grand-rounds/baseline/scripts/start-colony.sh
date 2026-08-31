@@ -125,6 +125,9 @@ else
     # #2044: the partial-panel waiver knob must be allowlisted or it is
     # silently inert (getenv() reads the SANITIZED env) — force the re-install.
     grep -qE '^[[:space:]]*exec\.env_passthrough[[:space:]]*=.*MVA_PANEL_ALLOW_PARTIAL' "$CONFIG_FILE" || need_wire=1
+    # The Track 2 tools read GR_* knobs; getenv() sees the SANITIZED env, so a
+    # pre-PR install would pass this check and then report "GR_X is unset".
+    grep -qE '^[[:space:]]*exec\.env_passthrough[[:space:]]*=.*GR_NAMPT_TSV' "$CONFIG_FILE" || need_wire=1
     # #2066: the proband-id knob must be allowlisted or it is silently inert.
     grep -qE '^[[:space:]]*exec\.env_passthrough[[:space:]]*=.*MVA_PROBAND_ID' "$CONFIG_FILE" || need_wire=1
     grep -qE '^[[:space:]]*exec\.default_timeout_ms[[:space:]]*=' "$CONFIG_FILE" || need_wire=1
@@ -136,7 +139,7 @@ fi
 if [ "$need_wire" -ne 0 ]; then
     echo "start-colony.sh: the managed .agentis/config keys are not wired in $CONFIG_FILE." >&2
     echo "      Run ./install.sh (idempotent), or add these lines to $CONFIG_FILE:" >&2
-    echo "  exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_PROBAND_ID,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR" >&2
+    echo "  exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_PROBAND_ID,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,GR_BIBLIOGRAPHY,GR_VERIFY_MARKER,GR_NAMPT_TSV,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR" >&2
     echo "  exec.default_timeout_ms = 21600000" >&2
     echo "  llm.cli_timeout_ms = 1800000" >&2
     exit 5

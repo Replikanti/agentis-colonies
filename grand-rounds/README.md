@@ -59,6 +59,62 @@ after approval invalidates the gate). Re-run `start-colony.sh` to resume; the
 schema-valid candidate CSV lands at
 `$MVA_OUT_DIR/agentis-federation_baseline.csv`.
 
+## Track 2 — mechanism and drug repurposing
+
+Track 1 asks *which variant*. Track 2 asks *what follows from it*: characterize
+the variant's mechanism and propose repositioned drug candidates. That is a
+literature problem rather than a pipeline problem, so it reuses the federation's
+devise-then-refute pattern — agents proposing candidates, agents attacking them —
+with one addition that turned out to matter more than the architecture.
+
+**The verification contract.** Research agents worked under a standing rule:
+*never report an identifier you have not confirmed*. Every claim carried a
+confidence label, and agents had to distinguish "shown in this exact model" from
+"shown in a different model". It earned its cost immediately — an agent guessed
+three PMIDs from memory and the lookup returned three unrelated papers, on
+ascorbate, progesterone and bacterial ribosomes. Proofreading would never have
+caught that; a fabricated citation looks exactly like a real one.
+
+So the check is mechanical and anyone can re-run it:
+
+```bash
+tools/run-verify-citations.sh          # wraps agents-side verify-citations.ag
+```
+
+[`tools/verify-citations.ag`](./tools/verify-citations.ag) re-derives first
+author and publication year for all 103 citations from PubMed and fails on any
+mismatch, missing record, duplicate or malformed row. It is `.ag`-first like the
+rest of this federation: the whole decision surface — parsing, validation,
+alignment, comparison, verdict — is agentis-resident, and the external binaries
+do only mechanical work (`curl` fetches, `grep` narrows MEDLINE to the three
+tags the decision reads). MEDLINE is line-oriented, so no JSON parser is needed.
+The shell wrapper decides nothing; it resolves paths and turns the agent's
+verdict marker into an exit code.
+It verifies *identity* — that a PMID is the paper we say it is. Whether the paper
+supports the claim stays a human judgement, which is why the bibliography carries
+the report section each citation serves.
+
+**The check that corrected us.** The report rejected NAD+ precursors partly on
+the claim that rhabdomyosarcoma — a risk tumour for this genotype — is
+*specifically* NAD+-dependent. We tested that against public DepMap CRISPR data
+and it did not hold, so the report now says so:
+
+```bash
+tools/run-analyze-nampt.sh            # wraps agents-side analyze-nampt.ag
+```
+
+Same boundary as above: `fetch-depmap-nampt.sh` streams a 429 MB dependency
+matrix and narrows it to one small TSV (bulk, mechanical), while
+[`tools/analyze-nampt.ag`](./tools/analyze-nampt.ag) owns the dependency
+threshold, the group comparison, a pan-essential positive control that refuses
+the run if the matrix does not behave, and the verdict. It prints a warning if
+the data ever starts supporting the claim we withdrew.
+
+The Track 2 report itself is a submission artifact and is not committed here; it
+is uploaded to the organizers. What lives in this repository is the tooling and
+the bibliography, so the report's central claim — that its citations are checked
+rather than trusted — is falsifiable by anyone who clones this.
+
 ## Tier contract
 
 This federation's pipeline agents are one-shot (no `fn tick`), so they run to

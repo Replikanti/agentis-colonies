@@ -1,0 +1,135 @@
+# Track 2 report bibliography — verified with tools/run-verify-citations.sh
+#
+# Columns: PMID <TAB> first author <TAB> year <TAB> journal <TAB> pages <TAB> report section
+# The first five are re-derived from PubMed MEDLINE and compared exactly.
+# Author+year is NOT a unique key (three colliding pairs here); author+year+journal
+# still collides once (two Suijkerbuijk SJ 2012 papers in Dev Cell), so pages are
+# part of the key. Swapping two same-author-same-year PMIDs must fail the check.
+# Pages may be empty for journals using article numbers; empty is compared, not required.
+# The last column is for a human spot-checking that the paper supports the claim.
+
+
+# --- 1.1 molecular lesion, genotype-phenotype, dose-response ---
+18932004	Bohers E	2008	Hum Genet	473-8	1.1 molecular lesion, genotype-phenotype, dose-response
+28611924	Kato M	2017	Hum Genome Var	17021	1.1 molecular lesion, genotype-phenotype, dose-response
+16411201	Matsuura S	2006	Am J Med Genet A	358-67	1.1 molecular lesion, genotype-phenotype, dose-response
+24344301	Ochiai H	2014	Proc Natl Acad Sci U S A	1461-6	1.1 molecular lesion, genotype-phenotype, dose-response
+40555658	Qu J	2025	Zhonghua Yi Xue Yi Chuan Xue Za Zhi	446-453	1.1 molecular lesion, genotype-phenotype, dose-response
+20516114	Suijkerbuijk SJ	2010	Cancer Res	4891-900	1.1 molecular lesion, genotype-phenotype, dose-response
+
+# --- 1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase ---
+27509861	Alfieri C	2016	Nature	431-436	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+17369399	Burton JL	2007	Genes Dev	655-67	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+22437499	Chao WC	2012	Nature	208-13	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+25669885	Di Fiore B	2015	Dev Cell	358-372	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+17785528	Elowe S	2007	Genes Dev	2205-19	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+33207204	Gama Braga L	2020	Cell Rep	108397	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+23791783	Han JS	2013	Mol Cell	92-104	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+25383541	Izawa D	2015	Nature	631-4	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+23345399	Kruse T	2013	J Cell Sci	1086-92	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+15592459	Lampson MA	2005	Nat Cell Biol	93-8	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+22193957	Lara-Gonzalez P	2011	J Cell Sci	4332-45	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+11535616	Sudakin V	2001	J Cell Biol	925-36	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+23079597	Suijkerbuijk SJ	2012	Dev Cell	745-55	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+22698286	Suijkerbuijk SJ	2012	Dev Cell	1321-9	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+11702782	Tang Z	2001	Dev Cell	227-37	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+30829571	Vallardi G	2019	Elife		1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+23789096	Xu P	2013	Biol Open	479-86	1.2 BubR1 function: SAC/MCC, KARD-PP2A, pseudokinase
+
+# --- 1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress ---
+27731420	Andriani GA	2016	Sci Rep	35218	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+15208629	Baker DJ	2004	Nat Genet	744-9	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+18516091	Baker DJ	2008	Nat Cell Biol	825-36	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+22048312	Baker DJ	2011	Nature	232-6	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+23242215	Baker DJ	2013	Nat Cell Biol	96-102	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+29342134	Bakhoum SF	2018	Nature	467-472	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+22258507	Crasta K	2012	Nature	53-8	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+25205676	Donnelly N	2014	EMBO J	2374-87	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+28976970	Dou Z	2017	Nature	402-406	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+18192061	Geigl JB	2008	Trends Genet	64-9	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+28759028	Gluck S	2017	Nat Cell Biol	1061-1070	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+22269907	Gordon DJ	2012	Nat Rev Genet	189-203	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+28759889	Harding SM	2017	Nature	466-470	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+23827674	Hatch EM	2013	Cell	47-60	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+11746029	Kajii T	2001	Am J Med Genet	57-64	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+9121588	Lengauer C	1997	Nature	623-7	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+28738408	Mackenzie KJ	2017	Nature	461-465	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+23222101	Oromendia AB	2012	Genes Dev	2696-708	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+26876972	Passerini V	2016	Nat Commun	10754	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+26404941	Santaguida S	2015	Genes Dev	2010-21	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+26204159	Santaguida S	2015	Nat Rev Mol Cell Biol	473-85	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+24041940	Sheltzer JM	2013	Cancer Res	6401-12	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+31738183	Sieben CJ	2020	J Clin Invest	171-188	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+18974345	Williams BR	2008	Science	703-9	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+26017310	Zhang CZ	2015	Nature	179-84	1.3 downstream: CIN, micronuclei, cGAS-STING, senescence, proteotoxic stress
+
+# --- 1.4 clinical phenotype and cancer spectrum ---
+15475955	Hanks S	2004	Nat Genet	1159-61	1.4 clinical phenotype and cancer spectrum
+16182441	Hanks S	2006	Cancer Lett	234-8	1.4 clinical phenotype and cancer spectrum
+11932988	Jacquemont S	2002	Am J Med Genet	17-21; discussion 16	1.4 clinical phenotype and cancer spectrum
+39169218	Malumbres M	2024	Nat Rev Genet	864-878	1.4 clinical phenotype and cancer spectrum
+39264246	Nakano Y	2024	Clin Cancer Res	5009-5020	1.4 clinical phenotype and cancer spectrum
+16690728	Scott RH	2006	J Med Genet	705-15	1.4 clinical phenotype and cancer spectrum
+28553959	Yost S	2017	Nat Genet	1148-1151	1.4 clinical phenotype and cancer spectrum
+
+# --- C1 senolytics: rejected pharmacology and model ceiling ---
+16476774	Baker DJ	2006	J Cell Biol	529-40	C1 senolytics: rejected pharmacology and model ceiling
+26840489	Baker DJ	2016	Nature	184-9	C1 senolytics: rejected pharmacology and model ceiling
+26657143	Chang J	2016	Nat Med	78-83	C1 senolytics: rejected pharmacology and model ceiling
+31542391	Hickson LJ	2019	EBioMedicine	446-456	C1 senolytics: rejected pharmacology and model ceiling
+30616998	Justice JN	2019	EBioMedicine	554-563	C1 senolytics: rejected pharmacology and model ceiling
+34995493	Meharena HS	2022	Cell Stem Cell	116-130.e7	C1 senolytics: rejected pharmacology and model ceiling
+19395653	Salmela AL	2009	Carcinogenesis	1032-40	C1 senolytics: rejected pharmacology and model ceiling
+12489117	Snyder RD	2002	Environ Mol Mutagen	266-76	C1 senolytics: rejected pharmacology and model ceiling
+30279143	Yousefzadeh MJ	2018	EBioMedicine	18-28	C1 senolytics: rejected pharmacology and model ceiling
+25754370	Zhu Y	2015	Aging Cell	644-58	C1 senolytics: rejected pharmacology and model ceiling
+
+# --- C2 aneuploidy-selective compounds: human replication failure ---
+25198699	Ben-David U	2014	Nat Commun	4825	C2 aneuploidy-selective compounds: human replication failure
+22286062	Chen G	2012	Nature	246-50	C2 aneuploidy-selective compounds: human replication failure
+34352223	Ippolito MR	2021	Dev Cell	2440-2454.e6	C2 aneuploidy-selective compounds: human replication failure
+23084023	Li LB	2012	Cell Stem Cell	615-9	C2 aneuploidy-selective compounds: human replication failure
+34352222	Lukow DA	2021	Dev Cell	2427-2439.e4	C2 aneuploidy-selective compounds: human replication failure
+20962780	Pavelka N	2010	Nature	321-5	C2 aneuploidy-selective compounds: human replication failure
+33203674	Replogle JM	2020	Proc Natl Acad Sci U S A	30566-30576	C2 aneuploidy-selective compounds: human replication failure
+21315436	Tang YC	2011	Cell	499-512	C2 aneuploidy-selective compounds: human replication failure
+
+# --- C3/C4 mTOR inhibition and metformin ---
+19587680	Harrison DE	2009	Nature	392-5	C3/C4 mTOR inhibition and metformin
+26280535	Herranz N	2015	Nat Cell Biol	1205-17	C3/C4 mTOR inhibition and metformin
+28087733	Izzo A	2017	Hum Mol Genet	1056-1069	C3/C4 mTOR inhibition and metformin
+26147250	Laberge RM	2015	Nat Cell Biol	1049-61	C3/C4 mTOR inhibition and metformin
+
+# --- C5 antioxidants: mechanism and the cancer-promotion safety signal ---
+37288672	Chen G	2023	J Cell Sci		C5 antioxidants: mechanism and the cancer-promotion safety signal
+28343997	Cho MG	2017	Free Radic Biol Med	129-145	C5 antioxidants: mechanism and the cancer-promotion safety signal
+38693434	Islam A	2024	J Mol Neurosci	50	C5 antioxidants: mechanism and the cancer-promotion safety signal
+26446958	Le Gal K	2015	Sci Transl Med	308re8	C5 antioxidants: mechanism and the cancer-promotion safety signal
+20663956	Li M	2010	Proc Natl Acad Sci U S A	14188-93	C5 antioxidants: mechanism and the cancer-promotion safety signal
+27815460	Matsuda D	2016	In Vivo	769-776	C5 antioxidants: mechanism and the cancer-promotion safety signal
+24477002	Sayin VI	2014	Sci Transl Med	221ra15	C5 antioxidants: mechanism and the cancer-promotion safety signal
+41290707	Zhu K	2025	NPJ Aging	107	C5 antioxidants: mechanism and the cancer-promotion safety signal
+
+# --- C6 JAK inhibition: pediatric growth, malignancy, precedent ---
+38849152	Brunner HI	2024	Ann Rheum Dis	1561-1571	C6 JAK inhibition: pediatric growth, malignancy, precedent
+35944741	Campion SN	2022	Reprod Toxicol	35-41	C6 JAK inhibition: pediatric growth, malignancy, precedent
+36600185	Curtis JR	2023	Ann Rheum Dis	331-343	C6 JAK inhibition: pediatric growth, malignancy, precedent
+41861528	Gilmore NK	2026	Biomed Pharmacother	119244	C6 JAK inhibition: pediatric growth, malignancy, precedent
+33222197	Polverelli N	2021	Br J Haematol	356-368	C6 JAK inhibition: pediatric growth, malignancy, precedent
+29907599	Porpaczy E	2018	Blood	694-706	C6 JAK inhibition: pediatric growth, malignancy, precedent
+37423231	Ramanan AV	2023	Lancet	555-570	C6 JAK inhibition: pediatric growth, malignancy, precedent
+
+# --- C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency ---
+42009009	Lin KY	2026	Lancet Neurol	469-481	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+37616468	McKay-Corkum GB	2023	Clin Cancer Res	4479-4491	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+24825348	North BJ	2014	EMBO J	1438-53	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+37899683	Presterud R	2024	Mov Disord	360-369	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+3155647	Rosenberg MR	1985	Cancer Res	809-14	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+34515380	Veenhuis SJG	2021	Mov Disord	2951-2957	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+38009412	Wu LE	2023	Aging Cell	e14027	C7 NAD+ precursors: model rescue, pediatric exposure, RMS dependency
+
+# --- 2.3 tumour surveillance guideline lineage ---
+34134020	Hol JA	2021	Eur J Cancer	51-63	2.3 tumour surveillance guideline lineage
+28674120	Kalish JM	2017	Clin Cancer Res	e115-e122	2.3 tumour surveillance guideline lineage
+33209710	Liu EK	2020	Transl Androl Urol	2370-2381	2.3 tumour surveillance guideline lineage
+16857697	Scott RH	2006	Arch Dis Child	995-9	2.3 tumour surveillance guideline lineage
