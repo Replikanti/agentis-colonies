@@ -125,6 +125,9 @@ else
     # #2044: the partial-panel waiver knob must be allowlisted or it is
     # silently inert (getenv() reads the SANITIZED env) — force the re-install.
     grep -qE '^[[:space:]]*exec\.env_passthrough[[:space:]]*=.*MVA_PANEL_ALLOW_PARTIAL' "$CONFIG_FILE" || need_wire=1
+    # The Track 2 tools read GR_* knobs; getenv() sees the SANITIZED env, so a
+    # pre-PR install would pass this check and then report "GR_X is unset".
+    grep -qE '^[[:space:]]*exec\.env_passthrough[[:space:]]*=.*GR_NAMPT_TSV' "$CONFIG_FILE" || need_wire=1
     # #2066: the proband-id knob must be allowlisted or it is silently inert.
     grep -qE '^[[:space:]]*exec\.env_passthrough[[:space:]]*=.*MVA_PROBAND_ID' "$CONFIG_FILE" || need_wire=1
     grep -qE '^[[:space:]]*exec\.default_timeout_ms[[:space:]]*=' "$CONFIG_FILE" || need_wire=1

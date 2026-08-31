@@ -19,6 +19,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GR="$(dirname "$HERE")"
 OUT="${1:-$GR/doc/depmap-nampt.tsv}"
+# Written via .part + mv: a killed stream must not leave a short but well-formed
+# table behind, because that analyses cleanly and gives a wrong answer.
+OUT_PART="$OUT.part"
 CACHE="${DEPMAP_CACHE:-${TMPDIR:-/tmp}/depmap-24q4}"
 
 MODEL_URL="https://ndownloader.figshare.com/files/51065297"   # Model.csv, ~646 KB
@@ -61,6 +64,13 @@ with open(out_path, "w") as fh:
                                        row[idx["NAMPT"]], row[idx["RPL5"]]))
         n += 1
 sys.stderr.write("fetch-depmap-nampt: wrote %d model rows\n" % n)
-' "$CACHE/Model.csv" "$OUT"
+' "$CACHE/Model.csv" "$OUT_PART"
 
-echo "fetch-depmap-nampt: $OUT" >&2
+rows="$(( $(wc -l < "$OUT_PART") - 1 ))"
+if [ "$rows" -lt 1000 ]; then
+    rm -f "$OUT_PART"
+    echo "fetch-depmap-nampt: only $rows model rows — truncated download, refusing to install" >&2
+    exit 3
+fi
+mv "$OUT_PART" "$OUT"
+echo "fetch-depmap-nampt: $OUT ($rows model rows)" >&2

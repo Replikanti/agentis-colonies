@@ -15,7 +15,7 @@
 // small TSV (bulk, mechanical); every judgement here — the dependency
 // threshold, the group split, what counts as a discordance — is .ag-resident.
 //
-// Run: ./tools/run-analyze-nampt.sh
+// Run: ./tools/run-analyze-nampt.sh   (install.sh wires the GR_* passthrough)
 // Env: GR_NAMPT_TSV     absolute path to the narrowed TSV (required)
 //      GR_VERIFY_MARKER path to write "ok"/"failed" for the wrapper's exit code
 
@@ -29,12 +29,13 @@ cb 20000000;
 // DepMap Chronos convention: 0 = no effect, -1 ~ the median common-essential
 // gene. -0.5 is the customary "dependent" line; RPL5 is the pan-essential
 // positive control that proves the screen behaves.
-let DEPENDENCY_THRESHOLD_MILLI = 0 - 500;
+let DEPENDENCY_THRESHOLD = 0 - 5000;
 
 fn nonempty_lines(blob: string) -> list<string> {
     return filter(regex_split("\n", blob), |l: string| -> bool { return len(trim(l)) > 0; });
 }
 
+// Used to seed accumulator lists; agentis has no list literal.
 fn empty_strs(seed: list<string>) -> list<string> {
     return filter(seed, |x: string| -> bool { return false; });
 }
@@ -50,50 +51,92 @@ fn field(line: string, n: int) -> string {
     return field(substring(line, t + 1, len(line)), n - 1);
 }
 
-// agentis has no float parser here, and gene effects are small signed decimals,
-// so values are read as thousandths ("-0.239" -> -239). Guards on every shape
-// the matrix actually emits: "", "NA", bare "-", integers, short mantissas.
-fn digits_to_milli(frac: string, i: int, acc: int) -> int {
-    if i >= 3 { return acc; }
-    let c = if i < len(frac) { substring(frac, i, i + 1) } else { "0" };
-    let d = index_of("0123456789", c);
-    if d < 0 { return acc * 10; }
-    return digits_to_milli(frac, i + 1, acc * 10 + d);
+// agentis has no float builtin, so values are parsed by hand into TEN-THOUSANDTHS
+// ("-0.2387" -> -2387) and only rounded to thousandths for display. The extra
+// digit matters: the -0.5 dependency threshold is compared at full precision, so
+// a value like -0.5004 is not truncated up into "not dependent" (review #5).
+//
+// CRITICAL (review #1): an unparseable value must NEVER silently become 0. A
+// zero keeps the row in n while dragging the group mean toward "not dependent" —
+// that is, toward the conclusion this analysis exists to test. Values are
+// therefore validated first, and a single unparseable one refuses the whole run.
+fn is_digits(s: string, i: int) -> bool {
+    if i >= len(s) { return len(s) > 0; }
+    let c = substring(s, i, i + 1);
+    if len(c) == 0 { return false; }
+    if index_of("0123456789", c) < 0 { return false; }
+    return is_digits(s, i + 1);
 }
 
-fn parse_milli(raw: string) -> int {
+// A plain signed decimal and nothing else: no exponent, no NaN/None/#N/A, no
+// second dot, no bare "-". Anything the matrix might grow later fails loudly.
+fn is_plain_decimal(raw: string) -> bool {
     let s = trim(raw);
-    if len(s) == 0 { return 0; }
-    if s == "NA" { return 0; }
+    if len(s) == 0 { return false; }
     let neg = substring(s, 0, 1) == "-";
     let body = if neg { substring(s, 1, len(s)) } else { s };
-    if len(body) == 0 { return 0; }
+    if len(body) == 0 { return false; }
+    let dot = index_of(body, ".");
+    if dot < 0 { return is_digits(body, 0); }
+    let whole = substring(body, 0, dot);
+    let frac = substring(body, dot + 1, len(body));
+    if len(whole) == 0 { return false; }
+    if len(frac) == 0 { return false; }
+    if !is_digits(whole, 0) { return false; }
+    return is_digits(frac, 0);
+}
+
+fn frac_to_tenthou(frac: string, i: int, acc: int) -> int {
+    if i >= 4 { return acc; }
+    let c = if i < len(frac) { substring(frac, i, i + 1) } else { "0" };
+    let d = index_of("0123456789", c);
+    return frac_to_tenthou(frac, i + 1, acc * 10 + d);
+}
+
+// Precondition: is_plain_decimal(raw). Callers validate before summing.
+fn parse_tenthou(raw: string) -> int {
+    let s = trim(raw);
+    let neg = substring(s, 0, 1) == "-";
+    let body = if neg { substring(s, 1, len(s)) } else { s };
     let dot = index_of(body, ".");
     let whole = if dot < 0 { body } else { substring(body, 0, dot) };
     let frac = if dot < 0 { "" } else { substring(body, dot + 1, len(body)) };
-    let w = if len(whole) == 0 { 0 } else { parse_int(whole) };
-    let m = w * 1000 + digits_to_milli(frac, 0, 0);
+    let m = parse_int(whole) * 10000 + frac_to_tenthou(frac, 0, 0);
     if neg { return 0 - m; }
     return m;
 }
 
+// "screened" means a usable numeric value: blank and NA are genuinely
+// unscreened lines and are dropped, not counted as zero effect.
 fn has_value(line: string, col: int) -> bool {
     let v = trim(field(line, col));
     if len(v) == 0 { return false; }
     if v == "NA" { return false; }
-    return true;
+    return is_plain_decimal(v);
 }
 
-fn sum_milli(rows: list<string>, col: int, i: int, acc: int) -> int {
+fn sum_tenthou(rows: list<string>, col: int, i: int, acc: int) -> int {
     if i >= len(rows) { return acc; }
-    return sum_milli(rows, col, i + 1, acc + parse_milli(field(get(rows, i), col)));
+    return sum_tenthou(rows, col, i + 1, acc + parse_tenthou(field(get(rows, i), col)));
 }
 
 fn count_below(rows: list<string>, col: int, i: int, acc: int) -> int {
     if i >= len(rows) { return acc; }
-    let v = parse_milli(field(get(rows, i), col));
-    let hit = if v < DEPENDENCY_THRESHOLD_MILLI { 1 } else { 0 };
+    let v = parse_tenthou(field(get(rows, i), col));
+    let hit = if v < DEPENDENCY_THRESHOLD { 1 } else { 0 };
     return count_below(rows, col, i + 1, acc + hit);
+}
+
+// Rows carrying a value that is present but not a plain decimal. Non-empty ->
+// refuse; see the note on parse_tenthou.
+fn unparsable_rec(rows: list<string>, col: int, i: int, acc: list<string>) -> list<string> {
+    if i >= len(rows) { return acc; }
+    let r = get(rows, i);
+    let v = trim(field(r, col));
+    if len(v) == 0 { return unparsable_rec(rows, col, i + 1, acc); }
+    if v == "NA" { return unparsable_rec(rows, col, i + 1, acc); }
+    if is_plain_decimal(v) { return unparsable_rec(rows, col, i + 1, acc); }
+    return unparsable_rec(rows, col, i + 1, push(acc, trim(field(r, 0)) + " -> '" + v + "'"));
 }
 
 // Integer permille mean rendered as a signed decimal, e.g. -239 -> "-0.239".
@@ -103,17 +146,20 @@ fn zpad3(n: int) -> string {
     return "00" + to_string(n);
 }
 
-fn milli_str(m: int) -> string {
-    let neg = m < 0;
-    let a = if neg { 0 - m } else { m };
-    let s = to_string(a / 1000) + "." + zpad3(a - (a / 1000) * 1000);
+// Ten-thousandths -> a rounded 3-decimal string. Truncating here biased every
+// figure toward zero, i.e. toward this analysis's own conclusion (review #4).
+fn tenthou_str(t: int) -> string {
+    let neg = t < 0;
+    let a = if neg { 0 - t } else { t };
+    let m = (a + 5) / 10;
+    let s = to_string(m / 1000) + "." + zpad3(m - (m / 1000) * 1000);
     if neg { return "-" + s; }
     return s;
 }
 
 fn pct_str(num: int, den: int) -> string {
     if den == 0 { return "n/a"; }
-    let tenths = (num * 1000) / den;
+    let tenths = ((num * 10000) / den + 5) / 10;
     return to_string(tenths / 10) + "." + to_string(tenths - (tenths / 10) * 10) + "%";
 }
 
@@ -137,6 +183,20 @@ agent nampt_analyst() -> void {
         return;
     }
 
+    // Refuse BEFORE any arithmetic: a value that is present but unparseable
+    // would otherwise be summed as zero, keeping the row in n while pulling the
+    // mean toward "not dependent" — toward this analysis's own conclusion.
+    let bad_n = unparsable_rec(all, 2, 0, empty_strs(all));
+    let bad_c = unparsable_rec(all, 3, 0, empty_strs(all));
+    if len(bad_n) > 0 {
+        print("analyze-nampt: REFUSING —", len(bad_n), "NAMPT value(s) present but unparseable, e.g.", get(bad_n, 0));
+        return;
+    }
+    if len(bad_c) > 0 {
+        print("analyze-nampt: REFUSING —", len(bad_c), "RPL5 value(s) present but unparseable, e.g.", get(bad_c, 0));
+        return;
+    }
+
     // Column 2 is NAMPT, column 3 RPL5; a line without a NAMPT value was not
     // screened and must be dropped rather than counted as zero effect.
     let scored = filter(all, |l: string| -> bool { return has_value(l, 2); });
@@ -147,26 +207,34 @@ agent nampt_analyst() -> void {
         print("analyze-nampt: REFUSING — no rhabdomyosarcoma lines carry a NAMPT score; nothing to compare.");
         return;
     }
+    // A truncated fetch produces a short but well-formed table that would
+    // analyse cleanly and give a wrong answer (review #2). DepMap 24Q4 screens
+    // ~1180 lines; anything far below that is a partial download, not a release.
+    if len(scored) < 1000 {
+        print("analyze-nampt: REFUSING — only", len(scored), "scored lines; DepMap 24Q4 has ~1178.");
+        print("  This looks like a truncated download. Delete the TSV and re-run the fetch.");
+        return;
+    }
 
-    let rms_mean = sum_milli(rms, 2, 0, 0) / len(rms);
-    let oth_mean = sum_milli(other, 2, 0, 0) / len(other);
+    let rms_mean = sum_tenthou(rms, 2, 0, 0) / len(rms);
+    let oth_mean = sum_tenthou(other, 2, 0, 0) / len(other);
     let rms_below = count_below(rms, 2, 0, 0);
     let oth_below = count_below(other, 2, 0, 0);
 
     // Positive control: if the pan-essential gene does not read as essential,
     // the matrix is not what we think it is and no conclusion may be drawn.
     let ctl_rows = filter(scored, |l: string| -> bool { return has_value(l, 3); });
-    let ctl_mean = if len(ctl_rows) == 0 { 0 } else { sum_milli(ctl_rows, 3, 0, 0) / len(ctl_rows) };
+    let ctl_mean = if len(ctl_rows) == 0 { 0 } else { sum_tenthou(ctl_rows, 3, 0, 0) / len(ctl_rows) };
 
     print("analyze-nampt: screened lines with a NAMPT score:", len(scored));
-    print("  rhabdomyosarcoma  n=", len(rms), "  mean NAMPT gene effect ", milli_str(rms_mean));
-    print("  all other lines   n=", len(other), "  mean NAMPT gene effect ", milli_str(oth_mean));
+    print("  rhabdomyosarcoma  n=", len(rms), "  mean NAMPT gene effect ", tenthou_str(rms_mean));
+    print("  all other lines   n=", len(other), "  mean NAMPT gene effect ", tenthou_str(oth_mean));
     print("  below -0.500  RMS:", rms_below, "/", len(rms), "=", pct_str(rms_below, len(rms)),
           "  other:", oth_below, "/", len(other), "=", pct_str(oth_below, len(other)));
-    print("  control RPL5 (pan-essential) mean:", milli_str(ctl_mean));
+    print("  control RPL5 (pan-essential) mean:", tenthou_str(ctl_mean));
 
     if ctl_mean > 0 - 1000 {
-        print("analyze-nampt: REFUSING — RPL5 does not read as pan-essential (", milli_str(ctl_mean),
+        print("analyze-nampt: REFUSING — RPL5 does not read as pan-essential (", tenthou_str(ctl_mean),
               "), so this matrix cannot be interpreted.");
         return;
     }
@@ -176,7 +244,7 @@ agent nampt_analyst() -> void {
     // not the exact number.
     if rms_mean < oth_mean {
         print("");
-        print("VERDICT: rhabdomyosarcoma is MORE NAMPT-dependent than other lines.");
+        print("REFUSING (VERDICT CONTRADICTED): rhabdomyosarcoma is MORE NAMPT-dependent.");
         print("  This would SUPPORT a tumour-specific objection to NAD+ precursors.");
         print("  The Track 2 report states the opposite — re-check the report against this run.");
         return;

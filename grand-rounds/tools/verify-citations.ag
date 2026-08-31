@@ -22,7 +22,8 @@
 // Run: ./tools/run-verify-citations.sh   (or: agentis go tools/verify-citations.ag
 //   --enable-exec, with GR_BIBLIOGRAPHY set and exec.env_passthrough wired).
 //
-// Env: GR_BIBLIOGRAPHY  path to the TSV (default doc/track2-bibliography.tsv)
+// Env: GR_BIBLIOGRAPHY  ABSOLUTE path to the TSV (required — exec runs in the
+//                       colony sandbox, where a relative path cannot resolve)
 //      GR_VERIFY_MARKER path to write "ok"/"failed" for the shell wrapper's
 //                       exit code (the wrapper does no deciding of its own).
 
@@ -32,11 +33,6 @@ cb 1500000;
 // helpers
 // ======================================================================
 
-fn getenv_or(name: string, dflt: string) -> string {
-    let v = getenv(name);
-    if len(v) == 0 { return dflt; }
-    return v;
-}
 
 // nth tab-separated field (0-based), "" if absent. Leaf recursion, as in
 // pipeline.ag — agentis has no split-to-list builtin for this shape.
