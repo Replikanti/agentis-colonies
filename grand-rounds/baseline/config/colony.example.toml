@@ -1,7 +1,13 @@
+# NOTE: this file is NOT read by the grand-rounds pipeline. It is kept as an
+# interface-compatible example only; the pipeline is configured through the
+# environment. The keys below map to PANEL_PAD, EXOMISER_TIMEOUT_MS and
+# MVA_APPROACH respectively -- set those, not this file.
+
 # Baseline Colony Configuration
 #
 # Part of the Grand Rounds federation (MVA Hackathon 2026, Track 1).
-# Copy to colony.toml and edit for your environment.
+# (Historic note: this file is an EXAMPLE only. Copying it to colony.toml
+# changes nothing — see the header above.)
 
 [colony]
 name = "baseline"

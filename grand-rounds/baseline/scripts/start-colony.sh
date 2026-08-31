@@ -59,10 +59,17 @@ SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 COLONY_DIR="$(dirname "$SCRIPT_DIR")"
 SETTINGS="$COLONY_DIR/settings"
 
+# A colony.toml path is accepted for interface compatibility with the other
+# federations, but this pipeline is configured ENTIRELY through the environment
+# and never parses it. Saying otherwise was worse than saying nothing: the old
+# note told operators to create the file "to silence this", and someone who set
+# [baseline] panel_pad = 20000 there silently got the PANEL_PAD default instead.
 CONFIG_ARG="${1:-$COLONY_DIR/config/colony.toml}"
-if [ ! -f "$CONFIG_ARG" ]; then
-    echo "Note: config not found ($CONFIG_ARG) — running with environment inputs only." >&2
-    echo "      Copy config/colony.example.toml to config/colony.toml to silence this." >&2
+if [ -f "$CONFIG_ARG" ]; then
+    echo "Note: $CONFIG_ARG exists but is NOT read — this pipeline takes its" >&2
+    echo "      configuration from the environment only. The keys in" >&2
+    echo "      config/colony.example.toml map to PANEL_PAD, EXOMISER_TIMEOUT_MS" >&2
+    echo "      and MVA_APPROACH; set those instead." >&2
 fi
 
 AGENT_FILE="$COLONY_DIR/agents/pipeline.ag"
