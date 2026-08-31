@@ -103,33 +103,103 @@ fi
 # dies with "refs error: no current branch (HEAD not set)". Earlier revisions
 # of this script did exactly that, so repair such a checkout as well as
 # initialising a fresh one. The config is the only thing worth preserving.
-if [ ! -e "$AGENTIS_DIR/HEAD" ]; then
+# `agentis init` REFUSES when .agentis/ already exists, so creating the directory
+# before initialising it permanently prevents initialisation: the colony ends up
+# with a config and objects/ but no HEAD, and every `agentis go` dies with
+# "refs error: no current branch (HEAD not set)". Earlier revisions of this
+# script did exactly that, so repair such a checkout as well as initialising a
+# fresh one.
+#
+# Repair is deliberately paranoid. .agentis/ can hold an Ed25519 keypair, memos,
+# audit and decision logs, experience and snapshots — none of which this script
+# can rebuild. So it repairs ONLY what is provably the empty stub, refuses
+# anything else, and never deletes.
+#
+# -s not -e: agentis treats an EMPTY HEAD as NoCurrentBranch too, so a truncated
+# HEAD must be repaired rather than skipped.
+if [ ! -s "$AGENTIS_DIR/HEAD" ]; then
+    # agentis must be present BEFORE anything is moved. Without this the init
+    # below aborts under `set -e` AFTER the mv, leaving no .agentis at all and
+    # the only copy of the operator's config inside the backup — and the next
+    # run would then init a default config with llm.backend = mock, which the
+    # start-colony gate cannot detect because the managed keys are all present.
+    if ! command -v agentis >/dev/null 2>&1; then
+        echo "install: FATAL — agentis is not on PATH; refusing to touch $AGENTIS_DIR" >&2
+        exit 2
+    fi
+
     if [ -d "$AGENTIS_DIR" ]; then
-        # A directory with no HEAD is normally the stub this script used to
-        # leave behind (config, maybe an empty objects/). Repairing that is
-        # safe. Anything carrying real state is NOT ours to rebuild: identity/
-        # is an Ed25519 keypair, and memo/, experience/ and snapshots/ are
-        # persisted agent state. Refuse rather than guess, and never delete.
-        for keep in identity memo experience snapshots refs; do
-            if [ -e "$AGENTIS_DIR/$keep" ]; then
-                echo "install: FATAL — $AGENTIS_DIR has no HEAD but contains $keep/." >&2
-                echo "  That is a damaged repository with real state in it, not the empty" >&2
-                echo "  stub older versions of this script created. Refusing to touch it." >&2
-                echo "  Back it up and inspect before re-running: $AGENTIS_DIR" >&2
-                exit 6
-            fi
+        # An unreadable directory cannot be judged. `[ -e ]` is FALSE on EACCES,
+        # so without this every content guard below silently passes and a
+        # healthy colony would be moved aside and re-keyed.
+        if [ ! -r "$AGENTIS_DIR" ] || [ ! -x "$AGENTIS_DIR" ]; then
+            echo "install: FATAL — $AGENTIS_DIR is not readable; refusing to touch it." >&2
+            echo "  Fix its permissions and re-run (a previous sudo run is the usual cause)." >&2
+            exit 6
+        fi
+
+        # Whitelist, not blacklist: a stub is a config and at most an EMPTY
+        # objects/. Anything else — identity, memo, audit, decisions, refs,
+        # sandbox, experience, snapshots, library, knowledge, prompt_stats — is
+        # real state, or a half-finished init, and is not ours to rebuild.
+        unexpected=""
+        for entry in "$AGENTIS_DIR"/* "$AGENTIS_DIR"/.[!.]*; do
+            [ -e "$entry" ] || continue
+            base="${entry##*/}"
+            case "$base" in
+                config) continue ;;
+                objects)
+                    if [ -z "$(ls -A "$entry" 2>/dev/null)" ]; then continue; fi
+                    ;;
+            esac
+            unexpected="$unexpected $base"
         done
+        if [ -n "$unexpected" ]; then
+            echo "install: FATAL — $AGENTIS_DIR has no usable HEAD but is not an empty stub." >&2
+            echo "  Unexpected entries:$unexpected" >&2
+            echo "  This is either a repository holding real state (identity keys, memos," >&2
+            echo "  audit or decision logs) or an interrupted \`agentis init\`. Neither is" >&2
+            echo "  safe for this script to rebuild. Inspect it, and if you are certain it" >&2
+            echo "  is disposable, move it aside yourself and re-run:" >&2
+            echo "    mv $AGENTIS_DIR $AGENTIS_DIR.old && ./install.sh" >&2
+            exit 6
+        fi
+
+        # Save the config BEFORE the mv, so a failing init cannot strand it.
+        saved=""
+        if [ -s "$CONFIG" ]; then
+            saved="$(mktemp)"
+            cp "$CONFIG" "$saved"
+        fi
         broken="$AGENTIS_DIR.broken-$(date +%Y%m%d%H%M%S)"
-        echo "install: $AGENTIS_DIR has no HEAD — moving it to $broken and initialising"
+        echo "install: $AGENTIS_DIR is an empty stub with no HEAD — moving it to $broken"
         mv "$AGENTIS_DIR" "$broken"
-        ( cd "$COLONY_DIR" && agentis init >/dev/null )
-        if [ -s "$broken/config" ]; then
-            cp "$broken/config" "$CONFIG"
+        if ! ( cd "$COLONY_DIR" && agentis init >/dev/null ); then
+            echo "install: FATAL — agentis init failed; restoring $broken" >&2
+            rm -rf "$AGENTIS_DIR"
+            mv "$broken" "$AGENTIS_DIR"
+            [ -n "$saved" ] && rm -f "$saved"
+            exit 2
+        fi
+        if [ -n "$saved" ]; then
+            cp "$saved" "$CONFIG"
+            rm -f "$saved"
         fi
     else
-        ( cd "$COLONY_DIR" && agentis init >/dev/null )
+        if ! ( cd "$COLONY_DIR" && agentis init >/dev/null ); then
+            echo "install: FATAL — agentis init failed in $COLONY_DIR" >&2
+            exit 2
+        fi
+    fi
+
+    # Post-condition: the whole point of this block. Never continue into the
+    # config rewrite on a colony that still cannot run anything.
+    if [ ! -s "$AGENTIS_DIR/HEAD" ]; then
+        echo "install: FATAL — agentis init produced no usable HEAD in $AGENTIS_DIR" >&2
+        exit 2
     fi
 fi
+
 mkdir -p "$AGENTIS_DIR"
 touch "$CONFIG"
 

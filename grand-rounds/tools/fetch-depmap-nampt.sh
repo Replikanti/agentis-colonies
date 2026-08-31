@@ -43,14 +43,17 @@ fi
 
 echo "fetch-depmap-nampt: streaming the gene-effect matrix (429 MB, no local copy kept)" >&2
 curl -fsSL "$EFFECT_URL" | python3 -c '
-import sys, csv
+import sys, csv, re
 # Column extraction only: find the two gene columns by header name, stream rows.
 model_path, out_path = sys.argv[1], sys.argv[2]
 labels = {}
 for r in csv.DictReader(open(model_path)):
     # Passed through verbatim; no classification happens here.
-    labels[r["ModelID"]] = (r.get("OncotreePrimaryDisease", "") + " " +
-                            r.get("OncotreeSubtype", "")).lower().replace("\t", " ").strip()
+    # Collapse ALL whitespace: CSV fields may contain embedded newlines, and a
+    # split row would silently shift every tab-delimited field the agent reads.
+    labels[r["ModelID"]] = re.sub(r"\s+", " ",
+                                  (r.get("OncotreePrimaryDisease", "") + " " +
+                                   r.get("OncotreeSubtype", "")).lower()).strip()
 reader = csv.reader(sys.stdin)
 hdr = next(reader)
 idx = {}
