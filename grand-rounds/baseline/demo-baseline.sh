@@ -20,14 +20,27 @@ GUARD="$REPO_ROOT/tools/check-no-gated-data.sh"
 
 pass=0
 fail=0
+skipped=0
 ok() { echo "  [ok] $1"; pass=$((pass + 1)); }
 bad() { echo "  [FAIL] $1" >&2; fail=$((fail + 1)); }
+skip() { echo "  [skip] $1"; skipped=$((skipped + 1)); }
 
 echo "grand-rounds/baseline: offline demo"
 
 # --- 1. Leak guard is not vacuous (mutation test) --------------------------
 echo "1. leak guard"
-if bash "$GUARD" --static >/dev/null 2>&1; then
+# The guard walks $ROOT's GIT INDEX, so its real-tree pass is meaningful only in
+# a checkout. A released bundle is an unpacked tarball with no index: running it
+# there reported a spurious failure in the privacy guard — the worst thing to
+# look broken on a clinical-genomics submission — while the mutation half below
+# passed vacuously because the script was not shipped at all. Skip the tree scan
+# when there is no index, and say so; the mutation test still runs, because it
+# builds its own git tree.
+if [ ! -f "$GUARD" ]; then
+    skip "leak guard: $GUARD not present (not a checkout); repo-CI enforces it"
+elif ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    skip "leak guard tree scan: $REPO_ROOT is not a git work tree (bundle); repo-CI enforces it"
+elif bash "$GUARD" --static >/dev/null 2>&1; then
     ok "check-no-gated-data --static clean on the real tracked tree"
 else
     bad "leak guard flags the real tree (should be clean)"
@@ -46,10 +59,26 @@ trap 'rm -rf "$MUT"' EXIT
     printf '##fileformat=VCFv4.2\n' > proband.vcf
     git add -A >/dev/null 2>&1
 )
-if bash "$GUARD" --static --root "$MUT" >/dev/null 2>&1; then
-    bad "leak guard did NOT fail on a planted HP id + .vcf (a guard that cannot fail is not a guard)"
+# A MISSING guard must not read as a working one. `bash <nonexistent>` exits
+# 127, which is non-zero, so the naive "did it fail?" form below passed
+# vacuously in a bundle that never shipped the script — the exact way this
+# assertion was dead for the whole life of the released tarball. Require the
+# script to exist, and treat 127 as "did not run" rather than "detected a leak".
+if [ ! -f "$GUARD" ]; then
+    skip "leak guard mutation test: $GUARD not present (not a checkout); repo-CI enforces it"
 else
-    ok "check-no-gated-data --static fails on a planted leak"
+    # `|| guard_rc=$?` and not a bare call: this script runs under `set -e`,
+    # where a non-zero exit from the guard — the very thing being asserted —
+    # would abort the whole suite.
+    guard_rc=0
+    bash "$GUARD" --static --root "$MUT" >/dev/null 2>&1 || guard_rc=$?
+    if [ "$guard_rc" -eq 0 ]; then
+        bad "leak guard did NOT fail on a planted HP id + .vcf (a guard that cannot fail is not a guard)"
+    elif [ "$guard_rc" -eq 127 ]; then
+        bad "leak guard could not be executed (exit 127) — the mutation test proves nothing"
+    else
+        ok "check-no-gated-data --static fails on a planted leak"
+    fi
 fi
 
 # --- 2. Fixture purity -----------------------------------------------------
@@ -244,5 +273,9 @@ else
     bad "cb ($cb_ag) != cb_budget ($cb_toml)"
 fi
 
-echo "grand-rounds/baseline demo: $pass ok, $fail failed"
+if [ "$skipped" -gt 0 ]; then
+    echo "grand-rounds/baseline demo: $pass ok, $fail failed, $skipped skipped"
+else
+    echo "grand-rounds/baseline demo: $pass ok, $fail failed"
+fi
 [ "$fail" -eq 0 ]

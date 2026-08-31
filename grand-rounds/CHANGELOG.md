@@ -15,6 +15,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **The released bundle was broken, and its privacy guard looked broken with
+  it.** `BUNDLE.manifest` listed only `grand-rounds/`, so the tarball shipped
+  without `tools/check-no-gated-data.sh`: inside it `demo-baseline.sh` reported
+  46 ok / 1 failed / exit 1, and the failure was in the leak guard — the worst
+  thing to look broken on a clinical-genomics submission. Worse, the guard's
+  mutation assertion passed **vacuously**: it ran `bash "$GUARD"` and treated any
+  non-zero exit as "the guard bit", but a missing script exits 127, so a guard
+  that was not shipped at all read as a working one. The assertion had been dead
+  for the whole life of the release. The guard now ships, 127 is treated as "did
+  not run", the repo-scoped tree scan skips explicitly outside a checkout
+  (a tarball has no git index), and `tools/test-make-federation-bundle.sh` gains
+  a test that runs the federation's own suite inside the built tarball and
+  requires the mutation assertion to have actually executed.
 - **A cold clone could emit a submission built on zero phenotype evidence.**
   `agentis init` writes `llm.backend = mock`, whose `prompt()` returns nothing;
   nothing checked the backend, so the phenotyper produced a 1-byte HPO draft,

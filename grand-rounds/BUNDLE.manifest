@@ -1,1 +1,7 @@
 grand-rounds/
+
+# demo-baseline.sh mutation-tests the leak guard by planting a leak into a
+# throwaway git tree, so the guard script must ship with the bundle. Its
+# real-tree pass is repo-scoped (it walks the git index) and is skipped in a
+# bundle, which has no index — see demo-baseline.sh.
+tools/check-no-gated-data.sh
