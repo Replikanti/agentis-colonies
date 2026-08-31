@@ -95,8 +95,32 @@ if [ "$missing" -ne 0 ]; then
     warn "prerequisites incomplete; resolve the warnings above, then re-run."
 fi
 
-# --- 2. .agentis/config (exec.env_passthrough + timeouts) -------------------
+# --- 2. .agentis repo + config (exec.env_passthrough + timeouts) ------------
 
+# `agentis init` REFUSES when .agentis/ already exists, so creating the
+# directory before initialising it permanently prevents initialisation: the
+# colony ends up with a config and objects/ but no HEAD, and every `agentis go`
+# dies with "refs error: no current branch (HEAD not set)". Earlier revisions
+# of this script did exactly that, so repair such a checkout as well as
+# initialising a fresh one. The config is the only thing worth preserving.
+if [ ! -e "$AGENTIS_DIR/HEAD" ]; then
+    if [ -d "$AGENTIS_DIR" ]; then
+        echo "install: $AGENTIS_DIR exists but has no HEAD — reinitialising (config preserved)"
+        saved=""
+        if [ -s "$CONFIG" ]; then
+            saved="$(mktemp)"
+            cp "$CONFIG" "$saved"
+        fi
+        rm -rf "$AGENTIS_DIR"
+        ( cd "$COLONY_DIR" && agentis init >/dev/null )
+        if [ -n "$saved" ]; then
+            cp "$saved" "$CONFIG"
+            rm -f "$saved"
+        fi
+    else
+        ( cd "$COLONY_DIR" && agentis init >/dev/null )
+    fi
+fi
 mkdir -p "$AGENTIS_DIR"
 touch "$CONFIG"
 
