@@ -139,10 +139,34 @@ fi
 if [ "$need_wire" -ne 0 ]; then
     echo "start-colony.sh: the managed .agentis/config keys are not wired in $CONFIG_FILE." >&2
     echo "      Run ./install.sh (idempotent), or add these lines to $CONFIG_FILE:" >&2
-    echo "  exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_PROBAND_ID,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,GR_BIBLIOGRAPHY,GR_VERIFY_MARKER,GR_NAMPT_TSV,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR" >&2
+    echo "  exec.env_passthrough = MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_PROBAND_ID,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,MVA_ALLOW_MOCK_BACKEND,GR_BIBLIOGRAPHY,GR_VERIFY_MARKER,GR_NAMPT_TSV,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR" >&2
     echo "  exec.default_timeout_ms = 21600000" >&2
     echo "  llm.cli_timeout_ms = 1800000" >&2
     exit 5
+fi
+
+# The backend itself. `agentis init` writes llm.backend = mock, and install.sh
+# manages only the passthrough allowlist and the timeouts — so a colony can pass
+# every check above and still have no LLM at all. Under mock, prompt() returns
+# nothing: the phenotyper extracts zero HPO terms and (before the guard added
+# alongside this check) the run would go on to offer that empty draft for
+# approval and emit a schema-valid submission built on no phenotype evidence.
+# Refuse here, where it costs seconds instead of an hour.
+backend="$(sed -nE 's/^[[:space:]]*llm\.backend[[:space:]]*=[[:space:]]*//p' "$CONFIG_FILE" | tail -1 | tr -d '"'"'"' ')"
+if [ -z "$backend" ] || [ "$backend" = "mock" ]; then
+    echo "start-colony.sh: llm.backend is '${backend:-unset}' in $CONFIG_FILE." >&2
+    echo "      The mock backend returns nothing from prompt(), so the phenotyper would" >&2
+    echo "      extract zero HPO terms and this run would produce a submission with no" >&2
+    echo "      phenotype evidence behind it. Refusing to start." >&2
+    echo "      Wire a real backend (see doc/methods.md), for example:" >&2
+    echo "  llm.backend = cli" >&2
+    echo "  llm.command = /path/to/your/llm-wrapper.sh" >&2
+    echo "      To run the deterministic stages only, without any LLM, set" >&2
+    echo "      MVA_ALLOW_MOCK_BACKEND=1 — the result is NOT a valid submission." >&2
+    if [ "${MVA_ALLOW_MOCK_BACKEND:-0}" != "1" ]; then
+        exit 7
+    fi
+    echo "start-colony.sh: MVA_ALLOW_MOCK_BACKEND=1 — continuing WITHOUT a real LLM." >&2
 fi
 
 # A PRESENT but stale llm.cli_timeout_ms (e.g. a hand-written 120000) passes
@@ -173,7 +197,7 @@ fi
 # Primary GRCh38 assembly (chr-prefixed, post-rename). The .ag also defaults
 # this, but exporting it keeps the operator-visible contract explicit.
 : "${MVA_PRIMARY_CONTIGS:=chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chr20,chr21,chr22,chrX,chrY,chrM}"
-# The Exomiser stage is opt-in (its output is not yet consumed by reconcile).
+# The Exomiser stage is opt-in; since #2054 its output IS consumed by reconcile.
 : "${MVA_RUN_EXOMISER:=0}"
 : "${MVA_EXOMISER_ASSEMBLY:=hg38}"
 : "${MVA_BCFTOOLS:=$MVA_WORK_DIR/tools/bin/bcftools}"

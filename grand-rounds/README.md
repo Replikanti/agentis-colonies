@@ -48,10 +48,28 @@ baseline submission byte-for-byte identical. See the
 ## Quickstart
 
 ```bash
-./install.sh                                   # prerequisite checks + .agentis/config wiring
-./baseline/scripts/fetch-reference-data.sh     # idempotent reference-data fetch (tens of GB)
+./install.sh                                   # prerequisite checks + agentis repo + config wiring
+
+# The federation reads its inputs and writes its outputs OUTSIDE the checkout,
+# through these three variables. install.sh prints them too; they are required.
+export MVA_DATA_DIR="$HOME/.mva-hackathon/data"   # gated inputs (read-only)
+export MVA_WORK_DIR="$HOME/.mva-hackathon/work"   # intermediates + reference data
+export MVA_OUT_DIR="$HOME/.mva-hackathon/out"     # submission CSVs
+
+./baseline/scripts/fetch-reference-data.sh     # idempotent reference-data fetch
 ./baseline/scripts/start-colony.sh             # runs `agentis go agents/pipeline.ag`
 ```
+
+`start-colony.sh` refuses to start unless a real LLM backend is configured:
+`agentis init` writes `llm.backend = mock`, whose `prompt()` returns nothing, and
+a run under it would extract zero phenotype terms and still emit a schema-valid
+submission. Wire a backend (`llm.backend` / `llm.command`) before the first run.
+Set `MVA_ALLOW_MOCK_BACKEND=1` to exercise the deterministic stages only — the
+output is not a valid submission.
+
+The reference-data fetch downloads the Exomiser bundles (tens of GB) even though
+the Exomiser stage is opt-in (`MVA_RUN_EXOMISER=1`, default off). The Track 2
+tools below need none of it.
 
 The pipeline **stops** after drafting the HPO set and waits for an operator to
 review and approve it (a `sha256` of the reviewed draft is stored, so editing
@@ -81,8 +99,8 @@ So the check is mechanical and anyone can re-run it:
 tools/run-verify-citations.sh          # wraps agents-side verify-citations.ag
 ```
 
-[`tools/verify-citations.ag`](./tools/verify-citations.ag) re-derives first
-author and publication year for all 103 citations from PubMed and fails on any
+[`tools/verify-citations.ag`](./tools/verify-citations.ag) re-derives first author,
+year, journal and pages for all 103 citations from PubMed and fails on any
 mismatch, missing record, duplicate or malformed row. It is `.ag`-first like the
 rest of this federation: the whole decision surface — parsing, validation,
 alignment, comparison, verdict — is agentis-resident, and the external binaries

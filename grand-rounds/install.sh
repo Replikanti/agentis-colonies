@@ -26,7 +26,7 @@ CONFIG="$AGENTIS_DIR/config"
 # The env knobs agents/pipeline.ag reads via getenv(). Keep this list in sync
 # with the getenv() calls in the .ag and the [baseline] block in
 # config/colony.example.toml. start-colony.sh asserts the same set.
-ENV_PASSTHROUGH="MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_PROBAND_ID,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,GR_BIBLIOGRAPHY,GR_VERIFY_MARKER,GR_NAMPT_TSV,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR"
+ENV_PASSTHROUGH="MVA_DATA_DIR,MVA_WORK_DIR,MVA_OUT_DIR,MVA_REF_FASTA,MVA_VCF,MVA_PHENOTYPE_DOC,MVA_HPO_OBO,MVA_GTF,MVA_PRIMARY_CONTIGS,MVA_BCFTOOLS,MVA_EXOMISER,MVA_EXOMISER_ASSEMBLY,MVA_RUN_EXOMISER,MVA_CONTAINER_CMD,MVA_APPROVAL_FILE,MVA_APPROACH,MVA_PROBAND_ID,MVA_LENS_MODE,MVA_PANEL_ALLOW_PARTIAL,MVA_ALLOW_MOCK_BACKEND,GR_BIBLIOGRAPHY,GR_VERIFY_MARKER,GR_NAMPT_TSV,PANEL_PAD,EXOMISER_TIMEOUT_MS,EXOMISER_JAVA_OPTS,COLONY_DIR"
 
 # Exomiser is an hour-scale run; the sandboxed-exec default of 10 s would abort
 # it. This raises the default so every exec sh stage has headroom; the Exomiser
@@ -66,8 +66,11 @@ missing=0
 # through it (macOS has no realpath before 12.3) and the DepMap fetch uses it
 # to narrow a 429 MB matrix. Fail here rather than three scripts later.
 if ! command -v python3 >/dev/null 2>&1; then
+    # Hard requirement, so exit rather than joining the warn-and-continue set:
+    # path resolution, the DepMap fetch and start-colony.sh all need it, and a
+    # later failure is far harder to diagnose than this line.
     echo "install: FATAL - python3 not found on PATH" >&2
-    missing=1
+    exit 2
 fi
 
 if ! command -v agentis >/dev/null 2>&1; then

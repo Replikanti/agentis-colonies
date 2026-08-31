@@ -667,6 +667,27 @@ agent phenotyper() -> void {
     let draft_hash = sha256_hex(file_bytes);
     print("phenotyper: HPO draft written (", len(ids), " verified terms) ->", draftfile);
 
+    // An EMPTY phenotype set must never reach the operator gate. With no LLM
+    // backend wired (agentis init defaults to llm.backend = mock) prompt()
+    // returns nothing, the draft is one byte, and the run then prints
+    // copy-pasteable approval instructions FOR THAT EMPTY DRAFT. Approving them
+    // yields a complete, schema-valid submission CSV built on zero phenotype
+    // evidence, with nothing anywhere saying so — a confident wrong answer,
+    // which is worse than a crash. Refuse instead, and name the likely cause.
+    if len(ids) == 0 {
+        print("phenotyper: REFUSING — zero HPO terms were extracted and verified.");
+        print("  A submission built on an empty phenotype set would look valid and be meaningless,");
+        print("  so this run stops here rather than offering the draft for approval.");
+        print("  Most likely cause: no real LLM backend is wired. `agentis init` defaults to");
+        print("  llm.backend = mock, whose prompt() returns nothing. Check .agentis/config and");
+        print("  see doc/methods.md on configuring the backend.");
+        print("  Other causes: an empty or unreadable clinical document ($MVA_PHENOTYPE_DOC),");
+        print("  or an hp.obo that verified none of the extracted terms.");
+        memo_write("baseline:abort_reason", "phenotype-empty");
+        emit("baseline:abort", "phenotype-empty");
+        return;
+    }
+
     // --- D6 operator review gate (hash-pinned) --------------------------
     // The pipeline STOPS here until an operator reviews hpo-draft.txt and
     // writes the SHA-256 of the reviewed draft into $MVA_APPROVAL_FILE.

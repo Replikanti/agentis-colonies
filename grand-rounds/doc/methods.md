@@ -34,7 +34,7 @@ coordinator plus six stages, wired only through the substrate emit/listen bus:
 | 0 | `coordinator` | Resolve inputs (VCF, phenotype doc, output dir) from the environment; seed the bus. |
 | 1 | `preprocessor` | Contig-rename + normalization (`bcftools` bulk); `.ag` decides the rename map and guards an empty-after-filter result. |
 | 2 | `phenotyper` | Derive candidate HPO ids from the free-text phenotype document (LLM decision), then **stop at a hash-pinned operator gate**: a `sha256` of the reviewed HPO draft is stored, so editing after approval invalidates the gate. |
-| 3 | `exomiser_runner` | **Opt-in** phenotype-driven ranking (Exomiser). Its output is a documented later revision — the Exomiser→reconcile merge is tracked in [#2031](https://github.com/Replikanti/agentis-colonies/issues/2031) and not yet consumed by stage 5. |
+| 3 | `exomiser_runner` | **Opt-in** phenotype-driven ranking (Exomiser). Its output is a documented later revision — the Exomiser→reconcile merge is tracked in [#2031](https://github.com/Replikanti/agentis-colonies/issues/2031) and consumed by stage 5 since #2054. |
 | 4 | `panel_reviewer` | Resolve the known-MVA-gene panel to coordinates from the operator-provided GENCODE GTF, restrict the normalized VCF to those regions, and classify each record. |
 | 5 | `reconciler` | Assign each candidate an evidence tier and its EPCR (see §4); order the pool. |
 | 6 | `emitter` | Build, **schema-validate**, and write the submission CSV. |
@@ -111,7 +111,7 @@ non-leading representation is emitted as a secondary `alt_representation`
 row — the official instructions state secondary findings never hurt the
 automated score. Rows are strictly EPCR-ordered ([#2059](https://github.com/Replikanti/agentis-colonies/issues/2059)).
 
-`baseline/demo-baseline.sh` pins the resulting ordering against a golden CSV, so
+`baseline/demo-baseline.sh` pins the resulting ordering against a live-demo ordering assertions (R1/R2/S1/E1 in demo-baseline-live.sh), so
 any change to this ladder is deliberate.
 
 ### Submission schema
