@@ -44,7 +44,11 @@ while [ $# -gt 0 ]; do
 done
 
 ROOT="$(cd "$ROOT" && pwd)"
-FIXTURES_EXCLUDE=':!grand-rounds/baseline/fixtures/'
+# The fixtures allowlist is now expressed ONLY as the `case` in the extension
+# loop below. The pathspec variables that used to exempt them from the content
+# needles are gone: those needles deliberately scan the fixtures, because a real
+# HP id in phenotype-source.txt or a coordinate in README.md used to pass, and
+# demo-baseline.sh's purity check covers only *.vcf and mini.fa.
 leaks=0
 report() { echo "[LEAK] $1" >&2; leaks=$((leaks + 1)); }
 
@@ -68,13 +72,34 @@ if ! git -C "$ROOT" ls-files >/dev/null 2>&1; then
     echo "check-no-gated-data: FATAL — cannot list tracked files in $ROOT." >&2
     exit 2
 fi
+# Erroring is not the only way to scan nothing. A BARE repository answers both
+# checks above successfully and lists zero files, so the guard would walk an
+# empty set and pronounce a full history clean — the same false pass, reached a
+# different way. Any tree worth guarding has tracked files.
+if [ -z "$(git -C "$ROOT" ls-files | head -1)" ]; then
+    echo "check-no-gated-data: FATAL — $ROOT has no tracked files (bare repo, or" >&2
+    echo "  an empty index). Nothing would be scanned, so reporting it clean would" >&2
+    echo "  be meaningless." >&2
+    exit 2
+fi
 
 # --- 1. Forbidden extensions (outside the fixtures allowlist) ----------------
 # Gated data file types that must never be committed anywhere but fixtures/.
 forbidden_re='\.(vcf|bcf|fastq|fq|bam|cram|docx|gtf|fa|fna|fai|obo)(\.[A-Za-z0-9]+)?$'
 while IFS= read -r -d '' f; do
     case "$f" in
-        grand-rounds/baseline/fixtures/*) continue ;;
+        # The fixtures exemption is a NAMED allowlist, not a blanket one. It
+        # used to be `fixtures/*`, so anything dropped in that directory —
+        # exactly where a test input naturally lands — bypassed the extension
+        # check entirely: a planted clinical.docx, proband.bam and an .obo
+        # carrying a real HP id all passed as clean. These five files are the
+        # synthetic set whose purity demo-baseline.sh asserts separately; a
+        # sixth must be added here deliberately, with the same scrutiny.
+        grand-rounds/baseline/fixtures/README.md) continue ;;
+        grand-rounds/baseline/fixtures/mini.fa) continue ;;
+        grand-rounds/baseline/fixtures/panel.gtf) continue ;;
+        grand-rounds/baseline/fixtures/phenotype-source.txt) continue ;;
+        grand-rounds/baseline/fixtures/proband.vcf) continue ;;
     esac
     if printf '%s\n' "$f" | grep -qiE "$forbidden_re"; then
         report "forbidden gated-data extension tracked: $f"
@@ -85,8 +110,31 @@ done < <(tracked)
 # A real HPO id in a tracked file is a derived-from-gated-data leak. The
 # synthetic fixtures carry none; source files reference the PATTERN
 # `HP:[0-9]{7}`, which is not a concrete id and does not match.
-if git -C "$ROOT" grep -nIE 'HP:[0-9]{7}' -- . "$FIXTURES_EXCLUDE" >/dev/null 2>&1; then
-    git -C "$ROOT" grep -nIE 'HP:[0-9]{7}' -- . "$FIXTURES_EXCLUDE" >&2 || true
+# --- genomic coordinates -----------------------------------------------
+# Derived artifacts the pipeline itself writes (refuted.tsv, panel-review.tsv,
+# a renamed submission CSV) carry GRCh38 coordinates and no forbidden
+# extension, so nothing here caught them: staged into a checkout they scanned
+# as clean. The repo's own rule is "never a variant, a coordinate, an HPO id",
+# and coordinates had no needle at all. Measured against the tracked tree at
+# the time of writing this matches nothing, so it costs no false positives.
+#
+# The separator class MUST include the comma: the pipeline's primary deliverable
+# is a CSV (`proband_id,chrom_1,pos_1,...`, i.e. a chr token and a position in
+# adjacent comma-separated fields), so a needle without the comma missed the
+# single most likely artifact to be committed by accident. Digits allow embedded
+# commas too, for the thousands-separated form a genome-browser copy-paste
+# produces, and the chr prefix is matched case-insensitively.
+#
+# NOTE: this comment deliberately carries no literal coordinate. The needle
+# scans this file too, and an example here would flag the guard itself — the
+# same reason demo-baseline.sh assembles its planted HP id from fragments.
+if git -C "$ROOT" grep -nIE '\b[Cc][Hh][Rr][0-9XYMxym]{1,2}[:_,;|[:space:]-][0-9][0-9,]{3,}' -- . >/dev/null 2>&1; then
+    git -C "$ROOT" grep -nIE '\b[Cc][Hh][Rr][0-9XYMxym]{1,2}[:_,;|[:space:]-][0-9][0-9,]{3,}' -- . >&2 || true
+    report "a genomic coordinate (chr<N>:<pos>) appears in a tracked file"
+fi
+
+if git -C "$ROOT" grep -nIE 'HP:[0-9]{7}' -- . >/dev/null 2>&1; then
+    git -C "$ROOT" grep -nIE 'HP:[0-9]{7}' -- . >&2 || true
     report "concrete HPO id (HP:<7 digits>) found in a tracked file"
 fi
 
@@ -114,7 +162,7 @@ if [ "$MODE" = "full" ] && [ -n "${MVA_DATA_DIR:-}" ] && [ -d "${MVA_DATA_DIR:-/
     # Gated file basenames.
     while IFS= read -r base; do
         [ -n "$base" ] || continue
-        if git -C "$ROOT" grep -nIF "$base" -- . "$FIXTURES_EXCLUDE" >/dev/null 2>&1; then
+        if git -C "$ROOT" grep -nIF "$base" -- . >/dev/null 2>&1; then
             report "gated input basename appears in a tracked file"
         fi
     done < <(ls -1 "$MVA_DATA_DIR" 2>/dev/null)
@@ -125,7 +173,7 @@ if [ "$MODE" = "full" ] && [ -n "${MVA_DATA_DIR:-}" ] && [ -d "${MVA_DATA_DIR:-/
         [ -f "$vcf" ] || continue
         while IFS= read -r sample; do
             [ -n "$sample" ] || continue
-            if git -C "$ROOT" grep -nIF "$sample" -- . "$FIXTURES_EXCLUDE" >/dev/null 2>&1; then
+            if git -C "$ROOT" grep -nIF "$sample" -- . >/dev/null 2>&1; then
                 report "proband/sample name appears in a tracked file"
             fi
         done < <("$bcftools_bin" query -l "$vcf" 2>/dev/null || true)
@@ -136,7 +184,7 @@ if [ "$MODE" = "full" ] && [ -n "${MVA_DATA_DIR:-}" ] && [ -d "${MVA_DATA_DIR:-/
     if [ -f "$approval" ]; then
         while IFS= read -r id; do
             [ -n "$id" ] || continue
-            if git -C "$ROOT" grep -nIF "$id" -- . "$FIXTURES_EXCLUDE" >/dev/null 2>&1; then
+            if git -C "$ROOT" grep -nIF "$id" -- . >/dev/null 2>&1; then
                 report "approved HPO id appears in a tracked file"
             fi
         done < <(grep -oE 'HP:[0-9]{7}' "$approval" 2>/dev/null || true)

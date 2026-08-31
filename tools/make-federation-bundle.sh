@@ -57,6 +57,16 @@ if [ ! -f "$MANIFEST" ]; then
     exit 2
 fi
 
+# Staging is driven by the git index (see the loop below), so a release cannot
+# be built from an unversioned directory: there would be no way to tell shipped
+# content from whatever happens to sit on disk. Refuse rather than fall back to
+# a plain copy, which is the behaviour that shipped an operator's private key.
+if ! git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "make-federation-bundle: $REPO_ROOT is not a git repository." >&2
+    echo "  A bundle is staged from the index, so it must be built from a checkout." >&2
+    exit 2
+fi
+
 DIST="$REPO_ROOT/dist"
 STAGE_NAME="$FED-v$VER"
 STAGE="$DIST/$STAGE_NAME"
@@ -85,11 +95,26 @@ while IFS= read -r raw || [ -n "$raw" ]; do
         exit 3
     fi
 
-    # Preserve repo-relative layout under $STAGE.
-    parent="$(dirname "$src")"
-    dest_parent="$STAGE/$parent"
-    mkdir -p "$dest_parent"
-    cp -pR "$src" "$dest_parent/"
+    # Stage TRACKED files only, never `cp -pR` of the path as it sits on disk.
+    # cp does not honour .gitignore, so a directory entry packaged whatever the
+    # operator's working tree happened to hold: a locally built grand-rounds
+    # tarball shipped baseline/.agentis/ (an Ed25519 private key), a real
+    # config/colony.toml, gated work/*.vcf and derived out/*.csv, with every
+    # bundle test green. Enumerating paths in each manifest only narrowed that;
+    # it did not close it, because the remaining directory entries have exactly
+    # the same property. Driving the copy from the index closes it for every
+    # federation at once: if a file is not committed, it cannot ship.
+    if [ -n "$(git -C "$REPO_ROOT" ls-files -- "$src" | head -1)" ]; then
+        while IFS= read -r -d '' tracked_file; do
+            mkdir -p "$STAGE/$(dirname "$tracked_file")"
+            cp -p "$REPO_ROOT/$tracked_file" "$STAGE/$tracked_file"
+        done < <(git -C "$REPO_ROOT" ls-files -z -- "$src")
+    else
+        echo "make-federation-bundle: manifest entry '$src' matches no TRACKED file" >&2
+        echo "  (it exists on disk but is not committed; a release must ship only" >&2
+        echo "   committed content, so this is refused rather than packaged)" >&2
+        exit 3
+    fi
     entries=$((entries + 1))
 done < "$MANIFEST"
 

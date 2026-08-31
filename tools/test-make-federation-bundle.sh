@@ -65,6 +65,20 @@ echo "check prompt" > "$FAKE_REPO/tools/check-prompt-gate.sh"
 echo "scaffolder" > "$FAKE_REPO/tools/new-colony.sh"
 echo "on: push" > "$FAKE_REPO/.github/workflows/ci.yml"
 
+# The bundler stages from the git INDEX (so an uncommitted operator secret can
+# never ship), which means this fixture has to be a real repository. It also
+# lets the tests below assert the property directly: an untracked file placed
+# in a manifest-listed directory must not appear in the tarball.
+(
+    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+    cd "$FAKE_REPO"
+    git init -q
+    git config user.email t@t
+    git config user.name t
+    git add -A >/dev/null 2>&1
+    git commit -qm fixture >/dev/null 2>&1
+)
+
 # ----- Test 1: arg validation -----
 set +e
 OUT="$(cd "$FAKE_REPO" && ./tools/make-federation-bundle.sh 2>&1)"; RC=$?
@@ -208,6 +222,24 @@ if [ "$SHELL_BROKEN" -eq 0 ]; then
 else
     fail "extracted-bash-n" "$SHELL_BROKEN script(s) failed syntax check"
 fi
+
+# ----- Test 7a: an UNTRACKED file in a manifest directory must not ship -----
+# The property that closes the operator-secret hole: staging is driven by the
+# index, so anything not committed cannot be packaged, whatever .gitignore says.
+UNTRACKED="$FAKE_REPO/fakefed/nested/operator-secret.key"
+echo "PRIVATE" > "$UNTRACKED"
+set +e
+OUT="$(cd "$FAKE_REPO" && ./tools/make-federation-bundle.sh fakefed 0.0.0-untracked 2>&1)"; RC=$?
+set -e
+UT_TARBALL="$FAKE_REPO/dist/fakefed-v0.0.0-untracked.tar.gz"
+if [ "$RC" -ne 0 ] || [ ! -f "$UT_TARBALL" ]; then
+    fail "untracked-not-shipped build" "rc=$RC, out=$OUT"
+elif tar tzf "$UT_TARBALL" | grep -q 'operator-secret.key'; then
+    fail "untracked-not-shipped" "an UNTRACKED file was packaged into the tarball"
+else
+    pass "untracked-not-shipped: an uncommitted file in a manifest directory does not ship"
+fi
+rm -f "$UNTRACKED"
 
 # ----- Test 8a: a federation's OWN test suite must pass inside its bundle -----
 # The gap this closes: grand-rounds shipped a tarball in which demo-baseline.sh

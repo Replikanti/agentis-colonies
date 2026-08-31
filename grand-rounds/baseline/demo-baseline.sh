@@ -18,6 +18,12 @@ TMPL="$BASE_DIR/settings/exomiser-analysis.template.yml"
 TOML="$BASE_DIR/config/colony.example.toml"
 GUARD="$REPO_ROOT/tools/check-no-gated-data.sh"
 
+# An exported GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE retargets every git command
+# in this suite AND inside the guard it invokes: the tree scan would report
+# another repository clean while claiming it was this one. Unset once, here,
+# rather than per-subshell.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
 pass=0
 fail=0
 skipped=0
@@ -48,19 +54,24 @@ elif [ ! -e "$REPO_ROOT/.git" ]; then
     # than the one this block was added to fix. A `.git` entry (dir OR gitfile)
     # separates every checkout shape from an unpacked tarball, which has none.
     skip "leak guard tree scan: no .git in $REPO_ROOT (unpacked bundle); repo-CI enforces it"
-elif bash "$GUARD" --static >/dev/null 2>&1; then
-    ok "check-no-gated-data --static clean on the real tracked tree"
 else
-    bad "leak guard flags the real tree (should be clean)"
+    tree_rc=0
+    bash "$GUARD" --static >/dev/null 2>&1 || tree_rc=$?
+    if [ "$tree_rc" -eq 0 ]; then
+        ok "check-no-gated-data --static clean on the real tracked tree"
+    elif [ "$tree_rc" -eq 1 ]; then
+        bad "leak guard flags the real tree (should be clean)"
+    else
+        # exit 2 is the guard REFUSING to scan (git distrusts the directory, a
+        # bare repo, an empty index). Telling a clinical operator "you have a
+        # leak" when the guard simply could not look is its own kind of harm.
+        bad "leak guard could not scan the tree (exit $tree_rc) — resolve that before trusting this run"
+    fi
 fi
 
 MUT="$(mktemp -d)"
 trap 'rm -rf "$MUT"' EXIT
 (
-    # An exported GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE would retarget these
-    # commands at the REAL repository: `git add -A` in the temp tree then stages
-    # a leak into the actual index and deletes everything else from it.
-    unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
     cd "$MUT"
     git init -q
     git config user.email t@t; git config user.name t
@@ -69,6 +80,14 @@ trap 'rm -rf "$MUT"' EXIT
     # concrete HP:<7 digits> literal — only the planted temp tree does.
     printf 'note: HP:%s seizure\n' '0001250' > leaked-notes.txt
     printf '##fileformat=VCFv4.2\n' > proband.vcf
+    # A derived artifact of the shape the pipeline itself writes: a genomic
+    # coordinate in a .tsv, carrying no forbidden extension and therefore
+    # invisible to the guard until the coordinate needle was added.
+    printf 'gene\tchrom\tpos\nBUB1B\tchr15\t40209701\n' > refuted.tsv
+    # And a file dropped into the fixtures directory, which used to be a
+    # BLANKET allowlist rather than a named one.
+    mkdir -p grand-rounds/baseline/fixtures
+    printf '##fileformat=VCFv4.2\n' > grand-rounds/baseline/fixtures/clinical.docx
     git add -A >/dev/null 2>&1
 )
 # A MISSING guard must not read as a working one. `bash <nonexistent>` exits
@@ -104,6 +123,25 @@ else
         bad "leak guard also fails on a CLEAN tree (exit $clean_rc) — it flags everything, so it proves nothing"
     else
         ok "check-no-gated-data --static fails on a planted leak and passes a clean tree"
+    fi
+
+    # Per-needle assertions. A single "it failed" cannot say WHICH rule bit, so
+    # a needle that quietly stopped working would hide behind the others.
+    guard_out="$(bash "$GUARD" --static --root "$MUT" 2>&1 || true)"
+    if printf '%s' "$guard_out" | grep -q 'concrete HPO id'; then
+        ok "leak guard: the HPO-id needle bites"
+    else
+        bad "leak guard: the HPO-id needle did not fire on a planted HP id"
+    fi
+    if printf '%s' "$guard_out" | grep -q 'genomic coordinate'; then
+        ok "leak guard: the coordinate needle bites on a derived .tsv"
+    else
+        bad "leak guard: a chr<N> coordinate in a tracked .tsv was not flagged"
+    fi
+    if printf '%s' "$guard_out" | grep -q 'fixtures/clinical.docx'; then
+        ok "leak guard: fixtures/ is a named allowlist, not a blanket one"
+    else
+        bad "leak guard: a file planted in fixtures/ bypassed the extension check"
     fi
 fi
 

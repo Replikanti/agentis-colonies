@@ -36,7 +36,18 @@ data/
 work/
 refdata/
 out/
+# Submission CSVs, under any name. The runbook encourages renaming to take-N,
+# so pinning the shipped prefix alone left every rename stageable.
 agentis-federation_*.csv
+take-*.csv
+*submission*.csv
+
+# Derived analysis artifacts the pipeline writes. These carry coordinates but
+# no forbidden extension, so nothing stopped them being staged; the leak guard
+# now has a coordinate needle as well, and this is the belt to its braces.
+refuted.tsv
+panel-review.tsv
+lens-*.tsv
 
 # Agentis runtime state. `agentis init` creates baseline/.agentis (holding an
 # Ed25519 keypair) and baseline/examples/; install.sh may park a broken stub as
@@ -47,4 +58,10 @@ agentis-federation_*.csv
 baseline/examples/
 *.key
 
-!baseline/fixtures/**
+# Named, like the guard's allowlist: a NEW file under fixtures/ is not
+# automatically un-ignored just because it sits in that directory.
+!baseline/fixtures/README.md
+!baseline/fixtures/mini.fa
+!baseline/fixtures/panel.gtf
+!baseline/fixtures/phenotype-source.txt
+!baseline/fixtures/proband.vcf

@@ -26,8 +26,30 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   which ignores `.gitignore` — so a tarball built on a working machine contained
   `baseline/.agentis/` (an Ed25519 private key), a real `config/colony.toml` and
   gated `work/*.vcf`, with all bundle tests green. Official releases build from
-  a fresh CI checkout and were unaffected, but the manifest no longer relies on
-  that: it enumerates paths, as dark-factory and tribes-bench already do.
+  a fresh CI checkout and were unaffected, but enumerating paths only narrowed it — the remaining directory entries had the
+  same property, and `tribes-bench` and `trading-binance` carry it too. Fixed at
+  the source instead: `make-federation-bundle` now stages from the **git index**,
+  so an uncommitted file cannot ship from any federation, and it refuses to build
+  outside a checkout rather than falling back to a plain copy.
+- **The leak guard had two blind spots, both on the privacy side.** Derived
+  artifacts the pipeline itself writes (`refuted.tsv`, `panel-review.tsv`, a
+  renamed submission CSV) carry GRCh38 coordinates but no forbidden extension,
+  and there was no coordinate needle at all — staged into a checkout they
+  scanned as clean. And `grand-rounds/baseline/fixtures/` was a BLANKET
+  allowlist in both the guard and `.gitignore`, so anything dropped in the one
+  directory a test input naturally lands in bypassed the extension check: a
+  planted `clinical.docx`, `proband.bam` and an `.obo` carrying a real HP id all
+  passed. The guard now has a coordinate needle (measured: zero false positives
+  on the tracked tree), the fixtures exemption is a NAMED five-file allowlist and applies to the
+  extension check ONLY — the content needles now scan the fixtures too, since
+  `demo-baseline.sh`'s purity check covers only `*.vcf` and `mini.fa`,
+  and `demo-baseline.sh` asserts each needle separately so one cannot hide
+  behind another. `.gitignore` also covers renamed submissions and the derived
+  artifacts.
+- `colony.toml` was accepted, warned about when absent, and never read. An
+  operator setting `[baseline] panel_pad` there silently got the default. The
+  note now says plainly that the file is not parsed and names the environment
+  variables that are.
 - **The released bundle was broken, and its privacy guard looked broken with
   it.** `BUNDLE.manifest` listed only `grand-rounds/`, so the tarball shipped
   without `tools/check-no-gated-data.sh`: inside it `demo-baseline.sh` reported
