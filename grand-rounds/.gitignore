@@ -38,4 +38,13 @@ refdata/
 out/
 agentis-federation_*.csv
 
+# Agentis runtime state. `agentis init` creates baseline/.agentis (holding an
+# Ed25519 keypair) and baseline/examples/; install.sh may park a broken stub as
+# .agentis.broken-<timestamp>. None of it belongs in the bundle, and a private
+# key must never become stageable.
+.agentis/
+.agentis.broken-*/
+baseline/examples/
+*.key
+
 !baseline/fixtures/**

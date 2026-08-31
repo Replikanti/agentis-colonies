@@ -106,7 +106,8 @@ tools/run-analyze-nampt.sh            # wraps agents-side analyze-nampt.ag
 Same boundary as above: `fetch-depmap-nampt.sh` streams a 429 MB dependency
 matrix and narrows it to one small TSV (bulk, mechanical), while
 [`tools/analyze-nampt.ag`](./tools/analyze-nampt.ag) owns the dependency
-threshold, the group comparison, a pan-essential positive control that refuses
+threshold, the classification rule deciding which lines are the tumour of
+interest, the group comparison, a pan-essential positive control that refuses
 the run if the matrix does not behave, and the verdict. It prints a warning if
 the data ever starts supporting the claim we withdrew.
 
