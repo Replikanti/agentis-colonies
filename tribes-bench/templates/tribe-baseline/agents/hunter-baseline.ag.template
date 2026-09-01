@@ -21,14 +21,6 @@ type Finding {
     signature_hint: string
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("hunter:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 fn tribe_name() -> string {
     let n = try { exec sh "printenv TRIBE_NAME"; } catch e { ""; };
     if len(n) > 0 {
@@ -64,7 +56,13 @@ fn tick(reason: string) -> void {
     // Capture BEFORE any other expensive op so we don't lose budget on
     // this call, and reuse the cached value at every downstream site.
     let _tick_now_ms = now_ms_via_shell();
-    let conf = get_confidence();
+    // NOTE the argument is "hunter", not "hunter-baseline". This agent is
+    // registered as `hunter-baseline` (colony.toml.template:29) but has
+    // always read the `hunter:confidence` memo. Preserving that exactly
+    // rather than silently repointing it at a different memo — the
+    // mismatch is real and tracked, but changing which key an agent reads
+    // is a behaviour change, not a refactor. Telemetry-only here.
+    let conf = confidence_value("hunter");
     print("[hunter-baseline] tick conf=", conf);
 
     let src = try {

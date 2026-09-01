@@ -44,25 +44,27 @@ fn tick(reason: string) -> void {
             ["acted", "triage"]
         );
     } else {
+        // agentis has no `else if`: the parser wants a block after `else`, so
+        // the chain nests. Same four branches, same order, same outcomes.
         if my_tier == "review-gated" {
-        // Real agent would draft via forge-api.sh; stubbed here.
-        learn(
-            "label_issue",
-            to_string(inbox),
-            "labels-drafted",
-            "success",
-            ["review-gated", "triage"]
-        );
+            // Real agent would draft via forge-api.sh; stubbed here.
+            learn(
+                "label_issue",
+                to_string(inbox),
+                "labels-drafted",
+                "success",
+                ["review-gated", "triage"]
+            );
         } else {
             if my_tier == "propose" {
-        emit("triage:label_suggestion", to_string(inbox));
-        learn(
-            "label_issue",
-            to_string(inbox),
-            "labels-emitted",
-            "partial",
-            ["emitted", "triage"]
-        );
+                emit("triage:label_suggestion", to_string(inbox));
+                learn(
+                    "label_issue",
+                    to_string(inbox),
+                    "labels-emitted",
+                    "partial",
+                    ["emitted", "triage"]
+                );
             } else {
                 // shadow / dormant: observe only.
                 learn(
