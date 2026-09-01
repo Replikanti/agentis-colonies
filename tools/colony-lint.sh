@@ -2728,6 +2728,39 @@ else
     fail "dark-factory: lint run modified the live hunt registry ($REAL_DF_HUNTS_DIR) -- a script invoked by colony-lint wrote there instead of respecting DARK_FACTORY_DIR. Diff of changed entries: $(diff <(printf '%s\n' "$DF_HUNTS_BEFORE") <(printf '%s\n' "$DF_HUNTS_AFTER") || true). Note: if you just ran a live 'run-zone-hunt.sh' by hand concurrently with this lint, that legitimate write can trigger this failure too -- re-run colony-lint alone to confirm."
 fi
 
+# --- Every tracked .ag parses -------------------------------------------------
+# Scoped to examples/, which is the actual uncovered ground: every federation's
+# agents are already exercised by its demo suite, while examples/ is exercised by
+# nothing. `examples/replay/candidate_labeler.ag` sat broken on main (an
+# `else if`, which agentis has no grammar for) and nothing noticed.
+#
+# CI runners carry no agentis binary, so this only runs locally — skip-aware
+# rather than silently absent, so "no agentis" reads as a skip and not a pass.
+# Kept narrow on purpose: parsing every tracked .ag means ~94 agentis spawns and
+# adds minutes to a gate people must run before every merge.
+if command -v agentis >/dev/null 2>&1; then
+    ag_bad=""
+    ag_probe="$(mktemp -d "${TMPDIR:-/tmp}/agparse.XXXXXX")"
+    ( cd "$ag_probe" && agentis init >/dev/null 2>&1 ) || true
+    while IFS= read -r _agf; do
+        [ -n "$_agf" ] || continue
+        cp "$REPO_ROOT/$_agf" "$ag_probe/p.ag" 2>/dev/null || continue
+        _out="$( cd "$ag_probe" && agentis go p.ag 2>&1 | grep -iE 'parse error|syntax error' | head -1 )"
+        [ -n "$_out" ] && ag_bad="${ag_bad}
+$_agf: $_out"
+    done <<AGLIST
+$(git -C "$REPO_ROOT" ls-files 'examples/*.ag' 2>/dev/null)
+AGLIST
+    rm -rf "$ag_probe"
+    if [ -z "$ag_bad" ]; then
+        pass "every .ag under examples/ parses"
+    else
+        fail "examples/ .ag files that do not parse:$ag_bad"
+    fi
+else
+    skip "examples/ .ag parse check (no agentis binary on PATH)"
+fi
+
 # --- Summary ---
 echo ""
 echo "Results: $PASS passed, $FAIL failed, $SKIP skipped"
