@@ -194,10 +194,29 @@ wait
 OUTER
 
 # Replace placeholders in start script
-sed -i "s/COLONY_PLACEHOLDER/$PRETTY_NAME/g" "$COL_PATH/scripts/start-colony.sh"
-sed -i "s/FED_PLACEHOLDER/$FED_PRETTY/g" "$COL_PATH/scripts/start-colony.sh"
-sed -i "s/NAME_PLACEHOLDER/$PRETTY_NAME/g" "$COL_PATH/scripts/start-colony.sh"
-sed -i "s/COLONY_ID_PLACEHOLDER/$COLONY/g" "$COL_PATH/scripts/start-colony.sh"
+# python3 rather than `sed -i`, matching the precedent in tools/scaffold-agent.sh,
+# tools/cost-cap.sh and tools/experience-transfer.sh. BSD `sed`'s -i takes a
+# REQUIRED suffix argument, so the GNU form used here consumed the substitution
+# expression as the backup suffix and then treated the target as the script —
+# on macOS this scaffolder corrupted the file it was meant to fill in, silently,
+# under `set -euo pipefail`.
+NC_TARGET="$COL_PATH/scripts/start-colony.sh"
+NC_TMP="$NC_TARGET.tmp.$$"
+NC_TARGET="$NC_TARGET" NC_TMP="$NC_TMP" \
+PRETTY_NAME="$PRETTY_NAME" FED_PRETTY="$FED_PRETTY" COLONY="$COLONY" \
+python3 -c '
+import os
+src = open(os.environ["NC_TARGET"]).read()
+for token, value in (
+    ("COLONY_PLACEHOLDER",    os.environ["PRETTY_NAME"]),
+    ("FED_PLACEHOLDER",       os.environ["FED_PRETTY"]),
+    ("NAME_PLACEHOLDER",      os.environ["PRETTY_NAME"]),
+    ("COLONY_ID_PLACEHOLDER", os.environ["COLONY"]),
+):
+    src = src.replace(token, value)
+open(os.environ["NC_TMP"], "w").write(src)
+'
+mv "$NC_TMP" "$NC_TARGET"
 
 chmod +x "$COL_PATH/scripts/start-colony.sh"
 

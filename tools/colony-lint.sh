@@ -306,9 +306,16 @@ if errors:
                 # Pattern is deliberately on one line: bash 3.2 (stock macOS)
                 # miscompiles backslash-newline inside case-pattern labels
                 # (#121). Keep all alternatives on a single line.
+                # Patterns are PARENTHESISED. bash 3.2 (stock macOS) cannot
+                # parse an unparenthesised `case` inside a $( … ) command
+                # substitution — it dies with "syntax error near unexpected
+                # token ';;'" — which made the repo's own mandatory lint
+                # unrunnable on macOS. Verified against a real 3.2.57.
+                # Also keep each pattern on one line (#121: 3.2 miscompiles
+                # backslash-newline inside case-pattern labels).
                 case "$flag" in
-                    --tick-interval|--cb-per-tick|--prompt-timeout-s|--colony|--deadline|--priority|--enable-migration|--enable-replication|--allow-replica-replication|--enable-exec|--enable-messaging|--deny-exec|--config-override|--help|-h) ;;
-                    *) echo "$flag" ;;
+                    (--tick-interval|--cb-per-tick|--prompt-timeout-s|--colony|--deadline|--priority|--enable-migration|--enable-replication|--allow-replica-replication|--enable-exec|--enable-messaging|--deny-exec|--config-override|--help|-h) ;;
+                    (*) echo "$flag" ;;
                 esac
             done)
 
@@ -2330,6 +2337,28 @@ else
         printf '[WARN] %d plaintext token(s) found:\n' "$secret_lint_count"
         printf '%s\n' "$secret_lint_findings"
     fi
+fi
+
+# --- BSD/macOS portability ratchet (#2082) ---
+# The narrow bash-3.2 check below covers two files. This one covers every
+# tracked *.sh, for the constructs that differ under a BSD userland — the class
+# that made this very script unrunnable on macOS and made both scaffolders
+# corrupt the file they were filling in. Two finding classes give the
+# shrinking-debt property: a NEW construct fails, and so does an allowlist row
+# whose site is already fixed.
+# Bound to this script's own directory rather than $REPO_ROOT, which is
+# caller-overridable via $1: the sibling tool always sits next to this file,
+# whatever root is being linted.
+pp_tool="$(cd "$(dirname "$0")" && pwd)/check-posix-portability.sh"
+if [ -x "$pp_tool" ]; then
+    if pp_out="$("$pp_tool" 2>&1)"; then
+        pass "tools: BSD/macOS portability ratchet"
+    else
+        fail "tools: BSD/macOS portability ratchet"
+        printf '%s\n' "$pp_out" | head -20
+    fi
+else
+    skip "tools: check-posix-portability.sh not present"
 fi
 
 # --- Bash-3.2 forbidden-construct lint for #321 scripts ---
