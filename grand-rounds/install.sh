@@ -105,7 +105,12 @@ if ! command -v agentis >/dev/null 2>&1; then
     warn "agentis not found on PATH. Install the prebuilt binary:"
     warn "  curl -fsSL https://raw.githubusercontent.com/Replikanti/agentis/main/install.sh | sh"
     warn "  (>= 1.22.3; this federation was developed against 1.28.0.)"
-    warn "  NOT \`cargo install agentis\` — it is not published on crates.io."
+    # Kept because it is the command a Rust developer reaches for first, and
+    # following it costs a full rustup install before it fails. Re-checked
+    # 2026-09-01: no crate named agentis, agentis-cli, agentis-core, agentis-bin
+    # or agentis-installer exists. Drop this line when Replikanti/agentis-core#964
+    # ships and `cargo binstall agentis` actually resolves — not before.
+    warn "  \`cargo install agentis\` and \`cargo binstall agentis\` both fail: no such crate."
     missing=1
 fi
 
