@@ -68,7 +68,10 @@ make_tree() {
     {
         printf '# test allowlist\n'
         local e
-        for e in "$@"; do printf '%s\n' "$e"; done
+        # Keys are repo-relative since #2083 widened the scan beyond a single
+        # federation. Fixtures still name their sites federation-relative, so
+        # the prefix is added here rather than in twelve call sites.
+        for e in "$@"; do printf 'dev-apprenticeship/%s\n' "$e"; done
     } > "$root/allowlist.txt"
 }
 

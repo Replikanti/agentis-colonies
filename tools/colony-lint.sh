@@ -674,7 +674,7 @@ fi
 if [ -x "$REPO_ROOT/tools/check-substrate-purity.sh" ]; then
     check_out="$("$REPO_ROOT/tools/check-substrate-purity.sh" "$REPO_ROOT" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
-        pass "check-substrate-purity: no NEW embedded interpreter in dev-apprenticeship exec sh (#1587)"
+        pass "check-substrate-purity: no NEW embedded interpreter in any */agents/*.ag exec sh (#1587, scope widened #2083)"
     elif [ "$check_rc" -eq 2 ]; then
         fail "check-substrate-purity: infra/usage error (exit 2 — not a purity finding)"
         printf '%s\n' "$check_out"
