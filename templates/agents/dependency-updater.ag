@@ -60,14 +60,18 @@ fn get_confidence() -> float {
 // don't depend on the host having GNU `date -d` (macOS bash 3.2 ships
 // only BSD `date`, which lacks `-d <iso8601>`).
 fn should_run_now() -> int {
-    let last = recall_latest("dependency_updater:last_check");
-    if len(last) == 0 {
-        return 1;
-    };
-    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-    let cmd = "python3 -c 'import sys,datetime,time; ts=sys.argv[1]; t=datetime.datetime.strptime(ts.rstrip(\"Z\"), \"%Y-%m-%dT%H:%M:%S\").replace(tzinfo=datetime.timezone.utc).timestamp(); print(1 if (time.time() - t) >= 300 else 0)' " + shell_escape(last);
-    let raw = try { exec sh cmd; } catch e { "1"; };
-    return parse_int(raw);
+    // Elapsed time is integer arithmetic on an epoch-ms memo. Earlier revisions
+    // stored an ISO string (a `date` fork) and re-parsed it with a `python3 -c
+    // strptime` one-liner "to avoid GNU/BSD date divergence" — two subprocesses
+    // per tick to compute a subtraction, inherited by every colony scaffolded
+    // from this template.
+    //
+    // Migration: an existing colony's ISO value parses as 0, so the first tick
+    // after upgrade reads stale, runs once, and writes the new format.
+    let last_ms = parse_int(recall_latest("dependency_updater:last_check_ms"));
+    if last_ms <= 0 { return 1; };
+    if now_ms() - last_ms >= 300 * 1000 { return 1; };
+    return 0;
 }
 
 fn tick(reason: string) -> void {
@@ -83,10 +87,8 @@ fn tick(reason: string) -> void {
     };
 
     if len(raw) < 3 {
-        let now_e0 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e0) > 0 {
-            memo_write("dependency_updater:last_check", now_e0);
-        };
+                    memo_write("dependency_updater:last_check", now_iso());
+            memo_write("dependency_updater:last_check_ms", to_string(now_ms()));
         return;
     };
 
@@ -95,10 +97,8 @@ fn tick(reason: string) -> void {
     // when the response is an empty array.
     let head_iid = parse_int(to_string(json_get(raw, "[0].iid")));
     if head_iid == 0 {
-        let now_e1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e1) > 0 {
-            memo_write("dependency_updater:last_check", now_e1);
-        };
+                    memo_write("dependency_updater:last_check", now_iso());
+            memo_write("dependency_updater:last_check_ms", to_string(now_ms()));
         return;
     };
 
@@ -117,10 +117,8 @@ fn tick(reason: string) -> void {
         if analysis.candidate_iid == 0 { true; } else { false; };
     };
     if no_candidate {
-        let now_e2 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e2) > 0 {
-            memo_write("dependency_updater:last_check", now_e2);
-        };
+                    memo_write("dependency_updater:last_check", now_iso());
+            memo_write("dependency_updater:last_check_ms", to_string(now_ms()));
         return;
     };
 
@@ -190,14 +188,16 @@ fn tick(reason: string) -> void {
             emit("__COLONY_NAME__:dependabot_pr_seen", analysis);
             learn("merge_dep_pr", "pr " + to_string(analysis.candidate_iid), "blocked", "partial", ["review-gated", "dependency-updater"]);
         };
-    } else if my_tier == "review-gated" {
+    } else {
+        if my_tier == "review-gated" {
         let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(analysis.candidate_iid) + " --body " + shell_escape(approve_body);
         try { exec sh post_cmd; } catch e {
             print("[dependency_updater] failed to post approval:", e);
         };
         emit("__COLONY_NAME__:dependabot_pr_seen", analysis);
         learn("merge_dep_pr", "pr " + to_string(analysis.candidate_iid), "approved", "partial", ["review-gated", "dependency-updater"]);
-    } else if my_tier == "propose" {
+    } else {
+        if my_tier == "propose" {
         // Draft only: emit the candidate on the bus + post the read-only
         // assessment as a comment. Non-terminal — operator decides.
         let post_cmd = "$COLONY_DIR/scripts/forge-api.sh post-note " + to_string(analysis.candidate_iid) + " --body " + shell_escape(assess_body);
@@ -218,10 +218,10 @@ fn tick(reason: string) -> void {
         };
         print("[dependency_updater] Observing (tier:", my_tier, ") PR:", analysis.candidate_iid, "package:", analysis.candidate_package);
         learn("merge_dep_pr", "pr " + to_string(analysis.candidate_iid), "observed", outcome, ["observed", "dependency-updater"]);
+            }
+        }
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-    if len(now) > 0 {
-        memo_write("dependency_updater:last_check", now);
-    };
+            memo_write("dependency_updater:last_check", now_iso());
+        memo_write("dependency_updater:last_check_ms", to_string(now_ms()));
 }

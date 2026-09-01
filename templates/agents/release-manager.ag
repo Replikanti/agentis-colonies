@@ -62,14 +62,18 @@ fn get_confidence() -> float {
 // Memo gate: only call prompt() if at least 5 minutes have passed since
 // the last tick — same idiom as `dependency-updater`.
 fn should_run_now() -> int {
-    let last = recall_latest("release_manager:last_check");
-    if len(last) == 0 {
-        return 1;
-    };
-    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-    let cmd = "python3 -c 'import sys,datetime,time; ts=sys.argv[1]; t=datetime.datetime.strptime(ts.rstrip(\"Z\"), \"%Y-%m-%dT%H:%M:%S\").replace(tzinfo=datetime.timezone.utc).timestamp(); print(1 if (time.time() - t) >= 300 else 0)' " + shell_escape(last);
-    let raw = try { exec sh cmd; } catch e { "1"; };
-    return parse_int(raw);
+    // Elapsed time is integer arithmetic on an epoch-ms memo. Earlier revisions
+    // stored an ISO string (a `date` fork) and re-parsed it with a `python3 -c
+    // strptime` one-liner "to avoid GNU/BSD date divergence" — two subprocesses
+    // per tick to compute a subtraction, inherited by every colony scaffolded
+    // from this template.
+    //
+    // Migration: an existing colony's ISO value parses as 0, so the first tick
+    // after upgrade reads stale, runs once, and writes the new format.
+    let last_ms = parse_int(recall_latest("release_manager:last_check_ms"));
+    if last_ms <= 0 { return 1; };
+    if now_ms() - last_ms >= 300 * 1000 { return 1; };
+    return 0;
 }
 
 fn tick(reason: string) -> void {
@@ -93,6 +97,8 @@ fn tick(reason: string) -> void {
         last_iso_via_json;
     } else {
         let fallback = try {
+            // substrate-purity: deferred (no ISO date-arithmetic builtin;
+            // the GNU/BSD fallback chain is why this one stays a fork)
             exec sh "date -u -d '30 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-30d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 2000-01-01T00:00:00Z";
         } catch e { "2000-01-01T00:00:00Z"; };
         fallback;
@@ -109,10 +115,8 @@ fn tick(reason: string) -> void {
     // window even worth assessing. Skip the prompt entirely.
     let head_iid = parse_int(to_string(json_get(mrs_raw, "[0].iid")));
     if head_iid == 0 {
-        let now_e0 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e0) > 0 {
-            memo_write("release_manager:last_check", now_e0);
-        };
+                    memo_write("release_manager:last_check", now_iso());
+            memo_write("release_manager:last_check_ms", to_string(now_ms()));
         return;
     };
 
@@ -125,10 +129,8 @@ fn tick(reason: string) -> void {
     ) -> ReleaseAssessment;
 
     if assessment.mr_count_since_last == 0 {
-        let now_e1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e1) > 0 {
-            memo_write("release_manager:last_check", now_e1);
-        };
+                    memo_write("release_manager:last_check", now_iso());
+            memo_write("release_manager:last_check_ms", to_string(now_ms()));
         return;
     };
 
@@ -201,7 +203,8 @@ fn tick(reason: string) -> void {
             emit("__COLONY_NAME__:release_window_assessment", assessment);
             learn("release_window", "v" + assessment.suggested_version, assessment.bump_type + ": " + assessment.rationale, "partial", ["review-gated", "release-manager"]);
         };
-    } else if my_tier == "review-gated" {
+    } else {
+        if my_tier == "review-gated" {
         // Open the release PR with VERSION + CHANGELOG bump rationale.
         // Don't merge it — operator gates the terminal action.
         // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
@@ -211,7 +214,8 @@ fn tick(reason: string) -> void {
         };
         emit("__COLONY_NAME__:release_window_assessment", assessment);
         learn("release_window", "v" + assessment.suggested_version, assessment.bump_type + ": " + assessment.rationale, "partial", ["review-gated", "release-manager"]);
-    } else if my_tier == "propose" {
+    } else {
+        if my_tier == "propose" {
         // Bus-only emit. No PR opened.
         emit("__COLONY_NAME__:release_window_assessment", assessment);
         print("[release_manager] Drafted release window (propose) v", assessment.suggested_version, "(", assessment.mr_count_since_last, "MRs)");
@@ -222,10 +226,10 @@ fn tick(reason: string) -> void {
         // version back — proxy for "would have released around now").
         print("[release_manager] Observing (tier:", my_tier, ") suggested:", assessment.suggested_version, "(", assessment.mr_count_since_last, "MRs)");
         learn("release_window", "v" + assessment.suggested_version, assessment.bump_type + ": " + assessment.rationale, "partial", ["observed", "release-manager"]);
+            }
+        }
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-    if len(now) > 0 {
-        memo_write("release_manager:last_check", now);
-    };
+            memo_write("release_manager:last_check", now_iso());
+        memo_write("release_manager:last_check_ms", to_string(now_ms()));
 }
