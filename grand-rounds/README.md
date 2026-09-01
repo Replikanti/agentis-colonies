@@ -64,11 +64,18 @@ LLM — if you are evaluating this repository, start there.
 `install.sh` names the exact install command for your operating system for
 anything that is missing. The only hard requirements for this path are **agentis**, **python3** and
 **git**; a container runtime is not needed. Install agentis with the upstream
-prebuilt binary — it is **not** on crates.io, so `cargo install agentis` fails:
+prebuilt binary:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Replikanti/agentis/main/install.sh | sh
 ```
+
+Not `cargo install agentis`, and not `cargo binstall agentis` either: no crate
+by that name is published, so both fail — the second one only after resolving
+the index. This is worth stating rather than leaving implicit, because it is the
+command a Rust developer tries first and it costs a full rustup installation
+before it fails. Re-checked 2026-09-01 against crates.io; it changes when
+[agentis-core#964](https://github.com/Replikanti/agentis-core/issues/964) ships.
 
 ### B. The full diagnostic pipeline (needs gated data and an LLM backend)
 
