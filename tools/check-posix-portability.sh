@@ -70,7 +70,8 @@ if [ ! -f "$RULES_FILE" ]; then
     echo "check-posix-portability: missing rule table $RULES_FILE" >&2
     exit 2
 fi
-RULES="$(grep -vE '^[[:space:]]*(#|$)' "$RULES_FILE")"
+EXEMPTS="$(grep -E '^@exempt~' "$RULES_FILE" || true)"
+RULES="$(grep -vE '^[[:space:]]*(#|$|@exempt~)' "$RULES_FILE")"
 if [ -z "$RULES" ]; then
     echo "check-posix-portability: rule table $RULES_FILE has no rules" >&2
     exit 2
@@ -98,12 +99,20 @@ allow=""
 # non-empty reason, and it silences only this line.
 is_waived() {
     _f="$1"; _n="$2"
-    _ctx="$(sed -n "${_n}p" "$_f")"
-    if [ "$_n" -gt 1 ]; then
-        _ctx="$_ctx
-$(sed -n "$((_n - 1))p" "$_f")"
+    # Same line always counts.
+    if sed -n "${_n}p" "$_f" | grep -qE 'posix-portability: deferred \([^)]+\)'; then
+        return 0
     fi
-    printf '%s\n' "$_ctx" | grep -qE 'posix-portability: deferred \([^)]+\)'
+    # The line above counts only if it is a COMMENT line. Without that test, a
+    # trailing waiver on a line of code silenced the NEXT line too — including a
+    # different rule entirely — because "the line above" is true for both.
+    [ "$_n" -gt 1 ] || return 1
+    _prev="$(sed -n "$((_n - 1))p" "$_f")"
+    case "$_prev" in
+        (\#*|" "*\#*|"	"*) ;;
+        (*) return 1 ;;
+    esac
+    printf '%s\n' "$_prev" | grep -qE '^[[:space:]]*#.*posix-portability: deferred \([^)]+\)'
 }
 
 # One alternation of every rule pattern, used only to decide whether a file is
@@ -121,6 +130,10 @@ ANY_RULE="${ANY_RULE%|}"
 # Emit `path:id|why` for each rule with at least one UNWAIVED match in the file.
 scan_file() {
     _rel="$1"; _f="$2"
+    if [ ! -r "$_f" ]; then
+        printf '%s:UNREADABLE|file cannot be read, so it cannot be checked\n' "$_rel"
+        return 0
+    fi
     grep -qE -- "$ANY_RULE" "$_f" 2>/dev/null || return 0
     # Only pay for per-line waiver lookups in files that actually carry one.
     _has_waiver=no
@@ -139,7 +152,23 @@ scan_file() {
         _pat="${_line#*|}"
         _pat="${_pat%|*}"
         [ -n "$_id" ] || continue
+        # An `@exempt~<id>~<pattern>` row names a same-line construct that makes
+        # the site portable after all (a `-f`/`-r` fallback beside a GNU flag).
+        # Documented as portable since the first version; unimplemented until
+        # now, which carried three false positives as real debt.
+        _exempt="$(printf '%s\n' "$EXEMPTS" | while IFS= read -r _e; do
+            _eid="${_e#@exempt~}"; _epat="${_eid#*~}"; _eid="${_eid%%~*}"
+            [ "$_eid" = "$_id" ] && printf '%s' "$_epat"
+        done)"
         _hits="$(printf '%s\n' "$_cleaned" | grep -nE -- "$_pat" 2>/dev/null | cut -d: -f1)"
+        if [ -n "$_exempt" ] && [ -n "$_hits" ]; then
+            _kept=""
+            for _h in $_hits; do
+                printf '%s\n' "$_cleaned" | sed -n "${_h}p" | grep -qE -- "$_exempt" && continue
+                _kept="$_kept $_h"
+            done
+            _hits="$_kept"
+        fi
         [ -n "$_hits" ] || continue
         if [ "$_has_waiver" = no ]; then
             printf '%s:%s|%s\n' "$_rel" "$_id" "$_why"

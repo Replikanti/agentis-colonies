@@ -13,6 +13,19 @@
 # `local -A` and `readarray` all sailed straight through — including constructs
 # whose own explanation claimed to cover them.
 #
+# The two bash-4 rules are anchored to COMMAND POSITION, because unanchored they
+# matched this repository's own lint error-message strings ("mapfile/readarray
+# detected", "declare -A detected") and carried two false positives as debt. The
+# anchor class must stay wide: `;`, `&`, `(`, `)`, `{`, `}`, `|` and the
+# `if`/`elif`/`then`/`do`/`else` keywords, with [[:space:]] so a TAB works too.
+#
+# An `@exempt~<id>~<pattern>` row says: for rule <id>, a line that ALSO matches
+# <pattern> is portable after all. That is how the `stat -c … || stat -f …`
+# idiom is exempted — documented as portable from the first version but never
+# implemented, so three allowlist rows were false positives carried as real
+# debt. The `~` separator is deliberate: these patterns contain `|`, and the
+# rule rows are split on `|`.
+#
 # Deliberately NOT listed, having been checked and found portable: `sort -V`,
 # `head -c`, `sed -E`, bare `mktemp -d` (Apple's mktemp has had a no-template
 # fallback since shell_cmds-198), and any `stat`/`date` site that already
@@ -27,5 +40,7 @@ stat-c|stat +(-c|--format|--printf)|BSD stat uses -f; put both on one line with 
 date-d|date +(-d |--date)|BSD date uses -v; put both on one line with a fallback
 readlink-f|readlink +(-f|--canonicalize)|BSD readlink has no -f; use the python3 realpath idiom
 shell-realpath|^[^#]*[^.]\brealpath\b|not on macOS before 12.3; use the python3 realpath idiom
-assoc-array|(^|[;&(]|then |do |else )[[:space:]]*(declare|typeset|local) +-A|associative arrays need bash 4; macOS ships 3.2
-mapfile|(^|[;&(]|then |do |else )[[:space:]]*(mapfile|readarray)( |$)|mapfile/readarray need bash 4; macOS ships 3.2
+assoc-array|(^|[;&(){}|]|then |do |else |elif |if )[[:space:]]*(declare|typeset|local)[[:space:]]+-A|associative arrays need bash 4; macOS ships 3.2
+mapfile|(^|[;&(){}|]|then |do |else |elif |if )[[:space:]]*(mapfile|readarray)([[:space:]]|$)|mapfile/readarray need bash 4; macOS ships 3.2
+@exempt~stat-c~stat +(-f|--format=%[A-Za-z])
+@exempt~date-d~date +(-r |-v|--reference)

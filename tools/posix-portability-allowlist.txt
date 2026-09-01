@@ -27,15 +27,12 @@ grand-rounds/baseline/demo-baseline-live.sh:grep-P
 grand-rounds/baseline/demo-baseline-live.sh:sha256sum
 grand-rounds/baseline/demo-lens-smoke-real.sh:sha256sum
 research-foundry/tools/run-research.sh:assoc-array
-research-foundry/tools/test-persistent-snapshot.sh:stat-c
 tools/colony-lint.sh:grep-P
 tools/kill-federation.sh:find-printf
 tools/lib/candidate-fingerprint.sh:sha256sum
 tools/make-dashboard-bundle.sh:sha256sum
 tools/make-federation-bundle.sh:sha256sum
 tools/self-observe.sh:sha256sum
-tools/test-cross-fed-bridge.sh:stat-c
-tools/test-dashboard-freshness-liveness.sh:stat-c
 tools/test-invariant-prover-real-target.sh:shell-realpath
 tools/test-make-dashboard-bundle.sh:sha256sum
 tools/test-make-federation-bundle.sh:sha256sum
