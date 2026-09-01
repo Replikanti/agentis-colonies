@@ -45,14 +45,6 @@ type DepAnalysis {
     reasoning: string
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("dependency_updater:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 // Memo-gated cadence: bail before any prompt() if the last tick stamped
 // less than 300s ago. Reactive colonies tick at 300000ms anyway, so this
 // gate is a no-op there; it doubles as a fail-safe for operators who

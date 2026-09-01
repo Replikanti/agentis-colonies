@@ -59,14 +59,6 @@ type DigestSummary {
     rationale: string
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("digest_poster:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 // 5-minute reactive memo gate. Distinct from the schedule gate — this
 // one lets a fast-tick colony skip the prompt() call when nothing has
 // changed since the last tick. Time math in python3 (BSD-date safe per

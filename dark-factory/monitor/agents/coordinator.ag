@@ -33,15 +33,6 @@
 
 cb 120000;
 
-// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
-fn get_confidence() -> float {
-    let raw = recall_latest("coordinator:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    }
-    return 0.0;
-}
-
 // --- read a watcher's blackboard signal + pull its verdict ---------------------
 // json_get on a miss returns Void -> to_string => "void"; collapse that to "".
 fn sanitize(s: string) -> string {
@@ -227,7 +218,7 @@ fn tick(reason: string) -> void {
 
     print("coordinator: fuse " + sig + " -> score=" + to_string(score)
         + " sev=" + sevLabel + " novel=" + to_string(novel)
-        + " (conf=" + to_string(get_confidence()) + ")");
+        + " (conf=" + to_string(confidence_value("coordinator")) + ")");
 
     let key = "fused:" + sig;
     let desc = "fused " + sig + " score=" + to_string(score);

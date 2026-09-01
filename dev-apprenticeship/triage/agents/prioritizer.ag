@@ -218,14 +218,6 @@ fn effective_priority_vocab() -> string {
     return "priority::critical, priority::high, priority::medium, priority::low";
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("prioritizer:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 // #1638 P3 cluster A: shared canonical-context helpers, added byte-identically
 // to labeler.ag / router.ag / prioritizer.ag (the nth_field/repo_field
 // duplication precedent; drift-asserted across the three files by
@@ -581,12 +573,12 @@ fn record_rule_feedback(blob: string, signal: int) -> void {
     print("[prioritizer] crystallizer feedback: rule", rule_id, "signal", signal);
 }
 
-// #1430: per-repo write target for the auto-confidence bump. get_confidence()
+// #1430: per-repo write target for the auto-confidence bump. confidence_value("prioritizer")
 // keeps reading the legacy unscoped key (bounded by clamp_auto's 0.85 cap).
 // Operators set per-repo overrides via
 // `agentis memo set <owner>__<repo>:prioritizer:confidence <value>`.
 fn apply_feedback(delta: float, owner: string, repo: string) -> void {
-    let cur = get_confidence();
+    let cur = confidence_value("prioritizer");
     let target = clamp_auto(cur, delta);
     memo_write(scoped_memo(owner, repo, "prioritizer:confidence"), to_string(target));
     print("[prioritizer] feedback delta", delta, "confidence", cur, "->", target);

@@ -53,15 +53,6 @@ fn board_max() -> int {
     return 64;
 }
 
-// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
-fn get_confidence() -> float {
-    let raw = recall_latest("value-scorer:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    }
-    return 0.0;
-}
-
 // --- candidate-cell field extraction (`<address>|<chain>|<metadata>`) -----------
 fn cell_address(cell: string) -> string {
     let bar = index_of(cell, "|");
@@ -306,7 +297,7 @@ fn tick(reason: string) -> void {
     let cleared = score_board(castBin, rpc, sig, floor, lines, 0, total, board_max(), 0);
 
     print("value-scorer: scored board -> " + to_string(cleared)
-        + " above floor (conf=" + to_string(get_confidence()) + ")");
+        + " above floor (conf=" + to_string(confidence_value("value-scorer")) + ")");
 
     let verdict = if cleared > 0 { "qualified" } else { "none" };
     let outcome = if cleared > 0 { "success" } else { "partial" };

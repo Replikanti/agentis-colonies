@@ -95,14 +95,6 @@ fn merged_mr_cmd(owner: string, repo: string) -> string {
     return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view impl" + repo_arg(owner, repo);
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("refactorer:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 // #200: suppress repeated refactor suggestions for the same `issue_id`
 // within a 300s cooldown window (5× the 60s tick interval).
 // Defense-in-depth: code_writer has its own (iid, updated_at) gate so

@@ -24,14 +24,6 @@ type Finding {
     class: string
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("hunter:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 fn tribe_name() -> string {
     let _tn = try { exec sh "printenv TRIBE_NAME"; } catch e { ""; };
     if len(_tn) > 0 {
@@ -618,7 +610,7 @@ fn tick(reason: string) -> void {
     // variant_stats:* memos at verified-finding / false-positive sites
     // for per-variant fitness telemetry.
     let _variant = recall_latest("hunter:prompt_variant");
-    let conf = get_confidence();
+    let conf = confidence_value("hunter");
     print("[hunter] tick conf=", conf);
     // #485 finite-pool: per-tick metabolic cost drains the shared tribe
     // pool. Pool capacity bounded at tribe:pool_cap (default unset =

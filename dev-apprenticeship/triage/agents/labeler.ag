@@ -433,14 +433,6 @@ fn issues_cmd(owner: string, repo: string) -> string {
     return "$COLONY_DIR/scripts/forge-api.sh issues --view labeler" + repo_arg(owner, repo);
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("labeler:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 // #106: Auto-confidence from feedback.
 //
 // Each time labeler emits a suggestion at 0.6-0.84, it stashes a "pending
@@ -537,13 +529,13 @@ fn record_rule_feedback(blob: string, signal: int) -> void {
     print("[labeler] crystallizer feedback: rule", rule_id, "signal", signal);
 }
 
-// #316 M4: per-repo write target. `get_confidence()` continues reading the
+// #316 M4: per-repo write target. `confidence_value("labeler")` continues reading the
 // legacy unscoped key (intentional — see plan §8: bounded by clamp_auto's
 // 0.85 cap, so per-repo drift cannot push past the autonomy threshold from
 // reality-check feedback alone). Operators set per-repo overrides via
 // `agentis memo set <owner>__<repo>:labeler:confidence <value>`.
 fn apply_feedback(delta: float, owner: string, repo: string) -> void {
-    let cur = get_confidence();
+    let cur = confidence_value("labeler");
     let target = clamp_auto(cur, delta);
     memo_write(scoped_memo(owner, repo, "labeler:confidence"), to_string(target));
     print("[labeler] feedback delta", delta, "confidence", cur, "->", target);

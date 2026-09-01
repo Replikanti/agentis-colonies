@@ -27,14 +27,6 @@ type LabelDecision {
     confidence: float
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("candidate_labeler:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 fn tick(reason: string) -> void {
     let inbox = try { poll_inbox(); } catch e { ""; };
     if len(to_string(inbox)) < 3 {
@@ -51,7 +43,8 @@ fn tick(reason: string) -> void {
             "success",
             ["acted", "triage"]
         );
-    } else if my_tier == "review-gated" {
+    } else {
+        if my_tier == "review-gated" {
         // Real agent would draft via forge-api.sh; stubbed here.
         learn(
             "label_issue",
@@ -60,7 +53,8 @@ fn tick(reason: string) -> void {
             "success",
             ["review-gated", "triage"]
         );
-    } else if my_tier == "propose" {
+        } else {
+            if my_tier == "propose" {
         emit("triage:label_suggestion", to_string(inbox));
         learn(
             "label_issue",
@@ -69,15 +63,17 @@ fn tick(reason: string) -> void {
             "partial",
             ["emitted", "triage"]
         );
-    } else {
-        // shadow / dormant: observe only.
-        learn(
-            "label_issue",
-            to_string(inbox),
-            "labels-observed",
-            "success",
-            ["observed", "triage"]
-        );
+            } else {
+                // shadow / dormant: observe only.
+                learn(
+                    "label_issue",
+                    to_string(inbox),
+                    "labels-observed",
+                    "success",
+                    ["observed", "triage"]
+                );
+            };
+        };
     };
 
     memo_write("candidate_labeler:last_check", to_string(now()));

@@ -95,14 +95,6 @@ fn unplanned_cmd(owner: string, repo: string) -> string {
     return "$COLONY_DIR/scripts/forge-api.sh issues --needs-planning --view planning" + repo_arg(owner, repo);
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("task_decomposer:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 // #1370 (B2/B3): per-issue handled marker, written at EVERY tier (not just
 // autonomous). Value = the tier the issue was handled at, so a future
 // promotion can re-run by clearing the marker. See scope_estimator.ag for the

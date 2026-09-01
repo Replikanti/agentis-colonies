@@ -60,15 +60,6 @@
 
 cb 90000;
 
-// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
-fn get_confidence() -> float {
-    let raw = recall_latest("notifier:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    }
-    return 0.0;
-}
-
 // json_get on a miss returns Void -> to_string => "void"; collapse that to "".
 fn sanitize(s: string) -> string {
     if s == "void" { return ""; }
@@ -223,7 +214,7 @@ fn tick(reason: string) -> void {
     let beatDue = heartbeat_due(intervalS, lastBeatMs, nowMs);
 
     print("notifier: alert=" + to_string(hasAlert) + " heartbeat_due=" + to_string(beatDue)
-        + " stale_s=" + to_string(staleS) + " (conf=" + to_string(get_confidence()) + ")");
+        + " stale_s=" + to_string(staleS) + " (conf=" + to_string(confidence_value("notifier")) + ")");
 
     // ONE tier() call, branch ONCE (ADR-0001). The tier gates FORWARDING +
     // HEARTBEAT only; the dead-man's switch DECISION above is unchanged by tier.

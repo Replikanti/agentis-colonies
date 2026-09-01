@@ -72,14 +72,6 @@ type Exploration {
     expected_output_format: string
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("explorer:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 fn colony_name() -> string {
     let _cn = getenv("COLONY_NAME");
     if len(_cn) > 0 {
@@ -974,7 +966,7 @@ fn tick(reason: string) -> void {
     };
 
     let _variant = recall_latest("explorer:prompt_variant");
-    let conf = get_confidence();
+    let conf = confidence_value("explorer");
     print("[explorer] tick conf=", conf);
 
     // Read foundry tick state seeded by the orchestrator

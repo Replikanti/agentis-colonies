@@ -22,14 +22,6 @@ type DraftPlan {
     confidence: float
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("plan_reviewer:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 // listen() returns Value::Void on timeout, which to_string() renders as the
 // literal string "void". Treat that (and the empty string) as "no message".
 fn received(s: string) -> bool {

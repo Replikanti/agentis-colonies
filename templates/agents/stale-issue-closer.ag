@@ -42,14 +42,6 @@ type StaleAnalysis {
     reasoning: string
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("stale_issue_closer:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 fn issues_cmd() -> string {
     let ts = recall_latest("stale_issue_closer:last_check");
     if len(ts) > 0 {
