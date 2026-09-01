@@ -78,15 +78,6 @@ fn cell_chain(cell: string) -> string {
     return substring(rest, 0, bar2);
 }
 
-// JSON-string escape a free-text field (mirrors the monitor watchers' json_escape).
-fn json_escape(s: string) -> string {
-    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
-        if c == "\\" { return acc + "\\\\"; }
-        if c == "\"" { return acc + "\\\""; }
-        return acc + c;
-    }, "");
-}
-
 // --- read a single uint value proxy for one candidate via cast (read-only) ------
 // When a value signature is configured: `cast call <addr> <sig>` -> a 0x-hex word
 // -> `cast --to-dec` -> a decimal string. When not: `cast balance <addr>` -> the
@@ -222,8 +213,8 @@ fn value_for_json(value: string) -> string {
 // `verdict` field, not on re-parsing the magnitude). Both are validated digit
 // strings, so no JSON escaping is needed.
 fn verdict_payload(addr: string, chain: string, value: string, floor: string, verdict: string, sev: string) -> string {
-    return "{\"agent\":\"value-scorer\",\"target\":\"" + json_escape(addr)
-         + "\",\"chain\":\"" + json_escape(chain) + "\",\"value\":\"" + value_for_json(value)
+    return "{\"agent\":\"value-scorer\",\"target\":\"" + json_escape_string(addr)
+         + "\",\"chain\":\"" + json_escape_string(chain) + "\",\"value\":\"" + value_for_json(value)
          + "\",\"floor\":\"" + floor + "\",\"verdict\":\"" + verdict
          + "\",\"severity\":\"" + sev + "\"}";
 }

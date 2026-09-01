@@ -79,17 +79,6 @@ fn cell_chain(cell: string) -> string {
     return substring(rest, 0, bar2);
 }
 
-// JSON-string escape a free-text field (mirrors the monitor watchers' #1089
-// json_escape): backslash -> \\ and double-quote -> \" so an address (validated
-// upstream, but defensive here) cannot corrupt the verdict JSON.
-fn json_escape(s: string) -> string {
-    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
-        if c == "\\" { return acc + "\\\\"; }
-        if c == "\"" { return acc + "\\\""; }
-        return acc + c;
-    }, "");
-}
-
 // --- read the verified function-signature surface for one candidate -------------
 // The reader command (PROSPECTOR_ABI_CMD) is run as `sh -c "<cmd>"`; the
 // candidate's address + chain are passed via the ENVIRONMENT (PROSPECTOR_ADDR /
@@ -273,8 +262,8 @@ fn outcome_of(verdict: string) -> string {
 // A compact, deterministic per-candidate verdict payload (JSON). All fields are
 // facts; none is LLM text. `sev` is set by the tier branch.
 fn verdict_payload(addr: string, chain: string, verdict: string, monitorable: bool, sev: string) -> string {
-    return "{\"agent\":\"source-classifier\",\"target\":\"" + json_escape(addr)
-         + "\",\"chain\":\"" + json_escape(chain) + "\",\"family\":\"" + verdict
+    return "{\"agent\":\"source-classifier\",\"target\":\"" + json_escape_string(addr)
+         + "\",\"chain\":\"" + json_escape_string(chain) + "\",\"family\":\"" + verdict
          + "\",\"monitorable\":" + to_string(monitorable) + ",\"severity\":\"" + sev + "\"}";
 }
 

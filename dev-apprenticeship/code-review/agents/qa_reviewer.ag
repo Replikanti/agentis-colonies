@@ -243,8 +243,11 @@ fn adv_status_or_pass(candidate: string) -> string {
     if raw == "fail" { return raw; };
     return "pass";
 }
-// No native string-replace builtin yet (#1587) — per-char fold mirrors
-// `dark-factory/monitor/agents/governance-watcher.ag:94`'s json_escape idiom.
+// No native string-replace builtin yet (#1587). This used to point at
+// governance-watcher.ag's json_escape as the precedent; that function is gone
+// (#2084 — it emitted invalid JSON for control characters and the
+// json_escape_string builtin replaced it). Folding newlines to spaces is a
+// different job from escaping them, so this one stays.
 fn fold_newlines(s: string) -> string {
     return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
         if c == "\n" { return acc + " "; };

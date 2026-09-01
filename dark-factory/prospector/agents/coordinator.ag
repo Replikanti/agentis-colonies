@@ -98,17 +98,6 @@ fn cell_metadata(cell: string) -> string {
     return substring(rest, bar2 + 1, len(rest));
 }
 
-// JSON-string escape a free-text field (mirrors the upstream agents' json_escape):
-// backslash -> \\ and double-quote -> \" so an operator-supplied metadata label
-// containing a `"` cannot corrupt the dossier JSON.
-fn json_escape(s: string) -> string {
-    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
-        if c == "\\" { return acc + "\\\\"; }
-        if c == "\"" { return acc + "\\\""; }
-        return acc + c;
-    }, "");
-}
-
 // json_get on a miss returns Void -> to_string => "void"; collapse to "".
 fn sanitize(s: string) -> string {
     if s == "void" { return ""; }
@@ -314,12 +303,12 @@ fn outcome_of(qualified: int) -> string {
 // the failed gate (when any), the suggested invariant (the monitor handoff), and
 // the value verdict. All fields are upstream FACTS; none is LLM text.
 fn dossier_payload(addr: string, chain: string, meta: string, family: string, valVerdict: string, qualified: bool, why: string, invariant: string, bounty: string, commit: string) -> string {
-    return "{\"agent\":\"coordinator\",\"target\":\"" + json_escape(addr)
-         + "\",\"chain\":\"" + json_escape(chain) + "\",\"label\":\"" + json_escape(meta)
+    return "{\"agent\":\"coordinator\",\"target\":\"" + json_escape_string(addr)
+         + "\",\"chain\":\"" + json_escape_string(chain) + "\",\"label\":\"" + json_escape_string(meta)
          + "\",\"qualifies\":" + to_string(qualified) + ",\"family\":\"" + family
          + "\",\"value\":\"" + valVerdict + "\",\"why\":\"" + why
-         + "\",\"watch\":\"" + json_escape(invariant)
-         + "\",\"bounty\":\"" + bounty + "\",\"commit\":\"" + json_escape(commit) + "\"}";
+         + "\",\"watch\":\"" + json_escape_string(invariant)
+         + "\",\"bounty\":\"" + bounty + "\",\"commit\":\"" + json_escape_string(commit) + "\"}";
 }
 
 // Write one candidate's dossier to its per-target blackboard memo (a memo write —

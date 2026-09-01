@@ -32,6 +32,7 @@ cb 300000;
 
 // --- file readers (dynamic paths -> safe-exec-concat per hunter.ag precedent) ---
 fn cat_file(path: string) -> string {
+    if len(path) == 0 { return ""; }
     let at = index_of(path, "@");
     if at < 0 {
         // colony-lint: safe-exec-concat

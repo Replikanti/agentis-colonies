@@ -68,17 +68,6 @@ fn label_or(raw: string, addr: string) -> string {
     return addr;
 }
 
-// JSON-string escape a free-text field (#1089): backslash -> \\ and double-quote
-// -> \" , so an operator-authored label/address containing a `"` cannot corrupt
-// the alert/signal JSON. Per-char fold (.ag has no string-replace builtin).
-fn json_escape(s: string) -> string {
-    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
-        if c == "\\" { return acc + "\\\\"; }
-        if c == "\"" { return acc + "\\\""; }
-        return acc + c;
-    }, "");
-}
-
 // The centralized read wrapper (#1098): scripts/cast-read.sh, the ONE place RPC
 // failover + read consensus live. "" => no wrapper, use the legacy direct `cast`.
 fn cast_reader() -> string {
@@ -282,9 +271,9 @@ fn value_for_json(s: string) -> string {
 // computed; none is LLM text. `sev` is set by the tier branch (draft vs page).
 // reserve/baseline are the full wei digit strings, quoted (see value_for_json).
 fn alert_payload(label: string, verdict: string, reserve: string, base: string, addr: string, sev: string) -> string {
-    return "{\"watcher\":\"liquidity\",\"pool\":\"" + json_escape(label) + "\",\"verdict\":\"" + verdict
+    return "{\"watcher\":\"liquidity\",\"pool\":\"" + json_escape_string(label) + "\",\"verdict\":\"" + verdict
          + "\",\"reserve\":\"" + value_for_json(reserve) + "\",\"baseline\":\"" + value_for_json(base)
-         + "\",\"address\":\"" + json_escape(addr) + "\",\"severity\":\"" + sev + "\"}";
+         + "\",\"address\":\"" + json_escape_string(addr) + "\",\"severity\":\"" + sev + "\"}";
 }
 
 fn tick(reason: string) -> void {
