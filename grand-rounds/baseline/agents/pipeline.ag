@@ -139,6 +139,68 @@ fn bcftools_bin() -> string {
     return getenv_or("MVA_BCFTOOLS", "bcftools");
 }
 
+// Content fingerprint of a VCF: a digest of its RECORDS, not of its bytes.
+//
+// Hashing the file does not work here, and the reason is not obvious. bcftools
+// stamps `Date=<wall clock>` and the full command line — including run-specific
+// temp paths — into the `##` header of everything it writes, so the normalized
+// VCF is byte-different on EVERY run over the same input. Measured: four
+// consecutive runs, four different file digests. A manifest built on that
+// changes every time, which does not merely fail to fix #2069 — it silently
+// disables the idempotency skip altogether and re-runs a stage whose floor is
+// ~100 s and whose ceiling is 6 h. Caught by the live suite, not by CI.
+//
+// Stripping `##` meta lines leaves the column header and the variant records:
+// exactly what Exomiser consumes, and stable across re-normalisation. ~4.8 s on
+// a real 191 MB VCF, against that same 100 s floor.
+//
+// Returns "" when the file is absent, unreadable, or no digest tool exists.
+// That empty value means "cannot pin", and every caller MUST treat it as such
+// — never as a match. A helper that quietly substituted a constant on failure
+// would rebuild exactly the bug this replaces.
+fn vcf_content_digest(path: string) -> string {
+    // The shell does bulk mechanical work only — decompress, drop meta lines,
+    // digest. Every decision stays in .ag.
+    // colony-lint: safe-exec-concat
+    let line = trim(exec sh timeout 900000 "{ gunzip -c " + shell_escape(path)
+        + " 2>/dev/null || cat " + shell_escape(path)
+        + " 2>/dev/null; } | grep -v '^##' | { sha256sum 2>/dev/null || shasum -a 256 2>/dev/null; } | head -1");
+    let sp = index_of(line, " ");
+    if sp <= 0 { return ""; }
+    let tok = substring(line, 0, sp);
+    // The first field is NOT trusted as a digest. GNU coreutils prefixes the
+    // line with a backslash when the filename holds a backslash or newline, and
+    // a sha256sum that writes to stdout before failing leaves its own message
+    // here while the working shasum result is discarded by head. Either way an
+    // unvalidated token is a CONSTANT that does not track content — the #2069
+    // failure mode, reintroduced through the back door.
+    let hex = regex_capture("^([0-9a-f]{64})$", tok, 1);
+    if len(hex) != 64 { return ""; }
+    // An absent, unreadable or record-less file yields an EMPTY stream, and the
+    // digest of an empty stream is a perfectly well-formed constant. Accepting
+    // it would make every unfingerprintable input hash identically — a match
+    // that means nothing, which is precisely #2069 wearing a different hat.
+    // This helper's own regression test caught it.
+    if hex == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" { return ""; }
+    return hex;
+}
+
+// The Exomiser idempotency manifest. Both the runner (which writes the marker)
+// and the fallback reader (which trusts it) derive it HERE, so they cannot
+// drift apart.
+//
+// The nvcf RECORD CONTENT is in the manifest, not just its path (#2069). The
+// normalized output path is a constant, so a path-only manifest matched across
+// runs with genuinely different variant content and the stage idempotent-
+// skipped, serving Exomiser rankings computed from a superseded VCF.
+//
+// Returns "" when the input cannot be fingerprinted.
+fn exomiser_manifest_hash(nvcf: string, hpo: string, assembly: string) -> string {
+    let digest = vcf_content_digest(nvcf);
+    if len(digest) == 0 { return ""; }
+    return sha256_hex(nvcf + "|" + digest + "|" + hpo + "|" + assembly);
+}
+
 // Is M3 lens mode requested? (opt-in, default off — the Exomiser opt-in
 // precedent. Every M3 agent early-returns on the default so the baseline
 // submission stays byte-for-byte identical.)
@@ -856,18 +918,23 @@ agent exomiser_runner() -> void {
     exec sh "printf %s " + shell_escape(analysis) + " > " + shell_escape(analysisfile);
     record_rows("exomiser", 1);
 
-    // Idempotency: hash the input manifest (vcf + hpo + assembly). Skip a
-    // completed run whose marker matches (N4 idempotent skip).
-    let manifest = nvcf + "|" + hpo + "|" + assembly;
-    let mhash = sha256_hex(manifest);
-    let marker = wd + "/exomiser/.done." + mhash;
-    // colony-lint: safe-exec-concat
-    let done = trim(exec sh "test -f " + shell_escape(marker) + " && echo yes || echo no");
+    // Idempotency: skip a completed run whose marker matches this run's inputs
+    // (N4 idempotent skip). The manifest pins the VCF CONTENT, not merely its
+    // path — see exomiser_manifest_hash and #2069.
+    let mhash = exomiser_manifest_hash(nvcf, hpo, assembly);
+    let marker = if len(mhash) == 0 { "" } else { wd + "/exomiser/.done." + mhash };
     let tsv = outdir + "/" + prefix + ".variants.tsv";
-    if done == "yes" {
-        print("exomiser_runner: idempotent skip — completed run for this manifest exists");
-        emit("baseline:exomiser_tsv", tsv);
-        return;
+    if len(marker) == 0 {
+        print("exomiser_runner: cannot fingerprint ", nvcf, " — running the stage rather than trusting an unpinned match");
+    }
+    if len(marker) > 0 {
+        // colony-lint: safe-exec-concat
+        let done = trim(exec sh "test -f " + shell_escape(marker) + " && echo yes || echo no");
+        if done == "yes" {
+            print("exomiser_runner: idempotent skip — completed run for this manifest exists");
+            emit("baseline:exomiser_tsv", tsv);
+            return;
+        }
     }
 
     // Blocking run with an explicit inline timeout (N4). EXOMISER_TIMEOUT_MS is
@@ -893,8 +960,18 @@ agent exomiser_runner() -> void {
         emit("baseline:abort", "exomiser-empty");
         return;
     }
-    // colony-lint: safe-exec-concat
-    exec sh "touch " + shell_escape(marker);
+    if len(marker) > 0 {
+        // Exactly ONE marker may exist, because there is exactly one output
+        // TSV and its path is constant. Markers used to accumulate one per
+        // input content, so the sequence A -> B -> A found A's stale marker
+        // still sitting next to a TSV holding B's rankings and skipped. Clear
+        // the others first: a marker present must mean the TSV beside it was
+        // produced for that manifest.
+        // colony-lint: safe-exec-concat
+        exec sh "rm -f " + shell_escape(outdir) + "/.done.* 2>/dev/null || true";
+        // colony-lint: safe-exec-concat
+        exec sh "touch " + shell_escape(marker);
+    }
     print("exomiser_runner: run complete (", lines, " TSV lines)");
     emit("baseline:exomiser_tsv", tsv);
 }
@@ -1089,15 +1166,26 @@ fn exomiser_tsv_path(wd: string) -> string {
     let canonical = wd + "/exomiser/baseline.variants.tsv";
     // Manifest-pinned fallback (#2055 review): only trust a canonical TSV
     // whose .done.<mhash> marker matches THIS run's inputs — the same
-    // nvcf|hpo|assembly manifest exomiser_runner hashes. An Exomiser output
+    // manifest exomiser_runner hashes. An Exomiser output
     // computed for an earlier HPO set / VCF must never silently merge into a
     // submission claiming the new approved phenotype. The bus hpo payload is
     // the draft WITHOUT the file's trailing newline, hence the trim.
+    // Cheap exit first. With Exomiser off (the default) there is no canonical
+    // TSV, the answer can only be "", and fingerprinting the nvcf would cost
+    // ~470 ms on a real 191 MB VCF and print a refusal to operators who never
+    // enabled the stage.
+    // colony-lint: safe-exec-concat
+    let have = trim(exec sh "test -s " + shell_escape(canonical) + " && echo yes || echo no");
+    if have != "yes" { return ""; }
     let nvcf = recall_latest("baseline:nvcf");
     // colony-lint: safe-exec-concat
     let hpo = trim(exec sh "cat " + shell_escape(wd + "/phenotype/hpo-draft.txt") + " 2>/dev/null || true");
     let assembly = getenv_or("MVA_EXOMISER_ASSEMBLY", "hg38");
-    let mhash = sha256_hex(nvcf + "|" + hpo + "|" + assembly);
+    let mhash = exomiser_manifest_hash(nvcf, hpo, assembly);
+    if len(mhash) == 0 {
+        print("exomiser_tsv_path: cannot fingerprint ", nvcf, " — refusing the canonical TSV fallback");
+        return "";
+    }
     let marker = wd + "/exomiser/.done." + mhash;
     // colony-lint: safe-exec-concat
     let ok = trim(exec sh "test -f " + shell_escape(marker) + " && test -s " + shell_escape(canonical) + " && echo yes || echo no");

@@ -276,8 +276,17 @@ if grep -qF 'approved_hash != draft_hash' "$AG"; then
 else
     bad "D6 gate does not compare a stored hash"
 fi
-# No embedded interpreters (substrate-purity spirit).
-if grep -qE 'python3 -c|[^a-z]awk |[^a-z]sed ' "$AG"; then
+# No embedded interpreters (substrate-purity spirit). Comment-only lines are
+# stripped first: the check used to fire on a comment that merely NAMED one of
+# these tools, e.g. one explaining why an awk pipe had been removed. A lint
+# that cannot tell code from prose teaches people not to write the prose.
+# Counted, not short-circuited: `grep -q` exits on its first match, which
+# SIGPIPEs the upstream grep to status 141, and under `set -o pipefail` that
+# makes the whole pipeline non-zero — so a REAL finding took the else branch
+# and reported clean. Only matches near end-of-file survived long enough to be
+# reported, which is exactly why hand-checking it looked fine.
+_embedded="$(grep -v '^[[:space:]]*//' "$AG" | grep -cE 'python3 -c|[^a-z]awk |[^a-z]sed ' || true)"
+if [ "$_embedded" -gt 0 ]; then
     bad "embedded python3 -c / awk / sed logic found in the .ag"
 else
     ok "no embedded python3 -c / awk / sed logic"
@@ -335,6 +344,107 @@ if [ -n "$cb_ag" ] && [ "$cb_ag" = "$cb_toml" ]; then
     ok "cb $cb_ag; == cb_budget $cb_toml"
 else
     bad "cb ($cb_ag) != cb_budget ($cb_toml)"
+fi
+
+# --- 5. Exomiser idempotency manifest pins CONTENT, not path (#2069) --------
+# The normalized VCF path is a constant, so a manifest built from the path
+# alone matched across runs with genuinely different variants and the stage
+# idempotent-skipped, serving rankings computed from a superseded VCF.
+echo "5. exomiser manifest content pinning (#2069)"
+
+# Static half — always runs, including on a runner with no agentis binary.
+if grep -qF 'fn exomiser_manifest_hash(' "$AG" \
+   && grep -qF 'let digest = vcf_content_digest(nvcf);' "$AG" \
+   && grep -qF 'sha256_hex(nvcf + "|" + digest + "|" + hpo + "|" + assembly)' "$AG"; then
+    ok "manifest hashes the nvcf record content, not its path or its bytes"
+else
+    bad "manifest no longer pins nvcf CONTENT (#2069 regression)"
+fi
+
+# Both the writer and the reader must derive it from the one helper, or they
+# drift apart and the reader trusts a marker the writer never meant.
+if [ "$(grep -cF 'exomiser_manifest_hash(nvcf, hpo, assembly)' "$AG")" = "2" ]; then
+    ok "runner and fallback reader share one manifest helper"
+else
+    bad "manifest is derived in $(grep -cF 'exomiser_manifest_hash(nvcf, hpo, assembly)' "$AG") place(s), expected 2"
+fi
+
+# An unfingerprintable input must FORCE a re-run, never a skip — and the marker
+# write must be guarded too, or a re-run leaves a marker it cannot have earned.
+if grep -qF 'if len(marker) == 0 {' "$AG" \
+   && grep -qF 'refusing the canonical TSV fallback' "$AG" \
+   && grep -qF 'if len(marker) > 0 {' "$AG"; then
+    ok "unfingerprintable input re-runs the stage and writes no marker"
+else
+    bad "missing the cannot-pin fail-safe (#2069)"
+fi
+
+# Exactly one marker may exist: the TSV path is constant, so a surviving older
+# marker means a match that does not describe the TSV beside it (A -> B -> A).
+# And it must hash RECORDS: bcftools stamps a wall-clock Date into the header,
+# so hashing file bytes changes the manifest every run and disables the skip.
+if grep -qF "grep -v '^##'" "$AG"; then
+    ok "digest strips ## meta lines, so re-normalisation does not change it"
+else
+    bad "digest hashes raw bytes; bcftools Date headers make it change every run"
+fi
+
+if grep -qF 'rm -f' "$AG" && grep -qF '/.done.*' "$AG"; then
+    ok "stale markers are cleared before a new one is written (A->B->A)"
+else
+    bad "markers accumulate; a marker match no longer implies the TSV matches"
+fi
+
+# The digest must be validated, not taken as the first whitespace-delimited
+# field — an unvalidated token can be a content-independent constant.
+if grep -qF 'regex_capture("^([0-9a-f]{64})$"' "$AG" \
+   && grep -qF 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' "$AG"; then
+    ok "vcf_content_digest validates the token and rejects the empty-stream digest"
+else
+    bad "vcf_content_digest trusts an unvalidated or empty-stream token (fail-open)"
+fi
+
+# Behavioural half — needs the binary, so it is skipped rather than faked.
+if ! command -v agentis >/dev/null 2>&1; then
+    echo "  [skip] manifest behaviour (no agentis binary on PATH)"
+    skipped=$((skipped + 1))
+else
+    _mfdir="$(mktemp -d "${TMPDIR:-/tmp}/mf.XXXXXX")"
+    (
+        cd "$_mfdir" || exit 1
+        agentis init >/dev/null 2>&1 || true
+        awk '/^fn vcf_content_digest\(/,/^}/' "$AG"            >  probe.ag
+        awk '/^fn exomiser_manifest_hash\(/,/^}/' "$AG" >> probe.ag
+        printf 'print(exomiser_manifest_hash("%s/v.vcf", "HP:1", "hg38"));\n' "$_mfdir" >> probe.ag
+        printf 'chr1\t100\tA\tG\n' > v.vcf
+        agentis go probe.ag --enable-exec 2>/dev/null | tail -1 > h1 || true
+        printf 'chr1\t100\tA\tT\n' > v.vcf
+        agentis go probe.ag --enable-exec 2>/dev/null | tail -1 > h2 || true
+        # Two cannot-pin shapes: no file at all, and a file whose records are
+        # empty — the latter digests to a well-formed CONSTANT if unguarded.
+        printf '##fileformat=VCFv4.2\n' > headonly.vcf
+        { printf 'print("[" + exomiser_manifest_hash("%s/absent.vcf", "HP:1", "hg38") + "]");\n' "$_mfdir"
+          printf 'print("[" + exomiser_manifest_hash("%s/headonly.vcf", "HP:1", "hg38") + "]");\n' "$_mfdir"
+        } > probe2.ag
+        awk '/^fn vcf_content_digest\(/,/^}/' "$AG"            >  probe2.tmp
+        awk '/^fn exomiser_manifest_hash\(/,/^}/' "$AG" >> probe2.tmp
+        cat probe2.ag >> probe2.tmp && mv probe2.tmp probe2.ag
+        agentis go probe2.ag --enable-exec 2>/dev/null | grep -c '^\[\]$' > h3 || true
+    )
+    _h1="$(cat "$_mfdir/h1" 2>/dev/null || true)"
+    _h2="$(cat "$_mfdir/h2" 2>/dev/null || true)"
+    _h3="$(cat "$_mfdir/h3" 2>/dev/null || echo 0)"
+    if [ -n "$_h1" ] && [ "$_h1" != "$_h2" ]; then
+        ok "same path + changed content -> different manifest (stage re-runs)"
+    else
+        bad "manifest did not change when the VCF content did (#2069)"
+    fi
+    if [ "$_h3" = "2" ]; then
+        ok "absent AND record-less inputs both yield an empty manifest, not a constant"
+    else
+        bad "missing file did not yield an empty manifest"
+    fi
+    rm -rf "$_mfdir"
 fi
 
 if [ "$skipped" -gt 0 ]; then

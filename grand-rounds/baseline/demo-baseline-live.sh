@@ -395,12 +395,19 @@ else
     bad "R2: representation suppression or wrong tiers (#2059 regression)"
 fi
 
-# The canonical fallback is manifest-pinned: recreate exomiser_runner's
-# nvcf|hpo|assembly hash for THIS run (draft file carries a trailing newline;
-# the manifest hpo does not).
+# The canonical fallback is manifest-pinned: recreate exomiser_runner's hash
+# for THIS run (draft file carries a trailing newline; the manifest hpo does
+# not). Since #2069 the manifest carries the nvcf CONTENT digest, not just its
+# path — the whole point being that a changed VCF at the constant normalized
+# path must no longer match. Keep this in step with exomiser_manifest_hash in
+# pipeline.ag or every Exomiser-dependent assertion below silently goes
+# panel-only and fails.
 NVCF_E="$WORKDIR/preproc/normalized.vcf.gz"
 HPO_E="$(tr -d '\n' < "$WORKDIR/phenotype/hpo-draft.txt")"
-MH_E="$(printf '%s|%s|%s' "$NVCF_E" "$HPO_E" "hg38" | sha256sum | cut -d' ' -f1)"
+# Records only, matching vcf_content_digest: bcftools stamps a wall-clock Date
+# and the command line into the ## header, so the file bytes differ every run.
+D_E="$( { gunzip -c "$NVCF_E" 2>/dev/null || cat "$NVCF_E"; } | grep -v '^##' | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1 )"
+MH_E="$(printf '%s|%s|%s|%s' "$NVCF_E" "$D_E" "$HPO_E" "hg38" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)"
 mkdir -p "$WORKDIR/exomiser"
 
 # E4 first: a TSV WITHOUT the matching marker must not merge (staleness guard).
@@ -556,7 +563,9 @@ run_pipeline "$DDO" approve
 o1_pre_c="$(gene_line CEP57 "$CSV" || true)"; o1_pre_t="$(gene_line TRIP13 "$CSV" || true)"
 NVCF_O="$WORKDIR/preproc/normalized.vcf.gz"
 HPO_O="$(tr -d '\n' < "$WORKDIR/phenotype/hpo-draft.txt")"
-MH_O="$(printf '%s|%s|%s' "$NVCF_O" "$HPO_O" "hg38" | sha256sum | cut -d' ' -f1)"
+# Records only, matching vcf_content_digest (see the E-block note above).
+D_O="$( { gunzip -c "$NVCF_O" 2>/dev/null || cat "$NVCF_O"; } | grep -v '^##' | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1 )"
+MH_O="$(printf '%s|%s|%s|%s' "$NVCF_O" "$D_O" "$HPO_O" "hg38" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)"
 mkdir -p "$WORKDIR/exomiser"
 touch "$WORKDIR/exomiser/.done.$MH_O"
 {
