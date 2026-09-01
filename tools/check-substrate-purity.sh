@@ -46,8 +46,16 @@
 # concatenation boundary on SEPARATE physical lines (e.g. `"python" + \n "3 -c"`)
 # is not caught by this line-level scanner. Flag it in review if seen.
 #
-# Scope: dev-apprenticeship/*/agents/*.ag only (issue-scoped; other federations
-# opt in later, mirroring check-getenv-allowlist.sh's dev-apprenticeship scoping).
+# Scope: EVERY */agents/*.ag in the repository, plus templates/agents/*.ag.
+#
+# It was dev-apprenticeship-only until #2083. That scoping is why the campaign
+# looked finished: the one federation the lint could see was clean, while dozens
+# of embedded-interpreter lines ran on in tribes-bench and trading-binance, and
+# more sat in templates/agents/ — copied into a new colony by
+# tools/scaffold-agent.sh on request (NOT by new-colony.sh, which creates an
+# empty agents/ directory; an earlier version of this comment said otherwise).
+# A lint scoped to one federation does not prevent the mistake; it only stops
+# that federation repeating it. Paths are repo-relative.
 #
 # Usage: ./tools/check-substrate-purity.sh [repo-root]
 # Exit 0 if clean, 1 if one or more findings ([NEW-ESCAPE]/[STALE-ALLOWLIST]),
@@ -61,11 +69,24 @@ if [ ! -d "$SCAN_ROOT" ]; then
     echo "check-substrate-purity: scan root does not exist: $SCAN_ROOT" >&2
     exit 2
 fi
+# Normalise: `${path#"$SCAN_ROOT"/}` silently fails to strip when the caller
+# passes a trailing slash, every relative path stays absolute, the worktree
+# exclusion below stops matching, and the scan reports hundreds of spurious
+# findings. colony-lint reaches this through its own `${1:-…}`.
+SCAN_ROOT="$(cd "$SCAN_ROOT" && pwd)"
 
-FED_DIR="$SCAN_ROOT/dev-apprenticeship"
+# Worktrees are checkouts of the same tracked files; scanning them double-counts
+# every finding and makes the allowlist unstable.
+# The exclusion must be applied to the path RELATIVE to the scan root: an
+# absolute `-not -path '*/worktrees/*'` also excludes every file when the scan
+# root is itself inside a worktree, which silently reduces the lint to nothing.
+# NUL-delimited throughout: a newline in a path must not be able to split one
+# entry into two, which is how the previous newline-delimited version skipped
+# such a file silently and still exited 0.
+AG_FILES="$(find "$SCAN_ROOT" -type f -path '*/agents/*.ag' -print0 | tr '\0' '\n' | sort | head -1)"
 
-if [ ! -d "$FED_DIR" ]; then
-    echo "check-substrate-purity: $FED_DIR not found" >&2
+if [ -z "$AG_FILES" ]; then
+    echo "check-substrate-purity: no */agents/*.ag found under $SCAN_ROOT" >&2
     exit 2
 fi
 
@@ -93,13 +114,81 @@ if [ -n "${SUBSTRATE_PURITY_ALLOWLIST_FILE:-}" ]; then
     ALLOWLIST="$(grep -vE '^[[:space:]]*(#|$)' "$SUBSTRATE_PURITY_ALLOWLIST_FILE" || true)"
     ALLOWLIST_COUNT_EXPECTED="$(printf '%s\n' "$ALLOWLIST" | grep -c . || true)"
 else
-    # #1587 fully closed (#1638 Phase 3 cluster B2): all 22 dev-apprenticeship
-    # agents are embedded-python-free — the allowlist is empty. The ratchet now
-    # only ever fails on a [NEW-ESCAPE]; there is nothing left to prune. Keep the
-    # empty-string literal (not an unset var) so the count assertion and the
-    # in_allowlist / [STALE-ALLOWLIST] loops iterate cleanly over zero entries.
-    ALLOWLIST=""
-    ALLOWLIST_COUNT_EXPECTED=0
+    # #1587 closed dev-apprenticeship (#1638 Phase 3 cluster B2) and its rows are
+    # gone. What follows is the debt #2083 exposed when the scope widened beyond
+    # that one federation: sites that were always there and that no lint could
+    # see. It is a to-do list with a guard rail, not an endorsement — the
+    # [STALE-ALLOWLIST] direction means a row cannot outlive its fix, so this
+    # list can only shrink.
+    #
+    # Not on it: templates/agents/, cleared in #2085. Two sites remain there,
+    # both inline-waived with reasons that still hold — checked against the
+    # running binary rather than assumed: now_iso()/now_ms() resolve, while
+    # weekday, epoch_to_iso, iso_to_epoch, date_add, strftime and every other
+    # candidate return "undefined function".
+    ALLOWLIST="dark-factory/auditor/agents/audit-scout.ag:cat_file
+dark-factory/auditor/agents/audit-scout.ag:scoped_code
+dark-factory/auditor/agents/brief-writer.ag:cat_file
+dark-factory/auditor/agents/dup-scout.ag:audit_mentions
+dark-factory/auditor/agents/feedback-intake.ag:manifest_field
+dark-factory/auditor/agents/feedback-intake.ag:manifest_text
+dark-factory/auditor/agents/feedback-intake.ag:outcome_reason
+dark-factory/auditor/agents/feedback-intake.ag:outcome_text
+dark-factory/auditor/agents/feedback-intake.ag:outcome_verdict
+dark-factory/auditor/agents/hunter.ag:cat_file
+dark-factory/auditor/agents/impact-gate.ag:poc_text
+dark-factory/auditor/agents/invariant-prover.ag:cat_file
+dark-factory/auditor/agents/invariant-prover.ag:steps_of
+dark-factory/auditor/agents/method-inventor.ag:cat
+dark-factory/auditor/agents/poc-screener.ag:read_harness
+dark-factory/auditor/agents/poc-writer.ag:cat_file
+dark-factory/auditor/agents/poc-writer.ag:first_fixture
+dark-factory/auditor/agents/refuter.ag:cat_file
+dark-factory/auditor/agents/report-writer.ag:poc_text
+dark-factory/auditor/agents/scope-gate.ag:scope_text
+dark-factory/auditor/agents/stateful-invariant-fuzz.ag:cat_file
+dark-factory/auditor/agents/symbolic-prover.ag:cat_file
+dark-factory/auditor/agents/zone-mapper.ag:cat_file
+dark-factory/auditor/agents/zone-mapper.ag:read_taxonomy
+trading-binance/tribe-alpha/agents/strategist.ag:_levenshtein_ratio_pct
+trading-binance/tribe-alpha/agents/strategist.ag:_publish_prompt_body_and_wrap_variant
+trading-binance/tribe-alpha/agents/strategist.ag:_push_settled_trade
+trading-binance/tribe-beta/agents/strategist.ag:_levenshtein_ratio_pct
+trading-binance/tribe-beta/agents/strategist.ag:_publish_prompt_body_and_wrap_variant
+trading-binance/tribe-beta/agents/strategist.ag:_push_settled_trade
+trading-binance/tribe-delta/agents/strategist.ag:_levenshtein_ratio_pct
+trading-binance/tribe-delta/agents/strategist.ag:_publish_prompt_body_and_wrap_variant
+trading-binance/tribe-delta/agents/strategist.ag:_push_settled_trade
+trading-binance/tribe-epsilon/agents/strategist.ag:_levenshtein_ratio_pct
+trading-binance/tribe-epsilon/agents/strategist.ag:_publish_prompt_body_and_wrap_variant
+trading-binance/tribe-epsilon/agents/strategist.ag:_push_settled_trade
+trading-binance/tribe-gamma/agents/strategist.ag:_levenshtein_ratio_pct
+trading-binance/tribe-gamma/agents/strategist.ag:_publish_prompt_body_and_wrap_variant
+trading-binance/tribe-gamma/agents/strategist.ag:_push_settled_trade
+trading-binance/tribe-zeta/agents/strategist.ag:_levenshtein_ratio_pct
+trading-binance/tribe-zeta/agents/strategist.ag:_publish_prompt_body_and_wrap_variant
+trading-binance/tribe-zeta/agents/strategist.ag:_push_settled_trade
+tribes-bench/tribe-alpha/agents/hunter.ag:_levenshtein_ratio_pct
+tribes-bench/tribe-alpha/agents/hunter.ag:_publish_prompt_body_and_wrap_variant
+tribes-bench/tribe-alpha/agents/hunter.ag:_push_verified_finding
+tribes-bench/tribe-alpha/agents/hunter.ag:rep_bucket
+tribes-bench/tribe-beta/agents/hunter.ag:_levenshtein_ratio_pct
+tribes-bench/tribe-beta/agents/hunter.ag:_publish_prompt_body_and_wrap_variant
+tribes-bench/tribe-beta/agents/hunter.ag:_push_verified_finding
+tribes-bench/tribe-beta/agents/hunter.ag:rep_bucket
+tribes-bench/tribe-delta/agents/hunter.ag:_levenshtein_ratio_pct
+tribes-bench/tribe-delta/agents/hunter.ag:_publish_prompt_body_and_wrap_variant
+tribes-bench/tribe-delta/agents/hunter.ag:_push_verified_finding
+tribes-bench/tribe-delta/agents/hunter.ag:rep_bucket
+tribes-bench/tribe-epsilon/agents/hunter.ag:_levenshtein_ratio_pct
+tribes-bench/tribe-epsilon/agents/hunter.ag:_publish_prompt_body_and_wrap_variant
+tribes-bench/tribe-epsilon/agents/hunter.ag:_push_verified_finding
+tribes-bench/tribe-epsilon/agents/hunter.ag:rep_bucket
+tribes-bench/tribe-gamma/agents/hunter.ag:_levenshtein_ratio_pct
+tribes-bench/tribe-gamma/agents/hunter.ag:_publish_prompt_body_and_wrap_variant
+tribes-bench/tribe-gamma/agents/hunter.ag:_push_verified_finding
+tribes-bench/tribe-gamma/agents/hunter.ag:rep_bucket"
+    ALLOWLIST_COUNT_EXPECTED=62
 fi
 
 # Guard against an accidental edit silently changing the debt size.
@@ -145,7 +234,7 @@ scan_file() {
     local ag_file="$1" rel="$2"
     PY_PAT="$PY_PAT" AWK_PAT="$AWK_PAT" SED_PAT="$SED_PAT" \
     awk -v rel="$rel" '
-    BEGIN { depth = 0; in_fn = 0; fn_name = ""; fn_block_waiver = 0; block_accum = 0; prev_deferred = 0 }
+    BEGIN { depth = 0; in_fn = 0; fn_name = ""; fn_block_waiver = 0; block_accum = 0; comment_run_deferred = 0 }
     {
         clean = $0
         # Strip `//` line comments (line start or whitespace-preceded), so the
@@ -168,8 +257,12 @@ scan_file() {
         # Finding detection on the comment-stripped line.
         if (clean ~ ENVIRON["PY_PAT"] || clean ~ ENVIRON["AWK_PAT"] || clean ~ ENVIRON["SED_PAT"]) {
             waived = 0
-            # Rule (a): waiver on the finding line itself or the line above.
-            if (has_deferred || prev_deferred) waived = 1
+            # Rule (a): waiver on the finding line itself, or anywhere in the
+            # contiguous comment block directly above it. Consulting only the
+            # single line above lost every waiver whose reason ran onto a second
+            # or third comment line — which is the normal shape for a reason
+            # worth writing down.
+            if (has_deferred || comment_run_deferred) waived = 1
             # Rule (b): waiver in the leading comment block above the enclosing fn.
             else if (in_fn && fn_block_waiver) waived = 1
             printf "%s:%d:%s:%d\n", rel, NR, (in_fn ? fn_name : "(toplevel)"), waived
@@ -177,11 +270,11 @@ scan_file() {
 
         # Track the contiguous leading `//`-comment run for the NEXT `fn`.
         if (is_comment_only) {
-            if (has_deferred) block_accum = 1
+            if (has_deferred) { block_accum = 1; comment_run_deferred = 1 }
         } else {
             block_accum = 0
+            comment_run_deferred = 0
         }
-        prev_deferred = (is_comment_only && has_deferred) ? 1 : 0
 
         opens = gsub(/\{/, "", clean)
         closes = gsub(/\}/, "", clean)
@@ -198,7 +291,14 @@ FAIL=0
 HIT_KEYS=""   # allowlist entries confirmed present this scan (space-delimited)
 
 while IFS= read -r -d '' f; do
-    rel="${f#"$FED_DIR"/}"
+    [ -n "$f" ] || continue
+    rel="${f#"$SCAN_ROOT"/}"
+    # The exclusion is applied to the path RELATIVE to the scan root. An
+    # absolute `-not -path '*/worktrees/*'` also excludes every file when the
+    # scan root is itself inside a worktree, which reduces the lint to nothing.
+    case "$rel" in
+        (worktrees/*|.git/*) continue ;;
+    esac
     while IFS= read -r finding; do
         [ -n "$finding" ] || continue
         # finding = relpath:line:function:waived
@@ -223,7 +323,7 @@ while IFS= read -r -d '' f; do
             FAIL=$((FAIL + 1))
         fi
     done < <(scan_file "$f" "$rel")
-done < <(find "$FED_DIR" -type f -path '*/agents/*.ag' -print0)
+done < <(find "$SCAN_ROOT" -type f -path '*/agents/*.ag' -print0)
 
 # [STALE-ALLOWLIST]: any allowlisted site that produced no finding this scan was
 # rewritten — its row is dead debt and must be pruned.

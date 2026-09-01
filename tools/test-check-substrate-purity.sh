@@ -68,7 +68,13 @@ make_tree() {
     {
         printf '# test allowlist\n'
         local e
-        for e in "$@"; do printf '%s\n' "$e"; done
+        # Keys are repo-relative since #2083 widened the scan beyond a single
+        # federation. Fixtures still name their sites federation-relative, so
+        # the prefix is added here rather than in twelve call sites.
+        for e in "$@"; do
+            [ -n "$e" ] || continue   # an empty arg is "no rows", not a blank row
+            printf 'dev-apprenticeship/%s\n' "$e"
+        done
     } > "$root/allowlist.txt"
 }
 
@@ -299,9 +305,58 @@ fi
 # ----- Test 11: real repo passes clean (baked allowlist, no override) -----
 T11_OUT="$("$CHECK" "$REPO_ROOT" 2>&1)" && T11_RC=0 || T11_RC=$?
 if [ "$T11_RC" -eq 0 ]; then
-    pass "real repo: 0 allowlisted + 1 waived site, zero findings"
+    pass "real repo: 62 allowlisted + 2 waived template sites, zero findings"
 else
     fail "real repo — expected exit 0, got rc=$T11_RC: $T11_OUT"
+fi
+
+# ----- Test 15: the scan is not silently emptied inside a worktree -----
+# #2083's headline fix. The first version excluded worktrees by matching the
+# ABSOLUTE path, so running from inside one excluded every file and the lint
+# passed having checked nothing. Reverting that fix left the old suite at 14/14,
+# which is why this test exists.
+T15="$FAKE_ROOT/worktrees/wt"; make_tree "$T15" ''
+cat > "$T15/dev-apprenticeship/triage/agents/labeler.ag" <<'EOF'
+fn leaks() -> string {
+    return exec sh "python3 -c 'print(1)'";
+}
+EOF
+T15_OUT="$(run_check "$T15")" && T15_RC=0 || T15_RC=$?
+if [ "$T15_RC" -eq 1 ] && printf '%s' "$T15_OUT" | grep -q '\[NEW-ESCAPE\]'; then
+    pass "a scan root inside a worktrees/ path still scans its files"
+else
+    fail "scan root under worktrees/ found nothing — the exclusion is matching the root itself: rc=$T15_RC: $T15_OUT"
+fi
+
+# ----- Test 16: a trailing slash on the scan root changes nothing -----
+# Unnormalised, `${path#"$SCAN_ROOT"/}` stops stripping, every relative path
+# stays absolute, the worktree exclusion stops matching, and the scan reports
+# hundreds of spurious findings. colony-lint reaches this through its own ${1:-}.
+T16_OUT="$(run_check "$T15/")" && T16_RC=0 || T16_RC=$?
+if [ "$T16_RC" -eq "$T15_RC" ] && [ "$T16_OUT" = "$T15_OUT" ]; then
+    pass "a trailing slash on the scan root is normalised away"
+else
+    fail "trailing slash changed the result — rc $T15_RC -> $T16_RC"
+fi
+
+# ----- Test 17: a waiver anywhere in the comment block above is honoured -----
+# Only the single line directly above used to count, so any reason that ran onto
+# a second line was silently ignored — and that is the normal shape for a reason
+# worth writing down. It cost one real allowlist row a false "still debt" status.
+T17="$FAKE_ROOT/t17"; make_tree "$T17" ''
+cat > "$T17/dev-apprenticeship/triage/agents/labeler.ag" <<'EOF'
+fn multiline_waived() -> string {
+    // substrate-purity: deferred (no calendar builtin — weekday and
+    // wall-clock-window matching have no .ag equivalent; see
+    // doc/ag-first-guide.md "what you will have to write yourself")
+    return exec sh "python3 -c 'print(1)'";
+}
+EOF
+T17_OUT="$(run_check "$T17")" && T17_RC=0 || T17_RC=$?
+if [ "$T17_RC" -eq 0 ]; then
+    pass "waiver on the first line of a multi-line comment block is honoured"
+else
+    fail "multi-line waiver ignored — expected exit 0, got rc=$T17_RC: $T17_OUT"
 fi
 
 echo ""
