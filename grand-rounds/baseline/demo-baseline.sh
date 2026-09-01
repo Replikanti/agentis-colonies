@@ -276,8 +276,11 @@ if grep -qF 'approved_hash != draft_hash' "$AG"; then
 else
     bad "D6 gate does not compare a stored hash"
 fi
-# No embedded interpreters (substrate-purity spirit).
-if grep -qE 'python3 -c|[^a-z]awk |[^a-z]sed ' "$AG"; then
+# No embedded interpreters (substrate-purity spirit). Comment-only lines are
+# stripped first: the check used to fire on a comment that merely NAMED one of
+# these tools, e.g. one explaining why an awk pipe had been removed. A lint
+# that cannot tell code from prose teaches people not to write the prose.
+if grep -v '^[[:space:]]*//' "$AG" | grep -qE 'python3 -c|[^a-z]awk |[^a-z]sed '; then
     bad "embedded python3 -c / awk / sed logic found in the .ag"
 else
     ok "no embedded python3 -c / awk / sed logic"
@@ -335,6 +338,74 @@ if [ -n "$cb_ag" ] && [ "$cb_ag" = "$cb_toml" ]; then
     ok "cb $cb_ag; == cb_budget $cb_toml"
 else
     bad "cb ($cb_ag) != cb_budget ($cb_toml)"
+fi
+
+# --- 5. Exomiser idempotency manifest pins CONTENT, not path (#2069) --------
+# The normalized VCF path is a constant, so a manifest built from the path
+# alone matched across runs with genuinely different variants and the stage
+# idempotent-skipped, serving rankings computed from a superseded VCF.
+echo "5. exomiser manifest content pinning (#2069)"
+
+# Static half — always runs, including on a runner with no agentis binary.
+if grep -qF 'fn exomiser_manifest_hash(' "$AG" \
+   && grep -qF 'let digest = file_digest(nvcf);' "$AG" \
+   && grep -qF 'sha256_hex(nvcf + "|" + digest + "|" + hpo + "|" + assembly)' "$AG"; then
+    ok "manifest hashes the nvcf content digest, not just its path"
+else
+    bad "manifest no longer pins nvcf CONTENT (#2069 regression)"
+fi
+
+# Both the writer and the reader must derive it from the one helper, or they
+# drift apart and the reader trusts a marker the writer never meant.
+if [ "$(grep -cF 'exomiser_manifest_hash(nvcf, hpo, assembly)' "$AG")" = "2" ]; then
+    ok "runner and fallback reader share one manifest helper"
+else
+    bad "manifest is derived in $(grep -cF 'exomiser_manifest_hash(nvcf, hpo, assembly)' "$AG") place(s), expected 2"
+fi
+
+# An unfingerprintable input must FORCE a re-run, never a skip.
+if grep -qF 'if len(marker) == 0 {' "$AG" && grep -qF 'refusing the canonical TSV fallback' "$AG"; then
+    ok "unfingerprintable input re-runs the stage instead of skipping"
+else
+    bad "missing the cannot-pin fail-safe (#2069)"
+fi
+
+# Behavioural half — needs the binary, so it is skipped rather than faked.
+if ! command -v agentis >/dev/null 2>&1; then
+    echo "  [skip] manifest behaviour (no agentis binary on PATH)"
+    skipped=$((skipped + 1))
+else
+    _mfdir="$(mktemp -d "${TMPDIR:-/tmp}/mf.XXXXXX")"
+    (
+        cd "$_mfdir" || exit 1
+        agentis init >/dev/null 2>&1
+        awk '/^fn file_digest\(/,/^}/' "$AG"            >  probe.ag
+        awk '/^fn exomiser_manifest_hash\(/,/^}/' "$AG" >> probe.ag
+        printf 'print(exomiser_manifest_hash("%s/v.vcf", "HP:1", "hg38"));\n' "$_mfdir" >> probe.ag
+        printf 'chr1\t100\tA\tG\n' > v.vcf
+        agentis go probe.ag --enable-exec 2>/dev/null | tail -1 > h1
+        printf 'chr1\t100\tA\tT\n' > v.vcf
+        agentis go probe.ag --enable-exec 2>/dev/null | tail -1 > h2
+        printf 'print("[" + exomiser_manifest_hash("%s/absent.vcf", "HP:1", "hg38") + "]");\n' "$_mfdir" > probe2.ag
+        awk '/^fn file_digest\(/,/^}/' "$AG"            >  probe2.tmp
+        awk '/^fn exomiser_manifest_hash\(/,/^}/' "$AG" >> probe2.tmp
+        cat probe2.ag >> probe2.tmp && mv probe2.tmp probe2.ag
+        agentis go probe2.ag --enable-exec 2>/dev/null | grep -c '^\[\]$' > h3
+    )
+    _h1="$(cat "$_mfdir/h1" 2>/dev/null || true)"
+    _h2="$(cat "$_mfdir/h2" 2>/dev/null || true)"
+    _h3="$(cat "$_mfdir/h3" 2>/dev/null || echo 0)"
+    if [ -n "$_h1" ] && [ "$_h1" != "$_h2" ]; then
+        ok "same path + changed content -> different manifest (stage re-runs)"
+    else
+        bad "manifest did not change when the VCF content did (#2069)"
+    fi
+    if [ "$_h3" = "1" ]; then
+        ok "unfingerprintable input yields an empty manifest, not a constant"
+    else
+        bad "missing file did not yield an empty manifest"
+    fi
+    rm -rf "$_mfdir"
 fi
 
 if [ "$skipped" -gt 0 ]; then
