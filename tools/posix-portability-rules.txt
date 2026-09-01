@@ -7,17 +7,25 @@
 # checker match its own source — and because `git ls-files` skips untracked
 # files, that self-match stayed invisible until the file was committed.
 #
+# Every rule must cover the LONG-FORM flag as well as the short one. An earlier
+# version matched only short flags, so `sed --in-place`, `grep --perl-regexp`,
+# `readlink --canonicalize`, `date --date=`, `stat --format=`, `typeset -A`,
+# `local -A` and `readarray` all sailed straight through — including constructs
+# whose own explanation claimed to cover them.
+#
 # Deliberately NOT listed, having been checked and found portable: `sort -V`,
 # `head -c`, `sed -E`, bare `mktemp -d` (Apple's mktemp has had a no-template
 # fallback since shell_cmds-198), and any `stat`/`date` site that already
 # carries a `-f`/`-r` fallback on the same line.
-grep-P|grep +-[a-zA-Z]*P|BSD grep has no -P; use -E with a printf-built tab, or awk
-sed-i-nosuffix|sed +-i +[^.]|BSD sed -i takes a REQUIRED suffix; use python3 or -i.bak + rm
+grep-P|grep +(-[a-zA-Z]*P|--perl-regexp)|BSD grep has no Perl regex; use -E with a printf-built tab, or awk
+sed-i-nosuffix|sed +(-i|--in-place)([[:space:]]|['"]|$)|BSD in-place sed takes a REQUIRED suffix; use python3, or a suffix then rm
+sed-case-escape|sed [^|]*\\[uUlL]|GNU-only case-conversion escape; BSD sed has none — use awk toupper/substr
+sed-word-boundary|sed [^|]*\\b|GNU-only word boundary; BSD sed has none — use [[:<:]] or awk
 sha256sum|sha256sum|not on macOS; use shasum -a 256, or guard both on one line
 find-printf|find .* -printf|BSD find has no -printf; use -exec stat or a portable loop
-stat-c|stat +-c|BSD stat uses -f; put both on one line with a fallback
-date-d|date +-d |BSD date uses -v; put both on one line with a fallback
-readlink-f|readlink +-f|BSD readlink has no -f; use the python3 realpath idiom
+stat-c|stat +(-c|--format|--printf)|BSD stat uses -f; put both on one line with a fallback
+date-d|date +(-d |--date)|BSD date uses -v; put both on one line with a fallback
+readlink-f|readlink +(-f|--canonicalize)|BSD readlink has no -f; use the python3 realpath idiom
 shell-realpath|^[^#]*[^.]\brealpath\b|not on macOS before 12.3; use the python3 realpath idiom
-declare-A|declare +-A|associative arrays need bash 4; macOS ships 3.2
-mapfile|mapfile |mapfile/readarray need bash 4; macOS ships 3.2
+assoc-array|(^|[;&(]|then |do |else )[[:space:]]*(declare|typeset|local) +-A|associative arrays need bash 4; macOS ships 3.2
+mapfile|(^|[;&(]|then |do |else )[[:space:]]*(mapfile|readarray)( |$)|mapfile/readarray need bash 4; macOS ships 3.2

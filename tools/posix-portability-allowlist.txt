@@ -7,8 +7,8 @@
 #
 # Seeded from the tree at the time the ratchet was introduced (#2082). Nothing
 # here is endorsed; it is a to-do list with a guard rail.
-dark-factory/bench/corpus-bench/generation-recall.sh:declare-A
-dark-factory/bench/corpus-bench/run-corpus-bench.sh:declare-A
+dark-factory/bench/corpus-bench/generation-recall.sh:assoc-array
+dark-factory/bench/corpus-bench/run-corpus-bench.sh:assoc-array
 dark-factory/demo-harness-mocks.sh:sha256sum
 dark-factory/demo-invariant-core-dep.sh:grep-P
 dark-factory/demo-invariant-corpus-replay.sh:sha256sum
@@ -26,9 +26,8 @@ dark-factory/state-export.sh:sha256sum
 grand-rounds/baseline/demo-baseline-live.sh:grep-P
 grand-rounds/baseline/demo-baseline-live.sh:sha256sum
 grand-rounds/baseline/demo-lens-smoke-real.sh:sha256sum
-research-foundry/tools/run-research.sh:declare-A
+research-foundry/tools/run-research.sh:assoc-array
 research-foundry/tools/test-persistent-snapshot.sh:stat-c
-tools/colony-lint.sh:declare-A
 tools/colony-lint.sh:grep-P
 tools/kill-federation.sh:find-printf
 tools/lib/candidate-fingerprint.sh:sha256sum

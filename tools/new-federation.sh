@@ -20,6 +20,15 @@
 
 set -euo pipefail
 
+# Preflight: this script substitutes template placeholders with python3, and it
+# creates the target directory before it does. Without this check a machine
+# lacking python3 gets a half-built tree with raw placeholders left in it, and
+# the re-run then refuses because the directory already exists.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "${0##*/}: python3 is required (used for template substitution)" >&2
+    exit 2
+fi
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 usage() {

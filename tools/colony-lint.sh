@@ -2358,7 +2358,10 @@ if [ -x "$pp_tool" ]; then
         printf '%s\n' "$pp_out" | head -20
     fi
 else
-    skip "tools: check-posix-portability.sh not present"
+    # NOT a skip. The checker is committed alongside this file, so its absence
+    # means a broken checkout or a bad copy — and a skip does not fail the
+    # lint, so the mandatory gate would report PASS having checked nothing.
+    fail "tools: check-posix-portability.sh missing or not executable ($pp_tool)"
 fi
 
 # --- Bash-3.2 forbidden-construct lint for #321 scripts ---

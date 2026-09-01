@@ -6,6 +6,15 @@
 
 set -euo pipefail
 
+# Preflight: this script substitutes template placeholders with python3, and it
+# creates the target directory before it does. Without this check a machine
+# lacking python3 gets a half-built tree with raw placeholders left in it, and
+# the re-run then refuses because the directory already exists.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "${0##*/}: python3 is required (used for template substitution)" >&2
+    exit 2
+fi
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 usage() {
@@ -47,10 +56,12 @@ echo "Creating colony '$COLONY' in federation '$FEDERATION'..."
 mkdir -p "$COL_PATH/agents" "$COL_PATH/config" "$COL_PATH/scripts"
 touch "$COL_PATH/agents/.gitkeep"
 
-# Pretty name: "code-review" -> "Code Review"
-PRETTY_NAME=$(echo "$COLONY" | sed 's/-/ /g' | sed 's/\b\(.\)/\u\1/g')
-# Federation pretty name
-FED_PRETTY=$(echo "$FEDERATION" | sed 's/-/ /g' | sed 's/\b\(.\)/\u\1/g')
+# Pretty names: "code-review" -> "Code Review". The `\u` escape and `\b` word
+# boundary are GNU extensions; BSD sed has neither, so on macOS this produced
+# "code review". Same helper as new-federation.sh.
+pretty() { echo "$1" | sed 's/-/ /g' | awk '{for (i=1; i<=NF; i++) $i=toupper(substr($i,1,1)) substr($i,2)}1'; }
+PRETTY_NAME="$(pretty "$COLONY")"
+FED_PRETTY="$(pretty "$FEDERATION")"
 
 # Generate README
 cat > "$COL_PATH/README.md" << EOF
