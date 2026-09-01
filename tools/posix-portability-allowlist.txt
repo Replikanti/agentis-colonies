@@ -1,0 +1,39 @@
+# Known BSD/macOS-divergent constructs, carried so the ratchet in
+# tools/check-posix-portability.sh can stay green while the debt shrinks.
+#
+# One `path:rule-id` per line. A NEW construct not listed here fails the lint;
+# a row whose site has been fixed ALSO fails, so this file cannot drift out of
+# date. Delete a row when you fix its site — that is the whole mechanism.
+#
+# Seeded from the tree at the time the ratchet was introduced (#2082). Nothing
+# here is endorsed; it is a to-do list with a guard rail.
+dark-factory/bench/corpus-bench/generation-recall.sh:assoc-array
+dark-factory/bench/corpus-bench/run-corpus-bench.sh:assoc-array
+dark-factory/demo-harness-mocks.sh:sha256sum
+dark-factory/demo-invariant-core-dep.sh:grep-P
+dark-factory/demo-invariant-corpus-replay.sh:sha256sum
+dark-factory/demo-invariant-ensemble.sh:grep-P
+dark-factory/demo-report-quality.sh:sha256sum
+dark-factory/demo-submit-triage.sh:grep-P
+dark-factory/lib/cell-watchdog.sh:find-printf
+dark-factory/monitor/scripts/check-drift.sh:sha256sum
+dark-factory/run-audit.sh:sha256sum
+dark-factory/run-batch.sh:mapfile
+dark-factory/run-invariant-hunt.sh:sha256sum
+dark-factory/run-live-watch.sh:sha256sum
+dark-factory/snapshot-rpc.sh:sha256sum
+dark-factory/state-export.sh:sha256sum
+grand-rounds/baseline/demo-baseline-live.sh:grep-P
+grand-rounds/baseline/demo-baseline-live.sh:sha256sum
+grand-rounds/baseline/demo-lens-smoke-real.sh:sha256sum
+research-foundry/tools/run-research.sh:assoc-array
+tools/colony-lint.sh:grep-P
+tools/kill-federation.sh:find-printf
+tools/lib/candidate-fingerprint.sh:sha256sum
+tools/make-dashboard-bundle.sh:sha256sum
+tools/make-federation-bundle.sh:sha256sum
+tools/self-observe.sh:sha256sum
+tools/test-invariant-prover-real-target.sh:shell-realpath
+tools/test-make-dashboard-bundle.sh:sha256sum
+tools/test-make-federation-bundle.sh:sha256sum
+tribes-bench/tools/test-stage2-rewrite-cb-decl.sh:sha256sum

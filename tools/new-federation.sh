@@ -20,6 +20,15 @@
 
 set -euo pipefail
 
+# Preflight: this script substitutes template placeholders with python3, and it
+# creates the target directory before it does. Without this check a machine
+# lacking python3 gets a half-built tree with raw placeholders left in it, and
+# the re-run then refuses because the directory already exists.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "${0##*/}: python3 is required (used for template substitution)" >&2
+    exit 2
+fi
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 usage() {
@@ -552,11 +561,26 @@ wait
 START_EOF
 
 # Substitute per-federation tokens.
-sed -i \
-    -e "s/COLONY_PRETTY_PLACEHOLDER/$COL_PRETTY/g" \
-    -e "s/FED_PRETTY_PLACEHOLDER/$FED_PRETTY/g" \
-    -e "s/COLONY_NAME_PLACEHOLDER/$COLONY/g" \
-    "$COL_PATH/scripts/start-colony.sh"
+# python3 rather than `sed -i`: BSD's -i takes a REQUIRED suffix argument, so
+# this GNU form consumed `-e` as the backup suffix and the substitution
+# expression became a filename. Precedent: tools/scaffold-agent.sh,
+# tools/cost-cap.sh, tools/experience-transfer.sh.
+NF_TARGET="$COL_PATH/scripts/start-colony.sh"
+NF_SUB_TMP="$NF_TARGET.tmp.$$"
+NF_TARGET="$NF_TARGET" NF_SUB_TMP="$NF_SUB_TMP" \
+COL_PRETTY="$COL_PRETTY" FED_PRETTY="$FED_PRETTY" COLONY="$COLONY" \
+python3 -c '
+import os
+src = open(os.environ["NF_TARGET"]).read()
+for token, value in (
+    ("COLONY_PRETTY_PLACEHOLDER", os.environ["COL_PRETTY"]),
+    ("FED_PRETTY_PLACEHOLDER",    os.environ["FED_PRETTY"]),
+    ("COLONY_NAME_PLACEHOLDER",   os.environ["COLONY"]),
+):
+    src = src.replace(token, value)
+open(os.environ["NF_SUB_TMP"], "w").write(src)
+'
+mv "$NF_SUB_TMP" "$NF_TARGET"
 
 # When --no-forge is set, swap the BEGIN FORGE_BLOCK..END FORGE_BLOCK
 # range for a non-forge no-op (mirroring tribes-bench/tribe-*/scripts/
@@ -585,10 +609,16 @@ if [ "$NO_FORGE" = "1" ]; then
     mv "$NF_TMP" "$COL_PATH/scripts/start-colony.sh"
 else
     # Strip the marker comments — they are only meaningful to the scaffolder.
-    sed -i \
-        -e '/^# BEGIN FORGE_BLOCK$/d' \
-        -e '/^# END FORGE_BLOCK$/d' \
-        "$COL_PATH/scripts/start-colony.sh"
+    # Same BSD `sed -i` hazard as above.
+    NF_MARK_TARGET="$COL_PATH/scripts/start-colony.sh"
+    NF_MARK_TMP="$NF_MARK_TARGET.tmp.$$"
+    NF_MARK_TARGET="$NF_MARK_TARGET" NF_MARK_TMP="$NF_MARK_TMP" python3 -c '
+import os
+keep = [l for l in open(os.environ["NF_MARK_TARGET"])
+        if l.rstrip("\n") not in ("# BEGIN FORGE_BLOCK", "# END FORGE_BLOCK")]
+open(os.environ["NF_MARK_TMP"], "w").writelines(keep)
+'
+    mv "$NF_MARK_TMP" "$NF_MARK_TARGET"
 fi
 
 chmod +x "$COL_PATH/scripts/start-colony.sh"
