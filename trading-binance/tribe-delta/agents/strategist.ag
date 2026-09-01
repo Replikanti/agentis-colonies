@@ -29,14 +29,6 @@ type Decision {
     setup: string
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("strategist:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 fn tribe_name() -> string {
     let _tn = try { exec sh "printenv TRIBE_NAME"; } catch e { ""; };
     if len(_tn) > 0 {
@@ -279,7 +271,7 @@ fn tick(reason: string) -> void {
     let _tribe_name = tribe_name();
     let _self_pid = try { exec sh "echo $PPID"; } catch e { ""; };
     let _variant = recall_latest("strategist:prompt_variant");
-    let conf = get_confidence();
+    let conf = confidence_value("strategist");
     print("[strategist] tick conf=", conf);
 
     // Read replay state seeded by the orchestrator (`tools/run-replay.sh`)

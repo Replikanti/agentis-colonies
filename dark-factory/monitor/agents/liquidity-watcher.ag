@@ -48,15 +48,6 @@
 
 cb 90000;
 
-// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
-fn get_confidence() -> float {
-    let raw = recall_latest("liquidity-watcher:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    }
-    return 0.0;
-}
-
 // --- env defaults --------------------------------------------------------------
 fn target_or(raw: string, fallback: string) -> string {
     if len(raw) > 0 { return raw; }
@@ -309,7 +300,7 @@ fn tick(reason: string) -> void {
 
     print("liquidity-watcher: " + label + " reserve=" + value_for_json(reserveDec)
         + " base=" + value_for_json(baseDec)
-        + " -> " + verdict + " (conf=" + to_string(get_confidence()) + ")");
+        + " -> " + verdict + " (conf=" + to_string(confidence_value("liquidity-watcher")) + ")");
 
     // Update the drop baseline to the latest GOOD read (the full digit string) so
     // the next tick compares against a recent reserve (a no-read leaves the old

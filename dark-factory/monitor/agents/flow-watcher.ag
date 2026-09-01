@@ -49,15 +49,6 @@
 
 cb 90000;
 
-// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
-fn get_confidence() -> float {
-    let raw = recall_latest("flow-watcher:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    }
-    return 0.0;
-}
-
 // --- env defaults --------------------------------------------------------------
 fn target_or(raw: string, fallback: string) -> string {
     if len(raw) > 0 { return raw; }
@@ -308,7 +299,7 @@ fn tick(reason: string) -> void {
 
     print("flow-watcher: " + label + " level=" + value_for_json(levelDec)
         + " prev=" + value_for_json(lastDec)
-        + " -> " + verdict + " (conf=" + to_string(get_confidence()) + ")");
+        + " -> " + verdict + " (conf=" + to_string(confidence_value("flow-watcher")) + ")");
 
     // Roll the window: store the latest GOOD level (the full digit string) as the
     // prior for next tick (a no-read leaves the old prior intact). A burst reading

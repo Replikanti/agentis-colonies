@@ -39,14 +39,6 @@ type AuditResult {
     summary: string
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("security_scanner:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 // Daily-window gate. Returns 1 if at least 24h have elapsed since the
 // last successful audit (or the memo is empty), 0 otherwise. Time math
 // in python3 to avoid GNU/BSD `date` divergence.

@@ -25,14 +25,6 @@ type Script {
     rationale: string
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("computer:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 fn colony_name() -> string {
     let _cn = getenv("COLONY_NAME");
     if len(_cn) > 0 {
@@ -567,7 +559,7 @@ fn tick(reason: string) -> void {
         };
     };
 
-    let conf = get_confidence();
+    let conf = confidence_value("computer");
     print("[computer] tick conf=", conf);
 
     // #742 TaskBoard accept: claim one explorer-posted compute task on

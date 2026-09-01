@@ -38,14 +38,6 @@ type Report {
     summary: string
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("oeis-search:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 fn colony_name() -> string {
     let _cn = getenv("COLONY_NAME");
     if len(_cn) > 0 {
@@ -506,7 +498,7 @@ fn tick(reason: string) -> void {
         };
     };
 
-    let conf = get_confidence();
+    let conf = confidence_value("oeis-search");
     print("[oeis-search] tick conf=", conf);
 
     let tick_idx_str = recall_latest("replay:current_tick");

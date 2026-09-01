@@ -44,15 +44,6 @@
 
 cb 90000;
 
-// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
-fn get_confidence() -> float {
-    let raw = recall_latest("pause-state-watcher:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    }
-    return 0.0;
-}
-
 // --- env defaults --------------------------------------------------------------
 fn target_or(raw: string, fallback: string) -> string {
     if len(raw) > 0 { return raw; }
@@ -188,7 +179,7 @@ fn tick(reason: string) -> void {
     let outcome = outcome_of(verdict);
 
     print("pause-state-watcher: " + label + " state=" + cur + " base=" + base
-        + " -> " + verdict + " (conf=" + to_string(get_confidence()) + ")");
+        + " -> " + verdict + " (conf=" + to_string(confidence_value("pause-state-watcher")) + ")");
 
     // Update the baseline to the latest GOOD read so the next tick compares
     // against the current state (a no-read leaves the old baseline intact). A

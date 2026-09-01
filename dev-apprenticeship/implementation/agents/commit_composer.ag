@@ -99,14 +99,6 @@ fn merged_mr_cmd(owner: string, repo: string) -> string {
     return "$COLONY_DIR/scripts/forge-api.sh merge-requests --state merged --view impl" + repo_arg(owner, repo);
 }
 
-fn get_confidence() -> float {
-    let raw = recall_latest("commit_composer:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    };
-    return 0.0;
-}
-
 // #239: learn from each merged MR at most once per daemon lifetime.
 // Without this gate, the `merge-requests --since <last_check>` query
 // keeps returning the same MR at index [0] as long as its `updated_at`

@@ -105,7 +105,7 @@ colony-name/
   }
   ```
 
-- `get_confidence()` is for diagnostics/logging only — never for branching.
+- `confidence_value()` (the builtin, since #2092; formerly a hand-copied `get_confidence()`) is for diagnostics/logging only — never for branching.
 - `learn()` topic must match the topic in `recommend()` within the same agent.
 - `memo_write("<agent_name>:last_check", now)` at the end of every tick.
 - **Per-issue handled marker + idle gate ([#1370](https://github.com/Replikanti/agentis-colonies/issues/1370)).** An agent acting on the top issue of a snapshot MUST: mark it handled at **every** tier it acts at (`memo_write("<agent>:<iid>:handled", <tier>)` in the autonomous, review-gated, propose, AND shadow branches), FILTER already-handled issues BEFORE indexing (`first_unhandled_iid(...)`), `return` before `prompt()` when none remain, and PIN the prompt to that `target_iid`. Otherwise the staleness gate stays empty at sub-autonomous tiers and `prompt()` re-fires on the same issue forever. `code_writer` uses the tier-independent `input_unchanged()` fingerprint variant. Source-asserted by `tools/test-idle-prompt-gates.sh`; full pattern: [doc/tooling-reference.md](./doc/tooling-reference.md).

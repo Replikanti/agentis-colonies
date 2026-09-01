@@ -71,15 +71,6 @@ fn admin_slot() -> string {
     return "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103";
 }
 
-// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
-fn get_confidence() -> float {
-    let raw = recall_latest("governance-watcher:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    }
-    return 0.0;
-}
-
 // --- env defaults --------------------------------------------------------------
 fn target_or(raw: string, fallback: string) -> string {
     if len(raw) > 0 { return raw; }
@@ -288,7 +279,7 @@ fn tick(reason: string) -> void {
     let outcome = outcome_of(verdict);
 
     print("governance-watcher: " + label + " impl=" + curImpl + " admin=" + curAdmin
-        + " -> " + verdict + " (conf=" + to_string(get_confidence()) + ")");
+        + " -> " + verdict + " (conf=" + to_string(confidence_value("governance-watcher")) + ")");
 
     // Update each per-field baseline to the latest GOOD read so the next tick
     // compares against the current surface (a no-read leaves the old baseline

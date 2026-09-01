@@ -54,15 +54,6 @@ fn board_max() -> int {
     return 64;
 }
 
-// --- diagnostic confidence read (logging only; tier() gates behaviour) ---------
-fn get_confidence() -> float {
-    let raw = recall_latest("source-classifier:confidence");
-    if len(raw) > 0 {
-        return parse_float(raw);
-    }
-    return 0.0;
-}
-
 // --- candidate-cell field extraction (`<address>|<chain>|<metadata>`) -----------
 fn cell_address(cell: string) -> string {
     let bar = index_of(cell, "|");
@@ -363,7 +354,7 @@ fn tick(reason: string) -> void {
     let monitorable = classify_board(abiCmd, lines, 0, total, board_max(), 0);
 
     print("source-classifier: classified board -> " + to_string(monitorable)
-        + " monitorable (conf=" + to_string(get_confidence()) + ")");
+        + " monitorable (conf=" + to_string(confidence_value("source-classifier")) + ")");
 
     // The tick-level verdict for the LEARN/EMIT layer: at least one monitorable
     // candidate is the signal worth surfacing; none read / matched is quiet.
