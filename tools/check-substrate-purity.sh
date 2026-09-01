@@ -49,12 +49,13 @@
 # Scope: EVERY */agents/*.ag in the repository, plus templates/agents/*.ag.
 #
 # It was dev-apprenticeship-only until #2083. That scoping is why the campaign
-# looked finished: the one federation the lint could see was clean, while 49
-# embedded-interpreter lines ran on in tribes-bench and trading-binance and 7
-# more sat in templates/agents/ — which is what new-colony.sh copies, so every
-# scaffolded colony inherited them. A lint scoped to one federation does not
-# prevent the mistake; it only stops that federation repeating it, while the
-# mistake keeps arriving through the scaffolder. Paths are repo-relative.
+# looked finished: the one federation the lint could see was clean, while dozens
+# of embedded-interpreter lines ran on in tribes-bench and trading-binance, and
+# more sat in templates/agents/ — copied into a new colony by
+# tools/scaffold-agent.sh on request (NOT by new-colony.sh, which creates an
+# empty agents/ directory; an earlier version of this comment said otherwise).
+# A lint scoped to one federation does not prevent the mistake; it only stops
+# that federation repeating it. Paths are repo-relative.
 #
 # Usage: ./tools/check-substrate-purity.sh [repo-root]
 # Exit 0 if clean, 1 if one or more findings ([NEW-ESCAPE]/[STALE-ALLOWLIST]),
@@ -68,21 +69,21 @@ if [ ! -d "$SCAN_ROOT" ]; then
     echo "check-substrate-purity: scan root does not exist: $SCAN_ROOT" >&2
     exit 2
 fi
+# Normalise: `${path#"$SCAN_ROOT"/}` silently fails to strip when the caller
+# passes a trailing slash, every relative path stays absolute, the worktree
+# exclusion below stops matching, and the scan reports hundreds of spurious
+# findings. colony-lint reaches this through its own `${1:-…}`.
+SCAN_ROOT="$(cd "$SCAN_ROOT" && pwd)"
 
 # Worktrees are checkouts of the same tracked files; scanning them double-counts
 # every finding and makes the allowlist unstable.
 # The exclusion must be applied to the path RELATIVE to the scan root: an
 # absolute `-not -path '*/worktrees/*'` also excludes every file when the scan
 # root is itself inside a worktree, which silently reduces the lint to nothing.
-AG_FILES="$(
-    find "$SCAN_ROOT" -type f -path '*/agents/*.ag' | sort | while IFS= read -r _p; do
-        _r="${_p#"$SCAN_ROOT"/}"
-        case "$_r" in
-            (worktrees/*|.git/*) ;;
-            (*) printf '%s\n' "$_p" ;;
-        esac
-    done
-)"
+# NUL-delimited throughout: a newline in a path must not be able to split one
+# entry into two, which is how the previous newline-delimited version skipped
+# such a file silently and still exited 0.
+AG_FILES="$(find "$SCAN_ROOT" -type f -path '*/agents/*.ag' -print0 | tr '\0' '\n' | sort | head -1)"
 
 if [ -z "$AG_FILES" ]; then
     echo "check-substrate-purity: no */agents/*.ag found under $SCAN_ROOT" >&2
@@ -120,10 +121,11 @@ else
     # [STALE-ALLOWLIST] direction means a row cannot outlive its fix, so this
     # list can only shrink.
     #
-    # Not on it: templates/agents/, which is the propagation source and was
-    # cleared first. Two sites there remain, both inline-waived with a reason
-    # that still holds (no calendar builtin, no epoch-to-ISO builtin — only
-    # now_iso() for the current instant, verified against the running binary).
+    # Not on it: templates/agents/, cleared in #2085. Two sites remain there,
+    # both inline-waived with reasons that still hold — checked against the
+    # running binary rather than assumed: now_iso()/now_ms() resolve, while
+    # weekday, epoch_to_iso, iso_to_epoch, date_add, strftime and every other
+    # candidate return "undefined function".
     ALLOWLIST="dark-factory/auditor/agents/audit-scout.ag:cat_file
 dark-factory/auditor/agents/audit-scout.ag:scoped_code
 dark-factory/auditor/agents/brief-writer.ag:cat_file
@@ -148,7 +150,6 @@ dark-factory/auditor/agents/stateful-invariant-fuzz.ag:cat_file
 dark-factory/auditor/agents/symbolic-prover.ag:cat_file
 dark-factory/auditor/agents/zone-mapper.ag:cat_file
 dark-factory/auditor/agents/zone-mapper.ag:read_taxonomy
-templates/agents/digest-poster.ag:should_post_now
 trading-binance/tribe-alpha/agents/strategist.ag:_levenshtein_ratio_pct
 trading-binance/tribe-alpha/agents/strategist.ag:_publish_prompt_body_and_wrap_variant
 trading-binance/tribe-alpha/agents/strategist.ag:_push_settled_trade
@@ -187,7 +188,7 @@ tribes-bench/tribe-gamma/agents/hunter.ag:_levenshtein_ratio_pct
 tribes-bench/tribe-gamma/agents/hunter.ag:_publish_prompt_body_and_wrap_variant
 tribes-bench/tribe-gamma/agents/hunter.ag:_push_verified_finding
 tribes-bench/tribe-gamma/agents/hunter.ag:rep_bucket"
-    ALLOWLIST_COUNT_EXPECTED=63
+    ALLOWLIST_COUNT_EXPECTED=62
 fi
 
 # Guard against an accidental edit silently changing the debt size.
@@ -233,7 +234,7 @@ scan_file() {
     local ag_file="$1" rel="$2"
     PY_PAT="$PY_PAT" AWK_PAT="$AWK_PAT" SED_PAT="$SED_PAT" \
     awk -v rel="$rel" '
-    BEGIN { depth = 0; in_fn = 0; fn_name = ""; fn_block_waiver = 0; block_accum = 0; prev_deferred = 0 }
+    BEGIN { depth = 0; in_fn = 0; fn_name = ""; fn_block_waiver = 0; block_accum = 0; comment_run_deferred = 0 }
     {
         clean = $0
         # Strip `//` line comments (line start or whitespace-preceded), so the
@@ -256,8 +257,12 @@ scan_file() {
         # Finding detection on the comment-stripped line.
         if (clean ~ ENVIRON["PY_PAT"] || clean ~ ENVIRON["AWK_PAT"] || clean ~ ENVIRON["SED_PAT"]) {
             waived = 0
-            # Rule (a): waiver on the finding line itself or the line above.
-            if (has_deferred || prev_deferred) waived = 1
+            # Rule (a): waiver on the finding line itself, or anywhere in the
+            # contiguous comment block directly above it. Consulting only the
+            # single line above lost every waiver whose reason ran onto a second
+            # or third comment line — which is the normal shape for a reason
+            # worth writing down.
+            if (has_deferred || comment_run_deferred) waived = 1
             # Rule (b): waiver in the leading comment block above the enclosing fn.
             else if (in_fn && fn_block_waiver) waived = 1
             printf "%s:%d:%s:%d\n", rel, NR, (in_fn ? fn_name : "(toplevel)"), waived
@@ -265,11 +270,11 @@ scan_file() {
 
         # Track the contiguous leading `//`-comment run for the NEXT `fn`.
         if (is_comment_only) {
-            if (has_deferred) block_accum = 1
+            if (has_deferred) { block_accum = 1; comment_run_deferred = 1 }
         } else {
             block_accum = 0
+            comment_run_deferred = 0
         }
-        prev_deferred = (is_comment_only && has_deferred) ? 1 : 0
 
         opens = gsub(/\{/, "", clean)
         closes = gsub(/\}/, "", clean)
@@ -285,9 +290,15 @@ scan_file() {
 FAIL=0
 HIT_KEYS=""   # allowlist entries confirmed present this scan (space-delimited)
 
-while IFS= read -r f; do
+while IFS= read -r -d '' f; do
     [ -n "$f" ] || continue
     rel="${f#"$SCAN_ROOT"/}"
+    # The exclusion is applied to the path RELATIVE to the scan root. An
+    # absolute `-not -path '*/worktrees/*'` also excludes every file when the
+    # scan root is itself inside a worktree, which reduces the lint to nothing.
+    case "$rel" in
+        (worktrees/*|.git/*) continue ;;
+    esac
     while IFS= read -r finding; do
         [ -n "$finding" ] || continue
         # finding = relpath:line:function:waived
@@ -312,9 +323,7 @@ while IFS= read -r f; do
             FAIL=$((FAIL + 1))
         fi
     done < <(scan_file "$f" "$rel")
-done <<AGFILES
-$AG_FILES
-AGFILES
+done < <(find "$SCAN_ROOT" -type f -path '*/agents/*.ag' -print0)
 
 # [STALE-ALLOWLIST]: any allowlisted site that produced no finding this scan was
 # rewritten — its row is dead debt and must be pruned.
