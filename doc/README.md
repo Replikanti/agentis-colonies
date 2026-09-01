@@ -27,6 +27,7 @@ the flat index.
 
 | Doc | What it covers | Mainly for |
 |-----|----------------|------------|
+| [`ag-first-guide.md`](./ag-first-guide.md) | Building a federation `.ag`-first: which side of the `exec sh` boundary a decision belongs on, what moving work in costs, and the runtime traps that pass `agentis commit` | Federation authors; anyone writing `.ag` |
 | [`federation-patterns.md`](./federation-patterns.md) | Sketches of federations beyond the coder workflow (data-ops, support-triage, monitoring-ops, …) | Architects, federation authors |
 | [`feedback-loop.md`](./feedback-loop.md) | The reality-check pattern: how an acting agent learns its suggestion was wrong (required for honest auto-promote fitness) | Agent authors |
 | [`dev-apprenticeship-first-task.md`](./dev-apprenticeship-first-task.md) | Pre-commitment contract + post-run triage for the federation's first real end-to-end task | End users, operators |
