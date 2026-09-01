@@ -91,18 +91,6 @@ fn label_or(raw: string, addr: string) -> string {
     return addr;
 }
 
-// JSON-string escape a free-text field (#1089): backslash -> \\ and double-quote
-// -> \" , so an operator-authored label/address containing a `"` cannot corrupt
-// the alert/signal JSON. Per-char fold (.ag has no string-replace builtin);
-// regex_find_all over [\s\S] yields every char incl. whitespace.
-fn json_escape(s: string) -> string {
-    return reduce(regex_find_all("[\\s\\S]", s), |acc: string, c: string| -> string {
-        if c == "\\" { return acc + "\\\\"; }
-        if c == "\"" { return acc + "\\\""; }
-        return acc + c;
-    }, "");
-}
-
 // The centralized read wrapper (#1098): scripts/cast-read.sh, the ONE place RPC
 // failover + read consensus live. "" => no wrapper, use the legacy direct `cast`.
 fn cast_reader() -> string {
@@ -252,8 +240,8 @@ fn is_anomaly(verdict: string) -> bool {
 // A compact, deterministic alert payload (JSON). All fields are facts the watcher
 // computed; none is LLM text. `sev` is set by the tier branch (draft vs page).
 fn alert_payload(label: string, verdict: string, addr: string, sev: string) -> string {
-    return "{\"watcher\":\"governance\",\"target\":\"" + json_escape(label) + "\",\"verdict\":\"" + verdict
-         + "\",\"address\":\"" + json_escape(addr) + "\",\"severity\":\"" + sev + "\"}";
+    return "{\"watcher\":\"governance\",\"target\":\"" + json_escape_string(label) + "\",\"verdict\":\"" + verdict
+         + "\",\"address\":\"" + json_escape_string(addr) + "\",\"severity\":\"" + sev + "\"}";
 }
 
 fn tick(reason: string) -> void {

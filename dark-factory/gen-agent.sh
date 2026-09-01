@@ -175,6 +175,13 @@ cb 300000;
 // Read a whole in-scope file. Dynamic path -> safe-exec-concat (the recall-match.ag
 // / hunter.ag precedent: the grep linter cannot see through the \${path} concat).
 fn cat_file(path: string) -> string {
+    // An empty path makes this `sed -n '1,2000p'  2>/dev/null`, and sed with no
+    // file argument reads standard input. The substrate closes stdin on every
+    // exec, so today that returns "" rather than leaking — but it spends a
+    // subprocess to arrive at the answer the caller already had, and it relies
+    // on a substrate guarantee this agent does not state. \$SCOPE_BRIEF below
+    // is unset on some paths, so the empty case is reachable. (#2084)
+    if len(path) == 0 { return ""; }
     // colony-lint: safe-exec-concat
     return exec sh "sed -n '1,2000p' \${path} 2>/dev/null || true";
 }

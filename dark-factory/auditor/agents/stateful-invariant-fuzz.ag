@@ -21,6 +21,7 @@ cb 300000;
 // Read a whole in-scope file. Dynamic path -> safe-exec-concat (the recall-match.ag
 // / hunter.ag precedent: the grep linter cannot see through the ${path} concat).
 fn cat_file(path: string) -> string {
+    if len(path) == 0 { return ""; }
     // colony-lint: safe-exec-concat
     return exec sh "sed -n '1,2000p' ${path} 2>/dev/null || true";
 }
