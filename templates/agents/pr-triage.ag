@@ -65,14 +65,18 @@ fn get_confidence() -> float {
 // divergence (matches the `dependency-updater` / `security-scanner`
 // precedent from PR 2 of #322).
 fn should_run_now() -> int {
-    let last = recall_latest("pr_triage:last_check");
-    if len(last) == 0 {
-        return 1;
-    };
-    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-    let cmd = "python3 -c 'import sys,datetime,time; ts=sys.argv[1]; t=datetime.datetime.strptime(ts.rstrip(\"Z\"), \"%Y-%m-%dT%H:%M:%S\").replace(tzinfo=datetime.timezone.utc).timestamp(); print(1 if (time.time() - t) >= 300 else 0)' " + shell_escape(last);
-    let raw = try { exec sh cmd; } catch e { "1"; };
-    return parse_int(raw);
+    // Elapsed time is integer arithmetic on an epoch-ms memo. Earlier revisions
+    // stored an ISO string (a `date` fork) and re-parsed it with a `python3 -c
+    // strptime` one-liner "to avoid GNU/BSD date divergence" — two subprocesses
+    // per tick to compute a subtraction, inherited by every colony scaffolded
+    // from this template.
+    //
+    // Migration: an existing colony's ISO value parses as 0, so the first tick
+    // after upgrade reads stale, runs once, and writes the new format.
+    let last_ms = parse_int(recall_latest("pr_triage:last_check_ms"));
+    if last_ms <= 0 { return 1; };
+    if now_ms() - last_ms >= 300 * 1000 { return 1; };
+    return 0;
 }
 
 fn tick(reason: string) -> void {
@@ -88,10 +92,8 @@ fn tick(reason: string) -> void {
     };
 
     if len(raw) < 3 {
-        let now_e0 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e0) > 0 {
-            memo_write("pr_triage:last_check", now_e0);
-        };
+                    memo_write("pr_triage:last_check", now_iso());
+            memo_write("pr_triage:last_check_ms", to_string(now_ms()));
         return;
     };
 
@@ -100,10 +102,8 @@ fn tick(reason: string) -> void {
     // when the response array is empty.
     let head_iid = parse_int(to_string(json_get(raw, "[0].iid")));
     if head_iid == 0 {
-        let now_e1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e1) > 0 {
-            memo_write("pr_triage:last_check", now_e1);
-        };
+                    memo_write("pr_triage:last_check", now_iso());
+            memo_write("pr_triage:last_check_ms", to_string(now_ms()));
         return;
     };
 
@@ -120,10 +120,8 @@ fn tick(reason: string) -> void {
     };
 
     if len(changes_raw) < 3 {
-        let now_e2 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e2) > 0 {
-            memo_write("pr_triage:last_check", now_e2);
-        };
+                    memo_write("pr_triage:last_check", now_iso());
+            memo_write("pr_triage:last_check_ms", to_string(now_ms()));
         return;
     };
 
@@ -151,10 +149,8 @@ fn tick(reason: string) -> void {
     if len(suggestion.suggested_reviewers) == 0 {
         // No CODEOWNERS rule matched (or no CODEOWNERS file present).
         // Stamp the memo and bail — nothing to suggest.
-        let now_e3 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e3) > 0 {
-            memo_write("pr_triage:last_check", now_e3);
-        };
+                    memo_write("pr_triage:last_check", now_iso());
+            memo_write("pr_triage:last_check_ms", to_string(now_ms()));
         learn("pr_reviewer_suggestion", "pr " + to_string(suggestion.pr_iid), "no-match", "partial", ["observed", "pr-triage"]);
         return;
     };
@@ -189,7 +185,8 @@ fn tick(reason: string) -> void {
             emit("__COLONY_NAME__:reviewer_suggestion", suggestion);
             learn("pr_reviewer_suggestion", "pr " + to_string(suggestion.pr_iid), "suggested-degraded", "partial", ["review-gated", "pr-triage"]);
         };
-    } else if my_tier == "review-gated" {
+    } else {
+        if my_tier == "review-gated" {
         // Post the @-mention comment. Non-terminal — the operator still
         // has to formally request the review.
         // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
@@ -199,7 +196,8 @@ fn tick(reason: string) -> void {
         };
         emit("__COLONY_NAME__:reviewer_suggestion", suggestion);
         learn("pr_reviewer_suggestion", "pr " + to_string(suggestion.pr_iid), "suggested", "partial", ["review-gated", "pr-triage"]);
-    } else if my_tier == "propose" {
+    } else {
+        if my_tier == "propose" {
         // Bus-only emit. No comment posted.
         emit("__COLONY_NAME__:reviewer_suggestion", suggestion);
         print("[pr_triage] Drafted reviewer suggestion (propose) for PR", suggestion.pr_iid, ":", suggestion.suggested_reviewers);
@@ -210,10 +208,10 @@ fn tick(reason: string) -> void {
         // operator gets a real signal as confidence grows.
         print("[pr_triage] Observing (tier:", my_tier, ") PR:", suggestion.pr_iid, "would-suggest:", suggestion.suggested_reviewers);
         learn("pr_reviewer_suggestion", "pr " + to_string(suggestion.pr_iid), "observed", "partial", ["observed", "pr-triage"]);
+            }
+        }
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-    if len(now) > 0 {
-        memo_write("pr_triage:last_check", now);
-    };
+            memo_write("pr_triage:last_check", now_iso());
+        memo_write("pr_triage:last_check_ms", to_string(now_ms()));
 }

@@ -68,10 +68,8 @@ fn tick(reason: string) -> void {
     };
 
     if len(raw) < 3 {
-        let now_e = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e) > 0 {
-            memo_write("stale_issue_closer:last_check", now_e);
-        };
+                    memo_write("stale_issue_closer:last_check", now_iso());
+            memo_write("stale_issue_closer:last_check_ms", to_string(now_ms()));
         return;
     };
 
@@ -80,10 +78,8 @@ fn tick(reason: string) -> void {
     // for shadow-tier observation; the prompt below refines per-issue policy.
     let head_iid = parse_int(to_string(json_get(raw, "[0].iid")));
     if head_iid == 0 {
-        let now_e2 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e2) > 0 {
-            memo_write("stale_issue_closer:last_check", now_e2);
-        };
+                    memo_write("stale_issue_closer:last_check", now_iso());
+            memo_write("stale_issue_closer:last_check_ms", to_string(now_ms()));
         return;
     };
 
@@ -101,10 +97,8 @@ fn tick(reason: string) -> void {
         if analysis.candidate_iid == 0 { true; } else { false; };
     };
     if no_candidate {
-        let now_e3 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e3) > 0 {
-            memo_write("stale_issue_closer:last_check", now_e3);
-        };
+                    memo_write("stale_issue_closer:last_check", now_iso());
+            memo_write("stale_issue_closer:last_check_ms", to_string(now_ms()));
         return;
     };
 
@@ -148,14 +142,16 @@ fn tick(reason: string) -> void {
             emit("stale_issue_closer:stale_issue_candidate", analysis);
             learn("close_stale_issue", "issue " + to_string(analysis.candidate_iid), "warned", "partial", ["review-gated", "stale-issue-closer"]);
         };
-    } else if my_tier == "review-gated" {
+    } else {
+        if my_tier == "review-gated" {
         let post_cmd = "$COLONY_DIR/scripts/forge-api.sh add-note " + to_string(analysis.candidate_iid) + " --body " + shell_escape(warning_body);
         try { exec sh post_cmd; } catch e {
             print("[stale_issue_closer] failed to post warning:", e);
         };
         emit("stale_issue_closer:stale_issue_candidate", analysis);
         learn("close_stale_issue", "issue " + to_string(analysis.candidate_iid), "warned", "partial", ["review-gated", "stale-issue-closer"]);
-    } else if my_tier == "propose" {
+    } else {
+        if my_tier == "propose" {
         // Draft only: emit the candidate on the bus so a downstream
         // reviewer-or-human can promote it. No external write here.
         emit("stale_issue_closer:stale_issue_candidate", analysis);
@@ -165,10 +161,10 @@ fn tick(reason: string) -> void {
         // shadow / dormant: observe-only.
         print("[stale_issue_closer] Observing (tier:", my_tier, ") candidate:", analysis.candidate_iid, "age:", analysis.candidate_age_days);
         learn("close_stale_issue", "issue " + to_string(analysis.candidate_iid), "observed", "partial", ["observed", "stale-issue-closer"]);
+            }
+        }
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-    if len(now) > 0 {
-        memo_write("stale_issue_closer:last_check", now);
-    };
+            memo_write("stale_issue_closer:last_check", now_iso());
+        memo_write("stale_issue_closer:last_check_ms", to_string(now_ms()));
 }

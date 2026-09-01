@@ -51,14 +51,18 @@ fn get_confidence() -> float {
 // last successful audit (or the memo is empty), 0 otherwise. Time math
 // in python3 to avoid GNU/BSD `date` divergence.
 fn should_audit_now() -> int {
-    let last = recall_latest("security_scanner:last_check");
-    if len(last) == 0 {
-        return 1;
-    };
-    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-    let cmd = "python3 -c 'import sys,datetime,time; ts=sys.argv[1]; t=datetime.datetime.strptime(ts.rstrip(\"Z\"), \"%Y-%m-%dT%H:%M:%S\").replace(tzinfo=datetime.timezone.utc).timestamp(); print(1 if (time.time() - t) >= 86400 else 0)' " + shell_escape(last);
-    let raw = try { exec sh cmd; } catch e { "1"; };
-    return parse_int(raw);
+    // Elapsed time is integer arithmetic on an epoch-ms memo. Earlier revisions
+    // stored an ISO string (a `date` fork) and re-parsed it with a `python3 -c
+    // strptime` one-liner "to avoid GNU/BSD date divergence" — two subprocesses
+    // per tick to compute a subtraction, inherited by every colony scaffolded
+    // from this template.
+    //
+    // Migration: an existing colony's ISO value parses as 0, so the first tick
+    // after upgrade reads stale, runs once, and writes the new format.
+    let last_ms = parse_int(recall_latest("security_scanner:last_check_ms"));
+    if last_ms <= 0 { return 1; };
+    if now_ms() - last_ms >= 86400 * 1000 { return 1; };
+    return 0;
 }
 
 // Auto-detect which audit command to run based on lockfile presence.
@@ -99,10 +103,8 @@ fn tick(reason: string) -> void {
     if tool == "none" {
         // No recognised lockfile — record the tick so we don't re-detect
         // every 5 min, but don't run the audit subprocess.
-        let now_e0 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e0) > 0 {
-            memo_write("security_scanner:last_check", now_e0);
-        };
+                    memo_write("security_scanner:last_check", now_iso());
+            memo_write("security_scanner:last_check_ms", to_string(now_ms()));
         return;
     };
 
@@ -113,10 +115,8 @@ fn tick(reason: string) -> void {
     };
 
     if len(raw) < 3 {
-        let now_e1 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e1) > 0 {
-            memo_write("security_scanner:last_check", now_e1);
-        };
+                    memo_write("security_scanner:last_check", now_iso());
+            memo_write("security_scanner:last_check_ms", to_string(now_ms()));
         return;
     };
 
@@ -131,10 +131,8 @@ fn tick(reason: string) -> void {
     if result.vuln_count == 0 {
         // Clean audit. Stamp the memo so we don't re-run for 24h, but do
         // not file an issue.
-        let now_e2 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e2) > 0 {
-            memo_write("security_scanner:last_check", now_e2);
-        };
+                    memo_write("security_scanner:last_check", now_iso());
+            memo_write("security_scanner:last_check_ms", to_string(now_ms()));
         learn("audit_findings", tool + " audit", "clean", "success", ["observed", "security-scanner"]);
         return;
     };
@@ -175,7 +173,8 @@ fn tick(reason: string) -> void {
             emit("__COLONY_NAME__:security_finding", result);
             learn("audit_findings", tool + " audit", "filed-degraded", "partial", ["review-gated", "security-scanner"]);
         };
-    } else if my_tier == "review-gated" {
+    } else {
+        if my_tier == "review-gated" {
         // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
         let create_cmd = "$COLONY_DIR/scripts/forge-api.sh create-issue --title " + shell_escape(issue_title) + " --body " + shell_escape(issue_body) + " --labels " + shell_escape("security," + severity_label);
         try { exec sh create_cmd; } catch e {
@@ -183,7 +182,8 @@ fn tick(reason: string) -> void {
         };
         emit("__COLONY_NAME__:security_finding", result);
         learn("audit_findings", tool + " audit", "filed", "partial", ["review-gated", "security-scanner"]);
-    } else if my_tier == "propose" {
+    } else {
+        if my_tier == "propose" {
         // Draft only: emit the result on the bus with severity + advisory
         // id list. No external write here.
         emit("__COLONY_NAME__:security_finding", result);
@@ -194,10 +194,10 @@ fn tick(reason: string) -> void {
         // there are vulnerabilities in the audit run.
         print("[security_scanner] Observing (tier:", my_tier, ") tool:", tool, "vulns:", result.vuln_count);
         learn("audit_findings", tool + " audit", "observed:" + to_string(result.vuln_count) + " vulns", "partial", ["observed", "security-scanner"]);
+            }
+        }
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-    if len(now) > 0 {
-        memo_write("security_scanner:last_check", now);
-    };
+            memo_write("security_scanner:last_check", now_iso());
+        memo_write("security_scanner:last_check_ms", to_string(now_ms()));
 }

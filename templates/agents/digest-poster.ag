@@ -72,14 +72,18 @@ fn get_confidence() -> float {
 // changed since the last tick. Time math in python3 (BSD-date safe per
 // the PR 2 of #322 precedent).
 fn should_run_now() -> int {
-    let last = recall_latest("digest_poster:last_check");
-    if len(last) == 0 {
-        return 1;
-    };
-    // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
-    let cmd = "python3 -c 'import sys,datetime,time; ts=sys.argv[1]; t=datetime.datetime.strptime(ts.rstrip(\"Z\"), \"%Y-%m-%dT%H:%M:%S\").replace(tzinfo=datetime.timezone.utc).timestamp(); print(1 if (time.time() - t) >= 300 else 0)' " + shell_escape(last);
-    let raw = try { exec sh cmd; } catch e { "1"; };
-    return parse_int(raw);
+    // Elapsed time is integer arithmetic on an epoch-ms memo. Earlier revisions
+    // stored an ISO string (a `date` fork) and re-parsed it with a `python3 -c
+    // strptime` one-liner "to avoid GNU/BSD date divergence" — two subprocesses
+    // per tick to compute a subtraction, inherited by every colony scaffolded
+    // from this template.
+    //
+    // Migration: an existing colony's ISO value parses as 0, so the first tick
+    // after upgrade reads stale, runs once, and writes the new format.
+    let last_ms = parse_int(recall_latest("digest_poster:last_check_ms"));
+    if last_ms <= 0 { return 1; };
+    if now_ms() - last_ms >= 300 * 1000 { return 1; };
+    return 0;
 }
 
 // Schedule fire-now check. Returns 1 if the current UTC time is within
@@ -90,6 +94,9 @@ fn should_run_now() -> int {
 // fires the autonomous post path.
 fn should_post_now(schedule: string, last_post: string) -> int {
     // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    // substrate-purity: deferred (no calendar builtin — weekday and
+    // wall-clock-window matching have no .ag equivalent; see
+    // doc/ag-first-guide.md "what you will have to write yourself")
     let cmd = "python3 -c 'import sys,datetime,time;\nschedule=sys.argv[1]; last_post=sys.argv[2];\ntry:\n  parts=schedule.split(\"@\");\n  kind=parts[0];\n  if kind==\"daily\":\n    hh,mm=map(int, parts[1].split(\":\"));\n    dow=None;\n  elif kind==\"weekly\":\n    dow_map={\"mon\":0,\"tue\":1,\"wed\":2,\"thu\":3,\"fri\":4,\"sat\":5,\"sun\":6};\n    dow=dow_map[parts[1]];\n    hh,mm=map(int, parts[2].split(\":\"));\n  else:\n    print(0); sys.exit(0);\n  now=datetime.datetime.now(datetime.timezone.utc);\n  if dow is not None and now.weekday()!=dow:\n    print(0); sys.exit(0);\n  scheduled=now.replace(hour=hh, minute=mm, second=0, microsecond=0);\n  delta=(now-scheduled).total_seconds();\n  if delta<0 or delta>300:\n    print(0); sys.exit(0);\n  if last_post:\n    lp=datetime.datetime.strptime(last_post.rstrip(\"Z\"), \"%Y-%m-%dT%H:%M:%S\").replace(tzinfo=datetime.timezone.utc);\n    if (now-lp).total_seconds()<43200:\n      print(0); sys.exit(0);\n  print(1)\nexcept Exception:\n  print(0)\n' " + shell_escape(schedule) + " " + shell_escape(last_post);
     let raw = try { exec sh cmd; } catch e { "0"; };
     return parse_int(raw);
@@ -113,6 +120,7 @@ fn tick(reason: string) -> void {
     // python3 inline keeps us on macOS bash 3.2 / BSD-date paths
     // identical to the rest of the catalog.
     // colony-lint: safe-exec-concat (all dynamic values wrapped in shell_escape)
+    // substrate-purity: deferred (no ISO date-arithmetic builtin)
     let since_cmd = "python3 -c 'import sys,datetime; n=int(sys.argv[1]); print((datetime.datetime.utcnow()-datetime.timedelta(days=n)).strftime(\"%Y-%m-%dT%H:%M:%SZ\"))' " + shell_escape(to_string(window_days_safe));
     let since_iso = try { exec sh since_cmd; } catch e { "2000-01-01T00:00:00Z"; };
 
@@ -155,10 +163,8 @@ fn tick(reason: string) -> void {
         false;
     };
     if empty_window {
-        let now_e0 = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-        if len(now_e0) > 0 {
-            memo_write("digest_poster:last_check", now_e0);
-        };
+                    memo_write("digest_poster:last_check", now_iso());
+            memo_write("digest_poster:last_check_ms", to_string(now_ms()));
         learn("digest_aggregation", "window " + to_string(window_days_safe) + "d", "empty", "partial", ["observed", "digest-poster"]);
         return;
     };
@@ -193,7 +199,7 @@ fn tick(reason: string) -> void {
                 "";
             };
             if len(post_result) > 0 {
-                let now_post = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+                let now_post = now_iso();
                 if len(now_post) > 0 {
                     memo_write("digest_poster:last_post", now_post);
                 };
@@ -213,7 +219,8 @@ fn tick(reason: string) -> void {
             emit("__COLONY_NAME__:digest_draft", summary);
             learn("digest_aggregation", "window " + to_string(window_days_safe) + "d", "deferred", "partial", ["review-gated", "digest-poster"]);
         };
-    } else if my_tier == "review-gated" {
+    } else {
+        if my_tier == "review-gated" {
         // Operator-approval handshake. The agent posts to the configured
         // thread iff the operator has stamped
         // `digest_poster:last_approved_draft` with a non-empty value
@@ -235,7 +242,7 @@ fn tick(reason: string) -> void {
             try { exec sh post_cmd; } catch e {
                 print("[digest_poster] review-gated post failed:", e);
             };
-            let now_post = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
+            let now_post = now_iso();
             if len(now_post) > 0 {
                 memo_write("digest_poster:last_post", now_post);
             };
@@ -255,7 +262,8 @@ fn tick(reason: string) -> void {
             print("[digest_poster] Drafted digest (review-gated, awaiting approval) merged:", summary.merged_pr_count, "closed:", summary.closed_issue_count);
             learn("digest_aggregation", "window " + to_string(window_days_safe) + "d", "drafted-pending-approval", "partial", ["review-gated", "digest-poster"]);
         };
-    } else if my_tier == "propose" {
+    } else {
+        if my_tier == "propose" {
         // Bus-only emit. No post.
         emit("__COLONY_NAME__:digest_draft", summary);
         print("[digest_poster] Drafted digest (propose) merged:", summary.merged_pr_count, "closed:", summary.closed_issue_count);
@@ -271,10 +279,10 @@ fn tick(reason: string) -> void {
         };
         print("[digest_poster] Observing (tier:", my_tier, ") merged:", summary.merged_pr_count, "closed:", summary.closed_issue_count);
         learn("digest_aggregation", "window " + to_string(window_days_safe) + "d", "observed", outcome, ["observed", "digest-poster"]);
+            }
+        }
     };
 
-    let now = try { exec sh "date -u +%Y-%m-%dT%H:%M:%SZ"; } catch e { ""; };
-    if len(now) > 0 {
-        memo_write("digest_poster:last_check", now);
-    };
+            memo_write("digest_poster:last_check", now_iso());
+        memo_write("digest_poster:last_check_ms", to_string(now_ms()));
 }

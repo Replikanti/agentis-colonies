@@ -180,7 +180,11 @@ This federation was scaffolded via
 [\`tools/new-federation.sh\`](../tools/new-federation.sh) and conforms to
 [ADR-0003](../doc/adr/ADR-0003-federation-portability-contract.md). See
 [\`doc/federation-patterns.md\`](../doc/federation-patterns.md) for example
-federation shapes.
+federation shapes, and
+[\`doc/ag-first-guide.md\`](../doc/ag-first-guide.md) before writing any
+\`exec sh\` — it covers which side of that boundary a decision belongs on, what
+moving work into \`.ag\` costs in CB, and the runtime traps that pass
+\`agentis commit\` and fail later.
 
 ## Colonies
 
