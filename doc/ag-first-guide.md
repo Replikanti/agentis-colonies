@@ -185,10 +185,17 @@ why the convention is *argmax first, `decide()` second*: score and order the
 options from facts, then call `decide()` on the already-ranked list, so the
 offline behaviour degrades to "take the best" rather than "take the first listed".
 
-**`exec sh`'s "sandbox" is a working directory, not confinement.** Cwd is
-`.agentis/sandbox`, but `ls ..` reaches the object store and `.agentis/identity/`
-— the key material — and absolute paths anywhere on the filesystem work. Treat
-`exec sh` as full user-level access. ([agentis-core#966])
+**`exec sh`'s "sandbox" is a working directory, not confinement — on the
+default profile.** Cwd is `.agentis/sandbox`, but `ls ..` reaches the object
+store and `.agentis/identity/` — the key material — and absolute paths
+anywhere on the filesystem work. That is still exactly true for `basic` (the
+default), `no-net` and `no-fs-write`: none of the three own a mount namespace,
+so none confine reads. As of v1.29.0, `strict` and `hardened` tmpfs-mask
+`<state>/identity` fail-closed (abort rather than run with the signing key
+exposed) — set `exec.sandbox_profile = strict`/`hardened` if a federation
+needs the identity dir hidden from its own exec children. macOS and any host
+with unprivileged user namespaces disabled stay unconfined on **every**
+profile, `strict`/`hardened` included. ([agentis-core#966], v1.29.0)
 
 **`cb N` inside an agent escapes the enclosing budget.** It assigns absolutely
 rather than drawing down, so a top-level `cb` gives *zero* protection against a
@@ -269,6 +276,14 @@ hand-rolled helpers for something the runtime already does.
 - **`${...}` inside an `exec sh` string is agentis interpolation, not shell.**
   Bare `$VAR` reaches the shell; `${VAR}` is resolved against `.ag` scope and
   inserted **unquoted**. Pair every dynamic value with `shell_escape()`.
+- **`exec argv [...]` sidesteps the trap above entirely (v1.29.0,
+  [agentis-core#963]).** `exec argv ["prog", arg1, arg2]` — optionally `exec
+  argv json timeout <ms> [...]` — hands the vector to the OS as-is: no word
+  splitting, no globbing, no `$VAR`/`|`/`;`/backtick expansion. There is no
+  interpolation to guard against, so `shell_escape()` on an `argv` element is
+  wrong, not just redundant — it adds literal quote characters to what the
+  program receives. `exec sh` + `shell_escape()` stays correct for anything
+  that genuinely needs a shell: pipes, redirection, globs.
 - **Comments are `//` only.** `#` is a lexer error.
 - **The entry point is top-level statements.** A file whose whole body is
   `fn main()` runs, prints nothing, and exits **0**.
@@ -321,7 +336,6 @@ independently reimplemented it.
 
 | Missing | Definitions | Note |
 |---|---|---|
-| `confidence()` | **70** | Zero semantic variation. `tier()` is already a builtin. ([agentis-core#967]) |
 | field/column accessor | 39 | Four incompatible designs. **`field(line,-1)` returns the first field; `nth_field(s,sep,-1)` returns `""`** — porting between them changes behaviour silently. |
 | total `listen()`/`recall_latest()` | 10 | Six different names for the same Void normaliser; one diverges semantically. |
 | `join` | ~21 | Eleven names across five federations. |
@@ -333,6 +347,12 @@ independently reimplemented it.
 | ISO-8601 → epoch | — | Worked around in two opposite ways; one federation **abandoned a feedback signal** rather than add an interpreter. |
 | `exec sh` exit status | 32 | `; echo __rc=$?` then regex it back out. |
 | stderr print | — | |
+
+**No longer missing, as of v1.29.0:** `confidence_value()` ([agentis-core#967])
+is now a builtin — the row that used to sit here counted the ~70 hand-copied
+`get_confidence()` definitions it replaces, migrated to the builtin in
+agentis-colonies #2092. It is a read-only diagnostic/logging call; branching
+still goes through `tier()`, never `confidence_value()`.
 
 Before writing one of these, check it is still missing. **146 `exec sh "printenv X"`
 calls exist on the premise that "agentis 1.6.0 has no getenv builtin"** —
@@ -356,6 +376,11 @@ finding classes:
 
 Together those give the **shrinking-debt property**: the debt can only go down,
 and CI stays green throughout. That federation's allowlist is now empty.
+
+Where the escape is a dynamic argument rather than shell logic, `exec argv
+[...]` (v1.29.0, [agentis-core#963]) is the structural fix, not another
+allowlist row: no shell at all, so no interpolation and no `shell_escape()`
+to get right.
 
 Two cautions from the record:
 
@@ -405,5 +430,6 @@ agentis 1.28.0; items marked source-read were not executed.*
 
 [PR #2071]: https://github.com/Replikanti/agentis-colonies/pull/2071
 [#2083]: https://github.com/Replikanti/agentis-colonies/issues/2083
+[agentis-core#963]: https://github.com/Replikanti/agentis-core/issues/963
 [agentis-core#966]: https://github.com/Replikanti/agentis-core/issues/966
 [agentis-core#967]: https://github.com/Replikanti/agentis-core/issues/967
