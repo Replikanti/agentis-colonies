@@ -15,7 +15,21 @@ is asserted until multi-version CI is in place.
 
 ## [Unreleased]
 
-**Requires:** agentis >= 1.22.4
+**Requires:** agentis >= 1.29.0
+
+## [2.13.0] - 2026-09-02
+
+**Requires:** agentis >= 1.29.0
+
+### Changed
+
+- **Runtime floor bump to agentis >= 1.29.0** ([#2091](https://github.com/Replikanti/agentis-colonies/issues/2091), [#2094](https://github.com/Replikanti/agentis-colonies/issues/2094)):
+  all five federations (`dev-apprenticeship`, `research-foundry`, `trading-binance`, `tribes-bench`) now pin to agentis v1.29.0. The dev-apprenticeship bump is no longer optional — [#2095](https://github.com/Replikanti/agentis-colonies/issues/2095) depends on the `confidence_value()` builtin introduced in v1.29.0.
+
+### Added
+
+- **Standardized confidence reading via `confidence_value()` builtin** ([#2092](https://github.com/Replikanti/agentis-colonies/issues/2092), [#2095](https://github.com/Replikanti/agentis-colonies/issues/2095)):
+  70 hand-copied `get_confidence()` helper functions across the repository are replaced with the single built-in `confidence_value()`. The migration is uniform — all 70 files' helpers reduced to the same shape, so 70 definitions are removed and 44 call sites rewritten. Uses the PEER form `confidence_value("<agent_name>")` to ensure the builtin correctly resolves through the agent's memo key (`{agent_name}:confidence`), reading `memo_dir/{key}.jsonl` exactly as the helpers did. This migration is load-bearing: the no-arg form would have silently zeroed the confidence behind every decision point (the daemon never calls `with_current_agent_name`, only entry into an `agent name() -> void` block sets it, and dev-apprenticeship's 70 files declare their agent outside a block). Verified on v1.29.0: all 70 files parse, `dark-factory`'s prospector-queue demo runs end-to-end on migrated agents, and substrate-purity/posix-portability/prompt-gate/leak-guard are all clean.
 
 ## [2.12.0] - 2026-07-15
 
@@ -851,7 +865,9 @@ is asserted until multi-version CI is in place.
   the default HOLD, auto-merge pauses until a human merges (set
   `merge_review_timeout_action = merge` for bounded-wait-then-merge).
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.11.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.13.0...HEAD
+[2.13.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.12.0...dev-apprenticeship-v2.13.0
+[2.12.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.11.0...dev-apprenticeship-v2.12.0
 [2.11.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.10.1...dev-apprenticeship-v2.11.0
 [2.10.1]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.10.0...dev-apprenticeship-v2.10.1
 [2.10.0]: https://github.com/Replikanti/agentis-colonies/compare/dev-apprenticeship-v2.9.0...dev-apprenticeship-v2.10.0
