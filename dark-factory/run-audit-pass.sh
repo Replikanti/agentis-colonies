@@ -42,6 +42,11 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
+# agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the RUN dir
+# (below), so a flat-cyborg/claude coordinator session does not block + exit 75.
+# shellcheck source=lib/ensure-claude-trust.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/ensure-claude-trust.sh"
 PASS_FIXTURE=""
 FINDING_LOCATION=""
 FINDING_IMPACT=""
@@ -242,6 +247,9 @@ fi
 
 # The coordinator applies its gating logic over PASS_FIXTURE (the live-built one above, or the operator's offline
 # --pass-fixture) -- deterministic, no nested flat-cyborg. --grant-pii: benign public contract/finding text (#1690).
+# #993: trust the RUN dir first so that, on a flat-cyborg/claude backend, the session
+# is not blocked on the workspace-trust dialog (mock never spawns claude). Best-effort.
+case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$RUN" ;; esac
 ( cd "$RUN" && env \
     PASS_ENABLED=1 \
     PASS_FIXTURE="$PASS_FIXTURE" \

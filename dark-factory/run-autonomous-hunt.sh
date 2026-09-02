@@ -82,6 +82,11 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
+# agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the RUN dir
+# (below), so a flat-cyborg/claude coordinator session does not block + exit 75.
+# shellcheck source=lib/ensure-claude-trust.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/ensure-claude-trust.sh"
 REPO=""
 TARGET=""
 MATCH="invariant"
@@ -365,6 +370,10 @@ fi
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"
+
+# #993: trust the RUN dir before the coordinator `agentis go` so a flat-cyborg/claude
+# session is not blocked on the workspace-trust dialog (mock never spawns claude).
+case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$RUN" ;; esac
 
 # Int M2 (#1037): seed each candidate's OWN context into the SHARED store the coordinator reads from via
 # recall_latest("candidate:<id>:..."). MUST run AFTER `agentis init` (the store exists) and BEFORE `agentis go`

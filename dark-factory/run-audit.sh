@@ -40,6 +40,11 @@ set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
+# agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the RUN dir
+# (below), so the flat-cyborg/claude pattern-seed/share sessions do not block + exit 75.
+# shellcheck source=lib/ensure-claude-trust.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/ensure-claude-trust.sh"
 TARGET="" ; HARNESS="" ; ANCHOR_HARNESS="" ; EVM_HARNESS="" ; SNAPSHOT="" ; POC="" ; EXPECT_OWNER=""
 REPO="" ; IN_SCOPE="" ; CONTRACT="" ; SEED_MANIFEST="" ; SHARE_PATTERNS=""
 BACKEND="flat-cyborg" ; SANDBOX="hardened" ; OUT="$PWD/audit-out" ; FUZZY_THRESHOLD="0.35" ; FUZZY_K="4" ; USE_EVOLVED=""
@@ -148,6 +153,11 @@ cp "$COLONY" "$RUN/auditor.ag"
   # federation members can buy it. The market is gated on the learning/knowledge subsystem.
   [ -n "$SHARE_PATTERNS" ] && { echo "learning.enabled = true"; echo "experience.enabled = true"; echo "knowledge.enabled = true"; }
 } > "$RUN/.agentis/config"
+
+# #993: trust the RUN dir before any `agentis go` (the seed/share-patterns agents run
+# in $RUN) so a flat-cyborg/claude session is not blocked on the workspace-trust
+# dialog (mock never spawns claude). Best-effort — never fails the audit.
+case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$RUN" ;; esac
 
 # #861: seed known-bug patterns into the DAG (bugpat:exact memos) BEFORE the audit, in the same
 # store, so reconn matches a forked target's sub-graph and guard fires the class directly. Manifest

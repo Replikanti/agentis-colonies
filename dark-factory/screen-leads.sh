@@ -30,6 +30,13 @@ set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
+# agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the RUN dir
+# (below), so a flat-cyborg/claude poc-screener session does not block + exit 75. This
+# script pins no llm.backend (it inherits agentis's default), so the trust write is
+# unconditional — best-effort + harmless when the default is not claude-backed.
+# shellcheck source=lib/ensure-claude-trust.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/ensure-claude-trust.sh"
 MANIFEST="" ; OUT="$PWD/screen-out" ; DEMO=0
 
 need() { [ "$1" -ge 2 ] || { echo "screen-leads.sh: missing value for the preceding flag" >&2; exit 2; }; }
@@ -120,6 +127,10 @@ fi
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"
+
+# #993: trust the RUN dir before `agentis go poc-screener.ag` so an interactive
+# session is not blocked on the workspace-trust dialog. Best-effort — never fails.
+df_ensure_claude_trust "$RUN"
 
 REPORT="$OUT/screen-report.md"
 {

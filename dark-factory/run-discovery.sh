@@ -130,6 +130,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 . "$HERE/lib/run-agent-validated.sh"
 DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
+# agentis-core#993: pre-accept Claude Code's workspace-trust dialog for every dir a
+# hunter session cd's into (the shared $RUN store on the serial/depth path, each
+# isolated cell dir on the parallel path), else the flat-cyborg/claude session
+# blocks on the dialog and exits 75.
+# shellcheck source=lib/ensure-claude-trust.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/ensure-claude-trust.sh"
 AGENTIS="agentis"
 REPO="" ; SCOPE="" ; BRIEF="" ; TAXONOMY="" ; ONLY="" ; CLASSES_OVERRIDE=""
 # #1865: opt-in inheritance-appendix sidecar; empty = OFF, every code path below is inert.
@@ -440,6 +447,11 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # (map-zones.sh:knowledge.enabled does the same for zone-mapper.ag's #1711 read.)
   echo "knowledge.enabled = true"
 } > "$RUN/.agentis/config"
+
+# #993: trust the shared $RUN store up front (the serial + depth paths cd into it,
+# and the parallel path additionally trusts each isolated cell dir at creation).
+# mock never spawns claude, so skip it. Best-effort — never fails the hunt.
+case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$RUN" ;; esac
 
 # #1887 LEARN->ACT bridge: if the operator points REFUTE_CONSTRAINTS_JSON at a refute-to-knowledge.sh output,
 # import it into THIS run's store (just wiped + re-init'd above) BEFORE the cell loop — and therefore before
@@ -1012,6 +1024,9 @@ else
     cp -r "$RUN/.agentis" "$cdir/.agentis"        # isolated store: an empty blackboard, no cross-cell race
     cp "$RUN/hunter.ag" "$cdir/hunter.ag"
     cp "$RUN/slice-fns.sh" "$cdir/slice-fns.sh"
+    # #993: trust this cell dir HERE (foreground, serialized) — never inside the
+    # backgrounded run_cell subshell, where concurrent whole-file writes would race.
+    case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$cdir" ;; esac
     run_cell "$cdir" "${CELL_SUBSYS[$idx]}" "${CELL_CLS[$idx]}" "${CELL_INSCOPE[$idx]}" "${CELL_LOGP[$idx]}" \
       "" "" "${CELL_APXF[$idx]}" "${CELL_APXB[$idx]}" &
     live=$((live + 1))

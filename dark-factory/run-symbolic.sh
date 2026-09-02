@@ -51,6 +51,11 @@ set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
+# agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the RUN dir
+# (below), so a flat-cyborg/claude symbolic-oracle session does not block + exit 75.
+# shellcheck source=lib/ensure-claude-trust.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/ensure-claude-trust.sh"
 CANDS="" ; REPO="" ; CODE_DIR="" ; ONLY=""
 BACKEND="flat-cyborg" ; MODEL="" ; OUT="$PWD/symbolic-out"
 
@@ -125,6 +130,11 @@ mkdir -p "$REPO_IN_RUN/test"
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"
+
+# #993: trust the RUN dir before the first `agentis go` so a flat-cyborg/claude
+# symbolic-oracle session is not blocked on the workspace-trust dialog (mock never
+# spawns claude). Best-effort — never fails the run.
+case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$RUN" ;; esac
 
 REPORT="$OUT/symbolic-report.md"
 {

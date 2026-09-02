@@ -43,6 +43,11 @@ esac
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AUDITOR_AG="$HERE/auditor/agents/auditor.ag"
+# agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the one-shot
+# run dir (below), so the (always flat-cyborg) auditor session does not block + exit 75.
+# shellcheck source=lib/ensure-claude-trust.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/ensure-claude-trust.sh"
 
 if ! command -v agentis >/dev/null 2>&1; then
   echo "VERDICT|dry|agentis not on PATH"
@@ -69,6 +74,9 @@ cp "$AUDITOR_AG" "$WORK/run/auditor.ag"
 } > "$WORK/run/.agentis/config"
 
 RUN_LOG="$WORK/run/hunt.log"
+# #993: trust this one-shot run dir before `agentis go` (backend is always
+# flat-cyborg here) so the session is not blocked on the workspace-trust dialog.
+df_ensure_claude_trust "$WORK/run"
 # --grant-pii: benign public contract-source text can trip the PII heuristic (#1690), same rationale as
 # auditor/scripts/start-colony.sh's own invocation, which these flags mirror verbatim.
 ( cd "$WORK/run" && agentis go auditor.ag --enable-exec --enable-messaging --grant-pii --sandbox-profile hardened ) \
