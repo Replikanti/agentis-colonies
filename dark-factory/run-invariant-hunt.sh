@@ -159,6 +159,11 @@ AGENTIS="agentis"
 # shellcheck source=lib/run-agent-validated.sh
 # shellcheck disable=SC1091
 . "$HERE/lib/run-agent-validated.sh"
+# agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the RUN dir
+# (below), so a flat-cyborg/claude invariant-prover session does not block + exit 75.
+# shellcheck source=lib/ensure-claude-trust.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/ensure-claude-trust.sh"
 # Backstop: free a held slot on ANY exit path (happy path, error, signal), not
 # only the explicit release calls around each forge subprocess below. Safe
 # no-op when no slot is held (fail-open path, or a run that never reached a
@@ -626,6 +631,10 @@ fi
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"
+
+# #993: trust the RUN dir before `agentis go` so a flat-cyborg/claude invariant-prover
+# session is not blocked on the workspace-trust dialog (mock never spawns claude).
+case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$RUN" ;; esac
 
 SLUG="$(printf '%s' "$TARGET" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
 INV_OUT="$REPO_IN_RUN/test/Inv_${SLUG}.t.sol"

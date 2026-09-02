@@ -33,6 +33,12 @@ set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTS_DIR="$HERE/../agents"
+# agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the RUN dir
+# (a fresh mktemp -d below), so a flat-cyborg/claude gate session does not block +
+# exit 75. The helper lives at the dark-factory root (two levels up from here).
+# shellcheck source=../../lib/ensure-claude-trust.sh
+# shellcheck disable=SC1091
+. "$HERE/../../lib/ensure-claude-trust.sh"
 AGENT="${GATE_AGENT:-}"
 PREFIX="${VERDICT_PREFIX:-}"
 NEGATIVE_TOKEN="${VERDICT_NEGATIVE:-}"
@@ -139,6 +145,10 @@ cp "$AGENT" "$RUN/$(basename "$AGENT")"
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"
+
+# #993: trust the fresh mktemp RUN dir before `agentis go` so a flat-cyborg/claude
+# gate session is not blocked on the workspace-trust dialog (mock never spawns claude).
+case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$RUN" ;; esac
 
 LOG="$RUN/gate.log"
 # --grant-pii: gate prompts can carry repo URLs / scope text that trip the PII heuristic; the input is benign.

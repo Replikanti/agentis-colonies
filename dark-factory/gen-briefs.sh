@@ -58,6 +58,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 . "$HERE/lib/run-agent-validated.sh"
 DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
+# agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the RUN dir
+# (below), so the flat-cyborg/claude backend session does not block + exit 75.
+# shellcheck source=lib/ensure-claude-trust.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/ensure-claude-trust.sh"
 AGENTIS="agentis"
 ZONES="" ; SCOPE="" ; OUT="" ; REPO="" ; RESIDUALS="" ; FIXTURE="" ; BACKEND="flat-cyborg"
 # #1930: both EMPTY = OFF; with them off the assembled brief is byte-identical to a pre-#1930 one.
@@ -275,6 +280,11 @@ _gb_attempt() {
       "$AGENTIS" go brief-writer.ag --enable-exec --enable-messaging --grant-pii ) > "$1" 2>&1 \
     || echo "gen-briefs.sh: brief-writer run failed for zone '$ZID' (see $1)" >&2
 }
+# #993: trust the RUN dir before the first `agentis go` (substrate path only; RUN is
+# unset on the fixture/mechanical paths, and mock never spawns claude). Best-effort.
+if [ "$SRC_LABEL" = "substrate" ]; then
+  case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$RUN" ;; esac
+fi
 TAB="$(printf '\t')"
 while IFS="$TAB" read -r ZID ZNAME ZCLASSES ZFILES || [ -n "${ZID:-}" ]; do
   [ -n "$ZID" ] || continue

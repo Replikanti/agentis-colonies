@@ -45,6 +45,11 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 . "$HERE/lib/run-agent-validated.sh"
 DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
+# agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the RUN dir
+# (below), so the flat-cyborg/claude backend session does not block + exit 75.
+# shellcheck source=lib/ensure-claude-trust.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/ensure-claude-trust.sh"
 AGENTIS="agentis"
 REPO="" ; OUT="" ; SCOPE_HINT="" ; SINCE="" ; FIXTURE="" ; BACKEND="flat-cyborg"
 # A contract above this many lines is emitted function-sliced (`file@fn1+fn2`, slice-fns.sh format) in
@@ -517,6 +522,10 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
         "$AGENTIS" go zone-mapper.ag --enable-exec --enable-messaging --grant-pii ) > "$1" 2>&1 \
       || echo "map-zones.sh: zone-mapper run failed for zone '$ZID' (see $1)" >&2
   }
+  # #993: trust the RUN dir before the first `agentis go` so the interactive
+  # flat-cyborg/claude session is not blocked on the workspace-trust dialog (mock
+  # never spawns claude, so skip it). Best-effort — never fails the mapping.
+  case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$RUN" ;; esac
   TAB="$(printf '\t')"
   while IFS="$TAB" read -r ZID ZFILES || [ -n "${ZID:-}" ]; do
     [ -n "$ZID" ] || continue

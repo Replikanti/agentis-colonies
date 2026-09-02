@@ -41,6 +41,11 @@ set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
+# agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the RUN dir
+# (below), so a flat-cyborg/claude poc-writer session does not block + exit 75.
+# shellcheck source=lib/ensure-claude-trust.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/ensure-claude-trust.sh"
 REPO="" ; TARGET="" ; HYPOTHESIS="" ; CLASS="" ; KIND="" ; FIXTURE="" ; CODE="" ; FIXTURES_DIR=""
 MATCH="test" ; BACKEND="flat-cyborg" ; MODEL="" ; REPAIR_ROUNDS="" ; OUT="$PWD/poc-out"
 
@@ -181,6 +186,10 @@ fi
   echo "learning.enabled = true"
   echo "experience.enabled = true"
 } > "$RUN/.agentis/config"
+
+# #993: trust the RUN dir before `agentis go` so a flat-cyborg/claude poc-writer
+# session is not blocked on the workspace-trust dialog (mock never spawns claude).
+case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$RUN" ;; esac
 
 SLUG="$(printf '%s' "$TARGET" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
 case "$KIND" in

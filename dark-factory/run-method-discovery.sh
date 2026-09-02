@@ -16,6 +16,11 @@ CORPUS="${1:-${CORPUS:-/tmp/mdctl}}"
 MODEL="${MODEL:-claude-opus-4-8}"
 INVENTOR="$HERE/auditor/agents/method-inventor.ag"
 FORGE="${FORGE:-$HOME/.foundry/bin/forge}"
+# agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the /tmp rundir
+# below, so the (hardcoded flat-cyborg) method-inventor session does not block + exit 75.
+# shellcheck source=lib/ensure-claude-trust.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/ensure-claude-trust.sh"
 
 echo "== method-discovery: INVENT -> VALIDATE -> ADOPT =="
 echo "registry=$REGISTRY  gap=$GAP  corpus=$CORPUS"
@@ -33,6 +38,9 @@ if [ -z "${NO_AGENTIS:-}" ] && command -v agentis >/dev/null 2>&1; then
   ( cd "$rd" && agentis init >/dev/null 2>&1
     { echo "llm.backend = flat-cyborg"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"
       echo "exec.env_passthrough = REGISTRY,GAP"; echo "llm.cli_timeout_ms = 300000"; echo "exec.default_timeout_ms = 30000"; } >> .agentis/config
+    # #993: trust this rundir before `agentis go` (backend is flat-cyborg) so the
+    # session is not blocked on the workspace-trust dialog. Best-effort.
+    df_ensure_claude_trust "$rd"
     # --grant-pii: REGISTRY/GAP method text can carry addresses/identifiers that trip the PII
     # heuristic; input is benign operator-authored method text (#1690).
     REGISTRY="$rd/registry.md" GAP="$rd/gap.md" agentis go method-inventor.ag --enable-exec --enable-messaging --grant-pii ) > "$rd/out" 2>"$rd/err"
