@@ -1,8 +1,8 @@
 # Grand Rounds
 
-![Version: 0.1.0](https://img.shields.io/badge/version-0.1.0-blue) ![Status: Experimental](https://img.shields.io/badge/status-experimental-red)
+![Version: 0.2.0](https://img.shields.io/badge/version-0.2.0-blue) ![Status: Experimental](https://img.shields.io/badge/status-experimental-red)
 
-**Version:** `0.1.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.22.3`
+**Version:** `0.2.0` · [Changelog](./CHANGELOG.md) · **Requires:** agentis >= `1.22.3`
 
 Grand Rounds is a clinical-genomics federation for **rare-disease diagnostic
 prioritization**. It was built for the MVA Hackathon 2026 (Track 1): given a

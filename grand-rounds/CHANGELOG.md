@@ -14,6 +14,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+**Requires:** agentis >= 1.22.3
+
+## [0.2.0] - 2026-09-02
+
 ### Fixed
 - **The preprocessor could score an input it never read.** The take-2 submission
   run pointed `MVA_VCF` outside the bcftools container's bind-mounts; every stage
@@ -338,5 +342,6 @@ Initial baseline colony for the MVA Hackathon 2026 (Track 1). Conforms to
 M3 variant-triage lens federation, M6 public-deliverable readiness, and
 comprehensive bug-fix pass on lens timeout and GTF wiring validation.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/grand-rounds-v0.1.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/grand-rounds-v0.2.0...HEAD
+[0.2.0]: https://github.com/Replikanti/agentis-colonies/compare/grand-rounds-v0.1.0...grand-rounds-v0.2.0
 [0.1.0]: https://github.com/Replikanti/agentis-colonies/releases/tag/grand-rounds-v0.1.0
