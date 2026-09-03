@@ -14,6 +14,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-04
+
+**Requires:** agentis >= `1.22.7`
+
 ### Fixed
 - **hunt-dashboard: raw breadth candidates at the same location no longer show duplicate rows with stale
   "needs PoC" siblings once one copy is verified/adjudicated** (#2024). A `--rehunt-gaps` re-find or a second
@@ -4155,7 +4159,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   with a `pending_human_review` marker. The colony NEVER auto-posts to a
   bounty platform — submission is always an explicit human action.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.6.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.10.1...HEAD
+[0.10.1]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.10.0...dark-factory-v0.10.1
+[0.10.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.9.0...dark-factory-v0.10.0
+[0.9.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.8.0...dark-factory-v0.9.0
+[0.8.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.7.0...dark-factory-v0.8.0
+[0.7.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.6.0...dark-factory-v0.7.0
 [0.6.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.5.0...dark-factory-v0.6.0
 [0.5.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.3...dark-factory-v0.5.0
 [0.4.3]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.4.2...dark-factory-v0.4.3
