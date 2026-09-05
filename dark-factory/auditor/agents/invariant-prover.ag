@@ -839,6 +839,14 @@ fn class_to_keyword(k: string) -> string {
     // is_value_custody("liveness") and is_oracle_dependent("liveness") are both false, so a value-custody / oracle
     // target never picks it up — the liveness detector fires false on those.
     if class_is(k, "c16") { return "liveness"; }
+    // #2111 (dark-factory) — C19 = "Narrow-integer overflow / unsafe downcast -> revert-DoS" (auditor/bug-taxonomy.md).
+    // A bare `C19` dominant label REUSES the existing "liveness" keyword: the livenessPrompt/livenessMeta lens is
+    // already narrow-int-overflow-DoS shaped (WRAP-BOUNDARY action, NARROW-INT-NO-WRAP relation) and now also carries
+    // an explicit DOWNCAST-TRUNCATION bullet, so C19 (uintN(x) / SafeCast truncation bricking a critical path, e.g.
+    // yieldoor H-3's uint16 observation-counter overflow) routes through the whole liveness machinery with no new
+    // disjoint keyword set to keep consistent. is_value_custody / is_oracle_dependent / is_access_sensitive stay false
+    // on "liveness", so a custody / oracle / access target never picks it up.
+    if class_is(k, "c19") { return "liveness"; }
     // #1785 (M1) — C5 = "Access control / role model" (auditor/bug-taxonomy.md). A bare `C5` dominant label routes to
     // the new "access" keyword so the access-control / privilege metamorphic lens fires. is_value_custody("access"),
     // is_oracle_dependent("access") and is_liveness_sensitive("access") are all false, so a value-custody / oracle /
@@ -947,6 +955,10 @@ fn action_checklist_prompt(klass: string) -> string {
          + "  - a FULL-RANGE ENTRYPOINT-SWEEP action: after the accumulator sits at its boundary, call every "
          + "CRITICAL user entrypoint (deposit / withdraw / settle / observe — the paths a user MUST reach) over the "
          + "full valid input domain and record whether any of them reverts\n"
+         + "  - a DOWNCAST-TRUNCATION action (#2111, C19): drive a wide value PAST a narrow type's max so an unchecked "
+         + "`uintN(x)`/`intN(x)` cast or `SafeCast.toUintN` on the critical path silently TRUNCATES (or reverts), "
+         + "bricking a core function — feed the entrypoint an input just above `2**N - 1` for the narrow type it "
+         + "downcasts to and record whether the truncated/reverted value corrupts accounting or blocks the path\n"
          + "  - >=2 actor addresses so the actor who DRIVES the counter to its boundary and the actor who then "
          + "needs the critical path are attributable to different positions\n";
     if index_of(k, "liveness") >= 0 { return livenessPrompt; }
@@ -959,6 +971,11 @@ fn action_checklist_prompt(klass: string) -> string {
     if index_of(k, "revert") >= 0 { return livenessPrompt; }
     if index_of(k, "dos") >= 0 { return livenessPrompt; }
     if index_of(k, "getincrement") >= 0 { return livenessPrompt; }
+    // #2111 (C19) — downcast/truncation matchers, kept in lockstep with livenessMeta / is_liveness_sensitive.
+    if index_of(k, "downcast") >= 0 { return livenessPrompt; }
+    if index_of(k, "truncat") >= 0 { return livenessPrompt; }
+    if index_of(k, "safecast") >= 0 { return livenessPrompt; }
+    if index_of(k, "narrow") >= 0 { return livenessPrompt; }
     // #1785 (M1) — ACCESS-CONTROL / PRIVILEGE class. Matched inline via index_of on the SAME access keyword set as
     // is_access_sensitive (NOT a call to it — .ag is definition-before-use and is_access_sensitive is defined later).
     // Value-custody, oracle AND liveness keywords are matched first above, so those labels never reach here.
@@ -1071,7 +1088,13 @@ fn metamorphic_relation_prompt(klass: string) -> string {
          + "the protocol's OWN increment path near its max, read `cAfter`, and assert it advanced MONOTONICALLY "
          + "without wrapping: `require(cAfter >= cBefore, \"narrow-int accumulator wrapped -> DoS\");` (a `uint16 a + "
          + "b` that overflows and reverts every subsequent critical call is exactly the integer-overflow-to-DoS rare "
-         + "High)\n";
+         + "High)\n"
+         + "  - DOWNCAST-NO-TRUNCATE (#2111, C19): a wide value narrowed by an unchecked `uintN(x)`/`intN(x)` cast or "
+         + "`SafeCast.toUintN` on the critical path must ROUND-TRIP without loss — read the wide source `wideVal`, "
+         + "apply the protocol's OWN downcast, widen the result back and assert equality: "
+         + "`require(uint256(narrowVal) == wideVal, \"downcast truncated -> DoS\");` (a `uint16(x)` that silently drops "
+         + "the high bits and corrupts an index/counter, or a `SafeCast` that reverts every critical call for valid "
+         + "inputs above the narrow max, is exactly the narrow-int downcast rare High)\n";
     if index_of(mk, "liveness") >= 0 { return livenessMeta; }
     if index_of(mk, "overflow") >= 0 { return livenessMeta; }
     if index_of(mk, "uint8") >= 0 { return livenessMeta; }
@@ -1082,6 +1105,11 @@ fn metamorphic_relation_prompt(klass: string) -> string {
     if index_of(mk, "revert") >= 0 { return livenessMeta; }
     if index_of(mk, "dos") >= 0 { return livenessMeta; }
     if index_of(mk, "getincrement") >= 0 { return livenessMeta; }
+    // #2111 (C19) — downcast/truncation matchers, kept in lockstep with livenessPrompt / is_liveness_sensitive.
+    if index_of(mk, "downcast") >= 0 { return livenessMeta; }
+    if index_of(mk, "truncat") >= 0 { return livenessMeta; }
+    if index_of(mk, "safecast") >= 0 { return livenessMeta; }
+    if index_of(mk, "narrow") >= 0 { return livenessMeta; }
     // #1785 (M1) — ACCESS-CONTROL / PRIVILEGE relations. Matched inline on the SAME access keyword set as
     // is_access_sensitive (value-custody + oracle + liveness keywords matched first above => those labels never
     // reach this).
@@ -1176,6 +1204,11 @@ fn is_liveness_sensitive(klass: string) -> bool {
     if index_of(lc, "revert") >= 0 { return true; }
     if index_of(lc, "dos") >= 0 { return true; }
     if index_of(lc, "getincrement") >= 0 { return true; }
+    // #2111 (C19) — downcast/truncation matchers, kept in lockstep with livenessPrompt / livenessMeta.
+    if index_of(lc, "downcast") >= 0 { return true; }
+    if index_of(lc, "truncat") >= 0 { return true; }
+    if index_of(lc, "safecast") >= 0 { return true; }
+    if index_of(lc, "narrow") >= 0 { return true; }
     return false;
 }
 
@@ -1186,7 +1219,8 @@ fn is_liveness_sensitive(klass: string) -> bool {
 // (C5 -> "access"), then anchored index_of over an access keyword set DISJOINT from the value-custody set
 // (4626/vault/lend/cdp/borrow/collateral/amm/swap/dex/pool/redeem/stak), the oracle set (oracle/price/feed/chainlink/
 // slot0/getprice/latestanswer) AND the liveness set (liveness/overflow/uint8/uint16/observation/cardinality/index/
-// revert/dos/getincrement) — so an out-of-class, value-custody, oracle or liveness label never trips it. Flat
+// revert/dos/getincrement/downcast/truncat/safecast/narrow) — so an out-of-class, value-custody, oracle or liveness
+// label never trips it. Flat
 // index_of only — no per-element recursion. A distinct local `ac` (not `k`) keeps the #1725 handler-action
 // normalizer-site count at exactly 2.
 fn is_access_sensitive(klass: string) -> bool {

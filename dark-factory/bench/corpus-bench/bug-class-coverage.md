@@ -107,7 +107,7 @@ arm).
 |---------|---------|----|-------|-------------|
 | yieldoor | H-1 liquidation fee decimal handling | 7 | C9 decimals | OUT-OF-CLASS |
 | yieldoor | **H-2 ticks from slot0** | **1** | **C2 oracle** | IN-FLIGHT (#1783) |
-| yieldoor | **H-3 uint16 overflow → DoS** | **1** | **C17 slot / C16 liveness** | OUT-OF-CLASS (#1784) |
+| yieldoor | **H-3 uint16 overflow → DoS** | **1** | **C19 narrow-overflow** | IN-FLIGHT (#2111) |
 | yieldoor | H-4 isLiquidateable base calc | 3 | C10 liquidation | OUT-OF-CLASS |
 | yieldoor | H-5 high-leverage vs liquidation | 24 | C10 liquidation | OUT-OF-CLASS |
 | yieldoor | H-6 tick param in collectFees | 19 | C1 vault / C6 | OUT-OF-CLASS |
@@ -156,7 +156,8 @@ arm).
 | C22 x-protocol asset/unit | 1 | 2 | REFUTED (#1879) | notional H-8 (fb=2): C22 fired + generated PT/sUSDe candidates, refute gate dropped them |
 | C23 hardcoded ext-param | 1 | 2 | **CAUGHT** ✅ (#1879) | notional H-9 (fb=2): judge conf 93 — first C22/C23-family catch, end-to-end |
 | C16 liveness / stuck-state | 4 | 3 | OPEN (#1784 overlaps) | DoS class |
-| C17 index/slot-overwrite | 2 | 1 | OPEN (#1784) | yieldoor H-3 (fb=1 rare, overflow) |
+| C17 index/slot-overwrite | 1 | 5 | OPEN (#1784) | notional H-5 (H-3 retagged to C19 #2111) |
+| C19 narrow-int overflow / downcast | 1 | 1 | IN-FLIGHT (#2111) | yieldoor H-3 (fb=1 rare) — liveness lens + zone-mapper C19 net wired |
 | C10 liquidation / redemption | 4 | 3 | OUT-OF-CLASS | |
 | C8 reentrancy | 2 | 4 | OUT-OF-CLASS | classic critical class, not yet rare here |
 | C12 slippage / MEV | 3 | 5 | OUT-OF-CLASS | |
@@ -173,6 +174,6 @@ Three corpus contests remain to tag: dodo, crestal, symm.
 1. **C2 oracle** — 5 corpus Highs, 2 rare (fb=1: yieldoor H-2, notional H-2). **In flight (#1783).** Transfer pair: derive on notional H-4 → hold out yieldoor H-2 (or plaza H-4).
 2. **C23 hardcoded ext-param** — notional H-9 (fb=2) **CAUGHT end-to-end (#1879)**, judge conf 93; the pattern (hardcoded `useEth`/`dexId`/pool-index on an external call) should transfer to other integration-adapter targets. **C22 x-protocol unit** (notional H-8, fb=2) fires + generates but is **REFUTED** — the remaining gap there is candidate airtightness vs. the refute gate, not coverage or generation.
 3. **C5 access control** — notional H-10 (fb=2 rare) + H-7 + yieldoor H-7. Issue #1785.
-4. **C17 slot-overwrite / overflow** — yieldoor H-3 (fb=1), notional H-5. Issue #1784.
+4. **C19 narrow-int overflow / downcast** — yieldoor H-3 (fb=1 rare, `uint16` observation-counter overflow → `checkPoolActivity` DoS). **In flight (#2111)**: C19 reuses the "liveness" generation lens (WRAP-BOUNDARY + NARROW-INT-NO-WRAP, now + a DOWNCAST-TRUNCATION bullet) via a one-line `class_to_keyword` map, and a deterministic `contains_narrow_int_signal()` zone-mapper backstop force-includes C19. **C17 slot-overwrite** — notional H-5 remains under #1784.
 
 Each class is declared functional only after the **transfer test** (#1787): derive on one contract of the class → the lens must also FINDING on a *different* corpus contract of the same class. `HARNESS-ERROR` rows (mellow C4) are tracked on the separate harness-robustness axis, not the template axis.
