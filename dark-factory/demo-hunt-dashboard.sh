@@ -1444,6 +1444,165 @@ kill "$DECOY_PID" 2>/dev/null
 wait "$DECOY_PID" 2>/dev/null
 
 # ----------------------------------------------------------------------------------------------------------
+# (26) #2108(a): the planned DEPTH matrix must NOT emit a phantom queued row for a zone with no deployable
+# implementation (all interface/events/abstract signatures — nothing a stateful-invariant fuzzer can deploy
+# or call), while a HUNTABLE zone that was never run (a real, still-open coverage gap) MUST keep its queued
+# row. Stage a private copy (so the count-exact assertions over MAIN_DESC are untouched) and append two zones:
+# one has_implementation:false (interface-only) and one has_implementation:true (huntable, no run dir).
+# ----------------------------------------------------------------------------------------------------------
+note "26) #2108(a): interface-only zone -> no phantom queued DEPTH row; capped-out huntable zone -> real queued row ..."
+IMPL_DESC="$(stage_as balancer balancer-has-impl)"
+python3 - "$IMPL_DESC" <<'PY'
+import json, os, sys
+desc = sys.argv[1]
+zp = os.path.join(os.path.dirname(desc), "zone-hunt-out", "map", "zones.json")
+zs = json.load(open(zp))
+zs.append({
+    "id": "protocol_iface", "name": "Protocol interface + events",
+    "files": ["contracts/iface/IProtocol.sol"],
+    "loc": 40, "hardening_score": 55, "bug_classes_likely": ["C2"],
+    "description": "Interface + events only; nothing to deploy.",
+    "value_custody": False, "has_implementation": False,
+})
+zs.append({
+    "id": "capped_vault", "name": "Capped-out huntable vault",
+    "files": ["contracts/capped/Capped.sol"],
+    "loc": 900, "hardening_score": 55, "bug_classes_likely": ["C2"],
+    "description": "Deployable logic that the pipeline capped out — a real coverage gap.",
+    "value_custody": False, "has_implementation": True,
+})
+json.dump(zs, open(zp, "w"), indent=2)
+PY
+if emit_model "$IMPL_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+e = []
+slots = {d["slot"] for d in m["deep_rows"]}
+if any(s.startswith("protocol_iface-") for s in slots):
+    e.append("an interface-only zone (has_implementation:false) still produced a phantom DEPTH row: %s" % sorted(slots))
+cap = next((d for d in m["deep_rows"] if d["slot"] == "capped_vault-C2"), None)
+if not (cap and cap["state"] == "queued"):
+    e.append("a huntable capped-out zone (has_implementation:true) lost its real queued coverage-gap row: %s" % cap)
+# the original balancer depth matrix is unperturbed by the two appended zones (no has_implementation key on it)
+if not any(s.startswith("pkg_vault_contracts-") for s in slots):
+    e.append("the original huntable zone's DEPTH rows vanished: %s" % sorted(slots))
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+  then ok "26: interface-only zone emits NO queued DEPTH row; the capped-out huntable zone keeps its real queued row (#2108(a))"
+  else bad "26: has_implementation gate mis-classified a DEPTH row"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "26: emit-model failed on the has_implementation descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (27) #2108(b): deep_hunt() must fold the AUTOMATED 4.6 refute-gate verdict as a FALLBACK behind the manual
+# deep-hunt-adjudicated.tsv overlay. Balancer's C6 slot is an open FINDING with no manual adjudication; plant
+# a per-slot refute-report.md for it and assert: (a) a gate REFUTED -> triaged_fp (struck) with adj_source
+# "gate" + the "auto (4.6 gate)" render marker; (b) a gate REAL (survivor) -> stays finding/needs-PoC; (c) a
+# manual TSV row for the same slot OVERRIDES the gate (adj_source None, no auto marker). Each case stages its
+# OWN copy so the count-exact assertions above are unperturbed.
+# ----------------------------------------------------------------------------------------------------------
+plant_gate_report() {   # plant_gate_report <hunt-dir> <slot> <VERDICT> <reason>
+  pgr_dir="$1/zone-hunt-out/deep-hunt/$2/refute-gate/refute-out"
+  mkdir -p "$pgr_dir"
+  {
+    printf '| Location | Class | Verdict | Reason |\n'
+    printf '|---|---|---|---|\n'
+    printf '| pkg/vault/contracts/Vault.sol:settle | C6 | %s | %s |\n' "$3" "$4"
+  } > "$pgr_dir/refute-report.md"
+}
+
+note "27) #2108(b): the automated 4.6 refute-gate verdict folds in behind the manual overlay ..."
+# (27a) gate REFUTED, no manual C6 row -> auto-triaged FP.
+GATE_REF_DESC="$(stage_as balancer balancer-gate-refuted)"
+plant_gate_report "$(dirname "$GATE_REF_DESC")" "pkg_vault_contracts-C6" "REFUTED" "Role-gated witness; trusted-actor capability, not an attack."
+if emit_model "$GATE_REF_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+c6 = next((d for d in m["deep_rows"] if d["slot"] == "pkg_vault_contracts-C6"), None)
+e = []
+if not (c6 and c6["state"] == "triaged_fp" and c6["struck"] is True):
+    e.append("gate REFUTED did not auto-triage C6 to a struck triaged_fp: %s" % c6)
+if not (c6 and c6.get("adj_source") == "gate"):
+    e.append("the auto-refuted C6 row must carry adj_source 'gate': %s" % c6)
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "27a: a gate REFUTED (no manual row) auto-triages the C6 finding to a struck triaged_fp with adj_source 'gate'"
+  else bad "27a: gate REFUTED fold-in wrong"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "27a: emit-model failed on the gate-refuted descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+# (27a-render) the gate-sourced REFUTED carries the compact provenance marker.
+if python3 "$DASH" --descriptor "$GATE_REF_DESC" --render > "$WORK/page.html" 2>"$WORK/render.err"; then
+  if grep -q 'auto (4.6 gate)' "$WORK/page.html"; then
+    ok "27a-render: the gate-sourced REFUTED row renders the compact 'auto (4.6 gate)' provenance marker"
+  else
+    bad "27a-render: the gate-sourced REFUTED row is missing the 'auto (4.6 gate)' marker"
+  fi
+else
+  bad "27a-render: --render failed on the gate-refuted descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+# (27b) gate REAL (survivor) -> stays a needs-PoC finding, never auto-refuted.
+GATE_REAL_DESC="$(stage_as balancer balancer-gate-real)"
+plant_gate_report "$(dirname "$GATE_REAL_DESC")" "pkg_vault_contracts-C6" "REAL" "Invariant genuinely broke; survives the gate."
+if emit_model "$GATE_REAL_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+c6 = next((d for d in m["deep_rows"] if d["slot"] == "pkg_vault_contracts-C6"), None)
+e = []
+if not (c6 and c6["state"] == "finding" and c6["struck"] is False):
+    e.append("a REAL (survived) gate verdict must keep C6 as a needs-PoC finding, not auto-refute it: %s" % c6)
+if c6 and c6.get("adj_source") is not None:
+    e.append("a survivor must have no adjudication source: %s" % c6)
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "27b: a gate REAL verdict leaves the C6 finding as needs-PoC (never auto-refutes a survivor)"
+  else bad "27b: gate REAL wrongly altered the finding"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "27b: emit-model failed on the gate-real descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+# (27c) manual deep-hunt-adjudicated.tsv row for the same slot OVERRIDES a conflicting gate REFUTED.
+GATE_OVR_DESC="$(stage_as balancer balancer-gate-override)"
+GATE_OVR_DIR="$(dirname "$GATE_OVR_DESC")"
+plant_gate_report "$GATE_OVR_DIR" "pkg_vault_contracts-C6" "REFUTED" "gate says refuted"
+printf 'pkg/vault/contracts/Vault.sol\tC6\tREFUTED\tMANUAL human triage overrides the gate.\n' >> "$GATE_OVR_DIR/deep-hunt-adjudicated.tsv"
+if emit_model "$GATE_OVR_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+c6 = next((d for d in m["deep_rows"] if d["slot"] == "pkg_vault_contracts-C6"), None)
+e = []
+if not (c6 and c6["state"] == "triaged_fp"):
+    e.append("a manual REFUTED row must still triage C6: %s" % c6)
+if c6 and c6.get("adj_source") is not None:
+    e.append("the manual overlay must WIN over the gate (adj_source must be None, not 'gate'): %s" % c6)
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "27c: a manual deep-hunt-adjudicated.tsv row overrides the automated gate (triaged_fp, adj_source None = human triage wins)"
+  else bad "27c: the manual overlay did not win over the gate"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  fi
+else
+  bad "27c: emit-model failed on the gate-override descriptor"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+# (27c-render) the human-triaged REFUTED renders WITHOUT the auto marker (exactly as before this PR).
+if python3 "$DASH" --descriptor "$GATE_OVR_DESC" --render > "$WORK/page.html" 2>"$WORK/render.err"; then
+  if grep -q 'auto (4.6 gate)' "$WORK/page.html"; then
+    bad "27c-render: a manual-overlaid REFUTED wrongly rendered the 'auto (4.6 gate)' marker"
+  else
+    ok "27c-render: the manual-overlaid REFUTED renders with no auto marker (human triage looks as it did before)"
+  fi
+else
+  bad "27c-render: --render failed on the gate-override descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
   exit 0

@@ -109,6 +109,28 @@ def coverage():
                  "classes_hunted": z.get("bug_classes_likely", [])} for z in mz]
     except Exception: return []
 
+def _gate_refute(slot):
+    # #2108(b): the AUTOMATED 4.6 refute-gate verdict for a deep-hunt slot (deep-hunt-gate.sh #1938,
+    # default-ON), read as a FALLBACK behind the manual deep-hunt-adjudicated.tsv overlay. The gate writes ONE
+    # verdict row to deep-hunt/<slot>/refute-gate/refute-out/refute-report.md in the format
+    # `| <loc> | <class> | REFUTED|REAL|ERROR | <reason> |` — the same row deep-hunt-gate.sh:228-235 scrapes
+    # (verdict at cell index 2, reason at 3 after stripping the outer `|`). Return a manual-TSV-shaped adj dict
+    # ONLY on a REFUTED row, so an auto-refuted finding reclassifies to a triaged FP exactly as a hand-written
+    # REFUTED row would; a REAL (survived) or ERROR verdict returns None so the finding stays needs-PoC (NEVER
+    # auto-refute a survivor). `source:"gate"` lets the renderer mark machine triage apart from a human one.
+    rp = os.path.join(OUT, "deep-hunt", slot, "refute-gate", "refute-out", "refute-report.md")
+    for ln in read(rp).splitlines():
+        s = ln.strip()
+        if not s.startswith("|"): continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if len(cells) < 4: continue
+        v = cells[2].upper()
+        if v not in ("REAL", "REFUTED", "ERROR"): continue   # header/separator/prose row — skip like the gate's awk
+        if v == "REFUTED":
+            return {"verdict": "REFUTED", "reason": cells[3], "source": "gate"}
+        return None   # REAL (survived) / ERROR: never auto-refute -> stays needs-PoC
+    return None
+
 def deep_hunt():
     # STAGE 4.5 stateful-invariant fuzzing: one invariant-report.md per <zone>-<class> slot.
     # The FUZZER's exit code is the verdict (FINDING = a broken invariant with a shrunk witness = a
@@ -155,9 +177,13 @@ def deep_hunt():
         for ln in txt.splitlines():
             if ln.strip().startswith("```"): inblk = not inblk; continue
             if inblk and re.match(r"\s*[A-Za-z_]\w*\(", ln): steps += 1
+        # #2108(b): the manual overlay wins when present (human override > automated gate), matching the
+        # precedence note at ~274; only when there is no manual row do we fall back to the automated 4.6
+        # refute-gate verdict for this slot (which fills adj only on a REFUTED — a survivor stays needs-PoC).
+        manual = adj.get((target, cls)) or adj.get((target, "*"))
         out.append({"slot": slot, "target": target, "cls": cls, "handler": handler,
                     "verdict": verdict, "steps": steps, "severity": vf.get(target, ""),
-                    "adj": adj.get((target, cls)) or adj.get((target, "*"))})
+                    "adj": manual or _gate_refute(slot)})
     return out
 
 def deep_hunt_state():
@@ -330,6 +356,14 @@ def planned_deep_rows():
     except Exception: return []
     rows=[]
     for z in zs:
+        # #2108(a): a zone with no deployable implementation (all interface/events/abstract signatures — a
+        # stateful-invariant fuzzer has nothing to deploy or call) never runs a deep-hunt lens, so it must NOT
+        # produce a phantom  queued DEPTH row. map-zones.sh writes a mechanical `has_implementation` per zone;
+        # exclude ONLY on an explicit False (Python `is False`), so a zone that is absent/true stays huntable —
+        # a legacy zones.json without the key, or a huntable zone merely capped out by
+        # --deep-hunt-max-targets/--deep-hunt-max-lenses, still renders its real queued coverage-gap row.
+        if z.get("has_implementation") is False:
+            continue
         classes=z.get("bug_classes_likely") or []
         dom=next((c for c in IMPL if c in classes),"C-invariant")
         lenses=[]
@@ -1073,7 +1107,10 @@ def page(nav=""):
                 # triaged false positive — IDENTICAL look to a refuted LEAD: severity in its OWN colour,
                 # struck through (Sev/Class/Location), dimmed; the refuted status sits in the gate column.
                 sev = f'<span style="color:{scol};font-weight:600;text-decoration:line-through">{html.escape(sevtxt or "?")}</span>'
-                gate = '<span style="color:#e5737b;font-weight:600">✗ REFUTED (triaged FP)</span>'
+                # #2108(b): a gate-sourced REFUTED carries a compact provenance marker so an operator can tell
+                # automated triage from a hand-written one; a manual-TSV REFUTED renders exactly as before.
+                _auto = ' · auto (4.6 gate)' if adj.get("source") == "gate" else ''
+                gate = f'<span style="color:#e5737b;font-weight:600">✗ REFUTED (triaged FP){_auto}</span>'
                 detail = f'<span style="color:#e5737b;font-size:12px">verified → not a bug: {html.escape(adj.get("reason", "")[:280])}</span>'
                 rowop = "opacity:.6"; strike = "text-decoration:line-through;"; st = "refuted"   # #1996
             elif ("FINDING" in v or "VIOLAT" in v) and adj.get("verdict") == "CONFIRMED":
@@ -1314,6 +1351,9 @@ def emit_model():
         cls=(d["cls"] if d else (m.group(2) if m else "?"))
         loc=(d["target"] if d else (m.group(1) if m else slot))
         deep_out.append({"id":_finding_id(loc, cls),"slot":slot,"cls":cls,"loc":loc,"severity":sev,"state":state,"struck":struck,
+                         # #2108(b): provenance of a triaged_fp — "gate" = automated 4.6 refute gate, None = a
+                         # manual deep-hunt-adjudicated.tsv row (manual wins, so a manual override reads None here).
+                         "adj_source":adj.get("source"),
                          "unpayable":_is_unpayable(sev, pf_rank)})
     # zones — the Result label that must agree with the LEADS table
     import collections as _cl

@@ -7,7 +7,7 @@
 # TWO parts:
 #   1) MAP + ROUND-TRIP (always, CI-safe, no toolchain): over a throwaway `git init` copy of
 #      fixtures/zone-map/ (an "audited" baseline + a post-audit-churn commit), runs map-zones.sh with
-#      --since + --fixture (the offline substrate stub) and asserts the emitted zones.json (valid, 7 keys),
+#      --since + --fixture (the offline substrate stub) and asserts the emitted zones.json (valid, 9 keys),
 #      scope.tsv (pipe-delimited, a function-slice for the oversized contract, no `|`/newline/backtick in
 #      any field), the run-discovery.sh --list-cells ROUND-TRIP (>=1 CELL, cells match the manifest), the
 #      advisory-and-never-a-gate hardening_score, and the read-only/never-submit map path.
@@ -88,7 +88,7 @@ if python3 - "$OUT/zones.json" <<'PY'
 import sys, json
 zones = json.load(open(sys.argv[1], encoding="utf-8"))
 assert isinstance(zones, list) and zones, "zones.json is not a non-empty array"
-need = {"id", "name", "files", "loc", "hardening_score", "bug_classes_likely", "description", "value_custody"}
+need = {"id", "name", "files", "loc", "hardening_score", "bug_classes_likely", "description", "value_custody", "has_implementation"}
 # #1957 relaxed the strict `== need` to `need.issubset(...)`: a zone MAY carry additive keys (`split_of` for a
 # split sub-zone, plus the pre-existing #1861/#1914/#1707 optionals). The upper bound still pins that no STRAY
 # key leaks in. The shipped fixture is small (every zone under the default 1600-LOC cap), so the default-cap run
@@ -103,8 +103,9 @@ for z in zones:
     assert isinstance(z["bug_classes_likely"], list), "bug_classes_likely not a list"
     assert isinstance(z["loc"], int) and isinstance(z["hardening_score"], int), "loc/hardening not ints"
     assert isinstance(z["value_custody"], bool), "value_custody not a bool"
+    assert isinstance(z["has_implementation"], bool), "has_implementation not a bool"   # #2108(a)
 PY
-then ok "zones.json is a valid JSON array; every zone has the 8 required keys (id/name/files/loc/hardening_score/bug_classes_likely/description/value_custody) + no stray key, and the default-cap run carries no split_of (splitting is a no-op below the cap)"
+then ok "zones.json is a valid JSON array; every zone has the 9 required keys (id/name/files/loc/hardening_score/bug_classes_likely/description/value_custody/has_implementation) + no stray key, and the default-cap run carries no split_of (splitting is a no-op below the cap)"
 else bad "zones.json schema assertion failed"
 fi
 
@@ -121,6 +122,8 @@ assert zones["contracts_vault"]["value_custody"] is True, "accounting vault zone
 assert zones["contracts_liquidation"]["value_custody"] is True, "lending/CDP liquidation zone not flagged value_custody"
 assert zones["contracts_oracle"]["value_custody"] is False, "read-only oracle zone wrongly flagged value_custody"
 assert zones["contracts_governance"]["value_custody"] is False, "governance role zone wrongly flagged value_custody"
+# #2108(a): the accounting vault is a deployable contract (real function bodies) -> has_implementation:true.
+assert zones["contracts_vault"]["has_implementation"] is True, "accounting vault zone not flagged has_implementation"
 PY
 then ok "value_custody is true for the accounting vault + lending/CDP zones, false for the oracle + governance zones"
 else bad "value_custody flag did not round-trip as expected"
@@ -1126,6 +1129,74 @@ PY
   fi
 else
   skip "lib/zone-coverage.py not found -- skipping the coverage round-trip"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (7) #2108(a): the has_implementation content signal. A deployable contract (a real function body) resolves
+#     TRUE; a body-less declaration-only file (pure interface + events, plus a function-with-body that lives
+#     only inside comments) resolves FALSE — even under a NON-excluded directory (the mETH case: the #1824
+#     path filter only drops interfaces/-DIR zones, and is blind to a declaration-only file under src/). The
+#     dashboard reads this to drop such a zone from the planned deep-hunt matrix instead of showing a phantom
+#     queued DEPTH row. SELF-CONTAINED (own throwaway repo + inline ZONE| fixture, so fixtures/zone-map/ and
+#     every demo that reads it are untouched, and the (c) 9-key schema count above is unaffected).
+# ----------------------------------------------------------------------------------------------------------
+note "7) #2108(a): has_implementation is true for a deployable contract, false for a declaration-only file ..."
+IMPL_REPO="$WORK/target-has-impl"
+mkdir -p "$IMPL_REPO/core" "$IMPL_REPO/events"
+# A real, deployable contract: a function that terminates in a body `{`.
+cat > "$IMPL_REPO/core/Vault.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract Vault {
+    mapping(address => uint256) public balances;
+
+    function withdraw(uint256 amount) external {
+        balances[msg.sender] -= amount;
+    }
+}
+SOL
+# A declaration-only file under a NON-excluded dir: an interface (all `;`-terminated signatures) + events, with
+# a function-WITH-body appearing ONLY inside a line comment and a block comment (must be stripped -> still FALSE).
+cat > "$IMPL_REPO/events/Protocol.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+// function commentedOut() external { balances[msg.sender] = 0; }
+/* legacy note:
+   function alsoCommented(uint256 x) internal { return x; }
+*/
+interface IProtocol {
+    event Deposited(address indexed who, uint256 amount);
+    function deposit(uint256 amount) external;
+    function totalAssets() external view returns (uint256);
+}
+SOL
+git -C "$IMPL_REPO" init -q
+git -C "$IMPL_REPO" config user.email demo@example.invalid
+git -C "$IMPL_REPO" config user.name "demo"
+git -C "$IMPL_REPO" add -A
+git -C "$IMPL_REPO" commit -qm "has_implementation fixture"
+
+IMPL_FIXTURE="$WORK/has-impl.fixture.txt"
+printf 'ZONE|core|core vault|C6|deployable accounting contract\n'  > "$IMPL_FIXTURE"
+printf 'ZONE|events|protocol interface|C2|interface + events only\n' >> "$IMPL_FIXTURE"
+
+OUT_IMPL="$WORK/out-has-impl"
+"$MAPZONES" --repo "$IMPL_REPO" --out "$OUT_IMPL" --fixture "$IMPL_FIXTURE" >/dev/null 2>"$WORK/has-impl.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "map-zones.sh exits 0 on the has_implementation fixture" \
+  || { bad "map-zones.sh exited $RC on the has_implementation fixture"; sed 's/^/      /' "$WORK/has-impl.err" >&2; }
+if python3 - "$OUT_IMPL/zones.json" <<'PY'
+import sys, json
+zones = {z["id"]: z for z in json.load(open(sys.argv[1], encoding="utf-8"))}
+assert zones["core"]["has_implementation"] is True, \
+    "a deployable contract (real function body) was not flagged has_implementation:true"
+assert zones["events"]["has_implementation"] is False, \
+    "a declaration-only file (interface + events, bodies only in comments) was not flagged has_implementation:false"
+PY
+then ok "has_implementation is true for the deployable core/Vault.sol zone and false for the declaration-only events/Protocol.sol zone (comment-embedded bodies stripped)"
+else bad "#2108(a) has_implementation content-signal assertion failed"
 fi
 
 # ----------------------------------------------------------------------------------------------------------

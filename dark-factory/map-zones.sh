@@ -220,6 +220,35 @@ def fn_names(f):
         pass
     return names
 
+# #2108(a): a mechanical "is there deployable logic in this zone?" signal, written per-zone into zones.json
+# so the dashboard's planned deep-hunt matrix (hunt-dashboard.py::planned_deep_rows) can DROP a zone that is
+# all interface/events/abstract-signature -- nothing a stateful-invariant fuzzer can deploy or call -- instead
+# of rendering it as a permanent  queued DEPTH row that never clears. STOP-1 decision: scan .sol files ONLY
+# (a zone with no .sol file stays UNKNOWN -> huntable), strip comments first, and treat a file as having an
+# implementation iff a function/constructor/receive/fallback/modifier declaration TERMINATES in a body `{`
+# (not a `;`-terminated interface/abstract signature). Conservative by construction: any body => huntable, so a
+# regex miss keeps a zone VISIBLE and never hides a real coverage gap.
+_IMPL_BODY_RE = re.compile(
+    r"\b(?:function\s+\w+|constructor|receive|fallback|modifier\s+\w+)\b[^;{}]*\{",
+    re.DOTALL,
+)
+
+def _strip_sol_comments(txt):
+    # Naive, conservative strip: block comments first (DOTALL), then line comments. Does NOT model a string
+    # literal that contains `//` or `/* */` -- an accepted residual (this is a huntability heuristic, not a
+    # parser), and it can only ever ADD a body match back, i.e. keep a zone visible.
+    txt = re.sub(r"/\*.*?\*/", "", txt, flags=re.DOTALL)
+    txt = re.sub(r"//[^\n]*", "", txt)
+    return txt
+
+def has_implementation(f):
+    try:
+        with open(os.path.join(repo, f), encoding="utf-8", errors="ignore") as fh:
+            txt = fh.read()
+    except Exception:
+        return False
+    return bool(_IMPL_BODY_RE.search(_strip_sol_comments(txt)))
+
 # Value-moving / recovery vocabulary (#1701): a large contract's first 8 DECLARED function names are
 # frequently all admin/init setters (e.g. dodo's Gateway* files), so truncating fn_names() by pure
 # declaration order starves the per-zone classification prompt of every function that actually moves
@@ -322,10 +351,16 @@ def build_zone(zid, name, files):
     # file age. Pinned formula; a hunt NEVER branches on it (a low score is a hint, not a skip).
     hardening = round((1.0 - churn_ratio) * 60 + (age / 30.0) * 40)
     hardening = max(0, min(hardening, 100))
+    # #2108(a): huntability signal (see has_implementation above), computed over THIS zone's own files so a
+    # #1957 split sub-zone is scored on its own bin. code_files = .sol only (STOP-1); a zone with zero .sol
+    # files is UNKNOWN, not empty, so it defaults True (never suppress the unknown).
+    code_files = [f for f in files if str(f).endswith(".sol")]
+    has_impl = (not code_files) or any(has_implementation(f) for f in code_files)
     return {
         "id": zid, "name": name,
         "files": files, "scope_files": scope_tokens,
         "loc": zloc, "hardening_score": hardening,
+        "has_implementation": has_impl,
     }
 
 
@@ -674,6 +709,10 @@ for z in mech:
         # sub-zone inherits the parent's flag via `split_of` (fixture path keys the parent; substrate path
         # keys each sub-zone) so a value-custody parent's sub-zones stay deep-hunt-eligible.
         "value_custody": custodymap.get(z["id"], custodymap.get(z.get("split_of"), False)),
+        # #2108(a): mechanical huntability, computed per-zone in build_zone over the zone's OWN .sol files
+        # (incl. #1957 split sub-zones). hunt-dashboard.py excludes a zone from the planned deep-hunt matrix
+        # ONLY on an explicit False, so a legacy zones.json that predates this key renders exactly as today.
+        "has_implementation": bool(z.get("has_implementation")),
     }
     # #1861: the inheritance-appendix record, copied through ONLY when lib/inheritance.py actually set it —
     # a target with no cross-zone abstract base emits a byte-identical zones.json. `implementor: null` inside
