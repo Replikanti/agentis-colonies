@@ -14,6 +14,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-05
+
+**Requires:** agentis >= `1.22.7`
+
+### Added
+- **Per-cell LLM timeout floor and cap now environment-overridable for discovery and deep-hunt** (#2106). Discovery
+  and deep-hunt harness generation now allow operators to override the per-cell LLM timeout floor and cap via
+  environment variables, enabling fine-grained control over timeouts in different deployment scenarios. New environment
+  variables: `DF_HUNT_TIMEOUT_FLOOR_MS` and `DF_HUNT_TIMEOUT_CAP_MS` for discovery (run-discovery.sh),
+  `DF_GEN_TIMEOUT_BASE_MS` and `DF_GEN_TIMEOUT_CAP_MS` for deep-hunt harness generation (run-invariant-hunt.sh).
+  An unconditional floor>cap clamp keeps the floor as a hard minimum even if the cap is set below it,
+  ensuring discovery and deep-hunt remain predictable under misconfiguration. See #2103 for motivation.
+
 ## [0.10.1] - 2026-09-04
 
 **Requires:** agentis >= `1.22.7`
