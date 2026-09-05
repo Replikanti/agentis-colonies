@@ -348,12 +348,27 @@ cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (s
 # 1800s. HUNT_SRC_LOC = sum of `wc -l` over the DISTINCT in-scope files this run will hunt — walked from
 # $SCOPE with the SAME filter the --list-cells path uses (trim SUBSYS, skip blank/comment, honour --only,
 # split FILES_CSV on commas, drop any `@fn` slice suffix, dedup). This is a side-effect-free WEIGHT PROBE:
-# a missing/unreadable file contributes 0 and never fails the hunt. Constants inline (no new env knob, the
-# #1915 style): floor 1200000, +300000 ms per 400 LOC step, capped at 1800000 (mirrors run-invariant-hunt.sh).
-HUNT_TIMEOUT_FLOOR=1200000
+# a missing/unreadable file contributes 0 and never fails the hunt. #2103: the floor and cap are now
+# env-overridable (DF_HUNT_TIMEOUT_FLOOR_MS / DF_HUNT_TIMEOUT_CAP_MS) — an opus-heavy lens cell can need more
+# than the 1800000ms default cap, and this scale-up is lens-reasoning-driven, not zone-size-driven, so a
+# smaller ZONE_SPLIT_LOC alone cannot avoid it. An invalid override (non-numeric, empty, or 0) falls back to
+# the default with a warning rather than aborting the run — this is a safety-relevant knob, not a CLI flag,
+# so it degrades rather than exits (mirrors the CELL_CAP/LLM_MAX_DISCOVERY_CELLS precedent below). No upper
+# sanity ceiling on the cap override by design: the exec_timeout/watchdog stays the real backstop. The
+# scaling slope (STEP_MS/STEP_LOC) is unchanged and stays a fixed literal — out of scope for #2103.
+HUNT_TIMEOUT_FLOOR="${DF_HUNT_TIMEOUT_FLOOR_MS:-1200000}"
 HUNT_TIMEOUT_STEP_MS=300000
 HUNT_TIMEOUT_STEP_LOC=400
-HUNT_TIMEOUT_CAP=1800000
+HUNT_TIMEOUT_CAP="${DF_HUNT_TIMEOUT_CAP_MS:-1800000}"
+case "$HUNT_TIMEOUT_FLOOR" in
+  ''|*[!0-9]*) echo "run-discovery.sh: DF_HUNT_TIMEOUT_FLOOR_MS must be a positive integer (got '$HUNT_TIMEOUT_FLOOR') -- using default 1200000" >&2; HUNT_TIMEOUT_FLOOR=1200000 ;;
+esac
+[ "$HUNT_TIMEOUT_FLOOR" -ge 1 ] || { echo "run-discovery.sh: DF_HUNT_TIMEOUT_FLOOR_MS must be >= 1 -- using default 1200000" >&2; HUNT_TIMEOUT_FLOOR=1200000; }
+case "$HUNT_TIMEOUT_CAP" in
+  ''|*[!0-9]*) echo "run-discovery.sh: DF_HUNT_TIMEOUT_CAP_MS must be a positive integer (got '$HUNT_TIMEOUT_CAP') -- using default 1800000" >&2; HUNT_TIMEOUT_CAP=1800000 ;;
+esac
+[ "$HUNT_TIMEOUT_CAP" -ge 1 ] || { echo "run-discovery.sh: DF_HUNT_TIMEOUT_CAP_MS must be >= 1 -- using default 1800000" >&2; HUNT_TIMEOUT_CAP=1800000; }
+[ "$HUNT_TIMEOUT_FLOOR" -gt "$HUNT_TIMEOUT_CAP" ] && { echo "run-discovery.sh: DF_HUNT_TIMEOUT_FLOOR_MS ($HUNT_TIMEOUT_FLOOR) exceeds the cap ($HUNT_TIMEOUT_CAP) -- raising the cap to the floor" >&2; HUNT_TIMEOUT_CAP=$HUNT_TIMEOUT_FLOOR; }
 HUNT_SCOPE_FILES=""
 # A --depth-from re-entry forbids --scope (line ~196): the plan comes from the recorded cells, so $SCOPE is
 # empty. Skip the probe then (HUNT_SRC_LOC stays 0 -> the floor timeout), never `< ""` (a crash). `_` discards

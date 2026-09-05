@@ -579,14 +579,29 @@ fi
 
 # #1915/#1932: composable-fresh generation (INV_AUX non-empty) deploys+wires the target AND every aux
 # contract in one prompt -- materially heavier than the single-target read the flat 1200s budget (line
-# ~517 below) was sized for. Scale by aux count (1200s base + 600s per staged aux contract), capped at
-# 1_800_000ms (30 min) so a large --aux set cannot grow the budget unboundedly. INV_AUX empty (no --aux)
-# => stays at the flat 1200000 base. agentis-core's retry re-issues the SAME prompt against the SAME
+# ~517 below) was sized for. Scale by aux count (base + 600s per staged aux contract), capped at the
+# configured cap so a large --aux set cannot grow the budget unboundedly. INV_AUX empty (no --aux)
+# => stays at the flat base. agentis-core's retry re-issues the SAME prompt against the SAME
 # budget (no escalation) -- the initial value must be sufficient on its own, a retry is not a rescue.
-GEN_TIMEOUT_MS=1200000
+# #2103: base and cap are now env-overridable (DF_GEN_TIMEOUT_BASE_MS / DF_GEN_TIMEOUT_CAP_MS) for the same
+# reason as run-discovery.sh's HUNT_TIMEOUT_FLOOR/CAP -- an invalid override falls back to the default with
+# a warning (does not abort the run), and the cap has no upper sanity ceiling by design (the exec_timeout/
+# watchdog is the real backstop). The per-aux slope (600000) stays a fixed literal -- out of scope for #2103.
+GEN_TIMEOUT_BASE="${DF_GEN_TIMEOUT_BASE_MS:-1200000}"
+GEN_TIMEOUT_CAP="${DF_GEN_TIMEOUT_CAP_MS:-1800000}"
+case "$GEN_TIMEOUT_BASE" in
+  ''|*[!0-9]*) echo "run-invariant-hunt.sh: DF_GEN_TIMEOUT_BASE_MS must be a positive integer (got '$GEN_TIMEOUT_BASE') -- using default 1200000" >&2; GEN_TIMEOUT_BASE=1200000 ;;
+esac
+[ "$GEN_TIMEOUT_BASE" -ge 1 ] || { echo "run-invariant-hunt.sh: DF_GEN_TIMEOUT_BASE_MS must be >= 1 -- using default 1200000" >&2; GEN_TIMEOUT_BASE=1200000; }
+case "$GEN_TIMEOUT_CAP" in
+  ''|*[!0-9]*) echo "run-invariant-hunt.sh: DF_GEN_TIMEOUT_CAP_MS must be a positive integer (got '$GEN_TIMEOUT_CAP') -- using default 1800000" >&2; GEN_TIMEOUT_CAP=1800000 ;;
+esac
+[ "$GEN_TIMEOUT_CAP" -ge 1 ] || { echo "run-invariant-hunt.sh: DF_GEN_TIMEOUT_CAP_MS must be >= 1 -- using default 1800000" >&2; GEN_TIMEOUT_CAP=1800000; }
+[ "$GEN_TIMEOUT_BASE" -gt "$GEN_TIMEOUT_CAP" ] && { echo "run-invariant-hunt.sh: DF_GEN_TIMEOUT_BASE_MS ($GEN_TIMEOUT_BASE) exceeds the cap ($GEN_TIMEOUT_CAP) -- raising the cap to the base" >&2; GEN_TIMEOUT_CAP=$GEN_TIMEOUT_BASE; }
+GEN_TIMEOUT_MS=$GEN_TIMEOUT_BASE
 if [ -n "$INV_AUX" ]; then
-  GEN_TIMEOUT_MS=$((1200000 + 600000 * _aux_idx))
-  [ "$GEN_TIMEOUT_MS" -gt 1800000 ] && GEN_TIMEOUT_MS=1800000
+  GEN_TIMEOUT_MS=$((GEN_TIMEOUT_BASE + 600000 * _aux_idx))
+  [ "$GEN_TIMEOUT_MS" -gt "$GEN_TIMEOUT_CAP" ] && GEN_TIMEOUT_MS=$GEN_TIMEOUT_CAP
 fi
 
 # init the agentis store FIRST (before any .agentis/ subdir exists), else HEAD is not set.
