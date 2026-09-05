@@ -14,6 +14,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **hunt-dashboard: the DEPTH panel no longer mis-states the deep-hunt track — no phantom queued row for a
+  no-logic zone, and automatically-refuted findings are triaged as such** (#2108). Two display-correctness
+  bugs in `hunt-dashboard/hunt-dashboard.py`, fixed together. (a) `planned_deep_rows()` reconstructed the
+  STAGE 4.5 lens matrix from every zone with any `bug_classes_likely`, so a zone that is all
+  interface/events/abstract signatures — nothing a stateful-invariant fuzzer can deploy or call — showed a
+  permanent `⬜ queued` DEPTH row that never cleared, making every hunt read as incomplete. `map-zones.sh`
+  now writes a mechanical `has_implementation` boolean per zone (a comment-stripped function-body scan over
+  the zone's own `.sol` files), and the dashboard excludes a zone from the planned matrix ONLY on an explicit
+  `has_implementation == false` — so a legacy `zones.json` without the key, and a huntable zone merely capped
+  out by `--deep-hunt-max-targets`/`--deep-hunt-max-lenses`, both still render their real queued coverage-gap
+  row. (b) `deep_hunt()` derived a finding's adjudication only from the manual `deep-hunt-adjudicated.tsv`
+  overlay, so an automatically-REFUTED deep-hunt finding (the #1938 4.6 refute gate, default-ON) kept showing
+  as an open `◆ FINDING · needs forge PoC + triage` until a human hand-wrote the TSV. `deep_hunt()` now folds
+  the per-slot `refute-gate/refute-out/refute-report.md` verdict as a FALLBACK behind the manual overlay
+  (human override still wins); a gate-sourced REFUTED renders as a triaged FP with a compact `· auto (4.6
+  gate)` provenance marker, while a `REAL`/survived verdict stays needs-PoC (a survivor is never
+  auto-refuted).
+
 ## [0.11.0] - 2026-09-05
 
 **Requires:** agentis >= `1.22.7`
