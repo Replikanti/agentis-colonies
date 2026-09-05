@@ -18,17 +18,25 @@
 # aux=2 and aux=5 -- not a broken cap, just the formula landing exactly on the
 # guard's boundary one increment earlier than before.
 #
+# #2103: the base and cap became env-overridable (DF_GEN_TIMEOUT_BASE_MS /
+# DF_GEN_TIMEOUT_CAP_MS); this guard pins the DEFAULT (env unset) behaviour only --
+# it must stay byte-identical to the pre-#2103 hardcoded formula. Override behaviour
+# (incl. invalid-value fallback + the floor/cap clamp) is covered by
+# dark-factory/demo-timeout-override.sh.
+#
 # Pure bash/awk/grep over the runner -- no agentis runtime, no LLM, no forge
 # required. Auto-discovered and run by tools/colony-lint.sh's `tools/test-*.sh` loop.
 #
 # Assertions:
-#   (a) The runner defines the GEN_TIMEOUT_MS base/scale/cap computation AND wires
-#       it into BOTH the claude-branch and flat-cyborg-branch `cli_timeout_ms` lines
-#       (not a bare 1200000 literal).
+#   (a) The runner defines the GEN_TIMEOUT_MS base/scale/cap computation (env-
+#       overridable since #2103, defaulting to the same 1200000/600000/1800000
+#       values) AND wires it into BOTH the claude-branch and flat-cyborg-branch
+#       `cli_timeout_ms` lines (not a bare 1200000 literal).
 #   (b) The extracted GEN_TIMEOUT_MS computation, executed with stubbed INV_AUX /
-#       _aux_idx, yields: 1200000 (INV_AUX empty, flat single-target base);
-#       1800000 (_aux_idx=1, now saturates the cap); 1800000 (_aux_idx=2, cap
-#       boundary); 1800000 (_aux_idx=5, cap holds -- doesn't grow unboundedly).
+#       _aux_idx and no env override, yields: 1200000 (INV_AUX empty, flat
+#       single-target base); 1800000 (_aux_idx=1, now saturates the cap); 1800000
+#       (_aux_idx=2, cap boundary); 1800000 (_aux_idx=5, cap holds -- doesn't grow
+#       unboundedly).
 #   (c) exec.default_timeout_ms = 600000 is still a bare literal (intentionally
 #       unscaled per this plan).
 #
@@ -62,17 +70,22 @@ fi
 
 run_src="$(cat "$RUNNER")"
 
-# (a) The runner defines the GEN_TIMEOUT_MS base/scale/cap lines AND wires the
-# variable into BOTH backend branches' cli_timeout_ms line (a pre-change bare
-# `llm.cli_timeout_ms = 600000` literal on either branch fails here).
+# (a) The runner defines the GEN_TIMEOUT_MS base/scale/cap lines (env-overridable
+# since #2103, same defaults) AND wires the variable into BOTH backend branches'
+# cli_timeout_ms line (a pre-change bare `llm.cli_timeout_ms = 600000` literal on
+# either branch fails here).
 a_fail=""
-printf '%s\n' "$run_src" | grep -Fq 'GEN_TIMEOUT_MS=1200000' \
+# shellcheck disable=SC2016  # matching the literal assignment line, $ must not expand
+printf '%s\n' "$run_src" | grep -Fq 'GEN_TIMEOUT_BASE="${DF_GEN_TIMEOUT_BASE_MS:-1200000}"' \
     || a_fail="${a_fail} no-base"
 # shellcheck disable=SC2016  # matching the literal assignment line, $ must not expand
-printf '%s\n' "$run_src" | grep -Fq 'GEN_TIMEOUT_MS=$((1200000 + 600000 * _aux_idx))' \
+printf '%s\n' "$run_src" | grep -Fq 'GEN_TIMEOUT_CAP="${DF_GEN_TIMEOUT_CAP_MS:-1800000}"' \
+    || a_fail="${a_fail} no-cap-default"
+# shellcheck disable=SC2016  # matching the literal assignment line, $ must not expand
+printf '%s\n' "$run_src" | grep -Fq 'GEN_TIMEOUT_MS=$((GEN_TIMEOUT_BASE + 600000 * _aux_idx))' \
     || a_fail="${a_fail} no-scale"
 # shellcheck disable=SC2016  # matching the literal cap-guard line, $ must not expand
-printf '%s\n' "$run_src" | grep -Fq '[ "$GEN_TIMEOUT_MS" -gt 1800000 ] && GEN_TIMEOUT_MS=1800000' \
+printf '%s\n' "$run_src" | grep -Fq '[ "$GEN_TIMEOUT_MS" -gt "$GEN_TIMEOUT_CAP" ] && GEN_TIMEOUT_MS=$GEN_TIMEOUT_CAP' \
     || a_fail="${a_fail} no-cap"
 # shellcheck disable=SC2016  # matching the literal echo line, $ must not expand
 _gen_wired_count="$(printf '%s\n' "$run_src" | grep -Fc 'echo "llm.cli_timeout_ms = $GEN_TIMEOUT_MS"' || true)"
@@ -91,26 +104,31 @@ else
          "missing piece(s):$a_fail"
 fi
 
-# Extract the live GEN_TIMEOUT_MS computation block verbatim (from the assignment
-# line through the closing `fi`) so the behavioural assertions exercise the SAME
-# code the runner ships (not a re-implementation), same technique the slim-source
-# test uses on slim_sol_source().
+# Extract the live GEN_TIMEOUT_MS computation block verbatim (from the base/cap
+# assignment line through the closing `fi` of the INV_AUX scaling block) so the
+# behavioural assertions exercise the SAME code the runner ships (not a
+# re-implementation), same technique the slim-source test uses on slim_sol_source().
 GEN_BLOCK="$(awk '
-  /^GEN_TIMEOUT_MS=1200000$/ { f=1 }
+  /^GEN_TIMEOUT_BASE=/ { f=1 }
   f { print }
   f && /^fi$/ { exit }
 ' "$RUNNER")"
 
 if [ -z "$GEN_BLOCK" ]; then
-    fail "GEN_TIMEOUT_MS block extracted" "no 'GEN_TIMEOUT_MS=1200000 ... fi' block in the runner"
+    fail "GEN_TIMEOUT_MS block extracted" "no 'GEN_TIMEOUT_BASE=... ... fi' block in the runner"
     summary_exit
 fi
 
-# Run the extracted block in a subshell with INV_AUX / _aux_idx stubbed, then
-# print the resulting GEN_TIMEOUT_MS.
+# Run the extracted block in a subshell with INV_AUX / _aux_idx stubbed and NO
+# env override (this guard pins the DEFAULT formula only -- #2103 override
+# behaviour lives in dark-factory/demo-timeout-override.sh), then print the
+# resulting GEN_TIMEOUT_MS.
 compute_gen_timeout() {  # $1 = INV_AUX value, $2 = _aux_idx value
     # shellcheck disable=SC2034  # INV_AUX is read by GEN_BLOCK via eval below, invisible to shellcheck
-    ( INV_AUX="$1"; _aux_idx="$2"; eval "$GEN_BLOCK"; printf '%s\n' "$GEN_TIMEOUT_MS" )
+    (
+      unset DF_GEN_TIMEOUT_BASE_MS DF_GEN_TIMEOUT_CAP_MS 2>/dev/null || true
+      INV_AUX="$1"; _aux_idx="$2"; eval "$GEN_BLOCK"; printf '%s\n' "$GEN_TIMEOUT_MS"
+    )
 }
 
 b_fail=""
