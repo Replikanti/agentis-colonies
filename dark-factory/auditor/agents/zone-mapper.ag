@@ -280,6 +280,116 @@ fn contains_narrow_int_signal(code: string) -> bool {
     return false;
 }
 
+// --- #2121 deterministic C8 (reentrancy) backstop -----------------------------------------------------
+// C8 is another class the breadth LLM systematically under-labels: an external call made BEFORE the
+// state write it should follow (CEI order) reenters and replays against stale storage. Royco Day's
+// entrypoint re-enters through an INTERFACE-TYPED call — `IRoycoPriceOracle(IRoycoDayKernel(kernel)
+// .getCollateralAssetOracle()).poke()` — never a low-level `.call{`/`.call(` or `safeTransfer*`, so (per
+// the plan-review amendment) the call-surface signal is TWO independent nets ORed together: the plan's
+// original low-level/token-callback surface, and a NEW interface-typed-call surface using the runtime's
+// `regex_find_all`/`regex_capture` builtins (Rust `regex` syntax) — the first regex-driven net in this
+// file, alongside `regex_split`. Sibling of the #1729/#2111 nets: a permissive, flat scan of the same
+// whole-zone `code` blob (STOP-1c — no AST/CFG parse, so call-then-write ORDER is never verified, only
+// call+write+no-guard EXISTENCE, the same idiom C17's has_revert_handler+has_indexed_write pair already
+// uses). False positives are cheaper than a missed reentrancy High (the #1681/#1698/#1729/#2111
+// tradeoff): an extra C8 cell returns SAFE cheaply.
+
+// Low-level external-call / token-callback surface: `.call{`/`.call(` (raw external call) or
+// `safeTransfer(`/`safeTransferFrom(` (ERC777/ERC1363-style callback surface).
+fn has_external_call_surface(code: string) -> bool {
+    if index_of(code, ".call{") >= 0 { return true; }
+    if index_of(code, ".call(") >= 0 { return true; }
+    if index_of(code, "safeTransfer(") >= 0 { return true; }
+    if index_of(code, "safeTransferFrom(") >= 0 { return true; }
+    return false;
+}
+
+// The interface-typed-call regex (Rust `regex` crate syntax, per plan-review amendment): `I<Name>(<args>)
+// .method(` — an interface cast applied to an address expression, immediately followed by a call. Kept
+// in one place (rather than duplicated at each call site, unlike this file's PRISET-style local-const
+// convention elsewhere) since both has_interface_call_surface and its per-match method extraction need
+// the identical pattern.
+fn interface_call_pattern() -> string {
+    return "\\bI[A-Z][A-Za-z0-9_]*\\([^()]*\\)\\.([a-zA-Z_][A-Za-z0-9_]*)\\(";
+}
+
+// Denylist of view-idiom method names the amendment excludes from the interface-call surface (a plain
+// balance/rate/metadata read through an interface cast is not a reentrancy vector on its own). A
+// non-denylisted view-shaped name (e.g. Royco's `poke()`, which is NOT on this list despite reading like
+// one) still trips the net — the amendment's accepted false-positive cost.
+fn is_view_idiom_method(name: string) -> bool {
+    if name == "balanceOf" { return true; }
+    if name == "allowance" { return true; }
+    if name == "decimals" { return true; }
+    if name == "totalSupply" { return true; }
+    if name == "totalAssets" { return true; }
+    if name == "convertToAssets" { return true; }
+    if name == "convertToShares" { return true; }
+    if name == "previewDeposit" { return true; }
+    if name == "previewMint" { return true; }
+    if name == "previewWithdraw" { return true; }
+    if name == "previewRedeem" { return true; }
+    if name == "getReserves" { return true; }
+    if name == "latestRoundData" { return true; }
+    if name == "latestAnswer" { return true; }
+    if name == "getPrice" { return true; }
+    if name == "name" { return true; }
+    if name == "symbol" { return true; }
+    if name == "owner" { return true; }
+    if name == "paused" { return true; }
+    return false;
+}
+
+// Does the zone's code contain an interface-typed call (`I<Name>(<args>).method(`) whose method name is
+// NOT on the view-idiom denylist? `regex_find_all` collects every match; each match is itself re-run
+// through `regex_capture` (group 1) to pull just that match's method name, since `regex_capture` only
+// ever returns the FIRST capture over the string it is given. Short-circuit-on-true reduce (same idiom
+// as `class_has`/`zone_is_test_or_interface` above).
+fn has_interface_call_surface(code: string) -> bool {
+    let pat = interface_call_pattern();
+    let matches = regex_find_all(pat, code);
+    return reduce(matches, |acc: bool, m: string| -> bool {
+        if acc { return true; }
+        let method = regex_capture(pat, m, 1);
+        if is_view_idiom_method(method) { return false; }
+        return true;
+    }, false);
+}
+
+// The full external-call surface: the plan's low-level/token-callback forms OR the amendment's
+// interface-typed-call form.
+fn has_reentrancy_call_surface(code: string) -> bool {
+    if has_external_call_surface(code) { return true; }
+    return has_interface_call_surface(code);
+}
+
+// Post-call state write: a mapping/array slot assignment (reusing has_indexed_write's exact `] =` idiom)
+// or a storage-slot `delete` (the taxonomy's own CEI example, and Royco Day's actual recovery shape).
+fn has_post_call_state_write(code: string) -> bool {
+    if index_of(code, "] =") >= 0 { return true; }
+    if index_of(code, "delete ") >= 0 { return true; }
+    return false;
+}
+
+// Does the zone carry a reentrancy guard anywhere in scope? `ReentrancyGuard` also matches
+// `ReentrancyGuardTransient` as a prefix (same convention as the #1740 `is AccessControl` /
+// `AccessControlUpgradeable` prefix match above).
+fn has_reentrancy_guard(code: string) -> bool {
+    if index_of(code, "nonReentrant") >= 0 { return true; }
+    if index_of(code, "ReentrancyGuard") >= 0 { return true; }
+    return false;
+}
+
+// True only when the zone owns an external-call surface (low-level OR interface-typed) AND a post-call
+// state write AND carries NO reentrancy guard — existence-AND over the whole-zone `code` blob, never a
+// verified call-then-write program-order check (accepted imprecision, same as the C17 pair).
+fn contains_reentrancy_surface(code: string) -> bool {
+    if !has_reentrancy_call_surface(code) { return false; }
+    if !has_post_call_state_write(code) { return false; }
+    if has_reentrancy_guard(code) { return false; }
+    return true;
+}
+
 // --- #1717 path-level test/interface exclusion (applied BEFORE the content signals below) -----------
 // A zone/file path can deterministically say "this is a test unit" or "this is a pure interface" in a
 // way content signals cannot: an interface getter that merely returns `IStabilityPool`, or a Foundry
@@ -456,6 +566,10 @@ fn apply_narrow_int_backstop(classesCsv: string, code: string) -> string {
     if !contains_narrow_int_signal(code) { return classesCsv; }
     return force_include(classesCsv, "C19");
 }
+fn apply_reentrancy_backstop(classesCsv: string, code: string) -> string {
+    if !contains_reentrancy_surface(code) { return classesCsv; }
+    return force_include(classesCsv, "C8");
+}
 
 // The deterministic net: when the zone's code signals a lending/CDP/stability-pool system (direct or
 // ERC4626-wrapped), force C10 ("first-depositor/inflation") + C11 ("stability-pool offset"); when it signals
@@ -586,9 +700,13 @@ fn apply_backstop(verdict: string, code: string) -> string {
     // #2111: force C19 (narrow-integer overflow / unsafe downcast -> revert-DoS) when the zone owns a narrow
     // downcast or a packed narrow counter, so the rare narrow-int-overflow class reaches scope.tsv and can be NAMED.
     let withNarrow = apply_narrow_int_backstop(withAll, code);
-    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C10/C11/C17/C19) by learned
-    // real-bug precision, so the highest-precision class leads the CSV that run-discovery.sh fans out.
-    let reordered = apply_fitness_reorder(withNarrow);
+    // #2121: force C8 (reentrancy) when the zone owns an external-call surface (low-level OR interface-
+    // typed) AND a post-call state write with NO reentrancy guard, so the rare reentrancy class reaches
+    // scope.tsv and can be NAMED.
+    let withReentrancy = apply_reentrancy_backstop(withNarrow, code);
+    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C8/C10/C11/C17/C19) by
+    // learned real-bug precision, so the highest-precision class leads the CSV that run-discovery.sh fans out.
+    let reordered = apply_fitness_reorder(withReentrancy);
     let rebuilt = "ZONE|" + pipe_field(line, 1) + "|" + pipe_field(line, 2) + "|" + reordered + "|" + pipe_field(line, 4);
     if rebuilt == line { return verdict; }
     return verdict + "\n" + rebuilt;
@@ -671,6 +789,17 @@ let instruction = priorBlock
   + "`SafeCast`/wrap that reverts every subsequent critical call for valid inputs above the narrow max. A pure "
   + "interface (declarations only, no cast in a function body) does NOT own this surface — do NOT add C19 for "
   + "it. If this zone does no narrow downcast and owns no narrow counter, do NOT add C19.\n\n"
+  + "=== REENTRANCY (EXTERNAL-CALL-BEFORE-STATE-WRITE) DETECTION RULE (C8) ===\n"
+  + "INCLUDE `C8` (reentrancy) when this zone makes an external call — a low-level `.call{`/`.call(`, a "
+  + "`safeTransfer`/`safeTransferFrom` token-callback surface, OR an interface-typed call like "
+  + "`IOracle(oracle).poke()` on a NON-view-named method — and SEPARATELY writes a mapping/array slot or "
+  + "`delete`s one, with NO `nonReentrant` modifier and NO `ReentrancyGuard` base anywhere in scope. The bug "
+  + "is a callee that reenters before the write lands, replaying against stale state (a request read into "
+  + "memory, an external oracle/hook call, then the request record cleared or an escrow slot adjusted — the "
+  + "guard's absence is what makes the reentry exploitable). Do NOT add C8 for a function already marked "
+  + "`nonReentrant` or a contract already `is ReentrancyGuard`, for a purely `view`/read-only external call "
+  + "(`balanceOf`, `totalSupply`, a price/rate getter), or for a pure interface (declarations only, no call "
+  + "sites or state writes of its own).\n\n"
   + "=== CROSS-PROTOCOL ASSET / UNIT EQUIVALENCE DETECTION RULE (C22) ===\n"
   + "INCLUDE `C22` (cross-protocol asset / unit equivalence) ONLY WHEN this zone NAMES TWO OR MORE distinct "
   + "externally-issued asset representations — two token addresses held as `constant`/`immutable`/constructor "
@@ -726,6 +855,10 @@ print("ACCESS-CTRL|" + zoneId + "|" + bool_str(contains_access_control_signal(co
 // trailing-line-scrape channel as ACCESS-CTRL|), so contains_narrow_int_signal() is observable + offline-testable
 // under the mock backend (whose reply carries no ZONE| line). Never perturbs the `^ZONE\|` scrape.
 print("NARROW-INT|" + zoneId + "|" + bool_str(contains_narrow_int_signal(code)));
+// #2121: emit the C8 reentrancy signal as a NON-ZONE| diagnostic line (same trailing-line-scrape channel
+// as NARROW-INT|), so contains_reentrancy_surface() is observable + offline-testable under the mock
+// backend (whose reply carries no ZONE| line). Never perturbs the `^ZONE\|` scrape.
+print("REENTRANCY|" + zoneId + "|" + bool_str(contains_reentrancy_surface(code)));
 let outcome = outcome_of(finalVerdict);
 emit("dark-factory:zone_mapped", "{\"zone\":\"" + zoneId + "\",\"outcome\":\"" + outcome + "\"}");
 learn("zone-map", zoneId, "attack-surface classification of zone " + zoneId, outcome, ["zone-map", zoneId, outcome]);

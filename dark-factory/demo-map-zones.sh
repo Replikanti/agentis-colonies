@@ -1283,6 +1283,18 @@ if grep -q 'fn contains_narrow_int_signal' "$MAPPER" \
 else
   bad "zone-mapper.ag missing the #2111 C19 narrow-integer overflow / unsafe downcast backstop wiring"
 fi
+# #2121: the C8 reentrancy backstop net exists, is chained into apply_backstop (so C8 reaches scope.tsv ->
+# is hunted -> can be NAMED), carries its classification rule, and emits the REENTRANCY| diagnostic (mirrors
+# the #1729/#2111 net idiom + the #1713/#1717 diagnostic-line convention).
+if grep -q 'fn contains_reentrancy_surface' "$MAPPER" \
+   && grep -q 'fn apply_reentrancy_backstop' "$MAPPER" \
+   && grep -q 'apply_reentrancy_backstop(' "$MAPPER" \
+   && grep -q 'REENTRANCY (EXTERNAL-CALL-BEFORE-STATE-WRITE) DETECTION RULE (C8)' "$MAPPER" \
+   && grep -q '"REENTRANCY|"' "$MAPPER"; then
+  ok "zone-mapper.ag defines the #2121 C8 net (contains_reentrancy_surface + apply_reentrancy_backstop), chains it into apply_backstop, carries the C8 rule, and emits the REENTRANCY| line"
+else
+  bad "zone-mapper.ag missing the #2121 C8 reentrancy backstop wiring"
+fi
 if grep -q 'learn("zone-map"' "$MAPPER" && grep -q 'memo_write("zone-mapper:last_check"' "$MAPPER"; then
   ok "zone-mapper.ag records the mapping (learn) + writes its last_check memo"
 else
@@ -1502,6 +1514,66 @@ contract WideMath {
     }
 }
 SOL
+  # #2121 (plan-review amendment): a THIRD pair of zones in the SAME repo for the C8 reentrancy net. The
+  # positive uses ONLY the amendment's interface-typed-call form (Royco-Day-shaped: read a pending request
+  # into memory, call out through `IOracle(oracle).poke()` — never `.call`/`safeTransfer` — then `delete`
+  # the request slot), with NO guard anywhere in the file (must resolve REENTRANCY|reentrancy|true). The
+  # negative makes the identical interface call but CEI-correct (write BEFORE the external call) AND
+  # `nonReentrant` AND `is ReentrancyGuard` — a double-negative proving the net doesn't fire on either
+  # signal alone (must resolve REENTRANCY|safeguard|false).
+  mkdir -p "$AC_REPO/reentrancy" "$AC_REPO/safeguard"
+  cat > "$AC_REPO/reentrancy/RoycoEntryPointLike.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+interface IOracle {
+    function poke() external;
+}
+
+contract RoycoEntryPointLike {
+    struct DepositRequest {
+        address asset;
+        uint256 amount;
+    }
+
+    mapping(address => mapping(uint256 => DepositRequest)) public requests;
+    mapping(address => uint256) public escrow;
+
+    function settle(address oracle, address user, uint256 nonce) external {
+        DepositRequest memory r = requests[user][nonce];
+        IOracle(oracle).poke();
+        delete requests[user][nonce];
+        escrow[r.asset] -= r.amount;
+    }
+}
+SOL
+  cat > "$AC_REPO/safeguard/GuardedSettle.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+interface IOracle {
+    function poke() external;
+}
+
+contract GuardedSettle is ReentrancyGuard {
+    struct DepositRequest {
+        address asset;
+        uint256 amount;
+    }
+
+    mapping(address => mapping(uint256 => DepositRequest)) public requests;
+    mapping(address => uint256) public escrow;
+
+    function settle(address oracle, address user, uint256 nonce) external nonReentrant {
+        DepositRequest memory r = requests[user][nonce];
+        delete requests[user][nonce];
+        escrow[r.asset] -= r.amount;
+        IOracle(oracle).poke();
+    }
+}
+SOL
 
   git -C "$AC_REPO" init -q
   git -C "$AC_REPO" config user.email demo@example.invalid
@@ -1543,6 +1615,17 @@ SOL
       ok "#2111: contains_narrow_int_signal() true for a uint16 observation-counter + uint16( downcast zone (yieldoor H-3 mechanic), false for plain uint256 math"
     else
       bad "#2111: unexpected NARROW-INT| lines (want narrow=true wide=false, got narrow='$NI_NARROW' wide='$NI_WIDE')"
+    fi
+    # #2121: same diagnostic-line read for the C8 reentrancy net — the mock backend still runs
+    # contains_reentrancy_surface()'s real, non-LLM logic (incl. the regex_find_all/regex_capture
+    # interface-typed-call detection), so this exercises the actual net offline via the unconditional
+    # REENTRANCY| diagnostic line.
+    RE_HOT="$(grep -h '^REENTRANCY|reentrancy|' "$OUT4/run/zone_reentrancy.log" 2>/dev/null | tail -1)"
+    RE_SAFE="$(grep -h '^REENTRANCY|safeguard|' "$OUT4/run/zone_safeguard.log" 2>/dev/null | tail -1)"
+    if [ "$RE_HOT" = "REENTRANCY|reentrancy|true" ] && [ "$RE_SAFE" = "REENTRANCY|safeguard|false" ]; then
+      ok "#2121: contains_reentrancy_surface() true for an unguarded interface-typed-call-then-delete zone (Royco Day mechanic), false for the CEI-correct + nonReentrant + is ReentrancyGuard sibling"
+    else
+      bad "#2121: unexpected REENTRANCY| lines (want reentrancy=true safeguard=false, got reentrancy='$RE_HOT' safeguard='$RE_SAFE')"
     fi
   else
     bad "map-zones.sh --backend mock failed on the #1729/#1740 access-control fixture (exit $RC4):"
