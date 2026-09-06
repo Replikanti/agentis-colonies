@@ -26,7 +26,10 @@
 #
 # Usage:
 #   deep-hunt-gate.sh --deep-out <DZOUT> --relfile <rel> --class <C> --repo <dir> --verified-json <json> \
-#                     --backend <b> --agentis <bin> [--invariant-harness <t.sol>] [--no-refute]
+#                     --backend <b> [--model <id>] --agentis <bin> [--invariant-harness <t.sol>] [--no-refute]
+#
+#   --model <id>  LLM model id for the refute gate's `llm.model` (default: unset, so the emitted config stays
+#                 `llm.model = opus` — byte-identical to before this flag existed).
 #
 # Stdout: exactly ONE token — `0` (no FINDING), `1` (merged into verified[]) or `refuted` (moved to refuted[]).
 set -eu
@@ -35,7 +38,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REFUTE="$HERE/run-refute.sh"
 
 DEEP_OUT="" ; RELFILE="" ; DCLASS="" ; REPO="" ; VERIFIED_JSON=""
-BACKEND="flat-cyborg" ; AGENTIS="agentis" ; INV_HARNESS="" ; NO_REFUTE=0
+BACKEND="flat-cyborg" ; AGENTIS="agentis" ; INV_HARNESS="" ; NO_REFUTE=0 ; MODEL=""
 
 need() { [ "$1" -ge 2 ] || { echo "deep-hunt-gate.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -46,6 +49,7 @@ while [ $# -gt 0 ]; do
     --repo)              need "$#"; REPO="$2"; shift 2 ;;
     --verified-json)     need "$#"; VERIFIED_JSON="$2"; shift 2 ;;
     --backend)           need "$#"; BACKEND="$2"; shift 2 ;;
+    --model)             need "$#"; MODEL="$2"; shift 2 ;;
     --agentis)           need "$#"; AGENTIS="$2"; shift 2 ;;
     --invariant-harness) need "$#"; INV_HARNESS="$2"; shift 2 ;;
     --no-refute)         NO_REFUTE=1; shift ;;
@@ -216,10 +220,10 @@ GATE_LOG="$GATE_OUT/gate.log"
 GATE_RC=0
 if [ -n "$INV_HARNESS" ]; then
   "$REFUTE" --candidates "$MANIFEST" --code-dir "$REPO" --invariant-mode --invariant-harness "$INV_HARNESS" \
-    --backend "$BACKEND" --agentis "$AGENTIS" --out "$GATE_OUT/refute-out" >"$GATE_LOG" 2>&1 || GATE_RC=$?
+    --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"} --out "$GATE_OUT/refute-out" >"$GATE_LOG" 2>&1 || GATE_RC=$?
 else
   "$REFUTE" --candidates "$MANIFEST" --code-dir "$REPO" --invariant-mode \
-    --backend "$BACKEND" --agentis "$AGENTIS" --out "$GATE_OUT/refute-out" >"$GATE_LOG" 2>&1 || GATE_RC=$?
+    --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"} --out "$GATE_OUT/refute-out" >"$GATE_LOG" 2>&1 || GATE_RC=$?
 fi
 
 REPORT="$GATE_OUT/refute-out/refute-report.md"

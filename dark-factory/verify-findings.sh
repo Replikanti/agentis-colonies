@@ -52,6 +52,8 @@
 #                       class). Default: unset/absent = inert = every artifact byte-identical to a pre-#2023 run.
 #   --brief <file>      Optional protocol brief handed to the refute gate (invariants + known issues).
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the gate (default: flat-cyborg).
+#   --model <id>        LLM model id for the gate's `llm.model` (default: unset, so the emitted config stays
+#                       `llm.model = opus` — byte-identical to before this flag existed).
 #   --agentis <bin>     agentis binary (default: `agentis` on PATH).
 #   --jobs <N>          OPT-IN bounded-concurrency fan-out over the CANDIDATE gates (#1863; default N=1 =
 #                       serial = today's exact statement sequence). Gate up to N candidates CONCURRENTLY:
@@ -85,7 +87,7 @@ set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
-RESULTS="" ; REPO="" ; OUT="" ; GATE="refute" ; BRIEF="" ; BACKEND="flat-cyborg"
+RESULTS="" ; REPO="" ; OUT="" ; GATE="refute" ; BRIEF="" ; BACKEND="flat-cyborg" ; MODEL=""
 JOBS=1  # #1863: opt-in bounded-concurrency gate fan-out; 1 = serial, today's exact statement sequence.
 PAY_FLOOR=""  # #1962: unset = inert (see the header). Validated below with the closed severity vocabulary.
 ADJUDICATED=""  # #2023: unset/absent = inert; operator adjudication overlay that pre-empts the refute gate.
@@ -99,6 +101,7 @@ while [ $# -gt 0 ]; do
     --gate)    nv "$#"; GATE="$2"; shift 2 ;;
     --brief)   nv "$#"; BRIEF="$2"; shift 2 ;;
     --backend) nv "$#"; BACKEND="$2"; shift 2 ;;
+    --model)   nv "$#"; MODEL="$2"; shift 2 ;;
     --agentis) nv "$#"; AGENTIS="$2"; shift 2 ;;
     --jobs)    nv "$#"; JOBS="$2"; shift 2 ;;
     --pay-floor) nv "$#"; PAY_FLOOR="$2"; shift 2 ;;
@@ -349,10 +352,10 @@ run_gate_refute() {
   fi
   if [ -n "$BRIEF" ]; then
     "$REFUTE" --candidates "$rg_out/candidate.manifest" --code-dir "$REPO" --brief "$BRIEF" \
-      --backend "$BACKEND" --agentis "$AGENTIS" --out "$rg_out/refute-out" >"$rg_out/gate.log" 2>&1 || return 1
+      --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"} --out "$rg_out/refute-out" >"$rg_out/gate.log" 2>&1 || return 1
   else
     "$REFUTE" --candidates "$rg_out/candidate.manifest" --code-dir "$REPO" \
-      --backend "$BACKEND" --agentis "$AGENTIS" --out "$rg_out/refute-out" >"$rg_out/gate.log" 2>&1 || return 1
+      --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"} --out "$rg_out/refute-out" >"$rg_out/gate.log" 2>&1 || return 1
   fi
   rg_report="$rg_out/refute-out/refute-report.md"
   [ -f "$rg_report" ] || { printf 'REFUTED\tno refute report produced (dropped as unverified)\n' > "$rg_out/verdict.txt"; return 0; }

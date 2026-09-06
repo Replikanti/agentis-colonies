@@ -529,6 +529,27 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (h2) #2114: --model threads into the emitted substrate config's `llm.model`; unset stays `opus` (additive,
+#      byte-identical to before this flag existed). Same STUB seam as (h)/(3d), no LLM/network involved.
+# ----------------------------------------------------------------------------------------------------------
+note "3e) #2114: --model <id> lands as llm.model = <id>; omitted stays llm.model = opus ..."
+OUT_MODEL="$WORK/out-model"
+"$MAPZONES" --repo "$REPO" --out "$OUT_MODEL" --agentis "$STUB" --model claude-fable-5-1 \
+  >/dev/null 2>"$WORK/map-model.err"
+if grep -qx 'llm.model = claude-fable-5-1' "$OUT_MODEL/run/.agentis/config" 2>/dev/null; then
+  ok "--model claude-fable-5-1 lands as llm.model = claude-fable-5-1 in the emitted config"
+else
+  bad "--model claude-fable-5-1 did not land in $OUT_MODEL/run/.agentis/config"
+fi
+OUT_NOMODEL="$WORK/out-nomodel"
+"$MAPZONES" --repo "$REPO" --out "$OUT_NOMODEL" --agentis "$STUB" >/dev/null 2>"$WORK/map-nomodel.err"
+if grep -qx 'llm.model = opus' "$OUT_NOMODEL/run/.agentis/config" 2>/dev/null; then
+  ok "omitting --model still emits llm.model = opus (byte-identical to before this flag existed)"
+else
+  bad "omitting --model did not emit llm.model = opus in $OUT_NOMODEL/run/.agentis/config"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 # (i) #1861 INHERITANCE APPENDIX. A zone whose file declares an `abstract contract` with body-less `virtual`
 #     members, and which holds no implementation of it, is hunted against a base class and none of its
 #     behaviour — measured on the diagnosing target as a 1-in-22 refute-gate confirmation rate against 14-in-22
