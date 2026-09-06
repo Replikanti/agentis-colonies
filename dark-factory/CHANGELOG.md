@@ -14,6 +14,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **`run-zone-hunt.sh --model <id>`: thread a model id through every LLM stage of the zone-hunt pipeline**
+  (#2114). Enables a model A/B (e.g. Fable 5.1 vs Opus) over the whole capstone without editing any stage
+  in isolation. `--model <id>` is parsed by `run-zone-hunt.sh`, `verify-findings.sh` and `deep-hunt-gate.sh`
+  (both new) and forwarded as `${MODEL:+--model "$MODEL"}` to every downstream substrate-facing call
+  (`map-zones.sh`, `gen-briefs.sh`, the discovery hunt invocation, `verify-findings.sh`'s refute gate, both
+  invariant-hunt invocations, and `deep-hunt-gate.sh`'s refute gate) — the same one-idiom-everywhere pattern
+  `run-discovery.sh`/`run-refute.sh`/`run-invariant-hunt.sh` already use. `map-zones.sh` and `gen-briefs.sh`
+  now emit `llm.model = ${MODEL:-opus}` instead of the hardcoded `llm.model = opus`. Additive and default-off:
+  an unset `--model` leaves every emitted config byte-identical to before this flag existed.
+
 ### Fixed
 - **hunt-dashboard: the DEPTH panel no longer mis-states the deep-hunt track — no phantom queued row for a
   no-logic zone, and automatically-refuted findings are triaged as such** (#2108). Two display-correctness

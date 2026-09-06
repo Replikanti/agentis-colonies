@@ -34,6 +34,8 @@
 #                       cannot stack two caps; each stage clamps to its own ceiling
 #                       (LLM_MAX_DISCOVERY_CELLS / LLM_MAX_VERIFY_GATES, both default 4).
 #   --backend <mock|flat-cyborg|claude>  LLM backend for every substrate step (default: flat-cyborg).
+#   --model <id>        LLM model id forwarded to every substrate step's `llm.model` (default: unset, so every
+#                       emitted config stays `llm.model = opus` — byte-identical to before this flag existed).
 #   --agentis <bin>     agentis binary (default: `agentis` on PATH).
 #   --scope-hint <t>    map-zones.sh source restriction (comma/space list of files or dir-prefixes).
 #   --since <ref>       Audit-covered ref (feeds map-zones.sh's advisory hardening_score).
@@ -235,7 +237,7 @@ trap 'echo "run-zone-hunt.sh: __EXIT__=$?"' EXIT
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
-REPO="" ; OUT="$PWD/zone-hunt-out" ; JOBS=1 ; BACKEND="flat-cyborg"
+REPO="" ; OUT="$PWD/zone-hunt-out" ; JOBS=1 ; BACKEND="flat-cyborg" ; MODEL=""
 SCOPE_HINT="" ; SINCE="" ; RESIDUALS=""
 IN_SCOPE="" ; ASSET_CONTRACTS="" ; IMPACT_THRESHOLD=""
 MAP_FIXTURE="" ; BRIEF_FIXTURE="" ; PASS_FIXTURE="" ; DROP_DIR=""
@@ -283,6 +285,7 @@ while [ $# -gt 0 ]; do
     --out)              nv "$#"; OUT="$2"; shift 2 ;;
     --jobs)             nv "$#"; JOBS="$2"; shift 2 ;;
     --backend)          nv "$#"; BACKEND="$2"; shift 2 ;;
+    --model)            nv "$#"; MODEL="$2"; shift 2 ;;
     --agentis)          nv "$#"; AGENTIS="$2"; shift 2 ;;
     --scope-hint)       nv "$#"; SCOPE_HINT="$2"; shift 2 ;;
     --since)            nv "$#"; SINCE="$2"; shift 2 ;;
@@ -512,10 +515,10 @@ else
 echo "run-zone-hunt.sh: [M1] mapping zones -> $MAP ..." >&2
 if [ -n "$MAP_FIXTURE" ]; then
   "$MAPZONES" --repo "$REPO" --out "$MAP" ${SCOPE_HINT:+--scope-hint "$SCOPE_HINT"} ${SINCE:+--since "$SINCE"} \
-    --fixture "$MAP_FIXTURE"
+    ${MODEL:+--model "$MODEL"} --fixture "$MAP_FIXTURE"
 else
   "$MAPZONES" --repo "$REPO" --out "$MAP" ${SCOPE_HINT:+--scope-hint "$SCOPE_HINT"} ${SINCE:+--since "$SINCE"} \
-    --backend "$BACKEND" --agentis "$AGENTIS"
+    --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"}
 fi
 [ -f "$MAP/zones.json" ] && [ -f "$MAP/scope.tsv" ] || { echo "run-zone-hunt.sh: map-zones.sh did not emit zones.json + scope.tsv" >&2; exit 3; }
 
@@ -529,12 +532,12 @@ if [ -n "$BRIEF_FIXTURE" ]; then
   "$GENBRIEFS" --zones "$MAP/zones.json" --scope "$MAP/scope.tsv" --out "$BRIEFS" --repo "$REPO" \
     ${RESIDUALS:+--audit-residuals "$RESIDUALS"} \
     ${PAY_FLOOR:+--pay-floor "$PAY_FLOOR"} ${PAYABLE_IMPACTS:+--payable-impacts "$PAYABLE_IMPACTS"} \
-    --fixture "$BRIEF_FIXTURE"
+    ${MODEL:+--model "$MODEL"} --fixture "$BRIEF_FIXTURE"
 else
   "$GENBRIEFS" --zones "$MAP/zones.json" --scope "$MAP/scope.tsv" --out "$BRIEFS" --repo "$REPO" \
     ${RESIDUALS:+--audit-residuals "$RESIDUALS"} \
     ${PAY_FLOOR:+--pay-floor "$PAY_FLOOR"} ${PAYABLE_IMPACTS:+--payable-impacts "$PAYABLE_IMPACTS"} \
-    --backend "$BACKEND" --agentis "$AGENTIS"
+    --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"}
 fi
 [ -f "$BRIEFS/briefs/zone_briefs.json" ] || { echo "run-zone-hunt.sh: gen-briefs.sh did not emit zone_briefs.json" >&2; exit 3; }
 fi
@@ -809,6 +812,7 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
   ZRC=0
   "$DISCOVERY" --repo "$REPO" --scope "$MAP/scope.tsv" --only "$ZNAME" --brief "$ZBRIEF" \
     --jobs "$JOBS" --backend "$BACKEND" --agentis "$AGENTIS" --out "$DISC/$ZID" \
+    ${MODEL:+--model "$MODEL"} \
     ${ZCLASSES_ARG:+--classes "$ZCLASSES_ARG"} \
     ${ZDEPTH_ARG:+--depth-max-cells "$ZDEPTH_ARG"} \
     ${ZQUOTA_ARG:+--depth-lens-quota "$ZQUOTA_ARG"} \
@@ -943,7 +947,8 @@ echo "run-zone-hunt.sh: [M4] verifying candidates (refute gate) -> $VER ..." >&2
 # to a pre-#2023 run; a --rehunt-gaps pass over an adjudicated run pre-empts re-refuting those locations.
 ADJ_ARG=""; _ADJ="$(dirname "$OUT")/adjudicated.tsv"; [ -f "$_ADJ" ] && ADJ_ARG="$_ADJ"
 "$VERIFY" --results "$MERGED" --repo "$REPO" --gate refute --backend "$BACKEND" --agentis "$AGENTIS" \
-  --jobs "$JOBS" ${PAY_FLOOR:+--pay-floor "$PAY_FLOOR"} ${ADJ_ARG:+--adjudicated "$ADJ_ARG"} --out "$VER"
+  --jobs "$JOBS" ${PAY_FLOOR:+--pay-floor "$PAY_FLOOR"} ${ADJ_ARG:+--adjudicated "$ADJ_ARG"} \
+  ${MODEL:+--model "$MODEL"} --out "$VER"
 VERIFIED_JSON="$VER/verified_findings.json"
 [ -f "$VERIFIED_JSON" ] || { echo "run-zone-hunt.sh: verify-findings.sh did not emit verified_findings.json" >&2; exit 3; }
 else
@@ -1212,6 +1217,7 @@ PY
       if [ -n "$INV_FIXTURE" ]; then
         "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
           --handler-fixture "$INV_FIXTURE" --backend "$BACKEND" --agentis "$AGENTIS" --out "$DZOUT" \
+          ${MODEL:+--model "$MODEL"} \
           --repair-rounds "$DEEP_HUNT_REPAIR_ROUNDS" "$@" ${DEEP_FWD[@]+"${DEEP_FWD[@]}"} \
           || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed for zone '$ZID' ($DCLASS); continuing" >&2; continue; }
       else
@@ -1222,6 +1228,7 @@ PY
         "$CELLWD" "$DZOUT" "$DEEP_CELL_STALE_S" "$DEEP_CELL_POLL_S" -- \
           "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
           --backend "$BACKEND" --agentis "$AGENTIS" --out "$DZOUT" \
+          ${MODEL:+--model "$MODEL"} \
           --repair-rounds "$DEEP_HUNT_REPAIR_ROUNDS" "$@" ${DEEP_FWD[@]+"${DEEP_FWD[@]}"} \
           || { echo "run-zone-hunt.sh: [deep-hunt] run-invariant-hunt.sh failed or was watchdog-killed for zone '$ZID' ($DCLASS); continuing" >&2; continue; }
       fi
@@ -1237,7 +1244,7 @@ PY
       MERGED_ADD="$("$HERE/deep-hunt-gate.sh" \
         --deep-out "$DZOUT" --relfile "$RELFILE" --class "$DCLASS" \
         --repo "$REPO" --verified-json "$VERIFIED_JSON" \
-        --backend "$BACKEND" --agentis "$AGENTIS" $DHG_NOREFUTE)"
+        --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"} $DHG_NOREFUTE)"
       if [ "$MERGED_ADD" = "1" ]; then
         DEEP_FINDINGS=$((DEEP_FINDINGS + 1))
         echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> FINDING merged into verified_findings.json (source=invariant-hunt)" >&2

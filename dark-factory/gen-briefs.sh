@@ -29,6 +29,8 @@
 #   --fixture <file>    Canned BRIEF-BEGIN|<zone_id>..BRIEF-END bodies (the offline/CI stub). When present the
 #                       substrate step is skipped entirely (deterministic, no LLM).
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the live substrate step (default: flat-cyborg).
+#   --model <id>        LLM model id for the live substrate step's `llm.model` (default: unset, so the
+#                       emitted config stays `llm.model = opus` — byte-identical to before this flag existed).
 #   --agentis <bin>     agentis binary (default: `agentis` on PATH).
 #   --pay-floor <sev>   #1930: the LOWEST severity the target program actually PAYS (critical|high|medium|low),
 #                       as derived by run-immunefi-intake.sh (the queue's `payfloor:<sev>` token / its payinfo
@@ -64,7 +66,7 @@ DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
 # shellcheck disable=SC1091
 . "$HERE/lib/ensure-claude-trust.sh"
 AGENTIS="agentis"
-ZONES="" ; SCOPE="" ; OUT="" ; REPO="" ; RESIDUALS="" ; FIXTURE="" ; BACKEND="flat-cyborg"
+ZONES="" ; SCOPE="" ; OUT="" ; REPO="" ; RESIDUALS="" ; FIXTURE="" ; BACKEND="flat-cyborg" ; MODEL=""
 # #1930: both EMPTY = OFF; with them off the assembled brief is byte-identical to a pre-#1930 one.
 PAY_FLOOR="" ; PAYABLE_IMPACTS=""
 IMPACT_LENS="$HERE/lib/impact-lens.py"
@@ -79,6 +81,7 @@ while [ $# -gt 0 ]; do
     --audit-residuals) need "$#"; RESIDUALS="$2"; shift 2 ;;
     --fixture) need "$#"; FIXTURE="$2"; shift 2 ;;
     --backend) need "$#"; BACKEND="$2"; shift 2 ;;
+    --model) need "$#"; MODEL="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --pay-floor) need "$#"; PAY_FLOOR="$2"; shift 2 ;;
     --payable-impacts) need "$#"; PAYABLE_IMPACTS="$2"; shift 2 ;;
@@ -233,7 +236,7 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
       # once the screen goes quiet, so it no longer risks scraping the pre-answer TUI footer as a chrome
       # "reply" and failing validation (#1707). If a brief looks flaky, file it against the completion
       # path, not this value.
-      echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = opus"
+      echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"
     fi
     echo "trace.level = normal"
     echo "exec.env_passthrough = TARGET_DIR,ZONE_ID,ZONE_NAME,ZONE_FILES,ZONE_CLASSES,TAXONOMY,AUDIT_RESIDUAL,AUDIT_BOUNDARY,SLICER"
