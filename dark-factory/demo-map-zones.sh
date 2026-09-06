@@ -1249,6 +1249,18 @@ if grep -q 'fn contains_access_control_signal' "$MAPPER" \
 else
   bad "zone-mapper.ag missing the #1729 C5 access-control/init-upgrade/proxy backstop wiring"
 fi
+# #2111: the C19 narrow-integer overflow / unsafe downcast backstop net exists, is chained into apply_backstop
+# (so C19 reaches scope.tsv -> is hunted -> can be NAMED), carries its classification rule, and emits the
+# NARROW-INT| diagnostic (mirrors the #1729 C5 net idiom + the #1713/#1717 diagnostic-line convention).
+if grep -q 'fn contains_narrow_int_signal' "$MAPPER" \
+   && grep -q 'fn apply_narrow_int_backstop' "$MAPPER" \
+   && grep -q 'apply_narrow_int_backstop(' "$MAPPER" \
+   && grep -q 'NARROW-INTEGER OVERFLOW / UNSAFE DOWNCAST DETECTION RULE (C19)' "$MAPPER" \
+   && grep -q '"NARROW-INT|"' "$MAPPER"; then
+  ok "zone-mapper.ag defines the #2111 C19 net (contains_narrow_int_signal + apply_narrow_int_backstop), chains it into apply_backstop, carries the C19 rule, and emits the NARROW-INT| line"
+else
+  bad "zone-mapper.ag missing the #2111 C19 narrow-integer overflow / unsafe downcast backstop wiring"
+fi
 if grep -q 'learn("zone-map"' "$MAPPER" && grep -q 'memo_write("zone-mapper:last_check"' "$MAPPER"; then
   ok "zone-mapper.ag records the mapping (learn) + writes its last_check memo"
 else
@@ -1431,6 +1443,43 @@ contract RoleReader {
     }
 }
 SOL
+  # #2111: two C19 narrow-integer regression zones in the SAME repo — narrow/ObservationOverflow.sol owns a
+  # `uint16` observation cardinality/index it increments toward a wrap PLUS an unchecked `uint16(` downcast on a
+  # critical path (must resolve NARROW-INT|narrow|true, mirroring yieldoor H-3's mechanic), and wide/PlainMath.sol
+  # does only `uint256` math with no narrow cast or counter (must resolve NARROW-INT|wide|false — proving the net
+  # does not trip on ordinary wide-int arithmetic).
+  mkdir -p "$AC_REPO/narrow" "$AC_REPO/wide"
+  cat > "$AC_REPO/narrow/ObservationOverflow.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract ObservationOverflow {
+    uint16 public observationCardinality;
+    uint16 public observationIndex;
+
+    function grow(uint256 next) external {
+        // unchecked narrow downcast on the critical path: a value above 2**16-1 truncates and bricks reads
+        observationCardinality = uint16(next);
+        observationIndex = observationIndex + 1;
+    }
+
+    function checkPoolActivity() external view returns (uint16) {
+        return observationCardinality;
+    }
+}
+SOL
+  cat > "$AC_REPO/wide/PlainMath.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract WideMath {
+    uint256 public total;
+
+    function add(uint256 a, uint256 b) external {
+        total = a + b;
+    }
+}
+SOL
 
   git -C "$AC_REPO" init -q
   git -C "$AC_REPO" config user.email demo@example.invalid
@@ -1462,6 +1511,16 @@ SOL
       ok "#1740: contains_access_control_signal() false for a read-only adapter that queries IAccessControl(target).hasRole(...) without owning AccessControl surface"
     else
       bad "#1740: reader regression (want ACCESS-CTRL|reader|false, got '$AC_READER')"
+    fi
+    # #2111: same diagnostic-line read for the C19 narrow-integer overflow / unsafe downcast net — the mock
+    # backend still runs contains_narrow_int_signal()'s real, non-LLM logic, so this exercises the actual net
+    # offline via the unconditional NARROW-INT| diagnostic line.
+    NI_NARROW="$(grep -h '^NARROW-INT|narrow|' "$OUT4/run/zone_narrow.log" 2>/dev/null | tail -1)"
+    NI_WIDE="$(grep -h '^NARROW-INT|wide|' "$OUT4/run/zone_wide.log" 2>/dev/null | tail -1)"
+    if [ "$NI_NARROW" = "NARROW-INT|narrow|true" ] && [ "$NI_WIDE" = "NARROW-INT|wide|false" ]; then
+      ok "#2111: contains_narrow_int_signal() true for a uint16 observation-counter + uint16( downcast zone (yieldoor H-3 mechanic), false for plain uint256 math"
+    else
+      bad "#2111: unexpected NARROW-INT| lines (want narrow=true wide=false, got narrow='$NI_NARROW' wide='$NI_WIDE')"
     fi
   else
     bad "map-zones.sh --backend mock failed on the #1729/#1740 access-control fixture (exit $RC4):"

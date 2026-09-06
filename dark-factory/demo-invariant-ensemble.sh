@@ -247,6 +247,24 @@ else
   bad "class_to_keyword() does not map C16 to \"liveness\" (the liveness lens would never route)"
 fi
 
+# #2111 (C19) — C19 (narrow-integer overflow / unsafe downcast -> revert-DoS) REUSES the "liveness" keyword via a
+# one-line class_to_keyword mapping, so --class C19 routes through the whole liveness machinery (yieldoor H-3).
+if grep -q 'if class_is(k, "c19") { return "liveness"; }' "$PROVER"; then
+  ok "class_to_keyword() maps the bare C19 taxonomy code to the \"liveness\" keyword (#2111)"
+else
+  bad "class_to_keyword() does not map C19 to \"liveness\" (the C19 downcast lens would never route)"
+fi
+
+# #2111 (C19) — the liveness lens now carries an explicit DOWNCAST-TRUNCATION action bullet + a DOWNCAST-NO-TRUNCATE
+# metamorphic relation so it covers true downcast-C19 (uintN(x)/SafeCast truncation) beyond pure counter-wrap.
+if grep -q 'DOWNCAST-TRUNCATION action' "$PROVER" \
+   && grep -q 'DOWNCAST-NO-TRUNCATE' "$PROVER" \
+   && grep -q 'require(uint256(narrowVal) == wideVal' "$PROVER"; then
+  ok "the liveness lens carries the #2111 C19 downcast-truncation bullet + downcast-no-truncate relation (round-trip require form)"
+else
+  bad "the liveness lens missing the #2111 C19 downcast-truncation bullet or downcast-no-truncate relation"
+fi
+
 # action_checklist_prompt() liveness branch — wrap-boundary + full-range entrypoint-sweep actions.
 if grep -q 'WRAP-BOUNDARY action' "$PROVER" \
    && grep -q 'FULL-RANGE ENTRYPOINT-SWEEP action' "$PROVER"; then

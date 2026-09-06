@@ -241,6 +241,45 @@ fn contains_access_control_signal(code: string) -> bool {
     return false;
 }
 
+// --- #2111 deterministic C19 (narrow-integer overflow / unsafe downcast -> revert-DoS) backstop ------
+// C19 is a rare, high-severity class the breadth LLM systematically under-labels the same way it missed
+// C5/C6/C17: a wide value narrowed by an unchecked `uintN(x)`/`intN(x)` cast or `SafeCast.toUintN` on a
+// critical path silently truncates or reverts, bricking a core function (yieldoor H-3: a `uint16`
+// observation counter that wraps -> checkPoolActivity DoS). Sibling of the #1729 C5 net: a permissive,
+// keyword-only `index_of` scan (STOP-1c — NO AST/structural downcast parse) split into a CAST-form net
+// (`uintN(`/`intN(` downcast calls, `SafeCast`, OZ `.toUintN`/`.toIntN`, and the Rust/Anchor `as uN`/`as iN`
+// cast form for Solana targets) and a NARROW-STATE net (the packed narrow counters — Uniswap-style
+// `observationCardinality`/`observationIndex` — that increment toward a wrap). False positives are cheaper
+// than a missed narrow-int-overflow High (the #1681/#1698/#1729 tradeoff): an extra C19 cell returns SAFE
+// cheaply. The nets stay on the anchored `uint16(` CAST form (paren) rather than a bare `uint16` type
+// mention so plain `uint256` math and ordinary narrow-typed struct fields do not trip it. Flat `index_of`
+// on the pre-built `code` blob only — no per-element recursion.
+fn has_narrow_int_downcast(code: string) -> bool {
+    if index_of(code, "uint8(") >= 0 { return true; }
+    if index_of(code, "uint16(") >= 0 { return true; }
+    if index_of(code, "uint32(") >= 0 { return true; }
+    if index_of(code, "uint64(") >= 0 { return true; }
+    if index_of(code, "int24(") >= 0 { return true; }
+    if index_of(code, "int56(") >= 0 { return true; }
+    if index_of(code, "int128(") >= 0 { return true; }
+    if index_of(code, "SafeCast") >= 0 { return true; }
+    if index_of(code, ".toUint") >= 0 { return true; }
+    if index_of(code, ".toInt") >= 0 { return true; }
+    if index_of(code, " as u") >= 0 { return true; }
+    if index_of(code, " as i") >= 0 { return true; }
+    return false;
+}
+fn has_narrow_int_state(code: string) -> bool {
+    if index_of(code, "observationCardinality") >= 0 { return true; }
+    if index_of(code, "observationIndex") >= 0 { return true; }
+    return false;
+}
+fn contains_narrow_int_signal(code: string) -> bool {
+    if has_narrow_int_downcast(code) { return true; }
+    if has_narrow_int_state(code) { return true; }
+    return false;
+}
+
 // --- #1717 path-level test/interface exclusion (applied BEFORE the content signals below) -----------
 // A zone/file path can deterministically say "this is a test unit" or "this is a pure interface" in a
 // way content signals cannot: an interface getter that merely returns `IStabilityPool`, or a Foundry
@@ -413,6 +452,10 @@ fn apply_access_control_backstop(classesCsv: string, code: string) -> string {
     if !contains_access_control_signal(code) { return classesCsv; }
     return force_include(classesCsv, "C5");
 }
+fn apply_narrow_int_backstop(classesCsv: string, code: string) -> string {
+    if !contains_narrow_int_signal(code) { return classesCsv; }
+    return force_include(classesCsv, "C19");
+}
 
 // The deterministic net: when the zone's code signals a lending/CDP/stability-pool system (direct or
 // ERC4626-wrapped), force C10 ("first-depositor/inflation") + C11 ("stability-pool offset"); when it signals
@@ -540,9 +583,12 @@ fn apply_backstop(verdict: string, code: string) -> string {
     // #1729: force C5 (access-control / init-upgrade / proxy) when the zone owns privileged/upgrade surface,
     // so the breadth lens's non-conservation class reaches scope.tsv and can be NAMED.
     let withAll = apply_access_control_backstop(withIndex, code);
-    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C10/C11/C17) by learned
+    // #2111: force C19 (narrow-integer overflow / unsafe downcast -> revert-DoS) when the zone owns a narrow
+    // downcast or a packed narrow counter, so the rare narrow-int-overflow class reaches scope.tsv and can be NAMED.
+    let withNarrow = apply_narrow_int_backstop(withAll, code);
+    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C10/C11/C17/C19) by learned
     // real-bug precision, so the highest-precision class leads the CSV that run-discovery.sh fans out.
-    let reordered = apply_fitness_reorder(withAll);
+    let reordered = apply_fitness_reorder(withNarrow);
     let rebuilt = "ZONE|" + pipe_field(line, 1) + "|" + pipe_field(line, 2) + "|" + reordered + "|" + pipe_field(line, 4);
     if rebuilt == line { return verdict; }
     return verdict + "\n" + rebuilt;
@@ -614,6 +660,17 @@ let instruction = priorBlock
   + "unrestricted `_authorizeUpgrade`/uninitialized proxy. A pure interface (declarations only, no modifier "
   + "bodies) does NOT own this surface — do NOT add C5 for it. If this zone has no privileged or "
   + "upgrade/proxy surface of its own, do NOT add C5.\n\n"
+  + "=== NARROW-INTEGER OVERFLOW / UNSAFE DOWNCAST DETECTION RULE (C19) ===\n"
+  + "The taxonomy's own guidance is: a value exceeding a narrow type's max is silently truncated (or reverts) "
+  + "on a critical path, bricking a core function. INCLUDE `C19` (narrow-integer overflow / unsafe downcast) "
+  + "when this zone OWNS a narrow-integer cast or a packed narrow counter on a reachable critical path — an "
+  + "unchecked `uintN(x)`/`intN(x)` downcast (`uint8`/`uint16`/`uint32`/`uint64`/`int24`/`int56`/`int128`) or "
+  + "a `SafeCast.toUintN`/`.toIntN` on a value that can exceed the narrow max, OR a packed narrow counter it "
+  + "increments toward a wrap (a `uint16` observation cardinality / observation index, a ring-buffer slot, an "
+  + "epoch counter). The bug is a wide value truncated by the cast (corrupting an index/accounting) or a "
+  + "`SafeCast`/wrap that reverts every subsequent critical call for valid inputs above the narrow max. A pure "
+  + "interface (declarations only, no cast in a function body) does NOT own this surface — do NOT add C19 for "
+  + "it. If this zone does no narrow downcast and owns no narrow counter, do NOT add C19.\n\n"
   + "=== CROSS-PROTOCOL ASSET / UNIT EQUIVALENCE DETECTION RULE (C22) ===\n"
   + "INCLUDE `C22` (cross-protocol asset / unit equivalence) ONLY WHEN this zone NAMES TWO OR MORE distinct "
   + "externally-issued asset representations — two token addresses held as `constant`/`immutable`/constructor "
@@ -665,6 +722,10 @@ print("CUSTODY|" + zoneId + "|" + bool_str(is_value_custody(code, files)));
 // the mock backend (whose reply carries no ZONE| line, making the apply_backstop append itself unreachable
 // there — the same constraint #1713/#1717 handled via the CUSTODY| diagnostic). Never perturbs the `^ZONE\|` scrape.
 print("ACCESS-CTRL|" + zoneId + "|" + bool_str(contains_access_control_signal(code)));
+// #2111: emit the C19 narrow-integer overflow / unsafe downcast signal as a NON-ZONE| diagnostic line (same
+// trailing-line-scrape channel as ACCESS-CTRL|), so contains_narrow_int_signal() is observable + offline-testable
+// under the mock backend (whose reply carries no ZONE| line). Never perturbs the `^ZONE\|` scrape.
+print("NARROW-INT|" + zoneId + "|" + bool_str(contains_narrow_int_signal(code)));
 let outcome = outcome_of(finalVerdict);
 emit("dark-factory:zone_mapped", "{\"zone\":\"" + zoneId + "\",\"outcome\":\"" + outcome + "\"}");
 learn("zone-map", zoneId, "attack-surface classification of zone " + zoneId, outcome, ["zone-map", zoneId, outcome]);
