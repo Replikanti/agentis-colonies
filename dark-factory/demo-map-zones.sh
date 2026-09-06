@@ -784,6 +784,7 @@ mkdir -p "$NOINH/lib" "$NOINH/auditor"
 cp "$MAPZONES" "$NOINH/map-zones.sh"
 cp "$HERE/lib/run-agent-validated.sh" "$NOINH/lib/run-agent-validated.sh"
 cp "$HERE/lib/ensure-claude-trust.sh" "$NOINH/lib/ensure-claude-trust.sh"  # #993: map-zones now sources this
+cp "$HERE/lib/flat-cyborg-env.sh" "$NOINH/lib/flat-cyborg-env.sh"  # #2119: map-zones now sources this too
 cp "$HERE/auditor/slice-fns.sh" "$NOINH/auditor/slice-fns.sh"
 cp "$HERE/auditor/bug-taxonomy.md" "$NOINH/auditor/bug-taxonomy.md" 2>/dev/null || true
 

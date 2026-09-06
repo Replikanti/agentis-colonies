@@ -49,6 +49,11 @@ SCRIPT_PATH="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))'
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
 COLONY_DIR="$(dirname "$SCRIPT_DIR")"
 
+# #2119: wide flat-cyborg PTY by default for every flat-cyborg config emission (see the helper header).
+# shellcheck source=../../lib/flat-cyborg-env.sh
+# shellcheck disable=SC1091
+. "$COLONY_DIR/../lib/flat-cyborg-env.sh"
+
 # Positional config-path arg is accepted for symmetry with other colonies and
 # to let operators document a non-default config; the one-shot pipeline reads
 # its inputs from the environment, not the TOML, so the path is informational.

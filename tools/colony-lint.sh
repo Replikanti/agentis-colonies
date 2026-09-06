@@ -2745,7 +2745,11 @@ if command -v agentis >/dev/null 2>&1; then
     while IFS= read -r _agf; do
         [ -n "$_agf" ] || continue
         cp "$REPO_ROOT/$_agf" "$ag_probe/p.ag" 2>/dev/null || continue
-        _out="$( cd "$ag_probe" && agentis go p.ag 2>&1 | grep -iE 'parse error|syntax error' | head -1 )"
+        # `|| true`: under `set -o pipefail`, grep's normal "no match" exit (1) --
+        # the EXPECTED, healthy result for a .ag file with no parse error -- would
+        # otherwise propagate as the assignment's own exit status and abort the
+        # whole lint via `set -e` on the very first clean file scanned.
+        _out="$( { cd "$ag_probe" && agentis go p.ag 2>&1 | grep -iE 'parse error|syntax error' | head -1; } || true )"
         [ -n "$_out" ] && ag_bad="${ag_bad}
 $_agf: $_out"
     done <<AGLIST

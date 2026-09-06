@@ -35,6 +35,10 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# #2119: wide flat-cyborg PTY by default for every flat-cyborg config emission (see the helper header).
+# shellcheck source=lib/flat-cyborg-env.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/flat-cyborg-env.sh"
 COORD_AG="$HERE/auditor/agents/coordinator.ag"
 GATE="$HERE/evm-harness/halmos-verify.sh"
 RUNNER="$HERE/run-coordinator.sh"
