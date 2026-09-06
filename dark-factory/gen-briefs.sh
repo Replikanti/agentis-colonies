@@ -55,6 +55,10 @@
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# #2119: wide flat-cyborg PTY by default for every flat-cyborg config emission (see the helper header).
+# shellcheck source=lib/flat-cyborg-env.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/flat-cyborg-env.sh"
 # #1707: shared reply-shape validation + retry for the brief-writer substrate call (see the helper header).
 # shellcheck source=lib/run-agent-validated.sh
 # shellcheck disable=SC1091

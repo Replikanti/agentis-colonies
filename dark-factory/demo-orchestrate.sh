@@ -41,6 +41,10 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# #2119: wide flat-cyborg PTY by default for every flat-cyborg config emission (see the helper header).
+# shellcheck source=lib/flat-cyborg-env.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/flat-cyborg-env.sh"
 command -v agentis >/dev/null 2>&1 || { echo "demo-orchestrate.sh: agentis binary not on PATH" >&2; exit 3; }
 COORD_AG="$HERE/auditor/agents/coordinator.ag"
 [ -f "$COORD_AG" ] || { echo "demo-orchestrate.sh: coordinator agent not found at $COORD_AG" >&2; exit 3; }

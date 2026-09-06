@@ -83,7 +83,15 @@ SCAN_ROOT="$(cd "$SCAN_ROOT" && pwd)"
 # NUL-delimited throughout: a newline in a path must not be able to split one
 # entry into two, which is how the previous newline-delimited version skipped
 # such a file silently and still exited 0.
-AG_FILES="$(find "$SCAN_ROOT" -type f -path '*/agents/*.ag' -print0 | tr '\0' '\n' | sort | head -1)"
+#
+# This is only an EXISTENCE check (empty vs non-empty below), so `find ... -quit`
+# stops at the first match instead of enumerating everything through a
+# find|tr|sort|head pipe: that 4-stage pipe under `set -o pipefail` intermittently
+# failed with rc=141 (SIGPIPE) once the scan root's path got long enough (e.g. a
+# nested worktree checkout) for `sort`'s buffered write to still be in flight when
+# `head -1` closed the pipe after its first line — reproduced consistently on a
+# long-path worktree scan, never on a short one, unrelated to file content.
+AG_FILES="$(find "$SCAN_ROOT" -type f -path '*/agents/*.ag' -print -quit)"
 
 if [ -z "$AG_FILES" ]; then
     echo "check-substrate-purity: no */agents/*.ag found under $SCAN_ROOT" >&2

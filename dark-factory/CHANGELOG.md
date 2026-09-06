@@ -15,6 +15,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **`FLAT_CYBORG_COLS` defaults to a wide PTY (600) everywhere the federation drives the flat-cyborg
+  backend** (#2119). flat-cyborg's Ink TUI soft-wraps a reply at the PTY column width; a wrapped
+  `\|`-delimited protocol line (`ZONE\|` class lists, `CANDIDATE\|...\|poc`) silently loses trailing
+  fields to a screen-read `--extract`. New shared helper `lib/flat-cyborg-env.sh` — sourced by every
+  script that emits an agentis config with `llm.backend` (25 scripts) plus
+  `auditor/scripts/start-colony.sh` — exports `FLAT_CYBORG_COLS="${FLAT_CYBORG_COLS:-600}"` so the wide
+  PTY is now the federation default while an operator override still wins. Requires flat-cyborg >= 0.16.0
+  (older binaries ignore the variable harmlessly). `demo-flat-cyborg-env.sh` proves the default, the
+  override, double-source safety, and full wiring coverage, offline.
 - **`run-zone-hunt.sh --model <id>`: thread a model id through every LLM stage of the zone-hunt pipeline**
   (#2114). Enables a model A/B (e.g. Fable 5.1 vs Opus) over the whole capstone without editing any stage
   in isolation. `--model <id>` is parsed by `run-zone-hunt.sh`, `verify-findings.sh` and `deep-hunt-gate.sh`

@@ -34,6 +34,10 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# #2119: wide flat-cyborg PTY by default for every flat-cyborg config emission (see the helper header).
+# shellcheck source=../lib/flat-cyborg-env.sh
+# shellcheck disable=SC1091
+. "$HERE/../lib/flat-cyborg-env.sh"
 DF="$(cd "$HERE/.." && pwd)"                 # dark-factory/
 GATE="$DF/novelty-gate.sh"
 SCOUT="$DF/auditor/agents/audit-scout.ag"

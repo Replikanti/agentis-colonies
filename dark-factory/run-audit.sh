@@ -39,6 +39,10 @@
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# #2119: wide flat-cyborg PTY by default for every flat-cyborg config emission (see the helper header).
+# shellcheck source=lib/flat-cyborg-env.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/flat-cyborg-env.sh"
 AGENTIS="agentis"
 # agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the RUN dir
 # (below), so the flat-cyborg/claude pattern-seed/share sessions do not block + exit 75.
