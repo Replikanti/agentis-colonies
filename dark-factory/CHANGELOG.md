@@ -15,6 +15,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **`watch-code-changes.sh` — a read-only code-CHANGE watcher over the Immunefi `bounties.json`** (#2128, epic
+  #2120 M1). Standalone (does not source freshness-watch), it surfaces a KNOWN program whose CODE moved since
+  the last run on two axes: (1) the source repo HEAD sha + tag set via keyless `git ls-remote`, and (2) the
+  ERC-1967 implementation-slot pointer for a proxy address in `assets[].url` via `cast storage` on a public RPC
+  (with an `eth_getStorageAt` curl fallback). One embedded python3 block parses the JSON, resolves the repo
+  (top-level `githubUrl` or first github-looking asset) and extracts each address with a most-specific-first
+  explorer-domain -> chain map (optimistic.etherscan.io before etherscan.io); the shell runs the probes and
+  diffs each against a per-program baseline under `~/.dark-factory/change-watch/`, appending one row per change
+  to `changes.tsv` (`date  program  chain  kind(head|tag|impl)  repo_or_addr  old  new  githubUrl`) for M2/M3.
+  github-axis rows carry `chain=-` (a source change is chain-agnostic; M2/M3 read program `ecosystem` from
+  bounties.json for a chain hint), impl-axis rows carry the resolved chain. Cold start baselines silently; an
+  empty read or an all-zero impl word (EOA/non-proxy) is skipped so a transient outage cannot flap. A
+  `--probe-cmd` seam lets `demo-watch-code-changes.sh` drive git/cast deterministically offline. Read-only /
+  NEVER-SUBMIT. Makes no LLM calls.
 - **Sandbox the flat-cyborg-driven Claude Code session in every hunt cell** (#2125). The five hunt
   emitters (`run-discovery.sh`, `run-refute.sh`, `run-invariant-hunt.sh`, `map-zones.sh`, `gen-briefs.sh`)
   now point agentis-core's `llm.flat_cyborg.target` at the new `lib/claude-sandboxed.sh` bubblewrap
