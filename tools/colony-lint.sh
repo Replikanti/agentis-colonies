@@ -1495,6 +1495,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-transport-resilience.sh" ]; then
     fi
 fi
 
+# --- dark-factory code-change watcher (#2128, epic #2120 M1) ---
+# watch-code-changes.sh is a standalone READ-ONLY watcher over the freshness-watch bounties.json: it surfaces a
+# program whose CODE moved since the last run on two axes — github repo HEAD/tags (`git ls-remote`) and the
+# ERC-1967 impl-slot pointer (`cast storage`) — appending one changes.tsv row per change for M2/M3. The demo is
+# offline + deterministic (a `--probe-cmd` STUB mocks git/cast, never the network): cold-start-zero, a rewound
+# state -> exactly one head + one impl row (correct old->new/chain/repo_or_addr), a no-repo/no-address program
+# skipped cleanly, the explorer-domain->chain map (optimistic.etherscan.io -> optimism, #code stripped, a
+# non-address URL skipped), and the empty/all-zero (transient/non-proxy) skip guard.
+if [ -x "$REPO_ROOT/dark-factory/demo-watch-code-changes.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-watch-code-changes.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: code-change watcher (github HEAD/tags + ERC-1967 impl-slot -> changes.tsv) (#2128)"
+    else
+        fail "dark-factory: code-change watcher regressed (#2128)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory refuter -> hunter constraint channel (#1887) ---
 # The refute gate is where most candidates die and its reason used to die with them. refuter.ag now emits the
 # GENERALISABLE half of each REFUTED verdict as a `CONSTRAINT|` line placed BEFORE the verdict (after it,
