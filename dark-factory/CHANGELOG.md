@@ -15,6 +15,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **`scope-changes.sh` — the M2 diff-scoper: a `changes.tsv` row -> a scoped-hunt descriptor** (#2131, epic
+  #2120 M2). A STATELESS transform that reads M1's `changes.tsv` (#2128) and emits ONE scope descriptor per
+  row (`program  chain  kind  repo_or_addr  new  scope_mode  scope_hint_files  since`) to
+  `~/.dark-factory/change-watch/scope-descriptors.tsv`, so M3 hunts only the DELTA (the unaudited surface),
+  not the whole protocol every time. `head`/`tag` rows drive a DIRECT two-ref diff (shallow-fetch both refs
+  into a scratch clone, `git diff --name-only <old> <new>` — no checkout, empty-diff guard replicated inline)
+  filtered to changed `.sol` NOT under `lib/node_modules/out/cache/artifacts/test/tests/script/mocks`, then
+  decide `scoped` (1..N changed .sol -> `--scope-hint` files + `--since` old sha), `full` (over `--max-files`,
+  default 25, keeping `since`; or the old sha unavailable/unfetchable, dropping it), or `skip` (docs/tests-only
+  delta). `impl` rows always emit a `full` descriptor carrying the proxy address + resolved chain + the new
+  impl address (0x + last 40 hex of the impl storage word); the new-impl source-pull is DEFERRED to M3 and the
+  source probe is advisory only (a `src:verified|src:unverified` log note, never gating). Every row is
+  `|| continue`-resilient; a `--probe-cmd` seam lets `demo-scope-changes.sh` mock git/Sourcify deterministically
+  offline (scoped / full-by-size / full-by-missing-sha / impl / skip, with exact descriptor-column asserts).
+  Read-only except the scratch clone. Makes no LLM calls (so no #2125 sandbox wiring). M3 will consume these
+  descriptors to trigger `run-zone-hunt.sh`/`run-batch.sh`.
 - **`watch-code-changes.sh` — a read-only code-CHANGE watcher over the Immunefi `bounties.json`** (#2128, epic
   #2120 M1). Standalone (does not source freshness-watch), it surfaces a KNOWN program whose CODE moved since
   the last run on two axes: (1) the source repo HEAD sha + tag set via keyless `git ls-remote`, and (2) the
