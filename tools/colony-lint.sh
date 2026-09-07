@@ -1513,6 +1513,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-watch-code-changes.sh" ]; then
     fi
 fi
 
+# --- dark-factory diff-scoper (#2131, epic #2120 M2) ---
+# scope-changes.sh is a stateless transform that turns each M1 changes.tsv row into ONE scope descriptor (the
+# args a scoped hunt needs) so M3 hunts only the DELTA. head/tag rows drive a DIRECT two-ref diff (shallow-
+# fetch both refs, `git diff --name-only <old> <new>`), filter to changed .sol (vendor/test/docs pruned), and
+# emit scoped / full-by-size / full-by-missing-sha / skip; impl rows emit a full descriptor carrying the new
+# impl address + chain (source-pull deferred to M3). The demo is offline + deterministic (a `--probe-cmd`
+# STUB mocks git/Sourcify, never the network): scoped/full-by-size/full-by-missing-sha/impl/skip + exact
+# descriptor-column assertions. No LLM calls.
+if [ -x "$REPO_ROOT/dark-factory/demo-scope-changes.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-scope-changes.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: diff-scoper (changes.tsv row -> scope descriptor: scoped/full/skip) (#2131)"
+    else
+        fail "dark-factory: diff-scoper regressed (#2131)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory refuter -> hunter constraint channel (#1887) ---
 # The refute gate is where most candidates die and its reason used to die with them. refuter.ag now emits the
 # GENERALISABLE half of each REFUTED verdict as a `CONSTRAINT|` line placed BEFORE the verdict (after it,
