@@ -124,6 +124,10 @@ REFUTER="$HERE/auditor/agents/refuter.ag"
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 RUN="$OUT/run"
 rm -rf "$RUN"; mkdir -p "$RUN"
+# #2125: thread the sandbox bind vars into the agentis invocation (run_flat_cyborg does not env_clear). The
+# refuter reads only candidate code + brief that are STAGED into $RUN (see the code-staging below), so no repo
+# bind is needed; RUN alone covers everything the sandboxed cell touches.
+export HUNT_SANDBOX_REPO="" HUNT_SANDBOX_RUN="$RUN"
 cp "$REFUTER" "$RUN/refuter.ag"
 # Stage the brief into the rundir so the sandboxed exec sh can read it (it cannot read $HOME).
 BRIEF_IN_RUN=""
@@ -149,6 +153,8 @@ fi
   # only bounds how fast a marker-less (sentinel-less) reply is accepted once the screen goes quiet. If a stage
   # looks flaky, file it against the completion path, not this value.
   [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"; }
+  # #2125: sandbox the driven Claude Code session (bubblewrap view = toolchain + run dir only, web tools denied).
+  [ "$BACKEND" = "flat-cyborg" ] && [ -z "${DF_NO_SANDBOX:-}" ] && command -v bwrap >/dev/null 2>&1 && echo "llm.flat_cyborg.target = $HERE/lib/claude-sandboxed.sh"
   echo "trace.level = normal"
   # The refuter reads the candidate code + brief through exec sh; pass through its whole env contract.
   # AUX_CODE_PATH (#1861) MUST be on this allowlist: getenv() reads the SANITIZED env, so an unregistered

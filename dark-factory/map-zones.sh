@@ -514,6 +514,8 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
   # Substrate classification: one zone-mapper.ag run per zone, against a shared agentis store (mirrors
   # run-discovery.sh's hunter fan-out — copy the agent + slicer, init the store, write the config).
   RUN="$OUT/run"; rm -rf "$RUN"; mkdir -p "$RUN"
+  # #2125: thread the sandbox bind vars into the agentis invocation (run_flat_cyborg does not env_clear).
+  export HUNT_SANDBOX_REPO="$REPO" HUNT_SANDBOX_RUN="$RUN"
   cp "$HERE/auditor/agents/zone-mapper.ag" "$RUN/zone-mapper.ag"
   cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"
   ( cd "$RUN" && "$AGENTIS" init >/dev/null 2>&1 ) || true
@@ -530,6 +532,8 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
       # flaky, file it against the completion path, not this value.
       echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"
     fi
+    # #2125: sandbox the driven Claude Code session (bubblewrap view = toolchain + repo + run dir, web tools denied).
+    [ "$BACKEND" = "flat-cyborg" ] && [ -z "${DF_NO_SANDBOX:-}" ] && command -v bwrap >/dev/null 2>&1 && echo "llm.flat_cyborg.target = $HERE/lib/claude-sandboxed.sh"
     echo "trace.level = normal"
     echo "exec.env_passthrough = TARGET_DIR,ZONE_ID,ZONE_FILES,TAXONOMY,SLICER"
     echo "exec.default_timeout_ms = 30000"

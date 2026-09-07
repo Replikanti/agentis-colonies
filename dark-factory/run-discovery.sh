@@ -341,6 +341,9 @@ fi
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 RUN="$OUT/run"
 rm -rf "$RUN"; mkdir -p "$RUN"
+# #2125: thread the sandbox bind vars into the agentis invocation (run_flat_cyborg does not env_clear, so they
+# reach lib/claude-sandboxed.sh via the flat-cyborg subprocess). RUN covers both the serial cwd and $RUN/cell-*.
+export HUNT_SANDBOX_REPO="$REPO" HUNT_SANDBOX_RUN="$RUN"
 cp "$HUNTER" "$RUN/hunter.ag"
 cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (scope `file@fn1+fn2`)
 
@@ -425,6 +428,10 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # only bounds how fast a marker-less (sentinel-less) reply is accepted once the screen goes quiet. If a stage
   # looks flaky, file it against the completion path, not this value.
   [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = $HUNT_TIMEOUT_MS"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"; }
+  # #2125: sandbox the driven Claude Code session (bubblewrap view = toolchain + repo + run dir only, web tools
+  # denied). Emit the target only when bwrap is available and the operator has not opted out — otherwise the
+  # bare `claude` runs (lib/claude-sandboxed.sh would fall through anyway, but not emitting keeps configs clean).
+  [ "$BACKEND" = "flat-cyborg" ] && [ -z "${DF_NO_SANDBOX:-}" ] && command -v bwrap >/dev/null 2>&1 && echo "llm.flat_cyborg.target = $HERE/lib/claude-sandboxed.sh"
   # #2017: cap in-process retries at ONE. A runaway / non-terminating generation (the #1955/#1957 class) blows
   # through llm.cli_timeout_ms with ZERO output; agentis-core then re-runs a `[llm.timeout]` `1 + llm.max_retries`
   # times (default max_retries = 2 => 3 attempts, so ~3x the per-cell budget — up to ~90 min on a 1800s-capped

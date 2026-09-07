@@ -15,6 +15,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Sandbox the flat-cyborg-driven Claude Code session in every hunt cell** (#2125). The five hunt
+  emitters (`run-discovery.sh`, `run-refute.sh`, `run-invariant-hunt.sh`, `map-zones.sh`, `gen-briefs.sh`)
+  now point agentis-core's `llm.flat_cyborg.target` at the new `lib/claude-sandboxed.sh` bubblewrap
+  wrapper and export `HUNT_SANDBOX_REPO`/`HUNT_SANDBOX_RUN` (threaded daemon → flat-cyborg → wrapper;
+  `run_flat_cyborg` does not `env_clear`). The driven Claude then sees ONLY the toolchain, the target
+  repo, and the cell run dir — the run root's PARENT (held-out ground truth / `AB-NOTE.md`), sibling
+  hunts, the corpus `truth.tsv`, and other `~/.claude` sessions are invisible — and `WebFetch`/`WebSearch`
+  are denied. The wrapper is **fail-closed** (`HUNT_SANDBOX_RUN` unset aborts rather than run unsandboxed)
+  and falls through to the real `claude` with a loud warning when `bwrap` is absent or `DF_NO_SANDBOX=1`
+  (web tools still denied), so CI / dev hosts without bubblewrap keep working. `demo-claude-sandboxed.sh`
+  proves the isolation, the tool denial, the fail-closed abort, both fallthrough paths, and the static
+  per-emitter wiring — offline, with the live asserts gated on `bwrap`.
 - **`FLAT_CYBORG_COLS` defaults to a wide PTY (600) everywhere the federation drives the flat-cyborg
   backend** (#2119). flat-cyborg's Ink TUI soft-wraps a reply at the PTY column width; a wrapped
   `\|`-delimited protocol line (`ZONE\|` class lists, `CANDIDATE\|...\|poc`) silently loses trailing
