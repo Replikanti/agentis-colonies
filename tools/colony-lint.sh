@@ -1531,6 +1531,25 @@ if [ -x "$REPO_ROOT/dark-factory/demo-scope-changes.sh" ]; then
     fi
 fi
 
+# --- dark-factory change-triggered hunt (#2133, epic #2120 M3) ---
+# run-change-hunts.sh maps each M2 scope descriptor into a real run-zone-hunt.sh invocation, deduped by
+# (program, new) via a change-key ledger, findings staged through the pipeline's own never-submit gate. It
+# reuses fetch-target.sh (clone) + the keyless Sourcify-v2 idiom (impl source-pull) + run-zone-hunt.sh (which
+# inherits the #2125 sandbox + the #2133 refusal-fallback disable STRUCTURALLY) + deliver-submission.sh
+# (transitively). --max-hunts defaults to 1 (no implicit fleet sweep — that cadence is M4). The demo is offline
+# + deterministic (a `--source-cmd` STUB mocks materialize + a `--hunt-cmd` STUB mocks the hunt, never the
+# network/LLM): scoped-argv/impl-source-pull/dedup-skip/finding-staged(never-submit)/clean-negative/--max-hunts
+# + the M1->M2->M3 handoff seam.
+if [ -x "$REPO_ROOT/dark-factory/demo-run-change-hunts.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-run-change-hunts.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: change-triggered hunt (scope descriptor -> deduped run-zone-hunt, findings staged) (#2133)"
+    else
+        fail "dark-factory: change-triggered hunt regressed (#2133)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory refuter -> hunter constraint channel (#1887) ---
 # The refute gate is where most candidates die and its reason used to die with them. refuter.ag now emits the
 # GENERALISABLE half of each REFUTED verdict as a `CONSTRAINT|` line placed BEFORE the verdict (after it,
