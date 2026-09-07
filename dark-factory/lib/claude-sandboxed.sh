@@ -25,12 +25,16 @@ set -u
 # Resolve the real claude WITHOUT recursing into this wrapper. DF_CLAUDE_BIN lets
 # the demo point at a stub; otherwise take the first `claude` on PATH that is not
 # this script.
+# canon: POSIX-portable path canonicalization (no GNU `readlink -f` — colony-lint's
+# portability ratchet forbids it). Resolves symlinked directories via `pwd -P`; the
+# final component is left as-is, which is enough to tell a candidate apart from this
+# wrapper (the config-target seam means `claude` is never PATH-shadowed by us).
+canon() { d="$(dirname "$1")"; b="$(basename "$1")"; ( cd "$d" 2>/dev/null && printf '%s/%s\n' "$(pwd -P)" "$b" ); }
 REAL="${DF_CLAUDE_BIN:-}"
 if [ -z "$REAL" ]; then
-  self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+  self="$(canon "$0")"
   for cand in $(command -v -a claude 2>/dev/null); do
-    rp="$(readlink -f "$cand" 2>/dev/null || echo "$cand")"
-    if [ "$rp" != "$self" ]; then REAL="$cand"; break; fi
+    if [ "$(canon "$cand")" != "$self" ]; then REAL="$cand"; break; fi
   done
 fi
 [ -n "$REAL" ] || { echo "claude-sandboxed.sh: no real 'claude' binary found on PATH" >&2; exit 127; }
