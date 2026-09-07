@@ -371,6 +371,10 @@ SYMBOL_EXTRACT="$HERE/evm-harness/extract-solidity-symbols.sh"
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 RUN="$OUT/run"
 rm -rf "$RUN"; mkdir -p "$RUN"
+# #2125: thread the sandbox bind vars into the agentis invocation (run_flat_cyborg does not env_clear). The
+# prover works against the $RUN/repo copy staged below, so RUN alone covers the forge PoC; the repo bind is
+# threaded too for parity with the other emitters and any absolute path the prover may still reference.
+export HUNT_SANDBOX_REPO="$REPO" HUNT_SANDBOX_RUN="$RUN"
 cp "$PROVER" "$RUN/invariant-prover.ag"
 cp "$GATE" "$RUN/forge-invariant.sh"
 # #1728 — stage the #1724 mutant kill-set (mutant-kill.sh + the mutants/ fixture tree) into the rundir next to
@@ -624,6 +628,8 @@ fi
   # the caller (run-zone-hunt.sh --deep-hunt does not).
   # #1915: same GEN_TIMEOUT_MS (scaled for composable-fresh mode) as the claude branch above.
   [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = $GEN_TIMEOUT_MS"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"; }
+  # #2125: sandbox the driven Claude Code session (bubblewrap view = toolchain + repo + run dir, web tools denied).
+  [ "$BACKEND" = "flat-cyborg" ] && [ -z "${DF_NO_SANDBOX:-}" ] && command -v bwrap >/dev/null 2>&1 && echo "llm.flat_cyborg.target = $HERE/lib/claude-sandboxed.sh"
   echo "trace.level = normal"
   # The prover reads code + the fixture and writes/runs the test through exec sh; pass its whole env contract.
   # FM1 (#1041): FORK_URL/FORK_BLOCK thread the fork into the gate; FORK_TARGET is the deployed address the

@@ -196,5 +196,16 @@ or corrects the targeting. It is not a failure.
 - **Content scrub (public repo).** No internal absolute paths, no local
   worktree paths, no client / private-core identifiers in any committed run-log
   or posted outcome. Name a target by its **public program name only**.
+- **Sandbox visibility (#2125).** The hunt cells drive a sandboxed Claude Code
+  session (`lib/claude-sandboxed.sh`) that can see ONLY the target repo (`--repo`)
+  and the run dir (`$OUT/run`). Keep **measurement artifacts the hunter must NOT
+  see** — `AB-NOTE.md`, held-out ground truth, control-arm outputs, the corpus
+  `truth.tsv` — in the run root's PARENT or another dir, never under `$OUT/run`
+  or the target repo; they are then invisible to the driven session by
+  construction. Conversely, any legitimate INPUT the cell must read (a `--brief`
+  or `--taxonomy` file) must live inside a bound path — the emitters already stage
+  briefs/harnesses INTO `$OUT/run`, so pass those staged copies, not a path under
+  `$HOME` or a sibling dir the sandbox cannot reach. Opt out with `DF_NO_SANDBOX=1`
+  (auto-opted-out when `bwrap` is absent).
 
 See [`CHANGELOG.md`](./CHANGELOG.md) for the per-milestone history.
