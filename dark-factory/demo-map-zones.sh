@@ -1521,7 +1521,41 @@ SOL
   # negative makes the identical interface call but CEI-correct (write BEFORE the external call) AND
   # `nonReentrant` AND `is ReentrancyGuard` — a double-negative proving the net doesn't fire on either
   # signal alone (must resolve REENTRANCY|safeguard|false).
-  mkdir -p "$AC_REPO/reentrancy" "$AC_REPO/safeguard"
+  # QA fix (PR #2126): interface_call_pattern()'s argument group must survive ONE level of nested
+  # parens — the real Royco Day call is `IRoycoPriceOracle(_getRoycoDayKernelStorage().collateralAssetOracle)
+  # .poke()`, where the cast argument is itself a call expression. A THIRD sibling zone reproduces that
+  # exact nested-paren shape (interface-typed call + post-call `delete`, no guard) to demo-assert the
+  # widened `\((?:[^()]|\([^()]*\))*\)` group still resolves REENTRANCY|nestedcall|true instead of
+  # silently failing to match (which would have made has_interface_call_surface return false and the
+  # zone resolve as safe, the exact miss this PR fixes).
+  mkdir -p "$AC_REPO/reentrancy" "$AC_REPO/safeguard" "$AC_REPO/nestedcall"
+  cat > "$AC_REPO/nestedcall/RoycoDayKernelLike.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+interface IRoycoPriceOracle {
+    function poke() external;
+}
+
+contract RoycoDayKernelLike {
+    struct KernelStorage {
+        address collateralAssetOracle;
+    }
+
+    mapping(address => mapping(uint256 => uint256)) public requests;
+    KernelStorage private kernelStorage;
+
+    function _getRoycoDayKernelStorage() internal view returns (KernelStorage storage) {
+        return kernelStorage;
+    }
+
+    function settle(address user, uint256 nonce) external {
+        uint256 amount = requests[user][nonce];
+        IRoycoPriceOracle(_getRoycoDayKernelStorage().collateralAssetOracle).poke();
+        delete requests[user][nonce];
+    }
+}
+SOL
   cat > "$AC_REPO/reentrancy/RoycoEntryPointLike.sol" <<'SOL'
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
@@ -1626,6 +1660,14 @@ SOL
       ok "#2121: contains_reentrancy_surface() true for an unguarded interface-typed-call-then-delete zone (Royco Day mechanic), false for the CEI-correct + nonReentrant + is ReentrancyGuard sibling"
     else
       bad "#2121: unexpected REENTRANCY| lines (want reentrancy=true safeguard=false, got reentrancy='$RE_HOT' safeguard='$RE_SAFE')"
+    fi
+    # QA fix (PR #2126): the nested-paren interface-call shape (`IFoo(bar().baz).poke()`, the exact real
+    # Royco Day form) must still trip has_interface_call_surface() through the widened argument group.
+    RE_NESTED="$(grep -h '^REENTRANCY|nestedcall|' "$OUT4/run/zone_nestedcall.log" 2>/dev/null | tail -1)"
+    if [ "$RE_NESTED" = "REENTRANCY|nestedcall|true" ]; then
+      ok "PR #2126 fix: contains_reentrancy_surface() true for a nested-paren interface-typed-call zone (IFoo(bar().baz).poke() shape) — the regex argument group survives one level of nesting"
+    else
+      bad "PR #2126 regression: nested-paren interface call not detected (want REENTRANCY|nestedcall|true, got '$RE_NESTED')"
     fi
   else
     bad "map-zones.sh --backend mock failed on the #1729/#1740 access-control fixture (exit $RC4):"

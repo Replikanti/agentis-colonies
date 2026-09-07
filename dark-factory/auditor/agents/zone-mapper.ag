@@ -310,7 +310,7 @@ fn has_external_call_surface(code: string) -> bool {
 // convention elsewhere) since both has_interface_call_surface and its per-match method extraction need
 // the identical pattern.
 fn interface_call_pattern() -> string {
-    return "\\bI[A-Z][A-Za-z0-9_]*\\([^()]*\\)\\.([a-zA-Z_][A-Za-z0-9_]*)\\(";
+    return "\\bI[A-Z][A-Za-z0-9_]*\\((?:[^()]|\\([^()]*\\))*\\)\\.([a-zA-Z_][A-Za-z0-9_]*)\\(";
 }
 
 // Denylist of view-idiom method names the amendment excludes from the interface-call surface (a plain
