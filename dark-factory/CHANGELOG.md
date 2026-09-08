@@ -15,6 +15,30 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **`run-change-hunts.sh` — the M3 change-triggered hunt: a scope descriptor -> a deduped `run-zone-hunt.sh`
+  run, findings staged** (#2133, epic #2120 M3: first-on-fresh-code). Ties M1 (#2128) + M2 (#2131) to the
+  proven hunt pipeline: for each M2 `scope-descriptors.tsv` row it materializes the target at the NEW code
+  (`head`/`tag` -> `fetch-target.sh` dep-aware clone, ref-pinned; `impl` -> keyless Sourcify-v2 `fields=source`
+  flat-`.sol` pull, the `recon-from-address.sh` idiom), then invokes `run-zone-hunt.sh --repo <clone>` with
+  `--scope-hint`/`--since` for a `scoped` change (never forwarding M2's `-` sentinel) or full scope otherwise.
+  Each change is hunted AT MOST ONCE — deduped by `(program, new)` via a change-key ledger
+  (`~/.dark-factory/change-watch/hunted-changes.tsv`); `skip` descriptors are ledgered as seen, never hunted.
+  Any verified finding is staged through `run-zone-hunt.sh`'s OWN built-in `deliver-submission.sh` never-submit
+  human gate (a `finding`/`clean` verdict is derived from the before/after drop-dir package count, since the
+  capstone exits 0 even with findings); this script NEVER contacts a bounty platform. The #2125 bwrap sandbox
+  and the new #2133 refusal-fallback disable are inherited STRUCTURALLY from `run-zone-hunt.sh`. Limit-safe by
+  construction: it NEVER reads `bounties.json` and NEVER sweeps the fleet — it consumes ONLY the descriptors it
+  is handed, runs rows SERIALLY, and caps work at `--max-hunts N` (DEFAULT 1; skips + already-ledgered rows do
+  not count). The live 245-program cadence + concurrency + LLM budget is M4. `--source-cmd`/`--hunt-cmd` seams
+  let `demo-run-change-hunts.sh` mock materialize + the hunt deterministically offline (scoped-argv,
+  impl-source-pull, dedup-skip, finding-staged/never-submit, clean-negative, `--max-hunts`, and the M1->M2->M3
+  handoff). LIMITATION (M3): an `impl` upgrade materializes as FLAT `.sol`, so breadth reads it but
+  `run-zone-hunt.sh --deep-hunt` self-skips the non-Foundry target; a buildable-impl reconstruction is deferred.
+- **`run-zone-hunt.sh` now disables the Claude Code refusal fallback by default** (#2133). A guarded
+  `: "${CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK:=1}"; export …` near the top makes EVERY hunt fail VISIBLY on a
+  model refusal instead of being silently served by a fallback model (a measurement-integrity gap found during
+  an A/B; same trust theme as the #2125 sandbox). It is a happy-path NO-OP — it only changes behaviour on an
+  actual refusal — and an operator can pre-set `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=0` to opt back in.
 - **`scope-changes.sh` — the M2 diff-scoper: a `changes.tsv` row -> a scoped-hunt descriptor** (#2131, epic
   #2120 M2). A STATELESS transform that reads M1's `changes.tsv` (#2128) and emits ONE scope descriptor per
   row (`program  chain  kind  repo_or_addr  new  scope_mode  scope_hint_files  since`) to

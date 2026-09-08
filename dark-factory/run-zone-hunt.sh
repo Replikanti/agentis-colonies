@@ -235,6 +235,14 @@ set -eu
 # stdout is the hunt log the dashboard reads, so an echo here lands in it; the trap never alters the exit code.
 trap 'echo "run-zone-hunt.sh: __EXIT__=$?"' EXIT
 
+# #2133 (epic #2120 M3): make EVERY hunt fail VISIBLY on a Claude Code refusal instead of being silently
+# swapped to another model. Without this, a Fable/Opus content refusal is served by a fallback model with no
+# `stop_reason: refusal` — a measurement-integrity gap (same trust theme as the #2125 sandbox). This is a
+# happy-path NO-OP: it only changes behaviour when a refusal actually occurs, and `:=` lets an operator keep
+# an explicit pre-set value (e.g. `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=0`) to opt back into the old fallback.
+: "${CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK:=1}"
+export CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK
+
 HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 REPO="" ; OUT="$PWD/zone-hunt-out" ; JOBS=1 ; BACKEND="flat-cyborg" ; MODEL=""
