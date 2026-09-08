@@ -33,7 +33,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   agent-output level by a new `demo-monitor.sh` phase 2 (four live spec members over two different contracts on
   a local anvil, including a `default-target` backward-compatibility control that is identical before and
   after). The fused `monitor:signal:invariant` payload, the coordinator's fusion and the #1891 delivery path
-  are unchanged.
+  are unchanged. The scale precision budget is ENFORCED, not merely documented (#2142): a non-power-of-ten
+  scale whose mantissa exceeds 8 digits resolves to `no-read` (>= 10 significant digits survive every accepted
+  scale), and `run-live-watch.sh` applies the identical cap — with a stderr warning when it drops one — so the
+  emitter and the watcher agree on exactly which scales exist.
 - **`change-pipeline.sh` — the M4 cadence + LLM budget: M1 -> M2 -> M3 in one budget-bounded tick** (#2135,
   epic #2120 M4: first-on-fresh-code). Chains the three merged stages — `watch-code-changes.sh` (#2128) ->
   `scope-changes.sh` (#2131) -> `run-change-hunts.sh` (#2133) — so the change-triggered hunt can run unattended

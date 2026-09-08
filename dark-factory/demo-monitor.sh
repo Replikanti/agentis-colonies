@@ -55,7 +55,11 @@
 #            produces a reading instead of the no-read sentinel;
 #        (o) `default-target` — the backward-compatibility CONTROL: an entry with
 #            NO per-side fields still reads BOTH sides from MONITOR_TARGET;
-#        (p) the per-side reads re-run EVERY tick (breaking one side flips it).
+#        (p) the per-side reads re-run EVERY tick (breaking one side flips it);
+#        (q) the SCALE PRECISION BUDGET (#2142) is enforced at both layers: an
+#            8-digit scale mantissa is accepted and computed, a 9-digit one is
+#            dropped by the emitter and resolves to `no-read` in the watcher --
+#            never to a silently lossy comparison.
 #
 # Why a store hand-off and not the bus (#1891): on agentis v1.28.0 emit()/listen()
 # are IN-PROCESS, so a bus event never crosses the daemon boundary that the
@@ -456,7 +460,11 @@ PY
    "lhs_target":"$C2","rhs_target":"$C2","lhs_scale":"1000"},
   {"label":"typed-return","lhs_sig":"totalSupply()(uint256)","rhs_sig":"totalAssets()(uint256)","rhs_const":"","rel":"le","margin_bp":0,
    "lhs_target":"$C3","rhs_target":"$C3"},
-  {"label":"default-target","lhs_sig":"totalSupply()","rhs_sig":"totalAssets()","rhs_const":"","rel":"le","margin_bp":0}
+  {"label":"default-target","lhs_sig":"totalSupply()","rhs_sig":"totalAssets()","rhs_const":"","rel":"le","margin_bp":0},
+  {"label":"scale-mantissa-cap","lhs_sig":"totalAssets()","rhs_sig":"","rhs_const":"12345678000","rel":"eq","margin_bp":0,
+   "lhs_target":"$C2","lhs_scale":"12345678"},
+  {"label":"scale-mantissa-over","lhs_sig":"totalAssets()","rhs_sig":"","rhs_const":"1000","rel":"eq","margin_bp":0,
+   "lhs_target":"$C2","lhs_scale":"123456789"}
 ]
 JSON
       if sh "$RUN_LIVE_WATCH" --address "$C" --rpc-url "$RPC" \
@@ -469,6 +477,41 @@ JSON
       else
         bad "run-live-watch.sh dropped the per-side watch-spec fields (see $WORK/rlw-cross.log and watch-spec-cross.json)"
       fi
+
+      # --- the emitter mirrors the watcher's scale precision budget (#2142) ---------
+      # An 8-digit scale mantissa is inside mul_dec()'s budget and must survive; a
+      # 9-digit one is outside it and must be dropped (with a warning), so the emitter
+      # can never hand the watcher a scale it would only refuse.
+      if grep -qF '"lhs_scale": "12345678"' "$WORK/watch-spec-cross.json" \
+         && ! grep -qF '"lhs_scale": "123456789"' "$WORK/watch-spec-cross.json" \
+         && grep -q 'dropping unrepresentable lhs_scale' "$WORK/rlw-cross.log"; then
+        ok "run-live-watch.sh kept an 8-digit scale mantissa and dropped a 9-digit one with a warning — the emitter mirrors the watcher's precision budget (#2142)"
+      else
+        bad "run-live-watch.sh does not mirror the watcher's scale mantissa cap (see $WORK/rlw-cross.log and watch-spec-cross.json)"
+      fi
+
+      # A hand-authored member the emitter would have refused: MONITOR_INV_SPEC also
+      # accepts an inline / hand-written array, so the WATCHER's own guard has to hold
+      # on its own. Appended after emission on purpose.
+      SPEC_CROSS="$WORK/watch-spec-cross.json" GUARD_TARGET="$C2" python3 - <<'PY'
+import json, os
+path = os.environ["SPEC_CROSS"]
+with open(path, encoding="utf-8") as fh:
+    spec = json.load(fh)
+spec.append({
+    "label": "scale-mantissa-guard",
+    "lhs_sig": "totalAssets()",
+    "rhs_sig": "",
+    "rhs_const": "123456789000",
+    "rel": "eq",
+    "margin_bp": 0,
+    "lhs_target": os.environ["GUARD_TARGET"],
+    "lhs_scale": "123456789",
+})
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump(spec, fh, indent=2)
+    fh.write("\n")
+PY
 
       # --- spawn the SECOND watcher on the cross-contract spec ----------------------
       # MONITOR_TARGET is the phase-1 fixture, which is ALREADY broken (supply > assets):
@@ -532,7 +575,25 @@ JSON
         bad "default-target did not read MONITOR_TARGET — the single-target fallback regressed (see $WORK/iw2.log)"
       fi
 
-      # --- q) the per-side reads re-run EVERY tick, not once at boot ----------------
+      # --- q) the SCALE PRECISION BUDGET is enforced, not merely documented (#2142) --
+      # C2.totalAssets() (1000) x 12345678 == 12345678000: an 8-digit mantissa is
+      # inside mul_dec()'s budget (>= 10 significant digits survive) and computes.
+      if member_verdict scale-mantissa-cap ok; then
+        ok "scale-mantissa-cap: an 8-digit scale mantissa is inside the precision budget and was applied exactly -> ok (#2142)"
+      else
+        bad "scale-mantissa-cap did not compute — the accepted end of the scale precision budget regressed (see $WORK/iw2.log)"
+      fi
+
+      # The same reading with a 9-digit mantissa is OUTSIDE the budget: the watcher
+      # must go quiet (no-read) rather than return a lossy product. On the previous
+      # guard (i64 overflow only) this member computed and read `ok`.
+      if member_verdict scale-mantissa-guard no-read; then
+        ok "scale-mantissa-guard: a 9-digit scale mantissa is refused and resolves to no-read, not a silently lossy comparison (#2142)"
+      else
+        bad "scale-mantissa-guard did not resolve to no-read — an over-long scale mantissa is still computed lossily (see $WORK/iw2.log)"
+      fi
+
+      # --- r) the per-side reads re-run EVERY tick, not once at boot ----------------
       fixture_break "$RPC" "$C" 500
       note "injected mintUnbacked(500) on the cross-contract LHS: C.totalSupply now $(fixture_read "$RPC" "$C" 'totalSupply()') > B.balanceOf 1000"
       if member_verdict cross-backing violated 40; then

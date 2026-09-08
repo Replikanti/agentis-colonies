@@ -39,8 +39,10 @@
 #                             may also be a comma-separated string. Unset => a zero-arg read.
 #   lhs_scale / rhs_scale     an integer MULTIPLIER applied to that side's reading BEFORE the comparison,
 #                             to normalise two sides carried in different decimals (e.g. "1000000000000").
-#                             A power of ten is kept at any magnitude; any other integer is capped at 18
-#                             digits. Unset / "1" => no scaling.
+#                             A power of ten is kept at any magnitude; any other integer is kept only while
+#                             its MANTISSA (the value with trailing zeros removed) is at most 8 digits — the
+#                             watcher's mul_dec() precision budget (#2142). A refused scale is DROPPED with a
+#                             warning on stderr. Unset / "1" => no scaling.
 #
 # TARGET FINGERPRINT (#1097) — written alongside the spec at <out>.fingerprint.json:
 #   {"address":"0x..","rpc_url":"...","code_hash":"<sha256 of cast code>","impl_slot":"<EIP-1967 impl slot value>"}
@@ -153,7 +155,7 @@ OUT="$OUT_DIR/$(basename "$OUT")"
 emit_spec() {
   _records="$1"
   ADDRESS="$ADDRESS" RPC_URL="$RPC_URL" TARGET="$TARGET" RECORDS_FILE="$_records" OUT_FILE="$OUT" python3 - <<'PY'
-import json, os
+import json, os, sys
 addr = os.environ["ADDRESS"]
 rpc = os.environ["RPC_URL"]
 target = os.environ["TARGET"]
@@ -163,7 +165,11 @@ ALNUM = set("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
 HEX = set("0123456789abcdefABCDEF")
 DIGITS = set("0123456789")
 ARGS_MAX = 4
-SCALE_MAX_DIGITS = 18
+# #2142: the emitter and the watcher must agree on exactly which scales are
+# representable. The watcher's mul_dec() applies a scale as mantissa x 10^zeros and
+# refuses a mantissa longer than 8 digits (its precision budget), so a scale the
+# emitter kept but the watcher refuses would read as a silent no-read.
+SCALE_MANTISSA_MAX = 8
 
 
 def norm_target(v):
@@ -188,7 +194,8 @@ def norm_args(v):
 
 
 def norm_scale(v):
-    """Per-side integer multiplier: a power of ten at any magnitude, else <= 18 digits.
+    """Per-side integer multiplier: a power of ten at any magnitude, else a mantissa
+    of at most SCALE_MANTISSA_MAX digits (the watcher's mul_dec() precision budget).
 
     "" / "0" / "1" (the no-op values) and anything non-numeric are dropped, so an
     unusable scale can never reach the watcher as a silently wrong comparison.
@@ -201,7 +208,7 @@ def norm_scale(v):
         return ""
     if v[0] == "1" and set(v[1:]) <= {"0"}:
         return v
-    if len(v) > SCALE_MAX_DIGITS:
+    if len(v.rstrip("0")) > SCALE_MANTISSA_MAX:
         return ""
     return v
 
@@ -247,6 +254,15 @@ for line in lines:
     }
     # #2122 per-side fields: emitted ONLY when they survive validation and are
     # non-empty, so a single-contract spec keeps the exact 6-key shape it had.
+    for key, raw in (("lhs_scale", lhs_scale), ("rhs_scale", rhs_scale)):
+        # #2142: a scale the watcher could not apply precisely is refused HERE too, so
+        # the two layers agree on exactly which scales exist. Announce the drop -- the
+        # member is then compared UNSCALED, which the operator must know about.
+        if raw.strip() and not norm_scale(raw):
+            sys.stderr.write(
+                "run-live-watch.sh: dropping unrepresentable %s %r on %r "
+                "(power of ten, or mantissa <= %d digits, required) -- that side will be compared UNSCALED\n"
+                % (key, raw.strip(), label or lhs_sig, SCALE_MANTISSA_MAX))
     for key, val in (("lhs_target", norm_target(lhs_target)),
                      ("rhs_target", norm_target(rhs_target)),
                      ("lhs_args", norm_args(lhs_args)),
