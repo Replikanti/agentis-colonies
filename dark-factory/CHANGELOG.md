@@ -15,6 +15,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **`change-pipeline.sh` — the M4 cadence + LLM budget: M1 -> M2 -> M3 in one budget-bounded tick** (#2135,
+  epic #2120 M4: first-on-fresh-code). Chains the three merged stages — `watch-code-changes.sh` (#2128) ->
+  `scope-changes.sh` (#2131) -> `run-change-hunts.sh` (#2133) — so the change-triggered hunt can run unattended
+  on a schedule instead of by hand. The budget is TWO REUSED knobs, not a new semaphore (STOP-1 #2135):
+  `--hunts-per-tick N` forwarded verbatim to M3 `--max-hunts` (DEFAULT 1), and `--forge-max-slots K` EXPORTED as
+  `FORGE_MAX_SLOTS` so the existing host-wide `lib/forge-slot.sh` (#2038, DEFAULT 2) caps concurrent `forge`
+  subprocesses across the whole M3 -> `run-zone-hunt` -> `run-invariant-hunt` subtree. This DIVERGES from the
+  issue body's `llm-session-slot.sh` suggestion on purpose — that is dev-apprenticeship's fed pool, the wrong
+  scope for a dark-factory hunt cadence. Each tick writes ONE PATCH-able JSON tick-summary (`last_tick`,
+  `status`, `changes_seen`, `descriptors`, `hunts_run`, `findings_staged`, `skipped`, `ledger_total`, `budget`,
+  `armed:false`, `tick_seq`) that the hunt-dashboard (#1913) renders as a full-width overview panel; M3's
+  `(program,new)` ledger makes a tick resumable (never re-hunts a change). **Build + OFFLINE-demo only
+  (limit-safety):** it NEVER installs a cron and NEVER runs a live hunt — there is no daemon/loop mode (one tick
+  per invocation), the summary always carries `armed:false`, and the ready-to-arm ~6h crontab line lives ONLY in
+  a comment (the operator installs it explicitly when arming, per the README). `--watch-cmd`/`--scope-cmd`
+  replace M1/M2 and `--hunt-cmd`/`--source-cmd` forward to M3's own seams, so `demo-change-pipeline.sh` proves
+  the tick chaining, the two-knob budget, the tick-summary, the dashboard panel, and the resumable ledger fully
+  offline (no network/LLM/forge; the real `~/.dark-factory` untouched). Arming (cron + a raised budget + the
+  first live fleet sweep) is the operator's go and is what M5 (the measured week) needs.
 - **`run-change-hunts.sh` — the M3 change-triggered hunt: a scope descriptor -> a deduped `run-zone-hunt.sh`
   run, findings staged** (#2133, epic #2120 M3: first-on-fresh-code). Ties M1 (#2128) + M2 (#2131) to the
   proven hunt pipeline: for each M2 `scope-descriptors.tsv` row it materializes the target at the NEW code
