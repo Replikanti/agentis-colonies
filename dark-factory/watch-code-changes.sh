@@ -40,9 +40,16 @@
 #   - IMPL-axis rows (kind impl) DO carry the resolved chain (the change is on that specific chain).
 #
 # STATE (per program, <state-dir>/state/<program-key>.state, key `immunefi:<slug>`): TSV lines
-#   kind<TAB>repo_or_addr<TAB>value — value = HEAD sha (head), sorted comma-joined tag set (tag), or the
-#   impl word (impl). COLD-START at per-triple granularity: the first sight of a (kind,repo_or_addr) writes the
-#   baseline and emits NOTHING; a row is emitted only when the state already holds a DIFFERENT non-empty value.
+#   kind<TAB>chain<TAB>repo_or_addr<TAB>value — value = HEAD sha (head), sorted comma-joined tag set (tag), or
+#   the impl word (impl). chain='-' on head|tag lines (a source change is chain-agnostic, mirroring changes.tsv);
+#   impl lines carry the RESOLVED chain — #2138: a proxy address deployed on more than one chain (a common
+#   deterministic-deploy shape) must baseline INDEPENDENTLY per chain, else the second chain's first-ever read
+#   collides with the first chain's baseline and looks like a phantom change on cold start.
+#   COLD-START at per-(kind,chain,repo_or_addr) granularity: the first sight writes the baseline and emits
+#   NOTHING; a row is emitted only when the state already holds a DIFFERENT non-empty value for that exact key.
+#   DEDUP: the work-plan is deduped to unique (program,axis,chain,repo_or_addr) rows before this loop runs, so
+#   an address listed multiple times in one program's assets (#2138) is baselined/compared exactly once per
+#   chain per tick — never against its own freshly-written baseline within the same tick.
 #   EMPTY/ALL-ZERO guard: a probe returning empty (unreachable RPC / dead repo) or an all-zero impl word
 #   (0x000… = EOA / non-proxy) is skipped — never baselined, never an old->"" change — so a transient outage
 #   cannot flap. Every item is `|| continue` so a single failure never aborts the sweep.
@@ -293,24 +300,24 @@ rpc_for_chain() {
   esac
 }
 
-# state_get KEY KIND ROA -> the stored value (or empty). state_put rewrites the program's state file with the
-# (KIND,ROA) line replaced/appended — small per-program files, so a full rewrite per triple stays cheap and
-# order-independent.
+# state_get KEY KIND CHAIN ROA -> the stored value (or empty). state_put rewrites the program's state file
+# with the (KIND,CHAIN,ROA) line replaced/appended — small per-program files, so a full rewrite per quadruple
+# stays cheap and order-independent. CHAIN is part of the key (#2138): head|tag rows always pass chain='-'.
 state_file_for() { echo "$STATE_DIR/state/$1.state"; }
 
 state_get() {
   _sf="$(state_file_for "$1")"
   [ -f "$_sf" ] || { echo ""; return; }
-  awk -F'\t' -v k="$2" -v r="$3" '$1==k && $2==r {print $3; exit}' "$_sf"
+  awk -F'\t' -v k="$2" -v c="$3" -v r="$4" '$1==k && $2==c && $3==r {print $4; exit}' "$_sf"
 }
 
 state_put() {
   _sf="$(state_file_for "$1")"
   _tmp="$(mktemp "${TMPDIR:-/tmp}/wcc-state.XXXXXX")"
   if [ -f "$_sf" ]; then
-    awk -F'\t' -v k="$2" -v r="$3" '!($1==k && $2==r)' "$_sf" > "$_tmp"
+    awk -F'\t' -v k="$2" -v c="$3" -v r="$4" '!($1==k && $2==c && $3==r)' "$_sf" > "$_tmp"
   fi
-  printf '%s\t%s\t%s\n' "$2" "$3" "$4" >> "$_tmp"
+  printf '%s\t%s\t%s\t%s\n' "$2" "$3" "$4" "$5" >> "$_tmp"
   mv "$_tmp" "$_sf"
 }
 
@@ -320,21 +327,27 @@ emit_change() {
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" "$4" "$5" "$6" "$7" >> "$OUT"
 }
 
-# apply a single (kind,roa) observation against state: baseline on first sight (emit nothing), else emit a
-# change row on a DIFFERENT non-empty value. An empty new value was already guarded by the caller.
+# apply a single (kind,chain,roa) observation against state: baseline on first sight (emit nothing), else emit
+# a change row on a DIFFERENT non-empty value. An empty new value was already guarded by the caller. #2138:
+# chain is threaded into state_get/state_put so two chains sharing an address never collide on one baseline.
 apply_obs() {
   # $1 key $2 chain $3 kind $4 roa $5 new $6 githubUrl
-  _old="$(state_get "$1" "$3" "$4")"
+  _old="$(state_get "$1" "$3" "$2" "$4")"
   if [ -z "$_old" ]; then
-    state_put "$1" "$3" "$4" "$5"
+    state_put "$1" "$3" "$2" "$4" "$5"
   elif [ "$_old" != "$5" ]; then
     emit_change "$1" "$2" "$3" "$4" "$_old" "$5" "$6"
-    state_put "$1" "$3" "$4" "$5"
+    state_put "$1" "$3" "$2" "$4" "$5"
   fi
 }
 
 changes_before="$(grep -cv '^#' "$OUT" 2>/dev/null || true)"
 
+# #2138: dedup PLAN rows to unique (program,axis,chain,repo_or_addr) BEFORE the per-row baseline/compare loop.
+# The python layer above already dedups per-program IMPL assets by (chain,addr), but this is a second,
+# independent guard at the actual processing boundary — the shape that broke live was 4 duplicate listings
+# of the same in-scope address; without this line each duplicate would be baselined/compared against the
+# SAME evolving per-tick state, and a later occurrence could read a phantom old->new off its own baseline.
 while IFS="$(printf '\t')" read -r prog axis chain roa ghurl || [ -n "$prog" ]; do
   [ -n "$prog" ] || continue
   case "$axis" in
@@ -368,7 +381,7 @@ while IFS="$(printf '\t')" read -r prog axis chain roa ghurl || [ -n "$prog" ]; 
       apply_obs "$prog" "$chain" "impl" "$roa" "$word" "$ghurl"
       ;;
   esac
-done < "$PLAN"
+done < <(awk -F'\t' '!seen[$1 FS $2 FS $3 FS $4]++' "$PLAN")
 
 changes_after="$(grep -cv '^#' "$OUT" 2>/dev/null || true)"
 new_rows=$((changes_after - changes_before))
