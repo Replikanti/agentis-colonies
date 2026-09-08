@@ -141,6 +141,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   now emit `llm.model = ${MODEL:-opus}` instead of the hardcoded `llm.model = opus`. Additive and default-off:
   an unset `--model` leaves every emitted config byte-identical to before this flag existed.
 
+### Changed
+- **STAGE 4.5 runs the zone's own fitness-ranked class, instead of defaulting to the custody-primary one**
+  (#2113). `run-zone-hunt.sh` `lens_classes()` re-imposed a hard-coded class precedence
+  (`C6, C10, C11, C2, C16, C5`) on every zone, so row 1 was always the custody-primary class and the class the
+  zone mapper had actually RANKED first in `scope.tsv` (`bug_classes_likely`, fitness-reordered by
+  `zone-mapper.ag`) lost the `--deep-hunt-max-lenses` cap — a yieldoor-shaped custody zone ranked
+  `C19, C20, C15, C6` hunted only `C6` at the default cap of 2. The selection now walks the zone's OWN ranked
+  order and keeps the routable classes, so the mapper's leading pick leads the fan-out. Two invariants are
+  preserved: at most ONE custody-primary lens per zone (a custody zone's cell count does not double, and the
+  custody row is demoted rather than dropped), and `dominant_class()` stays the fallback when a zone ranks no
+  routable class — so no zone that was hunted before stops being hunted. `C19` (arithmetic overflow /
+  precision DoS) joins `IMPLEMENTED_NONCUSTODY` so the shipped `liveness` lens route (#2111) is reachable at
+  all; the added cost of C19-dominant non-custody zones becoming deep-huntable is accepted and stays bounded
+  by `--deep-hunt-max-lenses` and the interface-only gate. `hunt-dashboard/hunt-dashboard.py`
+  `planned_deep_rows()` mirrors the same walk so queued DEPTH rows keep matching what STAGE 4.5 runs. The
+  `--payable-impacts` partition (#1930) is unchanged and still applied last.
+
 ### Fixed
 - **hunt-dashboard: the DEPTH panel no longer mis-states the deep-hunt track — no phantom queued row for a
   no-logic zone, and automatically-refuted findings are triaged as such** (#2108). Two display-correctness

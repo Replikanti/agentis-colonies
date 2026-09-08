@@ -156,6 +156,10 @@ run-zone-hunt.sh --repo <clone> --out <dir> \
   owns that map), so the hunter looks for what pays.
 - **STAGE 4.5** — when `--deep-hunt-max-lenses` truncates the lens fan-out, the
   lenses those impacts imply are preferred. Never adds or removes a lens row.
+  The *base* order the partition reorders is the zone's own fitness-ranked
+  class order from `scope.tsv` (`bug_classes_likely`, ranked by the zone
+  mapper), keeping at most one custody-primary lens per zone; the payable-impact
+  partition still runs last and still only changes which rows survive the cap.
 - **before STAGE 5** — [`finding-payability-gate.sh`](./finding-payability-gate.sh)
   writes `verify/verified_findings.payable.json`; sub-floor findings move into
   `unpayable[]` and are **not** delivered (`--pay-mode flag` annotates instead of

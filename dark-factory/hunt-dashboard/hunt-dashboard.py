@@ -357,7 +357,7 @@ def planned_deep_rows():
     # Client-side reconstruction of the STAGE 4.5 lens matrix (mirrors run-zone-hunt.sh lens_classes
     # gating) so the deep-hunt table can list PENDING/queued rows, not only completed slots. Best-effort:
     # the real gate owns the truth; this predicts the (zone, class) rows from map/zones.json.
-    CUSTODY=("C6","C10","C11"); NONCUST=("C2","C16","C5"); IMPL=CUSTODY+NONCUST; MAXL=3
+    CUSTODY=("C6","C10","C11"); NONCUST=("C2","C16","C5","C19"); IMPL=CUSTODY+NONCUST; MAXL=3
     try: zs=json.load(open(os.path.join(OUT,"map","zones.json")))
     except Exception: return []
     rows=[]
@@ -370,12 +370,20 @@ def planned_deep_rows():
         # --deep-hunt-max-targets/--deep-hunt-max-lenses, still renders its real queued coverage-gap row.
         if z.get("has_implementation") is False:
             continue
+        # #2113: mirror the runner's RANKED walk — the zone's own fitness-ranked bug_classes_likely order
+        # (scope.tsv / #1711), at most ONE custody-primary lens per zone, dominant class only as the fallback
+        # when a custody zone ranks nothing routable. Kept in lockstep with run-zone-hunt.sh lens_classes(),
+        # otherwise the queued DEPTH rows stop matching what STAGE 4.5 actually runs.
         classes=z.get("bug_classes_likely") or []
         dom=next((c for c in IMPL if c in classes),"C-invariant")
-        lenses=[]
-        if z.get("value_custody") or dom in NONCUST: lenses.append(dom)
-        for c in NONCUST:
-            if c in classes and c not in lenses: lenses.append(c)
+        custody=bool(z.get("value_custody"))
+        lenses=[]; took_custody=False
+        for c in classes:
+            if c in NONCUST:
+                if c not in lenses: lenses.append(c)
+            elif custody and c in CUSTODY and not took_custody:
+                lenses.append(c); took_custody=True
+        if custody and not took_custody and dom not in lenses: lenses.append(dom)
         lenses=lenses[:MAXL]
         for c in lenses: rows.append((z.get("id"), c, z.get("value_custody", False)))
         if z.get("value_custody") and len(lenses)<MAXL and len([f for f in z.get("files",[]) if str(f).endswith(".sol")])>1:
