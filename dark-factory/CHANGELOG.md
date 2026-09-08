@@ -15,6 +15,36 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Attacker-controlled-callee directive in the hunter** (#2145, milestone D1 of epic #2130). The hunter's
+  RULES put "a trusted role acting WITHIN its documented permissions" out of scope; a cell reading an external
+  call whose TARGET address a config/admin/deployer role sets filed the whole call site under that exclusion,
+  so the callee was never modelled as hostile and the reentrancy / return-value / gas question was never
+  asked. Detection of the call was never the gap (the #2121 C8 backstop already force-includes the cell) — the
+  TRUST MODEL was. `hunter.ag` now runs a deterministic detector over the assembled payload — an external call
+  surface (low-level `.call{`/`.call(`/`safeTransfer*`, or a non-view interface-typed call, reusing
+  zone-mapper.ag's #2121 nets verbatim) AND a settable-target signal (an `address` setter, a mutable `address`
+  state variable, or a call target resolved through another contract's getter) — and, when both hold, injects
+  a GENERIC trust-model directive ahead of every other conditional block in the instruction: for EVERY
+  external call, ask who controls the TARGET; a settable/repointable callee is ATTACKER-CONTROLLED for
+  reentrancy, return values and gas, even though the SETTER is a trusted role. The directive names no
+  protocol, contract or function, so injecting it cannot leak an answer into a hunt, and it re-frames every
+  class rather than adding one — `bug-taxonomy.md` is deliberately untouched (no new class; the epic's bet is
+  that lens-per-class has saturated). It is `""`-gated: a zone with no settable call target prompts
+  BYTE-IDENTICALLY to the pre-#2145 one. When the block is really in the prompt the cell prints
+  `CALLEE-TRUST|<subsystem>|<cls>|<n>` (`<n>` = how many of the three settable-target signals fired), gated on
+  the marker being present in the ASSEMBLED instruction rather than on the detector's return value — the same
+  honesty contract `APPENDIX-CONTEXT|` carries — and carrying no `CANDIDATE|` substring, so it can never
+  false-accept a cell. Detection is the same permissive flat whole-blob idiom as the #2121 net (no AST/CFG:
+  call-then-write order and the settability of the SPECIFIC target are never verified, only existence), each
+  net a single pass per cell, builtins only (#1587 ratchet). New `demo-callee-trust-lens.sh` is the offline
+  gate: a source-guard for the detector, the directive's load-bearing sentences, the `""`-when-false gate, the
+  splice position, the sentinel + its honesty gate, substrate purity and the no-new-class decision, plus —
+  with an `agentis` binary present — one REAL offline hunt cell per fixture (`--backend mock`, `HUNT_CLASS=C8`,
+  new `fixtures/callee-trust/`) asserting the sentinel fires on the settable-callee vault and is ABSENT on the
+  immutable-callee one, and a byte-identity probe over the helpers extracted from `hunter.ag` by line range.
+  Wired into `tools/colony-lint.sh`. The offline gate proves the MACHINERY only; whether the re-framing makes
+  a hunter generate the vector it was missing is measurable solely by a sandboxed, refusal-fallback-off,
+  transcript-attributed live re-hunt of a post-cutoff held-out target (an operator step, never a CI gate).
 - **Per-side target / args / scale for cross-contract invariants in the monitor colony** (#2122). The
   `invariant-watcher` could only ever compare two quantities read from the SAME `MONITOR_TARGET` with
   zero-argument signatures and no decimals normalisation, so a real cross-contract invariant (a vault's

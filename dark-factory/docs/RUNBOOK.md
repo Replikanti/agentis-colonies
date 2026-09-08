@@ -120,6 +120,12 @@ agent (`auditor/agents/hunter.ag`) out over (subsystem × bug-class).
    ./run-discovery.sh --repo <repo> --scope scope.tsv --brief brief.md --out discovery-out
    # cheap wiring smoke first (no real LLM):  --backend mock --only "<subsystem>" --classes C1
    ```
+   A cell log line `CALLEE-TRUST|<subsystem>|<class>|<n>` means the #2145 attacker-controlled-callee
+   directive was injected into that cell's prompt: the zone makes an external call whose TARGET address is
+   settable (`<n>` = how many of the three signals fired — an `address` setter, a mutable `address` state
+   variable, a target resolved through another contract's getter), so the hunt was told to treat that callee
+   as hostile even though the role that sets it is trusted. No such line = no settable target found and the
+   prompt was byte-identical to a pre-#2145 run.
 5. **Read the leads** — `discovery-out/discovery-report.md`. Each `CANDIDATE` row is an **unverified
    lead** (file:fn:line / severity / exploit / PoC sketch). No candidate = **rigorous negative**, the
    valid outcome on audited code; nothing is submitted.
