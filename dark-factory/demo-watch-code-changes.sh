@@ -20,6 +20,13 @@
 #         right chain, and the non-address URL yields no row.
 #   AC5 — an all-zero impl word (EOA / non-proxy) and an empty (unreachable) impl read are BOTH skipped: never
 #         baselined, never a row — a transient outage cannot flap.
+#   AC6 — #2138 regression: a program whose assets list the SAME address 4x on one chain (already deduped
+#         upstream) AND the same address again on a SECOND chain (a real deterministic-deploy shape) -> cold
+#         start emits ZERO rows and baselines each (chain,addr) independently. This is the exact live shape
+#         that violated cold-start-zero: without a chain-keyed state line, the second chain's first-ever read
+#         collided with the first chain's freshly-written baseline and looked like a phantom change.
+#   AC7 — after AC6's cold baseline, rewinding ONLY the second chain's state entry emits EXACTLY ONE impl row,
+#         carrying that chain (not the other one) — a genuine per-chain impl move is still detected correctly.
 #
 # Usage:  dark-factory/demo-watch-code-changes.sh
 # Requires: python3. Exit: 0 = all assertions held; non-zero = a failure.
@@ -65,7 +72,14 @@ cat > "$BJSON" <<'JSON'
  {"slug":"delta","githubUrl":null,"ecosystem":["Ethereum"],"language":["Solidity"],
   "assets":[
    {"url":"https://etherscan.io/address/0x7777777777777777777777777777777777777777"},
-   {"url":"https://etherscan.io/address/0x8888888888888888888888888888888888888888"}]}
+   {"url":"https://etherscan.io/address/0x8888888888888888888888888888888888888888"}]},
+ {"slug":"epsilon","githubUrl":null,"ecosystem":["Ethereum","Arbitrum"],"language":["Solidity"],
+  "assets":[
+   {"url":"https://etherscan.io/address/0x9999999999999999999999999999999999999999"},
+   {"url":"https://etherscan.io/address/0x9999999999999999999999999999999999999999"},
+   {"url":"https://etherscan.io/address/0x9999999999999999999999999999999999999999"},
+   {"url":"https://etherscan.io/address/0x9999999999999999999999999999999999999999"},
+   {"url":"https://arbiscan.io/address/0x9999999999999999999999999999999999999999"}]}
 ]
 JSON
 
@@ -86,6 +100,14 @@ STUB='case "$PROBE_KIND" in
       0x7777777777777777777777777777777777777777)
         printf "0x0000000000000000000000000000000000000000000000000000000000000000\n" ;;
       0x8888888888888888888888888888888888888888) ;;   # empty = unreachable RPC
+      0x9999999999999999999999999999999999999999)
+        # #2138: the SAME address deployed on two chains reads a DIFFERENT impl word on each —
+        # a real deterministic-deploy shape. Chain-keyed on $PROBE_CHAIN (set by the caller loop).
+        case "$PROBE_CHAIN" in
+          ethereum) printf "0x00000000000000000000000000000000000000000000000000000000ee9999\n" ;;
+          arbitrum) printf "0x00000000000000000000000000000000000000000000000000000000ab9999\n" ;;
+        esac
+        ;;
       *) printf "0x000000000000000000000000%s\n" "${PROBE_ADDR#0x}" | cut -c1-66 ;;
     esac
     ;;
@@ -119,11 +141,13 @@ note "AC2) rewind one head entry + one impl entry -> exactly one head row and on
 ALPHA_SF="$(state_file_of "$S1" alpha)"
 GAMMA_SF="$(state_file_of "$S1" gamma)"
 # Capture the baselined (current) values so we can assert the emitted old->new precisely.
-NEW_HEAD="$(awk -F'\t' '$1=="head"{print $3; exit}' "$ALPHA_SF")"
-NEW_IMPL="$(awk -F'\t' '$1=="impl" && $2=="0x2222222222222222222222222222222222222222"{print $3; exit}' "$GAMMA_SF")"
+# State schema (#2138): kind<TAB>chain<TAB>repo_or_addr<TAB>value — chain is threaded into the key so a
+# per-chain baseline is independent (head/tag rows carry chain='-').
+NEW_HEAD="$(awk -F'\t' '$1=="head"{print $4; exit}' "$ALPHA_SF")"
+NEW_IMPL="$(awk -F'\t' '$1=="impl" && $3=="0x2222222222222222222222222222222222222222"{print $4; exit}' "$GAMMA_SF")"
 # Rewind: set the stored value to an OLD one; the STUB still returns the NEW value -> exactly one change each.
-awk -F'\t' 'BEGIN{OFS="\t"} $1=="head"{$3="deadbeefoldhead"} {print}' "$ALPHA_SF" > "$ALPHA_SF.tmp" && mv "$ALPHA_SF.tmp" "$ALPHA_SF"
-awk -F'\t' 'BEGIN{OFS="\t"} ($1=="impl" && $2=="0x2222222222222222222222222222222222222222"){$3="0x000000000000000000000000oldimploldimploldimploldimploldim"} {print}' \
+awk -F'\t' 'BEGIN{OFS="\t"} $1=="head"{$4="deadbeefoldhead"} {print}' "$ALPHA_SF" > "$ALPHA_SF.tmp" && mv "$ALPHA_SF.tmp" "$ALPHA_SF"
+awk -F'\t' 'BEGIN{OFS="\t"} ($1=="impl" && $3=="0x2222222222222222222222222222222222222222"){$4="0x000000000000000000000000oldimploldimploldimploldimploldim"} {print}' \
   "$GAMMA_SF" > "$GAMMA_SF.tmp" && mv "$GAMMA_SF.tmp" "$GAMMA_SF"
 
 "$WATCH" --bounties-from "$BJSON" --state-dir "$S1" --probe-cmd "$STUB" >/dev/null 2>/dev/null
@@ -162,7 +186,7 @@ S2="$WORK/s2"
 "$WATCH" --bounties-from "$BJSON" --state-dir "$S2" --probe-cmd "$STUB" >/dev/null 2>/dev/null   # cold baseline
 GAMMA_SF2="$(state_file_of "$S2" gamma)"
 # Rewind every gamma impl entry so each address re-emits once with its resolved chain.
-awk -F'\t' 'BEGIN{OFS="\t"} $1=="impl"{$3="oldvalue"} {print}' "$GAMMA_SF2" > "$GAMMA_SF2.tmp" && mv "$GAMMA_SF2.tmp" "$GAMMA_SF2"
+awk -F'\t' 'BEGIN{OFS="\t"} $1=="impl"{$4="oldvalue"} {print}' "$GAMMA_SF2" > "$GAMMA_SF2.tmp" && mv "$GAMMA_SF2.tmp" "$GAMMA_SF2"
 "$WATCH" --bounties-from "$BJSON" --state-dir "$S2" --probe-cmd "$STUB" >/dev/null 2>/dev/null
 
 chain_of() { grep -v '^#' "$S2/changes.tsv" | awk -F'\t' -v a="$1" '$4=="impl" && $5==a{print $3; exit}'; }
@@ -189,6 +213,38 @@ DELTA_ROWS_S2="$(grep -v '^#' "$S2/changes.tsv" 2>/dev/null | awk -F'\t' '$2=="i
   || bad "AC5 FAILED: delta emitted rows (S1=$DELTA_ROWS_S1 S2=$DELTA_ROWS_S2)"
 [ -e "$(state_file_of "$S2" delta)" ] && bad "AC5 FAILED: delta got a state file in S2" \
   || ok "AC5: delta still has no state file (never baselined a transient/non-proxy read)"
+
+# ----------------------------------------------------------------------------------------------------------
+note "AC6) #2138 regression: same address 4x on one chain + the same address on a second chain -> cold" \
+     "start emits ZERO rows for it, baselined once per (chain,addr) ..."
+EPSILON_SF="$(state_file_of "$S1" epsilon)"
+EPSILON_ROWS_S1="$(grep -v '^#' "$S1/changes.tsv" | awk -F'\t' '$2=="immunefi:epsilon"' | grep -c . || true)"
+[ "$EPSILON_ROWS_S1" -eq 0 ] && ok "AC6: epsilon emitted 0 rows on cold start (got $EPSILON_ROWS_S1)" \
+  || bad "AC6 FAILED: epsilon emitted $EPSILON_ROWS_S1 row(s) on cold start, expected 0 (cold-start-zero violated)"
+EPSILON_STATE_LINES="$(grep -c . "$EPSILON_SF" 2>/dev/null || echo 0)"
+[ "$EPSILON_STATE_LINES" -eq 2 ] && ok "AC6: epsilon has exactly 2 state lines (one per chain, addr deduped 4x->1 per chain)" \
+  || bad "AC6 FAILED: epsilon has $EPSILON_STATE_LINES state line(s), expected 2"
+grep -q "^impl	ethereum	0x9999999999999999999999999999999999999999	" "$EPSILON_SF" \
+  && ok "AC6: epsilon baselined on ethereum" || bad "AC6 FAILED: no ethereum state line for epsilon"
+grep -q "^impl	arbitrum	0x9999999999999999999999999999999999999999	" "$EPSILON_SF" \
+  && ok "AC6: epsilon baselined on arbitrum (independent of the ethereum baseline)" \
+  || bad "AC6 FAILED: no arbitrum state line for epsilon"
+
+note "AC7) rewind ONLY the arbitrum epsilon entry -> exactly one impl row, carrying chain=arbitrum ..."
+awk -F'\t' 'BEGIN{OFS="\t"} ($1=="impl" && $2=="arbitrum" && $3=="0x9999999999999999999999999999999999999999"){$4="oldvalue"} {print}' \
+  "$EPSILON_SF" > "$EPSILON_SF.tmp" && mv "$EPSILON_SF.tmp" "$EPSILON_SF"
+"$WATCH" --bounties-from "$BJSON" --state-dir "$S1" --probe-cmd "$STUB" >/dev/null 2>/dev/null
+EPSILON_ROWS_S1B="$(grep -v '^#' "$S1/changes.tsv" | awk -F'\t' '$2=="immunefi:epsilon"' | grep -c . || true)"
+[ "$EPSILON_ROWS_S1B" -eq 1 ] && ok "AC7: exactly one epsilon row after the rewind (got $EPSILON_ROWS_S1B)" \
+  || bad "AC7 FAILED: $EPSILON_ROWS_S1B epsilon row(s) after rewind, expected 1"
+ER="$(grep -v '^#' "$S1/changes.tsv" | awk -F'\t' '$2=="immunefi:epsilon"{print; exit}')"
+e_chain="$(printf '%s' "$ER" | cut -f3)"; e_roa="$(printf '%s' "$ER" | cut -f5)"; e_new="$(printf '%s' "$ER" | cut -f7)"
+[ "$e_chain" = "arbitrum" ] && ok "AC7: emitted row carries chain=arbitrum (not the ethereum baseline)" \
+  || bad "AC7 FAILED: emitted row chain = $e_chain (want arbitrum)"
+[ "$e_roa" = "0x9999999999999999999999999999999999999999" ] && ok "AC7: emitted row addr correct" \
+  || bad "AC7 FAILED: emitted row addr = $e_roa"
+[ "$e_new" = "0x00000000000000000000000000000000000000000000000000000000ab9999" ] && ok "AC7: emitted new value matches the arbitrum probe read" \
+  || bad "AC7 FAILED: emitted new = $e_new"
 
 # ----------------------------------------------------------------------------------------------------------
 echo
