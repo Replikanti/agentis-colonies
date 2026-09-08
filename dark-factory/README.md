@@ -985,6 +985,54 @@ flowchart TD
     P --> Q["completion-check posts result once<br/>uploads submission-draft.md (#1577 / #1580)"]
 ```
 
+## Change-cadence: hunt fresh code unattended (`change-pipeline.sh`)
+
+The change-triggered pipeline (epic #2120, *first-on-fresh-code*) has three stages that already run by hand:
+`watch-code-changes.sh` (M1 — a program whose code moved) → `scope-changes.sh` (M2 — one scope descriptor per
+change) → `run-change-hunts.sh` (M3 — materialize@new + a deduped hunt, findings staged). `change-pipeline.sh`
+(M4) chains all three into **one budget-bounded tick** so the loop can run on a schedule instead of by hand:
+
+```sh
+# one manual tick at the conservative default budget (hunts-per-tick=1, forge-max-slots=2):
+dark-factory/change-pipeline.sh --once
+# raise the budget for a heavier sweep (still one tick):
+dark-factory/change-pipeline.sh --once --hunts-per-tick 3 --forge-max-slots 3
+```
+
+**The budget is two REUSED knobs — not a new mechanism:**
+
+- `--hunts-per-tick N` (default **1**) is forwarded verbatim to M3 `--max-hunts`: at most N changes are hunted
+  per tick (`skip` descriptors and already-ledgered changes do not count).
+- `--forge-max-slots K` (default **2**) is exported as `FORGE_MAX_SLOTS` so the existing host-wide
+  `lib/forge-slot.sh` semaphore (#2038) caps concurrent `forge` subprocesses across the whole M3 →
+  `run-zone-hunt` → `run-invariant-hunt` subtree. (This deliberately does **not** use dev-apprenticeship's
+  `llm-session-slot.sh` — that is a different federation's fed pool, the wrong scope for a hunt cadence.)
+
+Each tick writes one **PATCH-able JSON tick-summary** (default `~/.dark-factory/change-watch/tick-summary.json`:
+`last_tick`, `status`, `changes_seen`, `descriptors`, `hunts_run`, `findings_staged`, `skipped`, `ledger_total`,
+`budget`, `armed`, `tick_seq`) that the hunt-dashboard (`hunt-dashboard/`, #1913) renders as a full-width
+overview panel — so an unattended run reports progress, not silence. M3's `(program,new)` ledger makes a tick
+**resumable**: it never re-hunts a change already seen.
+
+### Arming (operator action — off by default) 🔒
+
+`change-pipeline.sh` is **build + demo only** until you arm it. There is **no daemon/loop mode**: each invocation
+runs exactly one tick, so it can only ever spend one budget's worth. The tick-summary always reports
+`armed:false`. **Arming is your explicit go** (and is what the M5 measured week needs); it means two manual steps:
+
+1. **Raise the budget** if the default (1 hunt/tick) is too conservative for your fleet.
+2. **Install the cron.** A ready ~6h line (matching `contest-watch.sh`'s cadence) — **NOT installed by any
+   script**; run it yourself when you decide to go live:
+
+```cron
+# every 6h: one change-cadence tick (M1 -> M2 -> M3) at the configured budget. NOT installed automatically.
+( crontab -l 2>/dev/null; echo '0 */6 * * * /path/to/dark-factory/change-pipeline.sh --once >> ~/.dark-factory/change-watch/cadence.log 2>&1' ) | crontab -
+```
+
+Arming spends the operator's LLM budget autonomously, so it is never done by the milestone or the demo — the
+pipeline adds **zero** new egress path (M3's baked-in never-submit `deliver-submission.sh` gate is inherited
+unchanged; a staged finding is always a lead a human reviews and files).
+
 ## Layout
 
 ```

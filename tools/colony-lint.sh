@@ -1550,6 +1550,25 @@ if [ -x "$REPO_ROOT/dark-factory/demo-run-change-hunts.sh" ]; then
     fi
 fi
 
+# --- dark-factory change-cadence pipeline (#2135, epic #2120 M4) ---
+# change-pipeline.sh chains M1 (watch-code-changes.sh) -> M2 (scope-changes.sh) -> M3 (run-change-hunts.sh) into
+# ONE budget-bounded tick and writes a PATCH-able JSON tick-summary the hunt-dashboard renders as an overview
+# panel. The budget is two REUSED knobs (STOP-1 #2135, NOT a new semaphore): M3-native --max-hunts N per tick
+# (default 1) + the exported host-wide FORGE_MAX_SLOTS (lib/forge-slot.sh, #2038, default 2). Build + OFFLINE
+# demo ONLY: it never installs a cron and never runs a live hunt (armed:false; one tick per invocation, no loop).
+# The demo REPLACES M1/M2 and mocks the M3 leaf (the real M3 still enforces the budget + (program,new) ledger),
+# never touching the network/LLM/forge or the real ~/.dark-factory: tick-with-changes/quiet/budget-cap/resumable
+# + the dashboard panel + the FORGE_MAX_SLOTS export + the no-cron-install invariant.
+if [ -x "$REPO_ROOT/dark-factory/demo-change-pipeline.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-change-pipeline.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: change-cadence pipeline (M1->M2->M3 tick, two-knob budget, tick-summary + dashboard panel) (#2135)"
+    else
+        fail "dark-factory: change-cadence pipeline regressed (#2135)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory refuter -> hunter constraint channel (#1887) ---
 # The refute gate is where most candidates die and its reason used to die with them. refuter.ag now emits the
 # GENERALISABLE half of each REFUTED verdict as a `CONSTRAINT|` line placed BEFORE the verdict (after it,

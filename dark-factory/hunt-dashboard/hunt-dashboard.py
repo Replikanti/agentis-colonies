@@ -44,6 +44,12 @@ REGISTRY_MODE = False
 REGISTRY_DIR = ""
 CUR_HUNT_ID = ""
 
+# ---- M4 change-cadence overview panel (#2135, epic #2120) -----------------------------------------------
+# change-pipeline.sh writes ONE PATCH-able tick-summary JSON; the overview renders it as a single full-width
+# panel above the hunt grid so an unattended cadence loop reports progress here, not just in a log. CHANGE_SUMMARY
+# defaults to ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/change-watch/tick-summary.json (the pipeline's default).
+CHANGE_SUMMARY = ""
+
 PHASES = [
     ("M1 · map zones",        3),
     ("M2 · briefs",           3),
@@ -1467,19 +1473,79 @@ def hunt_card(desc, base):
             "liveness_class": lcls, "is_live": is_live, "dot": dot, "dot_col": col,
             "status_text": txt, "deep_state": deep_hunt_state()}
 
+def default_change_summary():
+    base = os.environ.get("DARK_FACTORY_DIR") or os.path.join(os.path.expanduser("~"), ".dark-factory")
+    return os.path.join(base, "change-watch", "tick-summary.json")
+
+def change_pipeline_model(path=None):
+    # The M4 change-cadence panel model (#2135), read live from change-pipeline.sh's tick-summary JSON. Returns
+    # None when the file is absent/unreadable/malformed (graceful no-panel, never a crash) so the overview is
+    # unchanged on a host that never armed the cadence. Numeric fields are coerced defensively (a torn/partial
+    # write mid-tick never raises); the nested budget block is flattened for the render. This is the SAME model
+    # emit_model()/overview_model() and overview_page() both consume, so the JSON surface can't drift from the HTML.
+    p = path or CHANGE_SUMMARY or default_change_summary()
+    try:
+        with open(p) as f: d = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(d, dict):
+        return None
+    def _i(k):
+        try: return int(d.get(k, 0) or 0)
+        except (TypeError, ValueError): return 0
+    budget = d.get("budget") or {}
+    if not isinstance(budget, dict): budget = {}
+    def _bi(k):
+        try: return int(budget.get(k, 0) or 0)
+        except (TypeError, ValueError): return 0
+    return {"summary_path": p,
+            "last_tick": str(d.get("last_tick", "") or ""),
+            "status": str(d.get("status", "") or ""),
+            "changes_seen": _i("changes_seen"), "descriptors": _i("descriptors"),
+            "hunts_run": _i("hunts_run"), "findings_staged": _i("findings_staged"),
+            "skipped": _i("skipped"), "ledger_total": _i("ledger_total"),
+            "hunts_per_tick": _bi("hunts_per_tick"), "forge_max_slots": _bi("forge_max_slots"),
+            "armed": bool(d.get("armed", False)), "tick_seq": _i("tick_seq")}
+
 def overview_model(registry_dir=None):
     hunts = [hunt_card(d, b) for d, b in discover_hunts(registry_dir)]
     hunts.sort(key=lambda h: h["id"])
     return {"registry_dir": registry_dir or REGISTRY_DIR or default_registry_dir(),
-            "count": len(hunts), "hunts": hunts}
+            "count": len(hunts), "hunts": hunts,
+            "change_pipeline": change_pipeline_model()}
 
 def _card_bar_col(lcls):
     if lcls == "FINISHED": return "#39d353"
     if lcls in ("STOPPED", "PROCESS_GONE"): return "#e5737b"
     return "#f0a800"
 
+_CP_STATUS_COL = {"ok": "#39d353", "quiet": "#8b949e", "running": "#f0a800", "error": "#e5737b"}
+
+def _change_pipeline_panel(cp):
+    # One full-width overview panel fed by the tick-summary (reuses the .hc card chrome so it "renders like a
+    # hunt row"). Absent summary -> "" (no panel), matching the graceful-empty overview contract.
+    if not cp:
+        return ""
+    col = _CP_STATUS_COL.get(cp["status"], "#8b949e")
+    armed = ('<span style="color:#39d353">armed</span>' if cp["armed"]
+             else '<span style="color:#8b949e" title="build/demo only — not scheduled; arm per the README">disarmed</span>')
+    when = html.escape(cp["last_tick"] or "—")
+    meta = (f'changes {cp["changes_seen"]} &nbsp;·&nbsp; {cp["descriptors"]} scoped &nbsp;·&nbsp; '
+            f'{cp["hunts_run"]} hunt(s) &nbsp;·&nbsp; {cp["findings_staged"]} staged &nbsp;·&nbsp; '
+            f'{cp["skipped"]} skipped &nbsp;·&nbsp; ledger {cp["ledger_total"]}')
+    budget = (f'budget {cp["hunts_per_tick"]}/tick &nbsp;·&nbsp; forge-slots {cp["forge_max_slots"]} '
+              f'&nbsp;·&nbsp; tick #{cp["tick_seq"]} &nbsp;·&nbsp; {armed}')
+    return (f'<div class="hc cpp" style="display:block">'
+            f'<div class="hch"><span class="pulse" style="background:{col};box-shadow:0 0 8px {col};animation:none"></span>'
+            f'<span class="hcl">change-cadence pipeline</span>'
+            f'<span class="bl" style="cursor:default;color:{col}">{html.escape(cp["status"] or "—")}</span></div>'
+            f'<div class="hcs" style="color:#8b949e">last tick {when}</div>'
+            f'<div class="hcm">{meta}</div>'
+            f'<div class="hcm" style="margin-top:2px">{budget}</div></div>')
+
 def overview_page():
     m = overview_model(); hunts = m["hunts"]; now = datetime.datetime.now()
+    cpanel = _change_pipeline_panel(m.get("change_pipeline"))
     if hunts:
         cardhtml = ""
         for h in hunts:
@@ -1522,6 +1588,7 @@ h1{{font-size:20px;margin:0 0 2px}} .sub{{color:#888;font-size:13px;margin-botto
 .hcbl{{position:absolute;inset:0;line-height:22px;text-align:center;font-weight:700;color:#0d1117;font-size:12px}}
 .hcs{{font-size:12.5px;font-weight:600;margin-top:6px}}
 .hcm{{color:#8b949e;font-size:12px;margin-top:4px}}
+.cpp{{margin-bottom:16px}}
 .empty{{background:#161b22;border:1px solid #21262d;border-radius:10px;padding:24px;color:#e8e8e8;font-size:15px}}
 .pulse{{display:inline-block;width:9px;height:9px;border-radius:50%;flex:0 0 auto;animation:bl 1.4s ease-in-out infinite}}
 @keyframes bl{{0%,100%{{opacity:1}}50%{{opacity:.25}}}}
@@ -1530,6 +1597,7 @@ a{{color:#58a6ff}}
 </style></head><body><div class="wrap">
 <h1>🎯 dark-factory hunts</h1>
 <div class="sub">{m["count"]} registered hunt(s) · read-only · localhost:{PORT} · click a card for the full dashboard</div>
+{cpanel}
 {grid}
 <div class="sub" style="margin-top:16px">auto-refresh 5s · {now.strftime('%H:%M:%S')} · registry {html.escape(m["registry_dir"])}</div>
 </div></body></html>"""
@@ -1600,7 +1668,7 @@ def _resolve_paths(base):
 
 def main(argv=None):
     global ROOT, OUT, LOG, LABEL, REWARD_LINE, BOUNTY_URL, REPO_URL, PROJECT_URL, HOST, PORT
-    global REGISTRY_MODE, REGISTRY_DIR
+    global REGISTRY_MODE, REGISTRY_DIR, CHANGE_SUMMARY
     ap = argparse.ArgumentParser(description="Read-only, loopback-only hunt dashboard (#1913). "
                                              "Single-hunt with --descriptor/paths (M1); multi-hunt overview over "
                                              "the descriptor registry when given neither (M2).")
@@ -1612,6 +1680,8 @@ def main(argv=None):
                     help="multi-hunt registry mode: serve an overview of every registered hunt (implied when no "
                          "--descriptor/--root is given)")
     ap.add_argument("--registry-dir", help="override the registry dir (default ${DARK_FACTORY_DIR:-~/.dark-factory}/hunts)")
+    ap.add_argument("--change-summary", help="change-pipeline.sh tick-summary JSON for the M4 cadence panel "
+                    "(default ${DARK_FACTORY_DIR:-~/.dark-factory}/change-watch/tick-summary.json)")
     ap.add_argument("--hunt", help="registry mode: render/emit ONE hunt's detail by id (offline test seam)")
     ap.add_argument("--host", default=HOST)
     ap.add_argument("--port", type=int, default=int(os.environ.get("HUNT_DASHBOARD_PORT", PORT)))
@@ -1619,6 +1689,7 @@ def main(argv=None):
     ap.add_argument("--emit-model", action="store_true", help="emit the computed facts as JSON and exit")
     a = ap.parse_args(argv)
     HOST = a.host; PORT = a.port
+    if a.change_summary: CHANGE_SUMMARY = a.change_summary
 
     # Registry (multi-hunt) mode: explicit --registry/--registry-dir/--hunt, OR the bare invocation with no
     # single-hunt selector. A descriptor or --root always means the M1 single-hunt path (back-compat).
