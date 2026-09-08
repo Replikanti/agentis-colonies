@@ -88,10 +88,12 @@
 #                       protected by the existing #1077 both-real HARNESS_ERROR safety.
 #   --deep-hunt-max-lenses <N>  #1795: max lens classes run per deep-hunt zone (default 2). The STAGE 4.5
 #                       selection emits one row per (zone x APPLICABLE implemented lens class) instead of the
-#                       single dominant class, so a non-custody lens (oracle C2, liveness C16, access C5) is no
-#                       longer shadowed by the custody-first routing on a value-custody zone. Rows are ordered
-#                       custody-primary first, then C2, C16, C5 (the coverage-map rarity order) and truncated to
-#                       N — so N=1 reproduces the pre-#1795 single-lens fan-out.
+#                       single dominant class, so a non-custody lens (oracle C2, liveness C16, access C5,
+#                       overflow/precision-DoS C19) is no longer shadowed by the custody-first routing on a
+#                       value-custody zone. #2113: rows follow the ZONE'S OWN fitness-ranked class order
+#                       (`bug_classes_likely` / scope.tsv, ranked by zone-mapper.ag #1711), keeping AT MOST ONE
+#                       custody-primary lens per zone, and are truncated to N — so N=1 runs the zone's ranked
+#                       leading routable class (its dominant class only when it ranks none).
 #   --composable-lens   #1914 (M1): emit ONE ADDITIONAL class-agnostic GENERAL-SOLVENCY row (stable class token
 #                       `SYS-solvency`) per custody/composition surface, in ADDITION to the per-class rows —
 #                       target = the zone's primary .sol, aux = its next-largest co-system .sol — so the
@@ -256,7 +258,8 @@ DEEP_HUNT=0 ; INV_FIXTURE="" ; DEEP_HUNT_MAX_TARGETS=1 ; DEEP_HUNT_REPAIR_ROUNDS
 # working cell is never false-killed) the engine's process group is killed and the loop fail-forwards to
 # HARNESS_ERROR instead of wedging. env-overridable; 0 disables the watchdog (pass-through).
 DEEP_CELL_STALE_S="${DEEP_CELL_STALE_S:-900}" ; DEEP_CELL_POLL_S="${DEEP_CELL_POLL_S:-45}"
-DEEP_HUNT_MAX_LENSES=2  # #1795: max lens classes per deep-hunt zone (custody-primary first, then C2/C16/C5).
+DEEP_HUNT_MAX_LENSES=2  # #1795/#2113: max lens classes per deep-hunt zone, walked in the zone's own
+# fitness-ranked bug_classes_likely order (scope.tsv), with at most ONE custody-primary lens per zone.
 # #1914 (M1): the class-agnostic GENERAL-SOLVENCY lens (`SYS-solvency`). 0 (default) = OFF = STAGE 4.5 emits
 # exactly the per-class rows it emitted before, so `.deep-hunt-targets.tsv` is byte-identical. The default-on
 # flip is deferred to M4 (gated on the transfer validation); the disable path stays byte-identical forever.
@@ -1041,7 +1044,11 @@ CUSTODY_PRIMARY_CLASSES = ("C6", "C10", "C11")
 # non-custody zone BEFORE class routing, so #1786's oracle (C2) lens — and every future class lens — never fired
 # on a non-custody zone. Grow this tuple as class lenses land: C16 (liveness #1789) and C5 (access-control
 # #1785) join C2 here so their zones are actually selected and hunted.
-IMPLEMENTED_NONCUSTODY = ("C2", "C16", "C5")
+# #2113: C19 (arithmetic overflow / precision DoS) is APPENDED last, so dominant_class() stays byte-identical
+# for every zone that carries C2/C16/C5 and only a C19-dominant non-custody zone changes (it used to collapse
+# to the generic C-invariant and be dropped by the #1790 gate). C19 is routable because the prover's
+# class_to_keyword() already maps `c19` -> the shipped `liveness` lens keyword (#2111) — no new engine.
+IMPLEMENTED_NONCUSTODY = ("C2", "C16", "C5", "C19")
 IMPLEMENTED_LENS_CLASSES = CUSTODY_PRIMARY_CLASSES + IMPLEMENTED_NONCUSTODY
 # #1914 (M1): the CLASS-AGNOSTIC general-solvency lens token. Deliberately NOT a coverage-map C-code — it names
 # a SURFACE (the composition/custody seam), not a bug class, and the prover's class_to_keyword() passes an
@@ -1066,29 +1073,41 @@ def dominant_class(classes):
             return c
     return "C-invariant"
 def lens_classes(z):
-    # #1795: EVERY applicable implemented lens for the zone, most-precedent first, capped at max_lenses.
-    # Before #1795 a zone got exactly ONE lens — its dominant_class — so on a value-custody zone the
-    # custody-first precedence SHADOWED the non-custody lenses: yieldoor/plaza `src` are value_custody AND
-    # carry C2, yet only the custody lens ever ran, making their oracle bugs structurally unreachable.
-    # Row 1 is UNCHANGED (the dominant_class the zone got before, under the same custody/non-custody gate), so
-    # nothing regresses; the extra rows are the applicable non-custody lenses that used to be dropped.
+    # #1795: EVERY applicable implemented lens for the zone, capped at max_lenses. Before #1795 a zone got
+    # exactly ONE lens — its dominant_class — so on a value-custody zone the custody-first precedence SHADOWED
+    # the non-custody lenses: yieldoor/plaza `src` are value_custody AND carry C2, yet only the custody lens
+    # ever ran, making their oracle bugs structurally unreachable.
+    # #2113: the rows are now walked in the ZONE'S OWN class order — `bug_classes_likely`, which map-zones.sh
+    # writes verbatim as scope.tsv's class CSV and which zone-mapper.ag has already FITNESS-RANKED (#1711) —
+    # instead of the hard-coded IMPLEMENTED_LENS_CLASSES precedence. Row 1 is therefore the zone's leading
+    # routable class, not an unconditional custody-primary one: under the default cap of 2 the mapper's #1 pick
+    # used to lose to C6 outright, which is exactly the bug #2113 reports. Two invariants are kept:
+    #   * AT MOST ONE custody-primary lens per zone, so a custody zone's cell count does not double; and
+    #   * dominant_class() remains the fallback when the zone ranks no routable class at all (the C6/C10/C11 or
+    #     generic "C-invariant" row), so no zone that ran before stops running.
+    # The custody row is demoted, never dropped: at the default cap of 2 a ranked non-custody leader and the
+    # custody-primary class both fit.
     classes = z.get("bug_classes_likely", [])
     dclass = dominant_class(classes)
+    custody = bool(z.get("value_custody"))
     out = []
-    if z.get("value_custody"):
-        # a value-custody zone always keeps its custody-primary row (or the generic C-invariant) FIRST
-        out.append(dclass)
-    elif dclass in IMPLEMENTED_NONCUSTODY:
-        # #1790 non-custody gate: unchanged first row for a zone whose dominant class is an implemented lens
-        out.append(dclass)
-    for c in IMPLEMENTED_NONCUSTODY:
-        if c in classes and c not in out:
+    took_custody = False
+    for c in classes:
+        if c in IMPLEMENTED_NONCUSTODY:
+            if c not in out:
+                out.append(c)
+        elif custody and c in CUSTODY_PRIMARY_CLASSES and not took_custody:
+            # #1790 non-custody gate, unchanged: a custody-primary class may only open a lens on a
+            # value_custody zone — never on a non-custody one.
             out.append(c)
+            took_custody = True
+    if custody and not took_custody and dclass not in out:
+        out.append(dclass)
     # #1930 PAYABLE-IMPACT STEERING: a STABLE partition of the already-computed list — the lenses the program's
     # payable impacts imply move to the front, everything else keeps its relative order. This changes only WHICH
     # lenses survive the --deep-hunt-max-lenses truncation below; it never adds, removes or rewrites a row. It
-    # DELIBERATELY relaxes #1795's "row 1 is the zone's dominant class" rule, but ONLY under --payable-impacts:
-    # with the flag absent `preferred` is empty and the partition is provably the identity.
+    # DELIBERATELY overrides the #2113 ranked base order above, but ONLY under --payable-impacts: with the flag
+    # absent `preferred` is empty and the partition is provably the identity. It stays the LAST step.
     if preferred:
         out = [c for c in out if c in preferred] + [c for c in out if c not in preferred]
     return out[:max_lenses]

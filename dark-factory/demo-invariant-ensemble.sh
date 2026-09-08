@@ -371,10 +371,11 @@ else
 fi
 
 # #1785 — C5 joins the IMPLEMENTED_NONCUSTODY gate so an access-dominant non-custody zone is actually selected.
-if grep -q 'IMPLEMENTED_NONCUSTODY = ("C2", "C16", "C5")' "$ZONEHUNT"; then
-  ok "run-zone-hunt.sh IMPLEMENTED_NONCUSTODY includes C5 (access-dominant non-custody zones are hunted)"
+# #2113 — C19 (overflow / precision DoS) joins it too, so the shipped `liveness` lens route (#2111) is reachable.
+if grep -q 'IMPLEMENTED_NONCUSTODY = ("C2", "C16", "C5", "C19")' "$ZONEHUNT"; then
+  ok "run-zone-hunt.sh IMPLEMENTED_NONCUSTODY includes C5 + C19 (access/overflow non-custody zones are hunted)"
 else
-  bad "run-zone-hunt.sh IMPLEMENTED_NONCUSTODY does not include C5 (access zones dropped before class routing)"
+  bad "run-zone-hunt.sh IMPLEMENTED_NONCUSTODY does not include C5 + C19 (those zones drop before class routing)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -551,15 +552,18 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
-# 7) #1795 MULTI-LENS PER ZONE — the STAGE 4.5 selection emits one row per (zone x APPLICABLE implemented lens
-#    class), so a value-custody zone that ALSO carries C2/C16/C5 no longer shadows those lenses behind its
-#    custody-first dominant class. Guard the single source of truth for the class lists, the preserved
-#    custody-first row, the --deep-hunt-max-lenses fan-out cap, and the per-(zone,class) DZOUT.
+# 7) #1795 MULTI-LENS PER ZONE + #2113 RANKED CLASS SELECTION — the STAGE 4.5 selection emits one row per
+#    (zone x APPLICABLE implemented lens class), so a value-custody zone that ALSO carries C2/C16/C5/C19 no
+#    longer shadows those lenses behind its custody-first dominant class, and (#2113) the rows follow the
+#    ZONE'S OWN fitness-ranked scope.tsv class order instead of a hard-coded precedence — so the class the
+#    zone mapper ranked first leads the fan-out and survives the --deep-hunt-max-lenses cap. Guard the single
+#    source of truth for the class lists, the ranked walk + one-custody-primary rule, the C6 fallback, the
+#    fan-out cap and the per-(zone,class) DZOUT.
 # ----------------------------------------------------------------------------------------------------------
 note "source-guarding the #1795 multi-lens-per-zone selection ..."
 
 if grep -q 'CUSTODY_PRIMARY_CLASSES = ("C6", "C10", "C11")' "$ZONEHUNT" \
-   && grep -q 'IMPLEMENTED_NONCUSTODY = ("C2", "C16", "C5")' "$ZONEHUNT" \
+   && grep -q 'IMPLEMENTED_NONCUSTODY = ("C2", "C16", "C5", "C19")' "$ZONEHUNT" \
    && grep -q 'IMPLEMENTED_LENS_CLASSES = CUSTODY_PRIMARY_CLASSES + IMPLEMENTED_NONCUSTODY' "$ZONEHUNT"; then
   ok "the implemented lens classes have a SINGLE source of truth (custody-primary + non-custody tuples)"
 else
@@ -578,6 +582,18 @@ if grep -q 'def lens_classes(z):' "$ZONEHUNT" && grep -q 'return out\[:max_lense
   ok "lens_classes() is defined and truncates to the --deep-hunt-max-lenses cap"
 else
   bad "lens_classes() is missing or does not apply the fan-out cap"
+fi
+
+# #2113 — lens_classes() must WALK THE ZONE'S OWN class list (the fitness-ranked scope.tsv order), never
+# re-impose the IMPLEMENTED_LENS_CLASSES precedence, and must carry the one-custody-primary rule. Source-guard
+# both so a future refactor cannot silently revert to precedence order.
+if grep -q 'for c in classes:' "$ZONEHUNT" \
+   && grep -q 'took_custody = True' "$ZONEHUNT" \
+   && grep -q 'if custody and not took_custody and dclass not in out:' "$ZONEHUNT" \
+   && ! grep -q 'for c in IMPLEMENTED_NONCUSTODY:' "$ZONEHUNT"; then
+  ok "lens_classes() walks the zone's OWN ranked class order with the one-custody-primary rule + C6 fallback"
+else
+  bad "lens_classes() no longer walks the zone's ranked class order (the #2113 precedence bug is back)"
 fi
 
 if grep -q 'DEEP_HUNT_MAX_LENSES=2' "$ZONEHUNT" \
@@ -613,6 +629,10 @@ awk '/> "\$DEEP_TARGETS" <</{f=1;next} f&&/^PY$/{exit} f{print}' "$ZONEHUNT" > "
 mkdir -p "$_ml_tmp/repo/src/oracles" "$_ml_tmp/repo/src/interfaces"
 : > "$_ml_tmp/repo/src/Pool.sol"; : > "$_ml_tmp/repo/src/Vault.sol"
 : > "$_ml_tmp/repo/src/oracles/Feed.sol"; : > "$_ml_tmp/repo/src/interfaces/IPool.sol"
+# #2113 fixtures: a yieldoor-shaped custody zone whose mapper-RANKED leading class is C19 (not its custody
+# class), a custody zone that ranks nothing routable before C6, and a custody zone that ranks nothing routable
+# at all (the generic C-invariant fallback).
+: > "$_ml_tmp/repo/src/Strategy.sol"; : > "$_ml_tmp/repo/src/Router.sol"; : > "$_ml_tmp/repo/src/Timelock.sol"
 cat > "$_ml_tmp/zones.json" <<'JSON'
 [
   {"id": "src", "value_custody": true, "bug_classes_likely": ["C2", "C6", "C10", "C15", "C5"],
@@ -622,7 +642,13 @@ cat > "$_ml_tmp/zones.json" <<'JSON'
   {"id": "src_oracles", "value_custody": false, "bug_classes_likely": ["C2", "C9", "C15"],
    "files": ["src/oracles/Feed.sol"]},
   {"id": "src_interfaces", "value_custody": false, "bug_classes_likely": ["C2", "C10", "C15"],
-   "files": ["src/interfaces/IPool.sol"]}
+   "files": ["src/interfaces/IPool.sol"]},
+  {"id": "src_ranked", "value_custody": true, "bug_classes_likely": ["C19", "C20", "C15", "C6"],
+   "files": ["src/Strategy.sol"]},
+  {"id": "src_unranked", "value_custody": true, "bug_classes_likely": ["C15", "C20", "C6"],
+   "files": ["src/Router.sol"]},
+  {"id": "src_generic", "value_custody": true, "bug_classes_likely": ["C15", "C20"],
+   "files": ["src/Timelock.sol"]}
 ]
 JSON
 # The trailing 0 is #1914's --composable-lens argv (OFF) — this block guards the PER-CLASS #1795 selection, and
@@ -630,12 +656,14 @@ JSON
 # tools/test-deep-hunt-composable-lens.sh.
 _rows_n2="$(python3 "$_ml_tmp/select.py" "$_ml_tmp/zones.json" "$_ml_tmp/repo" 1 0 2 0)"
 _rows_n1="$(python3 "$_ml_tmp/select.py" "$_ml_tmp/zones.json" "$_ml_tmp/repo" 1 0 1 0)"
+_rows_n3="$(python3 "$_ml_tmp/select.py" "$_ml_tmp/zones.json" "$_ml_tmp/repo" 1 0 3 0)"
 
-# (i) the value-custody zone emits its CUSTODY row FIRST (byte-identical to the pre-#1795 single row) ...
-if [ "$(printf '%s\n' "$_rows_n2" | head -1)" = "$(printf 'src\tsrc/Pool.sol\tC6')" ]; then
-  ok "(i) the value-custody zone's custody-primary (C6) row is still emitted FIRST"
+# (i) #2113: the value-custody zone leads with its RANKED class — `src` ranks C2 ahead of its custody C6, so
+#     row 1 is C2, not the custody-primary class the old hard-coded precedence always forced to the front.
+if [ "$(printf '%s\n' "$_rows_n2" | head -1)" = "$(printf 'src\tsrc/Pool.sol\tC2')" ]; then
+  ok "(i) the value-custody zone leads with its RANKED class (C2), not the custody-primary precedence class"
 else
-  bad "(i) the value-custody zone lost its leading custody-primary row: $(printf '%s\n' "$_rows_n2" | head -1)"
+  bad "(i) the value-custody zone did not lead with its ranked class: $(printf '%s\n' "$_rows_n2" | head -1)"
 fi
 
 # (ii) ... AND the previously-shadowed oracle (C2) lens now runs on that same zone.
@@ -645,19 +673,22 @@ else
   bad "(ii) the value-custody zone still emits no C2 row — the oracle lens is still shadowed"
 fi
 
-# (iii) the cap bounds the fan-out: C5 also applies to that zone but is truncated at N=2.
+# (iii) the cap bounds the fan-out: C5 also applies to that zone but is truncated at N=2 — #2113: truncation
+#       now drops the LOWEST-RANKED routable class (C5, last in the zone's own order), not the last one in the
+#       hard-coded precedence tuple.
 if [ "$(printf '%s\n' "$_rows_n2" | grep -c '^src	')" -eq 2 ]; then
-  ok "(iii) --deep-hunt-max-lenses caps the zone at 2 lens rows (C5 truncated by the rarity order)"
+  ok "(iii) --deep-hunt-max-lenses caps the zone at 2 lens rows (C5 truncated by the zone's RANKED order)"
 else
   bad "(iii) the fan-out cap did not bound the zone to 2 lens rows"
 fi
 
-# (iv) N=1 reproduces the pre-#1795 selection EXACTLY (custody zones keep their lens; interface-only skipped).
-_expect_n1="$(printf 'src\tsrc/Pool.sol\tC6\nsrc_vault\tsrc/Vault.sol\tC6\nsrc_oracles\tsrc/oracles/Feed.sol\tC2')"
+# (iv) #2113: N=1 runs exactly ONE lens per zone — the zone's RANKED leading routable class, falling back to
+#      its dominant class (C6, or the generic C-invariant) only when it ranks none. Interface-only stays skipped.
+_expect_n1="$(printf 'src\tsrc/Pool.sol\tC2\nsrc_vault\tsrc/Vault.sol\tC6\nsrc_oracles\tsrc/oracles/Feed.sol\tC2\nsrc_ranked\tsrc/Strategy.sol\tC19\nsrc_unranked\tsrc/Router.sol\tC6\nsrc_generic\tsrc/Timelock.sol\tC-invariant')"
 if [ "$_rows_n1" = "$_expect_n1" ]; then
-  ok "(iv) --deep-hunt-max-lenses 1 reproduces the pre-#1795 single-lens selection exactly"
+  ok "(iv) --deep-hunt-max-lenses 1 runs each zone's ranked leading routable class (dominant class as fallback)"
 else
-  bad "(iv) --deep-hunt-max-lenses 1 does NOT reproduce the pre-#1795 selection:"
+  bad "(iv) --deep-hunt-max-lenses 1 did NOT select the ranked leading class per zone:"
   printf '%s\n' "$_rows_n1" | sed 's/^/      /' >&2
 fi
 
@@ -666,6 +697,45 @@ if printf '%s\n' "$_rows_n2" | grep -q '^src_interfaces	'; then
   bad "(v) the interface-only non-custody zone was selected (guaranteed HARNESS_ERROR)"
 else
   ok "(v) the interface-only non-custody zone stays skipped under the multi-lens fan-out"
+fi
+
+# (vii) #2113 RANKED LEADER — the yieldoor-shaped custody zone ranks C19 first, so its FIRST row is the C19
+#       lens the zone mapper actually picked. On the pre-#2113 precedence this row was C6 and C19 was not even
+#       routable, so the #2111 overflow/precision lens could never run on the zone that ranked it #1.
+if [ "$(printf '%s\n' "$_rows_n2" | grep '^src_ranked	' | head -1)" \
+     = "$(printf 'src_ranked\tsrc/Strategy.sol\tC19')" ]; then
+  ok "(vii) the ranked custody zone leads with its mapper-ranked C19 lens (not the custody-primary C6)"
+else
+  bad "(vii) the ranked custody zone did not lead with C19: $(printf '%s\n' "$_rows_n2" | grep '^src_ranked	' | head -1)"
+fi
+
+# (viii) BUDGET TRUNCATES IN RANKED ORDER — `src` ranks C2, C6, C10, C15, C5; with the one-custody-primary rule
+#        the routable order is C2, C6, C5, so N=2 keeps [C2, C6] and N=3 keeps [C2, C6, C5]. The class dropped
+#        by the cap is the LOWEST-ranked one, not the last entry of a hard-coded precedence tuple.
+_ranked_n2="$(printf '%s\n' "$_rows_n2" | awk -F'\t' '$1=="src"{print $3}' | tr '\n' ',')"
+_ranked_n3="$(printf '%s\n' "$_rows_n3" | awk -F'\t' '$1=="src"{print $3}' | tr '\n' ',')"
+if [ "$_ranked_n2" = "C2,C6," ] && [ "$_ranked_n3" = "C2,C6,C5," ]; then
+  ok "(viii) the --deep-hunt-max-lenses budget truncates in RANKED order (N=2 C2,C6; N=3 C2,C6,C5)"
+else
+  bad "(viii) the budget did not truncate in ranked order (N=2 '$_ranked_n2', N=3 '$_ranked_n3')"
+fi
+
+# (ix) C6 / C-invariant FALLBACK PRESERVED — a custody zone that ranks no routable class still gets exactly one
+#      row: its dominant class. No zone that was hunted before #2113 stops being hunted.
+_unranked="$(printf '%s\n' "$_rows_n2" | awk -F'\t' '$1=="src_unranked"{print $3}' | tr '\n' ',')"
+_generic="$(printf '%s\n' "$_rows_n2" | awk -F'\t' '$1=="src_generic"{print $3}' | tr '\n' ',')"
+if [ "$_unranked" = "C6," ] && [ "$_generic" = "C-invariant," ]; then
+  ok "(ix) a custody zone ranking nothing routable keeps its single dominant-class row (C6 / C-invariant)"
+else
+  bad "(ix) the dominant-class fallback regressed (unranked '$_unranked', generic '$_generic')"
+fi
+
+# (x) NO CUSTODY-ROW LOSS — at the default cap of 2 the ranked lens is ADDITIVE: the custody row is demoted to
+#     row 2, never dropped, so everything that ran before #2113 still runs.
+if printf '%s\n' "$_rows_n2" | grep -qx "$(printf 'src_ranked\tsrc/Strategy.sol\tC6')"; then
+  ok "(x) the ranked custody zone KEEPS its custody-primary C6 row at the default cap (demoted, not dropped)"
+else
+  bad "(x) the ranked custody zone LOST its custody-primary C6 row — the ranked lens swapped it out"
 fi
 
 # (vi) per-(zone,class) out-dirs keep the #1780 merge adapter resolving the RIGHT log per row: two lenses of one
@@ -707,10 +777,12 @@ if [ "$FAILS" -eq 0 ]; then
   note "      the allowlist + synthesizes the CANDIDATE|/aggregate-INVARIANT| vote, the INVARIANT| marker +"
   note "      verdict_of + #1471 gate are untouched, the #1725 normalizer count is still 2, and the bench"
   note "      forwarding (run-zone-hunt.sh DEEP_FWD + deep-hunt-ab.sh --live ON arm) is wired."
-  note "      #1795 also holds: the STAGE 4.5 selection derives every lens class from ONE source of truth, emits"
-  note "      the custody-primary row FIRST plus the previously-shadowed C2/C16/C5 lenses, bounds the fan-out via"
-  note "      --deep-hunt-max-lenses (default 2; N=1 == the pre-#1795 selection), keeps interface-only zones"
-  note "      skipped, and keys each run dir per (zone, class) so the merge adapter reads the right verdict."
+  note "      #1795/#2113 also hold: the STAGE 4.5 selection derives every lens class from ONE source of truth,"
+  note "      walks the ZONE'S OWN fitness-ranked scope.tsv class order (so the mapper's leading pick leads the"
+  note "      fan-out and survives the cap) with at most ONE custody-primary lens per zone and the dominant class"
+  note "      as fallback, routes C19 via the shipped liveness lens, bounds the fan-out via --deep-hunt-max-lenses"
+  note "      (default 2; truncation drops the LOWEST-ranked class), keeps interface-only zones skipped, and keys"
+  note "      each run dir per (zone, class) so the merge adapter reads the right verdict."
   exit 0
 fi
 note "DEMO FAILED — a #1778 metamorphic-ensemble wiring assertion did not hold" >&2
