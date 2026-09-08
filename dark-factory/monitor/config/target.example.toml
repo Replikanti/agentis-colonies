@@ -27,6 +27,11 @@ slug = "example-protocol"
 
 # The target protocol contract address (0x + 40 hex). Maps to MONITOR_TARGET and
 # is the default address every watcher reads unless overridden per-watcher below.
+# It is also the per-SIDE fallback for a cross-contract invariant (#2122): a
+# watch-spec member (or the MONITOR_INV_LHS_TARGET / MONITOR_INV_RHS_TARGET env
+# pair) may name a DIFFERENT contract per side, plus per-side call arguments
+# (lhs_args / rhs_args) and a per-side decimals multiplier (lhs_scale / rhs_scale);
+# a side that names none of them is read from this address, with no args, unscaled.
 address = "0x0000000000000000000000000000000000000000"
 
 # The EVM chain id this target lives on (informational / future multi-chain
@@ -45,6 +50,9 @@ cast = ""
 # the JSON file run-live-watch.sh emits (or the JSON array inline). When set, the
 # invariant-watcher evaluates every invariant in the set each tick. Maps to
 # MONITOR_INV_SPEC. Leave empty to use the single MONITOR_INV_* invariant instead.
+# Members may carry the optional per-side fields lhs_target / rhs_target /
+# lhs_args / rhs_args / lhs_scale / rhs_scale (#2122) — see the "Cross-contract
+# members" section of ../README.md.
 inv_spec = ""
 
 [alerts]

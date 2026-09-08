@@ -42,6 +42,20 @@
 #        (e) NEW ALERT: posting a second blackboard signal (`monitor:signal:pause`
 #            = paused, as the pause-state-watcher would) changes the fused
 #            signature, so the coordinator re-pages and the sink count reaches 2.
+#      Then a SECOND live phase (#2122) reuses the same anvil + workspace to prove
+#      the PER-SIDE watch-spec fields on the same shipped agent: a fresh
+#      invariant-watcher.ag daemon, deliberately pointed at the ALREADY-BROKEN
+#      phase-1 fixture via MONITOR_TARGET, evaluates a four-member cross-contract
+#      spec and must reach, per member:
+#        (l) `cross-backing` — each side read from its OWN contract with its OWN
+#            call argument (`balanceOf(address)` on a second, different fixture);
+#        (m) `scaled-parity` — a per-side integer multiplier applied BEFORE the
+#            comparison;
+#        (n) `typed-return`  — a typed-return signature (`totalSupply()(uint256)`)
+#            produces a reading instead of the no-read sentinel;
+#        (o) `default-target` — the backward-compatibility CONTROL: an entry with
+#            NO per-side fields still reads BOTH sides from MONITOR_TARGET;
+#        (p) the per-side reads re-run EVERY tick (breaking one side flips it).
 #
 # Why a store hand-off and not the bus (#1891): on agentis v1.28.0 emit()/listen()
 # are IN-PROCESS, so a bus event never crosses the daemon boundary that the
@@ -144,21 +158,27 @@ else
 fi
 
 miss_env=""
-for v in MONITOR_INV_SPEC MONITOR_TARGET MONITOR_RPC_URL; do
+for v in MONITOR_INV_SPEC MONITOR_TARGET MONITOR_RPC_URL \
+         MONITOR_INV_LHS_TARGET MONITOR_INV_RHS_TARGET \
+         MONITOR_INV_LHS_ARGS MONITOR_INV_RHS_ARGS \
+         MONITOR_INV_LHS_SCALE MONITOR_INV_RHS_SCALE; do
   grep -q "getenv(\"$v\")" "$AGENTS/invariant-watcher.ag" || miss_env="$miss_env $v"
 done
 if [ -z "$miss_env" ]; then
-  ok "invariant-watcher.ag reads the MONITOR_INV_SPEC / MONITOR_TARGET / MONITOR_RPC_URL env contract"
+  ok "invariant-watcher.ag reads the MONITOR_INV_SPEC / MONITOR_TARGET / MONITOR_RPC_URL env contract plus the six per-side keys (#2122)"
 else
   bad "invariant-watcher.ag missing getenv for:$miss_env"
 fi
 
 miss_exp=""
-for v in MONITOR_INV_SPEC MONITOR_TARGET MONITOR_RPC_URL MONITOR_CAST MONITOR_WEBHOOK_URL; do
+for v in MONITOR_INV_SPEC MONITOR_TARGET MONITOR_RPC_URL MONITOR_CAST MONITOR_WEBHOOK_URL \
+         MONITOR_INV_LHS_TARGET MONITOR_INV_RHS_TARGET \
+         MONITOR_INV_LHS_ARGS MONITOR_INV_RHS_ARGS \
+         MONITOR_INV_LHS_SCALE MONITOR_INV_RHS_SCALE; do
   grep -Eq "^export .*\b$v\b|\b$v\b" "$MON/scripts/start-colony.sh" || miss_exp="$miss_exp $v"
 done
 if [ -z "$miss_exp" ]; then
-  ok "start-colony.sh exports the watcher/notifier env contract (MONITOR_CAST/RPC_URL/TARGET/INV_SPEC/WEBHOOK_URL)"
+  ok "start-colony.sh exports the watcher/notifier env contract (MONITOR_CAST/RPC_URL/TARGET/INV_SPEC/WEBHOOK_URL + the six per-side keys)"
 else
   bad "start-colony.sh does not export:$miss_exp"
 fi
@@ -255,7 +275,11 @@ PY
       echo "experience.enabled = true"
       echo "learning.enabled = true"
       echo "exec.default_timeout_ms = 30000"
-      echo "exec.env_passthrough = MONITOR_CAST,MONITOR_RPC_URL,MONITOR_TARGET,MONITOR_INV_SPEC,COLONY_DIR,MONITOR_WEBHOOK_URL"
+      # MONITOR_CAST_READ routes the reads through scripts/cast-read.sh, exactly as
+      # scripts/start-colony.sh does in production. The phase-1 daemons below do NOT
+      # set it (their read path stays byte-identical to before); the phase-2 daemon
+      # does, which is what gives the wrapper's --to-dec branch OUTPUT-level coverage.
+      echo "exec.env_passthrough = MONITOR_CAST,MONITOR_CAST_READ,MONITOR_RPC_URL,MONITOR_TARGET,MONITOR_INV_SPEC,COLONY_DIR,MONITOR_WEBHOOK_URL"
     } >> "$WORK/.agentis/config"
     ( cd "$WORK" && agentis memo set "invariant-watcher:confidence" "0.7" >/dev/null 2>&1 || true )
     ( cd "$WORK" && agentis memo set "coordinator:confidence" "0.7" >/dev/null 2>&1 || true )
@@ -269,9 +293,9 @@ PY
     daemon_guard_init "$WORK"
     IW_ENV="MONITOR_CAST=$CASTBIN MONITOR_RPC_URL=$RPC MONITOR_TARGET=$ADDR MONITOR_INV_SPEC=$WORK/watch-spec.json COLONY_DIR=$MON MONITOR_WEBHOOK_URL=$SINK_URL"
     # shellcheck disable=SC2086 # IW_ENV is a deliberate space-separated env prefix
-    daemon_guard_spawn --cwd "$WORK" --log "$WORK/iw.log" -- \
+    IW_PID="$(daemon_guard_spawn --cwd "$WORK" --log "$WORK/iw.log" -- \
       env $IW_ENV agentis daemon "$AGENTS/invariant-watcher.ag" \
-        --colony monitor --enable-exec --enable-messaging --tick-interval 3000 >/dev/null
+        --colony monitor --enable-exec --enable-messaging --tick-interval 3000)"
     # shellcheck disable=SC2086
     daemon_guard_spawn --cwd "$WORK" --log "$WORK/co.log" -- \
       env $IW_ENV agentis daemon "$AGENTS/coordinator.ag" \
@@ -392,13 +416,140 @@ PY
     else
       skip "no fused page delivered — the dedup / new-alert assertions are skipped"
     fi
+
+    # ------------------------------------------------------------------------------------------------------
+    # PHASE 2 (#2122): PER-SIDE target / args / scale — a real CROSS-CONTRACT watch-spec.
+    #
+    # Same anvil, same workspace, same shipped invariant-watcher.ag — a SECOND daemon
+    # whose MONITOR_TARGET is deliberately the ALREADY-BROKEN phase-1 fixture, so any
+    # member that falls back to MONITOR_TARGET instead of honouring its own per-side
+    # address gives the WRONG answer and the cell fails loudly.
+    # ------------------------------------------------------------------------------------------------------
+    note "3) live phase 2: per-side target / args / scale on the same shipped invariant-watcher.ag (#2122) ..."
+
+    # Only ONE watcher may own the monitor:signal:invariant* keys at a time, so the
+    # phase-1 daemon is stopped before the phase-2 daemon (with its own spec) starts.
+    daemon_guard_stop "$IW_PID" >/dev/null 2>&1 || true
+
+    # Four contracts: C / C2 / C3 are SolvencyFixture instances; B is an EXISTING
+    # committed evm-harness fixture whose constructor credits the deployer 1000 and
+    # which exposes the ARGUMENT-taking getter `balanceOf(address)` (no new bytecode).
+    C="$(fixture_deploy "$RPC" 1000 1000)"
+    C2="$(fixture_deploy "$RPC" 1000000 1000)"
+    C3="$(fixture_deploy "$RPC" 1000000000000000000000 1000000000000000000000)"
+    B="$(fixture_deploy_bin "$RPC" "$HERE/evm-harness/contracts/bin/OverflowVaultSecure.bin")"
+    DEV="$(fixture_dev_address)"
+
+    if [ -n "$C" ] && [ -n "$C2" ] && [ -n "$C3" ] && [ -n "$B" ] && [ -n "$DEV" ]; then
+      ok "deployed the cross-contract fixtures (C=$C C2=$C2 C3=$C3 B=$B, holder $DEV)"
+    else
+      bad "cross-contract fixture deploy failed (C=$C C2=$C2 C3=$C3 B=$B DEV=$DEV)"
+    fi
+
+    if [ -n "$C" ] && [ -n "$C2" ] && [ -n "$C3" ] && [ -n "$B" ] && [ -n "$DEV" ]; then
+      # --- l) the EMITTER preserves the per-side fields end to end -------------------
+      cat > "$WORK/spec-cross-fixture.json" <<JSON
+[
+  {"label":"cross-backing","lhs_sig":"totalSupply()","rhs_sig":"balanceOf(address)","rhs_const":"","rel":"le","margin_bp":0,
+   "lhs_target":"$C","rhs_target":"$B","rhs_args":["$DEV"]},
+  {"label":"scaled-parity","lhs_sig":"totalAssets()","rhs_sig":"totalSupply()","rhs_const":"","rel":"eq","margin_bp":0,
+   "lhs_target":"$C2","rhs_target":"$C2","lhs_scale":"1000"},
+  {"label":"typed-return","lhs_sig":"totalSupply()(uint256)","rhs_sig":"totalAssets()(uint256)","rhs_const":"","rel":"le","margin_bp":0,
+   "lhs_target":"$C3","rhs_target":"$C3"},
+  {"label":"default-target","lhs_sig":"totalSupply()","rhs_sig":"totalAssets()","rhs_const":"","rel":"le","margin_bp":0}
+]
+JSON
+      if sh "$RUN_LIVE_WATCH" --address "$C" --rpc-url "$RPC" \
+           --spec-fixture "$WORK/spec-cross-fixture.json" --out "$WORK/watch-spec-cross.json" \
+           >"$WORK/rlw-cross.log" 2>&1 \
+         && grep -q '"lhs_target"' "$WORK/watch-spec-cross.json" \
+         && grep -q '"rhs_args"' "$WORK/watch-spec-cross.json" \
+         && grep -q '"lhs_scale"' "$WORK/watch-spec-cross.json"; then
+        ok "run-live-watch.sh carried the per-side target / args / scale fields through into the emitted watch-spec (#2122)"
+      else
+        bad "run-live-watch.sh dropped the per-side watch-spec fields (see $WORK/rlw-cross.log and watch-spec-cross.json)"
+      fi
+
+      # --- spawn the SECOND watcher on the cross-contract spec ----------------------
+      # MONITOR_TARGET is the phase-1 fixture, which is ALREADY broken (supply > assets):
+      # it is the fallback every member with no per-side address must still use, and the
+      # wrong answer for every member that has one.
+      IW2_ENV="MONITOR_CAST=$CASTBIN MONITOR_CAST_READ=$MON/scripts/cast-read.sh MONITOR_RPC_URL=$RPC MONITOR_TARGET=$ADDR MONITOR_INV_SPEC=$WORK/watch-spec-cross.json COLONY_DIR=$MON MONITOR_WEBHOOK_URL=$SINK_URL"
+      # shellcheck disable=SC2086 # IW2_ENV is a deliberate space-separated env prefix
+      daemon_guard_spawn --cwd "$WORK" --log "$WORK/iw2.log" -- \
+        env $IW2_ENV agentis daemon "$AGENTS/invariant-watcher.ag" \
+          --colony monitor --enable-exec --enable-messaging --tick-interval 3000 >/dev/null
+
+      # Poll one per-invariant blackboard memo until it carries the expected verdict.
+      # shellcheck disable=SC2317,SC2329  # invoked below; older shellcheck flags SC2317, newer SC2329
+      member_verdict() {
+        _key="monitor:signal:invariant:$1"; _want="$2"; _tries="${3:-30}"
+        _i=0
+        while [ "$_i" -lt "$_tries" ]; do
+          _v="$( cd "$WORK" && agentis memo get "$_key" 2>/dev/null )"
+          case "$_v" in
+            *"\"verdict\":\"$_want\""*) return 0 ;;
+          esac
+          sleep 1
+          _i=$((_i + 1))
+        done
+        return 1
+      }
+
+      # --- m) each side read from its OWN contract with its OWN call argument -------
+      # C.totalSupply() (1000) <= B.balanceOf(DEV) (1000). On a MONITOR_TARGET-only
+      # read this is `no-read`: the phase-1 fixture has no balanceOf(address) at all.
+      if member_verdict cross-backing ok 40; then
+        ok "cross-backing: each side was read from its OWN contract with its OWN call argument (balanceOf(address) on a second fixture) -> ok"
+      else
+        bad "cross-backing never reached ok — the per-side target / args are not honoured (see $WORK/iw2.log)"
+      fi
+
+      # --- n) the per-side SCALE multiplier is applied BEFORE the comparison --------
+      # C2.totalAssets() (1000) x 1000 == C2.totalSupply() (1000000). Unscaled this
+      # is `violated`.
+      if member_verdict scaled-parity ok; then
+        ok "scaled-parity: the per-side integer multiplier was applied BEFORE the comparison (1000 x 1000 == 1000000) -> ok"
+      else
+        bad "scaled-parity never reached ok — the per-side scale is not applied (see $WORK/iw2.log)"
+      fi
+
+      # --- o) a TYPED-return signature produces a reading, not the no-read sentinel --
+      # `cast` prints `<dec> [<sci>]` for totalSupply()(uint256); the previous
+      # unconditional `cast --to-dec` rejected that and every such read was `no-read`.
+      if member_verdict typed-return ok; then
+        ok "typed-return: a typed-return signature (totalSupply()(uint256)) produced a live reading through cast-read.sh -> ok"
+      else
+        bad "typed-return never reached ok — a typed-return signature still degrades to the no-read sentinel (see $WORK/iw2.log)"
+      fi
+
+      # --- p) BACKWARD-COMPATIBILITY CONTROL ----------------------------------------
+      # An entry with NO per-side fields must still read BOTH sides from MONITOR_TARGET
+      # — which is the broken phase-1 fixture, so the only correct answer is violated.
+      if member_verdict default-target violated; then
+        ok "default-target: an entry with NO per-side fields still read both sides from MONITOR_TARGET (the backward-compatibility control) -> violated"
+      else
+        bad "default-target did not read MONITOR_TARGET — the single-target fallback regressed (see $WORK/iw2.log)"
+      fi
+
+      # --- q) the per-side reads re-run EVERY tick, not once at boot ----------------
+      fixture_break "$RPC" "$C" 500
+      note "injected mintUnbacked(500) on the cross-contract LHS: C.totalSupply now $(fixture_read "$RPC" "$C" 'totalSupply()') > B.balanceOf 1000"
+      if member_verdict cross-backing violated 40; then
+        ok "cross-backing flipped to violated after the LHS contract changed — the per-side reads are LIVE every tick, not a one-shot at boot"
+      else
+        bad "cross-backing never flipped to violated after the break — the per-side reads are not re-run per tick (see $WORK/iw2.log)"
+      fi
+    else
+      skip "cross-contract fixtures unavailable — the per-side assertions are skipped"
+    fi
   fi
 fi
 
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
-  note "PASS — the monitor colony's detect -> deliver path holds on the real agents (#1889, #1891)"
+  note "PASS — the monitor colony's detect -> deliver path holds on the real agents (#1889, #1891) and the per-side watch-spec fields resolve per side (#2122)"
   exit 0
 fi
-note "FAIL — $FAILS assertion(s) regressed (#1889, #1891)" >&2
+note "FAIL — $FAILS assertion(s) regressed (#1889, #1891, #2122)" >&2
 exit 1

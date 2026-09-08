@@ -26,6 +26,10 @@
 #   fixture_pick_port                       -> echoes a free TCP port on 127.0.0.1
 #   fixture_start_anvil <port> <logfile>    -> boots anvil, sets FIXTURE_ANVIL_PID
 #   fixture_deploy <rpc> <supply> <assets>  -> echoes the deployed 0x address
+#   fixture_deploy_bin <rpc> <bin-file> [ctor-sig] [ctor-args...]
+#                                           -> echoes the deployed 0x address for ANY
+#                                              committed creation-bytecode blob
+#   fixture_dev_address                     -> echoes the anvil dev account address
 #   fixture_mine <rpc> <n>                  -> mines <n> blocks (anvil_mine)
 #   fixture_break <rpc> <addr> <amount>     -> mintUnbacked(<amount>): supply > assets
 #   fixture_block <rpc>                      -> echoes the current block number
@@ -73,22 +77,46 @@ fixture_start_anvil() {
     return 1
 }
 
-# Deploy SolvencyFixture(supply, assets) via `cast send --create` using anvil's
-# default dev account. Echoes the deployed 0x address on success; empty + non-zero
-# on failure. The creation bytecode is read from SOLVENCY_FIXTURE_BIN (committed
-# hex, so no compiler is needed at run time).
-fixture_deploy() {
-    _rpc="$1"; _supply="$2"; _assets="$3"
-    [ -n "${SOLVENCY_FIXTURE_BIN:-}" ] || return 1
-    [ -f "$SOLVENCY_FIXTURE_BIN" ] || return 1
-    _bin="$(cat "$SOLVENCY_FIXTURE_BIN")"
-    _json="$(cast send --rpc-url "$_rpc" --private-key "$SOLVENCY_FIXTURE_DEV_KEY" --json \
-        --create "0x$_bin" "constructor(uint256,uint256)" "$_supply" "$_assets" 2>/dev/null)" || return 1
+# Deploy ANY committed creation-bytecode blob via `cast send --create` using anvil's
+# default dev account, optionally with a constructor signature + arguments. Echoes
+# the deployed 0x address on success; empty + non-zero on failure. Generalises
+# fixture_deploy so a SECOND, different contract (e.g. an evm-harness fixture used as
+# the other side of a cross-contract invariant) can be stood up without a second copy
+# of the deploy boilerplate. No compiler is needed at run time -- the hex is committed.
+fixture_deploy_bin() {
+    _rpc="$1"; _binfile="$2"
+    shift 2
+    [ -n "$_binfile" ] || return 1
+    [ -f "$_binfile" ] || return 1
+    _bin="$(cat "$_binfile")"
+    if [ "$#" -gt 0 ]; then
+        _json="$(cast send --rpc-url "$_rpc" --private-key "$SOLVENCY_FIXTURE_DEV_KEY" --json \
+            --create "0x$_bin" "$@" 2>/dev/null)" || return 1
+    else
+        _json="$(cast send --rpc-url "$_rpc" --private-key "$SOLVENCY_FIXTURE_DEV_KEY" --json \
+            --create "0x$_bin" 2>/dev/null)" || return 1
+    fi
     printf '%s' "$_json" | python3 -c 'import json, sys
 try:
     print(json.load(sys.stdin).get("contractAddress", ""))
 except Exception:
     pass'
+}
+
+# Deploy SolvencyFixture(supply, assets) from SOLVENCY_FIXTURE_BIN. Signature and
+# behaviour unchanged -- it is now expressed in terms of fixture_deploy_bin.
+fixture_deploy() {
+    _rpc="$1"; _supply="$2"; _assets="$3"
+    [ -n "${SOLVENCY_FIXTURE_BIN:-}" ] || return 1
+    fixture_deploy_bin "$_rpc" "$SOLVENCY_FIXTURE_BIN" \
+        "constructor(uint256,uint256)" "$_supply" "$_assets"
+}
+
+# Echo the address of the anvil dev account every fixture deploys from -- the holder
+# the evm-harness fixtures credit in their constructor, so it can be passed as a call
+# ARGUMENT (e.g. `balanceOf(address)`) in a cross-contract watch-spec.
+fixture_dev_address() {
+    cast wallet address --private-key "$SOLVENCY_FIXTURE_DEV_KEY" 2>/dev/null
 }
 
 # Mine <n> blocks on the local anvil (deterministic, instant).

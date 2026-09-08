@@ -39,6 +39,29 @@
 //                       of flipping, the watcher flags a margin warning. "" => 0
 //                       (only a hard violation flags).
 //   MONITOR_INV_LABEL   a human label for the invariant (for the alert body).
+//   MONITOR_INV_LHS_TARGET / MONITOR_INV_RHS_TARGET
+//                       (#2122) OPTIONAL per-SIDE contract address (0x...) so a
+//                       CROSS-CONTRACT invariant can compare a quantity read from
+//                       ONE contract against a quantity read from ANOTHER (e.g. a
+//                       vault's accounting total vs a token's balance held by it).
+//                       "" (or a value carrying a non-alphanumeric character) =>
+//                       MONITOR_TARGET, so a single-contract invariant is
+//                       byte-for-byte unchanged.
+//   MONITOR_INV_LHS_ARGS / MONITOR_INV_RHS_ARGS
+//                       (#2122) OPTIONAL call ARGUMENTS for that side's signature,
+//                       comma- or space-separated (e.g. "0xHOLDER" for
+//                       "balanceOf(address)"). At most args_max() (4)
+//                       alphanumeric tokens survive; every one is shell_escape()d.
+//                       "" => a zero-arg read (today's behaviour).
+//   MONITOR_INV_LHS_SCALE / MONITOR_INV_RHS_SCALE
+//                       (#2122) OPTIONAL integer MULTIPLIER applied to that side's
+//                       reading BEFORE the comparison, so two sides carried in
+//                       different decimals can be compared (e.g. "1000000000000"
+//                       to lift a 6-dp reading onto an 18-dp one). A power of ten
+//                       is EXACT at any magnitude; any other integer keeps
+//                       18 - <mantissa digits> significant digits. An UNSUPPORTED
+//                       scale resolves to the no-read sentinel (quiet) — never to
+//                       an unscaled comparison. "" / "1" => no scaling.
 //   MONITOR_CAST_READ   (#1098) OPTIONAL — path to scripts/cast-read.sh, the ONE
 //                       centralized read wrapper that adds RPC FAILOVER (a comma
 //                       list MONITOR_RPC_URLS, tried in order) + optional read
@@ -53,10 +76,17 @@
 //                       once from the invariant-prover derivation path). Either an
 //                       absolute PATH to a JSON file, or the JSON array INLINE. The
 //                       array holds one object per invariant:
-//                         {"label","lhs_sig","rhs_sig","rhs_const","rel","margin_bp"}
-//                       (rhs_sig OR rhs_const per entry; rel in le|ge|eq). When SET,
-//                       the watcher evaluates EVERY invariant in the set against
-//                       live state each tick (the set path); when UNSET it falls
+//                         {"label","lhs_sig","rhs_sig","rhs_const","rel","margin_bp",
+//                          "lhs_target","rhs_target","lhs_args","rhs_args",
+//                          "lhs_scale","rhs_scale"}
+//                       (rhs_sig OR rhs_const per entry; rel in le|ge|eq). The six
+//                       #2122 per-side fields are OPTIONAL and mirror the
+//                       MONITOR_INV_*_TARGET / _ARGS / _SCALE env keys above with
+//                       the same "unset => today's behaviour" rule: no target =>
+//                       MONITOR_TARGET, no args => a zero-arg read, no scale => no
+//                       scaling.
+//                       When SET, the watcher evaluates EVERY invariant in the set
+//                       against live state each tick (the set path); when UNSET it falls
 //                       back to the single MONITOR_INV_* env contract above (the
 //                       legacy path is byte-for-byte unchanged). .ag has no loops,
 //                       so the set is walked by BOUNDED RECURSION over the array
@@ -74,6 +104,21 @@ cb 90000;
 // curated set; 64 is far above any realistic per-target invariant count and keeps
 // the per-tick cost bounded.
 fn spec_max() -> int {
+    return 64;
+}
+
+// (#2122) Upper bound on how many CALL ARGUMENTS one invariant side may carry.
+// A live-watchable view takes at most a handful of selectors (a holder address, a
+// token id, a market key); 4 keeps the per-read command bounded and caps the flat
+// argument walk below.
+fn args_max() -> int {
+    return 4;
+}
+
+// (#2122) Depth cap for the digit-string zero-append used by the scale multiplier.
+// 64 zeros is far beyond any on-chain decimals normalisation (1e18 is 18) and
+// keeps the bounded recursion cheap; a scale needing more resolves to no-read.
+fn pad_max() -> int {
     return 64;
 }
 
@@ -109,7 +154,12 @@ fn cast_reader() -> string {
 // emits the no-read sentinel (empty + non-zero) only when ALL endpoints fail, and
 // `|| true` keeps the tick alive. With it unset the legacy single-endpoint direct
 // `cast` read below runs unchanged.
-fn read_uint(castBin: string, rpc: string, addr: string, sig: string) -> string {
+//
+// #2122: `args` is the side's CALL ARGUMENT list, already shell_escape()d and
+// space-PREFIXED by args_string() ("" for a zero-arg view). It is appended verbatim
+// after the signature in BOTH branches, so with no arguments the emitted command
+// string is byte-identical to the one this function has always produced.
+fn read_uint(castBin: string, rpc: string, addr: string, sig: string, args: string) -> string {
     if len(castBin) == 0 { return ""; }
     if len(rpc) == 0 { return ""; }
     if len(addr) == 0 { return ""; }
@@ -118,20 +168,59 @@ fn read_uint(castBin: string, rpc: string, addr: string, sig: string) -> string 
     if len(reader) > 0 {
         // colony-lint: safe-exec-concat
         return exec sh "set +e; " + shell_escape(reader) + " --to-dec call "
-            + shell_escape(addr) + " " + shell_escape(sig) + " 2>/dev/null || true";
+            + shell_escape(addr) + " " + shell_escape(sig) + args + " 2>/dev/null || true";
     }
     // colony-lint: safe-exec-concat
     let out = exec sh "set +e; " + shell_escape(castBin) + " call --rpc-url " + shell_escape(rpc)
-            + " " + shell_escape(addr) + " " + shell_escape(sig)
+            + " " + shell_escape(addr) + " " + shell_escape(sig) + args
             + " 2>/dev/null | " + shell_escape(castBin) + " --to-dec 2>/dev/null || true";
     return out;
 }
 
-// Trim a trailing newline cast leaves on its decimal output, leaving only digits.
+// (#2122) Build the ALREADY-ESCAPED, space-prefixed argument list read_uint()
+// appends after the signature. ONE function serves BOTH sources: the spec array's
+// raw JSON subtree (json_get_raw -> `["0x..","25"]`) and the env value's
+// comma/space-separated list ("0x..,25") — a single FLAT regex_split over the
+// JSON/list punctuation yields the same token sequence for both. The flat split is
+// deliberate: a per-element `.ag` walk of the array costs ~70+ CB/element (#1587),
+// which a per-tick read path cannot afford.
+//
+// Every surviving token is shell_escape()d, and any token carrying a
+// NON-ALPHANUMERIC character is DROPPED — an address, an unsigned integer and a
+// bytes32 word are all alphanumeric once the punctuation is split away, so nothing
+// structural (a quote, a `$`, a `;`) can ever reach the shell. At most args_max()
+// tokens survive. "" -> "" (the zero-arg read).
+fn args_string(raw: string) -> string {
+    if len(raw) == 0 { return ""; }
+    return reduce(regex_split("[\\[\\], \"\\n\\t]+", raw), |acc: string, seg: string| -> string {
+        if len(seg) == 0 { return acc; }
+        if len(regex_find_all("[^A-Za-z0-9]", seg)) > 0 { return acc; }
+        if len(regex_find_all(" ", acc)) >= args_max() { return acc; }
+        return acc + " " + shell_escape(seg);
+    }, "");
+}
+
+// (#2122) Resolve one side's READ ADDRESS: the per-side value when it is present
+// AND alphanumeric (a malformed address must never reach the shell as a target),
+// else the colony-wide fallback (MONITOR_TARGET). Total.
+fn target_or(raw: string, fallback: string) -> string {
+    if len(raw) == 0 { return fallback; }
+    if len(regex_find_all("[^A-Za-z0-9]", raw)) > 0 { return fallback; }
+    return raw;
+}
+
+// Trim the trailing newline cast leaves on its decimal output, leaving only digits.
+// #2122: also cut at the first SPACE. A TYPED return signature ("totalSupply()(uint256)")
+// makes `cast` print `<dec> [<sci>]` (e.g. `1000000000000000000000 [1e21]`), and
+// reading_to_dec() rejects any non-digit — so without this cut every typed-return
+// signature (the shape the monitoring watch-specs use) silently degraded to the
+// no-read sentinel. A plain decimal / hex word has no space, so this is a no-op there.
 fn first_token(s: string) -> string {
     let nl = index_of(s, "\n");
-    if nl < 0 { return s; }
-    return substring(s, 0, nl);
+    let head = if nl < 0 { s } else { substring(s, 0, nl) };
+    let sp = index_of(head, " ");
+    if sp < 0 { return head; }
+    return substring(head, 0, sp);
 }
 
 // --- big-number-safe wei handling (NO bare parse_int on the raw reading) -------
@@ -194,6 +283,73 @@ fn scale_dec(s: string, drop: int) -> string {
     return substring(s, 0, len(s) - drop);
 }
 
+// (#2122) Append `n` zeros to a digit string — a scale-UP by 10^n, done as a
+// digit-string operation so no parse_int ever sees a wei magnitude. Bounded by the
+// caller against pad_max(); n <= 0 is the identity.
+fn pad_zeros(s: string, n: int) -> string {
+    if n <= 0 { return s; }
+    return pad_zeros(s + "0", n - 1);
+}
+
+// (#2122) Drop a digit string's TRAILING zeros, leaving its mantissa ("1000" -> "1",
+// "2500" -> "25", "0" -> "0"). Used to factor a scale into mantissa x 10^zeros so the
+// 10^zeros part is applied EXACTLY (a zero-append) and only the small mantissa costs
+// precision. Bounded by the caller (the scale is length-checked first).
+fn strip_trailing_zeros(s: string) -> string {
+    if len(s) <= 1 { return s; }
+    if substring(s, len(s) - 1, len(s)) != "0" { return s; }
+    return strip_trailing_zeros(substring(s, 0, len(s) - 1));
+}
+
+// (#2122) Apply a per-side integer SCALE multiplier to a reading, as a digit-string
+// operation. Two sides of a cross-contract invariant are often carried in different
+// decimals (a 6-dp stablecoin balance vs an 18-dp share total), so one side must be
+// lifted BEFORE the comparison — and it must happen before the symmetric #1109
+// excess_digits/scale_dec normalisation, whose whole guarantee is that both sides
+// were already made comparable.
+//
+// The scale is factored as `mantissa x 10^zeros`:
+//   * the 10^zeros part is a pure zero-append -> EXACT at any magnitude, which is
+//     the shape every decimals normalisation takes (1e12, 1e18, ...);
+//   * the mantissa is applied with the same pre-truncate/multiply/re-pad idiom the
+//     #1105/#1109 big-decimal handling uses, so no parse_int ever sees more than
+//     max_safe_digits() digits; it costs len(mantissa) significant digits, leaving
+//     18 - len(mantissa) (>= 14 for any realistic scale, orders finer than the
+//     margin_bp 1e-4 comparison granularity).
+// Total, and QUIET on anything it cannot do exactly enough: an empty / non-numeric
+// scale leaves the reading UNCHANGED, while a scale it cannot represent (a mantissa
+// at or beyond the i64 digit budget, or more zeros than pad_max()) resolves to the
+// "" no-read sentinel + a diagnostic — never to a silently unscaled comparison that
+// could page a false `violated`. "" (no reading) stays "".
+fn mul_dec(dec: string, scaleRaw: string) -> string {
+    if len(dec) == 0 { return ""; }
+    if len(scaleRaw) == 0 { return dec; }
+    if len(regex_find_all("[^0-9]", scaleRaw)) > 0 { return dec; }
+    let scale = strip_leading_zeros(scaleRaw);
+    if scale == "0" { return dec; }
+    if scale == "1" { return dec; }
+    if len(scale) > pad_max() {
+        print("invariant-watcher: scale " + scale + " exceeds the " + to_string(pad_max()) + "-digit cap -> no-read");
+        return "";
+    }
+    let mant = strip_trailing_zeros(scale);
+    let zeros = len(scale) - len(mant);
+    if mant == "1" { return pad_zeros(dec, zeros); }
+    if len(mant) >= max_safe_digits() {
+        print("invariant-watcher: scale " + scale + " has no representable mantissa -> no-read");
+        return "";
+    }
+    // Truncate just enough low-order digits off the reading that the product still
+    // fits i64, multiply, then re-append what was truncated plus the factored zeros.
+    let excess = len(dec) + len(mant) - max_safe_digits();
+    let drop = if excess > 0 { excess } else { 0 };
+    if drop + zeros > pad_max() {
+        print("invariant-watcher: scale " + scale + " on a " + to_string(len(dec)) + "-digit reading exceeds the pad cap -> no-read");
+        return "";
+    }
+    return pad_zeros(to_string(parse_int(scale_dec(dec, drop)) * parse_int(mant)), drop + zeros);
+}
+
 // Parse a SCALED (<= 18-digit) digit string to int; "" -> -1 (the "no reading"
 // sentinel, distinct from a legitimate 0). parse_int is total and, post-scaling,
 // never overflows.
@@ -205,9 +361,9 @@ fn scaled_to_int(s: string) -> int {
 // Resolve the RHS quantity as a big-number-safe DIGIT STRING: a live read of
 // RHS_SIG when present, else the literal MONITOR_INV_RHS_CONST. Returns "" (the
 // "no reading" sentinel) when neither yields a numeric value.
-fn resolve_rhs_dec(castBin: string, rpc: string, addr: string, rhsSig: string, rhsConst: string) -> string {
+fn resolve_rhs_dec(castBin: string, rpc: string, addr: string, rhsSig: string, rhsConst: string, args: string) -> string {
     if len(rhsSig) > 0 {
-        return reading_to_dec(read_uint(castBin, rpc, addr, rhsSig));
+        return reading_to_dec(read_uint(castBin, rpc, addr, rhsSig, args));
     }
     if len(rhsConst) == 0 { return ""; }
     if len(regex_find_all("[^0-9]", rhsConst)) > 0 { return ""; }
@@ -345,20 +501,47 @@ fn spec_margin(spec: string, i: int) -> int {
     return margin_int(spec_field(spec, i, "margin_bp"));
 }
 
+// (#2122) The i-th invariant's per-SIDE read address ("lhs" / "rhs"): the entry's
+// own <side>_target when it is present and alphanumeric, else `fallback`
+// (MONITOR_TARGET). An entry with no per-side target therefore reads exactly where
+// it reads today.
+fn side_target(spec: string, i: int, side: string, fallback: string) -> string {
+    return target_or(spec_field(spec, i, side + "_target"), fallback);
+}
+
+// (#2122) The i-th invariant's per-SIDE call arguments, escaped and space-prefixed.
+// The <side>_args field is a JSON ARRAY, so it is pulled as a RAW subtree
+// (json_get_raw, flat) and tokenised by args_string's single split — never by a
+// per-element .ag walk, which would cost ~70+ CB per argument (#1587). An absent
+// field yields "" -> a zero-arg read.
+fn side_args(spec: string, i: int, side: string) -> string {
+    return args_string(json_get_raw(spec, "[" + to_string(i) + "]." + side + "_args"));
+}
+
 // The per-invariant LIVE verdict for the i-th entry: read LHS (always a sig), read
 // RHS (a sig when rhs_sig is present, else the rhs_const literal) — BOTH as
 // big-number-safe DIGIT STRINGS — SCALE both down by the SAME drop so neither wraps
 // to 0, then the SAME deterministic verdict_of() the single-invariant path uses. A
 // FACT, never an LLM call. rel "" defaults to "le" via rel_or_default, matching the
 // env path.
+//
+// #2122: each side is resolved INDEPENDENTLY first — its own contract address
+// (side_target, defaulting to `addr` = MONITOR_TARGET), its own call arguments
+// (side_args) and its own decimals-normalising multiplier (mul_dec, applied BEFORE
+// the symmetric excess_digits/scale_dec normalisation below, which is untouched).
+// An entry carrying none of the six fields resolves to exactly today's behaviour.
 fn spec_verdict(castBin: string, rpc: string, addr: string, spec: string, i: int) -> string {
     let lhsSig = spec_field(spec, i, "lhs_sig");
     let rhsSig = spec_field(spec, i, "rhs_sig");
     let rhsConst = spec_field(spec, i, "rhs_const");
     let rel = rel_or_default(spec_field(spec, i, "rel"));
     let marginBp = spec_margin(spec, i);
-    let lhsDec = reading_to_dec(read_uint(castBin, rpc, addr, lhsSig));
-    let rhsDec = resolve_rhs_dec(castBin, rpc, addr, rhsSig, rhsConst);
+    let lhsAddr = side_target(spec, i, "lhs", addr);
+    let rhsAddr = side_target(spec, i, "rhs", addr);
+    let lhsDec = mul_dec(reading_to_dec(read_uint(castBin, rpc, lhsAddr, lhsSig, side_args(spec, i, "lhs"))),
+                         spec_field(spec, i, "lhs_scale"));
+    let rhsDec = mul_dec(resolve_rhs_dec(castBin, rpc, rhsAddr, rhsSig, rhsConst, side_args(spec, i, "rhs")),
+                         spec_field(spec, i, "rhs_scale"));
     let drop = excess_digits(lhsDec, rhsDec);
     let lhs = scaled_to_int(scale_dec(lhsDec, drop));
     let rhs = scaled_to_int(scale_dec(rhsDec, drop));
@@ -409,10 +592,17 @@ fn signal_key_label(label: string) -> string {
 // the fused monitor:signal:invariant stays the single fused fact it already reads.
 // A memo write — allowed at every tier, including shadow. The key suffix is the
 // sanitized label; the payload carries the original label.
-fn post_signal(label: string, verdict: string, addr: string) -> void {
+//
+// #2122: the payload also names the two RESOLVED per-side addresses, so an operator
+// reading a cross-contract member can see WHICH contract each side came from. The
+// FUSED monitor:signal:invariant payload is deliberately unchanged — coordinator.ag
+// reads only that key, so the #1891 delivery hand-off is untouched.
+fn post_signal(label: string, verdict: string, addr: string, lhsAddr: string, rhsAddr: string) -> void {
     memo_write("monitor:signal:invariant:" + signal_key_label(label),
         "{\"watcher\":\"invariant\",\"invariant\":\"" + json_escape_string(label) + "\",\"verdict\":\"" + verdict
-        + "\",\"target\":\"" + json_escape_string(addr) + "\",\"severity\":\"info\"}");
+        + "\",\"target\":\"" + json_escape_string(addr)
+        + "\",\"lhs_target\":\"" + json_escape_string(lhsAddr)
+        + "\",\"rhs_target\":\"" + json_escape_string(rhsAddr) + "\",\"severity\":\"info\"}");
 }
 
 // BOUNDED RECURSION over the spec array (single-assignment .ag has no while/for):
@@ -426,7 +616,8 @@ fn fuse_set(castBin: string, rpc: string, addr: string, spec: string, i: int, re
     let label = spec_label(spec, i);
     if len(spec_field(spec, i, "lhs_sig")) == 0 { return acc; }
     let verdict = spec_verdict(castBin, rpc, addr, spec, i);
-    let _sig = post_signal(label, verdict, addr);
+    let _sig = post_signal(label, verdict, addr,
+        side_target(spec, i, "lhs", addr), side_target(spec, i, "rhs", addr));
     print("invariant-watcher: [set] " + label + " -> " + verdict);
     return fuse_set(castBin, rpc, addr, spec, i + 1, remaining - 1, worse_verdict(acc, verdict));
 }
@@ -463,6 +654,15 @@ fn tick(reason: string) -> void {
     let rhsConst = getenv("MONITOR_INV_RHS_CONST");
     let marginBp = margin_int(getenv("MONITOR_INV_MARGIN_BP"));
 
+    // #2122 per-SIDE env facts (env path only). Each falls back to today's value:
+    // no per-side target => MONITOR_TARGET, no args => a zero-arg read (the emitted
+    // command string is then byte-identical to the one this agent has always run),
+    // no scale => the reading is passed through unchanged.
+    let lhsAddr = target_or(getenv("MONITOR_INV_LHS_TARGET"), addr);
+    let rhsAddr = target_or(getenv("MONITOR_INV_RHS_TARGET"), addr);
+    let lhsArgs = args_string(getenv("MONITOR_INV_LHS_ARGS"));
+    let rhsArgs = args_string(getenv("MONITOR_INV_RHS_ARGS"));
+
     // The relation reported in the alert body. The SET fuses many relations, so the
     // fused body reports "set"; the env path reports its single configured relation.
     let rel = if useSet { "set" } else { rel_or_default(getenv("MONITOR_INV_REL")) };
@@ -480,8 +680,15 @@ fn tick(reason: string) -> void {
     // on the SET path each member is read inside fuse_set()). A no-read yields the ""
     // sentinel. lhs/rhs are only meaningful on the env path; on the SET path they are
     // the "no single pair" sentinel "".
-    let lhsDec = if useSet { "" } else { reading_to_dec(read_uint(castBin, rpc, addr, lhsSig)) };
-    let rhsDec = if useSet { "" } else { resolve_rhs_dec(castBin, rpc, addr, rhsSig, rhsConst) };
+    // #2122: each side is read from its OWN address with its OWN arguments, and its
+    // per-side scale multiplier is applied BEFORE the symmetric #1109 normalisation
+    // below (which is unchanged).
+    let lhsDec = if useSet { "" } else {
+        mul_dec(reading_to_dec(read_uint(castBin, rpc, lhsAddr, lhsSig, lhsArgs)), getenv("MONITOR_INV_LHS_SCALE"))
+    };
+    let rhsDec = if useSet { "" } else {
+        mul_dec(resolve_rhs_dec(castBin, rpc, rhsAddr, rhsSig, rhsConst, rhsArgs), getenv("MONITOR_INV_RHS_SCALE"))
+    };
 
     // SCALE both to <= 18 digits by dropping the SAME number of low-order digits
     // (the relation + margin ratio are preserved) BEFORE any parse_int, so a 1e26
