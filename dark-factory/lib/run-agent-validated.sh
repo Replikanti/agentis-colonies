@@ -25,6 +25,13 @@
 # and PASS on the first attempt — matched anchored to a whole line so prose merely containing the word
 # "safe"/"skip" cannot false-accept.
 #
+# #2118: df_unwrap_zone_line() below joins a soft-wrapped PTY continuation line back onto its `ZONE|`
+# line BEFORE any `|`-split happens, so a long one-line zone-mapper reply that flat-cyborg hanging-indents
+# onto a second physical line no longer loses its tail (and the merge step's `len(parts) < 5` no longer
+# silently drops the whole classification). It is wired into map-zones.sh's ZONE| scrape only for now —
+# the CUSTODY| scrape (operator/agent diagnostic, same file) and the other three scrapers' sentinels
+# (gen-briefs.sh, run-discovery.sh, run-refute.sh) are explicit follow-ups, not covered here.
+#
 # RETRY SAFETY. A missing-sentinel reply is side-effect-free on the shared state: hunter.ag posts to the
 # blackboard + emit()s a lead ONLY inside its `CANDIDATE|` branch, so a chrome reply posts nothing and a
 # retry cannot double-post; zone-mapper/brief-writer/refuter write only an idempotent memo into the
@@ -96,6 +103,40 @@ df_sentinel_present() {
       return 1
       ;;
   esac
+}
+
+# df_unwrap_zone_line <logfile> — #2118: scan <logfile> for the LAST `ZONE|` emission (mirrors the
+# zone-mapper predicate above), joining back ONE immediately-following soft-wrap continuation line before
+# printing it. flat-cyborg's PTY hanging-indents a long one-line reply onto a second physical line with no
+# leading `ZONE|`/`WORD|` marker of its own — an anchored per-line scrape never sees that tail, so the
+# `|`-split downstream gets too few fields and drops the whole classification. A candidate continuation
+# line must (a) start with whitespace followed by a non-space character (the PTY hanging-indent shape) and
+# (b) NOT itself look like a new `WORD|` sentinel (`^[[:space:]]*[A-Za-z_]+\|`, e.g. a following `CUSTODY|`
+# line) — only the SINGLE line right after a `ZONE|` match is ever inspected, so the join can never chain
+# past one hop or swallow a genuine next emission. Re-matching `ZONE|` lines further down overwrite the
+# held value, preserving the existing "last emission wins" semantics the old `tail -1` scrape relied on.
+# Prints nothing (and callers see empty output) when the log has no `ZONE|` line at all.
+df_unwrap_zone_line() {
+  duz_log="$1"
+  [ -f "$duz_log" ] || return 1
+  awk '
+    /^[[:space:]]*ZONE\|/ {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      zone = line
+      pending = 1
+      next
+    }
+    pending {
+      pending = 0
+      if ($0 ~ /^[[:space:]]+[^[:space:]]/ && $0 !~ /^[[:space:]]*[A-Za-z_]+\|/) {
+        cont = $0
+        sub(/^[[:space:]]*/, "", cont)
+        zone = zone " " cont
+      }
+    }
+    END { if (zone != "") print zone }
+  ' "$duz_log"
 }
 
 # df_llm_timeout_in_log <log> — #1955: did the call TERMINALLY time out (not merely recover from an internal
