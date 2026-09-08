@@ -29,6 +29,19 @@
 #   rel       the relation that MUST hold: "le" (lhs<=rhs) | "ge" (lhs>=rhs) | "eq". Defaults to "le".
 #   margin_bp margin-to-violation band in basis points (0..10000); 0 = only a hard violation flags.
 #
+# PER-SIDE fields (#2122) — all OPTIONAL, and emitted ONLY when non-empty, so a single-contract spec is
+# byte-identical to what this script has always written. They let ONE entry express a CROSS-CONTRACT
+# invariant (a quantity read from one contract compared against a quantity read from another):
+#   lhs_target / rhs_target   the contract address that SIDE is read from (0x + 40 hex; anything else is
+#                             dropped). Unset => the watcher's MONITOR_TARGET, i.e. today's behaviour.
+#   lhs_args / rhs_args       a JSON ARRAY of call ARGUMENTS for that side's signature (e.g. ["0xHOLDER"]
+#                             for "balanceOf(address)"). At most 4 alphanumeric tokens survive; the input
+#                             may also be a comma-separated string. Unset => a zero-arg read.
+#   lhs_scale / rhs_scale     an integer MULTIPLIER applied to that side's reading BEFORE the comparison,
+#                             to normalise two sides carried in different decimals (e.g. "1000000000000").
+#                             A power of ten is kept at any magnitude; any other integer is capped at 18
+#                             digits. Unset / "1" => no scaling.
+#
 # TARGET FINGERPRINT (#1097) — written alongside the spec at <out>.fingerprint.json:
 #   {"address":"0x..","rpc_url":"...","code_hash":"<sha256 of cast code>","impl_slot":"<EIP-1967 impl slot value>"}
 # A static watch-spec silently stops matching the deployed contract once the target UPGRADES (new impl, new
@@ -129,9 +142,12 @@ OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 OUT="$OUT_DIR/$(basename "$OUT")"
 
 # emit_spec <derived-invariants-file> — build the final watch-spec JSON array from a newline-delimited list of
-# pipe-separated derived invariant records (label|lhs_sig|rhs_sig|rhs_const|rel|margin_bp), validate/normalise
-# every field in python3 (rel ∈ {le,ge,eq}; exactly one of rhs_sig/rhs_const per entry; margin_bp an int in
-# 0..10000), and write it to $OUT. All string handling is python3 so no shell metachar in any signature can
+# pipe-separated derived invariant records
+# (label|lhs_sig|rhs_sig|rhs_const|rel|margin_bp|lhs_target|rhs_target|lhs_args|rhs_args|lhs_scale|rhs_scale),
+# validate/normalise every field in python3 (rel ∈ {le,ge,eq}; exactly one of rhs_sig/rhs_const per entry;
+# margin_bp an int in 0..10000; #2122: a *_target must be 0x + 40 hex, a *_args token must be alphanumeric
+# (at most 4 kept, emitted as a JSON array), a *_scale must be a non-trivial integer), and write it to $OUT.
+# Shorter records (the 6-field rows extract_from_test emits) are padded, so the derivation path is unchanged. All string handling is python3 so no shell metachar in any signature can
 # corrupt the JSON (the repo's python3-json.dumps convention). Drops malformed/empty rows; an empty result is
 # a valid (empty) spec the watcher treats as "no invariant to evaluate".
 emit_spec() {
@@ -143,6 +159,53 @@ rpc = os.environ["RPC_URL"]
 target = os.environ["TARGET"]
 out = os.environ["OUT_FILE"]
 recs = []
+ALNUM = set("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+HEX = set("0123456789abcdefABCDEF")
+DIGITS = set("0123456789")
+ARGS_MAX = 4
+SCALE_MAX_DIGITS = 18
+
+
+def norm_target(v):
+    """A per-side read address: 0x + 40 hex, else dropped (never reaches a shell)."""
+    v = v.strip()
+    if len(v) == 42 and v[:2].lower() == "0x" and all(c in HEX for c in v[2:]):
+        return v
+    return ""
+
+
+def norm_args(v):
+    """Per-side call arguments as a JSON ARRAY: at most ARGS_MAX alphanumeric tokens."""
+    out = []
+    for tok in v.replace(" ", ",").split(","):
+        tok = tok.strip()
+        if not tok or any(c not in ALNUM for c in tok):
+            continue
+        out.append(tok)
+        if len(out) >= ARGS_MAX:
+            break
+    return out
+
+
+def norm_scale(v):
+    """Per-side integer multiplier: a power of ten at any magnitude, else <= 18 digits.
+
+    "" / "0" / "1" (the no-op values) and anything non-numeric are dropped, so an
+    unusable scale can never reach the watcher as a silently wrong comparison.
+    """
+    v = v.strip()
+    if not v or any(c not in DIGITS for c in v):
+        return ""
+    v = v.lstrip("0") or "0"
+    if v in ("0", "1"):
+        return ""
+    if v[0] == "1" and set(v[1:]) <= {"0"}:
+        return v
+    if len(v) > SCALE_MAX_DIGITS:
+        return ""
+    return v
+
+
 try:
     with open(os.environ["RECORDS_FILE"], "r", encoding="utf-8", errors="replace") as fh:
         lines = fh.read().splitlines()
@@ -153,9 +216,11 @@ for line in lines:
     if not line or line.startswith("#"):
         continue
     parts = line.split("|")
-    while len(parts) < 6:
+    while len(parts) < 12:
         parts.append("")
-    label, lhs_sig, rhs_sig, rhs_const, rel, margin_bp = (p.strip() for p in parts[:6])
+    (label, lhs_sig, rhs_sig, rhs_const, rel, margin_bp,
+     lhs_target, rhs_target, lhs_args, rhs_args,
+     lhs_scale, rhs_scale) = (p.strip() for p in parts[:12])
     if not lhs_sig:
         continue
     rel = rel if rel in ("le", "ge", "eq") else "le"
@@ -172,14 +237,25 @@ for line in lines:
     except ValueError:
         mbp = 0
     mbp = max(0, min(10000, mbp))
-    recs.append({
+    rec = {
         "label": label or lhs_sig,
         "lhs_sig": lhs_sig,
         "rhs_sig": rhs_sig,
         "rhs_const": rhs_const,
         "rel": rel,
         "margin_bp": mbp,
-    })
+    }
+    # #2122 per-side fields: emitted ONLY when they survive validation and are
+    # non-empty, so a single-contract spec keeps the exact 6-key shape it had.
+    for key, val in (("lhs_target", norm_target(lhs_target)),
+                     ("rhs_target", norm_target(rhs_target)),
+                     ("lhs_args", norm_args(lhs_args)),
+                     ("rhs_args", norm_args(rhs_args)),
+                     ("lhs_scale", norm_scale(lhs_scale)),
+                     ("rhs_scale", norm_scale(rhs_scale))):
+        if val:
+            rec[key] = val
+    recs.append(rec)
 with open(out, "w", encoding="utf-8") as fh:
     json.dump(recs, fh, indent=2)
     fh.write("\n")
@@ -325,12 +401,24 @@ with open(os.environ["SPEC_FIXTURE"], "r", encoding="utf-8") as fh:
     data = json.load(fh)
 if not isinstance(data, list):
     raise SystemExit(1)
+SPEC_KEYS = ("label", "lhs_sig", "rhs_sig", "rhs_const", "rel", "margin_bp",
+             "lhs_target", "rhs_target", "lhs_args", "rhs_args", "lhs_scale", "rhs_scale")
+
+
+def flatten(v):
+    # #2122: a list-valued *_args (the kit's shape) is joined with "," so it round-trips
+    # through the SAME normalisation as a comma-separated scalar; everything else is a
+    # plain scalar.
+    if isinstance(v, (list, tuple)):
+        return ",".join(str(x) for x in v)
+    return str(v)
+
+
 rows = []
 for o in data:
     if not isinstance(o, dict):
         raise SystemExit(1)
-    rows.append("|".join(str(o.get(k, "")) for k in
-                ("label", "lhs_sig", "rhs_sig", "rhs_const", "rel", "margin_bp")))
+    rows.append("|".join(flatten(o.get(k, "")) for k in SPEC_KEYS))
 with open(recs_path, "w", encoding="utf-8") as fh:
     fh.write("\n".join(rows))
     if rows:

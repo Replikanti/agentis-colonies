@@ -16,9 +16,11 @@
 # Usage:
 #   cast-read.sh [--to-dec] <subcommand> <args...>
 #     <subcommand>  one of: call | storage | balance | code
-#     --to-dec      pipe the read through `cast --to-dec` (decimal output); used by
-#                   the watchers that compare integers. Omit for the raw 0x word
-#                   (storage slots / owner addresses compare as hex).
+#     --to-dec      return the read as a DECIMAL integer; used by the watchers that
+#                   compare integers. A raw hex word is decoded with `cast --to-dec`;
+#                   a TYPED return signature ("totalSupply()(uint256)") already
+#                   prints a decimal and is passed through (#2122). Omit for the raw
+#                   0x word (storage slots / owner addresses compare as hex).
 #   examples:
 #     cast-read.sh --to-dec call 0xVAULT 'totalSupply()'
 #     cast-read.sh storage 0xPROXY 0x360894...d382bbc
@@ -114,15 +116,28 @@ read_one() {
     _rpc="$1"
     shift
     set +e
-    if [ "$TO_DEC" = "1" ]; then
-        _val="$("$CAST" "$SUBCMD" --rpc-url "$_rpc" "$@" 2>/dev/null | "$CAST" --to-dec 2>/dev/null)"
-    else
-        _val="$("$CAST" "$SUBCMD" --rpc-url "$_rpc" "$@" 2>/dev/null)"
-    fi
+    _val="$("$CAST" "$SUBCMD" --rpc-url "$_rpc" "$@" 2>/dev/null)"
     set -e
     # First whitespace-free token only (cast appends a newline; some reads print
-    # trailing metadata), lowercased for stable hex comparison.
+    # trailing metadata). This is also what strips the scientific-notation suffix
+    # `cast` appends to a TYPED return -- `1000000000000000000000 [1e21]`.
     _tok="$(printf '%s' "$_val" | awk 'NR==1{print $1}')"
+    # #2122: decode to decimal ONLY when --to-dec was asked AND the token is still a
+    # hex word. A TYPED return signature ("totalSupply()(uint256)") makes cast print
+    # a DECIMAL, and `cast --to-dec` rejects that ("could not autodetect base"), so
+    # the previous unconditional pipe turned every typed-return read into the no-read
+    # sentinel -- the shape the monitoring watch-specs are written in. An untyped
+    # (hex-word) read takes exactly the same `cast --to-dec` path it took before.
+    if [ "$TO_DEC" = "1" ]; then
+        case "$_tok" in
+            0x*|0X*)
+                set +e
+                _tok="$(printf '%s' "$_tok" | "$CAST" --to-dec 2>/dev/null)"
+                set -e
+                ;;
+        esac
+    fi
+    # Lowercased for stable hex comparison (a decimal is unaffected).
     printf '%s' "$_tok" | tr '[:upper:]' '[:lower:]'
 }
 

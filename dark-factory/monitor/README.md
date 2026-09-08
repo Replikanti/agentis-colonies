@@ -214,8 +214,9 @@ target (repo + address + RPC) ──run-live-watch.sh──► watch-spec.json �
    extracts the live-watchable two-sided comparisons (a view-call vs another
    view-call, or vs a literal bound), and writes a **watch-spec**: a JSON array of
    `{label, lhs_sig, rhs_sig | rhs_const, rel, margin_bp}` objects (`rel` ∈
-   `le|ge|eq`). An offline `--spec-fixture <file>` path takes a hand-authored
-   watch-spec **verbatim** (no LLM/forge) for the live-watchable subset.
+   `le|ge|eq`), plus the six **optional per-side** fields below. An offline
+   `--spec-fixture <file>` path takes a hand-authored watch-spec **verbatim** (no
+   LLM/forge) for the live-watchable subset.
 
    ```bash
    ../run-live-watch.sh \
@@ -235,9 +236,63 @@ target (repo + address + RPC) ──run-live-watch.sh──► watch-spec.json �
    ./scripts/start-colony.sh
    ```
 
+### Cross-contract members — per-side target / args / scale (#2122)
+
+A real protocol invariant rarely lives inside one contract: the interesting ones
+relate a quantity in the **accounting** contract to a quantity in a **token** or
+**vault** contract, often carried in different decimals and often behind a getter
+that takes an argument. Each spec member may therefore resolve **each side
+independently** with six optional fields:
+
+| Field | Meaning | Unset ⇒ |
+|-------|---------|---------|
+| `lhs_target` / `rhs_target` | The contract address (`0x` + 40 hex) that side is read from. | `MONITOR_TARGET` |
+| `lhs_args` / `rhs_args` | A JSON array of call arguments for that side's signature (at most 4 alphanumeric tokens; each is shell-escaped). | a zero-arg read |
+| `lhs_scale` / `rhs_scale` | An integer multiplier applied to that side's reading **before** the comparison, to normalise differing decimals. | no scaling |
+
+```json
+[
+  {
+    "label": "shares-backed-by-held-collateral",
+    "lhs_sig": "totalSupply()(uint256)",
+    "lhs_target": "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "rhs_sig": "balanceOf(address)(uint256)",
+    "rhs_target": "0xBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    "rhs_args": ["0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
+    "rhs_scale": "1000000000000",
+    "rel": "le",
+    "margin_bp": 50
+  }
+]
+```
+
+That member reads the vault's 18-dp share total from contract A, the 6-dp
+collateral balance the vault HOLDS from token contract B (passing the vault's own
+address as the getter's argument), lifts the 6-dp side by `1e12` onto the 18-dp
+scale, and flags when the shares outrun the backing.
+
+**Scale semantics.** The multiplier is an integer applied before the comparison.
+A **power of ten is exact at any magnitude** (it is a digit-string zero-append —
+the shape every decimals normalisation takes); any other integer keeps
+`18 − <mantissa digits>` significant digits, far finer than the `margin_bp`
+(1e-4) comparison granularity. A scale the watcher cannot represent resolves to
+the **no-read sentinel** (a quiet tick) — never to a silently unscaled
+comparison that could page a false `violated`.
+
+**Backward compatible by construction.** A member carrying none of the six fields
+reads both sides from `MONITOR_TARGET` with no arguments and no scaling, and the
+emitter writes the new keys only when they are non-empty — so a single-contract
+watch-spec is byte-identical to what this pipeline produced before.
+
+**Typed returns are supported.** A signature written with its return type
+(`totalSupply()(uint256)`) makes `cast` print `<decimal> [<sci>]`; the default
+reader [`scripts/cast-read.sh`](scripts/cast-read.sh) normalises that to the plain
+decimal, so the typed form and the untyped hex-word form both produce a reading.
+
 Each tick the watcher evaluates **every** invariant in the set with two read-only
 `cast call`s, posts each member's verdict to its own `monitor:signal:invariant:<label>`
-blackboard memo, and **fuses** them to the worst verdict across the set
+blackboard memo (which also names the two resolved per-side addresses), and
+**fuses** them to the worst verdict across the set
 (`violated` > `margin` > `ok`) — so one broken member pages the whole set. The
 fused verdict drives the **same** tier-gated emission as the single-invariant path,
 and the fused `monitor:signal:invariant` memo the `coordinator` already reads is
@@ -353,6 +408,12 @@ watcher reads nothing and only observes — it never raises a false alert.
 | `MONITOR_INV_REL` | Required relation: `le` \| `ge` \| `eq`. | `le` |
 | `MONITOR_INV_MARGIN_BP` | Margin-to-violation band in basis points (0..10000). | `0` |
 | `MONITOR_INV_LABEL` | Human label for the invariant (alert body). | the LHS signature |
+| `MONITOR_INV_LHS_TARGET` | (#2122) Contract address (`0x...`) the LHS quantity is read from — the single-invariant twin of a spec member's `lhs_target`. | unset ⇒ `MONITOR_TARGET` |
+| `MONITOR_INV_RHS_TARGET` | (#2122) Contract address the RHS quantity is read from. | unset ⇒ `MONITOR_TARGET` |
+| `MONITOR_INV_LHS_ARGS` | (#2122) Comma- or space-separated call arguments for `MONITOR_INV_LHS_SIG` (at most 4 alphanumeric tokens, each shell-escaped). | unset ⇒ no args (zero-arg read) |
+| `MONITOR_INV_RHS_ARGS` | (#2122) Call arguments for `MONITOR_INV_RHS_SIG`, same rules. | unset ⇒ no args (zero-arg read) |
+| `MONITOR_INV_LHS_SCALE` | (#2122) Integer multiplier applied to the LHS reading before the comparison (decimals normalisation). A power of ten is exact at any magnitude; an unsupported scale ⇒ the no-read sentinel, never an unscaled comparison. | unset ⇒ no scale |
+| `MONITOR_INV_RHS_SCALE` | (#2122) Integer multiplier applied to the RHS reading, same rules. | unset ⇒ no scale |
 | `MONITOR_INV_SPEC` | (#1086) A **derived watch-spec** for the whole invariant SET — an absolute PATH to the JSON file `run-live-watch.sh` emits, or the JSON array INLINE. When set, the watcher evaluates EVERY invariant in the set against live state each tick; when unset it uses the single `MONITOR_INV_*` invariant above (backward-compatible). | unset (single-invariant) |
 | `MONITOR_ORACLE` | Price-feed contract address (`0x...`). | unset |
 | `MONITOR_ORACLE_PRICE_SIG` | Signature returning the price. | `latestAnswer()` |

@@ -15,6 +15,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Per-side target / args / scale for cross-contract invariants in the monitor colony** (#2122). The
+  `invariant-watcher` could only ever compare two quantities read from the SAME `MONITOR_TARGET` with
+  zero-argument signatures and no decimals normalisation, so a real cross-contract invariant (a vault's
+  accounting total vs the collateral balance it HOLDS in a token contract) was inexpressible. Each side of an
+  invariant now resolves INDEPENDENTLY: its own contract address (`lhs_target` / `rhs_target`, or the
+  `MONITOR_INV_LHS_TARGET` / `MONITOR_INV_RHS_TARGET` env pair), its own call arguments (`lhs_args` /
+  `rhs_args`; at most 4 alphanumeric tokens, each `shell_escape()`d, non-alphanumeric tokens dropped) and its
+  own integer decimals multiplier (`lhs_scale` / `rhs_scale`), applied BEFORE the existing symmetric #1109
+  big-number normalisation. A power-of-ten scale is exact at any magnitude; an unsupported scale resolves to
+  the no-read sentinel (quiet), never to an unscaled comparison that could page a false `violated`.
+  `run-live-watch.sh` carries the six fields end to end (validated: a target must be `0x` + 40 hex, a scale
+  must be a non-trivial integer) and emits each ONLY when non-empty, so a single-contract watch-spec stays
+  byte-identical. Also fixes typed-return reads: `cast --to-dec` REJECTS the `<dec> [<sci>]` output of a
+  `totalSupply()(uint256)` signature, so every typed-return invariant — the shape the monitoring watch-specs
+  use — silently degraded to `no-read`; `scripts/cast-read.sh` now converts only a still-hex token. Proven at
+  agent-output level by a new `demo-monitor.sh` phase 2 (four live spec members over two different contracts on
+  a local anvil, including a `default-target` backward-compatibility control that is identical before and
+  after). The fused `monitor:signal:invariant` payload, the coordinator's fusion and the #1891 delivery path
+  are unchanged.
 - **`change-pipeline.sh` — the M4 cadence + LLM budget: M1 -> M2 -> M3 in one budget-bounded tick** (#2135,
   epic #2120 M4: first-on-fresh-code). Chains the three merged stages — `watch-code-changes.sh` (#2128) ->
   `scope-changes.sh` (#2131) -> `run-change-hunts.sh` (#2133) — so the change-triggered hunt can run unattended

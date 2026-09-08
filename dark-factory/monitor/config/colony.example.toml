@@ -149,12 +149,31 @@ tick_interval_ms = 60000
 #   MONITOR_INV_MARGIN_BP   margin-to-violation band in basis points (0..10000);
 #                           "" => 0 (only a hard violation flags).
 #   MONITOR_INV_LABEL       a human label for the invariant (alert body).
+#   MONITOR_INV_LHS_TARGET / MONITOR_INV_RHS_TARGET
+#                           (#2122) per-SIDE contract address (0x...) for a
+#                           CROSS-CONTRACT invariant (one side's accounting total vs
+#                           another contract's token balance); "" => MONITOR_TARGET.
+#   MONITOR_INV_LHS_ARGS / MONITOR_INV_RHS_ARGS
+#                           (#2122) comma- or space-separated call ARGUMENTS for that
+#                           side's signature (e.g. a holder address for
+#                           "balanceOf(address)"); at most 4 alphanumeric tokens,
+#                           each shell-escaped. "" => a zero-arg read.
+#   MONITOR_INV_LHS_SCALE / MONITOR_INV_RHS_SCALE
+#                           (#2122) integer MULTIPLIER applied to that side's reading
+#                           BEFORE the comparison, to normalise differing decimals
+#                           (e.g. "1000000000000" to lift a 6-dp side onto an 18-dp
+#                           one). A power of ten is exact at any magnitude; an
+#                           unsupported scale resolves to the no-read sentinel
+#                           (quiet), never an unscaled comparison. "" / "1" => none.
 #   MONITOR_INV_SPEC        (#1086) a DERIVED watch-spec for the WHOLE invariant
 #                           SET — an absolute PATH to the JSON file
 #                           run-live-watch.sh emits, or the JSON array INLINE. When
 #                           set, the watcher evaluates EVERY invariant in the set
 #                           each tick; when unset it uses the single MONITOR_INV_*
-#                           invariant above (backward-compatible).
+#                           invariant above (backward-compatible). Each member may
+#                           carry the same six per-side fields as lower-case keys
+#                           (lhs_target / rhs_target / lhs_args / rhs_args /
+#                           lhs_scale / rhs_scale), with the same defaults.
 #
 # oracle-watcher:
 #   MONITOR_ORACLE          the price-feed contract address (0x...).
