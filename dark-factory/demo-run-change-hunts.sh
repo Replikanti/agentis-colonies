@@ -22,6 +22,9 @@
 #   AC5 — a bare run over a multi-row descriptor file honours --max-hunts (no implicit fleet sweep).
 #   AC6 — the M1->M2->M3 thread: scope-changes.sh-shaped rows feed straight into run-change-hunts.sh, and the
 #         sandbox / refusal-fallback / never-submit / no-fleet-sweep invariants are documented in the header.
+#   AC7 — the REAL hunt_args build (NOT the --hunt-cmd mock): run against a STUB run-zone-hunt.sh that echoes
+#         its argv, a `scoped` descriptor -> `--scope-hint <files>` + `--since <old>`, a `full`/`impl`
+#         descriptor -> NEITHER, and M2's `-` sentinel is never forwarded as a flag value.
 #
 # Usage:  dark-factory/demo-run-change-hunts.sh
 # Exit:   0 = all assertions held; 1 = a failure; 3 = the script under test is missing.
@@ -192,6 +195,42 @@ grep -q "HUNT_SANDBOX" "$RCH" && ok "AC6: the header documents the #2125 sandbox
 grep -q "CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK" "$RCH" && ok "AC6: the header documents the #2133 refusal-fallback inheritance" || bad "AC6: no refusal-fallback note in the header"
 grep -qi "no implicit fleet sweep\|NO IMPLICIT FLEET SWEEP" "$RCH" && ok "AC6: the header documents the no-fleet-sweep guard" || bad "AC6: no fleet-sweep guard note"
 grep -qi "never contacts a bounty platform\|never-submit\|never submit" "$RCH" && ok "AC6: the header documents the never-submit invariant" || bad "AC6: no never-submit note"
+
+# ==========================================================================================================
+note "AC7) the REAL hunt_args build (no --hunt-cmd): scoped -> --scope-hint + --since; full/impl -> neither;"
+note "     M2's '-' sentinel is NEVER forwarded as a flag value ..."
+# Exercise the actual run-zone-hunt.sh invocation path (NOT the --hunt-cmd mock) so a regression in the
+# scoped/full/impl conditional is caught. run-change-hunts.sh calls "$HERE/run-zone-hunt.sh"; drop a COPY of it
+# into a temp bindir next to a STUB run-zone-hunt.sh that just echoes its argv, so $HERE resolves to the stub.
+BIN="$WORK/bin"; mkdir -p "$BIN"
+cp "$RCH" "$BIN/run-change-hunts.sh"; chmod +x "$BIN/run-change-hunts.sh"
+ARGV_LOG="$WORK/argv.log"; : > "$ARGV_LOG"
+cat > "$BIN/run-zone-hunt.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$ARGV_LOG"
+exit 0
+STUB
+chmod +x "$BIN/run-zone-hunt.sh"
+DESC_G="$WORK/desc-g.tsv"; LED_G="$WORK/ledger-g.tsv"
+printf 'scopedp\t-\thead\thttps://github.com/example/scopedp\tnewscoped\tscoped\tsrc/A.sol,src/B.sol\toldscoped\n' > "$DESC_G"
+printf 'fullp\t-\thead\thttps://github.com/example/fullp\tnewfull\tfull\t-\t-\n' >> "$DESC_G"
+printf 'implp\tethereum\timpl\t0x1111111111111111111111111111111111111111\t0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tfull\t-\t-\n' >> "$DESC_G"
+# --source-cmd mocks materialize (offline); NO --hunt-cmd, so the real hunt_args array + the stub are used.
+"$BIN/run-change-hunts.sh" --descriptors-from "$DESC_G" --ledger "$LED_G" --drop-dir "$WORK/drop-g" \
+  --out "$WORK/out-g" --work-dir "$WORK/wk-g" --max-hunts 3 --source-cmd "$SRC_MOCK" >/dev/null 2>"$WORK/g.err"
+[ "$(grep -c . "$ARGV_LOG")" -eq 3 ] && ok "AC7: the real path invoked run-zone-hunt.sh three times" || bad "AC7: run-zone-hunt.sh invoked $(grep -c . "$ARGV_LOG") time(s), expected 3"
+SCOPED_ARGV="$(grep -- 'scopedp' "$ARGV_LOG" | head -n1)"
+FULL_ARGV="$(grep -- 'fullp' "$ARGV_LOG" | head -n1)"
+IMPL_ARGV="$(grep -- 'out-g/implp' "$ARGV_LOG" | head -n1)"
+case "$SCOPED_ARGV" in *"--scope-hint src/A.sol,src/B.sol"*) ok "AC7: scoped argv carries --scope-hint <files>";; *) bad "AC7: scoped argv missing --scope-hint: $SCOPED_ARGV";; esac
+case "$SCOPED_ARGV" in *"--since oldscoped"*) ok "AC7: scoped argv carries --since <old>";; *) bad "AC7: scoped argv missing --since: $SCOPED_ARGV";; esac
+case "$FULL_ARGV" in *"--scope-hint"*|*"--since"*) bad "AC7: full argv wrongly carries --scope-hint/--since: $FULL_ARGV";; *) ok "AC7: full argv carries NEITHER --scope-hint nor --since";; esac
+case "$IMPL_ARGV" in *"--scope-hint"*|*"--since"*) bad "AC7: impl argv wrongly carries --scope-hint/--since: $IMPL_ARGV";; *) ok "AC7: impl argv carries NEITHER --scope-hint nor --since";; esac
+if grep -qE -- '--(scope-hint|since) -($| )' "$ARGV_LOG"; then
+  bad "AC7: M2's '-' sentinel was forwarded as a flag value"
+else
+  ok "AC7: M2's '-' sentinel is NEVER forwarded as a --scope-hint/--since value"
+fi
 
 # ==========================================================================================================
 echo
