@@ -584,9 +584,12 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
       # non-deterministically and sometimes indents the whole answer (observed live: the core `src` zone's
       # ZONE| line came back indented 2 spaces), so an anchored `^ZONE|` silently misses it -> the zone is
       # left unclassified -> 0 cells -> the zone is NEVER hunted. Match leading whitespace, strip it, and take
-      # the LAST emission (the agent reasons first and emits the ZONE| line at the end). The python parser
-      # below still drops any placeholder/template echo, so feeding it the real last line is safe.
-      grep -E '^[[:space:]]*ZONE\|' "$ZLOG" | sed 's/^[[:space:]]*//' | tail -1 >> "$CLASS_LINES" || true
+      # the LAST emission (the agent reasons first and emits the ZONE| line at the end). #2118: also join back
+      # ONE soft-wrapped PTY continuation line (df_unwrap_zone_line, lib/run-agent-validated.sh) before the
+      # `|`-split, so a long reply that hanging-indents its class-list/description onto a second physical line
+      # no longer loses that tail. The python parser below still drops any placeholder/template echo, so
+      # feeding it the real (possibly rejoined) last line is safe.
+      df_unwrap_zone_line "$ZLOG" >> "$CLASS_LINES" || true
       # #1713: scrape the value-custody flag off the same trailing-line channel (whitespace-tolerant, LAST
       # emission), exactly like the ZONE| scrape above. A zone whose reply carries no CUSTODY| line stays
       # value_custody=false by the merge's default.

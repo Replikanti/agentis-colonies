@@ -1676,6 +1676,48 @@ SOL
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (h) #2118: df_unwrap_zone_line() joins ONE soft-wrapped PTY continuation line back onto its ZONE| line
+#     before map-zones.sh's `|`-split, so a long one-line zone-mapper reply that flat-cyborg hanging-indents
+#     onto a second physical line no longer loses its tail (the issue's own src_accountant example). Fully
+#     offline: no git/agentis/mock backend needed, exercises the exact function map-zones.sh calls.
+# ----------------------------------------------------------------------------------------------------------
+. "$HERE/lib/run-agent-validated.sh"
+
+ZW_WRAPPED="$WORK/zlog-wrapped.txt"
+printf 'reasoning about the accountant zone before answering\n' > "$ZW_WRAPPED"
+printf 'ZONE|src_accountant|Accountant|\n' >> "$ZW_WRAPPED"
+printf '  C6,C1,C5,C16|Handles balance netting and settlement\n' >> "$ZW_WRAPPED"
+
+ZW_OUT="$(df_unwrap_zone_line "$ZW_WRAPPED")"
+ZW_F3="$(printf '%s\n' "$ZW_OUT" | cut -d'|' -f3)"
+ZW_F4="$(printf '%s\n' "$ZW_OUT" | cut -d'|' -f4 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+ZW_NFIELDS="$(printf '%s\n' "$ZW_OUT" | awk -F'|' '{print NF}')"
+if [ "$ZW_NFIELDS" = "5" ] && [ "$ZW_F3" = "Accountant" ] && [ "$ZW_F4" = "C6,C1,C5,C16" ]; then
+  ok "#2118: df_unwrap_zone_line() joins a soft-wrapped ZONE| continuation line back into 5 |-fields (class-list survives)"
+else
+  bad "#2118: df_unwrap_zone_line() did not rejoin the wrapped ZONE| line (want 5 fields, name=Accountant, classes=C6,C1,C5,C16; got '$ZW_OUT')"
+fi
+
+ZW_PLAIN="$WORK/zlog-plain.txt"
+printf 'ZONE|src_accountant|Accountant|C6,C1,C5,C16|Handles balance netting and settlement\n' > "$ZW_PLAIN"
+ZW_PLAIN_OUT="$(df_unwrap_zone_line "$ZW_PLAIN")"
+if [ "$ZW_PLAIN_OUT" = "ZONE|src_accountant|Accountant|C6,C1,C5,C16|Handles balance netting and settlement" ]; then
+  ok "#2118: df_unwrap_zone_line() leaves an already-unwrapped ZONE| line byte-identical"
+else
+  bad "#2118: df_unwrap_zone_line() changed an unwrapped ZONE| line (got '$ZW_PLAIN_OUT')"
+fi
+
+ZW_NEXTSENTINEL="$WORK/zlog-next-sentinel.txt"
+printf 'ZONE|src_math|MathLib|C1|pure math zone\n' > "$ZW_NEXTSENTINEL"
+printf '  CUSTODY|src_math|true\n' >> "$ZW_NEXTSENTINEL"
+ZW_NS_OUT="$(df_unwrap_zone_line "$ZW_NEXTSENTINEL")"
+if [ "$ZW_NS_OUT" = "ZONE|src_math|MathLib|C1|pure math zone" ]; then
+  ok "#2118: df_unwrap_zone_line() does not swallow a genuine following WORD| sentinel (e.g. CUSTODY|)"
+else
+  bad "#2118: df_unwrap_zone_line() incorrectly merged a following sentinel line (got '$ZW_NS_OUT')"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — M1 zone-mapping (map-zones.sh + zone-mapper.ag) holds"
   exit 0
