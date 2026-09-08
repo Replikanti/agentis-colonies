@@ -162,9 +162,11 @@ tick_interval_ms = 60000
 #                           (#2122) integer MULTIPLIER applied to that side's reading
 #                           BEFORE the comparison, to normalise differing decimals
 #                           (e.g. "1000000000000" to lift a 6-dp side onto an 18-dp
-#                           one). A power of ten is exact at any magnitude; an
-#                           unsupported scale resolves to the no-read sentinel
-#                           (quiet), never an unscaled comparison. "" / "1" => none.
+#                           one). A power of ten is exact at any magnitude; any
+#                           other integer is accepted only while its mantissa is at
+#                           most 8 digits (>= 10 significant digits survive, #2142).
+#                           An unsupported scale resolves to the no-read sentinel
+#                           (quiet), never a lossy comparison. "" / "1" => none.
 #   MONITOR_INV_SPEC        (#1086) a DERIVED watch-spec for the WHOLE invariant
 #                           SET — an absolute PATH to the JSON file
 #                           run-live-watch.sh emits, or the JSON array INLINE. When

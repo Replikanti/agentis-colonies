@@ -58,10 +58,12 @@
 //                       reading BEFORE the comparison, so two sides carried in
 //                       different decimals can be compared (e.g. "1000000000000"
 //                       to lift a 6-dp reading onto an 18-dp one). A power of ten
-//                       is EXACT at any magnitude; any other integer keeps
-//                       18 - <mantissa digits> significant digits. An UNSUPPORTED
-//                       scale resolves to the no-read sentinel (quiet) — never to
-//                       an unscaled comparison. "" / "1" => no scaling.
+//                       is EXACT at any magnitude; any other integer is accepted
+//                       only while its MANTISSA fits scale_mantissa_max() digits,
+//                       which guarantees >= 10 significant digits survive (#2142).
+//                       An UNSUPPORTED scale resolves to the no-read sentinel
+//                       (quiet) — never to a lossy or unscaled comparison.
+//                       "" / "1" => no scaling.
 //   MONITOR_CAST_READ   (#1098) OPTIONAL — path to scripts/cast-read.sh, the ONE
 //                       centralized read wrapper that adds RPC FAILOVER (a comma
 //                       list MONITOR_RPC_URLS, tried in order) + optional read
@@ -262,6 +264,20 @@ fn max_safe_digits() -> int {
     return 18;
 }
 
+// (#2142) The longest NON-power-of-ten scale mantissa mul_dec() will apply. The
+// mantissa is the only part of a scale that costs precision (the 10^zeros part is an
+// exact zero-append), and it costs exactly its own length out of the
+// max_safe_digits() budget — so an 8-digit cap GUARANTEES at least 10 significant
+// digits survive every accepted scale, six orders finer than the margin_bp (1e-4)
+// comparison granularity. Real decimals-normalisation scales are powers of ten or
+// have a 1-2 digit mantissa; a longer one is a misconfiguration, and a
+// misconfiguration must be LOUDLY quiet (no-read) rather than silently lossy — the
+// previous guard only stopped an i64 overflow, so a 17-digit mantissa still computed
+// a value with ~19 % relative error (#2142).
+fn scale_mantissa_max() -> int {
+    return 8;
+}
+
 // How many low-order digits must be dropped so BOTH `a` and `b` fit i64: the
 // excess of the LONGER string over max_safe_digits(), clamped to >= 0. The SAME
 // drop is applied to both, so the relation / margin-bp ratio is preserved.
@@ -313,14 +329,17 @@ fn strip_trailing_zeros(s: string) -> string {
 //     the shape every decimals normalisation takes (1e12, 1e18, ...);
 //   * the mantissa is applied with the same pre-truncate/multiply/re-pad idiom the
 //     #1105/#1109 big-decimal handling uses, so no parse_int ever sees more than
-//     max_safe_digits() digits; it costs len(mantissa) significant digits, leaving
-//     18 - len(mantissa) (>= 14 for any realistic scale, orders finer than the
-//     margin_bp 1e-4 comparison granularity).
-// Total, and QUIET on anything it cannot do exactly enough: an empty / non-numeric
+//     max_safe_digits() digits. It costs exactly len(mantissa) significant digits,
+//     and mantissas longer than scale_mantissa_max() are REFUSED — so every scale
+//     this function accepts leaves at least
+//     max_safe_digits() - scale_mantissa_max() = 10 significant digits, six orders
+//     finer than the margin_bp (1e-4) comparison granularity. That is an ENFORCED
+//     guarantee, not a claim about "realistic" inputs (#2142).
+// Total, and QUIET on anything it cannot do precisely enough: an empty / non-numeric
 // scale leaves the reading UNCHANGED, while a scale it cannot represent (a mantissa
-// at or beyond the i64 digit budget, or more zeros than pad_max()) resolves to the
-// "" no-read sentinel + a diagnostic — never to a silently unscaled comparison that
-// could page a false `violated`. "" (no reading) stays "".
+// longer than scale_mantissa_max(), or more zeros than pad_max()) resolves to the
+// "" no-read sentinel + a diagnostic — never to a silently lossy or unscaled
+// comparison that could page a false `violated`. "" (no reading) stays "".
 fn mul_dec(dec: string, scaleRaw: string) -> string {
     if len(dec) == 0 { return ""; }
     if len(scaleRaw) == 0 { return dec; }
@@ -335,8 +354,9 @@ fn mul_dec(dec: string, scaleRaw: string) -> string {
     let mant = strip_trailing_zeros(scale);
     let zeros = len(scale) - len(mant);
     if mant == "1" { return pad_zeros(dec, zeros); }
-    if len(mant) >= max_safe_digits() {
-        print("invariant-watcher: scale " + scale + " has no representable mantissa -> no-read");
+    if len(mant) > scale_mantissa_max() {
+        print("invariant-watcher: scale " + scale + " has a " + to_string(len(mant))
+            + "-digit mantissa (max " + to_string(scale_mantissa_max()) + ") -> no-read");
         return "";
     }
     // Truncate just enough low-order digits off the reading that the product still

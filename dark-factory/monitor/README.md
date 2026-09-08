@@ -273,11 +273,14 @@ scale, and flags when the shares outrun the backing.
 
 **Scale semantics.** The multiplier is an integer applied before the comparison.
 A **power of ten is exact at any magnitude** (it is a digit-string zero-append —
-the shape every decimals normalisation takes); any other integer keeps
-`18 − <mantissa digits>` significant digits, far finer than the `margin_bp`
-(1e-4) comparison granularity. A scale the watcher cannot represent resolves to
-the **no-read sentinel** (a quiet tick) — never to a silently unscaled
-comparison that could page a false `violated`.
+the shape every decimals normalisation takes). Any other integer is accepted only
+while its **mantissa** (the value with trailing zeros stripped) is at most **8
+digits**, which is an *enforced* guarantee that at least **10 significant digits**
+survive — six orders finer than the `margin_bp` (1e-4) comparison granularity.
+A scale outside that budget resolves to the **no-read sentinel** (a quiet tick) —
+never to a silently lossy or unscaled comparison that could page a false
+`violated`. `run-live-watch.sh` applies the identical cap, so the emitter and the
+watcher agree on exactly which scales exist (#2142).
 
 **Backward compatible by construction.** A member carrying none of the six fields
 reads both sides from `MONITOR_TARGET` with no arguments and no scaling, and the
