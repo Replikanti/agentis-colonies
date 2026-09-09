@@ -1374,6 +1374,12 @@ fi
 # FORGE_MAX_SLOTS is respected end-to-end. Gated on a Foundry target ($REPO/foundry.toml), same as STAGE 4.5.
 # ZERO new egress — the engine never submits and the merge is a local file read/write.
 # ----------------------------------------------------------------------------------------------------------
+# >>> STAGE-4.6-VECTOR-HUNT (OFF-path excludes this block) >>>
+# demo-vector-hunt.sh assertion 11 deletes everything between these two sentinel comments (inclusive) when
+# proving OFF byte-identity against origin/main, so it excludes this block by POSITION rather than by content
+# — a line of code here that happens to be byte-identical to an OFF-path line elsewhere in the file (e.g. a
+# shared `fi`/`continue`/python-heredoc line) must NOT mask a real OFF-path regression. Do not remove or move
+# these markers without updating demo-vector-hunt.sh's assertion 11 in the same change.
 if [ "$VECTOR_HUNT" -eq 1 ]; then
   if [ ! -f "$REPO/foundry.toml" ]; then
     echo "run-zone-hunt.sh: [vector-hunt] --vector-hunt set but $REPO has no foundry.toml (concrete-PoC verification is Foundry-specific) — skipping vector-hunt" >&2
@@ -1435,12 +1441,20 @@ PY
     while IFS='	' read -r ZID RELFILE DCLASS || [ -n "${ZID:-}" ]; do
       [ -n "$ZID" ] || continue
       VH_ZONE_OUT="$VH_OUT/$ZID"; mkdir -p "$VH_ZONE_OUT"
-      # Harvest this zone's D1 CALLEE-VECTOR candidates from the breadth cell logs. A zone D1 did not fire on
-      # (no CALLEE-VECTOR line) still gets the engine's bounded invariant-only fallback set, so the per-zone
-      # vector set is never empty on a custody zone.
+      # Harvest this zone's D1 CALLEE-VECTOR candidates from BOTH the breadth cell logs (hunt_*.log) and the
+      # depth/refute cell logs (depth_*.log, written by run-discovery.sh's depth pass into the same $RUN dir
+      # as the breadth logs -- see run-discovery.sh:1105's D_LOG="$RUN/depth_${D_SLUG}_${D_CLS}_${DEPTH_CELLS}.log"
+      # and run-discovery.sh:343's RUN="$OUT/run" vs. this script's VH_DISC="$OUT/discovery" above). A zone D1
+      # did not fire on (no CALLEE-VECTOR line in either) still gets the engine's bounded invariant-only
+      # fallback set, so the per-zone vector set is never empty on a custody zone. Breadth logs are processed
+      # FIRST so the union's file-append order stays breadth-before-depth: run-vector-hunt.sh's enumerate stage
+      # already content-hashes every CANDIDATE on (invariant, fn, callee, hazard) before any PoC attempt
+      # (run-vector-hunt.sh:142-153) and applies --max-vectors to the deduped list (run-vector-hunt.sh:182), so
+      # this ordering makes which candidates survive the cap deterministic (higher-confidence breadth hits are
+      # never displaced by depth candidates under the same cap) -- no separate dedup step is needed here.
       VH_CV="$VH_ZONE_OUT/callee-vectors.txt"
       : > "$VH_CV"
-      for _cvlog in "$VH_DISC/$ZID"/run/hunt_*.log; do
+      for _cvlog in "$VH_DISC/$ZID"/run/hunt_*.log "$VH_DISC/$ZID"/run/depth_*.log; do
         [ -e "$_cvlog" ] || continue
         grep -h 'CALLEE-VECTOR|' "$_cvlog" >> "$VH_CV" 2>/dev/null || true
       done
@@ -1468,6 +1482,7 @@ PY
     echo "run-zone-hunt.sh: [vector-hunt] merged $VECTOR_FINDINGS vector-hunt PoC-PASS finding(s) into verified_findings.json (source=vector-hunt)" >&2
   fi
 fi
+# <<< STAGE-4.6-VECTOR-HUNT <<<
 
 # #1774: --deep-hunt-only halts here — the lens has been applied over the reused breadth --out; M5 delivery is
 # the breadth path's job (it already ran when OFF was produced) and is deliberately skipped for the lens clone.
