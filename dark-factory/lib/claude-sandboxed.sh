@@ -22,9 +22,9 @@
 # claude with a loud stderr warning (so CI / dev hosts without bwrap still work).
 set -u
 
-# Resolve the real claude WITHOUT recursing into this wrapper. DF_CLAUDE_BIN lets
-# the demo point at a stub; otherwise take the first `claude` on PATH that is not
-# this script.
+# Resolve the real claude WITHOUT recursing into this wrapper. DF_CLAUDE_BIN is
+# a test seam for demo-claude-sandboxed.sh; production cells never set it and
+# always go through the PATH resolver below.
 # canon: POSIX-portable path canonicalization (no GNU `readlink -f` — colony-lint's
 # portability ratchet forbids it). Resolves symlinked directories via `pwd -P`; the
 # final component is left as-is, which is enough to tell a candidate apart from this
@@ -33,9 +33,9 @@ canon() { d="$(dirname "$1")"; b="$(basename "$1")"; ( cd "$d" 2>/dev/null && pr
 REAL="${DF_CLAUDE_BIN:-}"
 if [ -z "$REAL" ]; then
   self="$(canon "$0")"
-  for cand in $(command -v -a claude 2>/dev/null); do
+  while IFS= read -r cand; do
     if [ "$(canon "$cand")" != "$self" ]; then REAL="$cand"; break; fi
-  done
+  done < <(type -aP claude 2>/dev/null)
 fi
 [ -n "$REAL" ] || { echo "claude-sandboxed.sh: no real 'claude' binary found on PATH" >&2; exit 127; }
 

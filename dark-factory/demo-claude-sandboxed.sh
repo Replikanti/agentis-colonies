@@ -134,6 +134,54 @@ for f in run-discovery.sh run-refute.sh run-invariant-hunt.sh map-zones.sh gen-b
   fi
 done
 
+echo
+echo "demo-claude-sandboxed.sh: 5) PATH resolver (no DF_CLAUDE_BIN) ..."
+# These three arms exercise the real resolver in lib/claude-sandboxed.sh (no
+# DF_CLAUDE_BIN test seam). On main (the #2148 bug: 'command -v -a claude' is
+# invalid syntax under bash), REAL never gets set for (a)/(b), so both would
+# report rc 127 instead of resolving — they only pass once the 'type -aP claude'
+# fix lands.
+FAKEBIN="$TMP/fakebin"; mkdir -p "$FAKEBIN"
+cat > "$FAKEBIN/claude" <<'FAKEEOF'
+#!/bin/sh
+echo "FAKE-CLAUDE-RESOLVED $*"
+FAKEEOF
+chmod +x "$FAKEBIN/claude"
+
+# (a) a fake claude alone on PATH resolves the fake. Run from inside $RUN (a
+# bound dir) so the wrapper's `--chdir $PWD` succeeds inside bwrap, matching
+# section 1's convention.
+_out="$(cd "$RUN" && HUNT_SANDBOX_RUN="$RUN" PATH="$FAKEBIN:$PATH" "$WRAP" --version 2>&1)"
+_rc=$?
+case "$_out" in *FAKE-CLAUDE-RESOLVED*) ok "fake claude alone on PATH resolves (no DF_CLAUDE_BIN): $_out" ;;
+               *) bad "fake claude on PATH did not resolve (rc=$_rc): $_out" ;; esac
+
+# (b) self-skip still holds when a copy of the wrapper is named claude and sorts
+# first on PATH. Invoke the COPY directly (its own $0 ends in "claude", so it
+# self-identifies as the PATH entry it must skip) with PATH pointing back at
+# itself first, then the fake: the loop must skip that self-match and keep
+# walking to the fake further down PATH.
+SELFBIN="$TMP/selfbin"; mkdir -p "$SELFBIN"
+cp "$WRAP" "$SELFBIN/claude"
+chmod +x "$SELFBIN/claude"
+_out="$(cd "$RUN" && HUNT_SANDBOX_RUN="$RUN" PATH="$SELFBIN:$FAKEBIN:$PATH" "$SELFBIN/claude" --version 2>&1)"
+_rc=$?
+case "$_out" in *FAKE-CLAUDE-RESOLVED*) ok "wrapper copy named 'claude' first on PATH is skipped, fake further down resolves: $_out" ;;
+               *) bad "self-skip did not hold with a wrapper copy first on PATH (rc=$_rc): $_out" ;; esac
+
+# (c) nothing on PATH -> loud 127. PATH must still resolve bash (the wrapper's
+# own interpreter, per its #!/usr/bin/env bash shebang) but have no claude
+# anywhere, so the failure is specifically "no claude", not "no bash".
+EMPTYBIN="$TMP/emptybin"; mkdir -p "$EMPTYBIN"
+ln -sf "$(command -v bash)" "$EMPTYBIN/bash"
+_out="$(HUNT_SANDBOX_RUN="$RUN" PATH="$EMPTYBIN" "$WRAP" --version 2>&1)"
+_rc=$?
+if [ "$_rc" -eq 127 ] && case "$_out" in *"no real 'claude' binary found on PATH"*) true ;; *) false ;; esac; then
+  ok "empty PATH -> loud 127 with the expected 'no real claude binary' message"
+else
+  bad "empty PATH did not fail loud-127 as expected (rc=$_rc): $_out"
+fi
+
 # Live smoke recipe (manual, needs a real claude + bwrap):
 #   HUNT_SANDBOX_RUN=/tmp/run HUNT_SANDBOX_REPO=/path/to/clone \
 #     dark-factory/lib/claude-sandboxed.sh -p 'run: ls -a ~ ; cat ~/.bash_history'
