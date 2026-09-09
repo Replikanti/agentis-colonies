@@ -130,6 +130,10 @@ fi
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 RUN="$OUT/run"
 rm -rf "$RUN"; mkdir -p "$RUN"
+# #2125: thread the sandbox bind vars into the agentis invocation (run_flat_cyborg does not env_clear, so
+# they reach lib/claude-sandboxed.sh via the flat-cyborg subprocess). RUN is this PoC's OWN per-run dir
+# (self-contained: not a subdir of any operator-level HUNT_SANDBOX_RUN).
+export HUNT_SANDBOX_REPO="$REPO" HUNT_SANDBOX_RUN="$RUN"
 cp "$PROVER" "$RUN/poc-writer.ag"
 cp "$HERE/evm-harness/hardhat-poc.sh" "$RUN/hardhat-poc.sh"
 cp "$HERE/evm-harness/forge-poc.sh"   "$RUN/forge-poc.sh"
@@ -173,6 +177,8 @@ fi
   # reply") no longer garbles the generated test into HARNESS_ERROR. Every sibling flat-cyborg driver
   # (run-discovery/gen-briefs/map-zones/run-refute/run-invariant-hunt) already sets 12000.
   [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"; }
+  # #2125: sandbox the driven Claude Code session (bubblewrap view = toolchain + repo + run dir, web tools denied).
+  [ "$BACKEND" = "flat-cyborg" ] && [ -z "${DF_NO_SANDBOX:-}" ] && command -v bwrap >/dev/null 2>&1 && echo "llm.flat_cyborg.target = $HERE/lib/claude-sandboxed.sh"
   echo "trace.level = normal"
   # The poc-writer reads code + the fixture and writes/runs the test through exec sh; pass its whole env contract.
   echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,BUG_HYPOTHESIS,POC_KIND,POC_REPO,POC_OUT,POC_HARNESS,POC_FIXTURE,CODE_PATH,TARGET_FIXTURES_DIR,POC_MATCH,POC_REPAIR_ROUNDS"

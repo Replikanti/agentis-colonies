@@ -28,6 +28,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   PR state the check exists for), and still fails on any real drift there; (2) the removed-line count is now
   a single-line, 0-safe `awk 'END{print NR}'` instead of the `grep -c . ... || echo 0` idiom that could double
   up its output.
+- **`run-poc.sh` was the one hunt emitter never wired into the #2125 Claude sandbox** (#2161). It never
+  exported `HUNT_SANDBOX_REPO`/`HUNT_SANDBOX_RUN` nor emitted the guarded `llm.flat_cyborg.target =
+  lib/claude-sandboxed.sh` line, so its poc-writer session ran unsandboxed against the target clone. Now
+  mirrors the other five emitters (`run-discovery.sh`, `run-refute.sh`, `run-invariant-hunt.sh`,
+  `map-zones.sh`, `gen-briefs.sh`) byte-for-byte; `demo-claude-sandboxed.sh`'s static wiring check now
+  asserts all six.
 - **Change pipeline: whole-tag-set rows fan out per added tag, and a materialize failure no longer eats the
   hunt budget** (#2154, M5 finding under epic #2120). Two reproduced root causes are fixed. (1) `fetch-target.sh`
   was committed mode `100644`, so `run-change-hunts.sh`'s direct exec of it returned rc 126 for EVERY head/tag
