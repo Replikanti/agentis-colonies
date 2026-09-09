@@ -21,6 +21,15 @@
 #     7) exactly the ONE PoC-PASS vector merged into verified_findings.json == verified.golden.json.
 #     8) a 2nd --resume run is a BYTE-IDENTICAL no-op (resumability / dedup).
 #     9) the cap truncates: --max-vectors 2 emits exactly 2 VECTOR| lines.
+#   Part 3 RUN-ZONE-HUNT WIRING (#2156 PR2 — STAGE 4.6):
+#    10) run-zone-hunt.sh present; VECTOR_HUNT defaults 0 (OFF); the STAGE 4.6 block is gated on VECTOR_HUNT=1;
+#        the relaxed --deep-hunt-only guard is OFF-preserving when --vector-hunt is absent.
+#    11) OFF BYTE-IDENTITY: the ONLY origin/main line not byte-preserved in the wired run-zone-hunt.sh is the
+#        --deep-hunt-only guard (replaced by the OFF-equivalent) — every behaviour line the OFF path runs is
+#        unchanged (git-guarded: SKIP when origin/main is not fetched, where assertion 10 stands in).
+#    12) ON ROUTING: run-zone-hunt.sh --deep-hunt-only --vector-hunt over a staged breadth --out harvests the
+#        zone's CALLEE-VECTOR candidates, invokes run-vector-hunt.sh (same stub via the VECTOR_HUNT_POC_RUNNER
+#        seam), and merges EXACTLY the one PoC-PASS vector (source=vector-hunt) — dismissed vectors never route.
 #
 # Usage:  dark-factory/demo-vector-hunt.sh   (GENERATE_GOLDEN=1 rewrites the checked-in goldens)
 # Requires: python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression / the engine is absent
@@ -182,6 +191,109 @@ if [ "$N_CAP" -eq 2 ]; then
   ok "--max-vectors 2 bounded the enumerated set to exactly 2 vectors (the explicit cap)"
 else
   bad "--max-vectors 2 emitted $N_CAP vectors (expected 2)"
+fi
+
+# ==========================================================================================================
+# PART 3 — run-zone-hunt.sh STAGE 4.6 WIRING (#2156 PR2): OFF byte-identity + ON per-zone routing.
+# ==========================================================================================================
+RZH="$HERE/run-zone-hunt.sh"
+
+note "10) run-zone-hunt.sh STAGE 4.6 is OPT-IN + fully gated (source guard) ..."
+if [ -x "$RZH" ]; then
+  ok "run-zone-hunt.sh is present + executable"
+else
+  bad "run-zone-hunt.sh not found / not executable: $RZH"
+fi
+# The load-bearing OFF safety property: --vector-hunt defaults OFF and the STAGE 4.6 block is gated on it.
+if grep -Eq '^VECTOR_HUNT=0( |;|$)|VECTOR_HUNT=0 ; VECTOR_HUNT_MAX_VECTORS=6' "$RZH"; then
+  ok "VECTOR_HUNT defaults to 0 (OFF)"
+else
+  bad "VECTOR_HUNT does not default to 0 — the OFF path is not the default"
+fi
+# shellcheck disable=SC2016  # matching the literal source line, $VECTOR_HUNT must not expand
+if grep -Fq 'if [ "$VECTOR_HUNT" -eq 1 ]; then' "$RZH"; then
+  ok "the STAGE 4.6 block is gated on [ \"\$VECTOR_HUNT\" -eq 1 ] (skipped entirely when OFF)"
+else
+  bad "the STAGE 4.6 block is not gated on VECTOR_HUNT=1"
+fi
+# The relaxed --deep-hunt-only guard still errors when --vector-hunt is absent (OFF-preserving): it keeps the
+# `[ "$DEEP_HUNT" -eq 1 ]` clause, so a pre-#2156 `--deep-hunt-only` (no --deep-hunt, no --vector-hunt) still exits 2.
+# shellcheck disable=SC2016  # matching the literal guard line, the $-vars must not expand
+if grep -Fq 'requires --deep-hunt or --vector-hunt' "$RZH" \
+   && grep -Fq '[ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || [ "$VECTOR_HUNT" -eq 1 ]' "$RZH"; then
+  ok "the --deep-hunt-only guard admits --vector-hunt as a consuming stage but stays OFF-preserving when it is absent"
+else
+  bad "the --deep-hunt-only guard was not extended OFF-preservingly for --vector-hunt"
+fi
+
+note "11) run-zone-hunt.sh OFF byte-identity vs origin/main (every original line preserved except the guard) ..."
+# The STRONG proof: the ONLY line of origin/main's run-zone-hunt.sh not byte-preserved in the wired version is
+# the --deep-hunt-only guard, which was replaced by an OFF-equivalent (asserted above). Everything else — every
+# behaviour line the OFF path executes — is byte-identical, so `--vector-hunt` absent == today. Skipped (not
+# failed) when origin/main is not fetched (a shallow CI checkout), where assertion 10's gating proof still holds.
+if git -C "$HERE" cat-file -e origin/main:dark-factory/run-zone-hunt.sh 2>/dev/null; then
+  git -C "$HERE" show origin/main:dark-factory/run-zone-hunt.sh > "$WORK/rz-origin.sh"
+  # multiset of origin lines NOT present (with >= multiplicity) in the wired version == removed/modified content.
+  comm -23 <(sort "$WORK/rz-origin.sh") <(sort "$RZH") > "$WORK/rz-removed.txt"
+  REMOVED_N="$(grep -c . "$WORK/rz-removed.txt" 2>/dev/null || echo 0)"
+  # shellcheck disable=SC2016  # the literal origin/main guard line, compared verbatim — no expansion
+  EXPECT_GUARD='[ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires --deep-hunt" >&2; exit 2; }'
+  if [ "$REMOVED_N" -eq 1 ] && [ "$(cat "$WORK/rz-removed.txt")" = "$EXPECT_GUARD" ]; then
+    ok "every original run-zone-hunt.sh line is byte-preserved except the one OFF-equivalent guard replacement — the OFF path is byte-identical to origin/main"
+  else
+    bad "run-zone-hunt.sh changed $REMOVED_N original line(s) beyond the guard (OFF path may have drifted):"
+    sed 's/^/      /' "$WORK/rz-removed.txt" >&2
+  fi
+else
+  note "  [SKIP] origin/main not available in this checkout — assertion 10's gating proof stands in"
+fi
+
+note "12) STAGE 4.6 ON: run-zone-hunt.sh --deep-hunt-only --vector-hunt routes each zone to the engine + merges only PASS ..."
+# Stage a MINIMAL breadth --out (--deep-hunt-only reuses it: map/zones.json + verify/verified_findings.json), a
+# Foundry target repo, and one zone's breadth cell log carrying the D1 CALLEE-VECTOR lines. The engine is driven
+# by the SAME offline poc-runner stub, threaded through the VECTOR_HUNT_POC_RUNNER seam. NO agentis / forge / network.
+ZRUN="$WORK/zrun"; ZREPO="$WORK/zrepo"
+mkdir -p "$ZRUN/map" "$ZRUN/verify" "$ZRUN/discovery/core/run" "$ZREPO"
+printf 'Vault.sol\n' > "$ZREPO/Vault.sol"          # a body so the primary-target loc() picks it
+printf '[profile.default]\nsrc = "."\n' > "$ZREPO/foundry.toml"
+printf '%s\n' '[{"id": "core", "value_custody": true, "files": ["Vault.sol"], "bug_classes_likely": ["C6"]}]' > "$ZRUN/map/zones.json"
+printf '%s\n' '{"verified": [], "totals": {"verified": 0}}' > "$ZRUN/verify/verified_findings.json"
+# The breadth cell log for zone 'core' — the SAME CALLEE-VECTOR fixture (2 CANDIDATE hazards + 1 dismissed).
+cp "$CALLEE_VECTORS" "$ZRUN/discovery/core/run/hunt_core_C6.log"
+
+if VECTOR_HUNT_POC_RUNNER="$STUB" FORGE_SLOTS_DIR="$WORK/forge-slots-z" \
+   "$RZH" --repo "$ZREPO" --out "$ZRUN" --deep-hunt-only --vector-hunt --vector-hunt-max-vectors 6 \
+   --backend mock --agentis /bin/true > "$WORK/zrun.out" 2> "$WORK/zrun.err"; then
+  ok "run-zone-hunt.sh --deep-hunt-only --vector-hunt exited 0 over the reused breadth --out"
+else
+  bad "run-zone-hunt.sh --deep-hunt-only --vector-hunt exited non-zero:"
+  tail -5 "$WORK/zrun.err" | sed 's/^/      /' >&2
+fi
+# (i) the engine was invoked per value-custody zone (the per-zone vector-hunt output + verdict markers exist).
+if [ -f "$ZRUN/vector-hunt/core/vector-hunt.out" ] && grep -q '^VECTOR|' "$ZRUN/vector-hunt/core/vector-hunt.out"; then
+  ok "STAGE 4.6 harvested zone 'core' CALLEE-VECTOR candidates and invoked run-vector-hunt.sh (VECTOR| set emitted)"
+else
+  bad "STAGE 4.6 did not invoke run-vector-hunt.sh for the value-custody zone 'core'"
+fi
+# (ii) exactly the ONE PoC-PASS vector merged into the reused verified_findings.json, tagged source=vector-hunt.
+if python3 - "$ZRUN/verify/verified_findings.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+v = [e for e in d.get("verified", []) if e.get("source") == "vector-hunt"]
+assert len(v) == 1, "source=vector-hunt entries != 1: %d" % len(v)
+e = v[0]
+assert e["verdict"] == "FINDING", "not a FINDING: %r" % e.get("verdict")
+assert e["location"] == "Vault.sol:executeDeposit", "wrong location: %r" % e.get("location")
+assert e.get("vector_hash"), "missing vector_hash"
+PY
+then ok "STAGE 4.6 merged exactly the one PoC-PASS vector (source=vector-hunt) into the reused verified_findings.json — CLEAN vectors merged nothing"
+else bad "STAGE 4.6 merge is wrong (expected exactly one source=vector-hunt PoC-PASS entry on Vault.sol:executeDeposit)"
+fi
+# (iii) the dismissed CALLEE-VECTOR never seeded a vector even through the full wiring.
+if grep -q 'setFee' "$ZRUN/vector-hunt/core/vector-hunt.out" 2>/dev/null; then
+  bad "a dismissed: CALLEE-VECTOR (setFee) leaked through STAGE 4.6"
+else
+  ok "the dismissed: CALLEE-VECTOR (setFee) never seeded a vector through STAGE 4.6"
 fi
 
 # ----------------------------------------------------------------------------------------------------------

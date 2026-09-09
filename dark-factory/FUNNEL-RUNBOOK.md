@@ -170,6 +170,51 @@ Both flags default off — omit them and every artifact is byte-identical to a
 pre-#1930 run. Dashboard rendering of the floor and a `$0 / unpayable` badge is
 tracked separately (#1913) and is not implemented here.
 
+### Vector hunt (STAGE 4.6, #2156 — milestone D2 of epic #2130)
+
+`--vector-hunt` adds an **opt-in THIRD lens** on the value-custody zones, applied
+AFTER STAGE 4.5. Per zone it harvests that zone's D1 (#2145) `CALLEE-VECTOR|`
+candidates from the breadth cell logs (`<out>/discovery/<zone>/run/hunt_*.log`)
+and drives them through [`run-vector-hunt.sh`](./run-vector-hunt.sh), which crosses
+a GENERIC economic-invariant catalog with those code-derived vectors, drives each
+through the concrete-PoC gate (`run-poc.sh` -> `evm-harness/forge-poc.sh`), and
+merges ONLY reproduced (PoC-PASS) vectors into `verify/verified_findings.json`
+tagged `source=vector-hunt`. It complements STAGE 4.5's stateful-invariant fuzzer:
+where the fuzzer judges a property over sequences, this reproduces a concrete
+attacker-controlled-callee exploit.
+
+- Requires a Foundry target (`$REPO/foundry.toml`); a non-Foundry target logs +
+  skips it.
+- Forge-slot ownership lives INSIDE the engine (`lib/forge-slot.sh` per vector),
+  so `FORGE_MAX_SLOTS` is respected without double-acquiring in STAGE 4.6.
+- `--vector-hunt-max-vectors <N>` (default 6) is the per-zone cap forwarded to the
+  engine's `--max-vectors`; content-hash dedup + `--resume` ride inside the engine,
+  so re-invoking the whole zone hunt is idempotent.
+- `--vector-hunt` also satisfies `--deep-hunt-only`'s "a stage must consume the
+  reused breadth" requirement, so the lens can run over an EXISTING `--out`.
+- **DEFAULT OFF:** omit `--vector-hunt` and the whole STAGE 4.6 block is skipped —
+  every artifact is byte-for-byte a pre-#2156 run (pinned by `demo-vector-hunt.sh`).
+
+**Live operator gate (post-merge, measured, NEVER CI).** First establish the MISS
+baseline (breadth + `--deep-hunt`, no PoC for the target vector), then, sandboxed
+and refusal-fallback-off, run the vector hunt over the same held-out clone:
+
+```sh
+export HUNT_SANDBOX_RUN=<run-dir>              # lib/claude-sandboxed.sh — mandatory, fail-closed
+export HUNT_SANDBOX_REPO=<held-out-repo>
+export CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1  # refusal-fallback OFF
+export FORGE_MAX_SLOTS=2
+run-zone-hunt.sh --repo <held-out-repo> --out <run-dir> \
+    --deep-hunt --deep-hunt-only --vector-hunt --vector-hunt-max-vectors 6 \
+    --backend flat-cyborg --jobs 2
+```
+
+A PASS is `run-vector-hunt.sh` enumerating the vector from the D1 `CALLEE-VECTOR`
+candidate and `run-poc.sh` reproducing it as a PoC-PASS the breadth+deep pipeline
+missed. Attribute the producing model per-request from the persisted transcript;
+the vector is enumerated only from the code-derived `CALLEE-VECTOR`, never from a
+hint in the brief.
+
 ---
 
 ## (c) Target selection

@@ -112,6 +112,20 @@
 #                       once the default is 1, this flag is the documented, byte-identical opt-out that keeps
 #                       every pre-flip run reproducible. Last flag wins (`--composable-lens --no-composable-lens`
 #                       => OFF), so an A/B harness can pin either polarity explicitly.
+#   --vector-hunt       #2156 (milestone D2, epic #2130): enable STAGE 4.6 — an OPT-IN THIRD lens, applied after
+#                       STAGE 4.5, that per value-custody zone harvests that zone's D1 (#2145) `CALLEE-VECTOR|`
+#                       candidates from the breadth cell logs and drives them through run-vector-hunt.sh, which
+#                       crosses a GENERIC economic-invariant catalog with those code-derived vectors, drives each
+#                       through the concrete-PoC gate (run-poc.sh -> forge-poc.sh), and merges ONLY reproduced
+#                       (PoC-PASS) vectors into verified_findings.json tagged source=vector-hunt. FORGE-SLOT
+#                       ownership lives inside the engine (lib/forge-slot.sh per vector), so FORGE_MAX_SLOTS is
+#                       respected without double-acquiring here. DEFAULT OFF => this whole STAGE 4.6 block is
+#                       skipped and the run is byte-identical to before. Requires a Foundry target ($REPO/
+#                       foundry.toml); a non-Foundry target logs + skips it. Runs over a fresh breadth pass or,
+#                       with --deep-hunt-only (which --vector-hunt now also satisfies), over an existing --out.
+#   --vector-hunt-max-vectors <N>  #2156: the per-zone cap forwarded verbatim to run-vector-hunt.sh --max-vectors
+#                       (default 6). Bounds the enumerated vector set (content-hash dedup + --resume ride inside
+#                       the engine). Only meaningful with --vector-hunt.
 #   --deep-hunt-repair-rounds <N>  #1717: run-invariant-hunt.sh --repair-rounds for every deep-hunt target
 #                       (default 4 — a value-custody zone whose first harness draft doesn't compile gets
 #                       more bounded compile-repair attempts before HARNESS_ERROR; the loop still
@@ -270,6 +284,15 @@ DEEP_HUNT_RESUME=0  # #1934: idempotent skip-completed over STAGE 4.5's (zone, c
 # verified. Default ON *within* --deep-hunt (itself opt-in, so the true default run stays byte-identical);
 # --no-deep-hunt-refute reproduces the raw pre-gate merge byte-for-byte (golden-pinned). Requires --deep-hunt.
 DEEP_HUNT_REFUTE=1
+# #2156 (milestone D2, epic #2130): the opt-in STAGE 4.6 VECTOR-HUNT sub-mode. 0 (default) = OFF = the whole
+# STAGE 4.6 block below is skipped and the run is byte-identical to a pre-#2156 run. When 1, after STAGE 4.5 it
+# harvests each value-custody zone's D1 (#2145) `CALLEE-VECTOR|` candidates from the breadth cell logs and
+# drives them through run-vector-hunt.sh (invariant x code-derived-vector enumeration -> concrete-PoC gate),
+# merging only PoC-PASS vectors into verified_findings.json (source=vector-hunt). VECTOR_HUNT_MAX_VECTORS is the
+# per-zone cap forwarded verbatim to the engine's --max-vectors (default 6). VECTOR_HUNT_POC_RUNNER is the
+# OFFLINE/TEST seam only: when set it is threaded to the engine's --poc-runner (empty => the engine's own
+# run-poc.sh default, so a live run is byte-identical to omitting it).
+VECTOR_HUNT=0 ; VECTOR_HUNT_MAX_VECTORS=6
 # #1830: per-zone hunt budget + targeted re-hunt. Every knob here defaults OFF/inert — with them off STAGE 3's
 # run-discovery.sh invocation gains no argument. The COVERAGE RECORD itself is NOT gated on any of them.
 ZONE_CELL_BUDGET=0 ; RUN_CELL_BUDGET=0 ; REQUIRE_COVERAGE=""
@@ -317,6 +340,8 @@ while [ $# -gt 0 ]; do
     --deep-hunt-max-lenses) nv "$#"; DEEP_HUNT_MAX_LENSES="$2"; shift 2 ;;
     --composable-lens)  DEEP_HUNT_COMPOSABLE_LENS=1; shift ;;
     --no-composable-lens) DEEP_HUNT_COMPOSABLE_LENS=0; shift ;;
+    --vector-hunt)      VECTOR_HUNT=1; shift ;;
+    --vector-hunt-max-vectors) nv "$#"; VECTOR_HUNT_MAX_VECTORS="$2"; shift 2 ;;
     --deep-hunt-repair-rounds) nv "$#"; DEEP_HUNT_REPAIR_ROUNDS="$2"; shift 2 ;;
     --pattern-store)    nv "$#"; DEEP_FWD+=(--pattern-store "$2"); shift 2 ;;
     --replay-corpus)    DEEP_FWD+=(--replay-corpus); shift ;;
@@ -360,7 +385,15 @@ case "$DEEP_HUNT_MAX_LENSES" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt
 [ "$DEEP_HUNT_MAX_LENSES" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-max-lenses must be >= 1 (got '$DEEP_HUNT_MAX_LENSES')" >&2; exit 2; }
 case "$DEEP_HUNT_REPAIR_ROUNDS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be a positive integer (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2 ;; esac
 [ "$DEEP_HUNT_REPAIR_ROUNDS" -ge 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-repair-rounds must be >= 1 (got '$DEEP_HUNT_REPAIR_ROUNDS')" >&2; exit 2; }
-[ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires --deep-hunt" >&2; exit 2; }
+# #2156: the vector-hunt per-zone cap uses the same positive-integer shape as --deep-hunt-max-targets above; it
+# is forwarded verbatim to run-vector-hunt.sh --max-vectors. Validated unconditionally (its default 6 passes),
+# mirroring the deep-hunt knobs, so an OFF run is unaffected.
+case "$VECTOR_HUNT_MAX_VECTORS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --vector-hunt-max-vectors must be a positive integer (got '$VECTOR_HUNT_MAX_VECTORS')" >&2; exit 2 ;; esac
+[ "$VECTOR_HUNT_MAX_VECTORS" -ge 1 ] || { echo "run-zone-hunt.sh: --vector-hunt-max-vectors must be >= 1 (got '$VECTOR_HUNT_MAX_VECTORS')" >&2; exit 2; }
+# #2156: --vector-hunt is the OTHER lens that consumes an existing breadth --out (STAGE 4.6), so it also
+# satisfies --deep-hunt-only's "a stage must consume the reused breadth" requirement. This clause is inert when
+# --vector-hunt is absent (VECTOR_HUNT=0), so a pre-#2156 invocation errors exactly as before.
+[ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || [ "$VECTOR_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires --deep-hunt or --vector-hunt" >&2; exit 2; }
 # #1934: idempotent skip-completed is a STAGE 4.5 selection knob, same "meaningless without the stage that
 # consumes it" gate as --composable-lens above.
 [ "$DEEP_HUNT_RESUME" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-resume requires --deep-hunt" >&2; exit 2; }
@@ -1326,6 +1359,113 @@ PY
       fi
     done < "$DEEP_TARGETS"
     echo "run-zone-hunt.sh: [deep-hunt] merged $DEEP_FINDINGS invariant-hunt finding(s) into verified_findings.json" >&2
+  fi
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# STAGE 4.6 (#2156, milestone D2 of epic #2130): OPT-IN INVARIANT-DRIVEN VECTOR HUNT — a THIRD lens on the
+# VALUE-CUSTODY zones, applied AFTER STAGE 4.5's #2113 fitness-ranked-class routing. Default OFF (no
+# --vector-hunt => this whole block is skipped and the run is byte-identical to before). For each value-custody
+# zone it harvests that zone's D1 (#2145) `CALLEE-VECTOR|` candidates from the breadth cell logs and drives them
+# through run-vector-hunt.sh, which crosses a GENERIC economic-invariant catalog with those code-derived vectors,
+# drives EACH through the concrete-PoC gate (run-poc.sh -> evm-harness/forge-poc.sh), and merges ONLY reproduced
+# (PoC-PASS) vectors into verified_findings.json tagged source=vector-hunt. FORGE-SLOT OWNERSHIP lives INSIDE
+# run-vector-hunt.sh (lib/forge-slot.sh around each per-vector PoC), so STAGE 4.6 never double-acquires a slot —
+# FORGE_MAX_SLOTS is respected end-to-end. Gated on a Foundry target ($REPO/foundry.toml), same as STAGE 4.5.
+# ZERO new egress — the engine never submits and the merge is a local file read/write.
+# ----------------------------------------------------------------------------------------------------------
+if [ "$VECTOR_HUNT" -eq 1 ]; then
+  if [ ! -f "$REPO/foundry.toml" ]; then
+    echo "run-zone-hunt.sh: [vector-hunt] --vector-hunt set but $REPO has no foundry.toml (concrete-PoC verification is Foundry-specific) — skipping vector-hunt" >&2
+  else
+    VECHUNT="$HERE/run-vector-hunt.sh"
+    [ -x "$VECHUNT" ] || { echo "run-zone-hunt.sh: [vector-hunt] required entrypoint not found/executable: $VECHUNT" >&2; exit 3; }
+    # The breadth cell logs live under $OUT/discovery/<zone>/run/ (run-discovery.sh:992). DISC is only set on the
+    # full-pipeline path; set it explicitly here so STAGE 4.6 also works over a reused breadth --out (--deep-hunt-only).
+    VH_DISC="$OUT/discovery"
+    VH_OUT="$OUT/vector-hunt"; mkdir -p "$VH_OUT"
+    # #2156 OFFLINE/TEST seam: thread the deterministic stub PoC runner to the engine ONLY when
+    # VECTOR_HUNT_POC_RUNNER is set + executable (demo-vector-hunt.sh). Empty (the live default) => run-vector-hunt.sh
+    # uses its own run-poc.sh, so a live run's argv is byte-identical to omitting the flag.
+    VH_POC_RUNNER=""
+    if [ -n "${VECTOR_HUNT_POC_RUNNER:-}" ]; then
+      [ -x "$VECTOR_HUNT_POC_RUNNER" ] || { echo "run-zone-hunt.sh: [vector-hunt] VECTOR_HUNT_POC_RUNNER set but not executable: $VECTOR_HUNT_POC_RUNNER" >&2; exit 3; }
+      VH_POC_RUNNER="$VECTOR_HUNT_POC_RUNNER"
+    fi
+    # Enumerate the value-custody zones + their ONE primary target (largest-by-line-count .sol, lexicographic
+    # tie-break — the SAME selection STAGE 4.5 uses) + the zone's dominant custody class. TSV: zid \t relfile \t class.
+    # A sibling of STAGE 4.5's `.deep-hunt-targets.tsv`, derived independently so --vector-hunt needs no --deep-hunt.
+    VEC_TARGETS="$OUT/.vector-hunt-targets.tsv"
+    python3 - "$MAP/zones.json" "$REPO" > "$VEC_TARGETS" <<'PY'
+import sys, os, json
+zones = json.load(open(sys.argv[1], encoding="utf-8"))
+repo = sys.argv[2]
+if not isinstance(zones, list):
+    zones = []
+def loc(rel):
+    try:
+        with open(os.path.join(repo, rel), encoding="utf-8", errors="ignore") as fh:
+            return sum(1 for _ in fh)
+    except Exception:
+        return 0
+# The custody-primary lens codes in the SAME precedence STAGE 4.5's dominant_class() uses. The vector-hunt
+# --class is informational (it selects the ENGINE's generic invariant catalog rows), so an unranked custody zone
+# falls back to the literal C-invariant token, exactly as the deep-hunt path does.
+CUSTODY_PRIMARY_CLASSES = ("C6", "C10", "C11")
+IMPLEMENTED = CUSTODY_PRIMARY_CLASSES + ("C2", "C16", "C5", "C19")
+def dominant_class(classes):
+    for c in IMPLEMENTED:
+        if c in classes:
+            return c
+    return "C-invariant"
+for z in zones:
+    if not z.get("value_custody"):
+        continue
+    zid = z.get("id", "")
+    if not zid:
+        continue
+    sols = [f for f in z.get("files", []) if isinstance(f, str) and f.endswith(".sol")]
+    if not sols:
+        continue
+    primary = sorted(sols, key=lambda f: (-loc(f), f))[0]
+    dclass = dominant_class(z.get("bug_classes_likely", []))
+    print("%s\t%s\t%s" % (zid.replace("\t", " "), primary.replace("\t", " "), dclass))
+PY
+    VECTOR_FINDINGS=0
+    while IFS='	' read -r ZID RELFILE DCLASS || [ -n "${ZID:-}" ]; do
+      [ -n "$ZID" ] || continue
+      VH_ZONE_OUT="$VH_OUT/$ZID"; mkdir -p "$VH_ZONE_OUT"
+      # Harvest this zone's D1 CALLEE-VECTOR candidates from the breadth cell logs. A zone D1 did not fire on
+      # (no CALLEE-VECTOR line) still gets the engine's bounded invariant-only fallback set, so the per-zone
+      # vector set is never empty on a custody zone.
+      VH_CV="$VH_ZONE_OUT/callee-vectors.txt"
+      : > "$VH_CV"
+      for _cvlog in "$VH_DISC/$ZID"/run/hunt_*.log; do
+        [ -e "$_cvlog" ] || continue
+        grep -h 'CALLEE-VECTOR|' "$_cvlog" >> "$VH_CV" 2>/dev/null || true
+      done
+      _n_cv="$(grep -c 'CALLEE-VECTOR|' "$VH_CV" 2>/dev/null || echo 0)"
+      echo "run-zone-hunt.sh: [vector-hunt] zone '$ZID' target '$RELFILE' ($DCLASS): $_n_cv CALLEE-VECTOR candidate(s) -> run-vector-hunt.sh ..." >&2
+      # Invoke the engine (stdout -> per-zone log so the VECTOR-HUNT| summary is parseable; stderr flows to the
+      # operator). A failed invocation logs + continues (never aborts the loop under set -e, matching STAGE 4.5).
+      # shellcheck disable=SC2086  # $VH_POC_RUNNER is threaded via the ${VAR:+...} idiom (empty => no --poc-runner)
+      if "$VECHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
+          --callee-vectors "$VH_CV" --max-vectors "$VECTOR_HUNT_MAX_VECTORS" \
+          --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"} \
+          --out "$VH_ZONE_OUT" --verified-json "$VERIFIED_JSON" --resume \
+          ${VH_POC_RUNNER:+--poc-runner "$VH_POC_RUNNER"} > "$VH_ZONE_OUT/vector-hunt.out"; then
+        :
+      else
+        echo "run-zone-hunt.sh: [vector-hunt] run-vector-hunt.sh failed for zone '$ZID' ($DCLASS); continuing" >&2
+        continue
+      fi
+      # The engine's LAST stdout line is `VECTOR-HUNT|<target>|<n_verified>/<n_vectors>`; take n_verified.
+      VH_MERGED="$(grep 'VECTOR-HUNT|' "$VH_ZONE_OUT/vector-hunt.out" 2>/dev/null | tail -1 | sed 's#.*VECTOR-HUNT|[^|]*|##' | cut -d/ -f1 || true)"
+      case "$VH_MERGED" in ''|*[!0-9]*) VH_MERGED=0 ;; esac
+      VECTOR_FINDINGS=$((VECTOR_FINDINGS + VH_MERGED))
+      echo "run-zone-hunt.sh: [vector-hunt] zone '$ZID' ($DCLASS) -> $VH_MERGED vector(s) reproduced as PoC-PASS and merged (source=vector-hunt)" >&2
+    done < "$VEC_TARGETS"
+    echo "run-zone-hunt.sh: [vector-hunt] merged $VECTOR_FINDINGS vector-hunt PoC-PASS finding(s) into verified_findings.json (source=vector-hunt)" >&2
   fi
 fi
 
