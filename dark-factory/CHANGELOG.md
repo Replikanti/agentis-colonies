@@ -15,6 +15,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **`demo-vector-hunt.sh` assertion 11 (run-zone-hunt.sh OFF byte-identity) no longer fails on a clean
+  post-merge checkout** (#2163, hotfix: main red since 186d5c0c / #2159). The assertion proved OFF-path
+  byte-identity by diffing `origin/main:run-zone-hunt.sh` against the working tree via `comm -23`, which was
+  correct while `origin/main` still predated the STAGE 4.6 wiring (#2159's PR state) but broke once #2159
+  merged: `origin/main` now IS the wired version, so the diff is empty, and `grep -c .` on an empty
+  `rz-removed.txt` prints `0` **and** exits 1 — triggering its `|| echo 0` fallback too, concatenating into
+  `REMOVED_N="0\n0"` and blowing up `[ "$REMOVED_N" -eq 1 ]` with an "integer expected" error. Fixed two ways:
+  (1) when `origin/main:run-zone-hunt.sh` is now byte-identical to the working tree (`cmp -s`), the assertion
+  SKIPs cleanly (post-merge steady state — assertion 10's gating proof stands in), mirroring the existing
+  shallow-checkout SKIP; the `comm -23` + `-eq 1` guard-diff check only runs when they differ (the pre-merge
+  PR state the check exists for), and still fails on any real drift there; (2) the removed-line count is now
+  a single-line, 0-safe `awk 'END{print NR}'` instead of the `grep -c . ... || echo 0` idiom that could double
+  up its output.
 - **Change pipeline: whole-tag-set rows fan out per added tag, and a materialize failure no longer eats the
   hunt budget** (#2154, M5 finding under epic #2120). Two reproduced root causes are fixed. (1) `fetch-target.sh`
   was committed mode `100644`, so `run-change-hunts.sh`'s direct exec of it returned rc 126 for EVERY head/tag
