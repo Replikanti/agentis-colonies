@@ -1,0 +1,11 @@
+# briefs.fixture.txt — canned substrate brief bodies for the #2157 CALLEE-TRUST A/B self-test
+# (gen-briefs.sh --fixture). One DARK-FACTORY:BRIEF-BEGIN|<zone_id> .. DARK-FACTORY:BRIEF-END block per zone
+# id map-zones.sh derives from src/ (src -> `src`). Public-safe, generic protocol mechanics only.
+DARK-FACTORY:BRIEF-BEGIN|src
+Attack the share-price accounting as an external depositor holding no privileged role:
+- C6: is every division rounded AGAINST the user on deposit and FOR the vault on withdraw?
+- C10: is the first-depositor inflation guarded? The price is read from a DEPLOYER-SETTABLE oracle callee
+  reached mid-deposit before share state is finalized: treat that callee as attacker-controlled (it may
+  reenter, revert, return arbitrary data, or burn all gas) and judge CEI order at the call site.
+Break invariant: "a depositor's claim is always worth at least what they deposited, minus dust".
+DARK-FACTORY:BRIEF-END

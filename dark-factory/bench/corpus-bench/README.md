@@ -583,6 +583,96 @@ the constraint line, the harvested TSV, the feeder's aggregation/determinism, an
 prompt ON vs OFF); `demo-discovery-parallel.sh` block 19 pins default inertness, `knowledge.enabled`, the
 `--jobs N == serial` equality WITH a corpus imported, and the fold's CB.
 
+## D3 corpus rare-recall A/B + transfer + default-flip ratchet (#2157)
+
+Milestone D3 of epic #2130 measures what the D1 **CALLEE-TRUST** directive (#2145) and the D2 **vector-hunt**
+lens (#2156) actually buy on the RARE tier, then ratchets each default ONLY on a gain that survives a transfer
+contest. This scaffolding PR ships the OFFLINE, CI-deterministic harness; the expensive live corpus A/B and the
+default-flip are separate later steps (recorded on #2157).
+
+**The two arms.** `callee-trust-ab.sh` runs `run-zone-hunt.sh` over the SAME target twice:
+
+- **control** — `CALLEE_TRUST=0`, no `--vector-hunt`: the pre-D1/D2 pipeline. `CALLEE_TRUST=0` forces the #2145
+  directive off even where the settable-callee detector fires (a `getenv` gate added to `hunter.ag`, default ON
+  = byte-identical when the env is unset; registered on `run-discovery.sh`'s `exec.env_passthrough` so it is not
+  silently inert — the #1426/#1428 failure mode).
+- **treatment** — `CALLEE_TRUST=1`, `--vector-hunt`: D1 surfaces the attacker-controlled-callee `CALLEE-VECTOR`
+  candidate; D2's STAGE 4.6 harvests it and forge-verifies it, merging only PoC-PASS vectors as
+  `source=vector-hunt`.
+
+The run labels are FIXED before any run (never assigned after the numbers). `--self-test` (CI-safe, mock
+backend, no network/LLM/forge) proves the mechanism: control misses a RARE truth row that treatment catches
+(`score-match.py` HIT vs MISS), rare-recall Δ=+1, offline. `score-match.py` and `generation-recall.sh` are
+reused UNCHANGED.
+
+**Per-step model routing (honest — the D2 live-gate finding).** Fable 5.1 refuses weaponized-PoC authoring
+under its `[cyber]` safeguard, so NO arm is single-model end to end. The **analysis/enumeration** stages
+(`map-zones` / `gen-briefs` / `run-discovery`+`hunter.ag` / vector enumeration / `run-refute`) run on **Fable
+5.1** with `CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` + `CLAUDE_CODE_NO_MODEL_FALLBACK=1` +
+`CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1` (bwrap via `lib/claude-sandboxed.sh`); the **PoC-authoring /
+forge-verify** stages (`run-poc.sh`, `run-vector-hunt.sh`'s per-vector PoC) run on **Opus 4.8**. The
+**headline** is rare(1-2) **GENERATION**-recall (`generation-recall.sh`, scored from pre-refute candidates —
+D1's clean, pure-Fable number); the **secondary** is rare(1-2) **VERIFIED**-recall (`run-corpus-bench.sh
+--score` — D1+D2, "Fable analysis + Opus PoC-verify"). `model-attribution.py` reads the persisted transcripts
+and proves the split held per stage: an analysis stage that silently fell back to Opus comes back
+`CONTAMINATED`, which VOIDS the D1 capability claim.
+
+**Transfer-eligibility gate.** Reuse `refute-corpus-coverage.sh` to avoid the #1887 null-by-construction trap
+(a corpus with zero rare-GT rows in the reachable class cannot move the metric):
+
+```bash
+dark-factory/bench/corpus-bench/refute-corpus-coverage.sh \
+  --derivation d1d2=C8,C6,C10,C11,C2,C16 \
+  --held-out-scope <contest>/map/scope.tsv \
+  --held-out-truth <contest>/truth.tsv --rare-max 2
+```
+
+`COVERAGE-GATE: GO` means the contest's rare(1-2) GT class intersects the attacker-controlled-callee class set.
+**Pre-register before any arm runs:** designate one GO contest as the MEASUREMENT target and a *different* GO
+contest as the TRANSFER target. The gain counts ONLY if the rare-recall Δ is positive on the measurement target
+AND independently positive on the transfer target — a gain that vanishes on transfer is reachability, not
+capability (transfer-null).
+
+**Ratchet (two independent defaults, each gated on catches not wiring).**
+
+- **D1** (`CALLEE_TRUST`, this PR makes the toggle default ON = byte-identical to today) — gate on rare
+  **generation**-recall (D1 is a generation reframe; verified-recall is confounded by the Opus PoC step). Gain
+  survives transfer → default stays ON (documentation ratifies it, no code change). No gain / transfer-null →
+  a SEPARATE PR flips the `hunter.ag`/`run-discovery.sh` default to OFF (D1 becomes opt-in), an honest negative.
+- **D2** (`--vector-hunt`, default OFF) — gate on rare **verified** (PoC-PASS) recall. Gain survives transfer →
+  a SEPARATE PR flips `run-zone-hunt.sh`'s `VECTOR_HUNT=0` default (per the STAGE 4.5 refute-gate default-ON
+  precedent). No gain / transfer-null → stays opt-in, honest negative.
+
+The default-flip (or opt-in revert) is a SEPARATE small PR after the live verdict is recorded on #2157 — never
+in this scaffolding PR (keeps CI green and separates measurement infra from the measured decision).
+
+**#2160 fold-in.** #2160 (depth-log CALLEE-VECTOR harvest) only ADDS candidates to STAGE 4.6, so the D2
+verified-recall Δ measured with #2160 landed is a ceiling and without it a floor. Land #2160 before the live D2
+measurement; if not merged in time, run anyway and quote the D2 Δ as a floor.
+
+**Reproduce (offline).**
+
+```bash
+# the A/B mechanism (mock backend, control-vs-treatment rare-recall Δ=+1)
+dark-factory/bench/corpus-bench/callee-trust-ab.sh --self-test
+# per-stage model attribution over the fixture transcripts (Fable / Opus / fallback)
+dark-factory/bench/corpus-bench/model-attribution.py --self-test
+# the CALLEE_TRUST toggle byte-identity + sentinel suppression (real hunter.ag under mock)
+dark-factory/demo-callee-trust-lens.sh
+# the run-corpus-bench.sh --vector-hunt / --callee-trust pass-throughs
+dark-factory/bench/corpus-bench/run-corpus-bench.sh --self-test
+```
+
+**LIVE (operator step — expensive, NOT CI).** After this PR merges and #2160 lands: coverage-gate the corpus to
+pick the pre-registered measurement + transfer contests; run per arm one run per contest via `callee-trust-ab.sh
+--live` (or `run-corpus-bench.sh --live --id <contest> --callee-trust <0|1> [--vector-hunt] --backend
+flat-cyborg`) with the Fable-analysis / Opus-PoC routing, sandbox, and the fallback killswitches; run
+`model-attribution.py` over the persisted transcripts to prove the analysis stages were 100% Fable and the PoC
+stages Opus; score with `generation-recall.sh` (rare generation-recall) and `--score` (rare verified-recall).
+Archive under `runs/2157-corpus-callee-trust-ab/` (measurement) and `runs/2157-<held-out>-transfer/` (transfer),
+each a README following the #1887 template (arm mapping fixed before numbers, ruler stated, attribution table,
+verdict + ratchet decision, scrubbed paths). Then open the ratchet PR per the verdict.
+
 ## Adding a contest
 
 Append a row to `corpus.tsv` (`id  code_repo  judging_repo  scope_hint`) for any CONCLUDED Sherlock contest

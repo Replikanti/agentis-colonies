@@ -456,7 +456,9 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # mode). demo-discovery-parallel.sh asserts the stub actually receives them.
   # #1865 APPENDIX_FILE/APPENDIX_BASE ride the same rule for the same reason: unregistered => "" => the
   # hunter would concatenate the derived slice with no label and no judging rule, exactly as before the fix.
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE"
+  # #2157 CALLEE_TRUST rides the same rule: getenv() reads the SANITIZED env, so without it here the D3 A/B
+  # OFF toggle would be silently inert (CALLEE_TRUST=0 could never reach hunter.ag). Unset => "" => ON.
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: hunter.ag ends its tick with `learn("hunt", ...)`, and it is that WRITE
   # the flag gates (#1878 measured it on agentis v1.28.0 — `experience.enabled = false` makes learn() raise

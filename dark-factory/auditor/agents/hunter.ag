@@ -561,6 +561,23 @@ fn callee_trust_block(has: bool) -> string {
       + "target in this code is genuinely immutable or hardcoded, this directive simply does not apply.\n\n";
 }
 
+// #2157 D3 A/B toggle: the CALLEE-TRUST directive (#2145) is normally injected unconditionally, so its
+// contribution to rare-recall cannot be measured against a clean control. `CALLEE_TRUST=0` forces the
+// directive off even where the settable-callee detector fires, giving the D3 A/B an OFF arm. Any other
+// value (or the env unset — the default) leaves the directive ON, so the assembled prompt is
+// BYTE-IDENTICAL to the pre-#2157 pipeline whenever the env is absent.
+fn callee_trust_enabled() -> bool {
+    return getenv("CALLEE_TRUST") != "0";
+}
+
+// The directive as it enters the prompt: "" when the toggle is off (control arm) OR the detector found no
+// settable callee, else the full #2145 block. Concatenating "" is a no-op, so an OFF arm's prompt matches
+// the immutable-callee case byte-for-byte and the sentinel gate below auto-suppresses (empty directive).
+fn callee_directive(code: string) -> string {
+    if !callee_trust_enabled() { return ""; }
+    return callee_trust_block(has_attacker_controlled_callee(code));
+}
+
 let dir = getenv("TARGET_DIR");
 let files = getenv("IN_SCOPE");
 let cls = getenv("HUNT_CLASS");
@@ -617,8 +634,9 @@ if len(cons) > 0 {
 // is "" whenever the zone has no external call surface or no settable/computed call target, so an undetected
 // zone's instruction below is BYTE-IDENTICAL to the pre-#2145 one. The sentinel it enables is printed further
 // down — AFTER `instruction` exists — because it is gated on the directive having actually been assembled
-// into the prompt, not merely on the detector having returned true.
-let callee = callee_trust_block(has_attacker_controlled_callee(code));
+// into the prompt, not merely on the detector having returned true. #2157: routed through callee_directive so
+// `CALLEE_TRUST=0` forces the OFF arm; unset/any-other value is ON = byte-identical to before.
+let callee = callee_directive(code);
 
 // The instruction carries the lens (taxonomy class), the brief (invariants + known-issues), and the
 // strict output contract; the code is the prompt payload (matches auditor.ag::classify_evm_llm shape).
