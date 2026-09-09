@@ -39,6 +39,7 @@ DISCOVERY="$HERE/run-discovery.sh"
 FIXDIR="$HERE/fixtures/callee-trust/contracts"
 SETTABLE="$FIXDIR/SettableOracleVault.sol"
 IMMUTABLE="$FIXDIR/ImmutableOracleVault.sol"
+TRANSITIVE="$FIXDIR/TransitiveOracleVault.sol"
 
 FAILS=0
 note() { echo "demo-callee-trust-lens.sh: $*"; }
@@ -46,7 +47,7 @@ ok()   { echo "  [PASS] $*"; }
 bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 skip() { echo "  [SKIP] $*"; }
 
-for f in "$HUNTER" "$TAXONOMY" "$DISCOVERY" "$SETTABLE" "$IMMUTABLE"; do
+for f in "$HUNTER" "$TAXONOMY" "$DISCOVERY" "$SETTABLE" "$IMMUTABLE" "$TRANSITIVE"; do
   [ -f "$f" ] || { note "required file not found: $f" >&2; exit 3; }
 done
 
@@ -268,17 +269,19 @@ fi
 # PART 2 — LIVE UNDER MOCK (needs the agentis binary; clean [SKIP] otherwise)
 # ----------------------------------------------------------------------------------------------------------
 if ! command -v agentis >/dev/null 2>&1; then
-  note "10) live-under-mock sentinel discrimination + byte-identity probe ..."
+  note "10-12) live-under-mock sentinel discrimination + callee-closure arm + byte-identity probe ..."
   skip "no agentis binary on PATH — the mock hunt cells and the extracted-helper probe cannot run"
 else
   note "10) live-under-mock: one real offline hunt cell per fixture (--backend mock, HUNT_CLASS=C8) ..."
-  # _arm <label> <fixture-basename>: stage a one-contract repo + scope + brief, run ONE hunter cell through
-  # run-discovery.sh on the mock backend, print the cell log path.
+  # _arm <label> <fixture-basename> [<scope-token>]: stage a one-contract repo + scope + brief, run ONE hunter
+  # cell through run-discovery.sh on the mock backend, print the cell log path. The optional third argument
+  # overrides the scope token, so an arm can hand the cell a FUNCTION-SLICED `file@fn` entry (#2150) instead of
+  # the whole file.
   _arm() {
-    _label="$1"; _sol="$2"
+    _label="$1"; _sol="$2"; _tok="${3:-contracts/$_sol.sol}"
     _repo="$WORK/$_label-repo"; mkdir -p "$_repo/contracts"
     cp "$FIXDIR/$_sol.sol" "$_repo/contracts/$_sol.sol"
-    printf 'vault | C8 | contracts/%s.sol\n' "$_sol" > "$WORK/$_label-scope.tsv"
+    printf 'vault | C8 | %s\n' "$_tok" > "$WORK/$_label-scope.tsv"
     printf '# brief\nInvariants to break: share accounting is conserved.\nKnown issues to exclude: none.\n' \
       > "$WORK/$_label-brief.md"
     "$DISCOVERY" --repo "$_repo" --scope "$WORK/$_label-scope.tsv" --brief "$WORK/$_label-brief.md" \
@@ -313,7 +316,28 @@ else
     fi
   fi
 
-  note "11) byte-identity probe: the directive is the EMPTY string on the immutable-callee fixture ..."
+  note "11) live-under-mock: the detector fires THROUGH the slicer's same-file callee closure (#2150) ..."
+  # The zone is scoped `contracts/TransitiveOracleVault.sol@deposit` — the external entry point ONLY. Its body
+  # holds no external call; the computed-target poke lives one hop away in the internal `_settleOracle` helper,
+  # which slice-fns.sh's #2150 closure has to pull into the payload for the detector to have anything to see.
+  # This is the arm that fails on the pre-#2150 slicer, and it exercises the REAL path
+  # (run-discovery.sh -> hunter.ag cat_file -> `sh slice-fns.sh <file> '<fns>'`), not the slicer in isolation.
+  TRANS_LOG="$(_arm transitive TransitiveOracleVault "contracts/TransitiveOracleVault.sol@deposit")"
+  if [ ! -f "$TRANS_LOG" ]; then
+    bad "the function-sliced mock hunt cell produced no cell log (run-discovery.sh did not reach hunter.ag)"
+    tail -5 "$WORK/transitive.out" 2>/dev/null | sed 's/^/      /' >&2
+  elif grep -q '^CALLEE-TRUST|vault|C8|1$' "$TRANS_LOG"; then
+    # <n>=1 pins WHICH signal fired: the computed target, which exists only inside the closure-pulled helper.
+    # A 2 or 3 here would mean the fixture leaked a setter or a mutable address state variable into the header
+    # and the arm would prove nothing about the closure.
+    ok "a file@fn scope entry naming only the entry point still reaches the callee: CALLEE-TRUST|vault|C8|1 (computed target, one hop away)"
+  elif grep -q '^CALLEE-TRUST|' "$TRANS_LOG"; then
+    bad "the sentinel fired with the wrong signal count — the fixture leaked a setter/mutable-address signal into the header: $(grep -m1 '^CALLEE-TRUST|' "$TRANS_LOG")"
+  else
+    bad "NO CALLEE-TRUST| sentinel on the function-sliced cell — the same-file callee closure (#2150) did not put _settleOracle in the payload"
+  fi
+
+  note "12) byte-identity probe: the directive is the EMPTY string on the immutable-callee fixture ..."
   # The helpers are EXTRACTED FROM hunter.ag BY LINE RANGE, so this probe measures the shipped code rather
   # than a copy that can drift (the demo-discovery-parallel.sh 18g idiom).
   FRAG="$WORK/detector.frag"; : > "$FRAG"

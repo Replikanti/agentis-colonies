@@ -200,7 +200,12 @@ monotonicity and the not-a-gate property.
 
 - `#`-prefixed and blank lines are ignored; fields are whitespace-trimmed; files are relative to the repo.
 - A big contract is written `file@fn1+fn2+...` (the `slice-fns.sh` slice format) so a deep per-cell read
-  fits the hunter's per-call budget.
+  fits the hunter's per-call budget. The named functions are not the whole payload: `slice-fns.sh` also
+  pulls in the same-file `internal`/`private` functions they transitively call (#2150) — an entry point
+  that delegates its external calls to a helper would otherwise reach the hunter with no call surface in
+  view. The walk is bounded by the slicer's own `SLICE_MAX_DEPTH` (3 hops) and `SLICE_MAX_LINES` (2000)
+  caps, which the pipeline leaves at their defaults; `SLICE_MAX_DEPTH=0` restores the pre-#2150,
+  named-functions-only slice for anyone invoking the slicer directly.
 - A zone carrying the #1861 inheritance appendix gains **at most ONE extra token**, always in that same
   `path@fn1+fn2` slice form and never a bare path — the representative implementor, sliced to the base's
   virtual members and capped by the same `FN_SLICE_CAP = 16` as every other slice. It is bytes, never cells:

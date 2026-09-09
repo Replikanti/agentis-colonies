@@ -1451,6 +1451,28 @@ if [ -x "$REPO_ROOT/dark-factory/demo-callee-trust-lens.sh" ]; then
     fi
 fi
 
+# --- dark-factory same-file callee closure in the function slicer (#2150, sub-milestone D1.1 of epic #2130) ---
+# A `file@fn` slice used to carry the requested functions and the contract header only, so an external entry
+# point that delegates its state writes and external calls to same-file internal helpers reached the hunter as
+# a contract with no call surface in it — a payload-side false negative for every detector that reads the
+# assembled payload, the #2145 attacker-controlled-callee net included. auditor/slice-fns.sh now expands the
+# requested names with the internal/private callees transitively reachable from them, bounded by
+# SLICE_MAX_DEPTH (default 3) and SLICE_MAX_LINES (default 2000), with one stderr note when a cap stops it
+# short of a fixpoint; extraction, header handling, printing and the whole-file fallback are untouched and
+# SLICE_MAX_DEPTH=0 reproduces the pre-#2150 slice byte for byte. demo-slice-closure.sh is pure sh/awk over
+# checked-in fixtures (no agentis, no forge, no network): the transitive walk, both caps and their notes, the
+# depth-0 byte identity against the extraction stage sliced out of the shipped script, the untouched
+# fallbacks, and a shape sanity pass (no duplicates, deterministic order) on the zone-map liquidation contract.
+if [ -x "$REPO_ROOT/dark-factory/demo-slice-closure.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-slice-closure.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: slice-fns.sh same-file callee closure (transitive walk + depth/line caps + truncation note + SLICE_MAX_DEPTH=0 byte identity) (#2150)"
+    else
+        fail "dark-factory: slice-fns.sh same-file callee closure regressed (#2150)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory claude PATH resolver (#2148) ---
 # command -v -a is invalid in bash; every DF_CLAUDE_BIN-free demo arm
 # exercises the real type -aP resolver (fake claude on PATH, self-skip when

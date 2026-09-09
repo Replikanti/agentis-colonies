@@ -14,6 +14,42 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+- **The function slicer now follows same-file internal callees** (#2150, sub-milestone D1.1 of milestone D1
+  #2145, epic #2130). A `file@fn` scope entry produced the contract header plus the named functions and
+  nothing else, but a real contract puts nothing interesting in its external entry point: it delegates the
+  state writes and the external calls to same-file `internal`/`private` helpers. A cell scoped to the entry
+  point therefore received a payload with no call surface in it at all, so every deterministic detector that
+  reads the assembled payload — the #2145 attacker-controlled-callee net first among them — could not fire on
+  a call site that was one hop away, and the hunter could not reason about code it had never been shown. The
+  cause was the PAYLOAD, not the detector. `auditor/slice-fns.sh` now runs a bounded transitive-closure
+  pre-pass BEFORE extraction: it tables every definition in the file (start/end line, body, declared
+  visibility) and expands the requested names with the `internal`/`private` same-file functions reachable
+  from them. Only closure-DISCOVERED callees are visibility-filtered — a requested name is always kept,
+  whatever its visibility — and cross-file callees (interfaces, libraries, inherited members) are
+  deliberately not followed, so the slice stays a slice of one file. Two knobs bound it: `SLICE_MAX_DEPTH`
+  (default 3) call-graph hops, and `SLICE_MAX_LINES` (default 2000, the same ceiling the whole-file fallback
+  already used) on the resulting line count, counted exactly as the printer will emit it (header lines plus
+  each kept function's span). When a cap stops the walk short of a fixpoint, ONE line goes to stderr naming
+  the cap that stopped it and how many callees had been discovered but not taken; the slice on stdout is
+  unaffected. Everything downstream of the name list is untouched — the extraction awk, the header rule, the
+  brace-matched printing and the no-match whole-file fallback are byte-for-byte what they were, and
+  `SLICE_MAX_DEPTH=0` reproduces the pre-#2150 output exactly. The four call sites (`run-discovery.sh`,
+  `gen-briefs.sh`, `verify-findings.sh`, `map-zones.sh`) all gain the larger payload, which is intended: the
+  blind spot was theirs too. New `demo-slice-closure.sh` is the CI floor (pure sh/awk over a checked-in
+  `fixtures/slice-closure/ClosureChain.sol` chain, no agentis / forge / network): the transitive walk, the
+  refusal to pull in unreachable or uncalled functions, both caps and their stderr notes, the depth-0 byte
+  identity measured against the extraction stage sliced out of the shipped script by line range, the
+  untouched fallbacks, and a shape sanity pass (right helpers, no duplicates, deterministic order) on the
+  zone-map liquidation contract. `demo-callee-trust-lens.sh` gains the end-to-end half: a new
+  `fixtures/callee-trust/TransitiveOracleVault.sol` whose only external member delegates the
+  computed-target oracle poke to an internal helper, hunted under `--backend mock` through a
+  `<file>@deposit` scope entry — the real `run-discovery.sh` -> `hunter.ag cat_file` -> `slice-fns.sh` path —
+  asserting `CALLEE-TRUST|vault|C8|1` appears, which it cannot on the pre-#2150 slicer. Both demos are wired
+  into `tools/colony-lint.sh`. What this does NOT claim: that a wider payload makes a hunter GENERATE the
+  vector it was missing. That is measurable only by a live re-hunt of a held-out target and stays an operator
+  step, never a CI gate.
+
 ### Added
 - **Attacker-controlled-callee directive in the hunter** (#2145, milestone D1 of epic #2130). The hunter's
   RULES put "a trusted role acting WITHIN its documented permissions" out of scope; a cell reading an external

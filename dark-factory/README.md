@@ -1170,7 +1170,7 @@ dark-factory/
     methods/gap-stateful.md     # a documented gap the current method-set misses (the #998 invent trigger)
     method-discovery/controls/  # paired Buggy/Safe control corpus (the two-sided adoption gate)
     bug-taxonomy.md             # 23 DeFi bug classes (C1–C23) + per-class hunt lens (the discovery knowledge; C15 = integration-seam/composability, #1644)
-    slice-fns.sh                # Solidity function-slicer (scope `file@fn1+fn2` -> header + named fns)
+    slice-fns.sh                # Solidity function-slicer (scope `file@fn1+fn2` -> header + named fns + the same-file internal/private callees they reach, SLICE_MAX_DEPTH=3 hops / SLICE_MAX_LINES=2000; depth 0 = pre-#2150 behaviour)
     config/colony.example.toml  # forge.type = "none"; cb_budget
     scripts/start-colony.sh     # thin `agentis go` launcher (the legacy auditor.ag pipeline)
     scripts/run-gate-agent.sh   # thin LIVE runner for a single-verdict-line gate .ag, used by the coordinator submission pass (#1509)
