@@ -21,9 +21,10 @@
 #
 # Scope manifest (one subsystem per line; `#` and blank lines ignored):
 #   <subsystem label> | <classid,classid,...> | <file[,file...]>     (files relative to --repo)
-# A file may be FUNCTION-SLICED as `file@fn1+fn2+...` to feed ONLY those functions (+ the contract
-# header) instead of the whole file. Use it for big/complex contracts whose whole-file payload
-# overflows the LLM per-call budget — without it the deep liquidation/redeem cells time out.
+# A file may be FUNCTION-SLICED as `file@fn1+fn2+...` to feed those functions (+ the contract header,
+# + the same-file internal/private callees they transitively reach — #2150, bounded by slice-fns.sh's
+# own 3-hop / 2000-line caps) instead of the whole file. Use it for big/complex contracts whose
+# whole-file payload overflows the LLM per-call budget — without it the deep liquidation cells time out.
 # e.g.
 #   savings + rewards | C1,C6,C11 | contracts/SavingsVault.sol,contracts/RewardsDistributor.sol
 #   vault liquidation | C10       | contracts/Vault.sol@liquidate+seize+_redeem
