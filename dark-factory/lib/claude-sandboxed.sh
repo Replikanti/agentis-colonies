@@ -10,11 +10,11 @@
 # bubblewrap view containing ONLY the toolchain, the target repo, the cell run
 # dir, and the claude auth/config it needs, and denies WebFetch/WebSearch.
 #
-# The five hunt emitters (run-discovery / run-refute / run-invariant-hunt /
-# map-zones / gen-briefs) point agentis-core's `llm.flat_cyborg.target` at this
-# script and export the two bind vars below into the agentis invocation env;
-# `run_flat_cyborg` does not env_clear, so they propagate daemon -> flat-cyborg
-# -> here.
+# The six hunt emitters (run-discovery / run-refute / run-invariant-hunt /
+# map-zones / gen-briefs / run-poc) point agentis-core's `llm.flat_cyborg.target`
+# at this script and export the two bind vars below into the agentis invocation
+# env; `run_flat_cyborg` does not env_clear, so they propagate daemon ->
+# flat-cyborg -> here.
 #
 # FAIL-CLOSED: HUNT_SANDBOX_RUN is mandatory (`:?` aborts loudly) so a missing
 # bind var can never silently run an UNSANDBOXED session that believes it is

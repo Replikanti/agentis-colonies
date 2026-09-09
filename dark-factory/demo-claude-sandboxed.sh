@@ -4,7 +4,7 @@
 # flat-cyborg-driven Claude a bubblewrap view containing ONLY the toolchain, the
 # target repo, and the cell run dir; denies WebFetch/WebSearch; is fail-closed on
 # a missing bind var; falls through (with a loud warning) when bwrap is absent or
-# DF_NO_SANDBOX=1; and every one of the five hunt emitters is wired to it.
+# DF_NO_SANDBOX=1; and every one of the six hunt emitters is wired to it.
 #
 # CI-safe: uses a stub `claude` (DF_CLAUDE_BIN), no real claude / network / LLM.
 # The live filesystem-isolation asserts run only when bwrap is available; without
@@ -118,8 +118,8 @@ case "$_err" in *"bwrap not found"*UNSANDBOXED*) ok "bwrap absent -> falls throu
                *) bad "bwrap-absent path did not print the expected warning: $_err" ;; esac
 
 echo
-echo "demo-claude-sandboxed.sh: 4) static wiring — each of the five hunt emitters sets the target AND exports both bind vars ..."
-for f in run-discovery.sh run-refute.sh run-invariant-hunt.sh map-zones.sh gen-briefs.sh; do
+echo "demo-claude-sandboxed.sh: 4) static wiring — each of the six hunt emitters sets the target AND exports both bind vars ..."
+for f in run-discovery.sh run-refute.sh run-invariant-hunt.sh map-zones.sh gen-briefs.sh run-poc.sh; do
   p="$HERE/$f"
   [ -f "$p" ] || { bad "$f: emitter not found"; continue; }
   # (i) points llm.flat_cyborg.target at THIS wrapper (guarded emission).
@@ -191,7 +191,7 @@ fi
 echo
 if [ "$FAILS" -eq 0 ]; then
   echo "demo-claude-sandboxed.sh: PASS — sandbox hides everything outside the repo + run dir,"
-  echo "                         denies the web tools, is fail-closed, falls through safely, and all five emitters are wired."
+  echo "                         denies the web tools, is fail-closed, falls through safely, and all six emitters are wired."
   exit 0
 fi
 echo "demo-claude-sandboxed.sh: DEMO FAILED — a #2125 sandbox assertion did not hold" >&2
