@@ -234,11 +234,18 @@ note "11) run-zone-hunt.sh OFF byte-identity vs origin/main (every OFF-path line
 # The STRONG proof: every line of origin/main's run-zone-hunt.sh that the OFF path (--vector-hunt absent)
 # actually executes is byte-preserved, so `--vector-hunt` absent == today. Two kinds of change are permitted:
 # (a) the --deep-hunt-only guard, replaced by an OFF-equivalent (asserted above), and (b) any line INSIDE the
-# `if [ "$VECTOR_HUNT" -eq 1 ]; then ... fi` STAGE 4.6 block itself (#2160's depth-harvest glob/comment widening
-# lives entirely there) — the OFF run never enters that block, so edits confined to it cannot change OFF-path
-# behaviour no matter how many lines they touch. A removed origin line found OUTSIDE both of those is a real
-# OFF-path regression. Skipped (not failed) when origin/main is not fetched (a shallow CI checkout), where
-# assertion 10's gating proof still holds.
+# STAGE 4.6 `VECTOR_HUNT` block itself (#2160's depth-harvest glob/comment widening lives entirely there) — the
+# OFF run never enters that block, so edits confined to it cannot change OFF-path behaviour no matter how many
+# lines they touch. The block is excluded by POSITION, via the `# >>> STAGE-4.6-VECTOR-HUNT ... >>>` /
+# `# <<< STAGE-4.6-VECTOR-HUNT <<<` sentinel comments bracketing it — NOT by subtracting its content as a
+# multiset — because a content-based subtraction is fooled the moment an OFF-path line happens to be
+# byte-identical to a line inside the block (e.g. a shared `fi`/`continue`/heredoc line elsewhere in the file):
+# breaking that OFF-path line would then be silently absorbed into the block's own multiset and never show up
+# as "removed", false-passing a real regression (caught in review on #2167). A removed line found OUTSIDE the
+# sentinel-delimited span is a real OFF-path regression. Skipped (not failed) when origin/main is not fetched
+# (a shallow CI checkout), where assertion 10's gating proof still holds.
+VH_BLOCK_START='^# >>> STAGE-4\.6-VECTOR-HUNT \(OFF-path excludes this block\) >>>$'
+VH_BLOCK_END='^# <<< STAGE-4\.6-VECTOR-HUNT <<<$'
 if git -C "$HERE" cat-file -e origin/main:dark-factory/run-zone-hunt.sh 2>/dev/null; then
   git -C "$HERE" show origin/main:dark-factory/run-zone-hunt.sh > "$WORK/rz-origin.sh"
   if cmp -s "$WORK/rz-origin.sh" "$RZH"; then
@@ -246,18 +253,27 @@ if git -C "$HERE" cat-file -e origin/main:dark-factory/run-zone-hunt.sh 2>/dev/n
     # meaningful pre-merge, comparing the wired branch against the still-unwired origin/main).
     note "  [SKIP] origin/main == working tree run-zone-hunt.sh — post-merge steady state; assertion 10's gating proof stands in"
   else
-    # multiset of origin lines NOT present (with >= multiplicity) in the wired version == removed/modified content.
-    comm -23 <(sort "$WORK/rz-origin.sh") <(sort "$RZH") > "$WORK/rz-removed.txt"
-    # The full byte-range of origin's STAGE 4.6 `if [ "$VECTOR_HUNT" -eq 1 ]; then ... fi` block (both anchor
-    # lines are column-0, so the sed range closes on the matching outer `fi`, not an inner nested one).
-    sed -n '/^if \[ "\$VECTOR_HUNT" -eq 1 \]; then$/,/^fi$/p' "$WORK/rz-origin.sh" > "$WORK/rz-vh-block.txt"
-    # Removed lines that fall OUTSIDE the STAGE 4.6 block — these are the only ones that can regress the OFF path.
-    comm -23 <(sort "$WORK/rz-removed.txt") <(sort -u "$WORK/rz-vh-block.txt") > "$WORK/rz-removed-outside.txt"
+    # Strip the STAGE 4.6 block (inclusive) from BOTH files BEFORE comparing, by POSITION. The wired file always
+    # carries the sentinel comments (this PR introduces them), so it always strips via the sentinel range. origin
+    # may or may not have the sentinels yet: this PR's own origin/main (post-#2156, pre-#2160) does NOT, so fall
+    # back to the structural `if [ "$VECTOR_HUNT" -eq 1 ]; then ... fi` anchor there (present since #2156) — the
+    # SAME logical span the sentinels bracket in the wired file, so both sides strip the identical block region.
+    # A pre-#2156 origin/main (neither sentinels nor the if/fi) is left untouched by both deletes (no matching
+    # range -> no-op), degrading safely to a plain byte-diff.
+    if grep -Eq "$VH_BLOCK_START" "$WORK/rz-origin.sh"; then
+      sed -E "/${VH_BLOCK_START}/,/${VH_BLOCK_END}/d" "$WORK/rz-origin.sh" > "$WORK/rz-origin-noblock.sh"
+    else
+      sed '/^if \[ "\$VECTOR_HUNT" -eq 1 \]; then$/,/^fi$/d' "$WORK/rz-origin.sh" > "$WORK/rz-origin-noblock.sh"
+    fi
+    sed -E "/${VH_BLOCK_START}/,/${VH_BLOCK_END}/d" "$RZH" > "$WORK/rz-wired-noblock.sh"
+    # multiset of origin (block-stripped) lines NOT present in the wired (block-stripped) version == the only
+    # candidate OFF-path regressions, now immune to any content collision with the (already-removed) block.
+    comm -23 <(sort "$WORK/rz-origin-noblock.sh") <(sort "$WORK/rz-wired-noblock.sh") > "$WORK/rz-removed-outside.txt"
     OUTSIDE_N="$(awk 'END{print NR}' "$WORK/rz-removed-outside.txt")"
     # shellcheck disable=SC2016  # the literal origin/main guard line, compared verbatim — no expansion
     EXPECT_GUARD='[ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires --deep-hunt" >&2; exit 2; }'
     if [ "$OUTSIDE_N" -eq 0 ] || { [ "$OUTSIDE_N" -eq 1 ] && [ "$(cat "$WORK/rz-removed-outside.txt")" = "$EXPECT_GUARD" ]; }; then
-      ok "every run-zone-hunt.sh line OUTSIDE the STAGE 4.6 VECTOR_HUNT block is byte-preserved (at most the one OFF-equivalent guard replacement) — the OFF path is byte-identical to origin/main"
+      ok "every run-zone-hunt.sh line OUTSIDE the sentinel-delimited STAGE 4.6 block is byte-preserved (at most the one OFF-equivalent guard replacement) — the OFF path is byte-identical to origin/main"
     else
       bad "run-zone-hunt.sh changed $OUTSIDE_N original line(s) OUTSIDE the STAGE 4.6 block beyond the guard (OFF path may have drifted):"
       sed 's/^/      /' "$WORK/rz-removed-outside.txt" >&2
@@ -265,6 +281,48 @@ if git -C "$HERE" cat-file -e origin/main:dark-factory/run-zone-hunt.sh 2>/dev/n
   fi
 else
   note "  [SKIP] origin/main not available in this checkout — assertion 10's gating proof stands in"
+fi
+
+note "11b) assertion 11 self-check (independent of origin/main availability): an OFF-path line break byte-identical to block content (the #2167 review finding) IS caught; an in-block-only edit is still ignored ..."
+# Self-contained against the WIRED tree ($RZH) itself, exercising the SAME sentinel-strip mechanism assertion 11
+# uses — independent of whether origin/main is fetched or already carries the sentinels.
+# (a) break the OFF-path occurrence of a line that is a byte-for-byte DUPLICATE of a line inside the STAGE 4.6
+# block (the exact #2167 review repro: run-zone-hunt.sh's STAGE 4.5 python classifier's `return "C-invariant"`
+# also appears, verbatim, inside the STAGE 4.6 block) — a content-based (non-positional) exclusion would
+# silently absorb this break into the block's own multiset and never flag it; the positional exclusion must not.
+DUP_LINE='    return "C-invariant"'
+DUP_COUNT="$(grep -Fxc "$DUP_LINE" "$RZH" 2>/dev/null || echo 0)"
+if [ "$DUP_COUNT" -ge 2 ]; then
+  awk -v dup="$DUP_LINE" -v n=0 '
+    { if ($0 == dup) { n++; if (n == 1) { print "    return \"C-BROKEN\""; next } } print }
+  ' "$RZH" > "$WORK/rz-brokenoff.sh"
+  sed -E "/${VH_BLOCK_START}/,/${VH_BLOCK_END}/d" "$RZH" > "$WORK/rz-pristine-noblock.sh"
+  sed -E "/${VH_BLOCK_START}/,/${VH_BLOCK_END}/d" "$WORK/rz-brokenoff.sh" > "$WORK/rz-brokenoff-noblock.sh"
+  comm -23 <(sort "$WORK/rz-pristine-noblock.sh") <(sort "$WORK/rz-brokenoff-noblock.sh") > "$WORK/rz-selfcheck-a.txt"
+  if [ -s "$WORK/rz-selfcheck-a.txt" ]; then
+    ok "self-check (a): breaking the OFF-path line that duplicates block content IS flagged as a removed line (positional exclusion holds; a content-based exclusion would have hidden this)"
+  else
+    bad "self-check (a) REGRESSED: breaking an OFF-path line byte-identical to block content was NOT flagged — assertion 11 would false-pass this exact review finding"
+  fi
+else
+  note "  [SKIP] self-check (a): the known OFF-path/in-block duplicate line text was not found >= twice verbatim (source drifted) — assertion 11's positional logic still holds structurally"
+fi
+# (b) an edit confined strictly INSIDE the sentinel block must still be ignored (no false failure). Plain
+# substring matching (index(), not regex) avoids any awk-dialect escaping ambiguity over the literal markers.
+awk -v startpat='# >>> STAGE-4.6-VECTOR-HUNT (OFF-path excludes this block) >>>' \
+    -v endpat='# <<< STAGE-4.6-VECTOR-HUNT <<<' -v ins=0 '
+  { if (index($0, startpat) == 1) ins=1
+    if (ins==1 && index($0, "VECTOR_HUNT_MAX_VECTORS") > 0) { print "  # #2160 self-check in-block no-op edit"; print; next }
+    print
+    if (index($0, endpat) == 1) ins=0
+  }
+' "$RZH" > "$WORK/rz-inblockedit.sh"
+sed -E "/${VH_BLOCK_START}/,/${VH_BLOCK_END}/d" "$WORK/rz-inblockedit.sh" > "$WORK/rz-inblockedit-noblock.sh"
+sed -E "/${VH_BLOCK_START}/,/${VH_BLOCK_END}/d" "$RZH" > "$WORK/rz-pristine-noblock2.sh"
+if cmp -s "$WORK/rz-pristine-noblock2.sh" "$WORK/rz-inblockedit-noblock.sh"; then
+  ok "self-check (b): an edit confined inside the sentinel block leaves the block-stripped comparison unchanged (in-block edits never false-fail assertion 11)"
+else
+  bad "self-check (b) REGRESSED: an in-block-only edit changed the block-stripped comparison"
 fi
 
 note "12) STAGE 4.6 ON: run-zone-hunt.sh --deep-hunt-only --vector-hunt routes each zone to the engine + merges only PASS ..."
