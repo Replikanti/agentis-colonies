@@ -1451,6 +1451,21 @@ if [ -x "$REPO_ROOT/dark-factory/demo-callee-trust-lens.sh" ]; then
     fi
 fi
 
+# --- dark-factory claude PATH resolver (#2148) ---
+# command -v -a is invalid in bash; every DF_CLAUDE_BIN-free demo arm
+# exercises the real type -aP resolver (fake claude on PATH, self-skip when
+# a copy of the wrapper is named claude and sorts first, empty PATH -> 127).
+# No real claude / bwrap / network required.
+if [ -x "$REPO_ROOT/dark-factory/demo-claude-sandboxed.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-claude-sandboxed.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: claude-sandboxed.sh PATH resolver + isolation + fail-closed/fallthrough/wiring (#2125, #2148)"
+    else
+        fail "dark-factory: claude-sandboxed.sh regressed (#2125, #2148)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory experience/learning flags regression guard (#1881 + #1878, the #1866/#1877 flip) ---
 # #1877 flipped experience.enabled/learning.enabled to false on run-discovery.sh (STAGE 3 hunter) and
 # run-refute.sh (STAGE 4 refute gate) as "structurally inert". What the flag actually gates is the `learn()`
