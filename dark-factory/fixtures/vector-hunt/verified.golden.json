@@ -1,0 +1,19 @@
+{
+  "verified": [
+    {
+      "location": "Vault.sol:executeDeposit",
+      "file": "Vault.sol",
+      "class": "C-erc4626",
+      "severity": "High",
+      "exploit": "Under the reentrancy-state-consistency economic invariant, the attacker-controlled callee oracle.getPrice() reached from executeDeposit can violate it via a reentrant hazard: treat the callee as unknown code (it may reenter, revert, return arbitrary data, or consume all forwarded gas) and check the caller's state at the exact moment control passes to it.",
+      "poc_sketch": "Under the reentrancy-state-consistency economic invariant, the attacker-controlled callee oracle.getPrice() reached from executeDeposit can violate it via a reentrant hazard: treat the callee as unknown code (it may reenter, revert, return arbitrary data, or consume all forwarded gas) and check the caller's state at the exact moment control passes to it.",
+      "verdict": "FINDING",
+      "reason": "concrete-exploit PoC reproduced the enumerated attack vector",
+      "source": "vector-hunt",
+      "vector_hash": "6300b4748a8d2dca9c0e759b770b1356eec466a627aeac781bdff1f776ebc5f7"
+    }
+  ],
+  "totals": {
+    "verified": 1
+  }
+}

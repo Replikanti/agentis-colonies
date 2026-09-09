@@ -1312,6 +1312,23 @@ if [ -x "$REPO_ROOT/dark-factory/demo-deep-hunt-refute-gate.sh" ]; then
     fi
 fi
 
+# --- dark-factory STAGE 4.6 vector-hunt engine: invariant-driven vector enumeration -> per-vector forge-verify ---
+# run-vector-hunt.sh crosses a GENERIC economic-invariant catalog with D1's (#2145) code-derived CALLEE-VECTOR|
+# candidates, drives EACH enumerated vector through the concrete-PoC gate under a forge slot, and merges ONLY
+# reproduced (PoC-PASS) vectors into verified_findings.json (source=vector-hunt). demo-vector-hunt.sh is pure
+# bash/python3 driving a fast offline stub through the EXISTING --poc-runner seam (no live agentis / forge /
+# network): asserts the golden VECTOR| set (cap / content-hash dedup / dismissed-exclusion), forge-slot
+# ownership, the PASS-only merge golden, the resume no-op, and never-submit.
+if [ -x "$REPO_ROOT/dark-factory/demo-vector-hunt.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-vector-hunt.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: vector-hunt engine (run-vector-hunt.sh: invariant-driven vector enumeration -> per-vector forge-verify -> PASS-only merge) (#2156)"
+    else
+        fail "dark-factory: vector-hunt engine regressed (#2156)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory gap-remediation policy: classification contract + decision rule (#1828 M1/M2) ---
 # lib/gap-policy.py turns a #1830 coverage record into one of four verbs (rehunt_now / raise_budget_and_rehunt /
 # remap_target / give_up). It NEVER re-derives #1830's classification — it shells out to lib/zone-coverage.py —

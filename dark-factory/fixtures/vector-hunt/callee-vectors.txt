@@ -1,0 +1,8 @@
+# Fixed CALLEE-VECTOR| lines (D1 #2145 shape) for the offline vector-hunt demo. Two CANDIDATE hazards seed a
+# PoC; one is an exact duplicate (proves content-hash dedup); one is `dismissed:` (proves a dismissed vector
+# NEVER seeds a PoC). Generic shapes — no real protocol.
+CALLEE-VECTOR|executeDeposit|oracle.getPrice()|reentrant|CANDIDATE
+CALLEE-VECTOR|executeDeposit|oracle.getPrice()|reentrant|CANDIDATE
+CALLEE-VECTOR|withdraw|token.transfer(to, amt)|return-value|CANDIDATE
+CALLEE-VECTOR|claim|hook.onClaim()|gas|CANDIDATE
+CALLEE-VECTOR|setFee|admin.reconfigure()|reentrant|dismissed: role-gated and CEI order holds at the call site
