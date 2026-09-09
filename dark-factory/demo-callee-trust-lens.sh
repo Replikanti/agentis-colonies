@@ -64,13 +64,13 @@ HUNTER_FLAT="$(tr '\n' ' ' < "$HUNTER" | sed 's/"[[:space:]]*+[[:space:]]*"//g')
 # PART 1 — SOURCE-GUARD (CI floor: grep/awk only)
 # ----------------------------------------------------------------------------------------------------------
 note "1) hunter.ag declares the settable-callee detector helpers ..."
-DETECTOR_FNS="has_low_level_call_surface interface_call_pattern is_view_idiom_method has_interface_call_surface has_call_surface address_setter_pattern has_address_setter mutable_address_state_pattern has_mutable_address_state computed_target_pattern is_plain_cast_callee has_computed_call_target signal_score settable_signal_count has_settable_target has_attacker_controlled_callee callee_trust_marker callee_trust_block"
+DETECTOR_FNS="has_low_level_call_surface interface_call_pattern is_view_idiom_method has_interface_call_surface has_call_surface address_setter_pattern has_address_setter mutable_address_state_pattern has_mutable_address_state computed_target_pattern is_plain_cast_callee has_computed_call_target signal_score settable_signal_count has_settable_target has_attacker_controlled_callee callee_trust_marker callee_trust_block callee_trust_enabled callee_directive"
 MISSING_FN=""
 for fn in $DETECTOR_FNS; do
   grep -q "^fn $fn(" "$HUNTER" || MISSING_FN="$MISSING_FN $fn"
 done
 if [ -z "$MISSING_FN" ]; then
-  ok "all 18 detector/directive helpers are declared in hunter.ag"
+  ok "all 20 detector/directive/toggle helpers are declared in hunter.ag"
 else
   bad "hunter.ag is missing detector helper(s):$MISSING_FN"
 fi
@@ -144,10 +144,31 @@ if grep -q '^  + callee$' "$HUNTER" && grep -A1 '^  + callee$' "$HUNTER" | grep 
 else
   bad "the '+ callee' splice is gone or no longer sits directly before '+ focus' in the instruction chain"
 fi
-if grep -q 'let callee = callee_trust_block(has_attacker_controlled_callee(code));' "$HUNTER"; then
-  ok "the block is derived from the detector over the assembled payload, once per cell"
+if grep -q 'let callee = callee_directive(code);' "$HUNTER"; then
+  ok "the block is derived from the detector over the assembled payload, once per cell (via callee_directive)"
 else
-  bad "the 'let callee = callee_trust_block(has_attacker_controlled_callee(code));' binding is gone"
+  bad "the 'let callee = callee_directive(code);' binding is gone"
+fi
+# #2157 D3 A/B toggle: callee_directive() gates the #2145 block on the CALLEE_TRUST env so the A/B has an OFF
+# arm. It must (a) default ON = wrap callee_trust_block(has_attacker_controlled_callee(code)) unchanged, and
+# (b) return "" when disabled, so CALLEE_TRUST=0 forces the directive off even where the detector fires.
+if grep -A2 '^fn callee_trust_enabled(' "$HUNTER" | grep -q 'return getenv("CALLEE_TRUST") != "0";'; then
+  ok "callee_trust_enabled() is ON unless CALLEE_TRUST=0 (unset/any-other value = default ON = byte-identical)"
+else
+  bad "callee_trust_enabled() no longer reads getenv(\"CALLEE_TRUST\") != \"0\" (the OFF arm would be unreachable)"
+fi
+if grep -A2 '^fn callee_directive(' "$HUNTER" | grep -q 'if !callee_trust_enabled() { return ""; }' \
+   && grep -A3 '^fn callee_directive(' "$HUNTER" | grep -q 'return callee_trust_block(has_attacker_controlled_callee(code));'; then
+  ok "callee_directive() returns \"\" when disabled, else the unchanged #2145 block (ON = pre-#2157 behaviour)"
+else
+  bad "callee_directive() no longer \"\"-gates on the toggle while otherwise wrapping the unchanged #2145 block"
+fi
+# The toggle is silently inert unless CALLEE_TRUST rides run-discovery.sh's exec.env_passthrough (getenv reads
+# the SANITISED env — the #1426/#1428 failure mode the DEPTH_TARGET/APPENDIX allowlist entries guard against).
+if grep -q '^  echo "exec.env_passthrough = .*,CALLEE_TRUST"' "$DISCOVERY"; then
+  ok "run-discovery.sh registers CALLEE_TRUST on exec.env_passthrough (the OFF toggle can reach hunter.ag)"
+else
+  bad "run-discovery.sh does NOT pass CALLEE_TRUST through exec.env_passthrough — CALLEE_TRUST=0 would be inert"
 fi
 
 note "4) the CALLEE-TRUST sentinel and its honesty gate ..."
@@ -332,6 +353,20 @@ else
     fi
   fi
 
+  note "10b) live-under-mock: CALLEE_TRUST=0 suppresses the directive+sentinel even where the detector fires (#2157) ..."
+  # Same settable fixture that fired the sentinel in note 10, but with the D3 OFF toggle set. The directive
+  # is "" so the marker is absent from the instruction and the honesty-gated sentinel is suppressed — the A/B
+  # control arm. This is the whole-pipeline proof (run-discovery.sh -> env_passthrough -> hunter.ag getenv).
+  OFF_LOG="$(CALLEE_TRUST=0 _arm settable-off SettableOracleVault)"
+  if [ ! -f "$OFF_LOG" ]; then
+    bad "the CALLEE_TRUST=0 mock hunt cell produced no cell log (run-discovery.sh did not reach hunter.ag)"
+    tail -5 "$WORK/settable-off.out" 2>/dev/null | sed 's/^/      /' >&2
+  elif grep -q 'CALLEE-TRUST' "$OFF_LOG"; then
+    bad "settable-callee fixture with CALLEE_TRUST=0: a CALLEE-TRUST| sentinel still appeared — the OFF toggle did not reach hunter.ag (env_passthrough gap?)"
+  else
+    ok "settable-callee fixture with CALLEE_TRUST=0: NO CALLEE-TRUST| sentinel — the OFF arm suppresses the directive end-to-end (control arm is clean)"
+  fi
+
   note "11) live-under-mock: the detector fires THROUGH the slicer's same-file callee closure (#2150) ..."
   # The zone is scoped `contracts/TransitiveOracleVault.sol@deposit` — the external entry point ONLY. Its body
   # holds no external call; the computed-target poke lives one hop away in the internal `_settleOracle` helper,
@@ -369,7 +404,7 @@ else
     SQ="'"
     SB="$WORK/probe"; mkdir -p "$SB"
     ( cd "$SB" && agentis init >/dev/null 2>&1 ) || true
-    printf 'exec.env_passthrough = FIXTURE\n' > "$SB/.agentis/config"
+    printf 'exec.env_passthrough = FIXTURE,CALLEE_TRUST\n' > "$SB/.agentis/config"
     {
       printf 'cb 300000;\n\n'
       cat "$FRAG"
@@ -378,11 +413,25 @@ else
       # out of the format string (literal glyphs only — no \xHH escapes, which dash's printf does not expand).
       # shellcheck disable=SC2016  # ${p} is an .ag interpolation in the generated probe, not a shell expansion
       printf 'let code = exec sh "sed -n %s1,2000p%s ${p}";\n' "$SQ" "$SQ"
+      # BLOCKLEN = the raw #2145 block (detector only, toggle-independent). DIRLEN = what actually enters the
+      # prompt after the #2157 CALLEE_TRUST gate — so DIRLEN==BLOCKLEN proves the default is byte-identical to
+      # pre-#2157 and DIRLEN==0 (under CALLEE_TRUST=0) proves the OFF arm suppresses even a firing detector.
       printf 'print("BLOCKLEN=" + to_string(len(callee_trust_block(has_attacker_controlled_callee(code)))));\n'
+      printf 'print("DIRLEN=" + to_string(len(callee_directive(code))));\n'
     } > "$SB/probe.ag"
     _blocklen() {
       _bl="$( cd "$SB" && FIXTURE="$1" agentis go probe.ag --enable-exec 2>&1 | grep '^BLOCKLEN=' | tail -1 )"  # no-pii: the probe never calls prompt() — it only reads a checked-in Solidity fixture and prints a length
       printf '%s\n' "${_bl#BLOCKLEN=}"
+    }
+    # _dirlen <fixture> <callee-trust-value|"">: the toggle-gated directive length. An empty second argument
+    # runs with CALLEE_TRUST UNSET (the default-ON case).
+    _dirlen() {
+      if [ -n "$2" ]; then
+        _dl="$( cd "$SB" && FIXTURE="$1" CALLEE_TRUST="$2" agentis go probe.ag --enable-exec 2>&1 | grep '^DIRLEN=' | tail -1 )"  # no-pii: length-only probe, no prompt()
+      else
+        _dl="$( cd "$SB" && FIXTURE="$1" agentis go probe.ag --enable-exec 2>&1 | grep '^DIRLEN=' | tail -1 )"  # no-pii: length-only probe, no prompt()
+      fi
+      printf '%s\n' "${_dl#DIRLEN=}"
     }
     SET_LEN="$(_blocklen "$SETTABLE")"
     IMM_LEN="$(_blocklen "$IMMUTABLE")"
@@ -396,6 +445,31 @@ else
       0) bad "settable-callee fixture: the injected block is empty — the directive would never reach a prompt" ;;
       *) ok "settable-callee fixture: the injected block is $SET_LEN bytes (the directive is really assembled)" ;;
     esac
+
+    note "12b) #2157 CALLEE_TRUST toggle: default-ON is byte-identical, CALLEE_TRUST=0 suppresses a firing detector ..."
+    # Default ON (env UNSET): the gated directive that enters the prompt equals the raw detector block, so an
+    # unset env leaves the pipeline byte-identical to pre-#2157.
+    DIR_DEFAULT="$(_dirlen "$SETTABLE" "")"
+    if [ "$DIR_DEFAULT" = "$SET_LEN" ] && [ "$SET_LEN" != "0" ] 2>/dev/null; then
+      ok "CALLEE_TRUST unset (default): callee_directive() = $DIR_DEFAULT bytes = the raw #2145 block — byte-identical to pre-#2157"
+    else
+      bad "CALLEE_TRUST unset: callee_directive() ($DIR_DEFAULT) != the raw #2145 block ($SET_LEN) — the default is NOT byte-identical"
+    fi
+    # OFF arm: CALLEE_TRUST=0 forces the directive to "" EVEN ON the settable fixture where the detector fires,
+    # so the control arm's prompt matches the immutable-callee (no-directive) case byte-for-byte.
+    DIR_OFF="$(_dirlen "$SETTABLE" "0")"
+    case "$DIR_OFF" in
+      0) ok "CALLEE_TRUST=0 on the settable fixture: callee_directive() is \"\" (0 bytes) — the OFF arm is byte-identical to the no-directive case even where the detector fires" ;;
+      ''|*[!0-9]*) bad "the toggle probe did not complete under CALLEE_TRUST=0 (got '$DIR_OFF')" ;;
+      *) bad "CALLEE_TRUST=0: callee_directive() is $DIR_OFF bytes on the settable fixture — the OFF arm does NOT suppress the directive" ;;
+    esac
+    # Explicit ON (CALLEE_TRUST=1) matches the default: any value other than 0 is ON.
+    DIR_ON="$(_dirlen "$SETTABLE" "1")"
+    if [ "$DIR_ON" = "$SET_LEN" ] 2>/dev/null; then
+      ok "CALLEE_TRUST=1: callee_directive() = $DIR_ON bytes = the raw #2145 block (any non-0 value is ON)"
+    else
+      bad "CALLEE_TRUST=1: callee_directive() ($DIR_ON) != the raw #2145 block ($SET_LEN)"
+    fi
   fi
 fi
 

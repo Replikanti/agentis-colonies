@@ -128,6 +128,12 @@ TOTAL_DEPTH_CELLS="36"
 # #1830 breadth-side caps: pure pass-through, no bench policy. 0 = OFF = not forwarded = byte-identical.
 ZONE_CELL_BUDGET="0"
 RUN_CELL_BUDGET="0"
+# #2157: the D3 A/B pass-throughs. VECTOR_HUNT 0 = OFF = the run-zone-hunt.sh invocation gains NO --vector-hunt
+# argument (byte-identical to before). VECTOR_HUNT_MAX_VECTORS empty = run-zone-hunt.sh owns the default; only a
+# set value is forwarded. CALLEE_TRUST_ARG empty = the pipeline default (ON); "0" forces the control arm, "1"
+# the treatment arm — exported into the --hunt env so hunter.ag's getenv reads it (via the #2157 allowlist).
+VECTOR_HUNT="0" ; VECTOR_HUNT_MAX_VECTORS=""
+CALLEE_TRUST_ARG=""
 JUDGE="off" ; JUDGE_CMD="" ; JUDGE_CACHE="" ; JUDGE_LOG="" ; JUDGE_BATCH="" ; JUDGE_MINCONF=""
 GT_DUPES="" ; GT_DUPES_MINCONF="" ; NO_GT_DUPES=0
 DO_SELFTEST=0 ; DO_FETCH=0 ; DO_GT=0 ; DO_DUPES=0 ; DO_HUNT=0 ; DO_SCORE=0 ; ANY_ACTION=0
@@ -152,6 +158,9 @@ while [ $# -gt 0 ]; do case "$1" in
   --total-depth-cells) nv "$#" "$1"; TOTAL_DEPTH_CELLS="$2"; shift 2;;
   --zone-cell-budget) nv "$#" "$1"; ZONE_CELL_BUDGET="$2"; shift 2;;
   --run-cell-budget) nv "$#" "$1"; RUN_CELL_BUDGET="$2"; shift 2;;
+  --vector-hunt) VECTOR_HUNT=1; shift;;
+  --vector-hunt-max-vectors) nv "$#" "$1"; VECTOR_HUNT_MAX_VECTORS="$2"; shift 2;;
+  --callee-trust) nv "$#" "$1"; CALLEE_TRUST_ARG="$2"; shift 2;;
   --min-overlap) nv "$#" "$1"; MINOV="$2"; shift 2;;
   --agentis)     nv "$#" "$1"; AGENTIS="$2"; shift 2;;
   --json)        JSON=1; shift;;
@@ -190,6 +199,20 @@ esac
 case "$RUN_CELL_BUDGET" in
   ''|*[!0-9]*) echo "run-corpus-bench.sh: --run-cell-budget must be a non-negative integer (got '$RUN_CELL_BUDGET')" >&2; exit 2 ;;
 esac
+# #2157: same fail-fast posture — a typo'd D3 knob must fail before a single contest is hunted. The cap uses the
+# positive-integer shape run-zone-hunt.sh itself enforces; --callee-trust is a strict 0|1 (the two A/B arms).
+if [ -n "$VECTOR_HUNT_MAX_VECTORS" ]; then
+  case "$VECTOR_HUNT_MAX_VECTORS" in
+    ''|*[!0-9]*) echo "run-corpus-bench.sh: --vector-hunt-max-vectors must be a positive integer (got '$VECTOR_HUNT_MAX_VECTORS')" >&2; exit 2 ;;
+  esac
+  [ "$VECTOR_HUNT_MAX_VECTORS" -ge 1 ] || { echo "run-corpus-bench.sh: --vector-hunt-max-vectors must be >= 1 (got '$VECTOR_HUNT_MAX_VECTORS')" >&2; exit 2; }
+fi
+if [ -n "$CALLEE_TRUST_ARG" ]; then
+  case "$CALLEE_TRUST_ARG" in
+    0|1) ;;
+    *) echo "run-corpus-bench.sh: --callee-trust must be 0 (control) or 1 (treatment) (got '$CALLEE_TRUST_ARG')" >&2; exit 2 ;;
+  esac
+fi
 [ "$ANY_ACTION" -eq 1 ] || DO_SELFTEST=1
 
 say() { echo "run-corpus-bench.sh: $*" >&2; }
@@ -260,6 +283,32 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
     exit 1
   fi
 
+  # Fourth assertion (#2157): the D3 pass-throughs fail fast on a bad value (same posture as the depth knobs)
+  # and are forwarded byte-identically-when-absent. The bad-value checks re-invoke this script in a SUB-process
+  # with a bad flag (which exits 2 at validation, BEFORE reaching this self-test again — no recursion).
+  if "$0" --callee-trust 9 --self-test >/dev/null 2>&1; then
+    say "SELF-TEST: --callee-trust 9 was accepted (must be 0|1) -> FAIL"; exit 1
+  else
+    say "SELF-TEST: --callee-trust rejects a value other than 0|1 (fail-fast) -> PASS"
+  fi
+  if "$0" --vector-hunt-max-vectors 0 --self-test >/dev/null 2>&1; then
+    say "SELF-TEST: --vector-hunt-max-vectors 0 was accepted (must be >=1) -> FAIL"; exit 1
+  else
+    say "SELF-TEST: --vector-hunt-max-vectors rejects a non-positive integer (fail-fast) -> PASS"
+  fi
+  # Forwarding idiom (byte-identical when absent, present when set): --vector-hunt / its cap forward through the
+  # ${VAR:+...} idiom and CALLEE_TRUST rides an `env` prefix, so an unset arm leaves the run-zone-hunt.sh argv+env
+  # untouched. Asserted against this script's own source (a behavioral end-to-end proof of the same forwarding
+  # through the REAL run-zone-hunt.sh lives in callee-trust-ab.sh --self-test).
+  if grep -Fq '${VECTOR_HUNT_ARG:+--vector-hunt}' "$0" \
+     && grep -Fq '${VEC_MAX_ARG:+--vector-hunt-max-vectors "$VEC_MAX_ARG"}' "$0" \
+     && grep -Fq '${CALLEE_TRUST_ARG:+env CALLEE_TRUST="$CALLEE_TRUST_ARG"}' "$0" \
+     && grep -Eq '^VECTOR_HUNT="0" ;' "$0"; then
+    say "SELF-TEST: --vector-hunt / --vector-hunt-max-vectors / --callee-trust forward via the byte-identical-when-absent idiom (default OFF) -> PASS"
+  else
+    say "SELF-TEST: the D3 pass-through forwarding idiom is missing or no longer default-OFF -> FAIL"; exit 1
+  fi
+
   [ "$ANY_ACTION" -eq 1 ] && [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
 fi
 [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
@@ -328,6 +377,17 @@ if [ "$DO_HUNT" -eq 1 ]; then
   [ -n "$ZONE_DEPTH_LENS_QUOTA" ] && say "HUNT: depth allocation pinned to --zone-depth-lens-quota $ZONE_DEPTH_LENS_QUOTA (#1850) — lenses per location per round; state it next to any recall number"
   [ -n "$TOTAL_DEPTH_ARG" ] && say "HUNT: total depth bounded at $TOTAL_DEPTH_ARG cell(s) per contest (--total-depth-cells, #1880) — the EFFECTIVE per-zone depth is min($DEPTH_ARG, $TOTAL_DEPTH_ARG / zone count) and is recorded in coverage/zone-coverage.json as budget.depth_per_zone; quote THAT, not the nominal flag. Pass --total-depth-cells 0 for the uncapped pre-#1880 behaviour"
   { [ -n "$ZONE_BUDGET_ARG" ] || [ -n "$RUN_BUDGET_ARG" ]; } && say "HUNT: breadth cell budget forwarded (#1830): zone ${ZONE_BUDGET_ARG:-off}, run ${RUN_BUDGET_ARG:-off} — a run pool DENIES whole zones, so state the coverage record with any recall number"
+  # #2156/#2157: the D2 vector-hunt lens (+ its per-zone cap) and the D1 CALLEE_TRUST arm toggle. VECTOR_HUNT=0
+  # leaves VECTOR_HUNT_ARG empty, so the run-zone-hunt.sh argv gains NO --vector-hunt (byte-identical). The cap
+  # forwards only when the lens is on AND the cap is set. CALLEE_TRUST rides the hunt ENV (an env var hunter.ag's
+  # getenv reads), not an argv flag, so it is exported per-invocation only when the operator pinned an arm.
+  VECTOR_HUNT_ARG="" ; VEC_MAX_ARG=""
+  if [ "$VECTOR_HUNT" -eq 1 ] 2>/dev/null; then
+    VECTOR_HUNT_ARG=1
+    [ -n "$VECTOR_HUNT_MAX_VECTORS" ] && VEC_MAX_ARG="$VECTOR_HUNT_MAX_VECTORS"
+  fi
+  [ -n "$VECTOR_HUNT_ARG" ] && say "HUNT: vector-hunt STAGE 4.6 ON (--vector-hunt, #2156) — this ADDS the D2 vector-enumeration lens; a recall number from this run is not cost-comparable to a vector-hunt-off one${VEC_MAX_ARG:+ (cap $VEC_MAX_ARG/zone)}"
+  [ -n "$CALLEE_TRUST_ARG" ] && say "HUNT: CALLEE_TRUST=$CALLEE_TRUST_ARG forced into the hunt env (#2157 D1 A/B toggle) — 0 = control (directive OFF), 1 = treatment (directive ON); unset = pipeline default (ON)"
   while IFS=$'\t' read -r id _code _judging project_subdir scope_hint; do
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
@@ -335,6 +395,8 @@ if [ "$DO_HUNT" -eq 1 ]; then
     code_dir="$WORK/$id/code/$project_subdir"
     [ -d "$code_dir" ] || { echo "run-corpus-bench.sh: [$id] no cloned code at $code_dir (run --fetch first)" >&2; continue; }
     say "HUNT: [$id] running the real federation (run-zone-hunt.sh --backend $BACKEND) ..."
+    # #2157: CALLEE_TRUST rides an `env` prefix so an unset arm produces a byte-identical argv+env to before.
+    ${CALLEE_TRUST_ARG:+env CALLEE_TRUST="$CALLEE_TRUST_ARG"} \
     "$ZONEHUNT" --repo "$code_dir" --out "$WORK/$id/zone-hunt-out" --backend "$BACKEND" --jobs "$JOBS" \
       --agentis "$AGENTIS" ${scope_hint:+--scope-hint "$scope_hint"} \
       ${DEPTH_ARG:+--zone-depth-cells "$DEPTH_ARG"} \
@@ -342,6 +404,8 @@ if [ "$DO_HUNT" -eq 1 ]; then
       ${TOTAL_DEPTH_ARG:+--total-depth-cells "$TOTAL_DEPTH_ARG"} \
       ${ZONE_BUDGET_ARG:+--zone-cell-budget "$ZONE_BUDGET_ARG"} \
       ${RUN_BUDGET_ARG:+--run-cell-budget "$RUN_BUDGET_ARG"} \
+      ${VECTOR_HUNT_ARG:+--vector-hunt} \
+      ${VEC_MAX_ARG:+--vector-hunt-max-vectors "$VEC_MAX_ARG"} \
       || say "  [$id] run-zone-hunt.sh exited non-zero; scoring whatever it produced"
   done < "$CORPUS"
 fi

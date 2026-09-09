@@ -1,0 +1,7 @@
+# zones.fixture.txt — canned substrate classification for the #2157 CALLEE-TRUST A/B self-test
+# (map-zones.sh --fixture). One `ZONE|<id>|<name>|<class-csv>|<description>` line per zone, keyed by the zone
+# id map-zones.sh derives from each directory (slug of the relative path: src -> `src`). The `CUSTODY|<id>|..`
+# line DECLARES the value-custody flag on the offline path (the .ag is not run on --fixture), so zones.json's
+# value_custody is deterministic and STAGE 4.6 enumerates the zone.
+ZONE|src|value vault|C6,C10|ERC4626-style deposit/withdraw share accounting reached through a settable oracle callee
+CUSTODY|src|true

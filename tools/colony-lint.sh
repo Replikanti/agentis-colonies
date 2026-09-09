@@ -1937,6 +1937,39 @@ if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/deep-hunt-ab.sh" ]; then
     fi
 fi
 
+# --- dark-factory CALLEE-TRUST / vector-hunt rare-recall A/B (#2157, milestone D3, epic #2130) ---
+# callee-trust-ab.sh --self-test drives run-zone-hunt.sh over fixtures/callee-trust-ab/ TWICE through one
+# --agentis stub (no network / LLM / forge): a CONTROL arm (CALLEE_TRUST=0, no --vector-hunt = the pre-D1/D2
+# pipeline) and a TREATMENT arm (CALLEE_TRUST=1, --vector-hunt = D1 surfaces the attacker-controlled-callee
+# vector, D2 forge-verifies it via the shared poc-runner-stub), and asserts the treatment catches a RARE truth
+# row (score-match.py HIT) that the control MISSES — the ON-vs-OFF rare-recall delta, proven offline. The real
+# --live rare-tier measurement is operator-run on an isolated non-contending zone, never on CI.
+if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/callee-trust-ab.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/bench/corpus-bench/callee-trust-ab.sh" --self-test 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: CALLEE-TRUST/vector-hunt rare-recall A/B self-test (#2157)"
+    else
+        fail "dark-factory: CALLEE-TRUST/vector-hunt rare-recall A/B self-test regressed (#2157)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- dark-factory per-stage model attribution (#2157, milestone D3, epic #2130) ---
+# demo-model-attribution.sh runs model-attribution.py --self-test over checked-in Claude Code transcript
+# fixtures (no network / LLM / forge) and re-asserts the rendered per-stage table: an analysis stage that ran
+# pure Fable is PURE-FABLE, a PoC stage that ran Opus is PURE-OPUS, and a stage where a silent Fable->Opus
+# fallback content block fired is flagged CONTAMINATED — the honesty check proving the D3 analysis stages were
+# not secretly answered by the production fallback model (which would void any Fable-capability claim).
+if [ -x "$REPO_ROOT/dark-factory/demo-model-attribution.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-model-attribution.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: per-stage model-attribution self-test (#2157)"
+    else
+        fail "dark-factory: per-stage model-attribution self-test regressed (#2157)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory composable-lens TRANSFER bench (#1914 M4) ---
 # run-composable-lens-bench.sh is the ONLY harness that exercises run-zone-hunt.sh --deep-hunt --composable-lens
 # (run-corpus-bench.sh --hunt never passes --deep-hunt, so the general-solvency SYS-solvency lens is never hit
