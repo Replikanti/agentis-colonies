@@ -15,6 +15,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **STAGE 4.6 vector-hunt now harvests `CALLEE-VECTOR|` candidates from depth cell logs too, not just breadth
+  cell logs** (#2160, D2 recall-completeness gap, epic #2130). `run-zone-hunt.sh`'s per-zone harvest glob only
+  read `run/hunt_*.log` (D1's breadth cells); D2's depth/refute cells, written to `run/depth_*.log` by
+  `run-discovery.sh`'s depth pass (`run-discovery.sh:1105`, same `$RUN` dir as the breadth logs), never fed a
+  candidate into the vector-hunt engine, so a hazard the depth lens surfaced but the breadth lens missed was
+  silently dropped before it ever reached the PoC gate. The glob now reads both, breadth logs first so the
+  union's file-append order stays breadth-before-depth — `run-vector-hunt.sh`'s existing content-hash dedup
+  (over `invariant, fn, callee, hazard`, applied before any PoC attempt) and `--max-vectors` cap already
+  guarantee a candidate is never fed to the PoC gate twice regardless of which log harvested it, so no new
+  dedup logic was needed. `demo-vector-hunt.sh` assertion 13 (new) splits the existing zone-`core`
+  CALLEE-VECTOR fixture into a breadth log and a depth log and proves a depth-only candidate is harvested and
+  routed through the PoC runner end-to-end.
 - **`demo-vector-hunt.sh` assertion 11 (run-zone-hunt.sh OFF byte-identity) no longer fails on a clean
   post-merge checkout** (#2163, hotfix: main red since 186d5c0c / #2159). The assertion proved OFF-path
   byte-identity by diffing `origin/main:run-zone-hunt.sh` against the working tree via `comm -23`, which was

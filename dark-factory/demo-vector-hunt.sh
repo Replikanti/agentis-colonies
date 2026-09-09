@@ -24,12 +24,16 @@
 #   Part 3 RUN-ZONE-HUNT WIRING (#2156 PR2 — STAGE 4.6):
 #    10) run-zone-hunt.sh present; VECTOR_HUNT defaults 0 (OFF); the STAGE 4.6 block is gated on VECTOR_HUNT=1;
 #        the relaxed --deep-hunt-only guard is OFF-preserving when --vector-hunt is absent.
-#    11) OFF BYTE-IDENTITY: the ONLY origin/main line not byte-preserved in the wired run-zone-hunt.sh is the
-#        --deep-hunt-only guard (replaced by the OFF-equivalent) — every behaviour line the OFF path runs is
-#        unchanged (git-guarded: SKIP when origin/main is not fetched, where assertion 10 stands in).
+#    11) OFF BYTE-IDENTITY: every origin/main line OUTSIDE the STAGE 4.6 `VECTOR_HUNT` block is byte-preserved
+#        in the wired run-zone-hunt.sh, except the --deep-hunt-only guard (replaced by the OFF-equivalent) —
+#        every behaviour line the OFF path runs is unchanged, no matter how the gated block's own body (D2's
+#        depth-harvest widening, #2160) evolves (git-guarded: SKIP when origin/main is not fetched, where
+#        assertion 10 stands in).
 #    12) ON ROUTING: run-zone-hunt.sh --deep-hunt-only --vector-hunt over a staged breadth --out harvests the
 #        zone's CALLEE-VECTOR candidates, invokes run-vector-hunt.sh (same stub via the VECTOR_HUNT_POC_RUNNER
 #        seam), and merges EXACTLY the one PoC-PASS vector (source=vector-hunt) — dismissed vectors never route.
+#    13) DEPTH HARVEST (#2160): the STAGE 4.6 harvest glob ALSO reads depth_*.log (D2 depth/refute cells), not
+#        just breadth hunt_*.log — a depth-only CALLEE-VECTOR candidate is harvested and enumerated too.
 #
 # Usage:  dark-factory/demo-vector-hunt.sh   (GENERATE_GOLDEN=1 rewrites the checked-in goldens)
 # Requires: python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression / the engine is absent
@@ -194,7 +198,7 @@ else
 fi
 
 # ==========================================================================================================
-# PART 3 — run-zone-hunt.sh STAGE 4.6 WIRING (#2156 PR2): OFF byte-identity + ON per-zone routing.
+# PART 3 — run-zone-hunt.sh STAGE 4.6 WIRING (#2156 PR2): OFF byte-identity + ON per-zone routing + depth harvest.
 # ==========================================================================================================
 RZH="$HERE/run-zone-hunt.sh"
 
@@ -226,11 +230,15 @@ else
   bad "the --deep-hunt-only guard was not extended OFF-preservingly for --vector-hunt"
 fi
 
-note "11) run-zone-hunt.sh OFF byte-identity vs origin/main (every original line preserved except the guard) ..."
-# The STRONG proof: the ONLY line of origin/main's run-zone-hunt.sh not byte-preserved in the wired version is
-# the --deep-hunt-only guard, which was replaced by an OFF-equivalent (asserted above). Everything else — every
-# behaviour line the OFF path executes — is byte-identical, so `--vector-hunt` absent == today. Skipped (not
-# failed) when origin/main is not fetched (a shallow CI checkout), where assertion 10's gating proof still holds.
+note "11) run-zone-hunt.sh OFF byte-identity vs origin/main (every OFF-path line preserved except the guard) ..."
+# The STRONG proof: every line of origin/main's run-zone-hunt.sh that the OFF path (--vector-hunt absent)
+# actually executes is byte-preserved, so `--vector-hunt` absent == today. Two kinds of change are permitted:
+# (a) the --deep-hunt-only guard, replaced by an OFF-equivalent (asserted above), and (b) any line INSIDE the
+# `if [ "$VECTOR_HUNT" -eq 1 ]; then ... fi` STAGE 4.6 block itself (#2160's depth-harvest glob/comment widening
+# lives entirely there) — the OFF run never enters that block, so edits confined to it cannot change OFF-path
+# behaviour no matter how many lines they touch. A removed origin line found OUTSIDE both of those is a real
+# OFF-path regression. Skipped (not failed) when origin/main is not fetched (a shallow CI checkout), where
+# assertion 10's gating proof still holds.
 if git -C "$HERE" cat-file -e origin/main:dark-factory/run-zone-hunt.sh 2>/dev/null; then
   git -C "$HERE" show origin/main:dark-factory/run-zone-hunt.sh > "$WORK/rz-origin.sh"
   if cmp -s "$WORK/rz-origin.sh" "$RZH"; then
@@ -240,14 +248,19 @@ if git -C "$HERE" cat-file -e origin/main:dark-factory/run-zone-hunt.sh 2>/dev/n
   else
     # multiset of origin lines NOT present (with >= multiplicity) in the wired version == removed/modified content.
     comm -23 <(sort "$WORK/rz-origin.sh") <(sort "$RZH") > "$WORK/rz-removed.txt"
-    REMOVED_N="$(awk 'END{print NR}' "$WORK/rz-removed.txt")"
+    # The full byte-range of origin's STAGE 4.6 `if [ "$VECTOR_HUNT" -eq 1 ]; then ... fi` block (both anchor
+    # lines are column-0, so the sed range closes on the matching outer `fi`, not an inner nested one).
+    sed -n '/^if \[ "\$VECTOR_HUNT" -eq 1 \]; then$/,/^fi$/p' "$WORK/rz-origin.sh" > "$WORK/rz-vh-block.txt"
+    # Removed lines that fall OUTSIDE the STAGE 4.6 block — these are the only ones that can regress the OFF path.
+    comm -23 <(sort "$WORK/rz-removed.txt") <(sort -u "$WORK/rz-vh-block.txt") > "$WORK/rz-removed-outside.txt"
+    OUTSIDE_N="$(awk 'END{print NR}' "$WORK/rz-removed-outside.txt")"
     # shellcheck disable=SC2016  # the literal origin/main guard line, compared verbatim — no expansion
     EXPECT_GUARD='[ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires --deep-hunt" >&2; exit 2; }'
-    if [ "$REMOVED_N" -eq 1 ] && [ "$(cat "$WORK/rz-removed.txt")" = "$EXPECT_GUARD" ]; then
-      ok "every original run-zone-hunt.sh line is byte-preserved except the one OFF-equivalent guard replacement — the OFF path is byte-identical to origin/main"
+    if [ "$OUTSIDE_N" -eq 0 ] || { [ "$OUTSIDE_N" -eq 1 ] && [ "$(cat "$WORK/rz-removed-outside.txt")" = "$EXPECT_GUARD" ]; }; then
+      ok "every run-zone-hunt.sh line OUTSIDE the STAGE 4.6 VECTOR_HUNT block is byte-preserved (at most the one OFF-equivalent guard replacement) — the OFF path is byte-identical to origin/main"
     else
-      bad "run-zone-hunt.sh changed $REMOVED_N original line(s) beyond the guard (OFF path may have drifted):"
-      sed 's/^/      /' "$WORK/rz-removed.txt" >&2
+      bad "run-zone-hunt.sh changed $OUTSIDE_N original line(s) OUTSIDE the STAGE 4.6 block beyond the guard (OFF path may have drifted):"
+      sed 's/^/      /' "$WORK/rz-removed-outside.txt" >&2
     fi
   fi
 else
@@ -264,8 +277,12 @@ printf 'Vault.sol\n' > "$ZREPO/Vault.sol"          # a body so the primary-targe
 printf '[profile.default]\nsrc = "."\n' > "$ZREPO/foundry.toml"
 printf '%s\n' '[{"id": "core", "value_custody": true, "files": ["Vault.sol"], "bug_classes_likely": ["C6"]}]' > "$ZRUN/map/zones.json"
 printf '%s\n' '{"verified": [], "totals": {"verified": 0}}' > "$ZRUN/verify/verified_findings.json"
-# The breadth cell log for zone 'core' — the SAME CALLEE-VECTOR fixture (2 CANDIDATE hazards + 1 dismissed).
-cp "$CALLEE_VECTORS" "$ZRUN/discovery/core/run/hunt_core_C6.log"
+# Split the SAME zone-'core' CALLEE-VECTOR fixture across a BREADTH cell log (hunt_core_C6.log: the
+# executeDeposit CANDIDATE dup + the dismissed setFee) and a DEPTH cell log (depth_core_C6_1.log, naming
+# mirrors run-discovery.sh:1105's depth_<slug>_<class>_<n>.log: the withdraw + claim CANDIDATEs) — proving
+# STAGE 4.6 harvests BOTH hunt_*.log and depth_*.log into the same per-zone $VH_CV, not just breadth (#2160).
+grep -E '\|executeDeposit\||\|setFee\|' "$CALLEE_VECTORS" > "$ZRUN/discovery/core/run/hunt_core_C6.log"
+grep -E '\|withdraw\||\|claim\|' "$CALLEE_VECTORS" > "$ZRUN/discovery/core/run/depth_core_C6_1.log"
 
 if VECTOR_HUNT_POC_RUNNER="$STUB" FORGE_SLOTS_DIR="$WORK/forge-slots-z" \
    "$RZH" --repo "$ZREPO" --out "$ZRUN" --deep-hunt-only --vector-hunt --vector-hunt-max-vectors 6 \
@@ -301,6 +318,25 @@ if grep -q 'setFee' "$ZRUN/vector-hunt/core/vector-hunt.out" 2>/dev/null; then
 else
   ok "the dismissed: CALLEE-VECTOR (setFee) never seeded a vector through STAGE 4.6"
 fi
+
+note "13) STAGE 4.6 DEPTH HARVEST (#2160): depth-only CALLEE-VECTOR candidates (withdraw/claim, staged ONLY in depth_core_C6_1.log, no breadth hunt_*.log line) are harvested and enumerated too ..."
+DEPTH_OK=1
+for _fn in withdraw claim; do
+  _vline="$(grep "|$_fn|" "$ZRUN/vector-hunt/core/vector-hunt.out" 2>/dev/null | head -1)"
+  if [ -z "$_vline" ]; then
+    DEPTH_OK=0
+    bad "depth-only CALLEE-VECTOR candidate '$_fn' (staged in depth_core_C6_1.log) was never enumerated by STAGE 4.6 (fail-before: the harvest glob only reads hunt_*.log)"
+    continue
+  fi
+  _vh="$(printf '%s\n' "$_vline" | cut -d'|' -f2)"
+  if [ -f "$ZRUN/vector-hunt/core/vector-hunt/$_vh/poc.log" ]; then
+    :
+  else
+    DEPTH_OK=0
+    bad "depth-only candidate '$_fn' was enumerated but has no poc.log at $ZRUN/vector-hunt/core/vector-hunt/$_vh/poc.log (never routed to the PoC runner)"
+  fi
+done
+[ "$DEPTH_OK" -eq 1 ] && ok "STAGE 4.6 harvested depth_*.log too: both depth-only candidates (withdraw, claim) were enumerated and routed through the PoC runner"
 
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then

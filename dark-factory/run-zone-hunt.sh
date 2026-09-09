@@ -1435,12 +1435,20 @@ PY
     while IFS='	' read -r ZID RELFILE DCLASS || [ -n "${ZID:-}" ]; do
       [ -n "$ZID" ] || continue
       VH_ZONE_OUT="$VH_OUT/$ZID"; mkdir -p "$VH_ZONE_OUT"
-      # Harvest this zone's D1 CALLEE-VECTOR candidates from the breadth cell logs. A zone D1 did not fire on
-      # (no CALLEE-VECTOR line) still gets the engine's bounded invariant-only fallback set, so the per-zone
-      # vector set is never empty on a custody zone.
+      # Harvest this zone's D1 CALLEE-VECTOR candidates from BOTH the breadth cell logs (hunt_*.log) and the
+      # depth/refute cell logs (depth_*.log, written by run-discovery.sh's depth pass into the same $RUN dir
+      # as the breadth logs -- see run-discovery.sh:1105's D_LOG="$RUN/depth_${D_SLUG}_${D_CLS}_${DEPTH_CELLS}.log"
+      # and run-discovery.sh:343's RUN="$OUT/run" vs. this script's VH_DISC="$OUT/discovery" above). A zone D1
+      # did not fire on (no CALLEE-VECTOR line in either) still gets the engine's bounded invariant-only
+      # fallback set, so the per-zone vector set is never empty on a custody zone. Breadth logs are processed
+      # FIRST so the union's file-append order stays breadth-before-depth: run-vector-hunt.sh's enumerate stage
+      # already content-hashes every CANDIDATE on (invariant, fn, callee, hazard) before any PoC attempt
+      # (run-vector-hunt.sh:142-153) and applies --max-vectors to the deduped list (run-vector-hunt.sh:182), so
+      # this ordering makes which candidates survive the cap deterministic (higher-confidence breadth hits are
+      # never displaced by depth candidates under the same cap) -- no separate dedup step is needed here.
       VH_CV="$VH_ZONE_OUT/callee-vectors.txt"
       : > "$VH_CV"
-      for _cvlog in "$VH_DISC/$ZID"/run/hunt_*.log; do
+      for _cvlog in "$VH_DISC/$ZID"/run/hunt_*.log "$VH_DISC/$ZID"/run/depth_*.log; do
         [ -e "$_cvlog" ] || continue
         grep -h 'CALLEE-VECTOR|' "$_cvlog" >> "$VH_CV" 2>/dev/null || true
       done
