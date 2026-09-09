@@ -102,6 +102,21 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   pinned `demo-vector-hunt.sh` (wired into `tools/colony-lint.sh`) proves it with no agentis / forge / network.
   This PR ships the engine + demo only; the `run-zone-hunt.sh` STAGE 4.6 wiring lands in a follow-up PR, so the
   live hunt path is byte-identical.
+- **`run-zone-hunt.sh --vector-hunt` (STAGE 4.6): wire the vector-enumeration engine into the zone hunt**
+  (#2156, milestone D2 of epic #2130). A new opt-in STAGE 4.6, applied AFTER STAGE 4.5's #2113 fitness-ranked
+  routing, that per value-custody zone harvests that zone's D1 (#2145) `CALLEE-VECTOR|` candidates from the
+  breadth cell logs (`<out>/discovery/<zone>/run/hunt_*.log`) and drives them through `run-vector-hunt.sh`,
+  merging only PoC-PASS vectors into `verified_findings.json` (`source=vector-hunt`). Gated on a Foundry target
+  (`$REPO/foundry.toml`), same as STAGE 4.5; forge-slot ownership stays inside the engine (`lib/forge-slot.sh`
+  per vector) so `FORGE_MAX_SLOTS` is honoured without double-acquiring. New flags `--vector-hunt` and
+  `--vector-hunt-max-vectors <N>` (default 6, forwarded to the engine's `--max-vectors`); `--vector-hunt` also
+  satisfies `--deep-hunt-only`'s "a stage must consume the reused breadth" requirement, so the lens runs over an
+  existing `--out`. DEFAULT OFF: with `--vector-hunt` absent the whole STAGE 4.6 block is skipped and the run is
+  byte-for-byte what it was before — pinned by `demo-vector-hunt.sh`, which asserts (11) that the only origin/main
+  line not byte-preserved in the wired script is the OFF-equivalent guard replacement, and (12) that the ON path
+  routes each zone through the engine (via the `VECTOR_HUNT_POC_RUNNER` offline seam) and merges exactly the one
+  PoC-PASS vector. Live operator gate (post-merge, never CI): `run-zone-hunt.sh --repo <held-out> --out <run>
+  --deep-hunt --deep-hunt-only --vector-hunt --vector-hunt-max-vectors 6 --backend flat-cyborg --jobs 2`.
 - **Attacker-controlled-callee directive in the hunter** (#2145, milestone D1 of epic #2130). The hunter's
   RULES put "a trusted role acting WITHIN its documented permissions" out of scope; a cell reading an external
   call whose TARGET address a config/admin/deployer role sets filed the whole call site under that exclusion,
