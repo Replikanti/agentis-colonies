@@ -23,8 +23,9 @@ cb 300000;
 //               abstract. Empty (the default) => every helper below returns "" and the prompt is byte-identical.
 //   APPENDIX_BASE #1865 (optional, default ""): the abstract base that token implements (rel path).
 // Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
-//         Diagnostics that may precede it: `BLACKBOARD-FOCUS|`, `DEPTH-CELL|`, `APPENDIX-CONTEXT|` and —
-//         #1887, only when a refute-constraint corpus is imported — `REFUTE-CONSTRAINTS|<subsystem>|<cls>|<n>`.
+//         Diagnostics that may precede it: `BLACKBOARD-FOCUS|`, `DEPTH-CELL|`, `APPENDIX-CONTEXT|`, —
+//         #1887, only when a refute-constraint corpus is imported — `REFUTE-CONSTRAINTS|<subsystem>|<cls>|<n>`,
+//         and — #2145, only when the settable-callee detector fires — `CALLEE-TRUST|<subsystem>|<cls>|<n>`.
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -353,6 +354,193 @@ fn constraint_block(bullets: list) -> string {
          + "hold, answer SAFE. A rigorous SAFE is worth more than a claim dressed to survive a review.\n\n";
 }
 
+// --- #2145 ATTACKER-CONTROLLED-CALLEE DIRECTIVE (D1 of epic #2130) ------------------------------------------
+// The measured gap this closes is NOT detection of the external call — the #2121 C8 backstop already
+// force-includes a reentrancy cell on an interface-typed call. It is the TRUST MODEL the cell then applies:
+// the RULES block below rightly puts "a trusted role acting WITHIN its documented permissions" out of scope,
+// and a hunter reading a call whose TARGET address a deployer/config role set silently files the whole call
+// site under that exclusion — so the callee is never modelled as hostile and the reentrancy/return-value/gas
+// question is never asked. The fix is a generic re-framing directive, injected into the shared instruction
+// (so it frames EVERY class, not just C8: reentrancy, return-value handling and gas assumptions all hang off
+// who controls the callee), gated on a deterministic detector and made observable by the CALLEE-TRUST|
+// sentinel below.
+//
+// The directive is deliberately GENERIC: it names no protocol, contract, function or role, so injecting it
+// cannot leak a specific answer into a hunt — it changes which QUESTION the model asks, not what it is told.
+//
+// DETECTION is the same permissive, flat, whole-blob idiom zone-mapper.ag's #2121 C8 net uses (no AST, no
+// CFG, so call-then-write ORDER and settability of the SPECIFIC target are never verified — only existence):
+// a call surface AND a settable-target signal anywhere in the zone. False positives are cheap (a short block
+// telling the model to check something that turns out to be immutable, plus its own explicit "if every call
+// target here is genuinely immutable this does not apply" escape hatch); a false negative is the missed High
+// this milestone exists to stop losing.
+//
+// COST — annotated, not asserted. Every net below is a SINGLE pass over the whole-zone `code` blob, run once
+// per cell at top level (never per in-scope element — the per-element interpreted walk is the substrate trap
+// this file already refuses twice). Bounded exactly like the #2121 net under the `cb 300000;` this file
+// declares. A cell that FIRES additionally re-runs the three settable-target nets once, to count the signals
+// for the sentinel's <n> field; a cell that does not fire never pays that.
+// Substrate purity (#1587): builtins only (index_of / regex_find_all / regex_capture / reduce / len) — no new
+// embedded interpreter, no new `exec sh` string.
+
+// Low-level external-call / token-callback surface, verbatim from zone-mapper.ag::has_external_call_surface
+// (agents are self-contained — there is no import, so the idiom is copied rather than shared).
+fn has_low_level_call_surface(code: string) -> bool {
+    if index_of(code, ".call{") >= 0 { return true; }
+    if index_of(code, ".call(") >= 0 { return true; }
+    if index_of(code, "safeTransfer(") >= 0 { return true; }
+    if index_of(code, "safeTransferFrom(") >= 0 { return true; }
+    return false;
+}
+
+// The interface-typed-call regex (Rust `regex` crate syntax), verbatim from zone-mapper.ag: `I<Name>(<args>)
+// .method(` — an interface cast applied to an address expression, immediately followed by a call. Held in one
+// helper because both the surface test and its per-match method extraction need the identical pattern.
+fn interface_call_pattern() -> string {
+    return "\\bI[A-Z][A-Za-z0-9_]*\\((?:[^()]|\\([^()]*\\))*\\)\\.([a-zA-Z_][A-Za-z0-9_]*)\\(";
+}
+
+// Denylist of view-idiom method names excluded from the interface-call surface (a plain balance/rate/metadata
+// read through an interface cast is not, on its own, a callee-trust question). Kept identical to
+// zone-mapper.ag::is_view_idiom_method so the two nets cannot drift apart.
+fn is_view_idiom_method(name: string) -> bool {
+    if name == "balanceOf" { return true; }
+    if name == "allowance" { return true; }
+    if name == "decimals" { return true; }
+    if name == "totalSupply" { return true; }
+    if name == "totalAssets" { return true; }
+    if name == "convertToAssets" { return true; }
+    if name == "convertToShares" { return true; }
+    if name == "previewDeposit" { return true; }
+    if name == "previewMint" { return true; }
+    if name == "previewWithdraw" { return true; }
+    if name == "previewRedeem" { return true; }
+    if name == "getReserves" { return true; }
+    if name == "latestRoundData" { return true; }
+    if name == "latestAnswer" { return true; }
+    if name == "getPrice" { return true; }
+    if name == "name" { return true; }
+    if name == "symbol" { return true; }
+    if name == "owner" { return true; }
+    if name == "paused" { return true; }
+    return false;
+}
+
+// Does the payload contain an interface-typed call whose method is NOT a view idiom? `regex_find_all` collects
+// every match and each match is re-run through `regex_capture` (group 1) for its own method name, since
+// `regex_capture` only ever returns the FIRST capture over the string it is given. Short-circuit-on-true
+// reduce, the same idiom the file's other folds use.
+fn has_interface_call_surface(code: string) -> bool {
+    let pat = interface_call_pattern();
+    return reduce(regex_find_all(pat, code), |acc: bool, m: string| -> bool {
+        if acc { return true; }
+        if is_view_idiom_method(regex_capture(pat, m, 1)) { return false; }
+        return true;
+    }, false);
+}
+
+// The full call surface this directive cares about: low-level/token-callback OR interface-typed.
+fn has_call_surface(code: string) -> bool {
+    if has_low_level_call_surface(code) { return true; }
+    return has_interface_call_surface(code);
+}
+
+// Signal 1 — an ADDRESS SETTER: `function set<Something>(address ...`. The canonical way a config/admin role
+// repoints a call target.
+fn address_setter_pattern() -> string {
+    return "\\bfunction\\s+set[A-Za-z0-9_]*\\s*\\(\\s*address";
+}
+
+fn has_address_setter(code: string) -> bool {
+    return len(regex_find_all(address_setter_pattern(), code)) > 0;
+}
+
+// Signal 2 — a MUTABLE `address` STATE VARIABLE: a line-leading `address [visibility] <name>;` declaration.
+// `immutable`/`constant` declarations are excluded BY CONSTRUCTION rather than by a denylist: the pattern
+// admits at most ONE keyword between `address` and the terminating `;`, so `address public immutable oracle;`
+// and `address constant ORACLE = ...;` cannot match it, while `address public oracle;` does.
+fn mutable_address_state_pattern() -> string {
+    return "\\n[ \\t]*address(?:\\s+(?:public|internal|private))?\\s+[a-zA-Z_][A-Za-z0-9_]*\\s*;";
+}
+
+fn has_mutable_address_state(code: string) -> bool {
+    return len(regex_find_all(mutable_address_state_pattern(), code)) > 0;
+}
+
+// Signal 3 — a COMPUTED call target: an interface cast whose argument is itself a CALL rather than a stored
+// address (`IOracle(registry.getOracle()).poke()`, `IOracle(IKernel(k).getAssetOracle()).poke()`). The target
+// is then whatever that external getter returns, i.e. settable wherever the getter's owner says it is.
+fn computed_target_pattern() -> string {
+    return "\\bI[A-Z][A-Za-z0-9_]*\\(\\s*([A-Za-z_][A-Za-z0-9_.]*)\\s*\\(";
+}
+
+// `address(...)`/`payable(...)` are plain type casts, not target resolution — denylisted the same way the
+// view-idiom methods are, so `IOracle(address(x)).poke()` does not count as computed.
+fn is_plain_cast_callee(name: string) -> bool {
+    if name == "address" { return true; }
+    if name == "payable" { return true; }
+    return false;
+}
+
+fn has_computed_call_target(code: string) -> bool {
+    let pat = computed_target_pattern();
+    return reduce(regex_find_all(pat, code), |acc: bool, m: string| -> bool {
+        if acc { return true; }
+        if is_plain_cast_callee(regex_capture(pat, m, 1)) { return false; }
+        return true;
+    }, false);
+}
+
+// 0 for `false`, 1 for `true` — .ag has no bool->int coercion and no `let` reassignment.
+fn signal_score(b: bool) -> int {
+    if b { return 1; }
+    return 0;
+}
+
+// How many of the three settable-target signals fired (0-3). This is the sentinel's <n> field: it makes the
+// cell log say WHY the directive fired, not merely that it did.
+fn settable_signal_count(code: string) -> int {
+    return signal_score(has_address_setter(code))
+         + signal_score(has_mutable_address_state(code))
+         + signal_score(has_computed_call_target(code));
+}
+
+fn has_settable_target(code: string) -> bool {
+    return settable_signal_count(code) > 0;
+}
+
+// The detector: a call surface AND a settable target. Nested, because .ag has no `&&`.
+fn has_attacker_controlled_callee(code: string) -> bool {
+    if !has_call_surface(code) { return false; }
+    return has_settable_target(code);
+}
+
+// The one string the block is RECOGNISED by, so a reword of the directive cannot desync the sentinel gate
+// below from the text it has to detect (same discipline as appendix_marker/anchoring_marker above).
+fn callee_trust_marker() -> string {
+    return "=== WHO CONTROLS THE CALL TARGET? ===";
+}
+
+// The directive itself. "" when the detector found nothing, so concatenating it into `instruction` is a no-op
+// and an undetected zone's prompt is BYTE-IDENTICAL to the pre-#2145 one.
+fn callee_trust_block(has: bool) -> string {
+    if !has { return ""; }
+    return callee_trust_marker() + "\n"
+      + "This code makes at least one external call whose TARGET ADDRESS is not provably fixed: it is held in "
+      + "a mutable state variable, written by a setter, or resolved at call time through another contract. For "
+      + "EVERY external call you trace, ask WHO CONTROLS THE CALLEE, not only who is allowed to make the call.\n"
+      + "Wherever a config/admin/deployer/oracle/registry role can set or repoint that target (the variable is "
+      + "not `immutable`/`constant`, a setter exists, or the address is read back from an external getter), "
+      + "treat the CALLEE'S BEHAVIOUR as ATTACKER-CONTROLLED: it may reenter, revert, consume all forwarded "
+      + "gas, or return arbitrary values. Judge CEI order, `nonReentrant` coverage, return-value validation "
+      + "and gas bounds at that call site against a HOSTILE callee.\n"
+      + "This stays IN SCOPE even though the SETTER is a trusted role: the exploit needs only the CALLEE to "
+      + "misbehave, not the role to exceed its documented permissions — so \"a trusted role configured that "
+      + "address\" is NOT a reason to dismiss the call site.\n"
+      + "Do NOT invent a callee, and do NOT report a settable target as a finding by itself: if every call "
+      + "target in this code is genuinely immutable or hardcoded, this directive simply does not apply.\n\n";
+}
+
 let dir = getenv("TARGET_DIR");
 let files = getenv("IN_SCOPE");
 let cls = getenv("HUNT_CLASS");
@@ -405,14 +593,24 @@ if len(cons) > 0 {
     print("REFUTE-CONSTRAINTS|" + subsystem + "|" + cls + "|" + to_string(capped_count(cons_bullets, 6)));
 }
 
+// #2145 CALLEE-TRUST read: the deterministic settable-callee detector over the assembled payload. `callee`
+// is "" whenever the zone has no external call surface or no settable/computed call target, so an undetected
+// zone's instruction below is BYTE-IDENTICAL to the pre-#2145 one. The sentinel it enables is printed further
+// down — AFTER `instruction` exists — because it is gated on the directive having actually been assembled
+// into the prompt, not merely on the detector having returned true.
+let callee = callee_trust_block(has_attacker_controlled_callee(code));
+
 // The instruction carries the lens (taxonomy class), the brief (invariants + known-issues), and the
 // strict output contract; the code is the prompt payload (matches auditor.ag::classify_evm_llm shape).
 // The (possibly empty) blackboard FOCUS block sits up top so prior siblings' leads bias the hunt.
+// #2145: the (possibly empty) CALLEE-TRUST directive sits directly after the role preamble, ahead of every
+// other conditional block, because it re-frames the trust model the WHOLE hunt reasons under.
 let instruction =
     "You are an elite adversarial smart-contract auditor hunting a HIGH or MEDIUM severity bug an EXTERNAL "
   + "attacker (holding NO privileged role) can exploit. Audit this code FRESH: assume nothing is safe until "
   + "you have traced the actual control/data flow yourself. An obvious-looking bug IS a real bug unless a "
   + "guard in the code provably stops it — do NOT assume prior auditors already caught it.\n\n"
+  + callee
   + focus
   + depth
   + appx
@@ -457,6 +655,18 @@ let instruction =
 // are demonstrably in the prompt about to be sent, so no artifact can claim a framing that did not happen.
 if framing_emitted(appendix_file, instruction, code) {
     print("APPENDIX-CONTEXT|" + appendix_file);
+}
+
+// #2145: the CALLEE-TRUST sentinel, on the same honesty contract as APPENDIX-CONTEXT| above — it is gated on
+// the directive's own marker being demonstrably IN the prompt about to be sent (index_of over `instruction`),
+// never on the detector's return value, so no cell log can claim a re-framing that was not injected. It makes
+// the injection observable even on the mock backend (where prompt() never reasons), carries no `CANDIDATE|`
+// substring so lib/run-agent-validated.sh's sentinel predicate cannot false-accept a cell on it, and is
+// treated as a record BOUNDARY by run-discovery.sh's _join_wrapped_candidates like every other diagnostic.
+// <n> is how many of the three settable-target signals fired (setter / mutable address state / computed
+// target) — the counting pass runs ONLY inside this branch, so a non-firing cell never pays for it.
+if index_of(instruction, callee_trust_marker()) >= 0 {
+    print("CALLEE-TRUST|" + subsystem + "|" + cls + "|" + to_string(settable_signal_count(code)));
 }
 
 let verdict = prompt(instruction, code) -> string;

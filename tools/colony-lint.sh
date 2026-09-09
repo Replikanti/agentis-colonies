@@ -1433,6 +1433,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-external-assumption-lens.sh" ]; then
     fi
 fi
 
+# --- dark-factory attacker-controlled-callee directive (#2145, milestone D1 of epic #2130) ---
+# hunter.ag injects a GENERIC trust-model directive ("who controls the call TARGET?") whenever a deterministic
+# detector finds an external call surface AND a settable/computed call target, gated + made observable by the
+# CALLEE-TRUST|<subsystem>|<cls>|<n> sentinel. demo-callee-trust-lens.sh source-guards the detector, the
+# directive text, the ""-when-false gate (undetected zones prompt byte-identical), the sentinel's honesty gate
+# and the decision that the taxonomy gains no new class; with an `agentis` binary present it additionally runs
+# one REAL offline hunt cell per fixture (--backend mock) and asserts the sentinel fires on the settable-callee
+# fixture and is ABSENT on the immutable-callee one. No forge, no network, no LLM.
+if [ -x "$REPO_ROOT/dark-factory/demo-callee-trust-lens.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-callee-trust-lens.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: attacker-controlled-callee directive (detector + \"\"-gate + CALLEE-TRUST sentinel, mock-run fixture discrimination) (#2145)"
+    else
+        fail "dark-factory: attacker-controlled-callee directive regressed (#2145)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory experience/learning flags regression guard (#1881 + #1878, the #1866/#1877 flip) ---
 # #1877 flipped experience.enabled/learning.enabled to false on run-discovery.sh (STAGE 3 hunter) and
 # run-refute.sh (STAGE 4 refute gate) as "structurally inert". What the flag actually gates is the `learn()`
