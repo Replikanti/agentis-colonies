@@ -24,7 +24,7 @@ bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 
 command -v python3 >/dev/null 2>&1 || { note "[SKIP] python3 not installed"; exit 0; }
 [ -f "$ATTR" ] || { note "model-attribution.py not found: $ATTR" >&2; exit 3; }
-for s in analysis-fable analysis-tainted poc-opus; do
+for s in analysis-fable analysis-tainted poc-opus poc-toplevel-model; do
   [ -d "$FXDIR/$s" ] || { note "fixture stage dir missing: $FXDIR/$s" >&2; exit 3; }
 done
 
@@ -66,10 +66,19 @@ else
   bad "poc-opus row drifted: '$R'"
 fi
 
-# The TOTAL row aggregates all three stages (7 requests, 4 Fable, 3 Opus, 1 fallback).
+# poc-toplevel-model (#2166): 1 request whose model id sits at the TOP LEVEL of the event, not nested under
+# `message` -> the transcript must still attribute it PURE-FABLE, not degrade it to `other`.
+R="$(_row poc-toplevel-model)"
+if [ "$R" = "$(printf 'poc-toplevel-model\t1\t1\t0\t0\t0\t0\tPURE-FABLE')" ]; then
+  ok "poc-toplevel-model: a top-level (not message-nested) model id is attributed correctly (#2166)"
+else
+  bad "poc-toplevel-model row drifted (top-level model id not attributed -> #2166 regression): '$R'"
+fi
+
+# The TOTAL row aggregates all four stages (8 requests, 5 Fable, 3 Opus, 1 fallback).
 R="$(_row TOTAL)"
-if [ "$R" = "$(printf 'TOTAL\t7\t4\t3\t0\t1\t0\t-')" ]; then
-  ok "TOTAL aggregates the three stages (7 req, 4 Fable, 3 Opus, 1 fallback)"
+if [ "$R" = "$(printf 'TOTAL\t8\t5\t3\t0\t1\t0\t-')" ]; then
+  ok "TOTAL aggregates the four stages (8 req, 5 Fable, 3 Opus, 1 fallback)"
 else
   bad "TOTAL row drifted: '$R'"
 fi

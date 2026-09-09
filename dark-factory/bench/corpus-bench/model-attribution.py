@@ -66,11 +66,11 @@ def scan_transcript(path):
             # Only assistant requests carry an answering model. A transcript may nest the model at the top level
             # or under `message` depending on the exporter; accept either.
             if isinstance(msg, dict) and msg.get("role") == "assistant":
-                model = msg.get("model", "")
+                model = msg.get("model") or ev.get("model", "")
                 content = msg.get("content", [])
                 stop_reason = msg.get("stop_reason", "")
             elif ev.get("type") == "assistant" and isinstance(msg, dict):
-                model = msg.get("model", "")
+                model = msg.get("model") or ev.get("model", "")
                 content = msg.get("content", [])
                 stop_reason = msg.get("stop_reason", "")
             else:
@@ -177,14 +177,18 @@ def run_self_test():
     print("model-attribution.py: --self-test over %s" % fx)
     print(render_table(agg))
 
-    # The fixture encodes three stages (contamination-safe, generic stage names):
-    #   analysis-fable   : 3 pure-Fable requests, no fallback -> PURE-FABLE (the D1 headline stays clean)
-    #   analysis-tainted : 2 requests, one a Fable->Opus fallback content block -> CONTAMINATED
-    #   poc-opus         : 2 pure-Opus requests -> PURE-OPUS (the D2 PoC step, honestly Opus)
+    # The fixture encodes four stages (contamination-safe, generic stage names):
+    #   analysis-fable      : 3 pure-Fable requests, no fallback -> PURE-FABLE (the D1 headline stays clean)
+    #   analysis-tainted    : 2 requests, one a Fable->Opus fallback content block -> CONTAMINATED
+    #   poc-opus            : 2 pure-Opus requests -> PURE-OPUS (the D2 PoC step, honestly Opus)
+    #   poc-toplevel-model  : 1 request with the model id at the TOP LEVEL of the event (not nested under
+    #                         `message`) -> PURE-FABLE (#2166: a transcript shape with a top-level `model`
+    #                         must not degrade to `other`)
     exp = {
         "analysis-fable": {"requests": 3, "fable": 3, "opus": 0, "fallback": 0, "refusal": 0, "verdict": "PURE-FABLE"},
         "analysis-tainted": {"requests": 2, "fable": 1, "opus": 1, "fallback": 1, "refusal": 0, "verdict": "CONTAMINATED"},
         "poc-opus": {"requests": 2, "fable": 0, "opus": 2, "fallback": 0, "refusal": 0, "verdict": "PURE-OPUS"},
+        "poc-toplevel-model": {"requests": 1, "fable": 1, "opus": 0, "fallback": 0, "refusal": 0, "verdict": "PURE-FABLE"},
     }
     for stage, e in exp.items():
         if stage not in agg:
