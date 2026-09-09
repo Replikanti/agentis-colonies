@@ -84,6 +84,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   step, never a CI gate.
 
 ### Added
+- **Invariant-driven vector-enumeration deep-hunt engine** (#2156, milestone D2 of epic #2130). A new opt-in
+  per-target engine, `run-vector-hunt.sh`, automates the human vector-enumeration + property-construction we
+  did by hand for the yieldoor H-3 / yearn H-1 findings: per value-custody economic invariant it enumerates a
+  BOUNDED set of concrete attack VECTORS by crossing a GENERIC economic-invariant catalog (solvency,
+  share-price-monotonicity, no-unauthorized-mint, reentrancy-state-consistency, return-value-trust,
+  gas-liveness) with D1's (#2145) code-derived `CALLEE-VECTOR|<fn>|<callee-expr>|<hazard>|CANDIDATE` lines,
+  drives EACH vector through the concrete-PoC gate (`run-poc.sh` -> `evm-harness/forge-poc.sh`), and merges
+  ONLY reproduced (PoC-PASS) vectors into `verified_findings.json` tagged `source=vector-hunt`. The catalog is
+  embedded and selected by `--class` / value-custody — never read from the target brief (contamination
+  discipline of #2130) — and a vector is templated only from an invariant plus a code-derived `CALLEE-VECTOR`;
+  a `dismissed:` vector never seeds a PoC. The loop OWNS `lib/forge-slot.sh` around each PoC run (run-poc.sh /
+  forge-poc.sh do not self-acquire a slot, so `FORGE_MAX_SLOTS` is respected end-to-end), bounds the set with
+  `--max-vectors` (default 6), content-hashes each vector for dedup, retries a transient PoC verdict, and is
+  resumable via a per-vector `<hash>.verdict` marker (`--resume`). An injectable `--poc-runner` seam makes the
+  whole enumerate -> per-vector verify -> only-PASS-merged -> dedup loop offline-deterministic; the golden-
+  pinned `demo-vector-hunt.sh` (wired into `tools/colony-lint.sh`) proves it with no agentis / forge / network.
+  This PR ships the engine + demo only; the `run-zone-hunt.sh` STAGE 4.6 wiring lands in a follow-up PR, so the
+  live hunt path is byte-identical.
 - **Attacker-controlled-callee directive in the hunter** (#2145, milestone D1 of epic #2130). The hunter's
   RULES put "a trusted role acting WITHIN its documented permissions" out of scope; a cell reading an external
   call whose TARGET address a config/admin/deployer role sets filed the whole call site under that exclusion,
