@@ -25,7 +25,9 @@ cb 300000;
 // Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
 //         Diagnostics that may precede it: `BLACKBOARD-FOCUS|`, `DEPTH-CELL|`, `APPENDIX-CONTEXT|`, —
 //         #1887, only when a refute-constraint corpus is imported — `REFUTE-CONSTRAINTS|<subsystem>|<cls>|<n>`,
-//         and — #2145, only when the settable-callee detector fires — `CALLEE-TRUST|<subsystem>|<cls>|<n>`.
+//         and — #2145, only when the settable-callee detector fires — `CALLEE-TRUST|<subsystem>|<cls>|<n>|v2`.
+//         `CALLEE-VECTOR|<fn>|<callee-expr>|<hazard>|<CANDIDATE|dismissed: reason>` may also appear (model-emitted,
+//         only when the callee-trust directive fired, #2152 — free text, never script-printed).
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -537,6 +539,24 @@ fn callee_trust_block(has: bool) -> string {
       + "This stays IN SCOPE even though the SETTER is a trusted role: the exploit needs only the CALLEE to "
       + "misbehave, not the role to exceed its documented permissions — so \"a trusted role configured that "
       + "address\" is NOT a reason to dismiss the call site.\n"
+      + "For any call you must treat as ATTACKER-CONTROLLED per the paragraph above, treat the callee as UNKNOWN "
+      + "CODE: do NOT infer its behaviour from any implementation visible in this repository — an interface's "
+      + "default body, a base contract, a mock, or a test — the code actually deployed at that address is bound "
+      + "by none of it. Assume it may reenter any public/external entry point, revert, return arbitrary data, or "
+      + "consume all forwarded gas, and check the caller's state at the exact moment control passes to it.\n"
+      + "The controlling role's OTHER powers (pricing, pausing, fees, upgrades, or anything else it is "
+      + "documented to do) are NOT a reason to drop the vector — rate the call-site vector on its own "
+      + "consequence (what state is left inconsistent while the callee runs), report it as a CANDIDATE with "
+      + "that severity, and note the role precondition. Only dismiss it when the caller's state is PROVABLY "
+      + "consistent at the call (CEI order holds, a reentrancy guard covers every entry point the callee could "
+      + "reenter, its return value is unused, its gas cost is bounded) — a role's other authority, or what it "
+      + "already controls, is never itself that proof.\n"
+      + "When this directive fires, before your final verdict, emit one line for every call site you examined "
+      + "under it: `CALLEE-VECTOR|<fn>|<callee-expr>|<reentrant|return-value|gas>|<CANDIDATE|dismissed: reason>` "
+      + "— <fn> the function containing the call, <callee-expr> the call expression as written, the third field "
+      + "the hazard you assessed (emit a separate line per hazard if more than one applies), the last field "
+      + "CANDIDATE or dismissed: <the specific state-consistency reason> — never a role-power or "
+      + "in-repo-implementation reason, which this directive forbids.\n"
       + "Do NOT invent a callee, and do NOT report a settable target as a finding by itself: if every call "
       + "target in this code is genuinely immutable or hardcoded, this directive simply does not apply.\n\n";
 }
@@ -666,7 +686,7 @@ if framing_emitted(appendix_file, instruction, code) {
 // <n> is how many of the three settable-target signals fired (setter / mutable address state / computed
 // target) — the counting pass runs ONLY inside this branch, so a non-firing cell never pays for it.
 if index_of(instruction, callee_trust_marker()) >= 0 {
-    print("CALLEE-TRUST|" + subsystem + "|" + cls + "|" + to_string(settable_signal_count(code)));
+    print("CALLEE-TRUST|" + subsystem + "|" + cls + "|" + to_string(settable_signal_count(code)) + "|v2");
 }
 
 let verdict = prompt(instruction, code) -> string;

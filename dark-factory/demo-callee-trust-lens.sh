@@ -103,6 +103,9 @@ for s in \
   "ask WHO CONTROLS THE CALLEE" \
   "treat the CALLEE'S BEHAVIOUR as ATTACKER-CONTROLLED" \
   "This stays IN SCOPE even though the SETTER is a trusted role" \
+  "treat the callee as UNKNOWN CODE" \
+  "are NOT a reason to drop the vector" \
+  "CALLEE-VECTOR|<fn>|<callee-expr>|" \
   "Do NOT invent a callee"
 do
   case "$HUNTER_FLAT" in *"$s"*) ;; *) DIRECTIVE_MISS="$DIRECTIVE_MISS [$s]" ;; esac
@@ -148,10 +151,10 @@ else
 fi
 
 note "4) the CALLEE-TRUST sentinel and its honesty gate ..."
-if grep -q 'print("CALLEE-TRUST|" + subsystem + "|" + cls + "|" + to_string(settable_signal_count(code)));' "$HUNTER"; then
-  ok "the sentinel is printed as CALLEE-TRUST|<subsystem>|<cls>|<n>"
+if grep -q 'print("CALLEE-TRUST|" + subsystem + "|" + cls + "|" + to_string(settable_signal_count(code)) + "|v2");' "$HUNTER"; then
+  ok "the sentinel is printed as CALLEE-TRUST|<subsystem>|<cls>|<n>|v2"
 else
-  bad "the CALLEE-TRUST|<subsystem>|<cls>|<n> sentinel emission is gone or reshaped"
+  bad "the CALLEE-TRUST|<subsystem>|<cls>|<n>|v2 sentinel emission is gone or reshaped"
 fi
 # Gated on the marker being IN the assembled instruction, never on the detector's return value — the same
 # honesty contract APPENDIX-CONTEXT| carries, so a cell log can never claim a re-framing that was not sent.
@@ -167,10 +170,23 @@ if grep 'print("CALLEE-TRUST|"' "$HUNTER" | grep -q 'CANDIDATE|'; then
 else
   ok "the sentinel carries no 'CANDIDATE|' substring (cannot false-accept a cell)"
 fi
-if grep -q 'CALLEE-TRUST|<subsystem>|<cls>|<n>' "$HUNTER"; then
+if grep -q 'CALLEE-TRUST|<subsystem>|<cls>|<n>|v2' "$HUNTER"; then
   ok "hunter.ag's header documents CALLEE-TRUST| among the diagnostics that may precede the verdict"
 else
   bad "hunter.ag's header Stdout contract does not mention the CALLEE-TRUST| diagnostic"
+fi
+
+note "4b) the CALLEE-VECTOR| output instruction lives INSIDE the \"\"-gated directive block ..."
+case "$HUNTER_FLAT" in
+  *'CALLEE-VECTOR|<fn>|<callee-expr>|<reentrant|return-value|gas>|<CANDIDATE|dismissed: reason>'*)
+    ok "the CALLEE-VECTOR| output instruction is present verbatim in the assembled directive text" ;;
+  *)
+    bad "the CALLEE-VECTOR| output instruction is missing or reworded" ;;
+esac
+if grep -Fq 'CALLEE-VECTOR|<fn>|<callee-expr>|' "$BLOCK_BODY"; then
+  ok "the CALLEE-VECTOR| output instruction lives textually inside callee_trust_block() (stays \"\"-gated)"
+else
+  bad "the CALLEE-VECTOR| output instruction is not inside callee_trust_block() — it would leak into every prompt"
 fi
 
 note "5) the sentinel is a RECORD BOUNDARY in run-discovery.sh (#2147) ..."
@@ -304,7 +320,7 @@ else
     fi
     # The <n> field must report the signals that actually fired (setter + mutable address state = 2), not a
     # constant: a hardcoded count would make the cell log unable to say WHY the directive fired.
-    if grep -q '^CALLEE-TRUST|vault|C8|2$' "$SET_LOG"; then
+    if grep -q '^CALLEE-TRUST|vault|C8|2|v2$' "$SET_LOG"; then
       ok "the sentinel reports 2 settable-target signals (setter + mutable address state), not a constant"
     else
       bad "the sentinel's <n> field does not report the 2 signals this fixture carries"
@@ -326,7 +342,7 @@ else
   if [ ! -f "$TRANS_LOG" ]; then
     bad "the function-sliced mock hunt cell produced no cell log (run-discovery.sh did not reach hunter.ag)"
     tail -5 "$WORK/transitive.out" 2>/dev/null | sed 's/^/      /' >&2
-  elif grep -q '^CALLEE-TRUST|vault|C8|1$' "$TRANS_LOG"; then
+  elif grep -q '^CALLEE-TRUST|vault|C8|1|v2$' "$TRANS_LOG"; then
     # <n>=1 pins WHICH signal fired: the computed target, which exists only inside the closure-pulled helper.
     # A 2 or 3 here would mean the fixture leaked a setter or a mutable address state variable into the header
     # and the arm would prove nothing about the closure.

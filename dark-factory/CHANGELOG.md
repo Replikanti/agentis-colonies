@@ -15,6 +15,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **Callee-trust directive closes the implementation-of-record and role-power-dismissal gaps** (#2152, D1.2 of
+  milestone D1 #2145, epic #2130). A live gate re-run on #2145 found the directive still lost on two shapes:
+  the model inferred the callee's behaviour from an implementation VISIBLE IN THE REPO (an interface's default
+  body, a base contract, a mock, or a test) instead of treating the deployed code as unknown, and it dismissed
+  a call-site vector because the controlling role held OTHER documented powers, rather than judging the vector
+  on its own state-consistency merits. `callee_trust_block()` gains two new generic rules — treat an
+  ATTACKER-CONTROLLED callee as UNKNOWN CODE regardless of any in-repo implementation, and never let a role's
+  other authority substitute for a PROVEN state-consistent call site (CEI order, guard coverage, unused return
+  value, bounded gas) — plus a per-call-site output instruction, `CALLEE-VECTOR|<fn>|<callee-expr>|<hazard>|<CANDIDATE|dismissed: reason>`,
+  so a firing cell's reasoning about each hazard is inspectable in the cell log. Both rules stay inside the
+  `""`-gated function (an undetected zone's prompt is still byte-identical) and name no protocol, contract or
+  function. The `CALLEE-TRUST|<subsystem>|<cls>|<n>` sentinel gains a trailing `|v2` field so a cell log can
+  tell which wording produced it; `run-discovery.sh`'s prefix-matched boundary regex needs no change.
+  `demo-callee-trust-lens.sh`'s source-guard pins the two new load-bearing sentences, the output instruction
+  living textually inside the gated block, the genericity denylist re-passing over the larger slice, and the
+  `|v2` suffix in the sentinel source line and both LIVE-UNDER-MOCK cell logs. Wiring `CALLEE-VECTOR|` into
+  `run-discovery.sh`'s report is deferred: it is free-text the model writes only when it actually reasons
+  (never under `--backend mock`), so no CI-provable assertion of its content is possible yet.
 - **The function slicer now follows same-file internal callees** (#2150, sub-milestone D1.1 of milestone D1
   #2145, epic #2130). A `file@fn` scope entry produced the contract header plus the named functions and
   nothing else, but a real contract puts nothing interesting in its external entry point: it delegates the
