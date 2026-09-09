@@ -233,16 +233,22 @@ note "11) run-zone-hunt.sh OFF byte-identity vs origin/main (every original line
 # failed) when origin/main is not fetched (a shallow CI checkout), where assertion 10's gating proof still holds.
 if git -C "$HERE" cat-file -e origin/main:dark-factory/run-zone-hunt.sh 2>/dev/null; then
   git -C "$HERE" show origin/main:dark-factory/run-zone-hunt.sh > "$WORK/rz-origin.sh"
-  # multiset of origin lines NOT present (with >= multiplicity) in the wired version == removed/modified content.
-  comm -23 <(sort "$WORK/rz-origin.sh") <(sort "$RZH") > "$WORK/rz-removed.txt"
-  REMOVED_N="$(grep -c . "$WORK/rz-removed.txt" 2>/dev/null || echo 0)"
-  # shellcheck disable=SC2016  # the literal origin/main guard line, compared verbatim — no expansion
-  EXPECT_GUARD='[ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires --deep-hunt" >&2; exit 2; }'
-  if [ "$REMOVED_N" -eq 1 ] && [ "$(cat "$WORK/rz-removed.txt")" = "$EXPECT_GUARD" ]; then
-    ok "every original run-zone-hunt.sh line is byte-preserved except the one OFF-equivalent guard replacement — the OFF path is byte-identical to origin/main"
+  if cmp -s "$WORK/rz-origin.sh" "$RZH"; then
+    # Post-merge steady state: origin/main IS the wired version (the guard-replacement diff below is only
+    # meaningful pre-merge, comparing the wired branch against the still-unwired origin/main).
+    note "  [SKIP] origin/main == working tree run-zone-hunt.sh — post-merge steady state; assertion 10's gating proof stands in"
   else
-    bad "run-zone-hunt.sh changed $REMOVED_N original line(s) beyond the guard (OFF path may have drifted):"
-    sed 's/^/      /' "$WORK/rz-removed.txt" >&2
+    # multiset of origin lines NOT present (with >= multiplicity) in the wired version == removed/modified content.
+    comm -23 <(sort "$WORK/rz-origin.sh") <(sort "$RZH") > "$WORK/rz-removed.txt"
+    REMOVED_N="$(awk 'END{print NR}' "$WORK/rz-removed.txt")"
+    # shellcheck disable=SC2016  # the literal origin/main guard line, compared verbatim — no expansion
+    EXPECT_GUARD='[ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires --deep-hunt" >&2; exit 2; }'
+    if [ "$REMOVED_N" -eq 1 ] && [ "$(cat "$WORK/rz-removed.txt")" = "$EXPECT_GUARD" ]; then
+      ok "every original run-zone-hunt.sh line is byte-preserved except the one OFF-equivalent guard replacement — the OFF path is byte-identical to origin/main"
+    else
+      bad "run-zone-hunt.sh changed $REMOVED_N original line(s) beyond the guard (OFF path may have drifted):"
+      sed 's/^/      /' "$WORK/rz-removed.txt" >&2
+    fi
   fi
 else
   note "  [SKIP] origin/main not available in this checkout — assertion 10's gating proof stands in"
