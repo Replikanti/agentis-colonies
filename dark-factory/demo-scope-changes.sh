@@ -14,6 +14,15 @@
 #                             of the storage word) + the carried chain; an advisory src note on the log.
 #   AC5 (skip)              — a head row whose diff touches only docs/ + test/ + script/ (no huntable .sol) ->
 #                             `skip` (no spurious hunt).
+#   AC6 (tag fan-out)       — a tag row adding TWO tags -> EXACTLY two descriptors, each `new` a single tag.
+#   AC7 (last-elem regr.)   — a tag row whose ONLY added tag is the C-sort-LAST of the new set -> one
+#                             descriptor with that tag as `new` (the firedancer `new='-'` bug, #2154).
+#   AC8 (tag skips)         — removal-only / first-sight tag rows emit NO descriptor + a [skip] line; and no
+#                             kind=tag descriptor ever carries new='-'.
+#   AC9 (family base)       — a tag row adding graft/coreth/v1.15.0 diffs against the same-family predecessor
+#                             graft/coreth/v1.14.0, not the greater flat tag.
+#   AC10 (cap)              — --max-added-tags 2 over a row adding four tags -> the 2 greatest descriptors +
+#                             2 [skip] capped log lines.
 #
 # Usage:  dark-factory/demo-scope-changes.sh
 # Exit:   0 = all assertions held; non-zero = a failure.
@@ -51,6 +60,19 @@ CH="$WORK/changes.tsv"
   printf '2026-09-07T00:00:00Z\tgamma\t-\thead\thttps://github.com/example/gamma\t-\tnewsha_gamma\thttps://github.com/example/gamma\n'
   printf '2026-09-07T00:00:00Z\tdelta\tethereum\timpl\t0x1111111111111111111111111111111111111111\t0x000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t0x000000000000000000000000bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t-\n'
   printf '2026-09-07T00:00:00Z\tepsilon\t-\thead\thttps://github.com/example/epsilon\toldsha_eps\tnewsha_eps\thttps://github.com/example/epsilon\n'
+  # tag rows (#2154). old/new are the WHOLE sorted comma-joined tag SETS (M1's shape); M2 fans out per ADDED tag.
+  #   zeta  : adds TWO tags                                   -> 2 descriptors (AC6)
+  #   eta   : the ONLY added tag is the C-sort-LAST element   -> 1 descriptor, new = that tag (AC7 regression)
+  #   theta : new is a SUBSET of old (removal only)           -> NO descriptor + [skip] no added tag (AC8)
+  #   iota  : old = `-` (first-sight)                         -> NO descriptor + [skip] first-sight (AC8)
+  #   kappa : adds graft/coreth/v1.15.0 (family base)         -> since = graft/coreth/v1.14.0 (AC9)
+  #   lambda: adds FOUR tags, run at --max-added-tags 2       -> 2 descriptors + 2 [skip] capped (AC10)
+  printf '2026-09-07T00:00:00Z\tzeta\t-\ttag\thttps://github.com/example/zeta\tv1.0.0\tv1.0.0,v1.1.0,v1.2.0\t-\n'
+  printf '2026-09-07T00:00:00Z\teta\t-\ttag\thttps://github.com/example/eta\tv1.0.0,v2.0.0\tv1.0.0,v2.0.0,v9.9.9\t-\n'
+  printf '2026-09-07T00:00:00Z\ttheta\t-\ttag\thttps://github.com/example/theta\tv1.0.0,v2.0.0\tv1.0.0\t-\n'
+  printf '2026-09-07T00:00:00Z\tiota\t-\ttag\thttps://github.com/example/iota\t-\tv1.0.0\t-\n'
+  printf '2026-09-07T00:00:00Z\tkappa\t-\ttag\thttps://github.com/example/kappa\tgraft/coreth/v1.14.0,v1.9.9-rc.4\tgraft/coreth/v1.14.0,v1.9.9-rc.4,graft/coreth/v1.15.0\t-\n'
+  printf '2026-09-07T00:00:00Z\tlambda\t-\ttag\thttps://github.com/example/lambda\tv1.0.0\tv1.0.0,v1.1.0,v1.2.0,v1.3.0,v1.4.0\t-\n'
 } > "$CH"
 
 # The --probe-cmd STUB: keyed on $PROBE_KIND then $PROBE_REPO (diff) / $PROBE_ADDR (source). Canned changed
@@ -62,6 +84,7 @@ STUB='case "$PROBE_KIND" in
       *example/alpha)   printf "src/Vault.sol\nsrc/Token.sol\nREADME.md\nlib/openzeppelin/ERC20.sol\n" ;;
       *example/beta)    printf "src/A.sol\nsrc/B.sol\nsrc/C.sol\n" ;;
       *example/epsilon) printf "docs/spec.md\ntest/Vault.t.sol\nscript/Deploy.s.sol\n" ;;
+      *example/zeta|*example/eta|*example/kappa|*example/lambda) printf "src/Changed.sol\n" ;;
       *) exit 4 ;;
     esac
     ;;
@@ -70,7 +93,7 @@ esac'
 
 OUT="$WORK/scope-descriptors.tsv"
 ERR="$WORK/run.err"
-"$SCOPER" --changes-from "$CH" --out "$OUT" --max-files 2 --probe-cmd "$STUB" \
+"$SCOPER" --changes-from "$CH" --out "$OUT" --max-files 2 --max-added-tags 2 --probe-cmd "$STUB" \
   >/dev/null 2>"$ERR"
 RC=$?
 [ "$RC" -eq 0 ] && ok "run exits 0" || bad "run exited $RC (expected 0)"
@@ -78,10 +101,15 @@ RC=$?
 # a small extractor: the descriptor row for a program, field N (1-based, TAB).
 field() { grep -v '^#' "$OUT" | awk -F"$TAB" -v p="$1" -v n="$2" '$1==p{print $n; exit}'; }
 row_count() { grep -cv '^#' "$OUT" 2>/dev/null || true; }
+# fan-out helpers (#2154): all rows for a program (a `tag` row can fan out to several).
+prog_rows()  { grep -v '^#' "$OUT" | awk -F"$TAB" -v p="$1" '$1==p'; }
+prog_count() { prog_rows "$1" | grep -c . || true; }
+prog_news()  { prog_rows "$1" | cut -f5 | paste -sd, - ; }   # the `new` column of every row, comma-joined
+LOGF="$(dirname "$OUT")/scope-changes.log"
 
 TOTAL="$(row_count)"
-[ "$TOTAL" -eq 5 ] && ok "exactly 5 descriptors (one per fixture row)" \
-  || bad "got $TOTAL descriptors, expected 5"
+[ "$TOTAL" -eq 11 ] && ok "exactly 11 descriptors (head/impl/skip 1:1; tag rows fan out per added tag)" \
+  || bad "got $TOTAL descriptors, expected 11"
 
 # ----------------------------------------------------------------------------------------------------------
 note "AC1) head + small .sol-only diff -> scoped, exact scope_hint_files, since = old sha ..."
@@ -127,6 +155,54 @@ note "AC5) head diff of docs/test/script only -> skip (no huntable .sol) ..."
 [ "$(field epsilon 6)" = "skip" ] && ok "AC5: epsilon scope_mode = skip" || bad "AC5 FAILED: epsilon mode = $(field epsilon 6)"
 [ "$(field epsilon 7)" = "-" ] && ok "AC5: epsilon scope_hint_files = '-'" || bad "AC5 FAILED: epsilon hint = $(field epsilon 7)"
 [ "$(field epsilon 8)" = "-" ] && ok "AC5: epsilon since = '-'" || bad "AC5 FAILED: epsilon since = $(field epsilon 8)"
+
+# ----------------------------------------------------------------------------------------------------------
+note "AC6) tag row adding TWO tags -> EXACTLY two descriptors, each a single real tag as new ..."
+[ "$(prog_count zeta)" -eq 2 ] && ok "AC6: zeta fans out to exactly 2 descriptors" || bad "AC6 FAILED: zeta rows = $(prog_count zeta) (want 2)"
+[ "$(prog_news zeta)" = "v1.1.0,v1.2.0" ] \
+  && ok "AC6: zeta descriptors carry new=v1.1.0 and new=v1.2.0 (the two ADDED tags)" \
+  || bad "AC6 FAILED: zeta news = '$(prog_news zeta)' (want v1.1.0,v1.2.0)"
+if prog_rows zeta | awk -F"$TAB" '$3!="tag"{bad=1} END{exit bad+0}'; then
+  ok "AC6: every zeta descriptor kind = tag"
+else
+  bad "AC6 FAILED: a zeta descriptor kind != tag"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+note "AC7) the ONLY added tag is the C-sort-LAST element of the new set -> new = that tag, never '-' ..."
+[ "$(prog_count eta)" -eq 1 ] && ok "AC7: eta -> exactly 1 descriptor" || bad "AC7 FAILED: eta rows = $(prog_count eta) (want 1)"
+[ "$(field eta 5)" = "v9.9.9" ] \
+  && ok "AC7: eta new = v9.9.9 (the last-element regression is fixed; was '-' before #2154)" \
+  || bad "AC7 FAILED: eta new = '$(field eta 5)' (want v9.9.9)"
+[ "$(field eta 6)" != "full" ] || bad "AC7 FAILED: eta degraded to full (the added tag was dropped)"
+
+# ----------------------------------------------------------------------------------------------------------
+note "AC8) removal-only + first-sight tag rows emit NO descriptor + a [skip] line; NO tag row has new='-' ..."
+[ "$(prog_count theta)" -eq 0 ] && ok "AC8: theta (removal only) -> no descriptor" || bad "AC8 FAILED: theta rows = $(prog_count theta) (want 0)"
+grep -q "\[skip\] theta (tag .*): no added tag" "$LOGF" && ok "AC8: theta logged [skip] no added tag" || bad "AC8 FAILED: no theta 'no added tag' skip line"
+[ "$(prog_count iota)" -eq 0 ] && ok "AC8: iota (first-sight) -> no descriptor" || bad "AC8 FAILED: iota rows = $(prog_count iota) (want 0)"
+grep -q "\[skip\] iota (tag .*): first-sight tag baseline" "$LOGF" && ok "AC8: iota logged [skip] first-sight tag baseline" || bad "AC8 FAILED: no iota first-sight skip line"
+if grep -v '^#' "$OUT" | awk -F"$TAB" '$3=="tag" && $5=="-"{n++} END{exit (n>0)}'; then
+  ok "AC8: no kind=tag descriptor has new='-' (the invariant holds globally)"
+else
+  bad "AC8 FAILED: a kind=tag descriptor has new='-'"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+note "AC9) family-aware base: adding graft/coreth/v1.15.0 -> since = graft/coreth/v1.14.0 (same family) ..."
+[ "$(field kappa 5)" = "graft/coreth/v1.15.0" ] && ok "AC9: kappa new = graft/coreth/v1.15.0" || bad "AC9 FAILED: kappa new = $(field kappa 5)"
+[ "$(field kappa 8)" = "graft/coreth/v1.14.0" ] \
+  && ok "AC9: kappa since = graft/coreth/v1.14.0 (family base, NOT the greater flat tag v1.9.9-rc.4)" \
+  || bad "AC9 FAILED: kappa since = '$(field kappa 8)' (want graft/coreth/v1.14.0)"
+
+# ----------------------------------------------------------------------------------------------------------
+note "AC10) --max-added-tags 2 over a row adding FOUR tags -> 2 greatest descriptors + 2 [skip] capped ..."
+[ "$(prog_count lambda)" -eq 2 ] && ok "AC10: lambda capped to exactly 2 descriptors" || bad "AC10 FAILED: lambda rows = $(prog_count lambda) (want 2)"
+[ "$(prog_news lambda)" = "v1.3.0,v1.4.0" ] \
+  && ok "AC10: lambda kept the C-sort-greatest 2 (v1.3.0, v1.4.0)" \
+  || bad "AC10 FAILED: lambda news = '$(prog_news lambda)' (want v1.3.0,v1.4.0)"
+CAPPED="$(grep -c "\[skip\] lambda (tag .*): --max-added-tags 2 capped" "$LOGF" || true)"
+[ "$CAPPED" -eq 2 ] && ok "AC10: exactly 2 [skip] capped log lines for lambda" || bad "AC10 FAILED: $CAPPED capped lines (want 2)"
 
 # ----------------------------------------------------------------------------------------------------------
 echo

@@ -26,6 +26,8 @@
 #   S6 — source + runtime invariants: FORGE_MAX_SLOTS is EXPORTED (a custom K reaches the mock hunt at runtime),
 #        `--max-hunts` is forwarded, there is NO uncommented `crontab -` install, and the scope-guard header +
 #        `armed:false` are present.
+#   S7 — a materialize-error (#2154) is counted in `materialize_errors`, NOT `hunts_run`, and costs no hunt
+#        budget: matfail fails to materialize, `good` still hunts this tick at --hunts-per-tick 1; status=ok.
 #
 # Usage:  dark-factory/demo-change-pipeline.sh
 # Exit:   0 = all assertions held; 1 = a failure; 3 = a script under test is missing.
@@ -202,6 +204,7 @@ if command -v python3 >/dev/null 2>&1 && [ -f "$DASH" ]; then
   else
     bad "S5: change_pipeline model missing/wrong in the overview (see $MODEL)"
   fi
+  grep -q '"materialize_errors"' "$MODEL" && ok "S5: the change_pipeline model carries materialize_errors (#2154)" || bad "S5: materialize_errors missing from the model"
   python3 "$DASH" --registry --registry-dir "$EMPTY_REG" --change-summary "$SUM" --render > "$WORK/page.html" 2>>"$WORK/dash.err"
   grep -q "change-cadence pipeline" "$WORK/page.html" && ok "S5: --render carries the change-cadence panel" || bad "S5: rendered page missing the panel"
   python3 "$DASH" --registry --registry-dir "$EMPTY_REG" --change-summary "$WORK/nope.json" --emit-model > "$WORK/model-absent.json" 2>>"$WORK/dash.err"
@@ -229,6 +232,32 @@ fi
 grep -qi "SCOPE GUARD" "$CP" && ok "S6: the scope-guard header is present" || bad "S6: no SCOPE GUARD header"
 grep -q '"armed": false' "$CP" && ok "S6: the tick-summary hardcodes armed:false (build/demo, never live)" || bad "S6: armed:false not hardcoded"
 grep -qi "no daemon/loop mode\|only ever runs ONE tick\|there is no continuous" "$CP" && ok "S6: the header documents the no-loop (one-tick-per-invocation) limit-safety" || bad "S6: no no-loop guard documented"
+
+# ==========================================================================================================
+note "S7) a materialize-error is counted separately and costs NO hunt budget; status stays ok (#2154) ..."
+: > "$HUNTLOG"
+export DARK_FACTORY_DIR="$WORK/s7"; mkdir -p "$DARK_FACTORY_DIR"
+SUM="$DARK_FACTORY_DIR/change-watch/tick-summary.json"
+# a source mock that FAILS for the `matfail` program's repo (make_scope writes repo_or_addr=example.invalid/<prog>)
+# but succeeds otherwise, so matfail -> materialize-error and `good` (the next row) still hunts this tick.
+SRC_MOCK_S7="$WORK/src-mock-s7.sh"
+cat > "$SRC_MOCK_S7" <<MOCK
+#!/usr/bin/env bash
+set -u
+case "\$MAT_REPO" in */matfail) exit 1;; esac
+mkdir -p "\$MAT_DEST/src" || exit 1
+echo "// mock materialized" > "\$MAT_DEST/src/Target.sol"
+printf '%s\n' "\$MAT_DEST"
+MOCK
+chmod +x "$SRC_MOCK_S7"
+W7="$(make_watch "matfail good")"
+S7="$(make_scope "matfail:scoped:src/X.sol good:scoped:src/Y.sol")"
+"$CP" --once --watch-cmd "$W7" --scope-cmd "$S7" --source-cmd "$SRC_MOCK_S7" --hunt-cmd "$HUNT_MOCK" \
+  --hunts-per-tick 1 >/dev/null 2>>"$WORK/cp.err"
+[ "$(jnum "$SUM" hunts_run)" = "1" ] && ok "S7: hunts_run=1 (good still ran though matfail failed to materialize)" || bad "S7: hunts_run=$(jnum "$SUM" hunts_run)"
+[ "$(jnum "$SUM" materialize_errors)" = "1" ] && ok "S7: materialize_errors=1 (counted separately from hunts_run)" || bad "S7: materialize_errors=$(jnum "$SUM" materialize_errors)"
+[ "$(jstr "$SUM" status)" = "ok" ] && ok "S7: status=ok (a materialize-error is not a stage error)" || bad "S7: status=$(jstr "$SUM" status)"
+[ "$(head -n1 "$HUNTLOG" | awk -F'|' '{print $1}')" = "good" ] && ok "S7: the hunt that ran was 'good' (the row after the failure)" || bad "S7: hunted program = $(head -n1 "$HUNTLOG" | awk -F'|' '{print $1}')"
 
 # ==========================================================================================================
 echo

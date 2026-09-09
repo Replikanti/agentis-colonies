@@ -25,6 +25,14 @@
 #   AC7 — the REAL hunt_args build (NOT the --hunt-cmd mock): run against a STUB run-zone-hunt.sh that echoes
 #         its argv, a `scoped` descriptor -> `--scope-hint <files>` + `--since <old>`, a `full`/`impl`
 #         descriptor -> NEITHER, and M2's `-` sentinel is never forwarded as a flag value.
+#   AC8 — a materialize-error costs NO --max-hunts budget (#2154): matfail fails to materialize, `good` (the
+#         next row) still runs in the SAME tick under --max-hunts 1. Fails on main (the budget was charged
+#         BEFORE materialize, so the failure spent the only slot and `good` never ran).
+#   AC9 — real OFFLINE materialize over a LOCAL git fixture: a slashed tag ref (graft/coreth/vX.Y.Z) pins the
+#         worktree to the TAG's content (not the default-branch tip), and a nonexistent ref -> materialize-error
+#         with NO silent default-tip hunt. Also guards the fetch-target.sh exec bit (the #2154 rc-126 cause).
+#   AC10 — --max-materialize-errors caps a broken tick: 5 failing materializes at cap 2 -> exactly 2 ledgered
+#         rows + a [materialize-budget] stop, so one bad tick cannot walk the whole descriptor file.
 #
 # Usage:  dark-factory/demo-run-change-hunts.sh
 # Exit:   0 = all assertions held; 1 = a failure; 3 = the script under test is missing.
@@ -231,6 +239,88 @@ if grep -qE -- '--(scope-hint|since) -($| )' "$ARGV_LOG"; then
 else
   ok "AC7: M2's '-' sentinel is NEVER forwarded as a --scope-hint/--since value"
 fi
+
+# ==========================================================================================================
+note "AC8) a materialize-error costs NO --max-hunts budget: the next huntable row still runs this tick (#2154) ..."
+: > "$CAPTURE"; : > "$MATLOG"
+# A source mock that FAILS to materialize `matfail` but succeeds for `good`. With --max-hunts 1 the OLD code
+# charged the budget BEFORE materialize, so matfail spent the only slot and `good` never ran; the fix charges
+# the budget only AFTER a successful materialize.
+SRC_MOCK_FAIL="$WORK/src-mock-fail.sh"
+cat > "$SRC_MOCK_FAIL" <<MOCK
+#!/usr/bin/env bash
+set -u
+case "\$MAT_REPO" in *example/matfail) exit 1;; esac
+mkdir -p "\$MAT_DEST/src" || exit 1
+echo "// mock ok" > "\$MAT_DEST/src/Target.sol"
+printf '%s\n' "\$MAT_DEST"
+MOCK
+chmod +x "$SRC_MOCK_FAIL"
+DESC_H="$WORK/desc-h.tsv"; LED_H="$WORK/ledger-h.tsv"
+printf 'matfail\t-\thead\thttps://github.com/example/matfail\tnewmf\tscoped\tsrc/M.sol\toldmf\n' > "$DESC_H"
+printf 'good\t-\thead\thttps://github.com/example/good\tnewgood\tscoped\tsrc/G.sol\toldgood\n' >> "$DESC_H"
+"$RCH" --descriptors-from "$DESC_H" --ledger "$LED_H" --drop-dir "$WORK/drop-h" --out "$WORK/out-h" \
+  --max-hunts 1 --source-cmd "$SRC_MOCK_FAIL" --hunt-cmd "$HUNT_MOCK" >/dev/null 2>"$WORK/h.err"
+[ "$(capture_lines)" -eq 1 ] && ok "AC8: exactly one hunt ran despite the earlier materialize-error" || bad "AC8: $(capture_lines) hunts ran, expected 1 (budget wrongly spent on the failure?)"
+[ "$(printf '%s' "$(head -n1 "$CAPTURE")" | cut -d'|' -f1)" = "good" ] && ok "AC8: the hunt that ran was 'good' (the row after the failure)" || bad "AC8: hunted program = $(printf '%s' "$(head -n1 "$CAPTURE")" | cut -d'|' -f1)"
+[ "$(ledger_verdict matfail "$LED_H")" = "materialize-error" ] && ok "AC8: matfail ledgered materialize-error" || bad "AC8: matfail verdict = $(ledger_verdict matfail "$LED_H")"
+[ "$(ledger_verdict good "$LED_H")" = "clean" ] && ok "AC8: good ledgered clean (it still ran in the same tick)" || bad "AC8: good verdict = $(ledger_verdict good "$LED_H")"
+grep -q "materialize failed" "$WORK/h.err" && ok "AC8: the materialize-error is reported on stderr" || bad "AC8: no materialize-error on stderr"
+
+# ==========================================================================================================
+note "AC9) real offline materialize: a slashed tag ref pins the worktree to the TAG content; a bad ref errors ..."
+: > "$CAPTURE"; : > "$MATLOG"
+# exec-bit guard (the #2154 rc-126 root cause): the committed fetch-target.sh next to run-change-hunts.sh MUST
+# be executable, else run-change-hunts.sh's direct exec of it returns 126 for every materialize.
+[ -x "$HERE/fetch-target.sh" ] && ok "AC9: fetch-target.sh is executable (mode guard; the rc-126 root cause)" || bad "AC9: fetch-target.sh not executable — every materialize would rc-126"
+# a LOCAL git fixture: commit1 tagged graft/coreth/v1.15.0 (file=TAGVER), commit2 on the default branch (TIPVER).
+FIX="$WORK/fixture-repo"; mkdir -p "$FIX/src"
+git -C "$FIX" init -q
+git -C "$FIX" config user.email demo@example.invalid
+git -C "$FIX" config user.name demo-fixture
+echo "// TAGVER" > "$FIX/src/Pinned.sol"
+git -C "$FIX" add -A; git -C "$FIX" commit -qm c1
+git -C "$FIX" tag graft/coreth/v1.15.0
+echo "// TIPVER" > "$FIX/src/Pinned.sol"
+git -C "$FIX" add -A; git -C "$FIX" commit -qm c2
+# a real-path bindir carrying run-change-hunts.sh + fetch-target.sh (so the REAL default_materialize runs) +
+# a stub run-zone-hunt.sh that records the --repo dir AND the pinned file content it sees.
+BIN9="$WORK/bin9"; mkdir -p "$BIN9"
+cp -p "$RCH" "$BIN9/run-change-hunts.sh"
+cp -p "$HERE/fetch-target.sh" "$BIN9/fetch-target.sh"
+ARGV9="$WORK/argv9.log"; : > "$ARGV9"
+cat > "$BIN9/run-zone-hunt.sh" <<STUB
+#!/usr/bin/env bash
+repo=""; while [ \$# -gt 0 ]; do [ "\$1" = "--repo" ] && repo="\$2"; shift; done
+printf '%s\t%s\n' "\$repo" "\$(cat "\$repo/src/Pinned.sol" 2>/dev/null)" >> "$ARGV9"
+exit 0
+STUB
+chmod +x "$BIN9/run-zone-hunt.sh"
+DESC_I="$WORK/desc-i.tsv"; LED_I="$WORK/ledger-i.tsv"
+printf 'pinned\t-\ttag\t%s\tgraft/coreth/v1.15.0\tscoped\tsrc/Pinned.sol\tgraft/coreth/v1.14.0\n' "$FIX" > "$DESC_I"
+printf 'badref\t-\ttag\t%s\tv9.9.9-does-not-exist\tscoped\tsrc/Pinned.sol\tv1.0.0\n' "$FIX" >> "$DESC_I"
+"$BIN9/run-change-hunts.sh" --descriptors-from "$DESC_I" --ledger "$LED_I" --drop-dir "$WORK/drop-i" \
+  --out "$WORK/out-i" --work-dir "$WORK/wk-i" --max-hunts 5 >/dev/null 2>"$WORK/i.err"
+[ "$(ledger_verdict pinned "$LED_I")" = "clean" ] && ok "AC9: the slashed tag row materialized + hunted (clean)" || bad "AC9: pinned verdict = $(ledger_verdict pinned "$LED_I") (see $WORK/out-i/materialize.log)"
+[ "$(grep -c 'TAGVER' "$ARGV9" || true)" -eq 1 ] && ok "AC9: the hunted worktree holds the TAG content (slashed-ref pin), not the tip" || bad "AC9: worktree not pinned to the tag ($(cat "$ARGV9"))"
+if grep -q 'TIPVER' "$ARGV9"; then bad "AC9: the default-branch tip content leaked into the hunt (pin failed)"; else ok "AC9: no default-branch-tip content leaked (authoritative pin)"; fi
+[ "$(ledger_verdict badref "$LED_I")" = "materialize-error" ] && ok "AC9: a nonexistent tag ref -> materialize-error (never a silent default-tip hunt)" || bad "AC9: badref verdict = $(ledger_verdict badref "$LED_I")"
+[ "$(grep -c . "$ARGV9")" -eq 1 ] && ok "AC9: the bad-ref row ran NO hunt (no silent default-tip hunt)" || bad "AC9: $(grep -c . "$ARGV9") hunts ran, expected 1"
+
+# ==========================================================================================================
+note "AC10) --max-materialize-errors caps a broken tick: 5 failing rows, cap 2 -> 2 ledgered + a budget stop ..."
+: > "$CAPTURE"; : > "$MATLOG"
+DESC_J="$WORK/desc-j.tsv"; LED_J="$WORK/ledger-j.tsv"
+: > "$DESC_J"; j=1
+while [ "$j" -le 5 ]; do
+  printf 'mf%s\t-\thead\thttps://github.com/example/mf%s\tnew%s\tscoped\tsrc/X.sol\told%s\n' "$j" "$j" "$j" "$j" >> "$DESC_J"
+  j=$((j + 1))
+done
+"$RCH" --descriptors-from "$DESC_J" --ledger "$LED_J" --drop-dir "$WORK/drop-j" --out "$WORK/out-j" \
+  --max-hunts 9 --max-materialize-errors 2 --source-cmd 'exit 1' --hunt-cmd "$HUNT_MOCK" >/dev/null 2>"$WORK/j.err"
+[ "$(ledger_rows "$LED_J")" -eq 2 ] && ok "AC10: exactly 2 materialize-error rows ledgered (the cap stopped the tick)" || bad "AC10: ledger has $(ledger_rows "$LED_J") rows, expected 2"
+grep -q "reached --max-materialize-errors" "$WORK/j.err" && ok "AC10: the [materialize-budget] stop is logged" || bad "AC10: no materialize-budget stop logged"
+[ ! -s "$CAPTURE" ] && ok "AC10: no hunt ran (every materialize failed)" || bad "AC10: a hunt ran though every materialize failed"
 
 # ==========================================================================================================
 echo

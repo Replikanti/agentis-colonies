@@ -15,6 +15,21 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **Change pipeline: whole-tag-set rows fan out per added tag, and a materialize failure no longer eats the
+  hunt budget** (#2154, M5 finding under epic #2120). Two reproduced root causes are fixed. (1) `fetch-target.sh`
+  was committed mode `100644`, so `run-change-hunts.sh`'s direct exec of it returned rc 126 for EVERY head/tag
+  materialize — no change-triggered hunt had ever materialized; it is now mode `100755`, a preflight
+  executability guard names the failure instead of a bare 126, and `demo-run-change-hunts.sh` asserts the exec
+  bit. (2) `scope-changes.sh`'s tag set-diff dropped the last, unterminated element of the tag list, so the
+  lexicographically-greatest added tag became `new='-'` (the firedancer shape); the read loop now keeps the
+  final element. A `tag` row now fans out to one descriptor per ADDED tag (`--max-added-tags`, default 5,
+  greatest-first), each with a single real tag as `new` and a family-aware base ref (the greatest prior tag
+  sharing the `graft/<component>/` prefix); removal-only / first-sight tag rows emit no descriptor. The ref pin
+  is authoritative — a target that cannot be pinned to `new` (incl. a slashed tag ref) becomes
+  `materialize-error`, never a silent default-branch-tip hunt. `run-change-hunts.sh` charges the `--max-hunts`
+  budget only AFTER a successful materialize (a `materialize-error` costs no budget, so the next huntable
+  descriptor still runs in the same tick) and adds `--max-materialize-errors` (default 3) to cap a broken tick.
+  `change-pipeline.sh`'s tick-summary and the hunt-dashboard panel gain a `materialize_errors` count.
 - **Callee-trust directive closes the implementation-of-record and role-power-dismissal gaps** (#2152, D1.2 of
   milestone D1 #2145, epic #2130). A live gate re-run on #2145 found the directive still lost on two shapes:
   the model inferred the callee's behaviour from an implementation VISIBLE IN THE REPO (an interface's default
