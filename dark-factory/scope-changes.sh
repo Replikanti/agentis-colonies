@@ -15,8 +15,12 @@
 #            full  (by size)  — filtered count > --max-files (a big refactor is effectively new code); since = old.
 #            full  (missing)  — old sha empty/`-` (first-seen / shallow gap) or a ref unfetchable; since = `-`.
 #            skip             — the delta is docs/tests-only (no huntable .sol) -> nothing to hunt.
-#   tag  : same source-repo-delta shape using the newest ADDED tag (set-diff new\old, first) as the head ref
-#          and the most-recent prior tag (last of `old`) as the base ref. Either unresolvable -> full.
+#   tag  : same source-repo-delta shape, FANNED OUT to one descriptor per ADDED tag (set-diff new\old, in
+#          M1's LC_ALL=C sort order, capped to the C-sort-greatest --max-added-tags). Each descriptor's head
+#          ref is that single added tag; its base ref is the C-sort-greatest OLD tag in the SAME family
+#          (family = everything up to and including the tag's last `/`, empty for flat tags), falling back to
+#          the C-sort-greatest OLD tag overall. A `tag` descriptor's `new` is ALWAYS a single real tag, never
+#          `-`. old empty/`-` (first-sight) or no added tag (removal/rename only) -> NO descriptor is emitted.
 #   impl : an on-chain proxy upgrade. ALWAYS `full` (#2131 STOP-1): emit a full descriptor carrying the proxy
 #          address + resolved chain + the NEW impl address (0x + last 40 hex of the impl storage word in the
 #          `new` column). The new-impl source-pull (Sourcify/Blockscout) is DEFERRED to M3 (the stage that
@@ -26,13 +30,15 @@
 # aborts the sweep. NO LLM calls anywhere (so no #2125 sandbox wiring).
 #
 # Usage: scope-changes.sh [--changes-from <file>] [--out <file>] [--work-dir <dir>]
-#                         [--max-files N] [--probe-cmd "<cmd>"] [-h]
+#                         [--max-files N] [--max-added-tags N] [--probe-cmd "<cmd>"] [-h]
 #   --changes-from : M1's change ledger. Default ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/change-watch/
 #                     changes.tsv. Unreadable -> exit 2. `#`/blank lines are skipped.
 #   --out          : the descriptor file. Default <dir>/change-watch/scope-descriptors.tsv. OVERWRITTEN each
 #                     run (a pure function of the input, NOT an append ledger); descriptors also go to stdout.
 #   --work-dir     : scratch root for the shallow clones (default a `mktemp -d`, trap-cleaned).
 #   --max-files N  : the full-by-size threshold (default 25). A filtered .sol count above it -> `full`.
+#   --max-added-tags N : cap on how many ADDED tags a single `tag` row fans out to (default 5). The
+#                     C-sort-greatest N are kept; the rest are logged `[skip] ... capped` and emit no descriptor.
 #   --probe-cmd    : the probe seam (a mock hatch for the offline demo; mirrors watch-code-changes.sh). When
 #                     set it REPLACES the live fetch/diff and the source probe. Invoked as
 #                       PROBE_KIND=diff   PROBE_REPO=<url> PROBE_OLD=<old> PROBE_NEW=<new> sh -c "<cmd>"
@@ -43,11 +49,12 @@
 #                         -> must print `verified`/`unverified` (advisory only, never gates).
 #   -h/--help      : this header.
 #
-# descriptor SCHEMA (TAB-separated, one row per input row; a `#` header is written on each create):
+# descriptor SCHEMA (TAB-separated; one row per input row EXCEPT a `tag` row, which fans out to one row per
+# ADDED tag; a `#` header is written on each create):
 #   program  chain  kind(head|tag|impl)  repo_or_addr  new  scope_mode(scoped|full|skip)  scope_hint_files  since
 #   - chain=`-` passes through for head/tag (a source change is chain-agnostic — M3 resolves it from
 #     bounties.json `ecosystem` keyed by `program`, per M1's contract); impl carries the resolved chain.
-#   - `new` = the new HEAD sha (head), the added tag (tag), or the new impl address (impl).
+#   - `new` = the new HEAD sha (head), a SINGLE added tag (tag — never `-`), or the new impl address (impl).
 #   - `full` rows: scope_hint_files=`-`, since=old sha (full-by-size, keeps map-zones' advisory hardening
 #     signal) OR `-` (full-by-missing-sha). `skip`/`impl` rows: scope_hint_files=`-`, since=`-`.
 #
@@ -65,19 +72,22 @@ CHANGES_FROM="$DIR/change-watch/changes.tsv"
 OUT=""
 WORK_DIR=""
 MAX_FILES=25
+MAX_ADDED_TAGS=5
 PROBE_CMD=""
 while [ $# -gt 0 ]; do case "$1" in
-  --changes-from) nv "$#" "$1"; CHANGES_FROM="$2"; shift 2;;
-  --out)          nv "$#" "$1"; OUT="$2"; shift 2;;
-  --work-dir)     nv "$#" "$1"; WORK_DIR="$2"; shift 2;;
-  --max-files)    nv "$#" "$1"; MAX_FILES="$2"; shift 2;;
-  --probe-cmd)    nv "$#" "$1"; PROBE_CMD="$2"; shift 2;;
-  -h|--help)      sed -n '2,74p' "$0"; exit 0;;
+  --changes-from)   nv "$#" "$1"; CHANGES_FROM="$2"; shift 2;;
+  --out)            nv "$#" "$1"; OUT="$2"; shift 2;;
+  --work-dir)       nv "$#" "$1"; WORK_DIR="$2"; shift 2;;
+  --max-files)      nv "$#" "$1"; MAX_FILES="$2"; shift 2;;
+  --max-added-tags) nv "$#" "$1"; MAX_ADDED_TAGS="$2"; shift 2;;
+  --probe-cmd)      nv "$#" "$1"; PROBE_CMD="$2"; shift 2;;
+  -h|--help)        sed -n '2,83p' "$0"; exit 0;;
   *) echo "scope-changes.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
 
 [ -r "$CHANGES_FROM" ] || { echo "scope-changes.sh: --changes-from <file> not readable: $CHANGES_FROM" >&2; exit 2; }
 case "$MAX_FILES" in *[!0-9]*|"") echo "scope-changes.sh: --max-files must be a non-negative integer" >&2; exit 2;; esac
+case "$MAX_ADDED_TAGS" in *[!0-9]*|"") echo "scope-changes.sh: --max-added-tags must be a non-negative integer" >&2; exit 2;; esac
 
 [ -n "$OUT" ] || OUT="$DIR/change-watch/scope-descriptors.tsv"
 
@@ -154,19 +164,35 @@ emit_desc() {
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" | tee -a "$OUT"
 }
 
-# added_tag OLDSET NEWSET -> the first tag present in NEWSET but not in OLDSET (comma-joined sets, M1's shape).
-added_tag() {
+# added_tags OLDSET NEWSET -> ALL tags present in NEWSET but not in OLDSET (comma-joined sets, M1's shape),
+# one per line, in M1's LC_ALL=C sort order. The `|| [ -n "$_t" ]` guard keeps the LAST (unterminated) element
+# of the `tr` output — without it the C-sort-greatest added tag is silently dropped (the firedancer `new='-'`
+# bug, #2154). The membership test uses M1's comma-fenced set idiom.
+added_tags() {
   _old=",$1,"
-  printf '%s' "$2" | tr ',' '\n' | while IFS= read -r _t; do
+  printf '%s' "$2" | tr ',' '\n' | while IFS= read -r _t || [ -n "$_t" ]; do
     [ -n "$_t" ] || continue
     case "$_old" in *",$_t,"*) ;; *) printf '%s\n' "$_t";; esac
-  done | head -n1
+  done
 }
 
-# last_tag OLDSET -> the most-recent prior tag (last comma element), or empty for an empty/`-` set.
-last_tag() {
-  case "$1" in ""|"-") return;; esac
-  printf '%s' "$1" | tr ',' '\n' | grep -v '^$' | tail -n1
+# base_tag ADDED OLDSET -> the diff base for a single added tag: the C-sort-greatest OLD tag in ADDED's
+# family (family = everything up to and including the last `/`, empty for a flat tag), else the C-sort-greatest
+# OLD tag overall, else empty. `changes.tsv` carries no chronology, so a lexicographic pick is the only
+# deterministic + offline-testable option; the family rule keeps a monorepo's per-component tag series
+# (e.g. graft/coreth/vX.Y.Z) diffing against its own predecessor rather than an unrelated flat tag.
+base_tag() {
+  case "$2" in ""|"-") return;; esac
+  case "$1" in */*) _fam="${1%/*}/";; *) _fam="";; esac
+  _sorted="$(printf '%s' "$2" | tr ',' '\n' | grep -v '^$' | LC_ALL=C sort)"
+  _cand=""
+  if [ -n "$_fam" ]; then
+    _cand="$(printf '%s\n' "$_sorted" | while IFS= read -r _c || [ -n "$_c" ]; do
+               case "$_c" in "$_fam"*) printf '%s\n' "$_c";; esac
+             done | tail -n1)"
+  fi
+  [ -n "$_cand" ] || _cand="$(printf '%s\n' "$_sorted" | tail -n1)"
+  printf '%s' "$_cand"
 }
 
 # scope_row PROGRAM CHAIN KIND ROA NEWCOL BASE HEADREF — the shared source-repo-delta path (head + tag).
@@ -207,7 +233,8 @@ scope_row() {
 
 # --- write the descriptor file header (OVERWRITE each run — a pure function of the input) -------------------
 {
-  echo "# scope-changes.sh descriptors (#2131, epic #2120 M2). TAB-separated. One row per changes.tsv row."
+  echo "# scope-changes.sh descriptors (#2131, epic #2120 M2). TAB-separated. One row per changes.tsv row,"
+  echo "# EXCEPT a tag row fans out to one descriptor per ADDED tag (new = a single real tag, never '-')."
   printf '# program\tchain\tkind(head|tag|impl)\trepo_or_addr\tnew\tscope_mode(scoped|full|skip)\tscope_hint_files\tsince\n'
   echo "# chain='-' passes through for head|tag (source change is chain-agnostic; M3 resolves it from"
   echo "# bounties.json ecosystem keyed by program). full-by-size keeps since=old; full-by-missing-sha/skip/impl"
@@ -228,9 +255,34 @@ while IFS="$(printf '\t')" read -r _date prog chain kind roa old new ghurl || [ 
       scope_row "$prog" "$chain" head "$roa" "$new" "$old" "$new" || continue
       ;;
     tag)
-      _added="$(added_tag "$old" "$new")"
-      _base="$(last_tag "$old")"
-      scope_row "$prog" "$chain" tag "$roa" "${_added:--}" "${_base:--}" "${_added:--}" || continue
+      # A `tag` row's old/new are the WHOLE sorted comma-joined tag SETS (M1's stored state value). Fan out
+      # to one descriptor per ADDED tag; each descriptor's `new` is a single real tag (never `-`).
+      case "$old" in
+        ""|"-")
+          log "[skip] $prog (tag $roa): first-sight tag baseline, no diff base"
+          continue
+          ;;
+      esac
+      _added="$(added_tags "$old" "$new")"
+      if [ -z "$_added" ]; then
+        log "[skip] $prog (tag $roa): no added tag (removal/rename only)"
+        continue
+      fi
+      # _added is in C-sort ascending order; keep the C-sort-greatest --max-added-tags (the LAST N), drop
+      # the rest with one [skip] line each. base = base_tag (family-aware greatest OLD tag).
+      _total="$(printf '%s\n' "$_added" | grep -c . || true)"
+      _drop=$((_total - MAX_ADDED_TAGS))
+      [ "$_drop" -lt 0 ] && _drop=0
+      _i=0
+      printf '%s\n' "$_added" | while IFS= read -r _t || [ -n "$_t" ]; do
+        [ -n "$_t" ] || continue
+        _i=$((_i + 1))
+        if [ "$_i" -le "$_drop" ]; then
+          log "[skip] $prog (tag $roa): --max-added-tags $MAX_ADDED_TAGS capped, dropped $_t"
+          continue
+        fi
+        scope_row "$prog" "$chain" tag "$roa" "$_t" "$(base_tag "$_t" "$old")" "$_t"
+      done
       ;;
     impl)
       # New impl ADDRESS = 0x + last 40 hex of the impl storage word (M1's `new` for an impl row). An

@@ -33,16 +33,20 @@
 # Hunting more than one change per run requires raising `--max-hunts` explicitly. The cadence + concurrency +
 # LLM budget + the live 245-program fleet sweep is M4.
 #
-# Usage: run-change-hunts.sh [--descriptors-from <file>] [--ledger <file>] [--max-hunts N] [--out <dir>]
-#                            [--work-dir <dir>] [--drop-dir <dir>] [--backend <b>] [--agentis <bin>]
-#                            [--model <id>] [--hunt-cmd "<cmd>"] [--source-cmd "<cmd>"] [-h]
+# Usage: run-change-hunts.sh [--descriptors-from <file>] [--ledger <file>] [--max-hunts N]
+#                            [--max-materialize-errors N] [--out <dir>] [--work-dir <dir>] [--drop-dir <dir>]
+#                            [--backend <b>] [--agentis <bin>] [--model <id>] [--hunt-cmd "<cmd>"]
+#                            [--source-cmd "<cmd>"] [-h]
 #   --descriptors-from : M2's descriptor file. Default ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/change-watch/
 #                        scope-descriptors.tsv. Missing/empty/unreadable -> clean [SKIP] exit 0 (CI-safe,
 #                        mirroring run-batch.sh). `#`/blank lines are skipped.
 #   --ledger           : the change-key dedup ledger. Default <dir>/change-watch/hunted-changes.tsv. Appended
 #                        (never overwritten) — it is the resumable checkpoint keyed by `(program, new)`.
 #   --max-hunts N      : hunt at most N changes this run (DEFAULT 1). Alias --budget. Skips + already-ledgered
-#                        rows do NOT count.
+#                        rows do NOT count, and the budget is charged ONLY AFTER a successful materialize — a
+#                        materialize-error costs no budget, so the next huntable descriptor still runs this run.
+#   --max-materialize-errors N : stop the run after N materialize-error rows this run (DEFAULT 3), so one
+#                        broken tick cannot walk the whole descriptor file cloning large repos.
 #   --out              : per-run output root (default $PWD/change-hunt-out); each hunt lands in <out>/<slug>.
 #   --work-dir         : scratch root for the materialized clones (default a `mktemp -d`, trap-cleaned).
 #   --drop-dir         : the never-submit drop-dir forwarded to run-zone-hunt.sh (default <out>/drop).
@@ -69,6 +73,9 @@
 #
 # ledger SCHEMA (TAB-separated, appended one row per processed change):
 #   program  new  verdict(finding|clean|skipped-nohunt|materialize-error|hunt-error)  timestamp
+#   - a `materialize-error` row is ledgered (so the change is not re-tried endlessly) but does NOT consume the
+#     --max-hunts budget; the ref pin is AUTHORITATIVE, so a target that cannot be pinned to `new` (incl. a
+#     slashed tag ref graft/<component>/vX.Y.Z) becomes materialize-error, never a silent default-tip hunt.
 #
 # Requires: bash + git (default materialize path only; --source-cmd bypasses it). This script NEVER contacts a
 # bounty platform to submit — a staged finding is a LEAD a human reviews + files. Exit 0 on success OR a clean
@@ -85,6 +92,7 @@ nv() { [ "$1" -ge 2 ] || { echo "run-change-hunts.sh: $2 requires a value" >&2; 
 DESCRIPTORS="$DIR/change-watch/scope-descriptors.tsv"
 LEDGER="$DIR/change-watch/hunted-changes.tsv"
 MAX_HUNTS=1
+MAX_MAT_ERRORS=3
 OUT="$PWD/change-hunt-out"
 WORK_DIR=""
 DROP_DIR=""
@@ -97,6 +105,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --descriptors-from) nv "$#" "$1"; DESCRIPTORS="$2"; shift 2;;
   --ledger)           nv "$#" "$1"; LEDGER="$2"; shift 2;;
   --max-hunts|--budget) nv "$#" "$1"; MAX_HUNTS="$2"; shift 2;;
+  --max-materialize-errors) nv "$#" "$1"; MAX_MAT_ERRORS="$2"; shift 2;;
   --out)              nv "$#" "$1"; OUT="$2"; shift 2;;
   --work-dir)         nv "$#" "$1"; WORK_DIR="$2"; shift 2;;
   --drop-dir)         nv "$#" "$1"; DROP_DIR="$2"; shift 2;;
@@ -105,11 +114,12 @@ while [ $# -gt 0 ]; do case "$1" in
   --model)            nv "$#" "$1"; MODEL="$2"; shift 2;;
   --hunt-cmd)         nv "$#" "$1"; HUNT_CMD="$2"; shift 2;;
   --source-cmd)       nv "$#" "$1"; SOURCE_CMD="$2"; shift 2;;
-  -h|--help)          sed -n '2,86p' "$0"; exit 0;;
+  -h|--help)          sed -n '2,82p' "$0"; exit 0;;
   *) echo "run-change-hunts.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
 
 case "$MAX_HUNTS" in *[!0-9]*|"") echo "run-change-hunts.sh: --max-hunts must be a non-negative integer" >&2; exit 2;; esac
+case "$MAX_MAT_ERRORS" in *[!0-9]*|"") echo "run-change-hunts.sh: --max-materialize-errors must be a non-negative integer" >&2; exit 2;; esac
 [ -n "$DROP_DIR" ] || DROP_DIR="$OUT/drop"
 
 # Empty / missing / unreadable descriptors -> nothing to do (CI-safe; [SKIP] to stderr, mirroring run-batch.sh).
@@ -132,8 +142,12 @@ trap cleanup EXIT
 mkdir -p "$(dirname "$LEDGER")"
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 LOG="$OUT/run-change-hunts.log"
+# Materialize diagnostics: the default materialize used to send every clone/pin failure to /dev/null, so the
+# ledger's `materialize-error` rows carried zero forensics. Route them to a FILE (never stderr — the
+# materialize function's stdout must stay ONLY the dest dir).
+MAT_LOG="${MAT_LOG:-$OUT/materialize.log}"
 now="$(ts)"
-echo "[$now] run-change-hunts.sh over $DESCRIPTORS (max-hunts=$MAX_HUNTS, backend=$BACKEND)" >> "$LOG"
+echo "[$now] run-change-hunts.sh over $DESCRIPTORS (max-hunts=$MAX_HUNTS, max-materialize-errors=$MAX_MAT_ERRORS, backend=$BACKEND)" >> "$LOG"
 log() { echo "$*" >> "$LOG"; }
 
 TAB="$(printf '\t')"
@@ -161,15 +175,26 @@ default_materialize() { # env: MAT_KIND MAT_REPO MAT_ADDR MAT_REF MAT_CHAIN MAT_
   case "$MAT_KIND" in
     clone)
       [ -n "$MAT_REPO" ] && [ "$MAT_REPO" != "-" ] || return 1
-      "$HERE/fetch-target.sh" "$MAT_REPO" "$MAT_DEST" >/dev/null 2>&1 || return 1
-      # Pin the exact new ref when the cloned default tip is not already it (best-effort: a watch-time head sha
-      # is normally the default-branch tip, so the shallow clone already IS `new`; a tag/older sha is fetched).
+      # Preflight: a fetch-target.sh mode regression (it MUST be 100755) fails here with a NAMED reason
+      # instead of a bare rc 126 from the exec below (the #2154 root cause).
+      [ -x "$HERE/fetch-target.sh" ] || { echo "run-change-hunts: fetch-target.sh is not executable" >>"$MAT_LOG"; return 1; }
+      "$HERE/fetch-target.sh" "$MAT_REPO" "$MAT_DEST" >>"$MAT_LOG" 2>&1 || return 1
+      # AUTHORITATIVE ref pin: when MAT_REF is a real ref (head sha OR a tag, incl. slashed tags like
+      # graft/<component>/vX.Y.Z) the worktree MUST end up AT that ref, else materialize-error — NEVER silently
+      # hunt the default-branch tip (a wrong-target bug worse than an error). Slashed tag refs are supported.
       if [ -n "$MAT_REF" ] && [ "$MAT_REF" != "-" ]; then
-        if ! git -C "$MAT_DEST" cat-file -e "${MAT_REF}^{commit}" 2>/dev/null; then
-          git -C "$MAT_DEST" fetch --depth 1 -q origin "$MAT_REF" 2>/dev/null || true
+        if ! git -C "$MAT_DEST" cat-file -e "${MAT_REF}^{commit}" >>"$MAT_LOG" 2>&1; then
+          git -C "$MAT_DEST" fetch --depth 1 -q origin "$MAT_REF" >>"$MAT_LOG" 2>&1 \
+            || { echo "run-change-hunts: cannot fetch ref $MAT_REF from $MAT_REPO" >>"$MAT_LOG"; return 1; }
         fi
-        git -C "$MAT_DEST" checkout -q "$MAT_REF" 2>/dev/null \
-          || git -C "$MAT_DEST" checkout -q FETCH_HEAD 2>/dev/null || true
+        _want="$(git -C "$MAT_DEST" rev-parse --verify "${MAT_REF}^{commit}" 2>>"$MAT_LOG" \
+                 || git -C "$MAT_DEST" rev-parse --verify FETCH_HEAD 2>>"$MAT_LOG")"
+        [ -n "$_want" ] || { echo "run-change-hunts: cannot resolve ref $MAT_REF" >>"$MAT_LOG"; return 1; }
+        git -C "$MAT_DEST" checkout -q "$MAT_REF" >>"$MAT_LOG" 2>&1 \
+          || git -C "$MAT_DEST" checkout -q FETCH_HEAD >>"$MAT_LOG" 2>&1 \
+          || { echo "run-change-hunts: cannot checkout ref $MAT_REF" >>"$MAT_LOG"; return 1; }
+        _got="$(git -C "$MAT_DEST" rev-parse --verify HEAD 2>>"$MAT_LOG")"
+        [ "$_got" = "$_want" ] || { echo "run-change-hunts: worktree at ${_got:-?} is not the pinned ref $_want ($MAT_REF)" >>"$MAT_LOG"; return 1; }
       fi
       printf '%s\n' "$MAT_DEST"
       ;;
@@ -206,7 +231,7 @@ for path, ent in srcs.items():
     n += 1
 if n == 0:
     raise SystemExit("no source files materialized")
-' >/dev/null 2>&1 || return 1
+' >>"$MAT_LOG" 2>&1 || return 1
       printf '%s\n' "$MAT_DEST"
       ;;
     *) return 1;;
@@ -234,6 +259,7 @@ materialize() { # $1=kind $2=repo_or_addr $3=new $4=chain $5=dest
 hunts_done=0
 skipped=0
 staged=0
+mat_errors=0
 
 # Read M2's 8 descriptor columns with a TAB IFS. Skip `#`/blank lines. Every row is `|| continue`-resilient:
 # one materialize/hunt failure never aborts the sweep.
@@ -257,23 +283,30 @@ while IFS="$TAB" read -r program chain kind roa new scope_mode hint since || [ -
     continue
   fi
 
-  # Budget: skips + already-ledgered rows did NOT get here, so the cap counts only real hunt attempts.
+  # Budget: skips + already-ledgered rows did NOT get here, so the cap counts only rows that MATERIALIZED
+  # (the increment is charged below, AFTER a successful materialize — a materialize-error costs no budget).
   if [ "$hunts_done" -ge "$MAX_HUNTS" ]; then
     echo "run-change-hunts: reached --max-hunts $MAX_HUNTS; re-run to continue (resumable via the ledger)" >&2
     log "[budget] reached --max-hunts $MAX_HUNTS; stopping"
     break
   fi
-  hunts_done=$((hunts_done + 1))
 
   slug="$(slugify "$program")-$(printf '%s' "$new" | tail -c 12 | tr -cs 'A-Za-z0-9._-' '-')"
   clone="$WORK_DIR/$slug"
   hunt_out="$OUT/$slug"
 
-  # Materialize the target at the NEW code.
+  # Materialize the target at the NEW code. A failure is ledgered as materialize-error and costs NO hunt
+  # budget, so the next huntable descriptor still runs this tick; --max-materialize-errors caps a broken tick.
   target="$(materialize "$kind" "$roa" "$new" "$chain" "$clone")" || {
     record "$program" "$new" "materialize-error"
-    echo "run-change-hunts: $program @ $new -> materialize failed ($kind $roa) — ledgered materialize-error" >&2
+    mat_errors=$((mat_errors + 1))
+    echo "run-change-hunts: $program @ $new -> materialize failed ($kind $roa) — ledgered materialize-error (see $MAT_LOG)" >&2
     log "[materialize-error] $program @ $new ($kind $roa)"
+    if [ "$mat_errors" -ge "$MAX_MAT_ERRORS" ]; then
+      echo "run-change-hunts: reached --max-materialize-errors $MAX_MAT_ERRORS; stopping" >&2
+      log "[materialize-budget] reached --max-materialize-errors $MAX_MAT_ERRORS; stopping"
+      break
+    fi
     continue
   }
 
@@ -290,6 +323,8 @@ while IFS="$TAB" read -r program chain kind roa new scope_mode hint since || [ -
   fi
 
   before="$(pkg_count)"
+  # Charge the hunt budget only now — the target materialized, so this row is a real hunt attempt.
+  hunts_done=$((hunts_done + 1))
   echo "run-change-hunts: hunting $program @ $new ($scope_mode; $kind) -> $hunt_out ..." >&2
   log "[hunt] $program @ $new ($scope_mode $kind) repo=$target hint=${hint:-} since=${since:-}"
 
@@ -326,6 +361,6 @@ while IFS="$TAB" read -r program chain kind roa new scope_mode hint since || [ -
   log "[$verdict] $program @ $new"
 done < "$DESCRIPTORS"
 
-echo "run-change-hunts: $hunts_done hunt(s) run, $staged finding(s) staged, $skipped already-ledgered skipped; ledger -> $LEDGER" >&2
-log "[$now] done: hunts=$hunts_done staged=$staged skipped=$skipped"
+echo "run-change-hunts: $hunts_done hunt(s) run, $staged finding(s) staged, $mat_errors materialize error(s), $skipped already-ledgered skipped; ledger -> $LEDGER" >&2
+log "[$now] done: hunts=$hunts_done staged=$staged mat_errors=$mat_errors skipped=$skipped"
 exit 0

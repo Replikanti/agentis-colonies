@@ -46,8 +46,10 @@ CUR_HUNT_ID = ""
 
 # ---- M4 change-cadence overview panel (#2135, epic #2120) -----------------------------------------------
 # change-pipeline.sh writes ONE PATCH-able tick-summary JSON; the overview renders it as a single full-width
-# panel above the hunt grid so an unattended cadence loop reports progress here, not just in a log. CHANGE_SUMMARY
-# defaults to ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/change-watch/tick-summary.json (the pipeline's default).
+# panel above the hunt grid so an unattended cadence loop reports progress here, not just in a log. The panel
+# shows changes/scoped/hunt(s)/mat-err/staged/skipped/ledger (mat-err = materialize_errors, descriptors that
+# failed to materialize this tick and spent no hunt budget; a pre-#2154 summary lacks the key -> renders 0).
+# CHANGE_SUMMARY defaults to ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/change-watch/tick-summary.json (the pipeline's default).
 CHANGE_SUMMARY = ""
 
 PHASES = [
@@ -1510,7 +1512,8 @@ def change_pipeline_model(path=None):
             "last_tick": str(d.get("last_tick", "") or ""),
             "status": str(d.get("status", "") or ""),
             "changes_seen": _i("changes_seen"), "descriptors": _i("descriptors"),
-            "hunts_run": _i("hunts_run"), "findings_staged": _i("findings_staged"),
+            "hunts_run": _i("hunts_run"), "materialize_errors": _i("materialize_errors"),
+            "findings_staged": _i("findings_staged"),
             "skipped": _i("skipped"), "ledger_total": _i("ledger_total"),
             "hunts_per_tick": _bi("hunts_per_tick"), "forge_max_slots": _bi("forge_max_slots"),
             "armed": bool(d.get("armed", False)), "tick_seq": _i("tick_seq")}
@@ -1539,7 +1542,8 @@ def _change_pipeline_panel(cp):
              else '<span style="color:#8b949e" title="build/demo only — not scheduled; arm per the README">disarmed</span>')
     when = html.escape(cp["last_tick"] or "—")
     meta = (f'changes {cp["changes_seen"]} &nbsp;·&nbsp; {cp["descriptors"]} scoped &nbsp;·&nbsp; '
-            f'{cp["hunts_run"]} hunt(s) &nbsp;·&nbsp; {cp["findings_staged"]} staged &nbsp;·&nbsp; '
+            f'{cp["hunts_run"]} hunt(s) &nbsp;·&nbsp; {cp["materialize_errors"]} mat-err &nbsp;·&nbsp; '
+            f'{cp["findings_staged"]} staged &nbsp;·&nbsp; '
             f'{cp["skipped"]} skipped &nbsp;·&nbsp; ledger {cp["ledger_total"]}')
     budget = (f'budget {cp["hunts_per_tick"]}/tick &nbsp;·&nbsp; forge-slots {cp["forge_max_slots"]} '
               f'&nbsp;·&nbsp; tick #{cp["tick_seq"]} &nbsp;·&nbsp; {armed}')

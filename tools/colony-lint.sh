@@ -1605,6 +1605,26 @@ if [ -x "$REPO_ROOT/dark-factory/demo-run-change-hunts.sh" ]; then
     fi
 fi
 
+# --- dark-factory: change-hunt helper scripts must be executable in git (#2154) ---
+# run-change-hunts.sh execs its materialize/hunt helpers DIRECTLY ("$HERE/<name>.sh ..."), so a committed
+# non-executable mode (fetch-target.sh shipped 100644 pre-#2154) makes EVERY materialize return rc 126 and no
+# change-triggered hunt can materialize. Assert the git file mode of each directly-exec'd helper is 100755 so the
+# regression cannot return through a release bundle. Gated on the real dark-factory tree (fixture repos used by
+# the colony-lint meta-tests have no dark-factory/ and are not this git repo).
+if [ -f "$REPO_ROOT/dark-factory/run-change-hunts.sh" ] && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    df_exec_ok=1
+    for h in fetch-target.sh run-zone-hunt.sh; do
+        df_mode="$(git -C "$REPO_ROOT" ls-files -s "dark-factory/$h" 2>/dev/null | awk '{print $1}')"
+        if [ "$df_mode" != "100755" ]; then
+            df_exec_ok=0
+            fail "dark-factory: dark-factory/$h git mode is ${df_mode:-missing}, must be 100755 (exec'd directly by run-change-hunts.sh) (#2154)"
+        fi
+    done
+    if [ "$df_exec_ok" -eq 1 ]; then
+        pass "dark-factory: change-hunt helpers (fetch-target.sh, run-zone-hunt.sh) are executable in git (#2154)"
+    fi
+fi
+
 # --- dark-factory change-cadence pipeline (#2135, epic #2120 M4) ---
 # change-pipeline.sh chains M1 (watch-code-changes.sh) -> M2 (scope-changes.sh) -> M3 (run-change-hunts.sh) into
 # ONE budget-bounded tick and writes a PATCH-able JSON tick-summary the hunt-dashboard renders as an overview

@@ -33,6 +33,9 @@
 #
 # changes.tsv SCHEMA (TAB-separated, one row per detected change; a `#` header is written on first create):
 #   date  program  chain  kind(head|tag|impl)  repo_or_addr  old  new  githubUrl
+#   - on a `tag` row, `old`/`new` are the WHOLE sorted comma-joined tag SETS (byte-identical to this program's
+#     stored state value, by design — that identity is what makes the baseline auditable). M2 (scope-changes.sh)
+#     owns splitting `new \ old` into the per-added-tag descriptors; M1 never emits per-tag rows.
 #   - GITHUB-axis rows (kind head|tag) carry chain=`-`: a source change is chain-agnostic (a repo may deploy
 #     to several chains), so a single chain would mislead. `-` is VALID here, not an error. When M2/M3 need a
 #     chain hint for a github-triggered hunt they read program-level `ecosystem` from bounties.json keyed by
@@ -40,7 +43,8 @@
 #   - IMPL-axis rows (kind impl) DO carry the resolved chain (the change is on that specific chain).
 #
 # STATE (per program, <state-dir>/state/<program-key>.state, key `immunefi:<slug>`): TSV lines
-#   kind<TAB>chain<TAB>repo_or_addr<TAB>value — value = HEAD sha (head), sorted comma-joined tag set (tag), or
+#   kind<TAB>chain<TAB>repo_or_addr<TAB>value — value = HEAD sha (head), sorted comma-joined tag set (tag; the
+#   SAME whole set that lands in changes.tsv's old/new — M2 owns the new\old split), or
 #   the impl word (impl). chain='-' on head|tag lines (a source change is chain-agnostic, mirroring changes.tsv);
 #   impl lines carry the RESOLVED chain — #2138: a proxy address deployed on more than one chain (a common
 #   deterministic-deploy shape) must baseline INDEPENDENTLY per chain, else the second chain's first-ever read

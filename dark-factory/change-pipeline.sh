@@ -77,15 +77,17 @@
 #
 # tick-summary SCHEMA (single JSON object, atomically overwritten every tick — a reader mid-tick sees
 # `status:"running"`; PATCH-able for observability of a long unattended run):
-#   { last_tick, status(running|ok|quiet|error), changes_seen, descriptors, hunts_run, findings_staged,
-#     skipped, ledger_total, budget:{hunts_per_tick,forge_max_slots}, armed:false, tick_seq }
+#   { last_tick, status(running|ok|quiet|error), changes_seen, descriptors, hunts_run, materialize_errors,
+#     findings_staged, skipped, ledger_total, budget:{hunts_per_tick,forge_max_slots}, armed:false, tick_seq }
 #   - changes_seen   = new rows M1 appended to changes.tsv this tick.
 #   - descriptors    = M2 descriptor rows this tick (scope-descriptors.tsv is overwritten each run).
-#   - hunts_run      = real hunt attempts this tick (finding|clean|hunt-error|materialize-error ledger rows).
+#   - hunts_run      = real hunt attempts that MATERIALIZED this tick (finding|clean|hunt-error ledger rows).
+#   - materialize_errors = descriptors that failed to materialize this tick (materialize-error ledger rows);
+#     these do NOT count as hunts (a failed materialize spends no hunt budget, per M3).
 #   - findings_staged= staged submission packages this tick (drop-dir manifest.json count delta).
 #   - skipped        = docs/tests-only `skip` descriptors ledgered-seen this tick (skipped-nohunt rows).
 #   - ledger_total   = total (program,new) rows in the ledger after this tick.
-#   - status: quiet = no changes AND no hunts; error = a stage exited non-zero; ok otherwise.
+#   - status: quiet = no changes AND no hunts AND no materialize errors; error = a stage exited non-zero; ok else.
 #
 # Requires: bash + the M1/M2/M3 scripts (their own deps — python3/git/cast — apply on the live path only; the
 # demo replaces/mocks them). No `readlink -f`/GNU-only. Exit 0 on a completed tick (a per-row hunt failure is
@@ -156,7 +158,7 @@ pkg_count() { [ -d "$DROP_DIR" ] && { find "$DROP_DIR" -name manifest.json 2>/de
 
 # tick-summary is written atomically (tmp + mv) as a SINGLE overwritten file, so a reader never sees a torn
 # JSON and a long unattended run reports live progress rather than silence.
-changes_seen=0; descriptors=0; hunts_run=0; findings_staged=0; skipped=0; ledger_total=0
+changes_seen=0; descriptors=0; hunts_run=0; materialize_errors=0; findings_staged=0; skipped=0; ledger_total=0
 write_summary() { # $1 = status
   local st tmp
   st="$1"; tmp="$SUMMARY.tmp.$$"
@@ -167,6 +169,7 @@ write_summary() { # $1 = status
     printf '  "changes_seen": %s,\n' "$changes_seen"
     printf '  "descriptors": %s,\n' "$descriptors"
     printf '  "hunts_run": %s,\n' "$hunts_run"
+    printf '  "materialize_errors": %s,\n' "$materialize_errors"
     printf '  "findings_staged": %s,\n' "$findings_staged"
     printf '  "skipped": %s,\n' "$skipped"
     printf '  "ledger_total": %s,\n' "$ledger_total"
@@ -232,25 +235,28 @@ descriptors="$(count_rows "$DESCRIPTORS")"
 ledger_total="$(count_rows "$LEDGER")"
 findings_staged=$(( "$(pkg_count)" - before_pkgs )); [ "$findings_staged" -ge 0 ] || findings_staged=0
 
-# Classify the ledger rows APPENDED this tick (tail past the pre-tick line count): a real hunt attempt
-# (finding|clean|hunt-error|materialize-error) vs a docs/tests-only skip (skipped-nohunt).
-hunts_run=0; skipped=0
+# Classify the ledger rows APPENDED this tick (tail past the pre-tick line count): a real hunt attempt that
+# MATERIALIZED (finding|clean|hunt-error) vs a failed materialize (materialize-error, counted separately —
+# it spends no hunt budget) vs a docs/tests-only skip (skipped-nohunt).
+hunts_run=0; materialize_errors=0; skipped=0
 if [ "$ledger_total" -gt "$before_ledger" ] && [ -f "$LEDGER" ]; then
   delta="$(tail -n +"$((before_ledger + 1))" "$LEDGER" 2>/dev/null | cut -f3)"
-  hunts_run="$(printf '%s\n' "$delta" | grep -cE '^(finding|clean|hunt-error|materialize-error)$' || true)"
+  hunts_run="$(printf '%s\n' "$delta" | grep -cE '^(finding|clean|hunt-error)$' || true)"
+  materialize_errors="$(printf '%s\n' "$delta" | grep -cxF 'materialize-error' || true)"
   skipped="$(printf '%s\n' "$delta" | grep -cxF 'skipped-nohunt' || true)"
   case "$hunts_run" in ''|*[!0-9]*) hunts_run=0;; esac
+  case "$materialize_errors" in ''|*[!0-9]*) materialize_errors=0;; esac
   case "$skipped" in ''|*[!0-9]*) skipped=0;; esac
 fi
 
 if [ -n "$stage_err" ]; then
   status="error"
-elif [ "$changes_seen" -eq 0 ] && [ "$hunts_run" -eq 0 ]; then
+elif [ "$changes_seen" -eq 0 ] && [ "$hunts_run" -eq 0 ] && [ "$materialize_errors" -eq 0 ]; then
   status="quiet"
 else
   status="ok"
 fi
 write_summary "$status"
-log "tick #$TICK_SEQ done: status=$status changes=$changes_seen descriptors=$descriptors hunts=$hunts_run staged=$findings_staged skipped=$skipped ledger=$ledger_total"
-echo "change-pipeline: tick #$TICK_SEQ $status — changes=$changes_seen descriptors=$descriptors hunts=$hunts_run staged=$findings_staged skipped=$skipped (summary -> $SUMMARY)" >&2
+log "tick #$TICK_SEQ done: status=$status changes=$changes_seen descriptors=$descriptors hunts=$hunts_run materialize_errors=$materialize_errors staged=$findings_staged skipped=$skipped ledger=$ledger_total"
+echo "change-pipeline: tick #$TICK_SEQ $status — changes=$changes_seen descriptors=$descriptors hunts=$hunts_run mat-err=$materialize_errors staged=$findings_staged skipped=$skipped (summary -> $SUMMARY)" >&2
 exit 0

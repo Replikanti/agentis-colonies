@@ -1036,11 +1036,18 @@ dark-factory/change-pipeline.sh --once --hunts-per-tick 3 --forge-max-slots 3
   `run-zone-hunt` → `run-invariant-hunt` subtree. (This deliberately does **not** use dev-apprenticeship's
   `llm-session-slot.sh` — that is a different federation's fed pool, the wrong scope for a hunt cadence.)
 
+A **tag** change fans out to one hunt per ADDED tag (set-diff `new \ old`, capped to the greatest
+`--max-added-tags`, default 5), each pinned to that tag against a family-aware base ref (the greatest prior tag
+sharing the same `graft/<component>/` prefix). The ref pin is authoritative: a target that cannot be checked
+out at the change's ref is ledgered as a `materialize-error` — never silently hunted at the default-branch tip.
+A `materialize-error` is **not** charged against the tick's hunt budget, so a failed materialize does not
+starve the next huntable change; `--max-materialize-errors` (default 3) caps a broken tick.
+
 Each tick writes one **PATCH-able JSON tick-summary** (default `~/.dark-factory/change-watch/tick-summary.json`:
-`last_tick`, `status`, `changes_seen`, `descriptors`, `hunts_run`, `findings_staged`, `skipped`, `ledger_total`,
-`budget`, `armed`, `tick_seq`) that the hunt-dashboard (`hunt-dashboard/`, #1913) renders as a full-width
-overview panel — so an unattended run reports progress, not silence. M3's `(program,new)` ledger makes a tick
-**resumable**: it never re-hunts a change already seen.
+`last_tick`, `status`, `changes_seen`, `descriptors`, `hunts_run`, `materialize_errors`, `findings_staged`,
+`skipped`, `ledger_total`, `budget`, `armed`, `tick_seq`) that the hunt-dashboard (`hunt-dashboard/`, #1913)
+renders as a full-width overview panel — so an unattended run reports progress, not silence. M3's `(program,new)`
+ledger makes a tick **resumable**: it never re-hunts a change already seen.
 
 ### Arming (operator action — off by default) 🔒
 
