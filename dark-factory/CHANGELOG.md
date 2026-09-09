@@ -34,7 +34,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `CALLEE-TRUST|<subsystem>|<cls>|<n>` (`<n>` = how many of the three settable-target signals fired), gated on
   the marker being present in the ASSEMBLED instruction rather than on the detector's return value — the same
   honesty contract `APPENDIX-CONTEXT|` carries — and carrying no `CANDIDATE|` substring, so it can never
-  false-accept a cell. Detection is the same permissive flat whole-blob idiom as the #2121 net (no AST/CFG:
+  false-accept a cell. `run-discovery.sh`'s `_join_wrapped_candidates()` treats it as a record BOUNDARY
+  alongside the sibling sentinels (#2147), so a PTY-wrapped `CANDIDATE|` record can never absorb it as prose. Detection is the same permissive flat whole-blob idiom as the #2121 net (no AST/CFG:
   call-then-write order and the settability of the SPECIFIC target are never verified, only existence), each
   net a single pass per cell, builtins only (#1587 ratchet). New `demo-callee-trust-lens.sh` is the offline
   gate: a source-guard for the detector, the directive's load-bearing sentences, the `""`-when-false gate, the

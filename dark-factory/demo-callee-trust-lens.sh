@@ -172,7 +172,49 @@ else
   bad "hunter.ag's header Stdout contract does not mention the CALLEE-TRUST| diagnostic"
 fi
 
-note "5) substrate purity (#1587): the detector is builtins-only ..."
+note "5) the sentinel is a RECORD BOUNDARY in run-discovery.sh (#2147) ..."
+# hunter.ag's comment claims the sentinel is treated as a record boundary by _join_wrapped_candidates. That
+# claim has to be enforced, not merely written: the sentinel is printed BEFORE prompt() today, so a missing
+# boundary is currently harmless — and would stay invisible until an ordering change glued a CALLEE-TRUST|
+# line onto an open CANDIDATE| record as prose.
+BOUNDARY_LINE="$(grep -n 'BLACKBOARD-/ ||' "$DISCOVERY" | head -1 | cut -d: -f2-)"
+case "$BOUNDARY_LINE" in
+  *'CALLEE-TRUST\|'*) ok "run-discovery.sh's _join_wrapped_candidates boundary alternation lists CALLEE-TRUST| next to the sibling sentinels" ;;
+  '') bad "could not find the _join_wrapped_candidates boundary alternation in run-discovery.sh" ;;
+  *) bad "the _join_wrapped_candidates boundary alternation does NOT list CALLEE-TRUST| — the sentinel could be glued onto an open CANDIDATE| record" ;;
+esac
+
+# Behavioural half: run the SHIPPED awk program (sliced out of run-discovery.sh, so a copy-pasted twin cannot
+# drift from it) over a synthetic PTY-wrapped CANDIDATE followed by the sentinel. Pure awk — no agentis, no
+# forge, no network — so it stays in the CI floor.
+JWC_AWK="$WORK/join-wrapped.awk"
+sed -n '/^_join_wrapped_candidates() {$/,/^}$/p' "$DISCOVERY" \
+  | sed -n "/^  awk '$/,/^  ' /p" | sed "1d; \$d" > "$JWC_AWK"
+WRAP_LOG="$WORK/wrapped-cell.log"
+{
+  printf 'CALLEE-TRUST|vault|C8|2\n'
+  printf 'CANDIDATE|Vault.sol:deposit:41|C8|High|reenter deposit through the settable oracle callee|deploy a\n'
+  printf '  hostile oracle, call deposit, reenter and assert the stale balance\n'
+  printf 'CALLEE-TRUST|vault|C8|2\n'
+  printf 'SAFE\n'
+} > "$WRAP_LOG"
+if [ ! -s "$JWC_AWK" ]; then
+  bad "could not extract the _join_wrapped_candidates awk program from run-discovery.sh (reshaped?)"
+else
+  JOINED="$(awk -f "$JWC_AWK" "$WRAP_LOG")"
+  JOINED_N="$(printf '%s\n' "$JOINED" | grep -c 'CANDIDATE|')"
+  if [ "$JOINED_N" -ne 1 ]; then
+    bad "the wrapped record did not reconstruct into exactly one CANDIDATE| line (got $JOINED_N)"
+  elif printf '%s' "$JOINED" | grep -q 'CALLEE-TRUST'; then
+    bad "a CALLEE-TRUST| line was glued onto the open CANDIDATE| record as prose (the boundary does not hold)"
+  elif printf '%s' "$JOINED" | grep -q 'assert the stale balance'; then
+    ok "a CALLEE-TRUST| line after a PTY-wrapped CANDIDATE closes the record: one joined candidate, wrapped tail kept, no sentinel text in it"
+  else
+    bad "the wrapped continuation line was lost while joining the record"
+  fi
+fi
+
+note "6) substrate purity (#1587): the detector is builtins-only ..."
 # CODE lines only: the block's own prose legitimately discusses `exec sh` and interpreters, and a grep over
 # comments would flag the documentation of the very rule it is enforcing.
 CT_BLOCK="$WORK/callee-trust-block.txt"
@@ -187,7 +229,7 @@ else
   ok "the #2145 block uses only native builtins (no exec sh, no embedded python3/awk/sed/date)"
 fi
 
-note "6) DECISION: no new taxonomy class — this is a cross-class re-framing, not a lens-per-class addition ..."
+note "7) DECISION: no new taxonomy class — this is a cross-class re-framing, not a lens-per-class addition ..."
 if grep -q '^## C24 ' "$TAXONOMY"; then
   bad "bug-taxonomy.md gained a '## C24 ' class — D1 is explicitly a directive, NOT a new class"
 else
@@ -199,7 +241,7 @@ else
   ok "bug-taxonomy.md carries no #2145 text (untouched by this change)"
 fi
 
-note "7) the two fixtures have the shapes the detector discriminates on ..."
+note "8) the two fixtures have the shapes the detector discriminates on ..."
 if grep -q 'function setOracle(address newOracle) external' "$SETTABLE" \
    && grep -q '^    address public oracle;$' "$SETTABLE" \
    && grep -q 'IOracle(oracle).poke();' "$SETTABLE"; then
@@ -215,7 +257,7 @@ else
   bad "ImmutableOracleVault.sol no longer isolates the immutable-target case (same call shape, no setter)"
 fi
 
-note "8) read-only: no network / no submission verb on the discovery path this directive rides ..."
+note "9) read-only: no network / no submission verb on the discovery path this directive rides ..."
 if grep -vE '^[[:space:]]*#' "$DISCOVERY" | grep -Eiq '(^|[^a-z])(curl|wget|submit)([^a-z]|$)'; then
   bad "a network/submission verb appears on run-discovery.sh"
 else
@@ -226,10 +268,10 @@ fi
 # PART 2 — LIVE UNDER MOCK (needs the agentis binary; clean [SKIP] otherwise)
 # ----------------------------------------------------------------------------------------------------------
 if ! command -v agentis >/dev/null 2>&1; then
-  note "9) live-under-mock sentinel discrimination + byte-identity probe ..."
+  note "10) live-under-mock sentinel discrimination + byte-identity probe ..."
   skip "no agentis binary on PATH — the mock hunt cells and the extracted-helper probe cannot run"
 else
-  note "9) live-under-mock: one real offline hunt cell per fixture (--backend mock, HUNT_CLASS=C8) ..."
+  note "10) live-under-mock: one real offline hunt cell per fixture (--backend mock, HUNT_CLASS=C8) ..."
   # _arm <label> <fixture-basename>: stage a one-contract repo + scope + brief, run ONE hunter cell through
   # run-discovery.sh on the mock backend, print the cell log path.
   _arm() {
@@ -271,7 +313,7 @@ else
     fi
   fi
 
-  note "10) byte-identity probe: the directive is the EMPTY string on the immutable-callee fixture ..."
+  note "11) byte-identity probe: the directive is the EMPTY string on the immutable-callee fixture ..."
   # The helpers are EXTRACTED FROM hunter.ag BY LINE RANGE, so this probe measures the shipped code rather
   # than a copy that can drift (the demo-discovery-parallel.sh 18g idiom).
   FRAG="$WORK/detector.frag"; : > "$FRAG"
