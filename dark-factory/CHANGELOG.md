@@ -15,6 +15,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **`model-attribution.py` now reads a top-level `model` field, not only the nested `message.model` shape**
+  (#2166, review finding from #2165, milestone D3, epic #2130). The header comment on `scan_transcript()`
+  claimed it accepted the model id "either top-level or nested", but both branches only ever read
+  `msg.get("model")` (the nested shape) — a transcript exporter that puts `model` at the top level of the
+  event would silently degrade a request to family `other`, which could downgrade a stage's verdict from
+  `PURE-FABLE` to `MIXED`/`PURE-OTHER` even though every request actually ran on Fable. Now reads
+  `msg.get("model") or ev.get("model", "")` (nested first, top-level fallback) in both branches, matching the
+  comment. Fallback-block, refusal, and contamination-detection logic are unchanged. New fixture stage
+  `poc-toplevel-model` (one assistant row with a top-level `model`) plus a `--self-test` expectation and a
+  `demo-model-attribution.sh` assertion prove the row now attributes `PURE-FABLE` instead of `PURE-OTHER`.
 - **STAGE 4.6 vector-hunt now harvests `CALLEE-VECTOR|` candidates from depth cell logs too, not just breadth
   cell logs** (#2160, D2 recall-completeness gap, epic #2130). `run-zone-hunt.sh`'s per-zone harvest glob only
   read `run/hunt_*.log` (D1's breadth cells); D2's depth/refute cells, written to `run/depth_*.log` by
