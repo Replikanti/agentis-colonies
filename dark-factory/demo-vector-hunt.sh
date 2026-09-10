@@ -34,6 +34,12 @@
 #        seam), and merges EXACTLY the one PoC-PASS vector (source=vector-hunt) — dismissed vectors never route.
 #    13) DEPTH HARVEST (#2160): the STAGE 4.6 harvest glob ALSO reads depth_*.log (D2 depth/refute cells), not
 #        just breadth hunt_*.log — a depth-only CALLEE-VECTOR candidate is harvested and enumerated too.
+#    14) #2170 ESCROW D2 CHAIN: a custody-true escrow/withdraw-request zone (the state is_value_custody now
+#        emits for escrow shapes) flows end-to-end through STAGE 4.6 — its CALLEE-VECTOR markers are harvested
+#        and run-vector-hunt.sh is invoked, proving the D2 chain fires once the escrow zone is flagged custody.
+#    15) #2170 ESCAPE HATCH: a value_custody=false zone is SKIPPED by STAGE 4.6 by default (the bug's symptom:
+#        a misdetected custody zone silently enumerates 0) but IS enumerated with --vector-hunt-all-zones —
+#        the OFF-by-default recovery knob (fail-before default OFF / pass-after with the flag).
 #
 # Usage:  dark-factory/demo-vector-hunt.sh   (GENERATE_GOLDEN=1 rewrites the checked-in goldens)
 # Requires: python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression / the engine is absent
@@ -395,6 +401,66 @@ for _fn in withdraw claim; do
   fi
 done
 [ "$DEPTH_OK" -eq 1 ] && ok "STAGE 4.6 harvested depth_*.log too: both depth-only candidates (withdraw, claim) were enumerated and routed through the PoC runner"
+
+note "14) #2170 ESCROW D2 CHAIN: a custody-true escrow/withdraw-request zone flows end-to-end through STAGE 4.6 (harvest + engine invoke) ..."
+# The #2170 fix makes is_value_custody() emit value_custody=true for escrow/withdraw-request/cooldown zones
+# (proven at the .ag level by demo-map-zones.sh's agentis-gated withdraws=true/router=false pair). Here, CI-safe
+# and agentis-free, we stage the STATE that fix produces (a "withdraws" zone value_custody=true) and prove the
+# D2 chain fires for it — the escrow zone is harvested and driven through run-vector-hunt.sh, exactly as the
+# accounting zone in assertion 12 is. Same offline stub via the VECTOR_HUNT_POC_RUNNER seam. NO agentis/forge/net.
+ZRUN2="$WORK/zrun-escrow"; ZREPO2="$WORK/zrepo-escrow"
+mkdir -p "$ZRUN2/map" "$ZRUN2/verify" "$ZRUN2/discovery/withdraws/run" "$ZREPO2"
+printf 'WithdrawRequestManager.sol\n' > "$ZREPO2/WithdrawRequestManager.sol"   # a body so loc() picks it
+printf '[profile.default]\nsrc = "."\n' > "$ZREPO2/foundry.toml"
+printf '%s\n' '[{"id": "withdraws", "value_custody": true, "files": ["WithdrawRequestManager.sol"], "bug_classes_likely": ["C6"]}]' > "$ZRUN2/map/zones.json"
+printf '%s\n' '{"verified": [], "totals": {"verified": 0}}' > "$ZRUN2/verify/verified_findings.json"
+grep -E '\|withdraw\||\|claim\|' "$CALLEE_VECTORS" > "$ZRUN2/discovery/withdraws/run/hunt_withdraws_C6.log"
+if VECTOR_HUNT_POC_RUNNER="$STUB" FORGE_SLOTS_DIR="$WORK/forge-slots-escrow" \
+   "$RZH" --repo "$ZREPO2" --out "$ZRUN2" --deep-hunt-only --vector-hunt --vector-hunt-max-vectors 6 \
+   --backend mock --agentis /bin/true > "$WORK/zrun-escrow.out" 2> "$WORK/zrun-escrow.err"; then
+  if [ -f "$ZRUN2/vector-hunt/withdraws/vector-hunt.out" ] && grep -q '^VECTOR|' "$ZRUN2/vector-hunt/withdraws/vector-hunt.out"; then
+    ok "#2170: STAGE 4.6 harvested the custody-true escrow zone 'withdraws' CALLEE-VECTOR candidates and invoked run-vector-hunt.sh (D2 chain fires end-to-end)"
+  else
+    bad "#2170: STAGE 4.6 did not harvest/route the custody-true escrow zone 'withdraws'"
+  fi
+else
+  bad "#2170: run-zone-hunt.sh --deep-hunt-only --vector-hunt exited non-zero over the escrow zone:"
+  tail -5 "$WORK/zrun-escrow.err" | sed 's/^/      /' >&2
+fi
+
+note "15) #2170 ESCAPE HATCH: a value_custody=false zone is SKIPPED by default but enumerated with --vector-hunt-all-zones ..."
+# The #2170 bug is that a misdetected custody zone silently enumerates 0 in STAGE 4.6. The OFF-by-default
+# --vector-hunt-all-zones recovery knob lets an operator force enumeration over EVERY zone. Fail-before (default
+# OFF: the false zone is skipped, the bug's symptom) / pass-after (flag ON: the false zone is enumerated).
+ZRUN3="$WORK/zrun-allzones"; ZREPO3="$WORK/zrepo-allzones"
+mkdir -p "$ZRUN3/map" "$ZRUN3/verify" "$ZRUN3/discovery/misdetect/run" "$ZREPO3"
+printf 'Holder.sol\n' > "$ZREPO3/Holder.sol"
+printf '[profile.default]\nsrc = "."\n' > "$ZREPO3/foundry.toml"
+printf '%s\n' '[{"id": "misdetect", "value_custody": false, "files": ["Holder.sol"], "bug_classes_likely": ["C6"]}]' > "$ZRUN3/map/zones.json"
+printf '%s\n' '{"verified": [], "totals": {"verified": 0}}' > "$ZRUN3/verify/verified_findings.json"
+grep -E '\|withdraw\||\|claim\|' "$CALLEE_VECTORS" > "$ZRUN3/discovery/misdetect/run/hunt_misdetect_C6.log"
+# Fail-before: default OFF => the value_custody=false zone is skipped, so its vector-hunt dir is never created.
+VECTOR_HUNT_POC_RUNNER="$STUB" FORGE_SLOTS_DIR="$WORK/forge-slots-off" \
+  "$RZH" --repo "$ZREPO3" --out "$ZRUN3" --deep-hunt-only --vector-hunt --vector-hunt-max-vectors 6 \
+  --backend mock --agentis /bin/true > "$WORK/zrun-off.out" 2> "$WORK/zrun-off.err" || true
+if [ ! -e "$ZRUN3/vector-hunt/misdetect/vector-hunt.out" ]; then
+  ok "#2170: default OFF — the value_custody=false zone 'misdetect' was skipped by STAGE 4.6 (the bug's symptom, byte-identical pre-#2170 behaviour)"
+else
+  bad "#2170: default OFF should skip a value_custody=false zone, but STAGE 4.6 enumerated 'misdetect'"
+fi
+# Pass-after: --vector-hunt-all-zones => the same false zone IS enumerated and routed.
+if VECTOR_HUNT_POC_RUNNER="$STUB" FORGE_SLOTS_DIR="$WORK/forge-slots-on" \
+   "$RZH" --repo "$ZREPO3" --out "$ZRUN3" --deep-hunt-only --vector-hunt --vector-hunt-all-zones --vector-hunt-max-vectors 6 \
+   --backend mock --agentis /bin/true > "$WORK/zrun-on.out" 2> "$WORK/zrun-on.err"; then
+  if [ -f "$ZRUN3/vector-hunt/misdetect/vector-hunt.out" ] && grep -q '^VECTOR|' "$ZRUN3/vector-hunt/misdetect/vector-hunt.out"; then
+    ok "#2170: --vector-hunt-all-zones enumerated the value_custody=false zone 'misdetect' too (the recovery knob against a future custody misdetection)"
+  else
+    bad "#2170: --vector-hunt-all-zones did not enumerate the value_custody=false zone 'misdetect'"
+  fi
+else
+  bad "#2170: run-zone-hunt.sh --vector-hunt-all-zones exited non-zero:"
+  tail -5 "$WORK/zrun-on.err" | sed 's/^/      /' >&2
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then

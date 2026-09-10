@@ -1253,6 +1253,16 @@ if grep -q 'fn is_value_custody' "$MAPPER" \
 else
   bad "zone-mapper.ag missing the #1713 is_value_custody / CUSTODY| emission"
 fi
+# #2170: the escrow / withdraw-request / cooldown custody net exists AND is wired into is_value_custody, so a
+# zone that HOLDS user tokens across time (but owns no accounting/lending signal) flags value_custody=true and
+# STAGE 4.6 --vector-hunt enumerates it. Source-guard fires even where agentis is absent (CI coverage).
+if grep -q 'fn contains_custody_escrow_signal' "$MAPPER" \
+   && grep -q 'fn has_escrow_request_state' "$MAPPER" && grep -q 'fn has_escrowed_token_release' "$MAPPER" \
+   && awk '/fn is_value_custody/{f=1} f&&/contains_custody_escrow_signal\(code\)/{print;exit}' "$MAPPER" | grep -q .; then
+  ok "zone-mapper.ag defines the #2170 escrow/withdraw-request custody net (contains_custody_escrow_signal + has_escrow_request_state/has_escrowed_token_release) and wires it into is_value_custody"
+else
+  bad "zone-mapper.ag missing the #2170 escrow/withdraw-request custody net or its is_value_custody wiring"
+fi
 # #1717: the path-level test/interface exclusion runs BEFORE the content signals in is_value_custody.
 if grep -q 'fn zone_is_test_or_interface' "$MAPPER" && grep -q 'fn is_test_or_interface_path' "$MAPPER"; then
   ok "zone-mapper.ag defines the #1717 path-level test/interface exclusion"
@@ -1324,7 +1334,8 @@ else
   # is stubbed — so this exercises the actual #1717 fix, not a fixture-declared CUSTODY| line.
   # ----------------------------------------------------------------------------------------------------
   CUSTODY_REPO="$WORK/target-custody-paths"
-  mkdir -p "$CUSTODY_REPO/src" "$CUSTODY_REPO/interfaces" "$CUSTODY_REPO/test"
+  mkdir -p "$CUSTODY_REPO/src" "$CUSTODY_REPO/interfaces" "$CUSTODY_REPO/test" \
+    "$CUSTODY_REPO/withdraws" "$CUSTODY_REPO/router"
   cat > "$CUSTODY_REPO/src/Vault.sol" <<'SOL'
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
@@ -1359,6 +1370,56 @@ contract VaultTestMock {
     }
 }
 SOL
+  # #2170: a withdraw-request manager — HOLDS user tokens across a cooldown then releases them, but owns no
+  # amount-deduction accounting entrypoint (no `-=`/`.sub(`) and no lending interface, so the #1698/#1681
+  # nets miss it. The new escrow net must flag it value_custody=true (fail-before: withdraws=false).
+  cat > "$CUSTODY_REPO/withdraws/WithdrawRequestManager.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+interface IERC20 {
+    function safeTransfer(address to, uint256 amount) external;
+}
+
+contract WithdrawRequestManager {
+    struct WithdrawRequest {
+        uint256 amount;
+        uint256 unlockAt;
+    }
+
+    IERC20 public immutable YIELD_TOKEN;
+    uint256 public cooldown;
+    mapping(address => WithdrawRequest) public pendingWithdraw;
+
+    function requestWithdraw(uint256 amount) external {
+        pendingWithdraw[msg.sender] = WithdrawRequest(amount, block.timestamp + cooldown);
+    }
+
+    function finalizeWithdraw(address account) external {
+        WithdrawRequest memory req = pendingWithdraw[account];
+        require(block.timestamp >= req.unlockAt, "cooldown");
+        delete pendingWithdraw[account];
+        YIELD_TOKEN.safeTransfer(account, req.amount);
+    }
+}
+SOL
+  # #2170 precision pin: a genuinely non-custody fee forwarder — it `.safeTransfer(`s tokens out but carries
+  # NO escrow/request/cooldown state, so the compound-AND must keep it value_custody=false (over-flagging a
+  # transfer-only router would inflate STAGE 4.6 forge cost).
+  cat > "$CUSTODY_REPO/router/FeeRouter.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+interface IERC20 {
+    function safeTransfer(address to, uint256 amount) external;
+}
+
+contract FeeRouter {
+    function forward(address token, address recipient, uint256 amount) external {
+        IERC20(token).safeTransfer(recipient, amount);
+    }
+}
+SOL
   git -C "$CUSTODY_REPO" init -q
   git -C "$CUSTODY_REPO" config user.email demo@example.invalid
   git -C "$CUSTODY_REPO" config user.name "demo"
@@ -1371,7 +1432,7 @@ SOL
   # zone-mapper.ag's OWN content-level is_value_custody() logic for those paths (the thing this block is
   # actually regression-testing) rather than having #1824's earlier, stronger filter make the zones
   # disappear before reaching the substrate at all.
-  "$MAPZONES" --repo "$CUSTODY_REPO" --out "$OUT3" --backend mock --scope-hint "src,interfaces,test" \
+  "$MAPZONES" --repo "$CUSTODY_REPO" --out "$OUT3" --backend mock --scope-hint "src,interfaces,test,withdraws,router" \
     >/dev/null 2>"$WORK/mock-custody.err"
   RC3=$?
   # NOTE (deviation from the plan's literal read-zones.json mechanism, same intent): mock backend always
@@ -1392,6 +1453,16 @@ SOL
       ok "#1717: is_value_custody() true for a real custody contract (src/), false for a pure interface (interfaces/) and a test mock (test/)"
     else
       bad "#1717: unexpected CUSTODY| lines (want src=true interfaces=false test=false, got src='$CUSTODY_SRC' interfaces='$CUSTODY_IFACE' test='$CUSTODY_TEST')"
+    fi
+    # #2170: the escrow net's behavioral pair — a withdraw-request/cooldown manager (holds tokens, releases
+    # via safeTransfer, owns NO accounting/lending signal) must now flag value_custody=true (fail-before:
+    # false without the net), while a transfer-only fee router (release but no escrow state) must stay false.
+    CUSTODY_WITHDRAWS="$(grep -h '^CUSTODY|withdraws|' "$OUT3/run/zone_withdraws.log" 2>/dev/null | tail -1)"
+    CUSTODY_ROUTER="$(grep -h '^CUSTODY|router|' "$OUT3/run/zone_router.log" 2>/dev/null | tail -1)"
+    if [ "$CUSTODY_WITHDRAWS" = "CUSTODY|withdraws|true" ] && [ "$CUSTODY_ROUTER" = "CUSTODY|router|false" ]; then
+      ok "#2170: is_value_custody() true for a withdraw-request/cooldown manager (withdraws/), false for a transfer-only fee router (router/)"
+    else
+      bad "#2170: unexpected CUSTODY| lines (want withdraws=true router=false, got withdraws='$CUSTODY_WITHDRAWS' router='$CUSTODY_ROUTER')"
     fi
   else
     bad "map-zones.sh --backend mock failed on the #1717 custody-path fixture (exit $RC3):"
