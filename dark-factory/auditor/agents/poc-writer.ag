@@ -285,33 +285,36 @@ fn callee_addr_settable(calleeExpr: string, code: string) -> bool {
     if !is_bare_identifier(addr) { return false; }
     return len(regex_find_all(mutable_var_state_pattern(addr), code)) > 0;
 }
-// OUT-OF-SCOPE = NO in-scope contract IMPLEMENTS the cast type, so the callee's real code cannot be driven. A
-// callee cast to `IX` is IN-scope (do NOT stub) if any in-scope file declares either a `contract <typeName>` body
-// (a cast straight to a concrete contract) OR a `contract <Name> is ... <typeName> ...` implementer (the common
-// interface-cast case, e.g. `ChainlinkOracle is IOracle`). Only when NEITHER exists is it out-of-scope.
+// OUT-OF-SCOPE = there is POSITIVE evidence the callee type `IX` is genuinely EXTERNAL — i.e. NO in-scope
+// declaration carries it. A callee cast to `IX` is IN-scope (do NOT stub — the SAFE direction) if any in-scope
+// `.sol` declares a concrete `contract IX` OR any `contract`/`interface` header lists IX as a base
+// (`... is ... IX ...`). The `interface` alternation matters for TRANSITIVE chains: `interface IXV2 is IX` in
+// scope means an in-scope type carries IX, so an impl `contract C is IXV2` is drivable via IX (#2176 review).
 //
-// #2176 review: the implementer check MUST be FORMATTING-ROBUST. A real target often spreads the inheritance list
-// across MULTIPLE lines (`contract Foo is\n    Ownable,\n    IX\n{`), so a line-oriented grep for
-// `contract <Name> is ...<IX>` misses the base and fabricates a stub against an in-scope callee. Both greps run
-// with `grep -z` (the whole file is ONE record, so `[^{]*` and `[[:space:]]` cross newlines): the header from
-// `contract <Name>` up to the opening `{` is treated as one logical unit, and IX is matched as a base anywhere in
-// that header's `is ...` clause — handling multi-line bases, multiple bases, comments and extra whitespace.
-// FAIL-CLOSED: an empty type => in-scope => no stub (stub_eligible rejects an empty type before calling this); a
-// false "in-scope" (missed stub) is the SAFE direction, a false "out-of-scope" (fabricated stub) is the dangerous
-// one. typeName is `[A-Za-z0-9_]`-only, shell_escaped.
+// ROBUSTLY FAIL-CLOSED (so a new formatting variant cannot reopen the fabrication each round):
+//   - COMMENTS ARE STRIPPED (line `//` + block `/* */`, via a small awk pass) from every in-scope source BEFORE
+//     matching, so comment text can neither FAKE a declaration (a comment `contract IX` must not force in-scope)
+//     nor HIDE one (a `{` inside an inline comment must not truncate the `[^{]*` header span and drop a base).
+//   - The scan is `grep -z` (whole stripped stream = one record), so `[^{]*` spans the header from `contract`/
+//     `interface <Name>` up to the opening `{` across MULTIPLE lines / multiple bases / extra whitespace.
+//   - Ambiguity => IN-scope (no stub): an empty type, no in-scope source at all, or any scan that does not
+//     positively complete returns `false` (in-scope). A missed stub is safe; a fabricated stub is the bug.
+// typeName is `[A-Za-z0-9_]`-only (from callee_type_of), shell_escaped; the awk program is static (no interp).
+//
+// scope_probe returns "FOUND" (an in-scope carrier/concrete exists), "SCANNED" (source scanned, none found), or
+// "" (no in-scope source to judge). callee_out_of_scope is out-of-scope ONLY on a definitive "SCANNED".
+// substrate-purity: deferred (comment-aware C-comment stripping has no native builtin — agentis exposes no
+// regex_replace and a per-char .ag strip over every in-scope .sol is prohibitive CB — so a small inline awk is
+// the mechanical text processor for the #2176-review-mandated robustly-fail-closed scope resolver)
+fn scope_probe(typeName: string, repo: string) -> string {
+    // colony-lint: safe-exec-concat
+    return exec sh "SRC=$(find " + shell_escape(repo) + "/src " + shell_escape(repo) + "/contracts -name '*.sol' 2>/dev/null -exec cat {} + 2>/dev/null | awk '{s=$0;o=\"\";i=1;L=length(s);while(i<=L){a=substr(s,i,1);b=substr(s,i+1,1);if(c==1){if(a==\"*\"&&b==\"/\"){c=0;i+=2}else{i++}}else{if(a==\"/\"&&b==\"/\"){break}else if(a==\"/\"&&b==\"*\"){c=1;i+=2}else{o=o a;i++}}}print o}'); if [ -z \"$SRC\" ]; then printf ''; else printf '%s' \"$SRC\" | grep -zqE -e " + shell_escape("(^|[^A-Za-z0-9_])contract[[:space:]]+" + typeName + "([^A-Za-z0-9_]|$)") + " -e " + shell_escape("(contract|interface)[[:space:]]+[A-Za-z0-9_]+[[:space:]]+is[^{]*[^A-Za-z0-9_]" + typeName + "([^A-Za-z0-9_]|$)") + " && printf FOUND || printf SCANNED; fi";
+}
 fn callee_out_of_scope(typeName: string, repo: string) -> bool {
     if len(typeName) == 0 { return false; }
-    // A concrete `contract <typeName>` body (cast straight to a concrete contract). `-z` so the token boundary
-    // after the name may be a newline (`contract Foo\n{`), not only ` {(`.
-    // colony-lint: safe-exec-concat
-    let concrete = exec sh "grep -rlzE " + shell_escape("contract[[:space:]]+" + typeName + "([^A-Za-z0-9_]|$)") + " " + shell_escape(repo) + "/src " + shell_escape(repo) + "/contracts 2>/dev/null | head -n 1 || true";
-    if len(concrete) > 0 { return false; }
-    // An implementer `contract <Name> is <...bases incl. typeName...> {`. `[^{]*` (under `-z`) spans the whole
-    // header up to the opening brace, so a base on any line of a multi-line inheritance list is found.
-    // colony-lint: safe-exec-concat
-    let impl = exec sh "grep -rlzE " + shell_escape("contract[[:space:]]+[A-Za-z0-9_]+[[:space:]]+is[^{]*[^A-Za-z0-9_]" + typeName + "([^A-Za-z0-9_]|$)") + " " + shell_escape(repo) + "/src " + shell_escape(repo) + "/contracts 2>/dev/null | head -n 1 || true";
-    if len(impl) > 0 { return false; }
-    return true;
+    let probe = scope_probe(typeName, repo);
+    if probe == "SCANNED" { return true; }
+    return false;
 }
 // The AND-gate: a stub is synthesized ONLY when a CALLEE-VECTOR callee-expr was passed AND its type extracts AND
 // its SPECIFIC backing address is settable AND its type has no in-scope implementer. Any one false -> not
