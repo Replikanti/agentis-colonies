@@ -126,6 +126,12 @@
 #   --vector-hunt-max-vectors <N>  #2156: the per-zone cap forwarded verbatim to run-vector-hunt.sh --max-vectors
 #                       (default 6). Bounds the enumerated vector set (content-hash dedup + --resume ride inside
 #                       the engine). Only meaningful with --vector-hunt.
+#   --vector-hunt-all-zones  #2170: DIAGNOSTIC escape hatch. DEFAULT OFF => STAGE 4.6 enumerates only
+#                       value_custody zones (byte-identical to before). When set, STAGE 4.6 enumerates EVERY
+#                       zone with a .sol, skipping the value_custody filter — a recovery knob so a FUTURE
+#                       undetected custody shape can't again silently zero STAGE 4.6 (the #2170 bug). Costly
+#                       (every zone runs the concrete-PoC gate), so it is a diagnostic/recovery path, never the
+#                       default. Only meaningful with --vector-hunt.
 #   --deep-hunt-repair-rounds <N>  #1717: run-invariant-hunt.sh --repair-rounds for every deep-hunt target
 #                       (default 4 — a value-custody zone whose first harness draft doesn't compile gets
 #                       more bounded compile-repair attempts before HARNESS_ERROR; the loop still
@@ -293,6 +299,13 @@ DEEP_HUNT_REFUTE=1
 # OFFLINE/TEST seam only: when set it is threaded to the engine's --poc-runner (empty => the engine's own
 # run-poc.sh default, so a live run is byte-identical to omitting it).
 VECTOR_HUNT=0 ; VECTOR_HUNT_MAX_VECTORS=6
+# #2170: escape hatch for a FUTURE undetected value-custody shape. 0 (default) = OFF = STAGE 4.6 enumerates
+# ONLY value_custody zones (the byte-identical pre-#2170 behaviour); the arg case + this default are ADDITIONS
+# outside the STAGE 4.6 sentinel block, so they remove no OFF-path line and demo-vector-hunt assertion 11's
+# byte-identity check still holds. When 1, STAGE 4.6 enumerates EVERY zone with a .sol (skips the value_custody
+# filter) — a diagnostic/recovery knob so a custody misdetection can't again silently zero STAGE 4.6. Costly
+# (every zone runs the concrete-PoC gate), hence OFF by default and never the standard path.
+VECTOR_HUNT_ALL_ZONES=0
 # #1830: per-zone hunt budget + targeted re-hunt. Every knob here defaults OFF/inert — with them off STAGE 3's
 # run-discovery.sh invocation gains no argument. The COVERAGE RECORD itself is NOT gated on any of them.
 ZONE_CELL_BUDGET=0 ; RUN_CELL_BUDGET=0 ; REQUIRE_COVERAGE=""
@@ -341,6 +354,7 @@ while [ $# -gt 0 ]; do
     --composable-lens)  DEEP_HUNT_COMPOSABLE_LENS=1; shift ;;
     --no-composable-lens) DEEP_HUNT_COMPOSABLE_LENS=0; shift ;;
     --vector-hunt)      VECTOR_HUNT=1; shift ;;
+    --vector-hunt-all-zones) VECTOR_HUNT_ALL_ZONES=1; shift ;;
     --vector-hunt-max-vectors) nv "$#"; VECTOR_HUNT_MAX_VECTORS="$2"; shift 2 ;;
     --deep-hunt-repair-rounds) nv "$#"; DEEP_HUNT_REPAIR_ROUNDS="$2"; shift 2 ;;
     --pattern-store)    nv "$#"; DEEP_FWD+=(--pattern-store "$2"); shift 2 ;;
@@ -1402,10 +1416,13 @@ if [ "$VECTOR_HUNT" -eq 1 ]; then
     # tie-break — the SAME selection STAGE 4.5 uses) + the zone's dominant custody class. TSV: zid \t relfile \t class.
     # A sibling of STAGE 4.5's `.deep-hunt-targets.tsv`, derived independently so --vector-hunt needs no --deep-hunt.
     VEC_TARGETS="$OUT/.vector-hunt-targets.tsv"
-    python3 - "$MAP/zones.json" "$REPO" > "$VEC_TARGETS" <<'PY'
+    VECTOR_HUNT_ALL_ZONES="$VECTOR_HUNT_ALL_ZONES" python3 - "$MAP/zones.json" "$REPO" > "$VEC_TARGETS" <<'PY'
 import sys, os, json
 zones = json.load(open(sys.argv[1], encoding="utf-8"))
 repo = sys.argv[2]
+# #2170 escape hatch: when VECTOR_HUNT_ALL_ZONES=1 the value_custody filter below is skipped so EVERY zone
+# with a .sol is enumerated (diagnostic/recovery for a future undetected custody shape). Default 0 = OFF.
+all_zones = os.environ.get("VECTOR_HUNT_ALL_ZONES", "0") == "1"
 if not isinstance(zones, list):
     zones = []
 def loc(rel):
@@ -1425,7 +1442,7 @@ def dominant_class(classes):
             return c
     return "C-invariant"
 for z in zones:
-    if not z.get("value_custody"):
+    if not all_zones and not z.get("value_custody"):
         continue
     zid = z.get("id", "")
     if not zid:

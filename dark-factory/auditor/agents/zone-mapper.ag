@@ -439,6 +439,62 @@ fn zone_is_test_or_interface(files: string) -> bool {
     }, false);
 }
 
+// --- #2170 deterministic value-custody backstop: escrow / withdraw-request / cooldown holders --------
+// The #1698 C6 (accounting) and #1681 C10/C11 (lending) nets below only flag a zone that OWNS an amount-
+// deduction entrypoint or a lending-interface type. A zone that merely HOLDS user tokens across time —
+// a withdraw-request/redemption manager, an escrow/holding contract, a cooldown-gated withdrawal queue —
+// owns neither, so is_value_custody() returned false and STAGE 4.6 --vector-hunt (run-zone-hunt.sh, the
+// `if not z.get("value_custody"): continue` filter) enumerated 0 zones on exactly those custody targets
+// (#2170: escrow/withdraw-manager zones misflagged non-custody). This net closes that gap.
+//
+// Built as a compound-AND (mirrors contains_accounting_signal's has_value_moving_function + has_amount_
+// deduction idiom, and contains_index_overwrite_signal's declaration+write pair): an escrow/request STATE
+// token AND a body-level escrowed-token-RELEASE token. A bare-substring alternative (flag any zone naming
+// `Escrow`/`withdrawRequest`) was rejected for the #1698 reason — it over-flags every transfer-only fee
+// router and pure interface, and over-flagging inflates STAGE 4.6 forge cost (every custody zone runs the
+// concrete-PoC gate). The state token alone is carried by interfaces/getters; the compound-AND requires an
+// actual `.transfer(`/`safeTransfer(` release BODY, which an interface (no function bodies) never has —
+// same interface-immunity guarantee the #1698 net leans on. A plain swap/fee router that only `.transfer(`s
+// carries the release token but NOT the escrow/request state token, so it stays non-custody.
+
+// Does the zone's code carry a per-user held-claim / escrow STATE identifier that a swap/AMM/fee router
+// never carries? Sequential `index_of` (no `&&`, this file's style); substrings chosen to cover the common
+// variants (`WithdrawRequest` covers `WithdrawRequestManager`/`TokenizedWithdrawRequest`/`getWithdrawRequest`;
+// `pendingWithdraw` covers `pendingWithdrawal(s)`).
+fn has_escrow_request_state(code: string) -> bool {
+    if index_of(code, "WithdrawRequest") >= 0 { return true; }
+    if index_of(code, "withdrawRequest") >= 0 { return true; }
+    if index_of(code, "RedemptionRequest") >= 0 { return true; }
+    if index_of(code, "redeemRequest") >= 0 { return true; }
+    if index_of(code, "redemptionRequest") >= 0 { return true; }
+    if index_of(code, "pendingWithdraw") >= 0 { return true; }
+    if index_of(code, "Cooldown") >= 0 { return true; }
+    if index_of(code, "cooldown") >= 0 { return true; }
+    if index_of(code, "Escrow") >= 0 { return true; }
+    if index_of(code, "escrow") >= 0 { return true; }
+    if index_of(code, "WithdrawalQueue") >= 0 { return true; }
+    if index_of(code, "withdrawalQueue") >= 0 { return true; }
+    return false;
+}
+
+// Does the zone's code contain a body-level escrowed-token RELEASE (`.transfer(`/`safeTransfer(`)? An
+// interface carries no function body and so no release call — this is what keeps interface-only zones out
+// of the net (mirrors the #1698 net's interface-immunity argument).
+fn has_escrowed_token_release(code: string) -> bool {
+    if index_of(code, "safeTransfer(") >= 0 { return true; }
+    if index_of(code, ".transfer(") >= 0 { return true; }
+    return false;
+}
+
+// True only when the zone BOTH carries an escrow/request state identifier AND performs a body-level token
+// release (nested `if`, not `&&` — this file has no boolean-AND operator).
+fn contains_custody_escrow_signal(code: string) -> bool {
+    if has_escrow_request_state(code) {
+        if has_escrowed_token_release(code) { return true; }
+    }
+    return false;
+}
+
 // --- #1713 value-custody flag (severity-first deep-hunt gate) ---------------------------------------
 // A zone is VALUE-CUSTODY when it OWNS the accounting that moves user funds — either the #1698 C6
 // value-moving-accounting net (a mint/redeem/deposit/withdraw/swap entrypoint that adjusts an amount
@@ -454,6 +510,7 @@ fn is_value_custody(code: string, files: string) -> bool {
     if zone_is_test_or_interface(files) { return false; }
     if contains_accounting_signal(code) { return true; }
     if contains_lending_signal(code) { return true; }
+    if contains_custody_escrow_signal(code) { return true; }
     return false;
 }
 
