@@ -29,6 +29,10 @@
 #   --poc-fixture <file>  A ready-made PoC test used VERBATIM (the offline/deterministic path — NO LLM).
 #   --code <file>         Path to the target contract source the LLM reads + that arms the #1471 linkage gate.
 #                         Defaults to <repo>/<file> then <repo>/src|contracts/<file> when omitted (live path).
+#   --callee-expr <expr>  Optional CALLEE-VECTOR callee-expression (e.g. "IOracle(oracle)"; #2145/#2171). When
+#                         set AND the callee is settable-over-CODE_PATH AND out-of-scope, the poc-writer models it
+#                         as an attacker-deployed hostile stub instead of refuting the vector. Empty => inert.
+#   --callee-hazard <h>   Optional hazard the stub exhibits: reentrant | return-value | gas (default return-value).
 #   --fixtures-dir <dir>  Path to the target's OWN test fixtures/deploy helpers the prompt should reuse.
 #   --match <prefix>      Foundry test-fn prefix (default "test"; ignored by the hardhat gate).
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the live path (default flat-cyborg). Offline (fixture)
@@ -51,6 +55,7 @@ AGENTIS="agentis"
 # shellcheck disable=SC1091
 . "$HERE/lib/ensure-claude-trust.sh"
 REPO="" ; TARGET="" ; HYPOTHESIS="" ; CLASS="" ; KIND="" ; FIXTURE="" ; CODE="" ; FIXTURES_DIR=""
+CALLEE_EXPR="" ; CALLEE_HAZARD=""
 MATCH="test" ; BACKEND="flat-cyborg" ; MODEL="" ; REPAIR_ROUNDS="" ; OUT="$PWD/poc-out"
 
 need() { [ "$1" -ge 2 ] || { echo "run-poc.sh: missing value for the preceding flag" >&2; exit 2; }; }
@@ -63,6 +68,8 @@ while [ $# -gt 0 ]; do
     --kind) need "$#"; KIND="$2"; shift 2 ;;
     --poc-fixture) need "$#"; FIXTURE="$2"; shift 2 ;;
     --code) need "$#"; CODE="$2"; shift 2 ;;
+    --callee-expr) need "$#"; CALLEE_EXPR="$2"; shift 2 ;;
+    --callee-hazard) need "$#"; CALLEE_HAZARD="$2"; shift 2 ;;
     --fixtures-dir) need "$#"; FIXTURES_DIR="$2"; shift 2 ;;
     --match) need "$#"; MATCH="$2"; shift 2 ;;
     --backend) need "$#"; BACKEND="$2"; shift 2 ;;
@@ -181,7 +188,7 @@ fi
   [ "$BACKEND" = "flat-cyborg" ] && [ -z "${DF_NO_SANDBOX:-}" ] && command -v bwrap >/dev/null 2>&1 && echo "llm.flat_cyborg.target = $HERE/lib/claude-sandboxed.sh"
   echo "trace.level = normal"
   # The poc-writer reads code + the fixture and writes/runs the test through exec sh; pass its whole env contract.
-  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,BUG_HYPOTHESIS,POC_KIND,POC_REPO,POC_OUT,POC_HARNESS,POC_FIXTURE,CODE_PATH,TARGET_FIXTURES_DIR,POC_MATCH,POC_REPAIR_ROUNDS"
+  echo "exec.env_passthrough = TARGET_FN,TARGET_CLASS,BUG_HYPOTHESIS,POC_KIND,POC_REPO,POC_OUT,POC_HARNESS,POC_FIXTURE,CODE_PATH,CALLEE_EXPR,CALLEE_HAZARD,TARGET_FIXTURES_DIR,POC_MATCH,POC_REPAIR_ROUNDS"
   # A hardhat npm install + compile + test (or a forge build + concrete run) far exceeds the 10s default.
   echo "exec.default_timeout_ms = 600000"
   # Experience is ENABLED because `learn()` is a WRITE this flag GATES (#1878, measured on agentis v1.28.0):
@@ -221,6 +228,8 @@ echo "run-poc.sh: generating + verifying a concrete-exploit PoC for $TARGET ($CL
     POC_HARNESS="$GATE_IN_RUN" \
     POC_FIXTURE="$FIXTURE_IN_RUN" \
     CODE_PATH="$CODE_IN_RUN" \
+    CALLEE_EXPR="$CALLEE_EXPR" \
+    CALLEE_HAZARD="$CALLEE_HAZARD" \
     TARGET_FIXTURES_DIR="$FIXTURES_DIR_IN_RUN" \
     POC_MATCH="$MATCH" \
     POC_REPAIR_ROUNDS="$REPAIR_ROUNDS" \

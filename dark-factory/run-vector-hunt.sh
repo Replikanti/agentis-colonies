@@ -199,16 +199,21 @@ echo "run-vector-hunt.sh: enumerated $N_VECTORS vector(s) for $TARGET (class '${
 # unverified. Each vector's verdict is stamped to <hash>.verdict so --resume skips an already-verified vector.
 # ----------------------------------------------------------------------------------------------------------
 run_poc_once() {
-  # run_poc_once <hash> <hypothesis> -> echoes the parsed verdict (FINDING|CLEAN|HARNESS_ERROR).
-  rp_hash="$1"; rp_hyp="$2"
+  # run_poc_once <hash> <hypothesis> <callee-expr> <hazard> -> echoes the parsed verdict (FINDING|CLEAN|HARNESS_ERROR).
+  rp_hash="$1"; rp_hyp="$2"; rp_callee="$3"; rp_haz="$4"
   rp_dir="$VHDIR/$rp_hash"; mkdir -p "$rp_dir"
   rp_log="$rp_dir/poc.log"
+  # #2171: thread the CALLEE-VECTOR callee-expr + hazard so run-poc.sh -> poc-writer.ag can model an out-of-scope
+  # SETTABLE callee as an attacker-deployed hostile stub instead of refuting the vector for being unprovable. Both
+  # are "" for an invariant-only fallback vector -> the stub path stays inert (byte-identical to pre-#2171).
   # Thread --model only when set, so the runner's own default is preserved (byte-identical to no flag).
   if [ -n "$MODEL" ]; then
     "$POC_RUNNER" --repo "$REPO" --target "$TARGET" --class "$CLASS" --hypothesis "$rp_hyp" \
+      --callee-expr "$rp_callee" --callee-hazard "$rp_haz" \
       --backend "$BACKEND" --model "$MODEL" --out "$rp_dir" --agentis "$AGENTIS" >"$rp_log" 2>&1 || true
   else
     "$POC_RUNNER" --repo "$REPO" --target "$TARGET" --class "$CLASS" --hypothesis "$rp_hyp" \
+      --callee-expr "$rp_callee" --callee-hazard "$rp_haz" \
       --backend "$BACKEND" --out "$rp_dir" --agentis "$AGENTIS" >"$rp_log" 2>&1 || true
   fi
   rp_vline="$(grep 'POC|' "$rp_log" | grep -v 'POC-FILE|' | tail -1 || true)"
@@ -223,8 +228,9 @@ run_poc_once() {
 }
 
 N_VERIFIED=0
-# shellcheck disable=SC2034  # VINV/VCALLEE/VHAZ are captured only to keep the positional field split
-# correct (they are already baked into VHYP); only VH/VFN/VHYP are read below.
+# shellcheck disable=SC2034  # VINV is captured only to keep the positional field split correct (it is already
+# baked into VHYP); VH/VFN/VHYP plus VCALLEE/VHAZ (#2171, threaded to the PoC runner for the hostile-stub gate)
+# are read below.
 while IFS="$(printf '\t')" read -r VH VINV VFN VCALLEE VHAZ VHYP; do
   [ -n "$VH" ] || continue
   MARKER="$VHDIR/$VH.verdict"
@@ -235,13 +241,13 @@ while IFS="$(printf '\t')" read -r VH VINV VFN VCALLEE VHAZ VHYP; do
   fi
 
   acquire_forge_slot
-  VERD="$(run_poc_once "$VH" "$VHYP")"
+  VERD="$(run_poc_once "$VH" "$VHYP" "$VCALLEE" "$VHAZ")"
   # Bounded retry on a transient/build verdict (mirrors the #2045/#2048 TRANSIENT_ERROR discipline).
   ATTEMPT=0
   while { [ "$VERD" = "HARNESS_ERROR" ] || [ "$VERD" = "TRANSIENT_ERROR" ]; } && [ "$ATTEMPT" -lt "$RETRIES" ]; do
     ATTEMPT=$((ATTEMPT + 1))
     echo "run-vector-hunt.sh: vector $VH transient ($VERD) — retry $ATTEMPT/$RETRIES" >&2
-    VERD="$(run_poc_once "$VH" "$VHYP")"
+    VERD="$(run_poc_once "$VH" "$VHYP" "$VCALLEE" "$VHAZ")"
   done
   release_forge_slot
 

@@ -34,6 +34,15 @@ cb 300000;
 //   POC_OUT       absolute path the generated/fixture test is written to (under POC_REPO/test/...).
 //   POC_HARNESS   absolute path to the verdict gate (hardhat-poc.sh or forge-poc.sh; the analog of FORGE_INVARIANT).
 //   CODE_PATH     optional target contract source the LLM reads; "" to skip. Arms the #1471 linkage gate.
+//   CALLEE_EXPR   optional CALLEE-VECTOR callee-expression (e.g. "IOracle(oracle)") from run-vector-hunt.sh (D1
+//                 #2145). "" on the ordinary run-poc.sh path -> the hostile-stub path is INERT and the prompt is
+//                 byte-identical to today. When set AND the callee is settable-over-CODE_PATH AND out-of-scope
+//                 (interface-only, no in-repo `contract <Type>` body), the model is directed to model it as an
+//                 ATTACKER-DEPLOYED hostile stub (the Royco MaliciousOracle idiom) instead of refuting because
+//                 the callee's real code cannot be driven. verdict_of is UNCHANGED: a stub PoC that PASSES is an
+//                 honest FINDING carrying an explicit role-precondition the human triager weighs.
+//   CALLEE_HAZARD optional hazard the stub should exhibit: "reentrant" | "return-value" | "gas" (anything else
+//                 defaults to the return-value hazard). Only read when CALLEE_EXPR arms the stub path.
 //   TARGET_FIXTURES_DIR optional path to the target's OWN test fixtures/deploy helpers; when set the prompt
 //                 instructs reuse of the target's deploy setup. A short listing + one representative fixture are
 //                 read through the sandboxed reader and injected as prompt context. UNTRUSTED, prompt-only.
@@ -92,6 +101,8 @@ let pocOut = getenv("POC_OUT");
 let gate = getenv("POC_HARNESS");
 let codePath = getenv("CODE_PATH");
 let code = cat_file(codePath);
+let calleeExpr = getenv("CALLEE_EXPR");
+let calleeHazard = getenv("CALLEE_HAZARD");
 let fixturePath = getenv("POC_FIXTURE");
 let fixture = cat_file(fixturePath);
 let fixturesDir = getenv("TARGET_FIXTURES_DIR");
@@ -200,6 +211,122 @@ fn fixtures_context(dir: string) -> string {
 }
 let fixturesBlock = fixtures_context(fixturesDir);
 
+// --- #2171 HOSTILE-STUB CALLEE gate + synthesis directive ----------------------------------------
+// A CALLEE-VECTOR (#2145 D1) whose target callee is an OUT-OF-SCOPE address the target lets a config/admin/
+// registry role REPOINT cannot be driven through the callee's REAL code (it is not in the audit scope), so the
+// ordinary PoC path refutes it to CLEAN ("scope-unprovable"). But that callee is exactly what the Royco
+// MaliciousOracle idiom models: an ATTACKER-DEPLOYED mock implementing the callee's interface, injected as the
+// settable target, performing a reentrancy / adversarial-return / gas attack. This block adds a DETERMINISTIC
+// eligibility gate + a directive that instructs the model to synthesize such a stub — but ONLY when the callee
+// is BOTH settable over CODE_PATH AND out-of-scope, so a genuinely immutable/hardcoded or in-scope-implemented
+// callee is NEVER given a stub (that would fabricate a finding). The gate is AND-ed and FAIL-CLOSED.
+//
+// The settability detector is a byte-identical port of hunter.ag:452-512 (address-setter / mutable-address-state
+// / computed-target signals), so D1's "settable" and this PoC gate's "settable" agree exactly. The verdict is
+// still the gate's exit code (verdict_of untouched): a stub PoC PASS is an honest FINDING with the controlling
+// role noted as its precondition — a LEAD a human triages, never auto-submitted.
+
+// Signal 1 — an ADDRESS SETTER: `function set<Something>(address ...` (hunter.ag address_setter_pattern).
+fn address_setter_pattern() -> string {
+    return "\\bfunction\\s+set[A-Za-z0-9_]*\\s*\\(\\s*address";
+}
+fn has_address_setter(code: string) -> bool {
+    return len(regex_find_all(address_setter_pattern(), code)) > 0;
+}
+// Signal 2 — a MUTABLE `address` STATE VARIABLE (at most one visibility keyword, so `immutable`/`constant` are
+// excluded BY CONSTRUCTION). hunter.ag mutable_address_state_pattern, verbatim.
+fn mutable_address_state_pattern() -> string {
+    return "\\n[ \\t]*address(?:\\s+(?:public|internal|private))?\\s+[a-zA-Z_][A-Za-z0-9_]*\\s*;";
+}
+fn has_mutable_address_state(code: string) -> bool {
+    return len(regex_find_all(mutable_address_state_pattern(), code)) > 0;
+}
+// Signal 3 — a COMPUTED call target: an interface cast whose argument is itself a CALL (hunter.ag). `address`/
+// `payable` casts are denylisted the same way (plain type casts, not target resolution).
+fn computed_target_pattern() -> string {
+    return "\\bI[A-Z][A-Za-z0-9_]*\\(\\s*([A-Za-z_][A-Za-z0-9_.]*)\\s*\\(";
+}
+fn is_plain_cast_callee(name: string) -> bool {
+    if name == "address" { return true; }
+    if name == "payable" { return true; }
+    return false;
+}
+fn has_computed_call_target(code: string) -> bool {
+    let pat = computed_target_pattern();
+    return reduce(regex_find_all(pat, code), |acc: bool, m: string| -> bool {
+        if acc { return true; }
+        if is_plain_cast_callee(regex_capture(pat, m, 1)) { return false; }
+        return true;
+    }, false);
+}
+// The settable-callee detector: an OR of the three signals — the same "is the call target settable" question D1
+// asks (hunter.ag has_settable_target). Nested returns, because .ag has no `||`.
+fn has_settable_callee(code: string) -> bool {
+    if has_address_setter(code) { return true; }
+    if has_mutable_address_state(code) { return true; }
+    return has_computed_call_target(code);
+}
+
+// Extract the interface/contract TYPE the callee-expression casts to — the leading `I?[A-Z]\w*` before `(`,
+// e.g. `IOracle(oracle)` -> `IOracle`, `PriceFeed(feed)` -> `PriceFeed`. Empty when the expr has no cast type
+// (a bare `registry.getOracle()` computed target has none) -> the stub gate FAILS CLOSED on it.
+fn callee_type_of(expr: string) -> string {
+    return regex_capture("([A-Z][A-Za-z0-9_]*)\\s*\\(", expr, 1);
+}
+// OUT-OF-SCOPE = there is no `contract <typeName>` IMPLEMENTATION body under the staged repo's src/ or
+// contracts/. An interface-only type (only `interface IOracle`, or nothing) => out-of-scope => the callee's real
+// code cannot be driven => it is a stub candidate. One mechanical repo grep (same safe-exec-concat idiom as
+// resolve_in_repo_src); typeName is `[A-Za-z0-9_]`-only from callee_type_of, so no regex metachars leak in.
+// FAIL-CLOSED: an empty typeName is treated as out-of-scope true here, but stub_eligible below rejects an empty
+// type BEFORE calling this, so an unextractable expr never reaches a stub.
+fn callee_out_of_scope(typeName: string, repo: string) -> bool {
+    if len(typeName) == 0 { return true; }
+    // colony-lint: safe-exec-concat
+    let hits = exec sh "grep -rlE " + shell_escape("contract[[:space:]]+" + typeName + "[ {(]") + " " + shell_escape(repo) + "/src " + shell_escape(repo) + "/contracts 2>/dev/null | head -n 1 || true";
+    if len(hits) == 0 { return true; }
+    return false;
+}
+// The AND-gate: a stub is synthesized ONLY when a CALLEE-VECTOR callee-expr was passed AND its type extracts AND
+// the callee is settable over CODE_PATH AND its type is out-of-scope. Any one false -> not eligible -> the
+// directive is "" -> the prompt is byte-identical to today (no fabricated finding on a non-attacker-controllable
+// or in-scope callee). Nested, because .ag has no `&&`.
+fn stub_eligible(calleeExpr: string, code: string, repo: string) -> bool {
+    if len(calleeExpr) == 0 { return false; }
+    let typeName = callee_type_of(calleeExpr);
+    if len(typeName) == 0 { return false; }
+    if !has_settable_callee(code) { return false; }
+    return callee_out_of_scope(typeName, repo);
+}
+
+// The hazard the hostile stub's method must exhibit, selected by CALLEE_HAZARD. Builtins-only (a plain string).
+fn hazard_behaviour(hazard: string) -> string {
+    if hazard == "reentrant" { return "REENTER the target's entry point (call back into the function that handed you control) BEFORE returning, to act on state the target has not yet finalized"; }
+    if hazard == "gas" { return "CONSUME ALL forwarded gas (e.g. an unbounded loop) so the target's call to it griefs / reverts (a liveness / DoS hazard)"; }
+    return "RETURN an ADVERSARIAL value (an inflated / zero / crafted return payload) that the target trusts and mis-accounts on";
+}
+// The hostile-stub synthesis directive. Returns "" when ineligible (byte-identical splice). Else it names the
+// Royco MaliciousOracle idiom and instructs: (a) deploy a minimal hostile `contract Malicious<Type>` that
+// IMPLEMENTS the callee's interface, its method performing the CALLEE_HAZARD; (b) inject it as the settable
+// target via the discovered setter/config path BEFORE the attack; (c) note the controlling role as the exploit's
+// PRECONDITION; (d) keep the stub name DISTINCT from the target so the #1471 linkage gate never reads it as a
+// target shadow. Builtins-only (no exec sh) — the substrate-purity ratchet applies to this directive text.
+fn stub_directive(eligible: bool, calleeExpr: string, hazard: string) -> string {
+    if !eligible { return ""; }
+    let typeName = callee_type_of(calleeExpr);
+    return "  - HOSTILE-STUB CALLEE (the Royco MaliciousOracle idiom): the callee reached via `" + calleeExpr
+         + "` is an OUT-OF-SCOPE address the target lets a config/admin/registry role REPOINT, so its real code "
+         + "is not drivable — model it as ATTACKER-DEPLOYED code, do NOT refute the vector for being unprovable. "
+         + "Define a minimal hostile mock `contract Malicious" + typeName + "` that IMPLEMENTS the callee's "
+         + "interface (infer the function signature(s) from the call site in the source below); its method(s) "
+         + "must " + hazard_behaviour(hazard) + ". Deploy the stub in the test and POINT the target's settable "
+         + "callee at it via the discovered setter / config path BEFORE running the attack sequence. Keep the "
+         + "stub's name DISTINCT from the target contract (never declare a `contract` of the target's name). Add "
+         + "a PoC comment naming the controlling role (the setter's caller) as the exploit's PRECONDITION — the "
+         + "finding holds only if that role can be induced to repoint the callee.\n";
+}
+let stubEligible = stub_eligible(calleeExpr, code, pocRepo);
+let stubLine = stub_directive(stubEligible, calleeExpr, calleeHazard);
+
 // --- GENERATE the concrete exploit PoC -----------------------------------------------------------
 // Offline / deterministic path: a POC_FIXTURE is a ready-made PoC test used VERBATIM, no LLM (the path the demo
 // + a `--backend mock` wiring smoke take, so the target->PoC->gate->verdict loop is provable with zero LLM cost).
@@ -209,7 +336,7 @@ let fixturesBlock = fixtures_context(fixturesDir);
 // toy of it), (b) sets up the specific pre-state, runs the exact ATTACK SEQUENCE from the hypothesis, and (c)
 // ASSERTS the exploit succeeded so the test PASSES iff the vuln is real (the inverted-polarity convention the
 // gate scores). Cold path, one target in / one test out -> the prompt carries an explicit prompt-gate-ok marker.
-fn hardhat_prompt(klass: string, hypothesis: string, refLine: string, fixturesBlock: string) -> string {
+fn hardhat_prompt(klass: string, hypothesis: string, refLine: string, stubLine: string, fixturesBlock: string) -> string {
     return "You are an exploit engineer writing a CONCRETE proof-of-concept for a Hardhat project. Write ONE "
          + "self-contained mocha test (JavaScript, `require(\"hardhat\")` + `ethers`, plus `chai`'s `expect`) "
          + "that REPRODUCES the specific attack below end-to-end. Requirements:\n"
@@ -219,6 +346,7 @@ fn hardhat_prompt(klass: string, hypothesis: string, refLine: string, fixturesBl
          + "DoS'd. The test MUST be written so it PASSES iff the vulnerability is real (a passing test is the "
          + "positive PoC result).\n"
          + refLine
+         + stubLine
          + "  - Use `describe(...)`/`it(...)`; get signers via `await ethers.getSigners()`; deploy via "
          + "`await ethers.getContractFactory(...)` and `.deploy(...)` (await `.waitForDeployment()` on ethers v6). "
          + "Reuse the target's OWN deploy fixtures/helpers when provided below.\n"
@@ -230,7 +358,7 @@ fn hardhat_prompt(klass: string, hypothesis: string, refLine: string, fixturesBl
          + "Output ONLY the JavaScript mocha test source. It must define at least one `it(...)` whose body drives "
          + "the real target through the attack sequence and asserts the exploit succeeded.";
 }
-fn foundry_prompt(klass: string, hypothesis: string, matchPrefix: string, deployName: string, refLine: string, fixturesBlock: string) -> string {
+fn foundry_prompt(klass: string, hypothesis: string, matchPrefix: string, deployName: string, refLine: string, stubLine: string, fixturesBlock: string) -> string {
     return "You are an exploit engineer writing a CONCRETE proof-of-concept for a Foundry project. Write ONE "
          + "self-contained Solidity test (`pragma solidity ^0.8.20;`) that REPRODUCES the specific attack below "
          + "end-to-end. Requirements:\n"
@@ -243,6 +371,7 @@ fn foundry_prompt(klass: string, hypothesis: string, matchPrefix: string, deploy
          + "MUST be the real imported contract. Do NOT import forge-std — this test must compile with ZERO library "
          + "remappings (no `Test`/`vm` cheatcodes unless you define the minimal interface yourself).\n"
          + refLine
+         + stubLine
          + "  - In `setUp()` (or at the top of the test) deploy the real target: for a normal `constructor(args)` "
          + "use `new " + deployName + "(args)`; read the constructor/initializer signature from the source below "
          + "to wire the arguments. Keep the whole test bounded (~120 lines).\n"
@@ -254,11 +383,11 @@ fn foundry_prompt(klass: string, hypothesis: string, matchPrefix: string, deploy
          + "Output ONLY the Solidity source of the `*.t.sol` test — it must compile and define at least one "
          + "`contract` and one `" + matchPrefix + "_*` function.";
 }
-fn generate_test(hardhat: bool, klass: string, src: string, hypothesis: string, matchPrefix: string, deployName: string, refLine: string, fixturesBlock: string) -> string {
+fn generate_test(hardhat: bool, klass: string, src: string, hypothesis: string, matchPrefix: string, deployName: string, refLine: string, stubLine: string, fixturesBlock: string) -> string {
     let instruction = if hardhat {
-        hardhat_prompt(klass, hypothesis, refLine, fixturesBlock)
+        hardhat_prompt(klass, hypothesis, refLine, stubLine, fixturesBlock)
     } else {
-        foundry_prompt(klass, hypothesis, matchPrefix, deployName, refLine, fixturesBlock)
+        foundry_prompt(klass, hypothesis, matchPrefix, deployName, refLine, stubLine, fixturesBlock)
     };
     // colony-lint: prompt-gate-ok
     return prompt(instruction, src) -> string;
@@ -268,11 +397,11 @@ fn generate_test(hardhat: bool, klass: string, src: string, hypothesis: string, 
 // verbatim, no LLM); otherwise the LLM generates it (live path). On the live path this is only the FIRST attempt
 // — the bounded compile-repair loop below may regenerate it.
 let usedFixture = len(fixture) > 0;
-fn choose_test(usedFix: bool, fix: string, hardhat: bool, klass: string, src: string, hypothesis: string, matchPrefix: string, deployName: string, refLine: string, fixturesBlock: string) -> string {
+fn choose_test(usedFix: bool, fix: string, hardhat: bool, klass: string, src: string, hypothesis: string, matchPrefix: string, deployName: string, refLine: string, stubLine: string, fixturesBlock: string) -> string {
     if usedFix { return fix; }
-    return generate_test(hardhat, klass, src, hypothesis, matchPrefix, deployName, refLine, fixturesBlock);
+    return generate_test(hardhat, klass, src, hypothesis, matchPrefix, deployName, refLine, stubLine, fixturesBlock);
 }
-let test = choose_test(usedFixture, fixture, isHardhat, targetClass, code, bugHypothesis, pocMatch, deployName, refLine, fixturesBlock);
+let test = choose_test(usedFixture, fixture, isHardhat, targetClass, code, bugHypothesis, pocMatch, deployName, refLine, stubLine, fixturesBlock);
 
 // --- VERIFY with the toolchain-parametric gate ---------------------------------------------------
 // The gate is POC_HARNESS (hardhat-poc.sh or forge-poc.sh). We write the test to POC_OUT then run the gate

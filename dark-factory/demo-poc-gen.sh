@@ -132,7 +132,7 @@ else
 fi
 
 # run-poc.sh env_passthrough carries the whole poc-writer contract.
-if grep -q 'exec.env_passthrough = TARGET_FN,TARGET_CLASS,BUG_HYPOTHESIS,POC_KIND,POC_REPO,POC_OUT,POC_HARNESS,POC_FIXTURE,CODE_PATH,TARGET_FIXTURES_DIR,POC_MATCH,POC_REPAIR_ROUNDS' "$RUNNER"; then
+if grep -q 'exec.env_passthrough = TARGET_FN,TARGET_CLASS,BUG_HYPOTHESIS,POC_KIND,POC_REPO,POC_OUT,POC_HARNESS,POC_FIXTURE,CODE_PATH,CALLEE_EXPR,CALLEE_HAZARD,TARGET_FIXTURES_DIR,POC_MATCH,POC_REPAIR_ROUNDS' "$RUNNER"; then
   ok "run-poc.sh env_passthrough carries the full poc-writer env contract"
 else
   bad "run-poc.sh env_passthrough is missing a poc-writer env key"

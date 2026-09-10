@@ -1329,6 +1329,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-vector-hunt.sh" ]; then
     fi
 fi
 
+# --- dark-factory hostile-stub callee: model an out-of-scope settable callee as an attacker-deployed stub ------
+# poc-writer.ag gained a deterministic AND-gated (settable-over-CODE_PATH AND out-of-scope) stub-eligibility gate
+# + a hostile-stub synthesis directive (the Royco MaliciousOracle idiom), so a CALLEE-VECTOR whose callee is
+# out-of-scope but settable is modelled as an attacker-deployed mock instead of refuted for being unprovable.
+# CALLEE_EXPR/CALLEE_HAZARD thread through run-poc.sh + run-vector-hunt.sh; verdict_of is unchanged. The gate is
+# fail-closed with immutable + in-scope negative arms proving NO stub is fabricated. demo-poc-stub-callee.sh
+# source-guards the gate/directive/env-plumbing and (live) proves the eligibility truth table + fail-before/
+# pass-after through the real forge-poc.sh gate.
+if [ -x "$REPO_ROOT/dark-factory/demo-poc-stub-callee.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-poc-stub-callee.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: hostile-stub callee gate (poc-writer.ag: out-of-scope+settable callee -> attacker-deployed stub, fail-closed negative arms) (#2171)"
+    else
+        fail "dark-factory: hostile-stub callee gate regressed (#2171)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory gap-remediation policy: classification contract + decision rule (#1828 M1/M2) ---
 # lib/gap-policy.py turns a #1830 coverage record into one of four verbs (rehunt_now / raise_budget_and_rehunt /
 # remap_target / give_up). It NEVER re-derives #1830's classification — it shells out to lib/zone-coverage.py —
