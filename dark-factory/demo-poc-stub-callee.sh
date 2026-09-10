@@ -42,6 +42,7 @@ INSCOPEIFACE="$FIXSRC/InScopeInterfaceCalleeVault.sol"
 MULTILINE="$FIXSRC/MultiLineImplCalleeVault.sol"
 TRANSITIVE="$FIXSRC/TransitiveImplCalleeVault.sol"
 COMMENTBRACE="$FIXSRC/CommentBraceImplCalleeVault.sol"
+STRINGSLASH="$FIXSRC/StringSlashImplCalleeVault.sol"
 POC_CONTROL="$FIXROOT/Poc_control.t.sol"
 POC_STUB="$FIXROOT/Poc_stub.t.sol"
 
@@ -51,7 +52,7 @@ ok()   { echo "  [PASS] $*"; }
 bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 skip() { echo "  [SKIP] $*"; }
 
-for f in "$PROVER" "$RUNNER" "$VHUNT" "$SCOPED" "$IMMUT" "$INSCOPE" "$INSCOPEIFACE" "$MULTILINE" "$TRANSITIVE" "$COMMENTBRACE" "$POC_CONTROL" "$POC_STUB"; do
+for f in "$PROVER" "$RUNNER" "$VHUNT" "$SCOPED" "$IMMUT" "$INSCOPE" "$INSCOPEIFACE" "$MULTILINE" "$TRANSITIVE" "$COMMENTBRACE" "$STRINGSLASH" "$POC_CONTROL" "$POC_STUB"; do
   [ -f "$f" ] || { note "required file not found: $f" >&2; exit 3; }
 done
 
@@ -118,25 +119,29 @@ else
   bad "stub_eligible() lost an AND / fail-closed guard:$GATE_MISS"
 fi
 
-# #2175/#2176 review: out-of-scope resolution must be ROBUSTLY FAIL-CLOSED — comments STRIPPED before matching
-# (so comment text cannot fake OR hide a declaration), the `(contract|interface)` alternation (so a transitive
-# interface chain `interface IXV2 is IX` counts as an in-scope carrier), grep -z whole-record so `[^{]*` spans a
-# multi-line header, and IN-scope (no stub) on any ambiguity.
+# #2176 review (rounds 3-5): out-of-scope resolution must be FAIL-CLOSED BY CONSTRUCTION. grep/awk cannot tell
+# Solidity comments from strings from code, so the resolver matches RAW file text and NEVER strips comments: a
+# carrier appearing anywhere (even in a comment/string) => IN-scope (safe missed stub); out-of-scope only when it
+# appears NOWHERE. It recognizes `(contract|interface) <Name> is ...IX...` carriers (transitive interface chains)
+# and bounds the base-list scan by `;` (never in a header) not `{`, so a `{` hidden in a comment cannot truncate
+# it. No awk/sed comment-stripper (that round-4 stripper opened comment-state on a `/*` inside a STRING and ate a
+# real carrier — round-5 regression). Out-of-scope ONLY on a definitive SCANNED; FOUND / "" stay in-scope.
 SP_BODY="$WORK/scope-probe.txt"
 awk '/^fn scope_probe\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$SP_BODY"
 OOS_BODY="$WORK/callee-out-of-scope.txt"
 awk '/^fn callee_out_of_scope\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$OOS_BODY"
 SP_MISS=""
-grep -Fq 'awk ' "$SP_BODY" || SP_MISS="$SP_MISS [comment-strip-awk]"
-grep -Fq '(contract|interface)[[:space:]]+[A-Za-z0-9_]+[[:space:]]+is[^{]*[^A-Za-z0-9_]" + typeName' "$SP_BODY" || SP_MISS="$SP_MISS [contract|interface-carrier]"
+# RAW matching: the resolver must NOT strip comments (no embedded awk/sed text processor).
+grep -Eq '(^|[^A-Za-z0-9_])(awk|sed)[[:space:]]' "$SP_BODY" && SP_MISS="$SP_MISS [must-not-strip-comments]"
+grep -Fq "(contract|interface)[[:space:]]+[A-Za-z0-9_]+[[:space:]]+is[^;]*[^A-Za-z0-9_]\" + typeName" "$SP_BODY" || SP_MISS="$SP_MISS [contract|interface-carrier-semicolon-bound]"
 grep -Fq 'grep -zqE' "$SP_BODY" || SP_MISS="$SP_MISS [grep-z]"
 # out-of-scope ONLY on a definitive SCANNED; FOUND and "" (no source / ambiguous) both stay in-scope (no stub).
 grep -Fq 'if probe == "SCANNED" { return true; }' "$OOS_BODY" || SP_MISS="$SP_MISS [scanned-gate]"
 grep -Fq 'return false;' "$OOS_BODY" || SP_MISS="$SP_MISS [fail-closed-default]"
 if [ -z "$SP_MISS" ]; then
-  ok "scope resolution strips comments, recognizes contract OR interface carriers (transitive chains), scans with grep -z, and is out-of-scope ONLY on a definitive SCANNED (fail-closed in-scope otherwise)"
+  ok "scope resolution matches RAW text (no comment stripping), recognizes contract OR interface carriers (transitive chains) bounded by ';' not '{', scans with grep -z, and is out-of-scope ONLY on a definitive SCANNED (fail-closed in-scope otherwise)"
 else
-  bad "scope resolution is not robustly fail-closed:$SP_MISS"
+  bad "scope resolution is not fail-closed-by-construction:$SP_MISS"
 fi
 
 note "3) stub_directive() returns \"\" when ineligible (byte-identical splice for the ordinary / immutable / in-scope paths) ..."
@@ -317,6 +322,15 @@ if grep -q '^contract CommentBraceFeed is$' "$COMMENTBRACE" \
 else
   bad "CommentBraceImplCalleeVault.sol no longer mirrors the comment-brace-in-header repro"
 fi
+# #2176 round-5 path (/*-in-string): a `/*` inside a Solidity STRING literal before the in-scope carrier.
+if grep -q '"price feed adapter /\* v2";' "$STRINGSLASH" \
+   && grep -q '^contract StringSlashFeed is IPriceFeed {$' "$STRINGSLASH" \
+   && grep -q 'function setFeed(address newFeed) external' "$STRINGSLASH" \
+   && grep -q 'IPriceFeed(feed).price();' "$STRINGSLASH"; then
+  ok "StringSlashImplCalleeVault.sol: settable IPriceFeed callee with a /* inside a STRING literal before the in-scope impl (round-5 repro)"
+else
+  bad "StringSlashImplCalleeVault.sol no longer mirrors the /*-in-string-literal repro"
+fi
 if grep -q '^contract MaliciousOracle' "$POC_STUB" && ! grep -q '^contract ScopedVault' "$POC_STUB" \
    && grep -q 'import {ScopedVault} from "../src/ScopedVault.sol";' "$POC_STUB"; then
   ok "Poc_stub.t.sol imports the in-scope ScopedVault + declares a DISTINCT MaliciousOracle stub (no #1471 target shadow)"
@@ -377,6 +391,7 @@ else
     R_ML="$(_stage ml "$MULTILINE")"
     R_TRANS="$(_stage trans "$TRANSITIVE")"
     R_CB="$(_stage cb "$COMMENTBRACE")"
+    R_SS="$(_stage ss "$STRINGSLASH")"
     _elig() {
       ( cd "$SB" && FIXTURE="$1" REPODIR="$2" CEXPR="$3" agentis go probe.ag --enable-exec 2>&1 | grep '^ELIG=' | tail -1 )  # no-pii: the probe never calls prompt() — it reads a checked-in Solidity fixture and prints one eligibility bit
     }
@@ -387,6 +402,7 @@ else
     E_ML="$(_elig "$R_ML/src/MultiLineImplCalleeVault.sol" "$R_ML" 'IPriceFeed(feed)')"
     E_TRANS="$(_elig "$R_TRANS/src/TransitiveImplCalleeVault.sol" "$R_TRANS" 'IOracle(oracle)')"
     E_CB="$(_elig "$R_CB/src/CommentBraceImplCalleeVault.sol" "$R_CB" 'IPriceFeed(feed)')"
+    E_SS="$(_elig "$R_SS/src/StringSlashImplCalleeVault.sol" "$R_SS" 'IPriceFeed(feed)')"
     E_EMPTY="$(_elig "$R_SCOPED/src/ScopedVault.sol" "$R_SCOPED" '')"
     [ "$E_SCOPED" = "ELIG=1" ] && ok "out-of-scope + settable callee -> stub_eligible = 1 (a hostile stub is synthesized)" \
       || bad "out-of-scope + settable callee should be eligible (got '$E_SCOPED')"
@@ -400,8 +416,10 @@ else
       || bad "multi-line-inheritance in-scope implementer must NOT be eligible (got '$E_ML') — formatting-blind scope regression"
     [ "$E_TRANS" = "ELIG=0" ] && ok "#2176 round-4 path-1: callee carried only via a TRANSITIVE interface chain (interface IOracleV2 is IOracle) -> stub_eligible = 0 (NO stub fabricated)" \
       || bad "transitive-interface-chain carrier must NOT be eligible (got '$E_TRANS') — interface-carrier regression"
-    [ "$E_CB" = "ELIG=0" ] && ok "#2176 round-4 path-2: in-scope impl header with an inline comment { } brace -> stub_eligible = 0 (comments stripped, base still found)" \
-      || bad "comment-brace-in-header impl must NOT be eligible (got '$E_CB') — comment-strip regression"
+    [ "$E_CB" = "ELIG=0" ] && ok "#2176 round-4 path-2: in-scope impl header with an inline comment { } brace -> stub_eligible = 0 (';'-bound header, base still found)" \
+      || bad "comment-brace-in-header impl must NOT be eligible (got '$E_CB') — header-truncation regression"
+    [ "$E_SS" = "ELIG=0" ] && ok "#2176 round-5 path: /* inside a STRING literal before the in-scope carrier -> stub_eligible = 0 (raw matching, no comment-state)" \
+      || bad "/*-in-string impl must NOT be eligible (got '$E_SS') — comment-stripping regression reintroduced"
     [ "$E_EMPTY" = "ELIG=0" ] && ok "empty callee-expr (ordinary run-poc.sh path) -> stub_eligible = 0 (inert, byte-identical)" \
       || bad "empty callee-expr must NOT be eligible (got '$E_EMPTY')"
   fi
