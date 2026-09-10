@@ -217,84 +217,99 @@ let fixturesBlock = fixtures_context(fixturesDir);
 // ordinary PoC path refutes it to CLEAN ("scope-unprovable"). But that callee is exactly what the Royco
 // MaliciousOracle idiom models: an ATTACKER-DEPLOYED mock implementing the callee's interface, injected as the
 // settable target, performing a reentrancy / adversarial-return / gas attack. This block adds a DETERMINISTIC
-// eligibility gate + a directive that instructs the model to synthesize such a stub — but ONLY when the callee
-// is BOTH settable over CODE_PATH AND out-of-scope, so a genuinely immutable/hardcoded or in-scope-implemented
-// callee is NEVER given a stub (that would fabricate a finding). The gate is AND-ed and FAIL-CLOSED.
+// eligibility gate + a directive that instructs the model to synthesize such a stub — but ONLY when the SPECIFIC
+// callee named in CALLEE_EXPR is BOTH settable (its OWN backing address is repointable) AND out-of-scope (no
+// in-scope contract implements the cast type), so a genuinely immutable/hardcoded or in-scope-implemented callee
+// is NEVER given a stub (that would fabricate a finding). The gate is AND-ed and FAIL-CLOSED.
 //
-// The settability detector is a byte-identical port of hunter.ag:452-512 (address-setter / mutable-address-state
-// / computed-target signals), so D1's "settable" and this PoC gate's "settable" agree exactly. The verdict is
-// still the gate's exit code (verdict_of untouched): a stub PoC PASS is an honest FINDING with the controlling
-// role noted as its precondition — a LEAD a human triages, never auto-submitted.
+// #2175 review lesson: both halves are computed OVER THE CALLEE, not file-level. Settability is tied to the
+// backing address inside the cast (an unrelated setter/mutable address elsewhere must NOT arm an immutable
+// callee), and out-of-scope resolves interface->implementation (a `contract Impl is IX` in scope is IN-scope,
+// even though it is not named `contract IX`). The verdict is still the gate's exit code (verdict_of untouched):
+// a stub PoC PASS is an honest FINDING with the controlling role noted as its precondition — a LEAD a human
+// triages, never auto-submitted.
 
-// Signal 1 — an ADDRESS SETTER: `function set<Something>(address ...` (hunter.ag address_setter_pattern).
-fn address_setter_pattern() -> string {
-    return "\\bfunction\\s+set[A-Za-z0-9_]*\\s*\\(\\s*address";
-}
-fn has_address_setter(code: string) -> bool {
-    return len(regex_find_all(address_setter_pattern(), code)) > 0;
-}
-// Signal 2 — a MUTABLE `address` STATE VARIABLE (at most one visibility keyword, so `immutable`/`constant` are
-// excluded BY CONSTRUCTION). hunter.ag mutable_address_state_pattern, verbatim.
-fn mutable_address_state_pattern() -> string {
-    return "\\n[ \\t]*address(?:\\s+(?:public|internal|private))?\\s+[a-zA-Z_][A-Za-z0-9_]*\\s*;";
-}
-fn has_mutable_address_state(code: string) -> bool {
-    return len(regex_find_all(mutable_address_state_pattern(), code)) > 0;
-}
-// Signal 3 — a COMPUTED call target: an interface cast whose argument is itself a CALL (hunter.ag). `address`/
-// `payable` casts are denylisted the same way (plain type casts, not target resolution).
-fn computed_target_pattern() -> string {
-    return "\\bI[A-Z][A-Za-z0-9_]*\\(\\s*([A-Za-z_][A-Za-z0-9_.]*)\\s*\\(";
-}
+// #2175 review — settability MUST be tied to the SPECIFIC callee address named in CALLEE_EXPR, never file-level:
+// a file-level detector arms an `immutable` callee with a hostile stub whenever ANY unrelated setter/mutable
+// address exists elsewhere (owner/treasury), fabricating a finding on a callee no role can repoint. So we resolve
+// settability over the BACKING ADDRESS of the cast, not over the whole contract.
+
+// `address`/`payable` are plain type casts, not target resolution — denylisted so `address(x)` does not count as
+// a computed (config-resolved) target.
 fn is_plain_cast_callee(name: string) -> bool {
     if name == "address" { return true; }
     if name == "payable" { return true; }
     return false;
 }
-fn has_computed_call_target(code: string) -> bool {
-    let pat = computed_target_pattern();
-    return reduce(regex_find_all(pat, code), |acc: bool, m: string| -> bool {
-        if acc { return true; }
-        if is_plain_cast_callee(regex_capture(pat, m, 1)) { return false; }
-        return true;
-    }, false);
-}
-// The settable-callee detector: an OR of the three signals — the same "is the call target settable" question D1
-// asks (hunter.ag has_settable_target). Nested returns, because .ag has no `||`.
-fn has_settable_callee(code: string) -> bool {
-    if has_address_setter(code) { return true; }
-    if has_mutable_address_state(code) { return true; }
-    return has_computed_call_target(code);
-}
-
 // Extract the interface/contract TYPE the callee-expression casts to — the leading `I?[A-Z]\w*` before `(`,
 // e.g. `IOracle(oracle)` -> `IOracle`, `PriceFeed(feed)` -> `PriceFeed`. Empty when the expr has no cast type
 // (a bare `registry.getOracle()` computed target has none) -> the stub gate FAILS CLOSED on it.
 fn callee_type_of(expr: string) -> string {
     return regex_capture("([A-Z][A-Za-z0-9_]*)\\s*\\(", expr, 1);
 }
-// OUT-OF-SCOPE = there is no `contract <typeName>` IMPLEMENTATION body under the staged repo's src/ or
-// contracts/. An interface-only type (only `interface IOracle`, or nothing) => out-of-scope => the callee's real
-// code cannot be driven => it is a stub candidate. One mechanical repo grep (same safe-exec-concat idiom as
-// resolve_in_repo_src); typeName is `[A-Za-z0-9_]`-only from callee_type_of, so no regex metachars leak in.
-// FAIL-CLOSED: an empty typeName is treated as out-of-scope true here, but stub_eligible below rejects an empty
-// type BEFORE calling this, so an unextractable expr never reaches a stub.
+// The BACKING ADDRESS EXPRESSION inside the cast — the argument the interface is cast over. `IOracle(oracle)` ->
+// `oracle`; `IOracle(reg.getOracle())` -> `reg.getOracle()`; `IOracle(oracle).poke()` -> `oracle` (a trailing
+// `.method()` is ignored). The group allows at most ONE level of nested parens (enough for one getter call), so a
+// trailing member-call after the cast never leaks into the capture. Empty when there is no cast argument.
+fn callee_addr_expr(expr: string) -> string {
+    return regex_capture("[A-Za-z_][A-Za-z0-9_]*\\(([^()]*(?:\\([^()]*\\))?[^()]*)\\)", expr, 1);
+}
+fn is_bare_identifier(s: string) -> bool {
+    return len(regex_find_all("^[A-Za-z_][A-Za-z0-9_]*$", s)) > 0;
+}
+// The backing address is a COMPUTED (config-resolved) target when it is itself a getter call to something other
+// than a plain `address`/`payable` cast (`reg.getOracle()`) — settable wherever that getter's owner points it.
+fn addr_has_computed_target(addr: string) -> bool {
+    let pat = "([A-Za-z_][A-Za-z0-9_.]*)\\s*\\(";
+    return reduce(regex_find_all(pat, addr), |acc: bool, m: string| -> bool {
+        if acc { return true; }
+        if is_plain_cast_callee(regex_capture(pat, m, 1)) { return false; }
+        return true;
+    }, false);
+}
+// A MUTABLE `address` state var declaration for the SPECIFIC var name — at most one visibility keyword between
+// `address` and the name, so `immutable`/`constant` are excluded BY CONSTRUCTION (an immutable backing address is
+// NOT settable regardless of unrelated setters). An optional inline initializer is allowed (`address oracle = x;`
+// is still mutable storage). varName is a validated bare identifier, so no regex metachars leak in.
+fn mutable_var_state_pattern(varName: string) -> string {
+    return "\\n[ \\t]*address(?:\\s+(?:public|internal|private))?\\s+" + varName + "\\s*(?:=[^;]*)?;";
+}
+// Is the SPECIFIC callee named in calleeExpr attacker-repointable? Computed target (getter) => yes. Otherwise the
+// backing address must be a bare identifier that is declared as a MUTABLE address state var (a setter that writes
+// it implies the same non-immutable declaration). An `immutable`/hardcoded/base-only callee => false => no stub.
+// FAIL-CLOSED on an empty/exotic backing expression.
+fn callee_addr_settable(calleeExpr: string, code: string) -> bool {
+    let addr = callee_addr_expr(calleeExpr);
+    if len(addr) == 0 { return false; }
+    if addr_has_computed_target(addr) { return true; }
+    if !is_bare_identifier(addr) { return false; }
+    return len(regex_find_all(mutable_var_state_pattern(addr), code)) > 0;
+}
+// OUT-OF-SCOPE = NO in-scope contract IMPLEMENTS the cast type, so the callee's real code cannot be driven. A
+// callee cast to `IX` is IN-scope (do NOT stub) if any in-scope file declares either a `contract <typeName>` body
+// (a cast straight to a concrete contract) OR a `contract <Name> is ... <typeName> ...` implementer (the common
+// interface-cast case, e.g. `ChainlinkOracle is IOracle` — the #2175-review blind spot a `contract IOracle` grep
+// missed). Only when NEITHER exists is it out-of-scope. FAIL-CLOSED: an empty type => in-scope => no stub (but
+// stub_eligible rejects an empty type before calling this). typeName is `[A-Za-z0-9_]`-only, shell_escaped.
 fn callee_out_of_scope(typeName: string, repo: string) -> bool {
-    if len(typeName) == 0 { return true; }
+    if len(typeName) == 0 { return false; }
     // colony-lint: safe-exec-concat
-    let hits = exec sh "grep -rlE " + shell_escape("contract[[:space:]]+" + typeName + "[ {(]") + " " + shell_escape(repo) + "/src " + shell_escape(repo) + "/contracts 2>/dev/null | head -n 1 || true";
-    if len(hits) == 0 { return true; }
-    return false;
+    let concrete = exec sh "grep -rlE " + shell_escape("contract[[:space:]]+" + typeName + "[ {(]") + " " + shell_escape(repo) + "/src " + shell_escape(repo) + "/contracts 2>/dev/null | head -n 1 || true";
+    if len(concrete) > 0 { return false; }
+    // colony-lint: safe-exec-concat
+    let impl = exec sh "grep -rlE " + shell_escape("contract[[:space:]]+[A-Za-z0-9_]+[[:space:]]+is[[:space:]][^{]*" + typeName + "([^A-Za-z0-9_]|$)") + " " + shell_escape(repo) + "/src " + shell_escape(repo) + "/contracts 2>/dev/null | head -n 1 || true";
+    if len(impl) > 0 { return false; }
+    return true;
 }
 // The AND-gate: a stub is synthesized ONLY when a CALLEE-VECTOR callee-expr was passed AND its type extracts AND
-// the callee is settable over CODE_PATH AND its type is out-of-scope. Any one false -> not eligible -> the
-// directive is "" -> the prompt is byte-identical to today (no fabricated finding on a non-attacker-controllable
-// or in-scope callee). Nested, because .ag has no `&&`.
+// its SPECIFIC backing address is settable AND its type has no in-scope implementer. Any one false -> not
+// eligible -> the directive is "" -> the prompt is byte-identical to today (no fabricated finding on a
+// non-attacker-controllable or in-scope callee). Nested, because .ag has no `&&`.
 fn stub_eligible(calleeExpr: string, code: string, repo: string) -> bool {
     if len(calleeExpr) == 0 { return false; }
     let typeName = callee_type_of(calleeExpr);
     if len(typeName) == 0 { return false; }
-    if !has_settable_callee(code) { return false; }
+    if !callee_addr_settable(calleeExpr, code) { return false; }
     return callee_out_of_scope(typeName, repo);
 }
 
