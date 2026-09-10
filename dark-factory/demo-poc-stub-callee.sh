@@ -38,6 +38,11 @@ FIXSRC="$FIXROOT/src"
 SCOPED="$FIXSRC/ScopedVault.sol"
 IMMUT="$FIXSRC/ImmutableCalleeVault.sol"
 INSCOPE="$FIXSRC/InScopeCalleeVault.sol"
+INSCOPEIFACE="$FIXSRC/InScopeInterfaceCalleeVault.sol"
+MULTILINE="$FIXSRC/MultiLineImplCalleeVault.sol"
+TRANSITIVE="$FIXSRC/TransitiveImplCalleeVault.sol"
+COMMENTBRACE="$FIXSRC/CommentBraceImplCalleeVault.sol"
+STRINGSLASH="$FIXSRC/StringSlashImplCalleeVault.sol"
 POC_CONTROL="$FIXROOT/Poc_control.t.sol"
 POC_STUB="$FIXROOT/Poc_stub.t.sol"
 
@@ -47,7 +52,7 @@ ok()   { echo "  [PASS] $*"; }
 bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 skip() { echo "  [SKIP] $*"; }
 
-for f in "$PROVER" "$RUNNER" "$VHUNT" "$SCOPED" "$IMMUT" "$INSCOPE" "$POC_CONTROL" "$POC_STUB"; do
+for f in "$PROVER" "$RUNNER" "$VHUNT" "$SCOPED" "$IMMUT" "$INSCOPE" "$INSCOPEIFACE" "$MULTILINE" "$TRANSITIVE" "$COMMENTBRACE" "$STRINGSLASH" "$POC_CONTROL" "$POC_STUB"; do
   [ -f "$f" ] || { note "required file not found: $f" >&2; exit 3; }
 done
 
@@ -64,27 +69,36 @@ PROVER_FLAT="$(tr '\n' ' ' < "$PROVER" | sed 's/"[[:space:]]*+[[:space:]]*"//g')
 # PART 1 — SOURCE-GUARD (CI floor: grep/awk only)
 # ----------------------------------------------------------------------------------------------------------
 note "1) poc-writer.ag declares the eligibility + directive helpers ..."
-HELPER_FNS="address_setter_pattern has_address_setter mutable_address_state_pattern has_mutable_address_state computed_target_pattern is_plain_cast_callee has_computed_call_target has_settable_callee callee_type_of callee_out_of_scope stub_eligible hazard_behaviour stub_directive"
+HELPER_FNS="is_plain_cast_callee callee_type_of callee_addr_expr is_bare_identifier addr_has_computed_target mutable_var_state_pattern callee_addr_settable scope_probe callee_out_of_scope stub_eligible hazard_behaviour stub_directive"
 MISSING_FN=""
 for fn in $HELPER_FNS; do
   grep -q "^fn $fn(" "$PROVER" || MISSING_FN="$MISSING_FN $fn"
 done
 if [ -z "$MISSING_FN" ]; then
-  ok "all 13 settability/type/scope/eligibility/directive helpers are declared in poc-writer.ag"
+  ok "all 12 callee-specific settability/type/scope/eligibility/directive helpers are declared in poc-writer.ag"
 else
   bad "poc-writer.ag is missing helper(s):$MISSING_FN"
 fi
 
-# The settable-callee detector must OR all three D1 signals — losing one silently narrows what "settable" means,
-# desyncing the PoC gate from D1's hunter.ag.
-SIG_MISS=""
-for sig in has_address_setter has_mutable_address_state has_computed_call_target; do
-  grep -A4 '^fn has_settable_callee(' "$PROVER" | grep -q "$sig(code)" || SIG_MISS="$SIG_MISS $sig"
-done
-if [ -z "$SIG_MISS" ]; then
-  ok "has_settable_callee() ORs all three D1 settable-target signals (setter / mutable address state / computed target)"
+# #2175 review BUG 1: settability MUST be tied to the SPECIFIC callee address, never file-level. callee_addr_settable
+# must derive the backing address from CALLEE_EXPR (callee_addr_expr), accept a computed getter target, else require
+# THAT var to be a mutable state var (mutable_var_state_pattern over the specific name) — so an immutable callee with
+# an unrelated setter elsewhere is NOT armed.
+SETT_BODY="$WORK/callee-addr-settable.txt"
+awk '/^fn callee_addr_settable\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$SETT_BODY"
+if grep -Fq 'let addr = callee_addr_expr(calleeExpr);' "$SETT_BODY" \
+   && grep -Fq 'if addr_has_computed_target(addr) { return true; }' "$SETT_BODY" \
+   && grep -Fq 'return len(regex_find_all(mutable_var_state_pattern(addr), code)) > 0;' "$SETT_BODY"; then
+  ok "callee_addr_settable() ties settability to the SPECIFIC backing address inside CALLEE_EXPR (computed getter, or that var declared mutable) — not file-level"
 else
-  bad "has_settable_callee() dropped signal(s):$SIG_MISS"
+  bad "callee_addr_settable() no longer resolves settability over the callee's OWN backing address (BUG 1 regression risk)"
+fi
+# The specific-var mutable pattern must still exclude immutable/constant by construction (at most one visibility
+# keyword between `address` and the var name), so an immutable backing address is never settable.
+if grep -A2 '^fn mutable_var_state_pattern(' "$PROVER" | grep -Fq 'address(?:\\s+(?:public|internal|private))?\\s+" + varName'; then
+  ok "mutable_var_state_pattern() keys on the specific var and admits at most one visibility keyword (immutable/constant excluded by construction)"
+else
+  bad "mutable_var_state_pattern() no longer keys on the specific var / no longer excludes immutable by construction"
 fi
 
 note "2) stub_eligible() is an AND-gate and FAIL-CLOSED (never fabricates a finding on a non-attacker-controllable / in-scope callee) ..."
@@ -94,15 +108,40 @@ GATE_MISS=""
 for g in \
   'if len(calleeExpr) == 0 { return false; }' \
   'if len(typeName) == 0 { return false; }' \
-  'if !has_settable_callee(code) { return false; }' \
+  'if !callee_addr_settable(calleeExpr, code) { return false; }' \
   'return callee_out_of_scope(typeName, repo);'
 do
   grep -Fq "$g" "$ELIG_BODY" || GATE_MISS="$GATE_MISS [$g]"
 done
 if [ -z "$GATE_MISS" ]; then
-  ok "stub_eligible() ANDs (callee-expr present) + (type extracts) + (settable over CODE_PATH) + (out-of-scope), fail-closed on an empty callee/type"
+  ok "stub_eligible() ANDs (callee-expr present) + (type extracts) + (callee-specific settable) + (out-of-scope), fail-closed on an empty callee/type"
 else
   bad "stub_eligible() lost an AND / fail-closed guard:$GATE_MISS"
+fi
+
+# #2176 review (rounds 3-5): out-of-scope resolution must be FAIL-CLOSED BY CONSTRUCTION. grep/awk cannot tell
+# Solidity comments from strings from code, so the resolver matches RAW file text and NEVER strips comments: a
+# carrier appearing anywhere (even in a comment/string) => IN-scope (safe missed stub); out-of-scope only when it
+# appears NOWHERE. It recognizes `(contract|interface) <Name> is ...IX...` carriers (transitive interface chains)
+# and bounds the base-list scan by `;` (never in a header) not `{`, so a `{` hidden in a comment cannot truncate
+# it. No awk/sed comment-stripper (that round-4 stripper opened comment-state on a `/*` inside a STRING and ate a
+# real carrier — round-5 regression). Out-of-scope ONLY on a definitive SCANNED; FOUND / "" stay in-scope.
+SP_BODY="$WORK/scope-probe.txt"
+awk '/^fn scope_probe\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$SP_BODY"
+OOS_BODY="$WORK/callee-out-of-scope.txt"
+awk '/^fn callee_out_of_scope\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$OOS_BODY"
+SP_MISS=""
+# RAW matching: the resolver must NOT strip comments (no embedded awk/sed text processor).
+grep -Eq '(^|[^A-Za-z0-9_])(awk|sed)[[:space:]]' "$SP_BODY" && SP_MISS="$SP_MISS [must-not-strip-comments]"
+grep -Fq "(contract|interface)[[:space:]]+[A-Za-z0-9_]+[[:space:]]+is[^;]*[^A-Za-z0-9_]\" + typeName" "$SP_BODY" || SP_MISS="$SP_MISS [contract|interface-carrier-semicolon-bound]"
+grep -Fq 'grep -zqE' "$SP_BODY" || SP_MISS="$SP_MISS [grep-z]"
+# out-of-scope ONLY on a definitive SCANNED; FOUND and "" (no source / ambiguous) both stay in-scope (no stub).
+grep -Fq 'if probe == "SCANNED" { return true; }' "$OOS_BODY" || SP_MISS="$SP_MISS [scanned-gate]"
+grep -Fq 'return false;' "$OOS_BODY" || SP_MISS="$SP_MISS [fail-closed-default]"
+if [ -z "$SP_MISS" ]; then
+  ok "scope resolution matches RAW text (no comment stripping), recognizes contract OR interface carriers (transitive chains) bounded by ';' not '{', scans with grep -z, and is out-of-scope ONLY on a definitive SCANNED (fail-closed in-scope otherwise)"
+else
+  bad "scope resolution is not fail-closed-by-construction:$SP_MISS"
 fi
 
 note "3) stub_directive() returns \"\" when ineligible (byte-identical splice for the ordinary / immutable / in-scope paths) ..."
@@ -221,7 +260,7 @@ else
   ok "hazard_behaviour()/stub_directive() use only native builtins (no exec sh / embedded interpreter in the directive text)"
 fi
 
-note "10) the three fixture arms have the shapes the gate discriminates on ..."
+note "10) the fixture arms have the shapes the gate discriminates on (incl. the two #2175-review repros) ..."
 if grep -q 'function setOracle(address newOracle) external' "$SCOPED" \
    && grep -q '^    address public oracle;$' "$SCOPED" \
    && grep -q 'IOracle(oracle).price();' "$SCOPED" \
@@ -231,19 +270,66 @@ if grep -q 'function setOracle(address newOracle) external' "$SCOPED" \
 else
   bad "ScopedVault.sol lost the setter / mutable address state / interface-only (out-of-scope) call it exists to carry"
 fi
-if grep -q '^    address public immutable oracle;$' "$IMMUT" \
+# BUG-1 repro: immutable CALLEE (`oracle`) with an UNRELATED setter/mutable address present (real targets have them).
+if grep -q 'address public immutable oracle;' "$IMMUT" \
    && grep -q 'IOracle(oracle).price();' "$IMMUT" \
-   && ! grep -q 'function set' "$IMMUT"; then
-  ok "ImmutableCalleeVault.sol: same out-of-scope call, immutable target, no setter (settability negative arm)"
+   && grep -q 'function setTreasury(address newTreasury) external' "$IMMUT" \
+   && ! grep -q 'function setOracle' "$IMMUT"; then
+  ok "ImmutableCalleeVault.sol: immutable oracle callee WITH an unrelated setTreasury setter, no oracle setter (BUG-1 settability repro)"
 else
-  bad "ImmutableCalleeVault.sol no longer isolates the immutable-target case"
+  bad "ImmutableCalleeVault.sol no longer mirrors the BUG-1 repro (immutable callee + unrelated setter)"
 fi
 if grep -q '^contract PriceFeed {$' "$INSCOPE" \
    && grep -q 'function setFeed(address newFeed) external' "$INSCOPE" \
    && grep -q 'PriceFeed(feed).price();' "$INSCOPE"; then
-  ok "InScopeCalleeVault.sol: settable callee whose type PriceFeed IS implemented in scope (scope negative arm)"
+  ok "InScopeCalleeVault.sol: settable callee cast to a concrete in-scope contract PriceFeed (scope negative arm)"
 else
-  bad "InScopeCalleeVault.sol no longer isolates the in-scope-implemented callee case"
+  bad "InScopeCalleeVault.sol no longer isolates the in-scope concrete-callee case"
+fi
+# BUG-2 repro (single-line): settable callee cast to an INTERFACE with a differently-named in-scope implementer.
+if grep -q '^contract ChainlinkPriceFeed is IPriceFeed {$' "$INSCOPEIFACE" \
+   && grep -q 'function setFeed(address newFeed) external' "$INSCOPEIFACE" \
+   && grep -q 'IPriceFeed(feed).price();' "$INSCOPEIFACE"; then
+  ok "InScopeInterfaceCalleeVault.sol: settable callee cast to IPriceFeed with a single-line in-scope implementer (BUG-2 scope repro)"
+else
+  bad "InScopeInterfaceCalleeVault.sol no longer mirrors the BUG-2 repro (interface cast + differently-named in-scope impl)"
+fi
+# #2176 repro (MULTI-LINE inheritance): the base IPriceFeed sits on a different line than `contract <Name> is`.
+if grep -q '^contract ChainlinkPriceFeed is$' "$MULTILINE" \
+   && grep -q '^    IPriceFeed$' "$MULTILINE" \
+   && grep -q 'function setFeed(address newFeed) external' "$MULTILINE" \
+   && grep -q 'IPriceFeed(feed).price();' "$MULTILINE"; then
+  ok "MultiLineImplCalleeVault.sol: settable IPriceFeed callee with a MULTI-LINE inheritance impl (base on its own line) (#2176 repro)"
+else
+  bad "MultiLineImplCalleeVault.sol no longer mirrors the #2176 multi-line-inheritance repro"
+fi
+# #2176 round-4 path 1 (TRANSITIVE interface): only an interface extends IOracle; the impl implements that interface.
+if grep -q '^interface IOracleV2 is IOracle {$' "$TRANSITIVE" \
+   && grep -q '^contract ChainImpl is IOracleV2 {$' "$TRANSITIVE" \
+   && grep -q 'function setOracle(address newOracle) external' "$TRANSITIVE" \
+   && grep -q 'IOracle(oracle).price();' "$TRANSITIVE"; then
+  ok "TransitiveImplCalleeVault.sol: settable IOracle callee carried only via a transitive interface chain (interface IOracleV2 is IOracle) (path-1 repro)"
+else
+  bad "TransitiveImplCalleeVault.sol no longer mirrors the transitive-interface-chain repro"
+fi
+# #2176 round-4 path 2 (comment-brace in header): an inline comment with { } in the multi-line inheritance list.
+if grep -q '^contract CommentBraceFeed is$' "$COMMENTBRACE" \
+   && grep -q 'braces that must not truncate the header' "$COMMENTBRACE" \
+   && grep -q '^    IPriceFeed$' "$COMMENTBRACE" \
+   && grep -q 'function setFeed(address newFeed) external' "$COMMENTBRACE" \
+   && grep -q 'IPriceFeed(feed).price();' "$COMMENTBRACE"; then
+  ok "CommentBraceImplCalleeVault.sol: settable IPriceFeed callee whose impl header carries an inline comment with { } braces (path-2 repro)"
+else
+  bad "CommentBraceImplCalleeVault.sol no longer mirrors the comment-brace-in-header repro"
+fi
+# #2176 round-5 path (/*-in-string): a `/*` inside a Solidity STRING literal before the in-scope carrier.
+if grep -q '"price feed adapter /\* v2";' "$STRINGSLASH" \
+   && grep -q '^contract StringSlashFeed is IPriceFeed {$' "$STRINGSLASH" \
+   && grep -q 'function setFeed(address newFeed) external' "$STRINGSLASH" \
+   && grep -q 'IPriceFeed(feed).price();' "$STRINGSLASH"; then
+  ok "StringSlashImplCalleeVault.sol: settable IPriceFeed callee with a /* inside a STRING literal before the in-scope impl (round-5 repro)"
+else
+  bad "StringSlashImplCalleeVault.sol no longer mirrors the /*-in-string-literal repro"
 fi
 if grep -q '^contract MaliciousOracle' "$POC_STUB" && ! grep -q '^contract ScopedVault' "$POC_STUB" \
    && grep -q 'import {ScopedVault} from "../src/ScopedVault.sol";' "$POC_STUB"; then
@@ -266,13 +352,13 @@ fi
 # ----------------------------------------------------------------------------------------------------------
 # PART 2 — LIVE (needs agentis for the probe + forge for the gate; clean [SKIP] otherwise)
 # ----------------------------------------------------------------------------------------------------------
-note "12) extracted-helper probe: the stub_eligible truth table over the three fixture arms ..."
+note "12) extracted-helper probe: the stub_eligible truth table over all fixture arms (incl. both #2175-review repros) ..."
 if ! command -v agentis >/dev/null 2>&1; then
   skip "no agentis binary on PATH — the extracted-helper eligibility probe cannot run"
 else
   # Extract the eligibility helpers FROM poc-writer.ag BY LINE RANGE (dependency order), so a copy cannot drift
   # from the shipped agent (the demo-callee-trust-lens.sh idiom).
-  PROBE_FNS="address_setter_pattern has_address_setter mutable_address_state_pattern has_mutable_address_state computed_target_pattern is_plain_cast_callee has_computed_call_target has_settable_callee callee_type_of callee_out_of_scope stub_eligible"
+  PROBE_FNS="is_plain_cast_callee callee_type_of callee_addr_expr is_bare_identifier addr_has_computed_target mutable_var_state_pattern callee_addr_settable scope_probe callee_out_of_scope stub_eligible"
   FRAG="$WORK/elig.frag"; : > "$FRAG"; FRAG_MISS=""
   for fn in $PROBE_FNS; do
     awk -v want="^fn $fn\\\\(" '$0 ~ want {f=1} f{print} f&&/^}$/{exit}' "$PROVER" >> "$FRAG"
@@ -301,19 +387,39 @@ else
     R_SCOPED="$(_stage scoped "$SCOPED")"
     R_IMMUT="$(_stage immut "$IMMUT")"
     R_INSCOPE="$(_stage inscope "$INSCOPE")"
+    R_IFACE="$(_stage iface "$INSCOPEIFACE")"
+    R_ML="$(_stage ml "$MULTILINE")"
+    R_TRANS="$(_stage trans "$TRANSITIVE")"
+    R_CB="$(_stage cb "$COMMENTBRACE")"
+    R_SS="$(_stage ss "$STRINGSLASH")"
     _elig() {
       ( cd "$SB" && FIXTURE="$1" REPODIR="$2" CEXPR="$3" agentis go probe.ag --enable-exec 2>&1 | grep '^ELIG=' | tail -1 )  # no-pii: the probe never calls prompt() — it reads a checked-in Solidity fixture and prints one eligibility bit
     }
     E_SCOPED="$(_elig "$R_SCOPED/src/ScopedVault.sol" "$R_SCOPED" 'IOracle(oracle)')"
     E_IMMUT="$(_elig "$R_IMMUT/src/ImmutableCalleeVault.sol" "$R_IMMUT" 'IOracle(oracle)')"
     E_INSCOPE="$(_elig "$R_INSCOPE/src/InScopeCalleeVault.sol" "$R_INSCOPE" 'PriceFeed(feed)')"
+    E_IFACE="$(_elig "$R_IFACE/src/InScopeInterfaceCalleeVault.sol" "$R_IFACE" 'IPriceFeed(feed)')"
+    E_ML="$(_elig "$R_ML/src/MultiLineImplCalleeVault.sol" "$R_ML" 'IPriceFeed(feed)')"
+    E_TRANS="$(_elig "$R_TRANS/src/TransitiveImplCalleeVault.sol" "$R_TRANS" 'IOracle(oracle)')"
+    E_CB="$(_elig "$R_CB/src/CommentBraceImplCalleeVault.sol" "$R_CB" 'IPriceFeed(feed)')"
+    E_SS="$(_elig "$R_SS/src/StringSlashImplCalleeVault.sol" "$R_SS" 'IPriceFeed(feed)')"
     E_EMPTY="$(_elig "$R_SCOPED/src/ScopedVault.sol" "$R_SCOPED" '')"
     [ "$E_SCOPED" = "ELIG=1" ] && ok "out-of-scope + settable callee -> stub_eligible = 1 (a hostile stub is synthesized)" \
       || bad "out-of-scope + settable callee should be eligible (got '$E_SCOPED')"
-    [ "$E_IMMUT" = "ELIG=0" ] && ok "immutable callee -> stub_eligible = 0 (NO stub fabricated — settability negative arm)" \
-      || bad "immutable callee must NOT be eligible (got '$E_IMMUT') — a stub here would fabricate a finding"
-    [ "$E_INSCOPE" = "ELIG=0" ] && ok "in-scope-implemented callee -> stub_eligible = 0 (NO stub fabricated — scope negative arm)" \
-      || bad "in-scope-implemented callee must NOT be eligible (got '$E_INSCOPE') — a stub here would fabricate a finding"
+    [ "$E_IMMUT" = "ELIG=0" ] && ok "BUG-1 repro: immutable callee WITH an unrelated setter present -> stub_eligible = 0 (NO stub fabricated)" \
+      || bad "immutable callee with an unrelated setter must NOT be eligible (got '$E_IMMUT') — file-level settability regression"
+    [ "$E_INSCOPE" = "ELIG=0" ] && ok "in-scope concrete callee (PriceFeed) -> stub_eligible = 0 (NO stub fabricated)" \
+      || bad "in-scope concrete callee must NOT be eligible (got '$E_INSCOPE')"
+    [ "$E_IFACE" = "ELIG=0" ] && ok "BUG-2 repro: interface-cast callee with a single-line in-scope impl -> stub_eligible = 0 (NO stub fabricated)" \
+      || bad "interface-cast callee with an in-scope implementer must NOT be eligible (got '$E_IFACE') — interface-blind scope regression"
+    [ "$E_ML" = "ELIG=0" ] && ok "#2176 repro: interface-cast callee with a MULTI-LINE-inheritance in-scope impl -> stub_eligible = 0 (NO stub fabricated)" \
+      || bad "multi-line-inheritance in-scope implementer must NOT be eligible (got '$E_ML') — formatting-blind scope regression"
+    [ "$E_TRANS" = "ELIG=0" ] && ok "#2176 round-4 path-1: callee carried only via a TRANSITIVE interface chain (interface IOracleV2 is IOracle) -> stub_eligible = 0 (NO stub fabricated)" \
+      || bad "transitive-interface-chain carrier must NOT be eligible (got '$E_TRANS') — interface-carrier regression"
+    [ "$E_CB" = "ELIG=0" ] && ok "#2176 round-4 path-2: in-scope impl header with an inline comment { } brace -> stub_eligible = 0 (';'-bound header, base still found)" \
+      || bad "comment-brace-in-header impl must NOT be eligible (got '$E_CB') — header-truncation regression"
+    [ "$E_SS" = "ELIG=0" ] && ok "#2176 round-5 path: /* inside a STRING literal before the in-scope carrier -> stub_eligible = 0 (raw matching, no comment-state)" \
+      || bad "/*-in-string impl must NOT be eligible (got '$E_SS') — comment-stripping regression reintroduced"
     [ "$E_EMPTY" = "ELIG=0" ] && ok "empty callee-expr (ordinary run-poc.sh path) -> stub_eligible = 0 (inert, byte-identical)" \
       || bad "empty callee-expr must NOT be eligible (got '$E_EMPTY')"
   fi
