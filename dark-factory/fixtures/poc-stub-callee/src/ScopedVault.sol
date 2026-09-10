@@ -11,7 +11,7 @@ pragma solidity ^0.8.20;
 // idiom (an attacker-deployed mock injected via the setter) it reproduces as a return-value over-credit.
 //
 // MUST make stub_eligible() fire for the callee-expr `IOracle(oracle)`: the interface-typed call is out-of-scope
-// (only `interface IOracle`, no `contract IOracle` body), and BOTH the `setOracle(address)` setter and the
+// (an interface-only type with no in-scope implementer), and BOTH the `setOracle(address)` setter and the
 // mutable `address public oracle;` declaration are settable-target signals.
 
 interface IOracle {

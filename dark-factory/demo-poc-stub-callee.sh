@@ -39,6 +39,7 @@ SCOPED="$FIXSRC/ScopedVault.sol"
 IMMUT="$FIXSRC/ImmutableCalleeVault.sol"
 INSCOPE="$FIXSRC/InScopeCalleeVault.sol"
 INSCOPEIFACE="$FIXSRC/InScopeInterfaceCalleeVault.sol"
+MULTILINE="$FIXSRC/MultiLineImplCalleeVault.sol"
 POC_CONTROL="$FIXROOT/Poc_control.t.sol"
 POC_STUB="$FIXROOT/Poc_stub.t.sol"
 
@@ -48,7 +49,7 @@ ok()   { echo "  [PASS] $*"; }
 bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 skip() { echo "  [SKIP] $*"; }
 
-for f in "$PROVER" "$RUNNER" "$VHUNT" "$SCOPED" "$IMMUT" "$INSCOPE" "$INSCOPEIFACE" "$POC_CONTROL" "$POC_STUB"; do
+for f in "$PROVER" "$RUNNER" "$VHUNT" "$SCOPED" "$IMMUT" "$INSCOPE" "$INSCOPEIFACE" "$MULTILINE" "$POC_CONTROL" "$POC_STUB"; do
   [ -f "$f" ] || { note "required file not found: $f" >&2; exit 3; }
 done
 
@@ -115,14 +116,16 @@ else
   bad "stub_eligible() lost an AND / fail-closed guard:$GATE_MISS"
 fi
 
-# #2175 review BUG 2: out-of-scope must resolve interface->implementation, not grep `contract <InterfaceName>`.
+# #2175 review BUG 2 + #2176 review: out-of-scope must resolve interface->implementation, AND the implementer
+# check must be FORMATTING-ROBUST (grep -z whole-file record + `is[^{]*` header span) so a MULTI-LINE inheritance
+# list does not hide the base. A line-oriented grep would miss `contract Foo is\n  Ownable,\n  IX\n{`.
 OOS_BODY="$WORK/callee-out-of-scope.txt"
 awk '/^fn callee_out_of_scope\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$OOS_BODY"
-if grep -Fq 'contract[[:space:]]+" + typeName + "[ {(]' "$OOS_BODY" \
-   && grep -Fq 'is[[:space:]][^{]*" + typeName + "([^A-Za-z0-9_]|$)' "$OOS_BODY"; then
-  ok "callee_out_of_scope() treats a callee as in-scope if a concrete contract of the cast type OR an interface implementer (contract Name is ...Iface...) exists (only out-of-scope when NEITHER)"
+if grep -Fq 'is[^{]*[^A-Za-z0-9_]" + typeName + "([^A-Za-z0-9_]|$)' "$OOS_BODY" \
+   && [ "$(grep -c 'grep -rlzE ' "$OOS_BODY")" -eq 2 ]; then
+  ok "callee_out_of_scope() uses grep -z (whole-file record) + an is[^{]* header span, so a multi-line inheritance list still resolves the interface implementer (in-scope => no stub)"
 else
-  bad "callee_out_of_scope() does not resolve interface->implementation — an in-scope `contract Impl is IX` would be wrongly stubbed (BUG 2 regression)"
+  bad "callee_out_of_scope() is not formatting-robust (line-oriented grep) — a multi-line `contract Impl is ... IX` would be wrongly stubbed (#2176 regression)"
 fi
 
 note "3) stub_directive() returns \"\" when ineligible (byte-identical splice for the ordinary / immutable / in-scope paths) ..."
@@ -267,13 +270,22 @@ if grep -q '^contract PriceFeed {$' "$INSCOPE" \
 else
   bad "InScopeCalleeVault.sol no longer isolates the in-scope concrete-callee case"
 fi
-# BUG-2 repro: settable callee cast to an INTERFACE with a differently-named in-scope implementer.
+# BUG-2 repro (single-line): settable callee cast to an INTERFACE with a differently-named in-scope implementer.
 if grep -q '^contract ChainlinkPriceFeed is IPriceFeed {$' "$INSCOPEIFACE" \
    && grep -q 'function setFeed(address newFeed) external' "$INSCOPEIFACE" \
    && grep -q 'IPriceFeed(feed).price();' "$INSCOPEIFACE"; then
-  ok "InScopeInterfaceCalleeVault.sol: settable callee cast to IPriceFeed with an in-scope `contract ChainlinkPriceFeed is IPriceFeed` impl (BUG-2 scope repro)"
+  ok "InScopeInterfaceCalleeVault.sol: settable callee cast to IPriceFeed with a single-line in-scope implementer (BUG-2 scope repro)"
 else
   bad "InScopeInterfaceCalleeVault.sol no longer mirrors the BUG-2 repro (interface cast + differently-named in-scope impl)"
+fi
+# #2176 repro (MULTI-LINE inheritance): the base IPriceFeed sits on a different line than `contract <Name> is`.
+if grep -q '^contract ChainlinkPriceFeed is$' "$MULTILINE" \
+   && grep -q '^    IPriceFeed$' "$MULTILINE" \
+   && grep -q 'function setFeed(address newFeed) external' "$MULTILINE" \
+   && grep -q 'IPriceFeed(feed).price();' "$MULTILINE"; then
+  ok "MultiLineImplCalleeVault.sol: settable IPriceFeed callee with a MULTI-LINE inheritance impl (base on its own line) (#2176 repro)"
+else
+  bad "MultiLineImplCalleeVault.sol no longer mirrors the #2176 multi-line-inheritance repro"
 fi
 if grep -q '^contract MaliciousOracle' "$POC_STUB" && ! grep -q '^contract ScopedVault' "$POC_STUB" \
    && grep -q 'import {ScopedVault} from "../src/ScopedVault.sol";' "$POC_STUB"; then
@@ -332,6 +344,7 @@ else
     R_IMMUT="$(_stage immut "$IMMUT")"
     R_INSCOPE="$(_stage inscope "$INSCOPE")"
     R_IFACE="$(_stage iface "$INSCOPEIFACE")"
+    R_ML="$(_stage ml "$MULTILINE")"
     _elig() {
       ( cd "$SB" && FIXTURE="$1" REPODIR="$2" CEXPR="$3" agentis go probe.ag --enable-exec 2>&1 | grep '^ELIG=' | tail -1 )  # no-pii: the probe never calls prompt() — it reads a checked-in Solidity fixture and prints one eligibility bit
     }
@@ -339,6 +352,7 @@ else
     E_IMMUT="$(_elig "$R_IMMUT/src/ImmutableCalleeVault.sol" "$R_IMMUT" 'IOracle(oracle)')"
     E_INSCOPE="$(_elig "$R_INSCOPE/src/InScopeCalleeVault.sol" "$R_INSCOPE" 'PriceFeed(feed)')"
     E_IFACE="$(_elig "$R_IFACE/src/InScopeInterfaceCalleeVault.sol" "$R_IFACE" 'IPriceFeed(feed)')"
+    E_ML="$(_elig "$R_ML/src/MultiLineImplCalleeVault.sol" "$R_ML" 'IPriceFeed(feed)')"
     E_EMPTY="$(_elig "$R_SCOPED/src/ScopedVault.sol" "$R_SCOPED" '')"
     [ "$E_SCOPED" = "ELIG=1" ] && ok "out-of-scope + settable callee -> stub_eligible = 1 (a hostile stub is synthesized)" \
       || bad "out-of-scope + settable callee should be eligible (got '$E_SCOPED')"
@@ -346,8 +360,10 @@ else
       || bad "immutable callee with an unrelated setter must NOT be eligible (got '$E_IMMUT') — file-level settability regression"
     [ "$E_INSCOPE" = "ELIG=0" ] && ok "in-scope concrete callee (PriceFeed) -> stub_eligible = 0 (NO stub fabricated)" \
       || bad "in-scope concrete callee must NOT be eligible (got '$E_INSCOPE')"
-    [ "$E_IFACE" = "ELIG=0" ] && ok "BUG-2 repro: interface-cast callee with a differently-named in-scope impl (ChainlinkPriceFeed is IPriceFeed) -> stub_eligible = 0 (NO stub fabricated)" \
+    [ "$E_IFACE" = "ELIG=0" ] && ok "BUG-2 repro: interface-cast callee with a single-line in-scope impl -> stub_eligible = 0 (NO stub fabricated)" \
       || bad "interface-cast callee with an in-scope implementer must NOT be eligible (got '$E_IFACE') — interface-blind scope regression"
+    [ "$E_ML" = "ELIG=0" ] && ok "#2176 repro: interface-cast callee with a MULTI-LINE-inheritance in-scope impl -> stub_eligible = 0 (NO stub fabricated)" \
+      || bad "multi-line-inheritance in-scope implementer must NOT be eligible (got '$E_ML') — formatting-blind scope regression"
     [ "$E_EMPTY" = "ELIG=0" ] && ok "empty callee-expr (ordinary run-poc.sh path) -> stub_eligible = 0 (inert, byte-identical)" \
       || bad "empty callee-expr must NOT be eligible (got '$E_EMPTY')"
   fi

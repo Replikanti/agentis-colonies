@@ -288,16 +288,28 @@ fn callee_addr_settable(calleeExpr: string, code: string) -> bool {
 // OUT-OF-SCOPE = NO in-scope contract IMPLEMENTS the cast type, so the callee's real code cannot be driven. A
 // callee cast to `IX` is IN-scope (do NOT stub) if any in-scope file declares either a `contract <typeName>` body
 // (a cast straight to a concrete contract) OR a `contract <Name> is ... <typeName> ...` implementer (the common
-// interface-cast case, e.g. `ChainlinkOracle is IOracle` — the #2175-review blind spot a `contract IOracle` grep
-// missed). Only when NEITHER exists is it out-of-scope. FAIL-CLOSED: an empty type => in-scope => no stub (but
-// stub_eligible rejects an empty type before calling this). typeName is `[A-Za-z0-9_]`-only, shell_escaped.
+// interface-cast case, e.g. `ChainlinkOracle is IOracle`). Only when NEITHER exists is it out-of-scope.
+//
+// #2176 review: the implementer check MUST be FORMATTING-ROBUST. A real target often spreads the inheritance list
+// across MULTIPLE lines (`contract Foo is\n    Ownable,\n    IX\n{`), so a line-oriented grep for
+// `contract <Name> is ...<IX>` misses the base and fabricates a stub against an in-scope callee. Both greps run
+// with `grep -z` (the whole file is ONE record, so `[^{]*` and `[[:space:]]` cross newlines): the header from
+// `contract <Name>` up to the opening `{` is treated as one logical unit, and IX is matched as a base anywhere in
+// that header's `is ...` clause — handling multi-line bases, multiple bases, comments and extra whitespace.
+// FAIL-CLOSED: an empty type => in-scope => no stub (stub_eligible rejects an empty type before calling this); a
+// false "in-scope" (missed stub) is the SAFE direction, a false "out-of-scope" (fabricated stub) is the dangerous
+// one. typeName is `[A-Za-z0-9_]`-only, shell_escaped.
 fn callee_out_of_scope(typeName: string, repo: string) -> bool {
     if len(typeName) == 0 { return false; }
+    // A concrete `contract <typeName>` body (cast straight to a concrete contract). `-z` so the token boundary
+    // after the name may be a newline (`contract Foo\n{`), not only ` {(`.
     // colony-lint: safe-exec-concat
-    let concrete = exec sh "grep -rlE " + shell_escape("contract[[:space:]]+" + typeName + "[ {(]") + " " + shell_escape(repo) + "/src " + shell_escape(repo) + "/contracts 2>/dev/null | head -n 1 || true";
+    let concrete = exec sh "grep -rlzE " + shell_escape("contract[[:space:]]+" + typeName + "([^A-Za-z0-9_]|$)") + " " + shell_escape(repo) + "/src " + shell_escape(repo) + "/contracts 2>/dev/null | head -n 1 || true";
     if len(concrete) > 0 { return false; }
+    // An implementer `contract <Name> is <...bases incl. typeName...> {`. `[^{]*` (under `-z`) spans the whole
+    // header up to the opening brace, so a base on any line of a multi-line inheritance list is found.
     // colony-lint: safe-exec-concat
-    let impl = exec sh "grep -rlE " + shell_escape("contract[[:space:]]+[A-Za-z0-9_]+[[:space:]]+is[[:space:]][^{]*" + typeName + "([^A-Za-z0-9_]|$)") + " " + shell_escape(repo) + "/src " + shell_escape(repo) + "/contracts 2>/dev/null | head -n 1 || true";
+    let impl = exec sh "grep -rlzE " + shell_escape("contract[[:space:]]+[A-Za-z0-9_]+[[:space:]]+is[^{]*[^A-Za-z0-9_]" + typeName + "([^A-Za-z0-9_]|$)") + " " + shell_escape(repo) + "/src " + shell_escape(repo) + "/contracts 2>/dev/null | head -n 1 || true";
     if len(impl) > 0 { return false; }
     return true;
 }
