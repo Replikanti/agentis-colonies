@@ -1,0 +1,24 @@
+[
+ {
+  "result": {
+   "data": {
+    "competitionDetails": {
+     "id": "privcompid",
+     "name": "Sample Vault Audit",
+     "urlSlug": "2026-03-priv-vault",
+     "company": "Example Org",
+     "githubUrl": "https://github.com/example-org/priv-vault",
+     "startDate": "2026-03-01T00:00:00.000Z",
+     "endDate": "2026-03-15T16:00:00.000Z",
+     "finalised": true,
+     "privateSubmissionsToggle": true
+    },
+    "findings": [],
+    "highs": [],
+    "mediums": [],
+    "lows": [],
+    "gas": []
+   }
+  }
+ }
+]

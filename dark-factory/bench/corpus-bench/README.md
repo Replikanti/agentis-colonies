@@ -679,3 +679,52 @@ Append a row to `corpus.tsv` (`id  code_repo  judging_repo  scope_hint`) for any
 whose judging repo is public. `extract-gt.sh` only needs the judging repo's `README.md` to follow the
 `# Issue <H|M>-<N>: <title>` / `## Found by` shape used above — verify that shape holds (`grep -c '^# Issue
 [HM]-' README.md` should equal the contest's published finding count) before trusting the extracted count.
+
+## CodeHawks GT extraction (#2189, unblocks #2172)
+
+The corpus GT source above is Sherlock-only (`extract-gt.sh` parses a public `-judging` repo README). Public
+Sherlock judging repos went dry for the post-cutoff, rare-class targets #2172 needs, so a second, non-Sherlock
+GT source was added: **CodeHawks**. Its findings/judging data is served by a keyless tRPC layer (no `-judging`
+repo, no auth), so it needs a different two-script flow than the Sherlock path — and a **separate manifest** so
+the Sherlock `corpus.tsv` and its three positional readers (`fetch-corpus.sh`, `extract-gt.sh`,
+`run-corpus-bench.sh`) are never touched. Wiring the CodeHawks manifest into the bench is #2172's job, not this
+one's.
+
+Two scripts (siblings of `../watch-competitions.sh` and `extract-gt.sh`):
+
+1. **`list-codehawks-concluded.sh --cutoff-date <YYYY-MM-DD>`** — discovery. Parses the same keyless SvelteKit
+   `competitions.getCompetitions` embed the freshness watcher parses, but keeps `finalised == true &&
+   inviteOnly == false && privateSubmissionsToggle == false` contests whose `endDate` is STRICTLY AFTER
+   `--cutoff-date`. The cutoff is a **required flag with no default** — a missing cutoff is an error, never a
+   silent date — so a caller can never accidentally admit a possibly-model-seen target into the held-out
+   corpus. Recommended value: **`2026-02-01`** (the month strictly after the hunter model's Jan-2026 knowledge
+   cutoff; raise it as the cutoff advances, never lower it). Emits `id  urlSlug  name  githubUrl  endDate`,
+   sorted by `endDate`. The `id` chains directly into the extractor. Private-submission contests (findings tRPC
+   returns empty arrays) are dropped as a clean machine-detectable case, not an error.
+2. **`extract-gt-codehawks.sh <competition-id> <github-url> <out-truth.tsv> <out-corpus.tsv>`** — extraction.
+   With `--from <json>` (offline) or a live keyless GET of `findings.getFindingOverviewsForCompetition`, it
+   **stream-decodes** the findings array element-by-element (`json.JSONDecoder.raw_decode` per cluster) so a
+   70MB+ payload never materializes at once. For each accepted **High/Medium** finding it emits one class-tagged
+   `truth.tsv` row (`sev_id  found-by  class-csv  label` — the exact shape `refute-corpus-coverage.sh`
+   consumes) and appends one row to the CodeHawks-only **`codehawks-corpus.tsv`** manifest.
+
+**Rarity / `found-by`.** The payload nests, per finding cluster, an `issues[]` array of every raw submission —
+and a live inspection (#2189) showed the SAME reporter can appear more than once in one cluster (20 of 38
+clusters on the inspected contest had raw `len(issues)` > distinct reporters). So raw `len(issues)` over-counts
+and is NOT the rarity signal. The extractor counts **distinct reporters** (`issues[].User.id`, falling back to
+`.username`, then `.Team`) per cluster — the analog of Sherlock's "Found by" watson list. Fewer distinct
+reporters = rarer.
+
+**Class tagging (conservative, auditable, never guessed).** `codehawks-class-keywords.tsv` maps each taxonomy
+class (`../../auditor/bug-taxonomy.md`) to a narrow keyword regex. A finding's `title + description + content`
+is matched against every class; it is auto-tagged **only when EXACTLY ONE class matches**. On 0 or 2+ matches
+the `class-csv` is left BLANK (a safe no-op: `refute-corpus-coverage.sh` yields no class token for an empty
+field, so an untagged row never enters the rare-GT class set until a human fills it in) and the finding is
+logged to `--needs-tagging` for human classification. A wrong class poisons GT, so ambiguity is always deferred
+to a human. The keyword table is a first cut from the taxonomy's own prose, checked in separately from the
+parser so it can be hand-audited and extended without a code review; it is EXPECTED to leave many findings
+blank. The RARE attacker-controlled-callee class is C8 (reentrancy).
+
+**Network gating (HARD).** The live fetch is opt-in / offline-by-default. `colony-lint.sh`/CI invoke ONLY
+`--self-test`, which drives the checked-in redacted fixtures under `fixtures/codehawks/` (`--codehawks-from` /
+`--from`, zero network). No code path reachable from `--self-test` hits the endpoint.

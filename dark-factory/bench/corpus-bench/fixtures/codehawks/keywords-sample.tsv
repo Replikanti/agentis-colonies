@@ -1,0 +1,4 @@
+# Synthetic keyword table for extract-gt-codehawks.sh --self-test ONLY (two classes, deterministic).
+# The real table is ../../codehawks-class-keywords.tsv. Columns (TAB): class_id  keyword-regex
+C2	\boracle\b
+C8	reentran

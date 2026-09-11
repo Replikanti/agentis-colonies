@@ -1,0 +1,35 @@
+# codehawks-class-keywords.tsv — first-cut, CONSERVATIVE keyword table for auto-tagging a CodeHawks finding
+# with a bug-taxonomy class (../../auditor/bug-taxonomy.md). Columns (TAB-separated): class_id  keyword-regex
+#   class_id       a taxonomy class id (C1..C23).
+#   keyword-regex  a case-insensitive Python regex; a finding "matches" this class when the regex is found in
+#                  the finding's (title + description + content) text.
+# ASSIGNMENT RULE (extract-gt-codehawks.sh): a finding is auto-tagged with a class ONLY when EXACTLY ONE class
+# regex matches. On ZERO or 2+ matches the class-csv column is left BLANK and the finding is appended to the
+# --needs-tagging output for a human to classify — a wrong class poisons ground truth, so ambiguity never
+# guesses. The regexes are derived from each class's own `hits`/`hunt`/`breaks` prose in bug-taxonomy.md; they
+# are deliberately narrow and are EXPECTED to leave many findings blank. Extend/tighten this table (a human
+# edit, reviewable without touching the parser) as coverage is hand-audited — see README.md "CodeHawks GT
+# extraction". Recognized RARE class: C8 (reentrancy / attacker-controlled-callee).
+C1	erc[- ]?4626|converttoshares|converttoassets|share price|totalassets
+C2	\boracle\b|chainlink|\bpyth\b|stale price|price feed
+C3	layerzero|\boft\b|cross-chain|omni-?chain|lzcompose
+C4	withdrawal queue|nft claim|claimable owed
+C5	access control|onlyowner|missing modifier|privilege escalation|unauthori[sz]ed access
+C6	rounding direction|rounds? down|rounds? up|round-trip|precision loss
+C7	\breplay\b|ecrecover|\bnonce\b|signature (?:reuse|malleab)
+C8	reentran|nonreentrant|\bcei\b|external call before
+C9	decimal (?:mismatch|handling)|scaling factor|denominat
+C10	liquidat|\bcdp\b|over-?seize|unbacked debt|collateral conserv
+C11	first[- ]?depositor|inflation attack|donation attack|virtual offset|dead shares|minimum_?liquidity
+C12	\bslippage\b|\bmev\b|sandwich|front-?run
+C13	\bpause\b|\bfreeze\b|blacklist|sanction|compliance bypass
+C14	fork-?delta
+C15	integration seam|composab|adapter mis-?account
+C16	stuck state|permanent(?:ly)? (?:lock|stuck|limbo)|liveness
+C17	slot overwrite|index overwrite|silently clobber|key collision
+C18	auction grief|round settlement|counter manipulation
+C19	\boverflow\b|unsafe (?:down)?cast|\buint(?:8|16|32|64|128)\b downcast|revert-?dos
+C20	\btick\b|sqrtprice|concentrated liquidity|slot0
+C21	context flag|transient-?state valuation|branch selection valuation
+C22	unit equivalence|cross-protocol asset|two different (?:external )?assets
+C23	hard-?coded (?:external|integration|parameter|constant)|magic constant
