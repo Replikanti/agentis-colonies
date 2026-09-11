@@ -79,7 +79,9 @@ for anchor in \
   'solvency' 'share-price-monotonicity' 'no-unauthorized-mint' \
   'reentrancy-state-consistency' 'return-value-trust' 'gas-liveness' \
   'HAZARD_INVARIANT' '--max-vectors' 'source=vector-hunt' '"source": "vector-hunt"' \
-  '--poc-runner' '--resume' 'VECTOR-HUNT|' 'vector_hash'
+  '--poc-runner' '--resume' 'VECTOR-HUNT|' 'vector_hash' \
+  '--cli-timeout-ms' '--cli-timeout-max-ms' '--timeout-retries' 'DF_POC_CLI_TIMEOUT_MAX_MS' \
+  'DF_POC_TIMEOUT_RETRIES' 'TIMEOUT escalation'
 do
   grep -F -q -e "$anchor" "$ENGINE" || MISS="$MISS $anchor"
 done
@@ -201,6 +203,94 @@ if [ "$N_CAP" -eq 2 ]; then
   ok "--max-vectors 2 bounded the enumerated set to exactly 2 vectors (the explicit cap)"
 else
   bad "--max-vectors 2 emitted $N_CAP vectors (expected 2)"
+fi
+
+# ==========================================================================================================
+# PART 2.5 — #2178 TIMEOUT ESCALATION (pure shell): a terminal LlmTimeout (exit 75 / `[llm.timeout]`) becomes a
+# distinct TIMEOUT verdict that the engine escalates by RAISING llm.cli_timeout_ms toward a hard cap — bounded,
+# monotone, never an unbounded loop, and merging nothing. Driven by the offline stub's `__timeout__` branch.
+# ==========================================================================================================
+# A dedicated single-CANDIDATE callee-vectors file whose templated hypothesis carries the `__timeout__` token the
+# stub keys on — kept OUT of the shared callee-vectors.txt so the checked-in goldens stay byte-identical.
+TO_CV="$WORK/timeout-callee-vectors.txt"
+printf '%s\n' 'CALLEE-VECTOR|escalateProbe|__timeout__oracle()|reentrant|CANDIDATE' > "$TO_CV"
+
+run_timeout_engine() {
+  # run_timeout_engine <out-dir> <timeout-retries> [extra-args...]
+  rte_out="$1"; rte_retries="$2"; shift 2
+  "$ENGINE" \
+    --repo "$WORK/target" --target "Vault.sol:Vault" --class "C-erc4626" \
+    --callee-vectors "$TO_CV" --poc-runner "$STUB" \
+    --max-vectors 6 --out "$rte_out" --backend mock --agentis /bin/true \
+    --cli-timeout-ms 600000 --cli-timeout-max-ms 1200000 --timeout-retries "$rte_retries" "$@"
+}
+
+note "9b) a TIMEOUT vector escalates exactly DF_POC_TIMEOUT_RETRIES times with a monotonically-RAISED ceiling, then records a terminal TIMEOUT and merges nothing ..."
+TOUT1="$WORK/tout1"
+run_timeout_engine "$TOUT1" 1 > "$WORK/tout1.out" 2> "$WORK/tout1.err"
+TO_VH="$(grep '^VECTOR|' "$WORK/tout1.out" | head -1 | cut -d'|' -f2)"
+TO_SEEN="$TOUT1/vector-hunt/$TO_VH/cli-timeout.seen"
+TO_MARK="$TOUT1/vector-hunt/$TO_VH.verdict"
+if [ -n "$TO_VH" ] && [ -f "$TO_SEEN" ]; then
+  TO_N="$(grep -c . "$TO_SEEN")"
+  TO_FIRST="$(sed -n '1p' "$TO_SEEN")"
+  TO_LAST="$(sed -n "${TO_N}p" "$TO_SEEN")"
+  # timeout-retries 1 => 1 initial run + 1 escalation = exactly 2 invocations; ceiling raised 600000 -> 1200000.
+  if [ "$TO_N" -eq 2 ] && [ "$TO_FIRST" = "600000" ] && [ "$TO_LAST" = "1200000" ] && [ "$TO_LAST" -gt "$TO_FIRST" ]; then
+    ok "the TIMEOUT vector ran twice (1 initial + 1 escalation) with a monotonically-raised --cli-timeout-ms 600000 -> 1200000"
+  else
+    bad "TIMEOUT escalation trail wrong: $TO_N invocation(s), first=$TO_FIRST last=$TO_LAST (expected 2, 600000 -> 1200000)"
+  fi
+else
+  bad "no cli-timeout.seen trail for the TIMEOUT vector (hash='$TO_VH') — the escalation did not thread --cli-timeout-ms"
+fi
+if [ -f "$TO_MARK" ] && [ "$(cat "$TO_MARK")" = "TIMEOUT" ]; then
+  ok "the vector's terminal verdict marker is TIMEOUT (stamped for --resume, distinct from HARNESS_ERROR)"
+else
+  bad "the TIMEOUT vector's verdict marker is not TIMEOUT (got '$([ -f "$TO_MARK" ] && cat "$TO_MARK")')"
+fi
+# Merges nothing: no verified entry, totals.verified == 0 (a TIMEOUT is NOT a reproduced finding).
+if python3 - "$TOUT1/verified_findings.json" <<'PY'
+import sys, json, os
+p = sys.argv[1]
+if not os.path.exists(p):
+    sys.exit(0)   # never created == nothing merged
+d = json.load(open(p, encoding="utf-8"))
+assert not d.get("verified"), "TIMEOUT merged a verified[] entry"
+assert int(d.get("totals", {}).get("verified", 0)) == 0, "totals.verified != 0 after a TIMEOUT"
+PY
+then ok "a terminal TIMEOUT merged nothing into verified_findings.json (not counted as a verified finding)"
+else bad "a TIMEOUT vector wrongly merged into verified_findings.json"
+fi
+
+note "9c) RUNAWAY guard: even with a HIGH --timeout-retries, the monotone ceiling cap bounds the escalation (never an unbounded loop) ..."
+TOUT2="$WORK/tout2"
+run_timeout_engine "$TOUT2" 5 > "$WORK/tout2.out" 2> "$WORK/tout2.err"
+TO2_VH="$(grep '^VECTOR|' "$WORK/tout2.out" | head -1 | cut -d'|' -f2)"
+TO2_SEEN="$TOUT2/vector-hunt/$TO2_VH/cli-timeout.seen"
+if [ -f "$TO2_SEEN" ]; then
+  TO2_N="$(grep -c . "$TO2_SEEN")"
+  TO2_LAST="$(sed -n "${TO2_N}p" "$TO2_SEEN")"
+  # --timeout-retries 5 but cap 1200000: 600000 -> 1200000 hits the cap after ONE raise, so the loop stops at 2
+  # invocations regardless of the retry count, and never exceeds the cap.
+  if [ "$TO2_N" -eq 2 ] && [ "$TO2_LAST" = "1200000" ]; then
+    ok "the ceiling cap bounded the escalation to 2 invocations even with --timeout-retries 5 (RUNAWAY guard: monotone ceiling stops the loop, never unbounded)"
+  else
+    bad "RUNAWAY guard failed: $TO2_N invocation(s), last=$TO2_LAST (a high retry count blew through the cap or looped)"
+  fi
+else
+  bad "no cli-timeout.seen for the RUNAWAY-guard vector (hash='$TO2_VH')"
+fi
+
+note "9d) --timeout-retries 0 disables escalation: exactly ONE invocation, terminal TIMEOUT, no raise ..."
+TOUT3="$WORK/tout3"
+run_timeout_engine "$TOUT3" 0 > "$WORK/tout3.out" 2> "$WORK/tout3.err"
+TO3_VH="$(grep '^VECTOR|' "$WORK/tout3.out" | head -1 | cut -d'|' -f2)"
+TO3_SEEN="$TOUT3/vector-hunt/$TO3_VH/cli-timeout.seen"
+if [ -f "$TO3_SEEN" ] && [ "$(grep -c . "$TO3_SEEN")" -eq 1 ] && [ "$(cat "$TO3_SEEN")" = "600000" ]; then
+  ok "--timeout-retries 0 ran the vector exactly once at the floor ceiling with no escalation (classify-only)"
+else
+  bad "--timeout-retries 0 did not run exactly once at 600000 (got '$([ -f "$TO3_SEEN" ] && tr '\n' ',' < "$TO3_SEEN")')"
 fi
 
 # ==========================================================================================================

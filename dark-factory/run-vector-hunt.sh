@@ -48,6 +48,15 @@
 #   --agentis <bin>         agentis binary threaded to the PoC runner (default: `agentis` on PATH).
 #   --resume                Skip any vector whose <hash>.verdict marker already exists (idempotent re-run).
 #   --retries N             Bounded retries for a transient PoC verdict (HARNESS_ERROR/TRANSIENT_ERROR); default 1.
+#   --cli-timeout-ms N      Starting LLM CLI timeout ceiling (ms) threaded to the PoC runner (default: env
+#                           DF_POC_CLI_TIMEOUT_MS or 600000, the PoC-write floor).
+#   --cli-timeout-max-ms N  Hard cap the TIMEOUT escalation raises the ceiling toward (default: env
+#                           DF_POC_CLI_TIMEOUT_MAX_MS or 1200000).
+#   --timeout-retries N     Bounded TIMEOUT-escalation count on a terminal LlmTimeout (agentis-core#996: exit 75 /
+#                           `[llm.timeout]`); default 1 (env DF_POC_TIMEOUT_RETRIES). Each escalation raises the
+#                           ceiling toward the cap and re-runs — SEPARATE from --retries; a size-timeout is NEVER
+#                           blindly re-run, and a RUNAWAY that blows through a raised ceiling stops after this many
+#                           raises with a terminal TIMEOUT (never an unbounded loop).
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -63,6 +72,11 @@ AGENTIS="agentis"
 REPO="" ; TARGET="" ; CLASS="" ; CALLEE_VECTORS="" ; MAX_VECTORS=6
 BACKEND="flat-cyborg" ; MODEL="" ; OUT="$PWD/vector-hunt-out" ; VERIFIED_JSON="" ; POC_RUNNER="$HERE/run-poc.sh"
 RESUME=0 ; RETRIES=1
+# #2178: the TIMEOUT-escalation knobs. Starting ceiling (the floor), the hard cap the escalation raises toward,
+# and the bounded escalation count — all env-overridable per dark-factory cell (flags win over env).
+CLI_TIMEOUT_MS="${DF_POC_CLI_TIMEOUT_MS:-600000}"
+CLI_TIMEOUT_MAX_MS="${DF_POC_CLI_TIMEOUT_MAX_MS:-1200000}"
+TIMEOUT_RETRIES="${DF_POC_TIMEOUT_RETRIES:-1}"
 
 need() { [ "$1" -ge 2 ] || { echo "run-vector-hunt.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -80,6 +94,9 @@ while [ $# -gt 0 ]; do
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --resume) RESUME=1; shift ;;
     --retries) need "$#"; RETRIES="$2"; shift 2 ;;
+    --cli-timeout-ms) need "$#"; CLI_TIMEOUT_MS="$2"; shift 2 ;;
+    --cli-timeout-max-ms) need "$#"; CLI_TIMEOUT_MAX_MS="$2"; shift 2 ;;
+    --timeout-retries) need "$#"; TIMEOUT_RETRIES="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-vector-hunt.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -90,6 +107,11 @@ done
 case "$MAX_VECTORS" in ''|*[!0-9]*) echo "run-vector-hunt.sh: --max-vectors must be a positive integer" >&2; exit 2 ;; esac
 [ "$MAX_VECTORS" -ge 1 ] || { echo "run-vector-hunt.sh: --max-vectors must be >= 1" >&2; exit 2; }
 case "$RETRIES" in ''|*[!0-9]*) echo "run-vector-hunt.sh: --retries must be a whole number" >&2; exit 2 ;; esac
+case "$CLI_TIMEOUT_MS" in ''|*[!0-9]*) echo "run-vector-hunt.sh: --cli-timeout-ms / DF_POC_CLI_TIMEOUT_MS must be a positive integer of milliseconds" >&2; exit 2 ;; esac
+[ "$CLI_TIMEOUT_MS" -ge 1 ] || { echo "run-vector-hunt.sh: --cli-timeout-ms / DF_POC_CLI_TIMEOUT_MS must be >= 1" >&2; exit 2; }
+case "$CLI_TIMEOUT_MAX_MS" in ''|*[!0-9]*) echo "run-vector-hunt.sh: --cli-timeout-max-ms / DF_POC_CLI_TIMEOUT_MAX_MS must be a positive integer of milliseconds" >&2; exit 2 ;; esac
+[ "$CLI_TIMEOUT_MAX_MS" -ge "$CLI_TIMEOUT_MS" ] || { echo "run-vector-hunt.sh: --cli-timeout-max-ms ($CLI_TIMEOUT_MAX_MS) must be >= --cli-timeout-ms ($CLI_TIMEOUT_MS)" >&2; exit 2; }
+case "$TIMEOUT_RETRIES" in ''|*[!0-9]*) echo "run-vector-hunt.sh: --timeout-retries / DF_POC_TIMEOUT_RETRIES must be a whole number" >&2; exit 2 ;; esac
 [ -x "$POC_RUNNER" ] || { echo "run-vector-hunt.sh: --poc-runner not found/executable: $POC_RUNNER" >&2; exit 3; }
 command -v python3 >/dev/null 2>&1 || { echo "run-vector-hunt.sh: python3 is required (enumeration)" >&2; exit 3; }
 if [ -n "$CALLEE_VECTORS" ]; then
@@ -199,21 +221,23 @@ echo "run-vector-hunt.sh: enumerated $N_VECTORS vector(s) for $TARGET (class '${
 # unverified. Each vector's verdict is stamped to <hash>.verdict so --resume skips an already-verified vector.
 # ----------------------------------------------------------------------------------------------------------
 run_poc_once() {
-  # run_poc_once <hash> <hypothesis> <callee-expr> <hazard> -> echoes the parsed verdict (FINDING|CLEAN|HARNESS_ERROR).
-  rp_hash="$1"; rp_hyp="$2"; rp_callee="$3"; rp_haz="$4"
+  # run_poc_once <hash> <hypothesis> <callee-expr> <hazard> <cli-timeout-ms> -> echoes the parsed verdict
+  # (FINDING|CLEAN|TIMEOUT|HARNESS_ERROR|TRANSIENT_ERROR).
+  rp_hash="$1"; rp_hyp="$2"; rp_callee="$3"; rp_haz="$4"; rp_timeout="$5"
   rp_dir="$VHDIR/$rp_hash"; mkdir -p "$rp_dir"
   rp_log="$rp_dir/poc.log"
   # #2171: thread the CALLEE-VECTOR callee-expr + hazard so run-poc.sh -> poc-writer.ag can model an out-of-scope
   # SETTABLE callee as an attacker-deployed hostile stub instead of refuting the vector for being unprovable. Both
   # are "" for an invariant-only fallback vector -> the stub path stays inert (byte-identical to pre-#2171).
+  # #2178: thread --cli-timeout-ms so the TIMEOUT escalation below can RAISE the runner's llm.cli_timeout_ms.
   # Thread --model only when set, so the runner's own default is preserved (byte-identical to no flag).
   if [ -n "$MODEL" ]; then
     "$POC_RUNNER" --repo "$REPO" --target "$TARGET" --class "$CLASS" --hypothesis "$rp_hyp" \
-      --callee-expr "$rp_callee" --callee-hazard "$rp_haz" \
+      --callee-expr "$rp_callee" --callee-hazard "$rp_haz" --cli-timeout-ms "$rp_timeout" \
       --backend "$BACKEND" --model "$MODEL" --out "$rp_dir" --agentis "$AGENTIS" >"$rp_log" 2>&1 || true
   else
     "$POC_RUNNER" --repo "$REPO" --target "$TARGET" --class "$CLASS" --hypothesis "$rp_hyp" \
-      --callee-expr "$rp_callee" --callee-hazard "$rp_haz" \
+      --callee-expr "$rp_callee" --callee-hazard "$rp_haz" --cli-timeout-ms "$rp_timeout" \
       --backend "$BACKEND" --out "$rp_dir" --agentis "$AGENTIS" >"$rp_log" 2>&1 || true
   fi
   rp_vline="$(grep 'POC|' "$rp_log" | grep -v 'POC-FILE|' | tail -1 || true)"
@@ -222,7 +246,7 @@ run_poc_once() {
   fi
   rp_verd="$(printf '%s' "$rp_vline" | sed 's/.*POC|//' | cut -d'|' -f2)"
   case "$rp_verd" in
-    FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR) echo "$rp_verd" ;;
+    FINDING|CLEAN|TIMEOUT|HARNESS_ERROR|TRANSIENT_ERROR) echo "$rp_verd" ;;
     *) echo "HARNESS_ERROR" ;;
   esac
 }
@@ -241,13 +265,31 @@ while IFS="$(printf '\t')" read -r VH VINV VFN VCALLEE VHAZ VHYP; do
   fi
 
   acquire_forge_slot
-  VERD="$(run_poc_once "$VH" "$VHYP" "$VCALLEE" "$VHAZ")"
-  # Bounded retry on a transient/build verdict (mirrors the #2045/#2048 TRANSIENT_ERROR discipline).
+  CUR_TIMEOUT="$CLI_TIMEOUT_MS"
+  VERD="$(run_poc_once "$VH" "$VHYP" "$VCALLEE" "$VHAZ" "$CUR_TIMEOUT")"
+  # #2178 TIMEOUT escalation — a SEPARATE, bounded counter, entirely distinct from the transient $RETRIES loop
+  # below (a TIMEOUT must NEVER be blindly re-run: a size-timeout will time out identically). The ONLY lever is
+  # RAISING the llm.cli_timeout_ms ceiling once toward the hard cap and re-running (AC2's "OR raise ceiling").
+  # RUNAWAY GUARD: bounded by DF_POC_TIMEOUT_RETRIES AND the monotone ceiling capped at DF_POC_CLI_TIMEOUT_MAX_MS —
+  # a genuine RUNAWAY that blows through a raised ceiling with zero output is stopped after these raises with a
+  # terminal TIMEOUT, never an unbounded loop. The loop also stops the moment the ceiling reaches the cap (a
+  # further raise would be a no-op).
+  TIMEOUT_ESC=0
+  while [ "$VERD" = "TIMEOUT" ] && [ "$TIMEOUT_ESC" -lt "$TIMEOUT_RETRIES" ] && [ "$CUR_TIMEOUT" -lt "$CLI_TIMEOUT_MAX_MS" ]; do
+    TIMEOUT_ESC=$((TIMEOUT_ESC + 1))
+    NEXT_TIMEOUT=$((CUR_TIMEOUT * 2))
+    [ "$NEXT_TIMEOUT" -gt "$CLI_TIMEOUT_MAX_MS" ] && NEXT_TIMEOUT="$CLI_TIMEOUT_MAX_MS"
+    echo "run-vector-hunt.sh: vector $VH TIMEOUT — raising llm.cli_timeout_ms ${CUR_TIMEOUT} -> ${NEXT_TIMEOUT}ms (escalation $TIMEOUT_ESC/$TIMEOUT_RETRIES, cap ${CLI_TIMEOUT_MAX_MS}ms)" >&2
+    CUR_TIMEOUT="$NEXT_TIMEOUT"
+    VERD="$(run_poc_once "$VH" "$VHYP" "$VCALLEE" "$VHAZ" "$CUR_TIMEOUT")"
+  done
+  # Bounded retry on a transient/build verdict (mirrors the #2045/#2048 TRANSIENT_ERROR discipline). A TIMEOUT
+  # NEVER enters this loop (handled by the escalation above) — a size-timeout must not be blindly re-run.
   ATTEMPT=0
   while { [ "$VERD" = "HARNESS_ERROR" ] || [ "$VERD" = "TRANSIENT_ERROR" ]; } && [ "$ATTEMPT" -lt "$RETRIES" ]; do
     ATTEMPT=$((ATTEMPT + 1))
     echo "run-vector-hunt.sh: vector $VH transient ($VERD) — retry $ATTEMPT/$RETRIES" >&2
-    VERD="$(run_poc_once "$VH" "$VHYP" "$VCALLEE" "$VHAZ")"
+    VERD="$(run_poc_once "$VH" "$VHYP" "$VCALLEE" "$VHAZ" "$CUR_TIMEOUT")"
   done
   release_forge_slot
 
