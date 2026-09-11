@@ -53,6 +53,16 @@ COMMENTBRACE="$FIXSRC/CommentBraceImplCalleeVault.sol"
 STRINGSLASH="$FIXSRC/StringSlashImplCalleeVault.sol"
 POC_CONTROL="$FIXROOT/Poc_control.t.sol"
 POC_STUB="$FIXROOT/Poc_stub.t.sol"
+# #2177: alias + bounded one-hop-inheritance resolution fixtures for scope_probe(). ALIASLIB/ONEHOPLIB/
+# TWOHOPLIB are deliberately OUTSIDE src/ (the lib/ companion the one-hop fallback's widened read is allowed to
+# see) and are staged alongside their arm's src/ file by _stage_with_lib, never copied into an isolated arm's
+# own src/.
+FIXLIB="$FIXROOT/lib"
+ALIASIMPORT="$FIXSRC/AliasImportCalleeVault.sol"
+ONEHOP="$FIXSRC/TransitiveOutOfScopeCalleeVault.sol"
+ONEHOPLIB="$FIXLIB/IOracleExtChain.sol"
+TWOHOP="$FIXSRC/TwoHopOutOfScopeCalleeVault.sol"
+TWOHOPLIB="$FIXLIB/IOracleExtChain2.sol"
 
 FAILS=0
 note() { echo "demo-poc-stub-callee.sh: $*"; }
@@ -60,7 +70,7 @@ ok()   { echo "  [PASS] $*"; }
 bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 skip() { echo "  [SKIP] $*"; }
 
-for f in "$PROVER" "$RUNNER" "$VHUNT" "$SCOPED" "$PERMISSIONLESS" "$ROLEGUARD" "$IMMUT" "$INSCOPE" "$INSCOPEIFACE" "$MULTILINE" "$TRANSITIVE" "$COMMENTBRACE" "$STRINGSLASH" "$POC_CONTROL" "$POC_STUB"; do
+for f in "$PROVER" "$RUNNER" "$VHUNT" "$SCOPED" "$PERMISSIONLESS" "$ROLEGUARD" "$IMMUT" "$INSCOPE" "$INSCOPEIFACE" "$MULTILINE" "$TRANSITIVE" "$COMMENTBRACE" "$STRINGSLASH" "$POC_CONTROL" "$POC_STUB" "$ALIASIMPORT" "$ONEHOP" "$ONEHOPLIB" "$TWOHOP" "$TWOHOPLIB"; do
   [ -f "$f" ] || { note "required file not found: $f" >&2; exit 3; }
 done
 
@@ -145,6 +155,35 @@ if [ -z "$PRIV_MISS" ]; then
   ok "the privilege vocabulary (onlyX / msg.sender== / hasRole / _checkOwner / _checkRole / _authorizeUpgrade / requiresAuth / isAuthorized) and the external|public reachability predicate are all present"
 else
   bad "window privilege/reachability vocabulary is missing:$PRIV_MISS"
+fi
+
+note "1b) scope_probe() (#2177): the alias-import and bounded one-hop-inheritance resolution fallbacks compose with the UNCHANGED direct carrier patterns ..."
+SP_BODY="$WORK/scope-probe.txt"
+awk '/^fn scope_probe\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$SP_BODY"
+# Regression pin: the two ORIGINAL carrier patterns are present UNCHANGED (now parameterized by $1 inside the
+# shared carrier() helper instead of typeName baked in directly — same regex text either way).
+if grep -Fq '(^|[^A-Za-z0-9_])contract[[:space:]]+$1([^A-Za-z0-9_]|$)' "$SP_BODY" \
+   && grep -Fq '(contract|interface)[[:space:]]+[A-Za-z0-9_]+[[:space:]]+is[^;]*[^A-Za-z0-9_]$1([^A-Za-z0-9_]|$)' "$SP_BODY"; then
+  ok "scope_probe() still carries the two ORIGINAL carrier patterns (contract <T> / (contract|interface) <Name> is ... <T>) byte-identical (regression pin)"
+else
+  bad "scope_probe() no longer carries the two original carrier patterns unchanged"
+fi
+# ALIAS fallback: the import-alias name is extracted from the in-scope SRC with two chained grep -oE passes
+# (no sed/awk), then re-tried through the SAME carrier() helper.
+if grep -Fq '\b$TYPE[[:space:]]+as[[:space:]]+[A-Za-z0-9_]+' "$SP_BODY" \
+   && grep -Fq 'for a in $ALIASES; do carrier' "$SP_BODY"; then
+  ok "scope_probe() extracts import-alias name(s) of typeName from the in-scope SRC and re-tries each through carrier()"
+else
+  bad "scope_probe() lost the import-alias extraction fallback"
+fi
+# ONE-HOP fallback: the widened whole-repo read is used ONLY to learn candidate extended-type name(s), which are
+# then re-tried through carrier() against the ORIGINAL in-scope-only SRC (never against WIDE).
+if grep -Fq 'WIDE=$(find ' "$SP_BODY" \
+   && grep -Fq 'CAND1=$(printf' "$SP_BODY" \
+   && grep -Fq 'for x in $CANDS; do carrier' "$SP_BODY"; then
+  ok "scope_probe() widens the read to the whole repo ONLY to learn one-hop extended-type candidate(s), then re-tries each through carrier() against the original in-scope-only SRC"
+else
+  bad "scope_probe() lost the bounded one-hop-inheritance fallback"
 fi
 
 note "2) stub_class() is the fail-closed classifier — exactly six tokens, AND-ordered (callee-expr -> type -> settable -> out-of-scope) ..."
@@ -408,6 +447,35 @@ if grep -q '^contract MaliciousOracle' "$POC_STUB" && ! grep -q '^contract Permi
 else
   bad "Poc_stub.t.sol no longer imports PermissionlessCalleeVault or its stub name shadows the target"
 fi
+# #2177 ALIAS repro: cast site IPriceFeed(feed), in-scope carrier declared against an import alias IX.
+if grep -q 'import {IPriceFeed as IX} from "./IExternalPriceFeed.sol";' "$ALIASIMPORT" \
+   && grep -q '^contract ChainlinkFeed is IX {$' "$ALIASIMPORT" \
+   && grep -q 'function setFeed(address newFeed) external' "$ALIASIMPORT" \
+   && grep -q 'IPriceFeed(feed).price();' "$ALIASIMPORT"; then
+  ok "AliasImportCalleeVault.sol: settable IPriceFeed callee carried only via an import-alias carrier (import {IPriceFeed as IX}, contract ChainlinkFeed is IX) (#2177 alias repro)"
+else
+  bad "AliasImportCalleeVault.sol no longer mirrors the import-alias repro"
+fi
+# #2177 ONE-HOP repro: cast site IOracle(oracle); the carrier IOracleExt is IOracle lives OUT of scope (lib/).
+if grep -q '^contract ChainImpl is IOracleExt {$' "$ONEHOP" \
+   && grep -q 'function setOracle(address newOracle) external' "$ONEHOP" \
+   && grep -q 'IOracle(oracle).price();' "$ONEHOP" \
+   && ! grep -q 'interface IOracle is' "$ONEHOP" \
+   && grep -q '^interface IOracleExt is IOracle {$' "$ONEHOPLIB"; then
+  ok "TransitiveOutOfScopeCalleeVault.sol + lib/IOracleExtChain.sol: settable IOracle callee carried only via a ONE-HOP out-of-scope extends chain (interface IOracleExt is IOracle in lib/, contract ChainImpl is IOracleExt in scope) (#2177 one-hop repro)"
+else
+  bad "TransitiveOutOfScopeCalleeVault.sol / lib/IOracleExtChain.sol no longer mirror the one-hop out-of-scope repro"
+fi
+# #2177 TWO-HOP bound-pin: same shape, but the chain to IOracle is TWO hops out of scope — must stay armed.
+if grep -q '^contract ChainImpl2 is IOracleExt2 {$' "$TWOHOP" \
+   && grep -q 'function setOracle(address newOracle) external' "$TWOHOP" \
+   && grep -q 'IOracle(oracle).price();' "$TWOHOP" \
+   && grep -q '^interface IOracleExt2Mid is IOracle {$' "$TWOHOPLIB" \
+   && grep -q '^interface IOracleExt2 is IOracleExt2Mid {$' "$TWOHOPLIB"; then
+  ok "TwoHopOutOfScopeCalleeVault.sol + lib/IOracleExtChain2.sol: the extends chain to IOracle is TWO hops out of scope (bound-pin repro; must stay armed)"
+else
+  bad "TwoHopOutOfScopeCalleeVault.sol / lib/IOracleExtChain2.sol no longer mirror the two-hop bound-pin repro"
+fi
 
 note "11) read-only: no network / no submission verb on the PoC / vector-hunt paths ..."
 NET_HIT=0
@@ -455,6 +523,9 @@ else
     } > "$SB/probe.ag"
     # Stage a one-file repo per arm so callee_out_of_scope greps only that arm's src/.
     _stage() { _a="$1"; _f="$2"; mkdir -p "$WORK/$_a/src"; cp "$_f" "$WORK/$_a/src/$(basename "$_f")"; printf '%s\n' "$WORK/$_a"; }
+    # #2177: like _stage, but ALSO copies an out-of-scope lib/ companion into $WORK/<arm>/lib/ — the primary
+    # (src/contracts-only) probe never sees it; only the one-hop fallback's WHOLE-repo widened find does.
+    _stage_with_lib() { _a="$1"; _f="$2"; _l="$3"; mkdir -p "$WORK/$_a/src" "$WORK/$_a/lib"; cp "$_f" "$WORK/$_a/src/$(basename "$_f")"; cp "$_l" "$WORK/$_a/lib/$(basename "$_l")"; printf '%s\n' "$WORK/$_a"; }
     R_PERM="$(_stage perm "$PERMISSIONLESS")"
     R_SCOPED="$(_stage scoped "$SCOPED")"
     R_ROLE="$(_stage role "$ROLEGUARD")"
@@ -465,6 +536,9 @@ else
     R_TRANS="$(_stage trans "$TRANSITIVE")"
     R_CB="$(_stage cb "$COMMENTBRACE")"
     R_SS="$(_stage ss "$STRINGSLASH")"
+    R_ALIAS="$(_stage alias "$ALIASIMPORT")"
+    R_ONEHOP="$(_stage_with_lib onehop "$ONEHOP" "$ONEHOPLIB")"
+    R_TWOHOP="$(_stage_with_lib twohop "$TWOHOP" "$TWOHOPLIB")"
     _class() {
       ( cd "$SB" && FIXTURE="$1" REPODIR="$2" CEXPR="$3" agentis go probe.ag --enable-exec 2>&1 | grep '^CLASS=' | tail -1 | sed 's/^CLASS=//' )  # no-pii: the probe never calls prompt() — it reads a checked-in Solidity fixture and prints one classification token
     }
@@ -481,6 +555,9 @@ else
     C_CB="$(_class "$R_CB/src/CommentBraceImplCalleeVault.sol" "$R_CB" 'IPriceFeed(feed)')"
     C_SS="$(_class "$R_SS/src/StringSlashImplCalleeVault.sol" "$R_SS" 'IPriceFeed(feed)')"
     C_EMPTY="$(_class "$R_PERM/src/PermissionlessCalleeVault.sol" "$R_PERM" '')"
+    C_ALIAS="$(_class "$R_ALIAS/src/AliasImportCalleeVault.sol" "$R_ALIAS" 'IPriceFeed(feed)')"
+    C_ONEHOP="$(_class "$R_ONEHOP/src/TransitiveOutOfScopeCalleeVault.sol" "$R_ONEHOP" 'IOracle(oracle)')"
+    C_TWOHOP="$(_class "$R_TWOHOP/src/TwoHopOutOfScopeCalleeVault.sol" "$R_TWOHOP" 'IOracle(oracle)')"
     # POSITIVE arm: unguarded external setter + out-of-scope callee -> armed (the gate cannot silently degrade to never-arm).
     [ "$C_PERM" = "armed" ] && ok "PermissionlessCalleeVault + IOracle(oracle): UNGUARDED external setter, out-of-scope callee -> armed (AC pass arm)" \
       || bad "PermissionlessCalleeVault should be armed (got '$C_PERM') — the positive arm regressed"
@@ -502,6 +579,16 @@ else
       if _suppressed "$_v"; then ok "$_n in-scope repro -> $_v (suppressed:* — NO stub fabricated)"
       else bad "$_n in-scope repro must stay suppressed:* (got '$_v')"; fi
     done
+    # #2177: alias-import resolution and bounded one-hop-inheritance resolution — both are UNGUARDED-setter
+    # shapes, so they reach the scope check (unlike the six owner-guarded arms above) and prove the two new
+    # fallbacks resolve in-scope on their own (suppressed:in-scope), not merely suppressed earlier for privilege.
+    [ "$C_ALIAS" = "suppressed:in-scope" ] && ok "AliasImportCalleeVault + IPriceFeed(feed): import-alias carrier (contract ChainlinkFeed is IX) resolves in-scope -> suppressed:in-scope (#2177 alias fallback; today without the fix: armed)" \
+      || bad "AliasImportCalleeVault should be suppressed:in-scope (got '$C_ALIAS') — the import-alias fallback regressed"
+    [ "$C_ONEHOP" = "suppressed:in-scope" ] && ok "TransitiveOutOfScopeCalleeVault + IOracle(oracle): ONE-HOP out-of-scope extends chain (lib/IOracleExtChain.sol) resolves in-scope -> suppressed:in-scope (#2177 one-hop fallback; today without the fix: armed)" \
+      || bad "TransitiveOutOfScopeCalleeVault should be suppressed:in-scope (got '$C_ONEHOP') — the bounded one-hop fallback regressed"
+    # BOUND-ENFORCEMENT pin: a TWO-hop out-of-scope chain must NOT resolve — armed, unchanged before/after #2177.
+    [ "$C_TWOHOP" = "armed" ] && ok "TwoHopOutOfScopeCalleeVault + IOracle(oracle): TWO-hop out-of-scope extends chain stays armed — the one-hop fallback does NOT follow a second out-of-scope link (bound-enforcement pin)" \
+      || bad "TwoHopOutOfScopeCalleeVault should stay armed (got '$C_TWOHOP') — the one-hop bound was not enforced (false-positive scope credit two hops out)"
   fi
 fi
 
