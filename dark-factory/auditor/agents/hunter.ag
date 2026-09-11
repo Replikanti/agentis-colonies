@@ -25,9 +25,13 @@ cb 300000;
 // Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
 //         Diagnostics that may precede it: `BLACKBOARD-FOCUS|`, `DEPTH-CELL|`, `APPENDIX-CONTEXT|`, —
 //         #1887, only when a refute-constraint corpus is imported — `REFUTE-CONSTRAINTS|<subsystem>|<cls>|<n>`,
-//         and — #2145, only when the settable-callee detector fires — `CALLEE-TRUST|<subsystem>|<cls>|<n>|v2`.
+//         and — #2145, only when the settable-callee detector fires — `CALLEE-TRUST|<subsystem>|<cls>|<n>|v2`,
+//         and — #2191, only when the external-integration/oracle-assumption detector fires —
+//         `INTEGRATION-LENS|<subsystem>|<cls>|<n>` (a cross-class directive, injected whatever the HUNT_CLASS).
 //         `CALLEE-VECTOR|<fn>|<callee-expr>|<hazard>|<CANDIDATE|dismissed: reason>` may also appear (model-emitted,
-//         only when the callee-trust directive fired, #2152 — free text, never script-printed).
+//         only when the callee-trust directive fired, #2152 — free text, never script-printed), as may
+//         `INTEGRATION-ASSUMPTION|<fn>|<external-call-or-read>|<assumption>|<CANDIDATE|dismissed: reason>`
+//         (model-emitted, only when the #2191 integration directive fired — free text, never script-printed).
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -594,6 +598,138 @@ fn callee_directive(code: string) -> string {
     return callee_trust_block(has_attacker_controlled_callee(code));
 }
 
+// --- #2191 EXTERNAL-INTEGRATION / ORACLE-ASSUMPTION DIRECTIVE (elite-recall cross-class wedge) --------------
+// The measured gap this closes is GENERATION, not detection: on a frozen corpus contest the zone-mapper
+// selected C2/C15 on many zones yet the hunter never NAMED the rare integration/oracle bugs, while the classes
+// designed for them (C21/C22/C23) were assigned to ZERO zones (the #1830 1-4 class cell-budget cap plus
+// #1872's prompt-only zone-mapper rules). This is a CROSS-CLASS directive: like the #2145 callee-trust block
+// it is spliced into the SHARED instruction so it composes onto WHATEVER class a cell is already running,
+// firing even where the zone-mapper under-assigned the specific integration class. It changes the QUESTION the
+// model asks ("what does this code TRUST about the external protocol it calls or reads?"), never what it is
+// told.
+//
+// The directive is deliberately GENERIC: it names no protocol, contract, function or role — only SHAPES (an
+// external call into an adapter/pool/oracle, a hardcoded route/flag/index/param, a price/parity assumption) —
+// so injecting it cannot leak a specific answer into a hunt and stays valid on a held-out target.
+//
+// DETECTION reuses has_call_surface (the #2145 net, same flat whole-blob idiom — no AST/CFG) ANDed with at
+// least one of three coarse integration signals. Coarse-trigger / precise-prose, exactly like callee-trust:
+// over-firing costs only prompt bytes (the prose demands per-assumption DISMISSAL, never a false CANDIDATE), a
+// false negative is the missed integration High this wedge exists to stop losing. Every net is a SINGLE pass
+// over the whole-zone `code` blob at top level, never a per-element reduce (the substrate trap this file
+// refuses twice); a cell that FIRES additionally re-runs the three nets once to count signals for the
+// sentinel's <n> field — a cell that does not fire never pays that. Substrate purity (#1587): builtins only
+// (index_of / regex_find_all), no new embedded interpreter, no new `exec sh` string.
+
+// Signal 1 — an ORACLE / VALUATION READ SHAPE: a price/rate/parity the code reads and then TRUSTS. Coarse
+// string signals over the whole blob, so it catches the stored-interface read form has_call_surface's
+// view-idiom denylist deliberately skips.
+fn has_valuation_read_shape(code: string) -> bool {
+    if index_of(code, "latestRoundData") >= 0 { return true; }
+    if index_of(code, "Oracle") >= 0 { return true; }
+    if index_of(code, "getPrice") >= 0 { return true; }
+    if index_of(code, "exchangeRate") >= 0 { return true; }
+    if index_of(code, "getRate") >= 0 { return true; }
+    if index_of(code, "convertToAssets") >= 0 { return true; }
+    if index_of(code, "convertToShares") >= 0 { return true; }
+    return false;
+}
+
+// Signal 2 — a HARDCODED bool / small-int CALL ARGUMENT: a route/flag/index/param baked into an external call
+// (`pool.deposit(x, true)`, `router.swap(..., 0)`) — a setting the code assumes about the external protocol.
+fn hardcoded_bool_arg_pattern() -> string {
+    return "[(,][ \\t]*(?:true|false)[ \\t]*[,)]";
+}
+fn hardcoded_int_arg_pattern() -> string {
+    return "\\.[a-zA-Z_][A-Za-z0-9_]*\\([ \\t]*[0-9]{1,5}[ \\t]*[,)]";
+}
+fn has_hardcoded_call_arg(code: string) -> bool {
+    if len(regex_find_all(hardcoded_bool_arg_pattern(), code)) > 0 { return true; }
+    return len(regex_find_all(hardcoded_int_arg_pattern(), code)) > 0;
+}
+
+// Signal 3 — TWO externally-issued ASSET REPRESENTATIONS meeting in the payload: a parity/round-trip the code
+// assumes holds (a shares<->assets conversion, a token0/token1 or amount0/amount1 pair). Generic DeFi shape
+// tokens, never a protocol name.
+fn has_dual_asset_representation(code: string) -> bool {
+    if index_of(code, "convertToAssets") >= 0 {
+        if index_of(code, "convertToShares") >= 0 { return true; }
+    }
+    if index_of(code, "token0") >= 0 {
+        if index_of(code, "token1") >= 0 { return true; }
+    }
+    if index_of(code, "amount0") >= 0 {
+        if index_of(code, "amount1") >= 0 { return true; }
+    }
+    return false;
+}
+
+// How many of the three integration signals fired (0-3) — the sentinel's <n> field, so the cell log says WHY
+// the directive fired. The counting pass runs ONLY inside the sentinel branch below, mirroring
+// settable_signal_count.
+fn integration_signal_count(code: string) -> int {
+    return signal_score(has_valuation_read_shape(code))
+         + signal_score(has_hardcoded_call_arg(code))
+         + signal_score(has_dual_asset_representation(code));
+}
+
+// The detector: a call surface AND at least one integration signal — never one alone. Nested, because .ag has
+// no `&&`.
+fn has_external_integration_surface(code: string) -> bool {
+    if !has_call_surface(code) { return false; }
+    return integration_signal_count(code) > 0;
+}
+
+// The one string the block is RECOGNISED by, so a reword cannot desync the sentinel gate below from the text
+// it detects (same discipline as callee_trust_marker above).
+fn integration_lens_marker() -> string {
+    return "=== WHAT DOES THIS CODE TRUST ABOUT THE EXTERNAL PROTOCOL? ===";
+}
+
+// The directive itself. "" when the detector found nothing, so concatenating it into `instruction` is a no-op
+// and an undetected zone's prompt is BYTE-IDENTICAL to the pre-#2191 one.
+fn integration_assumption_block(has: bool) -> string {
+    if !has { return ""; }
+    return integration_lens_marker() + "\n"
+      + "In ADDITION to the bug class above (do NOT drop that lens), this code makes at least one EXTERNAL call, "
+      + "reads a price/rate/parity, or brings two externally-issued amounts together. For EVERY such touch point "
+      + "you trace, NAME in ONE sentence the ASSUMPTION this code makes about the external protocol: its rate or "
+      + "exchange ratio, its pool/market/vault SHAPE, a hardcoded route/flag/index/param it passes, or the "
+      + "validity/domain of a price feed (staleness, decimals, sign, bounds).\n"
+      + "Then show the PERMISSIONLESS path by which an attacker OR ordinary market motion violates that "
+      + "assumption — a market/token an intended flow lets anyone add, the reverse leg of a round-trip, a depeg "
+      + "or imbalance, a donation/direct transfer, a maturity/rollover, an empty-pool or first-deposit state — "
+      + "and state what the target then OVER-MINTS, OVER-WITHDRAWS, UNDER-COLLATERALISES or mis-prices. A "
+      + "trusted role is NOT required: an assumption the MARKET can break is in scope even if only a role can "
+      + "reconfigure the integration.\n"
+      + "When this directive fires, before your final verdict emit one line per touch point you examined under "
+      + "it: `INTEGRATION-ASSUMPTION|<fn>|<external-call-or-read>|<the assumption in one clause>|<CANDIDATE|"
+      + "dismissed: reason>` — the last field CANDIDATE when the permissionless violation holds (also emit the "
+      + "normal CANDIDATE| line for it), or `dismissed: <the specific guard/bound/validation you found in the "
+      + "code>` when it does not. A shape or a hardcoded value ALONE is NEVER a finding — dismiss it unless you "
+      + "traced a concrete permissionless violation.\n"
+      + "This is a PATTERN-level prompt, not an enumeration lens: when the class above is C2, C15, C21, C22 or "
+      + "C23, that class's own lens already lists the artefacts to enumerate — defer the detail to it and do NOT "
+      + "duplicate its bullets here; this directive only guarantees the assumption question is ASKED whatever "
+      + "class this cell runs.\n\n";
+}
+
+// #2191 A/B toggle: the directive is normally injected unconditionally, so its contribution to rare-recall
+// cannot be measured against a clean control. `INTEGRATION_LENS=0` forces it off EVEN where the detector fires,
+// giving the A/B an OFF arm. Any other value (or the env unset — the default) leaves it ON, so the assembled
+// prompt is BYTE-IDENTICAL to the pre-#2191 pipeline whenever the env is absent.
+fn integration_lens_enabled() -> bool {
+    return getenv("INTEGRATION_LENS") != "0";
+}
+
+// The directive as it enters the prompt: "" when the toggle is off (control arm) OR the detector found no
+// integration surface, else the full block. Concatenating "" is a no-op, so an OFF arm's prompt matches the
+// no-directive case byte-for-byte and the sentinel gate below auto-suppresses (empty directive).
+fn integration_directive(code: string) -> string {
+    if !integration_lens_enabled() { return ""; }
+    return integration_assumption_block(has_external_integration_surface(code));
+}
+
 let dir = getenv("TARGET_DIR");
 let files = getenv("IN_SCOPE");
 let cls = getenv("HUNT_CLASS");
@@ -654,6 +790,13 @@ if len(cons) > 0 {
 // `CALLEE_TRUST=0` forces the OFF arm; unset/any-other value is ON = byte-identical to before.
 let callee = callee_directive(code);
 
+// #2191 INTEGRATION read: the deterministic external-integration/oracle-assumption detector over the assembled
+// payload. `integ` is "" whenever the zone has no external call surface or no integration signal, so an
+// undetected zone's instruction below is BYTE-IDENTICAL to the pre-#2191 one. Routed through
+// integration_directive so `INTEGRATION_LENS=0` forces the OFF (control) arm; unset/any-other value is ON =
+// byte-identical to before. It composes CROSS-CLASS: it fires regardless of the assigned HUNT_CLASS.
+let integ = integration_directive(code);
+
 // The instruction carries the lens (taxonomy class), the brief (invariants + known-issues), and the
 // strict output contract; the code is the prompt payload (matches auditor.ag::classify_evm_llm shape).
 // The (possibly empty) blackboard FOCUS block sits up top so prior siblings' leads bias the hunt.
@@ -665,6 +808,7 @@ let instruction =
   + "you have traced the actual control/data flow yourself. An obvious-looking bug IS a real bug unless a "
   + "guard in the code provably stops it — do NOT assume prior auditors already caught it.\n\n"
   + callee
+  + integ
   + focus
   + depth
   + appx
@@ -721,6 +865,18 @@ if framing_emitted(appendix_file, instruction, code) {
 // target) — the counting pass runs ONLY inside this branch, so a non-firing cell never pays for it.
 if index_of(instruction, callee_trust_marker()) >= 0 {
     print("CALLEE-TRUST|" + subsystem + "|" + cls + "|" + to_string(settable_signal_count(code)) + "|v2");
+}
+
+// #2191: the INTEGRATION-LENS sentinel, on the same honesty contract as CALLEE-TRUST| above — gated on the
+// directive's own marker being demonstrably IN the assembled instruction (index_of over `instruction`), never
+// on the detector's return value, so no cell log can claim a re-framing that was not injected. It makes the
+// injection observable even on the mock backend (where prompt() never reasons), carries no `CANDIDATE|`
+// substring so lib/run-agent-validated.sh's sentinel predicate cannot false-accept a cell on it, and is
+// treated as a record BOUNDARY by run-discovery.sh's _join_wrapped_candidates. <n> is how many of the three
+// integration signals fired (valuation read / hardcoded call arg / dual asset representation) — the counting
+// pass runs ONLY inside this branch, so a non-firing cell never pays for it.
+if index_of(instruction, integration_lens_marker()) >= 0 {
+    print("INTEGRATION-LENS|" + subsystem + "|" + cls + "|" + to_string(integration_signal_count(code)));
 }
 
 let verdict = prompt(instruction, code) -> string;

@@ -1,0 +1,10 @@
+# briefs.fixture.txt — canned substrate brief bodies for the #2191 INTEGRATION_LENS A/B self-test
+# (gen-briefs.sh --fixture). One DARK-FACTORY:BRIEF-BEGIN|<zone_id> .. DARK-FACTORY:BRIEF-END block per zone
+# id map-zones.sh derives from src/ (src -> `src`). Public-safe, generic protocol mechanics only.
+DARK-FACTORY:BRIEF-BEGIN|src
+Attack the share accounting as an external depositor holding no privileged role:
+- C2: the deposit mints shares off an EXTERNAL oracle price and an EXTERNAL pool deposit passed a hardcoded
+  reserve flag. Name what the code trusts about those integrations and show a permissionless path (a
+  manipulated price, an imbalanced pool, a mis-set flag) by which shares are over-minted.
+Break invariant: "a depositor's minted shares are always worth at most what they deposited".
+DARK-FACTORY:BRIEF-END

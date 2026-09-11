@@ -15,6 +15,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **Cross-class external-integration / oracle-assumption directive** (#2191, elite-recall wedge). `hunter.ag`
+  gains a deterministic external-integration detector (`has_external_integration_surface`: a call surface AND
+  at least one of an oracle/valuation read, a hardcoded bool/small-int call argument, or two externally-issued
+  asset representations) that injects a GENERIC assumption-naming directive into the SHARED hunt instruction,
+  so it fires whatever taxonomy class a cell is running — sidestepping the zone-mapper under-assignment
+  (`#1830`/`#1872`) that leaves integration/oracle bugs un-named even on C2/C15 zones. The directive is
+  `""`-gated (an undetected zone's prompt is byte-identical), toggled by `INTEGRATION_LENS` (`=0` forces the
+  A/B OFF/control arm even where the detector fires; unset/any other value = ON = byte-identical to before),
+  and observable via the `INTEGRATION-LENS|<subsystem>|<cls>|<n>` sentinel (honesty-gated on the marker being
+  in the assembled prompt, a record boundary in `run-discovery.sh`). The detector and directive key on GENERIC
+  shapes only — no protocol name, no target-specific function-name match token (the structural overfitting
+  guard). NO new taxonomy class (a cross-class re-framing, documented as a Hunter usage note in
+  `bug-taxonomy.md`). Offline CI floor: `demo-integration-lens.sh` (source-guard + mock-run fixture
+  discrimination + byte-identity probe) and `bench/corpus-bench/integration-lens-ab.sh --self-test` (rare
+  GENERATION-recall Δ=+1 offline via `generation-recall.sh`), both wired into `colony-lint.sh`. The live
+  corpus-contest CONTROL-vs-TREATMENT rare generation-recall A/B is operator-run
+  (`integration-lens-ab.sh --live`), never on CI.
 - **CodeHawks corpus ground-truth (GT) extractor** (#2189, unblocks #2172). Generalizes the Sherlock-only
   corpus GT infra to a second, non-Sherlock platform via a sibling pair of scripts under
   `bench/corpus-bench/`, none of which touch the existing `corpus.tsv` or its readers.
