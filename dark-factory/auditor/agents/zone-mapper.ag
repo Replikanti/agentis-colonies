@@ -453,14 +453,60 @@ fn zone_is_test_or_interface(files: string) -> bool {
 // `Escrow`/`withdrawRequest`) was rejected for the #1698 reason — it over-flags every transfer-only fee
 // router and pure interface, and over-flagging inflates STAGE 4.6 forge cost (every custody zone runs the
 // concrete-PoC gate). The state token alone is carried by interfaces/getters; the compound-AND requires an
-// actual `.transfer(`/`safeTransfer(` release BODY, which an interface (no function bodies) never has —
-// same interface-immunity guarantee the #1698 net leans on. A plain swap/fee router that only `.transfer(`s
-// carries the release token but NOT the escrow/request state token, so it stays non-custody.
+// actual RELEASE call site. #2174 found the original "interfaces carry no function body" argument was
+// wrong for a released-caller idiom (`IEscrowToken.safeTransfer(...)` reads identically whether it appears
+// in a pure `interface` declaration or a real call site): release patterns are now dot/brace-anchored
+// (`.safeTransfer(`/`.transferFrom(`/`.call{value:`) — a bare `function safeTransfer(...) external;`
+// declaration never has a caller-dot before the method name, only a real call (`token.safeTransfer(...)`,
+// `IERC20(token).safeTransfer(...)`) does. The one pattern that cannot be dot-anchored (`_transfer(`, an
+// internal same-contract call with no caller object) instead goes through `has_call_site()`, a small
+// declaration-exclusion scan that skips any occurrence immediately preceded by a `function ` signature
+// prefix. A plain swap/fee router that only releases tokens carries the release token but NOT the
+// escrow/request state token, so it stays non-custody.
+
+// A small recursive left-to-right occurrence scan (same recursion idiom as this file's `first_nonws`/
+// `last_nonws`): does `code` contain a REAL CALL SITE of `needle` — as opposed to only a bare function
+// declaration/signature (`function <needle> ... ;` / `function <needle> ... {`, no caller object)? Skips
+// any occurrence whose immediately preceding 9 characters are the literal `"function "` and keeps scanning;
+// returns true on the first occurrence that isn't a declaration. Needed only for patterns that can't be
+// dot-anchored (an internal call like `_transfer(...)` has no caller-dot to rule out the declaration form
+// the way `.transfer(`/`.safeTransfer(` already do). Accepted imprecision: non-standard whitespace between
+// `function` and the name (double space / tab) isn't recognized as a declaration and so is treated as a
+// call site — out of scope for this fix, same whitespace-tolerance debt this file carries elsewhere.
+fn has_call_site(code: string, needle: string, from: int) -> bool {
+    let n = len(code);
+    if from > n { return false; }
+    let rel = index_of(substring(code, from, n), needle);
+    if rel < 0 { return false; }
+    let at = from + rel;
+    let declStart = at - 9;
+    if declStart >= 0 {
+        if substring(code, declStart, at) == "function " {
+            return has_call_site(code, needle, at + len(needle));
+        }
+    }
+    return true;
+}
+
+// Blunt ANY-`mapping(address =>`-in-the-blob check (both zero- and one-space `mapping (address =>` forms).
+// NOT lexically scoped to the word it gates below — a keeper with an unrelated per-address mapping (e.g.
+// per-caller rate limiting) could still slip a gated word through. Accepted imprecision for this SMALL fix
+// (documented, same tolerance class as the rest of this net): the dominant real custody shapes use the
+// already-specific compound tokens below, which stay ungated and unaffected.
+fn has_user_scoped_mapping(code: string) -> bool {
+    if index_of(code, "mapping(address =>") >= 0 { return true; }
+    if index_of(code, "mapping (address =>") >= 0 { return true; }
+    return false;
+}
 
 // Does the zone's code carry a per-user held-claim / escrow STATE identifier that a swap/AMM/fee router
 // never carries? Sequential `index_of` (no `&&`, this file's style); substrings chosen to cover the common
 // variants (`WithdrawRequest` covers `WithdrawRequestManager`/`TokenizedWithdrawRequest`/`getWithdrawRequest`;
-// `pendingWithdraw` covers `pendingWithdrawal(s)`).
+// `pendingWithdraw` covers `pendingWithdrawal(s)`). The two compounds above are specific enough to stay
+// unconditional; `Cooldown`/`cooldown`/`Escrow`/`escrow` are single generic words that also appear in
+// rate-limited keeper/rescue utilities with no per-user claim (#2174), so those four are gated behind
+// `has_user_scoped_mapping()` — a real escrow/withdraw-request holder always keys its per-user claim by
+// address, a global keeper cooldown does not.
 fn has_escrow_request_state(code: string) -> bool {
     if index_of(code, "WithdrawRequest") >= 0 { return true; }
     if index_of(code, "withdrawRequest") >= 0 { return true; }
@@ -468,21 +514,28 @@ fn has_escrow_request_state(code: string) -> bool {
     if index_of(code, "redeemRequest") >= 0 { return true; }
     if index_of(code, "redemptionRequest") >= 0 { return true; }
     if index_of(code, "pendingWithdraw") >= 0 { return true; }
-    if index_of(code, "Cooldown") >= 0 { return true; }
-    if index_of(code, "cooldown") >= 0 { return true; }
-    if index_of(code, "Escrow") >= 0 { return true; }
-    if index_of(code, "escrow") >= 0 { return true; }
     if index_of(code, "WithdrawalQueue") >= 0 { return true; }
     if index_of(code, "withdrawalQueue") >= 0 { return true; }
+    if has_user_scoped_mapping(code) {
+        if index_of(code, "Cooldown") >= 0 { return true; }
+        if index_of(code, "cooldown") >= 0 { return true; }
+        if index_of(code, "Escrow") >= 0 { return true; }
+        if index_of(code, "escrow") >= 0 { return true; }
+    }
     return false;
 }
 
-// Does the zone's code contain a body-level escrowed-token RELEASE (`.transfer(`/`safeTransfer(`)? An
-// interface carries no function body and so no release call — this is what keeps interface-only zones out
-// of the net (mirrors the #1698 net's interface-immunity argument).
+// Does the zone's code contain a body-level escrowed-token RELEASE? Dot/brace-anchored patterns
+// (`.safeTransfer(`/`.transfer(`/`.transferFrom(`/`.call{value:`) are always call expressions — never a
+// valid bare function-declaration prefix — so a pure `interface`'s `function safeTransfer(...) external;`
+// never matches (no leading dot). `_transfer(` is the one internal-call pattern with no caller-dot to
+// anchor on, so it goes through `has_call_site()` instead, which explicitly excludes the declaration form.
 fn has_escrowed_token_release(code: string) -> bool {
-    if index_of(code, "safeTransfer(") >= 0 { return true; }
+    if index_of(code, ".safeTransfer(") >= 0 { return true; }
     if index_of(code, ".transfer(") >= 0 { return true; }
+    if index_of(code, ".transferFrom(") >= 0 { return true; }
+    if index_of(code, ".call{value:") >= 0 { return true; }
+    if has_call_site(code, "_transfer(", 0) { return true; }
     return false;
 }
 
