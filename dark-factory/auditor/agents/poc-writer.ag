@@ -339,9 +339,21 @@ fn callee_attacker_settable(calleeExpr: string, code: string) -> bool {
 // "" (no in-scope source to judge). callee_out_of_scope is out-of-scope ONLY on a definitive "SCANNED"; an empty
 // type, no in-scope source, or a FOUND all stay IN-scope. typeName is `[A-Za-z0-9_]`-only, shell_escaped; the
 // scan is pure mechanical tooling (find/cat/grep — no embedded interpreter, no comment stripping).
+//
+// #2177: the direct carrier() check (unchanged) is tried first, then TWO additional fallback passes — still
+// pure find/cat/grep, no new interpreter — ONLY on a miss, so the original behavior is a strict prefix of the
+// new one. (1) ALIAS: an import-alias name (`import {IPriceFeed as IX}`) is extracted from the in-scope SRC
+// (two chained grep -oE passes, no sed/awk) and each alias is re-tried through the SAME carrier() check against
+// the SAME in-scope-only SRC — so a cast to the pre-alias name (`IPriceFeed`) resolves when the in-scope carrier
+// uses the alias (`contract ChainlinkFeed is IX`). (2) ONE-HOP INHERITANCE (bounded): ONLY for this fallback, the
+// read widens to the WHOLE repo (`find repo`, in- and out-of-scope) to extract candidate extended-type name(s) X
+// such that `(contract|interface) X is ... typeName` appears ANYWHERE in the repo; each candidate X is then
+// re-tried through carrier() against the ORIGINAL in-scope-only SRC ONLY — the wider read is used exclusively to
+// learn the extends-name mapping, NEVER to grant scope credit to code outside src/contracts, and candidates are
+// not themselves widened again (exactly one hop, no recursion, no chain-following).
 fn scope_probe(typeName: string, repo: string) -> string {
     // colony-lint: safe-exec-concat
-    return exec sh "SRC=$(find " + shell_escape(repo) + "/src " + shell_escape(repo) + "/contracts -name '*.sol' 2>/dev/null -exec cat {} + 2>/dev/null); if [ -z \"$SRC\" ]; then printf ''; else printf '%s' \"$SRC\" | grep -zqE -e " + shell_escape("(^|[^A-Za-z0-9_])contract[[:space:]]+" + typeName + "([^A-Za-z0-9_]|$)") + " -e " + shell_escape("(contract|interface)[[:space:]]+[A-Za-z0-9_]+[[:space:]]+is[^;]*[^A-Za-z0-9_]" + typeName + "([^A-Za-z0-9_]|$)") + " && printf FOUND || printf SCANNED; fi";
+    return exec sh "SRC=$(find " + shell_escape(repo) + "/src " + shell_escape(repo) + "/contracts -name '*.sol' 2>/dev/null -exec cat {} + 2>/dev/null); TYPE=" + shell_escape(typeName) + "; if [ -z \"$SRC\" ]; then printf ''; else carrier() { printf '%s' \"$SRC\" | grep -zqE -e \"(^|[^A-Za-z0-9_])contract[[:space:]]+$1([^A-Za-z0-9_]|$)\" -e \"(contract|interface)[[:space:]]+[A-Za-z0-9_]+[[:space:]]+is[^;]*[^A-Za-z0-9_]$1([^A-Za-z0-9_]|$)\"; }; FOUND=0; carrier \"$TYPE\" && FOUND=1; if [ \"$FOUND\" -eq 0 ]; then ALIASES=$(printf '%s' \"$SRC\" | grep -oE \"\\b$TYPE[[:space:]]+as[[:space:]]+[A-Za-z0-9_]+\" | grep -oE '[A-Za-z0-9_]+$'); for a in $ALIASES; do carrier \"$a\" && FOUND=1; done; fi; if [ \"$FOUND\" -eq 0 ]; then WIDE=$(find " + shell_escape(repo) + " -name '*.sol' 2>/dev/null -exec cat {} + 2>/dev/null); CAND1=$(printf '%s\\n' \"$WIDE\" | grep -oE \"(contract|interface)[[:space:]]+[A-Za-z0-9_]+[[:space:]]+is[^;]*[^A-Za-z0-9_]$TYPE([^A-Za-z0-9_]|$)\"); CANDS=$(printf '%s\\n' \"$CAND1\" | grep -oE '^(contract|interface)[[:space:]]+[A-Za-z0-9_]+' | grep -oE '[A-Za-z0-9_]+$'); for x in $CANDS; do carrier \"$x\" && FOUND=1; done; fi; if [ \"$FOUND\" -eq 1 ]; then printf FOUND; else printf SCANNED; fi; fi";
 }
 fn callee_out_of_scope(typeName: string, repo: string) -> bool {
     if len(typeName) == 0 { return false; }

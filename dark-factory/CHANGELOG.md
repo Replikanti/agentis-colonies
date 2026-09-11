@@ -37,6 +37,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   the vector-hunt stub's `__timeout__` branch records the escalation trail) — no real multi-minute timeout.
 
 ### Fixed
+- **`poc-writer.ag` `scope_probe` now resolves import-aliased and one-hop out-of-scope-inheritance carriers**
+  (#2177, honest-lead precision, follow-up to #2171). The in-scope carrier scan matched only `contract <T>` and
+  `(contract|interface) <Name> is ... <T>`, so a settable callee cast to `IPriceFeed` was mis-classified
+  out-of-scope (and the hostile stub armed) when the in-scope carrier was reached only via an import alias
+  (`import {IPriceFeed as IX}` + `contract ChainlinkFeed is IX`) or via one hop through an out-of-scope base
+  (`contract ChainImpl is IOracleExt` where `interface IOracleExt is IOracle` lives outside `src/`/`contracts/`).
+  Two pure find/cat/grep fallbacks now run ONLY on a miss, so the original scan is a strict prefix of the new
+  behaviour: (1) alias resolution re-tries each `<T> as <alias>` name through the same carrier check against the
+  same in-scope source; (2) a bounded one-hop inheritance resolution widens the read to the whole repo purely to
+  learn candidate extended-type names, then re-tries each through the carrier check against the in-scope-only
+  source — the wider read never grants scope credit to out-of-scope code, and there is exactly one hop (a
+  two-hop out-of-scope chain deliberately stays armed). Pinned by new fixtures and a live `agentis` truth table
+  in `demo-poc-stub-callee.sh` (alias and one-hop resolve to `suppressed:in-scope`; two-hop stays `armed`; the
+  permissionless-setter positive arm is unchanged).
 - **The hostile-stub-callee gate now arms only on ATTACKER-repointable callees, not merely admin-upgradeable
   ones** (#2179, review follow-up to #2171/#2176, epic #2130). `poc-writer.ag`'s `stub_eligible` tied the stub
   to any *settable* callee — a mutable backing address, or a getter-resolved (registry/proxy) target — which
