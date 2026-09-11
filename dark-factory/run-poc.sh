@@ -41,6 +41,9 @@
 #   --repair-rounds N     Extra bounded compile-repair rounds (default: the agent's own default, 2).
 #   --out <dir>           Output dir for the run + report (default: ./poc-out).
 #   --agentis <bin>       agentis binary (default: `agentis` on PATH).
+#   --cli-timeout-ms N    LLM CLI timeout ceiling (ms) threaded into llm.cli_timeout_ms (default: env
+#                         DF_POC_CLI_TIMEOUT_MS or 600000). The escalation lever run-vector-hunt.sh raises on a
+#                         TIMEOUT re-run (agentis-core#996 LlmTimeout: exit 75 / `[llm.timeout]`).
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -54,9 +57,19 @@ AGENTIS="agentis"
 # shellcheck source=lib/ensure-claude-trust.sh
 # shellcheck disable=SC1091
 . "$HERE/lib/ensure-claude-trust.sh"
+# #2178: the shared terminal-timeout / transport discriminators (df_llm_timeout_in_log,
+# df_transport_error_in_log) so an LlmTimeout (agentis-core#996: `[llm.timeout]`, exit 75) classifies as a
+# distinct TIMEOUT verdict here using the SAME predicate the discovery pipeline uses — never a re-grep.
+# shellcheck source=lib/run-agent-validated.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/run-agent-validated.sh"
 REPO="" ; TARGET="" ; HYPOTHESIS="" ; CLASS="" ; KIND="" ; FIXTURE="" ; CODE="" ; FIXTURES_DIR=""
 CALLEE_EXPR="" ; CALLEE_HAZARD=""
 MATCH="test" ; BACKEND="flat-cyborg" ; MODEL="" ; REPAIR_ROUNDS="" ; OUT="$PWD/poc-out"
+# #2178: the LLM CLI timeout ceiling threaded into the emitted llm.cli_timeout_ms config line. Env floor is
+# DF_POC_CLI_TIMEOUT_MS (default 600000 = the 600s PoC-write floor); a --cli-timeout-ms flag (below) wins over
+# the env so run-vector-hunt.sh's bounded escalation can RAISE it on a TIMEOUT re-run (#2178 AC2).
+CLI_TIMEOUT_MS="${DF_POC_CLI_TIMEOUT_MS:-600000}"
 
 need() { [ "$1" -ge 2 ] || { echo "run-poc.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -77,6 +90,7 @@ while [ $# -gt 0 ]; do
     --repair-rounds) need "$#"; REPAIR_ROUNDS="$2"; shift 2 ;;
     --out) need "$#"; OUT="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
+    --cli-timeout-ms) need "$#"; CLI_TIMEOUT_MS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-poc.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -87,6 +101,8 @@ done
 [ -n "$MATCH" ] || { echo "run-poc.sh: --match prefix must be non-empty" >&2; exit 2; }
 [ -n "$HYPOTHESIS" ] || [ -n "$FIXTURE" ] || { echo "run-poc.sh: --hypothesis is required on the live path (or supply --poc-fixture)" >&2; exit 2; }
 case "$REPAIR_ROUNDS" in '') ;; *[!0-9]*) echo "run-poc.sh: --repair-rounds must be a whole number" >&2; exit 2 ;; esac
+case "$CLI_TIMEOUT_MS" in ''|*[!0-9]*) echo "run-poc.sh: --cli-timeout-ms / DF_POC_CLI_TIMEOUT_MS must be a positive integer of milliseconds" >&2; exit 2 ;; esac
+[ "$CLI_TIMEOUT_MS" -ge 1 ] || { echo "run-poc.sh: --cli-timeout-ms / DF_POC_CLI_TIMEOUT_MS must be >= 1" >&2; exit 2; }
 command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ] || { echo "run-poc.sh: agentis binary not found ($AGENTIS)" >&2; exit 3; }
 
 DETECT="$HERE/evm-harness/detect-toolchain.sh"
@@ -176,14 +192,14 @@ fi
 {
   echo "llm.backend = $BACKEND"
   # 600s: writing a concrete exploit PoC for a real protocol is the same order of cost as a discovery read.
-  [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = 600000"; }
+  [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = $CLI_TIMEOUT_MS"; }
   # #1810: idle_ms 12000 (> native 4000 default), kept as a latency knob only (#1925) -- do NOT ratchet it
   # further. Completion is gated on the wrapper's closing sentinel from flat-cyborg >= 0.13.0
   # (idle_gate_open()); idle_ms only bounds how fast a marker-less (sentinel-less) reply is accepted once
   # the screen goes quiet, so a premature capture of chrome / no fenced reply ("--extract found no fenced
   # reply") no longer garbles the generated test into HARNESS_ERROR. Every sibling flat-cyborg driver
   # (run-discovery/gen-briefs/map-zones/run-refute/run-invariant-hunt) already sets 12000.
-  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"; }
+  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = $CLI_TIMEOUT_MS"; echo "llm.flat_cyborg.idle_ms = 12000"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"; }
   # #2125: sandbox the driven Claude Code session (bubblewrap view = toolchain + repo + run dir, web tools denied).
   [ "$BACKEND" = "flat-cyborg" ] && [ -z "${DF_NO_SANDBOX:-}" ] && command -v bwrap >/dev/null 2>&1 && echo "llm.flat_cyborg.target = $HERE/lib/claude-sandboxed.sh"
   echo "trace.level = normal"
@@ -216,6 +232,9 @@ esac
 CELL_LOG="$RUN/poc_${SLUG}.log"
 
 echo "run-poc.sh: generating + verifying a concrete-exploit PoC for $TARGET ($CLASS) [$KIND] ..." >&2
+# #2178: capture the runner's exit code (agentis-core#996 emits exit 75 on a terminal LlmTimeout). The `|| POC_RC=$?`
+# below both records it AND keeps `set -e` from aborting the run, replacing the old fire-and-forget `|| echo`.
+POC_RC=0
 # --grant-pii: hypothesis + target contract source can carry addresses/identifiers that trip the PII
 # heuristic; input is benign public contract text (#1690).
 ( cd "$RUN" && env \
@@ -233,8 +252,8 @@ echo "run-poc.sh: generating + verifying a concrete-exploit PoC for $TARGET ($CL
     TARGET_FIXTURES_DIR="$FIXTURES_DIR_IN_RUN" \
     POC_MATCH="$MATCH" \
     POC_REPAIR_ROUNDS="$REPAIR_ROUNDS" \
-    "$AGENTIS" go poc-writer.ag --enable-exec --enable-messaging --grant-pii ) >"$CELL_LOG" 2>&1 || \
-    echo "run-poc.sh: poc-writer run failed for '$TARGET' (see $CELL_LOG)" >&2
+    "$AGENTIS" go poc-writer.ag --enable-exec --enable-messaging --grant-pii ) >"$CELL_LOG" 2>&1 || POC_RC=$?
+[ "$POC_RC" -eq 0 ] || echo "run-poc.sh: poc-writer run failed for '$TARGET' (rc=$POC_RC, see $CELL_LOG)" >&2
 
 # The agent's contract: exactly one `POC|<target>|<verdict>` line, then (on a FINDING) a `POC-FILE|<path>` line.
 # Take the LAST verdict match. No line at all = HARNESS_ERROR (no verdict was produced).
@@ -245,9 +264,22 @@ else
   VERD="$(printf '%s' "$VLINE" | sed 's/.*POC|//' | cut -d'|' -f2)"
 fi
 case "$VERD" in
-  FINDING|CLEAN|HARNESS_ERROR) ;;
+  FINDING|CLEAN|TIMEOUT|HARNESS_ERROR) ;;
   *) VERD="HARNESS_ERROR" ;;
 esac
+# #2178: LlmTimeout (agentis-core#996) becomes a DISTINCT TIMEOUT verdict instead of being folded into
+# HARNESS_ERROR. The oracle: a terminal `[llm.timeout]` marker in the cell log (df_llm_timeout_in_log — the SAME
+# discriminator lib/run-agent-validated.sh single-sources for the discovery pipeline, never a re-grep) OR the
+# runner exited 75 with no terminal verdict. A genuine FINDING/CLEAN ALWAYS wins over a raw exit 75 (a real
+# verdict that also happens to exit 75 for an unrelated reason must never be overwritten), so a spurious 75
+# degrades to at worst the prior HARNESS_ERROR behaviour, never a false finding. There is no transport branch on
+# this path, so the shared "timeout checked before transport" ordering holds trivially. A self-classified
+# `POC|<t>|TIMEOUT` line (AC1 ".ag self-classifies") is already honored by the case set above.
+if [ "$VERD" != "FINDING" ] && [ "$VERD" != "CLEAN" ]; then
+  if df_llm_timeout_in_log "$CELL_LOG" || [ "$POC_RC" -eq 75 ]; then
+    VERD="TIMEOUT"
+  fi
+fi
 POC_FILE_LINE="$(grep '^POC-FILE|' "$CELL_LOG" | tail -1 | sed 's/^POC-FILE|//' || true)"
 
 # --- Durable run-evidence capture (#1540, best-effort, FINDING-gated) ---------------------------------------
@@ -318,6 +350,8 @@ if [ "$VERD" = "FINDING" ]; then
   echo "run-poc.sh: the concrete exploit PoC PASSED — a reproducible witness a human triages. This colony never auto-submits." >&2
 elif [ "$VERD" = "CLEAN" ]; then
   echo "run-poc.sh: the PoC ran and FAILED — the exploit did not reproduce in this harness. Nothing to triage." >&2
+elif [ "$VERD" = "TIMEOUT" ]; then
+  echo "run-poc.sh: TIMEOUT — the LLM PoC-write call terminally timed out (agentis-core#996: exit 75 / [llm.timeout]). Not a verdict; re-run with a raised --cli-timeout-ms (run-vector-hunt.sh escalates this automatically)." >&2
 else
   echo "run-poc.sh: HARNESS_ERROR — the PoC did not compile / no test ran / toolchain absent / linkage reject. No verdict." >&2
 fi

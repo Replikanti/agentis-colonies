@@ -278,8 +278,8 @@ if grep -q -- '--callee-expr "\$rp_callee" --callee-hazard "\$rp_haz"' "$VHUNT";
 else
   bad "run-vector-hunt.sh does not thread the CALLEE-VECTOR callee-expr/hazard into the PoC runner"
 fi
-if grep -q 'VERD="\$(run_poc_once "\$VH" "\$VHYP" "\$VCALLEE" "\$VHAZ")"' "$VHUNT"; then
-  ok "run_poc_once is called with the vector's VCALLEE/VHAZ (they are read, not just field-split placeholders)"
+if grep -q 'VERD="\$(run_poc_once "\$VH" "\$VHYP" "\$VCALLEE" "\$VHAZ" "\$CUR_TIMEOUT")"' "$VHUNT"; then
+  ok "run_poc_once is called with the vector's VCALLEE/VHAZ (they are read, not just field-split placeholders; #2178 appended the escalated --cli-timeout-ms as a trailing arg)"
 else
   bad "run_poc_once is not called with VCALLEE/VHAZ"
 fi

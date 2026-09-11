@@ -35,6 +35,7 @@ FG_GATE="$HERE/evm-harness/forge-poc.sh"
 DETECT="$HERE/evm-harness/detect-toolchain.sh"
 RUNNER="$HERE/run-poc.sh"
 FIX="$HERE/evm-harness/hardhat-poc-fixture"
+TIMEOUT_STUB="$HERE/fixtures/poc/agentis-timeout-stub.sh"
 
 FAILS=0
 note() { echo "demo-poc-gen.sh: $*"; }
@@ -158,6 +159,24 @@ else
   bad "run-poc.sh missing the #1540 run-evidence capture / POC-FILE|/POC-RUN| stdout wiring"
 fi
 
+# #2178: run-poc.sh classifies a terminal LlmTimeout (agentis-core#996: exit 75 / `[llm.timeout]`) as a DISTINCT
+# TIMEOUT verdict instead of folding it into HARNESS_ERROR. Source-guard the wiring: it sources the shared
+# discriminator lib (single-sourced with the discovery pipeline, never a re-grep), captures the runner's exit
+# code, maps `df_llm_timeout_in_log OR exit 75` to TIMEOUT (only when no terminal FINDING/CLEAN), honors the
+# --cli-timeout-ms / DF_POC_CLI_TIMEOUT_MS ceiling knob, and admits a self-classified POC|<t>|TIMEOUT line.
+if grep -q '\. "\$HERE/lib/run-agent-validated.sh"' "$RUNNER" \
+   && grep -q ') >"\$CELL_LOG" 2>&1 || POC_RC=\$?' "$RUNNER" \
+   && grep -q 'df_llm_timeout_in_log "\$CELL_LOG" || \[ "\$POC_RC" -eq 75 \]' "$RUNNER" \
+   && grep -q 'VERD="TIMEOUT"' "$RUNNER" \
+   && grep -q 'FINDING|CLEAN|TIMEOUT|HARNESS_ERROR)' "$RUNNER" \
+   && grep -q 'CLI_TIMEOUT_MS="\${DF_POC_CLI_TIMEOUT_MS:-600000}"' "$RUNNER" \
+   && grep -q -- '--cli-timeout-ms) need' "$RUNNER" \
+   && grep -q 'llm.cli_timeout_ms = \$CLI_TIMEOUT_MS' "$RUNNER"; then
+  ok "run-poc.sh sources the shared timeout discriminator, captures the runner exit code, maps exit 75 / [llm.timeout] -> TIMEOUT (finding/clean win), honors --cli-timeout-ms / DF_POC_CLI_TIMEOUT_MS, and accepts a self-classified POC|<t>|TIMEOUT line (#2178)"
+else
+  bad "run-poc.sh missing the #2178 TIMEOUT classification / --cli-timeout-ms wiring"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # 2) CI-SAFE MECHANICAL — detect-toolchain + the --classify verdict-parse + the linkage-reject (no toolchain).
 # ----------------------------------------------------------------------------------------------------------
@@ -208,6 +227,29 @@ if [ "$sub_rc" -eq 2 ] && printf '%s' "$sub_out" | grep -q '#1471 target-linkage
 else
   bad "substituted PoC should be HARNESS_ERROR (2)+#1471, got rc=$sub_rc"
   printf '%s\n' "$sub_out" | sed 's/^/        | /' | tail -5
+fi
+
+# #2178: LIVE-UNDER-STUB — run-poc.sh over a fake `agentis` (fixtures/poc/agentis-timeout-stub.sh) that prints the
+# terminal `[llm.timeout]` literal + exits 75, so the exit-75-vs-HARNESS_ERROR split is PROVEN in milliseconds
+# with no real timeout, no LLM, no forge. This is CI-safe (no toolchain): the stub short-circuits before any
+# gate/forge invocation, and detect-toolchain only needs the throwaway foundry.toml below.
+if [ ! -x "$TIMEOUT_STUB" ]; then
+  bad "the #2178 agentis-timeout stub is missing / not executable: $TIMEOUT_STUB"
+else
+  TO_WORK="$(mktemp -d)"
+  mkdir -p "$TO_WORK/repo/src" "$TO_WORK/out"
+  printf '[profile.default]\nsrc = "src"\n' > "$TO_WORK/repo/foundry.toml"
+  printf '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\ncontract Vault {}\n' > "$TO_WORK/repo/src/Vault.sol"
+  to_out="$(bash "$RUNNER" --repo "$TO_WORK/repo" --target "src/Vault.sol:Vault" --class "C-x" \
+             --hypothesis "reentrancy on executeDeposit" --backend mock --out "$TO_WORK/out" \
+             --agentis "$TIMEOUT_STUB" 2>/dev/null)"
+  if printf '%s' "$to_out" | grep -qF 'POC|src/Vault.sol:Vault|TIMEOUT'; then
+    ok "run-poc.sh over the exit-75 / [llm.timeout] agentis stub emits POC|<t>|TIMEOUT (not HARNESS_ERROR) — the #2178 split, proven in ms"
+  else
+    bad "run-poc.sh over the timeout stub did not emit POC|<t>|TIMEOUT (the exit-75 split regressed):"
+    printf '%s\n' "$to_out" | grep '^POC|' | sed 's/^/        | /' | tail -3
+  fi
+  rm -rf "$TO_WORK"
 fi
 
 # ----------------------------------------------------------------------------------------------------------

@@ -14,6 +14,28 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+- **`TIMEOUT` is now a first-class PoC verdict with bounded raise-ceiling escalation** (#2178, epic #2130).
+  agentis-core#996 classifies an LLM prompt() size-timeout as a distinct error (`LlmTimeout`, exit 75, terminal
+  `[llm.timeout]` marker); `run-poc.sh` now maps that to a `TIMEOUT` verdict instead of folding it into
+  `HARNESS_ERROR`, so the true failure mode is visible and the escalation can react. The oracle is the terminal
+  `[llm.timeout]` marker (via the shared `df_llm_timeout_in_log` discriminator, single-sourced with
+  `lib/run-agent-validated.sh` — never a re-grep) **OR** (exit 75 AND no terminal verdict): a genuine
+  `FINDING`/`CLEAN` always wins over a raw exit 75, so a spurious 75 degrades to at worst the prior
+  `HARNESS_ERROR`, never a false finding. `run-poc.sh` also accepts a self-classified `POC|<t>|TIMEOUT` line (a
+  forward-compatible seam for a future `poc-writer.ag` `err.code == 1001` self-report). `run-vector-hunt.sh` adds
+  a **separate, bounded** TIMEOUT-escalation counter (distinct from the transient `--retries` loop — a
+  size-timeout is never blindly re-run): on a `TIMEOUT` it raises `llm.cli_timeout_ms` toward a hard cap and
+  re-runs, bounded by `DF_POC_TIMEOUT_RETRIES` AND a monotone ceiling capped at `DF_POC_CLI_TIMEOUT_MAX_MS` — a
+  RUNAWAY that blows through a raised ceiling stops after the bounded raises with a terminal `TIMEOUT`, never an
+  unbounded loop. New env knobs (all overridable per dark-factory cell, flags win over env):
+  `DF_POC_CLI_TIMEOUT_MS` (floor / starting ceiling, default `600000`) + `--cli-timeout-ms`,
+  `DF_POC_CLI_TIMEOUT_MAX_MS` (hard cap, default `1200000`) + `--cli-timeout-max-ms`, and
+  `DF_POC_TIMEOUT_RETRIES` (escalation count, default `1`) + `--timeout-retries`. The `[llm.timeout]` log literal
+  and the discovery-pipeline discriminators are unchanged (the transport/timeout ordering is preserved). Proven
+  in milliseconds by deterministic fixtures (`fixtures/poc/agentis-timeout-stub.sh` prints the marker + exits 75;
+  the vector-hunt stub's `__timeout__` branch records the escalation trail) — no real multi-minute timeout.
+
 ### Fixed
 - **The hostile-stub-callee gate now arms only on ATTACKER-repointable callees, not merely admin-upgradeable
   ones** (#2179, review follow-up to #2171/#2176, epic #2130). `poc-writer.ag`'s `stub_eligible` tied the stub
