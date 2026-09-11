@@ -1717,6 +1717,31 @@ if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/refute-corpus-coverage.sh" ]
     fi
 fi
 
+# --- dark-factory: CodeHawks corpus GT source — discovery + extraction self-tests (#2189, unblocks #2172) ---
+# The Sherlock-only corpus GT infra (extract-gt.sh) is generalized to a NON-Sherlock platform (CodeHawks) via a
+# sibling pair: list-codehawks-concluded.sh (finalised + public + post-model-cutoff discovery filter) and
+# extract-gt-codehawks.sh (stream-decodes a findings tRPC payload into a class-tagged truth.tsv + a CodeHawks-
+# only codehawks-corpus.tsv, never touching corpus.tsv). Both --self-test run ENTIRELY OFFLINE (fixture
+# --codehawks-from/--from, no network) — the only mode invoked here — so CI never hits the live endpoint.
+if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/list-codehawks-concluded.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/bench/corpus-bench/list-codehawks-concluded.sh" --self-test 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: CodeHawks concluded-contest discovery filter self-test (#2189)"
+    else
+        fail "dark-factory: CodeHawks concluded-contest discovery filter self-test regressed (#2189)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/extract-gt-codehawks.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/bench/corpus-bench/extract-gt-codehawks.sh" --self-test 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: CodeHawks findings GT-extraction self-test (stream-decode, distinct-reporter rarity, conservative class-tag) (#2189)"
+    else
+        fail "dark-factory: CodeHawks findings GT-extraction self-test regressed (#2189)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory monitor colony proof-of-value: detect -> deliver (#1889, #1891) ---
 # The Path C monitoring proposition must DETECT a protocol invariant breaking on live chain state and
 # DELIVER it as a page. demo-monitor.sh source-guards the monitor wiring (the 8 agents, notifier.ag ->

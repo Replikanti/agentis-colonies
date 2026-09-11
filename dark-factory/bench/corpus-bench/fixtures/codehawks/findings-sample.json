@@ -1,0 +1,192 @@
+[
+ {
+  "result": {
+   "data": {
+    "competitionDetails": {
+     "id": "samplecompid",
+     "name": "Sample Vault Audit",
+     "urlSlug": "2026-03-sample-vault",
+     "company": "Example Org",
+     "githubUrl": "https://github.com/example-org/sample-vault",
+     "startDate": "2026-03-01T00:00:00.000Z",
+     "endDate": "2026-03-15T16:00:00.000Z",
+     "finalised": true,
+     "privateSubmissionsToggle": false
+    },
+    "findings": [
+     {
+      "severity": "high",
+      "id": "cl-f1",
+      "selectedIssueId": "cl-f1-i1",
+      "SelectedIssue": {
+       "severity": "high"
+      },
+      "issues": [
+       {
+        "id": "cl-f1-i1",
+        "title": "Reentrant withdraw drains the vault before share burn",
+        "severity": "high",
+        "description": "External transfer before share burn.",
+        "content": "The withdraw path makes an external call before burning shares, so a reentrant callback drains the vault.",
+        "User": {
+         "username": "alice",
+         "id": "uid-alice"
+        },
+        "Team": null
+       },
+       {
+        "id": "cl-f1-i2",
+        "title": "Reentrancy in withdraw (dup submission)",
+        "severity": "high",
+        "description": "Same reentrancy, second write-up by the same author.",
+        "content": "A reentrant call re-enters withdraw.",
+        "User": {
+         "username": "alice",
+         "id": "uid-alice"
+        },
+        "Team": null
+       },
+       {
+        "id": "cl-f1-i3",
+        "title": "Reentrancy on withdraw",
+        "severity": "high",
+        "description": "Reentrancy.",
+        "content": "Reentrant drain of the vault.",
+        "User": {
+         "username": "bob",
+         "id": "uid-bob"
+        },
+        "Team": null
+       }
+      ]
+     },
+     {
+      "severity": "medium",
+      "id": "cl-f2",
+      "selectedIssueId": "cl-f2-i1",
+      "SelectedIssue": {
+       "severity": "medium"
+      },
+      "issues": [
+       {
+        "id": "cl-f2-i1",
+        "title": "Oracle price re-entered during settlement",
+        "severity": "medium",
+        "description": "The oracle read can be reentered.",
+        "content": "During settlement the oracle price update is reachable via a reentrant call, mixing an oracle-integrity and a reentrancy concern.",
+        "User": {
+         "username": "carol",
+         "id": "uid-carol"
+        },
+        "Team": null
+       }
+      ]
+     },
+     {
+      "severity": "high",
+      "id": "cl-f3",
+      "selectedIssueId": "cl-f3-i2",
+      "SelectedIssue": {
+       "severity": "high"
+      },
+      "issues": [
+       {
+        "id": "cl-f3-i1",
+        "title": "Dust A",
+        "severity": "high",
+        "description": "d",
+        "content": "Fee accounting leaves dust in the pool over many calls.",
+        "User": {
+         "username": "clea",
+         "id": "uid-clea"
+        },
+        "Team": null
+       },
+       {
+        "id": "cl-f3-i2",
+        "title": "Fee accounting leaves dust in the pool",
+        "severity": "high",
+        "description": "d",
+        "content": "Repeated fee settlement leaves un-swept dust that accrues to nobody.",
+        "User": {
+         "username": "dan",
+         "id": "uid-dan"
+        },
+        "Team": null
+       },
+       {
+        "id": "cl-f3-i3",
+        "title": "Dust C",
+        "severity": "high",
+        "description": "d",
+        "content": "Leftover dust in the pool.",
+        "User": {
+         "username": "eve",
+         "id": "uid-eve"
+        },
+        "Team": null
+       },
+       {
+        "id": "cl-f3-i4",
+        "title": "Dust D",
+        "severity": "high",
+        "description": "d",
+        "content": "Pool dust.",
+        "User": {
+         "username": "fred",
+         "id": "uid-fred"
+        },
+        "Team": null
+       },
+       {
+        "id": "cl-f3-i5",
+        "title": "Dust E",
+        "severity": "high",
+        "description": "d",
+        "content": "Dust accrual.",
+        "User": {
+         "username": "gwen",
+         "id": "uid-gwen"
+        },
+        "Team": null
+       }
+      ]
+     },
+     {
+      "severity": "low",
+      "id": "cl-f4",
+      "selectedIssueId": "cl-f4-i1",
+      "SelectedIssue": {
+       "severity": "low"
+      },
+      "issues": [
+       {
+        "id": "cl-f4-i1",
+        "title": "Event not emitted",
+        "severity": "low",
+        "description": "d",
+        "content": "A low-severity missing event.",
+        "User": {
+         "username": "heidi",
+         "id": "uid-heidi"
+        },
+        "Team": null
+       }
+      ]
+     }
+    ],
+    "highs": [
+     1,
+     2
+    ],
+    "mediums": [
+     1
+    ],
+    "lows": [
+     1
+    ],
+    "gas": []
+   }
+  }
+ }
+]

@@ -1,0 +1,4 @@
+# findings left class-BLANK (0 or 2+ keyword matches) — human classification required.
+# Columns (TAB): competition_id  sev_id  n_matches  matched-classes  label
+samplecompid	M-1	2	C2,C8	Oracle price re-entered during settlement
+samplecompid	H-2	0		Fee accounting leaves dust in the pool

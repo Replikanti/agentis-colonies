@@ -15,6 +15,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Added
+- **CodeHawks corpus ground-truth (GT) extractor** (#2189, unblocks #2172). Generalizes the Sherlock-only
+  corpus GT infra to a second, non-Sherlock platform via a sibling pair of scripts under
+  `bench/corpus-bench/`, none of which touch the existing `corpus.tsv` or its readers.
+  `list-codehawks-concluded.sh` discovers CONCLUDED, public-findings CodeHawks contests (reuses the keyless
+  SvelteKit `competitions.getCompetitions` embed the freshness watcher parses, filtered to `finalised &&
+  !inviteOnly && !privateSubmissionsToggle` and `endDate` strictly after a **required, no-default**
+  `--cutoff-date` — recommended `2026-02-01`, the month after the hunter model's Jan-2026 knowledge cutoff, so
+  held-out targets are genuinely unseen). `extract-gt-codehawks.sh` stream-decodes a contest's findings tRPC
+  payload (`json.JSONDecoder.raw_decode` per cluster, so a 70MB+ payload never materializes at once) into a
+  class-tagged `truth.tsv` (`sev_id  found-by  class-csv  label`, the shape `refute-corpus-coverage.sh`
+  consumes) plus a row in a new CodeHawks-only `codehawks-corpus.tsv` manifest. Rarity (`found-by`) is the
+  count of **distinct reporters** per finding cluster, not raw `len(issues)` — a live payload inspection showed
+  the same reporter recurs within a cluster (20 of 38 clusters over-counted). Class tagging is conservative:
+  a `codehawks-class-keywords.tsv` regex table auto-tags a taxonomy class ONLY on an exactly-one-class match;
+  0-or-2+ matches leave `class-csv` blank and log the finding to `--needs-tagging` for a human, so a wrong
+  class never poisons GT. The live fetch is opt-in / offline-by-default: `--codehawks-from` / `--from` /
+  `--self-test` hatches keep `colony-lint.sh`/CI off the network. Two new colony-lint self-test gates run the
+  redacted checked-in fixtures under `fixtures/codehawks/`.
 - **`TIMEOUT` is now a first-class PoC verdict with bounded raise-ceiling escalation** (#2178, epic #2130).
   agentis-core#996 classifies an LLM prompt() size-timeout as a distinct error (`LlmTimeout`, exit 75, terminal
   `[llm.timeout]` marker); `run-poc.sh` now maps that to a `TIMEOUT` verdict instead of folding it into

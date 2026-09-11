@@ -1,0 +1,8 @@
+# codehawks-corpus.tsv — CodeHawks-only GT manifest (#2189; separate from corpus.tsv, which is
+# Sherlock-only). Columns (TAB): id  code_repo  competition_id  project_subdir  scope_hint
+#   id             urlSlug of the concluded contest (work-dir naming / --id selection).
+#   code_repo      GitHub "<org>/<repo>" of the audited code (from list-codehawks-concluded.sh).
+#   competition_id CodeHawks competition id (findings tRPC key; extract-gt-codehawks.sh input).
+#   project_subdir REQUIRED by #2172's fetch/run wiring; left BLANK here for a human to fill.
+#   scope_hint     optional map-zones.sh restriction; BLANK = auto-discover. Left for #2172.
+2026-03-sample-vault	example-org/sample-vault	samplecompid		
