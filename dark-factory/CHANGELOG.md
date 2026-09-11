@@ -56,6 +56,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   full `stub_class` truth table (live) and the byte-identity of the no-callee path. `verdict_of` and gate
   polarity are unchanged. Out of scope (own follow-up): the generation-side over-assumption in harvested
   `CALLEE-VECTOR` hypothesis text.
+- **`hunter.ag`'s attacker-controlled-callee directive now classifies a call target before framing it as
+  hostile, instead of asserting it unconditionally** (#2180, generation-side twin of #2179, epic #2130).
+  `callee_trust_block()`'s zone-level detector deliberately never checks per-callee settability (documented,
+  intentional — no AST/CFG), but the directive text itself told the model to treat EVERY settable-looking
+  callee as ATTACKER-CONTROLLED whenever the coarse detector fired, including a callee whose only settability
+  is a privilege-guarded admin path. The directive now mirrors #2179's exact taxonomy: a target is
+  ATTACKER-REPOINTABLE only when its backing address is mutable AND written by an `external`/`public` setter
+  carrying no privilege signal (`onlyX`, `msg.sender ==`, `hasRole`, `_checkOwner`/`_checkRole`,
+  `_authorizeUpgrade`, `requiresAuth`, `isAuthorized`); everything else — immutable/constant, an internal-only
+  writer, or a guarded setter — is ADMIN-UPGRADEABLE or unprovable and must now be emitted as
+  `CALLEE-VECTOR|...|dismissed: <guard/immutability>` rather than a manufactured `CANDIDATE`. This is a
+  prose-only directive edit: the deterministic detector, the `CALLEE-TRUST|` sentinel, the `CALLEE-VECTOR|`
+  schema, and the #2157 `CALLEE_TRUST` A/B toggle are all byte-identical. `demo-callee-trust-lens.sh` gained
+  the classification paragraphs to its source-guard assertions plus a new skip-gated live-LLM section (real
+  `--backend flat-cyborg`, not mock): a permissionless-setter fixture (new `PermissionlessOracleVault.sol`)
+  still arms a hostile `CANDIDATE` (the recall guard), and an owner-guarded fixture (`SettableOracleVault.sol`,
+  reused) is now dismissed instead of manufacturing one.
 - **`model-attribution.py` now reads a top-level `model` field, not only the nested `message.model` shape**
   (#2166, review finding from #2165, milestone D3, epic #2130). The header comment on `scan_transcript()`
   claimed it accepted the model id "either top-level or nested", but both branches only ever read

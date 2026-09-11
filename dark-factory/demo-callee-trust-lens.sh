@@ -9,12 +9,14 @@
 # `""`-gated, so a zone without a settable call target prompts byte-for-byte as it did before, and a
 # `CALLEE-TRUST|<subsystem>|<cls>|<n>` sentinel makes the injection observable in the cell log.
 #
-# This demo proves the MACHINERY, never the capability. Whether the directive actually makes a hunter
+# Parts 1-2 prove the MACHINERY, never the capability. Whether the directive actually makes a hunter
 # GENERATE the vector it was missing is only provable by a sandboxed, refusal-fallback-off,
 # transcript-attributed live re-hunt of a post-cutoff held-out target — an operator step, deliberately NOT
-# a CI gate (a mock backend does not reason).
+# a CI gate (a mock backend does not reason). Part 3 (#2180) is a narrower version of that same idea, scoped
+# to the classification refinement alone: it runs hunter.ag for real, over two small in-repo fixtures, and
+# is [SKIP]-gated on a real backend rather than being a CI gate either.
 #
-# Two parts:
+# Three parts:
 #   1) SOURCE-GUARD (the CI floor — pure grep/awk: no agentis, no forge, no network). The detector helpers,
 #      the directive's load-bearing sentences, the ""-when-false gate, the splice position, the sentinel and
 #      its honesty gate, substrate purity, the two fixtures' shapes, and the decision that the taxonomy gains
@@ -26,6 +28,12 @@
 #      copy-pasted twin cannot drift from the agent it claims to measure) over each fixture and asserts the
 #      injected block is the EMPTY string on the immutable arm — concatenating "" into the instruction is a
 #      no-op, which is what "the prompt is byte-identical" means here.
+#   3) LIVE-LLM CLASSIFICATION TRUTH TABLE (#2180; [SKIP] without `flat-cyborg`+`agentis` on PATH). The
+#      ATTACKER-REPOINTABLE vs ADMIN-UPGRADEABLE classification is prose, interpreted by the model, so no
+#      mock/deterministic slice can pin it. Runs hunter.ag for real (--backend flat-cyborg) over a
+#      permissionless-setter fixture (must still emit `CALLEE-VECTOR|...|CANDIDATE` — the recall guard) and
+#      an owner-guarded-setter fixture (must now emit `CALLEE-VECTOR|...|dismissed: ...` instead of a
+#      manufactured CANDIDATE).
 #
 # Usage:  dark-factory/demo-callee-trust-lens.sh
 # Exit: 0 = all assertions held; non-zero = a regression.
@@ -40,6 +48,9 @@ FIXDIR="$HERE/fixtures/callee-trust/contracts"
 SETTABLE="$FIXDIR/SettableOracleVault.sol"
 IMMUTABLE="$FIXDIR/ImmutableOracleVault.sol"
 TRANSITIVE="$FIXDIR/TransitiveOracleVault.sol"
+# #2180: PermissionlessOracleVault.sol is the live-classification truth table's attacker-repointable arm
+# (SettableOracleVault.sol above is reused as its owner-guarded / admin-upgradeable arm).
+PERMISSIONLESS="$FIXDIR/PermissionlessOracleVault.sol"
 
 FAILS=0
 note() { echo "demo-callee-trust-lens.sh: $*"; }
@@ -47,7 +58,7 @@ ok()   { echo "  [PASS] $*"; }
 bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 skip() { echo "  [SKIP] $*"; }
 
-for f in "$HUNTER" "$TAXONOMY" "$DISCOVERY" "$SETTABLE" "$IMMUTABLE" "$TRANSITIVE"; do
+for f in "$HUNTER" "$TAXONOMY" "$DISCOVERY" "$SETTABLE" "$IMMUTABLE" "$TRANSITIVE" "$PERMISSIONLESS"; do
   [ -f "$f" ] || { note "required file not found: $f" >&2; exit 3; }
 done
 
@@ -106,12 +117,17 @@ for s in \
   "treat the callee as UNKNOWN CODE" \
   "are NOT a reason to drop the vector" \
   "CALLEE-VECTOR|<fn>|<callee-expr>|" \
-  "Do NOT invent a callee"
+  "Do NOT invent a callee" \
+  "CLASSIFY the target's settability" \
+  "the target is ATTACKER-REPOINTABLE only when its" \
+  "IF the target is ATTACKER-REPOINTABLE per the classification above" \
+  "IF the target is ADMIN-UPGRADEABLE or unprovable per the classification above" \
+  "dismissed: <the specific guard or immutability you found>"
 do
   case "$HUNTER_FLAT" in *"$s"*) ;; *) DIRECTIVE_MISS="$DIRECTIVE_MISS [$s]" ;; esac
 done
 if [ -z "$DIRECTIVE_MISS" ]; then
-  ok "the directive keeps its header, its who-controls-the-callee question, the hostile-callee framing, the trusted-setter override and the do-not-invent guard"
+  ok "the directive keeps its header, its who-controls-the-callee question, the hostile-callee framing, the trusted-setter override, the do-not-invent guard, and the #2179-mirrored ATTACKER-REPOINTABLE vs ADMIN-UPGRADEABLE classification"
 else
   bad "the directive lost load-bearing text:$DIRECTIVE_MISS"
 fi
@@ -470,6 +486,60 @@ else
     else
       bad "CALLEE_TRUST=1: callee_directive() ($DIR_ON) != the raw #2145 block ($SET_LEN)"
     fi
+  fi
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# PART 3 — LIVE-LLM CLASSIFICATION TRUTH TABLE (#2180). The classification the directive teaches (ATTACKER-
+# REPOINTABLE vs ADMIN-UPGRADEABLE) is expressed in ENGLISH PROSE and interpreted by the model — no `.ag`
+# code implements it, so no deterministic/mock-backend slice above can pin whether it actually changes hunter
+# behaviour (mock does not reason; it replays a scripted transcript). This needs a REAL backend on PATH
+# (`flat-cyborg`, this federation's mandatory live backend — see CLAUDE.md's LLM backend section), clean
+# [SKIP] otherwise so CI (no logged-in session) stays green without pretending to have exercised this.
+# ----------------------------------------------------------------------------------------------------------
+if ! command -v flat-cyborg >/dev/null 2>&1 || ! command -v agentis >/dev/null 2>&1; then
+  note "13) live-LLM classification truth table (#2180) ..."
+  skip "no flat-cyborg/agentis on PATH — the real hunter.ag classification cannot be exercised"
+else
+  note "13) live-LLM classification truth table (#2180): permissionless setter still arms, guarded setter is dismissed ..."
+  # _live_arm <label> <fixture-basename>: same staging as _arm() above, but through the REAL flat-cyborg
+  # backend (a real model reasons over the prose), so this proves BEHAVIOUR, not just machinery.
+  _live_arm() {
+    _label="$1"; _sol="$2"
+    _repo="$WORK/$_label-repo"; mkdir -p "$_repo/contracts"
+    cp "$FIXDIR/$_sol.sol" "$_repo/contracts/$_sol.sol"
+    printf 'vault | C8 | contracts/%s.sol\n' "$_sol" > "$WORK/$_label-scope.tsv"
+    printf '# brief\nInvariants to break: share accounting is conserved.\nKnown issues to exclude: none.\n' \
+      > "$WORK/$_label-brief.md"
+    "$DISCOVERY" --repo "$_repo" --scope "$WORK/$_label-scope.tsv" --brief "$WORK/$_label-brief.md" \
+      --only "vault" --classes C8 --backend flat-cyborg --agentis agentis --out "$WORK/$_label" \
+      > "$WORK/$_label.out" 2>&1 || true
+    printf '%s\n' "$WORK/$_label/run/hunt_vault_C8.log"
+  }
+
+  LIVE_SET_LOG="$(_live_arm live-permissionless PermissionlessOracleVault)"
+  LIVE_GUARD_LOG="$(_live_arm live-guarded SettableOracleVault)"
+
+  if [ ! -f "$LIVE_SET_LOG" ]; then
+    bad "permissionless-setter fixture: no cell log — run-discovery.sh did not reach a verdict over the real backend"
+    tail -8 "$WORK/live-permissionless.out" 2>/dev/null | sed 's/^/      /' >&2
+  elif grep -q 'CALLEE-VECTOR|.*|CANDIDATE$' "$LIVE_SET_LOG"; then
+    ok "permissionless-setter fixture (attacker-repointable): hunter.ag emitted a CALLEE-VECTOR|...|CANDIDATE line — the hostile-callee framing still ARMS (recall guard holds)"
+  else
+    bad "permissionless-setter fixture (attacker-repointable): NO CALLEE-VECTOR|...|CANDIDATE line — the classification refinement suppressed a genuinely hostile callee (recall regression)"
+    grep '^CALLEE-VECTOR|' "$LIVE_SET_LOG" 2>/dev/null | sed 's/^/      /' >&2
+  fi
+
+  if [ ! -f "$LIVE_GUARD_LOG" ]; then
+    bad "owner-guarded-setter fixture: no cell log — run-discovery.sh did not reach a verdict over the real backend"
+    tail -8 "$WORK/live-guarded.out" 2>/dev/null | sed 's/^/      /' >&2
+  elif grep -q 'CALLEE-VECTOR|.*|dismissed:' "$LIVE_GUARD_LOG"; then
+    ok "owner-guarded-setter fixture (admin-upgradeable): hunter.ag emitted a CALLEE-VECTOR|...|dismissed: line — no manufactured CANDIDATE on a trusted-role repoint path"
+  elif grep -q 'CALLEE-VECTOR|.*|CANDIDATE$' "$LIVE_GUARD_LOG"; then
+    bad "owner-guarded-setter fixture (admin-upgradeable): hunter.ag still emitted an unconditional CANDIDATE — the classification did not suppress the pre-#2180 over-assumption"
+  else
+    bad "owner-guarded-setter fixture: no CALLEE-VECTOR| line at all — cannot judge the classification outcome"
+    tail -8 "$WORK/live-guarded.out" 2>/dev/null | sed 's/^/      /' >&2
   fi
 fi
 
