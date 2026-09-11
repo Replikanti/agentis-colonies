@@ -1263,6 +1263,17 @@ if grep -q 'fn contains_custody_escrow_signal' "$MAPPER" \
 else
   bad "zone-mapper.ag missing the #2170 escrow/withdraw-request custody net or its is_value_custody wiring"
 fi
+# #2174: the interface-declaration false-positive fix (dot-anchored release patterns + has_call_site
+# declaration-exclusion scan for the one pattern that can't be dot-anchored) and the keeper false-positive
+# fix (has_user_scoped_mapping gating the generic cooldown/escrow state tokens) exist and are wired in.
+if grep -q 'fn has_call_site' "$MAPPER" && grep -q 'fn has_user_scoped_mapping' "$MAPPER" \
+   && grep -q '\.transferFrom(' "$MAPPER" && grep -q '\.call{value:' "$MAPPER" \
+   && awk '/fn has_escrowed_token_release/{f=1} f&&/has_call_site\(code, "_transfer\(", 0\)/{print;exit}' "$MAPPER" | grep -q . \
+   && awk '/fn has_escrow_request_state/{f=1} f&&/has_user_scoped_mapping\(code\)/{print;exit}' "$MAPPER" | grep -q .; then
+  ok "zone-mapper.ag defines has_call_site + has_user_scoped_mapping (#2174) and wires them into has_escrowed_token_release/has_escrow_request_state"
+else
+  bad "zone-mapper.ag missing the #2174 declaration-exclusion / mapping-scoped keeper gate wiring"
+fi
 # #1717: the path-level test/interface exclusion runs BEFORE the content signals in is_value_custody.
 if grep -q 'fn zone_is_test_or_interface' "$MAPPER" && grep -q 'fn is_test_or_interface_path' "$MAPPER"; then
   ok "zone-mapper.ag defines the #1717 path-level test/interface exclusion"
@@ -1335,7 +1346,8 @@ else
   # ----------------------------------------------------------------------------------------------------
   CUSTODY_REPO="$WORK/target-custody-paths"
   mkdir -p "$CUSTODY_REPO/src" "$CUSTODY_REPO/interfaces" "$CUSTODY_REPO/test" \
-    "$CUSTODY_REPO/withdraws" "$CUSTODY_REPO/router"
+    "$CUSTODY_REPO/withdraws" "$CUSTODY_REPO/router" \
+    "$CUSTODY_REPO/ifacedecl" "$CUSTODY_REPO/keeper" "$CUSTODY_REPO/pullrelease"
   cat > "$CUSTODY_REPO/src/Vault.sol" <<'SOL'
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
@@ -1420,6 +1432,77 @@ contract FeeRouter {
     }
 }
 SOL
+  # #2174 fixture 1: a pure interface declaration OUTSIDE the interfaces/-prefixed path (so the #1717
+  # path-level filter does NOT pre-empt it — the content-level dot-anchor/declaration-exclusion fix is what's
+  # actually exercised here). Named to carry the (now mapping-gated) "Escrow" state substring AND a bare,
+  # bodyless `safeTransfer(` declaration — under the pre-#2174 code both matched unconditionally, giving a
+  # false positive; the fix must resolve this to false.
+  cat > "$CUSTODY_REPO/ifacedecl/IEscrowToken.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+interface IEscrowToken {
+    function escrowedBalance(address account) external view returns (uint256);
+    function safeTransfer(address to, uint256 amount) external;
+}
+SOL
+  # #2174 fixture 2: the reported keeper false-positive shape — a rate-limited keeper with a bare GLOBAL
+  # `cooldown` (no per-user mapping) and an admin `rescueTokens` that legitimately calls `.safeTransfer(` on
+  # an arbitrary token. The release token fires (real call site) but the state token must NOT (no per-user
+  # mapping to gate `cooldown` on), so the compound-AND must stay false.
+  cat > "$CUSTODY_REPO/keeper/CooldownKeeper.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+interface IERC20 {
+    function safeTransfer(address to, uint256 amount) external;
+}
+
+contract CooldownKeeper {
+    uint256 public cooldown;
+    uint256 public lastRun;
+
+    function run() external {
+        require(block.timestamp >= lastRun + cooldown, "cooldown not elapsed");
+        lastRun = block.timestamp;
+    }
+
+    function rescueTokens(address token, address to, uint256 amount) external {
+        IERC20(token).safeTransfer(to, amount);
+    }
+}
+SOL
+  # #2174 fixture 3: the notional src_withdraws coverage-gap shape — a per-user pull-release escrow that
+  # releases via `.transferFrom(` only (no `.transfer(`/`safeTransfer(` anywhere in the file). Fail-before
+  # (false on pre-#2174 main, proving the coverage gap), pass-after proves the `.transferFrom(` addition.
+  cat > "$CUSTODY_REPO/pullrelease/PullEscrow.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+struct WithdrawRequest {
+    uint256 amount;
+    uint256 unlockAt;
+}
+
+interface IERC20 {
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+contract PullEscrow {
+    IERC20 public immutable ASSET;
+    mapping(address => WithdrawRequest) public pendingWithdraw;
+
+    function requestWithdraw(uint256 amount) external {
+        pendingWithdraw[msg.sender] = WithdrawRequest(amount, block.timestamp + 7 days);
+    }
+
+    function finalizeWithdraw() external {
+        WithdrawRequest memory req = pendingWithdraw[msg.sender];
+        delete pendingWithdraw[msg.sender];
+        ASSET.transferFrom(address(this), msg.sender, req.amount);
+    }
+}
+SOL
   git -C "$CUSTODY_REPO" init -q
   git -C "$CUSTODY_REPO" config user.email demo@example.invalid
   git -C "$CUSTODY_REPO" config user.name "demo"
@@ -1432,7 +1515,8 @@ SOL
   # zone-mapper.ag's OWN content-level is_value_custody() logic for those paths (the thing this block is
   # actually regression-testing) rather than having #1824's earlier, stronger filter make the zones
   # disappear before reaching the substrate at all.
-  "$MAPZONES" --repo "$CUSTODY_REPO" --out "$OUT3" --backend mock --scope-hint "src,interfaces,test,withdraws,router" \
+  "$MAPZONES" --repo "$CUSTODY_REPO" --out "$OUT3" --backend mock \
+    --scope-hint "src,interfaces,test,withdraws,router,ifacedecl,keeper,pullrelease" \
     >/dev/null 2>"$WORK/mock-custody.err"
   RC3=$?
   # NOTE (deviation from the plan's literal read-zones.json mechanism, same intent): mock backend always
@@ -1463,6 +1547,19 @@ SOL
       ok "#2170: is_value_custody() true for a withdraw-request/cooldown manager (withdraws/), false for a transfer-only fee router (router/)"
     else
       bad "#2170: unexpected CUSTODY| lines (want withdraws=true router=false, got withdraws='$CUSTODY_WITHDRAWS' router='$CUSTODY_ROUTER')"
+    fi
+    # #2174: (i) a pure interface declaration (ifacedecl/) must NOT fire — the old unconditional
+    # `safeTransfer(`/`Escrow` substrings matched a bare declaration; (ii) the keeper false-positive shape
+    # (keeper/, global cooldown + legitimate rescueTokens release) must NOT fire; (iii) the transferFrom
+    # pull-release coverage gap (pullrelease/) MUST fire.
+    CUSTODY_IFACEDECL="$(grep -h '^CUSTODY|ifacedecl|' "$OUT3/run/zone_ifacedecl.log" 2>/dev/null | tail -1)"
+    CUSTODY_KEEPER="$(grep -h '^CUSTODY|keeper|' "$OUT3/run/zone_keeper.log" 2>/dev/null | tail -1)"
+    CUSTODY_PULLRELEASE="$(grep -h '^CUSTODY|pullrelease|' "$OUT3/run/zone_pullrelease.log" 2>/dev/null | tail -1)"
+    if [ "$CUSTODY_IFACEDECL" = "CUSTODY|ifacedecl|false" ] && [ "$CUSTODY_KEEPER" = "CUSTODY|keeper|false" ] \
+       && [ "$CUSTODY_PULLRELEASE" = "CUSTODY|pullrelease|true" ]; then
+      ok "#2174: is_value_custody() false for an interface-only declaration (ifacedecl/) and a keeper false-positive shape (keeper/), true for a transferFrom pull-release (pullrelease/)"
+    else
+      bad "#2174: unexpected CUSTODY| lines (want ifacedecl=false keeper=false pullrelease=true, got ifacedecl='$CUSTODY_IFACEDECL' keeper='$CUSTODY_KEEPER' pullrelease='$CUSTODY_PULLRELEASE')"
     fi
   else
     bad "map-zones.sh --backend mock failed on the #1717 custody-path fixture (exit $RC3):"

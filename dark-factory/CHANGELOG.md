@@ -37,6 +37,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   the vector-hunt stub's `__timeout__` branch records the escalation trail) — no real multi-minute timeout.
 
 ### Fixed
+- **Custody-escrow detector: interface-decl false-positive, keeper false-positive, and a release-path coverage
+  gap all tightened** (#2174, precision follow-up to #2170). In `zone-mapper.ag`, `has_escrowed_token_release`
+  matched a bare `safeTransfer(` substring, so a pure `interface`'s `function safeTransfer(...) external;`
+  declaration was read as a real release (false custody classification, inflating STAGE 4.6 forge cost). Release
+  patterns are now call-anchored — `.safeTransfer(` / `.transfer(` / `.transferFrom(` / `.call{value:` can only be
+  a call expression, never a declaration prefix — and the one internal pattern that cannot be dot-anchored,
+  `_transfer(`, goes through a new `has_call_site()` declaration-exclusion scan (skips any occurrence preceded by
+  a `function ` signature prefix). This also closes the coverage gap: release via `transferFrom` / `.call{value:}`
+  is now detected. Separately, `has_escrow_request_state`'s four generic single-word tokens (`Cooldown`/`cooldown`/
+  `Escrow`/`escrow`) are now gated behind a per-user `mapping(address =>` co-occurrence (`has_user_scoped_mapping`)
+  so a rate-limited keeper/rescue utility with a global cooldown no longer false-fires; the specific compound
+  tokens (`WithdrawRequest`, `pendingWithdraw`, `WithdrawalQueue`, …) stay unconditional. Documented accepted
+  imprecision: `has_user_scoped_mapping` is a blunt any-mapping check (not lexically scoped to the gated word), and
+  non-standard whitespace in a `function` declaration is treated as a call site — same whitespace-tolerance debt
+  this net carries elsewhere. Pinned by new interface-only / keeper / transferFrom-release fixtures plus an
+  unchanged re-run of the existing true-positive escrow shape in `demo-map-zones.sh`.
 - **`poc-writer.ag` `scope_probe` now resolves import-aliased and one-hop out-of-scope-inheritance carriers**
   (#2177, honest-lead precision, follow-up to #2171). The in-scope carrier scan matched only `contract <T>` and
   `(contract|interface) <Name> is ... <T>`, so a settable callee cast to `IPriceFeed` was mis-classified
