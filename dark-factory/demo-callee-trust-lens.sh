@@ -155,10 +155,12 @@ fi
 
 # The block is spliced as a bare `+ callee` term, which is what makes the empty string a no-op, and it sits
 # directly after the role preamble so it frames the WHOLE hunt (every class), ahead of `focus`/`depth`/`appx`.
-if grep -q '^  + callee$' "$HUNTER" && grep -A1 '^  + callee$' "$HUNTER" | grep -q '^  + focus$'; then
-  ok "the directive is spliced as a bare '+ callee' term immediately before '+ focus' (frames the whole hunt)"
+# #2191 spliced the cross-class '+ integ' term directly after '+ callee' (both re-frame the whole hunt ahead of
+# focus/depth), so callee is now immediately before integ; focus follows integ.
+if grep -q '^  + callee$' "$HUNTER" && grep -A1 '^  + callee$' "$HUNTER" | grep -q '^  + integ$'; then
+  ok "the directive is spliced as a bare '+ callee' term immediately before '+ integ' (frames the whole hunt)"
 else
-  bad "the '+ callee' splice is gone or no longer sits directly before '+ focus' in the instruction chain"
+  bad "the '+ callee' splice is gone or no longer sits directly before '+ integ' in the instruction chain"
 fi
 if grep -q 'let callee = callee_directive(code);' "$HUNTER"; then
   ok "the block is derived from the detector over the assembled payload, once per cell (via callee_directive)"
@@ -181,7 +183,7 @@ else
 fi
 # The toggle is silently inert unless CALLEE_TRUST rides run-discovery.sh's exec.env_passthrough (getenv reads
 # the SANITISED env — the #1426/#1428 failure mode the DEPTH_TARGET/APPENDIX allowlist entries guard against).
-if grep -q '^  echo "exec.env_passthrough = .*,CALLEE_TRUST"' "$DISCOVERY"; then
+if grep -q '^  echo "exec.env_passthrough = .*,CALLEE_TRUST\(,[A-Z_]*\)*"' "$DISCOVERY"; then
   ok "run-discovery.sh registers CALLEE_TRUST on exec.env_passthrough (the OFF toggle can reach hunter.ag)"
 else
   bad "run-discovery.sh does NOT pass CALLEE_TRUST through exec.env_passthrough — CALLEE_TRUST=0 would be inert"

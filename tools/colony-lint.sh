@@ -1486,6 +1486,27 @@ if [ -x "$REPO_ROOT/dark-factory/demo-callee-trust-lens.sh" ]; then
     fi
 fi
 
+# --- dark-factory external-integration/oracle-assumption directive (#2191, elite-recall cross-class wedge) ---
+# hunter.ag injects a GENERIC assumption-naming directive ("what does this code TRUST about the external
+# protocol?") whenever a deterministic detector finds an external call surface AND an integration signal (an
+# oracle/valuation read, a hardcoded bool/small-int call arg, or two externally-issued asset representations).
+# The directive is CROSS-CLASS (fires whatever HUNT_CLASS a cell runs), ""-gated, toggled by INTEGRATION_LENS,
+# and made observable by the INTEGRATION-LENS|<subsystem>|<cls>|<n> sentinel. demo-integration-lens.sh
+# source-guards the detector, the directive text, the ""-when-false gate, the toggle, the splice, the sentinel's
+# honesty gate, the record boundary, substrate purity, that NO protocol-specific token appears (the overfitting
+# guard), and the decision that the taxonomy gains no new class; with an `agentis` binary present it also runs
+# one REAL offline hunt cell per fixture (--backend mock) and asserts the sentinel fires on the integration
+# fixture, is ABSENT on the plain one, and is suppressed under INTEGRATION_LENS=0. No forge, no network, no LLM.
+if [ -x "$REPO_ROOT/dark-factory/demo-integration-lens.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-integration-lens.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: external-integration/oracle-assumption directive (detector + \"\"-gate + toggle + INTEGRATION-LENS sentinel, mock-run fixture discrimination) (#2191)"
+    else
+        fail "dark-factory: external-integration/oracle-assumption directive regressed (#2191)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory same-file callee closure in the function slicer (#2150, sub-milestone D1.1 of epic #2130) ---
 # A `file@fn` slice used to carry the requested functions and the contract header only, so an external entry
 # point that delegates its state writes and external calls to same-file internal helpers reached the hunter as
@@ -1993,6 +2014,23 @@ if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/callee-trust-ab.sh" ]; then
         pass "dark-factory: CALLEE-TRUST/vector-hunt rare-recall A/B self-test (#2157)"
     else
         fail "dark-factory: CALLEE-TRUST/vector-hunt rare-recall A/B self-test regressed (#2157)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- dark-factory INTEGRATION_LENS rare generation-recall A/B (#2191, elite-recall cross-class wedge) ---
+# integration-lens-ab.sh --self-test drives run-zone-hunt.sh over fixtures/integration-lens-ab/ TWICE through
+# one --agentis stub (no network / LLM / forge): a CONTROL arm (INTEGRATION_LENS=0 = the pre-#2191 pipeline)
+# and a TREATMENT arm (INTEGRATION_LENS unset = default ON), and asserts the treatment NAMES a RARE truth row
+# (generation-recall.sh HIT) that the control MISSES — the ON-vs-OFF rare GENERATION-recall delta (Δ=+1),
+# proven offline with the SAME ruler the live run uses. The real --live rare-tier measurement is operator-run
+# on an isolated non-contending contest, never on CI.
+if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/integration-lens-ab.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/bench/corpus-bench/integration-lens-ab.sh" --self-test 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: INTEGRATION_LENS rare generation-recall A/B self-test (#2191)"
+    else
+        fail "dark-factory: INTEGRATION_LENS rare generation-recall A/B self-test regressed (#2191)"
         printf '%s\n' "$check_out"
     fi
 fi
