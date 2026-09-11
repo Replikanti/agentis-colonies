@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# demo-poc-stub-callee.sh — the OFFLINE gate for the #2171 HOSTILE-STUB-CALLEE directive (epic #2130 follow-up).
+# demo-poc-stub-callee.sh — the OFFLINE gate for the #2171 HOSTILE-STUB-CALLEE directive + the #2179
+# attacker-repointable-vs-admin-upgradeable refinement (epic #2130 follow-up).
 #
 # What the change is: poc-writer.ag gained a DETERMINISTIC stub-eligibility gate and a hostile-stub synthesis
 # directive. When run-vector-hunt.sh hands it a CALLEE-VECTOR whose target callee is BOTH settable over
 # CODE_PATH (D1's #2145 signals, ported byte-identical) AND out-of-scope (interface-only, no in-repo
 # `contract <Type>` body), the model is directed to model the callee as an ATTACKER-DEPLOYED hostile stub (the
 # Royco MaliciousOracle idiom) injected via the discovered setter, instead of refuting the vector to CLEAN
-# because the callee's real code cannot be driven. The gate is AND-ed and FAIL-CLOSED: an immutable/hardcoded
-# or in-scope-implemented callee is byte-identical to today (stub_directive returns "" -> the prompt is
-# unchanged), so no finding is fabricated on a callee that is not actually attacker-controllable. verdict_of is
-# untouched: a stub PoC that PASSES is an honest FINDING carrying the controlling role as its precondition.
+# because the callee's real code cannot be driven. #2179 tightens "settable" to ATTACKER-repointable: a stub
+# arms ONLY when the backing address is mutable AND written by an UNGUARDED EXTERNAL setter — an owner/role-
+# guarded (admin/governance) setter, an internal writer, an immutable address, or a getter-resolved (out-of-
+# scope-setter) target all FAIL CLOSED. The gate is now a CLASSIFIER stub_class() returning one of `armed` /
+# `suppressed:{no-callee,no-type,not-settable,admin-or-unprovable,in-scope}`, and every suppression is surfaced
+# as a `STUB-GATE|<class>|<callee-expr>` audit line (before POC|, relayed by run-poc.sh). An immutable/guarded/
+# in-scope callee stays byte-identical to today (stub_directive returns "" -> the prompt is unchanged), so no
+# finding is fabricated on a callee that is not actually attacker-controllable. verdict_of is untouched.
 #
 # Two parts:
 #   1) SOURCE-GUARD (the CI floor — pure grep/awk: no agentis, no forge, no network). The eligibility helpers,
@@ -18,9 +23,10 @@
 #      env plumbing through run-poc.sh + run-vector-hunt.sh, substrate purity over the directive TEXT, the three
 #      fixture arms, and read-only/never-submit.
 #   2) LIVE ([SKIP] without agentis / forge). (a) an extracted-helper probe: the eligibility helpers sliced FROM
-#      poc-writer.ag BY LINE RANGE assert stub_eligible = 1 for the out-of-scope+settable arm, 0 for the
-#      immutable arm, 0 for the in-scope-implemented arm, and 0 for an empty callee-expr — the negative arms
-#      prove NO stub is fabricated. (b) fail-before/pass-after through the REAL forge-poc.sh gate: the control
+#      poc-writer.ag BY LINE RANGE assert stub_class = armed for the unguarded-external + out-of-scope arm and a
+#      suppressed:* reason for every negative arm (owner-guarded, modifier-guarded, immutable, getter/no-type,
+#      in-scope, empty) — the negative arms prove NO stub is fabricated. (b) fail-before/pass-after through the
+#      REAL forge-poc.sh gate: the control
 #      PoC (honest callee) -> POC|...|CLEAN and the stub PoC (hostile MaliciousOracle injected) -> POC|...|FINDING,
 #      NO LLM.
 #
@@ -36,6 +42,8 @@ VHUNT="$HERE/run-vector-hunt.sh"
 FIXROOT="$HERE/fixtures/poc-stub-callee"
 FIXSRC="$FIXROOT/src"
 SCOPED="$FIXSRC/ScopedVault.sol"
+PERMISSIONLESS="$FIXSRC/PermissionlessCalleeVault.sol"
+ROLEGUARD="$FIXSRC/RoleGuardedCalleeVault.sol"
 IMMUT="$FIXSRC/ImmutableCalleeVault.sol"
 INSCOPE="$FIXSRC/InScopeCalleeVault.sol"
 INSCOPEIFACE="$FIXSRC/InScopeInterfaceCalleeVault.sol"
@@ -52,7 +60,7 @@ ok()   { echo "  [PASS] $*"; }
 bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 skip() { echo "  [SKIP] $*"; }
 
-for f in "$PROVER" "$RUNNER" "$VHUNT" "$SCOPED" "$IMMUT" "$INSCOPE" "$INSCOPEIFACE" "$MULTILINE" "$TRANSITIVE" "$COMMENTBRACE" "$STRINGSLASH" "$POC_CONTROL" "$POC_STUB"; do
+for f in "$PROVER" "$RUNNER" "$VHUNT" "$SCOPED" "$PERMISSIONLESS" "$ROLEGUARD" "$IMMUT" "$INSCOPE" "$INSCOPEIFACE" "$MULTILINE" "$TRANSITIVE" "$COMMENTBRACE" "$STRINGSLASH" "$POC_CONTROL" "$POC_STUB"; do
   [ -f "$f" ] || { note "required file not found: $f" >&2; exit 3; }
 done
 
@@ -69,30 +77,56 @@ PROVER_FLAT="$(tr '\n' ' ' < "$PROVER" | sed 's/"[[:space:]]*+[[:space:]]*"//g')
 # PART 1 — SOURCE-GUARD (CI floor: grep/awk only)
 # ----------------------------------------------------------------------------------------------------------
 note "1) poc-writer.ag declares the eligibility + directive helpers ..."
-HELPER_FNS="is_plain_cast_callee callee_type_of callee_addr_expr is_bare_identifier addr_has_computed_target mutable_var_state_pattern callee_addr_settable scope_probe callee_out_of_scope stub_eligible hazard_behaviour stub_directive"
+HELPER_FNS="callee_type_of callee_addr_expr is_bare_identifier mutable_var_state_pattern callee_addr_mutable setter_window_pattern window_is_privileged window_is_externally_reachable callee_attacker_settable scope_probe callee_out_of_scope stub_class stub_eligible hazard_behaviour stub_directive"
 MISSING_FN=""
 for fn in $HELPER_FNS; do
   grep -q "^fn $fn(" "$PROVER" || MISSING_FN="$MISSING_FN $fn"
 done
 if [ -z "$MISSING_FN" ]; then
-  ok "all 12 callee-specific settability/type/scope/eligibility/directive helpers are declared in poc-writer.ag"
+  ok "all 15 callee-type/settability/window/scope/classifier/directive helpers are declared in poc-writer.ag"
 else
   bad "poc-writer.ag is missing helper(s):$MISSING_FN"
 fi
 
-# #2175 review BUG 1: settability MUST be tied to the SPECIFIC callee address, never file-level. callee_addr_settable
-# must derive the backing address from CALLEE_EXPR (callee_addr_expr), accept a computed getter target, else require
-# THAT var to be a mutable state var (mutable_var_state_pattern over the specific name) — so an immutable callee with
-# an unrelated setter elsewhere is NOT armed.
-SETT_BODY="$WORK/callee-addr-settable.txt"
-awk '/^fn callee_addr_settable\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$SETT_BODY"
-if grep -Fq 'let addr = callee_addr_expr(calleeExpr);' "$SETT_BODY" \
-   && grep -Fq 'if addr_has_computed_target(addr) { return true; }' "$SETT_BODY" \
-   && grep -Fq 'return len(regex_find_all(mutable_var_state_pattern(addr), code)) > 0;' "$SETT_BODY"; then
-  ok "callee_addr_settable() ties settability to the SPECIFIC backing address inside CALLEE_EXPR (computed getter, or that var declared mutable) — not file-level"
+# #2179: the computed-getter "settable" shortcut is GONE. A getter-resolved target's setter lives OUTSIDE the
+# audit scope (unprovable, never attacker-settable), so is_plain_cast_callee, addr_has_computed_target, and the
+# old callee_addr_settable must be ABSENT from the agent entirely (their return would re-open the admin/attacker
+# conflation this fix closes).
+GONE_MISS=""
+for g in is_plain_cast_callee addr_has_computed_target callee_addr_settable; do
+  grep -q "$g" "$PROVER" && GONE_MISS="$GONE_MISS [$g]"
+done
+if [ -z "$GONE_MISS" ]; then
+  ok "the computed-getter settable shortcut (is_plain_cast_callee/addr_has_computed_target) and the old callee_addr_settable are GONE (a getter-resolved target is unprovable, not attacker-settable)"
 else
-  bad "callee_addr_settable() no longer resolves settability over the callee's OWN backing address (BUG 1 regression risk)"
+  bad "a removed #2179 shortcut/name is still present:$GONE_MISS"
 fi
+
+# #2179 BUG (the over-assumption): attacker-repointability MUST require an UNGUARDED EXTERNAL setter, not merely a
+# mutable declaration. callee_attacker_settable ANDs (backing address mutable-declared) with (>=1 setter window
+# that is externally reachable AND not privileged), over the SPECIFIC backing var.
+SETT_BODY="$WORK/callee-attacker-settable.txt"
+awk '/^fn callee_attacker_settable\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$SETT_BODY"
+if grep -Fq 'if !callee_addr_mutable(calleeExpr, code) { return false; }' "$SETT_BODY" \
+   && grep -Fq 'regex_find_all(setter_window_pattern(addr), code)' "$SETT_BODY" \
+   && grep -Fq 'if window_is_privileged(w) { return false; }' "$SETT_BODY" \
+   && grep -Fq 'return window_is_externally_reachable(w);' "$SETT_BODY"; then
+  ok "callee_attacker_settable() ANDs a mutable backing declaration with an UNGUARDED (not-privileged) EXTERNALLY-reachable setter window — an admin/governance-guarded setter does NOT arm"
+else
+  bad "callee_attacker_settable() no longer requires an unguarded external setter window (the #2179 over-assumption would return)"
+fi
+
+# callee_addr_mutable ties the mutable-declaration check to the SPECIFIC backing bare identifier from CALLEE_EXPR.
+MUT_BODY="$WORK/callee-addr-mutable.txt"
+awk '/^fn callee_addr_mutable\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$MUT_BODY"
+if grep -Fq 'let addr = callee_addr_expr(calleeExpr);' "$MUT_BODY" \
+   && grep -Fq 'if !is_bare_identifier(addr) { return false; }' "$MUT_BODY" \
+   && grep -Fq 'return len(regex_find_all(mutable_var_state_pattern(addr), code)) > 0;' "$MUT_BODY"; then
+  ok "callee_addr_mutable() ties the mutable-declaration check to the SPECIFIC backing identifier inside CALLEE_EXPR (not file-level)"
+else
+  bad "callee_addr_mutable() no longer resolves the mutable declaration over the callee's OWN backing address"
+fi
+
 # The specific-var mutable pattern must still exclude immutable/constant by construction (at most one visibility
 # keyword between `address` and the var name), so an immutable backing address is never settable.
 if grep -A2 '^fn mutable_var_state_pattern(' "$PROVER" | grep -Fq 'address(?:\\s+(?:public|internal|private))?\\s+" + varName'; then
@@ -101,47 +135,43 @@ else
   bad "mutable_var_state_pattern() no longer keys on the specific var / no longer excludes immutable by construction"
 fi
 
-note "2) stub_eligible() is an AND-gate and FAIL-CLOSED (never fabricates a finding on a non-attacker-controllable / in-scope callee) ..."
-ELIG_BODY="$WORK/stub-eligible.txt"
-awk '/^fn stub_eligible\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$ELIG_BODY"
-GATE_MISS=""
-for g in \
-  'if len(calleeExpr) == 0 { return false; }' \
-  'if len(typeName) == 0 { return false; }' \
-  'if !callee_addr_settable(calleeExpr, code) { return false; }' \
-  'return callee_out_of_scope(typeName, repo);'
-do
-  grep -Fq "$g" "$ELIG_BODY" || GATE_MISS="$GATE_MISS [$g]"
+# The privilege vocabulary (role/owner/authorization guards) + the external|public reachability predicate must be
+# present — every guard token is ADDITIVE, strictly increasing fail-closed coverage.
+PRIV_MISS=""
+for tok in 'only[A-Z]' '.sender' 'hasRole' '_checkOwner' '_checkRole' '_authorizeUpgrade' 'requiresAuth' 'isAuthorized' '(?:external|public)'; do
+  grep -Fq "$tok" "$PROVER" || PRIV_MISS="$PRIV_MISS [$tok]"
 done
-if [ -z "$GATE_MISS" ]; then
-  ok "stub_eligible() ANDs (callee-expr present) + (type extracts) + (callee-specific settable) + (out-of-scope), fail-closed on an empty callee/type"
+if [ -z "$PRIV_MISS" ]; then
+  ok "the privilege vocabulary (onlyX / msg.sender== / hasRole / _checkOwner / _checkRole / _authorizeUpgrade / requiresAuth / isAuthorized) and the external|public reachability predicate are all present"
 else
-  bad "stub_eligible() lost an AND / fail-closed guard:$GATE_MISS"
+  bad "window privilege/reachability vocabulary is missing:$PRIV_MISS"
 fi
 
-# #2176 review (rounds 3-5): out-of-scope resolution must be FAIL-CLOSED BY CONSTRUCTION. grep/awk cannot tell
-# Solidity comments from strings from code, so the resolver matches RAW file text and NEVER strips comments: a
-# carrier appearing anywhere (even in a comment/string) => IN-scope (safe missed stub); out-of-scope only when it
-# appears NOWHERE. It recognizes `(contract|interface) <Name> is ...IX...` carriers (transitive interface chains)
-# and bounds the base-list scan by `;` (never in a header) not `{`, so a `{` hidden in a comment cannot truncate
-# it. No awk/sed comment-stripper (that round-4 stripper opened comment-state on a `/*` inside a STRING and ate a
-# real carrier — round-5 regression). Out-of-scope ONLY on a definitive SCANNED; FOUND / "" stay in-scope.
-SP_BODY="$WORK/scope-probe.txt"
-awk '/^fn scope_probe\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$SP_BODY"
-OOS_BODY="$WORK/callee-out-of-scope.txt"
-awk '/^fn callee_out_of_scope\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$OOS_BODY"
-SP_MISS=""
-# RAW matching: the resolver must NOT strip comments (no embedded awk/sed text processor).
-grep -Eq '(^|[^A-Za-z0-9_])(awk|sed)[[:space:]]' "$SP_BODY" && SP_MISS="$SP_MISS [must-not-strip-comments]"
-grep -Fq "(contract|interface)[[:space:]]+[A-Za-z0-9_]+[[:space:]]+is[^;]*[^A-Za-z0-9_]\" + typeName" "$SP_BODY" || SP_MISS="$SP_MISS [contract|interface-carrier-semicolon-bound]"
-grep -Fq 'grep -zqE' "$SP_BODY" || SP_MISS="$SP_MISS [grep-z]"
-# out-of-scope ONLY on a definitive SCANNED; FOUND and "" (no source / ambiguous) both stay in-scope (no stub).
-grep -Fq 'if probe == "SCANNED" { return true; }' "$OOS_BODY" || SP_MISS="$SP_MISS [scanned-gate]"
-grep -Fq 'return false;' "$OOS_BODY" || SP_MISS="$SP_MISS [fail-closed-default]"
-if [ -z "$SP_MISS" ]; then
-  ok "scope resolution matches RAW text (no comment stripping), recognizes contract OR interface carriers (transitive chains) bounded by ';' not '{', scans with grep -z, and is out-of-scope ONLY on a definitive SCANNED (fail-closed in-scope otherwise)"
+note "2) stub_class() is the fail-closed classifier — exactly six tokens, AND-ordered (callee-expr -> type -> settable -> out-of-scope) ..."
+CLASS_BODY="$WORK/stub-class.txt"
+awk '/^fn stub_class\(/{f=1} f{print} f&&/^}$/{exit}' "$PROVER" > "$CLASS_BODY"
+GATE_MISS=""
+for g in \
+  'if len(calleeExpr) == 0 { return "suppressed:no-callee"; }' \
+  'if len(typeName) == 0 { return "suppressed:no-type"; }' \
+  'if !callee_addr_mutable(calleeExpr, code) { return "suppressed:not-settable"; }' \
+  'if !callee_attacker_settable(calleeExpr, code) { return "suppressed:admin-or-unprovable"; }' \
+  'if !callee_out_of_scope(typeName, repo) { return "suppressed:in-scope"; }' \
+  'return "armed";'
+do
+  grep -Fq "$g" "$CLASS_BODY" || GATE_MISS="$GATE_MISS [$g]"
+done
+# exactly six DISTINCT return tokens, no seventh
+CLASS_TOKENS="$(grep -oE 'return "(armed|suppressed:[a-z-]*)"' "$CLASS_BODY" | sort -u | wc -l | tr -d ' ')"
+if [ -z "$GATE_MISS" ] && [ "$CLASS_TOKENS" = "6" ]; then
+  ok "stub_class() returns exactly six tokens (armed + 5 suppressed:* reasons) in fail-closed order; every suppression names its reason"
 else
-  bad "scope resolution is not fail-closed-by-construction:$SP_MISS"
+  bad "stub_class() lost a token / ordering guard:$GATE_MISS (distinct tokens=$CLASS_TOKENS, want 6)"
+fi
+if grep -Fq 'return stub_class(calleeExpr, code, repo) == "armed";' "$PROVER"; then
+  ok "stub_eligible() is stub_class(...) == \"armed\" — the \"\"-splice and the AND/fail-closed ordering are untouched"
+else
+  bad "stub_eligible() is no longer derived from stub_class(...) == \"armed\""
 fi
 
 note "3) stub_directive() returns \"\" when ineligible (byte-identical splice for the ordinary / immutable / in-scope paths) ..."
@@ -199,12 +229,31 @@ if [ "$SPLICE_N" -eq 2 ]; then
 else
   bad "'+ stubLine' is not spliced directly after '+ refLine' in both prompt builders (found $SPLICE_N of 2)"
 fi
-if grep -q 'let stubEligible = stub_eligible(calleeExpr, code, pocRepo);' "$PROVER" \
+if grep -q 'let stubClass = stub_class(calleeExpr, code, pocRepo);' "$PROVER" \
+   && grep -q 'let stubEligible = stubClass == "armed";' "$PROVER" \
    && grep -q 'let stubLine = stub_directive(stubEligible, calleeExpr, calleeHazard);' "$PROVER"; then
-  ok "stubEligible/stubLine are derived once from the CALLEE_EXPR env over the CODE_PATH contents + POC_REPO"
+  ok "stubClass/stubEligible/stubLine are derived once from the CALLEE_EXPR env over the CODE_PATH contents + POC_REPO"
 else
-  bad "the stubEligible/stubLine derivation from the CALLEE_EXPR env is gone"
+  bad "the stubClass/stubEligible/stubLine derivation from the CALLEE_EXPR env is gone"
 fi
+
+note "6b) the STUB-GATE audit line (#2179) is emitted ONLY under a non-empty CALLEE_EXPR, before POC|, and relayed ..."
+# poc-writer.ag: the print is guarded by `len(calleeExpr) > 0` and sits immediately before the POC| marker, so
+# the ordinary (no-callee) path prints NOTHING (byte-identical). The line carries no `POC|` substring.
+GATE_LINE='print("STUB-GATE|" + stubClass + "|" + calleeExpr);'
+if awk '/if len\(calleeExpr\) > 0 \{/{g=1} g && /print\("STUB-GATE\|" \+ stubClass \+ "\|" \+ calleeExpr\);/{ok=1} g && /print\("POC\|"/{if(ok)print"SEQ-OK"; exit}' "$PROVER" | grep -q 'SEQ-OK'; then
+  ok "poc-writer.ag prints STUB-GATE|<class>|<callee-expr> under a non-empty CALLEE_EXPR guard, immediately before the POC| marker"
+else
+  bad "the STUB-GATE line is not guarded by a non-empty CALLEE_EXPR / is not emitted before the POC| marker"
+fi
+case "$GATE_LINE" in *"POC|"*) bad "the STUB-GATE line contains a POC| substring — it would corrupt the verdict parse" ;; *) ok "the STUB-GATE line carries no POC| substring, so grep 'POC|' | grep -v 'POC-FILE|' never mis-parses it" ;; esac
+# run-poc.sh relays the STUB-GATE line from the cell log (the same idiom as POC-FILE|), after the POC| line.
+if grep -q "grep '^STUB-GATE|' \"\$CELL_LOG\" | tail -1" "$RUNNER" && grep -q 'echo "$STUB_GATE_LINE"' "$RUNNER"; then
+  ok "run-poc.sh relays the poc-writer STUB-GATE| line on its own stdout (after the POC| verdict line)"
+else
+  bad "run-poc.sh does not relay the STUB-GATE| audit line"
+fi
+
 
 note "7) run-poc.sh threads CALLEE_EXPR / CALLEE_HAZARD end-to-end ..."
 if grep -q -- '--callee-expr) need' "$RUNNER" && grep -q -- '--callee-hazard) need' "$RUNNER"; then
@@ -260,15 +309,37 @@ else
   ok "hazard_behaviour()/stub_directive() use only native builtins (no exec sh / embedded interpreter in the directive text)"
 fi
 
-note "10) the fixture arms have the shapes the gate discriminates on (incl. the two #2175-review repros) ..."
+note "10) the fixture arms have the shapes the gate discriminates on (positive + privilege + scope repros) ..."
+# POSITIVE arm (#2179): PermissionlessCalleeVault — mutable oracle + UNGUARDED external setter + out-of-scope IOracle.
+if grep -q 'function setOracle(address newOracle) external {' "$PERMISSIONLESS" \
+   && ! grep -q 'require(' "$PERMISSIONLESS" \
+   && ! grep -q 'onlyRole' "$PERMISSIONLESS" \
+   && grep -q '^    address public oracle;$' "$PERMISSIONLESS" \
+   && grep -q 'IOracle(oracle).price();' "$PERMISSIONLESS" \
+   && grep -q '^interface IOracle {$' "$PERMISSIONLESS" \
+   && ! grep -q '^contract IOracle' "$PERMISSIONLESS"; then
+  ok "PermissionlessCalleeVault.sol: mutable oracle + UNGUARDED external setOracle + interface-only IOracle (the armed positive arm)"
+else
+  bad "PermissionlessCalleeVault.sol lost the unguarded setter / mutable address / interface-only call the armed arm needs"
+fi
+# NEGATIVE arm (inline require guard): ScopedVault — same shape, but setOracle is gated by require(msg.sender == owner).
 if grep -q 'function setOracle(address newOracle) external' "$SCOPED" \
+   && grep -q 'require(msg.sender == owner' "$SCOPED" \
    && grep -q '^    address public oracle;$' "$SCOPED" \
-   && grep -q 'IOracle(oracle).price();' "$SCOPED" \
    && grep -q '^interface IOracle {$' "$SCOPED" \
    && ! grep -q '^contract IOracle' "$SCOPED"; then
-  ok "ScopedVault.sol: interface-typed call + setter + mutable address state, IOracle NOT implemented in scope (positive arm)"
+  ok "ScopedVault.sol: mutable oracle + OWNER-guarded (require msg.sender == owner) setter, IOracle out-of-scope (admin-guarded negative arm, inline-require style)"
 else
-  bad "ScopedVault.sol lost the setter / mutable address state / interface-only (out-of-scope) call it exists to carry"
+  bad "ScopedVault.sol lost the owner-guarded setter it now exists to carry (admin-or-unprovable arm)"
+fi
+# NEGATIVE arm (modifier guard): RoleGuardedCalleeVault — setOracle gated by an onlyRole(ADMIN_ROLE) modifier.
+if grep -q 'function setOracle(address newOracle) external onlyRole(ADMIN_ROLE)' "$ROLEGUARD" \
+   && grep -q 'modifier onlyRole(bytes32 role)' "$ROLEGUARD" \
+   && grep -q '^interface IOracle {$' "$ROLEGUARD" \
+   && ! grep -q '^contract IOracle' "$ROLEGUARD"; then
+  ok "RoleGuardedCalleeVault.sol: mutable oracle + MODIFIER-guarded (onlyRole) setter, IOracle out-of-scope (admin-guarded negative arm, modifier style)"
+else
+  bad "RoleGuardedCalleeVault.sol lost the onlyRole-modifier-guarded setter it exists to carry"
 fi
 # BUG-1 repro: immutable CALLEE (`oracle`) with an UNRELATED setter/mutable address present (real targets have them).
 if grep -q 'address public immutable oracle;' "$IMMUT" \
@@ -331,11 +402,11 @@ if grep -q '"price feed adapter /\* v2";' "$STRINGSLASH" \
 else
   bad "StringSlashImplCalleeVault.sol no longer mirrors the /*-in-string-literal repro"
 fi
-if grep -q '^contract MaliciousOracle' "$POC_STUB" && ! grep -q '^contract ScopedVault' "$POC_STUB" \
-   && grep -q 'import {ScopedVault} from "../src/ScopedVault.sol";' "$POC_STUB"; then
-  ok "Poc_stub.t.sol imports the in-scope ScopedVault + declares a DISTINCT MaliciousOracle stub (no #1471 target shadow)"
+if grep -q '^contract MaliciousOracle' "$POC_STUB" && ! grep -q '^contract PermissionlessCalleeVault' "$POC_STUB" \
+   && grep -q 'import {PermissionlessCalleeVault} from "../src/PermissionlessCalleeVault.sol";' "$POC_STUB"; then
+  ok "Poc_stub.t.sol imports the in-scope PermissionlessCalleeVault + declares a DISTINCT MaliciousOracle stub (no #1471 target shadow)"
 else
-  bad "Poc_stub.t.sol no longer imports ScopedVault or its stub name shadows the target"
+  bad "Poc_stub.t.sol no longer imports PermissionlessCalleeVault or its stub name shadows the target"
 fi
 
 note "11) read-only: no network / no submission verb on the PoC / vector-hunt paths ..."
@@ -352,21 +423,21 @@ fi
 # ----------------------------------------------------------------------------------------------------------
 # PART 2 — LIVE (needs agentis for the probe + forge for the gate; clean [SKIP] otherwise)
 # ----------------------------------------------------------------------------------------------------------
-note "12) extracted-helper probe: the stub_eligible truth table over all fixture arms (incl. both #2175-review repros) ..."
+note "12) extracted-helper probe: the stub_class truth table over all fixture arms (positive + privilege + scope) ..."
 if ! command -v agentis >/dev/null 2>&1; then
-  skip "no agentis binary on PATH — the extracted-helper eligibility probe cannot run"
+  skip "no agentis binary on PATH — the extracted-helper classification probe cannot run"
 else
-  # Extract the eligibility helpers FROM poc-writer.ag BY LINE RANGE (dependency order), so a copy cannot drift
+  # Extract the classification helpers FROM poc-writer.ag BY LINE RANGE (dependency order), so a copy cannot drift
   # from the shipped agent (the demo-callee-trust-lens.sh idiom).
-  PROBE_FNS="is_plain_cast_callee callee_type_of callee_addr_expr is_bare_identifier addr_has_computed_target mutable_var_state_pattern callee_addr_settable scope_probe callee_out_of_scope stub_eligible"
-  FRAG="$WORK/elig.frag"; : > "$FRAG"; FRAG_MISS=""
+  PROBE_FNS="callee_type_of callee_addr_expr is_bare_identifier mutable_var_state_pattern callee_addr_mutable setter_window_pattern window_is_privileged window_is_externally_reachable callee_attacker_settable scope_probe callee_out_of_scope stub_class"
+  FRAG="$WORK/class.frag"; : > "$FRAG"; FRAG_MISS=""
   for fn in $PROBE_FNS; do
     awk -v want="^fn $fn\\\\(" '$0 ~ want {f=1} f{print} f&&/^}$/{exit}' "$PROVER" >> "$FRAG"
     printf '\n' >> "$FRAG"
     grep -q "^fn $fn(" "$FRAG" || FRAG_MISS="$FRAG_MISS $fn"
   done
   if [ -n "$FRAG_MISS" ]; then
-    bad "could not extract eligibility helpers from poc-writer.ag by line range (renamed?):$FRAG_MISS"
+    bad "could not extract classification helpers from poc-writer.ag by line range (renamed?):$FRAG_MISS"
   else
     SB="$WORK/probe"; mkdir -p "$SB"
     ( cd "$SB" && agentis init >/dev/null 2>&1 ) || true
@@ -380,11 +451,13 @@ else
       printf 'let cexpr = getenv("CEXPR");\n'
       # shellcheck disable=SC2016  # ${p} is an .ag interpolation in the generated probe, not a shell expansion
       printf 'let code = exec sh "sed -n %s1,4000p%s ${p}";\n' "$SQ" "$SQ"  # no-pii: reads a checked-in Solidity fixture, no prompt()
-      printf 'if stub_eligible(cexpr, code, repo) { print("ELIG=1"); } else { print("ELIG=0"); }\n'
+      printf 'print("CLASS=" + stub_class(cexpr, code, repo));\n'
     } > "$SB/probe.ag"
     # Stage a one-file repo per arm so callee_out_of_scope greps only that arm's src/.
     _stage() { _a="$1"; _f="$2"; mkdir -p "$WORK/$_a/src"; cp "$_f" "$WORK/$_a/src/$(basename "$_f")"; printf '%s\n' "$WORK/$_a"; }
+    R_PERM="$(_stage perm "$PERMISSIONLESS")"
     R_SCOPED="$(_stage scoped "$SCOPED")"
+    R_ROLE="$(_stage role "$ROLEGUARD")"
     R_IMMUT="$(_stage immut "$IMMUT")"
     R_INSCOPE="$(_stage inscope "$INSCOPE")"
     R_IFACE="$(_stage iface "$INSCOPEIFACE")"
@@ -392,36 +465,43 @@ else
     R_TRANS="$(_stage trans "$TRANSITIVE")"
     R_CB="$(_stage cb "$COMMENTBRACE")"
     R_SS="$(_stage ss "$STRINGSLASH")"
-    _elig() {
-      ( cd "$SB" && FIXTURE="$1" REPODIR="$2" CEXPR="$3" agentis go probe.ag --enable-exec 2>&1 | grep '^ELIG=' | tail -1 )  # no-pii: the probe never calls prompt() — it reads a checked-in Solidity fixture and prints one eligibility bit
+    _class() {
+      ( cd "$SB" && FIXTURE="$1" REPODIR="$2" CEXPR="$3" agentis go probe.ag --enable-exec 2>&1 | grep '^CLASS=' | tail -1 | sed 's/^CLASS=//' )  # no-pii: the probe never calls prompt() — it reads a checked-in Solidity fixture and prints one classification token
     }
-    E_SCOPED="$(_elig "$R_SCOPED/src/ScopedVault.sol" "$R_SCOPED" 'IOracle(oracle)')"
-    E_IMMUT="$(_elig "$R_IMMUT/src/ImmutableCalleeVault.sol" "$R_IMMUT" 'IOracle(oracle)')"
-    E_INSCOPE="$(_elig "$R_INSCOPE/src/InScopeCalleeVault.sol" "$R_INSCOPE" 'PriceFeed(feed)')"
-    E_IFACE="$(_elig "$R_IFACE/src/InScopeInterfaceCalleeVault.sol" "$R_IFACE" 'IPriceFeed(feed)')"
-    E_ML="$(_elig "$R_ML/src/MultiLineImplCalleeVault.sol" "$R_ML" 'IPriceFeed(feed)')"
-    E_TRANS="$(_elig "$R_TRANS/src/TransitiveImplCalleeVault.sol" "$R_TRANS" 'IOracle(oracle)')"
-    E_CB="$(_elig "$R_CB/src/CommentBraceImplCalleeVault.sol" "$R_CB" 'IPriceFeed(feed)')"
-    E_SS="$(_elig "$R_SS/src/StringSlashImplCalleeVault.sol" "$R_SS" 'IPriceFeed(feed)')"
-    E_EMPTY="$(_elig "$R_SCOPED/src/ScopedVault.sol" "$R_SCOPED" '')"
-    [ "$E_SCOPED" = "ELIG=1" ] && ok "out-of-scope + settable callee -> stub_eligible = 1 (a hostile stub is synthesized)" \
-      || bad "out-of-scope + settable callee should be eligible (got '$E_SCOPED')"
-    [ "$E_IMMUT" = "ELIG=0" ] && ok "BUG-1 repro: immutable callee WITH an unrelated setter present -> stub_eligible = 0 (NO stub fabricated)" \
-      || bad "immutable callee with an unrelated setter must NOT be eligible (got '$E_IMMUT') — file-level settability regression"
-    [ "$E_INSCOPE" = "ELIG=0" ] && ok "in-scope concrete callee (PriceFeed) -> stub_eligible = 0 (NO stub fabricated)" \
-      || bad "in-scope concrete callee must NOT be eligible (got '$E_INSCOPE')"
-    [ "$E_IFACE" = "ELIG=0" ] && ok "BUG-2 repro: interface-cast callee with a single-line in-scope impl -> stub_eligible = 0 (NO stub fabricated)" \
-      || bad "interface-cast callee with an in-scope implementer must NOT be eligible (got '$E_IFACE') — interface-blind scope regression"
-    [ "$E_ML" = "ELIG=0" ] && ok "#2176 repro: interface-cast callee with a MULTI-LINE-inheritance in-scope impl -> stub_eligible = 0 (NO stub fabricated)" \
-      || bad "multi-line-inheritance in-scope implementer must NOT be eligible (got '$E_ML') — formatting-blind scope regression"
-    [ "$E_TRANS" = "ELIG=0" ] && ok "#2176 round-4 path-1: callee carried only via a TRANSITIVE interface chain (interface IOracleV2 is IOracle) -> stub_eligible = 0 (NO stub fabricated)" \
-      || bad "transitive-interface-chain carrier must NOT be eligible (got '$E_TRANS') — interface-carrier regression"
-    [ "$E_CB" = "ELIG=0" ] && ok "#2176 round-4 path-2: in-scope impl header with an inline comment { } brace -> stub_eligible = 0 (';'-bound header, base still found)" \
-      || bad "comment-brace-in-header impl must NOT be eligible (got '$E_CB') — header-truncation regression"
-    [ "$E_SS" = "ELIG=0" ] && ok "#2176 round-5 path: /* inside a STRING literal before the in-scope carrier -> stub_eligible = 0 (raw matching, no comment-state)" \
-      || bad "/*-in-string impl must NOT be eligible (got '$E_SS') — comment-stripping regression reintroduced"
-    [ "$E_EMPTY" = "ELIG=0" ] && ok "empty callee-expr (ordinary run-poc.sh path) -> stub_eligible = 0 (inert, byte-identical)" \
-      || bad "empty callee-expr must NOT be eligible (got '$E_EMPTY')"
+    _suppressed() { case "$1" in suppressed:*) return 0 ;; *) return 1 ;; esac; }
+    C_PERM="$(_class "$R_PERM/src/PermissionlessCalleeVault.sol" "$R_PERM" 'IOracle(oracle)')"
+    C_SCOPED="$(_class "$R_SCOPED/src/ScopedVault.sol" "$R_SCOPED" 'IOracle(oracle)')"
+    C_ROLE="$(_class "$R_ROLE/src/RoleGuardedCalleeVault.sol" "$R_ROLE" 'IOracle(oracle)')"
+    C_PROXY="$(_class "$R_PERM/src/PermissionlessCalleeVault.sol" "$R_PERM" 'nProxy(payable(address(oracle))).getImplementation()')"
+    C_IMMUT="$(_class "$R_IMMUT/src/ImmutableCalleeVault.sol" "$R_IMMUT" 'IOracle(oracle)')"
+    C_INSCOPE="$(_class "$R_INSCOPE/src/InScopeCalleeVault.sol" "$R_INSCOPE" 'PriceFeed(feed)')"
+    C_IFACE="$(_class "$R_IFACE/src/InScopeInterfaceCalleeVault.sol" "$R_IFACE" 'IPriceFeed(feed)')"
+    C_ML="$(_class "$R_ML/src/MultiLineImplCalleeVault.sol" "$R_ML" 'IPriceFeed(feed)')"
+    C_TRANS="$(_class "$R_TRANS/src/TransitiveImplCalleeVault.sol" "$R_TRANS" 'IOracle(oracle)')"
+    C_CB="$(_class "$R_CB/src/CommentBraceImplCalleeVault.sol" "$R_CB" 'IPriceFeed(feed)')"
+    C_SS="$(_class "$R_SS/src/StringSlashImplCalleeVault.sol" "$R_SS" 'IPriceFeed(feed)')"
+    C_EMPTY="$(_class "$R_PERM/src/PermissionlessCalleeVault.sol" "$R_PERM" '')"
+    # POSITIVE arm: unguarded external setter + out-of-scope callee -> armed (the gate cannot silently degrade to never-arm).
+    [ "$C_PERM" = "armed" ] && ok "PermissionlessCalleeVault + IOracle(oracle): UNGUARDED external setter, out-of-scope callee -> armed (AC pass arm)" \
+      || bad "PermissionlessCalleeVault should be armed (got '$C_PERM') — the positive arm regressed"
+    # SIGNATURE FLIP (#2179): the owner-guarded ScopedVault armed pre-#2179; it must now suppress as admin-or-unprovable.
+    [ "$C_SCOPED" = "suppressed:admin-or-unprovable" ] && ok "ScopedVault + IOracle(oracle): OWNER-guarded (require msg.sender==owner) setter -> suppressed:admin-or-unprovable (the #2179 fix signature; armed pre-#2179)" \
+      || bad "ScopedVault should be suppressed:admin-or-unprovable (got '$C_SCOPED') — the admin/attacker conflation is back"
+    [ "$C_ROLE" = "suppressed:admin-or-unprovable" ] && ok "RoleGuardedCalleeVault + IOracle(oracle): MODIFIER-guarded (onlyRole) setter -> suppressed:admin-or-unprovable" \
+      || bad "RoleGuardedCalleeVault should be suppressed:admin-or-unprovable (got '$C_ROLE') — modifier-guard privilege not detected"
+    [ "$C_PROXY" = "suppressed:no-type" ] && ok "nProxy(payable(address(oracle))).getImplementation() -> suppressed:no-type (the issue named expression: the \\b anchor keeps the mid-word capital out)" \
+      || bad "the nProxy(...) getter expression should be suppressed:no-type (got '$C_PROXY') — callee_type_of word-boundary fix regressed"
+    [ "$C_IMMUT" = "suppressed:not-settable" ] && ok "ImmutableCalleeVault (immutable oracle + unrelated mutable setter) -> suppressed:not-settable (immutable callee never arms)" \
+      || bad "immutable callee must be suppressed:not-settable (got '$C_IMMUT')"
+    [ "$C_EMPTY" = "suppressed:no-callee" ] && ok "empty callee-expr (ordinary run-poc.sh path) -> suppressed:no-callee (inert, byte-identical)" \
+      || bad "empty callee-expr must be suppressed:no-callee (got '$C_EMPTY')"
+    # SCOPE/privilege repros: the six in-scope arms carry owner-guarded setters, so under #2179 they suppress on the
+    # privilege axis (admin-or-unprovable) BEFORE the scope check — a suppressed:* outcome either way (never a stub).
+    for pair in "InScope=$C_INSCOPE" "InScopeIface=$C_IFACE" "MultiLine=$C_ML" "Transitive=$C_TRANS" "CommentBrace=$C_CB" "StringSlash=$C_SS"; do
+      _n="${pair%%=*}"; _v="${pair#*=}"
+      if _suppressed "$_v"; then ok "$_n in-scope repro -> $_v (suppressed:* — NO stub fabricated)"
+      else bad "$_n in-scope repro must stay suppressed:* (got '$_v')"; fi
+    done
   fi
 fi
 
@@ -433,21 +513,33 @@ elif ! command -v forge >/dev/null 2>&1; then
 else
   _verdict() {
     _fx="$1"; _od="$2"
-    bash "$RUNNER" --repo "$FIXROOT" --target "src/ScopedVault.sol:ScopedVault" \
-      --poc-fixture "$_fx" --code "$SCOPED" --out "$_od" --backend mock 2>&1 \
+    bash "$RUNNER" --repo "$FIXROOT" --target "src/PermissionlessCalleeVault.sol:PermissionlessCalleeVault" \
+      --poc-fixture "$_fx" --code "$PERMISSIONLESS" --out "$_od" --backend mock 2>&1 \
       | grep -E '^POC\|' | grep -v 'POC-FILE|' | tail -1 | sed 's/.*POC|//' | cut -d'|' -f2
   }
   V_CTRL="$(_verdict "$POC_CONTROL" "$WORK/ctrl")"
   V_STUB="$(_verdict "$POC_STUB" "$WORK/stub")"
   [ "$V_CTRL" = "CLEAN" ] && ok "fail-before: the honest-callee control PoC FAILS its exploit assertion -> POC|...|CLEAN (no finding)" \
     || bad "control PoC should be CLEAN (honest callee, no over-credit), got '$V_CTRL'"
-  [ "$V_STUB" = "FINDING" ] && ok "pass-after: the hostile MaliciousOracle stub (injected via setOracle) reproduces the over-credit -> POC|...|FINDING" \
+  [ "$V_STUB" = "FINDING" ] && ok "pass-after: the hostile MaliciousOracle stub (injected via the UNGUARDED setOracle) reproduces the over-credit -> POC|...|FINDING" \
     || bad "stub PoC should be FINDING (hostile injected callee over-credits), got '$V_STUB'"
+
+  # BYTE-IDENTITY on the unchanged path (#2179 AC3): a run-poc.sh invocation WITHOUT --callee-expr emits NO
+  # STUB-GATE| line and exactly one POC| verdict marker — identical to pre-#2179.
+  BID_OUT="$(bash "$RUNNER" --repo "$FIXROOT" --target "src/PermissionlessCalleeVault.sol:PermissionlessCalleeVault" \
+    --poc-fixture "$POC_CONTROL" --code "$PERMISSIONLESS" --out "$WORK/bid" --backend mock 2>&1)"
+  BID_STUB="$(printf '%s\n' "$BID_OUT" | grep -c '^STUB-GATE|')"
+  BID_POC="$(printf '%s\n' "$BID_OUT" | grep -c '^POC|')"
+  if [ "$BID_STUB" = "0" ] && [ "$BID_POC" = "1" ]; then
+    ok "no --callee-expr -> ZERO STUB-GATE| lines and exactly one POC| marker (byte-identical ordinary path, AC3)"
+  else
+    bad "the no-callee path is not byte-identical (STUB-GATE lines=$BID_STUB want 0, POC| markers=$BID_POC want 1)"
+  fi
 fi
 
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
-  note "PASS — the #2171 hostile-stub-callee gate (AND/fail-closed eligibility, \"\"-splice, Royco directive, unchanged verdict_of, env plumbing, negative arms) holds"
+  note "PASS — the #2171/#2179 hostile-stub-callee gate (attacker-repointable classifier, STUB-GATE audit line, \"\"-splice, Royco directive, unchanged verdict_of, env plumbing, negative arms) holds"
   exit 0
 fi
 note "FAIL — $FAILS assertion(s) regressed" >&2

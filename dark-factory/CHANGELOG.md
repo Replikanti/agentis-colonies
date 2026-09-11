@@ -15,6 +15,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 ## [Unreleased]
 
 ### Fixed
+- **The hostile-stub-callee gate now arms only on ATTACKER-repointable callees, not merely admin-upgradeable
+  ones** (#2179, review follow-up to #2171/#2176, epic #2130). `poc-writer.ag`'s `stub_eligible` tied the stub
+  to any *settable* callee — a mutable backing address, or a getter-resolved (registry/proxy) target — which
+  read a governance/admin upgrade as if an attacker could repoint it, over-assuming a hostile-implementation
+  precondition. Settability is now split into two positive-evidence axes: the backing address must be a
+  mutable-declared state var AND written by an `external`/`public` setter that carries NO privilege signal
+  (`onlyX` modifier, `msg.sender ==` check, `hasRole`, `_checkOwner`/`_checkRole`, `_authorizeUpgrade`,
+  `requiresAuth`, `isAuthorized`). An owner/role-guarded setter, an internal writer, an immutable address, or a
+  getter-resolved target (its setter out of the audit scope, unprovable) all FAIL CLOSED. The gate became a
+  classifier `stub_class()` returning one of `armed` / `suppressed:{no-callee,no-type,not-settable,
+  admin-or-unprovable,in-scope}`, and every suppression is surfaced as a `STUB-GATE|<class>|<callee-expr>`
+  audit line printed before the `POC|` marker and relayed by `run-poc.sh` (the ordinary no-callee path stays
+  byte-identical). The `callee_type_of` extractor is now `\b`-anchored, so a mid-word capital
+  (`nProxy(payable(address(x)))`) yields no cast type and fails closed on type alone. New fixtures
+  `PermissionlessCalleeVault.sol` (armed positive arm) and `RoleGuardedCalleeVault.sol` (modifier-guarded
+  negative arm); `ScopedVault.sol` is now the owner-guarded negative arm; `demo-poc-stub-callee.sh` asserts the
+  full `stub_class` truth table (live) and the byte-identity of the no-callee path. `verdict_of` and gate
+  polarity are unchanged. Out of scope (own follow-up): the generation-side over-assumption in harvested
+  `CALLEE-VECTOR` hypothesis text.
 - **`model-attribution.py` now reads a top-level `model` field, not only the nested `message.model` shape**
   (#2166, review finding from #2165, milestone D3, epic #2130). The header comment on `scan_transcript()`
   claimed it accepted the model id "either top-level or nested", but both branches only ever read

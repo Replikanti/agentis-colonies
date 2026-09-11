@@ -218,7 +218,8 @@ let fixturesBlock = fixtures_context(fixturesDir);
 // MaliciousOracle idiom models: an ATTACKER-DEPLOYED mock implementing the callee's interface, injected as the
 // settable target, performing a reentrancy / adversarial-return / gas attack. This block adds a DETERMINISTIC
 // eligibility gate + a directive that instructs the model to synthesize such a stub — but ONLY when the SPECIFIC
-// callee named in CALLEE_EXPR is BOTH settable (its OWN backing address is repointable) AND out-of-scope (no
+// callee named in CALLEE_EXPR is BOTH ATTACKER-repointable (its OWN backing address is written by an UNGUARDED
+// external setter, not merely an admin/governance one — #2179) AND out-of-scope (no
 // in-scope contract implements the cast type), so a genuinely immutable/hardcoded or in-scope-implemented callee
 // is NEVER given a stub (that would fabricate a finding). The gate is AND-ed and FAIL-CLOSED.
 //
@@ -234,18 +235,13 @@ let fixturesBlock = fixtures_context(fixturesDir);
 // address exists elsewhere (owner/treasury), fabricating a finding on a callee no role can repoint. So we resolve
 // settability over the BACKING ADDRESS of the cast, not over the whole contract.
 
-// `address`/`payable` are plain type casts, not target resolution — denylisted so `address(x)` does not count as
-// a computed (config-resolved) target.
-fn is_plain_cast_callee(name: string) -> bool {
-    if name == "address" { return true; }
-    if name == "payable" { return true; }
-    return false;
-}
-// Extract the interface/contract TYPE the callee-expression casts to — the leading `I?[A-Z]\w*` before `(`,
-// e.g. `IOracle(oracle)` -> `IOracle`, `PriceFeed(feed)` -> `PriceFeed`. Empty when the expr has no cast type
-// (a bare `registry.getOracle()` computed target has none) -> the stub gate FAILS CLOSED on it.
+// Extract the interface/contract TYPE the callee-expression casts to — the leading `[A-Z]\w*` at a WORD BOUNDARY
+// before `(`, e.g. `IOracle(oracle)` -> `IOracle`, `PriceFeed(feed)` -> `PriceFeed`. The `\b` anchor keeps a
+// capital buried inside a lowercase identifier OUT: `nProxy(payable(address(x)))` -> "" (the `P` in `nProxy` is
+// mid-word), so a getter/proxy call carrying no genuine cast type FAILS CLOSED on the type alone (#2179). Empty
+// when the expr has no cast type (a bare `registry.getOracle()` computed target has none).
 fn callee_type_of(expr: string) -> string {
-    return regex_capture("([A-Z][A-Za-z0-9_]*)\\s*\\(", expr, 1);
+    return regex_capture("\\b([A-Z][A-Za-z0-9_]*)\\s*\\(", expr, 1);
 }
 // The BACKING ADDRESS EXPRESSION inside the cast — the argument the interface is cast over. `IOracle(oracle)` ->
 // `oracle`; `IOracle(reg.getOracle())` -> `reg.getOracle()`; `IOracle(oracle).poke()` -> `oracle` (a trailing
@@ -257,16 +253,6 @@ fn callee_addr_expr(expr: string) -> string {
 fn is_bare_identifier(s: string) -> bool {
     return len(regex_find_all("^[A-Za-z_][A-Za-z0-9_]*$", s)) > 0;
 }
-// The backing address is a COMPUTED (config-resolved) target when it is itself a getter call to something other
-// than a plain `address`/`payable` cast (`reg.getOracle()`) — settable wherever that getter's owner points it.
-fn addr_has_computed_target(addr: string) -> bool {
-    let pat = "([A-Za-z_][A-Za-z0-9_.]*)\\s*\\(";
-    return reduce(regex_find_all(pat, addr), |acc: bool, m: string| -> bool {
-        if acc { return true; }
-        if is_plain_cast_callee(regex_capture(pat, m, 1)) { return false; }
-        return true;
-    }, false);
-}
 // A MUTABLE `address` state var declaration for the SPECIFIC var name — at most one visibility keyword between
 // `address` and the name, so `immutable`/`constant` are excluded BY CONSTRUCTION (an immutable backing address is
 // NOT settable regardless of unrelated setters). An optional inline initializer is allowed (`address oracle = x;`
@@ -274,16 +260,58 @@ fn addr_has_computed_target(addr: string) -> bool {
 fn mutable_var_state_pattern(varName: string) -> string {
     return "\\n[ \\t]*address(?:\\s+(?:public|internal|private))?\\s+" + varName + "\\s*(?:=[^;]*)?;";
 }
-// Is the SPECIFIC callee named in calleeExpr attacker-repointable? Computed target (getter) => yes. Otherwise the
-// backing address must be a bare identifier that is declared as a MUTABLE address state var (a setter that writes
-// it implies the same non-immutable declaration). An `immutable`/hardcoded/base-only callee => false => no stub.
-// FAIL-CLOSED on an empty/exotic backing expression.
-fn callee_addr_settable(calleeExpr: string, code: string) -> bool {
+// Is the SPECIFIC callee's BACKING ADDRESS a mutable-declared state var we can reason about? It must be a bare
+// identifier (a computed `reg.getOracle()` target has its setter OUTSIDE the audit scope -> unprovable, never
+// attacker-settable) declared as a MUTABLE `address` state var in CODE_PATH. FAIL-CLOSED on an empty/exotic/
+// computed backing expression or an immutable/constant declaration.
+fn callee_addr_mutable(calleeExpr: string, code: string) -> bool {
     let addr = callee_addr_expr(calleeExpr);
     if len(addr) == 0 { return false; }
-    if addr_has_computed_target(addr) { return true; }
     if !is_bare_identifier(addr) { return false; }
     return len(regex_find_all(mutable_var_state_pattern(addr), code)) > 0;
+}
+// A SETTER WINDOW for varName: one match per function-header-to-`varName =`-assignment span. The header is
+// `function <name>(<params>)<modifiers>{`; the body scan `(?:[^{}]|\{[^{}]*\})*?` cannot consume a LONE closing
+// brace, so a window can never escape the function it opens in (one nested `{...}` block is tolerated). The
+// `[^A-Za-z0-9_.]` prefix keeps `s[i].oracle = n` / `x_oracle = n` out; the trailing `[^=]` excludes `==`. Lazy,
+// linear-time on the regex_* engine (no backtracking blow-up).
+fn setter_window_pattern(varName: string) -> string {
+    return "(?s)function\\s+[A-Za-z0-9_]*\\s*\\([^)]*\\)[^{]*\\{(?:[^{}]|\\{[^{}]*\\})*?(?:[^A-Za-z0-9_.])" + varName + "\\s*=[^=]";
+}
+// Does a setter window carry a PRIVILEGE signal (a role/owner/authorization guard)? The list is broad and
+// ADDITIVE: an unrecognised guard reads as NON-privileged, so every entry strictly INCREASES fail-closed
+// coverage. A privileged window is an ADMIN/governance repoint, NOT an attacker repoint -> it does not arm.
+fn window_is_privileged(w: string) -> bool {
+    if len(regex_find_all("\\bonly[A-Z][A-Za-z0-9_]*", w)) > 0 { return true; }
+    if len(regex_find_all("msg\\.sender\\s*[=!]=", w)) > 0 { return true; }
+    if len(regex_find_all("==\\s*msg\\.sender", w)) > 0 { return true; }
+    if len(regex_find_all("\\bhasRole\\s*\\(", w)) > 0 { return true; }
+    if len(regex_find_all("_checkOwner", w)) > 0 { return true; }
+    if len(regex_find_all("_checkRole", w)) > 0 { return true; }
+    if len(regex_find_all("_authorizeUpgrade", w)) > 0 { return true; }
+    if len(regex_find_all("requiresAuth", w)) > 0 { return true; }
+    if len(regex_find_all("isAuthorized", w)) > 0 { return true; }
+    return false;
+}
+// Is the setter window's function EXTERNALLY reachable (an attacker can call it directly)? The header before the
+// opening brace must declare `external` or `public`; an `internal`/`private` writer is not a repoint path by
+// itself, so it FAILS CLOSED.
+fn window_is_externally_reachable(w: string) -> bool {
+    return len(regex_find_all("(?s)^function\\s+[A-Za-z0-9_]*\\s*\\([^)]*\\)[^{]*\\b(?:external|public)\\b", w)) > 0;
+}
+// Is the SPECIFIC callee named in calleeExpr ATTACKER-repointable (not merely admin-upgradeable)? Positive
+// evidence on BOTH axes (#2179): (a) the backing address is a mutable-declared state var (callee_addr_mutable),
+// AND (b) at least one setter window that writes it is EXTERNALLY reachable and carries NO privilege signal. A
+// privileged setter (owner/role guard), an internal-only writer, an immutable/hardcoded address, or a getter-
+// resolved target whose setter is out of scope all FAIL CLOSED -> no stub. Pure builtins (no exec sh).
+fn callee_attacker_settable(calleeExpr: string, code: string) -> bool {
+    if !callee_addr_mutable(calleeExpr, code) { return false; }
+    let addr = callee_addr_expr(calleeExpr);
+    return reduce(regex_find_all(setter_window_pattern(addr), code), |acc: bool, w: string| -> bool {
+        if acc { return true; }
+        if window_is_privileged(w) { return false; }
+        return window_is_externally_reachable(w);
+    }, false);
 }
 // OUT-OF-SCOPE = there is POSITIVE evidence the callee type `IX` is genuinely EXTERNAL — i.e. NO in-scope
 // declaration carries it. A callee cast to `IX` is IN-scope (do NOT stub — the SAFE direction) if any in-scope
@@ -321,16 +349,25 @@ fn callee_out_of_scope(typeName: string, repo: string) -> bool {
     if probe == "SCANNED" { return true; }
     return false;
 }
-// The AND-gate: a stub is synthesized ONLY when a CALLEE-VECTOR callee-expr was passed AND its type extracts AND
-// its SPECIFIC backing address is settable AND its type has no in-scope implementer. Any one false -> not
-// eligible -> the directive is "" -> the prompt is byte-identical to today (no fabricated finding on a
-// non-attacker-controllable or in-scope callee). Nested, because .ag has no `&&`.
-fn stub_eligible(calleeExpr: string, code: string, repo: string) -> bool {
-    if len(calleeExpr) == 0 { return false; }
+// The AND-gate, now a CLASSIFIER (#2179): returns exactly one of `armed`, `suppressed:no-callee`,
+// `suppressed:no-type`, `suppressed:not-settable`, `suppressed:admin-or-unprovable`, `suppressed:in-scope`. A
+// stub arms ONLY when a CALLEE-VECTOR callee-expr was passed AND its type extracts AND its SPECIFIC backing
+// address is ATTACKER-repointable (mutable + an unguarded external setter, not merely admin-upgradeable) AND its
+// type has no in-scope implementer. Any one miss suppresses -> the directive is "" -> the prompt is byte-
+// identical to today (no fabricated finding). The fail-closed ORDER is unchanged; the split just names the
+// suppression reason for the STUB-GATE audit line. Nested, because .ag has no `&&`.
+fn stub_class(calleeExpr: string, code: string, repo: string) -> string {
+    if len(calleeExpr) == 0 { return "suppressed:no-callee"; }
     let typeName = callee_type_of(calleeExpr);
-    if len(typeName) == 0 { return false; }
-    if !callee_addr_settable(calleeExpr, code) { return false; }
-    return callee_out_of_scope(typeName, repo);
+    if len(typeName) == 0 { return "suppressed:no-type"; }
+    if !callee_addr_mutable(calleeExpr, code) { return "suppressed:not-settable"; }
+    if !callee_attacker_settable(calleeExpr, code) { return "suppressed:admin-or-unprovable"; }
+    if !callee_out_of_scope(typeName, repo) { return "suppressed:in-scope"; }
+    return "armed";
+}
+// Thin bool kept so stub_directive's ""-splice and the AND/fail-closed ordering are untouched.
+fn stub_eligible(calleeExpr: string, code: string, repo: string) -> bool {
+    return stub_class(calleeExpr, code, repo) == "armed";
 }
 
 // The hazard the hostile stub's method must exhibit, selected by CALLEE_HAZARD. Builtins-only (a plain string).
@@ -359,7 +396,8 @@ fn stub_directive(eligible: bool, calleeExpr: string, hazard: string) -> string 
          + "a PoC comment naming the controlling role (the setter's caller) as the exploit's PRECONDITION — the "
          + "finding holds only if that role can be induced to repoint the callee.\n";
 }
-let stubEligible = stub_eligible(calleeExpr, code, pocRepo);
+let stubClass = stub_class(calleeExpr, code, pocRepo);
+let stubEligible = stubClass == "armed";
 let stubLine = stub_directive(stubEligible, calleeExpr, calleeHazard);
 
 // --- GENERATE the concrete exploit PoC -----------------------------------------------------------
@@ -581,6 +619,13 @@ let verdict = verdict_of(rc);
 // Surface the marker (stdout, parsed by run-poc.sh), then on a FINDING a `POC-FILE|<path>` line (the runnable
 // PoC a human executes), record it on the bus, and learn() the attribution (FINDING=success, CLEAN=failure,
 // harness=error). memo_write the last_check per the agent convention.
+// #2179: when a CALLEE-VECTOR was supplied, surface exactly one auditable STUB-GATE line naming the class BEFORE
+// the POC| marker, so every suppression is visible + countable in the hunt log. An empty callee-expr prints
+// NOTHING -> the ordinary run-poc.sh path is byte-identical. The line carries no `POC|` substring, so the
+// downstream verdict parse (grep 'POC|' | grep -v 'POC-FILE|') is unaffected.
+if len(calleeExpr) > 0 {
+    print("STUB-GATE|" + stubClass + "|" + calleeExpr);
+}
 print("POC|" + targetFn + "|" + verdict);
 if verdict == "FINDING" {
     print("POC-FILE|" + pocOut);
