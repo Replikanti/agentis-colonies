@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.20;
 
-// #2171 fixture (positive arm) for poc-writer.ag's hostile-stub-callee gate.
-//
-// The vault reads a price from an oracle whose ADDRESS is a mutable state variable with an owner-only setter,
-// and it uses the returned value to CREDIT shares. Nothing here is privileged-role abuse: the setter behaves
-// exactly as documented. The exploitable half is that the CALLEE is whatever `oracle` currently points at, and
-// that callee's interface (`IOracle`) is only DECLARED here, never IMPLEMENTED in scope — so the concrete-PoC
-// path cannot drive its real code and would refute the vector to CLEAN. Modelled as the Royco MaliciousOracle
-// idiom (an attacker-deployed mock injected via the setter) it reproduces as a return-value over-credit.
-//
-// MUST make stub_eligible() fire for the callee-expr `IOracle(oracle)`: the interface-typed call is out-of-scope
-// (an interface-only type with no in-scope implementer), and BOTH the `setOracle(address)` setter and the
-// mutable `address public oracle;` declaration are settable-target signals.
+// #2171/#2179 fixture (NEGATIVE arm — ADMIN-GUARDED setter). The callee address is a mutable state variable and
+// its interface (`IOracle`) is out-of-scope (only DECLARED here, never IMPLEMENTED in scope), but the setter is
+// gated by an inline `require(msg.sender == owner, "only owner")`, so repointing the callee is an OWNER/admin
+// action, NOT an attacker one. Under #2179 an admin-upgradeable callee is NOT attacker-repointable, so the gate
+// must SUPPRESS the stub here -> `suppressed:admin-or-unprovable` (it armed pre-#2179 — that was the over-
+// assumption #2179 fixes). PermissionlessCalleeVault is the positive (armed) arm; this is the owner-guarded
+// mirror, and RoleGuardedCalleeVault covers the modifier-guarded variant.
 
 interface IOracle {
     function price() external view returns (uint256);

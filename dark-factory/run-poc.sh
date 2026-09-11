@@ -266,6 +266,14 @@ fi
 # `================ POC: $TARGET -> $VERD ================` banner below (pinned by demo-poc-gen.sh's e2e grep).
 echo "POC|$TARGET|$VERD"
 
+# #2179: relay the poc-writer STUB-GATE|<class>|<callee-expr> audit line (emitted only when a CALLEE-VECTOR armed
+# or suppressed the hostile-stub path) the same way POC-FILE| is relayed. It carries no `POC|` substring, so the
+# verdict parse above (grep 'POC|' | grep -v 'POC-FILE|') never sees it. Absent on the ordinary (no-callee) path.
+STUB_GATE_LINE="$(grep '^STUB-GATE|' "$CELL_LOG" | tail -1 || true)"
+if [ -n "$STUB_GATE_LINE" ]; then
+  echo "$STUB_GATE_LINE"
+fi
+
 # #1540: on a FINDING, surface the runnable PoC path + the captured run-log on our OWN stdout (additive to the
 # POC| line), so a caller (the coordinator hand-off / deliver-submission --poc-file/--poc-run) can bundle them.
 if [ "$VERD" = "FINDING" ]; then
