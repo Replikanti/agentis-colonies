@@ -1671,6 +1671,36 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (29) #2196: the class normalizer must strip the ANGLE-BRACKET form "<class=C6>" (not just the compact
+# "class=C6" form) — real discovery candidates emit both. Pin the normalizer directly against all four forms
+# so a future regression on either the compact or angle-bracket path is caught here, not just in the LEADS
+# table.
+# ----------------------------------------------------------------------------------------------------------
+note "29) #2196: class normalizer strips '<class=C6>' angle brackets (not just compact 'class=C6') ..."
+if python3 - "$DASH" <<'PY'
+import sys, importlib.util
+spec = importlib.util.spec_from_file_location("hunt_dashboard", sys.argv[1])
+hd = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(hd)
+cases = [
+    ("<class=C6>", "C6"),
+    ("<CLASS=C16>", "C16"),
+    ("class=C6", "C6"),
+    ("class=C 22", "C22"),
+]
+e = []
+for raw, want in cases:
+    got = hd._norm_cls(raw)
+    if got != want:
+        e.append("_norm_cls(%r) = %r, want %r" % (raw, got, want))
+if e:
+    print("\n".join(e)); sys.exit(1)
+PY
+then ok "29: '<class=C6>' -> 'C6', '<CLASS=C16>' -> 'C16', 'class=C6' -> 'C6', 'class=C 22' -> 'C22' (angle-bracket + compact forms both normalize)"
+else bad "29: class normalizer angle-bracket/compact assertion failed"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
   exit 0
