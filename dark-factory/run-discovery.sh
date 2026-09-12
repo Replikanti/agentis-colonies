@@ -449,6 +449,12 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # Lever 1b guard refuses to re-run that outer loop on a genuine `[llm.timeout]`. demo-discovery-fail-fast.sh
   # pins this emission, the one-retry cap, and that a transient timeout still recovers on the second attempt.
   echo "llm.max_retries = 1"
+  # #2195: agentis-core #999 decoupled timeout retries from `max_retries` into a NEW
+  # `llm.timeout_retries` knob (default 0 = fail-fast). Without this, `llm.max_retries = 1`
+  # above no longer governs the `[llm.timeout]` path under a #999 agentis, so a TRANSIENT
+  # timeout (see the #2017 rationale above) would never recover. Opt in explicitly to keep
+  # the same 2x-budget cap on a persistent runaway while still recovering on attempt 2.
+  echo "llm.timeout_retries = 1"
   echo "trace.level = normal"
   # The hunter reads source + the brief/taxonomy through exec sh; pass through its whole env contract.
   # #1827 DEPTH_TARGET/DEPTH_KNOWN MUST be on this allowlist: getenv() reads the SANITIZED env, so an
