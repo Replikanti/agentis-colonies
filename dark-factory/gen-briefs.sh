@@ -248,7 +248,7 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
     # #2125: sandbox the driven Claude Code session (bubblewrap view = toolchain + repo + run dir, web tools denied).
     [ "$BACKEND" = "flat-cyborg" ] && [ -z "${DF_NO_SANDBOX:-}" ] && command -v bwrap >/dev/null 2>&1 && echo "llm.flat_cyborg.target = $HERE/lib/claude-sandboxed.sh"
     echo "trace.level = normal"
-    echo "exec.env_passthrough = TARGET_DIR,ZONE_ID,ZONE_NAME,ZONE_FILES,ZONE_CLASSES,TAXONOMY,AUDIT_RESIDUAL,AUDIT_BOUNDARY,SLICER"
+    echo "exec.env_passthrough = TARGET_DIR,ZONE_ID,ZONE_NAME,ZONE_FILES,ZONE_CLASSES,TAXONOMY,AUDIT_RESIDUAL,AUDIT_BOUNDARY,SLICER,BRIEF_OUT"
     echo "exec.default_timeout_ms = 30000"
     # Experience is ENABLED because `learn()` is a WRITE this flag GATES (#1878, measured on agentis v1.28.0):
     # brief-writer.ag ends every zone with learn("brief", ...), and with `experience.enabled = false` agentis
@@ -279,8 +279,13 @@ FAILED=0
 # ZID/ZNAME/ZFILES_NL/ZCLASSES/RESIDUAL_TXT from the loop below.
 # shellcheck disable=SC2317  # invoked by name through df_run_agent_validated
 _gb_attempt() {
+  # #2205: the model writes the brief body to this file (Write tool) so the body bypasses flat-cyborg's
+  # fragile --extract screen-scrape; brief-writer.ag reads it back and re-emits a clean sentinel block.
+  # rm stale first so a truncated/prior-attempt file is never re-read.
+  rm -f "$RUN/brief-out.$ZID.md"
   ( cd "$RUN" && env \
       TARGET_DIR="$REPO" \
+      BRIEF_OUT="$RUN/brief-out.$ZID.md" \
       ZONE_ID="$ZID" \
       ZONE_NAME="$ZNAME" \
       ZONE_FILES="$ZFILES_NL" \
