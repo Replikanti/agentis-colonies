@@ -598,6 +598,8 @@ def sublog_activity():
         kind="refute gate"
     elif "gen-briefs" in "\n".join(parts) or "briefs" in parts:
         kind="briefing"; mm=re.search(r"brief_(.+)\.log",os.path.basename(newest)); zone=mm.group(1) if mm else ""
+    elif "map" in parts:
+        kind="mapping"
     return {"kind":kind,"zone":zone,"waited":waited,"stalled":stalled}
 
 def phase_status():
@@ -640,8 +642,16 @@ def phase_status():
     zones_mapped     = os.path.isfile(os.path.join(OUT, "map", "zones.json"))
     briefs_populated = bool(glob.glob(os.path.join(OUT, "briefs", "briefs", "*.md")))
     discovery_touched = any(z.get("status") != "not_reached" for z in zs)
-    st["M1 · map zones"] = "done" if (zones_mapped or discovery_touched or "[M2]" in log) else ("run" if "[M1]" in log else "wait")
-    st["M2 · briefs"]    = "done" if (briefs_populated or discovery_touched or "[M3]" in log) else ("run" if "[M2]" in log else "wait")
+    # #2205: the MAP phase (M1 map, M2 briefs) must read "run" while it is genuinely live even on a
+    # marker-less registered log (the corpus-bench A/B + sweep harness registers a log carrying no
+    # [M1]/[M2]/[M3] markers). Mirror the #2200 M3 fix: key "run" on live sub-log activity (a mapping
+    # or briefing cell), not the marker alone, so a run mid-map / mid-briefing shows the running marker
+    # instead of a false "wait" while the top LIVE banner correctly reads active.
+    _act = sublog_activity()
+    _mapping_live  = (_act is not None and _act.get("kind") == "mapping")
+    _briefing_live = (_act is not None and _act.get("kind") == "briefing")
+    st["M1 · map zones"] = "done" if (zones_mapped or discovery_touched or "[M2]" in log) else ("run" if ("[M1]" in log or _mapping_live) else "wait")
+    st["M2 · briefs"]    = "done" if (briefs_populated or discovery_touched or "[M3]" in log) else ("run" if ("[M2]" in log or _briefing_live) else "wait")
     if ("__EXIT__=" in log) and not hunt_live:
         # The process exited — but "exited" is NOT "fully hunted". Only call the run
         # complete when every zone produced a verdict and none errored out. Otherwise
@@ -666,7 +676,7 @@ def phase_status():
     # that the top LIVE header correctly reported. Discovery has started when ANY of: the marker is present,
     # a zone has left "not_reached" (in_flight / covered / failed / hunted_degraded), or the discovery sublog
     # is active. Only genuine not-yet-started (no marker, every zone not_reached, no discovery sublog) is "wait".
-    _act = sublog_activity()
+    # (_act computed once above, at the M1/M2 map-phase liveness check — reused here.)
     _disc_started = (
         ("[M3]" in log)
         or any(z.get("status") != "not_reached" for z in zs)
@@ -688,7 +698,10 @@ def phase_status():
         st["M1 · map zones"] = "done"
         st["M2 · briefs"]    = "done"
     vs = verify_state()
-    deep = bool(re.search(r"STAGE 4\.5|\[deep-hunt\]", log))
+    # #2205 systemic: "deep-hunt started" is keyed on the on-disk artifact (a deep-hunt/<slot> dir) or a
+    # live deep slot, not the [deep-hunt]/STAGE-4.5 log marker alone — so M4 "done" and the 4.5 row render
+    # correctly on a marker-less registered log (the corpus-bench harness), same class as #2200/#2205 M1-M3.
+    deep = bool(re.search(r"STAGE 4\.5|\[deep-hunt\]", log)) or bool(glob.glob(os.path.join(OUT,"deep-hunt","*"))) or (active_deep_slot() is not None)
     # #2001: a phase shows "run" only when its work is LIVE right now — not merely because its marker appeared
     # once in the append-only log. A re-hunt re-enters discovery after a prior full pass, so the deep-hunt +
     # refute-deep markers persist while the actual deep-hunt cells sit idle (hours-stale) and only discovery is
