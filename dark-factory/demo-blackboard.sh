@@ -90,6 +90,12 @@ cat > "$BIN/claude" <<EOF
 #!/usr/bin/env bash
 set -eu
 PROMPT="\$(cat)"
+# 2197: the CANDIDATE-format instruction the hunter builds must teach the CANONICAL class token
+# (class=<CLS>), never the angle-bracket form (which trained the model to emit the <class=Cx> shape
+# that #2196 had to normalize). Assert on the ACTUAL prompt bytes this backend received, so a
+# regression in hunter.ag line 695 is caught at the source (generation), not just masked at the reader.
+if printf '%s' "\$PROMPT" | grep -q '|class=C2|'; then : > "$WORK/CANONICAL_CLASS_SEEN"; fi
+if printf '%s' "\$PROMPT" | grep -q '<class=C2>'; then : > "$WORK/BRACKET_CLASS_SEEN"; fi
 if printf '%s' "\$PROMPT" | grep -q 'LiquidationEngine.sol'; then
   # cell 2: it MUST have received the oracle lead via the blackboard FOCUS block injected by hunter.ag.
   if printf '%s' "\$PROMPT" | grep -q 'BLACKBOARD'; then
@@ -134,6 +140,9 @@ echo
 FAIL=0
 [ "$RC" -eq 0 ] || { echo "FAIL: run-discovery.sh exited $RC" >&2; FAIL=1; }
 [ -f "$WORK/STEER_CONFIRMED" ] || { echo "FAIL: cell 2's prompt did NOT contain cell 1's blackboard lead (no steer)" >&2; FAIL=1; }
+# #2197: the hunter prompt must teach the canonical class token and must NOT carry the angle-bracket form.
+[ -f "$WORK/CANONICAL_CLASS_SEEN" ] || { echo "FAIL: hunter prompt never carried the canonical '|class=C2|' CANDIDATE-format token (#2197)" >&2; FAIL=1; }
+[ ! -f "$WORK/BRACKET_CLASS_SEEN" ] || { echo "FAIL: hunter prompt still teaches the angle-bracket '<class=C2>' form — hunter.ag:695 regression (#2197)" >&2; FAIL=1; }
 # The oracle cell's log is slugged from its space/&-bearing subsystem name (tr -cs 'A-Za-z0-9' '_'):
 # "Vault fee accountant & oracle" -> "Vault_fee_accountant_oracle". Pre-fix this cell CRASHED at its
 # CANDIDATE post (illegal memo key) and this BLACKBOARD-POST line never appeared — the regression assertion.
