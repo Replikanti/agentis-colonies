@@ -631,8 +631,17 @@ def phase_status():
     # A stage is "done" only once the NEXT stage's marker appears; while it is the latest marker
     # it is the one actually running (M2 briefs take minutes of LLM per zone, so this is the window
     # where nothing else has a marker yet — show 🔄 on it instead of a premature ✅ + no running row).
-    st["M1 · map zones"] = "done" if "[M2]" in log else ("run" if "[M1]" in log else "wait")
-    st["M2 · briefs"]    = "done" if "[M3]" in log else ("run" if "[M2]" in log else "wait")
+    # #2193: the [M1]/[M2]/[M3] markers live in the REGISTERED `log` field, but a caller can redirect
+    # run-zone-hunt's stdout to a different sink (the corpus-bench A/B harness does) — the registered
+    # log then has no markers at all, so a marker-only test wrongly stays "wait" even once mapping and
+    # briefing have plainly finished (discovery cannot start without them). Corroborate with on-disk
+    # truth: M1 is done once map/zones.json exists, M2 once the briefs dir has actual brief files, and
+    # either is trivially implied once ANY zone has left "not_reached" (discovery has begun reading them).
+    zones_mapped     = os.path.isfile(os.path.join(OUT, "map", "zones.json"))
+    briefs_populated = bool(glob.glob(os.path.join(OUT, "briefs", "briefs", "*.md")))
+    discovery_touched = any(z.get("status") != "not_reached" for z in zs)
+    st["M1 · map zones"] = "done" if (zones_mapped or discovery_touched or "[M2]" in log) else ("run" if "[M1]" in log else "wait")
+    st["M2 · briefs"]    = "done" if (briefs_populated or discovery_touched or "[M3]" in log) else ("run" if "[M2]" in log else "wait")
     if ("__EXIT__=" in log) and not hunt_live:
         # The process exited — but "exited" is NOT "fully hunted". Only call the run
         # complete when every zone produced a verdict and none errored out. Otherwise
@@ -661,6 +670,12 @@ def phase_status():
         # coverage hole (a hunted_degraded zone leaves reached < total_z) is the gap. `covered` alone would mis-
         # flag a live re-hunt over a failed-zone exit as a gap.
         st["M3 · discovery"] = "run" if _disc_live else ("done" if reached >= total_z else "gap")
+    # #2193: once discovery has genuinely started (run/done/gap, never "wait"), M1+M2 are necessarily
+    # complete — discovery cannot begin without a zone map and a brief. Belt-and-braces over the
+    # artifact checks above for the rarer case where the map/briefs sink itself was also relocated.
+    if st["M3 · discovery"] != "wait":
+        st["M1 · map zones"] = "done"
+        st["M2 · briefs"]    = "done"
     vs = verify_state()
     deep = bool(re.search(r"STAGE 4\.5|\[deep-hunt\]", log))
     # #2001: a phase shows "run" only when its work is LIVE right now — not merely because its marker appeared
