@@ -1744,6 +1744,77 @@ else bad "29: class normalizer angle-bracket/compact assertion failed"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (30) #2205 SYSTEMIC: the WHOLE phase lifecycle must render correctly on a fully marker-less registered log
+# (the corpus-bench A/B + sweep harness registers a log carrying NO [M1]/[M2]/[M3]/[M4]/[deep-hunt]/__EXIT__
+# markers). #2193 fixed M1/M2-from-artifacts, #2200 fixed M3, #2205 fixes M1/M2 "run" (mapping/briefing live)
+# and the deep-hunt-started signal — this one test drives a marker-less run through EVERY stage so the next
+# phase to regress on marker-dependence is caught HERE, not discovered live and patched one at a time.
+# ----------------------------------------------------------------------------------------------------------
+note "30) #2205 systemic: marker-less log renders each phase 'run'/'done' from artifacts + live sub-log, not markers ..."
+strip_markers() { grep -vE '\[M1\]|\[M2\]|\[M3\]|\[M4\]|\[deep-hunt\]|STAGE 4\.5|__EXIT__=' "$1" > "$1.tmp" && mv "$1.tmp" "$1"; }
+
+# (30a) MAP live: no zones.json, no coverage, a fresh map sub-log -> M1 'run' (mapping cell live), M2/M3 'wait'.
+A_DESC="$(stage_as balancer sys-maplive)"; A_DIR="$(dirname "$A_DESC")"
+strip_markers "$A_DIR/hunt.log"
+rm -f "$A_DIR/zone-hunt-out/map/zones.json"
+rm -rf "$A_DIR/zone-hunt-out/coverage" "$A_DIR/zone-hunt-out/briefs"
+mkdir -p "$A_DIR/zone-hunt-out/map/run"; echo 'mapping zones ...' > "$A_DIR/zone-hunt-out/map/run/map.log"
+if emit_model "$A_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=1 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=1; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+ph = json.load(open(sys.argv[1]))["phases"]
+e = []
+if ph.get("M1 · map zones") != "run": e.append("M1 must be 'run' during live mapping on a marker-less log: %s" % ph.get("M1 · map zones"))
+if ph.get("M2 · briefs") != "wait": e.append("M2 must still be 'wait' during mapping: %s" % ph.get("M2 · briefs"))
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "30a: marker-less + live map sub-log -> M1 'run', M2 'wait'"
+  else bad "30a: map-phase liveness (marker-less) failed"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+  fi
+else bad "30a: emit-model failed (map-live)"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+# (30b) BRIEFS live: zones.json present (M1 done), briefs NOT populated, a fresh gen-briefs sub-log -> M2 'run'.
+B_DESC="$(stage_as balancer sys-brieflive)"; B_DIR="$(dirname "$B_DESC")"
+strip_markers "$B_DIR/hunt.log"
+rm -rf "$B_DIR/zone-hunt-out/coverage" "$B_DIR/zone-hunt-out/briefs"
+mkdir -p "$B_DIR/zone-hunt-out/briefs/.gen-briefs/run"
+echo 'drafting brief ...' > "$B_DIR/zone-hunt-out/briefs/.gen-briefs/run/brief_pkg_vault_contracts.log"
+if emit_model "$B_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=1 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=1; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+ph = json.load(open(sys.argv[1]))["phases"]
+e = []
+if ph.get("M1 · map zones") != "done": e.append("M1 must be 'done' (zones.json on disk): %s" % ph.get("M1 · map zones"))
+if ph.get("M2 · briefs") != "run": e.append("M2 must be 'run' during live briefing on a marker-less log: %s" % ph.get("M2 · briefs"))
+if ph.get("M3 · discovery") != "wait": e.append("M3 must still be 'wait' during briefing: %s" % ph.get("M3 · discovery"))
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "30b: marker-less + live gen-briefs sub-log -> M1 'done', M2 'run', M3 'wait'"
+  else bad "30b: briefs-phase liveness (marker-less) failed"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+  fi
+else bad "30b: emit-model failed (briefs-live)"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+# (30c) DEEP-HUNT started (marker-less): a deep-hunt/<slot> dir on disk -> M4 'done' (deep-hunt began) even
+# with NO [deep-hunt]/STAGE-4.5 marker in the log. Coverage is fully hunted so discovery is done.
+C_DESC="$(stage_as balancer sys-deepdir)"; C_DIR="$(dirname "$C_DESC")"
+strip_markers "$C_DIR/hunt.log"
+mkdir -p "$C_DIR/zone-hunt-out/deep-hunt/pkg_vault_contracts_C6/run"
+if emit_model "$C_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+ph = json.load(open(sys.argv[1]))["phases"]
+if ph.get("M4 · refute gate") != "done":
+    print("M4 must be 'done' once a deep-hunt/<slot> dir exists (deep began), marker-less: %s" % ph.get("M4 · refute gate")); sys.exit(1)
+PY
+  then ok "30c: marker-less + on-disk deep-hunt/<slot> dir -> M4 'done' (deep-hunt-started is artifact-based, not marker-based)"
+  else bad "30c: deep-hunt-started (marker-less) failed"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+  fi
+else bad "30c: emit-model failed (deep-dir)"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
   exit 0
