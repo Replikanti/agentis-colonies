@@ -1662,12 +1662,55 @@ m = json.load(open(sys.argv[1]))
 ph = m["phases"]
 if ph.get("M1 · map zones") == "done":
     print("pre-map run must not be false-marked M1 done: %s" % ph.get("M1 · map zones")); sys.exit(1)
+# #2200 regression guard: with NO discovery started (no marker, no zones off not_reached, no discovery sublog),
+# M3 must stay "wait" — the marker-independent detection must not flip every run to a phantom "run".
+if ph.get("M3 · discovery") != "wait":
+    print("pre-map run (no discovery started) must show M3 wait, got %s (#2200)" % ph.get("M3 · discovery")); sys.exit(1)
 PY
-  then ok "28b: a genuinely pre-map run (no zones.json/briefs/coverage/markers) still shows M1 not-done (no false-positive)"
+  then ok "28b: a genuinely pre-map run (no zones.json/briefs/coverage/markers) still shows M1 not-done + M3 wait (no false-positive, #2193 + #2200)"
   else bad "28b: pre-map run was wrongly false-marked M1 done"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
   fi
 else
   bad "28b: emit-model failed on the pre-map fixture"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+# (28c) #2200: the M3 · discovery phase itself must be robust to a marker-less registered log. The #2193 fix
+# made only M1/M2 artifact-based; M3 still short-circuited to "wait" whenever "[M3]" was absent from the log
+# field — exactly the corpus-bench A/B harness case (it registers the wrapper's marker-less stdout), so a
+# genuinely LIVE discovery (a zone in_flight, an active LLM child) rendered as "wait" while the top LIVE header
+# correctly read "running · discovery". Strip EVERY phase marker (incl. [deep-hunt], to stay out of the
+# deep-hunt-only branch) so the log is fully marker-less, keep a zone in_flight, and assert M3 reads "run".
+note "28c) #2200: M3 discovery reads 'run' from a live in_flight zone even with a fully marker-less log ..."
+M3_DESC="$(stage_as balancer balancer-m3-markerless)"
+M3_DIR="$(dirname "$M3_DESC")"
+grep -vE '\[M1\]|\[M2\]|\[M3\]|\[M4\]|\[deep-hunt\]|__EXIT__=' "$M3_DIR/hunt.log" > "$M3_DIR/hunt.log.tmp" && mv "$M3_DIR/hunt.log.tmp" "$M3_DIR/hunt.log"
+mkdir -p "$M3_DIR/zone-hunt-out/briefs/briefs"
+echo '# Vault core and routers brief' > "$M3_DIR/zone-hunt-out/briefs/briefs/brief_pkg_vault_contracts.md"
+python3 - "$M3_DIR/zone-hunt-out/coverage/zone-coverage.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+c = json.load(open(p))
+c["zones"][0]["status"] = "in_flight"   # discovery genuinely live on this zone
+c["complete"] = False
+json.dump(c, open(p, "w"))
+PY
+if emit_model "$M3_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=1 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=1; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+ph = m["phases"]
+mz = ph.get("M3 · discovery")
+if mz != "run":
+    print("M3 must read 'run' on a marker-less log with an in_flight zone + live discovery, got %r (#2200)" % mz); sys.exit(1)
+# and the running zone must still surface as in_flight (not reclassified — the hunt is live, not exited)
+if not any(z.get("status") == "in_flight" for z in m["zones"]):
+    print("the live zone must stay in_flight while the hunt is alive: %s" % [(z.get("id"), z.get("status")) for z in m["zones"]]); sys.exit(1)
+PY
+  then ok "28c: marker-less log + in_flight zone + live discovery -> M3 reads 'run', not a false 'wait' (#2200)"
+  else bad "28c: marker-independent M3 detection failed"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+  fi
+else
+  bad "28c: emit-model failed on the marker-less M3 fixture"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
 fi
 
 # ----------------------------------------------------------------------------------------------------------
