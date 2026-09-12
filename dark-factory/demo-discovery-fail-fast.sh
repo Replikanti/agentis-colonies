@@ -15,20 +15,31 @@
 # host-overheat de-bunch, an llm-session-slot wait, a one-off PTY/API spike) still recovers on attempt 2 instead
 # of becoming an immediate FAILED cell + false `hunted_degraded` zone. Dropping to 0 would kill that recovery.
 #
+# #2195 UPDATE: agentis-core #999 (merged, PR #1000) DECOUPLED timeout retries from `max_retries` into a new
+# `llm.timeout_retries` knob (default 0 = fail-fast) — a genuine `LlmError::Timeout` no longer consumes the
+# `max_retries` budget at all (`Transport`/`InvalidResponse` still do). Under a #999 agentis, run-discovery.sh's
+# `llm.max_retries = 1` therefore stopped governing the `[llm.timeout]` path, so it now ALSO emits
+# `llm.timeout_retries = 1` to keep the same 2x-budget cap on a persistent runaway while still recovering a
+# TRANSIENT timeout on attempt 2 (the `[LLM retry {i}/{max(max_retries, timeout_retries)}: ...]` line comes from
+# `run_with_retry` in agentis-core's src/llm.rs).
+#
 # Two layers (mirrors demo-experience-flags.sh / demo-cell-watchdog.sh):
-#   1) SOURCE GUARD (always, CI-safe, pure grep): run-discovery.sh must emit `llm.max_retries = 1` — NOT `= 0`
-#      (kills transient recovery) and NOT `>= 2` / absent (default 3 attempts). Fails the regression with no LLM.
+#   1) SOURCE GUARD (always, CI-safe, pure grep): run-discovery.sh must emit `llm.max_retries = 1` (still bounds
+#      non-timeout Transport) AND `llm.timeout_retries = 1` — NOT `= 0` (kills transient recovery under #999) and
+#      NOT `>= 2` / absent (uncapped or default-fail-fast). Fails the regression with no LLM.
 #   2) END-TO-END MUTATION (agentis-gated, [SKIP] without agentis): drive a REAL offline `agentis go` over a
-#      trivial `prompt()` probe with a stub backend, and assert the ATTEMPT budget at OUTPUT level —
-#        (2a) PERSISTENT timeout, max_retries=1 -> exactly ONE `[LLM retry` line, ~2x the budget (cap holds);
-#        (2b) PERSISTENT timeout, max_retries=2 -> TWO `[LLM retry` lines (vs ONE at max_retries=1), proving `= 1`
-#             bounds the waste. The assertion is the retry-line COUNT (2 vs 1) — it comes straight from
-#             agentis-core's `attempts = 1 + max_retries`. Elapsed wall time is reported alongside for human
-#             corroboration only; it is NOT a pass/fail input (a single `llm.cli_timeout_ms` interval routinely
-#             rounds to the same whole second under `date +%s` scheduler jitter, so a strict wall-time
+#      trivial `prompt()` probe with a stub backend, and assert the ATTEMPT budget at OUTPUT level. `max_retries`
+#      is pinned at 1 throughout (matches run-discovery.sh); `timeout_retries` is the varied knob, since #999
+#      routes `LlmError::Timeout` through it exclusively —
+#        (2a) PERSISTENT timeout, timeout_retries=1 -> exactly ONE `[LLM retry` line, ~2x the budget (cap holds);
+#        (2b) PERSISTENT timeout, timeout_retries=2 -> TWO `[LLM retry` lines (vs ONE at timeout_retries=1),
+#             proving `= 1` bounds the waste. The assertion is the retry-line COUNT (2 vs 1) — it comes straight
+#             from agentis-core's per-class `retry_budget()` (#999). Elapsed wall time is reported alongside for
+#             human corroboration only; it is NOT a pass/fail input (a single `llm.cli_timeout_ms` interval
+#             routinely rounds to the same whole second under `date +%s` scheduler jitter, so a strict wall-time
 #             inequality flaked here — see #2036);
 #        (2c) TRANSIENT timeout (a stateful stub that times out on attempt 1, then returns a reply on attempt 2),
-#             max_retries=1 -> RECOVERS: the probe prints its REPLY, no error, exactly ONE retry line. This is
+#             timeout_retries=1 -> RECOVERS: the probe prints its REPLY, no error, exactly ONE retry line. This is
 #             the load-bearing reason for `= 1` over `= 0`.
 #      NO live LLM — closes the "green stub proves nothing" gap. Generous timing bounds keep it non-flaky.
 #
@@ -51,18 +62,30 @@ skip() { echo "  [SKIP] $*"; }
 [ -x "$DISCOVERY" ] || { note "run-discovery.sh not found / not executable: $DISCOVERY" >&2; exit 3; }
 
 # ----------------------------------------------------------------------------------------------------------
-# 1) SOURCE GUARD (always): run-discovery.sh emits `llm.max_retries = 1` — bounded but not zero.
+# 1) SOURCE GUARD (always): run-discovery.sh emits `llm.max_retries = 1` AND `llm.timeout_retries = 1`.
 # ----------------------------------------------------------------------------------------------------------
 note "1) source-guard: run-discovery.sh emits llm.max_retries = 1 (one retry: bounded, keeps transient recovery) ..."
 if grep -Eq 'echo "llm\.max_retries = 0"' "$DISCOVERY"; then
-  bad "run-discovery.sh emits llm.max_retries = 0 — this kills in-process recovery of a TRANSIENT timeout (an immediate FAILED cell -> false hunted_degraded) (#2017)"
+  bad "run-discovery.sh emits llm.max_retries = 0 — this kills in-process recovery of a TRANSIENT non-timeout (Transport) error (#2017)"
 elif grep -Eq 'echo "llm\.max_retries = [2-9]' "$DISCOVERY"; then
-  bad "run-discovery.sh emits llm.max_retries >= 2 — a runaway would still burn 3x+ the per-cell budget (#2017)"
+  bad "run-discovery.sh emits llm.max_retries >= 2 — a Transport-class runaway would still burn 3x+ the per-cell budget (#2017)"
   grep -nE 'echo "llm\.max_retries = [2-9]' "$DISCOVERY" | sed 's/^/      /' >&2
 elif grep -Eq 'echo "llm\.max_retries = 1"' "$DISCOVERY"; then
-  ok "run-discovery.sh emits llm.max_retries = 1 — caps a runaway at 2x the budget while keeping one transient retry"
+  ok "run-discovery.sh emits llm.max_retries = 1 — caps a Transport-class runaway at 2x the budget while keeping one retry"
 else
   bad "run-discovery.sh emits NO explicit llm.max_retries — the per-cell config inherits the default 3 attempts (#2017)"
+fi
+
+note "1b) source-guard: run-discovery.sh emits llm.timeout_retries = 1 (agentis-core #999 decoupled the timeout path from max_retries) ..."
+if grep -Eq 'echo "llm\.timeout_retries = 0"' "$DISCOVERY"; then
+  bad "run-discovery.sh emits llm.timeout_retries = 0 — under a #999 agentis this kills in-process recovery of a TRANSIENT timeout (an immediate FAILED cell -> false hunted_degraded) (#2195)"
+elif grep -Eq 'echo "llm\.timeout_retries = [2-9]' "$DISCOVERY"; then
+  bad "run-discovery.sh emits llm.timeout_retries >= 2 — a persistent timeout would burn 3x+ the per-cell budget under a #999 agentis (#2195)"
+  grep -nE 'echo "llm\.timeout_retries = [2-9]' "$DISCOVERY" | sed 's/^/      /' >&2
+elif grep -Eq 'echo "llm\.timeout_retries = 1"' "$DISCOVERY"; then
+  ok "run-discovery.sh emits llm.timeout_retries = 1 — caps a persistent timeout at 2x the budget while keeping one transient retry under #999"
+else
+  bad "run-discovery.sh emits NO explicit llm.timeout_retries — under a #999 agentis the timeout path defaults to 0 retries, killing transient recovery (#2195)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -97,18 +120,20 @@ if [ "\$n" -le 1 ]; then exec sleep 30; else printf 'TRANSIENT-RECOVERED\n'; fi
 EOF
   chmod +x "$WORK/transient-stub.sh"
 
-  gen_cfg() {  # gen_cfg <max_retries> <command> [args]
+  gen_cfg() {  # gen_cfg <timeout_retries> <command> [args] -- max_retries is pinned at 1 (matches run-discovery.sh);
+               # #999 routes LlmError::Timeout through timeout_retries exclusively, so that is the varied knob here.
     {
       echo "llm.backend = claude"
       echo "llm.command = $2"
       [ -n "${3:-}" ] && echo "llm.args = $3"
       echo "llm.cli_timeout_ms = $BUDGET_MS"
-      echo "llm.max_retries = $1"
+      echo "llm.max_retries = 1"
+      echo "llm.timeout_retries = $1"
       echo "trace.level = normal"
     } > "$WORK/.agentis/config"
   }
 
-  run_probe() {   # run_probe <max_retries> <command> <args> <log> -> echoes elapsed seconds
+  run_probe() {   # run_probe <timeout_retries> <command> <args> <log> -> echoes elapsed seconds
     gen_cfg "$1" "$2" "$3"
     _t0=$(date +%s)
     ( cd "$WORK" && agentis go probe.ag ) > "$4" 2>&1 || true
@@ -116,39 +141,39 @@ EOF
     echo $(( _t1 - _t0 ))
   }
 
-  note "2) live mutation: attempt budget (max_retries=1 caps a runaway at 2x) + transient recovery (attempt 2) ..."
+  note "2) live mutation: attempt budget (timeout_retries=1 caps a runaway at 2x) + transient recovery (attempt 2) ..."
 
-  # --- (2a) persistent timeout, max_retries = 1 -> ONE retry line, ~2x the budget -----------------------
+  # --- (2a) persistent timeout, timeout_retries = 1 -> ONE retry line, ~2x the budget --------------------
   EL1="$(run_probe 1 sleep 30 "$WORK/retry1.log")"
   RETRIES1="$(grep -c '\[LLM retry' "$WORK/retry1.log" 2>/dev/null || true)"
   if grep -q '\[llm.timeout\]\|timed out' "$WORK/retry1.log" 2>/dev/null && [ "$RETRIES1" -eq 1 ]; then
-    ok "max_retries=1: a persistent runaway was retried ONCE ($RETRIES1 '[LLM retry 1/1' line), ~2x the budget (${EL1}s)"
+    ok "timeout_retries=1: a persistent runaway was retried ONCE ($RETRIES1 '[LLM retry 1/1' line), ~2x the budget (${EL1}s)"
   else
-    bad "max_retries=1: expected exactly 1 '[LLM retry' line on the timeout path, saw $RETRIES1 (elapsed ${EL1}s)"
+    bad "timeout_retries=1: expected exactly 1 '[LLM retry' line on the timeout path, saw $RETRIES1 (elapsed ${EL1}s)"
     grep -n '\[LLM retry\|timed out\|Error' "$WORK/retry1.log" 2>/dev/null | head -4 | sed 's/^/      /' >&2
   fi
 
-  # --- (2b) persistent timeout, max_retries = 2 (the OLD default) -> TWO retry lines, ~3x the budget -----
+  # --- (2b) persistent timeout, timeout_retries = 2 -> TWO retry lines, ~3x the budget --------------------
   EL2="$(run_probe 2 sleep 30 "$WORK/retry2.log")"
   RETRIES2="$(grep -c '\[LLM retry' "$WORK/retry2.log" 2>/dev/null || true)"
   if [ "$RETRIES2" -eq 2 ] && [ "$RETRIES1" -eq 1 ]; then
     if [ "$EL1" -ge "$EL2" ]; then
-      note "elapsed-time note: ${EL1}s at max_retries=1 vs ${EL2}s at max_retries=2 did not order as expected — scheduler jitter/contention, not a regression (retry-line counts are the assertion)"
+      note "elapsed-time note: ${EL1}s at timeout_retries=1 vs ${EL2}s at timeout_retries=2 did not order as expected — scheduler jitter/contention, not a regression (retry-line counts are the assertion)"
     fi
-    ok "the retry-line counts bound the waste: 1 '[LLM retry' line at max_retries=1 (${EL1}s) vs 2 lines at the default max_retries=2 (${EL2}s)"
+    ok "the retry-line counts bound the waste: 1 '[LLM retry' line at timeout_retries=1 (${EL1}s) vs 2 lines at timeout_retries=2 (${EL2}s)"
   else
-    bad "the one-retry cap did not bound the waste (max_retries=1 ${EL1}s/${RETRIES1} retries vs max_retries=2 ${EL2}s/${RETRIES2} retries)"
+    bad "the one-retry cap did not bound the waste (timeout_retries=1 ${EL1}s/${RETRIES1} retries vs timeout_retries=2 ${EL2}s/${RETRIES2} retries)"
   fi
 
-  # --- (2c) TRANSIENT timeout, max_retries = 1 -> RECOVERS on attempt 2 (the reason for 1 over 0) --------
+  # --- (2c) TRANSIENT timeout, timeout_retries = 1 -> RECOVERS on attempt 2 (the reason for 1 over 0) ----
   rm -f "$WORK/attempt.count"
   ELT="$(run_probe 1 "$WORK/transient-stub.sh" "" "$WORK/transient.log")"
   RETRIEST="$(grep -c '\[LLM retry' "$WORK/transient.log" 2>/dev/null || true)"
   if grep -q '^REPLY|TRANSIENT-RECOVERED' "$WORK/transient.log" 2>/dev/null \
        && ! grep -q 'runtime error' "$WORK/transient.log" 2>/dev/null && [ "$RETRIEST" -eq 1 ]; then
-    ok "max_retries=1: a TRANSIENT timeout recovered on attempt 2 (REPLY printed, no error, 1 retry) — max_retries=0 would have FAILED here (${ELT}s)"
+    ok "timeout_retries=1: a TRANSIENT timeout recovered on attempt 2 (REPLY printed, no error, 1 retry) — timeout_retries=0 would have FAILED here (${ELT}s)"
   else
-    bad "max_retries=1: a transient timeout did NOT recover (expected 'REPLY|TRANSIENT-RECOVERED', no runtime error, 1 retry; saw $RETRIEST retries in ${ELT}s)"
+    bad "timeout_retries=1: a transient timeout did NOT recover (expected 'REPLY|TRANSIENT-RECOVERED', no runtime error, 1 retry; saw $RETRIEST retries in ${ELT}s)"
     grep -n 'REPLY|\|\[LLM retry\|runtime error\|timed out' "$WORK/transient.log" 2>/dev/null | head -4 | sed 's/^/      /' >&2
   fi
 fi
