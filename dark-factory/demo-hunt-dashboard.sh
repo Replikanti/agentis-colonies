@@ -1603,6 +1603,74 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# (28) #2193: M1/M2 phase completion must be robust to marker routing — a caller (e.g. the corpus-bench
+# A/B harness) can redirect run-zone-hunt's stdout to a sink OTHER than the registered `log` field, so the
+# [M1]/[M2]/[M3] markers never land where phase_status() looks for them even though mapping+briefing are
+# demonstrably done (their on-disk artifacts exist) and discovery is genuinely live.
+# ----------------------------------------------------------------------------------------------------------
+note "28) #2193: M1/M2 done from on-disk artifacts + discovery-started, even with a marker-less registered log ..."
+ART_DESC="$(stage_as balancer balancer-artifact-m1m2)"
+ART_DIR="$(dirname "$ART_DESC")"
+# Strip every [M1]/[M2]/[M3]/__EXIT__ line from the registered log — simulates the markers having gone to a
+# different sink entirely, while leaving the rest of the (irrelevant) log lines alone.
+grep -vE '\[M1\]|\[M2\]|\[M3\]|__EXIT__=' "$ART_DIR/hunt.log" > "$ART_DIR/hunt.log.tmp" && mv "$ART_DIR/hunt.log.tmp" "$ART_DIR/hunt.log"
+# map/zones.json already ships in the balancer fixture (M1 artifact). Populate the briefs dir (M2 artifact) —
+# run-zone-hunt lays real briefs at <out>/briefs/briefs/*.md (gen-briefs.sh --out <out>/briefs).
+mkdir -p "$ART_DIR/zone-hunt-out/briefs/briefs"
+echo '# Vault core and routers brief' > "$ART_DIR/zone-hunt-out/briefs/briefs/brief_pkg_vault_contracts.md"
+# Coverage shows the zone genuinely in_flight (discovery live), not yet a terminal verdict.
+python3 - "$ART_DIR/zone-hunt-out/coverage/zone-coverage.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+c = json.load(open(p))
+c["zones"][0]["status"] = "in_flight"
+c["complete"] = False
+json.dump(c, open(p, "w"))
+PY
+if emit_model "$ART_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=1 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=1; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+e = []
+ph = m["phases"]
+if ph.get("M1 · map zones") != "done": e.append("M1 not done despite map/zones.json on disk: %s" % ph.get("M1 · map zones"))
+if ph.get("M2 · briefs") != "done": e.append("M2 not done despite populated briefs/ on disk: %s" % ph.get("M2 · briefs"))
+if not (m["prog"] > 0): e.append("prog must be > 0 once M1+M2 are credited: %s" % m["prog"])
+if e: print("\n".join(e)); sys.exit(1)
+PY
+  then ok "28a: marker-less registered log + on-disk map/briefs + in_flight coverage -> M1 done, M2 done, prog>0"
+  else bad "28a: artifact-based M1/M2 detection failed"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+  fi
+else
+  bad "28a: emit-model failed on the artifact-detection fixture"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+# (28b) regression: a genuinely PRE-MAP run (no zones.json, no briefs, no coverage, no markers at all) must
+# NOT be false-marked done — M1 stays wait (nothing to corroborate "mapped" with yet).
+PREMAP="$WORK/balancer-premap"
+mkdir -p "$PREMAP/zone-hunt-out"
+echo '=== vault pkg/vault zone-hunt START Mon 2026-01-01 12:41:59 ===' > "$PREMAP/hunt.log"
+python3 - "$FIX/balancer/descriptor.json" "$PREMAP/descriptor.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+json.dump(d, open(sys.argv[2], "w"))
+PY
+if emit_model "$PREMAP/descriptor.json" HUNT_DASHBOARD_FAKE_PROC_ALIVE=1 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0; then
+  if python3 - "$WORK/model.json" <<'PY'
+import sys, json
+m = json.load(open(sys.argv[1]))
+ph = m["phases"]
+if ph.get("M1 · map zones") == "done":
+    print("pre-map run must not be false-marked M1 done: %s" % ph.get("M1 · map zones")); sys.exit(1)
+PY
+  then ok "28b: a genuinely pre-map run (no zones.json/briefs/coverage/markers) still shows M1 not-done (no false-positive)"
+  else bad "28b: pre-map run was wrongly false-marked M1 done"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+  fi
+else
+  bad "28b: emit-model failed on the pre-map fixture"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — the #1913 M1 hunt-dashboard reference-fidelity model holds"
   exit 0
