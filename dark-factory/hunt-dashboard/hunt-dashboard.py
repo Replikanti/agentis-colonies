@@ -660,10 +660,21 @@ def phase_status():
     # that is a GAP (⚠️), NOT "running" — the run has already moved on to the refute gate / deep-hunt. Mirrors
     # the deep-hunt active_deep_slot() liveness gate (#2001): a re-hunt's stale [M4]/[deep-hunt] markers and a
     # not-yet-cleared coverage hole must never be read as discovery still churning.
-    if "[M3]" not in log:
+    # #2200: M3 is keyed on whether discovery has GENUINELY started, not on the "[M3]" marker alone.
+    # A run registered with a marker-less log field (the A/B harness registers the wrapper's stdout, which
+    # carries no "[M3]" line even while a zone is live) short-circuited to "wait" and hid the live discovery
+    # that the top LIVE header correctly reported. Discovery has started when ANY of: the marker is present,
+    # a zone has left "not_reached" (in_flight / covered / failed / hunted_degraded), or the discovery sublog
+    # is active. Only genuine not-yet-started (no marker, every zone not_reached, no discovery sublog) is "wait".
+    _act = sublog_activity()
+    _disc_started = (
+        ("[M3]" in log)
+        or any(z.get("status") != "not_reached" for z in zs)
+        or (_act is not None and _act.get("kind") == "discovery")
+    )
+    if not _disc_started:
         st["M3 · discovery"] = "wait"
     else:
-        _act = sublog_activity()
         _disc_live = any(z.get("status") == "in_flight" for z in zs) or (_act is not None and _act.get("kind") == "discovery")
         # done vs gap uses `reached` (covered + failed), matching the exited-branch + the #1999 live-over-stale-
         # marker test: a run whose every zone reached a terminal status is not "running", and a still-open
