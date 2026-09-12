@@ -727,10 +727,12 @@ def _norm_sev(raw):
     s = re.sub(r'(?i)^\s*severity\s*=\s*', '', raw or '')
     return re.sub(r'\s+', ' ', s).strip()
 def _norm_cls(raw):
-    # Normalize an LLM-emitted class value (#1974/#1976): remove ALL whitespace FIRST (handles "c lass="
-    # and "C 22"), strip the now-compact "class=" prefix, uppercase. No membership validation — class codes
-    # are open-ended (C1..C23, SYS-solvency, C-invariant).
-    return re.sub(r'(?i)^class=', '', re.sub(r'\s+', '', raw or '')).upper()
+    # Normalize an LLM-emitted class value (#1974/#1976/#2196): remove ALL whitespace FIRST (handles "c lass="
+    # and "C 22"), drop surrounding angle brackets (some discovery candidates emit "<class=C6>" rather than
+    # the compact "class=C6"), strip the now-compact "class=" prefix, uppercase. No membership validation —
+    # class codes are open-ended (C1..C23, SYS-solvency, C-invariant).
+    s = re.sub(r'\s+', '', raw or '').strip('<>')
+    return re.sub(r'(?i)^class=', '', s).upper()
 # Pay-floor marker (#1960): a display-only "$0" badge on any lead whose intrinsic severity ranks BELOW the
 # program's --pay-floor (threaded in as the descriptor's `pay_floor`). The delivery-time payability gate remains
 # the sole authority that actually drops sub-floor findings; this only annotates the dashboard.
