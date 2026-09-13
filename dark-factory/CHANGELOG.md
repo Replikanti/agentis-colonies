@@ -16,6 +16,7 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **gen-briefs brief-writer timeout 10min -> 20min (#2209).** `gen-briefs.sh` hardcoded `llm.cli_timeout_ms = 600000`, half of run-discovery.sh's floor (1200000), so heavy zones (notional: briefs observed completing at 586-1059s) timed out and fell back to mechanical/gap. Bumped to 1200000 to match the sibling hunt timeout floor; a zone still exceeding it should be split (ZONE_SPLIT_LOC), not chased. Full LOC-scaling like run-discovery is a noted future refinement.
 - **Native flat-cyborg result-file reply capture (#2207).** The hunt emitters (`run-discovery.sh`, `run-invariant-hunt.sh`, `run-refute.sh`, `map-zones.sh`, `run-poc.sh`, `gen-briefs.sh`) now set `llm.flat_cyborg.result_file_dir` to the per-cell RUN dir, so the driven model writes its reply to a file agentis reads via flat-cyborg `--result-file` (file > transcript > screen) — large zone briefs/hunts no longer fail the `--extract` screen-scrape and degrade to mechanical/empty. **Requires:** agentis >= 1.32.0 + flat-cyborg >= 0.17.0 (older agentis ignores the key harmlessly → screen-scrape as before). Builds on flat-cyborg#79 (v0.17.0 `--result-file`) and agentis-core#1002.
 
 ### Added

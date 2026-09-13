@@ -235,7 +235,7 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
   {
     echo "llm.backend = $BACKEND"
     if [ "$BACKEND" = "claude" ]; then
-      echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 600000"
+      echo "llm.command = claude"; echo "llm.args = -p"; echo "llm.cli_timeout_ms = 1200000"
     elif [ "$BACKEND" = "flat-cyborg" ]; then
       # idle_ms 12000 (> native 4000 default): kept as a latency knob only (#1925) -- do NOT ratchet it
       # further. Completion is gated on the wrapper's closing sentinel from flat-cyborg >= 0.13.0
@@ -243,7 +243,7 @@ elif command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ]; then
       # once the screen goes quiet, so it no longer risks scraping the pre-answer TUI footer as a chrome
       # "reply" and failing validation (#1707). If a brief looks flaky, file it against the completion
       # path, not this value.
-      echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.flat_cyborg.result_file_dir = $RUN"; echo "llm.model = ${MODEL:-opus}"
+      echo "llm.cli_timeout_ms = 1200000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.flat_cyborg.result_file_dir = $RUN"; echo "llm.model = ${MODEL:-opus}"
     fi
     # #2125: sandbox the driven Claude Code session (bubblewrap view = toolchain + repo + run dir, web tools denied).
     [ "$BACKEND" = "flat-cyborg" ] && [ -z "${DF_NO_SANDBOX:-}" ] && command -v bwrap >/dev/null 2>&1 && echo "llm.flat_cyborg.target = $HERE/lib/claude-sandboxed.sh"
