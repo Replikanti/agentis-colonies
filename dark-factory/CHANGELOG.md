@@ -14,6 +14,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Native flat-cyborg result-file reply capture (#2207).** The hunt emitters (`run-discovery.sh`, `run-invariant-hunt.sh`, `run-refute.sh`, `map-zones.sh`, `run-poc.sh`, `gen-briefs.sh`) now set `llm.flat_cyborg.result_file_dir` to the per-cell RUN dir, so the driven model writes its reply to a file agentis reads via flat-cyborg `--result-file` (file > transcript > screen) — large zone briefs/hunts no longer fail the `--extract` screen-scrape and degrade to mechanical/empty. **Requires:** agentis >= 1.32.0 + flat-cyborg >= 0.17.0 (older agentis ignores the key harmlessly → screen-scrape as before). Builds on flat-cyborg#79 (v0.17.0 `--result-file`) and agentis-core#1002.
+
 ### Added
 - **CodeHawks corpus ground-truth (GT) extractor** (#2189, unblocks #2172). Generalizes the Sherlock-only
   corpus GT infra to a second, non-Sherlock platform via a sibling pair of scripts under

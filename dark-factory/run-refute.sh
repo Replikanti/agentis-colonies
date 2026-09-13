@@ -152,7 +152,7 @@ fi
   # Completion is gated on the wrapper's closing sentinel from flat-cyborg >= 0.13.0 (idle_gate_open()); idle_ms
   # only bounds how fast a marker-less (sentinel-less) reply is accepted once the screen goes quiet. If a stage
   # looks flaky, file it against the completion path, not this value.
-  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"; }
+  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.flat_cyborg.result_file_dir = $RUN"; echo "llm.model = ${MODEL:-opus}"; }
   # #2125: sandbox the driven Claude Code session (bubblewrap view = toolchain + run dir only, web tools denied).
   [ "$BACKEND" = "flat-cyborg" ] && [ -z "${DF_NO_SANDBOX:-}" ] && command -v bwrap >/dev/null 2>&1 && echo "llm.flat_cyborg.target = $HERE/lib/claude-sandboxed.sh"
   echo "trace.level = normal"

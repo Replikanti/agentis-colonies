@@ -627,7 +627,7 @@ fi
   # invariant path is never silently left on the weaker default model when no --model is threaded through by
   # the caller (run-zone-hunt.sh --deep-hunt does not).
   # #1915: same GEN_TIMEOUT_MS (scaled for composable-fresh mode) as the claude branch above.
-  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = $GEN_TIMEOUT_MS"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.model = ${MODEL:-opus}"; }
+  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = $GEN_TIMEOUT_MS"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.flat_cyborg.result_file_dir = $RUN"; echo "llm.model = ${MODEL:-opus}"; }
   # #2125: sandbox the driven Claude Code session (bubblewrap view = toolchain + repo + run dir, web tools denied).
   [ "$BACKEND" = "flat-cyborg" ] && [ -z "${DF_NO_SANDBOX:-}" ] && command -v bwrap >/dev/null 2>&1 && echo "llm.flat_cyborg.target = $HERE/lib/claude-sandboxed.sh"
   echo "trace.level = normal"
