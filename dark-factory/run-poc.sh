@@ -199,7 +199,7 @@ fi
   # the screen goes quiet, so a premature capture of chrome / no fenced reply ("--extract found no fenced
   # reply") no longer garbles the generated test into HARNESS_ERROR. Every sibling flat-cyborg driver
   # (run-discovery/gen-briefs/map-zones/run-refute/run-invariant-hunt) already sets 12000.
-  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = $CLI_TIMEOUT_MS"; echo "llm.flat_cyborg.idle_ms = 12000"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"; }
+  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = $CLI_TIMEOUT_MS"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.flat_cyborg.result_file_dir = $RUN"; [ -n "$MODEL" ] && echo "llm.model = $MODEL"; }
   # #2125: sandbox the driven Claude Code session (bubblewrap view = toolchain + repo + run dir, web tools denied).
   [ "$BACKEND" = "flat-cyborg" ] && [ -z "${DF_NO_SANDBOX:-}" ] && command -v bwrap >/dev/null 2>&1 && echo "llm.flat_cyborg.target = $HERE/lib/claude-sandboxed.sh"
   echo "trace.level = normal"
