@@ -464,7 +464,9 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # hunter would concatenate the derived slice with no label and no judging rule, exactly as before the fix.
   # #2157 CALLEE_TRUST rides the same rule: getenv() reads the SANITIZED env, so without it here the D3 A/B
   # OFF toggle would be silently inert (CALLEE_TRUST=0 could never reach hunter.ag). Unset => "" => ON.
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST"
+  # #2211 OPERATIONALIZE_LENS rides it too, with the opposite polarity: only "1" opts IN, so without this entry
+  # the opt-in could never reach hunter.ag and the whole directive would be unreachable (unset => "" => OFF).
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: hunter.ag ends its tick with `learn("hunt", ...)`, and it is that WRITE
   # the flag gates (#1878 measured it on agentis v1.28.0 — `experience.enabled = false` makes learn() raise
@@ -551,8 +553,9 @@ _json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
 # record's exploit/poc_sketch prose routinely exceeds one physical line; the raw log then carries the tail
 # as continuation lines with no `CANDIDATE|` prefix, which a bare `grep 'CANDIDATE|'` silently drops. Here a
 # `CANDIDATE|` line opens/flushes a record; a `BLACKBOARD-*` line, a `DEPTH-CELL|` line (#1827), an
-# `APPENDIX-CONTEXT|` line (#1865), a `REFUTE-CONSTRAINTS|` line (#1887), a `CALLEE-TRUST|` line (#2145) or a
-# blank line closes the current record without starting a new one
+# `APPENDIX-CONTEXT|` line (#1865), a `REFUTE-CONSTRAINTS|` line (#1887), a `CALLEE-TRUST|` line (#2145), an
+# `OPERATIONALIZE|` line or a model-emitted `OPCHECK|` line (#2211) or a blank line closes the current record
+# without starting a new one
 # (these are the only meaningful boundary tokens in a hunt log — see hunter.ag's own framing); any other line
 # while a record is open is a continuation, appended with a single space (terminal wrap breaks on column
 # width, not on meaningful newlines — a stray space is a cosmetic artifact, not data loss). Emits one
@@ -565,7 +568,7 @@ _join_wrapped_candidates() {
       rec = $0
       next
     }
-    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*$/ {
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*$/ {
       if (rec != "") { print rec; rec = "" }
       next
     }
@@ -590,6 +593,9 @@ _join_wrapped_candidates() {
 # than what the shell intended to stage. It is appended LAST in the printf, after `phase`, so
 # _plan_depth_cells's forward key scan (subsystem -> class -> files -> status -> candidates) is untouched and
 # a cell with no appendix keeps its exact key set.
+# #2211: `opchecks` is derived from the LOG the same way (the model's own OPCHECK| lines) and appended LAST,
+# after `appendix`, for the same reason — it is the #2211 M2 A/B's cheap per-cell dosage metric, and a cell
+# that emitted none keeps its exact key set.
 _accumulate_cell() {
   ac_subsys="$1"; ac_cls="$2"; ac_files="$3"; ac_log="$4"; ac_status="${5:-ok}"; ac_phase="${6:-}"
   ac_phase_json=""
@@ -611,9 +617,16 @@ _accumulate_cell() {
     ac_a="$(grep '^APPENDIX-CONTEXT|' "$ac_log" | head -1 | sed 's/^APPENDIX-CONTEXT|//')"
     ac_appendix_json=",\"appendix\":$(_json_str "$ac_a")"
   fi
-  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s}\n' \
+  ac_opchecks_json=""
+  # Leading-whitespace tolerant like the boundary predicate above: OPCHECK| lines are MODEL-emitted, so a PTY
+  # capture can indent them, and an anchored '^OPCHECK|' would silently undercount the dosage metric.
+  ac_opn="$(grep -cE '^[[:space:]]*OPCHECK\|' "$ac_log" 2>/dev/null || true)"
+  case "$ac_opn" in ''|*[!0-9]*) ac_opn=0 ;; esac
+  if [ "$ac_opn" -gt 0 ]; then ac_opchecks_json=",\"opchecks\":$ac_opn"; fi
+  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s}\n' \
     "$(_json_str "$ac_subsys")" "$(_json_str "$ac_cls")" "$(_json_str "$ac_files")" \
-    "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" "$ac_appendix_json" >> "$CELLS_JSONL"
+    "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" "$ac_appendix_json" \
+    "$ac_opchecks_json" >> "$CELLS_JSONL"
 }
 
 # _appendix_for <subsystem> <files_csv> — #1865: the (token, base) pair the --appendix sidecar records for

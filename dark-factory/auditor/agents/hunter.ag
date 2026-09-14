@@ -22,12 +22,19 @@ cb 300000;
 //               inheritance appendix — a DERIVED contract sliced in because this zone's primary contract is
 //               abstract. Empty (the default) => every helper below returns "" and the prompt is byte-identical.
 //   APPENDIX_BASE #1865 (optional, default ""): the abstract base that token implements (rel path).
+//   OPERATIONALIZE_LENS #2211 (optional, default unset = OFF): "1" opts IN to the pure-meta
+//               "operationalize before you hunt" method directive. Any other value (or unset) leaves the
+//               prompt byte-identical to the pre-#2211 one. Inverted vs CALLEE_TRUST on purpose — the
+//               capability is UNMEASURED until the #2211 M2 corpus A/B runs.
 // Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
 //         Diagnostics that may precede it: `BLACKBOARD-FOCUS|`, `DEPTH-CELL|`, `APPENDIX-CONTEXT|`, —
 //         #1887, only when a refute-constraint corpus is imported — `REFUTE-CONSTRAINTS|<subsystem>|<cls>|<n>`,
 //         and — #2145, only when the settable-callee detector fires — `CALLEE-TRUST|<subsystem>|<cls>|<n>|v2`.
 //         `CALLEE-VECTOR|<fn>|<callee-expr>|<hazard>|<CANDIDATE|dismissed: reason>` may also appear (model-emitted,
 //         only when the callee-trust directive fired, #2152 — free text, never script-printed).
+//         #2211, only when OPERATIONALIZE_LENS=1 opts in: `OPERATIONALIZE|<subsystem>|<cls>|on`, followed in the
+//         model's own reply by one `OPCHECK|<construct>|<invariant>` line per derived check (model-emitted,
+//         free text, never script-printed) BEFORE any CANDIDATE| line.
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -356,6 +363,78 @@ fn constraint_block(bullets: list) -> string {
          + "hold, answer SAFE. A rigorous SAFE is worth more than a claim dressed to survive a review.\n\n";
 }
 
+// --- #2211 OPERATIONALIZE-BEFORE-YOU-HUNT DIRECTIVE (M1 — opt-in, default OFF) -------------------------------
+// The measured gap: a hunt cell reads its class lens, then jumps straight at the OBVIOUS instance of it
+// (reentrancy, a missing role check) and answers SAFE on zones whose real bug is only NAMEABLE after the
+// class has been converted into a concrete, code-grounded check. #2191 showed that a generic "think about
+// integrations" nudge does NOT close that gap (rare-recall delta +0): the lever is the METHOD — derive the
+// checks, WRITE THEM OUT, then trace each one — not one more theme to keep in mind.
+//
+// Shape: pure-meta prose, NO detector. The method (scan for external touchpoints, numeric conversions,
+// stored assumptions, state transitions) applies to essentially any zone, so a coarse detector would add
+// cost and a SECOND variable without gating anything — the FLAG is the only gate, which is what keeps the
+// M2 A/B a single-variable experiment. The text names no protocol, contract, function, flag, token standard
+// or unit, so injecting it on a held-out target cannot leak an answer into the hunt.
+//
+// Default OFF, deliberately INVERTED against CALLEE_TRUST/INTEGRATION_LENS ("0" = off, default ON): this is
+// an UNMEASURED recall-capability change, and #2191 proved a lens can be mechanically perfect and still
+// score delta=+0. Unset (or any value other than "1") => the directive is "" => the assembled prompt is
+// BYTE-IDENTICAL to the pre-#2211 one. M3 flips the default only on a measured rare-tier recall gain.
+
+// The one string the block is RECOGNISED by, so a reword of the directive cannot desync the sentinel gate
+// below from the text it has to detect (same discipline as callee_trust_marker above). It is the block's
+// literal FIRST LINE: the sentinel greps the ASSEMBLED instruction for it, so a marker that is not a
+// substring of what actually renders would silently disable the sentinel rather than fail loudly.
+fn operationalize_marker() -> string {
+    return "=== OPERATIONALIZE BEFORE YOU HUNT (do this FIRST, explicitly, in your reasoning) ===";
+}
+
+// The directive itself: the pure-meta "convert the class into code-grounded checks, write them out, THEN
+// trace each" method, plus the OPCHECK| emission contract — which is what makes compliance observable in the
+// cell log, so the live gate and the M2 A/B both assert on OUTPUT rather than on the prompt — and an
+// anti-fabrication clause (a derived check is never itself a finding).
+fn operationalize_block() -> string {
+    return operationalize_marker() + "\n"
+      + "Do NOT jump to the obvious bug (reentrancy, generic access control). FIRST, for the bug class in the "
+      + "LENS below — and for any additional class this zone's brief names — convert the class into CONCRETE "
+      + "operationalized checks grounded in THIS zone's actual code. An operationalized check is not a theme — "
+      + "it has the form:\n"
+      + "    \"for every <specific construct that appears in THIS zone's functions>,\n"
+      + "     verify <specific invariant that construct must satisfy>, else it is a bug.\"\n"
+      + "Method: scan the zone's functions for every place it touches an EXTERNAL protocol, a numeric "
+      + "conversion, a stored assumption, or a state transition. For each such touchpoint, write the exact "
+      + "check its correctness depends on — name the specific parameter/flag/function/field and the exact "
+      + "invariant, derived from what THAT integration actually requires (read the code, do not hand-wave). "
+      + "Cover both directions of any paired operation (entry vs exit, deposit vs withdraw, set vs read).\n"
+      + "WRITE OUT the operationalized checks you derived for this zone, THEN trace each one against the "
+      + "functions. A bug you can only name after operationalizing the check is exactly what a generic pass "
+      + "misses — that is the point of this step. Do not restate the class titles; produce zone-specific, "
+      + "code-grounded checks.\n"
+      + "Emit each derived check, BEFORE you begin tracing and before any CANDIDATE line, on its own line:\n"
+      + "OPCHECK|<the specific construct in this zone's code>|<the exact invariant it must satisfy>\n"
+      + "Then trace each OPCHECK line against the functions and answer per the output contract below. Derive "
+      + "the checks from THIS payload only: never invent a construct that is not in the code, and an OPCHECK "
+      + "that traces clean is a normal result — it is never, by itself, a finding.\n\n";
+}
+
+// The M1 toggle. INVERTED vs callee_trust_enabled() (`!= "0"`) ON PURPOSE: only the literal "1" opts IN, so
+// unset / any other value is OFF and is the DEFAULT. Do not "fix" this into consistency with its siblings —
+// shipping an unmeasured recall directive default-ON is exactly the #2191 mistake this flag exists to avoid.
+// The knob must also ride run-discovery.sh's exec.env_passthrough, else getenv() reads the SANITISED env and
+// the whole feature is silently inert (the #1426/#2157 failure mode).
+fn operationalize_enabled() -> bool {
+    return getenv("OPERATIONALIZE_LENS") == "1";
+}
+
+// The directive as it enters the prompt: "" unless the flag opts in. Concatenating "" is a no-op, so the
+// default (OFF) arm's instruction matches the pre-#2211 one byte for byte and the honesty-gated sentinel
+// below auto-suppresses, because an empty directive carries no marker. O(1) top-level string concat — no
+// regex, no reduce, no exec sh, so this adds no per-element substrate cost to any cell, firing or not.
+fn operationalize_directive() -> string {
+    if !operationalize_enabled() { return ""; }
+    return operationalize_block();
+}
+
 // --- #2145 ATTACKER-CONTROLLED-CALLEE DIRECTIVE (D1 of epic #2130) ------------------------------------------
 // The measured gap this closes is NOT detection of the external call — the #2121 C8 backstop already
 // force-includes a reentrancy cell on an interface-typed call. It is the TRUST MODEL the cell then applies:
@@ -654,11 +733,20 @@ if len(cons) > 0 {
 // `CALLEE_TRUST=0` forces the OFF arm; unset/any-other value is ON = byte-identical to before.
 let callee = callee_directive(code);
 
+// #2211 OPERATIONALIZE read: the pure-meta "derive code-grounded checks, write them out, THEN trace" method
+// directive. `opz` is "" unless OPERATIONALIZE_LENS=1 (opt-in, default OFF), so every cell that does not opt
+// in prompts BYTE-IDENTICALLY to the pre-#2211 pipeline. There is no detector — the flag is the only gate,
+// which is what makes the M2 A/B a single-variable experiment. The sentinel it enables is printed further
+// down, AFTER `instruction` exists, on the same honesty contract as CALLEE-TRUST| / APPENDIX-CONTEXT|.
+let opz = operationalize_directive();
+
 // The instruction carries the lens (taxonomy class), the brief (invariants + known-issues), and the
 // strict output contract; the code is the prompt payload (matches auditor.ag::classify_evm_llm shape).
 // The (possibly empty) blackboard FOCUS block sits up top so prior siblings' leads bias the hunt.
 // #2145: the (possibly empty) CALLEE-TRUST directive sits directly after the role preamble, ahead of every
 // other conditional block, because it re-frames the trust model the WHOLE hunt reasons under.
+// #2211: the (possibly empty) OPERATIONALIZE directive sits IMMEDIATELY ABOVE the lens, because it tells the
+// cell to convert "the bug class in the LENS below" into concrete checks — the referent has to follow it.
 let instruction =
     "You are an elite adversarial smart-contract auditor hunting a HIGH or MEDIUM severity bug an EXTERNAL "
   + "attacker (holding NO privileged role) can exploit. Audit this code FRESH: assume nothing is safe until "
@@ -669,6 +757,7 @@ let instruction =
   + depth
   + appx
   + cons
+  + opz
   + "=== HUNT THIS BUG CLASS (the lens) ===\n" + classDoc + "\n\n"
   + "=== PROTOCOL BRIEF — invariants whose violation is a valid finding, and KNOWN ISSUES you MUST NOT report ===\n"
   + brief + "\n\n"
@@ -721,6 +810,17 @@ if framing_emitted(appendix_file, instruction, code) {
 // target) — the counting pass runs ONLY inside this branch, so a non-firing cell never pays for it.
 if index_of(instruction, callee_trust_marker()) >= 0 {
     print("CALLEE-TRUST|" + subsystem + "|" + cls + "|" + to_string(settable_signal_count(code)) + "|v2");
+}
+
+// #2211: the OPERATIONALIZE sentinel, on the same honesty contract — gated on the directive's own marker
+// being demonstrably IN the prompt about to be sent (index_of over `instruction`), never on the toggle's
+// return value, so no cell log can claim a method directive that was not injected. It carries no
+// `CANDIDATE|` substring (lib/run-agent-validated.sh's sentinel predicate cannot false-accept a cell on it)
+// and run-discovery.sh's _join_wrapped_candidates treats it as a record BOUNDARY like every other
+// diagnostic. The <state> field is a constant `on`: the line is printed ONLY when the directive is in, so
+// there is nothing else it could say — an OFF cell simply prints no line at all.
+if index_of(instruction, operationalize_marker()) >= 0 {
+    print("OPERATIONALIZE|" + subsystem + "|" + cls + "|on");
 }
 
 let verdict = prompt(instruction, code) -> string;

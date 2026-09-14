@@ -1486,6 +1486,26 @@ if [ -x "$REPO_ROOT/dark-factory/demo-callee-trust-lens.sh" ]; then
     fi
 fi
 
+# --- dark-factory "operationalize before you hunt" method directive (#2211, milestone M1) ---
+# hunter.ag injects a PURE-META, cross-class method directive — convert the assigned bug class into concrete,
+# code-grounded checks for THIS zone, emit them as `OPCHECK|<construct>|<invariant>` lines, THEN trace — gated
+# ONLY by the opt-in `OPERATIONALIZE_LENS=1` env (default OFF: unset leaves the prompt byte-identical) and made
+# observable by an honesty-gated `OPERATIONALIZE|<subsystem>|<cls>|on` sentinel. demo-operationalize-lens.sh
+# source-guards the four helpers, the marker/sentinel coupling, the default-OFF polarity, the ""-when-disabled
+# gate, the splice position directly above the lens, the env_passthrough registration, both new record
+# boundaries, the per-cell `opchecks` metric, an OVERFITTING denylist that keeps the text protocol-agnostic and
+# substrate purity; with an `agentis` binary it runs mock hunt cells for the ON/OFF sentinel plus a byte-identity
+# probe, and with `flat-cyborg` it runs the live ON/OFF mutation gate. No forge, no network in the CI floor.
+if [ -x "$REPO_ROOT/dark-factory/demo-operationalize-lens.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-operationalize-lens.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: operationalize-before-you-hunt directive (pure-meta text + default-OFF flag + OPERATIONALIZE sentinel + OPCHECK contract) (#2211)"
+    else
+        fail "dark-factory: operationalize-before-you-hunt directive regressed (#2211)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory same-file callee closure in the function slicer (#2150, sub-milestone D1.1 of epic #2130) ---
 # A `file@fn` slice used to carry the requested functions and the contract header only, so an external entry
 # point that delegates its state writes and external calls to same-file internal helpers reached the hunter as

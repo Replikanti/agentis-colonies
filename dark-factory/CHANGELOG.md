@@ -20,6 +20,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 - **Native flat-cyborg result-file reply capture (#2207).** The hunt emitters (`run-discovery.sh`, `run-invariant-hunt.sh`, `run-refute.sh`, `map-zones.sh`, `run-poc.sh`, `gen-briefs.sh`) now set `llm.flat_cyborg.result_file_dir` to the per-cell RUN dir, so the driven model writes its reply to a file agentis reads via flat-cyborg `--result-file` (file > transcript > screen) — large zone briefs/hunts no longer fail the `--extract` screen-scrape and degrade to mechanical/empty. **Requires:** agentis >= 1.32.0 + flat-cyborg >= 0.17.0 (older agentis ignores the key harmlessly → screen-scrape as before). Builds on flat-cyborg#79 (v0.17.0 `--result-file`) and agentis-core#1002.
 
 ### Added
+- **"Operationalize before you hunt" method directive, opt-in and default OFF (#2211, M1).** `hunter.ag`
+  gained a PURE-META cross-class directive: convert the assigned bug class into CONCRETE, code-grounded
+  checks for THIS zone (scan for external touchpoints, numeric conversions, stored assumptions, state
+  transitions; cover both directions of any paired operation), emit each as an
+  `OPCHECK|<construct>|<invariant>` line BEFORE tracing, then trace each one. It names no protocol,
+  contract, function, flag, token standard or unit, so injecting it on a held-out target cannot leak an
+  answer. There is NO detector — the flag is the only gate, which keeps the follow-up A/B a single-variable
+  experiment. `OPERATIONALIZE_LENS=1` opts in; unset or any other value is OFF, the DEFAULT, and leaves the
+  assembled prompt BYTE-IDENTICAL to the pre-#2211 one (the polarity is inverted against `CALLEE_TRUST` /
+  `INTEGRATION_LENS` on purpose). An honesty-gated `OPERATIONALIZE|<subsystem>|<cls>|on` sentinel (printed
+  only when the marker is demonstrably in the assembled prompt) makes the injection observable, both new
+  tokens are record boundaries in `_join_wrapped_candidates`, and `discovery-results.json` gains a per-cell
+  `"opchecks":<n>` key when the model emitted any. **The capability is UNMEASURED at merge time** — that is
+  precisely why it ships default-OFF: #2191 proved a lens can be mechanically perfect and still score
+  rare-recall delta=+0. The corpus generation-recall A/B (M2) and any default flip (M3) are separate work.
+  Gated by `demo-operationalize-lens.sh` (source guard + mock ON/OFF sentinel + byte-identity probe +
+  a live-agent ON/OFF mutation gate over `fixtures/operationalize/`).
 - **CodeHawks corpus ground-truth (GT) extractor** (#2189, unblocks #2172). Generalizes the Sherlock-only
   corpus GT infra to a second, non-Sherlock platform via a sibling pair of scripts under
   `bench/corpus-bench/`, none of which touch the existing `corpus.tsv` or its readers.
