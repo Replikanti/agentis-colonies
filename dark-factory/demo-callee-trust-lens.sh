@@ -181,7 +181,10 @@ else
 fi
 # The toggle is silently inert unless CALLEE_TRUST rides run-discovery.sh's exec.env_passthrough (getenv reads
 # the SANITISED env — the #1426/#1428 failure mode the DEPTH_TARGET/APPENDIX allowlist entries guard against).
-if grep -q '^  echo "exec.env_passthrough = .*,CALLEE_TRUST"' "$DISCOVERY"; then
+# Matched with a [,"] terminator, not an end-of-string quote: the allowlist grows (#2211 appended
+# OPERATIONALIZE_LENS after this entry), and pinning CALLEE_TRUST as the LAST element would fail on every
+# later knob rather than on a real regression.
+if grep -q '^  echo "exec.env_passthrough = .*,CALLEE_TRUST[,"]' "$DISCOVERY"; then
   ok "run-discovery.sh registers CALLEE_TRUST on exec.env_passthrough (the OFF toggle can reach hunter.ag)"
 else
   bad "run-discovery.sh does NOT pass CALLEE_TRUST through exec.env_passthrough — CALLEE_TRUST=0 would be inert"
