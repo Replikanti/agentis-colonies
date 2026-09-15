@@ -16,6 +16,21 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **OPCHECK -> TRACE follow-through, gated on the cell log (#2214, Lever 1).** The opt-in `OPERATIONALIZE_LENS`
+  directive in `hunter.ag` now closes the loop it opened: for every `OPCHECK|<construct>|<invariant>` line the
+  cell must emit one `TRACE|<check>|<CLEAN|BUG|UNRESOLVED>|<evidence>` line, and `SAFE` is a valid answer only
+  when every derived check carries one. The load-bearing half is the GATE ON OUTPUT in `run-discovery.sh`: a
+  cell that answers with NO candidate while distinct `TRACE|` < distinct `OPCHECK|` is re-asked once
+  (`DF_TRACE_MAX_REASKS`, default 1, `0` = gate-only) and, if the shortfall survives, recorded as a FAILED
+  `untraced-opcheck` cell — so the zone lands `hunted_degraded` instead of a trusted clean sweep. Motivation
+  (#2213 forensics): the archived treatment arm's 6 oracles cells wrote 5/11/8/12/4/8 `OPCHECK|` lines and
+  ZERO traces, 4 of 6 answering SAFE — the gate would have tripped on 4 of 6 today. A cell that produced a
+  lead is never re-asked and never failed; its shortfall is recorded as the new per-cell `untraced` field
+  (`traces` counts the distinct trace lines). A trace is matched to its check by DISTINCT-LINE COUNT, never by
+  pairing the restated text, so verbatim repetition can neither inflate the requirement nor discharge it.
+  **Default behaviour is unchanged: with the lens OFF (the default) no `OPCHECK|` line exists, so the gate is
+  inert, the prompt is byte-identical and a cell's JSON keeps its exact key set.** This does NOT flip
+  `OPERATIONALIZE_LENS` on — #2213's NO-GO stands; the measurement re-runs under #2214.
 - **Operationalize-lens A/B measured: NO-GO, default stays OFF (#2213, M2).** A pre-registered ON-vs-OFF
   corpus generation-recall A/B over two contests, with STAGE 1/2 frozen so `OPERATIONALIZE_LENS` was the
   only variable (both arms re-entered STAGE 3 via `run-zone-hunt.sh --rehunt-gaps` over byte-identical zone

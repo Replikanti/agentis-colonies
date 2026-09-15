@@ -34,7 +34,11 @@ cb 300000;
 //         only when the callee-trust directive fired, #2152 — free text, never script-printed).
 //         #2211, only when OPERATIONALIZE_LENS=1 opts in: `OPERATIONALIZE|<subsystem>|<cls>|on`, followed in the
 //         model's own reply by one `OPCHECK|<construct>|<invariant>` line per derived check (model-emitted,
-//         free text, never script-printed) BEFORE any CANDIDATE| line.
+//         free text, never script-printed) BEFORE any CANDIDATE| line, and — #2214 — one
+//         `TRACE|<check>|<CLEAN|BUG|UNRESOLVED>|<evidence>` line per derived check AFTER tracing it. The TRACE
+//         lines are the FOLLOW-THROUGH half of the same contract: run-discovery.sh GATES a no-candidate reply
+//         on them (fewer distinct TRACE| than OPCHECK| lines => the cell is re-asked once, then recorded as a
+//         FAILED `untraced-opcheck` cell instead of a trusted clean negative).
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -393,6 +397,12 @@ fn operationalize_marker() -> string {
 // trace each" method, plus the OPCHECK| emission contract — which is what makes compliance observable in the
 // cell log, so the live gate and the M2 A/B both assert on OUTPUT rather than on the prompt — and an
 // anti-fabrication clause (a derived check is never itself a finding).
+// #2214 closes the loop on that contract: the archived #2213 treatment arm shows cells writing 5-12 OPCHECK
+// lines and then answering SAFE with ZERO of them traced in the reply, i.e. the derived check was the point
+// of the method and it was silently abandoned. The TRACE| clause below makes the follow-through an OUTPUT
+// obligation, which run-discovery.sh can then GATE on (prompt text alone is not a gate — that is the #2213
+// lesson). Verdict vocabulary is deliberately CLEAN/BUG/UNRESOLVED: no `CANDIDATE|` substring, so
+// lib/run-agent-validated.sh's hunter predicate cannot false-accept a cell on a trace line.
 fn operationalize_block() -> string {
     return operationalize_marker() + "\n"
       + "Do NOT jump to the obvious bug (reentrancy, generic access control). FIRST, for the bug class in the "
@@ -414,7 +424,13 @@ fn operationalize_block() -> string {
       + "OPCHECK|<the specific construct in this zone's code>|<the exact invariant it must satisfy>\n"
       + "Then trace each OPCHECK line against the functions and answer per the output contract below. Derive "
       + "the checks from THIS payload only: never invent a construct that is not in the code, and an OPCHECK "
-      + "that traces clean is a normal result — it is never, by itself, a finding.\n\n";
+      + "that traces clean is a normal result — it is never, by itself, a finding.\n"
+      + "FOLLOW THROUGH — a check you write and abandon is worse than one you never derived. For EVERY "
+      + "OPCHECK line you wrote, once you have traced it, emit one line of its own:\n"
+      + "TRACE|<the same check, restated>|<CLEAN or BUG or UNRESOLVED>|<the function or line in THIS zone that settles it>\n"
+      + "SAFE is a valid answer ONLY when every OPCHECK line you wrote has a matching TRACE line. UNRESOLVED "
+      + "is an honest verdict — a check you cannot settle from this payload belongs on the record — and it "
+      + "beats dropping the check silently.\n\n";
 }
 
 // The M1 toggle. INVERTED vs callee_trust_enabled() (`!= "0"`) ON PURPOSE: only the literal "1" opts IN, so

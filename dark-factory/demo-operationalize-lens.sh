@@ -15,7 +15,14 @@
 # A/B measures it. Parts 1-2 below prove the MACHINERY; part 3 proves the model actually COMPLIES. Neither
 # proves recall — that is M2's job, and no assertion here may be read as a capability claim.
 #
-# Three parts:
+# #2214 Lever 1 closes the loop on that contract. The directive now also asks for one
+# `TRACE|<check>|<CLEAN|BUG|UNRESOLVED>|<evidence>` line per derived check, and — the load-bearing half —
+# run-discovery.sh GATES ON THE OUTPUT: a cell that answers with no candidate while distinct `TRACE|` <
+# distinct `OPCHECK|` is re-asked once (DF_TRACE_MAX_REASKS, default 1) and, if the shortfall survives,
+# recorded as a FAILED `untraced-opcheck` cell (=> the zone is hunted_degraded, not a trusted clean sweep).
+# Part 4 below is that gate's offline acceptance bar; it is inert whenever the lens is OFF, and so is the gate.
+#
+# Four parts:
 #   1) SOURCE-GUARD (the CI floor — pure grep/awk: no agentis, no forge, no network). The four helpers, the
 #      marker/sentinel coupling, the `== "1"` (default-OFF) polarity, the ""-when-disabled gate, the splice
 #      position directly above the lens it refers to, the env_passthrough registration, both new record
@@ -31,6 +38,10 @@
 #      reached the LLM and changed its OUTPUT. The SAME cell runs TWICE over the same fixture with only the
 #      flag flipped: ON must emit >=2 code-grounded OPCHECK| lines BEFORE the first CANDIDATE|/SAFE token,
 #      OFF must emit none. The pair IS the mutation.
+#   4) #2214 FOLLOW-THROUGH GATE (CI floor again — pure grep + the SHIPPED shell functions sliced out of
+#      run-discovery.sh by line range, so a copy-pasted twin cannot drift). The gate's arithmetic on both
+#      sides (fires / does not fire), the duplicate-check tolerance, the candidate-emitting and lens-OFF
+#      cases, the re-ask bound, the `.untraced` FAILED branch and the unchanged default-OFF JSON key set.
 #
 # Usage:  dark-factory/demo-operationalize-lens.sh
 # Exit: 0 = all assertions held; non-zero = a regression.
@@ -95,6 +106,15 @@ else
   bad "operationalize_block() no longer opens with operationalize_marker() — the sentinel could silently stop firing"
 fi
 MARKER="$(sed -n '/^fn operationalize_marker(/,/^}$/p' "$HUNTER" | sed -n 's/^[[:space:]]*return "\(.*\)";$/\1/p')"
+# #2214: the marker literal itself must stay BYTE-IDENTICAL while the block around it grows. It is the string
+# the honesty-gated sentinel greps for in the ASSEMBLED instruction, so editing the directive's first line
+# would silently stop the OPERATIONALIZE| sentinel from firing — and the #2214 gate keys on that sentinel too,
+# which would make the whole follow-through gate inert without a single assertion turning red.
+if [ "$MARKER" = "=== OPERATIONALIZE BEFORE YOU HUNT (do this FIRST, explicitly, in your reasoning) ===" ]; then
+  ok "operationalize_marker() is byte-identical to the shipped #2211 literal (the sentinel gate and the #2214 output gate both key on it)"
+else
+  bad "operationalize_marker() changed ('$MARKER') — the OPERATIONALIZE| sentinel (and with it the #2214 untraced gate) would stop firing"
+fi
 if [ -n "$MARKER" ]; then
   case "$HUNTER_FLAT" in
     *"$MARKER"*) ok "the marker literal is a substring of the rendered directive text (index_of can match it)" ;;
@@ -186,15 +206,28 @@ for s in \
   "Do not restate the class titles" \
   "Emit each derived check, BEFORE you begin tracing and before any CANDIDATE line, on its own line:" \
   "OPCHECK|<the specific construct in this zone's code>|<the exact invariant it must satisfy>" \
-  "never invent a construct that is not in the code"
+  "never invent a construct that is not in the code" \
+  "FOLLOW THROUGH — a check you write and abandon is worse than one you never derived." \
+  "TRACE|<the same check, restated>|<CLEAN or BUG or UNRESOLVED>|<the function or line in THIS zone that settles it>" \
+  "SAFE is a valid answer ONLY when every OPCHECK line you wrote has a matching TRACE line."
 do
   case "$HUNTER_FLAT" in *"$s"*) ;; *) DIRECTIVE_MISS="$DIRECTIVE_MISS [$s]" ;; esac
 done
 if [ -z "$DIRECTIVE_MISS" ]; then
-  ok "the directive keeps its header, the derive-write-then-trace method, the paired-operation clause, the OPCHECK| emission contract and the anti-fabrication guard"
+  ok "the directive keeps its header, the derive-write-then-trace method, the paired-operation clause, the OPCHECK| emission contract, the #2214 TRACE| follow-through contract and the anti-fabrication guard"
 else
   bad "the directive lost load-bearing text:$DIRECTIVE_MISS"
 fi
+
+# #2214: the TRACE verdict vocabulary must not contain a `CANDIDATE|` substring — lib/run-agent-validated.sh
+# validates a hunter reply by grepping for exactly that, so a verdict word carrying it would let a reply that
+# never reached a verdict pass validation.
+case "$HUNTER_FLAT" in
+  *"TRACE|<the same check, restated>|<CLEAN or BUG or UNRESOLVED>"*)
+    ok "the TRACE| verdict vocabulary is CLEAN/BUG/UNRESOLVED — no 'CANDIDATE|' substring for the reply-shape validator to false-accept" ;;
+  *)
+    bad "the TRACE| verdict vocabulary changed — check it still carries no 'CANDIDATE|' substring (lib/run-agent-validated.sh would false-accept)" ;;
+esac
 
 note "8) OVERFITTING GUARD: the directive stays PURE-META (no protocol/product hint) ..."
 # The whole claim behind #2211 is that the BLIND (pure-meta) variant recovers bugs the generic pass misses.
@@ -227,17 +260,20 @@ else
   ok "the #2211 block uses only native builtins and O(1) string concat (no exec sh, no regex/reduce, no per-element cost)"
 fi
 
-note "10) both new tokens are RECORD BOUNDARIES in run-discovery.sh ..."
+note "10) all three model-emitted tokens are RECORD BOUNDARIES in run-discovery.sh ..."
 # OPCHECK| lines are MODEL-emitted free text that lands in the same log as the CANDIDATE| records. Without a
 # boundary, an OPCHECK line following a PTY-wrapped CANDIDATE would be glued onto it as prose.
 BOUNDARY_LINE="$(grep -n 'BLACKBOARD-/ ||' "$DISCOVERY" | head -1 | cut -d: -f2-)"
 BOUND_MISS=""
 case "$BOUNDARY_LINE" in *'OPERATIONALIZE\|'*) ;; *) BOUND_MISS="$BOUND_MISS OPERATIONALIZE|" ;; esac
 case "$BOUNDARY_LINE" in *'OPCHECK\|'*) ;; *) BOUND_MISS="$BOUND_MISS OPCHECK|" ;; esac
+# #2214: the TRACE| line has exactly the same hazard as the OPCHECK| line it answers — it is model-emitted
+# free text landing in the same log, so without a boundary it would be glued onto an open CANDIDATE| record.
+case "$BOUNDARY_LINE" in *'TRACE\|'*) ;; *) BOUND_MISS="$BOUND_MISS TRACE|" ;; esac
 if [ -z "$BOUNDARY_LINE" ]; then
   bad "could not find the _join_wrapped_candidates boundary alternation in run-discovery.sh"
 elif [ -z "$BOUND_MISS" ]; then
-  ok "_join_wrapped_candidates lists both OPERATIONALIZE| and OPCHECK| next to the sibling boundary tokens"
+  ok "_join_wrapped_candidates lists OPERATIONALIZE|, OPCHECK| and TRACE| next to the sibling boundary tokens"
 else
   bad "the _join_wrapped_candidates boundary alternation is missing:$BOUND_MISS"
 fi
@@ -254,6 +290,9 @@ WRAP_LOG="$WORK/wrapped-cell.log"
   printf 'CANDIDATE|Vault.sol:exitPool:48|C23|High|the exit leg hardcodes the opposite convention|deploy a\n'
   printf '  pool stub, enter then exit, and assert the returned representation differs\n'
   printf 'OPCHECK|the share accounting on both legs|total shares equals the sum of per-user shares\n'
+  printf 'CANDIDATE|Vault.sol:joinPool:31|C23|Medium|the entry leg reads a stale stored rate|stub the pool,\n'
+  printf '  move the rate between the two calls, and assert the entered amount uses the stale one\n'
+  printf 'TRACE|the share accounting on both legs|CLEAN|the totals are updated in the same statement\n'
   printf 'SAFE\n'
 } > "$WRAP_LOG"
 if [ ! -s "$JWC_AWK" ]; then
@@ -261,14 +300,15 @@ if [ ! -s "$JWC_AWK" ]; then
 else
   JOINED="$(awk -f "$JWC_AWK" "$WRAP_LOG")"
   JOINED_N="$(printf '%s\n' "$JOINED" | grep -c 'CANDIDATE|')"
-  if [ "$JOINED_N" -ne 1 ]; then
-    bad "the wrapped record did not reconstruct into exactly one CANDIDATE| line (got $JOINED_N)"
-  elif printf '%s' "$JOINED" | grep -q 'OPCHECK\|OPERATIONALIZE'; then
-    bad "an OPCHECK|/OPERATIONALIZE| line was glued onto the open CANDIDATE| record as prose (the boundary does not hold)"
-  elif printf '%s' "$JOINED" | grep -q 'assert the returned representation differs'; then
-    ok "an OPCHECK| line after a PTY-wrapped CANDIDATE closes the record: one joined candidate, wrapped tail kept, no OPCHECK text in it"
+  if [ "$JOINED_N" -ne 2 ]; then
+    bad "the two wrapped records did not reconstruct into exactly two CANDIDATE| lines (got $JOINED_N)"
+  elif printf '%s' "$JOINED" | grep -q 'OPCHECK\|OPERATIONALIZE\|TRACE|'; then
+    bad "an OPCHECK|/OPERATIONALIZE|/TRACE| line was glued onto an open CANDIDATE| record as prose (the boundary does not hold)"
+  elif printf '%s' "$JOINED" | grep -q 'assert the returned representation differs' \
+       && printf '%s' "$JOINED" | grep -q 'assert the entered amount uses the stale one'; then
+    ok "an OPCHECK| line and a TRACE| line each close a PTY-wrapped CANDIDATE record: two joined candidates, both wrapped tails kept, no OPCHECK/TRACE text inside them"
   else
-    bad "the wrapped continuation line was lost while joining the record"
+    bad "a wrapped continuation line was lost while joining the records"
   fi
 fi
 
@@ -284,6 +324,20 @@ if grep -q 'if \[ "\$ac_opn" -gt 0 \]; then ac_opchecks_json=' "$DISCOVERY"; the
   ok "the key is emitted only when the model emitted at least one OPCHECK| (a cell with none keeps its exact key set)"
 else
   bad "the opchecks key is emitted unconditionally — an OFF-arm cell's JSON would no longer be byte-identical"
+fi
+# #2214: the same discipline for the two follow-through counters. `untraced` is ALSO how a cell that DID
+# produce candidates records its shortfall — such a cell is never re-asked and never failed, so this field is
+# the only place its abandoned checks reach the readout.
+if grep -q 'if \[ "\$ac_trn" -gt 0 \]; then ac_traces_json=' "$DISCOVERY" \
+   && grep -q 'if \[ "\$ac_un" -gt 0 \]; then ac_untraced_json=' "$DISCOVERY"; then
+  ok "_accumulate_cell records \"traces\" and \"untraced\" only when non-zero (a lens-OFF cell's JSON key set is byte-identical to the pre-#2214 one)"
+else
+  bad "the #2214 traces/untraced counters are missing or emitted unconditionally (a lens-OFF cell's JSON would change shape)"
+fi
+if grep -q '"\$ac_opchecks_json" "\$ac_traces_json" "\$ac_untraced_json" >> "\$CELLS_JSONL"' "$DISCOVERY"; then
+  ok "both counters are appended LAST, after opchecks (the _plan_depth_cells forward key scan is untouched)"
+else
+  bad "the #2214 counters are no longer the LAST fields of the cell object — the forward key scan could break"
 fi
 
 note "12) DECISION: no new taxonomy class — this is a cross-class METHOD directive ..."
@@ -321,11 +375,13 @@ fi
 # explained in its own header comment that the gate expects OPCHECK| lines. The payload is fed to the model
 # VERBATIM, so the OFF arm dutifully emitted OPCHECK| lines with the directive absent and the mutation gate
 # read as contaminated. A fixture must never narrate the test it is fed to.
-if grep -Eq 'OPCHECK|OPERATIONALIZE|operationaliz' "$PAIRED" "$PLAIN"; then
-  bad "a fixture's own text names the OPCHECK|/OPERATIONALIZE contract — it would teach the model the expected output and contaminate the OFF arm"
-  grep -nE 'OPCHECK|OPERATIONALIZE|operationaliz' "$PAIRED" "$PLAIN" | head -3 | sed 's/^/      /' >&2
+# #2214 extends the same guard to the TRACE| half of the contract: a fixture that names it would teach the
+# OFF arm to emit trace lines and would make the follow-through gate unreadable in exactly the same way.
+if grep -Eq 'OPCHECK|OPERATIONALIZE|operationaliz|TRACE\|' "$PAIRED" "$PLAIN"; then
+  bad "a fixture's own text names the OPCHECK|/TRACE|/OPERATIONALIZE contract — it would teach the model the expected output and contaminate the OFF arm"
+  grep -nE 'OPCHECK|OPERATIONALIZE|operationaliz|TRACE\|' "$PAIRED" "$PLAIN" | head -3 | sed 's/^/      /' >&2
 else
-  ok "neither fixture narrates the gate that consumes it (the OFF arm cannot be taught the expected output)"
+  ok "neither fixture narrates the gate that consumes it, OPCHECK| or TRACE| (the OFF arm cannot be taught the expected output)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -488,6 +544,21 @@ EOF
         bad "ON arm: $UNGROUNDED of $OP_N OPCHECK| lines name nothing in the fixture's code (the model produced themes, or fabricated constructs)"
       fi
     fi
+    # #2214: the FOLLOW-THROUGH half of the same contract, on the same live reply. This is the only place the
+    # TRACE| clause is proven to be interpreted by the model rather than merely present in the prompt — and it
+    # is the ON arm the live gate must not trip: a compliant cell emits at least as many DISTINCT TRACE| lines
+    # as DISTINCT OPCHECK| lines, which is exactly _opcheck_trace_gap()'s arithmetic (part 4).
+    _distinct_live() { grep -E "^[[:space:]]*$1\|" "$2" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u | grep -c . || true; }
+    ON_OPD="$(_distinct_live OPCHECK "$LIVE_ON_LOG")"
+    ON_TRD="$(_distinct_live TRACE "$LIVE_ON_LOG")"
+    case "$ON_OPD" in ''|*[!0-9]*) ON_OPD=0 ;; esac
+    case "$ON_TRD" in ''|*[!0-9]*) ON_TRD=0 ;; esac
+    if [ "$ON_TRD" -ge "$ON_OPD" ] && [ "$ON_TRD" -gt 0 ]; then
+      ok "ON arm: $ON_TRD distinct TRACE| line(s) for $ON_OPD distinct OPCHECK| line(s) — the model followed every derived check through, so the #2214 gate does not trip"
+    else
+      bad "ON arm: only $ON_TRD distinct TRACE| line(s) for $ON_OPD distinct OPCHECK| line(s) — the model wrote checks it never traced (the #2214 gate would degrade this cell)"
+      grep -E '^[[:space:]]*(OPCHECK|TRACE)\|' "$LIVE_ON_LOG" | head -6 | sed 's/^/      /' >&2
+    fi
     # "Operationalize BEFORE you hunt" is an ORDERING claim — asserted by line number, not by eyeball.
     OP_LINE="$(grep -nE '^[[:space:]]*OPCHECK\|' "$LIVE_ON_LOG" | head -1 | cut -d: -f1)"
     VER_LINE="$(grep -nE '^[[:space:]]*(CANDIDATE\||SAFE[[:space:]]*$)' "$LIVE_ON_LOG" | head -1 | cut -d: -f1)"
@@ -506,17 +577,187 @@ EOF
   else
     OFF_OP_N="$(grep -cE '^[[:space:]]*OPCHECK\|' "$LIVE_OFF_LOG")"
     case "$OFF_OP_N" in ''|*[!0-9]*) OFF_OP_N=0 ;; esac
-    if [ "$OFF_OP_N" -eq 0 ] && ! grep -q 'OPERATIONALIZE|' "$LIVE_OFF_LOG"; then
-      ok "OFF arm: zero OPCHECK| lines and no OPERATIONALIZE| sentinel — the marker appears and disappears with the flag alone (this pair IS the mutation)"
+    OFF_TR_N="$(grep -cE '^[[:space:]]*TRACE\|' "$LIVE_OFF_LOG")"
+    case "$OFF_TR_N" in ''|*[!0-9]*) OFF_TR_N=0 ;; esac
+    if [ "$OFF_OP_N" -eq 0 ] && [ "$OFF_TR_N" -eq 0 ] && ! grep -q 'OPERATIONALIZE|' "$LIVE_OFF_LOG"; then
+      ok "OFF arm: zero OPCHECK| lines, zero TRACE| lines and no OPERATIONALIZE| sentinel — all three appear and disappear with the flag alone (this pair IS the mutation)"
     else
-      bad "OFF arm: $OFF_OP_N OPCHECK| line(s) / a sentinel appeared without the flag — the OFF arm is contaminated and the A/B would not be single-variable"
+      bad "OFF arm: $OFF_OP_N OPCHECK| / $OFF_TR_N TRACE| line(s) / a sentinel appeared without the flag — the OFF arm is contaminated and the A/B would not be single-variable"
     fi
   fi
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# PART 4 — #2214 LEVER 1: THE OPCHECK -> TRACE FOLLOW-THROUGH GATE (offline; runs in CI with no binaries).
+# The measured gap: in the archived #2213 treatment arm the 6 oracles cells wrote 5/11/8/12/4/8 OPCHECK lines
+# and ZERO TRACE lines, and 4 of the 6 answered SAFE — i.e. the derived checks, which ARE the method, were
+# abandoned and the zone still scored as a clean sweep. Prompt text is not a gate; this is the gate.
+# The shell functions under test are SLICED OUT of run-discovery.sh by line range and sourced, so this part
+# measures the shipped code rather than a copy that can drift (the same idiom as the awk extraction in 10).
+# ----------------------------------------------------------------------------------------------------------
+note "17) the shipped gate functions slice out of run-discovery.sh and load ..."
+GATE_FNS="$WORK/gate-fns.sh"
+{
+  sed -n '/^_distinct_sentinel_count() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_opcheck_trace_gap() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_untraced_safe() {$/,/^}$/p' "$DISCOVERY"
+} > "$GATE_FNS"
+GATE_LOADED=0
+if grep -q '^_opcheck_trace_gap() {$' "$GATE_FNS" && grep -q '^_untraced_safe() {$' "$GATE_FNS"; then
+  # shellcheck disable=SC1090  # sliced out of run-discovery.sh at runtime, by design
+  . "$GATE_FNS"
+  GATE_LOADED=1
+  ok "_distinct_sentinel_count / _opcheck_trace_gap / _untraced_safe extracted from run-discovery.sh and sourced"
+else
+  bad "could not extract the #2214 gate functions from run-discovery.sh (renamed or reshaped?)"
+fi
+
+# _cell_log <name> <line...> — write a synthetic cell log and print its path.
+_cell_log() {
+  _cl_name="$1"; shift
+  _cl_path="$WORK/$_cl_name.log"
+  : > "$_cl_path"
+  for _cl_line in "$@"; do printf '%s\n' "$_cl_line" >> "$_cl_path"; done
+  printf '%s\n' "$_cl_path"
+}
+# _assert_gap <label> <log> <expected-gap> <expected-trip: yes|no>
+_assert_gap() {
+  _ag_label="$1"; _ag_log="$2"; _ag_gap="$3"; _ag_trip="$4"
+  _ag_got="$(_opcheck_trace_gap "$_ag_log")"
+  if _untraced_safe "$_ag_log"; then _ag_fired=yes; else _ag_fired=no; fi
+  if [ "$_ag_got" = "$_ag_gap" ] && [ "$_ag_fired" = "$_ag_trip" ]; then
+    ok "$_ag_label: gap=$_ag_got, gate trips=$_ag_fired (as specified)"
+  else
+    bad "$_ag_label: gap=$_ag_got (want $_ag_gap), gate trips=$_ag_fired (want $_ag_trip)"
+  fi
+}
+
+if [ "$GATE_LOADED" -eq 1 ]; then
+  note "18) the gate arithmetic: it fires on an abandoned check and NEVER on a cell that followed through ..."
+  # (a) the #2213 shape, shrunk: checks derived, verdict SAFE, most of them never traced.
+  UNTRACED_LOG="$(_cell_log untraced \
+    'OPERATIONALIZE|vault|C23|on' \
+    'OPCHECK|the entry leg flag|both legs pass the same value' \
+    'OPCHECK|the exit leg flag|both legs pass the same value' \
+    'OPCHECK|the stored rate|it is refreshed before it is read' \
+    'OPCHECK|the share total|it equals the sum of the per-user shares' \
+    'OPCHECK|the fee cut|it is taken once per round trip' \
+    'TRACE|the entry leg flag|CLEAN|the entry call passes the literal' \
+    '  TRACE|the exit leg flag|UNRESOLVED|the exit path leaves this zone' \
+    'SAFE')"
+  _assert_gap "SAFE with 5 checks and 2 traces" "$UNTRACED_LOG" 3 yes
+  # (b) full follow-through: every check answered, including an honest UNRESOLVED. This is the arm the gate
+  #     must leave alone, or the directive would be punishing compliance.
+  TRACED_LOG="$(_cell_log traced \
+    'OPERATIONALIZE|vault|C23|on' \
+    'OPCHECK|the entry leg flag|both legs pass the same value' \
+    'OPCHECK|the stored rate|it is refreshed before it is read' \
+    'OPCHECK|the fee cut|it is taken once per round trip' \
+    'TRACE|the entry leg flag|CLEAN|the entry call passes the literal' \
+    'TRACE|the stored rate|UNRESOLVED|the setter is outside this payload' \
+    'TRACE|the fee cut|CLEAN|the fee is applied in the exit path only' \
+    'SAFE')"
+  _assert_gap "SAFE with 3 checks and 3 traces (one honest UNRESOLVED)" "$TRACED_LOG" 0 no
+
+  note "19) the gate is INERT with the lens off, and never re-asks a cell that produced a lead ..."
+  # (c) the production default: no directive => no OPCHECK| => nothing to gate, whatever else the log holds.
+  OFF_CELL_LOG="$(_cell_log lens-off \
+    'BLACKBOARD-FOCUS|a sibling lead' \
+    'SAFE')"
+  _assert_gap "lens OFF (no OPERATIONALIZE|, no OPCHECK|)" "$OFF_CELL_LOG" 0 no
+  # (d) a cell that DID surface a lead: the shortfall is real and is recorded as the `untraced` JSON field,
+  #     but the cell is neither re-asked (a re-ask could lose the lead) nor failed.
+  CAND_LOG="$(_cell_log candidate \
+    'OPERATIONALIZE|vault|C23|on' \
+    'OPCHECK|the entry leg flag|both legs pass the same value' \
+    'OPCHECK|the stored rate|it is refreshed before it is read' \
+    'TRACE|the entry leg flag|BUG|the exit leg passes the opposite value' \
+    'CANDIDATE|Vault.sol:exitPool:48|C23|High|the exit leg hardcodes the opposite convention|stub the pool and round-trip')"
+  _assert_gap "a candidate-emitting cell with 1 untraced check" "$CAND_LOG" 1 no
+  # (e) a #1707 chrome miss / #1955 timeout already owns its FAILED reason — the gate must not claim it.
+  : > "$UNTRACED_LOG.novalid"
+  if _untraced_safe "$UNTRACED_LOG"; then
+    bad "a cell carrying a .novalid marker was claimed by the untraced gate (it would mask the chrome/timeout reason)"
+  else
+    ok "a cell with a .novalid/.timeout marker keeps its own FAILED reason (the gate does not claim it)"
+  fi
+  rm -f "$UNTRACED_LOG.novalid"
+
+  note "20) TRACE grammar: a trace is matched to its OPCHECK by DISTINCT-LINE COUNT, not by text pairing ..."
+  # Verbatim repetition cannot inflate the requirement (5 OPCHECK lines, 3 distinct) and cannot discharge it
+  # either (a pasted TRACE line counts once). This is the whole matching rule, pinned.
+  DUPE_LOG="$(_cell_log dupes \
+    'OPERATIONALIZE|vault|C23|on' \
+    'OPCHECK|the entry leg flag|both legs pass the same value' \
+    'OPCHECK|the entry leg flag|both legs pass the same value' \
+    'OPCHECK|the stored rate|it is refreshed before it is read' \
+    'OPCHECK|the stored rate|it is refreshed before it is read' \
+    'OPCHECK|the fee cut|it is taken once per round trip' \
+    'TRACE|the entry leg flag|CLEAN|the entry call passes the literal' \
+    'TRACE|the stored rate|CLEAN|the setter runs first' \
+    'TRACE|the fee cut|CLEAN|the fee is applied once' \
+    'SAFE')"
+  _assert_gap "5 OPCHECK lines (3 distinct) answered by 3 traces" "$DUPE_LOG" 0 no
+  PASTED_LOG="$(_cell_log pasted \
+    'OPERATIONALIZE|vault|C23|on' \
+    'OPCHECK|the entry leg flag|both legs pass the same value' \
+    'OPCHECK|the stored rate|it is refreshed before it is read' \
+    'OPCHECK|the fee cut|it is taken once per round trip' \
+    'TRACE|the entry leg flag|CLEAN|the entry call passes the literal' \
+    'TRACE|the entry leg flag|CLEAN|the entry call passes the literal' \
+    'TRACE|the entry leg flag|CLEAN|the entry call passes the literal' \
+    'SAFE')"
+  _assert_gap "3 checks answered by the SAME trace line pasted 3 times" "$PASTED_LOG" 2 yes
+else
+  note "18-20) gate arithmetic, inertness and TRACE grammar ..."
+  bad "skipped: the #2214 gate functions could not be sourced (see 17)"
+fi
+
+note "21) run_cell bounds the re-ask, and scrape_cell_log has a DISTINCT untraced-opcheck FAILED branch ..."
+GATE_SRC_MISS=""
+# The re-ask is bounded by a validated knob, default 1, 0 = gate-only. An unbounded loop over a model that
+# never complies would burn a hunt budget on one cell.
+grep -q 'DF_TRACE_MAX_REASKS="${DF_TRACE_MAX_REASKS:-1}"' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [DF_TRACE_MAX_REASKS-default-1]"
+grep -q 'case "$DF_TRACE_MAX_REASKS" in' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [knob-validation]"
+grep -q 'while \[ "$rc_reask" -le "$DF_TRACE_MAX_REASKS" \] && _untraced_safe "$rc_log"; do' "$DISCOVERY" \
+  || GATE_SRC_MISS="$GATE_SRC_MISS [bounded-re-ask-loop]"
+# The superseded attempt is preserved, under a suffix that is NOT a `.log` (readouts and the hunt dashboard
+# enumerate `hunt_*.log` and must keep seeing exactly one log per cell).
+grep -q 'mv -f "$rc_log" "$rc_log.untraced-attempt-$rc_reask"' "$DISCOVERY" \
+  || GATE_SRC_MISS="$GATE_SRC_MISS [attempt-preserved-under-non-.log-suffix]"
+grep -q '_opcheck_trace_gap "$rc_log" > "$rc_log.untraced"' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [untraced-marker]"
+grep -q 'if \[ -f "$sc_log.untraced" \]; then' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [scrape-untraced-branch]"
+grep -q 'FAILED — untraced-opcheck: SAFE with %s untraced OPCHECK(s) (NOT a rigorous negative)' "$DISCOVERY" \
+  || GATE_SRC_MISS="$GATE_SRC_MISS [distinguishable-FAILED-row]"
+if [ -z "$GATE_SRC_MISS" ]; then
+  ok "the re-ask is bounded (DF_TRACE_MAX_REASKS, default 1, 0 = gate-only), the superseded attempt is kept out of the *.log namespace, and the surviving shortfall becomes a distinguishable 'untraced-opcheck' FAILED row"
+else
+  bad "the #2214 gate wiring in run-discovery.sh regressed:$GATE_SRC_MISS"
+fi
+# The FAILED row must ride the EXISTING status vocabulary: lib/zone-coverage.py derives hunted_degraded from
+# (exit 0 AND totals.failed > 0), so inventing a new cell status would silently drop these cells out of the
+# degraded derivation and out of every downstream readout.
+UNTRACED_BRANCH="$WORK/untraced-branch.txt"
+awk '/if \[ -f "\$sc_log.untraced" \]; then/{f=1} f{print} f&&/^  fi$/{exit}' "$DISCOVERY" > "$UNTRACED_BRANCH"
+if [ ! -s "$UNTRACED_BRANCH" ]; then
+  bad "could not slice the .untraced branch out of scrape_cell_log"
+elif grep -q 'FAILED_CELLS=$((FAILED_CELLS + 1))' "$UNTRACED_BRANCH" \
+     && grep -q '_accumulate_cell "$sc_subsys" "$sc_cls" "$sc_files" "$sc_log" failed "$sc_phase"' "$UNTRACED_BRANCH"; then
+  ok "an untraced-opcheck cell counts as FAILED and records \"status\":\"failed\" (zone-coverage.py still derives hunted_degraded; no new status vocabulary)"
+else
+  bad "the .untraced branch no longer increments FAILED_CELLS / records status \"failed\" — the zone would score as a trusted clean sweep"
+fi
+# Finally, the knob is SHELL-read: documenting it as an exec.env_passthrough entry would be cargo cult (the
+# #1426 trap applies to getenv() inside an .ag agent only), and adding it there would change the hunter's env.
+if grep -q '^  echo "exec.env_passthrough = .*DF_TRACE_MAX_REASKS' "$DISCOVERY"; then
+  bad "DF_TRACE_MAX_REASKS was added to exec.env_passthrough — it is read by this shell, and the entry changes the hunter's env for nothing"
+else
+  ok "DF_TRACE_MAX_REASKS stays a SHELL-read knob (no exec.env_passthrough entry, so the hunter's env is unchanged)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
-  note "PASS — the #2211 operationalize directive (pure-meta text, default-OFF flag, OPERATIONALIZE| sentinel, OPCHECK| contract) holds"
+  note "PASS — the #2211 operationalize directive (pure-meta text, default-OFF flag, OPERATIONALIZE| sentinel, OPCHECK| contract) and the #2214 OPCHECK->TRACE follow-through gate hold"
   note "NOTE: this gate proves WIRING and model COMPLIANCE only. Rare-tier recall is UNMEASURED until the #2211 M2 corpus A/B runs."
   exit 0
 fi
