@@ -390,6 +390,64 @@ fn contains_reentrancy_surface(code: string) -> bool {
     return true;
 }
 
+// --- #2214 deterministic C22 (cross-protocol asset / unit equivalence) TOUCHPOINT backstop ------------
+// C22 is not under-labelled the way C5/C8/C19 are — it is MIS-ROUTED. On the #2213 frozen notional map the
+// LLM put C22 on the staking zone (which holds the PT/SY tokens) and NOT on the oracles zone (which holds
+// `PendlePTOracle._calculateBaseToQuote`, where `useSyOracleRate` selects `getPtToSyRate` and the result is
+// then consumed as a PT->asset rate — notional H-8). The class that would have carried the bug never
+// reached the zone that contains it. This net re-keys C22 on the zone's TOUCHPOINTS instead of on which
+// contract nominally holds the tokens: a zone that READS a rate/price out of an external protocol, or that
+// holds a FLAG selecting between two unit/rate representations, is where a unit-equivalence assumption can
+// actually be made. Sibling of the #1729/#2111/#2121 nets: flat `index_of` over the pre-built `code` blob
+// only — no per-element recursion, no regex, no `exec sh`. The LLM instruction is deliberately NOT touched
+// (the C22 prompt rule already exists; editing it would re-roll every zone's classification).
+//
+// Deliberate exclusion: `convertToAssets(` / `convertToShares(`. An ERC4626 zone converting its OWN shares
+// is not a cross-protocol unit touchpoint; including them was measured to pull in 3 extra notional zones
+// for no mechanism. Measured fan-out on the two frozen #2213 maps: +1 zone per contest via the rate-read
+// net (notional `src_oracles`, yieldoor 1 of 4 zones), plus notional `src_single_sided_lp` via the `useEth`
+// selector — i.e. the "must not fire on every oracle" requirement held mechanically, not by intent.
+
+// An EXTERNAL protocol's rate/price getter appears in the zone: Chainlink-style feed reads, Pendle's PT
+// rate getters (the H-8 mechanic), Curve/Lido/Yearn/Balancer-style rate getters, and the generic
+// `getRate(`/`exchangeRate`/`getPrice(` forms. Sequential `if` (this file's no-`||` style).
+fn has_external_rate_read(code: string) -> bool {
+    if index_of(code, "latestRoundData") >= 0 { return true; }
+    if index_of(code, "latestAnswer") >= 0 { return true; }
+    if index_of(code, "getAnswer(") >= 0 { return true; }
+    if index_of(code, "getPtToSyRate") >= 0 { return true; }
+    if index_of(code, "getPtToAssetRate") >= 0 { return true; }
+    if index_of(code, "get_virtual_price") >= 0 { return true; }
+    if index_of(code, "price_oracle") >= 0 { return true; }
+    if index_of(code, "stEthPerToken") >= 0 { return true; }
+    if index_of(code, "getPooledEthByShares") >= 0 { return true; }
+    if index_of(code, "pricePerShare") >= 0 { return true; }
+    if index_of(code, "getRate(") >= 0 { return true; }
+    if index_of(code, "exchangeRate") >= 0 { return true; }
+    if index_of(code, "getPrice(") >= 0 { return true; }
+    return false;
+}
+
+// A flag that SELECTS between two asset/unit representations — the H-8 shape (`useSyOracleRate ?
+// getPtToSyRate : getPtToAssetRate`), plus the wrapped/native and base-inversion variants. Prefix
+// substrings (`useSy` also matches `useSyOracleRate`, `useEth` also matches `useEthAsBase`).
+fn has_unit_selector_flag(code: string) -> bool {
+    if index_of(code, "useSy") >= 0 { return true; }
+    if index_of(code, "useUnderlying") >= 0 { return true; }
+    if index_of(code, "useEth") >= 0 { return true; }
+    if index_of(code, "isNative") >= 0 { return true; }
+    if index_of(code, "invertBase") >= 0 { return true; }
+    if index_of(code, "useAssetRate") >= 0 { return true; }
+    if index_of(code, "rateSource") >= 0 { return true; }
+    return false;
+}
+
+fn contains_cross_unit_signal(code: string) -> bool {
+    if has_external_rate_read(code) { return true; }
+    if has_unit_selector_flag(code) { return true; }
+    return false;
+}
+
 // --- #1717 path-level test/interface exclusion (applied BEFORE the content signals below) -----------
 // A zone/file path can deterministically say "this is a test unit" or "this is a pure interface" in a
 // way content signals cannot: an interface getter that merely returns `IStabilityPool`, or a Foundry
@@ -680,6 +738,10 @@ fn apply_reentrancy_backstop(classesCsv: string, code: string) -> string {
     if !contains_reentrancy_surface(code) { return classesCsv; }
     return force_include(classesCsv, "C8");
 }
+fn apply_cross_unit_backstop(classesCsv: string, code: string) -> string {
+    if !contains_cross_unit_signal(code) { return classesCsv; }
+    return force_include(classesCsv, "C22");
+}
 
 // The deterministic net: when the zone's code signals a lending/CDP/stability-pool system (direct or
 // ERC4626-wrapped), force C10 ("first-depositor/inflation") + C11 ("stability-pool offset"); when it signals
@@ -814,9 +876,14 @@ fn apply_backstop(verdict: string, code: string) -> string {
     // typed) AND a post-call state write with NO reentrancy guard, so the rare reentrancy class reaches
     // scope.tsv and can be NAMED.
     let withReentrancy = apply_reentrancy_backstop(withNarrow, code);
-    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C8/C10/C11/C17/C19) by
+    // #2214: force C22 (cross-protocol asset/unit equivalence) when the zone READS an external protocol's
+    // rate/price or holds a unit-selection flag, so the class reaches the zone that owns the TOUCHPOINT
+    // (notional H-8's oracle) rather than only the zone that nominally holds the tokens. Chained AFTER the
+    // C8 net and BEFORE apply_fitness_reorder, so a forced C22 is still fitness-ranked like forced C5/C8/C19.
+    let withCrossUnit = apply_cross_unit_backstop(withReentrancy, code);
+    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C8/C10/C11/C17/C19/C22) by
     // learned real-bug precision, so the highest-precision class leads the CSV that run-discovery.sh fans out.
-    let reordered = apply_fitness_reorder(withReentrancy);
+    let reordered = apply_fitness_reorder(withCrossUnit);
     let rebuilt = "ZONE|" + pipe_field(line, 1) + "|" + pipe_field(line, 2) + "|" + reordered + "|" + pipe_field(line, 4);
     if rebuilt == line { return verdict; }
     return verdict + "\n" + rebuilt;
@@ -969,6 +1036,11 @@ print("NARROW-INT|" + zoneId + "|" + bool_str(contains_narrow_int_signal(code)))
 // as NARROW-INT|), so contains_reentrancy_surface() is observable + offline-testable under the mock
 // backend (whose reply carries no ZONE| line). Never perturbs the `^ZONE\|` scrape.
 print("REENTRANCY|" + zoneId + "|" + bool_str(contains_reentrancy_surface(code)));
+// #2214: emit the C22 cross-protocol unit TOUCHPOINT signal as a NON-ZONE| diagnostic line (same
+// trailing-line-scrape channel as REENTRANCY|), so contains_cross_unit_signal() is observable +
+// offline-testable under the mock backend (whose reply carries no ZONE| line, making the apply_backstop
+// append itself unreachable there). Never perturbs the `^ZONE\|` scrape.
+print("CROSS-UNIT|" + zoneId + "|" + bool_str(contains_cross_unit_signal(code)));
 let outcome = outcome_of(finalVerdict);
 emit("dark-factory:zone_mapped", "{\"zone\":\"" + zoneId + "\",\"outcome\":\"" + outcome + "\"}");
 learn("zone-map", zoneId, "attack-surface classification of zone " + zoneId, outcome, ["zone-map", zoneId, outcome]);

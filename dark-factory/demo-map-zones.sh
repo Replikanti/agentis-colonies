@@ -1316,6 +1316,35 @@ if grep -q 'fn contains_reentrancy_surface' "$MAPPER" \
 else
   bad "zone-mapper.ag missing the #2121 C8 reentrancy backstop wiring"
 fi
+# #2214: the C22 cross-protocol asset/unit TOUCHPOINT backstop net exists, is chained into apply_backstop
+# (so C22 reaches the zone that owns the touchpoint -> scope.tsv -> is hunted -> can be NAMED, the notional
+# H-8 routing miss), and emits the CROSS-UNIT| diagnostic (mirrors the #2111/#2121 net idiom).
+if grep -q 'fn has_external_rate_read' "$MAPPER" \
+   && grep -q 'fn has_unit_selector_flag' "$MAPPER" \
+   && grep -q 'fn contains_cross_unit_signal' "$MAPPER" \
+   && grep -q 'fn apply_cross_unit_backstop' "$MAPPER" \
+   && grep -q 'apply_cross_unit_backstop(' "$MAPPER" \
+   && grep -q '"CROSS-UNIT|"' "$MAPPER"; then
+  ok "zone-mapper.ag defines the #2214 C22 net (has_external_rate_read + has_unit_selector_flag -> contains_cross_unit_signal + apply_cross_unit_backstop), chains it into apply_backstop, and emits the CROSS-UNIT| line"
+else
+  bad "zone-mapper.ag missing the #2214 C22 cross-protocol-unit touchpoint backstop wiring"
+fi
+# #2214 ordering: the C22 backstop runs AFTER the C8 net and BEFORE apply_fitness_reorder, so a forced C22 is
+# still fitness-ranked like a forced C5/C8/C19 (and never lands outside the reordered CSV).
+if awk '/fn apply_backstop/{f=1} f&&/apply_reentrancy_backstop\(/{r=NR} f&&/apply_cross_unit_backstop\(/{c=NR} f&&/apply_fitness_reorder\(/{print (r&&c&&r<c&&c<NR) ? "ok" : "no"; exit}' "$MAPPER" | grep -q '^ok$'; then
+  ok "#2214: apply_cross_unit_backstop is chained after apply_reentrancy_backstop and before apply_fitness_reorder"
+else
+  bad "#2214: apply_cross_unit_backstop is not chained between the C8 backstop and the fitness reorder"
+fi
+# #2214 PROMPT-IDENTITY guard: the net is POST-classification only. The LLM instruction (the region between
+# `let instruction =` and the `prompt(` call) must not mention the net at all, so a zone on which the net does
+# not fire receives a byte-identical prompt to the pre-#2214 one and every zone's classification is unperturbed.
+if awk '/^let instruction =/{f=1} f{print} /let verdict = prompt\(/{exit}' "$MAPPER" \
+     | grep -qE 'cross_unit|CROSS-UNIT'; then
+  bad "#2214: the C22 touchpoint net leaked into the LLM instruction (the prompt must stay byte-identical when the net does not fire)"
+else
+  ok "#2214: the C22 touchpoint net is post-classification only — no cross_unit/CROSS-UNIT token inside the LLM instruction"
+fi
 if grep -q 'learn("zone-map"' "$MAPPER" && grep -q 'memo_write("zone-mapper:last_check"' "$MAPPER"; then
   ok "zone-mapper.ag records the mapping (learn) + writes its last_check memo"
 else
@@ -1777,6 +1806,82 @@ contract GuardedSettle is ReentrancyGuard {
 }
 SOL
 
+  # #2214: a FOURTH pair of zones in the SAME repo for the C22 cross-protocol-unit touchpoint net.
+  # crossunit/PtRateOracle.sol carries the notional H-8 mechanic verbatim in shape: an immutable
+  # `useSyOracleRate` flag SELECTING between two external rate getters (`getPtToSyRate` vs
+  # `getPtToAssetRate`) whose result is then multiplied by a Chainlink `latestRoundData` price — i.e. the
+  # zone both READS an external protocol's rate and holds a unit-selection flag (must resolve
+  # CROSS-UNIT|crossunit|true). selfrate/InternalShares.sol does pure INTERNAL share math
+  # (`convertToAssets`/`convertToShares` over its own totals, deliberately excluded from the rate-read net)
+  # with no external feed and no selector flag (must resolve CROSS-UNIT|selfrate|false — proving an ERC4626
+  # zone converting its OWN shares is not a cross-protocol unit touchpoint).
+  mkdir -p "$AC_REPO/crossunit" "$AC_REPO/selfrate"
+  cat > "$AC_REPO/crossunit/PtRateOracle.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+interface IPendleOracle {
+    function getPtToSyRate(address market, uint32 duration) external view returns (uint256);
+    function getPtToAssetRate(address market, uint32 duration) external view returns (uint256);
+}
+
+interface IAggregator {
+    function latestRoundData() external view returns (uint80, int256, uint256, uint256, uint80);
+}
+
+contract PtRateOracle {
+    IPendleOracle public immutable pendleOracle;
+    IAggregator public immutable baseToUSDOracle;
+    address public immutable pendleMarket;
+    uint32 public immutable twapDuration;
+    // the unit-selection flag: picks WHICH unit the returned rate is denominated in
+    bool public immutable useSyOracleRate;
+
+    constructor(IPendleOracle o, IAggregator b, address m, uint32 d, bool useSyOracleRate_) {
+        pendleOracle = o;
+        baseToUSDOracle = b;
+        pendleMarket = m;
+        twapDuration = d;
+        useSyOracleRate = useSyOracleRate_;
+    }
+
+    function _getPTRate() internal view returns (uint256) {
+        return useSyOracleRate
+            ? pendleOracle.getPtToSyRate(pendleMarket, twapDuration)
+            : pendleOracle.getPtToAssetRate(pendleMarket, twapDuration);
+    }
+
+    function _calculateBaseToQuote() internal view returns (uint256) {
+        (, int256 basePrice,,,) = baseToUSDOracle.latestRoundData();
+        // the PT rate is consumed as a PT->asset rate regardless of which unit it is denominated in
+        return (uint256(basePrice) * _getPTRate()) / 1e18;
+    }
+
+    function latestPrice() external view returns (uint256) {
+        return _calculateBaseToQuote();
+    }
+}
+SOL
+  cat > "$AC_REPO/selfrate/InternalShares.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract InternalShares {
+    uint256 public totalShares;
+    uint256 public totalDeposits;
+
+    function convertToAssets(uint256 shares) public view returns (uint256) {
+        if (totalShares == 0) return shares;
+        return (shares * totalDeposits) / totalShares;
+    }
+
+    function convertToShares(uint256 assets) public view returns (uint256) {
+        if (totalDeposits == 0) return assets;
+        return (assets * totalShares) / totalDeposits;
+    }
+}
+SOL
+
   git -C "$AC_REPO" init -q
   git -C "$AC_REPO" config user.email demo@example.invalid
   git -C "$AC_REPO" config user.name "demo"
@@ -1829,6 +1934,16 @@ SOL
     else
       bad "#2121: unexpected REENTRANCY| lines (want reentrancy=true safeguard=false, got reentrancy='$RE_HOT' safeguard='$RE_SAFE')"
     fi
+    # #2214: same diagnostic-line read for the C22 cross-protocol-unit touchpoint net — the mock backend
+    # still runs contains_cross_unit_signal()'s real, non-LLM logic, so this exercises the actual net
+    # offline via the unconditional CROSS-UNIT| diagnostic line.
+    CU_HOT="$(grep -h '^CROSS-UNIT|crossunit|' "$OUT4/run/zone_crossunit.log" 2>/dev/null | tail -1)"
+    CU_SELF="$(grep -h '^CROSS-UNIT|selfrate|' "$OUT4/run/zone_selfrate.log" 2>/dev/null | tail -1)"
+    if [ "$CU_HOT" = "CROSS-UNIT|crossunit|true" ] && [ "$CU_SELF" = "CROSS-UNIT|selfrate|false" ]; then
+      ok "#2214: contains_cross_unit_signal() true for a useSyOracleRate ? getPtToSyRate : getPtToAssetRate oracle feeding a Chainlink price (notional H-8 mechanic), false for pure internal convertToAssets/convertToShares share math"
+    else
+      bad "#2214: unexpected CROSS-UNIT| lines (want crossunit=true selfrate=false, got crossunit='$CU_HOT' selfrate='$CU_SELF')"
+    fi
     # QA fix (PR #2126): the nested-paren interface-call shape (`IFoo(bar().baz).poke()`, the exact real
     # Royco Day form) must still trip has_interface_call_surface() through the widened argument group.
     RE_NESTED="$(grep -h '^REENTRANCY|nestedcall|' "$OUT4/run/zone_nestedcall.log" 2>/dev/null | tail -1)"
@@ -1840,6 +1955,68 @@ SOL
   else
     bad "map-zones.sh --backend mock failed on the #1729/#1740 access-control fixture (exit $RC4):"
     sed 's/^/      /' "$WORK/mock-ac.err" | head -20 >&2
+  fi
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (g2) #2214 C22 APPEND SEMANTICS, offline and WITHOUT an LLM. The mock backend's reply carries no ZONE|
+#      sentinel, so apply_backstop()'s append is unreachable on the (g) path above — the CROSS-UNIT| line
+#      proves the NET, never the APPEND. This section drives the real, shipped apply_backstop() directly:
+#      it slices zone-mapper.ag's function prefix (everything above `let dir = getenv("TARGET_DIR");`, i.e.
+#      the byte-identical shipped definitions, never a copy of the logic), appends three `print()` calls
+#      over synthetic zone code, and runs it through `agentis go`. No prompt() is evaluated, so no backend
+#      is contacted. Pins: (1) the net fires -> exactly ONE C22 appended once as a new trailing ZONE| line;
+#      (2) the net does not fire -> the verdict is returned BYTE-IDENTICAL (no trailing line at all);
+#      (3) the zone already carries C22 -> no duplicate and again no trailing line.
+# ----------------------------------------------------------------------------------------------------------
+if ! command -v agentis >/dev/null 2>&1; then
+  skip "#2214: agentis not on PATH — skipping the apply_backstop() C22 append-semantics check"
+else
+  note "8) #2214: apply_backstop() C22 append semantics (real .ag functions, no LLM) ..."
+  CU_DIR="$WORK/crossunit-backstop"
+  mkdir -p "$CU_DIR"
+  awk '/^let dir = getenv\("TARGET_DIR"\);/{exit} {print}' "$MAPPER" > "$CU_DIR/backstop-probe.ag"
+  cat >> "$CU_DIR/backstop-probe.ag" <<'AG'
+// #2214 probe tail (demo-map-zones.sh): drive apply_backstop() over synthetic zone code. The H-8 shape
+// (a flag selecting between two external PT rate getters) must force C22; plain internal uint256 math
+// must leave the verdict untouched.
+let cuHot = "bool public immutable useSyOracleRate; uint256 r = useSyOracleRate ? P.getPtToSyRate(m, d) : P.getPtToAssetRate(m, d);";
+let cuCold = "contract Plain { uint256 total; function add(uint256 a) external { total = a + 1; } }";
+print("CU-T1|" + apply_backstop("ZONE|zhot|Oracle|C2,C9|why", cuHot));
+print("CU-T2|" + apply_backstop("ZONE|zcold|Plain|C2,C9|why", cuCold));
+print("CU-T3|" + apply_backstop("ZONE|zdup|Oracle|C22,C9|why", cuHot));
+AG
+  ( cd "$CU_DIR" && agentis init >/dev/null 2>&1 ) || true
+  # knowledge.enabled: apply_fitness_reorder() calls query_knowledge("hunt-fitness"); nothing is imported
+  # here, so the reorder stays an identity and the CSV order below is the backstop's own.
+  printf 'llm.backend = mock\nlearning.enabled = true\nexperience.enabled = true\nknowledge.enabled = true\n' > "$CU_DIR/.agentis/config"
+  ( cd "$CU_DIR" && agentis go backstop-probe.ag ) > "$CU_DIR/probe.log" 2>&1
+  CU_RC=$?
+  # Each print() emits the (possibly two-line) verdict; take the tag line and the line after it.
+  CU_T1_NEXT="$(awk '/^CU-T1\|/{getline; print; exit}' "$CU_DIR/probe.log")"
+  CU_T2_LINE="$(awk '/^CU-T2\|/{print; exit}' "$CU_DIR/probe.log")"
+  CU_T2_NEXT="$(awk '/^CU-T2\|/{getline; print; exit}' "$CU_DIR/probe.log")"
+  CU_T3_LINE="$(awk '/^CU-T3\|/{print; exit}' "$CU_DIR/probe.log")"
+  CU_T3_NEXT="$(awk '/^CU-T3\|/{getline; print; exit}' "$CU_DIR/probe.log")"
+  if [ "$CU_RC" -ne 0 ]; then
+    bad "#2214: the apply_backstop() probe did not run (exit $CU_RC)"
+    sed 's/^/      /' "$CU_DIR/probe.log" | head -20 >&2
+  else
+    if [ "$CU_T1_NEXT" = "ZONE|zhot|Oracle|C2,C9,C22|why" ]; then
+      ok "#2214: apply_backstop() appends ONE rebuilt ZONE| line with C22 added exactly once on the H-8 code shape"
+    else
+      bad "#2214: want the appended line 'ZONE|zhot|Oracle|C2,C9,C22|why', got '$CU_T1_NEXT'"
+    fi
+    if [ "$CU_T2_LINE" = "CU-T2|ZONE|zcold|Plain|C2,C9|why" ] && [ "$CU_T2_NEXT" != "ZONE|zcold|Plain|C2,C9,C22|why" ]; then
+      ok "#2214: apply_backstop() returns the verdict BYTE-IDENTICAL when the touchpoint net does not fire (no C22, no appended line)"
+    else
+      bad "#2214: the no-fire verdict was not byte-identical (got '$CU_T2_LINE' + next '$CU_T2_NEXT')"
+    fi
+    if [ "$CU_T3_LINE" = "CU-T3|ZONE|zdup|Oracle|C22,C9|why" ] && [ "$CU_T3_NEXT" != "ZONE|zdup|Oracle|C22,C9,C22|why" ]; then
+      ok "#2214: a zone that ALREADY carries C22 gets no duplicate (force_include dedupe, no appended line)"
+    else
+      bad "#2214: duplicate-C22 regression (got '$CU_T3_LINE' + next '$CU_T3_NEXT')"
+    fi
   fi
 fi
 

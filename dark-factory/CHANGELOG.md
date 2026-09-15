@@ -33,6 +33,28 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 - **Native flat-cyborg result-file reply capture (#2207).** The hunt emitters (`run-discovery.sh`, `run-invariant-hunt.sh`, `run-refute.sh`, `map-zones.sh`, `run-poc.sh`, `gen-briefs.sh`) now set `llm.flat_cyborg.result_file_dir` to the per-cell RUN dir, so the driven model writes its reply to a file agentis reads via flat-cyborg `--result-file` (file > transcript > screen) — large zone briefs/hunts no longer fail the `--extract` screen-scrape and degrade to mechanical/empty. **Requires:** agentis >= 1.32.0 + flat-cyborg >= 0.17.0 (older agentis ignores the key harmlessly → screen-scrape as before). Builds on flat-cyborg#79 (v0.17.0 `--result-file`) and agentis-core#1002.
 
 ### Added
+- **Deterministic C22 routing by TOUCHPOINT, not by token custody (#2214, lever 2).** `zone-mapper.ag` gained
+  a `contains_cross_unit_signal()` net (sibling of the #1729/#2111/#2121 backstops: flat `index_of` over the
+  pre-built zone `code` blob, no regex, no `exec sh`, no per-element recursion) that forces **C22**
+  (cross-protocol asset / unit equivalence) onto any zone that READS an external protocol's rate/price
+  (`latestRoundData`, `getPtToSyRate`/`getPtToAssetRate`, `get_virtual_price`, `stEthPerToken`,
+  `pricePerShare`, `getRate(`, `exchangeRate`, `getPrice(`, ...) **or** holds a flag SELECTING between two
+  unit/rate representations (`useSy`, `useUnderlying`, `useEth`, `isNative`, `invertBase`, `useAssetRate`,
+  `rateSource`). This is a ROUTING fix, not a new class: the #2213 forensics showed the LLM puts C22 on the
+  zone that nominally HOLDS the tokens, while the bug lives in the zone that PRICES them (notional H-8 —
+  `useSyOracleRate` selecting `getPtToSyRate`, whose result is then consumed as a PT->asset rate — was
+  hunted with C22 nowhere on the oracles zone). ERC4626 self-conversion (`convertToAssets(` /
+  `convertToShares(`) is deliberately EXCLUDED: a vault converting its own shares is not a cross-protocol
+  touchpoint. The forced class is appended AFTER the C8 net and BEFORE the #1711 fitness reorder, so it is
+  still ranked like a forced C5/C8/C19, and the LLM instruction is UNTOUCHED — a zone on which the net does
+  not fire gets a byte-identical prompt and an unchanged verdict. Observable offline through a new
+  `CROSS-UNIT|<zone>|<bool>` diagnostic line (same non-`ZONE|` trailing channel as `REENTRANCY|`). Measured
+  fan-out on the two frozen #2213 maps: +1 zone per contest via the rate-read net, plus one more notional
+  zone via the `useEth` selector — it does not fire on every oracle. Gated by `demo-map-zones.sh` (TRUE
+  fixture carrying the H-8 mechanic, FALSE internal-share-math fixture, chain-order guard, prompt-identity
+  guard, and an LLM-free probe that drives the real `apply_backstop()`: C22 appended exactly once, no
+  duplicate when the zone already carries it, byte-identical verdict when the net does not fire). This
+  amends the #1830 "C22/C23 stay menu-only" cell-budget decision for **C22 only**; C23 is unchanged.
 - **"Operationalize before you hunt" method directive, opt-in and default OFF (#2211, M1).** `hunter.ag`
   gained a PURE-META cross-class directive: convert the assigned bug class into CONCRETE, code-grounded
   checks for THIS zone (scan for external touchpoints, numeric conversions, stored assumptions, state
