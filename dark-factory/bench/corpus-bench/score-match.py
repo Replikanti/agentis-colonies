@@ -56,6 +56,30 @@
 # decisions it dropped, and how many rows that cost. A run reporting a nonzero `gated_rows` is a run whose
 # headline is gate-sensitive and must publish the sensitivity alongside it.
 #
+# GT LOCATION ANCHORS (issue #2215). The location-first rule can only fire when the row's TRUNCATED signature
+# prose happens to name both the `.sol` basename and the function. On real judging reports it often cannot:
+# the location the watson links lives past the truncation, or is expressed only as a GitHub `#L<n>` link or a
+# `Contract:LINE` backtick ref, neither of which carries a function NAME. `notional` H-9 is the canonical
+# case — BOTH arms of the #2213 A/B generated the bug at `CurveConvex2Token.sol:_exitPool`, the row's prose
+# names only the Curve-side symbols, so the lead was credited to the row's CONSENSUS twin (M-10, whose prose
+# does name file+function) and the RARE row scored MISS. That is a MEASUREMENT defect: the denominator of
+# every rare number quoted for that contest was matcher-bounded, not capability-bounded.
+# extract-gt.sh now resolves those anchors GT-side into truth.tsv column 6 (`<Basename.sol>:<function>`
+# pairs), and this scorer credits a lead whose own (basename, function) equals ONE of them. The contract:
+#   * PAIR-EXACT — file and function must come from the SAME pair. A cross product (file from one anchor,
+#     function from another) is NOT a match, so this rule is strictly TIGHTER than the prose rule it
+#     supplements, which accepts any co-occurrence anywhere in 1500 characters of signature.
+#   * `--judge off` ONLY — in judge mode the judge is authoritative and nothing here runs (#1829).
+#   * `lead_matches_row()` IS NOT TOUCHED, and a 5-column truth.tsv produces byte-identical output, so the
+#     `--self-test` pin on fixtures/score/ holds unchanged.
+#   * SEPARABLE — `LOC\t<rows_with_locations>\t<rows_credited_only_via_locations>` plus one
+#     `LOCHIT\t<sev_id>\t<lead location>` per row credited ONLY through a pair, so `hits - loc_credited`
+#     recovers the frozen number from the SAME replay (the #1840 `DUP`/`DUPHIT` idiom).
+#   * MECHANISM-BLIND — like the prose rule, a pair is a NAME, not evidence of the same bug. A name-coincident
+#     candidate at an anchored location still scores HIT. Any claim that a specific bug was FOUND must be read
+#     off the cell log, never off this scoreboard.
+# Credit is applied BEFORE the #1840 class expansion, so `--gt-dupes` sees it.
+#
 # This is a BENCH scorer only. It does NOT touch novelty-gate.sh (the LIVE hunting-pipeline boundary/novelty
 # gate, frozen for the #1698/#1699 re-measurement) or extract-gt.sh (truth.tsv schema unchanged).
 #
@@ -64,7 +88,9 @@
 #                       [--judge-log <file.jsonl>] [--judge-batch N] [--judge-min-confidence N]
 #                       [--judge-max-error-rate PCT] [--gt-dupes <file.tsv>]
 #                       [--gt-dupes-min-confidence N] [--gt-dupes-max-class N]
-#   truth.tsv           extract-gt.sh output: sev_id \t severity \t rarity \t title \t signature (per row).
+#   truth.tsv           extract-gt.sh output: sev_id \t severity \t rarity \t title \t signature [\t locations]
+#                       (per row). Column 6 (#2215) is OPTIONAL: space-separated `<Basename.sol>:<function>`
+#                       location anchors; absent/empty -> that row is scored exactly as before.
 #   verified_findings.json  run-zone-hunt.sh verify output: {"verified": [ {location, file, ...}, ... ]}.
 #   --min-overlap N     ONLY governs the location-unavailable fallback (a lead with no parseable function).
 #                       Location-resolvable leads are threshold-INDEPENDENT; N never affects them. Default 2.
@@ -101,7 +127,10 @@
 #                       field is NORMALIZED (a leading `class=` prefix is stripped; empty/missing -> `unknown`)
 #                       so the `class=C3` vs `C3` inconsistency in verified_findings.json collapses to one key.
 # Output (stdout): one `<sev_id>\t<HIT|MISS>` line per truth row (input order), then a trailer line
-#   `LEADS\t<verified_n>\t<matched_leads>` (verified lead count; leads matching >=1 truth row). In judge mode
+#   `LEADS\t<verified_n>\t<matched_leads>` (verified lead count; leads matching >=1 truth row). Under
+#   `--judge off` with a truth.tsv carrying column 6, one `LOC\t<rows_with_locations>\t<loc_credited>`
+#   trailer plus one `LOCHIT\t<sev_id>\t<lead location>` line per row credited ONLY by a location pair
+#   follow it (#2215). In judge mode
 #   TWO extra trailer lines follow it: `JUDGE\t<calls>\t<errors>` and (#1841) `GATE\t<min_confidence>\t
 #   <gated_matches>\t<gated_rows>` — the confidence gate in force, how many valid MATCH decisions it dropped,
 #   and how many truth rows are MISS ONLY because of it. Under `--gt-dupes`, one
@@ -197,6 +226,31 @@ def lead_matches_row(basename, function, ltokens, signature, min_overlap):
         return file_ok and overlap >= min_overlap
     # LAST RESORT: file also unknown -> stopword-filtered technical overlap alone.
     return overlap >= min_overlap
+
+
+def parse_row_locations(field):
+    """truth.tsv column 6 -> a set of (basename_lower, function_lower) location anchors for one row.
+
+    Case-insensitive on BOTH halves for the same reason the prose rule lowercases its signature: the two sides
+    are transcribed by different tools (a judging report vs. a hunter's `location` field) and a case slip is a
+    transcription artifact, never evidence of a different function. A token without exactly one `:` separator,
+    or with an empty half, is SKIPPED — a half-anchor (a basename with no function) would be an unanchored
+    file match, which is precisely what the #1697 rule refuses to do."""
+    anchors = set()
+    for token in (field or "").split():
+        basename, sep, function = token.partition(":")
+        if not sep or not basename.strip() or not function.strip():
+            continue
+        anchors.add((basename.strip().lower(), function.strip().lower()))
+    return anchors
+
+
+def lead_matches_locations(basename, function, anchors):
+    """#2215 PAIR-EXACT location credit. The lead's OWN (file, function) must equal one whole anchor: file and
+    function from the SAME pair, never a cross product across two anchors of the same row."""
+    if not basename or not function or not anchors:
+        return False
+    return (basename, function.lower()) in anchors
 
 
 # ==============================================================================================================
@@ -587,6 +641,7 @@ def main(argv):
 
     try:
         rows = []
+        row_locations = []
         with open(truth_path, encoding="utf-8", errors="ignore") as fh:
             for lineno, line in enumerate(fh, 1):
                 line = line.rstrip("\n")
@@ -605,6 +660,9 @@ def main(argv):
                     die(3, "truth.tsv row %d uses the reserved sev_id 'NONE' — that literal is the NO-MATCH "
                            "sentinel in the judge reply grammar and can never name a ground-truth row" % lineno)
                 rows.append((cols[0], cols[4]))  # (sev_id, signature)
+                # #2215: OPTIONAL column 6, parallel to `rows` so the judge-mode code paths (which take
+                # `rows` verbatim) are untouched by its existence.
+                row_locations.append(parse_row_locations(cols[5] if len(cols) >= 6 else ""))
     except OSError as e:
         die(3, "cannot read truth.tsv: " + str(e))
 
@@ -642,6 +700,9 @@ def main(argv):
         lead_class.append(normalized_class(lead))
 
     matched_leads = 0
+    # #2215: (row_index, lead location) for every row credited ONLY by a location pair. Judge mode leaves it
+    # empty, so the LOC trailers are `--judge off`-only exactly as the JUDGE/GATE trailers are judge-only.
+    loc_credited = []
     judge_calls = 0
     judge_errors = 0
     judge_gated_matches = 0
@@ -655,6 +716,19 @@ def main(argv):
                 if lead_matches_row(basename, function, ltokens, signature, min_overlap):
                     row_hit[ri] = True
                     lead_hit[li] = True
+        # #2215 GT LOCATION-ANCHOR credit, applied AFTER the frozen loop so a row already matched by the prose
+        # rule keeps reading as a prose hit, and BEFORE the #1840 expansion so `--gt-dupes` sees it. Every row
+        # credited here is recorded for the LOCHIT trailer, which is what makes the credit subtractable.
+        for li, (basename, function, _ltokens) in enumerate(resolved):
+            for ri, anchors in enumerate(row_locations):
+                if not lead_matches_locations(basename, function, anchors):
+                    continue
+                if not row_hit[ri]:
+                    row_hit[ri] = True
+                    # TAB-scrubbed: the trailer is TSV and a lead's `location` is upstream free text.
+                    loc_credited.append((ri, ((lead_objs[li].get("location") or "").strip()
+                                              or basename + ":" + function).replace("\t", " ")))
+                lead_hit[li] = True
     else:
         # #1829 judge mode: the judge is AUTHORITATIVE — no token fallback, no silent NO-MATCH.
         row_hit, lead_hit, judge_calls, judge_errors, judge_gated_matches, judge_gated_rows = run_judge(
@@ -676,6 +750,16 @@ def main(argv):
     for ri, (sev_id, _signature) in enumerate(rows):
         out.append(f"{sev_id}\t{'HIT' if row_hit[ri] else 'MISS'}")
     out.append(f"LEADS\t{len(resolved)}\t{matched_leads}")
+    # ADDITIVE GT location-anchor trailers (#2215): emitted only when >=1 truth row actually carries a column-6
+    # anchor, so every 5-column truth.tsv (and every judge-mode run) stays byte-identical. `LOC` reports how
+    # many rows are anchored at all and how many were credited ONLY through a pair — `hits - loc_credited` is
+    # the frozen #1697 number from the SAME replay — and one `LOCHIT` per credited row names the lead location
+    # that did it, so the credit is auditable row by row rather than a bulk delta.
+    rows_with_locations = sum(1 for anchors in row_locations if anchors)
+    if judge_mode == "off" and rows_with_locations:
+        out.append(f"LOC\t{rows_with_locations}\t{len(loc_credited)}")
+        for ri, lead_loc in sorted(loc_credited):
+            out.append(f"LOCHIT\t{rows[ri][0]}\t{lead_loc}")
     # ADDITIVE judge trailer (#1829): present ONLY in judge mode, so the default output stays byte-identical.
     # `calls` counts every lead x row-batch judging request (cache hits included, so a replay reports the same
     # number as the live run); `errors` counts JUDGE-ERRORs (unparseable reply / hallucinated row id).

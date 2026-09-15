@@ -1,0 +1,9 @@
+# gt-dupes/v1 contest=notional source=manual driver=none built=2026-09-15T00:00:00Z
+# HAND-DECLARED, NOT JUDGED (#2215). gt-dupes.sh was never run on this contest; the single pair below is
+# declared from the #2213 forensics: both arms generated the hardcoded-exit-leg bug at
+# CurveConvex2Token.sol:_exitPool, the frozen #1697 matcher resolved that lead to M-10 (whose prose names
+# file+function) and H-9 (whose prose names only the Curve-side symbols) scored MISS. The two accepted rows
+# are the same underlying exit-leg defect written up from the strategy side (M-10, found-by 6) and from the
+# Curve side (H-9, found-by 2). source=manual is the disclosure: this pair carries a human argument, not a
+# judge decision, and it is used ONLY for the SECONDARY column of the #2213 archive.
+DUP	H-9	M-10	100	hardcoded useEth on the CurveConvex2Token exit leg; the rare row anchors on remove_liquidity*/ETH_INDEX and the consensus twin on exitPosition/CurveConvexStrategy

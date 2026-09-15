@@ -1,0 +1,7 @@
+L-1	HIT
+L-2	MISS
+L-3	HIT
+L-4	MISS
+LEADS	3	2
+LOC	3	1
+LOCHIT	L-1	src/Vault.sol:withdraw:18
