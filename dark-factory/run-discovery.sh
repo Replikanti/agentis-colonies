@@ -123,6 +123,14 @@
 #                       cell's class. Nothing writes knowledge, so `--jobs N` stays equal to serial. A shell
 #                       env read here — deliberately NOT an exec.env_passthrough entry (mirrors
 #                       map-zones.sh's HUNT_FITNESS_JSON). An import failure is logged and the hunt continues.
+#   DF_TRACE_MAX_REASKS  #2214 Lever 1: how many times a cell that answered WITHOUT a candidate while at
+#                       least one derived `OPCHECK|` went untraced is RE-ASKED before it is recorded as a
+#                       FAILED `untraced-opcheck` cell. Default 1 (one re-ask, the bounded cost the gate was
+#                       designed with); 0 = gate-only (record the shortfall, never re-ask); garbage => 1.
+#                       Read by this SHELL, so it needs no exec.env_passthrough entry — the #1426 trap
+#                       applies to `getenv()` inside an `.ag` agent only. The whole gate is INERT whenever
+#                       OPERATIONALIZE_LENS is off (no directive => no `OPCHECK|` line => no shortfall),
+#                       which is the production default.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -135,6 +143,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 . "$HERE/lib/run-agent-validated.sh"
 DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
+# #2214 Lever 1: the re-ask ceiling for the OPCHECK->TRACE follow-through gate (see the Env block above).
+# Validated exactly like df_max_attempts, except the floor is 0 (0 = gate-only, no re-ask).
+DF_TRACE_MAX_REASKS="${DF_TRACE_MAX_REASKS:-1}"
+case "$DF_TRACE_MAX_REASKS" in ''|*[!0-9]*) DF_TRACE_MAX_REASKS=1 ;; esac
 # agentis-core#993: pre-accept Claude Code's workspace-trust dialog for every dir a
 # hunter session cd's into (the shared $RUN store on the serial/depth path, each
 # isolated cell dir on the parallel path), else the flat-cyborg/claude session
@@ -521,6 +533,8 @@ CELLS=0 ; CANDIDATES=0 ; STEERS=0 ; FAILED_CELLS=0
 # #1707: FAILED_CELLS counts cells whose hunter reply never carried a CANDIDATE|/SAFE sentinel after
 # DF_AGENT_MAX_ATTEMPTS retries (TUI chrome / no answer). Such a cell is NOT a rigorous negative — it is
 # surfaced as a distinct FAILED row + a "status":"failed" JSON record, never silently folded into "0 candidates".
+# #2214 adds a SECOND way into that counter with the same meaning: an `untraced-opcheck` cell (a directive-ON
+# SAFE that left derived checks untraced after the bounded re-ask). Inert whenever OPERATIONALIZE_LENS is off.
 # #1001: rows recording where one cell's lead STEERED a later cell (the blackboard coordination loop),
 # folded into the report at the end. Kept separate from $REPORT so it can be appended as its own table.
 COORD="$RUN/coordination.tsv"; : > "$COORD"
@@ -554,7 +568,8 @@ _json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
 # as continuation lines with no `CANDIDATE|` prefix, which a bare `grep 'CANDIDATE|'` silently drops. Here a
 # `CANDIDATE|` line opens/flushes a record; a `BLACKBOARD-*` line, a `DEPTH-CELL|` line (#1827), an
 # `APPENDIX-CONTEXT|` line (#1865), a `REFUTE-CONSTRAINTS|` line (#1887), a `CALLEE-TRUST|` line (#2145), an
-# `OPERATIONALIZE|` line or a model-emitted `OPCHECK|` line (#2211) or a blank line closes the current record
+# `OPERATIONALIZE|` line or a model-emitted `OPCHECK|` line (#2211) or a model-emitted `TRACE|` line (#2214)
+# or a blank line closes the current record
 # without starting a new one
 # (these are the only meaningful boundary tokens in a hunt log — see hunter.ag's own framing); any other line
 # while a record is open is a continuation, appended with a single space (terminal wrap breaks on column
@@ -568,7 +583,7 @@ _join_wrapped_candidates() {
       rec = $0
       next
     }
-    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*$/ {
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
       if (rec != "") { print rec; rec = "" }
       next
     }
@@ -581,6 +596,62 @@ _join_wrapped_candidates() {
     }
     END { if (rec != "") print rec }
   ' "$jwc_log"
+}
+
+# --- #2214 Lever 1: the OPCHECK -> TRACE FOLLOW-THROUGH GATE ------------------------------------------------
+# The measured gap (#2213 forensics, archived treatment arm): cells derived 5-12 `OPCHECK|` checks, wrote them
+# out in full compliance with the #2211 directive, then answered SAFE with ZERO of them traced in the reply —
+# 4 of 6 cells on the target zone. Compliance with an emission contract is not follow-through, and prompt text
+# is not a gate (#2213's null is the evidence). So the contract is closed HERE, on the OUTPUT: a cell that
+# answers without a candidate while it left derived checks untraced is NOT a rigorous negative.
+
+# _distinct_sentinel_count <TOKEN> <log> — how many DISTINCT `<TOKEN>|...` lines the log carries. Whitespace-
+# trimmed and `^[[:space:]]*`-anchored exactly like the `ac_opn` dosage count below, because both tokens are
+# MODEL-emitted free text and a PTY capture routinely indents them.
+_distinct_sentinel_count() {
+  dsc_tok="$1"; dsc_log="$2"
+  dsc_n="$(grep -E "^[[:space:]]*${dsc_tok}\|" "$dsc_log" 2>/dev/null \
+            | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u | grep -c . || true)"
+  case "$dsc_n" in ''|*[!0-9]*) dsc_n=0 ;; esac
+  printf '%s\n' "$dsc_n"
+}
+
+# _opcheck_trace_gap <log> — the follow-through shortfall of ONE cell log, printed as a single integer:
+# (distinct `OPCHECK|` lines) - (distinct `TRACE|` lines), floored at 0.
+#
+# HOW A TRACE IS MATCHED TO ITS OPCHECK: by the COUNT of DISTINCT lines, deliberately NOT by pairing the
+# restated check text. The directive asks the model to RESTATE the check in the TRACE line, so a text join
+# would degrade into a string-similarity heuristic that a paraphrase defeats and a copy-paste satisfies.
+# `sort -u` on BOTH sides is what keeps the arithmetic honest in either direction: a model that repeats one
+# check verbatim cannot inflate the requirement, and one that pastes the same TRACE line N times cannot
+# discharge N checks with it. Whether a TRACE's evidence field really names a construct of this zone is an
+# OPERATOR read (the #2214 anti-Goodhart rule), not something this shell pretends to decide.
+#
+# Prints 0 when the log carries no `OPCHECK|` line at all — which is EVERY cell whenever OPERATIONALIZE_LENS
+# is off (the production default), so the gate is inert there rather than merely cheap.
+_opcheck_trace_gap() {
+  otg_log="$1"
+  if [ ! -f "$otg_log" ]; then printf '0\n'; return 0; fi
+  otg_op="$(_distinct_sentinel_count OPCHECK "$otg_log")"
+  otg_tr="$(_distinct_sentinel_count TRACE "$otg_log")"
+  if [ "$otg_op" -le "$otg_tr" ]; then printf '0\n'; else printf '%s\n' "$((otg_op - otg_tr))"; fi
+}
+
+# _untraced_safe <log> — true when <log> is the exact thing the gate exists to refuse: a directive-ON cell
+# that answered with NO candidate while at least one derived check went untraced. Four guards, in order:
+#   * a #1707 chrome miss / #1955 terminal timeout already OWNS this cell's FAILED reason (and scrape_cell_log
+#     checks those markers first), so re-asking it here would spend a call on a cell that never answered;
+#   * no `OPERATIONALIZE|` sentinel => the lens was off for this cell => nothing to gate;
+#   * a cell that produced a LEAD is never re-asked (a re-ask could lose it) and never failed — its shortfall
+#     is recorded as the `untraced` field by _accumulate_cell instead;
+#   * finally the arithmetic itself.
+_untraced_safe() {
+  us_log="$1"
+  if [ ! -f "$us_log" ]; then return 1; fi
+  if [ -f "$us_log.novalid" ] || [ -f "$us_log.timeout" ]; then return 1; fi
+  if ! grep -qE '^[[:space:]]*OPERATIONALIZE\|' "$us_log" 2>/dev/null; then return 1; fi
+  if grep -v '^BLACKBOARD-' "$us_log" 2>/dev/null | grep -q 'CANDIDATE|'; then return 1; fi
+  [ "$(_opcheck_trace_gap "$us_log")" -gt 0 ]
 }
 
 # _accumulate_cell <subsys> <cls> <files> <log> [status] [phase] — append ONE JSON object for this cell to
@@ -596,6 +667,11 @@ _join_wrapped_candidates() {
 # #2211: `opchecks` is derived from the LOG the same way (the model's own OPCHECK| lines) and appended LAST,
 # after `appendix`, for the same reason — it is the #2211 M2 A/B's cheap per-cell dosage metric, and a cell
 # that emitted none keeps its exact key set.
+# #2214: `traces` (distinct TRACE| lines) and `untraced` (the follow-through shortfall) follow it, LAST and
+# again only when non-zero — so a directive-OFF cell's key set stays byte-identical to the pre-#2214 one and
+# _plan_depth_cells's forward key scan is untouched. `untraced` is what puts a shortfall on the record for a
+# cell that DID produce candidates: such a cell is scraped and reported normally (never re-asked, never
+# failed), so this field is the only place its abandoned checks are visible to the readout.
 _accumulate_cell() {
   ac_subsys="$1"; ac_cls="$2"; ac_files="$3"; ac_log="$4"; ac_status="${5:-ok}"; ac_phase="${6:-}"
   ac_phase_json=""
@@ -623,10 +699,16 @@ _accumulate_cell() {
   ac_opn="$(grep -cE '^[[:space:]]*OPCHECK\|' "$ac_log" 2>/dev/null || true)"
   case "$ac_opn" in ''|*[!0-9]*) ac_opn=0 ;; esac
   if [ "$ac_opn" -gt 0 ]; then ac_opchecks_json=",\"opchecks\":$ac_opn"; fi
-  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s}\n' \
+  ac_traces_json=""
+  ac_trn="$(_distinct_sentinel_count TRACE "$ac_log")"
+  if [ "$ac_trn" -gt 0 ]; then ac_traces_json=",\"traces\":$ac_trn"; fi
+  ac_untraced_json=""
+  ac_un="$(_opcheck_trace_gap "$ac_log")"
+  if [ "$ac_un" -gt 0 ]; then ac_untraced_json=",\"untraced\":$ac_un"; fi
+  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s}\n' \
     "$(_json_str "$ac_subsys")" "$(_json_str "$ac_cls")" "$(_json_str "$ac_files")" \
     "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" "$ac_appendix_json" \
-    "$ac_opchecks_json" >> "$CELLS_JSONL"
+    "$ac_opchecks_json" "$ac_traces_json" "$ac_untraced_json" >> "$CELLS_JSONL"
 }
 
 # _appendix_for <subsystem> <files_csv> — #1865: the (token, base) pair the --appendix sidecar records for
@@ -686,6 +768,25 @@ run_cell() {
   # code — a backgrounded `run_cell &` loses its return across `wait -n`, but the marker survives for the
   # deferred manifest-order aggregation in scrape_cell_log. Never trips set -e (|| true).
   df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-discovery.sh: $rc_cls/'$rc_subsys'" "$rc_log" hunter "" _rc_attempt || true
+  # #2214 Lever 1 — GATE ON OUTPUT. A reply that carries the #2211 sentinel, no candidate, and fewer distinct
+  # TRACE| than OPCHECK| lines is a cell that derived its checks and then abandoned them: NOT a rigorous
+  # negative, and never silently trusted. Re-ask the SAME validated attempt up to DF_TRACE_MAX_REASKS times
+  # (default 1); if the shortfall survives, drop a "$rc_log.untraced" marker holding the remaining gap, which
+  # scrape_cell_log turns into a DISTINCT FAILED row. RE-ASK SAFETY is #1707's argument unchanged: a cell with
+  # no CANDIDATE| posted nothing to the blackboard and emit()ed no lead, so a re-ask cannot double-post.
+  # The superseded attempt is kept as "$rc_log.untraced-attempt-N" — a suffix deliberately NOT ending in
+  # `.log`, so `find -name 'hunt_*.log'` readouts and the hunt dashboard keep seeing exactly one log per cell.
+  rm -f "$rc_log.untraced"
+  rc_reask=1
+  while [ "$rc_reask" -le "$DF_TRACE_MAX_REASKS" ] && _untraced_safe "$rc_log"; do
+    echo "run-discovery.sh:   ↳ untraced-opcheck: $rc_cls/'$rc_subsys' answered with $(_opcheck_trace_gap "$rc_log") untraced OPCHECK(s) — re-asking ($rc_reask/$DF_TRACE_MAX_REASKS)" >&2
+    mv -f "$rc_log" "$rc_log.untraced-attempt-$rc_reask" 2>/dev/null || true
+    df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-discovery.sh: $rc_cls/'$rc_subsys' (trace re-ask $rc_reask)" "$rc_log" hunter "" _rc_attempt || true
+    rc_reask=$((rc_reask + 1))
+  done
+  if _untraced_safe "$rc_log"; then
+    _opcheck_trace_gap "$rc_log" > "$rc_log.untraced"
+  fi
 }
 
 # scrape_cell_log <subsys> <cls> <log> <files> [phase] — the (byte-identical) post-cell scrape: surface the
@@ -716,6 +817,26 @@ scrape_cell_log() {
     echo "run-discovery.sh:   ↳ FAILED: $sc_cls/'$sc_subsys' produced no CANDIDATE|/SAFE reply after $DF_AGENT_MAX_ATTEMPTS attempts (NOT a rigorous negative)" >&2
     printf '| %s | %s | FAILED — no CANDIDATE|/SAFE reply after %s attempts (NOT a rigorous negative) |\n' \
       "$sc_subsys" "$sc_cls" "$DF_AGENT_MAX_ATTEMPTS" >> "$REPORT"
+    FAILED_CELLS=$((FAILED_CELLS + 1))
+    _accumulate_cell "$sc_subsys" "$sc_cls" "$sc_files" "$sc_log" failed "$sc_phase"
+    return 0
+  fi
+  # #2214 Lever 1: a cell that answered WITHOUT a candidate while it left derived OPCHECK(s) untraced, and
+  # still did so after run_cell's bounded re-ask, carries a "$sc_log.untraced" marker holding the surviving
+  # gap. It is a FAILED cell for the SAME reason the two branches above are: it is not a rigorous negative.
+  # Placed AFTER them so a chrome/timeout failure keeps its own (more specific) reason, and BEFORE the
+  # CANDIDATE scrape because such a cell has no candidate to scrape by construction.
+  # The JSON "status":"failed" is deliberately UNCHANGED — byte-compatible with lib/zone-coverage.py's
+  # hunted_degraded derivation (exit 0 AND totals.failed > 0), so the zone lands as DEGRADED rather than as a
+  # trusted clean sweep, with no new status vocabulary for the dashboard/generation-recall to learn. The
+  # discriminator is the `untraced-opcheck` token in the row text + stderr line (the #1955 `.timeout`
+  # precedent) and the per-cell `untraced` field in the additive JSON.
+  if [ -f "$sc_log.untraced" ]; then
+    sc_untr="$(cat "$sc_log.untraced" 2>/dev/null || true)"
+    case "$sc_untr" in ''|*[!0-9]*) sc_untr=1 ;; esac
+    echo "run-discovery.sh:   ↳ FAILED (untraced-opcheck): $sc_cls/'$sc_subsys' answered SAFE with $sc_untr untraced OPCHECK(s) (NOT a rigorous negative; re-hunt with --rehunt-gaps)" >&2
+    printf '| %s | %s | FAILED — untraced-opcheck: SAFE with %s untraced OPCHECK(s) (NOT a rigorous negative) |\n' \
+      "$sc_subsys" "$sc_cls" "$sc_untr" >> "$REPORT"
     FAILED_CELLS=$((FAILED_CELLS + 1))
     _accumulate_cell "$sc_subsys" "$sc_cls" "$sc_files" "$sc_log" failed "$sc_phase"
     return 0
