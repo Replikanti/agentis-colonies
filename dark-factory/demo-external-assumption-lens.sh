@@ -167,15 +167,25 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
-# (e) CELL-BUDGET guard (#1830), pinned as a DECISION: no deterministic force-include for C22/C23, and the
+# (e) CELL-BUDGET guard (#1830), pinned as a DECISION: no deterministic force-include for C23, and the
 #     class-count cap still reads 1-4. A menu addition displaces a class inside the cap; a force-include would
 #     add a cell to every matching zone unconditionally.
+#     #2214 AMENDS this decision for C22 ONLY: the #2213 forensics showed C22 is not under-labelled but
+#     MIS-ROUTED (the LLM put it on the zone holding the tokens, not on the oracle zone that reads the
+#     external rate — notional H-8), which a menu entry cannot fix. C22 therefore now HAS a deterministic
+#     touchpoint backstop (apply_cross_unit_backstop), measured at +1 zone per contest on the two frozen
+#     #2213 maps and pinned by demo-map-zones.sh's TRUE/FALSE fixtures. C23 stays menu-only.
 # ----------------------------------------------------------------------------------------------------------
-note "6) cell-budget guard: no force-include for C22/C23 and the 1-4 class cap is untouched ..."
-if grep -nE 'force_include|apply_[a-z_]*backstop' "$MAPPER" | grep -q 'C2[23]'; then
-  bad "zone-mapper.ag gained a deterministic force-include/backstop for C22 or C23 (cell-budget regression)"
+note "6) cell-budget guard: no force-include for C23, C22's #2214 touchpoint backstop is the only one, and the 1-4 class cap is untouched ..."
+if grep -nE 'force_include|apply_[a-z_]*backstop' "$MAPPER" | grep -q 'C23'; then
+  bad "zone-mapper.ag gained a deterministic force-include/backstop for C23 (cell-budget regression)"
 else
-  ok "no force_include / apply_*_backstop references C22 or C23 (the classes stay menu-only)"
+  ok "no force_include / apply_*_backstop references C23 (the class stays menu-only)"
+fi
+if grep -q 'fn apply_cross_unit_backstop' "$MAPPER" && grep -q 'force_include(classesCsv, "C22")' "$MAPPER"; then
+  ok "#2214: C22 carries exactly one deterministic touchpoint backstop (apply_cross_unit_backstop -> force_include C22), the amended #1830 decision"
+else
+  bad "#2214: the C22 touchpoint backstop (apply_cross_unit_backstop -> force_include C22) is missing"
 fi
 if grep -q 'pick the 1-4 that genuinely fit' "$MAPPER"; then
   ok "zone-mapper.ag still caps the class list at 1-4 per zone"
