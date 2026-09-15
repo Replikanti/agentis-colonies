@@ -1,0 +1,20 @@
+H-1	HIT
+H-2	MISS
+H-3	HIT
+H-4	MISS
+H-5	MISS
+H-6	MISS
+H-7	HIT
+M-1	MISS
+M-2	MISS
+M-3	MISS
+M-4	HIT
+M-5	HIT
+M-6	MISS
+M-7	HIT
+M-8	MISS
+M-9	HIT
+M-10	MISS
+LEADS	8	8
+LOC	17	1
+LOCHIT	H-1	src/Leverager.sol:liquidatePosition

@@ -17,7 +17,8 @@ campaign keeps missing (see `project_hunt_bench_calibration` / `project_dark_fac
 corpus-bench/
   corpus.tsv                    # manifest: id, code_repo, judging_repo, project_subdir, scope_hint (see header)
   fetch-corpus.sh                # clone code+judging repos for one/every corpus.tsv row (no re-hosting)
-  extract-gt.sh                  # judging-repo README.md -> truth.tsv (ground truth + rarity)
+  extract-gt.sh                  # judging-repo README.md -> truth.tsv (ground truth + rarity + --code
+                                  #   location anchors in column 6, #2215)
   score-match.py                 # bench-only scorer: verified_findings.json leads -> HIT/MISS per truth row
                                   #   (--per-lead: also emit per-lead class + HIT/MISS for the fitness feeder)
                                   #   (--judge: semantic mechanism judge instead of the token matcher, #1829)
@@ -29,11 +30,21 @@ corpus-bench/
                                   #   agentis `hunt-fitness` knowledge (feeds zone-mapper.ag's reorder)
   run-corpus-bench.sh             # orchestrator + scorer (this is the entrypoint)
   fixtures/
-    sample-judging-readme.md      # tiny synthetic judging report (2 findings, rarity 2 and 9)
-    expected-truth.tsv            # extract-gt.sh's expected output on the fixture above
+    sample-judging-readme.md      # tiny synthetic judging report (2 findings, rarity 2 and 9), carrying one
+                                  #   of each #2215 anchor form: a `File:` block, a `#L23-L25` blob link and
+                                  #   a `Vault:30` backtick ref
+    expected-truth.tsv            # extract-gt.sh --code's expected 6-column output on the fixture above
+    gt-locations/                 # the tiny Solidity source (src/Vault.sol) the fixture README's line
+                                  #   anchors resolve against; do not reflow it (line numbers are the pin)
     score/                        # synthetic score-match.py fixture (truth.tsv + verified_findings.json +
                                   #   expected-scorecard.txt); the second self-test asserts recall 1/3, stable
                                   #   across --min-overlap 2 and 5 (no re-hosted Sherlock prose)
+    score-locations/              # synthetic fixture for the #2215 pair-exact location credit: truth.tsv
+                                  #   with column 6 + verified_findings.json + expected-scorecard.txt. Pins
+                                  #   (a) a row credited ONLY by an anchor, (b) the CROSS-PRODUCT negative
+                                  #   (file from one anchor, function from another -> MISS), (c) the
+                                  #   LOC/LOCHIT trailers, (d) threshold independence. fixtures/score/ stays
+                                  #   5-column on purpose: it is the byte-identity pin for the frozen rule
     hunt-fitness/                 # synthetic fixture for the fitness loop (#1711): truth.tsv +
                                   #   verified_findings.json (mixed `class=C6`/`C6` formatting, C6 high-
                                   #   precision, C3 mostly noise) + reorder-harness.ag (mirrors the agent)
@@ -71,9 +82,42 @@ Source: <link>
 
 The watson-handle count is the **rarity** signal: a finding six watsons independently found (consensus) is a
 different, easier target than one only a single watson caught (rare). `truth.tsv` columns: `sev_id  severity
-rarity  title  signature` (signature = title + a truncated body snippet; the compiled Sherlock prose reliably
-names both the affected `*.sol` file basename and the function — the signal `score-match.py` matches on — same
-idiom as `../fixtures/*/truth.tsv`).
+rarity  title  signature  locations` (signature = title + a truncated body snippet, the free-text signal
+`score-match.py` matches on — same idiom as `../fixtures/*/truth.tsv`).
+
+### Location anchors — column 6 (#2215)
+
+The claim that "the compiled prose reliably names both the `.sol` basename and the function" turned out to be
+FALSE often enough to bound the metric. The signature is a 1500-character truncation, and a watson routinely
+expresses the location as a GitHub `#L<n>` permalink or a `` `Contract:LINE` `` backtick ref — neither of
+which carries a function NAME a substring matcher can see. On `notional` that made 4 of 14 rare rows
+structurally unmatchable, and it mis-credited a fifth: both arms of the #2213 A/B generated H-9 at
+`CurveConvex2Token.sol:_exitPool`, and because H-9's prose names only the Curve-side symbols the lead was
+credited to its CONSENSUS twin M-10 while the RARE row scored MISS.
+
+Column 6 resolves those anchors GT-side into space-separated, deduped `<Basename.sol>:<function>` pairs, read
+from the **FULL** issue block (not the truncated signature — the location is usually what the truncation cut
+off), by three mechanisms:
+
+| mechanism | example | needs `--code`? |
+|---|---|---|
+| `File:` marker above a pasted snippet | `File: Vault.sol` then `function withdraw(` | no |
+| GitHub blob permalink with a line anchor | `.../src/Vault.sol#L23-L25` | yes |
+| backtick line ref | `` `Strategy:207` ``, `` `Strategy.sol#L207` `` | yes |
+
+`extract-gt.sh <readme> <out> [--code <project-root>]` — `--code` is the cloned audited project root
+(`<work>/<id>/code/<project_subdir>`), which is what turns a LINE into a function NAME: the **enclosing**
+function of the first line, plus every function **declared inside** an `#L<n>-L<m>` range (a range routinely
+opens on the doc comment above the function it quotes). An ambiguous basename (two paths, e.g. a mock and the
+real contract) resolves to nothing rather than guessing, and a basename with no function is never emitted —
+a half-anchor would be an unanchored file match, which is exactly what #1697 refuses to do.
+`run-corpus-bench.sh --gt` passes `--code` automatically when the clone is present; without it the extractor
+still emits column 6 with only the `File:`-block anchors (a clean degradation, never an error).
+
+**Columns 1-5 are byte-identical to the pre-#2215 output** — the truncation rule is deliberately unchanged
+(verified by `diff` against the archived `runs/2213-operationalize-ab/<contest>/truth.tsv`), and a 5-column
+`truth.tsv` still scores exactly as before. `extract-gt-codehawks.sh` has its own row shape and is NOT touched
+by this: the CodeHawks path has no location column yet.
 
 ## Scoring
 
@@ -88,6 +132,36 @@ documented failure modes, so **any published recall number should say which rule
 - **name-coincident false match → false positive.** A candidate names a function a truth row also names but
   describes a completely different mechanism. Different bug, scored HIT — and it lands on the wrong row, so
   the real row it *did* describe still reads MISS.
+
+There is a third, cheaper corrective that applies under `--judge off` and does not replace either ruler:
+**GT location anchors** (#2215, truth.tsv column 6). A lead also HITs a row when the lead's OWN
+`(file basename, function)` equals one of that row's anchors — **pair-exact**: file and function must come
+from the SAME anchor, never a cross product across two of them, which makes this rule strictly TIGHTER than
+the prose rule (any co-occurrence anywhere in 1500 characters). It fixes the reachability half of the
+name-divergent failure mode above at zero LLM cost, and it does NOT fix the mechanism-blindness: a
+name-coincident candidate at an anchored location still scores HIT, so a claim that a SPECIFIC bug was found
+must be read off the cell log, never off the scoreboard.
+
+Every location credit is separable. `score-match.py` emits `LOC<TAB><anchored_rows><TAB><loc_credited>` plus
+one `LOCHIT<TAB><sev_id><TAB><lead location>` per row credited ONLY by an anchor, so `hits - loc_credited`
+recovers the frozen #1697 number **from the same replay** (the #1840 `DUP`/`DUPHIT` idiom). The trailers are
+emitted only under `--judge off` and only when at least one row is anchored.
+
+**Reachable rare.** `generation-recall.sh` prints `reachable rare = k/N` per contest and in the aggregate: the
+rare rows that carry a resolvable anchor at all. A rare row the matcher cannot resolve is a denominator the
+hunter cannot move, so a headline quoted without it invites reading a MATCHER bound as a CAPABILITY bound.
+(On a legacy 5-column `truth.tsv` the line degrades to "signature names >= 1 `.sol` basename" and says so.)
+
+**The quote-both rule (mandatory).** Any single-arm rare number taken from this corpus states the frozen
+primary and the `+locations` number side by side, plus `reachable rare` — e.g. "`notional` control rare 1/14
+primary, 5/14 with GT location anchors, reachable 14/14". This is the #1841 principle: a number without its
+ruler is not comparable to any other number.
+
+**Defaults.** Location anchors are **ON by default** — they are a free by-product of `extract-gt.sh --code`,
+cost zero LLM calls and are deterministic, and the credit they add is always subtractable. `--gt-dupes`
+(#1840) stays **opt-in**: its artifact is judged once per contest and therefore costs LLM calls. The two are
+complementary but overlapping — on `notional` the H-9/M-10 equivalence pair expands **0 rows** once the
+anchors exist, because H-9 is credited directly (see `runs/2213-operationalize-ab/README.md`).
 
 For each contest: run the REAL federation pipeline (`run-zone-hunt.sh`: map → brief → discover → verify) over
 the cloned code repo through a real LLM backend, then score each `verified_findings.json` lead against the

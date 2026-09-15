@@ -1,0 +1,25 @@
+{
+  "verified": [
+    {
+      "class": "C15",
+      "location": "src/Vault.sol:withdraw:18",
+      "file": "src/Vault.sol",
+      "exploit": "The exit leg is pinned to the native asset, so the unwind path reverts for a token pool.",
+      "poc_sketch": "enter the pool, then attempt the unwind and observe the revert"
+    },
+    {
+      "class": "C2",
+      "location": "src/Oracle.sol:peek:41",
+      "file": "src/Oracle.sol",
+      "exploit": "peek() never compares updatedAt with the heartbeat, so a halted feed keeps serving its last answer.",
+      "poc_sketch": "halt the feed, then read the price"
+    },
+    {
+      "class": "C9",
+      "location": "src/Registry.sol:sync:77",
+      "file": "src/Registry.sol",
+      "exploit": "Cross product probe: the FILE comes from one GT anchor and the FUNCTION from another.",
+      "poc_sketch": "must never credit L-2"
+    }
+  ]
+}

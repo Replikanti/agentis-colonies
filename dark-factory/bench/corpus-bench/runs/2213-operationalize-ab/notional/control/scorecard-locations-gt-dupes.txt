@@ -1,0 +1,46 @@
+H-1	MISS
+H-2	HIT
+H-3	HIT
+H-4	HIT
+H-5	MISS
+H-6	HIT
+H-7	HIT
+H-8	HIT
+H-9	HIT
+H-10	MISS
+H-11	MISS
+M-1	MISS
+M-2	HIT
+M-3	MISS
+M-4	MISS
+M-5	MISS
+M-6	HIT
+M-7	MISS
+M-8	MISS
+M-9	MISS
+M-10	HIT
+M-11	HIT
+M-12	MISS
+M-13	MISS
+M-14	MISS
+M-15	HIT
+M-16	MISS
+M-17	MISS
+M-18	MISS
+M-19	MISS
+M-20	MISS
+M-21	MISS
+M-22	HIT
+M-23	MISS
+M-24	MISS
+M-25	MISS
+M-26	MISS
+LEADS	19	16
+LOC	35	6
+LOCHIT	H-2	src/single-sided-lp/AbstractSingleSidedLP.sol:convertToAssets
+LOCHIT	H-8	src/oracles/PendlePTOracle.sol:_calculateBaseToQuote
+LOCHIT	H-9	src/single-sided-lp/CurveConvex2Token.sol:_exitPool
+LOCHIT	M-6	src/staking/AbstractStakingStrategy.sol:convertToAssets:50
+LOCHIT	M-11	src/rewards/AbstractRewardManager.sol:_claimVaultRewards:191
+LOCHIT	M-22	src/single-sided-lp/CurveConvex2Token.sol:_exitPool
+DUP	1	0

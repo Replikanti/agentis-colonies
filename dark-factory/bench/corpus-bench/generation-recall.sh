@@ -18,7 +18,10 @@
 # hypothesis) / (total GT rows). The fuzzer verdict is IGNORED; matching is score-match.py's file-basename +
 # function co-occurrence rule, which is threshold-INDEPENDENT for location-resolvable leads. Reported overall
 # + by severity (High/Medium) + by rarity (rare 1-2 / mid 3-8 / consensus 9+) — the same strata as
-# run-corpus-bench.sh; the rare tier is the headline capability number. When a contest also has a
+# run-corpus-bench.sh; the rare tier is the headline capability number. Every contest ALSO reports
+# `reachable rare = k/N` (#2215): the rare rows the matcher can resolve at all. A rare row whose ground truth
+# carries no resolvable `<file>:<function>` anchor is a denominator the hunter cannot move, so quoting the
+# headline without it reads a MATCHER bound as a CAPABILITY bound. When a contest also has a
 # verify/verified_findings.json, the GENERATION-minus-VERIFIED DELTA (GT rows a hypothesis NAMED but the
 # fuzzer/refuter then failed to confirm — the #1716 expressiveness gap, made measurable) is printed too.
 #
@@ -27,7 +30,8 @@
 #     and assert (a) the projected union byte-matches expected-leads.json; (b) score-match.py over it
 #     byte-matches expected-scorecard.txt AND is IDENTICAL at --min-overlap 2 and 5 (threshold-independent);
 #     (c) generation-recall > verified-recall on the SAME fixture — the CLEAN invariant that named the GT bug
-#     HITs generation but the fuzzer's DROP leaves verified a MISS (the generation-vs-confirmation delta).
+#     HITs generation but the fuzzer's DROP leaves verified a MISS (the generation-vs-confirmation delta);
+#     (d) #2215 — the LOC/LOCHIT trailers are skipped by the recall reader, never counted as truth rows.
 #   --from-work <dir> [--id <id>]... [--min-overlap N] [--json]: read an already-fetched/hunted corpus-bench
 #     work dir and, per contest, project <id>/zone-hunt-out/discovery/discovery-results.merged.json +
 #     <id>/zone-hunt-out/deep-hunt/*/run/invariant_*.log through the adapter, score the union against
@@ -44,6 +48,10 @@
 #              `--judge-min-confidence` defaults to 60 (#1841, the SAME value run-corpus-bench.sh uses) and is
 #              ALWAYS forwarded explicitly in judge mode, so the gate this harness prints is the one it
 #              passed, and the two harnesses can never disagree about which gate produced a number.
+#   #2215     : a truth.tsv with column 6 (`extract-gt.sh --code`) additionally lets score-match.py credit a
+#              lead whose OWN (file, function) equals one of the row's GT location anchors. Those rows are
+#              reported separately (`GT location anchors: ... credited ONLY via a location pair`) and are
+#              always subtractable, so both the anchored and the frozen #1697 number come from one replay.
 #   --gt-dupes* : #1840 — same deal for the GT-equivalence artifact: forwarded to BOTH halves of the DELTA, so
 #              a duplicated GT pair is credited identically on the generation and the verified side. The
 #              artifact is PER CONTEST (`<work>/<id>/gt-dupes.tsv`), so pass it with a single `--id`. Absent
@@ -119,8 +127,9 @@ recall_hits() {
   while IFS="$(printf '\t')" read -r _f1 _f2 _f3; do
     # Trailer lines, NOT truth rows. DUP/DUPHIT (#1840) and GATE (#1841) belong here for the same reason
     # LEADS/JUDGE do: a DUPHIT line's second field is a sev_id, not HIT/MISS, so counting it would inflate
-    # BOTH the denominator and (silently) the recall this DELTA is built from.
-    case "$_f1" in LEADS|JUDGE|GATE|DUP|DUPHIT) continue ;; esac
+    # BOTH the denominator and (silently) the recall this DELTA is built from. LOC/LOCHIT (#2215) are the same
+    # shape and belong in the same list.
+    case "$_f1" in LEADS|JUDGE|GATE|DUP|DUPHIT|LOC|LOCHIT) continue ;; esac
     [ -n "$_f1" ] || continue
     _total=$((_total + 1))
     [ "$_f2" = "HIT" ] && _hits=$((_hits + 1))
@@ -181,6 +190,22 @@ if [ "$MODE" = "self-test" ]; then
     bad "(c) expected generation-recall > verified-recall, got gen=$GEN_HITS ver=$VER_HITS"
   fi
 
+  # (d) #2215: the LOC/LOCHIT trailers must NOT be counted as truth rows. They share the DUPHIT shape (second
+  #     field is a sev_id, not HIT/MISS), so a reader that forgot to skip them would inflate the denominator
+  #     AND silently re-attribute recall. Scored over fixtures/score-locations/, whose expected scorecard
+  #     carries both trailers: the only correct answer is 2 hits out of 4 truth rows.
+  L_FIX="$HERE/fixtures/score-locations"
+  if [ -f "$L_FIX/truth.tsv" ] && [ -f "$L_FIX/verified_findings.json" ]; then
+    LOC_RC="$(recall_hits "$L_FIX/truth.tsv" "$L_FIX/verified_findings.json")"
+    if [ "$LOC_RC" = "2 4" ]; then
+      ok "(d) recall_hits skips the #2215 LOC/LOCHIT trailers (2/4, not inflated by the 2 trailer lines)"
+    else
+      bad "(d) recall_hits over fixtures/score-locations/ returned '$LOC_RC', expected '2 4' — a LOC/LOCHIT trailer is being counted as a truth row"
+    fi
+  else
+    bad "(d) fixture missing: $L_FIX/{truth.tsv,verified_findings.json}"
+  fi
+
   echo
   if [ "$FAILS" -eq 0 ]; then
     say "PASS — the generation-recall adapter projects breadth candidates + verdict-ignored invariant targets"
@@ -217,6 +242,7 @@ if [ "$MODE" = "from-work" ]; then
   G_TOTAL=0 ; G_HITS=0
   G_H_TOTAL=0 ; G_H_HITS=0 ; G_M_TOTAL=0 ; G_M_HITS=0
   G_RARE_TOTAL=0 ; G_RARE_HITS=0 ; G_MID_TOTAL=0 ; G_MID_HITS=0 ; G_CONS_TOTAL=0 ; G_CONS_HITS=0
+  G_RARE_REACHABLE=0 ; G_LOC_CREDITED=0
   G_VER_TOTAL=0 ; G_VER_HITS=0 ; ANY_VERIFIED=0
 
   for id in $SEL_IDS; do
@@ -248,7 +274,7 @@ if [ "$MODE" = "from-work" ]; then
       || { say "SCORE: [$id] score-match.py failed; skipping"; continue; }
 
     declare -A HITMAP=()
-    judge_calls=0 ; judge_errors=0 ; dup_classes=0 ; dup_expanded=0
+    judge_calls=0 ; judge_errors=0 ; dup_classes=0 ; dup_expanded=0 ; loc_rows=0 ; loc_credited=0
     gate_conf="$JUDGE_MINCONF" ; gate_dropped=0 ; gate_rows=0
     # A GATE trailer carries FOUR fields, so the reader takes f4 too; every other line leaves it empty.
     while IFS="$(printf '\t')" read -r f1 f2 f3 f4; do
@@ -260,6 +286,10 @@ if [ "$MODE" = "from-work" ]; then
       # DUPHIT's second field is a sev_id rather than HIT/MISS, so both must be skipped before HITMAP.
       if [ "$f1" = "DUP" ]; then dup_classes="$f2"; dup_expanded="$f3"; continue; fi
       [ "$f1" = "DUPHIT" ] && continue
+      # #2215 trailers: LOC carries the anchored-row / location-credited counts, LOCHIT attributes one
+      # location-credited row to the lead location that credited it. Trailers, never truth rows.
+      if [ "$f1" = "LOC" ]; then loc_rows="$f2"; loc_credited="$f3"; continue; fi
+      [ "$f1" = "LOCHIT" ] && continue
       [ -n "$f1" ] && HITMAP["$f1"]="$f2"
     done <<SCORE_EOF
 $SCORE_OUT
@@ -268,16 +298,34 @@ SCORE_EOF
     c_total=0 ; c_hits=0
     c_h_total=0 ; c_h_hits=0 ; c_m_total=0 ; c_m_hits=0
     c_rare_total=0 ; c_rare_hits=0 ; c_mid_total=0 ; c_mid_hits=0 ; c_cons_total=0 ; c_cons_hits=0
-    while IFS="$(printf '\t')" read -r sev_id severity rarity title _signature; do
+    c_rare_reachable=0
+
+    # #2215 REACHABLE RARE. A rare row the matcher can never resolve is a denominator the pipeline cannot move,
+    # so a headline that does not state it invites reading a matcher bound as a capability bound. With a
+    # 6-column truth.tsv (extract-gt.sh --code) "reachable" = the row carries a resolved `<file>:<function>`
+    # anchor. With a legacy 5-column one there is no anchor to check, so it degrades to the weaker
+    # "signature names at least one `.sol` basename" test and SAYS SO in the printed line.
+    loc_col=0
+    while IFS="$(printf '\t')" read -r _l1 _l2 _l3 _l4 _l5 _l6; do
+      [ -n "${_l6:-}" ] && { loc_col=1; break; }
+    done < "$truth"
+
+    while IFS="$(printf '\t')" read -r sev_id severity rarity title _signature locations; do
       [ -n "${sev_id:-}" ] || continue
       c_total=$((c_total + 1))
+      reachable=0
+      if [ "$loc_col" = 1 ]; then
+        [ -n "${locations:-}" ] && reachable=1
+      else
+        case "$_signature" in *.sol*) reachable=1 ;; esac
+      fi
       hit=0; [ "${HITMAP[$sev_id]:-MISS}" = "HIT" ] && hit=1
       [ "$hit" = 1 ] && c_hits=$((c_hits + 1))
       case "$severity" in
         High)   c_h_total=$((c_h_total + 1)); [ "$hit" = 1 ] && c_h_hits=$((c_h_hits + 1)) ;;
         Medium) c_m_total=$((c_m_total + 1)); [ "$hit" = 1 ] && c_m_hits=$((c_m_hits + 1)) ;;
       esac
-      if   [ "$rarity" -le 2 ] 2>/dev/null; then c_rare_total=$((c_rare_total + 1)); [ "$hit" = 1 ] && c_rare_hits=$((c_rare_hits + 1))
+      if   [ "$rarity" -le 2 ] 2>/dev/null; then c_rare_total=$((c_rare_total + 1)); [ "$hit" = 1 ] && c_rare_hits=$((c_rare_hits + 1)); [ "$reachable" = 1 ] && c_rare_reachable=$((c_rare_reachable + 1))
       elif [ "$rarity" -le 8 ] 2>/dev/null; then c_mid_total=$((c_mid_total + 1));  [ "$hit" = 1 ] && c_mid_hits=$((c_mid_hits + 1))
       else                                       c_cons_total=$((c_cons_total + 1)); [ "$hit" = 1 ] && c_cons_hits=$((c_cons_hits + 1))
       fi
@@ -285,6 +333,9 @@ SCORE_EOF
     done < "$truth"
 
     say "  [$id] generation-recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total"
+    reach_note=""; [ "$loc_col" = 0 ] && reach_note=" (legacy: basename-in-signature)"
+    say "  [$id] reachable rare = $c_rare_reachable/$c_rare_total$reach_note — rare rows this matcher can resolve at all; the headline above is bounded by it, not only by the hunter"
+    [ "$loc_col" = 1 ] && say "  [$id] GT location anchors (#2215): $loc_rows anchored row(s), $loc_credited row(s) credited ONLY via a location pair (generation-recall without them: $((c_hits - loc_credited))/$c_total)"
     [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE, min-confidence $gate_conf, #1829): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s); gate dropped $gate_dropped MATCH decision(s), costing $gate_rows row(s) (#1841)"
     [ -n "$GT_DUPES" ] && say "  [$id] GT-equivalence crediting (#1840) from $GT_DUPES: $dup_classes class(es), $dup_expanded row(s) credited through a class (generation-recall without them: $((c_hits - dup_expanded))/$c_total)"
 
@@ -302,7 +353,7 @@ SCORE_EOF
       say "  [$id] no verify/verified_findings.json — generation-only (no DELTA)"
     fi
 
-    CONTEST_JSON+=("{\"id\":\"$id\",\"gt_total\":$c_total,\"generation_hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"verified_hits\":${v_hits:-null}}")
+    CONTEST_JSON+=("{\"id\":\"$id\",\"gt_total\":$c_total,\"generation_hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"rare_reachable\":$c_rare_reachable,\"location_credited\":$loc_credited,\"verified_hits\":${v_hits:-null}}")
 
     G_TOTAL=$((G_TOTAL + c_total)); G_HITS=$((G_HITS + c_hits))
     G_H_TOTAL=$((G_H_TOTAL + c_h_total)); G_H_HITS=$((G_H_HITS + c_h_hits))
@@ -310,6 +361,7 @@ SCORE_EOF
     G_RARE_TOTAL=$((G_RARE_TOTAL + c_rare_total)); G_RARE_HITS=$((G_RARE_HITS + c_rare_hits))
     G_MID_TOTAL=$((G_MID_TOTAL + c_mid_total)); G_MID_HITS=$((G_MID_HITS + c_mid_hits))
     G_CONS_TOTAL=$((G_CONS_TOTAL + c_cons_total)); G_CONS_HITS=$((G_CONS_HITS + c_cons_hits))
+    G_RARE_REACHABLE=$((G_RARE_REACHABLE + c_rare_reachable)); G_LOC_CREDITED=$((G_LOC_CREDITED + loc_credited))
   done
 
   say ""
@@ -317,16 +369,18 @@ SCORE_EOF
   say "overall generation-recall: $G_HITS/$G_TOTAL"
   say "by severity              : High $G_H_HITS/$G_H_TOTAL, Medium $G_M_HITS/$G_M_TOTAL"
   say "by rarity                : rare(1-2) $G_RARE_HITS/$G_RARE_TOTAL, mid(3-8) $G_MID_HITS/$G_MID_TOTAL, consensus(9+) $G_CONS_HITS/$G_CONS_TOTAL"
+  say "reachable rare           : $G_RARE_REACHABLE/$G_RARE_TOTAL (#2215; rows carrying a resolvable location anchor — the ceiling this matcher can reach)"
+  say "location-credited rows   : $G_LOC_CREDITED (credited ONLY by a GT location pair; the same replay without them reads $((G_HITS - G_LOC_CREDITED))/$G_TOTAL)"
   if [ "$ANY_VERIFIED" -eq 1 ]; then
     say "generation-minus-verified: generation $G_HITS/$G_TOTAL vs verified $G_VER_HITS/$G_VER_TOTAL, DELTA $((G_HITS - G_VER_HITS)) (NAMED but unconfirmed — the #1716 expressiveness gap)"
   fi
 
   if [ "$JSON" -eq 1 ]; then
     joined="$(IFS=,; echo "${CONTEST_JSON[*]:-}")"
-    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"generation_hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"verified_hits":%d,"verified_total":%d}}\n' \
+    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"generation_hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"rare_reachable":%d,"location_credited":%d,"verified_hits":%d,"verified_total":%d}}\n' \
       "$joined" "$G_TOTAL" "$G_HITS" "$G_H_TOTAL" "$G_H_HITS" "$G_M_TOTAL" "$G_M_HITS" \
       "$G_RARE_TOTAL" "$G_RARE_HITS" "$G_MID_TOTAL" "$G_MID_HITS" "$G_CONS_TOTAL" "$G_CONS_HITS" \
-      "$G_VER_HITS" "$G_VER_TOTAL"
+      "$G_RARE_REACHABLE" "$G_LOC_CREDITED" "$G_VER_HITS" "$G_VER_TOTAL"
   fi
   exit 0
 fi

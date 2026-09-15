@@ -27,8 +27,9 @@
 #                            [--judge-log <file.jsonl>] [--judge-batch <N>] [--judge-min-confidence <N>]
 #                            [--gt-dupes <file>] [--gt-dupes-min-confidence <N>] [--no-gt-dupes]
 #   (no action flag)  same as --self-test.
-#   --self-test       Deterministic, CI-safe, no network/LLM: extract-gt.sh over fixtures/sample-judging-readme.md
-#                     must byte-match fixtures/expected-truth.tsv. This is the safety property that gates CI,
+#   --self-test       Deterministic, CI-safe, no network/LLM: extract-gt.sh --code over
+#                     fixtures/sample-judging-readme.md must byte-match fixtures/expected-truth.tsv (6 columns
+#                     since #2215). This is the safety property that gates CI,
 #                     exactly like run-capability-bench.sh's STAGE 1.
 #   --fetch           Clone code+judging repos for the selected --id(s) (default: every corpus.tsv row).
 #   --gt              (Re)build truth.tsv per selected contest from its cloned judging repo.
@@ -245,15 +246,31 @@ fi
 if [ "$DO_SELFTEST" -eq 1 ]; then
   command -v python3 >/dev/null 2>&1 || { echo "run-corpus-bench.sh: [SKIP] python3 not installed" >&2; exit 0; }
   TMP_TRUTH="$(mktemp)"
-  bash "$EXTRACTGT" "$HERE/fixtures/sample-judging-readme.md" "$TMP_TRUTH" 2>/dev/null
+  # #2215: --code is part of the pin, because column 6's two line-number mechanisms (a GitHub `#L<n>[-L<m>]`
+  # link and a `Contract:LINE` backtick ref) can only resolve a LINE to a function NAME against real source.
+  # fixtures/gt-locations/src/Vault.sol is that source and the fixture README links into its exact lines.
+  bash "$EXTRACTGT" "$HERE/fixtures/sample-judging-readme.md" "$TMP_TRUTH" --code "$HERE/fixtures/gt-locations" 2>/dev/null
   if diff -q "$TMP_TRUTH" "$HERE/fixtures/expected-truth.tsv" >/dev/null 2>&1; then
-    say "SELF-TEST: extract-gt.sh output byte-matches fixtures/expected-truth.tsv -> PASS"
+    say "SELF-TEST: extract-gt.sh --code output byte-matches fixtures/expected-truth.tsv (6 columns) -> PASS"
     rm -f "$TMP_TRUTH"
   else
     say "SELF-TEST: extract-gt.sh output DIFFERS from fixtures/expected-truth.tsv -> FAIL"
     diff "$TMP_TRUTH" "$HERE/fixtures/expected-truth.tsv" >&2 || true
     rm -f "$TMP_TRUTH"
     exit 1
+  fi
+
+  # #2215 (b): WITHOUT --code the extractor still emits column 6, carrying ONLY the `File:`-block anchors (the
+  # mechanism that needs no source). run-corpus-bench.sh --gt relies on that degradation being clean rather
+  # than fatal when a work dir has no clone, so it is pinned rather than assumed.
+  TMP_NOCODE="$(mktemp)"
+  bash "$EXTRACTGT" "$HERE/fixtures/sample-judging-readme.md" "$TMP_NOCODE" 2>/dev/null
+  NOCODE_LOCS="$(cut -f6 "$TMP_NOCODE" | tr '\n' '|')"
+  rm -f "$TMP_NOCODE"
+  if [ "$NOCODE_LOCS" = "Vault.sol:withdraw|FeeMath.sol:calc|" ]; then
+    say "SELF-TEST: extract-gt.sh WITHOUT --code degrades to File:-block anchors only (never fatal) -> PASS"
+  else
+    say "SELF-TEST: extract-gt.sh without --code emitted unexpected anchors: $NOCODE_LOCS -> FAIL"; exit 1
   fi
 
   # Second assertion (#1697): score-match.py over fixtures/score/ must byte-match the expected scorecard AND
@@ -267,6 +284,25 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
   else
     say "SELF-TEST: score-match.py over fixtures/score/ DIFFERS from expected-scorecard.txt (or is threshold-dependent) -> FAIL"
     { printf '%s\n' "--- expected ---"; printf '%s\n' "$EXPECT"; printf '%s\n' "--- --min-overlap 2 ---"; printf '%s\n' "$SC2"; printf '%s\n' "--- --min-overlap 5 ---"; printf '%s\n' "$SC5"; } >&2
+    exit 1
+  fi
+
+  # #2215: score-match.py over fixtures/score-locations/ must byte-match its expected scorecard at BOTH
+  # thresholds. The fixture pins all four contract clauses at once: (a) L-1 is credited ONLY by a location
+  # pair (its prose names neither the file nor the function); (b) the CROSS PRODUCT is negative — a lead whose
+  # file comes from L-2's first anchor and whose function comes from its second scores MISS; (c) the
+  # LOC/LOCHIT trailers make that credit subtractable; (d) pair credit is threshold-independent, like the
+  # #1697 rule it supplements. fixtures/score/ above stays 5-column and byte-identical: that is the pin
+  # proving a truth.tsv without column 6 is scored exactly as before.
+  L_FIX="$HERE/fixtures/score-locations"
+  LC2="$(python3 "$SCOREMATCH" "$L_FIX/truth.tsv" "$L_FIX/verified_findings.json" --min-overlap 2 2>/dev/null)"
+  LC5="$(python3 "$SCOREMATCH" "$L_FIX/truth.tsv" "$L_FIX/verified_findings.json" --min-overlap 5 2>/dev/null)"
+  LEXPECT="$(cat "$L_FIX/expected-scorecard.txt")"
+  if [ "$LC2" = "$LEXPECT" ] && [ "$LC5" = "$LEXPECT" ]; then
+    say "SELF-TEST: score-match.py over fixtures/score-locations/ matches expected-scorecard.txt at --min-overlap 2 and 5 (pair-exact credit, cross product negative) -> PASS"
+  else
+    say "SELF-TEST: score-match.py over fixtures/score-locations/ DIFFERS from expected-scorecard.txt (or is threshold-dependent) -> FAIL"
+    { printf '%s\n' "--- expected ---"; printf '%s\n' "$LEXPECT"; printf '%s\n' "--- --min-overlap 2 ---"; printf '%s\n' "$LC2"; printf '%s\n' "--- --min-overlap 5 ---"; printf '%s\n' "$LC5"; } >&2
     exit 1
   fi
 
@@ -325,13 +361,18 @@ fi
 
 # ---- --gt ---------------------------------------------------------------------------------------------------
 if [ "$DO_GT" -eq 1 ]; then
-  while IFS=$'\t' read -r id _code _judging _subdir _scope; do
+  while IFS=$'\t' read -r id _code _judging subdir _scope; do
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
     readme="$WORK/$id/judging/README.md"
     [ -f "$readme" ] || { echo "run-corpus-bench.sh: [$id] no judging README at $readme (run --fetch first)" >&2; continue; }
+    # #2215: the audited project root lets extract-gt.sh turn a `#L<n>` link / `Contract:LINE` ref into the
+    # FUNCTION declared there (truth.tsv column 6). Absent (no --fetch yet, or a hand-staged work dir) the
+    # extractor still emits column 6 — with only the `File:`-block anchors in it — so this is never fatal.
+    declare -a GT_CODE=()
+    [ -d "$WORK/$id/code/$subdir" ] && GT_CODE=(--code "$WORK/$id/code/$subdir")
     say "GT: [$id] extracting truth.tsv ..."
-    bash "$EXTRACTGT" "$readme" "$WORK/$id/truth.tsv"
+    bash "$EXTRACTGT" "$readme" "$WORK/$id/truth.tsv" ${GT_CODE[@]+"${GT_CODE[@]}"}
   done < "$CORPUS"
 fi
 
@@ -475,7 +516,9 @@ if [ "$DO_SCORE" -eq 1 ]; then
 
     declare -A HITMAP=()
     declare -A EXPANDED=()
+    declare -A LOCCREDIT=()
     verified_n=0 ; matched_leads=0 ; judge_calls=0 ; judge_errors=0 ; dup_classes=0 ; dup_expanded=0
+    loc_rows=0 ; loc_credited=0
     gate_conf="$JUDGE_MINCONF" ; gate_dropped=0 ; gate_rows=0
     # A GATE trailer carries FOUR fields, so the reader takes f4 too; every other line leaves it empty.
     while IFS=$'\t' read -r f1 f2 f3 f4; do
@@ -488,6 +531,10 @@ if [ "$DO_SCORE" -eq 1 ]; then
       # actually matched. Neither is a truth row — a DUPHIT's second field is a sev_id, not HIT/MISS.
       if [ "$f1" = "DUP" ]; then dup_classes="$f2"; dup_expanded="$f3"; continue; fi
       if [ "$f1" = "DUPHIT" ]; then EXPANDED["$f2"]=1; continue; fi
+      # #2215 trailers: LOC carries the anchored-row / location-credited counts, LOCHIT names the lead
+      # location that credited one row. Trailers, never truth rows — a LOCHIT's second field is a sev_id.
+      if [ "$f1" = "LOC" ]; then loc_rows="$f2"; loc_credited="$f3"; continue; fi
+      if [ "$f1" = "LOCHIT" ]; then LOCCREDIT["$f2"]=1; continue; fi
       [ -n "$f1" ] && HITMAP["$f1"]="$f2"
     done <<SCORE_EOF
 $SCORE_OUT
@@ -513,7 +560,7 @@ SCORE_EOF
       elif [ "$rarity" -le 8 ] 2>/dev/null; then c_mid_total=$((c_mid_total+1));  [ "$hit" = 1 ] && c_mid_hits=$((c_mid_hits+1))
       else                                       c_cons_total=$((c_cons_total+1)); [ "$hit" = 1 ] && c_cons_hits=$((c_cons_hits+1))
       fi
-      say "  [$id] $([ "$hit" = 1 ] && echo HIT || echo MISS)$([ "$exp" = 1 ] && echo ' (via GT-equivalence)') $sev_id (rarity $rarity): $title"
+      say "  [$id] $([ "$hit" = 1 ] && echo HIT || echo MISS)$([ "$exp" = 1 ] && echo ' (via GT-equivalence)')$([ "${LOCCREDIT[$sev_id]:-0}" = "1" ] && echo ' (via GT location anchor)') $sev_id (rarity $rarity): $title"
     done < "$truth"
 
     unmatched_leads=$((verified_n - matched_leads))
@@ -522,6 +569,9 @@ SCORE_EOF
     say "  [$id] recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total$rare_note, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total, verified-leads $verified_n (matched $matched_leads, unmatched $unmatched_leads — needs manual triage, NOT auto-claimed novel)"
     [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE, min-confidence $gate_conf): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s); gate dropped $gate_dropped MATCH decision(s), costing $gate_rows row(s)"
     [ -n "$dupes_file" ] && say "  [$id] GT-equivalence (#1840): $dup_classes class(es), $dup_expanded row(s) credited through a class; the same replay without expansion reads $((c_hits - dup_expanded))/$c_total"
+    # #2215: same disclosure discipline as the #1840 line above — a ruler that moved the headline must say so
+    # in the run log, otherwise an anchored number and a frozen one get compared as if they were the same.
+    [ "$loc_rows" -gt 0 ] && say "  [$id] GT location anchors (#2215): $loc_rows anchored row(s), $loc_credited row(s) credited ONLY via a location pair; the same replay without them reads $((c_hits - loc_credited))/$c_total"
 
     # #1867: run-level COST for this contest (cells spent / candidates generated / confirmed by the refute
     # gate), joined from its own zone-coverage.json (#1830) + the verified_findings.json already scored above.
