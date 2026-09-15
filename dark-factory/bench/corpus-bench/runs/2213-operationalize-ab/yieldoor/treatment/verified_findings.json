@@ -1,0 +1,92 @@
+{
+  "repo": "yieldoor",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 1/2)",
+      "location": "src/Leverager.sol:liquidatePosition",
+      "file": "src/Leverager.sol",
+      "class": "class=C2",
+      "severity": "Medium",
+      "exploit": "Permissionless liquidator exploits the decimals-scaling defect `borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals()` (raw integer instead of 10**decimals) making borrowedValue ~5.5e16x too large so `totalValueUSD > borrowedValue` is always false; the protocol-fee block never runs, feeRecipient gets 0, and the external liquidator pockets the protocol's liquidation fee on every liquidation.",
+      "poc_sketch": "Foundry: deploy LendingPool + Leverager + mock ERC20 denomination(18dec) + mock PriceFeed.getPrice returning 1e8 + mock Vault whose withdraw returns amount0/amount1 with totalValueUSD > owed*1e8/1e18; owner setLiquidationFee(1000) and feeRecipient=F; open a position, drive it underwater so isLiquidateable==true; from an unprivileged EOA call liquidatePosition; assert IERC20(token0/token1).balanceOf(F)==0 (fee block skipped) while recomputing with the correct /1e18 divisor shows totalValueUSD>borrowedValue and pf0/pf1>0 that SHOULD have gone to F; assert the liquidator received those pf amounts instead.",
+      "verdict": "REAL",
+      "reason": "The divisor is the raw uint8 decimals() instead of 10**decimals(), inflating borrowedValue ~5.5e16x so `totalValueUSD > borrowedValue` is permanently false, the feeRecipient block never executes, and the leftover (including the uncollected fee) is transferred to the permissionless msg.sender liquidator with no guard preventing it."
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "location": "src/Leverager.sol:liquidatePosition:318",
+      "file": "src/Leverager.sol",
+      "class": "class=C6",
+      "severity": "Medium",
+      "exploit": "`borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals()` divides by the raw decimals integer (e.g. 18) instead of 10**decimals, inflating borrowedValue ~5.5e16x so `if(totalValueUSD>borrowedValue)` is always false; the protocol-fee block never executes, feeRecipient gets 0, and any external permissionless liquidator keeps the entire collateral surplus including the liquidation fee that should have accrued to the protocol on every profitable liquidation.",
+      "poc_sketch": "Foundry (verified, test/PoCFeeDecimals.t.sol): deploy Leverager + mock LendingPool + mock Vault(token0=WBTC 8dec, token1=USDC 6dec) + MockPriceFeed + MockRouter; owner initVault, setLiquidationFee(500), setPriceFeed, setSwapRouter, and force feeRecipient to a real address; open a leveraged position, raise the WETH (denomination) price so isLiquidateable==true while collateral USD still exceeds debt USD; from an unprivileged EOA call liquidatePosition; assert wbtc.balanceOf(feeRecipient)==0 && usdc.balanceOf(feeRecipient)==0 while recomputing borrowedValue with the correct /1e18 divisor shows totalValueUSD>borrowedValue and pf0=0.001 WBTC / pf1=100 USDC that SHOULD have gone to feeRecipient; assert the liquidator received the full 1e8 WBTC + 100000e6 USDC instead.",
+      "verdict": "REAL",
+      "reason": "The divisor is the raw decimals() integer instead of 10**decimals, inflating borrowedValue ~5.56e16x so totalValueUSD>borrowedValue is always false; the fee block never runs and any permissionless liquidator (external function gated only by the correct-math isLiquidateable check) pockets the surplus that should accrue to feeRecipient on every profitable liquidation."
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "location": "src/Leverager.sol:liquidatePosition:318",
+      "file": "src/Leverager.sol",
+      "class": "class=C10",
+      "severity": "Medium",
+      "exploit": "borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals() divides by the raw decimals integer instead of 10**decimals, inflating borrowedValue ~5.5e16\u00d7 so if(totalValueUSD>borrowedValue) is always false; the protocol-fee block never runs and the entire liquidation surplus (including the fee that should accrue to feeRecipient) egresses to the unprivileged liquidator on every liquidation",
+      "poc_sketch": "Foundry: deploy LendingPool+Leverager+ERC721, mock Vault(token0=WBTC 8dec, token1=USDC 6dec), MockPriceFeed(getPrice=1e8-scaled), MockRouter; owner initReserve/initVault, setLiquidationFee(500), setPriceFeed, setSwapRouter, set feeRecipient=F; open a leveraged position; move denom price so isLiquidateable()==true while collateral USD still exceeds debt USD; from an unprivileged EOA call liquidatePosition; assert token0.balanceOf(F)==0 && token1.balanceOf(F)==0 (fee block skipped) while recomputing borrowedValue with /1e18 shows totalValueUSD>borrowedValue with pf0,pf1>0 that SHOULD have gone to F; assert the liquidator received those pf0/pf1 amounts instead",
+      "verdict": "REAL",
+      "reason": "borrowedValue divides owedAmount*bPrice by the raw uint8 decimals() (e.g. 18) instead of 10**decimals (1e18) \u2014 proven wrong by the sibling openLeveragedPosition/isLiquidateable formulas using the same getPrice feed \u2014 inflating it ~5.5e16x so totalValueUSD>borrowedValue is never true, skipping the feeRecipient block and sending the surplus to the unprivileged, access-control-free liquidator."
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "location": "src/Leverager.sol:liquidatePosition:318",
+      "file": "src/Leverager.sol",
+      "class": "class=C15",
+      "severity": "Medium",
+      "exploit": "Permissionless external liquidator exploits the decimals-seam defect borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals() (raw decimals integer instead of 10**decimals) which inflates borrowedValue ~5.5e16x so if(totalValueUSD>borrowedValue) is always false, the protocol-fee block never runs, feeRecipient gets 0, and the liquidator keeps the entire collateral surplus including the fee owed to the protocol on every liquidation",
+      "poc_sketch": "Foundry: deploy LendingPool+Leverager+mock Vault(token0=WBTC 8dec, token1=USDC 6dec)+MockPriceFeed(getPrice returns e.g. 1e8-scaled)+MockRouter; as owner initVault, setLiquidationFee(500), setPriceFeed, setSwapRouter and set feeRecipient=F; open a leveraged position then drive the denomination price so isLiquidateable(id)==true while collateral USD still exceeds debt USD; from an unprivileged EOA call liquidatePosition(id) with no swap; assert IERC20(token0).balanceOf(F)==0 && IERC20(token1).balanceOf(F)==0 (fee block skipped) while recomputing borrowedValue with the correct /1e18 divisor shows totalValueUSD>borrowedValue and pf0/pf1>0 that SHOULD have gone to F; assert the liquidator received those pf0/pf1 amounts instead.",
+      "verdict": "REAL",
+      "reason": "Line 318 divides by the raw ERC20 decimals integer instead of 10**decimals (every other conversion in the contract uses 10**decimals), inflating borrowedValue by ~10**decimals/decimals so that totalValueUSD > borrowedValue is always false, permanently skipping the only feeRecipient transfer in liquidation and letting any permissionless liquidator keep the protocol fee."
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "location": "src/Leverager.sol:withdraw",
+      "file": "src/Leverager.sol",
+      "class": "class=C19",
+      "severity": "Medium",
+      "exploit": "An unprivileged owner of any token1-denominated position (e.g. token1=USDC(6) denomination, token0 an 18-decimal token) calls withdraw; because the `else if (borrowed == up.token1)` branch mis-sets `repayFromWithdraw = amountOut0` (the other token) instead of `amountOut1`, the subsequent `owedAmount -= repayFromWithdraw` / `amountOut1 -= repayFromWithdraw` underflow-revert whenever amountOut0 exceeds owedAmount or amountOut1, permanently bricking that owner's ability to exit (funds frozen; only liquidation remains).",
+      "poc_sketch": "Foundry: deploy LendingPool + Leverager (owner initReserve for USDC, initVault, set leverager, setPriceFeed, setSwapRouter) + mock Vault(token0=18-dec token, token1=USDC 6-dec) whose withdraw() returns amountOut0~1e18 and amountOut1~1e9 + mock PriceFeed + mock router; from an unprivileged EOA openLeveragedPosition with denomination=token1(USDC); then call withdraw({id, pctWithdraw:1e18,...}) and assert the call reverts with an arithmetic underflow (0x11) inside the token1 branch (`owedAmount -= amountOut0` / `amountOut1 -= amountOut0`), and that the same position is liquidatable via liquidatePosition (which uses the correct `amount1`) \u2014 proving the freeze is specific to the withdraw copy-paste.",
+      "verdict": "REAL",
+      "reason": "The token1 branch's ternary true-arm assigns repayFromWithdraw = amountOut0 (18-dec other token) instead of amountOut1 whenever amountOut1 < owedAmount, so `owedAmount -= amountOut0` and `amountOut1 -= amountOut0` deterministically underflow-revert for any above-~2x token1-denominated position, bricking the unprivileged owner's withdraw with no guard in the path."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/Strategy.sol:checkPoolActivity",
+      "file": "src/Strategy.sol",
+      "class": "class=C19",
+      "severity": "High",
+      "exploit": "Anyone permissionlessly calls pool.increaseObservationCardinalityNext to raise observationCardinality so observationCardinality+currentIndex exceeds 65535; that sum is evaluated in uint16 and reverts on overflow, and since checkPoolActivity gates _requirePriceWithinRange, rebalance() and compound() then revert permanently, freezing all position management for every depositor.",
+      "poc_sketch": "Foundry: deploy a mock IUniswapV3Pool whose slot0() returns observationCardinality=65535 and currentIndex=1 with valid observations(), construct Strategy against it, assert strategy.checkPoolActivity() reverts with arithmetic overflow and therefore rebalance()/compound() revert; alternatively fork a live pool, grow cardinality to 65535 via increaseObservationCardinalityNext, and show the same revert bricks rebalance permanently. FCB_18823a18d56d5ae04462ff0_END",
+      "verdict": "REAL",
+      "reason": "The loop index expression `observationCardinality + currentIndex` is computed in checked uint16 arithmetic, and an unprivileged attacker can permissionlessly grow the pool's observationCardinality above 32768 (up to 65535) via increaseObservationCardinalityNext plus tick-changing swaps, so the sum exceeds 65535 and panics, propagating through _priceWithinRange -> _requirePriceWithinRange to permanently freeze rebalance() and compound()."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/Strategy.sol:checkPoolActivity",
+      "file": "src/Strategy.sol",
+      "class": "class=C19",
+      "severity": "High",
+      "exploit": "An external attacker permissionlessly grows the underlying Uniswap V3 pool's observation buffer (increaseObservationCardinalityNext) until observationCardinality==65535 and currentIndex>=1; the uint16 sum `observationCardinality + currentIndex` in `uint256 index = (observationCardinality + currentIndex - i) % observationCardinality` then overflows uint16 (65536) and reverts on the first loop iteration, and since checkPoolActivity gates _requirePriceWithinRange, both rebalance() and compound() revert permanently \u2014 an irreversible freeze of all position management.",
+      "poc_sketch": "Foundry: deploy a mock IUniswapV3Pool whose slot0() returns observationCardinality=65535, currentIndex=1, a valid tick and sqrtPriceX96, and whose observations() returns valid (timestamp!=0) data; construct Strategy against it; assert vm.expectRevert(stdError.arithmeticError) on strategy.checkPoolActivity(); then set an onlyRebalancer caller and assert rebalance() and compound() also revert with arithmetic overflow. Alternatively fork mainnet, call pool.increaseObservationCardinalityNext(65535) and drive swaps in distinct blocks until observationCardinality==65535 & currentIndex>=1, then show checkPoolActivity()/rebalance() revert permanently.",
+      "verdict": "REAL",
+      "reason": "All three operands are uint16, so `observationCardinality + currentIndex` runs in checked uint16 arithmetic and reverts (Panic 0x11) on the first loop iteration once a permissionless attacker grows the Uniswap V3 buffer to cardinality 65535 with currentIndex>=1, and this is the first unguarded statement in the loop that gates rebalance()/compound()."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 8,
+    "verified": 7,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

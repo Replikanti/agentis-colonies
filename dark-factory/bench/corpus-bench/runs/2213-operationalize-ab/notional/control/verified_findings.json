@@ -1,0 +1,103 @@
+{
+  "repo": "notional-v4",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "Vault reward accrual & Convex claim manager",
+      "location": "src/rewards/AbstractRewardManager.sol:_claimVaultRewards:191",
+      "file": "src/rewards/AbstractRewardManager.sol",
+      "class": "class=C1",
+      "severity": "Medium",
+      "exploit": "With forceClaimAfter>0 the Convex CRV/CVX index is frozen mid-window while rewards keep accruing in Convex; an attacker deposits a large collateral position just before the window expires (their mint's _claimVaultRewards no-ops, so their debt is pinned at the stale pre-jump index), waits for expiry, calls claimRewardTokens() to trigger the lump claim which _accumulateSecondaryRewardViaClaim splits across current (post-deposit) shares, then claims via lendingRouter.claimRewards \u2014 capturing a per-share slice of a whole window's rewards for only a few blocks of holding and diluting time-weighted honest holders.",
+      "poc_sketch": "Extend TestRewardManager harness: migrateRewardPool with forceClaimAfter=7 days; honest user enterPosition(defaultDeposit) and hold; warp ~7 days and MockRewardPool.setRewardAmount=windowReward (simulating a full window of Convex accrual); just before expiry attacker enterPosition with a large deposit and assert the vault index is unchanged and getRewardDebt(attacker)==attackerSharesindex_old/1e18; warp past expiry; call claimRewardTokens() then lendingRouter.claimRewards(vault) as attacker and assert attackerReward \u2248 windowRewardattackerShares/effectiveSupply_after (a full-window slice) despite ~0 holding time, while the honest holder's claim is diluted well below the no-attacker baseline, and net attacker gain exceeds LP entry/exit slippage.",
+      "verdict": "REAL",
+      "reason": "The forceClaimAfter>0 early-return freezes accumulatedRewardPerVaultShare across the window so a just-in-time depositor's rewardDebt is pinned at the stale index, while the later lump claim divides a whole window's Convex rewards by the current post-deposit effectiveSupply, letting the unprivileged attacker claim a proportional slice with no deposit-time settlement or minimum-holding guard."
+    },
+    {
+      "subsystem": "Single-sided Curve/Convex LP yield strategy",
+      "location": "src/single-sided-lp/CurveConvex2Token.sol:_exitPool",
+      "file": "src/single-sided-lp/CurveConvex2Token.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "On a Curve V2 crypto pool holding WETH (ERC20, not the native-ETH sentinel), entry derives use_eth=false but exit hardcodes use_eth=true, so Curve sends native ETH on redemption, the ETH_ADDRESS-keyed re-wrap is skipped, and the WETH before/after balance delta reads 0 \u2014 recovered value is booked as 0 and users' funds are stranded as native ETH on the shared exit path.",
+      "poc_sketch": "Foundry: fork mainnet, deploy CurveConvex2Token on a V2 twocrypto pool whose coin is WETH; user deposits (entry uses use_eth=false, WETH added); then redeem single-sided and two-sided; assert the V2 remove_liquidity(...,true,...) delivers native ETH, that unstakeAndExitPool does NOT re-wrap (TOKEN!=ETH_ADDRESS), that exitBalances[PRIMARY]==0, and that the strategy's WETH balance is unchanged while address(this).balance grew \u2014 funds unrecoverable via the normal exit.",
+      "verdict": "REAL",
+      "reason": "For a Curve V2 pool holding WETH as an ERC20 (coins() returns the WETH address so TOKEN != ETH_ADDRESS), _enterPool derives use_eth=false and deposits WETH while _exitPool's V2 branches hardcode use_eth=true, so the pool returns native ETH that unstakeAndExitPool never re-wraps (its re-wrap fires only when TOKEN_1/2 == ETH_ADDRESS) and whose WETH before/after delta reads 0, stranding value on ordinary unprivileged withdrawals with no guard stopping it."
+    },
+    {
+      "subsystem": "Single-sided Curve/Convex LP yield strategy",
+      "location": "src/single-sided-lp/CurveConvex2Token.sol:_exitPool",
+      "file": "src/single-sided-lp/CurveConvex2Token.sol",
+      "class": "class=C23",
+      "severity": "High",
+      "exploit": "_exitPool hardcodes Curve V2 use_eth=true on both remove_liquidity_one_coin and remove_liquidity while _enterPool derives use_eth=(msgValue>0); deploy on a Curve V2 crypto pool holding WETH/ERC20 (natural config: TOKEN=WETH not the ETH_ADDRESS sentinel, so entry succeeds via use_eth=false), then any unprivileged user redeeming forces use_eth=true on exit, so Curve either reverts (pure-ERC20 pool) or sends native ETH that the TOKEN==ETH_ADDRESS-gated re-wrap skips and the V2 before/after WETH balance-delta reads as 0 \u2014 stranding/freezing all users' recovered funds on the shared exit path.",
+      "poc_sketch": "Foundry: fork mainnet; deploy CurveConvex2Token with CurveInterface.V2 pointed at a Curve V2 twocrypto pool whose coins are WETH + an ERC20, setting TOKEN_1/TOKEN_2 = pool.coins(0/1) (WETH, not ETH_ADDRESS); as an unprivileged account deposit assets and assert entry succeeds (use_eth=false path, LP staked, _checkPoolShare passes); then drive the redeem flow (unstakeAndExitPool -> _exitPool two-sided) and assert exitBalances[wethIndex]==0 while address(this).balance increased by the WETH amount (native ETH received, WETH ERC20 balance unchanged) \u2014 i.e. recovered primary booked as 0 though the LP was burned; on a pure-ERC20 V2 pool variant assert the same call reverts, in both cases proving the unprivileged redeemer's funds are stranded/frozen. FCB_813d218d5414e8cae37bd0_END",
+      "verdict": "REAL",
+      "reason": "The V2 use_eth interface only exists for WETH-holding pools so coins() returns WETH and TOKEN is never the ETH sentinel, meaning entry deposits with use_eth=false while _exitPool hardcodes use_eth=true, so the pool returns native ETH that the TOKEN==ETH_ADDRESS-gated re-wrap in unstakeAndExitPool skips and the WETH balance-delta reads as 0, freezing every unprivileged user's redeemed funds."
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "location": "src/withdraws/Dinero.sol:_finalizeWithdrawImpl",
+      "file": "src/withdraws/Dinero.sol",
+      "class": "class=C4",
+      "severity": "High",
+      "exploit": "An external user whose sub-32-ETH pxETH redemption shares a PirexETH upxETH batchId with another request calls the permissionless finalizeRequestManual on their own request first; _finalizeWithdrawImpl redeems upxETH.balanceOf(this,batchId) (the full commingled per-batch balance) and credits all of it to their tokenized request, so their payout (R1+R2)*R1/R1=R1+R2 drains the co-batched request, which then finalizes to 0.",
+      "poc_sketch": "Fork mainnet PirexETH: register a vault, stake so two accounts each initiateWithdraw a <32 ETH pxETH redemption that PirexETH allocates to the same batchId (assert both requestIds decode to an overlapping [initialBatchId,finalBatchId]); dissolve that validator; call finalizeRequestManual(vault, attacker) then read s_tokenizedWithdrawRequest[attackerReqId].totalWithdraw == attacker+victim and assert upxETH.balanceOf(manager,batchId)==0; finalizeRequestManual(vault, victim) returns tokensClaimed==0; assert finalizeAndRedeemWithdrawRequest transfers the victim's ETH to the attacker's vault.",
+      "verdict": "REAL",
+      "reason": "_finalizeWithdrawImpl redeems the entire commingled upxETH.balanceOf(this,batchId) and returns it as the single finalizing request's tokensClaimed with no per-request amount tracking (requestId encodes only batch ids + a nonce, and the code comment confirms batch ids overlap between requests), so the first co-batched request finalized via the permissionless path drains the whole batch and the other finalizes to 0."
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "location": "src/withdraws/Ethena.sol:_finalizeCooldown",
+      "file": "src/withdraws/Ethena.sol",
+      "class": "class=C4",
+      "severity": "Medium",
+      "exploit": "While sUSDe.cooldownDuration()==0, an unprivileged user's initiateWithdraw makes the holder redeem sUSDe to USDe at initiate time; at finalize _finalizeCooldown reads balanceBefore after the USDe is already on the holder and skips unstake, so tokensClaimed=balanceAfter-balanceBefore=0, the request finalizes with s.totalWithdraw=0 and the user's USDe is stranded on the holder clone.",
+      "poc_sketch": "Fork with sUSDe.cooldownDuration()==0 (or vm.mockCall it to 0): approve vault, stake USDe->sUSDe, initiateWithdraw; assert USDe.balanceOf(holder) == full amount after initiate; canFinalizeWithdrawRequest true; finalizeAndRedeemWithdrawRequest returns tokensWithdrawn==0 while USDe.balanceOf(holder) stays == full amount (lost). FCB_b36e718d5430f6ff450e10_END",
+      "verdict": "REAL",
+      "reason": "When cooldownDuration==0 the holder redeems sUSDe to USDe at initiate time, so at finalize balanceBefore already includes that USDe and, since cooldownEnd==0 skips unstake, tokensClaimed = balanceAfter - balanceBefore = 0 while the redeemed USDe stays stranded on the single-use holder clone."
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "location": "src/withdraws/Dinero.sol:_finalizeWithdrawImpl",
+      "file": "src/withdraws/Dinero.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "An external user whose sub-32-ETH pxETH redemption is batched by PirexETH into the same upxETH batchId as another request calls permissionless finalizeRequestManual on their own request first; _finalizeWithdrawImpl redeems the full commingled upxETH.balanceOf(this,batchId) and credits all of it to their tokenized request (payout (A+V)*A/A = A+V), draining the co-batched victim who then finalizes to 0.",
+      "poc_sketch": "Fork mainnet PirexETH: setApprovedVault a mock vault; via the vault call initiateWithdraw for attacker and victim with two <32-ETH pxETH amounts that PirexETH assigns to the same batchId (assert both requestIds decode to the same [initialBatchId,finalBatchId]); dissolve that validator; call finalizeRequestManual(vault,attacker) then assert s_tokenizedWithdrawRequest[attackerReqId].totalWithdraw == attacker+victim and upxETH.balanceOf(manager,batchId)==0; assert finalizeRequestManual(vault,victim) yields tokensWithdrawn==0 and that finalizeAndRedeemWithdrawRequest transfers the victim's WETH to the attacker's vault.",
+      "verdict": "REAL",
+      "reason": "_finalizeWithdrawImpl credits the manager-wide commingled upxETH.balanceOf(address(this),batchId) to whichever single requestId finalizes first and _finalizeWithdraw books that as s.totalWithdraw with no per-request reconciliation, so an unprivileged user calling permissionless finalizeRequestManual on their own dust request that shares a Pirex batch sweeps the co-batched victim's upxETH and the victim later finalizes to zero."
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "location": "src/withdraws/Ethena.sol:_finalizeCooldown",
+      "file": "src/withdraws/Ethena.sol",
+      "class": "class=C15",
+      "severity": "Medium",
+      "exploit": "When sUSDe.cooldownDuration()==0, _startCooldown redeems sUSDe to USDe onto the holder at initiate, so _finalizeCooldown's balanceBefore already includes that USDe and unstake is skipped, making tokensClaimed = balanceAfter-balanceBefore = 0; the request finalizes with totalWithdraw=0 and the user's USDe is permanently stranded on the holder (owner-rescue only).",
+      "poc_sketch": "Fork with sUSDe.cooldownDuration forced to 0: via an approved vault call initiateWithdraw for a user, assert USDe.balanceOf(clonedHolder) > 0 immediately after; call finalizeRequestManual and assert returned tokensWithdrawn==0 and s_tokenizedWithdrawRequest[reqId].totalWithdraw==0 while USDe.balanceOf(holder) is still the full redeemed amount, proving the funds are stranded and the user receives nothing. FCB_beef718d54376f90cecdc0_END",
+      "verdict": "REAL",
+      "reason": "With cooldownDuration()==0 the USDe is redeemed onto the holder at initiate so balanceBefore already includes it, cooldownEnd==0 makes finalize skip unstake, and tokensClaimed=balanceAfter-balanceBefore=0 leaves the user's USDe stranded on the holder while the request finalizes with zero withdrawal."
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "location": "src/withdraws/Dinero.sol:_finalizeWithdrawImpl",
+      "file": "src/withdraws/Dinero.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "Attacker whose sub-32-ETH pxETH redemption is batched by PirexETH into the same upxETH batchId as a victim's calls permissionless finalizeRequestManual on their own request first; the loop redeems the full commingled upxETH.balanceOf(manager,batchId)=R1+R2 and _finalizeWithdraw credits all of it to the attacker's per-request denominator (payout (R1+R2)*R1/R1=R1+R2), so the attacker's redeem round-trip nets more than deposited and the co-batched victim finalizes to 0.",
+      "poc_sketch": "Fork mainnet PirexETH: setApprovedVault a mock vault; via the vault initiateWithdraw for attacker and victim with two <32-ETH pxETH amounts and assert both requestIds decode to the same [initialBatchId,finalBatchId]; dissolve the validator; call finalizeRequestManual(vault,attacker) and assert s_tokenizedWithdrawRequest[attackerReqId].totalWithdraw==R1+R2 and upxETH.balanceOf(manager,batchId)==0; assert finalizeRequestManual(vault,victim) yields tokensWithdrawn==0; assert finalizeAndRedeemWithdrawRequest(attacker,...) transfers R1+R2 WETH out (net +R2 stolen from the commingled pool).",
+      "verdict": "REAL",
+      "reason": "_finalizeWithdrawImpl credits the entire aggregate upxETH.balanceOf(manager, batchId) to whichever request finalizes first with no per-request share tracking, and the code's own comment confirms batchIds overlap across distinct requests, so an unprivileged attacker who co-batches a sub-32-ETH redemption with a victim and finalizes first redeems and is credited both parties' upxETH, leaving the victim's finalize to read a zeroed balance."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 19,
+    "verified": 8,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

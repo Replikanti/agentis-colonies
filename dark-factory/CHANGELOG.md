@@ -16,6 +16,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **Operationalize-lens A/B measured: NO-GO, default stays OFF (#2213, M2).** A pre-registered ON-vs-OFF
+  corpus generation-recall A/B over two contests, with STAGE 1/2 frozen so `OPERATIONALIZE_LENS` was the
+  only variable (both arms re-entered STAGE 3 via `run-zone-hunt.sh --rehunt-gaps` over byte-identical zone
+  maps and briefs; depth OFF, `--judge off --min-overlap 2`, model pinned, killswitches on, attribution gated
+  to PURE-model). **Rare-tier generation recall moved by 0 rows on BOTH contests (1/14 -> 1/14 and 4/8 -> 4/8,
+  identical row for row); overall recall came out lower in treatment.** Model compliance was total (100% of
+  cells emitted the sentinel, 7.1-8.7 `OPCHECK|` per cell), so the null is about the METHOD, not the wiring.
+  Per the pre-registered rule the M3 default-ON flip is **NO-GO** and the flag remains opt-in. No behaviour
+  changed in this entry: it ships the archive
+  (`bench/corpus-bench/runs/2213-operationalize-ab/`, incl. per-rare-row tables), the reproducible recipe in
+  `bench/corpus-bench/README.md`, and the class-level findings in `bench/corpus-bench/bug-class-coverage.md`
+  (notional H-8 is a C22 class-ROUTING miss with the right check derived but never traced; notional H-9 is a
+  location-matcher false negative that BOTH arms actually generated).
 - **gen-briefs brief-writer timeout 10min -> 20min (#2209).** `gen-briefs.sh` hardcoded `llm.cli_timeout_ms = 600000`, half of run-discovery.sh's floor (1200000), so heavy zones (notional: briefs observed completing at 586-1059s) timed out and fell back to mechanical/gap. Bumped to 1200000 to match the sibling hunt timeout floor; a zone still exceeding it should be split (ZONE_SPLIT_LOC), not chased. Full LOC-scaling like run-discovery is a noted future refinement.
 - **Native flat-cyborg result-file reply capture (#2207).** The hunt emitters (`run-discovery.sh`, `run-invariant-hunt.sh`, `run-refute.sh`, `map-zones.sh`, `run-poc.sh`, `gen-briefs.sh`) now set `llm.flat_cyborg.result_file_dir` to the per-cell RUN dir, so the driven model writes its reply to a file agentis reads via flat-cyborg `--result-file` (file > transcript > screen) — large zone briefs/hunts no longer fail the `--extract` screen-scrape and degrade to mechanical/empty. **Requires:** agentis >= 1.32.0 + flat-cyborg >= 0.17.0 (older agentis ignores the key harmlessly → screen-scrape as before). Builds on flat-cyborg#79 (v0.17.0 `--result-file`) and agentis-core#1002.
 

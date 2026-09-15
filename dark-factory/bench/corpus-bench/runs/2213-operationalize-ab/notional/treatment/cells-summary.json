@@ -1,0 +1,307 @@
+{
+  "arm": "treatment",
+  "cells": 42,
+  "status_distribution": {
+    "ok": 42
+  },
+  "candidates_total": 21,
+  "opchecks_total": 299,
+  "opchecks_mean_per_cell": 7.12,
+  "cells_with_opchecks": 42,
+  "per_cell": [
+    {
+      "subsystem": "Yield-strategy share vault (ERC4626 collateral for Morpho)",
+      "class": "C1",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 7
+    },
+    {
+      "subsystem": "Yield-strategy share vault (ERC4626 collateral for Morpho)",
+      "class": "C6",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 9
+    },
+    {
+      "subsystem": "Yield-strategy share vault (ERC4626 collateral for Morpho)",
+      "class": "C11",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 4
+    },
+    {
+      "subsystem": "Yield-strategy share vault (ERC4626 collateral for Morpho)",
+      "class": "C21",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 4
+    },
+    {
+      "subsystem": "Yield-strategy share vault (ERC4626 collateral for Morpho)",
+      "class": "C19",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 7
+    },
+    {
+      "subsystem": "Custom price oracles (Curve LP + Pendle PT)",
+      "class": "C2",
+      "status": "ok",
+      "candidates": 2,
+      "opchecks": 12
+    },
+    {
+      "subsystem": "Custom price oracles (Curve LP + Pendle PT)",
+      "class": "C9",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 8
+    },
+    {
+      "subsystem": "Custom price oracles (Curve LP + Pendle PT)",
+      "class": "C15",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 5
+    },
+    {
+      "subsystem": "Custom price oracles (Curve LP + Pendle PT)",
+      "class": "C23",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 8
+    },
+    {
+      "subsystem": "Custom price oracles (Curve LP + Pendle PT)",
+      "class": "C19",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 11
+    },
+    {
+      "subsystem": "Custom price oracles (Curve LP + Pendle PT)",
+      "class": "C8",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 4
+    },
+    {
+      "subsystem": "Upgradeable-proxy & access-control registry",
+      "class": "C5",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 9
+    },
+    {
+      "subsystem": "Upgradeable-proxy & access-control registry",
+      "class": "C19",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 5
+    },
+    {
+      "subsystem": "Upgradeable-proxy & access-control registry",
+      "class": "C8",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 6
+    },
+    {
+      "subsystem": "Vault reward accrual & Convex claim manager",
+      "class": "C6",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 8
+    },
+    {
+      "subsystem": "Vault reward accrual & Convex claim manager",
+      "class": "C1",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 9
+    },
+    {
+      "subsystem": "Vault reward accrual & Convex claim manager",
+      "class": "C9",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 5
+    },
+    {
+      "subsystem": "Vault reward accrual & Convex claim manager",
+      "class": "C15",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 6
+    },
+    {
+      "subsystem": "Vault reward accrual & Convex claim manager",
+      "class": "C19",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 6
+    },
+    {
+      "subsystem": "Morpho leveraged-position lending router",
+      "class": "C15",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 9
+    },
+    {
+      "subsystem": "Morpho leveraged-position lending router",
+      "class": "C10",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 8
+    },
+    {
+      "subsystem": "Morpho leveraged-position lending router",
+      "class": "C8",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 7
+    },
+    {
+      "subsystem": "Morpho leveraged-position lending router",
+      "class": "C6",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 5
+    },
+    {
+      "subsystem": "Single-sided Curve/Convex LP yield strategy",
+      "class": "C21",
+      "status": "ok",
+      "candidates": 2,
+      "opchecks": 8
+    },
+    {
+      "subsystem": "Single-sided Curve/Convex LP yield strategy",
+      "class": "C15",
+      "status": "ok",
+      "candidates": 2,
+      "opchecks": 11
+    },
+    {
+      "subsystem": "Single-sided Curve/Convex LP yield strategy",
+      "class": "C23",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 7
+    },
+    {
+      "subsystem": "Single-sided Curve/Convex LP yield strategy",
+      "class": "C6",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 5
+    },
+    {
+      "subsystem": "Single-sided Curve/Convex LP yield strategy",
+      "class": "C8",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 4
+    },
+    {
+      "subsystem": "Pendle PT / staking-vault strategy",
+      "class": "C21",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 11
+    },
+    {
+      "subsystem": "Pendle PT / staking-vault strategy",
+      "class": "C15",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 8
+    },
+    {
+      "subsystem": "Pendle PT / staking-vault strategy",
+      "class": "C22",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 7
+    },
+    {
+      "subsystem": "Pendle PT / staking-vault strategy",
+      "class": "C23",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 7
+    },
+    {
+      "subsystem": "Pendle PT / staking-vault strategy",
+      "class": "C19",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 8
+    },
+    {
+      "subsystem": "Shared token & type-conversion utility library",
+      "class": "C9",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 8
+    },
+    {
+      "subsystem": "Shared token & type-conversion utility library",
+      "class": "C19",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 6
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "class": "C4",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 9
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "class": "C15",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 8
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "class": "C6",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 6
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "class": "C2",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 5
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "class": "C5",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 7
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "class": "C19",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 7
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "class": "C8",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 5
+    }
+  ]
+}

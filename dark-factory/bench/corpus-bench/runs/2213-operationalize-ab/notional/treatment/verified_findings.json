@@ -1,0 +1,92 @@
+{
+  "repo": "notional-v4",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "Custom price oracles (Curve LP + Pendle PT)",
+      "location": "src/oracles/Curve2TokenOracle.sol:_lpTokenValue:57",
+      "file": "src/oracles/Curve2TokenOracle.sol",
+      "class": "class=C8",
+      "severity": "High",
+      "exploit": "Curve2TokenOracle reads raw balances(0/1), totalSupply and get_dy with no Curve reentrancy-lock touch, so an unprivileged attacker triggers a native-ETH pool remove_liquidity and, inside the ETH raw_call callback (ETH = last coin), reenters the lending protocol's liquidation: mid-callback both balances are decremented while total_supply is not yet burned, so every tokenClaim is uniformly scaled by (1-f) and get_dy's ratio is preserved (deviation band passes), collapsing the reported LP collateral value to ~(1-f) of fair and letting the attacker wrongfully liquidate/seize a healthy LP-collateralized position.",
+      "poc_sketch": "Foundry mainnet-fork: fork a native-ETH Curve 2-coin pool (e.g. an ETH/token pool) and deploy Curve2TokenOracle over it with a real baseToUSD Chainlink feed; register it in a TradingModule and seed a victim position collateralized by the LP at a healthy health factor. From an attacker contract: flashloan the two coins, add_liquidity to obtain ~99% of LP (f~0.99), call remove_liquidity(myLP,[0,0]); in receive()/fallback (ETH callback), call TRADING_MODULE.getOraclePrice(LP,USD) (or the protocol's liquidate() on the victim) and assert the returned LP price == fairPrice*(1-f) (~1% of fair) while a call OUTSIDE the callback returns fairPrice; assert the deviation band did NOT revert (get_dy ratio preserved); assert liquidate() on the previously-healthy victim now succeeds and transfers the LP collateral to the attacker. Control: add a get_virtual_price/remove_liquidity(0,..) lock-touch and show the in-callback read reverts.",
+      "verdict": "REAL",
+      "reason": "The oracle reads Curve balances/totalSupply/get_dy in an unguarded view with no reentrancy-lock touch, native-ETH pools (callback-before-burn) are explicitly supported, and the sole guard (spot-vs-Chainlink deviation band) reads the same mid-callback state and is invariant to proportional balances/totalSupply desync, so a mid-remove_liquidity read undervalues the LP by ~(1-f) and enables wrongful liquidation of a healthy position. FCB_3536cf18d559ef4d5aaed90_END"
+    },
+    {
+      "subsystem": "Vault reward accrual & Convex claim manager",
+      "location": "src/rewards/AbstractRewardManager.sol:_claimVaultRewards:191",
+      "file": "src/rewards/AbstractRewardManager.sol",
+      "class": "class=C1",
+      "severity": "Medium",
+      "exploit": "The throttled Convex reward index (forceClaimAfter) accrues in the Convex pool over the whole window but is added to the vault index as one lump distributed over CURRENT shares with no time-weighting; an unprivileged attacker deposits large just before the window expires (their deposit's _claimVaultRewards no-ops so their debt is pinned at index_old), then after expiry triggers the lump claim and settles shares*(index_new-index_old), capturing a full window's rewards for minutes of holding and diluting honest holders (emission-rate stream is immune because it vests linearly).",
+      "poc_sketch": "Foundry: deploy a SingleSidedLP vault + ConvexRewardManager with a mock IConvexRewardPool whose getReward mints a fixed CRV lump and forceClaimAfter=7 days; honest LP deposits size X at t0; warp to t0+7d-1; attacker deposits size X via the lending router; warp +2 blocks; call claimRewardTokens() then have the attacker exit/claim via the router (claimAccountRewards) and the honest LP claim; assert attacker CRV received is within rounding of the honest LP's despite holding for ~2 blocks vs 7 days, and attacker net-profits after gas \u2014 demonstrating time-weighting is broken for the throttled stream.",
+      "verdict": "REAL",
+      "reason": "The line-191 throttle makes a within-window deposit's _claimVaultRewards no-op so the attacker's debt is pinned at the stale index while the full window's Convex lump (including pre-deposit accrual) is later distributed via _accumulateSecondaryRewardViaClaim over current shares with no time-weighting, letting the JIT depositor capture and dilute honest holders' rewards."
+    },
+    {
+      "subsystem": "Vault reward accrual & Convex claim manager",
+      "location": "src/rewards/AbstractRewardManager.sol:_claimVaultRewards:191",
+      "file": "src/rewards/AbstractRewardManager.sol",
+      "class": "class=C15",
+      "severity": "Medium",
+      "exploit": "The forceClaimAfter throttle makes _claimVaultRewards no-op for the whole window, so an unprivileged attacker deposits large ~1 block before expiry (deposit's claim no-ops, debt pinned at index_old), then after expiry triggers the lump claim (claimRewardTokens) and settles via claimAccountRewards, capturing tokensClaimed*attackerShares/(totalShares) of a full window's Convex CRV/CVX for minutes of holding and diluting honest holders.",
+      "poc_sketch": "Foundry: deploy AbstractSingleSidedLP(Curve/Convex2Token)+ConvexRewardManager with a mock IConvexRewardPool whose getReward mints a fixed CRV lump and forceClaimAfter=7d; honest LP deposits X at t0 via the lending router; warp to t0+7d-1; attacker deposits 10X; warp +1 block; call claimRewardTokens() then attacker claimAccountRewards() and honest claimAccountRewards(); assert attacker CRV ~= 10/11 of lump while honest ~= 1/11 despite honest holding 7d vs attacker ~1 block, and attacker nets profit after gas/fee. FCB_21410818d54f0b565532370_END",
+      "verdict": "REAL",
+      "reason": "The forceClaimAfter early-return skips _executeClaim and the accumulator bump for the whole window, so a mid-window depositor's rewardDebt is pinned against the stale accumulatedRewardPerVaultShare and the permissionless post-expiry lump claim then credits them attackerShares/totalSupply of the entire window's Convex CRV/CVX, diluting honest holders."
+    },
+    {
+      "subsystem": "Single-sided Curve/Convex LP yield strategy",
+      "location": "src/single-sided-lp/CurveConvex2Token.sol:_exitPool",
+      "file": "src/single-sided-lp/CurveConvex2Token.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "Exit legs hardcode Curve V2 use_eth=true while entry derives use_eth=false, so on any V2 crypto pool with no native-ETH sentinel coin (ERC20-only, or WETH stored under the WETH address) redemption reverts or Curve sends native ETH that the ETH_ADDRESS-keyed re-wrap never captures, mis-reporting exitBalances and stranding user funds on the shared exit path.",
+      "poc_sketch": "Deploy CurveConvex2Token with CurveInterface.V2 over a two-ERC20 (or WETH-coin) crypto pool; deposit single-sided (entry succeeds with use_eth=false); call the redeem/withdraw path and assert _exitPool's remove_liquidity_one_coin/remove_liquidity(...,true,...) either reverts or leaves address(this).balance>0 while exitBalances/WETH balance under-report, i.e. net primary returned to the user < redeemable, funds stranded; contrast with an ETH-coin pool where the round-trip matches.",
+      "verdict": "REAL",
+      "reason": "For a Curve V2 crypto pool holding WETH under its ERC20 address (the canonical V2 target, never rewritten to ETH_ADDRESS), _exitPool hardcodes use_eth=true so remove_liquidity/remove_liquidity_one_coin deliver native ETH while entry derives use_eth=false, and the only re-wrap fires solely when TOKEN==ETH_ADDRESS (impossible here), so the two-sided WETH balance-delta reports exitBalances=0 and the native ETH is stranded unaccounted on the unprivileged shared exit path."
+    },
+    {
+      "subsystem": "Single-sided Curve/Convex LP yield strategy",
+      "location": "src/single-sided-lp/CurveConvex2Token.sol:_exitPool",
+      "file": "src/single-sided-lp/CurveConvex2Token.sol",
+      "class": "class=C23",
+      "severity": "High",
+      "exploit": "Exit legs hardcode Curve V2 use_eth=true while _enterPool derives use_eth=false, so on a reachable V2 crypto pool whose primary coin is stored as WETH (not the ETH_ADDRESS sentinel) redemption tells Curve to send native ETH which the ETH_ADDRESS-keyed re-wrap in unstakeAndExitPool never captures (and the two-sided balance-delta reads 0), stranding every redeemer's funds on the shared exit path.",
+      "poc_sketch": "Foundry: deploy CurveConvex2Token with curveInterface=CurveInterface.V2 over a two-coin V2 crypto pool that holds WETH under the WETH address with TOKEN_i set to WETH (not ETH_ADDRESS) and ASSET=WETH; single-sided deposit (assert entry uses use_eth=false and succeeds, LP staked); then call the redeem path (unstakeAndExitPool via _redeemShares) and assert (a) address(strategy).balance > 0 (native ETH received), (b) exitBalances[_PRIMARY_INDEX]/WETH balance under-reports so net WETH returned to the user < redeemable, funds stranded; contrast with a pool configured TOKEN_i=ETH_ADDRESS where the round-trip (use_eth true on both legs, re-wrap fires) balances. FCB_24513518d5507000fbb51c0_END",
+      "verdict": "REAL",
+      "reason": "Because a Curve V2 crypto pool's coins() returns WETH (never the 0xEEeE sentinel that _rewriteAltETH maps to ETH_ADDRESS), TOKEN is always WETH, so enter derives use_eth=false (deposits WETH) while both exit legs hardcode use_eth=true (withdraw native ETH), and unstakeAndExitPool's re-wrap \u2014 gated on TOKEN==ETH_ADDRESS \u2014 never fires (and the two-sided WETH balance-delta reads 0), leaving the native ETH from any redeemer's exit stranded/unconverted against the ASSET==WETH accounting. FCB_390f5618d55c1b651a99830_END"
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "location": "src/withdraws/Dinero.sol:_finalizeWithdrawImpl",
+      "file": "src/withdraws/Dinero.sol",
+      "class": "class=C4",
+      "severity": "High",
+      "exploit": "An unprivileged user, via an approved Dinero vault, initiates a tiny pxETH redemption that lands in a batchId already containing other requests' upxETH, then (after the validator dissolves) finalizes first; the loop redeems the manager's full per-batch upxETH balance and credits it all to the attacker's requestId, over-claiming and draining other requests' escrow from the commingled WETH pool.",
+      "poc_sketch": "Foundry: deploy DineroWithdrawRequestManager with a MockPirexETH + MockUpxETH(ERC1155) + MockWETH where initiateRedemption mints upxETH of the current batchId to the manager and redeemWithUpxEth burns exactly the passed `assets` of that batchId and pays ETH; approve two vaults. As victim, initiateWithdraw(20e18) \u2192 mints 20e18 upxETH in batch b. As attacker, initiateWithdraw(1e16) \u2192 mints 1e16 upxETH in the same batch b (range [b,b]). Set validator(b) status = Dissolved and outstandingRedemptions high enough. Call finalizeAndRedeemWithdrawRequest(attacker, 1e16, ...) and assert tokensWithdrawn \u2248 20.01e18 (>> the 1e16 the attacker contributed). Then finalize the victim and assert it now reverts on WETH transfer / receives ~0, proving the attacker stole the victim's escrow. FCB_27770518d5522e8eafa1700_END",
+      "verdict": "REAL",
+      "reason": "The finalize loop redeems and credits the manager's entire per-batch balance `upxETH.balanceOf(address(this), i)` to the one finalizing requestId, and because the requestId encodes only the batch range plus a nonce (never the request's own redeemed amount) while the code's own comment confirms batch ids commingle across requests, the first unprivileged finalizer burns and over-claims every other request's escrowed upxETH with no per-request bound to stop it."
+    },
+    {
+      "subsystem": "Illiquid staking withdrawal-request managers",
+      "location": "src/withdraws/Dinero.sol:_finalizeWithdrawImpl:61",
+      "file": "src/withdraws/Dinero.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "An external attacker, as a normal end-user of any approved vault, initiates a tiny pxETH redemption that PirexETH mints into a batchId already holding another user's upxETH; after the validator dissolves the attacker (permissionlessly, or via the vault) finalizes first, and the loop redeems `upxETH.balanceOf(manager, i)` \u2014 the manager's ENTIRE commingled batch balance \u2014 crediting all of it to the attacker's uniquely-keyed request (whose tokenized denominator equals only the attacker's own tiny yieldTokenAmount, so the payout ratio is 1), letting the attacker withdraw the victim's escrow while the victim later finalizes against an emptied batch and receives 0.",
+      "poc_sketch": "VERIFIED: etch mock PirexETH/pxETH/upxETH(ERC1155)/WETH/AddressRegistry at their hardcoded constant addresses where initiateRedemption mints `assets` upxETH of a fixed batch to the manager and redeemWithUpxEth burns the passed amount and pays ETH 1:1; deploy DineroWithdrawRequestManager(pxETH) behind the real TimelockUpgradeableProxy and approve one vault; initiateWithdraw(victim,20e18,20e18,\"\") then initiateWithdraw(attacker,1e16,1e16,\"\") land in the same batch; set status=Dissolved and outstandingRedemptions high; finalizeAndRedeemWithdrawRequest(attacker,1e16,1e16) returns tokensWithdrawn==20.01e18 (assert), then finalizeAndRedeemWithdrawRequest(victim,20e18,20e18) returns 0 (assert). Ran and PASSED: attacker 0.01 pxETH -> 20.01 WETH, victim 20 pxETH -> 0 WETH. FCB_281c7618d5528ba003b1ae0_END",
+      "verdict": "REAL",
+      "reason": "The loop redeems upxETH.balanceOf(address(this), i) \u2014 the manager's full commingled batch balance \u2014 and credits it wholly to the attacker's uniquely-nonced requestId (tokenized denominator = attacker's own amount, ratio 1), so an unprivileged attacker whose tiny redemption shares a batchId drains and withdraws the victim's escrow while the victim's later finalize reads a zero balance and receives nothing."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 21,
+    "verified": 7,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

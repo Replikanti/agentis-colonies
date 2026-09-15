@@ -177,3 +177,30 @@ Three corpus contests remain to tag: dodo, crestal, symm.
 4. **C19 narrow-int overflow / downcast** — yieldoor H-3 (fb=1 rare, `uint16` observation-counter overflow → `checkPoolActivity` DoS). **In flight (#2111)**: C19 reuses the "liveness" generation lens (WRAP-BOUNDARY + NARROW-INT-NO-WRAP, now + a DOWNCAST-TRUNCATION bullet) via a one-line `class_to_keyword` map, and a deterministic `contains_narrow_int_signal()` zone-mapper backstop force-includes C19. **C17 slot-overwrite** — notional H-5 remains under #1784.
 
 Each class is declared functional only after the **transfer test** (#1787): derive on one contract of the class → the lens must also FINDING on a *different* corpus contract of the same class. `HARNESS-ERROR` rows (mellow C4) are tracked on the separate harness-robustness axis, not the template axis.
+
+## Operationalize-before-you-hunt: measured NO-GO (#2213 M2, 2026-09-15)
+
+The #2211 `OPERATIONALIZE_LENS` directive — a cross-class METHOD (derive code-grounded checks, write them
+out as `OPCHECK|` lines, THEN trace each), not a taxonomy class — was measured against this corpus in a
+pre-registered ON-vs-OFF A/B over two contests, with the STAGE 1/2 artifacts frozen so the flag was the only
+variable. **Rare-tier generation recall moved by exactly 0 rows on both: `notional` 1/14 → 1/14, `yieldoor`
+4/8 → 4/8 — identical row for row, not merely equal in count.** Overall recall came out LOWER in treatment
+(−2 / −1 rows). Compliance was total (100 % of cells emitted the sentinel, 7.1-8.7 checks per cell), so the
+null is about the method, not the wiring. Per the pre-registered rule the default stays OFF; archive with the
+full per-rare-row tables: [`runs/2213-operationalize-ab/`](runs/2213-operationalize-ab/).
+
+Two class-level findings fall out of the forensics and matter more than the null itself:
+
+- **C22 (cross-protocol unit), notional H-8, is a ROUTING miss, not a generation miss.** The bug lives in
+  `PendlePTOracle._calculateBaseToQuote` (`useSyOracleRate` → `getPtToSyRate` used as a PT→asset rate), but
+  the zone map routes C22 to the staking zone only; the oracles zone carries C2,C9,C15,C23,C19,C8. The
+  staking C22 cell operationalized the PT/SY units, traced them and honestly answered SAFE for ITS zone,
+  while the oracles C2 cell WROTE the exact right check as an `OPCHECK|` and then never traced it. This
+  refines the earlier reading above (H-8 "fires + generates but is REFUTED"): on a depth-off breadth sweep
+  the binding constraint is class→zone routing plus check follow-through, not candidate airtightness.
+- **C23 (hardcoded external-integration parameter), notional H-9, is a MATCHER false negative here.** Both
+  arms generated it (`CurveConvex2Token.sol:_exitPool`, C23 and C15 candidates), but H-9's GT signature names
+  only `remove_liquidity_one_coin` / `remove_liquidity` / `ETH_INDEX` and no `.sol` basename, so the
+  location-first matcher credits the lead to the consensus row M-10 and scores H-9 MISS. Any rare-recall
+  number quoted for `notional` with `--gt-dupes` OFF therefore UNDERSTATES C23: absolute rare generation is
+  >= 2/14 in both arms. The #1840 GT-equivalence artifact is the fix when a run wants the true count.

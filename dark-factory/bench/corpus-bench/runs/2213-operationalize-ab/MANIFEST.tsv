@@ -1,0 +1,6 @@
+take	arm	contest	commit	model	flags	start	end
+take-1-control-armA	control	notional	5e4e7303ddfa2921b7185fdf92f00c81143a23ce	claude-opus-4-8	OPERATIONALIZE_LENS=off	2026-09-14T18:43:57+02:00	2026-09-14T23:18:18+02:00
+take-2-treatment-armA	treatment	notional	5e4e7303ddfa2921b7185fdf92f00c81143a23ce	claude-opus-4-8	OPERATIONALIZE_LENS=on	2026-09-14T23:19:17+02:00	2026-09-15T04:34:17+02:00
+take-3-treatment-armA	treatment	yieldoor	5e4e7303ddfa2921b7185fdf92f00c81143a23ce	claude-opus-4-8	OPERATIONALIZE_LENS=on	2026-09-15T04:34:31+02:00	2026-09-15T06:37:19+02:00
+take-4-control-armA	control	yieldoor	5e4e7303ddfa2921b7185fdf92f00c81143a23ce	claude-opus-4-8	OPERATIONALIZE_LENS=off	2026-09-15T06:37:45+02:00	2026-09-15T08:46:25+02:00
+take-3b-treatment-armA	treatment	yieldoor	5e4e7303ddfa2921b7185fdf92f00c81143a23ce	claude-opus-4-8	OPERATIONALIZE_LENS=on	2026-09-15T08:47:18+02:00	2026-09-15T10:34:39+02:00

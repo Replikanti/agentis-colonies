@@ -1,0 +1,92 @@
+{
+  "repo": "yieldoor",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 1/2)",
+      "location": "src/Leverager.sol:liquidatePosition",
+      "file": "src/Leverager.sol",
+      "class": "class=C2",
+      "severity": "Medium",
+      "exploit": "Permissionless liquidator exploits the decimal-scaling defect `borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals()` (divides by raw decimals 18/6 instead of 10**decimals), inflating borrowedValue ~10**dec/dec so `totalValueUSD > borrowedValue` is always false, the protocol-fee block never fires, and the external liquidator keeps the entire surplus that should have gone to feeRecipient on every liquidation",
+      "poc_sketch": "Foundry: deploy LendingPool+Leverager+PriceFeed+mock Vault; register an 18-dec denomination feed via setChainlinkPriceFeed; set liquidationFee=1000 (10%) and a non-zero feeRecipient; open a leveraged position, move state so isLiquidateable==true with totalValueUSD (1e8-scale) modestly above the correct owedAmount*bPrice/1e18; call liquidatePosition from an unprivileged EOA; assert ERC20(token0/token1).balanceOf(feeRecipient)==0 and that the liquidator received the full surplus (balanceOf(liquidator) == withdrawn amounts minus repay, with no pf0/pf1 deducted), i.e. the fee branch was skipped. Then patch the divisor to 10**decimals and assert feeRecipient now receives pf0/pf1 > 0, proving the leak. FCB_3c43b518d55de6c3b1f7a80_END",
+      "verdict": "REAL",
+      "reason": "borrowedValue divides by the raw decimals() (18/6) instead of 10**decimals, so it is inflated ~10**dec/dec and totalValueUSD > borrowedValue is never true, making the protocol-fee branch dead code and letting the permissionless liquidator keep the entire surplus that should have gone to feeRecipient on every liquidation"
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "location": "src/Leverager.sol:liquidatePosition",
+      "file": "src/Leverager.sol",
+      "class": "class=C6",
+      "severity": "Medium",
+      "exploit": "A permissionless external liquidator keeps the protocol's entire liquidation fee: `borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals()` divides by the raw decimals integer (18/6) instead of 10**decimals, inflating borrowedValue ~10**dec/dec so `if (totalValueUSD > borrowedValue)` is always false, the pf0/pf1 fee-deduction block never runs, amount0/amount1 are never reduced, and the liquidator receives 100% of the collateral surplus while feeRecipient gets 0 on every liquidation.",
+      "poc_sketch": "Foundry: deploy LendingPool+Leverager+PriceFeed+mock Vault; register an 18-dec denomination feed via setChainlinkPriceFeed; setLiquidationFee(1000) (10%) and a non-zero feeRecipient; open a leveraged position; move state so isLiquidateable()==true with totalValueUSD (chPrice-scale) modestly above the correct owedAmount*bPrice/1e18; call liquidatePosition from an unprivileged EOA; assert ERC20(token0).balanceOf(feeRecipient)==0 && ERC20(token1).balanceOf(feeRecipient)==0 and that the liquidator received the full surplus (no pf0/pf1 deducted); then patch the divisor to 10**decimals and assert feeRecipient now receives pf0/pf1 > 0, proving the fee leak. FCB_3c9b1718d55e17840035370_END",
+      "verdict": "REAL",
+      "reason": "borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals() divides by the raw decimals integer instead of 10**decimals, inflating it by ~1e18/decimals so `totalValueUSD > borrowedValue` is always false, the pf0/pf1 fee block is dead code, and any permissionless liquidator keeps the entire collateral surplus while feeRecipient gets 0."
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "location": "src/Leverager.sol:liquidatePosition",
+      "file": "src/Leverager.sol",
+      "class": "class=C10",
+      "severity": "Medium",
+      "exploit": "Permissionless external liquidator keeps the protocol's entire liquidation fee: `borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals()` divides by the raw decimals integer (18/6) instead of 10**decimals, inflating borrowedValue ~10**dec/dec so `if (totalValueUSD > borrowedValue)` is always false, the pf0/pf1 fee-deduction block never runs, amount0/amount1 are never reduced, and the liquidator seizes 100% of the collateral surplus while feeRecipient gets 0 on every liquidation.",
+      "poc_sketch": "Foundry: deploy LendingPool+Leverager+PriceFeed+mock Vault; register an 18-dec denomination Chainlink feed via setChainlinkPriceFeed; setLiquidationFee(1000) (10%) and a non-zero feeRecipient; open a leveraged position; move state so isLiquidateable()==true with totalValueUSD (1e8/chPrice scale) modestly above the correct owedAmount*bPrice/1e18; call liquidatePosition from an unprivileged EOA; assert ERC20(token0).balanceOf(feeRecipient)==0 && ERC20(token1).balanceOf(feeRecipient)==0 and that the liquidator received the full surplus (no pf0/pf1 deducted); then patch the divisor to 10**decimals and assert feeRecipient now receives pf0/pf1 > 0, proving the fee leak.",
+      "verdict": "REAL",
+      "reason": "The permissionless liquidatePosition computes borrowedValue = owedAmount * bPrice / ERC20(denomination).decimals() (raw integer 18/6) instead of /10**decimals, inflating it by ~10**dec/dec so `totalValueUSD > borrowedValue` is unsatisfiable for any realistic collateral, making the pf0/pf1 fee-deduction branch permanently dead code and letting the unprivileged liquidator keep 100% of the surplus while feeRecipient receives nothing on every liquidation."
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "location": "src/Leverager.sol:liquidatePosition",
+      "file": "src/Leverager.sol",
+      "class": "class=C15",
+      "severity": "Medium",
+      "exploit": "A permissionless external liquidator keeps the protocol's entire liquidation fee: `borrowedValue = owedAmount * bPrice / ERC20(up.denomination).decimals()` divides by the raw decimals integer (18/6) instead of 10**decimals, inflating borrowedValue ~10**dec/dec so `if (totalValueUSD > borrowedValue)` is always false, the pf0/pf1 fee-deduction block never runs, amount0/amount1 are never reduced, and the liquidator receives 100% of the collateral surplus while feeRecipient gets 0 on every liquidation.",
+      "poc_sketch": "Foundry: deploy LendingPool+Leverager+PriceFeed+mock Vault; register an 18-dec denomination Chainlink feed via setChainlinkPriceFeed; setLiquidationFee(1000) and a non-zero feeRecipient; initVault + open a leveraged position; move state so isLiquidateable()==true with totalValueUSD (chPrice/1e8 scale) modestly above the correct owedAmount*bPrice/1e18; call liquidatePosition from an unprivileged EOA; assert ERC20(token0).balanceOf(feeRecipient)==0 && ERC20(token1).balanceOf(feeRecipient)==0 and the liquidator received the full surplus (no pf0/pf1 deducted); then patch the divisor to 10**decimals and assert feeRecipient now receives pf0/pf1 > 0, proving the fee leak. FCB_3dca6c18d55ec350521f740_END",
+      "verdict": "REAL",
+      "reason": "borrowedValue divides owedAmount*bPrice by the raw decimals integer instead of 10**decimals (contradicting every other conversion in the contract), inflating it ~10^dec/dec so the unguarded `totalValueUSD > borrowedValue` fee-gate is always false, and because liquidatePosition has no access control any external liquidator takes the full collateral surplus while feeRecipient receives zero on every liquidation."
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "location": "src/Leverager.sol:withdraw",
+      "file": "src/Leverager.sol",
+      "class": "class=C19",
+      "severity": "High",
+      "exploit": "A token1-denominated position in a vault where token0 carries more raw units than token1 (e.g. 18-dec token0 paired with 6-dec token1 as the borrowed denomination) enters else if (borrowed == up.token1), where repayFromWithdraw = amountOut1 < owedAmount ? amountOut0 : owedAmount wrongly selects amountOut0; the subsequent owedAmount -= repayFromWithdraw / amountOut1 -= repayFromWithdraw then underflow uint256 whenever amountOut0 > amountOut1 (or amountOut0 > owedAmount), so EVERY withdraw of such a position reverts, permanently freezing the position owner's equity (its only exit becomes liquidation, at a loss).",
+      "poc_sketch": "Foundry: deploy LendingPool + Leverager + PriceFeed + a mock Vault whose withdraw returns amountOut0 (18-dec token0) numerically greater than amountOut1 (6-dec token1); register Chainlink feeds for both; initVault; openLeveragedPosition with lp.denomination == token1 and enough leverage that the token1 debt (owedAmount for the pctWithdraw) exceeds amountOut1; call withdraw(WithdrawParams) from the position owner and assert it reverts with an arithmetic underflow at the else if (borrowed == up.token1) block; then patch the ternary to amountOut1 < owedAmount ? amountOut1 : owedAmount and assert the same withdraw now succeeds, proving the copy-paste amountOut0 is the cause.",
+      "verdict": "REAL",
+      "reason": "In the `borrowed == up.token1` branch the ternary wrongly assigns `repayFromWithdraw = amountOut0` (the correct `liquidatePosition` twin uses `amount1`), so any token1-denominated position whose debt exceeds its token1 collateral portion \u2014 routine above ~2x leverage and guaranteed as interest accrues, with token0's larger raw units forcing it under the 18/6-dec pairing \u2014 hits `owedAmount -= amountOut0` / `amountOut1 -= amountOut0`, which underflow and revert every unprivileged withdraw with no guard, freezing the owner's equity. FCB_600f618d56308c0f1f05d0_END"
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/Strategy.sol:checkPoolActivity",
+      "file": "src/Strategy.sol",
+      "class": "class=C19",
+      "severity": "High",
+      "exploit": "Any external user calls pool.increaseObservationCardinalityNext to grow observationCardinality until observationCardinality + currentIndex exceeds 65535; the `(observationCardinality + currentIndex - i)` expression, evaluated in uint16 with checked math, then reverts, and since checkPoolActivity gates _requirePriceWithinRange it permanently bricks rebalance() and compound() (position can never be re-centered/compounded).",
+      "poc_sketch": "Foundry: fork/deploy pool+Strategy; loop increaseObservationCardinalityNext until slot0 cardinality is high and let currentIndex advance (via swaps in new blocks) so cardinality+currentIndex>65535; call rebalance()/compound() as rebalancer and assert both revert (arithmetic overflow) inside checkPoolActivity while deposit/withdraw still function, demonstrating the management-function freeze.",
+      "verdict": "REAL",
+      "reason": "The `observationCardinality + currentIndex` subexpression is evaluated in uint16 (Solidity never widens operands to match the uint256 assignment target), so a permissionless attacker who grows the pool's observationCardinality toward its 65535 max via increaseObservationCardinalityNext plus swaps makes the checked addition overflow and revert on the first loop iteration, and with this view guarding rebalance()/compound() through _requirePriceWithinRange and no cardinality bound anywhere on the path, both are permanently bricked. FCB_6db1918d5637c49f5c3200_END"
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/Strategy.sol:checkPoolActivity:320",
+      "file": "src/Strategy.sol",
+      "class": "class=C19",
+      "severity": "High",
+      "exploit": "External attacker permissionlessly grows the underlying pool's observation buffer (pool.increaseObservationCardinalityNext) until observationCardinality+currentIndex > 65535; the sum `observationCardinality + currentIndex` in `(observationCardinality + currentIndex - i) % observationCardinality` is evaluated in uint16 and reverts (Panic 0x11) on overflow, and since checkPoolActivity() gates rebalance()/compound() via _requirePriceWithinRange, both are permanently DoS'd (funds/position frozen from rebalancing & compounding).",
+      "poc_sketch": "Foundry (no fork needed): deploy real Strategy against a MockPool whose slot0() returns caller-set (observationIndex, observationCardinality) and observations() returns nonzero timestamps; vm.warp past twap; assert strat.checkPoolActivity() succeeds with cardinality=100,index=5, then vm.expectRevert(stdError.arithmeticError) on strat.checkPoolActivity() with cardinality=65535,index=5 (and again 33000/32999) \u2014 reverts confirm the uint16 overflow bricks the activity gate feeding rebalance()/compound().",
+      "verdict": "REAL",
+      "reason": "The subexpression `observationCardinality + currentIndex` is evaluated in uint16 with a checked add before the cast to uint256, and an unprivileged attacker can permissionlessly grow the pool to observationCardinality=65535 via increaseObservationCardinalityNext, after which currentIndex>=1 (true in ~65534/65535 states) makes the sum exceed 65535 and revert with Panic 0x11, permanently DoS'ing rebalance()/compound() through _requirePriceWithinRange."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 10,
+    "verified": 7,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}
