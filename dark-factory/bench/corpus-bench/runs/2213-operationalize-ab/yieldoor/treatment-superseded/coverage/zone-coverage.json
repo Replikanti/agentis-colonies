@@ -1,0 +1,134 @@
+{
+  "schema": "zone-coverage/v1",
+  "repo": "yieldoor",
+  "commit": "5e4e7303ddfa2921b7185fdf92f00c81143a23ce",
+  "started_at": "2026-09-15T02:34:31Z",
+  "updated_at": "2026-09-15T03:58:55Z",
+  "budget": {
+    "unit": "cells",
+    "per_zone": 0,
+    "run": 0
+  },
+  "zones": [
+    {
+      "id": "src__p1",
+      "name": "src (part 1/2)",
+      "value_custody": true,
+      "order": 1,
+      "status": "hunted",
+      "cells_planned": 6,
+      "cells_charged": 6,
+      "classes_hunted": [
+        "C2",
+        "C6",
+        "C10",
+        "C15",
+        "C5",
+        "C19"
+      ],
+      "budget_truncated": false,
+      "cells": 6,
+      "candidates": 5,
+      "failed_cells": 0,
+      "exit_code": 0,
+      "started_at": "2026-09-15T02:34:31Z",
+      "ended_at": "2026-09-15T03:04:15Z",
+      "results": "discovery/src__p1/discovery-results.json",
+      "detail": "",
+      "attempts": []
+    },
+    {
+      "id": "src__p2",
+      "name": "src (part 2/2)",
+      "value_custody": true,
+      "order": 2,
+      "status": "hunted",
+      "cells_planned": 5,
+      "cells_charged": 5,
+      "classes_hunted": [
+        "C20",
+        "C19",
+        "C15",
+        "C6",
+        "C5"
+      ],
+      "budget_truncated": false,
+      "cells": 5,
+      "candidates": 5,
+      "failed_cells": 0,
+      "exit_code": 0,
+      "started_at": "2026-09-15T03:04:16Z",
+      "ended_at": "2026-09-15T03:44:25Z",
+      "results": "discovery/src__p2/discovery-results.json",
+      "detail": "",
+      "attempts": []
+    },
+    {
+      "id": "src_libraries",
+      "name": "Core math & reserve-accounting libraries",
+      "value_custody": false,
+      "order": 3,
+      "status": "hunted_empty",
+      "cells_planned": 3,
+      "cells_charged": 3,
+      "classes_hunted": [
+        "C6",
+        "C1",
+        "C19"
+      ],
+      "budget_truncated": false,
+      "cells": 3,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": 0,
+      "started_at": "2026-09-15T03:44:25Z",
+      "ended_at": "2026-09-15T03:57:31Z",
+      "results": "discovery/src_libraries/discovery-results.json",
+      "detail": "",
+      "attempts": []
+    },
+    {
+      "id": "src_types",
+      "name": "reserve data-type structs",
+      "value_custody": false,
+      "order": 4,
+      "status": "hunted_empty",
+      "cells_planned": 1,
+      "cells_charged": 1,
+      "classes_hunted": [
+        "none"
+      ],
+      "budget_truncated": false,
+      "cells": 1,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": 0,
+      "started_at": "2026-09-15T03:57:31Z",
+      "ended_at": "2026-09-15T03:58:55Z",
+      "results": "discovery/src_types/discovery-results.json",
+      "detail": "",
+      "attempts": []
+    }
+  ],
+  "totals": {
+    "zones": 4,
+    "cells_planned": 15,
+    "cells_charged": 15,
+    "candidates": 10,
+    "failed_cells": 0,
+    "by_status": {
+      "hunted": 2,
+      "hunted_empty": 2,
+      "hunted_degraded": 0,
+      "failed": 0,
+      "budget_exhausted": 0,
+      "budget_unenforceable": 0,
+      "in_flight": 0,
+      "no_brief": 0,
+      "unscoped": 0,
+      "not_reached": 0
+    }
+  },
+  "complete": true,
+  "gap_zones": []
+}

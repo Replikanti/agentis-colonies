@@ -673,6 +673,88 @@ Archive under `runs/2157-corpus-callee-trust-ab/` (measurement) and `runs/2157-<
 each a README following the #1887 template (arm mapping fixed before numbers, ruler stated, attribution table,
 verdict + ratchet decision, scrubbed paths). Then open the ratchet PR per the verdict.
 
+## Operationalize-lens generation-recall A/B (#2213)
+
+The recipe the #2213 M2 measurement used, reproducible from this repo alone. It adds **no harness**: both
+arms enter STAGE 3 through `run-zone-hunt.sh --rehunt-gaps` over a **frozen `map/` + `briefs/`** produced
+ONCE per contest, so zone-mapper and brief-writer stochasticity are removed and `OPERATIONALIZE_LENS` is the
+single variable. Archive of the run it produced: [`runs/2213-operationalize-ab/`](runs/2213-operationalize-ab/).
+
+Ruler (identical in every arm, and quoted with every number): `--backend flat-cyborg --model <pinned id>
+--jobs 1`, depth OFF (no `--zone-depth-cells` / `--total-depth-cells`), no `--deep-hunt`, no `--vector-hunt`,
+scoring `--judge off --min-overlap 2` with no `--gt-dupes`, plus
+`CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1 CLAUDE_CODE_NO_MODEL_FALLBACK=1 CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1`.
+Depth OFF is deliberate: depth cells are planned FROM breadth candidates, so with depth on the two arms could
+legitimately plan different cell sets and cell-count parity would be unenforceable.
+
+```sh
+DF=<repo>/dark-factory ; RUN=<run-root> ; ID=<contest> ; M=<model-id>
+
+# 0) FREE pre-flight — assert the staged recipe consumes the frozen artifacts before spending anything.
+#    Run steps 2-5 once with --backend mock and check the log says
+#    "--rehunt-gaps: reusing <map> + <briefs>; STAGE 1/2 skipped" and that every zone is hunted.
+
+# 1) fetch + ground truth (no LLM)
+bash "$DF/bench/corpus-bench/run-corpus-bench.sh" --fetch --gt --id "$ID" --work "$RUN/base"
+
+# 2) freeze STAGE 1/2 ONCE per contest — the artifacts BOTH arms will share, byte for byte
+CODE="$RUN/base/$ID/code/<project_subdir>"
+bash "$DF/map-zones.sh"  --repo "$CODE" --out "$RUN/base/$ID/map" --backend flat-cyborg --model "$M"
+bash "$DF/gen-briefs.sh" --zones "$RUN/base/$ID/map/zones.json" --scope "$RUN/base/$ID/map/scope.tsv" \
+                         --out "$RUN/base/$ID/briefs" --repo "$CODE" --backend flat-cyborg --model "$M"
+# Check the gen-briefs summary line for "N brief(s) FAILED validation ... mechanical fallback used".
+# A fallback brief is a ~2-3 kB stub against ~8-21 kB for a real one; regenerate those zones before
+# freezing. The base is shared by both arms, so repairing it is never an arm asymmetry.
+
+# 3) cost pre-flight (offline, no LLM): the EXACT per-arm breadth cell count, before spending
+for SUB in $(grep -v '^#' "$RUN/base/$ID/map/scope.tsv" | cut -d'|' -f1 | sed 's/ *$//'); do
+  bash "$DF/run-discovery.sh" --repo "$CODE" --scope "$RUN/base/$ID/map/scope.tsv" \
+       --only "$SUB" --list-cells | grep -c '^CELL|'
+done   # SUM these; stop and re-scope if the total exceeds the agreed ceiling
+
+# 4) stage a take: copy the frozen artifacts in, then mark EVERY zone a gap
+TAKE="$RUN/take-1-control/$ID"
+mkdir -p "$TAKE/zone-hunt-out/coverage"
+cp -a "$RUN/base/$ID/map" "$RUN/base/$ID/briefs" "$TAKE/zone-hunt-out/"
+cp "$RUN/base/$ID/truth.tsv" "$TAKE/truth.tsv"
+python3 "$DF/lib/zone-coverage.py" init \
+  --zones "$TAKE/zone-hunt-out/map/zones.json" \
+  --out "$TAKE/zone-hunt-out/coverage/zone-coverage.json" \
+  --zone-list "$TAKE/zone-hunt-out/.zone-list.tsv" \
+  --repo "$ID" --commit "$(git -C "$DF" rev-parse HEAD)" --zone-cell-budget 0 --run-cell-budget 0
+
+# 5) run the arm. CONTROL = the variable UNSET (the shipped gate is == "1", so unset is the production
+#    default a flip would change); TREATMENT = prefix `env OPERATIONALIZE_LENS=1`.
+bash "$DF/run-zone-hunt.sh" --repo "$CODE" --out "$TAKE/zone-hunt-out" --rehunt-gaps \
+     --backend flat-cyborg --model "$M" --jobs 1 --agentis agentis
+
+# 6) score (deterministic, zero judge LLM calls)
+bash "$DF/bench/corpus-bench/generation-recall.sh" --from-work "$RUN/take-1-control" --id "$ID" \
+     --judge off --min-overlap 2
+```
+
+**Arm-activity gate — verify BEFORE trusting any number.** Grep the **cell logs**, never the discovery tree:
+each zone's `run/` holds a copy of `hunter.ag`, whose SOURCE contains both `OPERATIONALIZE|` and `OPCHECK|`
+literals, so a tree-wide grep reports sentinels in the control arm and looks like a leaked flag.
+
+```sh
+CELLS=$(find "$TAKE/zone-hunt-out/discovery" -name 'hunt_*.log')
+cat $CELLS | grep -c '^[[:space:]]*OPERATIONALIZE|'   # treatment: == cell count ; control: MUST be 0
+cat $CELLS | grep -c '^[[:space:]]*OPCHECK|'          # treatment: > 0 (dosage) ; control: MUST be 0
+python3 "$DF/bench/corpus-bench/model-attribution.py" --stage discovery \
+  ~/.claude/projects/*<take>*discovery*run/*.jsonl    # MUST be PURE-<model> in BOTH arms
+```
+
+`MIXED` / `CONTAMINATED` voids the pair — rerun it. When triaging a `MIXED`, print the offending record
+first: Claude Code writes its own `API Error: ...` notices with `model: "<synthetic>"`, which the tool buckets
+into OTHER and which is a transcript artifact, not a silent model fallback (`FALLBACK`/`REFUSAL` stay 0).
+
+**Ordering and symmetry rules.** Run both arms of a contest back-to-back and FLIP the arm order between
+contests (time-of-day drift); never pull the checkout between the two arms of a pair; a zone left `failed` /
+`hunted_degraded` in either arm gets exactly ONE `--rehunt-gaps --rehunt-include-partial
+--rehunt-max-attempts 2` pass IN THAT ARM, and if it is still degraded the whole contest pair is VOID — a
+crashed cell must never become a one-sided MISS.
+
 ## Adding a contest
 
 Append a row to `corpus.tsv` (`id  code_repo  judging_repo  scope_hint`) for any CONCLUDED Sherlock contest

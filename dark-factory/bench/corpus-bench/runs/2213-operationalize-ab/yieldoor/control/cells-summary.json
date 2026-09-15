@@ -1,0 +1,118 @@
+{
+  "arm": "control",
+  "cells": 15,
+  "status_distribution": {
+    "ok": 15
+  },
+  "candidates_total": 9,
+  "opchecks_total": 0,
+  "opchecks_mean_per_cell": 0.0,
+  "cells_with_opchecks": 0,
+  "per_cell": [
+    {
+      "subsystem": "src (part 1/2)",
+      "class": "C2",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "class": "C6",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "class": "C10",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "class": "C15",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "class": "C5",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "class": "C19",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "class": "C20",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "class": "C19",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "class": "C15",
+      "status": "ok",
+      "candidates": 2,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "class": "C6",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "class": "C5",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "Core math & reserve-accounting libraries",
+      "class": "C6",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "Core math & reserve-accounting libraries",
+      "class": "C1",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "Core math & reserve-accounting libraries",
+      "class": "C19",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 0
+    },
+    {
+      "subsystem": "reserve data-type structs",
+      "class": "none",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 0
+    }
+  ]
+}

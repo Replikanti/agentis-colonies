@@ -1,0 +1,118 @@
+{
+  "arm": "treatment",
+  "cells": 15,
+  "status_distribution": {
+    "ok": 15
+  },
+  "candidates_total": 8,
+  "opchecks_total": 131,
+  "opchecks_mean_per_cell": 8.73,
+  "cells_with_opchecks": 15,
+  "per_cell": [
+    {
+      "subsystem": "src (part 1/2)",
+      "class": "C2",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 6
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "class": "C6",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 9
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "class": "C10",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 6
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "class": "C15",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 6
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "class": "C5",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 7
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "class": "C19",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 5
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "class": "C20",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 8
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "class": "C19",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 9
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "class": "C15",
+      "status": "ok",
+      "candidates": 1,
+      "opchecks": 5
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "class": "C6",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 7
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "class": "C5",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 12
+    },
+    {
+      "subsystem": "Core math & reserve-accounting libraries",
+      "class": "C6",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 14
+    },
+    {
+      "subsystem": "Core math & reserve-accounting libraries",
+      "class": "C1",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 17
+    },
+    {
+      "subsystem": "Core math & reserve-accounting libraries",
+      "class": "C19",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 15
+    },
+    {
+      "subsystem": "reserve data-type structs",
+      "class": "none",
+      "status": "ok",
+      "candidates": 0,
+      "opchecks": 5
+    }
+  ]
+}
