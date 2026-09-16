@@ -67,6 +67,35 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   writable when set, and widening nothing else). Whether the model USES the verb is not proven by any of
   this: that is the live mutation arm's and M4's job.
 
+- **On-chain fact check: read the DEPLOYED value instead of remembering it (#2235, PR C).**
+  `onchain-fact.sh` (new) is the second verb of the external-reading capability and rides the SAME knob as
+  the resolver (`run-discovery.sh --external-resolve`, default OFF): one bounded `cast call` against the
+  operator's endpoint, whose RESULT is written into the same external cache — so a claim about a configured
+  parameter, a role holder or a current rate becomes a citation the harness can RE-OPEN from disk.
+  `run-discovery.sh` gained `--fork-url` / `--fork-block` with `run-invariant-hunt.sh`'s validation shape and
+  threads the reader into every cell dir, and `hunter.ag` gained a pure-meta directive (gated on
+  `ONCHAIN_FACT` alone, observable through an honesty-gated `ONCHAIN-FACT|<subsystem>|<cls>|on` sentinel)
+  naming the command, the `ONCHAIN|<chain>:<address>:<selector>|<result>|<block>` grammar, the per-cell bound
+  and the evidence kind `TRACE|#<k>|CLEAN|ONCHAIN <chain>:<address>:<selector>@<block> = <result>`.
+  **The endpoint is always the operator's:** no flag of the tool takes a URL or a host, the model supplies an
+  address and a signature only, the endpoint is read from `DF_EXTERNAL_RPC`/`FORK_URL`/`ETH_RPC_URL`, and it
+  is deliberately NOT on `exec.env_passthrough` — it can never be interpolated into a prompt or cached.
+  **A missing endpoint is an honest null, never a silent pass** (issue #2235 STOP-1 decision 4): the read
+  answers `unavailable|no-rpc`, NOTHING is cached, and the dependent check stays `UNRESOLVED` — the same for
+  a revert and for a spent budget. `_uncited_dismissal_lines` gained a FOURTH acceptance branch that re-opens
+  an `ONCHAIN` citation **from the cache and never from the network**, counting it only when the cached
+  record for that (chain, address, selector, block) carries exactly the cited value; a value never read, read
+  at another block, or disagreeing with the cache marks THAT check uncited (#2230 per-check semantics).
+  Cache key `(chain, address, calldata, block)` under `external/onchain/…`, shared across cells; budget
+  `DF_ONCHAIN_BUDGET` (default 5) calls per cell in its own state file, with the block pinned once per cell so
+  every call keys on one block. With the knob off the directive is exactly 0 bytes, nothing is copied and the
+  gate behaves exactly as before. `demo-resolve-cell.sh` pins all of it offline through a `DF_CAST_CMD` seam
+  (canned cache entry served with no endpoint, `no-rpc`/`revert` refusals caching nothing, the 5-call bound
+  with the seam reached exactly 5 times, and the gate's accept/reject pairs), and `tools/colony-lint.sh`
+  fails the lint if `onchain-fact.sh` ever hard-codes a host, with a dead-guard control. Whether the model
+  USES the verb — and whether an endpoint exists for a given held-out chain — is M4's question, not this
+  PR's.
+
 - **`resolve-external.sh` reports the refusal that is actually true (#2238), and finds externals vendored
   outside `lib/` (#2240).** The upstream step used to record `no-upstream-url` unconditionally, so it
   outranked every weaker reason and EVERY negative case — including a symbol the audited repo never mentions

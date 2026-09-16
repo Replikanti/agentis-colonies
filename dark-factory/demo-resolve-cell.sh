@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# demo-resolve-cell.sh — the gate for #2235 PR B: the discovery cell's ACCESS to resolve-external.sh, the
-# `EXTERNAL-CITED` evidence kind, and the harness re-open that decides whether such a citation counts.
+# demo-resolve-cell.sh — the gate for #2235 PR B and PR C: the discovery cell's ACCESS to resolve-external.sh
+# and onchain-fact.sh, the `EXTERNAL-CITED` / `ONCHAIN` evidence kinds, and the harness re-opens that decide
+# whether such a citation counts.
 #
 # What the change is. PR A shipped a deterministic, LLM-free resolver that turns an external SYMBOL into a
 # `path:line` anyone can re-open. On its own it changed no hunt: nothing called it. This PR gives a discovery
@@ -40,8 +41,16 @@
 #      EXTRACTED FROM hunter.ag by name. ON: the sentinel fires end-to-end (env_passthrough -> getenv), the
 #      resolver is in the cell dir, the budget dir exists. OFF: no sentinel, no resolver anywhere under the
 #      run dir, and the same per-cell JSON key set.
+#   4) #2235 PR C — THE ON-CHAIN FACT CHECK, which rides the SAME knob: onchain-fact.sh reads a DEPLOYED
+#      value with one bounded call through the OPERATOR's endpoint (--fork-url/--fork-block, validated with
+#      run-invariant-hunt.sh's shape) and caches the result under the same root, so the harness re-opens an
+#      `ONCHAIN <chain>:<address>:<selector>@<block> = <result>` citation FROM THAT CACHE and counts it only
+#      when the cached record for that call and block holds exactly that value. The load-bearing case is a
+#      host with NO endpoint (issue #2235 STOP-1 decision 4): the read answers `unavailable|no-rpc`, nothing
+#      is cached, and the dependent check stays UNRESOLVED — a missing RPC is never a silent CLEAN. All of
+#      it offline through a `DF_CAST_CMD` seam: no `cast`, no endpoint, no network anywhere in this file.
 #
-# What this demo does NOT prove: that the model USES the verb, or that using it finds anything. The directive
+# What this demo does NOT prove: that the model USES either verb, or that using one finds anything. The directive
 # is English prose interpreted by an LLM; a mock backend never reasons. That is the live ON/OFF mutation arm's
 # job (an operator step, deliberately not CI — this host runs a held-out freeze) and M4's, and no assertion
 # here may be read as a recall claim.
@@ -55,6 +64,7 @@ HUNTER="$HERE/auditor/agents/hunter.ag"
 DISCOVERY="$HERE/run-discovery.sh"
 SANDBOX="$HERE/lib/claude-sandboxed.sh"
 RESOLVER="$HERE/resolve-external.sh"
+ONCHAIN="$HERE/onchain-fact.sh"
 
 FAILS=0
 note() { echo "demo-resolve-cell.sh: $*"; }
@@ -62,7 +72,7 @@ ok()   { echo "  [PASS] $*"; }
 bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 skip() { echo "  [SKIP] $*"; }
 
-for f in "$HUNTER" "$DISCOVERY" "$SANDBOX" "$RESOLVER"; do
+for f in "$HUNTER" "$DISCOVERY" "$SANDBOX" "$RESOLVER" "$ONCHAIN"; do
   [ -f "$f" ] || { note "missing input: $f" >&2; exit 3; }
 done
 
@@ -482,6 +492,23 @@ else
     else
       bad "no external-budget dir under the run dir"
     fi
+    # #2235 PR C rides the SAME knob: the on-chain verb must arrive with the resolver, even on this host,
+    # which has no RPC configured at all — that is exactly the case decision 4 says must still ship.
+    if grep -q '^ONCHAIN-FACT|vault|C2|on$' "$ON_LOG"; then
+      ok "--external-resolve: the ONCHAIN-FACT| sentinel fired too (the second verb reached hunter.ag)"
+    else
+      bad "--external-resolve: NO ONCHAIN-FACT| sentinel — the on-chain verb did not reach the cell"
+    fi
+    if [ -f "$ON_OUT/run/onchain-fact.sh" ]; then
+      ok "onchain-fact.sh was copied into the run dir the sandbox binds"
+    else
+      bad "no onchain-fact.sh under the run dir — the cell could not read a deployed value inside the sandbox"
+    fi
+    if [ -d "$ON_OUT/run/onchain-budget" ]; then
+      ok "the per-cell CALL budget dir exists, separate from the resolve budget (the two cannot spend each other)"
+    else
+      bad "no onchain-budget dir under the run dir"
+    fi
   fi
 
   note "24) live-under-mock OFF (the default): no sentinel, no resolver, same JSON key set ..."
@@ -495,10 +522,15 @@ else
     else
       ok "default run: no sentinel — the directive is opt-in and the prompt is unchanged"
     fi
-    if [ -e "$OFF_OUT/run/resolve-external.sh" ]; then
-      bad "default run: resolve-external.sh was copied anyway"
+    if grep -q 'ONCHAIN-FACT|' "$OFF_LOG"; then
+      bad "default run: an ONCHAIN-FACT| sentinel appeared — the on-chain verb is NOT default-OFF"
     else
-      ok "default run: no resolver anywhere under the run dir"
+      ok "default run: no on-chain sentinel either — both verbs are opt-in"
+    fi
+    if [ -e "$OFF_OUT/run/resolve-external.sh" ] || [ -e "$OFF_OUT/run/onchain-fact.sh" ]; then
+      bad "default run: a verb script was copied anyway"
+    else
+      ok "default run: neither verb script anywhere under the run dir"
     fi
     ON_KEYS="$(head -1 "$ON_OUT/run/results-cells.jsonl" 2>/dev/null | grep -oE '"[a-z_0-9]+":' | LC_ALL=C sort -u | tr '\n' ' ')"
     OFF_KEYS="$(head -1 "$OFF_OUT/run/results-cells.jsonl" 2>/dev/null | grep -oE '"[a-z_0-9]+":' | LC_ALL=C sort -u | tr '\n' ' ')"
@@ -566,6 +598,370 @@ else
   fi
 fi
 
+# ==========================================================================================================
+# PART 4 — #2235 PR C: THE ON-CHAIN FACT CHECK
+# ==========================================================================================================
+# The resolver answers "what does the external SOURCE say". This verb answers "what is the deployed value",
+# which no source file settles. Same knob, same cache, same two-root discipline — and one extra rule that is
+# the whole point of shipping it on a host with no endpoint: an answer that was NOT read (`unavailable`) is
+# never evidence, so the check that rests on it stays UNRESOLVED instead of turning into a CLEAN.
+note "26) hunter.ag carries the on-chain helpers, and the marker is the block's literal first line ..."
+OC_FNS="onchain_fact_marker onchain_fact_block onchain_budget onchain_fact_directive"
+MISS=""
+for fn in $OC_FNS; do grep -q "^fn $fn(" "$HUNTER" || MISS="$MISS $fn"; done
+[ -z "$MISS" ] && ok "hunter.ag declares:$(printf ' %s' $OC_FNS)" || bad "hunter.ag is missing:$MISS"
+if sed -n '/^fn onchain_fact_block(/,/^}$/p' "$HUNTER" | head -2 | grep -q 'onchain_fact_marker() + "\\n"'; then
+  ok "onchain_fact_block() opens with its marker (so what the sentinel greps is what renders)"
+else
+  bad "the on-chain block does not start with onchain_fact_marker() — a reword could desync the sentinel"
+fi
+if grep -q 'if index_of(instruction, onchain_fact_marker()) >= 0 {' "$HUNTER" \
+   && grep -q 'print("ONCHAIN-FACT|" + subsystem + "|" + cls + "|on");' "$HUNTER"; then
+  ok "ONCHAIN-FACT| fires only when the directive is demonstrably in the prompt about to be sent"
+else
+  bad "the ONCHAIN-FACT| sentinel is missing or is gated on something other than the assembled instruction"
+fi
+OC_DIR_BODY="$(sed -n '/^fn onchain_fact_directive(/,/^}$/p' "$HUNTER")"
+if printf '%s\n' "$OC_DIR_BODY" | grep -q 'getenv("ONCHAIN_FACT")' \
+   && printf '%s\n' "$OC_DIR_BODY" | grep -q 'if tool == "" { return ""; }'; then
+  ok "onchain_fact_directive() returns \"\" for an empty ONCHAIN_FACT (the OFF prompt is byte-identical)"
+else
+  bad "the on-chain directive's empty-env gate is missing — an OFF cell's prompt would not be byte-identical"
+fi
+if printf '%s\n' "$RULES" | grep -q '^  + onchain$'; then
+  ok "the on-chain verb is concatenated after the resolver verb, inside the same RULES block"
+else
+  bad "the on-chain directive is not spliced into the RULES block after extres"
+fi
+
+note "27) the on-chain directive states the verb, the grammar, the unavailable rule, the budget and the citation ..."
+OC_BLOCK="$(sed -n '/^fn onchain_fact_block(/,/^}$/p' "$HUNTER")"
+_oc_says() { printf '%s\n' "$OC_BLOCK" | grep -qiF "$1"; }
+_oc_pin() { if _oc_says "$2"; then ok "the on-chain directive states: $1"; else bad "the on-chain directive no longer states: $1 ($2)"; fi; }
+_oc_pin "the read/unavailable output grammar"            'ONCHAIN|<chain>:<address>:<selector>|unavailable|<reason>'
+_oc_pin "that an unavailable answer is not evidence"     'is UNRESOLVED'
+_oc_pin "the per-cell call budget"                       'BUDGET: at most '
+_oc_pin "the ONCHAIN evidence kind"                      'TRACE|#<k>|CLEAN|ONCHAIN'
+_oc_pin "that the citation is re-opened from the cache"  'RE-OPENED from the reader'
+_oc_pin "that the address may not be invented"           'address you invented'
+# The ENDPOINT is the operator's: it may not appear in the text a model reads, in any shape.
+if printf '%s\n' "$OC_BLOCK" | grep -qiE 'https?://|--rpc-url|rpc url|endpoint is <'; then
+  bad "the on-chain directive leaks an endpoint/URL into the prompt — it must only say the operator configures it"
+else
+  ok "the directive names no URL and no endpoint (an RPC URL routinely carries a key)"
+fi
+OC_HITS="$(printf '%s\n' "$OC_BLOCK" | grep -Eio "$DENY" | sort -u | tr '\n' ' ')"
+if [ -z "$OC_HITS" ]; then
+  ok "no protocol/product/token/standard name in the on-chain directive (it stays pure-meta)"
+else
+  bad "the on-chain directive names: $OC_HITS — it must stay pure-meta"
+fi
+if printf '%s\n' "$OC_BLOCK" | grep -q 'CANDIDATE|'; then
+  bad "the on-chain directive text contains a CANDIDATE| substring"
+else
+  ok "the on-chain directive text carries no CANDIDATE| substring"
+fi
+if printf '%s\n' "$OC_BLOCK" "$OC_DIR_BODY" | grep -qE 'exec sh|reduce|for_each|map\(|python3 -c'; then
+  bad "the on-chain helpers introduce an exec/per-element construct — every cell would pay for it"
+else
+  ok "no exec sh, no reduce/map, no embedded interpreter in either on-chain helper"
+fi
+
+note "28) run-discovery.sh: --fork-url/--fork-block validation, the copies, the passthrough, the boundary ..."
+if grep -q -- '--fork-url) need "$#"; FORK_URL="$2"; shift 2 ;;' "$DISCOVERY" \
+   && grep -q -- '--fork-block) need "$#"; FORK_BLOCK="$2"; shift 2 ;;' "$DISCOVERY"; then
+  ok "--fork-url / --fork-block exist with the repo's value-flag shape"
+else
+  bad "run-discovery.sh has no --fork-url/--fork-block flags"
+fi
+# The SAME validation shape run-invariant-hunt.sh uses — checked against that file, not against a copy of it.
+IH="$HERE/run-invariant-hunt.sh"
+if [ -f "$IH" ]; then
+  for _pat in 'http://\*|https://\*) ;;' '--fork-url must be an http(s) URL' '--fork-block must be a whole number' '--fork-block requires --fork-url'; do
+    if grep -q -- "$_pat" "$DISCOVERY" && grep -q -- "$_pat" "$IH"; then
+      ok "the fork-arg validation matches run-invariant-hunt.sh: $_pat"
+    else
+      bad "the fork-arg validation diverges from run-invariant-hunt.sh: $_pat"
+    fi
+  done
+else
+  skip "run-invariant-hunt.sh not found — cannot compare the fork-arg validation shape"
+fi
+if grep -q 'ONCHAIN_FACT="" ; ONCHAIN_BUDGET="" ; ONCHAIN_BUDGET_DIR=""' "$DISCOVERY"; then
+  ok "the on-chain shell variables initialise EMPTY, so every OFF path is inert"
+else
+  bad "the on-chain variables are not initialised empty (an OFF run could leak a non-empty env)"
+fi
+if grep -q 'cp "$HERE/onchain-fact.sh" "$RUN/onchain-fact.sh"' "$DISCOVERY" \
+   && grep -q 'if \[ -n "$ONCHAIN_FACT" \]; then cp "$RUN/onchain-fact.sh" "$cdir/onchain-fact.sh"; fi' "$DISCOVERY"; then
+  ok "onchain-fact.sh is copied into the run dir AND into every per-cell dir (same idiom as the resolver)"
+else
+  bad "onchain-fact.sh is not copied into \$RUN and/or into the per-cell dirs"
+fi
+if grep -q 'ONCHAIN_FACT="${ONCHAIN_FACT:+$rc_dir/onchain-fact.sh}"' "$DISCOVERY"; then
+  ok "the cell is handed the copy inside ITS OWN dir (\$rc_dir), which is what the sandbox binds"
+else
+  bad "the cell env does not point ONCHAIN_FACT at the per-cell copy"
+fi
+OC_PT_MISS=""
+for k in ONCHAIN_FACT ONCHAIN_BUDGET_STATE ONCHAIN_BUDGET FORK_BLOCK; do
+  case "$PASS_LINE" in *"$k"*) : ;; *) OC_PT_MISS="$OC_PT_MISS $k" ;; esac
+done
+[ -z "$OC_PT_MISS" ] \
+  && ok "ONCHAIN_FACT / ONCHAIN_BUDGET_STATE / ONCHAIN_BUDGET / FORK_BLOCK are all registered (#1426)" \
+  || bad "unregistered (getenv would read the sanitised env and the verb would be silently inert):$OC_PT_MISS"
+case "$PASS_LINE" in
+  *FORK_URL*) bad "FORK_URL is on exec.env_passthrough — the endpoint must never reach the .ag env or a prompt" ;;
+  *) ok "FORK_URL is NOT on exec.env_passthrough (only onchain-fact.sh reads it, from the cell environment)" ;;
+esac
+if grep -q 'FORK_URL="$FORK_URL"' "$DISCOVERY"; then
+  ok "the endpoint still reaches the cell environment, where the tool (not the model) reads it"
+else
+  bad "FORK_URL is never put into the cell env — a configured endpoint could not reach onchain-fact.sh"
+fi
+if sed -n '/^_join_wrapped_candidates() {$/,/^}$/p' "$DISCOVERY" | grep -q 'ONCHAIN-FACT\\|'; then
+  ok "ONCHAIN-FACT| is a record boundary too"
+else
+  bad "ONCHAIN-FACT| is not in the record-boundary predicate"
+fi
+
+note "29) onchain-fact.sh takes an address and a signature — never an endpoint, never a URL ..."
+if grep -qE '^\s+--(rpc-url|url|host|endpoint|node)\)' "$ONCHAIN"; then
+  bad "onchain-fact.sh accepts an endpoint on argv — the endpoint must be the operator's, not the caller's"
+else
+  ok "no flag takes a URL, a host or an endpoint (the model can only name an address and a signature)"
+fi
+if grep -q 'RPC="${DF_EXTERNAL_RPC:-${FORK_URL:-${ETH_RPC_URL:-}}}"' "$ONCHAIN"; then
+  ok "the endpoint comes only from DF_EXTERNAL_RPC/FORK_URL/ETH_RPC_URL (the resolver's own precedence)"
+else
+  bad "onchain-fact.sh does not read the endpoint from the three configured env names"
+fi
+OC_BAD="$(sh "$ONCHAIN" --address 0x1111111111111111111111111111111111111111 --sig 'https://evil.example/x' \
+  --cache-dir "$WORK/oc-cache" 2>/dev/null)" ; OC_BAD_RC=$?
+if [ "$OC_BAD_RC" -eq 2 ] && [ "$OC_BAD" = 'ONCHAIN|?|unavailable|bad-input' ]; then
+  ok "a URL passed as a signature is bad-input, exit 2, and the refusal echoes nothing back"
+else
+  bad "a URL as --sig produced rc=$OC_BAD_RC out='$OC_BAD' (want rc=2 and the bad-input line)"
+fi
+OC_BADA="$(sh "$ONCHAIN" --address 0x1111111111111111111111111111111111111111 --sig 'capOf(address)(uint256)' \
+  --args 'x; id' --cache-dir "$WORK/oc-cache" 2>/dev/null)" ; OC_BADA_RC=$?
+if [ "$OC_BADA_RC" -eq 2 ] && [ "$OC_BADA" = 'ONCHAIN|?|unavailable|bad-input' ]; then
+  ok "an argument carrying a shell metacharacter is bad-input (nothing can reach the call line)"
+else
+  bad "a metacharacter argument produced rc=$OC_BADA_RC out='$OC_BADA' (want rc=2 and the bad-input line)"
+fi
+
+note "30) the tool, offline: a canned cache entry answers with NO endpoint; no endpoint and no cache is no-rpc ..."
+OC_CACHE="$WORK/oc-cache"
+OC_ADDR="0xcccccccccccccccccccccccccccccccccccccccc"
+OC_CALL="1:$OC_ADDR:rateOf()"
+mkdir -p "$OC_CACHE/onchain/1/$OC_ADDR/4242"
+# The record is CANNED, exactly as a previous cell would have left it — this arm never runs `cast` at all.
+# posix-portability: deferred (guarded pair — sha256sum on GNU, shasum -a 256 on BSD), same as the tool's own.
+_oc_sha() { printf '%s' "$1" | sha256sum 2>/dev/null | cut -d' ' -f1 || printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -d' ' -f1; }
+OC_KEY="$(_oc_sha 'rateOf()()')"
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$OC_CALL" 'rateOf()(uint256)' '' '1000000000000000000' '4242' '2026-01-01T00:00:00Z' \
+  > "$OC_CACHE/onchain/1/$OC_ADDR/4242/$OC_KEY.tsv"
+OC_HIT="$(env -u DF_EXTERNAL_RPC -u FORK_URL -u ETH_RPC_URL sh "$ONCHAIN" --address "$OC_ADDR" \
+  --sig 'rateOf()(uint256)' --block 4242 --cache-dir "$OC_CACHE" 2>/dev/null)"
+if [ "$OC_HIT" = "ONCHAIN|$OC_CALL|1000000000000000000|4242" ]; then
+  ok "a cached value is served with no endpoint configured and no call made: $OC_HIT"
+else
+  bad "the cache hit answered '$OC_HIT' (want ONCHAIN|$OC_CALL|1000000000000000000|4242)"
+fi
+OC_NORPC="$(env -u DF_EXTERNAL_RPC -u FORK_URL -u ETH_RPC_URL sh "$ONCHAIN" --address "$OC_ADDR" \
+  --sig 'capOf()(uint256)' --block 4242 --cache-dir "$OC_CACHE" 2>/dev/null)"
+if [ "$OC_NORPC" = "ONCHAIN|1:$OC_ADDR:capOf()|unavailable|no-rpc" ]; then
+  ok "no endpoint and no cached record: unavailable|no-rpc — never a value, never a failure"
+else
+  bad "the no-endpoint answer was '$OC_NORPC' (want unavailable|no-rpc)"
+fi
+OC_NORPC_RC=0
+env -u DF_EXTERNAL_RPC -u FORK_URL -u ETH_RPC_URL sh "$ONCHAIN" --address "$OC_ADDR" --sig 'capOf()(uint256)' \
+  --block 4242 --cache-dir "$OC_CACHE" >/dev/null 2>&1 || OC_NORPC_RC=$?
+if [ "$OC_NORPC_RC" -eq 0 ]; then
+  ok "an unavailable answer still exits 0 — a cell is never derailed by a missing endpoint"
+else
+  bad "the no-rpc path exited $OC_NORPC_RC (a non-zero exit would derail the cell)"
+fi
+if [ -z "$(find "$OC_CACHE/onchain/1/$OC_ADDR/4242" -name '*.tsv' -newer "$OC_CACHE" 2>/dev/null | grep -v "$OC_KEY" || true)" ]; then
+  ok "an unavailable answer caches NOTHING (so it can never be re-opened as if it were a reading)"
+else
+  bad "the no-rpc path wrote a cache record — an unread value could then be cited"
+fi
+# A revert is the other shape of "not read": the seam returns nothing, and again nothing is cached.
+OC_REV="$(FORK_URL='https://endpoint.invalid/rpc' DF_CAST_CMD='exit 1' sh "$ONCHAIN" --address "$OC_ADDR" \
+  --sig 'failing()(uint256)' --block 4242 --cache-dir "$OC_CACHE" 2>/dev/null)"
+if [ "$OC_REV" = "ONCHAIN|1:$OC_ADDR:failing()|unavailable|revert" ]; then
+  ok "a reverting call is unavailable|revert (and writes no record)"
+else
+  bad "the revert answer was '$OC_REV' (want unavailable|revert)"
+fi
+OC_REV_KEY="$(_oc_sha 'failing()()')"
+if [ -e "$OC_CACHE/onchain/1/$OC_ADDR/4242/$OC_REV_KEY.tsv" ]; then
+  bad "the revert path wrote a cache record"
+else
+  ok "no record for the reverting call — an unavailable line is never re-openable evidence"
+fi
+
+note "31) the per-cell budget of 5 binds: the 6th distinct call is refused without reaching the seam ..."
+OC_STATE="$WORK/oc-budget/cell"
+OC_SEAM_LOG="$WORK/oc-seam.log"
+: > "$OC_SEAM_LOG"
+_oc_call() { # $1=selector-name
+  FORK_URL='https://endpoint.invalid/rpc' \
+  DF_CAST_CMD='printf "%s\n" 7; printf "call\n" >> "$OC_SEAM_LOG"' OC_SEAM_LOG="$OC_SEAM_LOG" \
+    sh "$ONCHAIN" --address "$OC_ADDR" --sig "$1()(uint256)" --block 4242 \
+    --cache-dir "$OC_CACHE" --budget-state "$OC_STATE" 2>/dev/null
+}
+OC_LAST=""
+for _n in a b c d e; do OC_LAST="$(_oc_call "budget_$_n")"; done
+OC_SIXTH="$(_oc_call budget_f)"
+OC_SEAM_N="$(wc -l < "$OC_SEAM_LOG" | tr -d ' ')"
+if [ "$OC_LAST" = "ONCHAIN|1:$OC_ADDR:budget_e()|7|4242" ]; then
+  ok "the first five calls are answered (the fifth: $OC_LAST)"
+else
+  bad "the fifth call answered '$OC_LAST' (want the value 7 at block 4242)"
+fi
+if [ "$OC_SIXTH" = "ONCHAIN|1:$OC_ADDR:budget_f()|unavailable|budget-exhausted" ]; then
+  ok "the sixth is unavailable|budget-exhausted — the bound is enforced in a file, not in the prompt"
+else
+  bad "the sixth call answered '$OC_SIXTH' (want unavailable|budget-exhausted)"
+fi
+if [ "$OC_SEAM_N" = "5" ]; then
+  ok "the call seam was reached exactly 5 times (the refused call never left the host)"
+else
+  bad "the call seam was reached $OC_SEAM_N times (want 5)"
+fi
+OC_REPEAT="$(env -u DF_EXTERNAL_RPC -u FORK_URL -u ETH_RPC_URL sh "$ONCHAIN" --address "$OC_ADDR" \
+  --sig 'budget_a()(uint256)' --block 4242 --cache-dir "$OC_CACHE" --budget-state "$OC_STATE" 2>/dev/null)"
+if [ "$OC_REPEAT" = "ONCHAIN|1:$OC_ADDR:budget_a()|7|4242" ]; then
+  ok "a repeat of an already-read call is served from the cache even with the budget spent and no endpoint"
+else
+  bad "the cached repeat answered '$OC_REPEAT' — a cache hit must cost neither budget nor network"
+fi
+
+if [ "$GATE_LOADED" -eq 1 ]; then
+  note "32) the gate: an ONCHAIN citation counts only when the CACHE holds that call, that block, that value ..."
+  OC_OK_LOG="$(_cell_log oc-accepted \
+    'EXTERNAL-RESOLVE|vault|C2|on' \
+    'ONCHAIN-FACT|vault|C2|on' \
+    'OPCHECK|#1|the configured rate|the zone assumes the deployed value carries this unit' \
+    "TRACE|#1|CLEAN|ONCHAIN $OC_CALL@4242 = 1000000000000000000 — the deployed value carries the unit this zone assumes" \
+    'SAFE')"
+  _assert_uncited "an ONCHAIN citation matching the cached record" "$OC_OK_LOG" "" "$REPO_DIR" "$OC_CACHE"
+  # The SAME citation, one digit different: the value was not what was read.
+  OC_MM_LOG="$(_cell_log oc-mismatch \
+    'ONCHAIN-FACT|vault|C2|on' \
+    'OPCHECK|#1|the configured rate|the zone assumes the deployed value carries this unit' \
+    "TRACE|#1|CLEAN|ONCHAIN $OC_CALL@4242 = 1000000000000000001 — the deployed value carries the unit this zone assumes" \
+    'SAFE')"
+  _assert_uncited "an ONCHAIN citation whose value disagrees with the cache" "$OC_MM_LOG" "1" "$REPO_DIR" "$OC_CACHE"
+  OC_ABS_LOG="$(_cell_log oc-absent \
+    'ONCHAIN-FACT|vault|C2|on' \
+    'OPCHECK|#1|the configured rate|the zone assumes the deployed value carries this unit' \
+    "TRACE|#1|CLEAN|ONCHAIN 1:0xdddddddddddddddddddddddddddddddddddddddd:rateOf()@4242 = 1000000000000000000 — as deployed" \
+    'SAFE')"
+  _assert_uncited "an ONCHAIN citation of a call that is NOT in the cache" "$OC_ABS_LOG" "1" "$REPO_DIR" "$OC_CACHE"
+  OC_BLK_LOG="$(_cell_log oc-block \
+    'ONCHAIN-FACT|vault|C2|on' \
+    'OPCHECK|#1|the configured rate|the zone assumes the deployed value carries this unit' \
+    "TRACE|#1|CLEAN|ONCHAIN $OC_CALL@9999 = 1000000000000000000 — as deployed" \
+    'SAFE')"
+  _assert_uncited "the same value cited at a block that was never read" "$OC_BLK_LOG" "1" "$REPO_DIR" "$OC_CACHE"
+  # THE decision-4 fixture: the tool said `unavailable`, the cell closed the check anyway.
+  OC_UNAV_LOG="$(_cell_log oc-unavailable \
+    'ONCHAIN-FACT|vault|C2|on' \
+    'OPCHECK|#1|the configured rate|the zone assumes the deployed value carries this unit' \
+    "TRACE|#1|CLEAN|ONCHAIN $OC_CALL@4242 = unavailable — no endpoint here, but the deployed value is standard" \
+    'SAFE')"
+  _assert_uncited "a CLEAN resting on an unavailable read (the no-rpc case)" "$OC_UNAV_LOG" "1" "$REPO_DIR" "$OC_CACHE"
+  # ... and the honest move on the same input costs the cell nothing: UNRESOLVED is not a dismissal at all.
+  OC_HONEST_LOG="$(_cell_log oc-honest \
+    'ONCHAIN-FACT|vault|C2|on' \
+    'OPCHECK|#1|the configured rate|the zone assumes the deployed value carries this unit' \
+    'TRACE|#1|UNRESOLVED|the deployed value could not be read here (no endpoint), so this stays open' \
+    'SAFE')"
+  _assert_uncited "the honest UNRESOLVED on the same unreadable fact" "$OC_HONEST_LOG" "" "$REPO_DIR" "$OC_CACHE"
+  OC_UNRES_N="$(_unresolved_trace_count "$OC_HONEST_LOG")"
+  if [ "$OC_UNRES_N" = "1" ]; then
+    ok "and it is carried as 1 UNRESOLVED check — an RPC-less host produces an honest null, never a CLEAN"
+  else
+    bad "the honest answer was counted as $OC_UNRES_N UNRESOLVED (want 1)"
+  fi
+  note "33) per-check semantics and the OFF-run shape are unchanged by the new branch ..."
+  OC_MIX_LOG="$(_cell_log oc-mixed \
+    'ONCHAIN-FACT|vault|C2|on' \
+    'OPCHECK|#1|the configured rate|the zone assumes the deployed value carries this unit' \
+    'OPCHECK|#2|the cap|it must be non-zero for the path to be reachable' \
+    "TRACE|#1|CLEAN|ONCHAIN $OC_CALL@4242 = 1000000000000000000 — the deployed value carries the unit this zone assumes" \
+    "TRACE|#2|CLEAN|ONCHAIN $OC_CALL@4242 = 5 — the cap is set" \
+    'SAFE')"
+  _assert_uncited "one matching and one mismatching ONCHAIN citation" "$OC_MIX_LOG" "2" "$REPO_DIR" "$OC_CACHE"
+  # With NO cache root (every run without --external-resolve) the branch keeps the documented shape-only
+  # contract the other three keep, so an OFF run's gate is byte-for-byte the pre-#2235 one.
+  _assert_uncited "the same log judged with no cache root (an OFF run)" "$OC_MIX_LOG" ""
+else
+  skip "32-33) the on-chain gate fixtures — the shipped functions could not be sliced"
+fi
+
+note "34) byte-identity probe: the on-chain directive is EXACTLY 0 bytes with ONCHAIN_FACT unset ..."
+if ! command -v agentis >/dev/null 2>&1; then
+  skip "no agentis binary on PATH — the on-chain byte-identity probe cannot run"
+else
+  OC_FRAG="$WORK/oc.frag"; : > "$OC_FRAG"
+  OC_FRAG_MISS=""
+  for fn in $OC_FNS; do
+    awk -v want="^fn $fn\\\\(" '$0 ~ want {f=1} f{print} f&&/^}$/{exit}' "$HUNTER" >> "$OC_FRAG"
+    printf '\n' >> "$OC_FRAG"
+    grep -q "^fn $fn(" "$OC_FRAG" || OC_FRAG_MISS="$OC_FRAG_MISS $fn"
+  done
+  if [ -n "$OC_FRAG_MISS" ]; then
+    bad "could not extract the #2235 PR C helpers from hunter.ag by name (renamed?):$OC_FRAG_MISS"
+  else
+    OC_SB="$WORK/oc-probe"; mkdir -p "$OC_SB"
+    ( cd "$OC_SB" && agentis init >/dev/null 2>&1 ) || true
+    printf 'exec.env_passthrough = ONCHAIN_FACT,ONCHAIN_BUDGET,ONCHAIN_BUDGET_STATE,EXTERNAL_CACHE,EXTERNAL_RESOLVER,FORK_BLOCK,FORK_URL\n' \
+      > "$OC_SB/.agentis/config"
+    {
+      printf 'cb 300000;\n\n'
+      cat "$OC_FRAG"
+      printf 'print("DIRLEN=" + to_string(len(onchain_fact_directive())));\n'
+      printf 'print("HASURL=" + to_string(index_of(onchain_fact_directive(), "endpoint.invalid")));\n'
+    } > "$OC_SB/probe.ag"
+    _oc_probe() { # $1=ONCHAIN_FACT ("" = unset) ; prints "<dirlen> <hasurl>"
+      if [ -n "$1" ]; then
+        _op="$( cd "$OC_SB" && ONCHAIN_FACT="$1" ONCHAIN_BUDGET=5 ONCHAIN_BUDGET_STATE="$WORK/ob" \
+                EXTERNAL_CACHE="$OC_CACHE" EXTERNAL_RESOLVER="/run/resolve-external.sh" FORK_BLOCK=4242 \
+                FORK_URL="https://endpoint.invalid/rpc" agentis go probe.ag 2>&1 )"  # no-pii: length-only probe, no prompt()
+      else
+        _op="$( cd "$OC_SB" && FORK_URL="https://endpoint.invalid/rpc" agentis go probe.ag 2>&1 )"  # no-pii: length-only probe, no prompt()
+      fi
+      printf '%s %s\n' "$(printf '%s\n' "$_op" | grep '^DIRLEN=' | tail -1 | sed 's/^DIRLEN=//')" \
+                       "$(printf '%s\n' "$_op" | grep '^HASURL=' | tail -1 | sed 's/^HASURL=//')"
+    }
+    OC_OFF_PROBE="$(_oc_probe "")"
+    OC_ON_PROBE="$(_oc_probe "/run/onchain-fact.sh")"
+    case "${OC_OFF_PROBE%% *}" in
+      0) ok "ONCHAIN_FACT unset: the on-chain directive is \"\" (0 bytes) — the default prompt is byte-identical" ;;
+      ''|*[!0-9]*) bad "the on-chain probe did not complete with the env unset (got '$OC_OFF_PROBE')" ;;
+      *) bad "ONCHAIN_FACT unset: the directive is ${OC_OFF_PROBE%% *} bytes — the default is NOT byte-identical" ;;
+    esac
+    case "${OC_ON_PROBE%% *}" in
+      ''|*[!0-9]*) bad "the on-chain probe did not complete with ONCHAIN_FACT set (got '$OC_ON_PROBE')" ;;
+      0) bad "ONCHAIN_FACT set: the directive is still empty — the verb could never reach a prompt" ;;
+      *) ok "ONCHAIN_FACT set: the directive is ${OC_ON_PROBE%% *} bytes (the opt-in really injects it)" ;;
+    esac
+    # The RUNTIME proof of the endpoint rule: FORK_URL is set for both probes, and the rendered directive
+    # still does not contain it. A source grep alone could not tell an interpolated env value from a literal.
+    if [ "${OC_ON_PROBE##* }" = "-1" ]; then
+      ok "with an endpoint configured the rendered directive still contains NO endpoint (it is never prompted)"
+    else
+      bad "the rendered on-chain directive contains the configured endpoint (index ${OC_ON_PROBE##* })"
+    fi
+  fi
+fi
+
 echo
 if [ "$FAILS" -eq 0 ]; then
   note "PASS: a discovery cell can be handed the external-protocol resolver (opt-in, default OFF), and every"
@@ -573,7 +969,10 @@ if [ "$FAILS" -eq 0 ]; then
   note "      — never from the network — with the cited lines required to state the fact. A citation outside"
   note "      those two roots, to a file that does not exist, or to a range that states nothing marks THAT"
   note "      check uncited and nothing else. With the knob off: no directive bytes, no resolver copy, no"
-  note "      extra sandbox bind, no new JSON field. Whether the model USES the verb is not proven here."
+  note "      extra sandbox bind, no new JSON field. The same knob also hands the cell the ON-CHAIN verb: a"
+  note "      bounded call whose result is re-opened from the cache, and whose \`unavailable\` answers (no"
+  note "      endpoint, revert, spent budget) can close no check — an RPC-less host produces an honest"
+  note "      UNRESOLVED, never a CLEAN. Whether the model USES either verb is not proven here."
   exit 0
 fi
 note "DEMO FAILED: $FAILS assertion(s) did not hold — see above." >&2

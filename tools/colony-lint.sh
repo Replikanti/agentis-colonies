@@ -1607,13 +1607,54 @@ fi
 # inert-knob trap), the conditional sandbox bind and the new record boundary — then runs the SHIPPED gate
 # functions (sliced out of run-discovery.sh, never copied) over nine citation fixtures, and with an `agentis`
 # binary a mock ON/OFF pair plus a DIRLEN byte-identity probe. No network, no forge, no LLM.
+#
+# The SAME demo gates #2235 PR C, the ON-CHAIN half, which rides the same knob: onchain-fact.sh reads a
+# DEPLOYED value with one bounded `cast call` through the operator's endpoint (--fork-url/--fork-block, the
+# run-invariant-hunt.sh validation shape) and writes the RESULT into the same cache, so the harness re-opens
+# an `ONCHAIN <chain>:<address>:<selector>@<block> = <result>` citation FROM THAT CACHE and accepts it only
+# when the cached record for that call and block carries exactly that value. The load-bearing case is the
+# host with NO endpoint (STOP-1 decision 4): the read answers `unavailable|no-rpc`, nothing is cached, and
+# the dependent check stays UNRESOLVED — a missing RPC can never become a silent CLEAN. Its fixtures are
+# offline through a `DF_CAST_CMD` seam: a canned cache entry served with no endpoint, the no-rpc and revert
+# refusals, the 5-call per-cell bound, and the gate's accept/reject pairs.
 if [ -x "$REPO_ROOT/dark-factory/demo-resolve-cell.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-resolve-cell.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
-        pass "dark-factory: discovery-cell external reading (default-OFF verb + EXTERNAL-CITED evidence kind + two-root re-open gate) (#2235)"
+        pass "dark-factory: discovery-cell external reading (default-OFF verbs + EXTERNAL-CITED/ONCHAIN evidence kinds + cache re-open gate) (#2235)"
     else
         fail "dark-factory: discovery-cell external reading regressed (#2235)"
         printf '%s\n' "$check_out"
+    fi
+
+    # #2235 PR C egress guard, the counterpart of the PR A host allowlist: onchain-fact.sh talks to the
+    # OPERATOR's endpoint and to nothing else, so it must carry NO host literal of its own — a hard-coded
+    # host here would be an endpoint the operator never configured. Same extractor and same DEAD-GUARD
+    # control as the resolver check above, so a broken grep cannot report a clean script having checked
+    # nothing. (`https://*` and the like are shell GLOBS, not hosts, and do not match the extractor.)
+    oc_script="$REPO_ROOT/dark-factory/onchain-fact.sh"
+    if [ -f "$oc_script" ]; then
+        oc_tmp="$(mktemp)"
+        cp "$oc_script" "$oc_tmp"
+        echo '# dead-guard control: https://not-an-allowed-host.example/probe' >> "$oc_tmp"
+        oc_found=""
+        oc_guard=""
+        for oc_f in "$oc_script" "$oc_tmp"; do
+            oc_hits="$(sed 's/\\//g' "$oc_f" | grep -oE '(https?://|git@)[A-Za-z0-9][A-Za-z0-9.-]*' \
+                       | sed -e 's|^https\{0,1\}://||' -e 's|^git@||' | LC_ALL=C sort -u | tr '\n' ' ' || true)"
+            if [ "$oc_f" = "$oc_tmp" ]; then oc_guard="$oc_hits"; else oc_found="$oc_hits"; fi
+        done
+        rm -f "$oc_tmp"
+        case " $oc_guard " in
+            *" not-an-allowed-host.example "*) oc_guard_live=1 ;;
+            *) oc_guard_live=0 ;;
+        esac
+        if [ "$oc_guard_live" -eq 0 ]; then
+            fail "dark-factory: the onchain-fact.sh host check is DEAD - a planted host was not caught (#2235)"
+        elif [ -n "$oc_found" ]; then
+            fail "dark-factory: onchain-fact.sh hard-codes host(s):$oc_found - the endpoint must be the operator's (#2235)"
+        else
+            pass "dark-factory: onchain-fact.sh hard-codes no host (endpoint only from DF_EXTERNAL_RPC/FORK_URL/ETH_RPC_URL), dead-guard control live (#2235)"
+        fi
     fi
 fi
 

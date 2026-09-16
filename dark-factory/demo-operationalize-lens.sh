@@ -922,12 +922,20 @@ fi
 # inside the lens block (so the lens-OFF prompt keeps its byte-identity contract).
 # ----------------------------------------------------------------------------------------------------------
 note "22) the config-realizability rule sits in the shared RULES block and is GENERAL (no flag, no lens) ..."
+# The span between the rule and the subsystem line is asserted by CONTENT, not by a fixed line distance:
+# #2235 splices two ""-when-off verb blocks (PR B's `extres`, PR C's `onchain`) in there, each with its own
+# comment, so a distance window would have to be widened on every such insertion. What must stay true is that
+# NOTHING ELSE sits between them — an unconditional block there would change the lens-OFF prompt.
+RULE_SPAN="$(sed -n '/^  + config_realizability_rule()$/,/Subsystem under review/p' "$HUNTER")"
+RULE_SPAN_EXTRA="$(printf '%s\n' "$RULE_SPAN" | grep -vE '^[[:space:]]*//|^[[:space:]]*$' \
+  | grep -vE '^  \+ (config_realizability_rule\(\)|extres|onchain)$' | grep -v 'Subsystem under review' || true)"
 if grep -q '^  + config_realizability_rule()$' "$HUNTER" \
    && grep -A5 'Never report a listed KNOWN ISSUE' "$HUNTER" | grep -q '+ config_realizability_rule()' \
-   && grep -A6 '^  + config_realizability_rule()$' "$HUNTER" | grep -q 'Subsystem under review'; then
-  ok "'+ config_realizability_rule()' is spliced INSIDE the === RULES === block, right after the trusted-role exclusion it qualifies, and still ahead of the subsystem line (#2235 inserts its own \"\"-when-off block between them)"
+   && printf '%s\n' "$RULE_SPAN" | grep -q 'Subsystem under review' \
+   && [ -z "$RULE_SPAN_EXTRA" ]; then
+  ok "'+ config_realizability_rule()' is spliced INSIDE the === RULES === block, right after the trusted-role exclusion it qualifies, and ahead of the subsystem line, with only the #2235 \"\"-when-off verb blocks between them"
 else
-  bad "the config-realizability rule is not spliced into the RULES block between the trusted-role exclusion and the subsystem line"
+  bad "the config-realizability rule is not spliced into the RULES block between the trusted-role exclusion and the subsystem line${RULE_SPAN_EXTRA:+ (unexpected line(s) in the span: $RULE_SPAN_EXTRA)}"
 fi
 RULE_BODY="$WORK/config-rule-body.txt"
 awk '/^fn config_realizability_rule\(/{f=1} f{print} f&&/^}$/{exit}' "$HUNTER" > "$RULE_BODY"
