@@ -26,6 +26,10 @@ cb 300000;
 //               "operationalize before you hunt" method directive. Any other value (or unset) leaves the
 //               prompt byte-identical to the pre-#2211 one. Inverted vs CALLEE_TRUST on purpose — the
 //               capability is UNMEASURED until the #2211 M2 corpus A/B runs.
+//   TRACE_REASK_IDS #2223 (optional, default ""): set by run-discovery.sh ONLY on a follow-through RE-ASK,
+//               and only when the #2211 lens is on. It carries the check ids (`#2, #5`) the previous answer
+//               left unanswered, so the re-ask names them instead of repeating the same prompt verbatim.
+//               Empty (every first attempt, and every lens-OFF cell) => the directive is byte-identical.
 // Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
 //         Diagnostics that may precede it: `BLACKBOARD-FOCUS|`, `DEPTH-CELL|`, `APPENDIX-CONTEXT|`, —
 //         #1887, only when a refute-constraint corpus is imported — `REFUTE-CONSTRAINTS|<subsystem>|<cls>|<n>`,
@@ -33,12 +37,16 @@ cb 300000;
 //         `CALLEE-VECTOR|<fn>|<callee-expr>|<hazard>|<CANDIDATE|dismissed: reason>` may also appear (model-emitted,
 //         only when the callee-trust directive fired, #2152 — free text, never script-printed).
 //         #2211, only when OPERATIONALIZE_LENS=1 opts in: `OPERATIONALIZE|<subsystem>|<cls>|on`, followed in the
-//         model's own reply by one `OPCHECK|<construct>|<invariant>` line per derived check (model-emitted,
+//         model's own reply by one `OPCHECK|#<k>|<construct>|<invariant>` line per derived check (model-emitted,
 //         free text, never script-printed) BEFORE any CANDIDATE| line, and — #2214 — one
-//         `TRACE|<check>|<CLEAN|BUG|UNRESOLVED>|<evidence>` line per derived check AFTER tracing it. The TRACE
-//         lines are the FOLLOW-THROUGH half of the same contract: run-discovery.sh GATES a no-candidate reply
-//         on them (fewer distinct TRACE| than OPCHECK| lines => the cell is re-asked once, then recorded as a
-//         FAILED `untraced-opcheck` cell instead of a trusted clean negative). #2214 PR C adds the CITATION
+//         `TRACE|#<k>|<CLEAN|BUG|UNRESOLVED>|<evidence>` line per derived check AFTER tracing it. #2223 made
+//         `#<k>` (the check's ordinal within the cell) the PAIRING KEY: the TRACE answers the OPCHECK that
+//         carries the SAME id, so a paraphrase cannot break the pairing and an unrelated trace line cannot
+//         discharge a check. The TRACE lines are the FOLLOW-THROUGH half of the same contract: run-discovery.sh
+//         GATES a no-candidate reply on them (any check left without a TRACE of its id => the cell is re-asked
+//         once naming those ids; a cell where EVERY check stayed unanswered is then recorded as a FAILED
+//         `untraced-opcheck` cell instead of a trusted clean negative, and a PARTIAL shortfall is recorded
+//         per check on the cell rather than failing it wholesale). #2214 PR C adds the CITATION
 //         half of that grammar: a CLEAN resting on configuration grounds must cite a `file:line` in the
 //         audited repo, and a CLEAN resting on an EXTERNAL protocol fact must cite the interface/source/doc
 //         it was verified against — an uncited one counts as untraced for the same gate, and an unverifiable
@@ -407,6 +415,11 @@ fn operationalize_marker() -> string {
 // obligation, which run-discovery.sh can then GATE on (prompt text alone is not a gate — that is the #2213
 // lesson). Verdict vocabulary is deliberately CLEAN/BUG/UNRESOLVED: no `CANDIDATE|` substring, so
 // lib/run-agent-validated.sh's hunter predicate cannot false-accept a cell on a trace line.
+// #2223 numbers the checks. The measured failure of a COUNT-based contract is that N distinct but unrelated
+// TRACE lines discharge N checks (the #2222 QA counter-example), so the id — the check's ordinal within this
+// cell — is now the pairing key on BOTH sides, and the TRACE line drops the restated check text it can no
+// longer be matched on. The instruction text is what makes the id available to the harness at all; the gate
+// itself still lives in run-discovery.sh, because prompt text is not a gate (the #2213 lesson).
 fn operationalize_block() -> string {
     return operationalize_marker() + "\n"
       + "Do NOT jump to the obvious bug (reentrancy, generic access control). FIRST, for the bug class in the "
@@ -424,15 +437,21 @@ fn operationalize_block() -> string {
       + "functions. A bug you can only name after operationalizing the check is exactly what a generic pass "
       + "misses — that is the point of this step. Do not restate the class titles; produce zone-specific, "
       + "code-grounded checks.\n"
-      + "Emit each derived check, BEFORE you begin tracing and before any CANDIDATE line, on its own line:\n"
-      + "OPCHECK|<the specific construct in this zone's code>|<the exact invariant it must satisfy>\n"
+      + "Emit each derived check, BEFORE you begin tracing and before any CANDIDATE line, on its own line, "
+      + "NUMBERING the checks #1, #2, #3 ... in the order you derive them:\n"
+      + "OPCHECK|#<k>|<the specific construct in this zone's code>|<the exact invariant it must satisfy>\n"
       + "Then trace each OPCHECK line against the functions and answer per the output contract below. Derive "
       + "the checks from THIS payload only: never invent a construct that is not in the code, and an OPCHECK "
       + "that traces clean is a normal result — it is never, by itself, a finding.\n"
       + "FOLLOW THROUGH — a check you write and abandon is worse than one you never derived. For EVERY "
-      + "OPCHECK line you wrote, once you have traced it, emit one line of its own:\n"
-      + "TRACE|<the same check, restated>|<CLEAN or BUG or UNRESOLVED>|<the function or line in THIS zone that settles it>\n"
-      + "SAFE is a valid answer ONLY when every OPCHECK line you wrote has a matching TRACE line. UNRESOLVED "
+      + "OPCHECK line you wrote, once you have traced it, emit one line of its own that REFERENCES THE SAME "
+      + "NUMBER you gave that check:\n"
+      + "TRACE|#<k>|<CLEAN or BUG or UNRESOLVED>|<the function or line in THIS zone that settles it>\n"
+      + "The number is how a trace is matched to its check: a TRACE line carrying the wrong number, or no "
+      + "number, answers NOTHING — it cannot stand in for the check it does not name, however well it is "
+      + "written. Number every check, answer every number, and never renumber a check between the two lists.\n"
+      + "SAFE is a valid answer ONLY when every OPCHECK number you wrote has a TRACE line with the same "
+      + "number. UNRESOLVED "
       + "is an honest verdict — a check you cannot settle from this payload belongs on the record — and it "
       + "beats dropping the check silently.\n"
       + "EXTERNAL FACTS — the other way a derived check dies quietly: when a TRACE verdict of CLEAN rests on "
@@ -464,7 +483,25 @@ fn operationalize_enabled() -> bool {
 // regex, no reduce, no exec sh, so this adds no per-element substrate cost to any cell, firing or not.
 fn operationalize_directive() -> string {
     if !operationalize_enabled() { return ""; }
-    return operationalize_block();
+    return operationalize_block() + trace_reask_block();
+}
+
+// --- #2223 RE-ASK ADDRESSING (empty on every first attempt) --------------------------------------------------
+// run-discovery.sh's follow-through gate re-asks a cell that answered without a candidate while it left
+// derived checks unanswered. Before #2223 the re-ask replayed the SAME prompt verbatim, which told the model
+// nothing about WHICH check it dropped — the count rule could not name one. With the checks numbered, the
+// shortfall IS a list of ids, so the re-ask states it. TRACE_REASK_IDS is set by the shell ONLY on a re-ask
+// (and only inside a lens-ON cell), so this block is "" on every first attempt and the assembled prompt is
+// unchanged there; it lives INSIDE the lens directive, so the lens-OFF prompt keeps its byte-identity
+// contract whatever the env holds. Pure-meta like every other directive here: it names ids, never content.
+fn trace_reask_block() -> string {
+    let ids = getenv("TRACE_REASK_IDS");
+    if ids == "" { return ""; }
+    return "RE-ASK — your previous answer for this cell left these derived checks unanswered or closed them "
+      + "on an unverified dismissal: " + ids + ". Answer each of them by number this time: keep the same "
+      + "numbering you used before, emit one TRACE line per listed number, and settle it against the code in "
+      + "front of you or record it as UNRESOLVED. Do not renumber the checks, do not drop the ones you "
+      + "already settled, and do not replace a listed check with a different one.\n\n";
 }
 
 // --- #2145 ATTACKER-CONTROLLED-CALLEE DIRECTIVE (D1 of epic #2130) ------------------------------------------

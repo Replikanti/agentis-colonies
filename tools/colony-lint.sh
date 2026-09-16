@@ -1509,7 +1509,8 @@ fi
 
 # --- dark-factory "operationalize before you hunt" method directive (#2211, milestone M1) ---
 # hunter.ag injects a PURE-META, cross-class method directive — convert the assigned bug class into concrete,
-# code-grounded checks for THIS zone, emit them as `OPCHECK|<construct>|<invariant>` lines, THEN trace — gated
+# code-grounded checks for THIS zone, emit them as numbered `OPCHECK|#k|<construct>|<invariant>` lines, THEN
+# trace each under the same id (`TRACE|#k|...`, #2223 — the harness pairs by id, not by text) — gated
 # ONLY by the opt-in `OPERATIONALIZE_LENS=1` env (default OFF: unset leaves the prompt byte-identical) and made
 # observable by an honesty-gated `OPERATIONALIZE|<subsystem>|<cls>|on` sentinel. demo-operationalize-lens.sh
 # source-guards the four helpers, the marker/sentinel coupling, the default-OFF polarity, the ""-when-disabled

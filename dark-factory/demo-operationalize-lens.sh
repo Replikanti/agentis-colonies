@@ -65,6 +65,17 @@
 #      run-discovery.sh, over synthetic cell logs — a config-grounds dismissal with and without a
 #      `path:line` citation, the VERBATIM dismissal sentence a measured arm-run produced, an external-fact
 #      CLEAN with and without a source, the UNRESOLVED counter, and the lens-OFF inertness of all of it.
+#   7) #2223 PER-CHECK PAIRING BY ID (CI floor): the numbered grammar in the directive, and the shipped
+#      pairing functions over synthetic logs — matching ids pass, the #2222 QA counter-example (unrelated
+#      TRACE lines) trips, an orphan id is counted, a cell with ONE uncited check and a correct UNRESOLVED
+#      carry stays `ok` with both recorded per check, a legacy un-numbered transcript falls back to the count
+#      rule, and a lens-OFF cell keeps both its byte-identical prompt and its exact JSON key set.
+#
+# #2223 also changes WHEN a cell is failed, which parts 4 and 7 both pin: a cell that answered NONE of its
+# derived checks is still a FAILED `untraced-opcheck` cell, while a PARTIAL shortfall is recorded per check on
+# an `ok` cell (`untraced_ids`/`uncited_ids`/`unresolved_ids`). The measured reason is in the #2214 M3 archive:
+# the `dismissal` r1 C23 cell carried the rare row as UNRESOLVED correctly and was discarded anyway, because
+# ONE unrelated uncited line in the same cell failed the whole cell.
 #
 # Usage:  dark-factory/demo-operationalize-lens.sh
 # Exit: 0 = all assertions held; non-zero = a regression.
@@ -102,15 +113,15 @@ HUNTER_FLAT="$(tr '\n' ' ' < "$HUNTER" | sed 's/"[[:space:]]*+[[:space:]]*"//g')
 # PART 1 — SOURCE-GUARD (CI floor: grep/awk only)
 # ----------------------------------------------------------------------------------------------------------
 note "1) hunter.ag declares the four #2211 helpers ..."
-OPZ_FNS="operationalize_marker operationalize_block operationalize_enabled operationalize_directive"
+OPZ_FNS="operationalize_marker operationalize_block operationalize_enabled operationalize_directive trace_reask_block"
 MISSING_FN=""
 for fn in $OPZ_FNS; do
   grep -q "^fn $fn(" "$HUNTER" || MISSING_FN="$MISSING_FN $fn"
 done
 if [ -z "$MISSING_FN" ]; then
-  ok "all 4 marker/block/toggle/directive helpers are declared in hunter.ag"
+  ok "all 5 marker/block/toggle/directive/re-ask helpers are declared in hunter.ag"
 else
-  bad "hunter.ag is missing #2211 helper(s):$MISSING_FN"
+  bad "hunter.ag is missing #2211/#2223 helper(s):$MISSING_FN"
 fi
 
 # NO detector, deliberately: a coarse net over "does this zone touch anything external" would gate nothing
@@ -213,8 +224,9 @@ if grep 'print("OPERATIONALIZE|"' "$HUNTER" | grep -q 'CANDIDATE|'; then
 else
   ok "the sentinel carries no 'CANDIDATE|' substring (lib/run-agent-validated.sh cannot false-accept a cell on it)"
 fi
-if grep -q 'OPERATIONALIZE|<subsystem>|<cls>|on' "$HUNTER" && grep -q 'OPCHECK|<construct>|<invariant>' "$HUNTER"; then
-  ok "hunter.ag's header Stdout contract documents both the OPERATIONALIZE| sentinel and the model-emitted OPCHECK| lines"
+if grep -q 'OPERATIONALIZE|<subsystem>|<cls>|on' "$HUNTER" && grep -q 'OPCHECK|#<k>|<construct>|<invariant>' "$HUNTER" \
+   && grep -q 'TRACE|#<k>|<CLEAN|BUG|UNRESOLVED>|<evidence>' "$HUNTER"; then
+  ok "hunter.ag's header Stdout contract documents the OPERATIONALIZE| sentinel and the NUMBERED OPCHECK|#k / TRACE|#k grammar (#2223)"
 else
   bad "hunter.ag's header Stdout contract does not document the OPERATIONALIZE|/OPCHECK| lines"
 fi
@@ -235,12 +247,15 @@ for s in \
   "Cover both directions of any paired operation" \
   "WRITE OUT the operationalized checks you derived for this zone, THEN trace each one against the" \
   "Do not restate the class titles" \
-  "Emit each derived check, BEFORE you begin tracing and before any CANDIDATE line, on its own line:" \
-  "OPCHECK|<the specific construct in this zone's code>|<the exact invariant it must satisfy>" \
+  "Emit each derived check, BEFORE you begin tracing and before any CANDIDATE line, on its own line, " \
+  "NUMBERING the checks #1, #2, #3 ... in the order you derive them:" \
+  "OPCHECK|#<k>|<the specific construct in this zone's code>|<the exact invariant it must satisfy>" \
   "never invent a construct that is not in the code" \
   "FOLLOW THROUGH — a check you write and abandon is worse than one you never derived." \
-  "TRACE|<the same check, restated>|<CLEAN or BUG or UNRESOLVED>|<the function or line in THIS zone that settles it>" \
-  "SAFE is a valid answer ONLY when every OPCHECK line you wrote has a matching TRACE line." \
+  "REFERENCES THE SAME NUMBER you gave that check" \
+  "TRACE|#<k>|<CLEAN or BUG or UNRESOLVED>|<the function or line in THIS zone that settles it>" \
+  "The number is how a trace is matched to its check" \
+  "SAFE is a valid answer ONLY when every OPCHECK number you wrote has a TRACE line with the same number." \
   "EXTERNAL FACTS — the other way a derived check dies quietly" \
   "that claim is a FACT YOU MUST VERIFY, not an assumption you may lean on" \
   "the verdict is UNRESOLVED — never CLEAN"
@@ -257,7 +272,7 @@ fi
 # validates a hunter reply by grepping for exactly that, so a verdict word carrying it would let a reply that
 # never reached a verdict pass validation.
 case "$HUNTER_FLAT" in
-  *"TRACE|<the same check, restated>|<CLEAN or BUG or UNRESOLVED>"*)
+  *"TRACE|#<k>|<CLEAN or BUG or UNRESOLVED>"*)
     ok "the TRACE| verdict vocabulary is CLEAN/BUG/UNRESOLVED — no 'CANDIDATE|' substring for the reply-shape validator to false-accept" ;;
   *)
     bad "the TRACE| verdict vocabulary changed — check it still carries no 'CANDIDATE|' substring (lib/run-agent-validated.sh would false-accept)" ;;
@@ -369,10 +384,11 @@ else
   bad "the #2214 traces/untraced counters are missing or emitted unconditionally (a lens-OFF cell's JSON would change shape)"
 fi
 # #2214 PR C appends `unresolved` after them, under the same discipline (non-zero only, LAST).
-if grep -q '"\$ac_opchecks_json" "\$ac_traces_json" "\$ac_untraced_json" "\$ac_unresolved_json" >> "\$CELLS_JSONL"' "$DISCOVERY"; then
-  ok "the three counters are appended LAST, after opchecks (the _plan_depth_cells forward key scan is untouched)"
+if grep -q '"\$ac_opchecks_json" "\$ac_traces_json" "\$ac_untraced_json" "\$ac_unresolved_json" \\' "$DISCOVERY" \
+   && grep -q '"\$ac_untraced_ids_json" "\$ac_uncited_ids_json" "\$ac_unresolved_ids_json" >> "\$CELLS_JSONL"' "$DISCOVERY"; then
+  ok "the counters are appended after opchecks and the #2223 rule/orphan/id fields after them, LAST (the _plan_depth_cells forward key scan is untouched)"
 else
-  bad "the #2214 counters are no longer the LAST fields of the cell object — the forward key scan could break"
+  bad "the #2214/#2223 counters are no longer the LAST fields of the cell object — the forward key scan could break"
 fi
 if grep -q 'if \[ "\$ac_unres" -gt 0 \]; then ac_unresolved_json=' "$DISCOVERY"; then
   ok "_accumulate_cell records \"unresolved\" only when non-zero (a cell with no UNRESOLVED check keeps its exact key set)"
@@ -486,7 +502,7 @@ else
   else
     SB="$WORK/probe"; mkdir -p "$SB"
     ( cd "$SB" && agentis init >/dev/null 2>&1 ) || true
-    printf 'exec.env_passthrough = OPERATIONALIZE_LENS\n' > "$SB/.agentis/config"
+    printf 'exec.env_passthrough = OPERATIONALIZE_LENS,TRACE_REASK_IDS\n' > "$SB/.agentis/config"
     {
       printf 'cb 300000;\n\n'
       cat "$FRAG"
@@ -494,12 +510,15 @@ else
       printf 'print("DIRLEN=" + to_string(len(operationalize_directive())));\n'
       printf 'print("RULELEN=" + to_string(len(config_realizability_rule())));\n'
     } > "$SB/probe.ag"
-    # _dirlen <flag-value|"">: the toggle-gated directive length. An empty argument runs with the env UNSET.
+    # _dirlen <flag-value|""> [reask-ids]: the toggle-gated directive length. An empty first argument runs
+    # with OPERATIONALIZE_LENS UNSET; #2223's optional second argument sets TRACE_REASK_IDS, which is how the
+    # re-ask block is measured (and how the lens-OFF byte-identity contract is proven to survive it).
     _dirlen() {
+      _dl_ids="${2:-}"
       if [ -n "$1" ]; then
-        _dl="$( cd "$SB" && OPERATIONALIZE_LENS="$1" agentis go probe.ag 2>&1 | grep '^DIRLEN=' | tail -1 )"  # no-pii: the probe never calls prompt() — it prints two string lengths
+        _dl="$( cd "$SB" && OPERATIONALIZE_LENS="$1" TRACE_REASK_IDS="$_dl_ids" agentis go probe.ag 2>&1 | grep '^DIRLEN=' | tail -1 )"  # no-pii: the probe never calls prompt() — it prints two string lengths
       else
-        _dl="$( cd "$SB" && agentis go probe.ag 2>&1 | grep '^DIRLEN=' | tail -1 )"  # no-pii: length-only probe, no prompt()
+        _dl="$( cd "$SB" && TRACE_REASK_IDS="$_dl_ids" agentis go probe.ag 2>&1 | grep '^DIRLEN=' | tail -1 )"  # no-pii: length-only probe, no prompt()
       fi
       printf '%s\n' "${_dl#DIRLEN=}"
     }
@@ -539,6 +558,24 @@ else
     else
       bad "a value other than \"1\" turned the directive ON (=0 gave '$DIR_ZERO', =true gave '$DIR_TRUE')"
     fi
+    # #2223: the re-ask block lives INSIDE the lens directive, so TRACE_REASK_IDS can never reach a lens-OFF
+    # prompt — the byte-identity contract survives a knob that only ever fires on a re-ask.
+    DIR_OFF_IDS="$(_dirlen "" "#2, #5")"
+    DIR_ON_IDS="$(_dirlen "1" "#2, #5")"
+    if [ "$DIR_OFF_IDS" = "0" ]; then
+      ok "TRACE_REASK_IDS set with the lens OFF: operationalize_directive() is still 0 bytes (the re-ask block cannot leak into a lens-OFF prompt)"
+    else
+      bad "TRACE_REASK_IDS set with the lens OFF gave a $DIR_OFF_IDS-byte directive — the lens-OFF prompt is NOT byte-identical"
+    fi
+    case "$DIR_ON_IDS" in
+      ''|*[!0-9]*) bad "the #2223 re-ask probe did not complete (got '$DIR_ON_IDS')" ;;
+      *)
+        if [ "$DIR_ON_IDS" -gt "$DIR_ON" ]; then
+          ok "TRACE_REASK_IDS set with the lens ON: $DIR_ON_IDS bytes vs $DIR_ON without it — the re-ask really names the open checks in the prompt"
+        else
+          bad "TRACE_REASK_IDS changed nothing with the lens ON ($DIR_ON_IDS vs $DIR_ON) — the re-ask would replay the same prompt (env_passthrough gap?)"
+        fi ;;
+    esac
   fi
 fi
 
@@ -614,6 +651,32 @@ EOF
       bad "ON arm: only $ON_TRD distinct TRACE| line(s) for $ON_OPD distinct OPCHECK| line(s) — the model wrote checks it never traced (the #2214 gate would degrade this cell)"
       grep -E '^[[:space:]]*(OPCHECK|TRACE)\|' "$LIVE_ON_LOG" | head -6 | sed 's/^/      /' >&2
     fi
+    # #2223: the ON arm must also NUMBER its checks and answer them by number — the pairing key the harness
+    # uses. Asserted on the live reply, because the numbering is prose the model has to follow, not code:
+    # every OPCHECK line carries an id, and no derived id is left without a TRACE of the same id.
+    ON_OP_IDS="$(grep -E '^[[:space:]]*OPCHECK\|' "$LIVE_ON_LOG" | sed 's/^[[:space:]]*//' | cut -d'|' -f2 | sed 's/[[:space:]]//g' | grep -cE '^#[0-9]+$' || true)"
+    case "$ON_OP_IDS" in ''|*[!0-9]*) ON_OP_IDS=0 ;; esac
+    if [ "$OP_N" -gt 0 ] && [ "$ON_OP_IDS" -eq "$OP_N" ]; then
+      ok "ON arm: all $ON_OP_IDS OPCHECK| line(s) carry a #<k> id — the model numbered its checks (the #2223 pairing key)"
+    else
+      bad "ON arm: only $ON_OP_IDS of $OP_N OPCHECK| line(s) carry a #<k> id — the harness would fall back to the count rule"
+      grep -E '^[[:space:]]*OPCHECK\|' "$LIVE_ON_LOG" | head -4 | sed 's/^/      /' >&2
+    fi
+    # ... and the pairing must RESOLVE: every derived id answered by a TRACE line carrying that id. Computed
+    # here from the same grammar (the shipped functions are only sourced in part 4), so this is the live half
+    # of what part 7 pins offline — the acceptance bar the count rule could not express.
+    _live_ids() { grep -E "^[[:space:]]*$1\|" "$2" | sed 's/^[[:space:]]*//' | cut -d'|' -f2 | sed 's/[[:space:]]//g' | grep -E '^#[0-9]+$' | sort -u; }
+    LIVE_TR_IDS=" $(_live_ids TRACE "$LIVE_ON_LOG" | tr '\n' ' ')"
+    LIVE_UNPAIRED=0
+    for live_id in $(_live_ids OPCHECK "$LIVE_ON_LOG"); do
+      case "$LIVE_TR_IDS" in *" $live_id "*) ;; *) LIVE_UNPAIRED=$((LIVE_UNPAIRED + 1)) ;; esac
+    done
+    if [ "$ON_OP_IDS" -gt 0 ] && [ "$LIVE_UNPAIRED" -eq 0 ]; then
+      ok "ON arm: the id pairing resolves EVERY derived check (0 unpaired of $ON_OP_IDS) — the #2223 gate does not trip on a compliant cell"
+    else
+      bad "ON arm: $LIVE_UNPAIRED derived check id(s) have no TRACE line of the same id — the live reply would be degraded by the #2223 gate"
+      grep -E '^[[:space:]]*(OPCHECK|TRACE)\|' "$LIVE_ON_LOG" | head -8 | sed 's/^/      /' >&2
+    fi
     # "Operationalize BEFORE you hunt" is an ORDERING claim — asserted by line number, not by eyeball.
     OP_LINE="$(grep -nE '^[[:space:]]*OPCHECK\|' "$LIVE_ON_LOG" | head -1 | cut -d: -f1)"
     VER_LINE="$(grep -nE '^[[:space:]]*(CANDIDATE\||SAFE[[:space:]]*$)' "$LIVE_ON_LOG" | head -1 | cut -d: -f1)"
@@ -657,20 +720,37 @@ GATE_FNS="$WORK/gate-fns.sh"
   # #2214 PR C: _opcheck_trace_gap now calls these two, so the slice must carry them or the extracted gate
   # would behave differently here than in production (which is the whole point of slicing rather than copying).
   sed -n '/^_distinct_trace_lines() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_uncited_dismissal_lines() {$/,/^}$/p' "$DISCOVERY"
   sed -n '/^_uncited_dismissals() {$/,/^}$/p' "$DISCOVERY"
   sed -n '/^_unresolved_trace_count() {$/,/^}$/p' "$DISCOVERY"
+  # #2223: the per-check pairing helpers _opcheck_trace_gap now dispatches to, plus the predicates parts 4
+  # and 7 assert on. Same rule as above — sliced, never copied.
+  sed -n '/^_ids_of_lines() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_check_ids() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_count_stdin() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_untraced_rule() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_missing_check_ids() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_orphan_trace_ids() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_unnumbered_opchecks() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_uncited_check_ids() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_unresolved_check_ids() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_shortfall_id_list() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_all_checks_untraced() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_json_id_array() {$/,/^}$/p' "$DISCOVERY"
   sed -n '/^_opcheck_trace_gap() {$/,/^}$/p' "$DISCOVERY"
   sed -n '/^_untraced_safe() {$/,/^}$/p' "$DISCOVERY"
 } > "$GATE_FNS"
 GATE_LOADED=0
 if grep -q '^_opcheck_trace_gap() {$' "$GATE_FNS" && grep -q '^_untraced_safe() {$' "$GATE_FNS" \
-   && grep -q '^_uncited_dismissals() {$' "$GATE_FNS" && grep -q '^_unresolved_trace_count() {$' "$GATE_FNS"; then
+   && grep -q '^_uncited_dismissals() {$' "$GATE_FNS" && grep -q '^_unresolved_trace_count() {$' "$GATE_FNS" \
+   && grep -q '^_all_checks_untraced() {$' "$GATE_FNS" && grep -q '^_missing_check_ids() {$' "$GATE_FNS" \
+   && grep -q '^_untraced_rule() {$' "$GATE_FNS" && grep -q '^_unresolved_check_ids() {$' "$GATE_FNS"; then
   # shellcheck disable=SC1090  # sliced out of run-discovery.sh at runtime, by design
   . "$GATE_FNS"
   GATE_LOADED=1
-  ok "_distinct_sentinel_count / _distinct_trace_lines / _uncited_dismissals / _unresolved_trace_count / _opcheck_trace_gap / _untraced_safe extracted from run-discovery.sh and sourced"
+  ok "the shipped gate, citation and #2223 pairing functions (_opcheck_trace_gap / _untraced_safe / _all_checks_untraced / _missing_check_ids / _untraced_rule / _uncited_check_ids / _unresolved_check_ids / ...) extracted from run-discovery.sh and sourced"
 else
-  bad "could not extract the #2214 gate functions from run-discovery.sh (renamed or reshaped?)"
+  bad "could not extract the #2214/#2223 gate functions from run-discovery.sh (renamed or reshaped?)"
 fi
 
 # _cell_log <name> <line...> — write a synthetic cell log and print its path.
@@ -747,9 +827,11 @@ if [ "$GATE_LOADED" -eq 1 ]; then
   fi
   rm -f "$UNTRACED_LOG.novalid"
 
-  note "20) TRACE grammar: a trace is matched to its OPCHECK by DISTINCT-LINE COUNT, not by text pairing ..."
-  # Verbatim repetition cannot inflate the requirement (5 OPCHECK lines, 3 distinct) and cannot discharge it
-  # either (a pasted TRACE line counts once). This is the whole matching rule, pinned.
+  note "20) the COUNT-RULE FALLBACK (#2223): an un-numbered transcript is still matched by DISTINCT-LINE COUNT ..."
+  # These logs carry no `#k` id, so they take the count rule — the pre-#2223 arithmetic, byte for byte, kept
+  # for older transcripts and for a model that ignores the numbering half of the contract. Verbatim repetition
+  # cannot inflate the requirement (5 OPCHECK lines, 3 distinct) and cannot discharge it either (a pasted
+  # TRACE line counts once). Part 7 pins the id rule that supersedes it whenever the checks ARE numbered.
   DUPE_LOG="$(_cell_log dupes \
     'OPERATIONALIZE|vault|C23|on' \
     'OPCHECK|the entry leg flag|both legs pass the same value' \
@@ -1093,8 +1175,8 @@ grep -q 'otg_unc="$(_uncited_dismissals "$otg_log" "$otg_repo")"' "$DISCOVERY" \
   || PRC_SRC_MISS="$PRC_SRC_MISS [uncited-folded-into-the-gap]"
 grep -q 'if \[ "$ac_unres" -gt 0 \]; then ac_unresolved_json=' "$DISCOVERY" \
   || PRC_SRC_MISS="$PRC_SRC_MISS [unresolved-key-only-when-non-zero]"
-grep -q '"\$ac_untraced_json" "\$ac_unresolved_json" >> "\$CELLS_JSONL"' "$DISCOVERY" \
-  || PRC_SRC_MISS="$PRC_SRC_MISS [unresolved-key-appended-LAST]"
+grep -q '"\$ac_untraced_json" "\$ac_unresolved_json" \\' "$DISCOVERY" \
+  || PRC_SRC_MISS="$PRC_SRC_MISS [unresolved-key-after-untraced]"
 grep -q 'UNRESOLVED check(s)' "$DISCOVERY" || PRC_SRC_MISS="$PRC_SRC_MISS [unresolved-surfaced-to-the-operator]"
 if [ -z "$PRC_SRC_MISS" ]; then
   ok "the detectors are documented as heuristics in the header, fold into _opcheck_trace_gap, and the \"unresolved\" key is additive, non-zero-only and LAST"
@@ -1109,8 +1191,218 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# PART 7 — #2223: PER-CHECK PAIRING BY ID (offline; runs in CI with no binaries).
+# The #2222 QA counter-example is the reason this part exists: 3 OPCHECK lines answered by 3 distinct but
+# semantically UNRELATED TRACE lines satisfy a COUNT rule exactly (gap 0, gate silent). With the checks
+# numbered, the same reply answers nothing. The second half of the change is the DEGRADATION UNIT: a partial
+# shortfall marks the CHECK, not the cell, because the #2214 M3 `dismissal` r1 C23 cell carried the rare row
+# as a correct UNRESOLVED and was discarded for one unrelated uncited line beside it.
+# The functions under test are the SAME sliced-out shipped ones part 4 loaded (see 17).
+# ----------------------------------------------------------------------------------------------------------
+# _assert_cell <label> <log> <rule> <gap> <trip: yes|no> <fails-wholesale: yes|no> [repo_dir]
+# The four things a cell's record has to say under #2223: which rule decided it, how many checks are open,
+# whether the gate re-asks it, and whether the FAILED-row path claims it.
+_assert_cell() {
+  _ac_label="$1"; _ac_log="$2"; _ac_rule="$3"; _ac_gap="$4"; _ac_trip="$5"; _ac_fail="$6"; _ac_repo="${7:-}"
+  _ac_got_rule="$(_untraced_rule "$_ac_log")"
+  _ac_got_gap="$(_opcheck_trace_gap "$_ac_log" "$_ac_repo")"
+  if _untraced_safe "$_ac_log" "$_ac_repo"; then _ac_got_trip=yes; else _ac_got_trip=no; fi
+  if _all_checks_untraced "$_ac_log"; then _ac_got_fail=yes; else _ac_got_fail=no; fi
+  if [ "$_ac_got_rule" = "$_ac_rule" ] && [ "$_ac_got_gap" = "$_ac_gap" ] \
+     && [ "$_ac_got_trip" = "$_ac_trip" ] && [ "$_ac_got_fail" = "$_ac_fail" ]; then
+    ok "$_ac_label: rule=$_ac_got_rule, open=$_ac_got_gap, re-ask=$_ac_got_trip, FAILED-row=$_ac_got_fail (as specified)"
+  else
+    bad "$_ac_label: rule=$_ac_got_rule/$_ac_rule, open=$_ac_got_gap/$_ac_gap, re-ask=$_ac_got_trip/$_ac_trip, FAILED-row=$_ac_got_fail/$_ac_fail"
+  fi
+}
+
+if [ "$GATE_LOADED" -eq 1 ]; then
+  note "30) ids pair a trace to its check: matching ids pass, UNRELATED trace lines no longer discharge them ..."
+  # (a) the compliant shape: three numbered checks, three answers under the same numbers.
+  ID_OK_LOG="$(_cell_log id-ok \
+    'OPERATIONALIZE|vault|C23|on' \
+    'OPCHECK|#1|the entry leg flag|both legs pass the same value' \
+    'OPCHECK|#2|the stored rate|it is refreshed before it is read' \
+    'OPCHECK|#3|the fee cut|it is taken once per round trip' \
+    'TRACE|#1|CLEAN|the entry call passes the literal' \
+    'TRACE|#2|CLEAN|the setter runs in the same statement' \
+    'TRACE|#3|CLEAN|the fee is applied in the exit path only' \
+    'SAFE')"
+  _assert_cell "3 numbered checks answered by their 3 ids" "$ID_OK_LOG" id 0 no no
+  # (b) THE #2222 QA COUNTER-EXAMPLE: three distinct TRACE lines, none of them naming a derived id — one
+  #     wrong id, one restating a check the pre-#2223 grammar allowed, one about something else entirely.
+  #     The count rule scored this 0. It answers nothing, so it is the ONE shape that still fails wholesale.
+  ID_UNRELATED_LOG="$(_cell_log id-unrelated \
+    'OPERATIONALIZE|vault|C23|on' \
+    'OPCHECK|#1|the entry leg flag|both legs pass the same value' \
+    'OPCHECK|#2|the stored rate|it is refreshed before it is read' \
+    'OPCHECK|#3|the fee cut|it is taken once per round trip' \
+    'TRACE|#7|CLEAN|a check this cell never derived' \
+    'TRACE|the stored rate|CLEAN|the setter runs in the same statement' \
+    'TRACE|the deposit path|CLEAN|nothing in the derived list is about this' \
+    'SAFE')"
+  _assert_cell "3 ids answered by 3 unrelated TRACE lines (the #2222 counter-example)" "$ID_UNRELATED_LOG" id 3 yes yes
+  ID_UNRELATED_NAMED="$(_shortfall_id_list "$ID_UNRELATED_LOG")"
+  if [ "$ID_UNRELATED_NAMED" = "#1, #2, #3" ]; then
+    ok "the re-ask names the missing ids explicitly ($ID_UNRELATED_NAMED) — the count rule could not name one"
+  else
+    bad "the re-ask id list is '$ID_UNRELATED_NAMED' (want '#1, #2, #3')"
+  fi
+  # (c) an orphan: every derived check IS answered, and one extra trace names an id that does not exist.
+  #     It discharges nothing and is counted on its own — a renumbered or invented answer is a defect, not a
+  #     silent no-op, but it is not a shortfall either (nothing was left open).
+  ID_ORPHAN_LOG="$(_cell_log id-orphan \
+    'OPERATIONALIZE|vault|C23|on' \
+    'OPCHECK|#1|the entry leg flag|both legs pass the same value' \
+    'OPCHECK|#2|the stored rate|it is refreshed before it is read' \
+    'TRACE|#1|CLEAN|the entry call passes the literal' \
+    'TRACE|#2|CLEAN|the setter runs in the same statement' \
+    'TRACE|#9|CLEAN|a check that was never derived in this cell' \
+    'SAFE')"
+  _assert_cell "a TRACE naming a non-existent id" "$ID_ORPHAN_LOG" id 0 no no
+  ID_ORPHAN_N="$(_orphan_trace_ids "$ID_ORPHAN_LOG" | _count_stdin)"
+  if [ "$ID_ORPHAN_N" = "1" ]; then
+    ok "trace_orphans=1 for the id no OPCHECK line declares (counted, never able to discharge a check)"
+  else
+    bad "trace_orphans reported '$ID_ORPHAN_N' for one orphan trace id"
+  fi
+
+  note "31) DEGRADATION IS PER CHECK: one uncited dismissal no longer discards the cell's correct UNRESOLVED ..."
+  # The measured shape (#2214 M3 `dismissal` r1, C23): four checks, all traced. #2 is closed on an uncited
+  # configuration dismissal; #4 carries the rare row honestly as UNRESOLVED. Before #2223 the whole cell was
+  # failed and the UNRESOLVED carry went with it. Now the cell is `ok`, #2 is named as uncited, and #4
+  # survives WITH its check text — which is the record #2217 consumes.
+  ID_MIXED_LOG="$(_cell_log id-mixed \
+    'OPERATIONALIZE|vault|C22|on' \
+    'OPCHECK|#1|the share totals|they equal the sum of the per-user shares' \
+    'OPCHECK|#2|the flag-vs-source pairing|the configured pair must agree on the referent' \
+    'OPCHECK|#3|the fee cut|it is taken once per round trip' \
+    'OPCHECK|#4|the cross-issuer rate presumption|the two sides must be denominated in the same unit' \
+    'TRACE|#1|CLEAN|both totals are updated in the same statement' \
+    'TRACE|#2|CLEAN|a valid configuration exists and only the trusted deployer can pair them wrongly, so it is a deploy-time misconfiguration' \
+    'TRACE|#3|CLEAN|the fee is applied in the exit path only' \
+    'TRACE|#4|UNRESOLVED|no deployment script or test in this payload sets the pair, so the presumption could not be settled here' \
+    'SAFE')"
+  _assert_cell "one uncited check beside a correct UNRESOLVED carry" "$ID_MIXED_LOG" id 1 yes no
+  ID_MIXED_UNCITED="$(_uncited_check_ids "$ID_MIXED_LOG" | _json_id_array)"
+  if [ "$ID_MIXED_UNCITED" = "2" ]; then
+    ok "uncited_ids=[2] — the citation rules of #2224/#2227 mark THAT check, not the cell"
+  else
+    bad "uncited_ids=[$ID_MIXED_UNCITED] (want [2]) — the per-trace attribution is wrong"
+  fi
+  ID_MIXED_UNRES="$(_unresolved_check_ids "$ID_MIXED_LOG" | cut -f1 | _json_id_array)"
+  ID_MIXED_UNRES_TXT="$(_unresolved_check_ids "$ID_MIXED_LOG" | cut -f2-)"
+  if [ "$ID_MIXED_UNRES" = "4" ] && [ -n "$ID_MIXED_UNRES_TXT" ]; then
+    case "$ID_MIXED_UNRES_TXT" in
+      *"cross-issuer rate presumption"*)
+        ok "unresolved_ids=[4] carries the check's own text ('$(printf '%s' "$ID_MIXED_UNRES_TXT" | cut -c1-48)...') — the carry survives the cell for #2217" ;;
+      *) bad "unresolved_ids=[4] carries the wrong check text: '$ID_MIXED_UNRES_TXT'" ;;
+    esac
+  else
+    bad "unresolved_ids=[$ID_MIXED_UNRES] (want [4], with the OPCHECK text attached)"
+  fi
+  # The FAILED-row path is reserved for a cell that answered NOTHING it derived — the #2213 shape.
+  ID_NONE_LOG="$(_cell_log id-none \
+    'OPERATIONALIZE|vault|C23|on' \
+    'OPCHECK|#1|the entry leg flag|both legs pass the same value' \
+    'OPCHECK|#2|the stored rate|it is refreshed before it is read' \
+    'SAFE')"
+  _assert_cell "the #2213 shape: checks derived, none traced" "$ID_NONE_LOG" id 2 yes yes
+
+  note "32) the count rule is the FALLBACK, and only for a transcript that numbered nothing ..."
+  # (e) a legacy cell: OPCHECK lines with no id at all. It keeps the pre-#2223 arithmetic and reports which
+  #     rule decided it, so a readout can tell a legacy cell from a numbered one without re-reading the log.
+  LEGACY_LOG="$(_cell_log id-legacy \
+    'OPERATIONALIZE|vault|C23|on' \
+    'OPCHECK|the entry leg flag|both legs pass the same value' \
+    'OPCHECK|the stored rate|it is refreshed before it is read' \
+    'TRACE|the entry leg flag|CLEAN|the entry call passes the literal' \
+    'SAFE')"
+  _assert_cell "a legacy transcript with no ids" "$LEGACY_LOG" count 1 yes no
+  LEGACY_IDS="$(_shortfall_id_list "$LEGACY_LOG")"
+  if [ -z "$LEGACY_IDS" ]; then
+    ok "untraced_rule=count and the re-ask names no id (a count-rule cell cannot name one — the re-ask stays the pre-#2223 verbatim replay)"
+  else
+    bad "a count-rule cell produced an id list ('$LEGACY_IDS') — it has no ids to name"
+  fi
+  # A cell that numbered SOME of its checks is under the id rule, and the un-numbered ones still count: they
+  # can be paired with nothing, so they are open checks (they just have no id for the re-ask to name).
+  PARTIAL_ID_LOG="$(_cell_log id-partial \
+    'OPERATIONALIZE|vault|C23|on' \
+    'OPCHECK|#1|the entry leg flag|both legs pass the same value' \
+    'OPCHECK|the stored rate|it is refreshed before it is read' \
+    'TRACE|#1|CLEAN|the entry call passes the literal' \
+    'SAFE')"
+  _assert_cell "a half-numbered cell (one un-numbered check left open)" "$PARTIAL_ID_LOG" id 1 yes no
+
+  note "33) lens OFF: no rule, no ids, no new JSON key ..."
+  # (f) the production default. No OPCHECK line => no rule is recorded at all => every #2223 field is ABSENT
+  #     (not empty, not `[]`), so a lens-OFF cell's JSON key set is byte-identical to the pre-#2223 one.
+  OFF_ID_LOG="$(_cell_log id-lens-off \
+    'BLACKBOARD-FOCUS|a sibling lead' \
+    'This pairing is a deploy-time misconfiguration set by the trusted deployer, so it is out of scope.' \
+    'SAFE')"
+  _assert_cell "lens OFF (no OPERATIONALIZE|, no OPCHECK|)" "$OFF_ID_LOG" "" 0 no no
+  OFF_FIELDS=""
+  [ -z "$(_untraced_rule "$OFF_ID_LOG")" ] || OFF_FIELDS="$OFF_FIELDS [untraced_rule]"
+  [ "$(_orphan_trace_ids "$OFF_ID_LOG" | _count_stdin)" = "0" ] || OFF_FIELDS="$OFF_FIELDS [trace_orphans]"
+  [ -z "$(_missing_check_ids "$OFF_ID_LOG" | _json_id_array)" ] || OFF_FIELDS="$OFF_FIELDS [untraced_ids]"
+  [ -z "$(_uncited_check_ids "$OFF_ID_LOG" | _json_id_array)" ] || OFF_FIELDS="$OFF_FIELDS [uncited_ids]"
+  [ -z "$(_unresolved_check_ids "$OFF_ID_LOG")" ] || OFF_FIELDS="$OFF_FIELDS [unresolved_ids]"
+  if [ -z "$OFF_FIELDS" ]; then
+    ok "a lens-OFF cell produces no rule, no orphans and no id lists — all five #2223 keys are absent, so its JSON key set is unchanged"
+  else
+    bad "a lens-OFF cell would gain #2223 key(s):$OFF_FIELDS"
+  fi
+else
+  note "30-33) #2223 per-check pairing fixtures ..."
+  bad "skipped: the gate functions could not be sourced (see 17)"
+fi
+
+note "34) the #2223 wiring in run-discovery.sh and hunter.ag ..."
+ID_SRC_MISS=""
+# The five additive JSON fields, each emitted only when it carries something (a lens-OFF cell keeps its key set).
+grep -q 'if \[ -n "$ac_rule" \]; then ac_rule_json=' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [untraced_rule-key]"
+grep -q 'if \[ "$ac_orph" -gt 0 \]; then ac_orphans_json=' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [trace_orphans-key]"
+grep -q 'if \[ -n "$ac_untraced_ids" \]; then ac_untraced_ids_json=' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [untraced_ids-key]"
+grep -q 'if \[ -n "$ac_uncited_ids" \]; then ac_uncited_ids_json=' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [uncited_ids-key]"
+grep -q 'if \[ -n "$ac_unresolved_ids" \]; then ac_unresolved_ids_json=' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [unresolved_ids-key]"
+# The FAILED marker is written ONLY for a total shortfall — this is the whole per-check degradation change.
+grep -q 'if _untraced_safe "$rc_log" "$REPO" && _all_checks_untraced "$rc_log"; then' "$DISCOVERY" \
+  || ID_SRC_MISS="$ID_SRC_MISS [FAILED-row-only-when-every-check-untraced]"
+# The re-ask names the ids, and carries them into the prompt through a registered passthrough entry.
+grep -q 'rc_reask_ids="$(_shortfall_id_list "$rc_log" "$REPO")"' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [re-ask-names-ids]"
+grep -q 'TRACE_REASK_IDS="$rc_reask_ids"' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [re-ask-ids-in-cell-env]"
+grep -q '^  echo "exec.env_passthrough = .*,TRACE_REASK_IDS"' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [TRACE_REASK_IDS-passthrough]"
+# The status semantics are STATED in the script header, not left to be reverse-engineered from the branches.
+grep -q '#2223 — PER-CHECK PAIRING BY ID, AND THE EXACT STATUS SEMANTICS' "$DISCOVERY" \
+  || ID_SRC_MISS="$ID_SRC_MISS [status-semantics-in-header]"
+# hunter.ag's re-ask block is lens-gated (it is concatenated INSIDE operationalize_directive, which is "" when
+# the flag is off), so no env value can reach a lens-OFF prompt.
+grep -q 'return operationalize_block() + trace_reask_block();' "$HUNTER" || ID_SRC_MISS="$ID_SRC_MISS [re-ask-block-inside-the-lens]"
+if [ -z "$ID_SRC_MISS" ]; then
+  ok "the five additive keys are conditional, the FAILED row is reserved for a cell that answered NONE of its checks, and the re-ask carries the open ids into a LENS-GATED prompt block"
+else
+  bad "the #2223 wiring regressed:$ID_SRC_MISS"
+fi
+# The partial shortfall must still be SURFACED — an `ok` cell that quietly drops checks is the failure mode
+# this whole gate exists to refuse.
+if grep -q 'sc_open_ids="$(_shortfall_id_list "$sc_log" "$REPO")"' "$DISCOVERY" \
+   && grep -q 'unanswered after the re-ask' "$DISCOVERY"; then
+  ok "scrape_cell_log prints the open check ids of a PARTIAL shortfall (recorded \"ok\", never silently clean)"
+else
+  bad "a partial shortfall is no longer surfaced to the operator — an 'ok' cell could drop checks unseen"
+fi
+# No new status vocabulary, again: #2223 adds fields, never a cell status lib/zone-coverage.py does not know.
+if grep -E '_accumulate_cell .*"\$sc_log" ' "$DISCOVERY" | grep -vqE ' (ok|failed) '; then
+  bad "a cell status other than ok/failed was introduced — zone-coverage.py's hunted_degraded derivation knows only those two"
+else
+  ok "the cell status vocabulary is still exactly ok/failed (no new status for the dashboard/coverage derivation to learn)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
-  note "PASS — the #2211 operationalize directive (pure-meta text, default-OFF flag, OPERATIONALIZE| sentinel, OPCHECK| contract), the #2214 OPCHECK->TRACE follow-through gate and the #2214 PR C dismissal-citation discipline hold"
+  note "PASS — the #2211 operationalize directive (pure-meta text, default-OFF flag, OPERATIONALIZE| sentinel, OPCHECK| contract), the #2214 OPCHECK->TRACE follow-through gate, the #2214 PR C dismissal-citation discipline and the #2223 per-check pairing by id (with per-CHECK degradation) hold"
   note "NOTE: this gate proves WIRING and model COMPLIANCE only. Rare-tier recall is UNMEASURED until the #2211 M2 corpus A/B runs."
   exit 0
 fi

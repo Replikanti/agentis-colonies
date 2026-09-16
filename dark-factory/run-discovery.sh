@@ -124,9 +124,12 @@
 #                       env read here — deliberately NOT an exec.env_passthrough entry (mirrors
 #                       map-zones.sh's HUNT_FITNESS_JSON). An import failure is logged and the hunt continues.
 #   DF_TRACE_MAX_REASKS  #2214 Lever 1: how many times a cell that answered WITHOUT a candidate while at
-#                       least one derived `OPCHECK|` went untraced is RE-ASKED before it is recorded as a
-#                       FAILED `untraced-opcheck` cell. Default 1 (one re-ask, the bounded cost the gate was
-#                       designed with); 0 = gate-only (record the shortfall, never re-ask); garbage => 1.
+#                       least one derived `OPCHECK|` went unanswered is RE-ASKED before its shortfall is
+#                       recorded. #2223: the re-ask NAMES the open check ids, and what happens after it
+#                       depends on how much is left — a TOTAL shortfall is a FAILED `untraced-opcheck` cell, a
+#                       partial one is an `ok` cell carrying `untraced_ids`/`uncited_ids` (see the #2223 block
+#                       below). Default 1 (one re-ask, the bounded cost the gate was designed with); 0 =
+#                       gate-only (record the shortfall, never re-ask); garbage => 1.
 #                       Read by this SHELL, so it needs no exec.env_passthrough entry — the #1426 trap
 #                       applies to `getenv()` inside an `.ag` agent only. The whole gate is INERT whenever
 #                       OPERATIONALIZE_LENS is off (no directive => no `OPCHECK|` line => no shortfall),
@@ -166,6 +169,39 @@
 #   tuned to be cheap when wrong: a false positive costs ONE re-ask of a cell that has no candidate to lose, a
 #   false negative simply leaves the pre-PR-C behaviour. The detectors only ever see `TRACE|` lines, which
 #   exist only when the #2211 lens is ON, so the production default (lens OFF) is untouched.
+#
+# #2223 — PER-CHECK PAIRING BY ID, AND THE EXACT STATUS SEMANTICS OF THE FOLLOW-THROUGH GATE:
+#   GRAMMAR (lens-gated, so a lens-OFF prompt is byte-identical): the hunter numbers each derived check
+#   `OPCHECK|#k|<construct>|<invariant>` (k = its ordinal within THIS cell) and answers it under the same
+#   number `TRACE|#k|<CLEAN|BUG|UNRESOLVED>|<evidence>`. The id is the pairing key — never the check text,
+#   which a paraphrase changes and a copy-paste repeats.
+#   WHY: the pre-#2223 rule compared COUNTS, and the #2222 QA showed N distinct but semantically unrelated
+#   TRACE lines satisfy it exactly. Counting is not following through.
+#   RULES: `id` whenever at least one OPCHECK line is numbered; `count` (the pre-#2223 arithmetic, byte for
+#   byte) only for a cell that numbered none. The decider is recorded per cell as `untraced_rule`.
+#   A TRACE naming an id this cell never derived discharges nothing and is counted as `trace_orphans`.
+#   The #2224/#2227 citation rules apply PER TRACE: an uncited dismissal marks THAT check (its id lands in
+#   `uncited_ids`), never the whole cell.
+#
+#   STATUS SEMANTICS (what a cell's recorded status means, exhaustively — no new status vocabulary):
+#     * the cell never ANSWERED (chrome miss / `[llm.timeout]`) => FAILED, with its own existing reason. The
+#       follow-through gate never claims such a cell.
+#     * lens ON, no candidate, and EVERY derived check left unanswered after the bounded re-ask (the #2213
+#       shape: checks derived, none traced) => FAILED `untraced-opcheck`, exactly as before. This is the ONLY
+#       remaining wholesale failure, and it still makes the zone `hunted_degraded` via totals.failed.
+#     * lens ON, no candidate, and SOME checks unanswered after the re-ask => status `ok`, with `untraced_ids`
+#       / `uncited_ids` naming them and `untraced` counting them. NOT failed: the checks the cell DID settle
+#       are real results, and a correct `UNRESOLVED` carry among them must survive — the #2214 M3 `dismissal`
+#       r1 C23 cell carried the rare row as `UNRESOLVED` correctly and was discarded for ONE unrelated uncited
+#       line in the same cell. The honest consequence, stated rather than hidden: such a cell no longer marks
+#       its zone degraded on its own, so a partial shortfall is visible ONLY through these per-cell fields and
+#       the stderr line scrape_cell_log prints.
+#     * a cell that produced a CANDIDATE is never re-asked and never failed; its shortfall is recorded the
+#       same per-check way (unchanged from #2214 in intent, now with ids).
+#     * `UNRESOLVED` checks are carried in `unresolved_ids` WITH the check's own text (plus the `unresolved`
+#       count) — the record #2217 consumes to turn a rare-class UNRESOLVED into a second-tier candidate.
+#   RE-ASK: one (DF_TRACE_MAX_REASKS, default 1), and it NAMES the open ids through TRACE_REASK_IDS, which
+#   hunter.ag renders inside the lens block. Empty on every first attempt => that prompt is unchanged.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -513,7 +549,9 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # OFF toggle would be silently inert (CALLEE_TRUST=0 could never reach hunter.ag). Unset => "" => ON.
   # #2211 OPERATIONALIZE_LENS rides it too, with the opposite polarity: only "1" opts IN, so without this entry
   # the opt-in could never reach hunter.ag and the whole directive would be unreachable (unset => "" => OFF).
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS"
+  # #2223 TRACE_REASK_IDS rides it for the same reason, but is set by run_cell ONLY on a follow-through re-ask:
+  # unregistered => "" => the re-ask would silently replay the same prompt instead of naming the open checks.
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: hunter.ag ends its tick with `learn("hunt", ...)`, and it is that WRITE
   # the flag gates (#1878 measured it on agentis v1.28.0 — `experience.enabled = false` makes learn() raise
@@ -597,6 +635,18 @@ fi
 # _json_str <s> — emit <s> as a JSON string literal (escape backslash + double-quote; cell output is single-line).
 _json_str() { printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"; }
 
+# _json_id_array — #2223: read check ids on stdin, print them as the INSIDE of a JSON array (`2,5`), or
+# nothing when there are none. The caller decides whether to emit the key at all, which is what keeps every
+# id field absent (not `[]`) on a cell that has nothing to report.
+_json_id_array() {
+  ja_out=""
+  while IFS= read -r ja_id; do
+    [ -n "$ja_id" ] || continue
+    if [ -z "$ja_out" ]; then ja_out="$ja_id"; else ja_out="$ja_out,$ja_id"; fi
+  done
+  printf '%s' "$ja_out"
+}
+
 # _join_wrapped_candidates <log> — reconstruct one logical line per `CANDIDATE|...` record from a hunt log,
 # undoing flat-cyborg's PTY-capture line wrap (#1705). A `CANDIDATE|file:fn:line|class|severity|exploit|poc`
 # record's exploit/poc_sketch prose routinely exceeds one physical line; the raw log then carries the tail
@@ -660,9 +710,94 @@ _distinct_trace_lines() {
     | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u || true
 }
 
-# _uncited_dismissals <log> [repo_dir] — #2214 PR C: how many DISTINCT traced CLEANs of this cell dismissed a
-# check without the citation their grounds require (see the heuristics block in the header). Printed as one
-# integer and ADDED to the follow-through shortfall by _opcheck_trace_gap below, so an uncited dismissal is
+# --- #2223: PER-CHECK PAIRING BY ID -------------------------------------------------------------------------
+# The #2222 QA counter-example: 3 `OPCHECK|` lines answered by 3 distinct but semantically UNRELATED `TRACE|`
+# lines satisfy a COUNT rule exactly. So the directive now numbers each derived check (`OPCHECK|#k|...`) and
+# asks for its answer under the same number (`TRACE|#k|<verdict>|<evidence>`), and the pairing below is done
+# on that id: a paraphrase cannot break it and an unrelated trace line cannot discharge a check.
+#
+# The id is the check's ORDINAL WITHIN THE CELL, never a global identity — cells are independent hunts.
+# Everything here is whitespace-trimmed and `^[[:space:]]*`-anchored for the same reason the count rule is:
+# these are MODEL-emitted lines captured through a PTY, which routinely indents them.
+
+# _ids_of_lines — read sentinel lines on stdin, print the distinct check ids they carry (the `#k` in field 2,
+# `#` stripped), ascending. A line whose field 2 is not a bare `#<digits>` carries no id and is skipped here;
+# it is accounted for by the callers (an un-numbered OPCHECK is a shortfall, an un-numbered TRACE answers
+# nothing). Per-line `sed` rather than `tr -d` on the stream: `tr` would also eat the newlines.
+_ids_of_lines() {
+  cut -d'|' -f2 | sed 's/[[:space:]]//g' | grep -E '^#[0-9]+$' | sed 's/^#//' | sort -n -u
+}
+
+# _check_ids <TOKEN> <log> — the distinct check ids the log's `<TOKEN>|` lines carry, ascending.
+_check_ids() {
+  ci_tok="$1"; ci_log="$2"
+  [ -f "$ci_log" ] || return 0
+  grep -E "^[[:space:]]*${ci_tok}\|" "$ci_log" 2>/dev/null \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | _ids_of_lines
+}
+
+# _count_stdin — how many non-empty lines arrive on stdin, as a validated integer.
+_count_stdin() {
+  cs_n="$(grep -c . || true)"
+  case "$cs_n" in ''|*[!0-9]*) cs_n=0 ;; esac
+  printf '%s\n' "$cs_n"
+}
+
+# _untraced_rule <log> — which pairing rule decides this cell: `id` when at least one OPCHECK line carries an
+# id, `count` when the cell wrote OPCHECK lines but numbered none (an older transcript, or a model that
+# ignored the numbering half of the contract). Prints NOTHING when the cell carries no OPCHECK line at all —
+# i.e. every cell with the lens off, which is why the additive JSON field below is absent there.
+_untraced_rule() {
+  ur_log="$1"
+  [ -f "$ur_log" ] || return 0
+  grep -qE '^[[:space:]]*OPCHECK\|' "$ur_log" 2>/dev/null || return 0
+  if grep -qE '^[[:space:]]*OPCHECK\|[[:space:]]*#[0-9]+[[:space:]]*\|' "$ur_log" 2>/dev/null; then
+    printf 'id\n'
+  else
+    printf 'count\n'
+  fi
+}
+
+# _missing_check_ids <log> — the OPCHECK ids with NO TRACE line of the same id: the untraced checks under the
+# id rule, ascending. This is the whole pairing rule — set difference on ids, no text similarity anywhere.
+_missing_check_ids() {
+  mci_log="$1"
+  [ -f "$mci_log" ] || return 0
+  mci_tr=" $(_check_ids TRACE "$mci_log" | tr '\n' ' ')"
+  for mci_id in $(_check_ids OPCHECK "$mci_log"); do
+    case "$mci_tr" in *" $mci_id "*) ;; *) printf '%s\n' "$mci_id" ;; esac
+  done
+}
+
+# _orphan_trace_ids <log> — the TRACE ids that name NO OPCHECK id of this cell, ascending. A trace answering a
+# check that was never derived is a defect of its own (a renumbered or invented answer), so it is counted and
+# reported (`trace_orphans`) rather than silently ignored — but it never discharges anything.
+_orphan_trace_ids() {
+  oti_log="$1"
+  [ -f "$oti_log" ] || return 0
+  oti_op=" $(_check_ids OPCHECK "$oti_log" | tr '\n' ' ')"
+  for oti_id in $(_check_ids TRACE "$oti_log"); do
+    case "$oti_op" in *" $oti_id "*) ;; *) printf '%s\n' "$oti_id" ;; esac
+  done
+}
+
+# _unnumbered_opchecks <log> — how many DISTINCT OPCHECK lines carry no id while the cell is under the id
+# rule. Such a check cannot be paired with anything, so it counts toward the shortfall (and so re-asks the
+# cell) even though it has no id to name in the re-ask.
+_unnumbered_opchecks() {
+  uo_log="$1"
+  [ -f "$uo_log" ] || { printf '0\n'; return 0; }
+  grep -E '^[[:space:]]*OPCHECK\|' "$uo_log" 2>/dev/null \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u \
+    | grep -vE '^OPCHECK\|[[:space:]]*#[0-9]+[[:space:]]*\|' | _count_stdin
+}
+
+# _uncited_dismissal_lines <log> [repo_dir] — #2214 PR C: the DISTINCT traced CLEANs of this cell that
+# dismissed a check without the citation their grounds require (see the heuristics block in the header), one
+# per output line. #2223 split the LINES out of the counter so the same detector can be read two ways: as an
+# integer (_uncited_dismissals, the count rule) or per check id (_uncited_check_ids, the id rule) — one
+# detector, two projections, so the two rules can never disagree about what is uncited.
+# The count is ADDED to the follow-through shortfall by _opcheck_trace_gap below, so an uncited dismissal is
 # untraced for the existing gate: same one re-ask, same `untraced-opcheck` FAILED reason, no new status
 # vocabulary. [repo_dir] is OPTIONAL and empty is documented behaviour, not a gap: with no repo_dir the
 # check stays the pre-#2225 citation-SHAPE-only check (a well-formed `path:line` counts, on EITHER branch,
@@ -683,10 +818,10 @@ _distinct_trace_lines() {
 # The span searched is fields 3..N of the TRACE line (verdict + evidence), NOT the evidence field alone: the
 # measured cells routinely merge the two ("CLEAN — a VALID configuration exists ... a privileged deploy-time
 # misconfiguration"), and a detector anchored on field 4 would miss exactly the shape it was built for.
-_uncited_dismissals() {
+_uncited_dismissal_lines() {
   ud_log="$1"
   ud_repo="${2:-}"
-  if [ ! -f "$ud_log" ]; then printf '0\n'; return 0; fi
+  [ -f "$ud_log" ] || return 0
   # Configuration-grounds vocabulary and the repo citation it must carry. #2225: the citation must sit UNDER
   # a directory that records what the repo actually SHIPS (deploy/test/script/docs evidence) — a `.sol` under
   # `src/` only names the flag it declares, which is exactly the shape the measured H-8 dismissals used.
@@ -701,7 +836,6 @@ _uncited_dismissals() {
   # The fact tokens the TRACE relies on: a cited range that states none of these only NAMES the file, it does
   # not STATE the scaling/decimals/normalisation/ordering property the check depends on.
   ud_fact_re='1e18|decimals|WAD|ONE|normali|scale|order'
-  ud_n=0
   while IFS= read -r ud_line; do
     [ -n "$ud_line" ] || continue
     # Only a CLEAN is a dismissal: BUG is a finding and UNRESOLVED is the honest verdict this rule asks for.
@@ -710,7 +844,7 @@ _uncited_dismissals() {
     ud_span="$(printf '%s\n' "$ud_line" | cut -d'|' -f3-)"
     if printf '%s\n' "$ud_span" | grep -Eqi "$ud_cfg_re"; then
       if ! printf '%s\n' "$ud_span" | grep -Eq "$ud_cfg_pathline_re"; then
-        ud_n=$((ud_n + 1))
+        printf '%s\n' "$ud_line"
         continue
       fi
       # #2225 QA fix: shape-accepted is not enough — a citation whose file does not
@@ -720,7 +854,7 @@ _uncited_dismissals() {
       if [ -n "$ud_repo" ]; then
         ud_cfg_cite="$(printf '%s\n' "$ud_span" | grep -oE "$ud_pathline_re" | head -1)"
         if [ -n "$ud_cfg_cite" ] && [ ! -f "$ud_repo/${ud_cfg_cite%%:*}" ]; then
-          ud_n=$((ud_n + 1))
+          printf '%s\n' "$ud_line"
           continue
         fi
       fi
@@ -729,7 +863,7 @@ _uncited_dismissals() {
       ud_cite="$(printf '%s\n' "$ud_span" | grep -oE "$ud_pathline_re" | head -1)"
       if [ -z "$ud_cite" ]; then
         # No repo path:line at all — the #2225-dropped URL/bare-name/bare-interface shapes land here too.
-        ud_n=$((ud_n + 1))
+        printf '%s\n' "$ud_line"
       elif [ -n "$ud_repo" ]; then
         ud_file="${ud_cite%%:*}"
         ud_range="${ud_cite#*:}"
@@ -740,17 +874,37 @@ _uncited_dismissals() {
         if [ ! -f "$ud_repo/$ud_file" ]; then
           # #2225 QA fix: a citation to a file that does not exist under the repo
           # cannot state anything either — uncited, not an unverifiable pass-through.
-          ud_n=$((ud_n + 1))
+          printf '%s\n' "$ud_line"
         elif ! sed -n "${ud_a},${ud_b}p" "$ud_repo/$ud_file" 2>/dev/null | grep -qiE "$ud_fact_re"; then
           # The file resolves and its cited range says none of the fact tokens: it names the file, not the fact.
-          ud_n=$((ud_n + 1))
+          printf '%s\n' "$ud_line"
         fi
       fi
     fi
   done <<EOF
 $(_distinct_trace_lines "$ud_log")
 EOF
-  printf '%s\n' "$ud_n"
+}
+
+# _uncited_dismissals <log> [repo_dir] — the COUNT of those lines, the integer the count-rule shortfall adds
+# (see _opcheck_trace_gap). Kept as its own entry point so the count rule keeps the exact arithmetic it was
+# measured with; the id rule uses _uncited_check_ids below instead, which attributes each one to its check.
+_uncited_dismissals() {
+  _uncited_dismissal_lines "$1" "${2:-}" | _count_stdin
+}
+
+# _uncited_check_ids <log> [repo_dir] — #2223: the ids of the checks whose TRACE line is an uncited dismissal,
+# ascending. Only ids this cell actually DERIVED are reported: an uncited trace carrying an orphan id answers
+# no check of this cell (it is counted as an orphan instead), and one carrying no id at all cannot be
+# attributed — its check is already reported as untraced. This is what makes the citation rules of #2224/#2227
+# apply PER TRACE: they mark THAT check unresolved/uncited, never the whole cell.
+_uncited_check_ids() {
+  uci_log="$1"; uci_repo="${2:-}"
+  [ -f "$uci_log" ] || return 0
+  uci_op=" $(_check_ids OPCHECK "$uci_log" | tr '\n' ' ')"
+  for uci_id in $(_uncited_dismissal_lines "$uci_log" "$uci_repo" | _ids_of_lines); do
+    case "$uci_op" in *" $uci_id "*) printf '%s\n' "$uci_id" ;; esac
+  done
 }
 
 # _unresolved_trace_count <log> — #2214 PR C: how many DISTINCT checks this cell carried as UNRESOLVED. The
@@ -764,19 +918,61 @@ _unresolved_trace_count() {
   printf '%s\n' "$utc_n"
 }
 
+# _unresolved_check_ids <log> — #2223: the checks this cell carried as UNRESOLVED, one `<id>\t<check text>`
+# row per id, ascending. The text is the OPCHECK line's own wording (its fields after the id), so the carry
+# survives the cell without the reader having to go back to the log — this is the row #2217 consumes when it
+# turns an UNRESOLVED on a rare-class check into a second-tier candidate. A cell under the count rule emits
+# no rows (its traces name no check), which is why the additive JSON field is absent there.
+_unresolved_check_ids() {
+  uci2_log="$1"
+  [ -f "$uci2_log" ] || return 0
+  awk '
+    function idof(l,   g, m, v) {
+      m = split(l, g, "|"); if (m < 2) return "";
+      v = g[2]; gsub(/[[:space:]]/, "", v);
+      if (v !~ /^#[0-9]+$/) return "";
+      sub(/^#/, "", v); return v;
+    }
+    { line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line) }
+    index(line, "OPCHECK|") == 1 {
+      id = idof(line)
+      if (id != "") {
+        n = split(line, f, "|"); t = ""
+        for (i = 3; i <= n; i++) { t = (t == "" ? f[i] : t "|" f[i]) }
+        txt[id] = t
+      }
+      next
+    }
+    index(line, "TRACE|") == 1 {
+      id = idof(line)
+      if (id != "") {
+        n = split(line, f, "|")
+        if (n >= 3 && toupper(f[3]) ~ /UNRESOLVED/) { unres[id] = 1 }
+      }
+      next
+    }
+    END { for (k in unres) print k "\t" (k in txt ? txt[k] : "") }
+  ' "$uci2_log" | sort -n
+}
+
 # _opcheck_trace_gap <log> [repo_dir] — the follow-through shortfall of ONE cell log, printed as a single
-# integer: (distinct `OPCHECK|` lines) - (distinct `TRACE|` lines), floored at 0, PLUS (#2214 PR C) the
-# distinct traced CLEANs that dismissed a check without the citation their grounds require
-# (_uncited_dismissals). [repo_dir] threads straight through to _uncited_dismissals (#2225); omit it to fall
-# back to the citation-shape check alone.
+# integer: how many derived checks this cell did not follow through. [repo_dir] threads straight through to
+# the citation detectors (#2225/#2227); omit it to fall back to the citation-shape check alone.
 #
-# HOW A TRACE IS MATCHED TO ITS OPCHECK: by the COUNT of DISTINCT lines, deliberately NOT by pairing the
-# restated check text. The directive asks the model to RESTATE the check in the TRACE line, so a text join
-# would degrade into a string-similarity heuristic that a paraphrase defeats and a copy-paste satisfies.
-# `sort -u` on BOTH sides is what keeps the arithmetic honest in either direction: a model that repeats one
-# check verbatim cannot inflate the requirement, and one that pastes the same TRACE line N times cannot
-# discharge N checks with it. Whether a TRACE's evidence field really names a construct of this zone is an
-# OPERATOR read (the #2214 anti-Goodhart rule), not something this shell pretends to decide.
+# HOW A TRACE IS MATCHED TO ITS OPCHECK — #2223 replaced the count proxy with per-check pairing, and which
+# rule decided is on the record (`untraced_rule` in the cell object, _untraced_rule above):
+#   * `id` rule (the contract as it now ships): the cell numbered its checks, so untraced = OPCHECK ids with
+#     no TRACE line of the same id, PLUS the ids whose TRACE closed CLEAN on an uncited dismissal
+#     (_uncited_check_ids), PLUS any DISTINCT OPCHECK line the cell left un-numbered (it can be paired with
+#     nothing). Text is never compared: a paraphrase cannot break the pairing, and N unrelated TRACE lines
+#     cannot discharge N checks — the #2222 QA counter-example, which the count rule accepted.
+#   * `count` rule (fallback, ONLY for a cell whose OPCHECK lines carry no id at all — an older transcript,
+#     or a model that ignored the numbering): the pre-#2223 arithmetic, byte for byte — (distinct OPCHECK) -
+#     (distinct TRACE), floored at 0, plus the uncited-dismissal count. `sort -u` on both sides is what keeps
+#     it honest in either direction: a repeated check cannot inflate the requirement and a pasted trace line
+#     cannot discharge N checks with one line.
+# Whether a TRACE's evidence really settles its check stays an OPERATOR read (the #2214 anti-Goodhart rule),
+# not something this shell pretends to decide.
 #
 # Prints 0 when the log carries no `OPCHECK|` line at all — which is EVERY cell whenever OPERATIONALIZE_LENS
 # is off (the production default), so the gate is inert there rather than merely cheap.
@@ -784,20 +980,63 @@ _opcheck_trace_gap() {
   otg_log="$1"
   otg_repo="${2:-}"
   if [ ! -f "$otg_log" ]; then printf '0\n'; return 0; fi
+  if [ "$(_untraced_rule "$otg_log")" = "id" ]; then
+    otg_mis="$(_missing_check_ids "$otg_log" | _count_stdin)"
+    otg_unnum="$(_unnumbered_opchecks "$otg_log")"
+    otg_unc="$(_uncited_check_ids "$otg_log" "$otg_repo" | _count_stdin)"
+    printf '%s\n' "$((otg_mis + otg_unnum + otg_unc))"
+    return 0
+  fi
   otg_op="$(_distinct_sentinel_count OPCHECK "$otg_log")"
   otg_tr="$(_distinct_sentinel_count TRACE "$otg_log")"
   otg_gap=0
   if [ "$otg_op" -gt "$otg_tr" ]; then otg_gap=$((otg_op - otg_tr)); fi
   # #2214 PR C: a check traced to an UNCITED dismissal was not followed through either — it was closed on an
   # unchecked scope heuristic or an unverified external fact — so it is added to the SAME shortfall and rides
-  # the SAME gate (one re-ask, then the `untraced-opcheck` FAILED reason). No new status vocabulary.
+  # the SAME gate. No new status vocabulary.
   otg_unc="$(_uncited_dismissals "$otg_log" "$otg_repo")"
   printf '%s\n' "$((otg_gap + otg_unc))"
 }
 
+# _shortfall_id_list <log> [repo_dir] — #2223: the checks the re-ask must name, as `#2, #5` (untraced first,
+# then the uncited ones, each id once, ascending). Empty when the cell is under the count rule, which cannot
+# name a check — there the re-ask stays the pre-#2223 verbatim replay.
+_shortfall_id_list() {
+  sil_log="$1"; sil_repo="${2:-}"
+  [ -f "$sil_log" ] || return 0
+  [ "$(_untraced_rule "$sil_log")" = "id" ] || return 0
+  sil_out=""
+  for sil_id in $( { _missing_check_ids "$sil_log"; _uncited_check_ids "$sil_log" "$sil_repo"; } | sort -n -u ); do
+    if [ -z "$sil_out" ]; then sil_out="#$sil_id"; else sil_out="$sil_out, #$sil_id"; fi
+  done
+  printf '%s\n' "$sil_out"
+}
+
+# _all_checks_untraced <log> — #2223: true only when the cell answered NOTHING it derived — every OPCHECK id
+# is missing a TRACE of that id (id rule), or the cell wrote OPCHECK lines and not a single TRACE line (count
+# rule). This is the ONLY shape that still fails a cell wholesale (the #2213 shape: 5-12 checks derived, zero
+# traced, verdict SAFE). A PARTIAL shortfall is recorded per check instead — see the status semantics in the
+# header — because a cell that answered most of its checks, and carried one honestly as UNRESOLVED, is not
+# the same thing as a cell that abandoned the method (the #2214 M3 dismissal r1 C23 loss).
+_all_checks_untraced() {
+  acu_log="$1"
+  [ -f "$acu_log" ] || return 1
+  if [ "$(_untraced_rule "$acu_log")" = "id" ]; then
+    acu_ids="$(_check_ids OPCHECK "$acu_log" | _count_stdin)"
+    [ "$acu_ids" -gt 0 ] || return 1
+    [ "$(_missing_check_ids "$acu_log" | _count_stdin)" -eq "$acu_ids" ]
+    return $?
+  fi
+  acu_op="$(_distinct_sentinel_count OPCHECK "$acu_log")"
+  [ "$acu_op" -gt 0 ] || return 1
+  [ "$(_distinct_sentinel_count TRACE "$acu_log")" -eq 0 ]
+}
+
 # _untraced_safe <log> [repo_dir] — true when <log> is the exact thing the gate exists to refuse: a
-# directive-ON cell that answered with NO candidate while at least one derived check went untraced. Four
-# guards, in order:
+# directive-ON cell that answered with NO candidate while at least one derived check went unanswered (untraced
+# or closed on an uncited dismissal). #2223: this is the RE-ASK predicate — it fires on a shortfall of ONE
+# check, because that is the cheapest moment to recover it — and it is NOT, by itself, the FAILED predicate:
+# only _all_checks_untraced still fails a cell wholesale. Four guards, in order:
 #   * a #1707 chrome miss / #1955 terminal timeout already OWNS this cell's FAILED reason (and scrape_cell_log
 #     checks those markers first), so re-asking it here would spend a call on a cell that never answered;
 #   * no `OPERATIONALIZE|` sentinel => the lens was off for this cell => nothing to gate;
@@ -835,6 +1074,11 @@ _untraced_safe() {
 # #2214 PR C: `unresolved` (distinct checks traced UNRESOLVED) follows them, LAST and again only when
 # non-zero. An UNRESOLVED check is the honest verdict the citation rules ask for, and this counter is what
 # stops it from folding silently into a clean-looking negative.
+# #2223: `untraced_rule` (`id`|`count`, absent when the cell wrote no OPCHECK line), `trace_orphans` (TRACE
+# ids naming no check of this cell, non-zero only) and the per-check breakdown `untraced_ids` / `uncited_ids` /
+# `unresolved_ids` (each `[{"id":N,"check":"..."}]` for the last one) follow them, LAST and only when
+# non-empty. They are what makes a PARTIAL shortfall readable without the cell log: an `ok` cell can now say
+# WHICH checks it left open, and an UNRESOLVED carry survives with the check's own text for #2217 to consume.
 _accumulate_cell() {
   ac_subsys="$1"; ac_cls="$2"; ac_files="$3"; ac_log="$4"; ac_status="${5:-ok}"; ac_phase="${6:-}"
   ac_phase_json=""
@@ -871,10 +1115,37 @@ _accumulate_cell() {
   ac_unresolved_json=""
   ac_unres="$(_unresolved_trace_count "$ac_log")"
   if [ "$ac_unres" -gt 0 ]; then ac_unresolved_json=",\"unresolved\":$ac_unres"; fi
-  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s%s}\n' \
+  # #2223: which pairing rule decided this cell, the orphan count, and the PER-CHECK breakdown. All five keys
+  # follow the same discipline as every additive field above — appended LAST, emitted only when they carry
+  # something — so a lens-OFF cell (no OPCHECK line => no rule, no ids) keeps its exact pre-#2223 key set and
+  # _plan_depth_cells's forward key scan is untouched.
+  ac_rule_json=""
+  ac_rule="$(_untraced_rule "$ac_log")"
+  if [ -n "$ac_rule" ]; then ac_rule_json=",\"untraced_rule\":\"$ac_rule\""; fi
+  ac_orphans_json=""
+  ac_orph="$(_orphan_trace_ids "$ac_log" | _count_stdin)"
+  if [ "$ac_orph" -gt 0 ]; then ac_orphans_json=",\"trace_orphans\":$ac_orph"; fi
+  ac_untraced_ids_json=""
+  ac_untraced_ids="$(_missing_check_ids "$ac_log" | _json_id_array)"
+  if [ -n "$ac_untraced_ids" ]; then ac_untraced_ids_json=",\"untraced_ids\":[$ac_untraced_ids]"; fi
+  ac_uncited_ids_json=""
+  ac_uncited_ids="$(_uncited_check_ids "$ac_log" "$REPO" | _json_id_array)"
+  if [ -n "$ac_uncited_ids" ]; then ac_uncited_ids_json=",\"uncited_ids\":[$ac_uncited_ids]"; fi
+  # The UNRESOLVED carry, with the check's own text: this is the row #2217 consumes to turn an honest "I could
+  # not settle this" on a rare-class check into a second-tier candidate instead of a silent clean sweep.
+  ac_unresolved_ids_json=""
+  ac_unresolved_ids=""
+  while IFS='	' read -r ac_ur_id ac_ur_txt; do
+    [ -n "$ac_ur_id" ] || continue
+    ac_ur_obj="{\"id\":$ac_ur_id,\"check\":$(_json_str "$ac_ur_txt")}"
+    if [ -z "$ac_unresolved_ids" ]; then ac_unresolved_ids="$ac_ur_obj"; else ac_unresolved_ids="$ac_unresolved_ids,$ac_ur_obj"; fi
+  done < <(_unresolved_check_ids "$ac_log" 2>/dev/null || true)
+  if [ -n "$ac_unresolved_ids" ]; then ac_unresolved_ids_json=",\"unresolved_ids\":[$ac_unresolved_ids]"; fi
+  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s%s%s%s%s%s%s}\n' \
     "$(_json_str "$ac_subsys")" "$(_json_str "$ac_cls")" "$(_json_str "$ac_files")" \
     "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" "$ac_appendix_json" \
-    "$ac_opchecks_json" "$ac_traces_json" "$ac_untraced_json" "$ac_unresolved_json" >> "$CELLS_JSONL"
+    "$ac_opchecks_json" "$ac_traces_json" "$ac_untraced_json" "$ac_unresolved_json" \
+    "$ac_rule_json" "$ac_orphans_json" "$ac_untraced_ids_json" "$ac_uncited_ids_json" "$ac_unresolved_ids_json" >> "$CELLS_JSONL"
 }
 
 # _appendix_for <subsystem> <files_csv> — #1865: the (token, base) pair the --appendix sidecar records for
@@ -910,6 +1181,9 @@ run_cell() {
   rc_dir="$1"; rc_subsys="$2"; rc_cls="$3"; rc_in_scope="$4"; rc_log="$5"
   rc_depth_target="${6:-}"; rc_depth_known="${7:-}"
   rc_appendix_file="${8:-}"; rc_appendix_base="${9:-}"
+  # #2223: the ids the follow-through re-ask must name. EMPTY on the first attempt (and on every count-rule
+  # cell), so the first prompt — and every lens-OFF prompt — is byte-identical to the pre-#2223 one.
+  rc_reask_ids=""
   echo "run-discovery.sh: hunting $rc_cls on '$rc_subsys' ..." >&2
   # shellcheck disable=SC2317  # invoked by name through df_run_agent_validated
   _rc_attempt() {
@@ -925,6 +1199,7 @@ run_cell() {
         DEPTH_KNOWN="$rc_depth_known" \
         APPENDIX_FILE="$rc_appendix_file" \
         APPENDIX_BASE="$rc_appendix_base" \
+        TRACE_REASK_IDS="$rc_reask_ids" \
         "$AGENTIS" go hunter.ag --enable-exec --enable-messaging --grant-pii ) >"$1" 2>&1 || \
         echo "run-discovery.sh: hunter run failed for $rc_cls/'$rc_subsys' (see $1)" >&2
   }
@@ -945,12 +1220,22 @@ run_cell() {
   rm -f "$rc_log.untraced"
   rc_reask=1
   while [ "$rc_reask" -le "$DF_TRACE_MAX_REASKS" ] && _untraced_safe "$rc_log" "$REPO"; do
-    echo "run-discovery.sh:   ↳ untraced-opcheck: $rc_cls/'$rc_subsys' answered with $(_opcheck_trace_gap "$rc_log" "$REPO") untraced OPCHECK(s) — re-asking ($rc_reask/$DF_TRACE_MAX_REASKS)" >&2
+    # #2223: name the checks. The re-ask carries the ids into the prompt (TRACE_REASK_IDS -> hunter.ag's
+    # trace_reask_block), so the model is told WHICH checks it left open instead of being handed the same
+    # prompt again — the count rule could not name one, which is why the pre-#2223 re-ask was a verbatim
+    # replay. Empty for a count-rule cell: there the re-ask stays exactly what it was.
+    rc_reask_ids="$(_shortfall_id_list "$rc_log" "$REPO")"
+    echo "run-discovery.sh:   ↳ untraced-opcheck: $rc_cls/'$rc_subsys' answered with $(_opcheck_trace_gap "$rc_log" "$REPO") unanswered check(s)${rc_reask_ids:+ ($rc_reask_ids)} — re-asking ($rc_reask/$DF_TRACE_MAX_REASKS)" >&2
     mv -f "$rc_log" "$rc_log.untraced-attempt-$rc_reask" 2>/dev/null || true
     df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-discovery.sh: $rc_cls/'$rc_subsys' (trace re-ask $rc_reask)" "$rc_log" hunter "" _rc_attempt || true
     rc_reask=$((rc_reask + 1))
   done
-  if _untraced_safe "$rc_log" "$REPO"; then
+  rc_reask_ids=""
+  # #2223: the FAILED marker is written ONLY for a TOTAL shortfall — a cell that answered none of the checks
+  # it derived. A cell that answered some of them keeps `status":"ok"` and reports the open ones per check
+  # (untraced_ids/uncited_ids), because failing it wholesale discards the checks it DID settle — including a
+  # correct UNRESOLVED carry, which is exactly what the #2214 M3 dismissal r1 C23 cell lost.
+  if _untraced_safe "$rc_log" "$REPO" && _all_checks_untraced "$rc_log"; then
     _opcheck_trace_gap "$rc_log" "$REPO" > "$rc_log.untraced"
   fi
 }
@@ -1006,6 +1291,15 @@ scrape_cell_log() {
     FAILED_CELLS=$((FAILED_CELLS + 1))
     _accumulate_cell "$sc_subsys" "$sc_cls" "$sc_files" "$sc_log" failed "$sc_phase"
     return 0
+  fi
+  # #2223: a PARTIAL shortfall — the cell answered some of its checks and left others untraced or closed on an
+  # uncited dismissal, after the bounded re-ask. It is recorded `ok` (the answers it DID produce are real
+  # results, and the cell may carry a correct UNRESOLVED), so the operator gets the open ids here and the
+  # per-check fields in the JSON, not a discarded cell. This is deliberately NOT a FAILED row: only a cell
+  # that answered NONE of its checks is not a result at all.
+  sc_open_ids="$(_shortfall_id_list "$sc_log" "$REPO")"
+  if [ -n "$sc_open_ids" ]; then
+    echo "run-discovery.sh:   ↳ $sc_cls/'$sc_subsys' left check(s) $sc_open_ids unanswered after the re-ask (recorded as \"untraced_ids\"/\"uncited_ids\" on an \"ok\" cell; this cell's negative is NOT a rigorous clean sweep)" >&2
   fi
   # #2214 PR C: an UNRESOLVED check never folds silently into SAFE. Such a cell is NOT failed and NOT
   # re-asked — the verdict is the honest one the citation rules ask for — but its negative is not a rigorous

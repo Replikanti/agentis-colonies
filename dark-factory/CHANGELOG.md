@@ -16,6 +16,29 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **A `TRACE|` is paired to its `OPCHECK|` by check id, and degradation is now PER CHECK (#2223).** PR #2222's
+  follow-through gate compared COUNTS, and its own QA showed the hole: 3 `OPCHECK|` lines answered by 3
+  distinct but semantically UNRELATED `TRACE|` lines satisfy the count rule exactly (gap 0, gate silent). The
+  directive now numbers each derived check — `OPCHECK|#k|<construct>|<invariant>` — and asks for its answer
+  under the same number — `TRACE|#k|<CLEAN|BUG|UNRESOLVED>|<evidence>` — and `run-discovery.sh` pairs by that
+  id: a paraphrase cannot break the pairing and an unrelated trace line cannot discharge a check. The count
+  rule survives as a FALLBACK for a transcript that numbered nothing, and the decider is on the record per
+  cell (`untraced_rule: id|count`); a `TRACE|` naming an id the cell never derived discharges nothing and is
+  counted as `trace_orphans`. The citation rules of #2224/#2227 now apply PER TRACE and mark only THAT check.
+  **The degradation unit changed with it, which is the point of the issue:** a `SAFE` cell with an unanswered
+  check is re-asked once, and the re-ask NAMES the open ids (`TRACE_REASK_IDS` -> a lens-gated re-ask block in
+  `hunter.ag`); if the shortfall survives, the cell is FAILED `untraced-opcheck` **only when EVERY check went
+  unanswered** (the #2213 shape) — a PARTIAL shortfall is recorded on an `ok` cell as `untraced_ids` /
+  `uncited_ids`, with `UNRESOLVED` carries surviving as `unresolved_ids` **with the check's own text**. The
+  measured reason: in the #2214 M3 `dismissal` r1 archive the C23 cell carried the rare row as a correct
+  `UNRESOLVED` and the whole cell was discarded for ONE unrelated uncited line beside it. The honest
+  consequence, stated in the script header: a partial shortfall no longer marks its zone `hunted_degraded` on
+  its own — it is visible through the per-cell fields and the operator line instead. All five new JSON fields
+  are additive, emitted only when non-empty and appended LAST. **Default behaviour with the lens OFF is
+  unchanged: no `OPCHECK|` line exists, so no rule is recorded, no field is added and the prompt is
+  byte-identical (the re-ask block lives INSIDE the lens directive, so no env value can reach a lens-OFF
+  prompt).**
+
 - **Dismissal discipline: a check may not be closed on an unchecked scope heuristic or an unverified external
   fact (#2214, PR C).** With routing (#2221) and follow-through (#2222) closed, the measured residual cause of
   the rare-row miss was the DISMISSAL: five cells across three arms found the bug, named its consequence, and
