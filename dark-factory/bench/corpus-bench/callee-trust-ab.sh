@@ -149,6 +149,12 @@ if [ "$MODE" = "self-test" ]; then
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/callee-trust-ab.XXXXXX")"
   trap 'rm -rf "$WORK"' EXIT
 
+  # #2220: self-test drives the REAL run-zone-hunt.sh registration hook; default to an isolated registry
+  # root under $WORK (cleaned by the trap above) so a hand-run self-test never writes into the live
+  # ${HOME}/.dark-factory/hunts.
+  DARK_FACTORY_DIR="${DARK_FACTORY_DIR:-$WORK/dark-factory-dir}"
+  export DARK_FACTORY_DIR
+
   # Throwaway Foundry target: the settable-oracle value-custody Vault, under git.
   REPO="$WORK/target"
   mkdir -p "$REPO"
