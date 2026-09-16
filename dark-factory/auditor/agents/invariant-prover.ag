@@ -698,7 +698,7 @@ fn victim_fairness_invariant_prompt(klass: string, active: bool) -> string {
 // initializes real share storage AT THE STRATEGY. The directive is a plain string — no shell. `!active` => "".
 // #1755 M5 — TARGET IMPORT-PATH PIN. Two autonomous runs proved harness-gen is not yet RELIABLE: the CATCHING run
 // imported the target from its real in-repo source (`import {LiquityV2SPStrategy} from "../src/Strategy.sol";`)
-// and caught the H-1 first-depositor bug; a second run imported it from the pipeline's FLATTENED staged copy
+// and caught the first-depositor bug; a second run imported it from the pipeline's FLATTENED staged copy
 // (`import {...} from "target-code.sol";`) — a file that lives one dir ABOVE the foundry repo, not inside it, so
 // the test fails to compile (`Source "target-code.sol" not found`) => HARNESS_ERROR. So the LLM's target import
 // VARIES between the correct `../src/<Target>.sol` and the wrong staged `target-code.sol`. #1765 fix: `targetRel`

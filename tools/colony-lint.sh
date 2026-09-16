@@ -1789,20 +1789,12 @@ fi
 # the model on a target it is later SCORED on. Until 2026-09-16 its `seen:` lines carried the corpus contests'
 # own GT ids and mechanisms (`corpus-bench notional GT M-12 (...)`), which made every recall number measured on
 # those contests in-distribution. This guard keeps the lens clean: a prompt-visible file may describe the
-# generic CODE SHAPE of a class, never the contest it was taken from. The contest-keyed originals live in
+# generic CODE SHAPE of a class, never the contest it was taken from — and never a GT finding id, with or
+# without the contest name next to it (#2233). The contest-keyed originals live in
 # dark-factory/bench/corpus-bench/bug-class-coverage.md — documentation the pipeline never reads.
 # Deterministic + offline: two greps over the working tree, no network, no LLM, no toolchain.
 df_gt_root="$REPO_ROOT/dark-factory"
 if [ -d "$df_gt_root/auditor" ]; then
-    # The contest vocabulary is READ from the manifest (ids + both repo slugs) so a new corpus row is covered
-    # without editing this check, plus the fixed family names of the 8 rows the corpus ships with today.
-    df_gt_manifest="$df_gt_root/bench/corpus-bench/corpus.tsv"
-    df_gt_names="notional yieldoor yearn yearn-ybold crestal plaza dodo mellow symm"
-    if [ -f "$df_gt_manifest" ]; then
-        df_gt_names="$df_gt_names $(awk -F'\t' '$1 !~ /^#/ && NF >= 3 { print $1; print $2; print $3 }' "$df_gt_manifest")"
-    fi
-    df_gt_name_re="$(printf '%s\n' "$df_gt_names" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' '|' | sed 's/|$//')"
-
     # Prompt-visible = everything the hunter / brief-writer can end up reading: the whole auditor colony
     # (taxonomy, methods, knowledge feeds, agent prompt strings), the brief scaffold, any lib/ prompt helper,
     # and every `.ag` under the federation (an agent comment is one copy-paste away from a prompt string).
@@ -1815,22 +1807,25 @@ if [ -d "$df_gt_root/auditor" ]; then
         } | sort -u
     }
     # The detector: file list on stdin -> one `<file>:<line>:<rule>:<text>` per violation. Rule 1 is the
-    # literal `corpus-bench` anywhere; rule 2 is a contest name (word-bounded, so `symmetric` is not `symm`)
-    # on the SAME LINE as a Sherlock-style GT id.
+    # literal `corpus-bench` anywhere. Rule 2 is a Sherlock-style GT id token (`H-<n>` / `M-<n>`, 1-2 digits,
+    # delimited so `2025-06-notional` or an identifier cannot match) ANYWHERE in the file — not only next to a
+    # contest name: #2233 found two design comments that cited a bare `H-8` / `H-1` with the contest dropped,
+    # which is the same ground truth minus the label. A bare id is therefore the violation, whatever the line
+    # says around it; provenance belongs in the issue number, never in the contest's finding id.
     df_gt_scan() {
         while IFS= read -r _dfgt_f; do
             [ -f "$_dfgt_f" ] || continue
             grep -nI 'corpus-bench' "$_dfgt_f" 2>/dev/null | sed "s|^|$_dfgt_f:corpus-bench:|" || true
-            grep -nIwE "($df_gt_name_re)" "$_dfgt_f" 2>/dev/null | grep -E '[HM]-[0-9]+' \
+            grep -nIE '(^|[^[:alnum:]_])[HM]-[0-9]{1,2}([^[:alnum:]_]|$)' "$_dfgt_f" 2>/dev/null \
                 | sed "s|^|$_dfgt_f:gt-id:|" || true
         done
     }
 
     df_gt_violations="$(df_gt_files | df_gt_scan || true)"
     if [ -z "$df_gt_violations" ]; then
-        pass "dark-factory: no corpus contest name, GT id or 'corpus-bench' in a prompt-visible file (#2231)"
+        pass "dark-factory: no GT finding id or 'corpus-bench' in a prompt-visible file (#2231, #2233)"
     else
-        fail "dark-factory: corpus ground truth is prompt-visible (#2231) — the lens must not name a contest it is scored on"
+        fail "dark-factory: corpus ground truth is prompt-visible (#2231) — the lens must not carry a contest GT id it is scored on"
         printf '%s\n' "$df_gt_violations" | sed "s|^$REPO_ROOT/||" | head -40
     fi
 

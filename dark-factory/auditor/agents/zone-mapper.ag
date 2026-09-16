@@ -428,7 +428,7 @@ fn has_external_rate_read(code: string) -> bool {
     return false;
 }
 
-// A flag that SELECTS between two asset/unit representations — the H-8 shape (`useSyOracleRate ?
+// A flag that SELECTS between two asset/unit representations — the rate-selector shape (`useSyOracleRate ?
 // getPtToSyRate : getPtToAssetRate`), plus the wrapped/native and base-inversion variants. Prefix
 // substrings (`useSy` also matches `useSyOracleRate`, `useEth` also matches `useEthAsBase`).
 fn has_unit_selector_flag(code: string) -> bool {

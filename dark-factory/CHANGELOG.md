@@ -24,12 +24,14 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   contest-specific narrative); the contest-keyed originals moved verbatim into
   `bench/corpus-bench/bug-class-coverage.md` ("Contest examples — docs only, never prompt-visible"). The same
   scrub ran over the agent prompt strings and design comments (`zone-mapper.ag`'s fitness-prior prompt no
-  longer says "corpus-bench ground truth"; `invariant-prover.ag` no longer cites contest GT ids).
+  longer says "corpus-bench ground truth"; neither `zone-mapper.ag` nor `invariant-prover.ag` cites a GT
+  finding id any more, including the two bare-id comments #2233 caught).
   `tools/colony-lint.sh` now FAILS when any prompt-visible file (`auditor/**`, `gen-briefs.sh`,
-  `lib/*prompt*`, every `.ag` under `dark-factory/`) contains the literal `corpus-bench`, or a contest name
-  from `corpus.tsv` on the same line as a `[HM]-<n>` GT id — with a negative control that fires the detector
-  on a reverted taxonomy line, so a dead guard is detectable. `corpus.tsv` gains a REQUIRED `role` column
-  (column 5, before the optional `scope_hint`, because `IFS=TAB` collapses an empty field): `dev` =
+  `lib/*prompt*`, every `.ag` under `dark-factory/`) contains the literal `corpus-bench` or a Sherlock-style
+  GT finding id (`H-<n>` / `M-<n>`) anywhere — a bare id with the contest name dropped is the same ground
+  truth minus the label (#2233), so the contest name is not required for the rule to fire — with a negative
+  control that fires the detector on a reverted taxonomy line, so a dead guard is detectable. `corpus.tsv`
+  gains a REQUIRED `role` column (column 5, before the optional `scope_hint`, because `IFS=TAB` collapses an empty field): `dev` =
   `notional`, `yieldoor`, `yearn-ybold`, `crestal`, `plaza` (lenses were designed here — every number is
   IN-DISTRIBUTION), `holdout` = `dodo`, `mellow`, `symm` (the only rows a recall CLAIM may be made on).
   `run-corpus-bench.sh --score` and `generation-recall.sh --from-work` print the role on every per-contest
