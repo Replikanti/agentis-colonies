@@ -34,7 +34,9 @@ FETCH_TARGET="$HERE/../../fetch-target.sh"
 [ -x "$FETCH_TARGET" ] || FETCH_TARGET=""
 
 FAILED=0
-while IFS=$'\t' read -r id code_repo judging_repo _project_subdir _scope_hint; do
+# #2231: `role` is column 5, BEFORE the optional scope_hint (IFS=TAB collapses an empty field, so a role
+# appended after a blank scope_hint would land in scope_hint). Every positional reader takes it explicitly.
+while IFS=$'\t' read -r id code_repo judging_repo _project_subdir _role _scope_hint; do
   case "$id" in ""|\#*) continue;; esac
   if [ -n "$IDS" ]; then
     case " $IDS " in *" $id "*) : ;; *) continue;; esac

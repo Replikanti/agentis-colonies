@@ -59,6 +59,16 @@
 #                       MANIFEST order, so the finding set is deterministic + independent of completion
 #                       order. --jobs 1 (the default) keeps the ONE shared store WITH live #1001 steering
 #                       and is BYTE-FOR-BYTE identical to the pre-M3 hunt.
+#   --tier2             #2217 OPT-IN SECOND TIER (default OFF = every code path inert and the emitted
+#                       discovery-results.json byte-identical to a pre-#2217 run). With it, the checks this
+#                       run DERIVED and did not settle — the #2223 `unresolved_ids` + `uncited_ids` carries —
+#                       are lifted out of their cell objects into a TOP-LEVEL `tier2[]` array with a derived
+#                       location, ranked and capped per zone (see the #2217 block below for the schema).
+#                       Costs ZERO extra LLM calls and changes no prompt: every input is already in the cell
+#                       logs this run produced. `DF_TIER2=1` is the same switch for a caller that composes
+#                       argv elsewhere (run-zone-hunt.sh inherits the env, so one export covers a whole hunt).
+#                       A tier-2 record is NOT a candidate and carries NO severity — it says only "this check
+#                       was derived and left open".
 #   --depth-max-cells <N>  #1827 WITHIN-CONTRACT DEPTH PASS. 0 (default) = OFF = the run is byte-identical
 #                       to before. With N > 0, AFTER every breadth cell has run, re-hunt the functions a
 #                       breadth candidate already flagged: one EXTRA cell per (flagged function x alternative
@@ -134,6 +144,19 @@
 #                       applies to `getenv()` inside an `.ag` agent only. The whole gate is INERT whenever
 #                       OPERATIONALIZE_LENS is off (no directive => no `OPCHECK|` line => no shortfall),
 #                       which is the production default.
+#   DF_TIER2            #2217: `1` turns the second tier on, exactly like `--tier2` (any other value, and
+#                       unset, leave it OFF — the default). It exists because run-zone-hunt.sh calls this
+#                       script with a fixed argv: one `export DF_TIER2=1` covers every zone of a hunt.
+#   DF_TIER2_MAX_PER_ZONE  #2217: the PER-ZONE cap on tier-2 records (default 3; `0` forces the feature OFF
+#                       even with --tier2; garbage => 3). The measured supply is ~5 unsettled checks per
+#                       zone-run (#2214 archive: 15 over 21 cells in one arm, 14 in the other), so this cap
+#                       BINDS and the ranking below is load-bearing rather than decoration. Records the cap
+#                       discards are counted in `totals.tier2_dropped`, never silently dropped.
+#   DF_TIER2_RARE_CLASSES  #2217: the RARE-CLASS PRIORITY LIST the cap ranks by, as one comma list (default
+#                       `C19,C20,C21,C22,C23,C24`). It is a priority list and nothing more — not a rarity
+#                       oracle, and it makes no claim about any individual record. One env-overridable list
+#                       so a future out-of-class lens joins it without a code change.
+#                       All three are read by this SHELL, so none needs an exec.env_passthrough entry.
 #
 # #2214 PR C — CITATION DISCIPLINE ON A DISMISSAL (heuristics, deliberately shallow):
 #   The measured residual cause of the #2214 rare-row miss is not routing and not follow-through but the
@@ -242,6 +265,8 @@ DEPTH_MAX_CELLS=0  # #1827: opt-in within-contract depth pass; 0 = OFF, the whol
 DEPTH_LENS_QUOTA=1
 # #1857: opt-in depth-only re-entry; empty = OFF, every code path below is inert and the shipped hunt is unchanged.
 DEPTH_FROM=""
+# #2217: opt-in second tier (see --tier2 above); 0 = OFF = the default, every tier-2 code path inert.
+TIER2=0
 
 need() { [ "$1" -ge 2 ] || { echo "run-discovery.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -261,6 +286,7 @@ while [ $# -gt 0 ]; do
     --depth-max-cells) need "$#"; DEPTH_MAX_CELLS="$2"; shift 2 ;;
     --depth-lens-quota) need "$#"; DEPTH_LENS_QUOTA="$2"; shift 2 ;;
     --depth-from) need "$#"; DEPTH_FROM="$2"; shift 2 ;;
+    --tier2) TIER2=1; shift ;;
     --list-cells|-n) LIST_CELLS=1; shift ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-discovery.sh: unknown flag $1" >&2; exit 2 ;;
@@ -277,6 +303,15 @@ case "$DEPTH_MAX_CELLS" in ''|*[!0-9]*) echo "run-discovery.sh: --depth-max-cell
 # non-zero cap, i.e. silently disable a depth pass the operator asked for. Same fail-fast shape as --jobs.
 case "$DEPTH_LENS_QUOTA" in ''|*[!0-9]*) echo "run-discovery.sh: --depth-lens-quota must be a positive integer (got '$DEPTH_LENS_QUOTA')" >&2; exit 2 ;; esac
 [ "$DEPTH_LENS_QUOTA" -ge 1 ] || { echo "run-discovery.sh: --depth-lens-quota must be >= 1 (got '$DEPTH_LENS_QUOTA')" >&2; exit 2; }
+# #2217: the second tier is OFF unless the operator asked for it, through EITHER the flag or the env (the env
+# exists because run-zone-hunt.sh calls this script with a fixed argv). The cap is validated like every other
+# integer knob here except that garbage degrades to the default instead of failing the run — it is an env knob,
+# not an argv one, so an unusable value must not abort a hunt the operator already paid for. A cap of 0 forces
+# the whole feature OFF, which keeps "0 = inert" true for the cap the same way it is for --depth-max-cells.
+if [ "${DF_TIER2:-}" = "1" ]; then TIER2=1; fi
+DF_TIER2_MAX_PER_ZONE="${DF_TIER2_MAX_PER_ZONE:-3}"
+case "$DF_TIER2_MAX_PER_ZONE" in ''|*[!0-9]*) DF_TIER2_MAX_PER_ZONE=3 ;; esac
+[ "$DF_TIER2_MAX_PER_ZONE" -gt 0 ] || TIER2=0
 # #1857: the depth-only re-entry's ARGV contract. Everything here is an exit 2 — the operator asked for
 # something that cannot be honoured — and it is checked BEFORE the --repo/--scope/--brief requirements below,
 # so a refused flag combination is named rather than reported as a missing manifest. The refused flags are
@@ -614,6 +649,11 @@ COORD="$RUN/coordination.tsv"; : > "$COORD"
 # #1625: per-cell JSON accumulator for the additive discovery-results.json (written on BOTH the serial and
 # the parallel path). One object per cell, appended in MANIFEST order; it never mutates $REPORT's bytes.
 CELLS_JSONL="$RUN/results-cells.jsonl"; : > "$CELLS_JSONL"
+# #2217: the run-scoped tier-2 accumulator. Created ONLY when the feature is on, so an OFF run writes no new
+# file at all; the records live here rather than in the cell objects, which is what keeps every existing
+# per-cell key set (and _plan_depth_cells's forward key scan) byte-identical.
+TIER2_TSV="$RUN/tier2.tsv"
+if [ "$TIER2" -eq 1 ]; then : > "$TIER2_TSV"; fi
 
 # #1625 (epic #1611 M3): concurrency ceiling. The effective parallelism is min(--jobs, CELL_CAP); the cap is
 # a HARD limit (never fail-open) so N concurrent agentis go / forge / solc processes cannot OOM-thrash a
@@ -955,6 +995,285 @@ _unresolved_check_ids() {
   ' "$uci2_log" | sort -n
 }
 
+# --- #2217 PR A: SECOND-TIER (tier-2) RECORDS ---------------------------------------------------------------
+# WHAT THIS CARRIES. The #2223 per-check breakdown already records, per cell, WHICH derived checks the cell
+# left open: `unresolved_ids` (with the check's own OPCHECK text) and `uncited_ids` (a CLEAN dismissal without
+# the citation its grounds require). Those records die inside the cell object — nothing downstream can act on
+# one. A tier-2 record is that SAME decision, carried to the top of the run with a location it can be looked
+# up by. It costs ZERO extra LLM calls and changes no prompt: every input already exists in the cell log this
+# run produced, and the derivation below is pure shell.
+#
+# A TIER-2 RECORD IS NOT A CANDIDATE. It says "the cell derived this check and did not settle it", nothing
+# more: no severity is assessed (`severity` ships EMPTY, by construction), it never enters `candidates[]`, and
+# it is never a finding. Letting one reach the refute gate is a separate, separably-gated change (#2217 PR C).
+#
+# SOURCE SET (the #2217 STOP-1 decision): `unresolved_ids` + `uncited_ids` ONLY. Every CLEAN dismissal would be
+# ~50 records per cell and would bury the signal under the cap's ranking.
+#
+# SCHEMA — top-level `tier2[]` of discovery-results.json, emitted ONLY when the feature is ON and non-empty:
+#   subsystem   the manifest label of the cell that derived the check
+#   class       the bug class that cell hunted (C1..C24)
+#   id          the check's ordinal WITHIN THAT CELL (the #2223 `OPCHECK|#k` id) — never a global identity
+#   kind        "unresolved" (a TRACE answered UNRESOLVED) | "uncited" (a CLEAN dismissal with no valid citation)
+#   location    "<path>:<function>" when it could be derived from the check's own text, else "<path>" (fallback)
+#   loc_source  "opcheck" = derived from the CHECK TEXT | "zone" = fell back to this cell's file list
+#   loc_rule    "contract-fn" | "fn-grep" | "file-only" — WHICH rule produced it (see _tier2_location)
+#   severity    ALWAYS "" — a tier-2 record carries no severity assessment
+#   check       the OPCHECK line's own wording (its fields 3..n)
+#   why         the TRACE line's evidence span (its fields 4..n) — the cell's own reason for not settling it
+# plus `totals.tier2` (records kept) and `totals.tier2_dropped` (records the per-zone cap discarded). Both
+# totals and the array ride the same emit-only-when-non-empty discipline as every additive field above, so a
+# run with the feature OFF — or ON with no unsettled check anywhere — is BYTE-IDENTICAL to a pre-#2217 run.
+#
+# The functions below are self-contained (no script-level global, every knob read inline with its default) for
+# the reason the citation detectors are: demo-operationalize-lens.sh slices them out of this file by line range
+# and sources them, and a helper that depended on caller state would behave differently there than in
+# production — which is exactly what the slicing exists to prevent.
+
+# _tier2_flat <s> — one-line, trimmed text. TAB is the record separator of the accumulator below, so a tab (or
+# a stray newline) inside a model-emitted check text would silently shift every later column; it is collapsed
+# to a space HERE, once, rather than guarded for at each read site.
+_tier2_flat() {
+  printf '%s' "$1" | tr '\t\n' '  ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+# _opcheck_text <log> <id> — the wording of the OPCHECK line carrying <id> (its fields 3..n, `|` preserved), or
+# nothing. First occurrence wins, so a repeated check cannot make the derivation depend on log length.
+_opcheck_text() {
+  ot_log="$1"; ot_id="$2"
+  [ -f "$ot_log" ] || return 0
+  grep -E '^[[:space:]]*OPCHECK\|' "$ot_log" 2>/dev/null \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+    | awk -F'|' -v want="$ot_id" '
+        { v = $2; gsub(/[[:space:]]/, "", v) }
+        v == "#" want {
+          t = ""; for (i = 3; i <= NF; i++) { t = (t == "" ? $i : t "|" $i) }
+          print t; exit
+        }'
+}
+
+# _trace_evidence <log> <id> — the EVIDENCE SPAN of the TRACE line carrying <id> (fields 4..n of
+# `TRACE|#k|<verdict>|<evidence>`), or nothing. This is the cell's own "why": for an UNRESOLVED check it is
+# what it could not settle, for an uncited CLEAN it is the unsupported ground it closed on. First occurrence
+# wins (same determinism rule as above).
+_trace_evidence() {
+  te_log="$1"; te_id="$2"
+  [ -f "$te_log" ] || return 0
+  grep -E '^[[:space:]]*TRACE\|' "$te_log" 2>/dev/null \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+    | awk -F'|' -v want="$te_id" '
+        { v = $2; gsub(/[[:space:]]/, "", v) }
+        v == "#" want {
+          t = ""; for (i = 4; i <= NF; i++) { t = (t == "" ? $i : t "|" $i) }
+          print t; exit
+        }'
+}
+
+# _unresolved_check_rows <log> — the UNRESOLVED carry as `<id>\t<check text>\t<why>` rows, ascending. The first
+# two columns are _unresolved_check_ids's own output (that function is REUSED rather than re-implemented, so
+# the shipped `unresolved_ids` JSON stays byte-identical and the two cannot drift); the third is the TRACE
+# line's evidence span.
+_unresolved_check_rows() {
+  ucr_log="$1"
+  [ -f "$ucr_log" ] || return 0
+  while IFS='	' read -r ucr_id ucr_txt; do
+    [ -n "$ucr_id" ] || continue
+    printf '%s\t%s\t%s\n' "$ucr_id" "$(_tier2_flat "$ucr_txt")" "$(_tier2_flat "$(_trace_evidence "$ucr_log" "$ucr_id")")"
+  done <<EOF
+$(_unresolved_check_ids "$ucr_log")
+EOF
+}
+
+# _uncited_check_rows <log> [repo_dir] — the same row shape for the checks whose TRACE closed CLEAN on an
+# UNCITED dismissal (_uncited_check_ids decides which those are; [repo_dir] threads straight through to it, so
+# the tier-2 source set is exactly the set the #2225/#2227 detectors flag — never a second opinion about it).
+_uncited_check_rows() {
+  ukr_log="$1"; ukr_repo="${2:-}"
+  [ -f "$ukr_log" ] || return 0
+  for ukr_id in $(_uncited_check_ids "$ukr_log" "$ukr_repo"); do
+    printf '%s\t%s\t%s\n' "$ukr_id" \
+      "$(_tier2_flat "$(_opcheck_text "$ukr_log" "$ukr_id")")" \
+      "$(_tier2_flat "$(_trace_evidence "$ukr_log" "$ukr_id")")"
+  done
+}
+
+# _tier2_emit_loc <loc> <loc_source> <loc_rule> — print the derived location triple, but ONLY when <loc> passes
+# the pinned shape `<path>.sol:<function>`: a bare path, exactly one `:`, no `@fn` slice suffix, no `~(...)`
+# tail, no whitespace. score-match.py's lead_location() parses exactly that into (basename, function); a
+# location outside it cannot be pair-credited and would be worse than the honest zone fallback. Returns
+# non-zero (so the caller falls through to the next rule) when the shape does not hold.
+_tier2_emit_loc() {
+  printf '%s\n' "$1" | grep -qE '^[A-Za-z0-9_./-]+\.sol:[A-Za-z_][A-Za-z0-9_]*$' || return 1
+  printf '%s\t%s\t%s\n' "$1" "$2" "$3"
+}
+
+# _tier2_resolve_file <basename> <files-csv> — the path IN THIS CELL'S file list whose basename is <basename>
+# (exact match first, then case-insensitive), or nothing. A `file@fn+fn` slice token (#2150) names the same
+# file, so the `@` tail is stripped before comparing. Resolving against the CELL's own list — never a repo-wide
+# search — is what keeps a derived location inside the payload the model actually read.
+_tier2_resolve_file() {
+  trf_want="$1"; trf_rest="$2,"; trf_ci=""
+  while [ -n "$trf_rest" ]; do
+    trf_one="${trf_rest%%,*}"; trf_rest="${trf_rest#*,}"
+    trf_one="${trf_one%%@*}"
+    [ -n "$trf_one" ] || continue
+    trf_base="${trf_one##*/}"
+    if [ "$trf_base" = "$trf_want" ]; then printf '%s\n' "$trf_one"; return 0; fi
+    if [ -z "$trf_ci" ] \
+       && [ "$(printf '%s' "$trf_base" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$trf_want" | tr 'A-Z' 'a-z')" ]; then
+      trf_ci="$trf_one"
+    fi
+  done
+  if [ -n "$trf_ci" ]; then printf '%s\n' "$trf_ci"; fi
+  return 0
+}
+
+# _tier2_location <check-text> <files-csv> [repo_dir] — DETERMINISTIC location derivation, printed as
+# `<location>\t<loc_source>\t<loc_rule>`. The precedence is pinned (first rule that yields a well-shaped
+# location wins) and nothing here consults an LLM:
+#   L1 contract-fn — the check text names its own location. Either literally (`Foo.sol:_calcRate`) or as a
+#      `Contract.function` mention (`FooOracle._calcRate`), scanned left to right; the file half is resolved
+#      against THIS cell's file list. loc_source = "opcheck".
+#   L2 fn-grep     — no resolvable file half: take the first call-shaped mention (`_calcRate(`) and find the
+#      first file of this cell's list (IN CSV ORDER, so ambiguity resolves deterministically) that declares
+#      `function <fn>`. Needs [repo_dir] to read the files; without it the rule is skipped. loc_source = "opcheck".
+#   L3 file-only   — neither resolves: the FIRST file of the cell's list, with NO function. loc_source =
+#      "zone". Documented consequence: score-match.py's pair rule needs a function, so such a record cannot be
+#      pair-credited at all — which is why the ranking below puts it LAST under the cap.
+# Backticks, quotes, commas and parentheses are decoration a model wraps mentions in, never part of a path or
+# an identifier, so they are blanked before matching (parentheses are KEPT for L2, which matches on them).
+_tier2_location() {
+  tl_text="$1"; tl_files="$2"; tl_repo="${3:-}"
+  tl_paren="$(printf '%s' "$tl_text" | sed "s/[\`\"',]/ /g")"
+  tl_clean="$(printf '%s' "$tl_paren" | tr '()' '  ')"
+  # L1a: an explicit `<file>.sol:<function>` mention.
+  tl_hit="$(printf '%s' "$tl_clean" | grep -oE '[A-Za-z0-9_./-]+\.sol:[A-Za-z_][A-Za-z0-9_]*' | head -1 || true)"
+  if [ -n "$tl_hit" ]; then
+    tl_hb="${tl_hit%%:*}"; tl_hb="${tl_hb##*/}"
+    tl_p="$(_tier2_resolve_file "$tl_hb" "$tl_files")"
+    if [ -n "$tl_p" ] && _tier2_emit_loc "$tl_p:${tl_hit##*:}" opcheck contract-fn; then return 0; fi
+  fi
+  # L1b: a `Contract.function` mention. `Foo.sol` is a FILE, not a call — skipped, L1a already had its turn.
+  for tl_m in $(printf '%s' "$tl_clean" | grep -oE '[A-Z][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*' || true); do
+    tl_fn="${tl_m#*.}"
+    case "$tl_fn" in sol) continue ;; esac
+    tl_p="$(_tier2_resolve_file "${tl_m%%.*}.sol" "$tl_files")"
+    if [ -n "$tl_p" ] && _tier2_emit_loc "$tl_p:$tl_fn" opcheck contract-fn; then return 0; fi
+  done
+  # L2: a call-shaped mention, grepped for its declaration across this cell's files in CSV order.
+  tl_call="$(printf '%s' "$tl_paren" | grep -oE '[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(' | head -1 | tr -d ' (' || true)"
+  if [ -n "$tl_call" ] && [ -n "$tl_repo" ]; then
+    tl_rest="$tl_files,"
+    while [ -n "$tl_rest" ]; do
+      tl_one="${tl_rest%%,*}"; tl_rest="${tl_rest#*,}"
+      tl_one="${tl_one%%@*}"
+      [ -n "$tl_one" ] || continue
+      if [ -f "$tl_repo/$tl_one" ] \
+         && grep -qE "function[[:space:]]+${tl_call}[[:space:]]*\(" "$tl_repo/$tl_one" 2>/dev/null \
+         && _tier2_emit_loc "$tl_one:$tl_call" opcheck fn-grep; then
+        return 0
+      fi
+    done
+  fi
+  # L3: the zone fallback. No shape gate — a bare path is all this rule claims to know.
+  tl_first="${tl_files%%,*}"; tl_first="${tl_first%%@*}"
+  printf '%s\tzone\tfile-only\n' "$tl_first"
+}
+
+# _tier2_rare <class> — 0 when <class> is on the RARE-CLASS PRIORITY LIST, 1 otherwise. The list
+# (DF_TIER2_RARE_CLASSES, default `C19,C20,C21,C22,C23,C24` — the classes the #1782 multi-class lens program
+# minted for rare rows) is a PRIORITY LIST and nothing else: it decides which record survives the cap first,
+# it is NOT a rarity oracle and it makes no claim about any individual record. Env-overridable as ONE list so a
+# future out-of-class lens joins it without a code change.
+_tier2_rare() {
+  t2c_list="${DF_TIER2_RARE_CLASSES:-C19,C20,C21,C22,C23,C24}"
+  case ",$t2c_list," in *",$1,"*) printf '0\n' ;; *) printf '1\n' ;; esac
+}
+
+# _tier2_records <subsystem> <class> <files-csv> <log> [repo_dir] — every tier-2 record ONE cell log yields, as
+# TAB-separated rows, unresolved rows first and each kind in ascending check id. Columns 1-3 are the RANK KEYS
+# (see _tier2_select); the rest is the record:
+#   1 rare(0|1)  2 kind(0=unresolved,1=uncited)  3 loc_rule(0=contract-fn,1=fn-grep,2=file-only)
+#   4 kind  5 class  6 subsystem  7 id  8 location  9 loc_source  10 loc_rule  11 check  12 why
+_tier2_records() {
+  t2r_subsys="$1"; t2r_cls="$2"; t2r_files="$3"; t2r_log="$4"; t2r_repo="${5:-}"
+  [ -f "$t2r_log" ] || return 0
+  t2r_rare="$(_tier2_rare "$t2r_cls")"
+  for t2r_kind in unresolved uncited; do
+    if [ "$t2r_kind" = unresolved ]; then t2r_krank=0; else t2r_krank=1; fi
+    while IFS='	' read -r t2r_id t2r_check t2r_why; do
+      case "$t2r_id" in ''|*[!0-9]*) continue ;; esac
+      t2r_loc="$(_tier2_location "$t2r_check" "$t2r_files" "$t2r_repo")"
+      t2r_l="$(printf '%s' "$t2r_loc" | cut -f1)"
+      t2r_src="$(printf '%s' "$t2r_loc" | cut -f2)"
+      t2r_rule="$(printf '%s' "$t2r_loc" | cut -f3)"
+      case "$t2r_rule" in
+        contract-fn) t2r_lrank=0 ;;
+        fn-grep)     t2r_lrank=1 ;;
+        *)           t2r_lrank=2 ;;
+      esac
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$t2r_rare" "$t2r_krank" "$t2r_lrank" "$t2r_kind" "$t2r_cls" "$(_tier2_flat "$t2r_subsys")" \
+        "$t2r_id" "$t2r_l" "$t2r_src" "$t2r_rule" "$t2r_check" "$t2r_why"
+    done <<EOF
+$(if [ "$t2r_kind" = unresolved ]; then _unresolved_check_rows "$t2r_log"; else _uncited_check_rows "$t2r_log" "$t2r_repo"; fi)
+EOF
+  done
+}
+
+# _tier2_select <tsv> <cap> — the records that survive the PER-ZONE CAP, in rank order. Rank = rare class
+# first, then unresolved before uncited, then the location rule (contract-fn > fn-grep > file-only), then the
+# accumulator's own order — which is MANIFEST cell order, then ascending check id, because _accumulate_cell is
+# called in manifest order on the serial, parallel (post-drain) and depth paths alike. `sort -s` is what makes
+# that last tie-break the input order rather than an arbitrary one.
+# The cap is applied HERE, over the whole zone, AFTER every cell has been accumulated — never per cell — so the
+# selection is identical under `--jobs 1` and `--jobs N`. cap 0 (or garbage) selects nothing.
+_tier2_select() {
+  t2s_tsv="$1"; t2s_cap="$2"
+  [ -f "$t2s_tsv" ] || return 0
+  case "$t2s_cap" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$t2s_cap" -gt 0 ] || return 0
+  sort -s -t'	' -k1,1n -k2,2n -k3,3n "$t2s_tsv" | head -n "$t2s_cap"
+}
+
+# _tier2_json_array — read selected rows on stdin, print the INSIDE of the `tier2[]` array (no brackets), or
+# nothing. Same contract as _json_id_array: the CALLER decides whether the key is emitted at all, which is what
+# keeps the key ABSENT (not `[]`) on a run with nothing to carry.
+_tier2_json_array() {
+  t2j_out=""
+  # The three leading RANK columns are consumed by _tier2_select's sort, never by the record itself; they are
+  # read into named variables (rather than dropped) so the column contract is legible at the read site.
+  # shellcheck disable=SC2034
+  while IFS='	' read -r t2j_rare t2j_kr t2j_lr t2j_kind t2j_cls t2j_sub t2j_id t2j_loc t2j_src t2j_rule t2j_check t2j_why; do
+    case "$t2j_id" in ''|*[!0-9]*) continue ;; esac
+    t2j_obj="{\"subsystem\":$(_json_str "$t2j_sub"),\"class\":$(_json_str "$t2j_cls"),\"id\":$t2j_id,\"kind\":$(_json_str "$t2j_kind"),\"location\":$(_json_str "$t2j_loc"),\"loc_source\":$(_json_str "$t2j_src"),\"loc_rule\":$(_json_str "$t2j_rule"),\"severity\":\"\",\"check\":$(_json_str "$t2j_check"),\"why\":$(_json_str "$t2j_why")}"
+    if [ -z "$t2j_out" ]; then t2j_out="$t2j_obj"; else t2j_out="$t2j_out,$t2j_obj"; fi
+  done
+  printf '%s' "$t2j_out"
+}
+
+# _tier2_top_json <tsv> <on> <cap> — the TOP-LEVEL `,"tier2":[...]` fragment, or EXACTLY 0 bytes when the
+# feature is off, the cap is 0, or the run carried nothing. Concatenating 0 bytes is a no-op, which is how the
+# byte-identity contract of a feature-OFF run is met by construction rather than by assertion.
+_tier2_top_json() {
+  [ "$2" = "1" ] || return 0
+  t2t_arr="$(_tier2_select "$1" "$3" | _tier2_json_array)"
+  [ -n "$t2t_arr" ] || return 0
+  printf ',"tier2":[%s]' "$t2t_arr"
+}
+
+# _tier2_totals_json <tsv> <on> <cap> — the `,"tier2":N,"tier2_dropped":M` fragment for the `totals` object,
+# under the same gate and the same 0-byte contract. `tier2_dropped` is what the cap DISCARDED: a supply that
+# exceeds the cap must be visible, never silently truncated.
+_tier2_totals_json() {
+  [ "$2" = "1" ] || return 0
+  t2u_kept="$(_tier2_select "$1" "$3" | _count_stdin)"
+  t2u_all="$(grep -c . "$1" 2>/dev/null || true)"
+  case "$t2u_all" in ''|*[!0-9]*) t2u_all=0 ;; esac
+  [ "$t2u_kept" -gt 0 ] || return 0
+  printf ',"tier2":%s,"tier2_dropped":%s' "$t2u_kept" "$((t2u_all - t2u_kept))"
+}
+
 # _opcheck_trace_gap <log> [repo_dir] — the follow-through shortfall of ONE cell log, printed as a single
 # integer: how many derived checks this cell did not follow through. [repo_dir] threads straight through to
 # the citation detectors (#2225/#2227); omit it to fall back to the citation-shape check alone.
@@ -1146,6 +1465,13 @@ _accumulate_cell() {
     "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" "$ac_appendix_json" \
     "$ac_opchecks_json" "$ac_traces_json" "$ac_untraced_json" "$ac_unresolved_json" \
     "$ac_rule_json" "$ac_orphans_json" "$ac_untraced_ids_json" "$ac_uncited_ids_json" "$ac_unresolved_ids_json" >> "$CELLS_JSONL"
+  # #2217: the tier-2 carry, appended to the RUN-scoped accumulator AFTER the cell object is written and
+  # gated on the feature flag — so an OFF run does no extra work, writes no extra file, and emits the same
+  # bytes it did before #2217. _accumulate_cell is called in MANIFEST order on the serial, parallel
+  # (post-drain) and depth paths alike, which is what makes this file's order the cap's last tie-break.
+  if [ "$TIER2" -eq 1 ]; then
+    _tier2_records "$ac_subsys" "$ac_cls" "$ac_files" "$ac_log" "$REPO" >> "$TIER2_TSV"
+  fi
 }
 
 # _appendix_for <subsystem> <files_csv> — #1865: the (token, base) pair the --appendix sidecar records for
@@ -1770,15 +2096,33 @@ DEPTH_FROM_JSON=""
 if [ -n "$DEPTH_FROM" ]; then
   DEPTH_FROM_JSON=",\"depth_from\":{\"source\":$(_json_str "$DEPTH_FROM"),\"repo\":$(_json_str "$DF_REPO"),\"commit\":$(_json_str "$DF_COMMIT"),\"carried_cells\":$DF_CELLS,\"carried_candidates\":$DF_CANDIDATES}"
 fi
-printf '{"repo":%s,"commit":%s,"backend":%s,"jobs":%s%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s%s}}\n' \
+# #2217: the second tier. Both fragments are EXACTLY 0 bytes unless the feature is on AND the run carried a
+# record the cap kept, so a feature-OFF run — and a feature-ON run with nothing unsettled — emits byte-identical
+# JSON to a pre-#2217 run. The cap is applied HERE, over the whole zone, after every cell has been accumulated,
+# which is what makes the selection independent of --jobs.
+TIER2_JSON=""
+TIER2_TOTALS_JSON=""
+if [ "$TIER2" -eq 1 ]; then
+  TIER2_JSON="$(_tier2_top_json "$TIER2_TSV" 1 "$DF_TIER2_MAX_PER_ZONE")"
+  TIER2_TOTALS_JSON="$(_tier2_totals_json "$TIER2_TSV" 1 "$DF_TIER2_MAX_PER_ZONE")"
+fi
+printf '{"repo":%s,"commit":%s,"backend":%s,"jobs":%s%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s%s%s}%s}\n' \
   "$(_json_str "$(basename "$REPO")")" "$(_json_str "$COMMIT")" "$(_json_str "$BACKEND")" "$JOBS" "$DEPTH_FROM_JSON" "$CELLS_ARR" \
-  "$CELLS" "$CANDIDATES" "$STEERS" "$FAILED_CELLS" "$DEPTH_TOTAL_JSON" > "$RESULTS_JSON"
+  "$CELLS" "$CANDIDATES" "$STEERS" "$FAILED_CELLS" "$DEPTH_TOTAL_JSON" "$TIER2_TOTALS_JSON" "$TIER2_JSON" > "$RESULTS_JSON"
 
 echo >&2
 DEPTH_BANNER=""
 if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then DEPTH_BANNER=" ($DEPTH_CELLS depth)"; fi
 echo "================ DISCOVERY: $CELLS cells$DEPTH_BANNER, $CANDIDATES candidate(s), $STEERS blackboard-steered, $FAILED_CELLS failed ================" >&2
 echo "run-discovery.sh: leads at $REPORT" >&2
+# #2217: say what the second tier carried, and say what it is NOT. A tier-2 record is an UNSETTLED check, not
+# a lead: it never enters the candidate count above and nothing here verifies or submits one.
+if [ -n "$TIER2_JSON" ]; then
+  TIER2_KEPT="$(_tier2_select "$TIER2_TSV" "$DF_TIER2_MAX_PER_ZONE" | _count_stdin)"
+  TIER2_ALL="$(grep -c . "$TIER2_TSV" 2>/dev/null || true)"
+  case "$TIER2_ALL" in ''|*[!0-9]*) TIER2_ALL=0 ;; esac
+  echo "run-discovery.sh: tier-2: $TIER2_KEPT of $TIER2_ALL unsettled check(s) carried (cap $DF_TIER2_MAX_PER_ZONE/zone) — these are UNSETTLED CHECKS, not candidates, and carry no severity" >&2
+fi
 if [ "$CANDIDATES" -gt 0 ]; then
   echo "run-discovery.sh: NEXT = verify each lead with evm-harness/forge-verify.sh; only a PASSING PoC is a finding. Submission stays human-gated." >&2
 else

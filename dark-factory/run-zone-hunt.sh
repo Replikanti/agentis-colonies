@@ -919,11 +919,22 @@ if matrix_rel:
 # The current zone dir sorts BEFORE its `.attempt-<n>` archives (a prefix sorts first), so it is seen first and
 # `cells[]` stays in current-run order; the cell keeps the CURRENT attempt's fields (its status is the fresher
 # truth about this run) and only gains the archived attempts' extra candidates.
+# #2217 PR A: the same UNION policy, applied to the top-level `tier2[]` records run-discovery.sh emits when
+# the second tier is on (`--tier2` / `DF_TIER2=1`; the env is how a whole hunt opts in, since the argv below is
+# fixed). Records are concatenated in ZONE ORDER and deduplicated on the WHOLE record object — two records are
+# merged only when they are identical in every field, exactly as two candidates are merged only when they are
+# byte-identical. The merge deliberately does NOT re-rank or re-cap across attempts: the ranking lives in ONE
+# place (run-discovery.sh's _tier2_select) and duplicating it here in a second language would invite drift, and
+# dropping a record a prior attempt produced is the same failure the union policy above exists to refuse. The
+# honest consequence: after a --rehunt-gaps pass a zone can carry up to cap x attempts tier-2 records.
+# The key is ABSENT (never `[]`) when nothing was carried, so a merged file from a run without the second tier
+# is byte-identical to a pre-#2217 one.
 def cell_key(c):
     return (c.get("subsystem", ""), c.get("class", ""), c.get("files", ""))
 def candidates_of(c):
     return [x for x in (c.get("candidates") or []) if isinstance(x, str)]
 best, order, carried = {}, [], 0
+tier2, tier2_seen = [], set()
 for name in sorted(os.listdir(disc_dir)):
     p = os.path.join(disc_dir, name, "discovery-results.json")
     if not os.path.isfile(p):
@@ -933,6 +944,14 @@ for name in sorted(os.listdir(disc_dir)):
     except Exception:
         continue
     archived = ".attempt-" in name
+    for r in (d.get("tier2") or []):
+        if not isinstance(r, dict):
+            continue
+        rk = json.dumps(r, sort_keys=True)
+        if rk in tier2_seen:
+            continue
+        tier2_seen.add(rk)
+        tier2.append(r)
     for c in d.get("cells", []):
         if not isinstance(c, dict):
             continue
@@ -969,10 +988,19 @@ out = {"repo": repo, "backend": backend, "jobs": jobs, "cells": cells,
        "totals": {"cells": tc, "candidates": tcand, "steers": ts, "failed": tf},
        "merge": {"policy": "union-across-attempts", "carried_over_cells": carried},
        "coverage": coverage}
+if tier2:
+    out["tier2"] = tier2
+    out["totals"]["tier2"] = len(tier2)
 json.dump(out, open(merged_path, "w", encoding="utf-8"), indent=2)
 open(merged_path, "a", encoding="utf-8").write("\n")
 print("run-zone-hunt.sh: [M3] merged %d cell(s), %d candidate(s)%s" % (
     tc, tcand, (" (%d carried over from a prior attempt)" % carried) if carried else ""), file=sys.stderr)
+# #2217 PR A: the tier-2 count on its OWN line rather than folded into the one above — the #2156 OFF-path
+# byte-identity guard (demo-vector-hunt.sh assertion 11) requires every original line of this file to survive,
+# and an additive line satisfies it where an edited one would not.
+if tier2:
+    print("run-zone-hunt.sh: [M3] merged %d tier-2 record(s) — UNSETTLED checks, not candidates" % len(tier2),
+          file=sys.stderr)
 PY
 [ -f "$MERGED" ] || { echo "run-zone-hunt.sh: merge produced no discovery-results.merged.json" >&2; exit 3; }
 

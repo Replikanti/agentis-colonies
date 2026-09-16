@@ -1847,6 +1847,67 @@ if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/extract-gt-codehawks.sh" ]; 
     fi
 fi
 
+# --- dark-factory: corpus ground truth must NEVER be prompt-visible (#2231) ---
+# bug-taxonomy.md is the hunter's lens AND the brief-writer's source, so anything written into it is handed to
+# the model on a target it is later SCORED on. Until 2026-09-16 its `seen:` lines carried the corpus contests'
+# own GT ids and mechanisms (`corpus-bench notional GT M-12 (...)`), which made every recall number measured on
+# those contests in-distribution. This guard keeps the lens clean: a prompt-visible file may describe the
+# generic CODE SHAPE of a class, never the contest it was taken from — and never a GT finding id, with or
+# without the contest name next to it (#2233). The contest-keyed originals live in
+# dark-factory/bench/corpus-bench/bug-class-coverage.md — documentation the pipeline never reads.
+# Deterministic + offline: two greps over the working tree, no network, no LLM, no toolchain.
+df_gt_root="$REPO_ROOT/dark-factory"
+if [ -d "$df_gt_root/auditor" ]; then
+    # Prompt-visible = everything the hunter / brief-writer can end up reading: the whole auditor colony
+    # (taxonomy, methods, knowledge feeds, agent prompt strings), the brief scaffold, any lib/ prompt helper,
+    # and every `.ag` under the federation (an agent comment is one copy-paste away from a prompt string).
+    df_gt_files() {
+        {
+            find "$df_gt_root/auditor" -type f 2>/dev/null || true
+            find "$df_gt_root" -name '*.ag' -type f 2>/dev/null || true
+            if [ -f "$df_gt_root/gen-briefs.sh" ]; then echo "$df_gt_root/gen-briefs.sh"; fi
+            find "$df_gt_root/lib" -maxdepth 1 -name '*prompt*' -type f 2>/dev/null || true
+        } | sort -u
+    }
+    # The detector: file list on stdin -> one `<file>:<line>:<rule>:<text>` per violation. Rule 1 is the
+    # literal `corpus-bench` anywhere. Rule 2 is a Sherlock-style GT id token (`H-<n>` / `M-<n>`, 1-2 digits,
+    # delimited so `2025-06-notional` or an identifier cannot match) ANYWHERE in the file — not only next to a
+    # contest name: #2233 found two design comments that cited a bare `H-8` / `H-1` with the contest dropped,
+    # which is the same ground truth minus the label. A bare id is therefore the violation, whatever the line
+    # says around it; provenance belongs in the issue number, never in the contest's finding id.
+    df_gt_scan() {
+        while IFS= read -r _dfgt_f; do
+            [ -f "$_dfgt_f" ] || continue
+            grep -nI 'corpus-bench' "$_dfgt_f" 2>/dev/null | sed "s|^|$_dfgt_f:corpus-bench:|" || true
+            grep -nIE '(^|[^[:alnum:]_])[HM]-[0-9]{1,2}([^[:alnum:]_]|$)' "$_dfgt_f" 2>/dev/null \
+                | sed "s|^|$_dfgt_f:gt-id:|" || true
+        done
+    }
+
+    df_gt_violations="$(df_gt_files | df_gt_scan || true)"
+    if [ -z "$df_gt_violations" ]; then
+        pass "dark-factory: no GT finding id or 'corpus-bench' in a prompt-visible file (#2231, #2233)"
+    else
+        fail "dark-factory: corpus ground truth is prompt-visible (#2231) — the lens must not carry a contest GT id it is scored on"
+        printf '%s\n' "$df_gt_violations" | sed "s|^$REPO_ROOT/||" | head -40
+    fi
+
+    # Negative control: a guard that never fires is indistinguishable from a guard that cannot fire. The
+    # fixture is one REVERTED taxonomy seen: line as it read before #2231 (code spans dropped so the fixture
+    # stays a plain single-quoted string) — both rules must hit it.
+    df_gt_fixture="$(mktemp)"
+    printf '%s\n' '- **seen:** corpus-bench yieldoor GT H-3 (a strategy summed two uint16 Uniswap-V3 slot0 observation counters in uint16).' > "$df_gt_fixture"
+    df_gt_probe="$(printf '%s\n' "$df_gt_fixture" | df_gt_scan || true)"
+    rm -f "$df_gt_fixture"
+    df_gt_probe_cb="$(printf '%s\n' "$df_gt_probe" | grep -c ':corpus-bench:' || true)"
+    df_gt_probe_id="$(printf '%s\n' "$df_gt_probe" | grep -c ':gt-id:' || true)"
+    if [ "$df_gt_probe_cb" -ge 1 ] && [ "$df_gt_probe_id" -ge 1 ]; then
+        pass "dark-factory: the #2231 prompt-visibility detector FIRES on a reverted taxonomy seen: line (negative control)"
+    else
+        fail "dark-factory: the #2231 prompt-visibility detector no longer fires on a known-contaminated line (corpus-bench hits=$df_gt_probe_cb, gt-id hits=$df_gt_probe_id) — the guard is dead"
+    fi
+fi
+
 # --- dark-factory monitor colony proof-of-value: detect -> deliver (#1889, #1891) ---
 # The Path C monitoring proposition must DETECT a protocol invariant breaking on live chain state and
 # DELIVER it as a page. demo-monitor.sh source-guards the monitor wiring (the 8 agents, notifier.ag ->

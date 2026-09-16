@@ -110,7 +110,8 @@ select_contests() {
   echo "${_sel# }"
 }
 
-# corpus_field <id> <col> — echo the requested TAB column (4=project_subdir, 5=scope_hint) of a corpus.tsv row.
+# corpus_field <id> <col> — echo the requested TAB column (4=project_subdir, 5=role, 6=scope_hint — #2231
+# inserted `role` before the optional scope_hint) of a corpus.tsv row.
 corpus_field() {
   awk -F'\t' -v id="$1" -v col="$2" '$1==id && $1 !~ /^#/ {print $col; exit}' "$CORPUS" 2>/dev/null
 }
@@ -330,7 +331,7 @@ if [ "$MODE" = "live" ]; then
   # discipline. A contest whose code / truth is not staged is a logged skip, never a false zero.
   for id in $SELECTED; do
     subdir="$(corpus_field "$id" 4)"
-    scope="$(corpus_field "$id" 5)"
+    scope="$(corpus_field "$id" 6)"
     code_dir="$WORK/$id/code${subdir:+/$subdir}"
     truth="$WORK/$id/truth.tsv"
     if [ ! -d "$code_dir" ] || [ ! -f "$truth" ]; then

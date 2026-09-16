@@ -65,7 +65,7 @@ fn outcome_of(verdict: string) -> string {
 // ONE deviation confirmed live pre-merge (#1681 plan's own flagged risk): the bare generic `IPool` token
 // was DROPPED in favor of `IPoolAddressesProvider` (Aave's own address-registry interface, always imported
 // alongside a real Aave V3 integration, so it keeps the Aave signal without the collision) after a live
-// map-zones.sh --backend claude run against the symm corpus-bench target showed `IPool` false-firing on
+// map-zones.sh --backend claude run against a bench target showed `IPool` false-firing on
 // `contracts_vesting_interfaces` — a Balancer v3 pool/router integration the LLM itself correctly classified
 // as C15-only, that the bare-`IPool` backstop then force-appended C10/C11 onto anyway (confirmed via the
 // second, backstop-appended `ZONE|` line in that run's zone log). yearn-ybold's positive match is unaffected
@@ -129,7 +129,7 @@ fn contains_accounting_signal(code: string) -> bool {
 // --- #1698 deterministic C17 (index/slot-overwrite) backstop ---------------------------------------
 // zone-mapper's LLM classification under-recognizes zones whose recovery/refund handlers write an id-keyed
 // mapping/array slot — see #1698 (dodo's Gateway zone, whose `onRevert`/`onAbort` handlers write
-// `refundInfos[externalId] = refundInfo;`, M-7's exact shape). Live-verified: dodo's Gateway zone defines
+// `refundInfos[externalId] = refundInfo;`, the index-overwrite shape). Live-verified: that Gateway zone defines
 // `function onRevert`/`function onAbort` (both GatewayCrossChain.sol and GatewayTransferNative.sol) and
 // writes the indexed slot inside them — both conditions hold. Crucially, dodo's test-suite zone (e.g.
 // `test/GatewaySend.t.sol`) *calls* `gatewaySendA.onRevert(...)` and separately contains unrelated `] =`
@@ -244,7 +244,7 @@ fn contains_access_control_signal(code: string) -> bool {
 // --- #2111 deterministic C19 (narrow-integer overflow / unsafe downcast -> revert-DoS) backstop ------
 // C19 is a rare, high-severity class the breadth LLM systematically under-labels the same way it missed
 // C5/C6/C17: a wide value narrowed by an unchecked `uintN(x)`/`intN(x)` cast or `SafeCast.toUintN` on a
-// critical path silently truncates or reverts, bricking a core function (yieldoor H-3: a `uint16`
+// critical path silently truncates or reverts, bricking a core function (a `uint16`
 // observation counter that wraps -> checkPoolActivity DoS). Sibling of the #1729 C5 net: a permissive,
 // keyword-only `index_of` scan (STOP-1c — NO AST/structural downcast parse) split into a CAST-form net
 // (`uintN(`/`intN(` downcast calls, `SafeCast`, OZ `.toUintN`/`.toIntN`, and the Rust/Anchor `as uN`/`as iN`
@@ -394,7 +394,7 @@ fn contains_reentrancy_surface(code: string) -> bool {
 // C22 is not under-labelled the way C5/C8/C19 are — it is MIS-ROUTED. On the #2213 frozen notional map the
 // LLM put C22 on the staking zone (which holds the PT/SY tokens) and NOT on the oracles zone (which holds
 // `PendlePTOracle._calculateBaseToQuote`, where `useSyOracleRate` selects `getPtToSyRate` and the result is
-// then consumed as a PT->asset rate — notional H-8). The class that would have carried the bug never
+// then consumed as a PT->asset rate). The class that would have carried the bug never
 // reached the zone that contains it. This net re-keys C22 on the zone's TOUCHPOINTS instead of on which
 // contract nominally holds the tokens: a zone that READS a rate/price out of an external protocol, or that
 // holds a FLAG selecting between two unit/rate representations, is where a unit-equivalence assumption can
@@ -409,7 +409,7 @@ fn contains_reentrancy_surface(code: string) -> bool {
 // selector — i.e. the "must not fire on every oracle" requirement held mechanically, not by intent.
 
 // An EXTERNAL protocol's rate/price getter appears in the zone: Chainlink-style feed reads, Pendle's PT
-// rate getters (the H-8 mechanic), Curve/Lido/Yearn/Balancer-style rate getters, and the generic
+// rate getters (the mis-routed rate mechanic), Curve/Lido/Yearn/Balancer-style rate getters, and the generic
 // `getRate(`/`exchangeRate`/`getPrice(` forms. Sequential `if` (this file's no-`||` style).
 fn has_external_rate_read(code: string) -> bool {
     if index_of(code, "latestRoundData") >= 0 { return true; }
@@ -428,7 +428,7 @@ fn has_external_rate_read(code: string) -> bool {
     return false;
 }
 
-// A flag that SELECTS between two asset/unit representations — the H-8 shape (`useSyOracleRate ?
+// A flag that SELECTS between two asset/unit representations — the rate-selector shape (`useSyOracleRate ?
 // getPtToSyRate : getPtToAssetRate`), plus the wrapped/native and base-inversion variants. Prefix
 // substrings (`useSy` also matches `useSyOracleRate`, `useEth` also matches `useEthAsBase`).
 fn has_unit_selector_flag(code: string) -> bool {
@@ -844,7 +844,7 @@ fn apply_state_assumption_backstop(classesCsv: string, code: string) -> string {
 // the shell side. All four classes are folded into ONE rebuilt trailing line (not one appended line per
 // class) so that single `tail -1` scrape stays correct.
 
-// --- #1711 learned-real-bug fitness reorder (the ACT half of the corpus-bench -> hunter feedback loop) -----
+// --- #1711 learned-real-bug fitness reorder (the ACT half of the bench -> hunter feedback loop) ----------
 // The bench (bench-to-knowledge.sh) imports per-class REAL-BUG precision as agentis `hunt-fitness` knowledge;
 // this agent CONSUMES it here to reorder a zone's class CSV so historically-real-bug classes hunt FIRST. That
 // order flows through map-zones.sh's `tail -1` ZONE| scrape -> scope.tsv -> run-discovery.sh's per-cell fan-out
@@ -941,7 +941,7 @@ fn apply_fitness_reorder(classesCsv: string) -> string {
 // knowledge (get(rec,"knowledge") == 0) -> byte-identical prompt to today, so no regression before any import.
 fn fitness_prior(rec: map) -> string {
     if get(rec, "knowledge") == 0 { return ""; }
-    return "=== LEARNED REAL-BUG FITNESS PRIOR (corpus-bench ground truth) ===\n"
+    return "=== LEARNED REAL-BUG FITNESS PRIOR (scored ground truth) ===\n"
       + "On already-scored contests, these bug classes historically caught the most REAL bugs per candidate. "
       + "Weight your class choice toward the higher-precision ones WHEN this zone's mechanics genuinely expose "
       + "them (do not add a class the zone does not actually support):\n"
@@ -966,7 +966,7 @@ fn apply_backstop(verdict: string, code: string) -> string {
     let withReentrancy = apply_reentrancy_backstop(withNarrow, code);
     // #2214: force C22 (cross-protocol asset/unit equivalence) when the zone READS an external protocol's
     // rate/price or holds a unit-selection flag, so the class reaches the zone that owns the TOUCHPOINT
-    // (notional H-8's oracle) rather than only the zone that nominally holds the tokens. Chained AFTER the
+    // (the oracle zone that owns the rate read) rather than only the zone that nominally holds the tokens. Chained AFTER the
     // C8 net and BEFORE apply_fitness_reorder, so a forced C22 is still fitness-ranked like forced C5/C8/C19.
     let withCrossUnit = apply_cross_unit_backstop(withReentrancy, code);
     // #2218: force C24 (stale state assumption between touchpoints) when the zone owns an accrual/index

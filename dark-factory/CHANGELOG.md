@@ -42,6 +42,30 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **The hunter's lens no longer carries the corpus's ground truth, and the corpus has a hold-out policy
+  (#2231).** `auditor/bug-taxonomy.md` is read by `hunter.ag` AND folded verbatim into the frozen briefs by
+  `gen-briefs.sh`, so its `**seen:**` lines — which since 2026-07-24 named the corpus contests, their GT ids
+  and their mechanisms — were ground truth handed to the model about targets it was then scored on. All 11
+  contaminated lines now carry only the generic CODE SHAPE of the class (no contest, no GT id, no
+  contest-specific narrative); the contest-keyed originals moved verbatim into
+  `bench/corpus-bench/bug-class-coverage.md` ("Contest examples — docs only, never prompt-visible"). The same
+  scrub ran over the agent prompt strings and design comments (`zone-mapper.ag`'s fitness-prior prompt no
+  longer says "corpus-bench ground truth"; neither `zone-mapper.ag` nor `invariant-prover.ag` cites a GT
+  finding id any more, including the two bare-id comments #2233 caught).
+  `tools/colony-lint.sh` now FAILS when any prompt-visible file (`auditor/**`, `gen-briefs.sh`,
+  `lib/*prompt*`, every `.ag` under `dark-factory/`) contains the literal `corpus-bench` or a Sherlock-style
+  GT finding id (`H-<n>` / `M-<n>`) anywhere — a bare id with the contest name dropped is the same ground
+  truth minus the label (#2233), so the contest name is not required for the rule to fire — with a negative
+  control that fires the detector on a reverted taxonomy line, so a dead guard is detectable. `corpus.tsv`
+  gains a REQUIRED `role` column (column 5, before the optional `scope_hint`, because `IFS=TAB` collapses an empty field): `dev` =
+  `notional`, `yieldoor`, `yearn-ybold`, `crestal`, `plaza` (lenses were designed here — every number is
+  IN-DISTRIBUTION), `holdout` = `dodo`, `mellow`, `symm` (the only rows a recall CLAIM may be made on).
+  `run-corpus-bench.sh --score` and `generation-recall.sh --from-work` print the role on every per-contest
+  headline and in `--json`, and the archives `runs/2213-operationalize-ab/`, `runs/2214-oracles-rehunt/` plus
+  the C11/C23 `CAUGHT` rows of `bug-class-coverage.md` are banner-labelled in-distribution. Every positional
+  `corpus.tsv` reader (`fetch-corpus.sh`, `run-corpus-bench.sh`, `generalization-bench.sh`,
+  `../composable-lens-bench/run-composable-lens-bench.sh`) was updated for the new column.
+
 - **A `TRACE|` is paired to its `OPCHECK|` by check id, and degradation is now PER CHECK (#2223).** PR #2222's
   follow-through gate compared COUNTS, and its own QA showed the hole: 3 `OPCHECK|` lines answered by 3
   distinct but semantically UNRELATED `TRACE|` lines satisfy the count rule exactly (gap 0, gate silent). The
@@ -120,6 +144,33 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 - **Native flat-cyborg result-file reply capture (#2207).** The hunt emitters (`run-discovery.sh`, `run-invariant-hunt.sh`, `run-refute.sh`, `map-zones.sh`, `run-poc.sh`, `gen-briefs.sh`) now set `llm.flat_cyborg.result_file_dir` to the per-cell RUN dir, so the driven model writes its reply to a file agentis reads via flat-cyborg `--result-file` (file > transcript > screen) — large zone briefs/hunts no longer fail the `--extract` screen-scrape and degrade to mechanical/empty. **Requires:** agentis >= 1.32.0 + flat-cyborg >= 0.17.0 (older agentis ignores the key harmlessly → screen-scrape as before). Builds on flat-cyborg#79 (v0.17.0 `--result-file`) and agentis-core#1002.
 
 ### Added
+- **A SECOND TIER: the checks a cell derived and did not settle are carried out of the cell object (#2217, PR
+  A).** The #2223 breakdown already recorded, per cell, WHICH derived checks were left open — `unresolved_ids`
+  (with the check's own text) and `uncited_ids` — and those records died there: nothing downstream could act on
+  one. `run-discovery.sh` gains an opt-in `--tier2` (equivalently `DF_TIER2=1`, which is how a whole
+  `run-zone-hunt.sh` run opts in through the env) that lifts them into a **top-level `tier2[]` array** with a
+  location derived from the check's OWN text: `Contract.function` / `Foo.sol:fn` resolved against that cell's
+  file list, else the first call-shaped mention grepped for its declaration, else the cell's first file — with
+  `loc_source` (`opcheck` | `zone`) and `loc_rule` (`contract-fn` | `fn-grep` | `file-only`) on every record so
+  a credited row is auditable. Records are ranked rare-class first (`DF_TIER2_RARE_CLASSES`, default
+  `C19,C20,C21,C22,C23,C24` — a priority list, **not** a rarity oracle), then unresolved before uncited, then
+  the location rule, then manifest cell order and check id, and capped at `DF_TIER2_MAX_PER_ZONE` (default 3)
+  **per zone, after every cell has been accumulated** — so the selection is identical under `--jobs 1` and
+  `--jobs N`, and what the cap discarded is counted in `totals.tier2_dropped` rather than silently dropped. The
+  measured supply is ~5 unsettled checks per zone-run (#2214 archive), so the cap BINDS and the ranking is
+  load-bearing. `run-zone-hunt.sh`'s merge unions each zone's records in zone order and dedupes on the WHOLE
+  record; it deliberately does not re-rank or re-cap across attempts (the ranking lives in one place), so after
+  a `--rehunt-gaps` pass a zone can carry up to cap x attempts records — stated in the script header rather
+  than solved by a second implementation. **A tier-2 record is NOT a candidate:** it never enters
+  `candidates[]`, it carries NO severity (the field ships empty by construction), and it is not a finding.
+  **Cost: ZERO extra LLM calls and no prompt change** — every input already exists in the cell logs the run
+  produced, and the derivation is pure shell. **Default OFF and byte-identical:** without the flag no record is
+  collected, no file is written and both JSON fragments are exactly 0 bytes, so a default run emits the same
+  bytes as a pre-#2217 one; `DF_TIER2_MAX_PER_ZONE=0` forces the same inertness with the flag on.
+  `demo-operationalize-lens.sh` part 8 is the offline gate (derivation, the zone fallback, sanitisation, the
+  cap and its rank order, arrival-order independence, the 0-byte OFF path on a non-empty supply, and an
+  end-to-end `--tier2` byte-identity run under the mock backend).
+
 - **C24 — stale state assumption between touchpoints: new bug class + deterministic zone-mapper route (#2218,
   M1).** The #2213 corpus forensics clustered the pure GENERATION misses (candidates the hunter never emitted)
   and most share one root: a value written, snapshotted or DEFINED at touchpoint A is consumed at touchpoint B
