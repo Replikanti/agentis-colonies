@@ -142,18 +142,24 @@
 #     * CONFIG grounds  — a `TRACE|...|CLEAN...|` whose verdict+evidence span matches
 #                         /misconfig|trusted[ -](role|deployer)|privileged[ -](role|deployer)|deploy-time|
 #                          deployment[ -]configuration|configuration[ -](choice|invariant)/i
-#                         and carries NO `path.(sol|ts|js|md|json|toml|yml):<line>` citation.
+#                         and carries NO `path:<line>` citation UNDER `test/`, `tests/`, `script/`, `scripts/`,
+#                         `deploy/` or `docs/` — a `.sol` under `src/` only names the flag it declares, not
+#                         what the repo actually ships for it (#2225).
 #     * EXTERNAL grounds — a `TRACE|...|CLEAN...|` whose verdict+evidence span matches
 #                         /documented|by construction|by design|always returns|normali[sz]ed|normali[sz]es|
 #                          1e18|decimals|guarantee[sd]?/i
-#                         and cites no source at all (no `path:line`, no URL, no source file name, no
-#                         interface-style `I<Name>` identifier).
+#                         and either cites no `path:line` at all (#2225: a URL, a bare source-file name and a
+#                         bare interface identifier no longer discharge this branch — only a repo `path:line`
+#                         does), or cites one whose file resolves under the target repo and whose cited line
+#                         range states none of the fact tokens the TRACE relies on (`1e18|decimals|WAD|ONE|
+#                         normali|scale|order`) — a citation that only NAMES the file, without stating the
+#                         property, is not verification.
 #   Both are HEURISTICS over model-emitted free text — a regex cannot decide whether a sentence is really a
-#   scope argument, and nothing here verifies that a cited line says what the cell claims (that stays the
-#   OPERATOR read, like the trace-evidence rule above). They are tuned to be cheap when wrong: a false
-#   positive costs ONE re-ask of a cell that has no candidate to lose, a false negative simply leaves the
-#   pre-PR-C behaviour. The detectors only ever see `TRACE|` lines, which exist only when the #2211 lens is
-#   ON, so the production default (lens OFF) is untouched.
+#   scope argument, and the EXTERNAL content check is a cheap `sed -n 'a,bp' | grep -qiE` over the cited
+#   range, not a semantic read (that stays the OPERATOR read, like the trace-evidence rule above). They are
+#   tuned to be cheap when wrong: a false positive costs ONE re-ask of a cell that has no candidate to lose, a
+#   false negative simply leaves the pre-PR-C behaviour. The detectors only ever see `TRACE|` lines, which
+#   exist only when the #2211 lens is ON, so the production default (lens OFF) is untouched.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -648,30 +654,41 @@ _distinct_trace_lines() {
     | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u || true
 }
 
-# _uncited_dismissals <log> — #2214 PR C: how many DISTINCT traced CLEANs of this cell dismissed a check
-# without the citation their grounds require (see the heuristics block in the header). Printed as one integer
-# and ADDED to the follow-through shortfall by _opcheck_trace_gap below, so an uncited dismissal is untraced
-# for the existing gate: same one re-ask, same `untraced-opcheck` FAILED reason, no new status vocabulary.
+# _uncited_dismissals <log> [repo_dir] — #2214 PR C: how many DISTINCT traced CLEANs of this cell dismissed a
+# check without the citation their grounds require (see the heuristics block in the header). Printed as one
+# integer and ADDED to the follow-through shortfall by _opcheck_trace_gap below, so an uncited dismissal is
+# untraced for the existing gate: same one re-ask, same `untraced-opcheck` FAILED reason, no new status
+# vocabulary. [repo_dir] is OPTIONAL (empty = the pre-#2225 path:line-only check): when given, a EXTERNAL
+# citation whose file resolves under it also has its cited line range read for the fact tokens the TRACE
+# relies on (#2225) — a file the caller cannot resolve (no repo_dir, or the path does not exist under it)
+# falls back to the citation-shape check alone, since the content cannot be verified either way.
 #
 # The regexes live HERE rather than in globals so the function is self-contained: demo-operationalize-lens.sh
 # slices it out of this file by line range and sources it, and a detector that depended on script-level state
-# would silently behave differently there than in production.
+# would silently behave differently there than in production. [repo_dir] is an explicit PARAMETER for the
+# same reason — the function never reads the caller's $REPO global.
 #
 # The span searched is fields 3..N of the TRACE line (verdict + evidence), NOT the evidence field alone: the
 # measured cells routinely merge the two ("CLEAN — a VALID configuration exists ... a privileged deploy-time
 # misconfiguration"), and a detector anchored on field 4 would miss exactly the shape it was built for.
 _uncited_dismissals() {
   ud_log="$1"
+  ud_repo="${2:-}"
   if [ ! -f "$ud_log" ]; then printf '0\n'; return 0; fi
-  # Configuration-grounds vocabulary and the repo citation it must carry (a deployment/test line, or the
-  # validating check in a constructor/setter).
+  # Configuration-grounds vocabulary and the repo citation it must carry. #2225: the citation must sit UNDER
+  # a directory that records what the repo actually SHIPS (deploy/test/script/docs evidence) — a `.sol` under
+  # `src/` only names the flag it declares, which is exactly the shape the measured H-8 dismissals used.
   ud_cfg_re='misconfig|trusted[ -](role|deployer)|privileged[ -](role|deployer)|deploy-time|deployment[ -]configuration|configuration[ -](choice|invariant)'
-  ud_pathline_re='[A-Za-z0-9_/.-]+\.(sol|ts|js|md|json|toml|ya?ml):[0-9]+'
-  # External-fact vocabulary: an assertion about behaviour this payload does not settle. Any of the four
-  # citation forms discharges it — a path:line, a URL, a source/interface file name, or an interface-style
-  # identifier (the external interface the claim was read from).
+  ud_cfg_pathline_re='(^|[^A-Za-z0-9_])(test|tests|script|scripts|deploy|docs)/[A-Za-z0-9_/.-]+\.(sol|ts|js|md|json|toml|ya?ml):[0-9]+(-[0-9]+)?'
+  # External-fact vocabulary: an assertion about behaviour this payload does not settle. #2225: the ONLY
+  # citation shape that can discharge it is a repo `path:line` (optionally a `path:a-b` range) — a URL, a
+  # bare source-file name and a bare interface identifier NAME something without pointing at text that states
+  # what it does, which is exactly the shape #2214 M-12 measured closing a false CLEAN.
   ud_ext_re='documented|by construction|by design|always returns|normali[sz]ed|normali[sz]es|1e18|decimals|guarantee[sd]?'
-  ud_cite_re="$ud_pathline_re|https?://|[A-Za-z0-9_/.-]+\.(sol|ts|js|md)([^A-Za-z0-9]|\$)|(^|[^A-Za-z0-9_])I[A-Z][A-Za-z0-9_][A-Za-z0-9_]*"
+  ud_pathline_re='[A-Za-z0-9_/.-]+\.(sol|ts|js|md|json|toml|ya?ml):[0-9]+(-[0-9]+)?'
+  # The fact tokens the TRACE relies on: a cited range that states none of these only NAMES the file, it does
+  # not STATE the scaling/decimals/normalisation/ordering property the check depends on.
+  ud_fact_re='1e18|decimals|WAD|ONE|normali|scale|order'
   ud_n=0
   while IFS= read -r ud_line; do
     [ -n "$ud_line" ] || continue
@@ -680,13 +697,28 @@ _uncited_dismissals() {
     case "$ud_verdict" in *[Cc][Ll][Ee][Aa][Nn]*) ;; *) continue ;; esac
     ud_span="$(printf '%s\n' "$ud_line" | cut -d'|' -f3-)"
     if printf '%s\n' "$ud_span" | grep -Eqi "$ud_cfg_re" \
-       && ! printf '%s\n' "$ud_span" | grep -Eq "$ud_pathline_re"; then
+       && ! printf '%s\n' "$ud_span" | grep -Eq "$ud_cfg_pathline_re"; then
       ud_n=$((ud_n + 1))
       continue
     fi
-    if printf '%s\n' "$ud_span" | grep -Eqi "$ud_ext_re" \
-       && ! printf '%s\n' "$ud_span" | grep -Eq "$ud_cite_re"; then
-      ud_n=$((ud_n + 1))
+    if printf '%s\n' "$ud_span" | grep -Eqi "$ud_ext_re"; then
+      ud_cite="$(printf '%s\n' "$ud_span" | grep -oE "$ud_pathline_re" | head -1)"
+      if [ -z "$ud_cite" ]; then
+        # No repo path:line at all — the #2225-dropped URL/bare-name/bare-interface shapes land here too.
+        ud_n=$((ud_n + 1))
+      elif [ -n "$ud_repo" ]; then
+        ud_file="${ud_cite%%:*}"
+        ud_range="${ud_cite#*:}"
+        case "$ud_range" in
+          *-*) ud_a="${ud_range%-*}"; ud_b="${ud_range#*-}" ;;
+          *)   ud_a="$ud_range"; ud_b="$ud_range" ;;
+        esac
+        if [ -f "$ud_repo/$ud_file" ] \
+           && ! sed -n "${ud_a},${ud_b}p" "$ud_repo/$ud_file" 2>/dev/null | grep -qiE "$ud_fact_re"; then
+          # The file resolves and its cited range says none of the fact tokens: it names the file, not the fact.
+          ud_n=$((ud_n + 1))
+        fi
+      fi
     fi
   done <<EOF
 $(_distinct_trace_lines "$ud_log")
@@ -705,9 +737,11 @@ _unresolved_trace_count() {
   printf '%s\n' "$utc_n"
 }
 
-# _opcheck_trace_gap <log> — the follow-through shortfall of ONE cell log, printed as a single integer:
-# (distinct `OPCHECK|` lines) - (distinct `TRACE|` lines), floored at 0, PLUS (#2214 PR C) the distinct traced
-# CLEANs that dismissed a check without the citation their grounds require (_uncited_dismissals).
+# _opcheck_trace_gap <log> [repo_dir] — the follow-through shortfall of ONE cell log, printed as a single
+# integer: (distinct `OPCHECK|` lines) - (distinct `TRACE|` lines), floored at 0, PLUS (#2214 PR C) the
+# distinct traced CLEANs that dismissed a check without the citation their grounds require
+# (_uncited_dismissals). [repo_dir] threads straight through to _uncited_dismissals (#2225); omit it to fall
+# back to the citation-shape check alone.
 #
 # HOW A TRACE IS MATCHED TO ITS OPCHECK: by the COUNT of DISTINCT lines, deliberately NOT by pairing the
 # restated check text. The directive asks the model to RESTATE the check in the TRACE line, so a text join
@@ -721,6 +755,7 @@ _unresolved_trace_count() {
 # is off (the production default), so the gate is inert there rather than merely cheap.
 _opcheck_trace_gap() {
   otg_log="$1"
+  otg_repo="${2:-}"
   if [ ! -f "$otg_log" ]; then printf '0\n'; return 0; fi
   otg_op="$(_distinct_sentinel_count OPCHECK "$otg_log")"
   otg_tr="$(_distinct_sentinel_count TRACE "$otg_log")"
@@ -729,25 +764,27 @@ _opcheck_trace_gap() {
   # #2214 PR C: a check traced to an UNCITED dismissal was not followed through either — it was closed on an
   # unchecked scope heuristic or an unverified external fact — so it is added to the SAME shortfall and rides
   # the SAME gate (one re-ask, then the `untraced-opcheck` FAILED reason). No new status vocabulary.
-  otg_unc="$(_uncited_dismissals "$otg_log")"
+  otg_unc="$(_uncited_dismissals "$otg_log" "$otg_repo")"
   printf '%s\n' "$((otg_gap + otg_unc))"
 }
 
-# _untraced_safe <log> — true when <log> is the exact thing the gate exists to refuse: a directive-ON cell
-# that answered with NO candidate while at least one derived check went untraced. Four guards, in order:
+# _untraced_safe <log> [repo_dir] — true when <log> is the exact thing the gate exists to refuse: a
+# directive-ON cell that answered with NO candidate while at least one derived check went untraced. Four
+# guards, in order:
 #   * a #1707 chrome miss / #1955 terminal timeout already OWNS this cell's FAILED reason (and scrape_cell_log
 #     checks those markers first), so re-asking it here would spend a call on a cell that never answered;
 #   * no `OPERATIONALIZE|` sentinel => the lens was off for this cell => nothing to gate;
 #   * a cell that produced a LEAD is never re-asked (a re-ask could lose it) and never failed — its shortfall
 #     is recorded as the `untraced` field by _accumulate_cell instead;
-#   * finally the arithmetic itself.
+#   * finally the arithmetic itself. [repo_dir] threads straight through to _opcheck_trace_gap (#2225).
 _untraced_safe() {
   us_log="$1"
+  us_repo="${2:-}"
   if [ ! -f "$us_log" ]; then return 1; fi
   if [ -f "$us_log.novalid" ] || [ -f "$us_log.timeout" ]; then return 1; fi
   if ! grep -qE '^[[:space:]]*OPERATIONALIZE\|' "$us_log" 2>/dev/null; then return 1; fi
   if grep -v '^BLACKBOARD-' "$us_log" 2>/dev/null | grep -q 'CANDIDATE|'; then return 1; fi
-  [ "$(_opcheck_trace_gap "$us_log")" -gt 0 ]
+  [ "$(_opcheck_trace_gap "$us_log" "$us_repo")" -gt 0 ]
 }
 
 # _accumulate_cell <subsys> <cls> <files> <log> [status] [phase] — append ONE JSON object for this cell to
@@ -802,7 +839,7 @@ _accumulate_cell() {
   ac_trn="$(_distinct_sentinel_count TRACE "$ac_log")"
   if [ "$ac_trn" -gt 0 ]; then ac_traces_json=",\"traces\":$ac_trn"; fi
   ac_untraced_json=""
-  ac_un="$(_opcheck_trace_gap "$ac_log")"
+  ac_un="$(_opcheck_trace_gap "$ac_log" "$REPO")"
   if [ "$ac_un" -gt 0 ]; then ac_untraced_json=",\"untraced\":$ac_un"; fi
   ac_unresolved_json=""
   ac_unres="$(_unresolved_trace_count "$ac_log")"
@@ -880,14 +917,14 @@ run_cell() {
   # `.log`, so `find -name 'hunt_*.log'` readouts and the hunt dashboard keep seeing exactly one log per cell.
   rm -f "$rc_log.untraced"
   rc_reask=1
-  while [ "$rc_reask" -le "$DF_TRACE_MAX_REASKS" ] && _untraced_safe "$rc_log"; do
-    echo "run-discovery.sh:   ↳ untraced-opcheck: $rc_cls/'$rc_subsys' answered with $(_opcheck_trace_gap "$rc_log") untraced OPCHECK(s) — re-asking ($rc_reask/$DF_TRACE_MAX_REASKS)" >&2
+  while [ "$rc_reask" -le "$DF_TRACE_MAX_REASKS" ] && _untraced_safe "$rc_log" "$REPO"; do
+    echo "run-discovery.sh:   ↳ untraced-opcheck: $rc_cls/'$rc_subsys' answered with $(_opcheck_trace_gap "$rc_log" "$REPO") untraced OPCHECK(s) — re-asking ($rc_reask/$DF_TRACE_MAX_REASKS)" >&2
     mv -f "$rc_log" "$rc_log.untraced-attempt-$rc_reask" 2>/dev/null || true
     df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-discovery.sh: $rc_cls/'$rc_subsys' (trace re-ask $rc_reask)" "$rc_log" hunter "" _rc_attempt || true
     rc_reask=$((rc_reask + 1))
   done
-  if _untraced_safe "$rc_log"; then
-    _opcheck_trace_gap "$rc_log" > "$rc_log.untraced"
+  if _untraced_safe "$rc_log" "$REPO"; then
+    _opcheck_trace_gap "$rc_log" "$REPO" > "$rc_log.untraced"
   fi
 }
 

@@ -438,11 +438,15 @@ fn operationalize_block() -> string {
       + "EXTERNAL FACTS — the other way a derived check dies quietly: when a TRACE verdict of CLEAN rests on "
       + "a claim about how something OUTSIDE this payload behaves (what an external call returns, how it "
       + "scales, normalises or rounds a value, what units it uses, what order it applies operations in), "
-      + "that claim is a FACT YOU MUST VERIFY, not an assumption you may lean on. Cite in the evidence field "
-      + "the external interface, source or documentation you verified it against. If you cannot verify it "
-      + "from what you were given, the verdict is UNRESOLVED — never CLEAN. An UNRESOLVED check is recorded "
-      + "and carried forward; a CLEAN resting on an unverified external claim is a false negative with a "
-      + "confident face.\n\n";
+      + "that claim is a FACT YOU MUST VERIFY, not an assumption you may lean on. VERIFIED has a strict "
+      + "meaning: the text you cite is IN THIS REPOSITORY — a vendored interface, library, test or doc file, "
+      + "at a specific path:line — AND that cited text literally STATES the property the check relies on (the "
+      + "scaling factor, the decimal count, the normalisation rule, the ordering guarantee). Naming an "
+      + "external site, a library by name, or a well-known convention is NOT verification, no matter how "
+      + "standard it sounds — cite the repository text that states the fact, or the check is unverified. If "
+      + "you cannot verify it from what you were given, the verdict is UNRESOLVED — never CLEAN. An "
+      + "UNRESOLVED check is recorded and carried forward; a CLEAN resting on an unverified external claim is "
+      + "a false negative with a confident face.\n\n";
 }
 
 // The M1 toggle. INVERTED vs callee_trust_enabled() (`!= "0"`) ON PURPOSE: only the literal "1" opts IN, so
