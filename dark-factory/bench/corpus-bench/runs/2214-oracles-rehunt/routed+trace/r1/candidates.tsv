@@ -1,0 +1,5 @@
+location	class	severity
+src/oracles/Curve2TokenOracle.sol:_lpTokenValue	C15	High
+src/oracles/Curve2TokenOracle.sol:_lpTokenValue	C8	High
+src/oracles/AbstractCustomOracle.sol:_checkSequencer	C2	Medium
+src/oracles/Curve2TokenOracle.sol:_lpTokenValue:75	C8	High
