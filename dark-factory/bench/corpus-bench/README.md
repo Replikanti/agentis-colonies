@@ -185,6 +185,21 @@ novel.** A concluded, multi-watson-combed contest rarely has a genuinely missed 
 far more likely noise (FP, out-of-scope, already-known-but-phrased-differently) than a real find. Treat it as
 a manual-triage queue, not a result.
 
+**Tier 2 is scored, and reported, separately (#2217).** `run-discovery.sh --tier2` lifts the checks a cell
+DERIVED but never settled (`unresolved` / `uncited`) into a top-level `tier2[]` array, each with a location
+derived by regex from the check's own text. Those are weaker evidence than a candidate the model chose to
+file, so they never touch a headline: `hypotheses-to-leads.py` projects them only under `--include-tier2` (as
+leads flagged `"tier": 2`), and `generation-recall.sh` scores TWICE — the PRIMARY generation-recall is
+computed from a lead set the adapter emitted WITHOUT the flag and therefore containing no tier-2 lead at all,
+and the tier-2 contribution is printed on its own line (`tier-2 (SECONDARY, #2217): +k`, `tier2_hits` /
+`tier2_leads` in `--json`) as the GT rows credited ONLY once tier-2 leads are added. Both sides of that
+subtraction go through the same ruler (same `--min-overlap` / `--judge` / `--gt-dupes`), so the secondary
+number is a delta and never a second metric. `score-match.py` is UNCHANGED: it ignores the `tier` key and
+scores a tier-2 lead by the same location-first rule, which is exactly why the separation has to be made in
+the LEAD SET rather than in the scorer. Reading rule: a tier-2 hit says the pipeline NAMED the location in a
+check it could not settle — it is mechanism-blind at a higher rate than a tier-1 hit, so "we found it" is
+still an operator read of the cell log, never a scoreboard read.
+
 ## Semantic mechanism judge (#1829)
 
 `--judge cache|cmd` swaps the name-matching rule for a **root-cause + mechanism** decision made by a model.
