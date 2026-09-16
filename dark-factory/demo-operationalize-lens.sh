@@ -70,6 +70,14 @@
 #      TRACE lines) trips, an orphan id is counted, a cell with ONE uncited check and a correct UNRESOLVED
 #      carry stays `ok` with both recorded per check, a legacy un-numbered transcript falls back to the count
 #      rule, and a lens-OFF cell keeps both its byte-identical prompt and its exact JSON key set.
+#   8) #2217 PR A SECOND-TIER RECORDS (CI floor): the shipped tier-2 functions, sliced out of run-discovery.sh
+#      again, over synthetic cell logs — an UNRESOLVED carry becomes ONE record located from the check's own
+#      `Contract.function` text (`loc_source: opcheck`), a check that names nothing falls back to the zone file
+#      list (`loc_source: zone`), decoration/slice suffixes can never produce an unparseable location, the
+#      per-zone cap of 3 keeps the rare class first and COUNTS what it dropped, the selection does not depend
+#      on cell arrival order, and — the load-bearing half — the feature OFF emits EXACTLY 0 bytes on the same
+#      non-empty supply, so a default run's JSON is byte-identical. A tier-2 record is an UNSETTLED CHECK, not
+#      a candidate: it carries no severity and nothing here may be read as a recall claim.
 #
 # #2223 also changes WHEN a cell is failed, which parts 4 and 7 both pin: a cell that answered NONE of its
 # derived checks is still a FAILED `untraced-opcheck` cell, while a PARTIAL shortfall is recorded per check on
@@ -86,6 +94,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 HUNTER="$HERE/auditor/agents/hunter.ag"
 TAXONOMY="$HERE/auditor/bug-taxonomy.md"
 DISCOVERY="$HERE/run-discovery.sh"
+ZONEHUNT="$HERE/run-zone-hunt.sh"
 FIXDIR="$HERE/fixtures/operationalize/contracts"
 PAIRED="$FIXDIR/PairedPoolVault.sol"
 PLAIN="$FIXDIR/PlainCounter.sol"
@@ -96,7 +105,7 @@ ok()   { echo "  [PASS] $*"; }
 bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 skip() { echo "  [SKIP] $*"; }
 
-for f in "$HUNTER" "$TAXONOMY" "$DISCOVERY" "$PAIRED" "$PLAIN"; do
+for f in "$HUNTER" "$TAXONOMY" "$DISCOVERY" "$ZONEHUNT" "$PAIRED" "$PLAIN"; do
   [ -f "$f" ] || { note "required file not found: $f" >&2; exit 3; }
 done
 
@@ -1401,8 +1410,325 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# PART 8 — #2217 PR A: SECOND-TIER (tier-2) RECORDS (offline; runs in CI with no binaries).
+# The carry this part gates: the #2223 per-check breakdown already records WHICH derived checks a cell left
+# open, and those records die inside the cell object. A tier-2 record lifts one out — with a location derived
+# from the check's OWN text — into a top-level `tier2[]` array, ranked and capped per zone. It costs ZERO
+# extra LLM calls and changes no prompt: every input is already in the cell log, and the derivation is pure
+# shell. As everywhere else here, the functions under test are SLICED OUT of run-discovery.sh by line range
+# and sourced, so this measures the shipped code rather than a copy that can drift.
+# A tier-2 record is NOT a candidate and carries NO severity. Nothing below may be read as a recall claim.
+# ----------------------------------------------------------------------------------------------------------
+note "35) the shipped tier-2 functions slice out of run-discovery.sh and load ..."
+T2_FNS="$WORK/tier2-fns.sh"
+{
+  # _json_str is a ONE-LINE function, so it is matched by prefix rather than by the `^}$` range the others use.
+  sed -n '/^_json_str() {/p' "$DISCOVERY"
+  for _t2fn in _count_stdin _ids_of_lines _check_ids _distinct_trace_lines _uncited_dismissal_lines \
+               _uncited_check_ids _unresolved_check_ids _tier2_flat _opcheck_text _trace_evidence \
+               _unresolved_check_rows _uncited_check_rows _tier2_emit_loc _tier2_resolve_file \
+               _tier2_location _tier2_rare _tier2_records _tier2_select _tier2_json_array \
+               _tier2_top_json _tier2_totals_json; do
+    sed -n "/^$_t2fn() {\$/,/^}\$/p" "$DISCOVERY"
+  done
+} > "$T2_FNS"
+T2_LOADED=0
+T2_FN_MISS=""
+for _t2fn in _json_str _tier2_location _tier2_records _tier2_select _tier2_json_array _tier2_top_json _tier2_totals_json _unresolved_check_rows _uncited_check_rows; do
+  grep -q "^$_t2fn() {" "$T2_FNS" || T2_FN_MISS="$T2_FN_MISS $_t2fn"
+done
+if [ -z "$T2_FN_MISS" ]; then
+  # shellcheck disable=SC1090  # sliced out of run-discovery.sh at runtime, by design
+  . "$T2_FNS"
+  T2_LOADED=1
+  ok "the shipped tier-2 functions (_tier2_location / _tier2_records / _tier2_select / _tier2_top_json / _tier2_totals_json / ...) extracted from run-discovery.sh and sourced"
+else
+  bad "could not extract the #2217 tier-2 functions from run-discovery.sh (renamed or reshaped?):$T2_FN_MISS"
+fi
+
+# A generic two-contract zone: one oracle-shaped contract whose function the check text can NAME, and a
+# sibling whose function can only be found by grepping for its declaration. Protocol-agnostic on purpose —
+# a fixture that named a real protocol would overfit the gate and, in a public repo, read as a target hint.
+T2REPO="$WORK/tier2-repo"
+mkdir -p "$T2REPO/src/oracles"
+cat > "$T2REPO/src/oracles/YieldTokenOracle.sol" <<'T2SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract YieldTokenOracle {
+    function _calculateBaseToQuote(uint256 amount) internal view returns (uint256) {
+        return amount;
+    }
+
+    function latestAnswer() external view returns (uint256) {
+        return 1e18;
+    }
+}
+T2SOL
+cat > "$T2REPO/src/oracles/RateAdapter.sol" <<'T2SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+contract RateAdapter {
+    function convertRate(uint256 amount) public pure returns (uint256) {
+        return amount;
+    }
+}
+T2SOL
+T2FILES="src/oracles/YieldTokenOracle.sol,src/oracles/RateAdapter.sol"
+
+if [ "$T2_LOADED" -eq 1 ]; then
+  note "36) an UNRESOLVED carry becomes ONE tier-2 record, located from the check's OWN text ..."
+  # The r2 shape from the #2214 archive, genericised: the cell derived a decimals-scaling check that NAMES its
+  # location as `Contract.function`, answered it UNRESOLVED, and answered everything else. The cell is `ok`,
+  # the zone is not degraded, and before #2217 that carry died inside the cell object.
+  T2_R2_LOG="$(_cell_log tier2-r2 \
+    'OPERATIONALIZE|oracles|C23|on' \
+    'OPCHECK|#1|YieldTokenOracle._calculateBaseToQuote scaling|the quote is scaled by the quote token decimals, not a hardcoded unit' \
+    'OPCHECK|#2|the refresh order|the stored index is refreshed before it is read' \
+    'TRACE|#1|UNRESOLVED|the decimals of the quote token are not visible in this payload' \
+    'TRACE|#2|CLEAN|the setter runs before the reader in the same call' \
+    'SAFE')"
+  T2_R2_TSV="$WORK/tier2-r2.tsv"
+  _tier2_records oracles C23 "$T2FILES" "$T2_R2_LOG" "$T2REPO" > "$T2_R2_TSV"
+  T2_R2_N="$(grep -c . "$T2_R2_TSV" 2>/dev/null || true)"
+  T2_R2_LOC="$(cut -f8 "$T2_R2_TSV" | head -1)"
+  T2_R2_SRC="$(cut -f9 "$T2_R2_TSV" | head -1)"
+  T2_R2_RULE="$(cut -f10 "$T2_R2_TSV" | head -1)"
+  T2_R2_KIND="$(cut -f4 "$T2_R2_TSV" | head -1)"
+  T2_R2_WHY="$(cut -f12 "$T2_R2_TSV" | head -1)"
+  if [ "$T2_R2_N" = "1" ] && [ "$T2_R2_KIND" = "unresolved" ] \
+     && [ "$T2_R2_LOC" = "src/oracles/YieldTokenOracle.sol:_calculateBaseToQuote" ] \
+     && [ "$T2_R2_SRC" = "opcheck" ] && [ "$T2_R2_RULE" = "contract-fn" ]; then
+    ok "the UNRESOLVED check becomes exactly ONE record at $T2_R2_LOC (loc_source=opcheck, loc_rule=contract-fn); the CLEAN sibling contributes none"
+  else
+    bad "the UNRESOLVED carry did not become one located record (n=$T2_R2_N kind=$T2_R2_KIND loc=$T2_R2_LOC src=$T2_R2_SRC rule=$T2_R2_RULE)"
+  fi
+  # The record must carry the cell's OWN reason, not a harness paraphrase: `why` is the TRACE evidence span.
+  case "$T2_R2_WHY" in
+    "the decimals of the quote token are not visible in this payload")
+      ok "the record's \"why\" is the TRACE line's own evidence span (the cell's reason for not settling it)" ;;
+    *) bad "the record's \"why\" is not the TRACE evidence span (got '$T2_R2_WHY')" ;;
+  esac
+  # The location must be parseable by score-match.py's lead_location() — bare path, ONE colon, a function half.
+  if printf '%s\n' "$T2_R2_LOC" | grep -qE '^[A-Za-z0-9_./-]+\.sol:[A-Za-z_][A-Za-z0-9_]*$'; then
+    ok "the derived location passes the pinned <path>.sol:<function> shape (score-match.py can pair-credit it)"
+  else
+    bad "the derived location is outside the pinned shape — no consumer could parse it into (file, function)"
+  fi
+
+  note "37) a check with NO derivable location falls back to the zone file list ..."
+  T2_ZONE_LOG="$(_cell_log tier2-zone \
+    'OPERATIONALIZE|oracles|C23|on' \
+    'OPCHECK|#1|the wrapper rate source|the wrapper and the yield leg must read the SAME rate source' \
+    'TRACE|#1|UNRESOLVED|both legs resolve their source through a registry this zone does not contain' \
+    'SAFE')"
+  T2_ZONE_TSV="$WORK/tier2-zone.tsv"
+  _tier2_records oracles C23 "$T2FILES" "$T2_ZONE_LOG" "$T2REPO" > "$T2_ZONE_TSV"
+  T2_Z_LOC="$(cut -f8 "$T2_ZONE_TSV" | head -1)"
+  T2_Z_SRC="$(cut -f9 "$T2_ZONE_TSV" | head -1)"
+  T2_Z_RULE="$(cut -f10 "$T2_ZONE_TSV" | head -1)"
+  if [ "$T2_Z_LOC" = "src/oracles/YieldTokenOracle.sol" ] && [ "$T2_Z_SRC" = "zone" ] && [ "$T2_Z_RULE" = "file-only" ]; then
+    ok "no Contract.function and no call-shaped mention: the record falls back to the cell's FIRST file with loc_source=zone (honest, and ranked last under the cap)"
+  else
+    bad "the zone fallback did not fire as specified (loc=$T2_Z_LOC src=$T2_Z_SRC rule=$T2_Z_RULE)"
+  fi
+  # The middle rule: a call-shaped mention whose DECLARATION is grepped out of this cell's files, in CSV order.
+  T2_GREP_LOC="$(_tier2_location 'the convertRate( ) rounding|rounding favours the pool on both legs' "$T2FILES" "$T2REPO" | cut -f1)"
+  T2_GREP_SRC="$(_tier2_location 'the convertRate( ) rounding|rounding favours the pool on both legs' "$T2FILES" "$T2REPO" | cut -f2,3 | tr '\t' '/')"
+  if [ "$T2_GREP_LOC" = "src/oracles/RateAdapter.sol:convertRate" ] && [ "$T2_GREP_SRC" = "opcheck/fn-grep" ]; then
+    ok "a call-shaped mention resolves through the fn-grep rule to the file that DECLARES it ($T2_GREP_LOC)"
+  else
+    bad "the fn-grep rule did not resolve the call-shaped mention (loc=$T2_GREP_LOC src/rule=$T2_GREP_SRC)"
+  fi
+
+  note "38) SANITISATION: decoration and slice suffixes can never produce a location outside the pinned shape ..."
+  T2_SAN_BAD=""
+  for _t2case in \
+    'the `YieldTokenOracle._calculateBaseToQuote` scaling (see the header)' \
+    'YieldTokenOracle.sol:_calculateBaseToQuote@_calculateBaseToQuote must scale' \
+    'src/oracles/YieldTokenOracle.sol:_calculateBaseToQuote:132 is the site' \
+    '"YieldTokenOracle._calculateBaseToQuote" ~(test/Oracle.t.sol) must scale'
+  do
+    _t2loc="$(_tier2_location "$_t2case" "$T2FILES" "$T2REPO" | cut -f1)"
+    case "$_t2loc" in
+      src/oracles/YieldTokenOracle.sol|src/oracles/YieldTokenOracle.sol:_calculateBaseToQuote) ;;
+      *) T2_SAN_BAD="$T2_SAN_BAD [$_t2case -> $_t2loc]" ;;
+    esac
+  done
+  if [ -z "$T2_SAN_BAD" ]; then
+    ok "backticks, quotes, parentheses, an @fn slice suffix, a ~(...) tail and an extra ':' all degrade to a well-shaped location or the zone fallback — never to a string no consumer can parse"
+  else
+    bad "sanitisation let a malformed location through:$T2_SAN_BAD"
+  fi
+
+  note "39) the per-zone CAP keeps the 3 highest-ranked records and COUNTS what it dropped ..."
+  # Five candidates across two cells of one zone: a rare-class (C23) cell and a non-rare (C1) one. The rank is
+  # rare class first, then unresolved before uncited, then the location rule, then cell order / check id.
+  T2_CAP_A="$(_cell_log tier2-cap-a \
+    'OPERATIONALIZE|oracles|C23|on' \
+    'OPCHECK|#1|YieldTokenOracle._calculateBaseToQuote scaling|the quote is scaled by the quote token decimals' \
+    'OPCHECK|#2|the wrapper rate source|both legs must read the SAME rate source' \
+    'OPCHECK|#3|the convertRate( ) rounding|rounding favours the pool on both legs' \
+    'TRACE|#1|UNRESOLVED|the decimals of the quote token are not visible in this payload' \
+    'TRACE|#2|UNRESOLVED|the registry that resolves the source is outside this zone' \
+    'TRACE|#3|CLEAN|by construction the external venue always returns a normalised unit ratio' \
+    'SAFE')"
+  T2_CAP_B="$(_cell_log tier2-cap-b \
+    'OPERATIONALIZE|oracles|C1|on' \
+    'OPCHECK|#1|YieldTokenOracle.latestAnswer staleness|the answer is rejected when it is older than the heartbeat' \
+    'OPCHECK|#2|the queue order|entries are drained in insertion order' \
+    'TRACE|#1|UNRESOLVED|the heartbeat is a deployment parameter this payload does not carry' \
+    'TRACE|#2|UNRESOLVED|the queue implementation lives outside this zone' \
+    'SAFE')"
+  T2_CAP_TSV="$WORK/tier2-cap.tsv"
+  : > "$T2_CAP_TSV"
+  _tier2_records oracles C23 "$T2FILES" "$T2_CAP_A" "$T2REPO" >> "$T2_CAP_TSV"
+  _tier2_records oracles C1  "$T2FILES" "$T2_CAP_B" "$T2REPO" >> "$T2_CAP_TSV"
+  T2_CAP_ALL="$(grep -c . "$T2_CAP_TSV" 2>/dev/null || true)"
+  T2_CAP_KEPT="$(_tier2_select "$T2_CAP_TSV" 3 | cut -f5,4,7 | tr '\t' '/' | tr '\n' ' ' | sed 's/ $//')"
+  if [ "$T2_CAP_ALL" = "5" ] && [ "$T2_CAP_KEPT" = "unresolved/C23/1 unresolved/C23/2 uncited/C23/3" ]; then
+    ok "5 candidates, cap 3: the kept set is the rare class first, unresolved before uncited, contract-fn before the zone fallback ($T2_CAP_KEPT)"
+  else
+    bad "the cap did not select the specified 3 (all=$T2_CAP_ALL kept='$T2_CAP_KEPT')"
+  fi
+  T2_CAP_TOTALS="$(_tier2_totals_json "$T2_CAP_TSV" 1 3)"
+  if [ "$T2_CAP_TOTALS" = ',"tier2":3,"tier2_dropped":2' ]; then
+    ok "the totals record BOTH halves: 3 kept and 2 dropped by the cap (an over-supply is never silently truncated)"
+  else
+    bad "totals.tier2/tier2_dropped are wrong (got '$T2_CAP_TOTALS', want ',\"tier2\":3,\"tier2_dropped\":2')"
+  fi
+  # The cap is applied over the WHOLE zone after every cell is accumulated, so it must be independent of the
+  # order the accumulator happened to append in. Re-run with the two cells swapped: same three records.
+  T2_CAP_TSV2="$WORK/tier2-cap-swapped.tsv"
+  : > "$T2_CAP_TSV2"
+  _tier2_records oracles C1  "$T2FILES" "$T2_CAP_B" "$T2REPO" >> "$T2_CAP_TSV2"
+  _tier2_records oracles C23 "$T2FILES" "$T2_CAP_A" "$T2REPO" >> "$T2_CAP_TSV2"
+  if [ "$(_tier2_select "$T2_CAP_TSV2" 3 | cut -f5,4,7 | tr '\t' '/' | tr '\n' ' ' | sed 's/ $//')" = "$T2_CAP_KEPT" ]; then
+    ok "the selection is unchanged when the cells are accumulated in the opposite order (the rank decides, not the arrival order)"
+  else
+    bad "the selection depends on cell arrival order — it would differ between --jobs 1 and --jobs N"
+  fi
+  # The rare-class list is a PRIORITY LIST and nothing else, and it is one env-overridable comma list.
+  if [ "$(_tier2_rare C23)" = "0" ] && [ "$(_tier2_rare C1)" = "1" ] \
+     && [ "$(DF_TIER2_RARE_CLASSES=C1 _tier2_rare C1)" = "0" ] \
+     && [ "$(DF_TIER2_RARE_CLASSES=C1 _tier2_rare C23)" = "1" ]; then
+    ok "DF_TIER2_RARE_CLASSES is the single, env-overridable priority list (default C19-C24; overriding it moves the priority, nothing else)"
+  else
+    bad "the rare-class priority list is not env-overridable as one list"
+  fi
+
+  note "40) OFF is EXACTLY 0 bytes, on the SAME non-empty supply ..."
+  # This is the byte-identity contract, proven on a TSV that really carries records: with the feature off both
+  # fragments are empty strings, and concatenating an empty string into the assembly printf is a no-op. So a
+  # feature-OFF run cannot differ from a pre-#2217 run by construction, not by inspection.
+  T2_OFF_TOP="$(_tier2_top_json "$T2_CAP_TSV" 0 3)"
+  T2_OFF_TOT="$(_tier2_totals_json "$T2_CAP_TSV" 0 3)"
+  T2_CAP0_TOP="$(_tier2_top_json "$T2_CAP_TSV" 1 0)"
+  if [ -z "$T2_OFF_TOP" ] && [ -z "$T2_OFF_TOT" ] && [ -z "$T2_CAP0_TOP" ]; then
+    ok "feature OFF (and cap 0) emit 0 bytes for BOTH the tier2[] array and the totals — no key, not an empty array"
+  else
+    bad "the OFF path emits bytes (top='$T2_OFF_TOP' totals='$T2_OFF_TOT' cap0='$T2_CAP0_TOP') — a default run's JSON would change shape"
+  fi
+  # ON, the fragment must be well-formed JSON carrying the documented schema keys and an EMPTY severity.
+  T2_ON_TOP="$(_tier2_top_json "$T2_CAP_TSV" 1 3)"
+  if printf '{"totals":{}%s}\n' "$T2_ON_TOP" | python3 -c 'import json,sys; d=json.load(sys.stdin); r=d["tier2"][0]; assert len(d["tier2"])==3; assert sorted(r)==["check","class","id","kind","loc_rule","loc_source","location","severity","subsystem","why"], sorted(r); assert r["severity"]=="", r; assert isinstance(r["id"], int)' 2>/dev/null; then
+    ok "the emitted fragment parses as JSON, carries exactly the documented schema keys, an integer id and an EMPTY severity (a tier-2 record assesses none)"
+  else
+    bad "the tier2[] fragment is not well-formed JSON with the documented schema (severity must ship empty)"
+  fi
+
+  note "41) the UNRESOLVED row source cannot drift from the shipped #2223 carry ..."
+  # _unresolved_check_rows REUSES _unresolved_check_ids for its first two columns rather than re-implementing
+  # the parse, so the tier-2 source set and the shipped `unresolved_ids` JSON can never disagree about WHICH
+  # checks were carried. Pin it on a log that carries two.
+  if [ "$(_unresolved_check_rows "$T2_CAP_A" | cut -f1 | tr '\n' ' ')" = "$(_unresolved_check_ids "$T2_CAP_A" | cut -f1 | tr '\n' ' ')" ]; then
+    ok "_unresolved_check_rows carries exactly the ids _unresolved_check_ids reports (one parse, two projections)"
+  else
+    bad "the tier-2 rows and the #2223 unresolved_ids carry DIFFERENT check ids — one of them re-implemented the parse"
+  fi
+  # The uncited source set is likewise the set the #2225/#2227 detectors flag, never a second opinion.
+  if [ "$(_uncited_check_rows "$T2_CAP_A" | cut -f1 | tr '\n' ' ')" = "$(_uncited_check_ids "$T2_CAP_A" | cut -f1 | tr '\n' ' ')" ]; then
+    ok "_uncited_check_rows carries exactly the ids _uncited_check_ids flags (the tier-2 source set is the STOP-1 set: unresolved + uncited, nothing else)"
+  else
+    bad "the tier-2 uncited rows disagree with _uncited_check_ids — the source set grew a second opinion"
+  fi
+fi
+
+note "42) the #2217 wiring in run-discovery.sh and run-zone-hunt.sh ..."
+T2_SRC_MISS=""
+# Default OFF, on BOTH switches, and the cap forces the whole feature off at 0.
+grep -q '^TIER2=0$' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [TIER2-defaults-to-0]"
+grep -q -- '--tier2) TIER2=1; shift ;;' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [--tier2-flag]"
+grep -q 'if \[ "${DF_TIER2:-}" = "1" \]; then TIER2=1; fi' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [DF_TIER2-env-switch]"
+grep -q 'DF_TIER2_MAX_PER_ZONE="${DF_TIER2_MAX_PER_ZONE:-3}"' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [cap-default-3]"
+grep -q '\[ "$DF_TIER2_MAX_PER_ZONE" -gt 0 \] || TIER2=0' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [cap-0-forces-OFF]"
+# The records go to a RUN-scoped TSV, never into the cell object — that is what keeps every per-cell key set
+# (and _plan_depth_cells's forward key scan) byte-identical.
+grep -q '_tier2_records "$ac_subsys" "$ac_cls" "$ac_files" "$ac_log" "$REPO" >> "$TIER2_TSV"' "$DISCOVERY" \
+  || T2_SRC_MISS="$T2_SRC_MISS [records-to-run-scoped-tsv]"
+grep -q 'if \[ "$TIER2" -eq 1 \]; then : > "$TIER2_TSV"; fi' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [tsv-created-only-when-ON]"
+# The two new %s slots of the assembly printf are fed by variables initialised EMPTY and assigned only under
+# the flag — the OFF path cannot reach the emitters at all.
+grep -q '^TIER2_JSON=""$' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [TIER2_JSON-initialised-empty]"
+grep -q '^TIER2_TOTALS_JSON=""$' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [TIER2_TOTALS_JSON-initialised-empty]"
+grep -q '"$DEPTH_TOTAL_JSON" "$TIER2_TOTALS_JSON" "$TIER2_JSON" > "$RESULTS_JSON"' "$DISCOVERY" \
+  || T2_SRC_MISS="$T2_SRC_MISS [assembly-consumes-both-fragments]"
+# The schema is DOCUMENTED in the script header, not left to be reverse-engineered from the printf.
+grep -q 'SCHEMA — top-level `tier2\[\]` of discovery-results.json' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [schema-in-header]"
+grep -q 'loc_source  "opcheck" = derived from the CHECK TEXT' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [loc_source-documented]"
+# The merge unions tier-2 records across zones and attempts, dedupes on the WHOLE record, and adds no key when
+# there is nothing to carry.
+grep -q 'tier2, tier2_seen = \[\], set()' "$ZONEHUNT" || T2_SRC_MISS="$T2_SRC_MISS [merge-collects-tier2]"
+grep -q 'rk = json.dumps(r, sort_keys=True)' "$ZONEHUNT" || T2_SRC_MISS="$T2_SRC_MISS [merge-dedupes-whole-record]"
+grep -q 'out\["totals"\]\["tier2"\] = len(tier2)' "$ZONEHUNT" || T2_SRC_MISS="$T2_SRC_MISS [merge-totals-tier2]"
+if [ -z "$T2_SRC_MISS" ]; then
+  ok "the second tier is default-OFF on both switches, cap-0-inert, written to a RUN-scoped TSV (never into a cell object), assembled through two fragments that are empty unless it is ON, documented in the header, and unioned by the merge"
+else
+  bad "the #2217 wiring regressed:$T2_SRC_MISS"
+fi
+# A tier-2 record must never be countable as a candidate: the emitters carry no CANDIDATE| substring (the
+# reply-shape validator greps for exactly that) and never touch the candidate accumulator.
+if sed -n '/^# --- #2217 PR A: SECOND-TIER/,/^# _opcheck_trace_gap /p' "$DISCOVERY" | grep -q 'CANDIDATE|'; then
+  bad "the #2217 block mentions a 'CANDIDATE|' token — a tier-2 record could be mistaken for a lead"
+else
+  ok "the #2217 block emits no 'CANDIDATE|' substring and touches no candidate accumulator (a tier-2 record is an UNSETTLED CHECK, not a lead)"
+fi
+
+note "43) live-under-mock: --tier2 changes NOTHING on a run that carried no unsettled check ..."
+if ! command -v agentis >/dev/null 2>&1; then
+  skip "no agentis binary on PATH — the end-to-end --tier2 byte-identity run cannot run"
+else
+  T2SCOPE="$WORK/tier2-scope.tsv"
+  T2BRIEF="$WORK/tier2-brief.md"
+  printf 'vault | C23 | contracts/PairedPoolVault.sol\n' > "$T2SCOPE"
+  printf '# brief\nInvariants to break: the two legs of a round trip agree.\nKnown issues to exclude: none.\n' > "$T2BRIEF"
+  T2E2E_REPO="$WORK/tier2-e2e-repo"; mkdir -p "$T2E2E_REPO/contracts"
+  cp "$PAIRED" "$T2E2E_REPO/contracts/PairedPoolVault.sol"
+  OPERATIONALIZE_LENS=1 "$DISCOVERY" --repo "$T2E2E_REPO" --scope "$T2SCOPE" --brief "$T2BRIEF" \
+    --only vault --classes C23 --backend mock --agentis agentis --out "$WORK/t2-on" --tier2 \
+    > "$WORK/t2-on.out" 2>&1 || true
+  OPERATIONALIZE_LENS=1 "$DISCOVERY" --repo "$T2E2E_REPO" --scope "$T2SCOPE" --brief "$T2BRIEF" \
+    --only vault --classes C23 --backend mock --agentis agentis --out "$WORK/t2-off" \
+    > "$WORK/t2-off.out" 2>&1 || true
+  if [ ! -f "$WORK/t2-on/discovery-results.json" ] || [ ! -f "$WORK/t2-off/discovery-results.json" ]; then
+    bad "the mock --tier2 arms produced no discovery-results.json (run-discovery.sh did not complete)"
+    tail -5 "$WORK/t2-on.out" 2>/dev/null | sed 's/^/      /' >&2
+  else
+    if grep -q '"tier2"' "$WORK/t2-off/discovery-results.json"; then
+      bad "a run WITHOUT --tier2 emitted a tier2 key — the feature is not default-OFF end to end"
+    elif cmp -s "$WORK/t2-on/discovery-results.json" "$WORK/t2-off/discovery-results.json"; then
+      ok "--tier2 on a run whose cells settled (or derived) nothing is BYTE-IDENTICAL to the default run — the flag parses, and an empty supply adds no key"
+    else
+      bad "--tier2 changed the emitted JSON on a run with no unsettled check"
+      diff "$WORK/t2-off/discovery-results.json" "$WORK/t2-on/discovery-results.json" | head -5 | sed 's/^/      /' >&2
+    fi
+  fi
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
-  note "PASS — the #2211 operationalize directive (pure-meta text, default-OFF flag, OPERATIONALIZE| sentinel, OPCHECK| contract), the #2214 OPCHECK->TRACE follow-through gate, the #2214 PR C dismissal-citation discipline and the #2223 per-check pairing by id (with per-CHECK degradation) hold"
+  note "PASS — the #2211 operationalize directive (pure-meta text, default-OFF flag, OPERATIONALIZE| sentinel, OPCHECK| contract), the #2214 OPCHECK->TRACE follow-through gate, the #2214 PR C dismissal-citation discipline, the #2223 per-check pairing by id (with per-CHECK degradation) and the #2217 PR A second-tier carry (derivation, location, ranking, cap, default-OFF byte-identity) hold"
   note "NOTE: this gate proves WIRING and model COMPLIANCE only. Rare-tier recall is UNMEASURED until the #2211 M2 corpus A/B runs."
   exit 0
 fi
