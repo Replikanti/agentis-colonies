@@ -26,12 +26,25 @@
 # fuzzer/refuter then failed to confirm — the #1716 expressiveness gap, made measurable) is printed too.
 #
 # MODES:
+#
+# TIER 2 (#2217 PR B) — SCORED SEPARATELY, NEVER FOLDED IN. A tier-2 record is a check a cell DERIVED and did
+# not settle, lifted out of the cell object by run-discovery.sh --tier2 with a location its own text implies.
+# That is weaker evidence than a candidate the model chose to file, so this harness scores TWICE: the PRIMARY
+# generation-recall is computed from a lead set the adapter emits WITHOUT --include-tier2 — it contains NO
+# tier-2 lead, by construction, whatever the merged file carries — and the tier-2 contribution is reported on
+# its own line (and as `tier2_hits` in --json) as the GT rows credited ONLY once tier-2 leads are added. Both
+# sides of that subtraction are measured with the SAME ruler (same --min-overlap / --judge / --gt-dupes), so
+# the secondary number is a delta, never a second metric.
+#
 #   --self-test (default; CI-safe, no network/LLM/forge): run the adapter over fixtures/generation-recall/
 #     and assert (a) the projected union byte-matches expected-leads.json; (b) score-match.py over it
 #     byte-matches expected-scorecard.txt AND is IDENTICAL at --min-overlap 2 and 5 (threshold-independent);
 #     (c) generation-recall > verified-recall on the SAME fixture — the CLEAN invariant that named the GT bug
 #     HITs generation but the fuzzer's DROP leaves verified a MISS (the generation-vs-confirmation delta);
-#     (d) #2215 — the LOC/LOCHIT trailers are skipped by the recall reader, never counted as truth rows.
+#     (d) #2215 — the LOC/LOCHIT trailers are skipped by the recall reader, never counted as truth rows;
+#     (e) #2231 — corpus_role resolves dev / holdout / unknown from corpus.tsv; (f) #2217 — a tier2[] record
+#     at a GT location is projected ONLY under --include-tier2, is counted in tier2_hits, leaves the primary
+#     number untouched, and does so identically at --min-overlap 2 and 5.
 #   --from-work <dir> [--id <id>]... [--min-overlap N] [--json]: read an already-fetched/hunted corpus-bench
 #     work dir and, per contest, project <id>/zone-hunt-out/discovery/discovery-results.merged.json +
 #     <id>/zone-hunt-out/deep-hunt/*/run/invariant_*.log through the adapter, score the union against
@@ -233,6 +246,54 @@ if [ "$MODE" = "self-test" ]; then
     bad "(e) corpus_role returned dev='$R_DEV' holdout='$R_HOLD' unknown='$R_UNK' (expected dev/holdout/?)"
   fi
 
+  # (f) #2217 PR B: the tier-2 projection and the DUAL-scoring rule that keeps it out of the headline. Three
+  #     things must hold at once, and the first is the load-bearing one: an input that CARRIES tier-2 records
+  #     must project byte-identically to the pre-#2217 lead set unless the flag is passed, so the primary
+  #     number can never absorb a tier-2 hit by accident. Then the flag adds exactly one lead flagged
+  #     `"tier": 2`, and over a truth file with one GT row that ONLY the tier-2 record names, the primary
+  #     stays 2/3 while the tier-2 delta is +1 — at --min-overlap 2 AND 5, because a tier-2 lead carries a
+  #     function and is therefore scored by the same threshold-independent location rule as a tier-1 lead.
+  T2_DISC="$FIX/discovery-results.tier2.json"
+  T2_TRUTH="$FIX/truth.tier2.tsv"
+  T2_LEADS="$FIX/expected-leads.tier2.json"
+  if [ -f "$T2_DISC" ] && [ -f "$T2_TRUTH" ] && [ -f "$T2_LEADS" ]; then
+    T2_OFF="$(python3 "$ADAPTER" --from-discovery "$T2_DISC" --from-invariants "$FIX/invariant-targets.txt" 2>/dev/null)"
+    if [ "$T2_OFF" = "$(cat "$FIX/expected-leads.json")" ]; then
+      ok "(f1) a top-level tier2[] CANNOT leak into the default lead set (no --include-tier2 => byte-identical to expected-leads.json)"
+    else
+      bad "(f1) the DEFAULT projection of discovery-results.tier2.json DIFFERS from expected-leads.json — the primary lead set is contaminated"
+      diff <(printf '%s\n' "$T2_OFF") "$FIX/expected-leads.json" >&2 || true
+    fi
+
+    T2_ON="$(python3 "$ADAPTER" --from-discovery "$T2_DISC" --from-invariants "$FIX/invariant-targets.txt" --include-tier2 2>/dev/null)"
+    T2_N="$(printf '%s\n' "$T2_ON" | grep -c '"tier": 2' || true)"
+    if [ "$T2_ON" = "$(cat "$T2_LEADS")" ] && [ "$T2_N" = "1" ]; then
+      ok "(f2) --include-tier2 adds exactly ONE lead flagged \"tier\": 2, byte-matching expected-leads.tier2.json"
+    else
+      bad "(f2) the --include-tier2 projection DIFFERS from expected-leads.tier2.json (tier-2 leads found: $T2_N, expected 1)"
+      diff <(printf '%s\n' "$T2_ON") "$T2_LEADS" >&2 || true
+    fi
+
+    T2_SAVED_MINOV="$MINOV"
+    T2_F3=1 ; T2_SEEN=""
+    for _mo in 2 5; do
+      MINOV="$_mo"
+      _p="$(recall_hits "$T2_TRUTH" "$FIX/expected-leads.json")" || _p=""
+      _u="$(recall_hits "$T2_TRUTH" "$T2_LEADS")" || _u=""
+      T2_SEEN="$T2_SEEN [min-overlap $_mo: primary '$_p', union '$_u']"
+      { [ "$_p" = "2 3" ] && [ "$_u" = "3 3" ]; } || T2_F3=0
+    done
+    MINOV="$T2_SAVED_MINOV"
+    echo "  primary generation-recall 2/3 (no tier-2 lead in the scored set), tier-2 (SECONDARY) +1 GT row credited only with --include-tier2"
+    if [ "$T2_F3" -eq 1 ]; then
+      ok "(f3) the tier-2 record credits the GT row the tier-1 leads MISS (tier2_hits = 3-2 = 1) while the primary stays 2/3, at --min-overlap 2 and 5"
+    else
+      bad "(f3) tier-2 dual scoring regressed — expected primary '2 3' and union '3 3' at both thresholds, got$T2_SEEN"
+    fi
+  else
+    bad "(f) fixture missing: $FIX/{discovery-results.tier2.json,truth.tier2.tsv,expected-leads.tier2.json}"
+  fi
+
   echo
   if [ "$FAILS" -eq 0 ]; then
     say "PASS — the generation-recall adapter projects breadth candidates + verdict-ignored invariant targets"
@@ -271,6 +332,9 @@ if [ "$MODE" = "from-work" ]; then
   G_RARE_TOTAL=0 ; G_RARE_HITS=0 ; G_MID_TOTAL=0 ; G_MID_HITS=0 ; G_CONS_TOTAL=0 ; G_CONS_HITS=0
   G_RARE_REACHABLE=0 ; G_LOC_CREDITED=0
   G_VER_TOTAL=0 ; G_VER_HITS=0 ; ANY_VERIFIED=0
+  # #2217 PR B: the SECONDARY tier-2 totals. Kept in their own accumulators (never added to G_HITS) so the
+  # aggregate below cannot print a headline that quietly includes them. The caveat is printed ONCE per run.
+  G_T2_HITS=0 ; G_T2_LEADS=0 ; T2_CAVEAT_DONE=0
 
   for id in $SEL_IDS; do
     truth="$WORK/$id/truth.tsv"
@@ -369,6 +433,37 @@ SCORE_EOF
     [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE, min-confidence $gate_conf, #1829): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s); gate dropped $gate_dropped MATCH decision(s), costing $gate_rows row(s) (#1841)"
     [ -n "$GT_DUPES" ] && say "  [$id] GT-equivalence crediting (#1840) from $GT_DUPES: $dup_classes class(es), $dup_expanded row(s) credited through a class (generation-recall without them: $((c_hits - dup_expanded))/$c_total)"
 
+    # #2217 PR B — the SECONDARY tier-2 number. Everything above was scored from `$leads`, which the adapter
+    # emitted WITHOUT --include-tier2 and therefore contains no tier-2 lead at all: the primary number is
+    # protected by construction, not by arithmetic. The tier-2 contribution is the DELTA between the same
+    # ruler applied to the union and to that primary set — both measured through recall_hits, so --min-overlap,
+    # --judge and --gt-dupes are identical on both sides and the subtraction is apples-to-apples.
+    t2_hits=0 ; t2_leads=0
+    if [ -f "$disc" ] && grep -q '"tier2"' "$disc" 2>/dev/null; then
+      leads_t2="$WORK/$id/generation-leads.tier2.json"
+      if python3 "$ADAPTER" "${ADP[@]}" --include-tier2 > "$leads_t2" 2>/dev/null; then
+        # The adapter's output is json.dumps(indent=2, sort_keys=True), so a projected tier-2 lead is exactly
+        # one `"tier": 2` line — counting them needs no second JSON parse.
+        t2_leads="$(grep -c '"tier": 2' "$leads_t2" 2>/dev/null || true)"
+        case "$t2_leads" in ''|*[!0-9]*) t2_leads=0 ;; esac
+        _u="$(recall_hits "$truth" "$leads_t2")" || _u=""
+        _p="$(recall_hits "$truth" "$leads")" || _p=""
+        if [ -n "$_u" ] && [ -n "$_p" ]; then
+          t2_hits=$(( ${_u%% *} - ${_p%% *} ))
+          [ "$t2_hits" -ge 0 ] || t2_hits=0
+        fi
+      else
+        say "  [$id] hypotheses-to-leads.py --include-tier2 failed; tier-2 reported as 0 (the primary number above is unaffected)"
+      fi
+    fi
+    if [ "$t2_leads" -gt 0 ]; then
+      say "  [$id] tier-2 (SECONDARY, #2217): +$t2_hits GT row(s) credited ONLY by a tier-2 lead ($t2_leads projected) — NOT part of the $c_hits/$c_total above, which is scored from a lead set containing no tier-2 lead"
+      if [ "$T2_CAVEAT_DONE" -eq 0 ]; then
+        say "  tier-2 CAVEAT: a tier-2 location is a NAME derived by regex from an unsettled check's text, not a finding the model asserted — mechanism-blind at a higher rate than a tier-1 candidate. A 'we found it' claim is still an operator read of the cell log (#2214 scoring discipline)."
+        T2_CAVEAT_DONE=1
+      fi
+    fi
+
     # GENERATION-minus-VERIFIED DELTA — GT rows a hypothesis NAMED but the fuzzer/refuter never confirmed.
     verified_json="$WORK/$id/zone-hunt-out/verify/verified_findings.json"
     v_hits="" ; v_total=""
@@ -383,7 +478,7 @@ SCORE_EOF
       say "  [$id] no verify/verified_findings.json — generation-only (no DELTA)"
     fi
 
-    CONTEST_JSON+=("{\"id\":\"$id\",\"role\":\"$role\",\"gt_total\":$c_total,\"generation_hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"rare_reachable\":$c_rare_reachable,\"location_credited\":$loc_credited,\"verified_hits\":${v_hits:-null}}")
+    CONTEST_JSON+=("{\"id\":\"$id\",\"role\":\"$role\",\"gt_total\":$c_total,\"generation_hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"rare_reachable\":$c_rare_reachable,\"location_credited\":$loc_credited,\"tier2_hits\":$t2_hits,\"tier2_leads\":$t2_leads,\"verified_hits\":${v_hits:-null}}")
 
     G_TOTAL=$((G_TOTAL + c_total)); G_HITS=$((G_HITS + c_hits))
     G_H_TOTAL=$((G_H_TOTAL + c_h_total)); G_H_HITS=$((G_H_HITS + c_h_hits))
@@ -392,6 +487,7 @@ SCORE_EOF
     G_MID_TOTAL=$((G_MID_TOTAL + c_mid_total)); G_MID_HITS=$((G_MID_HITS + c_mid_hits))
     G_CONS_TOTAL=$((G_CONS_TOTAL + c_cons_total)); G_CONS_HITS=$((G_CONS_HITS + c_cons_hits))
     G_RARE_REACHABLE=$((G_RARE_REACHABLE + c_rare_reachable)); G_LOC_CREDITED=$((G_LOC_CREDITED + loc_credited))
+    G_T2_HITS=$((G_T2_HITS + t2_hits)); G_T2_LEADS=$((G_T2_LEADS + t2_leads))
   done
 
   say ""
@@ -402,16 +498,17 @@ SCORE_EOF
   say "hold-out                 : a role=dev contest above is IN-DISTRIBUTION (#2231) — the lenses were designed on its ground truth; recall CLAIMS belong to the role=holdout rows of corpus.tsv"
   say "reachable rare           : $G_RARE_REACHABLE/$G_RARE_TOTAL (#2215; rows carrying a resolvable location anchor — the ceiling this matcher can reach)"
   say "location-credited rows   : $G_LOC_CREDITED (credited ONLY by a GT location pair; the same replay without them reads $((G_HITS - G_LOC_CREDITED))/$G_TOTAL)"
+  say "tier-2 (SECONDARY, #2217): +$G_T2_HITS GT row(s) credited only when tier-2 leads are added ($G_T2_LEADS projected) — NEVER folded into the overall/severity/rarity numbers above, which are scored from lead sets containing no tier-2 lead"
   if [ "$ANY_VERIFIED" -eq 1 ]; then
     say "generation-minus-verified: generation $G_HITS/$G_TOTAL vs verified $G_VER_HITS/$G_VER_TOTAL, DELTA $((G_HITS - G_VER_HITS)) (NAMED but unconfirmed — the #1716 expressiveness gap)"
   fi
 
   if [ "$JSON" -eq 1 ]; then
     joined="$(IFS=,; echo "${CONTEST_JSON[*]:-}")"
-    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"generation_hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"rare_reachable":%d,"location_credited":%d,"verified_hits":%d,"verified_total":%d}}\n' \
+    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"generation_hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"rare_reachable":%d,"location_credited":%d,"tier2_hits":%d,"tier2_leads":%d,"verified_hits":%d,"verified_total":%d}}\n' \
       "$joined" "$G_TOTAL" "$G_HITS" "$G_H_TOTAL" "$G_H_HITS" "$G_M_TOTAL" "$G_M_HITS" \
       "$G_RARE_TOTAL" "$G_RARE_HITS" "$G_MID_TOTAL" "$G_MID_HITS" "$G_CONS_TOTAL" "$G_CONS_HITS" \
-      "$G_RARE_REACHABLE" "$G_LOC_CREDITED" "$G_VER_HITS" "$G_VER_TOTAL"
+      "$G_RARE_REACHABLE" "$G_LOC_CREDITED" "$G_T2_HITS" "$G_T2_LEADS" "$G_VER_HITS" "$G_VER_TOTAL"
   fi
   exit 0
 fi

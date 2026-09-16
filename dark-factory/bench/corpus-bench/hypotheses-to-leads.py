@@ -15,6 +15,11 @@
 #       walk cells[].candidates[] (run-discovery.sh / run-zone-hunt.sh merge schema), split each
 #       `file:fn:line|classid|severity|exploit|poc` string into a lead. The `location` is passed through
 #       verbatim (score-match.py's lead_location parses file+function off it); `file` is the bare source path.
+#   --include-tier2   (#2217 PR B; only meaningful with --from-discovery, default OFF)
+#       additionally project the merged file's TOP-LEVEL `tier2[]` records — the checks a cell DERIVED and
+#       did not settle (#2217 PR A) — into leads flagged `"tier": 2`. DEFAULT OFF is load-bearing, not a
+#       convenience: generation-recall.sh's PRIMARY number is computed from the lead set this adapter emits
+#       WITHOUT the flag, so a tier-2 record can never reach it, whatever the input file carries.
 #   --from-invariants <file|glob>
 #       parse `INVARIANT|<file:fn>|<verdict>` lines (run-invariant-hunt.sh / the run-zone-hunt.sh deep-hunt
 #       adapter emit exactly one per prover run) into a `{location:"file:fn", file, class:"invariant"}` lead.
@@ -48,7 +53,7 @@ def bare_codefile(location):
     return s
 
 
-def leads_from_discovery(path):
+def leads_from_discovery(path, include_tier2=False):
     """cells[].candidates[] -> leads. Defensive field parsing: a short/malformed candidate never crashes,
     missing fields become empty strings (score-match.py then simply cannot resolve that lead)."""
     try:
@@ -75,6 +80,40 @@ def leads_from_discovery(path):
                 "exploit": exploit.strip(),
                 "poc_sketch": sketch.strip(),
             })
+    if include_tier2:
+        leads.extend(leads_from_tier2(data))
+    return leads
+
+
+def leads_from_tier2(data):
+    """Top-level `tier2[]` (#2217 PR A) -> leads flagged `"tier": 2`. A tier-2 record is NOT a candidate: it
+    is a check the cell derived and did not settle, it carries no severity assessment, and its `location` was
+    derived by REGEX from the check's own text rather than asserted by the model. It is therefore projected
+    only under --include-tier2, and score-match.py — which is FROZEN and ignores unknown lead keys — scores it
+    by exactly the same location-first rule as a tier-1 lead; the `tier` key exists so a consumer can tell the
+    two apart AFTER scoring, never so the scorer treats them differently."""
+    if not isinstance(data, dict):
+        return []
+    leads = []
+    for rec in data.get("tier2", []):
+        if not isinstance(rec, dict):
+            continue
+        location = str(rec.get("location", "") or "").strip()
+        if not location:
+            continue  # a record without a location cannot be scored at all; dropping it beats a bare `file` guess
+        check = str(rec.get("check", "") or "").strip()
+        why = str(rec.get("why", "") or "").strip()
+        # The cell's OWN two sentences: what it checked, and why it did not settle it. Joined (rather than
+        # keeping only the check) so the technical-token fallback has the same material a tier-1 exploit has.
+        exploit = " — ".join([t for t in (check, why) if t])
+        leads.append({
+            "location": location,
+            "file": bare_codefile(location),
+            "class": str(rec.get("class", "") or "").strip(),
+            "exploit": exploit,
+            "poc_sketch": "",
+            "tier": 2,
+        })
     return leads
 
 
@@ -114,6 +153,7 @@ def leads_from_invariants(pattern):
 def main(argv):
     discovery = None
     invariants = None
+    include_tier2 = False
     i = 1
     while i < len(argv):
         a = argv[i]
@@ -127,17 +167,21 @@ def main(argv):
                 die(2, "--from-invariants requires a value")
             invariants = argv[i + 1]
             i += 2
+        elif a == "--include-tier2":
+            include_tier2 = True
+            i += 1
         elif a in ("-h", "--help"):
             sys.stdout.write(__doc__ or "")
             return 0
         else:
             die(2, "unknown arg: " + a)
     if discovery is None and invariants is None:
-        die(2, "usage: hypotheses-to-leads.py [--from-discovery <merged.json>] [--from-invariants <file|glob>]")
+        die(2, "usage: hypotheses-to-leads.py [--from-discovery <merged.json>]"
+               " [--from-invariants <file|glob>] [--include-tier2]")
 
     leads = []
     if discovery is not None:
-        leads.extend(leads_from_discovery(discovery))
+        leads.extend(leads_from_discovery(discovery, include_tier2))
     if invariants is not None:
         leads.extend(leads_from_invariants(invariants))
 

@@ -145,6 +145,26 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   cap and its rank order, arrival-order independence, the 0-byte OFF path on a non-empty supply, and an
   end-to-end `--tier2` byte-identity run under the mock backend).
 
+- **Tier-2 records reach the scoreboard WITHOUT touching the headline number (#2217, PR B).** The `tier2[]`
+  records PR A carries out of the cell objects are now scorable: `hypotheses-to-leads.py` gains
+  `--include-tier2`, which projects each record into the `{location,file,class,exploit,poc_sketch}` lead shape
+  the FROZEN `score-match.py` already consumes, flagged `"tier": 2` (location = the record's derived location,
+  class = the cell's class, exploit = the check plus the cell's own reason for not settling it). The flag is
+  **default OFF and that is load-bearing, not a convenience**: `generation-recall.sh` now scores TWICE, and
+  its PRIMARY generation-recall — the overall / by-severity / by-rarity numbers, the DELTA, every published
+  figure — is computed from a lead set the adapter emitted WITHOUT the flag, so it CANNOT contain a tier-2
+  lead whatever the merged file carries. The tier-2 contribution is reported as a SECONDARY delta on its own
+  line (`tier-2 (SECONDARY, #2217): +k GT row(s) credited ONLY by a tier-2 lead`) and as `tier2_hits` /
+  `tier2_leads` in `--json`, measured with the SAME ruler on both sides of the subtraction (same
+  `--min-overlap`, `--judge`, `--gt-dupes`), so it is a delta rather than a second metric. A caveat is printed
+  once per run: a tier-2 location is a NAME a regex derived from an unsettled check's text, mechanism-blind at
+  a higher rate than a tier-1 candidate, so a "we found it" claim is still an operator read of the cell log.
+  `score-match.py` is UNCHANGED (it ignores the `tier` key), which is why the separation lives in the lead set
+  and not in the scorer. `generation-recall.sh --self-test` gains assertion (f): a `tier2[]` in the input
+  projects byte-identically to `expected-leads.json` without the flag, adds exactly one `"tier": 2` lead with
+  it, and over a truth file whose third GT row only the tier-2 record names the primary stays 2/3 while the
+  tier-2 delta is +1 — at `--min-overlap` 2 and 5 alike.
+
 - **C24 — stale state assumption between touchpoints: new bug class + deterministic zone-mapper route (#2218,
   M1).** The #2213 corpus forensics clustered the pure GENERATION misses (candidates the hunter never emitted)
   and most share one root: a value written, snapshotted or DEFINED at touchpoint A is consumed at touchpoint B
