@@ -38,7 +38,11 @@ cb 300000;
 //         `TRACE|<check>|<CLEAN|BUG|UNRESOLVED>|<evidence>` line per derived check AFTER tracing it. The TRACE
 //         lines are the FOLLOW-THROUGH half of the same contract: run-discovery.sh GATES a no-candidate reply
 //         on them (fewer distinct TRACE| than OPCHECK| lines => the cell is re-asked once, then recorded as a
-//         FAILED `untraced-opcheck` cell instead of a trusted clean negative).
+//         FAILED `untraced-opcheck` cell instead of a trusted clean negative). #2214 PR C adds the CITATION
+//         half of that grammar: a CLEAN resting on configuration grounds must cite a `file:line` in the
+//         audited repo, and a CLEAN resting on an EXTERNAL protocol fact must cite the interface/source/doc
+//         it was verified against — an uncited one counts as untraced for the same gate, and an unverifiable
+//         claim belongs on the record as UNRESOLVED (counted per cell), never folded into SAFE.
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -430,7 +434,15 @@ fn operationalize_block() -> string {
       + "TRACE|<the same check, restated>|<CLEAN or BUG or UNRESOLVED>|<the function or line in THIS zone that settles it>\n"
       + "SAFE is a valid answer ONLY when every OPCHECK line you wrote has a matching TRACE line. UNRESOLVED "
       + "is an honest verdict — a check you cannot settle from this payload belongs on the record — and it "
-      + "beats dropping the check silently.\n\n";
+      + "beats dropping the check silently.\n"
+      + "EXTERNAL FACTS — the other way a derived check dies quietly: when a TRACE verdict of CLEAN rests on "
+      + "a claim about how something OUTSIDE this payload behaves (what an external call returns, how it "
+      + "scales, normalises or rounds a value, what units it uses, what order it applies operations in), "
+      + "that claim is a FACT YOU MUST VERIFY, not an assumption you may lean on. Cite in the evidence field "
+      + "the external interface, source or documentation you verified it against. If you cannot verify it "
+      + "from what you were given, the verdict is UNRESOLVED — never CLEAN. An UNRESOLVED check is recorded "
+      + "and carried forward; a CLEAN resting on an unverified external claim is a false negative with a "
+      + "confident face.\n\n";
 }
 
 // The M1 toggle. INVERTED vs callee_trust_enabled() (`!= "0"`) ON PURPOSE: only the literal "1" opts IN, so
@@ -689,6 +701,41 @@ fn callee_directive(code: string) -> string {
     return callee_trust_block(has_attacker_controlled_callee(code));
 }
 
+// --- #2214 PR C: CONFIG-REALIZABILITY DISMISSAL RULE (GENERAL — deliberately NOT lens-gated) ----------------
+// The measured gap (#2214 M3, five arm-runs on the frozen base): the hunter FOUND the rare bug, named its
+// consequence correctly ("the error grows permissionlessly as yield accrues"), and then threw it away — "a
+// valid configuration exists", "a trusted deployer picks that pairing", "an external attacker cannot flip the
+// flag" => OUT OF SCOPE — five times across three arms, WITHOUT ever checking whether the audited repository
+// itself ships that configuration. It did: the repo's own deployment/test setup wires the unsafe pairing,
+// which is exactly why the contest accepted the row as High. The gap is neither routing nor follow-through
+// (both closed) but DISMISSAL DISCIPLINE, so the fix is a rule about what a dismissal must have done first.
+//
+// PLACEMENT DECISION: this rule rides the shared RULES block on EVERY cell, lens ON or OFF. The dismissal was
+// measured in arms where OPERATIONALIZE_LENS was UNSET (the `routed` r1/r2 cells dismissed it with no lens at
+// all), so a lens-gated rule could not reach the cells that produced the miss. The price is an honest,
+// MEASURED prompt-byte delta on every cell — demo-operationalize-lens.sh prints it (RULELEN) and asserts it is
+// non-zero — not a silent prompt change. The #2211 lens keeps its own byte-identity contract untouched:
+// operationalize_directive() is still exactly "" when the flag is off.
+//
+// The text is PURE-META (no protocol, contract, function, flag, unit or product name), like every other
+// directive here: it changes which QUESTION the cell must answer before it may dismiss, and cannot leak an
+// answer into a hunt on a held-out target.
+fn config_realizability_rule() -> string {
+    return "CONFIGURATION REALIZABILITY (this governs every dismissal on configuration grounds). The audited "
+      + "repository's OWN configuration is part of the audit. Before you dismiss a check or a lead because "
+      + "\"a valid configuration exists\", \"the deployer would not set that\", \"a trusted role sets this\" or "
+      + "\"that pairing is a deploy-time choice\", you MUST: (a) search THIS repository — deployment scripts, "
+      + "tests, fixtures, example configs and documentation — for the value it actually configures for every "
+      + "flag, address, source or parameter the check involves; and (b) check whether the constructor or the "
+      + "setter VALIDATES that pairing at all. Then apply the rule: a pairing this repository itself ships, "
+      + "documents, or accepts WITHOUT validation is IN SCOPE — a mismatch the code invites is a finding, not "
+      + "somebody else's misconfiguration. Only a pairing the code itself rejects, and that nothing in the "
+      + "repository sets, may be dismissed on configuration grounds. Every such dismissal MUST cite the "
+      + "file:line you checked (the deployment or test line that sets the value, or the validating check in "
+      + "the constructor/setter). A configuration-grounds dismissal with NO file:line citation is not a "
+      + "result: record the check as UNRESOLVED and state what you could not verify.\n";
+}
+
 let dir = getenv("TARGET_DIR");
 let files = getenv("IN_SCOPE");
 let cls = getenv("HUNT_CLASS");
@@ -778,7 +825,10 @@ let instruction =
   + "=== PROTOCOL BRIEF — invariants whose violation is a valid finding, and KNOWN ISSUES you MUST NOT report ===\n"
   + brief + "\n\n"
   + "=== RULES ===\nOnly Medium/High count. A trusted role acting WITHIN its documented permissions is OUT OF SCOPE; "
-  + "a role EXCEEDING its permissions, or any unprivileged user, IS in scope. Never report a listed KNOWN ISSUE. "
+  + "a role EXCEEDING its permissions, or any unprivileged user, IS in scope. Never report a listed KNOWN ISSUE.\n"
+  // #2214 PR C: the trusted-role exclusion one line above is exactly what the measured dismissals hid
+  // behind, so the rule that qualifies it sits HERE, inside the same RULES block, on every cell.
+  + config_realizability_rule()
   + "Subsystem under review: " + subsystem + ".\n\n"
   + "=== HOW TO ANSWER ===\n"
   + "BOUNDED TERMINATION (#2017 — you MUST converge to ONE terminal verdict; never run an open-ended search). "

@@ -131,6 +131,29 @@
 #                       applies to `getenv()` inside an `.ag` agent only. The whole gate is INERT whenever
 #                       OPERATIONALIZE_LENS is off (no directive => no `OPCHECK|` line => no shortfall),
 #                       which is the production default.
+#
+# #2214 PR C — CITATION DISCIPLINE ON A DISMISSAL (heuristics, deliberately shallow):
+#   The measured residual cause of the #2214 rare-row miss is not routing and not follow-through but the
+#   DISMISSAL: a traced check closed CLEAN on "a trusted deployer picks that pairing / it is a deploy-time
+#   misconfiguration" without ever checking what the audited repo itself configures, and a sibling check
+#   closed CLEAN on an asserted EXTERNAL-protocol fact ("it returns a normalised ratio by construction") that
+#   was never verified and is false for some markets. `_uncited_dismissals()` below turns both into the
+#   EXISTING untraced-opcheck gate (no new status vocabulary, same one re-ask, same FAILED reason):
+#     * CONFIG grounds  — a `TRACE|...|CLEAN...|` whose verdict+evidence span matches
+#                         /misconfig|trusted[ -](role|deployer)|privileged[ -](role|deployer)|deploy-time|
+#                          deployment[ -]configuration|configuration[ -](choice|invariant)/i
+#                         and carries NO `path.(sol|ts|js|md|json|toml|yml):<line>` citation.
+#     * EXTERNAL grounds — a `TRACE|...|CLEAN...|` whose verdict+evidence span matches
+#                         /documented|by construction|by design|always returns|normali[sz]ed|normali[sz]es|
+#                          1e18|decimals|guarantee[sd]?/i
+#                         and cites no source at all (no `path:line`, no URL, no source file name, no
+#                         interface-style `I<Name>` identifier).
+#   Both are HEURISTICS over model-emitted free text — a regex cannot decide whether a sentence is really a
+#   scope argument, and nothing here verifies that a cited line says what the cell claims (that stays the
+#   OPERATOR read, like the trace-evidence rule above). They are tuned to be cheap when wrong: a false
+#   positive costs ONE re-ask of a cell that has no candidate to lose, a false negative simply leaves the
+#   pre-PR-C behaviour. The detectors only ever see `TRACE|` lines, which exist only when the #2211 lens is
+#   ON, so the production default (lens OFF) is untouched.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -616,8 +639,75 @@ _distinct_sentinel_count() {
   printf '%s\n' "$dsc_n"
 }
 
+# _distinct_trace_lines <log> — the DISTINCT, whitespace-trimmed `TRACE|` lines of one cell log, one per
+# output line. Same normalisation as _distinct_sentinel_count, so the citation detectors below count exactly
+# the lines that arithmetic counts (a pasted trace line is one line on both sides).
+_distinct_trace_lines() {
+  dtl_log="$1"
+  grep -E '^[[:space:]]*TRACE\|' "$dtl_log" 2>/dev/null \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u || true
+}
+
+# _uncited_dismissals <log> — #2214 PR C: how many DISTINCT traced CLEANs of this cell dismissed a check
+# without the citation their grounds require (see the heuristics block in the header). Printed as one integer
+# and ADDED to the follow-through shortfall by _opcheck_trace_gap below, so an uncited dismissal is untraced
+# for the existing gate: same one re-ask, same `untraced-opcheck` FAILED reason, no new status vocabulary.
+#
+# The regexes live HERE rather than in globals so the function is self-contained: demo-operationalize-lens.sh
+# slices it out of this file by line range and sources it, and a detector that depended on script-level state
+# would silently behave differently there than in production.
+#
+# The span searched is fields 3..N of the TRACE line (verdict + evidence), NOT the evidence field alone: the
+# measured cells routinely merge the two ("CLEAN — a VALID configuration exists ... a privileged deploy-time
+# misconfiguration"), and a detector anchored on field 4 would miss exactly the shape it was built for.
+_uncited_dismissals() {
+  ud_log="$1"
+  if [ ! -f "$ud_log" ]; then printf '0\n'; return 0; fi
+  # Configuration-grounds vocabulary and the repo citation it must carry (a deployment/test line, or the
+  # validating check in a constructor/setter).
+  ud_cfg_re='misconfig|trusted[ -](role|deployer)|privileged[ -](role|deployer)|deploy-time|deployment[ -]configuration|configuration[ -](choice|invariant)'
+  ud_pathline_re='[A-Za-z0-9_/.-]+\.(sol|ts|js|md|json|toml|ya?ml):[0-9]+'
+  # External-fact vocabulary: an assertion about behaviour this payload does not settle. Any of the four
+  # citation forms discharges it — a path:line, a URL, a source/interface file name, or an interface-style
+  # identifier (the external interface the claim was read from).
+  ud_ext_re='documented|by construction|by design|always returns|normali[sz]ed|normali[sz]es|1e18|decimals|guarantee[sd]?'
+  ud_cite_re="$ud_pathline_re|https?://|[A-Za-z0-9_/.-]+\.(sol|ts|js|md)([^A-Za-z0-9]|\$)|(^|[^A-Za-z0-9_])I[A-Z][A-Za-z0-9_][A-Za-z0-9_]*"
+  ud_n=0
+  while IFS= read -r ud_line; do
+    [ -n "$ud_line" ] || continue
+    # Only a CLEAN is a dismissal: BUG is a finding and UNRESOLVED is the honest verdict this rule asks for.
+    ud_verdict="$(printf '%s\n' "$ud_line" | cut -d'|' -f3)"
+    case "$ud_verdict" in *[Cc][Ll][Ee][Aa][Nn]*) ;; *) continue ;; esac
+    ud_span="$(printf '%s\n' "$ud_line" | cut -d'|' -f3-)"
+    if printf '%s\n' "$ud_span" | grep -Eqi "$ud_cfg_re" \
+       && ! printf '%s\n' "$ud_span" | grep -Eq "$ud_pathline_re"; then
+      ud_n=$((ud_n + 1))
+      continue
+    fi
+    if printf '%s\n' "$ud_span" | grep -Eqi "$ud_ext_re" \
+       && ! printf '%s\n' "$ud_span" | grep -Eq "$ud_cite_re"; then
+      ud_n=$((ud_n + 1))
+    fi
+  done <<EOF
+$(_distinct_trace_lines "$ud_log")
+EOF
+  printf '%s\n' "$ud_n"
+}
+
+# _unresolved_trace_count <log> — #2214 PR C: how many DISTINCT checks this cell carried as UNRESOLVED. The
+# additive per-cell `unresolved` field _accumulate_cell writes, and the stderr note scrape_cell_log prints,
+# are what keep an honest "I could not settle this" from folding silently into a clean-looking SAFE.
+_unresolved_trace_count() {
+  utc_log="$1"
+  if [ ! -f "$utc_log" ]; then printf '0\n'; return 0; fi
+  utc_n="$(_distinct_trace_lines "$utc_log" | cut -d'|' -f3 | grep -ci 'UNRESOLVED' || true)"
+  case "$utc_n" in ''|*[!0-9]*) utc_n=0 ;; esac
+  printf '%s\n' "$utc_n"
+}
+
 # _opcheck_trace_gap <log> — the follow-through shortfall of ONE cell log, printed as a single integer:
-# (distinct `OPCHECK|` lines) - (distinct `TRACE|` lines), floored at 0.
+# (distinct `OPCHECK|` lines) - (distinct `TRACE|` lines), floored at 0, PLUS (#2214 PR C) the distinct traced
+# CLEANs that dismissed a check without the citation their grounds require (_uncited_dismissals).
 #
 # HOW A TRACE IS MATCHED TO ITS OPCHECK: by the COUNT of DISTINCT lines, deliberately NOT by pairing the
 # restated check text. The directive asks the model to RESTATE the check in the TRACE line, so a text join
@@ -634,7 +724,13 @@ _opcheck_trace_gap() {
   if [ ! -f "$otg_log" ]; then printf '0\n'; return 0; fi
   otg_op="$(_distinct_sentinel_count OPCHECK "$otg_log")"
   otg_tr="$(_distinct_sentinel_count TRACE "$otg_log")"
-  if [ "$otg_op" -le "$otg_tr" ]; then printf '0\n'; else printf '%s\n' "$((otg_op - otg_tr))"; fi
+  otg_gap=0
+  if [ "$otg_op" -gt "$otg_tr" ]; then otg_gap=$((otg_op - otg_tr)); fi
+  # #2214 PR C: a check traced to an UNCITED dismissal was not followed through either — it was closed on an
+  # unchecked scope heuristic or an unverified external fact — so it is added to the SAME shortfall and rides
+  # the SAME gate (one re-ask, then the `untraced-opcheck` FAILED reason). No new status vocabulary.
+  otg_unc="$(_uncited_dismissals "$otg_log")"
+  printf '%s\n' "$((otg_gap + otg_unc))"
 }
 
 # _untraced_safe <log> — true when <log> is the exact thing the gate exists to refuse: a directive-ON cell
@@ -672,6 +768,9 @@ _untraced_safe() {
 # _plan_depth_cells's forward key scan is untouched. `untraced` is what puts a shortfall on the record for a
 # cell that DID produce candidates: such a cell is scraped and reported normally (never re-asked, never
 # failed), so this field is the only place its abandoned checks are visible to the readout.
+# #2214 PR C: `unresolved` (distinct checks traced UNRESOLVED) follows them, LAST and again only when
+# non-zero. An UNRESOLVED check is the honest verdict the citation rules ask for, and this counter is what
+# stops it from folding silently into a clean-looking negative.
 _accumulate_cell() {
   ac_subsys="$1"; ac_cls="$2"; ac_files="$3"; ac_log="$4"; ac_status="${5:-ok}"; ac_phase="${6:-}"
   ac_phase_json=""
@@ -705,10 +804,13 @@ _accumulate_cell() {
   ac_untraced_json=""
   ac_un="$(_opcheck_trace_gap "$ac_log")"
   if [ "$ac_un" -gt 0 ]; then ac_untraced_json=",\"untraced\":$ac_un"; fi
-  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s}\n' \
+  ac_unresolved_json=""
+  ac_unres="$(_unresolved_trace_count "$ac_log")"
+  if [ "$ac_unres" -gt 0 ]; then ac_unresolved_json=",\"unresolved\":$ac_unres"; fi
+  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s%s}\n' \
     "$(_json_str "$ac_subsys")" "$(_json_str "$ac_cls")" "$(_json_str "$ac_files")" \
     "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" "$ac_appendix_json" \
-    "$ac_opchecks_json" "$ac_traces_json" "$ac_untraced_json" >> "$CELLS_JSONL"
+    "$ac_opchecks_json" "$ac_traces_json" "$ac_untraced_json" "$ac_unresolved_json" >> "$CELLS_JSONL"
 }
 
 # _appendix_for <subsystem> <files_csv> — #1865: the (token, base) pair the --appendix sidecar records for
@@ -840,6 +942,14 @@ scrape_cell_log() {
     FAILED_CELLS=$((FAILED_CELLS + 1))
     _accumulate_cell "$sc_subsys" "$sc_cls" "$sc_files" "$sc_log" failed "$sc_phase"
     return 0
+  fi
+  # #2214 PR C: an UNRESOLVED check never folds silently into SAFE. Such a cell is NOT failed and NOT
+  # re-asked — the verdict is the honest one the citation rules ask for — but its negative is not a rigorous
+  # clean sweep either, so the count is surfaced to the operator here and recorded as the additive
+  # `unresolved` field by _accumulate_cell below.
+  sc_unres="$(_unresolved_trace_count "$sc_log")"
+  if [ "$sc_unres" -gt 0 ]; then
+    echo "run-discovery.sh:   ↳ $sc_unres UNRESOLVED check(s): $sc_cls/'$sc_subsys' could not settle them from its payload (recorded as \"unresolved\"; this cell's negative is NOT a rigorous clean sweep)" >&2
   fi
   # #1001 coordination: the hunter reads a shared BLACKBOARD before it prompts and posts every
   # CANDIDATE back to it, so a lead an EARLIER cell found steers later cells (corroborate / pivot).

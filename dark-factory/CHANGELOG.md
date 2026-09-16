@@ -16,6 +16,29 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **Dismissal discipline: a check may not be closed on an unchecked scope heuristic or an unverified external
+  fact (#2214, PR C).** With routing (#2221) and follow-through (#2222) closed, the measured residual cause of
+  the rare-row miss was the DISMISSAL: five cells across three arms found the bug, named its consequence, and
+  threw it away as "a valid configuration exists / a trusted deployer picks that pairing / an external attacker
+  cannot flip the flag", never checking that the audited repo's own deployment and test setup ships exactly that
+  pairing; a sibling check closed CLEAN on an asserted external-protocol fact that was never verified. Three
+  changes: (1) a CONFIG-REALIZABILITY rule in `hunter.ag`'s shared RULES block — GENERAL, on every cell, lens on
+  or off (the dismissals were measured with the lens UNSET), adding a measured 1260 prompt bytes: before
+  dismissing on configuration grounds the cell must search the repo's deploy scripts, tests, fixtures and docs
+  for the configured value and check whether the constructor/setter validates the pairing, a pairing the repo
+  itself ships/documents/accepts-unvalidated is IN SCOPE, and the dismissal must cite the `file:line` it checked;
+  (2) an EXTERNAL-FACTS rule inside the `OPERATIONALIZE_LENS` block (so the lens-OFF prompt keeps its
+  byte-identity contract): a `TRACE|...|CLEAN|` resting on a claim about an external protocol's return scaling,
+  units, normalisation or ordering must cite what it was verified against, else the verdict is `UNRESOLVED`,
+  never `CLEAN`; (3) a harness pin in `run-discovery.sh` — an uncited config-grounds dismissal, or an uncited
+  external-grounds CLEAN, counts as untraced for the EXISTING gate (same one re-ask, same `untraced-opcheck`
+  FAILED reason, **no new status vocabulary**), and `UNRESOLVED` checks get an additive, non-zero-only per-cell
+  `unresolved` field plus an operator line instead of folding into a clean-looking SAFE. The two detectors are
+  documented as HEURISTICS over model-emitted free text in the script header (a false positive costs one re-ask
+  of a cell with no candidate to lose). **Default behaviour with the lens OFF is unchanged apart from the
+  measured prompt delta of rule 1: no `TRACE|` line exists, so both detectors are inert and a cell's JSON keeps
+  its exact key set.** Recall is UNMEASURED until the `routed+trace+dismissal` arm runs.
+
 - **OPCHECK -> TRACE follow-through, gated on the cell log (#2214, Lever 1).** The opt-in `OPERATIONALIZE_LENS`
   directive in `hunter.ag` now closes the loop it opened: for every `OPCHECK|<construct>|<invariant>` line the
   cell must emit one `TRACE|<check>|<CLEAN|BUG|UNRESOLVED>|<evidence>` line, and `SAFE` is a valid answer only
