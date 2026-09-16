@@ -1,0 +1,8 @@
+arm	repeat	class	status	candidates	opcheck_n	trace_n	untraced_n	h8_kw_prefilter	m12_kw_prefilter	logfile	unresolved	reasks
+control	1	C15	ok	1	0	0	0	0	0	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C15.log	0	0
+control	1	C19	ok	0	0	0	0	0	0	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C19.log	0	0
+control	1	C23	ok	0	0	0	0	0	0	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C23.log	0	0
+control	1	C2	ok	1	0	0	0	0	1	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C2.log	0	0
+control	1	C8	ok	1	0	0	0	0	0	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C8.log	0	0
+control	1	C9	ok	0	0	0	0	0	0	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C9.log	0	0
+OPERATOR-READ	arm=control	repeat=1	H-8=MISS — never named	M-12=adjacent — decimals candidate (ptDecimals dead-code), not the SY-vs-asset mechanism

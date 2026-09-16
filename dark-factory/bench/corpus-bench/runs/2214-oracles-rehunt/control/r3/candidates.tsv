@@ -1,0 +1,4 @@
+location	class	severity
+src/oracles/Curve2TokenOracle.sol:_lpTokenValue	C15	High
+src/oracles/PendlePTOracle.sol:_calculateBaseToQuote	C2	High
+src/oracles/Curve2TokenOracle.sol:_lpTokenValue:55	C8	High

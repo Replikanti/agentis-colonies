@@ -1,0 +1,9 @@
+arm	repeat	class	status	candidates	opcheck_n	trace_n	untraced_n	h8_kw_prefilter	m12_kw_prefilter	logfile	unresolved	reasks
+routed+trace	2	C15	ok	1	6	6	0	1	1	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C15.log	2	0
+routed+trace	2	C19	ok	0	14	14	0	0	1	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C19.log	0	0
+routed+trace	2	C22	ok	0	7	7	0	0	0	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C22.log	0	0
+routed+trace	2	C23	ok	0	10	10	0	0	1	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C23.log	0	0
+routed+trace	2	C2	ok	1	9	9	0	0	1	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C2.log	4	0
+routed+trace	2	C8	ok	1	7	7	0	0	0	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C8.log	0	0
+routed+trace	2	C9	ok	0	8	8	0	1	1	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C9.log	0	0
+OPERATOR-READ	arm=routed+trace	repeat=2	H-8=MISS — traced in C22+C23 (4th/5th dismissal on identical grounds)	M-12=HIT — C2 candidate at _calculateBaseToQuote:88, non-1e18 rate for non-18-dec markets

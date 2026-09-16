@@ -829,6 +829,60 @@ contests (time-of-day drift); never pull the checkout between the two arms of a 
 --rehunt-max-attempts 2` pass IN THAT ARM, and if it is still degraded the whole contest pair is VOID — a
 crashed cell must never become a one-sided MISS.
 
+## Zone-restricted rehunt (#2214)
+
+A `--rehunt-gaps` pass scoped to ONE zone of an already-frozen base, used to test a lever (a routing change,
+a follow-through gate, a dismissal-discipline directive) cheaply against a single rare-row miss instead of
+re-running a whole contest. Archive of the run it produced:
+[`runs/2214-oracles-rehunt/`](runs/2214-oracles-rehunt/). Needs a base already frozen by the recipe above
+(step 2) — this recipe never runs STAGE 1/2.
+
+```sh
+DF=<repo>/dark-factory ; ARMDIR=<take-root>/<contest> ; BASE=<frozen-base>/<contest> ; ZONE_ID=<zone id>
+
+# 1) stage: copy the frozen map + briefs (mutated below, so a real copy) + truth.tsv; symlink code + judging
+mkdir -p "$ARMDIR/zone-hunt-out/coverage"
+cp -a "$BASE/map" "$BASE/briefs" "$ARMDIR/zone-hunt-out/"
+cp    "$BASE/truth.tsv" "$ARMDIR/truth.tsv"
+ln -s "$BASE/code"    "$ARMDIR/code"
+ln -s "$BASE/judging" "$ARMDIR/judging"
+
+# 2) filter the staged map/zones.json down to the ONE zone (byte-identical zone dict, 1-element list)
+python3 -c '
+import json, sys
+path, zid = sys.argv[1], sys.argv[2]
+zones = json.load(open(path, encoding="utf-8"))
+matched = [z for z in zones if z.get("id") == zid]
+assert len(matched) == 1, matched
+json.dump(matched, open(path, "w", encoding="utf-8"), indent=2)
+' "$ARMDIR/zone-hunt-out/map/zones.json" "$ZONE_ID"
+# map/scope.tsv and briefs/ are left untouched for a control arm.
+
+# 2b) treatment arms only: inject the class under test into that zone's scope.tsv line (the field
+#     run-discovery.sh --list-cells reads to build the per-cell class set under --rehunt-gaps — NOT
+#     zones.json's bug_classes_likely)
+#     edit "$ARMDIR/zone-hunt-out/map/scope.tsv": append ",<CLASS>" to field 2 of the matching zone-name row.
+
+# 3) coverage init over the FILTERED zones.json -> one not_reached zone -> `gaps` yields exactly it
+python3 "$DF/lib/zone-coverage.py" init \
+  --zones "$ARMDIR/zone-hunt-out/map/zones.json" \
+  --out "$ARMDIR/zone-hunt-out/coverage/zone-coverage.json" \
+  --zone-list "$ARMDIR/zone-hunt-out/.zone-list.tsv" \
+  --repo "<contest>" --commit "$(git -C "$DF" rev-parse HEAD)" --zone-cell-budget 0 --run-cell-budget 0
+python3 "$DF/lib/zone-coverage.py" gaps --file "$ARMDIR/zone-hunt-out/coverage/zone-coverage.json" \
+  --max-attempts 2   # SELF-CHECK: must print exactly one line, id=$ZONE_ID
+
+# 4) run — same ruler as the whole-contest recipe above (depth OFF, --jobs 1, killswitches); the lens/flags
+#    under test are env vars on this one invocation
+bash "$DF/run-zone-hunt.sh" --repo "$ARMDIR/code" --out "$ARMDIR/zone-hunt-out" --rehunt-gaps \
+     --backend flat-cyborg --model <model-id> --jobs 1 --agentis agentis
+```
+
+Scoring: read the cell logs (`OPCHECK|`/`TRACE|`/`CANDIDATE|` lines under `discovery/$ZONE_ID/run/hunt_*.log`)
+for the specific rare row(s) under test — never the location-first scoreboard, which can name-coincident-credit
+a row through an unrelated candidate at the same function (see the #2213 archive's disclosure). Grep only the
+`hunt_*.log` glob, never `hunter.ag` (a copy of the directive SOURCE, containing the same literal sentinels).
+
 ## Adding a contest
 
 Append a row to `corpus.tsv` (`id  code_repo  judging_repo  scope_hint`) for any CONCLUDED Sherlock contest

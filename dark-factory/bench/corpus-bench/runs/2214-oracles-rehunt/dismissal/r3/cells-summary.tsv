@@ -1,0 +1,9 @@
+arm	repeat	class	status	candidates	opcheck_n	trace_n	untraced_n	h8_kw_prefilter	m12_kw_prefilter	logfile	unresolved	reasks
+dismissal	3	C15	ok	1	9	9	0	1	1	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C15.log	2	0
+dismissal	3	C19	failed(untraced-degraded)	0	13	13	0	0	1	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C19.log	0	1
+dismissal	3	C22	ok	1	6	6	0	1	1	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C22.log	1	1
+dismissal	3	C23	ok	0	7	7	0	1	0	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C23.log	1	1
+dismissal	3	C2	ok	3	11	11	0	0	0	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C2.log	3	0
+dismissal	3	C8	ok	1	6	6	0	0	0	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C8.log	0	0
+dismissal	3	C9	failed(untraced-degraded)	0	8	8	0	1	1	hunt_Custom_price_oracles_Curve_LP_Pendle_PT_C9.log	0	1
+OPERATOR-READ	arm=dismissal	repeat=3	H-8=CANDIDATE (HIT) — C22 emitted the candidate at PendlePTOracle._calculateBaseToQuote with the SY-vs-asset mechanism, citing TestPTStrategyImpl.sol:110-118; first H-8 candidate in 15 arm-runs	M-12=MISS — adjacent decimals candidate present, no verified 1e18 claim
