@@ -736,19 +736,45 @@ if grep -q 'RPC="${DF_EXTERNAL_RPC:-${FORK_URL:-${ETH_RPC_URL:-}}}"' "$ONCHAIN";
 else
   bad "onchain-fact.sh does not read the endpoint from the three configured env names"
 fi
-# The cell is TOLD to run this with `sh` (the directive's own command line), so a bash-only construct would
-# make every invocation exit 2 with no output on a dash host — the #2235 PR C shape of the dash/CI trap. Every
-# fixture below therefore invokes the tool through `sh`, and this pins the constructs that would break it.
+# THE INTERPRETER COUPLING. Both directives name `bash` explicitly, because resolve-external.sh is bash-only
+# (`set -o pipefail`, herestrings) and a dash /bin/sh — what CI runs — makes an `sh` invocation exit 2 with NO
+# output, which a cell reads as "the tool is broken" rather than "the fact is unavailable". onchain-fact.sh is
+# additionally kept POSIX, and every fixture below invokes it through `sh` (dash in CI) as the stricter proof.
+for _d in "external_resolve_block:$RESOLVER:resolver" "onchain_fact_block:$ONCHAIN:on-chain reader"; do
+  _fn="${_d%%:*}"; _rest="${_d#*:}"; _tool="${_rest%%:*}"; _label="${_rest#*:}"
+  if sed -n "/^fn $_fn(/,/^}\$/p" "$HUNTER" | grep -qE '\+ "    bash " \+'; then
+    ok "the $_label directive names \`bash\` explicitly (never \`sh\`, whose identity varies by host)"
+  else
+    bad "the $_label directive does not name \`bash\` — on a dash /bin/sh every call would exit 2 with no output"
+  fi
+  if command -v dash >/dev/null 2>&1; then
+    if dash -n "$_tool" 2>/dev/null; then
+      ok "dash also parses $(basename "$_tool") — the explicit \`bash\` stays correct either way"
+    else
+      ok "dash CANNOT parse $(basename "$_tool"): the \`bash\` invocation is load-bearing, not decoration"
+    fi
+  else
+    skip "no dash on PATH — the interpreter guard rests on the \`bash\` invocation string asserted above"
+  fi
+done
+# And the constructs that would break the POSIX tool, whose fixtures below run under `sh`.
 OC_BASHISM="$(grep -nE 'set -[a-z]*o[[:space:]]+pipefail|<<<|\[\[[[:space:]]' "$ONCHAIN" | grep -v '^[0-9]*:#' | head -3 || true)"
 if [ -z "$OC_BASHISM" ]; then
-  ok "onchain-fact.sh is free of pipefail/herestring/[[ — it really runs under the `sh` the directive names"
+  ok "onchain-fact.sh is free of pipefail/herestring/[[ — every fixture below really runs it under sh"
 else
   bad "onchain-fact.sh carries a bash-only construct: $OC_BASHISM"
 fi
 if command -v dash >/dev/null 2>&1; then
-  if dash -n "$ONCHAIN" 2>/dev/null; then ok "dash parses onchain-fact.sh"; else bad "dash cannot parse onchain-fact.sh"; fi
+  # A real dash RUN, not just a parse: the tool must answer inside its grammar under a POSIX shell.
+  OC_DASH="$(env -u DF_EXTERNAL_RPC -u FORK_URL -u ETH_RPC_URL dash "$ONCHAIN" \
+    --address 0x1111111111111111111111111111111111111111 --sig 'rateOf()(uint256)' --block 1 \
+    --cache-dir "$WORK/oc-dash" 2>/dev/null)"
+  case "$OC_DASH" in
+    ONCHAIN\|*\|unavailable\|no-rpc) ok "under dash the tool answers inside its grammar: $OC_DASH" ;;
+    *) bad "under dash the tool answered '$OC_DASH' (want the no-rpc line) — it is not POSIX after all" ;;
+  esac
 else
-  skip "no dash on PATH — the POSIX parse is covered by the sh-invoked fixtures below (CI's sh IS dash)"
+  skip "no dash on PATH — the POSIX run is covered by the sh-invoked fixtures below (CI's /bin/sh IS dash)"
 fi
 OC_BAD="$(sh "$ONCHAIN" --address 0x1111111111111111111111111111111111111111 --sig 'https://evil.example/x' \
   --cache-dir "$WORK/oc-cache" 2>/dev/null)" ; OC_BAD_RC=$?

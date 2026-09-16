@@ -836,12 +836,17 @@ fn external_resolve_marker() -> string {
 // The directive text. Every path in it is passed in, so the model never has to invent one — an invented cache
 // path is exactly the "citation laundering" the harness gate refuses. O(1) top-level concat: no regex, no
 // reduce, no exec sh, so a cell pays nothing for it whether it fires or not.
+//
+// The command names `bash` EXPLICITLY, never `sh`: resolve-external.sh is bash-only (`set -o pipefail`,
+// herestrings), and on a host whose /bin/sh is dash — which is what CI runs — an `sh` invocation exits 2 with
+// NO output, which a cell reads as "the tool is broken" instead of "the symbol did not resolve". Naming the
+// interpreter removes the dependency on whatever /bin/sh happens to be. demo-resolve-cell.sh pins it.
 fn external_resolve_block(resolver: string, repo: string, cache: string, state: string, budget: string) -> string {
     return external_resolve_marker() + "\n"
       + "A claim about how something OUTSIDE this payload behaves is a fact you can now GO AND READ. There is a "
       + "deterministic resolver on disk — no model, no search — that turns the NAME of an externally declared "
       + "contract, interface or library into source you can open. Run it with Bash, exactly like this:\n"
-      + "    sh " + resolver + " --symbol <Name> --repo " + repo + " --cache-dir " + cache
+      + "    bash " + resolver + " --symbol <Name> --repo " + repo + " --cache-dir " + cache
       + " --budget-state " + state + "\n"
       + "`<Name>` is a Solidity identifier, optionally `Name.function` — a contract/interface/library name that "
       + "appears in this payload's imports, inheritance or call sites. It takes NOTHING else: no URL, no host, "
@@ -895,14 +900,17 @@ fn onchain_fact_marker() -> string {
 }
 
 // The directive text. Every path and bound is passed in for the same reason the resolver's are: a value the
-// model invents is exactly the citation the harness then cannot re-open. O(1) top-level concat.
+// model invents is exactly the citation the harness then cannot re-open. O(1) top-level concat. The command
+// names `bash` explicitly for the same reason the resolver's does — one idiom, no dependency on /bin/sh —
+// even though onchain-fact.sh itself is kept POSIX (the demo runs it under `sh`, i.e. dash in CI, as the
+// stricter proof).
 fn onchain_fact_block(tool: string, cache: string, state: string, budget: string, block: string) -> string {
     return onchain_fact_marker() + "\n"
       + "Some claims turn on DEPLOYED STATE rather than on source: what a parameter is actually set to, which "
       + "account actually holds a role, what a value actually is right now. Source cannot settle those and "
       + "neither can memory — but you can READ one. There is a deterministic on-chain reader on disk (no "
       + "model, no search). Run it with Bash:\n"
-      + "    sh " + tool + " --chain <id> --address 0x<40 hex> --sig \"<name>(<argtypes>)(<returntypes>)\""
+      + "    bash " + tool + " --chain <id> --address 0x<40 hex> --sig \"<name>(<argtypes>)(<returntypes>)\""
       + " [--args \"<value> <value>\"]" + block + " --cache-dir " + cache + " --budget-state " + state + "\n"
       + "The ADDRESS must be one this payload, its configuration or the resolver above actually names; an "
       + "address you invented answers about nothing. The tool takes NO endpoint and NO URL — the network "

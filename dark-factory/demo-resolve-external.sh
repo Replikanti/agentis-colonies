@@ -101,13 +101,17 @@ seam_count() { grep -c "^$1 " "$SEAM_LOG" 2>/dev/null | head -n 1 || true; }
 seam_reset() { : > "$SEAM_LOG"; }
 
 OUT=""; RC=0
+# Every invocation below names `bash` EXPLICITLY rather than relying on the shebang or on /bin/sh: the
+# resolver is bash-only (`set -o pipefail`, herestrings), so under a dash /bin/sh — what CI runs — an `sh`
+# invocation would exit 2 with NO output. hunter.ag's directive names the same interpreter, and
+# demo-resolve-cell.sh pins that coupling.
 run() { # run the resolver with both network seams live; captures stdout only
     OUT="$(DF_SOURCIFY_CMD="$SOURCIFY_SEAM" DF_GIT_CLONE_CMD="$CLONE_SEAM" \
-           "$RESOLVER" "$@" 2>"$WORK/stderr.log")"
+           bash "$RESOLVER" "$@" 2>"$WORK/stderr.log")"
     RC=$?
 }
 run_bare() { # no seams configured at all (the defaults would need the network, so pair with --offline)
-    OUT="$("$RESOLVER" "$@" 2>"$WORK/stderr.log")"
+    OUT="$(bash "$RESOLVER" "$@" 2>"$WORK/stderr.log")"
     RC=$?
 }
 
@@ -400,7 +404,7 @@ seam_reset
 CACHE11B="$WORK/cache11b"
 OUT="$(DF_SOURCIFY_CMD="$SOURCIFY_SEAM" DF_GIT_CLONE_CMD="$CLONE_SEAM" DF_ETH_STORAGE_CMD="$STORAGE_SEAM" \
        DF_EXTERNAL_RPC="http://127.0.0.1:8545" \
-       "$RESOLVER" --symbol ProxiedVault --address 0x4444444444444444444444444444444444444444 \
+       bash "$RESOLVER" --symbol ProxiedVault --address 0x4444444444444444444444444444444444444444 \
        --chain 11155111 --cache-dir "$CACHE11B" 2>"$WORK/stderr.log")"; RC=$?
 check
 [ "$(kind)" = "sourcify" ] \

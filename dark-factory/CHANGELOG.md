@@ -92,7 +92,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   gate behaves exactly as before. `demo-resolve-cell.sh` pins all of it offline through a `DF_CAST_CMD` seam
   (canned cache entry served with no endpoint, `no-rpc`/`revert` refusals caching nothing, the 5-call bound
   with the seam reached exactly 5 times, and the gate's accept/reject pairs), and `tools/colony-lint.sh`
-  fails the lint if `onchain-fact.sh` ever hard-codes a host, with a dead-guard control. Whether the model
+  fails the lint if `onchain-fact.sh` ever hard-codes a host, with a dead-guard control. Both directives name
+  `bash` explicitly rather than `sh`: `resolve-external.sh` is bash-only (`set -o pipefail`, herestrings), so
+  on a host whose `/bin/sh` is dash an `sh` invocation would exit 2 with NO output — a cell would read that as
+  a broken tool rather than as an unresolved fact. `onchain-fact.sh` is additionally kept POSIX and its
+  fixtures run it through `sh` (dash under CI) as the stricter proof. Whether the model
   USES the verb — and whether an endpoint exists for a given held-out chain — is M4's question, not this
   PR's.
 
