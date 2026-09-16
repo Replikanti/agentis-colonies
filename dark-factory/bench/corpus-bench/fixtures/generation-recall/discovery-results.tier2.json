@@ -1,0 +1,32 @@
+{
+  "repo": "generation-recall-fixture",
+  "backend": "mock",
+  "jobs": 1,
+  "cells": [
+    {
+      "subsystem": "vault-core",
+      "class": "C2",
+      "files": "src/Vault.sol",
+      "status": "ok",
+      "candidates": [
+        "src/Vault.sol:settleEpoch:120|C2|Medium|floor division favors the protocol on every settlement|call settleEpoch across epochs and skim the rounding bias"
+      ],
+      "coordination": []
+    }
+  ],
+  "tier2": [
+    {
+      "subsystem": "oracle-feed",
+      "class": "C23",
+      "id": 4,
+      "kind": "unresolved",
+      "location": "src/Oracle.sol:peekPrice",
+      "loc_source": "opcheck",
+      "loc_rule": "contract-fn",
+      "severity": "",
+      "check": "Oracle.peekPrice must revert when the feed answer is older than the staleness window",
+      "why": "the staleness window is assigned outside this zone slice, so the TRACE could not settle the check"
+    }
+  ],
+  "totals": {"cells": 1, "candidates": 1, "steers": 0, "tier2": 1, "tier2_dropped": 0}
+}
