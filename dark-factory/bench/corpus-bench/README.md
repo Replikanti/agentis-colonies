@@ -15,7 +15,8 @@ campaign keeps missing (see `project_hunt_bench_calibration` / `project_dark_fac
 
 ```
 corpus-bench/
-  corpus.tsv                    # manifest: id, code_repo, judging_repo, project_subdir, scope_hint (see header)
+  corpus.tsv                    # manifest: id, code_repo, judging_repo, project_subdir, role, scope_hint
+                                  #   (see header; `role` = dev|holdout, the #2231 hold-out policy below)
   fetch-corpus.sh                # clone code+judging repos for one/every corpus.tsv row (no re-hosting)
   extract-gt.sh                  # judging-repo README.md -> truth.tsv (ground truth + rarity + --code
                                   #   location anchors in column 6, #2215)
@@ -883,11 +884,35 @@ for the specific rare row(s) under test — never the location-first scoreboard,
 a row through an unrelated candidate at the same function (see the #2213 archive's disclosure). Grep only the
 `hunt_*.log` glob, never `hunter.ag` (a copy of the directive SOURCE, containing the same literal sentinels).
 
+## Hold-out policy: `dev` vs `holdout` (#2231)
+
+`corpus.tsv` column 5 is `role`, and it decides what a number measured on that contest is allowed to claim:
+
+- **`dev`** (`notional`, `yieldoor`, `yearn-ybold`, `crestal`, `plaza`) — **the lenses are designed here.**
+  Until 2026-09-16 these contests' own GT ids and mechanisms sat in `bug-taxonomy.md`'s `seen:` lines, which
+  `hunter.ag` reads and `gen-briefs.sh` folds into the frozen briefs verbatim; the brief's known-findings
+  clause then told the hunter to treat some of the same rows as out of scope. Every recall number measured on
+  a `dev` contest is therefore **in-distribution** — inflated where the mechanism was given, suppressed where
+  the brief excluded the row — and both harnesses label it so on the headline. Use these contests to BUILD and
+  debug a lens, never to claim recall.
+- **`holdout`** (`dodo`, `mellow`, `symm`) — never used to design a lens. **Recall claims are only made here.**
+
+`run-corpus-bench.sh --score` and `generation-recall.sh --from-work` print `role=<role>` next to every
+per-contest headline (and carry it in `--json`), with `dev` spelled out as `IN-DISTRIBUTION`. A contest that is
+not in the manifest reads `role=?` rather than passing as clean. `run-corpus-bench.sh --self-test` fails if any
+row is missing a `dev`/`holdout` role; `tools/colony-lint.sh` fails if a contest id or a GT id reappears in a
+prompt-visible file. The contest text removed from the lens is parked, verbatim, in
+[`bug-class-coverage.md`](bug-class-coverage.md) ("Contest examples — docs only, never prompt-visible").
+
+Model memorisation of public Sherlock reports remains a residual risk on every contest; the hold-out only
+removes the leakage we control.
+
 ## Adding a contest
 
-Append a row to `corpus.tsv` (`id  code_repo  judging_repo  scope_hint`) for any CONCLUDED Sherlock contest
-whose judging repo is public. `extract-gt.sh` only needs the judging repo's `README.md` to follow the
-`# Issue <H|M>-<N>: <title>` / `## Found by` shape used above — verify that shape holds (`grep -c '^# Issue
+Append a row to `corpus.tsv` (`id  code_repo  judging_repo  project_subdir  role  [scope_hint]`) for any
+CONCLUDED Sherlock contest whose judging repo is public — `role` is REQUIRED, and a new contest is a
+`holdout` unless a lens was knowingly designed on it. `extract-gt.sh` only needs the judging repo's
+`README.md` to follow the `# Issue <H|M>-<N>: <title>` / `## Found by` shape used above — verify that shape holds (`grep -c '^# Issue
 [HM]-' README.md` should equal the contest's published finding count) before trusting the extracted count.
 
 ## CodeHawks GT extraction (#2189, unblocks #2172)
@@ -896,8 +921,8 @@ The corpus GT source above is Sherlock-only (`extract-gt.sh` parses a public `-j
 Sherlock judging repos went dry for the post-cutoff, rare-class targets #2172 needs, so a second, non-Sherlock
 GT source was added: **CodeHawks**. Its findings/judging data is served by a keyless tRPC layer (no `-judging`
 repo, no auth), so it needs a different two-script flow than the Sherlock path — and a **separate manifest** so
-the Sherlock `corpus.tsv` and its three positional readers (`fetch-corpus.sh`, `extract-gt.sh`,
-`run-corpus-bench.sh`) are never touched. Wiring the CodeHawks manifest into the bench is #2172's job, not this
+the Sherlock `corpus.tsv` and its positional readers (`fetch-corpus.sh`, `run-corpus-bench.sh`,
+`generalization-bench.sh`, `../composable-lens-bench/run-composable-lens-bench.sh`) are never touched. Wiring the CodeHawks manifest into the bench is #2172's job, not this
 one's.
 
 Two scripts (siblings of `../watch-competitions.sh` and `extract-gt.sh`):

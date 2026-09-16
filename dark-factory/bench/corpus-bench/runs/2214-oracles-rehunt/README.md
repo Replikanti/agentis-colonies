@@ -1,5 +1,13 @@
 # C22 routing + TRACE follow-through + dismissal-discipline rehunt (#2214 M3) — archive
 
+> **⚠️ in-distribution (#2231).** This rehunt runs on the same frozen `notional` base as #2213, and `notional`
+> is a `dev` row of `corpus.tsv`: at the time, `auditor/bug-taxonomy.md`'s C22/C23 `seen:` lines named
+> `notional`'s GT ids (H-8, M-3, M-22 / H-9, M-5, M-18) and the briefs folded them in. The H-8 row this
+> measurement is built around was therefore ground truth the lens had already been shown by id. The WIRING
+> conclusions (C22 routing, TRACE follow-through, dismissal discipline) are mechanical and survive; any recall
+> or catch number quoted from here is in-distribution and is not a held-out capability claim. The lens was
+> de-contaminated in #2231; recall claims belong on the `holdout` contests (`dodo`, `mellow`, `symm`).
+
 The forensic follow-up to the #2213 M2 A/B ([`runs/2213-operationalize-ab/`](../2213-operationalize-ab/)):
 `notional` H-8 ("Pendle SY treated 1:1 with PT via `getPtToSyRate`") was MISSED by both #2213 arms, and the
 forensics said this was **not a generation failure** — the class that would carry the bug (C22,

@@ -345,6 +345,25 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
     say "SELF-TEST: the D3 pass-through forwarding idiom is missing or no longer default-OFF -> FAIL"; exit 1
   fi
 
+  # Fifth assertion (#2231): the hold-out policy is a property of the manifest + the headline, so both halves
+  # are pinned here. (i) EVERY non-comment corpus.tsv row carries a `role` of exactly `dev` or `holdout` in
+  # column 5 — the column readers take explicitly, placed BEFORE the optional scope_hint because IFS=TAB
+  # collapses an empty field and a trailing role would otherwise be read as a scope_hint. (ii) the per-contest
+  # score headline prints that role and labels a `dev` contest IN-DISTRIBUTION, so a number designed-on
+  # contest can never be quoted as a clean recall claim by accident.
+  role_bad="$(awk -F'\t' '/^#/ {next} NF==0 {next} ($5 != "dev" && $5 != "holdout") {print $1 " role=<" $5 ">"}' "$CORPUS")"
+  if [ -z "$role_bad" ]; then
+    say "SELF-TEST: every corpus.tsv row carries role=dev|holdout in column 5 (#2231 hold-out policy) -> PASS"
+  else
+    say "SELF-TEST: corpus.tsv row(s) without a valid role column -> FAIL"; printf '%s\n' "$role_bad" >&2; exit 1
+  fi
+  if grep -Fq 'role_note="role=dev, IN-DISTRIBUTION (lens designed on this contest, #2231)"' "$0" \
+     && grep -Fq 'say "  [$id] [$role_note] recall ' "$0"; then
+    say "SELF-TEST: the per-contest score headline prints the corpus role and labels dev IN-DISTRIBUTION (#2231) -> PASS"
+  else
+    say "SELF-TEST: the score headline no longer prints the #2231 role label -> FAIL"; exit 1
+  fi
+
   [ "$ANY_ACTION" -eq 1 ] && [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
 fi
 [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
@@ -361,7 +380,7 @@ fi
 
 # ---- --gt ---------------------------------------------------------------------------------------------------
 if [ "$DO_GT" -eq 1 ]; then
-  while IFS=$'\t' read -r id _code _judging subdir _scope; do
+  while IFS=$'\t' read -r id _code _judging subdir _role _scope; do
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
     readme="$WORK/$id/judging/README.md"
@@ -379,7 +398,7 @@ fi
 # ---- --dupes (#1840 GT-equivalence artifact; costs LLM calls, operator-only) -----------------------------------
 if [ "$DO_DUPES" -eq 1 ]; then
   [ -x "$GTDUPES" ] || { echo "run-corpus-bench.sh: gt-dupes.sh not found/executable at $GTDUPES" >&2; exit 3; }
-  while IFS=$'\t' read -r id _code _judging _subdir _scope; do
+  while IFS=$'\t' read -r id _code _judging _subdir _role _scope; do
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
     truth="$WORK/$id/truth.tsv"
@@ -429,7 +448,7 @@ if [ "$DO_HUNT" -eq 1 ]; then
   fi
   [ -n "$VECTOR_HUNT_ARG" ] && say "HUNT: vector-hunt STAGE 4.6 ON (--vector-hunt, #2156) — this ADDS the D2 vector-enumeration lens; a recall number from this run is not cost-comparable to a vector-hunt-off one${VEC_MAX_ARG:+ (cap $VEC_MAX_ARG/zone)}"
   [ -n "$CALLEE_TRUST_ARG" ] && say "HUNT: CALLEE_TRUST=$CALLEE_TRUST_ARG forced into the hunt env (#2157 D1 A/B toggle) — 0 = control (directive OFF), 1 = treatment (directive ON); unset = pipeline default (ON)"
-  while IFS=$'\t' read -r id _code _judging project_subdir scope_hint; do
+  while IFS=$'\t' read -r id _code _judging project_subdir _role scope_hint; do
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
     [ -n "$project_subdir" ] || { echo "run-corpus-bench.sh: [$id] corpus.tsv row has no project_subdir; skipping" >&2; continue; }
@@ -468,9 +487,16 @@ G_COST_CELLS=0 ; G_COST_CANDIDATES=0 ; G_COST_CONFIRMED=0
 
 if [ "$DO_SCORE" -eq 1 ]; then
   command -v python3 >/dev/null 2>&1 || { echo "run-corpus-bench.sh: python3 not installed (scoring needs it)" >&2; exit 3; }
-  while IFS=$'\t' read -r id _code _judging _subdir _scope; do
+  while IFS=$'\t' read -r id _code _judging _subdir role _scope; do
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
+    # #2231 hold-out policy: a `dev` contest is one the lenses were DESIGNED on (its ground truth lived in
+    # bug-taxonomy.md's `seen:` lines until 2026-09-16), so its number is IN-DISTRIBUTION and says so on the
+    # headline. Recall CLAIMS are only made on `holdout` rows. An unlabelled row reads `role=?` rather than
+    # silently passing as clean.
+    role="${role:-?}"
+    role_note="role=$role"
+    [ "$role" = "dev" ] && role_note="role=dev, IN-DISTRIBUTION (lens designed on this contest, #2231)"
     truth="$WORK/$id/truth.tsv"
     verified_json="$WORK/$id/zone-hunt-out/verify/verified_findings.json"
     if [ ! -f "$truth" ]; then say "SCORE: [$id] no truth.tsv (run --gt first); skipping"; continue; fi
@@ -566,7 +592,7 @@ SCORE_EOF
     unmatched_leads=$((verified_n - matched_leads))
     rare_note=""; [ -n "$dupes_file" ] && rare_note=" ($c_rare_expanded via GT-equivalence)"
 
-    say "  [$id] recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total$rare_note, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total, verified-leads $verified_n (matched $matched_leads, unmatched $unmatched_leads — needs manual triage, NOT auto-claimed novel)"
+    say "  [$id] [$role_note] recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total$rare_note, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total, verified-leads $verified_n (matched $matched_leads, unmatched $unmatched_leads — needs manual triage, NOT auto-claimed novel)"
     [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE, min-confidence $gate_conf): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s); gate dropped $gate_dropped MATCH decision(s), costing $gate_rows row(s)"
     [ -n "$dupes_file" ] && say "  [$id] GT-equivalence (#1840): $dup_classes class(es), $dup_expanded row(s) credited through a class; the same replay without expansion reads $((c_hits - dup_expanded))/$c_total"
     # #2215: same disclosure discipline as the #1840 line above — a ruler that moved the headline must say so
@@ -613,7 +639,7 @@ COST_EOF
       c_gate_conf_json="$gate_conf" ; c_gate_dropped_json="$gate_dropped" ; c_gate_rows_json="$gate_rows"
       G_GATE_DROPPED=$((G_GATE_DROPPED+gate_dropped)); G_GATE_ROWS=$((G_GATE_ROWS+gate_rows))
     fi
-    CONTEST_JSON+=("{\"id\":\"$id\",\"gt_total\":$c_total,\"hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"verified_leads\":$verified_n,\"matched_leads\":$matched_leads,\"unmatched_leads\":$unmatched_leads,\"judge\":{\"mode\":\"$JUDGE\",\"calls\":$judge_calls,\"errors\":$judge_errors,\"min_confidence\":$c_gate_conf_json,\"gated_matches\":$c_gate_dropped_json,\"gated_rows\":$c_gate_rows_json},\"dup\":{\"classes\":$dup_classes,\"expanded\":$dup_expanded,\"rare_expanded\":$c_rare_expanded},\"cost\":{\"cells\":$c_cost_cells,\"candidates\":$c_cost_candidates,\"confirmed\":$c_cost_confirmed,\"confirm_rate_pct\":$c_cost_rate_json,\"cells_per_confirmed\":$c_cost_cpc_json}}")
+    CONTEST_JSON+=("{\"id\":\"$id\",\"role\":\"$role\",\"gt_total\":$c_total,\"hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"verified_leads\":$verified_n,\"matched_leads\":$matched_leads,\"unmatched_leads\":$unmatched_leads,\"judge\":{\"mode\":\"$JUDGE\",\"calls\":$judge_calls,\"errors\":$judge_errors,\"min_confidence\":$c_gate_conf_json,\"gated_matches\":$c_gate_dropped_json,\"gated_rows\":$c_gate_rows_json},\"dup\":{\"classes\":$dup_classes,\"expanded\":$dup_expanded,\"rare_expanded\":$c_rare_expanded},\"cost\":{\"cells\":$c_cost_cells,\"candidates\":$c_cost_candidates,\"confirmed\":$c_cost_confirmed,\"confirm_rate_pct\":$c_cost_rate_json,\"cells_per_confirmed\":$c_cost_cpc_json}}")
     G_JUDGE_CALLS=$((G_JUDGE_CALLS+judge_calls)); G_JUDGE_ERRORS=$((G_JUDGE_ERRORS+judge_errors))
     G_DUP_CLASSES=$((G_DUP_CLASSES+dup_classes)); G_DUP_EXPANDED=$((G_DUP_EXPANDED+dup_expanded)); G_DUP_RARE_EXPANDED=$((G_DUP_RARE_EXPANDED+c_rare_expanded))
 
@@ -631,6 +657,7 @@ COST_EOF
   say "overall recall: $G_HITS/$G_TOTAL"
   say "by severity   : High $G_H_HITS/$G_H_TOTAL, Medium $G_M_HITS/$G_M_TOTAL"
   say "by rarity     : rare(1-2) $G_RARE_HITS/$G_RARE_TOTAL$([ "$G_DUP_EXPANDED" -gt 0 ] && echo " ($G_DUP_RARE_EXPANDED via GT-equivalence)"), mid(3-8) $G_MID_HITS/$G_MID_TOTAL, consensus(9+) $G_CONS_HITS/$G_CONS_TOTAL"
+  say "hold-out      : every role=dev contest above is IN-DISTRIBUTION (#2231) — the lenses were designed on it; recall CLAIMS belong to the role=holdout rows of corpus.tsv (see bug-class-coverage.md)"
   say "verified leads: $G_VERIFIED total, $G_MATCHED_LEADS matched a truth row, $G_UNMATCHED_LEADS unmatched (manual triage required before any novelty claim)"
   if [ "$G_DUP_EXPANDED" -gt 0 ]; then
     say "GT-equivalence: $G_DUP_CLASSES judged class(es), $G_DUP_EXPANDED row(s) credited through a class (#1840). The SAME replay without class expansion reads $((G_HITS - G_DUP_EXPANDED))/$G_TOTAL — quote the ruler with the number."

@@ -665,7 +665,7 @@ if len(prior) > 0 {
 let ensembleVariant = getenv("INV_ENSEMBLE_VARIANT");
 // #1755 M2 — VAULT VICTIM-FAIRNESS INVARIANT directive. On the vault route (active = vaultRoute) the ONE deep
 // invariant is not left to the model's discretion: it MUST be the #1724 `inv_victim_not_robbed` per-actor
-// FAIRNESS property, because the money-tier first-depositor / share-inflation bug (the yearn-ybold H-1 High)
+// FAIRNESS property, because the money-tier first-depositor / share-inflation bug (a rare High on this route)
 // manifests precisely as a LATER honest depositor redeeming strictly LESS than they deposited after a prior
 // actor's 1-wei micro-deposit + direct donation — a break a GLOBAL solvency sum can mask. Plain-string prompt
 // directive only (no shell, no env, no per-element recursion); it is prompt STEERING and never a second gate.
@@ -843,7 +843,7 @@ fn class_to_keyword(k: string) -> string {
     // A bare `C19` dominant label REUSES the existing "liveness" keyword: the livenessPrompt/livenessMeta lens is
     // already narrow-int-overflow-DoS shaped (WRAP-BOUNDARY action, NARROW-INT-NO-WRAP relation) and now also carries
     // an explicit DOWNCAST-TRUNCATION bullet, so C19 (uintN(x) / SafeCast truncation bricking a critical path, e.g.
-    // yieldoor H-3's uint16 observation-counter overflow) routes through the whole liveness machinery with no new
+    // a `uint16` observation-counter overflow) routes through the whole liveness machinery with no new
     // disjoint keyword set to keep consistent. is_value_custody / is_oracle_dependent / is_access_sensitive stay false
     // on "liveness", so a custody / oracle / access target never picks it up.
     if class_is(k, "c19") { return "liveness"; }

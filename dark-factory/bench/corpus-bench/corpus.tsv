@@ -1,5 +1,5 @@
 # dark-factory corpus-bench manifest (#1490 sibling; see ../README.md and README.md in this dir).
-# Columns (TAB-separated): id  code_repo  judging_repo  project_subdir  scope_hint
+# Columns (TAB-separated): id  code_repo  judging_repo  project_subdir  role  scope_hint
 #   id             short slug used for work-dir naming and --id selection.
 #   code_repo      GitHub "<org>/<repo>" of the CONCLUDED contest's audited code (cloned read-only, never
 #                  modified).
@@ -9,17 +9,25 @@
 #                  project dir) — the actual Foundry/Hardhat project root is <code_dir>/<project_subdir>, not
 #                  the clone root. run-corpus-bench.sh's --hunt stage points run-zone-hunt.sh --repo at this
 #                  subdir. Verified present (foundry.toml or hardhat.config.ts) on 2026-07-13.
+#   role           REQUIRED, `dev` or `holdout` (#2231 hold-out policy). `dev` = a contest the lenses were
+#                  DESIGNED on (its ground truth sat in bug-taxonomy.md's `seen:` lines until 2026-09-16), so
+#                  every recall number measured on it is IN-DISTRIBUTION and must be labelled as such.
+#                  `holdout` = never used to design a lens; recall CLAIMS are only made here. Readers print
+#                  the role next to every per-contest headline (run-corpus-bench.sh, generation-recall.sh).
+#                  role sits BEFORE the optional scope_hint on purpose: with IFS=TAB a `read` collapses an
+#                  empty field, so a role appended AFTER a blank scope_hint would land in scope_hint. All
+#                  positional readers were updated instead (see README.md "Adding a contest").
 #   scope_hint     optional map-zones.sh --scope-hint restriction (comma/space list of files or dir-prefixes);
 #                  blank = let zone-mapper.ag auto-discover the in-scope surface.
 # Provenance: all 8 rows are Sherlock contests, chosen (2026-07-11 session) as a corpus spanning contest size/
 # domain; GT counts below are informational (re-derived live by extract-gt.sh from each judging_repo, never
 # hand-entered) and were verified by direct clone+grep on 2026-07-13: dodo=17 yieldoor=17 crestal=7 yearn=3
 # plaza=30 notional=37 mellow=15 symm=6 (total 132). No contest code or finding text is re-hosted here.
-dodo	sherlock-audit/2025-05-dodo-cross-chain-dex	sherlock-audit/2025-05-dodo-cross-chain-dex-judging	omni-chain-contracts
-yieldoor	sherlock-audit/2025-02-yieldoor	sherlock-audit/2025-02-yieldoor-judging	yieldoor
-crestal	sherlock-audit/2025-03-crestal-network	sherlock-audit/2025-03-crestal-network-judging	crestal-omni-contracts
-yearn-ybold	sherlock-audit/2025-05-yearn-ybold	sherlock-audit/2025-05-yearn-ybold-judging	yv3-liquityv2-sp-strategy
-plaza	sherlock-audit/2024-12-plaza-finance	sherlock-audit/2024-12-plaza-finance-judging	plaza-evm
-notional	sherlock-audit/2025-06-notional-exponent	sherlock-audit/2025-06-notional-exponent-judging	notional-v4
-mellow	sherlock-audit/2025-07-mellow-flexible-vaults	sherlock-audit/2025-07-mellow-flexible-vaults-judging	flexible-vaults
-symm	sherlock-audit/2025-03-symm-io-stacking	sherlock-audit/2025-03-symm-io-stacking-judging	token
+dodo	sherlock-audit/2025-05-dodo-cross-chain-dex	sherlock-audit/2025-05-dodo-cross-chain-dex-judging	omni-chain-contracts	holdout
+yieldoor	sherlock-audit/2025-02-yieldoor	sherlock-audit/2025-02-yieldoor-judging	yieldoor	dev
+crestal	sherlock-audit/2025-03-crestal-network	sherlock-audit/2025-03-crestal-network-judging	crestal-omni-contracts	dev
+yearn-ybold	sherlock-audit/2025-05-yearn-ybold	sherlock-audit/2025-05-yearn-ybold-judging	yv3-liquityv2-sp-strategy	dev
+plaza	sherlock-audit/2024-12-plaza-finance	sherlock-audit/2024-12-plaza-finance-judging	plaza-evm	dev
+notional	sherlock-audit/2025-06-notional-exponent	sherlock-audit/2025-06-notional-exponent-judging	notional-v4	dev
+mellow	sherlock-audit/2025-07-mellow-flexible-vaults	sherlock-audit/2025-07-mellow-flexible-vaults-judging	flexible-vaults	holdout
+symm	sherlock-audit/2025-03-symm-io-stacking	sherlock-audit/2025-03-symm-io-stacking-judging	token	holdout

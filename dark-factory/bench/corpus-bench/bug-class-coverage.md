@@ -10,6 +10,15 @@ definitions in `../../auditor/bug-taxonomy.md`. Lens status is read from the liv
 (2026-07-23, `deep-hunt-ab.sh --live --ensemble-candidates 3`). This is human-checkable, not
 auto-derived; refine as `tag-bug-classes` (a #1787 deliverable) is built.
 
+> **⚠️ in-distribution (#2231).** Until 2026-09-16 the lens (`../../auditor/bug-taxonomy.md`) carried the
+> corpus contests' own GT ids and mechanisms in its `seen:` lines, and `gen-briefs.sh` folded them into the
+> frozen briefs. Every `CAUGHT`/recall claim below that was measured on `notional`, `yieldoor`, `yearn-ybold`,
+> `crestal` or `plaza` (the `dev` contests in `corpus.tsv`) is therefore **in-distribution** — inflated where
+> the mechanism was given, suppressed where the brief's known-findings clause excluded the row. The C11 and
+> C23 `CAUGHT` rows are marked accordingly. `dodo`, `mellow` and `symm` are the held-out contests; recall
+> claims belong there. The removed contest text is parked verbatim under "Contest examples" at the bottom of
+> this file.
+
 **Lens-status legend**
 - `CAUGHT` — the invariant lens FINDINGs it (witness-verified).
 - `REDUNDANT` — lens finds it but breadth already caught it (no net recall).
@@ -123,7 +132,7 @@ arm).
 | plaza | H-9 COLLATERAL_THRESHOLD 125 vs 120 | 4 | C10 config | OUT-OF-CLASS |
 | plaza | H-10 sell BondToken by manipulating collat | 8 | C1 / C10 | OUT-OF-CLASS |
 | plaza | H-11 incorrect price representation | 5 | C2 oracle / C9 | IN-FLIGHT (#1783) |
-| yearn | **H-1 steal 25% of first depositor** | **1** | **C11 first-depositor** | **CAUGHT** ✅ |
+| yearn | **H-1 steal 25% of first depositor** | **1** | **C11 first-depositor** | **CAUGHT** ✅ `in-distribution` (#2231) |
 | yearn | **H-2 deposit after keeper loss report** | **2** | C1 / C6 accounting-timing | OUT-OF-CLASS |
 | notional | H-1 cross-contract reentrancy theft | 4 | C8 reentrancy | OUT-OF-CLASS |
 | notional | **H-2 drain Morpho by inflating** | **1** | **C2 oracle / C15** | IN-FLIGHT (#1783) |
@@ -133,7 +142,7 @@ arm).
 | notional | H-6 DoS DineroWithdrawRequestManager | 7 | C16 liveness | OUT-OF-CLASS |
 | notional | H-7 claimAccountRewards missing param check | 5 | C5 access | OUT-OF-CLASS |
 | notional | **H-8 Pendle SY 1:1 assumption** | **2** | **C22 x-protocol unit** | REFUTED (#1879) |
-| notional | **H-9 hardcoded useEth in remove_liquidity** | **2** | **C23 hardcoded-param** | **CAUGHT** ✅ (#1879) |
+| notional | **H-9 hardcoded useEth in remove_liquidity** | **2** | **C23 hardcoded-param** | **CAUGHT** ✅ (#1879) `in-distribution` (#2231) |
 | notional | **H-10 TradeType change to steal** | **2** | **C5 access** | OUT-OF-CLASS (#1785) |
 | notional | H-11 missing slippage PT redemption | 11 | C12 slippage | OUT-OF-CLASS |
 | mellow | H-1 checkSignatures duplicate signers | 44 | C7 signature | OUT-OF-CLASS |
@@ -147,14 +156,14 @@ arm).
 
 | Class | Highs | rarest fb | Lens status | Priority note |
 |-------|-------|-----------|-------------|---------------|
-| C11 first-depositor / inflation | 1 | 1 | **CAUGHT** ✅ | shipped (#1778) — the proof the approach works |
+| C11 first-depositor / inflation | 1 | 1 | **CAUGHT** ✅ `in-distribution` | shipped (#1778) — the proof the approach works; the catch is on a `dev` contest whose GT mechanism was in the lens (#2231) |
 | C1 vault / share accounting | 6 | 2 | CAUGHT (redundant w/ breadth) | breadth already strong here |
 | C2 oracle integrity | 5 | 1 | IN-FLIGHT (#1783) | 5 Highs incl. 2 rare (fb=1) — highest ROI |
 | C5 access control | 3 | 2 | OPEN (#1785) | 3 Highs incl. notional H-10 (fb=2 rare) |
 | C6 accounting / rounding | 7 | 3 | OUT-OF-CLASS | large but mostly non-rare; breadth-adjacent |
 | C15 integration-seam | 1 | 2 | OUT-OF-CLASS | plaza H-7; notional H-8/H-9 retagged to C22/C23 (#1879) |
 | C22 x-protocol asset/unit | 1 | 2 | REFUTED (#1879) | notional H-8 (fb=2): C22 fired + generated PT/sUSDe candidates, refute gate dropped them |
-| C23 hardcoded ext-param | 1 | 2 | **CAUGHT** ✅ (#1879) | notional H-9 (fb=2): judge conf 93 — first C22/C23-family catch, end-to-end |
+| C23 hardcoded ext-param | 1 | 2 | **CAUGHT** ✅ (#1879) `in-distribution` | notional H-9 (fb=2): judge conf 93 — first C22/C23-family catch, end-to-end; `dev` contest, GT ids were in the lens when it was measured (#2231) |
 | C24 stale state assumption | 3 | 1 | IN-FLIGHT (#2218) | 3 Mediums, all generation misses in #2213: yieldoor M-2, notional M-8, notional M-16 — class + zone-mapper route landed, recall unmeasured until M2 |
 | C16 liveness / stuck-state | 4 | 3 | OPEN (#1784 overlaps) | DoS class |
 | C17 index/slot-overwrite | 1 | 5 | OPEN (#1784) | notional H-5 (H-3 retagged to C19 #2111) |
@@ -258,3 +267,39 @@ Two class-level findings fall out of the forensics and matter more than the null
   location-first matcher credits the lead to the consensus row M-10 and scores H-9 MISS. Any rare-recall
   number quoted for `notional` with `--gt-dupes` OFF therefore UNDERSTATES C23: absolute rare generation is
   >= 2/14 in both arms. The #1840 GT-equivalence artifact is the fix when a run wants the true count.
+
+## Contest examples (docs only — never prompt-visible)
+
+The `**seen:**` lines of [`../../auditor/bug-taxonomy.md`](../../auditor/bug-taxonomy.md) used to carry the
+corpus contest, the GT id and the mechanism of the finding each class was designed on. The taxonomy is read by
+`hunter.ag` and folded verbatim into the frozen briefs by `gen-briefs.sh`, so every one of those lines was
+ground truth handed to the hunter about a contest it was then scored on (#2231). The lens now carries only the
+generic code shape; the contest-keyed originals are parked HERE, verbatim, because they are still the honest
+provenance of each class — and this file is documentation the pipeline never reads.
+
+`tools/colony-lint.sh` fails the build if any of this text reappears in a prompt-visible file (`auditor/**`,
+`gen-briefs.sh`, `lib/*prompt*`, any `.ag` under `dark-factory/`).
+
+| class | contest | GT rows | verbatim `seen:` text as it read in the lens before #2231 |
+|---|---|---|---|
+| C2 — oracle integrity | notional | M-12 | corpus-bench notional GT M-12 (`PendlePTOracle._getPTRate` presumes `ptRate` is 1e18-decimal for EVERY market, which does not hold for markets whose index token is not 18-decimal). |
+| C11 — first-depositor / inflation | yearn-ybold | H-1 | corpus-bench yearn GT H-1 (a Yearn v3 strategy inheriting `TokenizedStrategy` whose factory/constructor performs no initial seed → first-depositor inflatable). |
+| C16 — state-machine liveness | crestal | M-5 | corpus-bench Crestal GT M-5 (worker-induced DoS in deployment requests — no cancellation mechanism). |
+| C17 — index/slot-overwrite | crestal | M-1 | corpus-bench Crestal GT M-1 (`createCommonProjectIDAndDeploymentRequest()` hardcodes the request-id index to 0, losing prior requests). |
+| C18 — round/auction-griefing | plaza | M-1, M-10 | corpus-bench Plaza GT M-1 (a failed auction period still updates `sharesPerToken` as if it succeeded) and M-10 (a user can always inflate `totalSellReserveAmount` to block the auction from ending). |
+| C19 — narrow-integer overflow → revert-DoS | yieldoor | H-3 | corpus-bench yieldoor GT H-3 (a strategy summed two `uint16` Uniswap-V3 slot0 observation counters in `uint16`; a pool with a large observation buffer overflowed the sum, reverting and permanently DoS'ing every pool-activity-gated operation). |
+| C20 — concentrated-liquidity tick precision | yieldoor | H-2 | corpus-bench yieldoor GT H-2 (main position ticks are set from `slot0.tick` rather than the `sqrtPrice`-derived tick; at a boundary the tick lags by one, so the allocated range is asymmetric and the position loses fees). |
+| C21 — context-flag valuation dispatch | notional | H-4 | corpus-bench notional GT H-4 (`convertToAssets` branches on the transient `t_CurrentAccount`: when it is set AND that account has a pending withdraw request, it returns the attacker-influenceable `getWithdrawRequestValue` escrow valuation instead of `super.convertToAssets` — a borrower steers their own position onto the favorable escrow-based value rather than the fair share price). |
+| C22 — cross-protocol asset / unit equivalence | notional | H-8, M-3, M-22 | corpus-bench notional GT H-8, M-3, M-22. |
+| C23 — hardcoded external-integration parameter | notional | H-9, M-5, M-18 | corpus-bench notional GT H-9, M-5, M-18. |
+| C24 — stale state assumption between touchpoints | yieldoor, notional | M-2 / M-8, M-16 | corpus-bench yieldoor GT M-2, notional GT M-8, notional GT M-16. |
+
+Two clean entries stayed in the lens because they name no contest: C2's and C11's non-corpus observations
+(a custom Chainlink+sequencer oracle, KiloLend, Curve scrvUSD, a virtual-balance savings vault) are live-hunt
+history, not corpus ground truth.
+
+**Consequence for every number on this page.** C16/C17/C18/C19/C20/C21 were designed with the contest's own
+mechanism in the lens (2026-07-24, #1783/#1784/#1785 and the C19/C20/C21 PRs), C22/C23 on 2026-08-10 and C24
+on 2026-09-16 with the GT ids only. Any recall claim on `notional`, `yieldoor`, `yearn-ybold`, `crestal` or
+`plaza` measured after those dates is **in-distribution** — see the `role` column of `corpus.tsv` and the
+hold-out policy in [`README.md`](README.md).
