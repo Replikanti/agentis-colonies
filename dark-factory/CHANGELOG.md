@@ -16,6 +16,30 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **The hunter's lens no longer carries the corpus's ground truth, and the corpus has a hold-out policy
+  (#2231).** `auditor/bug-taxonomy.md` is read by `hunter.ag` AND folded verbatim into the frozen briefs by
+  `gen-briefs.sh`, so its `**seen:**` lines — which since 2026-07-24 named the corpus contests, their GT ids
+  and their mechanisms — were ground truth handed to the model about targets it was then scored on. All 11
+  contaminated lines now carry only the generic CODE SHAPE of the class (no contest, no GT id, no
+  contest-specific narrative); the contest-keyed originals moved verbatim into
+  `bench/corpus-bench/bug-class-coverage.md` ("Contest examples — docs only, never prompt-visible"). The same
+  scrub ran over the agent prompt strings and design comments (`zone-mapper.ag`'s fitness-prior prompt no
+  longer says "corpus-bench ground truth"; neither `zone-mapper.ag` nor `invariant-prover.ag` cites a GT
+  finding id any more, including the two bare-id comments #2233 caught).
+  `tools/colony-lint.sh` now FAILS when any prompt-visible file (`auditor/**`, `gen-briefs.sh`,
+  `lib/*prompt*`, every `.ag` under `dark-factory/`) contains the literal `corpus-bench` or a Sherlock-style
+  GT finding id (`H-<n>` / `M-<n>`) anywhere — a bare id with the contest name dropped is the same ground
+  truth minus the label (#2233), so the contest name is not required for the rule to fire — with a negative
+  control that fires the detector on a reverted taxonomy line, so a dead guard is detectable. `corpus.tsv`
+  gains a REQUIRED `role` column (column 5, before the optional `scope_hint`, because `IFS=TAB` collapses an empty field): `dev` =
+  `notional`, `yieldoor`, `yearn-ybold`, `crestal`, `plaza` (lenses were designed here — every number is
+  IN-DISTRIBUTION), `holdout` = `dodo`, `mellow`, `symm` (the only rows a recall CLAIM may be made on).
+  `run-corpus-bench.sh --score` and `generation-recall.sh --from-work` print the role on every per-contest
+  headline and in `--json`, and the archives `runs/2213-operationalize-ab/`, `runs/2214-oracles-rehunt/` plus
+  the C11/C23 `CAUGHT` rows of `bug-class-coverage.md` are banner-labelled in-distribution. Every positional
+  `corpus.tsv` reader (`fetch-corpus.sh`, `run-corpus-bench.sh`, `generalization-bench.sh`,
+  `../composable-lens-bench/run-composable-lens-bench.sh`) was updated for the new column.
+
 - **A `TRACE|` is paired to its `OPCHECK|` by check id, and degradation is now PER CHECK (#2223).** PR #2222's
   follow-through gate compared COUNTS, and its own QA showed the hole: 3 `OPCHECK|` lines answered by 3
   distinct but semantically UNRELATED `TRACE|` lines satisfy the count rule exactly (gap 0, gate silent). The

@@ -1,5 +1,15 @@
 # Operationalize-lens generation-recall A/B (#2213 M2) — pre-registered archive
 
+> **⚠️ in-distribution (#2231).** Both contests measured here — `notional` and `yieldoor` — are `dev` rows of
+> `corpus.tsv`: when these arms ran, `auditor/bug-taxonomy.md` still carried their own GT ids and mechanisms in
+> its `seen:` lines (C19/C20/C21 since 2026-07-24, C22/C23 since 2026-08-10), and `gen-briefs.sh` folded that
+> text into the frozen briefs the arms shared. So the rare-row numbers below are **not** held-out recall: the
+> hunter had been told the shape of several of the very rows it is scored on, and the briefs' known-findings
+> clause pushed others out of scope. The A/B's INTERNAL comparison still holds (both arms read the identical
+> contaminated briefs — the flag was the only variable, which is what the NO-GO rests on); the ABSOLUTE recall
+> levels do not transfer. The lens was de-contaminated in #2231; held-out re-measurement belongs on `dodo`,
+> `mellow` or `symm`.
+
 The **measurement** half of #2213. It answers the one question #2211's M1 probe could not: does the
 opt-in `OPERATIONALIZE_LENS` directive (shipped in PR #2212, default OFF) actually raise **rare-tier
 generation recall** — isolated from the #2191/#2192 integration-lens directive that confounded the probe?

@@ -104,7 +104,8 @@ if [ "$MODE" = "live" ]; then
   bash "$FETCHCORPUS" --out "$WORK" --corpus "$CORPUS" "${ID_ARGS[@]}" \
     || { say "fetch-corpus.sh failed"; exit 3; }
 
-  while IFS=$'\t' read -r id _code _judging project_subdir scope_hint; do
+  # #2231: corpus.tsv column 5 is `role` (dev|holdout), read explicitly so scope_hint stays column 6.
+  while IFS=$'\t' read -r id _code _judging project_subdir _role scope_hint; do
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
     [ -n "$project_subdir" ] || { say "[$id] corpus.tsv row has no project_subdir; skipping"; continue; }

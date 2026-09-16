@@ -39,6 +39,7 @@
 #     verify/verified_findings.json is present). A missing artifact is a logged skip, NEVER a false 0.
 #
 # Usage: generation-recall.sh [--self-test] | [--from-work <dir> [--id <id>]... [--min-overlap N] [--json]
+#                             [--corpus <corpus.tsv>]
 #                             [--judge <off|cache|cmd>] [--judge-cmd <p>] [--judge-cache <f>] [--judge-log <f>]
 #                             [--judge-batch N] [--judge-min-confidence N] [--gt-dupes <f>]
 #                             [--gt-dupes-min-confidence N]] [-h]
@@ -48,6 +49,9 @@
 #              `--judge-min-confidence` defaults to 60 (#1841, the SAME value run-corpus-bench.sh uses) and is
 #              ALWAYS forwarded explicitly in judge mode, so the gate this harness prints is the one it
 #              passed, and the two harnesses can never disagree about which gate produced a number.
+#   --corpus  : #2231 — the manifest the per-contest `role` (dev|holdout) is read from (default: corpus.tsv
+#              next to this script). Every per-contest headline prints that role and a `dev` contest is
+#              labelled IN-DISTRIBUTION: the lenses were designed on it, so its recall is not a claim.
 #   #2215     : a truth.tsv with column 6 (`extract-gt.sh --code`) additionally lets score-match.py credit a
 #              lead whose OWN (file, function) equals one of the row's GT location anchors. Those rows are
 #              reported separately (`GT location anchors: ... credited ONLY via a location pair`) and are
@@ -64,6 +68,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ADAPTER="$HERE/hypotheses-to-leads.py"
 SCOREMATCH="$HERE/score-match.py"
 FIX="$HERE/fixtures/generation-recall"
+# #2231 hold-out policy: the manifest that says whether a contest is `dev` (lenses were designed on it,
+# so its number is IN-DISTRIBUTION) or `holdout` (the only rows a recall CLAIM may be made on).
+CORPUS="$HERE/corpus.tsv"
 
 MODE="self-test"
 # #1841: the scoring gate this harness forwards AND prints. Must equal score-match.py's judge_min_conf default
@@ -79,6 +86,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --from-work)   nv "$#"; MODE="from-work"; WORK="$2"; shift 2 ;;
   --id)          nv "$#"; IDS="$IDS $2"; shift 2 ;;
   --min-overlap) nv "$#"; MINOV="$2"; shift 2 ;;
+  --corpus)      nv "$#"; CORPUS="$2"; shift 2 ;;
   --json)        JSON=1; shift ;;
   --judge)                nv "$#"; JUDGE="$2"; shift 2 ;;
   --judge-cmd)            nv "$#"; JUDGE_CMD="$2"; shift 2 ;;
@@ -116,6 +124,15 @@ if [ -n "$GT_DUPES" ]; then
   DUPE_ARGS+=(--gt-dupes "$GT_DUPES")
   [ -n "$GT_DUPES_MINCONF" ] && DUPE_ARGS+=(--gt-dupes-min-confidence "$GT_DUPES_MINCONF")
 fi
+
+# corpus_role <id> — echo the #2231 role (`dev`|`holdout`) of a corpus.tsv row, `?` when the id is not in the
+# manifest (a hand-staged work dir, a CodeHawks target). Column 5, read BEFORE the optional scope_hint: with
+# IFS=TAB an empty field collapses, so a role appended after a blank scope_hint would be read as one.
+corpus_role() {
+  _r=""
+  [ -f "$CORPUS" ] && _r="$(awk -F'\t' -v id="$1" '$1==id && $1 !~ /^#/ {print $5; exit}' "$CORPUS" 2>/dev/null)"
+  case "$_r" in dev|holdout) printf '%s' "$_r" ;; *) printf '?' ;; esac
+}
 
 # recall_hits <truth.tsv> <leads.json> — print "<hits> <total>" (HIT truth rows / total truth rows) from
 # score-match.py at --min-overlap "$MINOV" (and the selected --judge / --gt-dupes mode). Empty on failure.
@@ -204,6 +221,16 @@ if [ "$MODE" = "self-test" ]; then
     fi
   else
     bad "(d) fixture missing: $L_FIX/{truth.tsv,verified_findings.json}"
+  fi
+
+  # (e) #2231: the hold-out lookup this harness labels every headline with. A `dev` id must resolve to `dev`
+  #     (its number is IN-DISTRIBUTION), a `holdout` id to `holdout`, and an id absent from the manifest to `?`
+  #     — never silently to a clean-looking role.
+  R_DEV="$(corpus_role notional)"; R_HOLD="$(corpus_role mellow)"; R_UNK="$(corpus_role not-a-contest)"
+  if [ "$R_DEV" = "dev" ] && [ "$R_HOLD" = "holdout" ] && [ "$R_UNK" = "?" ]; then
+    ok "(e) corpus_role resolves dev / holdout / unknown from corpus.tsv column 5 (#2231 hold-out policy)"
+  else
+    bad "(e) corpus_role returned dev='$R_DEV' holdout='$R_HOLD' unknown='$R_UNK' (expected dev/holdout/?)"
   fi
 
   echo
@@ -332,7 +359,10 @@ SCORE_EOF
       say "  [$id] $([ "$hit" = 1 ] && echo HIT || echo MISS) $sev_id (rarity $rarity): $title"
     done < "$truth"
 
-    say "  [$id] generation-recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total"
+    role="$(corpus_role "$id")"
+    role_note="role=$role"
+    [ "$role" = "dev" ] && role_note="role=dev, IN-DISTRIBUTION (lens designed on this contest, #2231)"
+    say "  [$id] [$role_note] generation-recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total"
     reach_note=""; [ "$loc_col" = 0 ] && reach_note=" (legacy: basename-in-signature)"
     say "  [$id] reachable rare = $c_rare_reachable/$c_rare_total$reach_note — rare rows this matcher can resolve at all; the headline above is bounded by it, not only by the hunter"
     [ "$loc_col" = 1 ] && say "  [$id] GT location anchors (#2215): $loc_rows anchored row(s), $loc_credited row(s) credited ONLY via a location pair (generation-recall without them: $((c_hits - loc_credited))/$c_total)"
@@ -353,7 +383,7 @@ SCORE_EOF
       say "  [$id] no verify/verified_findings.json — generation-only (no DELTA)"
     fi
 
-    CONTEST_JSON+=("{\"id\":\"$id\",\"gt_total\":$c_total,\"generation_hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"rare_reachable\":$c_rare_reachable,\"location_credited\":$loc_credited,\"verified_hits\":${v_hits:-null}}")
+    CONTEST_JSON+=("{\"id\":\"$id\",\"role\":\"$role\",\"gt_total\":$c_total,\"generation_hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"rare_reachable\":$c_rare_reachable,\"location_credited\":$loc_credited,\"verified_hits\":${v_hits:-null}}")
 
     G_TOTAL=$((G_TOTAL + c_total)); G_HITS=$((G_HITS + c_hits))
     G_H_TOTAL=$((G_H_TOTAL + c_h_total)); G_H_HITS=$((G_H_HITS + c_h_hits))
@@ -369,6 +399,7 @@ SCORE_EOF
   say "overall generation-recall: $G_HITS/$G_TOTAL"
   say "by severity              : High $G_H_HITS/$G_H_TOTAL, Medium $G_M_HITS/$G_M_TOTAL"
   say "by rarity                : rare(1-2) $G_RARE_HITS/$G_RARE_TOTAL, mid(3-8) $G_MID_HITS/$G_MID_TOTAL, consensus(9+) $G_CONS_HITS/$G_CONS_TOTAL"
+  say "hold-out                 : a role=dev contest above is IN-DISTRIBUTION (#2231) — the lenses were designed on its ground truth; recall CLAIMS belong to the role=holdout rows of corpus.tsv"
   say "reachable rare           : $G_RARE_REACHABLE/$G_RARE_TOTAL (#2215; rows carrying a resolvable location anchor — the ceiling this matcher can reach)"
   say "location-credited rows   : $G_LOC_CREDITED (credited ONLY by a GT location pair; the same replay without them reads $((G_HITS - G_LOC_CREDITED))/$G_TOTAL)"
   if [ "$ANY_VERIFIED" -eq 1 ]; then
