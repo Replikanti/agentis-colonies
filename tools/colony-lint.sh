@@ -1468,6 +1468,27 @@ if [ -x "$REPO_ROOT/dark-factory/demo-external-assumption-lens.sh" ]; then
     fi
 fi
 
+# --- dark-factory state-assumption lens: the C24 bug class + zone-mapper route (#2218, M1) ---
+# One taxonomy class for the shape the #2213 corpus forensics clustered the pure GENERATION misses into — a
+# value written or DEFINED at touchpoint A is consumed at touchpoint B as if nothing changed in between (an
+# accrual index reusing a rate stamped at the last update, an emission carried per unit of a supply floored
+# elsewhere, a request state that blocks the user's remedy while a liquidation path stays live). The lens IS
+# the taxonomy section (hunter.ag slices `## <cls> ` out of bug-taxonomy.md) plus a deterministic zone-mapper
+# backstop, so hunter.ag is untouched. demo-state-assumption-lens.sh is pure awk/grep (no network, no LLM, no
+# agentis): it guards the anti-catch-all contract (NOT-this-class naming C2/C9/C22/C23/C8/C21/C6/C10, the
+# FOUR-part required-evidence rule, both mechanism flavours and both sub-shapes), replays hunter.ag's own
+# `## <cls> ` awk anchor so `C23` cannot swallow `C24`, and pins the two deliberate non-changes (no
+# class_to_keyword() entry, no C24 token in hunter.ag). The behavioural half lives in demo-map-zones.sh.
+if [ -x "$REPO_ROOT/dark-factory/demo-state-assumption-lens.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-state-assumption-lens.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: state-assumption lens (C24 guarded class text + deterministic zone-mapper route, class_section extraction pin, pinned non-changes) (#2218)"
+    else
+        fail "dark-factory: state-assumption lens regressed (#2218)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory attacker-controlled-callee directive (#2145, milestone D1 of epic #2130) ---
 # hunter.ag injects a GENERIC trust-model directive ("who controls the call TARGET?") whenever a deterministic
 # detector finds an external call surface AND a settable/computed call target, gated + made observable by the

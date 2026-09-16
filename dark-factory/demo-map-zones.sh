@@ -1345,6 +1345,38 @@ if awk '/^let instruction =/{f=1} f{print} /let verdict = prompt\(/{exit}' "$MAP
 else
   ok "#2214: the C22 touchpoint net is post-classification only — no cross_unit/CROSS-UNIT token inside the LLM instruction"
 fi
+# #2218: the C24 stale-state-assumption backstop net exists, is chained into apply_backstop (so C24 reaches
+# scope.tsv -> is hunted -> can be NAMED), carries its classification rule, and emits the STALE-STATE|
+# diagnostic (mirrors the #2111/#2121/#2214 net idiom).
+if grep -q 'fn has_accrual_update_surface' "$MAPPER" \
+   && grep -q 'fn has_emission_per_supply_surface' "$MAPPER" \
+   && grep -q 'fn has_request_gated_solvency_surface' "$MAPPER" \
+   && grep -q 'fn contains_state_assumption_signal' "$MAPPER" \
+   && grep -q 'fn apply_state_assumption_backstop' "$MAPPER" \
+   && grep -q 'apply_state_assumption_backstop(' "$MAPPER" \
+   && grep -q 'STALE STATE ASSUMPTION BETWEEN TOUCHPOINTS DETECTION RULE (C24)' "$MAPPER" \
+   && grep -q '"STALE-STATE|"' "$MAPPER"; then
+  ok "zone-mapper.ag defines the #2218 C24 net (accrual-update + emission-per-supply + request-gated-solvency -> contains_state_assumption_signal + apply_state_assumption_backstop), chains it into apply_backstop, carries the C24 rule, and emits the STALE-STATE| line"
+else
+  bad "zone-mapper.ag missing the #2218 C24 stale-state-assumption backstop wiring"
+fi
+# #2218 ordering: the C24 backstop runs AFTER the #2214 net and BEFORE apply_fitness_reorder, so a forced C24
+# is still fitness-ranked like a forced C5/C8/C19/C22 (and never lands outside the reordered CSV).
+if awk '/fn apply_backstop/{f=1} f&&/apply_cross_unit_backstop\(/{c=NR} f&&/apply_state_assumption_backstop\(/{t=NR} f&&/apply_fitness_reorder\(/{print (c&&t&&c<t&&t<NR) ? "ok" : "no"; exit}' "$MAPPER" | grep -q '^ok$'; then
+  ok "#2218: apply_state_assumption_backstop is chained after apply_cross_unit_backstop and before apply_fitness_reorder"
+else
+  bad "#2218: apply_state_assumption_backstop is not chained between the #2214 backstop and the fitness reorder"
+fi
+# #2218 PROMPT-IDENTITY guard: the NET is post-classification only. The C24 DETECTION RULE deliberately DOES
+# live in the instruction (the C19/C22/C23 precedent — the taxonomy menu grows the moment the class exists, and
+# the ONLY-WHEN rule is what BOUNDS it), but no net helper name may leak there: the deterministic route must
+# stay a post-verdict decision, never a hint the model can pattern-match on.
+if awk '/^let instruction =/{f=1} f{print} /let verdict = prompt\(/{exit}' "$MAPPER" \
+     | grep -qE 'state_assumption|_surface\(|STALE-STATE\|'; then
+  bad "#2218: a C24 net helper name leaked into the LLM instruction (the net must stay post-classification only)"
+else
+  ok "#2218: the C24 net is post-classification only — no net helper name inside the LLM instruction (the ONLY-WHEN rule is the prompt's whole C24 surface)"
+fi
 if grep -q 'learn("zone-map"' "$MAPPER" && grep -q 'memo_write("zone-mapper:last_check"' "$MAPPER"; then
   ok "zone-mapper.ag records the mapping (learn) + writes its last_check memo"
 else
@@ -1882,6 +1914,92 @@ contract InternalShares {
 }
 SOL
 
+  # #2218: a FIFTH pair of zones in the SAME repo for the C24 stale-state-assumption net.
+  # staleindex/ReserveAccrual.sol carries the TIME-gap mechanic: the accrual recomputes the index from a
+  # borrowing rate CAPTURED AT THE LAST UPDATE, applies it across the WHOLE elapsed interval, derives the new
+  # total borrows from it, and only re-prices the rate AFTER the accrual has landed — an `_updateIndexes(` /
+  # `latestBorrowingIndex(` / `updateInterestRates(` touchpoint set (must resolve STALE-STATE|staleindex|true).
+  # freshindex/SpotAccrual.sol is the same accounting written to RE-DERIVE the rate from live utilisation at
+  # the point of use: nothing is stored between a write and a read, no emission-per-supply accrual and no
+  # request state, so there is no A->B window at all (must resolve STALE-STATE|freshindex|false — proving the
+  # net keys on the stale-reuse touchpoint, not merely on the words "interest" or "rate").
+  mkdir -p "$AC_REPO/staleindex" "$AC_REPO/freshindex"
+  cat > "$AC_REPO/staleindex/ReserveAccrual.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract ReserveAccrual {
+    struct Reserve {
+        uint256 borrowingIndex;
+        uint256 currentBorrowingRate;
+        uint256 totalBorrows;
+        uint256 totalLiquidity;
+        uint256 lastUpdateTimestamp;
+    }
+
+    Reserve internal reserve;
+
+    function utilizationRate() public view returns (uint256) {
+        if (reserve.totalLiquidity == 0) return 0;
+        return (reserve.totalBorrows * 1e18) / reserve.totalLiquidity;
+    }
+
+    // the rate was stamped at the LAST update and is applied across the WHOLE elapsed interval
+    function latestBorrowingIndex() public view returns (uint256) {
+        uint256 elapsed = block.timestamp - reserve.lastUpdateTimestamp;
+        uint256 growth = (reserve.currentBorrowingRate * elapsed) / 365 days;
+        return reserve.borrowingIndex + (reserve.borrowingIndex * growth) / 1e18;
+    }
+
+    function _updateIndexes() internal {
+        uint256 newBorrowingIndex = latestBorrowingIndex();
+        uint256 newTotalBorrows = (reserve.totalBorrows * newBorrowingIndex) / reserve.borrowingIndex;
+        reserve.borrowingIndex = newBorrowingIndex;
+        reserve.totalBorrows = newTotalBorrows;
+        reserve.lastUpdateTimestamp = block.timestamp;
+    }
+
+    // re-priced only AFTER the accrual above already consumed the previous rate
+    function updateInterestRates() internal {
+        reserve.currentBorrowingRate = utilizationRate() / 10;
+    }
+
+    function borrow(uint256 amount) external {
+        _updateIndexes();
+        reserve.totalBorrows += amount;
+        updateInterestRates();
+    }
+}
+SOL
+  cat > "$AC_REPO/freshindex/SpotAccrual.sol" <<'SOL'
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+contract SpotAccrual {
+    uint256 public totalBorrows;
+    uint256 public totalLiquidity;
+
+    function utilizationRate() public view returns (uint256) {
+        if (totalLiquidity == 0) return 0;
+        return (totalBorrows * 1e18) / totalLiquidity;
+    }
+
+    // derived from LIVE utilisation every time it is asked for; never stored
+    function spotRate() public view returns (uint256) {
+        return utilizationRate() / 10;
+    }
+
+    function interestOwed(uint256 principal, uint256 elapsed) public view returns (uint256) {
+        return (principal * spotRate() * elapsed) / (365 days * 1e18);
+    }
+
+    function borrow(uint256 amount) external {
+        require(amount <= totalLiquidity - totalBorrows, "insufficient liquidity");
+        totalBorrows += amount;
+    }
+}
+SOL
+
   git -C "$AC_REPO" init -q
   git -C "$AC_REPO" config user.email demo@example.invalid
   git -C "$AC_REPO" config user.name "demo"
@@ -1943,6 +2061,16 @@ SOL
       ok "#2214: contains_cross_unit_signal() true for a useSyOracleRate ? getPtToSyRate : getPtToAssetRate oracle feeding a Chainlink price (notional H-8 mechanic), false for pure internal convertToAssets/convertToShares share math"
     else
       bad "#2214: unexpected CROSS-UNIT| lines (want crossunit=true selfrate=false, got crossunit='$CU_HOT' selfrate='$CU_SELF')"
+    fi
+    # #2218: same diagnostic-line read for the C24 stale-state-assumption net — the mock backend still runs
+    # contains_state_assumption_signal()'s real, non-LLM logic, so this exercises the actual net offline via
+    # the unconditional STALE-STATE| diagnostic line.
+    SS_HOT="$(grep -h '^STALE-STATE|staleindex|' "$OUT4/run/zone_staleindex.log" 2>/dev/null | tail -1)"
+    SS_FRESH="$(grep -h '^STALE-STATE|freshindex|' "$OUT4/run/zone_freshindex.log" 2>/dev/null | tail -1)"
+    if [ "$SS_HOT" = "STALE-STATE|staleindex|true" ] && [ "$SS_FRESH" = "STALE-STATE|freshindex|false" ]; then
+      ok "#2218: contains_state_assumption_signal() true for an accrual that reuses a rate stamped at the last update across the whole interval, false for the sibling that re-derives the rate from live utilisation at the point of use"
+    else
+      bad "#2218: unexpected STALE-STATE| lines (want staleindex=true freshindex=false, got staleindex='$SS_HOT' freshindex='$SS_FRESH')"
     fi
     # QA fix (PR #2126): the nested-paren interface-call shape (`IFoo(bar().baz).poke()`, the exact real
     # Royco Day form) must still trip has_interface_call_surface() through the widened argument group.
@@ -2016,6 +2144,65 @@ AG
       ok "#2214: a zone that ALREADY carries C22 gets no duplicate (force_include dedupe, no appended line)"
     else
       bad "#2214: duplicate-C22 regression (got '$CU_T3_LINE' + next '$CU_T3_NEXT')"
+    fi
+  fi
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (g3) #2218 C24 APPEND SEMANTICS, offline and WITHOUT an LLM. Same construction as (g2): the mock backend's
+#      reply carries no ZONE| sentinel, so apply_backstop()'s append is unreachable on the (g) path — the
+#      STALE-STATE| line proves the NET, never the APPEND. This drives the real, shipped apply_backstop() over
+#      synthetic zone code. Pins: (1) the net fires -> exactly ONE C24 appended once as a new trailing ZONE|
+#      line; (2) the net does not fire -> the verdict is returned BYTE-IDENTICAL (no trailing line at all);
+#      (3) the zone already carries C24 -> no duplicate and again no trailing line.
+# ----------------------------------------------------------------------------------------------------------
+if ! command -v agentis >/dev/null 2>&1; then
+  skip "#2218: agentis not on PATH — skipping the apply_backstop() C24 append-semantics check"
+else
+  note "9) #2218: apply_backstop() C24 append semantics (real .ag functions, no LLM) ..."
+  SS_DIR="$WORK/stalestate-backstop"
+  mkdir -p "$SS_DIR"
+  awk '/^let dir = getenv\("TARGET_DIR"\);/{exit} {print}' "$MAPPER" > "$SS_DIR/backstop-probe.ag"
+  cat >> "$SS_DIR/backstop-probe.ag" <<'AG'
+// #2218 probe tail (demo-map-zones.sh): drive apply_backstop() over synthetic zone code. An accrual that
+// reuses a rate stamped at the last update must force C24; plain internal uint256 math must leave the
+// verdict untouched.
+let ssHot = "function _updateIndexes() internal { reserve.borrowingIndex = latestBorrowingIndex(); }";
+let ssCold = "contract Plain { uint256 total; function add(uint256 a) external { total = a + 1; } }";
+print("SS-T1|" + apply_backstop("ZONE|zstale|Reserve|C2,C9|why", ssHot));
+print("SS-T2|" + apply_backstop("ZONE|zcold|Plain|C2,C9|why", ssCold));
+print("SS-T3|" + apply_backstop("ZONE|zdup|Reserve|C24,C9|why", ssHot));
+AG
+  ( cd "$SS_DIR" && agentis init >/dev/null 2>&1 ) || true
+  # knowledge.enabled: apply_fitness_reorder() calls query_knowledge("hunt-fitness"); nothing is imported
+  # here, so the reorder stays an identity and the CSV order below is the backstop's own.
+  printf 'llm.backend = mock\nlearning.enabled = true\nexperience.enabled = true\nknowledge.enabled = true\n' > "$SS_DIR/.agentis/config"
+  ( cd "$SS_DIR" && agentis go backstop-probe.ag ) > "$SS_DIR/probe.log" 2>&1
+  SS_RC=$?
+  # Each print() emits the (possibly two-line) verdict; take the tag line and the line after it.
+  SS_T1_NEXT="$(awk '/^SS-T1\|/{getline; print; exit}' "$SS_DIR/probe.log")"
+  SS_T2_LINE="$(awk '/^SS-T2\|/{print; exit}' "$SS_DIR/probe.log")"
+  SS_T2_NEXT="$(awk '/^SS-T2\|/{getline; print; exit}' "$SS_DIR/probe.log")"
+  SS_T3_LINE="$(awk '/^SS-T3\|/{print; exit}' "$SS_DIR/probe.log")"
+  SS_T3_NEXT="$(awk '/^SS-T3\|/{getline; print; exit}' "$SS_DIR/probe.log")"
+  if [ "$SS_RC" -ne 0 ]; then
+    bad "#2218: the apply_backstop() probe did not run (exit $SS_RC)"
+    sed 's/^/      /' "$SS_DIR/probe.log" | head -20 >&2
+  else
+    if [ "$SS_T1_NEXT" = "ZONE|zstale|Reserve|C2,C9,C24|why" ]; then
+      ok "#2218: apply_backstop() appends ONE rebuilt ZONE| line with C24 added exactly once on the stale-accrual code shape"
+    else
+      bad "#2218: want the appended line 'ZONE|zstale|Reserve|C2,C9,C24|why', got '$SS_T1_NEXT'"
+    fi
+    if [ "$SS_T2_LINE" = "SS-T2|ZONE|zcold|Plain|C2,C9|why" ] && [ "$SS_T2_NEXT" != "ZONE|zcold|Plain|C2,C9,C24|why" ]; then
+      ok "#2218: apply_backstop() returns the verdict BYTE-IDENTICAL when the stale-state net does not fire (no C24, no appended line)"
+    else
+      bad "#2218: the no-fire verdict was not byte-identical (got '$SS_T2_LINE' + next '$SS_T2_NEXT')"
+    fi
+    if [ "$SS_T3_LINE" = "SS-T3|ZONE|zdup|Reserve|C24,C9|why" ] && [ "$SS_T3_NEXT" != "ZONE|zdup|Reserve|C24,C9,C24|why" ]; then
+      ok "#2218: a zone that ALREADY carries C24 gets no duplicate (force_include dedupe, no appended line)"
+    else
+      bad "#2218: duplicate-C24 regression (got '$SS_T3_LINE' + next '$SS_T3_NEXT')"
     fi
   fi
 fi

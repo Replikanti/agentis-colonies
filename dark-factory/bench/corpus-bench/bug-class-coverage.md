@@ -155,6 +155,7 @@ arm).
 | C15 integration-seam | 1 | 2 | OUT-OF-CLASS | plaza H-7; notional H-8/H-9 retagged to C22/C23 (#1879) |
 | C22 x-protocol asset/unit | 1 | 2 | REFUTED (#1879) | notional H-8 (fb=2): C22 fired + generated PT/sUSDe candidates, refute gate dropped them |
 | C23 hardcoded ext-param | 1 | 2 | **CAUGHT** ✅ (#1879) | notional H-9 (fb=2): judge conf 93 — first C22/C23-family catch, end-to-end |
+| C24 stale state assumption | 3 | 1 | IN-FLIGHT (#2218) | 3 Mediums, all generation misses in #2213: yieldoor M-2, notional M-8, notional M-16 — class + zone-mapper route landed, recall unmeasured until M2 |
 | C16 liveness / stuck-state | 4 | 3 | OPEN (#1784 overlaps) | DoS class |
 | C17 index/slot-overwrite | 1 | 5 | OPEN (#1784) | notional H-5 (H-3 retagged to C19 #2111) |
 | C19 narrow-int overflow / downcast | 1 | 1 | IN-FLIGHT (#2111) | yieldoor H-3 (fb=1 rare) — liveness lens + zone-mapper C19 net wired |
@@ -177,6 +178,46 @@ Three corpus contests remain to tag: dodo, crestal, symm.
 4. **C19 narrow-int overflow / downcast** — yieldoor H-3 (fb=1 rare, `uint16` observation-counter overflow → `checkPoolActivity` DoS). **In flight (#2111)**: C19 reuses the "liveness" generation lens (WRAP-BOUNDARY + NARROW-INT-NO-WRAP, now + a DOWNCAST-TRUNCATION bullet) via a one-line `class_to_keyword` map, and a deterministic `contains_narrow_int_signal()` zone-mapper backstop force-includes C19. **C17 slot-overwrite** — notional H-5 remains under #1784.
 
 Each class is declared functional only after the **transfer test** (#1787): derive on one contract of the class → the lens must also FINDING on a *different* corpus contract of the same class. `HARNESS-ERROR` rows (mellow C4) are tracked on the separate harness-robustness axis, not the template axis.
+
+### State-assumption lens (#2218)
+
+The #2213 generation misses cluster into one root — a value written, snapshotted or DEFINED at touchpoint A
+is consumed at touchpoint B as if nothing changed in between — and **C24** (`auditor/bug-taxonomy.md`) is the
+class for it, with a deterministic `zone-mapper.ag` route so it reaches the zone that owns the touchpoint
+rather than only the zone the breadth LLM happened to label. Unlike C1–C23 it targets an INVARIANT the
+analysis never verifies, so its guard rails (the four-part required-evidence rule, the
+C2/C9/C22/C23/C8/C21/C6/C10 `NOT this class` list, the two named sub-shapes) do the work a tactical class
+gets from its code tells.
+
+**Target rows** — all three are `found-by` 1 (the rarest tier) and all three were pure GENERATION misses in
+the #2213 A/B, in both arms:
+
+| target row | mechanism | #2213 status |
+|---|---|---|
+| yieldoor M-2 | the accrual applies a borrow rate captured at the last update across the whole elapsed interval, and only re-prices it after | generation miss (never named, both arms) |
+| notional M-8 | an emission accrual divides by a supply whose floor is defined in a different contract in scope | generation miss (never named, both arms) |
+| notional M-16 | a pending-request state blocks the position owner's remedy while a third party's path stays live against it | generation miss (never named, both arms) |
+
+**Measured offline fan-out of the C24 net** on the two frozen #2213 base maps (zone file sets taken from each
+map's own `scope.tsv`, sliced exactly as `zone-mapper.ag` slices them; the shipped net driven directly, no
+LLM):
+
+| contest | zones | C24 fires on | carrying net |
+|---|---|---|---|
+| yieldoor | 4 | 2 zones (the library zone that holds M-2's accrual, plus the zone that owns the same interest touchpoint) | accrual-update |
+| notional | 9 | 4 zones (the zones that hold M-8's emission accrual and M-16's request gate, plus the staking and router zones) | emission-per-supply, request-gated-solvency, accrual-update |
+
+**6 of 13 zones, i.e. +1 cell per firing zone — it does not fire on every zone** (7 zones stay silent).
+Both zones that carry the CAUGHT C23 row are among the silent ones, so that catch is untouched by
+construction. The two zones beyond the three target rows are an accepted, disclosed cost: both own an
+interest-accrual touchpoint, so both are mechanism-plausible rather than noise.
+
+**Status: IN-FLIGHT — recall is UNMEASURED.** M1 ships the class, the route and the offline guards only.
+Whether C24 recovers any of the three rows is #2218 M2: a zone-restricted `--rehunt-gaps` A/B on the SAME
+frozen bases (control = staged map untouched, treatment = `,C24` appended to that zone's `scope.tsv` row),
+2 arms x 2 repeats per row first, scored by an operator read of the cell logs, with the #2191-carried
+no-regression gate (every GT row the control arm names stays named; C11/C23 unaffected) blocking a GO
+regardless of the delta.
 
 ## Operationalize-before-you-hunt: measured NO-GO (#2213 M2, 2026-09-15)
 

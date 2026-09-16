@@ -448,6 +448,86 @@ fn contains_cross_unit_signal(code: string) -> bool {
     return false;
 }
 
+// --- #2218 deterministic C24 (stale state assumption between touchpoints) backstop -------------------
+// C24 is the domain class for "a value written or DEFINED at touchpoint A is consumed at touchpoint B as
+// if nothing changed in between". The #2213 forensics clustered the pure GENERATION misses (candidates the
+// hunter never emitted) and most of them share that root: an accrual index recomputed from a rate captured
+// at the last update, an emission divided by a supply floored elsewhere, a request state entered at A that
+// disables the user's remedy while a third party's action at B stays live. The class only reaches a cell if
+// it reaches that zone's `scope.tsv` row, so it needs the same deterministic backstop C5/C8/C19/C22 have.
+// Sibling of the #1729/#2111/#2121/#2214 nets: flat `index_of` over the pre-built whole-zone `code` blob —
+// no per-element recursion, no regex, no `exec sh`.
+//
+// Measured fan-out on the two frozen #2213 maps (zone files taken from each map's own `scope.tsv`, sliced
+// exactly as this agent slices them): 6 of 13 zones, 2 of 4 on one contest and 4 of 9 on the other — i.e.
+// it does NOT fire on every zone, and both zones that carry the CAUGHT C23 row stay silent, so that catch
+// is untouched by construction. Cost is +1 cell per firing zone.
+
+// (a) TIME-gap surface: the zone owns an accrual/index/rate UPDATE touchpoint — a function that advances a
+// stored index or rate and stamps it, whose result later feeds a decision. Paren-anchored on purpose (the
+// #2111 `uint16(` discipline): the bare field names (`borrowingIndex`, `currentBorrowingRate`, a
+// `lastUpdate` timestamp) were measured to fire on a pure struct-definition zone that owns no touchpoint
+// at all, so only the CALL/DEFINITION forms are tokens here.
+fn has_accrual_update_surface(code: string) -> bool {
+    if index_of(code, "_updateIndexes(") >= 0 { return true; }
+    if index_of(code, "updateState(") >= 0 { return true; }
+    if index_of(code, "accrueInterest(") >= 0 { return true; }
+    if index_of(code, "_accrueInterest(") >= 0 { return true; }
+    if index_of(code, "updateInterestRates(") >= 0 { return true; }
+    if index_of(code, "latestBorrowingIndex(") >= 0 { return true; }
+    if index_of(code, "getNormalizedIncome(") >= 0 { return true; }
+    if index_of(code, "updateIndex(") >= 0 { return true; }
+    if index_of(code, "_updateIndex(") >= 0 { return true; }
+    if index_of(code, "accrue(") >= 0 { return true; }
+    return false;
+}
+
+// (b) DEFINITION-gap surface: an emission/reward accrual carried PER UNIT OF SUPPLY. The denominator is
+// defined once (often with a virtual floor or an "effective" adjustment applied in a different contract)
+// and consumed here as if it were the raw supply the name promises.
+fn has_emission_per_supply_surface(code: string) -> bool {
+    if index_of(code, "rewardPerToken") >= 0 { return true; }
+    if index_of(code, "accRewardPerShare") >= 0 { return true; }
+    if index_of(code, "rewardPerShare") >= 0 { return true; }
+    if index_of(code, "emissionRate") >= 0 { return true; }
+    if index_of(code, "effectiveSupply") >= 0 { return true; }
+    return false;
+}
+
+// (c) BLOCKED-REMEDY surface: AND of two nets (the nested early-return idiom of contains_reentrancy_surface)
+// — a request/cooldown PREDICATE that a position can be parked behind, and a solvency/liquidation CONSUMER
+// that stays live against that position while it is parked. Either half alone is ordinary code; the pair is
+// the A-disables-the-remedy / B-still-fires window.
+// `convertToAssets(` is DELIBERATELY excluded from the consumer set: measured, it pulls two more zones in
+// for no mechanism (the same exclusion reasoning that keeps `convertToShares(` out of the #2214 net).
+fn has_request_gated_solvency_surface(code: string) -> bool {
+    if index_of(code, "_isWithdrawRequestPending(") < 0 {
+        if index_of(code, "isPendingWithdrawRequest(") < 0 {
+            if index_of(code, "hasPendingWithdrawals(") < 0 {
+                if index_of(code, "getWithdrawRequest(") < 0 {
+                    if index_of(code, "pendingRequest(") < 0 {
+                        if index_of(code, "isCooldownActive(") < 0 { return false; }
+                    }
+                }
+            }
+        }
+    }
+    if index_of(code, "healthFactor(") >= 0 { return true; }
+    if index_of(code, "balanceOfCollateral(") >= 0 { return true; }
+    if index_of(code, "_preLiquidation(") >= 0 { return true; }
+    if index_of(code, "isLiquidateable(") >= 0 { return true; }
+    if index_of(code, "_liquidate(") >= 0 { return true; }
+    if index_of(code, "liquidatePosition(") >= 0 { return true; }
+    return false;
+}
+
+fn contains_state_assumption_signal(code: string) -> bool {
+    if has_accrual_update_surface(code) { return true; }
+    if has_emission_per_supply_surface(code) { return true; }
+    if has_request_gated_solvency_surface(code) { return true; }
+    return false;
+}
+
 // --- #1717 path-level test/interface exclusion (applied BEFORE the content signals below) -----------
 // A zone/file path can deterministically say "this is a test unit" or "this is a pure interface" in a
 // way content signals cannot: an interface getter that merely returns `IStabilityPool`, or a Foundry
@@ -742,6 +822,10 @@ fn apply_cross_unit_backstop(classesCsv: string, code: string) -> string {
     if !contains_cross_unit_signal(code) { return classesCsv; }
     return force_include(classesCsv, "C22");
 }
+fn apply_state_assumption_backstop(classesCsv: string, code: string) -> string {
+    if !contains_state_assumption_signal(code) { return classesCsv; }
+    return force_include(classesCsv, "C24");
+}
 
 // The deterministic net: when the zone's code signals a lending/CDP/stability-pool system (direct or
 // ERC4626-wrapped), force C10 ("first-depositor/inflation") + C11 ("stability-pool offset"); when it signals
@@ -881,9 +965,14 @@ fn apply_backstop(verdict: string, code: string) -> string {
     // (notional H-8's oracle) rather than only the zone that nominally holds the tokens. Chained AFTER the
     // C8 net and BEFORE apply_fitness_reorder, so a forced C22 is still fitness-ranked like forced C5/C8/C19.
     let withCrossUnit = apply_cross_unit_backstop(withReentrancy, code);
-    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C8/C10/C11/C17/C19/C22) by
-    // learned real-bug precision, so the highest-precision class leads the CSV that run-discovery.sh fans out.
-    let reordered = apply_fitness_reorder(withCrossUnit);
+    // #2218: force C24 (stale state assumption between touchpoints) when the zone owns an accrual/index
+    // update touchpoint, an emission-per-supply accrual, or a request-gated position a liquidation path can
+    // still act on — the three shapes the #2213 generation misses clustered into. Chained AFTER the #2214
+    // net and BEFORE apply_fitness_reorder, so a forced C24 is still fitness-ranked like a forced C5/C8/C19.
+    let withStaleState = apply_state_assumption_backstop(withCrossUnit, code);
+    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C8/C10/C11/C17/C19/C22/C24)
+    // by learned real-bug precision, so the highest-precision class leads the CSV that run-discovery.sh fans out.
+    let reordered = apply_fitness_reorder(withStaleState);
     let rebuilt = "ZONE|" + pipe_field(line, 1) + "|" + pipe_field(line, 2) + "|" + reordered + "|" + pipe_field(line, 4);
     if rebuilt == line { return verdict; }
     return verdict + "\n" + rebuilt;
@@ -998,6 +1087,20 @@ let instruction = priorBlock
   + "can reach another. A zone that integrates an external protocol but DERIVES every argument from its own "
   + "inputs or from the external contract's own views (`coins(i)`, `asset()`, `pool_type()`), or a pure "
   + "interface (declarations only, no call sites) — do NOT add C23.\n\n"
+  + "=== STALE STATE ASSUMPTION BETWEEN TOUCHPOINTS DETECTION RULE (C24) ===\n"
+  + "INCLUDE `C24` (stale state assumption between touchpoints) ONLY WHEN this zone both WRITES (or "
+  + "snapshots, or defines with a floor/offset/virtualisation) a protocol quantity at one point AND CONSUMES "
+  + "that same quantity at a LATER point for a decision — an index/rate/accrual snapshot advanced by an "
+  + "`accrueInterest`/`_updateIndexes`-shaped function and then used to size debt or collateral; a reward or "
+  + "emission accrual carried per unit of supply (a `rewardPerToken`/`accRewardPerShare` over a total or "
+  + "`effective` supply) and then paid out; a request/cooldown state entered by one entrypoint and read by a "
+  + "mint/valuation/liquidation path; a price or exchange rate cached into memory or storage and reused after "
+  + "an external call or across blocks. The bug is that the consumer reuses the earlier value instead of "
+  + "re-reading or re-deriving it, while elapsed time, a permissionless entrypoint, an external protocol's own "
+  + "accrual, or a definition-level floor applied elsewhere moved what the value actually means. A zone that "
+  + "only READS values it never stores, a zone whose every decision re-derives its inputs in the same call, "
+  + "or a pure interface or struct/type declaration (no function bodies) — do NOT add C24. If this zone does "
+  + "none of these, do NOT add C24.\n\n"
   + "=== ZONE ID (echo it back UNCHANGED as the first field) ===\n" + zoneId + "\n\n"
   + "=== HOW TO ANSWER ===\n"
   + "FIRST reason step by step: read the zone's contracts, name the subsystem, and for EACH candidate class "
@@ -1041,6 +1144,11 @@ print("REENTRANCY|" + zoneId + "|" + bool_str(contains_reentrancy_surface(code))
 // offline-testable under the mock backend (whose reply carries no ZONE| line, making the apply_backstop
 // append itself unreachable there). Never perturbs the `^ZONE\|` scrape.
 print("CROSS-UNIT|" + zoneId + "|" + bool_str(contains_cross_unit_signal(code)));
+// #2218: emit the C24 stale-state-assumption signal as a NON-ZONE| diagnostic line (same trailing-line-
+// scrape channel as CROSS-UNIT|), so contains_state_assumption_signal() is observable + offline-testable
+// under the mock backend (whose reply carries no ZONE| line, making the apply_backstop append itself
+// unreachable there). Never perturbs the `^ZONE\|` scrape.
+print("STALE-STATE|" + zoneId + "|" + bool_str(contains_state_assumption_signal(code)));
 let outcome = outcome_of(finalVerdict);
 emit("dark-factory:zone_mapped", "{\"zone\":\"" + zoneId + "\",\"outcome\":\"" + outcome + "\"}");
 learn("zone-map", zoneId, "attack-surface classification of zone " + zoneId, outcome, ["zone-map", zoneId, outcome]);
