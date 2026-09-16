@@ -14,6 +14,32 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+
+- **`resolve-external.sh`: read the EXTERNAL protocol instead of remembering it (#2235, PR A).** Every
+  dismissal that rests on how another protocol behaves ("that rate is 1e18-scaled", "that wrapper is 1:1")
+  is unanswerable from the zone slice, so under the #2224/#2227 citation rules a cell either confabulates a
+  citation or answers `UNRESOLVED`. The new deterministic, LLM-free resolver turns an external SYMBOL (or a
+  deployed address) into a `path:line` a human or the harness can RE-OPEN, in order: vendored source under
+  the audited repo's `lib/`/`node_modules/`/`dependencies/`/`contracts/lib/`; then a deployed address the
+  repo ITSELF names in `script/`/`test/`/`docs/` (or `--address`), pulled KEYLESS from Sourcify into the
+  cache with the ERC-1967 implementation slot resolved when an RPC is configured and recorded as
+  `proxy-unresolved` when it is not — never a silent claim about the implementation; then the upstream
+  GitHub repo the audited repo's own header comment or vendored `package.json` names, shallow-cloned into
+  the cache. Output is exactly one line — `EXTERNAL|<symbol>|<vendored|sourcify|upstream>|<path>:<line>|<sha256>`
+  or `EXTERNAL|<symbol>|unresolved|<reason>` from a CLOSED seven-word vocabulary — and every emitted path
+  lies under `--repo` or under the cache, the only two roots a harness re-opens. **Inputs are a symbol or an
+  address, never a URL:** there is no flag that takes a host, a URL fails validation (`bad-input`, exit 2),
+  and requests are built from fixed templates against a HARD-CODED host allowlist that `tools/colony-lint.sh`
+  greps for — with a dead-guard control, so a broken grep cannot report a clean allowlist having checked
+  nothing. Cache-first (a repeat costs zero requests), `--budget-state` caps network resolutions at
+  `DF_EXTERNAL_BUDGET` (default 5), `--offline` never leaves the host, and every refusal exits 0 so a caller
+  is never derailed. `demo-resolve-external.sh` pins all of it offline against three fixtures — a vendored
+  library, a canned Sourcify body served through the `DF_SOURCIFY_CMD` seam, and a local bare-repo upstream
+  — with no network, no forge, no `agentis` and no LLM. **On its own this ships no behaviour change:** no
+  hunt path calls the resolver yet; discovery-cell access, the `EXTERNAL-CITED` evidence kind and the
+  on-chain fact check follow separately.
+
 ### Changed
 
 - **The hunter's lens no longer carries the corpus's ground truth, and the corpus has a hold-out policy

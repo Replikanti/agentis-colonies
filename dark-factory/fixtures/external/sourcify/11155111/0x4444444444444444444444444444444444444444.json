@@ -1,0 +1,10 @@
+{
+  "match": "exact_match",
+  "chainId": "11155111",
+  "address": "0x4444444444444444444444444444444444444444",
+  "sources": {
+    "src/TransparentProxyStub.sol": {
+      "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\n/// @title TransparentProxyStub\n/// @notice An ERC-1967 proxy. Its verified source declares NO business logic: whatever the\n///         consumer calls lives behind the implementation slot, not here.\ncontract TransparentProxyStub {\n    fallback() external payable {\n        // delegatecall into the implementation slot\n    }\n}\n"
+    }
+  }
+}

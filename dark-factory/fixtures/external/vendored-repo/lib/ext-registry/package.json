@@ -1,0 +1,10 @@
+{
+  "name": "ext-registry",
+  "version": "0.3.1",
+  "description": "Vendored without sources on purpose: only the manifest is checked in.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/example-org/ext-ledger"
+  }
+}

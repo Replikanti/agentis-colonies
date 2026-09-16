@@ -1,0 +1,10 @@
+{
+  "match": "exact_match",
+  "chainId": "11155111",
+  "address": "0x3333333333333333333333333333333333333333",
+  "sources": {
+    "src/ProxiedVault.sol": {
+      "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\n/// @title ProxiedVault\n/// @notice The implementation actually running behind the proxy.\ncontract ProxiedVault {\n    /// @dev The exchange rate is 1:1 only while the vault holds no accrued fee; once fees accrue\n    ///      the share price is strictly greater than 1e18 and a 1:1 assumption over-credits redeemers.\n    function exchangeRate() external view returns (uint256) {\n        return _rate;\n    }\n\n    uint256 internal _rate;\n}\n"
+    }
+  }
+}
