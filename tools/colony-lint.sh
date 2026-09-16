@@ -2990,6 +2990,37 @@ else
     fail "dark-factory: lint run modified the live hunt registry ($REAL_DF_HUNTS_DIR) -- a script invoked by colony-lint wrote there instead of respecting DARK_FACTORY_DIR. Diff of changed entries: $(diff <(printf '%s\n' "$DF_HUNTS_BEFORE") <(printf '%s\n' "$DF_HUNTS_AFTER") || true). Note: if you just ran a live 'run-zone-hunt.sh' by hand concurrently with this lint, that legitimate write can trigger this failure too -- re-run colony-lint alone to confirm."
 fi
 
+# --- Dark Factory self-test DARK_FACTORY_DIR default check (#2220) ---
+# The check above only proves THIS lint run stayed off the live registry --
+# it inherits DARK_FACTORY_DIR=$DF_LINT_SCRATCH from this process, so it can't
+# catch a self-test that forgot to default DARK_FACTORY_DIR itself. Run one
+# representative self-test (deep-hunt-ab.sh, which drives the real
+# run-zone-hunt.sh registration hook) with DARK_FACTORY_DIR UNSET, in a
+# sandboxed HOME, and assert the sandboxed "live" registry path stays
+# absent/empty -- proving the self-test's own default isolates it.
+#
+# run-zone-hunt.sh's registration hook is itself opt-in: it is a pure NO-OP
+# unless ${DARK_FACTORY_DIR:-$HOME/.dark-factory}/hunts ALREADY EXISTS as a
+# directory (the operator's opt-in switch, e.g. from running hunt-dashboard).
+# Pre-create that dir here so this check actually reproduces the #2220
+# scenario instead of vacuously passing because the dir was never there.
+DF_SELFTEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/colony-lint-df-selftest-home.XXXXXX")"
+mkdir -p "$DF_SELFTEST_HOME/.dark-factory/hunts"
+df_selftest_out="$(
+    unset DARK_FACTORY_DIR
+    export HOME="$DF_SELFTEST_HOME"
+    bash "$REPO_ROOT/dark-factory/bench/corpus-bench/deep-hunt-ab.sh" --self-test 2>&1
+)" && df_selftest_rc=0 || df_selftest_rc=$?
+if [ "$df_selftest_rc" -ne 0 ]; then
+    fail "dark-factory: deep-hunt-ab.sh --self-test failed with DARK_FACTORY_DIR unset (sandboxed HOME=$DF_SELFTEST_HOME) -- cannot verify the self-test's own registry isolation"
+    printf '%s\n' "$df_selftest_out"
+elif [ -d "$DF_SELFTEST_HOME/.dark-factory/hunts" ] && [ -n "$(find "$DF_SELFTEST_HOME/.dark-factory/hunts" -mindepth 1 2>/dev/null)" ]; then
+    fail "dark-factory: deep-hunt-ab.sh --self-test with DARK_FACTORY_DIR unset wrote into the sandboxed live registry ($DF_SELFTEST_HOME/.dark-factory/hunts) -- a self-test must default DARK_FACTORY_DIR to its own isolated temp root (#2220)"
+else
+    pass "dark-factory: deep-hunt-ab.sh --self-test with DARK_FACTORY_DIR unset does not touch the (sandboxed) live hunt registry"
+fi
+rm -rf "$DF_SELFTEST_HOME"
+
 # --- Every tracked .ag parses -------------------------------------------------
 # Scoped to examples/, which is the actual uncovered ground: every federation's
 # agents are already exercised by its demo suite, while examples/ is exercised by

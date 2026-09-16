@@ -117,6 +117,11 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/demo-vector-hunt.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 # Isolate the forge-slot pool to this run — never touch the host-wide pool a live hunt shares.
 export FORGE_SLOTS_DIR="$WORK/forge-slots"
+# #2220: PART 3 below drives the REAL run-zone-hunt.sh registration hook; default to an isolated registry
+# root under $WORK (cleaned by the trap above) so a hand-run demo never writes into the live
+# ${HOME}/.dark-factory/hunts.
+DARK_FACTORY_DIR="${DARK_FACTORY_DIR:-$WORK/dark-factory-dir}"
+export DARK_FACTORY_DIR
 mkdir -p "$WORK/target"
 
 run_engine() {
