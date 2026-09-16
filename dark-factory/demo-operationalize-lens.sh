@@ -1428,7 +1428,8 @@ T2_FNS="$WORK/tier2-fns.sh"
   sed -n '/^_json_str() {/p' "$DISCOVERY"
   for _t2fn in _count_stdin _ids_of_lines _check_ids _distinct_trace_lines _uncited_dismissal_lines \
                _uncited_check_ids _unresolved_check_ids _tier2_flat _opcheck_text _trace_evidence \
-               _unresolved_check_rows _uncited_check_rows _tier2_emit_loc _tier2_resolve_file \
+               _unresolved_check_rows _uncited_check_rows _tier2_emit_loc _tier2_emit_bare_loc \
+               _tier2_resolve_file \
                _tier2_location _tier2_rare _tier2_records _tier2_select _tier2_json_array \
                _tier2_top_json _tier2_totals_json; do
     sed -n "/^$_t2fn() {\$/,/^}\$/p" "$DISCOVERY"
@@ -1542,6 +1543,44 @@ if [ "$T2_LOADED" -eq 1 ]; then
     ok "a call-shaped mention resolves through the fn-grep rule to the file that DECLARES it ($T2_GREP_LOC)"
   else
     bad "the fn-grep rule did not resolve the call-shaped mention (loc=$T2_GREP_LOC src/rule=$T2_GREP_SRC)"
+  fi
+
+  # #2217 M5 bug 2: a check text can name the contract it is about WITHOUT ever writing a `Contract.function`
+  # pair. Before the contract-only rule such a text fell through to the zone fallback and was located at the
+  # cell's FIRST file — a name no scoreboard can credit against the contract the check actually named. The
+  # texts below are the M5 shape, genericised onto this fixture zone (a fixture that named a real protocol
+  # would overfit the gate and, in a public repo, read as a target hint).
+  note "37b) a BARE CONTRACT NAME resolves to that contract's file, ahead of the fn-grep and zone rules ..."
+  T2_CO_TXT='YieldTokenOracle useAltRate immutable bool selecting rateA vs rateB, paired with the quote leg|the quote leg must price the SAME referent the selected rate is denominated in'
+  T2_CO="$(_tier2_location "$T2_CO_TXT" "$T2FILES" "$T2REPO" | tr '\t' '/')"
+  if [ "$T2_CO" = "src/oracles/YieldTokenOracle.sol/opcheck/contract-only" ]; then
+    ok "a bare contract name with no Contract.function pair resolves to THAT contract's file (loc_source=opcheck, loc_rule=contract-only) instead of the zone's first file"
+  else
+    bad "the contract-only rule did not fire on a bare contract name (got '$T2_CO')"
+  fi
+  # ... and when the SAME text also mentions a call-shaped name the resolved file DECLARES, the function half
+  # is appended — the pair-creditable shape, still under the contract-only rule.
+  T2_COFN="$(_tier2_location "$T2_CO_TXT, and the latestAnswer( ) path must agree" "$T2FILES" "$T2REPO" | tr '\t' '/')"
+  if [ "$T2_COFN" = "src/oracles/YieldTokenOracle.sol:latestAnswer/opcheck/contract-only" ]; then
+    ok "the same text plus a call-shaped mention the resolved file declares gains the :function half (pair-creditable, still contract-only)"
+  else
+    bad "the contract-only rule did not append the function half (got '$T2_COFN')"
+  fi
+  # A call-shaped mention declared in some OTHER file must NOT be appended — that would contradict the
+  # contract the rule just resolved — and must NOT let the fn-grep rule relocate the record to that file.
+  T2_COX="$(_tier2_location "$T2_CO_TXT, and the convertRate( ) rounding" "$T2FILES" "$T2REPO" | tr '\t' '/')"
+  if [ "$T2_COX" = "src/oracles/YieldTokenOracle.sol/opcheck/contract-only" ]; then
+    ok "a call-shaped mention declared in a DIFFERENT file neither becomes the function half nor relocates the record (contract-only outranks fn-grep)"
+  else
+    bad "a foreign call-shaped mention moved the contract-only location (got '$T2_COX')"
+  fi
+  # A capitalised word that names no file of this zone is not a contract: the resolve IS the gate, so the
+  # record still falls through to the zone fallback exactly as before.
+  T2_CON="$(_tier2_location 'SettlementQueue entries drift after a partial redemption|the drift must stay bounded' "$T2FILES" "$T2REPO" | tr '\t' '/')"
+  if [ "$T2_CON" = "src/oracles/YieldTokenOracle.sol/zone/file-only" ]; then
+    ok "a capitalised word matching NO zone file falls through to the zone fallback as before (the resolve is the gate, not the capitalisation)"
+  else
+    bad "a bare name matching no zone file did not fall through to file-only (got '$T2_CON')"
   fi
 
   note "38) SANITISATION: decoration and slice suffixes can never produce a location outside the pinned shape ..."

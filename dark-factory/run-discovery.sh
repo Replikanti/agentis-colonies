@@ -1134,7 +1134,8 @@ _unresolved_check_ids() {
 #   kind        "unresolved" (a TRACE answered UNRESOLVED) | "uncited" (a CLEAN dismissal with no valid citation)
 #   location    "<path>:<function>" when it could be derived from the check's own text, else "<path>" (fallback)
 #   loc_source  "opcheck" = derived from the CHECK TEXT | "zone" = fell back to this cell's file list
-#   loc_rule    "contract-fn" | "fn-grep" | "file-only" — WHICH rule produced it (see _tier2_location)
+#   loc_rule    "contract-fn" | "contract-only" | "fn-grep" | "file-only" — WHICH rule produced it (see
+#               _tier2_location)
 #   severity    ALWAYS "" — a tier-2 record carries no severity assessment
 #   check       the OPCHECK line's own wording (its fields 3..n)
 #   why         the TRACE line's evidence span (its fields 4..n) — the cell's own reason for not settling it
@@ -1225,6 +1226,15 @@ _tier2_emit_loc() {
   printf '%s\t%s\t%s\n' "$1" "$2" "$3"
 }
 
+# _tier2_emit_bare_loc <path> <loc_source> <loc_rule> — the same gate as _tier2_emit_loc for a location that
+# names a FILE and NO function: a bare path, no `:` at all, no decoration. The contract-only rule below claims
+# exactly that much ("the check names THIS contract") and must not invent a function half to satisfy a shape
+# gate written for locations that have one.
+_tier2_emit_bare_loc() {
+  printf '%s\n' "$1" | grep -qE '^[A-Za-z0-9_./-]+\.sol$' || return 1
+  printf '%s\t%s\t%s\n' "$1" "$2" "$3"
+}
+
 # _tier2_resolve_file <basename> <files-csv> — the path IN THIS CELL'S file list whose basename is <basename>
 # (exact match first, then case-insensitive), or nothing. A `file@fn+fn` slice token (#2150) names the same
 # file, so the `@` tail is stripped before comparing. Resolving against the CELL's own list — never a repo-wide
@@ -1252,6 +1262,14 @@ _tier2_resolve_file() {
 #   L1 contract-fn — the check text names its own location. Either literally (`Foo.sol:_calcRate`) or as a
 #      `Contract.function` mention (`FooOracle._calcRate`), scanned left to right; the file half is resolved
 #      against THIS cell's file list. loc_source = "opcheck".
+#   L1c contract-only — no `Contract.function` pair anywhere: a check text may name the contract it is about
+#      and nothing else (`<Contract> <flag> selecting <rateA> vs <rateB> ...`). Scan the CAPITALISED
+#      identifiers left to right and take the first whose `<Name>.sol` resolves against THIS cell's file list —
+#      the resolve IS the gate, so a capitalised word naming no zone file costs nothing. When the text also
+#      carries a call-shaped `name(` whose DECLARATION lives in that same file, the function half is appended;
+#      a function declared in some OTHER file is not (it would contradict the contract just resolved).
+#      loc_source = "opcheck". Before this rule such a text fell through to L3 and was located at the zone's
+#      FIRST file — a name no scoreboard can credit against the contract the check actually named (#2217 M5).
 #   L2 fn-grep     — no resolvable file half: take the first call-shaped mention (`_calcRate(`) and find the
 #      first file of this cell's list (IN CSV ORDER, so ambiguity resolves deterministically) that declares
 #      `function <fn>`. Needs [repo_dir] to read the files; without it the rule is skipped. loc_source = "opcheck".
@@ -1277,6 +1295,18 @@ _tier2_location() {
     case "$tl_fn" in sol) continue ;; esac
     tl_p="$(_tier2_resolve_file "${tl_m%%.*}.sol" "$tl_files")"
     if [ -n "$tl_p" ] && _tier2_emit_loc "$tl_p:$tl_fn" opcheck contract-fn; then return 0; fi
+  done
+  # L1c: a BARE CONTRACT NAME, resolved against this cell's own file list (see the precedence note above).
+  for tl_c in $(printf '%s' "$tl_clean" | grep -oE '[A-Z][A-Za-z0-9_]*' || true); do
+    tl_p="$(_tier2_resolve_file "$tl_c.sol" "$tl_files")"
+    [ -n "$tl_p" ] || continue
+    if [ -n "$tl_repo" ] && [ -f "$tl_repo/$tl_p" ]; then
+      for tl_fn in $(printf '%s' "$tl_paren" | grep -oE '[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(' | tr -d ' (' || true); do
+        grep -qE "function[[:space:]]+${tl_fn}[[:space:]]*\(" "$tl_repo/$tl_p" 2>/dev/null || continue
+        if _tier2_emit_loc "$tl_p:$tl_fn" opcheck contract-only; then return 0; fi
+      done
+    fi
+    if _tier2_emit_bare_loc "$tl_p" opcheck contract-only; then return 0; fi
   done
   # L2: a call-shaped mention, grepped for its declaration across this cell's files in CSV order.
   tl_call="$(printf '%s' "$tl_paren" | grep -oE '[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(' | head -1 | tr -d ' (' || true)"
@@ -1311,7 +1341,7 @@ _tier2_rare() {
 # _tier2_records <subsystem> <class> <files-csv> <log> [repo_dir] [cache_dir] — every tier-2 record ONE cell log yields, as
 # TAB-separated rows, unresolved rows first and each kind in ascending check id. Columns 1-3 are the RANK KEYS
 # (see _tier2_select); the rest is the record:
-#   1 rare(0|1)  2 kind(0=unresolved,1=uncited)  3 loc_rule(0=contract-fn,1=fn-grep,2=file-only)
+#   1 rare(0|1)  2 kind(0=unresolved,1=uncited)  3 loc_rule(0=contract-fn,1=contract-only,2=fn-grep,3=file-only)
 #   4 kind  5 class  6 subsystem  7 id  8 location  9 loc_source  10 loc_rule  11 check  12 why
 _tier2_records() {
   t2r_subsys="$1"; t2r_cls="$2"; t2r_files="$3"; t2r_log="$4"; t2r_repo="${5:-}"; t2r_cache="${6:-}"
@@ -1326,9 +1356,10 @@ _tier2_records() {
       t2r_src="$(printf '%s' "$t2r_loc" | cut -f2)"
       t2r_rule="$(printf '%s' "$t2r_loc" | cut -f3)"
       case "$t2r_rule" in
-        contract-fn) t2r_lrank=0 ;;
-        fn-grep)     t2r_lrank=1 ;;
-        *)           t2r_lrank=2 ;;
+        contract-fn)   t2r_lrank=0 ;;
+        contract-only) t2r_lrank=1 ;;
+        fn-grep)       t2r_lrank=2 ;;
+        *)             t2r_lrank=3 ;;
       esac
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$t2r_rare" "$t2r_krank" "$t2r_lrank" "$t2r_kind" "$t2r_cls" "$(_tier2_flat "$t2r_subsys")" \
@@ -1340,7 +1371,7 @@ EOF
 }
 
 # _tier2_select <tsv> <cap> — the records that survive the PER-ZONE CAP, in rank order. Rank = rare class
-# first, then unresolved before uncited, then the location rule (contract-fn > fn-grep > file-only), then the
+# first, then unresolved before uncited, then the location rule (contract-fn > contract-only > fn-grep > file-only), then the
 # accumulator's own order — which is MANIFEST cell order, then ascending check id, because _accumulate_cell is
 # called in manifest order on the serial, parallel (post-drain) and depth paths alike. `sort -s` is what makes
 # that last tie-break the input order rather than an arbitrary one.
