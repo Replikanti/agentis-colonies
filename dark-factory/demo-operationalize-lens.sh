@@ -964,6 +964,17 @@ if [ "$GATE_LOADED" -eq 1 ]; then
     'TRACE|the cross-issuer rate presumption|CLEAN|src/PriceOracle.sol:49 declares the flag and only a trusted deployer sets it, so it is a deploy-time misconfiguration' \
     'SAFE')"
   _assert_gap "the same dismissal citing a src/ path:line (names the flag, not what is shipped)" "$CFG_SRCDIR_LOG" 1 yes
+  # (h) #2225 QA fix: a well-shaped tests/ citation whose FILE DOES NOT EXIST under the repo — a fabricated
+  # or hallucinated path:line is not "in this repository" either, and must not pass on shape alone.
+  CFG_MISSING_LOG="$(_cell_log cfg-missing \
+    'OPERATIONALIZE|vault|C22|on' \
+    'OPCHECK|the cross-issuer rate presumption|the two sides must be denominated in the same unit' \
+    'TRACE|the cross-issuer rate presumption|CLEAN|tests/Missing.t.sol:5 wires the mismatched pair and only a trusted deployer sets it, so it is a deploy-time misconfiguration' \
+    'SAFE')"
+  _assert_gap "config-grounds dismissal citing a tests/ path:line whose file does not exist" "$CFG_MISSING_LOG" 1 yes "$EXT_REPO"
+  # Without a repo_dir, the same non-existent citation falls back to the shape-only check (accepted) — the
+  # documented empty-repo_dir behaviour, not a regression: existence cannot be resolved with no repo to check.
+  _assert_gap "the same citation with no repo_dir given (existence unverifiable, shape accepted)" "$CFG_MISSING_LOG" 0 no
 
   note "26) an external-protocol claim: needs an IN-REPO citation that STATES the fact, not just names a source ..."
   # (c) the M-12 shape, in its three uncited forms: a bare URL, a bare interface identifier, a bare library
@@ -1010,6 +1021,17 @@ if [ "$GATE_LOADED" -eq 1 ]; then
   # Without a repo to resolve the citation against, the same cited range falls back to the shape check alone
   # (accepted) — the content check degrades gracefully rather than false-failing on an unresolvable path.
   _assert_gap "the same citation with no repo_dir given (content unverifiable, shape accepted)" "$EXT_STATED_LOG" 0 no
+  # (g) #2225 QA fix: a well-shaped citation whose FILE DOES NOT EXIST under the repo — a fabricated or
+  # hallucinated path:line is not "in this repository" either, so it must not be accepted as verified.
+  EXT_MISSING_LOG="$(_cell_log ext-missing \
+    'OPERATIONALIZE|vault|C2|on' \
+    'OPCHECK|the external rate read|the returned value must carry the unit this zone assumes' \
+    'TRACE|the external rate read|CLEAN|lib/Nonexistent.sol:12 fixes the unit, so it always returns the same normalised ratio' \
+    'SAFE')"
+  _assert_gap "external-fact CLEAN citing a repo range whose file does not exist" "$EXT_MISSING_LOG" 1 yes "$EXT_REPO"
+  # Without a repo_dir, the same non-existent citation falls back to the shape-only check (accepted) — the
+  # documented empty-repo_dir behaviour, not a regression: existence cannot be resolved with no repo to check.
+  _assert_gap "the same citation with no repo_dir given (existence unverifiable, shape accepted)" "$EXT_MISSING_LOG" 0 no
 
   note "27) UNRESOLVED is the honest verdict the rules ask for — counted, never a dismissal, never SAFE-trusted ..."
   # An UNRESOLVED check carries the same "I could not verify it" words as an uncited CLEAN and must NOT be

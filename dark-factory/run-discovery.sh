@@ -144,16 +144,22 @@
 #                          deployment[ -]configuration|configuration[ -](choice|invariant)/i
 #                         and carries NO `path:<line>` citation UNDER `test/`, `tests/`, `script/`, `scripts/`,
 #                         `deploy/` or `docs/` — a `.sol` under `src/` only names the flag it declares, not
-#                         what the repo actually ships for it (#2225).
+#                         what the repo actually ships for it (#2225) — OR (when a repo_dir is given, #2225
+#                         QA fix) cites one whose FILE DOES NOT EXIST under the target repo: a fabricated or
+#                         hallucinated `path:line` is not "in this repository" either.
 #     * EXTERNAL grounds — a `TRACE|...|CLEAN...|` whose verdict+evidence span matches
 #                         /documented|by construction|by design|always returns|normali[sz]ed|normali[sz]es|
 #                          1e18|decimals|guarantee[sd]?/i
 #                         and either cites no `path:line` at all (#2225: a URL, a bare source-file name and a
 #                         bare interface identifier no longer discharge this branch — only a repo `path:line`
-#                         does), or cites one whose file resolves under the target repo and whose cited line
-#                         range states none of the fact tokens the TRACE relies on (`1e18|decimals|WAD|ONE|
-#                         normali|scale|order`) — a citation that only NAMES the file, without stating the
-#                         property, is not verification.
+#                         does), or (when a repo_dir is given) cites one whose FILE DOES NOT EXIST under the
+#                         target repo (#2225 QA fix — same fabricated-citation rule as CONFIG grounds above),
+#                         or whose file DOES exist but whose cited line range states none of the fact tokens
+#                         the TRACE relies on (`1e18|decimals|WAD|ONE|normali|scale|order`) — a citation that
+#                         only NAMES the file, without stating the property, is not verification either. With
+#                         NO repo_dir, both branches fall back to the pre-#2225 citation-SHAPE-only check —
+#                         documented behaviour, not a gap: the content genuinely cannot be resolved without a
+#                         repo to read it against.
 #   Both are HEURISTICS over model-emitted free text — a regex cannot decide whether a sentence is really a
 #   scope argument, and the EXTERNAL content check is a cheap `sed -n 'a,bp' | grep -qiE` over the cited
 #   range, not a semantic read (that stays the OPERATOR read, like the trace-evidence rule above). They are
@@ -658,10 +664,16 @@ _distinct_trace_lines() {
 # check without the citation their grounds require (see the heuristics block in the header). Printed as one
 # integer and ADDED to the follow-through shortfall by _opcheck_trace_gap below, so an uncited dismissal is
 # untraced for the existing gate: same one re-ask, same `untraced-opcheck` FAILED reason, no new status
-# vocabulary. [repo_dir] is OPTIONAL (empty = the pre-#2225 path:line-only check): when given, a EXTERNAL
-# citation whose file resolves under it also has its cited line range read for the fact tokens the TRACE
-# relies on (#2225) — a file the caller cannot resolve (no repo_dir, or the path does not exist under it)
-# falls back to the citation-shape check alone, since the content cannot be verified either way.
+# vocabulary. [repo_dir] is OPTIONAL and empty is documented behaviour, not a gap: with no repo_dir the
+# check stays the pre-#2225 citation-SHAPE-only check (a well-formed `path:line` counts, on EITHER branch,
+# because the content genuinely cannot be resolved without a repo to read it against). When repo_dir IS
+# given, both branches go further, per the plan's own definition of VERIFIED ("the cited text is IN THIS
+# REPOSITORY"): a `path:line` whose FILE DOES NOT EXIST under repo_dir counts as UNCITED — a fabricated or
+# hallucinated citation is by construction not in the repository, so it must not be treated the same as one
+# the caller simply cannot check. On the EXTERNAL branch only, a file that DOES exist also has its cited
+# line range read for the fact tokens the TRACE relies on (#2225): a range that names the file but states
+# none of them is uncited too. The CONFIG branch stops at existence — rule 1 requires ONLY a citation of
+# what the repo configures (config_realizability_rule() in hunter.ag), not a specific fact token in range.
 #
 # The regexes live HERE rather than in globals so the function is self-contained: demo-operationalize-lens.sh
 # slices it out of this file by line range and sources it, and a detector that depended on script-level state
@@ -696,10 +708,22 @@ _uncited_dismissals() {
     ud_verdict="$(printf '%s\n' "$ud_line" | cut -d'|' -f3)"
     case "$ud_verdict" in *[Cc][Ll][Ee][Aa][Nn]*) ;; *) continue ;; esac
     ud_span="$(printf '%s\n' "$ud_line" | cut -d'|' -f3-)"
-    if printf '%s\n' "$ud_span" | grep -Eqi "$ud_cfg_re" \
-       && ! printf '%s\n' "$ud_span" | grep -Eq "$ud_cfg_pathline_re"; then
-      ud_n=$((ud_n + 1))
-      continue
+    if printf '%s\n' "$ud_span" | grep -Eqi "$ud_cfg_re"; then
+      if ! printf '%s\n' "$ud_span" | grep -Eq "$ud_cfg_pathline_re"; then
+        ud_n=$((ud_n + 1))
+        continue
+      fi
+      # #2225 QA fix: shape-accepted is not enough — a citation whose file does not
+      # exist under the target repo cannot be evidence of what the repo ships either.
+      # Only checked when repo_dir is given (see the header: empty repo_dir keeps the
+      # pre-#2225 shape-only check, since the content cannot be resolved either way).
+      if [ -n "$ud_repo" ]; then
+        ud_cfg_cite="$(printf '%s\n' "$ud_span" | grep -oE "$ud_pathline_re" | head -1)"
+        if [ -n "$ud_cfg_cite" ] && [ ! -f "$ud_repo/${ud_cfg_cite%%:*}" ]; then
+          ud_n=$((ud_n + 1))
+          continue
+        fi
+      fi
     fi
     if printf '%s\n' "$ud_span" | grep -Eqi "$ud_ext_re"; then
       ud_cite="$(printf '%s\n' "$ud_span" | grep -oE "$ud_pathline_re" | head -1)"
@@ -713,8 +737,11 @@ _uncited_dismissals() {
           *-*) ud_a="${ud_range%-*}"; ud_b="${ud_range#*-}" ;;
           *)   ud_a="$ud_range"; ud_b="$ud_range" ;;
         esac
-        if [ -f "$ud_repo/$ud_file" ] \
-           && ! sed -n "${ud_a},${ud_b}p" "$ud_repo/$ud_file" 2>/dev/null | grep -qiE "$ud_fact_re"; then
+        if [ ! -f "$ud_repo/$ud_file" ]; then
+          # #2225 QA fix: a citation to a file that does not exist under the repo
+          # cannot state anything either — uncited, not an unverifiable pass-through.
+          ud_n=$((ud_n + 1))
+        elif ! sed -n "${ud_a},${ud_b}p" "$ud_repo/$ud_file" 2>/dev/null | grep -qiE "$ud_fact_re"; then
           # The file resolves and its cited range says none of the fact tokens: it names the file, not the fact.
           ud_n=$((ud_n + 1))
         fi
