@@ -22,7 +22,22 @@
 # recorded as a FAILED `untraced-opcheck` cell (=> the zone is hunted_degraded, not a trusted clean sweep).
 # Part 4 below is that gate's offline acceptance bar; it is inert whenever the lens is OFF, and so is the gate.
 #
-# Four parts:
+# #2214 PR C closes the RESIDUAL cause the M3 measurement exposed: the gate made every check traced, and the
+# cell then DISMISSED the rare bug anyway — five times, on "a trusted deployer picks that pairing", without
+# checking what the audited repo itself configures — while a sibling check closed CLEAN on an unverified
+# external-protocol fact. So two rules and one harness pin land here:
+#   * CONFIG-REALIZABILITY (hunter.ag, GENERAL — in the shared RULES block, NOT lens-gated, because the
+#     measured dismissals happened in arms with the lens UNSET). Its prompt-byte delta is measured, not
+#     silent: part 2's probe prints RULELEN and asserts it is non-zero.
+#   * EXTERNAL FACTS (inside the lens block, so the lens-OFF prompt keeps its byte-identity contract): a
+#     CLEAN resting on a claim about an external protocol must cite what it was verified against, else
+#     UNRESOLVED.
+#   * The harness pin: an uncited config-grounds dismissal, or an uncited external-grounds CLEAN, counts as
+#     untraced for the EXISTING gate (same one re-ask, same `untraced-opcheck` reason, no new status
+#     vocabulary), and UNRESOLVED checks get an additive per-cell `unresolved` counter instead of folding
+#     into SAFE. Parts 5-6 below are the offline fixtures for both.
+#
+# Six parts:
 #   1) SOURCE-GUARD (the CI floor — pure grep/awk: no agentis, no forge, no network). The four helpers, the
 #      marker/sentinel coupling, the `== "1"` (default-OFF) polarity, the ""-when-disabled gate, the splice
 #      position directly above the lens it refers to, the env_passthrough registration, both new record
@@ -42,6 +57,14 @@
 #      run-discovery.sh by line range, so a copy-pasted twin cannot drift). The gate's arithmetic on both
 #      sides (fires / does not fire), the duplicate-check tolerance, the candidate-emitting and lens-OFF
 #      cases, the re-ask bound, the `.untraced` FAILED branch and the unchanged default-OFF JSON key set.
+#   5) #2214 PR C DISMISSAL RULES IN THE PROMPT (CI floor): both rules' load-bearing sentences, the
+#      placement decision (config rule in the shared RULES block and NOT inside the lens block; external-fact
+#      rule inside the lens block), the flag-independence of the config rule and the same overfitting
+#      denylist applied to its text.
+#   6) #2214 PR C CITATION DISCIPLINE (CI floor): the shipped detectors, again sliced out of
+#      run-discovery.sh, over synthetic cell logs — a config-grounds dismissal with and without a
+#      `path:line` citation, the VERBATIM dismissal sentence a measured arm-run produced, an external-fact
+#      CLEAN with and without a source, the UNRESOLVED counter, and the lens-OFF inertness of all of it.
 #
 # Usage:  dark-factory/demo-operationalize-lens.sh
 # Exit: 0 = all assertions held; non-zero = a regression.
@@ -97,6 +120,14 @@ if grep -A3 '^fn operationalize_directive(' "$HUNTER" | grep -qi 'code\|detector
   bad "operationalize_directive() grew a payload/detector argument — the flag must stay the ONLY gate (M2 single-variable)"
 else
   ok "operationalize_directive() takes no payload and consults no detector (the flag is the only gate)"
+fi
+
+# #2214 PR C: the config-realizability rule is a FIFTH helper and is deliberately NOT one of the four above —
+# it is general (no flag, no lens), so it is asserted separately here and in part 5.
+if grep -q '^fn config_realizability_rule(' "$HUNTER"; then
+  ok "hunter.ag declares config_realizability_rule() (the #2214 PR C general dismissal rule)"
+else
+  bad "hunter.ag is missing config_realizability_rule() — the #2214 PR C dismissal rule would not exist"
 fi
 
 note "2) the marker helper IS what the sentinel greps, and IS the block's first line ..."
@@ -209,12 +240,15 @@ for s in \
   "never invent a construct that is not in the code" \
   "FOLLOW THROUGH — a check you write and abandon is worse than one you never derived." \
   "TRACE|<the same check, restated>|<CLEAN or BUG or UNRESOLVED>|<the function or line in THIS zone that settles it>" \
-  "SAFE is a valid answer ONLY when every OPCHECK line you wrote has a matching TRACE line."
+  "SAFE is a valid answer ONLY when every OPCHECK line you wrote has a matching TRACE line." \
+  "EXTERNAL FACTS — the other way a derived check dies quietly" \
+  "that claim is a FACT YOU MUST VERIFY, not an assumption you may lean on" \
+  "the verdict is UNRESOLVED — never CLEAN"
 do
   case "$HUNTER_FLAT" in *"$s"*) ;; *) DIRECTIVE_MISS="$DIRECTIVE_MISS [$s]" ;; esac
 done
 if [ -z "$DIRECTIVE_MISS" ]; then
-  ok "the directive keeps its header, the derive-write-then-trace method, the paired-operation clause, the OPCHECK| emission contract, the #2214 TRACE| follow-through contract and the anti-fabrication guard"
+  ok "the directive keeps its header, the derive-write-then-trace method, the paired-operation clause, the OPCHECK| emission contract, the #2214 TRACE| follow-through contract, the #2214 PR C external-fact citation rule and the anti-fabrication guard"
 else
   bad "the directive lost load-bearing text:$DIRECTIVE_MISS"
 fi
@@ -334,10 +368,16 @@ if grep -q 'if \[ "\$ac_trn" -gt 0 \]; then ac_traces_json=' "$DISCOVERY" \
 else
   bad "the #2214 traces/untraced counters are missing or emitted unconditionally (a lens-OFF cell's JSON would change shape)"
 fi
-if grep -q '"\$ac_opchecks_json" "\$ac_traces_json" "\$ac_untraced_json" >> "\$CELLS_JSONL"' "$DISCOVERY"; then
-  ok "both counters are appended LAST, after opchecks (the _plan_depth_cells forward key scan is untouched)"
+# #2214 PR C appends `unresolved` after them, under the same discipline (non-zero only, LAST).
+if grep -q '"\$ac_opchecks_json" "\$ac_traces_json" "\$ac_untraced_json" "\$ac_unresolved_json" >> "\$CELLS_JSONL"' "$DISCOVERY"; then
+  ok "the three counters are appended LAST, after opchecks (the _plan_depth_cells forward key scan is untouched)"
 else
   bad "the #2214 counters are no longer the LAST fields of the cell object — the forward key scan could break"
+fi
+if grep -q 'if \[ "\$ac_unres" -gt 0 \]; then ac_unresolved_json=' "$DISCOVERY"; then
+  ok "_accumulate_cell records \"unresolved\" only when non-zero (a cell with no UNRESOLVED check keeps its exact key set)"
+else
+  bad "the #2214 PR C unresolved counter is missing or emitted unconditionally (a lens-OFF cell's JSON would change shape)"
 fi
 
 note "12) DECISION: no new taxonomy class — this is a cross-class METHOD directive ..."
@@ -431,7 +471,9 @@ else
   # than a copy that can drift (the demo-discovery-parallel.sh 18g idiom).
   FRAG="$WORK/opz.frag"; : > "$FRAG"
   FRAG_MISS=""
-  for fn in $OPZ_FNS; do
+  # #2214 PR C: the general config rule is extracted alongside the four lens helpers, so the SAME probe that
+  # proves the lens is 0 bytes when OFF also MEASURES what the general rule adds to every prompt.
+  for fn in $OPZ_FNS config_realizability_rule; do
     awk -v want="^fn $fn\\\\(" '$0 ~ want {f=1} f{print} f&&/^}$/{exit}' "$HUNTER" >> "$FRAG"
     printf '\n' >> "$FRAG"
     grep -q "^fn $fn(" "$FRAG" || FRAG_MISS="$FRAG_MISS $fn"
@@ -447,6 +489,7 @@ else
       cat "$FRAG"
       printf 'print("BLOCKLEN=" + to_string(len(operationalize_block())));\n'
       printf 'print("DIRLEN=" + to_string(len(operationalize_directive())));\n'
+      printf 'print("RULELEN=" + to_string(len(config_realizability_rule())));\n'
     } > "$SB/probe.ag"
     # _dirlen <flag-value|"">: the toggle-gated directive length. An empty argument runs with the env UNSET.
     _dirlen() {
@@ -479,6 +522,15 @@ else
       bad "OPERATIONALIZE_LENS=1: operationalize_directive() ($DIR_ON) != the full block ($BLOCK_LEN)"
     fi
     # Any value OTHER than "1" is OFF — including the two that a well-meaning operator would expect to work.
+    # #2214 PR C: the general rule's PROMPT-BYTE DELTA. It is injected on EVERY cell, lens on or off, so the
+    # honest thing is to measure it and put the number in the readout — not to claim the prompt is unchanged.
+    RULE_LEN="$( cd "$SB" && agentis go probe.ag 2>&1 | grep '^RULELEN=' | tail -1 )"  # no-pii: length-only probe, no prompt()
+    RULE_LEN="${RULE_LEN#RULELEN=}"
+    case "$RULE_LEN" in
+      ''|*[!0-9]*) bad "the #2214 PR C rule probe did not complete (RULELEN='$RULE_LEN')" ;;
+      0) bad "config_realizability_rule() is empty — the general dismissal rule would never reach a prompt" ;;
+      *) ok "config_realizability_rule() is $RULE_LEN bytes: the MEASURED prompt-byte delta this general rule adds to every cell (lens on or off)" ;;
+    esac
     if [ "$DIR_ZERO" = "0" ] && [ "$DIR_TRUE" = "0" ]; then
       ok "OPERATIONALIZE_LENS=0 and =true are both OFF (only the literal \"1\" opts in — no accidental default-ON)"
     else
@@ -599,15 +651,21 @@ note "17) the shipped gate functions slice out of run-discovery.sh and load ..."
 GATE_FNS="$WORK/gate-fns.sh"
 {
   sed -n '/^_distinct_sentinel_count() {$/,/^}$/p' "$DISCOVERY"
+  # #2214 PR C: _opcheck_trace_gap now calls these two, so the slice must carry them or the extracted gate
+  # would behave differently here than in production (which is the whole point of slicing rather than copying).
+  sed -n '/^_distinct_trace_lines() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_uncited_dismissals() {$/,/^}$/p' "$DISCOVERY"
+  sed -n '/^_unresolved_trace_count() {$/,/^}$/p' "$DISCOVERY"
   sed -n '/^_opcheck_trace_gap() {$/,/^}$/p' "$DISCOVERY"
   sed -n '/^_untraced_safe() {$/,/^}$/p' "$DISCOVERY"
 } > "$GATE_FNS"
 GATE_LOADED=0
-if grep -q '^_opcheck_trace_gap() {$' "$GATE_FNS" && grep -q '^_untraced_safe() {$' "$GATE_FNS"; then
+if grep -q '^_opcheck_trace_gap() {$' "$GATE_FNS" && grep -q '^_untraced_safe() {$' "$GATE_FNS" \
+   && grep -q '^_uncited_dismissals() {$' "$GATE_FNS" && grep -q '^_unresolved_trace_count() {$' "$GATE_FNS"; then
   # shellcheck disable=SC1090  # sliced out of run-discovery.sh at runtime, by design
   . "$GATE_FNS"
   GATE_LOADED=1
-  ok "_distinct_sentinel_count / _opcheck_trace_gap / _untraced_safe extracted from run-discovery.sh and sourced"
+  ok "_distinct_sentinel_count / _distinct_trace_lines / _uncited_dismissals / _unresolved_trace_count / _opcheck_trace_gap / _untraced_safe extracted from run-discovery.sh and sourced"
 else
   bad "could not extract the #2214 gate functions from run-discovery.sh (renamed or reshaped?)"
 fi
@@ -756,8 +814,209 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+# PART 5 — #2214 PR C: THE TWO DISMISSAL RULES, AND WHERE THEY LIVE (offline; runs in CI with no binaries).
+# The M3 measurement made every check traced and the rare row was still MISSED: five cells dismissed it on
+# "a trusted deployer picks that pairing", and a sibling closed CLEAN on an unverified external fact. The
+# PLACEMENT is the load-bearing decision, so it is asserted, not just commented: the config rule must reach a
+# cell with the lens OFF (that is where the dismissals were measured), and the external-fact rule must stay
+# inside the lens block (so the lens-OFF prompt keeps its byte-identity contract).
+# ----------------------------------------------------------------------------------------------------------
+note "22) the config-realizability rule sits in the shared RULES block and is GENERAL (no flag, no lens) ..."
+if grep -q '^  + config_realizability_rule()$' "$HUNTER" \
+   && grep -A5 'Never report a listed KNOWN ISSUE' "$HUNTER" | grep -q '+ config_realizability_rule()' \
+   && grep -A1 '^  + config_realizability_rule()$' "$HUNTER" | grep -q 'Subsystem under review'; then
+  ok "'+ config_realizability_rule()' is spliced INSIDE the === RULES === block, right after the trusted-role exclusion it qualifies"
+else
+  bad "the config-realizability rule is not spliced into the RULES block between the trusted-role exclusion and the subsystem line"
+fi
+RULE_BODY="$WORK/config-rule-body.txt"
+awk '/^fn config_realizability_rule\(/{f=1} f{print} f&&/^}$/{exit}' "$HUNTER" > "$RULE_BODY"
+if [ ! -s "$RULE_BODY" ]; then
+  bad "could not slice config_realizability_rule() out of hunter.ag"
+elif grep -q 'getenv(' "$RULE_BODY"; then
+  bad "config_realizability_rule() consults getenv() — the rule would be flag-gated, and the measured dismissals happened with the lens UNSET"
+else
+  ok "config_realizability_rule() reads no env: the rule is unconditional, so it reaches the lens-OFF cells that produced the measured dismissals"
+fi
+# Exactly ONE call site (the RULES splice). A second one inside the lens plumbing would quietly make the
+# general rule lens-dependent again.
+RULE_CALLS="$(grep -c '^[^/]*config_realizability_rule()' "$HUNTER")"
+case "$RULE_CALLS" in ''|*[!0-9]*) RULE_CALLS=0 ;; esac
+if [ "$RULE_CALLS" -eq 2 ]; then
+  ok "config_realizability_rule() has exactly one declaration and one call site (the RULES splice)"
+else
+  bad "config_realizability_rule() appears at $RULE_CALLS code sites (want 2: the declaration and the single RULES splice)"
+fi
+note "23) the placement decision is enforced: config rule OUTSIDE the lens block, external-fact rule INSIDE ..."
+PRC_BLOCK_BODY="$WORK/operationalize-body-prc.txt"
+awk '/^fn operationalize_block\(/{f=1} f{print} f&&/^}$/{exit}' "$HUNTER" > "$PRC_BLOCK_BODY"
+if [ ! -s "$PRC_BLOCK_BODY" ]; then
+  bad "could not slice operationalize_block() for the #2214 PR C placement check"
+else
+  if grep -qi 'CONFIGURATION REALIZABILITY\|config_realizability_rule' "$PRC_BLOCK_BODY"; then
+    bad "the config-realizability rule leaked INTO operationalize_block() — it would vanish on every lens-OFF cell, which is where the dismissals were measured"
+  else
+    ok "the config rule is NOT inside the lens block (a lens-OFF cell still gets it)"
+  fi
+  if grep -q 'EXTERNAL FACTS' "$PRC_BLOCK_BODY"; then
+    ok "the external-fact rule IS inside the lens block (it extends the TRACE grammar, so the lens-OFF prompt keeps its byte-identity contract)"
+  else
+    bad "the external-fact rule is not inside operationalize_block() — either it is missing, or it changed the lens-OFF prompt"
+  fi
+  # The same overfitting denylist part 8 applies to the lens text: this rule rides EVERY prompt, so a
+  # domain hint here would leak an answer into every hunt, not just the opted-in ones.
+  if grep -Eq "$DENY" "$RULE_BODY"; then
+    bad "the config-realizability rule names a protocol/product/parameter specific (it rides every prompt — this would leak an answer into every hunt)"
+    grep -nE "$DENY" "$RULE_BODY" | head -3 | sed 's/^/      /' >&2
+  else
+    ok "the config-realizability rule stays pure-meta (no protocol, contract, flag, unit or product name)"
+  fi
+fi
+note "24) both rules carry their load-bearing sentences ..."
+PRC_MISS=""
+for s_prc in \
+  "CONFIGURATION REALIZABILITY (this governs every dismissal on configuration grounds)." \
+  "The audited repository's OWN configuration is part of the audit." \
+  "search THIS repository — deployment scripts, tests, fixtures, example configs and documentation" \
+  "check whether the constructor or the setter VALIDATES that pairing at all" \
+  "a pairing this repository itself ships, documents, or accepts WITHOUT validation is IN SCOPE" \
+  "Every such dismissal MUST cite the file:line you checked" \
+  "A configuration-grounds dismissal with NO file:line citation is not a result: record the check as UNRESOLVED"
+do
+  case "$HUNTER_FLAT" in *"$s_prc"*) ;; *) PRC_MISS="$PRC_MISS [$s_prc]" ;; esac
+done
+if [ -z "$PRC_MISS" ]; then
+  ok "the config rule keeps the grep-the-repo obligation, the constructor/setter validation check, the in-scope rule and the file:line citation requirement"
+else
+  bad "the #2214 PR C config rule lost load-bearing text:$PRC_MISS"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# PART 6 — #2214 PR C: CITATION DISCIPLINE, MEASURED ON THE SHIPPED DETECTORS (offline; CI floor).
+# The detectors are HEURISTICS over model-emitted free text (documented as such in run-discovery.sh's header)
+# and they ride the EXISTING gate: an uncited dismissal is added to the follow-through shortfall, so it is
+# re-asked once and then recorded with the SAME `untraced-opcheck` reason. No new status vocabulary.
+# ----------------------------------------------------------------------------------------------------------
+if [ "$GATE_LOADED" -eq 1 ]; then
+  note "25) a config-grounds dismissal: accepted WITH a path:line citation, untraced WITHOUT one ..."
+  # (a) the dismissal did the work the rule asks for and says where it looked.
+  CFG_CITED_LOG="$(_cell_log cfg-cited \
+    'OPERATIONALIZE|vault|C23|on' \
+    'OPCHECK|the flag-vs-source pairing|the configured pair must agree on the referent' \
+    'OPCHECK|the fee cut|it is taken once per round trip' \
+    'TRACE|the flag-vs-source pairing|CLEAN|script/DeployVault.s.sol:115 configures the matching pair and the constructor rejects the other one, so the deploy-time choice is validated' \
+    'TRACE|the fee cut|CLEAN|the fee is applied in the exit path only' \
+    'SAFE')"
+  _assert_gap "config-grounds dismissal WITH a path:line citation" "$CFG_CITED_LOG" 0 no
+  # (b) the same dismissal with the citation removed: the cell asserted a configuration fact it never checked.
+  CFG_UNCITED_LOG="$(_cell_log cfg-uncited \
+    'OPERATIONALIZE|vault|C23|on' \
+    'OPCHECK|the flag-vs-source pairing|the configured pair must agree on the referent' \
+    'OPCHECK|the fee cut|it is taken once per round trip' \
+    'TRACE|the flag-vs-source pairing|CLEAN|a valid configuration exists and only the trusted deployer can pair them wrongly, so it is a deploy-time misconfiguration' \
+    'TRACE|the fee cut|CLEAN|the fee is applied in the exit path only' \
+    'SAFE')"
+  _assert_gap "the same dismissal WITHOUT a citation" "$CFG_UNCITED_LOG" 1 yes
+  # (e) the VERBATIM sentence a measured arm-run produced on the rare row this PR exists for (referents
+  #     genericised, dismissal clause word for word). If the detector does not trip on this, it is decoration.
+  MEASURED_LOG="$(_cell_log cfg-measured \
+    'OPERATIONALIZE|vault|C22|on' \
+    'OPCHECK|the cross-issuer rate presumption|the two sides must be denominated in the same unit' \
+    'TRACE|the cross-issuer rate presumption|CLEAN|But: it exists only under a specific deploy-time pairing ... set by the trusted deployer ... not an attacker-triggerable code seam ... out of scope' \
+    'SAFE')"
+  _assert_gap "the VERBATIM measured dismissal sentence" "$MEASURED_LOG" 1 yes
+
+  note "26) an external-protocol claim: CLEAN needs a source, otherwise it is not a settled check ..."
+  # (c) the M-12 shape: a confident claim about what an external call returns, verified against nothing.
+  EXT_UNCITED_LOG="$(_cell_log ext-uncited \
+    'OPERATIONALIZE|vault|C2|on' \
+    'OPCHECK|the external rate read|the returned value must carry the unit this zone assumes' \
+    'TRACE|the external rate read|CLEAN|the call always returns a normalised ratio by construction, a documented invariant of the upstream protocol' \
+    'SAFE')"
+  _assert_gap "external-fact CLEAN with no source cited" "$EXT_UNCITED_LOG" 1 yes
+  # The same claim, verified: an interface/source/URL citation discharges it.
+  EXT_CITED_LOG="$(_cell_log ext-cited \
+    'OPERATIONALIZE|vault|C2|on' \
+    'OPCHECK|the external rate read|the returned value must carry the unit this zone assumes' \
+    'TRACE|the external rate read|CLEAN|checked against IRateSource.getRate in the vendored interface, which always returns the normalised ratio' \
+    'SAFE')"
+  _assert_gap "the same claim, cited against the external interface" "$EXT_CITED_LOG" 0 no
+
+  note "27) UNRESOLVED is the honest verdict the rules ask for — counted, never a dismissal, never SAFE-trusted ..."
+  # An UNRESOLVED check carries the same "I could not verify it" words as an uncited CLEAN and must NOT be
+  # punished for them: the rules ask for exactly this verdict.
+  UNRES_LOG="$(_cell_log unresolved \
+    'OPERATIONALIZE|vault|C2|on' \
+    'OPCHECK|the external rate read|the returned value must carry the unit this zone assumes' \
+    'OPCHECK|the flag-vs-source pairing|the configured pair must agree on the referent' \
+    'TRACE|the external rate read|UNRESOLVED|the callee is outside this payload and its documented normalisation could not be verified from what I was given' \
+    'TRACE|the flag-vs-source pairing|UNRESOLVED|no deployment script or test in this payload sets the pair, so the trusted-deployer claim is unchecked' \
+    'SAFE')"
+  _assert_gap "two honest UNRESOLVED verdicts" "$UNRES_LOG" 0 no
+  UNRES_N="$(_unresolved_trace_count "$UNRES_LOG")"
+  if [ "$UNRES_N" = "2" ]; then
+    ok "_unresolved_trace_count reports 2 distinct UNRESOLVED checks (the additive per-cell \"unresolved\" field; they do not fold into SAFE unseen)"
+  else
+    bad "_unresolved_trace_count reported '$UNRES_N' for a cell with two UNRESOLVED checks"
+  fi
+  # Repetition cannot inflate the counter either (same discipline as the gap arithmetic).
+  UNRES_DUPE_LOG="$(_cell_log unresolved-dupes \
+    'OPERATIONALIZE|vault|C2|on' \
+    'OPCHECK|the external rate read|the returned value must carry the unit this zone assumes' \
+    'TRACE|the external rate read|UNRESOLVED|the callee is outside this payload' \
+    'TRACE|the external rate read|UNRESOLVED|the callee is outside this payload' \
+    'SAFE')"
+  UNRES_DUPE_N="$(_unresolved_trace_count "$UNRES_DUPE_LOG")"
+  if [ "$UNRES_DUPE_N" = "1" ]; then
+    ok "a pasted UNRESOLVED line counts once (distinct-line discipline, same as the gap arithmetic)"
+  else
+    bad "the UNRESOLVED counter counted a pasted duplicate ('$UNRES_DUPE_N' for one distinct check)"
+  fi
+
+  note "28) the citation detectors are INERT with the lens off ..."
+  # The dismissal prose is there, but with no lens there are no TRACE| lines and no sentinel: nothing to gate.
+  PRC_OFF_LOG="$(_cell_log prc-lens-off \
+    'BLACKBOARD-FOCUS|a sibling lead' \
+    'This pairing is a deploy-time misconfiguration set by the trusted deployer, so it is out of scope.' \
+    'SAFE')"
+  _assert_gap "lens OFF, dismissal prose in the reply text" "$PRC_OFF_LOG" 0 no
+  PRC_OFF_UNRES="$(_unresolved_trace_count "$PRC_OFF_LOG")"
+  if [ "$PRC_OFF_UNRES" = "0" ]; then
+    ok "a lens-OFF cell reports 0 unresolved checks, so its JSON key set is byte-identical to the pre-#2214 one"
+  else
+    bad "a lens-OFF cell reported '$PRC_OFF_UNRES' unresolved checks — its JSON would gain a key"
+  fi
+else
+  note "25-28) #2214 PR C citation fixtures ..."
+  bad "skipped: the gate functions could not be sourced (see 17)"
+fi
+
+note "29) the harness pin reuses the EXISTING gate: same re-ask, same reason, one additive JSON key ..."
+PRC_SRC_MISS=""
+grep -q '#2214 PR C — CITATION DISCIPLINE ON A DISMISSAL' "$DISCOVERY" \
+  || PRC_SRC_MISS="$PRC_SRC_MISS [heuristics-documented-in-header]"
+grep -q 'otg_unc="$(_uncited_dismissals "$otg_log")"' "$DISCOVERY" \
+  || PRC_SRC_MISS="$PRC_SRC_MISS [uncited-folded-into-the-gap]"
+grep -q 'if \[ "$ac_unres" -gt 0 \]; then ac_unresolved_json=' "$DISCOVERY" \
+  || PRC_SRC_MISS="$PRC_SRC_MISS [unresolved-key-only-when-non-zero]"
+grep -q '"\$ac_untraced_json" "\$ac_unresolved_json" >> "\$CELLS_JSONL"' "$DISCOVERY" \
+  || PRC_SRC_MISS="$PRC_SRC_MISS [unresolved-key-appended-LAST]"
+grep -q 'UNRESOLVED check(s)' "$DISCOVERY" || PRC_SRC_MISS="$PRC_SRC_MISS [unresolved-surfaced-to-the-operator]"
+if [ -z "$PRC_SRC_MISS" ]; then
+  ok "the detectors are documented as heuristics in the header, fold into _opcheck_trace_gap, and the \"unresolved\" key is additive, non-zero-only and LAST"
+else
+  bad "the #2214 PR C wiring in run-discovery.sh regressed:$PRC_SRC_MISS"
+fi
+# No new status vocabulary: the FAILED row an uncited dismissal produces is the EXISTING untraced-opcheck one.
+if grep -E 'printf .*FAILED — ' "$DISCOVERY" | grep -qi 'uncited\|citation'; then
+  bad "a NEW FAILED reason was invented for uncited dismissals — the pin must reuse the untraced-opcheck row (zone-coverage.py knows no other vocabulary)"
+else
+  ok "an uncited dismissal rides the existing 'untraced-opcheck' FAILED row (no new status vocabulary for the dashboard/coverage derivation to learn)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
-  note "PASS — the #2211 operationalize directive (pure-meta text, default-OFF flag, OPERATIONALIZE| sentinel, OPCHECK| contract) and the #2214 OPCHECK->TRACE follow-through gate hold"
+  note "PASS — the #2211 operationalize directive (pure-meta text, default-OFF flag, OPERATIONALIZE| sentinel, OPCHECK| contract), the #2214 OPCHECK->TRACE follow-through gate and the #2214 PR C dismissal-citation discipline hold"
   note "NOTE: this gate proves WIRING and model COMPLIANCE only. Rare-tier recall is UNMEASURED until the #2211 M2 corpus A/B runs."
   exit 0
 fi
