@@ -433,18 +433,25 @@ dark-factory/resolve-external.sh --symbol ExternalQuoteSource --repo /path/to/au
 # EXTERNAL|ExternalQuoteSource|sourcify|<cache>/sourcify/1/0x…/sources/…sol:6|<sha256>
 
 dark-factory/resolve-external.sh --symbol NoSuchThing --repo /path/to/audited-repo
-# EXTERNAL|NoSuchThing|unresolved|no-upstream-url
+# EXTERNAL|NoSuchThing|unresolved|no-vendored-match
 ```
 
 Resolution order, first hit wins: **(a) vendored** source under the repo's own `lib/`, `node_modules/`,
-`dependencies/`, `contracts/lib/`; **(b) a deployed address the repo itself names** in `script/` / `test/` /
-`docs/` (or `--address`), fetched KEYLESS from Sourcify into the cache — an ERC-1967 implementation slot is
-resolved when an RPC is configured (`DF_EXTERNAL_RPC`/`FORK_URL`/`ETH_RPC_URL`), and without one the proxy
-is fetched and the record says `proxy-unresolved` rather than claiming anything about the implementation;
-**(c) the upstream GitHub repo the audited repo's OWN header comment or vendored `package.json` names**,
-shallow-cloned into the cache. Otherwise exactly one refusal from a closed vocabulary:
-`no-vendored-match`, `no-address`, `not-verified-on-sourcify`, `no-upstream-url`, `network-unavailable`,
-`budget-exhausted`, `bad-input`.
+`dependencies/`, `contracts/lib/`, `src/interfaces/external/`; **(b) a deployed address the repo itself
+names** in `script/` / `test/` / `docs/` (or `--address`), fetched KEYLESS from Sourcify into the cache — an
+ERC-1967 implementation slot is resolved when an RPC is configured (`DF_EXTERNAL_RPC`/`FORK_URL`/`ETH_RPC_URL`),
+and without one the proxy is fetched and the record says `proxy-unresolved` rather than claiming anything
+about the implementation; **(c) the upstream GitHub repo the audited repo's OWN header comment or vendored
+`package.json` names**, shallow-cloned into the cache. Otherwise exactly one refusal from a closed
+vocabulary: `no-vendored-match`, `no-address`, `not-verified-on-sourcify`, `no-upstream-url`,
+`network-unavailable`, `budget-exhausted`, `submodule-empty`, `bad-input`.
+
+The refusal is the step that actually applied (#2238): a symbol the repo never mentions is
+`no-vendored-match` (the address and upstream steps record nothing about a symbol they could not have
+resolved), a symbol the repo mentions with no deployment and no named upstream is `no-address`, and an
+upstream that WAS named and cloned and still lacks the declaration is `no-upstream-url`. A vendored root
+holding an uninitialised submodule — an empty directory, the state `git submodule update` was never run in —
+is `submodule-empty` (#2240), so an incomplete checkout is never reported as a scope miss.
 
 Three properties are load-bearing, because this is the one dark-factory tool that leaves the host:
 
@@ -466,8 +473,41 @@ no `agentis`, no LLM):
 dark-factory/demo-resolve-external.sh
 ```
 
-Wiring the resolver into discovery cells (the `EXTERNAL-CITED` evidence kind and the harness re-open gate)
-and the on-chain fact check land separately; on its own this script changes no hunt.
+#### Giving a discovery cell the verb (`--external-resolve`, #2235 PR B)
+
+`run-discovery.sh --external-resolve` (env twin `DF_EXTERNAL_RESOLVE=1`, **default OFF**) hands the cell the
+resolver instead of leaving it a fact it has to remember:
+
+```bash
+dark-factory/run-discovery.sh --repo <clone> --scope <scope.tsv> --brief <brief.md> --external-resolve
+```
+
+* the resolver is **copied into every cell dir** next to `slice-fns.sh` — the hunt sandbox binds the cell dir
+  and the target repo, never this checkout, so a path into `dark-factory/` does not exist for the driven
+  session;
+* ONE extra directory is bound into that sandbox, rw, and only on this branch: the external-source cache
+  (`DF_EXTERNAL_CACHE`, default `${DARK_FACTORY_DIR:-~/.dark-factory}/external`). It holds external-protocol
+  source only — never target code, never judging or ground-truth data;
+* `hunter.ag` gains a pure-meta directive (gated on `EXTERNAL_RESOLVER` alone, **independent of**
+  `OPERATIONALIZE_LENS`) naming the command, the input contract and the budget, plus a new evidence kind:
+
+```
+TRACE|#<k>|CLEAN|EXTERNAL-CITED <path>:<line> — <the property those lines state>
+```
+
+The gate is the point. The harness **re-opens every such citation from the repo or the cache, never from the
+network**, and counts it only when the path lies under one of those two roots, the file exists, and the cited
+lines literally state the fact. Anything else marks THAT check uncited (per-check, #2230) — a fabricated path,
+a range that merely names the file, or a file outside both roots buys nothing. Budget: `DF_EXTERNAL_BUDGET`
+(default 5) network resolutions per cell; the cache is shared, so a symbol a sibling cell already resolved is
+free. With the flag off the directive is 0 bytes, nothing is copied, and the sandbox view is unchanged.
+
+```bash
+dark-factory/demo-resolve-cell.sh        # offline: source guards, the gate fixtures, a mock ON/OFF pair
+```
+
+The on-chain fact check lands separately. Neither demo proves the model USES the verb — that is a live
+mutation arm's job, and the recall question is M4's.
 
 ### Inter-agent coordination (shared blackboard, #1001)
 

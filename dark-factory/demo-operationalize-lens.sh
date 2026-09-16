@@ -874,14 +874,16 @@ GATE_SRC_MISS=""
 # never complies would burn a hunt budget on one cell.
 grep -q 'DF_TRACE_MAX_REASKS="${DF_TRACE_MAX_REASKS:-1}"' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [DF_TRACE_MAX_REASKS-default-1]"
 grep -q 'case "$DF_TRACE_MAX_REASKS" in' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [knob-validation]"
-grep -q 'while \[ "$rc_reask" -le "$DF_TRACE_MAX_REASKS" \] && _untraced_safe "$rc_log" "$REPO"; do' "$DISCOVERY" \
+# #2235 threaded the external-cache root through as the optional THIRD argument (empty on every run without
+# --external-resolve), so the pin accepts it and still fails if the loop stops passing the repo.
+grep -q 'while \[ "$rc_reask" -le "$DF_TRACE_MAX_REASKS" \] && _untraced_safe "$rc_log" "$REPO" "$EXTERNAL_CACHE"; do' "$DISCOVERY" \
   || GATE_SRC_MISS="$GATE_SRC_MISS [bounded-re-ask-loop]"
 # The superseded attempt is preserved, under a suffix that is NOT a `.log` (readouts and the hunt dashboard
 # enumerate `hunt_*.log` and must keep seeing exactly one log per cell).
 grep -q 'mv -f "$rc_log" "$rc_log.untraced-attempt-$rc_reask"' "$DISCOVERY" \
   || GATE_SRC_MISS="$GATE_SRC_MISS [attempt-preserved-under-non-.log-suffix]"
 # #2225: both calls now thread $REPO through, so the EXTERNAL-branch content check can resolve a cited file.
-grep -q '_opcheck_trace_gap "$rc_log" "$REPO" > "$rc_log.untraced"' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [untraced-marker]"
+grep -q '_opcheck_trace_gap "$rc_log" "$REPO" "$EXTERNAL_CACHE" > "$rc_log.untraced"' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [untraced-marker]"
 grep -q 'if \[ -f "$sc_log.untraced" \]; then' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [scrape-untraced-branch]"
 grep -q 'FAILED — untraced-opcheck: SAFE with %s untraced OPCHECK(s) (NOT a rigorous negative)' "$DISCOVERY" \
   || GATE_SRC_MISS="$GATE_SRC_MISS [distinguishable-FAILED-row]"
@@ -922,8 +924,8 @@ fi
 note "22) the config-realizability rule sits in the shared RULES block and is GENERAL (no flag, no lens) ..."
 if grep -q '^  + config_realizability_rule()$' "$HUNTER" \
    && grep -A5 'Never report a listed KNOWN ISSUE' "$HUNTER" | grep -q '+ config_realizability_rule()' \
-   && grep -A1 '^  + config_realizability_rule()$' "$HUNTER" | grep -q 'Subsystem under review'; then
-  ok "'+ config_realizability_rule()' is spliced INSIDE the === RULES === block, right after the trusted-role exclusion it qualifies"
+   && grep -A6 '^  + config_realizability_rule()$' "$HUNTER" | grep -q 'Subsystem under review'; then
+  ok "'+ config_realizability_rule()' is spliced INSIDE the === RULES === block, right after the trusted-role exclusion it qualifies, and still ahead of the subsystem line (#2235 inserts its own \"\"-when-off block between them)"
 else
   bad "the config-realizability rule is not spliced into the RULES block between the trusted-role exclusion and the subsystem line"
 fi
@@ -1180,7 +1182,7 @@ note "29) the harness pin reuses the EXISTING gate: same re-ask, same reason, on
 PRC_SRC_MISS=""
 grep -q '#2214 PR C — CITATION DISCIPLINE ON A DISMISSAL' "$DISCOVERY" \
   || PRC_SRC_MISS="$PRC_SRC_MISS [heuristics-documented-in-header]"
-grep -q 'otg_unc="$(_uncited_dismissals "$otg_log" "$otg_repo")"' "$DISCOVERY" \
+grep -q 'otg_unc="$(_uncited_dismissals "$otg_log" "$otg_repo" "$otg_cache")"' "$DISCOVERY" \
   || PRC_SRC_MISS="$PRC_SRC_MISS [uncited-folded-into-the-gap]"
 grep -q 'if \[ "$ac_unres" -gt 0 \]; then ac_unresolved_json=' "$DISCOVERY" \
   || PRC_SRC_MISS="$PRC_SRC_MISS [unresolved-key-only-when-non-zero]"
@@ -1377,12 +1379,12 @@ grep -q 'if \[ -n "$ac_untraced_ids" \]; then ac_untraced_ids_json=' "$DISCOVERY
 grep -q 'if \[ -n "$ac_uncited_ids" \]; then ac_uncited_ids_json=' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [uncited_ids-key]"
 grep -q 'if \[ -n "$ac_unresolved_ids" \]; then ac_unresolved_ids_json=' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [unresolved_ids-key]"
 # The FAILED marker is written ONLY for a total shortfall — this is the whole per-check degradation change.
-grep -q 'if _untraced_safe "$rc_log" "$REPO" && _all_checks_untraced "$rc_log"; then' "$DISCOVERY" \
+grep -q 'if _untraced_safe "$rc_log" "$REPO" "$EXTERNAL_CACHE" && _all_checks_untraced "$rc_log"; then' "$DISCOVERY" \
   || ID_SRC_MISS="$ID_SRC_MISS [FAILED-row-only-when-every-check-untraced]"
 # The re-ask names the ids, and carries them into the prompt through a registered passthrough entry.
-grep -q 'rc_reask_ids="$(_shortfall_id_list "$rc_log" "$REPO")"' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [re-ask-names-ids]"
+grep -q 'rc_reask_ids="$(_shortfall_id_list "$rc_log" "$REPO" "$EXTERNAL_CACHE")"' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [re-ask-names-ids]"
 grep -q 'TRACE_REASK_IDS="$rc_reask_ids"' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [re-ask-ids-in-cell-env]"
-grep -q '^  echo "exec.env_passthrough = .*,TRACE_REASK_IDS"' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [TRACE_REASK_IDS-passthrough]"
+grep -q '^  echo "exec.env_passthrough = .*,TRACE_REASK_IDS' "$DISCOVERY" || ID_SRC_MISS="$ID_SRC_MISS [TRACE_REASK_IDS-passthrough]"
 # The status semantics are STATED in the script header, not left to be reverse-engineered from the branches.
 grep -q '#2223 — PER-CHECK PAIRING BY ID, AND THE EXACT STATUS SEMANTICS' "$DISCOVERY" \
   || ID_SRC_MISS="$ID_SRC_MISS [status-semantics-in-header]"
@@ -1396,7 +1398,7 @@ else
 fi
 # The partial shortfall must still be SURFACED — an `ok` cell that quietly drops checks is the failure mode
 # this whole gate exists to refuse.
-if grep -q 'sc_open_ids="$(_shortfall_id_list "$sc_log" "$REPO")"' "$DISCOVERY" \
+if grep -q 'sc_open_ids="$(_shortfall_id_list "$sc_log" "$REPO" "$EXTERNAL_CACHE")"' "$DISCOVERY" \
    && grep -q 'unanswered after the re-ask' "$DISCOVERY"; then
   ok "scrape_cell_log prints the open check ids of a PARTIAL shortfall (recorded \"ok\", never silently clean)"
 else
@@ -1665,7 +1667,7 @@ grep -q 'DF_TIER2_MAX_PER_ZONE="${DF_TIER2_MAX_PER_ZONE:-3}"' "$DISCOVERY" || T2
 grep -q '\[ "$DF_TIER2_MAX_PER_ZONE" -gt 0 \] || TIER2=0' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [cap-0-forces-OFF]"
 # The records go to a RUN-scoped TSV, never into the cell object — that is what keeps every per-cell key set
 # (and _plan_depth_cells's forward key scan) byte-identical.
-grep -q '_tier2_records "$ac_subsys" "$ac_cls" "$ac_files" "$ac_log" "$REPO" >> "$TIER2_TSV"' "$DISCOVERY" \
+grep -q '_tier2_records "$ac_subsys" "$ac_cls" "$ac_files" "$ac_log" "$REPO" "$EXTERNAL_CACHE" >> "$TIER2_TSV"' "$DISCOVERY" \
   || T2_SRC_MISS="$T2_SRC_MISS [records-to-run-scoped-tsv]"
 grep -q 'if \[ "$TIER2" -eq 1 \]; then : > "$TIER2_TSV"; fi' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [tsv-created-only-when-ON]"
 # The two new %s slots of the assembly printf are fed by variables initialised EMPTY and assigned only under

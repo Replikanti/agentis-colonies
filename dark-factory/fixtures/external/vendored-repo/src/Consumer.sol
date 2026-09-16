@@ -8,6 +8,8 @@ import "ext-rate-lib/src/IRateSource.sol";
 /// @dev The registry this contract queries is maintained upstream at
 ///      https://github.com/example-org/ext-registry — see UpstreamRegistry there for the
 ///      canonical accounting rules; ExternalQuoteSource is the deployed quote reader.
+/// @dev RetiredRegistryView is named here too, but the upstream repository no longer declares it —
+///      the shape whose terminal refusal is `no-upstream-url` (#2238).
 contract Consumer {
     IRateSource public immutable rateSource;
     address public quoteSource;

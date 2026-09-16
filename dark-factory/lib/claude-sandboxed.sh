@@ -43,6 +43,11 @@ fi
 # without --repo).
 RUN="${HUNT_SANDBOX_RUN:?claude-sandboxed.sh: HUNT_SANDBOX_RUN must be set (fail-closed sandbox)}"
 REPO="${HUNT_SANDBOX_REPO:-}"
+# #2235: the external-protocol source cache, bound rw (the resolver writes it) ONLY when the emitter exported
+# the var — i.e. only under run-discovery.sh --external-resolve. Unset (the default) => the bind set below is
+# byte-identical to the pre-#2235 one. It holds external-protocol source only, never target code and never
+# judging / ground-truth data, and the cell reads citations back out of it instead of re-fetching them.
+EXTERNAL="${HUNT_SANDBOX_EXTERNAL:-}"
 H="$HOME"
 
 # Fallthrough: no bwrap, or explicit opt-out -> real claude, web tools still
@@ -73,6 +78,9 @@ binds=(
 [ -e "$H/.svm" ]         && binds+=(--ro-bind "$H/.svm" "$H/.svm")              # solc version manager cache
 [ -n "$REPO" ] && [ -e "$REPO" ] && binds+=(--bind "$REPO" "$REPO")            # target clone (rw: PoC/forge out)
 binds+=(--bind "$RUN" "$RUN")                                                    # cell run/out dir (rw)
+# AFTER the --tmpfs "$H" entry above on purpose: the cache's default location is under $HOME, and a bind that
+# preceded the tmpfs would be masked by it.
+[ -n "$EXTERNAL" ] && [ -e "$EXTERNAL" ] && binds+=(--bind "$EXTERNAL" "$EXTERNAL")  # #2235 external cache (rw)
 binds+=(
   --setenv PATH "$H/.foundry/bin:$(dirname "$REAL"):/usr/local/bin:/usr/bin:/bin"
   --setenv HOME "$H"

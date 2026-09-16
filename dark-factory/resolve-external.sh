@@ -10,7 +10,9 @@
 #   fact about a file on disk rather than a name the model remembered.
 #
 # RESOLUTION ORDER (first hit wins)
-#   (a) vendored   — the audited repo's own `lib/`, `node_modules/`, `dependencies/`, `contracts/lib/`
+#   (a) vendored   — the audited repo's own `lib/`, `node_modules/`, `dependencies/`, `contracts/lib/`,
+#                    `src/interfaces/external/` (#2240 — a real held-out base vendors every external
+#                    interface there and nothing under `lib/` at all)
 #   (b) sourcify   — a deployed address named in the repo's deploy/test/docs (or --address), fetched KEYLESS
 #                    from Sourcify (the shipped recon-from-address.sh / run-change-hunts.sh idiom) into the
 #                    cache. An ERC-1967 proxy's implementation slot is resolved when an RPC is configured;
@@ -28,14 +30,21 @@
 #   EXTERNAL|<symbol>|<vendored|sourcify|upstream>|<abs-path>:<line>|<sha256-of-file>
 #   EXTERNAL|<symbol>|unresolved|<reason>
 #   reasons (CLOSED vocabulary):
-#     no-vendored-match         the audited repo vendors no declaration of the symbol
-#     no-address                no deployed address for it in the repo's deploy/test/docs, and none passed
+#     no-vendored-match         the audited repo neither vendors nor MENTIONS the symbol — nothing to go on
+#     no-address                the repo mentions it, but ships no deployed address for it and names no
+#                               upstream repo either: the identity is known, the deployment is not
 #     not-verified-on-sourcify  the address has no verified Sourcify source, or that source lacks the symbol
-#     no-upstream-url           the repo names no upstream repo for it, or the clone lacks the declaration
+#     no-upstream-url           the repo NAMES an upstream for it and that upstream still did not declare it
+#                               (refused host, or a clone that lacks the declaration)
 #     network-unavailable       --offline, a missing python3/git, or a request that did not come back
 #     budget-exhausted          --budget-state already spent DF_EXTERNAL_BUDGET network resolutions
+#     submodule-empty           a vendored root holds an UNINITIALISED submodule (an empty directory), so
+#                               step (a) could not run against the source the repo means to vendor (#2240)
 #     bad-input                 the input is not a symbol/address (exit 2; a URL always lands here)
-#   When several steps fail, the MOST INFORMATIVE reason is reported (rank order above, left to right).
+#   When several steps fail, the MOST INFORMATIVE reason is reported (see reason_rank). #2238: a step that
+#   was never APPLICABLE never records a reason — the address and upstream steps stay silent about a symbol
+#   the repo does not mention at all — so the three "nothing to go on" reasons map 1:1 onto three DISTINCT
+#   states of the audited repo instead of collapsing into whichever step happened to run last.
 #   <abs-path> is ALWAYS under --repo or under the cache root — the two roots a harness re-opens.
 #
 # Usage:
@@ -56,6 +65,12 @@ ALLOWED_HOSTS='sourcify.dev repo.sourcify.dev github.com raw.githubusercontent.c
 
 # ERC-1967 implementation slot: keccak256("eip1967.proxy.implementation") - 1.
 ERC1967_IMPL_SLOT='0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc'
+
+# The vendored roots step (a) scans, and the roots a vendored package manifest is looked up under. ONE list,
+# used by both, so the two can never drift. #2240: `src/interfaces/external` is here because a real held-out
+# base vendors every external protocol interface under `src/interfaces/external/<protocol>/` and has nothing
+# usable under `lib/` at all — without it the dominant, free, offline resolution path never fires there.
+VENDOR_ROOTS='lib node_modules dependencies contracts/lib src/interfaces/external'
 
 MAX_FILES="${DF_EXTERNAL_MAX_FILES:-4000}"   # per-root scan cap, keeps a huge monorepo bounded
 MAX_HEADER_LINES=120                         # how far into a file a "header comment" reaches
@@ -111,21 +126,34 @@ mkdir -p "$CACHE" 2>/dev/null || true
 # Refusal bookkeeping: each step records why it failed, and only a MORE informative reason may overwrite a
 # less informative one, so the emitted refusal does not depend on which step happened to run last.
 # ----------------------------------------------------------------------------------------------------------
+# #2238: the rank is "how much did this answer actually tell the caller", NOT "which step ran last".
+#   1 no-vendored-match  the repo knows nothing about the symbol (the weakest possible answer)
+#   2 no-upstream-url    the repo names no upstream for it (it may still know its deployment)
+#   3 no-address         the repo mentions it and ships no deployment for it either
+#   4 network-unavailable / 5 not-verified-on-sourcify / 6 budget-exhausted — a step that actually RAN
+#   7 submodule-empty    the vendored source the repo means to ship is not checked out: actionable, and it
+#                        explains why the free, dominant step (a) could not answer at all (#2240)
+# The step that got FURTHEST while still failing (an upstream that was named, cloned and lacked the symbol)
+# uses set_reason instead, so its outcome is not outranked by a weaker step's bookkeeping.
 REASON="no-vendored-match"
 reason_rank() {
     case "$1" in
         no-vendored-match)        echo 1 ;;
-        no-address)               echo 2 ;;
-        no-upstream-url)          echo 3 ;;
+        no-upstream-url)          echo 2 ;;
+        no-address)               echo 3 ;;
         network-unavailable)      echo 4 ;;
         not-verified-on-sourcify) echo 5 ;;
         budget-exhausted)         echo 6 ;;
+        submodule-empty)          echo 7 ;;
         *)                        echo 0 ;;
     esac
 }
 note_reason() {
     if [ "$(reason_rank "$1")" -ge "$(reason_rank "$REASON")" ]; then REASON="$1"; fi
 }
+# The furthest-progress override: this step did not merely fail to start, it ran to the end and still did not
+# produce the declaration. Used ONLY where that is literally true (see the upstream step).
+set_reason() { REASON="$1"; }
 
 log() { echo "resolve-external: $*" >&2; }
 
@@ -212,11 +240,56 @@ find_decl() {
     return 1
 }
 
+naming_files() { # repo .sol files that mention the symbol, C-sorted, capped
+    [ -n "$REPO" ] || return 1
+    nf_files="$(find "$REPO" \( -name .git -o -name out -o -name cache -o -name artifacts \
+        -o -name broadcast -o -name coverage \) -prune -o -type f -name '*.sol' -print 2>/dev/null \
+        | LC_ALL=C sort | head -n "$MAX_FILES")"
+    [ -n "$nf_files" ] || return 1
+    while IFS= read -r nf_f; do
+        [ -n "$nf_f" ] || continue
+        grep -qE "(^|[^A-Za-z0-9_])${NAME}([^A-Za-z0-9_]|$)" "$nf_f" 2>/dev/null && printf '%s\n' "$nf_f"
+    done <<< "$nf_files"
+}
+
+# Does the audited repo MENTION the symbol at all? This is the APPLICABILITY precondition of the address and
+# upstream steps (#2238): a repo that never names a symbol cannot be missing a deployment or an upstream repo
+# FOR it, so those steps must not record a refusal reason about it — before this gate they did, and their
+# (higher-ranked) reason buried both `no-vendored-match` and `no-address` in every "found nothing" case.
+# Memoised: naming_files walks the repo once, and the upstream step reuses the SAME candidate list.
+UP_CANDS=""
+NAMED=""
+symbol_is_named() {
+    if [ -z "$NAMED" ]; then
+        UP_CANDS="$(naming_files || true)"
+        if [ -n "$UP_CANDS" ]; then NAMED="yes"; else NAMED="no"; fi
+    fi
+    [ "$NAMED" = "yes" ]
+}
+
+# #2240: a vendored root whose direct child contains NO regular file at all. That is exactly what a git
+# submodule looks like in a checkout where `git submodule update` never ran — git creates the mount point and
+# leaves it empty — and it is the state a real held-out base was measured in (every `lib/<x>` present, all of
+# them empty). Answering `no-vendored-match` there blames the resolver's scope for an incomplete checkout, so
+# the refusal names the checkout instead. Prints one path per empty child (nothing when there is none).
+empty_vendor_dirs() {
+    [ -n "$REPO" ] || return 0
+    for ev_root in $VENDOR_ROOTS; do
+        [ -d "$REPO/$ev_root" ] || continue
+        for ev_d in "$REPO/$ev_root"/*; do
+            [ -d "$ev_d" ] || continue
+            [ -n "$(find "$ev_d" -type f 2>/dev/null | head -n 1)" ] && continue
+            printf '%s\n' "$ev_d"
+        done
+    done
+}
+
 # ----------------------------------------------------------------------------------------------------------
 # (a) VENDORED — free, offline, and the dominant path in practice (audited repos vendor their deps).
 # ----------------------------------------------------------------------------------------------------------
 if [ -n "$REPO" ]; then
-    for vroot in lib node_modules dependencies contracts/lib; do
+    # shellcheck disable=SC2086  # VENDOR_ROOTS is a deliberate word-split list of relative roots
+    for vroot in $VENDOR_ROOTS; do
         [ -d "$REPO/$vroot" ] || continue
         if hit="$(find_decl "$REPO/$vroot")"; then
             emit_hit vendored "${hit%%	*}" "${hit##*	}"
@@ -224,6 +297,10 @@ if [ -n "$REPO" ]; then
     done
 fi
 note_reason no-vendored-match
+# #2240: distinguish "this repo vendors no declaration of the symbol" from "the source it MEANS to vendor is
+# not checked out" — the second is actionable (`git submodule update --init --recursive`) and is why step (a)
+# could not answer at all, so it outranks every other refusal.
+if [ -n "$(empty_vendor_dirs)" ]; then note_reason submodule-empty; fi
 
 # ----------------------------------------------------------------------------------------------------------
 # (b) DEPLOYED ADDRESS -> SOURCIFY. The address comes from --address or from the audited repo's own deploy /
@@ -324,7 +401,10 @@ resolve_impl_slot() { # $1=address -> implementation address, or nothing
 ADDR="$ADDRESS"
 [ -n "$ADDR" ] || ADDR="$(discover_address || true)"
 if [ -z "$ADDR" ]; then
-    note_reason no-address
+    # #2238: APPLICABILITY — only a repo that mentions the symbol can be missing a deployment FOR it. For a
+    # symbol the repo never names, this step answers nothing and stays silent, leaving the true terminal
+    # reason (`no-vendored-match`, or `submodule-empty`) standing.
+    symbol_is_named && note_reason no-address
 else
     ADDR_LC="$(printf '%s' "$ADDR" | tr 'A-F' 'a-f')"
     SRC_DIR="$CACHE/sourcify/$CHAIN/$ADDR_LC/sources"
@@ -363,20 +443,8 @@ fi
 # ----------------------------------------------------------------------------------------------------------
 GITHUB_URL_RE='https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+'
 
-naming_files() { # repo .sol files that mention the symbol, C-sorted, capped
-    [ -n "$REPO" ] || return 1
-    nf_files="$(find "$REPO" \( -name .git -o -name out -o -name cache -o -name artifacts \
-        -o -name broadcast -o -name coverage \) -prune -o -type f -name '*.sol' -print 2>/dev/null \
-        | LC_ALL=C sort | head -n "$MAX_FILES")"
-    [ -n "$nf_files" ] || return 1
-    while IFS= read -r nf_f; do
-        [ -n "$nf_f" ] || continue
-        grep -qE "(^|[^A-Za-z0-9_])${NAME}([^A-Za-z0-9_]|$)" "$nf_f" 2>/dev/null && printf '%s\n' "$nf_f"
-    done <<< "$nf_files"
-}
-
 upstream_url() {
-    uu_cands="$(naming_files || true)"
+    uu_cands="$UP_CANDS"          # memoised by symbol_is_named, which gates this whole step
     [ -n "$uu_cands" ] || return 1
     # c1: a github URL inside a comment in the file's header.
     while IFS= read -r uu_f; do
@@ -393,7 +461,8 @@ upstream_url() {
         [ -n "$uu_segs" ] || continue
         while IFS= read -r uu_seg; do
             [ -n "$uu_seg" ] || continue
-            for uu_root in lib node_modules dependencies contracts/lib; do
+            # shellcheck disable=SC2086  # same deliberate word-split list step (a) scans
+            for uu_root in $VENDOR_ROOTS; do
                 uu_pj="$REPO/$uu_root/$uu_seg/package.json"
                 [ -f "$uu_pj" ] || continue
                 uu_u="$(grep -A3 '"repository"' "$uu_pj" 2>/dev/null | grep -oE "$GITHUB_URL_RE" | head -n 1)"
@@ -406,9 +475,12 @@ upstream_url() {
 
 DF_GIT_CLONE_CMD_DEFAULT='git clone --depth 1 -q "$CLONE_URL" "$CLONE_DEST"'
 
-UP_URL="$(upstream_url || true)"
+UP_URL=""
+if symbol_is_named; then UP_URL="$(upstream_url || true)"; fi
 if [ -z "$UP_URL" ]; then
-    note_reason no-upstream-url
+    # #2238: same applicability rule as the address step — a symbol the repo never mentions has no upstream
+    # for the repo to name, so this step records nothing rather than overwriting the reason that is true.
+    symbol_is_named && note_reason no-upstream-url
 else
     if host_allowed "$UP_URL"; then
         UP_SLUG="$(printf '%s' "${UP_URL#https://}" | tr -cs 'A-Za-z0-9._/-' '-')"
@@ -429,10 +501,12 @@ else
             if hit="$(find_decl "$UP_DIR")"; then
                 emit_hit upstream "${hit%%	*}" "${hit##*	}"
             fi
-            note_reason no-upstream-url
+            # FURTHEST PROGRESS (#2238): the upstream was named, cloned and still did not declare the symbol.
+            # That is a stronger statement than any earlier step's bookkeeping, so it is set, not ranked.
+            set_reason no-upstream-url
         fi
     else
-        note_reason no-upstream-url
+        set_reason no-upstream-url   # the repo names an upstream this script refuses to talk to
     fi
 fi
 

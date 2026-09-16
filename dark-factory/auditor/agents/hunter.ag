@@ -26,6 +26,15 @@ cb 300000;
 //               "operationalize before you hunt" method directive. Any other value (or unset) leaves the
 //               prompt byte-identical to the pre-#2211 one. Inverted vs CALLEE_TRUST on purpose — the
 //               capability is UNMEASURED until the #2211 M2 corpus A/B runs.
+//   EXTERNAL_RESOLVER #2235 (optional, default "" = OFF): absolute path to the per-cell copy of
+//               resolve-external.sh. Non-empty ONLY under run-discovery.sh --external-resolve, and it is the
+//               ONLY gate on the resolver directive (deliberately INDEPENDENT of OPERATIONALIZE_LENS — the
+//               measured dismissals it exists to close happened in lens-OFF arms too). Empty => the directive
+//               is "" => the prompt is byte-identical to the pre-#2235 one.
+//   EXTERNAL_CACHE / EXTERNAL_BUDGET_STATE / EXTERNAL_BUDGET #2235 (optional, default ""): the cache root the
+//               harness re-opens citations from, this cell's budget-state file, and the per-cell resolve
+//               bound. They are quoted verbatim into the command line the directive prints, so the model
+//               never has to invent a path; all four ride exec.env_passthrough or getenv() returns "".
 //   TRACE_REASK_IDS #2223 (optional, default ""): set by run-discovery.sh ONLY on a follow-through RE-ASK,
 //               and only when the #2211 lens is on. It carries the check ids (`#2, #5`) the previous answer
 //               left unanswered, so the re-ask names them instead of repeating the same prompt verbatim.
@@ -51,6 +60,11 @@ cb 300000;
 //         audited repo, and a CLEAN resting on an EXTERNAL protocol fact must cite the interface/source/doc
 //         it was verified against — an uncited one counts as untraced for the same gate, and an unverifiable
 //         claim belongs on the record as UNRESOLVED (counted per cell), never folded into SAFE.
+//         #2235, only when EXTERNAL_RESOLVER is non-empty: `EXTERNAL-RESOLVE|<subsystem>|<cls>|on`, and in the
+//         model's own reply the `EXTERNAL-CITED <path>:<line>` evidence kind on a TRACE line (model-emitted,
+//         free text, never script-printed). run-discovery.sh RE-OPENS every such citation from the cache or
+//         the audited repo and requires the cited lines to state the fact — an unopenable or empty citation
+//         marks THAT check uncited, exactly like the #2227 repo-path branch.
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -777,6 +791,78 @@ fn config_realizability_rule() -> string {
       + "result: record the check as UNRESOLVED and state what you could not verify.\n";
 }
 
+// --- #2235 READ THE EXTERNAL PROTOCOL (PR B — opt-in, default OFF) -------------------------------------------
+// The measured gap the #2214/#2227 citation rules exposed: a cell whose verdict turns on how ANOTHER protocol
+// behaves ("that rate is 1e18-scaled", "that wrapper is 1:1") has two honest moves and no third — confabulate
+// a citation, or answer UNRESOLVED. Neither finds the bug. This directive adds the missing third move: the
+// cell can RESOLVE the external symbol to source it can actually read, and then cite the `path:line` it read.
+//
+// Shape: the directive is a VERB, not knowledge. It states that the resolver exists, its INPUT CONTRACT (a
+// symbol or an address — never a URL, never free text), its one-line output grammar, the per-cell budget, and
+// how a resolved fact is cited. It names no protocol, contract, function, unit or product, so injecting it on
+// a held-out target cannot leak an answer — the same overfitting discipline as config_realizability_rule().
+//
+// GATE: EXTERNAL_RESOLVER being non-empty, and nothing else. Deliberately INDEPENDENT of OPERATIONALIZE_LENS
+// (issue #2235 STOP-1 decision 2): the dismissals this closes were measured in lens-OFF arms too, so a
+// lens-gated verb could not reach the cells that produced the miss. Empty env => "" => the assembled prompt
+// is BYTE-IDENTICAL to the pre-#2235 one, exactly like operationalize_directive()/callee_directive().
+//
+// SPLICE POINT: the shared RULES block, immediately after config_realizability_rule(), so one resolved
+// citation can discharge BOTH rule 1 (a dismissal on configuration grounds) and rule 2 (a CLEAN resting on an
+// external fact) — the two rules that otherwise leave a cell no move at all.
+
+// The one string the block is RECOGNISED by (same discipline as operationalize_marker/callee_trust_marker):
+// it is the block's literal FIRST LINE, and the sentinel greps the ASSEMBLED instruction for it, so a marker
+// that is not a substring of what renders disables the sentinel loudly rather than silently lying.
+fn external_resolve_marker() -> string {
+    return "=== READ THE EXTERNAL PROTOCOL (a tool you have, not a fact you remember) ===";
+}
+
+// The directive text. Every path in it is passed in, so the model never has to invent one — an invented cache
+// path is exactly the "citation laundering" the harness gate refuses. O(1) top-level concat: no regex, no
+// reduce, no exec sh, so a cell pays nothing for it whether it fires or not.
+fn external_resolve_block(resolver: string, repo: string, cache: string, state: string, budget: string) -> string {
+    return external_resolve_marker() + "\n"
+      + "A claim about how something OUTSIDE this payload behaves is a fact you can now GO AND READ. There is a "
+      + "deterministic resolver on disk — no model, no search — that turns the NAME of an externally declared "
+      + "contract, interface or library into source you can open. Run it with Bash, exactly like this:\n"
+      + "    sh " + resolver + " --symbol <Name> --repo " + repo + " --cache-dir " + cache
+      + " --budget-state " + state + "\n"
+      + "`<Name>` is a Solidity identifier, optionally `Name.function` — a contract/interface/library name that "
+      + "appears in this payload's imports, inheritance or call sites. It takes NOTHING else: no URL, no host, "
+      + "no path, no free text (those are rejected). It prints exactly one line:\n"
+      + "EXTERNAL|<symbol>|<vendored|sourcify|upstream>|<path>:<line>|<sha256>\n"
+      + "EXTERNAL|<symbol>|unresolved|<reason>\n"
+      + "On a resolved line, OPEN that file and READ around that line — the line number is where the "
+      + "declaration starts, the fact you need is usually in the doc comment or the body just below it. On an "
+      + "`unresolved` line the fact remains unverified; do not guess what the source would have said.\n"
+      + "BUDGET: at most " + budget + " resolutions in this cell, so spend them only on facts a VERDICT turns "
+      + "on — the scaling, decimals, normalisation, rounding, ordering or return-value guarantee a check "
+      + "depends on. Resolving a symbol you are merely curious about wastes a slot you will need later.\n"
+      + "CITING WHAT YOU READ: when a verdict rests on text you resolved this way, cite the path and line you "
+      + "actually read, on the trace line for that check:\n"
+      + "TRACE|#<k>|CLEAN|EXTERNAL-CITED <path>:<line> — <the exact property those lines state>\n"
+      + "A range (`<path>:<line>-<line>`) is fine. The citation is RE-OPENED and read back: the file must "
+      + "exist under the repository or the resolver's cache, and the lines you cite must LITERALLY state the "
+      + "property you are relying on. A path you did not get from the resolver, or a range that merely names "
+      + "the file, counts as no citation at all — that check is then recorded as unanswered, which is strictly "
+      + "worse than an honest UNRESOLVED. An external claim you did not resolve and cite is UNRESOLVED, never "
+      + "CLEAN.\n";
+}
+
+// The toggle + the assembled directive: "" unless the shell handed this cell a resolver path. The budget is
+// quoted into the text from the same env the shell enforces it with, so the number the model is told and the
+// number the resolver enforces cannot drift; "5" is the resolver's own documented default.
+fn external_resolve_directive() -> string {
+    let resolver = getenv("EXTERNAL_RESOLVER");
+    if resolver == "" { return ""; }
+    let budget = getenv("EXTERNAL_BUDGET");
+    if budget == "" { return external_resolve_block(resolver, getenv("TARGET_DIR"), getenv("EXTERNAL_CACHE"),
+        getenv("EXTERNAL_BUDGET_STATE"), "5"); }
+    return external_resolve_block(resolver, getenv("TARGET_DIR"), getenv("EXTERNAL_CACHE"),
+        getenv("EXTERNAL_BUDGET_STATE"), budget);
+}
+
 let dir = getenv("TARGET_DIR");
 let files = getenv("IN_SCOPE");
 let cls = getenv("HUNT_CLASS");
@@ -844,6 +930,13 @@ let callee = callee_directive(code);
 // down, AFTER `instruction` exists, on the same honesty contract as CALLEE-TRUST| / APPENDIX-CONTEXT|.
 let opz = operationalize_directive();
 
+// #2235 EXTERNAL-RESOLVE read: the "you may go and read the external protocol" verb. `extres` is "" unless
+// run-discovery.sh --external-resolve handed this cell a resolver path, so every default cell prompts
+// BYTE-IDENTICALLY to the pre-#2235 pipeline. Gated on the env alone and NOT on the #2211 lens (STOP-1
+// decision 2). The sentinel it enables is printed further down, AFTER `instruction` exists, on the same
+// honesty contract as CALLEE-TRUST| / OPERATIONALIZE| / APPENDIX-CONTEXT|.
+let extres = external_resolve_directive();
+
 // The instruction carries the lens (taxonomy class), the brief (invariants + known-issues), and the
 // strict output contract; the code is the prompt payload (matches auditor.ag::classify_evm_llm shape).
 // The (possibly empty) blackboard FOCUS block sits up top so prior siblings' leads bias the hunt.
@@ -870,6 +963,10 @@ let instruction =
   // #2214 PR C: the trusted-role exclusion one line above is exactly what the measured dismissals hid
   // behind, so the rule that qualifies it sits HERE, inside the same RULES block, on every cell.
   + config_realizability_rule()
+  // #2235: the resolver verb sits directly after the dismissal rule it gives a cell a MOVE against — one
+  // resolved citation can discharge both rule 1 (configuration grounds) and rule 2 (an external fact).
+  // "" whenever the knob is off, so the RULES block is byte-identical on every default cell.
+  + extres
   + "Subsystem under review: " + subsystem + ".\n\n"
   + "=== HOW TO ANSWER ===\n"
   + "BOUNDED TERMINATION (#2017 — you MUST converge to ONE terminal verdict; never run an open-ended search). "
@@ -928,6 +1025,15 @@ if index_of(instruction, callee_trust_marker()) >= 0 {
 // there is nothing else it could say — an OFF cell simply prints no line at all.
 if index_of(instruction, operationalize_marker()) >= 0 {
     print("OPERATIONALIZE|" + subsystem + "|" + cls + "|on");
+}
+
+// #2235: the EXTERNAL-RESOLVE sentinel, on the same honesty contract — gated on the directive's own marker
+// being demonstrably IN the prompt about to be sent, never on getenv() having returned something. It carries
+// no `CANDIDATE|` substring (lib/run-agent-validated.sh's sentinel predicate cannot false-accept a cell on
+// it) and run-discovery.sh's _join_wrapped_candidates treats it as a record BOUNDARY like every other
+// diagnostic. `on` is a constant for the same reason as OPERATIONALIZE|: an OFF cell prints no line at all.
+if index_of(instruction, external_resolve_marker()) >= 0 {
+    print("EXTERNAL-RESOLVE|" + subsystem + "|" + cls + "|on");
 }
 
 let verdict = prompt(instruction, code) -> string;

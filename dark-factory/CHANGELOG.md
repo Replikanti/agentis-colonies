@@ -40,6 +40,47 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   hunt path calls the resolver yet; discovery-cell access, the `EXTERNAL-CITED` evidence kind and the
   on-chain fact check follow separately.
 
+- **A discovery cell can now READ the external protocol, and the harness re-opens what it cites (#2235,
+  PR B).** `run-discovery.sh --external-resolve` (env twin `DF_EXTERNAL_RESOLVE=1`, **default OFF**) copies
+  `resolve-external.sh` into every cell dir — the hunt sandbox binds the cell dir and the target repo, never
+  the colonies checkout, so a path into the checkout simply does not exist for the driven session — binds ONE
+  extra directory into that sandbox (`HUNT_SANDBOX_EXTERNAL`, the external-source cache, rw because the
+  resolver fills it), and gives `hunter.ag` a PURE-META directive naming the command, its input contract (a
+  Solidity identifier or an address — never a URL), the per-cell budget and the new evidence kind
+  `TRACE|#<k>|CLEAN|EXTERNAL-CITED <path>:<line> — <the property those lines state>`. The directive is gated
+  on `EXTERNAL_RESOLVER` alone and is deliberately INDEPENDENT of `OPERATIONALIZE_LENS` (STOP-1 decision 2:
+  the dismissals it gives a cell a move against were measured in lens-OFF arms too), sits in the shared RULES
+  block directly after the configuration-realizability rule so one resolved citation can discharge BOTH
+  dismissal rules, and is made observable by an honesty-gated `EXTERNAL-RESOLVE|<subsystem>|<cls>|on`
+  sentinel. **The load-bearing half is the harness, not the prompt:** `_uncited_dismissal_lines` gained a
+  THIRD acceptance branch that RE-OPENS every `EXTERNAL-CITED` citation — from the audited repo or the cache
+  and NEVER from the network — and accepts it only when the path lies under one of those two roots (a `..`
+  cannot walk out of either), the file exists, and the cited lines literally state a fact token (the
+  unchanged #2227 content check). Anything else marks THAT check uncited under the #2230 per-check
+  semantics — no new status vocabulary, never a whole-cell failure. Budget: `DF_EXTERNAL_BUDGET` (default 5)
+  NETWORK resolutions per cell in a per-cell state file, with the cache shared across cells so a symbol a
+  sibling already resolved costs nothing. With the knob off: the directive is exactly 0 bytes, no resolver is
+  copied anywhere, the sandbox bind set and the per-cell JSON key set are unchanged.
+  `demo-resolve-cell.sh` (new) pins all of it offline — source guards, nine citation fixtures against the
+  SHIPPED gate functions sliced out of `run-discovery.sh`, a mock ON/OFF pair and a DIRLEN byte-identity
+  probe — and `demo-claude-sandboxed.sh` gained the bind's own assertions (invisible when unset, readable +
+  writable when set, and widening nothing else). Whether the model USES the verb is not proven by any of
+  this: that is the live mutation arm's and M4's job.
+
+- **`resolve-external.sh` reports the refusal that is actually true (#2238), and finds externals vendored
+  outside `lib/` (#2240).** The upstream step used to record `no-upstream-url` unconditionally, so it
+  outranked every weaker reason and EVERY negative case — including a symbol the audited repo never mentions
+  — came back as `no-upstream-url`; `no-vendored-match` and `no-address` were structurally unreachable. The
+  rule is now APPLICABILITY: a step that could not have applied records nothing, so the three basic negative
+  cases are DISTINCT — `no-vendored-match` (the repo neither vendors nor mentions the symbol),
+  `no-address` (it mentions it but ships no deployment and names no upstream) and `no-upstream-url` (it NAMES
+  an upstream that was cloned and still did not declare the symbol, which overrides the weaker reasons
+  because it is the step that got furthest). The vendored scan also reads `src/interfaces/external/` — a
+  real, non-fixture convention a held-out base uses for every external interface it vendors — and a vendored
+  root holding an UNINITIALISED submodule (an empty directory, the state `git submodule update` was never run
+  in) now refuses with the new closed-vocabulary reason `submodule-empty` instead of blaming the resolver's
+  scope for an incomplete checkout. `demo-resolve-external.sh` gains fixtures for all four cases.
+
 ### Changed
 
 - **The hunter's lens no longer carries the corpus's ground truth, and the corpus has a hold-out policy
