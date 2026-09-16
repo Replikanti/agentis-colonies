@@ -774,6 +774,7 @@ mkdir -p "$OC_CACHE/onchain/1/$OC_ADDR/4242"
 # posix-portability: deferred (guarded pair — sha256sum on GNU, shasum -a 256 on BSD), byte-for-byte the
 # tool's own str_sha, so the fixture and the tool can never key a cache entry differently.
 _oc_sha() {
+  # posix-portability: deferred (guarded pair — the shasum -a 256 fallback is the next line)
   _s="$(printf '%s' "$1" | sha256sum 2>/dev/null | cut -d' ' -f1)"
   [ -n "$_s" ] || _s="$(printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
   printf '%s' "${_s:-nosha}"

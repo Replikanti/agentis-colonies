@@ -134,6 +134,7 @@ emit_unavailable() { # $1=reason
 # The fallback is driven by an EMPTY result rather than by the pipeline's exit status: without `pipefail` a
 # failing first stage still leaves `cut` successful, so only the value itself can tell the two apart.
 str_sha() {
+    # posix-portability: deferred (guarded pair — the shasum -a 256 fallback is the next line)
     _s="$(printf '%s' "$1" | sha256sum 2>/dev/null | cut -d' ' -f1)"
     [ -n "$_s" ] || _s="$(printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
     printf '%s' "${_s:-nosha}"
