@@ -18,7 +18,11 @@
 #   AC6  cache-first           a second resolution of the same symbol costs ZERO seam invocations
 #   AC7  budget                the 6th NETWORK resolution against one --budget-state is budget-exhausted
 #   AC8  offline               --offline never invokes a seam, and a vendored hit still resolves
-#   AC9  closed vocabulary     every `unresolved` reason the script can emit is one of the documented seven
+#   AC15 terminal reason (#2238) the three "nothing to go on" refusals are DISTINCT and each reachable
+#   AC16 vendored roots (#2240) `src/interfaces/external/` resolves; an uninitialised submodule refuses
+#                        with `submodule-empty` (AC15/AC16 run HERE, before the sweeps below, so the
+#                        vocabulary (AC9), two-roots (AC12) and grammar (AC14) checks cover their output)
+#   AC9  closed vocabulary     every `unresolved` reason the script can emit is one of the documented eight
 #   AC10 refusal               a URL, an over-long symbol, a malformed address and an unknown flag exit 2
 #   AC11 proxy                 an ERC-1967 proxy: no RPC -> proxy-unresolved; RPC -> the impl is fetched
 #   AC12 two roots             every emitted path is under --repo or under the cache root, and re-opens
@@ -116,7 +120,7 @@ ALL_HITS="$WORK/all-hits.txt"
 : > "$ALL_HITS"
 record_hit() { [ "$(kind)" != "unresolved" ] && printf '%s\n' "$OUT" >> "$ALL_HITS"; return 0; }
 
-VOCAB="no-vendored-match no-address not-verified-on-sourcify no-upstream-url network-unavailable budget-exhausted bad-input"
+VOCAB="no-vendored-match no-address not-verified-on-sourcify no-upstream-url network-unavailable budget-exhausted submodule-empty bad-input"
 ALL_REASONS="$WORK/all-reasons.txt"
 : > "$ALL_REASONS"
 record_reason() { [ "$(kind)" = "unresolved" ] && field 4 >> "$ALL_REASONS"; return 0; }
@@ -264,7 +268,85 @@ run_bare --symbol IRateSource --repo "$REPO" --offline --cache-dir "$WORK/cache8
   || bad "AC8 FAILED: out='$OUT'"
 
 # ----------------------------------------------------------------------------------------------------------
-note "AC9) closed refusal vocabulary: every reason the script can emit is one of the documented seven ..."
+note "AC15) #2238 terminal reason: the three \"nothing to go on\" refusals are distinct and each reachable ..."
+# Before #2238 the upstream step recorded `no-upstream-url` unconditionally, so it outranked both weaker
+# reasons and EVERY negative case — a symbol the repo never mentions included — came back as `no-upstream-url`.
+# The rule now is APPLICABILITY: a step that could not have applied records nothing.
+seam_reset
+run_bare --symbol NoSuchThing --repo "$REPO" --offline --cache-dir "$WORK/cache15a"; check
+R15A="$(field 4)"
+[ "$(kind)" = "unresolved" ] && [ "$R15A" = "no-vendored-match" ] \
+  && ok "AC15: a symbol the repo neither vendors nor mentions -> no-vendored-match" \
+  || bad "AC15 FAILED: NoSuchThing -> '$OUT' (want unresolved|no-vendored-match)"
+[ "$(seam_count clone)" = "0" ] && [ "$(seam_count sourcify)" = "0" ] \
+  && ok "AC15: an inapplicable upstream step attempts no request at all" \
+  || bad "AC15 FAILED: seams fired for an unmentioned symbol ($(cat "$SEAM_LOG"))"
+# Mentioned, but the repo ships no deployment for it and names no upstream: the identity is known, nothing else.
+run_bare --symbol IIsolatedFeed --repo "$REPO" --offline --cache-dir "$WORK/cache15b"; check
+R15B="$(field 4)"
+[ "$R15B" = "no-address" ] \
+  && ok "AC15: a symbol the repo mentions with no deployed address and no upstream -> no-address" \
+  || bad "AC15 FAILED: IIsolatedFeed -> '$OUT' (want unresolved|no-address)"
+# Furthest progress: the repo NAMES an upstream, the clone succeeds, and the declaration is still not there.
+# This also proves the override — `no-address` (higher-ranked) was already recorded by the address step.
+seam_reset
+run --symbol RetiredRegistryView --repo "$REPO" --cache-dir "$WORK/cache15c"; check
+R15C="$(field 4)"
+[ "$R15C" = "no-upstream-url" ] \
+  && ok "AC15: a named upstream that was cloned and lacks the declaration -> no-upstream-url" \
+  || bad "AC15 FAILED: RetiredRegistryView -> '$OUT' (want unresolved|no-upstream-url)"
+[ "$(seam_count clone)" = "1" ] \
+  && ok "AC15: that refusal is reported AFTER the clone actually ran (furthest progress, not bookkeeping)" \
+  || bad "AC15 FAILED: $(seam_count clone) clone requests for RetiredRegistryView"
+if [ "$R15A" != "$R15B" ] && [ "$R15B" != "$R15C" ] && [ "$R15A" != "$R15C" ]; then
+    ok "AC15: the three basic negative cases report three DIFFERENT reasons ($R15A / $R15B / $R15C)"
+else
+    bad "AC15 FAILED: reasons collapse ($R15A / $R15B / $R15C)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+note "AC16) #2240 vendored roots: src/interfaces/external/ resolves; an empty submodule says so ..."
+seam_reset
+run_bare --symbol IExtQuoteFeed.latestQuote --repo "$REPO" --offline --cache-dir "$WORK/cache16a"; check
+[ "$(kind)" = "vendored" ] \
+  && ok "AC16: a symbol vendored under src/interfaces/external/ resolves through step (a)" \
+  || bad "AC16 FAILED: IExtQuoteFeed.latestQuote -> '$OUT'"
+case "$(loc)" in
+  "$REPO"/src/interfaces/external/*) ok "AC16: the cited path is the src/-adjacent vendored root, not lib/" ;;
+  *) bad "AC16 FAILED: path '$(loc)' is not under $REPO/src/interfaces/external" ;;
+esac
+AC16_FILE="${OUT%:*}"; AC16_FILE="${AC16_FILE##*|}"
+AC16_LINE="$(loc)"; AC16_LINE="${AC16_LINE##*:}"
+sed -n "${AC16_LINE}p" "$AC16_FILE" | grep -q '1e18' \
+  && ok "AC16: the cited LINE re-opens and states the scaling fact" \
+  || bad "AC16 FAILED: line $AC16_LINE of $AC16_FILE does not state the fact"
+[ "$(seam_count sourcify)" = "0" ] && [ "$(seam_count clone)" = "0" ] \
+  && ok "AC16: the new root is as free as the others (zero requests)" \
+  || bad "AC16 FAILED: seams fired on the src/interfaces/external hit ($(cat "$SEAM_LOG"))"
+# ONE root list, used by step (a) AND by the vendored-manifest lookup, so the two can never drift.
+[ "$(grep -c 'VENDOR_ROOTS' "$RESOLVER")" -ge 3 ] \
+  && ok "AC16: both vendored scans read the same VENDOR_ROOTS list" \
+  || bad "AC16 FAILED: VENDOR_ROOTS is not the single source of the root list"
+# An UNINITIALISED submodule: git leaves the mount point as an empty directory. A checkout in that state is
+# the measured held-out shape, and answering `no-vendored-match` there blames the resolver's scope for it.
+SUBREPO="$WORK/submodule-repo"
+mkdir -p "$SUBREPO"
+cp -R "$REPO/." "$SUBREPO/"
+mkdir -p "$SUBREPO/lib/ext-uninitialised"
+printf '[submodule "lib/ext-uninitialised"]\n\tpath = lib/ext-uninitialised\n\turl = https://github.com/example-org/ext-uninitialised\n' \
+    > "$SUBREPO/.gitmodules"
+run_bare --symbol NoSuchThing --repo "$SUBREPO" --offline --cache-dir "$WORK/cache16b"; check
+[ "$(field 4)" = "submodule-empty" ] \
+  && ok "AC16: a vendored root holding an empty (uninitialised) submodule refuses with submodule-empty" \
+  || bad "AC16 FAILED: empty-submodule repo -> '$OUT' (want unresolved|submodule-empty)"
+# Dead-guard: the same probe on the SHIPPED fixture (no empty roots) must NOT report it, else the detector
+# would be a constant rather than a check.
+[ "$R15A" = "no-vendored-match" ] \
+  && ok "AC16: the detector is not a constant — the checked-out fixture repo still reports no-vendored-match" \
+  || bad "AC16 FAILED: submodule-empty fires on a fully checked-out repo"
+
+# ----------------------------------------------------------------------------------------------------------
+note "AC9) closed refusal vocabulary: every reason the script can emit is one of the documented eight ..."
 EMITTED="$(LC_ALL=C sort -u "$ALL_REASONS" 2>/dev/null)"
 UNKNOWN=""
 for r in $EMITTED; do

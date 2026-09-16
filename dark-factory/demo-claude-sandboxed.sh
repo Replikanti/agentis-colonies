@@ -6,6 +6,11 @@
 # a missing bind var; falls through (with a loud warning) when bwrap is absent or
 # DF_NO_SANDBOX=1; and every one of the six hunt emitters is wired to it.
 #
+# #2235 adds ONE optional bind to the same wrapper: HUNT_SANDBOX_EXTERNAL, the external-protocol source cache
+# a discovery cell resolves into and cites back out of. Section 1 asserts it is INVISIBLE when the var is
+# unset (the default), section 1b that it is readable AND writable when it is set — the cache is useless
+# read-only, because the resolver writes it from inside the cell.
+#
 # CI-safe: uses a stub `claude` (DF_CLAUDE_BIN), no real claude / network / LLM.
 # The live filesystem-isolation asserts run only when bwrap is available; without
 # it they SKIP, but the fail-closed + fallthrough + static wiring asserts always
@@ -32,7 +37,10 @@ trap cleanup EXIT
 # Layout: RUN (bound rw) under an OUT parent (NOT bound); a REPO (bound rw); two
 # decoys the sandboxed session must NOT be able to read.
 OUT="$TMP/out"; RUN="$OUT/run"; REPO="$TMP/repo"
-mkdir -p "$RUN" "$REPO"
+# #2235: the external-protocol cache lives OUTSIDE both, exactly like the real one (a host-wide state dir).
+EXTCACHE="$TMP/external"
+mkdir -p "$RUN" "$REPO" "$EXTCACHE"
+echo "cached-external-source" > "$EXTCACHE/IExample.sol"
 PARENT_DECOY="$OUT/AB-NOTE-decoy.txt"          # in RUN's PARENT (held-out GT lives here)
 echo "SECRET-GROUND-TRUTH" > "$PARENT_DECOY"
 echo "SECRET-HOME-FILE"    > "$HOME_DECOY"     # under $HOME, outside the binds
@@ -48,6 +56,8 @@ cat > "$STUB" <<'STUBEOF'
   if cat "$D_PARENT" 2>/dev/null >/dev/null; then echo "PARENT_DECOY_READABLE"; else echo "PARENT_DECOY_BLOCKED"; fi
   if cat "$D_HOME"   2>/dev/null >/dev/null; then echo "HOME_DECOY_READABLE";   else echo "HOME_DECOY_BLOCKED";   fi
   if cat "$D_PROBE"  2>/dev/null >/dev/null; then echo "REPO_READABLE";         else echo "REPO_UNREADABLE";      fi
+  if cat "$D_EXT"    2>/dev/null >/dev/null; then echo "EXT_READABLE";          else echo "EXT_BLOCKED";           fi
+  if echo w > "$EXT_WRITE"  2>/dev/null; then echo "EXT_WRITABLE"; else echo "EXT_NOTWRITABLE"; fi
   if echo w > "$RUN_WRITE"  2>/dev/null; then echo "RUN_WRITABLE";  else echo "RUN_NOTWRITABLE";  fi
   if echo w > "$REPO_WRITE" 2>/dev/null; then echo "REPO_WRITABLE"; else echo "REPO_NOTWRITABLE"; fi
 } > "$D_RESULT" 2>&1
@@ -60,6 +70,7 @@ RESULT="$RUN/stub-result.txt"
 stub_env=(
   D_PARENT="$PARENT_DECOY" D_HOME="$HOME_DECOY" D_PROBE="$REPO/probe.sol"
   RUN_WRITE="$RUN/w.txt" REPO_WRITE="$REPO/w.txt" D_RESULT="$RESULT"
+  D_EXT="$EXTCACHE/IExample.sol" EXT_WRITE="$EXTCACHE/w.txt"
 )
 
 echo "demo-claude-sandboxed.sh: 1) live sandbox isolation (bwrap-gated) ..."
@@ -84,11 +95,40 @@ if command -v bwrap >/dev/null 2>&1; then
                  *) bad "bound repo was not writable: $R" ;; esac
     case "$R" in *"--disallowedTools WebFetch WebSearch"*) ok "web tools denied: claude got --disallowedTools WebFetch WebSearch" ;;
                  *) bad "the --disallowedTools WebFetch WebSearch flags were not passed: $R" ;; esac
+    # #2235: HUNT_SANDBOX_EXTERNAL was NOT set on this run, so the cache must be as invisible as any other
+    # host directory — the bind is opt-in, never a widening the default run pays for.
+    case "$R" in *EXT_BLOCKED*)          ok "the external cache is INVISIBLE when HUNT_SANDBOX_EXTERNAL is unset (#2235)" ;;
+                 *) bad "the external cache was readable with HUNT_SANDBOX_EXTERNAL unset: $R" ;; esac
   else
     bad "the sandboxed stub produced no result file (wrapper did not run the stub inside bwrap)"
   fi
 else
   skip "bwrap not available — skipping live isolation asserts (fail-closed + wiring asserts still run)"
+fi
+
+echo
+echo "demo-claude-sandboxed.sh: 1b) the #2235 external-cache bind (bwrap-gated) ..."
+if command -v bwrap >/dev/null 2>&1; then
+  rm -f "$RESULT"
+  ( cd "$RUN" && env "${stub_env[@]}" \
+      HUNT_SANDBOX_RUN="$RUN" HUNT_SANDBOX_REPO="$REPO" HUNT_SANDBOX_EXTERNAL="$EXTCACHE" DF_CLAUDE_BIN="$STUB" \
+      "$WRAP" -p 'probe' >/dev/null 2>&1 ) || true
+  if [ -f "$RESULT" ]; then
+    R="$(cat "$RESULT")"
+    case "$R" in *EXT_READABLE*) ok "with HUNT_SANDBOX_EXTERNAL set, the external cache is READABLE inside the sandbox" ;;
+                 *) bad "the bound external cache was not readable: $R" ;; esac
+    case "$R" in *EXT_WRITABLE*) ok "the external cache is WRITABLE (the resolver fills it from inside the cell)" ;;
+                 *) bad "the bound external cache was not writable: $R" ;; esac
+    # The new bind widens NOTHING else: the two decoys stay blocked with the cache bound.
+    case "$R" in *PARENT_DECOY_BLOCKED*) ok "the cache bind does not widen the view: RUN's parent stays invisible" ;;
+                 *) bad "parent decoy became readable once the cache was bound: $R" ;; esac
+    case "$R" in *HOME_DECOY_BLOCKED*)   ok "the cache bind does not widen the view: \$HOME stays invisible" ;;
+                 *) bad "home decoy became readable once the cache was bound: $R" ;; esac
+  else
+    bad "the sandboxed stub produced no result file with HUNT_SANDBOX_EXTERNAL set"
+  fi
+else
+  skip "bwrap not available — skipping the #2235 external-cache bind asserts"
 fi
 
 echo
@@ -190,7 +230,8 @@ fi
 
 echo
 if [ "$FAILS" -eq 0 ]; then
-  echo "demo-claude-sandboxed.sh: PASS — sandbox hides everything outside the repo + run dir,"
+  echo "demo-claude-sandboxed.sh: PASS — sandbox hides everything outside the repo + run dir (plus, only when"
+  echo "                         #2235 asks for it, the external-protocol cache),"
   echo "                         denies the web tools, is fail-closed, falls through safely, and all six emitters are wired."
   exit 0
 fi

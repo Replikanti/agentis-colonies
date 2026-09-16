@@ -1591,6 +1591,32 @@ if [ -x "$REPO_ROOT/dark-factory/demo-resolve-external.sh" ]; then
     fi
 fi
 
+# --- dark-factory external-protocol reading in a discovery cell (#2235, PR B) ---
+# The resolver from PR A is now something a hunt cell can USE: `run-discovery.sh --external-resolve` (default
+# OFF, env twin DF_EXTERNAL_RESOLVE=1) copies resolve-external.sh into the cell dir — the hunt sandbox binds
+# the cell dir, never the colonies checkout — binds ONE extra directory (the external-source cache) into that
+# sandbox, and hands hunter.ag a PURE-META directive naming the command, its input contract (a symbol or an
+# address, never a URL), the per-cell budget and the `EXTERNAL-CITED <path>:<line>` evidence kind. The
+# load-bearing half is the HARNESS, not the prompt: run-discovery.sh RE-OPENS every such citation from the
+# audited repo or that cache (never from the network) and accepts it only when the path lies under one of
+# those two roots, the file exists, and the cited lines literally state the fact — otherwise THAT check is
+# uncited (the #2230 per-check semantics), never the whole cell. demo-resolve-cell.sh source-guards the three
+# hunter.ag helpers, the marker/sentinel coupling, the lens-INDEPENDENT gate (#2235 STOP-1 decision 2), the
+# splice point in the shared RULES block, an OVERFITTING denylist over the directive text, substrate purity,
+# the flag/env default-OFF polarity, the resolver copies, all four env_passthrough entries (the #1426
+# inert-knob trap), the conditional sandbox bind and the new record boundary — then runs the SHIPPED gate
+# functions (sliced out of run-discovery.sh, never copied) over nine citation fixtures, and with an `agentis`
+# binary a mock ON/OFF pair plus a DIRLEN byte-identity probe. No network, no forge, no LLM.
+if [ -x "$REPO_ROOT/dark-factory/demo-resolve-cell.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-resolve-cell.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: discovery-cell external reading (default-OFF verb + EXTERNAL-CITED evidence kind + two-root re-open gate) (#2235)"
+    else
+        fail "dark-factory: discovery-cell external reading regressed (#2235)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory same-file callee closure in the function slicer (#2150, sub-milestone D1.1 of epic #2130) ---
 # A `file@fn` slice used to carry the requested functions and the contract header only, so an external entry
 # point that delegates its state writes and external calls to same-file internal helpers reached the hunter as

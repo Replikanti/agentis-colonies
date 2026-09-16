@@ -69,6 +69,19 @@
 #                       argv elsewhere (run-zone-hunt.sh inherits the env, so one export covers a whole hunt).
 #                       A tier-2 record is NOT a candidate and carries NO severity — it says only "this check
 #                       was derived and left open".
+#   --external-resolve  #2235 PR B OPT-IN EXTERNAL-PROTOCOL READING (default OFF = every path below inert and
+#                       the assembled prompt byte-identical to a pre-#2235 run). Copies resolve-external.sh
+#                       into every cell dir, binds the external cache into the hunt sandbox, and hands the
+#                       cell a VERB: resolve an external SYMBOL (never a URL) to source it can open, then cite
+#                       the `path:line` it read as `EXTERNAL-CITED` on the TRACE line for that check. The
+#                       harness RE-OPENS every such citation from the audited repo or that cache — never from
+#                       the network — and requires the cited lines to state the fact; a citation that does not
+#                       re-open marks THAT check uncited (the #2230 per-check semantics), never the cell.
+#                       Budget: DF_EXTERNAL_BUDGET (default 5) NETWORK resolutions per cell, counted in a
+#                       per-cell state file; vendored hits and cache hits are free, and the cache is shared
+#                       per run so a second cell in the same zone pays nothing for a symbol already resolved.
+#                       `DF_EXTERNAL_RESOLVE=1` is the same switch for a caller that composes argv elsewhere.
+#                       Independent of OPERATIONALIZE_LENS by design (#2235 STOP-1 decision 2).
 #   --depth-max-cells <N>  #1827 WITHIN-CONTRACT DEPTH PASS. 0 (default) = OFF = the run is byte-identical
 #                       to before. With N > 0, AFTER every breadth cell has run, re-hunt the functions a
 #                       breadth candidate already flagged: one EXTRA cell per (flagged function x alternative
@@ -144,6 +157,17 @@
 #                       applies to `getenv()` inside an `.ag` agent only. The whole gate is INERT whenever
 #                       OPERATIONALIZE_LENS is off (no directive => no `OPCHECK|` line => no shortfall),
 #                       which is the production default.
+#   DF_EXTERNAL_RESOLVE #2235: `1` turns the external-protocol reading on, exactly like `--external-resolve`
+#                       (any other value, and unset, leave it OFF — the default), so one export covers every
+#                       zone of a run-zone-hunt.sh hunt.
+#   DF_EXTERNAL_CACHE   #2235: the cache root the resolver writes and the harness re-opens citations from
+#                       (default `${DARK_FACTORY_DIR:-$HOME/.dark-factory}/external`, the host-wide state-dir
+#                       convention). It is the ONE extra directory bound into the hunt sandbox, and only when
+#                       --external-resolve is on. It holds external-protocol source only — never target code,
+#                       never judging or ground-truth data.
+#   DF_EXTERNAL_BUDGET  #2235: NETWORK resolutions allowed PER CELL (default 5; read by resolve-external.sh
+#                       itself and quoted into the directive, so the number the model is told and the number
+#                       enforced cannot drift).
 #   DF_TIER2            #2217: `1` turns the second tier on, exactly like `--tier2` (any other value, and
 #                       unset, leave it OFF — the default). It exists because run-zone-hunt.sh calls this
 #                       script with a fixed argv: one `export DF_TIER2=1` covers every zone of a hunt.
@@ -267,6 +291,8 @@ DEPTH_LENS_QUOTA=1
 DEPTH_FROM=""
 # #2217: opt-in second tier (see --tier2 above); 0 = OFF = the default, every tier-2 code path inert.
 TIER2=0
+# #2235 PR B: opt-in external-protocol reading; 0 = OFF = the default, every path below inert.
+case "${DF_EXTERNAL_RESOLVE:-}" in 1) EXT_RESOLVE=1 ;; *) EXT_RESOLVE=0 ;; esac
 
 need() { [ "$1" -ge 2 ] || { echo "run-discovery.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -287,6 +313,7 @@ while [ $# -gt 0 ]; do
     --depth-lens-quota) need "$#"; DEPTH_LENS_QUOTA="$2"; shift 2 ;;
     --depth-from) need "$#"; DEPTH_FROM="$2"; shift 2 ;;
     --tier2) TIER2=1; shift ;;
+    --external-resolve) EXT_RESOLVE=1; shift ;;
     --list-cells|-n) LIST_CELLS=1; shift ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-discovery.sh: unknown flag $1" >&2; exit 2 ;;
@@ -466,6 +493,34 @@ export HUNT_SANDBOX_REPO="$REPO" HUNT_SANDBOX_RUN="$RUN"
 cp "$HUNTER" "$RUN/hunter.ag"
 cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (scope `file@fn1+fn2`)
 
+# #2235 PR B: external-protocol reading. ALL of it is empty/absent unless --external-resolve opted in, which
+# is what keeps the default prompt byte-identical and the sandbox view unchanged.
+#   * the resolver is COPIED into $RUN (and, below, into every per-cell dir) next to slice-fns.sh, because the
+#     hunt sandbox binds the toolchain, the repo and the RUN dir — the colonies checkout is NOT visible from
+#     inside it, so a path into $HERE would simply not exist for the driven session;
+#   * the CACHE is host-wide and shared across cells/zones on purpose (a symbol another cell already resolved
+#     costs nothing), and it is bound into the sandbox by lib/claude-sandboxed.sh through HUNT_SANDBOX_EXTERNAL;
+#   * the BUDGET is per cell: one state file per cell under $RUN/external-budget/.
+EXTERNAL_RESOLVER="" ; EXTERNAL_CACHE="" ; EXTERNAL_BUDGET="" ; EXTERNAL_BUDGET_DIR=""
+if [ "$EXT_RESOLVE" -eq 1 ]; then
+  [ -f "$HERE/resolve-external.sh" ] || {
+    echo "run-discovery.sh: --external-resolve: resolve-external.sh not found at $HERE" >&2; exit 3; }
+  cp "$HERE/resolve-external.sh" "$RUN/resolve-external.sh"
+  chmod +x "$RUN/resolve-external.sh" 2>/dev/null || true
+  EXTERNAL_RESOLVER="$RUN/resolve-external.sh"
+  EXTERNAL_CACHE="${DF_EXTERNAL_CACHE:-${DARK_FACTORY_DIR:-$HOME/.dark-factory}/external}"
+  mkdir -p "$EXTERNAL_CACHE"
+  EXTERNAL_CACHE="$(cd "$EXTERNAL_CACHE" && pwd)"
+  EXTERNAL_BUDGET="${DF_EXTERNAL_BUDGET:-5}"
+  case "$EXTERNAL_BUDGET" in ''|*[!0-9]*) EXTERNAL_BUDGET=5 ;; esac
+  EXTERNAL_BUDGET_DIR="$RUN/external-budget"
+  mkdir -p "$EXTERNAL_BUDGET_DIR"
+  # The ONE extra sandbox bind (#2235 STOP-1 decision 3c): exported only on this branch, so an OFF run gives
+  # lib/claude-sandboxed.sh exactly the bind set it had before.
+  export HUNT_SANDBOX_EXTERNAL="$EXTERNAL_CACHE"
+  echo "run-discovery.sh: external-protocol reading ON — cache $EXTERNAL_CACHE, <= $EXTERNAL_BUDGET network resolve(s)/cell" >&2
+fi
+
 # init the agentis store FIRST (before any .agentis/ subdir exists), else HEAD is not set.
 ( cd "$RUN" && "$AGENTIS" init >/dev/null 2>&1 )
 
@@ -586,7 +641,12 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # the opt-in could never reach hunter.ag and the whole directive would be unreachable (unset => "" => OFF).
   # #2223 TRACE_REASK_IDS rides it for the same reason, but is set by run_cell ONLY on a follow-through re-ask:
   # unregistered => "" => the re-ask would silently replay the same prompt instead of naming the open checks.
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS"
+  # #2235 EXTERNAL_RESOLVER/EXTERNAL_CACHE/EXTERNAL_BUDGET_STATE/EXTERNAL_BUDGET ride it for exactly the #1426
+  # reason: hunter.ag gates the whole resolver directive on getenv("EXTERNAL_RESOLVER"), which reads the
+  # SANITISED env — unregistered => "" => --external-resolve would be silently inert, and the other three are
+  # quoted into the command line the directive prints, so a missing one would hand the model a broken command.
+  # All four are EMPTY on a default run, so registering them changes nothing there.
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: hunter.ag ends its tick with `learn("hunt", ...)`, and it is that WRITE
   # the flag gates (#1878 measured it on agentis v1.28.0 — `experience.enabled = false` makes learn() raise
@@ -708,7 +768,7 @@ _join_wrapped_candidates() {
       rec = $0
       next
     }
-    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
       if (rec != "") { print rec; rec = "" }
       next
     }
@@ -832,7 +892,7 @@ _unnumbered_opchecks() {
     | grep -vE '^OPCHECK\|[[:space:]]*#[0-9]+[[:space:]]*\|' | _count_stdin
 }
 
-# _uncited_dismissal_lines <log> [repo_dir] — #2214 PR C: the DISTINCT traced CLEANs of this cell that
+# _uncited_dismissal_lines <log> [repo_dir] [cache_dir] — #2214 PR C: the DISTINCT traced CLEANs of this cell that
 # dismissed a check without the citation their grounds require (see the heuristics block in the header), one
 # per output line. #2223 split the LINES out of the counter so the same detector can be read two ways: as an
 # integer (_uncited_dismissals, the count rule) or per check id (_uncited_check_ids, the id rule) — one
@@ -850,6 +910,16 @@ _unnumbered_opchecks() {
 # none of them is uncited too. The CONFIG branch stops at existence — rule 1 requires ONLY a citation of
 # what the repo configures (config_realizability_rule() in hunter.ag), not a specific fact token in range.
 #
+# [cache_dir] is #2235 PR B's third acceptance branch and the SAME kind of optional seam: the root of the
+# resolve-external.sh cache. A TRACE carrying the `EXTERNAL-CITED` evidence kind is cited only when ALL of
+#   (i) the cited path resolves under repo_dir OR under cache_dir — a path under neither is uncited and is
+#       never opened, so no file outside the two roots the harness owns can be cited at all;
+#   (ii) the file exists;
+#   (iii) the cited line range literally states one of the fact tokens (the SAME #2227 content check),
+# hold. Otherwise the line flows into the existing per-check uncited path (#2230): THAT check degrades, no new
+# status vocabulary, never a whole-cell failure. Empty cache_dir (every run without --external-resolve) keeps
+# today's behaviour exactly — there is then no cache to re-open anything from.
+#
 # The regexes live HERE rather than in globals so the function is self-contained: demo-operationalize-lens.sh
 # slices it out of this file by line range and sources it, and a detector that depended on script-level state
 # would silently behave differently there than in production. [repo_dir] is an explicit PARAMETER for the
@@ -861,6 +931,7 @@ _unnumbered_opchecks() {
 _uncited_dismissal_lines() {
   ud_log="$1"
   ud_repo="${2:-}"
+  ud_cache="${3:-}"
   [ -f "$ud_log" ] || return 0
   # Configuration-grounds vocabulary and the repo citation it must carry. #2225: the citation must sit UNDER
   # a directory that records what the repo actually SHIPS (deploy/test/script/docs evidence) — a `.sol` under
@@ -876,12 +947,57 @@ _uncited_dismissal_lines() {
   # The fact tokens the TRACE relies on: a cited range that states none of these only NAMES the file, it does
   # not STATE the scaling/decimals/normalisation/ordering property the check depends on.
   ud_fact_re='1e18|decimals|WAD|ONE|normali|scale|order'
+  # #2235: the evidence kind a cell may only produce after it actually RESOLVED the external symbol. It is
+  # matched before the two #2214 branches because a resolved citation discharges BOTH of their grounds.
+  ud_extcited_re='EXTERNAL-CITED'
+  # Same shape as ud_pathline_re plus `@`, because a cached upstream clone lives under
+  # `<cache>/repo/<host>/<org>/<name>@<ref>/…` — without the `@` the match would start MID-PATH and a real
+  # cache citation could never resolve. Kept separate so the #2225/#2227 branches keep their exact regex.
+  ud_xpathline_re='[A-Za-z0-9_@/.-]+\.(sol|ts|js|md|json|toml|ya?ml):[0-9]+(-[0-9]+)?'
   while IFS= read -r ud_line; do
     [ -n "$ud_line" ] || continue
     # Only a CLEAN is a dismissal: BUG is a finding and UNRESOLVED is the honest verdict this rule asks for.
     ud_verdict="$(printf '%s\n' "$ud_line" | cut -d'|' -f3)"
     case "$ud_verdict" in *[Cc][Ll][Ee][Aa][Nn]*) ;; *) continue ;; esac
     ud_span="$(printf '%s\n' "$ud_line" | cut -d'|' -f3-)"
+    # #2235 PR B: the EXTERNAL-CITED branch. A cell that RESOLVED the fact and cites what it read has done
+    # exactly what rules 1 and 2 ask for, so an accepted citation ends the judgement of this line — and a
+    # citation the harness cannot re-open ends it the other way, without falling through to the branches
+    # below, whose repo-relative resolution would call every cache path uncited for the wrong reason.
+    if printf '%s\n' "$ud_span" | grep -q "$ud_extcited_re"; then
+      ud_xcite="$(printf '%s\n' "$ud_span" | grep -oE "$ud_xpathline_re" | head -1)"
+      ud_xok=0
+      if [ -z "$ud_repo" ] && [ -z "$ud_cache" ]; then
+        # No root to resolve against: the same shape-only contract the two branches below keep in that case.
+        [ -n "$ud_xcite" ] && ud_xok=1
+      elif [ -n "$ud_xcite" ]; then
+        ud_xfile="${ud_xcite%%:*}"
+        ud_xrange="${ud_xcite#*:}"
+        case "$ud_xrange" in
+          *-*) ud_xa="${ud_xrange%-*}"; ud_xb="${ud_xrange#*-}" ;;
+          *)   ud_xa="$ud_xrange"; ud_xb="$ud_xrange" ;;
+        esac
+        # (i) the path must land INSIDE one of the two roots. A relative path is repo-relative (the #2227
+        # shape); an absolute one must be a prefix match on a root. `..` is refused outright rather than
+        # normalised, so a prefix match can never be walked back out of the root it matched.
+        ud_xabs=""
+        case "$ud_xfile" in
+          *..*) : ;;
+          /*)
+            if [ -n "$ud_cache" ] && [ "${ud_xfile#"$ud_cache"/}" != "$ud_xfile" ]; then ud_xabs="$ud_xfile"
+            elif [ -n "$ud_repo" ] && [ "${ud_xfile#"$ud_repo"/}" != "$ud_xfile" ]; then ud_xabs="$ud_xfile"
+            fi ;;
+          *) [ -n "$ud_repo" ] && ud_xabs="$ud_repo/$ud_xfile" ;;
+        esac
+        # (ii) it must exist and (iii) the cited range must STATE the fact — the unchanged #2227 content check.
+        if [ -n "$ud_xabs" ] && [ -f "$ud_xabs" ] \
+           && sed -n "${ud_xa},${ud_xb}p" "$ud_xabs" 2>/dev/null | grep -qiE "$ud_fact_re"; then
+          ud_xok=1
+        fi
+      fi
+      if [ "$ud_xok" -eq 0 ]; then printf '%s\n' "$ud_line"; fi
+      continue
+    fi
     if printf '%s\n' "$ud_span" | grep -Eqi "$ud_cfg_re"; then
       if ! printf '%s\n' "$ud_span" | grep -Eq "$ud_cfg_pathline_re"; then
         printf '%s\n' "$ud_line"
@@ -926,23 +1042,24 @@ $(_distinct_trace_lines "$ud_log")
 EOF
 }
 
-# _uncited_dismissals <log> [repo_dir] — the COUNT of those lines, the integer the count-rule shortfall adds
-# (see _opcheck_trace_gap). Kept as its own entry point so the count rule keeps the exact arithmetic it was
-# measured with; the id rule uses _uncited_check_ids below instead, which attributes each one to its check.
+# _uncited_dismissals <log> [repo_dir] [cache_dir] — the COUNT of those lines, the integer the count-rule
+# shortfall adds (see _opcheck_trace_gap). Kept as its own entry point so the count rule keeps the exact
+# arithmetic it was measured with; the id rule uses _uncited_check_ids below instead, which attributes each
+# one to its check. Both optional roots thread straight through — never a second opinion about what is cited.
 _uncited_dismissals() {
-  _uncited_dismissal_lines "$1" "${2:-}" | _count_stdin
+  _uncited_dismissal_lines "$1" "${2:-}" "${3:-}" | _count_stdin
 }
 
-# _uncited_check_ids <log> [repo_dir] — #2223: the ids of the checks whose TRACE line is an uncited dismissal,
+# _uncited_check_ids <log> [repo_dir] [cache_dir] — #2223: the ids of the checks whose TRACE line is an uncited dismissal,
 # ascending. Only ids this cell actually DERIVED are reported: an uncited trace carrying an orphan id answers
 # no check of this cell (it is counted as an orphan instead), and one carrying no id at all cannot be
 # attributed — its check is already reported as untraced. This is what makes the citation rules of #2224/#2227
 # apply PER TRACE: they mark THAT check unresolved/uncited, never the whole cell.
 _uncited_check_ids() {
-  uci_log="$1"; uci_repo="${2:-}"
+  uci_log="$1"; uci_repo="${2:-}"; uci_cache="${3:-}"
   [ -f "$uci_log" ] || return 0
   uci_op=" $(_check_ids OPCHECK "$uci_log" | tr '\n' ' ')"
-  for uci_id in $(_uncited_dismissal_lines "$uci_log" "$uci_repo" | _ids_of_lines); do
+  for uci_id in $(_uncited_dismissal_lines "$uci_log" "$uci_repo" "$uci_cache" | _ids_of_lines); do
     case "$uci_op" in *" $uci_id "*) printf '%s\n' "$uci_id" ;; esac
   done
 }
@@ -1084,13 +1201,14 @@ $(_unresolved_check_ids "$ucr_log")
 EOF
 }
 
-# _uncited_check_rows <log> [repo_dir] — the same row shape for the checks whose TRACE closed CLEAN on an
-# UNCITED dismissal (_uncited_check_ids decides which those are; [repo_dir] threads straight through to it, so
-# the tier-2 source set is exactly the set the #2225/#2227 detectors flag — never a second opinion about it).
+# _uncited_check_rows <log> [repo_dir] [cache_dir] — the same row shape for the checks whose TRACE closed
+# CLEAN on an UNCITED dismissal (_uncited_check_ids decides which those are; both optional roots thread
+# straight through to it, so the tier-2 source set is exactly the set the #2225/#2227/#2235 detectors flag —
+# never a second opinion about it).
 _uncited_check_rows() {
-  ukr_log="$1"; ukr_repo="${2:-}"
+  ukr_log="$1"; ukr_repo="${2:-}"; ukr_cache="${3:-}"
   [ -f "$ukr_log" ] || return 0
-  for ukr_id in $(_uncited_check_ids "$ukr_log" "$ukr_repo"); do
+  for ukr_id in $(_uncited_check_ids "$ukr_log" "$ukr_repo" "$ukr_cache"); do
     printf '%s\t%s\t%s\n' "$ukr_id" \
       "$(_tier2_flat "$(_opcheck_text "$ukr_log" "$ukr_id")")" \
       "$(_tier2_flat "$(_trace_evidence "$ukr_log" "$ukr_id")")"
@@ -1190,13 +1308,13 @@ _tier2_rare() {
   case ",$t2c_list," in *",$1,"*) printf '0\n' ;; *) printf '1\n' ;; esac
 }
 
-# _tier2_records <subsystem> <class> <files-csv> <log> [repo_dir] — every tier-2 record ONE cell log yields, as
+# _tier2_records <subsystem> <class> <files-csv> <log> [repo_dir] [cache_dir] — every tier-2 record ONE cell log yields, as
 # TAB-separated rows, unresolved rows first and each kind in ascending check id. Columns 1-3 are the RANK KEYS
 # (see _tier2_select); the rest is the record:
 #   1 rare(0|1)  2 kind(0=unresolved,1=uncited)  3 loc_rule(0=contract-fn,1=fn-grep,2=file-only)
 #   4 kind  5 class  6 subsystem  7 id  8 location  9 loc_source  10 loc_rule  11 check  12 why
 _tier2_records() {
-  t2r_subsys="$1"; t2r_cls="$2"; t2r_files="$3"; t2r_log="$4"; t2r_repo="${5:-}"
+  t2r_subsys="$1"; t2r_cls="$2"; t2r_files="$3"; t2r_log="$4"; t2r_repo="${5:-}"; t2r_cache="${6:-}"
   [ -f "$t2r_log" ] || return 0
   t2r_rare="$(_tier2_rare "$t2r_cls")"
   for t2r_kind in unresolved uncited; do
@@ -1216,7 +1334,7 @@ _tier2_records() {
         "$t2r_rare" "$t2r_krank" "$t2r_lrank" "$t2r_kind" "$t2r_cls" "$(_tier2_flat "$t2r_subsys")" \
         "$t2r_id" "$t2r_l" "$t2r_src" "$t2r_rule" "$t2r_check" "$t2r_why"
     done <<EOF
-$(if [ "$t2r_kind" = unresolved ]; then _unresolved_check_rows "$t2r_log"; else _uncited_check_rows "$t2r_log" "$t2r_repo"; fi)
+$(if [ "$t2r_kind" = unresolved ]; then _unresolved_check_rows "$t2r_log"; else _uncited_check_rows "$t2r_log" "$t2r_repo" "$t2r_cache"; fi)
 EOF
   done
 }
@@ -1274,7 +1392,7 @@ _tier2_totals_json() {
   printf ',"tier2":%s,"tier2_dropped":%s' "$t2u_kept" "$((t2u_all - t2u_kept))"
 }
 
-# _opcheck_trace_gap <log> [repo_dir] — the follow-through shortfall of ONE cell log, printed as a single
+# _opcheck_trace_gap <log> [repo_dir] [cache_dir] — the follow-through shortfall of ONE cell log, printed as a single
 # integer: how many derived checks this cell did not follow through. [repo_dir] threads straight through to
 # the citation detectors (#2225/#2227); omit it to fall back to the citation-shape check alone.
 #
@@ -1298,11 +1416,12 @@ _tier2_totals_json() {
 _opcheck_trace_gap() {
   otg_log="$1"
   otg_repo="${2:-}"
+  otg_cache="${3:-}"
   if [ ! -f "$otg_log" ]; then printf '0\n'; return 0; fi
   if [ "$(_untraced_rule "$otg_log")" = "id" ]; then
     otg_mis="$(_missing_check_ids "$otg_log" | _count_stdin)"
     otg_unnum="$(_unnumbered_opchecks "$otg_log")"
-    otg_unc="$(_uncited_check_ids "$otg_log" "$otg_repo" | _count_stdin)"
+    otg_unc="$(_uncited_check_ids "$otg_log" "$otg_repo" "$otg_cache" | _count_stdin)"
     printf '%s\n' "$((otg_mis + otg_unnum + otg_unc))"
     return 0
   fi
@@ -1313,19 +1432,19 @@ _opcheck_trace_gap() {
   # #2214 PR C: a check traced to an UNCITED dismissal was not followed through either — it was closed on an
   # unchecked scope heuristic or an unverified external fact — so it is added to the SAME shortfall and rides
   # the SAME gate. No new status vocabulary.
-  otg_unc="$(_uncited_dismissals "$otg_log" "$otg_repo")"
+  otg_unc="$(_uncited_dismissals "$otg_log" "$otg_repo" "$otg_cache")"
   printf '%s\n' "$((otg_gap + otg_unc))"
 }
 
-# _shortfall_id_list <log> [repo_dir] — #2223: the checks the re-ask must name, as `#2, #5` (untraced first,
+# _shortfall_id_list <log> [repo_dir] [cache_dir] — #2223: the checks the re-ask must name, as `#2, #5` (untraced first,
 # then the uncited ones, each id once, ascending). Empty when the cell is under the count rule, which cannot
 # name a check — there the re-ask stays the pre-#2223 verbatim replay.
 _shortfall_id_list() {
-  sil_log="$1"; sil_repo="${2:-}"
+  sil_log="$1"; sil_repo="${2:-}"; sil_cache="${3:-}"
   [ -f "$sil_log" ] || return 0
   [ "$(_untraced_rule "$sil_log")" = "id" ] || return 0
   sil_out=""
-  for sil_id in $( { _missing_check_ids "$sil_log"; _uncited_check_ids "$sil_log" "$sil_repo"; } | sort -n -u ); do
+  for sil_id in $( { _missing_check_ids "$sil_log"; _uncited_check_ids "$sil_log" "$sil_repo" "$sil_cache"; } | sort -n -u ); do
     if [ -z "$sil_out" ]; then sil_out="#$sil_id"; else sil_out="$sil_out, #$sil_id"; fi
   done
   printf '%s\n' "$sil_out"
@@ -1351,7 +1470,7 @@ _all_checks_untraced() {
   [ "$(_distinct_sentinel_count TRACE "$acu_log")" -eq 0 ]
 }
 
-# _untraced_safe <log> [repo_dir] — true when <log> is the exact thing the gate exists to refuse: a
+# _untraced_safe <log> [repo_dir] [cache_dir] — true when <log> is the exact thing the gate exists to refuse: a
 # directive-ON cell that answered with NO candidate while at least one derived check went unanswered (untraced
 # or closed on an uncited dismissal). #2223: this is the RE-ASK predicate — it fires on a shortfall of ONE
 # check, because that is the cheapest moment to recover it — and it is NOT, by itself, the FAILED predicate:
@@ -1365,11 +1484,12 @@ _all_checks_untraced() {
 _untraced_safe() {
   us_log="$1"
   us_repo="${2:-}"
+  us_cache="${3:-}"
   if [ ! -f "$us_log" ]; then return 1; fi
   if [ -f "$us_log.novalid" ] || [ -f "$us_log.timeout" ]; then return 1; fi
   if ! grep -qE '^[[:space:]]*OPERATIONALIZE\|' "$us_log" 2>/dev/null; then return 1; fi
   if grep -v '^BLACKBOARD-' "$us_log" 2>/dev/null | grep -q 'CANDIDATE|'; then return 1; fi
-  [ "$(_opcheck_trace_gap "$us_log" "$us_repo")" -gt 0 ]
+  [ "$(_opcheck_trace_gap "$us_log" "$us_repo" "$us_cache")" -gt 0 ]
 }
 
 # _accumulate_cell <subsys> <cls> <files> <log> [status] [phase] — append ONE JSON object for this cell to
@@ -1429,7 +1549,7 @@ _accumulate_cell() {
   ac_trn="$(_distinct_sentinel_count TRACE "$ac_log")"
   if [ "$ac_trn" -gt 0 ]; then ac_traces_json=",\"traces\":$ac_trn"; fi
   ac_untraced_json=""
-  ac_un="$(_opcheck_trace_gap "$ac_log" "$REPO")"
+  ac_un="$(_opcheck_trace_gap "$ac_log" "$REPO" "$EXTERNAL_CACHE")"
   if [ "$ac_un" -gt 0 ]; then ac_untraced_json=",\"untraced\":$ac_un"; fi
   ac_unresolved_json=""
   ac_unres="$(_unresolved_trace_count "$ac_log")"
@@ -1448,7 +1568,7 @@ _accumulate_cell() {
   ac_untraced_ids="$(_missing_check_ids "$ac_log" | _json_id_array)"
   if [ -n "$ac_untraced_ids" ]; then ac_untraced_ids_json=",\"untraced_ids\":[$ac_untraced_ids]"; fi
   ac_uncited_ids_json=""
-  ac_uncited_ids="$(_uncited_check_ids "$ac_log" "$REPO" | _json_id_array)"
+  ac_uncited_ids="$(_uncited_check_ids "$ac_log" "$REPO" "$EXTERNAL_CACHE" | _json_id_array)"
   if [ -n "$ac_uncited_ids" ]; then ac_uncited_ids_json=",\"uncited_ids\":[$ac_uncited_ids]"; fi
   # The UNRESOLVED carry, with the check's own text: this is the row #2217 consumes to turn an honest "I could
   # not settle this" on a rare-class check into a second-tier candidate instead of a silent clean sweep.
@@ -1470,7 +1590,7 @@ _accumulate_cell() {
   # bytes it did before #2217. _accumulate_cell is called in MANIFEST order on the serial, parallel
   # (post-drain) and depth paths alike, which is what makes this file's order the cap's last tie-break.
   if [ "$TIER2" -eq 1 ]; then
-    _tier2_records "$ac_subsys" "$ac_cls" "$ac_files" "$ac_log" "$REPO" >> "$TIER2_TSV"
+    _tier2_records "$ac_subsys" "$ac_cls" "$ac_files" "$ac_log" "$REPO" "$EXTERNAL_CACHE" >> "$TIER2_TSV"
   fi
 }
 
@@ -1510,6 +1630,15 @@ run_cell() {
   # #2223: the ids the follow-through re-ask must name. EMPTY on the first attempt (and on every count-rule
   # cell), so the first prompt — and every lens-OFF prompt — is byte-identical to the pre-#2223 one.
   rc_reask_ids=""
+  # #2235: one budget-state file per CELL, named after this cell's log so the two can never disagree about
+  # which cell they belong to. "" when --external-resolve is off, which makes all four env entries below empty
+  # and hunter.ag's directive exactly "". The file is NOT reset between re-asks: a re-ask is the same cell, so
+  # it keeps spending the same cell's budget rather than being handed a fresh one.
+  rc_ext_state=""
+  if [ -n "$EXTERNAL_BUDGET_DIR" ]; then
+    rc_ext_base="${rc_log##*/}"
+    rc_ext_state="$EXTERNAL_BUDGET_DIR/${rc_ext_base%.log}"
+  fi
   echo "run-discovery.sh: hunting $rc_cls on '$rc_subsys' ..." >&2
   # shellcheck disable=SC2317  # invoked by name through df_run_agent_validated
   _rc_attempt() {
@@ -1526,6 +1655,10 @@ run_cell() {
         APPENDIX_FILE="$rc_appendix_file" \
         APPENDIX_BASE="$rc_appendix_base" \
         TRACE_REASK_IDS="$rc_reask_ids" \
+        EXTERNAL_RESOLVER="${EXTERNAL_RESOLVER:+$rc_dir/resolve-external.sh}" \
+        EXTERNAL_CACHE="$EXTERNAL_CACHE" \
+        EXTERNAL_BUDGET_STATE="$rc_ext_state" \
+        EXTERNAL_BUDGET="$EXTERNAL_BUDGET" \
         "$AGENTIS" go hunter.ag --enable-exec --enable-messaging --grant-pii ) >"$1" 2>&1 || \
         echo "run-discovery.sh: hunter run failed for $rc_cls/'$rc_subsys' (see $1)" >&2
   }
@@ -1545,13 +1678,13 @@ run_cell() {
   # `.log`, so `find -name 'hunt_*.log'` readouts and the hunt dashboard keep seeing exactly one log per cell.
   rm -f "$rc_log.untraced"
   rc_reask=1
-  while [ "$rc_reask" -le "$DF_TRACE_MAX_REASKS" ] && _untraced_safe "$rc_log" "$REPO"; do
+  while [ "$rc_reask" -le "$DF_TRACE_MAX_REASKS" ] && _untraced_safe "$rc_log" "$REPO" "$EXTERNAL_CACHE"; do
     # #2223: name the checks. The re-ask carries the ids into the prompt (TRACE_REASK_IDS -> hunter.ag's
     # trace_reask_block), so the model is told WHICH checks it left open instead of being handed the same
     # prompt again — the count rule could not name one, which is why the pre-#2223 re-ask was a verbatim
     # replay. Empty for a count-rule cell: there the re-ask stays exactly what it was.
-    rc_reask_ids="$(_shortfall_id_list "$rc_log" "$REPO")"
-    echo "run-discovery.sh:   ↳ untraced-opcheck: $rc_cls/'$rc_subsys' answered with $(_opcheck_trace_gap "$rc_log" "$REPO") unanswered check(s)${rc_reask_ids:+ ($rc_reask_ids)} — re-asking ($rc_reask/$DF_TRACE_MAX_REASKS)" >&2
+    rc_reask_ids="$(_shortfall_id_list "$rc_log" "$REPO" "$EXTERNAL_CACHE")"
+    echo "run-discovery.sh:   ↳ untraced-opcheck: $rc_cls/'$rc_subsys' answered with $(_opcheck_trace_gap "$rc_log" "$REPO" "$EXTERNAL_CACHE") unanswered check(s)${rc_reask_ids:+ ($rc_reask_ids)} — re-asking ($rc_reask/$DF_TRACE_MAX_REASKS)" >&2
     mv -f "$rc_log" "$rc_log.untraced-attempt-$rc_reask" 2>/dev/null || true
     df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-discovery.sh: $rc_cls/'$rc_subsys' (trace re-ask $rc_reask)" "$rc_log" hunter "" _rc_attempt || true
     rc_reask=$((rc_reask + 1))
@@ -1561,8 +1694,8 @@ run_cell() {
   # it derived. A cell that answered some of them keeps `status":"ok"` and reports the open ones per check
   # (untraced_ids/uncited_ids), because failing it wholesale discards the checks it DID settle — including a
   # correct UNRESOLVED carry, which is exactly what the #2214 M3 dismissal r1 C23 cell lost.
-  if _untraced_safe "$rc_log" "$REPO" && _all_checks_untraced "$rc_log"; then
-    _opcheck_trace_gap "$rc_log" "$REPO" > "$rc_log.untraced"
+  if _untraced_safe "$rc_log" "$REPO" "$EXTERNAL_CACHE" && _all_checks_untraced "$rc_log"; then
+    _opcheck_trace_gap "$rc_log" "$REPO" "$EXTERNAL_CACHE" > "$rc_log.untraced"
   fi
 }
 
@@ -1623,7 +1756,7 @@ scrape_cell_log() {
   # results, and the cell may carry a correct UNRESOLVED), so the operator gets the open ids here and the
   # per-check fields in the JSON, not a discarded cell. This is deliberately NOT a FAILED row: only a cell
   # that answered NONE of its checks is not a result at all.
-  sc_open_ids="$(_shortfall_id_list "$sc_log" "$REPO")"
+  sc_open_ids="$(_shortfall_id_list "$sc_log" "$REPO" "$EXTERNAL_CACHE")"
   if [ -n "$sc_open_ids" ]; then
     echo "run-discovery.sh:   ↳ $sc_cls/'$sc_subsys' left check(s) $sc_open_ids unanswered after the re-ask (recorded as \"untraced_ids\"/\"uncited_ids\" on an \"ok\" cell; this cell's negative is NOT a rigorous clean sweep)" >&2
   fi
@@ -1987,6 +2120,9 @@ else
     cp -r "$RUN/.agentis" "$cdir/.agentis"        # isolated store: an empty blackboard, no cross-cell race
     cp "$RUN/hunter.ag" "$cdir/hunter.ag"
     cp "$RUN/slice-fns.sh" "$cdir/slice-fns.sh"
+    # #2235: the resolver rides the same idiom as the slicer — copied INTO the cell dir, because that dir is
+    # what the hunt sandbox binds; a path outside it does not exist for the driven session. No-op when off.
+    if [ -n "$EXTERNAL_RESOLVER" ]; then cp "$RUN/resolve-external.sh" "$cdir/resolve-external.sh"; fi
     # #993: trust this cell dir HERE (foreground, serialized) — never inside the
     # backgrounded run_cell subshell, where concurrent whole-file writes would race.
     case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$cdir" ;; esac
