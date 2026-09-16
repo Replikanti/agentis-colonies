@@ -190,6 +190,27 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   projects byte-identically to `expected-leads.json` without the flag, adds exactly one `"tier": 2` lead with
   it, and over a truth file whose third GT row only the tier-2 record names the primary stays 2/3 while the
   tier-2 delta is +1 — at `--min-overlap` 2 and 5 alike.
+- **The second tier reaches the refute gate, separably (#2217, PR C).** `verify-findings.sh` gains
+  `--tier2 <N>` (default `0` = OFF): AFTER every tier-1 candidate has been gated, the N highest-ranked tier-2
+  records PER ZONE are driven through the SAME `gate_candidate` path, and their verdicts land in a **separate
+  top-level `tier2[]` array** of `verified_findings.json` — `{subsystem, location, file, class, id, kind,
+  loc_source, loc_rule, severity (always ""), check, why, verdict, reason}`. **Never in `verified[]`:** the
+  CONFIRMED-only contract the submission pass consumes is unchanged whatever the gate says about a tier-2 row,
+  and a tier-2 outcome is outside `totals.candidates`, outside the `candidates == verified + errored + refuted
+  + dropped_subfloor` invariant, outside the `--pay-floor` partition (a record carries no severity to floor)
+  and outside the #1887 `refute-constraints.tsv` corpus (its gates run in their own `<out>/gates-tier2/` dir,
+  so the corpus is byte-identical with and without the flag). "Per zone" is keyed on `subsystem` — the merged
+  file carries no other zone identity — and "highest-ranked" is "first in the array", because
+  `run-discovery.sh`'s `_tier2_select` already ranked each zone's slice: no ranking is re-derived here. The
+  gate manifest needs a severity, so `Medium` is substituted as a GATE INPUT and the exploit text is prefixed
+  `TIER2 (severity unassessed):`, while the emitted record still ships an empty severity. A record whose
+  derived location does not resolve on disk is an `ERROR` outcome, never a `REFUTED` verdict it did not earn.
+  `run-zone-hunt.sh` forwards a new `--tier2 <N>` on its own continuation line, so an absent flag leaves the
+  STAGE 4 argv byte-identical; that flag governs VERIFICATION only (whether the hunt CARRIES records is still
+  `DF_TIER2=1`). **Default OFF and byte-identical:** a results file carrying `tier2[]` verified without the
+  flag produces the same bytes as the same file with `tier2[]` stripped, no `tier2` key and no
+  `gates-tier2/` dir; `--tier2 N` over a file with no `tier2[]` is a silent no-op. `demo-verify-findings.sh`
+  assertion 13 is the offline gate (mock backend, no LLM).
 
 - **C24 — stale state assumption between touchpoints: new bug class + deterministic zone-mapper route (#2218,
   M1).** The #2213 corpus forensics clustered the pure GENERATION misses (candidates the hunter never emitted)

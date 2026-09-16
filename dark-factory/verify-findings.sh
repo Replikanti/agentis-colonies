@@ -20,6 +20,13 @@
 # refute-to-knowledge.sh turns into a knowledge corpus a LATER target's hunter can read. It is an additional
 # FILE, never a new key — verified_findings.json's schema is unchanged.
 #
+# #2217 SECOND TIER. `--tier2 N` (default 0 = OFF) sends the N highest-ranked tier-2 records per zone through the
+# SAME gate, AFTER every tier-1 candidate has been examined. A tier-2 record is a check the hunt DERIVED and did
+# not settle (an UNRESOLVED trace, or a CLEAN dismissal without the citation its grounds require) — it is not a
+# candidate, carries no severity, and is never a finding. Its verdicts land in a SEPARATE top-level `tier2[]`
+# array, NEVER in verified[]: whatever the gate says about a tier-2 row, the CONFIRMED-only contract the
+# submission pass consumes is unchanged.
+#
 # WHAT IT IS NOT. It is READ-ONLY over discovery-results.json (never mutates it), touches no network, and has NO
 # submit verb anywhere — a CONFIRMED finding is still a LEAD a human triages. Surfacing the verified subset is
 # the whole job; verification's downstream (packaging + the human-gated submission pass) is M5's capstone.
@@ -50,6 +57,32 @@
 #                       rm -rf's the gates dir every run — can never silently downgrade a confirmed finding to
 #                       REFUTED. Match keying is normalized-location-only (protects the location regardless of
 #                       class). Default: unset/absent = inert = every artifact byte-identical to a pre-#2023 run.
+#   --tier2 <N>         OPTIONAL (#2217). Examine up to N SECOND-TIER records PER ZONE through the selected
+#                       gate, AFTER the tier-1 candidate loop has finished (tier 1 always gets the gate
+#                       first — the second tier never displaces a candidate). Source: the top-level
+#                       `tier2[]` array run-discovery.sh emits when its own second tier is on; a merged
+#                       file WITHOUT that array makes this flag a silent no-op, never an error.
+#                       PER ZONE = per `subsystem`: a merged discovery-results.json carries no zone key,
+#                       and the subsystem name IS the zone label every record carries (map-zones.sh keys a
+#                       zone on it). On a single-zone run that is exactly "the first N records".
+#                       HIGHEST-RANKED = FIRST IN THE ARRAY: run-discovery.sh's _tier2_select already emits
+#                       each zone's slice in rank order and the merge concatenates slices in zone order, so
+#                       no rank is re-derived here — the ranking lives in exactly one place (#2217 PR A).
+#                       SEPARATION IS THE POINT. A tier-2 outcome lands ONLY in the new top-level `tier2[]`
+#                       array — never in verified[], never in errors[], never in dropped_subfloor[]. It is
+#                       outside totals.candidates and therefore outside the counting invariant
+#                       `candidates == verified + errored + refuted + dropped_subfloor`; it is outside the
+#                       --pay-floor partition (a record carries no severity to floor); and its gate runs in
+#                       its OWN <out>/gates-tier2/ dir, so the #1887 refute-constraints.tsv corpus — built
+#                       from <out>/gates/ — is byte-identical with and without this flag. The #2023
+#                       adjudication overlay is deliberately NOT consulted: it rules on FINDINGS, and a
+#                       tier-2 outcome is never one.
+#                       The gate needs a severity in its manifest, so `Medium` is substituted as a GATE
+#                       INPUT and the exploit text is prefixed `TIER2 (severity unassessed):` — the emitted
+#                       record still ships `severity: ""`, because nothing assessed one.
+#                       Serial by construction (N is capped small upstream); --jobs fans out tier 1 only.
+#                       Default 0 = OFF = inert: no new key, no new dir, every artifact byte-identical to a
+#                       pre-#2217 run.
 #   --brief <file>      Optional protocol brief handed to the refute gate (invariants + known issues).
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the gate (default: flat-cyborg).
 #   --model <id>        LLM model id for the gate's `llm.model` (default: unset, so the emitted config stays
@@ -91,6 +124,7 @@ RESULTS="" ; REPO="" ; OUT="" ; GATE="refute" ; BRIEF="" ; BACKEND="flat-cyborg"
 JOBS=1  # #1863: opt-in bounded-concurrency gate fan-out; 1 = serial, today's exact statement sequence.
 PAY_FLOOR=""  # #1962: unset = inert (see the header). Validated below with the closed severity vocabulary.
 ADJUDICATED=""  # #2023: unset/absent = inert; operator adjudication overlay that pre-empts the refute gate.
+TIER2=0  # #2217: 0 = OFF = inert (see --tier2 in the header). N > 0 = examine N tier-2 records per zone.
 
 nv() { [ "$1" -ge 2 ] || { echo "verify-findings.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -106,6 +140,7 @@ while [ $# -gt 0 ]; do
     --jobs)    nv "$#"; JOBS="$2"; shift 2 ;;
     --pay-floor) nv "$#"; PAY_FLOOR="$2"; shift 2 ;;
     --adjudicated) nv "$#"; ADJUDICATED="$2"; shift 2 ;;
+    --tier2)   nv "$#"; TIER2="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "verify-findings.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -127,6 +162,8 @@ esac
 # #1863: --jobs is a POSITIVE integer, validated before any side effect (same shape as run-discovery.sh).
 case "$JOBS" in ''|*[!0-9]*) echo "verify-findings.sh: --jobs must be a positive integer (got '$JOBS')" >&2; exit 2 ;; esac
 [ "$JOBS" -ge 1 ] || { echo "verify-findings.sh: --jobs must be >= 1 (got '$JOBS')" >&2; exit 2; }
+# #2217: --tier2 is a NON-NEGATIVE integer (0 = OFF = the default), validated before any side effect.
+case "$TIER2" in ''|*[!0-9]*) echo "verify-findings.sh: --tier2 must be a non-negative integer (got '$TIER2')" >&2; exit 2 ;; esac
 [ -z "$BRIEF" ] || [ -f "$BRIEF" ] || { echo "verify-findings.sh: --brief not found: $BRIEF" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "verify-findings.sh: python3 not installed" >&2; exit 3; }
 
@@ -636,6 +673,97 @@ if [ "$GATE" = "refute" ]; then
   done < "$CT_ORDER.sorted"
 fi
 
+# --- #2217: THE SECOND TIER REACHES THE GATE ---------------------------------------------------------------
+#     Runs AFTER the tier-1 candidate loop (and after the #1887 aggregation, which walks <out>/gates/ and must
+#     never see a tier-2 cell). A tier-2 record is a check the hunt derived and did NOT settle; sending it
+#     through the SAME gate_candidate path answers the one question the cell left open — does a hostile
+#     second reader kill it? — without letting the answer pose as a finding. Every outcome goes to its own
+#     accumulator, so verified[]/errors[]/dropped_subfloor[]/totals are untouched by construction, not by
+#     assertion. TIER2 = 0 (the default) leaves this whole block inert: the accumulator stays empty, no
+#     gates-tier2/ dir is created, and the emitted JSON below gains no key.
+TIER2_OUT_TSV="$WORK/tier2-out.tsv"; : > "$TIER2_OUT_TSV"
+TIER2_EXAMINED=0
+if [ "$TIER2" -gt 0 ]; then
+  # Read-only parse of the merged file's top-level tier2[] -> one TSV row per record to examine. Selection is
+  # "the first N of each subsystem group": the array is already in rank order within a zone (see --tier2 in
+  # the header), so taking a prefix IS taking the highest-ranked, and no ranking is re-implemented here.
+  TIER2_TSV="$WORK/tier2.tsv"
+  TIER2_N="$TIER2" python3 - "$RESULTS" > "$TIER2_TSV" <<'PY'
+import sys, os, json
+
+n = int(os.environ["TIER2_N"])
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+per_zone = {}
+rows = []
+# A merged file from a run WITHOUT the second tier simply has no `tier2` key -> zero rows -> a silent no-op.
+for r in (data.get("tier2") or []):
+    if not isinstance(r, dict):
+        continue
+    location = str(r.get("location", "")).strip()
+    if not location:
+        continue  # a record with no location cannot be gated; skipped BEFORE it consumes a per-zone slot.
+    subsystem = str(r.get("subsystem", ""))
+    taken = per_zone.get(subsystem, 0)
+    if taken >= n:
+        continue
+    per_zone[subsystem] = taken + 1
+    # The location is REGEX-PINNED upstream (run-discovery.sh's _tier2_emit_loc: `<path>.sol:<function>`, or a
+    # bare path for the file-only rule), so it carries none of the `@func` / `:~(test/...)` decorations that
+    # bare_codefile() exists to strip in the candidates parse above — the code file is the part before the
+    # first ':', with no second, driftable copy of that stripping logic.
+    codefile = location.split(":", 1)[0].strip()
+    fields = [subsystem, str(r.get("class", "")), str(r.get("id", "")), str(r.get("kind", "")),
+              location, codefile, str(r.get("loc_source", "")), str(r.get("loc_rule", "")),
+              str(r.get("check", "")), str(r.get("why", ""))]
+    rows.append("\t".join(f.replace("\t", " ").replace("\n", " ") for f in fields))
+sys.stdout.write("\n".join(rows))
+if rows:
+    sys.stdout.write("\n")
+PY
+  T2CELLS="$OUT/gates-tier2"; rm -rf "$T2CELLS"; mkdir -p "$T2CELLS"
+  while IFS= read -r T2ROW || [ -n "${T2ROW:-}" ]; do
+    [ -n "$T2ROW" ] || continue
+    T2_SUBSYS="$(printf '%s\n' "$T2ROW" | cut -f1)"
+    T2_CLASS="$(printf '%s\n' "$T2ROW" | cut -f2)"
+    T2_ID="$(printf '%s\n' "$T2ROW" | cut -f3)"
+    T2_KIND="$(printf '%s\n' "$T2ROW" | cut -f4)"
+    T2_LOC="$(printf '%s\n' "$T2ROW" | cut -f5)"
+    T2_FILE="$(printf '%s\n' "$T2ROW" | cut -f6)"
+    T2_SRC="$(printf '%s\n' "$T2ROW" | cut -f7)"
+    T2_RULE="$(printf '%s\n' "$T2ROW" | cut -f8)"
+    T2_CHECK="$(printf '%s\n' "$T2ROW" | cut -f9)"
+    T2_WHY="$(printf '%s\n' "$T2ROW" | cut -f10)"
+    TIER2_EXAMINED=$((TIER2_EXAMINED + 1))
+    T2_SLUG="$(printf '%s' "$T2_LOC" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
+    T2_REL="gates-tier2/${TIER2_EXAMINED}_${T2_SLUG}"
+    T2_OUT="$OUT/$T2_REL"
+    # The gate manifest needs an exploit sentence and a severity. The prefix keeps a tier-2 row from posing as
+    # an assessed finding INSIDE the gate's own transcript too, not merely in the emitted JSON.
+    T2_EXPL="TIER2 (severity unassessed): $T2_CHECK"
+    [ -z "$T2_WHY" ] || T2_EXPL="$T2_EXPL — unsettled because: $T2_WHY"
+    if [ ! -f "$REPO/$T2_FILE" ]; then
+      # Same preflight as tier 1, routed to the tier-2 accumulator: a derived location that does not resolve is
+      # an ERROR outcome (visible), never a REFUTED verdict the record never earned.
+      T2_VERD="ERROR"; T2_REASON="code file not found: $T2_FILE"
+      echo "verify-findings.sh: [$GATE] tier-2 $T2_LOC ($T2_CLASS/$T2_KIND) -> ERROR ($T2_REASON)" >&2
+    else
+      echo "verify-findings.sh: [$GATE] verifying TIER-2 $T2_LOC ($T2_CLASS, $T2_KIND) ..." >&2
+      T2_RC=0
+      gate_candidate "$T2_OUT" "$T2_LOC" "$T2_CLASS" "Medium" "$T2_EXPL" "$T2_FILE" || T2_RC=1
+      if [ "$T2_RC" -ne 0 ]; then
+        T2_VERD="ERROR"; T2_REASON="gate errored (see $T2_REL/gate.log)"
+      else
+        T2_VERD="$(cut -f1 "$T2_OUT/verdict.txt")"
+        T2_REASON="$(cut -f2- "$T2_OUT/verdict.txt" | tr '\t' ' ')"
+      fi
+      echo "verify-findings.sh:   -> tier-2 $T2_VERD" >&2
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$T2_SUBSYS" "$T2_LOC" "$T2_FILE" "$T2_CLASS" "$T2_ID" "$T2_KIND" "$T2_SRC" "$T2_RULE" \
+      "$T2_CHECK" "$T2_WHY" "$T2_VERD" "$T2_REASON" >> "$TIER2_OUT_TSV"
+  done < "$TIER2_TSV"
+fi
+
 # --- aggregate CONFIRMED-only -> verified_findings.json (python3 json.dumps, the repo convention; seam-3 schema).
 #     totals.errored + errors[] (#1691) make a malformed/unresolvable candidate DISTINGUISHABLE from a rigorous
 #     REFUTED verdict — the true rigorous-refutation count = candidates - verified - errored. Additive only:
@@ -646,7 +774,7 @@ fi
 VERIFIED_JSON="$OUT/verified_findings.json"
 REPO_NAME="$REPO_NAME" GATE="$GATE" CANDIDATES="$CANDIDATES" VERIFIED="$VERIFIED" ERRORED="$ERRORED" \
 PAY_FLOOR="$PAY_FLOOR" SUBFLOOR="$SUBFLOOR" \
-python3 - "$CONFIRMED_TSV" "$ERRORS_TSV" "$DROPPED_SUBFLOOR_TSV" > "$VERIFIED_JSON" <<'PY'
+python3 - "$CONFIRMED_TSV" "$ERRORS_TSV" "$DROPPED_SUBFLOOR_TSV" "$TIER2_OUT_TSV" > "$VERIFIED_JSON" <<'PY'
 import sys, os, json
 verified = []
 with open(sys.argv[1], encoding="utf-8") as fh:
@@ -701,6 +829,32 @@ out = {
         "dropped_subfloor": int(os.environ.get("SUBFLOOR", "0")),
     },
 }
+# #2217: the SECOND TIER, strictly additive and strictly separate. Emitted ONLY when at least one tier-2
+# record was examined, so an OFF run (an empty accumulator) gains NO key and stays byte-identical to a
+# pre-#2217 run — the same emit-only-when-non-empty discipline run-discovery.sh's own tier2[] rides.
+# `severity` ships EMPTY by construction: the `Medium` the gate manifest carried is an INPUT the gate needs,
+# never an assessment anyone made. verified[] and every pre-existing total are untouched above.
+tier2 = []
+with open(sys.argv[4], encoding="utf-8") as fh:
+    for line in fh:
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        f = line.split("\t")
+        while len(f) < 12:
+            f.append("")
+        # `id` is the check's ordinal within its cell — emitted as a NUMBER, exactly as run-discovery.sh's
+        # own tier2[] emits it, so a consumer reading both arrays never sees the same field in two types.
+        rid = int(f[4]) if f[4].isdigit() else f[4]
+        tier2.append({
+            "subsystem": f[0], "location": f[1], "file": f[2], "class": f[3],
+            "id": rid, "kind": f[5], "loc_source": f[6], "loc_rule": f[7],
+            "severity": "", "check": f[8], "why": f[9],
+            "verdict": f[10], "reason": f[11],
+        })
+if tier2:
+    out["tier2"] = tier2
+    out["totals"]["tier2"] = len(tier2)
 print(json.dumps(out, indent=2))
 PY
 
@@ -711,6 +865,9 @@ if [ -n "$PAY_FLOOR" ] && [ "$SUBFLOOR" -gt 0 ]; then
 fi
 echo "================ VERIFY [$GATE]: $CANDIDATES candidate(s), $VERIFIED confirmed, $ERRORED errored (malformed/unresolvable), $SKIPPED skipped$SUBFLOOR_SUFFIX ================" >&2
 echo "verify-findings.sh: verified findings at $VERIFIED_JSON" >&2
+if [ "$TIER2_EXAMINED" -gt 0 ]; then
+  echo "verify-findings.sh: tier 2 — $TIER2_EXAMINED unsettled check(s) examined; verdicts in tier2[] of $VERIFIED_JSON (NOT findings, never in verified[])" >&2
+fi
 if [ "$VERIFIED" -gt 0 ]; then
   echo "verify-findings.sh: NEXT = run the human-gated submission pass over each verified finding (run-audit-pass.sh); submission stays human-gated." >&2
 else
