@@ -19,10 +19,13 @@
 #                  positional readers were updated instead (see README.md "Adding a contest").
 #   scope_hint     optional map-zones.sh --scope-hint restriction (comma/space list of files or dir-prefixes);
 #                  blank = let zone-mapper.ag auto-discover the in-scope surface.
-# Provenance: all 8 rows are Sherlock contests, chosen (2026-07-11 session) as a corpus spanning contest size/
+# Provenance: the first 8 rows are Sherlock contests, chosen (2026-07-11 session) as a corpus spanning contest size/
 # domain; GT counts below are informational (re-derived live by extract-gt.sh from each judging_repo, never
 # hand-entered) and were verified by direct clone+grep on 2026-07-13: dodo=17 yieldoor=17 crestal=7 yearn=3
 # plaza=30 notional=37 mellow=15 symm=6 (total 132). No contest code or finding text is re-hosted here.
+# Held-out additions (2026-09-16, #2231): three concluded Sherlock contests absent from every lens, chosen for
+# rare-row supply (found-by <= 2): malda=17 GT (5 rare), superfluid-locker=8 (4 rare), lend-v2=39 (4 rare) —
+# verified by clone + extract-gt.sh on 2026-09-16. Sherlock has published no new judging repo since 2025-07-25.
 dodo	sherlock-audit/2025-05-dodo-cross-chain-dex	sherlock-audit/2025-05-dodo-cross-chain-dex-judging	omni-chain-contracts	holdout
 yieldoor	sherlock-audit/2025-02-yieldoor	sherlock-audit/2025-02-yieldoor-judging	yieldoor	dev
 crestal	sherlock-audit/2025-03-crestal-network	sherlock-audit/2025-03-crestal-network-judging	crestal-omni-contracts	dev
@@ -31,3 +34,6 @@ plaza	sherlock-audit/2024-12-plaza-finance	sherlock-audit/2024-12-plaza-finance-
 notional	sherlock-audit/2025-06-notional-exponent	sherlock-audit/2025-06-notional-exponent-judging	notional-v4	dev
 mellow	sherlock-audit/2025-07-mellow-flexible-vaults	sherlock-audit/2025-07-mellow-flexible-vaults-judging	flexible-vaults	holdout
 symm	sherlock-audit/2025-03-symm-io-stacking	sherlock-audit/2025-03-symm-io-stacking-judging	token	holdout
+malda	sherlock-audit/2025-07-malda	sherlock-audit/2025-07-malda-judging	malda-lending	holdout
+superfluid-locker	sherlock-audit/2025-06-superfluid-locker-system	sherlock-audit/2025-06-superfluid-locker-system-judging	fluid/packages/contracts	holdout
+lend-v2	sherlock-audit/2025-05-lend-audit-contest	sherlock-audit/2025-05-lend-audit-contest-judging	Lend-V2	holdout
