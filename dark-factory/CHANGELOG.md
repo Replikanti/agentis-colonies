@@ -97,9 +97,14 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   classification instruction gains an ONLY-WHEN-shaped `C24` detection rule with an explicit "if this zone does
   none of these, do NOT add C24" escape (the C19/C22/C23 precedent: the taxonomy menu grows the moment the
   class exists, and the tight rule is what bounds it) — no net helper name and no corpus identifier appears in
-  the prompt. **Measured offline fan-out on the two frozen #2213 corpus maps: 6 of 13 zones (2 of 4 on one
-  contest, 4 of 9 on the other), +1 cell per firing zone; both zones carrying the CAUGHT C23 row stay silent,
-  so that catch is untouched by construction.** Two deliberate non-changes, pinned by tests: **no
+  the prompt. **Measured offline fan-out on the two frozen #2213 corpus maps: 7 of 13 zones over each
+  zone's whole file set (2 of 4 on one contest, **5 of 9** on the other), +1 cell per firing zone.** Of the two
+  zones carrying the CAUGHT C23 row, only ONE stays silent — the other fires (a request predicate plus a
+  `_preLiquidation(` consumer in the same contract), so "the C23 zones stay silent" is NOT a property of this
+  net and is not claimed. The count is input-dependent: over the function-SLICED blob the mapper is handed on
+  these particular maps it is 6 of 13, because that zone's 16-function slice keeps the predicate and drops the
+  consumer; 7 of 13 is the number quoted, the slice being a prompt-budget artefact of one map.
+  Two deliberate non-changes, pinned by tests: **no
   `class_to_keyword()` entry** for C24 in `invariant-prover.ag` (that map routes the depth/metamorphic action
   menu — an unmeasured second variable; C22/C23 have no entry either) and **`hunter.ag` is not touched at all**
   (the lens IS the taxonomy section it already slices). New `demo-state-assumption-lens.sh` (pure awk/grep,

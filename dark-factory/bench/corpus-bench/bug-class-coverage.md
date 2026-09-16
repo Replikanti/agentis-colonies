@@ -198,19 +198,32 @@ the #2213 A/B, in both arms:
 | notional M-8 | an emission accrual divides by a supply whose floor is defined in a different contract in scope | generation miss (never named, both arms) |
 | notional M-16 | a pending-request state blocks the position owner's remedy while a third party's path stays live against it | generation miss (never named, both arms) |
 
-**Measured offline fan-out of the C24 net** on the two frozen #2213 base maps (zone file sets taken from each
-map's own `scope.tsv`, sliced exactly as `zone-mapper.ag` slices them; the shipped net driven directly, no
-LLM):
+**Measured offline fan-out of the C24 net** on the two frozen #2213 base maps, driving the shipped net
+directly (no LLM) over each zone's WHOLE file set:
 
 | contest | zones | C24 fires on | carrying net |
 |---|---|---|---|
-| yieldoor | 4 | 2 zones (the library zone that holds M-2's accrual, plus the zone that owns the same interest touchpoint) | accrual-update |
-| notional | 9 | 4 zones (the zones that hold M-8's emission accrual and M-16's request gate, plus the staking and router zones) | emission-per-supply, request-gated-solvency, accrual-update |
+| yieldoor | 4 | 2 — `src_libraries` (holds M-2's accrual), `src__p1` | accrual-update |
+| notional | 9 | 5 — `src` (M-16's request gate), `src_rewards` (M-8's emission accrual), `src_staking`, `src_routers`, `src_single_sided_lp` | emission-per-supply, request-gated-solvency, accrual-update |
 
-**6 of 13 zones, i.e. +1 cell per firing zone — it does not fire on every zone** (7 zones stay silent).
-Both zones that carry the CAUGHT C23 row are among the silent ones, so that catch is untouched by
-construction. The two zones beyond the three target rows are an accepted, disclosed cost: both own an
-interest-accrual touchpoint, so both are mechanism-plausible rather than noise.
+**7 of 13 zones, i.e. +1 cell per firing zone — it does not fire on every zone** (6 stay silent: yieldoor
+`src__p2`, `src_types`; notional `src_oracles`, `src_proxy`, `src_utils`, `src_withdraws`).
+
+Of the two zones that carry the **CAUGHT C23** row, only `src_oracles` stays silent; `src_single_sided_lp`
+FIRES (a request/cooldown predicate plus a `_preLiquidation(` consumer in the same contract). So "the C23
+zones stay silent" is **not** a property of this net and is not claimed — the C23 catch is argued safe by the
+#2191-carried no-regression gate in M2, not by construction. The three zones beyond the three target rows are
+an accepted, disclosed cost: each owns an interest-accrual or request-gated touchpoint, so each is
+mechanism-plausible rather than noise.
+
+The count is **input-dependent**, which is worth recording for anyone re-measuring: over the function-SLICED
+blob the mapper is actually handed on these maps (`scope_files` — a >120-LOC contract cut to its top 16
+functions) the count is **6 of 13**, because `src_single_sided_lp`'s slice keeps the request predicate and
+drops the `_preLiquidation(` consumer. 7 of 13 is the number quoted here: the slice is a prompt-budget
+artefact of one particular map, the whole-file reading is the net's own selectivity.
+
+**M2's rehunt zones are unaffected either way** — the measurement stages `C24` into `scope.tsv` by hand on
+`src_libraries` / `src_rewards` / `src` and never re-maps, so neither reading changes the arms.
 
 **Status: IN-FLIGHT — recall is UNMEASURED.** M1 ships the class, the route and the offline guards only.
 Whether C24 recovers any of the three rows is #2218 M2: a zone-restricted `--rehunt-gaps` A/B on the SAME

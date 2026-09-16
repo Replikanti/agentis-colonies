@@ -458,10 +458,14 @@ fn contains_cross_unit_signal(code: string) -> bool {
 // Sibling of the #1729/#2111/#2121/#2214 nets: flat `index_of` over the pre-built whole-zone `code` blob —
 // no per-element recursion, no regex, no `exec sh`.
 //
-// Measured fan-out on the two frozen #2213 maps (zone files taken from each map's own `scope.tsv`, sliced
-// exactly as this agent slices them): 6 of 13 zones, 2 of 4 on one contest and 4 of 9 on the other — i.e.
-// it does NOT fire on every zone, and both zones that carry the CAUGHT C23 row stay silent, so that catch
-// is untouched by construction. Cost is +1 cell per firing zone.
+// Measured fan-out on the two frozen #2213 maps: 7 of 13 zones over each zone's WHOLE file set (2 of 4 on
+// one contest, 5 of 9 on the other) — i.e. it does NOT fire on every zone. Cost is +1 cell per firing zone.
+// One of those 7 also carries the CAUGHT C23 row, so "the C23 zones stay silent" is NOT a property of this
+// net: only one of the two is silent. NB the fan-out is input-dependent — over the function-SLICED blob the
+// mapper is actually handed on these maps (`scope_files`, a >120-LOC contract cut to its top 16 functions)
+// the count is 6 of 13, because that zone's slice keeps the request predicate but drops the
+// `_preLiquidation(` consumer. Quote the 7/13 number: the slice is a prompt-budget artefact of one map, the
+// whole-file reading is the net's actual selectivity.
 
 // (a) TIME-gap surface: the zone owns an accrual/index/rate UPDATE touchpoint — a function that advances a
 // stored index or rate and stamps it, whose result later feeds a decision. Paren-anchored on purpose (the
