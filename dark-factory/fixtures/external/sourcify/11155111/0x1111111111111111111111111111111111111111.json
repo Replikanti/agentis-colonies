@@ -1,0 +1,10 @@
+{
+  "match": "exact_match",
+  "chainId": "11155111",
+  "address": "0x1111111111111111111111111111111111111111",
+  "sources": {
+    "src/ExternalQuoteSource.sol": {
+      "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.20;\n\n/// @title ExternalQuoteSource\n/// @notice Verified quote reader. Only readable through its verified on-chain source.\ncontract ExternalQuoteSource {\n    /// @dev Quotes are returned scaled by 1e8, NOT by 1e18, because this source mirrors an\n    ///      8-decimal feed. A consumer normalising by 1e18 under-reports by ten orders of magnitude.\n    function quote(address asset) external view returns (uint256) {\n        return _quotes[asset];\n    }\n\n    mapping(address => uint256) internal _quotes;\n}\n"
+    }
+  }
+}

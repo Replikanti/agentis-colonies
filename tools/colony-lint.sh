@@ -1528,6 +1528,69 @@ if [ -x "$REPO_ROOT/dark-factory/demo-operationalize-lens.sh" ]; then
     fi
 fi
 
+# --- dark-factory external-protocol resolver (#2235, PR A) ---
+# dark-factory/resolve-external.sh turns an EXTERNAL symbol (or a deployed address) into a re-openable
+# <path>:<line>, so a claim about another protocol can be CITED instead of remembered: vendored source under
+# the audited repo first, then the deployed address the repo itself names via keyless Sourcify (ERC-1967
+# implementation resolved when an RPC is configured, else recorded `proxy-unresolved`), then the upstream
+# repo the repo's own header comment or vendored package manifest points at. Two gates, both mandatory:
+#   (1) demo-resolve-external.sh — the offline self-test: the three resolution steps in isolation and in
+#       priority order, cache-first (a repeat costs zero requests), the per-cell network budget, the closed
+#       refusal vocabulary, `bad-input` exit 2 for a model-supplied URL, and that every emitted path lies
+#       under --repo or the cache and re-opens. Both outbound seams are replaced by fixture readers, so the
+#       test runs with no network, no forge, no agentis and no LLM.
+#   (2) the HOST ALLOWLIST (issue #2235 STOP-1 decision 3b) — the resolver may talk to the hosts it
+#       hard-codes in ALLOWED_HOSTS and to nothing else, so this greps the script for every https?:// and
+#       git@ host literal and fails on any that is not on that list. A DEAD-GUARD control plants an
+#       off-allowlist host in a copy and fails the lint if the same extractor does not catch it — without
+#       it, a broken extractor would report a clean allowlist having checked nothing.
+if [ -x "$REPO_ROOT/dark-factory/demo-resolve-external.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-resolve-external.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: external-protocol resolver (vendored -> Sourcify -> upstream, cache-first, budgeted, closed refusal vocabulary) (#2235)"
+    else
+        fail "dark-factory: external-protocol resolver regressed (#2235)"
+        printf '%s\n' "$check_out"
+    fi
+
+    rx_script="$REPO_ROOT/dark-factory/resolve-external.sh"
+    rx_allowed="$(grep -E "^ALLOWED_HOSTS='" "$rx_script" | head -n 1 | sed -e "s/^ALLOWED_HOSTS='//" -e "s/'$//" || true)"
+    rx_tmp="$(mktemp)"
+    cp "$rx_script" "$rx_tmp"
+    echo '# dead-guard control: https://not-an-allowed-host.example/probe' >> "$rx_tmp"
+    rx_off=""
+    rx_guard=""
+    for rx_f in "$rx_script" "$rx_tmp"; do
+        rx_found=""
+        # Backslashes are stripped first so a host hidden in an escaped regex literal still yields its
+        # full name rather than a truncated prefix. Same extractor as demo-resolve-external.sh AC13.
+        for rx_h in $(sed 's/\\//g' "$rx_f" | grep -oE '(https?://|git@)[A-Za-z0-9][A-Za-z0-9.-]*' \
+                      | sed -e 's|^https\{0,1\}://||' -e 's|^git@||' | LC_ALL=C sort -u || true); do
+            case " $rx_allowed " in
+                *" $rx_h "*) : ;;
+                *) rx_found="$rx_found $rx_h" ;;
+            esac
+        done
+        if [ "$rx_f" = "$rx_tmp" ]; then rx_guard="$rx_found"; else rx_off="$rx_found"; fi
+    done
+    rm -f "$rx_tmp"
+    # Membership, not equality: a resolver that ALREADY names an off-allowlist host would otherwise be
+    # reported as a dead extractor rather than as the allowlist violation it is.
+    rx_guard_live=0
+    case " $rx_guard " in
+        *" not-an-allowed-host.example "*) rx_guard_live=1 ;;
+    esac
+    if [ -z "$rx_allowed" ]; then
+        fail "dark-factory: resolve-external.sh has no hard-coded ALLOWED_HOSTS literal (#2235)"
+    elif [ "$rx_guard_live" -eq 0 ]; then
+        fail "dark-factory: the resolve-external.sh host-allowlist check is DEAD - a planted off-allowlist host was not caught (#2235)"
+    elif [ -n "$rx_off" ]; then
+        fail "dark-factory: resolve-external.sh names host(s) outside its own allowlist:$rx_off (#2235)"
+    else
+        pass "dark-factory: resolve-external.sh host allowlist enforced ($rx_allowed), dead-guard control live (#2235)"
+    fi
+fi
+
 # --- dark-factory same-file callee closure in the function slicer (#2150, sub-milestone D1.1 of epic #2130) ---
 # A `file@fn` slice used to carry the requested functions and the contract header only, so an external entry
 # point that delegates its state writes and external calls to same-file internal helpers reached the hunter as

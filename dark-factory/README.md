@@ -417,6 +417,58 @@ The offline demo proves the **machinery**, never the capability: whether the re-
 actually generate the vector it was missing is only provable by a sandboxed, refusal-fallback-off,
 transcript-attributed live re-hunt of a post-cutoff held-out target (an operator step, deliberately not CI).
 
+### Read the external protocol (`resolve-external.sh`, #2235)
+
+Every dismissal that turns on how ANOTHER protocol behaves — "that rate is 1e18-scaled", "that wrapper is
+1:1" — is unanswerable from the zone slice alone, so it is either confabulated or left `UNRESOLVED`.
+`resolve-external.sh` is the missing primitive: it turns an external **symbol** into a `path:line` that a
+human or the harness can RE-OPEN, with no LLM anywhere.
+
+```bash
+export DARK_FACTORY_DIR="$(mktemp -d)"   # the cache root; defaults to ~/.dark-factory
+dark-factory/resolve-external.sh --symbol IRateSource.rate --repo /path/to/audited-repo
+# EXTERNAL|IRateSource.rate|vendored|/path/to/audited-repo/lib/.../IRateSource.sol:11|<sha256>
+
+dark-factory/resolve-external.sh --symbol ExternalQuoteSource --repo /path/to/audited-repo --chain 1
+# EXTERNAL|ExternalQuoteSource|sourcify|<cache>/sourcify/1/0x…/sources/…sol:6|<sha256>
+
+dark-factory/resolve-external.sh --symbol NoSuchThing --repo /path/to/audited-repo
+# EXTERNAL|NoSuchThing|unresolved|no-upstream-url
+```
+
+Resolution order, first hit wins: **(a) vendored** source under the repo's own `lib/`, `node_modules/`,
+`dependencies/`, `contracts/lib/`; **(b) a deployed address the repo itself names** in `script/` / `test/` /
+`docs/` (or `--address`), fetched KEYLESS from Sourcify into the cache — an ERC-1967 implementation slot is
+resolved when an RPC is configured (`DF_EXTERNAL_RPC`/`FORK_URL`/`ETH_RPC_URL`), and without one the proxy
+is fetched and the record says `proxy-unresolved` rather than claiming anything about the implementation;
+**(c) the upstream GitHub repo the audited repo's OWN header comment or vendored `package.json` names**,
+shallow-cloned into the cache. Otherwise exactly one refusal from a closed vocabulary:
+`no-vendored-match`, `no-address`, `not-verified-on-sourcify`, `no-upstream-url`, `network-unavailable`,
+`budget-exhausted`, `bad-input`.
+
+Three properties are load-bearing, because this is the one dark-factory tool that leaves the host:
+
+- **Inputs are a symbol or an address — never a URL.** There is no flag that takes a host, and a URL fails
+  input validation (`bad-input`, exit 2). Requests are built from fixed templates.
+- **Hard-coded host allowlist** (`sourcify.dev`, `repo.sourcify.dev`, `github.com`,
+  `raw.githubusercontent.com`, plus the operator's configured RPC). `tools/colony-lint.sh` greps the script
+  for every host literal and fails on anything else, with a dead-guard control so a broken grep cannot
+  report a clean allowlist having checked nothing.
+- **Cache-first and budgeted.** A repeat resolution costs zero requests; `--budget-state <file>` caps
+  NETWORK resolutions at `DF_EXTERNAL_BUDGET` (default 5) across the calls that share the file, and
+  `--offline` never leaves the host at all. Every citation is re-opened from the cache, never re-fetched.
+
+Reproduce offline — the three resolution steps in isolation and in priority order, the cache, the budget,
+the refusals and the allowlist, with both outbound seams replaced by fixture readers (no network, no forge,
+no `agentis`, no LLM):
+
+```bash
+dark-factory/demo-resolve-external.sh
+```
+
+Wiring the resolver into discovery cells (the `EXTERNAL-CITED` evidence kind and the harness re-open gate)
+and the on-chain fact check land separately; on its own this script changes no hunt.
+
 ### Inter-agent coordination (shared blackboard, #1001)
 
 The fan-out is no longer a flat sum of independent cells. Because every (subsystem × class) cell runs
