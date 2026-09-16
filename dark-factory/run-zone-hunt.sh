@@ -236,6 +236,15 @@
 #                       PREFER the lens classes those impacts imply when --deep-hunt-max-lenses truncates the
 #                       fan-out. It never adds or removes a lens row, only reorders which survive the cap; an
 #                       empty/unmapped set is a provable no-op. Absent => byte-identical.
+#   --tier2 <N>         #2217 STAGE 4 SECOND TIER (default: absent = OFF = nothing forwarded = a
+#                       byte-identical STAGE 4 argv). Forwarded verbatim to verify-findings.sh --tier2,
+#                       which examines the N highest-ranked tier-2 records PER ZONE through the refute gate
+#                       AFTER every tier-1 candidate, and lands their verdicts in a SEPARATE tier2[] array
+#                       of verified_findings.json (never in verified[] — a tier-2 record is an UNSETTLED
+#                       check, not a finding). VERIFICATION ONLY: whether the hunt carries tier-2 records
+#                       in the first place is run-discovery.sh's own opt-in, DF_TIER2=1 in the environment
+#                       (with DF_TIER2_MAX_PER_ZONE as its per-zone cap). Without it the merged file has no
+#                       tier2[] and --tier2 N is a silent no-op, never an error.
 #   --drop-dir <dir>    deliver-submission.sh drop-dir (default: <out>/drop).
 #   -h, --help          This help.
 #
@@ -321,6 +330,10 @@ REHUNT_GAPS=0 ; REHUNT_INCLUDE_PARTIAL=0 ; REHUNT_MAX_ATTEMPTS=2
 # #1930: payability. EMPTY floor = OFF = no brief section, no lens steering, no finding gate — every artifact
 # is byte-identical to a pre-#1930 run. PAY_MODE is only meaningful with a floor (validated below).
 PAY_FLOOR="" ; PAY_MODE="drop" ; PAYABLE_IMPACTS="" ; PAY_MODE_SET=0
+# #2217: STAGE 4 second tier. EMPTY = the flag was not passed = NOTHING is forwarded to verify-findings.sh,
+# so the STAGE 4 argv is byte-identical to a pre-#2217 run. This flag governs VERIFICATION only; whether the
+# hunt CARRIES tier-2 records at all is run-discovery.sh's own opt-in (DF_TIER2=1 in the environment).
+TIER2=""
 # #1731: cross-run ensemble/union flags — a THIN pass-through: collected verbatim into DEEP_FWD and appended to
 # both --deep-hunt run-invariant-hunt.sh invocations. Empty (the default) => the arg lists are byte-identical.
 DEEP_FWD=()
@@ -377,6 +390,7 @@ while [ $# -gt 0 ]; do
     --rehunt-include-partial) REHUNT_INCLUDE_PARTIAL=1; shift ;;
     --rehunt-max-attempts) nv "$#"; REHUNT_MAX_ATTEMPTS="$2"; shift 2 ;;
     --pay-floor)        nv "$#"; PAY_FLOOR="$2"; shift 2 ;;
+    --tier2)            nv "$#"; TIER2="$2"; shift 2 ;;
     --pay-mode)         nv "$#"; PAY_MODE="$2"; PAY_MODE_SET=1; shift 2 ;;
     --payable-impacts)  nv "$#"; PAYABLE_IMPACTS="$2"; shift 2 ;;
     --drop-dir)         nv "$#"; DROP_DIR="$2"; shift 2 ;;
@@ -450,6 +464,10 @@ esac
 case "$PAY_MODE" in
   drop|flag) : ;;
   *) echo "run-zone-hunt.sh: --pay-mode must be drop or flag (got '$PAY_MODE')" >&2; exit 2 ;;
+esac
+# #2217: --tier2 is a non-negative integer when present; a typo must fail here, not 40 minutes into STAGE 4.
+case "$TIER2" in
+  ''|*[!0-9]*) [ -z "$TIER2" ] || { echo "run-zone-hunt.sh: --tier2 must be a non-negative integer (got '$TIER2')" >&2; exit 2; } ;;
 esac
 # A mode with no floor gates nothing — a usage error, the --total-depth-cells-needs-depth precedent.
 [ "$PAY_MODE_SET" -eq 0 ] || [ -n "$PAY_FLOOR" ] || { echo "run-zone-hunt.sh: --pay-mode needs --pay-floor: a finding pay mode with no floor is a no-op" >&2; exit 2; }
@@ -1034,6 +1052,7 @@ echo "run-zone-hunt.sh: [M4] verifying candidates (refute gate) -> $VER ..." >&2
 ADJ_ARG=""; _ADJ="$(dirname "$OUT")/adjudicated.tsv"; [ -f "$_ADJ" ] && ADJ_ARG="$_ADJ"
 "$VERIFY" --results "$MERGED" --repo "$REPO" --gate refute --backend "$BACKEND" --agentis "$AGENTIS" \
   --jobs "$JOBS" ${PAY_FLOOR:+--pay-floor "$PAY_FLOOR"} ${ADJ_ARG:+--adjudicated "$ADJ_ARG"} \
+  ${TIER2:+--tier2 "$TIER2"} \
   ${MODEL:+--model "$MODEL"} --out "$VER"
 VERIFIED_JSON="$VER/verified_findings.json"
 [ -f "$VERIFIED_JSON" ] || { echo "run-zone-hunt.sh: verify-findings.sh did not emit verified_findings.json" >&2; exit 3; }

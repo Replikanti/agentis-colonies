@@ -33,6 +33,13 @@
 #      skip uncounted, NEVER landing in dropped_subfloor[]. totals.candidates is identical with and without
 #      --pay-floor, and the #1962 counting invariant (candidates == verified + errored + refuted +
 #      dropped_subfloor) holds in both runs.
+#   13) #2217 --tier2: with the flag ABSENT a results file CARRYING a top-level tier2[] produces a
+#      verified_findings.json byte-identical to the same file with tier2[] stripped, with NO `tier2` key and
+#      no gates-tier2/ dir. With `--tier2 2` over 3 tier-2 records exactly 2 are examined, their verdicts
+#      (REAL and REFUTED) land in a SEPARATE tier2[] array carrying id/kind/location/loc_source/check, and
+#      verified[] + every pre-existing total + the #1887 refute-constraints.tsv corpus are UNCHANGED. The
+#      cap is PER ZONE (per subsystem), an unresolvable tier-2 location is an ERROR outcome (not REFUTED),
+#      and `--tier2 3` over a results file with NO tier2[] is a silent no-op.
 #
 # Usage:  dark-factory/demo-verify-findings.sh
 # Requires: python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression.
@@ -1112,6 +1119,238 @@ assert "contracts/Token.sol:transfer:5" in [v["location"] for v in d["verified"]
 PY
 then ok "12e) a re-run (which rm -rf's gates/) REBUILDS the preserved verdict from the overlay — the adjudicated finding survives the wipe a --rehunt-gaps pass triggers"
 else bad "12e) the adjudicated verdict did not survive a gates-dir-wiping re-run"
+fi
+
+
+# ----------------------------------------------------------------------------------------------------------
+# (13) #2217: --tier2 N sends the N highest-ranked UNSETTLED checks per zone through the SAME refute gate,
+#     AFTER tier 1, and lands their verdicts in a SEPARATE tier2[] array. Three fixtures:
+#       (a) --tier2 2 over 3 tier-2 records -> exactly 2 examined, verdicts in tier2[], verified[] untouched;
+#       (b) the flag ABSENT -> byte-identical to the same results with tier2[] stripped, and no `tier2` key;
+#       (c) --tier2 3 over a results file with NO tier2[] -> a silent no-op, exit 0.
+#     Self-contained fixtures over the SAME throwaway repo; the tier-1 fixtures above are untouched.
+# ----------------------------------------------------------------------------------------------------------
+note "13) #2217: --tier2 examines unsettled checks through the same gate, separably ..."
+
+# The tier-2 records are shaped EXACTLY as run-discovery.sh's PR-A schema emits them (subsystem/class/id/kind/
+# location/loc_source/loc_rule/severity ""/check/why), in rank order within their zone. Record 3 is the one the
+# cap must NOT reach. Record 2's class carries the stub's *refuted* sentinel, so the two examined records take
+# DIFFERENT verdicts — a pass that hard-coded one verdict could not produce this pair.
+T2RES="$WORK/tier2-results.json"
+python3 - > "$T2RES" <<'PY'
+import json
+
+
+def rec(rid, kind, loc, cls, rule, check, why):
+    return {"subsystem": "vault deposits", "class": cls, "id": rid, "kind": kind, "location": loc,
+            "loc_source": "opcheck", "loc_rule": rule, "severity": "", "check": check, "why": why}
+
+
+data = {
+    "repo": "target", "backend": "mock", "jobs": 1,
+    "cells": [
+        {"subsystem": "vault deposits", "class": "C1", "files": "contracts/Vault.sol",
+         "candidates": ["contracts/Vault.sol:deposit:12|C1|High|external depositor mints free shares|donate an asset to inflate the share price"],
+         "coordination": []},
+        {"subsystem": "vault deposits", "class": "C-refuted", "files": "contracts/Token.sol",
+         "candidates": ["contracts/Token.sol:transfer:5|C-refuted|Low|transfer lacks an owner check|anyone moves funds"],
+         "coordination": []},
+    ],
+    "totals": {"cells": 2, "candidates": 2, "steers": 0, "tier2": 3},
+    "tier2": [
+        rec(7, "unresolved", "contracts/Vault.sol:deposit", "C19", "contract-fn",
+            "does deposit bound the share mint when totalSupply is zero", "the trace never reached the mint path"),
+        rec(3, "uncited", "contracts/Oracle.sol:price", "C-refuted", "contract-fn",
+            "is a stale round rejected before price is used", "dismissed CLEAN with no citation"),
+        rec(11, "unresolved", "contracts/Token.sol:transfer", "C19", "fn-grep",
+            "can transfer move more than the caller holds", "the trace stopped at an external call"),
+    ],
+}
+print(json.dumps(data, indent=2))
+PY
+# The SAME file with the top-level tier2[] (and its total) removed -- the OFF-path byte-identity reference.
+T2RES_STRIPPED="$WORK/tier2-results-stripped.json"
+python3 - "$T2RES" > "$T2RES_STRIPPED" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+d.pop("tier2", None)
+d["totals"].pop("tier2", None)
+print(json.dumps(d, indent=2))
+PY
+
+# --- (b) FLAG ABSENT: the tier2[] in the INPUT is ignored end to end. ---------------------------------------
+T2_OFF_OUT="$WORK/out-tier2-off"
+"$VERIFY" --results "$T2RES" --repo "$REPO" --out "$T2_OFF_OUT" --gate refute --backend mock --agentis "$STUB" \
+  >"$WORK/t2-off.out" 2>"$WORK/t2-off.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "13a) the --tier2-absent run over a tier2-carrying results file exits 0" \
+  || { bad "13a) the --tier2-absent run exited $RC"; sed 's/^/      /' "$WORK/t2-off.err" >&2; }
+
+T2_STRIP_OUT="$WORK/out-tier2-stripped"
+"$VERIFY" --results "$T2RES_STRIPPED" --repo "$REPO" --out "$T2_STRIP_OUT" --gate refute --backend mock --agentis "$STUB" \
+  >"$WORK/t2-strip.out" 2>"$WORK/t2-strip.err"
+if cmp -s "$T2_OFF_OUT/verified_findings.json" "$T2_STRIP_OUT/verified_findings.json"; then
+  ok "13b) with --tier2 ABSENT, verified_findings.json is BYTE-IDENTICAL to the same results with tier2[] stripped (the second tier is inert by default)"
+else
+  bad "13b) the OFF run differs from the tier2-stripped run (default inertness broken)"
+  diff "$T2_STRIP_OUT/verified_findings.json" "$T2_OFF_OUT/verified_findings.json" | sed 's/^/      /' >&2
+fi
+if python3 -c 'import sys, json; d = json.load(open(sys.argv[1], encoding="utf-8")); sys.exit(0 if ("tier2" not in d and "tier2" not in d["totals"]) else 1)' "$T2_OFF_OUT/verified_findings.json"; then
+  ok "13c) the OFF run emits NO tier2 key at all (absent, not an empty array) in either the top level or totals"
+else
+  bad "13c) the OFF run emitted a tier2 key"
+fi
+if [ ! -d "$T2_OFF_OUT/gates-tier2" ]; then
+  ok "13d) the OFF run creates no gates-tier2/ dir (no new artifact on the default path)"
+else
+  bad "13d) the OFF run created a gates-tier2/ dir"
+fi
+
+# --- (a) --tier2 2 over 3 records: exactly 2 examined, verdicts separate, tier 1 untouched. -----------------
+T2_ON_OUT="$WORK/out-tier2-on"
+"$VERIFY" --results "$T2RES" --repo "$REPO" --out "$T2_ON_OUT" --gate refute --backend mock --agentis "$STUB" \
+  --tier2 2 >"$WORK/t2-on.out" 2>"$WORK/t2-on.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "13e) the --tier2 2 run exits 0" \
+  || { bad "13e) the --tier2 2 run exited $RC"; sed 's/^/      /' "$WORK/t2-on.err" >&2; }
+
+if python3 - "$T2_ON_OUT/verified_findings.json" "$T2_OFF_OUT/verified_findings.json" <<'PY'
+import sys, json
+on = json.load(open(sys.argv[1], encoding="utf-8"))
+off = json.load(open(sys.argv[2], encoding="utf-8"))
+# the SEPARATE array, with exactly the two highest-ranked records of the (single) zone
+assert "tier2" in on, "the --tier2 run emitted no tier2[] array"
+t2 = on["tier2"]
+assert len(t2) == 2, "tier2[] len != 2 (the cap did not bind): %d" % len(t2)
+assert on["totals"]["tier2"] == 2, "totals.tier2 != 2: %r" % on["totals"].get("tier2")
+keys = {"subsystem", "location", "file", "class", "id", "kind", "loc_source", "loc_rule",
+        "severity", "check", "why", "verdict", "reason"}
+for r in t2:
+    assert set(r.keys()) == keys, "tier2 entry keys %r != %r" % (set(r.keys()), keys)
+    assert r["severity"] == "", "a tier-2 outcome carries a severity it never assessed: %r" % r["severity"]
+    assert r["check"], "a tier-2 outcome lost its check text"
+    assert r["reason"], "a tier-2 outcome has a blank reason"
+byloc = {r["location"]: r for r in t2}
+assert sorted(byloc) == ["contracts/Oracle.sol:price", "contracts/Vault.sol:deposit"], \
+    "the wrong tier-2 records were examined: %r" % sorted(byloc)
+assert "contracts/Token.sol:transfer" not in byloc, "the 3rd (over-cap) tier-2 record was examined"
+# the REFUTE VERDICT is the record's own, not a constant: record 1 survives, record 2 is killed.
+v = byloc["contracts/Vault.sol:deposit"]
+assert v["verdict"] == "REAL", "the surviving tier-2 record's verdict is not REAL: %r" % v["verdict"]
+assert v["id"] == 7 and v["kind"] == "unresolved", "tier-2 id/kind lost (id must be a NUMBER, as run-discovery.sh emits it): %r" % v
+assert v["loc_source"] == "opcheck" and v["loc_rule"] == "contract-fn", "tier-2 loc provenance lost: %r" % v
+assert v["file"] == "contracts/Vault.sol", "tier-2 code file mis-derived: %r" % v["file"]
+o = byloc["contracts/Oracle.sol:price"]
+assert o["verdict"] == "REFUTED", "the killed tier-2 record's verdict is not REFUTED: %r" % o["verdict"]
+assert o["id"] == 3 and o["kind"] == "uncited", "tier-2 id/kind lost: %r" % o
+# SEPARATION: a tier-2 outcome is in NO tier-1 array, and the tier-1 result is bit-for-bit the OFF run's.
+vlocs = [x["location"] for x in on["verified"]]
+assert "contracts/Vault.sol:deposit" not in vlocs, "a tier-2 outcome leaked into verified[] (REAL is not a finding)"
+assert on["verified"] == off["verified"], "verified[] changed under --tier2"
+assert on["errors"] == off["errors"], "errors[] changed under --tier2"
+assert on["dropped_subfloor"] == off["dropped_subfloor"], "dropped_subfloor[] changed under --tier2"
+for k in ("candidates", "verified", "errored", "dropped_subfloor"):
+    assert on["totals"][k] == off["totals"][k], "totals.%s changed under --tier2: %r vs %r" % (k, on["totals"][k], off["totals"][k])
+# the counting invariant still counts TIER 1 ONLY (a tier-2 row is outside it by construction)
+t = on["totals"]
+assert t["candidates"] == 2 and t["verified"] == 1, "tier-1 bookkeeping moved: %r" % t
+refuted = t["candidates"] - t["verified"] - t["errored"] - t["dropped_subfloor"]
+assert refuted == 1, "candidates == verified + errored + refuted + dropped_subfloor broken: %r" % t
+PY
+then ok "13f) exactly 2 of 3 tier-2 records were examined (in rank order), their REAL/REFUTED verdicts are in a SEPARATE tier2[] carrying id/kind/location/loc_source/check, and verified[]/errors[]/dropped_subfloor[]/totals are unchanged vs the OFF run"
+else bad "13f) the --tier2 2 outcome contract failed"
+fi
+
+# the examined records got their OWN gate cells, and the tier-1 gates/ dir is untouched.
+if python3 - "$T2_ON_OUT" "$T2_OFF_OUT" <<'PY'
+import sys, os
+on, off = sys.argv[1], sys.argv[2]
+t2 = sorted(os.listdir(os.path.join(on, "gates-tier2")))
+assert len(t2) == 2, "expected 2 tier-2 gate cells, got %d: %r" % (len(t2), t2)
+assert sorted(os.listdir(os.path.join(on, "gates"))) == sorted(os.listdir(os.path.join(off, "gates"))), \
+    "the tier-1 gates/ dir changed under --tier2"
+PY
+then ok "13g) the tier-2 gates live in their OWN gates-tier2/ dir (2 cells) and the tier-1 gates/ dir is identical to the OFF run"
+else bad "13g) tier-2 gate cells were not isolated from the tier-1 gates dir"
+fi
+
+# #1887 SEPARATION: the knowledge corpus is built from gates/ only, so a tier-2 refutation never enters it.
+if cmp -s "$T2_OFF_OUT/refute-constraints.tsv" "$T2_ON_OUT/refute-constraints.tsv"; then
+  ok "13h) #1887 refute-constraints.tsv is BYTE-IDENTICAL with and without --tier2 (no tier-2 refutation reaches the knowledge corpus)"
+else
+  bad "13h) --tier2 changed the #1887 constraint corpus"
+fi
+
+# --- (c) a results file with NO tier2[] under --tier2 3: a silent no-op, never an error. --------------------
+T2_NOOP_OUT="$WORK/out-tier2-noop"
+"$VERIFY" --results "$T2RES_STRIPPED" --repo "$REPO" --out "$T2_NOOP_OUT" --gate refute --backend mock \
+  --agentis "$STUB" --tier2 3 >"$WORK/t2-noop.out" 2>"$WORK/t2-noop.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "13i) --tier2 3 over a results file with NO tier2[] exits 0 (a missing second tier is a no-op, not an error)" \
+  || { bad "13i) --tier2 3 over a tier2-less results file exited $RC"; sed 's/^/      /' "$WORK/t2-noop.err" >&2; }
+if cmp -s "$T2_NOOP_OUT/verified_findings.json" "$T2_STRIP_OUT/verified_findings.json"; then
+  ok "13j) that no-op run's verified_findings.json is BYTE-IDENTICAL to the same file verified without --tier2 (no key, no drift)"
+else
+  bad "13j) --tier2 3 over a tier2-less results file changed verified_findings.json"
+  diff "$T2_STRIP_OUT/verified_findings.json" "$T2_NOOP_OUT/verified_findings.json" | sed 's/^/      /' >&2
+fi
+
+# --- the cap is PER ZONE (per subsystem), and an unresolvable tier-2 location is an ERROR outcome. ----------
+# Two zones x 2 records each at --tier2 1 => 2 examined, one from EACH zone: a flat "first N of the array"
+# reading would examine both records of the first zone and none of the second.
+T2ZRES="$WORK/tier2-zones-results.json"
+python3 - > "$T2ZRES" <<'PY'
+import json
+
+
+def rec(sub, rid, loc, cls):
+    return {"subsystem": sub, "class": cls, "id": rid, "kind": "unresolved", "location": loc,
+            "loc_source": "opcheck", "loc_rule": "contract-fn", "severity": "",
+            "check": "an unsettled check in %s" % sub, "why": "the trace never closed"}
+
+
+data = {
+    "repo": "target", "backend": "mock", "jobs": 1,
+    "cells": [{"subsystem": "vault deposits", "class": "C1", "files": "contracts/Vault.sol",
+               "candidates": ["contracts/Vault.sol:deposit:12|C1|High|external depositor mints free shares|donate an asset"],
+               "coordination": []}],
+    "totals": {"cells": 1, "candidates": 1, "steers": 0},
+    "tier2": [
+        rec("vault deposits", 1, "contracts/Vault.sol:deposit", "C19"),
+        rec("vault deposits", 2, "contracts/Oracle.sol:price", "C19"),
+        rec("price oracle", 5, "contracts/Missing.sol:ghost", "C19"),
+        rec("price oracle", 6, "contracts/Token.sol:transfer", "C19"),
+    ],
+}
+print(json.dumps(data, indent=2))
+PY
+T2Z_OUT="$WORK/out-tier2-zones"
+"$VERIFY" --results "$T2ZRES" --repo "$REPO" --out "$T2Z_OUT" --gate refute --backend mock --agentis "$STUB" \
+  --tier2 1 >"$WORK/t2-zones.out" 2>"$WORK/t2-zones.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "13k) the per-zone --tier2 1 run exits 0 (an unresolvable tier-2 location is never fatal)" \
+  || { bad "13k) the per-zone --tier2 1 run exited $RC"; sed 's/^/      /' "$WORK/t2-zones.err" >&2; }
+if python3 - "$T2Z_OUT/verified_findings.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+t2 = d["tier2"]
+assert len(t2) == 2, "tier2[] len != 2 (the cap is not per zone): %r" % [r["location"] for r in t2]
+subs = sorted(r["subsystem"] for r in t2)
+assert subs == ["price oracle", "vault deposits"], "the cap did not take one record from EACH zone: %r" % subs
+byzone = {r["subsystem"]: r for r in t2}
+assert byzone["vault deposits"]["location"] == "contracts/Vault.sol:deposit", \
+    "zone 1 did not take its FIRST (highest-ranked) record: %r" % byzone["vault deposits"]["location"]
+ghost = byzone["price oracle"]
+assert ghost["location"] == "contracts/Missing.sol:ghost", "zone 2 took the wrong record: %r" % ghost["location"]
+# a derived location that does not resolve on disk is an ERROR outcome, never a REFUTED verdict it never earned
+assert ghost["verdict"] == "ERROR", "an unresolvable tier-2 location was not ERROR: %r" % ghost["verdict"]
+assert "code file not found" in ghost["reason"], "the ERROR outcome lost its reason: %r" % ghost["reason"]
+# and it never entered any tier-1 array
+assert all("Missing.sol" not in v["location"] for v in d["verified"]), "a tier-2 record leaked into verified[]"
+assert all("Missing.sol" not in e["location"] for e in d["errors"]), "a tier-2 ERROR leaked into the tier-1 errors[]"
+PY
+then ok "13l) the cap binds PER ZONE (one record from each subsystem at --tier2 1, each its zone's first), and an unresolvable tier-2 location is an ERROR outcome that never enters verified[]/errors[]"
+else bad "13l) the per-zone cap / unresolvable-location contract failed"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
