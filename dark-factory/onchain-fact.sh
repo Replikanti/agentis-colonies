@@ -44,7 +44,11 @@
 # Exit: 0 on any answer OR any refusal (a cell is never derailed); 2 on bad input ONLY.
 #
 # Offline proof: dark-factory/demo-resolve-cell.sh (canned cache entry, no-rpc, budget, gate — zero network).
-set -uo pipefail
+#
+# PORTABILITY: the directive tells a cell to run this with `sh`, so the body stays POSIX — no `pipefail`, no
+# herestring, no `[[`. On a host whose /bin/sh is dash, a bash-only line here would make every invocation exit
+# 2 with NO output, which a cell would read as "the tool is broken", not as "the fact is unavailable".
+set -u
 
 BUDGET="${DF_ONCHAIN_BUDGET:-5}"          # calls allowed against --budget-state, per CELL
 case "$BUDGET" in ''|*[!0-9]*) BUDGET=5 ;; esac
@@ -127,7 +131,13 @@ emit_unavailable() { # $1=reason
 }
 
 # sha256 of a string. posix-portability: deferred (guarded pair — sha256sum on GNU, shasum -a 256 on BSD).
-str_sha() { printf '%s' "$1" | sha256sum 2>/dev/null | cut -d' ' -f1 || printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -d' ' -f1; }
+# The fallback is driven by an EMPTY result rather than by the pipeline's exit status: without `pipefail` a
+# failing first stage still leaves `cut` successful, so only the value itself can tell the two apart.
+str_sha() {
+    _s="$(printf '%s' "$1" | sha256sum 2>/dev/null | cut -d' ' -f1)"
+    [ -n "$_s" ] || _s="$(printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
+    printf '%s' "${_s:-nosha}"
+}
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # ----------------------------------------------------------------------------------------------------------

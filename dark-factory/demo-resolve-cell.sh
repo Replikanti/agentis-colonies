@@ -736,6 +736,20 @@ if grep -q 'RPC="${DF_EXTERNAL_RPC:-${FORK_URL:-${ETH_RPC_URL:-}}}"' "$ONCHAIN";
 else
   bad "onchain-fact.sh does not read the endpoint from the three configured env names"
 fi
+# The cell is TOLD to run this with `sh` (the directive's own command line), so a bash-only construct would
+# make every invocation exit 2 with no output on a dash host — the #2235 PR C shape of the dash/CI trap. Every
+# fixture below therefore invokes the tool through `sh`, and this pins the constructs that would break it.
+OC_BASHISM="$(grep -nE 'set -[a-z]*o[[:space:]]+pipefail|<<<|\[\[[[:space:]]' "$ONCHAIN" | grep -v '^[0-9]*:#' | head -3 || true)"
+if [ -z "$OC_BASHISM" ]; then
+  ok "onchain-fact.sh is free of pipefail/herestring/[[ — it really runs under the `sh` the directive names"
+else
+  bad "onchain-fact.sh carries a bash-only construct: $OC_BASHISM"
+fi
+if command -v dash >/dev/null 2>&1; then
+  if dash -n "$ONCHAIN" 2>/dev/null; then ok "dash parses onchain-fact.sh"; else bad "dash cannot parse onchain-fact.sh"; fi
+else
+  skip "no dash on PATH — the POSIX parse is covered by the sh-invoked fixtures below (CI's sh IS dash)"
+fi
 OC_BAD="$(sh "$ONCHAIN" --address 0x1111111111111111111111111111111111111111 --sig 'https://evil.example/x' \
   --cache-dir "$WORK/oc-cache" 2>/dev/null)" ; OC_BAD_RC=$?
 if [ "$OC_BAD_RC" -eq 2 ] && [ "$OC_BAD" = 'ONCHAIN|?|unavailable|bad-input' ]; then
@@ -757,8 +771,13 @@ OC_ADDR="0xcccccccccccccccccccccccccccccccccccccccc"
 OC_CALL="1:$OC_ADDR:rateOf()"
 mkdir -p "$OC_CACHE/onchain/1/$OC_ADDR/4242"
 # The record is CANNED, exactly as a previous cell would have left it — this arm never runs `cast` at all.
-# posix-portability: deferred (guarded pair — sha256sum on GNU, shasum -a 256 on BSD), same as the tool's own.
-_oc_sha() { printf '%s' "$1" | sha256sum 2>/dev/null | cut -d' ' -f1 || printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -d' ' -f1; }
+# posix-portability: deferred (guarded pair — sha256sum on GNU, shasum -a 256 on BSD), byte-for-byte the
+# tool's own str_sha, so the fixture and the tool can never key a cache entry differently.
+_oc_sha() {
+  _s="$(printf '%s' "$1" | sha256sum 2>/dev/null | cut -d' ' -f1)"
+  [ -n "$_s" ] || _s="$(printf '%s' "$1" | shasum -a 256 2>/dev/null | cut -d' ' -f1)"
+  printf '%s' "${_s:-nosha}"
+}
 OC_KEY="$(_oc_sha 'rateOf()()')"
 printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$OC_CALL" 'rateOf()(uint256)' '' '1000000000000000000' '4242' '2026-01-01T00:00:00Z' \
   > "$OC_CACHE/onchain/1/$OC_ADDR/4242/$OC_KEY.tsv"
