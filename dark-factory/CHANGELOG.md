@@ -71,6 +71,50 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 - **Native flat-cyborg result-file reply capture (#2207).** The hunt emitters (`run-discovery.sh`, `run-invariant-hunt.sh`, `run-refute.sh`, `map-zones.sh`, `run-poc.sh`, `gen-briefs.sh`) now set `llm.flat_cyborg.result_file_dir` to the per-cell RUN dir, so the driven model writes its reply to a file agentis reads via flat-cyborg `--result-file` (file > transcript > screen) — large zone briefs/hunts no longer fail the `--extract` screen-scrape and degrade to mechanical/empty. **Requires:** agentis >= 1.32.0 + flat-cyborg >= 0.17.0 (older agentis ignores the key harmlessly → screen-scrape as before). Builds on flat-cyborg#79 (v0.17.0 `--result-file`) and agentis-core#1002.
 
 ### Added
+- **C24 — stale state assumption between touchpoints: new bug class + deterministic zone-mapper route (#2218,
+  M1).** The #2213 corpus forensics clustered the pure GENERATION misses (candidates the hunter never emitted)
+  and most share one root: a value written, snapshotted or DEFINED at touchpoint A is consumed at touchpoint B
+  as if nothing changed in between. `auditor/bug-taxonomy.md` gains **C24** in the C22/C23 six-field shape —
+  two named mechanism flavours (**TIME gap**: a snapshot reused across an interval in which elapsed time or a
+  permissionless entrypoint moved the real quantity; **DEFINITION gap**: a value defined with a floor/offset/
+  virtualisation and consumed as the raw quantity its name promises), two named sub-shapes (**closed-form**: a
+  rate captured at A applied across the whole A->B interval systematically mis-charges; **blocked-remedy**: a
+  state entered at A disables the user's remedy while a third party's liquidation/valuation stays live), a
+  `NOT this class` list naming C2/C9/C22/C23/C8/C21/C6/C10, and a **four-part** required-evidence rule (both
+  lines, the one-sentence assumption, the concrete falsifier, who loses what) — so the class cannot degrade
+  into a "be more thorough" meta-directive, which is exactly the shape that measured Delta=+0 in #2213.
+  `zone-mapper.ag` gains the matching deterministic backstop (sibling of the #1729/#2111/#2121/#2214 nets:
+  flat `index_of` over the pre-built zone `code` blob, no regex, no `exec sh`, no per-element recursion):
+  `contains_state_assumption_signal()` = an accrual/index UPDATE touchpoint (`_updateIndexes(`,
+  `accrueInterest(`, `updateInterestRates(`, `latestBorrowingIndex(`, `getNormalizedIncome(`, `accrue(`, ...
+  paren-anchored on purpose, the #2111 `uint16(` discipline — the bare field names were measured to fire on a
+  pure struct zone) **or** an emission-per-supply accrual (`rewardPerToken`, `accRewardPerShare`,
+  `emissionRate`, `effectiveSupply`) **or** the AND of a request/cooldown predicate and a solvency/liquidation
+  consumer (`convertToAssets(` deliberately excluded — measured, it pulls two more zones in for no mechanism).
+  `apply_state_assumption_backstop()` force-includes **C24**, chained AFTER the #2214 net and BEFORE the #1711
+  fitness reorder; a new `STALE-STATE|<zone>|<bool>` diagnostic makes the net observable and offline-testable
+  under the mock backend (it carries no `ZONE|` substring, so the `^ZONE\|` scrape is untouched). The
+  classification instruction gains an ONLY-WHEN-shaped `C24` detection rule with an explicit "if this zone does
+  none of these, do NOT add C24" escape (the C19/C22/C23 precedent: the taxonomy menu grows the moment the
+  class exists, and the tight rule is what bounds it) — no net helper name and no corpus identifier appears in
+  the prompt. **Measured offline fan-out on the two frozen #2213 corpus maps: 7 of 13 zones over each
+  zone's whole file set (2 of 4 on one contest, **5 of 9** on the other), +1 cell per firing zone.** Of the two
+  zones carrying the CAUGHT C23 row, only ONE stays silent — the other fires (a request predicate plus a
+  `_preLiquidation(` consumer in the same contract), so "the C23 zones stay silent" is NOT a property of this
+  net and is not claimed. The count is input-dependent: over the function-SLICED blob the mapper is handed on
+  these particular maps it is 6 of 13, because that zone's 16-function slice keeps the predicate and drops the
+  consumer; 7 of 13 is the number quoted, the slice being a prompt-budget artefact of one map.
+  Two deliberate non-changes, pinned by tests: **no
+  `class_to_keyword()` entry** for C24 in `invariant-prover.ag` (that map routes the depth/metamorphic action
+  menu — an unmeasured second variable; C22/C23 have no entry either) and **`hunter.ag` is not touched at all**
+  (the lens IS the taxonomy section it already slices). New `demo-state-assumption-lens.sh` (pure awk/grep,
+  wired into `tools/colony-lint.sh`) guards the class text, replays hunter.ag's own `## <cls> ` awk anchor so
+  `C23` cannot swallow `C24`, and pins both non-changes; `demo-map-zones.sh` gains the behavioural half — a
+  TRUE/FALSE fixture pair (a reserve accrual reusing a rate stamped at the last update vs. the sibling that
+  re-derives it from live utilisation at the point of use), the chain-order and prompt-leak guards, and an
+  LLM-free probe driving the real `apply_backstop()` (C24 appended exactly once, byte-identical verdict when
+  the net is silent, no duplicate when the class is already present). **Recall is UNMEASURED: whether C24
+  recovers a rare row is #2218 M2's zone-restricted re-hunt on the frozen corpus bases.**
 - **Deterministic C22 routing by TOUCHPOINT, not by token custody (#2214, lever 2).** `zone-mapper.ag` gained
   a `contains_cross_unit_signal()` net (sibling of the #1729/#2111/#2121 backstops: flat `index_of` over the
   pre-built zone `code` blob, no regex, no `exec sh`, no per-element recursion) that forces **C22**

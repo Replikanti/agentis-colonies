@@ -381,8 +381,11 @@ else
 fi
 
 note "12) DECISION: no new taxonomy class — this is a cross-class METHOD directive ..."
-if grep -q '^## C24 ' "$TAXONOMY"; then
-  bad "bug-taxonomy.md gained a '## C24 ' class — #2211 is explicitly a method directive, NOT a new class"
+# The pin is "no class was minted FOR THIS change", asserted against the next UNALLOCATED taxonomy slot.
+# C24 was allocated by #2218 (stale state assumption between touchpoints) — an unrelated domain class — so
+# the slot moved to C25; the decision below is unchanged.
+if grep -q '^## C25 ' "$TAXONOMY"; then
+  bad "bug-taxonomy.md gained a '## C25 ' class — #2211 is explicitly a method directive, NOT a new class"
 else
   ok "bug-taxonomy.md declares no new class (the directive is cross-class, it replaces no lens and adds none)"
 fi
