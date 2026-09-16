@@ -678,11 +678,14 @@ _cell_log() {
   for _cl_line in "$@"; do printf '%s\n' "$_cl_line" >> "$_cl_path"; done
   printf '%s\n' "$_cl_path"
 }
-# _assert_gap <label> <log> <expected-gap> <expected-trip: yes|no>
+# _assert_gap <label> <log> <expected-gap> <expected-trip: yes|no> [repo_dir]
+# [repo_dir] (#2225) is threaded to _opcheck_trace_gap/_untraced_safe so the EXTERNAL-branch content check
+# (a cited range must STATE a fact token, not just name the file) can be exercised against real fixture files;
+# omitted (the default, "") for every fixture that predates #2225 and does not need it.
 _assert_gap() {
-  _ag_label="$1"; _ag_log="$2"; _ag_gap="$3"; _ag_trip="$4"
-  _ag_got="$(_opcheck_trace_gap "$_ag_log")"
-  if _untraced_safe "$_ag_log"; then _ag_fired=yes; else _ag_fired=no; fi
+  _ag_label="$1"; _ag_log="$2"; _ag_gap="$3"; _ag_trip="$4"; _ag_repo="${5:-}"
+  _ag_got="$(_opcheck_trace_gap "$_ag_log" "$_ag_repo")"
+  if _untraced_safe "$_ag_log" "$_ag_repo"; then _ag_fired=yes; else _ag_fired=no; fi
   if [ "$_ag_got" = "$_ag_gap" ] && [ "$_ag_fired" = "$_ag_trip" ]; then
     ok "$_ag_label: gap=$_ag_got, gate trips=$_ag_fired (as specified)"
   else
@@ -777,13 +780,14 @@ GATE_SRC_MISS=""
 # never complies would burn a hunt budget on one cell.
 grep -q 'DF_TRACE_MAX_REASKS="${DF_TRACE_MAX_REASKS:-1}"' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [DF_TRACE_MAX_REASKS-default-1]"
 grep -q 'case "$DF_TRACE_MAX_REASKS" in' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [knob-validation]"
-grep -q 'while \[ "$rc_reask" -le "$DF_TRACE_MAX_REASKS" \] && _untraced_safe "$rc_log"; do' "$DISCOVERY" \
+grep -q 'while \[ "$rc_reask" -le "$DF_TRACE_MAX_REASKS" \] && _untraced_safe "$rc_log" "$REPO"; do' "$DISCOVERY" \
   || GATE_SRC_MISS="$GATE_SRC_MISS [bounded-re-ask-loop]"
 # The superseded attempt is preserved, under a suffix that is NOT a `.log` (readouts and the hunt dashboard
 # enumerate `hunt_*.log` and must keep seeing exactly one log per cell).
 grep -q 'mv -f "$rc_log" "$rc_log.untraced-attempt-$rc_reask"' "$DISCOVERY" \
   || GATE_SRC_MISS="$GATE_SRC_MISS [attempt-preserved-under-non-.log-suffix]"
-grep -q '_opcheck_trace_gap "$rc_log" > "$rc_log.untraced"' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [untraced-marker]"
+# #2225: both calls now thread $REPO through, so the EXTERNAL-branch content check can resolve a cited file.
+grep -q '_opcheck_trace_gap "$rc_log" "$REPO" > "$rc_log.untraced"' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [untraced-marker]"
 grep -q 'if \[ -f "$sc_log.untraced" \]; then' "$DISCOVERY" || GATE_SRC_MISS="$GATE_SRC_MISS [scrape-untraced-branch]"
 grep -q 'FAILED — untraced-opcheck: SAFE with %s untraced OPCHECK(s) (NOT a rigorous negative)' "$DISCOVERY" \
   || GATE_SRC_MISS="$GATE_SRC_MISS [distinguishable-FAILED-row]"
@@ -892,11 +896,32 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
-# PART 6 — #2214 PR C: CITATION DISCIPLINE, MEASURED ON THE SHIPPED DETECTORS (offline; CI floor).
+# PART 6 — #2214 PR C / #2225: CITATION DISCIPLINE, MEASURED ON THE SHIPPED DETECTORS (offline; CI floor).
 # The detectors are HEURISTICS over model-emitted free text (documented as such in run-discovery.sh's header)
 # and they ride the EXISTING gate: an uncited dismissal is added to the follow-through shortfall, so it is
 # re-asked once and then recorded with the SAME `untraced-opcheck` reason. No new status vocabulary.
+# #2225: rule 2 (EXTERNAL grounds) as shipped by #2214 accepted a citation by NAME (a URL, a bare source-file
+# name, a bare interface identifier) with no check that the cited text says anything at all — measured M-12
+# went 2/3 -> 0/3 on exactly that shape. The fixtures below use a synthetic two-file "repo" (no real protocol
+# named, per this repo's public-content rule) so the EXTERNAL-branch content check can be exercised against
+# real cited ranges, not just prose.
 # ----------------------------------------------------------------------------------------------------------
+EXT_REPO="$WORK/ext-repo"
+mkdir -p "$EXT_REPO/interfaces" "$EXT_REPO/vendor"
+{
+  echo "// synthetic fixture interface: getters only, states no scaling/normalisation fact"
+  echo "interface IRateSource {"
+  echo "    function getRate() external view returns (uint256);"
+  echo "    function getRateSource() external view returns (address);"
+  echo "}"
+} > "$EXT_REPO/interfaces/IRateSource.sol"
+{
+  echo "// synthetic fixture library: the cited line states the fixed-point unit outright"
+  echo "library FixedPointMath {"
+  echo "    uint256 internal constant UNIT = 1e18;"
+  echo "}"
+} > "$EXT_REPO/vendor/FixedPointMath.sol"
+
 if [ "$GATE_LOADED" -eq 1 ]; then
   note "25) a config-grounds dismissal: accepted WITH a path:line citation, untraced WITHOUT one ..."
   # (a) the dismissal did the work the rule asks for and says where it looked.
@@ -925,22 +950,88 @@ if [ "$GATE_LOADED" -eq 1 ]; then
     'TRACE|the cross-issuer rate presumption|CLEAN|But: it exists only under a specific deploy-time pairing ... set by the trusted deployer ... not an attacker-triggerable code seam ... out of scope' \
     'SAFE')"
   _assert_gap "the VERBATIM measured dismissal sentence" "$MEASURED_LOG" 1 yes
+  # (#2225 item 3) directory-scoped citation shape: a test-evidence path is acceptable proof of what the repo
+  # ships; a src/ contract only DECLARES the flag, it does not say what value is actually configured for it.
+  CFG_TESTDIR_LOG="$(_cell_log cfg-testdir \
+    'OPERATIONALIZE|vault|C22|on' \
+    'OPCHECK|the cross-issuer rate presumption|the two sides must be denominated in the same unit' \
+    'TRACE|the cross-issuer rate presumption|CLEAN|tests/TestStrategyImpl.sol:110-117 wires the mismatched pair and only a trusted deployer sets it, so it is a deploy-time misconfiguration' \
+    'SAFE')"
+  _assert_gap "config-grounds dismissal citing a tests/ path:line range" "$CFG_TESTDIR_LOG" 0 no
+  CFG_SRCDIR_LOG="$(_cell_log cfg-srcdir \
+    'OPERATIONALIZE|vault|C22|on' \
+    'OPCHECK|the cross-issuer rate presumption|the two sides must be denominated in the same unit' \
+    'TRACE|the cross-issuer rate presumption|CLEAN|src/PriceOracle.sol:49 declares the flag and only a trusted deployer sets it, so it is a deploy-time misconfiguration' \
+    'SAFE')"
+  _assert_gap "the same dismissal citing a src/ path:line (names the flag, not what is shipped)" "$CFG_SRCDIR_LOG" 1 yes
+  # (h) #2225 QA fix: a well-shaped tests/ citation whose FILE DOES NOT EXIST under the repo — a fabricated
+  # or hallucinated path:line is not "in this repository" either, and must not pass on shape alone.
+  CFG_MISSING_LOG="$(_cell_log cfg-missing \
+    'OPERATIONALIZE|vault|C22|on' \
+    'OPCHECK|the cross-issuer rate presumption|the two sides must be denominated in the same unit' \
+    'TRACE|the cross-issuer rate presumption|CLEAN|tests/Missing.t.sol:5 wires the mismatched pair and only a trusted deployer sets it, so it is a deploy-time misconfiguration' \
+    'SAFE')"
+  _assert_gap "config-grounds dismissal citing a tests/ path:line whose file does not exist" "$CFG_MISSING_LOG" 1 yes "$EXT_REPO"
+  # Without a repo_dir, the same non-existent citation falls back to the shape-only check (accepted) — the
+  # documented empty-repo_dir behaviour, not a regression: existence cannot be resolved with no repo to check.
+  _assert_gap "the same citation with no repo_dir given (existence unverifiable, shape accepted)" "$CFG_MISSING_LOG" 0 no
 
-  note "26) an external-protocol claim: CLEAN needs a source, otherwise it is not a settled check ..."
-  # (c) the M-12 shape: a confident claim about what an external call returns, verified against nothing.
+  note "26) an external-protocol claim: needs an IN-REPO citation that STATES the fact, not just names a source ..."
+  # (c) the M-12 shape, in its three uncited forms: a bare URL, a bare interface identifier, a bare library
+  # name. #2225 drops all three acceptances for THIS branch — none of them points at text stating the fact.
   EXT_UNCITED_LOG="$(_cell_log ext-uncited \
     'OPERATIONALIZE|vault|C2|on' \
     'OPCHECK|the external rate read|the returned value must carry the unit this zone assumes' \
     'TRACE|the external rate read|CLEAN|the call always returns a normalised ratio by construction, a documented invariant of the upstream protocol' \
     'SAFE')"
-  _assert_gap "external-fact CLEAN with no source cited" "$EXT_UNCITED_LOG" 1 yes
-  # The same claim, verified: an interface/source/URL citation discharges it.
-  EXT_CITED_LOG="$(_cell_log ext-cited \
+  _assert_gap "external-fact CLEAN with no source at all" "$EXT_UNCITED_LOG" 1 yes
+  EXT_URL_LOG="$(_cell_log ext-url \
     'OPERATIONALIZE|vault|C2|on' \
     'OPCHECK|the external rate read|the returned value must carry the unit this zone assumes' \
-    'TRACE|the external rate read|CLEAN|checked against IRateSource.getRate in the vendored interface, which always returns the normalised ratio' \
+    'TRACE|the external rate read|CLEAN|documented at https://docs.example-protocol.test/rates, it always returns a normalised ratio' \
     'SAFE')"
-  _assert_gap "the same claim, cited against the external interface" "$EXT_CITED_LOG" 0 no
+  _assert_gap "external-fact CLEAN citing a bare URL" "$EXT_URL_LOG" 1 yes
+  EXT_IFACE_LOG="$(_cell_log ext-iface \
+    'OPERATIONALIZE|vault|C2|on' \
+    'OPCHECK|the external rate read|the returned value must carry the unit this zone assumes' \
+    'TRACE|the external rate read|CLEAN|IRateSource.getRate always returns a normalised ratio by construction' \
+    'SAFE')"
+  _assert_gap "external-fact CLEAN naming a bare interface identifier, no path:line" "$EXT_IFACE_LOG" 1 yes
+  EXT_LIBNAME_LOG="$(_cell_log ext-libname \
+    'OPERATIONALIZE|vault|C2|on' \
+    'OPCHECK|the external rate read|the returned value must carry the unit this zone assumes' \
+    'TRACE|the external rate read|CLEAN|FixedPointMath always returns the normalised ratio by design, a well-known convention' \
+    'SAFE')"
+  _assert_gap "external-fact CLEAN naming a bare library, no path:line" "$EXT_LIBNAME_LOG" 1 yes
+
+  # (a) a real repo path:line whose cited RANGE only declares getters — names the file, states no fact.
+  EXT_GETTERS_LOG="$(_cell_log ext-getters \
+    'OPERATIONALIZE|vault|C2|on' \
+    'OPCHECK|the external rate read|the returned value must carry the unit this zone assumes' \
+    'TRACE|the external rate read|CLEAN|interfaces/IRateSource.sol:3-4 documents the getters this call reads, so it always returns a normalised ratio' \
+    'SAFE')"
+  _assert_gap "external-fact CLEAN citing a getters-only repo range" "$EXT_GETTERS_LOG" 1 yes "$EXT_REPO"
+  # (b) a real repo path:line whose cited range literally STATES the fact (the fixed-point unit) — accepted.
+  EXT_STATED_LOG="$(_cell_log ext-stated \
+    'OPERATIONALIZE|vault|C2|on' \
+    'OPCHECK|the external rate read|the returned value must carry the unit this zone assumes' \
+    'TRACE|the external rate read|CLEAN|vendor/FixedPointMath.sol:3 fixes the unit, so it always returns the same normalised ratio' \
+    'SAFE')"
+  _assert_gap "external-fact CLEAN citing a range that states the unit" "$EXT_STATED_LOG" 0 no "$EXT_REPO"
+  # Without a repo to resolve the citation against, the same cited range falls back to the shape check alone
+  # (accepted) — the content check degrades gracefully rather than false-failing on an unresolvable path.
+  _assert_gap "the same citation with no repo_dir given (content unverifiable, shape accepted)" "$EXT_STATED_LOG" 0 no
+  # (g) #2225 QA fix: a well-shaped citation whose FILE DOES NOT EXIST under the repo — a fabricated or
+  # hallucinated path:line is not "in this repository" either, so it must not be accepted as verified.
+  EXT_MISSING_LOG="$(_cell_log ext-missing \
+    'OPERATIONALIZE|vault|C2|on' \
+    'OPCHECK|the external rate read|the returned value must carry the unit this zone assumes' \
+    'TRACE|the external rate read|CLEAN|lib/Nonexistent.sol:12 fixes the unit, so it always returns the same normalised ratio' \
+    'SAFE')"
+  _assert_gap "external-fact CLEAN citing a repo range whose file does not exist" "$EXT_MISSING_LOG" 1 yes "$EXT_REPO"
+  # Without a repo_dir, the same non-existent citation falls back to the shape-only check (accepted) — the
+  # documented empty-repo_dir behaviour, not a regression: existence cannot be resolved with no repo to check.
+  _assert_gap "the same citation with no repo_dir given (existence unverifiable, shape accepted)" "$EXT_MISSING_LOG" 0 no
 
   note "27) UNRESOLVED is the honest verdict the rules ask for — counted, never a dismissal, never SAFE-trusted ..."
   # An UNRESOLVED check carries the same "I could not verify it" words as an uncited CLEAN and must NOT be
@@ -995,7 +1086,7 @@ note "29) the harness pin reuses the EXISTING gate: same re-ask, same reason, on
 PRC_SRC_MISS=""
 grep -q '#2214 PR C — CITATION DISCIPLINE ON A DISMISSAL' "$DISCOVERY" \
   || PRC_SRC_MISS="$PRC_SRC_MISS [heuristics-documented-in-header]"
-grep -q 'otg_unc="$(_uncited_dismissals "$otg_log")"' "$DISCOVERY" \
+grep -q 'otg_unc="$(_uncited_dismissals "$otg_log" "$otg_repo")"' "$DISCOVERY" \
   || PRC_SRC_MISS="$PRC_SRC_MISS [uncited-folded-into-the-gap]"
 grep -q 'if \[ "$ac_unres" -gt 0 \]; then ac_unresolved_json=' "$DISCOVERY" \
   || PRC_SRC_MISS="$PRC_SRC_MISS [unresolved-key-only-when-non-zero]"
