@@ -1353,6 +1353,78 @@ then ok "13l) the cap binds PER ZONE (one record from each subsystem at --tier2 
 else bad "13l) the per-zone cap / unresolvable-location contract failed"
 fi
 
+# --- the FIELD MAPPING, proven against a REAL run-refute.sh invocation (#2217 M5 bug 1). -------------------
+# The gate manifest is PIPE-delimited and a tier-2 check text is itself an OPCHECK line whose
+# `<what>|<invariant>` halves are joined by a pipe. Pasted verbatim, that pipe splits the exploit column and
+# shifts the code file out of field 5, so run-refute.sh read the INVARIANT half as the code file and ERRORed
+# every tier-2 record with `code file not found: <invariant text>` — without ever opening the code. The
+# fixtures above could not see it: none of their check texts carried a pipe. This one does, in BOTH text
+# columns, and is driven through the real run-refute.sh (offline stub behind the --agentis seam).
+T2PIPE_RES="$WORK/tier2-pipe-results.json"
+python3 - > "$T2PIPE_RES" <<'PY'
+import json
+
+check = ("tokenClaim = balance * PRECISION / totalSupply in Vault.deposit"
+         "|balance*PRECISION must stay below the type max and totalSupply != 0, for externally-set balances")
+why = ("balance is externally set (Vault.sol)|the product only overflows past an unreachable balance, "
+       "and totalSupply == 0 needs an empty vault")
+data = {
+    "repo": "target", "backend": "mock", "jobs": 1,
+    "cells": [{"subsystem": "vault deposits", "class": "C1", "files": "contracts/Vault.sol",
+               "candidates": ["contracts/Vault.sol:deposit:12|C1|High|external depositor mints free shares|donate an asset"],
+               "coordination": []}],
+    "totals": {"cells": 1, "candidates": 1, "steers": 0, "tier2": 1},
+    "tier2": [{"subsystem": "vault deposits", "class": "C19", "id": 4, "kind": "uncited",
+               "location": "contracts/Vault.sol:deposit", "loc_source": "opcheck", "loc_rule": "contract-fn",
+               "severity": "", "check": check, "why": why}],
+}
+print(json.dumps(data, indent=2))
+PY
+T2P_OUT="$WORK/out-tier2-pipe"
+"$VERIFY" --results "$T2PIPE_RES" --repo "$REPO" --out "$T2P_OUT" --gate refute --backend mock \
+  --agentis "$STUB" --tier2 1 >"$WORK/t2-pipe.out" 2>"$WORK/t2-pipe.err"
+RC=$?
+[ "$RC" -eq 0 ] && ok "13m) the pipe-carrying tier-2 record's run exits 0" \
+  || { bad "13m) the pipe-carrying tier-2 run exited $RC"; sed 's/^/      /' "$WORK/t2-pipe.err" >&2; }
+
+if python3 - "$T2P_OUT/verified_findings.json" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+t2 = d.get("tier2") or []
+assert len(t2) == 1, "expected exactly 1 tier-2 outcome, got %d" % len(t2)
+r = t2[0]
+assert r["verdict"] != "ERROR", "the tier-2 record was ERRORed instead of assessed: %r" % r["reason"]
+assert "code file not found" not in r["reason"], "the check text reached the code-file slot again: %r" % r["reason"]
+assert r["verdict"] == "REAL", "the gate did not return the stub's verdict: %r" % r["verdict"]
+assert r["file"] == "contracts/Vault.sol", "the code file is not the location's path half: %r" % r["file"]
+# the RECORD keeps its own bytes — the delimiter is neutralised in the MANIFEST text, not in the output.
+assert "|" in r["check"] and "|" in r["why"], "the emitted record lost the check/why text it carried: %r" % r
+PY
+then ok "13m) a tier-2 record whose check AND why carry the OPCHECK '|' reaches a REAL run-refute.sh verdict (not ERROR, not 'code file not found'), its file slot is the location's path half, and the emitted record keeps its original text"
+else bad "13m) the tier-2 -> refute field mapping regressed (the check text is reaching the code-file slot)"
+fi
+
+# The gate actually OPENED the code: run-refute.sh stages the candidate's file into its own rundir before the
+# skeptic reads it, so that staged slice existing (and matching the repo file) is the proof the record was
+# assessed against real code rather than ERRORed on a mis-parsed manifest.
+if python3 - "$T2P_OUT" "$REPO" <<'PY'
+import sys, os, glob, filecmp
+out, repo = sys.argv[1], sys.argv[2]
+cells = sorted(glob.glob(os.path.join(out, "gates-tier2", "*")))
+assert len(cells) == 1, "expected 1 tier-2 gate cell, got %r" % cells
+man = open(os.path.join(cells[0], "candidate.manifest"), encoding="utf-8").read().strip()
+fields = man.split("|")
+assert len(fields) in (5, 6), "the gate manifest is not 5/6 pipe fields: %d" % len(fields)
+assert fields[4] == "contracts/Vault.sol", "manifest field 5 is not the code file: %r" % fields[4]
+sliced = glob.glob(os.path.join(cells[0], "refute-out", "run", "code_*.txt"))
+assert len(sliced) == 1, "the gate dir holds no sliced code file: %r" % sliced
+assert filecmp.cmp(sliced[0], os.path.join(repo, "contracts/Vault.sol"), shallow=False), \
+    "the sliced code file is not the candidate's code file"
+PY
+then ok "13n) the tier-2 gate dir carries a 5-field manifest whose code-file column is the record's file, and the sliced code file run-refute.sh staged for the skeptic (the record was assessed against real code)"
+else bad "13n) the tier-2 gate never staged the record's code file"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
   note "PASS — M4 verify integration (verify-findings.sh: refute gate -> CONFIRMED-only verified_findings.json) holds"

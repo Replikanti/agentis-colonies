@@ -681,6 +681,18 @@ fi
 #     accumulator, so verified[]/errors[]/dropped_subfloor[]/totals are untouched by construction, not by
 #     assertion. TIER2 = 0 (the default) leaves this whole block inert: the accumulator stays empty, no
 #     gates-tier2/ dir is created, and the emitted JSON below gains no key.
+# t2_manifest_text <s> — <s> with the gate manifest's PIPE DELIMITER neutralised. The refute/symbolic manifest
+# is `file:fn|class|sev|exploit|code-file`, and a tier-2 check text is itself an OPCHECK line whose
+# `<what>|<invariant>` halves are joined by a pipe. Pasted verbatim, that pipe SPLITS the exploit column in
+# two and shifts every later field: run-refute.sh then reads the INVARIANT half as the code file and ERRORs
+# the record with `code file not found: <invariant text>` without ever assessing it (#2217 M5 bug 1 — the
+# record's `file` never reached the file slot). Neutralised HERE, in the manifest text only: the record
+# emitted into tier2[] keeps its original check/why bytes. The other two columns this block fills need no
+# such guard — the location is shape-pinned upstream (_tier2_emit_loc) and the class is a `C<n>` token.
+t2_manifest_text() {
+  printf '%s' "${1//|/ — }"
+}
+
 TIER2_OUT_TSV="$WORK/tier2-out.tsv"; : > "$TIER2_OUT_TSV"
 TIER2_EXAMINED=0
 if [ "$TIER2" -gt 0 ]; then
@@ -707,10 +719,10 @@ for r in (data.get("tier2") or []):
     if taken >= n:
         continue
     per_zone[subsystem] = taken + 1
-    # The location is REGEX-PINNED upstream (run-discovery.sh's _tier2_emit_loc: `<path>.sol:<function>`, or a
-    # bare path for the file-only rule), so it carries none of the `@func` / `:~(test/...)` decorations that
-    # bare_codefile() exists to strip in the candidates parse above — the code file is the part before the
-    # first ':', with no second, driftable copy of that stripping logic.
+    # The location is REGEX-PINNED upstream (run-discovery.sh's _tier2_emit_loc: `<path>.sol:<function>`, or
+    # _tier2_emit_bare_loc: a bare path, for the contract-only and file-only rules), so it carries none of the
+    # `@func` / `:~(test/...)` decorations that bare_codefile() exists to strip in the candidates parse above —
+    # the code file is the part before the first ':', with no second, driftable copy of that stripping logic.
     codefile = location.split(":", 1)[0].strip()
     fields = [subsystem, str(r.get("class", "")), str(r.get("id", "")), str(r.get("kind", "")),
               location, codefile, str(r.get("loc_source", "")), str(r.get("loc_rule", "")),
@@ -739,8 +751,8 @@ PY
     T2_OUT="$OUT/$T2_REL"
     # The gate manifest needs an exploit sentence and a severity. The prefix keeps a tier-2 row from posing as
     # an assessed finding INSIDE the gate's own transcript too, not merely in the emitted JSON.
-    T2_EXPL="TIER2 (severity unassessed): $T2_CHECK"
-    [ -z "$T2_WHY" ] || T2_EXPL="$T2_EXPL — unsettled because: $T2_WHY"
+    T2_EXPL="TIER2 (severity unassessed): $(t2_manifest_text "$T2_CHECK")"
+    [ -z "$T2_WHY" ] || T2_EXPL="$T2_EXPL — unsettled because: $(t2_manifest_text "$T2_WHY")"
     if [ ! -f "$REPO/$T2_FILE" ]; then
       # Same preflight as tier 1, routed to the tier-2 accumulator: a derived location that does not resolve is
       # an ERROR outcome (visible), never a REFUTED verdict the record never earned.

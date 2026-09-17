@@ -114,6 +114,32 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   in) now refuses with the new closed-vocabulary reason `submodule-empty` instead of blaming the resolver's
   scope for an incomplete checkout. `demo-resolve-external.sh` gains fixtures for all four cases.
 
+### Fixed
+
+- **The second tier reaches the refute gate, and a check that names only its contract is located there
+  (#2217, the two harness bugs the M5 mechanics run surfaced).** Both were invisible to the PR-C/PR-A
+  fixtures and both cost the whole second tier its point.
+  1. **Field mapping: `verify-findings.sh --tier2` -> `run-refute.sh`.** The gate manifest is PIPE-delimited
+     (`file:fn|class|sev|exploit|code-file`) and a tier-2 check text is itself an OPCHECK line whose
+     `<what>|<invariant>` halves are joined by a pipe. Pasted verbatim into the exploit column that pipe SPLIT
+     the column and shifted every later field, so `run-refute.sh` read the INVARIANT half as the code file and
+     returned `ERROR | code file not found: <check text>` for every tier-2 record — the gate never opened a
+     line of code. The delimiter is now neutralised in the manifest TEXT columns only (`t2_manifest_text`);
+     the record emitted into `tier2[]` keeps its original `check`/`why` bytes, and the file slot is the
+     location's path half as designed. `demo-verify-findings.sh` now drives a pipe-carrying record through a
+     REAL `run-refute.sh` invocation (offline stub behind the `--agentis` seam) and asserts a non-`ERROR`
+     verdict plus the sliced code file staged in the gate dir — the assertion the old fixtures never made.
+  2. **Location derivation: the new `contract-only` rule in `run-discovery.sh`.** A check text may name the
+     contract it is about without ever writing a `Contract.function` pair, so the `contract-fn` rule failed
+     and the record fell through to the zone fallback — located at the zone's FIRST file, a name no
+     scoreboard can credit against the contract the check actually named. Rule order is now `contract-fn` ->
+     `contract-only` -> `fn-grep` -> `file-only`: the capitalised identifiers of the check text are scanned
+     left to right and the first whose `<Name>.sol` resolves against THIS cell's file list wins
+     (`loc_source: opcheck`, `loc_rule: contract-only`); when the text also carries a call-shaped `name(`
+     whose declaration lives in that same file, the `:function` half is appended. The resolve IS the gate, so
+     a capitalised word naming no zone file still falls through exactly as before.
+
+
 ### Changed
 
 - **The hunter's lens no longer carries the corpus's ground truth, and the corpus has a hold-out policy
