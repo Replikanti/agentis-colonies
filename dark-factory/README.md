@@ -506,8 +506,46 @@ free. With the flag off the directive is 0 bytes, nothing is copied, and the san
 dark-factory/demo-resolve-cell.sh        # offline: source guards, the gate fixtures, a mock ON/OFF pair
 ```
 
-The on-chain fact check lands separately. Neither demo proves the model USES the verb — that is a live
-mutation arm's job, and the recall question is M4's.
+#### Checking an on-chain fact (`onchain-fact.sh`, #2235 PR C)
+
+Some dismissals turn on DEPLOYED STATE, not on source: what a parameter is set to, who holds a role, what a
+value is right now. `onchain-fact.sh` reads one with a bounded `cast call` and writes the RESULT into the same
+cache, so the citation is re-openable from disk:
+
+```bash
+dark-factory/run-discovery.sh --repo <clone> --scope <scope.tsv> --brief <brief.md> \
+  --external-resolve --fork-url https://<operator-endpoint> [--fork-block <n>]
+```
+
+```
+ONCHAIN|<chain>:<address>:<selector>|<result>|<block>
+ONCHAIN|<chain>:<address>:<selector>|unavailable|<no-rpc|no-cast|revert|budget-exhausted|bad-input>
+TRACE|#<k>|CLEAN|ONCHAIN <chain>:<address>:<selector>@<block> = <result> — <what that value settles>
+```
+
+* the verb rides the SAME knob as the resolver (`--external-resolve`), so there is one switch, not two; with
+  the knob off nothing is copied and the prompt is byte-identical;
+* **the endpoint is always the operator's** — no flag of the tool takes a URL or a host, the model supplies an
+  address and a signature only, and the endpoint comes from `DF_EXTERNAL_RPC` / `FORK_URL` / `ETH_RPC_URL`
+  (`--fork-url` sets the second, validated with `run-invariant-hunt.sh`'s shape). It is never printed into a
+  prompt, never cached, and deliberately NOT on `exec.env_passthrough`. A whole `run-zone-hunt.sh` hunt is
+  covered by `export DF_EXTERNAL_RESOLVE=1 FORK_URL=<endpoint>`;
+* **no endpoint is an honest null, not a silent pass** ([STOP-1 decision 4](https://github.com/Replikanti/agentis-colonies/issues/2235)):
+  the read answers `unavailable|no-rpc`, NOTHING is cached, and the check that rests on it stays `UNRESOLVED`
+  — it can never become a `CLEAN`. The same holds for a revert and for a spent budget;
+* the harness re-opens the citation **from the cache, never from the network**, and counts it only when the
+  cached record for that (chain, address, selector, block) carries exactly the cited value — so re-judging a
+  log needs no RPC, and an endpoint that has since changed cannot rewrite a verdict;
+* cache key `(chain, address, calldata, block)` under `external/onchain/…`, shared across cells (a value a
+  sibling already read is free), budget `DF_ONCHAIN_BUDGET` (default 5) calls per cell, block pinned once per
+  cell (or by `--fork-block`) so every call of a cell keys on one block.
+
+```bash
+dark-factory/demo-resolve-cell.sh        # the same demo also gates the on-chain verb, offline via DF_CAST_CMD
+```
+
+Neither demo proves the model USES a verb — that is a live mutation arm's job, and the recall question is
+M4's.
 
 ### Inter-agent coordination (shared blackboard, #1001)
 

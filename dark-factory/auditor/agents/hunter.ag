@@ -35,6 +35,16 @@ cb 300000;
 //               harness re-opens citations from, this cell's budget-state file, and the per-cell resolve
 //               bound. They are quoted verbatim into the command line the directive prints, so the model
 //               never has to invent a path; all four ride exec.env_passthrough or getenv() returns "".
+//   ONCHAIN_FACT #2235 PR C (optional, default "" = OFF): absolute path to the per-cell copy of
+//               onchain-fact.sh, the bounded `cast call` verb. Non-empty ONLY under run-discovery.sh
+//               --external-resolve, and it is the ONLY gate on the on-chain directive. Empty => that
+//               directive is "" => the prompt is byte-identical. The RPC endpoint is NEVER in the prompt or
+//               in this env contract: onchain-fact.sh reads the operator's own DF_EXTERNAL_RPC/FORK_URL/
+//               ETH_RPC_URL, and with none configured it answers `unavailable|no-rpc` — an honest null.
+//   ONCHAIN_BUDGET_STATE / ONCHAIN_BUDGET / FORK_BLOCK #2235 PR C (optional, default ""): this cell's
+//               call-budget file, the per-cell call bound, and the operator's pinned fork block. Quoted
+//               verbatim into the command line the directive prints; all ride exec.env_passthrough or
+//               getenv() returns "".
 //   TRACE_REASK_IDS #2223 (optional, default ""): set by run-discovery.sh ONLY on a follow-through RE-ASK,
 //               and only when the #2211 lens is on. It carries the check ids (`#2, #5`) the previous answer
 //               left unanswered, so the re-ask names them instead of repeating the same prompt verbatim.
@@ -65,6 +75,11 @@ cb 300000;
 //         free text, never script-printed). run-discovery.sh RE-OPENS every such citation from the cache or
 //         the audited repo and requires the cited lines to state the fact — an unopenable or empty citation
 //         marks THAT check uncited, exactly like the #2227 repo-path branch.
+//         #2235 PR C, only when ONCHAIN_FACT is non-empty: `ONCHAIN-FACT|<subsystem>|<cls>|on`, and in the
+//         model's own reply the `ONCHAIN <chain>:<address>:<selector>@<block> = <result>` evidence kind on a
+//         TRACE line. run-discovery.sh re-opens THAT citation from the on-chain cache — never from the
+//         network — and counts it only when a cached record for that call and block carries exactly the
+//         cited result; anything else (including every `unavailable` answer) marks THAT check uncited.
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -821,12 +836,17 @@ fn external_resolve_marker() -> string {
 // The directive text. Every path in it is passed in, so the model never has to invent one — an invented cache
 // path is exactly the "citation laundering" the harness gate refuses. O(1) top-level concat: no regex, no
 // reduce, no exec sh, so a cell pays nothing for it whether it fires or not.
+//
+// The command names `bash` EXPLICITLY, never `sh`: resolve-external.sh is bash-only (`set -o pipefail`,
+// herestrings), and on a host whose /bin/sh is dash — which is what CI runs — an `sh` invocation exits 2 with
+// NO output, which a cell reads as "the tool is broken" instead of "the symbol did not resolve". Naming the
+// interpreter removes the dependency on whatever /bin/sh happens to be. demo-resolve-cell.sh pins it.
 fn external_resolve_block(resolver: string, repo: string, cache: string, state: string, budget: string) -> string {
     return external_resolve_marker() + "\n"
       + "A claim about how something OUTSIDE this payload behaves is a fact you can now GO AND READ. There is a "
       + "deterministic resolver on disk — no model, no search — that turns the NAME of an externally declared "
       + "contract, interface or library into source you can open. Run it with Bash, exactly like this:\n"
-      + "    sh " + resolver + " --symbol <Name> --repo " + repo + " --cache-dir " + cache
+      + "    bash " + resolver + " --symbol <Name> --repo " + repo + " --cache-dir " + cache
       + " --budget-state " + state + "\n"
       + "`<Name>` is a Solidity identifier, optionally `Name.function` — a contract/interface/library name that "
       + "appears in this payload's imports, inheritance or call sites. It takes NOTHING else: no URL, no host, "
@@ -861,6 +881,75 @@ fn external_resolve_directive() -> string {
         getenv("EXTERNAL_BUDGET_STATE"), "5"); }
     return external_resolve_block(resolver, getenv("TARGET_DIR"), getenv("EXTERNAL_CACHE"),
         getenv("EXTERNAL_BUDGET_STATE"), budget);
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// #2235 PR C — THE ON-CHAIN FACT CHECK (the second verb)
+// ---------------------------------------------------------------------------------------------------------
+// The resolver above answers "what does the external SOURCE say". A second class of dismissal turns on
+// DEPLOYED STATE instead — a configured cap, a role holder, a current rate — which no source file settles and
+// no model can remember. onchain-fact.sh reads it with one bounded call and writes the RESULT into the same
+// cache, so a citation of that value is re-openable from disk by the harness.
+//
+// Same discipline as the resolver: a VERB, not knowledge; pure-meta (no protocol, product, token or unit);
+// gated on ONE env var, so an OFF cell's prompt is byte-identical. The ENDPOINT is never in this text — the
+// tool reads the operator's own configuration, and with none configured it answers `unavailable|no-rpc`,
+// which is an honest null a check may NOT be closed on (issue #2235 STOP-1 decision 4).
+fn onchain_fact_marker() -> string {
+    return "=== CHECK AN ON-CHAIN VALUE (a call you can make, not a number you remember) ===";
+}
+
+// The directive text. Every path and bound is passed in for the same reason the resolver's are: a value the
+// model invents is exactly the citation the harness then cannot re-open. O(1) top-level concat. The command
+// names `bash` explicitly for the same reason the resolver's does — one idiom, no dependency on /bin/sh —
+// even though onchain-fact.sh itself is kept POSIX (the demo runs it under `sh`, i.e. dash in CI, as the
+// stricter proof).
+fn onchain_fact_block(tool: string, cache: string, state: string, budget: string, block: string) -> string {
+    return onchain_fact_marker() + "\n"
+      + "Some claims turn on DEPLOYED STATE rather than on source: what a parameter is actually set to, which "
+      + "account actually holds a role, what a value actually is right now. Source cannot settle those and "
+      + "neither can memory — but you can READ one. There is a deterministic on-chain reader on disk (no "
+      + "model, no search). Run it with Bash:\n"
+      + "    bash " + tool + " --chain <id> --address 0x<40 hex> --sig \"<name>(<argtypes>)(<returntypes>)\""
+      + " [--args \"<value> <value>\"]" + block + " --cache-dir " + cache + " --budget-state " + state + "\n"
+      + "The ADDRESS must be one this payload, its configuration or the resolver above actually names; an "
+      + "address you invented answers about nothing. The tool takes NO endpoint and NO URL — the network "
+      + "endpoint is configured by the operator, and arguments must be plain values (a hex word, a number, a "
+      + "boolean, a name). It prints exactly one line:\n"
+      + "ONCHAIN|<chain>:<address>:<selector>|<result>|<block>\n"
+      + "ONCHAIN|<chain>:<address>:<selector>|unavailable|<reason>\n"
+      + "An `unavailable` line means the value was NOT read — no endpoint is configured, the call reverted, or "
+      + "the budget is spent. It is NEVER evidence that the value is what you expected: a check resting on it "
+      + "is UNRESOLVED.\n"
+      + "BUDGET: at most " + budget + " calls in this cell, so spend them on values a VERDICT turns on.\n"
+      + "CITING WHAT YOU READ: quote the call and the value exactly as the tool printed them:\n"
+      + "TRACE|#<k>|CLEAN|ONCHAIN <chain>:<address>:<selector>@<block> = <result> — <what that value settles>\n"
+      + "The citation is RE-OPENED from the reader's own cache, never from the network, and the value must be "
+      + "the one that call returned. A value you did not read this way, or one that does not match what was "
+      + "cached, counts as no citation at all — that check is then recorded as unanswered, which is strictly "
+      + "worse than an honest UNRESOLVED.\n";
+}
+
+// The toggle + the assembled directive: "" unless the shell handed this cell the reader. The optional
+// `--block` is only offered when the operator pinned one, so a cell is never told to invent a block number.
+// "5" is onchain-fact.sh's own documented default, quoted from the same env the shell enforces it with, so
+// the number the model is told and the number enforced cannot drift.
+fn onchain_budget() -> string {
+    let b = getenv("ONCHAIN_BUDGET");
+    if b == "" { return "5"; }
+    return b;
+}
+
+fn onchain_fact_directive() -> string {
+    let tool = getenv("ONCHAIN_FACT");
+    if tool == "" { return ""; }
+    let blk = getenv("FORK_BLOCK");
+    if blk == "" {
+        return onchain_fact_block(tool, getenv("EXTERNAL_CACHE"), getenv("ONCHAIN_BUDGET_STATE"),
+            onchain_budget(), "");
+    }
+    return onchain_fact_block(tool, getenv("EXTERNAL_CACHE"), getenv("ONCHAIN_BUDGET_STATE"),
+        onchain_budget(), " --block " + blk);
 }
 
 let dir = getenv("TARGET_DIR");
@@ -937,6 +1026,12 @@ let opz = operationalize_directive();
 // honesty contract as CALLEE-TRUST| / OPERATIONALIZE| / APPENDIX-CONTEXT|.
 let extres = external_resolve_directive();
 
+// #2235 PR C ON-CHAIN read: the "you may read a deployed value" verb. `onchain` is "" unless the same
+// --external-resolve branch handed this cell onchain-fact.sh, so a default cell prompts BYTE-IDENTICALLY.
+// It rides beside `extres` rather than inside it because the two verbs answer different questions (source
+// vs deployed state) and a host with no configured endpoint still gets the resolver.
+let onchain = onchain_fact_directive();
+
 // The instruction carries the lens (taxonomy class), the brief (invariants + known-issues), and the
 // strict output contract; the code is the prompt payload (matches auditor.ag::classify_evm_llm shape).
 // The (possibly empty) blackboard FOCUS block sits up top so prior siblings' leads bias the hunt.
@@ -967,6 +1062,9 @@ let instruction =
   // resolved citation can discharge both rule 1 (configuration grounds) and rule 2 (an external fact).
   // "" whenever the knob is off, so the RULES block is byte-identical on every default cell.
   + extres
+  // #2235 PR C: the on-chain verb follows the source verb, so a cell that cannot settle a claim from source
+  // sees the deployed-state move next. "" whenever the knob is off.
+  + onchain
   + "Subsystem under review: " + subsystem + ".\n\n"
   + "=== HOW TO ANSWER ===\n"
   + "BOUNDED TERMINATION (#2017 — you MUST converge to ONE terminal verdict; never run an open-ended search). "
@@ -1034,6 +1132,13 @@ if index_of(instruction, operationalize_marker()) >= 0 {
 // diagnostic. `on` is a constant for the same reason as OPERATIONALIZE|: an OFF cell prints no line at all.
 if index_of(instruction, external_resolve_marker()) >= 0 {
     print("EXTERNAL-RESOLVE|" + subsystem + "|" + cls + "|on");
+}
+
+// #2235 PR C: the ONCHAIN-FACT sentinel, on the same honesty contract as EXTERNAL-RESOLVE| above — gated on
+// its own marker being demonstrably IN the prompt about to be sent, never on getenv(). It carries no
+// `CANDIDATE|` substring and run-discovery.sh's _join_wrapped_candidates treats it as a record BOUNDARY.
+if index_of(instruction, onchain_fact_marker()) >= 0 {
+    print("ONCHAIN-FACT|" + subsystem + "|" + cls + "|on");
 }
 
 let verdict = prompt(instruction, code) -> string;

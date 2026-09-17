@@ -82,6 +82,20 @@
 #                       per run so a second cell in the same zone pays nothing for a symbol already resolved.
 #                       `DF_EXTERNAL_RESOLVE=1` is the same switch for a caller that composes argv elsewhere.
 #                       Independent of OPERATIONALIZE_LENS by design (#2235 STOP-1 decision 2).
+#                       It also hands the cell the #2235 PR C ON-CHAIN verb (onchain-fact.sh): one bounded
+#                       `cast call` whose RESULT lands in the same cache, cited as
+#                       `ONCHAIN <chain>:<address>:<selector>@<block> = <result>` and re-opened by the harness
+#                       FROM THAT CACHE, never from the network. Same knob, so there is one switch, not two.
+#   --fork-url <rpc>    #2235 PR C: the RPC endpoint onchain-fact.sh reads deployed state through (http(s),
+#                       validated with the same shape check as run-invariant-hunt.sh). It is ALWAYS the
+#                       operator's: it is never printed into a prompt, never cached and never taken from the
+#                       model. WITHOUT it the on-chain verb still ships and still answers — with
+#                       `unavailable|no-rpc`, which leaves the dependent check UNRESOLVED and can never
+#                       become a silent CLEAN (issue #2235 STOP-1 decision 4). Inert without
+#                       --external-resolve (nothing is copied and no cell is told about the verb).
+#   --fork-block <n>    #2235 PR C: pin every on-chain read to one block, so the cache key — and therefore
+#                       what the harness re-opens — is reproducible across cells and re-asks. Requires
+#                       --fork-url. Without it each cell pins its own block once via `cast block-number`.
 #   --depth-max-cells <N>  #1827 WITHIN-CONTRACT DEPTH PASS. 0 (default) = OFF = the run is byte-identical
 #                       to before. With N > 0, AFTER every breadth cell has run, re-hunt the functions a
 #                       breadth candidate already flagged: one EXTRA cell per (flagged function x alternative
@@ -168,6 +182,9 @@
 #   DF_EXTERNAL_BUDGET  #2235: NETWORK resolutions allowed PER CELL (default 5; read by resolve-external.sh
 #                       itself and quoted into the directive, so the number the model is told and the number
 #                       enforced cannot drift).
+#   DF_ONCHAIN_BUDGET   #2235 PR C: on-chain CALLS allowed PER CELL (default 5; read by onchain-fact.sh
+#                       itself and quoted into the directive, on the same no-drift contract). A cache hit is
+#                       free, so a value a sibling cell already read costs nothing.
 #   DF_TIER2            #2217: `1` turns the second tier on, exactly like `--tier2` (any other value, and
 #                       unset, leave it OFF — the default). It exists because run-zone-hunt.sh calls this
 #                       script with a fixed argv: one `export DF_TIER2=1` covers every zone of a hunt.
@@ -293,6 +310,9 @@ DEPTH_FROM=""
 TIER2=0
 # #2235 PR B: opt-in external-protocol reading; 0 = OFF = the default, every path below inert.
 case "${DF_EXTERNAL_RESOLVE:-}" in 1) EXT_RESOLVE=1 ;; *) EXT_RESOLVE=0 ;; esac
+# #2235 PR C: the operator's RPC for the on-chain verb. Empty = no endpoint = every on-chain read answers
+# `unavailable|no-rpc` and the dependent check stays UNRESOLVED (STOP-1 decision 4) — never a silent CLEAN.
+FORK_URL="${FORK_URL:-}" ; FORK_BLOCK="${FORK_BLOCK:-}"
 
 need() { [ "$1" -ge 2 ] || { echo "run-discovery.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -314,6 +334,8 @@ while [ $# -gt 0 ]; do
     --depth-from) need "$#"; DEPTH_FROM="$2"; shift 2 ;;
     --tier2) TIER2=1; shift ;;
     --external-resolve) EXT_RESOLVE=1; shift ;;
+    --fork-url) need "$#"; FORK_URL="$2"; shift 2 ;;
+    --fork-block) need "$#"; FORK_BLOCK="$2"; shift 2 ;;
     --list-cells|-n) LIST_CELLS=1; shift ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-discovery.sh: unknown flag $1" >&2; exit 2 ;;
@@ -330,6 +352,16 @@ case "$DEPTH_MAX_CELLS" in ''|*[!0-9]*) echo "run-discovery.sh: --depth-max-cell
 # non-zero cap, i.e. silently disable a depth pass the operator asked for. Same fail-fast shape as --jobs.
 case "$DEPTH_LENS_QUOTA" in ''|*[!0-9]*) echo "run-discovery.sh: --depth-lens-quota must be a positive integer (got '$DEPTH_LENS_QUOTA')" >&2; exit 2 ;; esac
 [ "$DEPTH_LENS_QUOTA" -ge 1 ] || { echo "run-discovery.sh: --depth-lens-quota must be >= 1 (got '$DEPTH_LENS_QUOTA')" >&2; exit 2; }
+# #2235 PR C: fork-arg shape validation, the SAME shape run-invariant-hunt.sh uses for the same two flags
+# (an operator typo must surface here, as a usage error, not as an opaque `cast` failure inside a cell).
+# A malformed endpoint is a hard exit rather than a degrade-to-no-rpc: the operator asked for on-chain reads.
+case "$FORK_URL" in
+  '') ;;
+  http://*|https://*) ;;
+  *) echo "run-discovery.sh: --fork-url must be an http(s) URL (got: $FORK_URL)" >&2; exit 2 ;;
+esac
+case "$FORK_BLOCK" in '') ;; *[!0-9]*) echo "run-discovery.sh: --fork-block must be a whole number" >&2; exit 2 ;; esac
+[ -z "$FORK_BLOCK" ] || [ -n "$FORK_URL" ] || { echo "run-discovery.sh: --fork-block requires --fork-url" >&2; exit 2; }
 # #2217: the second tier is OFF unless the operator asked for it, through EITHER the flag or the env (the env
 # exists because run-zone-hunt.sh calls this script with a fixed argv). The cap is validated like every other
 # integer knob here except that garbage degrades to the default instead of failing the run — it is an env knob,
@@ -501,13 +533,22 @@ cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (s
 #   * the CACHE is host-wide and shared across cells/zones on purpose (a symbol another cell already resolved
 #     costs nothing), and it is bound into the sandbox by lib/claude-sandboxed.sh through HUNT_SANDBOX_EXTERNAL;
 #   * the BUDGET is per cell: one state file per cell under $RUN/external-budget/.
+# #2235 PR C: the on-chain reader rides the SAME knob — one switch, not two. It is copied and announced even
+# when no RPC is configured, because that is what turns an unverifiable deployed-state claim into an honest
+# `unavailable|no-rpc` -> UNRESOLVED instead of a remembered value (issue #2235 STOP-1 decision 4).
 EXTERNAL_RESOLVER="" ; EXTERNAL_CACHE="" ; EXTERNAL_BUDGET="" ; EXTERNAL_BUDGET_DIR=""
+ONCHAIN_FACT="" ; ONCHAIN_BUDGET="" ; ONCHAIN_BUDGET_DIR=""
 if [ "$EXT_RESOLVE" -eq 1 ]; then
   [ -f "$HERE/resolve-external.sh" ] || {
     echo "run-discovery.sh: --external-resolve: resolve-external.sh not found at $HERE" >&2; exit 3; }
   cp "$HERE/resolve-external.sh" "$RUN/resolve-external.sh"
   chmod +x "$RUN/resolve-external.sh" 2>/dev/null || true
   EXTERNAL_RESOLVER="$RUN/resolve-external.sh"
+  [ -f "$HERE/onchain-fact.sh" ] || {
+    echo "run-discovery.sh: --external-resolve: onchain-fact.sh not found at $HERE" >&2; exit 3; }
+  cp "$HERE/onchain-fact.sh" "$RUN/onchain-fact.sh"
+  chmod +x "$RUN/onchain-fact.sh" 2>/dev/null || true
+  ONCHAIN_FACT="$RUN/onchain-fact.sh"
   EXTERNAL_CACHE="${DF_EXTERNAL_CACHE:-${DARK_FACTORY_DIR:-$HOME/.dark-factory}/external}"
   mkdir -p "$EXTERNAL_CACHE"
   EXTERNAL_CACHE="$(cd "$EXTERNAL_CACHE" && pwd)"
@@ -515,10 +556,20 @@ if [ "$EXT_RESOLVE" -eq 1 ]; then
   case "$EXTERNAL_BUDGET" in ''|*[!0-9]*) EXTERNAL_BUDGET=5 ;; esac
   EXTERNAL_BUDGET_DIR="$RUN/external-budget"
   mkdir -p "$EXTERNAL_BUDGET_DIR"
+  ONCHAIN_BUDGET="${DF_ONCHAIN_BUDGET:-5}"
+  case "$ONCHAIN_BUDGET" in ''|*[!0-9]*) ONCHAIN_BUDGET=5 ;; esac
+  ONCHAIN_BUDGET_DIR="$RUN/onchain-budget"
+  mkdir -p "$ONCHAIN_BUDGET_DIR"
   # The ONE extra sandbox bind (#2235 STOP-1 decision 3c): exported only on this branch, so an OFF run gives
   # lib/claude-sandboxed.sh exactly the bind set it had before.
   export HUNT_SANDBOX_EXTERNAL="$EXTERNAL_CACHE"
   echo "run-discovery.sh: external-protocol reading ON — cache $EXTERNAL_CACHE, <= $EXTERNAL_BUDGET network resolve(s)/cell" >&2
+  # The endpoint is reported as configured / not configured and NEVER echoed: an RPC URL routinely carries a key.
+  if [ -n "$FORK_URL" ]; then
+    echo "run-discovery.sh: on-chain fact check ON — endpoint configured, <= $ONCHAIN_BUDGET call(s)/cell${FORK_BLOCK:+, block $FORK_BLOCK}" >&2
+  else
+    echo "run-discovery.sh: on-chain fact check ON — NO endpoint configured (--fork-url): every read answers 'unavailable|no-rpc' and leaves its check UNRESOLVED" >&2
+  fi
 fi
 
 # init the agentis store FIRST (before any .agentis/ subdir exists), else HEAD is not set.
@@ -646,7 +697,11 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # SANITISED env — unregistered => "" => --external-resolve would be silently inert, and the other three are
   # quoted into the command line the directive prints, so a missing one would hand the model a broken command.
   # All four are EMPTY on a default run, so registering them changes nothing there.
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET"
+  # #2235 PR C ONCHAIN_FACT/ONCHAIN_BUDGET_STATE/ONCHAIN_BUDGET/FORK_BLOCK ride it for the same #1426 reason.
+  # FORK_URL deliberately does NOT: hunter.ag never reads the endpoint (onchain-fact.sh does, from the cell's
+  # own environment), and keeping it off the sanitised env is what guarantees an RPC URL — routinely a
+  # key-bearing secret — can never be interpolated into a prompt.
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET,ONCHAIN_FACT,ONCHAIN_BUDGET_STATE,ONCHAIN_BUDGET,FORK_BLOCK"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: hunter.ag ends its tick with `learn("hunt", ...)`, and it is that WRITE
   # the flag gates (#1878 measured it on agentis v1.28.0 — `experience.enabled = false` makes learn() raise
@@ -768,7 +823,7 @@ _join_wrapped_candidates() {
       rec = $0
       next
     }
-    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*ONCHAIN-FACT\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
       if (rec != "") { print rec; rec = "" }
       next
     }
@@ -920,6 +975,14 @@ _unnumbered_opchecks() {
 # status vocabulary, never a whole-cell failure. Empty cache_dir (every run without --external-resolve) keeps
 # today's behaviour exactly — there is then no cache to re-open anything from.
 #
+# #2235 PR C adds the FOURTH branch on the same contract, for a claim about DEPLOYED STATE rather than source.
+# A TRACE carrying `ONCHAIN <chain>:<address>:<selector>@<block> = <result>` is cited only when the on-chain
+# cache under cache_dir holds a record for exactly that call AND that block whose RESULT is exactly the cited
+# value. The lookup is a file read under cache_dir — never a network call, so re-judging a log needs no RPC
+# and an endpoint that has since changed cannot rewrite a verdict. A cited value that was never read, was read
+# at another block, or disagrees with what was cached is uncited; and because onchain-fact.sh caches NOTHING
+# on an `unavailable` answer (no endpoint, revert, spent budget), a check resting on one can never be closed.
+#
 # The regexes live HERE rather than in globals so the function is self-contained: demo-operationalize-lens.sh
 # slices it out of this file by line range and sources it, and a detector that depended on script-level state
 # would silently behave differently there than in production. [repo_dir] is an explicit PARAMETER for the
@@ -950,6 +1013,10 @@ _uncited_dismissal_lines() {
   # #2235: the evidence kind a cell may only produce after it actually RESOLVED the external symbol. It is
   # matched before the two #2214 branches because a resolved citation discharges BOTH of their grounds.
   ud_extcited_re='EXTERNAL-CITED'
+  # #2235 PR C: the on-chain evidence kind and the citation it must carry. The call id and the block are
+  # exactly what onchain-fact.sh printed, so the harness can rebuild the cache path from the TRACE line alone.
+  ud_onchain_re='ONCHAIN'
+  ud_oncall_re='[0-9]{1,10}:0x[0-9a-fA-F]{40}:[A-Za-z_][A-Za-z0-9_]*\([]A-Za-z0-9_,[]*\)@[0-9]+'
   # Same shape as ud_pathline_re plus `@`, because a cached upstream clone lives under
   # `<cache>/repo/<host>/<org>/<name>@<ref>/…` — without the `@` the match would start MID-PATH and a real
   # cache citation could never resolve. Kept separate so the #2225/#2227 branches keep their exact regex.
@@ -960,6 +1027,45 @@ _uncited_dismissal_lines() {
     ud_verdict="$(printf '%s\n' "$ud_line" | cut -d'|' -f3)"
     case "$ud_verdict" in *[Cc][Ll][Ee][Aa][Nn]*) ;; *) continue ;; esac
     ud_span="$(printf '%s\n' "$ud_line" | cut -d'|' -f3-)"
+    # #2235 PR C: the ONCHAIN branch, judged BEFORE the source branches for the same reason PR B's is — an
+    # accepted on-chain citation answers rules 1 and 2 outright, and a rejected one must not then be re-judged
+    # by a branch that would call it uncited for the wrong reason. `EXTERNAL-CITED` carries no `ONCHAIN`
+    # substring, so the two kinds never contend for the same line.
+    if printf '%s\n' "$ud_span" | grep -q "$ud_onchain_re"; then
+      ud_ocite="$(printf '%s\n' "$ud_span" | grep -oE "$ud_oncall_re" | head -1)"
+      # The cited VALUE: the token after the `=` that follows the call id, matched as ONE span with the same
+      # ERE the call id uses (never a second, BRE-flavoured expression — the two could then disagree about
+      # what they matched). Trailing prose punctuation and the backticks a model likes to wrap a value in are
+      # stripped, and the comparison is case-insensitive so a hex word cited in another case still matches.
+      ud_opair="$(printf '%s\n' "$ud_span" \
+        | grep -oE "${ud_oncall_re}[[:space:]]*=[[:space:]]*[^[:space:]]+" | head -1)"
+      ud_ovalue="$(printf '%s' "${ud_opair##*=}" | tr -d ' `"'"'"',;' | sed 's/\.$//' | tr 'A-Z' 'a-z')"
+      ud_ook=0
+      if [ -z "$ud_cache" ]; then
+        # No cache root to re-open against: the same shape-only contract the other branches keep in that case.
+        [ -n "$ud_ocite" ] && [ -n "$ud_ovalue" ] && ud_ook=1
+      elif [ -n "$ud_ocite" ] && [ -n "$ud_ovalue" ]; then
+        ud_oid="${ud_ocite%@*}"
+        ud_oblock="${ud_ocite##*@}"
+        ud_ochain="${ud_oid%%:*}"
+        ud_orest="${ud_oid#*:}"
+        ud_oaddr="$(printf '%s' "${ud_orest%%:*}" | tr 'A-F' 'a-f')"
+        ud_odir="$ud_cache/onchain/$ud_ochain/$ud_oaddr/$ud_oblock"
+        if [ -d "$ud_odir" ]; then
+          for ud_orec in "$ud_odir"/*.tsv; do
+            [ -f "$ud_orec" ] || continue
+            # Field 1 is the call id the reader emitted, field 4 the result it cached. A record for another
+            # call (same address, different selector) is skipped rather than matched on its value alone.
+            ud_oreccall="$(cut -f1 "$ud_orec" 2>/dev/null | head -1 | tr 'A-F' 'a-f')"
+            [ "$ud_oreccall" = "$(printf '%s' "$ud_oid" | tr 'A-F' 'a-f')" ] || continue
+            ud_orecval="$(cut -f4 "$ud_orec" 2>/dev/null | head -1 | tr 'A-Z' 'a-z')"
+            if [ -n "$ud_orecval" ] && [ "$ud_orecval" = "$ud_ovalue" ]; then ud_ook=1; break; fi
+          done
+        fi
+      fi
+      if [ "$ud_ook" -eq 0 ]; then printf '%s\n' "$ud_line"; fi
+      continue
+    fi
     # #2235 PR B: the EXTERNAL-CITED branch. A cell that RESOLVED the fact and cites what it read has done
     # exactly what rules 1 and 2 ask for, so an accepted citation ends the judgement of this line — and a
     # citation the harness cannot re-open ends it the other way, without falling through to the branches
@@ -1639,6 +1745,14 @@ run_cell() {
     rc_ext_base="${rc_log##*/}"
     rc_ext_state="$EXTERNAL_BUDGET_DIR/${rc_ext_base%.log}"
   fi
+  # #2235 PR C: the same per-cell bookkeeping for the on-chain CALL budget, in its own file so the two verbs
+  # cannot spend each other's bound. It also memoises this cell's pinned block (onchain-fact.sh writes a
+  # `<state>.block-<chain>` sibling), which is what keeps every call of a cell on ONE cache key.
+  rc_oc_state=""
+  if [ -n "$ONCHAIN_BUDGET_DIR" ]; then
+    rc_oc_base="${rc_log##*/}"
+    rc_oc_state="$ONCHAIN_BUDGET_DIR/${rc_oc_base%.log}"
+  fi
   echo "run-discovery.sh: hunting $rc_cls on '$rc_subsys' ..." >&2
   # shellcheck disable=SC2317  # invoked by name through df_run_agent_validated
   _rc_attempt() {
@@ -1659,6 +1773,11 @@ run_cell() {
         EXTERNAL_CACHE="$EXTERNAL_CACHE" \
         EXTERNAL_BUDGET_STATE="$rc_ext_state" \
         EXTERNAL_BUDGET="$EXTERNAL_BUDGET" \
+        ONCHAIN_FACT="${ONCHAIN_FACT:+$rc_dir/onchain-fact.sh}" \
+        ONCHAIN_BUDGET_STATE="$rc_oc_state" \
+        ONCHAIN_BUDGET="$ONCHAIN_BUDGET" \
+        FORK_URL="$FORK_URL" \
+        FORK_BLOCK="$FORK_BLOCK" \
         "$AGENTIS" go hunter.ag --enable-exec --enable-messaging --grant-pii ) >"$1" 2>&1 || \
         echo "run-discovery.sh: hunter run failed for $rc_cls/'$rc_subsys' (see $1)" >&2
   }
@@ -2123,6 +2242,7 @@ else
     # #2235: the resolver rides the same idiom as the slicer — copied INTO the cell dir, because that dir is
     # what the hunt sandbox binds; a path outside it does not exist for the driven session. No-op when off.
     if [ -n "$EXTERNAL_RESOLVER" ]; then cp "$RUN/resolve-external.sh" "$cdir/resolve-external.sh"; fi
+    if [ -n "$ONCHAIN_FACT" ]; then cp "$RUN/onchain-fact.sh" "$cdir/onchain-fact.sh"; fi
     # #993: trust this cell dir HERE (foreground, serialized) — never inside the
     # backgrounded run_cell subshell, where concurrent whole-file writes would race.
     case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$cdir" ;; esac
