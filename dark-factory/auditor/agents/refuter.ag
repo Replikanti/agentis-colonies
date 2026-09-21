@@ -24,11 +24,19 @@ cb 300000;
 //                  contract`, this is a function-sliced derived contract that implements its `virtual`
 //                  members. "" to skip — and with "" the prompt is byte-identical to the pre-#1861 one.
 //   BRIEF_PATH     optional path to the protocol brief (invariants + KNOWN ISSUES to exclude); "" to skip.
+//   SEVERITY_RUBRIC  #2245 iteration 2 OPT-IN: "1" injects the contest-severity dismissal rubric + the closed
+//                  ground list into the HOW-TO-JUDGE body and asks for a `REFUTE-GROUND|` line on a REFUTED
+//                  verdict. Unset / any other value = OFF = the DEFAULT, and the prompt is byte-identical to
+//                  the pre-#2245 one in both modes.
+//   RUBRIC_REASK_GROUNDS  #2245 iteration 2: the insufficient ground the driver is re-asking about. Set by
+//                  run-refute.sh ONLY on that bounded second call; empty (the default) => no re-ask block.
 // Stdout: exactly one verdict line —
 //   VERDICT|REAL|<file:fn>|<class>|<one-sentence why the refutation FAILED: the exploit holds>
 //   VERDICT|REFUTED|<file:fn>|<class>|<one-sentence the specific guard / control-flow fact that kills it>
 // plus, on a REFUTED verdict ONLY and IMMEDIATELY BEFORE it (#1887) —
 //   CONSTRAINT|<class>|<one target-independent sentence: the generalisable requirement the claim failed>
+// and, with SEVERITY_RUBRIC=1 on a REFUTED verdict ONLY, ahead of BOTH of those (#2245 iteration 2) —
+//   REFUTE-GROUND|<ground-id>|<the evidence that ground requires>
 // The ORDER is load-bearing: run-refute.sh's _join_wrapped_verdict() treats every non-boundary line AFTER a
 // `VERDICT|` line as a PTY-wrap continuation of the verdict's reason, so a CONSTRAINT| line emitted after the
 // verdict would be swallowed into that reason and would then shift verify-findings.sh's `awk -F'|'` field
@@ -99,6 +107,114 @@ fn constraint_rule(cls: string) -> string {
       + "On a REAL verdict write NO CONSTRAINT| line at all.\n";
 }
 
+
+// --- #2245 iteration 2: CONTEST-SEVERITY DISMISSAL RUBRIC (opt-in, default OFF) ------------------------------
+// The measured gap (issue #2245 iteration 1, three runs on the frozen base): the class net closed the
+// GENERATION gap — 3 of 3 runs reached the ground-truth mechanism — and 0 of 3 KEPT it. One of those losses
+// happened HERE: this gate refuted a contest-accepted Medium on "owner-only intentional guard, no external
+// attacker, another exit path bypasses it, so no funds are locked". The other two happened at the hunter's own
+// SAFE, on the same criterion. So the rubric is installed at BOTH decision points, with the CLOSED ground list
+// below and a structured `REFUTE-GROUND|` line the driver can gate on.
+//
+// WHAT IS DELIBERATELY NOT CHANGED: the conservative TIE-BREAK below. That tie-break IS the precision
+// mechanism of this whole gate, and #1938 established that inverting it is defensible only for a
+// fuzzer-witnessed finding, never for an unproven lead. The rubric qualifies WHICH grounds may kill a claim;
+// it never lowers the bar of how sure the reader must be.
+//
+// Default OFF (`SEVERITY_RUBRIC=1` opts in, everything else is off), and the knob is INDEPENDENT of
+// OPERATIONALIZE_LENS (issue #2245 STOP-1 decision 3). Off => the directive is "" => the assembled prompt is
+// BYTE-IDENTICAL to the pre-#2245 one in BOTH modes, the discovery-lead gate and the #1938 invariant gate.
+// The knob must also ride run-refute.sh's exec.env_passthrough, else getenv() reads the SANITIZED env and the
+// whole feature is silently inert (the #1861/#1938 failure mode this file already documents twice).
+//
+// SPLICE POINT: inside judge_body(), after the decision list and BEFORE the TIE-BREAK paragraph, so it
+// qualifies rule (b) ("a privileged/trusted role acting within its documented permissions") before the
+// tie-break is read.
+
+fn severity_rubric_marker() -> string {
+    return "=== SEVERITY RUBRIC FOR A DISMISSAL (this governs when \"not a bug\" is a valid answer) ===";
+}
+
+// The rubric + the CLOSED ground list. BYTE-IDENTICAL to hunter.ag's severity_rubric_block() — one standard,
+// two decision points, and demo-severity-rubric.sh diffs the two functions so they cannot drift apart. The
+// per-agent EMISSION contract differs (the hunter writes `DISMISS|`, this side writes `REFUTE-GROUND|`) and so
+// lives outside this function, in ground_rule() below. Do not edit one copy: edit both, in the same commit.
+fn severity_rubric_block() -> string {
+    return severity_rubric_marker() + "\n"
+      + "Medium is NOT reserved for a bug an unprivileged attacker profits from. THREE ATTACKER-FREE SHAPES "
+      + "ARE Medium, and dismissing one of them because nobody gains is a false negative:\n"
+      + "  (a) VALID-INPUT LIVENESS LOSS — a documented user path reverts, or is otherwise unavailable, under "
+      + "a state or configuration the protocol's OWN validation admits. An admin/owner action INSIDE the range "
+      + "its own setter accepts is a VALID INPUT, not a \"trusted admin misconfiguration\": the question is "
+      + "what the code ADMITS, never who typed it.\n"
+      + "  (b) ATTACKER-FREE MISACCOUNTING — value is stranded, misattributed, or emitted to nobody under a "
+      + "state the code admits. A BOUNDED loss still counts; \"only dust\" is a number you must PRODUCE, not "
+      + "an adjective you may assert.\n"
+      + "  (c) ALTERNATIVE-PATH RULE — the existence of another path does NOT cancel the loss on the broken "
+      + "one unless that alternative is EQUIVALENT IN COST AND IN TIME. A slower, more expensive or "
+      + "differently-taxed route is a loss, not a remedy.\n"
+      + "CLOSED GROUND LIST. Every dismissal names exactly ONE ground id from this list, and nothing outside "
+      + "it counts.\n"
+      + "  INSUFFICIENT — each of these is insufficient ALONE, and ANY UNION of them is STILL insufficient "
+      + "(stacking three weak grounds does not build one strong one):\n"
+      + "    no-attacker        no unprivileged attacker gains anything.\n"
+      + "    trusted-config     a privileged role, a deploy-time choice or an admin action reaches the state.\n"
+      + "    alt-path           some other path still works.\n"
+      + "    dust-unquantified  the loss is \"small\", \"dust\" or \"negligible\" with no numbers.\n"
+      + "  SUFFICIENT — each one stands ONLY with the evidence named next to it, in the same line:\n"
+      + "    guard                 cite the file:line of the guard that provably stops the path.\n"
+      + "    unreachable           cite the constructor/setter line that VALIDATES the state away.\n"
+      + "    no-loss               cite the path and its ZERO delta (nothing is lost, nobody waits).\n"
+      + "    known-issue           cite the brief line that already lists it.\n"
+      + "    immaterial-quantified quantify the loss from THIS payload's own numbers, numbers included.\n"
+      + "A missing, empty or unrecognised ground id counts as INSUFFICIENT.\n";
+}
+
+// The EMISSION contract for this side. ORDER IS LOAD-BEARING: `REFUTE-GROUND|` then `CONSTRAINT|` then
+// `VERDICT|` last — run-refute.sh's _join_wrapped_verdict() glues every non-boundary line AFTER a `VERDICT|`
+// line into the verdict's reason (see the header note), which would both swallow the ground and shift
+// verify-findings.sh's `awk -F'|'` field read. The token carries no `VERDICT|` substring, so
+// lib/run-agent-validated.sh's refuter predicate cannot false-accept a reply that never reached a verdict.
+fn ground_rule() -> string {
+    return "IF — and only if — your verdict is REFUTED, write ONE MORE line naming the ground it stands on. It "
+      + "goes BEFORE the CONSTRAINT| line, and therefore before the VERDICT| line; nothing may follow the "
+      + "verdict:\n"
+      + "REFUTE-GROUND|<ground-id>|<the evidence that ground requires>\n"
+      + "The ground id is copied VERBATIM from the closed list above, exactly one per verdict. A REFUTED "
+      + "verdict whose ground is missing, empty, unrecognised, or one of the INSUFFICIENT ids is a verdict that "
+      + "has not been justified: the driver will hand this candidate straight back to you. On a REAL verdict "
+      + "write NO REFUTE-GROUND| line at all.\n";
+}
+
+// The opt-in, same INVERTED polarity as hunter.ag's severity_rubric_enabled(): only the literal "1" opts in,
+// so unset / any other value is OFF and is the DEFAULT.
+fn severity_rubric_enabled() -> bool {
+    return getenv("SEVERITY_RUBRIC") == "1";
+}
+
+// The directive as it enters judge_body(): "" unless the knob opts in. Concatenating "" is a no-op, so the
+// default prompt is byte-identical to the pre-#2245 one and the honesty-gated sentinel below auto-suppresses,
+// because an empty directive carries no marker.
+fn severity_rubric_directive() -> string {
+    if !severity_rubric_enabled() { return ""; }
+    return severity_rubric_block() + ground_rule() + rubric_reask_block();
+}
+
+// The GROUND RE-ASK addressing (empty on every first attempt), the gate-side twin of hunter.ag's
+// dismiss_reask_block(). run-refute.sh re-asks ONE bounded time when a REFUTED verdict stood on an
+// insufficient/unknown/missing ground, and names that ground here. RUBRIC_REASK_GROUNDS is set by the driver
+// ONLY on such a re-ask, so this block is "" on every first call and that prompt is unchanged; it lives INSIDE
+// the rubric directive, so the rubric-OFF prompt keeps its byte-identity contract whatever the env holds.
+fn rubric_reask_block() -> string {
+    let open = getenv("RUBRIC_REASK_GROUNDS");
+    if open == "" { return ""; }
+    return "RE-ASK — you already refuted this candidate once, on a ground the closed list above treats as "
+      + "INSUFFICIENT: " + open + ". Judge it AGAIN under the rubric above. If it really is not a bug, name a "
+      + "SUFFICIENT ground with the evidence that ground requires. If it matches shape (a), (b) or (c), the "
+      + "honest verdict is REAL. Re-stating the same insufficient ground, or adding more of them, answers "
+      + "nothing — and do NOT invent a guard that is not in the code to satisfy this re-ask.\n";
+}
+
 // --- #1938 invariant-hunt judgment mode -----------------------------------------------------------------
 // STAGE 4.5 (--deep-hunt) surfaces a BROKEN STATEFUL invariant carrying a fuzzer-reproduced shrunk witness —
 // a different object from a discovery LEAD (an unproven exploit claim). When CAND_INVARIANT is set
@@ -135,6 +251,10 @@ fn judge_body(inv: string, aux: string) -> string {
           + "  (c) You traced the code and the claimed exploit genuinely holds for an UNPRIVILEGED external attacker, "
           + "with no guard stopping it. -> REAL.\n"
           + appendix_rule(aux)
+          // #2245 iteration 2: the severity rubric, read AFTER the decision list it qualifies (rule (b)'s
+          // trusted-role exclusion) and BEFORE the tie-break, which it deliberately leaves alone. "" when the
+          // knob is off => this branch is byte-identical to the pre-#2245 one.
+          + severity_rubric_directive()
           + "TIE-BREAK: if after an honest trace you are NOT confident the exploit holds — the relevant code is not "
           + "shown, the path is ambiguous, or you cannot point to the exact step that breaks an invariant — answer "
           + "REFUTED. Surviving this gate must require the claim to be unambiguously real; uncertainty kills it.\n\n";
@@ -154,6 +274,9 @@ fn judge_body(inv: string, aux: string) -> string {
       + "  REAL requires BOTH: the invariant is a genuine guarantee AND the witness is reachable by an "
       + "unprivileged attacker.\n"
       + appendix_rule(aux)
+      // #2245 iteration 2: the same rubric in the invariant mode, for the same reason — axis (b) here carries
+      // the same trusted-role exclusion. "" when the knob is off => byte-identical to the pre-#2245 prompt.
+      + severity_rubric_directive()
       + "TIE-BREAK (INVERTED for a witnessed finding): the fuzzer already reproduced this exact exploit sequence, "
       + "so — UNLIKE an unproven discovery lead — DEFAULT TO REAL on genuine uncertainty. REFUTE only when you can "
       + "NAME the specific mis-specification (axis a) or the specific privileged/trusted step the witness needs "
@@ -219,6 +342,13 @@ if len(aux) > 0 { print("AUX-CONTEXT|" + auxPath); }
 // #1938: same observability marker for the staged invariant harness (printed BEFORE the verdict, so it never
 // perturbs run-refute.sh's verdict/constraint scrapers, which only read from the VERDICT|/CONSTRAINT| line on).
 if len(harness) > 0 { print("INV-HARNESS|" + harnessPath); }
+// #2245 iteration 2: the SEVERITY-RUBRIC sentinel, on the same honesty contract as hunter.ag's — gated on the
+// rubric's own marker being demonstrably IN the prompt about to be sent, never on getenv() having returned
+// something, so no log can claim a rubric that was not injected. It is also what makes run-refute.sh's ground
+// gate INERT by construction when the knob is off: that gate reads this line and does nothing without it.
+// Printed BEFORE the prompt() call (like AUX-CONTEXT| above) and carrying no `VERDICT|` substring, so neither
+// _join_wrapped_verdict() nor lib/run-agent-validated.sh's refuter predicate can be confused by it.
+if index_of(instruction, severity_rubric_marker()) >= 0 { print("SEVERITY-RUBRIC|refute|on"); }
 
 let verdict = prompt(instruction, harness_payload(appendix_payload(code, aux, auxPath), harness, harnessPath)) -> string;
 

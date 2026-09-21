@@ -806,6 +806,132 @@ fn config_realizability_rule() -> string {
       + "result: record the check as UNRESOLVED and state what you could not verify.\n";
 }
 
+// --- #2245 iteration 2: CONTEST-SEVERITY DISMISSAL RUBRIC (opt-in, default OFF) ------------------------------
+// The measured gap (iteration 1, three runs on the frozen base): the class net closed the GENERATION gap —
+// 3 of 3 runs reached the ground-truth mechanism and wrote it out — and 0 of 3 KEPT it. All three losses
+// applied ONE criterion at two different decision points, the hunter's SAFE and the refute gate's REFUTED:
+// "no unprivileged attacker gain and no funds locked => not a bug". The contest's own rubric accepted every
+// one of those rows as Medium (core functionality broken, or value misaccounted, under a state the protocol's
+// OWN validation admits — attacker-free, alternative-path-irrelevant). So iteration 2 changes neither routing
+// nor generation: it installs the SEVERITY rubric at both decision points, with a CLOSED list of dismissal
+// grounds and a structured output line the harness can gate on.
+//
+// WHY AN OUTPUT CONTRACT AND NOT A NUDGE: #2213 measured Delta=+0 for a prompt directive with no gate. What
+// did work on this pipeline is the #2214/#2223 shape — an emission contract, a deterministic OUTPUT gate, a
+// named re-ask. So the rubric ships with `DISMISS|` (below), run-discovery.sh's ground gate, and — when a
+// second dismissal still stands on an insufficient ground — PROMOTION of the lead to a tier-1 `Medium`
+// candidate, which the refute gate and the PoC gate then still have to agree with.
+//
+// Default OFF, same INVERTED polarity as OPERATIONALIZE_LENS ("1" opts in, everything else is off): this is an
+// UNMEASURED recall-capability change and #2191 proved a mechanically perfect lens can still score Delta=+0.
+// Unset => the directive is "" => the assembled prompt is BYTE-IDENTICAL to the pre-#2245 one. The knob is
+// deliberately INDEPENDENT of OPERATIONALIZE_LENS (issue #2245 STOP-1 decision 3): the measured dismissals
+// happened in lens-OFF cells too, and coupling the two would make the arm a two-variable experiment.
+//
+// The text is PURE-META — no protocol, contract, function, token, unit or product name — like every other
+// directive in this file, so injecting it on a held-out target cannot leak an answer into the hunt.
+//
+// SPLICE POINT: the shared RULES block, immediately AFTER config_realizability_rule(). The rule two lines
+// above it ("a trusted role acting WITHIN its documented permissions is OUT OF SCOPE") is exactly what the
+// measured dismissals hid behind, so the rubric that QUALIFIES it has to be read after it; and it extends the
+// same dismissal-discipline rule config_realizability_rule() states for configuration grounds.
+
+// The one string the block is RECOGNISED by (same discipline as operationalize_marker/external_resolve_marker):
+// it is the block's literal FIRST LINE, and the sentinel greps the ASSEMBLED instruction for it, so a marker
+// that is not a substring of what renders disables the sentinel loudly rather than silently claiming an
+// injection that never happened.
+fn severity_rubric_marker() -> string {
+    return "=== SEVERITY RUBRIC FOR A DISMISSAL (this governs when \"not a bug\" is a valid answer) ===";
+}
+
+// The rubric + the CLOSED ground list. This block is the ONE source string the two gates share: refuter.ag
+// carries a severity_rubric_block() whose body is BYTE-IDENTICAL to this one, and demo-severity-rubric.sh
+// diffs the two so the hunter's standard and the refute gate's standard cannot drift apart. The per-agent
+// EMISSION contracts differ (this side writes `DISMISS|`, the gate side writes `REFUTE-GROUND|`) and therefore
+// live OUTSIDE this function — dismiss_rule() here, ground_rule() there — so the shared half stays diffable.
+// Do not edit one copy: edit both, in the same commit, or the demo fails.
+fn severity_rubric_block() -> string {
+    return severity_rubric_marker() + "\n"
+      + "Medium is NOT reserved for a bug an unprivileged attacker profits from. THREE ATTACKER-FREE SHAPES "
+      + "ARE Medium, and dismissing one of them because nobody gains is a false negative:\n"
+      + "  (a) VALID-INPUT LIVENESS LOSS — a documented user path reverts, or is otherwise unavailable, under "
+      + "a state or configuration the protocol's OWN validation admits. An admin/owner action INSIDE the range "
+      + "its own setter accepts is a VALID INPUT, not a \"trusted admin misconfiguration\": the question is "
+      + "what the code ADMITS, never who typed it.\n"
+      + "  (b) ATTACKER-FREE MISACCOUNTING — value is stranded, misattributed, or emitted to nobody under a "
+      + "state the code admits. A BOUNDED loss still counts; \"only dust\" is a number you must PRODUCE, not "
+      + "an adjective you may assert.\n"
+      + "  (c) ALTERNATIVE-PATH RULE — the existence of another path does NOT cancel the loss on the broken "
+      + "one unless that alternative is EQUIVALENT IN COST AND IN TIME. A slower, more expensive or "
+      + "differently-taxed route is a loss, not a remedy.\n"
+      + "CLOSED GROUND LIST. Every dismissal names exactly ONE ground id from this list, and nothing outside "
+      + "it counts.\n"
+      + "  INSUFFICIENT — each of these is insufficient ALONE, and ANY UNION of them is STILL insufficient "
+      + "(stacking three weak grounds does not build one strong one):\n"
+      + "    no-attacker        no unprivileged attacker gains anything.\n"
+      + "    trusted-config     a privileged role, a deploy-time choice or an admin action reaches the state.\n"
+      + "    alt-path           some other path still works.\n"
+      + "    dust-unquantified  the loss is \"small\", \"dust\" or \"negligible\" with no numbers.\n"
+      + "  SUFFICIENT — each one stands ONLY with the evidence named next to it, in the same line:\n"
+      + "    guard                 cite the file:line of the guard that provably stops the path.\n"
+      + "    unreachable           cite the constructor/setter line that VALIDATES the state away.\n"
+      + "    no-loss               cite the path and its ZERO delta (nothing is lost, nobody waits).\n"
+      + "    known-issue           cite the brief line that already lists it.\n"
+      + "    immaterial-quantified quantify the loss from THIS payload's own numbers, numbers included.\n"
+      + "A missing, empty or unrecognised ground id counts as INSUFFICIENT.\n";
+}
+
+// The EMISSION contract for this side of the gate. Kept out of severity_rubric_block() so the shared rubric
+// stays byte-diffable against refuter.ag (see above). Vocabulary note: neither `DISMISS|` nor any ground id
+// contains the substring `CANDIDATE|`, so lib/run-agent-validated.sh's hunter predicate cannot false-accept a
+// cell that never reached a terminal verdict on one of these lines, and run-discovery.sh treats `DISMISS|` as
+// a record BOUNDARY so it can never be glued onto a PTY-wrapped CANDIDATE| record.
+fn dismiss_rule() -> string {
+    return "RECORD EVERY DISMISSAL. For each lead you matched to this class's pattern and then did NOT report, "
+      + "write ONE line of its own BEFORE your terminal verdict (before any CANDIDATE| line and before the "
+      + "SAFE token):\n"
+      + "DISMISS|<file:function[:line]>|<ground-id>|<the evidence that ground requires>\n"
+      + "One line per dismissed lead; the ground id is copied VERBATIM from the closed list above. A lead you "
+      + "dismissed without this line is a lead you did not record, and an unrecorded dismissal is not a "
+      + "result. Writing a DISMISS line is never itself a finding, and it never substitutes for a report: if "
+      + "the lead qualifies under (a), (b) or (c) above, the answer is a CANDIDATE line, not a dismissal.\n\n";
+}
+
+// The opt-in. INVERTED like operationalize_enabled() (`== "1"`) ON PURPOSE: only the literal "1" opts in, so
+// unset / any other value is OFF and is the DEFAULT. Do not "fix" this into consistency with CALLEE_TRUST —
+// shipping an unmeasured dismissal rubric default-ON is exactly the #2191 mistake the polarity exists to
+// avoid. The knob must also ride run-discovery.sh's exec.env_passthrough, else getenv() reads the SANITISED
+// env and the whole feature is silently inert (the #1426/#2157 failure mode).
+fn severity_rubric_enabled() -> bool {
+    return getenv("SEVERITY_RUBRIC") == "1";
+}
+
+// The directive as it enters the prompt: "" unless the knob opts in. Concatenating "" is a no-op, so a default
+// cell's instruction matches the pre-#2245 one byte for byte and the honesty-gated sentinel below
+// auto-suppresses, because an empty directive carries no marker. O(1) top-level string concat — no regex, no
+// reduce, no exec sh, so this adds no per-element substrate cost to any cell, firing or not.
+fn severity_rubric_directive() -> string {
+    if !severity_rubric_enabled() { return ""; }
+    return severity_rubric_block() + dismiss_rule() + dismiss_reask_block();
+}
+
+// The GROUND RE-ASK addressing (empty on every first attempt), the exact twin of trace_reask_block() above.
+// run-discovery.sh's ground gate re-asks a cell that dismissed a lead on a ground the closed list treats as
+// insufficient, and names the open locations here. DISMISS_REASK_GROUNDS is set by the shell ONLY on such a
+// re-ask (and only inside a rubric-ON cell), so this block is "" on every first attempt and the assembled
+// prompt is unchanged there; it lives INSIDE the rubric directive, so the rubric-OFF prompt keeps its
+// byte-identity contract whatever the env holds. Pure-meta like every other directive here: it names the
+// locations the cell itself wrote down and the ground ids it used, never any content of its own.
+fn dismiss_reask_block() -> string {
+    let open = getenv("DISMISS_REASK_GROUNDS");
+    if open == "" { return ""; }
+    return "RE-ASK — your previous answer for this cell dismissed these leads on a ground the closed list "
+      + "above treats as INSUFFICIENT: " + open + ". Take each of them again, and for EACH either name a "
+      + "SUFFICIENT ground WITH the evidence that ground requires, or apply the rubric and report the lead as "
+      + "a CANDIDATE. Re-stating the same insufficient ground answers nothing, and adding more insufficient "
+      + "grounds to it answers less; do not drop a listed location from your reply.\n\n";
+}
+
 // --- #2235 READ THE EXTERNAL PROTOCOL (PR B — opt-in, default OFF) -------------------------------------------
 // The measured gap the #2214/#2227 citation rules exposed: a cell whose verdict turns on how ANOTHER protocol
 // behaves ("that rate is 1e18-scaled", "that wrapper is 1:1") has two honest moves and no third — confabulate
@@ -1026,6 +1152,14 @@ let opz = operationalize_directive();
 // honesty contract as CALLEE-TRUST| / OPERATIONALIZE| / APPENDIX-CONTEXT|.
 let extres = external_resolve_directive();
 
+// #2245 iteration 2 SEVERITY-RUBRIC read: the contest-severity dismissal rubric + the closed ground list.
+// `rubric` is "" unless SEVERITY_RUBRIC=1 (opt-in, default OFF), so every cell that does not opt in prompts
+// BYTE-IDENTICALLY to the pre-#2245 pipeline. There is no detector — a severity judgment is cross-class and
+// cannot be routed to a zone, so the flag is the only gate, which is what keeps the arm a single-variable
+// experiment. Gated INDEPENDENTLY of OPERATIONALIZE_LENS (STOP-1 decision 3). The sentinel it enables is
+// printed further down, AFTER `instruction` exists, on the same honesty contract as OPERATIONALIZE|.
+let rubric = severity_rubric_directive();
+
 // #2235 PR C ON-CHAIN read: the "you may read a deployed value" verb. `onchain` is "" unless the same
 // --external-resolve branch handed this cell onchain-fact.sh, so a default cell prompts BYTE-IDENTICALLY.
 // It rides beside `extres` rather than inside it because the two verbs answer different questions (source
@@ -1058,6 +1192,11 @@ let instruction =
   // #2214 PR C: the trusted-role exclusion one line above is exactly what the measured dismissals hid
   // behind, so the rule that qualifies it sits HERE, inside the same RULES block, on every cell.
   + config_realizability_rule()
+  // #2245 iteration 2: the severity rubric QUALIFIES the trusted-role exclusion above (an admin action inside
+  // the range its own setter accepts is a valid INPUT, not an out-of-scope trusted action) and extends the
+  // dismissal discipline config_realizability_rule() states for configuration grounds, so it is read directly
+  // after it. "" whenever the knob is off, so the RULES block is byte-identical on every default cell.
+  + rubric
   // #2235: the resolver verb sits directly after the dismissal rule it gives a cell a MOVE against — one
   // resolved citation can discharge both rule 1 (configuration grounds) and rule 2 (an external fact).
   // "" whenever the knob is off, so the RULES block is byte-identical on every default cell.
@@ -1123,6 +1262,18 @@ if index_of(instruction, callee_trust_marker()) >= 0 {
 // there is nothing else it could say — an OFF cell simply prints no line at all.
 if index_of(instruction, operationalize_marker()) >= 0 {
     print("OPERATIONALIZE|" + subsystem + "|" + cls + "|on");
+}
+
+// #2245 iteration 2: the SEVERITY-RUBRIC sentinel, on the same honesty contract — gated on the rubric's own
+// marker being demonstrably IN the prompt about to be sent (index_of over `instruction`), never on the
+// toggle's return value, so no cell log can claim a rubric that was not injected. It is also what makes
+// run-discovery.sh's ground gate INERT by construction whenever the knob is off: that gate reads this line
+// and counts nothing without it. Carries no `CANDIDATE|` substring (lib/run-agent-validated.sh's sentinel
+// predicate cannot false-accept a cell on it) and run-discovery.sh's _join_wrapped_candidates treats it as a
+// record BOUNDARY like every other diagnostic. `on` is a constant for the same reason as OPERATIONALIZE|:
+// an OFF cell prints no line at all.
+if index_of(instruction, severity_rubric_marker()) >= 0 {
+    print("SEVERITY-RUBRIC|" + subsystem + "|" + cls + "|on");
 }
 
 // #2235: the EXTERNAL-RESOLVE sentinel, on the same honesty contract — gated on the directive's own marker
