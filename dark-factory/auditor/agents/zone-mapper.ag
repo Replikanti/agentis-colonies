@@ -532,6 +532,98 @@ fn contains_state_assumption_signal(code: string) -> bool {
     return false;
 }
 
+// --- #2245 deterministic C25 (empty distribution / zero participation edge) backstop ------------------
+// C25 is the domain class for "an aggregate participation total can be zero — or can NEVER be zero — and the
+// path that reads it mishandles that edge". Two directions: a `require(total > 0)` applied to a leg whose
+// allocation weight is legitimately zero blocks an ordinary user action, and a total floored by a virtual or
+// minimum constant kills the "no participants, stop distributing" branch so the flow keeps accruing with no
+// recipient. Like every other class it only reaches a cell if it reaches that zone's `scope.tsv` row, so it
+// needs the same deterministic backstop C5/C8/C19/C22/C24 have. Sibling of the #1729/#2111/#2121/#2214/#2218
+// nets: flat `index_of` over the pre-built whole-zone `code` blob — no per-element recursion, no regex, no
+// `exec sh`.
+//
+// Measured offline fan-out over the frozen dev + held-out maps, each zone's WHOLE file set: 10 of 63 zones
+// (0/11 on one of the six targets, 1/16 on another, 2/4 and 3/9 on the two that carry the design shapes). It is a
+// route, not a blanket. Cost is +1 cell per firing zone.
+
+// (a) PARTICIPATION-TOTAL read surface. Deliberately BARE names, not paren-anchored like the #2111/#2218
+// nets: the same quantity shows up as a pool getter (`getTotalUnits()`), an ERC20-style view (`totalSupply()`)
+// and a plain storage variable (`totalSupply`, `totalStaked`), and all three are the denominator this class is
+// about. The breadth is safe because this surface never decides anything on its own — it is ANDed with the
+// zero-handling surfaces below, every one of whose tokens already carries one of these names.
+fn has_participation_total_surface(code: string) -> bool {
+    if index_of(code, "getTotalUnits") >= 0 { return true; }
+    if index_of(code, "totalUnits") >= 0 { return true; }
+    if index_of(code, "totalSupply") >= 0 { return true; }
+    if index_of(code, "effectiveSupply") >= 0 { return true; }
+    if index_of(code, "totalStaked") >= 0 { return true; }
+    if index_of(code, "totalShares") >= 0 { return true; }
+    return false;
+}
+
+// (b1) ZERO-GATE surface: the `require(total > 0)` / `if (total == 0)` predicate itself, as a COMPOUND token.
+// The comparison has to be PART of the token — a bare `> 0` fires on every contract ever written, and a bare
+// total name says nothing about how zero is handled — so this list pairs each total with its canonical
+// single-space Solidity comparison. Same exact-form discipline as the #2111 `uint16(` anchor: a source that
+// spells the gate differently is a miss, never a false positive, and a miss is what the LLM rule is for.
+fn has_participation_zero_gate(code: string) -> bool {
+    if index_of(code, "getTotalUnits() == 0") >= 0 { return true; }
+    if index_of(code, "getTotalUnits() > 0") >= 0 { return true; }
+    if index_of(code, "totalUnits() == 0") >= 0 { return true; }
+    if index_of(code, "totalUnits() > 0") >= 0 { return true; }
+    if index_of(code, "totalSupply() == 0") >= 0 { return true; }
+    if index_of(code, "totalSupply() > 0") >= 0 { return true; }
+    if index_of(code, "totalSupply == 0") >= 0 { return true; }
+    if index_of(code, "totalSupply > 0") >= 0 { return true; }
+    if index_of(code, "totalStaked == 0") >= 0 { return true; }
+    if index_of(code, "totalStaked > 0") >= 0 { return true; }
+    if index_of(code, "totalShares == 0") >= 0 { return true; }
+    if index_of(code, "totalShares > 0") >= 0 { return true; }
+    if index_of(code, "effectiveSupply == 0") >= 0 { return true; }
+    if index_of(code, "effectiveSupply() == 0") >= 0 { return true; }
+    if index_of(code, "effectiveSupply() > 0") >= 0 { return true; }
+    if index_of(code, "0 < effectiveSupply") >= 0 { return true; }
+    return false;
+}
+
+// (b2) DIVISION surface: the denominator form of the same edge — a per-unit distribution or share price
+// carried as `something / <participation total>`. Space-anchored on the division operator so a path segment
+// or a comment slash cannot trip it.
+fn has_participation_division(code: string) -> bool {
+    if index_of(code, "/ getTotalUnits") >= 0 { return true; }
+    if index_of(code, "/ totalUnits") >= 0 { return true; }
+    if index_of(code, "/ totalSupply") >= 0 { return true; }
+    if index_of(code, "/ _totalSupply") >= 0 { return true; }
+    if index_of(code, "/ totalStaked") >= 0 { return true; }
+    if index_of(code, "/ totalShares") >= 0 { return true; }
+    if index_of(code, "/ effectiveSupply") >= 0 { return true; }
+    return false;
+}
+
+// (b3) FLOOR / VIRTUALISATION surface: the "false non-zero" direction. A virtual-shares or virtual-assets
+// offset, a minimum-liquidity constant or a named minimum total is exactly what makes the zero branch dead
+// while the accrual it guards keeps running. `VIRTUAL_SHARE`/`VIRTUAL_ASSET` are written singular on purpose
+// so the plural constant names match through the same token.
+fn has_supply_floor_constant(code: string) -> bool {
+    if index_of(code, "VIRTUAL_SHARE") >= 0 { return true; }
+    if index_of(code, "VIRTUAL_ASSET") >= 0 { return true; }
+    if index_of(code, "MINIMUM_LIQUIDITY") >= 0 { return true; }
+    if index_of(code, "MIN_TOTAL_SUPPLY") >= 0 { return true; }
+    if index_of(code, "virtualShares") >= 0 { return true; }
+    if index_of(code, "_virtualSupply") >= 0 { return true; }
+    return false;
+}
+
+// The AND: a participation total must be READ here, and this zone must do one of the three things the class is
+// about with it — gate on its zero, divide by it, or floor it so zero is unreachable.
+fn contains_zero_total_signal(code: string) -> bool {
+    if !has_participation_total_surface(code) { return false; }
+    if has_participation_zero_gate(code) { return true; }
+    if has_participation_division(code) { return true; }
+    if has_supply_floor_constant(code) { return true; }
+    return false;
+}
+
 // --- #1717 path-level test/interface exclusion (applied BEFORE the content signals below) -----------
 // A zone/file path can deterministically say "this is a test unit" or "this is a pure interface" in a
 // way content signals cannot: an interface getter that merely returns `IStabilityPool`, or a Foundry
@@ -830,6 +922,10 @@ fn apply_state_assumption_backstop(classesCsv: string, code: string) -> string {
     if !contains_state_assumption_signal(code) { return classesCsv; }
     return force_include(classesCsv, "C24");
 }
+fn apply_zero_total_backstop(classesCsv: string, code: string) -> string {
+    if !contains_zero_total_signal(code) { return classesCsv; }
+    return force_include(classesCsv, "C25");
+}
 
 // The deterministic net: when the zone's code signals a lending/CDP/stability-pool system (direct or
 // ERC4626-wrapped), force C10 ("first-depositor/inflation") + C11 ("stability-pool offset"); when it signals
@@ -974,9 +1070,14 @@ fn apply_backstop(verdict: string, code: string) -> string {
     // still act on — the three shapes the #2213 generation misses clustered into. Chained AFTER the #2214
     // net and BEFORE apply_fitness_reorder, so a forced C24 is still fitness-ranked like a forced C5/C8/C19.
     let withStaleState = apply_state_assumption_backstop(withCrossUnit, code);
-    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C8/C10/C11/C17/C19/C22/C24)
+    // #2245: force C25 (empty distribution / zero participation edge) when the zone reads an aggregate
+    // participation total AND gates on its zero, divides by it, or floors it with a virtual/minimum constant
+    // so zero is unreachable. Chained AFTER the #2218 net and BEFORE apply_fitness_reorder, so a forced C25 is
+    // still fitness-ranked like a forced C5/C8/C19/C22/C24.
+    let withZeroTotal = apply_zero_total_backstop(withStaleState, code);
+    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C8/C10/C11/C17/C19/C22/C24/C25)
     // by learned real-bug precision, so the highest-precision class leads the CSV that run-discovery.sh fans out.
-    let reordered = apply_fitness_reorder(withStaleState);
+    let reordered = apply_fitness_reorder(withZeroTotal);
     let rebuilt = "ZONE|" + pipe_field(line, 1) + "|" + pipe_field(line, 2) + "|" + reordered + "|" + pipe_field(line, 4);
     if rebuilt == line { return verdict; }
     return verdict + "\n" + rebuilt;
@@ -1105,6 +1206,19 @@ let instruction = priorBlock
   + "only READS values it never stores, a zone whose every decision re-derives its inputs in the same call, "
   + "or a pure interface or struct/type declaration (no function bodies) — do NOT add C24. If this zone does "
   + "none of these, do NOT add C24.\n\n"
+  + "=== EMPTY DISTRIBUTION / ZERO PARTICIPATION EDGE DETECTION RULE (C25) ===\n"
+  + "INCLUDE `C25` (empty distribution / zero participation edge) ONLY WHEN this zone reads an AGGREGATE "
+  + "PARTICIPATION TOTAL — a distribution pool's unit count, a `totalSupply`/`effectiveSupply`, a "
+  + "`totalStaked`/`totalShares` — and does one of three things with it: GATES on the total being zero or "
+  + "non-zero (a `require(total > 0)`, an `if (total == 0) revert`, an early return) on a path a user needs; "
+  + "DIVIDES by that total to size a per-unit distribution, reward or share price; or FLOORS it with a "
+  + "virtual-shares / virtual-assets / minimum-liquidity constant so it can never read zero. The bug is at the "
+  + "zero edge in one of two directions: the gate blocks an ordinary user action in a state the protocol's own "
+  + "configuration can reach (a leg whose allocation weight is zero, a pool nobody has subscribed to), or the "
+  + "floor makes the \"no participants, stop distributing\" branch dead so the flow keeps accruing to nobody. A "
+  + "zone that merely MINTS or BURNS a supply without reading the total for a decision, a zone whose only "
+  + "totals are constants or immutables, or a pure interface or struct/type declaration (no function bodies) — "
+  + "do NOT add C25. If this zone does none of these, do NOT add C25.\n\n"
   + "=== ZONE ID (echo it back UNCHANGED as the first field) ===\n" + zoneId + "\n\n"
   + "=== HOW TO ANSWER ===\n"
   + "FIRST reason step by step: read the zone's contracts, name the subsystem, and for EACH candidate class "
@@ -1153,6 +1267,13 @@ print("CROSS-UNIT|" + zoneId + "|" + bool_str(contains_cross_unit_signal(code)))
 // under the mock backend (whose reply carries no ZONE| line, making the apply_backstop append itself
 // unreachable there). Never perturbs the `^ZONE\|` scrape.
 print("STALE-STATE|" + zoneId + "|" + bool_str(contains_state_assumption_signal(code)));
+// #2245: the C25 zero-participation signal is emitted as a NON-ZONE| diagnostic ONLY WHEN THE NET FIRES, so a
+// zone the net is silent on produces byte-identical output to the pre-#2245 mapper (same trailing-line-scrape
+// channel as CROSS-UNIT|/STALE-STATE|, which print unconditionally — this one deliberately does not). It makes
+// contains_zero_total_signal() observable + offline-testable under the mock backend, whose reply carries no
+// ZONE| line and therefore leaves the apply_backstop append unreachable there. Never perturbs the `^ZONE\|`
+// scrape.
+if contains_zero_total_signal(code) { print("ZERO-TOTAL|" + zoneId + "|true"); }
 let outcome = outcome_of(finalVerdict);
 emit("dark-factory:zone_mapped", "{\"zone\":\"" + zoneId + "\",\"outcome\":\"" + outcome + "\"}");
 learn("zone-map", zoneId, "attack-surface classification of zone " + zoneId, outcome, ["zone-map", zoneId, outcome]);

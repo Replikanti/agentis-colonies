@@ -288,12 +288,13 @@ fi
 
 note "7) DECISION: no new taxonomy class — this is a cross-class re-framing, not a lens-per-class addition ..."
 # The pin is "no class was minted FOR THIS change", asserted against the next UNALLOCATED taxonomy slot.
-# C24 was allocated by #2218 (stale state assumption between touchpoints) — an unrelated domain class — so
-# the slot moved to C25; the decision below is unchanged.
-if grep -q '^## C25 ' "$TAXONOMY"; then
-  bad "bug-taxonomy.md gained a '## C25 ' class — D1 is explicitly a directive, NOT a new class"
+# C24 was allocated by #2218 (stale state assumption between touchpoints) and C25 by #2245 (empty
+# distribution / zero participation edge) — unrelated domain classes — so the slot moved to C26; the decision
+# below is unchanged.
+if grep -q '^## C26 ' "$TAXONOMY"; then
+  bad "bug-taxonomy.md gained a '## C26 ' class — D1 is explicitly a directive, NOT a new class"
 else
-  ok "bug-taxonomy.md declares no C25 class (the directive replaces a per-class lens, per epic #2130)"
+  ok "bug-taxonomy.md declares no C26 class (the directive replaces a per-class lens, per epic #2130)"
 fi
 if grep -qi 'CALLEE-TRUST\|attacker-controlled callee' "$TAXONOMY"; then
   bad "bug-taxonomy.md was edited for #2145 — the re-framing belongs in the shared hunter instruction"
