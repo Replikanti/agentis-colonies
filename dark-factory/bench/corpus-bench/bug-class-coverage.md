@@ -165,6 +165,7 @@ arm).
 | C22 x-protocol asset/unit | 1 | 2 | REFUTED (#1879) | notional H-8 (fb=2): C22 fired + generated PT/sUSDe candidates, refute gate dropped them |
 | C23 hardcoded ext-param | 1 | 2 | **CAUGHT** ✅ (#1879) `in-distribution` | notional H-9 (fb=2): judge conf 93 — first C22/C23-family catch, end-to-end; `dev` contest, GT ids were in the lens when it was measured (#2231) |
 | C24 stale state assumption | 3 | 1 | IN-FLIGHT (#2218) | 3 Mediums, all generation misses in #2213: yieldoor M-2, notional M-8, notional M-16 — class + zone-mapper route landed, recall unmeasured until M2 |
+| C25 empty distribution / zero participation | 2 | 1 | IN-FLIGHT (#2245) | design twin dev notional M-8 (in-distribution), test twin held-out superfluid-locker M-2 — class + zone-mapper route landed, recall unmeasured until the held-out run |
 | C16 liveness / stuck-state | 4 | 3 | OPEN (#1784 overlaps) | DoS class |
 | C17 index/slot-overwrite | 1 | 5 | OPEN (#1784) | notional H-5 (H-3 retagged to C19 #2111) |
 | C19 narrow-int overflow / downcast | 1 | 1 | IN-FLIGHT (#2111) | yieldoor H-3 (fb=1 rare) — liveness lens + zone-mapper C19 net wired |
@@ -241,6 +242,48 @@ frozen bases (control = staged map untouched, treatment = `,C24` appended to tha
 no-regression gate (every GT row the control arm names stays named; C11/C23 unaffected) blocking a GO
 regardless of the delta.
 
+### Zero-participation lens (#2245, iteration 1 of the miss-shape lens program)
+
+#2218 wrote its class from a CLUSTER of misses; #2231's held-out baseline then showed that a lens written as
+a general category does not transfer (#2218's own follow-up, 0/7 on held-out). This iteration inverts the
+method: **one lens per ONE concrete miss shape, with a dev-corpus twin (the design source, in-distribution)
+and a held-out twin (the test)**, measured only on the held-out twin. **C25** (`auditor/bug-taxonomy.md`) is
+the class for the ZERO edge of an aggregate participation total, in two named directions — a `require(total >
+0)` gate that blocks a legitimate user action on a leg whose allocation weight is legitimately zero, and a
+total FLOORED by a virtual/minimum constant so the "no participants, stop distributing" branch is dead while
+the emission keeps accruing. A deterministic `zone-mapper.ag` route puts it on the zone that owns the gate or
+the denominator rather than only the zone the breadth LLM happened to label.
+
+**The twin pair** — both rows are Mediums and both were generation misses (no cell named the mechanism):
+
+| role | target | mechanism | status |
+|---|---|---|---|
+| design source (in-distribution, NEVER a recall number) | dev notional | an emission accrual divides by a supply floored by a virtual-shares constant, so the zero branch is dead | generation miss |
+| test (the measurement) | held-out superfluid-locker | an exit path reverts while a distribution pool's unit count is zero, although that pool's allocation weight is configured to zero and it is owed nothing | generation miss |
+
+**Measured offline fan-out of the C25 net**, driving the SHIPPED token lists (extracted from
+`zone-mapper.ag`, no LLM) over each zone's WHOLE file set across all six frozen maps:
+
+| role | target | zones | C25 fires on | carrying surface |
+|---|---|---|---|---|
+| dev | notional | 9 | 3 — `src`, `src_oracles`, `src_rewards` (the design row's emission accrual) | floor constant, division |
+| dev | yieldoor | 4 | 2 — `src__p1`, `src__p2` | zero gate, division |
+| held-out | superfluid-locker | 4 | 2 — `src__p2` (the test row's exit gate), `src__p1` | zero gate |
+| held-out | lend-v2 | 16 | 1 — `src__p3` | zero gate, division |
+| held-out | malda | 19 | 2 — `src_mToken__p1`, `src_mToken__p2` | zero gate, division |
+| held-out | mellow | 11 | 0 | — |
+
+**13 of 72 zones, +1 cell per firing zone — it does not fire on every zone**, and it is silent on a whole
+target (mellow). Both zones the measurement needs are in the firing set. The route is a token net over the
+whole-file blob; the count over the function-SLICED blob the mapper is actually handed can differ, and for
+the two zones that matter it does not (both gates sit inside functions the frozen `scope.tsv` slices keep).
+
+**Status: IN-FLIGHT — recall is UNMEASURED.** This iteration ships the class, the route and the offline
+guards only (`../../demo-zero-total-lens.sh`, wired into `tools/colony-lint.sh`). Whether C25 recovers the
+held-out row is the follow-on measurement: inject `C25` into the frozen `scope.tsv` row of the held-out
+target's exit zone, 2 repeats against the #2231 control rows, plus ONE dev-zone sanity run reported
+explicitly as in-distribution and never as recall.
+
 ## Operationalize-before-you-hunt: measured NO-GO (#2213 M2, 2026-09-15)
 
 The #2211 `OPERATIONALIZE_LENS` directive — a cross-class METHOD (derive code-grounded checks, write them
@@ -293,6 +336,7 @@ provenance of each class — and this file is documentation the pipeline never r
 | C22 — cross-protocol asset / unit equivalence | notional | H-8, M-3, M-22 | corpus-bench notional GT H-8, M-3, M-22. |
 | C23 — hardcoded external-integration parameter | notional | H-9, M-5, M-18 | corpus-bench notional GT H-9, M-5, M-18. |
 | C24 — stale state assumption between touchpoints | yieldoor, notional | M-2 / M-8, M-16 | corpus-bench yieldoor GT M-2, notional GT M-8, notional GT M-16. |
+| C25 — empty distribution / zero participation edge | notional (dev, design source), superfluid-locker (held-out, test) | M-8 / M-2 | corpus-bench notional GT M-8 (`AbstractRewardManager` emissions accrue per unit of an `effectiveSupply` floored by a virtual-shares constant, so the no-participants branch never fires) and superfluid-locker GT M-2 (`unlock` reverts while `STAKER_DISTRIBUTION_POOL.getTotalUnits() == 0` although `stakerAllocationBP == 0`, so the pool is owed nothing). Never written into the lens: C25's `seen:` line carries only the generic code shape. |
 
 Two clean entries stayed in the lens because they name no contest: C2's and C11's non-corpus observations
 (a custom Chainlink+sequencer oracle, KiloLend, Curve scrvUSD, a virtual-balance savings vault) are live-hunt
@@ -300,6 +344,7 @@ history, not corpus ground truth.
 
 **Consequence for every number on this page.** C16/C17/C18/C19/C20/C21 were designed with the contest's own
 mechanism in the lens (2026-07-24, #1783/#1784/#1785 and the C19/C20/C21 PRs), C22/C23 on 2026-08-10 and C24
-on 2026-09-16 with the GT ids only. Any recall claim on `notional`, `yieldoor`, `yearn-ybold`, `crestal` or
+on 2026-09-16 with the GT ids only. C25 (#2245) is the first class written with NO contest text in the lens at
+all — its design twin is named only here. Any recall claim on `notional`, `yieldoor`, `yearn-ybold`, `crestal` or
 `plaza` measured after those dates is **in-distribution** — see the `role` column of `corpus.tsv` and the
 hold-out policy in [`README.md`](README.md).

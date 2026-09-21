@@ -16,6 +16,54 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **C25 "empty distribution / zero participation edge" class + deterministic zone-mapper route (#2245,
+  iteration 1).** The held-out baseline (#2231) put rare recall at 0/13 with 10 of the 13 misses being pure
+  GENERATION misses — no cell conceives the mechanism — and a lens written as a general CATEGORY was measured
+  not to transfer. This iteration inverts the method: one lens per ONE concrete miss shape, written from a
+  dev-corpus twin (the design source, in-distribution) and measured on a held-out twin. The shape is the ZERO
+  edge of an aggregate participation total, in two named directions: a **false zero gate** (`require(total >
+  0)` blocks an ordinary user action — exit, unlock, claim — on a leg whose allocation weight is legitimately
+  zero, a state the protocol's OWN setter reaches, so the gate keys on the raw count instead of on the
+  economic condition) and a **false non-zero** (the total is floored by a virtual-shares / minimum-liquidity
+  constant, so the "no participants, stop distributing" branch is dead code and the emission keeps accruing
+  with no recipient). `auditor/bug-taxonomy.md` gains the class in the C22/C23/C24 six-field shape — both
+  directions, a three-part hunt (how zero is REACHED and which setter produces it / what the path DOES at
+  zero / WHO PAYS), a `NOT this class` list naming C11/C1/C9/C6/C16/C19/C24, and a four-part
+  required-evidence rule. **The lens IS the taxonomy section** hunter.ag already slices with its `## <cls> `
+  anchor, so hunter.ag is not touched at all: a directive block in the hunter is the pure-meta shape that
+  measured Delta=+0 (#2213) and it cannot be routed per zone.
+
+  `zone-mapper.ag` gains the matching deterministic backstop, sibling of the #1729/#2111/#2121/#2214/#2218
+  nets (flat `index_of` over the pre-built zone code blob — no regex, no `exec sh`, no per-element
+  recursion): a participation-total READ (`getTotalUnits`/`totalUnits`/`totalSupply`/`effectiveSupply`/
+  `totalStaked`/`totalShares`) ANDed with one of three zero-handling surfaces — a compound zero GATE token
+  (the comparison is part of the token; a bare `> 0` fires on every contract ever written), a DIVISION by the
+  total, or a FLOOR/virtualisation constant. `apply_zero_total_backstop` force-includes C25, chained after
+  the #2218 net and before the #1711 fitness reorder. The `ZERO-TOTAL|` diagnostic is emitted **only when the
+  net fires**, so a zone the net is silent on produces byte-identical mapper output to before this change.
+  The classification instruction gains an ONLY-WHEN-shaped C25 rule with an explicit do-NOT-add escape
+  (C19/C22/C23/C24 precedent: the class menu grows the moment the class exists, and the tight rule is what
+  bounds it); no net helper name and no corpus identifier reaches the prompt.
+
+  Measured offline fan-out over all six frozen dev + held-out maps, driving the shipped token lists over each
+  zone's whole file set: **13 of 72 zones** (3/9 and 2/4 on the two dev targets; 2/4, 2/19, 1/16 and 0/11 on
+  the four held-out ones) — +1 cell per firing zone, silent on a whole target, and both zones the follow-on
+  measurement needs are in the firing set.
+
+  Two deliberate non-changes, pinned by tests: no `class_to_keyword()` entry for C25 in `invariant-prover.ag`
+  (that map routes the depth/metamorphic action menu, an unmeasured second variable; C22/C23/C24 have no
+  entry either) and no `C25`/`zero_total` token in `hunter.ag`. New `demo-zero-total-lens.sh` (wired into
+  `tools/colony-lint.sh`) guards the class text and replays hunter.ag's own awk anchor so `C24` cannot
+  swallow `C25`, and — when `agentis` is present — drives the REAL `apply_backstop()` over three Solidity
+  fixtures with no LLM: two TRUE (a pool-unit gate on a zero-allocation leg; an emission per a
+  virtual-shares-floored supply) force C25 exactly once, one FALSE (a seeded share vault that names a total
+  but handles no zero edge) leaves the verdict byte-identical, a zone already carrying C25 gets no duplicate,
+  and the diagnostic appears for the two TRUE fixtures only. The two sibling demos that used `## C25` as the
+  next-unallocated slot to assert "my change minted no class" are re-pointed at `## C26`; their decision is
+  unchanged.
+
+  **Recall is UNMEASURED:** whether C25 recovers the held-out row is the follow-on host-side measurement.
+
 - **`resolve-external.sh`: read the EXTERNAL protocol instead of remembering it (#2235, PR A).** Every
   dismissal that rests on how another protocol behaves ("that rate is 1e18-scaled", "that wrapper is 1:1")
   is unanswerable from the zone slice, so under the #2224/#2227 citation rules a cell either confabulates a
