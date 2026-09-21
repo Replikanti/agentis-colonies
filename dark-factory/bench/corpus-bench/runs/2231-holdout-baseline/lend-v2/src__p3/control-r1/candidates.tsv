@@ -1,0 +1,4 @@
+location	class	severity
+src/LToken.sol:mintFresh	C10	High
+src/LToken.sol:mintFresh	C6	High
+VOID	VOID	hard-stop timeout (rc=124)

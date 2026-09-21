@@ -1,0 +1,2 @@
+location	class	severity
+src/managers/ShareManager.sol:updateChecks:139	C13	Medium

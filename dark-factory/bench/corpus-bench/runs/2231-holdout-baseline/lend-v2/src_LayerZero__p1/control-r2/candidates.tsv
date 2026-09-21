@@ -1,0 +1,14 @@
+location	class	severity
+src/LayerZero/CoreRouter.sol:liquidateBorrowAllowedInternal:347	C10	High
+src/LayerZero/CrossChainRouter.sol:_handleLiquidationExecute	C22	High
+src/LayerZero/CrossChainRouter.sol:_handleLiquidationSuccess	C22	High
+src/LayerZero/CoreRouter.sol:claimLend	C24	High
+src/LayerZero/CoreRouter.sol:supply	C24	Medium
+src/LayerZero/CrossChainRouter.sol:borrowCrossChain	C24	High
+src/LayerZero/CoreRouter.sol:borrow	C3	High
+src/LayerZero/CoreRouter.sol:redeem	C3	High
+src/LayerZero/CrossChainRouter.sol:borrowCrossChain	C3	High
+src/LayerZero/CoreRouter.sol:borrow	C6	High
+src/LayerZero/CoreRouter.sol:supply	C6	Medium
+src/LayerZero/CoreRouter.sol:redeem	C8	High
+src/LayerZero/CoreRouter.sol:borrow	C8	High

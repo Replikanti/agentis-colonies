@@ -1,0 +1,15 @@
+contest	sev_id	found_by	title	zone	reachable
+mellow	M-6	1	Targeted-lockup bypass: freshly minted shares can be transferred immediately in the same `transfer()` or `transferFrom()` call	src_managers	yes
+malda	M-1	1	Wrong direction of rounding in redeem may lead to drain if exchange rate grows large	src_mToken__p1	yes
+malda	M-5	1	Rebalancer can send to unallowed destination chains through EverclearBridge	src_rebalancer_bridges	yes
+malda	M-10	2	Unenforced maxFee and ttl Parameters in sendMsg Function	src_rebalancer_bridges	yes
+malda	M-12	1	Rebalancer can drain market funds via excessive bridge fees	src_rebalancer;src_rebalancer_bridges	yes
+malda	M-16	2	Bridges don't support all of the listed assets	-	no
+superfluid-locker	M-2	1	User can't `unlock` when `getTotalUnits == 0` even though tax is zero.	src__p2	yes
+superfluid-locker	M-3	2	Incorrect initial deposit calculation may cause cancelProgram to revert	src__p1	yes
+superfluid-locker	M-5	1	Program start failure due to incorrect buffer calculation	src__p1	yes
+superfluid-locker	M-6	2	Locker owners can leverage low liquidity pools to bypass the tax mechanism	src__p2	yes
+lend-v2	H-12	1	Incorrect LEND reward distribution for cross-chain borrows	src_LayerZero__p2	yes
+lend-v2	M-1	2	Borrower will loose funds if their repay transaction executes after cross-chain liquidation call	src_LayerZero__p1	yes
+lend-v2	M-2	1	User may not be able to borrow even if they provide sufficient collaterals	src_LayerZero__p1;src__p3;src__p4	yes
+lend-v2	M-6	2	Cross-Chain Borrowing will not work as intended	src_LayerZero__p1	yes

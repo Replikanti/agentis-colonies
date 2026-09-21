@@ -1,0 +1,9 @@
+class	status	candidates	opcheck	trace	untraced	unresolved	reasks	external_cited	onchain
+C10	ok	1	5	5	0	1	0	0	0
+C19	ok	0	6	6	0	1	1	1	0
+C22	ok	1	5	5	0	1	0	0	0
+C24	ok	2	7	7	0	1	0	0	0
+C3	ok	1	9	9	0	3	0	0	0
+C5	ok	0	6	6	0	0	1	2	0
+C6	ok	3	7	7	0	1	0	0	0
+C8	ok	2	7	7	0	0	0	0	0

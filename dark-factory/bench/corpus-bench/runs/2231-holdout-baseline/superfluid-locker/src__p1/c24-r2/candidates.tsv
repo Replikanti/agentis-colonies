@@ -1,0 +1,2 @@
+location	class	severity
+src/FluidEPProgramManager.sol:stopFunding:339	C5	Medium

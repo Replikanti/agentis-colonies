@@ -1,0 +1,2 @@
+location	class	severity
+src/rebalancer/Rebalancer.sol:sendMsg	C24	Medium
