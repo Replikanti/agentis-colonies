@@ -273,7 +273,7 @@ the denominator rather than only the zone the breadth LLM happened to label.
 | held-out | malda | 19 | 2 — `src_mToken__p1`, `src_mToken__p2` | zero gate, division |
 | held-out | mellow | 11 | 0 | — |
 
-**13 of 72 zones, +1 cell per firing zone — it does not fire on every zone**, and it is silent on a whole
+**10 of 63 zones, +1 cell per firing zone — it does not fire on every zone**, and it is silent on a whole
 target (mellow). Both zones the measurement needs are in the firing set. The route is a token net over the
 whole-file blob; the count over the function-SLICED blob the mapper is actually handed can differ, and for
 the two zones that matter it does not (both gates sit inside functions the frozen `scope.tsv` slices keep).

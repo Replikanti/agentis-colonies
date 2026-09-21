@@ -46,7 +46,7 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   bounds it); no net helper name and no corpus identifier reaches the prompt.
 
   Measured offline fan-out over all six frozen dev + held-out maps, driving the shipped token lists over each
-  zone's whole file set: **13 of 72 zones** (3/9 and 2/4 on the two dev targets; 2/4, 2/19, 1/16 and 0/11 on
+  zone's whole file set: **10 of 63 zones** (3/9 and 2/4 on the two dev targets; 2/4, 2/19, 1/16 and 0/11 on
   the four held-out ones) — +1 cell per firing zone, silent on a whole target, and both zones the follow-on
   measurement needs are in the firing set.
 

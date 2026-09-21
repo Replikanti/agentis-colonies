@@ -542,8 +542,8 @@ fn contains_state_assumption_signal(code: string) -> bool {
 // nets: flat `index_of` over the pre-built whole-zone `code` blob — no per-element recursion, no regex, no
 // `exec sh`.
 //
-// Measured offline fan-out over the frozen dev + held-out maps, each zone's WHOLE file set: 13 of 72 zones
-// (0/11 and 0/16 on two of the six targets, 2/4 and 3/9 on the two that carry the design shapes). It is a
+// Measured offline fan-out over the frozen dev + held-out maps, each zone's WHOLE file set: 10 of 63 zones
+// (0/11 on one of the six targets, 1/16 on another, 2/4 and 3/9 on the two that carry the design shapes). It is a
 // route, not a blanket. Cost is +1 cell per firing zone.
 
 // (a) PARTICIPATION-TOTAL read surface. Deliberately BARE names, not paren-anchored like the #2111/#2218
