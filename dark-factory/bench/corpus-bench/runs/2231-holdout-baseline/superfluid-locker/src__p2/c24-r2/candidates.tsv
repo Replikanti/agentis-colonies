@@ -1,0 +1,3 @@
+location	class	severity
+src/FluidLocker.sol:provideLiquidity	C15	High
+src/FluidLocker.sol:provideLiquidity:420	C6	High

@@ -1,0 +1,2 @@
+location	class	severity
+VOID	VOID	terminated (rc=143, operator-stopped)

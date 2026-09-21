@@ -1,0 +1,9 @@
+class	status	candidates	opcheck	trace	untraced	unresolved	reasks
+C10	ok	1	0	0	0	0	0
+C19	ok	0	0	0	0	0	0
+C22	ok	2	0	0	0	0	0
+C24	ok	3	0	0	0	0	0
+C3	ok	3	0	0	0	0	0
+C5	ok	0	0	0	0	0	0
+C6	ok	2	0	0	0	0	0
+C8	ok	2	0	0	0	0	0

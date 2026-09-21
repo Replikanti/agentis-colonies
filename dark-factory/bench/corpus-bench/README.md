@@ -922,6 +922,14 @@ prompt-visible file. The contest text removed from the lens is parked, verbatim,
 Model memorisation of public Sherlock reports remains a residual risk on every contest; the hold-out only
 removes the leakage we control.
 
+**The policy in practice**: [`runs/2231-holdout-baseline/`](runs/2231-holdout-baseline/) archives the first
+measurement run entirely on `holdout` contests (`mellow`, `malda`, `superfluid-locker`, `lend-v2`) under the
+clean, de-contaminated lens — control (shipped main) scores **rare-tier recall 0/13 in both repeats**, and
+none of three candidate fixes measured against it (a routing lever, the `#2218` state-assumption lens, `#2235`
+external-fact resolution) moves a single held-out rare row (all NO-GO at n=2; the resolver arm's own citation
+mechanics separately PASS). Read every number in that archive, and in any future `holdout`-role measurement,
+as the honest floor the `dev`-contest numbers above are NOT comparable to.
+
 ## Adding a contest
 
 Append a row to `corpus.tsv` (`id  code_repo  judging_repo  project_subdir  role  [scope_hint]`) for any
