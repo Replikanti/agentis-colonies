@@ -197,7 +197,7 @@ fn severity_rubric_enabled() -> bool {
 // because an empty directive carries no marker.
 fn severity_rubric_directive() -> string {
     if !severity_rubric_enabled() { return ""; }
-    return severity_rubric_block() + ground_rule() + rubric_reask_block();
+    return severity_rubric_block() + ground_evidence_directive() + ground_rule() + rubric_reask_block();
 }
 
 // The GROUND RE-ASK addressing (empty on every first attempt), the gate-side twin of hunter.ag's
@@ -212,7 +212,93 @@ fn rubric_reask_block() -> string {
       + "INSUFFICIENT: " + open + ". Judge it AGAIN under the rubric above. If it really is not a bug, name a "
       + "SUFFICIENT ground with the evidence that ground requires. If it matches shape (a), (b) or (c), the "
       + "honest verdict is REAL. Re-stating the same insufficient ground, or adding more of them, answers "
-      + "nothing — and do NOT invent a guard that is not in the code to satisfy this re-ask.\n";
+      + "nothing — and do NOT invent a guard that is not in the code to satisfy this re-ask.\n"
+      + ground_evidence_reask_clause();
+}
+
+// --- #2245 iteration 3: THE PER-GROUND EVIDENCE CONTRACT (opt-in, default OFF) -------------------------------
+// The measured gap (iteration 2): the rubric moved this gate from 0/1 to 1/2 on the held-out shape, and the ONE
+// remaining loss here was a REFUTED verdict that named the SUFFICIENT ground `no-loss` and then argued
+// REACHABILITY — no path, no zero delta, and it never engaged the state the candidate described. The shipped
+// gate checks the ground ID; nothing checked the evidence. So iteration 3 adds the per-ground EVIDENCE contract
+// below and run-refute.sh checks the emitted `REFUTE-GROUND|` line against it, folding a contract failure into
+// the EXISTING insufficient path — same one bounded re-ask, same `REFUTED` verdict, same sidecar.
+//
+// severity_rubric_block() stays FROZEN — not one byte changes — so the iteration-2 arm stays reproducible.
+//
+// SPLICE POINT: inside severity_rubric_directive(), between the rubric and the emission contract, exactly as in
+// hunter.ag, so it lands in BOTH judge modes.
+// The one string the block is RECOGNISED by (same discipline as severity_rubric_marker above): it is the
+// block's literal FIRST LINE, and the sentinel greps the ASSEMBLED instruction for it, so a marker that is
+// not a substring of what renders disables the sentinel loudly rather than silently claiming a contract that
+// never entered the prompt.
+fn ground_evidence_marker() -> string {
+    return "=== EVIDENCE CONTRACT PER GROUND (a ground id is a claim; this is what proves it) ===";
+}
+
+// The per-ground EVIDENCE contract. BYTE-IDENTICAL in hunter.ag and refuter.ag — one standard, two decision
+// points, and demo-severity-rubric.sh diffs the two functions so they cannot drift apart. Do not edit one
+// copy: edit both, in the same commit, or the demo fails.
+//
+// It names the machine-findable tokens VERBATIM (`delta=0:`, `loss=`) because the drivers decide on exactly
+// those tokens: a contract the model was never shown could not be met, and a driver requirement that is not
+// in this text is a requirement nobody was given. The demo pins both directions.
+//
+// PURE-META like every other directive here: no protocol, contract, function, token, unit or product name, so
+// injecting it on a held-out target cannot leak an answer.
+fn ground_evidence_block() -> string {
+    return ground_evidence_marker() + "\n"
+      + "A ground id is a CLAIM; the evidence on the SAME line is what makes it true. Each sufficient ground "
+      + "has exactly ONE contract, below. A line that names a sufficient ground without meeting that ground's "
+      + "contract is read as INSUFFICIENT — the same answer as naming no ground at all.\n"
+      + "  guard                 cite path:line (or path:first-last) of the check that stops the path, in code "
+      + "you were given. The cited text must BE the check: a conditional, a require/revert/assert, an access "
+      + "modifier.\n"
+      + "  unreachable           cite the path:line that VALIDATES the state away — a rejecting check in a "
+      + "constructor, an initializer or a setter. A deployment script, a migration, or the value some "
+      + "deployment happens to hold, is NOT a validation: it shows what was CHOSEN, never what is REFUSED.\n"
+      + "  no-loss               cite the path AND write the literal token delta=0:<the quantity that is "
+      + "unchanged>. \"That state never occurs\" is NOT this ground — that claim is unreachable, and it needs "
+      + "unreachable's citation. A reachability argument filed as no-loss is an insufficient dismissal.\n"
+      + "  known-issue           quote the brief's own line VERBATIM, inside quotes, at least a dozen "
+      + "characters of it.\n"
+      + "  immaterial-quantified write the literal token loss=<amount> <unit>, and compare it in the SAME "
+      + "units with a second number taken from this payload (\"... of ...\", \"... out of ...\", \"... vs "
+      + "...\"). A ratio of internal counters is not a loss amount.\n"
+      + "ADMITTED IS NOT DEPLOYED. A read of a live deployment, a deploy-time value, or \"as shipped today\", "
+      + "establishes the DEPLOYED state only — and every ground above asks what the code ADMITS. So a "
+      + "dismissal resting on deployed state closes NOTHING unless the SAME line also cites the validating "
+      + "line that rejects every OTHER admitted state. \"As deployed\" is not \"admitted\".\n";
+}
+
+// The opt-in, same INVERTED polarity as severity_rubric_enabled(): only the literal "1" opts in, so unset /
+// any other value is OFF and is the DEFAULT. This knob is INDEPENDENT of SEVERITY_RUBRIC and NOT a value mode
+// of it (issue #2245 iteration-3 STOP-1 decision 1): a `SEVERITY_RUBRIC=2` sub-mode would have to loosen
+// severity_rubric_enabled()'s `== "1"` test, which would silently disable the WHOLE rubric for an operator who
+// set `2` against an older checkout — and it would make the iteration-2 arm unreproducible byte-for-byte.
+// Two knobs, one delta per arm. It must also ride the driver's exec.env_passthrough, else getenv() reads the
+// SANITISED env and the contract is silently inert (the #1426/#2157 failure mode).
+fn ground_evidence_enabled() -> bool {
+    return getenv("GROUND_EVIDENCE") == "1";
+}
+
+// The contract as it enters the rubric directive: "" unless the knob opts in. It is concatenated INSIDE
+// severity_rubric_directive(), so it can only ever reach a rubric-ON cell — the contracts are defined against
+// the rubric's own ground list, and GROUND_EVIDENCE=1 with the rubric off is inert by construction (no block,
+// no marker, no sentinel, no shell layer).
+fn ground_evidence_directive() -> string {
+    if !ground_evidence_enabled() { return ""; }
+    return ground_evidence_block();
+}
+
+// The second RE-ASK sentence, gated on the SAME knob so the iteration-2 re-ask text is byte-identical with the
+// contract off. The driver names the failing ground as `<ground>: <what is missing>`, so this sentence only has
+// to say that such a line is insufficient too.
+fn ground_evidence_reask_clause() -> string {
+    if !ground_evidence_enabled() { return ""; }
+    return "A line whose ground id is sufficient but whose EVIDENCE does not meet that ground's contract above "
+      + "is insufficient in exactly the same way; where the list names a ground it also names what is missing "
+      + "from it, and repeating the line without that evidence answers nothing.\n";
 }
 
 // --- #1938 invariant-hunt judgment mode -----------------------------------------------------------------
@@ -349,6 +435,11 @@ if len(harness) > 0 { print("INV-HARNESS|" + harnessPath); }
 // Printed BEFORE the prompt() call (like AUX-CONTEXT| above) and carrying no `VERDICT|` substring, so neither
 // _join_wrapped_verdict() nor lib/run-agent-validated.sh's refuter predicate can be confused by it.
 if index_of(instruction, severity_rubric_marker()) >= 0 { print("SEVERITY-RUBRIC|refute|on"); }
+// #2245 iteration 3: the GROUND-EVIDENCE sentinel, on the SAME honesty contract — it is what makes
+// run-refute.sh's per-ground evidence contract INERT by construction when the second knob is off (a rubric-ON
+// cell then prints the line above and not this one, which is exactly the iteration-2 arm). Carries no
+// `VERDICT|` substring and closes a wrapped record in all three scrapers, like every sibling diagnostic.
+if index_of(instruction, ground_evidence_marker()) >= 0 { print("GROUND-EVIDENCE|refute|on"); }
 
 let verdict = prompt(instruction, harness_payload(appendix_payload(code, aux, auxPath), harness, harnessPath)) -> string;
 

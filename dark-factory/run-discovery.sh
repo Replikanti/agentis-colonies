@@ -180,6 +180,15 @@
 #                       dismissals happened in lens-OFF cells too, and coupling the two would make the arm a
 #                       two-variable experiment. It rides exec.env_passthrough, else getenv() could not see it.
 #                       The SAME export also reaches run-refute.sh's gate, so one variable covers both halves.
+#   GROUND_EVIDENCE     #2245 iteration 3 OPT-IN, default UNSET = OFF, and INDEPENDENT of SEVERITY_RUBRIC (it is
+#                       a second knob, NOT a `SEVERITY_RUBRIC=2` sub-mode — that would have to loosen the
+#                       agents' `== "1"` test and would make the iteration-2 arm unreproducible). `1` appends
+#                       hunter.ag's per-ground EVIDENCE contract to the rubric directive, which can only happen
+#                       INSIDE a rubric-ON cell, and arms the contract half of the gate below. Unset / any other
+#                       value leaves the assembled prompt byte-identical to the iteration-2 one and leaves the
+#                       contract layer inert (no `GROUND-EVIDENCE|` sentinel => every line is judged on its
+#                       ground id alone). It rides exec.env_passthrough, else getenv() could not see it; the
+#                       SAME export also reaches run-refute.sh's gate, so one variable covers both halves.
 #   DF_RUBRIC_MAX_REASKS  #2245 iteration 2: how many times a cell that answered WITHOUT a candidate while it
 #                       dismissed at least one lead on an INSUFFICIENT ground is re-asked before the surviving
 #                       locations are PROMOTED to tier-1 `Medium` candidates. Default 1; 0 = gate-only (record
@@ -310,6 +319,28 @@
 #   A promoted candidate is still an unproven LEAD: it is judged by the refute gate and needs a PASSING Foundry
 #   PoC before it is a finding, exactly like a model-emitted one. Tier 1 rather than a tier-2 record because
 #   verify-findings.sh keeps tier-2 verdicts out of `verified[]` by construction (issue #2245 STOP-1 decision 2).
+#
+# #2245 ITERATION 3 — THE PER-GROUND EVIDENCE CONTRACT (a DETECTOR, not a second mechanism):
+#   MEASURED CAUSE: iteration 2 moved the held-out row from 0/2 to 2/2 on the hunt side and 0/1 to 1/2 on the
+#   gate side, and all three remaining losses have ONE shape — a SUFFICIENT ground id attached to evidence that
+#   does not establish that ground's definition (a reachability argument filed as `no-loss`; an accrual emitted
+#   to nobody dismissed `no-loss` with no zero delta and `immaterial-quantified` on a ratio of internal
+#   counters; a correct read of the DEPLOYED configuration closing a lead the code ADMITS in every other
+#   configuration). The gate above checks the ground ID; nothing checked the evidence.
+#   GRAMMAR: unchanged. GROUND_EVIDENCE=1 appends the per-ground contract to the SAME rubric directive, and this
+#   shell checks the SAME `DISMISS|` line against it — citation existence + a validating-line shape for
+#   `guard`/`unreachable`/`known-issue`, the literal `delta=0:` token for `no-loss`, a number plus a bound for
+#   `immaterial-quantified`, and the admitted-vs-deployed veto on all of them.
+#   STATUS SEMANTICS (still no new status vocabulary, and this gate still NEVER fails a cell):
+#     * a contract failure IS an insufficient ground: same one bounded re-ask (now naming what is missing),
+#       same promotion, same `insufficient_dismissals` counter.
+#     * TAINT RULE (issue #2245 iteration-3 STOP-1 decision 2): a location whose dismissal set contains a
+#       contract-FAILING sufficient line stays OPEN even if a sibling line passes. This strictly widens the open
+#       set — the one place this iteration trades precision for recall — and precision is held by the gates that
+#       stay live (the refute gate, the PoC gate, the `Medium` cap, one promotion per location).
+#     * no `GROUND-EVIDENCE|` sentinel => no contract check anywhere => behaviour byte-identical to iteration 2.
+#     * `contract_failed_dismissals` is recorded per cell (only when non-zero) as the arm's anti-Goodhart
+#       readout: the contract is a floor on the FORM of the evidence, never a claim about its truth.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -751,11 +782,12 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # own environment), and keeping it off the sanitised env is what guarantees an RPC URL — routinely a
   # key-bearing secret — can never be interpolated into a prompt.
   # #2245 iteration 2 SEVERITY_RUBRIC/DISMISS_REASK_GROUNDS ride it for exactly the #1426 reason: hunter.ag
+  # #2245 iteration 3 GROUND_EVIDENCE rides it for the same reason, as its own independent knob.
   # gates the whole rubric on getenv("SEVERITY_RUBRIC"), which reads the SANITISED env — unregistered => "" =>
   # the opt-in could never reach the agent and the feature would be silently inert. DISMISS_REASK_GROUNDS is
   # set by run_cell ONLY on a ground re-ask: unregistered => "" => the re-ask would replay the same prompt
   # instead of naming the open locations. Both are EMPTY on a default run, so registering them changes nothing.
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET,ONCHAIN_FACT,ONCHAIN_BUDGET_STATE,ONCHAIN_BUDGET,FORK_BLOCK,SEVERITY_RUBRIC,DISMISS_REASK_GROUNDS"
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET,ONCHAIN_FACT,ONCHAIN_BUDGET_STATE,ONCHAIN_BUDGET,FORK_BLOCK,SEVERITY_RUBRIC,DISMISS_REASK_GROUNDS,GROUND_EVIDENCE"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: hunter.ag ends its tick with `learn("hunt", ...)`, and it is that WRITE
   # the flag gates (#1878 measured it on agentis v1.28.0 — `experience.enabled = false` makes learn() raise
@@ -864,6 +896,7 @@ _json_id_array() {
 # `APPENDIX-CONTEXT|` line (#1865), a `REFUTE-CONSTRAINTS|` line (#1887), a `CALLEE-TRUST|` line (#2145), an
 # `OPERATIONALIZE|` line or a model-emitted `OPCHECK|` line (#2211) or a model-emitted `TRACE|` line (#2214)
 # or a `SEVERITY-RUBRIC|` line or a model-emitted `DISMISS|` line (#2245 iteration 2)
+# or a `GROUND-EVIDENCE|` line (#2245 iteration 3)
 # or a blank line closes the current record
 # without starting a new one
 # (these are the only meaningful boundary tokens in a hunt log — see hunter.ag's own framing); any other line
@@ -878,7 +911,7 @@ _join_wrapped_candidates() {
       rec = $0
       next
     }
-    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*ONCHAIN-FACT\|/ || /^[[:space:]]*SEVERITY-RUBRIC\|/ || /^[[:space:]]*DISMISS\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*ONCHAIN-FACT\|/ || /^[[:space:]]*SEVERITY-RUBRIC\|/ || /^[[:space:]]*GROUND-EVIDENCE\|/ || /^[[:space:]]*DISMISS\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
       if (rec != "") { print rec; rec = "" }
       next
     }
@@ -1723,50 +1756,247 @@ _dismiss_ground() {
   printf '%s' "$1" | cut -d'|' -f3 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]'
 }
 
-# _insufficient_dismissal_rows <log> — one `<location>\t<ground-id>\t<evidence>` row per location whose DISMISS
-# lines carry ONLY insufficient or unrecognised grounds, in the NORMALISED record order (_dismiss_lines applies
-# `sort -u`, so the order is lexicographic rather than log order — deterministic, which is what the re-ask
-# addressing and the promotion both need). The UNION rule of the rubric
-# is implemented here and is the whole point of grouping by LOCATION rather than by line: the measured loss
-# stacked THREE insufficient grounds on one lead, so any number of them still leaves the location open, while a
-# single SUFFICIENT ground on that same location closes it. The row keeps the FIRST insufficient line's ground
-# and evidence, which is what the re-ask names and what a promoted candidate carries.
-_insufficient_dismissal_rows() {
-  idr_log="$1"
-  [ -f "$idr_log" ] || return 0
-  _dismiss_lines "$idr_log" | awk -F'|' -v suff="$(_rubric_sufficient_grounds)" '
-    BEGIN { n = split(suff, a, " "); for (i = 1; i <= n; i++) S[a[i]] = 1 }
-    {
-      loc = $2; g = tolower($3); ev = $4
-      sub(/^[[:space:]]+/, "", loc); sub(/[[:space:]]+$/, "", loc)
-      sub(/^[[:space:]]+/, "", g);   sub(/[[:space:]]+$/, "", g)
-      sub(/^[[:space:]]+/, "", ev);  sub(/[[:space:]]+$/, "", ev)
-      if (loc == "") next
-      if (!(loc in seen)) { seen[loc] = 1; order[++k] = loc }
-      if (g in S) { ok[loc] = 1; next }
-      if (!(loc in ground)) { ground[loc] = g; evid[loc] = ev }
-    }
-    END { for (i = 1; i <= k; i++) if (!(order[i] in ok)) print order[i] "\t" ground[order[i]] "\t" evid[order[i]] }
-  '
+# --- #2245 iteration 3: THE PER-GROUND EVIDENCE CONTRACT -----------------------------------------------------
+# The measured gap (iteration 2, four runs): the rubric works where it is applied honestly (the held-out row
+# went 0/2 -> 2/2 here) and ALL three remaining losses have ONE shape — a SUFFICIENT ground id attached to
+# evidence that does not establish that ground's definition. The gate above checks the ground ID; nothing
+# checked the evidence. So this layer adds the per-ground EVIDENCE contract on the SAME output gate, reusing the
+# #2224/#2227/#2225 citation discipline, and folds a contract failure into the EXISTING insufficient path: same
+# one bounded re-ask, same promotion, no second mechanism and no new status vocabulary.
+#
+# It is INERT by construction twice over: no `SEVERITY-RUBRIC|` sentinel => no rubric gate at all, and no
+# `GROUND-EVIDENCE|` sentinel => every line is judged on its ground id exactly as iteration 2 judged it.
+
+# _ground_contract_armed <log> — the ONLY gate of this layer: hunter.ag's honesty-gated `GROUND-EVIDENCE|`
+# sentinel is in this cell's log, so the contract really entered the prompt this cell answered. Never the env
+# var: a cell must not be re-asked against a contract it was never shown.
+_ground_contract_armed() {
+  grep -qE '^[[:space:]]*GROUND-EVIDENCE\|' "$1" 2>/dev/null
 }
 
-# _insufficient_dismissal_locs <log> — just the locations of the rows above (the gate reads this, the promotion
-# reads the rows).
+# _dismiss_evidence_ok <line> [root] [brief] — the per-line contract decider, BYTE-IDENTICAL to run-refute.sh's
+# copy (demo-severity-rubric.sh diffs the two, exactly as it diffs _rubric_sufficient_grounds). Returns 0 when
+# the line's SUFFICIENT ground meets its contract, and 1 after printing the failing contract id:
+#   cite-missing | cite-unresolved | cite-not-a-guard | cite-not-validating
+#   no-zero-delta | reachability-as-no-loss | unquantified | admitted-vs-deployed
+# A ground that is NOT on the sufficient list returns 0 here — the id check already treats it as insufficient,
+# and a second opinion about it would be a second rule.
+#
+# WHAT THIS CAN AND CANNOT DECIDE, stated rather than hidden: it is a floor on the FORM of the evidence
+# (does the citation exist, does the cited line look like the thing the ground names, is there a number where
+# the ground demands one). Whether a correctly-shaped guard really stops the path stays an OPERATOR read — the
+# same anti-Goodhart limit _uncited_dismissal_lines carries.
+_dismiss_evidence_ok() {
+  de_line="$1"; de_root="${2:-}"; de_brief="${3:-}"
+  # Self-contained by design: every regex lives HERE, like _uncited_dismissal_lines's do, because
+  # demo-severity-rubric.sh slices this function out by line range and sources it — a decider that depended on
+  # script-level state would behave differently there than in production, which is the whole point of slicing.
+  de_pathline_re='[A-Za-z0-9_/.-]+\.(sol|ts|js|md|json|toml|ya?ml):[0-9]+(-[0-9]+)?'
+  de_guard_re='require|revert|assert|if[[:space:]]*\(|modifier|only[A-Z]|_checkRole|msg\.sender'
+  de_valid_re='require|revert|assert|if[[:space:]]*\('
+  de_deploy_re='(^|/)(script|scripts|deploy|broadcast)/'
+  de_reach_re='never|cannot|can not|does not occur|impossible|no such state|not reachable|would require'
+  de_admit_re='ONCHAIN|@block|as deployed|currently deployed|as shipped|shipped (market|config|deployment)|mainnet|live market'
+  de_fn_re='[A-Za-z_][A-Za-z0-9_]*\('
+  de_g="$(printf '%s' "$de_line" | cut -d'|' -f3 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+  # Fields 4..N, not field 4 alone: the measured lines merge verdict and evidence, exactly as
+  # _uncited_dismissal_lines reads fields 3..N of a TRACE line for the same reason.
+  de_span="$(printf '%s' "$de_line" | cut -d'|' -f4-)"
+  de_cite="$(printf '%s' "$de_span" | grep -oE "$de_pathline_re" | head -1)"
+  de_need=""; de_failid=""
+  case "$de_g" in
+    guard)
+      [ -n "$de_cite" ] || { printf 'cite-missing\n'; return 1; }
+      de_need="$de_guard_re"; de_failid="cite-not-a-guard" ;;
+    unreachable)
+      [ -n "$de_cite" ] || { printf 'cite-missing\n'; return 1; }
+      # Deliberately the INVERSE of the #2225 configuration rule, which REQUIRES a deploy/test citation: that
+      # rule asks what the repository SHIPS, this ground asks what the repository REFUSES. Do not harmonise.
+      if printf '%s' "${de_cite%%:*}" | grep -Eq "$de_deploy_re"; then printf 'cite-not-validating\n'; return 1; fi
+      de_need="$de_valid_re"; de_failid="cite-not-validating" ;;
+    no-loss)
+      if ! printf '%s' "$de_span" | grep -Eqi 'delta=0:[^[:space:]]'; then printf 'no-zero-delta\n'; return 1; fi
+      if ! printf '%s' "$de_span" | grep -Eq "$de_pathline_re|$de_fn_re"; then printf 'cite-missing\n'; return 1; fi
+      # The measured loss: a reachability argument filed under a sufficient ground. That claim is `unreachable`
+      # and needs that ground's citation, so the vocabulary veto applies here and nowhere else.
+      if printf '%s' "$de_span" | grep -Eqi "$de_reach_re"; then printf 'reachability-as-no-loss\n'; return 1; fi ;;
+    known-issue)
+      # shellcheck disable=SC2016  # a grep ERE held verbatim: nothing in it may expand
+      de_q="$(printf '%s' "$de_span" | grep -oE '"[^"]{12,}"|`[^`]{12,}`' | head -1)"
+      [ -n "$de_q" ] || { printf 'cite-missing\n'; return 1; }
+      if [ -n "$de_brief" ] && [ -f "$de_brief" ]; then
+        de_q="$(printf '%s' "$de_q" | sed 's/^.//; s/.$//')"
+        grep -Fq "$de_q" "$de_brief" 2>/dev/null || { printf 'cite-unresolved\n'; return 1; }
+      fi ;;
+    immaterial-quantified)
+      if ! printf '%s' "$de_span" | grep -Eq 'loss=[^[:space:]]*[0-9]'; then printf 'unquantified\n'; return 1; fi
+      if ! printf '%s' "$de_span" | grep -Eqi '(of|out of|vs\.?|versus)[[:space:]]+[^[:space:]]*[0-9]'; then
+        printf 'unquantified\n'; return 1
+      fi ;;
+    *) return 0 ;;
+  esac
+  # The citation RESOLUTION shared by the two citing grounds. EMPTY de_root is documented behaviour, not a gap:
+  # with no root the check is citation-SHAPE only, exactly like _uncited_dismissal_lines's empty repo_dir.
+  if [ -n "$de_need" ] && [ -n "$de_root" ]; then
+    de_f="${de_cite%%:*}"
+    # An absolute path or a `..` segment is refused outright rather than normalised: no file outside the one
+    # root the caller owns is ever opened.
+    case "$de_f" in /*|*..*) printf 'cite-unresolved\n'; return 1 ;; esac
+    [ -f "$de_root/$de_f" ] || { printf 'cite-unresolved\n'; return 1; }
+    de_r="${de_cite#*:}"
+    case "$de_r" in *-*) de_a="${de_r%-*}"; de_b="${de_r#*-}" ;; *) de_a="$de_r"; de_b="$de_r" ;; esac
+    if ! sed -n "${de_a},${de_b}p" "$de_root/$de_f" 2>/dev/null | grep -Eq "$de_need"; then
+      printf '%s\n' "$de_failid"; return 1
+    fi
+  fi
+  # ADMITTED IS NOT DEPLOYED — the veto that applies to EVERY sufficient ground. Deployed-state evidence
+  # establishes what one deployment holds today; a ground answers what the code ADMITS. So such a line closes
+  # nothing unless it ALSO carries a validating citation that rejects the other admitted states.
+  if printf '%s' "$de_span" | grep -Eqi "$de_admit_re"; then
+    de_vok=0
+    for de_c in $(printf '%s' "$de_span" | grep -oE "$de_pathline_re"); do
+      de_vf="${de_c%%:*}"
+      case "$de_vf" in /*|*..*) continue ;; esac
+      printf '%s' "$de_vf" | grep -Eq "$de_deploy_re" && continue
+      if [ -z "$de_root" ]; then de_vok=1; break; fi
+      [ -f "$de_root/$de_vf" ] || continue
+      de_vr="${de_c#*:}"
+      case "$de_vr" in *-*) de_va="${de_vr%-*}"; de_vb="${de_vr#*-}" ;; *) de_va="$de_vr"; de_vb="$de_vr" ;; esac
+      if sed -n "${de_va},${de_vb}p" "$de_root/$de_vf" 2>/dev/null | grep -Eq "$de_valid_re"; then de_vok=1; break; fi
+    done
+    [ "$de_vok" -eq 1 ] || { printf 'admitted-vs-deployed\n'; return 1; }
+  fi
+  return 0
+}
+
+# _contract_requirement <contract-id> — the ONE table of re-ask phrases, so the driver can never ask for
+# something the prompt never defined. The two literal tokens below (`delta=0:` and `loss=`) are pinned by
+# demo-severity-rubric.sh against hunter.ag/refuter.ag's ground_evidence_block(), in BOTH directions.
+_contract_requirement() {
+  case "$1" in
+    cite-missing)            printf '%s\n' 'cite the path:line this ground requires, in code you were given' ;;
+    cite-unresolved)         printf '%s\n' 'the cited path:line is not in the code you were given' ;;
+    cite-not-a-guard)        printf '%s\n' 'the cited line is not a check — cite the conditional or the require/revert that stops the path' ;;
+    cite-not-validating)     printf '%s\n' 'cite the constructor/initializer/setter line that REJECTS the state, never a deployment script or a deployed value' ;;
+    no-zero-delta)           printf '%s\n' 'write the literal token delta=0:<the quantity that is unchanged> beside the path' ;;
+    reachability-as-no-loss) printf '%s\n' 'a "that state never occurs" argument is the unreachable ground, not no-loss — cite the line that validates the state away' ;;
+    unquantified)            printf '%s\n' 'write the literal token loss=<amount> <unit> and compare it with a second number in the same units' ;;
+    admitted-vs-deployed)    printf '%s\n' 'deployed state is not what the code ADMITS — cite the validating line that rejects every other admitted state' ;;
+    *)                       printf '%s\n' 'name a sufficient ground with the evidence that ground requires' ;;
+  esac
+}
+
+# _dismiss_contract_rows <log> [root] [brief] — one `<location>\t<ground>\t<contract-id>` row per DISMISS line
+# whose SUFFICIENT ground FAILS its contract. This is the new per-cell metric (`contract_failed_dismissals`)
+# and what the re-ask names. Empty for an unarmed log, which is every cell of an iteration-2 arm.
+_dismiss_contract_rows() {
+  dcr_log="$1"; dcr_root="${2:-}"; dcr_brief="${3:-}"
+  [ -f "$dcr_log" ] || return 0
+  _ground_contract_armed "$dcr_log" || return 0
+  _dismiss_lines "$dcr_log" | while IFS= read -r dcr_line; do
+    [ -n "$dcr_line" ] || continue
+    dcr_g="$(_dismiss_ground "$dcr_line")"
+    dcr_hit=0
+    for dcr_ok in $(_rubric_sufficient_grounds); do
+      if [ "$dcr_g" = "$dcr_ok" ]; then dcr_hit=1; fi
+    done
+    [ "$dcr_hit" -eq 1 ] || continue
+    dcr_id=""
+    if dcr_id="$(_dismiss_evidence_ok "$dcr_line" "$dcr_root" "$dcr_brief")"; then continue; fi
+    dcr_loc="$(printf '%s' "$dcr_line" | cut -d'|' -f2 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    [ -n "$dcr_loc" ] || continue
+    printf '%s\t%s\t%s\n' "$dcr_loc" "$dcr_g" "${dcr_id:-unknown}"
+  done
+}
+
+# _contract_failed_dismissals <log> [root] [brief] — the COUNT of those rows, the additive per-cell key.
+_contract_failed_dismissals() {
+  cfd_n="$(_dismiss_contract_rows "$1" "${2:-}" "${3:-}" | grep -c . || true)"
+  case "$cfd_n" in ''|*[!0-9]*) cfd_n=0 ;; esac
+  printf '%s\n' "$cfd_n"
+}
+
+# _insufficient_dismissal_rows <log> [root] [brief] — one `<location>\t<ground-id>\t<evidence>` row per
+# location this cell left OPEN, in the NORMALISED record order (_dismiss_lines applies `sort -u`, so the order is
+# lexicographic rather than log order — deterministic, which is what the re-ask addressing and the promotion both
+# need). The row keeps the FIRST not-closing line's ground and evidence, which is what the re-ask names and what
+# a promoted candidate carries.
+#
+# CLOSURE RULE. Iteration 2: a location is closed by ANY sufficient ground, and any number of insufficient ones
+# still leaves it open (the union rule — the whole reason the grouping is by LOCATION, since the measured loss
+# stacked THREE weak grounds on one lead). Iteration 3 adds the TAINT rule, and ONLY when the log is armed with
+# the `GROUND-EVIDENCE|` sentinel: a sufficient-ground line that FAILS its contract keeps the location open even
+# if a sibling line passes. That is the one place this iteration trades precision for recall (issue #2245
+# iteration-3 STOP-1 decision 2) — it is what makes the measured two-line dismissal (a contract-failing `no-loss`
+# beside a form-passing `immaterial-quantified`, on the same accrual) reachable at all.
+#
+# [root] and [brief] are the resolution seams of _dismiss_evidence_ok and are OPTIONAL: default-empty keeps the
+# citation check shape-only, and with the log UNARMED no line can ever be tagged `fail:`, so this function's
+# output is byte-identical to the iteration-2 one.
+_insufficient_dismissal_rows() {
+  idr_log="$1"; idr_root="${2:-}"; idr_brief="${3:-}"
+  [ -f "$idr_log" ] || return 0
+  idr_armed=0
+  if _ground_contract_armed "$idr_log"; then idr_armed=1; fi
+  # The per-line contract READS FILES, which the awk pass below must not do, so the normalisation happens in
+  # SHELL: one `<loc>\t<ground>\t<state>\t<evidence>` row per DISMISS line, where <state> is `ok` (a sufficient
+  # ground that met its contract), `fail:<contract-id>` (a sufficient ground that did not) or `weak` (an
+  # insufficient, unknown, empty or missing id). The awk pass then applies the closure rule as it always did.
+  _dismiss_lines "$idr_log" | while IFS= read -r idr_line; do
+    [ -n "$idr_line" ] || continue
+    idr_loc="$(printf '%s' "$idr_line" | cut -d'|' -f2 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    idr_g="$(_dismiss_ground "$idr_line")"
+    idr_ev="$(printf '%s' "$idr_line" | cut -d'|' -f4 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    idr_state=weak
+    for idr_ok in $(_rubric_sufficient_grounds); do
+      [ "$idr_g" = "$idr_ok" ] || continue
+      idr_state=ok
+      if [ "$idr_armed" -eq 1 ]; then
+        idr_id=""
+        if ! idr_id="$(_dismiss_evidence_ok "$idr_line" "$idr_root" "$idr_brief")"; then
+          idr_state="fail:${idr_id:-unknown}"
+        fi
+      fi
+      break
+    done
+    printf '%s\t%s\t%s\t%s\n' "$idr_loc" "$idr_g" "$idr_state" "$idr_ev"
+  done | awk -F'\t' '
+    {
+      loc = $1; g = $2; st = $3; ev = $4
+      if (loc == "") next
+      if (!(loc in seen)) { seen[loc] = 1; order[++k] = loc }
+      if (st == "ok") { ok[loc] = 1; next }
+      if (st != "weak") tainted[loc] = 1
+      if (!(loc in ground)) { ground[loc] = g; evid[loc] = ev }
+    }
+    END {
+      for (i = 1; i <= k; i++) {
+        l = order[i]
+        if (!(l in ok) || (l in tainted)) print l "\t" ground[l] "\t" evid[l]
+      }
+    }
+  '
+}
+# _insufficient_dismissal_locs <log> [root] [brief] — just the locations of the rows above (the gate reads this,
+# the promotion reads the rows). The two optional roots thread straight through — never a second opinion about
+# what is open.
 _insufficient_dismissal_locs() {
-  _insufficient_dismissal_rows "$1" | cut -f1
+  _insufficient_dismissal_rows "$1" "${2:-}" "${3:-}" | cut -f1
 }
 
 # _rubric_dismissal_gap <log> — the ground shortfall of ONE cell log as a single integer: how many DISTINCT
 # locations this cell dismissed without a sufficient ground. Prints 0 when the log carries no
 # `SEVERITY-RUBRIC|` sentinel — which is EVERY cell whenever SEVERITY_RUBRIC is off (the production default) —
 # so the gate is inert there by construction rather than merely cheap, the same contract as _opcheck_trace_gap.
-# Whether a SUFFICIENT ground's cited evidence really settles the lead stays an OPERATOR read (the #2214
-# anti-Goodhart rule): this shell decides only whether a ground id is on the closed list.
+# #2245 iteration 3: with the log ALSO carrying the `GROUND-EVIDENCE|` sentinel, a location whose sufficient
+# ground fails its EVIDENCE contract counts here too (the taint rule in _insufficient_dismissal_rows). Whether a
+# contract-PASSING ground really settles the lead stays an OPERATOR read (the #2214 anti-Goodhart rule): this
+# shell decides the ground id and the FORM of its evidence, never the semantics of the quantity it names.
 _rubric_dismissal_gap() {
   rdg_log="$1"
   if [ ! -f "$rdg_log" ]; then printf '0\n'; return 0; fi
   if ! grep -qE '^[[:space:]]*SEVERITY-RUBRIC\|' "$rdg_log" 2>/dev/null; then printf '0\n'; return 0; fi
-  rdg_n="$(_insufficient_dismissal_locs "$rdg_log" | grep -c . || true)"
+  rdg_n="$(_insufficient_dismissal_locs "$rdg_log" "${2:-}" "${3:-}" | grep -c . || true)"
   case "$rdg_n" in ''|*[!0-9]*) rdg_n=0 ;; esac
   printf '%s\n' "$rdg_n"
 }
@@ -1782,30 +2012,39 @@ _rubric_dismissal_gap() {
 # RE-ASK SAFETY is #1707's argument unchanged: a cell with no `CANDIDATE|` posted nothing to the blackboard and
 # emit()ed no lead, so a re-ask cannot double-post.
 _rubric_reask_needed() {
-  rrn_log="$1"
+  rrn_log="$1"; rrn_root="${2:-}"; rrn_brief="${3:-}"
   if [ ! -f "$rrn_log" ]; then return 1; fi
   if [ -f "$rrn_log.novalid" ] || [ -f "$rrn_log.timeout" ]; then return 1; fi
   if ! grep -qE '^[[:space:]]*SEVERITY-RUBRIC\|' "$rrn_log" 2>/dev/null; then return 1; fi
   if grep -v '^BLACKBOARD-' "$rrn_log" 2>/dev/null | grep -q 'CANDIDATE|'; then return 1; fi
-  [ "$(_rubric_dismissal_gap "$rrn_log")" -gt 0 ]
+  [ "$(_rubric_dismissal_gap "$rrn_log" "$rrn_root" "$rrn_brief")" -gt 0 ]
 }
 
-# _rubric_open_grounds <log> — the open locations the re-ask must name, as `<loc> (<ground>), <loc> (<ground>)`.
-# Empty when there are none. It names only what the CELL ITSELF wrote down, so nothing of this harness's own
-# judgement enters the prompt.
+# _rubric_open_grounds <log> [root] [brief] — the open locations the re-ask must name, as
+# `<loc> (<ground>), <loc> (<ground>)`. Empty when there are none. It names only what the CELL ITSELF wrote
+# down, so nothing of this harness's own judgement enters the prompt — except, for a #2245 iteration-3 CONTRACT
+# failure, the one-line requirement of the ground the cell itself chose: `<loc> (<ground>: <requirement>)`, with
+# the phrase taken from _contract_requirement, the single table the demo pins against the agents' contract text.
 _rubric_open_grounds() {
+  rog_log="$1"; rog_root="${2:-}"; rog_brief="${3:-}"
   rog_out=""
+  rog_fail="$(_dismiss_contract_rows "$rog_log" "$rog_root" "$rog_brief")"
   while IFS='	' read -r rog_loc rog_g; do
     [ -n "$rog_loc" ] || continue
-    rog_one="$rog_loc (${rog_g:-no ground given})"
+    rog_id="$(printf '%s\n' "$rog_fail" | awk -F'	' -v l="$rog_loc" -v g="$rog_g" '$1 == l && $2 == g { print $3; exit }')"
+    if [ -n "$rog_id" ]; then
+      rog_one="$rog_loc ($rog_g: $(_contract_requirement "$rog_id"))"
+    else
+      rog_one="$rog_loc (${rog_g:-no ground given})"
+    fi
     if [ -z "$rog_out" ]; then rog_out="$rog_one"; else rog_out="$rog_out, $rog_one"; fi
   done <<EOF
-$(_insufficient_dismissal_rows "$1" | cut -f1,2)
+$(_insufficient_dismissal_rows "$rog_log" "$rog_root" "$rog_brief" | cut -f1,2)
 EOF
   printf '%s\n' "$rog_out"
 }
 
-# _rubric_promote <log> <class> <files> — the PROMOTION half of the gate (issue #2245 STOP-1 decision 2): when a
+# _rubric_promote <log> <class> <files> [root] [brief] — the PROMOTION half of the gate (issue #2245 STOP-1 decision 2): when a
 # location's dismissal is STILL insufficient after the bounded re-ask, synthesise a TIER-1 candidate for it into
 # "<log>.rubric-promoted" — one `RUBRIC-PROMOTED|<loc>|<ground-id>` provenance line followed by one
 # `CANDIDATE|<loc>|class=<cls>|Medium|<the cell's own evidence>|<PoC sketch>` line.
@@ -1823,7 +2062,7 @@ EOF
 # ACCEPTED ASYMMETRY, documented rather than hidden: a promoted candidate is NOT posted to the #1001 blackboard
 # — hunter.ag posts only what the model itself emitted — so it does not steer later cells.
 _rubric_promote() {
-  rp_log="$1"; rp_cls="$2"; rp_files="$(printf '%s' "$3" | tr '\n' ',')"
+  rp_log="$1"; rp_cls="$2"; rp_files="$(printf '%s' "$3" | tr '\n' ',')"; rp_root="${4:-}"; rp_brief="${5:-}"
   [ -f "$rp_log" ] || return 0
   rp_out="$rp_log.rubric-promoted"
   rm -f "$rp_out"
@@ -1848,7 +2087,7 @@ _rubric_promote() {
     printf 'CANDIDATE|%s|class=%s|Medium|%s|PoC sketch: reproduce the admitted state, call the documented path, and assert the revert or the value delta\n' \
       "$rp_final" "$rp_cls" "$rp_ev_clean" >> "$rp_out"
   done <<EOF
-$(_insufficient_dismissal_rows "$rp_log")
+$(_insufficient_dismissal_rows "$rp_log" "$rp_root" "$rp_brief")
 EOF
 }
 
@@ -1977,17 +2216,25 @@ _accumulate_cell() {
   case "$ac_dis" in ''|*[!0-9]*) ac_dis=0 ;; esac
   if [ "$ac_dis" -gt 0 ]; then ac_dismissals_json=",\"dismissals\":$ac_dis"; fi
   ac_insuff_json=""
-  ac_insuff="$(_rubric_dismissal_gap "$ac_log")"
+  ac_insuff="$(_rubric_dismissal_gap "$ac_log" "$REPO" "$BRIEF")"
   if [ "$ac_insuff" -gt 0 ]; then ac_insuff_json=",\"insufficient_dismissals\":$ac_insuff"; fi
   ac_promoted_json=""
   ac_prom="$(_rubric_promoted_count "$ac_log")"
   if [ "$ac_prom" -gt 0 ]; then ac_promoted_json=",\"rubric_promoted\":$ac_prom"; fi
-  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s%s%s%s%s%s%s%s%s%s}\n' \
+  # #2245 iteration 3: how many of this cell's dismissals named a SUFFICIENT ground whose EVIDENCE failed that
+  # ground's contract. Appended LAST, after `rubric_promoted`, and only when non-zero — so a contract-OFF cell
+  # (and every iteration-2 arm cell) keeps its exact key set and _plan_depth_cells's forward key scan is
+  # untouched. This is the anti-Goodhart readout of the arm: a sudden all-pass with unchanged verdicts is
+  # visible here, per contract id, in rubric-dismissals.tsv's fifth column.
+  ac_contract_json=""
+  ac_contract="$(_contract_failed_dismissals "$ac_log" "$REPO" "$BRIEF")"
+  if [ "$ac_contract" -gt 0 ]; then ac_contract_json=",\"contract_failed_dismissals\":$ac_contract"; fi
+  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s}\n' \
     "$(_json_str "$ac_subsys")" "$(_json_str "$ac_cls")" "$(_json_str "$ac_files")" \
     "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" "$ac_appendix_json" \
     "$ac_opchecks_json" "$ac_traces_json" "$ac_untraced_json" "$ac_unresolved_json" \
     "$ac_rule_json" "$ac_orphans_json" "$ac_untraced_ids_json" "$ac_uncited_ids_json" "$ac_unresolved_ids_json" \
-    "$ac_dismissals_json" "$ac_insuff_json" "$ac_promoted_json" >> "$CELLS_JSONL"
+    "$ac_dismissals_json" "$ac_insuff_json" "$ac_promoted_json" "$ac_contract_json" >> "$CELLS_JSONL"
   # #2217: the tier-2 carry, appended to the RUN-scoped accumulator AFTER the cell object is written and
   # gated on the feature flag — so an OFF run does no extra work, writes no extra file, and emits the same
   # bytes it did before #2217. _accumulate_cell is called in MANIFEST order on the serial, parallel
@@ -2072,6 +2319,7 @@ run_cell() {
         TRACE_REASK_IDS="$rc_reask_ids" \
         SEVERITY_RUBRIC="${SEVERITY_RUBRIC:-}" \
         DISMISS_REASK_GROUNDS="$rc_dismiss_grounds" \
+        GROUND_EVIDENCE="${GROUND_EVIDENCE:-}" \
         EXTERNAL_RESOLVER="${EXTERNAL_RESOLVER:+$rc_dir/resolve-external.sh}" \
         EXTERNAL_CACHE="$EXTERNAL_CACHE" \
         EXTERNAL_BUDGET_STATE="$rc_ext_state" \
@@ -2133,16 +2381,16 @@ run_cell() {
   # resolvable location is recorded (insufficient_dismissals) rather than turned into a FAILED row.
   rm -f "$rc_log.rubric-promoted"
   rc_rubric=1
-  while [ "$rc_rubric" -le "$DF_RUBRIC_MAX_REASKS" ] && _rubric_reask_needed "$rc_log"; do
-    rc_dismiss_grounds="$(_rubric_open_grounds "$rc_log")"
-    echo "run-discovery.sh:   ↳ insufficient-dismissal: $rc_cls/'$rc_subsys' dismissed $(_rubric_dismissal_gap "$rc_log") lead(s) on an insufficient ground${rc_dismiss_grounds:+ ($rc_dismiss_grounds)} — re-asking ($rc_rubric/$DF_RUBRIC_MAX_REASKS)" >&2
+  while [ "$rc_rubric" -le "$DF_RUBRIC_MAX_REASKS" ] && _rubric_reask_needed "$rc_log" "$REPO" "$BRIEF"; do
+    rc_dismiss_grounds="$(_rubric_open_grounds "$rc_log" "$REPO" "$BRIEF")"
+    echo "run-discovery.sh:   ↳ insufficient-dismissal: $rc_cls/'$rc_subsys' dismissed $(_rubric_dismissal_gap "$rc_log" "$REPO" "$BRIEF") lead(s) on an insufficient ground${rc_dismiss_grounds:+ ($rc_dismiss_grounds)} — re-asking ($rc_rubric/$DF_RUBRIC_MAX_REASKS)" >&2
     mv -f "$rc_log" "$rc_log.rubric-attempt-$rc_rubric" 2>/dev/null || true
     df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-discovery.sh: $rc_cls/'$rc_subsys' (ground re-ask $rc_rubric)" "$rc_log" hunter "" _rc_attempt || true
     rc_rubric=$((rc_rubric + 1))
   done
   rc_dismiss_grounds=""
-  if _rubric_reask_needed "$rc_log"; then
-    _rubric_promote "$rc_log" "$rc_cls" "$rc_in_scope"
+  if _rubric_reask_needed "$rc_log" "$REPO" "$BRIEF"; then
+    _rubric_promote "$rc_log" "$rc_cls" "$rc_in_scope" "$REPO" "$BRIEF"
   fi
 }
 
@@ -2219,9 +2467,16 @@ scrape_cell_log() {
   # the gate's answer is the promotion, not a discarded cell — but it is not a rigorous clean sweep either, so
   # both numbers are surfaced here and recorded as the additive `insufficient_dismissals` / `rubric_promoted`
   # fields by _accumulate_cell below. Silent on every rubric-OFF cell (the gap is 0 without the sentinel).
-  sc_rubric_gap="$(_rubric_dismissal_gap "$sc_log")"
+  sc_rubric_gap="$(_rubric_dismissal_gap "$sc_log" "$REPO" "$BRIEF")"
   if [ "$sc_rubric_gap" -gt 0 ]; then
-    echo "run-discovery.sh:   ↳ $sc_rubric_gap insufficient dismissal(s): $sc_cls/'$sc_subsys' ruled out lead(s) on a ground the closed list does not accept ($(_rubric_open_grounds "$sc_log")); this cell's negative is NOT a rigorous clean sweep" >&2
+    echo "run-discovery.sh:   ↳ $sc_rubric_gap insufficient dismissal(s): $sc_cls/'$sc_subsys' ruled out lead(s) on a ground the closed list does not accept ($(_rubric_open_grounds "$sc_log" "$REPO" "$BRIEF")); this cell's negative is NOT a rigorous clean sweep" >&2
+  fi
+  # #2245 iteration 3: the same voice for the EVIDENCE half — how many dismissals named a sufficient ground
+  # whose evidence did not meet that ground's contract. Silent on every contract-OFF cell (0 without the
+  # `GROUND-EVIDENCE|` sentinel), and never a FAILED row: the gate's answer is the re-ask and the promotion.
+  sc_contract="$(_contract_failed_dismissals "$sc_log" "$REPO" "$BRIEF")"
+  if [ "$sc_contract" -gt 0 ]; then
+    echo "run-discovery.sh:   ↳ $sc_contract dismissal(s) named a sufficient ground whose EVIDENCE failed its contract: $sc_cls/'$sc_subsys' (recorded as \"contract_failed_dismissals\"; the ground id was accepted, the evidence was not)" >&2
   fi
   sc_promoted="$(_rubric_promoted_count "$sc_log")"
   if [ "$sc_promoted" -gt 0 ]; then

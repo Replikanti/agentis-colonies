@@ -910,9 +910,11 @@ fn severity_rubric_enabled() -> bool {
 // cell's instruction matches the pre-#2245 one byte for byte and the honesty-gated sentinel below
 // auto-suppresses, because an empty directive carries no marker. O(1) top-level string concat — no regex, no
 // reduce, no exec sh, so this adds no per-element substrate cost to any cell, firing or not.
+// #2245 iteration 3: ground_evidence_directive() rides INSIDE this gate and is "" unless its own knob opts in
+// too, so SEVERITY_RUBRIC=1 alone still renders exactly the iteration-2 string, byte for byte.
 fn severity_rubric_directive() -> string {
     if !severity_rubric_enabled() { return ""; }
-    return severity_rubric_block() + dismiss_rule() + dismiss_reask_block();
+    return severity_rubric_block() + ground_evidence_directive() + dismiss_rule() + dismiss_reask_block();
 }
 
 // The GROUND RE-ASK addressing (empty on every first attempt), the exact twin of trace_reask_block() above.
@@ -929,7 +931,97 @@ fn dismiss_reask_block() -> string {
       + "above treats as INSUFFICIENT: " + open + ". Take each of them again, and for EACH either name a "
       + "SUFFICIENT ground WITH the evidence that ground requires, or apply the rubric and report the lead as "
       + "a CANDIDATE. Re-stating the same insufficient ground answers nothing, and adding more insufficient "
-      + "grounds to it answers less; do not drop a listed location from your reply.\n\n";
+      + "grounds to it answers less; do not drop a listed location from your reply.\n"
+      + ground_evidence_reask_clause()
+      + "\n";
+}
+
+// --- #2245 iteration 3: THE PER-GROUND EVIDENCE CONTRACT (opt-in, default OFF) -------------------------------
+// The measured gap (iteration 2, four runs on the frozen bases): the rubric WORKS where it is applied honestly
+// — the held-out row went 0/2 -> 2/2 on this side — and all three remaining losses have ONE shape: a SUFFICIENT
+// ground id attached to evidence that does not establish that ground's definition. Two of them happened HERE
+// (an accrual "emitted to nobody" dismissed `no-loss` with no zero delta, and a correct on-chain read of the
+// DEPLOYED configuration dismissed `no-loss` although the code ADMITS every other configuration). The shipped
+// gate checks the ground ID; nothing checked the evidence. So iteration 3 changes neither the rubric text nor
+// the routing nor the generation: it adds the per-ground EVIDENCE contract below, and the driver checks the
+// emitted line against it on the same OUTPUT gate.
+//
+// severity_rubric_block() stays FROZEN — not one byte changes — so the iteration-2 arm stays reproducible and
+// the two arms stay comparable. Every new sentence, including ADMITTED IS NOT DEPLOYED, lives here.
+//
+// SPLICE POINT: inside severity_rubric_directive(), between the rubric and the emission contract — the reader
+// meets the closed ground list, then what each of those grounds actually costs, then how to write the line.
+// The one string the block is RECOGNISED by (same discipline as severity_rubric_marker above): it is the
+// block's literal FIRST LINE, and the sentinel greps the ASSEMBLED instruction for it, so a marker that is
+// not a substring of what renders disables the sentinel loudly rather than silently claiming a contract that
+// never entered the prompt.
+fn ground_evidence_marker() -> string {
+    return "=== EVIDENCE CONTRACT PER GROUND (a ground id is a claim; this is what proves it) ===";
+}
+
+// The per-ground EVIDENCE contract. BYTE-IDENTICAL in hunter.ag and refuter.ag — one standard, two decision
+// points, and demo-severity-rubric.sh diffs the two functions so they cannot drift apart. Do not edit one
+// copy: edit both, in the same commit, or the demo fails.
+//
+// It names the machine-findable tokens VERBATIM (`delta=0:`, `loss=`) because the drivers decide on exactly
+// those tokens: a contract the model was never shown could not be met, and a driver requirement that is not
+// in this text is a requirement nobody was given. The demo pins both directions.
+//
+// PURE-META like every other directive here: no protocol, contract, function, token, unit or product name, so
+// injecting it on a held-out target cannot leak an answer.
+fn ground_evidence_block() -> string {
+    return ground_evidence_marker() + "\n"
+      + "A ground id is a CLAIM; the evidence on the SAME line is what makes it true. Each sufficient ground "
+      + "has exactly ONE contract, below. A line that names a sufficient ground without meeting that ground's "
+      + "contract is read as INSUFFICIENT — the same answer as naming no ground at all.\n"
+      + "  guard                 cite path:line (or path:first-last) of the check that stops the path, in code "
+      + "you were given. The cited text must BE the check: a conditional, a require/revert/assert, an access "
+      + "modifier.\n"
+      + "  unreachable           cite the path:line that VALIDATES the state away — a rejecting check in a "
+      + "constructor, an initializer or a setter. A deployment script, a migration, or the value some "
+      + "deployment happens to hold, is NOT a validation: it shows what was CHOSEN, never what is REFUSED.\n"
+      + "  no-loss               cite the path AND write the literal token delta=0:<the quantity that is "
+      + "unchanged>. \"That state never occurs\" is NOT this ground — that claim is unreachable, and it needs "
+      + "unreachable's citation. A reachability argument filed as no-loss is an insufficient dismissal.\n"
+      + "  known-issue           quote the brief's own line VERBATIM, inside quotes, at least a dozen "
+      + "characters of it.\n"
+      + "  immaterial-quantified write the literal token loss=<amount> <unit>, and compare it in the SAME "
+      + "units with a second number taken from this payload (\"... of ...\", \"... out of ...\", \"... vs "
+      + "...\"). A ratio of internal counters is not a loss amount.\n"
+      + "ADMITTED IS NOT DEPLOYED. A read of a live deployment, a deploy-time value, or \"as shipped today\", "
+      + "establishes the DEPLOYED state only — and every ground above asks what the code ADMITS. So a "
+      + "dismissal resting on deployed state closes NOTHING unless the SAME line also cites the validating "
+      + "line that rejects every OTHER admitted state. \"As deployed\" is not \"admitted\".\n";
+}
+
+// The opt-in, same INVERTED polarity as severity_rubric_enabled(): only the literal "1" opts in, so unset /
+// any other value is OFF and is the DEFAULT. This knob is INDEPENDENT of SEVERITY_RUBRIC and NOT a value mode
+// of it (issue #2245 iteration-3 STOP-1 decision 1): a `SEVERITY_RUBRIC=2` sub-mode would have to loosen
+// severity_rubric_enabled()'s `== "1"` test, which would silently disable the WHOLE rubric for an operator who
+// set `2` against an older checkout — and it would make the iteration-2 arm unreproducible byte-for-byte.
+// Two knobs, one delta per arm. It must also ride the driver's exec.env_passthrough, else getenv() reads the
+// SANITISED env and the contract is silently inert (the #1426/#2157 failure mode).
+fn ground_evidence_enabled() -> bool {
+    return getenv("GROUND_EVIDENCE") == "1";
+}
+
+// The contract as it enters the rubric directive: "" unless the knob opts in. It is concatenated INSIDE
+// severity_rubric_directive(), so it can only ever reach a rubric-ON cell — the contracts are defined against
+// the rubric's own ground list, and GROUND_EVIDENCE=1 with the rubric off is inert by construction (no block,
+// no marker, no sentinel, no shell layer).
+fn ground_evidence_directive() -> string {
+    if !ground_evidence_enabled() { return ""; }
+    return ground_evidence_block();
+}
+
+// The second RE-ASK sentence, gated on the SAME knob so the iteration-2 re-ask text is byte-identical with the
+// contract off. The driver names the failing ground as `<ground>: <what is missing>`, so this sentence only has
+// to say that such a line is insufficient too.
+fn ground_evidence_reask_clause() -> string {
+    if !ground_evidence_enabled() { return ""; }
+    return "A line whose ground id is sufficient but whose EVIDENCE does not meet that ground's contract above "
+      + "is insufficient in exactly the same way; where the list names a ground it also names what is missing "
+      + "from it, and repeating the line without that evidence answers nothing.\n";
 }
 
 // --- #2235 READ THE EXTERNAL PROTOCOL (PR B — opt-in, default OFF) -------------------------------------------
@@ -1274,6 +1366,15 @@ if index_of(instruction, operationalize_marker()) >= 0 {
 // an OFF cell prints no line at all.
 if index_of(instruction, severity_rubric_marker()) >= 0 {
     print("SEVERITY-RUBRIC|" + subsystem + "|" + cls + "|on");
+}
+
+// #2245 iteration 3: the GROUND-EVIDENCE sentinel, on the SAME honesty contract and for the same reason — it
+// is what makes run-discovery.sh's per-ground evidence contract INERT by construction whenever the second knob
+// is off: that layer reads this line and checks nothing without it. A rubric-ON / contract-OFF cell prints the
+// line above and not this one, which is exactly the iteration-2 arm. Carries no `CANDIDATE|` substring and is a
+// record BOUNDARY for _join_wrapped_candidates like every other diagnostic.
+if index_of(instruction, ground_evidence_marker()) >= 0 {
+    print("GROUND-EVIDENCE|" + subsystem + "|" + cls + "|on");
 }
 
 // #2235: the EXTERNAL-RESOLVE sentinel, on the same honesty contract — gated on the directive's own marker

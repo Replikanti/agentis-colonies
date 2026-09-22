@@ -16,6 +16,24 @@
 # `SEVERITY_RUBRIC=1` opts in; unset (the DEFAULT) leaves both agents' prompts and both drivers' behaviour
 # byte-identical to today. The knob is INDEPENDENT of OPERATIONALIZE_LENS (issue #2245 STOP-1 decision 3).
 #
+# ITERATION 3 — the per-ground EVIDENCE contract, behind its OWN knob `GROUND_EVIDENCE=1`. Iteration 2 measured
+# the next constraint exactly: the rubric works where it is applied honestly (the held-out row went 0/2 -> 2/2 on
+# the hunt side, 0/1 -> 1/2 on the gate side) and all three remaining losses have ONE shape — a SUFFICIENT
+# ground id attached to evidence that does not establish that ground's definition. The shipped gate checks the
+# ground ID; nothing checked the evidence. So iteration 3 adds a DETECTOR, not a second mechanism:
+#   * ONE shared per-ground contract string, byte-identical in both agents (part 3 diffs it), appended INSIDE
+#     the rubric directive — so it can only ever reach a rubric-ON cell, and `SEVERITY_RUBRIC=1` alone still
+#     renders exactly the iteration-2 prompt;
+#   * ONE shared decider, `_dismiss_evidence_ok`, byte-identical in both drivers (part 3 diffs it too): citation
+#     existence + a validating-line shape for `guard`/`unreachable`/`known-issue`, the literal `delta=0:` token
+#     for `no-loss`, a number plus a bound for `immaterial-quantified`, and the admitted-vs-deployed veto on all
+#     of them (mechanical checks only — issue #2245 iteration-3 STOP-1 decision 3);
+#   * a contract failure folds into the EXISTING insufficient path: same one bounded re-ask (now naming what is
+#     missing), same hunt-side promotion, same gate-side `REFUTED` + `rubric-insufficient: ` + sidecar row;
+#   * the TAINT rule (decision 2): a contract-FAILING sufficient line keeps its location open even when a
+#     sibling line passes. `severity_rubric_block()` stays FROZEN so the two arms stay comparable.
+# `GROUND_EVIDENCE` unset (the DEFAULT) leaves every prompt and both drivers byte-identical to iteration 2.
+#
 # The default is OFF on purpose and is NOT a defect this gate should "fix": #2191 shipped a mechanically perfect
 # lens that scored rare-recall delta=+0, and #2213 measured delta=+0 for an ungated prompt directive. Nothing
 # asserted here is a recall claim — recall is the operator's pre-registered measurement, not this file's job.
@@ -31,7 +49,9 @@
 #   3) ANTI-DRIFT — severity_rubric_marker() and severity_rubric_block() are BYTE-IDENTICAL between the two
 #      agents; _rubric_sufficient_grounds() is byte-identical between the two drivers; and every ground id the
 #      shells decide on appears in the prompt text the models are shown (a shell list that has drifted from the
-#      rubric would silently re-ask on a ground the model was never offered).
+#      rubric would silently re-ask on a ground the model was never offered). Iteration 3 adds the same discipline
+#      to its five agent helpers, to _dismiss_evidence_ok/_contract_requirement across the two drivers, to the
+#      FROZEN iteration-2 rubric string, and to the two literal contract tokens in BOTH directions.
 #   4) WIRING — both `exec.env_passthrough` registrations (the #1426 trap: getenv() reads the SANITISED env, so
 #      an unregistered knob is silently inert), the two new record boundaries in _join_wrapped_candidates, the
 #      new boundary in all three refute scrapers, and the token invariants (`DISMISS|`, `SEVERITY-RUBRIC|`,
@@ -206,6 +226,69 @@ case "$HUNTER_FLAT" in
   *) bad "the DISMISS| contract lost its 'never substitutes for a report' clause — it would become an escape hatch from reporting" ;;
 esac
 
+note "6.1) hunter.ag declares the five #2245 iteration-3 helpers ..."
+GE_FNS="ground_evidence_marker ground_evidence_block ground_evidence_enabled ground_evidence_directive ground_evidence_reask_clause"
+MISS=""
+for fn in $GE_FNS; do
+  grep -q "^fn $fn(" "$HUNTER" || MISS="$MISS $fn"
+done
+if [ -z "$MISS" ]; then
+  ok "all 5 marker/contract/toggle/directive/re-ask-clause helpers are declared in hunter.ag"
+else
+  bad "hunter.ag is missing #2245 iteration-3 helper(s):$MISS"
+fi
+
+note "6.2) the contract knob is INDEPENDENT and default-OFF, and its marker is the block's first line ..."
+if _agfn "$HUNTER" ground_evidence_enabled | grep -q 'getenv("GROUND_EVIDENCE") == "1"'; then
+  ok "ground_evidence_enabled() reads its OWN env var and is == \"1\" (unset / \"0\" / \"2\" are all OFF — the DEFAULT)"
+else
+  bad "ground_evidence_enabled() is not a default-OFF read of GROUND_EVIDENCE — a value sub-mode of SEVERITY_RUBRIC was explicitly rejected (it would make the iteration-2 arm unreproducible)"
+fi
+# The iteration-2 toggle must NOT have learned about the second knob: SEVERITY_RUBRIC=1 alone has to render
+# exactly what the iteration-2 arm was measured with.
+if _agfn "$HUNTER" severity_rubric_enabled | grep -q 'GROUND_EVIDENCE'; then
+  bad "severity_rubric_enabled() now consults GROUND_EVIDENCE — the two knobs must stay independent"
+else
+  ok "severity_rubric_enabled() is untouched — SEVERITY_RUBRIC=1 alone still renders the iteration-2 prompt"
+fi
+if _agfn "$HUNTER" ground_evidence_block | sed -n 2p | grep -q 'return ground_evidence_marker() +'; then
+  ok "ground_evidence_block() opens with ground_evidence_marker() — the sentinel greps a string that really renders"
+else
+  bad "ground_evidence_block() no longer opens with its marker — the honesty-gated sentinel would silently stop firing"
+fi
+if _agfn "$HUNTER" ground_evidence_directive | grep -q 'if !ground_evidence_enabled() { return ""; }' \
+   && _agfn "$HUNTER" ground_evidence_reask_clause | grep -q 'if !ground_evidence_enabled() { return ""; }'; then
+  ok "both the contract and the extra re-ask sentence are \"\" when the knob is off — concatenating them is a no-op"
+else
+  bad "the contract directive or the re-ask clause lost its \"\"-when-disabled early return — the iteration-2 prompt would change"
+fi
+
+note "6.3) the contract is spliced INSIDE the rubric directive, between the rubric and the emission contract ..."
+if _agfn "$HUNTER" severity_rubric_directive \
+   | grep -q 'return severity_rubric_block() + ground_evidence_directive() + dismiss_rule() + dismiss_reask_block();'; then
+  ok "severity_rubric_directive() reads rubric -> per-ground contract -> emission contract (and GROUND_EVIDENCE=1 with the rubric OFF is inert by construction: no block, no marker, no sentinel)"
+else
+  bad "the contract is not concatenated inside severity_rubric_directive() — it could reach a rubric-OFF cell, or not reach a rubric-ON one"
+fi
+if _agfn "$HUNTER" dismiss_reask_block | grep -q '+ ground_evidence_reask_clause()'; then
+  ok "dismiss_reask_block() carries the knob-gated second sentence (the iteration-2 re-ask text is byte-identical with the contract off)"
+else
+  bad "dismiss_reask_block() does not carry ground_evidence_reask_clause() — a contract failure could be re-asked without saying what is missing"
+fi
+
+note "6.4) the GROUND-EVIDENCE| sentinel is honesty-gated on the contract's own marker ..."
+if grep -q 'if index_of(instruction, ground_evidence_marker()) >= 0 {' "$HUNTER" \
+   && grep -q 'print("GROUND-EVIDENCE|" + subsystem + "|" + cls + "|on");' "$HUNTER"; then
+  ok "GROUND-EVIDENCE| is printed only when the contract is demonstrably IN the prompt about to be sent"
+else
+  bad "the GROUND-EVIDENCE| sentinel is missing or no longer gated on index_of(instruction, ground_evidence_marker())"
+fi
+if grep -A2 'print("GROUND-EVIDENCE|" + subsystem' "$HUNTER" | grep -q 'ground_evidence_enabled()'; then
+  bad "the GROUND-EVIDENCE| sentinel consults the toggle — it must be gated on the marker only (the honesty contract that makes the shell layer inert)"
+else
+  ok "the sentinel consults no toggle — a cell log cannot claim a contract that was not assembled"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # PART 2 — refuter.ag SOURCE-GUARD
 # ----------------------------------------------------------------------------------------------------------
@@ -277,6 +360,30 @@ else
   bad "refuter.ag's SEVERITY-RUBRIC| sentinel is missing or not gated on the assembled instruction"
 fi
 
+note "9.1) refuter.ag carries the SAME five iteration-3 helpers, the same splice and the same sentinel ..."
+MISS=""
+for fn in $GE_FNS; do
+  grep -q "^fn $fn(" "$REFUTER" || MISS="$MISS $fn"
+done
+if [ -n "$MISS" ]; then
+  bad "refuter.ag is missing #2245 iteration-3 helper(s):$MISS"
+elif _agfn "$REFUTER" severity_rubric_directive \
+     | grep -q 'return severity_rubric_block() + ground_evidence_directive() + ground_rule() + rubric_reask_block();'; then
+  ok "the gate side splices the contract in the same place, so it lands in BOTH judge modes (the directive is read by each)"
+else
+  bad "refuter.ag does not concatenate ground_evidence_directive() inside severity_rubric_directive()"
+fi
+if _agfn "$REFUTER" rubric_reask_block | grep -q '+ ground_evidence_reask_clause()'; then
+  ok "rubric_reask_block() carries the same knob-gated second sentence"
+else
+  bad "rubric_reask_block() does not carry ground_evidence_reask_clause()"
+fi
+if grep -q 'if index_of(instruction, ground_evidence_marker()) >= 0 { print("GROUND-EVIDENCE|refute|on"); }' "$REFUTER"; then
+  ok "the gate-side GROUND-EVIDENCE| sentinel is honesty-gated on the marker too, and is printed BEFORE the prompt() call"
+else
+  bad "refuter.ag's GROUND-EVIDENCE| sentinel is missing or not gated on the assembled instruction"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # PART 3 — ANTI-DRIFT: one rubric, one ground list, four copies that cannot diverge
 # ----------------------------------------------------------------------------------------------------------
@@ -337,6 +444,77 @@ case "$HUNTER_FLAT" in
     ok "the rubric states that a missing/unrecognised ground is insufficient — which is exactly what makes the sufficient list the shells' single decider" ;;
   *) bad "the rubric no longer states that a missing/unrecognised ground is insufficient (the shell has no second list to fall back on)" ;;
 esac
+
+note "11.1) the per-ground EVIDENCE contract is BYTE-IDENTICAL in both agents ..."
+for fn in $GE_FNS; do
+  _agfn "$HUNTER" "$fn"  > "$WORK/h-$fn.txt"
+  _agfn "$REFUTER" "$fn" > "$WORK/r-$fn.txt"
+  if [ ! -s "$WORK/h-$fn.txt" ] || [ ! -s "$WORK/r-$fn.txt" ]; then
+    bad "could not slice $fn() out of both agents"
+  elif cmp -s "$WORK/h-$fn.txt" "$WORK/r-$fn.txt"; then
+    ok "$fn() is byte-identical in both agents ($(wc -c < "$WORK/h-$fn.txt" | tr -d ' ') bytes)"
+  else
+    bad "$fn() has DRIFTED between hunter.ag and refuter.ag — the hunt side and the gate side would demand different evidence"
+    diff "$WORK/h-$fn.txt" "$WORK/r-$fn.txt" | head -6 | sed 's/^/      /' >&2
+  fi
+done
+sed 's/ADMITTED IS NOT DEPLOYED/ADMITTED IS DEPLOYED/' "$WORK/h-ground_evidence_block.txt" > "$WORK/mutated-contract.txt"
+if cmp -s "$WORK/h-ground_evidence_block.txt" "$WORK/mutated-contract.txt"; then
+  bad "the contract anti-drift comparison cannot detect a mutation — the guard is dead"
+else
+  ok "the contract anti-drift comparison fires on a mutation of the admitted-vs-deployed rule (negative control)"
+fi
+
+note "11.2) the iteration-2 rubric string is FROZEN — every new sentence lives in the new block ..."
+FROZEN_BAD=""
+for tok in 'delta=0:' 'loss=' 'ADMITTED IS NOT DEPLOYED' 'EVIDENCE CONTRACT PER GROUND'; do
+  grep -Fq "$tok" "$WORK/h-severity_rubric_block.txt" && FROZEN_BAD="$FROZEN_BAD [$tok]"
+done
+if [ -z "$FROZEN_BAD" ]; then
+  ok "severity_rubric_block() carries NONE of the iteration-3 contract tokens — the arm delta is entirely in the new block, so the two arms stay comparable"
+else
+  bad "an iteration-3 token leaked into the FROZEN iteration-2 rubric string:$FROZEN_BAD — the rubric arm would no longer be reproducible"
+fi
+
+note "11.3) the shell DECIDER and its requirement table are byte-identical in both drivers ..."
+for fn in _dismiss_evidence_ok _contract_requirement _ground_contract_armed; do
+  _shfn "$DISCOVERY" "$fn" > "$WORK/d-$fn.sh"
+  _shfn "$REFUTE"    "$fn" > "$WORK/r-$fn.sh"
+  if [ ! -s "$WORK/d-$fn.sh" ] || [ ! -s "$WORK/r-$fn.sh" ]; then
+    bad "could not slice $fn() out of both drivers"
+  elif cmp -s "$WORK/d-$fn.sh" "$WORK/r-$fn.sh"; then
+    ok "$fn() is byte-identical in run-discovery.sh and run-refute.sh — one decider, two decision points"
+  else
+    bad "$fn() has DRIFTED between the two drivers — one gate would accept evidence the other rejects"
+    diff "$WORK/d-$fn.sh" "$WORK/r-$fn.sh" | head -6 | sed 's/^/      /' >&2
+  fi
+done
+
+note "11.4) the shell requirement table and the agents' contract text cannot drift apart, in EITHER direction ..."
+CONTRACT_TXT="$WORK/contract-text.txt"
+{ _agfn "$HUNTER" ground_evidence_block; _agfn "$HUNTER" ground_evidence_reask_clause; } > "$CONTRACT_TXT"
+TOK_MISS=""
+for tok in 'delta=0:' 'loss='; do
+  grep -Fq "$tok" "$CONTRACT_TXT" || TOK_MISS="$TOK_MISS $tok(prompt)"
+  grep -Fq "$tok" "$WORK/d-_contract_requirement.sh" || TOK_MISS="$TOK_MISS $tok(shell)"
+done
+if [ -z "$TOK_MISS" ]; then
+  ok "the two literal tokens the decider greps for (delta=0:, loss=) appear VERBATIM in the prompt AND in the re-ask table — neither side can ask for what the other never defined"
+else
+  bad "a machine-checked token is missing from one side:$TOK_MISS"
+fi
+# Every contract id the decider can print must have a phrase in the table (an unknown id would be re-asked
+# with the generic fallback, i.e. with no requirement at all).
+ID_MISS=""
+for cid in cite-missing cite-unresolved cite-not-a-guard cite-not-validating no-zero-delta reachability-as-no-loss unquantified admitted-vs-deployed; do
+  grep -Fq "$cid" "$WORK/d-_dismiss_evidence_ok.sh" || ID_MISS="$ID_MISS $cid(decider)"
+  grep -Fq "$cid" "$WORK/d-_contract_requirement.sh" || ID_MISS="$ID_MISS $cid(table)"
+done
+if [ -z "$ID_MISS" ]; then
+  ok "all 8 contract ids are emitted by the decider AND carry a one-line requirement in the table"
+else
+  bad "a contract id is not decidable or has no requirement phrase:$ID_MISS"
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 # PART 4 — WIRING: registrations, boundaries, token invariants
@@ -447,6 +625,62 @@ else
   bad "a #2245 marker/attempt file ends in .log — it would be scraped as a second cell log by the dashboard and the readouts"
 fi
 
+note "15.1) GROUND_EVIDENCE rides BOTH exec.env_passthrough lines and BOTH cell env blocks (#1426) ..."
+GE_MISS=""
+case "$D_PASS" in *GROUND_EVIDENCE*) ;; *) GE_MISS="$GE_MISS passthrough(discovery)" ;; esac
+case "$R_PASS" in *GROUND_EVIDENCE*) ;; *) GE_MISS="$GE_MISS passthrough(refute)" ;; esac
+# shellcheck disable=SC2016  # the single quotes are deliberate: these greps match LITERAL source text
+grep -q 'GROUND_EVIDENCE="${GROUND_EVIDENCE:-}"' "$DISCOVERY" || GE_MISS="$GE_MISS env(discovery)"
+# shellcheck disable=SC2016  # the single quotes are deliberate: these greps match LITERAL source text
+grep -q 'GROUND_EVIDENCE="${GROUND_EVIDENCE:-}"' "$REFUTE" || GE_MISS="$GE_MISS env(refute)"
+if [ -z "$GE_MISS" ]; then
+  ok "the second knob is allowlisted AND exported on both sides — an unregistered knob would be SILENTLY INERT"
+else
+  bad "the GROUND_EVIDENCE wiring is incomplete (#1426):$GE_MISS"
+fi
+
+note "15.2) GROUND-EVIDENCE| is a record boundary in ALL FOUR scrapers ..."
+GB_MISS=""
+case "$BOUNDARY_LINE" in *'GROUND-EVIDENCE\|'*) ;; *) GB_MISS="$GB_MISS _join_wrapped_candidates" ;; esac
+_shfn "$REFUTE" _join_wrapped_verdict    | grep -q 'GROUND-EVIDENCE' || GB_MISS="$GB_MISS _join_wrapped_verdict"
+_shfn "$REFUTE" _join_wrapped_constraint | grep -q 'GROUND-EVIDENCE' || GB_MISS="$GB_MISS _join_wrapped_constraint"
+_shfn "$REFUTE" _join_wrapped_ground     | grep -q 'GROUND-EVIDENCE' || GB_MISS="$GB_MISS _join_wrapped_ground"
+if [ -z "$GB_MISS" ]; then
+  ok "the new sentinel closes an open record in the hunt scraper and in all three refute scrapers"
+else
+  bad "the GROUND-EVIDENCE| boundary is missing from:$GB_MISS"
+fi
+# Behavioural half, on the SHIPPED awk program: the sentinel must not be glued into a wrapped candidate.
+if [ -s "$JWC_AWK" ]; then
+  GE_WRAP_LOG="$WORK/wrapped-cell-ge.log"
+  {
+    printf 'SEVERITY-RUBRIC|vault|C25|on\n'
+    printf 'GROUND-EVIDENCE|vault|C25|on\n'
+    printf 'CANDIDATE|Vault.sol:exitPool:48|C25|Medium|the exit leg reverts on a zero-weight leg|deploy a pool\n'
+    printf '  stub, set the weight to zero, and assert the exit call reverts\n'
+    printf 'GROUND-EVIDENCE|vault|C25|on\n'
+    printf 'SAFE\n'
+  } > "$GE_WRAP_LOG"
+  GE_JOINED="$(awk -f "$JWC_AWK" "$GE_WRAP_LOG")"
+  if [ "$(printf '%s\n' "$GE_JOINED" | grep -c 'CANDIDATE|' || true)" = "1" ] \
+     && ! printf '%s\n' "$GE_JOINED" | grep -q 'GROUND-EVIDENCE|'; then
+    ok "a GROUND-EVIDENCE| line closes the open CANDIDATE record instead of being glued into its PoC sketch"
+  else
+    bad "the GROUND-EVIDENCE| boundary does not hold in the shipped awk program"
+  fi
+fi
+
+note "15.3) the new token carries neither CANDIDATE| nor VERDICT| ..."
+GE_TOK_BAD=""
+GE_TOK='GROUND-EVIDENCE|'
+case "$GE_TOK" in *'CANDIDATE|'*) GE_TOK_BAD="$GE_TOK_BAD $GE_TOK:CANDIDATE" ;; esac
+case "$GE_TOK" in *'VERDICT|'*) GE_TOK_BAD="$GE_TOK_BAD $GE_TOK:VERDICT" ;; esac
+if [ -z "$GE_TOK_BAD" ]; then
+  ok "GROUND-EVIDENCE| contains neither sentinel substring — neither of lib/run-agent-validated.sh's predicates can false-accept a cell on it"
+else
+  bad "the new token would false-accept a reply shape:$GE_TOK_BAD"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # PART 5 — OVERFITTING DENYLIST + SUBSTRATE PURITY
 # ----------------------------------------------------------------------------------------------------------
@@ -458,6 +692,11 @@ PROMPT_TXT="$WORK/prompt-text.txt"
   _agfn "$HUNTER" dismiss_reask_block
   _agfn "$REFUTER" ground_rule
   _agfn "$REFUTER" rubric_reask_block
+  # #2245 iteration 3: the per-ground contract and its re-ask sentence are prompt-visible text too, so they are
+  # judged by exactly the same denylist — the contract names path:line shapes and two literal tokens, never a
+  # protocol, a file, a unit or a corpus target.
+  _agfn "$HUNTER" ground_evidence_block
+  _agfn "$HUNTER" ground_evidence_reask_clause
 } > "$PROMPT_TXT"
 # The generic product denylist of demo-operationalize-lens.sh, plus the two corpus rules colony-lint already
 # enforces on every prompt-visible file (#2231/#2233): the literal `corpus-bench`, and a bare ground-truth
@@ -498,10 +737,14 @@ fi
 note "17) substrate purity (#1587): the new .ag code is builtins-only ..."
 PURE="$WORK/pure.txt"
 {
+  # The slice runs from the iteration-2 header to the next unrelated block, so it covers the iteration-3
+  # helpers too (they sit between the two).
   awk '/--- #2245 iteration 2: CONTEST-SEVERITY DISMISSAL RUBRIC/{f=1} f&&/^\/\/ --- #2235 READ THE EXTERNAL PROTOCOL/{exit} f{print}' "$HUNTER"
   awk '/--- #2245 iteration 2: CONTEST-SEVERITY DISMISSAL RUBRIC/{f=1} f&&/^\/\/ --- #1938 invariant-hunt judgment mode/{exit} f{print}' "$REFUTER"
 } | grep -v '^[[:space:]]*//' > "$PURE"
-if [ ! -s "$PURE" ]; then
+if ! grep -q 'ground_evidence_block' "$PURE"; then
+  bad "the substrate-purity slice does not cover the #2245 iteration-3 helpers (block moved?)"
+elif [ ! -s "$PURE" ]; then
   bad "could not slice the #2245 blocks out of the two agents (header comment renamed?)"
 elif grep -Eq 'exec sh|python3 -c|reduce\(|regex_' "$PURE"; then
   bad "the #2245 block introduced an embedded interpreter / regex / reduce (substrate-purity ratchet + per-element CB cost)"
@@ -519,6 +762,13 @@ GATE_FNS="$WORK/gate-fns.sh"
   _shfn "$DISCOVERY" _rubric_sufficient_grounds
   _shfn "$DISCOVERY" _dismiss_lines
   _shfn "$DISCOVERY" _dismiss_ground
+  # #2245 iteration 3: the contract layer, sliced from the SAME driver so the fixtures below exercise exactly
+  # what production runs — never a copy that could drift.
+  _shfn "$DISCOVERY" _ground_contract_armed
+  _shfn "$DISCOVERY" _dismiss_evidence_ok
+  _shfn "$DISCOVERY" _contract_requirement
+  _shfn "$DISCOVERY" _dismiss_contract_rows
+  _shfn "$DISCOVERY" _contract_failed_dismissals
   _shfn "$DISCOVERY" _insufficient_dismissal_rows
   _shfn "$DISCOVERY" _insufficient_dismissal_locs
   _shfn "$DISCOVERY" _rubric_dismissal_gap
@@ -536,7 +786,8 @@ GATE_FNS="$WORK/gate-fns.sh"
 } > "$GATE_FNS"
 GATE_LOADED=0
 if grep -q '^_rubric_dismissal_gap() {$' "$GATE_FNS" && grep -q '^_rubric_promote() {$' "$GATE_FNS" \
-   && grep -q '^_tier2_emit_loc() {$' "$GATE_FNS" && grep -q '^_rubric_reask_needed() {$' "$GATE_FNS"; then
+   && grep -q '^_tier2_emit_loc() {$' "$GATE_FNS" && grep -q '^_rubric_reask_needed() {$' "$GATE_FNS" \
+   && grep -q '^_dismiss_evidence_ok() {$' "$GATE_FNS" && grep -q '^_dismiss_contract_rows() {$' "$GATE_FNS"; then
   # shellcheck disable=SC1090  # sliced out of run-discovery.sh at runtime, by design
   . "$GATE_FNS"
   GATE_LOADED=1
@@ -728,6 +979,137 @@ contracts/Other.sol"
   else
     bad "the synthesised candidate has $PIPE_FIELDS fields, want 6"
   fi
+
+  # --- #2245 iteration 3: the PER-GROUND EVIDENCE CONTRACT, one fixture pair per branch ---------------------
+  # A tiny synthetic tree with KNOWN line numbers is the resolution root: the decider reads the cited range, so
+  # a fixture that did not really contain the text would prove nothing about the check.
+  CREPO="$WORK/contract-repo"; mkdir -p "$CREPO/src" "$CREPO/script"
+  {
+    printf 'pragma solidity ^0.8.20;\n'                       # 1
+    printf 'contract Guarded {\n'                             # 2
+    printf '    uint256 public cap;\n'                        # 3
+    printf '    function setCap(uint256 c) external {\n'       # 4
+    printf '        require(c > 0, "zero cap");\n'             # 5
+    printf '        cap = c;\n'                                # 6
+    printf '    }\n'                                           # 7
+    printf '    uint256 public total;\n'                       # 8
+  } > "$CREPO/src/Guarded.sol"
+  printf 'guarded.setCap(100);\n' > "$CREPO/script/Deploy.s.sol"
+  printf 'Known issues to exclude: "the fee split rounds down by one wei" is accepted by design.\n' \
+    > "$WORK/contract-brief.md"
+  CBRIEF="$WORK/contract-brief.md"
+
+  # _contract_case <label> <expected: PASS|<contract-id>> <dismiss-line>
+  _contract_case() {
+    _cc_label="$1"; _cc_want="$2"; _cc_line="$3"
+    if _cc_got="$(_dismiss_evidence_ok "$_cc_line" "$CREPO" "$CBRIEF")"; then _cc_got=PASS; fi
+    if [ "$_cc_got" = "$_cc_want" ]; then
+      ok "contract '$_cc_label' -> $_cc_got (as specified)"
+    else
+      bad "contract '$_cc_label' -> ${_cc_got:-<empty>} (want $_cc_want)"
+    fi
+  }
+
+  note "25.1) guard: an existing line that IS a check passes; a fabricated path and a non-check line do not ..."
+  _contract_case "guard, cited require"      PASS             'DISMISS|Guarded.sol:setCap|guard|src/Guarded.sol:5 rejects the zero value outright'
+  _contract_case "guard, path not in tree"   cite-unresolved  'DISMISS|Guarded.sol:setCap|guard|src/NotHere.sol:5 rejects it outright'
+  _contract_case "guard, line is not a check" cite-not-a-guard 'DISMISS|Guarded.sol:setCap|guard|src/Guarded.sol:8 shows the accounting'
+  _contract_case "guard, no citation at all" cite-missing     'DISMISS|Guarded.sol:setCap|guard|the owner-only modifier stops it'
+
+  note "25.2) unreachable: a validating setter line passes; a deployment script never does ..."
+  _contract_case "unreachable, setter require" PASS                'DISMISS|Guarded.sol:setCap|unreachable|src/Guarded.sol:4-5 validates the state away'
+  _contract_case "unreachable, deploy script"  cite-not-validating 'DISMISS|Guarded.sol:setCap|unreachable|script/Deploy.s.sol:1 sets it to a safe value'
+  _contract_case "unreachable, non-validating line" cite-not-validating 'DISMISS|Guarded.sol:setCap|unreachable|src/Guarded.sol:8 shows the total'
+  # This is DELIBERATELY the inverse of the #2225 configuration rule, which REQUIRES a deploy/test citation.
+  if _shfn "$DISCOVERY" _uncited_dismissal_lines | grep -q 'test|tests|script|scripts|deploy|docs'; then
+    ok "the #2225 rule (a configuration dismissal must cite what the repo SHIPS) is untouched — the two rules ask opposite questions on purpose"
+  else
+    bad "the #2225 configuration-citation rule changed — this iteration must not touch it"
+  fi
+
+  note "25.3) no-loss: a zero delta beside a path passes; a reachability argument and a missing delta do not ..."
+  _contract_case "no-loss, delta + path"     PASS                    'DISMISS|Guarded.sol:setCap|no-loss|src/Guarded.sol:6 delta=0:the recorded total'
+  _contract_case "no-loss, measured reachability wording" reachability-as-no-loss \
+    'DISMISS|Guarded.sol:setCap|no-loss|the percentage never sets the units, so that state does not occur; src/Guarded.sol:6 delta=0:the recorded total'
+  _contract_case "no-loss, no zero delta"    no-zero-delta           'DISMISS|Guarded.sol:setCap|no-loss|nothing is lost and nobody waits, see src/Guarded.sol:6'
+  _contract_case "no-loss, delta but no path" cite-missing           'DISMISS|Guarded.sol:setCap|no-loss|delta=0:the recorded total'
+
+  note "25.4) ADMITTED IS NOT DEPLOYED: deployed-state evidence closes nothing without a validating citation ..."
+  _contract_case "no-loss resting on a deployed read" admitted-vs-deployed \
+    'DISMISS|Guarded.sol:setCap|no-loss|ONCHAIN @block 1234 every shipped market pairs correctly, delta=0:the recorded total in src/Guarded.sol:6'
+  _contract_case "the same plus a validating citation" PASS \
+    'DISMISS|Guarded.sol:setCap|no-loss|ONCHAIN @block 1234 as deployed, and src/Guarded.sol:5 rejects every other admitted value, delta=0:the recorded total'
+  _contract_case "a deployed read whose only citation is the deploy script" admitted-vs-deployed \
+    'DISMISS|Guarded.sol:setCap|no-loss|as deployed, script/Deploy.s.sol:1 sets it, delta=0:the recorded total'
+
+  note "25.5) immaterial-quantified: a loss amount with a bound passes; a bare ratio does not ..."
+  _contract_case "loss + bound"        PASS          'DISMISS|Guarded.sol:setCap|immaterial-quantified|loss=3 units out of 1000000 units minted'
+  _contract_case "a ratio of counters" unquantified  'DISMISS|Guarded.sol:setCap|immaterial-quantified|a vanishing fraction of the recorded counters'
+  _contract_case "an amount with no bound" unquantified 'DISMISS|Guarded.sol:setCap|immaterial-quantified|loss=3 units, which is negligible'
+
+  note "25.6) known-issue: a quoted line that is in the brief passes; one that is not does not ..."
+  _contract_case "quotes a brief line"      PASS            'DISMISS|Guarded.sol:setCap|known-issue|the brief lists "the fee split rounds down by one wei"'
+  _contract_case "quotes something else"    cite-unresolved 'DISMISS|Guarded.sol:setCap|known-issue|the brief lists "an entirely different accepted behaviour"'
+  _contract_case "no quoted fragment"       cite-missing    'DISMISS|Guarded.sol:setCap|known-issue|the brief already lists it'
+
+  note "25.7) an INSUFFICIENT ground id is not this decider's business, and an empty root is shape-only ..."
+  _contract_case "an insufficient id passes the contract (the id check already rejected it)" PASS \
+    'DISMISS|Guarded.sol:setCap|no-attacker|nobody profits'
+  if _so_got="$(_dismiss_evidence_ok 'DISMISS|Guarded.sol:setCap|guard|src/Unknowable.sol:5 rejects it' "" "")"; then _so_got=PASS; fi
+  if [ "$_so_got" = PASS ]; then
+    ok "with no resolution root the check is citation-SHAPE only — documented behaviour, exactly like _uncited_dismissal_lines's empty repo_dir, never a false failure"
+  else
+    bad "the shape-only degradation is broken (got '$_so_got') — a run with a non-repo code dir would fail every citation"
+  fi
+
+  note "25.8) THE TAINT RULE: a contract-failing line keeps its location open even beside a passing sibling ..."
+  CSENT="$SENT
+GROUND-EVIDENCE|vault|C25|on"
+  TAINT_LOG="$(_cl "taint" "$CSENT" \
+      "DISMISS|Guarded.sol:accrue|no-loss|the emission is absorbed by the next depositor, see src/Guarded.sol:6" \
+      "DISMISS|Guarded.sol:accrue|immaterial-quantified|loss=2 units out of 1000000 units minted" "SAFE")"
+  TAINT_GAP="$(_rubric_dismissal_gap "$TAINT_LOG" "$CREPO" "$CBRIEF")"
+  TAINT_ROWS="$(_dismiss_contract_rows "$TAINT_LOG" "$CREPO" "$CBRIEF")"
+  if [ "$TAINT_GAP" = "1" ] && [ "$(printf '%s\n' "$TAINT_ROWS" | awk -F'\t' 'NR==1{print $3}')" = "no-zero-delta" ]; then
+    ok "the location stays OPEN on the failing no-loss line although its immaterial-quantified sibling PASSES the form check (the one recall-for-precision trade of this iteration)"
+  else
+    bad "the taint rule does not hold (gap=$TAINT_GAP rows='$TAINT_ROWS')"
+  fi
+  # ... and the RE-ASK names the ground AND what is missing from it, from the single shell table.
+  TAINT_OPEN="$(_rubric_open_grounds "$TAINT_LOG" "$CREPO" "$CBRIEF")"
+  case "$TAINT_OPEN" in
+    *'Guarded.sol:accrue (no-loss: write the literal token delta=0:'*)
+      ok "the re-ask names '<location> (<ground>: <requirement>)' with the phrase from _contract_requirement" ;;
+    *) bad "the contract re-ask addressing is wrong: '$TAINT_OPEN'" ;;
+  esac
+  # NEGATIVE CONTROL: the same location with only the PASSING sibling is CLOSED.
+  PASSONLY_LOG="$(_cl "passonly" "$CSENT" \
+      "DISMISS|Guarded.sol:accrue|immaterial-quantified|loss=2 units out of 1000000 units minted" "SAFE")"
+  if [ "$(_rubric_dismissal_gap "$PASSONLY_LOG" "$CREPO" "$CBRIEF")" = "0" ] \
+     && [ "$(_contract_failed_dismissals "$PASSONLY_LOG" "$CREPO" "$CBRIEF")" = "0" ]; then
+    ok "a dismissal whose sufficient ground MEETS its contract still closes its location, and counts no contract failure (negative control)"
+  else
+    bad "a contract-passing dismissal no longer closes its location — the gate would re-ask everything"
+  fi
+
+  note "25.9) INERTNESS: without the GROUND-EVIDENCE| sentinel the same logs decide exactly as iteration 2 ..."
+  IT2_LOG="$(_cl "taint-it2" "$SENT" \
+      "DISMISS|Guarded.sol:accrue|no-loss|the emission is absorbed by the next depositor, see src/Guarded.sol:6" \
+      "DISMISS|Guarded.sol:accrue|immaterial-quantified|loss=2 units out of 1000000 units minted" "SAFE")"
+  if [ "$(_rubric_dismissal_gap "$IT2_LOG" "$CREPO" "$CBRIEF")" = "0" ] \
+     && [ -z "$(_dismiss_contract_rows "$IT2_LOG" "$CREPO" "$CBRIEF")" ] \
+     && ! _rubric_reask_needed "$IT2_LOG" "$CREPO" "$CBRIEF"; then
+    ok "no GROUND-EVIDENCE| sentinel => no contract check anywhere => the sufficient ground closes the location, exactly as the measured iteration-2 arm decided it"
+  else
+    bad "the contract layer is NOT inert without its sentinel — the iteration-2 arm would not be reproducible"
+  fi
+  NOSENT_LOG="$(_cl "ge-nosent" "GROUND-EVIDENCE|vault|C25|on" \
+      "DISMISS|Guarded.sol:accrue|no-loss|the emission is absorbed by the next depositor" "SAFE")"
+  if [ "$(_rubric_dismissal_gap "$NOSENT_LOG" "$CREPO" "$CBRIEF")" = "0" ]; then
+    ok "the contract sentinel ALONE (no SEVERITY-RUBRIC| line) decides nothing either — the rubric gate is still the outer gate"
+  else
+    bad "a log with only the contract sentinel produced a shortfall — the two gates are not nested"
+  fi
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -747,6 +1129,9 @@ case "${1:-}" in
     if [ "${SEVERITY_RUBRIC:-}" = "1" ]; then
       printf 'SEVERITY-RUBRIC|%s|%s|on\n' "${SUBSYSTEM:-}" "${HUNT_CLASS:-}"
     fi
+    if [ "${GROUND_EVIDENCE:-}" = "1" ]; then
+      printf 'GROUND-EVIDENCE|%s|%s|on\n' "${SUBSYSTEM:-}" "${HUNT_CLASS:-}"
+    fi
     if [ -n "${DISMISS_REASK_GROUNDS:-}" ]; then
       # The RE-ASK turn. Record what the driver named, so the caller can assert the addressing reached the cell.
       [ -n "${STUB_REASK_LOG:-}" ] && printf '%s\n' "$DISMISS_REASK_GROUNDS" >> "$STUB_REASK_LOG"
@@ -754,6 +1139,7 @@ case "${1:-}" in
       # arm stays unresolvable across both turns instead of silently becoming promotable.
       case "${STUB_REASK:-hold}" in
         comply)  printf 'DISMISS|%s|guard|PlainCounter.sol:12 rejects it outright\n' "${STUB_LOC:-PlainCounter.sol:increment}" ;;
+        holdcontract) printf 'DISMISS|%s|no-loss|nothing is lost and nobody waits on the documented path\n' "${STUB_LOC:-PlainCounter.sol:increment}" ;;
         candidate) printf 'CANDIDATE|PlainCounter.sol:increment:12|%s|Medium|the documented path reverts under an admitted cap|set the cap to zero and assert the revert\n' "${HUNT_CLASS:-}"; printf 'SAFE\n'; exit 0 ;;
         *)       printf 'DISMISS|%s|no-attacker|nobody profits from the reverted call\n' "${STUB_LOC:-PlainCounter.sol:increment}" ;;
       esac
@@ -763,6 +1149,8 @@ case "${1:-}" in
     case "${STUB_MODE:-insufficient}" in
       sufficient) printf 'DISMISS|PlainCounter.sol:increment|guard|PlainCounter.sol:12 rejects it outright\n' ;;
       unresolvable) printf 'DISMISS|Elsewhere.sol:mystery|no-attacker|nobody profits from the reverted call\n' ;;
+      contractfail) printf 'DISMISS|PlainCounter.sol:increment|no-loss|nothing is lost and nobody waits on the documented path\n' ;;
+      contractpass) printf 'DISMISS|PlainCounter.sol:increment|no-loss|contracts/PlainCounter.sol:12 delta=0:the recorded count\n' ;;
       nodismiss) : ;;
       *) printf 'DISMISS|PlainCounter.sol:increment|no-attacker|nobody profits from the reverted call\n' ;;
     esac
@@ -883,6 +1271,57 @@ else
   bad "the gate counted a shortfall on a log with no sentinel — it is keyed on the wrong signal"
 fi
 
+note "30.1) end-to-end: a SUFFICIENT ground whose EVIDENCE fails its contract is re-asked and then PROMOTED ..."
+STUB_REASK_LOG="$WORK/ge-reask-addr.txt"; export STUB_REASK_LOG
+SEVERITY_RUBRIC=1 GROUND_EVIDENCE=1 STUB_MODE=contractfail STUB_REASK=holdcontract _hunt gefail > "$WORK/gefail.dir"
+GFDIR="$(cat "$WORK/gefail.dir")"
+if [ -f "$GFDIR/$HCELL.rubric-attempt-1" ] && [ -s "$GFDIR/$HCELL.rubric-promoted" ]; then
+  ok "a dismissal the ID check ACCEPTS (no-loss is on the sufficient list) but the CONTRACT rejects is re-asked once and, when it holds, promoted — the same path, no second mechanism"
+else
+  bad "the contract end-to-end re-ask/promotion did not happen (attempt-1=$( [ -f "$GFDIR/$HCELL.rubric-attempt-1" ] && echo yes || echo no ), sidecar=$( [ -s "$GFDIR/$HCELL.rubric-promoted" ] && echo yes || echo no ))"
+  tail -12 "$WORK/gefail.out" | sed 's/^/      /' >&2
+fi
+if grep -q 'no-loss: write the literal token delta=0:' "$WORK/ge-reask-addr.txt" 2>/dev/null; then
+  ok "the re-ask reached the cell naming the ground AND what its contract is missing"
+else
+  bad "the contract re-ask addressing never reached the cell: '$(cat "$WORK/ge-reask-addr.txt" 2>/dev/null)'"
+fi
+GFJSON="$GFDIR/discovery-results.json"
+GF_MISS=""
+for k in '"insufficient_dismissals":1' '"rubric_promoted":1' '"contract_failed_dismissals":1'; do
+  grep -q "$k" "$GFJSON" || GF_MISS="$GF_MISS $k"
+done
+if [ -z "$GF_MISS" ]; then
+  ok "the cell JSON carries the new additive key beside the iteration-2 ones (contract_failed_dismissals — the arm's anti-Goodhart readout)"
+else
+  bad "an additive per-cell key is missing or wrong:$GF_MISS"
+fi
+
+note "30.2) CONTROL: the same ground with contract-MEETING evidence is never re-asked ..."
+SEVERITY_RUBRIC=1 GROUND_EVIDENCE=1 STUB_MODE=contractpass _hunt gepass > "$WORK/gepass.dir"
+GPDIR="$(cat "$WORK/gepass.dir")"
+if [ ! -f "$GPDIR/$HCELL.rubric-attempt-1" ] && [ ! -s "$GPDIR/$HCELL.rubric-promoted" ] \
+   && ! grep -q 'contract_failed_dismissals\|insufficient_dismissals' "$GPDIR/discovery-results.json"; then
+  ok "a zero delta beside a path closes the location: no re-ask, no promotion, no contract key (the contract is a floor on FORM — it costs nothing when the form is met)"
+else
+  bad "a contract-PASSING dismissal still triggered the gate"
+fi
+
+note "30.3) ITERATION-2 REPRODUCTION: SEVERITY_RUBRIC=1 ALONE leaves the contract-failing cell untouched ..."
+SEVERITY_RUBRIC=1 STUB_MODE=contractfail STUB_REASK=holdcontract _hunt ge-it2 > "$WORK/ge-it2.dir"
+GIDIR="$(cat "$WORK/ge-it2.dir")"
+GI_OK=1
+grep -q 'GROUND-EVIDENCE|' "$GIDIR/$HCELL" && GI_OK=0
+[ -f "$GIDIR/$HCELL.rubric-attempt-1" ] && GI_OK=0
+[ -e "$GIDIR/$HCELL.rubric-promoted" ] && GI_OK=0
+grep -q 'contract_failed_dismissals\|insufficient_dismissals\|rubric_promoted' "$GIDIR/discovery-results.json" && GI_OK=0
+grep -q 'SEVERITY-RUBRIC|' "$GIDIR/$HCELL" || GI_OK=0
+if [ "$GI_OK" -eq 1 ]; then
+  ok "the rubric sentinel fires and the contract one does not: the very dismissal iteration 3 catches is closed on its ground id, exactly as the measured iteration-2 arm closed it (the arm stays reproducible)"
+else
+  bad "SEVERITY_RUBRIC=1 alone did NOT reproduce the iteration-2 behaviour — the two arms would not be comparable"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # PART 8 — THE REFUTE GATE END-TO-END through run-refute.sh (offline --agentis stub, no LLM)
 # ----------------------------------------------------------------------------------------------------------
@@ -895,6 +1334,7 @@ case "${1:-}" in
   go)
     fn="${CAND_FILE_FN:-}"; cls="${CAND_CLASS:-}"
     if [ "${SEVERITY_RUBRIC:-}" = "1" ]; then printf 'SEVERITY-RUBRIC|refute|on\n'; fi
+    if [ "${GROUND_EVIDENCE:-}" = "1" ]; then printf 'GROUND-EVIDENCE|refute|on\n'; fi
     if [ -n "${RUBRIC_REASK_GROUNDS:-}" ]; then
       [ -n "${STUB_REASK_LOG:-}" ] && printf '%s\n' "$RUBRIC_REASK_GROUNDS" >> "$STUB_REASK_LOG"
       case "${STUB_REASK:-hold}" in
@@ -906,6 +1346,10 @@ case "${1:-}" in
           printf 'REFUTE-GROUND|guard|Pool.sol:31 rejects the state outright\n'
           printf 'CONSTRAINT|%s|a claim must name the state the code admits\n' "$cls"
           printf 'VERDICT|REFUTED|%s|%s|the guard at Pool.sol:31 stops it\n' "$fn" "$cls" ;;
+        holdcontract)
+          printf 'REFUTE-GROUND|no-loss|the allocation never empties the pool, so that state does not occur; pool.sol:1 delta=0:the pool units\n'
+          printf 'CONSTRAINT|%s|a claim must name the state the code admits\n' "$cls"
+          printf 'VERDICT|REFUTED|%s|%s|with the pool populated the documented call succeeds\n' "$fn" "$cls" ;;
         *)
           printf 'REFUTE-GROUND|no-attacker|no unprivileged caller gains anything\n'
           printf 'CONSTRAINT|%s|a claim must name the unprivileged trigger\n' "$cls"
@@ -926,6 +1370,14 @@ case "${1:-}" in
         printf 'VERDICT|REFUTED|%s|%s|owner-only intentional guard, nobody profits\n' "$fn" "$cls" ;;
       real)
         printf 'VERDICT|REAL|%s|%s|no guard stops the unprivileged caller\n' "$fn" "$cls" ;;
+      contractfail)
+        printf 'REFUTE-GROUND|no-loss|the allocation never empties the pool, so that state does not occur; pool.sol:1 delta=0:the pool units\n'
+        printf 'CONSTRAINT|%s|a claim must name the state the code admits\n' "$cls"
+        printf 'VERDICT|REFUTED|%s|%s|with the pool populated the documented call succeeds\n' "$fn" "$cls" ;;
+      contractpass)
+        printf 'REFUTE-GROUND|no-loss|pool.sol:1 delta=0:the pool units, which the documented call leaves untouched\n'
+        printf 'CONSTRAINT|%s|a claim must name the state the code admits\n' "$cls"
+        printf 'VERDICT|REFUTED|%s|%s|the documented call leaves the accounting untouched\n' "$fn" "$cls" ;;
       *)
         printf 'REFUTE-GROUND|no-attacker|no unprivileged caller gains anything\n'
         printf 'CONSTRAINT|%s|a claim must name the unprivileged trigger\n' "$cls"
@@ -1009,10 +1461,13 @@ esac
 if [ -s "$RH/rubric-dismissals.tsv" ]; then
   RHF="$(awk -F'\t' 'NR==1{print NF}' "$RH/rubric-dismissals.tsv")"
   RHG="$(awk -F'\t' 'NR==1{print $3}' "$RH/rubric-dismissals.tsv")"
-  if [ "$RHF" = "4" ] && [ "$RHG" = "no-attacker" ]; then
-    ok "one sidecar row with the pinned 4 columns <class>/<file:fn>/<ground-id>/<reason>, naming the held ground"
+  # #2245 iteration 3 appended a FIFTH column, <contract-id>, EMPTY when the ground ID itself was insufficient
+  # (which is this case) — an additive change to an operator-only artefact with one consumer, this file.
+  RHC="$(awk -F'\t' 'NR==1{print $5}' "$RH/rubric-dismissals.tsv")"
+  if [ "$RHF" = "5" ] && [ "$RHG" = "no-attacker" ] && [ -z "$RHC" ]; then
+    ok "one sidecar row with the pinned 5 columns <class>/<file:fn>/<ground-id>/<reason>/<contract-id>, naming the held ground, with an EMPTY contract id (the id itself was insufficient — nothing to check)"
   else
-    bad "the sidecar row shape is wrong (fields=$RHF ground=$RHG)"
+    bad "the sidecar row shape is wrong (fields=$RHF ground=$RHG contract='$RHC')"
   fi
 else
   bad "no rubric-dismissals.tsv row for a held insufficient ground — the NO-GO would be invisible"
@@ -1083,6 +1538,71 @@ else
   tail -8 "$WORK/r-off.rout" | sed 's/^/      /' >&2
 fi
 
+note "36.1) end-to-end: a REFUTED verdict whose SUFFICIENT ground fails its contract is re-asked, and a held one keeps REFUTED ..."
+STUB_REASK_LOG="$WORK/r-ge-addr.txt"; export STUB_REASK_LOG
+SEVERITY_RUBRIC=1 GROUND_EVIDENCE=1 STUB_MODE=contractfail STUB_REASK=holdcontract _refute r-gefail > "$WORK/r-gefail.dir"
+RGF="$(cat "$WORK/r-gefail.dir")"
+if [ -f "$RGF/run/refute_Pool_sol_exitPool_rubric1.log" ] && [ "$(_verdict_of "$RGF")" = "REFUTED" ]; then
+  ok "the measured loss shape — a reachability argument filed under the SUFFICIENT ground no-loss — now buys one more hostile read, and the verdict column still reads exactly REFUTED"
+else
+  bad "the refute contract gate did not fire (re-ask=$( [ -f "$RGF/run/refute_Pool_sol_exitPool_rubric1.log" ] && echo yes || echo no ), verdict=$(_verdict_of "$RGF"))"
+  tail -10 "$WORK/r-gefail.rout" | sed 's/^/      /' >&2
+fi
+case "$(_reason_of "$RGF")" in
+  'rubric-insufficient: '*) ok "the held contract failure is legible in the report row itself (same prefix as a held insufficient id — one outcome vocabulary, not two)" ;;
+  *) bad "the held contract failure is not prefixed: '$(_reason_of "$RGF")'" ;;
+esac
+if [ -s "$RGF/rubric-dismissals.tsv" ]; then
+  RGF_G="$(awk -F'\t' 'NR==1{print $3}' "$RGF/rubric-dismissals.tsv")"
+  RGF_C="$(awk -F'\t' 'NR==1{print $5}' "$RGF/rubric-dismissals.tsv")"
+  if [ "$RGF_G" = "no-loss" ] && [ "$RGF_C" = "reachability-as-no-loss" ]; then
+    ok "the sidecar names BOTH the accepted ground id and the contract it failed (ground=$RGF_G contract=$RGF_C) — which is what makes the arm readable per contract id"
+  else
+    bad "the sidecar row does not carry the contract id (ground='$RGF_G' contract='$RGF_C')"
+  fi
+else
+  bad "no rubric-dismissals.tsv row for a held contract failure"
+fi
+if grep -q 'no-loss: a "that state never occurs" argument' "$WORK/r-ge-addr.txt" 2>/dev/null; then
+  ok "RUBRIC_REASK_GROUNDS reached the refuter naming the ground AND its missing evidence"
+else
+  bad "the refute contract re-ask addressing never reached the agent: '$(cat "$WORK/r-ge-addr.txt" 2>/dev/null)'"
+fi
+
+note "36.2) CONTROL: a contract-MEETING no-loss verdict is not re-asked and writes no sidecar ..."
+SEVERITY_RUBRIC=1 GROUND_EVIDENCE=1 STUB_MODE=contractpass _refute r-gepass > "$WORK/r-gepass.dir"
+RGP="$(cat "$WORK/r-gepass.dir")"
+if [ ! -f "$RGP/run/refute_Pool_sol_exitPool_rubric1.log" ] && [ ! -e "$RGP/rubric-dismissals.tsv" ] \
+   && [ "$(_verdict_of "$RGP")" = "REFUTED" ]; then
+  ok "a zero delta beside a path costs no extra call and keeps the refutation exactly as it was"
+else
+  bad "a contract-PASSING refutation was still re-asked or side-filed (verdict=$(_verdict_of "$RGP"))"
+fi
+
+note "36.3) a contract re-ask that answers REAL recovers the candidate and teaches nothing forward ..."
+SEVERITY_RUBRIC=1 GROUND_EVIDENCE=1 STUB_MODE=contractfail STUB_REASK=real _refute r-gereal > "$WORK/r-gereal.dir"
+RGR="$(cat "$WORK/r-gereal.dir")"
+if [ "$(_verdict_of "$RGR")" = "REAL" ] && [ ! -s "$RGR/refute-constraints.tsv" ] && [ ! -e "$RGR/rubric-dismissals.tsv" ]; then
+  ok "the gate's OWN second read overturned the first (no mechanical flip anywhere), and the overturned standard is not taught forward as a constraint"
+else
+  bad "the contract recovery path is wrong (verdict=$(_verdict_of "$RGR"))"
+fi
+
+note "36.4) ITERATION-2 REPRODUCTION on the gate side: SEVERITY_RUBRIC=1 alone leaves the same verdict alone ..."
+SEVERITY_RUBRIC=1 STUB_MODE=contractfail STUB_REASK=holdcontract _refute r-ge-it2 > "$WORK/r-ge-it2.dir"
+RGI="$(cat "$WORK/r-ge-it2.dir")"
+RGI_OK=1
+grep -q 'GROUND-EVIDENCE|' "$RGI/run/refute_Pool_sol_exitPool.log" 2>/dev/null && RGI_OK=0
+[ -f "$RGI/run/refute_Pool_sol_exitPool_rubric1.log" ] && RGI_OK=0
+[ -e "$RGI/rubric-dismissals.tsv" ] && RGI_OK=0
+[ "$(_verdict_of "$RGI")" = "REFUTED" ] || RGI_OK=0
+case "$(_reason_of "$RGI")" in 'rubric-insufficient: '*) RGI_OK=0 ;; esac
+if [ "$RGI_OK" -eq 1 ]; then
+  ok "the exact verdict iteration 3 catches is accepted on its ground id alone, with no extra call and no sidecar — the iteration-2 arm reproduces byte-for-byte"
+else
+  bad "SEVERITY_RUBRIC=1 alone did NOT reproduce the iteration-2 gate behaviour"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # PART 9 — verify-findings.sh IS UNTOUCHED
 # ----------------------------------------------------------------------------------------------------------
@@ -1136,6 +1656,7 @@ else
   }
   M_ON="$(SEVERITY_RUBRIC=1 _mock mock-on)"
   M_OFF="$(_mock mock-off)"
+  M_BOTH="$(SEVERITY_RUBRIC=1 GROUND_EVIDENCE=1 _mock mock-both)"
   if [ ! -f "$M_ON" ] || [ ! -f "$M_OFF" ]; then
     bad "the mock hunt cells produced no cell log (run-discovery.sh did not reach hunter.ag)"
     tail -5 "$WORK/mock-on.out" 2>/dev/null | sed 's/^/      /' >&2
@@ -1150,12 +1671,30 @@ else
     else
       ok "default (env unset): NO SEVERITY-RUBRIC| sentinel — the rubric is opt-in and the prompt is unchanged"
     fi
+    # #2245 iteration 3: the DISCRIMINATING live check — the two knobs must be separately observable, because
+    # that separation is what makes the two arms comparable.
+    if grep -q 'GROUND-EVIDENCE|' "$M_ON"; then
+      bad "SEVERITY_RUBRIC=1 alone printed a GROUND-EVIDENCE| sentinel — the iteration-2 arm would carry the iteration-3 contract"
+    else
+      ok "SEVERITY_RUBRIC=1 alone: the rubric sentinel fires and the contract sentinel does NOT (the iteration-2 arm, end-to-end)"
+    fi
+    if [ -f "$M_BOTH" ] && grep -q '^SEVERITY-RUBRIC|counter|C25|on$' "$M_BOTH" \
+       && grep -q '^GROUND-EVIDENCE|counter|C25|on$' "$M_BOTH"; then
+      ok "both knobs: BOTH sentinels fire end-to-end (run-discovery.sh -> env_passthrough -> hunter.ag getenv -> index_of(instruction, marker)) — the iteration-3 arm"
+    else
+      bad "SEVERITY_RUBRIC=1 GROUND_EVIDENCE=1: the contract sentinel did not fire — the second opt-in does not reach hunter.ag (env_passthrough gap?)"
+    fi
+    if grep -q 'GROUND-EVIDENCE|' "$M_OFF"; then
+      bad "default (env unset): a GROUND-EVIDENCE| sentinel appeared — the contract is NOT default-OFF"
+    else
+      ok "default (env unset): neither sentinel — the pre-#2245 prompt is reproduced"
+    fi
   fi
 
   note "39) byte-identity probe: the directive is EXACTLY 0 bytes when the knob is unset ..."
   FRAG="$WORK/rubric.frag"; : > "$FRAG"
   FRAG_MISS=""
-  for fn in $HUNT_FNS; do
+  for fn in $HUNT_FNS $GE_FNS; do
     _agfn "$HUNTER" "$fn" >> "$FRAG"
     printf '\n' >> "$FRAG"
     grep -q "^fn $fn(" "$FRAG" || FRAG_MISS="$FRAG_MISS $fn"
@@ -1165,27 +1704,32 @@ else
   else
     SB="$WORK/probe"; mkdir -p "$SB"
     ( cd "$SB" && agentis init >/dev/null 2>&1 ) || true
-    printf 'exec.env_passthrough = SEVERITY_RUBRIC,DISMISS_REASK_GROUNDS\n' > "$SB/.agentis/config"
+    printf 'exec.env_passthrough = SEVERITY_RUBRIC,DISMISS_REASK_GROUNDS,GROUND_EVIDENCE\n' > "$SB/.agentis/config"
     {
       printf 'cb 300000;\n\n'
       cat "$FRAG"
       printf 'print("BLOCKLEN=" + to_string(len(severity_rubric_block()) + len(dismiss_rule())));\n'
+      printf 'print("CONTRACTLEN=" + to_string(len(ground_evidence_block())));\n'
       printf 'print("DIRLEN=" + to_string(len(severity_rubric_directive())));\n'
     } > "$SB/probe.ag"
     # _dirlen <knob-value|""> [reask-grounds]: the toggle-gated directive length. An empty first argument runs
     # with SEVERITY_RUBRIC UNSET; the optional second sets DISMISS_REASK_GROUNDS, which is how the re-ask block
     # is measured — and how the knob-OFF byte-identity contract is proven to survive a populated env.
+    # The third argument is #2245 iteration 3's GROUND_EVIDENCE (empty = unset), so the same probe measures both
+    # knobs and every combination of them.
     _dirlen() {
-      _dl_g="${2:-}"
+      _dl_g="${2:-}"; _dl_c="${3:-}"
       if [ -n "$1" ]; then
-        _dl="$( cd "$SB" && SEVERITY_RUBRIC="$1" DISMISS_REASK_GROUNDS="$_dl_g" agentis go probe.ag 2>&1 | grep '^DIRLEN=' | tail -1 )"  # no-pii: the probe never calls prompt() — it prints two string lengths
+        _dl="$( cd "$SB" && SEVERITY_RUBRIC="$1" DISMISS_REASK_GROUNDS="$_dl_g" GROUND_EVIDENCE="$_dl_c" agentis go probe.ag 2>&1 | grep '^DIRLEN=' | tail -1 )"  # no-pii: the probe never calls prompt() — it prints two string lengths
       else
-        _dl="$( cd "$SB" && DISMISS_REASK_GROUNDS="$_dl_g" agentis go probe.ag 2>&1 | grep '^DIRLEN=' | tail -1 )"  # no-pii: length-only probe, no prompt()
+        _dl="$( cd "$SB" && DISMISS_REASK_GROUNDS="$_dl_g" GROUND_EVIDENCE="$_dl_c" agentis go probe.ag 2>&1 | grep '^DIRLEN=' | tail -1 )"  # no-pii: length-only probe, no prompt()
       fi
       printf '%s\n' "${_dl#DIRLEN=}"
     }
     BLOCK_LEN="$( cd "$SB" && agentis go probe.ag 2>&1 | grep '^BLOCKLEN=' | tail -1 )"  # no-pii: length-only probe, no prompt()
     BLOCK_LEN="${BLOCK_LEN#BLOCKLEN=}"
+    CONTRACT_LEN="$( cd "$SB" && agentis go probe.ag 2>&1 | grep '^CONTRACTLEN=' | tail -1 )"  # no-pii: length-only probe, no prompt()
+    CONTRACT_LEN="${CONTRACT_LEN#CONTRACTLEN=}"
     DIR_UNSET="$(_dirlen "")"
     DIR_ON="$(_dirlen "1")"
     DIR_ZERO="$(_dirlen "0")"
@@ -1216,13 +1760,39 @@ else
     else
       bad "DISMISS_REASK_GROUNDS added $DIR_UNSET_WITH_ENV bytes to a knob-OFF prompt — the byte-identity contract is broken"
     fi
+
+    # #2245 iteration 3: the SECOND knob, measured on the same probe.
+    DIR_BOTH="$(_dirlen "1" "" "1")"
+    DIR_CONTRACT_ONLY="$(_dirlen "" "" "1")"
+    DIR_RUBRIC_CONTRACT_ZERO="$(_dirlen "1" "" "0")"
+    case "$CONTRACT_LEN" in
+      ''|*[!0-9]*) bad "the contract probe did not complete (CONTRACTLEN='$CONTRACT_LEN')" ;;
+      0) bad "the per-ground contract is empty — it could never reach a prompt" ;;
+      *) ok "the per-ground evidence contract is $CONTRACT_LEN bytes (the MEASURED prompt-byte delta of the iteration-3 arm, printed rather than assumed)" ;;
+    esac
+    if [ "$DIR_ON" = "$BLOCK_LEN" ] && [ "$DIR_BOTH" = "$((BLOCK_LEN + CONTRACT_LEN))" ]; then
+      ok "SEVERITY_RUBRIC=1 alone renders exactly the iteration-2 string ($DIR_ON bytes) and adding GROUND_EVIDENCE=1 adds exactly the contract ($DIR_BOTH bytes) — one delta, one arm"
+    else
+      bad "the two-knob arithmetic is wrong (rubric-only=$DIR_ON, both=$DIR_BOTH, rubric=$BLOCK_LEN, contract=$CONTRACT_LEN)"
+    fi
+    if [ "$DIR_CONTRACT_ONLY" = "0" ]; then
+      ok "GROUND_EVIDENCE=1 with the rubric OFF is INERT by construction (0 bytes): the contract lives inside the rubric directive, so there is no block, no marker, no sentinel and no shell layer"
+    else
+      bad "GROUND_EVIDENCE=1 alone rendered $DIR_CONTRACT_ONLY bytes — the two-knob confusion case is NOT inert"
+    fi
+    if [ "$DIR_RUBRIC_CONTRACT_ZERO" = "$BLOCK_LEN" ]; then
+      ok "GROUND_EVIDENCE=0 is OFF — only the literal \"1\" opts in on the second knob too (the same deliberately inverted polarity)"
+    else
+      bad "GROUND_EVIDENCE=0 changed the prompt ($DIR_RUBRIC_CONTRACT_ZERO bytes, want $BLOCK_LEN)"
+    fi
   fi
 fi
 
 echo
 if [ "$FAILS" -eq 0 ]; then
-  note "ALL ASSERTIONS HELD — the #2245 iteration-2 dismissal rubric is wired, output-gated on both sides and default OFF."
-  note "NOTE: nothing above is a recall claim. Whether the rubric recovers the held-out row is the operator's"
+  note "ALL ASSERTIONS HELD — the #2245 dismissal rubric (iteration 2) and the per-ground EVIDENCE contract"
+  note "(iteration 3) are wired, output-gated on both sides, mutually independent and BOTH default OFF."
+  note "NOTE: nothing above is a recall claim. Whether the contract recovers the held-out row is the operator's"
   note "pre-registered measurement (2 held-out repeats, GO iff the row survives to verified_findings.json)."
   exit 0
 fi
