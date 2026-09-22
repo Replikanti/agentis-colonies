@@ -410,11 +410,11 @@ fi
 
 note "12) DECISION: no new taxonomy class — this is a cross-class METHOD directive ..."
 # The pin is "no class was minted FOR THIS change", asserted against the next UNALLOCATED taxonomy slot.
-# C24 was allocated by #2218 (stale state assumption between touchpoints) and C25 by #2245 (empty
-# distribution / zero participation edge) — unrelated domain classes — so the slot moved to C26; the decision
-# below is unchanged.
-if grep -q '^## C26 ' "$TAXONOMY"; then
-  bad "bug-taxonomy.md gained a '## C26 ' class — #2211 is explicitly a method directive, NOT a new class"
+# C24 was allocated by #2218 (stale state assumption between touchpoints), C25 by #2245 iteration 1 (empty
+# distribution / zero participation edge) and C26 by #2245 iteration 4 (admitted parameter / unenforced
+# bound) — unrelated domain classes — so the slot moved to C27; the decision below is unchanged.
+if grep -q '^## C27 ' "$TAXONOMY"; then
+  bad "bug-taxonomy.md gained a '## C27 ' class — #2211 is explicitly a method directive, NOT a new class"
 else
   ok "bug-taxonomy.md declares no new class (the directive is cross-class, it replaces no lens and adds none)"
 fi

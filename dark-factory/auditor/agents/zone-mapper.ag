@@ -624,6 +624,100 @@ fn contains_zero_total_signal(code: string) -> bool {
     return false;
 }
 
+// --- #2245 deterministic C26 (admitted parameter / unenforced bound) backstop ------------------------
+// C26 is the domain class for "a value the design CONSTRAINS is admitted from outside — a caller, a role
+// that is not the owner, or a second configuration choice — and the consuming function never checks it".
+// Two directions: an unenforced bound / unchecked admitted value forwarded into an external call, and an
+// unvalidated COMBINATION of two individually valid config choices. Like every other class it only reaches
+// a cell if it reaches that zone's `scope.tsv` row, so it needs the same deterministic backstop
+// C5/C8/C19/C22/C24/C25 have. Sibling of the #1729/#2111/#2121/#2214/#2218/#2245 nets: flat `index_of`
+// over the pre-built whole-zone `code` blob — no per-element recursion, no regex, no `exec sh`.
+//
+// TOKEN PROVENANCE (binding, and the reason this net is deliberately narrow). Every token below carries one
+// of exactly two provenances, tagged in-line:
+//   (D) attested in a DEV design zone — the in-distribution twin the class text was written from;
+//   (T) already written in this repo's OWN shipped class text (C23's route-id / pool-type / coin-index /
+//       unit-selection-bool list and its "magic amount (`minOut = 0`, fixed deadline, fixed slippage)"
+//       line, and C12's user-supplied-bound class).
+// Candidate tokens that were observable ONLY in held-out code were REJECTED and must not be added here
+// (a fee-cap field, a time-to-live field, a destination/endpoint id, a destination list, and a
+// period/duration declaration surface). Widening the net after seeing which held-out zones it misses is
+// tuning on the test set; a held-out zone this net is silent on is a recorded routing MISS for C26.
+//
+// Measured offline fan-out over the frozen dev + held-out maps, each zone's WHOLE file set: 9 of 62 zones
+// (6 of 12 on the two dev targets that carry the design rows, 3 of 50 across the four held-out targets,
+// and silent on a whole held-out target). It is a route, not a blanket. Cost is +1 cell per firing zone.
+
+// (a) ADMITTED-SET surface: the route / variant ids whose value is only correct for one external
+// configuration. Bare names on purpose — the same id appears as a struct field (`params.dexId`), a
+// function argument (`uint16 dexId`) and a storage variable, and all three are the admitted value this
+// class is about. Safe because this surface never decides alone: it is ANDed with the admission surface.
+fn has_admitted_route_param(code: string) -> bool {
+    if index_of(code, "dexId") >= 0 { return true; }        // (D)
+    if index_of(code, "poolId") >= 0 { return true; }       // (D)
+    if index_of(code, "poolType") >= 0 { return true; }     // (T) C23 pool-type variant flag
+    if index_of(code, "swapType") >= 0 { return true; }     // (T) C23 route/enum id
+    if index_of(code, "coinIndex") >= 0 { return true; }    // (T) C23 external-pool coin index
+    return false;
+}
+
+// (b) ASSET-REPRESENTATION surface: the compatibility axis the dev design rows turn on — which token
+// representation (native or wrapped) this path believes it is handling, chosen independently of the pool
+// or route type it is pointed at.
+fn has_asset_type_selector(code: string) -> bool {
+    if index_of(code, "ETH_ADDRESS") >= 0 { return true; }    // (D)
+    if index_of(code, "ALT_ETH") >= 0 { return true; }        // (D)
+    if index_of(code, "useEth") >= 0 { return true; }         // (D) and (T) C23's unit-selection bool
+    if index_of(code, "useUnderlying") >= 0 { return true; }  // (T) C23's unit-selection bool
+    if index_of(code, "isNative") >= 0 { return true; }       // (T) C23's unit-selection bool
+    return false;
+}
+
+// (c) NUMERIC-BOUND surface: the limit an admitted value is supposed to respect, taken entirely from
+// C23's "a magic amount (`minOut = 0`, fixed deadline, fixed slippage)" line and C12's class.
+fn has_admitted_bound_param(code: string) -> bool {
+    if index_of(code, "minOut") >= 0 { return true; }        // (T)
+    if index_of(code, "deadline") >= 0 { return true; }      // (T)
+    if index_of(code, "slippage") >= 0 { return true; }      // (T)
+    if index_of(code, "maxSlippage") >= 0 { return true; }   // (T)
+    return false;
+}
+
+// (d) ADMISSION surface: WHO supplies the value. Either a role gate that is NOT the owner — the class is
+// about a caller who is legitimately in role while the PARAMETER goes unchecked, which is what separates
+// C26 from C5 — or a caller-supplied payload/params decode, the other way an unchecked value enters.
+fn has_nonowner_admission(code: string) -> bool {
+    if index_of(code, "onlyVault") >= 0 { return true; }        // (D)
+    if index_of(code, "onlyRebalancer") >= 0 { return true; }   // (D)
+    if index_of(code, "onlyManager") >= 0 { return true; }      // (D)
+    if index_of(code, "onlyApproved") >= 0 { return true; }     // (D)
+    if index_of(code, "Admin(") >= 0 { return true; }           // (D)
+    if index_of(code, "onlyKeeper") >= 0 { return true; }       // (D-family) same non-owner role vocabulary
+    if index_of(code, "onlyOperator") >= 0 { return true; }     // (D-family)
+    if index_of(code, "onlyStrategist") >= 0 { return true; }   // (D-family)
+    if index_of(code, "onlyGuardian") >= 0 { return true; }     // (D-family)
+    if index_of(code, "onlyRelayer") >= 0 { return true; }      // (D-family)
+    if index_of(code, "onlyCurator") >= 0 { return true; }      // (D-family)
+    if index_of(code, "onlyRole(") >= 0 { return true; }        // (D-family) AccessControl generic
+    if index_of(code, "hasRole(") >= 0 { return true; }         // (D-family) AccessControl generic
+    if index_of(code, "_checkRole(") >= 0 { return true; }      // (D-family) AccessControl generic
+    if index_of(code, "abi.decode(") >= 0 { return true; }      // (D) caller-supplied payload surface
+    return false;
+}
+
+// The AND: this zone must NAME a value the design constrains (an admitted-set id, an asset-representation
+// selector or a numeric bound) AND admit it from outside the owner — from a non-owner role or a decoded
+// caller payload. A bound or a route id alone is carried by half of DeFi; the admission surface is what
+// turns it into this class.
+fn contains_admitted_param_signal(code: string) -> bool {
+    if !has_nonowner_admission(code) { return false; }
+    if has_admitted_route_param(code) { return true; }
+    if has_asset_type_selector(code) { return true; }
+    if has_admitted_bound_param(code) { return true; }
+    return false;
+}
+
+
 // --- #1717 path-level test/interface exclusion (applied BEFORE the content signals below) -----------
 // A zone/file path can deterministically say "this is a test unit" or "this is a pure interface" in a
 // way content signals cannot: an interface getter that merely returns `IStabilityPool`, or a Foundry
@@ -926,6 +1020,10 @@ fn apply_zero_total_backstop(classesCsv: string, code: string) -> string {
     if !contains_zero_total_signal(code) { return classesCsv; }
     return force_include(classesCsv, "C25");
 }
+fn apply_admitted_param_backstop(classesCsv: string, code: string) -> string {
+    if !contains_admitted_param_signal(code) { return classesCsv; }
+    return force_include(classesCsv, "C26");
+}
 
 // The deterministic net: when the zone's code signals a lending/CDP/stability-pool system (direct or
 // ERC4626-wrapped), force C10 ("first-depositor/inflation") + C11 ("stability-pool offset"); when it signals
@@ -1075,9 +1173,15 @@ fn apply_backstop(verdict: string, code: string) -> string {
     // so zero is unreachable. Chained AFTER the #2218 net and BEFORE apply_fitness_reorder, so a forced C25 is
     // still fitness-ranked like a forced C5/C8/C19/C22/C24.
     let withZeroTotal = apply_zero_total_backstop(withStaleState, code);
-    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C8/C10/C11/C17/C19/C22/C24/C25)
+    // #2245 iteration 4: force C26 (admitted parameter / unenforced bound) when the zone NAMES a value the
+    // design constrains — an admitted-set route id, an asset-representation selector or a numeric bound — AND
+    // admits it from outside the owner, through a non-owner role gate or a decoded caller payload. Chained
+    // AFTER the C25 net and BEFORE apply_fitness_reorder, so a forced C26 is still fitness-ranked like a
+    // forced C5/C8/C19/C22/C24/C25.
+    let withAdmittedParam = apply_admitted_param_backstop(withZeroTotal, code);
+    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C8/C10/C11/C17/C19/C22/C24/C25/C26)
     // by learned real-bug precision, so the highest-precision class leads the CSV that run-discovery.sh fans out.
-    let reordered = apply_fitness_reorder(withZeroTotal);
+    let reordered = apply_fitness_reorder(withAdmittedParam);
     let rebuilt = "ZONE|" + pipe_field(line, 1) + "|" + pipe_field(line, 2) + "|" + reordered + "|" + pipe_field(line, 4);
     if rebuilt == line { return verdict; }
     return verdict + "\n" + rebuilt;
@@ -1219,6 +1323,22 @@ let instruction = priorBlock
   + "zone that merely MINTS or BURNS a supply without reading the total for a decision, a zone whose only "
   + "totals are constants or immutables, or a pure interface or struct/type declaration (no function bodies) — "
   + "do NOT add C25. If this zone does none of these, do NOT add C25.\n\n"
+  + "=== ADMITTED PARAMETER / UNENFORCED BOUND DETECTION RULE (C26) ===\n"
+  + "INCLUDE `C26` (admitted parameter / unenforced bound) ONLY WHEN a value this zone's design CONSTRAINS "
+  + "enters the consuming function FROM OUTSIDE IT and is not checked there. Three surfaces count: "
+  + "membership of an admitted SET (a route/DEX id, a pool type, an external pool's coin index, which token "
+  + "representation an adapter is pointed at); a numeric BOUND (a minimum-out, a slippage limit, a deadline, "
+  + "an amount); or a COMPATIBILITY requirement between two independently configurable choices (an asset "
+  + "representation chosen by one setter and a pool/route type chosen by another). It qualifies only when "
+  + "the value is ADMITTED from outside: supplied by a caller, decoded out of a caller-supplied payload or "
+  + "params struct, supplied by a role that is NOT the owner (a vault, manager, rebalancer, keeper or "
+  + "approved operator), or produced by a configuration combination. The bug is in one of two directions: "
+  + "the consuming function forwards the value into an external call or writes it into config with nothing "
+  + "checking it there, or the two configuration choices are accepted separately and their combination is "
+  + "never validated. A zone whose only entrypoints are owner-only setters writing literals, a zone that "
+  + "validates every admitted value against a mapping or allowlist in the same function, or a pure "
+  + "interface or struct/type declaration with no function bodies — do NOT add C26. If this zone does none "
+  + "of these, do NOT add C26.\n\n"
   + "=== ZONE ID (echo it back UNCHANGED as the first field) ===\n" + zoneId + "\n\n"
   + "=== HOW TO ANSWER ===\n"
   + "FIRST reason step by step: read the zone's contracts, name the subsystem, and for EACH candidate class "
@@ -1274,6 +1394,12 @@ print("STALE-STATE|" + zoneId + "|" + bool_str(contains_state_assumption_signal(
 // ZONE| line and therefore leaves the apply_backstop append unreachable there. Never perturbs the `^ZONE\|`
 // scrape.
 if contains_zero_total_signal(code) { print("ZERO-TOTAL|" + zoneId + "|true"); }
+// #2245 iteration 4: the C26 admitted-parameter signal follows the same discipline as ZERO-TOTAL| above —
+// emitted ONLY WHEN THE NET FIRES, so a zone the net is silent on produces byte-identical output to the
+// pre-C26 mapper. It makes contains_admitted_param_signal() observable + offline-testable under the mock
+// backend, whose reply carries no ZONE| line and therefore leaves the apply_backstop append unreachable
+// there. Never perturbs the `^ZONE\|` scrape.
+if contains_admitted_param_signal(code) { print("ADMITTED-PARAM|" + zoneId + "|true"); }
 let outcome = outcome_of(finalVerdict);
 emit("dark-factory:zone_mapped", "{\"zone\":\"" + zoneId + "\",\"outcome\":\"" + outcome + "\"}");
 learn("zone-map", zoneId, "attack-surface classification of zone " + zoneId, outcome, ["zone-map", zoneId, outcome]);

@@ -1548,6 +1548,31 @@ if [ -x "$REPO_ROOT/dark-factory/demo-severity-rubric.sh" ]; then
     fi
 fi
 
+# --- dark-factory admitted-parameter lens: the C26 bug class + zone-mapper route (#2245, iteration 4) ---
+# One taxonomy class for the next held-out generation-miss shape: "a value the design CONSTRAINS is admitted
+# from outside the function that consumes it and is never checked there" — a route/set id or a numeric bound
+# supplied by a caller or by a role that is NOT the owner and forwarded into an external call unchecked, or
+# two independently configurable choices (an asset representation and a pool/route type) accepted separately
+# and never validated as a pair. The lens IS the taxonomy section (hunter.ag slices `## <cls> ` out of
+# bug-taxonomy.md) plus a deterministic zone-mapper backstop, so hunter.ag is untouched.
+# demo-admitted-param-lens.sh guards the anti-catch-all contract (NOT-this-class naming C23/C12/C5/C22/C24/
+# C25/C19, the FOUR-part required-evidence rule, both directions, the four-step hunt), replays hunter.ag's
+# own `## <cls> ` awk anchor so `C25` cannot swallow `C26`, pins the deliberate non-changes (no C26 token in
+# hunter.ag, no class_to_keyword() entry, the DF_TIER2_RARE_CLASSES default untouched, C23's section
+# byte-unchanged), pins the TOKEN-PROVENANCE contract (every net token is dev-attested or already in this
+# repo's C23/C12 class text; no held-out-only token) and — when agentis is present — drives the REAL
+# apply_backstop() over two TRUE, one FALSE and one already-C26 Solidity fixture with no LLM (append-once,
+# no duplicate, byte-identical verdict when silent, diagnostic only when it fires). No network, no forge.
+if [ -x "$REPO_ROOT/dark-factory/demo-admitted-param-lens.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-admitted-param-lens.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: admitted-parameter lens (C26 guarded class text + deterministic zone-mapper route + TRUE/TRUE/FALSE/DUP apply_backstop fixtures) (#2245)"
+    else
+        fail "dark-factory: admitted-parameter lens regressed (#2245)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory attacker-controlled-callee directive (#2145, milestone D1 of epic #2130) ---
 # hunter.ag injects a GENERIC trust-model directive ("who controls the call TARGET?") whenever a deterministic
 # detector finds an external call surface AND a settable/computed call target, gated + made observable by the

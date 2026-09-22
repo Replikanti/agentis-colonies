@@ -16,6 +16,82 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **C26 "admitted parameter / unenforced bound" class + deterministic zone-mapper route (#2245,
+  iteration 4).** Iterations 2-3 closed the JUDGMENT half on one held-out shape; the remaining held-out loss
+  is still GENERATION. This iteration ships the next miss shape one-for-one on the iteration-1 template: ONE
+  taxonomy class, ONE deterministic route, no knob, no hunter/refuter edit, no default flip. The shape is a
+  value the design CONSTRAINS entering the consuming function from OUTSIDE it and never being checked there,
+  in two named directions: an **unenforced bound / unchecked admitted value** (a route/set id, a minimum-out,
+  a deadline or a slippage limit supplied by a caller, decoded out of a `bytes` payload, or supplied by a role
+  that is NOT the owner, then forwarded into an external call or written into config with no `require` and no
+  lookup on it in that function) and an **unvalidated combination** (two individually valid configuration
+  choices — an asset representation chosen by one setter, a pool/route type chosen by another — accepted
+  separately and never validated as a PAIR, so a valid-looking setup reaches a path that assumes the other
+  choice). `auditor/bug-taxonomy.md` gains the class in the C22/C23/C24/C25 six-field shape: both directions,
+  a four-step hunt (LIST THE ADMITTED VALUES / FIND THE ENFORCEMENT, which must be in the SAME function and is
+  not satisfied by an off-chain service, an API the caller is expected to call, a comment or the caller's good
+  behaviour / CROSS THE TWO CONFIG AXES as a grid / WHO PAYS), a `NOT this class` list naming
+  C23/C12/C5/C22/C24/C25/C19, and a four-part required-evidence rule. **The lens IS the taxonomy section**
+  hunter.ag already slices with its `## <cls> ` anchor, so hunter.ag is not touched: a directive block in the
+  hunter is the pure-meta shape that measured Delta=+0 (#2213) and it cannot be routed per zone. C23 is the
+  INVERSE class (the wrong value is a literal IN the code) and its text is left byte-unchanged, pinned by a
+  test — C26 is not shipped by widening a prompt string the earlier arms were measured with.
+
+  `zone-mapper.ag` gains the matching deterministic backstop, sibling of the #1729/#2111/#2121/#2214/#2218
+  nets (flat `index_of` over the pre-built zone code blob — no regex, no `exec sh`, no per-element
+  recursion): a value surface — an admitted-SET id (`dexId`/`poolId`/`poolType`/`swapType`/`coinIndex`), an
+  asset-representation selector (`ETH_ADDRESS`/`ALT_ETH`/`useEth`/`useUnderlying`/`isNative`) or a numeric
+  BOUND (`minOut`/`deadline`/`slippage`/`maxSlippage`) — ANDed with an ADMISSION surface: a role gate that is
+  not the owner (`onlyVault`/`onlyRebalancer`/`onlyManager`/`onlyApproved`/`Admin(` and the same-family
+  keeper/operator/strategist/guardian/relayer/curator modifiers plus the AccessControl generics) or a
+  caller-supplied `abi.decode(`. `apply_admitted_param_backstop` force-includes C26, chained after the
+  iteration-1 C25 net and before the #1711 fitness reorder. The `ADMITTED-PARAM|` diagnostic is emitted **only
+  when the net fires**, so a zone the net is silent on produces byte-identical mapper output to before this
+  change. The classification instruction gains an ONLY-WHEN-shaped C26 rule with an explicit do-NOT-add
+  escape; no net helper name and no corpus identifier reaches the prompt.
+
+  **Token provenance is the design discipline of this iteration, and it is binding.** Every token in the net
+  is either (D) attested in a DEV design zone — the in-distribution twin the class text was written from — or
+  (T) already written in this repo's own shipped C23/C12 class text (C23's route-id / pool-type / coin-index /
+  unit-selection-bool list and its "magic amount (`minOut = 0`, fixed deadline, fixed slippage)" line). Every
+  token line carries its tag in the source and a test asserts that none is untagged. Candidate tokens that
+  were observable ONLY in held-out code — a fee-cap field, a time-to-live field, a destination/endpoint id, a
+  destination list, and a period/duration declaration surface — were REJECTED and are pinned absent by the
+  same test. That rejection costs coverage on purpose: one of the two held-out clusters this shape was drawn
+  against is NOT routed by the shipped net and is recorded as a **routing MISS for C26**, not repaired by hand.
+
+  Measured offline fan-out over all six frozen dev + held-out maps, driving the shipped token lists over each
+  zone's whole file set (zones counted after the mapper's own test / interface / mock / script path
+  exclusion): **9 of 62 zones (15 %)** — +1 cell per firing zone, and silent on a whole held-out target.
+
+  | role | zones | C26 fires on | carrying surface |
+  |---|---|---|---|
+  | dev target A (design source) | 9 | 5 (incl. the zone carrying the design rows) | route id, asset-representation selector, bound |
+  | dev target B | 3 | 1 | bound + non-owner role gate |
+  | held-out target 1 | 19 | 1 | bound + role gate / decoded payload |
+  | held-out target 2 | 4 | 1 | bound + role gate |
+  | held-out target 3 | 11 | 1 | bound + decoded payload |
+  | held-out target 4 | 16 | 0 | — |
+
+  The held-out column is an OBSERVATION about generalisation, never a design target: no token was added,
+  removed or reshaped to make a held-out zone fire.
+
+  Deliberate non-changes, pinned by tests: no `class_to_keyword()` entry for C26 in `invariant-prover.ag`
+  (that map routes the depth/metamorphic action menu, an unmeasured second variable; C22/C23/C24/C25 have no
+  entry either), no `C26`/`admitted_param` token in `hunter.ag`, and `DF_TIER2_RARE_CLASSES` still defaults to
+  `C19,C20,C21,C22,C23,C24` — C26 is a ROUTED class, not a tier-2 promotion. New
+  `demo-admitted-param-lens.sh` (wired into `tools/colony-lint.sh`) guards the class text, replays hunter.ag's
+  own awk anchor so `C25` cannot swallow `C26`, asserts the provenance contract, and — when `agentis` is
+  present — drives the REAL `apply_backstop()` over four Solidity fixtures with no LLM: two TRUE (a role-gated
+  entrypoint decoding a route id and bounds out of a caller payload; two independently-set config choices
+  behind a non-owner role) force C26 exactly once, one FALSE (an owner-only setter that bounds its own
+  argument in the same function) leaves the verdict byte-identical with no diagnostic, and a zone already
+  carrying C26 gets no duplicate. The two sibling demos that used `## C26` as the next-unallocated slot to
+  assert "my change minted no class" are re-pointed at `## C27`; their decision is unchanged.
+
+  **Recall is UNMEASURED:** whether C26 recovers a held-out row is the follow-on host-side measurement, and
+  no `VERSION` is bumped.
+
 - **Per-ground EVIDENCE contract on both dismissal gates, output-gated, default OFF (#2245, iteration 3).**
   Iteration 2 measured the next constraint as precisely as iteration 1 did: the rubric works where it is applied
   honestly — on the held-out shape the hunter kept the row **0/2 → 2/2** and the refute gate **0/1 → 1/2**, the

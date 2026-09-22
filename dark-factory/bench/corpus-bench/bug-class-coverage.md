@@ -166,6 +166,7 @@ arm).
 | C23 hardcoded ext-param | 1 | 2 | **CAUGHT** ✅ (#1879) `in-distribution` | notional H-9 (fb=2): judge conf 93 — first C22/C23-family catch, end-to-end; `dev` contest, GT ids were in the lens when it was measured (#2231) |
 | C24 stale state assumption | 3 | 1 | IN-FLIGHT (#2218) | 3 Mediums, all generation misses in #2213: yieldoor M-2, notional M-8, notional M-16 — class + zone-mapper route landed, recall unmeasured until M2 |
 | C25 empty distribution / zero participation | 2 | 1 | IN-FLIGHT (#2245) | design twin dev notional M-8 (in-distribution), test twin held-out superfluid-locker M-2 — class + zone-mapper route landed, recall unmeasured until the held-out run |
+| C26 admitted parameter / unenforced bound | 3 | 1 | IN-FLIGHT (#2245) | design twins dev notional M-3/M-5/M-22 (in-distribution), test twin held-out malda M-5/M-10/M-12 — class + zone-mapper route landed, recall unmeasured until the held-out run; the second held-out cluster (superfluid-locker M-3/M-5) is a recorded routing MISS |
 | C16 liveness / stuck-state | 4 | 3 | OPEN (#1784 overlaps) | DoS class |
 | C17 index/slot-overwrite | 1 | 5 | OPEN (#1784) | notional H-5 (H-3 retagged to C19 #2111) |
 | C19 narrow-int overflow / downcast | 1 | 1 | IN-FLIGHT (#2111) | yieldoor H-3 (fb=1 rare) — liveness lens + zone-mapper C19 net wired |
@@ -383,6 +384,65 @@ and the verdict is ground-truth survival, never confirm rate.
 **Status: IN-FLIGHT — recall is UNMEASURED.** This iteration ships the contract, both gates, the taint rule and
 the offline guards only (`../../demo-severity-rubric.sh`, wired into `tools/colony-lint.sh`).
 
+### Admitted-parameter lens (#2245, iteration 4 of the miss-shape lens program)
+
+Iterations 2-3 closed the JUDGMENT half on one held-out shape; the remaining held-out loss is still
+GENERATION. **C26** (`auditor/bug-taxonomy.md`) is the class for a value the design CONSTRAINS entering the
+consuming function from OUTSIDE it and never being checked there, in two named directions — an **unenforced
+bound / unchecked admitted value** (a route/set id or a numeric bound supplied by a caller, decoded out of a
+`bytes` payload, or supplied by a role that is NOT the owner, then forwarded into an external call with no
+`require` in that function) and an **unvalidated combination** (two individually valid configuration choices,
+an asset representation and a pool/route type, accepted separately and never validated as a PAIR). A
+deterministic `zone-mapper.ag` route puts it on the zone that admits the value.
+
+**The twin pair.** The design source is the three in-distribution `dev` rows below; the held-out cluster is
+the test.
+
+| role | target | GT rows | mechanism | status |
+|---|---|---|---|---|
+| design source (in-distribution, NEVER a recall number) | dev notional | M-3, M-5, M-22 | a single-sided strategy cannot trade when the configured pool is a native-ETH pool; minting single-sided is impossible when one route id is configured for redemptions; a wrapped-native asset paired with a pool holding native ETH loses user funds | generation misses |
+| test (the measurement) | held-out malda `src_rebalancer_bridges` | M-5, M-10, M-12 | a non-owner role sends to a destination the design does not admit, and forwards an unenforced fee cap and time-to-live into the bridge call | generation misses (#2231; routing was necessary but not sufficient) |
+| second cluster (recorded routing MISS) | held-out superfluid-locker `src__p1` | M-3, M-5 | the initial-deposit / buffer arithmetic of a program lifecycle is never examined | generation misses — **the shipped net is silent on this zone** |
+
+**Design discipline (decision 1 at STOP 1, and the reason the numbers look the way they do).** Both halves —
+the class TEXT and the mapper NET — are derived ONLY from the dev design rows and from vocabulary this repo's
+own class text already ships (C23's route-id / pool-type / coin-index / unit-selection-bool list and its
+"magic amount (`minOut = 0`, fixed deadline, fixed slippage)" line; C12's user-supplied-bound class). Every
+token in the net carries a `(D)` (dev-attested) or `(T)` (class-text) tag in the source, and
+`../../demo-admitted-param-lens.sh` fails if any token is untagged. Candidate tokens that were observable ONLY
+in held-out code — `maxFee`, `ttl`, `dstChainId`, `dstEid`, `destinations` and a period/duration declaration
+surface — were REJECTED and are pinned absent by the same test. The cost is explicit: the second held-out
+cluster above is **not routed** and is scored as a routing MISS for C26, not repaired by hand.
+
+**Measured offline fan-out of the C26 net**, driving the SHIPPED token lists (extracted from `zone-mapper.ag`,
+no LLM) over each zone's WHOLE file set across all six frozen maps. Zones are counted after the mechanical
+test / interface / mock / script path exclusion `map-zones.sh` applies, which is why the denominator is 62
+rather than iteration 1's 63:
+
+| role | target | zones | C26 fires on | carrying surface |
+|---|---|---|---|---|
+| dev (design source) | notional | 9 | 5 — **`src_single_sided_lp`** (the three design rows), `src`, `src_staking`, `src_withdraws`, `src_rewards` | route id, asset-representation selector, bound |
+| dev | yieldoor | 3 | 1 — `src` | bound + non-owner role gate |
+| held-out | malda | 19 | 1 — **`src_rebalancer_bridges`** (the test zone) | bound + role gate / decoded payload |
+| held-out | superfluid-locker | 4 | 1 — `src__p2` (**not** `src__p1`) | bound + role gate |
+| held-out | mellow | 11 | 1 — `src_queues` | bound + decoded payload |
+| held-out | lend-v2 | 16 | 0 | — |
+
+**9 of 62 zones (15 %), +1 cell per firing zone** — it fires on the design zone, it is silent on a whole
+held-out target, and it is silent on 53 of the 62 zones. The held-out column is an OBSERVATION about
+generalisation, not a design target: that the test zone routes on its own (it carries a bound token and a
+non-owner role gate) was measured after the token lists were frozen, and no token was added, removed or
+reshaped to make a held-out zone fire.
+
+**Status: IN-FLIGHT — recall is UNMEASURED.** This iteration ships the class, the route and the offline guards
+only (`../../demo-admitted-param-lens.sh`, wired into `tools/colony-lint.sh`). The pre-registered measurement:
+both arms on the iteration-3 ON-baseline (`SEVERITY_RUBRIC=1 GROUND_EVIDENCE=1`); treatment = the test zone
+×2 with `C26` staged into its frozen `scope.tsv` row (legitimate only because the shipped net routes that zone
+on its own); ON-control = the same zone ×1 with no C26; **GO iff at least ONE of the three test rows survives
+to `verified_findings.json` in 2/2 repeats**. The second cluster is reported as a routing MISS and is NOT
+staged. `src__p2` and `src_queues` may be run ×1 each as informational generalisation probes; neither enters
+the verdict. One dev-twin sanity run on `src_single_sided_lp`, reported as in-distribution and never as recall.
+
 ## Operationalize-before-you-hunt: measured NO-GO (#2213 M2, 2026-09-15)
 
 The #2211 `OPERATIONALIZE_LENS` directive — a cross-class METHOD (derive code-grounded checks, write them
@@ -436,6 +496,7 @@ provenance of each class — and this file is documentation the pipeline never r
 | C23 — hardcoded external-integration parameter | notional | H-9, M-5, M-18 | corpus-bench notional GT H-9, M-5, M-18. |
 | C24 — stale state assumption between touchpoints | yieldoor, notional | M-2 / M-8, M-16 | corpus-bench yieldoor GT M-2, notional GT M-8, notional GT M-16. |
 | C25 — empty distribution / zero participation edge | notional (dev, design source), superfluid-locker (held-out, test) | M-8 / M-2 | corpus-bench notional GT M-8 (`AbstractRewardManager` emissions accrue per unit of an `effectiveSupply` floored by a virtual-shares constant, so the no-participants branch never fires) and superfluid-locker GT M-2 (`unlock` reverts while `STAKER_DISTRIBUTION_POOL.getTotalUnits() == 0` although `stakerAllocationBP == 0`, so the pool is owed nothing). Never written into the lens: C25's `seen:` line carries only the generic code shape. |
+| C26 — admitted parameter / unenforced bound | notional (dev, design source), malda (held-out, test), superfluid-locker (held-out, recorded routing MISS) | M-3, M-5, M-22 / M-5, M-10, M-12 / M-3, M-5 | corpus-bench notional GT M-3 (a single-sided Curve LP strategy cannot trade when the configured pool is an ETH pool), M-5 (minting yield tokens single sided is impossible when the `CURVE_V2` `dexId` is configured for redemptions) and M-22 (`asset = WETH` paired with a Curve pool holding native ETH loses user funds); corpus-bench malda GT M-5 (a rebalancer sends to unallowed destination chains), M-10 (unenforced fee-cap and time-to-live parameters) and M-12 (a rebalancer drains market funds via excessive bridge fees); corpus-bench superfluid-locker GT M-3 and M-5 (initial-deposit / buffer arithmetic). Never written into the lens: C26's `seen:` line carries only the generic code shape, and the malda-only token vocabulary was deliberately kept OUT of the mapper net. |
 
 Two clean entries stayed in the lens because they name no contest: C2's and C11's non-corpus observations
 (a custom Chainlink+sequencer oracle, KiloLend, Curve scrvUSD, a virtual-balance savings vault) are live-hunt
@@ -443,7 +504,8 @@ history, not corpus ground truth.
 
 **Consequence for every number on this page.** C16/C17/C18/C19/C20/C21 were designed with the contest's own
 mechanism in the lens (2026-07-24, #1783/#1784/#1785 and the C19/C20/C21 PRs), C22/C23 on 2026-08-10 and C24
-on 2026-09-16 with the GT ids only. C25 (#2245) is the first class written with NO contest text in the lens at
-all — its design twin is named only here. Any recall claim on `notional`, `yieldoor`, `yearn-ybold`, `crestal` or
+on 2026-09-16 with the GT ids only. C25 and C26 (#2245) are the first classes written with NO contest text in the lens
+at all — their design twins are named only here, and C26 additionally keeps every held-out-only token out of
+its zone-mapper net. Any recall claim on `notional`, `yieldoor`, `yearn-ybold`, `crestal` or
 `plaza` measured after those dates is **in-distribution** — see the `role` column of `corpus.tsv` and the
 hold-out policy in [`README.md`](README.md).
