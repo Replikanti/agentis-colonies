@@ -1512,7 +1512,7 @@ if [ -x "$REPO_ROOT/dark-factory/demo-zero-total-lens.sh" ]; then
     fi
 fi
 
-# --- dark-factory contest-severity dismissal rubric (#2245, iteration 2) ---
+# --- dark-factory contest-severity dismissal rubric + per-ground evidence contract (#2245, iteration 3) ---
 # Iteration 1 closed the GENERATION gap on the held-out shape (3 of 3 runs reached the ground-truth mechanism)
 # and lost it 3 of 3 times downstream, every loss applying one criterion — "no unprivileged attacker gain and no
 # funds locked => not a bug" — at the hunter's SAFE or at the refute gate's REFUTED. Iteration 2 installs the
@@ -1521,17 +1521,27 @@ fi
 # driver, PROMOTION of a surviving hunt-side dismissal to a tier-1 `Medium` candidate, and — on the gate side —
 # NO verdict flip (the verdict stays `REFUTED` with a `rubric-insufficient: ` reason and a sidecar row).
 # `SEVERITY_RUBRIC=1` opts in; unset (the default) leaves both prompts and both drivers byte-identical.
-# demo-severity-rubric.sh source-guards the eleven helpers, the marker/sentinel honesty gate, the default-OFF
-# polarity, both splice positions (after config_realizability_rule() in the hunter; before BOTH tie-breaks in the
-# refuter, neither of which is touched), both env_passthrough registrations, every new record/scraper boundary,
-# the token invariants, an overfitting + ground-truth-id denylist and substrate purity; then drives the SHIPPED
-# gate over synthetic cell logs and BOTH drivers end-to-end through offline `--agentis` stubs (re-ask, promotion,
-# recovery, held ground, gate-only mode, knob-OFF inertness). With `agentis` present it adds the real mock-cell
-# sentinel discrimination and the 0-bytes-when-unset probe. No forge, no network, no LLM in the CI floor.
+# Iteration 3 adds a SECOND, independent knob `GROUND_EVIDENCE=1` (effective only inside a rubric-ON cell): the
+# per-ground EVIDENCE contract, checked by ONE shared decider on the SAME output gate — citation existence + a
+# validating-line shape for `guard`/`unreachable`/`known-issue`, the literal `delta=0:` token for `no-loss`, a
+# number plus a bound for `immaterial-quantified`, and an admitted-vs-deployed veto on all of them. A contract
+# failure folds into the EXISTING insufficient path (same bounded re-ask, same promotion, same sidecar), with
+# the TAINT rule: a contract-failing sufficient line keeps its location open even beside a passing sibling.
+# demo-severity-rubric.sh source-guards the sixteen helpers, the marker/sentinel honesty gate of BOTH knobs, the
+# default-OFF polarity of both, all splice positions (after config_realizability_rule() in the hunter; before
+# BOTH tie-breaks in the refuter, neither of which is touched; the contract INSIDE the rubric directive), all
+# four env_passthrough/env registrations, every new record/scraper boundary, the token invariants, the FROZEN
+# iteration-2 rubric string, the decider/requirement-table anti-drift in both directions, an overfitting +
+# ground-truth-id denylist and substrate purity; then drives the SHIPPED gate over synthetic cell logs (one
+# fixture pair per contract branch, the taint rule, the shape-only degradation, both inertness controls) and
+# BOTH drivers end-to-end through offline `--agentis` stubs (re-ask, promotion, recovery, held ground, gate-only
+# mode, knob-OFF inertness, and an ITERATION-2 REPRODUCTION control on each side). With `agentis` present it adds
+# the real mock-cell sentinel discrimination per knob and the byte-length probe over every knob combination.
+# No forge, no network, no LLM in the CI floor.
 if [ -x "$REPO_ROOT/dark-factory/demo-severity-rubric.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-severity-rubric.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
-        pass "dark-factory: contest-severity dismissal rubric (shared rubric + closed ground list + DISMISS/REFUTE-GROUND output gates + promotion, default OFF) (#2245)"
+        pass "dark-factory: contest-severity dismissal rubric + per-ground evidence contract (shared rubric + closed ground list + DISMISS/REFUTE-GROUND output gates + promotion + GROUND_EVIDENCE contract, both default OFF) (#2245)"
     else
         fail "dark-factory: contest-severity dismissal rubric regressed (#2245)"
         printf '%s\n' "$check_out"

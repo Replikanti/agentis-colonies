@@ -59,6 +59,17 @@
 #                    export covers the hunter half, so `export SEVERITY_RUBRIC=1` is ONE variable for both
 #                    decision points — including through verify-findings.sh, which invokes this script as a
 #                    plain subprocess and therefore needs no change of its own.
+#   GROUND_EVIDENCE  #2245 iteration 3 OPT-IN, default UNSET = OFF, INDEPENDENT of SEVERITY_RUBRIC (a second
+#                    knob, not a `SEVERITY_RUBRIC=2` sub-mode). `1` appends refuter.ag's per-ground EVIDENCE
+#                    contract to the rubric directive — which can only happen inside a rubric-ON prompt, since
+#                    the block is concatenated inside it — and arms the contract half of the gate below: a
+#                    REFUTED verdict whose ground id is SUFFICIENT but whose evidence does not meet that
+#                    ground's contract is treated exactly like an insufficient ground (one bounded re-ask, then
+#                    `REFUTED` + the `rubric-insufficient: ` prefix + a sidecar row carrying the contract id).
+#                    Unset / any other value leaves the prompt and the gate byte-identical to iteration 2 (the
+#                    gate fires only on the agent's own `GROUND-EVIDENCE|` sentinel). Citations resolve against
+#                    `--code-dir` + the brief, degrading to citation-SHAPE only when that is not the target
+#                    tree; there is NO new flag and verify-findings.sh is untouched (STOP-1 decision 4).
 #   DF_RUBRIC_MAX_REASKS  #2245 iteration 2: how many extra hostile reads a REFUTED verdict standing on an
 #                    INSUFFICIENT ground gets. Default 1 (the bounded one-extra-call-per-candidate budget the
 #                    #1699 C6 fallback established); 0 = gate-only (record it, never re-ask); garbage => 1.
@@ -79,6 +90,13 @@
 # into the CONFIRMED-only contract and would make the pre-registered gate mechanically reachable. The honest
 # consequence, stated rather than hidden: a gate that holds an insufficient ground through the re-ask makes the
 # arm a NO-GO, visibly.
+#
+# #2245 iteration 3 appends a FIFTH column to that file, `<contract-id>` — which per-ground EVIDENCE contract the
+# held ground failed (`cite-missing`, `cite-unresolved`, `cite-not-a-guard`, `cite-not-validating`,
+# `no-zero-delta`, `reachability-as-no-loss`, `unquantified`, `admitted-vs-deployed`), EMPTY when the ground id
+# itself was insufficient and on every contract-OFF run. The file has exactly one consumer in this repository
+# (demo-severity-rubric.sh, which pins its field count), so this is an additive change to an operator-only
+# artefact; the verdict column and the report row are untouched.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -195,7 +213,10 @@ fi
   # refuter.ag gates the whole rubric on getenv("SEVERITY_RUBRIC"), which reads the SANITIZED env, so an
   # unregistered knob would make the opt-in unreachable and the feature silently inert. Both are empty on a
   # default run, so their presence on the line is a no-op there.
-  echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH,CAND_INVARIANT,INV_HARNESS_PATH,SEVERITY_RUBRIC,RUBRIC_REASK_GROUNDS"
+  # #2245 iteration 3: GROUND_EVIDENCE rides it for exactly the same reason, as its own independent knob — and
+  # it can only have an effect inside a rubric-ON prompt, since its block is concatenated inside the rubric
+  # directive.
+  echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH,CAND_INVARIANT,INV_HARNESS_PATH,SEVERITY_RUBRIC,RUBRIC_REASK_GROUNDS,GROUND_EVIDENCE"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: refuter.ag ends its tick with `learn("refute", ...)`, and it is that
   # WRITE the flag gates (#1878, agentis v1.28.0: learn() raises `runtime error: experience not enabled`, and
@@ -274,7 +295,7 @@ _join_wrapped_verdict() {
   jwv_log="$1"
   awk '
     /VERDICT\|/ { rec = $0; open = 1; cont = 0; next }
-    open && (/^[[:space:]]*$/ || /AUX-CONTEXT\|/ || /REFUTE-GROUND\|/) { open = 0; next }
+    open && (/^[[:space:]]*$/ || /AUX-CONTEXT\|/ || /REFUTE-GROUND\|/ || /GROUND-EVIDENCE\|/) { open = 0; next }
     open {
       if (cont >= 12) { open = 0; next }
       line = $0
@@ -299,7 +320,7 @@ _join_wrapped_constraint() {
   jwc_log="$1"
   awk '
     /CONSTRAINT\|/ { rec = $0; open = 1; cont = 0; next }
-    open && (/VERDICT\|/ || /REFUTE-GROUND\|/ || /^[[:space:]]*$/) { open = 0; next }
+    open && (/VERDICT\|/ || /REFUTE-GROUND\|/ || /GROUND-EVIDENCE\|/ || /^[[:space:]]*$/) { open = 0; next }
     open {
       if (cont >= 12) { open = 0; next }
       line = $0
@@ -337,7 +358,7 @@ _join_wrapped_ground() {
   jwg_log="$1"
   awk '
     /REFUTE-GROUND\|/ { rec = $0; open = 1; cont = 0; next }
-    open && (/VERDICT\|/ || /CONSTRAINT\|/ || /^[[:space:]]*$/) { open = 0; next }
+    open && (/VERDICT\|/ || /CONSTRAINT\|/ || /GROUND-EVIDENCE\|/ || /^[[:space:]]*$/) { open = 0; next }
     open {
       if (cont >= 12) { open = 0; next }
       line = $0
@@ -347,6 +368,150 @@ _join_wrapped_ground() {
     }
     END { if (rec != "") print rec }
   ' "$jwg_log"
+}
+
+# --- #2245 iteration 3: the per-ground EVIDENCE contract ----------------------------------------------------
+# The measured cause (issue #2245 iteration 2, held-out r1): this gate REFUTED the row on the SUFFICIENT ground
+# `no-loss` and then argued REACHABILITY — no path, no zero delta, and it never engaged the state the candidate
+# described. The gate above checks the ground ID; nothing checked the evidence. So the contract below is checked
+# on the SAME emitted line, and a failure is folded into the EXISTING insufficient path: same one bounded
+# re-ask, same `REFUTED` verdict, same sidecar row. A detector, not a second mechanism.
+#
+# _ground_contract_armed <log> — the ONLY gate of this layer, the twin of run-discovery.sh's: refuter.ag's
+# honesty-gated `GROUND-EVIDENCE|` sentinel is in this candidate's log, so the contract really entered the
+# prompt this verdict answered. Never the env var: a verdict must not be re-asked against a contract it was
+# never shown, and with GROUND_EVIDENCE off every log is unarmed and this whole layer decides nothing.
+_ground_contract_armed() {
+  grep -qE '^[[:space:]]*GROUND-EVIDENCE\|' "$1" 2>/dev/null
+}
+
+# _dismiss_evidence_ok <line> [root] [brief] — BYTE-IDENTICAL to run-discovery.sh's copy (demo-severity-rubric.sh
+# diffs the two, the same anti-drift contract _rubric_sufficient_grounds already carries). One decider, two
+# decision points: the hunt side feeds it a `DISMISS|` line, this side rebuilds the same shape from its
+# `REFUTE-GROUND|` record (see _refute_ground_contract below), so neither gate can accept evidence the other
+# rejects. Returns 0 on pass; on failure it prints the contract id and returns 1.
+_dismiss_evidence_ok() {
+  de_line="$1"; de_root="${2:-}"; de_brief="${3:-}"
+  # Self-contained by design: every regex lives HERE, like _uncited_dismissal_lines's do, because
+  # demo-severity-rubric.sh slices this function out by line range and sources it — a decider that depended on
+  # script-level state would behave differently there than in production, which is the whole point of slicing.
+  de_pathline_re='[A-Za-z0-9_/.-]+\.(sol|ts|js|md|json|toml|ya?ml):[0-9]+(-[0-9]+)?'
+  de_guard_re='require|revert|assert|if[[:space:]]*\(|modifier|only[A-Z]|_checkRole|msg\.sender'
+  de_valid_re='require|revert|assert|if[[:space:]]*\('
+  de_deploy_re='(^|/)(script|scripts|deploy|broadcast)/'
+  de_reach_re='never|cannot|can not|does not occur|impossible|no such state|not reachable|would require'
+  de_admit_re='ONCHAIN|@block|as deployed|currently deployed|as shipped|shipped (market|config|deployment)|mainnet|live market'
+  de_fn_re='[A-Za-z_][A-Za-z0-9_]*\('
+  de_g="$(printf '%s' "$de_line" | cut -d'|' -f3 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+  # Fields 4..N, not field 4 alone: the measured lines merge verdict and evidence, exactly as
+  # _uncited_dismissal_lines reads fields 3..N of a TRACE line for the same reason.
+  de_span="$(printf '%s' "$de_line" | cut -d'|' -f4-)"
+  de_cite="$(printf '%s' "$de_span" | grep -oE "$de_pathline_re" | head -1)"
+  de_need=""; de_failid=""
+  case "$de_g" in
+    guard)
+      [ -n "$de_cite" ] || { printf 'cite-missing\n'; return 1; }
+      de_need="$de_guard_re"; de_failid="cite-not-a-guard" ;;
+    unreachable)
+      [ -n "$de_cite" ] || { printf 'cite-missing\n'; return 1; }
+      # Deliberately the INVERSE of the #2225 configuration rule, which REQUIRES a deploy/test citation: that
+      # rule asks what the repository SHIPS, this ground asks what the repository REFUSES. Do not harmonise.
+      if printf '%s' "${de_cite%%:*}" | grep -Eq "$de_deploy_re"; then printf 'cite-not-validating\n'; return 1; fi
+      de_need="$de_valid_re"; de_failid="cite-not-validating" ;;
+    no-loss)
+      if ! printf '%s' "$de_span" | grep -Eqi 'delta=0:[^[:space:]]'; then printf 'no-zero-delta\n'; return 1; fi
+      if ! printf '%s' "$de_span" | grep -Eq "$de_pathline_re|$de_fn_re"; then printf 'cite-missing\n'; return 1; fi
+      # The measured loss: a reachability argument filed under a sufficient ground. That claim is `unreachable`
+      # and needs that ground's citation, so the vocabulary veto applies here and nowhere else.
+      if printf '%s' "$de_span" | grep -Eqi "$de_reach_re"; then printf 'reachability-as-no-loss\n'; return 1; fi ;;
+    known-issue)
+      # shellcheck disable=SC2016  # a grep ERE held verbatim: nothing in it may expand
+      de_q="$(printf '%s' "$de_span" | grep -oE '"[^"]{12,}"|`[^`]{12,}`' | head -1)"
+      [ -n "$de_q" ] || { printf 'cite-missing\n'; return 1; }
+      if [ -n "$de_brief" ] && [ -f "$de_brief" ]; then
+        de_q="$(printf '%s' "$de_q" | sed 's/^.//; s/.$//')"
+        grep -Fq "$de_q" "$de_brief" 2>/dev/null || { printf 'cite-unresolved\n'; return 1; }
+      fi ;;
+    immaterial-quantified)
+      if ! printf '%s' "$de_span" | grep -Eq 'loss=[^[:space:]]*[0-9]'; then printf 'unquantified\n'; return 1; fi
+      if ! printf '%s' "$de_span" | grep -Eqi '(of|out of|vs\.?|versus)[[:space:]]+[^[:space:]]*[0-9]'; then
+        printf 'unquantified\n'; return 1
+      fi ;;
+    *) return 0 ;;
+  esac
+  # The citation RESOLUTION shared by the two citing grounds. EMPTY de_root is documented behaviour, not a gap:
+  # with no root the check is citation-SHAPE only, exactly like _uncited_dismissal_lines's empty repo_dir.
+  if [ -n "$de_need" ] && [ -n "$de_root" ]; then
+    de_f="${de_cite%%:*}"
+    # An absolute path or a `..` segment is refused outright rather than normalised: no file outside the one
+    # root the caller owns is ever opened.
+    case "$de_f" in /*|*..*) printf 'cite-unresolved\n'; return 1 ;; esac
+    [ -f "$de_root/$de_f" ] || { printf 'cite-unresolved\n'; return 1; }
+    de_r="${de_cite#*:}"
+    case "$de_r" in *-*) de_a="${de_r%-*}"; de_b="${de_r#*-}" ;; *) de_a="$de_r"; de_b="$de_r" ;; esac
+    if ! sed -n "${de_a},${de_b}p" "$de_root/$de_f" 2>/dev/null | grep -Eq "$de_need"; then
+      printf '%s\n' "$de_failid"; return 1
+    fi
+  fi
+  # ADMITTED IS NOT DEPLOYED — the veto that applies to EVERY sufficient ground. Deployed-state evidence
+  # establishes what one deployment holds today; a ground answers what the code ADMITS. So such a line closes
+  # nothing unless it ALSO carries a validating citation that rejects the other admitted states.
+  if printf '%s' "$de_span" | grep -Eqi "$de_admit_re"; then
+    de_vok=0
+    for de_c in $(printf '%s' "$de_span" | grep -oE "$de_pathline_re"); do
+      de_vf="${de_c%%:*}"
+      case "$de_vf" in /*|*..*) continue ;; esac
+      printf '%s' "$de_vf" | grep -Eq "$de_deploy_re" && continue
+      if [ -z "$de_root" ]; then de_vok=1; break; fi
+      [ -f "$de_root/$de_vf" ] || continue
+      de_vr="${de_c#*:}"
+      case "$de_vr" in *-*) de_va="${de_vr%-*}"; de_vb="${de_vr#*-}" ;; *) de_va="$de_vr"; de_vb="$de_vr" ;; esac
+      if sed -n "${de_va},${de_vb}p" "$de_root/$de_vf" 2>/dev/null | grep -Eq "$de_valid_re"; then de_vok=1; break; fi
+    done
+    [ "$de_vok" -eq 1 ] || { printf 'admitted-vs-deployed\n'; return 1; }
+  fi
+  return 0
+}
+
+# _contract_requirement <contract-id> — BYTE-IDENTICAL to run-discovery.sh's table, for the same reason: the
+# re-ask can never ask for something the prompt never defined, and the demo pins the two literal tokens
+# (`delta=0:`, `loss=`) against the agents' ground_evidence_block() in BOTH directions.
+_contract_requirement() {
+  case "$1" in
+    cite-missing)            printf '%s\n' 'cite the path:line this ground requires, in code you were given' ;;
+    cite-unresolved)         printf '%s\n' 'the cited path:line is not in the code you were given' ;;
+    cite-not-a-guard)        printf '%s\n' 'the cited line is not a check — cite the conditional or the require/revert that stops the path' ;;
+    cite-not-validating)     printf '%s\n' 'cite the constructor/initializer/setter line that REJECTS the state, never a deployment script or a deployed value' ;;
+    no-zero-delta)           printf '%s\n' 'write the literal token delta=0:<the quantity that is unchanged> beside the path' ;;
+    reachability-as-no-loss) printf '%s\n' 'a "that state never occurs" argument is the unreachable ground, not no-loss — cite the line that validates the state away' ;;
+    unquantified)            printf '%s\n' 'write the literal token loss=<amount> <unit> and compare it with a second number in the same units' ;;
+    admitted-vs-deployed)    printf '%s\n' 'deployed state is not what the code ADMITS — cite the validating line that rejects every other admitted state' ;;
+    *)                       printf '%s\n' 'name a sufficient ground with the evidence that ground requires' ;;
+  esac
+}
+
+# _refute_ground_contract <log> [root] [brief] — the contract id this candidate's `REFUTE-GROUND|` record FAILS,
+# or nothing (pass / unarmed / no record). It rebuilds the hunt-side shape `DISMISS|<loc>|<ground>|<evidence>`
+# from the scraped record so both gates run literally the same decider over literally the same field layout.
+#
+# The root is the caller's `--code-dir`, which verify-findings.sh already sets to the target repository, so the
+# refuter's citations resolve against the real tree with real line numbers. A standalone run pointed at a
+# non-repo code dir degrades to citation-SHAPE only — documented behaviour, never a failure, exactly like
+# _uncited_dismissal_lines's empty repo_dir on the hunt side.
+_refute_ground_contract() {
+  rgc_log="$1"; rgc_root="${2:-}"; rgc_brief="${3:-}"
+  [ -f "$rgc_log" ] || return 0
+  _ground_contract_armed "$rgc_log" || return 0
+  rgc_rec="$(_join_wrapped_ground "$rgc_log" 2>/dev/null || true)"
+  [ -n "$rgc_rec" ] || return 0
+  rgc_rec="$(printf '%s' "$rgc_rec" | sed 's/^.*\(REFUTE-GROUND|\)/\1/')"
+  rgc_g="$(printf '%s' "$rgc_rec" | cut -d'|' -f2)"
+  rgc_ev="$(printf '%s' "$rgc_rec" | cut -d'|' -f3-)"
+  rgc_id=""
+  if rgc_id="$(_dismiss_evidence_ok "DISMISS|verdict|$rgc_g|$rgc_ev" "$rgc_root" "$rgc_brief")"; then
+    return 0
+  fi
+  printf '%s\n' "${rgc_id:-unknown}"
 }
 
 # _scraped_ground <log> — the ground id of the last `REFUTE-GROUND|` record, trimmed and lowercased, or empty.
@@ -462,6 +627,7 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
         BRIEF_PATH="$BRIEF_IN_RUN" \
         SEVERITY_RUBRIC="${SEVERITY_RUBRIC:-}" \
         RUBRIC_REASK_GROUNDS="$RUBRIC_GROUNDS" \
+        GROUND_EVIDENCE="${GROUND_EVIDENCE:-}" \
         "$AGENTIS" go refuter.ag --enable-exec --enable-messaging --grant-pii ) >"$1" 2>&1 || \
         echo "run-refute.sh: refuter run failed for '$CFN' (see $1)" >&2
   }
@@ -519,13 +685,28 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
   # measurement mechanically reachable rather than a test of the gate's own judgement. The outcome is made
   # LEGIBLE instead: the reason is prefixed `rubric-insufficient: ` and one row lands in rubric-dismissals.tsv.
   RUBRIC_INSUFFICIENT=""
+  RUBRIC_CONTRACT=""
   RUBRIC_RECOVERED=0
   if [ "$VERD" = "REFUTED" ] && _rubric_gate_armed "$CELL_LOG"; then
     RB_GROUND="$(_scraped_ground "$CELL_LOG")"
-    if _ground_insufficient "$RB_GROUND"; then
+    # #2245 iteration 3: a SUFFICIENT ground id whose evidence fails that ground's contract is treated exactly
+    # like an insufficient id — the same gate, the same one bounded re-ask, the same outcomes. RB_CONTRACT is
+    # always empty when the ground id itself was insufficient (there is nothing to check yet) and on every
+    # contract-OFF run (no `GROUND-EVIDENCE|` sentinel => _refute_ground_contract prints nothing), so this
+    # branch reproduces the iteration-2 behaviour exactly there.
+    RB_CONTRACT=""
+    if ! _ground_insufficient "$RB_GROUND"; then
+      RB_CONTRACT="$(_refute_ground_contract "$CELL_LOG" "$CODE_DIR" "$BRIEF_IN_RUN")"
+    fi
+    if _ground_insufficient "$RB_GROUND" || [ -n "$RB_CONTRACT" ]; then
       RB_TRY=1
       while [ "$RB_TRY" -le "$DF_RUBRIC_MAX_REASKS" ] && [ "$VERD" = "REFUTED" ]; do
+        # The re-ask NAMES what is open: the bare ground id when the id itself was insufficient, and
+        # `<ground>: <requirement>` when the id was accepted but its evidence was not.
         RUBRIC_GROUNDS="${RB_GROUND:-none given}"
+        if [ -n "$RB_CONTRACT" ]; then
+          RUBRIC_GROUNDS="$RUBRIC_GROUNDS: $(_contract_requirement "$RB_CONTRACT")"
+        fi
         RB_LOG="$RUN/refute_${SLUG}_rubric$RB_TRY.log"
         echo "run-refute.sh: $CFN refuted on the insufficient ground '$RUBRIC_GROUNDS'; re-asking under the severity rubric ($RB_TRY/$DF_RUBRIC_MAX_REASKS) ..." >&2
         if df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-refute.sh: '$CFN' (rubric re-ask $RB_TRY)" "$RB_LOG" refuter "" _rf_attempt; then
@@ -539,16 +720,21 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
               REASON="recovered under the severity rubric (first read refuted on '$RUBRIC_GROUNDS'): $RB_REASON"
             else
               RB_GROUND="$(_scraped_ground "$RB_LOG")"
+              RB_CONTRACT=""
+              if ! _ground_insufficient "$RB_GROUND"; then
+                RB_CONTRACT="$(_refute_ground_contract "$RB_LOG" "$CODE_DIR" "$BRIEF_IN_RUN")"
+              fi
               REASON="$RB_REASON"
-              _ground_insufficient "$RB_GROUND" || break
+              if ! _ground_insufficient "$RB_GROUND" && [ -z "$RB_CONTRACT" ]; then break; fi
             fi
           fi
         fi
         RB_TRY=$((RB_TRY + 1))
       done
       RUBRIC_GROUNDS=""
-      if [ "$VERD" = "REFUTED" ] && _ground_insufficient "$RB_GROUND"; then
+      if [ "$VERD" = "REFUTED" ] && { _ground_insufficient "$RB_GROUND" || [ -n "$RB_CONTRACT" ]; }; then
         RUBRIC_INSUFFICIENT="${RB_GROUND:-none given}"
+        RUBRIC_CONTRACT="$RB_CONTRACT"
         REASON="rubric-insufficient: $REASON"
       fi
     fi
@@ -608,8 +794,10 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
   fi
   # #2245 iteration 2: the insufficient-ground sidecar row (lazy file creation — see RUBRIC_TSV above).
   if [ -n "$RUBRIC_INSUFFICIENT" ]; then
-    echo "run-refute.sh: $CFN held an INSUFFICIENT ground ('$RUBRIC_INSUFFICIENT') through the rubric re-ask — verdict stays REFUTED, row recorded in rubric-dismissals.tsv" >&2
-    printf '%s\t%s\t%s\t%s\n' "$ROW_CLS" "$CFN" "$RUBRIC_INSUFFICIENT" "$REASON" >> "$RUBRIC_TSV"
+    RUBRIC_NOTE=""
+    if [ -n "$RUBRIC_CONTRACT" ]; then RUBRIC_NOTE=", evidence contract $RUBRIC_CONTRACT"; fi
+    echo "run-refute.sh: $CFN held an INSUFFICIENT ground ($RUBRIC_INSUFFICIENT$RUBRIC_NOTE) through the rubric re-ask — verdict stays REFUTED, row recorded in rubric-dismissals.tsv" >&2
+    printf '%s\t%s\t%s\t%s\t%s\n' "$ROW_CLS" "$CFN" "$RUBRIC_INSUFFICIENT" "$REASON" "$RUBRIC_CONTRACT" >> "$RUBRIC_TSV"
   fi
 done < "$CANDS"
 

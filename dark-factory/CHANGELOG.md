@@ -16,6 +16,66 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Per-ground EVIDENCE contract on both dismissal gates, output-gated, default OFF (#2245, iteration 3).**
+  Iteration 2 measured the next constraint as precisely as iteration 1 did: the rubric works where it is applied
+  honestly — on the held-out shape the hunter kept the row **0/2 → 2/2** and the refute gate **0/1 → 1/2**, the
+  first held-out rare row ever to reach `verified_findings.json` on this bench — and all three remaining losses
+  have ONE shape: **a SUFFICIENT ground id attached to evidence that does not establish that ground's
+  definition.** The three shapes, in the voice of the gate that lost them: (i) the refute gate named `no-loss`
+  and then argued REACHABILITY, citing neither the path nor a zero delta, and never engaging the state the
+  candidate described; (ii) a hunt cell dismissed an accrual *emitted to nobody* — which the rubric's own shape
+  (b) names as a bounded loss that counts — as `no-loss` with no zero delta, and as `immaterial-quantified` on a
+  ratio of internal counters; (iii) a hunt cell closed a code-level wrong assumption with a correct on-chain read
+  of the **deployed** configuration, although the code ADMITS every other configuration and validates none of
+  them away. The shipped gate checks the ground **id**; nothing checked the evidence.
+
+  So this iteration changes neither the rubric text nor the routing nor the generation — it adds a DETECTOR:
+  `GROUND_EVIDENCE=1` (a second, INDEPENDENT knob, not a `SEVERITY_RUBRIC=2` sub-mode, so the iteration-2 arm
+  stays byte-reproducible and each arm carries one delta) appends a per-ground EVIDENCE contract to the SAME
+  rubric directive — which can only happen inside a rubric-ON cell — and both drivers check the SAME emitted
+  `DISMISS|` / `REFUTE-GROUND|` line against it with ONE shared decider, `_dismiss_evidence_ok`, byte-identical
+  in `run-discovery.sh` and `run-refute.sh` and reusing the #2224/#2225/#2227 citation discipline.
+  **The contract:** `guard` and `unreachable` need a `path:line` that EXISTS in the code the cell was given and
+  whose cited text is a check — for `unreachable` a *validating* check in a constructor/initializer/setter,
+  never a deployment script (deliberately the INVERSE of the #2225 configuration rule, which asks what the repo
+  SHIPS: this ground asks what it REFUSES); `no-loss` needs the path AND the literal token
+  `delta=0:<quantity>`, and a reachability argument filed under it fails (that claim is `unreachable` and needs
+  that ground's citation); `known-issue` needs a quoted fragment of the brief that actually resolves in it;
+  `immaterial-quantified` needs the literal token `loss=<amount> <unit>` plus a comparison bound in the same
+  units. On top of all of them the **admitted-vs-deployed** rule: a read of a live deployment or a deploy-time
+  value establishes the DEPLOYED state only, and closes nothing unless the SAME line also cites the validating
+  line that rejects every other admitted state — *"as deployed" is not "admitted"*.
+  These are **mechanical checks only** (citation existence + per-ground token shape); whether a correctly-shaped
+  guard really settles the lead stays an operator read, and that limit is stated rather than hidden.
+
+  A contract failure IS an insufficient ground: the SAME one bounded re-ask (now naming `<ground>: <what is
+  missing>` from one shell table the demo pins against the agents' contract text, in both directions), the SAME
+  hunt-side promotion to a tier-1 `Medium` candidate, the SAME gate-side outcome (verdict stays `REFUTED`, reason
+  prefixed `rubric-insufficient: `, one sidecar row) — a detector, not a second mechanism, and no new status or
+  verdict vocabulary anywhere. One new rule: the **TAINT rule** — a location whose dismissal set contains a
+  contract-FAILING sufficient line stays OPEN even when a sibling line passes. That is the one place this
+  iteration trades precision for recall (it is what makes loss (ii) reachable at all); precision is held by the
+  gates that stay live — the refute gate, the PoC gate, the `Medium` cap, one promotion per location, and the
+  requirement that the MODEL wrote the line. `severity_rubric_block()` is FROZEN, not one byte changed, so the
+  two arms stay comparable; every new sentence lives in the new block.
+
+  **Default OFF, and inert three ways:** `GROUND_EVIDENCE` unset leaves every prompt and both drivers
+  byte-identical to iteration 2; `GROUND_EVIDENCE=1` with the rubric OFF renders 0 bytes (the contract lives
+  inside the rubric directive, so no block ⇒ no marker ⇒ no sentinel ⇒ no shell layer); and each driver's
+  contract layer fires only on the agent's own honesty-gated `GROUND-EVIDENCE|` sentinel, never on the env var.
+  One additive per-cell JSON key, appended last and only when non-zero — `contract_failed_dismissals` — and a
+  FIFTH appended column in `<out>/rubric-dismissals.tsv` carrying the contract id (`cite-missing`,
+  `cite-unresolved`, `cite-not-a-guard`, `cite-not-validating`, `no-zero-delta`, `reachability-as-no-loss`,
+  `unquantified`, `admitted-vs-deployed`), empty when the ground id itself was insufficient. Together they are
+  the anti-Goodhart readout: the contract is a floor on the FORM of the evidence, so a sudden all-pass with
+  unchanged verdicts is visible per contract id. `verify-findings.sh` is untouched — the refuter's citations
+  resolve against the `--code-dir` it already passes, degrading to citation-SHAPE only when that is not the
+  target tree. `demo-severity-rubric.sh` (wired into `tools/colony-lint.sh`) grew the source guards for both
+  knobs, the anti-drift diffs of the shared contract and the shared decider, a fixture PAIR per contract branch,
+  the taint and shape-only fixtures, both inertness controls, an ITERATION-2 REPRODUCTION control on each
+  driver, and the byte-length probe over every knob combination. **Recall is UNMEASURED** — the pre-registered
+  held-out measurement is the operator's, not this change's.
+
 - **Contest-severity dismissal rubric on the hunter AND the refute gate, output-gated, default OFF (#2245,
   iteration 2).** Iteration 1 measured the binding constraint precisely: on the held-out shape **3 of 3 runs
   REACHED the ground-truth mechanism and 0 of 3 KEPT it**, and all three losses applied ONE criterion — *no

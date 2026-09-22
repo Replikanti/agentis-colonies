@@ -332,6 +332,57 @@ precision cost is measured rather than assumed.
 **Status: IN-FLIGHT — recall is UNMEASURED.** This iteration ships the rubric, both output gates, the promotion
 rule and the offline guards only (`../../demo-severity-rubric.sh`, wired into `tools/colony-lint.sh`).
 
+### Ground-evidence gate (#2245, iteration 3 of the miss-shape lens program)
+
+Iteration 2 worked where it was applied honestly and exposed the next constraint just as exactly. On the
+held-out shape the hunter kept the row **0/2 → 2/2** and the refute gate **0/1 → 1/2** (registered gate 1/2 =
+NO-GO, but the first held-out rare row ever to reach `verified_findings.json` on this bench). All three
+remaining losses have **ONE shape**: a *sufficient* ground id attached to evidence that does not establish that
+ground's definition.
+
+| # | half | ground claimed | what the evidence actually was | reachable mechanically? |
+|---|---|---|---|---|
+| 1 | refute gate, held-out repeat 1 | `no-loss` | a reachability argument — no path, no zero delta, and it never engaged the state the candidate described | yes: `no-loss` requires the explicit `delta=0:` token + a path, and reachability vocabulary in a `no-loss` line fails (that claim is `unreachable`, which needs its own citation) |
+| 2 | hunter, dev twin (accrual shape) | `no-loss` **+** `immaterial-quantified` on one location | no zero delta on the first line; a ratio of internal counters, not a loss amount, on the second | partly: the `no-loss` line fails its contract, the second line passes the FORM check — the location stays open only under the **taint rule**. A semantic mislabel of a quantity is NOT mechanically decidable, and that is stated, not hidden |
+| 3 | hunter, dev twin (deployed-config shape) | `no-loss` | a correct on-chain read of the markets as DEPLOYED, for a code-level assumption the code ADMITS in every other configuration | yes: the admitted-vs-deployed rule — deployed-state evidence closes nothing unless the same line cites a validating line that rejects every other admitted state |
+
+**The lens** is therefore not new text but a per-ground EVIDENCE **contract** on the same two output gates,
+behind its own knob `GROUND_EVIDENCE=1` (independent of `SEVERITY_RUBRIC`, effective only inside a rubric-ON
+cell, so `SEVERITY_RUBRIC=1` alone still renders exactly what the iteration-2 arm was measured with).
+`severity_rubric_block()` is FROZEN; every new sentence lives in the new block.
+
+| ground | what the contract demands (checked by ONE shared decider in both drivers) | contract ids it can fail with |
+|---|---|---|
+| `guard` | a `path:line` that EXISTS in the code the cell was given, whose cited text IS a check | `cite-missing`, `cite-unresolved`, `cite-not-a-guard` |
+| `unreachable` | a *validating* line in a constructor/initializer/setter — never a deployment script (deliberately the INVERSE of the #2225 configuration rule: that rule asks what the repo SHIPS, this one what it REFUSES) | `cite-missing`, `cite-unresolved`, `cite-not-validating` |
+| `no-loss` | the path AND the literal token `delta=0:<quantity>`; a reachability argument fails | `no-zero-delta`, `cite-missing`, `reachability-as-no-loss` |
+| `known-issue` | a quoted fragment of the brief that resolves in the brief | `cite-missing`, `cite-unresolved` |
+| `immaterial-quantified` | the literal token `loss=<amount> <unit>` plus a comparison bound in the same units | `unquantified` |
+| all of them | ADMITTED IS NOT DEPLOYED — deployed-state evidence closes nothing without a resolved validating citation | `admitted-vs-deployed` |
+
+A contract failure is folded into the EXISTING insufficient path (one bounded re-ask naming `<ground>: <what is
+missing>`, hunt-side promotion to a tier-1 `Medium`, gate-side `REFUTED` + `rubric-insufficient: ` + a sidecar
+row now carrying the contract id). The one new rule is the **taint rule**: a contract-failing sufficient line
+keeps its location open even beside a passing sibling — the single recall-for-precision trade of this iteration,
+bounded by the refute gate, the PoC gate, the `Medium` cap and one promotion per location. The checks are
+**mechanical only**: citation existence plus a per-ground token shape. Whether a correctly-shaped guard really
+settles the lead stays an operator read; an LLM second opinion was deferred rather than added as a second
+variable.
+
+**Pre-registered measurement.** Arm `evidence` = the iteration-2 `rubric` arm plus `export GROUND_EVIDENCE=1`,
+nothing else changed, at the merge commit of this change. Same frozen held-out base and zone, **×2 repeats**,
+**GO iff the target row SURVIVES to `verified_findings.json` in 2/2** — the same registered gate as iteration 2,
+now aimed at loss 1. Dev-twin sanity ×1 each for the loss-2 and loss-3 shapes, reported as in-distribution only
+and never as recall. Also reported per run: contract failures by ground id and contract id (the per-cell
+`contract_failed_dismissals` key and column 5 of `rubric-dismissals.tsv`), re-asks, promotions and how many the
+refute gate then confirmed, compliance dosage, and **precision vs iteration 2** as the verified count per zone.
+The anti-Goodhart limit is recorded in advance: the contract is a floor on the FORM of the evidence, so a sudden
+all-pass with unchanged verdicts is a Goodhart signal, not a win — which is why the readout is per contract id
+and the verdict is ground-truth survival, never confirm rate.
+
+**Status: IN-FLIGHT — recall is UNMEASURED.** This iteration ships the contract, both gates, the taint rule and
+the offline guards only (`../../demo-severity-rubric.sh`, wired into `tools/colony-lint.sh`).
+
 ## Operationalize-before-you-hunt: measured NO-GO (#2213 M2, 2026-09-15)
 
 The #2211 `OPERATIONALIZE_LENS` directive — a cross-class METHOD (derive code-grounded checks, write them
