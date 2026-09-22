@@ -284,6 +284,54 @@ held-out row is the follow-on measurement: inject `C25` into the frozen `scope.t
 target's exit zone, 2 repeats against the #2231 control rows, plus ONE dev-zone sanity run reported
 explicitly as in-distribution and never as recall.
 
+### Dismissal-rubric lens (#2245, iteration 2 of the miss-shape lens program)
+
+Iteration 1 closed the generation gap on this shape and exposed the next one exactly. **3 of 3 runs reached the
+ground-truth mechanism, 0 of 3 kept it**, and every loss applied ONE criterion at one of the two decision points
+downstream of generation:
+
+| run | role | reached the GT mechanism? | where it was lost | ground given |
+|---|---|---|---|---|
+| held-out `src__p2` r1 | test | yes (emitted as a candidate) | refute gate | owner-only intentional guard; no external attacker; the max-period exit bypasses it, so "no funds locked" |
+| held-out `src__p2` r2 | test | yes (written out, then SAFE) | hunter dismissal | trusted-owner config trigger; the alternate exit remains; "recoverable liveness degradation, not exploitable by an unprivileged attacker" |
+| dev `src_rewards` r1 | dev twin (in-distribution) | yes (written out, then SAFE) | hunter dismissal | dust / stranded-to-void; no attacker gain; blocks no user action |
+
+Reading: what the machine and the contest disagree on is **what counts as a Medium**. Three rows, two contests,
+one criterion — *no unprivileged attacker gain and no funds locked ⇒ not a bug* — while the contest rubric
+accepted all three as *core functionality broken / value misaccounted under a state the protocol's own validation
+admits*, attacker-free and alternative-path-irrelevant. That is a **severity-model** gap, not another mechanism
+gap, which is why iteration 2 is NOT a new taxonomy class: a severity judgment is cross-class (it cannot be
+routed to a zone) and is not a code shape, so writing it as a class would put the rubric in the lens of ONE class
+while every other class kept the old one.
+
+**The lens** is therefore a rubric installed at BOTH decision points (`auditor/agents/hunter.ag` and
+`auditor/agents/refuter.ag`, one byte-identical source string), with a **closed ground list**, a structured
+output line per side, a bounded named re-ask in each driver, and — on the hunt side only — promotion of a
+still-insufficient dismissal to a tier-1 `Medium` candidate:
+
+| half | rubric shapes offered | insufficient grounds (alone AND in any union) | sufficient grounds (each needs its citation) | gate action |
+|---|---|---|---|---|
+| hunter (`run-discovery.sh`) | valid-input liveness loss / attacker-free misaccounting / alternative-path rule | `no-attacker`, `trusted-config`, `alt-path`, `dust-unquantified` | `guard`, `unreachable`, `no-loss`, `known-issue`, `immaterial-quantified` | `DISMISS\|` line per unreported lead → grouped by location → 1 re-ask naming the open locations → PROMOTE the survivor to `Medium` |
+| refute gate (`run-refute.sh`) | identical text | identical list | identical list | `REFUTE-GROUND\|` ahead of a REFUTED verdict → 1 re-ask naming the ground → verdict STAYS `REFUTED`, reason prefixed `rubric-insufficient: `, row in `rubric-dismissals.tsv` |
+
+No mechanical `REFUTED → REAL` flip: escalating a held refutation would make the pre-registered gate
+mechanically reachable and therefore meaningless. The knob `SEVERITY_RUBRIC` is independent of
+`OPERATIONALIZE_LENS` so the arm stays single-variable, and is default OFF (both prompts byte-identical, both
+drivers inert without the agents' own sentinel).
+
+**Pre-registered measurement.** Arm `rubric` = the iteration-1 `c25` arm plus `export SEVERITY_RUBRIC=1` and
+nothing else changed. Same frozen held-out base and zone, **×2 repeats**, **GO iff the target row SURVIVES to
+`verified_findings.json` in 2/2** — read from the cell logs, the refute verdicts, `rubric-dismissals.tsv` and the
+per-cell `dismissals` / `insufficient_dismissals` / `rubric_promoted` keys. Pair-exact scoreboard credit stays
+SECONDARY for the reason recorded in iteration 1 (the report link resolves to the config setter, not the bug
+site). Dev-twin sanity ×1 each, reported as in-distribution only and never as recall. Also reported per arm:
+compliance dosage (`dismissals` per cell — a SAFE reply with zero `DISMISS` lines is non-compliance, and that is
+the honest limit of an output gate), the re-ask count, and promotions-confirmed vs promotions-refuted so the
+precision cost is measured rather than assumed.
+
+**Status: IN-FLIGHT — recall is UNMEASURED.** This iteration ships the rubric, both output gates, the promotion
+rule and the offline guards only (`../../demo-severity-rubric.sh`, wired into `tools/colony-lint.sh`).
+
 ## Operationalize-before-you-hunt: measured NO-GO (#2213 M2, 2026-09-15)
 
 The #2211 `OPERATIONALIZE_LENS` directive — a cross-class METHOD (derive code-grounded checks, write them

@@ -171,6 +171,24 @@
 #                       applies to `getenv()` inside an `.ag` agent only. The whole gate is INERT whenever
 #                       OPERATIONALIZE_LENS is off (no directive => no `OPCHECK|` line => no shortfall),
 #                       which is the production default.
+#   SEVERITY_RUBRIC     #2245 iteration 2 OPT-IN, default UNSET = OFF. `1` injects hunter.ag's contest-severity
+#                       dismissal rubric + the CLOSED ground list into the shared RULES block and asks the cell
+#                       for one `DISMISS|<file:function[:line]>|<ground-id>|<evidence>` line per lead it matched
+#                       and did not report. Unset / any other value leaves the assembled prompt BYTE-IDENTICAL
+#                       to the pre-#2245 one, and leaves the gate below inert (no sentinel => no shortfall).
+#                       INDEPENDENT of OPERATIONALIZE_LENS (issue #2245 STOP-1 decision 3): the measured
+#                       dismissals happened in lens-OFF cells too, and coupling the two would make the arm a
+#                       two-variable experiment. It rides exec.env_passthrough, else getenv() could not see it.
+#                       The SAME export also reaches run-refute.sh's gate, so one variable covers both halves.
+#   DF_RUBRIC_MAX_REASKS  #2245 iteration 2: how many times a cell that answered WITHOUT a candidate while it
+#                       dismissed at least one lead on an INSUFFICIENT ground is re-asked before the surviving
+#                       locations are PROMOTED to tier-1 `Medium` candidates. Default 1; 0 = gate-only (record
+#                       and promote, never re-ask); garbage => 1. Read by this SHELL, so it needs no
+#                       exec.env_passthrough entry — the #1426 trap applies to `getenv()` inside an `.ag` only.
+#   DISMISS_REASK_GROUNDS  #2245 iteration 2: the open `<loc> (<ground>)` list the ground re-ask names. Set by
+#                       run_cell ONLY on that re-ask (and only inside a rubric-ON cell), so it is empty on every
+#                       first attempt and that prompt is unchanged. It rides exec.env_passthrough for the #1426
+#                       reason: unregistered, the re-ask would silently replay the same prompt.
 #   DF_EXTERNAL_RESOLVE #2235: `1` turns the external-protocol reading on, exactly like `--external-resolve`
 #                       (any other value, and unset, leave it OFF — the default), so one export covers every
 #                       zone of a run-zone-hunt.sh hunt.
@@ -266,6 +284,32 @@
 #       count) — the record #2217 consumes to turn a rare-class UNRESOLVED into a second-tier candidate.
 #   RE-ASK: one (DF_TRACE_MAX_REASKS, default 1), and it NAMES the open ids through TRACE_REASK_IDS, which
 #   hunter.ag renders inside the lens block. Empty on every first attempt => that prompt is unchanged.
+#
+# #2245 ITERATION 2 — THE DISMISSAL-GROUND GATE, AND ITS EXACT STATUS SEMANTICS:
+#   MEASURED CAUSE: iteration 1 closed the generation gap on the held-out shape (3 of 3 runs reached the
+#   ground-truth mechanism) and lost it 3 of 3 times downstream, every time on ONE criterion applied at the
+#   hunter's SAFE or at the refute gate's REFUTED: "no unprivileged attacker gain and no funds locked => not a
+#   bug". The contest rubric accepts those rows as Medium. So this gate does not touch routing or generation.
+#   GRAMMAR (knob-gated, so a knob-OFF prompt is byte-identical): with SEVERITY_RUBRIC=1 hunter.ag carries the
+#   severity rubric + a CLOSED ground list and writes `DISMISS|<file:function[:line]>|<ground-id>|<evidence>`
+#   for every lead it matched to the class pattern and did not report. Exactly four ground ids are INSUFFICIENT
+#   (`no-attacker`, `trusted-config`, `alt-path`, `dust-unquantified`) — each alone AND in any union — and five
+#   are SUFFICIENT with the evidence each names (`guard`, `unreachable`, `no-loss`, `known-issue`,
+#   `immaterial-quantified`). A missing/empty/unrecognised id counts as insufficient (_rubric_sufficient_grounds
+#   is therefore the single decider, and the four insufficient ids need no second list in this shell).
+#   THE GATE: grouped BY LOCATION, because the measured loss stacked three insufficient grounds on one lead.
+#   One re-ask (DF_RUBRIC_MAX_REASKS, default 1) NAMES the open locations through DISMISS_REASK_GROUNDS.
+#   STATUS SEMANTICS (no new status vocabulary, and this gate NEVER fails a cell):
+#     * knob off, or no `SEVERITY-RUBRIC|` sentinel in the log => gap 0, gate inert, JSON key set unchanged.
+#     * a cell with a CANDIDATE|, a `.novalid` or a `.timeout` marker is never re-asked (the first has a lead to
+#       lose, the other two never answered and already own their FAILED reason).
+#     * shortfall survives the re-ask => each surviving location whose `file:function` RESOLVES in this cell's
+#       own file list becomes a NORMAL tier-1 `Medium` candidate (status stays `ok`), recorded as
+#       `rubric_promoted`; a location that does not resolve is DROPPED and only counted.
+#     * `dismissals` (the compliance dosage) and `insufficient_dismissals` are recorded per cell either way.
+#   A promoted candidate is still an unproven LEAD: it is judged by the refute gate and needs a PASSING Foundry
+#   PoC before it is a finding, exactly like a model-emitted one. Tier 1 rather than a tier-2 record because
+#   verify-findings.sh keeps tier-2 verdicts out of `verified[]` by construction (issue #2245 STOP-1 decision 2).
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -282,6 +326,11 @@ DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
 # Validated exactly like df_max_attempts, except the floor is 0 (0 = gate-only, no re-ask).
 DF_TRACE_MAX_REASKS="${DF_TRACE_MAX_REASKS:-1}"
 case "$DF_TRACE_MAX_REASKS" in ''|*[!0-9]*) DF_TRACE_MAX_REASKS=1 ;; esac
+# #2245 iteration 2: the re-ask ceiling for the dismissal-GROUND gate (see the Env block above). Validated
+# exactly like DF_TRACE_MAX_REASKS, floor 0 (0 = gate-only: record + promote, never re-ask). The gate itself is
+# inert without the SEVERITY-RUBRIC| sentinel, so this value is irrelevant on a default (knob-off) run.
+DF_RUBRIC_MAX_REASKS="${DF_RUBRIC_MAX_REASKS:-1}"
+case "$DF_RUBRIC_MAX_REASKS" in ''|*[!0-9]*) DF_RUBRIC_MAX_REASKS=1 ;; esac
 # agentis-core#993: pre-accept Claude Code's workspace-trust dialog for every dir a
 # hunter session cd's into (the shared $RUN store on the serial/depth path, each
 # isolated cell dir on the parallel path), else the flat-cyborg/claude session
@@ -701,7 +750,12 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # FORK_URL deliberately does NOT: hunter.ag never reads the endpoint (onchain-fact.sh does, from the cell's
   # own environment), and keeping it off the sanitised env is what guarantees an RPC URL — routinely a
   # key-bearing secret — can never be interpolated into a prompt.
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET,ONCHAIN_FACT,ONCHAIN_BUDGET_STATE,ONCHAIN_BUDGET,FORK_BLOCK"
+  # #2245 iteration 2 SEVERITY_RUBRIC/DISMISS_REASK_GROUNDS ride it for exactly the #1426 reason: hunter.ag
+  # gates the whole rubric on getenv("SEVERITY_RUBRIC"), which reads the SANITISED env — unregistered => "" =>
+  # the opt-in could never reach the agent and the feature would be silently inert. DISMISS_REASK_GROUNDS is
+  # set by run_cell ONLY on a ground re-ask: unregistered => "" => the re-ask would replay the same prompt
+  # instead of naming the open locations. Both are EMPTY on a default run, so registering them changes nothing.
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET,ONCHAIN_FACT,ONCHAIN_BUDGET_STATE,ONCHAIN_BUDGET,FORK_BLOCK,SEVERITY_RUBRIC,DISMISS_REASK_GROUNDS"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: hunter.ag ends its tick with `learn("hunt", ...)`, and it is that WRITE
   # the flag gates (#1878 measured it on agentis v1.28.0 — `experience.enabled = false` makes learn() raise
@@ -809,6 +863,7 @@ _json_id_array() {
 # `CANDIDATE|` line opens/flushes a record; a `BLACKBOARD-*` line, a `DEPTH-CELL|` line (#1827), an
 # `APPENDIX-CONTEXT|` line (#1865), a `REFUTE-CONSTRAINTS|` line (#1887), a `CALLEE-TRUST|` line (#2145), an
 # `OPERATIONALIZE|` line or a model-emitted `OPCHECK|` line (#2211) or a model-emitted `TRACE|` line (#2214)
+# or a `SEVERITY-RUBRIC|` line or a model-emitted `DISMISS|` line (#2245 iteration 2)
 # or a blank line closes the current record
 # without starting a new one
 # (these are the only meaningful boundary tokens in a hunt log — see hunter.ag's own framing); any other line
@@ -823,7 +878,7 @@ _join_wrapped_candidates() {
       rec = $0
       next
     }
-    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*ONCHAIN-FACT\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*ONCHAIN-FACT\|/ || /^[[:space:]]*SEVERITY-RUBRIC\|/ || /^[[:space:]]*DISMISS\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
       if (rec != "") { print rec; rec = "" }
       next
     }
@@ -1629,6 +1684,201 @@ _untraced_safe() {
   [ "$(_opcheck_trace_gap "$us_log" "$us_repo" "$us_cache")" -gt 0 ]
 }
 
+# --- #2245 iteration 2: THE DISMISSAL-GROUND GATE ----------------------------------------------------------
+# The measured gap (iteration 1, three runs on the frozen base): 3 of 3 runs REACHED the ground-truth mechanism
+# and 0 of 3 KEPT it, and every loss applied one criterion — "no unprivileged attacker gain and no funds locked
+# => not a bug" — at the hunter's SAFE or at the refute gate's REFUTED. hunter.ag now carries the contest
+# severity rubric + a CLOSED ground list and must write one `DISMISS|<file:function[:line]>|<ground-id>|
+# <evidence>` line per lead it matched and did not report (SEVERITY_RUBRIC=1 only). This is the OUTPUT half:
+# prompt text is not a gate (the #2213 lesson), so the grounds are checked HERE.
+#
+# Everything below is INERT by construction when the knob is off: `_rubric_dismissal_gap` returns 0 unless the
+# log carries the honesty-gated `SEVERITY-RUBRIC|` sentinel, exactly like `_opcheck_trace_gap` returns 0 for a
+# log with no `OPCHECK|` line. No sentinel, no gate, no re-ask, no promotion, no extra JSON key.
+
+# _rubric_sufficient_grounds — the CLOSED list of ground ids a dismissal may stand on, as one space-separated
+# line. It is the shell twin of the list inside hunter.ag/refuter.ag's severity_rubric_block(), and the ONE
+# decider this gate uses: a ground that is not on this list is insufficient, which is exactly the rubric's
+# "a missing, empty or unrecognised ground id counts as INSUFFICIENT" rule — so the four INSUFFICIENT ids need
+# no second list here and cannot drift out of sync with one. run-refute.sh declares a byte-identical function
+# (demo-severity-rubric.sh diffs the two, and both against the prompt text).
+_rubric_sufficient_grounds() {
+  printf '%s\n' 'guard unreachable no-loss known-issue immaterial-quantified'
+}
+
+# _dismiss_lines <log> — the DISTINCT, whitespace-trimmed `DISMISS|` records of one cell log, one per output
+# line, with any PTY prefix ahead of the token stripped. Leading-whitespace tolerant and `sort -u`-normalised
+# exactly like _distinct_trace_lines, because `DISMISS|` is MODEL-emitted free text and a PTY capture routinely
+# indents (and occasionally prefixes) it. `sort -u` is what keeps a repeated dismissal from inflating the gap.
+_dismiss_lines() {
+  dl_log="$1"
+  [ -f "$dl_log" ] || return 0
+  grep -E '^[[:space:]]*DISMISS\|' "$dl_log" 2>/dev/null \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u | grep . || true
+}
+
+# _dismiss_ground <line> — field 3 of a `DISMISS|` record, trimmed and lowercased. Empty for a malformed line,
+# which the rubric already treats as insufficient, so no separate malformed branch is needed anywhere.
+_dismiss_ground() {
+  printf '%s' "$1" | cut -d'|' -f3 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]'
+}
+
+# _insufficient_dismissal_rows <log> — one `<location>\t<ground-id>\t<evidence>` row per location whose DISMISS
+# lines carry ONLY insufficient or unrecognised grounds, in the NORMALISED record order (_dismiss_lines applies
+# `sort -u`, so the order is lexicographic rather than log order — deterministic, which is what the re-ask
+# addressing and the promotion both need). The UNION rule of the rubric
+# is implemented here and is the whole point of grouping by LOCATION rather than by line: the measured loss
+# stacked THREE insufficient grounds on one lead, so any number of them still leaves the location open, while a
+# single SUFFICIENT ground on that same location closes it. The row keeps the FIRST insufficient line's ground
+# and evidence, which is what the re-ask names and what a promoted candidate carries.
+_insufficient_dismissal_rows() {
+  idr_log="$1"
+  [ -f "$idr_log" ] || return 0
+  _dismiss_lines "$idr_log" | awk -F'|' -v suff="$(_rubric_sufficient_grounds)" '
+    BEGIN { n = split(suff, a, " "); for (i = 1; i <= n; i++) S[a[i]] = 1 }
+    {
+      loc = $2; g = tolower($3); ev = $4
+      sub(/^[[:space:]]+/, "", loc); sub(/[[:space:]]+$/, "", loc)
+      sub(/^[[:space:]]+/, "", g);   sub(/[[:space:]]+$/, "", g)
+      sub(/^[[:space:]]+/, "", ev);  sub(/[[:space:]]+$/, "", ev)
+      if (loc == "") next
+      if (!(loc in seen)) { seen[loc] = 1; order[++k] = loc }
+      if (g in S) { ok[loc] = 1; next }
+      if (!(loc in ground)) { ground[loc] = g; evid[loc] = ev }
+    }
+    END { for (i = 1; i <= k; i++) if (!(order[i] in ok)) print order[i] "\t" ground[order[i]] "\t" evid[order[i]] }
+  '
+}
+
+# _insufficient_dismissal_locs <log> — just the locations of the rows above (the gate reads this, the promotion
+# reads the rows).
+_insufficient_dismissal_locs() {
+  _insufficient_dismissal_rows "$1" | cut -f1
+}
+
+# _rubric_dismissal_gap <log> — the ground shortfall of ONE cell log as a single integer: how many DISTINCT
+# locations this cell dismissed without a sufficient ground. Prints 0 when the log carries no
+# `SEVERITY-RUBRIC|` sentinel — which is EVERY cell whenever SEVERITY_RUBRIC is off (the production default) —
+# so the gate is inert there by construction rather than merely cheap, the same contract as _opcheck_trace_gap.
+# Whether a SUFFICIENT ground's cited evidence really settles the lead stays an OPERATOR read (the #2214
+# anti-Goodhart rule): this shell decides only whether a ground id is on the closed list.
+_rubric_dismissal_gap() {
+  rdg_log="$1"
+  if [ ! -f "$rdg_log" ]; then printf '0\n'; return 0; fi
+  if ! grep -qE '^[[:space:]]*SEVERITY-RUBRIC\|' "$rdg_log" 2>/dev/null; then printf '0\n'; return 0; fi
+  rdg_n="$(_insufficient_dismissal_locs "$rdg_log" | grep -c . || true)"
+  case "$rdg_n" in ''|*[!0-9]*) rdg_n=0 ;; esac
+  printf '%s\n' "$rdg_n"
+}
+
+# _rubric_reask_needed <log> — the RE-ASK predicate, with the same four guards as _untraced_safe and in the
+# same order:
+#   * a #1707 chrome miss / #1955 terminal timeout already OWNS this cell's FAILED reason, so re-asking it
+#     would spend a call on a cell that never answered;
+#   * no `SEVERITY-RUBRIC|` sentinel => the rubric was off for this cell => nothing to gate;
+#   * a cell that produced a LEAD is never re-asked (a re-ask could lose it) — and its dismissals are still
+#     recorded per cell by _accumulate_cell;
+#   * finally the arithmetic itself.
+# RE-ASK SAFETY is #1707's argument unchanged: a cell with no `CANDIDATE|` posted nothing to the blackboard and
+# emit()ed no lead, so a re-ask cannot double-post.
+_rubric_reask_needed() {
+  rrn_log="$1"
+  if [ ! -f "$rrn_log" ]; then return 1; fi
+  if [ -f "$rrn_log.novalid" ] || [ -f "$rrn_log.timeout" ]; then return 1; fi
+  if ! grep -qE '^[[:space:]]*SEVERITY-RUBRIC\|' "$rrn_log" 2>/dev/null; then return 1; fi
+  if grep -v '^BLACKBOARD-' "$rrn_log" 2>/dev/null | grep -q 'CANDIDATE|'; then return 1; fi
+  [ "$(_rubric_dismissal_gap "$rrn_log")" -gt 0 ]
+}
+
+# _rubric_open_grounds <log> — the open locations the re-ask must name, as `<loc> (<ground>), <loc> (<ground>)`.
+# Empty when there are none. It names only what the CELL ITSELF wrote down, so nothing of this harness's own
+# judgement enters the prompt.
+_rubric_open_grounds() {
+  rog_out=""
+  while IFS='	' read -r rog_loc rog_g; do
+    [ -n "$rog_loc" ] || continue
+    rog_one="$rog_loc (${rog_g:-no ground given})"
+    if [ -z "$rog_out" ]; then rog_out="$rog_one"; else rog_out="$rog_out, $rog_one"; fi
+  done <<EOF
+$(_insufficient_dismissal_rows "$1" | cut -f1,2)
+EOF
+  printf '%s\n' "$rog_out"
+}
+
+# _rubric_promote <log> <class> <files> — the PROMOTION half of the gate (issue #2245 STOP-1 decision 2): when a
+# location's dismissal is STILL insufficient after the bounded re-ask, synthesise a TIER-1 candidate for it into
+# "<log>.rubric-promoted" — one `RUBRIC-PROMOTED|<loc>|<ground-id>` provenance line followed by one
+# `CANDIDATE|<loc>|class=<cls>|Medium|<the cell's own evidence>|<PoC sketch>` line.
+#
+# WHY TIER 1 AND NOT A TIER-2 RECORD: verify-findings.sh puts tier-2 verdicts in a separate top-level `tier2[]`
+# array and NEVER in `verified[]`, so a tier-2 record cannot reach verified_findings.json by construction — the
+# pre-registered measurement for this iteration would be unreadable. Precision is held by the gates that stay
+# live: a promoted lead is still judged by the refute gate and still needs a PASSING PoC before it is a finding,
+# it is capped at `Medium`, it fires at most ONCE per location, and it exists only because the MODEL wrote a
+# `DISMISS|` line naming a location that RESOLVES inside this cell's own file list (_tier2_resolve_file +
+# _tier2_emit_loc, the shipped validators — an unresolvable location is DROPPED, never guessed).
+#
+# The cell LOG is never written to: it stays a pure model transcript, and the sidecar's suffix deliberately does
+# not end in `.log` so `find -name 'hunt_*.log'` readouts and the hunt dashboard keep seeing one log per cell.
+# ACCEPTED ASYMMETRY, documented rather than hidden: a promoted candidate is NOT posted to the #1001 blackboard
+# — hunter.ag posts only what the model itself emitted — so it does not steer later cells.
+_rubric_promote() {
+  rp_log="$1"; rp_cls="$2"; rp_files="$(printf '%s' "$3" | tr '\n' ',')"
+  [ -f "$rp_log" ] || return 0
+  rp_out="$rp_log.rubric-promoted"
+  rm -f "$rp_out"
+  while IFS='	' read -r rp_loc rp_ground rp_ev; do
+    [ -n "$rp_loc" ] || continue
+    # `file:function[:line]` -> the basename and the function half; an optional `:line` tail is dropped
+    # (_tier2_emit_loc pins exactly `<path>.sol:<function>`, which is what score-match.py can parse).
+    case "$rp_loc" in *:*) ;; *) continue ;; esac
+    rp_base="${rp_loc%%:*}"; rp_base="${rp_base##*/}"
+    rp_fn="${rp_loc#*:}"; rp_fn="${rp_fn%%:*}"
+    [ -n "$rp_base" ] && [ -n "$rp_fn" ] || continue
+    rp_path="$(_tier2_resolve_file "$rp_base" "$rp_files")"
+    [ -n "$rp_path" ] || continue
+    rp_row="$(_tier2_emit_loc "$rp_path:$rp_fn" rubric dismissal || true)"
+    [ -n "$rp_row" ] || continue
+    rp_final="${rp_row%%	*}"
+    # A `|` inside the model's evidence would add a field to the candidate record every downstream reader
+    # splits on, so it is mapped to `/` exactly like run-refute.sh's _clean_reason does for a verdict reason.
+    rp_ev_clean="$(printf '%s' "$rp_ev" | tr '|' '/' | sed 's/[[:space:]][[:space:]]*/ /g; s/^ *//; s/ *$//')"
+    [ -n "$rp_ev_clean" ] || rp_ev_clean="dismissed on the insufficient ground '$rp_ground' with no evidence given"
+    printf 'RUBRIC-PROMOTED|%s|%s\n' "$rp_final" "$rp_ground" >> "$rp_out"
+    printf 'CANDIDATE|%s|class=%s|Medium|%s|PoC sketch: reproduce the admitted state, call the documented path, and assert the revert or the value delta\n' \
+      "$rp_final" "$rp_cls" "$rp_ev_clean" >> "$rp_out"
+  done <<EOF
+$(_insufficient_dismissal_rows "$rp_log")
+EOF
+}
+
+# _rubric_promoted_candidates <log> — the promoted `CANDIDATE|` records of one cell, or nothing. This is the ONE
+# reader through which a shell-promoted lead enters the pipeline; _cell_candidates below unions it with the
+# model-emitted records at both scrape sites, so a promoted lead reaches $REPORT, `candidates[]`, the depth plan
+# and the refute gate exactly like a model-emitted one.
+_rubric_promoted_candidates() {
+  rpc_log="$1"
+  [ -s "$rpc_log.rubric-promoted" ] || return 0
+  grep -E '^CANDIDATE\|' "$rpc_log.rubric-promoted" 2>/dev/null || true
+}
+
+# _rubric_promoted_count <log> — how many locations this cell's gate promoted (0 without the sidecar).
+_rubric_promoted_count() {
+  rpn_log="$1"
+  rpn_n="$(grep -cE '^RUBRIC-PROMOTED\|' "$rpn_log.rubric-promoted" 2>/dev/null || true)"
+  case "$rpn_n" in ''|*[!0-9]*) rpn_n=0 ;; esac
+  printf '%s\n' "$rpn_n"
+}
+
+# _cell_candidates <log> — every candidate record of one cell: the model-emitted (PTY-unwrapped) ones first,
+# then the #2245 promoted ones. Both scrape sites call THIS, so the two paths cannot disagree about what a cell
+# produced. With the knob off the second half emits nothing and the output is byte-identical to
+# _join_wrapped_candidates alone.
+_cell_candidates() {
+  _join_wrapped_candidates "$1" 2>/dev/null || true
+  _rubric_promoted_candidates "$1"
+}
+
 # _accumulate_cell <subsys> <cls> <files> <log> [status] [phase] — append ONE JSON object for this cell to
 # $CELLS_JSONL (additive; feeds discovery-results.json). Never touches $REPORT. [status] defaults to "ok";
 # a #1707 no-sentinel-after-retries cell is recorded as "failed" so the JSON distinguishes it from a clean
@@ -1665,7 +1915,7 @@ _accumulate_cell() {
     ac_c="$(printf '%s' "$ac_line" | sed 's/^.*\(CANDIDATE|\)/\1/; s/^CANDIDATE|//')"
     ac_c="$(_json_str "$ac_c")"
     if [ -z "$ac_cands" ]; then ac_cands="$ac_c"; else ac_cands="$ac_cands,$ac_c"; fi
-  done < <(_join_wrapped_candidates "$ac_log" 2>/dev/null || true)
+  done < <(_cell_candidates "$ac_log" 2>/dev/null || true)
   ac_coord=""
   if grep -q '^BLACKBOARD-FOCUS|' "$ac_log" 2>/dev/null; then
     ac_f="$(grep '^BLACKBOARD-FOCUS|' "$ac_log" | head -1 | sed 's/^BLACKBOARD-FOCUS|//')"
@@ -1717,11 +1967,27 @@ _accumulate_cell() {
     if [ -z "$ac_unresolved_ids" ]; then ac_unresolved_ids="$ac_ur_obj"; else ac_unresolved_ids="$ac_unresolved_ids,$ac_ur_obj"; fi
   done < <(_unresolved_check_ids "$ac_log" 2>/dev/null || true)
   if [ -n "$ac_unresolved_ids" ]; then ac_unresolved_ids_json=",\"unresolved_ids\":[$ac_unresolved_ids]"; fi
-  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s%s%s%s%s%s%s}\n' \
+  # #2245 iteration 2: the dismissal dosage + the gate's two outcomes. Appended LAST, after every #2223 key, and
+  # ONLY when non-zero — so a rubric-OFF cell (no DISMISS| line, no sentinel => all three are 0) keeps its exact
+  # pre-#2245 key set and _plan_depth_cells's forward key scan (subsystem -> class -> files -> status ->
+  # candidates) is untouched. `dismissals` is the compliance-dosage metric the arm readout needs: a SAFE reply
+  # with zero DISMISS lines is non-compliance, and an output gate cannot see a lead that was never written down.
+  ac_dismissals_json=""
+  ac_dis="$(_dismiss_lines "$ac_log" | grep -c . || true)"
+  case "$ac_dis" in ''|*[!0-9]*) ac_dis=0 ;; esac
+  if [ "$ac_dis" -gt 0 ]; then ac_dismissals_json=",\"dismissals\":$ac_dis"; fi
+  ac_insuff_json=""
+  ac_insuff="$(_rubric_dismissal_gap "$ac_log")"
+  if [ "$ac_insuff" -gt 0 ]; then ac_insuff_json=",\"insufficient_dismissals\":$ac_insuff"; fi
+  ac_promoted_json=""
+  ac_prom="$(_rubric_promoted_count "$ac_log")"
+  if [ "$ac_prom" -gt 0 ]; then ac_promoted_json=",\"rubric_promoted\":$ac_prom"; fi
+  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s%s%s%s%s%s%s%s%s%s}\n' \
     "$(_json_str "$ac_subsys")" "$(_json_str "$ac_cls")" "$(_json_str "$ac_files")" \
     "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" "$ac_appendix_json" \
     "$ac_opchecks_json" "$ac_traces_json" "$ac_untraced_json" "$ac_unresolved_json" \
-    "$ac_rule_json" "$ac_orphans_json" "$ac_untraced_ids_json" "$ac_uncited_ids_json" "$ac_unresolved_ids_json" >> "$CELLS_JSONL"
+    "$ac_rule_json" "$ac_orphans_json" "$ac_untraced_ids_json" "$ac_uncited_ids_json" "$ac_unresolved_ids_json" \
+    "$ac_dismissals_json" "$ac_insuff_json" "$ac_promoted_json" >> "$CELLS_JSONL"
   # #2217: the tier-2 carry, appended to the RUN-scoped accumulator AFTER the cell object is written and
   # gated on the feature flag — so an OFF run does no extra work, writes no extra file, and emits the same
   # bytes it did before #2217. _accumulate_cell is called in MANIFEST order on the serial, parallel
@@ -1767,6 +2033,10 @@ run_cell() {
   # #2223: the ids the follow-through re-ask must name. EMPTY on the first attempt (and on every count-rule
   # cell), so the first prompt — and every lens-OFF prompt — is byte-identical to the pre-#2223 one.
   rc_reask_ids=""
+  # #2245 iteration 2: the open dismissal locations the GROUND re-ask must name. EMPTY on the first attempt (and
+  # on every rubric-OFF cell), so the first prompt — and every rubric-OFF prompt — is byte-identical to the
+  # pre-#2245 one.
+  rc_dismiss_grounds=""
   # #2235: one budget-state file per CELL, named after this cell's log so the two can never disagree about
   # which cell they belong to. "" when --external-resolve is off, which makes all four env entries below empty
   # and hunter.ag's directive exactly "". The file is NOT reset between re-asks: a re-ask is the same cell, so
@@ -1800,6 +2070,8 @@ run_cell() {
         APPENDIX_FILE="$rc_appendix_file" \
         APPENDIX_BASE="$rc_appendix_base" \
         TRACE_REASK_IDS="$rc_reask_ids" \
+        SEVERITY_RUBRIC="${SEVERITY_RUBRIC:-}" \
+        DISMISS_REASK_GROUNDS="$rc_dismiss_grounds" \
         EXTERNAL_RESOLVER="${EXTERNAL_RESOLVER:+$rc_dir/resolve-external.sh}" \
         EXTERNAL_CACHE="$EXTERNAL_CACHE" \
         EXTERNAL_BUDGET_STATE="$rc_ext_state" \
@@ -1846,6 +2118,31 @@ run_cell() {
   # correct UNRESOLVED carry, which is exactly what the #2214 M3 dismissal r1 C23 cell lost.
   if _untraced_safe "$rc_log" "$REPO" "$EXTERNAL_CACHE" && _all_checks_untraced "$rc_log"; then
     _opcheck_trace_gap "$rc_log" "$REPO" "$EXTERNAL_CACHE" > "$rc_log.untraced"
+  fi
+  # #2245 iteration 2 — THE DISMISSAL-GROUND GATE, a SECOND bounded re-ask with the same shape as the
+  # follow-through one above. A reply that carries the rubric sentinel, no candidate, and at least one location
+  # dismissed on a ground the closed list treats as INSUFFICIENT is not a rigorous negative: it is the exact
+  # shape the iteration-1 forensics measured (the cell wrote the ground-truth mechanism out and then ruled it
+  # out on "trusted-owner config / no attacker / another exit remains"). Re-ask up to DF_RUBRIC_MAX_REASKS
+  # times (default 1) NAMING the open locations and their grounds; if the shortfall survives, PROMOTE each
+  # surviving location to a tier-1 `Medium` candidate (_rubric_promote). Re-ask safety is #1707's argument
+  # unchanged: a cell with no CANDIDATE| posted nothing to the blackboard and emit()ed no lead.
+  # The superseded attempt is kept as "$rc_log.rubric-attempt-N" — a suffix deliberately NOT ending in `.log`,
+  # so `find -name 'hunt_*.log'` readouts and the hunt dashboard keep seeing exactly one log per cell.
+  # This gate NEVER fails a cell: a promoted candidate is a normal candidate, and a surviving shortfall with no
+  # resolvable location is recorded (insufficient_dismissals) rather than turned into a FAILED row.
+  rm -f "$rc_log.rubric-promoted"
+  rc_rubric=1
+  while [ "$rc_rubric" -le "$DF_RUBRIC_MAX_REASKS" ] && _rubric_reask_needed "$rc_log"; do
+    rc_dismiss_grounds="$(_rubric_open_grounds "$rc_log")"
+    echo "run-discovery.sh:   ↳ insufficient-dismissal: $rc_cls/'$rc_subsys' dismissed $(_rubric_dismissal_gap "$rc_log") lead(s) on an insufficient ground${rc_dismiss_grounds:+ ($rc_dismiss_grounds)} — re-asking ($rc_rubric/$DF_RUBRIC_MAX_REASKS)" >&2
+    mv -f "$rc_log" "$rc_log.rubric-attempt-$rc_rubric" 2>/dev/null || true
+    df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-discovery.sh: $rc_cls/'$rc_subsys' (ground re-ask $rc_rubric)" "$rc_log" hunter "" _rc_attempt || true
+    rc_rubric=$((rc_rubric + 1))
+  done
+  rc_dismiss_grounds=""
+  if _rubric_reask_needed "$rc_log"; then
+    _rubric_promote "$rc_log" "$rc_cls" "$rc_in_scope"
   fi
 }
 
@@ -1918,6 +2215,18 @@ scrape_cell_log() {
   if [ "$sc_unres" -gt 0 ]; then
     echo "run-discovery.sh:   ↳ $sc_unres UNRESOLVED check(s): $sc_cls/'$sc_subsys' could not settle them from its payload (recorded as \"unresolved\"; this cell's negative is NOT a rigorous clean sweep)" >&2
   fi
+  # #2245 iteration 2: the dismissal-ground readout. A surviving insufficient dismissal is NOT a failed cell —
+  # the gate's answer is the promotion, not a discarded cell — but it is not a rigorous clean sweep either, so
+  # both numbers are surfaced here and recorded as the additive `insufficient_dismissals` / `rubric_promoted`
+  # fields by _accumulate_cell below. Silent on every rubric-OFF cell (the gap is 0 without the sentinel).
+  sc_rubric_gap="$(_rubric_dismissal_gap "$sc_log")"
+  if [ "$sc_rubric_gap" -gt 0 ]; then
+    echo "run-discovery.sh:   ↳ $sc_rubric_gap insufficient dismissal(s): $sc_cls/'$sc_subsys' ruled out lead(s) on a ground the closed list does not accept ($(_rubric_open_grounds "$sc_log")); this cell's negative is NOT a rigorous clean sweep" >&2
+  fi
+  sc_promoted="$(_rubric_promoted_count "$sc_log")"
+  if [ "$sc_promoted" -gt 0 ]; then
+    echo "run-discovery.sh:   ↳ PROMOTED $sc_promoted dismissed lead(s) to Medium candidate(s) after the ground re-ask: $sc_cls/'$sc_subsys' (still judged by the refute gate and the PoC gate)" >&2
+  fi
   # #1001 coordination: the hunter reads a shared BLACKBOARD before it prompts and posts every
   # CANDIDATE back to it, so a lead an EARLIER cell found steers later cells (corroborate / pivot).
   # Surface both halves of that loop to the operator and the report: BLACKBOARD-FOCUS| = THIS cell was
@@ -1938,13 +2247,16 @@ scrape_cell_log() {
   # The hunter's contract: a `CANDIDATE|file:fn:line|class|severity|exploit|poc` line, or `SAFE`.
   # Exclude the hunter's own `BLACKBOARD-*` diagnostic lines: they echo a lead summary (which no longer
   # carries a bare `CANDIDATE|` token, but stay defensive) and must never be scraped as findings.
-  if grep -v '^BLACKBOARD-' "$sc_log" | grep -q 'CANDIDATE|'; then
+  # #2245 iteration 2: the `|| [ -s ... ]` half is load-bearing — a cell whose only candidate came from the
+  # ground gate's PROMOTION has no `CANDIDATE|` line in its own log, so without it the promoted lead would be
+  # accumulated into the JSON (via _cell_candidates) and never reach $REPORT or the CANDIDATES counter.
+  if grep -v '^BLACKBOARD-' "$sc_log" | grep -q 'CANDIDATE|' || [ -s "$sc_log.rubric-promoted" ]; then
     while IFS= read -r LINE; do
       CAND="$(printf '%s' "$LINE" | sed 's/^.*\(CANDIDATE|\)/\1/')"
       BODY="$(printf '%s' "$CAND" | sed 's/^CANDIDATE|//; s/|/ \/ /g')"
       printf '| %s | %s | %s |\n' "$sc_subsys" "$sc_cls" "$BODY" >> "$REPORT"
       CANDIDATES=$((CANDIDATES + 1))
-    done < <(_join_wrapped_candidates "$sc_log")
+    done < <(_cell_candidates "$sc_log")
     if grep -q '^BLACKBOARD-POST|' "$sc_log"; then
       echo "run-discovery.sh:   ↳ posted a lead to the blackboard for later cells to focus on" >&2
     fi

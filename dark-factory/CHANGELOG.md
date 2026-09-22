@@ -16,6 +16,70 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Contest-severity dismissal rubric on the hunter AND the refute gate, output-gated, default OFF (#2245,
+  iteration 2).** Iteration 1 measured the binding constraint precisely: on the held-out shape **3 of 3 runs
+  REACHED the ground-truth mechanism and 0 of 3 KEPT it**, and all three losses applied ONE criterion — *no
+  unprivileged attacker gain and no funds locked => not a bug* — at two different decision points, the hunter's
+  `SAFE` and the refute gate's `REFUTED`. The contest's own rubric accepted every one of those rows as Medium.
+  So this iteration changes neither routing nor generation: it installs the severity rubric at BOTH decision
+  points, as an OUTPUT contract with a gate rather than a nudge (#2213 measured Delta=+0 for an ungated prompt
+  directive; what worked on this pipeline is the #2214/#2223 shape — emission contract, deterministic output
+  gate, named re-ask).
+
+  **The rubric** names three ATTACKER-FREE Medium shapes — (a) valid-input liveness loss (a documented user path
+  unavailable under a state the protocol's OWN validation admits; an admin action inside the range its setter
+  accepts is a valid INPUT, not a "trusted admin misconfiguration"), (b) attacker-free misaccounting (value
+  stranded / misattributed / emitted to nobody, a bounded loss included), (c) the alternative-path rule (another
+  path cancels nothing unless it is equivalent in COST and in TIME) — plus a **CLOSED ground list**: four
+  INSUFFICIENT ids (`no-attacker`, `trusted-config`, `alt-path`, `dust-unquantified`, each alone AND in any
+  union) and five SUFFICIENT ones that each demand a citation (`guard`, `unreachable`, `no-loss`,
+  `known-issue`, `immaterial-quantified`). A missing or unrecognised id counts as insufficient. The rubric text
+  is ONE source string, byte-identical in `auditor/agents/hunter.ag` and `auditor/agents/refuter.ag`, and the
+  demo diffs the two functions so the hunt-side and gate-side standards cannot drift apart.
+
+  **Hunt side** (`hunter.ag` + `run-discovery.sh`): the rubric rides the shared RULES block immediately after
+  `config_realizability_rule()`, where it qualifies the trusted-role exclusion the measured dismissals hid
+  behind, and asks for one `DISMISS|<file:function[:line]>|<ground-id>|<evidence>` line per lead the cell
+  matched and did not report. `run-discovery.sh` gates on that OUTPUT: it groups dismissals BY LOCATION (the
+  measured loss stacked three insufficient grounds on one lead), re-asks once (`DF_RUBRIC_MAX_REASKS`, default
+  1; `0` = gate-only) NAMING the open locations through `DISMISS_REASK_GROUNDS`, and — if the shortfall survives
+  — PROMOTES each surviving location whose `file:function` resolves in the cell's own file list to a normal
+  tier-1 `Medium` candidate. Tier 1 rather than a tier-2 record because `verify-findings.sh` keeps tier-2
+  verdicts out of `verified[]` by construction; precision is held by the gates that stay live (the refute gate,
+  the PoC gate, the `Medium` cap, one promotion per location, and the requirement that the MODEL wrote the
+  `DISMISS` line). The superseded attempt is kept as `<log>.rubric-attempt-N` and the promotion as
+  `<log>.rubric-promoted` — suffixes that do not end in `.log`, so every `hunt_*.log` readout still sees one log
+  per cell — and the cell log itself is never written to. Three additive per-cell JSON keys, appended last and
+  only when non-zero: `dismissals` (the compliance dosage), `insufficient_dismissals`, `rubric_promoted`.
+
+  **Gate side** (`refuter.ag` + `run-refute.sh`): the same rubric is spliced inside `judge_body` in BOTH modes,
+  after the decision list and BEFORE the tie-break — which is deliberately left untouched, since that tie-break
+  IS the precision mechanism of the gate — and asks for `REFUTE-GROUND|<ground-id>|<evidence>` ahead of a
+  REFUTED verdict (order is load-bearing: ground, then `CONSTRAINT|`, then `VERDICT|` last). An insufficient
+  ground buys ONE more full hostile read, before the #1699 C6 fallback and carrying the same appendix / brief /
+  invariant env. **After a failed re-ask the verdict column STAYS `REFUTED`**: `verify-findings.sh` matches the
+  cell against the exact vocabulary `REAL|REFUTED|ERROR`, so a fifth token would be read as "no verdict row" and
+  the candidate silently dropped — and a mechanical `REFUTED -> REAL` flip would make the pre-registered
+  measurement reachable without testing the gate's own judgement. Instead the reason is prefixed
+  `rubric-insufficient: ` and one row lands in a new lazily-created sidecar `<out>/rubric-dismissals.tsv`
+  (`<class>\t<file:fn>\t<ground-id>\t<reason>`). Stated rather than hidden: a gate that holds an insufficient
+  ground through the re-ask makes the arm a visible NO-GO. A candidate the re-ask CONVERTED to `REAL`
+  contributes no `refute-constraints.tsv` row, for the reason the C6 recovery does not. `verify-findings.sh` is
+  unchanged — it invokes `run-refute.sh` as a plain subprocess, so one `export SEVERITY_RUBRIC=1` reaches both
+  gates.
+
+  `SEVERITY_RUBRIC` is INDEPENDENT of `OPERATIONALIZE_LENS` (single-variable arm) and default OFF with the same
+  inverted polarity: only the literal `1` opts in, so with the knob unset both agents' prompts are byte-identical
+  (measured: the directive is exactly 0 bytes) and both drivers are inert by construction — each gate keys on the
+  agent's own honesty-gated `SEVERITY-RUBRIC|` sentinel, never on the env var. Both knobs and both re-ask
+  channels ride the `exec.env_passthrough` lines (the #1426 trap: `getenv()` reads the sanitised env). New
+  `demo-severity-rubric.sh` (wired into `tools/colony-lint.sh`) is the offline gate: 110 assertions covering the
+  source guards, the anti-drift diffs, the wiring, an overfitting + ground-truth-id denylist, substrate purity,
+  the shipped gate functions over synthetic cell logs, and BOTH drivers end-to-end through offline `--agentis`
+  stubs — no forge, no network, no LLM in the CI floor. Whether the rubric recovers the held-out row is the
+  operator's pre-registered measurement (2 held-out repeats, GO iff the row survives to
+  `verified_findings.json`); nothing here is a recall claim, and no `VERSION` is bumped.
+
 - **C25 "empty distribution / zero participation edge" class + deterministic zone-mapper route (#2245,
   iteration 1).** The held-out baseline (#2231) put rare recall at 0/13 with 10 of the 13 misses being pure
   GENERATION misses — no cell conceives the mechanism — and a lens written as a general CATEGORY was measured

@@ -392,12 +392,15 @@ if grep -q 'if \[ "\$ac_trn" -gt 0 \]; then ac_traces_json=' "$DISCOVERY" \
 else
   bad "the #2214 traces/untraced counters are missing or emitted unconditionally (a lens-OFF cell's JSON would change shape)"
 fi
-# #2214 PR C appends `unresolved` after them, under the same discipline (non-zero only, LAST).
+# #2214 PR C appends `unresolved` after them, under the same discipline (non-zero only, LAST). What the pin
+# protects is the FORWARD key scan (subsystem -> class -> files -> status -> candidates), so a later issue may
+# append further additive keys AFTER the #2223 ones — #2245 iteration 2 appends three — but nothing may be
+# inserted before them.
 if grep -q '"\$ac_opchecks_json" "\$ac_traces_json" "\$ac_untraced_json" "\$ac_unresolved_json" \\' "$DISCOVERY" \
-   && grep -q '"\$ac_untraced_ids_json" "\$ac_uncited_ids_json" "\$ac_unresolved_ids_json" >> "\$CELLS_JSONL"' "$DISCOVERY"; then
-  ok "the counters are appended after opchecks and the #2223 rule/orphan/id fields after them, LAST (the _plan_depth_cells forward key scan is untouched)"
+   && grep -q '"\$ac_untraced_ids_json" "\$ac_uncited_ids_json" "\$ac_unresolved_ids_json"' "$DISCOVERY"; then
+  ok "the counters are appended after opchecks and the #2223 rule/orphan/id fields after them (the _plan_depth_cells forward key scan is untouched)"
 else
-  bad "the #2214/#2223 counters are no longer the LAST fields of the cell object — the forward key scan could break"
+  bad "the #2214/#2223 counters are no longer appended after the fixed fields of the cell object — the forward key scan could break"
 fi
 if grep -q 'if \[ "\$ac_unres" -gt 0 \]; then ac_unresolved_json=' "$DISCOVERY"; then
   ok "_accumulate_cell records \"unresolved\" only when non-zero (a cell with no UNRESOLVED check keeps its exact key set)"
@@ -925,16 +928,17 @@ fi
 note "22) the config-realizability rule sits in the shared RULES block and is GENERAL (no flag, no lens) ..."
 # The span between the rule and the subsystem line is asserted by CONTENT, not by a fixed line distance:
 # #2235 splices two ""-when-off verb blocks (PR B's `extres`, PR C's `onchain`) in there, each with its own
-# comment, so a distance window would have to be widened on every such insertion. What must stay true is that
-# NOTHING ELSE sits between them — an unconditional block there would change the lens-OFF prompt.
+# comment, and #2245 iteration 2 splices a third (`rubric`), so a distance window would have to be widened on
+# every such insertion. What must stay true is that NOTHING ELSE sits between them, and that every block that
+# does is ""-when-off — an unconditional block there would change the lens-OFF prompt.
 RULE_SPAN="$(sed -n '/^  + config_realizability_rule()$/,/Subsystem under review/p' "$HUNTER")"
 RULE_SPAN_EXTRA="$(printf '%s\n' "$RULE_SPAN" | grep -vE '^[[:space:]]*//|^[[:space:]]*$' \
-  | grep -vE '^  \+ (config_realizability_rule\(\)|extres|onchain)$' | grep -v 'Subsystem under review' || true)"
+  | grep -vE '^  \+ (config_realizability_rule\(\)|rubric|extres|onchain)$' | grep -v 'Subsystem under review' || true)"
 if grep -q '^  + config_realizability_rule()$' "$HUNTER" \
    && grep -A5 'Never report a listed KNOWN ISSUE' "$HUNTER" | grep -q '+ config_realizability_rule()' \
    && printf '%s\n' "$RULE_SPAN" | grep -q 'Subsystem under review' \
    && [ -z "$RULE_SPAN_EXTRA" ]; then
-  ok "'+ config_realizability_rule()' is spliced INSIDE the === RULES === block, right after the trusted-role exclusion it qualifies, and ahead of the subsystem line, with only the #2235 \"\"-when-off verb blocks between them"
+  ok "'+ config_realizability_rule()' is spliced INSIDE the === RULES === block, right after the trusted-role exclusion it qualifies, and ahead of the subsystem line, with only the #2235/#2245 \"\"-when-off blocks between them"
 else
   bad "the config-realizability rule is not spliced into the RULES block between the trusted-role exclusion and the subsystem line${RULE_SPAN_EXTRA:+ (unexpected line(s) in the span: $RULE_SPAN_EXTRA)}"
 fi

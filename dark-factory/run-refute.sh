@@ -50,11 +50,35 @@
 #   --invariant-harness <file>  #1938: optional generated invariant *.t.sol (the actual asserted predicate),
 #                        staged into the rundir and appended to the payload for axis (a). Absent => no change.
 #
+# Env:
+#   SEVERITY_RUBRIC  #2245 iteration 2 OPT-IN, default UNSET = OFF. `1` injects refuter.ag's contest-severity
+#                    rubric + the CLOSED dismissal-ground list into the HOW-TO-JUDGE body and asks for one
+#                    `REFUTE-GROUND|<ground-id>|<evidence>` line ahead of a REFUTED verdict. Unset / any other
+#                    value leaves the prompt BYTE-IDENTICAL to the pre-#2245 one in BOTH modes, and leaves the
+#                    gate below inert (it fires only on the agent's own `SEVERITY-RUBRIC|` sentinel). The SAME
+#                    export covers the hunter half, so `export SEVERITY_RUBRIC=1` is ONE variable for both
+#                    decision points — including through verify-findings.sh, which invokes this script as a
+#                    plain subprocess and therefore needs no change of its own.
+#   DF_RUBRIC_MAX_REASKS  #2245 iteration 2: how many extra hostile reads a REFUTED verdict standing on an
+#                    INSUFFICIENT ground gets. Default 1 (the bounded one-extra-call-per-candidate budget the
+#                    #1699 C6 fallback established); 0 = gate-only (record it, never re-ask); garbage => 1.
+#
 # Outputs: `<out>/refute-report.md` (the verdict table, an unchanged downstream contract) and — #1887 —
 # `<out>/refute-constraints.tsv`, one `<class>\t<file:fn>\t<constraint>` row per REFUTED candidate whose
 # reply carried the generalisable `CONSTRAINT|` line. That file is the input of refute-to-knowledge.sh, which
 # turns it into an agentis knowledge corpus a LATER target's hunter can read. Always written (empty = no
 # refutation produced a constraint); nothing in this script consumes it.
+#
+# #2245 iteration 2 adds a THIRD output, `<out>/rubric-dismissals.tsv` (`<class>\t<file:fn>\t<ground-id>\t
+# <reason>`), written LAZILY — one row per candidate whose REFUTED verdict still stood on an insufficient ground
+# after the bounded re-ask, and no file at all when there is none, so a default (knob-OFF) run's output dir is
+# unchanged. The verdict column deliberately STAYS `REFUTED` in that case: verify-findings.sh matches the cell
+# against the exact vocabulary `REAL|REFUTED|ERROR`, so a fifth token would be read as "no verdict row" and the
+# candidate would be silently dropped. The report reason is prefixed `rubric-insufficient: ` instead. There is
+# NO mechanical `REFUTED -> REAL` flip anywhere (issue #2245 STOP-1 decision 1): that would put an unjudged lead
+# into the CONFIRMED-only contract and would make the pre-registered gate mechanically reachable. The honest
+# consequence, stated rather than hidden: a gate that holds an insufficient ground through the re-ask makes the
+# arm a NO-GO, visibly.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -68,6 +92,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 . "$HERE/lib/run-agent-validated.sh"
 DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
+# #2245 iteration 2: the re-ask ceiling for the dismissal-GROUND gate (see the Env block above). Floor 0
+# (0 = gate-only, no re-ask); garbage => 1. Irrelevant on a default run — the gate needs the agent's sentinel.
+DF_RUBRIC_MAX_REASKS="${DF_RUBRIC_MAX_REASKS:-1}"
+case "$DF_RUBRIC_MAX_REASKS" in ''|*[!0-9]*) DF_RUBRIC_MAX_REASKS=1 ;; esac
 # agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the RUN dir
 # (below), so the flat-cyborg/claude backend session does not block + exit 75.
 # shellcheck source=lib/ensure-claude-trust.sh
@@ -163,7 +191,11 @@ fi
   # #1938: CAND_INVARIANT + INV_HARNESS_PATH MUST be on this allowlist too — getenv() reads the SANITIZED env,
   # so an unregistered knob is staged and never read (the whole invariant mode would be silently inert). Both are
   # exported EMPTY when --invariant-mode is off, so their presence on the line is a no-op for every legacy run.
-  echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH,CAND_INVARIANT,INV_HARNESS_PATH"
+  # #2245 iteration 2: SEVERITY_RUBRIC + RUBRIC_REASK_GROUNDS MUST be on this allowlist for the same reason —
+  # refuter.ag gates the whole rubric on getenv("SEVERITY_RUBRIC"), which reads the SANITIZED env, so an
+  # unregistered knob would make the opt-in unreachable and the feature silently inert. Both are empty on a
+  # default run, so their presence on the line is a no-op there.
+  echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH,CAND_INVARIANT,INV_HARNESS_PATH,SEVERITY_RUBRIC,RUBRIC_REASK_GROUNDS"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: refuter.ag ends its tick with `learn("refute", ...)`, and it is that
   # WRITE the flag gates (#1878, agentis v1.28.0: learn() raises `runtime error: experience not enabled`, and
@@ -200,6 +232,11 @@ REPORT="$OUT/refute-report.md"
 # "no candidate was refuted with a constraint", and refute-to-knowledge.sh turns it into a valid empty corpus.
 CONSTRAINTS="$OUT/refute-constraints.tsv"
 : > "$CONSTRAINTS"
+# #2245 iteration 2: the insufficient-ground sidecar, `<class>\t<file:fn>\t<ground-id>\t<reason>`. An additive
+# FILE, never a new column or key (refute-report.md's row shape is a downstream contract), and — unlike
+# refute-constraints.tsv — created LAZILY, on the first row: with the knob off no row is ever written, so a
+# default run's output dir is byte-identical to a pre-#2245 one.
+RUBRIC_TSV="$OUT/rubric-dismissals.tsv"
 
 # --- #1699 bounded single-class C6 fallback -------------------------------------------------------------
 # A candidate REFUTED under its ASSIGNED class is not dropped outright when its own code file trips a
@@ -229,14 +266,15 @@ fallback_class_for() {
 # line, the raw log then carries the tail as continuation lines with no `VERDICT|` prefix, and a bare
 # `grep 'VERDICT|' | tail -1` silently truncates the reason mid-sentence — which is exactly what made
 # `verdict.txt` and `refute-report.md` unreadable to an operator (#1861's secondary item). A `VERDICT|` line
-# opens (and replaces) the record; a blank line, an `AUX-CONTEXT|` sentinel, EOF or 12 continuation lines
-# close it; any other line while a record is open is appended with its leading whitespace stripped and a
+# opens (and replaces) the record; a blank line, an `AUX-CONTEXT|` sentinel, a `REFUTE-GROUND|` line (#2245
+# iteration 2 — a stray post-verdict ground line must never be glued into the verdict reason), EOF or 12
+# continuation lines close it; any other line while a record is open is appended with its leading whitespace stripped and a
 # single joining space (terminal wrap breaks on column width, not on meaningful newlines).
 _join_wrapped_verdict() {
   jwv_log="$1"
   awk '
     /VERDICT\|/ { rec = $0; open = 1; cont = 0; next }
-    open && (/^[[:space:]]*$/ || /AUX-CONTEXT\|/) { open = 0; next }
+    open && (/^[[:space:]]*$/ || /AUX-CONTEXT\|/ || /REFUTE-GROUND\|/) { open = 0; next }
     open {
       if (cont >= 12) { open = 0; next }
       line = $0
@@ -251,7 +289,9 @@ _join_wrapped_verdict() {
 # _join_wrapped_constraint <log> — the #1887 twin of the above, for the `CONSTRAINT|<class>|<sentence>` line
 # the refuter prints IMMEDIATELY BEFORE a REFUTED verdict. Same PTY-wrap problem, same joining rules, one
 # extra boundary: a `VERDICT|` line CLOSES an open constraint record (the constraint always precedes the
-# verdict, so the verdict line is the natural terminator and must never be glued into the sentence). A blank
+# verdict, so the verdict line is the natural terminator and must never be glued into the sentence). A
+# `REFUTE-GROUND|` line closes it too (#2245 iteration 2: the contract puts the ground FIRST, but a model that
+# emits the two in the other order must not have its ground swallowed into the constraint sentence). A blank
 # line, EOF or 12 continuation lines also close it. The LAST constraint record in the log wins, mirroring
 # _join_wrapped_verdict's "last record" rule — and note this scraper is deliberately SEPARATE: touching
 # _join_wrapped_verdict would put the verdict row (which verify-findings.sh reads with `awk -F'|'`) at risk.
@@ -259,7 +299,7 @@ _join_wrapped_constraint() {
   jwc_log="$1"
   awk '
     /CONSTRAINT\|/ { rec = $0; open = 1; cont = 0; next }
-    open && (/VERDICT\|/ || /^[[:space:]]*$/) { open = 0; next }
+    open && (/VERDICT\|/ || /REFUTE-GROUND\|/ || /^[[:space:]]*$/) { open = 0; next }
     open {
       if (cont >= 12) { open = 0; next }
       line = $0
@@ -269,6 +309,70 @@ _join_wrapped_constraint() {
     }
     END { if (rec != "") print rec }
   ' "$jwc_log"
+}
+
+# --- #2245 iteration 2: the dismissal-GROUND gate -----------------------------------------------------------
+# The measured cause (issue #2245 iteration 1): this gate refuted a contest-accepted Medium on "owner-only
+# intentional guard, no external attacker, another exit path bypasses it, so no funds are locked" — one of three
+# losses that all applied that single criterion. refuter.ag now carries the contest severity rubric + a CLOSED
+# ground list (BYTE-IDENTICAL to hunter.ag's) and must name the ground a REFUTED verdict stands on. This is the
+# OUTPUT half: prompt text is not a gate (the #2213 lesson), so the ground is checked here.
+#
+# _rubric_sufficient_grounds — the closed list of ground ids a refutation may stand on, byte-identical to
+# run-discovery.sh's function of the same name (demo-severity-rubric.sh diffs the two, and both against the
+# prompt text). It is the single decider: anything not on it — including the four INSUFFICIENT ids, an
+# unrecognised id and a missing line — is insufficient, which is exactly the rubric's own rule.
+_rubric_sufficient_grounds() {
+  printf '%s\n' 'guard unreachable no-loss known-issue immaterial-quantified'
+}
+
+# _join_wrapped_ground <log> — the #2245 twin of the two scrapers above, for the `REFUTE-GROUND|<ground-id>|
+# <evidence>` line the refuter prints ahead of a REFUTED verdict. Same PTY-wrap problem, same joining rules,
+# two boundaries: a `CONSTRAINT|` or a `VERDICT|` line closes an open ground record (both follow it under the
+# contract, so either is a natural terminator and neither may be glued into the evidence). A blank line, EOF or
+# 12 continuation lines also close it. The LAST ground record wins, mirroring both siblings — and this is
+# deliberately a THIRD function rather than a parameter on one of them: touching _join_wrapped_verdict would put
+# the verdict row (which verify-findings.sh reads with `awk -F'|'`) at risk for a best-effort diagnostic.
+_join_wrapped_ground() {
+  jwg_log="$1"
+  awk '
+    /REFUTE-GROUND\|/ { rec = $0; open = 1; cont = 0; next }
+    open && (/VERDICT\|/ || /CONSTRAINT\|/ || /^[[:space:]]*$/) { open = 0; next }
+    open {
+      if (cont >= 12) { open = 0; next }
+      line = $0
+      sub(/^[[:space:]]+/, "", line)
+      rec = rec " " line
+      cont++
+    }
+    END { if (rec != "") print rec }
+  ' "$jwg_log"
+}
+
+# _scraped_ground <log> — the ground id of the last `REFUTE-GROUND|` record, trimmed and lowercased, or empty.
+_scraped_ground() {
+  sg_line="$(_join_wrapped_ground "$1" 2>/dev/null || true)"
+  [ -n "$sg_line" ] || return 0
+  printf '%s' "$sg_line" | sed 's/^.*\(REFUTE-GROUND|\)/\1/' | cut -d'|' -f2 \
+    | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]'
+}
+
+# _ground_insufficient <ground> — true when <ground> is NOT on the closed sufficient list (which covers empty,
+# unrecognised and every INSUFFICIENT id in one predicate — the rubric's own rule, not a second opinion).
+_ground_insufficient() {
+  gi_want="$1"
+  [ -n "$gi_want" ] || return 0
+  for gi_ok in $(_rubric_sufficient_grounds); do
+    [ "$gi_want" = "$gi_ok" ] && return 1
+  done
+  return 0
+}
+
+# _rubric_gate_armed <log> — the gate fires ONLY when the agent's own honesty-gated `SEVERITY-RUBRIC|` sentinel
+# is in this candidate's log, never on the env var: with the knob off (the default) there is no sentinel, so the
+# whole gate is inert by construction and no candidate can be re-asked, re-worded or side-filed.
+_rubric_gate_armed() {
+  grep -qE '^[[:space:]]*SEVERITY-RUBRIC\|' "$1" 2>/dev/null
 }
 
 # _clean_reason <reason> — normalise a scraped verdict reason for the pipe-delimited report row. A literal `|`
@@ -337,6 +441,9 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
     fi
   fi
   CELL_LOG="$RUN/refute_${SLUG}.log"
+  # #2245 iteration 2: the insufficient ground the bounded re-ask names. EMPTY on the first call of every
+  # candidate, so that prompt is byte-identical to the pre-#2245 one whatever the knob says.
+  RUBRIC_GROUNDS=""
   echo "run-refute.sh: refuting $CFN ($CLS) ..." >&2
   # --grant-pii: candidate/exploit text + staged contract source can carry addresses/identifiers that
   # trip the PII heuristic; input is benign public contract/finding text (#1690). Dynamic scope:
@@ -353,6 +460,8 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
         CODE_PATH="$STAGED" \
         AUX_CODE_PATH="$AUX_STAGED" \
         BRIEF_PATH="$BRIEF_IN_RUN" \
+        SEVERITY_RUBRIC="${SEVERITY_RUBRIC:-}" \
+        RUBRIC_REASK_GROUNDS="$RUBRIC_GROUNDS" \
         "$AGENTIS" go refuter.ag --enable-exec --enable-messaging --grant-pii ) >"$1" 2>&1 || \
         echo "run-refute.sh: refuter run failed for '$CFN' (see $1)" >&2
   }
@@ -395,6 +504,55 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
     continue
   fi
   ROW_CLS="$CLS"
+
+  # #2245 iteration 2 — THE DISMISSAL-GROUND GATE. A REFUTED verdict whose named ground is missing, empty,
+  # unrecognised or one of the four INSUFFICIENT ids is a verdict that has not been justified under the rubric
+  # the agent was just handed, so it gets ONE more full hostile read (DF_RUBRIC_MAX_REASKS, default 1) with the
+  # open ground NAMED through RUBRIC_REASK_GROUNDS. Structurally the #1699 C6 fallback — the precedent for "at
+  # most one extra sequential call per candidate" — and it runs BEFORE that fallback so the two cannot stack
+  # their budgets on one candidate. It reuses _rf_attempt, which is what guarantees the re-ask carries the SAME
+  # appendix / brief / invariant env (the easy miss the C6 block documents).
+  #
+  # AFTER A FAILED RE-ASK THE VERDICT COLUMN STAYS `REFUTED` (issue #2245 STOP-1 decision 1). verify-findings.sh
+  # matches the verdict cell against the exact vocabulary `REAL|REFUTED|ERROR`, so a fifth token would be read as
+  # "no verdict row" and the candidate silently dropped; and escalating to REAL would make the pre-registered
+  # measurement mechanically reachable rather than a test of the gate's own judgement. The outcome is made
+  # LEGIBLE instead: the reason is prefixed `rubric-insufficient: ` and one row lands in rubric-dismissals.tsv.
+  RUBRIC_INSUFFICIENT=""
+  RUBRIC_RECOVERED=0
+  if [ "$VERD" = "REFUTED" ] && _rubric_gate_armed "$CELL_LOG"; then
+    RB_GROUND="$(_scraped_ground "$CELL_LOG")"
+    if _ground_insufficient "$RB_GROUND"; then
+      RB_TRY=1
+      while [ "$RB_TRY" -le "$DF_RUBRIC_MAX_REASKS" ] && [ "$VERD" = "REFUTED" ]; do
+        RUBRIC_GROUNDS="${RB_GROUND:-none given}"
+        RB_LOG="$RUN/refute_${SLUG}_rubric$RB_TRY.log"
+        echo "run-refute.sh: $CFN refuted on the insufficient ground '$RUBRIC_GROUNDS'; re-asking under the severity rubric ($RB_TRY/$DF_RUBRIC_MAX_REASKS) ..." >&2
+        if df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-refute.sh: '$CFN' (rubric re-ask $RB_TRY)" "$RB_LOG" refuter "" _rf_attempt; then
+          RB_VLINE="$(_join_wrapped_verdict "$RB_LOG" || true)"
+          if [ -n "$RB_VLINE" ]; then
+            RB_V="$(printf '%s' "$RB_VLINE" | sed 's/^.*\(VERDICT|\)/\1/')"
+            RB_VERD="$(printf '%s' "$RB_V" | cut -d'|' -f2)"
+            RB_REASON="$(_clean_reason "$(printf '%s' "$RB_V" | cut -d'|' -f5-)")"
+            if [ "$RB_VERD" = "REAL" ]; then
+              VERD="REAL" ; RUBRIC_RECOVERED=1
+              REASON="recovered under the severity rubric (first read refuted on '$RUBRIC_GROUNDS'): $RB_REASON"
+            else
+              RB_GROUND="$(_scraped_ground "$RB_LOG")"
+              REASON="$RB_REASON"
+              _ground_insufficient "$RB_GROUND" || break
+            fi
+          fi
+        fi
+        RB_TRY=$((RB_TRY + 1))
+      done
+      RUBRIC_GROUNDS=""
+      if [ "$VERD" = "REFUTED" ] && _ground_insufficient "$RB_GROUND"; then
+        RUBRIC_INSUFFICIENT="${RB_GROUND:-none given}"
+        REASON="rubric-insufficient: $REASON"
+      fi
+    fi
+  fi
 
   # #1699 bounded single-class C6 fallback: a candidate REFUTED under its assigned class gets ONE more full
   # hostile read under C6 when its code trips the compound-AND accounting signal (see fallback_class_for).
@@ -442,8 +600,16 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
   # fallback RECOVERED to REAL contributes nothing — the gate's own second read overturned the standard the
   # first one applied, so teaching that standard forward would teach a mistake. A candidate whose fallback
   # also refuted keeps the ASSIGNED-class constraint, because that is the verdict the report row carries.
-  if [ "$VERD" = "REFUTED" ] && [ -n "$CONSTRAINT" ]; then
+  # #2245 iteration 2: a candidate the rubric re-ask CONVERTED to REAL contributes nothing either, for exactly
+  # the reason the C6 recovery does not — the gate's own second read overturned the standard the first one
+  # applied, so teaching that standard forward would teach a mistake.
+  if [ "$VERD" = "REFUTED" ] && [ -n "$CONSTRAINT" ] && [ "$RUBRIC_RECOVERED" -eq 0 ]; then
     printf '%s\t%s\t%s\n' "$ROW_CLS" "$CFN" "$CONSTRAINT" >> "$CONSTRAINTS"
+  fi
+  # #2245 iteration 2: the insufficient-ground sidecar row (lazy file creation — see RUBRIC_TSV above).
+  if [ -n "$RUBRIC_INSUFFICIENT" ]; then
+    echo "run-refute.sh: $CFN held an INSUFFICIENT ground ('$RUBRIC_INSUFFICIENT') through the rubric re-ask — verdict stays REFUTED, row recorded in rubric-dismissals.tsv" >&2
+    printf '%s\t%s\t%s\t%s\n' "$ROW_CLS" "$CFN" "$RUBRIC_INSUFFICIENT" "$REASON" >> "$RUBRIC_TSV"
   fi
 done < "$CANDS"
 
