@@ -2801,6 +2801,25 @@ if [ -x "$REPO_ROOT/dark-factory/demo-fcb-sentinel-strip.sh" ]; then
     fi
 fi
 
+# --- dark-factory deep-hunt REACH (#2245, iteration 6) ---
+# Knob DEEP_HUNT_REACH=1 (default OFF, byte-identical when unset): up-to-3 CONCRETE targets per zone (greedy by
+# owned/inherited entry points — the abstract base is replaced by its concrete subclass), a pre-fuzz HANDLER-
+# COVERAGE gate (inherited entry points included, one re-ask on any uncovered name, LOW_COVERAGE below
+# ceil(0.6*total)), and a deployment inventory re-injected into every repair round. demo-deep-hunt-reach.sh
+# source-guards the shell + .ag wiring, exercises lib/inheritance.py reach-targets/reach-inventory +
+# evm-harness/handler-coverage.py on fixtures (python-only, CI-safe), drives an end-to-end run-zone-hunt.sh
+# --deep-hunt-only + stub run (OFF byte-identical, ON reaches the prover), and mutation-checks every rule; the
+# agentis/forge parts SKIP cleanly when those tools are absent.
+if [ -x "$REPO_ROOT/dark-factory/demo-deep-hunt-reach.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-deep-hunt-reach.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: deep-hunt REACH — concrete multi-target selection + handler-coverage gate + deployment inventory, default OFF (#2245)"
+    else
+        fail "dark-factory: deep-hunt REACH regressed (#2245)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory --grant-pii guard on live/exec .ag invocations (#1690) ---
 # The PII heuristic that blocked hunter.ag (#1675/#1676) and then zone-mapper.ag (#1690) can trip on
 # ANY invocation that transmits target source / scope / findings / PoCs / persisted patterns (all benign

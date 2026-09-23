@@ -64,6 +64,7 @@ fuzzer's concrete failing call-sequence** over the whole protocol.
 |---|---|---|---|
 | `1` | **FINDING** | ≥1 invariant broke under a concrete SHRUNK multi-call sequence → a CANDIDATE with a reproducible witness | `success` |
 | `0` | **CLEAN** | every invariant held across the whole fuzzed search → no finding **in this budget** (NOT a proof of safety) | `failure` |
+| (CLEAN, REACH only) | **LOW_COVERAGE** | a CLEAN whose FINAL handler coverage fell below `ceil(0.6 × total)` of the target's entry points — the search is not trustworthy. Non-FINDING, never merged, terminal on `--deep-hunt-resume` (#2245) | `partial` |
 | else (`2`, …) | **HARNESS_ERROR** | the test did not compile / no `invariant_*` matched / repo not a Foundry project / `forge` missing | `error` |
 
 A FINDING is the highest-value outcome (a reproduced multi-step exploit witness), so it is recorded as
@@ -265,3 +266,28 @@ where `auditor/agents/stateful-invariant-fuzz.ag` is an LLM *lens* that proposes
 *reproduces* a multi-step exploit with the fuzzer and returns the concrete witness. As everywhere in this
 colony, a FINDING is a **LEAD a human triages** — submission stays an explicit, human-gated action and this
 colony **never auto-submits**.
+
+## Deep-hunt REACH (`DEEP_HUNT_REACH=1`, default OFF — #2245, iteration 6)
+
+Two frozen deep-hunt runs came back CLEAN with the failure in target SELECTION, not the fuzzer: one deployed
+an abstract base whose concrete subclass held the row, the other exercised a router harness with a single
+action. REACH (a `run-zone-hunt.sh` env knob, default unset = byte-identical) fixes reach without touching the
+lens routing, the fuzzer, the refute gate or the merge:
+
+- **Concrete multi-target selection** (`lib/inheritance.py reach-targets`) — up to 3 CONCRETE targets per zone,
+  greedy by the zone's state-changing entry points a contract owns or inherits. An abstract base is never
+  deployed when it has a concrete subclass; the subclass takes its place. Rows are `zid \t rel:Name \t
+  new_covered \t total \t in_zone|out_zone`.
+- **Handler-coverage gate** (`evm-harness/handler-coverage.py`) — before fuzzing, the harness's actions are
+  compared against the target's FULL entry-point list (inherited vendored functions such as the ERC-20 transfer
+  path included; `lib/inheritance.py reach-inventory`). The prover is re-asked ONCE with the missing names on
+  any uncovered entry point; a CLEAN whose final coverage is below `ceil(0.6 × total)` (total capped at 20) is
+  labelled **LOW_COVERAGE**, never CLEAN.
+- **Deployment inventory** — constructor/initializer signatures + resolved collaborator imports (or a mock hint
+  for an unresolved one) are re-injected into every repair round so a multi-contract `setUp()` can compile.
+
+Wiring: `run-zone-hunt.sh` (`DEEP_HUNT_REACH`) → `run-invariant-hunt.sh --reach` writes `entry-points.tsv` +
+`reach-inventory.txt` into the rundir and stages `handler-coverage.py` → `invariant-prover.ag`'s `reachOn` is
+the mere presence of `entry-points.tsv` (a fixed rundir file resolved absolutely from `INV_REPO`, NOT a new
+`exec.env_passthrough` entry). Unset ⇒ none of those files is written ⇒ `reachOn` false ⇒ byte-identical.
+Proven end-to-end by [`demo-deep-hunt-reach.sh`](../demo-deep-hunt-reach.sh).

@@ -1254,6 +1254,7 @@ dark-factory/
   demo-pattern-memory.sh        # Int M3 proof: a FINDING persists invpat:latest:<class> to the DAG, a same-class target RECALLs + reuses it across runs, invent-method seeds a new class (SKIPs without forge)
   demo-fork-hunt.sh             # FM1 (#1041) foundation proof: forks the REAL deployed WETH at a pinned mainnet block -> funded-handler solvency invariant CLEAN against real forked state; forced-bad RPC -> HARNESS_ERROR (SKIPs without forge or a reachable public RPC)
   demo-composability.sh         # FM2 (#1041) proof: synthetic MiniAMM+LendingVault+FlashLender; composable handler (target+dex+flashloan) -> FINDING with a cross-contract witness, single-contract handler same budget/seed -> CLEAN (the split proves composability is the lift; SKIPs without forge/agentis)
+  demo-deep-hunt-reach.sh       # deep-hunt REACH (#2245, DEEP_HUNT_REACH=1, default OFF): concrete multi-target selection (concrete subclass over abstract base, greedy), the handler-coverage gate (LOW_COVERAGE), the deployment inventory; OFF byte-identical, ON reaches the prover end-to-end (agentis/forge parts SKIP when absent)
   demo-funnel.sh                # offline, deterministic proof of the #1054 funnel: a fixture candidate list via --from -> ranked by score desc, non-RUNNING dropped (freshness), ledger-seen dropped (self-dedup), exit 0
   demo-batch.sh                 # offline, deterministic proof of the #1055 batch runner: a fixture queue + stub --hunt-cmd -> score order, ledgered key skipped, confirmed finding staged (NOT submitted), resumable no-op re-run, exit 0
   demo-submit-triage.sh         # offline, deterministic proof of the #1056 triage: a complete package -> READY/HIGH, an incomplete one -> INCOMPLETE missing poc, checklist + manual-submit note, empty root -> SKIP, no egress, exit 0
@@ -1332,6 +1333,7 @@ dark-factory/
     forge-verify.sh             # multi-contract custom-protocol PoC gate (real Foundry deploy+exploit)
     halmos-verify.sh            # sound symbolic gate: PROVES an invariant or returns a counterexample (Halmos+z3; #1015)
     forge-invariant.sh          # stateful-fuzzing gate: drives Foundry invariant fuzzing -> FINDING (+ shrunk sequence) / CLEAN / HARNESS_ERROR (#1035)
+    handler-coverage.py         # deep-hunt REACH coverage matcher: compares a generated harness's actions against the target's entry-point list -> COVERAGE|/COVERED|/UNCOVERED| (offline, stdlib; #2245)
     forge-poc.sh                # concrete-exploit verdict gate for FOUNDRY projects: a PASSING attack test is a FINDING (#1507)
     hardhat-poc.sh              # concrete-exploit verdict gate for HARDHAT projects: a PASSING mocha/ethers exploit test is a FINDING (#1507)
     detect-toolchain.sh         # pick hardhat-vs-forge for a target by file presence, set POC_KIND/POC_HARNESS/POC_OUT (#1507)

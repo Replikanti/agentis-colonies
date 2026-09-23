@@ -509,6 +509,32 @@ recall claim stays reserved for the never-touched final-exam set.
 **Status: IN-FLIGHT — recall UNMEASURED.** This iteration ships the audit, the gate, the bound contract, the
 promotion and the offline guards only (`../../demo-param-audit.sh`, wired into `tools/colony-lint.sh`).
 
+### Deep-hunt REACH (#2245, iteration 6 — concrete multi-target selection + handler-coverage gate + inventory)
+
+The measurement pivot for iterations 1-5 was the JUDGMENT and GENERATION halves of the breadth hunter. This
+iteration measures the DEPTH engine instead: two frozen deep-hunt runs on the fixed harness both returned CLEAN
+with the failure in target SELECTION, not the fuzzer — one deployed an abstract base whose concrete subclass
+held the row, the other exercised a router harness with a single action, so neither verdict is informative. REACH
+(the `DEEP_HUNT_REACH=1` knob, default OFF) gives the depth engine reach without touching the lens routing, the
+fuzzer, the refute gate or the merge: up-to-3 CONCRETE targets per zone (greedy by owned/inherited entry points,
+abstract base replaced by its concrete subclass), a pre-fuzz handler-coverage gate that re-asks once on any
+uncovered entry point and labels an under-covered CLEAN `LOW_COVERAGE` (below `ceil(0.6 × total)`, total capped
+at 20), and a deployment inventory re-injected into every repair round.
+
+**Offline pre-flight on the two frozen diagnosis zones (role names only; no LLM):**
+
+- Zone A (a token share-manager family): the selection picks the concrete token share-manager subclass and NOT
+  its abstract base; that target's entry-point denominator includes the inherited vendored `transfer`/
+  `transferFrom` path.
+- Zone B (a cross-chain + core router pair): BOTH routers are selected; the cross-chain router's entry points
+  include the liquidation and repay functions (its 7-line multi-line liquidation header parses correctly).
+
+**Status: IN-FLIGHT — recall UNMEASURED.** This iteration ships the selection, the gate, the inventory and the
+offline guards only (`../../demo-deep-hunt-reach.sh`, wired into `tools/colony-lint.sh`). The pre-registered
+measurement (a mechanics gate on the two diagnosis zones first, then the recall gate on the reserved
+`src_mToken__p1` zone ×2 plus one OFF attribution control) is an operator step; the default stays OFF until the
+mechanics gate passes and both recall repeats reach `verified_findings.json`.
+
 ## Operationalize-before-you-hunt: measured NO-GO (#2213 M2, 2026-09-15)
 
 The #2211 `OPERATIONALIZE_LENS` directive — a cross-class METHOD (derive code-grounded checks, write them
