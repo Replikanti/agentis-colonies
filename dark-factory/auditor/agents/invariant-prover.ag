@@ -1683,15 +1683,51 @@ let linkArgs = link_args(forkUrl, forkTarget, forkContext, codePath, targetName,
 // substituted-target test is rejected as HARNESS_ERROR no matter which attempt produced it.
 let gateExtra = fork + linkArgs;
 
+// #2245-FCB-STRIP-BEGIN
+// #2245 — the native flat-cyborg result-file channel (#2207, llm.flat_cyborg.result_file_dir, set by
+// run-invariant-hunt.sh) wraps the driven model's reply in sentinels: a first line `FCB_<hex>_BEGIN` and a
+// trailing `FCB_<hex>_END` (either its own line, or appended to the last content line after a space). Harmless
+// in hunter/refuter TEXT, but here the reply becomes a *.t.sol FILE — a leading sentinel is the first byte solc
+// sees and it fails immediately (`Error (2314): Expected identifier but got 'pragma'`). Strip it NATIVELY (no
+// `exec sh` escape — regex_match/regex_capture are pure-compute builtins) before the write, so the sentinels
+// never reach the shell at all. BEGIN can only be the reply's first line: strip_fcb_begin matches it whole and
+// returns everything after its newline; a reply that does not start with the sentinel is returned UNCHANGED.
+// strip_fcb_end then handles END, which is either the entire (post-BEGIN-strip) remainder, its own trailing
+// line, or a ` FCB_..._END` suffix appended to the last content line; unmatched input is returned unchanged.
+// Composed: sentinel-free text is a BYTE-IDENTICAL no-op through both steps. This exact block is duplicated
+// verbatim in poc-writer.ag's write_test (the sibling code-writing sink) — demo-fcb-sentinel-strip.sh diffs the
+// two (by these BEGIN/END markers) to catch drift.
+fn strip_fcb_begin(s: string) -> string {
+    if regex_match("(?s)^FCB_[0-9a-f]+_BEGIN\\n(.*)$", s) {
+        return regex_capture("(?s)^FCB_[0-9a-f]+_BEGIN\\n(.*)$", s, 1);
+    }
+    return s;
+}
+fn strip_fcb_end(s: string) -> string {
+    if regex_match("^FCB_[0-9a-f]+_END$", s) { return ""; }
+    if regex_match("(?s)^(.*)\\nFCB_[0-9a-f]+_END$", s) {
+        return regex_capture("(?s)^(.*)\\nFCB_[0-9a-f]+_END$", s, 1);
+    }
+    if regex_match("(?s)^(.*) FCB_[0-9a-f]+_END$", s) {
+        return regex_capture("(?s)^(.*) FCB_[0-9a-f]+_END$", s, 1);
+    }
+    return s;
+}
+fn strip_fcb_sentinel(s: string) -> string {
+    return strip_fcb_end(strip_fcb_begin(s));
+}
+// #2245-FCB-STRIP-END
+
 // Write the generated/fixture test to INV_OUT. The test content is UNTRUSTED — it is either an LLM completion
 // (prompt-injectable by the untrusted target code under audit) or an operator fixture — so it MUST go through
 // shell_escape(), never a heredoc (a heredoc body is not escaped: a test line equal to the sentinel would
 // terminate it early and the rest would execute as shell). printf '%s' on a shell_escape()d single-quoted
 // literal cannot be escaped by any content (no shell metachar survives single-quoting), so the test is written
-// verbatim with zero injection. Wrapped in a fn so the repair loop below reuses the SAME write mechanism.
+// verbatim with zero injection (the #2245 sentinel is stripped natively, above, before shell_escape() ever
+// sees the content). Wrapped in a fn so the repair loop below reuses the SAME write mechanism.
 fn write_test(src: string, out: string) -> string {
     // colony-lint: safe-exec-concat
-    return exec sh "printf '%s' " + shell_escape(src) + " > " + shell_escape(out) + "; echo __wrote=$?";
+    return exec sh "printf '%s' " + shell_escape(strip_fcb_sentinel(src)) + " > " + shell_escape(out) + "; echo __wrote=$?";
 }
 // Run the gate over the just-written INV_OUT and capture its `__rc=<n>` marker. Wrapped in a fn so the repair
 // loop reuses the EXACT gate invocation (same flags, same shell_escape()ing) every attempt.
