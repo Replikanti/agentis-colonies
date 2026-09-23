@@ -129,9 +129,10 @@ awk '/^fn repair_step\(/{f=1} f{print} f&&/^}/{exit}' "$AG" \
 # loop also carries the re-injected generation scaffold as the trailing arg (`sharedScaffold`); since #1939 M2
 # (FM-B symbol grounding) that trailing arg is `sharedScaffold + symbolInventorySeed`, so every repair round is
 # grounded against the real symbol inventory too (empty seed => `+ ""` => byte-identical).
-printf '%s\n' "$src" | grep -Fq 'let firstStop = stop_flag_both(rc_of(firstOut), test, composableFresh, requiredNames);' \
+# #2245 REACH: the first written source is `firstSrc` (== `test` off/fixture, the coverage re-ask result on).
+printf '%s\n' "$src" | grep -Fq 'let firstStop = stop_flag_both(rc_of(firstOut), firstSrc, composableFresh, requiredNames);' \
     || b_fail="${b_fail} no-bothreal-first-stop"
-printf '%s\n' "$src" | grep -Fq 'repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, gateExtra, composableFresh, requiredNames, sharedScaffold + symbolInventorySeed)' \
+printf '%s\n' "$src" | grep -Fq 'repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, gateExtra, composableFresh, requiredNames, sharedScaffold + symbolInventorySeed + reachSeed)' \
     || b_fail="${b_fail} no-threaded-loop"
 
 if [ -z "$b_fail" ]; then
@@ -187,7 +188,8 @@ printf '%s\n' "$src" | grep -Fq 'let bothRealViolated = len(bothRealMissing) > 0
 awk '/^fn final_verdict\(/{f=1} f{print} f&&/^}/{exit}' "$AG" \
     | grep -Fq 'if violated { return "HARNESS_ERROR"; }' \
     || d_fail="${d_fail} no-force-harness-error"
-printf '%s\n' "$src" | grep -Fq 'let verdict = final_verdict(rc, bothRealViolated);' \
+# #2245 REACH: the base verdict is bound to `baseVerdict`; `verdict` is reach_verdict() wrapping it (identity off).
+printf '%s\n' "$src" | grep -Fq 'let baseVerdict = final_verdict(rc, bothRealViolated);' \
     || d_fail="${d_fail} no-override-binding"
 # A clear stderr/marker reason is surfaced on the override.
 printf '%s\n' "$src" | grep -Fq 'harness mocked/omitted required real contract(s):' \

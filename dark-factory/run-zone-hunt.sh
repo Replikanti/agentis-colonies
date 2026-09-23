@@ -77,6 +77,15 @@
 #   --invariant-fixture <f>  run-invariant-hunt.sh --handler-fixture (the OFFLINE/deterministic deep-hunt
 #                       path — no LLM). Only meaningful with --deep-hunt.
 #   --deep-hunt-max-targets <N>  Max primary targets per value-custody zone (default 1 — the largest .sol).
+#   DEEP_HUNT_REACH=1   #2245 (iteration 6, deep-hunt REACH — an ENV KNOB, not a flag; requires --deep-hunt).
+#                       Replaces the largest-file target ranking with up-to-3 CONCRETE targets per zone chosen
+#                       greedily by the zone's state-changing entry points a contract owns or inherits (an
+#                       abstract base is never deployed when it has a concrete subclass), and turns ON the
+#                       prover's pre-fuzz HANDLER-COVERAGE gate + deployment inventory (via run-invariant-hunt.sh
+#                       --reach). A CLEAN whose final coverage is below ceil(0.6*total) is labelled LOW_COVERAGE
+#                       (non-FINDING, never merged, terminal on --deep-hunt-resume). Accepts ''/0/1; anything
+#                       else, or =1 without --deep-hunt, exits 2. DEFAULT unset/0 => the STAGE 4.5 target
+#                       selection, run dirs, prompt and merge are byte-identical to before.
 #   --deep-hunt-aux-max <N>  #1726 (M2): max SECONDARY co-custody contracts fed to the deep-hunt as
 #                       run-invariant-hunt.sh --aux (the shipped composable-fresh multi-contract engine —
 #                       INV_AUX -> compose_fresh_seed -> multi-register targetContracts() -> #1077 both-real
@@ -299,6 +308,10 @@ DEEP_HUNT_RESUME=0  # #1934: idempotent skip-completed over STAGE 4.5's (zone, c
 # verified. Default ON *within* --deep-hunt (itself opt-in, so the true default run stays byte-identical);
 # --no-deep-hunt-refute reproduces the raw pre-gate merge byte-for-byte (golden-pinned). Requires --deep-hunt.
 DEEP_HUNT_REFUTE=1
+# #2245 (iteration 6, deep-hunt REACH): an ENV KNOB (not a CLI flag — read only by this shell; no getenv, so no
+# allowlist entry). Unset/empty => OFF => STAGE 4.5 is byte-identical. Validated below with the deep-hunt guards.
+DEEP_HUNT_REACH="${DEEP_HUNT_REACH:-}"
+REACH_N=3  # up-to-N concrete targets per zone under REACH (STOP-1 decision 1: N=3).
 # #2156 (milestone D2, epic #2130): the opt-in STAGE 4.6 VECTOR-HUNT sub-mode. 0 (default) = OFF = the whole
 # STAGE 4.6 block below is skipped and the run is byte-identical to a pre-#2156 run. When 1, after STAGE 4.5 it
 # harvests each value-custody zone's D1 (#2145) `CALLEE-VECTOR|` candidates from the breadth cell logs and
@@ -431,6 +444,10 @@ case "$VECTOR_HUNT_MAX_VECTORS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --vector
 # #1938: --no-deep-hunt-refute is a STAGE 4.5 opt-out — meaningless without the stage it gates (same shape as
 # the --composable-lens / --deep-hunt-resume guards above).
 [ "$DEEP_HUNT_REFUTE" -eq 1 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --no-deep-hunt-refute requires --deep-hunt" >&2; exit 2; }
+# #2245 REACH: accept only ''/0/1 (anything else is a usage error), and =1 requires --deep-hunt (the stage it
+# gates), the same shape as the --composable-lens / --deep-hunt-resume guards above.
+case "$DEEP_HUNT_REACH" in ''|0|1) ;; *) echo "run-zone-hunt.sh: DEEP_HUNT_REACH must be unset, 0 or 1 (got '$DEEP_HUNT_REACH')" >&2; exit 2 ;; esac
+[ "$DEEP_HUNT_REACH" != 1 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_REACH=1 requires --deep-hunt" >&2; exit 2; }
 # #1830: the budget/re-hunt knobs use the same integer validation + exit-2 shape as every flag above.
 case "$ZONE_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-cell-budget must be a non-negative integer (got '$ZONE_CELL_BUDGET')" >&2; exit 2 ;; esac
 case "$RUN_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --run-cell-budget must be a non-negative integer (got '$RUN_CELL_BUDGET')" >&2; exit 2 ;; esac
@@ -1111,6 +1128,20 @@ if [ "$DEEP_HUNT" -eq 1 ]; then
       PREFERRED_LENSES="$(printf '%s\n' "$PAYABLE_IMPACTS" | "$HERE/lib/impact-lens.py" classes --impacts - 2>/dev/null || true)"
       [ -z "$PREFERRED_LENSES" ] || echo "run-zone-hunt.sh: [deep-hunt] payable-impact lens preference: $PREFERRED_LENSES (#1930)" >&2
     fi
+    # #2245 REACH: compute up-to-REACH_N CONCRETE targets per zone (greedy by owned/inherited entry points) and
+    # export the TSV so the selection heredoc below overrides its per-zone target list with it. Empty (knob off)
+    # => the heredoc's reach_map is empty => every row byte-identical. A helper failure warns and continues on
+    # the OFF (largest-file) selection, so a zone that ran before never stops running.
+    DEEP_HUNT_REACH_TSV=""
+    if [ "$DEEP_HUNT_REACH" = 1 ]; then
+      if python3 "$HERE/lib/inheritance.py" reach-targets --zones "$MAP/zones.json" --repo "$REPO" --max "$REACH_N" > "$OUT/.deep-hunt-reach.tsv" 2>/dev/null; then
+        DEEP_HUNT_REACH_TSV="$(cat "$OUT/.deep-hunt-reach.tsv")"
+        echo "run-zone-hunt.sh: [deep-hunt] REACH selection: $(grep -c . "$OUT/.deep-hunt-reach.tsv" 2>/dev/null || echo 0) concrete target row(s) (#2245)" >&2
+      else
+        echo "run-zone-hunt.sh: [deep-hunt] REACH selection helper failed — continuing with the largest-file selection (#2245)" >&2
+      fi
+    fi
+    export DEEP_HUNT_REACH_TSV
     python3 - "$MAP/zones.json" "$REPO" "$DEEP_HUNT_MAX_TARGETS" "$DEEP_HUNT_AUX_MAX" "$DEEP_HUNT_MAX_LENSES" \
              "$DEEP_HUNT_COMPOSABLE_LENS" "$PREFERRED_LENSES" > "$DEEP_TARGETS" <<'PY'
 import sys, os, json
@@ -1219,6 +1250,16 @@ def has_impl_sol(z):
             continue
         return True
     return False
+# #2245 REACH: DEEP_HUNT_REACH_TSV (zid \t rel:Name \t new_covered \t total \t in_zone|out_zone) overrides a
+# zone's per-target list. Empty (knob off) => reach_map empty => no override, no truncation, byte-identical.
+reach_map = {}
+for _line in os.environ.get("DEEP_HUNT_REACH_TSV", "").splitlines():
+    _p = _line.split("\t")
+    if len(_p) >= 2 and _p[0]:
+        reach_map.setdefault(_p[0], []).append(_p[1])
+orig_max = max_targets
+if reach_map:
+    max_targets = 3  # STOP-1 decision 1: up-to-3 concrete targets per zone under REACH.
 for z in zones:
     lenses = lens_classes(z)
     if not lenses:
@@ -1233,6 +1274,13 @@ for z in zones:
         continue
     # largest by line count; lexicographic tie-break (smallest name wins on equal loc)
     ranked = sorted(sols, key=lambda f: (-loc(f), f))
+    # #2245 REACH: replace the largest-file ranking with this zone's concrete reach targets (rel:Name rows);
+    # a REACH zone with no reach row falls back to the OFF slice. reach_map empty (knob off) => untouched.
+    if reach_map:
+        if zid in reach_map:
+            ranked = reach_map[zid]
+        else:
+            ranked = ranked[:orig_max]
     for rel in ranked[:max_targets]:
         # #1795: one row per applicable lens class — the FIRST is the class this zone got before #1795.
         for dclass in lenses:
@@ -1289,6 +1337,15 @@ PY
     DEEP_FINDINGS=0
     while IFS='	' read -r ZID RELFILE DCLASS AUXFILES || [ -n "${ZID:-}" ]; do
       [ -n "$ZID" ] || continue
+      # #2245 REACH: the RELFILE column carries `rel:Name` under REACH. Split off the concrete contract name
+      # (threaded to run-invariant-hunt.sh --target-contract) and restore RELFILE to the plain path deep-hunt-
+      # gate.sh consumes. With the knob off there is no `:Name`, so REACH_NAME stays empty and RELFILE unchanged.
+      REACH_NAME=""
+      if [ "$DEEP_HUNT_REACH" = 1 ]; then
+        case "$RELFILE" in
+          *:*) REACH_NAME="${RELFILE##*:}"; RELFILE="${RELFILE%:*}" ;;
+        esac
+      fi
       # #1726 (M2): split the comma-joined AUXFILES column (present only when --deep-hunt-aux-max > 0) into
       # distinct `--aux <rel>` argv elements — one per SECONDARY co-custody contract — reusing the shipped
       # composable-fresh multi-contract engine (run-invariant-hunt.sh --aux -> INV_AUX -> compose_fresh_seed
@@ -1305,6 +1362,12 @@ PY
         done
         IFS="$_aux_old_ifs"
       fi
+      # #2245 REACH: turn on run-invariant-hunt.sh's coverage gate + deployment inventory, pinning the concrete
+      # contract. "$@" already reaches BOTH $INVHUNT invocations below. Knob off => no extra args.
+      if [ "$DEEP_HUNT_REACH" = 1 ]; then
+        set -- "$@" --reach
+        [ -n "$REACH_NAME" ] && set -- "$@" --target-contract "$REACH_NAME"
+      fi
       echo "run-zone-hunt.sh: [deep-hunt] stateful-invariant lens on zone '$ZID' target '$RELFILE' ($DCLASS) ..." >&2
       # #1795: the out-dir is keyed per (ZONE, CLASS), not per zone — with the multi-lens fan-out two rows of
       # one zone would otherwise SHARE a run dir and their per-target `invariant_<t>.log` would collide, so the
@@ -1312,6 +1375,14 @@ PY
       # `_c<N>.log`) would read the wrong lens's verdict. The `deep-hunt/*/run/invariant_*.log` consumers
       # (generation-recall.sh, generalization-bench.sh) glob the zone level, so the suffix is transparent to them.
       DZOUT="$DEEP/$ZID-$DCLASS"
+      # #2245 REACH: per-target run dirs so the up-to-3 targets of one (zone, class) never collide. Slug from the
+      # concrete contract name (else the file basename), sanitized to a dir-safe token. Knob off => DZOUT unchanged.
+      if [ "$DEEP_HUNT_REACH" = 1 ]; then
+        _reach_slug="$REACH_NAME"
+        [ -n "$_reach_slug" ] || _reach_slug="$(basename "$RELFILE" .sol)"
+        _reach_slug="$(printf '%s' "$_reach_slug" | tr -c 'A-Za-z0-9._-' '_')"
+        DZOUT="$DEEP/$ZID-$DCLASS-$_reach_slug"
+      fi
       # #1934: idempotent skip-completed (--deep-hunt-resume). Before invoking the engine, check whether this
       # (zone, class) row already has a TERMINAL verdict on disk — an aggregate `invariant_*.log` (never a
       # per-candidate `_c<N>.log`, the SAME log-selection the #1780 merge adapter below uses) carrying an
@@ -1327,6 +1398,13 @@ PY
             *_c[0-9]*.log) continue ;;  # per-candidate ensemble log — never the aggregate verdict
           esac
           if grep -Eq 'INVARIANT\|[^|]*\|(CLEAN|FINDING)([[:space:]]|$)' "$_dhr_log" 2>/dev/null; then
+            _dhr_terminal=1
+          fi
+          # #2245 REACH: a LOW_COVERAGE verdict is ALSO terminal under REACH — the under-covered clean is a
+          # settled outcome for this target, not a gap to re-run. Only under the knob (else byte-identical).
+          # `${DEEP_HUNT_REACH:-}` so this loop stays safe when extracted + eval'd under `set -u` (the
+          # test-deep-hunt-resume.sh predicate harness).
+          if [ "${DEEP_HUNT_REACH:-}" = 1 ] && grep -Eq 'INVARIANT\|[^|]*\|LOW_COVERAGE([[:space:]]|$)' "$_dhr_log" 2>/dev/null; then
             _dhr_terminal=1
           fi
         done
@@ -1373,6 +1451,33 @@ PY
         echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> FINDING refuted by the invariant-mode gate -> refuted[] (not counted as a finding)" >&2
       else
         echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) -> no FINDING to merge (CLEAN / HARNESS_ERROR / TRANSIENT_ERROR)" >&2
+      fi
+      # #2245 REACH: record this cell's HANDLER-COVERAGE readout (parsed from the aggregate invariant log) into
+      # $OUT/deep-hunt/reach-coverage.tsv, and echo a line when the cell was labelled LOW_COVERAGE. Only under
+      # the knob (else this whole block is skipped and the loop is byte-identical to before).
+      if [ "$DEEP_HUNT_REACH" = 1 ]; then
+        _rc_log=""
+        for _rc_cand in "$DZOUT"/run/invariant_*.log; do
+          [ -e "$_rc_cand" ] || continue
+          case "$_rc_cand" in *_c[0-9]*.log) continue ;; esac
+          _rc_log="$_rc_cand"
+        done
+        if [ -n "$_rc_log" ]; then
+          _rc_line="$(grep '^HANDLER-COVERAGE|' "$_rc_log" 2>/dev/null | tail -1 || true)"
+          _rc_body="$(printf '%s' "$_rc_line" | sed 's/^HANDLER-COVERAGE|[^|]*|//')"
+          _rc_draft="$(grep '^HANDLER-COVERAGE-DRAFT|' "$_rc_log" 2>/dev/null | tail -1 | sed 's/^HANDLER-COVERAGE-DRAFT|[^|]*|//' || true)"
+          _rc_covered="$(grep '^HANDLER-COVERED|' "$_rc_log" 2>/dev/null | tail -1 | sed 's/^HANDLER-COVERED|//' || true)"
+          _rc_uncovered="$(grep '^HANDLER-UNCOVERED|' "$_rc_log" 2>/dev/null | tail -1 | sed 's/^HANDLER-UNCOVERED|//' || true)"
+          _rc_verd="$(grep 'INVARIANT|' "$_rc_log" 2>/dev/null | tail -1 | sed 's/.*INVARIANT|//' | cut -d'|' -f2 || true)"
+          _rc_reask="$(printf '%s' "$_rc_line" | grep -oE 'reask=[01]' | head -1 | cut -d= -f2)"
+          if [ -n "$_rc_line" ] || [ -n "$_rc_verd" ]; then
+            mkdir -p "$OUT/deep-hunt"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+              "$ZID" "${REACH_NAME:-$(basename "$RELFILE" .sol)}" "$DCLASS" "$_rc_draft" "$_rc_body" \
+              "${_rc_reask:-0}" "$_rc_verd" "$_rc_covered" "$_rc_uncovered" >> "$OUT/deep-hunt/reach-coverage.tsv"
+          fi
+          [ "$_rc_verd" = "LOW_COVERAGE" ] && echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) target '$RELFILE' -> LOW_COVERAGE (handler under-covered the entry points; not merged) (#2245)" >&2
+        fi
       fi
       # #1914 M3: record this row's lens depth into the lens x surface matrix (surface = the zone $ZID). For the
       # class-agnostic SYS-solvency (general) lens we READ THE RAW VERDICT from the aggregate invariant log

@@ -35,9 +35,20 @@ cb 300000;
 //   INV_DEPTH     optional forge invariant depth budget (passed to the gate); "" = the gate / project default.
 //   INV_SEED      optional forge --fuzz-seed for a reproducible search; "" = forge's default seed.
 //   FORGE_INVARIANT the absolute path to evm-harness/forge-invariant.sh (the verdict gate).
+// Rundir files (FIXED files under <RUN>, NOT new env vars; <RUN> is derived absolutely from INV_REPO = <RUN>/repo
+// because the exec sandbox runs in <RUN>/.agentis/sandbox, not <RUN>):
+//   symbol-inventory.txt   FM-B (#1939 M2): the in-scope symbol inventory; absent => grounding off.
+//   entry-points.tsv       #2245 REACH: the target's entry-point list (TARGET|/TYPES|/EP|/OVERCAP|). Its mere
+//                          PRESENCE (len > 0) is what turns REACH on — the coverage gate + deployment inventory.
+//   reach-inventory.txt    #2245 REACH: the prompt-visible deployment inventory (constructor/initializer sigs +
+//                          resolved collaborators). Both files are written ONLY by run-invariant-hunt.sh --reach.
+//   handler-coverage.py    #2245 REACH: the staged coverage matcher this agent invokes (like forge-invariant.sh).
 // Stdout: exactly one verdict marker line —
-//   INVARIANT|<file:fn>|<FINDING|CLEAN|HARNESS_ERROR>
-// followed, on a FINDING, by the shrunk exploit call-sequence (one `STEP|...` line per call).
+//   INVARIANT|<file:fn>|<FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR|LOW_COVERAGE>
+// followed, on a FINDING, by the shrunk exploit call-sequence (one `STEP|...` line per call). Under REACH the
+// agent ALSO prints, BEFORE the marker, HANDLER-COVERAGE-DRAFT|/HANDLER-COVERAGE|/HANDLER-COVERED|/
+// HANDLER-UNCOVERED| readout lines (none carries an `INVARIANT|` substring). LOW_COVERAGE (#2245) is a CLEAN
+// whose FINAL handler coverage fell below ceil(0.6*total) — non-FINDING, never merged.
 
 // --- file reader (dynamic path -> safe-exec-concat, per symbolic-prover.ag / refuter.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -95,6 +106,9 @@ fn verdict_of(rc: int) -> string {
 fn outcome_of(verdict: string) -> string {
     if verdict == "FINDING" { return "success"; }
     if verdict == "CLEAN" { return "failure"; }
+    // #2245 REACH: a CLEAN below the handler-coverage threshold is a PARTIAL result — the invariant held but the
+    // harness under-exercised the target, so it is neither a confirmed miss nor a finding.
+    if verdict == "LOW_COVERAGE" { return "partial"; }
     return "error";
 }
 
@@ -139,6 +153,50 @@ let auditText = cat_file(auditPath);
 // symbolInventorySeed == "" => the generation + repair prompts are byte-identical to a non-grounded run.
 let symbolInventory = read_symbol_inventory("symbol-inventory.txt");
 let symbolInventorySeed = symbol_inventory_seed(symbolInventory);
+
+// #2245 (iteration 6, deep-hunt REACH) — reader for the two FIXED rundir files run-invariant-hunt.sh --reach
+// writes (entry-points.tsv + reach-inventory.txt). These are FIXED rundir files, NOT a new exec.env_passthrough
+// entry (so the pinned passthrough line is byte-identical). The exec sandbox runs in $RUN/.agentis/sandbox, NOT
+// $RUN, so a bare relative name would not resolve — the rundir is derived ABSOLUTELY from INV_REPO (an existing
+// passthrough var that is ALWAYS `<RUN>/repo`). ABSENT (--reach off) => "" => reachOn false => the coverage gate
+// + inventory prompt are inert and the generation/repair prompts are byte-identical to today.
+fn read_reach_file(path: string) -> string {
+    if len(path) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "cat " + shell_escape(path) + " 2>/dev/null || true";
+}
+// The rundir: INV_REPO is REPO_IN_RUN = `<RUN>/repo` (run-invariant-hunt.sh invariant), so strip the trailing
+// `/repo`. A value that does not end in `/repo` is returned unchanged (reachOn then reads a missing file => off).
+fn reach_dir(repo: string) -> string {
+    if len(repo) >= 5 {
+        if substring(repo, len(repo) - 5, len(repo)) == "/repo" {
+            return substring(repo, 0, len(repo) - 5);
+        }
+    }
+    return repo;
+}
+let reachDir = reach_dir(invRepo);
+let reachEntries = read_reach_file(reachDir + "/entry-points.tsv");
+let reachInventory = read_reach_file(reachDir + "/reach-inventory.txt");
+// reachOn is derived SOLELY from the presence of the staged entry-points.tsv — no getenv on a REACH var. Empty
+// / absent file (flag off) => reachOn false => every REACH block below is a no-op.
+let reachOn = len(reachEntries) > 0;
+// The REACH generation seed: a HARD constraint to expose one bounded action per listed entry point, plus the
+// deployment inventory (real collaborator imports / mock guidance). Generic template text only — no protocol,
+// contract, function or domain nouns (the SIGNATURES it renders are real source data, like symbolInventory).
+fn reach_seed(on: bool, inventory: string) -> string {
+    if !on { return ""; }
+    return "=== HANDLER COVERAGE (entry points + deployment inventory) ===\n"
+         + "This OVERRIDES the minimal-Handler guidance and the ~120-line budget: expose ONE bounded action per "
+         + "listed entry point; size budget ~260 lines. Keep the invariant(s) and every existing action.\n"
+         + "For an entry point marked [gated: <modifier>], call it as the role holder your setUp deploys (grant "
+         + "or impersonate that role) — do NOT skip it.\n"
+         + "Prefer the REAL in-repo collaborator (a GLOBAL import from the path shown below) over a stand-in; "
+         + "else write a minimal stand-in of exactly the calls listed. NEVER declare a contract with the same "
+         + "name as an in-repo contract you import.\n"
+         + inventory + "\n";
+}
+let reachSeed = reach_seed(reachOn, reachInventory);
 
 // #1070-B1 — drive the REAL target. The generated test is written to INV_OUT (under <repo>/test/...) and the
 // target source is CODE_PATH; the model needs the CORRECT relative import path so it can `import` and DEPLOY
@@ -1588,6 +1646,7 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
       + fork_seed(forkActive, forkTarget, forkUrl, forkBlock)
       + compose_seed(composeActive, forkContext)
       + compose_fresh_seed(composeFresh)
+      + reachSeed
       + sharedScaffold;
     // colony-lint: prompt-gate-ok
     return prompt(instruction, src) -> string;
@@ -1753,6 +1812,84 @@ fn repair_rounds(raw: string) -> int {
 }
 let repairRounds = repair_rounds(getenv("INV_REPAIR_ROUNDS"));
 
+// ================================================================================================
+// #2245 (iteration 6, deep-hunt REACH) — HANDLER-COVERAGE gate helpers. All no-ops when reachOn is false, so
+// the whole path is byte-identical to today when the knob is off. handler-coverage.py is staged into $RUN by
+// run-invariant-hunt.sh --reach; the prover cds into $RUN, so it and entry-points.tsv resolve by relative name.
+// The tool ALWAYS exits 0; a missing tool / no COVERAGE| line reads as unmeasured, and cov_ok fails OPEN (no
+// LOW_COVERAGE label) while the readout records mode=unmeasured (a mechanics FAIL for the operator).
+
+// Run the coverage matcher over a written harness FILE. ONE staged-tool exec sh, the run_gate idiom, every
+// dynamic value shell_escape()d. "" when reachOn is off (no exec at all).
+fn run_coverage(on: bool, path: string, name: string) -> string {
+    if !on { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "python3 " + shell_escape(reachDir + "/handler-coverage.py") + " --entry-points " + shell_escape(reachDir + "/entry-points.tsv") + " --harness " + shell_escape(path) + " 2>/dev/null || true";
+}
+// The COVERAGE| line's body (everything after `COVERAGE|`), for the HANDLER-COVERAGE readout.
+fn cov_body(out: string) -> string {
+    return regex_capture("(?m)^COVERAGE\\|(.*)$", out, 1);
+}
+// The UNCOVERED| list (comma-joined entry-point names the harness has no action for).
+fn cov_uncovered(out: string) -> string {
+    return regex_capture("(?m)^UNCOVERED\\|(.*)$", out, 1);
+}
+// The number of uncovered listed entry points (drives the single re-ask). An empty UNCOVERED| list => 0.
+fn cov_gap(out: string) -> int {
+    let u = cov_uncovered(out);
+    if len(u) == 0 { return 0; }
+    return len(regex_split(",", u));
+}
+// The threshold verdict: ok when the COVERAGE| line ends in `|ok`. NO COVERAGE| line (unmeasured / tool
+// missing) FAILS OPEN — returns true — so an unmeasured cell is never wrongly downgraded to LOW_COVERAGE (the
+// readout still records mode=unmeasured as a mechanics FAIL for the operator).
+fn cov_ok(out: string) -> bool {
+    if index_of(out, "COVERAGE|") < 0 { return true; }
+    return regex_capture("(?m)^COVERAGE\\|.*\\|(ok|low)$", out, 1) == "ok";
+}
+// The single coverage RE-ASK instruction: re-inject the SAME scaffold, name the uncovered entry points, and ask
+// for one bounded action per uncovered name while keeping every existing action + invariant. Generic text — no
+// protocol/contract/function/domain nouns (the uncovered NAMES are real source data, injected as a list).
+fn coverage_reask_instruction(uncovered: string, prevSrc: string, scaffold: string) -> string {
+    return scaffold
+         + "\n=== YOUR HANDLER HAS NO ACTION FOR THESE ENTRY POINTS ===\n"
+         + uncovered
+         + "\nAdd ONE bounded action for EACH of the listed entry points. Keep every existing action and the "
+         + "invariant(s) unchanged. Output ONLY the corrected Solidity.\nYour previous test was:\n"
+         + prevSrc;
+}
+fn coverage_reask(uncovered: string, prevSrc: string, scaffold: string) -> string {
+    // colony-lint: prompt-gate-ok
+    return prompt(coverage_reask_instruction(uncovered, prevSrc, scaffold), "") -> string;
+}
+// Write a harness source and return its path — lets the draft be written and measured in one binding (single-
+// assignment .ag has no statement sequencing outside a fn body). Used only under reachOn.
+fn write_and_path(src: string, out: string) -> string {
+    let _w = write_test(src, out);
+    return out;
+}
+// A REACH-only excerpt of forge's setUp()/revert lines (a reverting collaborator constructor is the expected
+// multi-contract failure), capped at 20, folded into error_excerpt's return. "" when reachOn is off.
+fn reach_setup_excerpt(out: string) -> string {
+    if !reachOn { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "printf '%s' " + shell_escape(out) + " | grep -E '\\[FAIL|setUp\\(\\)|revert' | head -n 20 || true";
+}
+// The verdict override: under REACH a CLEAN whose final coverage is below the threshold becomes LOW_COVERAGE; a
+// reproduced FINDING is NEVER discarded, and HARNESS_ERROR / TRANSIENT_ERROR are unchanged. Off => identity.
+fn reach_verdict(base: string, on: bool, ok: bool) -> string {
+    if !on { return base; }
+    if base == "CLEAN" {
+        if ok { return "CLEAN"; }
+        return "LOW_COVERAGE";
+    }
+    return base;
+}
+fn reask_flag(fired: bool) -> string {
+    if fired { return "1"; }
+    return "0";
+}
+
 // Extract a useful compiler-error excerpt from the gate's captured output (forge stderr). Keep the lines that
 // carry diagnostic signal — the Error / error[ / `-->` source pointer / Compiler banner lines AND (#1720) the
 // solc source-context lines the model needs to actually locate the fault: the numbered gutter lines
@@ -1764,8 +1901,13 @@ let repairRounds = repair_rounds(getenv("INV_REPAIR_ROUNDS"));
 fn error_excerpt(out: string) -> string {
     // colony-lint: safe-exec-concat
     let filtered = exec sh "printf '%s' " + shell_escape(out) + " | grep -E 'Error|error\\[|[-][-]>|Compiler|^[[:space:]]*[0-9]*[[:space:]]*\\||\\^' | head -n 160 || true";
-    if len(filtered) > 6000 { return substring(filtered, 0, 6000); }
-    return filtered;
+    // #2245 REACH: append the setUp()/revert lines so a multi-contract deployment failure (a reverting
+    // collaborator constructor is the expected multi-contract failure mode) is repaired. reach_setup_excerpt
+    // returns "" when REACH is off, so `filtered + ""` == filtered => byte-identical. The addition goes into
+    // the RETURN, so the pinned call `repair_test(error_excerpt(prevOut), prevSrc, scaffold)` is untouched.
+    let augmented = filtered + reach_setup_excerpt(out);
+    if len(augmented) > 6000 { return substring(augmented, 0, 6000); }
+    return augmented;
 }
 // The repair instruction: hand the model the compiler error + its PRIOR test source, with the SAME hard
 // constraints as the first generation (pragma ^0.8.20, no forge-std, targetContracts(), plain require(),
@@ -1898,18 +2040,26 @@ fn repair_loop(acc: string, remaining: int, gateSh: string, repo: string, out: s
 // FIRST attempt: write the chosen test + run the gate ONCE (today's one-shot — byte-identical for the fixture
 // path and for INV_REPAIR_ROUNDS=0). `firstStop` is "1" iff the first attempt already produced a verdict, so
 // the loop below makes zero extra prompt()/gate calls once a FINDING/CLEAN is in hand.
-let wrote = write_test(test, invOut);
+// #2245 REACH DRAFT + one re-ask. Under reachOn, on the LLM path, write the DRAFT first generation to INV_OUT
+// so handler-coverage.py can read it, measure coverage, and — if ANY listed entry point is uncovered — re-ask
+// ONCE for one bounded action per uncovered name. reachOn false (knob off) OR the fixture path => reaskFired
+// false and firstSrc == test, and no draft write happens (write_and_path is only called under reachOn), so
+// INV_OUT is written exactly ONCE below — byte-identical to today.
+let covDraft = if reachOn { run_coverage(true, write_and_path(test, invOut), targetFn) } else { "" };
+let reaskFired = if reachOn { if usedFixture { false } else { cov_gap(covDraft) > 0 } } else { false };
+let firstSrc = if reaskFired { coverage_reask(cov_uncovered(covDraft), test, sharedScaffold + symbolInventorySeed + reachSeed) } else { test };
+let wrote = write_test(firstSrc, invOut);
 let firstOut = run_gate(gate, invRepo, invOut, invMatch, budget, gateExtra);
 // FM2 (#1077): the first-attempt stop flag is both-real-aware too — in composable-fresh mode a first-attempt
 // FINDING/CLEAN on a harness that mocked/omitted a required real contract does NOT short-circuit; it enters
 // repair. Outside composable-fresh this is byte-identical to `stop_flag(rc_of(firstOut))` (only the rc decides).
-let firstStop = stop_flag_both(rc_of(firstOut), test, composableFresh, requiredNames);
+let firstStop = stop_flag_both(rc_of(firstOut), firstSrc, composableFresh, requiredNames);
 // Repair fires ONLY on the LLM path: the fixture path seeds the loop ALREADY-stopped (stopped="1") so it can
 // never be LLM-repaired, regardless of its rc. On the LLM path the initial stopped flag is firstStop, so a
 // FINDING/CLEAN first attempt (both-real satisfied) short-circuits (no repair) and a HARNESS_ERROR — or a
 // both-real violation in composable-fresh mode — enters repair.
 let initStopped = if usedFixture { "1" } else { firstStop };
-let initState = rstate(initStopped, test, firstOut);
+let initState = rstate(initStopped, firstSrc, firstOut);
 // Bounded compile-repair loop (#1073, extended for #1077): at most `repairRounds` EXTRA rounds, each a no-op
 // once stopped. The carried per-attempt state is the (stopped, testSrc, runOut) triple. repairRounds==0 (the
 // disable path) and the fixture path both leave `finalState` == `initState` (today's one-shot behaviour). The
@@ -1919,7 +2069,9 @@ let initState = rstate(initStopped, test, firstOut);
 // repair_loop is `sharedScaffold + symbolInventorySeed`, so every repaired harness is grounded against the real
 // symbol inventory too. symbolInventorySeed == "" (grounding off) => `sharedScaffold + ""` == sharedScaffold =>
 // byte-identical to today.
-let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, gateExtra, composableFresh, requiredNames, sharedScaffold + symbolInventorySeed);
+// #2245 REACH: the repair rounds also re-inject reachSeed, so a repaired harness keeps the one-action-per-entry
+// -point directive + deployment inventory. reachSeed == "" (knob off) => `+ ""` => byte-identical to today.
+let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, gateExtra, composableFresh, requiredNames, sharedScaffold + symbolInventorySeed + reachSeed);
 
 // The verdict is the gate's exit code on the LAST attempt — NEVER the LLM's opinion (unchanged contract) —
 // EXCEPT the #1077 both-real override: in composable-fresh mode, if the FINAL harness STILL mocked/omitted a
@@ -1939,7 +2091,13 @@ fn final_verdict(rc: int, violated: bool) -> string {
     if violated { return "HARNESS_ERROR"; }
     return verdict_of(rc);
 }
-let verdict = final_verdict(rc, bothRealViolated);
+let baseVerdict = final_verdict(rc, bothRealViolated);
+// #2245 REACH: re-measure coverage on the FINAL INV_OUT (it still holds the last written source — the gate
+// never rewrites it) and, when reachOn, downgrade a CLEAN whose final coverage is below the threshold to
+// LOW_COVERAGE. A reproduced FINDING is never discarded; HARNESS_ERROR/TRANSIENT_ERROR pass through. Off =>
+// covFinal == "" and reach_verdict is the identity => byte-identical to today.
+let covFinal = run_coverage(reachOn, invOut, targetFn);
+let verdict = reach_verdict(baseVerdict, reachOn, cov_ok(covFinal));
 // Surface WHY this is not a real verdict so the HARNESS_ERROR marker below is not mistaken for a genuine
 // compile failure. Routed to STDERR via `exec sh` (the prover has no stderr print builtin) so the stdout marker
 // line stays the single machine-parsed verdict. `bothRealMissing` is untrusted LLM-derived text, so it is
@@ -1956,6 +2114,15 @@ let _bothRealReason = bothreal_reason(bothRealViolated, bothRealMissing);
 // sequence (one STEP| line per call), record it on the bus, and learn() the attribution so invariant-prover
 // fitness reweights over targets (FINDING=success, CLEAN=failure, harness=error). memo_write the last_check
 // per the agent convention.
+// #2245 REACH readout — the draft/final HANDLER-COVERAGE lines + the covered/uncovered lists, printed BEFORE
+// the pinned marker. NONE of these carries an `INVARIANT|` substring, so every last-`INVARIANT|`-wins parser
+// (run-invariant-hunt.sh, deep-hunt-gate.sh, the resume check) is unaffected. Only when reachOn (else silent).
+if reachOn {
+    print("HANDLER-COVERAGE-DRAFT|" + targetFn + "|" + cov_body(covDraft));
+    print("HANDLER-COVERAGE|" + targetFn + "|" + cov_body(covFinal) + "|reask=" + reask_flag(reaskFired));
+    print("HANDLER-COVERED|" + regex_capture("(?m)^COVERED\\|(.*)$", covFinal, 1));
+    print("HANDLER-UNCOVERED|" + cov_uncovered(covFinal));
+}
 print("INVARIANT|" + targetFn + "|" + verdict);
 let steps = steps_of(runOut);
 if verdict == "FINDING" {

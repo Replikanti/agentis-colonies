@@ -16,6 +16,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Deep-hunt REACH — concrete multi-target selection + a handler-coverage gate + a deployment inventory, knob
+  `DEEP_HUNT_REACH=1`, default OFF (#2245, iteration 6).** Two frozen deep-hunt runs on the fixed harness came
+  back CLEAN with the failure in target SELECTION, not the fuzzer: one deployed an abstract base whose concrete
+  subclass held the row, the other exercised a router harness with a single action. REACH changes three things
+  inside STAGE 4.5 and leaves the lens routing, the fuzzer, the refute gate and the merge alone. (1) **Target
+  selection** (`lib/inheritance.py reach-targets`): up to 3 CONCRETE targets per zone, greedy by the zone's
+  state-changing entry points a contract owns or inherits — an abstract base is never deployed when it has a
+  concrete subclass. (2) **Handler-coverage gate** (`evm-harness/handler-coverage.py` + `reach-inventory`):
+  before fuzzing, the harness's actions are compared against the target's full entry-point list (inherited
+  vendored functions such as the ERC-20 transfer path included); the prover is re-asked ONCE on any uncovered
+  entry point, and a CLEAN whose final coverage is below `ceil(0.6 × total)` (total capped at 20) is labelled
+  **`LOW_COVERAGE`** — non-FINDING, never merged, terminal on `--deep-hunt-resume`. (3) **Deployment inventory**:
+  constructor/initializer signatures + resolved collaborator imports (or a mock hint for an unresolved one) are
+  re-injected into every repair round so a multi-contract `setUp()` can compile. Wiring: `run-zone-hunt.sh`
+  (`DEEP_HUNT_REACH` env knob) → `run-invariant-hunt.sh --reach` (writes `entry-points.tsv` + `reach-inventory.txt`
+  into the rundir, stages `handler-coverage.py`) → `invariant-prover.ag`'s `reachOn` is the mere presence of
+  `entry-points.tsv` (a fixed rundir file, NOT a new `exec.env_passthrough` entry). Unset ⇒ none of those files
+  is written ⇒ byte-identical selection, run dirs, prompt and merge. Proven end-to-end by
+  `demo-deep-hunt-reach.sh`; recall UNMEASURED (see `bench/corpus-bench/bug-class-coverage.md`).
 - **Output-gated PARAMETER AUDIT on the hunter, default OFF (#2245, iteration 5).** Iteration 4 measured a
   GENERATION loss that class text does not reach: the cell arrived at the function that admits the value and
   never listed that function's arguments, so the lead living in one of them was never written down. This

@@ -144,6 +144,16 @@
 #                        multi-contract shape hit and survived all repair rounds). Default OFF => the file is NOT
 #                        written => the prover's grounding block is empty => the prompts are byte-identical to
 #                        today. Source-parsing only (no forge build / network) so it is deterministic in CI.
+#   --reach              #2245 (iteration 6, deep-hunt REACH): write the target's ENTRY-POINT list +
+#                        DEPLOYMENT INVENTORY to `$RUN/entry-points.tsv` + `$RUN/reach-inventory.txt` (via
+#                        lib/inheritance.py reach-inventory over the STAGED repo, so inherited vendored
+#                        functions resolve) and stage evm-harness/handler-coverage.py into $RUN. The prover then
+#                        turns its handler-coverage gate + deployment-inventory prompt ON (its reachOn is
+#                        `len(entry-points.tsv) > 0` — a FIXED rundir file, NOT a new exec.env_passthrough
+#                        entry). A CLEAN whose FINAL coverage is below ceil(0.6*total) becomes LOW_COVERAGE.
+#                        Default OFF => none of those files is written => reachOn false => byte-identical.
+#   --target-contract <Name>  #2245: the concrete contract to deploy for the reach inventory + coverage.
+#                        Identifier charset only. Appended as `:Name` to --target when --target has no `:` yet.
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
 set -eu
 
@@ -182,6 +192,12 @@ SYMBOLIC_TIMEOUT="" # #1732: per-assertion halmos solver timeout (seconds); "" =
 CORE_DEP_HARNESS="" # #1755: deploy the REAL delegatecall singleton (yearn-v3 TokenizedStrategy); "" => OFF (byte-identical)
 ENSEMBLE_CANDIDATES="0"  # #1778: single-run metamorphic-ensemble candidate count; 0/1 => OFF (byte-identical to today)
 GROUND_SYMBOLS=0  # FM-B (#1939 M2): symbol grounding; 0 => OFF (no symbol-inventory.txt written; byte-identical prompts)
+# #2245 (iteration 6, deep-hunt REACH): --reach writes entry-points.tsv + reach-inventory.txt into the rundir
+# and stages handler-coverage.py, so the prover's coverage gate + deployment inventory turn ON (its reachOn is
+# `len(entry-points.tsv) > 0` — a FIXED rundir file, NOT a new exec.env_passthrough entry, the #1939 M2
+# precedent). 0/absent => none of those files is written => reachOn false => byte-identical to today.
+REACH=0
+REACH_TARGET_CONTRACT=""  # --target-contract <Name>: appended as `:Name` to --target only when it has no `:` yet.
 REPAIR_ROUNDS=""  # #1073: extra compile-repair rounds; "" => the prover's own default (2)
 AUDIT_CONTEXT=""  # #1722: optional spec / audit-scope doc; "" => no audit seed (byte-identical prompt)
 FORK_URL="" ; FORK_BLOCK="" ; FORK_TARGET=""
@@ -221,6 +237,8 @@ while [ $# -gt 0 ]; do
     --core-dep-harness) CORE_DEP_HARNESS=1; shift ;;
     --ensemble-candidates) need "$#"; ENSEMBLE_CANDIDATES="$2"; shift 2 ;;
     --ground-symbols) GROUND_SYMBOLS=1; shift ;;
+    --reach) REACH=1; shift ;;
+    --target-contract) need "$#"; REACH_TARGET_CONTRACT="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-invariant-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -296,6 +314,19 @@ for spec in ${FORK_TARGET_SPECS+"${FORK_TARGET_SPECS[@]}"}; do
   [ "$_role" = "target" ] && FORK_TARGET="$_addr"
 done
 command -v "$AGENTIS" >/dev/null 2>&1 || [ -x "$AGENTIS" ] || { echo "run-invariant-hunt.sh: agentis binary not found ($AGENTIS)" >&2; exit 3; }
+
+# #2245 REACH: --target-contract <Name> pins the concrete contract to deploy. Identifier charset only, else a
+# usage error; appended as `:Name` to --target ONLY when --target carries no `:` yet (so an explicit
+# `--target File.sol:Name` wins). Empty (the default) => TARGET is untouched => byte-identical.
+if [ -n "$REACH_TARGET_CONTRACT" ]; then
+  case "$REACH_TARGET_CONTRACT" in
+    *[!A-Za-z0-9_$]*) echo "run-invariant-hunt.sh: --target-contract must be a Solidity identifier (got: $REACH_TARGET_CONTRACT)" >&2; exit 2 ;;
+  esac
+  case "$TARGET" in
+    *:*) : ;;
+    *) TARGET="$TARGET:$REACH_TARGET_CONTRACT" ;;
+  esac
+fi
 
 # Resolve operator paths to ABSOLUTE — the colony runs from the rundir (a different cwd) and the exec sandbox
 # cannot read $HOME, so a relative or home-rooted path would silently read empty. We build the test inside the
@@ -585,6 +616,34 @@ if [ "$GROUND_SYMBOLS" = "1" ] && [ -f "$SYMBOL_EXTRACT" ]; then
   echo "run-invariant-hunt.sh: [ground-symbols] wrote $(grep -c . "$RUN/symbol-inventory.txt" 2>/dev/null || echo 0) in-scope symbols to symbol-inventory.txt" >&2
 fi
 
+# #2245 (iteration 6, deep-hunt REACH) — write the per-target ENTRY-POINT list + DEPLOYMENT INVENTORY to the
+# FIXED rundir files entry-points.tsv / reach-inventory.txt (parsed off the STAGED repo copy, so the inherited
+# vendored transfer/receiver functions resolve inside the same tree the harness compiles against), and stage
+# the coverage matcher into $RUN. The prover reads entry-points.tsv by its relative name (it cds into $RUN);
+# reachOn is `len(entry-points.tsv) > 0`. Only under --reach are these files written / the tool staged: absent
+# the flag, entry-points.tsv never exists => the prover's reachOn is false => byte-identical to today. In fork
+# (or fork-context) mode reach-inventory renders only the entry-point half (--fork). A helper failure leaves
+# the files unwritten and the run degrades to the non-REACH prompt.
+if [ "$REACH" = "1" ]; then
+  _reach_inh="$HERE/lib/inheritance.py"
+  _reach_fork=""
+  { [ -n "$FORK_URL" ] || [ -n "$FORK_CONTEXT" ]; } && _reach_fork="--fork"
+  REACH_AUX_ARGS=()
+  for _rspec in ${AUX_SPECS[@]+"${AUX_SPECS[@]}"}; do REACH_AUX_ARGS+=(--aux "$_rspec"); done
+  if [ -f "$_reach_inh" ]; then
+    # shellcheck disable=SC2086  # $_reach_fork is a single optional flag; intentional (empty = no arg)
+    if python3 "$_reach_inh" reach-inventory --repo "$REPO_IN_RUN" --target "$TARGET" \
+        --out-tsv "$RUN/entry-points.tsv" --out-inventory "$RUN/reach-inventory.txt" \
+        $_reach_fork ${REACH_AUX_ARGS[@]+"${REACH_AUX_ARGS[@]}"} 2>/dev/null; then
+      cp "$HERE/evm-harness/handler-coverage.py" "$RUN/handler-coverage.py" 2>/dev/null || true
+      echo "run-invariant-hunt.sh: [reach] wrote $(grep -c '^EP|' "$RUN/entry-points.tsv" 2>/dev/null || echo 0) entry points to entry-points.tsv (+ deployment inventory)" >&2
+    else
+      echo "run-invariant-hunt.sh: [reach] reach-inventory helper failed for '$TARGET' — degrading to the non-REACH prompt" >&2
+      rm -f "$RUN/entry-points.tsv" "$RUN/reach-inventory.txt" 2>/dev/null || true
+    fi
+  fi
+fi
+
 # #1915/#1932: composable-fresh generation (INV_AUX non-empty) deploys+wires the target AND every aux
 # contract in one prompt -- materially heavier than the single-target read the flat 1200s budget (line
 # ~517 below) was sized for. Scale by aux count (base + 600s per staged aux contract), capped at the
@@ -609,6 +668,13 @@ esac
 GEN_TIMEOUT_MS=$GEN_TIMEOUT_BASE
 if [ -n "$INV_AUX" ]; then
   GEN_TIMEOUT_MS=$((GEN_TIMEOUT_BASE + 600000 * _aux_idx))
+  [ "$GEN_TIMEOUT_MS" -gt "$GEN_TIMEOUT_CAP" ] && GEN_TIMEOUT_MS=$GEN_TIMEOUT_CAP
+fi
+# #2245 REACH: the bigger ~260-line handler (one action per entry point) plus a possible one-shot coverage
+# re-ask is heavier than the single-target read — add one aux-slope step, capped like the aux scaling. Off =>
+# unchanged.
+if [ "$REACH" = "1" ]; then
+  GEN_TIMEOUT_MS=$((GEN_TIMEOUT_MS + 600000))
   [ "$GEN_TIMEOUT_MS" -gt "$GEN_TIMEOUT_CAP" ] && GEN_TIMEOUT_MS=$GEN_TIMEOUT_CAP
 fi
 
@@ -886,6 +952,7 @@ run_one_candidate() {  # $1 = variant ("" = OFF/single), $2 = INV_OUT path, $3 =
     _cverd="$(printf '%s' "$_vline" | sed 's/.*INVARIANT|//' | cut -d'|' -f2)"
   fi
   case "$_cverd" in
+    LOW_COVERAGE) ;;  # #2245 REACH: a CLEAN whose FINAL handler coverage was below the gate threshold — non-FINDING, terminal on --deep-hunt-resume, never merged
     FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR) ;;  # #2033: TRANSIENT_ERROR is a re-runnable verdict, distinct from HARNESS_ERROR
     *) _cverd="HARNESS_ERROR" ;;
   esac
@@ -904,7 +971,7 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
 # aggregate with ZERO parser change.
 if [ "$ENSEMBLE_CANDIDATES" -ge 2 ] && [ -z "$FIXTURE_IN_RUN" ]; then
   echo "run-invariant-hunt.sh: [ensemble] $ENSEMBLE_CANDIDATES metamorphic candidates for $TARGET ..." >&2
-  ENS_AGG="CLEAN"; ENS_HAD_HARNESS=""; ENS_HAD_TRANSIENT=""; ENS_WIN_LOG=""; ENS_WIN_INVOUT=""
+  ENS_AGG="CLEAN"; ENS_HAD_HARNESS=""; ENS_HAD_TRANSIENT=""; ENS_HAD_LOW=""; ENS_WIN_LOG=""; ENS_WIN_INVOUT=""
   ENS_ROWS=()
   ens_i=0
   while [ "$ens_i" -lt "$ENSEMBLE_CANDIDATES" ]; do
@@ -921,6 +988,8 @@ if [ "$ENSEMBLE_CANDIDATES" -ge 2 ] && [ -z "$FIXTURE_IN_RUN" ]; then
       ENS_HAD_TRANSIENT=1
     elif [ "$ens_verd" = "HARNESS_ERROR" ]; then
       ENS_HAD_HARNESS=1
+    elif [ "$ens_verd" = "LOW_COVERAGE" ]; then
+      ENS_HAD_LOW=1
     fi
     ens_i=$((ens_i + 1))
   done
@@ -929,6 +998,10 @@ if [ "$ENSEMBLE_CANDIDATES" -ge 2 ] && [ -z "$FIXTURE_IN_RUN" ]; then
   # HARNESS_ERROR so the cell is re-hunted rather than finalized as an untestable zone.
   if [ "$ENS_AGG" != "FINDING" ] && [ -n "$ENS_HAD_TRANSIENT" ]; then ENS_AGG="TRANSIENT_ERROR"
   elif [ "$ENS_AGG" != "FINDING" ] && [ -n "$ENS_HAD_HARNESS" ]; then ENS_AGG="HARNESS_ERROR"; fi
+  # #2245 REACH: LOW_COVERAGE outranks a bare CLEAN (an under-covered clean is not a real negative) but sits
+  # below a real FINDING/TRANSIENT/HARNESS. Added as a SEPARATE follow-up if so the pinned two-line vote chain
+  # above is byte-identical (demo-invariant-ensemble.sh:437); it fires only when the chain left ENS_AGG=CLEAN.
+  if [ "$ENS_AGG" = "CLEAN" ] && [ -n "$ENS_HAD_LOW" ]; then ENS_AGG="LOW_COVERAGE"; fi
   VERD="$ENS_AGG"
   # Point INV_OUT at the winning candidate's generated test (a real file for the #1731 corpus accumulation); on a
   # non-FINDING aggregate, fall back to the LAST candidate's INV_OUT so the corpus/teeth path references a real test.
@@ -991,6 +1064,37 @@ REPORT="$OUT/invariant-report.md"
     echo "A human triages this candidate before any submission. This colony never posts."
   fi
 } > "$REPORT"
+
+# #2245 (iteration 6, deep-hunt REACH) — append a Handler coverage section parsed from the cell log's HANDLER-*
+# readout lines (none of which carry an INVARIANT| substring, so the last-INVARIANT|-wins parsers are unaffected).
+# The table row above is untouched, so a non-REACH report is byte-identical. Absent under --reach off.
+if [ "$REACH" = "1" ]; then
+  _hc_final="$(grep '^HANDLER-COVERAGE|' "$CELL_LOG" 2>/dev/null | tail -1 || true)"
+  _hc_draft="$(grep '^HANDLER-COVERAGE-DRAFT|' "$CELL_LOG" 2>/dev/null | tail -1 || true)"
+  _hc_covered="$(grep '^HANDLER-COVERED|' "$CELL_LOG" 2>/dev/null | tail -1 | sed 's/^HANDLER-COVERED|//' || true)"
+  _hc_uncovered="$(grep '^HANDLER-UNCOVERED|' "$CELL_LOG" 2>/dev/null | tail -1 | sed 's/^HANDLER-UNCOVERED|//' || true)"
+  _hc_body="$(printf '%s' "$_hc_final" | sed 's/^HANDLER-COVERAGE|[^|]*|//')"
+  _hc_c="$(printf '%s' "$_hc_body" | grep -oE 'covered=[0-9]+' | head -1 | cut -d= -f2)"
+  _hc_t="$(printf '%s' "$_hc_body" | grep -oE 'total=[0-9]+' | head -1 | cut -d= -f2)"
+  _hc_r="$(printf '%s' "$_hc_body" | grep -oE 'required=[0-9]+' | head -1 | cut -d= -f2)"
+  _hc_mode="$(printf '%s' "$_hc_body" | grep -oE 'mode=[A-Za-z-]+' | head -1 | cut -d= -f2)"
+  _hc_reask="$(printf '%s' "$_hc_body" | grep -oE 'reask=[01]' | head -1 | cut -d= -f2)"
+  _hc_over="$(grep -c '^OVERCAP|' "$RUN/entry-points.tsv" 2>/dev/null || echo 0)"
+  _hc_collab="$(grep -c "^COLLABORATOR '" "$RUN/reach-inventory.txt" 2>/dev/null || echo 0)"
+  _hc_unresolved="$(grep -c 'unresolved — deploy a minimal mock' "$RUN/reach-inventory.txt" 2>/dev/null || echo 0)"
+  {
+    echo
+    echo "## Handler coverage (DEEP_HUNT_REACH)"
+    echo
+    echo "- handler_coverage: ${_hc_c:-0}/${_hc_t:-0} (required ${_hc_r:-0}) — $( [ "$VERD" = "LOW_COVERAGE" ] && echo LOW_COVERAGE || echo ok )"
+    echo "- mode: ${_hc_mode:-unmeasured}; re-ask fired: ${_hc_reask:-0}"
+    echo "- draft: $(printf '%s' "$_hc_draft" | sed 's/^HANDLER-COVERAGE-DRAFT|[^|]*|//')"
+    echo "- covered: ${_hc_covered:-}"
+    echo "- uncovered: ${_hc_uncovered:-}"
+    echo "- over-cap entry points (recorded, never gated): ${_hc_over:-0}"
+    echo "- collaborators resolved: ${_hc_collab:-0}; unresolved (mock): ${_hc_unresolved:-0}"
+  } >> "$REPORT"
+fi
 
 # #1732 — COMPLEMENTARY SYMBOLIC / BMC ORACLE. Runs AFTER the primary $REPORT is written (the fuzzer verdict is
 # already finalized) and BEFORE the #1731 replay block below clobbers test/*.t.sol, so $INV_OUT is intact. The
@@ -1058,6 +1162,8 @@ elif [ "$VERD" = "CLEAN" ]; then
   echo "run-invariant-hunt.sh: every deep invariant held across the fuzzed search — no finding in this budget (not a proof of safety). Nothing to triage." >&2
 elif [ "$VERD" = "TRANSIENT_ERROR" ]; then
   echo "run-invariant-hunt.sh: TRANSIENT_ERROR (#2033) — forge was starved/killed/timed out under concurrent batch load; the harness is VALID and this cell is RE-RUNNABLE (re-hunted on resume), NOT an untestable zone. Distinct from HARNESS_ERROR." >&2
+elif [ "$VERD" = "LOW_COVERAGE" ]; then
+  echo "run-invariant-hunt.sh: LOW_COVERAGE (#2245 REACH) — every deep invariant held, but the handler exercised fewer than the required fraction of the target's entry points, so the CLEAN is not trustworthy. Non-FINDING, never merged; see the Handler coverage report section." >&2
 else
   echo "run-invariant-hunt.sh: HARNESS_ERROR — the test did not compile / no invariant matched / forge absent. No verdict was produced." >&2
 fi
