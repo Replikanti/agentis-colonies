@@ -1573,6 +1573,29 @@ if [ -x "$REPO_ROOT/dark-factory/demo-admitted-param-lens.sh" ]; then
     fi
 fi
 
+# --- dark-factory output-gated parameter audit (#2245, iteration 5 of the miss-shape lens program) ---
+# Opt-in (PARAM_AUDIT=1, default OFF, independent of every other knob): hunter.ag asks for one
+# `PARAM|#k|<file:function>|<parameter>|<source>` line per admitted value, answered by one
+# `PARAM-TRACE|#k|bounded-at:<path>:<line>|...` or `PARAM-TRACE|#k|unbounded|...` line, and run-discovery.sh gates
+# the OUTPUT (uncovered / unanswered / absent / open lead), re-asks once naming the open items, re-opens every
+# bounded-at citation under a STRICT bound contract (the cited range must check the value AND name the parameter; a
+# role check never counts) and, inside a rubric-ON cell, promotes an unbounded lead that got neither a CANDIDATE nor
+# a DISMISS naming it to a tier-1 Medium candidate (one per location, never duplicating a rubric promotion).
+# demo-param-audit.sh source-guards the agent half, pins the wiring (passthrough, cell env, boundaries, cap, re-ask
+# phrases vs prompt text, path regex, gate order), drives the SLICED gate over fixtures with negative controls, runs
+# run-discovery.sh end-to-end through an offline stub (incl. knob-OFF byte-identity of the cell JSON), mutates a
+# copy of the gate five ways (each must flip a fixture) and — when agentis is present — probes the extracted
+# helpers for 0 bytes under every knob-OFF combination and runs a live mock cell. No forge, no network, no LLM.
+if [ -x "$REPO_ROOT/dark-factory/demo-param-audit.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-param-audit.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: output-gated parameter audit (PARAM|/PARAM-TRACE| gate + strict bound contract + one re-ask + rubric-gated Medium promotion, default OFF) (#2245)"
+    else
+        fail "dark-factory: output-gated parameter audit regressed (#2245)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory attacker-controlled-callee directive (#2145, milestone D1 of epic #2130) ---
 # hunter.ag injects a GENERIC trust-model directive ("who controls the call TARGET?") whenever a deterministic
 # detector finds an external call surface AND a settable/computed call target, gated + made observable by the

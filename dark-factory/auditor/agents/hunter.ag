@@ -49,6 +49,13 @@ cb 300000;
 //               and only when the #2211 lens is on. It carries the check ids (`#2, #5`) the previous answer
 //               left unanswered, so the re-ask names them instead of repeating the same prompt verbatim.
 //               Empty (every first attempt, and every lens-OFF cell) => the directive is byte-identical.
+//   PARAM_AUDIT #2245 iteration 5 (optional, default unset = OFF): "1" opts IN to the output-gated parameter
+//               audit (param_audit_directive). Any other value leaves the prompt byte-identical. Independent of
+//               SEVERITY_RUBRIC / GROUND_EVIDENCE / OPERATIONALIZE_LENS; its LEAD rule renders only when
+//               SEVERITY_RUBRIC=1 too.
+//   PARAM_REASK_ITEMS #2245 iteration 5 (optional, default ""): set by run-discovery.sh ONLY on a parameter re-ask;
+//               it names the open audit items (uncovered functions, unanswered numbers, failed bounds, open
+//               leads). Empty (every first attempt, and every knob-OFF cell) => the directive is unchanged.
 // Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
 //         Diagnostics that may precede it: `BLACKBOARD-FOCUS|`, `DEPTH-CELL|`, `APPENDIX-CONTEXT|`, —
 //         #1887, only when a refute-constraint corpus is imported — `REFUTE-CONSTRAINTS|<subsystem>|<cls>|<n>`,
@@ -80,6 +87,11 @@ cb 300000;
 //         TRACE line. run-discovery.sh re-opens THAT citation from the on-chain cache — never from the
 //         network — and counts it only when a cached record for that call and block carries exactly the
 //         cited result; anything else (including every `unavailable` answer) marks THAT check uncited.
+//         #2245 iteration 5, only when PARAM_AUDIT=1 opts in: `PARAM-AUDIT|<subsystem>|<cls>|on`, followed in the
+//         model's own reply by one `PARAM|#<k>|<file:function>|<parameter>|<caller|role|config|derived>` line per
+//         audited value and one `PARAM-TRACE|#<k>|<bounded-at:<path>:<line>|unbounded>|<evidence>` answer per
+//         number (model-emitted, free text, never script-printed). run-discovery.sh pairs them by id, re-opens
+//         every bounded-at citation, and gates / re-asks / promotes on the result.
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -1024,6 +1036,125 @@ fn ground_evidence_reask_clause() -> string {
       + "from it, and repeating the line without that evidence answers nothing.\n";
 }
 
+// --- #2245 iteration 5: OUTPUT-GATED PARAMETER AUDIT (opt-in, default OFF) ---------------------------------
+// The measured gap (iteration 4, on the frozen bases): the cell REACHED the function that admits the value and
+// never listed that function's arguments — it ruled the function out on other grounds, and the lead that lived in
+// one of its arguments was never written down. Per-shape class text did not change that, and a
+// pure-meta "check where every argument is bounded" paragraph with no gate is the #2213 shape (Delta=+0). So this
+// iteration gives GENERATION the mechanism that worked on the dismissal side: an emission contract (one
+// `PARAM|#k|...` line per admitted value, answered by one `PARAM-TRACE|#k|...` line under the same number), a
+// deterministic OUTPUT gate in run-discovery.sh, one named re-ask, and — inside a rubric-ON cell — promotion of an
+// `unbounded` answer that got neither a CANDIDATE nor a DISMISS naming the parameter. The judges downstream are
+// the EXISTING ones (the rubric + evidence gate, the refute gate, the PoC gate); nothing here judges a lead.
+//
+// WHY `PARAM-TRACE|` AND NOT `TRACE|`: with OPERATIONALIZE_LENS=1 on too, a shared `#k` namespace would collide
+// with the #2223 OPCHECK pairing, and four shipped `TRACE|` consumers would silently change meaning. A separate
+// token keeps the two knobs independent by construction (issue #2245 iteration-5 STOP-1 decision 2).
+// None of `PARAM|`, `PARAM-TRACE|` or `PARAM-AUDIT|` contains `CANDIDATE|`, `SAFE` or `VERDICT|`, so
+// lib/run-agent-validated.sh's hunter predicate cannot false-accept a cell on one of them.
+//
+// Default OFF, the same INVERTED polarity as every #2245 knob ("1" opts in, everything else is off), and
+// INDEPENDENT of SEVERITY_RUBRIC / GROUND_EVIDENCE / OPERATIONALIZE_LENS: PARAM_AUDIT=1 alone renders the
+// enumeration contract; only the LEAD rule (param_lead_rule) needs the rubric, because it points at the DISMISS
+// grammar — the GROUND_EVIDENCE precedent of a second half that works only inside a rubric-ON cell.
+//
+// SPLICE POINT: directly after `+ rubric` in the shared RULES block (the lead rule refers to the DISMISS grammar
+// just read) and before `+ extres` (so one resolved citation stays usable by both). PURE-META like every other
+// directive here: no protocol, contract, function, unit, product or domain noun.
+
+// The one string the block is RECOGNISED by (same discipline as severity_rubric_marker): it is the block's
+// literal FIRST LINE, and the sentinel greps the ASSEMBLED instruction for it.
+fn param_audit_marker() -> string {
+    return "=== PARAMETER AUDIT (where is each admitted value bounded?) ===";
+}
+
+// The per-cell cap on audited parameter numbers. A CONSTANT, not a knob (a knob would be a second variable in
+// the arm): run-discovery.sh's _param_audit_cap prints the same number, and demo-param-audit.sh pins the two equal.
+fn param_audit_cap() -> int {
+    return 20;
+}
+
+// The enumeration + answer contract. The bound rule is stated in words the driver checks mechanically
+// (_param_bound_ok): the cited range must CHECK the value AND NAME the parameter, a role check never bounds, and
+// a deployment script or a deployed value bounds nothing. demo-param-audit.sh pins _param_requirement's re-ask
+// phrases against this text in both directions, so the driver can never ask for something this text never said.
+fn param_audit_block() -> string {
+    return param_audit_marker() + "\n"
+      + "Before your terminal verdict, audit the VALUES this zone admits. Scope: every function you examine that "
+      + "makes a non-view external call or writes storage. For every argument of such a call or write, name "
+      + "where the value comes from:\n"
+      + "  caller   an argument of an externally callable function.\n"
+      + "  role     an argument of a role-gated function.\n"
+      + "  config   storage written by a setter, a constructor or an initializer.\n"
+      + "  derived  computed in this function from any of the above.\n"
+      + "Constants, immutables, msg.sender and address(this) are out of scope.\n"
+      + "Write one line per such value, NUMBERING them #1, #2, #3 ... in the order you list them:\n"
+      + "PARAM|#<k>|<file:function>|<parameter as written>|<caller or role or config or derived>\n"
+      + "<file:function> is the function you EXAMINED — the one you would name in a CANDIDATE or DISMISS "
+      + "line — even when the call or write itself sits in an internal helper that function reaches.\n"
+      + "Then answer EVERY number with one line of its own that carries the SAME number, in exactly one of two "
+      + "forms:\n"
+      + "PARAM-TRACE|#<k>|bounded-at:<path>:<line>[-<line>]|<the check at that line>\n"
+      + "PARAM-TRACE|#<k>|unbounded|<the call or write that consumes it, and what an out-of-range value does "
+      + "there>\n"
+      + "The number is how an answer is matched to its parameter: an answer carrying the wrong number, or no "
+      + "number, answers NOTHING. Number every parameter, answer every number, and never renumber between the "
+      + "two lists. The third field is literally bounded-at:<path>:<line> or unbounded; anything else answers "
+      + "nothing.\n"
+      + "WHAT BOUNDS A VALUE. bounded-at must cite the path:line (or path:first-last) of the check, in code you "
+      + "were given, and the cited text must both CHECK the value — a require/revert/assert, a conditional, a "
+      + "min/max/clamp, an allowlist or validity lookup, or a modifier called with that value — and NAME the "
+      + "parameter. Access control limits WHO calls, never WHAT value is passed: a role check does not bound an "
+      + "argument. A deployment script, or a deployed value, bounds nothing — the question is what the code "
+      + "ADMITS.\n"
+      + "CAP. List at most " + to_string(param_audit_cap()) + " parameters in this cell: arguments of non-view "
+      + "external calls first, then values written to storage, within the functions you examine. Numbers above "
+      + to_string(param_audit_cap()) + " are not audited.\n"
+      + "An audit line is never itself a finding: unbounded says where to look, not that there is a bug.\n";
+}
+
+// The LEAD rule — rendered ONLY inside a rubric-ON cell, because it points at the DISMISS grammar and the closed
+// ground list above it (the ground_evidence_reask_clause() pattern: a knob-gated sentence that is "" otherwise).
+// It deliberately does not mention the shell promotion: the model is told what it owes, not what happens if it
+// does not pay.
+fn param_lead_rule() -> string {
+    if !severity_rubric_enabled() { return ""; }
+    return "LEADS FROM THE AUDIT. Every value you answered unbounded is a LEAD, and it is judged by the severity "
+      + "rubric above: either report it as a CANDIDATE line, or write a DISMISS line at that same function whose "
+      + "evidence NAMES the parameter (or its #<k>). An unbounded value left with neither line is an unrecorded "
+      + "lead, and an unrecorded lead is not a result.\n";
+}
+
+// The opt-in. INVERTED like severity_rubric_enabled() (`== "1"`) ON PURPOSE: unset / any other value is OFF and is
+// the DEFAULT. It must also ride run-discovery.sh's exec.env_passthrough, else getenv() reads the SANITISED env and
+// the whole feature is silently inert (the #1426/#2157 failure mode).
+fn param_audit_enabled() -> bool {
+    return getenv("PARAM_AUDIT") == "1";
+}
+
+// The PARAM RE-ASK addressing (empty on every first attempt), the twin of dismiss_reask_block(). PARAM_REASK_ITEMS
+// is set by the shell ONLY on a parameter re-ask, so this block is "" on every first attempt; it lives INSIDE the
+// gated directive, so the knob-OFF prompt keeps its byte-identity contract whatever the env holds. It names only
+// what the cell itself wrote (plus function names from its own slice), never any content of its own.
+fn param_reask_block() -> string {
+    let items = getenv("PARAM_REASK_ITEMS");
+    if items == "" { return ""; }
+    return "RE-ASK — your previous answer for this cell left the parameter audit open: " + items + ". Take each "
+      + "listed item again: write PARAM lines for every function listed as uncovered or given, answer every "
+      + "listed number with one PARAM-TRACE line under the SAME number, re-cite a bound that meets the "
+      + "requirement named beside it or answer it unbounded, and give every open lead a CANDIDATE line or a "
+      + "DISMISS line that names the parameter. Keep your numbering, and do not drop the items you already "
+      + "settled.\n";
+}
+
+// The directive as it enters the prompt: "" unless the knob opts in. Concatenating "" is a no-op, so a default
+// cell's instruction matches the pre-iteration-5 one byte for byte and the honesty-gated sentinel auto-suppresses.
+// O(1) top-level string concat — no regex, no reduce, no exec sh.
+fn param_audit_directive() -> string {
+    if !param_audit_enabled() { return ""; }
+    return param_audit_block() + param_lead_rule() + param_reask_block() + "\n";
+}
+
 // --- #2235 READ THE EXTERNAL PROTOCOL (PR B — opt-in, default OFF) -------------------------------------------
 // The measured gap the #2214/#2227 citation rules exposed: a cell whose verdict turns on how ANOTHER protocol
 // behaves ("that rate is 1e18-scaled", "that wrapper is 1:1") has two honest moves and no third — confabulate
@@ -1252,6 +1383,13 @@ let extres = external_resolve_directive();
 // printed further down, AFTER `instruction` exists, on the same honesty contract as OPERATIONALIZE|.
 let rubric = severity_rubric_directive();
 
+// #2245 iteration 5 PARAM-AUDIT read: the output-gated parameter audit (PARAM|/PARAM-TRACE| emission contract +,
+// inside a rubric-ON cell, the lead rule). `paudit` is "" unless PARAM_AUDIT=1 (opt-in, default OFF), so every
+// cell that does not opt in prompts BYTE-IDENTICALLY to the pre-iteration-5 pipeline. No detector — the flag is
+// the only gate. INDEPENDENT of SEVERITY_RUBRIC, GROUND_EVIDENCE and OPERATIONALIZE_LENS. The sentinel it enables
+// is printed further down, AFTER `instruction` exists, on the same honesty contract as SEVERITY-RUBRIC|.
+let paudit = param_audit_directive();
+
 // #2235 PR C ON-CHAIN read: the "you may read a deployed value" verb. `onchain` is "" unless the same
 // --external-resolve branch handed this cell onchain-fact.sh, so a default cell prompts BYTE-IDENTICALLY.
 // It rides beside `extres` rather than inside it because the two verbs answer different questions (source
@@ -1289,6 +1427,10 @@ let instruction =
   // dismissal discipline config_realizability_rule() states for configuration grounds, so it is read directly
   // after it. "" whenever the knob is off, so the RULES block is byte-identical on every default cell.
   + rubric
+  // #2245 iteration 5: the parameter audit sits directly after the rubric, so its lead rule can point at the
+  // DISMISS grammar just read, and before the resolver verb, so one resolved citation stays usable by both.
+  // "" whenever the knob is off, so the RULES block is byte-identical on every default cell.
+  + paudit
   // #2235: the resolver verb sits directly after the dismissal rule it gives a cell a MOVE against — one
   // resolved citation can discharge both rule 1 (configuration grounds) and rule 2 (an external fact).
   // "" whenever the knob is off, so the RULES block is byte-identical on every default cell.
@@ -1375,6 +1517,15 @@ if index_of(instruction, severity_rubric_marker()) >= 0 {
 // record BOUNDARY for _join_wrapped_candidates like every other diagnostic.
 if index_of(instruction, ground_evidence_marker()) >= 0 {
     print("GROUND-EVIDENCE|" + subsystem + "|" + cls + "|on");
+}
+
+// #2245 iteration 5: the PARAM-AUDIT sentinel, on the SAME honesty contract — gated on the audit's own marker being
+// demonstrably IN the prompt about to be sent (index_of over `instruction`), never on the toggle's return value. It
+// is what ARMS run-discovery.sh's parameter gate: that gate reads this line and counts nothing without it, so the
+// shell layer is inert by construction whenever the knob is off. Carries no `CANDIDATE|` substring and is a record
+// BOUNDARY for _join_wrapped_candidates like every other diagnostic. `on` is a constant: an OFF cell prints nothing.
+if index_of(instruction, param_audit_marker()) >= 0 {
+    print("PARAM-AUDIT|" + subsystem + "|" + cls + "|on");
 }
 
 // #2235: the EXTERNAL-RESOLVE sentinel, on the same honesty contract — gated on the directive's own marker
