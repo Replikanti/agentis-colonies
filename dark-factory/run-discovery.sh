@@ -198,6 +198,20 @@
 #                       run_cell ONLY on that re-ask (and only inside a rubric-ON cell), so it is empty on every
 #                       first attempt and that prompt is unchanged. It rides exec.env_passthrough for the #1426
 #                       reason: unregistered, the re-ask would silently replay the same prompt.
+#   PARAM_AUDIT         #2245 iteration 5 OPT-IN, default UNSET = OFF, INDEPENDENT of SEVERITY_RUBRIC /
+#                       GROUND_EVIDENCE / OPERATIONALIZE_LENS. `1` injects hunter.ag's output-gated parameter audit
+#                       (`PARAM|#k|...` per admitted value, answered by `PARAM-TRACE|#k|...`) and arms the parameter
+#                       gate below through the honesty-gated `PARAM-AUDIT|` sentinel. Unset / any other value leaves
+#                       the assembled prompt BYTE-IDENTICAL and the gate inert. It rides exec.env_passthrough, else
+#                       getenv() could not see it. The LEAD half (promotion of an unbounded parameter) works only
+#                       inside a rubric-ON cell, the GROUND_EVIDENCE precedent.
+#   DF_PARAM_MAX_REASKS #2245 iteration 5: how many times a no-candidate, audit-ON cell with an open parameter
+#                       audit (see the iteration-5 block below) is re-asked before its open leads are PROMOTED.
+#                       Default 1; 0 = gate-only (record and promote, never re-ask); garbage => 1. Read by this
+#                       SHELL, so it needs no exec.env_passthrough entry.
+#   PARAM_REASK_ITEMS   #2245 iteration 5: the open audit items the parameter re-ask names. Set by run_cell ONLY on
+#                       that re-ask, so it is empty on every first attempt and that prompt is unchanged. It rides
+#                       exec.env_passthrough for the #1426 reason: unregistered, the re-ask would replay the prompt.
 #   DF_EXTERNAL_RESOLVE #2235: `1` turns the external-protocol reading on, exactly like `--external-resolve`
 #                       (any other value, and unset, leave it OFF — the default), so one export covers every
 #                       zone of a run-zone-hunt.sh hunt.
@@ -341,6 +355,37 @@
 #     * no `GROUND-EVIDENCE|` sentinel => no contract check anywhere => behaviour byte-identical to iteration 2.
 #     * `contract_failed_dismissals` is recorded per cell (only when non-zero) as the arm's anti-Goodhart
 #       readout: the contract is a floor on the FORM of the evidence, never a claim about its truth.
+#
+# #2245 ITERATION 5 — THE OUTPUT-GATED PARAMETER AUDIT (generation gets the mechanism the dismissal side has):
+#   MEASURED CAUSE: on the iteration-4 zone the cell REACHED the function that admits the value and never listed
+#   its arguments; per-shape class text did not change that, and a gate-less "check every argument" paragraph is
+#   the #2213 shape. So the audit is an emission contract + an OUTPUT gate + one named re-ask + promotion.
+#   GRAMMAR (knob-gated, so a knob-OFF prompt is byte-identical; `#k` is its OWN id namespace, never OPCHECK's):
+#     PARAM|#<k>|<file:function>|<parameter as written>|<caller|role|config|derived>
+#     PARAM-TRACE|#<k>|bounded-at:<path>:<line>[-<line>]|<the check at that line>
+#     PARAM-TRACE|#<k>|unbounded|<the call or write that consumes it, and what an out-of-range value does there>
+#   Pairing is `_check_ids PARAM` against `_check_ids PARAM-TRACE` (the #2223 rule: ids, never text). An answer is
+#   WELL-FORMED only when field 3 is `unbounded` or starts `bounded-at:`. A `bounded-at` answer is RE-OPENED by
+#   _param_bound_ok: the cited range must CHECK the value and NAME the parameter (a role check never bounds), and a
+#   deploy-script path or deployed-state wording bounds nothing; a failing citation is DEMOTED to unbounded.
+#   THE GATE, four components, armed ONLY by the `PARAM-AUDIT|` sentinel (never by the env var):
+#     G1 uncovered  — a function the cell names in its own DISMISS|/CALLEE-VECTOR| lines has no PARAM line
+#                     (suspended once the cell used all `cap` ids);
+#     G2 unanswered — a PARAM id <= cap with no well-formed PARAM-TRACE of that id, or an un-numbered PARAM line;
+#     G3 absent     — a no-candidate cell wrote no PARAM line at all;
+#     G4 open lead  — a PARAM id <= cap answered unbounded (or demoted) with no DISMISS| at that function whose
+#                     evidence names the parameter or `#k`. Armed only when the log ALSO carries SEVERITY-RUBRIC|.
+#   ORDER inside run_cell: the parameter loop runs AFTER the OPCHECK->TRACE block and BEFORE the rubric block, so a
+#   DISMISS written in answer to a parameter re-ask is then judged by the UNCHANGED rubric + evidence gate.
+#   STATUS SEMANTICS (no new status vocabulary, and this gate NEVER fails a cell):
+#     * no `PARAM-AUDIT|` sentinel => gap 0, gate inert, no sidecar, JSON key set unchanged.
+#     * a `.novalid`/`.timeout` cell or a cell with a model CANDIDATE| is never re-asked and never promoted; its
+#       parameter rows are still recorded (`<log>.param-audit.tsv`, the per-cell `param*` keys).
+#     * G1-G3 residuals after the one re-ask (DF_PARAM_MAX_REASKS) are RECORDED, never failed.
+#     * a G4 lead that survives is PROMOTED to a tier-1 `Medium` candidate, one per resolvable location, and a
+#       location the rubric gate already promoted is skipped (one lead per location across both gates).
+#   CAP: 20 ids per cell (a constant here and in hunter.ag, pinned equal); ids above it are counted
+#   (`param_over_cap`), never gated or promoted.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -362,6 +407,10 @@ case "$DF_TRACE_MAX_REASKS" in ''|*[!0-9]*) DF_TRACE_MAX_REASKS=1 ;; esac
 # inert without the SEVERITY-RUBRIC| sentinel, so this value is irrelevant on a default (knob-off) run.
 DF_RUBRIC_MAX_REASKS="${DF_RUBRIC_MAX_REASKS:-1}"
 case "$DF_RUBRIC_MAX_REASKS" in ''|*[!0-9]*) DF_RUBRIC_MAX_REASKS=1 ;; esac
+# #2245 iteration 5: the re-ask ceiling for the PARAMETER-audit gate, validated exactly like the two above (floor 0
+# = gate-only: record + promote, never re-ask). Inert without the PARAM-AUDIT| sentinel, i.e. on every default run.
+DF_PARAM_MAX_REASKS="${DF_PARAM_MAX_REASKS:-1}"
+case "$DF_PARAM_MAX_REASKS" in ''|*[!0-9]*) DF_PARAM_MAX_REASKS=1 ;; esac
 # agentis-core#993: pre-accept Claude Code's workspace-trust dialog for every dir a
 # hunter session cd's into (the shared $RUN store on the serial/depth path, each
 # isolated cell dir on the parallel path), else the flat-cyborg/claude session
@@ -787,7 +836,11 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # the opt-in could never reach the agent and the feature would be silently inert. DISMISS_REASK_GROUNDS is
   # set by run_cell ONLY on a ground re-ask: unregistered => "" => the re-ask would replay the same prompt
   # instead of naming the open locations. Both are EMPTY on a default run, so registering them changes nothing.
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET,ONCHAIN_FACT,ONCHAIN_BUDGET_STATE,ONCHAIN_BUDGET,FORK_BLOCK,SEVERITY_RUBRIC,DISMISS_REASK_GROUNDS,GROUND_EVIDENCE"
+  # #2245 iteration 5 PARAM_AUDIT/PARAM_REASK_ITEMS ride it for the same #1426 reason: hunter.ag gates the whole
+  # parameter audit on getenv("PARAM_AUDIT"), and PARAM_REASK_ITEMS is set by run_cell ONLY on a parameter re-ask —
+  # unregistered, the opt-in would be silently inert and the re-ask would replay the same prompt. Both are EMPTY on
+  # a default run, so registering them changes nothing there.
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET,ONCHAIN_FACT,ONCHAIN_BUDGET_STATE,ONCHAIN_BUDGET,FORK_BLOCK,SEVERITY_RUBRIC,DISMISS_REASK_GROUNDS,GROUND_EVIDENCE,PARAM_AUDIT,PARAM_REASK_ITEMS"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: hunter.ag ends its tick with `learn("hunt", ...)`, and it is that WRITE
   # the flag gates (#1878 measured it on agentis v1.28.0 — `experience.enabled = false` makes learn() raise
@@ -897,6 +950,7 @@ _json_id_array() {
 # `OPERATIONALIZE|` line or a model-emitted `OPCHECK|` line (#2211) or a model-emitted `TRACE|` line (#2214)
 # or a `SEVERITY-RUBRIC|` line or a model-emitted `DISMISS|` line (#2245 iteration 2)
 # or a `GROUND-EVIDENCE|` line (#2245 iteration 3)
+# or a `PARAM-AUDIT|` line or a model-emitted `PARAM|` / `PARAM-TRACE|` line (#2245 iteration 5)
 # or a blank line closes the current record
 # without starting a new one
 # (these are the only meaningful boundary tokens in a hunt log — see hunter.ag's own framing); any other line
@@ -911,7 +965,7 @@ _join_wrapped_candidates() {
       rec = $0
       next
     }
-    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*ONCHAIN-FACT\|/ || /^[[:space:]]*SEVERITY-RUBRIC\|/ || /^[[:space:]]*GROUND-EVIDENCE\|/ || /^[[:space:]]*DISMISS\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*ONCHAIN-FACT\|/ || /^[[:space:]]*SEVERITY-RUBRIC\|/ || /^[[:space:]]*GROUND-EVIDENCE\|/ || /^[[:space:]]*DISMISS\|/ || /^[[:space:]]*PARAM-AUDIT\|/ || /^[[:space:]]*PARAM\|/ || /^[[:space:]]*PARAM-TRACE\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
       if (rec != "") { print rec; rec = "" }
       next
     }
@@ -2109,13 +2163,473 @@ _rubric_promoted_count() {
   printf '%s\n' "$rpn_n"
 }
 
+# --- #2245 iteration 5: THE OUTPUT-GATED PARAMETER AUDIT ------------------------------------------------------
+# The measured gap (iteration 4): the cell REACHED the function that admits the value and never listed its
+# arguments, so the lead that lived in one of them was never written down — generation, not judgment. hunter.ag
+# (PARAM_AUDIT=1 only) now asks for one `PARAM|#k|<file:function>|<parameter>|<source>` line per admitted value
+# and one `PARAM-TRACE|#k|<bounded-at:<path>:<line> | unbounded>|<evidence>` answer per number. This is the OUTPUT
+# half: prompt text is not a gate (the #2213 lesson), so enumeration, pairing and the bound citation are checked
+# HERE, and an `unbounded` lead the cell neither reported nor dismissed is promoted like _rubric_promote does.
+#
+# INERT by construction without the honesty-gated `PARAM-AUDIT|` sentinel (_param_audit_armed): no gap, no
+# re-ask, no promotion, no sidecar and no extra JSON key. The LEAD half (G4 + promotion) is additionally inert
+# without `SEVERITY-RUBRIC|`, because the lead rule points at the DISMISS grammar and its closed ground list.
+#
+# Every function below is self-contained (own regexes, no script-level global, every knob read inline with its
+# default) for the reason the citation detectors are: demo-param-audit.sh slices them out of this file by line
+# range and sources them, and a helper that depended on caller state would behave differently there.
+
+# _param_audit_armed <log> — the ONLY arming signal: hunter.ag's honesty-gated `PARAM-AUDIT|` sentinel is in this
+# cell's log, so the audit really entered the prompt this cell answered. Never the env var: a cell must not be
+# re-asked against a contract it was never shown.
+_param_audit_armed() {
+  grep -qE '^[[:space:]]*PARAM-AUDIT\|' "$1" 2>/dev/null
+}
+
+# _param_audit_cap — the per-cell cap on audited ids. A CONSTANT, the shell twin of hunter.ag's param_audit_cap()
+# (demo-param-audit.sh pins the two equal). Ids above it are recorded (`param_over_cap`), never gated or promoted.
+_param_audit_cap() {
+  printf '%s\n' 20
+}
+
+# _param_lines <log> — the whitespace-trimmed `PARAM|` lines of one cell log, in LOG ORDER (the first line of an id
+# is the one that counts, and "first" means first written). `^[[:space:]]*`-anchored like every model-emitted
+# token, because a PTY capture routinely indents them. `PARAM\|` never matches a `PARAM-TRACE|` line.
+_param_lines() {
+  pl_log="$1"
+  [ -f "$pl_log" ] || return 0
+  grep -E '^[[:space:]]*PARAM\|' "$pl_log" 2>/dev/null | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true
+}
+
+# _param_trace_lines <log> — the same for the `PARAM-TRACE|` answers, in LOG ORDER.
+_param_trace_lines() {
+  ptl_log="$1"
+  [ -f "$ptl_log" ] || return 0
+  grep -E '^[[:space:]]*PARAM-TRACE\|' "$ptl_log" 2>/dev/null | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true
+}
+
+# _param_ids_in_cap <log> — the distinct PARAM ids 1..cap, ascending. The id set comes from the shipped, token-
+# generic _check_ids (the #2223 rule: pairing is by id, never by text).
+_param_ids_in_cap() {
+  pic_cap="$(_param_audit_cap)"
+  _check_ids PARAM "$1" | awk -v c="$pic_cap" '$1 >= 1 && $1 <= c'
+}
+
+# _param_over_cap <log> — how many distinct PARAM ids lie ABOVE the cap (recorded, never gated).
+_param_over_cap() {
+  poc_cap="$(_param_audit_cap)"
+  _check_ids PARAM "$1" | awk -v c="$poc_cap" '$1 > c' | _count_stdin
+}
+
+# _param_unnumbered <log> — how many DISTINCT PARAM lines carry no `#<digits>` id: such a line cannot be paired with
+# anything, so it counts toward the unanswered shortfall (G2) even though there is no id to name.
+_param_unnumbered() {
+  _param_lines "$1" | sort -u | grep -vE '^PARAM\|[[:space:]]*#[0-9]+[[:space:]]*\|' | _count_stdin
+}
+
+# _param_answered_ids <log> — the ids that carry a WELL-FORMED answer: field 3 is literally `unbounded` or starts
+# `bounded-at:` (case-folded). Anything else answers nothing. The id parse is the shared _ids_of_lines.
+_param_answered_ids() {
+  _param_trace_lines "$1" \
+    | awk -F'|' '{ f = tolower($3); gsub(/^[[:space:]]+|[[:space:]]+$/, "", f); if (f == "unbounded" || f ~ /^bounded-at:/) print }' \
+    | _ids_of_lines
+}
+
+# _param_unanswered_ids <log> — the in-cap PARAM ids with NO well-formed answer of the same id (set difference on
+# ids, exactly _missing_check_ids's rule), ascending.
+_param_unanswered_ids() {
+  pui_ans=" $(_param_answered_ids "$1" | tr '\n' ' ')"
+  for pui_id in $(_param_ids_in_cap "$1"); do
+    case "$pui_ans" in *" $pui_id "*) ;; *) printf '%s\n' "$pui_id" ;; esac
+  done
+}
+
+# _param_trace_for <log> <id> — the FIRST well-formed answer line (log order) carrying <id>, or nothing.
+_param_trace_for() {
+  _param_trace_lines "$1" | awk -F'|' -v want="$2" '
+    { v = $2; gsub(/[[:space:]]/, "", v) }
+    v == "#" want {
+      f = tolower($3); gsub(/^[[:space:]]+|[[:space:]]+$/, "", f)
+      if (f == "unbounded" || f ~ /^bounded-at:/) { print; exit }
+    }'
+}
+
+# _param_name <parameter as written> — the parameter's LAST identifier (`cfg.limit` -> `limit`, `uint256 amount`
+# -> `amount`, `amounts[i]` -> `amounts`). Index and call suffixes are decoration, never the name.
+_param_name() {
+  printf '%s' "$1" | sed 's/\[[^]]*\]//g; s/([^)]*)//g' | grep -oE '[A-Za-z_][A-Za-z0-9_]*' | tail -1 || true
+}
+
+# _param_fn_of <location> — the FUNCTION half of a model-written location (`file:function[:line]`, `Contract.fn`,
+# `fn()`), or nothing. Coverage and discharge match by function, because that is the only field DISMISS|,
+# CALLEE-VECTOR| and PARAM| share.
+_param_fn_of() {
+  pfo_loc="$(printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  case "$pfo_loc" in
+    *:*) pfo_fn="${pfo_loc#*:}"; pfo_fn="${pfo_fn%%:*}" ;;
+    *)   pfo_fn="$pfo_loc" ;;
+  esac
+  # shellcheck disable=SC2016  # a sed program held verbatim: the backtick is a literal character to strip
+  pfo_fn="$(printf '%s' "$pfo_fn" | sed 's/(.*$//; s/[[:space:]`]//g')"
+  case "$pfo_fn" in *.sol|'') return 0 ;; esac
+  pfo_fn="${pfo_fn##*.}"
+  printf '%s\n' "$pfo_fn" | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' || true
+}
+
+# _param_mentions <text> <parameter-name> [k] — true when <text> names the parameter (its identifier as a WHOLE
+# word, a leading `_` allowed either way) or its `#k` (not a prefix of a longer number).
+_param_mentions() {
+  pm_text="$1"; pm_k="${3:-}"
+  pm_bare="$(printf '%s' "$2" | sed 's/^_*//' | tr -cd 'A-Za-z0-9_')"
+  if [ -n "$pm_k" ] && printf '%s\n' "$pm_text" | grep -Eq "#${pm_k}([^0-9]|\$)"; then return 0; fi
+  [ -n "$pm_bare" ] || return 1
+  printf '%s\n' "$pm_text" | grep -Eq "(^|[^A-Za-z0-9_])_*${pm_bare}([^A-Za-z0-9_]|\$)"
+}
+
+# _param_bound_ok <param-trace-line> <parameter-name> [root] — the BOUND CONTRACT. Returns 0 when the `bounded-at`
+# answer really bounds the parameter, else prints ONE failure id and returns 1:
+#   bound-cite-missing     no path:line in field 3
+#   bound-cite-unresolved  an absolute path, a `..` segment, or (with a root) a file that is not under it
+#   bound-cite-deploy      the cited path is under script/ scripts/ deploy/ broadcast/
+#   bound-not-a-check      the cited range holds no require/revert/assert/`if (`, no min/max/clamp call, no
+#                          allowlist or validity lookup, and no modifier CALLED WITH arguments (`only<X>(...)`)
+#   bound-names-other      the cited range does not name the parameter (its identifier as a whole word). A
+#                          function SIGNATURE names every argument, so a `function <name>(...)` parameter list is
+#                          stripped before either test, and a range whose only check is a modifier call names the
+#                          parameter only when it sits INSIDE that modifier's arguments — so a role modifier on
+#                          the declaration line, or a `require` on the caller's identity, never bounds a value
+#   bound-deployed-state   the answer rests on the iteration-3 deployed-state wording — a deployed value bounds
+#                          nothing, the question is what the code ADMITS
+# It deliberately does NOT reuse _dismiss_evidence_ok's `guard` set: a check that does not NAME the parameter never
+# bounds it, which is exactly what excludes a pure role check (access control limits WHO calls, not WHAT value is
+# passed — issue #2245 iteration-5 STOP-1 decision 3). The path regex is byte-identical to _dismiss_evidence_ok's
+# `de_pathline_re` (demo-param-audit.sh pins it). An EMPTY root is documented behaviour, not a gap: the check is
+# then citation-SHAPE only, exactly like _dismiss_evidence_ok's. Self-contained: every regex lives HERE.
+_param_bound_ok() {
+  pb_line="$1"; pb_name="$2"; pb_root="${3:-}"
+  pb_pathline_re='[A-Za-z0-9_/.-]+\.(sol|ts|js|md|json|toml|ya?ml):[0-9]+(-[0-9]+)?'
+  pb_check_re='require|revert|assert|(^|[^A-Za-z0-9_])if[[:space:]]*\(|(^|[^A-Za-z0-9])_?(min|max)[[:space:]]*\(|clamp|allowed|allowlist|whitelist|supported|valid'
+  pb_mod_re='only[A-Z][A-Za-z0-9_]*[[:space:]]*\([^)]*[^)[:space:]][^)]*\)'
+  pb_sig_re='function[[:space:]]+[A-Za-z0-9_]+[[:space:]]*\([^)]*\)'
+  pb_deploy_re='(^|/)(script|scripts|deploy|broadcast)/'
+  pb_admit_re='ONCHAIN|@block|as deployed|currently deployed|as shipped|shipped (market|config|deployment)|mainnet|live market'
+  pb_f3="$(printf '%s' "$pb_line" | cut -d'|' -f3)"
+  pb_span="$(printf '%s' "$pb_line" | cut -d'|' -f3-)"
+  pb_cite="$(printf '%s' "$pb_f3" | grep -oE "$pb_pathline_re" | head -1 || true)"
+  [ -n "$pb_cite" ] || { printf 'bound-cite-missing\n'; return 1; }
+  pb_f="${pb_cite%%:*}"
+  case "$pb_f" in /*|*..*) printf 'bound-cite-unresolved\n'; return 1 ;; esac
+  if printf '%s' "$pb_f" | grep -Eq "$pb_deploy_re"; then printf 'bound-cite-deploy\n'; return 1; fi
+  if [ -n "$pb_root" ]; then
+    [ -f "$pb_root/$pb_f" ] || { printf 'bound-cite-unresolved\n'; return 1; }
+    pb_r="${pb_cite#*:}"
+    case "$pb_r" in *-*) pb_a="${pb_r%-*}"; pb_b="${pb_r#*-}" ;; *) pb_a="$pb_r"; pb_b="$pb_r" ;; esac
+    pb_range="$(sed -n "${pb_a},${pb_b}p" "$pb_root/$pb_f" 2>/dev/null | sed -E "s/$pb_sig_re/function/g" || true)"
+    if printf '%s\n' "$pb_range" | grep -Eqi "$pb_check_re"; then
+      pb_named="$pb_range"
+    else
+      pb_named="$(printf '%s\n' "$pb_range" | grep -oE "$pb_mod_re" || true)"
+      [ -n "$pb_named" ] || { printf 'bound-not-a-check\n'; return 1; }
+    fi
+    pb_bare="$(printf '%s' "$pb_name" | sed 's/^_*//' | tr -cd 'A-Za-z0-9_')"
+    if [ -z "$pb_bare" ] || ! printf '%s\n' "$pb_named" | grep -Eq "(^|[^A-Za-z0-9_])_*${pb_bare}([^A-Za-z0-9_]|\$)"; then printf 'bound-names-other\n'; return 1; fi
+  fi
+  if printf '%s' "$pb_span" | grep -Eqi "$pb_admit_re"; then printf 'bound-deployed-state\n'; return 1; fi
+  return 0
+}
+
+# _param_requirement <failure-id> — the ONE table of re-ask phrases, so the driver can never ask for something the
+# prompt never defined. demo-param-audit.sh pins these phrases against hunter.ag's param_audit_block() in BOTH
+# directions (every phrase is in the block, every bound rule of the block has a phrase here).
+_param_requirement() {
+  case "$1" in
+    bound-cite-missing)    printf '%s\n' 'cite the path:line of the check that bounds it, in code you were given' ;;
+    bound-cite-unresolved) printf '%s\n' 'the cited path:line is not in code you were given' ;;
+    bound-cite-deploy)     printf '%s\n' 'a deployment script bounds nothing — cite the check in code you were given' ;;
+    bound-not-a-check)     printf '%s\n' 'the cited line does not CHECK the value — cite a require/revert/assert, a conditional, a min/max/clamp or an allowlist lookup' ;;
+    bound-names-other)     printf '%s\n' 'the cited check does not NAME the parameter — access control limits WHO calls, never WHAT value is passed' ;;
+    bound-deployed-state)  printf '%s\n' 'a deployed value bounds nothing — the question is what the code ADMITS' ;;
+    *)                     printf '%s\n' 'cite a check that bounds the value, or answer it unbounded' ;;
+  esac
+}
+
+# _param_discharge <log> <id> <fn> <parameter-name> — how an OPEN value (unbounded or demoted) was answered:
+# `candidate` when a model CANDIDATE| record at the same function names the parameter or `#k`, else `dismiss` when
+# a DISMISS| line at the same function carries evidence (fields 4..N) that names it, else `open`. A DISMISS
+# discharges the LEAD only; whether its ground holds is the unchanged rubric + evidence gate's call.
+_param_discharge() {
+  pd_log="$1"; pd_id="$2"; pd_fn="$3"; pd_name="$4"
+  if [ -n "$pd_fn" ]; then
+    while IFS= read -r pd_c; do
+      [ -n "$pd_c" ] || continue
+      pd_cl="$(printf '%s' "$pd_c" | sed 's/^.*\(CANDIDATE|\)/\1/' | cut -d'|' -f2)"
+      [ "$(_param_fn_of "$pd_cl")" = "$pd_fn" ] || continue
+      if _param_mentions "$pd_c" "$pd_name" "$pd_id"; then printf 'candidate\n'; return 0; fi
+    done <<PDEOF
+$(_join_wrapped_candidates "$pd_log" 2>/dev/null | grep -v '^[[:space:]]*BLACKBOARD-' || true)
+PDEOF
+    while IFS= read -r pd_d; do
+      [ -n "$pd_d" ] || continue
+      [ "$(_param_fn_of "$(printf '%s' "$pd_d" | cut -d'|' -f2)")" = "$pd_fn" ] || continue
+      if _param_mentions "$(printf '%s' "$pd_d" | cut -d'|' -f4-)" "$pd_name" "$pd_id"; then printf 'dismiss\n'; return 0; fi
+    done <<PDEOF
+$(_dismiss_lines "$pd_log")
+PDEOF
+  fi
+  printf 'open\n'
+}
+
+# _param_rows <log> [root] — the per-parameter record, one TSV row per PARAM id 1..cap (ascending):
+#   <id> <file:function> <parameter> <source> <bounded|unbounded|demoted:<fail-id>|unanswered> <candidate|dismiss|open|n/a>
+# The first PARAM line of an id and the first well-formed answer of it (both in log order) are the ones read. A
+# `bounded-at` answer that FAILS the bound contract is DEMOTED (it is a lead exactly like an `unbounded` one). This
+# is what run-discovery.sh writes to `<log>.param-audit.tsv` for an armed cell — the measurement's readout.
+_param_rows() {
+  pr_log="$1"; pr_root="${2:-}"
+  [ -f "$pr_log" ] || return 0
+  for pr_id in $(_param_ids_in_cap "$pr_log"); do
+    pr_pl="$(_param_lines "$pr_log" | awk -F'|' -v want="$pr_id" '{ v = $2; gsub(/[[:space:]]/, "", v) } v == "#" want { print; exit }')"
+    pr_loc="$(printf '%s' "$pr_pl" | cut -d'|' -f3 | tr '\t' ' ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    pr_par="$(printf '%s' "$pr_pl" | cut -d'|' -f4 | tr '\t' ' ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    pr_src="$(printf '%s' "$pr_pl" | cut -d'|' -f5 | tr '\t' ' ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+    pr_name="$(_param_name "$pr_par")"
+    pr_tr="$(_param_trace_for "$pr_log" "$pr_id")"
+    pr_disc="n/a"
+    if [ -z "$pr_tr" ]; then
+      pr_st="unanswered"
+    elif [ "$(printf '%s' "$pr_tr" | cut -d'|' -f3 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')" = "unbounded" ]; then
+      pr_st="unbounded"
+    else
+      pr_fail=""
+      if pr_fail="$(_param_bound_ok "$pr_tr" "$pr_name" "$pr_root")"; then pr_st="bounded"; else pr_st="demoted:${pr_fail:-unknown}"; fi
+    fi
+    case "$pr_st" in
+      unbounded|demoted:*) pr_disc="$(_param_discharge "$pr_log" "$pr_id" "$(_param_fn_of "$pr_loc")" "$pr_name")" ;;
+    esac
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$pr_id" "$pr_loc" "$pr_par" "$pr_src" "$pr_st" "$pr_disc"
+  done
+}
+
+# _param_examined_fns <log> — the functions this cell says it EXAMINED, as `<fn>\t<location as written>` rows
+# (first occurrence per function). The two model-written lines with a fixed function-location field: DISMISS|
+# (field 2) and CALLEE-VECTOR| (field 2). The sliced function list is what the cell was GIVEN, not what it
+# examined, so it is used only to NAME functions in the G3 re-ask (_param_requested_fns).
+_param_examined_fns() {
+  pef_log="$1"
+  [ -f "$pef_log" ] || return 0
+  {
+    _dismiss_lines "$pef_log" | cut -d'|' -f2
+    grep -E '^[[:space:]]*CALLEE-VECTOR\|' "$pef_log" 2>/dev/null | sed 's/^[[:space:]]*//' | cut -d'|' -f2 || true
+  } | while IFS= read -r pef_loc; do
+    pef_fn="$(_param_fn_of "$pef_loc")"
+    [ -n "$pef_fn" ] || continue
+    pef_show="$(printf '%s' "$pef_loc" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | awk -F: '{ print (NF >= 2 ? $1 ":" $2 : $1) }')"
+    printf '%s\t%s\n' "$pef_fn" "$pef_show"
+  done | awk -F'\t' '!seen[$1]++'
+}
+
+# _param_uncovered_fns <log> — G1: the examined functions no PARAM| line (numbered or not, any id) names, one
+# location per line. SUSPENDED once the cell has used all `cap` ids — a cell that hit the cap was told to stop.
+_param_uncovered_fns() {
+  puf_log="$1"
+  [ -f "$puf_log" ] || return 0
+  [ "$(_param_ids_in_cap "$puf_log" | _count_stdin)" -lt "$(_param_audit_cap)" ] || return 0
+  puf_cov=" $(_param_lines "$puf_log" | cut -d'|' -f3 | while IFS= read -r puf_l; do _param_fn_of "$puf_l"; done | tr '\n' ' ')"
+  _param_examined_fns "$puf_log" | while IFS='	' read -r puf_fn puf_show; do
+    case "$puf_cov" in *" $puf_fn "*) ;; *) printf '%s\n' "$puf_show" ;; esac
+  done
+}
+
+# _param_requested_fns <in_scope> — the function names this cell's own slice tokens (`path@fn+fn`) hand it, at most
+# 6, first occurrence first. A whole-file token names no function and contributes nothing.
+_param_requested_fns() {
+  printf '%s\n' "$1" | tr ',' '\n' | while IFS= read -r prf_tok; do
+    case "$prf_tok" in *@*) printf '%s\n' "${prf_tok#*@}" | tr '+' '\n' ;; esac
+  done | sed 's/[[:space:]]//g' | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' | awk '!seen[$0]++' | head -6 || true
+}
+
+# _param_open_leads <log> [root] — G4: the _param_rows rows answered `unbounded` (or DEMOTED) that no CANDIDATE and
+# no DISMISS at their function names. Armed ONLY when the log carries BOTH the `PARAM-AUDIT|` and the
+# `SEVERITY-RUBRIC|` sentinel: the lead rule needs the DISMISS grammar and the closed ground list.
+_param_open_leads() {
+  pol_log="$1"; pol_root="${2:-}"
+  [ -f "$pol_log" ] || return 0
+  _param_audit_armed "$pol_log" || return 0
+  grep -qE '^[[:space:]]*SEVERITY-RUBRIC\|' "$pol_log" 2>/dev/null || return 0
+  _param_rows "$pol_log" "$pol_root" | awk -F'\t' '($5 == "unbounded" || $5 ~ /^demoted:/) && $6 == "open"'
+}
+
+# _param_audit_gap <log> [root] — the audit shortfall of ONE cell log as a single integer, G1 + G2 + G3 + G4 (see the
+# iteration-5 block in the header). Prints 0 when the log carries no `PARAM-AUDIT|` sentinel — EVERY cell whenever
+# PARAM_AUDIT is off (the production default) — so the gate is inert there by construction.
+_param_audit_gap() {
+  pag_log="$1"; pag_root="${2:-}"
+  if [ ! -f "$pag_log" ]; then printf '0\n'; return 0; fi
+  _param_audit_armed "$pag_log" || { printf '0\n'; return 0; }
+  pag_g1="$(_param_uncovered_fns "$pag_log" | _count_stdin)"
+  pag_g2=$(( $(_param_unanswered_ids "$pag_log" | _count_stdin) + $(_param_unnumbered "$pag_log") ))
+  pag_g3=0
+  if ! grep -qE '^[[:space:]]*PARAM\|' "$pag_log" 2>/dev/null \
+     && ! { grep -v '^BLACKBOARD-' "$pag_log" 2>/dev/null | grep -q 'CANDIDATE|'; }; then pag_g3=1; fi
+  pag_g4="$(_param_open_leads "$pag_log" "$pag_root" | _count_stdin)"
+  printf '%s\n' "$((pag_g1 + pag_g2 + pag_g3 + pag_g4))"
+}
+
+# _param_reask_needed <log> [root] — the RE-ASK predicate, with the four guards of _rubric_reask_needed in the same
+# order: a `.novalid`/`.timeout` cell already owns its FAILED reason; no `PARAM-AUDIT|` sentinel => nothing to gate;
+# a cell with a model CANDIDATE| is never re-asked (a re-ask could lose the lead); finally the arithmetic.
+_param_reask_needed() {
+  prn_log="$1"; prn_root="${2:-}"
+  if [ ! -f "$prn_log" ]; then return 1; fi
+  if [ -f "$prn_log.novalid" ] || [ -f "$prn_log.timeout" ]; then return 1; fi
+  _param_audit_armed "$prn_log" || return 1
+  if grep -v '^BLACKBOARD-' "$prn_log" 2>/dev/null | grep -q 'CANDIDATE|'; then return 1; fi
+  [ "$(_param_audit_gap "$prn_log" "$prn_root")" -gt 0 ]
+}
+
+# _param_open_items <log> [root] [in_scope] — what the re-ask names (PARAM_REASK_ITEMS), `; `-joined, each part
+# present only when non-empty:
+#   uncovered: <file:fn>, ... ; unanswered: #2, #5[, N un-numbered PARAM line(s)] ;
+#   not bounded by the cited line: #3 (<requirement>) ; open leads: #4 <fn>.<param> ;
+#   no PARAM lines — functions given: <fn>, ...
+# It names only what the cell itself wrote, plus function names from its own slice; the requirement phrases come
+# from _param_requirement, the one table the demo pins against the agent text.
+_param_open_items() {
+  poi_log="$1"; poi_root="${2:-}"; poi_scope="${3:-}"
+  [ -f "$poi_log" ] || return 0
+  _param_audit_armed "$poi_log" || return 0
+  poi_out=""
+  poi_unc="$(_param_uncovered_fns "$poi_log" | awk '{ o = (NR == 1 ? $0 : o ", " $0) } END { if (NR) print o }')"
+  [ -z "$poi_unc" ] || poi_out="uncovered: $poi_unc"
+  poi_una="$(_param_unanswered_ids "$poi_log" | awk '{ o = (NR == 1 ? "#" $0 : o ", #" $0) } END { if (NR) print o }')"
+  poi_unn="$(_param_unnumbered "$poi_log")"
+  if [ "$poi_unn" -gt 0 ]; then poi_una="${poi_una:+$poi_una, }$poi_unn un-numbered PARAM line(s)"; fi
+  [ -z "$poi_una" ] || poi_out="${poi_out:+$poi_out; }unanswered: $poi_una"
+  poi_dem=""; poi_lead=""
+  while IFS='	' read -r poi_id poi_loc poi_par _ poi_st _; do
+    [ -n "$poi_id" ] || continue
+    case "$poi_st" in
+      demoted:*) poi_one="#$poi_id ($(_param_requirement "${poi_st#demoted:}"))"
+                 poi_dem="${poi_dem:+$poi_dem, }$poi_one" ;;
+      *)         poi_nm="$(_param_name "$poi_par")"
+                 poi_one="#$poi_id $(_param_fn_of "$poi_loc").${poi_nm:-$poi_par}"
+                 poi_lead="${poi_lead:+$poi_lead, }$poi_one" ;;
+    esac
+  done <<POIEOF
+$(_param_open_leads "$poi_log" "$poi_root")
+POIEOF
+  [ -z "$poi_dem" ] || poi_out="${poi_out:+$poi_out; }not bounded by the cited line: $poi_dem"
+  [ -z "$poi_lead" ] || poi_out="${poi_out:+$poi_out; }open leads: $poi_lead"
+  if ! grep -qE '^[[:space:]]*PARAM\|' "$poi_log" 2>/dev/null; then
+    poi_req="$(_param_requested_fns "$poi_scope" | awk '{ o = (NR == 1 ? $0 : o ", " $0) } END { if (NR) print o }')"
+    poi_out="${poi_out:+$poi_out; }no PARAM lines${poi_req:+ — functions given: $poi_req}"
+  fi
+  printf '%s\n' "$poi_out"
+}
+
+# _param_promote <log> <class> <files> [root] — the PROMOTION half (issue #2245 iteration-5 STOP-1 decision 4): an
+# open lead (G4) that is STILL open on the final log becomes a TIER-1 `Medium` candidate in "<log>.param-promoted":
+#   PARAM-PROMOTED|<loc>|<#k,#m>|<parameters>
+#   CANDIDATE|<loc>|class=<cls>|Medium|<param> (<source>) reaches <the cell's own consumer text> with no bound in <fn>|PoC sketch: ...
+# The same four guards as _param_reask_needed (the lead half is also rubric-gated, inside _param_open_leads). One
+# promotion per LOCATION (the lowest id at a location speaks for it; the provenance line lists them all), resolved
+# with the shipped _tier2_resolve_file + _tier2_emit_loc — an unresolvable location is DROPPED and recorded as a
+# `PARAM-DROPPED|<loc>|unresolved` line — and a location the rubric gate already promoted (`$log.rubric-promoted`)
+# is SKIPPED (`PARAM-DROPPED|<loc>|rubric-promoted`), so one location yields one lead across both gates. Tier 1
+# for the iteration-2 reason: a tier-2 record cannot reach verified[]; precision is held by the refute gate, the
+# PoC gate and the `Medium` cap. `|` inside model text becomes `/`. The cell LOG is never written to, and the
+# sidecar's suffix does not end in `.log`. ACCEPTED ASYMMETRY (as in iteration 2): a promoted candidate is not
+# posted to the blackboard.
+_param_promote() {
+  pp_log="$1"; pp_cls="$2"; pp_files="$(printf '%s' "$3" | tr '\n' ',')"; pp_root="${4:-}"
+  [ -f "$pp_log" ] || return 0
+  pp_out="$pp_log.param-promoted"
+  rm -f "$pp_out"
+  if [ -f "$pp_log.novalid" ] || [ -f "$pp_log.timeout" ]; then return 0; fi
+  _param_audit_armed "$pp_log" || return 0
+  if grep -v '^BLACKBOARD-' "$pp_log" 2>/dev/null | grep -q 'CANDIDATE|'; then return 0; fi
+  pp_rows="$(_param_open_leads "$pp_log" "$pp_root")"
+  [ -n "$pp_rows" ] || return 0
+  pp_seen=" "
+  while IFS='	' read -r pp_id pp_loc pp_par pp_src pp_st _; do
+    [ -n "$pp_id" ] || continue
+    pp_fn="$(_param_fn_of "$pp_loc")"
+    pp_base="${pp_loc%%:*}"; pp_base="${pp_base##*/}"
+    pp_path=""
+    case "$pp_loc" in *:*) pp_path="$(_tier2_resolve_file "$pp_base" "$pp_files")" ;; esac
+    pp_final=""
+    if [ -n "$pp_path" ] && [ -n "$pp_fn" ]; then
+      pp_row="$(_tier2_emit_loc "$pp_path:$pp_fn" param audit || true)"
+      pp_final="${pp_row%%	*}"
+    fi
+    if [ -z "$pp_final" ]; then
+      printf 'PARAM-DROPPED|%s|unresolved\n' "$(printf '%s' "$pp_loc" | tr '|' '/')" >> "$pp_out"
+      continue
+    fi
+    case "$pp_seen" in *" $pp_final "*) continue ;; esac
+    pp_seen="$pp_seen$pp_final "
+    if grep -qF "RUBRIC-PROMOTED|$pp_final|" "$pp_log.rubric-promoted" 2>/dev/null; then printf 'PARAM-DROPPED|%s|rubric-promoted\n' "$pp_final" >> "$pp_out"; continue; fi
+    # Every open lead at this SAME resolved location, for the provenance line (ids ascending, as _param_rows is).
+    pp_ids=""; pp_pars=""
+    while IFS='	' read -r pq_id pq_loc pq_par _; do
+      [ -n "$pq_id" ] || continue
+      [ "$(_param_fn_of "$pq_loc")" = "$pp_fn" ] || continue
+      pq_base="${pq_loc%%:*}"; pq_base="${pq_base##*/}"
+      [ "$(_tier2_resolve_file "$pq_base" "$pp_files")" = "$pp_path" ] || continue
+      pp_ids="${pp_ids:+$pp_ids,}#$pq_id"
+      pp_pars="${pp_pars:+$pp_pars, }$pq_par"
+    done <<PQEOF
+$pp_rows
+PQEOF
+    pp_name="$(_param_name "$pp_par")"; pp_name="${pp_name:-$pp_par}"
+    case "$pp_st" in
+      demoted:*)
+        pp_why="$pp_par ($pp_src) has no bound in $pp_fn: the cited bound fails ${pp_st#demoted:} ($(_param_requirement "${pp_st#demoted:}"))" ;;
+      *)
+        pp_cons="$(_param_trace_for "$pp_log" "$pp_id" | cut -d'|' -f4-)"
+        pp_why="$pp_par ($pp_src) reaches ${pp_cons:-its consumer} with no bound in $pp_fn" ;;
+    esac
+    pp_why="$(printf '%s' "$pp_why" | tr '|' '/' | sed 's/[[:space:]][[:space:]]*/ /g; s/^ *//; s/ *$//')"
+    printf 'PARAM-PROMOTED|%s|%s|%s\n' "$pp_final" "$pp_ids" "$(printf '%s' "$pp_pars" | tr '|' '/')" >> "$pp_out"
+    printf 'CANDIDATE|%s|class=%s|Medium|%s|PoC sketch: call %s with an out-of-range %s the function admits and assert the value delta or the revert\n' \
+      "$pp_final" "$pp_cls" "$pp_why" "$pp_fn" "$(printf '%s' "$pp_name" | tr '|' '/')" >> "$pp_out"
+  done <<PPEOF
+$pp_rows
+PPEOF
+}
+
+# _param_promoted_candidates <log> — the promoted `CANDIDATE|` records of one cell, or nothing: the ONE reader
+# through which a parameter-promoted lead enters the pipeline (_cell_candidates unions it at both scrape sites).
+_param_promoted_candidates() {
+  ppc_log="$1"
+  [ -s "$ppc_log.param-promoted" ] || return 0
+  grep -E '^CANDIDATE\|' "$ppc_log.param-promoted" 2>/dev/null || true
+}
+
+# _param_promoted_count <log> — how many locations this cell's parameter gate promoted (0 without the sidecar).
+_param_promoted_count() {
+  ppn_n="$(grep -cE '^PARAM-PROMOTED\|' "$1.param-promoted" 2>/dev/null || true)"
+  case "$ppn_n" in ''|*[!0-9]*) ppn_n=0 ;; esac
+  printf '%s\n' "$ppn_n"
+}
+
+# _param_dropped_count <log> — how many open-lead locations were NOT promoted (unresolvable, or already promoted by
+# the rubric gate): the "dropped and counted" half of the promotion, surfaced on stderr by scrape_cell_log.
+_param_dropped_count() {
+  pdc_n="$(grep -cE '^PARAM-DROPPED\|' "$1.param-promoted" 2>/dev/null || true)"
+  case "$pdc_n" in ''|*[!0-9]*) pdc_n=0 ;; esac
+  printf '%s\n' "$pdc_n"
+}
+
 # _cell_candidates <log> — every candidate record of one cell: the model-emitted (PTY-unwrapped) ones first,
 # then the #2245 promoted ones. Both scrape sites call THIS, so the two paths cannot disagree about what a cell
 # produced. With the knob off the second half emits nothing and the output is byte-identical to
-# _join_wrapped_candidates alone.
+# _join_wrapped_candidates alone. #2245 iteration 5 adds the parameter-promoted records as the THIRD source, on
+# the same contract (nothing without the PARAM-AUDIT| sentinel).
 _cell_candidates() {
   _join_wrapped_candidates "$1" 2>/dev/null || true
   _rubric_promoted_candidates "$1"
+  _param_promoted_candidates "$1"
 }
 
 # _accumulate_cell <subsys> <cls> <files> <log> [status] [phase] — append ONE JSON object for this cell to
@@ -2229,12 +2743,37 @@ _accumulate_cell() {
   ac_contract_json=""
   ac_contract="$(_contract_failed_dismissals "$ac_log" "$REPO" "$BRIEF")"
   if [ "$ac_contract" -gt 0 ]; then ac_contract_json=",\"contract_failed_dismissals\":$ac_contract"; fi
-  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s}\n' \
+  # #2245 iteration 5: the parameter-audit readout keys, appended LAST (after `contract_failed_dismissals`), each
+  # ONLY when non-zero, and computed ONLY for a cell carrying the `PARAM-AUDIT|` sentinel — so a knob-off cell keeps
+  # its exact key set and _plan_depth_cells's forward key scan is untouched. `params` counts the audited ids
+  # (1..cap), `params_unbounded` the ones the cell answered `unbounded`, `param_bound_failed` the `bounded-at`
+  # answers the bound contract DEMOTED, `param_uncovered` / `param_untraced` the G1 / G2 residuals,
+  # `param_over_cap` the ids above the cap, and `param_promoted` the promoted locations.
+  ac_param_json=""
+  if _param_audit_armed "$ac_log"; then
+    ac_prows="$(_param_rows "$ac_log" "$REPO")"
+    ac_pn="$(printf '%s\n' "$ac_prows" | grep -c . || true)"
+    ac_punb="$(printf '%s\n' "$ac_prows" | awk -F'\t' '$5 == "unbounded"' | _count_stdin)"
+    ac_pbf="$(printf '%s\n' "$ac_prows" | awk -F'\t' '$5 ~ /^demoted:/' | _count_stdin)"
+    ac_punc="$(_param_uncovered_fns "$ac_log" | _count_stdin)"
+    ac_punt=$(( $(_param_unanswered_ids "$ac_log" | _count_stdin) + $(_param_unnumbered "$ac_log") ))
+    ac_pover="$(_param_over_cap "$ac_log")"
+    ac_pprom="$(_param_promoted_count "$ac_log")"
+    case "$ac_pn" in ''|*[!0-9]*) ac_pn=0 ;; esac
+    if [ "$ac_pn" -gt 0 ]; then ac_param_json="$ac_param_json,\"params\":$ac_pn"; fi
+    if [ "$ac_punb" -gt 0 ]; then ac_param_json="$ac_param_json,\"params_unbounded\":$ac_punb"; fi
+    if [ "$ac_pbf" -gt 0 ]; then ac_param_json="$ac_param_json,\"param_bound_failed\":$ac_pbf"; fi
+    if [ "$ac_punc" -gt 0 ]; then ac_param_json="$ac_param_json,\"param_uncovered\":$ac_punc"; fi
+    if [ "$ac_punt" -gt 0 ]; then ac_param_json="$ac_param_json,\"param_untraced\":$ac_punt"; fi
+    if [ "$ac_pover" -gt 0 ]; then ac_param_json="$ac_param_json,\"param_over_cap\":$ac_pover"; fi
+    if [ "$ac_pprom" -gt 0 ]; then ac_param_json="$ac_param_json,\"param_promoted\":$ac_pprom"; fi
+  fi
+  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s}\n' \
     "$(_json_str "$ac_subsys")" "$(_json_str "$ac_cls")" "$(_json_str "$ac_files")" \
     "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" "$ac_appendix_json" \
     "$ac_opchecks_json" "$ac_traces_json" "$ac_untraced_json" "$ac_unresolved_json" \
     "$ac_rule_json" "$ac_orphans_json" "$ac_untraced_ids_json" "$ac_uncited_ids_json" "$ac_unresolved_ids_json" \
-    "$ac_dismissals_json" "$ac_insuff_json" "$ac_promoted_json" "$ac_contract_json" >> "$CELLS_JSONL"
+    "$ac_dismissals_json" "$ac_insuff_json" "$ac_promoted_json" "$ac_contract_json" "$ac_param_json" >> "$CELLS_JSONL"
   # #2217: the tier-2 carry, appended to the RUN-scoped accumulator AFTER the cell object is written and
   # gated on the feature flag — so an OFF run does no extra work, writes no extra file, and emits the same
   # bytes it did before #2217. _accumulate_cell is called in MANIFEST order on the serial, parallel
@@ -2284,6 +2823,9 @@ run_cell() {
   # on every rubric-OFF cell), so the first prompt — and every rubric-OFF prompt — is byte-identical to the
   # pre-#2245 one.
   rc_dismiss_grounds=""
+  # #2245 iteration 5: the open audit items the PARAMETER re-ask must name. EMPTY on the first attempt (and on every
+  # audit-OFF cell), so the first prompt — and every audit-OFF prompt — is byte-identical to the pre-iteration-5 one.
+  rc_param_items=""
   # #2235: one budget-state file per CELL, named after this cell's log so the two can never disagree about
   # which cell they belong to. "" when --external-resolve is off, which makes all four env entries below empty
   # and hunter.ag's directive exactly "". The file is NOT reset between re-asks: a re-ask is the same cell, so
@@ -2320,6 +2862,8 @@ run_cell() {
         SEVERITY_RUBRIC="${SEVERITY_RUBRIC:-}" \
         DISMISS_REASK_GROUNDS="$rc_dismiss_grounds" \
         GROUND_EVIDENCE="${GROUND_EVIDENCE:-}" \
+        PARAM_AUDIT="${PARAM_AUDIT:-}" \
+        PARAM_REASK_ITEMS="$rc_param_items" \
         EXTERNAL_RESOLVER="${EXTERNAL_RESOLVER:+$rc_dir/resolve-external.sh}" \
         EXTERNAL_CACHE="$EXTERNAL_CACHE" \
         EXTERNAL_BUDGET_STATE="$rc_ext_state" \
@@ -2367,6 +2911,25 @@ run_cell() {
   if _untraced_safe "$rc_log" "$REPO" "$EXTERNAL_CACHE" && _all_checks_untraced "$rc_log"; then
     _opcheck_trace_gap "$rc_log" "$REPO" "$EXTERNAL_CACHE" > "$rc_log.untraced"
   fi
+  # #2245 iteration 5 — THE PARAMETER-AUDIT GATE, a third bounded re-ask with the same shape. It runs AFTER the
+  # follow-through loop above and BEFORE the ground gate below, so a DISMISS the cell writes in answer to this re-ask
+  # is then judged by the UNCHANGED rubric + evidence gate (with its own re-ask and its own promotion). A reply that
+  # carries the `PARAM-AUDIT|` sentinel, no candidate, and an open audit (an examined function with no PARAM line, an
+  # unanswered number, no PARAM line at all, or — inside a rubric-ON cell — an unbounded parameter with neither a
+  # CANDIDATE nor a DISMISS naming it) is re-asked up to DF_PARAM_MAX_REASKS times (default 1) NAMING the open items
+  # through PARAM_REASK_ITEMS. Re-ask safety is #1707's argument unchanged. The superseded attempt is kept as
+  # "$rc_log.param-attempt-N" (a suffix NOT ending in `.log`). This gate NEVER fails a cell: residuals are recorded,
+  # and surviving open leads are promoted by _param_promote below, after the rubric promotion.
+  rm -f "$rc_log.param-promoted"
+  rc_param=1
+  while [ "$rc_param" -le "$DF_PARAM_MAX_REASKS" ] && _param_reask_needed "$rc_log" "$REPO"; do
+    rc_param_items="$(_param_open_items "$rc_log" "$REPO" "$rc_in_scope")"
+    echo "run-discovery.sh:   ↳ param-audit: $rc_cls/'$rc_subsys' left $(_param_audit_gap "$rc_log" "$REPO") audit item(s) open${rc_param_items:+ ($rc_param_items)} — re-asking ($rc_param/$DF_PARAM_MAX_REASKS)" >&2
+    mv -f "$rc_log" "$rc_log.param-attempt-$rc_param" 2>/dev/null || true
+    df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-discovery.sh: $rc_cls/'$rc_subsys' (param re-ask $rc_param)" "$rc_log" hunter "" _rc_attempt || true
+    rc_param=$((rc_param + 1))
+  done
+  rc_param_items=""
   # #2245 iteration 2 — THE DISMISSAL-GROUND GATE, a SECOND bounded re-ask with the same shape as the
   # follow-through one above. A reply that carries the rubric sentinel, no candidate, and at least one location
   # dismissed on a ground the closed list treats as INSUFFICIENT is not a rigorous negative: it is the exact
@@ -2392,6 +2955,9 @@ run_cell() {
   if _rubric_reask_needed "$rc_log" "$REPO" "$BRIEF"; then
     _rubric_promote "$rc_log" "$rc_cls" "$rc_in_scope" "$REPO" "$BRIEF"
   fi
+  # #2245 iteration 5: the parameter PROMOTION runs on the FINAL log, after the rubric promotion, so it can skip a
+  # location the rubric gate already promoted. Self-guarded (sentinel, markers, model candidate, rubric sentinel).
+  _param_promote "$rc_log" "$rc_cls" "$rc_in_scope" "$REPO"
 }
 
 # scrape_cell_log <subsys> <cls> <log> <files> [phase] — the (byte-identical) post-cell scrape: surface the
@@ -2400,6 +2966,12 @@ run_cell() {
 # (deterministic). [phase] (#1827) is "depth" only for a depth cell and is forwarded to _accumulate_cell.
 scrape_cell_log() {
   sc_subsys="$1"; sc_cls="$2"; sc_log="$3"; sc_files="$4"; sc_phase="${5:-}"
+  # #2245 iteration 5: the per-parameter readout the measurement reads (`<id> <file:function> <parameter> <source>
+  # <bounded|unbounded|demoted:<fail-id>|unanswered> <candidate|dismiss|open|n/a>`), written for audit-ON cells ONLY
+  # (no `PARAM-AUDIT|` sentinel => no file). The suffix does not end in `.log`.
+  if _param_audit_armed "$sc_log"; then
+    _param_rows "$sc_log" "$REPO" > "$sc_log.param-audit.tsv" 2>/dev/null || true
+  fi
   # #1707: a cell whose reply never produced a CANDIDATE|/SAFE sentinel after DF_AGENT_MAX_ATTEMPTS retries
   # (TUI chrome / no answer) carries a "$sc_log.novalid" marker. Do NOT treat its empty log as a rigorous
   # negative: surface it as a DISTINCT FAILED row + counter so it is visible, not silently folded into
@@ -2482,6 +3054,21 @@ scrape_cell_log() {
   if [ "$sc_promoted" -gt 0 ]; then
     echo "run-discovery.sh:   ↳ PROMOTED $sc_promoted dismissed lead(s) to Medium candidate(s) after the ground re-ask: $sc_cls/'$sc_subsys' (still judged by the refute gate and the PoC gate)" >&2
   fi
+  # #2245 iteration 5: the parameter-audit readout, in the same voice. An open audit after the re-ask is NOT a failed
+  # cell — the gate records residuals and promotes open leads — but it is not a rigorous clean sweep either. Silent
+  # on every audit-OFF cell (the gap is 0 without the `PARAM-AUDIT|` sentinel).
+  sc_param_gap="$(_param_audit_gap "$sc_log" "$REPO")"
+  if [ "$sc_param_gap" -gt 0 ]; then
+    echo "run-discovery.sh:   ↳ $sc_param_gap open parameter-audit item(s): $sc_cls/'$sc_subsys' ($(_param_open_items "$sc_log" "$REPO" "$sc_files")); recorded per parameter in ${sc_log##*/}.param-audit.tsv" >&2
+  fi
+  sc_param_prom="$(_param_promoted_count "$sc_log")"
+  if [ "$sc_param_prom" -gt 0 ]; then
+    echo "run-discovery.sh:   ↳ PROMOTED $sc_param_prom unbounded parameter lead(s) to Medium candidate(s) after the parameter re-ask: $sc_cls/'$sc_subsys' (still judged by the refute gate and the PoC gate)" >&2
+  fi
+  sc_param_drop="$(_param_dropped_count "$sc_log")"
+  if [ "$sc_param_drop" -gt 0 ]; then
+    echo "run-discovery.sh:   ↳ $sc_param_drop open parameter lead location(s) NOT promoted (unresolvable in this cell's file list, or already promoted by the ground gate): $sc_cls/'$sc_subsys'" >&2
+  fi
   # #1001 coordination: the hunter reads a shared BLACKBOARD before it prompts and posts every
   # CANDIDATE back to it, so a lead an EARLIER cell found steers later cells (corroborate / pivot).
   # Surface both halves of that loop to the operator and the report: BLACKBOARD-FOCUS| = THIS cell was
@@ -2505,7 +3092,8 @@ scrape_cell_log() {
   # #2245 iteration 2: the `|| [ -s ... ]` half is load-bearing — a cell whose only candidate came from the
   # ground gate's PROMOTION has no `CANDIDATE|` line in its own log, so without it the promoted lead would be
   # accumulated into the JSON (via _cell_candidates) and never reach $REPORT or the CANDIDATES counter.
-  if grep -v '^BLACKBOARD-' "$sc_log" | grep -q 'CANDIDATE|' || [ -s "$sc_log.rubric-promoted" ]; then
+  # #2245 iteration 5: `|| [ -s ... param-promoted ]` is load-bearing for the same reason.
+  if grep -v '^BLACKBOARD-' "$sc_log" | grep -q 'CANDIDATE|' || [ -s "$sc_log.rubric-promoted" ] || [ -s "$sc_log.param-promoted" ]; then
     while IFS= read -r LINE; do
       CAND="$(printf '%s' "$LINE" | sed 's/^.*\(CANDIDATE|\)/\1/')"
       BODY="$(printf '%s' "$CAND" | sed 's/^CANDIDATE|//; s/|/ \/ /g')"

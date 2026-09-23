@@ -16,6 +16,52 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Output-gated PARAMETER AUDIT on the hunter, default OFF (#2245, iteration 5).** Iteration 4 measured a
+  GENERATION loss that class text does not reach: the cell arrived at the function that admits the value and
+  never listed that function's arguments, so the lead living in one of them was never written down. This
+  iteration stops writing per-shape lenses and gives generation the mechanism that worked on the dismissal side —
+  an emission contract, a deterministic OUTPUT gate, one named re-ask and promotion of what survives — behind a
+  new knob `PARAM_AUDIT=1` (default unset = OFF; independent of `SEVERITY_RUBRIC`, `GROUND_EVIDENCE` and
+  `OPERATIONALIZE_LENS`). `hunter.ag` gains a pure-meta block (no protocol, product or domain noun): for every
+  function the cell examines that makes a non-view external call or writes storage, list each argument as
+  `PARAM|#k|<file:function>|<parameter as written>|<caller|role|config|derived>` and answer every number with
+  `PARAM-TRACE|#k|bounded-at:<path>:<line>|<the check>` or `PARAM-TRACE|#k|unbounded|<the consumer and what an
+  out-of-range value does there>`, at most 20 per cell (arguments of non-view external calls first). The answer
+  token is deliberately NOT `TRACE|`: its own id namespace keeps the audit independent of the #2211 OPCHECK
+  pairing. Inside a rubric-ON cell only, a LEAD rule adds: every `unbounded` value owes a CANDIDATE line or a
+  DISMISS line at that function naming the parameter. The honesty-gated `PARAM-AUDIT|` sentinel is the ONLY thing
+  that arms the shell half.
+
+  `run-discovery.sh` pairs the two lists by id with the shipped `_check_ids` (a paraphrase cannot break a pair, a
+  wrong or missing number answers nothing) and gates the reply on four components: an examined function (named in
+  the cell's own `DISMISS|`/`CALLEE-VECTOR|` lines) with no PARAM line, a number with no well-formed answer, no
+  PARAM line at all, and — rubric-ON only — an open lead. Every `bounded-at` citation is RE-OPENED by the new
+  `_param_bound_ok` under a STRICT contract (issue #2245 iteration-5 STOP-1 decision 3): the cited range must CHECK
+  the value (require/revert/assert, a conditional, min/max/clamp, an allowlist or validity lookup, or a modifier
+  called with that value) AND NAME the parameter — the function signature is stripped first, so a role check or a
+  role modifier on the declaration line never bounds an argument; a deploy-script path or deployed-state wording
+  bounds nothing. A failing citation is demoted to unbounded. One bounded re-ask (`DF_PARAM_MAX_REASKS`, default 1,
+  `0` = gate-only) names the open items through `PARAM_REASK_ITEMS`, with the requirement phrases taken from one
+  table the demo pins against the prompt text. The loop runs AFTER the OPCHECK->TRACE loop and BEFORE the rubric
+  gate, so a DISMISS written for it is judged by the unchanged rubric + evidence gate. A lead still open on the
+  final log is promoted like `_rubric_promote` does: tier-1 `Medium`, one per resolvable location, never for a
+  location the rubric gate already promoted (`<log>.param-promoted`; an unresolvable location is dropped and
+  counted). The gate never fails a cell. Per armed cell the driver writes `<log>.param-audit.tsv` (one row per
+  parameter: source, bounded/unbounded/demoted with its failure id, and how it was answered) and appends the
+  additive keys `params`, `params_unbounded`, `param_bound_failed`, `param_uncovered`, `param_untraced`,
+  `param_over_cap`, `param_promoted` — each only when non-zero, so a knob-off cell keeps its exact key set. Both
+  env names ride `exec.env_passthrough` and the cell env (#1426); the three tokens are record boundaries for the
+  PTY-wrap joiner. `refuter.ag`, `run-refute.sh` and `verify-findings.sh` are untouched.
+
+  New `demo-param-audit.sh` (wired into `tools/colony-lint.sh`) source-guards the agent half, pins the wiring,
+  drives the sliced gate over fixtures with a negative twin for every branch, runs `run-discovery.sh` end to end
+  through an offline stub (re-ask + promotion, compliant control, knob-OFF byte-identity of the cell JSON,
+  gate-only mode, the rubric-off enumeration arm, and the param-before-rubric order with one promotion per
+  location), applies five mutations to a copy of the gate (each must flip a fixture) and — with `agentis` present —
+  proves the directive is 0 bytes under every knob-OFF combination and runs a live mock cell. **Status:
+  IN-FLIGHT — recall UNMEASURED**; the pre-registered measurement is recorded in
+  `bench/corpus-bench/bug-class-coverage.md`.
+
 - **C26 "admitted parameter / unenforced bound" class + deterministic zone-mapper route (#2245,
   iteration 4).** Iterations 2-3 closed the JUDGMENT half on one held-out shape; the remaining held-out loss
   is still GENERATION. This iteration ships the next miss shape one-for-one on the iteration-1 template: ONE

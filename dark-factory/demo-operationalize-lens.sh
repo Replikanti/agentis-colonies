@@ -928,12 +928,13 @@ fi
 note "22) the config-realizability rule sits in the shared RULES block and is GENERAL (no flag, no lens) ..."
 # The span between the rule and the subsystem line is asserted by CONTENT, not by a fixed line distance:
 # #2235 splices two ""-when-off verb blocks (PR B's `extres`, PR C's `onchain`) in there, each with its own
-# comment, and #2245 iteration 2 splices a third (`rubric`), so a distance window would have to be widened on
+# comment, #2245 iteration 2 splices a third (`rubric`) and iteration 5 a fourth (`paudit`, the PARAM_AUDIT=1
+# parameter audit — also ""-when-off, pinned 0 bytes by demo-param-audit.sh), so a distance window would have to be widened on
 # every such insertion. What must stay true is that NOTHING ELSE sits between them, and that every block that
 # does is ""-when-off — an unconditional block there would change the lens-OFF prompt.
 RULE_SPAN="$(sed -n '/^  + config_realizability_rule()$/,/Subsystem under review/p' "$HUNTER")"
 RULE_SPAN_EXTRA="$(printf '%s\n' "$RULE_SPAN" | grep -vE '^[[:space:]]*//|^[[:space:]]*$' \
-  | grep -vE '^  \+ (config_realizability_rule\(\)|rubric|extres|onchain)$' | grep -v 'Subsystem under review' || true)"
+  | grep -vE '^  \+ (config_realizability_rule\(\)|rubric|paudit|extres|onchain)$' | grep -v 'Subsystem under review' || true)"
 if grep -q '^  + config_realizability_rule()$' "$HUNTER" \
    && grep -A5 'Never report a listed KNOWN ISSUE' "$HUNTER" | grep -q '+ config_realizability_rule()' \
    && printf '%s\n' "$RULE_SPAN" | grep -q 'Subsystem under review' \

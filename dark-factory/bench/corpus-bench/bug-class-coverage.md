@@ -443,6 +443,72 @@ to `verified_findings.json` in 2/2 repeats**. The second cluster is reported as 
 staged. `src__p2` and `src_queues` may be run ×1 each as informational generalisation probes; neither enters
 the verdict. One dev-twin sanity run on `src_single_sided_lp`, reported as in-distribution and never as recall.
 
+### Parameter audit (#2245, iteration 5 of the miss-shape lens program)
+
+Iteration 4 exposed a GENERATION loss that a class cannot reach: on its zone the cell arrived at the function
+that admits the value and never listed that function's arguments — it ruled the function out on other grounds,
+and the lead living in one argument was never written down. Three per-shape classes (C24/C25/C26) did not change
+that, and a gate-less "check where every argument is bounded" paragraph is the #2213 shape (Delta=+0). So this
+iteration writes **no class text, no route, no new judge and no refuter change**. It gives generation the
+mechanism that worked on the dismissal side — an emission contract, a deterministic OUTPUT gate on the cell's own
+lines, one named re-ask, and promotion of whatever survives — behind its own knob `PARAM_AUDIT=1` (default OFF,
+independent of `SEVERITY_RUBRIC`, `GROUND_EVIDENCE` and `OPERATIONALIZE_LENS`).
+
+**Grammar** (hunter.ag, pure-meta; at most 20 ids per cell, arguments of non-view external calls first):
+
+```
+PARAM|#<k>|<file:function>|<parameter as written>|<caller|role|config|derived>
+PARAM-TRACE|#<k>|bounded-at:<path>:<line>[-<line>]|<the check at that line>
+PARAM-TRACE|#<k>|unbounded|<the call or write that consumes it, and what an out-of-range value does there>
+```
+
+`#k` is its own id namespace (not `TRACE|`, which would collide with the #2223 OPCHECK pairing); pairing is by id
+through the shipped `_check_ids`, never by text.
+
+**The gate** (`run-discovery.sh`, armed ONLY by the honesty-gated `PARAM-AUDIT|` sentinel):
+
+| component | fires when | armed |
+|---|---|---|
+| G1 uncovered | a function the cell names in its own `DISMISS\|` / `CALLEE-VECTOR\|` lines has no `PARAM\|` line (suspended at the cap) | always |
+| G2 unanswered | an id ≤ 20 has no well-formed `PARAM-TRACE\|` of that id, or a `PARAM\|` line has no number | always |
+| G3 absent | a no-candidate cell wrote no `PARAM\|` line at all | always |
+| G4 open lead | an id ≤ 20 answered `unbounded` (or demoted, below) with no `DISMISS\|` at that function naming the parameter or `#k` | only with `SEVERITY-RUBRIC\|` too |
+
+**Bound contract** (`_param_bound_ok`, strict — STOP-1 decision 3): the cited range must CHECK the value
+(require/revert/assert, a conditional, min/max/clamp, an allowlist or validity lookup, a modifier called with
+arguments) AND NAME the parameter; the function signature is stripped first, so a role check — including a role
+modifier on the declaration line — never bounds an argument. A deploy-script path or deployed-state wording bounds
+nothing. Failure ids: `bound-cite-missing`, `bound-cite-unresolved`, `bound-cite-deploy`, `bound-not-a-check`,
+`bound-names-other`, `bound-deployed-state`; a failing citation is DEMOTED to unbounded.
+
+**Re-ask and promotion.** One re-ask (`DF_PARAM_MAX_REASKS`, default 1) names the open items; it runs after the
+OPCHECK->TRACE loop and before the rubric gate, so a DISMISS written for it is judged by the unchanged rubric +
+evidence gate. A G4 lead still open on the final log is promoted to a tier-1 `Medium` candidate, one per
+resolvable location, never for a location the rubric gate already promoted (STOP-1 decision 4). The gate never
+fails a cell. Per armed cell: `<log>.param-audit.tsv` (one row per parameter) and the additive keys `params`,
+`params_unbounded`, `param_bound_failed`, `param_uncovered`, `param_untraced`, `param_over_cap`,
+`param_promoted`.
+
+**Pre-registered measurement** (operator step; methodology rules binding). Checkout = this change's merge commit;
+the same frozen bases and the frozen `scope.tsv` rows **as-is** (the audit needs no routing); ruler
+`--backend flat-cyborg --model claude-opus-4-8 --jobs 1` with the standard killswitches; every other knob as the
+iteration-3/4 ON-baseline arm records it. Arms: `audit` = `SEVERITY_RUBRIC=1 GROUND_EVIDENCE=1 PARAM_AUDIT=1`;
+`on-control` = the same without `PARAM_AUDIT` (byte-identical prompts, demo-pinned). **Registered held-out test:
+superfluid-locker `src__p1`** — `audit` ×2, `on-control` ×1 (this zone was never measured under rubric +
+evidence). **GO iff, in BOTH `audit` repeats, at least one of its two rows survives to
+`verified_findings.json`** (operator read of cell logs and refute verdicts; per-row replication reported
+separately). Exposure stated: the zone ran in two earlier arms, all generation misses; nothing in this design reads
+its code. Dev-twin sanity ×1: notional `src_single_sided_lp`, `audit` arm, in-distribution only and never recall.
+Tuning happens only on the dev twins; the held-out zone runs only its registered repeats. Reported per run: the
+chain *enumerated → traced → unbounded → lead → CANDIDATE / DISMISS / promoted → refute verdict* per rare row and
+where it stopped; per cell the `param*` keys (bound failures by id), param re-asks and the rubric keys; candidates
+and verified vs `on-control`; cost (reply bytes, calls) vs `on-control`, flagged above 2×. Voids are re-run; any
+fallback request voids a run. `src_managers` and `src_mToken__p1` stay unused (kept for later tests); the final
+recall claim stays reserved for the never-touched final-exam set.
+
+**Status: IN-FLIGHT — recall UNMEASURED.** This iteration ships the audit, the gate, the bound contract, the
+promotion and the offline guards only (`../../demo-param-audit.sh`, wired into `tools/colony-lint.sh`).
+
 ## Operationalize-before-you-hunt: measured NO-GO (#2213 M2, 2026-09-15)
 
 The #2211 `OPERATIONALIZE_LENS` directive — a cross-class METHOD (derive code-grounded checks, write them
@@ -497,6 +563,7 @@ provenance of each class — and this file is documentation the pipeline never r
 | C24 — stale state assumption between touchpoints | yieldoor, notional | M-2 / M-8, M-16 | corpus-bench yieldoor GT M-2, notional GT M-8, notional GT M-16. |
 | C25 — empty distribution / zero participation edge | notional (dev, design source), superfluid-locker (held-out, test) | M-8 / M-2 | corpus-bench notional GT M-8 (`AbstractRewardManager` emissions accrue per unit of an `effectiveSupply` floored by a virtual-shares constant, so the no-participants branch never fires) and superfluid-locker GT M-2 (`unlock` reverts while `STAKER_DISTRIBUTION_POOL.getTotalUnits() == 0` although `stakerAllocationBP == 0`, so the pool is owed nothing). Never written into the lens: C25's `seen:` line carries only the generic code shape. |
 | C26 — admitted parameter / unenforced bound | notional (dev, design source), malda (held-out, test), superfluid-locker (held-out, recorded routing MISS) | M-3, M-5, M-22 / M-5, M-10, M-12 / M-3, M-5 | corpus-bench notional GT M-3 (a single-sided Curve LP strategy cannot trade when the configured pool is an ETH pool), M-5 (minting yield tokens single sided is impossible when the `CURVE_V2` `dexId` is configured for redemptions) and M-22 (`asset = WETH` paired with a Curve pool holding native ETH loses user funds); corpus-bench malda GT M-5 (a rebalancer sends to unallowed destination chains), M-10 (unenforced fee-cap and time-to-live parameters) and M-12 (a rebalancer drains market funds via excessive bridge fees); corpus-bench superfluid-locker GT M-3 and M-5 (initial-deposit / buffer arithmetic). Never written into the lens: C26's `seen:` line carries only the generic code shape, and the malda-only token vocabulary was deliberately kept OUT of the mapper net. |
+| — (iteration 5 parameter audit; no class) | superfluid-locker (held-out, registered test), notional (dev sanity) | M-3, M-5 / M-3, M-5, M-22 | no `seen:` text exists: the audit is a pure-meta method, not a class. Its registered test is superfluid-locker GT M-3 and M-5 (program-lifecycle initial-deposit / buffer arithmetic that makes the cancel path and the start path revert, never examined in any earlier arm); the dev sanity zone carries notional GT M-3, M-5 and M-22 (the configuration-combination design rows of C26). Neither contest nor row is named anywhere prompt-visible. |
 
 Two clean entries stayed in the lens because they name no contest: C2's and C11's non-corpus observations
 (a custom Chainlink+sequencer oracle, KiloLend, Curve scrvUSD, a virtual-balance savings vault) are live-hunt
