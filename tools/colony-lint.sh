@@ -2779,6 +2779,28 @@ if [ -x "$REPO_ROOT/dark-factory/demo-poc-gen.sh" ]; then
     fi
 fi
 
+# --- dark-factory flat-cyborg result-file sentinel strip on the deep-hunt code-writing sinks (#2245) ---
+# Since the native flat-cyborg result-file channel was wired into the hunt emitters (#2207,
+# llm.flat_cyborg.result_file_dir), the driven model's reply carries leading/trailing FCB_<hex>_BEGIN/_END
+# sentinels. Harmless in hunter/refuter TEXT, but invariant-prover.ag and poc-writer.ag write the reply out as a
+# *.t.sol FILE — an unstripped leading sentinel is the first byte solc sees and the harness fails to compile.
+# Both write_test() sinks now pipe the reply through a shared, byte-identical sed filter before the redirect.
+# forge-invariant.sh's _compile_error_sig() also gained a stdout scan + a terse-stub pattern: forge --json puts
+# the rich solc diagnostic on STDOUT (stderr gets only "Error: Compilation failed"), so a stderr-only scan
+# missed every genuine compile error and misclassified it as a re-runnable TRANSIENT_ERROR. demo-fcb-sentinel-
+# strip.sh source-guards both sinks' wiring + the gate's dual-file scan (CI-safe, no toolchain) and, when forge
+# is present, runs the gate live over a sentinel-prefixed harness (must be HARNESS_ERROR, never TRANSIENT_ERROR)
+# and the filtered harness (must compile and reach a real verdict).
+if [ -x "$REPO_ROOT/dark-factory/demo-fcb-sentinel-strip.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-fcb-sentinel-strip.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: flat-cyborg result-file sentinel stripped from generated harness code; solc parser errors classify as HARNESS_ERROR (#2245)"
+    else
+        fail "dark-factory: flat-cyborg result-file sentinel strip regressed (#2245)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory --grant-pii guard on live/exec .ag invocations (#1690) ---
 # The PII heuristic that blocked hunter.ag (#1675/#1676) and then zone-mapper.ag (#1690) can trip on
 # ANY invocation that transmits target source / scope / findings / PoCs / persisted patterns (all benign

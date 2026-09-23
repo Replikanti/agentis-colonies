@@ -230,9 +230,15 @@ banner() { echo "================ FORGE-INVARIANT: $1 ================" >&2; }
 # byte-identically (its stderr carries a solc/forge signature, so _transient_candidate is false and it is
 # never retried); FORK MODE is excluded entirely (the no-result path there stays byte-identical to today).
 #
-# _compile_error_sig <errfile>: TRUE (0) when forge/solc stderr carries a deterministic compile-error marker.
+# _compile_error_sig <file>...: TRUE (0) when ANY given file carries a deterministic solc/forge compile-error
+# marker. #2245 — forge --json puts the RICH diagnostic ("Compiler run failed:" + "Error (NNNN): <solc message>",
+# e.g. a ParserError from a stray sentinel line prepended to the generated harness) on STDOUT (our out.json),
+# while stderr gets only the terse stub "Error: Compilation failed" — verified live (forge 1.7.1). Scanning
+# stderr alone therefore MISSES every real compile error, leaving _transient_candidate with no signature to see
+# and misclassifying a broken harness as a re-runnable TRANSIENT_ERROR. Callers now pass BOTH files; "Compilation
+# failed" covers the terse stub too, so even a truncated/empty stdout still trips the genuine-error path.
 _compile_error_sig() {
-  grep -Eq 'Compiler run failed|Error \([0-9]+\):|ParserError|DeclarationError|TypeError|Identifier not found|Source .* not found' "$1" 2>/dev/null
+  grep -Eq 'Compiler run failed|Compilation failed|Error \([0-9]+\):|ParserError|DeclarationError|TypeError|Identifier not found|Source .* not found' "$@" 2>/dev/null
 }
 # _declares_invariant: TRUE (0) when the harness STATICALLY declares a `function <MATCH>...(` — i.e. there IS
 # an invariant to run, so a no-result outcome is a RUN failure, not a "nothing to check" harness defect.
@@ -246,7 +252,7 @@ _transient_candidate() {
   [ -z "$FORK_URL" ] || return 1
   _declares_invariant || return 1
   [ "${FORGE_RC:-0}" -ge 128 ] && return 0
-  _compile_error_sig "$TMPD/err.txt" && return 1
+  _compile_error_sig "$TMPD/err.txt" "$TMPD/out.json" && return 1
   return 0
 }
 
