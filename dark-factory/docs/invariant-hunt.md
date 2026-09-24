@@ -65,6 +65,7 @@ fuzzer's concrete failing call-sequence** over the whole protocol.
 | `1` | **FINDING** | ≥1 invariant broke under a concrete SHRUNK multi-call sequence → a CANDIDATE with a reproducible witness | `success` |
 | `0` | **CLEAN** | every invariant held across the whole fuzzed search → no finding **in this budget** (NOT a proof of safety) | `failure` |
 | (CLEAN, REACH only) | **LOW_COVERAGE** | a CLEAN whose FINAL handler coverage fell below `ceil(0.6 × total)` of the target's entry points — the search is not trustworthy. Non-FINDING, never merged, terminal on `--deep-hunt-resume` (#2245) | `partial` |
+| (CLEAN, PROMISES only) | **LOW_PROMISE_COVERAGE** | a CLEAN whose FINAL harness left an accepted user-facing promise without its own asserting `invariant_p<k>_…` function. Non-FINDING, never merged, terminal on `--deep-hunt-resume`; `LOW_COVERAGE` outranks it (#2245 iteration 7) | `partial` |
 | else (`2`, …) | **HARNESS_ERROR** | the test did not compile / no `invariant_*` matched / repo not a Foundry project / `forge` missing | `error` |
 
 A FINDING is the highest-value outcome (a reproduced multi-step exploit witness), so it is recorded as
@@ -291,3 +292,34 @@ Wiring: `run-zone-hunt.sh` (`DEEP_HUNT_REACH`) → `run-invariant-hunt.sh --reac
 the mere presence of `entry-points.tsv` (a fixed rundir file resolved absolutely from `INV_REPO`, NOT a new
 `exec.env_passthrough` entry). Unset ⇒ none of those files is written ⇒ `reachOn` false ⇒ byte-identical.
 Proven end-to-end by [`demo-deep-hunt-reach.sh`](../demo-deep-hunt-reach.sh).
+
+## Deep-hunt PROMISES (`DEEP_HUNT_PROMISES=1`, requires REACH, default OFF — #2245, iteration 7)
+
+With REACH the harness reaches the right functions, but its invariant still comes from the lens-class menu,
+which never asks what the target promises an INDIVIDUAL user (a per-account waiting window, a required order
+between two actions on one position, a conversion's direction). PROMISES adds a second, additive source of
+invariants; the lens invariant stays, and the fuzzer's exit code stays the only verdict:
+
+- **Listing** (`lib/inheritance.py promise-sources`) — the target's file, then its own-source ancestor contracts,
+  then its ancestor interfaces, then up to 2 in-repo `*.md` files naming it (one ≤ 200-line window each), every
+  non-blank line prefixed with its REAL line number; capped at 160 KB at a line boundary.
+- **Extraction** — ONE extra prompt per cell. The model lists free-form
+  `PROMISE|#k|<subject>|<statement>|<path>:<line>[-<line>]` lines. No kind vocabulary appears in any prompt
+  (STOP-1 decision 4); `promise-gate.py` assigns a kind afterwards from a fixed keyword map, for the readout only.
+- **Citation gate** (`evm-harness/promise-gate.py gate`) — a promise is kept only when its citation re-opens to
+  ≤ 40 in-repo lines that name its subject; `lib/`, `node_modules/`, `dependencies/`, `test/`, `tests/`, `mocks/`
+  and deployment scripts are refused, as is deployed-state wording (the path/deploy/deployed-state regexes are
+  byte-identical copies of `run-discovery.sh`'s `_param_bound_ok` literals). At most 8 per target; the rest are
+  `OVERCAP`. Like `_dismiss_evidence_ok`, this is a floor on the FORM of the evidence: whether the cited lines
+  really make the promise is an operator read.
+- **Promise-coverage gate** (`promise-gate.py coverage`) — every accepted promise needs its own
+  `invariant_p<k>_…` function whose body asserts (`require`/`assert`/`revert`). One re-ask on a gap (LLM path only);
+  a CLEAN that still leaves one uncovered is **LOW_PROMISE_COVERAGE**. On a FINDING, `PROMISE-BROKEN|` names the
+  broken promise invariants.
+
+Wiring: `run-zone-hunt.sh` (`DEEP_HUNT_PROMISES`) → `run-invariant-hunt.sh --promises` writes
+`promise-sources.txt` and stages `promise-gate.py` (`--promise-fixture` stages verbatim `PROMISE|` lines, the
+offline seam) → `invariant-prover.ag`'s `promisesOn` is the presence of `promise-sources.txt` at the absolute
+rundir (no new `exec.env_passthrough` entry). Per-cell readouts: `deep-hunt/promise-coverage.tsv` (one row per
+cell) and `deep-hunt/promises.tsv` (one row per accepted promise). Unset ⇒ byte-identical to a REACH-only run.
+Proven end-to-end by [`demo-deep-hunt-promises.sh`](../demo-deep-hunt-promises.sh).

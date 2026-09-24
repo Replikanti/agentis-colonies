@@ -86,6 +86,15 @@
 #                       (non-FINDING, never merged, terminal on --deep-hunt-resume). Accepts ''/0/1; anything
 #                       else, or =1 without --deep-hunt, exits 2. DEFAULT unset/0 => the STAGE 4.5 target
 #                       selection, run dirs, prompt and merge are byte-identical to before.
+#   DEEP_HUNT_PROMISES=1  #2245 (iteration 7, deep-hunt PROMISES — an ENV KNOB; requires DEEP_HUNT_REACH=1).
+#                       Adds invariants derived from the target's USER-FACING PROMISES next to the lens invariant
+#                       (via run-invariant-hunt.sh --promises): one extra extraction prompt per cell, a citation
+#                       gate (cap 8), one asserting `invariant_p<k>_` function per accepted promise (one re-ask on
+#                       a gap), and a CLEAN that leaves an accepted promise uncovered is labelled
+#                       LOW_PROMISE_COVERAGE (non-FINDING, never merged, terminal on --deep-hunt-resume; LOW_COVERAGE
+#                       outranks it). Per-cell readouts land in deep-hunt/promise-coverage.tsv + promises.tsv.
+#                       Accepts ''/0/1; anything else, or =1 without DEEP_HUNT_REACH=1, exits 2. DEFAULT unset/0 =>
+#                       byte-identical to a REACH-only run.
 #   --deep-hunt-aux-max <N>  #1726 (M2): max SECONDARY co-custody contracts fed to the deep-hunt as
 #                       run-invariant-hunt.sh --aux (the shipped composable-fresh multi-contract engine —
 #                       INV_AUX -> compose_fresh_seed -> multi-register targetContracts() -> #1077 both-real
@@ -312,6 +321,9 @@ DEEP_HUNT_REFUTE=1
 # allowlist entry). Unset/empty => OFF => STAGE 4.5 is byte-identical. Validated below with the deep-hunt guards.
 DEEP_HUNT_REACH="${DEEP_HUNT_REACH:-}"
 REACH_N=3  # up-to-N concrete targets per zone under REACH (STOP-1 decision 1: N=3).
+# #2245 (iteration 7, deep-hunt PROMISES): an ENV KNOB read only by this shell (no getenv, no allowlist entry).
+# Unset/empty => OFF => byte-identical to a REACH-only run. Validated below with the REACH guards.
+DEEP_HUNT_PROMISES="${DEEP_HUNT_PROMISES:-}"
 # #2156 (milestone D2, epic #2130): the opt-in STAGE 4.6 VECTOR-HUNT sub-mode. 0 (default) = OFF = the whole
 # STAGE 4.6 block below is skipped and the run is byte-identical to a pre-#2156 run. When 1, after STAGE 4.5 it
 # harvests each value-custody zone's D1 (#2145) `CALLEE-VECTOR|` candidates from the breadth cell logs and
@@ -448,6 +460,10 @@ case "$VECTOR_HUNT_MAX_VECTORS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --vector
 # gates), the same shape as the --composable-lens / --deep-hunt-resume guards above.
 case "$DEEP_HUNT_REACH" in ''|0|1) ;; *) echo "run-zone-hunt.sh: DEEP_HUNT_REACH must be unset, 0 or 1 (got '$DEEP_HUNT_REACH')" >&2; exit 2 ;; esac
 [ "$DEEP_HUNT_REACH" != 1 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_REACH=1 requires --deep-hunt" >&2; exit 2; }
+# #2245 PROMISES: accept only ''/0/1, and =1 requires DEEP_HUNT_REACH=1 (the promise invariants sit next to the
+# REACH handler + coverage gate; REACH itself requires --deep-hunt).
+case "$DEEP_HUNT_PROMISES" in ''|0|1) ;; *) echo "run-zone-hunt.sh: DEEP_HUNT_PROMISES must be unset, 0 or 1 (got '$DEEP_HUNT_PROMISES')" >&2; exit 2 ;; esac
+[ "$DEEP_HUNT_PROMISES" != 1 ] || [ "$DEEP_HUNT_REACH" = 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_PROMISES=1 requires DEEP_HUNT_REACH=1" >&2; exit 2; }
 # #1830: the budget/re-hunt knobs use the same integer validation + exit-2 shape as every flag above.
 case "$ZONE_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-cell-budget must be a non-negative integer (got '$ZONE_CELL_BUDGET')" >&2; exit 2 ;; esac
 case "$RUN_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --run-cell-budget must be a non-negative integer (got '$RUN_CELL_BUDGET')" >&2; exit 2 ;; esac
@@ -1368,6 +1384,11 @@ PY
         set -- "$@" --reach
         [ -n "$REACH_NAME" ] && set -- "$@" --target-contract "$REACH_NAME"
       fi
+      # #2245 PROMISES: add the promise-derived invariants (run-invariant-hunt.sh --promises; "$@" reaches BOTH
+      # $INVHUNT invocations). Knob off => no extra arg.
+      if [ "$DEEP_HUNT_PROMISES" = 1 ]; then
+        set -- "$@" --promises
+      fi
       echo "run-zone-hunt.sh: [deep-hunt] stateful-invariant lens on zone '$ZID' target '$RELFILE' ($DCLASS) ..." >&2
       # #1795: the out-dir is keyed per (ZONE, CLASS), not per zone — with the multi-lens fan-out two rows of
       # one zone would otherwise SHARE a run dir and their per-target `invariant_<t>.log` would collide, so the
@@ -1405,6 +1426,11 @@ PY
           # `${DEEP_HUNT_REACH:-}` so this loop stays safe when extracted + eval'd under `set -u` (the
           # test-deep-hunt-resume.sh predicate harness).
           if [ "${DEEP_HUNT_REACH:-}" = 1 ] && grep -Eq 'INVARIANT\|[^|]*\|LOW_COVERAGE([[:space:]]|$)' "$_dhr_log" 2>/dev/null; then
+            _dhr_terminal=1
+          fi
+          # #2245 PROMISES: LOW_PROMISE_COVERAGE is terminal under the knob too (a settled outcome, not a gap).
+          # `${DEEP_HUNT_PROMISES:-}` keeps the extracted + eval'd predicate safe under `set -u`.
+          if [ "${DEEP_HUNT_PROMISES:-}" = 1 ] && grep -Eq 'INVARIANT\|[^|]*\|LOW_PROMISE_COVERAGE([[:space:]]|$)' "$_dhr_log" 2>/dev/null; then
             _dhr_terminal=1
           fi
         done
@@ -1477,6 +1503,42 @@ PY
               "${_rc_reask:-0}" "$_rc_verd" "$_rc_covered" "$_rc_uncovered" >> "$OUT/deep-hunt/reach-coverage.tsv"
           fi
           [ "$_rc_verd" = "LOW_COVERAGE" ] && echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) target '$RELFILE' -> LOW_COVERAGE (handler under-covered the entry points; not merged) (#2245)" >&2
+        fi
+      fi
+      # #2245 (iteration 7) PROMISES: record this cell's promise readout (parsed from the aggregate invariant log)
+      # into $OUT/deep-hunt/promise-coverage.tsv (one row per cell) and promises.tsv (one row per accepted
+      # promise), and echo a line on LOW_PROMISE_COVERAGE. Only under the knob (else skipped, byte-identical).
+      if [ "$DEEP_HUNT_PROMISES" = 1 ]; then
+        _pp_log=""
+        for _pp_cand in "$DZOUT"/run/invariant_*.log; do
+          [ -e "$_pp_cand" ] || continue
+          case "$_pp_cand" in *_c[0-9]*.log) continue ;; esac
+          _pp_log="$_pp_cand"
+        done
+        if [ -n "$_pp_log" ]; then
+          _pp_tgt="${REACH_NAME:-$(basename "$RELFILE" .sol)}"
+          _pp_head="$(grep '^PROMISES|' "$_pp_log" 2>/dev/null | tail -1 || true)"
+          _pp_field() { printf '%s' "$_pp_head" | grep -oE "$1=[^|]*" | head -1 | cut -d= -f2; }
+          _pp_final="$(grep '^PROMISE-COVERAGE|' "$_pp_log" 2>/dev/null | tail -1 | sed 's/^PROMISE-COVERAGE|[^|]*|//' || true)"
+          _pp_draft="$(grep '^PROMISE-COVERAGE-DRAFT|' "$_pp_log" 2>/dev/null | tail -1 | sed 's/^PROMISE-COVERAGE-DRAFT|[^|]*|//' || true)"
+          _pp_unc="$(grep '^PROMISE-UNCOVERED|' "$_pp_log" 2>/dev/null | tail -1 | sed 's/^PROMISE-UNCOVERED|//' || true)"
+          _pp_broken="$(grep '^PROMISE-BROKEN|' "$_pp_log" 2>/dev/null | tail -1 | sed 's/^PROMISE-BROKEN|//' || true)"
+          _pp_verd="$(grep 'INVARIANT|' "$_pp_log" 2>/dev/null | tail -1 | sed 's/.*INVARIANT|//' | cut -d'|' -f2 || true)"
+          _pp_reask="$(printf '%s' "$_pp_final" | grep -oE 'reask=[01]' | head -1 | cut -d= -f2)"
+          if [ -n "$_pp_head" ] || [ -n "$_pp_verd" ]; then
+            mkdir -p "$OUT/deep-hunt"
+            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+              "$ZID" "$_pp_tgt" "$DCLASS" "$(_pp_field source)" "$(_pp_field emitted)" "$(_pp_field accepted)" \
+              "$(_pp_field dropped)" "$(_pp_field overcap)" "$_pp_draft" "$(printf '%s' "$_pp_final" | sed 's/|reask=[01]$//')" \
+              "${_pp_reask:-0}" "$_pp_unc" "$_pp_broken" "$_pp_verd" >> "$OUT/deep-hunt/promise-coverage.tsv"
+            grep '^PROMISE-ACCEPTED|' "$_pp_log" 2>/dev/null | while IFS='|' read -r _pa_tag _pa_k _pa_subj _pa_kind _pa_stmt _pa_cite; do
+              _pa_cov=1
+              case ",$_pp_unc," in *",$_pa_k,"*) _pa_cov=0 ;; esac
+              printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ZID" "$_pp_tgt" "$DCLASS" "$_pa_k" "$_pa_subj" \
+                "$_pa_kind" "$_pa_stmt" "$_pa_cite" "$_pa_cov" >> "$OUT/deep-hunt/promises.tsv"
+            done
+          fi
+          [ "$_pp_verd" = "LOW_PROMISE_COVERAGE" ] && echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' ($DCLASS) target '$RELFILE' -> LOW_PROMISE_COVERAGE (an accepted user-facing promise had no asserting invariant; not merged) (#2245)" >&2
         fi
       fi
       # #1914 M3: record this row's lens depth into the lens x surface matrix (surface = the zone $ZID). For the

@@ -96,8 +96,9 @@ fi
 
 # Since #1939 M2 (FM-B symbol grounding) the trailing scaffold arg is `sharedScaffold + symbolInventorySeed`;
 # since #2245 (deep-hunt REACH) it also carries `+ reachSeed`, so a repaired harness keeps the one-action-per-
-# entry-point directive + deployment inventory too (each seed empty => `+ ""` => byte-identical when off).
-if grep -q 'repair_loop(initState, repairRounds,.*requiredNames, sharedScaffold + symbolInventorySeed + reachSeed)' "$PROVER"; then
+# entry-point directive + deployment inventory too (each seed empty => `+ ""` => byte-identical when off); since
+# #2245 iteration 7 (deep-hunt PROMISES) it also carries `+ promiseSeed` (the accepted promises + cited lines).
+if grep -q 'repair_loop(initState, repairRounds,.*requiredNames, sharedScaffold + symbolInventorySeed + reachSeed + promiseSeed)' "$PROVER"; then
   ok "the repair_loop call site passes sharedScaffold (re-inject every round, #1939 M2 grounded)"
 else
   bad "the repair_loop call site does not pass sharedScaffold"
