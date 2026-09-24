@@ -2820,6 +2820,25 @@ if [ -x "$REPO_ROOT/dark-factory/demo-deep-hunt-reach.sh" ]; then
     fi
 fi
 
+# --- dark-factory deep-hunt PROMISES (#2245 iteration 7) ---
+# DEEP_HUNT_PROMISES=1 (requires DEEP_HUNT_REACH=1, default OFF) adds invariants derived from the target's
+# user-facing promises next to the lens invariant: lib/inheritance.py promise-sources renders the line-numbered
+# listing, the prover extracts free-form PROMISE| lines (no kind vocabulary in any prompt), evm-harness/
+# promise-gate.py keeps only cited ones (cap 8) and checks one asserting invariant_p<k>_ per accepted promise
+# (LOW_PROMISE_COVERAGE otherwise). demo-deep-hunt-promises.sh source-guards the wiring, exercises the listing +
+# gate + coverage tools on fixtures (python-only, CI-safe), drives an end-to-end run-zone-hunt.sh --deep-hunt-only
+# + stub run (OFF == REACH-only, ON reaches the prover), and mutation-checks every rule; the agentis/forge parts
+# SKIP cleanly when those tools are absent.
+if [ -x "$REPO_ROOT/dark-factory/demo-deep-hunt-promises.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-deep-hunt-promises.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: deep-hunt PROMISES — promise-derived invariants + citation gate + promise-coverage gate, default OFF (#2245)"
+    else
+        fail "dark-factory: deep-hunt PROMISES regressed (#2245)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory --grant-pii guard on live/exec .ag invocations (#1690) ---
 # The PII heuristic that blocked hunter.ag (#1675/#1676) and then zone-mapper.ag (#1690) can trip on
 # ANY invocation that transmits target source / scope / findings / PoCs / persisted patterns (all benign

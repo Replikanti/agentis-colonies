@@ -154,6 +154,17 @@
 #                        Default OFF => none of those files is written => reachOn false => byte-identical.
 #   --target-contract <Name>  #2245: the concrete contract to deploy for the reach inventory + coverage.
 #                        Identifier charset only. Appended as `:Name` to --target when --target has no `:` yet.
+#   --promises           #2245 (iteration 7, deep-hunt PROMISES; requires --reach): write the line-numbered
+#                        target + ancestor + doc listing to `$RUN/promise-sources.txt` (via lib/inheritance.py
+#                        promise-sources over the STAGED repo) and stage evm-harness/promise-gate.py into $RUN.
+#                        The prover then extracts the target's user-facing PROMISES (one extra prompt), keeps
+#                        only the cited ones (cap 8), asks for one asserting `<match>_p<k>_` invariant per
+#                        accepted promise next to the lens invariant (one re-ask on a gap), and labels a CLEAN
+#                        with an uncovered promise LOW_PROMISE_COVERAGE. promisesOn is `len(promise-sources.txt)
+#                        > 0` — a FIXED rundir file, NOT a new exec.env_passthrough entry. Default OFF =>
+#                        byte-identical.
+#   --promise-fixture <file>  #2245: verbatim `PROMISE|#k|<subject>|<statement>|<path:line>` lines used INSTEAD
+#                        of the extraction call (the offline/deterministic seam). Requires --promises.
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
 set -eu
 
@@ -198,6 +209,11 @@ GROUND_SYMBOLS=0  # FM-B (#1939 M2): symbol grounding; 0 => OFF (no symbol-inven
 # precedent). 0/absent => none of those files is written => reachOn false => byte-identical to today.
 REACH=0
 REACH_TARGET_CONTRACT=""  # --target-contract <Name>: appended as `:Name` to --target only when it has no `:` yet.
+# #2245 (iteration 7, deep-hunt PROMISES): --promises writes promise-sources.txt + stages promise-gate.py (the
+# prover's promisesOn is `len(promise-sources.txt) > 0`, the same fixed-rundir-file idiom as REACH). 0 => nothing
+# written => byte-identical. --promise-fixture stages verbatim PROMISE| lines as promise-fixture.txt.
+PROMISES=0
+PROMISE_FIXTURE=""
 REPAIR_ROUNDS=""  # #1073: extra compile-repair rounds; "" => the prover's own default (2)
 AUDIT_CONTEXT=""  # #1722: optional spec / audit-scope doc; "" => no audit seed (byte-identical prompt)
 FORK_URL="" ; FORK_BLOCK="" ; FORK_TARGET=""
@@ -239,6 +255,8 @@ while [ $# -gt 0 ]; do
     --ground-symbols) GROUND_SYMBOLS=1; shift ;;
     --reach) REACH=1; shift ;;
     --target-contract) need "$#"; REACH_TARGET_CONTRACT="$2"; shift 2 ;;
+    --promises) PROMISES=1; shift ;;
+    --promise-fixture) need "$#"; PROMISE_FIXTURE="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-invariant-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -326,6 +344,16 @@ if [ -n "$REACH_TARGET_CONTRACT" ]; then
     *:*) : ;;
     *) TARGET="$TARGET:$REACH_TARGET_CONTRACT" ;;
   esac
+fi
+
+# #2245 PROMISES: --promises needs --reach (the promise invariants sit next to the REACH handler + coverage gate);
+# --promise-fixture needs --promises and a readable file. Each is a usage error (exit 2).
+if [ "$PROMISES" = "1" ] && [ "$REACH" != "1" ]; then
+  echo "run-invariant-hunt.sh: --promises requires --reach" >&2; exit 2
+fi
+if [ -n "$PROMISE_FIXTURE" ]; then
+  [ "$PROMISES" = "1" ] || { echo "run-invariant-hunt.sh: --promise-fixture requires --promises" >&2; exit 2; }
+  [ -r "$PROMISE_FIXTURE" ] && [ -f "$PROMISE_FIXTURE" ] || { echo "run-invariant-hunt.sh: --promise-fixture file not readable: $PROMISE_FIXTURE" >&2; exit 2; }
 fi
 
 # Resolve operator paths to ABSOLUTE — the colony runs from the rundir (a different cwd) and the exec sandbox
@@ -644,6 +672,23 @@ if [ "$REACH" = "1" ]; then
   fi
 fi
 
+# #2245 (iteration 7, deep-hunt PROMISES) — write the promise-extraction listing to the FIXED rundir file
+# promise-sources.txt (parsed off the STAGED repo copy, so every cited `path:line` re-opens inside the same tree the
+# gate resolves against) and stage the promise gate (+ the optional fixture). Only under --promises: absent the
+# flag the listing never exists => the prover's promisesOn is false => byte-identical. A helper failure or an
+# empty listing (unresolvable target) removes the file and degrades to the REACH-only prompt.
+if [ "$PROMISES" = "1" ]; then
+  if python3 "$HERE/lib/inheritance.py" promise-sources --repo "$REPO_IN_RUN" --target "$TARGET" \
+      --out "$RUN/promise-sources.txt" 2>/dev/null && [ -s "$RUN/promise-sources.txt" ]; then
+    cp "$HERE/evm-harness/promise-gate.py" "$RUN/promise-gate.py" 2>/dev/null || true
+    [ -n "$PROMISE_FIXTURE" ] && cp "$PROMISE_FIXTURE" "$RUN/promise-fixture.txt"
+    echo "run-invariant-hunt.sh: [promises] wrote a $(wc -c < "$RUN/promise-sources.txt" | tr -d ' ')-byte promise-source listing ($(grep -c '^=== ' "$RUN/promise-sources.txt" 2>/dev/null || echo 0) file(s)) to promise-sources.txt" >&2
+  else
+    echo "run-invariant-hunt.sh: [promises] promise-sources helper failed or found no target for '$TARGET' — degrading to the REACH-only prompt" >&2
+    rm -f "$RUN/promise-sources.txt" 2>/dev/null || true
+  fi
+fi
+
 # #1915/#1932: composable-fresh generation (INV_AUX non-empty) deploys+wires the target AND every aux
 # contract in one prompt -- materially heavier than the single-target read the flat 1200s budget (line
 # ~517 below) was sized for. Scale by aux count (base + 600s per staged aux contract), capped at the
@@ -674,6 +719,12 @@ fi
 # re-ask is heavier than the single-target read — add one aux-slope step, capped like the aux scaling. Off =>
 # unchanged.
 if [ "$REACH" = "1" ]; then
+  GEN_TIMEOUT_MS=$((GEN_TIMEOUT_MS + 600000))
+  [ "$GEN_TIMEOUT_MS" -gt "$GEN_TIMEOUT_CAP" ] && GEN_TIMEOUT_MS=$GEN_TIMEOUT_CAP
+fi
+# #2245 PROMISES: the ~340-line harness (the lens invariant + one invariant per accepted promise) is heavier again —
+# one more slope step, capped the same way. At the default base/cap this is a no-op (REACH already reached the cap).
+if [ "$PROMISES" = "1" ]; then
   GEN_TIMEOUT_MS=$((GEN_TIMEOUT_MS + 600000))
   [ "$GEN_TIMEOUT_MS" -gt "$GEN_TIMEOUT_CAP" ] && GEN_TIMEOUT_MS=$GEN_TIMEOUT_CAP
 fi
@@ -953,6 +1004,7 @@ run_one_candidate() {  # $1 = variant ("" = OFF/single), $2 = INV_OUT path, $3 =
   fi
   case "$_cverd" in
     LOW_COVERAGE) ;;  # #2245 REACH: a CLEAN whose FINAL handler coverage was below the gate threshold — non-FINDING, terminal on --deep-hunt-resume, never merged
+    LOW_PROMISE_COVERAGE) ;;  # #2245 PROMISES: a CLEAN that left an accepted user-facing promise without an asserting invariant — non-FINDING, never merged
     FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR) ;;  # #2033: TRANSIENT_ERROR is a re-runnable verdict, distinct from HARNESS_ERROR
     *) _cverd="HARNESS_ERROR" ;;
   esac
@@ -972,6 +1024,7 @@ echo "run-invariant-hunt.sh: generating + stateful-fuzzing $TARGET ($CLASS) ..."
 if [ "$ENSEMBLE_CANDIDATES" -ge 2 ] && [ -z "$FIXTURE_IN_RUN" ]; then
   echo "run-invariant-hunt.sh: [ensemble] $ENSEMBLE_CANDIDATES metamorphic candidates for $TARGET ..." >&2
   ENS_AGG="CLEAN"; ENS_HAD_HARNESS=""; ENS_HAD_TRANSIENT=""; ENS_HAD_LOW=""; ENS_WIN_LOG=""; ENS_WIN_INVOUT=""
+  ENS_HAD_LOWP=""  # #2245 PROMISES: a separate init line so the pinned one above is byte-identical
   ENS_ROWS=()
   ens_i=0
   while [ "$ens_i" -lt "$ENSEMBLE_CANDIDATES" ]; do
@@ -990,6 +1043,8 @@ if [ "$ENSEMBLE_CANDIDATES" -ge 2 ] && [ -z "$FIXTURE_IN_RUN" ]; then
       ENS_HAD_HARNESS=1
     elif [ "$ens_verd" = "LOW_COVERAGE" ]; then
       ENS_HAD_LOW=1
+    elif [ "$ens_verd" = "LOW_PROMISE_COVERAGE" ]; then
+      ENS_HAD_LOWP=1
     fi
     ens_i=$((ens_i + 1))
   done
@@ -1002,6 +1057,9 @@ if [ "$ENSEMBLE_CANDIDATES" -ge 2 ] && [ -z "$FIXTURE_IN_RUN" ]; then
   # below a real FINDING/TRANSIENT/HARNESS. Added as a SEPARATE follow-up if so the pinned two-line vote chain
   # above is byte-identical (demo-invariant-ensemble.sh:437); it fires only when the chain left ENS_AGG=CLEAN.
   if [ "$ENS_AGG" = "CLEAN" ] && [ -n "$ENS_HAD_LOW" ]; then ENS_AGG="LOW_COVERAGE"; fi
+  # #2245 PROMISES: LOW_PROMISE_COVERAGE sits just below LOW_COVERAGE (FINDING > TRANSIENT > HARNESS > LOW_COVERAGE
+  # > LOW_PROMISE_COVERAGE > CLEAN); a separate follow-up so every existing line above is untouched.
+  if [ "$ENS_AGG" = "CLEAN" ] && [ -n "$ENS_HAD_LOWP" ]; then ENS_AGG="LOW_PROMISE_COVERAGE"; fi
   VERD="$ENS_AGG"
   # Point INV_OUT at the winning candidate's generated test (a real file for the #1731 corpus accumulation); on a
   # non-FINDING aggregate, fall back to the LAST candidate's INV_OUT so the corpus/teeth path references a real test.
@@ -1096,6 +1154,32 @@ if [ "$REACH" = "1" ]; then
   } >> "$REPORT"
 fi
 
+# #2245 (iteration 7, deep-hunt PROMISES) — append a Promise coverage section parsed from the cell log's PROMISE*
+# readout lines (none carries an INVARIANT| substring). The table row above is untouched. Absent under --promises off.
+if [ "$PROMISES" = "1" ]; then
+  _pc_head="$(grep '^PROMISES|' "$CELL_LOG" 2>/dev/null | tail -1 | sed 's/^PROMISES|[^|]*|//' || true)"
+  _pc_final="$(grep '^PROMISE-COVERAGE|' "$CELL_LOG" 2>/dev/null | tail -1 | sed 's/^PROMISE-COVERAGE|[^|]*|//' || true)"
+  _pc_draft="$(grep '^PROMISE-COVERAGE-DRAFT|' "$CELL_LOG" 2>/dev/null | tail -1 | sed 's/^PROMISE-COVERAGE-DRAFT|[^|]*|//' || true)"
+  _pc_unc="$(grep '^PROMISE-UNCOVERED|' "$CELL_LOG" 2>/dev/null | tail -1 | sed 's/^PROMISE-UNCOVERED|//' || true)"
+  _pc_broken="$(grep '^PROMISE-BROKEN|' "$CELL_LOG" 2>/dev/null | tail -1 | sed 's/^PROMISE-BROKEN|//' || true)"
+  _pc_dropped="$(grep '^PROMISE-DROPPED|' "$CELL_LOG" 2>/dev/null | sed 's/^PROMISE-DROPPED|//' | tr '\n' ' ' || true)"
+  _pc_reask="$(printf '%s' "$_pc_final" | grep -oE 'reask=[01]' | head -1 | cut -d= -f2)"
+  _pc_cov="$(printf '%s' "$_pc_final" | sed 's/|reask=[01]$//')"
+  {
+    echo
+    echo "## Promise coverage (DEEP_HUNT_PROMISES)"
+    echo
+    echo "- promises: ${_pc_head:-unmeasured}"
+    echo "- dropped (by id): ${_pc_dropped:-none}"
+    echo "- accepted:"
+    grep '^PROMISE-ACCEPTED|' "$CELL_LOG" 2>/dev/null | awk -F'|' '{printf "  - %s [%s] %s: %s (%s)\n", $2, $4, $3, $5, $6}' || true
+    echo "- promise_coverage: ${_pc_cov:-unmeasured} — $( [ "$VERD" = "LOW_PROMISE_COVERAGE" ] && echo LOW_PROMISE_COVERAGE || echo "verdict $VERD" )"
+    echo "- draft: ${_pc_draft:-unmeasured}; re-ask fired: ${_pc_reask:-0}"
+    echo "- uncovered: ${_pc_unc:-}"
+    echo "- broken promise invariants: ${_pc_broken:-}"
+  } >> "$REPORT"
+fi
+
 # #1732 — COMPLEMENTARY SYMBOLIC / BMC ORACLE. Runs AFTER the primary $REPORT is written (the fuzzer verdict is
 # already finalized) and BEFORE the #1731 replay block below clobbers test/*.t.sol, so $INV_OUT is intact. The
 # whole block is gated on $SYMBOLIC_ORACLE: with the flag off it never runs => byte-identical to today. It only
@@ -1164,6 +1248,8 @@ elif [ "$VERD" = "TRANSIENT_ERROR" ]; then
   echo "run-invariant-hunt.sh: TRANSIENT_ERROR (#2033) — forge was starved/killed/timed out under concurrent batch load; the harness is VALID and this cell is RE-RUNNABLE (re-hunted on resume), NOT an untestable zone. Distinct from HARNESS_ERROR." >&2
 elif [ "$VERD" = "LOW_COVERAGE" ]; then
   echo "run-invariant-hunt.sh: LOW_COVERAGE (#2245 REACH) — every deep invariant held, but the handler exercised fewer than the required fraction of the target's entry points, so the CLEAN is not trustworthy. Non-FINDING, never merged; see the Handler coverage report section." >&2
+elif [ "$VERD" = "LOW_PROMISE_COVERAGE" ]; then
+  echo "run-invariant-hunt.sh: LOW_PROMISE_COVERAGE (#2245 PROMISES) — every invariant that ran held, but at least one accepted user-facing promise had no asserting invariant of its own, so the CLEAN is not trustworthy. Non-FINDING, never merged; see the Promise coverage report section." >&2
 else
   echo "run-invariant-hunt.sh: HARNESS_ERROR — the test did not compile / no invariant matched / forge absent. No verdict was produced." >&2
 fi

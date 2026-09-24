@@ -16,6 +16,28 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Deep-hunt PROMISES — invariants derived from the target's user-facing promises, knob `DEEP_HUNT_PROMISES=1`
+  (requires `DEEP_HUNT_REACH=1`), default OFF (#2245, iteration 7).** Iteration 6 fixed reach: the harness deploys
+  the right concrete targets and calls the rows' entry points, yet stayed CLEAN, because the invariant comes from
+  the lens-class menu, which never asks what the target promises an individual user. PROMISES adds a second,
+  additive source of invariants inside STAGE 4.5 and keeps the lens invariant, the fuzzer verdict, the refute gate
+  and the merge unchanged. (1) **Listing** (`lib/inheritance.py promise-sources`): the target's file, its own-source
+  ancestor contracts, then its ancestor interfaces, then up to 2 in-repo docs naming it, rendered with REAL line
+  numbers (capped at 160 KB, cut at a line boundary). (2) **Extraction**: ONE extra prompt per cell; the model lists
+  free-form `PROMISE|#k|<subject>|<statement>|<path:line>` lines — no kind vocabulary appears in any prompt (the
+  STOP-1 decision); a kind is assigned afterwards from a fixed keyword map for reporting only. (3) **Citation gate**
+  (`evm-harness/promise-gate.py gate`): a promise is kept only when its cited range (≤ 40 lines, in-repo, not under
+  `lib/`/`test/`/`mocks/`/deploy scripts) names its subject; the path/deploy/deployed-state rules are byte-identical
+  copies of `run-discovery.sh`'s `_param_bound_ok` literals; at most 8 per target. (4) **Promise-coverage gate**
+  (`promise-gate.py coverage`): every accepted promise must end up as its own asserting `invariant_p<k>_…`
+  function (one re-ask on a gap); a CLEAN that leaves one uncovered is labelled **`LOW_PROMISE_COVERAGE`** —
+  non-FINDING, never merged, terminal on `--deep-hunt-resume` (`LOW_COVERAGE` outranks it). Wiring:
+  `run-zone-hunt.sh` (`DEEP_HUNT_PROMISES` env knob) → `run-invariant-hunt.sh --promises` (writes
+  `promise-sources.txt`, stages `promise-gate.py`; `--promise-fixture` is the offline seam) →
+  `invariant-prover.ag`'s `promisesOn` is the presence of `promise-sources.txt` at the absolute rundir (no new
+  `exec.env_passthrough` entry). Per-cell readouts land in `deep-hunt/promise-coverage.tsv` + `promises.tsv`.
+  Unset ⇒ byte-identical to a REACH-only run. Proven end-to-end by `demo-deep-hunt-promises.sh`; recall
+  UNMEASURED (see `bench/corpus-bench/bug-class-coverage.md`).
 - **Deep-hunt REACH — concrete multi-target selection + a handler-coverage gate + a deployment inventory, knob
   `DEEP_HUNT_REACH=1`, default OFF (#2245, iteration 6).** Two frozen deep-hunt runs on the fixed harness came
   back CLEAN with the failure in target SELECTION, not the fuzzer: one deployed an abstract base whose concrete

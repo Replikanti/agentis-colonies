@@ -43,12 +43,22 @@ cb 300000;
 //   reach-inventory.txt    #2245 REACH: the prompt-visible deployment inventory (constructor/initializer sigs +
 //                          resolved collaborators). Both files are written ONLY by run-invariant-hunt.sh --reach.
 //   handler-coverage.py    #2245 REACH: the staged coverage matcher this agent invokes (like forge-invariant.sh).
+//   promise-sources.txt    #2245 PROMISES (iteration 7): the line-numbered target + ancestor + doc listing the
+//                          promise extraction reads. Its PRESENCE (len > 0) turns PROMISES on. Written ONLY by
+//                          run-invariant-hunt.sh --promises (which requires --reach).
+//   promise-fixture.txt    #2245 PROMISES: optional verbatim PROMISE| lines used instead of the extraction call.
+//   promise-gate.py        #2245 PROMISES: the staged citation gate + promise-coverage matcher.
+//   promises-raw.txt / promises-accepted.tsv  written BY this agent (the raw promise text; the gate's accepted rows).
 // Stdout: exactly one verdict marker line —
-//   INVARIANT|<file:fn>|<FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR|LOW_COVERAGE>
+//   INVARIANT|<file:fn>|<FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR|LOW_COVERAGE|LOW_PROMISE_COVERAGE>
 // followed, on a FINDING, by the shrunk exploit call-sequence (one `STEP|...` line per call). Under REACH the
 // agent ALSO prints, BEFORE the marker, HANDLER-COVERAGE-DRAFT|/HANDLER-COVERAGE|/HANDLER-COVERED|/
 // HANDLER-UNCOVERED| readout lines (none carries an `INVARIANT|` substring). LOW_COVERAGE (#2245) is a CLEAN
-// whose FINAL handler coverage fell below ceil(0.6*total) — non-FINDING, never merged.
+// whose FINAL handler coverage fell below ceil(0.6*total) — non-FINDING, never merged. Under PROMISES it also
+// prints PROMISES| + the PROMISE-ACCEPTED|/-DROPPED|/-OVERCAP| readout right after the promise gate, and
+// PROMISE-COVERAGE-DRAFT|/PROMISE-COVERAGE|/PROMISE-UNCOVERED|/PROMISE-BROKEN| before the marker (none carries an
+// `INVARIANT|` substring). LOW_PROMISE_COVERAGE (#2245 iteration 7) is a CLEAN whose FINAL harness left an accepted
+// user-facing promise without its own asserting invariant — non-FINDING, never merged; LOW_COVERAGE outranks it.
 
 // --- file reader (dynamic path -> safe-exec-concat, per symbolic-prover.ag / refuter.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -109,6 +119,8 @@ fn outcome_of(verdict: string) -> string {
     // #2245 REACH: a CLEAN below the handler-coverage threshold is a PARTIAL result — the invariant held but the
     // harness under-exercised the target, so it is neither a confirmed miss nor a finding.
     if verdict == "LOW_COVERAGE" { return "partial"; }
+    // #2245 PROMISES: a CLEAN that left an accepted user-facing promise without an asserting invariant — PARTIAL.
+    if verdict == "LOW_PROMISE_COVERAGE" { return "partial"; }
     return "error";
 }
 
@@ -478,6 +490,106 @@ fn recall_pattern(klass: string) -> string {
 // target->handler->fuzzer->verdict loop is provable with zero LLM cost and a real fuzzer. The fixture is
 // read through the sandboxed reader.
 let fixture = cat_file(fixturePath);
+
+// ================================================================================================
+// #2245 (iteration 7, deep-hunt PROMISES) — invariants derived from what the target PROMISES an individual user,
+// ADDED next to the lens invariant (never replacing it). run-invariant-hunt.sh --promises writes the line-numbered
+// source listing to the FIXED rundir file promise-sources.txt and stages promise-gate.py; promisesOn is derived
+// SOLELY from that file (the same absolute-rundir read as reachOn — no getenv, no new passthrough entry). Placed
+// after `fixture` because the extraction is skipped on the HANDLER_FIXTURE path. Absent file (flag off) =>
+// promisesOn false => no extraction, promiseSeed == "" => every prompt is byte-identical to a REACH-only run.
+// Flow: ONE extraction prompt -> promises-raw.txt -> promise-gate.py gate (citation floor, cap 8) ->
+// promises-accepted.tsv + the ACCEPTED block -> promiseSeed (generation, repair, both re-asks) -> the coverage
+// gate after the draft (one re-ask) and after the final attempt (LOW_PROMISE_COVERAGE). STOP-1 decision 4: the
+// model lists promises FREE-FORM; no kind vocabulary appears in any prompt (the gate tool assigns a kind for
+// reporting only, and the prompt-visible ACCEPTED block carries none).
+let promiseSources = read_reach_file(reachDir + "/promise-sources.txt");
+let promisesOn = len(promiseSources) > 0;
+// --promise-fixture (the offline/deterministic seam): its lines are used VERBATIM instead of the extraction call.
+let promiseFixture = read_reach_file(reachDir + "/promise-fixture.txt");
+// The extraction instruction. Generic template text only — no protocol, contract, function, domain or kind
+// nouns; the listing it reads (passed as prompt()'s source argument) is real source data.
+fn promise_extract_instruction() -> string {
+    return "You are reading a smart-contract system to list what it PROMISES an individual user.\n"
+         + "The source listing below is split into `=== <path> ===` sections; every line starts with its REAL line "
+         + "number in that file.\n"
+         + "List the guarantees an INDIVIDUAL account or position can rely on — one account or one position, not "
+         + "only global totals — that the code STATES (NatSpec, comments, docs) or ENFORCES (a require/revert, a "
+         + "modifier, or per-account state the code checks). Write each one as ONE sentence that a SEQUENCE of "
+         + "calls by one or more accounts could violate. Most valuable first.\n"
+         + "Output ONLY lines of this exact form, at most 8, no prose, no markdown:\n"
+         + "PROMISE|#<k>|<the entry point or state variable the promise is about>|<the one-sentence promise>|"
+         + "<path>:<line>[-<line>]\n"
+         + "Rules:\n"
+         + "  - <k> is 1, 2, 3, ... as listed.\n"
+         + "  - The last field cites AT MOST 40 consecutive lines of the listing (its section path and its real "
+         + "line numbers) that state or enforce the promise AND name the third field. A promise you cannot cite "
+         + "this way is discarded.\n"
+         + "  - Never cite deployment scripts, tests, mocks or vendored library code.\n"
+         + "  - Do not use the `|` character inside a field.\n";
+}
+// Fixture first (verbatim, no LLM); "" on the HANDLER_FIXTURE path (no LLM at all there); else ONE prompt.
+fn extract_promises(on: bool, fixture: string, handlerFixture: bool, sources: string) -> string {
+    if !on { return ""; }
+    if len(fixture) > 0 { return fixture; }
+    if handlerFixture { return ""; }
+    // colony-lint: prompt-gate-ok
+    return prompt(promise_extract_instruction(), sources) -> string;
+}
+fn promise_source_label(fixture: string, handlerFixture: bool) -> string {
+    if len(fixture) > 0 { return "fixture"; }
+    if handlerFixture { return "none"; }
+    return "llm";
+}
+let promiseRaw = extract_promises(promisesOn, promiseFixture, len(fixture) > 0, promiseSources);
+let promiseSourceLabel = promise_source_label(promiseFixture, len(fixture) > 0);
+// Write the raw promise text to the rundir (the write_test printf/shell_escape idiom; the gate tool strips the
+// #2207 FCB sentinels itself). "" when off (no exec at all).
+fn write_promise_raw(on: bool, raw: string) -> string {
+    if !on { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "printf '%s' " + shell_escape(raw) + " > " + shell_escape(reachDir + "/promises-raw.txt") + "; echo __wrote=$?";
+}
+// Run the staged gate over the raw text. ONE staged-tool exec sh, every dynamic value shell_escape()d. The tool
+// always exits 0; a missing tool reads as no PROMISES| line => the readout records `unmeasured`.
+fn run_promise_gate(on: bool, wrote: string) -> string {
+    if !on { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "python3 " + shell_escape(reachDir + "/promise-gate.py") + " gate --raw " + shell_escape(reachDir + "/promises-raw.txt") + " --repo " + shell_escape(invRepo) + " --out " + shell_escape(reachDir + "/promises-accepted.tsv") + " 2>/dev/null || true";
+}
+let promiseGateOut = run_promise_gate(promisesOn, write_promise_raw(promisesOn, promiseRaw));
+let promiseAcceptedBlock = regex_capture("(?s)BEGIN-ACCEPTED\\n(.*)\\nEND-ACCEPTED", promiseGateOut, 1);
+// The promise seed. "" when off OR when nothing was accepted, so the prompt is byte-identical to a REACH-only run.
+// It explicitly overrides the single-invariant rule (the lens invariant is KEPT). Generic ghost-state guidance —
+// no function, domain or kind nouns; the ACCEPTED block carries the real subjects + cited source lines.
+fn promise_seed(on: bool, acceptedBlock: string, matchPrefix: string) -> string {
+    if !on { return ""; }
+    if len(acceptedBlock) == 0 { return ""; }
+    return "=== USER-FACING PROMISES (one invariant each) ===\n"
+         + "This OVERRIDES 'EXACTLY ONE deep invariant' and the size budget: KEEP the lens invariant AND add ONE `"
+         + matchPrefix + "_p<k>_<short_name>` function for EACH promise below (k = its number), asserting it with "
+         + "plain require(...) so that a SEQUENCE of Handler calls can break it; size budget ~340 lines.\n"
+         + "To check a promise about one account, keep ghost state in the Handler: per account, record what each "
+         + "action put in and took out, the block timestamp and a call counter of each action, and the balances "
+         + "just before and after the call; the invariant function then asserts the promise over that recorded "
+         + "history. If a promise depends on elapsed time, add a time-advance action that calls the `warp` "
+         + "cheatcode on the same Vm address as the other cheatcodes, with a small fuzzed step.\n"
+         + "Each promise is followed by the source lines it cites:\n"
+         + acceptedBlock + "\n";
+}
+let promiseSeed = promise_seed(promisesOn, promiseAcceptedBlock, invMatch);
+// The gate readout, printed RIGHT AFTER the gate so a later hang still leaves it in the cell log. None of these
+// lines carries an `INVARIANT|` substring (the tool maps every model-derived `|` to `/`).
+fn promises_body(out: string) -> string {
+    let b = regex_capture("(?m)^PROMISES\\|(.*)$", out, 1);
+    if len(b) == 0 { return "unmeasured"; }
+    return b;
+}
+if promisesOn {
+    print("PROMISES|" + targetFn + "|" + promises_body(promiseGateOut) + "|source=" + promiseSourceLabel);
+    let promiseReadout = regex_capture("(?s)BEGIN-READOUT\\n(.*)\\nEND-READOUT", promiseGateOut, 1);
+    if len(promiseReadout) > 0 { print(promiseReadout); }
+}
 
 // Live path: the LLM is the HYPOTHESIS GENERATOR. It reads the target contract source and writes a
 // self-contained Foundry stateful-invariant test — a MINIMAL `Handler` that exposes only the core
@@ -1647,6 +1759,7 @@ fn generate_test(klass: string, src: string, matchPrefix: string, prior: string,
       + compose_seed(composeActive, forkContext)
       + compose_fresh_seed(composeFresh)
       + reachSeed
+      + promiseSeed
       + sharedScaffold;
     // colony-lint: prompt-gate-ok
     return prompt(instruction, src) -> string;
@@ -1890,6 +2003,82 @@ fn reask_flag(fired: bool) -> string {
     return "0";
 }
 
+// ================================================================================================
+// #2245 (iteration 7, deep-hunt PROMISES) — PROMISE-COVERAGE gate helpers. All no-ops when promisesOn is false.
+// promise-gate.py coverage: a promise #k is covered only by an ASSERTING `<prefix>_p<k>_...` function. The tool
+// always exits 0; a missing tool / no PCOVERAGE| line fails OPEN in pcov_ok (no LOW_PROMISE_COVERAGE label) while
+// the readout records `unmeasured` (a mechanics FAIL for the operator), the cov_ok precedent.
+fn run_promise_coverage(on: bool, path: string) -> string {
+    if !on { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "python3 " + shell_escape(reachDir + "/promise-gate.py") + " coverage --accepted " + shell_escape(reachDir + "/promises-accepted.tsv") + " --harness " + shell_escape(path) + " --prefix " + shell_escape(invMatch) + " 2>/dev/null || true";
+}
+// The PCOVERAGE| body (`covered=<c>|total=<t>|<ok|low|n/a>`), or `unmeasured` when the tool printed none.
+fn pcov_body(out: string) -> string {
+    let b = regex_capture("(?m)^PCOVERAGE\\|(.*)$", out, 1);
+    if len(b) == 0 { return "unmeasured"; }
+    return b;
+}
+// The comma-joined uncovered ids (`#2,#5`).
+fn pcov_uncovered(out: string) -> string {
+    return regex_capture("(?m)^PUNCOVERED\\|(.*)$", out, 1);
+}
+// The number of uncovered accepted promises (drives the single promise re-ask). Empty list => 0.
+fn pcov_gap(out: string) -> int {
+    let u = pcov_uncovered(out);
+    if len(u) == 0 { return 0; }
+    return len(regex_split(",", u));
+}
+// ok unless the PCOVERAGE| line ends in `|low`. NO PCOVERAGE| line (unmeasured) FAILS OPEN; `n/a` (nothing
+// accepted) is vacuous and ok.
+fn pcov_ok(out: string) -> bool {
+    if index_of(out, "PCOVERAGE|") < 0 { return true; }
+    let state = regex_capture("(?m)^PCOVERAGE\\|.*\\|(ok|low|n/a)$", out, 1);
+    if state == "low" { return false; }
+    return true;
+}
+// The uncovered promises' `#k | subject | statement | cite` lines, verbatim, for the re-ask.
+fn pcov_uncovered_block(out: string) -> string {
+    return regex_capture("(?s)BEGIN-UNCOVERED\\n(.*)\\nEND-UNCOVERED", out, 1);
+}
+// The single promise RE-ASK: the FULL scaffold (incl. the REACH + promise seeds, so the handler actions and the
+// promise list survive), the uncovered promises verbatim, and the previous source. Generic text only.
+fn promise_reask_instruction(uncovered: string, prevSrc: string, scaffold: string) -> string {
+    return scaffold
+         + "\n=== YOUR TEST HAS NO INVARIANT FOR THESE PROMISES ===\n"
+         + uncovered
+         + "\nAdd ONE `" + invMatch + "_p<k>_<short_name>` function for EACH promise listed above (k = its number), "
+         + "asserting it with plain require(...). Keep every existing action and invariant unchanged. Output ONLY "
+         + "the corrected Solidity.\nYour previous test was:\n"
+         + prevSrc;
+}
+fn promise_reask(uncovered: string, prevSrc: string, scaffold: string) -> string {
+    // colony-lint: prompt-gate-ok
+    return prompt(promise_reask_instruction(uncovered, prevSrc, scaffold), "") -> string;
+}
+// The verdict override, applied ON TOP of reach_verdict: under PROMISES a CLEAN with an uncovered accepted promise
+// becomes LOW_PROMISE_COVERAGE. A FINDING is never discarded; LOW_COVERAGE (which outranks it) / HARNESS_ERROR /
+// TRANSIENT_ERROR pass through. Off => identity.
+fn promise_verdict(base: string, on: bool, ok: bool) -> string {
+    if !on { return base; }
+    if base == "CLEAN" {
+        if ok { return "CLEAN"; }
+        return "LOW_PROMISE_COVERAGE";
+    }
+    return base;
+}
+// On a FINDING: the promise invariants among forge-invariant.sh's `-- broken invariant: <fn>` lines, comma-joined
+// (native regex only — no embedded interpreter).
+fn promise_broken(out: string, matchPrefix: string) -> string {
+    let lines = regex_find_all("(?m)^-- broken invariant: .*$", out);
+    let joined = reduce(lines, |acc: string, ln: string| -> string { return acc + ln + "\n"; }, "");
+    let names = regex_find_all(matchPrefix + "_p[0-9]+_[A-Za-z0-9_]+", joined);
+    return reduce(names, |acc: string, nm: string| -> string {
+        if len(acc) == 0 { return nm; }
+        return acc + "," + nm;
+    }, "");
+}
+
 // Extract a useful compiler-error excerpt from the gate's captured output (forge stderr). Keep the lines that
 // carry diagnostic signal — the Error / error[ / `-->` source pointer / Compiler banner lines AND (#1720) the
 // solc source-context lines the model needs to actually locate the fault: the numbered gutter lines
@@ -2047,7 +2236,15 @@ fn repair_loop(acc: string, remaining: int, gateSh: string, repo: string, out: s
 // INV_OUT is written exactly ONCE below — byte-identical to today.
 let covDraft = if reachOn { run_coverage(true, write_and_path(test, invOut), targetFn) } else { "" };
 let reaskFired = if reachOn { if usedFixture { false } else { cov_gap(covDraft) > 0 } } else { false };
-let firstSrc = if reaskFired { coverage_reask(cov_uncovered(covDraft), test, sharedScaffold + symbolInventorySeed + reachSeed) } else { test };
+let reachSrc = if reaskFired { coverage_reask(cov_uncovered(covDraft), test, sharedScaffold + symbolInventorySeed + reachSeed + promiseSeed) } else { test };
+// #2245 PROMISES DRAFT + one re-ask, AFTER the (unchanged) REACH draft/re-ask. Under promisesOn, write the current
+// source, measure promise coverage, and — on the LLM path only — re-ask ONCE when ANY accepted promise has no
+// asserting `<prefix>_p<k>_` invariant. The re-ask scaffold carries reachSeed too, so it cannot drop the handler
+// actions (and the REACH re-ask above carries promiseSeed, so it cannot drop the promise invariants). Off (or the
+// fixture path) => promReaskFired false => firstSrc == reachSrc; off => no draft write => byte-identical.
+let promDraft = if promisesOn { run_promise_coverage(true, write_and_path(reachSrc, invOut)) } else { "" };
+let promReaskFired = if promisesOn { if usedFixture { false } else { pcov_gap(promDraft) > 0 } } else { false };
+let firstSrc = if promReaskFired { promise_reask(pcov_uncovered_block(promDraft), reachSrc, sharedScaffold + symbolInventorySeed + reachSeed + promiseSeed) } else { reachSrc };
 let wrote = write_test(firstSrc, invOut);
 let firstOut = run_gate(gate, invRepo, invOut, invMatch, budget, gateExtra);
 // FM2 (#1077): the first-attempt stop flag is both-real-aware too — in composable-fresh mode a first-attempt
@@ -2071,7 +2268,8 @@ let initState = rstate(initStopped, firstSrc, firstOut);
 // byte-identical to today.
 // #2245 REACH: the repair rounds also re-inject reachSeed, so a repaired harness keeps the one-action-per-entry
 // -point directive + deployment inventory. reachSeed == "" (knob off) => `+ ""` => byte-identical to today.
-let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, gateExtra, composableFresh, requiredNames, sharedScaffold + symbolInventorySeed + reachSeed);
+// #2245 PROMISES: the repair rounds also re-inject promiseSeed (the promise list + cited lines). "" when off => `+ ""`.
+let finalState = repair_loop(initState, repairRounds, gate, invRepo, invOut, invMatch, budget, gateExtra, composableFresh, requiredNames, sharedScaffold + symbolInventorySeed + reachSeed + promiseSeed);
 
 // The verdict is the gate's exit code on the LAST attempt — NEVER the LLM's opinion (unchanged contract) —
 // EXCEPT the #1077 both-real override: in composable-fresh mode, if the FINAL harness STILL mocked/omitted a
@@ -2097,7 +2295,12 @@ let baseVerdict = final_verdict(rc, bothRealViolated);
 // LOW_COVERAGE. A reproduced FINDING is never discarded; HARNESS_ERROR/TRANSIENT_ERROR pass through. Off =>
 // covFinal == "" and reach_verdict is the identity => byte-identical to today.
 let covFinal = run_coverage(reachOn, invOut, targetFn);
-let verdict = reach_verdict(baseVerdict, reachOn, cov_ok(covFinal));
+let reachVerdict = reach_verdict(baseVerdict, reachOn, cov_ok(covFinal));
+// #2245 PROMISES: re-measure promise coverage on the FINAL INV_OUT and, when promisesOn, label a CLEAN with an
+// uncovered accepted promise LOW_PROMISE_COVERAGE (applied after reach_verdict, so LOW_COVERAGE outranks it). Off
+// => promFinal == "" and promise_verdict is the identity => byte-identical.
+let promFinal = run_promise_coverage(promisesOn, invOut);
+let verdict = promise_verdict(reachVerdict, promisesOn, pcov_ok(promFinal));
 // Surface WHY this is not a real verdict so the HARNESS_ERROR marker below is not mistaken for a genuine
 // compile failure. Routed to STDERR via `exec sh` (the prover has no stderr print builtin) so the stdout marker
 // line stays the single machine-parsed verdict. `bothRealMissing` is untrusted LLM-derived text, so it is
@@ -2122,6 +2325,14 @@ if reachOn {
     print("HANDLER-COVERAGE|" + targetFn + "|" + cov_body(covFinal) + "|reask=" + reask_flag(reaskFired));
     print("HANDLER-COVERED|" + regex_capture("(?m)^COVERED\\|(.*)$", covFinal, 1));
     print("HANDLER-UNCOVERED|" + cov_uncovered(covFinal));
+}
+// #2245 PROMISES readout — draft/final promise coverage, the uncovered ids and (on a FINDING) the broken promise
+// invariants, printed BEFORE the pinned marker; none carries an `INVARIANT|` substring. Only when promisesOn.
+if promisesOn {
+    print("PROMISE-COVERAGE-DRAFT|" + targetFn + "|" + pcov_body(promDraft));
+    print("PROMISE-COVERAGE|" + targetFn + "|" + pcov_body(promFinal) + "|reask=" + reask_flag(promReaskFired));
+    print("PROMISE-UNCOVERED|" + pcov_uncovered(promFinal));
+    if verdict == "FINDING" { print("PROMISE-BROKEN|" + promise_broken(runOut, invMatch)); }
 }
 print("INVARIANT|" + targetFn + "|" + verdict);
 let steps = steps_of(runOut);

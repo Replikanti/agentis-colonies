@@ -50,6 +50,10 @@
 #       independently-maintained copy of map-zones.sh's (the same convention the repo already carries at
 #       map-zones.sh:137-141 and :198-201) — two independently-maintained lists can drift; if you touch one,
 #       check the other.
+#   reach-targets / reach-inventory — #2245 iteration 6 (deep-hunt REACH), documented at their block below.
+#   promise-sources --repo <dir> --target <rel[:Name]> --out <file>
+#       #2245 iteration 7 (deep-hunt PROMISES): the line-numbered source listing the invariant prover reads to
+#       extract the target's user-facing promises. Documented at its block below.
 #
 # Exit: 0 on success (including "nothing triggered"); 2 usage error; 3 unreadable input.
 import json
@@ -1217,17 +1221,172 @@ def _cap12kb(text):
     return text[:12000] + "\n... [inventory truncated at 12 KB] ...\n"
 
 
+# ================================================================================================
+# #2245 (iteration 7) — DEEP-HUNT PROMISES. One ADDITIVE subcommand; everything above is byte-for-byte UNCHANGED.
+#
+#   promise-sources --repo <staged repo> --target <rel[:Name]> --out <file>
+#       The line-numbered source listing the invariant prover reads to list the target's USER-FACING PROMISES
+#       (run-invariant-hunt.sh --promises writes it to the fixed rundir file promise-sources.txt). Order:
+#         1. the target's own file;
+#         2. the files declaring its own-source ancestor CONTRACTS (abstract or not; libraries count here),
+#            breadth-first, most-derived first;
+#         3. the files declaring its own-source ancestor INTERFACES;
+#         4. up to PROMISE_DOC_MAX in-repo *.md files that name the target contract as a whole word (ranked by
+#            mention count, then path), each ONE window of <= PROMISE_DOC_WINDOW lines starting
+#            PROMISE_DOC_LEAD lines above its first mention.
+#       Every file is listed once. Rendering: a `=== <repo-relative path> ===` header, then `<n>| <text>` for
+#       every NON-BLANK line, where <n> is the REAL file line — so `sed -n <n>p <repo>/<path>` returns <text>
+#       and a citation re-opens exactly. Capped at PROMISE_SOURCES_CAP bytes, cut at a line boundary with the
+#       PROMISE_TRUNC_MARK line and nothing after it; contracts come first, so interfaces and docs are the first
+#       thing cut. An unresolvable target writes an EMPTY file (the prover's promisesOn is then false).
+#       Vendored code (lib/ node_modules/ ...) is never listed: its ancestors end the chain, like the appendix.
+PROMISE_SOURCES_CAP = 160 * 1024
+PROMISE_TRUNC_MARK = "... [promise sources truncated at 160 KB] ..."
+PROMISE_DOC_MAX = 2
+PROMISE_DOC_WINDOW = 200
+PROMISE_DOC_LEAD = 20
+PROMISE_DOC_EXCLUDED_PREFIXES = ("test/", "tests/", "mocks/", "script/")
+
+
+def _own_ancestor_files(inv, decl):
+    """The files declaring the own-source ancestors of `decl`, breadth-first, most-derived first, split into
+    (contract_files, interface_files). A base that is not own-source (vendored / ambiguous / unscanned) ends its
+    branch. A file is recorded once, in the first bucket that reaches it (contracts win, see the caller)."""
+    contracts = []
+    interfaces = []
+    seen = set([decl["name"]])
+    frontier = list(decl["bases"])
+    while frontier:
+        nxt = []
+        for b in frontier:
+            if b in seen:
+                continue
+            seen.add(b)
+            got = inv.get(b)
+            if got is None:
+                continue
+            rel, d = got
+            if d["kind"] == "interface":
+                if rel not in interfaces:
+                    interfaces.append(rel)
+            elif rel not in contracts:
+                contracts.append(rel)
+            for bb in d["bases"]:
+                if bb not in seen:
+                    nxt.append(bb)
+        frontier = nxt
+    return contracts, interfaces
+
+
+def _promise_doc_windows(repo, name):
+    """Up to PROMISE_DOC_MAX (rel, first_line_1based, last_line_1based) doc windows for the in-repo *.md files
+    that name `name` as a whole word, ranked by mention count (desc) then path."""
+    word = re.compile(r"(^|[^A-Za-z0-9_$])" + re.escape(name) + r"([^A-Za-z0-9_$]|$)")
+    ranked = []
+    for root, dirs, files in os.walk(repo):
+        dirs[:] = sorted(d for d in dirs if d not in PRUNE_DIRS)
+        for f in files:
+            if not f.lower().endswith(".md"):
+                continue
+            rel = os.path.relpath(os.path.join(root, f), repo).replace(os.sep, "/")
+            if any(rel.startswith(p) or ("/" + p) in rel for p in PROMISE_DOC_EXCLUDED_PREFIXES):
+                continue
+            try:
+                with open(os.path.join(repo, rel), encoding="utf-8", errors="ignore") as fh:
+                    lines = fh.read().splitlines()
+            except OSError:
+                continue
+            hits = [i for i, ln in enumerate(lines) if word.search(ln)]
+            if not hits:
+                continue
+            count = sum(len(word.findall(lines[i])) for i in hits)
+            start = max(0, hits[0] - PROMISE_DOC_LEAD)
+            end = min(len(lines), start + PROMISE_DOC_WINDOW)
+            ranked.append((-count, rel, start + 1, end))
+    ranked.sort()
+    return [(rel, a, b) for _c, rel, a, b in ranked[:PROMISE_DOC_MAX]]
+
+
+def _render_listing(repo, rel, first=1, last=None):
+    """`=== rel ===` + `<n>| <text>` for every non-blank line in [first, last] (1-based, inclusive)."""
+    try:
+        with open(os.path.join(repo, rel), encoding="utf-8", errors="ignore") as fh:
+            lines = fh.read().split("\n")
+    except OSError:
+        return []
+    if lines and lines[-1] == "":
+        lines.pop()
+    if last is None or last > len(lines):
+        last = len(lines)
+    out = ["=== " + rel + " ==="]
+    n = first
+    while n <= last:
+        text = lines[n - 1].rstrip("\r")
+        if text.strip():
+            out.append("%d| %s" % (n, text))
+        n += 1
+    return out
+
+
+def cmd_promise_sources(argv):
+    flags = parse_flags(argv, ("--repo", "--target", "--out"), ())
+    repo = flags.get("--repo")
+    target = flags.get("--target")
+    out = flags.get("--out")
+    if not repo or not target or not out:
+        die(2, "promise-sources requires --repo --target --out")
+    if not os.path.isdir(repo):
+        die(3, "--repo is not a directory: " + repo)
+    inv = OwnInventory(repo, discover_inventory_sources(repo))
+    resolved = _resolve_target(inv, repo, target)
+    if resolved is None:
+        # Inert: no target -> empty file -> the prover's promisesOn is false -> the REACH-only prompt.
+        with open(out, "w", encoding="utf-8") as fh:
+            fh.write("")
+        return 0
+    rel, decl = resolved
+    contracts, interfaces = _own_ancestor_files(inv, decl)
+    listed = [rel]
+    for f in contracts + interfaces:
+        if f not in listed:
+            listed.append(f)
+    blocks = [_render_listing(repo, f) for f in listed]
+    for drel, a, b in _promise_doc_windows(repo, decl["name"]):
+        if drel not in listed:
+            listed.append(drel)
+            blocks.append(_render_listing(repo, drel, a, b))
+    text_lines = []
+    size = 0
+    cut = False
+    for block in blocks:
+        for ln in block:
+            add = len(ln.encode("utf-8")) + 1
+            if size + add > PROMISE_SOURCES_CAP:
+                cut = True
+                break
+            text_lines.append(ln)
+            size += add
+        if cut:
+            break
+    if cut:
+        text_lines.append(PROMISE_TRUNC_MARK)
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(text_lines) + ("\n" if text_lines else ""))
+    return 0
+
+
 COMMANDS = {
     "appendix": cmd_appendix,
     "implementor": cmd_implementor,
     "reach-targets": cmd_reach_targets,
     "reach-inventory": cmd_reach_inventory,
+    "promise-sources": cmd_promise_sources,
 }
 
 
 def main(argv):
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
-        sys.stdout.write("usage: inheritance.py <appendix|implementor|reach-targets|reach-inventory> [flags]\n")
+        sys.stdout.write("usage: inheritance.py <appendix|implementor|reach-targets|reach-inventory|promise-sources> [flags]\n")
         return 0 if len(argv) >= 2 else 2
     cmd = COMMANDS.get(argv[1])
     if cmd is None:

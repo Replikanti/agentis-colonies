@@ -529,11 +529,47 @@ at 20), and a deployment inventory re-injected into every repair round.
 - Zone B (a cross-chain + core router pair): BOTH routers are selected; the cross-chain router's entry points
   include the liquidation and repay functions (its 7-line multi-line liquidation header parses correctly).
 
-**Status: IN-FLIGHT — recall UNMEASURED.** This iteration ships the selection, the gate, the inventory and the
-offline guards only (`../../demo-deep-hunt-reach.sh`, wired into `tools/colony-lint.sh`). The pre-registered
-measurement (a mechanics gate on the two diagnosis zones first, then the recall gate on the reserved
-`src_mToken__p1` zone ×2 plus one OFF attribution control) is an operator step; the default stays OFF until the
-mechanics gate passes and both recall repeats reach `verified_findings.json`.
+**Status: MEASURED — mechanics PASS, recall 0 on both diagnosis zones; recall gate NOT run (#2245 comment
+5804784466).** The harness now deploys the concrete targets and calls the rows' entry points as handler actions
+(zone A: 12 entry points on the first target, one lens `LOW_COVERAGE`; zone B: 9/9 and 7/7 after one re-ask), yet
+every verdict stayed CLEAN: the invariant is chosen by lens class, and neither lens menu asks what the target
+promises an individual user. The binding gap moved from reach to invariant selection, so the reserved recall zone
+was left unspent (its row would meet the same class menu). The default stays OFF. The shipped pieces are the
+selection, the gate, the inventory and the offline guards (`../../demo-deep-hunt-reach.sh`, wired into
+`tools/colony-lint.sh`).
+
+### Promise-derived invariants (#2245, iteration 7 — last before the final exam)
+
+Iteration 6 fixed reach; the invariant still came from the lens-class menu. PROMISES (the `DEEP_HUNT_PROMISES=1`
+knob, requires REACH, default OFF) adds a second, additive source of invariants inside STAGE 4.5: one extra prompt
+per cell lists the target's user-facing promises as free-form `PROMISE|#k|<subject>|<statement>|<path:line>` lines
+over a real-line-numbered listing (`lib/inheritance.py promise-sources`: target, ancestor contracts, ancestor
+interfaces, up to 2 docs naming it); `evm-harness/promise-gate.py gate` keeps only promises whose ≤ 40-line
+in-repo citation names the subject (cap 8); every accepted promise must become its own asserting
+`invariant_p<k>_…` function (one re-ask), else the CLEAN is `LOW_PROMISE_COVERAGE`. The lens invariant stays and
+the fuzzer's exit code stays the only verdict. **No kind vocabulary appears in any prompt** (STOP-1 decision 4):
+the kind list drafted for the plan was written with the held-out rows in view, and one of its words names the
+recall row's class, so the model lists promises free-form and `promise-gate.py` assigns a kind afterwards from a
+fixed keyword map, for the readout only. `demo-deep-hunt-promises.sh` pins that the rendered extraction prompt,
+the promise seed and the promise re-ask carry none of the kind words.
+
+**Offline pre-check on the two frozen diagnosis zones (role names only; no LLM; the recall zone untouched):**
+
+- Zone A (the token share-manager family), concrete token share-manager target: the promise listing (≈ 22 KB,
+  target + its abstract base + 2 interfaces, no truncation) contains the per-account lockup-setting code in the
+  base's issue path and the lockup check on the move path; an operator-written promise citing either range passes
+  the citation gate.
+- Zone B (the cross-chain + core router pair), cross-chain router target: the listing (≈ 44 KB, target + its
+  math base + the repo README window, no truncation) contains the cross-chain repay entry point, the cross-chain
+  liquidation entry point and both liquidation-outcome handlers; operator-written promises citing those ranges
+  pass the citation gate.
+
+**Status: IN-FLIGHT — recall UNMEASURED.** This iteration ships the listing, the extraction, both gates, the
+wiring and the offline guards only (`../../demo-deep-hunt-promises.sh`, wired into `tools/colony-lint.sh`). The
+pre-registered measurement (#2245 plan comment 5805207458, STOP-1 comment 5805211578) is an operator step: the
+mechanics gate on the two diagnosis zones first (a FAIL on either records recall UNMEASURED and leaves the recall
+zone unspent), then an offline pre-flight and the recall gate on the reserved zone ×2 plus one PROMISES-off
+attribution control. After it the program goes to the final exam on the never-touched set regardless of the result.
 
 ## Operationalize-before-you-hunt: measured NO-GO (#2213 M2, 2026-09-15)
 
@@ -589,6 +625,7 @@ provenance of each class — and this file is documentation the pipeline never r
 | C24 — stale state assumption between touchpoints | yieldoor, notional | M-2 / M-8, M-16 | corpus-bench yieldoor GT M-2, notional GT M-8, notional GT M-16. |
 | C25 — empty distribution / zero participation edge | notional (dev, design source), superfluid-locker (held-out, test) | M-8 / M-2 | corpus-bench notional GT M-8 (`AbstractRewardManager` emissions accrue per unit of an `effectiveSupply` floored by a virtual-shares constant, so the no-participants branch never fires) and superfluid-locker GT M-2 (`unlock` reverts while `STAKER_DISTRIBUTION_POOL.getTotalUnits() == 0` although `stakerAllocationBP == 0`, so the pool is owed nothing). Never written into the lens: C25's `seen:` line carries only the generic code shape. |
 | C26 — admitted parameter / unenforced bound | notional (dev, design source), malda (held-out, test), superfluid-locker (held-out, recorded routing MISS) | M-3, M-5, M-22 / M-5, M-10, M-12 / M-3, M-5 | corpus-bench notional GT M-3 (a single-sided Curve LP strategy cannot trade when the configured pool is an ETH pool), M-5 (minting yield tokens single sided is impossible when the `CURVE_V2` `dexId` is configured for redemptions) and M-22 (`asset = WETH` paired with a Curve pool holding native ETH loses user funds); corpus-bench malda GT M-5 (a rebalancer sends to unallowed destination chains), M-10 (unenforced fee-cap and time-to-live parameters) and M-12 (a rebalancer drains market funds via excessive bridge fees); corpus-bench superfluid-locker GT M-3 and M-5 (initial-deposit / buffer arithmetic). Never written into the lens: C26's `seen:` line carries only the generic code shape, and the malda-only token vocabulary was deliberately kept OUT of the mapper net. |
+| — (iterations 6-7 deep-hunt REACH + PROMISES; no class) | mellow (held-out, diagnosis zone A), lend-v2 (held-out, diagnosis zone B), malda (held-out, reserved recall zone) | not recorded here — the implementer reads no ground-truth file; the rows are identified by role in the #2245 thread | no `seen:` text exists: REACH and PROMISES are depth-engine mechanics, not classes. Zone A's row is a per-account lockup of newly issued shares that a transfer path bypasses; zone B's row is a repay after a cross-chain liquidation that still takes the borrower's funds; the recall zone's row is a redeem rounding direction. None of these words appears in any prompt-visible file. |
 | — (iteration 5 parameter audit; no class) | superfluid-locker (held-out, registered test), notional (dev sanity) | M-3, M-5 / M-3, M-5, M-22 | no `seen:` text exists: the audit is a pure-meta method, not a class. Its registered test is superfluid-locker GT M-3 and M-5 (program-lifecycle initial-deposit / buffer arithmetic that makes the cancel path and the start path revert, never examined in any earlier arm); the dev sanity zone carries notional GT M-3, M-5 and M-22 (the configuration-combination design rows of C26). Neither contest nor row is named anywhere prompt-visible. |
 
 Two clean entries stayed in the lens because they name no contest: C2's and C11's non-corpus observations
