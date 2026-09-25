@@ -275,7 +275,9 @@ note "6) substrate purity (#1587): the detector is builtins-only ..."
 # CODE lines only: the block's own prose legitimately discusses `exec sh` and interpreters, and a grep over
 # comments would flag the documentation of the very rule it is enforcing.
 CT_BLOCK="$WORK/callee-trust-block.txt"
-awk '/--- #2145 ATTACKER-CONTROLLED-CALLEE DIRECTIVE/{f=1} f&&/^let dir = getenv\("TARGET_DIR"\);$/{exit} f{print}' \
+# #2264: the span stops at the #2264 BREADTH PROMISES block, whose one plain `cat` (read_promise_file, the harness-written
+# accepted block) is pinned by demo-breadth-promises.sh's own purity check.
+awk '/--- #2145 ATTACKER-CONTROLLED-CALLEE DIRECTIVE/{f=1} f&&(/^let dir = getenv\("TARGET_DIR"\);$/||/^\/\/ --- #2264 BREADTH PROMISES/){exit} f{print}' \
   "$HUNTER" | grep -v '^[[:space:]]*//' > "$CT_BLOCK"
 if [ ! -s "$CT_BLOCK" ]; then
   bad "could not slice the #2145 block out of hunter.ag (header comment renamed?)"

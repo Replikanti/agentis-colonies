@@ -294,6 +294,13 @@
 #                       breadth + coverage: coverage outranks depth, and breadth is never traded for either. Unset (the
 #                       default) => the argv, the env and the coverage record are byte-identical, and the merged file
 #                       gains a `function_coverage[]` array only when some zone emitted one.
+#   BREADTH_PROMISES=1 (env)  #2264 BREADTH PROMISES — run-discovery.sh's own opt-in (every zone inherits the export;
+#                       the STAGE 3 argv is unchanged). run-discovery.sh extracts each manifest line's cited promises
+#                       ONCE and gates every breadth cell's PTRACE| answers. Nothing is CHARGED here (#2264 STOP-1
+#                       decision 4): the extraction call and the promise re-asks are not hunter cells, so the admission
+#                       rule and the recorded cells_charged are unchanged; the per-zone `totals.promise_extractions`
+#                       makes the extra calls visible. The merged file gains a zone-prefixed `breadth_promises[]` array
+#                       only when some zone emitted one — absent (never `[]`) with the knob unset.
 #   --drop-dir <dir>    deliver-submission.sh drop-dir (default: <out>/drop).
 #   -h, --help          This help.
 #
@@ -1169,6 +1176,28 @@ if os.path.isfile(fcov_trimmed):
 function_coverage = [r for z in sorted(fcov_by_zone) for r in fcov_by_zone[z]]
 if function_coverage:
     out["function_coverage"] = function_coverage
+# #2264: the per-line breadth-promise records of the CURRENT zone dirs (never an `.attempt-<n>` archive, for the
+# #2256 reason), in zone order, each prefixed with its zone id. ABSENT, never `[]`, when no zone emitted one — which
+# is every run with BREADTH_PROMISES unset.
+bp_by_zone = {}
+for name in sorted(os.listdir(disc_dir)):
+    if ".attempt-" in name:
+        continue
+    p = os.path.join(disc_dir, name, "discovery-results.json")
+    if not os.path.isfile(p):
+        continue
+    try:
+        d = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        continue
+    for r in (d.get("breadth_promises") or []):
+        if isinstance(r, dict):
+            rr = {"zone": name}
+            rr.update(r)
+            bp_by_zone.setdefault(name, []).append(rr)
+breadth_promises = [r for z in sorted(bp_by_zone) for r in bp_by_zone[z]]
+if breadth_promises:
+    out["breadth_promises"] = breadth_promises
 json.dump(out, open(merged_path, "w", encoding="utf-8"), indent=2)
 open(merged_path, "a", encoding="utf-8").write("\n")
 print("run-zone-hunt.sh: [M3] merged %d cell(s), %d candidate(s)%s" % (

@@ -25,6 +25,9 @@
 # and PASS on the first attempt — matched anchored to a whole line so prose merely containing the word
 # "safe"/"skip" cannot false-accept.
 #
+# #2264: a fifth stage, `promise-lister`, validates run-discovery.sh's once-per-line breadth promise extraction
+# (auditor/agents/promise-lister.ag) on the same shared predicate discipline; the four stages above are unchanged.
+#
 # #2118: df_unwrap_zone_line() below joins a soft-wrapped PTY continuation line back onto its `ZONE|`
 # line BEFORE any `|`-split happens, so a long one-line zone-mapper reply that flat-cyborg hanging-indents
 # onto a second physical line no longer loses its tail (and the merge step's `len(parts) < 5` no longer
@@ -98,6 +101,12 @@ df_sentinel_present() {
     refuter)
       # run-refute.sh scrapes a `VERDICT|` line.
       grep -q 'VERDICT|' "$dsp_log"
+      ;;
+    promise-lister)
+      # #2264: run-discovery.sh's breadth promise extraction (auditor/agents/promise-lister.ag) feeds its log to
+      # evm-harness/promise-gate.py, which reads `PROMISE|` lines (whitespace-tolerant) — so the reply is valid
+      # iff it carries at least one. `PROMISE-LISTER|` (the agent's own diagnostic) never matches `PROMISE\|`.
+      grep -Eq '^[[:space:]]*PROMISE\|' "$dsp_log"
       ;;
     *)
       return 1

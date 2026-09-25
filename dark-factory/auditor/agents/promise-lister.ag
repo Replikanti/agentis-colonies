@@ -1,0 +1,68 @@
+cb 300000;
+// #2264 — BREADTH PROMISES: the one-prompt PROMISE LISTER for run-discovery.sh's breadth pass.
+//
+// run-discovery.sh (BREADTH_PROMISES=1 only, default OFF) calls this agent ONCE per scope-manifest line, before
+// that line's breadth cells run — never per cell, so `--jobs N` sees the same promises as `--jobs 1`. It reads the
+// line-numbered listing `lib/inheritance.py promise-sources --files` wrote (PROMISE_SOURCES, an absolute path) and
+// asks the model for the guarantees the code makes to an individual account or position, as
+// `PROMISE|#<k>|<subject>|<statement>|<path>:<line>[-<line>]` lines. The shell then keeps only the cited ones
+// (evm-harness/promise-gate.py gate, plus the #2264 `--names-in` rule) and hands the accepted block to every
+// breadth cell of the line as checks it must settle (`PTRACE|`, hunter.ag).
+//
+// The extraction instruction is a BYTE-IDENTICAL copy of invariant-prover.ag's promise_extract_instruction() —
+// the #2245 iteration-7 text, which carries no kind vocabulary (STOP-1 decision 4). demo-breadth-promises.sh
+// diffs the two function bodies, so the copy cannot drift: edit both or neither.
+//
+// Env:
+//   PROMISE_SOURCES  absolute path to the listing (rides run-discovery.sh's exec.env_passthrough; unregistered,
+//                    getenv() would read "" and the agent would always answer `empty`).
+// Stdout:
+//   `PROMISE-LISTER|empty` — the listing is empty or unreadable: NO prompt is issued (nothing to read);
+//   `PROMISE-LISTER|on`    — followed by the model's reply verbatim (the `PROMISE|` lines the shell validates on,
+//                            lib/run-agent-validated.sh's `promise-lister` stage).
+
+// The extraction instruction. Generic template text only — no protocol, contract, function, domain or kind
+// nouns; the listing it reads (passed as prompt()'s source argument) is real source data.
+// BYTE-IDENTICAL to invariant-prover.ag's promise_extract_instruction(): edit both or neither.
+fn promise_extract_instruction() -> string {
+    return "You are reading a smart-contract system to list what it PROMISES an individual user.\n"
+         + "The source listing below is split into `=== <path> ===` sections; every line starts with its REAL line "
+         + "number in that file.\n"
+         + "List the guarantees an INDIVIDUAL account or position can rely on — one account or one position, not "
+         + "only global totals — that the code STATES (NatSpec, comments, docs) or ENFORCES (a require/revert, a "
+         + "modifier, or per-account state the code checks). Write each one as ONE sentence that a SEQUENCE of "
+         + "calls by one or more accounts could violate. Most valuable first.\n"
+         + "Output ONLY lines of this exact form, at most 8, no prose, no markdown:\n"
+         + "PROMISE|#<k>|<the entry point or state variable the promise is about>|<the one-sentence promise>|"
+         + "<path>:<line>[-<line>]\n"
+         + "Rules:\n"
+         + "  - <k> is 1, 2, 3, ... as listed.\n"
+         + "  - The last field cites AT MOST 40 consecutive lines of the listing (its section path and its real "
+         + "line numbers) that state or enforce the promise AND name the third field. A promise you cannot cite "
+         + "this way is discarded.\n"
+         + "  - Never cite deployment scripts, tests, mocks or vendored library code.\n"
+         + "  - Do not use the `|` character inside a field.\n";
+}
+
+// The listing reader: a plain `cat` of the absolute path the shell passes, "" when unset or unreadable.
+fn read_listing(path: string) -> string {
+    if len(path) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "cat " + shell_escape(path) + " 2>/dev/null || true";
+}
+
+// ONE prompt per invocation. The shell runs this agent once per manifest line and caps its own retries at 2 (a
+// line without promises simply hunts without them), so there is no memo staleness gate to add here.
+fn list_promises(sources: string) -> string {
+    // colony-lint: prompt-gate-ok
+    return prompt(promise_extract_instruction(), sources) -> string;
+}
+
+let sources = read_listing(getenv("PROMISE_SOURCES"));
+if len(sources) == 0 {
+    print("PROMISE-LISTER|empty");
+} else {
+    print("PROMISE-LISTER|on");
+    print(list_promises(sources));
+}
+memo_write("promise-lister:last_check", "done");

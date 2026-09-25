@@ -57,6 +57,28 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   with the same matcher into `cued_recall` / `cued_rate` / `decoy_fp_rate`, and a contest is `MEMORIZED` when
   `rare_cued_rate > --memorized-rare-rate` (default 0.25). `--self-test` (colony-lint) is fully offline:
   synthetic fixtures, `FRESH_SET_OFFLINE=1` network trip-wire, stub probe backend.
+- **Breadth PROMISES — promise-derived checks for the breadth cells, `PTRACE|` output gate, `BREADTH_PROMISES=1`,
+  default OFF (#2264).** #2245 iteration 7's cited user-facing promises only reached the deep hunt, while the breadth
+  pass is where the verified rare-row hits came from. (1) **Zone pre-pass** (`run-discovery.sh`): once per manifest
+  line — serially, before the line's first cell on both the `--jobs 1` and `--jobs N` paths — `lib/inheritance.py
+  promise-sources --files` renders the line's listing (token files whole, ancestor contracts, interfaces, at most two
+  doc windows, 160 KB cap, multi-root aware; `--target` output byte-identical), the new one-prompt
+  `auditor/agents/promise-lister.ag` extracts `PROMISE|` lines with an instruction that is a byte-copy of
+  `invariant-prover.ag`'s (no kind vocabulary), and `evm-harness/promise-gate.py gate --cap 8 --names-in` keeps the
+  cited ones — the new `subject-off-payload` rule drops a promise whose subject the line's own files never name,
+  before the cap (flagless output byte-identical). (2) **Hunter** (`hunter.ag`): every BREADTH cell of the line gets
+  the accepted block plus the `PTRACE|#k|held|<path:line>|<check>` / `PTRACE|#k|broken|<file:function>|<sequence>`
+  contract (honesty-gated `BREADTH-PROMISES|` sentinel, spliced `+ paudit + fcov + bprom + extres`); depth and
+  coverage cells get none. (3) **Gate** (`run-discovery.sh`): pairing by id (first well-formed answer, orphans
+  counted), every `held` citation re-opened (in-repo, not deploy/test/mocks, <= 40 lines, a check that names the
+  subject, prose grounded in the cited lines — else DEMOTED), one named re-ask (`DF_PROMISE_MAX_REASKS`, default 1,
+  run between the PARAM and rubric loops), and — inside a `SEVERITY_RUBRIC=1` cell, also next to other candidates — an
+  open `broken` promise promoted to ONE tier-1 Medium candidate per resolved location (never over a rubric/param
+  promotion or a model candidate). Never fails a cell; no new status vocabulary. Readouts: `<log>.promise-trace.tsv`,
+  seven per-cell keys, `run/promises_<slug>.tsv`, top-level `breadth_promises[]`, `totals.promise_extractions`, a
+  report footer line and a banner suffix; `run-zone-hunt.sh` merges a zone-prefixed `breadth_promises[]` (additions
+  only) and charges nothing extra at admission. Unset => prompt, report, results JSON, banner and run-zone-hunt argv
+  byte-identical. `demo-breadth-promises.sh` (colony-lint) proves it; recall is UNMEASURED (fresh-set measurement).
 
 - **Scope-aware refute — declared trust/token assumptions + the `out-of-scope-premise` ground, `--scope-docs
   <auto|file>`, nested under `SEVERITY_RUBRIC=1`, default OFF (#2257).** Verified findings whose exploit rests on

@@ -587,6 +587,22 @@ bug was not seen, nor one in a function outside the zone's files.
 coverage cell, the budget half and the offline guards only (`../../demo-function-coverage.sh`, wired into
 `tools/colony-lint.sh`). Any recall claim belongs to a new fresh set, measured by the operator.
 
+### Breadth PROMISES (#2264 — breadth-side promise violations)
+
+#2245 iteration 7 turned the target's cited user-facing promises into fuzzer invariants, but only the deep hunt
+consumed them; the breadth cells — where the verified rare-row hits came from — never saw one. `BREADTH_PROMISES=1`
+(default OFF) targets breadth-side promise violations: a guarantee the code states or enforces for one account or
+position that a sequence of calls through the zone's own functions can break. Each zone line's promises are extracted
+ONCE (the iteration-7 instruction, byte-identical, no kind vocabulary), kept only when cited and named by the line's own
+files, and every breadth cell must settle each one with a `PTRACE|#k|held|<path:line>|..` or `PTRACE|#k|broken|..`
+line; a `held` citation is re-opened and a rubric-ON open `broken` becomes one Medium lead. It adds no class, no lens
+text and no ground-truth knowledge; it cannot help a miss whose invariant is not a stated or enforced per-account
+promise, nor one whose promise the extraction does not list.
+
+**Status: IN-FLIGHT — recall UNMEASURED.** This change ships the extraction pre-pass, the PTRACE contract, the gate,
+the promotion and the offline guards only (`../../demo-breadth-promises.sh`, wired into `tools/colony-lint.sh`). Any
+recall claim belongs to a new fresh set, measured by the operator.
+
 ## Operationalize-before-you-hunt: measured NO-GO (#2213 M2, 2026-09-15)
 
 The #2211 `OPERATIONALIZE_LENS` directive — a cross-class METHOD (derive code-grounded checks, write them

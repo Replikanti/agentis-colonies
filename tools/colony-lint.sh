@@ -2935,6 +2935,27 @@ if [ -x "$REPO_ROOT/dark-factory/demo-function-coverage.sh" ]; then
     fi
 fi
 
+# --- dark-factory breadth PROMISES (#2264) ---
+# Opt-in (BREADTH_PROMISES=1, default OFF, independent of every other knob): run-discovery.sh extracts each scope line's
+# cited user-facing promises ONCE (lib/inheritance.py promise-sources --files -> auditor/agents/promise-lister.ag, whose
+# instruction is a byte-copy of invariant-prover.ag's -> evm-harness/promise-gate.py gate --cap 8 --names-in) and hands
+# the accepted block to every breadth cell of that line; hunter.ag answers each promise with `PTRACE|#k|held|<path:line>|..`
+# or `PTRACE|#k|broken|<file:fn>|..`, and the shell re-opens every held citation, re-asks once naming the open items and —
+# inside a rubric-ON cell — promotes an open broken promise to one Medium candidate per location. demo-breadth-promises.sh
+# source-guards the agent half (kind-vocabulary pin with a negative control), checks the listing + the gate's
+# subject-off-payload rule on fixtures (--target and flagless gate output byte-identical vs origin/main), drives the SLICED
+# gate and promotion, runs run-discovery.sh + run-zone-hunt.sh end to end through offline stubs (knob-OFF byte-identity),
+# mutates copies ten ways and — when agentis is present — probes the helpers for 0 bytes and runs live mock cells.
+if [ -x "$REPO_ROOT/dark-factory/demo-breadth-promises.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-breadth-promises.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: breadth PROMISES (PTRACE| held/broken per zone promise, citation gate, one re-ask, rubric-gated promotion, default OFF) (#2264)"
+    else
+        fail "dark-factory: breadth PROMISES regressed (#2264)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory --grant-pii guard on live/exec .ag invocations (#1690) ---
 # The PII heuristic that blocked hunter.ag (#1675/#1676) and then zone-mapper.ag (#1690) can trip on
 # ANY invocation that transmits target source / scope / findings / PoCs / persisted patterns (all benign
