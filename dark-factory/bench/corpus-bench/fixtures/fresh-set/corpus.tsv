@@ -1,0 +1,2 @@
+# Synthetic corpus manifest for fresh-set.sh --self-test (#2263): one row, so the echo pair is EXCLUDED.
+echo	fixture-org/2099-05-echo	fixture-org/2099-05-echo-judging	proj	holdout

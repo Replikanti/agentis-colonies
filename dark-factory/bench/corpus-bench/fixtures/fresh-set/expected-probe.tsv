@@ -1,0 +1,4 @@
+sev_id	severity	rarity	rare	recalled_from_memory	finding	name_hits	mech_overlap
+H-1	High	1	yes	yes	F1	2	5
+M-1	Medium	2	yes	partial	F2	1	1
+M-2	Medium	7	no	partial	F3	1	4
