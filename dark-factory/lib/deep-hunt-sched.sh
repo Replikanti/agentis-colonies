@@ -24,10 +24,14 @@
 #      --deep-hunt-max-targets > 1 rows share `<zone>-<class>`, and a later row would overwrite an earlier one's
 #      run dir before it was collected). Per batch the cells are dispatched FIFO in queue order under the job window,
 #      the probe-first rule and the zone budget; each worker runs the real engine under lib/cell-watchdog.sh.
-#   3. COLLECT. The loop runs again over the batch's rc-0 cells only, in QUEUE order, with the shim exiting 0 at once
-#      and --deep-hunt-resume forced off (the cells it just settled would otherwise be skipped as terminal). So the
-#      gate merge, reach-coverage.tsv, the promise TSVs and the lens-surface matrix are written in the sequential
-#      order whatever order the cells finished in: parallel output equals sequential output by construction.
+#   3. COLLECT. As soon as the cell at the collect cursor settles, the loop runs again over the settled QUEUE-ORDER
+#      PREFIX's rc-0 cells, with the shim exiting 0 at once and --deep-hunt-resume forced off (the cells just settled
+#      would otherwise be skipped as terminal); dispatch then continues (workers keep running meanwhile). So the gate
+#      merge, reach-coverage.tsv, the promise TSVs and the lens-surface matrix are written in the sequential order
+#      whatever order the cells finished in (parallel output equals sequential output by construction), each FINDING
+#      is merged as early as that order allows (with 1 job: right after its cell, like the legacy loop), and a hard
+#      stop strands nothing that settled before it: a cell that finished but is not yet collected keeps
+#      <DZOUT>/.dh-uncollected, and --deep-hunt-resume merges it COLLECT-ONLY instead of skipping it as done.
 #
 # DEFINITIONS (normative — docs/invariant-hunt.md "Deep-hunt time budget (#2258)"):
 #   TIMEOUT   the wall bound fired (watchdog exit 124) and the cell's AGGREGATE invariant_*.log (never a _c<N>.log)
@@ -61,7 +65,16 @@ dh_sched_init() {
   if [ "$DH_CT" -gt 0 ] || [ "$DH_ZB" -gt 0 ] || [ "$DH_SKIP" = 1 ] || [ "$DH_J" -gt 1 ]; then
     DH_ACTIVE=1
   else
-    return 0
+    # A --deep-hunt-resume over a STOPPED scheduler run: a cell that finished but was never merged carries
+    # <DZOUT>/.dh-uncollected. Its log already holds a terminal verdict, so the legacy resume check would skip it and
+    # strand its FINDING. Turn the scheduler on (1 job, no caps — otherwise inert) so it is merged without re-running.
+    _dh_auto=0
+    if [ "${DEEP_HUNT_RESUME:-0}" = 1 ]; then
+      for _dh_m in "$DEEP"/*/.dh-uncollected; do [ -e "$_dh_m" ] && { _dh_auto=1; break; }; done
+    fi
+    [ "$_dh_auto" = 1 ] || return 0
+    DH_ACTIVE=1
+    echo "run-zone-hunt.sh: [deep-hunt] --deep-hunt-resume over a stopped scheduler run: finished-but-unmerged cell(s) found -> scheduler ON (1 job, no caps) to merge them without re-running (#2258)" >&2
   fi
   # `wait -n` (the parallel window) needs bash >= 4.3 — the run-discovery.sh precedent: warn and run serially.
   if [ "$DH_J" -gt 1 ] && { [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -lt 3 ]; }; }; then
@@ -94,7 +107,9 @@ dh_sched_init() {
 }
 
 # dh_pass_begin — the `while` condition wrapped around the STAGE 4.5 row loop. Legacy: true once. Scheduler: the
-# enqueue pass, then (dispatching each batch first) one collect pass per batch.
+# enqueue pass, then repeated dispatch steps, each followed by a collect pass over the cells it settled — the settled
+# QUEUE-ORDER PREFIX, so a FINDING is merged as soon as it and every cell queued before it are done (with 1 job:
+# right after it finishes, exactly like the legacy loop), and a hard stop never strands an earlier FINDING.
 dh_pass_begin() {
   if [ "$DH_ACTIVE" != 1 ]; then
     if [ -z "$DH_PHASE" ]; then DH_PHASE=run; return 0; fi
@@ -110,16 +125,17 @@ dh_pass_begin() {
       exec 3>&2 2>>"$DH_STATE/enqueue.log"
       return 0 ;;
     between)
-      if [ "$DH_BATCH_IDX" -ge "$DH_NBATCH" ]; then
+      if [ "$DH_CURSOR" -gt "$DH_N" ]; then
+        trap - TERM INT
         DEEP_CELL_STALE_S="$DH_SAVED_STALE"
         INVHUNT="$DH_ENGINE"
         DH_MODE=""; export DH_MODE
         DH_PHASE=finished
         return 1
       fi
-      dh_dispatch_batch "$DH_BATCH_IDX"
+      dh_dispatch_step
       DH_SAVED_TARGETS="$DEEP_TARGETS"; DH_SAVED_RESUME="$DEEP_HUNT_RESUME"
-      DEEP_TARGETS="$DH_STATE/batch-$DH_BATCH_IDX.tsv"
+      DEEP_TARGETS="$DH_STATE/collect-$DH_STEP.tsv"
       DEEP_HUNT_RESUME=0
       DH_MODE=collect; export DH_MODE
       DH_COLLECT_I=0
@@ -138,30 +154,43 @@ dh_pass_end() {
       grep -v -F -e '[deep-hunt] run-invariant-hunt.sh failed' -e '[deep-hunt] stateful-invariant lens on zone' \
         "$DH_STATE/enqueue.log" >&2 2>/dev/null || true
       dh_build_queue
-      DH_BATCH_IDX=0
+      DH_CURSOR=1; DH_STEP=0; DH_PRETRUSTED=""
+      DH_RUN_PIDS=(); DH_RUN_SEQS=()
+      # Workers run in the background across the collect passes too, so the stop handler stays armed until the
+      # last cell is collected.
+      trap dh_on_term TERM INT
       DH_PHASE=between ;;
     collect)
       DEEP_TARGETS="$DH_SAVED_TARGETS"; DEEP_HUNT_RESUME="$DH_SAVED_RESUME"
       if [ "$DH_COLLECT_I" -ne "$DH_BATCH_NCOLLECT" ]; then
-        echo "run-zone-hunt.sh: [deep-hunt] scheduler: batch $DH_BATCH_IDX collected $DH_COLLECT_I row(s), expected $DH_BATCH_NCOLLECT (#2258)" >&2
+        echo "run-zone-hunt.sh: [deep-hunt] scheduler: collect step $DH_STEP collected $DH_COLLECT_I row(s), expected $DH_BATCH_NCOLLECT (#2258)" >&2
         exit 3
       fi
-      DH_BATCH_IDX=$((DH_BATCH_IDX + 1))
       DH_PHASE=between ;;
   esac
   return 0
 }
 
-# dh_note_row ZID RELFILE DCLASS AUXFILES REACH_NAME DZOUT — the loop's hook, right before the engine call. Enqueue:
-# records the row (one field per line: a TSV read would collapse the empty aux / reach fields) and hands the shim its
-# sequence number. Collect: checks the row against the queue. Legacy: no-op.
+# dh_uncollected DZOUT — the enqueue-pass guard in front of the loop's --deep-hunt-resume check: true for a cell a
+# stopped scheduler run finished but never merged (<DZOUT>/.dh-uncollected, written by the worker, removed when the
+# cell is collected). The loop then queues it COLLECT-ONLY instead of letting the resume check skip it as done.
+dh_uncollected() {
+  [ "$DH_ACTIVE" = 1 ] && [ "$DH_PHASE" = enqueue ] && [ "${DEEP_HUNT_RESUME:-0}" = 1 ] && [ -f "$1/.dh-uncollected" ]
+}
+
+# dh_note_row ZID RELFILE DCLASS AUXFILES REACH_NAME DZOUT [collect-only] — the loop's hook, right before the engine
+# call. Enqueue: records the row (one field per line: a TSV read would collapse the empty aux / reach fields) and
+# hands the shim its sequence number; a re-run cell drops any stale .dh-uncollected marker. Collect: checks the row
+# against the queue and clears the cell's marker BEFORE its post-processing (a stop inside the gate then behaves like
+# the legacy loop's: never a double merge). Legacy: no-op.
 dh_note_row() {
   [ "$DH_ACTIVE" = 1 ] || return 0
   case "$DH_PHASE" in
     enqueue)
       DH_SEQ=$((DH_SEQ + 1))
-      printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$1" "$2" "$3" "$4" "$5" "$6" > "$DH_STATE/meta/$DH_SEQ" \
+      printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "${7:-}" > "$DH_STATE/meta/$DH_SEQ" \
         || { echo "run-zone-hunt.sh: [deep-hunt] scheduler: cannot write $DH_STATE/meta/$DH_SEQ (#2258)" >&3; exit 3; }
+      [ "${7:-}" = collect-only ] || rm -f "$6/.dh-uncollected"
       DH_CUR_SEQ="$DH_SEQ"; export DH_CUR_SEQ ;;
     collect)
       _dh_s="${DH_BATCH_COLLECT[$DH_COLLECT_I]:-}"
@@ -170,6 +199,7 @@ dh_note_row() {
         echo "run-zone-hunt.sh: [deep-hunt] scheduler: collect row $DH_COLLECT_I ('$1' $3 -> $6) does not match the queue (#2258)" >&2
         exit 3
       fi
+      rm -f "$6/.dh-uncollected"
       DH_CUR_SEQ="$_dh_s"; export DH_CUR_SEQ ;;
   esac
   return 0
@@ -209,23 +239,40 @@ dh_target_broken() {
   ' "$1/run/forge-diag/compile.tsv" 2>/dev/null || printf '0\n'
 }
 
+# dh_terminal DZOUT — the loop's own --deep-hunt-resume predicate (a terminal verdict in an aggregate log), for the
+# rows whose resume decision cannot be taken at enqueue time: see dh_try_launch.
+dh_terminal() {
+  [ -d "$1/run" ] || return 1
+  for _dh_tl in "$1"/run/invariant_*.log; do
+    [ -e "$_dh_tl" ] || continue
+    case "$_dh_tl" in *_c[0-9]*.log) continue ;; esac
+    grep -Eq 'INVARIANT\|[^|]*\|(CLEAN|FINDING)([[:space:]]|$)' "$_dh_tl" 2>/dev/null && return 0
+    if [ "${DEEP_HUNT_REACH:-}" = 1 ] && grep -Eq 'INVARIANT\|[^|]*\|LOW_COVERAGE([[:space:]]|$)' "$_dh_tl" 2>/dev/null; then return 0; fi
+    if [ "${DEEP_HUNT_PROMISES:-}" = 1 ] && grep -Eq 'INVARIANT\|[^|]*\|LOW_PROMISE_COVERAGE([[:space:]]|$)' "$_dh_tl" 2>/dev/null; then return 0; fi
+  done
+  return 1
+}
+
 # dh_build_queue — after the enqueue pass: load every recorded row, pair it with its argv, cut the batches and find
 # each target's probe. Fails loudly on a row without an argv (the shim was not reached) or an unreadable record.
 dh_build_queue() {
   DH_N="$DH_SEQ"
-  DH_Z=(); DH_REL=(); DH_C=(); DH_AUX=(); DH_REACH=(); DH_DZ=(); DH_T=(); DH_KEY=()
-  DH_BATCH=(); DH_PROBE=(); DH_STATUS=(); DH_REASON=(); DH_COLLECT=(); DH_BROKEN=(); DH_BLOC=()
+  DH_Z=(); DH_REL=(); DH_C=(); DH_AUX=(); DH_REACH=(); DH_DZ=(); DH_T=(); DH_KEY=(); DH_ONLY=(); DH_SHARED=()
+  DH_BATCH=(); DH_PROBE=(); DH_STATUS=(); DH_REASON=(); DH_COLLECT=(); DH_BROKEN=(); DH_BLOC=(); DH_LAUNCHED=(); DH_DONE=()
   DH_NBATCH=0
   _dh_batch_dz=""
   _dh_s=1
   while [ "$_dh_s" -le "$DH_N" ]; do
-    [ -f "$DH_STATE/meta/$_dh_s" ] && [ -f "$DH_STATE/argv/$_dh_s" ] || {
-      echo "run-zone-hunt.sh: [deep-hunt] scheduler: queue entry $_dh_s is incomplete (meta/argv missing under $DH_STATE) (#2258)" >&2
+    [ -f "$DH_STATE/meta/$_dh_s" ] || {
+      echo "run-zone-hunt.sh: [deep-hunt] scheduler: queue entry $_dh_s is incomplete (meta missing under $DH_STATE) (#2258)" >&2
       exit 3; }
     { IFS= read -r "DH_Z[$_dh_s]"; IFS= read -r "DH_REL[$_dh_s]"; IFS= read -r "DH_C[$_dh_s]"; IFS= read -r "DH_AUX[$_dh_s]"
-      IFS= read -r "DH_REACH[$_dh_s]"; IFS= read -r "DH_DZ[$_dh_s]"; } < "$DH_STATE/meta/$_dh_s"
+      IFS= read -r "DH_REACH[$_dh_s]"; IFS= read -r "DH_DZ[$_dh_s]"; IFS= read -r "DH_ONLY[$_dh_s]"; } < "$DH_STATE/meta/$_dh_s"
     [ -n "${DH_Z[$_dh_s]}" ] && [ -n "${DH_DZ[$_dh_s]}" ] || {
       echo "run-zone-hunt.sh: [deep-hunt] scheduler: queue entry $_dh_s is unreadable (#2258)" >&2; exit 3; }
+    [ "${DH_ONLY[$_dh_s]}" = collect-only ] || [ -f "$DH_STATE/argv/$_dh_s" ] || {
+      echo "run-zone-hunt.sh: [deep-hunt] scheduler: queue entry $_dh_s has no recorded argv under $DH_STATE (#2258)" >&2
+      exit 3; }
     if [ -n "${DH_REACH[$_dh_s]}" ]; then DH_T[_dh_s]="${DH_REACH[$_dh_s]}"; else DH_T[_dh_s]="$(basename "${DH_REL[$_dh_s]}" .sol)"; fi
     DH_KEY[_dh_s]="${DH_Z[$_dh_s]}|${DH_REL[$_dh_s]}:${DH_REACH[$_dh_s]}"
     # Batches: a new one starts when this row's run dir is already used in the current batch.
@@ -239,14 +286,16 @@ ${DH_DZ[$_dh_s]}
     _dh_batch_dz="$_dh_batch_dz${DH_DZ[$_dh_s]}
 "
     DH_BATCH[_dh_s]="$DH_NBATCH"
-    # Probe: the target's first queued lens (same zone + rel[:Name]).
-    DH_PROBE[_dh_s]="$_dh_s"
+    # Probe: the target's first queued lens (same zone + rel[:Name]). Shared: an earlier row uses the same run dir.
+    DH_PROBE[_dh_s]="$_dh_s"; DH_SHARED[_dh_s]=0
     _dh_p=1
     while [ "$_dh_p" -lt "$_dh_s" ]; do
-      if [ "${DH_KEY[$_dh_p]}" = "${DH_KEY[$_dh_s]}" ]; then DH_PROBE[_dh_s]="$_dh_p"; break; fi
+      if [ "${DH_KEY[$_dh_p]}" = "${DH_KEY[$_dh_s]}" ] && [ "${DH_PROBE[$_dh_s]}" = "$_dh_s" ]; then DH_PROBE[_dh_s]="$_dh_p"; fi
+      [ "${DH_DZ[$_dh_p]}" = "${DH_DZ[$_dh_s]}" ] && DH_SHARED[_dh_s]=1
       _dh_p=$((_dh_p + 1))
     done
     DH_STATUS[_dh_s]=""; DH_REASON[_dh_s]=""; DH_COLLECT[_dh_s]=0; DH_BROKEN[_dh_s]=0; DH_BLOC[_dh_s]=""
+    DH_LAUNCHED[_dh_s]=0; DH_DONE[_dh_s]=0
     _dh_s=$((_dh_s + 1))
   done
   [ "$DH_N" -eq 0 ] || DH_NBATCH=$((DH_NBATCH + 1))
@@ -264,9 +313,10 @@ ${DH_DZ[$_dh_s]}
   echo "run-zone-hunt.sh: [deep-hunt] scheduler: $DH_N cell(s) queued in $DH_NBATCH batch(es) (#2258)" >&2
 }
 
-# dh_queue_order — the order the collect pass and the ledger walk the cells in: QUEUE order, never completion order
-# (the whole point: the artifacts are written in the sequential order). demo-deep-hunt-budget.sh mutates this line.
-dh_queue_order() { seq 1 "$DH_N"; }
+# dh_queue_order — the order a collect step walks the not-yet-collected cells in: QUEUE order from the cursor, never
+# completion order (the whole point: the artifacts are written in the sequential order). demo-deep-hunt-budget.sh
+# mutates this line.
+dh_queue_order() { seq "$DH_CURSOR" "$DH_N"; }
 
 # dh_now — the scheduler clock: seconds spent DISPATCHING (the collect passes, incl. the refute gate, do not count
 # against a zone budget).
@@ -280,7 +330,7 @@ dh_settle() {
   echo "run-zone-hunt.sh: [deep-hunt] zone '${DH_Z[$1]}' (${DH_C[$1]}) target '${DH_T[$1]}' -> $2 (${3:--}) (#2258)" >&2
 }
 
-# dh_zone_start ZONE NOW — echo the zone's budget start (set to NOW on its first launch).
+# dh_zone_start ZONE — echo the zone's budget start (empty before its first launch).
 dh_zone_start() {
   _dh_i=0
   while [ "$_dh_i" -lt "${#DH_ZONE_NAMES[@]}" ]; do
@@ -305,8 +355,10 @@ dh_reap() {
   dh_settle "$1" "${_dh_st:-ENGINE_FAILED}" "$_dh_rs"
 }
 
-# dh_on_term — TERM/INT during dispatch: forward TERM to every live worker (each forwards it to its watchdog, which
-# kills its engine group), wait for them, exit 143. The run's own EXIT trap (#1981 __EXIT__ marker) still fires.
+# dh_on_term — TERM/INT while the scheduler runs (dispatch AND the collect passes, where workers keep running in the
+# background): forward TERM to every live worker (each forwards it to its watchdog, which kills its engine group),
+# wait for them, exit 143. The run's own EXIT trap (#1981 __EXIT__ marker) still fires. A finished-but-uncollected
+# cell keeps its .dh-uncollected marker, so the next --deep-hunt-resume merges it.
 dh_on_term() {
   echo "run-zone-hunt.sh: [deep-hunt] scheduler: stop signal — terminating ${#DH_RUN_PIDS[@]} running cell(s) (#2258)" >&2
   for _dh_pid in ${DH_RUN_PIDS[@]+"${DH_RUN_PIDS[@]}"}; do kill -TERM "$_dh_pid" 2>/dev/null || true; done
@@ -330,54 +382,81 @@ dh_pretrust() {
   df_ensure_claude_trust "${_dh_dirs[@]}"
 }
 
-# dh_dispatch_batch K — run every cell of batch K, then write the batch's collect file + ledger rows.
-dh_dispatch_batch() {
-  _dh_k="$1"
-  _dh_pending=()
-  _dh_s=1
-  while [ "$_dh_s" -le "$DH_N" ]; do
-    [ "${DH_BATCH[$_dh_s]}" = "$_dh_k" ] && _dh_pending+=("$_dh_s")
-    _dh_s=$((_dh_s + 1))
-  done
-  [ "${#_dh_pending[@]}" -gt 0 ] || { echo "run-zone-hunt.sh: [deep-hunt] scheduler: batch $_dh_k is empty (#2258)" >&2; exit 3; }
-  dh_pretrust "${_dh_pending[@]}"
-  DH_RUN_PIDS=(); DH_RUN_SEQS=()
+# dh_try_launch SEQ — settle or launch one not-yet-launched cell of the cursor's batch, in this order:
+#   collect-only (a stopped run's finished-but-unmerged cell)        -> settled from its log, collected, never re-run
+#   shared run dir under --deep-hunt-resume                          -> the legacy loop checks such a row AFTER the
+#       previous row in that dir ran, so the check happens here (the previous row is already collected): terminal ->
+#       skipped exactly like the legacy loop (its `already hunted` line, no ledger row)
+#   probe-first (DEEP_HUNT_SKIP_BROKEN_TARGET)                       -> wait for the probe / SKIPPED_TARGET_BROKEN
+#   job window full                                                  -> stays pending
+#   zone budget                                                      -> SKIPPED_BUDGET / cap = remaining budget
+dh_try_launch() {
+  _dh_t="$1"
+  if [ "${DH_ONLY[$_dh_t]}" = collect-only ]; then
+    _dh_v="$(dh_agg_verdict "${DH_DZ[$_dh_t]}")"
+    case "$_dh_v" in FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR|LOW_COVERAGE|LOW_PROMISE_COVERAGE) ;; *) _dh_v=HARNESS_ERROR ;; esac
+    DH_COLLECT[_dh_t]=1
+    dh_settle "$_dh_t" "$_dh_v" "collect-only (finished before a stop, merged on resume)"
+    return 0
+  fi
+  if [ "${DH_SHARED[$_dh_t]}" = 1 ] && [ "${DEEP_HUNT_RESUME:-0}" = 1 ] && dh_terminal "${DH_DZ[$_dh_t]}"; then
+    echo "run-zone-hunt.sh: [deep-hunt] zone '${DH_Z[$_dh_t]}' (${DH_C[$_dh_t]}) -> already hunted (terminal verdict), skipping [--deep-hunt-resume]" >&2
+    DH_STATUS[_dh_t]=RESUME_SKIPPED
+    return 0
+  fi
+  _dh_p="${DH_PROBE[$_dh_t]}"
+  if [ "$DH_SKIP" = 1 ] && [ "$_dh_p" != "$_dh_t" ]; then
+    if [ -z "${DH_STATUS[$_dh_p]}" ]; then return 0; fi   # wait for the probe
+    if [ "${DH_BROKEN[$_dh_p]}" = 1 ]; then
+      dh_settle "$_dh_t" SKIPPED_TARGET_BROKEN "probe=${DH_C[$_dh_p]} loc=${DH_BLOC[$_dh_p]}"
+      return 0
+    fi
+  fi
+  [ "${#DH_RUN_SEQS[@]}" -lt "$DH_J" ] || return 0
+  _dh_cap="$DH_CT"; _dh_kind=cell
+  if [ "$DH_ZB" -gt 0 ]; then
+    _dh_now="$(dh_now)"
+    _dh_t0="$(dh_zone_start "${DH_Z[$_dh_t]}")"
+    if [ -z "$_dh_t0" ]; then
+      DH_ZONE_NAMES+=("${DH_Z[$_dh_t]}"); DH_ZONE_T0+=("$_dh_now"); _dh_t0="$_dh_now"
+    fi
+    _dh_rem=$(( DH_ZB - (_dh_now - _dh_t0) ))
+    if [ "$_dh_rem" -le 0 ]; then
+      dh_settle "$_dh_t" SKIPPED_BUDGET "zone-budget=${DH_ZB}s"
+      return 0
+    fi
+    if [ "$_dh_cap" -eq 0 ] || [ "$_dh_rem" -lt "$_dh_cap" ]; then _dh_cap="$_dh_rem"; _dh_kind=zone; fi
+  fi
+  "$DH_HERE/deep-hunt-cell.sh" --worker "$_dh_t" "$_dh_cap" "$_dh_kind" &
+  DH_RUN_PIDS+=("$!"); DH_RUN_SEQS+=("$_dh_t"); DH_LAUNCHED[_dh_t]=1
+  return 0
+}
+
+# dh_dispatch_step — launch/reap until the cell at the collect cursor has settled, then write the collect file +
+# ledger rows for the settled QUEUE-ORDER PREFIX from the cursor and advance it. Only the cursor's batch launches, so
+# a later batch (which re-uses a run dir) starts only once every cell of the earlier one is collected.
+dh_dispatch_step() {
   DH_DISPATCH_T0="$(date +%s)"
-  trap dh_on_term TERM INT
-  while [ "${#_dh_pending[@]}" -gt 0 ] || [ "${#DH_RUN_SEQS[@]}" -gt 0 ]; do
-    # Launch every eligible pending cell, in queue order, while the window has room.
-    _dh_left=()
-    for _dh_s in ${_dh_pending[@]+"${_dh_pending[@]}"}; do
-      if [ "${#DH_RUN_SEQS[@]}" -ge "$DH_J" ]; then _dh_left+=("$_dh_s"); continue; fi
-      _dh_p="${DH_PROBE[$_dh_s]}"
-      if [ "$DH_SKIP" = 1 ] && [ "$_dh_p" != "$_dh_s" ]; then
-        if [ -z "${DH_STATUS[$_dh_p]}" ]; then _dh_left+=("$_dh_s"); continue; fi   # wait for the probe
-        if [ "${DH_BROKEN[$_dh_p]}" = 1 ]; then
-          dh_settle "$_dh_s" SKIPPED_TARGET_BROKEN "probe=${DH_C[$_dh_p]} loc=${DH_BLOC[$_dh_p]}"
-          continue
-        fi
-      fi
-      _dh_cap="$DH_CT"; _dh_kind=cell
-      if [ "$DH_ZB" -gt 0 ]; then
-        _dh_now="$(dh_now)"
-        _dh_t0="$(dh_zone_start "${DH_Z[$_dh_s]}")"
-        if [ -z "$_dh_t0" ]; then
-          DH_ZONE_NAMES+=("${DH_Z[$_dh_s]}"); DH_ZONE_T0+=("$_dh_now"); _dh_t0="$_dh_now"
-        fi
-        _dh_rem=$(( DH_ZB - (_dh_now - _dh_t0) ))
-        if [ "$_dh_rem" -le 0 ]; then
-          dh_settle "$_dh_s" SKIPPED_BUDGET "zone-budget=${DH_ZB}s"
-          continue
-        fi
-        if [ "$_dh_cap" -eq 0 ] || [ "$_dh_rem" -lt "$_dh_cap" ]; then _dh_cap="$_dh_rem"; _dh_kind=zone; fi
-      fi
-      "$DH_HERE/deep-hunt-cell.sh" --worker "$_dh_s" "$_dh_cap" "$_dh_kind" &
-      DH_RUN_PIDS+=("$!"); DH_RUN_SEQS+=("$_dh_s")
+  while :; do
+    _dh_cb="${DH_BATCH[$DH_CURSOR]}"
+    if [ "$DH_PRETRUSTED" != "$_dh_cb" ]; then
+      _dh_bs=()
+      _dh_s="$DH_CURSOR"
+      while [ "$_dh_s" -le "$DH_N" ] && [ "${DH_BATCH[$_dh_s]}" = "$_dh_cb" ]; do
+        [ "${DH_ONLY[$_dh_s]}" = collect-only ] || _dh_bs+=("$_dh_s")
+        _dh_s=$((_dh_s + 1))
+      done
+      [ "${#_dh_bs[@]}" -eq 0 ] || dh_pretrust "${_dh_bs[@]}"
+      DH_PRETRUSTED="$_dh_cb"
+    fi
+    _dh_s="$DH_CURSOR"
+    while [ "$_dh_s" -le "$DH_N" ] && [ "${DH_BATCH[$_dh_s]}" = "$_dh_cb" ]; do
+      if [ -z "${DH_STATUS[$_dh_s]}" ] && [ "${DH_LAUNCHED[$_dh_s]}" != 1 ]; then dh_try_launch "$_dh_s"; fi
+      _dh_s=$((_dh_s + 1))
     done
-    _dh_pending=(${_dh_left[@]+"${_dh_left[@]}"})
+    [ -n "${DH_STATUS[$DH_CURSOR]}" ] && break
     if [ "${#DH_RUN_SEQS[@]}" -eq 0 ]; then
-      [ "${#_dh_pending[@]}" -eq 0 ] && break
-      echo "run-zone-hunt.sh: [deep-hunt] scheduler: ${#_dh_pending[@]} cell(s) can never launch (probe not in the batch) (#2258)" >&2
+      echo "run-zone-hunt.sh: [deep-hunt] scheduler: cell $DH_CURSOR can never settle (nothing is running) (#2258)" >&2
       exit 3
     fi
     # Wait for a worker to finish (one running: wait for it; several: `wait -n`, bash >= 4.3 is guaranteed then), then
@@ -403,25 +482,30 @@ dh_dispatch_batch() {
     done
     DH_RUN_PIDS=(${_dh_keep_p[@]+"${_dh_keep_p[@]}"}); DH_RUN_SEQS=(${_dh_keep_s[@]+"${_dh_keep_s[@]}"})
   done
-  trap - TERM INT
   DH_CLOCK_BASE=$(( DH_CLOCK_BASE + $(date +%s) - DH_DISPATCH_T0 ))
-  # The collect file (the rc-0 cells' raw rows, queue order) and the ledger rows (every cell, queue order).
-  : > "$DH_STATE/batch-$_dh_k.tsv" || { echo "run-zone-hunt.sh: [deep-hunt] scheduler: cannot write the batch file (#2258)" >&2; exit 3; }
+  # The collect file (the rc-0 cells' raw rows) and the ledger rows, for the settled prefix, in queue order.
+  DH_STEP=$((DH_STEP + 1))
+  : > "$DH_STATE/collect-$DH_STEP.tsv" || { echo "run-zone-hunt.sh: [deep-hunt] scheduler: cannot write the collect file (#2258)" >&2; exit 3; }
   DH_BATCH_COLLECT=(); DH_BATCH_NCOLLECT=0
+  _dh_n=0
   for _dh_s in $(dh_queue_order); do
-    if [ "${DH_BATCH[$_dh_s]}" = "$_dh_k" ]; then
-      printf '%s\t%s\t%s\t%s\t%s\n' "${DH_Z[$_dh_s]}" "${DH_T[$_dh_s]}" "${DH_C[$_dh_s]}" "${DH_STATUS[$_dh_s]}" \
-        "${DH_REASON[$_dh_s]:--}" >> "$DEEP/cell-status.tsv"
-      if [ "${DH_COLLECT[$_dh_s]}" = 1 ]; then
-        _dh_tgt="${DH_REL[$_dh_s]}${DH_REACH[$_dh_s]:+:${DH_REACH[$_dh_s]}}"
-        if [ -n "${DH_AUX[$_dh_s]}" ]; then
-          printf '%s\t%s\t%s\t%s\n' "${DH_Z[$_dh_s]}" "$_dh_tgt" "${DH_C[$_dh_s]}" "${DH_AUX[$_dh_s]}" >> "$DH_STATE/batch-$_dh_k.tsv"
-        else
-          printf '%s\t%s\t%s\n' "${DH_Z[$_dh_s]}" "$_dh_tgt" "${DH_C[$_dh_s]}" >> "$DH_STATE/batch-$_dh_k.tsv"
-        fi
-        DH_BATCH_COLLECT+=("$_dh_s"); DH_BATCH_NCOLLECT=$((DH_BATCH_NCOLLECT + 1))
+    [ "${DH_DONE[$_dh_s]}" = 1 ] && continue
+    [ -n "${DH_STATUS[$_dh_s]}" ] || break
+    DH_DONE[_dh_s]=1; _dh_n=$((_dh_n + 1))
+    [ "${DH_STATUS[$_dh_s]}" = RESUME_SKIPPED ] && continue
+    printf '%s\t%s\t%s\t%s\t%s\n' "${DH_Z[$_dh_s]}" "${DH_T[$_dh_s]}" "${DH_C[$_dh_s]}" "${DH_STATUS[$_dh_s]}" \
+      "${DH_REASON[$_dh_s]:--}" >> "$DEEP/cell-status.tsv"
+    if [ "${DH_COLLECT[$_dh_s]}" = 1 ]; then
+      _dh_tgt="${DH_REL[$_dh_s]}${DH_REACH[$_dh_s]:+:${DH_REACH[$_dh_s]}}"
+      if [ -n "${DH_AUX[$_dh_s]}" ]; then
+        printf '%s\t%s\t%s\t%s\n' "${DH_Z[$_dh_s]}" "$_dh_tgt" "${DH_C[$_dh_s]}" "${DH_AUX[$_dh_s]}" >> "$DH_STATE/collect-$DH_STEP.tsv"
+      else
+        printf '%s\t%s\t%s\n' "${DH_Z[$_dh_s]}" "$_dh_tgt" "${DH_C[$_dh_s]}" >> "$DH_STATE/collect-$DH_STEP.tsv"
       fi
+      DH_BATCH_COLLECT+=("$_dh_s"); DH_BATCH_NCOLLECT=$((DH_BATCH_NCOLLECT + 1))
     fi
   done
+  [ "$_dh_n" -gt 0 ] || { echo "run-zone-hunt.sh: [deep-hunt] scheduler: collect step $DH_STEP made no progress (#2258)" >&2; exit 3; }
+  while [ "$DH_CURSOR" -le "$DH_N" ] && [ "${DH_DONE[$DH_CURSOR]}" = 1 ]; do DH_CURSOR=$((DH_CURSOR + 1)); done
   return 0
 }

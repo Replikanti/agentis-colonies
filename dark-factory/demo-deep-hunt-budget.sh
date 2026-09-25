@@ -26,6 +26,9 @@
 #   8  SLOT + FORCED SERIAL: LLM_MAX_CONCURRENT=1 -> concurrency 1 (pool never exported to the engine);
 #      --pattern-store -> warning + concurrency 1; legacy --deep-hunt-max-targets 2 (shared run dir) == legacy.
 #   9  MUTATIONS on a copied tree: each rule is load-bearing.
+#  10  HARD STOP + RESUME: a settled FINDING is merged before a stop (1 job) or merged collect-only by the next resume
+#      (3 jobs); a transport-crashed probe is TRANSIENT_ERROR, never a broken target; shared run dirs under
+#      --deep-hunt-resume run the sequential loop's cells; a cap never reads a previous run's verdict.
 #
 # Usage: dark-factory/demo-deep-hunt-budget.sh
 # Exit: 0 = all assertions hold; non-zero = a regression.
@@ -111,7 +114,8 @@ done
 
 # The stub --agentis. Its prover branch reads a spec line `<Contract>|<class>|<seconds>|<mode>|<verdict>` (first
 # match, `*` wildcards) from $STUB_SPEC. Modes: normal (sleep, then the verdict), tail (the verdict, then sleep),
-# forge-<fixture> (sleep, write a harness and run the REAL staged forge-invariant.sh through the fake forge on PATH).
+# forge-<fixture> (sleep, write a harness and run the REAL staged forge-invariant.sh through the fake forge on PATH),
+# ftrans-<fixture> (the same forge attempt, then a flat-cyborg transport crash and no verdict — the #2045 shape).
 STUB="$WORK/stub.sh"
 cat > "$STUB" <<'STUBEOF'
 #!/bin/sh
@@ -152,6 +156,12 @@ case "$cmd" in
         }
         case "$mode" in
           tail) emit; "${STUB_SLEEP:-sleep}" "$dur" ;;
+          ftrans-*)
+            "${STUB_SLEEP:-sleep}" "$dur"
+            mkdir -p "$(dirname "$INV_OUT")"
+            printf 'contract InvTest {\n    function invariant_x() public {}\n}\n' > "$INV_OUT"
+            FAKE_FORGE_OUT="$FIXDIR/${mode#ftrans-}.stdout" bash "$FORGE_INVARIANT" --repo "$INV_REPO" --target "$INV_OUT" >/dev/null 2>&1
+            echo "LLM transport error: flat-cyborg exited (exit status: 75)" ;;
           forge-*)
             "${STUB_SLEEP:-sleep}" "$dur"
             mkdir -p "$(dirname "$INV_OUT")"
@@ -477,6 +487,7 @@ eq_check() {  # RZH -> 0 when a == b == c and the ledgers/concurrency hold
   cmp -s "$WORK/eqb/deep-hunt/cell-status.tsv" "$WORK/eqc/deep-hunt/cell-status.tsv" || { echo "    ledger b != c"; _q_ok=1; }
   [ -f "$WORK/eqa/deep-hunt/cell-status.tsv" ] && { echo "    legacy wrote a ledger"; _q_ok=1; }
   [ "$(findings_of "$WORK/eqa")" = 2 ] || { echo "    legacy merged $(findings_of "$WORK/eqa") finding(s), want 2"; _q_ok=1; }
+  [ -z "$(find "$WORK/eqb/deep-hunt" "$WORK/eqc/deep-hunt" -name .dh-uncollected 2>/dev/null)" ] || { echo "    an uncollected marker survived a complete run"; _q_ok=1; }
   return "$_q_ok"
 }
 if eq_check "$RZH"; then
@@ -550,6 +561,103 @@ else
 fi
 
 # ================================================================================================
+note "10) HARD STOP + RESUME, TRANSIENT PROBE, SHARED-DIR RESUME, STALE VERDICT ..."
+# run_bg OUT [KNOB=V...] — start a lens-only pass in the background (fresh copy of the base); sets BGPID.
+run_bg() {
+  _b_out="$1"; shift
+  rm -rf "$_b_out"; cp -R "$DBASE" "$_b_out"
+  ( for _b_kv in "$@"; do export "${_b_kv?}"; done
+    exec env PATH="$WORK/fbin:$PATH" "$RZH" --repo "$REPO" --out "$_b_out" --deep-hunt --deep-hunt-only \
+      --backend mock --agentis "$STUB" ) >"$_b_out.log" 2>&1 &
+  BGPID=$!
+}
+stop_bg() { kill -TERM "$BGPID" 2>/dev/null; wait "$BGPID" 2>/dev/null; sleep 1; }
+resume_run() {  # OUT STUBLOG [KNOB=V...] [-- extra flags...]
+  _r_out="$1"; _r_log="$2"; shift 2
+  : > "$_r_log"
+  ( while [ "$#" -gt 0 ] && [ "$1" != -- ]; do export "${1?}"; shift; done
+    [ "${1:-}" = -- ] && shift
+    STUB_LOG="$_r_log" PATH="$WORK/fbin:$PATH" "$RZH" --repo "$REPO" --out "$_r_out" --deep-hunt --deep-hunt-only \
+      --deep-hunt-resume --backend mock --agentis "$STUB" "$@" ) >"$_r_out.resume.log" 2>&1
+}
+# (a) 1 job, a hard stop after the first cell's FINDING settled: it is already merged + in the ledger, and a resume
+#     neither loses nor re-runs it.
+spec 'VaultA|C10|0.2|normal|FINDING' '*|*|30|normal|CLEAN'
+: > "$WORK/h1.stub"
+STUB_LOG="$WORK/h1.stub" run_bg "$WORK/h1" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S=3600
+for _i in $(seq 1 150); do [ "$(grep -c . "$WORK/h1.stub" 2>/dev/null)" -ge 2 ] && break; sleep 0.2; done
+stop_bg
+h1_after="$(findings_of "$WORK/h1")"; h1_row="$(status_of "$WORK/h1" VaultA C10)"
+spec '*|*|0.2|normal|CLEAN'
+resume_run "$WORK/h1" "$WORK/h1r.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S=3600
+if [ "$h1_after" = 1 ] && [ "$h1_row" = FINDING ] && [ "$(findings_of "$WORK/h1")" = 1 ] && ! grep -qx 'VaultA|C10' "$WORK/h1r.stub" \
+   && [ -z "$(procs_under "$STUB_SLEEP")" ]; then
+  ok "hard stop (1 job) after a FINDING settled: merged + ledgered before the stop; the resume keeps it (1 merged) and does not re-run it"
+else
+  bad "hard stop (1 job): merged after stop=$h1_after ledger=$h1_row, after resume=$(findings_of "$WORK/h1"), resume ran [$(tr '\n' ' ' < "$WORK/h1r.stub")]"
+fi
+# (b) 3 jobs, a hard stop while a FINDING that finished AFTER an earlier still-running cell waits for the queue-order
+#     prefix: it stays marked, and a knob-less --deep-hunt-resume merges it without re-running it.
+spec 'VaultA|C10|30|normal|CLEAN' 'VaultA|C2|0.2|normal|FINDING' '*|*|30|normal|CLEAN'
+run_bg "$WORK/h3" DEEP_HUNT_REACH=1 DEEP_HUNT_JOBS=3
+for _i in $(seq 1 150); do [ -f "$WORK/h3/deep-hunt/.sched/rc/2" ] && break; sleep 0.2; done
+stop_bg
+h3_after="$(findings_of "$WORK/h3")"; h3_mark=0; [ -f "$WORK/h3/deep-hunt/src_vault-C2-VaultA/.dh-uncollected" ] && h3_mark=1
+spec '*|*|0.2|normal|CLEAN'
+resume_run "$WORK/h3" "$WORK/h3r.stub" DEEP_HUNT_REACH=1
+if [ "$h3_after" = 0 ] && [ "$h3_mark" = 1 ] && [ "$(findings_of "$WORK/h3")" = 1 ] && ! grep -qx 'VaultA|C2' "$WORK/h3r.stub" \
+   && grep -qx 'VaultA|C10' "$WORK/h3r.stub" && grep -q 'scheduler ON (1 job, no caps)' "$WORK/h3.resume.log" \
+   && [ -z "$(find "$WORK/h3/deep-hunt" -name .dh-uncollected)" ] && [ -z "$(procs_under "$STUB_SLEEP")" ]; then
+  ok "hard stop (3 jobs) with a finished-but-uncollected FINDING: marked; a knob-less resume merges it (1 merged) without re-running it"
+else
+  bad "hard stop (3 jobs): merged=$h3_after marker=$h3_mark, after resume=$(findings_of "$WORK/h3"), resume ran [$(tr '\n' ' ' < "$WORK/h3r.stub")]"
+fi
+# (c) A probe whose prover crashed on a flat-cyborg TRANSPORT error after a target-scoped compile failure is a
+#     TRANSIENT_ERROR, never a broken target: the target's other lens still runs.
+spec 'VaultB|C10|0.2|ftrans-target|' '*|*|0.2|normal|CLEAN'
+: > "$WORK/tt.stub"; STUB_LOG="$WORK/tt.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_SKIP_BROKEN_TARGET=1 lens_only "$RZH" "$WORK/tt"
+if [ "$(status_of "$WORK/tt" VaultB C10)" = TRANSIENT_ERROR ] && [ "$(status_of "$WORK/tt" VaultB C2)" = CLEAN ] \
+   && grep -qx 'VaultB|C2' "$WORK/tt.stub"; then
+  ok "a transport-crashed probe is TRANSIENT_ERROR and never skips its target's other lens"
+else
+  bad "transport-crashed probe: $(status_of "$WORK/tt" VaultB C10) / other lens $(status_of "$WORK/tt" VaultB C2)"
+fi
+# (d) --deep-hunt-max-targets 2 (shared run dirs) + --deep-hunt-resume over a HARNESS_ERROR-only prior pass: the
+#     scheduler runs exactly the cells the sequential loop runs.
+for arm in legacy sched; do
+  rm -rf "$WORK/sr-$arm"; cp -R "$DBASE" "$WORK/sr-$arm"
+  spec '*|*|0.2|normal|HARNESS_ERROR'
+  PATH="$WORK/fbin:$PATH" "$RZH" --repo "$REPO" --out "$WORK/sr-$arm" --deep-hunt --deep-hunt-only --backend mock \
+    --agentis "$STUB" --deep-hunt-max-targets 2 >/dev/null 2>&1
+  spec '*|*|0.2|normal|CLEAN'
+  if [ "$arm" = legacy ]; then
+    resume_run "$WORK/sr-$arm" "$WORK/sr-$arm.stub" -- --deep-hunt-max-targets 2
+  else
+    resume_run "$WORK/sr-$arm" "$WORK/sr-$arm.stub" DEEP_HUNT_JOBS=1 DEEP_HUNT_CELL_TIMEOUT_S=3600 -- --deep-hunt-max-targets 2
+  fi
+done
+if [ -s "$WORK/sr-legacy.stub" ] && cmp -s "$WORK/sr-legacy.stub" "$WORK/sr-sched.stub" \
+   && [ "$(grep -c 'already hunted' "$WORK/sr-legacy.resume.log")" = "$(grep -c 'already hunted' "$WORK/sr-sched.resume.log")" ] \
+   && [ "$(sig3 "$WORK/sr-legacy")" = "$(sig3 "$WORK/sr-sched")" ]; then
+  ok "shared run dirs + --deep-hunt-resume: the scheduler runs exactly the sequential loop's cells ($(tr '\n' ' ' < "$WORK/sr-legacy.stub"))"
+else
+  bad "shared-dir resume: legacy ran [$(tr '\n' ' ' < "$WORK/sr-legacy.stub")], scheduler ran [$(tr '\n' ' ' < "$WORK/sr-sched.stub")]"
+fi
+# (e) A cap that fires before the engine touches its run dir never reads the previous run's verdict (worker level).
+WS="$WORK/wst"; rm -rf "$WS"; mkdir -p "$WS/state/meta" "$WS/state/argv" "$WS/state/rc" "$WS/dz/run"
+printf 'INVARIANT|src/vault/VaultA.sol:VaultA|CLEAN\n' > "$WS/dz/run/invariant_old.log"
+printf 'src_vault\nsrc/vault/VaultA.sol\nC10\n\n\n%s\n\n' "$WS/dz" > "$WS/state/meta/1"
+printf '%s\0' --out "$WS/dz" > "$WS/state/argv/1"
+printf '#!/bin/sh\nexec "%s" 20\n' "$STUB_SLEEP" > "$WS/engine.sh"; chmod +x "$WS/engine.sh"
+DH_STATE="$WS/state" DH_ENGINE="$WS/engine.sh" DH_STALE=0 DH_POLL=1 DH_SKIP=0 DH_LLM_SLOTS_DIR="$WS/slots" \
+  bash "$HERE/lib/deep-hunt-cell.sh" --worker 1 1 cell >/dev/null 2>&1
+if [ "$(cut -f2 "$WS/state/rc/1" 2>/dev/null)" = TIMEOUT ] && [ ! -e "$WS/dz/.dh-uncollected" ]; then
+  ok "a cap firing before the engine rewrote its run dir -> TIMEOUT, never the previous run's CLEAN"
+else
+  bad "stale verdict read as this run's: $(cat "$WS/state/rc/1" 2>/dev/null)"
+fi
+
+# ================================================================================================
 note "9) MUTATIONS on a copied tree ..."
 MT="$WORK/tree"
 mkdir -p "$MT"
@@ -578,7 +686,7 @@ skip_rule() { t5_skip "$MRZH" 1 "$WORK/m3"; [ "$(status_of "$WORK/m3" VaultB C2)
 classifier_ok() { [ "$(classify_all "$MT/dark-factory/evm-harness/forge-invariant.sh")" = "$exp" ]; }
 # shellcheck disable=SC2016  # literal source text for the mutations
 mut "drop probe-first" lib/deep-hunt-sched.sh \
-  'if [ -z "${DH_STATUS[$_dh_p]}" ]; then _dh_left+=("$_dh_s"); continue; fi   # wait for the probe' '' skip_equiv
+  'if [ -z "${DH_STATUS[$_dh_p]}" ]; then return 0; fi   # wait for the probe' '' skip_equiv
 # shellcheck disable=SC2016
 mut "TIMEOUT returns rc 0 / CLEAN" lib/deep-hunt-cell.sh 'STATUS=TIMEOUT' 'STATUS=CLEAN; COLLECT_RC=0' t4_timeout "$MRZH"
 mut "invert the harness-tree test" evm-harness/forge-invariant.sh \
@@ -587,7 +695,7 @@ mut "invert the harness-tree test (skip)" evm-harness/forge-invariant.sh \
   'return hdir == "" or p == hdir or p.startswith(hdir + "/")' 'return not (hdir == "" or p == hdir or p.startswith(hdir + "/"))' skip_rule
 # shellcheck disable=SC2016
 mut "post-process in completion order" lib/deep-hunt-sched.sh \
-  'dh_queue_order() { seq 1 "$DH_N"; }' 'dh_queue_order() { cut -f1 "$DH_STATE/timing.tsv"; }' eq_check "$MRZH"
+  'dh_queue_order() { seq "$DH_CURSOR" "$DH_N"; }' 'dh_queue_order() { cut -f1 "$DH_STATE/timing.tsv"; }' eq_check "$MRZH"
 mut "drop DEEP_HUNT_RESUME=0 in the collect pass" lib/deep-hunt-sched.sh \
   '      DEEP_HUNT_RESUME=0
 ' '' t4_timeout "$MRZH"

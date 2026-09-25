@@ -347,10 +347,12 @@ malformed value, exits 2. All four unset (the default) ⇒ STAGE 4.5 is byte-ide
    job window, the probe-first rule and the zone budget. Each worker runs the real engine under
    `lib/cell-watchdog.sh` with a wall cap (4th positional; exit 124 on the cap, distinct from the staleness kill's
    143/137).
-3. **Collect.** The loop runs again over the batch's rc-0 cells only, in QUEUE order, with the shim exiting 0 and
-   `--deep-hunt-resume` forced off. The gate merge, `reach-coverage.tsv`, the promise TSVs and the lens-surface
-   matrix are therefore written in the sequential order whatever order the cells finished in: parallel output
-   equals sequential output.
+3. **Collect.** Whenever the cell at the collect cursor settles, the loop runs again over the settled QUEUE-ORDER
+   prefix's rc-0 cells, with the shim exiting 0 and `--deep-hunt-resume` forced off; dispatch then continues (workers
+   keep running meanwhile). The gate merge, `reach-coverage.tsv`, the promise TSVs, the lens-surface matrix and the
+   ledger are therefore written in the sequential order whatever order the cells finished in (parallel output equals
+   sequential output), and each FINDING is merged as early as that order allows — with 1 job right after its cell,
+   like the legacy loop.
 
 **Definitions.**
 
@@ -387,8 +389,15 @@ forwarded (cross-cell pattern recall depends on the serial order). Before each b
 pre-trusted in ONE foreground `df_ensure_claude_trust` call (flat-cyborg / claude backends only), because that
 helper's whole-file write is not concurrency-safe; each engine's own call is then an idempotent no-write.
 
-**Stopping.** TERM/INT to `run-zone-hunt.sh` during a batch is forwarded scheduler → worker → watchdog → engine
-process group; the run exits 143 and the `__EXIT__` marker still prints. The pass-2 refute gate is not parallelised
+**Stopping.** TERM/INT to `run-zone-hunt.sh` while the scheduler runs is forwarded scheduler → worker → watchdog →
+engine process group; the run exits 143 and the `__EXIT__` marker still prints. Everything collected before the stop
+is merged and ledgered. A cell that finished but was not yet collected (a later cell of the queue-order prefix) keeps
+`<DZOUT>/.dh-uncollected`; the next `--deep-hunt-resume` queues it collect-only — merged from its log, never re-run —
+and turns the scheduler on (1 job, no caps) for that when no knob is set. Under `--deep-hunt-resume`, a row that
+re-uses an earlier row's run dir (legacy `--deep-hunt-max-targets > 1`) is resume-checked after that row ran, exactly
+like the sequential loop. A probe whose prover died on a flat-cyborg transport crash is `TRANSIENT_ERROR` and never
+marks its target broken; only a `HARNESS_ERROR` probe can. A worker clears the cell's old invariant logs before
+launching, so a cap can never record the previous run's verdict. The pass-2 refute gate is not parallelised
 and its time does not count against a zone budget.
 
 Out of scope: dashboard rendering of the new statuses, salvaging a killed ensemble cell's per-candidate FINDINGs,

@@ -1664,6 +1664,9 @@ PY
         _reach_slug="$(printf '%s' "$_reach_slug" | tr -c 'A-Za-z0-9._-' '_')"
         DZOUT="$DEEP/$ZID-$DCLASS-$_reach_slug"
       fi
+      # #2258: a cell a STOPPED time-budget run finished but never merged is queued collect-only (merged, not re-run)
+      # instead of being skipped as terminal by the resume check below. A no-op unless the scheduler is active.
+      if dh_uncollected "$DZOUT"; then dh_note_row "$ZID" "$RELFILE" "$DCLASS" "${AUXFILES:-}" "$REACH_NAME" "$DZOUT" collect-only; continue; fi
       # #1934: idempotent skip-completed (--deep-hunt-resume). Before invoking the engine, check whether this
       # (zone, class) row already has a TERMINAL verdict on disk — an aggregate `invariant_*.log` (never a
       # per-candidate `_c<N>.log`, the SAME log-selection the #1780 merge adapter below uses) carrying an
