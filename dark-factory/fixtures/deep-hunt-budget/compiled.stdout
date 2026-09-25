@@ -1,0 +1,1 @@
+{"test/Inv_harness.t.sol:InvTest":{"test_results":{"invariant_x()":{"status":"Success","reason":null,"counterexample":null}}}}

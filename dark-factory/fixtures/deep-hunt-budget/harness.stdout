@@ -1,0 +1,12 @@
+Compiler run failed:
+Error (9582): Member "totalAssetz" not found or not visible after argument-dependent lookup in contract VaultB.
+ --> test/Inv_harness.t.sol:14:17:
+   |
+14 |         require(v.totalAssetz() >= 0);
+   |                 ^^^^^^^^^^^^^
+Note: The contract that was searched is declared here:
+ --> src/vault/VaultB.sol:4:1:
+  |
+4 | contract VaultB {
+  | ^
+

@@ -1,0 +1,13 @@
+Compiler run failed:
+Warning (2072): Unused local variable.
+ --> src/vault/VaultB.sol:6:9:
+  |
+6 |         uint256 unused;
+  |         ^^^^^^^^^^^^^^
+
+Error (9582): Member "totalAssetz" not found or not visible after argument-dependent lookup in contract VaultB.
+ --> test/Inv_harness.t.sol:14:17:
+   |
+14 |         require(v.totalAssetz() >= 0);
+   |                 ^^^^^^^^^^^^^
+

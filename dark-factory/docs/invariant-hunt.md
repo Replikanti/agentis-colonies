@@ -323,3 +323,74 @@ offline seam) → `invariant-prover.ag`'s `promisesOn` is the presence of `promi
 rundir (no new `exec.env_passthrough` entry). Per-cell readouts: `deep-hunt/promise-coverage.tsv` (one row per
 cell) and `deep-hunt/promises.tsv` (one row per accepted promise). Unset ⇒ byte-identical to a REACH-only run.
 Proven end-to-end by [`demo-deep-hunt-promises.sh`](../demo-deep-hunt-promises.sh).
+
+## Deep-hunt time budget (#2258)
+
+STAGE 4.5 runs one (target, lens) CELL after another, and a live cell takes 35–60 min: in one exam zone 3 REACH
+targets × 2 lenses ran back to back and the run passed its 4 h hard stop with the zone half done. Four
+`run-zone-hunt.sh` env knobs bound that. Each is inert when unset or 0; an active knob without `--deep-hunt`, or a
+malformed value, exits 2. All four unset (the default) ⇒ STAGE 4.5 is byte-identical to before.
+
+| Knob | Effect |
+|---|---|
+| `DEEP_HUNT_CELL_TIMEOUT_S=<N>` | wall-clock cap per (target, lens) cell → `TIMEOUT` |
+| `DEEP_HUNT_ZONE_BUDGET_S=<N>` | per-zone budget counted from the zone's first cell launch: an unlaunched pair → `SKIPPED_BUDGET`; a running cell is capped at the zone's remaining budget (killed → `TIMEOUT`, reason `zone-budget`) |
+| `DEEP_HUNT_SKIP_BROKEN_TARGET=1` | skip a target's remaining lenses after a target-level `HARNESS_ERROR` → `SKIPPED_TARGET_BROKEN` |
+| `DEEP_HUNT_JOBS=<1..8>` | max concurrent cells (default 1). `--jobs` never parallelises STAGE 4.5 |
+
+**How.** With a knob set, the unchanged STAGE 4.5 loop runs as ordered passes (`lib/deep-hunt-sched.sh`):
+
+1. **Enqueue.** `$INVHUNT` points at `lib/deep-hunt-cell.sh`, which records each row's exact engine argv and exits 1,
+   so the loop's own `|| continue` skips the post-processing. `--deep-hunt-resume` filters rows exactly as always.
+2. **Schedule.** The queue is cut into batches (maximal runs of rows with distinct run dirs; legacy
+   `--deep-hunt-max-targets > 1` rows share `<zone>-<class>`). Each batch's cells run FIFO in queue order under the
+   job window, the probe-first rule and the zone budget. Each worker runs the real engine under
+   `lib/cell-watchdog.sh` with a wall cap (4th positional; exit 124 on the cap, distinct from the staleness kill's
+   143/137).
+3. **Collect.** The loop runs again over the batch's rc-0 cells only, in QUEUE order, with the shim exiting 0 and
+   `--deep-hunt-resume` forced off. The gate merge, `reach-coverage.tsv`, the promise TSVs and the lens-surface
+   matrix are therefore written in the sequential order whatever order the cells finished in: parallel output
+   equals sequential output.
+
+**Definitions.**
+
+- **TIMEOUT** — the wall bound fired and the cell's aggregate `invariant_*.log` (never a `_c<N>.log`) has no
+  `INVARIANT|` line. Recorded in the ledger only: never merged, never CLEAN, no post-processing (its matrix surface
+  stays at its floor, a gap), not terminal on `--deep-hunt-resume` (a resume re-runs it). When the bound fires
+  AFTER the verdict was written (the engine was killed in its post-verdict tail) the cell keeps that verdict, reason
+  `tail-killed`, and is collected as usual, so a FINDING is never stranded. For a killed ensemble cell the reason
+  lists the per-candidate verdicts (diagnostic only).
+- **Target-level HARNESS_ERROR.** With the skip knob on, the worker passes `run-invariant-hunt.sh --forge-diag`, and
+  the staged `forge-invariant.sh` appends one row per forge run of the prover's harness to
+  `<run>/forge-diag/compile.tsv`: `harness_relpath \t scope \t n_error_locs \t first_non_harness_loc`. Error
+  locations are the `--> <path>:<line>:<col>` pointers inside ERROR diagnostics (a block opens at `Error (NNNN):` or
+  `<Kind>Error:` and closes at the next header of any kind; warnings, infos and notes are ignored) in forge's stdout
+  and stderr. Scope: `compiled` (no compile-error signature), `target` (≥ 1 location, none inside the harness's
+  directory tree), `harness` (all inside), `mixed`, `unlocated`. A cell is **TARGET_BROKEN** iff its aggregate verdict
+  is HARNESS_ERROR (no `INVARIANT|` line counts as HARNESS_ERROR), its rows minus the `CorpusReplay.t.sol` rows are
+  non-empty, and every one of them is `target`. TRANSIENT_ERROR, TIMEOUT and any other scope never count. Only the
+  target's PROBE (its first queued lens) decides: the target's remaining lenses (same zone + `rel[:Name]`) are
+  recorded `SKIPPED_TARGET_BROKEN` (reason `probe=<class> loc=<first_non_harness_loc>`) and never launched. A mis-skip
+  costs one resume, never a false CLEAN.
+- **Ledger** `deep-hunt/cell-status.tsv` — scheduler mode only, one row per queued cell, in queue order:
+  `zone \t target \t class \t status \t reason` (`target` is the `reach-coverage.tsv` token). Status vocabulary:
+  `FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR|LOW_COVERAGE|LOW_PROMISE_COVERAGE|TIMEOUT|ENGINE_FAILED|SKIPPED_TARGET_BROKEN|SKIPPED_BUDGET`.
+  Timings (non-deterministic) go to `deep-hunt/.sched/timing.tsv` only.
+
+**Slots.** Each worker holds one slot of a DEDICATED dark-factory LLM-session pool,
+`${DARK_FACTORY_DIR:-~/.dark-factory}/deep-hunt-llm-slots` (`tools/lib/llm-session-slot.sh`, K = `LLM_MAX_CONCURRENT`,
+default 3, fail-open after `LLM_SLOT_WAIT_S`); the pool dir is never exported to the engine, whose own per-prompt
+acquire keeps its own pool. The prover also holds a FORGE slot for its whole run, so cells beyond `FORGE_MAX_SLOTS`
+(default 2) wait `FORGE_SLOT_WAIT_S` and then run without one — set `FORGE_MAX_SLOTS ≥ DEEP_HUNT_JOBS` (the scheduler
+warns). `DEEP_HUNT_JOBS` falls back to 1 with a warning on bash < 4.3 (`wait -n`) and when `--pattern-store` is
+forwarded (cross-cell pattern recall depends on the serial order). Before each batch the batch's `<run>` dirs are
+pre-trusted in ONE foreground `df_ensure_claude_trust` call (flat-cyborg / claude backends only), because that
+helper's whole-file write is not concurrency-safe; each engine's own call is then an idempotent no-write.
+
+**Stopping.** TERM/INT to `run-zone-hunt.sh` during a batch is forwarded scheduler → worker → watchdog → engine
+process group; the run exits 143 and the `__EXIT__` marker still prints. The pass-2 refute gate is not parallelised
+and its time does not count against a zone budget.
+
+Out of scope: dashboard rendering of the new statuses, salvaging a killed ensemble cell's per-candidate FINDINGs,
+short-circuiting the prover's repair rounds on a target-level compile error, STAGE 3/4/4.6 concurrency, and any
+default flip. Proven end-to-end by [`demo-deep-hunt-budget.sh`](../demo-deep-hunt-budget.sh).

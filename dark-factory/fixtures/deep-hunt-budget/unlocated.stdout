@@ -1,0 +1,2 @@
+Compiler run failed:
+Error: Encountered invalid solc version in src/vault/VaultB.sol: No solc version exists that matches the version requirement: =0.4.1

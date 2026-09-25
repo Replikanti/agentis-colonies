@@ -2897,6 +2897,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-deep-hunt-promises.sh" ]; then
     fi
 fi
 
+# --- dark-factory deep-hunt TIME BUDGET (#2258) ---
+# Four env knobs, default OFF (STAGE 4.5 byte-identical when unset): DEEP_HUNT_CELL_TIMEOUT_S (per-cell wall cap ->
+# TIMEOUT, never merged, re-run on resume), DEEP_HUNT_ZONE_BUDGET_S (hard per-zone budget), DEEP_HUNT_SKIP_BROKEN_TARGET
+# (a target-scoped compile failure of the probe lens skips the target's other lenses, via forge-invariant.sh's opt-in
+# compile-scope diag row) and DEEP_HUNT_JOBS (parallel cells, collected in queue order). demo-deep-hunt-budget.sh pins
+# the watchdog wall cap, the diag classifier on canned forge diagnostics, TIMEOUT / skip / budget end to end through a
+# stub --agentis, parallel == sequential on every artifact, no orphan engine on a stop, and mutation-checks each rule.
+# bash + python3 only (CI-safe).
+if [ -x "$REPO_ROOT/dark-factory/demo-deep-hunt-budget.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-deep-hunt-budget.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: deep-hunt time budget — per-cell cap, zone budget, broken-target skip, parallel cells, default OFF (#2258)"
+    else
+        fail "dark-factory: deep-hunt time budget regressed (#2258)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory multi-root map layer (#2255 PR 1) ---
 # A multi-project code repo (several nested Foundry/Hardhat project roots) is mapped over the CLONE ROOT: lib/
 # project_roots.py detects the roots (vendored/test/mock configs excluded; `--project-roots .` opts out), every

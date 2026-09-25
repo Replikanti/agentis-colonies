@@ -80,6 +80,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   only) and charges nothing extra at admission. Unset => prompt, report, results JSON, banner and run-zone-hunt argv
   byte-identical. `demo-breadth-promises.sh` (colony-lint) proves it; recall is UNMEASURED (fresh-set measurement).
 
+- **Deep-hunt time budget — per-cell cap, zone budget, broken-target skip, parallel cells, default OFF (#2258).**
+  STAGE 4.5 ran its (target, lens) cells one after another at 35–60 min each, so a 3-target × 2-lens zone blew
+  through a run's 4 h hard stop. Four `run-zone-hunt.sh` env knobs, each inert when unset/0 (malformed or active
+  without `--deep-hunt` ⇒ exit 2): `DEEP_HUNT_CELL_TIMEOUT_S` (wall cap per cell → `TIMEOUT`: never merged, never
+  CLEAN, re-run by `--deep-hunt-resume`; a verdict already written when the cap fires is kept, reason
+  `tail-killed`), `DEEP_HUNT_ZONE_BUDGET_S` (hard: unlaunched pairs `SKIPPED_BUDGET`, running cells capped at the
+  remaining budget), `DEEP_HUNT_SKIP_BROKEN_TARGET=1` (a target's probe lens whose every forge attempt failed on
+  errors outside the harness skips the target's other lenses → `SKIPPED_TARGET_BROKEN`) and `DEEP_HUNT_JOBS=<1..8>`
+  (parallel cells on a dedicated `deep-hunt-llm-slots` pool; `--jobs` never parallelises STAGE 4.5). With a knob
+  set, the UNCHANGED loop runs as enqueue → scheduler → collect passes (`lib/deep-hunt-sched.sh`,
+  `lib/deep-hunt-cell.sh`), post-processing in queue order, so parallel artifacts equal the serial run's; outcomes
+  land in `deep-hunt/cell-status.tsv`. `lib/cell-watchdog.sh` gains an optional wall-cap positional (exit 124, TERM
+  forwarding), `evm-harness/forge-invariant.sh` an opt-in compile-scope diag row (`forge-diag/compile.tsv`, only
+  next to a run's staged gate) and `run-invariant-hunt.sh` `--forge-diag`. `run-zone-hunt.sh` changes are additions
+  only. Proof: `demo-deep-hunt-budget.sh` (lint-wired; bash + python3).
+
 - **Scope-aware refute — declared trust/token assumptions + the `out-of-scope-premise` ground, `--scope-docs
   <auto|file>`, nested under `SEVERITY_RUBRIC=1`, default OFF (#2257).** Verified findings whose exploit rests on
   an asset or environment the target's own docs exclude had nothing to stop them: the refute gate never saw the

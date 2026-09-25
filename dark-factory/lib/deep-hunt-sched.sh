@@ -264,6 +264,10 @@ ${DH_DZ[$_dh_s]}
   echo "run-zone-hunt.sh: [deep-hunt] scheduler: $DH_N cell(s) queued in $DH_NBATCH batch(es) (#2258)" >&2
 }
 
+# dh_queue_order — the order the collect pass and the ledger walk the cells in: QUEUE order, never completion order
+# (the whole point: the artifacts are written in the sequential order). demo-deep-hunt-budget.sh mutates this line.
+dh_queue_order() { seq 1 "$DH_N"; }
+
 # dh_now — the scheduler clock: seconds spent DISPATCHING (the collect passes, incl. the refute gate, do not count
 # against a zone budget).
 dh_now() {
@@ -404,8 +408,7 @@ dh_dispatch_batch() {
   # The collect file (the rc-0 cells' raw rows, queue order) and the ledger rows (every cell, queue order).
   : > "$DH_STATE/batch-$_dh_k.tsv" || { echo "run-zone-hunt.sh: [deep-hunt] scheduler: cannot write the batch file (#2258)" >&2; exit 3; }
   DH_BATCH_COLLECT=(); DH_BATCH_NCOLLECT=0
-  _dh_s=1
-  while [ "$_dh_s" -le "$DH_N" ]; do
+  for _dh_s in $(dh_queue_order); do
     if [ "${DH_BATCH[$_dh_s]}" = "$_dh_k" ]; then
       printf '%s\t%s\t%s\t%s\t%s\n' "${DH_Z[$_dh_s]}" "${DH_T[$_dh_s]}" "${DH_C[$_dh_s]}" "${DH_STATUS[$_dh_s]}" \
         "${DH_REASON[$_dh_s]:--}" >> "$DEEP/cell-status.tsv"
@@ -419,7 +422,6 @@ dh_dispatch_batch() {
         DH_BATCH_COLLECT+=("$_dh_s"); DH_BATCH_NCOLLECT=$((DH_BATCH_NCOLLECT + 1))
       fi
     fi
-    _dh_s=$((_dh_s + 1))
   done
   return 0
 }
