@@ -332,6 +332,11 @@ if [ "$MODE" = "live" ]; then
   for id in $SELECTED; do
     subdir="$(corpus_field "$id" 4)"
     scope="$(corpus_field "$id" 6)"
+    # #2255: a comma-separated project_subdir is a multi-root row; deep-hunt-ab.sh takes ONE project dir, so say
+    # so explicitly instead of the misleading "not staged" below.
+    case "$subdir" in
+      *,*) note "live: [$id] multi-root row not supported by deep-hunt-ab yet (#2255); skipping A/B"; continue ;;
+    esac
     code_dir="$WORK/$id/code${subdir:+/$subdir}"
     truth="$WORK/$id/truth.tsv"
     if [ ! -d "$code_dir" ] || [ ! -f "$truth" ]; then

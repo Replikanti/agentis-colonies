@@ -1,0 +1,5 @@
+# fixture-root: market
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]

@@ -1,0 +1,3 @@
+# fixture-root: core-test-fork (NOT a project root: under test/)
+[profile.default]
+src = "."

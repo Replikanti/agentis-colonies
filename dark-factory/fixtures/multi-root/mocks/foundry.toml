@@ -1,0 +1,3 @@
+# fixture-root: mocks (NOT a project root: under mocks/)
+[profile.default]
+src = "."

@@ -38,6 +38,13 @@
 #                       emitted config stays `llm.model = opus` — byte-identical to before this flag existed).
 #   --agentis <bin>     agentis binary (default: `agentis` on PATH).
 #   --scope-hint <t>    map-zones.sh source restriction (comma/space list of files or dir-prefixes).
+#   --project-roots <csv>  #2255: the project roots of a MULTI-PROJECT code repo (dirs holding foundry.toml /
+#                       hardhat.config.*, relative to --repo, which stays the CLONE ROOT). Exported as
+#                       DF_PROJECT_ROOTS, which both STAGE 1 map-zones.sh invocations read (see its --help). Default:
+#                       map-zones.sh AUTO-DETECTS the roots; `.` disables detection (the single-root opt-out).
+#                       With 0 or 1 root in effect nothing changes. A --rehunt-gaps / --deep-hunt-only pass over a
+#                       multi-root map asserts every zone `root` is a dir under --repo (exit 3 otherwise: that map
+#                       was made against the clone root).
 #   --since <ref>       Audit-covered ref (feeds map-zones.sh's advisory hardening_score).
 #   --audit-residuals <f>  audit-scout.ag output folded into gen-briefs.sh's per-zone briefs (optional).
 #   --in-scope <t>      The in-scope program facts handed to run-audit-pass.sh's scope gate.
@@ -306,6 +313,9 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 AGENTIS="agentis"
 REPO="" ; OUT="$PWD/zone-hunt-out" ; JOBS=1 ; BACKEND="flat-cyborg" ; MODEL=""
 SCOPE_HINT="" ; SINCE="" ; RESIDUALS=""
+# #2255: explicit project roots for a multi-project repo. EMPTY = not passed = nothing exported (map-zones.sh then
+# auto-detects exactly as it does when called directly).
+PROJECT_ROOTS=""
 IN_SCOPE="" ; ASSET_CONTRACTS="" ; IMPACT_THRESHOLD=""
 MAP_FIXTURE="" ; BRIEF_FIXTURE="" ; PASS_FIXTURE="" ; DROP_DIR=""
 DEEP_HUNT=0 ; INV_FIXTURE="" ; DEEP_HUNT_MAX_TARGETS=1 ; DEEP_HUNT_REPAIR_ROUNDS=4 ; DEEP_HUNT_AUX_MAX=0
@@ -385,6 +395,7 @@ while [ $# -gt 0 ]; do
     --model)            nv "$#"; MODEL="$2"; shift 2 ;;
     --agentis)          nv "$#"; AGENTIS="$2"; shift 2 ;;
     --scope-hint)       nv "$#"; SCOPE_HINT="$2"; shift 2 ;;
+    --project-roots)    nv "$#"; PROJECT_ROOTS="$2"; shift 2 ;;
     --since)            nv "$#"; SINCE="$2"; shift 2 ;;
     --audit-residuals)  nv "$#"; RESIDUALS="$2"; shift 2 ;;
     --in-scope)         nv "$#"; IN_SCOPE="$2"; shift 2 ;;
@@ -440,6 +451,9 @@ done
 [ -n "$REPO" ] && [ -d "$REPO" ] || { echo "run-zone-hunt.sh: --repo <cloned repo dir> required (clone it with fetch-target.sh)" >&2; exit 2; }
 case "$JOBS" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --jobs must be a positive integer (got '$JOBS')" >&2; exit 2 ;; esac
 [ "$JOBS" -ge 1 ] || { echo "run-zone-hunt.sh: --jobs must be >= 1 (got '$JOBS')" >&2; exit 2; }
+# #2255: hand the explicit roots to BOTH STAGE 1 map-zones.sh invocations through the environment, so neither
+# invocation line changes. Unset flag => nothing exported (an operator's own DF_PROJECT_ROOTS still applies).
+if [ -n "$PROJECT_ROOTS" ]; then export DF_PROJECT_ROOTS="$PROJECT_ROOTS"; fi
 [ -z "$MAP_FIXTURE" ]   || [ -f "$MAP_FIXTURE" ]   || { echo "run-zone-hunt.sh: --map-fixture not found: $MAP_FIXTURE" >&2; exit 2; }
 [ -z "$BRIEF_FIXTURE" ] || [ -f "$BRIEF_FIXTURE" ] || { echo "run-zone-hunt.sh: --brief-fixture not found: $BRIEF_FIXTURE" >&2; exit 2; }
 [ -z "$RESIDUALS" ]     || [ -f "$RESIDUALS" ]     || { echo "run-zone-hunt.sh: --audit-residuals not found: $RESIDUALS" >&2; exit 2; }
@@ -618,6 +632,23 @@ if [ -n "$IMPACT_THRESHOLD" ]; then
   SCOPE_CONTEXT="${SCOPE_CONTEXT}${SCOPE_CONTEXT:+ | }impact threshold: $IMPACT_THRESHOLD"
 fi
 
+# #2255: a multi-root map records each zone's project root RELATIVE TO THE CLONE ROOT it was made against. A pass
+# that REUSES a map (--rehunt-gaps, --deep-hunt-only) must therefore get that same clone root as --repo; every
+# distinct zone `root` has to be a dir under it, else exit 3. A single-root map has no `root` key: no-op.
+mr_assert_roots_under_repo() {
+  _mr_bad=""
+  while IFS='	' read -r _mr_zid _mr_root; do
+    [ -n "${_mr_root:-}" ] || continue
+    [ -d "$REPO/$_mr_root" ] || _mr_bad="$_mr_root"
+  done <<MR_EOF
+$(python3 "$HERE/lib/project_roots.py" zone-roots --zones "$1" 2>/dev/null)
+MR_EOF
+  if [ -n "$_mr_bad" ]; then
+    echo "run-zone-hunt.sh: zone root '$_mr_bad' of $1 is not a dir under --repo $REPO — map made against a different --repo; a multi-root map needs the clone root (#2255)" >&2
+    exit 3
+  fi
+}
+
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 1 (M1): map-zones.sh -> <out>/map/zones.json + scope.tsv. --map-fixture => offline; else live substrate.
 #
@@ -638,6 +669,7 @@ if [ "$REHUNT_GAPS" -eq 1 ]; then
   for _pre in "$MAP/zones.json" "$MAP/scope.tsv" "$BRIEFS/briefs" "$COVERAGE_JSON"; do
     [ -e "$_pre" ] || { echo "run-zone-hunt.sh: --rehunt-gaps requires an existing $_pre (run the full breadth pass first)" >&2; exit 3; }
   done
+  mr_assert_roots_under_repo "$MAP/zones.json"
   echo "run-zone-hunt.sh: [M3] --rehunt-gaps: reusing $MAP + $BRIEFS; STAGE 1/2 skipped" >&2
 else
 echo "run-zone-hunt.sh: [M1] mapping zones -> $MAP ..." >&2
@@ -1115,6 +1147,7 @@ else
   MAP="$OUT/map"; VER="$OUT/verify"; VERIFIED_JSON="$VER/verified_findings.json"
   [ -f "$MAP/zones.json" ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires an existing $MAP/zones.json (run breadth first)" >&2; exit 3; }
   [ -f "$VERIFIED_JSON" ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires an existing $VERIFIED_JSON (run breadth first)" >&2; exit 3; }
+  mr_assert_roots_under_repo "$MAP/zones.json"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
