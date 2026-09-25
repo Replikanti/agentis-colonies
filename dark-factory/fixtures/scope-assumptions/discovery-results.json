@@ -1,0 +1,14 @@
+{
+  "repo": "repo-tokens",
+  "cells": [
+    {"subsystem": "vault accounting", "class": "C15",
+     "files": "src/Vault.sol",
+     "candidates": [
+       "src/Vault.sol:deposit|C15|Medium|a fee-on-transfer token credits the depositor with more than the vault received, so later withdrawals drain other depositors|deposit a fee-charging token then withdraw the credited amount",
+       "src/Vault.sol:withdraw|C5|High|withdraw has no ownership check, so any caller can reduce another depositor's balance|call withdraw on behalf of a victim",
+       "src/Vault.sol:setFee|C23|Medium|the admin can set the fee to the largest value its setter accepts and strand every pending deposit|set the fee to the bound then deposit"
+     ],
+     "coordination": []}
+  ],
+  "totals": {"cells": 1, "candidates": 3, "steers": 0}
+}

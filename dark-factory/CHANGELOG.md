@@ -16,6 +16,29 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Scope-aware refute — declared trust/token assumptions + the `out-of-scope-premise` ground, `--scope-docs
+  <auto|file>`, nested under `SEVERITY_RUBRIC=1`, default OFF (#2257).** Verified findings whose exploit rests on
+  an asset or environment the target's own docs exclude had nothing to stop them: the refute gate never saw the
+  declarations. (1) **Extractor** (`lib/scope-assumptions.py extract`, stdlib only): the target's `SCOPE.md` then
+  `README.md` (Q&A pairs categorised by the question, scope/trust/token/chain/known-issue sections, table rows;
+  fenced code and source-file rows skipped) — or an operator `scope-assumptions.md` that replaces auto — into a
+  deterministic, line-cited block `A<n>|<category>|<source>:<first>[-<last>]|<text>` (40 rows, 300 characters;
+  categories token/chain/trust/exclusion/known-issue). (2) **Refuter** (`refuter.ag`): inside a rubric-ON prompt
+  with a non-empty block, the block plus ONE extra sufficient ground `out-of-scope-premise` whose evidence is
+  `A<n>:"<quote of that row>" premise:"<quote of the claim>"`; spliced after the rubric in the discovery-lead
+  branch only; honesty-gated `SCOPE-ASSUMPTIONS|refute|on` sentinel; the frozen rubric, the closed ground list and
+  both tie-breaks untouched. (3) **Gate** (`run-refute.sh --scope-assumptions`): the contract is checked by
+  `scope-assumptions.py check` (`scope-cite-missing` / `scope-cite-unresolved` / `scope-not-citable` for trust rows
+  / `scope-premise-missing` / `scope-premise-unresolved`); a pass is FINAL — verdict stays `REFUTED`, reason
+  prefixed `out-of-scope-premise (<id>, <category>): `, no #1699 C6 re-read, no #1887 constraint, one row in the
+  lazy `out-of-scope.tsv`; a failure rides the existing bounded re-ask and `rubric-dismissals.tsv` (scope contract id
+  in column 5). (4) **Surface** (`verify-findings.sh --scope-docs`, forwarded by `run-zone-hunt.sh`): the block is
+  built once per run (`<out>/scope-assumptions.txt`), and routed candidates land in a new `out_of_scope[]` array +
+  `totals.out_of_scope` — emitted only when non-empty, never in `verified[]`, a subset of the implicit refuted
+  count. An empty block, the rubric off, or an extractor crash (fail-open) is inert, and whenever the flag is
+  given `verified_findings.json` records it as `scope_layer: {state: on|off|inert-extractor-error, reason}`. STAGE 4 first-pass findings only
+  (`deep-hunt-gate.sh` / `--invariant-mode` not wired). Unset ⇒ byte-identical. Proven offline by
+  `demo-scope-assumptions.sh`; precision UNMEASURED (needs a fresh set).
 - **Deep-hunt PROMISES — invariants derived from the target's user-facing promises, knob `DEEP_HUNT_PROMISES=1`
   (requires `DEEP_HUNT_REACH=1`), default OFF (#2245, iteration 7).** Iteration 6 fixed reach: the harness deploys
   the right concrete targets and calls the rows' entry points, yet stayed CLEAN, because the invariant comes from

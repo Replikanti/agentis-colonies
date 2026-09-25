@@ -30,6 +30,9 @@ cb 300000;
 //                  the pre-#2245 one in both modes.
 //   RUBRIC_REASK_GROUNDS  #2245 iteration 2: the insufficient ground the driver is re-asking about. Set by
 //                  run-refute.sh ONLY on that bounded second call; empty (the default) => no re-ask block.
+//   SCOPE_ASSUMPTIONS_PATH  #2257 OPT-IN: path to the staged declared-scope block (lib/scope-assumptions.py).
+//                  Read ONLY inside a rubric-ON prompt; there it adds the block + the extra SUFFICIENT ground
+//                  `out-of-scope-premise`. Unset / empty file = OFF = the prompt is byte-identical.
 // Stdout: exactly one verdict line —
 //   VERDICT|REAL|<file:fn>|<class>|<one-sentence why the refutation FAILED: the exploit holds>
 //   VERDICT|REFUTED|<file:fn>|<class>|<one-sentence the specific guard / control-flow fact that kills it>
@@ -37,6 +40,8 @@ cb 300000;
 //   CONSTRAINT|<class>|<one target-independent sentence: the generalisable requirement the claim failed>
 // and, with SEVERITY_RUBRIC=1 on a REFUTED verdict ONLY, ahead of BOTH of those (#2245 iteration 2) —
 //   REFUTE-GROUND|<ground-id>|<the evidence that ground requires>
+// (with a scope block staged, <ground-id> may also be `out-of-scope-premise`, evidence
+//  `A<n>:"<quote of that row>" premise:"<quote of the claim>"` — #2257).
 // The ORDER is load-bearing: run-refute.sh's _join_wrapped_verdict() treats every non-boundary line AFTER a
 // `VERDICT|` line as a PTY-wrap continuation of the verdict's reason, so a CONSTRAINT| line emitted after the
 // verdict would be swallowed into that reason and would then shift verify-findings.sh's `awk -F'|'` field
@@ -301,6 +306,62 @@ fn ground_evidence_reask_clause() -> string {
       + "from it, and repeating the line without that evidence answers nothing.\n";
 }
 
+// --- #2257: DECLARED SCOPE ASSUMPTIONS (opt-in, default OFF) ------------------------------------------------
+// The measured gap: verified findings whose exploit only works with an asset or an environment the target's
+// own docs EXCLUDE (a transfer-fee or rebasing asset where the docs say standard assets only). This gate never
+// saw those declarations, so it could not reject such a premise. run-refute.sh --scope-assumptions stages a
+// deterministic, line-cited block (lib/scope-assumptions.py) and this directive shows it, with ONE extra
+// SUFFICIENT ground, `out-of-scope-premise`, whose evidence has its own citation contract: an assumption id plus
+// a verbatim quote of that row, and a verbatim quote of the premise taken from the candidate's own claim. The
+// driver checks that contract through the same helper that wrote the block.
+//
+// WHAT IS DELIBERATELY NOT CHANGED: severity_rubric_block() (frozen and byte-paired with hunter.ag), the closed
+// ground list inside it, ground_evidence_block(), rubric_reask_block() and both TIE-BREAKs. The extra ground is
+// described HERE, as an addition to the list, never an edit of it.
+//
+// TRUST ROWS ARE CONTEXT ONLY (issue #2257 STOP-1 decision 1): a declared trusted role is shown but can never
+// be cited, so it cannot launder the `trusted-config` ground #2245 made insufficient.
+//
+// NESTED UNDER THE RUBRIC (STOP-1 decision 2): "" unless severity_rubric_enabled() AND the staged block is
+// non-empty. SCOPE_ASSUMPTIONS_PATH must ride run-refute.sh's exec.env_passthrough (getenv() reads the SANITISED
+// env), and with it unset the prompt is byte-identical to the rubric-only one.
+//
+// SPLICE POINT: the discovery-lead branch of judge_body() only, right after the rubric directive and before its
+// TIE-BREAK (STOP-1 decision 4: the invariant mode is out of reach in v1).
+//
+// PURE-META like every directive here: no protocol, product, standard number or file name in the text.
+
+// The one string the block is RECOGNISED by: its literal FIRST LINE. The sentinel greps the ASSEMBLED
+// instruction for it, so it can only fire when the directive really entered the prompt.
+fn scope_assumptions_marker() -> string {
+    return "=== DECLARED SCOPE ASSUMPTIONS (the target's own docs; one extra ground, with its own citation) ===";
+}
+
+fn scope_assumptions_directive() -> string {
+    if !severity_rubric_enabled() { return ""; }
+    let block = cat_file(getenv("SCOPE_ASSUMPTIONS_PATH"));
+    if len(block) == 0 { return ""; }
+    return scope_assumptions_marker() + "\n"
+      + "The target's OWN documentation declares the assumptions below, copied mechanically and cited by line. "
+      + "Each row reads A<n>|<category>|<source>:<line>|<text>; the categories are token, chain, trust, "
+      + "exclusion and known-issue.\n"
+      + block + "\n"
+      + "ONE EXTRA SUFFICIENT GROUND, in addition to the closed list above:\n"
+      + "  out-of-scope-premise  the claimed exploit DEPENDS on a behaviour, an environment or an input that one "
+      + "of these assumptions explicitly EXCLUDES — the claim does not work unless the excluded thing is present.\n"
+      + "Its evidence has its own contract, on the REFUTE-GROUND| line:\n"
+      + "REFUTE-GROUND|out-of-scope-premise|A<n>:\"<at least a dozen characters copied verbatim from row A<n>>\" "
+      + "premise:\"<at least eight characters copied verbatim from the claimed exploit path above>\"\n"
+      + "This ground is NOT valid when the exploit also works under the assumption, when the claim merely "
+      + "mentions a component or a kind of asset the assumption names without depending on the excluded "
+      + "behaviour, or when the cited row is a trust row. TRUST ROWS ARE CONTEXT ONLY: they are never a ground, "
+      + "the rubric above still governs privileged roles, and an admin action inside the range its own setter "
+      + "accepts is still a VALID INPUT.\n"
+      + "A claim these assumptions do not exclude is traced exactly as before. A line whose id does not exist, "
+      + "whose quote is not in that row, or whose premise is not in the claimed exploit is insufficient, and the "
+      + "driver will hand the candidate back to you.\n";
+}
+
 // --- #1938 invariant-hunt judgment mode -----------------------------------------------------------------
 // STAGE 4.5 (--deep-hunt) surfaces a BROKEN STATEFUL invariant carrying a fuzzer-reproduced shrunk witness —
 // a different object from a discovery LEAD (an unproven exploit claim). When CAND_INVARIANT is set
@@ -341,6 +402,9 @@ fn judge_body(inv: string, aux: string) -> string {
           // trusted-role exclusion) and BEFORE the tie-break, which it deliberately leaves alone. "" when the
           // knob is off => this branch is byte-identical to the pre-#2245 one.
           + severity_rubric_directive()
+          // #2257: the declared scope assumptions + the out-of-scope-premise ground. "" unless the rubric is on
+          // AND a non-empty block is staged, so the rubric-only and the default prompts are both unchanged.
+          + scope_assumptions_directive()
           + "TIE-BREAK: if after an honest trace you are NOT confident the exploit holds — the relevant code is not "
           + "shown, the path is ambiguous, or you cannot point to the exact step that breaks an invariant — answer "
           + "REFUTED. Surviving this gate must require the claim to be unambiguously real; uncertainty kills it.\n\n";
@@ -440,6 +504,11 @@ if index_of(instruction, severity_rubric_marker()) >= 0 { print("SEVERITY-RUBRIC
 // cell then prints the line above and not this one, which is exactly the iteration-2 arm). Carries no
 // `VERDICT|` substring and closes a wrapped record in all three scrapers, like every sibling diagnostic.
 if index_of(instruction, ground_evidence_marker()) >= 0 { print("GROUND-EVIDENCE|refute|on"); }
+// #2257: the SCOPE-ASSUMPTIONS sentinel, on the same honesty contract — gated on the block's own marker being IN
+// the prompt, never on the env. It is what arms run-refute.sh's out-of-scope-premise contract check, so with the
+// rubric off or no block staged that layer decides nothing. Carries no `VERDICT|` substring and closes a wrapped
+// record in all three refute scrapers, like its siblings.
+if index_of(instruction, scope_assumptions_marker()) >= 0 { print("SCOPE-ASSUMPTIONS|refute|on"); }
 
 let verdict = prompt(instruction, harness_payload(appendix_payload(code, aux, auxPath), harness, harnessPath)) -> string;
 

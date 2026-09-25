@@ -1,0 +1,4 @@
+A1|token|scope-assumptions.md:5|Only plain transfer tokens are listed; fee-on-transfer and rebasing assets are excluded.
+A2|trust|scope-assumptions.md:9|The protocol owner is a trusted multisig.
+A3|exclusion|scope-assumptions.md:13|Findings on the test harness and the deployment scripts are out of scope.
+A4|exclusion|scope-assumptions.md:14|A single bullet with no keyword in it at all, kept on purpose.

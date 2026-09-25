@@ -1,0 +1,6 @@
+A1|chain|README.md:9|Deployment chains: The settlement layer and one rollup network
+A2|trust|README.md:10|Trusted roles: The owner multisig may pause and set every parameter
+A3|trust|README.md:11|Out of scope: Findings that need a compromised owner key are excluded
+A4|token|README.md:17|Fee-on-transfer tokens: No — every listed asset is a plain transfer token
+A5|token|README.md:18|Rebasing tokens: No
+A6|token|README.md:19|Tokens with more than 18 decimals: Not supported and not listed
