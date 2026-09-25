@@ -16,6 +16,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Held-out exam: per-row triage scorer `bench/corpus-bench/triage.py` (#2262 M1).** Every rare row of a
+  held-out exam was scored by hand (candidates / verified findings at the row's function, cell-log mentions,
+  DISMISS lines, refute verdicts -> HIT / MISS and the MISS cause). The new stdlib-only, offline scorer reads one or
+  more `run-zone-hunt.sh` output trees read-only (`--run [LABEL=]<tree>` or `--run-root <dir>`) against a
+  `truth.tsv` and, per row, collects the evidence at the row's location and PROPOSES a class — `HIT-candidate`
+  (`level=verified|unassessed|tier2`), `refuted`, `found-dismissed`, `scope-out-of-map` (`file|slice`),
+  `unmeasured` (a zone that did not run, failed every cell, or is named by `--unmeasured`, never a generation miss),
+  `generation` (`examined|unseen`; a CLEAN invariant at the location counts as examined) or `unanchored` — as a
+  TSV (with an empty `operator_class` column) + a markdown table with the evidence lines. The operator confirms;
+  the tool never claims a HIT. "At the location" is the scoreboard's #2215 pair-exact rule, imported read-only from
+  `score-match.py` / `hypotheses-to-leads.py` (neither is edited); an empty column 6 falls back to deterministic
+  keyword anchors from title + signature. Only real output is read (`hunt_*.log*` cell logs, `refute_*.log`,
+  `verdict.txt`, the discovery / verified JSON, `invariant_*.log`) — never the `hunter.ag` / `refuter.ag` source
+  copies — and superseded `discovery/<zone>.attempt-<n>/` dirs are excluded by default. `--self-test` (wired into
+  colony-lint via the new `demo-holdout-exam.sh`) reproduces a fixed triage table from the synthetic
+  `fixtures/triage/`, whose decoy source copies and superseded attempt fail it if either read rule regresses.
+
 - **Scope-aware refute — declared trust/token assumptions + the `out-of-scope-premise` ground, `--scope-docs
   <auto|file>`, nested under `SEVERITY_RUBRIC=1`, default OFF (#2257).** Verified findings whose exploit rests on
   an asset or environment the target's own docs exclude had nothing to stop them: the refute gate never saw the

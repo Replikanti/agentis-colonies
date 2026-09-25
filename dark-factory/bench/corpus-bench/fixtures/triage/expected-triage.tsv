@@ -1,0 +1,15 @@
+sev_id	severity	rarity	tier	anchor_source	anchors	proposed	sub	level	verified	candidates	refuted	dismissed	mentions	zones	top_evidence	operator_class
+TX-1	High	1	rare	col6	Pool.sol:withdraw	HIT-candidate	-	verified	1	1	0	0	3	core=ran	[verified] run-core:verify/verified_findings.json:verified[0] src/core/Pool.sol:withdraw:40 source=breadth High -- withdraw transfers assets before the share burn, so a re-entrant receiver withdraws twice	
+TX-2	Medium	2	rare	col6	Vault.sol:settle	HIT-candidate	-	verified	1	0	0	0	2	core=ran	[verified] run-core:verify/verified_findings.json:verified[1] src/core/Vault.sol:settle source=invariant-hunt Medium -- invariant_settle_index_monotone broken: settle compounds the index twice	
+TX-3	Medium	5	mid	col6	Pool.sol:skim	HIT-candidate	-	unassessed	0	1	0	0	1	core=ran	[candidate] run-core:discovery/discovery-results.merged.json:cells[0].candidates[1] src/core/Pool.sol:skim:61|class=C6|Medium|skim pays the reserve surplus to an arbitrary recipient|donate, skim to self, assert the surplus left the pool	
+TX-4	High	1	rare	col6	Vault.sol:sweep	refuted	-	-	0	1	1	0	1	core=ran	[candidate] run-core:discovery/discovery-results.merged.json:cells[0].candidates[0] src/core/Vault.sol:sweep:88|class=C6|High|sweep forwards the idle balance to msg.sender without an owner check|call sweep as a stranger and assert the idle balance moved	
+TX-5	Medium	3	mid	col6	Pool.sol:deposit	found-dismissed	-	-	0	0	0	1	1	core=ran	[dismiss] run-core:discovery/core/run/hunt_core_C2.log:9 DISMISS|src/core/Pool.sol:deposit|rounding-dust|deposit rounds shares up by at most one wei per call, below any profitable threshold	
+TX-6	Medium	9	consensus	col6	Oracle.sol:peek	scope-out-of-map	file	-	0	0	0	0	0	-	-	
+TX-7	High	2	rare	col6	Router.sol:route	unmeasured	not-run	-	0	0	0	0	0	periph=not-run	-	
+TX-8	Medium	4	mid	col6	Vault.sol:accrue	generation	examined	-	0	0	0	0	1	core=ran	[mention] run-core:discovery/core/run/hunt_core_C2.log:7 TRACE|#2|CLEAN|Vault accrue advances the index from the last checkpoint, one block late but bounded	
+TX-9	High	1	rare	col6	Vault.sol:rebase	generation	examined	-	0	0	0	0	1	core=ran	[invariant] run-core:deep-hunt/core-C2/run/invariant_src_core_Vault_sol_rebase.log:2 INVARIANT|src/core/Vault.sol:rebase|CLEAN	
+TX-10	Medium	12	consensus	col6	Pool.sol:sync	scope-out-of-map	slice	-	0	0	0	0	0	core=ran	-	
+TX-11	Medium	2	rare	col6	Vault.sol:pause	generation	unseen	-	0	0	0	0	0	core=ran	-	
+TX-12	Medium	6	mid	keyword-pair	Vault.sol:harvest	HIT-candidate	-	tier2	0	1	0	0	0	core=ran	[tier2] run-core:discovery/discovery-results.merged.json:tier2[0] src/core/Vault.sol:harvest Vault.harvest must round the fee share toward the vault -- the fee rate is set outside this zone slice, so the trace could not settle the check	
+TX-13	Medium	7	mid	keyword-fn	*:rescue	generation	examined	-	0	0	0	0	1	core=ran,periph=not-run	[mention] run-core:discovery/core/run/hunt_core_C2.log.untraced-attempt-1:3 READ|src/core/Vault.sol:rescue|the admin rescue(token, amount) path excludes nothing, the deposit asset included	
+TX-14	High	1	rare	none	-	unanchored	-	-	0	0	0	0	0	-	-	

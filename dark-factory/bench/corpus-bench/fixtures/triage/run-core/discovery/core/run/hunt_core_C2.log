@@ -1,0 +1,9 @@
+[genesis] 000000000002
+[prompt] "You are an elite adversarial smart-contract auditor..." -> string
+[llm] requesting mock ...
+Reading the pool entry points first.
+READ|src/core/Pool.sol:withdraw|assets are transferred on line 40, shares burned on line 44
+TRACE|#1|BUG|withdraw pays out before the share burn; the receiver hook re-enters
+TRACE|#2|CLEAN|Vault accrue advances the index from the last checkpoint, one block late but bounded
+CANDIDATE|src/core/Pool.sol:withdraw:40|class=C2|High|withdraw transfers assets before the share burn|re-enter from the receiver hook
+DISMISS|src/core/Pool.sol:deposit|rounding-dust|deposit rounds shares up by at most one wei per call, below any profitable threshold

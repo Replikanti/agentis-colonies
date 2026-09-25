@@ -1,0 +1,3 @@
+// DECOY source copy (triage fixture): an agent source copy that must never be read as output.
+DISMISS|src/core/Vault.sol:pause|guard|DECOY hunter source copy line
+TRACE|#9|CLEAN|DECOY hunter source copy line naming Pool sync

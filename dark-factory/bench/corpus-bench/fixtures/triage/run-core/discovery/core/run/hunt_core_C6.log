@@ -1,0 +1,7 @@
+[genesis] 000000000003
+[prompt] "You are an elite adversarial smart-contract auditor..." -> string
+[llm] requesting mock ...
+The idle-balance and surplus paths are the value exits of this zone.
+CANDIDATE|src/core/Vault.sol:sweep:88|class=C6|High|sweep forwards the idle balance to msg.sender|call sweep as a stranger
+CANDIDATE|src/core/Pool.sol:skim:61|class=C6|Medium|skim pays the reserve surplus to an arbitrary recipient|donate, skim to self
+Settlement looks consistent on a first read; the settle index is only written in one place.

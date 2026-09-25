@@ -1,0 +1,1 @@
+src/core/Pool.sol:withdraw:40|class=C2|High|withdraw transfers assets before the share burn|src/core/Pool.sol
