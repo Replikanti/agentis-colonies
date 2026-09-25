@@ -86,6 +86,11 @@ dh_sched_init() {
   if [ "$DH_J" -gt "${FORGE_MAX_SLOTS:-2}" ] 2>/dev/null; then
     echo "run-zone-hunt.sh: [deep-hunt] WARNING: DEEP_HUNT_JOBS=$DH_J > FORGE_MAX_SLOTS=${FORGE_MAX_SLOTS:-2}: each cell holds a forge slot for its whole run, so the extra cells wait FORGE_SLOT_WAIT_S and then run without one; set FORGE_MAX_SLOTS >= DEEP_HUNT_JOBS (#2258)" >&2
   fi
+  # A worker takes its LLM-pool slot BEFORE its watchdog (and so its wall cap) starts: with more jobs than slots, a
+  # cell capped by the zone budget can overrun that budget by up to the slot wait (LLM_SLOT_WAIT_S, then fail-open).
+  if [ "$DH_J" -gt "${LLM_MAX_CONCURRENT:-3}" ] 2>/dev/null; then
+    echo "run-zone-hunt.sh: [deep-hunt] WARNING: DEEP_HUNT_JOBS=$DH_J > LLM_MAX_CONCURRENT=${LLM_MAX_CONCURRENT:-3}: a cell waits up to LLM_SLOT_WAIT_S=${LLM_SLOT_WAIT_S:-120}s for an LLM slot before its cap starts, so a zone-budget cell may overrun its zone budget by up to that wait (#2258)" >&2
+  fi
   DH_HERE="$HERE/lib"
   DH_STATE="$DEEP/.sched"
   rm -rf "$DH_STATE" && mkdir -p "$DH_STATE/argv" "$DH_STATE/meta" "$DH_STATE/rc" \
@@ -138,7 +143,7 @@ dh_pass_begin() {
       DEEP_TARGETS="$DH_STATE/collect-$DH_STEP.tsv"
       DEEP_HUNT_RESUME=0
       DH_MODE=collect; export DH_MODE
-      DH_COLLECT_I=0
+      DH_COLLECT_I=0; DH_COLLECT_PREV=""
       DH_PHASE=collect
       return 0 ;;
     *) return 1 ;;
@@ -161,6 +166,7 @@ dh_pass_end() {
       trap dh_on_term TERM INT
       DH_PHASE=between ;;
     collect)
+      dh_collect_done
       DEEP_TARGETS="$DH_SAVED_TARGETS"; DEEP_HUNT_RESUME="$DH_SAVED_RESUME"
       if [ "$DH_COLLECT_I" -ne "$DH_BATCH_NCOLLECT" ]; then
         echo "run-zone-hunt.sh: [deep-hunt] scheduler: collect step $DH_STEP collected $DH_COLLECT_I row(s), expected $DH_BATCH_NCOLLECT (#2258)" >&2
@@ -193,13 +199,14 @@ dh_note_row() {
       [ "${7:-}" = collect-only ] || rm -f "$6/.dh-uncollected"
       DH_CUR_SEQ="$DH_SEQ"; export DH_CUR_SEQ ;;
     collect)
+      dh_collect_done
       _dh_s="${DH_BATCH_COLLECT[$DH_COLLECT_I]:-}"
       DH_COLLECT_I=$((DH_COLLECT_I + 1))
       if [ -z "$_dh_s" ] || [ "${DH_DZ[$_dh_s]}" != "$6" ]; then
         echo "run-zone-hunt.sh: [deep-hunt] scheduler: collect row $DH_COLLECT_I ('$1' $3 -> $6) does not match the queue (#2258)" >&2
         exit 3
       fi
-      rm -f "$6/.dh-uncollected"
+      DH_COLLECT_PREV="$_dh_s"
       DH_CUR_SEQ="$_dh_s"; export DH_CUR_SEQ ;;
   esac
   return 0
@@ -258,8 +265,8 @@ dh_terminal() {
 dh_build_queue() {
   DH_N="$DH_SEQ"
   DH_Z=(); DH_REL=(); DH_C=(); DH_AUX=(); DH_REACH=(); DH_DZ=(); DH_T=(); DH_KEY=(); DH_ONLY=(); DH_SHARED=()
-  DH_BATCH=(); DH_PROBE=(); DH_STATUS=(); DH_REASON=(); DH_COLLECT=(); DH_BROKEN=(); DH_BLOC=(); DH_LAUNCHED=(); DH_DONE=()
-  DH_NBATCH=0
+  DH_BATCH=(); DH_PROBE=(); DH_STATUS=(); DH_REASON=(); DH_COLLECT=(); DH_BROKEN=(); DH_BLOC=(); DH_LAUNCHED=(); DH_DONE=(); DH_TAIL=()
+  DH_NBATCH=0; DH_STOP=0
   _dh_batch_dz=""
   _dh_s=1
   while [ "$_dh_s" -le "$DH_N" ]; do
@@ -359,11 +366,45 @@ dh_reap() {
 # background): forward TERM to every live worker (each forwards it to its watchdog, which kills its engine group),
 # wait for them, exit 143. The run's own EXIT trap (#1981 __EXIT__ marker) still fires. A finished-but-uncollected
 # cell keeps its .dh-uncollected marker, so the next --deep-hunt-resume merges it.
+# Inside a COLLECT pass the exit is deferred to the next row boundary (dh_note_row / dh_pass_end): bash runs this
+# handler only after the current foreground step (e.g. the refute gate) returns, and the rest of the row (reach /
+# promise rows, matrix, marker removal, ledger row) is local and quick — so a merged cell is never left half-recorded
+# and a merge is never repeated by a resume.
 dh_on_term() {
   echo "run-zone-hunt.sh: [deep-hunt] scheduler: stop signal — terminating ${#DH_RUN_PIDS[@]} running cell(s) (#2258)" >&2
   for _dh_pid in ${DH_RUN_PIDS[@]+"${DH_RUN_PIDS[@]}"}; do kill -TERM "$_dh_pid" 2>/dev/null || true; done
   for _dh_pid in ${DH_RUN_PIDS[@]+"${DH_RUN_PIDS[@]}"}; do wait "$_dh_pid" 2>/dev/null || true; done
+  DH_RUN_PIDS=(); DH_RUN_SEQS=()
+  if [ "$DH_PHASE" = collect ]; then DH_STOP=1; return 0; fi
   exit 143
+}
+
+# dh_ledger_row SEQ — append one ledger row. A collect-only cell (merged by a resume) is skipped when the ledger
+# already ends that cell's history with the same status, so a resume never duplicates a row.
+dh_ledger_row() {
+  if [ "${DH_ONLY[$1]}" = collect-only ] && [ -f "$DEEP/cell-status.tsv" ] \
+     && [ "$(awk -F'\t' -v z="${DH_Z[$1]}" -v t="${DH_T[$1]}" -v c="${DH_C[$1]}" '$1 == z && $2 == t && $3 == c { s = $4 } END { print s }' "$DEEP/cell-status.tsv")" = "${DH_STATUS[$1]}" ]; then
+    return 0
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\n' "${DH_Z[$1]}" "${DH_T[$1]}" "${DH_C[$1]}" "${DH_STATUS[$1]}" \
+    "${DH_REASON[$1]:--}" >> "$DEEP/cell-status.tsv"
+}
+
+# dh_collect_done — the row boundary after a collected cell's post-processing: only now (its verified row durably
+# written) drop its .dh-uncollected marker and append its ledger row plus the rows of the non-collectable cells that
+# follow it in queue order; then honour a deferred stop.
+dh_collect_done() {
+  if [ -n "${DH_COLLECT_PREV:-}" ]; then
+    rm -f "${DH_DZ[$DH_COLLECT_PREV]}/.dh-uncollected"
+    dh_ledger_row "$DH_COLLECT_PREV"
+    for _dh_ts in ${DH_TAIL[$DH_COLLECT_PREV]:-}; do dh_ledger_row "$_dh_ts"; done
+    DH_COLLECT_PREV=""
+  fi
+  if [ "${DH_STOP:-0}" = 1 ]; then
+    echo "run-zone-hunt.sh: [deep-hunt] scheduler: stopped at a row boundary; the remaining finished cells are merged by --deep-hunt-resume (#2258)" >&2
+    exit 143
+  fi
+  return 0
 }
 
 # dh_pretrust SEQ... — ONE foreground df_ensure_claude_trust call over the batch's <DZOUT>/run dirs (its whole-file
@@ -486,16 +527,21 @@ dh_dispatch_step() {
   # The collect file (the rc-0 cells' raw rows) and the ledger rows, for the settled prefix, in queue order.
   DH_STEP=$((DH_STEP + 1))
   : > "$DH_STATE/collect-$DH_STEP.tsv" || { echo "run-zone-hunt.sh: [deep-hunt] scheduler: cannot write the collect file (#2258)" >&2; exit 3; }
+  # Ledger rows: a non-collectable cell (TIMEOUT, SKIPPED_*, ENGINE_FAILED) has nothing to merge — its row is written
+  # now if no collectable cell precedes it in this prefix, else right after that cell's merge (DH_TAIL), so the
+  # ledger stays in queue order and a collectable cell's row is written only once it is merged.
   DH_BATCH_COLLECT=(); DH_BATCH_NCOLLECT=0
-  _dh_n=0
+  _dh_n=0; _dh_lastc=""
   for _dh_s in $(dh_queue_order); do
     [ "${DH_DONE[$_dh_s]}" = 1 ] && continue
     [ -n "${DH_STATUS[$_dh_s]}" ] || break
     DH_DONE[_dh_s]=1; _dh_n=$((_dh_n + 1))
     [ "${DH_STATUS[$_dh_s]}" = RESUME_SKIPPED ] && continue
-    printf '%s\t%s\t%s\t%s\t%s\n' "${DH_Z[$_dh_s]}" "${DH_T[$_dh_s]}" "${DH_C[$_dh_s]}" "${DH_STATUS[$_dh_s]}" \
-      "${DH_REASON[$_dh_s]:--}" >> "$DEEP/cell-status.tsv"
+    if [ "${DH_COLLECT[$_dh_s]}" != 1 ]; then
+      if [ -n "$_dh_lastc" ]; then DH_TAIL[_dh_lastc]="${DH_TAIL[$_dh_lastc]:-} $_dh_s"; else dh_ledger_row "$_dh_s"; fi
+    fi
     if [ "${DH_COLLECT[$_dh_s]}" = 1 ]; then
+      _dh_lastc="$_dh_s"
       _dh_tgt="${DH_REL[$_dh_s]}${DH_REACH[$_dh_s]:+:${DH_REACH[$_dh_s]}}"
       if [ -n "${DH_AUX[$_dh_s]}" ]; then
         printf '%s\t%s\t%s\t%s\n' "${DH_Z[$_dh_s]}" "$_dh_tgt" "${DH_C[$_dh_s]}" "${DH_AUX[$_dh_s]}" >> "$DH_STATE/collect-$DH_STEP.tsv"

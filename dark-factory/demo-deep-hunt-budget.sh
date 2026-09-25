@@ -28,7 +28,8 @@
 #   9  MUTATIONS on a copied tree: each rule is load-bearing.
 #  10  HARD STOP + RESUME: a settled FINDING is merged before a stop (1 job) or merged collect-only by the next resume
 #      (3 jobs); a transport-crashed probe is TRANSIENT_ERROR, never a broken target; shared run dirs under
-#      --deep-hunt-resume run the sequential loop's cells; a cap never reads a previous run's verdict.
+#      --deep-hunt-resume run the sequential loop's cells; a cap never reads a previous run's verdict; a cell TERMed
+#      after its verdict is merged by the resume; a TERM inside a collect step never duplicates a ledger row.
 #
 # Usage: dark-factory/demo-deep-hunt-budget.sh
 # Exit: 0 = all assertions hold; non-zero = a regression.
@@ -128,7 +129,10 @@ case "$cmd" in
     case "$sub" in
       zone-mapper.ag) echo "ZONE-CLASS|C10"; exit 0 ;;
       hunter.ag) echo "SAFE"; exit 0 ;;
-      refuter.ag) echo "VERDICT|REAL|${CAND_FILE_FN:-}|${CAND_CLASS:-}|survived"; exit 0 ;;
+      refuter.ag)
+        [ -n "${STUB_REFUTE_FLAG:-}" ] && : > "$STUB_REFUTE_FLAG"
+        [ -n "${STUB_REFUTE_SLEEP:-}" ] && "${STUB_SLEEP:-sleep}" "$STUB_REFUTE_SLEEP"
+        echo "VERDICT|REAL|${CAND_FILE_FN:-}|${CAND_CLASS:-}|survived"; exit 0 ;;
       invariant-prover.ag)
         tf="${TARGET_FN:-}"; cl="${TARGET_CLASS:-}"
         name="${tf##*:}"; name="${name##*/}"; name="${name%.sol}"
@@ -522,6 +526,12 @@ if [ "$(maxconc "$WORK/s1.probe")" = 1 ] && [ "$(grep -c . "$WORK/s1/deep-hunt/c
 else
   bad "LLM slot pool: concurrency $(maxconc "$WORK/s1.probe"), engine saw [$(sort -u "$WORK/s1.env" | tr '\n' ' ')]"
 fi
+if grep -q 'DEEP_HUNT_JOBS=3 > LLM_MAX_CONCURRENT=1: .*may overrun its zone budget by up to that wait' "$WORK/s1.log" \
+   && ! grep -q 'LLM_MAX_CONCURRENT' "$WORK/eqc.log"; then
+  ok "JOBS > LLM_MAX_CONCURRENT prints the zone-budget overrun warning (and JOBS <= LLM_MAX_CONCURRENT does not)"
+else
+  bad "the JOBS > LLM_MAX_CONCURRENT warning is missing (or printed when JOBS <= the pool size)"
+fi
 rm -rf "$WORK/s2.probe"; mkdir -p "$WORK/s2.probe"
 STUB_PROBE="$WORK/s2.probe" DEEP_HUNT_REACH=1 DEEP_HUNT_JOBS=3 lens_only "$RZH" "$WORK/s2" --pattern-store "$WORK/pstore"
 if [ "$(maxconc "$WORK/s2.probe")" = 1 ] && grep -q 'pattern-store is forwarded' "$WORK/s2.log"; then
@@ -655,6 +665,42 @@ if [ "$(cut -f2 "$WS/state/rc/1" 2>/dev/null)" = TIMEOUT ] && [ ! -e "$WS/dz/.dh
   ok "a cap firing before the engine rewrote its run dir -> TIMEOUT, never the previous run's CLEAN"
 else
   bad "stale verdict read as this run's: $(cat "$WS/state/rc/1" 2>/dev/null)"
+fi
+
+# (f) A cell TERMed in its tail AFTER writing its verdict (1 job, no cap fired) is marked, so a resume merges it once
+#     instead of skipping its terminal verdict as done.
+spec 'VaultA|C10|30|tail|FINDING' '*|*|0.2|normal|CLEAN'
+run_bg "$WORK/tk" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S=3600
+for _i in $(seq 1 150); do grep -qs 'INVARIANT|' "$WORK"/tk/deep-hunt/src_vault-C10-VaultA/run/invariant_*.log && break; sleep 0.2; done
+sleep 0.5; stop_bg
+tk_mark=0; [ -f "$WORK/tk/deep-hunt/src_vault-C10-VaultA/.dh-uncollected" ] && tk_mark=1
+spec '*|*|0.2|normal|CLEAN'
+resume_run "$WORK/tk" "$WORK/tkr.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S=3600
+tk_rows="$(awk -F'\t' '$2 == "VaultA" && $3 == "C10"' "$WORK/tk/deep-hunt/cell-status.tsv" 2>/dev/null | grep -c .)"
+if [ "$tk_mark" = 1 ] && [ "$(findings_of "$WORK/tk")" = 1 ] && ! grep -qx 'VaultA|C10' "$WORK/tkr.stub" && [ "$tk_rows" = 1 ] \
+   && [ "$(status_of "$WORK/tk" VaultA C10)" = FINDING ] && [ -z "$(procs_under "$STUB_SLEEP")" ]; then
+  ok "a cell TERMed in its tail after writing its verdict is marked; the resume merges it once (1 merged, 1 ledger row, not re-run)"
+else
+  bad "TERM in a cell's tail: marker=$tk_mark merged=$(findings_of "$WORK/tk") ledger rows=$tk_rows resume ran [$(tr '\n' ' ' < "$WORK/tkr.stub")]"
+fi
+# (g) A TERM while a multi-row collect step merges its first cell (a slow refute gate): the stop waits for that row,
+#     every ledger row is written after its cell's merge, and the resume converges — one ledger row and one reach row
+#     per cell, the FINDING merged once.
+spec 'VaultA|C10|2|normal|FINDING' '*|*|0.3|normal|CLEAN'
+rm -f "$WORK/refute.flag"
+STUB_REFUTE_FLAG="$WORK/refute.flag" STUB_REFUTE_SLEEP=3 run_bg "$WORK/tg" DEEP_HUNT_REACH=1 DEEP_HUNT_JOBS=3
+for _i in $(seq 1 150); do [ -f "$WORK/refute.flag" ] && break; sleep 0.2; done
+stop_bg
+tg_stop_rows="$(grep -c . "$WORK/tg/deep-hunt/cell-status.tsv" 2>/dev/null)"
+resume_run "$WORK/tg" "$WORK/tgr.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_JOBS=3
+tg_cells="$(cut -f1-3 "$WORK/tg/deep-hunt/cell-status.tsv" 2>/dev/null | sort -u | grep -c .)"
+tg_rows="$(grep -c . "$WORK/tg/deep-hunt/cell-status.tsv" 2>/dev/null)"
+tg_reach="$(cut -f1-3 "$WORK/tg/deep-hunt/reach-coverage.tsv" 2>/dev/null | sort | uniq -c | awk '$1 == 1' | grep -c .)"
+if [ -f "$WORK/refute.flag" ] && [ "$tg_stop_rows" = 1 ] && [ "$tg_rows" = 6 ] && [ "$tg_cells" = 6 ] && [ "$tg_reach" = 6 ] \
+   && [ "$(findings_of "$WORK/tg")" = 1 ] && grep -q 'stopped at a row boundary' "$WORK/tg.log"; then
+  ok "TERM during a collect step's merge: the row completes, ledger 1 row at the stop, 6 rows / 6 cells / 6 reach rows after resume, 1 FINDING"
+else
+  bad "TERM during a collect step: rows at stop=$tg_stop_rows, after resume rows=$tg_rows cells=$tg_cells reach=$tg_reach merged=$(findings_of "$WORK/tg")"
 fi
 
 # ================================================================================================

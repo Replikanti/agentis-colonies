@@ -81,10 +81,21 @@ _w_slots="${DH_LLM_SLOTS_DIR:-${DARK_FACTORY_DIR:-${HOME:-.}/.dark-factory}/deep
 _w_release() { AGENTIS_LLM_SLOTS_DIR="$_w_slots" release_llm_slot; }
 
 _w_child=""
+# _w_mark — atomically mark this cell as finished-but-not-yet-merged (see the scheduler header). Idempotent.
+_w_mark() {
+  : > "$DZOUT/.dh-uncollected.$$" 2>/dev/null && mv -f "$DZOUT/.dh-uncollected.$$" "$DZOUT/.dh-uncollected" 2>/dev/null
+}
 _w_term() {
   if [ -n "$_w_child" ]; then
     kill -TERM "$_w_child" 2>/dev/null || true
     wait "$_w_child" 2>/dev/null || true
+  fi
+  # A cell whose engine had already written THIS run's verdict when the stop arrived (it was killed in its tail) is
+  # settled: mark it so the next --deep-hunt-resume merges it instead of skipping its terminal verdict as done.
+  _w_l="$(dh_agg_log "$DZOUT")"
+  if [ -n "$_w_l" ] && [ -f "$DH_STATE/start/$SEQ" ] && [ ! "$_w_l" -ot "$DH_STATE/start/$SEQ" ] \
+     && grep -q 'INVARIANT|' "$_w_l" 2>/dev/null; then
+    _w_mark
   fi
   _w_release
   exit 143
@@ -161,6 +172,6 @@ fi
 _w_release
 # A collectable cell stays marked until the collect pass merges it: a stop in between leaves the marker, and the next
 # --deep-hunt-resume merges the cell instead of skipping its terminal verdict as done.
-if [ "$COLLECT_RC" = 0 ]; then : > "$DZOUT/.dh-uncollected"; fi
+if [ "$COLLECT_RC" = 0 ]; then _w_mark; fi
 write_rc "$COLLECT_RC" "$STATUS" "$REASON" "${BROKEN:-0}" "$BLOC"
 exit 0

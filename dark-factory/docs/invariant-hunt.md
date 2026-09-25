@@ -382,7 +382,8 @@ malformed value, exits 2. All four unset (the default) ⇒ STAGE 4.5 is byte-ide
 **Slots.** Each worker holds one slot of a DEDICATED dark-factory LLM-session pool,
 `${DARK_FACTORY_DIR:-~/.dark-factory}/deep-hunt-llm-slots` (`tools/lib/llm-session-slot.sh`, K = `LLM_MAX_CONCURRENT`,
 default 3, fail-open after `LLM_SLOT_WAIT_S`); the pool dir is never exported to the engine, whose own per-prompt
-acquire keeps its own pool. The prover also holds a FORGE slot for its whole run, so cells beyond `FORGE_MAX_SLOTS`
+acquire keeps its own pool. A worker takes its slot BEFORE its watchdog starts, so with `DEEP_HUNT_JOBS > LLM_MAX_CONCURRENT`
+a cell capped by the zone budget may overrun that budget by up to `LLM_SLOT_WAIT_S` (the scheduler warns). The prover also holds a FORGE slot for its whole run, so cells beyond `FORGE_MAX_SLOTS`
 (default 2) wait `FORGE_SLOT_WAIT_S` and then run without one — set `FORGE_MAX_SLOTS ≥ DEEP_HUNT_JOBS` (the scheduler
 warns). `DEEP_HUNT_JOBS` falls back to 1 with a warning on bash < 4.3 (`wait -n`) and when `--pattern-store` is
 forwarded (cross-cell pattern recall depends on the serial order). Before each batch the batch's `<run>` dirs are
