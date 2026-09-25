@@ -35,7 +35,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   in column 5). (4) **Surface** (`verify-findings.sh --scope-docs`, forwarded by `run-zone-hunt.sh`): the block is
   built once per run (`<out>/scope-assumptions.txt`), and routed candidates land in a new `out_of_scope[]` array +
   `totals.out_of_scope` — emitted only when non-empty, never in `verified[]`, a subset of the implicit refuted
-  count. An empty block, or the rubric off, is inert (logged). STAGE 4 first-pass findings only
+  count. An empty block, the rubric off, or an extractor crash (fail-open) is inert, and whenever the flag is
+  given `verified_findings.json` records it as `scope_layer: {state: on|off|inert-extractor-error, reason}`. STAGE 4 first-pass findings only
   (`deep-hunt-gate.sh` / `--invariant-mode` not wired). Unset ⇒ byte-identical. Proven offline by
   `demo-scope-assumptions.sh`; precision UNMEASURED (needs a fresh set).
 - **Deep-hunt PROMISES — invariants derived from the target's user-facing promises, knob `DEEP_HUNT_PROMISES=1`

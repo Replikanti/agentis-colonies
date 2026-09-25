@@ -710,9 +710,9 @@ fi
 note "e3) KNOB-OFF byte identity, and scope-without-rubric inertness ..."
 _vf e-off "$TGT_TOK"
 _vf e-norub "$TGT_TOK" --scope-docs auto
-if [ "$(_jq "$WORK/e-off/verified_findings.json" '"out_of_scope" in d or "out_of_scope" in d["totals"]')" = "False" ] \
+if [ "$(_jq "$WORK/e-off/verified_findings.json" '"out_of_scope" in d or "out_of_scope" in d["totals"] or "scope_layer" in d')" = "False" ] \
    && [ -z "$(find "$WORK/e-off" -name 'out-of-scope.tsv' -o -name 'scope-assumptions.txt' | head -1)" ]; then
-  ok "flag unset: no out_of_scope key, no out-of-scope.tsv, no scope-assumptions.txt anywhere"
+  ok "flag unset: no out_of_scope / scope_layer key, no out-of-scope.tsv, no scope-assumptions.txt anywhere"
 else
   bad "a flagless run grew a scope key or file"
 fi
@@ -723,10 +723,16 @@ for r in "$WORK"/e-off/gates/*/refute-out/refute-report.md; do
 done
 OFF_FILES="$(cd "$WORK/e-off" && find . -type f ! -path './.verify-work/*' | sort)"
 NORUB_FILES="$(cd "$WORK/e-norub" && find . -type f ! -path './.verify-work/*' ! -name scope-assumptions.txt | sort)"
-if cmp -s "$WORK/e-off/verified_findings.json" "$WORK/e-norub/verified_findings.json" && [ -z "$REP_DIFF" ] \
+# The one intended difference is the scope_layer record (the flag WAS requested); everything else must match.
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("scope_layer", None); print(json.dumps(d, indent=2))' \
+  "$WORK/e-norub/verified_findings.json" > "$WORK/e-norub.noscope.json" 2>/dev/null
+python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), indent=2))' \
+  "$WORK/e-off/verified_findings.json" > "$WORK/e-off.norm.json" 2>/dev/null
+if cmp -s "$WORK/e-off.norm.json" "$WORK/e-norub.noscope.json" && [ -z "$REP_DIFF" ] \
    && [ "$OFF_FILES" = "$NORUB_FILES" ] \
+   && [ "$(_jq "$WORK/e-norub/verified_findings.json" 'd["scope_layer"]["state"]')" = "off" ] \
    && grep -q 'SEVERITY_RUBRIC is not 1 — the scope layer is nested under the rubric and is INERT' "$WORK/e-norub.vout"; then
-  ok "--scope-docs without SEVERITY_RUBRIC=1: verified_findings.json + every refute-report.md byte-identical to a flagless run, the only new file is the block record, and the warning is LOUD"
+  ok "--scope-docs without SEVERITY_RUBRIC=1: verified_findings.json (minus scope_layer.state=off) + every refute-report.md identical to a flagless run, the only new file is the block record, and the warning is LOUD"
 else
   bad "scope-without-rubric was not inert (report diffs:$REP_DIFF)"
 fi
@@ -736,6 +742,31 @@ if [ "$RC_BAD" = "2" ]; then
   ok "a --scope-docs value that is neither 'auto' nor a file is a usage error (exit 2)"
 else
   bad "a bad --scope-docs exited $RC_BAD, want 2"
+fi
+if [ "$(_jq "$EJ" 'd["scope_layer"]["state"]')" = "on" ] && [ "$(_jq "$AJ" 'd["scope_layer"]["state"]')" = "off" ]; then
+  ok "scope_layer records the layer's state whenever --scope-docs was requested (on for e1, off for the empty block of e2)"
+else
+  bad "scope_layer is missing or wrong (e1=$(_jq "$EJ" 'd.get("scope_layer")') e2=$(_jq "$AJ" 'd.get("scope_layer")'))"
+fi
+
+note "e3b) an EXTRACTOR ERROR fails open AND is recorded as scope_layer.state=inert-extractor-error ..."
+# A throwaway dark-factory root whose scope helper crashes (exit 3), everything else symlinked to the real tree.
+XERR="$WORK/xerr-root"; mkdir -p "$XERR/lib"
+for e in "$HERE"/lib/*; do ln -s "$e" "$XERR/lib/$(basename "$e")"; done
+rm -f "$XERR/lib/scope-assumptions.py"
+printf 'import sys\nsys.stderr.write("scope-assumptions.py: simulated crash\\n")\nsys.exit(3)\n' > "$XERR/lib/scope-assumptions.py"
+ln -s "$HERE/auditor" "$XERR/auditor"; ln -s "$REFUTE" "$XERR/run-refute.sh"; cp "$VERIFY" "$XERR/verify-findings.sh"
+STUB_CALLS="$WORK/xerr.calls"; export STUB_CALLS; : > "$STUB_CALLS"
+SEVERITY_RUBRIC=1 "$XERR/verify-findings.sh" --results "$RES" --repo "$TGT_TOK" --out "$WORK/e-xerr" --gate refute \
+  --backend mock --agentis "$STUB" --scope-docs auto > "$WORK/e-xerr.vout" 2>&1; RC_XERR=$?
+XJ="$WORK/e-xerr/verified_findings.json"
+if [ "$RC_XERR" = "0" ] && [ "$(_jq "$XJ" 'd["scope_layer"]["state"]')" = "inert-extractor-error" ] \
+   && _jq "$XJ" 'd["scope_layer"]["reason"]' | grep -q 'simulated crash' \
+   && [ "$(_jq "$XJ" '"out_of_scope" in d')" = "False" ] \
+   && grep -q 'WARNING: scope extraction failed' "$WORK/e-xerr.vout"; then
+  ok "a crashing extractor does not abort STAGE 4, the run completes with the layer off, and verified_findings.json says why"
+else
+  bad "the extractor-error case is not recorded (rc=$RC_XERR scope_layer=$(_jq "$XJ" 'd.get("scope_layer")'))"
 fi
 
 note "e4) --jobs 2 parity ..."

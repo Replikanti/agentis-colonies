@@ -96,7 +96,10 @@
 #                       dropped_subfloor` is unchanged. An empty block (nothing declared) is logged and inert; a
 #                       non-empty block without SEVERITY_RUBRIC=1 is logged LOUDLY and passed nowhere (inert).
 #                       Tier-2 records get the block in their prompt but no new routing (their reason carries the
-#                       `out-of-scope-premise (...)` prefix). Default: unset = inert = every artifact byte-identical.
+#                       `out-of-scope-premise (...)` prefix). Whenever the flag is given, verified_findings.json
+#                       also carries `scope_layer: {state: on|off|inert-extractor-error, reason}` (an extractor
+#                       crash fails OPEN and is recorded there). Default: unset = inert = every artifact
+#                       byte-identical (no scope_layer key).
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the gate (default: flat-cyborg).
 #   --model <id>        LLM model id for the gate's `llm.model` (default: unset, so the emitted config stays
 #                       `llm.model = opus` — byte-identical to before this flag existed).
@@ -242,25 +245,36 @@ OUT_OF_SCOPE=0
 #     (=> run_gate_refute passes nothing) when --scope-docs is unset, when nothing was declared, when the
 #     extraction failed (fail-open: a broken doc must not abort STAGE 4), or when the rubric the layer is nested
 #     under is off. Only the refute gate reads it.
-SCOPE_BLOCK=""
+#     SCOPE_STATE / SCOPE_REASON record WHICH of those happened, and land in verified_findings.json as
+#     `scope_layer: {state, reason}` whenever --scope-docs was requested (never when it is unset, so OFF stays
+#     byte-identical): `on`, `off` (nothing declared / non-refute gate / rubric off) or `inert-extractor-error` —
+#     a fail-open that is visible in the artifact, not only on stderr.
+SCOPE_BLOCK="" ; SCOPE_STATE="" ; SCOPE_REASON="" ; SCOPE_EXTRACT_FAILED=0
 if [ -n "$SCOPE_DOCS" ]; then
   SCOPE_LIB="$HERE/lib/scope-assumptions.py"
   SCOPE_OUT="$OUT/scope-assumptions.txt"
   if [ "$SCOPE_DOCS" = "auto" ]; then
     python3 "$SCOPE_LIB" extract --repo "$REPO" > "$SCOPE_OUT" 2>"$WORK/scope-extract.err" \
-      || { echo "verify-findings.sh: WARNING: scope extraction failed ($(head -1 "$WORK/scope-extract.err")) — scope layer inert" >&2; : > "$SCOPE_OUT"; }
+      || { echo "verify-findings.sh: WARNING: scope extraction failed ($(head -1 "$WORK/scope-extract.err")) — scope layer inert" >&2; : > "$SCOPE_OUT"; SCOPE_EXTRACT_FAILED=1; }
   else
     python3 "$SCOPE_LIB" extract --repo "$REPO" --operator "$SCOPE_DOCS" > "$SCOPE_OUT" 2>"$WORK/scope-extract.err" \
-      || { echo "verify-findings.sh: WARNING: scope extraction failed ($(head -1 "$WORK/scope-extract.err")) — scope layer inert" >&2; : > "$SCOPE_OUT"; }
+      || { echo "verify-findings.sh: WARNING: scope extraction failed ($(head -1 "$WORK/scope-extract.err")) — scope layer inert" >&2; : > "$SCOPE_OUT"; SCOPE_EXTRACT_FAILED=1; }
   fi
-  if [ ! -s "$SCOPE_OUT" ]; then
+  if [ "$SCOPE_EXTRACT_FAILED" -eq 1 ]; then
+    SCOPE_STATE="inert-extractor-error"
+    SCOPE_REASON="scope extraction failed: $(head -1 "$WORK/scope-extract.err" | tr '\t' ' ')"
+  elif [ ! -s "$SCOPE_OUT" ]; then
+    SCOPE_STATE="off"; SCOPE_REASON="the scope docs declared no assumption"
     echo "verify-findings.sh: --scope-docs $SCOPE_DOCS declared no assumption — scope layer inert" >&2
   elif [ "$GATE" != "refute" ]; then
+    SCOPE_STATE="off"; SCOPE_REASON="the scope block is read by the refute gate only (gate $GATE)"
     echo "verify-findings.sh: WARNING: --scope-docs is read by the refute gate only (--gate $GATE) — scope layer inert" >&2
   elif [ "${SEVERITY_RUBRIC:-}" != "1" ]; then
+    SCOPE_STATE="off"; SCOPE_REASON="SEVERITY_RUBRIC is not 1 (the scope layer is nested under the rubric)"
     echo "verify-findings.sh: WARNING: --scope-docs extracted $(wc -l < "$SCOPE_OUT" | tr -d ' ') assumption(s) but SEVERITY_RUBRIC is not 1 — the scope layer is nested under the rubric and is INERT for this run" >&2
   else
     SCOPE_BLOCK="$SCOPE_OUT"
+    SCOPE_STATE="on"; SCOPE_REASON="$(wc -l < "$SCOPE_OUT" | tr -d ' ') declared assumption(s) handed to every refute gate"
     echo "verify-findings.sh: scope layer: $(wc -l < "$SCOPE_OUT" | tr -d ' ') declared assumption(s) -> every refute gate ($SCOPE_OUT)" >&2
   fi
 fi
@@ -846,7 +860,7 @@ fi
 #     gate loop), top-level pay_floor ("" when unset), and totals.dropped_subfloor (0 when unset).
 VERIFIED_JSON="$OUT/verified_findings.json"
 REPO_NAME="$REPO_NAME" GATE="$GATE" CANDIDATES="$CANDIDATES" VERIFIED="$VERIFIED" ERRORED="$ERRORED" \
-PAY_FLOOR="$PAY_FLOOR" SUBFLOOR="$SUBFLOOR" \
+PAY_FLOOR="$PAY_FLOOR" SUBFLOOR="$SUBFLOOR" SCOPE_STATE="$SCOPE_STATE" SCOPE_REASON="$SCOPE_REASON" \
 python3 - "$CONFIRMED_TSV" "$ERRORS_TSV" "$DROPPED_SUBFLOOR_TSV" "$TIER2_OUT_TSV" "$OOS_TSV" > "$VERIFIED_JSON" <<'PY'
 import sys, os, json
 verified = []
@@ -951,6 +965,10 @@ if os.path.exists(sys.argv[5]):
 if out_of_scope:
     out["out_of_scope"] = out_of_scope
     out["totals"]["out_of_scope"] = len(out_of_scope)
+# #2257: the scope layer's own state, present ONLY when --scope-docs was requested (SCOPE_STATE is empty otherwise),
+# so an extractor failure that fails open is recorded in the artifact, not only on stderr.
+if os.environ.get("SCOPE_STATE", ""):
+    out["scope_layer"] = {"state": os.environ["SCOPE_STATE"], "reason": os.environ.get("SCOPE_REASON", "")}
 print(json.dumps(out, indent=2))
 PY
 
