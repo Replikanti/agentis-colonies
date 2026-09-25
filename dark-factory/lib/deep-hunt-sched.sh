@@ -63,9 +63,15 @@ dh_sched_init() {
   else
     return 0
   fi
-  if [ "$DH_J" -gt 1 ]; then
-    echo "run-zone-hunt.sh: [deep-hunt] WARNING: DEEP_HUNT_JOBS=$DH_J — parallel cells are not available in this build; running them one at a time (#2258)" >&2
+  # `wait -n` (the parallel window) needs bash >= 4.3 — the run-discovery.sh precedent: warn and run serially.
+  if [ "$DH_J" -gt 1 ] && { [ "${BASH_VERSINFO[0]:-0}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]:-0}" -lt 3 ]; }; }; then
+    echo "run-zone-hunt.sh: [deep-hunt] WARNING: DEEP_HUNT_JOBS=$DH_J needs bash >= 4.3 (wait -n); running the cells one at a time (#2258)" >&2
     DH_J=1
+  fi
+  # The prover holds a forge slot for its whole run, so cells beyond FORGE_MAX_SLOTS wait FORGE_SLOT_WAIT_S for one
+  # and then fail open (run unbounded) — the window still works, but say so.
+  if [ "$DH_J" -gt "${FORGE_MAX_SLOTS:-2}" ] 2>/dev/null; then
+    echo "run-zone-hunt.sh: [deep-hunt] WARNING: DEEP_HUNT_JOBS=$DH_J > FORGE_MAX_SLOTS=${FORGE_MAX_SLOTS:-2}: each cell holds a forge slot for its whole run, so the extra cells wait FORGE_SLOT_WAIT_S and then run without one; set FORGE_MAX_SLOTS >= DEEP_HUNT_JOBS (#2258)" >&2
   fi
   DH_HERE="$HERE/lib"
   DH_STATE="$DEEP/.sched"
@@ -76,10 +82,13 @@ dh_sched_init() {
   DH_STALE="$DEEP_CELL_STALE_S"
   DH_POLL="$DEEP_CELL_POLL_S"
   DH_BACKEND="$BACKEND"
+  # STOP-1 decision 2: a DEDICATED dark-factory LLM-session pool (dev-apprenticeship's fed pool is the wrong scope for
+  # hunts — #2135), K = LLM_MAX_CONCURRENT (default 3), soft: a worker fails open after LLM_SLOT_WAIT_S.
+  DH_LLM_SLOTS_DIR="${DARK_FACTORY_DIR:-${HOME:-.}/.dark-factory}/deep-hunt-llm-slots"
   DH_CLOCK_BASE=0
   DH_ZONE_NAMES=()
   DH_ZONE_T0=()
-  export DH_STATE DH_ENGINE DH_STALE DH_POLL DH_SKIP
+  export DH_STATE DH_ENGINE DH_STALE DH_POLL DH_SKIP DH_LLM_SLOTS_DIR
   echo "run-zone-hunt.sh: [deep-hunt] time-budget scheduler ON: jobs=$DH_J cell-timeout=${DH_CT}s zone-budget=${DH_ZB}s skip-broken-target=$DH_SKIP (#2258)" >&2
   return 0
 }
@@ -241,6 +250,17 @@ ${DH_DZ[$_dh_s]}
     _dh_s=$((_dh_s + 1))
   done
   [ "$DH_N" -eq 0 ] || DH_NBATCH=$((DH_NBATCH + 1))
+  # Cross-cell pattern recall (--pattern-store) depends on the serial order: one cell reads what the previous wrote.
+  if [ "$DH_J" -gt 1 ]; then
+    for _dh_af in "$DH_STATE"/argv/*; do
+      [ -f "$_dh_af" ] || continue
+      if tr '\0' '\n' < "$_dh_af" | grep -qx -- '--pattern-store'; then
+        echo "run-zone-hunt.sh: [deep-hunt] WARNING: --pattern-store is forwarded — cross-cell pattern recall depends on the serial order, so DEEP_HUNT_JOBS=$DH_J is forced to 1 (#2258)" >&2
+        DH_J=1
+        break
+      fi
+    done
+  fi
   echo "run-zone-hunt.sh: [deep-hunt] scheduler: $DH_N cell(s) queued in $DH_NBATCH batch(es) (#2258)" >&2
 }
 
@@ -356,8 +376,15 @@ dh_dispatch_batch() {
       echo "run-zone-hunt.sh: [deep-hunt] scheduler: ${#_dh_pending[@]} cell(s) can never launch (probe not in the batch) (#2258)" >&2
       exit 3
     fi
-    # Wait for a worker to finish, then reap every finished one.
-    wait "${DH_RUN_PIDS[0]}" 2>/dev/null || true
+    # Wait for a worker to finish (one running: wait for it; several: `wait -n`, bash >= 4.3 is guaranteed then), then
+    # reap every finished one. A worker is finished once its result file exists or its pid is gone.
+    if [ "${#DH_RUN_PIDS[@]}" -eq 1 ]; then
+      wait "${DH_RUN_PIDS[0]}" 2>/dev/null || true
+    else
+      _dh_any=0
+      for _dh_q in "${DH_RUN_SEQS[@]}"; do [ -f "$DH_STATE/rc/$_dh_q" ] && _dh_any=1; done
+      [ "$_dh_any" = 1 ] || wait -n 2>/dev/null || true
+    fi
     _dh_keep_p=(); _dh_keep_s=()
     _dh_i=0
     while [ "$_dh_i" -lt "${#DH_RUN_SEQS[@]}" ]; do

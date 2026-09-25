@@ -62,15 +62,33 @@ for _a in "${ARGV[@]}"; do [ "$_a" = "--handler-fixture" ] && STALE=0; done
 EXTRA=()
 [ "${DH_SKIP:-0}" = 1 ] && EXTRA+=(--forge-diag)
 
+# One slot of the dedicated dark-factory LLM-session pool (tools/lib/llm-session-slot.sh, K = LLM_MAX_CONCURRENT,
+# fails open after LLM_SLOT_WAIT_S) for the cell's lifetime. AGENTIS_LLM_SLOTS_DIR is set on the acquire/release
+# calls ONLY and never exported to the engine: an inner per-prompt acquire must keep using its own pool, or it could
+# starve on this one. The library missing (a partial install) degrades to no-op stubs — tools/flat-cyborg-claude.sh.
+_w_slotlib="$(cd "$DH_HERE/../.." 2>/dev/null && pwd)/tools/lib/llm-session-slot.sh"
+if [ -f "$_w_slotlib" ]; then
+  # shellcheck source=../../tools/lib/llm-session-slot.sh
+  . "$_w_slotlib"
+else
+  acquire_llm_slot() { return 0; }
+  release_llm_slot() { return 0; }
+fi
+_w_slots="${DH_LLM_SLOTS_DIR:-${DARK_FACTORY_DIR:-${HOME:-.}/.dark-factory}/deep-hunt-llm-slots}"
+_w_release() { AGENTIS_LLM_SLOTS_DIR="$_w_slots" release_llm_slot; }
+
 _w_child=""
 _w_term() {
   if [ -n "$_w_child" ]; then
     kill -TERM "$_w_child" 2>/dev/null || true
     wait "$_w_child" 2>/dev/null || true
   fi
+  _w_release
   exit 143
 }
 trap _w_term TERM
+trap _w_release EXIT
+AGENTIS_LLM_SLOTS_DIR="$_w_slots" acquire_llm_slot
 
 _w_t0="$(date +%s)"
 "$DH_HERE/cell-watchdog.sh" "$DZOUT" "$STALE" "${DH_POLL:-45}" "$CAP" -- \
@@ -119,5 +137,7 @@ EOF
   [ -n "${BLOC:-}" ] || BLOC="-"
 fi
 
+# Free the slot BEFORE publishing the result: the scheduler launches the next cell as soon as it sees the file.
+_w_release
 write_rc "$COLLECT_RC" "$STATUS" "$REASON" "${BROKEN:-0}" "$BLOC"
 exit 0
