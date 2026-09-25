@@ -84,6 +84,19 @@
 #                       Default 0 = OFF = inert: no new key, no new dir, every artifact byte-identical to a
 #                       pre-#2217 run.
 #   --brief <file>      Optional protocol brief handed to the refute gate (invariants + known issues).
+#   --scope-docs <auto|file>  OPTIONAL (#2257). The target's DECLARED scope assumptions, extracted ONCE per run by
+#                       lib/scope-assumptions.py into <out>/scope-assumptions.txt (`auto` = the repo's own SCOPE.md +
+#                       README.md; a file = an operator-curated `scope-assumptions.md`, which REPLACES auto) and
+#                       handed to every refute gate via run-refute.sh --scope-assumptions. It only acts inside a
+#                       SEVERITY_RUBRIC=1 refuter prompt: there a REFUTED verdict that stands on a contract-passing
+#                       `out-of-scope-premise` ground lands in a new top-level `out_of_scope[]` array (label
+#                       `out_of_scope_premise`, the cited assumption, the quoted premise) — NEVER in verified[] —
+#                       and `totals.out_of_scope` counts it. Both keys appear ONLY when non-empty; out_of_scope is a
+#                       SUBSET of the implicit refuted count, so `candidates == verified + errored + refuted +
+#                       dropped_subfloor` is unchanged. An empty block (nothing declared) is logged and inert; a
+#                       non-empty block without SEVERITY_RUBRIC=1 is logged LOUDLY and passed nowhere (inert).
+#                       Tier-2 records get the block in their prompt but no new routing (their reason carries the
+#                       `out-of-scope-premise (...)` prefix). Default: unset = inert = every artifact byte-identical.
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the gate (default: flat-cyborg).
 #   --model <id>        LLM model id for the gate's `llm.model` (default: unset, so the emitted config stays
 #                       `llm.model = opus` — byte-identical to before this flag existed).
@@ -125,6 +138,7 @@ JOBS=1  # #1863: opt-in bounded-concurrency gate fan-out; 1 = serial, today's ex
 PAY_FLOOR=""  # #1962: unset = inert (see the header). Validated below with the closed severity vocabulary.
 ADJUDICATED=""  # #2023: unset/absent = inert; operator adjudication overlay that pre-empts the refute gate.
 TIER2=0  # #2217: 0 = OFF = inert (see --tier2 in the header). N > 0 = examine N tier-2 records per zone.
+SCOPE_DOCS=""  # #2257: unset = inert. `auto` or an operator file (see --scope-docs in the header).
 
 nv() { [ "$1" -ge 2 ] || { echo "verify-findings.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -141,6 +155,7 @@ while [ $# -gt 0 ]; do
     --pay-floor) nv "$#"; PAY_FLOOR="$2"; shift 2 ;;
     --adjudicated) nv "$#"; ADJUDICATED="$2"; shift 2 ;;
     --tier2)   nv "$#"; TIER2="$2"; shift 2 ;;
+    --scope-docs) nv "$#"; SCOPE_DOCS="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "verify-findings.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -165,12 +180,17 @@ case "$JOBS" in ''|*[!0-9]*) echo "verify-findings.sh: --jobs must be a positive
 # #2217: --tier2 is a NON-NEGATIVE integer (0 = OFF = the default), validated before any side effect.
 case "$TIER2" in ''|*[!0-9]*) echo "verify-findings.sh: --tier2 must be a non-negative integer (got '$TIER2')" >&2; exit 2 ;; esac
 [ -z "$BRIEF" ] || [ -f "$BRIEF" ] || { echo "verify-findings.sh: --brief not found: $BRIEF" >&2; exit 2; }
+# #2257: `auto` or an existing operator file; anything else is a usage error before any side effect.
+[ -z "$SCOPE_DOCS" ] || [ "$SCOPE_DOCS" = "auto" ] || [ -f "$SCOPE_DOCS" ] || { echo "verify-findings.sh: --scope-docs must be 'auto' or an existing file (got '$SCOPE_DOCS')" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "verify-findings.sh: python3 not installed" >&2; exit 3; }
 
 # Resolve every operator path to ABSOLUTE (the gate scripts run from throwaway cwds).
 REPO="$(cd "$REPO" && pwd)"
 RESULTS="$(cd "$(dirname "$RESULTS")" && pwd)/$(basename "$RESULTS")"
 [ -z "$BRIEF" ] || BRIEF="$(cd "$(dirname "$BRIEF")" && pwd)/$(basename "$BRIEF")"
+if [ -n "$SCOPE_DOCS" ] && [ "$SCOPE_DOCS" != "auto" ]; then
+  SCOPE_DOCS="$(cd "$(dirname "$SCOPE_DOCS")" && pwd)/$(basename "$SCOPE_DOCS")"
+fi
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 
 REFUTE="$HERE/run-refute.sh"
@@ -213,6 +233,37 @@ SLICER="$HERE/auditor/slice-fns.sh"
 WORK="$OUT/.verify-work"; rm -rf "$WORK"; mkdir -p "$WORK"
 CELLS="$OUT/gates"; rm -rf "$CELLS"; mkdir -p "$CELLS"
 CONFIRMED_TSV="$WORK/confirmed.tsv"; : > "$CONFIRMED_TSV"
+# #2257: candidates the refute gate routed to a DECLARED out-of-scope premise. Created LAZILY (first row), and the
+# JSON pass reads it only if it exists, so a default run gains no key.
+OOS_TSV="$WORK/out-of-scope.tsv"
+OUT_OF_SCOPE=0
+
+# --- #2257: the declared-scope block, built ONCE per run and handed to every refute gate. SCOPE_BLOCK stays empty
+#     (=> run_gate_refute passes nothing) when --scope-docs is unset, when nothing was declared, when the
+#     extraction failed (fail-open: a broken doc must not abort STAGE 4), or when the rubric the layer is nested
+#     under is off. Only the refute gate reads it.
+SCOPE_BLOCK=""
+if [ -n "$SCOPE_DOCS" ]; then
+  SCOPE_LIB="$HERE/lib/scope-assumptions.py"
+  SCOPE_OUT="$OUT/scope-assumptions.txt"
+  if [ "$SCOPE_DOCS" = "auto" ]; then
+    python3 "$SCOPE_LIB" extract --repo "$REPO" > "$SCOPE_OUT" 2>"$WORK/scope-extract.err" \
+      || { echo "verify-findings.sh: WARNING: scope extraction failed ($(head -1 "$WORK/scope-extract.err")) — scope layer inert" >&2; : > "$SCOPE_OUT"; }
+  else
+    python3 "$SCOPE_LIB" extract --repo "$REPO" --operator "$SCOPE_DOCS" > "$SCOPE_OUT" 2>"$WORK/scope-extract.err" \
+      || { echo "verify-findings.sh: WARNING: scope extraction failed ($(head -1 "$WORK/scope-extract.err")) — scope layer inert" >&2; : > "$SCOPE_OUT"; }
+  fi
+  if [ ! -s "$SCOPE_OUT" ]; then
+    echo "verify-findings.sh: --scope-docs $SCOPE_DOCS declared no assumption — scope layer inert" >&2
+  elif [ "$GATE" != "refute" ]; then
+    echo "verify-findings.sh: WARNING: --scope-docs is read by the refute gate only (--gate $GATE) — scope layer inert" >&2
+  elif [ "${SEVERITY_RUBRIC:-}" != "1" ]; then
+    echo "verify-findings.sh: WARNING: --scope-docs extracted $(wc -l < "$SCOPE_OUT" | tr -d ' ') assumption(s) but SEVERITY_RUBRIC is not 1 — the scope layer is nested under the rubric and is INERT for this run" >&2
+  else
+    SCOPE_BLOCK="$SCOPE_OUT"
+    echo "verify-findings.sh: scope layer: $(wc -l < "$SCOPE_OUT" | tr -d ' ') declared assumption(s) -> every refute gate ($SCOPE_OUT)" >&2
+  fi
+fi
 
 # The gate-specific CONFIRMED token: refute=REAL, poc=FINDING, symbolic=COUNTEREXAMPLE.
 case "$GATE" in
@@ -389,10 +440,12 @@ run_gate_refute() {
   fi
   if [ -n "$BRIEF" ]; then
     "$REFUTE" --candidates "$rg_out/candidate.manifest" --code-dir "$REPO" --brief "$BRIEF" \
-      --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"} --out "$rg_out/refute-out" >"$rg_out/gate.log" 2>&1 || return 1
+      --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"} ${SCOPE_BLOCK:+--scope-assumptions "$SCOPE_BLOCK"} \
+      --out "$rg_out/refute-out" >"$rg_out/gate.log" 2>&1 || return 1
   else
     "$REFUTE" --candidates "$rg_out/candidate.manifest" --code-dir "$REPO" \
-      --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"} --out "$rg_out/refute-out" >"$rg_out/gate.log" 2>&1 || return 1
+      --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"} ${SCOPE_BLOCK:+--scope-assumptions "$SCOPE_BLOCK"} \
+      --out "$rg_out/refute-out" >"$rg_out/gate.log" 2>&1 || return 1
   fi
   rg_report="$rg_out/refute-out/refute-report.md"
   [ -f "$rg_report" ] || { printf 'REFUTED\tno refute report produced (dropped as unverified)\n' > "$rg_out/verdict.txt"; return 0; }
@@ -507,6 +560,14 @@ classify_candidate() {
       "$cc_subsys" "$cc_loc" "$cc_file" "$cc_eff_class" "$cc_sev" "$cc_expl" "$cc_sketch" "$cc_verd" "$cc_reason" >> "$CONFIRMED_TSV"
     VERIFIED=$((VERIFIED + 1))
     echo "verify-findings.sh:   -> CONFIRMED ($cc_verd)" >&2
+  elif [ "$GATE" = "refute" ] && [ -s "$cc_out/refute-out/out-of-scope.tsv" ]; then
+    # #2257: refuted on a CONTRACT-PASSING declared out-of-scope premise. Kept VISIBLE in out_of_scope[] (never
+    # verified[]); the gate's own sidecar row carries the assumption fields (columns 3..7).
+    cc_oos="$(head -1 "$cc_out/refute-out/out-of-scope.tsv" | cut -f3-)"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$cc_subsys" "$cc_loc" "$cc_file" "$cc_cls" "$cc_sev" "$cc_expl" "$cc_sketch" "$cc_verd" "$cc_reason" "$cc_oos" >> "$OOS_TSV"
+    OUT_OF_SCOPE=$((OUT_OF_SCOPE + 1))
+    echo "verify-findings.sh:   -> OUT-OF-SCOPE (declared premise $(printf '%s' "$cc_oos" | cut -f1))" >&2
   else
     echo "verify-findings.sh:   -> dropped ($cc_verd)" >&2
   fi
@@ -786,7 +847,7 @@ fi
 VERIFIED_JSON="$OUT/verified_findings.json"
 REPO_NAME="$REPO_NAME" GATE="$GATE" CANDIDATES="$CANDIDATES" VERIFIED="$VERIFIED" ERRORED="$ERRORED" \
 PAY_FLOOR="$PAY_FLOOR" SUBFLOOR="$SUBFLOOR" \
-python3 - "$CONFIRMED_TSV" "$ERRORS_TSV" "$DROPPED_SUBFLOOR_TSV" "$TIER2_OUT_TSV" > "$VERIFIED_JSON" <<'PY'
+python3 - "$CONFIRMED_TSV" "$ERRORS_TSV" "$DROPPED_SUBFLOOR_TSV" "$TIER2_OUT_TSV" "$OOS_TSV" > "$VERIFIED_JSON" <<'PY'
 import sys, os, json
 verified = []
 with open(sys.argv[1], encoding="utf-8") as fh:
@@ -867,6 +928,29 @@ with open(sys.argv[4], encoding="utf-8") as fh:
 if tier2:
     out["tier2"] = tier2
     out["totals"]["tier2"] = len(tier2)
+# #2257: candidates refuted on a DECLARED out-of-scope premise — emitted ONLY when non-empty (the tier2 discipline),
+# so a run without --scope-docs, or one that routed nothing, gains no key. Never part of verified[]; a subset of the
+# implicit refuted count, so the counting invariant is untouched.
+out_of_scope = []
+if os.path.exists(sys.argv[5]):
+    with open(sys.argv[5], encoding="utf-8") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            f = line.split("\t")
+            while len(f) < 14:
+                f.append("")
+            out_of_scope.append({
+                "subsystem": f[0], "location": f[1], "file": f[2], "class": f[3],
+                "severity": f[4], "exploit": f[5], "poc_sketch": f[6],
+                "verdict": f[7], "label": "out_of_scope_premise",
+                "assumption": {"id": f[9], "category": f[10], "source": f[11], "text": f[12]},
+                "premise": f[13], "reason": f[8],
+            })
+if out_of_scope:
+    out["out_of_scope"] = out_of_scope
+    out["totals"]["out_of_scope"] = len(out_of_scope)
 print(json.dumps(out, indent=2))
 PY
 
@@ -875,7 +959,11 @@ SUBFLOOR_SUFFIX=""
 if [ -n "$PAY_FLOOR" ] && [ "$SUBFLOOR" -gt 0 ]; then
   SUBFLOOR_SUFFIX=", $SUBFLOOR sub-floor"
 fi
-echo "================ VERIFY [$GATE]: $CANDIDATES candidate(s), $VERIFIED confirmed, $ERRORED errored (malformed/unresolvable), $SKIPPED skipped$SUBFLOOR_SUFFIX ================" >&2
+OOS_SUFFIX=""
+if [ "$OUT_OF_SCOPE" -gt 0 ]; then
+  OOS_SUFFIX=", $OUT_OF_SCOPE out-of-scope (declared premise)"
+fi
+echo "================ VERIFY [$GATE]: $CANDIDATES candidate(s), $VERIFIED confirmed, $ERRORED errored (malformed/unresolvable), $SKIPPED skipped$SUBFLOOR_SUFFIX$OOS_SUFFIX ================" >&2
 echo "verify-findings.sh: verified findings at $VERIFIED_JSON" >&2
 if [ "$TIER2_EXAMINED" -gt 0 ]; then
   echo "verify-findings.sh: tier 2 — $TIER2_EXAMINED unsettled check(s) examined; verdicts in tier2[] of $VERIFIED_JSON (NOT findings, never in verified[])" >&2

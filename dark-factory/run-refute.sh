@@ -49,6 +49,14 @@
 #                        candidate's exploit/broken-invariant sentence. Absent => byte-identical to before.
 #   --invariant-harness <file>  #1938: optional generated invariant *.t.sol (the actual asserted predicate),
 #                        staged into the rundir and appended to the payload for axis (a). Absent => no change.
+#   --scope-assumptions <file>  #2257: the target's DECLARED scope block (lib/scope-assumptions.py extract: one
+#                        `A<n>|<category>|<source>:<line>|<text>` row per declared assumption), staged into the rundir
+#                        as scope-assumptions.txt and exported as SCOPE_ASSUMPTIONS_PATH. Read by refuter.ag ONLY
+#                        inside a SEVERITY_RUBRIC=1 prompt, where it adds the extra SUFFICIENT ground
+#                        `out-of-scope-premise` with its own citation contract, checked below through the same
+#                        helper that wrote the block. An empty file is treated as unset. Needs python3 (exit 3
+#                        without it); rejected together with --invariant-mode (exit 2, v1 reach = discovery leads).
+#                        Absent => the prompt, the report and every output file are byte-identical.
 #
 # Env:
 #   SEVERITY_RUBRIC  #2245 iteration 2 OPT-IN, default UNSET = OFF. `1` injects refuter.ag's contest-severity
@@ -97,6 +105,17 @@
 # itself was insufficient and on every contract-OFF run. The file has exactly one consumer in this repository
 # (demo-severity-rubric.sh, which pins its field count), so this is an additive change to an operator-only
 # artefact; the verdict column and the report row are untouched.
+#
+# #2257 adds a FOURTH output, `<out>/out-of-scope.tsv` (`<class>\t<file:fn>\t<assumption-id>\t<category>\t<source>
+# \t<assumption text>\t<premise>`), written LAZILY — one row per candidate refuted on a CONTRACT-PASSING
+# `out-of-scope-premise` ground, no file at all otherwise. Such a verdict is FINAL (STOP-1 decision 3): no #1699
+# C6 re-read (it would run without the scope block and resurrect the excluded premise) and no #1887 constraint
+# harvest (a target's own scope rule must not travel to another target). The verdict cell stays `REFUTED`; the
+# reason is prefixed `out-of-scope-premise (<id>, <category>): `, so the finding stays visible and nothing flips.
+# A contract FAILURE takes the existing insufficient path: one bounded re-ask naming what is missing, then
+# `rubric-insufficient: ` + a rubric-dismissals.tsv row whose fifth column is the scope contract id
+# (`scope-cite-missing`, `scope-cite-unresolved`, `scope-not-citable`, `scope-premise-missing`,
+# `scope-premise-unresolved`).
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -125,6 +144,9 @@ BACKEND="flat-cyborg" ; MODEL="" ; OUT="$PWD/refute-out"
 # #1938: invariant-hunt judgment mode. OFF (default) => CAND_INVARIANT/INV_HARNESS_PATH are exported EMPTY, and
 # refuter.ag reproduces the discovery-lead prompt byte-for-byte, so every existing manifest/fixture is unchanged.
 INVARIANT_MODE=0 ; INV_HARNESS=""
+# #2257: the declared-scope block. EMPTY (default) => SCOPE_ASSUMPTIONS_PATH is exported empty, refuter.ag's scope
+# directive is "" and the scope contract below is never armed.
+SCOPE_ASSUMPTIONS="" ; SCOPE_LIB="$HERE/lib/scope-assumptions.py"
 
 need() { [ "$1" -ge 2 ] || { echo "run-refute.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -139,6 +161,7 @@ while [ $# -gt 0 ]; do
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --invariant-mode) INVARIANT_MODE=1; shift ;;
     --invariant-harness) need "$#"; INV_HARNESS="$2"; shift 2 ;;
+    --scope-assumptions) need "$#"; SCOPE_ASSUMPTIONS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-refute.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -163,6 +186,18 @@ if [ -n "$INV_HARNESS" ]; then
   [ -f "$INV_HARNESS" ] || { echo "run-refute.sh: --invariant-harness not found: $INV_HARNESS" >&2; exit 2; }
   INV_HARNESS="$(cd "$(dirname "$INV_HARNESS")" && pwd)/$(basename "$INV_HARNESS")"
 fi
+# #2257: an empty block is the extractor's "nothing declared" answer and means OFF, never an error.
+if [ -n "$SCOPE_ASSUMPTIONS" ]; then
+  [ -f "$SCOPE_ASSUMPTIONS" ] || { echo "run-refute.sh: --scope-assumptions not found: $SCOPE_ASSUMPTIONS" >&2; exit 2; }
+  if [ ! -s "$SCOPE_ASSUMPTIONS" ]; then
+    SCOPE_ASSUMPTIONS=""
+  else
+    [ "$INVARIANT_MODE" = 0 ] || { echo "run-refute.sh: --scope-assumptions cannot be combined with --invariant-mode (v1 covers discovery leads only)" >&2; exit 2; }
+    command -v python3 >/dev/null 2>&1 || { echo "run-refute.sh: --scope-assumptions needs python3" >&2; exit 3; }
+    [ -f "$SCOPE_LIB" ] || { echo "run-refute.sh: scope helper not found at $SCOPE_LIB" >&2; exit 3; }
+    SCOPE_ASSUMPTIONS="$(cd "$(dirname "$SCOPE_ASSUMPTIONS")" && pwd)/$(basename "$SCOPE_ASSUMPTIONS")"
+  fi
+fi
 
 REFUTER="$HERE/auditor/agents/refuter.ag"
 [ -f "$REFUTER" ] || { echo "run-refute.sh: refuter agent not found at $REFUTER" >&2; exit 3; }
@@ -186,6 +221,12 @@ INV_HARNESS_IN_RUN=""
 if [ -n "$INV_HARNESS" ]; then
   cp "$INV_HARNESS" "$RUN/invariant-harness.t.sol"
   INV_HARNESS_IN_RUN="$RUN/invariant-harness.t.sol"
+fi
+# #2257: stage the declared-scope block (same reason as the brief). Empty => nothing staged, path exported empty.
+SCOPE_IN_RUN=""
+if [ -n "$SCOPE_ASSUMPTIONS" ]; then
+  cp "$SCOPE_ASSUMPTIONS" "$RUN/scope-assumptions.txt"
+  SCOPE_IN_RUN="$RUN/scope-assumptions.txt"
 fi
 
 # init the agentis store FIRST (before any .agentis/ subdir exists), else HEAD is not set.
@@ -216,7 +257,9 @@ fi
   # #2245 iteration 3: GROUND_EVIDENCE rides it for exactly the same reason, as its own independent knob — and
   # it can only have an effect inside a rubric-ON prompt, since its block is concatenated inside the rubric
   # directive.
-  echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH,CAND_INVARIANT,INV_HARNESS_PATH,SEVERITY_RUBRIC,RUBRIC_REASK_GROUNDS,GROUND_EVIDENCE"
+  # #2257: SCOPE_ASSUMPTIONS_PATH rides it for the same reason; it is exported EMPTY without --scope-assumptions,
+  # so its presence on the line changes the config file only, never the prompt or an output.
+  echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH,CAND_INVARIANT,INV_HARNESS_PATH,SEVERITY_RUBRIC,RUBRIC_REASK_GROUNDS,GROUND_EVIDENCE,SCOPE_ASSUMPTIONS_PATH"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: refuter.ag ends its tick with `learn("refute", ...)`, and it is that
   # WRITE the flag gates (#1878, agentis v1.28.0: learn() raises `runtime error: experience not enabled`, and
@@ -295,7 +338,7 @@ _join_wrapped_verdict() {
   jwv_log="$1"
   awk '
     /VERDICT\|/ { rec = $0; open = 1; cont = 0; next }
-    open && (/^[[:space:]]*$/ || /AUX-CONTEXT\|/ || /REFUTE-GROUND\|/ || /GROUND-EVIDENCE\|/) { open = 0; next }
+    open && (/^[[:space:]]*$/ || /AUX-CONTEXT\|/ || /REFUTE-GROUND\|/ || /GROUND-EVIDENCE\|/ || /SCOPE-ASSUMPTIONS\|/) { open = 0; next }
     open {
       if (cont >= 12) { open = 0; next }
       line = $0
@@ -320,7 +363,7 @@ _join_wrapped_constraint() {
   jwc_log="$1"
   awk '
     /CONSTRAINT\|/ { rec = $0; open = 1; cont = 0; next }
-    open && (/VERDICT\|/ || /REFUTE-GROUND\|/ || /GROUND-EVIDENCE\|/ || /^[[:space:]]*$/) { open = 0; next }
+    open && (/VERDICT\|/ || /REFUTE-GROUND\|/ || /GROUND-EVIDENCE\|/ || /SCOPE-ASSUMPTIONS\|/ || /^[[:space:]]*$/) { open = 0; next }
     open {
       if (cont >= 12) { open = 0; next }
       line = $0
@@ -358,7 +401,7 @@ _join_wrapped_ground() {
   jwg_log="$1"
   awk '
     /REFUTE-GROUND\|/ { rec = $0; open = 1; cont = 0; next }
-    open && (/VERDICT\|/ || /CONSTRAINT\|/ || /GROUND-EVIDENCE\|/ || /^[[:space:]]*$/) { open = 0; next }
+    open && (/VERDICT\|/ || /CONSTRAINT\|/ || /GROUND-EVIDENCE\|/ || /SCOPE-ASSUMPTIONS\|/ || /^[[:space:]]*$/) { open = 0; next }
     open {
       if (cont >= 12) { open = 0; next }
       line = $0
@@ -540,6 +583,48 @@ _rubric_gate_armed() {
   grep -qE '^[[:space:]]*SEVERITY-RUBRIC\|' "$1" 2>/dev/null
 }
 
+# --- #2257: the declared-scope OUT-OF-SCOPE-PREMISE ground ----------------------------------------------------
+# The measured cause: verified findings whose exploit rests on an asset or environment the target's own docs
+# exclude. refuter.ag now shows the declared block (inside a rubric-ON prompt only) and offers ONE extra sufficient
+# ground with its own citation contract; this is the OUTPUT half. A passing ground routes the candidate into
+# out-of-scope.tsv (the verdict stays REFUTED, the finding stays visible); a failing one joins the existing
+# insufficient path — same bounded re-ask, same sidecar — so there is no second loop.
+#
+# _scope_gate_armed <log> — the ONLY gate of this layer: refuter.ag's honesty-gated `SCOPE-ASSUMPTIONS|` sentinel is
+# in this log, so the block really entered the prompt this verdict answered. Never the env var.
+_scope_gate_armed() {
+  grep -qE '^[[:space:]]*SCOPE-ASSUMPTIONS\|' "$1" 2>/dev/null
+}
+
+# _scope_ground_state <log> <claim> — empty unless the gate is armed AND the scraped ground is
+# `out-of-scope-premise`; otherwise the decider's own answer, `ok\t<id>\t<category>\t<source>\t<text>\t<premise>`
+# or `fail\t<contract-id>`. The decider is lib/scope-assumptions.py `check` — the SAME helper that wrote the block,
+# so the block grammar lives in one place. It reads fields 3..N of the record, like _refute_ground_contract does.
+_scope_ground_state() {
+  sgs_log="$1"; sgs_claim="$2"
+  [ -n "$SCOPE_IN_RUN" ] && [ -f "$SCOPE_IN_RUN" ] || return 0
+  _scope_gate_armed "$sgs_log" || return 0
+  [ "$(_scraped_ground "$sgs_log")" = "out-of-scope-premise" ] || return 0
+  sgs_rec="$(_join_wrapped_ground "$sgs_log" 2>/dev/null || true)"
+  sgs_ev="$(printf '%s' "$sgs_rec" | sed 's/^.*\(REFUTE-GROUND|\)/\1/' | cut -d'|' -f3-)"
+  python3 "$SCOPE_LIB" check --block "$SCOPE_IN_RUN" --claim "$sgs_claim" --evidence "$sgs_ev" 2>/dev/null \
+    || printf 'fail\tscope-cite-missing\n'
+}
+
+# _scope_contract_requirement <contract-id> — the re-ask phrase per scope contract id. A NEW table on purpose:
+# _contract_requirement above is byte-paired with run-discovery.sh and must not grow a scope-only row. Every
+# phrase restates a rule refuter.ag's scope directive already shows, so the re-ask never asks for something new.
+_scope_contract_requirement() {
+  case "$1" in
+    scope-cite-missing)       printf '%s\n' 'quote the assumption as A<n>:"<at least a dozen characters copied verbatim from that row>"' ;;
+    scope-cite-unresolved)    printf '%s\n' 'the quoted text is not in the assumption row you cited — copy it verbatim from that row' ;;
+    scope-not-citable)        printf '%s\n' 'a trust row is context only and never a ground — trace the claim under the rubric above' ;;
+    scope-premise-missing)    printf '%s\n' 'quote the premise as premise:"<at least eight characters copied verbatim from the claimed exploit>"' ;;
+    scope-premise-unresolved) printf '%s\n' 'the premise quote is not in the claimed exploit — copy it verbatim from the claim' ;;
+    *)                        printf '%s\n' 'name a sufficient ground with the evidence that ground requires' ;;
+  esac
+}
+
 # _clean_reason <reason> — normalise a scraped verdict reason for the pipe-delimited report row. A literal `|`
 # in the reason breaks the four-cell markdown row AND re-truncates the reason at verify-findings.sh's
 # `awk -F'|' ... $5`, so map it to `/`; squeeze the whitespace the wrap-join introduces. Nothing else consumes
@@ -549,6 +634,7 @@ _clean_reason() {
 }
 
 CHECKED=0 ; REAL=0 ; REFUTED=0 ; ERRORED=0
+SCOPE_OOS=0  # #2257: REFUTED candidates routed to out-of-scope.tsv (a subset of REFUTED, never a fifth bucket).
 # Manifest loop: one candidate per line, `file:fn | class | sev | exploit | code-file [| aux-code-file]`.
 # AUXF is EMPTY on a five-column line, so every existing manifest (and every existing fixture) is unaffected.
 while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
@@ -628,6 +714,7 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
         SEVERITY_RUBRIC="${SEVERITY_RUBRIC:-}" \
         RUBRIC_REASK_GROUNDS="$RUBRIC_GROUNDS" \
         GROUND_EVIDENCE="${GROUND_EVIDENCE:-}" \
+        SCOPE_ASSUMPTIONS_PATH="$SCOPE_IN_RUN" \
         "$AGENTIS" go refuter.ag --enable-exec --enable-messaging --grant-pii ) >"$1" 2>&1 || \
         echo "run-refute.sh: refuter run failed for '$CFN' (see $1)" >&2
   }
@@ -687,6 +774,9 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
   RUBRIC_INSUFFICIENT=""
   RUBRIC_CONTRACT=""
   RUBRIC_RECOVERED=0
+  # #2257: the decider's `ok` payload (`<id>\t<category>\t<source>\t<text>\t<premise>`) once a REFUTED verdict stood
+  # on a contract-passing out-of-scope-premise ground; empty otherwise, and ALWAYS empty without the scope sentinel.
+  SCOPE_OOS_ROW=""
   if [ "$VERD" = "REFUTED" ] && _rubric_gate_armed "$CELL_LOG"; then
     RB_GROUND="$(_scraped_ground "$CELL_LOG")"
     # #2245 iteration 3: a SUFFICIENT ground id whose evidence fails that ground's contract is treated exactly
@@ -698,14 +788,26 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
     if ! _ground_insufficient "$RB_GROUND"; then
       RB_CONTRACT="$(_refute_ground_contract "$CELL_LOG" "$CODE_DIR" "$BRIEF_IN_RUN")"
     fi
-    if _ground_insufficient "$RB_GROUND" || [ -n "$RB_CONTRACT" ]; then
+    # #2257: `out-of-scope-premise` is not on the closed list, so without the scope sentinel it is simply an
+    # unrecognised (= insufficient) id and the lines above decide exactly as before. With the sentinel, a passing
+    # contract stops here (no re-ask) and a failing one becomes RB_CONTRACT — the scope contract id — so it rides
+    # the SAME bounded re-ask and the SAME sidecar as every other contract failure.
+    RB_SCOPE="$(_scope_ground_state "$CELL_LOG" "$EXPL")"
+    case "$RB_SCOPE" in
+      ok*)   SCOPE_OOS_ROW="$(printf '%s' "$RB_SCOPE" | cut -f2-)" ;;
+      fail*) RB_CONTRACT="$(printf '%s' "$RB_SCOPE" | cut -f2)" ;;
+    esac
+    if [ -z "$SCOPE_OOS_ROW" ] && { _ground_insufficient "$RB_GROUND" || [ -n "$RB_CONTRACT" ]; }; then
       RB_TRY=1
       while [ "$RB_TRY" -le "$DF_RUBRIC_MAX_REASKS" ] && [ "$VERD" = "REFUTED" ]; do
         # The re-ask NAMES what is open: the bare ground id when the id itself was insufficient, and
         # `<ground>: <requirement>` when the id was accepted but its evidence was not.
         RUBRIC_GROUNDS="${RB_GROUND:-none given}"
         if [ -n "$RB_CONTRACT" ]; then
-          RUBRIC_GROUNDS="$RUBRIC_GROUNDS: $(_contract_requirement "$RB_CONTRACT")"
+          case "$RB_CONTRACT" in
+            scope-*) RUBRIC_GROUNDS="$RUBRIC_GROUNDS: $(_scope_contract_requirement "$RB_CONTRACT")" ;;
+            *)       RUBRIC_GROUNDS="$RUBRIC_GROUNDS: $(_contract_requirement "$RB_CONTRACT")" ;;
+          esac
         fi
         RB_LOG="$RUN/refute_${SLUG}_rubric$RB_TRY.log"
         echo "run-refute.sh: $CFN refuted on the insufficient ground '$RUBRIC_GROUNDS'; re-asking under the severity rubric ($RB_TRY/$DF_RUBRIC_MAX_REASKS) ..." >&2
@@ -725,6 +827,13 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
                 RB_CONTRACT="$(_refute_ground_contract "$RB_LOG" "$CODE_DIR" "$BRIEF_IN_RUN")"
               fi
               REASON="$RB_REASON"
+              # #2257: the re-ask may land on a contract-passing out-of-scope-premise ground (routed, final) or
+              # repeat a failing one (held, recorded with its scope contract id).
+              RB_SCOPE="$(_scope_ground_state "$RB_LOG" "$EXPL")"
+              case "$RB_SCOPE" in
+                ok*)   SCOPE_OOS_ROW="$(printf '%s' "$RB_SCOPE" | cut -f2-)"; break ;;
+                fail*) RB_CONTRACT="$(printf '%s' "$RB_SCOPE" | cut -f2)" ;;
+              esac
               if ! _ground_insufficient "$RB_GROUND" && [ -z "$RB_CONTRACT" ]; then break; fi
             fi
           fi
@@ -732,7 +841,7 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
         RB_TRY=$((RB_TRY + 1))
       done
       RUBRIC_GROUNDS=""
-      if [ "$VERD" = "REFUTED" ] && { _ground_insufficient "$RB_GROUND" || [ -n "$RB_CONTRACT" ]; }; then
+      if [ "$VERD" = "REFUTED" ] && [ -z "$SCOPE_OOS_ROW" ] && { _ground_insufficient "$RB_GROUND" || [ -n "$RB_CONTRACT" ]; }; then
         RUBRIC_INSUFFICIENT="${RB_GROUND:-none given}"
         RUBRIC_CONTRACT="$RB_CONTRACT"
         REASON="rubric-insufficient: $REASON"
@@ -740,12 +849,22 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
     fi
   fi
 
+  # #2257: a contract-passing out-of-scope-premise verdict is FINAL (STOP-1 decision 3) and LEGIBLE: the verdict
+  # stays REFUTED and the reason names the assumption it stood on.
+  if [ -n "$SCOPE_OOS_ROW" ]; then
+    SCOPE_OOS_ID="$(printf '%s' "$SCOPE_OOS_ROW" | cut -f1)"
+    SCOPE_OOS_CAT="$(printf '%s' "$SCOPE_OOS_ROW" | cut -f2)"
+    REASON="out-of-scope-premise ($SCOPE_OOS_ID, $SCOPE_OOS_CAT): $REASON"
+  fi
+
   # #1699 bounded single-class C6 fallback: a candidate REFUTED under its assigned class gets ONE more full
   # hostile read under C6 when its code trips the compound-AND accounting signal (see fallback_class_for).
   # The retry can only convert REFUTED -> REAL (never the reverse), costs at most ONE extra refuter.ag call
   # per candidate, and keeps the candidate only if it INDEPENDENTLY survives the C6 lens (the same conservative
   # single-thesis refuter, so a candidate with no real accounting bug is REFUTED under C6 too — precision holds).
-  if [ "$VERD" = "REFUTED" ]; then
+  # #2257: SKIPPED for an out-of-scope-premise verdict — the C6 re-read runs without the scope block and would
+  # resurrect exactly the excluded premise (a fee deduction is the C6 signal itself).
+  if [ "$VERD" = "REFUTED" ] && [ -z "$SCOPE_OOS_ROW" ]; then
     FB="$(fallback_class_for "$SRC" "$CLS")"
     if [ -n "$FB" ]; then
       FB_LOG="$RUN/refute_${SLUG}_c6.log"
@@ -789,8 +908,16 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
   # #2245 iteration 2: a candidate the rubric re-ask CONVERTED to REAL contributes nothing either, for exactly
   # the reason the C6 recovery does not — the gate's own second read overturned the standard the first one
   # applied, so teaching that standard forward would teach a mistake.
-  if [ "$VERD" = "REFUTED" ] && [ -n "$CONSTRAINT" ] && [ "$RUBRIC_RECOVERED" -eq 0 ]; then
+  # #2257: an out-of-scope-premise verdict contributes NO constraint either — the rule it applied is THIS target's
+  # declared scope, and refute-to-knowledge.sh would carry it to targets that declare nothing of the kind.
+  if [ "$VERD" = "REFUTED" ] && [ -n "$CONSTRAINT" ] && [ "$RUBRIC_RECOVERED" -eq 0 ] && [ -z "$SCOPE_OOS_ROW" ]; then
     printf '%s\t%s\t%s\n' "$ROW_CLS" "$CFN" "$CONSTRAINT" >> "$CONSTRAINTS"
+  fi
+  # #2257: the out-of-scope sidecar row (lazy file creation — see the header).
+  if [ -n "$SCOPE_OOS_ROW" ]; then
+    SCOPE_OOS=$((SCOPE_OOS + 1))
+    echo "run-refute.sh: $CFN refuted on a DECLARED out-of-scope premise ($SCOPE_OOS_ID, $SCOPE_OOS_CAT) — final: no C6 re-read, no constraint; row recorded in out-of-scope.tsv" >&2
+    printf '%s\t%s\t%s\n' "$ROW_CLS" "$CFN" "$SCOPE_OOS_ROW" >> "$OUT/out-of-scope.tsv"
   fi
   # #2245 iteration 2: the insufficient-ground sidecar row (lazy file creation — see RUBRIC_TSV above).
   if [ -n "$RUBRIC_INSUFFICIENT" ]; then
@@ -805,10 +932,16 @@ done < "$CANDS"
   echo
   echo "---"
   echo "Checked: $CHECKED    REAL (survived, verify with forge): $REAL    REFUTED (killed): $REFUTED    ERRORED (unresolvable code file / unassessed no-verdict): $ERRORED"
+  # #2257: printed only when a candidate was routed, so a default run's report is byte-identical.
+  if [ "$SCOPE_OOS" -gt 0 ]; then
+    echo "Of the REFUTED: $SCOPE_OOS on a DECLARED out-of-scope premise (see out-of-scope.tsv)"
+  fi
 } >> "$REPORT"
 
 echo >&2
-echo "================ REFUTE: $CHECKED checked, $REAL survived, $REFUTED refuted, $ERRORED errored ================" >&2
+SCOPE_OOS_SUFFIX=""
+if [ "$SCOPE_OOS" -gt 0 ]; then SCOPE_OOS_SUFFIX=" ($SCOPE_OOS on a declared out-of-scope premise)"; fi
+echo "================ REFUTE: $CHECKED checked, $REAL survived, $REFUTED refuted$SCOPE_OOS_SUFFIX, $ERRORED errored ================" >&2
 echo "run-refute.sh: verdicts at $REPORT" >&2
 if [ "$REAL" -gt 0 ]; then
   echo "run-refute.sh: NEXT = forge-verify each REAL lead with evm-harness/forge-verify.sh; only a PASSING PoC is a finding. Submission stays human-gated." >&2

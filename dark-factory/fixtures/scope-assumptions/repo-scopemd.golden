@@ -1,0 +1,3 @@
+A1|token|SCOPE.md:5|Only standard tokens without transfer fees are listed.
+A2|trust|SCOPE.md:6|Issues that require the owner to act against users are out of scope.
+A3|chain|README.md:5|The lender runs on one rollup network only.

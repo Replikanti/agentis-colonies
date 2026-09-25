@@ -263,6 +263,16 @@
 #                       in the first place is run-discovery.sh's own opt-in, DF_TIER2=1 in the environment
 #                       (with DF_TIER2_MAX_PER_ZONE as its per-zone cap). Without it the merged file has no
 #                       tier2[] and --tier2 N is a silent no-op, never an error.
+#   --scope-docs <auto|file>  #2257 STAGE 4 DECLARED SCOPE (default: absent = OFF = nothing forwarded = a
+#                       byte-identical STAGE 4 argv). Forwarded to verify-findings.sh --scope-docs: `auto` extracts the
+#                       target's own declared assumptions (SCOPE.md, then README.md: token behaviour, chains, trusted
+#                       roles, exclusions, known issues) with lib/scope-assumptions.py; a file is an operator-curated
+#                       scope-assumptions.md that REPLACES auto (resolved to an absolute path here). The refute gate
+#                       sees the block only inside a SEVERITY_RUBRIC=1 prompt, where a finding whose claimed exploit
+#                       DEPENDS on a declared exclusion is refuted on the `out-of-scope-premise` ground (citation
+#                       contract checked by the driver) and lands in verified_findings.json's `out_of_scope[]`, never
+#                       in verified[]. Trust rows are context only. STAGE 4 first-pass findings only: STAGE 4.5
+#                       (deep-hunt-gate.sh) is not wired.
 #   --drop-dir <dir>    deliver-submission.sh drop-dir (default: <out>/drop).
 #   -h, --help          This help.
 #
@@ -359,6 +369,8 @@ PAY_FLOOR="" ; PAY_MODE="drop" ; PAYABLE_IMPACTS="" ; PAY_MODE_SET=0
 # so the STAGE 4 argv is byte-identical to a pre-#2217 run. This flag governs VERIFICATION only; whether the
 # hunt CARRIES tier-2 records at all is run-discovery.sh's own opt-in (DF_TIER2=1 in the environment).
 TIER2=""
+# #2257: STAGE 4 declared scope. EMPTY = not passed = NOTHING forwarded, so the STAGE 4 argv is byte-identical.
+SCOPE_DOCS=""
 # #1731: cross-run ensemble/union flags — a THIN pass-through: collected verbatim into DEEP_FWD and appended to
 # both --deep-hunt run-invariant-hunt.sh invocations. Empty (the default) => the arg lists are byte-identical.
 DEEP_FWD=()
@@ -416,6 +428,7 @@ while [ $# -gt 0 ]; do
     --rehunt-max-attempts) nv "$#"; REHUNT_MAX_ATTEMPTS="$2"; shift 2 ;;
     --pay-floor)        nv "$#"; PAY_FLOOR="$2"; shift 2 ;;
     --tier2)            nv "$#"; TIER2="$2"; shift 2 ;;
+    --scope-docs)       nv "$#"; SCOPE_DOCS="$2"; shift 2 ;;
     --pay-mode)         nv "$#"; PAY_MODE="$2"; PAY_MODE_SET=1; shift 2 ;;
     --payable-impacts)  nv "$#"; PAYABLE_IMPACTS="$2"; shift 2 ;;
     --drop-dir)         nv "$#"; DROP_DIR="$2"; shift 2 ;;
@@ -502,6 +515,12 @@ esac
 case "$TIER2" in
   ''|*[!0-9]*) [ -z "$TIER2" ] || { echo "run-zone-hunt.sh: --tier2 must be a non-negative integer (got '$TIER2')" >&2; exit 2; } ;;
 esac
+# #2257: --scope-docs is `auto` or an existing file (resolved to ABSOLUTE — STAGE 4 runs from its own cwd); a typo
+# must fail here, not 40 minutes into STAGE 4.
+if [ -n "$SCOPE_DOCS" ] && [ "$SCOPE_DOCS" != "auto" ]; then
+  [ -f "$SCOPE_DOCS" ] || { echo "run-zone-hunt.sh: --scope-docs must be 'auto' or an existing file (got '$SCOPE_DOCS')" >&2; exit 2; }
+  SCOPE_DOCS="$(cd "$(dirname "$SCOPE_DOCS")" && pwd)/$(basename "$SCOPE_DOCS")"
+fi
 # A mode with no floor gates nothing — a usage error, the --total-depth-cells-needs-depth precedent.
 [ "$PAY_MODE_SET" -eq 0 ] || [ -n "$PAY_FLOOR" ] || { echo "run-zone-hunt.sh: --pay-mode needs --pay-floor: a finding pay mode with no floor is a no-op" >&2; exit 2; }
 command -v python3 >/dev/null 2>&1 || { echo "run-zone-hunt.sh: python3 not installed" >&2; exit 3; }
@@ -1086,6 +1105,7 @@ ADJ_ARG=""; _ADJ="$(dirname "$OUT")/adjudicated.tsv"; [ -f "$_ADJ" ] && ADJ_ARG=
 "$VERIFY" --results "$MERGED" --repo "$REPO" --gate refute --backend "$BACKEND" --agentis "$AGENTIS" \
   --jobs "$JOBS" ${PAY_FLOOR:+--pay-floor "$PAY_FLOOR"} ${ADJ_ARG:+--adjudicated "$ADJ_ARG"} \
   ${TIER2:+--tier2 "$TIER2"} \
+  ${SCOPE_DOCS:+--scope-docs "$SCOPE_DOCS"} \
   ${MODEL:+--model "$MODEL"} --out "$VER"
 VERIFIED_JSON="$VER/verified_findings.json"
 [ -f "$VERIFIED_JSON" ] || { echo "run-zone-hunt.sh: verify-findings.sh did not emit verified_findings.json" >&2; exit 3; }

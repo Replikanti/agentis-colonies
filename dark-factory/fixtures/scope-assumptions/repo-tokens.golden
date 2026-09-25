@@ -1,0 +1,5 @@
+A1|chain|README.md:16-17|Q: On what chains are the smart contracts going to be deployed? — A: Only the settlement layer; no rollups or side chains.
+A2|token|README.md:19-21|Q: Which tokens are expected to interact with the smart contracts? — A: Standard ERC20 only. No fee-on-transfer, rebasing or hook-carrying tokens are supported.
+A3|trust|README.md:23-24|Q: Are there any trusted roles in the protocol? — A: The admin is a trusted multisig and sets the fee within the bounds its setter enforces.
+A4|known-issue|README.md:31|Rounding in favour of the vault on every share conversion is accepted.
+A5|known-issue|README.md:32|A paused vault blocks withdrawals until the admin unpauses it.

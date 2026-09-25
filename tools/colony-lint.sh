@@ -1548,6 +1548,29 @@ if [ -x "$REPO_ROOT/dark-factory/demo-severity-rubric.sh" ]; then
     fi
 fi
 
+# --- dark-factory scope-aware refute: declared trust/token assumptions + out-of-scope-premise ground (#2257) ---
+# Opt-in (verify-findings.sh / run-zone-hunt.sh --scope-docs <auto|file>, nested under SEVERITY_RUBRIC=1, default
+# OFF): lib/scope-assumptions.py extracts a deterministic, line-cited block of what the target's own docs declare
+# (token behaviour, chains, trusted roles, exclusions, known issues), refuter.ag shows it with ONE extra sufficient
+# ground `out-of-scope-premise` whose evidence must quote an assumption row AND the claim's own premise, and
+# run-refute.sh checks that contract through the same helper: a pass routes the candidate into out_of_scope[]
+# (verdict REFUTED, no C6 re-read, no constraint harvest — never verified[]), a failure rides the existing bounded
+# re-ask + rubric-dismissals.tsv; trust rows are context only. demo-scope-assumptions.sh pins the extractor
+# (goldens over four doc shapes + an operator file, determinism, citation ranges, caps, exclusions), the decider
+# (one fixture per contract id, wrap-split quotes), the agent + driver wiring and every untouched byte-pair, both
+# drivers end-to-end through an offline --agentis stub (acceptance, negative control, knob-OFF byte identity,
+# --jobs 2 parity), five mutants that must each flip a fixture and — with agentis — the live sentinel + a 0-byte
+# probe under every knob-OFF combination. No forge, no network, no LLM.
+if [ -x "$REPO_ROOT/dark-factory/demo-scope-assumptions.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-scope-assumptions.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: scope-aware refute (declared-scope block + out-of-scope-premise citation contract + out_of_scope[] routing, trust context-only, default OFF) (#2257)"
+    else
+        fail "dark-factory: scope-aware refute regressed (#2257)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory admitted-parameter lens: the C26 bug class + zone-mapper route (#2245, iteration 4) ---
 # One taxonomy class for the next held-out generation-miss shape: "a value the design CONSTRAINS is admitted
 # from outside the function that consumes it and is never checked there" — a route/set id or a numeric bound
