@@ -12,6 +12,11 @@
 # Every other contest gets `FINDING|NONE`. FRESH_SET_PROBE_STUB_MODE=fail answers nothing and exits 1 (a dead
 # backend), for the "a failed probe is never scored" assertion.
 #
+# A CUED prompt (`MEMORY PROBE (cued)`, one `C<n>|<contract>:<function>` line per location) gets one CUE| line per
+# location: YES + the right mechanism at `claimRewards` (the alpha rare row), NONE everywhere else (the decoy
+# included). FRESH_SET_PROBE_STUB_MODE=yes-all answers YES with a content-free sentence to EVERY cue, the
+# say-yes-to-everything model the decoy exists to expose.
+#
 # dash-safe: no arrays, no $'...', literal glyphs only.
 set -u
 
@@ -27,6 +32,19 @@ fi
 
 echo "stub model=$model"
 case "$prompt" in
+  'MEMORY PROBE (cued)'*)
+    printf '%s\n' "$prompt" | while IFS='|' read -r label loc; do
+      case "$label" in C[0-9]*) ;; *) continue ;; esac
+      if [ "${FRESH_SET_PROBE_STUB_MODE:-reply}" = "yes-all" ]; then
+        echo "CUE|$label|YES|an accepted finding was reported at this function"
+      else
+        case "$loc" in
+          *:claimRewards) echo "CUE|$label|YES|claimRewards pays out before clearing the balance, so a reentrant claimer drains the reward balance" ;;
+          *) echo "CUE|$label|NONE" ;;
+        esac
+      fi
+    done
+    ;;
   *'"2099-01-alpha"'*)
     echo "FINDING|H|Vault|claimRewards|claimRewards pays out before clearing the balance, so a reentrant claimer drains the reward balance"
     echo "FINDING|M|Vault|sweepDust|sweepDust uses a stale value"

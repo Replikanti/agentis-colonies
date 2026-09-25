@@ -51,7 +51,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   ground truth in the prompt (leak guard, exit 4), which accepted findings it remembers; scores the reply offline
   with a conservative name + mechanism matcher -> `recalled_from_memory yes|partial|no` per row and a
   memorization rate per contest; prompt and reply recorded verbatim; runs standalone on any already-frozen contest
-  dir; a contest whose rare rows are recalled is `MEMORIZED`. `--self-test` (colony-lint) is fully offline:
+  dir; a contest whose rare rows are recalled is `MEMORIZED`. A **cued** mode (`probe --cued`, `build --probe
+  --cued`) addresses free recall's bias toward NONE: per GT location it shows only `<contract>:<function>` (never
+  a title or mechanism), batched (`--batch`, default 20) with one decoy function per batch. It scores the answers
+  with the same matcher into `cued_recall` / `cued_rate` / `decoy_fp_rate`, and a contest is `MEMORIZED` when
+  `rare_cued_rate > --memorized-rare-rate` (default 0.25). `--self-test` (colony-lint) is fully offline:
   synthetic fixtures, `FRESH_SET_OFFLINE=1` network trip-wire, stub probe backend.
 
 - **Scope-aware refute — declared trust/token assumptions + the `out-of-scope-premise` ground, `--scope-docs

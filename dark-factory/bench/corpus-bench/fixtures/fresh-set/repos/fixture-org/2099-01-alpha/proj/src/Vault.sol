@@ -15,4 +15,7 @@ contract Vault {
         require(ok);
         shares[msg.sender] = 0;
     }
+
+    // No GT row names this function: the cued probe's decoy.
+    function pause() external {}
 }

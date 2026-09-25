@@ -29,6 +29,7 @@
 #       failed probe backend (never scored) ;
 #       4 reserve or probe refused ; 5 FRESH_SET_OFFLINE=1 and the network was reached (the self-test trip-wire).
 import bisect
+import hashlib
 import json
 import os
 import re
@@ -52,6 +53,8 @@ TRUST = os.path.join(DF, "lib", "ensure-claude-trust.sh")
 
 RARE_MAX = 2                    # a GT row is RARE when its found-by count is 1..RARE_MAX (the bench's rare tier)
 MEMORIZED_MIN_RARE_YES = 1      # a contest is MEMORIZED once this many RARE rows are recalled_from_memory=yes
+CUED_BATCH = 20                 # cued probe: GT locations per prompt (plus one decoy)
+CUED_RARE_RATE = 0.25           # cued probe: MEMORIZED when the rare cued_rate is ABOVE this (--memorized-rare-rate)
 PER_PAGE = 100
 MAX_PAGES = 20                  # 2000 repos; the org needs ~5 pages today
 NET_TIMEOUT_S = 30
@@ -65,7 +68,7 @@ SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 REPORT_COLS = ("id", "slug", "date", "ended", "status", "reason", "gt", "rare", "rare_loc", "rarity_unknown",
                "gt_shape", "sol_files", "sol_lines", "roots", "project_subdir", "code_present", "contam_strong",
-               "contam_weak", "contam_pv", "ledger", "memo", "memo_rare", "code_sha", "judging_sha")
+               "contam_weak", "contam_pv", "ledger", "memo", "memo_rare", "memo_cued", "code_sha", "judging_sha")
 
 # Weak-needle stopwords: name tokens so generic that a hit on them says nothing about THIS contest. Documented in
 # the corpus-bench README ("Fresh held-out set builder"); extend here when a real run shows a new false positive.
@@ -793,8 +796,10 @@ def build_probe_prompt(meta):
     ])
 
 
-def prompt_leaks(prompt, rows):
-    """The prompt must carry NO code and NO ground truth. Returns the reasons it does (empty = clean)."""
+def prompt_leaks(prompt, rows, cued=False):
+    """The prompt must carry NO code and NO ground truth. Returns the reasons it does (empty = clean). A CUED prompt
+    names GT locations on purpose (`<contract>:<function>` is the cue), so only that one check is lifted for it:
+    titles, ids, `.sol` names and source code stay forbidden."""
     low = prompt.lower()
     why = []
     if ".sol" in low or "pragma solidity" in low or re.search(r"\bfunction\s+\w+\s*\(", prompt):
@@ -805,7 +810,7 @@ def prompt_leaks(prompt, rows):
         t = re.sub(r"\s+", " ", r["title"]).strip().lower()
         if len(t) >= 12 and t in low:
             why.append("the title of GT row " + r["sev_id"])
-        for pair in r["locations"].split():
+        for pair in ([] if cued else r["locations"].split()):
             fn = pair.partition(":")[2]
             if len(fn) >= 6 and re.search(r"(?<![A-Za-z0-9_])" + re.escape(fn) + r"(?![A-Za-z0-9_])", prompt,
                                           re.I):
@@ -928,13 +933,237 @@ def run_probe(cdir, rows, backend, model, stub, name_override, rescore):
                  "\t".join(keys) + "\n" + "\t".join(str(s[k]) for k in keys) + "\n")
     return s
 
+# ---- cued memorisation probe -----------------------------------------------------------------------------------
+# Free recall ("list what you remember") is biased toward FINDING|NONE by its own do-not-guess instruction and
+# misses RECOGNITION memory. The cued probe hands the model each GT row's column-6 location, `<contract>:<function>`
+# and nothing else (never a title, a description or a mechanism), and asks whether an accepted High/Medium finding
+# was reported there and, if so, its root cause. The answer is scored by the SAME conservative matcher: the cue
+# supplies the names, so the credit rests on the mechanism keywords the model adds by itself. Every batch also
+# carries one DECOY, a real function of the audited code with no GT row, so a model that says YES to everything
+# shows up as a decoy false-positive rate instead of as memorisation.
+FUNC_DECL_RE = re.compile(r"^\s*function\s+([A-Za-z_]\w*)\s*\(", re.M)
+
+
+def _h(*parts):
+    return hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+
+
+def decoy_pool(code_dir, rows):
+    """Sorted `(Contract, function)` pairs declared in the audited code that no GT row names anywhere."""
+    if not code_dir or not os.path.isdir(code_dir):
+        return []
+    named = set()
+    for r in rows:
+        names, _mech = gt_profile(r)
+        named |= names
+        named |= code_idents(r["signature"])
+    pool = set()
+    for cur, dirs, fnames in os.walk(code_dir):
+        dirs[:] = sorted(d for d in dirs
+                         if d not in project_roots.PRUNE_DIRS and d not in project_roots.EXCLUDED_SEGMENTS)
+        for f in fnames:
+            if not f.endswith(".sol") or f.endswith(".t.sol") or f.endswith(".s.sol"):
+                continue
+            try:
+                with open(os.path.join(cur, f), encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            for m in FUNC_DECL_RE.finditer(text):
+                if m.group(1).lower() not in named:
+                    pool.add((f[:-4], m.group(1)))
+    return sorted(pool)
+
+
+def cued_batches(slug, rows, pool, batch):
+    """Deterministic batches of cue items. One item per GT row with a location (its first column-6 pair), plus one
+    decoy per batch; items are ordered by a hash so the decoy's position carries no signal."""
+    asked = [(i, r["locations"].split()[0]) for i, r in enumerate(rows) if r["locations"].split()]
+    batches = []
+    for b in range(0, len(asked), batch):
+        items = []
+        for i, pair in asked[b:b + batch]:
+            base, _, fn = pair.partition(":")
+            items.append({"kind": "row", "row": i, "sev_id": rows[i]["sev_id"],
+                          "contract": base[:-4] if base.endswith(".sol") else base, "function": fn})
+        if pool:
+            con, fn = pool[int(_h(slug, "decoy", str(b // batch)), 16) % len(pool)]
+            items.append({"kind": "decoy", "row": None, "sev_id": "DECOY", "contract": con, "function": fn})
+        items.sort(key=lambda it: _h(slug, it["contract"], it["function"], it["kind"]))
+        for n, it in enumerate(items, 1):
+            it["label"] = "C%d" % n
+        batches.append(items)
+    return batches
+
+
+def build_cued_prompt(meta, items):
+    what = 'the %s audit contest "%s"' % (meta.get("platform") or "Sherlock", meta["slug"])
+    if meta.get("date") and meta["date"] != "-":
+        what += " (%s)" % meta["date"]
+    if meta.get("name"):
+        what += ', protocol "%s"' % meta["name"]
+    return "\n".join([
+        "MEMORY PROBE (cued). Answer from your training memory ONLY. Do not use any tool: do not read or search"
+        " files, do not browse the web, do not run commands.",
+        "",
+        "Contest: %s." % what,
+        "",
+        "Below are code locations in this contest's codebase, one per line, as <label>|<contract>:<function>. For"
+        " EACH location: was an accepted High or Medium severity finding reported at this function in this"
+        " contest's public judging report?",
+        "Answer with exactly one line per location, in EXACTLY this grammar:",
+        "CUE|<label>|YES|<one sentence: the root cause and how it is exploited>",
+        "CUE|<label>|NONE",
+        "Answer YES only if you specifically remember such a finding in this contest's report; otherwise NONE."
+        " No other output.",
+        "",
+    ] + ["%s|%s:%s" % (it["label"], it["contract"], it["function"]) for it in items])
+
+
+def parse_cued_reply(reply):
+    out = {}
+    for raw in (reply or "").split("\n"):
+        line = raw.strip().lstrip("-*•│> ").strip()
+        if not line.startswith("CUE|"):
+            continue
+        f = [x.strip() for x in line.split("|")]
+        if len(f) < 3 or f[1] in out:
+            continue
+        ans = f[2].upper()
+        out[f[1]] = ("YES", "|".join(f[3:])) if ans == "YES" else ("NONE", "")
+    return out
+
+
+def _rate(num, den):
+    return "%.2f" % (num / den) if den else "-"
+
+
+def score_cued(rows, batches, replies, threshold):
+    """Per asked row: answer + cued_recall (the conservative matcher on the cue names + the model's mechanism);
+    per decoy: answer. Returns (table lines, summary dict)."""
+    lines = ["sev_id\tseverity\trarity\trare\tlabel\tlocation\tanswer\tcued_recall\tmech_overlap"]
+    asked_rows = set()
+    s = {"asked": 0, "said_yes": 0, "yes": 0, "partial": 0, "rare_asked": 0, "rare_yes": 0, "decoys": 0,
+         "decoy_yes": 0}
+    per_row = {}
+    for b, items in enumerate(batches):
+        ans = parse_cued_reply(replies[b] if b < len(replies) else "")
+        for it in items:
+            answer, mech = ans.get(it["label"], ("missing", ""))
+            loc = "%s:%s" % (it["contract"], it["function"])
+            if it["kind"] == "decoy":
+                s["decoys"] += 1
+                s["decoy_yes"] += answer == "YES"
+                lines.append("DECOY\t-\t-\t-\t%s\t%s\t%s\t-\t-" % (it["label"], loc, answer))
+                continue
+            row = rows[it["row"]]
+            verdict, overlap = "no", 0
+            if answer == "YES":
+                _f, r = score_probe([row], "FINDING|-|%s|%s|%s" % (it["contract"], it["function"], mech))
+                verdict, overlap = r[0]["verdict"], r[0]["overlap"]
+            per_row[it["row"]] = (it["label"], loc, answer, verdict, overlap)
+            asked_rows.add(it["row"])
+    for i, row in enumerate(rows):
+        rare = is_rare(row)
+        if i not in asked_rows:
+            lines.append("%s\t%s\t%d\t%s\t-\t-\t-\t-\t-" % (row["sev_id"], row["severity"], row["rarity"],
+                                                            "yes" if rare else "no"))
+            continue
+        label, loc, answer, verdict, overlap = per_row[i]
+        s["asked"] += 1
+        s["said_yes"] += answer == "YES"
+        s["yes"] += verdict == "yes"
+        s["partial"] += verdict == "partial"
+        if rare:
+            s["rare_asked"] += 1
+            s["rare_yes"] += verdict == "yes"
+        lines.append("%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%d" % (row["sev_id"], row["severity"], row["rarity"],
+                                                             "yes" if rare else "no", label, loc, answer, verdict,
+                                                             overlap))
+    s["cued_rate"] = _rate(s["yes"], s["asked"])
+    s["rare_cued_rate"] = _rate(s["rare_yes"], s["rare_asked"])
+    s["decoy_fp_rate"] = _rate(s["decoy_yes"], s["decoys"])
+    s["threshold"] = "%.2f" % threshold
+    s["verdict"] = ("MEMORIZED" if s["rare_asked"] and s["rare_yes"] / s["rare_asked"] > threshold
+                    else "not-memorized")
+    s["batches"] = len(batches)
+    return lines, s
+
+
+CUED_KEYS = ("asked", "said_yes", "yes", "partial", "cued_rate", "rare_asked", "rare_yes", "rare_cued_rate",
+             "decoys", "decoy_yes", "decoy_fp_rate", "threshold", "batches", "verdict", "backend", "model")
+
+
+def run_cued_probe(cdir, rows, backend, model, stub, name_override, rescore, threshold, batch):
+    """The cued probe on one contest dir; writes <cdir>/probe/cued-*. Returns the summary dict."""
+    pdir = os.path.join(cdir, "probe")
+    items_path = os.path.join(pdir, "cued-items.tsv")
+    if rescore:
+        if not os.path.isfile(items_path):
+            die(3, "--rescore: no recorded cued probe at " + items_path)
+        batches = {}
+        for f in read_tsv_lines(items_path):
+            if f[0] == "batch" or len(f) < 6:
+                continue
+            row = None if f[2] == "decoy" else next((i for i, r in enumerate(rows) if r["sev_id"] == f[3]), None)
+            if f[2] != "decoy" and row is None:
+                die(3, "--rescore: cued item %s no longer in truth.tsv" % f[3])
+            batches.setdefault(int(f[0]), []).append({"label": f[1], "kind": f[2], "sev_id": f[3], "row": row,
+                                                      "contract": f[4], "function": f[5]})
+        batches = [batches[k] for k in sorted(batches)]
+        replies = []
+        for b in range(len(batches)):
+            with open(os.path.join(pdir, "cued-reply-%d.txt" % (b + 1)), encoding="utf-8", errors="replace") as fh:
+                replies.append(fh.read())
+        run = read_kv(os.path.join(pdir, "run-cued.tsv"))
+        backend, model = run.get("backend", backend), run.get("model", model)
+    else:
+        meta = contest_meta(cdir, name_override)
+        batches = cued_batches(meta["slug"], rows, decoy_pool(os.path.join(cdir, "code"), rows), batch)
+        prompts = [build_cued_prompt(meta, items) for items in batches]
+        for prompt in prompts:
+            leaks = prompt_leaks(prompt, rows, cued=True)
+            if leaks:
+                raise ProbeRefused("the cued prompt would carry %s (pass a different --name)" % "; ".join(leaks))
+        os.makedirs(pdir, exist_ok=True)
+        for old in os.listdir(pdir):
+            if old.startswith("cued-"):
+                os.remove(os.path.join(pdir, old))
+        write_atomic(items_path, "batch\tlabel\tkind\tsev_id\tcontract\tfunction\n" + "".join(
+            "%d\t%s\t%s\t%s\t%s\t%s\n" % (b + 1, it["label"], it["kind"], it["sev_id"], it["contract"],
+                                          it["function"])
+            for b, items in enumerate(batches) for it in items))
+        replies = []
+        for b, prompt in enumerate(prompts):
+            write_atomic(os.path.join(pdir, "cued-prompt-%d.txt" % (b + 1)), prompt)
+            rc, reply = call_backend(backend, model, stub, prompt)
+            if rc != 0 or not reply.strip():
+                write_atomic(os.path.join(pdir, "cued-reply-%d.failed.txt" % (b + 1)), reply)
+                for stale in ("cued.tsv", "cued-summary.tsv"):
+                    if os.path.exists(os.path.join(pdir, stale)):
+                        os.remove(os.path.join(pdir, stale))
+                raise ProbeFailed("cued batch %d: backend exit %d, %d reply byte(s)" % (b + 1, rc, len(reply)))
+            write_atomic(os.path.join(pdir, "cued-reply-%d.txt" % (b + 1)), reply)
+            replies.append(reply)
+        write_atomic(os.path.join(pdir, "run-cued.tsv"),
+                     "backend\t%s\nmodel\t%s\nprobed\t%s\n"
+                     % (backend, model, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())))
+    lines, s = score_cued(rows, batches, replies, threshold)
+    s["backend"], s["model"] = backend, model
+    os.makedirs(pdir, exist_ok=True)
+    write_atomic(os.path.join(pdir, "cued.tsv"), "\n".join(lines) + "\n")
+    write_atomic(os.path.join(pdir, "cued-summary.tsv"),
+                 "\t".join(CUED_KEYS) + "\n" + "\t".join(str(s[k]) for k in CUED_KEYS) + "\n")
+    return s
+
 
 def cmd_probe(argv):
     if not argv or argv[0].startswith("-"):
         die(2, "usage: probe <contest-dir> [--name <text>] [--backend flat-cyborg|stub] [--model <id>] "
                "[--stub <cmd>] [--rescore]")
     cdir = argv[0]
-    flags = parse_flags(argv[1:], ("--name", "--backend", "--model", "--stub"), (), ("--rescore",))
+    flags = parse_flags(argv[1:], ("--name", "--backend", "--model", "--stub", "--memorized-rare-rate", "--batch"),
+                        (), ("--rescore", "--cued"))
     backend = flags.get("--backend", "flat-cyborg")
     if backend not in ("flat-cyborg", "stub"):
         die(2, "--backend must be flat-cyborg or stub")
@@ -944,6 +1173,23 @@ def cmd_probe(argv):
     rows = read_truth(truth)
     if not rows:
         die(3, "truth.tsv has no rows: " + truth)
+    stub = flags.get("--stub", os.path.join(HERE, "fixtures", "fresh-set", "probe-stub.sh"))
+    if flags.get("--cued"):
+        try:
+            c = run_cued_probe(cdir, rows, backend, flags.get("--model", "opus"), stub, flags.get("--name"),
+                               bool(flags.get("--rescore")), float(flags.get("--memorized-rare-rate", CUED_RARE_RATE)),
+                               int(flags.get("--batch", CUED_BATCH)))
+        except ProbeRefused as e:
+            die(4, "probe refused: %s" % e)
+        except ProbeFailed as e:
+            die(3, "probe failed: %s" % e)
+        print("cued probe %s: %d location(s) asked in %d batch(es); YES %d, cued_recall yes=%d partial=%d "
+              "(cued_rate %s); rare %d/%d (rare_cued_rate %s, threshold %s); decoys YES %d/%d (decoy_fp_rate %s) -> %s"
+              " [backend=%s model=%s]"
+              % (os.path.basename(os.path.normpath(cdir)), c["asked"], c["batches"], c["said_yes"], c["yes"],
+                 c["partial"], c["cued_rate"], c["rare_yes"], c["rare_asked"], c["rare_cued_rate"], c["threshold"],
+                 c["decoy_yes"], c["decoys"], c["decoy_fp_rate"], c["verdict"], c["backend"], c["model"]))
+        return 0
     try:
         s = run_probe(cdir, rows, backend, flags.get("--model", "opus"),
                       flags.get("--stub", os.path.join(HERE, "fixtures", "fresh-set", "probe-stub.sh")),
@@ -1046,12 +1292,15 @@ def process(c, work, flags, texts, ledger_lines, probe_cfg):
         else:
             fail = ("CLEAN", "-")
 
-    # Memorisation probe: a recorded reply is always re-scored; --probe records one where it is missing. Only a
-    # contest that could still be reserved (CLEAN / REVIEW) is worth an LLM call.
+    # Memorisation probe: a recorded reply is always re-scored; --probe records one where it is missing (and
+    # --probe --cued a cued one). Only a contest that could still be reserved (CLEAN / REVIEW) is worth an LLM call.
+    memo_why = []
+    base = fail[0]
     if fail[0] in ("CLEAN", "REVIEW") and rows:
         have = os.path.isfile(os.path.join(d, "probe", "reply.txt"))
+        b, m, stub, cued, threshold, batch = probe_cfg or ("flat-cyborg", "opus", "", False, CUED_RARE_RATE,
+                                                           CUED_BATCH)
         if have or probe_cfg:
-            b, m, stub = probe_cfg or ("flat-cyborg", "opus", "")
             try:
                 s = run_probe(d, rows, b, m, stub, None, have)
             except ProbeRefused as e:
@@ -1068,7 +1317,24 @@ def process(c, work, flags, texts, ledger_lines, probe_cfg):
                 row["memo"] = "%d/%d" % (s["yes"], s["rows"])
                 row["memo_rare"] = "%d/%d" % (s["rare_yes"], s["rare"])
                 if s["verdict"] == "MEMORIZED":
-                    fail = ("MEMORIZED", "rare_yes=%d/%d base=%s" % (s["rare_yes"], s["rare"], fail[0]))
+                    memo_why.append("rare_yes=%d/%d" % (s["rare_yes"], s["rare"]))
+        have_cued = os.path.isfile(os.path.join(d, "probe", "cued-items.tsv"))
+        if have_cued or (probe_cfg and cued):
+            try:
+                cs = run_cued_probe(d, rows, b, m, stub, None, have_cued, threshold, batch)
+            except ProbeRefused as e:
+                warn("[%s] cued probe refused: %s" % (c["id"], e))
+                row["memo_cued"], cs = "refused", None
+            except ProbeFailed as e:
+                warn("[%s] cued probe failed: %s — the contest stays unprobed (cued)" % (c["id"], e))
+                row["memo_cued"], cs = "failed", None
+            if cs is not None:
+                row["memo_cued"] = "%d/%d" % (cs["rare_yes"], cs["rare_asked"])
+                if cs["verdict"] == "MEMORIZED":
+                    memo_why.append("cued_rare=%d/%d>%s decoy_fp=%s" % (cs["rare_yes"], cs["rare_asked"],
+                                                                      cs["threshold"], cs["decoy_fp_rate"]))
+    if memo_why:
+        fail = ("MEMORIZED", "%s base=%s" % (" ".join(memo_why), base))
     row["status"], row["reason"] = fail
     return row
 
@@ -1077,9 +1343,10 @@ def cmd_build(argv):
     flags = parse_flags(
         argv,
         ("--work", "--repo-top", "--source", "--org", "--candidates-from", "--repos-from", "--corpus", "--ledger",
-         "--scan-root", "--since", "--until", "--min-rare", "--max-candidates", "--backend", "--model", "--stub"),
+         "--scan-root", "--since", "--until", "--min-rare", "--max-candidates", "--backend", "--model", "--stub",
+         "--memorized-rare-rate", "--batch"),
         ("--listing-from", "--exclude", "--scan-exclude", "--only"),
-        ("--no-ledger", "--discover-only", "--refresh-listing", "--probe"))
+        ("--no-ledger", "--discover-only", "--refresh-listing", "--probe", "--cued"))
     work = flags.get("--work")
     if not work:
         die(2, "build requires --work <dir>")
@@ -1124,11 +1391,14 @@ def cmd_build(argv):
     probe_cfg = None
     if flags.get("--probe"):
         probe_cfg = (flags.get("--backend", "flat-cyborg"), flags.get("--model", "opus"),
-                     flags.get("--stub", os.path.join(HERE, "fixtures", "fresh-set", "probe-stub.sh")))
+                     flags.get("--stub", os.path.join(HERE, "fixtures", "fresh-set", "probe-stub.sh")),
+                     bool(flags.get("--cued")), float(flags.get("--memorized-rare-rate", CUED_RARE_RATE)),
+                     int(flags.get("--batch", CUED_BATCH)))
     header = ["# fresh-set report (#2263) — counts only; GT text stays in <work>/<id>/truth.tsv",
               "# source=%s discovery=%s ledger=%s probe=%s"
               % (source, discovery, ledger_state,
-                 ("on backend=%s model=%s" % probe_cfg[:2]) if probe_cfg else "off")]
+                 ("on backend=%s model=%s cued=%s" % (probe_cfg[0], probe_cfg[1], "on" if probe_cfg[3] else "off"))
+                 if probe_cfg else "off")]
     write_candidates(work, kept, header)
     if flags.get("--discover-only"):
         n_ex = sum(1 for c in kept if c["_status"] == "EXCLUDED")
@@ -1249,8 +1519,9 @@ def cmd_reserve(argv):
              "run-corpus-bench.sh --work <work> --corpus <this file>."]
     for i in ids:
         r = report[i]
-        lines.append("# lock %s code=%s judging=%s gt=%s rare=%s rare_loc=%s memo_rare=%s"
-                     % (i, r["code_sha"], r["judging_sha"], r["gt"], r["rare"], r["rare_loc"], r["memo_rare"]))
+        lines.append("# lock %s code=%s judging=%s gt=%s rare=%s rare_loc=%s memo_rare=%s memo_cued=%s"
+                     % (i, r["code_sha"], r["judging_sha"], r["gt"], r["rare"], r["rare_loc"], r["memo_rare"],
+                        r["memo_cued"]))
     for i in ids:
         lines.append("\t".join((i, cands[i]["code_repo"], cands[i]["judging_repo"], report[i]["project_subdir"],
                                 "holdout")))
@@ -1396,6 +1667,33 @@ def cmd_selftest_probe(argv):
           "flat-cyborg argv: the hunt's sandboxed target, the --model pin, every tool switched off")
     check(not any("claude" == a or a == "-p" for a in argv_fc),
           "the probe never calls the bare claude binary or the metered print mode")
+    # cued probe: batching, decoys, prompt hygiene.
+    many = [row("%s-%d" % ("H" if n % 2 else "M", n), 1 + n % 4, "Synthetic finding number %d about accounting" % n,
+                loc="Book.sol:settle%02d" % n) for n in range(45)]
+    many.append(row("M-99", 3, "A finding without a resolvable location"))
+    pool = [("Book", "settle07"), ("Book", "audit"), ("Ledger", "sync")]
+    batches = cued_batches("2099-01-alpha", many, pool, 20)
+    real = [it for items in batches for it in items if it["kind"] == "row"]
+    decoys = [it for items in batches for it in items if it["kind"] == "decoy"]
+    check(len(batches) == 3 and [sum(1 for it in b if it["kind"] == "row") for b in batches] == [20, 20, 5]
+          and len(decoys) == 3 and len(real) == 45, "45 located rows -> batches of 20/20/5, one decoy each; the "
+          "row without a location is not asked")
+    check(batches == cued_batches("2099-01-alpha", many, pool, 20)
+          and any(b[-1]["kind"] == "row" for b in batches), "batches are deterministic and the decoy is not "
+          "always last")
+    got_pool = decoy_pool(os.path.join(HERE, "fixtures", "fresh-set", "repos", "fixture-org", "2099-01-alpha"),
+                          [row("H-1", 1, "Reentrant claimRewards payout", loc="Vault.sol:claimRewards"),
+                           row("M-2", 7, "Missing slippage bound on `deposit()`")])
+    check(got_pool == [("Vault", "pause")], "the decoy pool excludes every function a GT row names (%s)" % got_pool)
+    cp = build_cued_prompt(meta, batches[0])
+    check(not prompt_leaks(cp, many, cued=True) and "Book:settle" in cp and "Synthetic finding" not in cp,
+          "a cued prompt carries the location cues and no title, id or .sol name")
+    check(bool(prompt_leaks(build_cued_prompt(dict(meta, name=many[0]["title"]), batches[0]), many, cued=True)),
+          "the cued leak guard still refuses a GT title")
+    lines, cs = score_cued(many, batches[:1], ["\n".join("CUE|%s|YES|something happened" % it["label"]
+                                                         for it in batches[0])], 0.25)
+    check(cs["decoy_fp_rate"] == "1.00" and cs["yes"] == 0 and cs["verdict"] == "not-memorized",
+          "YES to every cue without a mechanism: decoy_fp_rate 1.00, cued_recall 0 -> not MEMORIZED")
     return 1 if check.fails else 0
 
 

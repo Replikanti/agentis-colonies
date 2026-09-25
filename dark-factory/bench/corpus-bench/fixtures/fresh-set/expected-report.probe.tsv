@@ -1,10 +1,10 @@
 # fresh-set report (#2263) — counts only; GT text stays in <work>/<id>/truth.tsv
-# source=sherlock-gh discovery=offline ledger=unchecked probe=on backend=stub model=fixture-model
-id	slug	date	ended	status	reason	gt	rare	rare_loc	rarity_unknown	gt_shape	sol_files	sol_lines	roots	project_subdir	code_present	contam_strong	contam_weak	contam_pv	ledger	memo	memo_rare	code_sha	judging_sha
-2099-05-echo	2099-05-echo	2099-05	2099-05-21	EXCLUDED	corpus	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-
-alpha	2099-01-alpha	2099-01	2099-01-21	MEMORIZED	rare_yes=1/2 base=CLEAN	3	2	1	0	ok	1	18	1	proj	ok	0	0	0	unchecked	1/3	1/2	local	local
-bravo	2099-02-bravo	2099-02	2099-02-21	NO-CODE	readme-only	1	1	-	0	ok	0	0	0	-	readme-only	0	0	0	unchecked	-	-	local	local
-charlie	2099-03-charlie	2099-03	2099-03-21	NO-CODE	empty-submodule	1	1	-	0	ok	0	0	0	-	empty-submodule	0	0	0	unchecked	-	-	local	local
-delta	2099-04-delta	2099-04	2099-04-21	CONTAMINATED	strong=1 pv=1 ledger=unchecked	1	1	0	0	ok	1	8	1	core	ok	1	1	1	unchecked	-	-	local	local
-foxtrot	2099-06-foxtrot	2099-06	2099-06-21	REVIEW	weak=1 ledger=unchecked	1	1	0	0	ok	1	10	1	.	ok	0	1	0	unchecked	0/1	0/1	local	local
-golf	2099-07-golf	2099-07	2099-07-21	NO-GT	0-rows	0	0	-	0	ok	-	-	-	-	-	0	0	0	unchecked	-	-	-	local
+# source=sherlock-gh discovery=offline ledger=unchecked probe=on backend=stub model=fixture-model cued=on
+id	slug	date	ended	status	reason	gt	rare	rare_loc	rarity_unknown	gt_shape	sol_files	sol_lines	roots	project_subdir	code_present	contam_strong	contam_weak	contam_pv	ledger	memo	memo_rare	memo_cued	code_sha	judging_sha
+2099-05-echo	2099-05-echo	2099-05	2099-05-21	EXCLUDED	corpus	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-	-
+alpha	2099-01-alpha	2099-01	2099-01-21	MEMORIZED	rare_yes=1/2 cued_rare=1/1>0.25 decoy_fp=0.00 base=CLEAN	3	2	1	0	ok	1	21	1	proj	ok	0	0	0	unchecked	1/3	1/2	1/1	local	local
+bravo	2099-02-bravo	2099-02	2099-02-21	NO-CODE	readme-only	1	1	-	0	ok	0	0	0	-	readme-only	0	0	0	unchecked	-	-	-	local	local
+charlie	2099-03-charlie	2099-03	2099-03-21	NO-CODE	empty-submodule	1	1	-	0	ok	0	0	0	-	empty-submodule	0	0	0	unchecked	-	-	-	local	local
+delta	2099-04-delta	2099-04	2099-04-21	CONTAMINATED	strong=1 pv=1 ledger=unchecked	1	1	0	0	ok	1	8	1	core	ok	1	1	1	unchecked	-	-	-	local	local
+foxtrot	2099-06-foxtrot	2099-06	2099-06-21	REVIEW	weak=1 ledger=unchecked	1	1	0	0	ok	1	10	1	.	ok	0	1	0	unchecked	0/1	0/1	0/0	local	local
+golf	2099-07-golf	2099-07	2099-07-21	NO-GT	0-rows	0	0	-	0	ok	-	-	-	-	-	0	0	0	unchecked	-	-	-	-	local

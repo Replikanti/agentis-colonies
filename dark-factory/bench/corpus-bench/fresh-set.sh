@@ -10,7 +10,7 @@
 #   fresh-set.sh --work <dir> (--ledger <file> | --no-ledger) [build options]          # build + report
 #   fresh-set.sh --work <dir> --reserve <id,id,...> [--allow-review] [--allow-memorized] [--corpus <tsv>]
 #   fresh-set.sh probe <contest-dir> [--name <text>] [--backend flat-cyborg|stub] [--model <id>] [--stub <cmd>]
-#                [--rescore]
+#                [--rescore] [--cued [--batch <N>] [--memorized-rare-rate <R>]]
 #   fresh-set.sh --self-test
 #
 # Build options:
@@ -44,6 +44,8 @@
 #                           recorded reply yet; a recorded <work>/<id>/probe/reply.txt is always re-scored.
 #   --backend / --model / --stub   the probe backend (flat-cyborg | stub), model pin (default opus, the hunt's
 #                           llm.model default) and stub command (default fixtures/fresh-set/probe-stub.sh).
+#   --cued [--batch N] [--memorized-rare-rate R]   with --probe: also run the CUED probe (below); a recorded cued
+#                           probe is always re-scored.
 #
 # Statuses, in gate order (a contest carries the FIRST gate it fails): EXCLUDED (in --corpus / an --exclude
 # file) > NO-GT (no judging README or 0 accepted H/M rows) > LOW-RARE > NO-CODE (empty-submodule / readme-only /
@@ -67,6 +69,16 @@
 # memorisation rate. prompt.txt + reply.txt are recorded VERBATIM in <contest-dir>/probe/ with probe.tsv and
 # summary.tsv. --name overrides the protocol name (default: contest.tsv, else the code README H1); --rescore
 # re-scores the recorded reply without calling the model.
+#
+# probe <contest-dir> --cued: the RECOGNITION probe. Free recall is biased toward NONE by its do-not-guess rule, so
+# the cued probe gives the model, per GT row with a column-6 location, ONLY `<contract>:<function>` (never a title,
+# a description or a mechanism) plus the contest name, and asks whether an accepted High/Medium finding was
+# reported there and, if yes, its root cause. --batch N locations per prompt (default 20), each batch with one
+# DECOY: a real function of <contest-dir>/code that no GT row names. Scored offline by the same conservative
+# matcher (the cue gives the names, so credit rests on the mechanism the model adds) -> cued_recall per row
+# (probe/cued.tsv), cued_rate + rare_cued_rate + decoy_fp_rate (probe/cued-summary.tsv; a high decoy_fp_rate =
+# a model that says YES to everything). MEMORIZED when rare_cued_rate > --memorized-rare-rate (default 0.25).
+# Prompts and replies are recorded verbatim (probe/cued-prompt-<n>.txt, cued-reply-<n>.txt).
 #
 # --self-test: offline fixture suite (FRESH_SET_OFFLINE=1 trips any network access; no token; stub backend).
 # A probe whose backend fails (non-zero exit or an empty reply) is never scored: the reply is kept as
@@ -217,16 +229,41 @@ self_test() {
     && ok "(7) a dead backend exits 3 and is never scored (no reply.txt / summary.tsv left to read as not-memorized)" \
     || bad "(7) failed probe exit $rc (want 3, nothing scored)"
 
-  # (8) build --probe folds the probe into the report: alpha -> MEMORIZED, not reservable without --allow-memorized.
-  run --work "$T/a" "${COMMON[@]}" --no-ledger --probe --backend stub --model fixture-model >/dev/null 2>"$T/a2.err"; rc=$?
+  # (7c) the CUED probe on the same frozen dir: only `<contract>:<function>` cues + one decoy per batch.
+  mkdir -p "$FZ/code/proj/src"
+  cp "$FIX/repos/fixture-org/2099-01-alpha/proj/src/Vault.sol" "$FZ/code/proj/src/Vault.sol"
+  run probe "$FZ" --cued --backend stub --model fixture-model >"$T/cz.out" 2>&1; rc=$?
+  [ "$rc" -eq 0 ] && ok "(7c) cued probe on a frozen contest dir exits 0" || { bad "(7c) cued probe exit $rc"; sed 's/^/         | /' "$T/cz.out" | tail -5; }
+  same "$FIX/expected-cued.tsv" "$FZ/probe/cued.tsv" "(7c) per-row cued_recall byte-matches (located rare row yes, decoy NONE, unlocated rows not asked)"
+  if grep -q '	1.00	1	0	0.00	0.25	1	MEMORIZED	stub	fixture-model$' "$FZ/probe/cued-summary.tsv"; then
+    ok "(7c) cued-summary: rare_cued_rate 1.00 > 0.25 -> MEMORIZED, decoy_fp_rate 0.00"
+  else bad "(7c) cued-summary.tsv"; sed 's/^/         | /' "$FZ/probe/cued-summary.tsv" 2>/dev/null; fi
+  if grep -qx 'C[0-9]|Vault:claimRewards' "$FZ/probe/cued-prompt-1.txt" && grep -qx 'C[0-9]|Vault:pause' "$FZ/probe/cued-prompt-1.txt" \
+     && ! grep -qiE '\.sol|sweepDust|reentr|payout|drain|slippage|[HM]-[0-9]' "$FZ/probe/cued-prompt-1.txt"; then
+    ok "(7c) cued prompt: the location cue + a decoy, no title / mechanism / GT id / .sol name"
+  else bad "(7c) cued prompt content"; fi
+  run probe "$FZ" --cued --rescore --memorized-rare-rate 1.0 >/dev/null 2>&1; rc=$?
+  { [ "$rc" -eq 0 ] && grep -q '	1.00	1	not-memorized	stub	fixture-model$' "$FZ/probe/cued-summary.tsv"; } \
+    && ok "(7c) --memorized-rare-rate is the threshold: 1.00 is not > 1.0 -> not-memorized (offline re-score)" \
+    || bad "(7c) --memorized-rare-rate threshold (exit $rc)"
+  FRESH_SET_PROBE_STUB_MODE=yes-all run probe "$FZ" --cued --backend stub --model fixture-model >/dev/null 2>&1; rc=$?
+  { [ "$rc" -eq 0 ] && grep -q '	1	1	1.00	0.25	1	not-memorized	stub	fixture-model$' "$FZ/probe/cued-summary.tsv" \
+    && grep -q '^H-1	.*	YES	no	0$' "$FZ/probe/cued.tsv"; } \
+    && ok "(7c) a say-YES-to-everything model: decoy_fp_rate 1.00, a content-free YES is cued_recall no -> not MEMORIZED" \
+    || { bad "(7c) yes-all model (exit $rc)"; sed 's/^/         | /' "$FZ/probe/cued-summary.tsv" 2>/dev/null; }
+
+  # (8) build --probe --cued folds both probes into the report: alpha -> MEMORIZED, not reservable without
+  #     --allow-memorized.
+  run --work "$T/a" "${COMMON[@]}" --no-ledger --probe --cued --backend stub --model fixture-model >/dev/null 2>"$T/a2.err"; rc=$?
   [ "$rc" -eq 0 ] && ok "(8) build --probe exits 0" || { bad "(8) build --probe exit $rc"; tail -5 "$T/a2.err" | sed 's/^/         | /'; }
   same "$FIX/expected-report.probe.tsv" "$T/a/fresh-set-report.tsv" "(8) --probe report byte-matches (alpha MEMORIZED, foxtrot probed + still REVIEW)"
   same "$FIX/expected-probe.tsv" "$T/a/alpha/probe/probe.tsv" "(8) the build's probe of alpha scores like the standalone probe"
+  same "$FIX/expected-cued.tsv" "$T/a/alpha/probe/cued.tsv" "(8) the build's cued probe of alpha scores like the standalone one"
   run --work "$T/a" --reserve alpha --corpus "$FIX/corpus.tsv" >/dev/null 2>&1; rc=$?
   [ "$rc" -eq 4 ] && ok "(8) --reserve of a MEMORIZED contest exits 4" || bad "(8) --reserve MEMORIZED exit $rc (want 4)"
   run --work "$T/a" --reserve alpha --allow-memorized --corpus "$FIX/corpus.tsv" >/dev/null 2>&1; rc=$?
-  { [ "$rc" -eq 0 ] && grep -q '^# lock alpha .* memo_rare=1/2$' "$T/a/RESERVED.tsv"; } \
-    && ok "(8) --allow-memorized reserves it, the lock line carries memo_rare" || bad "(8) --allow-memorized exit $rc"
+  { [ "$rc" -eq 0 ] && grep -q '^# lock alpha .* memo_rare=1/2 memo_cued=1/1$' "$T/a/RESERVED.tsv"; } \
+    && ok "(8) --allow-memorized reserves it, the lock line carries memo_rare + memo_cued" || bad "(8) --allow-memorized exit $rc"
 
   # No run may have reached the network: the trip-wire turns any attempt into exit 5 + a loud line.
   if cat "$T"/*.err "$T"/*.out 2>/dev/null | grep -q 'TRIP-WIRE'; then bad "a run reached the network trip-wire"
@@ -246,6 +283,8 @@ case "${1:-}" in
 esac
 
 nv() { [ "$1" -ge 2 ] || die 2 "$2 requires a value"; }
+int() { printf '%s' "$2" | grep -qE '^[0-9]+$' || die 2 "$1 wants a non-negative integer, got: $2"; }
+rate() { printf '%s' "$2" | grep -qE '^(0(\.[0-9]+)?|1(\.0+)?)$' || die 2 "$1 wants a rate in [0, 1], got: $2"; }
 
 if [ "$1" = "probe" ]; then
   shift
@@ -258,7 +297,9 @@ if [ "$1" = "probe" ]; then
     --backend) nv "$#" "$1"
                case "$2" in flat-cyborg|stub) ;; *) die 2 "--backend must be flat-cyborg or stub" ;; esac
                PARGS+=("$1" "$2"); shift 2 ;;
-    --rescore) PARGS+=("$1"); shift ;;
+    --rescore|--cued) PARGS+=("$1"); shift ;;
+    --batch) nv "$#" "$1"; int "$1" "$2"; [ "$2" -ge 1 ] || die 2 "--batch must be >= 1"; PARGS+=("$1" "$2"); shift 2 ;;
+    --memorized-rare-rate) nv "$#" "$1"; rate "$1" "$2"; PARGS+=("$1" "$2"); shift 2 ;;
     *) die 2 "unknown probe arg: $1" ;;
   esac; done
   [ -d "$CDIR" ] || die 3 "contest dir not found: $CDIR"
@@ -270,7 +311,6 @@ WORK=""; RESERVE=""; LEDGER=""; NO_LEDGER=0
 ARGS=()
 BUILD_ONLY=0; RESERVE_ONLY=0
 ym() { printf '%s' "$2" | grep -qE '^[0-9]{4}-[0-9]{2}$' || die 2 "$1 wants YYYY-MM, got: $2"; }
-int() { printf '%s' "$2" | grep -qE '^[0-9]+$' || die 2 "$1 wants a non-negative integer, got: $2"; }
 while [ $# -gt 0 ]; do case "$1" in
   --work)    nv "$#" "$1"; WORK="$2"; shift 2 ;;
   --reserve) nv "$#" "$1"; RESERVE="$2"; shift 2 ;;
@@ -285,10 +325,11 @@ while [ $# -gt 0 ]; do case "$1" in
              case "$2" in flat-cyborg|stub) ;; *) die 2 "--backend must be flat-cyborg or stub" ;; esac
              ARGS+=("$1" "$2"); BUILD_ONLY=1; shift 2 ;;
   --since|--until) nv "$#" "$1"; ym "$1" "$2"; ARGS+=("$1" "$2"); BUILD_ONLY=1; shift 2 ;;
-  --min-rare|--max-candidates) nv "$#" "$1"; int "$1" "$2"; ARGS+=("$1" "$2"); BUILD_ONLY=1; shift 2 ;;
+  --min-rare|--max-candidates|--batch) nv "$#" "$1"; int "$1" "$2"; ARGS+=("$1" "$2"); BUILD_ONLY=1; shift 2 ;;
+  --memorized-rare-rate) nv "$#" "$1"; rate "$1" "$2"; ARGS+=("$1" "$2"); BUILD_ONLY=1; shift 2 ;;
   --org|--listing-from|--candidates-from|--repos-from|--exclude|--scan-root|--scan-exclude|--only|--model|--stub)
              nv "$#" "$1"; ARGS+=("$1" "$2"); BUILD_ONLY=1; shift 2 ;;
-  --discover-only|--refresh-listing|--probe) ARGS+=("$1"); BUILD_ONLY=1; shift ;;
+  --discover-only|--refresh-listing|--probe|--cued) ARGS+=("$1"); BUILD_ONLY=1; shift ;;
   *) die 2 "unknown arg: $1 (see --help)" ;;
 esac; done
 

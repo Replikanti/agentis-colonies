@@ -1,5 +1,5 @@
 # fresh-set RESERVED manifest (#2263) — a sealed held-out set: keep it OUTSIDE the repo until the exam is consumed.
 # built=2099-12-31 source=sherlock-gh discovery=offline ledger=unchecked probe=off
 # corpus.tsv row format (id code_repo judging_repo project_subdir role); run it with run-corpus-bench.sh --work <work> --corpus <this file>.
-# lock alpha code=local judging=local gt=3 rare=2 rare_loc=1 memo_rare=-
+# lock alpha code=local judging=local gt=3 rare=2 rare_loc=1 memo_rare=- memo_cued=-
 alpha	fixture-org/2099-01-alpha	fixture-org/2099-01-alpha-judging	proj	holdout

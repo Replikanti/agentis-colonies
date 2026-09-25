@@ -70,7 +70,7 @@ corpus-bench/
                                   #   repos/ (plain trees standing in for the clones), scan-root/ (a tiny fake
                                   #   repo text tree), corpus.tsv + ledger.tsv, probe-stub.sh (offline model),
                                   #   and the pinned expected-report{,.ledger,.probe}.tsv / expected-reserved.tsv /
-                                  #   expected-probe.tsv
+                                  #   expected-probe.tsv / expected-cued.tsv
     gt-dupes/                     # synthetic fixture for GT equivalence (#1840), deliberately SEPARATE from
                                   #   mech-judge/ (adding a row there would change every request payload and
                                   #   silently re-baseline the frozen #1829 cache keys): truth.tsv with a
@@ -1096,6 +1096,24 @@ probe <contest-dir>` measures it:
   recorded reply is always re-scored. `probe --rescore` re-scores without calling the model.
 - The probe also runs standalone on any already-frozen `<work>/<id>/` of `fetch-corpus.sh` (the name comes from
   the judging clone's origin remote and the code README H1), so spent sets can be probed retroactively.
+
+**Cued probe (`probe <contest-dir> --cued`, or `build --probe --cued`).** Free recall ("list what you remember")
+is biased toward `FINDING|NONE` by its own do-not-guess rule, and it misses recognition memory. The cued probe
+gives the model, for each GT row with a column-6 location, ONLY `<contract>:<function>` plus the contest name. It
+never gives a title, a description or a mechanism. It asks whether an accepted High/Medium finding was reported at
+that function and, if so, what its root cause was.
+
+- Locations are batched, `--batch` per prompt (default 20). The isolation and the backend are the same as the free
+  probe, and every prompt and reply is recorded verbatim (`cued-prompt-<n>.txt`, `cued-reply-<n>.txt`).
+- Every batch carries one **decoy**: a real function of `<contest-dir>/code` that no GT row names anywhere. Its
+  position in the batch is hash-ordered, so it carries no signal.
+- A `YES` is scored offline by the same conservative matcher. Because the cue supplies the names, the credit rests
+  on the mechanism keywords the model adds itself. The result is `cued_recall` per row (`cued.tsv`) plus
+  `cued_rate`, `rare_cued_rate` and `decoy_fp_rate` (`cued-summary.tsv`).
+- A model that answers `YES` to everything shows up as a high `decoy_fp_rate`, with content-free answers scoring
+  `no`, instead of looking like memorization.
+- A contest is `MEMORIZED` when `rare_cued_rate` exceeds `--memorized-rare-rate` (default 0.25). The report shows
+  the result as `memo_cued` (rare rows recalled / rare rows asked). `--rescore` re-scores recorded replies offline.
 
 The probe measures what the model can **state**. A model that recognises the code on sight without being able to
 name the finding is not caught, so a `not-memorized` contest is a lower bound on contamination, not proof of
