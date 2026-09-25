@@ -2862,6 +2862,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-deep-hunt-promises.sh" ]; then
     fi
 fi
 
+# --- dark-factory multi-root map layer (#2255 PR 1) ---
+# A multi-project code repo (several nested Foundry/Hardhat project roots) is mapped over the CLONE ROOT: lib/
+# project_roots.py detects the roots (vendored/test/mock configs excluded; `--project-roots .` opts out), every
+# zone gains an additive `root` key and a `<root>/<name>` name, lib/inheritance.py partitions its index per root,
+# gen-briefs.sh adds a `Project root:` line, zone-coverage carries `root`, and a map-reusing run-zone-hunt.sh pass
+# asserts the clone root. demo-multi-root.sh proves detection, auto/explicit mapping, the per-root inheritance
+# partition (mutation-checked), the --only/brief/coverage round-trip and SINGLE-ROOT BYTE-IDENTITY (in-tree, and
+# against origin/main when it is fetched). bash + git + python3 only (CI-safe).
+if [ -x "$REPO_ROOT/dark-factory/demo-multi-root.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-multi-root.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: multi-root map layer — every project root mapped over the clone root, single-root byte-identical (#2255)"
+    else
+        fail "dark-factory: multi-root map layer regressed (#2255)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory --grant-pii guard on live/exec .ag invocations (#1690) ---
 # The PII heuristic that blocked hunter.ag (#1675/#1676) and then zone-mapper.ag (#1690) can trip on
 # ANY invocation that transmits target source / scope / findings / PoCs / persisted patterns (all benign

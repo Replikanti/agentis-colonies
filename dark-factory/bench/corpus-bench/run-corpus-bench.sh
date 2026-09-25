@@ -218,6 +218,29 @@ fi
 
 say() { echo "run-corpus-bench.sh: $*" >&2; }
 
+# #2255: resolve_code_dir <work> <id> <project_subdir> -> sets CODE_DIR + PROJECT_ROOTS_ARG. A SINGLE project_subdir
+# resolves to today's <work>/<id>/code/<subdir> with PROJECT_ROOTS_ARG empty, so the run-zone-hunt.sh argv stays
+# byte-identical. A comma-separated LIST (the project roots of a multi-project code repo, clone-root-relative)
+# resolves to the clone root <work>/<id>/code with PROJECT_ROOTS_ARG=<list>; every listed dir must exist, else
+# it returns 1 with a message (the caller skips the row). Existence of a single subdir is left to the caller.
+resolve_code_dir() {
+  CODE_DIR="$1/$2/code/$3" ; PROJECT_ROOTS_ARG=""
+  case "$3" in
+    *,*)
+      CODE_DIR="$1/$2/code" ; PROJECT_ROOTS_ARG="$3"
+      _rcd_missing=""
+      for _rcd_r in $(printf '%s' "$3" | tr ',' ' '); do
+        [ -d "$CODE_DIR/$_rcd_r" ] || _rcd_missing="${_rcd_missing:+$_rcd_missing,}$_rcd_r"
+      done
+      if [ -n "$_rcd_missing" ]; then
+        echo "run-corpus-bench.sh: [$2] project root(s) '$_rcd_missing' of the multi-root row not found under $CODE_DIR (run --fetch first, or fix project_subdir); skipping" >&2
+        return 1
+      fi
+      ;;
+  esac
+  return 0
+}
+
 # #1829: the judge flags forwarded to score-match.py. The mode is always passed explicitly (never an empty
 # array expansion) and defaults to `off`, which selects the frozen #1697 matcher — byte-identical output.
 declare -a JUDGE_ARGS=(--judge "$JUDGE")
@@ -364,6 +387,24 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
     say "SELF-TEST: the score headline no longer prints the #2231 role label -> FAIL"; exit 1
   fi
 
+  # Sixth assertion (#2255): project_subdir resolution. A single subdir resolves to <work>/<id>/code/<subdir> with
+  # NO --project-roots (the byte-identical argv); a comma list resolves to the clone root + --project-roots <list>;
+  # a list naming a missing root is refused (the row is skipped, never hunted against a partial tree).
+  RCD_W="$(mktemp -d)"
+  mkdir -p "$RCD_W/x/code/core" "$RCD_W/x/code/market"
+  rcd_ok=1
+  resolve_code_dir "$RCD_W" x core || rcd_ok=0
+  [ "$CODE_DIR" = "$RCD_W/x/code/core" ] && [ -z "$PROJECT_ROOTS_ARG" ] || rcd_ok=0
+  resolve_code_dir "$RCD_W" x core,market || rcd_ok=0
+  [ "$CODE_DIR" = "$RCD_W/x/code" ] && [ "$PROJECT_ROOTS_ARG" = "core,market" ] || rcd_ok=0
+  if resolve_code_dir "$RCD_W" x core,nope 2>/dev/null; then rcd_ok=0; fi
+  rm -rf "$RCD_W"
+  if [ "$rcd_ok" -eq 1 ] && grep -Fq '${PROJECT_ROOTS_ARG:+--project-roots "$PROJECT_ROOTS_ARG"}' "$0"; then
+    say "SELF-TEST: project_subdir resolves single -> <code>/<subdir> (no --project-roots), list -> clone root + --project-roots, missing root refused (#2255) -> PASS"
+  else
+    say "SELF-TEST: project_subdir resolution (single / multi-root list) regressed (#2255) -> FAIL"; exit 1
+  fi
+
   [ "$ANY_ACTION" -eq 1 ] && [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
 fi
 [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
@@ -389,7 +430,9 @@ if [ "$DO_GT" -eq 1 ]; then
     # FUNCTION declared there (truth.tsv column 6). Absent (no --fetch yet, or a hand-staged work dir) the
     # extractor still emits column 6 — with only the `File:`-block anchors in it — so this is never fatal.
     declare -a GT_CODE=()
-    [ -d "$WORK/$id/code/$subdir" ] && GT_CODE=(--code "$WORK/$id/code/$subdir")
+    # #2255: a multi-root row's --code is the CLONE ROOT (extract-gt.sh's basename index + the blob-path hint
+    # tell the roots apart; an ambiguous basename is still skipped). A single subdir is unchanged.
+    if resolve_code_dir "$WORK" "$id" "$subdir" 2>/dev/null && [ -d "$CODE_DIR" ]; then GT_CODE=(--code "$CODE_DIR"); fi
     say "GT: [$id] extracting truth.tsv ..."
     bash "$EXTRACTGT" "$readme" "$WORK/$id/truth.tsv" ${GT_CODE[@]+"${GT_CODE[@]}"}
   done < "$CORPUS"
@@ -452,13 +495,17 @@ if [ "$DO_HUNT" -eq 1 ]; then
     case "$id" in ""|\#*) continue;; esac
     if [ -n "$IDS" ]; then case " $IDS " in *" $id "*) : ;; *) continue;; esac; fi
     [ -n "$project_subdir" ] || { echo "run-corpus-bench.sh: [$id] corpus.tsv row has no project_subdir; skipping" >&2; continue; }
-    code_dir="$WORK/$id/code/$project_subdir"
+    # #2255: a single subdir -> <code>/<subdir> + no --project-roots (byte-identical argv); a comma list -> the
+    # clone root + --project-roots <list>.
+    resolve_code_dir "$WORK" "$id" "$project_subdir" || continue
+    code_dir="$CODE_DIR"
     [ -d "$code_dir" ] || { echo "run-corpus-bench.sh: [$id] no cloned code at $code_dir (run --fetch first)" >&2; continue; }
     say "HUNT: [$id] running the real federation (run-zone-hunt.sh --backend $BACKEND) ..."
     # #2157: CALLEE_TRUST rides an `env` prefix so an unset arm produces a byte-identical argv+env to before.
     ${CALLEE_TRUST_ARG:+env CALLEE_TRUST="$CALLEE_TRUST_ARG"} \
     "$ZONEHUNT" --repo "$code_dir" --out "$WORK/$id/zone-hunt-out" --backend "$BACKEND" --jobs "$JOBS" \
       --agentis "$AGENTIS" ${scope_hint:+--scope-hint "$scope_hint"} \
+      ${PROJECT_ROOTS_ARG:+--project-roots "$PROJECT_ROOTS_ARG"} \
       ${DEPTH_ARG:+--zone-depth-cells "$DEPTH_ARG"} \
       ${ZONE_DEPTH_LENS_QUOTA:+--zone-depth-lens-quota "$ZONE_DEPTH_LENS_QUOTA"} \
       ${TOTAL_DEPTH_ARG:+--total-depth-cells "$TOTAL_DEPTH_ARG"} \

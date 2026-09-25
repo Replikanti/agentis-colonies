@@ -1,0 +1,3 @@
+# fixture-root: core-lib-dep (NOT a project root: a vendored dependency under lib/)
+[profile.default]
+src = "src"

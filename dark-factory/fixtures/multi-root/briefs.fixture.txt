@@ -1,0 +1,12 @@
+# briefs.fixture.txt — canned substrate brief bodies for demo-multi-root.sh (#2255; gen-briefs.sh --fixture).
+# One DARK-FACTORY:BRIEF-BEGIN|<zone_id> .. DARK-FACTORY:BRIEF-END block per zone of fixtures/multi-root/.
+# Public-safe, generic protocol mechanics only.
+DARK-FACTORY:BRIEF-BEGIN|core_src
+Break "share price is monotonic non-decreasing" through deposit/withdraw rounding.
+DARK-FACTORY:BRIEF-END
+DARK-FACTORY:BRIEF-BEGIN|market_src
+Break "settle never pays out more than the tracked balance".
+DARK-FACTORY:BRIEF-END
+DARK-FACTORY:BRIEF-BEGIN|market_src_base
+Break "settle never pays out more than the tracked balance" through the virtual hook.
+DARK-FACTORY:BRIEF-END

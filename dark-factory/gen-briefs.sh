@@ -163,16 +163,25 @@ for z in zones:
     classes_csv = clean_classes(srow["classes"]) if srow else clean_classes(",".join(z.get("bug_classes_likely", [])))
     files_csv = srow["files"] if srow else ",".join(z.get("files", []))
     classes = [c for c in classes_csv.split(",") if c]
+    # #2255: a zone of a multi-root map carries `root`, and its name is qualified `<root>/<name>` by map-zones.sh.
+    # An audit residual labels the subsystem WITHOUT that prefix, so the unqualified tail matches too.
+    root = z.get("root", "")
+    names = [name.lower()]
+    if root and root != "." and name.startswith(root + "/"):
+        names.append(name[len(root) + 1:].lower())
     # match residual leads to this zone: same bug class OR the residual's subsystem label == the zone name.
     matched = []
     for rl in residual_lines:
         f = rl.split("|")
-        if len(f) >= 3 and (f[2].strip() in classes or f[1].strip().lower() == name.lower()):
+        if len(f) >= 3 and (f[2].strip() in classes or f[1].strip().lower() in names):
             matched.append(rl)
     with open(os.path.join(resdir, zid + ".residual"), "w", encoding="utf-8") as fh:
         fh.write("\n".join(matched))
-    model.append({"id": zid, "name": name, "classes": classes, "files": files_csv,
-                  "residual": matched, "boundary": boundary_lines})
+    entry = {"id": zid, "name": name, "classes": classes, "files": files_csv,
+             "residual": matched, "boundary": boundary_lines}
+    if root:
+        entry["root"] = root
+    model.append(entry)
     listing.append(zid + "\t" + name + "\t" + classes_csv + "\t" + files_csv)
 
 with open(os.environ["MODEL"], "w", encoding="utf-8") as fh:
@@ -458,6 +467,17 @@ for z in model:
     out = []
     out.append("# %s — hunt brief   (zone: %s)" % (name, zid))
     out.append("In-scope files: %s" % (", ".join(files) if files else "(none listed)"))
+    # #2255: ONE line, only for a zone of a multi-root map (the only kind that carries `root`), so a single-root
+    # brief is byte-identical to before.
+    root = z.get("root", "")
+    if root == ".":
+        out.append("Project root: the repository root — the Foundry/Hardhat project at the top of this "
+                   "multi-project repository; its imports and remappings resolve against that directory. "
+                   "Paths above are relative to the repository root.")
+    elif root:
+        out.append("Project root: %s/ — a separate Foundry/Hardhat project inside this repository; its imports "
+                   "and remappings resolve against that directory. Paths above are relative to the repository "
+                   "root." % root)
     out.append("Bug classes to hunt: %s" % (", ".join(title_of(c) for c in classes) if classes else "(none classified)"))
     out.append("")
     out.append("## Invariants to break / attack surface")

@@ -44,8 +44,14 @@
 #           implementor, implementor_contract, resolves[], unresolved[]} ]`.
 #       `implementor: null` is the option-C fallback: the condition is RECORDED and nothing else changes.
 #       `files`, `loc` and `hardening_score` are never touched, so zone identity is byte-identical.
+#       #2255: on a MULTI-ROOT model (zones carrying a `root` key) ONE Index is built per root partition, over
+#       the sources of that root's zones only, so a contract name declared in two project roots is no longer
+#       ambiguous (failure mode (d)). Zones without `root` form one partition — the single-root path, unchanged.
 #   implementor --repo <dir> --file <rel>
 #       Prints `<implementor-rel>\t<fn1,fn2,…>` for the abstract contract declared in <rel>, or nothing.
+#       #2255: when lib/project_roots.py detects >= 2 project roots under <dir> and <rel> lies under a root R
+#       other than `.`, sources are discovered under <dir>/R only and the implementor is printed re-prefixed
+#       with `R/` (still relative to <dir>). Otherwise the output is byte-identical to before.
 #       Discovers sources itself with the same prune + exclusion list. NOTE: that list is a SEPARATE,
 #       independently-maintained copy of map-zones.sh's (the same convention the repo already carries at
 #       map-zones.sh:137-141 and :198-201) — two independently-maintained lists can drift; if you touch one,
@@ -381,16 +387,20 @@ def cmd_appendix(argv):
     if not isinstance(zones, list):
         die(3, "the mechanical zone model is not a JSON array")
 
-    sources = []
+    # #2255: one Index per project-root partition. Zones without a `root` key (every zone of a single-root map)
+    # share the `None` partition, whose source list is built exactly as before this issue.
+    part_sources = {}
     for z in zones:
+        sources = part_sources.setdefault(z.get("root"), [])
         for f in z.get("files", []):
             if f.endswith(".sol") and f not in sources:
                 sources.append(f)
-    idx = Index(repo, sources)
+    indexes = dict((key, Index(repo, sources)) for key, sources in part_sources.items())
 
     attached = []
     recorded = []
     for z in zones:
+        idx = indexes[z.get("root")]
         zone_files = z.get("files", [])
         entries = []
         token = None
@@ -439,6 +449,21 @@ def cmd_implementor(argv):
         rel = rel[2:]
     if not rel.endswith(".sol") or not os.path.isfile(os.path.join(repo, rel)):
         return 0
+    # #2255: on a multi-root clone, index only the project root holding <rel> and re-prefix the answer with it.
+    # A single-root clone (0 or 1 detected root), a file under `.` / outside every root, and an absent helper all
+    # take today's path.
+    prefix = ""
+    try:
+        pr = _project_roots()
+    except ImportError:
+        pr = None
+    roots = pr.detect(repo) if pr is not None else []
+    if len(roots) >= 2:
+        root = pr.root_of(rel, roots)
+        if root is not None and root != ".":
+            repo = os.path.join(repo, root)
+            rel = rel[len(root) + 1:]
+            prefix = root + "/"
     # The candidate's own file may be excluded from `discover_sources` (a `mocks/` shim the operator reached
     # through --scope-hint, say), so index it explicitly: the trigger must be evaluated on the file the gate
     # actually staged, not on whether that file would have formed a zone.
@@ -452,8 +477,18 @@ def cmd_implementor(argv):
             best_overall = ranked[0]
     if best_overall is None:
         return 0
-    sys.stdout.write(best_overall["implementor"] + "\t" + ",".join(best_overall["fns"]) + "\n")
+    sys.stdout.write(prefix + best_overall["implementor"] + "\t" + ",".join(best_overall["fns"]) + "\n")
     return 0
+
+
+def _project_roots():
+    """lib/project_roots.py (#2255), imported lazily from this file's own directory."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    sys.dont_write_bytecode = True      # never leave a __pycache__/ next to the shipped helpers
+    import project_roots
+    return project_roots
 
 
 # ================================================================================================

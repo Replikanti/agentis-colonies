@@ -261,7 +261,7 @@ def cmd_init(argv):
         zid = zid.replace("\t", " ")
         name = name.replace("\t", " ")
         lines.append("%s\t%s" % (zid, name))
-        entries.append({
+        entry = {
             "id": zid,
             "name": name,
             "value_custody": bool(z.get("value_custody", False)),
@@ -280,7 +280,12 @@ def cmd_init(argv):
             "results": "",
             "detail": "",
             "attempts": prior_attempts.get(zid, []),
-        })
+        }
+        # #2255: the zone's project root, copied ONLY when the map carries it (a multi-root target), so a
+        # single-root record is byte-identical to before.
+        if z.get("root"):
+            entry["root"] = z["root"]
+        entries.append(entry)
     started = now_iso()
     rec = {
         "schema": SCHEMA,

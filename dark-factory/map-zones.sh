@@ -28,6 +28,17 @@
 #   --model <id>        LLM model id for the live substrate step's `llm.model` (default: unset, so the
 #                       emitted config stays `llm.model = opus` — byte-identical to before this flag existed).
 #   --agentis <bin>     agentis binary (default: `agentis` on PATH).
+#   --project-roots <csv>  #2255: the project roots (dirs holding foundry.toml / hardhat.config.*, relative to
+#                       --repo) of a MULTI-PROJECT code repo. Default: AUTO-DETECTED by lib/project_roots.py (the
+#                       prune list below plus test/tests/mocks/script/interfaces, so vendored/test/mock configs
+#                       never count). `.` DISABLES detection (the single-root opt-out). A single entry other
+#                       than `.` is an error: pass --repo <repo>/<root> instead. Env fallback DF_PROJECT_ROOTS
+#                       (the flag wins) — a shell-level read like ZONE_SPLIT_LOC, no `.ag` getenv. Multi-root
+#                       mode starts only when >= 2 roots are in effect: every zone then carries an additive
+#                       `root` key, zones under a root other than `.` get the name `<root>/<name>`, an explicit
+#                       list narrows the sources to the listed roots (before --scope-hint, whose entries stay
+#                       relative to --repo), and every path stays relative to --repo. With 0 or 1 root the
+#                       output is byte-identical to a run without this flag.
 #   -h, --help          This help.
 #
 # #1865 appendix.tsv: the SIDECAR naming, per subsystem, the ONE #1861 appendix token this run attached and
@@ -58,6 +69,9 @@ DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
 . "$HERE/lib/ensure-claude-trust.sh"
 AGENTIS="agentis"
 REPO="" ; OUT="" ; SCOPE_HINT="" ; SINCE="" ; FIXTURE="" ; BACKEND="flat-cyborg" ; MODEL=""
+# #2255: explicit project roots (csv). The DF_PROJECT_ROOTS env is the fallback (run-zone-hunt.sh --project-roots
+# exports it); the --project-roots flag below wins. Empty = auto-detect.
+PROJECT_ROOTS="${DF_PROJECT_ROOTS:-}"
 # A contract above this many lines is emitted function-sliced (`file@fn1+fn2`, slice-fns.sh format) in
 # scope.tsv so a deep per-cell read fits the hunter's per-call budget (mirrors run-discovery.sh's guidance).
 LOC_SLICE_THRESHOLD=120
@@ -85,6 +99,7 @@ while [ $# -gt 0 ]; do
     --backend) need "$#"; BACKEND="$2"; shift 2 ;;
     --model) need "$#"; MODEL="$2"; shift 2 ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
+    --project-roots) need "$#"; PROJECT_ROOTS="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "map-zones.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -98,6 +113,29 @@ command -v python3 >/dev/null 2>&1 || { echo "[SKIP] python3 not installed" >&2;
 REPO="$(cd "$REPO" && pwd)"
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 TAXONOMY="$HERE/auditor/bug-taxonomy.md"
+
+# --- #2255 project roots: which dirs of this clone are separate Foundry/Hardhat projects ---------------------
+# lib/project_roots.py owns detection + validation. MR_ROOTS is the newline list of roots in effect; multi-root
+# mode starts only at >= 2 roots (MR_ROOTS is emptied otherwise), so a single-root target (0 or 1 root, or the
+# `.` opt-out) passes nothing new to the heredocs below and its output is byte-identical to before. Follows the
+# inheritance-appendix precedent for an absent helper: auto mode degrades to single-root with one stderr line; an
+# explicit multi-root list cannot be honoured without it and is a usage error.
+MR_ROOTS=""
+if [ -f "$HERE/lib/project_roots.py" ]; then
+  MR_ROOTS="$(python3 "$HERE/lib/project_roots.py" resolve --repo "$REPO" ${PROJECT_ROOTS:+--roots "$PROJECT_ROOTS"})" \
+    || { echo "map-zones.sh: invalid --project-roots '$PROJECT_ROOTS' (see the message above)" >&2; exit 2; }
+elif [ -n "$PROJECT_ROOTS" ] && [ "$PROJECT_ROOTS" != "." ]; then
+  echo "map-zones.sh: --project-roots '$PROJECT_ROOTS' needs lib/project_roots.py, which is missing" >&2; exit 2
+else
+  echo "map-zones.sh: lib/project_roots.py not found (continuing single-root, without project-root detection)" >&2
+fi
+MR_MODE="auto"
+[ -z "$PROJECT_ROOTS" ] || MR_MODE="explicit"
+if [ "$(printf '%s\n' "$MR_ROOTS" | grep -c .)" -ge 2 ]; then
+  echo "map-zones.sh: multi-root target (#2255): $(printf '%s\n' "$MR_ROOTS" | grep -c .) project roots [$(printf '%s\n' "$MR_ROOTS" | paste -sd, - | sed 's/,/, /g')] ($MR_MODE)" >&2
+else
+  MR_ROOTS=""
+fi
 
 # --- locate in-scope Solidity/Anchor sources (relative to --repo) -------------------------------------
 # PRUNE vendored dependencies and build artifacts. A Foundry/Hardhat target's OWN auditable code lives in
@@ -125,7 +163,8 @@ fi
 # --- mechanical pass: group by directory, LOC, hardening_score, slice tokens (python3, per convention) --
 MECH_JSON="$OUT/.zones-mechanical.json"
 ZONE_LIST="$(REPO_ABS="$REPO" SOURCES="$SOURCES" SCOPE_HINT="$SCOPE_HINT" DELTA_JSON="$DELTA_JSON" \
-  LOC_SLICE_THRESHOLD="$LOC_SLICE_THRESHOLD" ZONE_SPLIT_LOC="$ZONE_SPLIT_LOC" MECH_JSON="$MECH_JSON" python3 - <<'PY'
+  LOC_SLICE_THRESHOLD="$LOC_SLICE_THRESHOLD" ZONE_SPLIT_LOC="$ZONE_SPLIT_LOC" MECH_JSON="$MECH_JSON" \
+  MR_ROOTS="$MR_ROOTS" MR_MODE="$MR_MODE" DF_LIB="$HERE/lib" python3 - <<'PY'
 import os, re, json, time, subprocess, sys
 from collections import OrderedDict
 
@@ -141,6 +180,18 @@ try:
 except ValueError:
     split_cap = 1600
 mech_json = os.environ["MECH_JSON"]
+
+# #2255: the project roots in effect — non-empty ONLY in multi-root mode (>= 2 roots), so with 0 or 1 root nothing
+# below this block behaves differently. An EXPLICIT list narrows the sources to files under a listed root, BEFORE
+# the --scope-hint intersection (hints stay relative to --repo). In auto mode a file outside every root is kept
+# and forms a zone without a `root` key.
+mr_roots = [l for l in os.environ.get("MR_ROOTS", "").splitlines() if l.strip()]
+if mr_roots:
+    sys.path.insert(0, os.environ["DF_LIB"])
+    sys.dont_write_bytecode = True
+    from project_roots import root_of
+    if os.environ.get("MR_MODE") == "explicit":
+        sources = [f for f in sources if root_of(f, mr_roots) is not None]
 
 # --scope-hint intersection: keep a source that equals a hint or sits under one as a directory prefix
 # (the audit-delta.sh --paths convention — a plain list, no glob engine).
@@ -363,12 +414,19 @@ def build_zone(zid, name, files):
     # files is UNKNOWN, not empty, so it defaults True (never suppress the unknown).
     code_files = [f for f in files if str(f).endswith(".sol")]
     has_impl = (not code_files) or any(has_implementation(f) for f in code_files)
-    return {
+    z = {
         "id": zid, "name": name,
         "files": files, "scope_files": scope_tokens,
         "loc": zloc, "hardening_score": hardening,
         "has_implementation": has_impl,
     }
+    # #2255: multi-root mode only — the zone's project root. A zone is ONE directory, so every file in it
+    # shares a root and the first file decides. A file outside every root (auto mode) gets no key.
+    if mr_roots and files:
+        r = root_of(files[0], mr_roots)
+        if r is not None:
+            z["root"] = r
+    return z
 
 
 def split_bins(files, flocs, cap):
@@ -708,6 +766,12 @@ for z in mech:
     # classification still supplies classes/desc/custody; only the NAME is pinned to stay unique. An un-split
     # zone has no `split_of`, so its name resolution is byte-identical to before #1957.
     name = z["name"] if z.get("split_of") else (c.get("name") or z["name"])
+    # #2255: multi-root mode only (a `root` key exists only there) — qualify the final name as `<root>/<name>`
+    # for a zone under a root other than `.`, ONCE, after the #1957 split-name rule above. Every consumer that
+    # keys on the name (the scope.tsv subsystem, appendix.tsv, gen-briefs' scope_by_name, run-discovery.sh
+    # --only, zone-coverage's .zone-list.tsv) then reads the same string, unique across roots.
+    if z.get("root") and z["root"] != ".":
+        name = "%s/%s" % (z["root"], name)
     classes = [x.strip() for x in c.get("classes", "").split(",") if x.strip()]
     desc = c.get("desc", "")
     z_out = {
@@ -746,6 +810,10 @@ for z in mech:
     # carries its parent for that future grouping.
     if z.get("split_of"):
         z_out["split_of"] = z["split_of"]
+    # #2255: the zone's project root (relative to --repo), copied through ADDITIVELY in multi-root mode only. A
+    # single-root map has no `root` key anywhere, so its zones.json is byte-identical to before.
+    if z.get("root"):
+        z_out["root"] = z["root"]
     if z["id"] in failed_zones:
         z_out["classification_failed"] = True
     zones.append(z_out)

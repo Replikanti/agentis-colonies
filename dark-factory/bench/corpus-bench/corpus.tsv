@@ -9,6 +9,10 @@
 #                  project dir) — the actual Foundry/Hardhat project root is <code_dir>/<project_subdir>, not
 #                  the clone root. run-corpus-bench.sh's --hunt stage points run-zone-hunt.sh --repo at this
 #                  subdir. Verified present (foundry.toml or hardhat.config.ts) on 2026-07-13.
+#                  #2255: for a MULTI-PROJECT code repo (several nested project roots) this may be a
+#                  comma-separated LIST of project roots, relative to the clone root (e.g. `core,market`); the
+#                  hunt then runs over the clone root with run-zone-hunt.sh --project-roots <list>, and a
+#                  scope_hint on such a row is clone-root-relative. Every listed dir must exist.
 #   role           REQUIRED, `dev` or `holdout` (#2231 hold-out policy). `dev` = a contest the lenses were
 #                  DESIGNED on (its ground truth sat in bug-taxonomy.md's `seen:` lines until 2026-09-16), so
 #                  every recall number measured on it is IN-DISTRIBUTION and must be labelled as such.

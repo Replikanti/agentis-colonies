@@ -39,6 +39,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   given `verified_findings.json` records it as `scope_layer: {state: on|off|inert-extractor-error, reason}`. STAGE 4 first-pass findings only
   (`deep-hunt-gate.sh` / `--invariant-mode` not wired). Unset ⇒ byte-identical. Proven offline by
   `demo-scope-assumptions.sh`; precision UNMEASURED (needs a fresh set).
+- **Multi-project repos: every project root is mapped — map layer (#2255, part 1 of 2).** A code repo that holds
+  several nested Foundry/Hardhat projects used to be mapped through ONE of them, so every other root was never
+  mapped, briefed or hunted. `--repo` now stays the CLONE ROOT and every path in `zones.json` / `scope.tsv` /
+  `appendix.tsv` stays relative to it. New `lib/project_roots.py` detects the roots (a dir holding `foundry.toml` or
+  `hardhat.config.{js,ts,cjs,mjs}`; configs under `lib/`, `node_modules/`, `out/`, `cache/`, `artifacts/`, `test/`,
+  `tests/`, `mocks/`, `script/`, `interfaces/` never count). Multi-root mode starts only at >= 2 roots: each zone
+  gains an additive `root` key and zones under a root other than `.` are named `<root>/<name>` (unique across roots
+  for the `scope.tsv` subsystem, `run-discovery.sh --only`, the briefs and the coverage record);
+  `lib/inheritance.py` builds one index per root, so a contract name declared in two roots no longer drops the
+  appendix, and `implementor` answers per root; `gen-briefs.sh` adds one `Project root: <root>/` line;
+  `lib/zone-coverage.py init` carries `root`. `map-zones.sh --project-roots <csv>` (env `DF_PROJECT_ROOTS`,
+  exported by `run-zone-hunt.sh --project-roots`) pins the list; `.` opts out. A `--rehunt-gaps` /
+  `--deep-hunt-only` pass over a multi-root map exits 3 unless `--repo` is the clone root. corpus-bench:
+  `project_subdir` may be a comma-separated list of roots (`--hunt` then passes the clone root +
+  `--project-roots`), and `generalization-bench.sh` skips such a row explicitly. With 0 or 1 root the output is
+  byte-identical (pinned in-tree and against origin/main by the new `demo-multi-root.sh`). The deep hunt, vector
+  hunt and PoC stages still run against a single toolchain root; per-row root rebasing for them is part 2.
 - **Deep-hunt PROMISES — invariants derived from the target's user-facing promises, knob `DEEP_HUNT_PROMISES=1`
   (requires `DEEP_HUNT_REACH=1`), default OFF (#2245, iteration 7).** Iteration 6 fixed reach: the harness deploys
   the right concrete targets and calls the rows' entry points, yet stayed CLEAN, because the invariant comes from

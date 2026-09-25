@@ -789,6 +789,10 @@ bash "$DF/bench/corpus-bench/run-corpus-bench.sh" --fetch --gt --id "$ID" --work
 
 # 2) freeze STAGE 1/2 ONCE per contest — the artifacts BOTH arms will share, byte for byte
 CODE="$RUN/base/$ID/code/<project_subdir>"
+#    #2255 multi-root row (project_subdir = a comma list of project roots): CODE is the CLONE ROOT and the
+#    roots are passed explicitly, so every root is mapped and every path in map/ stays clone-root-relative:
+#      CODE="$RUN/base/$ID/code"
+#      bash "$DF/map-zones.sh" --repo "$CODE" --project-roots <list> --out "$RUN/base/$ID/map" ...
 bash "$DF/map-zones.sh"  --repo "$CODE" --out "$RUN/base/$ID/map" --backend flat-cyborg --model "$M"
 bash "$DF/gen-briefs.sh" --zones "$RUN/base/$ID/map/zones.json" --scope "$RUN/base/$ID/map/scope.tsv" \
                          --out "$RUN/base/$ID/briefs" --repo "$CODE" --backend flat-cyborg --model "$M"
@@ -797,6 +801,7 @@ bash "$DF/gen-briefs.sh" --zones "$RUN/base/$ID/map/zones.json" --scope "$RUN/ba
 # freezing. The base is shared by both arms, so repairing it is never an arm asymmetry.
 
 # 3) cost pre-flight (offline, no LLM): the EXACT per-arm breadth cell count, before spending
+#    (multi-root: same loop with the clone-root CODE; subsystem names are qualified `<root>/<name>`)
 for SUB in $(grep -v '^#' "$RUN/base/$ID/map/scope.tsv" | cut -d'|' -f1 | sed 's/ *$//'); do
   bash "$DF/run-discovery.sh" --repo "$CODE" --scope "$RUN/base/$ID/map/scope.tsv" \
        --only "$SUB" --list-cells | grep -c '^CELL|'
@@ -815,6 +820,8 @@ python3 "$DF/lib/zone-coverage.py" init \
 
 # 5) run the arm. CONTROL = the variable UNSET (the shipped gate is == "1", so unset is the production
 #    default a flip would change); TREATMENT = prefix `env OPERATIONALIZE_LENS=1`.
+#    Multi-root: pass the same clone-root CODE; the frozen zones carry their `root`, and --rehunt-gaps exits 3
+#    if --repo is not the clone root the map was made against.
 bash "$DF/run-zone-hunt.sh" --repo "$CODE" --out "$TAKE/zone-hunt-out" --rehunt-gaps \
      --backend flat-cyborg --model "$M" --jobs 1 --agentis agentis
 
@@ -937,6 +944,14 @@ CONCLUDED Sherlock contest whose judging repo is public — `role` is REQUIRED, 
 `holdout` unless a lens was knowingly designed on it. `extract-gt.sh` only needs the judging repo's
 `README.md` to follow the `# Issue <H|M>-<N>: <title>` / `## Found by` shape used above — verify that shape holds (`grep -c '^# Issue
 [HM]-' README.md` should equal the contest's published finding count) before trusting the extracted count.
+
+**Multi-project code repo (#2255).** When the audited code repo holds several nested project roots (each with
+its own `foundry.toml` / `hardhat.config.*`), set `project_subdir` to a comma-separated LIST of those roots,
+relative to the clone root (`core,market`), and write any `scope_hint` relative to the clone root. `--hunt`
+then runs `run-zone-hunt.sh --repo <work>/<id>/code --project-roots <list>`, so every root is mapped, briefed
+and hunted; `--gt` passes the clone root as `--code`. A listed root that does not exist skips the row. The
+coverage record's `repo` field then names the clone dir rather than the project dir (cosmetic).
+`generalization-bench.sh` skips such a row explicitly (deep-hunt-ab takes one project dir).
 
 ## CodeHawks GT extraction (#2189, unblocks #2172)
 
