@@ -165,6 +165,11 @@
 #                        byte-identical.
 #   --promise-fixture <file>  #2245: verbatim `PROMISE|#k|<subject>|<statement>|<path:line>` lines used INSTEAD
 #                        of the extraction call (the offline/deterministic seam). Requires --promises.
+#   --forge-diag         #2258 (deep-hunt DEEP_HUNT_SKIP_BROKEN_TARGET): create `$RUN/forge-diag/` so the staged
+#                        forge-invariant.sh appends one compile-scope row per forge run of the prover's harness to
+#                        `$RUN/forge-diag/compile.tsv` (compiled | target | harness | mixed | unlocated). The
+#                        scheduler reads it to skip the remaining lenses of a target that does not compile. Default
+#                        OFF => no dir => the gate writes nothing => byte-identical.
 #   --agentis <bin>      agentis binary (default: `agentis` on PATH).
 set -eu
 
@@ -214,6 +219,9 @@ REACH_TARGET_CONTRACT=""  # --target-contract <Name>: appended as `:Name` to --t
 # written => byte-identical. --promise-fixture stages verbatim PROMISE| lines as promise-fixture.txt.
 PROMISES=0
 PROMISE_FIXTURE=""
+# #2258: --forge-diag creates $RUN/forge-diag so the staged gate records one compile-scope row per forge run. 0 =>
+# no dir => the gate's opt-in never matches => byte-identical.
+FORGE_DIAG=0
 REPAIR_ROUNDS=""  # #1073: extra compile-repair rounds; "" => the prover's own default (2)
 AUDIT_CONTEXT=""  # #1722: optional spec / audit-scope doc; "" => no audit seed (byte-identical prompt)
 FORK_URL="" ; FORK_BLOCK="" ; FORK_TARGET=""
@@ -257,6 +265,7 @@ while [ $# -gt 0 ]; do
     --target-contract) need "$#"; REACH_TARGET_CONTRACT="$2"; shift 2 ;;
     --promises) PROMISES=1; shift ;;
     --promise-fixture) need "$#"; PROMISE_FIXTURE="$2"; shift 2 ;;
+    --forge-diag) FORGE_DIAG=1; shift ;;
     --agentis) need "$#"; AGENTIS="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-invariant-hunt.sh: unknown flag $1" >&2; exit 2 ;;
@@ -436,6 +445,8 @@ rm -rf "$RUN"; mkdir -p "$RUN"
 export HUNT_SANDBOX_REPO="$REPO" HUNT_SANDBOX_RUN="$RUN"
 cp "$PROVER" "$RUN/invariant-prover.ag"
 cp "$GATE" "$RUN/forge-invariant.sh"
+# #2258: opt-in compile-scope diag dir next to the staged gate (see --forge-diag). Absent flag => no dir.
+if [ "$FORGE_DIAG" = 1 ]; then mkdir -p "$RUN/forge-diag"; fi
 # #1728 — stage the #1724 mutant kill-set (mutant-kill.sh + the mutants/ fixture tree) into the rundir next to
 # the gate so the prover's TEETH-GATE can run it from the exec sandbox (which cannot read $HOME). mutant-kill.sh
 # resolves forge-invariant.sh + mutants/ relative to its OWN dir — which becomes $RUN, where $RUN/forge-invariant.sh

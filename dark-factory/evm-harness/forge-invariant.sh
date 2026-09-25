@@ -220,6 +220,75 @@ fi
 TMPD="$(mktemp -d "${TMPDIR:-/tmp}/forge-invariant.XXXXXX")" || { echo "forge-invariant: cannot create temp dir" >&2; exit 2; }
 trap 'rm -rf "$TMPD"' EXIT
 
+# --- #2258 OPT-IN COMPILE-SCOPE DIAG ROW (deep-hunt DEEP_HUNT_SKIP_BROKEN_TARGET) -------------------
+# The deep-hunt time-budget scheduler must tell a TARGET that does not compile under our toolchain (every lens on
+# it will fail the same way) from a HARNESS the prover wrote badly (the next lens may well compile). So, ONLY when
+# the run opted in — a `forge-diag/` dir next to this staged gate (run-invariant-hunt.sh --forge-diag) AND --repo
+# is that run's own staged copy (`<gate dir>/repo`) — the EXIT trap below appends ONE row per forge run to
+# `forge-diag/compile.tsv`:   harness_relpath \t scope \t n_error_locs \t first_non_harness_loc
+# scope: `compiled` (no compile-error signature), `target` (>= 1 error location, none inside the harness's own
+# directory tree), `harness` (all inside it), `mixed` (both), `unlocated` (a signature but no location, e.g. solc
+# version resolution). Error locations are the `--> <path>:<line>:<col>` pointers inside ERROR diagnostics only
+# (a block opens at `Error (NNNN):` / `<Kind>Error:` and closes at the next header of any kind; warnings, infos and
+# notes are ignored), scanned in both forge's stdout and stderr. Mutant-kill temp repos and direct callers never
+# match the opt-in, so they never write; the exit code, banners and stdout are unchanged in every case.
+_fi_self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd -P)"
+_fi_diag_dir=""
+if [ -n "$_fi_self_dir" ] && [ -d "$_fi_self_dir/forge-diag" ] && [ -d "$_fi_self_dir/repo" ] \
+   && [ "$(cd "$REPO" 2>/dev/null && pwd -P)" = "$(cd "$_fi_self_dir/repo" 2>/dev/null && pwd -P)" ]; then
+  _fi_diag_dir="$_fi_self_dir/forge-diag"
+fi
+_diag_row() {
+  [ -f "$TMPD/out.json" ] || [ -f "$TMPD/err.txt" ] || return 0   # forge never ran: nothing to classify
+  _dr_sig=0
+  _compile_error_sig "$TMPD/err.txt" "$TMPD/out.json" && _dr_sig=1
+  python3 - "$REPO" "$TARGET_PATH" "$_dr_sig" "$TMPD/out.json" "$TMPD/err.txt" >> "$_fi_diag_dir/compile.tsv" 2>/dev/null <<'DIAGPY' || true
+import os, re, sys
+repo, target, sig = sys.argv[1], sys.argv[2], sys.argv[3]
+files = sys.argv[4:]
+repo_r = os.path.realpath(repo)
+def rel(p):
+    ap = p if os.path.isabs(p) else os.path.join(repo_r, p)
+    return os.path.relpath(os.path.realpath(ap), repo_r)
+harness = rel(target)
+hdir = os.path.dirname(harness)
+def in_harness_tree(p):
+    return hdir == "" or p == hdir or p.startswith(hdir + "/")
+HEADER = re.compile(r"^\s*(?:(?:Error|Warning|Info|Note)\s*(?:\(\d+\))?|[A-Z][A-Za-z]*(?:Error|Warning|Exception))\s*:")
+OPENS = re.compile(r"^\s*(?:Error\s*\(\d+\)|[A-Z][A-Za-z]*Error)\s*:")
+LOC = re.compile(r"^\s*-->\s*(.+):(\d+):(\d+):?\s*$")
+locs = []
+for f in files:
+    try:
+        lines = open(f, encoding="utf-8", errors="ignore").read().splitlines()
+    except OSError:
+        continue
+    in_err = False
+    for line in lines:
+        if HEADER.match(line):
+            in_err = bool(OPENS.match(line))
+            continue
+        m = LOC.match(line)
+        if m and in_err:
+            locs.append("%s:%s:%s" % (rel(m.group(1)), m.group(2), m.group(3)))
+if sig != "1":
+    scope, n, first = "compiled", 0, ""
+else:
+    outside = [l for l in locs if not in_harness_tree(l.rsplit(":", 2)[0])]
+    if not locs:
+        scope = "unlocated"
+    elif not outside:
+        scope = "harness"
+    elif len(outside) == len(locs):
+        scope = "target"
+    else:
+        scope = "mixed"
+    n, first = len(locs), (outside[0] if outside else "")
+sys.stdout.write("%s\t%s\t%d\t%s\n" % (harness, scope, n, first))
+DIAGPY
+}
+[ -z "$_fi_diag_dir" ] || trap '_diag_row; rm -rf "$TMPD"' EXIT
+
 banner() { echo "================ FORGE-INVARIANT: $1 ================" >&2; }
 
 # --- #2033 TRANSIENT vs. GENUINE run-failure classification -------------------------------------
