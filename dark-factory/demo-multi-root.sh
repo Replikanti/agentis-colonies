@@ -356,7 +356,12 @@ else
         bad "$T: differs from origin/main at $D"
       fi
     done
-    # The multi-root clone: origin/main's view is exactly this tree's '.' opt-out view.
+    # The multi-root clone: origin/main's view is exactly this tree's '.' opt-out view — but only while origin/main
+    # PREDATES the multi-root layer. Once it carries lib/project_roots.py its default view of the clone is itself
+    # multi-root, so a later PR that touches one of the four files above must not be compared against it here.
+    if git -C "$TOP" cat-file -e origin/main:dark-factory/lib/project_roots.py 2>/dev/null; then
+      skip "multi-root clone: origin/main already maps every root, so its default view is not the '.' view — part 6a stands in"
+    else
     "$MAIN/map-zones.sh" --repo "$CLONE" --out "$WORK/clone-main/map" --fixture "$FIX/zones.fixture.txt" >/dev/null 2>&1
     "$MAIN/gen-briefs.sh" --zones "$WORK/clone-main/map/zones.json" --scope "$WORK/clone-main/map/scope.tsv" \
       --out "$WORK/clone-main/briefs" --repo "$CLONE" --fixture "$FIX/briefs.fixture.txt" >/dev/null 2>&1
@@ -367,6 +372,7 @@ else
       ok "multi-root clone: '--project-roots .' == origin/main's single-root view, byte for byte"
     else
       bad "multi-root clone: the '.' opt-out differs from origin/main at $D"
+    fi
     fi
     # zone-coverage init: identical record (timestamps normalised) + identical .zone-list.tsv.
     python3 "$MAIN/lib/zone-coverage.py" init --zones "$WORK/t1-def/map/zones.json" --out "$WORK/cov-main.json" \
