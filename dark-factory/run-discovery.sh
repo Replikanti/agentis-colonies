@@ -212,6 +212,17 @@
 #   PARAM_REASK_ITEMS   #2245 iteration 5: the open audit items the parameter re-ask names. Set by run_cell ONLY on
 #                       that re-ask, so it is empty on every first attempt and that prompt is unchanged. It rides
 #                       exec.env_passthrough for the #1426 reason: unregistered, the re-ask would replay the prompt.
+#   FUNCTION_COVERAGE   #2256 OPT-IN, default UNSET = OFF, independent of every other knob. `1` injects hunter.ag's
+#                       READ| contract (one `READ|<file:function>|<evidence>` line per traced function) and arms the
+#                       zone-level BREADTH FUNCTION-COVERAGE GATE below: after every breadth and depth cell of a
+#                       manifest line has run, a gated function that no cell traced gets ONE focused coverage cell.
+#                       Unset / any other value leaves the prompt, the report, the results JSON and the stderr banner
+#                       BYTE-IDENTICAL. It rides exec.env_passthrough, else getenv() could not see it. Ignored (one
+#                       stderr line) under --depth-from, which has no breadth logs to check.
+#   COVERAGE_REASK_FNS  #2256: the `rel:fn, rel:fn` list the coverage cell names. Set by run_cell ONLY on that cell,
+#                       so it is empty on every breadth and depth cell and their prompts are unchanged. It rides
+#                       exec.env_passthrough for the #1426 reason: unregistered, the coverage cell would be framed
+#                       as an ordinary breadth cell.
 #   DF_EXTERNAL_RESOLVE #2235: `1` turns the external-protocol reading on, exactly like `--external-resolve`
 #                       (any other value, and unset, leave it OFF — the default), so one export covers every
 #                       zone of a run-zone-hunt.sh hunt.
@@ -386,6 +397,41 @@
 #       location the rubric gate already promoted is skipped (one lead per location across both gates).
 #   CAP: 20 ids per cell (a constant here and in hunter.ag, pinned equal); ids above it are counted
 #   (`param_over_cap`), never gated or promoted.
+#
+# #2256 — THE BREADTH FUNCTION-COVERAGE GATE (zone level; every other gate above is per cell):
+#   MEASURED CAUSE: in the #2245 final exam a rare row sat in a function that was IN the zone's sliced function list,
+#   and none of the six cells on that zone mentioned it — they converged on another subsystem of the same zone. A
+#   "never looked" miss is invisible to OPCHECK->TRACE, the DISMISS grounds and the parameter audit, because those
+#   only constrain what a cell says about what it CHOSE to look at. Only the ZONE can see the gap.
+#   GATED SET (per manifest line; `lib/inheritance.py zone-functions`, the #2253 function model): every external/
+#   public, non-view/pure, non-initializer function WITH A BODY declared in a `contract` of the line's own `.sol`
+#   tokens (a `rel@fn+fn` token restricts to its names). `value|state` and `open|guarded` only RANK functions under
+#   the cap (STOP-1 decision 1). Own-source functions inherited from bases OUTSIDE the line's files are recorded
+#   (`inherited_outside`), never gated. Non-`.sol` lines record `total: 0` and never fire.
+#   TRACE: a gated (rel, fn) is covered when a FINAL cell log of the line (breadth `hunt_<slug>_<cls>.log`, depth
+#   `depth_<slug>_*.log` of this line — never a superseded `*-attempt-N` file) carries a location whose function part
+#   is fn (_param_fn_of) and — when it names a `.sol` file — whose basename is rel's, on one of: `READ|` f2,
+#   `DISMISS|` f2, `CANDIDATE|` f2 (every _cell_candidates record), `PARAM|` f3, `CALLEE-VECTOR|` f2. A `READ|` counts
+#   only when its evidence (f3..N) names an identifier from the function's body or its one-hop same-file callees
+#   (STOP-1 decision 2); an ungrounded READ covers nothing and is counted (`reads_ungrounded`).
+#   ARMING: FUNCTION_COVERAGE=1 AND at least one breadth log of the line carrying hunter.ag's `FUNCTION-COVERAGE|`
+#   sentinel (the READ contract really reached the prompt). Otherwise, and in the other degenerate cases, NO cell is
+#   run and the reason is recorded: `skipped:no-python` | `skipped:no-functions` | `skipped:no-answered-cell` (every
+#   breadth cell `.novalid`/`.timeout`) | `skipped:unarmed`; run-zone-hunt.sh records `skipped:trimmed` for a zone
+#   whose cell budget had no headroom for the cell.
+#   THE COVERAGE CELL: ONE per manifest line, run serially on the shared $RUN store AFTER the depth pass (so the depth
+#   plan never sees it), tagged `"phase":"coverage"`, log `hunt_<slug>_coverage.log`, counted in CELLS. HUNT_CLASS is
+#   the line's class LIST (hunter.ag renders every section and asks for exactly ONE id in `class=`), IN_SCOPE one
+#   `rel@fnA+fnB` token per file in manifest order, COVERAGE_REASK_FNS the `rel:fn` list. Cap 12 listed functions
+#   (_fcov_cap; never stated in the prompt), ranked value > state, open > guarded, then manifest/declaration order;
+#   the rest are recorded `over_cap` and never hunted. It runs through the unchanged run_cell + scrape_cell_log, so
+#   every other ON gate applies inside it, and its candidates are ordinary tier-1 leads. ONE pass: listed functions it
+#   leaves untraced are recorded `still_untouched`, never re-asked. It never fails a cell by itself; a coverage cell
+#   that times out is an ordinary FAILED cell (the zone becomes hunted_degraded — those functions stayed unread).
+#   RECORD: top-level `function_coverage[]` (one object per line), `totals.coverage_cells`, a per-cell `reads` key
+#   (distinct READ lines of an armed cell, appended LAST, non-zero only), the sidecar
+#   `run/function-coverage_<slug>.tsv` (`rel fn value|state open|guarded covered-by|none after-coverage-cell`), one
+#   report footer line per line and a `, K coverage` banner suffix — ALL absent with the knob off.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -609,7 +655,8 @@ if not isinstance(d, dict) or not isinstance(d.get("cells"), list):
 # The depth filter is a CORRECTNESS requirement, not hygiene: a depth candidate fed back into the ranking
 # moves both the location order and the per-location lens order, so replaying an unfiltered file computes a
 # DIFFERENT plan than the run it claims to re-enter.
-breadth = [c for c in d["cells"] if isinstance(c, dict) and c.get("phase") != "depth"]
+# #2256: a recorded coverage cell carries a class LIST and must never seed a depth plan either.
+breadth = [c for c in d["cells"] if isinstance(c, dict) and c.get("phase") not in ("depth", "coverage")]
 if not breadth:
     sys.stderr.write("run-discovery.sh: --depth-from: %s records 0 breadth cell(s) - nothing to plan a depth pass from\n" % p)
     raise SystemExit(3)
@@ -840,7 +887,11 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # parameter audit on getenv("PARAM_AUDIT"), and PARAM_REASK_ITEMS is set by run_cell ONLY on a parameter re-ask —
   # unregistered, the opt-in would be silently inert and the re-ask would replay the same prompt. Both are EMPTY on
   # a default run, so registering them changes nothing there.
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET,ONCHAIN_FACT,ONCHAIN_BUDGET_STATE,ONCHAIN_BUDGET,FORK_BLOCK,SEVERITY_RUBRIC,DISMISS_REASK_GROUNDS,GROUND_EVIDENCE,PARAM_AUDIT,PARAM_REASK_ITEMS"
+  # #2256 FUNCTION_COVERAGE/COVERAGE_REASK_FNS ride it for the same #1426 reason: hunter.ag gates the READ| contract
+  # on getenv("FUNCTION_COVERAGE"), and COVERAGE_REASK_FNS is set by run_cell ONLY on the one coverage cell of a
+  # zone line — unregistered, the opt-in would be silently inert and the coverage cell would be framed as an
+  # ordinary breadth cell. Both are EMPTY on a default run; these two names are the only unconditional delta.
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET,ONCHAIN_FACT,ONCHAIN_BUDGET_STATE,ONCHAIN_BUDGET,FORK_BLOCK,SEVERITY_RUBRIC,DISMISS_REASK_GROUNDS,GROUND_EVIDENCE,PARAM_AUDIT,PARAM_REASK_ITEMS,FUNCTION_COVERAGE,COVERAGE_REASK_FNS"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: hunter.ag ends its tick with `learn("hunt", ...)`, and it is that WRITE
   # the flag gates (#1878 measured it on agentis v1.28.0 — `experience.enabled = false` makes learn() raise
@@ -951,6 +1002,7 @@ _json_id_array() {
 # or a `SEVERITY-RUBRIC|` line or a model-emitted `DISMISS|` line (#2245 iteration 2)
 # or a `GROUND-EVIDENCE|` line (#2245 iteration 3)
 # or a `PARAM-AUDIT|` line or a model-emitted `PARAM|` / `PARAM-TRACE|` line (#2245 iteration 5)
+# or a `FUNCTION-COVERAGE|` / `COVERAGE-CELL|` line or a model-emitted `READ|` line (#2256)
 # or a blank line closes the current record
 # without starting a new one
 # (these are the only meaningful boundary tokens in a hunt log — see hunter.ag's own framing); any other line
@@ -965,7 +1017,7 @@ _join_wrapped_candidates() {
       rec = $0
       next
     }
-    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*ONCHAIN-FACT\|/ || /^[[:space:]]*SEVERITY-RUBRIC\|/ || /^[[:space:]]*GROUND-EVIDENCE\|/ || /^[[:space:]]*DISMISS\|/ || /^[[:space:]]*PARAM-AUDIT\|/ || /^[[:space:]]*PARAM\|/ || /^[[:space:]]*PARAM-TRACE\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*ONCHAIN-FACT\|/ || /^[[:space:]]*SEVERITY-RUBRIC\|/ || /^[[:space:]]*GROUND-EVIDENCE\|/ || /^[[:space:]]*DISMISS\|/ || /^[[:space:]]*PARAM-AUDIT\|/ || /^[[:space:]]*PARAM\|/ || /^[[:space:]]*PARAM-TRACE\|/ || /^[[:space:]]*FUNCTION-COVERAGE\|/ || /^[[:space:]]*COVERAGE-CELL\|/ || /^[[:space:]]*READ\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
       if (rec != "") { print rec; rec = "" }
       next
     }
@@ -2632,6 +2684,281 @@ _cell_candidates() {
   _param_promoted_candidates "$1"
 }
 
+# --- #2256: THE BREADTH FUNCTION-COVERAGE GATE ---------------------------------------------------------------
+# The zone-level output gate described in the header block: which gated functions of a manifest line did NO final
+# cell log trace, and which ones does the ONE coverage cell list. Every helper here is self-contained (every knob
+# read inline, the inheritance.py path passed as an argument, no script-level global) for the reason the other
+# gates are: demo-function-coverage.sh slices this block out of the file by line range and sources it, and a
+# helper that depended on caller state would behave differently there than in production. The only shipped
+# helpers it reuses are _param_fn_of (the location -> function rule), _dismiss_lines, _param_lines and
+# _cell_candidates, which the demo slices alongside it.
+#
+# Nothing here runs with FUNCTION_COVERAGE unset: the driver below calls into this block only behind _fcov_enabled.
+
+# _fcov_enabled — the knob, read inline. Only the literal "1" opts in (the #2245 polarity); unset/0/true are OFF.
+_fcov_enabled() {
+  [ "${FUNCTION_COVERAGE:-}" = "1" ]
+}
+
+# _fcov_cap — how many untouched functions the coverage cell lists. A SHELL constant only: the prompt never states
+# it (the cell is handed the list, not the rule), so there is nothing to pin between agent and shell.
+_fcov_cap() {
+  printf '%s\n' 12
+}
+
+# _fcov_armed <log>... — true when at least one of the given (breadth) logs carries hunter.ag's honesty-gated
+# `FUNCTION-COVERAGE|` sentinel, i.e. the READ| contract really reached a prompt this line answered. Never the env
+# var: a zone must not be judged against a contract its cells were never shown.
+_fcov_armed() {
+  for fa_log in "$@"; do
+    grep -qE '^[[:space:]]*FUNCTION-COVERAGE\|' "$fa_log" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+# _fcov_answered <log>... — true when at least one of the given (breadth) logs exists and carries neither the
+# #1707 `.novalid` nor the #1955 `.timeout` marker: some cell of the line actually answered.
+_fcov_answered() {
+  for fan_log in "$@"; do
+    [ -f "$fan_log" ] || continue
+    [ -f "$fan_log.novalid" ] || [ -f "$fan_log.timeout" ] || return 0
+  done
+  return 1
+}
+
+# _fcov_functions <inheritance.py> <repo> <files_csv> — the line's `zone-functions` rows (FN rows in rank order,
+# then INH rows), or nothing when the helper fails: a missing gated set degrades to `skipped:no-functions`, never
+# to a failed run.
+_fcov_functions() {
+  python3 "$1" zone-functions --repo "$2" --files "$3" 2>/dev/null || true
+}
+
+# _fcov_class_csv <cls_csv> — the line's effective class list, trimmed and comma-joined (`C1, C6` -> `C1,C6`).
+_fcov_class_csv() {
+  printf '%s\n' "$1" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' | paste -sd, - || true
+}
+
+# _fcov_breadth_logs <run> <slug> <cls_csv> — the FINAL breadth log path of every class of the line, one per output
+# line, in class order. Exact names only: a superseded `<log>.<gate>-attempt-N` file is never listed, so it can
+# never count as a trace.
+_fcov_breadth_logs() {
+  fbl_run="$1"; fbl_slug="$2"
+  printf '%s\n' "$3" | tr ',' '\n' | while IFS= read -r fbl_cls; do
+    [ -n "$fbl_cls" ] || continue
+    printf '%s\n' "$fbl_run/hunt_${fbl_slug}_${fbl_cls}.log"
+  done
+}
+
+# _fcov_depth_logs <tsv> <subsystem> — the depth logs the depth pass recorded for this line
+# (`<subsystem>\t<log>` rows, written only with the knob on), one per output line.
+_fcov_depth_logs() {
+  [ -f "$1" ] || return 0
+  awk -F'\t' -v s="$2" '$1 == s { print $2 }' "$1"
+}
+
+# _fcov_loc_parts <location> — `<basename-or-->\t<fn>` for one model-written location. The function half is the
+# shipped _param_fn_of rule; the basename is set only when the location names a `.sol` file, so `Router.sol:deposit`
+# can never cover `Vault.sol:deposit`, while a bare `deposit` (or `Contract.deposit`) covers every file's deposit.
+_fcov_loc_parts() {
+  flp_loc="$(printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  flp_fn="$(_param_fn_of "$flp_loc")"
+  [ -n "$flp_fn" ] || return 0
+  flp_base="-"
+  case "$flp_loc" in
+    *:*)
+      # shellcheck disable=SC2016  # a sed program held verbatim: the backtick is a literal character to strip
+      flp_file="$(printf '%s' "${flp_loc%%:*}" | sed 's/[`[:space:]]//g')"
+      case "$flp_file" in *.sol) flp_base="${flp_file##*/}" ;; esac ;;
+  esac
+  printf '%s\t%s\n' "$flp_base" "$flp_fn"
+}
+
+# _fcov_trace_rows <log> — every function TRACE one cell log carries, as `<kind>\t<basename|->\t<fn>\t<evidence>`
+# rows. Kinds and the field each reads: `read` (READ| f2; evidence = f3..N), `dismiss` (DISMISS| f2), `candidate`
+# (f2 of every _cell_candidates record — model-emitted and promoted), `param` (PARAM| f3), `callee_vector`
+# (CALLEE-VECTOR| f2). Only READ carries evidence (the others print `-`): it is the one kind whose grounding is
+# checked. TRACE|/OPCHECK| lines are NOT traces here — they carry no fixed function field.
+_fcov_trace_rows() {
+  ftr_log="$1"
+  [ -f "$ftr_log" ] || return 0
+  {
+    grep -E '^[[:space:]]*READ\|' "$ftr_log" 2>/dev/null | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | sort -u \
+      | awk -F'|' '{ ev = ""; for (i = 3; i <= NF; i++) ev = (i == 3 ? $i : ev "|" $i); gsub(/\t/, " ", ev); if (ev == "") ev = "-"; print "read\t" $2 "\t" ev }'
+    _dismiss_lines "$ftr_log" | awk -F'|' '{ print "dismiss\t" $2 "\t-" }'
+    _cell_candidates "$ftr_log" 2>/dev/null | sed 's/^.*\(CANDIDATE|\)/\1/' | awk -F'|' '{ print "candidate\t" $2 "\t-" }'
+    _param_lines "$ftr_log" | awk -F'|' '{ print "param\t" $3 "\t-" }'
+    grep -E '^[[:space:]]*CALLEE-VECTOR\|' "$ftr_log" 2>/dev/null | sed 's/^[[:space:]]*//' | awk -F'|' '{ print "callee_vector\t" $2 "\t-" }'
+  } | while IFS='	' read -r ftr_kind ftr_loc ftr_ev; do
+    [ -n "$ftr_loc" ] || continue
+    ftr_parts="$(_fcov_loc_parts "$ftr_loc")"
+    [ -n "$ftr_parts" ] || continue
+    printf '%s\t%s\t%s\n' "$ftr_kind" "$ftr_parts" "${ftr_ev:--}"
+  done
+}
+
+# _fcov_read_grounded <evidence> <identifiers> — THE GROUNDING RULE (#2256 STOP-1 decision 2), one awk pass: true
+# when the READ line's evidence names at least one identifier of the function's body or its one-hop same-file
+# callees (the space-separated list zone-functions printed). `-` means an EMPTY body — there is nothing to name,
+# so any READ counts. "checked, fine" names nothing and covers nothing. A floor on the FORM of the evidence, never
+# proof of reading — the same anti-Goodhart limit every other evidence contract here carries.
+_fcov_read_grounded() {
+  [ "$2" = "-" ] && return 0
+  printf '%s\n' "$1" | awk -v ids="$2" '
+    BEGIN { n = split(ids, a, " "); for (i = 1; i <= n; i++) if (a[i] != "") want[a[i]] = 1 }
+    {
+      s = $0
+      while (match(s, /[A-Za-z_][A-Za-z0-9_]*/)) {
+        t = substr(s, RSTART, RLENGTH)
+        if (t in want) { found = 1; exit }
+        s = substr(s, RSTART + RLENGTH)
+      }
+    }
+    END { exit (found ? 0 : 1) }'
+}
+
+# _fcov_table <fn_rows> <log>... — one row per gated (FN) function, in the zone-functions RANK order:
+#   <rel> \t <fn> \t <value|state> \t <open|guarded> \t <read|dismiss|candidate|param|callee_vector|none>
+# The fifth column is the FIRST covering kind in that fixed precedence (a grounded READ first), or `none`. A trace
+# matches when its function half is the function and its basename is `-` or the rel's basename.
+_fcov_table() {
+  ft_fns="$1"; shift
+  ft_rows="$(for ft_log in "$@"; do _fcov_trace_rows "$ft_log"; done)"
+  while IFS='	' read -r ft_tag ft_rel ft_fn ft_val ft_open ft_ids; do
+    [ "$ft_tag" = "FN" ] || continue
+    ft_hits="$(printf '%s\n' "$ft_rows" | awk -F'\t' -v fn="$ft_fn" -v b="${ft_rel##*/}" '$3 == fn && ($2 == "-" || $2 == b)')"
+    ft_by="none"
+    for ft_kind in read dismiss candidate param callee_vector; do
+      if [ "$ft_kind" = "read" ]; then
+        while IFS='	' read -r ft_k _ _ ft_ev; do
+          [ "$ft_k" = "read" ] || continue
+          if _fcov_read_grounded "$ft_ev" "${ft_ids:--}"; then ft_by="read"; break; fi
+        done <<FTEOF
+$(printf '%s\n' "$ft_hits" | awk -F'\t' '$1 == "read"')
+FTEOF
+      elif printf '%s\n' "$ft_hits" | awk -F'\t' -v k="$ft_kind" '$1 == k { f = 1 } END { exit (f ? 0 : 1) }'; then
+        ft_by="$ft_kind"
+      fi
+      [ "$ft_by" = "none" ] || break
+    done
+    printf '%s\t%s\t%s\t%s\t%s\n' "$ft_rel" "$ft_fn" "$ft_val" "$ft_open" "$ft_by"
+  done < "$ft_fns"
+}
+
+# _fcov_ungrounded <fn_rows> <log>... — how many DISTINCT READ lines named a gated function and were grounded for
+# none of the functions they named: the recorded readout of the grounding rule (`reads_ungrounded`). A READ naming
+# no gated function at all (an internal helper, say) is not counted.
+_fcov_ungrounded() {
+  fu_fns="$1"; shift
+  fu_n=0
+  while IFS='	' read -r _ fu_base fu_fn fu_ev; do
+    [ -n "$fu_fn" ] || continue
+    fu_match=0; fu_ok=0
+    while IFS='	' read -r fu_tag fu_rel fu_gfn _ _ fu_ids; do
+      [ "$fu_tag" = "FN" ] && [ "$fu_gfn" = "$fu_fn" ] || continue
+      [ "$fu_base" = "-" ] || [ "$fu_base" = "${fu_rel##*/}" ] || continue
+      fu_match=1
+      if _fcov_read_grounded "$fu_ev" "${fu_ids:--}"; then fu_ok=1; break; fi
+    done < "$fu_fns"
+    if [ "$fu_match" -eq 1 ] && [ "$fu_ok" -eq 0 ]; then fu_n=$((fu_n + 1)); fi
+  done <<FUEOF
+$(for fu_log in "$@"; do _fcov_trace_rows "$fu_log"; done | awk -F'\t' '$1 == "read"' | sort -u)
+FUEOF
+  printf '%s\n' "$fu_n"
+}
+
+# _fcov_listed <table> — the untouched functions the coverage cell lists, as `<rel>\t<fn>` rows: the first
+# _fcov_cap `none` rows of the table, which is already in rank order (value > state, open > guarded, then
+# manifest/declaration order).
+_fcov_listed() {
+  awk -F'\t' '$5 == "none" { print $1 "\t" $2 }' "$1" | head -n "$(_fcov_cap)"
+}
+
+# _fcov_over_cap <table> — the untouched functions past the cap: recorded, never hunted.
+_fcov_over_cap() {
+  awk -F'\t' -v c="$(_fcov_cap)" '$5 == "none" { n++; if (n > c) print $1 "\t" $2 }' "$1"
+}
+
+# _fcov_scope_tokens <files_csv> <listed rows> — the coverage cell's IN_SCOPE: one `rel@fnA+fnB` token per file of
+# the line that holds a listed function, in MANIFEST file order, newline-separated (the hunter splits IN_SCOPE on
+# newlines). slice-fns.sh then adds each function's same-file callees under its own 3-hop / 2000-line caps.
+_fcov_scope_tokens() {
+  printf '%s\n' "$1" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/@.*$//' | awk '$0 != "" && !seen[$0]++' \
+    | while IFS= read -r fst_rel; do
+        fst_fns="$(printf '%s\n' "$2" | awk -F'\t' -v r="$fst_rel" '$1 == r { print $2 }' | paste -sd+ -)"
+        [ -n "$fst_fns" ] && printf '%s@%s\n' "$fst_rel" "$fst_fns"
+      done
+  return 0
+}
+
+# _fcov_items <listed rows> — the `rel:fn, rel:fn` list the coverage cell is told (COVERAGE_REASK_FNS).
+_fcov_items() {
+  printf '%s\n' "$1" | awk -F'\t' '$2 != "" { o = (o == "" ? $1 ":" $2 : o ", " $1 ":" $2) } END { print o }'
+}
+
+# _fcov_json_list — read `<rel>\t<fn>` rows on stdin, print the INSIDE of a JSON array of `"rel:fn"` strings.
+_fcov_json_list() {
+  fjl_out=""
+  while IFS='	' read -r fjl_rel fjl_fn _; do
+    [ -n "$fjl_fn" ] || continue
+    fjl_one="$(_json_str "$fjl_rel:$fjl_fn")"
+    fjl_out="${fjl_out:+$fjl_out,}$fjl_one"
+  done
+  printf '%s' "$fjl_out"
+}
+
+# _fcov_sidecar <table> <after_table> — the per-line readout `run/function-coverage_<slug>.tsv`:
+#   <rel> <fn> <value|state> <open|guarded> <covered-by|none> <after-coverage-cell>
+# where the last column is the covering kind (or `none`) in the coverage cell's own log for a LISTED function and
+# `-` for every other row.
+_fcov_sidecar() {
+  fs_listed=" $(awk -F'\t' '$5 == "none" { print $1 ":" $2 }' "$1" | head -n "$(_fcov_cap)" | tr '\n' ' ')"
+  while IFS='	' read -r fs_rel fs_fn fs_val fs_open fs_by; do
+    [ -n "$fs_fn" ] || continue
+    fs_after="-"
+    if [ -s "$2" ]; then
+      case "$fs_listed" in
+        *" $fs_rel:$fs_fn "*) fs_after="$(awk -F'\t' -v r="$fs_rel" -v f="$fs_fn" '$1 == r && $2 == f { print $5; exit }' "$2")" ;;
+      esac
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$fs_rel" "$fs_fn" "$fs_val" "$fs_open" "$fs_by" "${fs_after:--}"
+  done < "$1"
+}
+
+# _fcov_record_json <subsystem> <files_csv> <fn_rows> <table> <coverage_cell> <after_table> <reads_ungrounded> — ONE
+# `function_coverage[]` object. `listed` / `over_cap` / `still_untouched` are non-empty only when the cell ran; the
+# arrays hold `"rel:fn"` strings. <fn_rows>, <table> and <after_table> may be empty files (a skipped line).
+_fcov_record_json() {
+  frj_fns="$3"; frj_table="$4"; frj_state="$5"; frj_after="$6"; frj_ungr="${7:-0}"
+  case "$frj_ungr" in ''|*[!0-9]*) frj_ungr=0 ;; esac
+  frj_total="$(grep -c '^FN	' "$frj_fns" 2>/dev/null || true)"
+  frj_value="$(awk -F'\t' '$1 == "FN" && $4 == "value"' "$frj_fns" 2>/dev/null | _count_stdin)"
+  frj_inh="$(grep -c '^INH	' "$frj_fns" 2>/dev/null || true)"
+  case "$frj_total" in ''|*[!0-9]*) frj_total=0 ;; esac
+  case "$frj_inh" in ''|*[!0-9]*) frj_inh=0 ;; esac
+  frj_cov="$(awk -F'\t' '$5 != "" && $5 != "none"' "$frj_table" 2>/dev/null | _count_stdin)"
+  frj_by=""
+  for frj_k in read dismiss candidate param callee_vector; do
+    frj_kn="$(awk -F'\t' -v k="$frj_k" '$5 == k' "$frj_table" 2>/dev/null | _count_stdin)"
+    frj_by="${frj_by:+$frj_by,}\"$frj_k\":$frj_kn"
+  done
+  frj_unc="$(awk -F'\t' '$5 == "none" { print $1 "\t" $2 }' "$frj_table" 2>/dev/null | _fcov_json_list)"
+  frj_listed="" ; frj_over="" ; frj_still=""
+  if [ "$frj_state" = "ran" ]; then
+    frj_lrows="$(_fcov_listed "$frj_table")"
+    frj_listed="$(printf '%s\n' "$frj_lrows" | _fcov_json_list)"
+    frj_over="$(_fcov_over_cap "$frj_table" | _fcov_json_list)"
+    frj_still="$(printf '%s\n' "$frj_lrows" | while IFS='	' read -r frj_r frj_f; do
+      [ -n "$frj_f" ] || continue
+      frj_a="$(awk -F'\t' -v r="$frj_r" -v f="$frj_f" '$1 == r && $2 == f { print $5; exit }' "$frj_after" 2>/dev/null)"
+      [ "${frj_a:-none}" = "none" ] && printf '%s\t%s\n' "$frj_r" "$frj_f"
+    done | _fcov_json_list)"
+  fi
+  printf '{"subsystem":%s,"files":%s,"total":%s,"value_moving":%s,"covered":%s,"covered_by":{%s},"uncovered":[%s],"listed":[%s],"over_cap":[%s],"coverage_cell":%s,"still_untouched":[%s],"reads_ungrounded":%s,"inherited_outside":%s}' \
+    "$(_json_str "$1")" "$(_json_str "$2")" "$frj_total" "$frj_value" "$frj_cov" "$frj_by" "$frj_unc" \
+    "$frj_listed" "$frj_over" "$(_json_str "$frj_state")" "$frj_still" "$frj_ungr" "$frj_inh"
+}
+# --- end #2256 block ---
+
 # _accumulate_cell <subsys> <cls> <files> <log> [status] [phase] — append ONE JSON object for this cell to
 # $CELLS_JSONL (additive; feeds discovery-results.json). Never touches $REPORT. [status] defaults to "ok";
 # a #1707 no-sentinel-after-retries cell is recorded as "failed" so the JSON distinguishes it from a clean
@@ -2662,6 +2989,8 @@ _accumulate_cell() {
   ac_subsys="$1"; ac_cls="$2"; ac_files="$3"; ac_log="$4"; ac_status="${5:-ok}"; ac_phase="${6:-}"
   ac_phase_json=""
   if [ "$ac_phase" = "depth" ]; then ac_phase_json=',"phase":"depth"'; fi
+  # #2256: the one coverage cell of a zone line is tagged the same way. Only ever passed with FUNCTION_COVERAGE=1.
+  if [ "$ac_phase" = "coverage" ]; then ac_phase_json=',"phase":"coverage"'; fi
   ac_cands=""
   while IFS= read -r ac_line; do
     [ -n "$ac_line" ] || continue
@@ -2768,12 +3097,21 @@ _accumulate_cell() {
     if [ "$ac_pover" -gt 0 ]; then ac_param_json="$ac_param_json,\"param_over_cap\":$ac_pover"; fi
     if [ "$ac_pprom" -gt 0 ]; then ac_param_json="$ac_param_json,\"param_promoted\":$ac_pprom"; fi
   fi
-  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s}\n' \
+  # #2256: `reads` — the DISTINCT READ| lines of a cell whose log carries the `FUNCTION-COVERAGE|` sentinel (the READ
+  # contract's dosage readout; a 100 % READ claim with no other trace is visible here). Appended LAST, after the
+  # iteration-5 keys, and only when non-zero, so a knob-off cell keeps its exact key set and _plan_depth_cells's
+  # forward key scan is untouched.
+  ac_reads_json=""
+  if grep -qE '^[[:space:]]*FUNCTION-COVERAGE\|' "$ac_log" 2>/dev/null; then
+    ac_reads="$(_distinct_sentinel_count READ "$ac_log")"
+    if [ "$ac_reads" -gt 0 ]; then ac_reads_json=",\"reads\":$ac_reads"; fi
+  fi
+  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s}\n' \
     "$(_json_str "$ac_subsys")" "$(_json_str "$ac_cls")" "$(_json_str "$ac_files")" \
     "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" "$ac_appendix_json" \
     "$ac_opchecks_json" "$ac_traces_json" "$ac_untraced_json" "$ac_unresolved_json" \
     "$ac_rule_json" "$ac_orphans_json" "$ac_untraced_ids_json" "$ac_uncited_ids_json" "$ac_unresolved_ids_json" \
-    "$ac_dismissals_json" "$ac_insuff_json" "$ac_promoted_json" "$ac_contract_json" "$ac_param_json" >> "$CELLS_JSONL"
+    "$ac_dismissals_json" "$ac_insuff_json" "$ac_promoted_json" "$ac_contract_json" "$ac_param_json" "$ac_reads_json" >> "$CELLS_JSONL"
   # #2217: the tier-2 carry, appended to the RUN-scoped accumulator AFTER the cell object is written and
   # gated on the feature flag — so an OFF run does no extra work, writes no extra file, and emits the same
   # bytes it did before #2217. _accumulate_cell is called in MANIFEST order on the serial, parallel
@@ -2803,6 +3141,7 @@ _appendix_for() {
 }
 
 # run_cell <dir> <subsys> <cls> <in_scope> <log> [depth_target] [depth_known] [appendix_file] [appendix_base]
+#          [coverage_fns]
 # — invoke the hunter for ONE
 # (subsystem x class) cell into <log>. Serial passes dir=$RUN (the shared store); parallel passes an isolated
 # per-cell store. Never trips set -e (the invocation ends `|| echo …`), so a failed cell degrades (its log is
@@ -2812,10 +3151,14 @@ _appendix_for() {
 # #1865: params 8/9 carry the appendix pair for a BREADTH cell whose payload holds the derived implementor.
 # They are EMPTY on every depth cell by construction: a depth payload IS the narrowed function, so framing it
 # as "your contract is abstract, the last section implements it" would be a lie about that payload.
+# #2256: param 10 is the `rel:fn, rel:fn` list of the ONE coverage cell of a zone line (COVERAGE_REASK_FNS), EMPTY
+# on every breadth and depth cell, so their prompts are unchanged. On the coverage cell <cls> is the line's class
+# LIST, which is why both promotion calls below pass only its FIRST id (a no-op for a single class).
 run_cell() {
   rc_dir="$1"; rc_subsys="$2"; rc_cls="$3"; rc_in_scope="$4"; rc_log="$5"
   rc_depth_target="${6:-}"; rc_depth_known="${7:-}"
   rc_appendix_file="${8:-}"; rc_appendix_base="${9:-}"
+  rc_cov_fns="${10:-}"
   # #2223: the ids the follow-through re-ask must name. EMPTY on the first attempt (and on every count-rule
   # cell), so the first prompt — and every lens-OFF prompt — is byte-identical to the pre-#2223 one.
   rc_reask_ids=""
@@ -2864,6 +3207,8 @@ run_cell() {
         GROUND_EVIDENCE="${GROUND_EVIDENCE:-}" \
         PARAM_AUDIT="${PARAM_AUDIT:-}" \
         PARAM_REASK_ITEMS="$rc_param_items" \
+        FUNCTION_COVERAGE="${FUNCTION_COVERAGE:-}" \
+        COVERAGE_REASK_FNS="$rc_cov_fns" \
         EXTERNAL_RESOLVER="${EXTERNAL_RESOLVER:+$rc_dir/resolve-external.sh}" \
         EXTERNAL_CACHE="$EXTERNAL_CACHE" \
         EXTERNAL_BUDGET_STATE="$rc_ext_state" \
@@ -2953,11 +3298,11 @@ run_cell() {
   done
   rc_dismiss_grounds=""
   if _rubric_reask_needed "$rc_log" "$REPO" "$BRIEF"; then
-    _rubric_promote "$rc_log" "$rc_cls" "$rc_in_scope" "$REPO" "$BRIEF"
+    _rubric_promote "$rc_log" "${rc_cls%%,*}" "$rc_in_scope" "$REPO" "$BRIEF"
   fi
   # #2245 iteration 5: the parameter PROMOTION runs on the FINAL log, after the rubric promotion, so it can skip a
   # location the rubric gate already promoted. Self-guarded (sentinel, markers, model candidate, rubric sentinel).
-  _param_promote "$rc_log" "$rc_cls" "$rc_in_scope" "$REPO"
+  _param_promote "$rc_log" "${rc_cls%%,*}" "$rc_in_scope" "$REPO"
 }
 
 # scrape_cell_log <subsys> <cls> <log> <files> [phase] — the (byte-identical) post-cell scrape: surface the
@@ -3291,7 +3636,7 @@ import sys, json
 src, jsonl, rows = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(src, encoding="utf-8") as fh:
     d = json.load(fh)
-breadth = [c for c in d["cells"] if isinstance(c, dict) and c.get("phase") != "depth"]
+breadth = [c for c in d["cells"] if isinstance(c, dict) and c.get("phase") not in ("depth", "coverage")]  # #2256
 with open(jsonl, "w", encoding="utf-8") as out:
     for c in breadth:
         out.write(json.dumps(c, ensure_ascii=False, separators=(",", ":")) + "\n")
@@ -3356,6 +3701,10 @@ elif [ "$JOBS" -le 1 ]; then
     APXF="" ; APXB=""
     APX_ROW="$(_appendix_for "$SUBSYS" "$FILES_CSV")"
     if [ -n "$APX_ROW" ]; then APXF="${APX_ROW%%	*}"; APXB="${APX_ROW#*	}"; fi
+    # #2256: record the line for the coverage pass (knob ON only — the OFF path writes nothing).
+    if _fcov_enabled; then
+      printf '%s\t%s\t%s\t%s\n' "$SUBSYS" "$(_fcov_class_csv "$CLS_CSV")" "$FILES_CSV" "$SLUG" >> "$RUN/fcov-lines.tsv"
+    fi
 
     OLDIFS="$IFS"; IFS=','
     for CLS in $CLS_CSV; do
@@ -3392,6 +3741,10 @@ else
     APXF="" ; APXB=""
     APX_ROW="$(_appendix_for "$SUBSYS" "$FILES_CSV")"
     if [ -n "$APX_ROW" ]; then APXF="${APX_ROW%%	*}"; APXB="${APX_ROW#*	}"; fi
+    # #2256: the same per-line record as the serial path (knob ON only).
+    if _fcov_enabled; then
+      printf '%s\t%s\t%s\t%s\n' "$SUBSYS" "$(_fcov_class_csv "$CLS_CSV")" "$FILES_CSV" "$SLUG" >> "$RUN/fcov-lines.tsv"
+    fi
     OLDIFS="$IFS"; IFS=','
     for CLS in $CLS_CSV; do
       IFS="$OLDIFS"
@@ -3479,6 +3832,8 @@ if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then
     DEPTH_CELLS=$((DEPTH_CELLS + 1))
     D_SLUG="$(printf '%s' "$D_SUBSYS" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
     D_LOG="$RUN/depth_${D_SLUG}_${D_CLS}_${DEPTH_CELLS}.log"
+    # #2256: the coverage pass counts this line's depth logs as traces (knob ON only — OFF writes nothing).
+    if _fcov_enabled; then printf '%s\t%s\n' "$D_SUBSYS" "$D_LOG" >> "$RUN/fcov-depth-logs.tsv"; fi
     D_KNOWN="$(cat "$D_KNOWNF" 2>/dev/null || true)"
     echo "run-discovery.sh:   ↳ DEPTH: re-reading $D_TARGET under $D_CLS (excluding the known lead(s))" >&2
     # IN_SCOPE is the NARROWED `file@fn` — cat_file() routes it through the existing slice-fns.sh slicer, so
@@ -3487,6 +3842,88 @@ if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then
     run_cell "$RUN" "$D_SUBSYS" "$D_CLS" "$D_TARGET" "$D_LOG" "$D_TARGET" "$D_KNOWN"
     scrape_cell_log "$D_SUBSYS" "$D_CLS" "$D_LOG" "$D_TARGET" depth
   done < "$DEPTH_PLAN"
+fi
+
+# #2256 BREADTH FUNCTION-COVERAGE PASS — ONE pass, after the breadth pass AND the depth pass (so the depth plan above
+# never sees a coverage cell), serially on the shared $RUN store. Per recorded manifest line: enumerate the gated
+# functions, match them against every FINAL cell log of the line, and — when the line is armed, answered, and some
+# gated function has no trace — run ONE coverage cell over the (capped, ranked) untouched functions through the
+# unchanged run_cell + scrape_cell_log. Never a loop: the coverage cell's own leftovers are recorded
+# (`still_untouched`), not re-asked. Entirely skipped with FUNCTION_COVERAGE unset (the default), which is what
+# keeps the report, the results JSON and the banner byte-identical.
+COVERAGE_CELLS=0 ; FCOV_ACTIVE=0 ; FCOV_RECORDS=""
+FCOV_FOOTER="$RUN/fcov-footer.txt"
+if _fcov_enabled; then
+  if [ -n "$DEPTH_FROM" ]; then
+    echo "run-discovery.sh: FUNCTION_COVERAGE=1 is ignored under --depth-from — a depth-only re-entry has no breadth cell logs to check function coverage against (#2256)" >&2
+  else
+    FCOV_ACTIVE=1
+    : > "$FCOV_FOOTER"
+    FCOV_DIR="$RUN/fcov"; mkdir -p "$FCOV_DIR"
+    [ -f "$RUN/fcov-lines.tsv" ] || : > "$RUN/fcov-lines.tsv"
+    while IFS='	' read -r FC_SUBSYS FC_CLS FC_FILES FC_SLUG || [ -n "${FC_SUBSYS:-}" ]; do
+      [ -n "$FC_SUBSYS" ] || continue
+      FC_FNS="$FCOV_DIR/${FC_SLUG}.fns"; FC_TABLE="$FCOV_DIR/${FC_SLUG}.table"; FC_AFTER="$FCOV_DIR/${FC_SLUG}.after"
+      : > "$FC_FNS"; : > "$FC_TABLE"; : > "$FC_AFTER"
+      FC_BLOGS=() ; FC_ALL=()
+      while IFS= read -r FC_L; do
+        [ -n "$FC_L" ] || continue
+        FC_BLOGS+=("$FC_L"); FC_ALL+=("$FC_L")
+      done < <(_fcov_breadth_logs "$RUN" "$FC_SLUG" "$FC_CLS")
+      while IFS= read -r FC_L; do
+        [ -n "$FC_L" ] || continue
+        FC_ALL+=("$FC_L")
+      done < <(_fcov_depth_logs "$RUN/fcov-depth-logs.tsv" "$FC_SUBSYS")
+      FC_STATE="" ; FC_UNGR=0 ; FC_LISTED="" ; FC_LOG=""
+      if ! command -v python3 >/dev/null 2>&1; then
+        FC_STATE="skipped:no-python"
+      else
+        _fcov_functions "$HERE/lib/inheritance.py" "$REPO" "$FC_FILES" > "$FC_FNS"
+        grep -q '^FN	' "$FC_FNS" || FC_STATE="skipped:no-functions"
+      fi
+      if [ -z "$FC_STATE" ]; then
+        _fcov_table "$FC_FNS" ${FC_ALL[@]+"${FC_ALL[@]}"} > "$FC_TABLE"
+        FC_UNGR="$(_fcov_ungrounded "$FC_FNS" ${FC_ALL[@]+"${FC_ALL[@]}"})"
+        if ! _fcov_answered ${FC_BLOGS[@]+"${FC_BLOGS[@]}"}; then
+          FC_STATE="skipped:no-answered-cell"
+        elif ! _fcov_armed ${FC_BLOGS[@]+"${FC_BLOGS[@]}"}; then
+          FC_STATE="skipped:unarmed"
+        elif ! awk -F'\t' '$5 == "none" { f = 1 } END { exit (f ? 0 : 1) }' "$FC_TABLE"; then
+          FC_STATE="none"
+        else
+          FC_STATE="ran"
+        fi
+      fi
+      if [ "$FC_STATE" = "ran" ]; then
+        FC_LISTED="$(_fcov_listed "$FC_TABLE")"
+        FC_SCOPE="$(_fcov_scope_tokens "$FC_FILES" "$FC_LISTED")"
+        FC_ITEMS="$(_fcov_items "$FC_LISTED")"
+        FC_LOG="$RUN/hunt_${FC_SLUG}_coverage.log"
+        CELLS=$((CELLS + 1))
+        COVERAGE_CELLS=$((COVERAGE_CELLS + 1))
+        echo "run-discovery.sh:   ↳ COVERAGE: $(awk -F'\t' '$5 == "none"' "$FC_TABLE" | _count_stdin) gated function(s) of '$FC_SUBSYS' untraced by every breadth/depth cell — one coverage cell over $(printf '%s\n' "$FC_LISTED" | _count_stdin) of them ($FC_ITEMS) under $FC_CLS" >&2
+        run_cell "$RUN" "$FC_SUBSYS" "$FC_CLS" "$FC_SCOPE" "$FC_LOG" "" "" "" "" "$FC_ITEMS" < /dev/null
+        scrape_cell_log "$FC_SUBSYS" "$FC_CLS" "$FC_LOG" "$(printf '%s\n' "$FC_SCOPE" | paste -sd, -)" coverage
+        _fcov_table "$FC_FNS" "$FC_LOG" > "$FC_AFTER"
+      elif [ "$FC_STATE" != "none" ]; then
+        echo "run-discovery.sh:   ↳ function coverage of '$FC_SUBSYS': no coverage cell ($FC_STATE)" >&2
+      fi
+      if [ -s "$FC_TABLE" ]; then _fcov_sidecar "$FC_TABLE" "$FC_AFTER" > "$RUN/function-coverage_${FC_SLUG}.tsv"; fi
+      FC_REC="$(_fcov_record_json "$FC_SUBSYS" "$FC_FILES" "$FC_FNS" "$FC_TABLE" "$FC_STATE" "$FC_AFTER" "$FC_UNGR")"
+      FCOV_RECORDS="${FCOV_RECORDS:+$FCOV_RECORDS,}$FC_REC"
+      FC_TOTAL="$(grep -c '^FN	' "$FC_FNS" 2>/dev/null || true)"; case "$FC_TOTAL" in ''|*[!0-9]*) FC_TOTAL=0 ;; esac
+      FC_COVN="$(awk -F'\t' '$5 != "" && $5 != "none"' "$FC_TABLE" | _count_stdin)"
+      FC_NOTE="coverage cell: $FC_STATE"
+      if [ "$FC_STATE" = "ran" ]; then
+        FC_STILL="$(printf '%s\n' "$FC_REC" | sed 's/.*"still_untouched":\[\([^]]*\)\].*/\1/' | tr ',' '\n' | grep -c . || true)"
+        FC_OVER="$(_fcov_over_cap "$FC_TABLE" | _count_stdin)"
+        FC_NOTE="$FC_NOTE over $(printf '%s\n' "$FC_LISTED" | _count_stdin) listed function(s), ${FC_STILL:-0} still untouched after it, $FC_OVER over the cap"
+      fi
+      # shellcheck disable=SC2016  # the backticks are literal Markdown around the subsystem name
+      printf -- '- Function coverage (#2256) `%s`: %s/%s gated function(s) traced by the breadth/depth cells; %s; %s ungrounded READ line(s); %s inherited from outside the line (recorded, not gated).\n' \
+        "$FC_SUBSYS" "$FC_COVN" "$FC_TOTAL" "$FC_NOTE" "$FC_UNGR" "$(grep -c '^INH	' "$FC_FNS" 2>/dev/null || true)" >> "$FCOV_FOOTER"
+    done < "$RUN/fcov-lines.tsv"
+  fi
 fi
 
 # #1707: only a run with ZERO candidates AND ZERO failed cells is a rigorous NEGATIVE. A cell that FAILED
@@ -3502,6 +3939,8 @@ fi
   # #1857: without this line `Cells run: N` reads as "N cells were hunted", which a depth-only re-entry did not do.
   [ -n "$DEPTH_FROM" ] && echo "Of those, $DF_CELLS breadth cell(s) were CARRIED from \`$DEPTH_FROM\` (NOT re-hunted); $DEPTH_CELLS depth cell(s) were hunted by this run."
 } >> "$REPORT"
+# #2256: one function-coverage line per manifest line — only with the knob on, so the OFF report is byte-identical.
+if [ "$FCOV_ACTIVE" -eq 1 ] && [ -s "$FCOV_FOOTER" ]; then cat "$FCOV_FOOTER" >> "$REPORT"; fi
 
 # #1001: append the coordination table — where a lead from one cell STEERED a later cell via the shared
 # blackboard. This is what makes the run more than a sum of independent audits: emit it whenever any
@@ -3548,14 +3987,24 @@ if [ "$TIER2" -eq 1 ]; then
   TIER2_JSON="$(_tier2_top_json "$TIER2_TSV" 1 "$DF_TIER2_MAX_PER_ZONE")"
   TIER2_TOTALS_JSON="$(_tier2_totals_json "$TIER2_TSV" 1 "$DF_TIER2_MAX_PER_ZONE")"
 fi
-printf '{"repo":%s,"commit":%s,"backend":%s,"jobs":%s%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s%s%s}%s}\n' \
+# #2256: `totals.coverage_cells` and the top-level `function_coverage[]` — both EXACTLY 0 bytes unless the knob is on
+# (and the run is not a --depth-from re-entry), the same emit-only-when-on contract as the depth and tier-2 fragments.
+FCOV_TOTALS_JSON="" ; FCOV_JSON=""
+if [ "$FCOV_ACTIVE" -eq 1 ]; then
+  FCOV_TOTALS_JSON=",\"coverage_cells\":$COVERAGE_CELLS"
+  FCOV_JSON=",\"function_coverage\":[$FCOV_RECORDS]"
+fi
+printf '{"repo":%s,"commit":%s,"backend":%s,"jobs":%s%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s%s%s%s}%s%s}\n' \
   "$(_json_str "$(basename "$REPO")")" "$(_json_str "$COMMIT")" "$(_json_str "$BACKEND")" "$JOBS" "$DEPTH_FROM_JSON" "$CELLS_ARR" \
-  "$CELLS" "$CANDIDATES" "$STEERS" "$FAILED_CELLS" "$DEPTH_TOTAL_JSON" "$TIER2_TOTALS_JSON" "$TIER2_JSON" > "$RESULTS_JSON"
+  "$CELLS" "$CANDIDATES" "$STEERS" "$FAILED_CELLS" "$DEPTH_TOTAL_JSON" "$TIER2_TOTALS_JSON" "$FCOV_TOTALS_JSON" "$TIER2_JSON" "$FCOV_JSON" > "$RESULTS_JSON"
 
 echo >&2
 DEPTH_BANNER=""
 if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then DEPTH_BANNER=" ($DEPTH_CELLS depth)"; fi
-echo "================ DISCOVERY: $CELLS cells$DEPTH_BANNER, $CANDIDATES candidate(s), $STEERS blackboard-steered, $FAILED_CELLS failed ================" >&2
+# #2256: `, K coverage` only with the knob on (0 bytes otherwise, so the OFF banner is byte-identical).
+FCOV_BANNER=""
+if [ "$FCOV_ACTIVE" -eq 1 ]; then FCOV_BANNER=", $COVERAGE_CELLS coverage"; fi
+echo "================ DISCOVERY: $CELLS cells$DEPTH_BANNER$FCOV_BANNER, $CANDIDATES candidate(s), $STEERS blackboard-steered, $FAILED_CELLS failed ================" >&2
 echo "run-discovery.sh: leads at $REPORT" >&2
 # #2217: say what the second tier carried, and say what it is NOT. A tier-2 record is an UNSETTLED check, not
 # a lead: it never enters the candidate count above and nothing here verifies or submits one.
