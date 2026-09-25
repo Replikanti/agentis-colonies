@@ -105,6 +105,28 @@
 #                       outranks it). Per-cell readouts land in deep-hunt/promise-coverage.tsv + promises.tsv.
 #                       Accepts ''/0/1; anything else, or =1 without DEEP_HUNT_REACH=1, exits 2. DEFAULT unset/0 =>
 #                       byte-identical to a REACH-only run.
+#   DEEP_HUNT_CELL_TIMEOUT_S=<N>  #2258 (deep-hunt TIME BUDGET — an ENV KNOB; requires --deep-hunt). Wall-clock cap
+#                       per (target, lens) cell: a cell still running after N seconds is killed and recorded TIMEOUT in
+#                       deep-hunt/cell-status.tsv (never merged, never CLEAN, re-run by --deep-hunt-resume). A cell whose
+#                       aggregate log already carries its verdict when the cap fires keeps that verdict (reason
+#                       `tail-killed`) and is merged as usual. Unset/0 => no cap.
+#   DEEP_HUNT_ZONE_BUDGET_S=<N>  #2258 (ENV KNOB; requires --deep-hunt). Per-zone wall-clock budget, counted from the
+#                       zone's first cell launch: a (target, lens) pair not launched when it runs out is recorded
+#                       SKIPPED_BUDGET, and a running cell is capped at the zone's remaining budget (killed -> TIMEOUT,
+#                       reason `zone-budget`). Unset/0 => no budget.
+#   DEEP_HUNT_SKIP_BROKEN_TARGET=1  #2258 (ENV KNOB; requires --deep-hunt). Run a target's first queued lens as its
+#                       PROBE; when the probe ends HARNESS_ERROR and every recorded forge attempt of its harness failed
+#                       on errors located OUTSIDE the harness (the target itself does not compile), the target's
+#                       remaining lenses are recorded SKIPPED_TARGET_BROKEN and never launched. Accepts ''/0/1.
+#   DEEP_HUNT_JOBS=<1..8>  #2258 (ENV KNOB; requires --deep-hunt when > 1). Max concurrent STAGE 4.5 cells (default 1).
+#                       Each cell holds one slot of a dedicated dark-factory LLM-session pool
+#                       (<DARK_FACTORY_DIR>/deep-hunt-llm-slots, K = LLM_MAX_CONCURRENT). Results are merged in the
+#                       sequential order whatever the completion order, so the artifacts equal a serial run's. Forced
+#                       to 1 (with a warning) on bash < 4.3 or when --pattern-store is forwarded. `--jobs` never
+#                       parallelises STAGE 4.5.
+#                       Any of the four knobs set => STAGE 4.5 runs through lib/deep-hunt-sched.sh (enqueue pass, cell
+#                       scheduler, collect pass in queue order) and writes deep-hunt/cell-status.tsv. All four unset/0
+#                       (the default) => STAGE 4.5 is byte-identical to before. Bad values exit 2.
 #   --deep-hunt-aux-max <N>  #1726 (M2): max SECONDARY co-custody contracts fed to the deep-hunt as
 #                       run-invariant-hunt.sh --aux (the shipped composable-fresh multi-contract engine —
 #                       INV_AUX -> compose_fresh_seed -> multi-register targetContracts() -> #1077 both-real
@@ -365,6 +387,12 @@ REACH_N=3  # up-to-N concrete targets per zone under REACH (STOP-1 decision 1: N
 # #2245 (iteration 7, deep-hunt PROMISES): an ENV KNOB read only by this shell (no getenv, no allowlist entry).
 # Unset/empty => OFF => byte-identical to a REACH-only run. Validated below with the REACH guards.
 DEEP_HUNT_PROMISES="${DEEP_HUNT_PROMISES:-}"
+# #2258 deep-hunt TIME BUDGET: four ENV KNOBS read only by this shell (no getenv, no allowlist entry). Unset/empty/0
+# => inert => STAGE 4.5 is byte-identical. Validated below with the PROMISES guards.
+DEEP_HUNT_CELL_TIMEOUT_S="${DEEP_HUNT_CELL_TIMEOUT_S:-}"
+DEEP_HUNT_ZONE_BUDGET_S="${DEEP_HUNT_ZONE_BUDGET_S:-}"
+DEEP_HUNT_SKIP_BROKEN_TARGET="${DEEP_HUNT_SKIP_BROKEN_TARGET:-}"
+DEEP_HUNT_JOBS="${DEEP_HUNT_JOBS:-}"
 # #2156 (milestone D2, epic #2130): the opt-in STAGE 4.6 VECTOR-HUNT sub-mode. 0 (default) = OFF = the whole
 # STAGE 4.6 block below is skipped and the run is byte-identical to a pre-#2156 run. When 1, after STAGE 4.5 it
 # harvests each value-custody zone's D1 (#2145) `CALLEE-VECTOR|` candidates from the breadth cell logs and
@@ -512,6 +540,18 @@ case "$DEEP_HUNT_REACH" in ''|0|1) ;; *) echo "run-zone-hunt.sh: DEEP_HUNT_REACH
 # REACH handler + coverage gate; REACH itself requires --deep-hunt).
 case "$DEEP_HUNT_PROMISES" in ''|0|1) ;; *) echo "run-zone-hunt.sh: DEEP_HUNT_PROMISES must be unset, 0 or 1 (got '$DEEP_HUNT_PROMISES')" >&2; exit 2 ;; esac
 [ "$DEEP_HUNT_PROMISES" != 1 ] || [ "$DEEP_HUNT_REACH" = 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_PROMISES=1 requires DEEP_HUNT_REACH=1" >&2; exit 2; }
+# #2258 TIME BUDGET: whole seconds (no leading zero), 0/1 for the skip switch, 0..8 for the job count; an ACTIVE knob
+# (a cap/budget > 0, the skip switch on, more than one job) requires --deep-hunt — the REACH guard's shape.
+case "$DEEP_HUNT_CELL_TIMEOUT_S" in ''|0|[1-9]|[1-9]*[0-9]) ;; *) echo "run-zone-hunt.sh: DEEP_HUNT_CELL_TIMEOUT_S must be unset or a whole number of seconds (got '$DEEP_HUNT_CELL_TIMEOUT_S')" >&2; exit 2 ;; esac
+case "$DEEP_HUNT_CELL_TIMEOUT_S" in *[!0-9]*) echo "run-zone-hunt.sh: DEEP_HUNT_CELL_TIMEOUT_S must be unset or a whole number of seconds (got '$DEEP_HUNT_CELL_TIMEOUT_S')" >&2; exit 2 ;; esac
+case "$DEEP_HUNT_ZONE_BUDGET_S" in ''|0|[1-9]|[1-9]*[0-9]) ;; *) echo "run-zone-hunt.sh: DEEP_HUNT_ZONE_BUDGET_S must be unset or a whole number of seconds (got '$DEEP_HUNT_ZONE_BUDGET_S')" >&2; exit 2 ;; esac
+case "$DEEP_HUNT_ZONE_BUDGET_S" in *[!0-9]*) echo "run-zone-hunt.sh: DEEP_HUNT_ZONE_BUDGET_S must be unset or a whole number of seconds (got '$DEEP_HUNT_ZONE_BUDGET_S')" >&2; exit 2 ;; esac
+case "$DEEP_HUNT_SKIP_BROKEN_TARGET" in ''|0|1) ;; *) echo "run-zone-hunt.sh: DEEP_HUNT_SKIP_BROKEN_TARGET must be unset, 0 or 1 (got '$DEEP_HUNT_SKIP_BROKEN_TARGET')" >&2; exit 2 ;; esac
+case "$DEEP_HUNT_JOBS" in ''|[0-8]) ;; *) echo "run-zone-hunt.sh: DEEP_HUNT_JOBS must be unset or an integer 1-8 (got '$DEEP_HUNT_JOBS')" >&2; exit 2 ;; esac
+[ "${DEEP_HUNT_CELL_TIMEOUT_S:-0}" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_CELL_TIMEOUT_S requires --deep-hunt" >&2; exit 2; }
+[ "${DEEP_HUNT_ZONE_BUDGET_S:-0}" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_ZONE_BUDGET_S requires --deep-hunt" >&2; exit 2; }
+[ "$DEEP_HUNT_SKIP_BROKEN_TARGET" != 1 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_SKIP_BROKEN_TARGET=1 requires --deep-hunt" >&2; exit 2; }
+[ "${DEEP_HUNT_JOBS:-0}" -le 1 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_JOBS > 1 requires --deep-hunt" >&2; exit 2; }
 # #1830: the budget/re-hunt knobs use the same integer validation + exit-2 shape as every flag above.
 case "$ZONE_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-cell-budget must be a non-negative integer (got '$ZONE_CELL_BUDGET')" >&2; exit 2 ;; esac
 case "$RUN_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --run-cell-budget must be a non-negative integer (got '$RUN_CELL_BUDGET')" >&2; exit 2 ;; esac
@@ -1289,6 +1329,14 @@ if [ "$DEEP_HUNT" -eq 1 ]; then
     CELLWD="$HERE/lib/cell-watchdog.sh"   # #1982 per-cell staleness watchdog wrapper
     [ -x "$INVHUNT" ] || { echo "run-zone-hunt.sh: [deep-hunt] required entrypoint not found/executable: $INVHUNT" >&2; exit 3; }
     DEEP="$OUT/deep-hunt"; mkdir -p "$DEEP"
+    # #2258 deep-hunt TIME BUDGET: lib/deep-hunt-sched.sh owns the per-cell cap, the zone budget, the broken-target
+    # skip and the parallel window. dh_sched_init is a NO-OP unless one of the four knobs is set; when one is, it
+    # points $INVHUNT at lib/deep-hunt-cell.sh (a recording shim) and keeps the real engine in DH_ENGINE, so the
+    # UNCHANGED loop below runs as ordered passes (enqueue -> scheduler -> collect in queue order). See the lib header.
+    [ -f "$HERE/lib/deep-hunt-sched.sh" ] && [ -x "$HERE/lib/deep-hunt-cell.sh" ] || { echo "run-zone-hunt.sh: [deep-hunt] required helper not found: $HERE/lib/deep-hunt-sched.sh / lib/deep-hunt-cell.sh (#2258)" >&2; exit 3; }
+    # shellcheck source=lib/deep-hunt-sched.sh
+    . "$HERE/lib/deep-hunt-sched.sh"
+    dh_sched_init
     # #1914 M3: SEED the lens x surface matrix BEFORE the deep-hunt loop, so a surface can never be silently
     # missing — only visibly at its floor. The surface set (value-custody OR composition_surfaces zones) is
     # derived inside the helper. We seed AFTER STAGE 3 breadth, so the floor is `discovery-only` (breadth-seen,
@@ -1526,6 +1574,9 @@ for z in zones:
     print("%s\t%s\t%s\t%s" % (zid.replace("\t", " "), primary.replace("\t", " "), SYS_SOLVENCY_CLASS, sys_auxcol))
 PY
     DEEP_FINDINGS=0
+    # #2258: one pass when every time-budget knob is unset (dh_pass_begin succeeds exactly once: byte-identical);
+    # otherwise the enqueue pass, then one collect pass per batch. DEEP_FINDINGS accumulates across the passes.
+    while dh_pass_begin; do
     while IFS='	' read -r ZID RELFILE DCLASS AUXFILES || [ -n "${ZID:-}" ]; do
       [ -n "$ZID" ] || continue
       # #2245 REACH: the RELFILE column carries `rel:Name` under REACH. Split off the concrete contract name
@@ -1648,6 +1699,8 @@ PY
           continue
         fi
       fi
+      # #2258: record this row for the time-budget scheduler (a no-op unless a knob is set).
+      dh_note_row "$ZID" "$RELFILE" "$DCLASS" "${AUXFILES:-}" "$REACH_NAME" "$DZOUT"
       if [ -n "$INV_FIXTURE" ]; then
         "$INVHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
           --handler-fixture "$INV_FIXTURE" --backend "$BACKEND" --agentis "$AGENTIS" --out "$DZOUT" \
@@ -1795,6 +1848,8 @@ PY
         fi
       fi
     done < "$DEEP_TARGETS"
+    dh_pass_end
+    done
     echo "run-zone-hunt.sh: [deep-hunt] merged $DEEP_FINDINGS invariant-hunt finding(s) into verified_findings.json" >&2
   fi
 fi
