@@ -1,0 +1,13 @@
+Compiler run failed:
+Error (7576): Undeclared identifier.
+ --> src/vault/VaultB.sol:5:47:
+  |
+5 |     function depositB(uint256 a) external { missing = a; }
+  |                                               ^^^^^^^
+
+Error (1686): Function with same name and parameter types defined twice.
+ --> test/Inv_harness.t.sol:9:5:
+  |
+9 |     function act() external {}
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
