@@ -25,7 +25,8 @@
 #    10) run-zone-hunt.sh present; VECTOR_HUNT defaults 0 (OFF); the STAGE 4.6 block is gated on VECTOR_HUNT=1;
 #        the relaxed --deep-hunt-only guard is OFF-preserving when --vector-hunt is absent.
 #    11) OFF BYTE-IDENTITY: every origin/main line OUTSIDE the STAGE 4.6 `VECTOR_HUNT` block is byte-preserved
-#        in the wired run-zone-hunt.sh, except the --deep-hunt-only guard (replaced by the OFF-equivalent) —
+#        in the wired run-zone-hunt.sh, except an ALLOWLIST of OFF-equivalent replacements (the --deep-hunt-only
+#        guard; #2255: the STAGE 4.5 Foundry gate, which only adds the multi-root condition) —
 #        every behaviour line the OFF path runs is unchanged, no matter how the gated block's own body (D2's
 #        depth-harvest widening, #2160) evolves (git-guarded: SKIP when origin/main is not fetched, where
 #        assertion 10 stands in).
@@ -331,7 +332,7 @@ else
   bad "the --deep-hunt-only guard was not extended OFF-preservingly for --vector-hunt"
 fi
 
-note "11) run-zone-hunt.sh OFF byte-identity vs origin/main (every OFF-path line preserved except the guard) ..."
+note "11) run-zone-hunt.sh OFF byte-identity vs origin/main (every OFF-path line preserved except the allowlisted guard/gate) ..."
 # The STRONG proof: every line of origin/main's run-zone-hunt.sh that the OFF path (--vector-hunt absent)
 # actually executes is byte-preserved, so `--vector-hunt` absent == today. Two kinds of change are permitted:
 # (a) the --deep-hunt-only guard, replaced by an OFF-equivalent (asserted above), and (b) any line INSIDE the
@@ -373,8 +374,16 @@ if git -C "$HERE" cat-file -e origin/main:dark-factory/run-zone-hunt.sh 2>/dev/n
     OUTSIDE_N="$(awk 'END{print NR}' "$WORK/rz-removed-outside.txt")"
     # shellcheck disable=SC2016  # the literal origin/main guard line, compared verbatim — no expansion
     EXPECT_GUARD='[ "$DEEP_HUNT_ONLY" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: --deep-hunt-only requires --deep-hunt" >&2; exit 2; }'
-    if [ "$OUTSIDE_N" -eq 0 ] || { [ "$OUTSIDE_N" -eq 1 ] && [ "$(cat "$WORK/rz-removed-outside.txt")" = "$EXPECT_GUARD" ]; }; then
-      ok "every run-zone-hunt.sh line OUTSIDE the sentinel-delimited STAGE 4.6 block is byte-preserved (at most the one OFF-equivalent guard replacement) — the OFF path is byte-identical to origin/main"
+    # #2255 (STOP-1 option A): the STAGE 4.5 Foundry gate, replaced by an OFF-equivalent that only adds the
+    # multi-root condition (`[ -z "$MR_ROOTS" ] && ...`; MR_ROOTS is empty on every single-root map).
+    # shellcheck disable=SC2016  # the literal origin/main gate line, compared verbatim — no expansion
+    EXPECT_DH_GATE='  if [ ! -f "$REPO/foundry.toml" ]; then'
+    # ALLOWLIST: each removed line must be one of the verbatim OFF-equivalent replacements, each at most once.
+    printf '%s\n%s\n' "$EXPECT_GUARD" "$EXPECT_DH_GATE" > "$WORK/rz-allowlist.txt"
+    ALLOW_BAD="$(grep -vxF -f "$WORK/rz-allowlist.txt" "$WORK/rz-removed-outside.txt" || true)"
+    ALLOW_DUP="$(sort "$WORK/rz-removed-outside.txt" | uniq -d)"
+    if [ "$OUTSIDE_N" -eq 0 ] || { [ -z "$ALLOW_BAD" ] && [ -z "$ALLOW_DUP" ]; }; then
+      ok "every run-zone-hunt.sh line OUTSIDE the sentinel-delimited STAGE 4.6 block is byte-preserved (at most the allowlisted OFF-equivalent replacements: the --deep-hunt-only guard, the STAGE 4.5 Foundry gate) — the OFF path is byte-identical to origin/main"
     else
       bad "run-zone-hunt.sh changed $OUTSIDE_N original line(s) OUTSIDE the STAGE 4.6 block beyond the guard (OFF path may have drifted):"
       sed 's/^/      /' "$WORK/rz-removed-outside.txt" >&2

@@ -39,6 +39,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   given `verified_findings.json` records it as `scope_layer: {state: on|off|inert-extractor-error, reason}`. STAGE 4 first-pass findings only
   (`deep-hunt-gate.sh` / `--invariant-mode` not wired). Unset ⇒ byte-identical. Proven offline by
   `demo-scope-assumptions.sh`; precision UNMEASURED (needs a fresh set).
+- **Multi-project repos: the deep hunt, vector hunt and PoC stages run in each zone's own project root (#2255,
+  part 2 of 2).** On a multi-root map (zones carrying a `root` key) `run-zone-hunt.sh` records the per-zone roots
+  in `<out>/.deep-hunt-roots.tsv` and stages every STAGE 4.5 (`--deep-hunt`) row, every STAGE 4.6
+  (`--vector-hunt`) row and every M5 PoC in that zone's OWN Foundry root: `--repo <clone>/<root>` plus the target
+  (and each `--aux`) rebased into it, so forge compiles against that root's `foundry.toml`, remappings and `lib/`.
+  The stage-level `foundry.toml` gate becomes per row: a Hardhat-only root and a zone outside every root are
+  skipped with a log line. `lib/inheritance.py reach-targets` indexes each rooted zone over its own root and
+  re-prefixes the emitted path, so the `DEEP_HUNT_REACH` selection resolves a concrete subclass whose name also
+  exists in another root. A merged deep-hunt finding keeps a clone-relative `file` / `location`. Single-root maps
+  take none of these paths (argv and outputs byte-identical; `demo-vector-hunt.sh` assertion 11 allowlists the one
+  edited gate line, an OFF-equivalent). Proven offline by `demo-multi-root.sh` part 7 (stub prover, fake `forge`,
+  PoC-runner seam). Known limit: a vector-hunt finding records its root-relative `file` (the engine's own
+  `--target`), so M5 resolves its root only when exactly one root holds that path.
 - **Multi-project repos: every project root is mapped — map layer (#2255, part 1 of 2).** A code repo that holds
   several nested Foundry/Hardhat projects used to be mapped through ONE of them, so every other root was never
   mapped, briefed or hunted. `--repo` now stays the CLONE ROOT and every path in `zones.json` / `scope.tsv` /

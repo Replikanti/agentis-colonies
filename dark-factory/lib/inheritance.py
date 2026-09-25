@@ -507,6 +507,8 @@ def _project_roots():
 #       Up to N concrete deploy targets per zone, greedy by the zone's state-changing entry points a candidate
 #       owns or inherits. An abstract base is never emitted when it has a concrete subclass. TSV:
 #         zid \t rel:ContractName \t new_covered \t total \t in_zone|out_zone
+#       #2255: a zone carrying a `root` key (a multi-root map) is indexed over <repo>/<root> only and its `rel` is
+#       re-prefixed with `<root>/`, so the TSV stays relative to --repo (the clone root). Rootless zones: unchanged.
 #   reach-inventory --repo <staged repo> --target <rel[:Name]> --out-tsv <f> --out-inventory <f> [--fork] [--aux <rel[:Name]>]...
 #       The per-target entry-point denominator (own state-changing fns + vendored no-modifier fns, inherited
 #       included) + the deployment inventory (constructor/initializer signatures + resolved collaborators).
@@ -901,15 +903,32 @@ def cmd_reach_targets(argv):
     if not isinstance(zones, list):
         die(3, "the zone model is not a JSON array")
 
-    inv = OwnInventory(repo, discover_inventory_sources(repo))
-    vendored = VendoredIndex(repo)
-    idx = Index(repo, discover_sources(repo))
+    # #2255: one (inventory, vendored, index) context per PROJECT ROOT. A zone of a multi-root map (a `root` key)
+    # is indexed over <repo>/<root> only — its own sources, and its OWN vendored lib/ — so a contract name declared
+    # in two roots is not ambiguous and a nested root's vendored bases resolve. Its files are rebased into the root
+    # and every emitted rel is re-prefixed with `<root>/`, so the TSV stays clone-relative. Zones without `root`
+    # (every zone of a single-root map) share the `None` context over --repo: exactly the pre-#2255 path.
+    contexts = {}
+
+    def context(root):
+        if root not in contexts:
+            base = repo if root in (None, ".") else os.path.join(repo, root)
+            contexts[root] = (OwnInventory(base, discover_inventory_sources(base)), VendoredIndex(base),
+                              Index(base, discover_sources(base)), base)
+        return contexts[root]
 
     for z in zones:
         zone_files = [f for f in z.get("files", []) if isinstance(f, str) and f.endswith(".sol")]
         zid = z.get("id", "")
         if not zid or not zone_files:
             continue
+        zroot = z.get("root") or None
+        prefix = "" if zroot in (None, ".") else zroot + "/"
+        if prefix:
+            zone_files = [f[len(prefix):] for f in zone_files if f.startswith(prefix)]
+            if not zone_files:
+                continue
+        inv, vendored, idx, zrepo = context(zroot)
         zone_eps, _declared = zone_entry_points(inv, zone_files)
         if not zone_eps:
             continue
@@ -919,7 +938,7 @@ def cmd_reach_targets(argv):
         candidate_names = set()
         for rel in zone_files:
             try:
-                with open(os.path.join(repo, rel), encoding="utf-8", errors="ignore") as fh:
+                with open(os.path.join(zrepo, rel), encoding="utf-8", errors="ignore") as fh:
                     decls = parse_entry_points(fh.read())
             except OSError:
                 decls = []
@@ -971,7 +990,7 @@ def cmd_reach_targets(argv):
             picked.append((c, new_covered))
         for c, new_covered in picked:
             sys.stdout.write("%s\t%s:%s\t%d\t%d\t%s\n" % (
-                zid.replace("\t", " "), c["rel"], c["name"], new_covered, c["total"],
+                zid.replace("\t", " "), prefix + c["rel"], c["name"], new_covered, c["total"],
                 "in_zone" if c["in_zone"] else "out_zone"))
     return 0
 
