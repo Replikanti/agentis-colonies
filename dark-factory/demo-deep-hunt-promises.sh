@@ -1083,7 +1083,8 @@ mutate "$PG" "$M" 'r"_p" + str(k) + r"_[A-Za-z0-9_$]+\s*\("' 'r"_p" + str(k) + r
   && python3 "$M" coverage --accepted "$WORK/acc-one.tsv" --harness "$WORK/h-p10.t.sol" | grep -qx 'PCOVERED|#1' \
   && ok "(g) un-anchoring _p<k>_ lets invariant_p10_a cover #1 — the anchor is load-bearing" || bad "(g) the anchor mutation did not flip #1"
 MI="$WORK/inh-mut.py"
-mutate "$INH" "$MI" '    for f in contracts + interfaces:' '    for f in interfaces + contracts:' \
+# #2264: the order lives in lib/inheritance.py's shared _promise_listing helper (both --target and --files use it).
+mutate "$INH" "$MI" '    for f in anc_contracts + anc_interfaces:' '    for f in anc_interfaces + anc_contracts:' \
   && python3 "$MI" promise-sources --repo "$PREPO" --target src/fx/FxHoldToken.sol:FxHoldToken --out "$WORK/list-mut.txt" \
   && [ "$(grep '^=== ' "$WORK/list-mut.txt" | sed -n 2p)" = "=== src/fx/IFxHold.sol ===" ] \
   && ok "(h) dropping the contracts-before-interfaces order puts the interface second — the order is load-bearing" \

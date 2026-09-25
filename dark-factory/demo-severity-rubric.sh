@@ -778,6 +778,10 @@ GATE_FNS="$WORK/gate-fns.sh"
   _shfn "$DISCOVERY" _rubric_promoted_candidates
   _shfn "$DISCOVERY" _rubric_promoted_count
   _shfn "$DISCOVERY" _cell_candidates
+  # _cell_candidates also unions the #2245 iteration-5 and #2264 promoted records; slice their (sidecar-only) readers too,
+  # so the sourced union never calls an undefined function.
+  _shfn "$DISCOVERY" _param_promoted_candidates
+  _shfn "$DISCOVERY" _promise_promoted_candidates
   _shfn "$DISCOVERY" _join_wrapped_candidates
   # _rubric_promote validates its location with the SHIPPED tier-2 helpers, so the slice must carry them or the
   # extracted gate would behave differently here than in production (the whole point of slicing).

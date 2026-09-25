@@ -223,6 +223,21 @@
 #                       so it is empty on every breadth and depth cell and their prompts are unchanged. It rides
 #                       exec.env_passthrough for the #1426 reason: unregistered, the coverage cell would be framed
 #                       as an ordinary breadth cell.
+#   BREADTH_PROMISES    #2264 OPT-IN, default UNSET = OFF, independent of every other knob. `1` extracts the cited
+#                       user-facing PROMISES of each manifest line ONCE (auditor/agents/promise-lister.ag over
+#                       `lib/inheritance.py promise-sources --files`, kept by evm-harness/promise-gate.py, cap 8) and hands
+#                       the accepted ones to every BREADTH cell of that line as checks it must settle — one
+#                       `PTRACE|#k|held|...` or `PTRACE|#k|broken|...` line each, gated by the shell below (one named
+#                       re-ask; a rubric-ON open `broken` is promoted to a Medium candidate). Unset / any other value
+#                       leaves the prompt, the report, the results JSON and the stderr banner BYTE-IDENTICAL. Ignored (one
+#                       stderr line) under --depth-from, which hunts no breadth cell. Read by this SHELL only.
+#   DF_PROMISE_MAX_REASKS #2264: how many times a no-candidate, promise-armed cell with an open promise (see the #2264
+#                       block below) is re-asked before its residuals are recorded and its open leads promoted. Default
+#                       1; 0 = gate-only; garbage => 1. Read by this SHELL, so it needs no exec.env_passthrough entry.
+#   BREADTH_PROMISE_FILE #2264: the absolute path of the zone line's ACCEPTED block, set by run_cell ONLY on a breadth
+#                       cell of a line that accepted at least one promise. PTRACE_REASK_IDS: the open promise items the
+#                       re-ask names, set ONLY on that re-ask. PROMISE_SOURCES: the listing path handed to the lister.
+#                       All three ride exec.env_passthrough for the #1426 reason and are empty on every default run.
 #   DF_EXTERNAL_RESOLVE #2235: `1` turns the external-protocol reading on, exactly like `--external-resolve`
 #                       (any other value, and unset, leave it OFF — the default), so one export covers every
 #                       zone of a run-zone-hunt.sh hunt.
@@ -432,6 +447,47 @@
 #   (distinct READ lines of an armed cell, appended LAST, non-zero only), the sidecar
 #   `run/function-coverage_<slug>.tsv` (`rel fn value|state open|guarded covered-by|none after-coverage-cell`), one
 #   report footer line per line and a `, K coverage` banner suffix — ALL absent with the knob off.
+#
+# #2264 — BREADTH PROMISES (a zone pre-pass + a per-cell output gate, the iteration-5 PARAM shape):
+#   MEASURED CAUSE: #2245 iteration 7 extracts the target's cited user-facing promises, but only STAGE 4.5 consumed them —
+#   the breadth cells, where the verified rare-row hits of the final exam came from, never saw one.
+#   ZONE PRE-PASS (_bp_prepare_line, BREADTH_PROMISES=1 only): once per manifest line — serially in the manifest loop, and
+#   on the parallel path in the EXPANSION loop, so every extraction finishes before the first cell launches and `--jobs N`
+#   sees the same block as `--jobs 1` — render the line's listing (`promise-sources --files`), run promise-lister.ag ONCE
+#   (at most 2 validated attempts, stage `promise-lister`), and keep the cited promises with `promise-gate.py gate --cap 8
+#   --names-in <the line's own .sol files>` (a promise whose subject those files never name is dropped as
+#   `subject-off-payload`, before the cap — STOP-1 decision 1). The ACCEPTED block (numbered promises + cited lines, NO
+#   kind) goes to every BREADTH cell of the line; depth and coverage cells get none. A line with 0 accepted prompts
+#   byte-identically to OFF. Every line is recorded (`$RUN/bp-lines.tsv`, then `breadth_promises[]`).
+#   GRAMMAR (its OWN token — `TRACE|` would collide with the #2223 OPCHECK pairing; `#k` = the promise's own number):
+#     PTRACE|#<k>|held|<path>:<line>[-<line>]|<the check at that line that keeps the promise>
+#     PTRACE|#<k>|broken|<file:function>|<the call sequence that breaks it>
+#   The FIRST well-formed answer of an id (log order) is read; an un-numbered PTRACE answers nothing; an id outside the
+#   cell's accepted set is an orphan (counted, discharges nothing). A `held` answer is RE-OPENED by _promise_held_ok
+#   (in-repo, not deploy/test/mocks, <= 40 lines, a check that NAMES the subject, prose grounded in the cited lines —
+#   STOP-1 decision 3); a failing one is DEMOTED (open for the re-ask, never promoted).
+#   THE GATE, armed ONLY by the `BREADTH-PROMISES|` sentinel plus the cell's accepted snapshot `<log>.promises.tsv`:
+#     P1 unanswered — an accepted id with no well-formed answer, plus every un-numbered PTRACE line;
+#     P2 demoted    — a `held` answer that fails the citation contract;
+#     P3 open lead  — a `broken` answer with no model CANDIDATE and no DISMISS at that function naming `#k` or the
+#                     subject. Armed only when the log ALSO carries SEVERITY-RUBRIC| (STOP-1 decision 2).
+#   ORDER inside run_cell: OPCHECK->TRACE loop -> PARAM loop -> PROMISE loop -> rubric loop, so a DISMISS written for
+#   a promise re-ask is judged by the UNCHANGED rubric + evidence gate. Promotions run rubric -> param -> promise.
+#   STATUS SEMANTICS (no new status vocabulary, and this gate NEVER fails a cell):
+#     * unarmed => gap 0, no re-ask, no sidecar, JSON key set unchanged;
+#     * a `.novalid`/`.timeout` cell or a cell with a model CANDIDATE| is never re-asked (DF_PROMISE_MAX_REASKS, default
+#       1, names the open items through PTRACE_REASK_IDS); P1/P2 residuals are recorded, never failed;
+#     * a P3 lead still open on the FINAL log is PROMOTED to ONE tier-1 `Medium` candidate per resolvable location — also
+#       in a cell that reported other candidates (decision 2) — unless the rubric or parameter gate already promoted that
+#       location or a model CANDIDATE sits there, so one location yields at most one lead across the three gates.
+#   COST: one extraction call per manifest line (the listing is <= 160 KB), <= ~3k tokens of contract + block per
+#   breadth cell, <= 1 re-ask per no-candidate cell; the extraction and the re-asks are not hunter cells and are NOT
+#   charged at run-zone-hunt.sh admission (STOP-1 decision 4) — `totals.promise_extractions` makes them visible.
+#   RECORD (all 0 bytes with the knob off): per cell `<log>.promise-trace.tsv` (`k subject held|broken|demoted:<id>|
+#   unanswered cite-or-location candidate|dismiss|open|n/a`) and the keys `promises`, `promises_held`, `promises_broken`,
+#   `promise_held_demoted`, `promises_unanswered`, `ptrace_orphans`, `promise_promoted` (appended LAST, non-zero only);
+#   per line `run/promises_<slug>.tsv`; top-level `breadth_promises[]`, `totals.promise_extractions`, one report footer
+#   line per line and a `, K promise extraction(s)` banner suffix.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -457,6 +513,10 @@ case "$DF_RUBRIC_MAX_REASKS" in ''|*[!0-9]*) DF_RUBRIC_MAX_REASKS=1 ;; esac
 # = gate-only: record + promote, never re-ask). Inert without the PARAM-AUDIT| sentinel, i.e. on every default run.
 DF_PARAM_MAX_REASKS="${DF_PARAM_MAX_REASKS:-1}"
 case "$DF_PARAM_MAX_REASKS" in ''|*[!0-9]*) DF_PARAM_MAX_REASKS=1 ;; esac
+# #2264: the re-ask ceiling for the breadth PROMISE gate, validated exactly like the three above (floor 0 = gate-only:
+# record + promote, never re-ask). Inert without the BREADTH-PROMISES| sentinel + snapshot, i.e. on every default run.
+DF_PROMISE_MAX_REASKS="${DF_PROMISE_MAX_REASKS:-1}"
+case "$DF_PROMISE_MAX_REASKS" in ''|*[!0-9]*) DF_PROMISE_MAX_REASKS=1 ;; esac
 # agentis-core#993: pre-accept Claude Code's workspace-trust dialog for every dir a
 # hunter session cd's into (the shared $RUN store on the serial/depth path, each
 # isolated cell dir on the parallel path), else the flat-cyborg/claude session
@@ -700,6 +760,11 @@ rm -rf "$RUN"; mkdir -p "$RUN"
 export HUNT_SANDBOX_REPO="$REPO" HUNT_SANDBOX_RUN="$RUN"
 cp "$HUNTER" "$RUN/hunter.ag"
 cp "$HERE/auditor/slice-fns.sh" "$RUN/slice-fns.sh"   # function-level slicer (scope `file@fn1+fn2`)
+# #2264: the one-prompt promise lister is staged ONLY with BREADTH_PROMISES=1 (and never on a --depth-from re-entry,
+# which hunts no breadth cell), so a default run's $RUN tree is unchanged.
+if [ "${BREADTH_PROMISES:-}" = "1" ] && [ -z "$DEPTH_FROM" ]; then
+  cp "$HERE/auditor/agents/promise-lister.ag" "$RUN/promise-lister.ag"
+fi
 
 # #2235 PR B: external-protocol reading. ALL of it is empty/absent unless --external-resolve opted in, which
 # is what keeps the default prompt byte-identical and the sandbox view unchanged.
@@ -891,7 +956,12 @@ HUNT_TIMEOUT_MS=$(( HUNT_TIMEOUT_FLOOR + HUNT_TIMEOUT_STEP_MS * (HUNT_SRC_LOC / 
   # on getenv("FUNCTION_COVERAGE"), and COVERAGE_REASK_FNS is set by run_cell ONLY on the one coverage cell of a
   # zone line — unregistered, the opt-in would be silently inert and the coverage cell would be framed as an
   # ordinary breadth cell. Both are EMPTY on a default run; these two names are the only unconditional delta.
-  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET,ONCHAIN_FACT,ONCHAIN_BUDGET_STATE,ONCHAIN_BUDGET,FORK_BLOCK,SEVERITY_RUBRIC,DISMISS_REASK_GROUNDS,GROUND_EVIDENCE,PARAM_AUDIT,PARAM_REASK_ITEMS,FUNCTION_COVERAGE,COVERAGE_REASK_FNS"
+  # #2264 BREADTH_PROMISE_FILE/PTRACE_REASK_IDS/PROMISE_SOURCES ride it for the same #1426 reason: hunter.ag renders the
+  # PTRACE| contract only from getenv("BREADTH_PROMISE_FILE"), PTRACE_REASK_IDS is set by run_cell ONLY on a promise
+  # re-ask, and promise-lister.ag reads its listing through getenv("PROMISE_SOURCES") — unregistered, the whole pass
+  # would be silently inert. All three are EMPTY on a default run (no lister is ever invoked), so the three names are
+  # the knob's only unconditional delta here.
+  echo "exec.env_passthrough = TARGET_DIR,IN_SCOPE,SCOPE_BRIEF,TAXONOMY,HUNT_CLASS,SUBSYSTEM,SLICER,DEPTH_TARGET,DEPTH_KNOWN,APPENDIX_FILE,APPENDIX_BASE,CALLEE_TRUST,OPERATIONALIZE_LENS,TRACE_REASK_IDS,EXTERNAL_RESOLVER,EXTERNAL_CACHE,EXTERNAL_BUDGET_STATE,EXTERNAL_BUDGET,ONCHAIN_FACT,ONCHAIN_BUDGET_STATE,ONCHAIN_BUDGET,FORK_BLOCK,SEVERITY_RUBRIC,DISMISS_REASK_GROUNDS,GROUND_EVIDENCE,PARAM_AUDIT,PARAM_REASK_ITEMS,FUNCTION_COVERAGE,COVERAGE_REASK_FNS,BREADTH_PROMISE_FILE,PTRACE_REASK_IDS,PROMISE_SOURCES"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: hunter.ag ends its tick with `learn("hunt", ...)`, and it is that WRITE
   # the flag gates (#1878 measured it on agentis v1.28.0 — `experience.enabled = false` makes learn() raise
@@ -1003,6 +1073,7 @@ _json_id_array() {
 # or a `GROUND-EVIDENCE|` line (#2245 iteration 3)
 # or a `PARAM-AUDIT|` line or a model-emitted `PARAM|` / `PARAM-TRACE|` line (#2245 iteration 5)
 # or a `FUNCTION-COVERAGE|` / `COVERAGE-CELL|` line or a model-emitted `READ|` line (#2256)
+# or a `BREADTH-PROMISES|` line or a model-emitted `PTRACE|` line (#2264)
 # or a blank line closes the current record
 # without starting a new one
 # (these are the only meaningful boundary tokens in a hunt log — see hunter.ag's own framing); any other line
@@ -1017,7 +1088,7 @@ _join_wrapped_candidates() {
       rec = $0
       next
     }
-    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*ONCHAIN-FACT\|/ || /^[[:space:]]*SEVERITY-RUBRIC\|/ || /^[[:space:]]*GROUND-EVIDENCE\|/ || /^[[:space:]]*DISMISS\|/ || /^[[:space:]]*PARAM-AUDIT\|/ || /^[[:space:]]*PARAM\|/ || /^[[:space:]]*PARAM-TRACE\|/ || /^[[:space:]]*FUNCTION-COVERAGE\|/ || /^[[:space:]]*COVERAGE-CELL\|/ || /^[[:space:]]*READ\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
+    /^[[:space:]]*BLACKBOARD-/ || /^[[:space:]]*DEPTH-CELL\|/ || /^[[:space:]]*APPENDIX-CONTEXT\|/ || /^[[:space:]]*REFUTE-CONSTRAINTS\|/ || /^[[:space:]]*CALLEE-TRUST\|/ || /^[[:space:]]*OPERATIONALIZE\|/ || /^[[:space:]]*EXTERNAL-RESOLVE\|/ || /^[[:space:]]*ONCHAIN-FACT\|/ || /^[[:space:]]*SEVERITY-RUBRIC\|/ || /^[[:space:]]*GROUND-EVIDENCE\|/ || /^[[:space:]]*DISMISS\|/ || /^[[:space:]]*PARAM-AUDIT\|/ || /^[[:space:]]*PARAM\|/ || /^[[:space:]]*PARAM-TRACE\|/ || /^[[:space:]]*FUNCTION-COVERAGE\|/ || /^[[:space:]]*COVERAGE-CELL\|/ || /^[[:space:]]*READ\|/ || /^[[:space:]]*BREADTH-PROMISES\|/ || /^[[:space:]]*PTRACE\|/ || /^[[:space:]]*OPCHECK\|/ || /^[[:space:]]*TRACE\|/ || /^[[:space:]]*$/ {
       if (rec != "") { print rec; rec = "" }
       next
     }
@@ -2677,11 +2748,14 @@ _param_dropped_count() {
 # then the #2245 promoted ones. Both scrape sites call THIS, so the two paths cannot disagree about what a cell
 # produced. With the knob off the second half emits nothing and the output is byte-identical to
 # _join_wrapped_candidates alone. #2245 iteration 5 adds the parameter-promoted records as the THIRD source, on
-# the same contract (nothing without the PARAM-AUDIT| sentinel).
+# the same contract (nothing without the PARAM-AUDIT| sentinel). #2264 adds the promise-promoted records as the FOURTH
+# source (nothing without the BREADTH-PROMISES| sentinel and the per-cell accepted snapshot); the function is defined
+# further down, in the #2264 block, and is resolved at call time.
 _cell_candidates() {
   _join_wrapped_candidates "$1" 2>/dev/null || true
   _rubric_promoted_candidates "$1"
   _param_promoted_candidates "$1"
+  _promise_promoted_candidates "$1"
 }
 
 # --- #2256: THE BREADTH FUNCTION-COVERAGE GATE ---------------------------------------------------------------
@@ -2959,6 +3033,544 @@ _fcov_record_json() {
 }
 # --- end #2256 block ---
 
+# --- #2264: BREADTH PROMISES -----------------------------------------------------------------------------------
+# The zone pre-pass (one promise extraction per manifest line) and the per-cell PTRACE| output gate described in the
+# #2264 header block. Every GATE helper here is self-contained (its regexes in place, every knob read inline, helper
+# paths passed as arguments) for the reason the other gates are: demo-breadth-promises.sh slices this block out of
+# the file by line range and sources it. The only shipped helpers it reuses are _param_fn_of, _param_mentions,
+# _dismiss_lines, _join_wrapped_candidates, _check_ids, _ids_of_lines, _count_stdin, _fcov_read_grounded,
+# _tier2_resolve_file and _tier2_emit_loc, which the demo slices alongside it. _bp_prepare_line is the driver half
+# (it runs the lister through the shared $RUN store) and is exercised end to end, never sliced.
+#
+# Nothing here runs with BREADTH_PROMISES unset: the driver calls into this block only behind _bp_enabled, and every
+# per-cell helper is inert without the `BREADTH-PROMISES|` sentinel AND the per-cell accepted snapshot.
+
+# _bp_enabled — the knob, read inline. Only the literal "1" opts in (the #2245 polarity); unset/0/true are OFF.
+_bp_enabled() {
+  [ "${BREADTH_PROMISES:-}" = "1" ]
+}
+
+# _bp_cap — at most this many promises are accepted per zone line (promise-gate.py --cap). The shared extraction
+# instruction already asks for "at most 8", so the two numbers agree (#2264 STOP-1 decision 4).
+_bp_cap() {
+  printf '%s\n' 8
+}
+
+# _bp_extract_attempts — the lister's validation ceiling. A shell constant, NOT the cell's DF_AGENT_MAX_ATTEMPTS: a
+# zone line whose extraction yields no PROMISE| line simply hunts without promises.
+_bp_extract_attempts() {
+  printf '%s\n' 2
+}
+
+# _bp_int <s> — <s> when it is a whole number, else 0 (every count parsed out of the gate's stdout goes through it).
+_bp_int() {
+  case "$1" in ''|*[!0-9]*) printf '0\n' ;; *) printf '%s\n' "$1" ;; esac
+}
+
+# _bp_payload_files <files_csv> — the line's `.sol` tokens with the `@fn+fn` tail stripped, deduped, one per line: the
+# `--names-in` list of the gate's subject-off-payload rule.
+_bp_payload_files() {
+  printf '%s\n' "$1" | tr ',' '\n' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/@.*$//' \
+    | awk '$0 ~ /\.sol$/ && !seen[$0]++'
+  return 0
+}
+
+# _bp_prepare_line <subsys> <files_csv> <slug> [cls_csv] — THE ZONE PRE-PASS for one manifest line (knob ON only):
+# render the line's listing (inheritance.py promise-sources --files), run the ONE-prompt lister over it (at most
+# _bp_extract_attempts validated attempts, stage `promise-lister`), keep the cited promises (promise-gate.py gate
+# --cap 8 --names-in <the line's own files>), and print the STEM `$RUN/promises/<slug>` — ONLY when at least one
+# promise was accepted, so a line with none prompts byte-identically to OFF. Every line appends ONE row to
+# $RUN/bp-lines.tsv:
+#   subsys cls_csv files slug state listing_bytes emitted accepted dropped off_payload overcap
+# state: accepted | none-accepted | no-listing | extraction-failed | extraction-timeout | no-python.
+# The lister's stdin is /dev/null: this runs inside the `while read ... < "$SCOPE"` manifest loop, and a reader
+# there would swallow manifest lines (the #2256 coverage-pass precedent). Its log suffix is `.lister`, never `.log`.
+# Every lister ATTEMPT appends one line to $RUN/bp-calls.log (the `totals.promise_extractions` readout).
+_bp_prepare_line() {
+  bpl_subsys="$1"; bpl_files="$2"; bpl_slug="$3"; bpl_cls="${4:-}"
+  bpl_dir="$RUN/promises"
+  mkdir -p "$bpl_dir"
+  bpl_stem="$bpl_dir/$bpl_slug"
+  bpl_state="" ; bpl_bytes=0 ; bpl_em=0 ; bpl_acc=0 ; bpl_drop=0 ; bpl_off=0 ; bpl_over=0
+  _bp_payload_files "$bpl_files" > "$bpl_stem.payload-files"
+  if ! command -v python3 >/dev/null 2>&1; then
+    bpl_state="no-python"
+  else
+    python3 "$HERE/lib/inheritance.py" promise-sources --repo "$REPO" --files "$bpl_files" --out "$bpl_stem.sources" \
+      >/dev/null 2>&1 || : > "$bpl_stem.sources"
+    [ -f "$bpl_stem.sources" ] || : > "$bpl_stem.sources"
+    bpl_bytes="$(wc -c < "$bpl_stem.sources" | tr -d ' ')"
+    case "$bpl_bytes" in ''|*[!0-9]*) bpl_bytes=0 ;; esac
+    if [ ! -s "$bpl_stem.sources" ]; then
+      bpl_state="no-listing"
+    fi
+  fi
+  if [ -z "$bpl_state" ]; then
+    # shellcheck disable=SC2317,SC2329  # invoked by name through df_run_agent_validated
+    _bp_attempt() {
+      printf '%s\n' "$bpl_slug" >> "$RUN/bp-calls.log"
+      ( cd "$RUN" && env PROMISE_SOURCES="$bpl_stem.sources" \
+          "$AGENTIS" go promise-lister.ag --enable-exec --grant-pii ) < /dev/null >"$1" 2>&1 || \
+          echo "run-discovery.sh: promise lister run failed for '$bpl_subsys' (see $1)" >&2
+    }
+    echo "run-discovery.sh: extracting the promises of '$bpl_subsys' ($bpl_bytes byte listing) ..." >&2
+    if df_run_agent_validated "$(_bp_extract_attempts)" "run-discovery.sh: promise extraction for '$bpl_subsys'" \
+         "$bpl_stem.lister" promise-lister "" _bp_attempt; then
+      python3 "$HERE/evm-harness/promise-gate.py" gate --raw "$bpl_stem.lister" --repo "$REPO" \
+        --out "$bpl_stem.accepted.tsv" --cap "$(_bp_cap)" --names-in "$bpl_stem.payload-files" \
+        > "$bpl_stem.gate" 2>/dev/null || true
+      bpl_head="$(grep -m1 '^PROMISES|' "$bpl_stem.gate" 2>/dev/null || true)"
+      bpl_em="$(printf '%s' "$bpl_head" | sed -n 's/.*|emitted=\([0-9]*\).*/\1/p')"
+      bpl_acc="$(printf '%s' "$bpl_head" | sed -n 's/.*|accepted=\([0-9]*\).*/\1/p')"
+      bpl_drop="$(printf '%s' "$bpl_head" | sed -n 's/.*|dropped=\([0-9]*\).*/\1/p')"
+      bpl_over="$(printf '%s' "$bpl_head" | sed -n 's/.*|overcap=\([0-9]*\).*/\1/p')"
+      bpl_off="$(grep -c '^PROMISE-DROPPED|.*|subject-off-payload$' "$bpl_stem.gate" 2>/dev/null || true)"
+      bpl_em="$(_bp_int "$bpl_em")"; bpl_acc="$(_bp_int "$bpl_acc")"; bpl_drop="$(_bp_int "$bpl_drop")"
+      bpl_over="$(_bp_int "$bpl_over")"; bpl_off="$(_bp_int "$bpl_off")"
+      awk '/^END-ACCEPTED$/{f=0} f{print} /^BEGIN-ACCEPTED$/{f=1}' "$bpl_stem.gate" > "$bpl_stem.block" 2>/dev/null || : > "$bpl_stem.block"
+      if [ "$bpl_acc" -gt 0 ] && [ -s "$bpl_stem.block" ] && [ -s "$bpl_stem.accepted.tsv" ]; then
+        bpl_state="accepted"
+      else
+        bpl_state="none-accepted"
+      fi
+    elif [ -f "$bpl_stem.lister.timeout" ]; then
+      bpl_state="extraction-timeout"
+    else
+      bpl_state="extraction-failed"
+    fi
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(printf '%s' "$bpl_subsys" | tr '\t' ' ')" "$bpl_cls" \
+    "$bpl_files" "$bpl_slug" "$bpl_state" "$bpl_bytes" "$bpl_em" "$bpl_acc" "$bpl_drop" "$bpl_off" "$bpl_over" >> "$RUN/bp-lines.tsv"
+  echo "run-discovery.sh:   ↳ promises of '$bpl_subsys': $bpl_state ($bpl_acc accepted of $bpl_em emitted; $bpl_drop dropped, $bpl_off off-payload, $bpl_over over the cap)" >&2
+  if [ "$bpl_state" = "accepted" ]; then printf '%s\n' "$bpl_stem"; fi
+  return 0
+}
+
+# _promise_armed <log> — the ONLY arming signal of the per-cell gate: hunter.ag's honesty-gated `BREADTH-PROMISES|`
+# sentinel is in this cell's log (the contract really entered the prompt) AND the cell carries a non-empty accepted
+# snapshot `<log>.promises.tsv` (the set its answers are paired against). Never the env var.
+_promise_armed() {
+  grep -qE '^[[:space:]]*BREADTH-PROMISES\|' "$1" 2>/dev/null && [ -s "$1.promises.tsv" ]
+}
+
+# _ptrace_lines <log> — the whitespace-trimmed `PTRACE|` lines of one cell log, in LOG ORDER (the first well-formed
+# answer of an id is the one read). `^[[:space:]]*`-anchored like every model-emitted token.
+_ptrace_lines() {
+  [ -f "$1" ] || return 0
+  grep -E '^[[:space:]]*PTRACE\|' "$1" 2>/dev/null | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' || true
+}
+
+# _promise_ids <log> — the accepted promise numbers this cell was handed (column 1 of the snapshot), ascending.
+_promise_ids() {
+  [ -s "$1.promises.tsv" ] || return 0
+  cut -f1 "$1.promises.tsv" | grep -E '^[0-9]+$' | sort -n -u || true
+}
+
+# _promise_subject <log> <k> / _promise_statement <log> <k> — the snapshot's subject / statement of promise #k.
+_promise_subject() {
+  awk -F'\t' -v k="$2" '$1 == k { print $2; exit }' "$1.promises.tsv" 2>/dev/null || true
+}
+_promise_statement() {
+  awk -F'\t' -v k="$2" '$1 == k { print $5; exit }' "$1.promises.tsv" 2>/dev/null || true
+}
+
+# _ptrace_for <log> <k> — the FIRST WELL-FORMED answer line (log order) carrying #k, or nothing. Well-formed: field 2
+# is `#<digits>`, field 3 is `held` or `broken` (case-folded), and field 4 carries a `path:line` (held) or a location
+# whose function half _param_fn_of resolves (broken). Anything else answers nothing.
+_ptrace_for() {
+  pf_pathline_re='[A-Za-z0-9_/.-]+\.(sol|ts|js|md|json|toml|ya?ml):[0-9]+(-[0-9]+)?'
+  _ptrace_lines "$1" | while IFS= read -r pf_line; do
+    pf_id="$(printf '%s' "$pf_line" | cut -d'|' -f2 | sed 's/[[:space:]]//g')"
+    [ "$pf_id" = "#$2" ] || continue
+    pf_v="$(printf '%s' "$pf_line" | cut -d'|' -f3 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')"
+    pf_f4="$(printf '%s' "$pf_line" | cut -d'|' -f4)"
+    case "$pf_v" in
+      held)   printf '%s\n' "$pf_f4" | grep -Eq "$pf_pathline_re" || continue ;;
+      broken) [ -n "$(_param_fn_of "$pf_f4")" ] || continue ;;
+      *)      continue ;;
+    esac
+    printf '%s\n' "$pf_line"
+    break
+  done
+}
+
+# _promise_unnumbered <log> — how many DISTINCT PTRACE lines carry no `#<digits>` id: each answers nothing and counts
+# toward the unanswered shortfall (P1) even though there is no id to name.
+_promise_unnumbered() {
+  _ptrace_lines "$1" | sort -u | grep -vE '^PTRACE\|[[:space:]]*#[0-9]+[[:space:]]*\|' | _count_stdin
+}
+
+# _promise_orphans <log> — how many distinct PTRACE ids name NO promise this cell was handed: counted
+# (`ptrace_orphans`), never a discharge.
+_promise_orphans() {
+  po_ids=" $(_promise_ids "$1" | tr '\n' ' ')"
+  _ptrace_lines "$1" | _ids_of_lines | while IFS= read -r po_k; do
+    case "$po_ids" in *" $po_k "*) ;; *) printf '%s\n' "$po_k" ;; esac
+  done | _count_stdin
+}
+
+# _promise_held_ok <ptrace-line> <subject> [root] — THE HELD CITATION CONTRACT (the _param_bound_ok shape). Returns 0
+# when the `held` answer really cites a check that keeps the promise, else prints ONE failure id and returns 1:
+#   held-cite-missing       no path:line in field 4
+#   held-cite-unresolved    an absolute path, a `..` segment, a > b or a line 0 — and (with a root) a file that is not
+#                           under it or a range outside the file
+#   held-cite-deploy        the cited path is under script/ scripts/ deploy/ broadcast/
+#   held-cite-out-of-scope  the cited path is under test/ tests/ mocks/ (vendored lib/ is allowed: a library check the
+#                           target calls can keep a promise)
+#   held-cite-too-wide      the cited range is longer than 40 lines (promise-gate.py's CITE_MAX_LINES)
+#   held-not-a-check        the cited range holds none of _param_bound_ok's check tokens and no `only…`/`when…`
+#                           modifier invocation (with or without arguments)
+#   held-names-other        the cited range does not name the subject (the cite-names-other rule; a function
+#                           header in the range counts — the check lives in the subject's own body)
+#   held-ungrounded         the prose (fields 5..N) names no identifier of the cited range (the #2261 READ rule,
+#                           _fcov_read_grounded, keywords excluded)
+#   held-deployed-state     the answer rests on deployed-state wording (pb_admit_re)
+# The path regex is byte-identical to _param_bound_ok's pb_pathline_re and promise-gate.py's PB_PATHLINE_RE
+# (demo-breadth-promises.sh pins all three). An EMPTY root is documented behaviour, not a gap: the check is then
+# citation-SHAPE only, exactly like _param_bound_ok's. Self-contained: every regex lives HERE.
+_promise_held_ok() {
+  ph_line="$1"; ph_subject="$2"; ph_root="${3:-}"
+  ph_pathline_re='[A-Za-z0-9_/.-]+\.(sol|ts|js|md|json|toml|ya?ml):[0-9]+(-[0-9]+)?'
+  ph_check_re='require|revert|assert|(^|[^A-Za-z0-9_])if[[:space:]]*\(|(^|[^A-Za-z0-9])_?(min|max)[[:space:]]*\(|clamp|allowed|allowlist|whitelist|supported|valid'
+  ph_mod_re='(^|[^A-Za-z0-9_])(only|when)[A-Z_][A-Za-z0-9_]*'
+  ph_deploy_re='(^|/)(script|scripts|deploy|broadcast)/'
+  ph_scope_re='(^|/)(test|tests|mocks)/'
+  ph_admit_re='ONCHAIN|@block|as deployed|currently deployed|as shipped|shipped (market|config|deployment)|mainnet|live market'
+  ph_stop=' abstract address anonymous assembly assert bool break byte bytes calldata catch constant constructor continue contract delete else emit enum error event external fallback false function immutable import indexed interface internal library mapping memory modifier override payable pragma private public pure receive require return returns revert storage string struct super this true try type unchecked uint using view virtual while msg sender value block timestamp number the and for not with from that are was this '
+  ph_f4="$(printf '%s' "$ph_line" | cut -d'|' -f4)"
+  ph_prose="$(printf '%s' "$ph_line" | cut -d'|' -f5-)"
+  ph_cite="$(printf '%s' "$ph_f4" | grep -oE "$ph_pathline_re" | head -1 || true)"
+  [ -n "$ph_cite" ] || { printf 'held-cite-missing\n'; return 1; }
+  ph_f="${ph_cite%%:*}"
+  ph_r="${ph_cite#*:}"
+  case "$ph_r" in *-*) ph_a="${ph_r%-*}"; ph_b="${ph_r#*-}" ;; *) ph_a="$ph_r"; ph_b="$ph_r" ;; esac
+  case "$ph_f" in /*|*..*) printf 'held-cite-unresolved\n'; return 1 ;; esac
+  if [ "$ph_a" -lt 1 ] || [ "$ph_a" -gt "$ph_b" ]; then printf 'held-cite-unresolved\n'; return 1; fi
+  if printf '%s' "$ph_f" | grep -Eq "$ph_deploy_re"; then printf 'held-cite-deploy\n'; return 1; fi
+  if printf '%s' "$ph_f" | grep -Eq "$ph_scope_re"; then printf 'held-cite-out-of-scope\n'; return 1; fi
+  if [ $((ph_b - ph_a + 1)) -gt 40 ]; then printf 'held-cite-too-wide\n'; return 1; fi
+  if [ -n "$ph_root" ]; then
+    [ -f "$ph_root/$ph_f" ] || { printf 'held-cite-unresolved\n'; return 1; }
+    ph_n="$(wc -l < "$ph_root/$ph_f" | tr -d ' ')"
+    case "$ph_n" in ''|*[!0-9]*) ph_n=0 ;; esac
+    if [ -n "$(tail -c 1 "$ph_root/$ph_f" 2>/dev/null)" ]; then ph_n=$((ph_n + 1)); fi
+    [ "$ph_b" -le "$ph_n" ] || { printf 'held-cite-unresolved\n'; return 1; }
+    ph_range="$(sed -n "${ph_a},${ph_b}p" "$ph_root/$ph_f" 2>/dev/null || true)"
+    if ! printf '%s\n' "$ph_range" | grep -Eqi "$ph_check_re" && ! printf '%s\n' "$ph_range" | grep -Eq "$ph_mod_re"; then
+      printf 'held-not-a-check\n'; return 1
+    fi
+    ph_bare="$(printf '%s' "$ph_subject" | sed 's/^_*//' | tr -cd 'A-Za-z0-9_')"
+    if [ -z "$ph_bare" ] || ! printf '%s\n' "$ph_range" | grep -Eq "(^|[^A-Za-z0-9_\$])_*${ph_bare}([^A-Za-z0-9_\$]|\$)"; then
+      printf 'held-names-other\n'; return 1
+    fi
+    ph_ids="$(printf '%s\n' "$ph_range" | grep -oE '[A-Za-z_][A-Za-z0-9_]*' | awk -v stop="$ph_stop" '
+      length($0) >= 3 && index(stop, " " $0 " ") == 0 && !seen[$0]++ { o = (o == "" ? $0 : o " " $0) } END { print o }')"
+    if ! _fcov_read_grounded "$ph_prose" "${ph_ids:--}"; then printf 'held-ungrounded\n'; return 1; fi
+  fi
+  if printf '%s' "$ph_f4|$ph_prose" | grep -Eqi "$ph_admit_re"; then printf 'held-deployed-state\n'; return 1; fi
+  return 0
+}
+
+# _promise_requirement <failure-id> — the ONE table of re-ask phrases, so the driver can never ask for something the
+# prompt never defined. demo-breadth-promises.sh pins these phrases against hunter.ag's breadth_promises_block() in
+# BOTH directions (every phrase is in the block, every failure id the decider prints has a phrase).
+_promise_requirement() {
+  case "$1" in
+    held-cite-missing)      printf '%s\n' 'cite the path:line of the check that keeps it, in code you were given' ;;
+    held-cite-unresolved)   printf '%s\n' 'the cited path:line is not in code you were given' ;;
+    held-cite-deploy)       printf '%s\n' 'a deployment script keeps nothing — cite the check in code you were given' ;;
+    held-cite-out-of-scope) printf '%s\n' 'a test or a mock keeps nothing — cite the check in code you were given' ;;
+    held-cite-too-wide)     printf '%s\n' 'cite at most 40 lines' ;;
+    held-not-a-check)       printf '%s\n' 'the cited lines do not CHECK anything — cite a require/revert/assert, a conditional, a min/max/clamp, an allowlist or validity lookup, or a modifier' ;;
+    held-names-other)       printf '%s\n' "the cited lines do not NAME the promise's subject" ;;
+    held-ungrounded)        printf '%s\n' 'your last field must name something that is literally in the cited lines' ;;
+    held-deployed-state)    printf '%s\n' 'a deployed value keeps nothing — the question is what the code ADMITS' ;;
+    *)                      printf '%s\n' 'cite a check that keeps the promise, or answer it broken' ;;
+  esac
+}
+
+# _promise_discharge <log> <k> <fn> <subject> — how an OPEN `broken` answer was answered: `candidate` when a MODEL
+# CANDIDATE| record at the same function names the subject or `#k`, else `dismiss` when a DISMISS| line at that
+# function carries evidence (fields 4..N) naming it, else `open`. A DISMISS discharges the LEAD only; whether its
+# ground holds is the unchanged rubric + evidence gate's call (with its own re-ask and promotion).
+_promise_discharge() {
+  pdc_log="$1"; pdc_k="$2"; pdc_fn="$3"; pdc_subj="$4"
+  if [ -n "$pdc_fn" ]; then
+    while IFS= read -r pdc_c; do
+      [ -n "$pdc_c" ] || continue
+      pdc_cl="$(printf '%s' "$pdc_c" | sed 's/^.*\(CANDIDATE|\)/\1/' | cut -d'|' -f2)"
+      [ "$(_param_fn_of "$pdc_cl")" = "$pdc_fn" ] || continue
+      if _param_mentions "$pdc_c" "$pdc_subj" "$pdc_k"; then printf 'candidate\n'; return 0; fi
+    done <<PDCEOF
+$(_join_wrapped_candidates "$pdc_log" 2>/dev/null | grep -v '^[[:space:]]*BLACKBOARD-' || true)
+PDCEOF
+    while IFS= read -r pdc_d; do
+      [ -n "$pdc_d" ] || continue
+      [ "$(_param_fn_of "$(printf '%s' "$pdc_d" | cut -d'|' -f2)")" = "$pdc_fn" ] || continue
+      if _param_mentions "$(printf '%s' "$pdc_d" | cut -d'|' -f4-)" "$pdc_subj" "$pdc_k"; then printf 'dismiss\n'; return 0; fi
+    done <<PDCEOF
+$(_dismiss_lines "$pdc_log")
+PDCEOF
+  fi
+  printf 'open\n'
+}
+
+# _promise_rows <log> [root] — the per-promise record of an ARMED cell, one TSV row per accepted id (ascending):
+#   <k> <subject> <held|broken|demoted:<fail-id>|unanswered> <cite-or-location> <candidate|dismiss|open|n/a>
+# The first well-formed answer of an id (log order) is the one read. A `held` answer that FAILS the citation contract
+# is DEMOTED: it stays open for the re-ask and is never promoted (only an explicit `broken` is a lead). This is what
+# scrape_cell_log writes to `<log>.promise-trace.tsv`.
+_promise_rows() {
+  prw_log="$1"; prw_root="${2:-}"
+  [ -f "$prw_log" ] || return 0
+  _promise_armed "$prw_log" || return 0
+  for prw_k in $(_promise_ids "$prw_log"); do
+    prw_subj="$(_promise_subject "$prw_log" "$prw_k")"
+    prw_tr="$(_ptrace_for "$prw_log" "$prw_k")"
+    prw_loc="-"; prw_disc="n/a"
+    if [ -z "$prw_tr" ]; then
+      prw_st="unanswered"
+    else
+      prw_loc="$(printf '%s' "$prw_tr" | cut -d'|' -f4 | tr '\t' ' ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+      if [ "$(printf '%s' "$prw_tr" | cut -d'|' -f3 | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | tr '[:upper:]' '[:lower:]')" = "broken" ]; then
+        prw_st="broken"
+        prw_disc="$(_promise_discharge "$prw_log" "$prw_k" "$(_param_fn_of "$prw_loc")" "$prw_subj")"
+      else
+        prw_fail=""
+        if prw_fail="$(_promise_held_ok "$prw_tr" "$prw_subj" "$prw_root")"; then prw_st="held"; else prw_st="demoted:${prw_fail:-unknown}"; fi
+      fi
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\n' "$prw_k" "$prw_subj" "$prw_st" "${prw_loc:--}" "$prw_disc"
+  done
+}
+
+# _promise_open_leads <log> [root] — P3: the rows answered `broken` whose discharge is `open`. Armed ONLY when the log
+# ALSO carries the `SEVERITY-RUBRIC|` sentinel (#2264 STOP-1 decision 2): the lead rule points at the DISMISS grammar.
+_promise_open_leads() {
+  pol2_log="$1"; pol2_root="${2:-}"
+  [ -f "$pol2_log" ] || return 0
+  _promise_armed "$pol2_log" || return 0
+  grep -qE '^[[:space:]]*SEVERITY-RUBRIC\|' "$pol2_log" 2>/dev/null || return 0
+  _promise_rows "$pol2_log" "$pol2_root" | awk -F'\t' '$3 == "broken" && $5 == "open"'
+}
+
+# _promise_gap <log> [root] — the promise shortfall of ONE cell log as a single integer, P1 + P2 + P3:
+#   P1 unanswered — an accepted id with no well-formed answer, plus every un-numbered PTRACE line;
+#   P2 demoted    — a `held` answer that fails the citation contract;
+#   P3 open lead  — a `broken` answer with no CANDIDATE and no DISMISS naming it (rubric-ON cells only).
+# Prints 0 unless the cell is ARMED, so the gate is inert by construction whenever no promise was handed in.
+_promise_gap() {
+  pg_log="$1"; pg_root="${2:-}"
+  if [ ! -f "$pg_log" ] || ! _promise_armed "$pg_log"; then printf '0\n'; return 0; fi
+  pg_rows="$(_promise_rows "$pg_log" "$pg_root")"
+  pg_p1=$(( $(printf '%s\n' "$pg_rows" | awk -F'\t' '$3 == "unanswered"' | _count_stdin) + $(_promise_unnumbered "$pg_log") ))
+  pg_p2="$(printf '%s\n' "$pg_rows" | awk -F'\t' '$3 ~ /^demoted:/' | _count_stdin)"
+  pg_p3=0
+  if grep -qE '^[[:space:]]*SEVERITY-RUBRIC\|' "$pg_log" 2>/dev/null; then
+    pg_p3="$(printf '%s\n' "$pg_rows" | awk -F'\t' '$3 == "broken" && $5 == "open"' | _count_stdin)"
+  fi
+  printf '%s\n' "$((pg_p1 + pg_p2 + pg_p3))"
+}
+
+# _promise_reask_needed <log> [root] — the RE-ASK predicate, with the four guards of _param_reask_needed in the same
+# order: a `.novalid`/`.timeout` cell already owns its FAILED reason; an unarmed cell has nothing to gate; a cell with
+# a model CANDIDATE| is never re-asked (a re-ask could lose the lead); finally the arithmetic.
+_promise_reask_needed() {
+  prk_log="$1"; prk_root="${2:-}"
+  if [ ! -f "$prk_log" ]; then return 1; fi
+  if [ -f "$prk_log.novalid" ] || [ -f "$prk_log.timeout" ]; then return 1; fi
+  _promise_armed "$prk_log" || return 1
+  if grep -v '^BLACKBOARD-' "$prk_log" 2>/dev/null | grep -q 'CANDIDATE|'; then return 1; fi
+  [ "$(_promise_gap "$prk_log" "$prk_root")" -gt 0 ]
+}
+
+# _promise_open_items <log> [root] — what the re-ask names (PTRACE_REASK_IDS), `; `-joined, each part only when
+# non-empty:
+#   unanswered: #2, #5[, N un-numbered PTRACE line(s)] ; not kept by the cited line: #3 (<requirement>) ;
+#   open leads: #4 at <file:function>
+# It names only what the cell itself wrote; the requirement phrases come from _promise_requirement.
+_promise_open_items() {
+  poi2_log="$1"; poi2_root="${2:-}"
+  [ -f "$poi2_log" ] || return 0
+  _promise_armed "$poi2_log" || return 0
+  poi2_rows="$(_promise_rows "$poi2_log" "$poi2_root")"
+  poi2_out=""
+  poi2_una="$(printf '%s\n' "$poi2_rows" | awk -F'\t' '$3 == "unanswered" { o = (o == "" ? "#" $1 : o ", #" $1) } END { print o }')"
+  poi2_unn="$(_promise_unnumbered "$poi2_log")"
+  if [ "$poi2_unn" -gt 0 ]; then poi2_una="${poi2_una:+$poi2_una, }$poi2_unn un-numbered PTRACE line(s)"; fi
+  [ -z "$poi2_una" ] || poi2_out="unanswered: $poi2_una"
+  poi2_dem=""
+  while IFS='	' read -r poi2_k _ poi2_st _ _; do
+    case "$poi2_st" in
+      demoted:*) poi2_dem="${poi2_dem:+$poi2_dem, }#$poi2_k ($(_promise_requirement "${poi2_st#demoted:}"))" ;;
+    esac
+  done <<POI2EOF
+$poi2_rows
+POI2EOF
+  [ -z "$poi2_dem" ] || poi2_out="${poi2_out:+$poi2_out; }not kept by the cited line: $poi2_dem"
+  poi2_lead="$(_promise_open_leads "$poi2_log" "$poi2_root" | awk -F'\t' '{ o = (o == "" ? "#" $1 " at " $4 : o ", #" $1 " at " $4) } END { print o }')"
+  [ -z "$poi2_lead" ] || poi2_out="${poi2_out:+$poi2_out; }open leads: $poi2_lead"
+  printf '%s\n' "$poi2_out"
+}
+
+# _promise_promote <log> <class> <files> [root] — the PROMOTION half (#2264 STOP-1 decision 2), run on the FINAL log
+# after _rubric_promote and _param_promote: every P3 row still open becomes ONE tier-1 `Medium` candidate per resolved
+# location in "<log>.promise-promoted":
+#   PROMISE-PROMOTED|<loc>|<#k,#m>|<subjects>
+#   CANDIDATE|<loc>|class=<cls>|Medium|promise #k (<subject>: <statement>) is broken at <fn>: <the cell's own text>|PoC sketch: ...
+# Guards: a `.novalid`/`.timeout` cell and an unarmed cell promote nothing; the lead half is rubric-gated inside
+# _promise_open_leads. Unlike the parameter gate it ALSO runs in a cell that reported other candidates (decision 2) —
+# only the re-ask is guarded there. Resolution: _tier2_resolve_file + _tier2_emit_loc (the shipped validators); an
+# unresolvable location is recorded `PROMISE-DROPPED|<loc>|unresolved`, a location the rubric or parameter gate
+# already promoted `PROMISE-DROPPED|<loc>|already-promoted`, and a location already carrying a MODEL candidate is
+# discharged silently — so each location yields at most one lead across all three gates. `|` in model text becomes
+# `/`; the cell LOG is never written; the sidecar suffix does not end in `.log`; nothing is posted to the blackboard.
+_promise_promote() {
+  # A class LIST (the coverage cell's shape) contributes its FIRST id only: a lead never carries a list.
+  ppm_log="$1"; ppm_cls="${2%%,*}"; ppm_files="$(printf '%s' "$3" | tr '\n' ',')"; ppm_root="${4:-}"
+  [ -f "$ppm_log" ] || return 0
+  ppm_out="$ppm_log.promise-promoted"
+  rm -f "$ppm_out"
+  if [ -f "$ppm_log.novalid" ] || [ -f "$ppm_log.timeout" ]; then return 0; fi
+  _promise_armed "$ppm_log" || return 0
+  ppm_rows="$(_promise_open_leads "$ppm_log" "$ppm_root")"
+  [ -n "$ppm_rows" ] || return 0
+  # The locations the MODEL itself reported (resolved the same way), so a promoted lead never doubles one.
+  ppm_model=" $(_join_wrapped_candidates "$ppm_log" 2>/dev/null | grep -v '^[[:space:]]*BLACKBOARD-' \
+    | sed 's/^.*\(CANDIDATE|\)/\1/' | cut -d'|' -f2 | while IFS= read -r ppm_ml; do
+        ppm_mfn="$(_param_fn_of "$ppm_ml")"; ppm_mb="${ppm_ml%%:*}"; ppm_mb="${ppm_mb##*/}"
+        [ -n "$ppm_mfn" ] || continue
+        ppm_mp="$(_tier2_resolve_file "$ppm_mb" "$ppm_files")"
+        [ -n "$ppm_mp" ] && printf '%s:%s ' "$ppm_mp" "$ppm_mfn"
+      done)"
+  ppm_seen=" "
+  while IFS='	' read -r ppm_k ppm_subj _ ppm_loc _; do
+    [ -n "$ppm_k" ] || continue
+    ppm_fn="$(_param_fn_of "$ppm_loc")"
+    ppm_base="${ppm_loc%%:*}"; ppm_base="${ppm_base##*/}"
+    ppm_path=""
+    case "$ppm_loc" in *:*) ppm_path="$(_tier2_resolve_file "$ppm_base" "$ppm_files")" ;; esac
+    ppm_final=""
+    if [ -n "$ppm_path" ] && [ -n "$ppm_fn" ]; then
+      ppm_row="$(_tier2_emit_loc "$ppm_path:$ppm_fn" promise broken || true)"
+      ppm_final="${ppm_row%%	*}"
+    fi
+    if [ -z "$ppm_final" ]; then
+      printf 'PROMISE-DROPPED|%s|unresolved\n' "$(printf '%s' "$ppm_loc" | tr '|' '/')" >> "$ppm_out"
+      continue
+    fi
+    case "$ppm_seen" in *" $ppm_final "*) continue ;; esac
+    ppm_seen="$ppm_seen$ppm_final "
+    if grep -qF "RUBRIC-PROMOTED|$ppm_final|" "$ppm_log.rubric-promoted" 2>/dev/null \
+       || grep -qF "PARAM-PROMOTED|$ppm_final|" "$ppm_log.param-promoted" 2>/dev/null; then
+      printf 'PROMISE-DROPPED|%s|already-promoted\n' "$ppm_final" >> "$ppm_out"
+      continue
+    fi
+    case "$ppm_model" in *" $ppm_final "*) continue ;; esac
+    # Every open lead at this SAME resolved location, for the provenance line (ids ascending, as _promise_rows is).
+    ppm_ids=""; ppm_subjs=""
+    while IFS='	' read -r ppq_k ppq_subj _ ppq_loc _; do
+      [ -n "$ppq_k" ] || continue
+      [ "$(_param_fn_of "$ppq_loc")" = "$ppm_fn" ] || continue
+      ppq_base="${ppq_loc%%:*}"; ppq_base="${ppq_base##*/}"
+      [ "$(_tier2_resolve_file "$ppq_base" "$ppm_files")" = "$ppm_path" ] || continue
+      ppm_ids="${ppm_ids:+$ppm_ids,}#$ppq_k"
+      ppm_subjs="${ppm_subjs:+$ppm_subjs, }$ppq_subj"
+    done <<PPQEOF
+$ppm_rows
+PPQEOF
+    ppm_stmt="$(_promise_statement "$ppm_log" "$ppm_k")"
+    ppm_seq="$(_ptrace_for "$ppm_log" "$ppm_k" | cut -d'|' -f5-)"
+    ppm_why="promise #$ppm_k ($ppm_subj: $ppm_stmt) is broken at $ppm_fn: ${ppm_seq:-the call sequence the cell traced}"
+    ppm_why="$(printf '%s' "$ppm_why" | tr '|' '/' | sed 's/[[:space:]][[:space:]]*/ /g; s/^ *//; s/ *$//')"
+    printf 'PROMISE-PROMOTED|%s|%s|%s\n' "$ppm_final" "$ppm_ids" "$(printf '%s' "$ppm_subjs" | tr '|' '/')" >> "$ppm_out"
+    printf 'CANDIDATE|%s|class=%s|Medium|%s|PoC sketch: drive the call sequence above from one or more accounts and assert the promised property fails\n' \
+      "$ppm_final" "$ppm_cls" "$ppm_why" >> "$ppm_out"
+  done <<PPMEOF
+$ppm_rows
+PPMEOF
+}
+
+# _promise_promoted_candidates <log> — the promoted `CANDIDATE|` records of one cell, or nothing: the ONE reader through
+# which a promise-promoted lead enters the pipeline (_cell_candidates unions it at both scrape sites).
+_promise_promoted_candidates() {
+  [ -s "$1.promise-promoted" ] || return 0
+  grep -E '^CANDIDATE\|' "$1.promise-promoted" 2>/dev/null || true
+}
+
+# _promise_promoted_count <log> / _promise_dropped_count <log> — how many locations this cell's promise gate promoted /
+# did NOT promote (unresolvable, or already promoted by the rubric or parameter gate). 0 without the sidecar.
+_promise_promoted_count() {
+  ppc2_n="$(grep -cE '^PROMISE-PROMOTED\|' "$1.promise-promoted" 2>/dev/null || true)"
+  case "$ppc2_n" in ''|*[!0-9]*) ppc2_n=0 ;; esac
+  printf '%s\n' "$ppc2_n"
+}
+_promise_dropped_count() {
+  pdc2_n="$(grep -cE '^PROMISE-DROPPED\|' "$1.promise-promoted" 2>/dev/null || true)"
+  case "$pdc2_n" in ''|*[!0-9]*) pdc2_n=0 ;; esac
+  printf '%s\n' "$pdc2_n"
+}
+
+# _bp_line_rollup <accepted.tsv> <log>... — the per-line readout `run/promises_<slug>.tsv`: the accepted TSV
+# (`k subject kind kind_keyword statement cite` — kind is for reporting only, never prompt-visible) plus
+#   held_cells broken_cells unanswered_cells promoted
+# counted over the given FINAL breadth logs' `<log>.promise-trace.tsv` sidecars and `.promise-promoted` records
+# (never an `*-attempt-N` file: the caller lists exact names only).
+_bp_line_rollup() {
+  blr_acc="$1"; shift
+  [ -s "$blr_acc" ] || return 0
+  while IFS='	' read -r blr_k blr_rest; do
+    case "$blr_k" in ''|*[!0-9]*) continue ;; esac
+    blr_h=0; blr_b=0; blr_u=0; blr_p=0
+    for blr_log in "$@"; do
+      blr_st="$(awk -F'\t' -v k="$blr_k" '$1 == k { print $3; exit }' "$blr_log.promise-trace.tsv" 2>/dev/null || true)"
+      case "$blr_st" in
+        held)       blr_h=$((blr_h + 1)) ;;
+        broken)     blr_b=$((blr_b + 1)) ;;
+        unanswered) blr_u=$((blr_u + 1)) ;;
+      esac
+      if grep -E '^PROMISE-PROMOTED\|' "$blr_log.promise-promoted" 2>/dev/null | cut -d'|' -f3 \
+           | grep -Eq "(^|,)#${blr_k}(,|\$)"; then
+        blr_p=$((blr_p + 1))
+      fi
+    done
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$blr_k" "$blr_rest" "$blr_h" "$blr_b" "$blr_u" "$blr_p"
+  done < "$blr_acc"
+}
+
+# _bp_record_json <bp-lines row> <stem> <log>... — ONE `breadth_promises[]` object for a manifest line:
+#   {"subsystem","files","state","listing_bytes","emitted","accepted","dropped","off_payload","overcap",
+#    "accepted_ids":[...],"cells","held","broken","unanswered","promoted"}
+# `cells` counts the given FINAL breadth logs that were ARMED; held/broken/unanswered sum their promise-trace rows,
+# promoted their PROMISE-PROMOTED lines.
+_bp_record_json() {
+  brj_row="$1"; brj_stem="$2"; shift 2
+  # cut, never `IFS=<tab> read`: a tab is IFS whitespace, so an EMPTY field (a class-less line) would shift the rest.
+  brj_subsys="$(printf '%s' "$brj_row" | cut -f1)"; brj_files="$(printf '%s' "$brj_row" | cut -f3)"
+  brj_state="$(printf '%s' "$brj_row" | cut -f5)"; brj_bytes="$(printf '%s' "$brj_row" | cut -f6)"
+  brj_em="$(printf '%s' "$brj_row" | cut -f7)"; brj_acc="$(printf '%s' "$brj_row" | cut -f8)"
+  brj_drop="$(printf '%s' "$brj_row" | cut -f9)"; brj_off="$(printf '%s' "$brj_row" | cut -f10)"
+  brj_over="$(printf '%s' "$brj_row" | cut -f11)"
+  brj_ids=""
+  if [ "$brj_state" = "accepted" ] && [ -s "$brj_stem.accepted.tsv" ]; then
+    brj_ids="$(cut -f1 "$brj_stem.accepted.tsv" | grep -E '^[0-9]+$' | paste -sd, - || true)"
+  fi
+  brj_cells=0; brj_h=0; brj_b=0; brj_u=0; brj_p=0
+  for brj_log in "$@"; do
+    _promise_armed "$brj_log" || continue
+    brj_cells=$((brj_cells + 1))
+    brj_h=$((brj_h + $(awk -F'\t' '$3 == "held"' "$brj_log.promise-trace.tsv" 2>/dev/null | _count_stdin)))
+    brj_b=$((brj_b + $(awk -F'\t' '$3 == "broken"' "$brj_log.promise-trace.tsv" 2>/dev/null | _count_stdin)))
+    brj_u=$((brj_u + $(awk -F'\t' '$3 == "unanswered"' "$brj_log.promise-trace.tsv" 2>/dev/null | _count_stdin)))
+    brj_p=$((brj_p + $(_promise_promoted_count "$brj_log")))
+  done
+  printf '{"subsystem":%s,"files":%s,"state":%s,"listing_bytes":%s,"emitted":%s,"accepted":%s,"dropped":%s,"off_payload":%s,"overcap":%s,"accepted_ids":[%s],"cells":%s,"held":%s,"broken":%s,"unanswered":%s,"promoted":%s}' \
+    "$(_json_str "$brj_subsys")" "$(_json_str "$brj_files")" "$(_json_str "$brj_state")" "$(_bp_int "$brj_bytes")" \
+    "$(_bp_int "$brj_em")" "$(_bp_int "$brj_acc")" "$(_bp_int "$brj_drop")" "$(_bp_int "$brj_off")" "$(_bp_int "$brj_over")" \
+    "$brj_ids" "$brj_cells" "$brj_h" "$brj_b" "$brj_u" "$brj_p"
+}
+# --- end #2264 block ---
+
 # _accumulate_cell <subsys> <cls> <files> <log> [status] [phase] — append ONE JSON object for this cell to
 # $CELLS_JSONL (additive; feeds discovery-results.json). Never touches $REPORT. [status] defaults to "ok";
 # a #1707 no-sentinel-after-retries cell is recorded as "failed" so the JSON distinguishes it from a clean
@@ -3106,12 +3718,33 @@ _accumulate_cell() {
     ac_reads="$(_distinct_sentinel_count READ "$ac_log")"
     if [ "$ac_reads" -gt 0 ]; then ac_reads_json=",\"reads\":$ac_reads"; fi
   fi
-  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s}\n' \
+  # #2264: the breadth-promise readout keys, appended LAST (after `reads`), each ONLY when non-zero, and computed ONLY
+  # for an ARMED cell (the `BREADTH-PROMISES|` sentinel + its accepted snapshot) — so a knob-off cell, and every depth
+  # and coverage cell, keeps its exact key set and _plan_depth_cells's forward key scan is untouched.
+  ac_bp_json=""
+  if _promise_armed "$ac_log"; then
+    ac_bprows="$(_promise_rows "$ac_log" "$REPO")"
+    ac_bpn="$(_promise_ids "$ac_log" | _count_stdin)"
+    ac_bph="$(printf '%s\n' "$ac_bprows" | awk -F'\t' '$3 == "held"' | _count_stdin)"
+    ac_bpb="$(printf '%s\n' "$ac_bprows" | awk -F'\t' '$3 == "broken"' | _count_stdin)"
+    ac_bpd="$(printf '%s\n' "$ac_bprows" | awk -F'\t' '$3 ~ /^demoted:/' | _count_stdin)"
+    ac_bpu=$(( $(printf '%s\n' "$ac_bprows" | awk -F'\t' '$3 == "unanswered"' | _count_stdin) + $(_promise_unnumbered "$ac_log") ))
+    ac_bpo="$(_promise_orphans "$ac_log")"
+    ac_bpp="$(_promise_promoted_count "$ac_log")"
+    if [ "$ac_bpn" -gt 0 ]; then ac_bp_json="$ac_bp_json,\"promises\":$ac_bpn"; fi
+    if [ "$ac_bph" -gt 0 ]; then ac_bp_json="$ac_bp_json,\"promises_held\":$ac_bph"; fi
+    if [ "$ac_bpb" -gt 0 ]; then ac_bp_json="$ac_bp_json,\"promises_broken\":$ac_bpb"; fi
+    if [ "$ac_bpd" -gt 0 ]; then ac_bp_json="$ac_bp_json,\"promise_held_demoted\":$ac_bpd"; fi
+    if [ "$ac_bpu" -gt 0 ]; then ac_bp_json="$ac_bp_json,\"promises_unanswered\":$ac_bpu"; fi
+    if [ "$ac_bpo" -gt 0 ]; then ac_bp_json="$ac_bp_json,\"ptrace_orphans\":$ac_bpo"; fi
+    if [ "$ac_bpp" -gt 0 ]; then ac_bp_json="$ac_bp_json,\"promise_promoted\":$ac_bpp"; fi
+  fi
+  printf '{"subsystem":%s,"class":%s,"files":%s,"status":%s,"candidates":[%s],"coordination":[%s]%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s}\n' \
     "$(_json_str "$ac_subsys")" "$(_json_str "$ac_cls")" "$(_json_str "$ac_files")" \
     "$(_json_str "$ac_status")" "$ac_cands" "$ac_coord" "$ac_phase_json" "$ac_appendix_json" \
     "$ac_opchecks_json" "$ac_traces_json" "$ac_untraced_json" "$ac_unresolved_json" \
     "$ac_rule_json" "$ac_orphans_json" "$ac_untraced_ids_json" "$ac_uncited_ids_json" "$ac_unresolved_ids_json" \
-    "$ac_dismissals_json" "$ac_insuff_json" "$ac_promoted_json" "$ac_contract_json" "$ac_param_json" "$ac_reads_json" >> "$CELLS_JSONL"
+    "$ac_dismissals_json" "$ac_insuff_json" "$ac_promoted_json" "$ac_contract_json" "$ac_param_json" "$ac_reads_json" "$ac_bp_json" >> "$CELLS_JSONL"
   # #2217: the tier-2 carry, appended to the RUN-scoped accumulator AFTER the cell object is written and
   # gated on the feature flag — so an OFF run does no extra work, writes no extra file, and emits the same
   # bytes it did before #2217. _accumulate_cell is called in MANIFEST order on the serial, parallel
@@ -3154,11 +3787,24 @@ _appendix_for() {
 # #2256: param 10 is the `rel:fn, rel:fn` list of the ONE coverage cell of a zone line (COVERAGE_REASK_FNS), EMPTY
 # on every breadth and depth cell, so their prompts are unchanged. On the coverage cell <cls> is the line's class
 # LIST, which is why both promotion calls below pass only its FIRST id (a no-op for a single class).
+# #2264: param 11 is the zone line's promise STEM (`$RUN/promises/<slug>`) — set ONLY on a BREADTH cell of a line whose
+# extraction accepted at least one promise, EMPTY on every depth, coverage and knob-OFF call, so those prompts are
+# unchanged. With it the accepted TSV is snapshotted to "<log>.promises.tsv" (what every gate helper pairs against)
+# before the first attempt and the cell is handed the ACCEPTED block through BREADTH_PROMISE_FILE.
 run_cell() {
   rc_dir="$1"; rc_subsys="$2"; rc_cls="$3"; rc_in_scope="$4"; rc_log="$5"
   rc_depth_target="${6:-}"; rc_depth_known="${7:-}"
   rc_appendix_file="${8:-}"; rc_appendix_base="${9:-}"
   rc_cov_fns="${10:-}"
+  rc_bp_stem="${11:-}"
+  # #2264: the ACCEPTED block this cell settles (empty => hunter.ag renders nothing) and the open promise items the
+  # PROMISE re-ask names (EMPTY on every first attempt, so the first prompt is unchanged).
+  rc_bp_file=""
+  rc_ptrace_ids=""
+  if [ -n "$rc_bp_stem" ] && [ -s "$rc_bp_stem.accepted.tsv" ] && [ -s "$rc_bp_stem.block" ]; then
+    cp "$rc_bp_stem.accepted.tsv" "$rc_log.promises.tsv"
+    rc_bp_file="$rc_bp_stem.block"
+  fi
   # #2223: the ids the follow-through re-ask must name. EMPTY on the first attempt (and on every count-rule
   # cell), so the first prompt — and every lens-OFF prompt — is byte-identical to the pre-#2223 one.
   rc_reask_ids=""
@@ -3209,6 +3855,8 @@ run_cell() {
         PARAM_REASK_ITEMS="$rc_param_items" \
         FUNCTION_COVERAGE="${FUNCTION_COVERAGE:-}" \
         COVERAGE_REASK_FNS="$rc_cov_fns" \
+        BREADTH_PROMISE_FILE="$rc_bp_file" \
+        PTRACE_REASK_IDS="$rc_ptrace_ids" \
         EXTERNAL_RESOLVER="${EXTERNAL_RESOLVER:+$rc_dir/resolve-external.sh}" \
         EXTERNAL_CACHE="$EXTERNAL_CACHE" \
         EXTERNAL_BUDGET_STATE="$rc_ext_state" \
@@ -3275,6 +3923,23 @@ run_cell() {
     rc_param=$((rc_param + 1))
   done
   rc_param_items=""
+  # #2264 — THE BREADTH PROMISE GATE, a fourth bounded re-ask with the same shape. It runs AFTER the parameter loop and
+  # BEFORE the ground gate below, so a DISMISS the cell writes in answer to this re-ask is then judged by the UNCHANGED
+  # rubric + evidence gate. A promise-armed reply (the `BREADTH-PROMISES|` sentinel + the snapshot) with no candidate and
+  # an open promise (an unanswered number, a held answer whose citation fails the contract, or — inside a rubric-ON cell
+  # — a broken answer with neither a CANDIDATE nor a DISMISS naming it) is re-asked up to DF_PROMISE_MAX_REASKS times
+  # (default 1) NAMING the open items through PTRACE_REASK_IDS. The superseded attempt is kept as
+  # "$rc_log.promise-attempt-N" (a suffix NOT ending in `.log`). This gate NEVER fails a cell.
+  rm -f "$rc_log.promise-promoted"
+  rc_promise=1
+  while [ "$rc_promise" -le "$DF_PROMISE_MAX_REASKS" ] && _promise_reask_needed "$rc_log" "$REPO"; do
+    rc_ptrace_ids="$(_promise_open_items "$rc_log" "$REPO")"
+    echo "run-discovery.sh:   ↳ breadth-promises: $rc_cls/'$rc_subsys' left $(_promise_gap "$rc_log" "$REPO") promise item(s) open${rc_ptrace_ids:+ ($rc_ptrace_ids)} — re-asking ($rc_promise/$DF_PROMISE_MAX_REASKS)" >&2
+    mv -f "$rc_log" "$rc_log.promise-attempt-$rc_promise" 2>/dev/null || true
+    df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-discovery.sh: $rc_cls/'$rc_subsys' (promise re-ask $rc_promise)" "$rc_log" hunter "" _rc_attempt || true
+    rc_promise=$((rc_promise + 1))
+  done
+  rc_ptrace_ids=""
   # #2245 iteration 2 — THE DISMISSAL-GROUND GATE, a SECOND bounded re-ask with the same shape as the
   # follow-through one above. A reply that carries the rubric sentinel, no candidate, and at least one location
   # dismissed on a ground the closed list treats as INSUFFICIENT is not a rigorous negative: it is the exact
@@ -3303,6 +3968,9 @@ run_cell() {
   # #2245 iteration 5: the parameter PROMOTION runs on the FINAL log, after the rubric promotion, so it can skip a
   # location the rubric gate already promoted. Self-guarded (sentinel, markers, model candidate, rubric sentinel).
   _param_promote "$rc_log" "${rc_cls%%,*}" "$rc_in_scope" "$REPO"
+  # #2264: the promise PROMOTION runs on the FINAL log, after both promotions above, so it can skip a location either
+  # already promoted. Self-guarded (markers, arming, and — inside _promise_open_leads — the rubric sentinel).
+  _promise_promote "$rc_log" "${rc_cls%%,*}" "$rc_in_scope" "$REPO"
 }
 
 # scrape_cell_log <subsys> <cls> <log> <files> [phase] — the (byte-identical) post-cell scrape: surface the
@@ -3316,6 +3984,11 @@ scrape_cell_log() {
   # (no `PARAM-AUDIT|` sentinel => no file). The suffix does not end in `.log`.
   if _param_audit_armed "$sc_log"; then
     _param_rows "$sc_log" "$REPO" > "$sc_log.param-audit.tsv" 2>/dev/null || true
+  fi
+  # #2264: the per-promise readout (`<k> <subject> <held|broken|demoted:<id>|unanswered> <cite-or-location>
+  # <candidate|dismiss|open|n/a>`), written for promise-ARMED cells ONLY. The suffix does not end in `.log`.
+  if _promise_armed "$sc_log"; then
+    _promise_rows "$sc_log" "$REPO" > "$sc_log.promise-trace.tsv" 2>/dev/null || true
   fi
   # #1707: a cell whose reply never produced a CANDIDATE|/SAFE sentinel after DF_AGENT_MAX_ATTEMPTS retries
   # (TUI chrome / no answer) carries a "$sc_log.novalid" marker. Do NOT treat its empty log as a rigorous
@@ -3414,6 +4087,21 @@ scrape_cell_log() {
   if [ "$sc_param_drop" -gt 0 ]; then
     echo "run-discovery.sh:   ↳ $sc_param_drop open parameter lead location(s) NOT promoted (unresolvable in this cell's file list, or already promoted by the ground gate): $sc_cls/'$sc_subsys'" >&2
   fi
+  # #2264: the breadth-promise readout, in the same voice. An open promise after the re-ask is NOT a failed cell — the
+  # gate records residuals and promotes open leads — but it is not a rigorous clean sweep either. Silent on every
+  # unarmed cell (the gap is 0 without the `BREADTH-PROMISES|` sentinel and the snapshot).
+  sc_bp_gap="$(_promise_gap "$sc_log" "$REPO")"
+  if [ "$sc_bp_gap" -gt 0 ]; then
+    echo "run-discovery.sh:   ↳ $sc_bp_gap open promise item(s): $sc_cls/'$sc_subsys' ($(_promise_open_items "$sc_log" "$REPO")); recorded per promise in ${sc_log##*/}.promise-trace.tsv" >&2
+  fi
+  sc_bp_prom="$(_promise_promoted_count "$sc_log")"
+  if [ "$sc_bp_prom" -gt 0 ]; then
+    echo "run-discovery.sh:   ↳ PROMOTED $sc_bp_prom broken-promise lead(s) to Medium candidate(s): $sc_cls/'$sc_subsys' (still judged by the refute gate and the PoC gate)" >&2
+  fi
+  sc_bp_drop="$(_promise_dropped_count "$sc_log")"
+  if [ "$sc_bp_drop" -gt 0 ]; then
+    echo "run-discovery.sh:   ↳ $sc_bp_drop broken-promise lead location(s) NOT promoted (unresolvable in this cell's file list, or already promoted by the ground or parameter gate): $sc_cls/'$sc_subsys'" >&2
+  fi
   # #1001 coordination: the hunter reads a shared BLACKBOARD before it prompts and posts every
   # CANDIDATE back to it, so a lead an EARLIER cell found steers later cells (corroborate / pivot).
   # Surface both halves of that loop to the operator and the report: BLACKBOARD-FOCUS| = THIS cell was
@@ -3438,7 +4126,8 @@ scrape_cell_log() {
   # ground gate's PROMOTION has no `CANDIDATE|` line in its own log, so without it the promoted lead would be
   # accumulated into the JSON (via _cell_candidates) and never reach $REPORT or the CANDIDATES counter.
   # #2245 iteration 5: `|| [ -s ... param-promoted ]` is load-bearing for the same reason.
-  if grep -v '^BLACKBOARD-' "$sc_log" | grep -q 'CANDIDATE|' || [ -s "$sc_log.rubric-promoted" ] || [ -s "$sc_log.param-promoted" ]; then
+  # #2264: `|| [ -s ... promise-promoted ]` too.
+  if grep -v '^BLACKBOARD-' "$sc_log" | grep -q 'CANDIDATE|' || [ -s "$sc_log.rubric-promoted" ] || [ -s "$sc_log.param-promoted" ] || [ -s "$sc_log.promise-promoted" ]; then
     while IFS= read -r LINE; do
       CAND="$(printf '%s' "$LINE" | sed 's/^.*\(CANDIDATE|\)/\1/')"
       BODY="$(printf '%s' "$CAND" | sed 's/^CANDIDATE|//; s/|/ \/ /g')"
@@ -3705,6 +4394,10 @@ elif [ "$JOBS" -le 1 ]; then
     if _fcov_enabled; then
       printf '%s\t%s\t%s\t%s\n' "$SUBSYS" "$(_fcov_class_csv "$CLS_CSV")" "$FILES_CSV" "$SLUG" >> "$RUN/fcov-lines.tsv"
     fi
+    # #2264: the zone pre-pass — ONE promise extraction per manifest line, before any of its breadth cells (knob ON
+    # only; BP_STEM stays "" otherwise, and for a line that accepted nothing, so those cells prompt as before).
+    BP_STEM=""
+    if _bp_enabled; then BP_STEM="$(_bp_prepare_line "$SUBSYS" "$FILES_CSV" "$SLUG" "$(_fcov_class_csv "$CLS_CSV")" < /dev/null)"; fi
 
     OLDIFS="$IFS"; IFS=','
     for CLS in $CLS_CSV; do
@@ -3713,7 +4406,7 @@ elif [ "$JOBS" -le 1 ]; then
       [ -n "$CLS" ] || { IFS=','; continue; }
       CELLS=$((CELLS + 1))
       CELL_LOG="$RUN/hunt_${SLUG}_${CLS}.log"
-      run_cell "$RUN" "$SUBSYS" "$CLS" "$IN_SCOPE" "$CELL_LOG" "" "" "$APXF" "$APXB"
+      run_cell "$RUN" "$SUBSYS" "$CLS" "$IN_SCOPE" "$CELL_LOG" "" "" "$APXF" "$APXB" "" "$BP_STEM"
       scrape_cell_log "$SUBSYS" "$CLS" "$CELL_LOG" "$FILES_CSV"
       IFS=','
     done
@@ -3728,6 +4421,7 @@ else
   # so the aggregated finding set is identical + independent of completion order.
   CELL_SUBSYS=() ; CELL_CLS=() ; CELL_INSCOPE=() ; CELL_FILES=() ; CELL_DIR=() ; CELL_LOGP=()
   CELL_APXF=() ; CELL_APXB=()   # #1865: the per-line appendix pair, resolved with the manifest line itself
+  CELL_BPSTEM=()                # #2264: the per-line promise stem ("" unless the line accepted a promise)
   while IFS='|' read -r SUBSYS CLS_CSV FILES_CSV || [ -n "${SUBSYS:-}" ]; do
     SUBSYS="$(printf '%s' "$SUBSYS" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     case "$SUBSYS" in ''|\#*) continue ;; esac
@@ -3745,6 +4439,10 @@ else
     if _fcov_enabled; then
       printf '%s\t%s\t%s\t%s\n' "$SUBSYS" "$(_fcov_class_csv "$CLS_CSV")" "$FILES_CSV" "$SLUG" >> "$RUN/fcov-lines.tsv"
     fi
+    # #2264: the zone pre-pass runs HERE, serially, in the expansion loop — every extraction finishes before the first
+    # cell launches, so `--jobs N` hands each cell the same block `--jobs 1` would (knob ON only).
+    BP_STEM=""
+    if _bp_enabled; then BP_STEM="$(_bp_prepare_line "$SUBSYS" "$FILES_CSV" "$SLUG" "$(_fcov_class_csv "$CLS_CSV")" < /dev/null)"; fi
     OLDIFS="$IFS"; IFS=','
     for CLS in $CLS_CSV; do
       IFS="$OLDIFS"
@@ -3754,6 +4452,7 @@ else
       CELL_SUBSYS+=("$SUBSYS") ; CELL_CLS+=("$CLS") ; CELL_INSCOPE+=("$IN_SCOPE")
       CELL_FILES+=("$FILES_CSV") ; CELL_DIR+=("$RUN/cell-${SLUG}_${CLS}") ; CELL_LOGP+=("$RUN/hunt_${SLUG}_${CLS}.log")
       CELL_APXF+=("$APXF") ; CELL_APXB+=("$APXB")
+      CELL_BPSTEM+=("$BP_STEM")
       IFS=','
     done
     IFS="$OLDIFS"
@@ -3786,7 +4485,7 @@ else
     # backgrounded run_cell subshell, where concurrent whole-file writes would race.
     case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$cdir" ;; esac
     run_cell "$cdir" "${CELL_SUBSYS[$idx]}" "${CELL_CLS[$idx]}" "${CELL_INSCOPE[$idx]}" "${CELL_LOGP[$idx]}" \
-      "" "" "${CELL_APXF[$idx]}" "${CELL_APXB[$idx]}" &
+      "" "" "${CELL_APXF[$idx]}" "${CELL_APXB[$idx]}" "" "${CELL_BPSTEM[$idx]}" &
     live=$((live + 1))
     idx=$((idx + 1))
   done
@@ -3926,6 +4625,43 @@ if _fcov_enabled; then
   fi
 fi
 
+# #2264 BREADTH PROMISES READOUT — after the breadth, depth and coverage passes, one record per manifest line the pre-pass
+# saw: the per-line rollup `run/promises_<slug>.tsv` (accepted rows + held/broken/unanswered cells + promoted), one
+# `breadth_promises[]` object and one report footer line. Counted over each line's FINAL breadth logs only (depth and
+# coverage cells carry no promises). Entirely skipped with BREADTH_PROMISES unset (the default), which keeps the
+# report, the results JSON and the banner byte-identical.
+BP_ACTIVE=0 ; BP_RECORDS="" ; BP_EXTRACTIONS=0
+BP_FOOTER="$RUN/bp-footer.txt"
+if _bp_enabled; then
+  if [ -n "$DEPTH_FROM" ]; then
+    echo "run-discovery.sh: BREADTH_PROMISES=1 is ignored under --depth-from — a depth-only re-entry hunts no breadth cell to hand promises to (#2264)" >&2
+  else
+    BP_ACTIVE=1
+    : > "$BP_FOOTER"
+    [ -f "$RUN/bp-lines.tsv" ] || : > "$RUN/bp-lines.tsv"
+    while IFS= read -r BP_ROW || [ -n "${BP_ROW:-}" ]; do
+      [ -n "$BP_ROW" ] || continue
+      BP_SUBSYS="$(printf '%s' "$BP_ROW" | cut -f1)"; BP_CLS="$(printf '%s' "$BP_ROW" | cut -f2)"
+      BP_SLUG="$(printf '%s' "$BP_ROW" | cut -f4)"; BP_STATE="$(printf '%s' "$BP_ROW" | cut -f5)"
+      BP_LOGS=()
+      while IFS= read -r BP_L; do
+        [ -n "$BP_L" ] || continue
+        BP_LOGS+=("$BP_L")
+      done < <(_fcov_breadth_logs "$RUN" "$BP_SLUG" "$BP_CLS")
+      if [ "$BP_STATE" = "accepted" ]; then
+        _bp_line_rollup "$RUN/promises/$BP_SLUG.accepted.tsv" ${BP_LOGS[@]+"${BP_LOGS[@]}"} > "$RUN/promises_${BP_SLUG}.tsv"
+      fi
+      BP_REC="$(_bp_record_json "$BP_ROW" "$RUN/promises/$BP_SLUG" ${BP_LOGS[@]+"${BP_LOGS[@]}"})"
+      BP_RECORDS="${BP_RECORDS:+$BP_RECORDS,}$BP_REC"
+      BP_SUM="$(printf '%s\n' "$BP_REC" | python3 -c 'import sys, json; r = json.loads(sys.stdin.read()); print("%d accepted of %d emitted (%d dropped, %d off-payload, %d over the cap); over %d armed breadth cell(s): %d held, %d broken, %d unanswered; %d promoted" % (r["accepted"], r["emitted"], r["dropped"], r["off_payload"], r["overcap"], r["cells"], r["held"], r["broken"], r["unanswered"], r["promoted"]))' 2>/dev/null || true)"
+      # shellcheck disable=SC2016  # the backticks are literal Markdown around the subsystem name
+      printf -- '- Breadth promises (#2264) `%s`: %s; %s.\n' "$BP_SUBSYS" "$BP_STATE" "${BP_SUM:-no readout}" >> "$BP_FOOTER"
+    done < "$RUN/bp-lines.tsv"
+    BP_EXTRACTIONS="$(grep -c . "$RUN/bp-calls.log" 2>/dev/null || true)"
+    case "$BP_EXTRACTIONS" in ''|*[!0-9]*) BP_EXTRACTIONS=0 ;; esac
+  fi
+fi
+
 # #1707: only a run with ZERO candidates AND ZERO failed cells is a rigorous NEGATIVE. A cell that FAILED
 # validation (chrome / no answer) is NOT evidence of cleanliness, so its presence suppresses this line —
 # the FAILED rows above already make those cells visible as unassessed, not clean.
@@ -3941,6 +4677,8 @@ fi
 } >> "$REPORT"
 # #2256: one function-coverage line per manifest line — only with the knob on, so the OFF report is byte-identical.
 if [ "$FCOV_ACTIVE" -eq 1 ] && [ -s "$FCOV_FOOTER" ]; then cat "$FCOV_FOOTER" >> "$REPORT"; fi
+# #2264: one breadth-promise line per manifest line — only with the knob on, so the OFF report is byte-identical.
+if [ "$BP_ACTIVE" -eq 1 ] && [ -s "$BP_FOOTER" ]; then cat "$BP_FOOTER" >> "$REPORT"; fi
 
 # #1001: append the coordination table — where a lead from one cell STEERED a later cell via the shared
 # blackboard. This is what makes the run more than a sum of independent audits: emit it whenever any
@@ -3994,9 +4732,16 @@ if [ "$FCOV_ACTIVE" -eq 1 ]; then
   FCOV_TOTALS_JSON=",\"coverage_cells\":$COVERAGE_CELLS"
   FCOV_JSON=",\"function_coverage\":[$FCOV_RECORDS]"
 fi
-printf '{"repo":%s,"commit":%s,"backend":%s,"jobs":%s%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s%s%s%s}%s%s}\n' \
+# #2264: `totals.promise_extractions` and the top-level `breadth_promises[]` — both EXACTLY 0 bytes unless the knob is on
+# (and the run is not a --depth-from re-entry), the same emit-only-when-on contract as the fragments above.
+BP_TOTALS_JSON="" ; BP_JSON=""
+if [ "$BP_ACTIVE" -eq 1 ]; then
+  BP_TOTALS_JSON=",\"promise_extractions\":$BP_EXTRACTIONS"
+  BP_JSON=",\"breadth_promises\":[$BP_RECORDS]"
+fi
+printf '{"repo":%s,"commit":%s,"backend":%s,"jobs":%s%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s%s%s%s%s}%s%s%s}\n' \
   "$(_json_str "$(basename "$REPO")")" "$(_json_str "$COMMIT")" "$(_json_str "$BACKEND")" "$JOBS" "$DEPTH_FROM_JSON" "$CELLS_ARR" \
-  "$CELLS" "$CANDIDATES" "$STEERS" "$FAILED_CELLS" "$DEPTH_TOTAL_JSON" "$TIER2_TOTALS_JSON" "$FCOV_TOTALS_JSON" "$TIER2_JSON" "$FCOV_JSON" > "$RESULTS_JSON"
+  "$CELLS" "$CANDIDATES" "$STEERS" "$FAILED_CELLS" "$DEPTH_TOTAL_JSON" "$TIER2_TOTALS_JSON" "$FCOV_TOTALS_JSON" "$BP_TOTALS_JSON" "$TIER2_JSON" "$FCOV_JSON" "$BP_JSON" > "$RESULTS_JSON"
 
 echo >&2
 DEPTH_BANNER=""
@@ -4004,7 +4749,10 @@ if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then DEPTH_BANNER=" ($DEPTH_CELLS depth)"; fi
 # #2256: `, K coverage` only with the knob on (0 bytes otherwise, so the OFF banner is byte-identical).
 FCOV_BANNER=""
 if [ "$FCOV_ACTIVE" -eq 1 ]; then FCOV_BANNER=", $COVERAGE_CELLS coverage"; fi
-echo "================ DISCOVERY: $CELLS cells$DEPTH_BANNER$FCOV_BANNER, $CANDIDATES candidate(s), $STEERS blackboard-steered, $FAILED_CELLS failed ================" >&2
+# #2264: `, K promise extraction(s)` only with the knob on (0 bytes otherwise, so the OFF banner is byte-identical).
+BP_BANNER=""
+if [ "$BP_ACTIVE" -eq 1 ]; then BP_BANNER=", $BP_EXTRACTIONS promise extraction(s)"; fi
+echo "================ DISCOVERY: $CELLS cells$DEPTH_BANNER$FCOV_BANNER$BP_BANNER, $CANDIDATES candidate(s), $STEERS blackboard-steered, $FAILED_CELLS failed ================" >&2
 echo "run-discovery.sh: leads at $REPORT" >&2
 # #2217: say what the second tier carried, and say what it is NOT. A tier-2 record is an UNSETTLED check, not
 # a lead: it never enters the candidate count above and nothing here verifies or submits one.

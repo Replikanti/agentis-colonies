@@ -222,7 +222,7 @@ fi
 
 note "8) substrate purity: the #2256 .ag code adds no embedded interpreter ..."
 PURE="$WORK/pure.txt"
-awk '/--- #2256 BREADTH FUNCTION-COVERAGE GATE/{f=1} f&&/^let dir = getenv\("TARGET_DIR"\);$/{exit} f{print}' "$HUNTER" \
+awk '/--- #2256 BREADTH FUNCTION-COVERAGE GATE/{f=1} f&&(/^let dir = getenv\("TARGET_DIR"\);$/||/^\/\/ --- #2264 BREADTH PROMISES/){exit} f{print}' "$HUNTER" \
   | grep -v '^[[:space:]]*//' > "$PURE"
 if [ ! -s "$PURE" ] || ! grep -q 'fn function_coverage_block' "$PURE"; then
   bad "could not slice the #2256 block out of hunter.ag (header renamed?)"

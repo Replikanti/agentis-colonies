@@ -358,7 +358,7 @@ else
 fi
 # shellcheck disable=SC2016  # the single quotes are deliberate: these greps match LITERAL source text
 if _shfn "$DISCOVERY" _cell_candidates | grep -q '_param_promoted_candidates "\$1"' \
-   && grep -q '\[ -s "\$sc_log.param-promoted" \]; then' "$DISCOVERY"; then
+   && grep -q '\[ -s "\$sc_log.param-promoted" \]' "$DISCOVERY"; then
   ok "_cell_candidates unions the promoted records and scrape_cell_log's candidate guard sees the sidecar"
 else
   bad "a promoted parameter lead could not reach \$REPORT / candidates[]"

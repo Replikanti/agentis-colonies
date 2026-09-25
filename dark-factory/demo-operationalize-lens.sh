@@ -930,12 +930,14 @@ note "22) the config-realizability rule sits in the shared RULES block and is GE
 # #2235 splices two ""-when-off verb blocks (PR B's `extres`, PR C's `onchain`) in there, each with its own
 # comment, #2245 iteration 2 splices a third (`rubric`) and iteration 5 a fourth (`paudit`, the PARAM_AUDIT=1
 # parameter audit — also ""-when-off, pinned 0 bytes by demo-param-audit.sh) and #2256 a fifth (`fcov`, the
-# FUNCTION_COVERAGE=1 READ| contract — ""-when-off, pinned 0 bytes by demo-function-coverage.sh), so a distance window would have to be widened on
+# FUNCTION_COVERAGE=1 READ| contract — ""-when-off, pinned 0 bytes by demo-function-coverage.sh) and #2264 a sixth
+# (`bprom`, the BREADTH_PROMISES=1 PTRACE| contract — "" without a non-empty accepted block, pinned 0 bytes by
+# demo-breadth-promises.sh), so a distance window would have to be widened on
 # every such insertion. What must stay true is that NOTHING ELSE sits between them, and that every block that
 # does is ""-when-off — an unconditional block there would change the lens-OFF prompt.
 RULE_SPAN="$(sed -n '/^  + config_realizability_rule()$/,/Subsystem under review/p' "$HUNTER")"
 RULE_SPAN_EXTRA="$(printf '%s\n' "$RULE_SPAN" | grep -vE '^[[:space:]]*//|^[[:space:]]*$' \
-  | grep -vE '^  \+ (config_realizability_rule\(\)|rubric|paudit|fcov|extres|onchain)$' | grep -v 'Subsystem under review' || true)"
+  | grep -vE '^  \+ (config_realizability_rule\(\)|rubric|paudit|fcov|bprom|extres|onchain)$' | grep -v 'Subsystem under review' || true)"
 if grep -q '^  + config_realizability_rule()$' "$HUNTER" \
    && grep -A5 'Never report a listed KNOWN ISSUE' "$HUNTER" | grep -q '+ config_realizability_rule()' \
    && printf '%s\n' "$RULE_SPAN" | grep -q 'Subsystem under review' \
@@ -1730,7 +1732,9 @@ grep -q '^TIER2_JSON=""$' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [TIER2_JSON-
 grep -q '^TIER2_TOTALS_JSON=""$' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [TIER2_TOTALS_JSON-initialised-empty]"
 # #2256 interleaves its own two ""-when-off fragments (totals.coverage_cells, top-level function_coverage[]) — they
 # are pinned 0 bytes with the knob off by demo-function-coverage.sh; the tier-2 pair is still consumed in order.
-grep -q '"$DEPTH_TOTAL_JSON" "$TIER2_TOTALS_JSON" "$FCOV_TOTALS_JSON" "$TIER2_JSON" "$FCOV_JSON" > "$RESULTS_JSON"' "$DISCOVERY" \
+# #2264 adds a third pair the same way (totals.promise_extractions, top-level breadth_promises[]), pinned 0 bytes with
+# the knob off by demo-breadth-promises.sh.
+grep -q '"$DEPTH_TOTAL_JSON" "$TIER2_TOTALS_JSON" "$FCOV_TOTALS_JSON" "$BP_TOTALS_JSON" "$TIER2_JSON" "$FCOV_JSON" "$BP_JSON" > "$RESULTS_JSON"' "$DISCOVERY" \
   || T2_SRC_MISS="$T2_SRC_MISS [assembly-consumes-both-fragments]"
 # The schema is DOCUMENTED in the script header, not left to be reverse-engineered from the printf.
 grep -q 'SCHEMA — top-level `tier2\[\]` of discovery-results.json' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [schema-in-header]"

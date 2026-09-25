@@ -62,6 +62,13 @@ cb 300000;
 //   COVERAGE_REASK_FNS #2256 (optional, default ""): set by run-discovery.sh ONLY on the one coverage cell of a zone
 //               line — the `rel:fn, rel:fn` list no earlier cell traced. On that cell HUNT_CLASS is the zone's class
 //               LIST (class_sections/class_field). Empty (every breadth and depth cell) => the prompt is unchanged.
+//   BREADTH_PROMISE_FILE #2264 (optional, default ""): set by run-discovery.sh ONLY with BREADTH_PROMISES=1, ONLY on a
+//               breadth cell, and ONLY when the zone line's promise extraction accepted at least one promise — the
+//               absolute path of that line's ACCEPTED block (numbered promises + their cited lines, no kind). The
+//               PTRACE| contract (breadth_promises_directive) renders only when the path is set AND the file is
+//               non-empty; otherwise "" and the prompt is byte-identical.
+//   PTRACE_REASK_IDS #2264 (optional, default ""): set by run-discovery.sh ONLY on a promise re-ask; it names the
+//               open promise items (unanswered numbers, demoted held answers, open leads). Empty => unchanged.
 // Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
 //         Diagnostics that may precede it: `BLACKBOARD-FOCUS|`, `DEPTH-CELL|`, `APPENDIX-CONTEXT|`, —
 //         #1887, only when a refute-constraint corpus is imported — `REFUTE-CONSTRAINTS|<subsystem>|<cls>|<n>`,
@@ -101,6 +108,10 @@ cb 300000;
 //         #2256, only when FUNCTION_COVERAGE=1 opts in: `FUNCTION-COVERAGE|<subsystem>|<cls>|on`, followed in the
 //         model's own reply by one `READ|<file:function>|<evidence>` line per traced function (model-emitted, free
 //         text). On the one coverage cell of a zone line additionally `COVERAGE-CELL|<subsystem>|<cls>|<n>`.
+//         #2264, only when BREADTH_PROMISE_FILE names a non-empty accepted block: `BREADTH-PROMISES|<subsystem>|<cls>|on`,
+//         followed in the model's own reply by one `PTRACE|#<k>|held|<path>:<line>[-<line>]|<check>` or
+//         `PTRACE|#<k>|broken|<file:function>|<call sequence>` line per accepted promise (model-emitted, free text).
+//         run-discovery.sh pairs them by id, re-opens every held citation, and gates / re-asks / promotes on it.
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -1406,6 +1417,104 @@ fn class_field(cls: string) -> string {
     return "<exactly ONE of: " + cls + ">";
 }
 
+// --- #2264 BREADTH PROMISES (opt-in, default OFF) ------------------------------------------------------------
+// #2245 iteration 7 extracts the target's cited user-facing PROMISES and turns each into a fuzzer invariant — but
+// only the deep hunt consumed them, while the breadth pass is where the verified rare-row hits came from. With
+// BREADTH_PROMISES=1, run-discovery.sh extracts the promises ONCE per zone line (promise-lister.ag + the citation
+// gate) and hands the ACCEPTED block to every breadth cell of that line through BREADTH_PROMISE_FILE. This block is
+// the cell's half: settle each numbered promise with one `PTRACE|#<k>|held|...` or `PTRACE|#<k>|broken|...` line.
+// The shell half (pairing by id, the held-citation contract, one named re-ask, rubric-gated promotion of an open
+// `broken`) lives in run-discovery.sh — prompt text is not a gate (the #2213 lesson).
+//
+// WHY `PTRACE|` AND NOT `TRACE|`: a shared `#k` namespace would collide with the #2223 OPCHECK pairing and change four
+// shipped `TRACE|` readers (the iteration-5 reason for `PARAM-TRACE|`). Every `TRACE|` reader is `^[[:space:]]*`-
+// anchored, so a `PTRACE|` line never pairs with an OPCHECK. None of `PTRACE|` / `BREADTH-PROMISES|` contains
+// `CANDIDATE|`, `SAFE` or `VERDICT|`, so lib/run-agent-validated.sh's hunter predicate cannot false-accept on them.
+//
+// Default OFF: the gate is the FILE, not a knob read here — an empty BREADTH_PROMISE_FILE (every depth and coverage
+// cell, every knob-OFF cell, every line whose extraction accepted nothing) renders "" and the prompt is
+// BYTE-IDENTICAL. PURE-META like every directive here: no protocol, contract, domain or product noun, and none of
+// the iteration-7 kind names — the numbered promises themselves are the only target-specific text, and they carry
+// no kind. SPLICE POINT: directly after the READ| contract (`+ paudit + fcov + bprom + extres`).
+
+// The one string the block is RECOGNISED by (same discipline as param_audit_marker): the block's literal FIRST
+// LINE, and the sentinel greps the ASSEMBLED instruction for it.
+fn breadth_promises_marker() -> string {
+    return "=== PROMISES THIS CODE MAKES (settle each one) ===";
+}
+
+// The accepted block reader: a plain `cat` of the absolute path the shell passes. Deliberately NOT cat_file(): no
+// 2000-line cut and no `@` slice branch — the block is harness-written text, not a source file.
+fn read_promise_file(path: string) -> string {
+    if len(path) == 0 { return ""; }
+    // colony-lint: safe-exec-concat
+    return exec sh "cat " + shell_escape(path) + " 2>/dev/null || true";
+}
+
+// The PTRACE emission + answer contract. The held rule is stated in words the driver checks mechanically
+// (_promise_held_ok); demo-breadth-promises.sh pins _promise_requirement's re-ask phrases against this text in BOTH
+// directions. It never mentions the gate, the re-ask or the promotion: the cell is told what it owes.
+fn breadth_promises_block() -> string {
+    return breadth_promises_marker() + "\n"
+      + "The numbered lines at the end of this block are guarantees this system states or enforces for one "
+      + "account or one position, each followed by the lines it was cited from. They are not findings, and they "
+      + "are not a list of bugs.\n"
+      + "For EACH number, trace whether a sequence of calls through the code you were given — by one or more "
+      + "accounts, in any sequence the code admits — can break that guarantee.\n"
+      + "Before your terminal verdict, write ONE line per number, carrying the SAME number, in exactly one of two "
+      + "forms:\n"
+      + "PTRACE|#<k>|held|<path>:<line>[-<line>]|<the check at that line that keeps the promise>\n"
+      + "PTRACE|#<k>|broken|<file:function>|<the call sequence that breaks it>\n"
+      + "WHAT A held ANSWER MUST CITE. The path:line (or path:first-last, at most 40 lines) of the check that keeps "
+      + "the promise, in code you were given — never a deployment script, and never a test or a mock. The cited "
+      + "text must CHECK something — a require/revert/assert, a conditional, a min/max/clamp, an allowlist or "
+      + "validity lookup, or a modifier — and NAME the promise's subject, and your last field must name something "
+      + "that is literally in the cited lines. A deployed value keeps nothing — the question is what the code "
+      + "ADMITS.\n"
+      + "A broken answer names the function where the sequence breaks the promise, in the same bare shape as a "
+      + "CANDIDATE location: a repo-relative source path, then the function name, nothing more.\n"
+      + "The number is how an answer is matched to its promise: an answer carrying a wrong number, or no number, "
+      + "answers NOTHING. Answer every number, and never renumber.\n"
+      + "A PTRACE line is never itself a finding and never carries a CANDIDATE record inside it: a broken promise "
+      + "that qualifies under the rules above still needs its own CANDIDATE line.\n";
+}
+
+// The LEAD rule — rendered ONLY inside a rubric-ON cell, because it points at the DISMISS grammar and the closed
+// ground list above it (the param_lead_rule() pattern). It does not mention the promotion.
+fn promise_lead_rule() -> string {
+    if !severity_rubric_enabled() { return ""; }
+    return "LEADS FROM THE PROMISES. Every promise you answered broken is a LEAD, and it is judged by the severity "
+      + "rubric above: either report it as a CANDIDATE line, or write a DISMISS line at that same function whose "
+      + "evidence NAMES the promise's #<k> or its subject. A broken promise left with neither line is an "
+      + "unrecorded lead, and an unrecorded lead is not a result.\n";
+}
+
+// The PROMISE RE-ASK addressing (empty on every first attempt), the twin of param_reask_block(). PTRACE_REASK_IDS is
+// set by the shell ONLY on a promise re-ask; it names only what the cell itself wrote (numbers, its own locations)
+// plus the requirement phrase of a failed held citation.
+fn ptrace_reask_block() -> string {
+    let items = getenv("PTRACE_REASK_IDS");
+    if items == "" { return ""; }
+    return "RE-ASK — your previous answer for this cell left promises open: " + items + ". Take each listed item "
+      + "again: answer every listed number with one PTRACE line under the SAME number, re-cite a held answer "
+      + "with a check that meets the requirement named beside it or answer it broken, and give every open lead a "
+      + "CANDIDATE line or a DISMISS line that names its #<k>. Keep your numbering, and do not drop the items you "
+      + "already settled.\n";
+}
+
+// The directive as it enters the prompt: "" unless the shell handed this cell a NON-EMPTY accepted block. The
+// numbered promises are appended VERBATIM (the gate's BEGIN-ACCEPTED body — kind-free by construction). The exec is
+// reached only when the env names a file, so a knob-OFF cell pays nothing. O(1) string concat otherwise.
+fn breadth_promises_directive() -> string {
+    let path = getenv("BREADTH_PROMISE_FILE");
+    if path == "" { return ""; }
+    let accepted = read_promise_file(path);
+    if len(trim(accepted)) == 0 { return ""; }
+    // `exec sh` drops the file's trailing newline, so two are added back: the block ends its last line and leaves one
+    // blank line before the next directive, like every other directive here.
+    return breadth_promises_block() + promise_lead_rule() + ptrace_reask_block() + accepted + "\n\n";
+}
+
 let dir = getenv("TARGET_DIR");
 let files = getenv("IN_SCOPE");
 let cls = getenv("HUNT_CLASS");
@@ -1511,6 +1620,12 @@ let paudit = param_audit_directive();
 // gate. The sentinel it enables is printed further down, AFTER `instruction` exists, on the same honesty contract.
 let fcov = function_coverage_directive();
 
+// #2264 BREADTH-PROMISES read: the PTRACE| contract over the zone line's accepted promises. `bprom` is "" unless
+// run-discovery.sh (BREADTH_PROMISES=1) handed this breadth cell a non-empty accepted block, so every other cell
+// prompts BYTE-IDENTICALLY. The sentinel it enables is printed further down, AFTER `instruction` exists, on the same
+// honesty contract as FUNCTION-COVERAGE|.
+let bprom = breadth_promises_directive();
+
 // #2235 PR C ON-CHAIN read: the "you may read a deployed value" verb. `onchain` is "" unless the same
 // --external-resolve branch handed this cell onchain-fact.sh, so a default cell prompts BYTE-IDENTICALLY.
 // It rides beside `extres` rather than inside it because the two verbs answer different questions (source
@@ -1558,6 +1673,9 @@ let instruction =
   // #2256: the READ| contract sits after the parameter audit (both are per-function emission contracts) and before
   // the resolver verb. "" whenever the knob is off, so the RULES block is byte-identical on every default cell.
   + fcov
+  // #2264: the PTRACE| contract follows the READ| contract (both are per-cell emission contracts the shell gates on)
+  // and precedes the resolver verb. "" off a breadth cell with accepted promises, so the RULES block is unchanged.
+  + bprom
   // #2235: the resolver verb sits directly after the dismissal rule it gives a cell a MOVE against — one
   // resolved citation can discharge both rule 1 (configuration grounds) and rule 2 (an external fact).
   // "" whenever the knob is off, so the RULES block is byte-identical on every default cell.
@@ -1662,6 +1780,14 @@ if index_of(instruction, param_audit_marker()) >= 0 {
 // _join_wrapped_candidates. `on` is a constant: an OFF cell prints nothing.
 if index_of(instruction, function_coverage_marker()) >= 0 {
     print("FUNCTION-COVERAGE|" + subsystem + "|" + cls + "|on");
+}
+
+// #2264: the BREADTH-PROMISES sentinel, on the SAME honesty contract — gated on the block's own marker being
+// demonstrably IN the prompt about to be sent, never on the env var. Together with the per-cell accepted snapshot it
+// is what ARMS run-discovery.sh's promise gate, so the shell layer is inert by construction whenever no promise was
+// handed in. No `CANDIDATE|` substring; a record BOUNDARY for _join_wrapped_candidates. `on` is a constant.
+if index_of(instruction, breadth_promises_marker()) >= 0 {
+    print("BREADTH-PROMISES|" + subsystem + "|" + cls + "|on");
 }
 
 // #2235: the EXTERNAL-RESOLVE sentinel, on the same honesty contract — gated on the directive's own marker

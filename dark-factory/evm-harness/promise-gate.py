@@ -15,7 +15,13 @@
 # The KIND column below is assigned HERE, afterwards, from the fixed KIND_MAP keyword table, for REPORTING ONLY.
 # It is never shown to the model: the BEGIN-ACCEPTED block (the prompt-visible half) carries no kind.
 #
-# gate --raw <file> --repo <staged repo> --out <accepted.tsv> [--cap 8]
+# gate --raw <file> --repo <staged repo> --out <accepted.tsv> [--cap 8] [--names-in <file>]
+#   --names-in (#2264, breadth PROMISES — run-discovery.sh passes it, the deep hunt never does): <file> lists
+#   repo-relative paths, one per line (the scope line's own `.sol` tokens). A promise whose subject none of those
+#   files names is dropped as `subject-off-payload`, checked AFTER every citation rule, so it never takes a cap
+#   slot. Each path resolves under --repo with check_cite's path safety (absolute, `..`, outside --repo or not a
+#   file => skipped). A whole-file grep, so it is over-inclusive by design: a subject named only outside a slice
+#   is kept. Without the flag the output is byte-identical to before.
 #   Strips the FCB_<hex>_BEGIN/END result-file sentinels (#2207), reads the `PROMISE|` lines, and checks each in
 #   ascending #k order; the first failing rule is reported by its id:
 #     bad-id               field 2 is not `#<1..99>`
@@ -32,6 +38,8 @@
 #     cite-too-wide        the cited range is longer than CITE_MAX_LINES lines
 #     cite-names-other     the cited range does not name the subject as a whole word (a leading `_` is tolerated)
 #     cite-deployed-state  the statement or the citation rests on deployed-state wording
+#     subject-off-payload  #2264, ONLY with --names-in: the subject is named (as a whole word, a leading `_`
+#                          tolerated — the cite-names-other regex) in NONE of the files listed in <file>
 #   At most --cap promises are ACCEPTED; the promises after the cap is reached are OVERCAP (recorded, never gated).
 #   Stdout (always exit 0 at runtime; exit 2 only for CLI misuse):
 #     PROMISES|emitted=<e>|accepted=<a>|dropped=<d>|overcap=<o>
@@ -179,8 +187,35 @@ def check_cite(source, subject, statement, repo):
     return None, rel, a, b, rng_lines
 
 
+def _names_in_texts(path, repo):
+    """#2264: the texts of the files listed in `path` (one repo-relative path per line), each resolved under `repo`
+    with check_cite's path safety. A path that is absolute, carries `..`, escapes the repo or is not a file is
+    skipped; an unreadable list file lists nothing."""
+    root = os.path.realpath(repo)
+    texts = []
+    for rel in read_text(path).splitlines():
+        rel = rel.strip()
+        if not rel or rel.startswith("/") or ".." in rel:
+            continue
+        full = os.path.realpath(os.path.join(repo, rel))
+        if not (full == root or full.startswith(root + os.sep)) or not os.path.isfile(full):
+            continue
+        texts.append(read_text(full))
+    return texts
+
+
+def _named_in(subject, texts):
+    """True when one of `texts` names `subject` as a whole word (a leading `_` tolerated) — the cite-names-other
+    regex of check_cite, applied to whole files."""
+    bare = subject.lstrip("_")
+    if not bare:
+        return False
+    named = re.compile(r"(^|[^A-Za-z0-9_$])_*" + re.escape(bare) + r"([^A-Za-z0-9_$]|$)", re.M)
+    return any(named.search(t) for t in texts)
+
+
 def cmd_gate(argv):
-    flags = parse_flags(argv, ("--raw", "--repo", "--out", "--cap"))
+    flags = parse_flags(argv, ("--raw", "--repo", "--out", "--cap", "--names-in"))
     if "--raw" not in flags or "--repo" not in flags or "--out" not in flags:
         usage("gate requires --raw --repo --out")
     cap_s = flags.get("--cap", str(DEFAULT_CAP))
@@ -189,6 +224,7 @@ def cmd_gate(argv):
     cap = int(cap_s)
     raw = _FCB_RE.sub("", read_text(flags["--raw"]))
     repo = flags["--repo"]
+    names_in = _names_in_texts(flags["--names-in"], repo) if "--names-in" in flags else None
 
     entries = []      # (k or None, raw_id, parts) in file order
     for line in raw.splitlines():
@@ -236,6 +272,8 @@ def cmd_gate(argv):
             fail = "no-statement"
         if fail is None:
             fail, rel, a, b, rng_lines = check_cite(source, subject, statement, repo)
+        if fail is None and names_in is not None and not _named_in(subject, names_in):
+            fail = "subject-off-payload"
         if fail is not None:
             readout.append((k, "PROMISE-DROPPED|#%d|%s" % (k, fail)))
             dropped += 1

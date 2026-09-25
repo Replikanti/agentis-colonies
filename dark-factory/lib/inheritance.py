@@ -60,6 +60,9 @@
 #   promise-sources --repo <dir> --target <rel[:Name]> --out <file>
 #       #2245 iteration 7 (deep-hunt PROMISES): the line-numbered source listing the invariant prover reads to
 #       extract the target's user-facing promises. Documented at its block below.
+#   promise-sources --repo <dir> --files <FILES_CSV> --out <file>
+#       #2264 (breadth PROMISES): the same listing for ONE scope-manifest line, which run-discovery.sh's
+#       promise-lister.ag reads once per line. Mutually exclusive with --target. Documented at its block below.
 #   zone-functions --repo <dir> --files <FILES_CSV>
 #       #2256 (breadth function-coverage gate): the GATED function set of ONE scope-manifest line — every
 #       state-changing external/public function with a body declared in a `contract` of the line's own payload
@@ -1303,6 +1306,23 @@ def _cap12kb(text):
 #       PROMISE_TRUNC_MARK line and nothing after it; contracts come first, so interfaces and docs are the first
 #       thing cut. An unresolvable target writes an EMPTY file (the prover's promisesOn is then false).
 #       Vendored code (lib/ node_modules/ ...) is never listed: its ancestors end the chain, like the appendix.
+#
+#   promise-sources --repo <dir> --files <FILES_CSV> --out <file>                                  (#2264)
+#       The listing for ONE run-discovery.sh scope-manifest line (breadth PROMISES), rendered through the SAME
+#       helper (_promise_listing), so `--target` output is byte-identical to before. `--target` and `--files`
+#       are mutually exclusive (exit 2). TOKENS: split on `,`, trimmed, the `@fn+fn` slice tail stripped; only a
+#       relative, `..`-free `.sol` file that exists is kept (deduped, in token order) — anything else contributes
+#       nothing (EVM only, never an error). Each kept file's main contract is resolved by the shipped
+#       _resolve_target. ORDER:
+#         1. every kept token file, in token order — a slice token renders its WHOLE file once, because NatSpec
+#            and state declarations sit outside the sliced functions;
+#         2. the own-source ancestor CONTRACT files of every resolved contract (deduped);
+#         3. their ancestor INTERFACE files;
+#         4. doc windows: _promise_doc_windows per contract name, deduped by path, PROMISE_DOC_MAX in TOTAL.
+#       Same rendering, same PROMISE_SOURCES_CAP cut + PROMISE_TRUNC_MARK. No kept token => an EMPTY file.
+#       MULTI-ROOT (#2255): when lib/project_roots.py detects >= 2 roots and the first kept token lies under a root
+#       R other than `.`, only R is indexed (the cmd_implementor pattern) — but every header stays
+#       CLONE-ROOT-relative, so every citation re-opens from --repo.
 PROMISE_SOURCES_CAP = 160 * 1024
 PROMISE_TRUNC_MARK = "... [promise sources truncated at 160 KB] ..."
 PROMISE_DOC_MAX = 2
@@ -1391,33 +1411,67 @@ def _render_listing(repo, rel, first=1, last=None):
     return out
 
 
-def cmd_promise_sources(argv):
-    flags = parse_flags(argv, ("--repo", "--target", "--out"), ())
-    repo = flags.get("--repo")
-    target = flags.get("--target")
-    out = flags.get("--out")
-    if not repo or not target or not out:
-        die(2, "promise-sources requires --repo --target --out")
-    if not os.path.isdir(repo):
-        die(3, "--repo is not a directory: " + repo)
-    inv = OwnInventory(repo, discover_inventory_sources(repo))
-    resolved = _resolve_target(inv, repo, target)
-    if resolved is None:
-        # Inert: no target -> empty file -> the prover's promisesOn is false -> the REACH-only prompt.
-        with open(out, "w", encoding="utf-8") as fh:
-            fh.write("")
-        return 0
-    rel, decl = resolved
-    contracts, interfaces = _own_ancestor_files(inv, decl)
-    listed = [rel]
-    for f in contracts + interfaces:
+def _promise_listing(repo, inv, targets, prefix="", doc_repo=None):
+    """The rendered promise listing (a list of lines, uncapped) for `targets` — [(clone-relative rel, decl or
+    None)], listed in that order. ONE helper for both modes: `--target` passes a one-element list, `--files` one
+    entry per kept token. `prefix` re-prefixes the file names `inv` returns (a multi-root index built under
+    <repo>/R answers R-relative names), and `doc_repo` is where the doc windows are searched (the indexed root)."""
+    if doc_repo is None:
+        doc_repo = repo
+    listed = []
+    for rel, _decl in targets:
+        if rel not in listed:
+            listed.append(rel)
+    anc_contracts = []
+    anc_interfaces = []
+    for _rel, decl in targets:
+        if decl is None:
+            continue
+        contracts, interfaces = _own_ancestor_files(inv, decl)
+        for f in contracts:
+            if prefix + f not in anc_contracts:
+                anc_contracts.append(prefix + f)
+        for f in interfaces:
+            if prefix + f not in anc_interfaces:
+                anc_interfaces.append(prefix + f)
+    for f in anc_contracts + anc_interfaces:
         if f not in listed:
             listed.append(f)
     blocks = [_render_listing(repo, f) for f in listed]
-    for drel, a, b in _promise_doc_windows(repo, decl["name"]):
-        if drel not in listed:
-            listed.append(drel)
-            blocks.append(_render_listing(repo, drel, a, b))
+    docs = 0
+    names = []
+    for _rel, decl in targets:
+        if decl is None or decl["name"] in names:
+            continue
+        names.append(decl["name"])
+        for drel, a, b in _promise_doc_windows(doc_repo, decl["name"]):
+            drel = prefix + drel
+            if docs >= PROMISE_DOC_MAX:
+                break
+            if drel not in listed:
+                listed.append(drel)
+                blocks.append(_render_listing(repo, drel, a, b))
+                docs += 1
+    return blocks
+
+
+def _promise_file_tokens(files_csv):
+    """FILES_CSV -> the kept clone-relative `.sol` paths under `repo` rules (see the #2264 header): trimmed, `@`
+    tail stripped, relative, `..`-free, `.sol`, deduped in token order. Existence is checked by the caller."""
+    out = []
+    for tok in files_csv.split(","):
+        rel = tok.strip().split("@", 1)[0].strip()
+        while rel.startswith("./"):
+            rel = rel[2:]
+        if not rel.endswith(".sol") or rel.startswith("/") or ".." in rel.split("/"):
+            continue
+        if rel not in out:
+            out.append(rel)
+    return out
+
+
+def _write_promise_listing(out, blocks):
+    """Apply the PROMISE_SOURCES_CAP cut to the rendered blocks and write the listing file."""
     text_lines = []
     size = 0
     cut = False
@@ -1436,6 +1490,61 @@ def cmd_promise_sources(argv):
     with open(out, "w", encoding="utf-8") as fh:
         fh.write("\n".join(text_lines) + ("\n" if text_lines else ""))
     return 0
+
+
+def cmd_promise_sources(argv):
+    flags = parse_flags(argv, ("--repo", "--target", "--files", "--out"), ())
+    repo = flags.get("--repo")
+    target = flags.get("--target")
+    files_csv = flags.get("--files")
+    out = flags.get("--out")
+    if target is not None and files_csv is not None:
+        die(2, "promise-sources: --target and --files are mutually exclusive")
+    if files_csv is None and (not repo or not target or not out):
+        die(2, "promise-sources requires --repo --target --out")
+    if files_csv is not None and (not repo or not out):
+        die(2, "promise-sources --files requires --repo --files --out")
+    if not os.path.isdir(repo):
+        die(3, "--repo is not a directory: " + repo)
+    if files_csv is not None:
+        return _promise_sources_files(repo, files_csv, out)
+    inv = OwnInventory(repo, discover_inventory_sources(repo))
+    resolved = _resolve_target(inv, repo, target)
+    if resolved is None:
+        # Inert: no target -> empty file -> the prover's promisesOn is false -> the REACH-only prompt.
+        with open(out, "w", encoding="utf-8") as fh:
+            fh.write("")
+        return 0
+    return _write_promise_listing(out, _promise_listing(repo, inv, [resolved]))
+
+
+def _promise_sources_files(repo, files_csv, out):
+    """#2264 `--files` mode (see the header block above)."""
+    kept = [rel for rel in _promise_file_tokens(files_csv) if os.path.isfile(os.path.join(repo, rel))]
+    if not kept:
+        with open(out, "w", encoding="utf-8") as fh:
+            fh.write("")
+        return 0
+    # #2255: on a multi-root clone, index only the project root holding the FIRST kept token; the names the index
+    # answers are re-prefixed with that root, so every header stays clone-root-relative.
+    index_repo = repo
+    prefix = ""
+    try:
+        pr = _project_roots()
+    except ImportError:
+        pr = None
+    roots = pr.detect(repo) if pr is not None else []
+    if len(roots) >= 2:
+        root = pr.root_of(kept[0], roots)
+        if root is not None and root != ".":
+            index_repo = os.path.join(repo, root)
+            prefix = root + "/"
+    inv = OwnInventory(index_repo, discover_inventory_sources(index_repo))
+    targets = []
+    for rel in kept:
+        got = _resolve_target(inv, repo, rel)
+        targets.append((rel, got[1] if got is not None else None))
+    return _write_promise_listing(out, _promise_listing(repo, inv, targets, prefix, index_repo))
 
 
 # ================================================================================================
