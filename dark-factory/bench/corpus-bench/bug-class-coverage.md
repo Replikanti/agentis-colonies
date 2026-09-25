@@ -571,6 +571,22 @@ mechanics gate on the two diagnosis zones first (a FAIL on either records recall
 zone unspent), then an offline pre-flight and the recall gate on the reserved zone ×2 plus one PROMISES-off
 attribution control. After it the program goes to the final exam on the never-touched set regardless of the result.
 
+### Breadth function-coverage gate (#2256 — generation misses of the "never looked" kind)
+
+Every earlier gate constrains what a cell says about what it CHOSE to look at (derived checks, dismissal grounds,
+audited parameters). The #2245 final exam showed a different generation miss: the row sat in a function that was
+in the zone's own sliced function list, and none of the zone's cells mentioned that function at all — they all
+converged on another subsystem of the same zone. `FUNCTION_COVERAGE=1` (default OFF) targets exactly that shape
+and nothing else: cells write one `READ|<file:function>|<evidence>` line per traced function, the driver checks the
+whole zone's final logs against the zone's gated function set (external/public, state-changing, with a body), and
+a function no cell traced gets ONE focused coverage cell (narrowed payload, all zone classes, cap 12). It adds no
+class, no lens text and no ground-truth knowledge; it cannot help a miss where the right function WAS read and the
+bug was not seen, nor one in a function outside the zone's files.
+
+**Status: IN-FLIGHT — recall UNMEASURED.** This change ships the READ contract, the enumeration, the gate, the
+coverage cell, the budget half and the offline guards only (`../../demo-function-coverage.sh`, wired into
+`tools/colony-lint.sh`). Any recall claim belongs to a new fresh set, measured by the operator.
+
 ## Operationalize-before-you-hunt: measured NO-GO (#2213 M2, 2026-09-15)
 
 The #2211 `OPERATIONALIZE_LENS` directive — a cross-class METHOD (derive code-grounded checks, write them

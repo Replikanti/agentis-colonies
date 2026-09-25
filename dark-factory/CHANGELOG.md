@@ -56,6 +56,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `--project-roots`), and `generalization-bench.sh` skips such a row explicitly. With 0 or 1 root the output is
   byte-identical (pinned in-tree and against origin/main by the new `demo-multi-root.sh`). The deep hunt, vector
   hunt and PoC stages still run against a single toolchain root; per-row root rebasing for them is part 2.
+- **Breadth function-coverage gate — `READ|` traces + one focused coverage cell per zone line, knob
+  `FUNCTION_COVERAGE=1`, default OFF (#2256).** A rare row can sit in a function that is in the zone's own function
+  list while every cell of the zone converges elsewhere; that "never looked" miss is invisible to every per-cell
+  gate. (1) `hunter.ag` asks for one `READ|<file:function>|<evidence>` line per traced function (honesty-gated
+  `FUNCTION-COVERAGE|` sentinel; pure-meta text). (2) `lib/inheritance.py zone-functions` enumerates a manifest
+  line's GATED functions with the #2253 function model (external/public, state-changing, non-initializer, with a
+  body, in a `contract` of the line's own files or slices), ranked value-moving and unguarded first; own-source
+  functions inherited from outside the line are recorded (`inherited_outside`), never gated. (3) After the depth
+  pass, `run-discovery.sh` matches them against every final cell log of the line (`READ|` only when it names an
+  identifier from the body or a one-hop callee, `DISMISS|`, `CANDIDATE|`, `PARAM|`, `CALLEE-VECTOR|`); when the
+  line is armed and some function has no trace, ONE coverage cell runs over at most 12 of them with a narrowed
+  payload and all zone classes (`"phase":"coverage"`, the answer contract asks for exactly one class id,
+  promotions carry the first). Recorded: `function_coverage[]`, `totals.coverage_cells`, a per-cell `reads` key,
+  `run/function-coverage_<slug>.tsv`, a report footer line and a banner suffix. (4) `run-zone-hunt.sh` charges the
+  cell up front (additions only), trims it before any breadth class under a cell budget (and lowers depth before
+  coverage), and merges the per-zone records. Knob off: prompt, report, results JSON, banner and the STAGE 3
+  argv/env are byte-identical. Guarded by `demo-function-coverage.sh` (wired into `tools/colony-lint.sh`). Recall
+  is UNMEASURED.
+
 - **Deep-hunt PROMISES — invariants derived from the target's user-facing promises, knob `DEEP_HUNT_PROMISES=1`
   (requires `DEEP_HUNT_REACH=1`), default OFF (#2245, iteration 7).** Iteration 6 fixed reach: the harness deploys
   the right concrete targets and calls the rows' entry points, yet stayed CLEAN, because the invariant comes from

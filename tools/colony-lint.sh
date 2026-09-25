@@ -2880,6 +2880,26 @@ if [ -x "$REPO_ROOT/dark-factory/demo-multi-root.sh" ]; then
     fi
 fi
 
+# --- dark-factory breadth function-coverage gate (#2256) ---
+# Opt-in (FUNCTION_COVERAGE=1, default OFF, independent of every other knob): hunter.ag asks for one
+# `READ|<file:function>|<evidence>` line per traced function, lib/inheritance.py zone-functions enumerates each scope
+# line's gated functions (the #2253 function model), and run-discovery.sh — after the depth pass — runs ONE focused
+# coverage cell per line over the (capped at 12, value/open-first) functions no final cell log traced; a READ counts
+# only when it names an identifier from the function's body. run-zone-hunt.sh charges the cell up front and trims it
+# before any breadth class. demo-function-coverage.sh source-guards the agent half, pins the wiring, checks
+# zone-functions on fixtures (other subcommands byte-identical), drives the SLICED gate with negative controls, runs
+# run-discovery.sh + run-zone-hunt.sh end to end through offline stubs (knob-OFF byte-identity vs origin/main),
+# mutates copies eight ways and — when agentis is present — probes the helpers for 0 bytes and runs live mock cells.
+if [ -x "$REPO_ROOT/dark-factory/demo-function-coverage.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-function-coverage.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: breadth function-coverage gate (READ| trace + one focused coverage cell per zone line, default OFF) (#2256)"
+    else
+        fail "dark-factory: breadth function-coverage gate regressed (#2256)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory --grant-pii guard on live/exec .ag invocations (#1690) ---
 # The PII heuristic that blocked hunter.ag (#1675/#1676) and then zone-mapper.ag (#1690) can trip on
 # ANY invocation that transmits target source / scope / findings / PoCs / persisted patterns (all benign

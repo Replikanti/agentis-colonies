@@ -56,6 +56,12 @@ cb 300000;
 //   PARAM_REASK_ITEMS #2245 iteration 5 (optional, default ""): set by run-discovery.sh ONLY on a parameter re-ask;
 //               it names the open audit items (uncovered functions, unanswered numbers, failed bounds, open
 //               leads). Empty (every first attempt, and every knob-OFF cell) => the directive is unchanged.
+//   FUNCTION_COVERAGE #2256 (optional, default unset = OFF): "1" opts IN to the READ| emission contract
+//               (function_coverage_directive) that run-discovery.sh's zone-level breadth function-coverage gate reads.
+//               Any other value leaves the prompt byte-identical. Independent of every other knob.
+//   COVERAGE_REASK_FNS #2256 (optional, default ""): set by run-discovery.sh ONLY on the one coverage cell of a zone
+//               line — the `rel:fn, rel:fn` list no earlier cell traced. On that cell HUNT_CLASS is the zone's class
+//               LIST (class_sections/class_field). Empty (every breadth and depth cell) => the prompt is unchanged.
 // Stdout: exactly one `CANDIDATE|file:fn:line|class|severity|exploit|poc` line per finding, else `SAFE`.
 //         Diagnostics that may precede it: `BLACKBOARD-FOCUS|`, `DEPTH-CELL|`, `APPENDIX-CONTEXT|`, —
 //         #1887, only when a refute-constraint corpus is imported — `REFUTE-CONSTRAINTS|<subsystem>|<cls>|<n>`,
@@ -92,6 +98,9 @@ cb 300000;
 //         audited value and one `PARAM-TRACE|#<k>|<bounded-at:<path>:<line>|unbounded>|<evidence>` answer per
 //         number (model-emitted, free text, never script-printed). run-discovery.sh pairs them by id, re-opens
 //         every bounded-at citation, and gates / re-asks / promotes on the result.
+//         #2256, only when FUNCTION_COVERAGE=1 opts in: `FUNCTION-COVERAGE|<subsystem>|<cls>|on`, followed in the
+//         model's own reply by one `READ|<file:function>|<evidence>` line per traced function (model-emitted, free
+//         text). On the one coverage cell of a zone line additionally `COVERAGE-CELL|<subsystem>|<cls>|<n>`.
 
 // --- file readers (dynamic paths -> safe-exec-concat per recall-match.ag precedent) ---
 fn cat_file(path: string) -> string {
@@ -1301,6 +1310,102 @@ fn onchain_fact_directive() -> string {
         onchain_budget(), " --block " + blk);
 }
 
+// --- #2256 BREADTH FUNCTION-COVERAGE GATE (opt-in, default OFF) ---------------------------------------------
+// The measured gap (#2245 final exam): a rare row sat in a function that WAS in the zone's sliced function list,
+// yet none of the six cells on that zone mentioned the function at all — they converged on another subsystem of
+// the same zone. A "never looked" miss is invisible to every other gate here (OPCHECK->TRACE, DISMISS grounds, the
+// parameter audit), because those only constrain what a cell says about what it CHOSE to look at. So this gate
+// asks the cell to say WHICH functions it traced — one `READ|<file:function>|<evidence>` line per traced function
+// — and run-discovery.sh checks the whole ZONE's output against the zone's gated function list. A function no
+// cell traced gets ONE focused coverage cell (all zone classes, payload narrowed to the untouched functions).
+//
+// Default OFF with the INVERTED polarity of every #2245 knob (only the literal "1" opts in). Unset => every helper
+// below is "" and the assembled prompt is BYTE-IDENTICAL. The READ contract is PURE-META (no protocol, product or
+// domain noun), and like param_lead_rule() it states what the cell owes, never what the shell does about it.
+// `READ|`, `FUNCTION-COVERAGE|` and `COVERAGE-CELL|` carry no `CANDIDATE|`, `SAFE` or `VERDICT|`, so
+// lib/run-agent-validated.sh's hunter predicate cannot false-accept a reply on them; the driver treats all three
+// as record BOUNDARIES. SPLICE POINTS: the READ contract directly after the parameter audit (`+ paudit + fcov +
+// extres`), the coverage frame directly after the depth frame (`+ depth + cpass`) — both are "which payload is
+// this" frames.
+
+// The one string the block is RECOGNISED by (same discipline as param_audit_marker): the block's literal FIRST
+// LINE, and the sentinel greps the ASSEMBLED instruction for it.
+fn function_coverage_marker() -> string {
+    return "=== FUNCTION TRACE (which functions did you read?) ===";
+}
+
+// The opt-in. INVERTED like param_audit_enabled() (`== "1"`) ON PURPOSE: unset / any other value is OFF and is the
+// DEFAULT. It must also ride run-discovery.sh's exec.env_passthrough, else getenv() reads the SANITISED env and the
+// whole feature is silently inert (the #1426/#2157 failure mode).
+fn function_coverage_enabled() -> bool {
+    return getenv("FUNCTION_COVERAGE") == "1";
+}
+
+// The READ emission contract. It never mentions the gate, the re-ask or the coverage cell: the cell is told what it
+// owes, not what happens if it does not pay.
+fn function_coverage_block() -> string {
+    return function_coverage_marker() + "\n"
+      + "Before your terminal verdict, name the functions you actually traced. For every external or public "
+      + "function of the payload that you traced, write one line of its own:\n"
+      + "READ|<file:function>|<what you checked there, naming a variable, call or condition from its body>\n"
+      + "<file:function> has the same bare shape as a CANDIDATE location: a repo-relative source path, then "
+      + "the function name, nothing more. The third field must name something that is "
+      + "literally in that function's body or in a helper it calls — a line that names nothing from the body "
+      + "says nothing about having read it.\n"
+      + "Never write a READ line for a function you did not trace, and never put a finding on a READ line: a "
+      + "READ line is never itself a finding, and a bug you found still needs its own CANDIDATE line.\n";
+}
+
+// The directive as it enters the prompt: "" unless the knob opts in. O(1) top-level string concat.
+fn function_coverage_directive() -> string {
+    if !function_coverage_enabled() { return ""; }
+    return function_coverage_block() + "\n";
+}
+
+// The COVERAGE-CELL frame, a depth_block-style "why this payload" header. COVERAGE_REASK_FNS is set by
+// run-discovery.sh ONLY on the one coverage cell of a zone line (and only with the knob on), so this block is "" on
+// every breadth and depth cell and their prompts are unchanged.
+fn coverage_pass_block() -> string {
+    let fns = getenv("COVERAGE_REASK_FNS");
+    if fns == "" { return ""; }
+    return "=== COVERAGE PASS — functions no earlier cell of this zone traced ===\n"
+      + "Every earlier cell of this zone answered without tracing these functions: " + fns + ". The payload "
+      + "below is narrowed to them (plus the internal helpers they reach), because an untraced function is "
+      + "exactly where a bug nobody looked for survives.\n"
+      + "Hunt EACH listed function under ANY of the lenses below — it is not assigned to one of them — and give "
+      + "each listed function either a CANDIDATE line for a qualifying bug or a READ line saying what you "
+      + "checked. "
+      + "Do NOT invent a bug to fill the list: a function you traced and found clean gets a READ line, and a "
+      + "rigorous SAFE is a valid result.\n\n";
+}
+
+// How many functions the coverage frame lists (the COVERAGE-CELL| sentinel's <n> field). Runs only on the one
+// coverage cell of a zone line, so every other cell pays nothing for it.
+fn coverage_fn_count(fns: string) -> int {
+    return len(regex_split(",", fns));
+}
+
+// The lens text for this cell. A breadth or depth cell carries ONE class id and gets class_section() VERBATIM
+// (byte-identical prompt); only the coverage cell carries the zone's class LIST and gets every section of it, in
+// list order. The fold is bounded by the zone's class count and reuses class_section()'s existing reader — no new
+// embedded interpreter.
+fn class_sections(taxo: string, cls: string) -> string {
+    if index_of(cls, ",") < 0 { return class_section(taxo, cls); }
+    return reduce(regex_split(",", cls), |acc: string, c: string| -> string {
+        let id = trim(c);
+        if len(id) == 0 { return acc; }
+        if len(acc) == 0 { return class_section(taxo, id); }
+        return acc + "\n" + class_section(taxo, id);
+    }, "");
+}
+
+// The `class=` field of the answer contract: the class id itself on every single-class cell (byte-identical), and
+// on the coverage cell an instruction to pick exactly ONE of the listed ids — a lead must never carry a list.
+fn class_field(cls: string) -> string {
+    if index_of(cls, ",") < 0 { return cls; }
+    return "<exactly ONE of: " + cls + ">";
+}
+
 let dir = getenv("TARGET_DIR");
 let files = getenv("IN_SCOPE");
 let cls = getenv("HUNT_CLASS");
@@ -1312,7 +1417,9 @@ let brief = cat_file(getenv("SCOPE_BRIEF"));
 let appendix_file = getenv("APPENDIX_FILE");
 let appendix_base = getenv("APPENDIX_BASE");
 let code = scoped_code(dir, files, appendix_file, appendix_base);
-let classDoc = class_section(getenv("TAXONOMY"), cls);
+// #2256: class_sections() is class_section() VERBATIM for a single class id (every breadth and depth cell), and
+// the concatenated sections only for the coverage cell, whose HUNT_CLASS is the zone's class list.
+let classDoc = class_sections(getenv("TAXONOMY"), cls);
 
 // #1001 READ side: pull the shared blackboard FIRST, so a lead an EARLIER cell posted this run can
 // steer this one. `focus` is "" when the board is empty (first cell) or holds nothing for this cell —
@@ -1335,6 +1442,15 @@ let depth_target = getenv("DEPTH_TARGET");
 let depth = depth_block(depth_target, getenv("DEPTH_KNOWN"));
 if len(depth) > 0 {
     print("DEPTH-CELL|" + subsystem + "|" + cls + "|" + depth_target);
+}
+
+// #2256 COVERAGE-CELL read: the frame of the ONE coverage cell of a zone line. `cpass` is "" on every other cell
+// (COVERAGE_REASK_FNS is set only there), so their instruction stays byte-identical. The printed COVERAGE-CELL|
+// line makes the pass observable in the cell log (the DEPTH-CELL| precedent) and is a record BOUNDARY for
+// run-discovery.sh's _join_wrapped_candidates.
+let cpass = coverage_pass_block();
+if len(cpass) > 0 {
+    print("COVERAGE-CELL|" + subsystem + "|" + cls + "|" + to_string(coverage_fn_count(getenv("COVERAGE_REASK_FNS"))));
 }
 
 // #1865 APPENDIX read: the judging block for a payload carrying the derived implementor of an abstract base.
@@ -1390,6 +1506,11 @@ let rubric = severity_rubric_directive();
 // is printed further down, AFTER `instruction` exists, on the same honesty contract as SEVERITY-RUBRIC|.
 let paudit = param_audit_directive();
 
+// #2256 FUNCTION-COVERAGE read: the READ| emission contract. `fcov` is "" unless FUNCTION_COVERAGE=1 (opt-in,
+// default OFF), so every cell that does not opt in prompts BYTE-IDENTICALLY. No detector — the flag is the only
+// gate. The sentinel it enables is printed further down, AFTER `instruction` exists, on the same honesty contract.
+let fcov = function_coverage_directive();
+
 // #2235 PR C ON-CHAIN read: the "you may read a deployed value" verb. `onchain` is "" unless the same
 // --external-resolve branch handed this cell onchain-fact.sh, so a default cell prompts BYTE-IDENTICALLY.
 // It rides beside `extres` rather than inside it because the two verbs answer different questions (source
@@ -1411,6 +1532,9 @@ let instruction =
   + callee
   + focus
   + depth
+  // #2256: the coverage frame follows the depth frame — both say why THIS payload is narrowed. "" off the one
+  // coverage cell of a zone line.
+  + cpass
   + appx
   + cons
   + opz
@@ -1431,6 +1555,9 @@ let instruction =
   // DISMISS grammar just read, and before the resolver verb, so one resolved citation stays usable by both.
   // "" whenever the knob is off, so the RULES block is byte-identical on every default cell.
   + paudit
+  // #2256: the READ| contract sits after the parameter audit (both are per-function emission contracts) and before
+  // the resolver verb. "" whenever the knob is off, so the RULES block is byte-identical on every default cell.
+  + fcov
   // #2235: the resolver verb sits directly after the dismissal rule it gives a cell a MOVE against — one
   // resolved citation can discharge both rule 1 (configuration grounds) and rule 2 (an external fact).
   // "" whenever the knob is off, so the RULES block is byte-identical on every default cell.
@@ -1456,7 +1583,7 @@ let instruction =
   + "FIRST reason step by step: walk EACH in-scope function relevant to this bug class and trace whether an "
   + "external attacker can break an invariant — verify guards/CEI-order/rounding/auth in the actual code, do "
   + "not hand-wave. THEN, for EVERY qualifying Medium/High bug you found, write one line:\n"
-  + "CANDIDATE|<file:function:line>|class=" + cls + "|<severity=Medium|High>|<one-sentence external exploit path>|<concrete foundry PoC sketch: what to deploy, call, and assert>\n"
+  + "CANDIDATE|<file:function:line>|class=" + class_field(cls) + "|<severity=Medium|High>|<one-sentence external exploit path>|<concrete foundry PoC sketch: what to deploy, call, and assert>\n"
   + "The <file:function:line> field MUST be a BARE repo-relative source path, then the function name, then an "
   + "optional line — exactly `file:function[:line]` and nothing more: NO `@`-compound suffix, NO `~(...)` test "
   + "reference, and NO extra `:` beyond those two.\n"
@@ -1526,6 +1653,15 @@ if index_of(instruction, ground_evidence_marker()) >= 0 {
 // BOUNDARY for _join_wrapped_candidates like every other diagnostic. `on` is a constant: an OFF cell prints nothing.
 if index_of(instruction, param_audit_marker()) >= 0 {
     print("PARAM-AUDIT|" + subsystem + "|" + cls + "|on");
+}
+
+// #2256: the FUNCTION-COVERAGE sentinel, on the SAME honesty contract — gated on the READ contract's own marker
+// being demonstrably IN the prompt about to be sent, never on the toggle. It is what ARMS run-discovery.sh's
+// coverage gate (a zone whose breadth logs carry none of these is recorded `skipped:unarmed`), so the shell layer
+// is inert by construction whenever the knob is off. No `CANDIDATE|` substring; a record BOUNDARY for
+// _join_wrapped_candidates. `on` is a constant: an OFF cell prints nothing.
+if index_of(instruction, function_coverage_marker()) >= 0 {
+    print("FUNCTION-COVERAGE|" + subsystem + "|" + cls + "|on");
 }
 
 // #2235: the EXTERNAL-RESOLVE sentinel, on the same honesty contract — gated on the directive's own marker

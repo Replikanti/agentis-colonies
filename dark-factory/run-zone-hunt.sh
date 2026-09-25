@@ -280,6 +280,17 @@
 #                       contract checked by the driver) and lands in verified_findings.json's `out_of_scope[]`, never
 #                       in verified[]. Trust rows are context only. STAGE 4 first-pass findings only: STAGE 4.5
 #                       (deep-hunt-gate.sh) is not wired.
+#   FUNCTION_COVERAGE=1 (env)  #2256 BREADTH FUNCTION-COVERAGE GATE — run-discovery.sh's own opt-in (every zone
+#                       inherits the export; the STAGE 3 argv is unchanged). What THIS script adds is the BUDGET half
+#                       (#2256 STOP-1 decision 4): a measured zone is charged ONE extra cell per distinct (subsystem,
+#                       files) line of its --list-cells probe, UP FRONT, because the coverage cell is a real cell that
+#                       runs whenever a gated function stays untraced. Under --zone-cell-budget / --run-cell-budget the
+#                       coverage cells are admitted only when the headroom ABOVE breadth holds all of them — otherwise
+#                       they are trimmed (that zone's run-discovery.sh sees FUNCTION_COVERAGE=0 and the merged file
+#                       records `coverage_cell: skipped:trimmed`) — and depth is then lowered to what is left above
+#                       breadth + coverage: coverage outranks depth, and breadth is never traded for either. Unset (the
+#                       default) => the argv, the env and the coverage record are byte-identical, and the merged file
+#                       gains a `function_coverage[]` array only when some zone emitted one.
 #   --drop-dir <dir>    deliver-submission.sh drop-dir (default: <out>/drop).
 #   -h, --help          This help.
 #
@@ -854,6 +865,23 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
       if [ "$ZHEAD" -lt "$ZDEPTH_EFF" ]; then ZDEPTH_EFF="$ZHEAD"; fi
     fi
   fi
+  # #2256 FUNCTION-COVERAGE ALLOWANCE — ADDITIONS ONLY (demo-vector-hunt.sh assertion 11 byte-preserves every OFF-path
+  # line). Active only with FUNCTION_COVERAGE=1 on a MEASURED zone: one cell per distinct (subsystem, files) pair of
+  # the --list-cells probe above (run-discovery.sh runs at most one coverage cell per manifest line). Under a cap the
+  # cells are admitted only if the headroom above breadth holds ALL of them, else trimmed; depth is then lowered to
+  # what is left above breadth + coverage, so coverage outranks depth and no breadth class is ever dropped for it.
+  ZFCOV_EFF=0 ; ZFCOV_TRIM=0
+  if [ "${FUNCTION_COVERAGE:-}" = "1" ] && [ -n "$CELLS_PLANNED" ]; then
+    ZFCOV_EFF="$(grep '^CELL|' "$CELL_PROBE" | cut -d'|' -f2,4 | sort -u | grep -c . || true)"
+    case "$ZFCOV_EFF" in ''|*[!0-9]*) ZFCOV_EFF=0 ;; esac
+    if [ -n "$ZCAP" ]; then
+      ZFHEAD=$((ZCAP - CELLS_PLANNED))
+      if [ "$ZFHEAD" -lt 0 ]; then ZFHEAD=0; fi
+      if [ "$ZFHEAD" -lt "$ZFCOV_EFF" ]; then ZFCOV_EFF=0; ZFCOV_TRIM=1; fi
+      ZFHEAD=$((ZFHEAD - ZFCOV_EFF))
+      if [ "$ZDEPTH_EFF" -gt "$ZFHEAD" ]; then ZDEPTH_EFF="$ZFHEAD"; fi
+    fi
+  fi
   ZCHARGE="${CELLS_PLANNED:-0}" ; ZCLASSES_ARG="" ; ZTRUNC="" ; ZDETAIL=""
   if [ -z "$CELLS_PLANNED" ]; then
     ZDETAIL="--list-cells probe failed; planned cell count unknown"
@@ -941,6 +969,14 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
       ZDETAIL="${ZDETAIL:+$ZDETAIL; }depth pass trimmed to 0 cell(s) — the cell budget leaves no headroom above breadth (#1827)"
     fi
   fi
+  # #2256: the coverage cell(s) are charged UP FRONT, like the depth cap — a zone whose breadth already traced every
+  # gated function runs none and simply under-spends its charge (never the other way round).
+  if [ "$ZFCOV_EFF" -gt 0 ]; then
+    ZCHARGE=$((ZCHARGE + ZFCOV_EFF))
+    ZDETAIL="${ZDETAIL:+$ZDETAIL; }charged $ZFCOV_EFF function-coverage cell(s) (#2256, one per manifest line; runs only when a gated function stays untraced)"
+  elif [ "$ZFCOV_TRIM" -eq 1 ]; then
+    ZDETAIL="${ZDETAIL:+$ZDETAIL; }function-coverage cell trimmed — the cell budget leaves no headroom above breadth for it (#2256)"
+  fi
   if [ "$ZACTION" = "retry" ]; then
     # failed / in_flight (and an --rehunt-include-partial partial) carry PRIOR ARTIFACTS that run-discovery.sh
     # destroys on re-entry (`rm -rf $RUN`, `> $REPORT`). Move them aside FIRST, then push the prior terminal
@@ -969,6 +1005,9 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
       --detail "$ZDETAIL"
   fi
   RUN_SPENT=$((RUN_SPENT + ZCHARGE))
+  # #2256: a trimmed zone hunts with the gate OFF (FUNCTION_COVERAGE=0 is byte-identical to unset in
+  # run-discovery.sh), and the knob is restored for the zones behind it right after the call.
+  if [ "$ZFCOV_TRIM" -eq 1 ]; then export FUNCTION_COVERAGE=0; fi
   ZRC=0
   "$DISCOVERY" --repo "$REPO" --scope "$MAP/scope.tsv" --only "$ZNAME" --brief "$ZBRIEF" \
     --jobs "$JOBS" --backend "$BACKEND" --agentis "$AGENTIS" --out "$DISC/$ZID" \
@@ -978,6 +1017,10 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
     ${ZQUOTA_ARG:+--depth-lens-quota "$ZQUOTA_ARG"} \
     ${ZAPX_ARG:+--appendix "$ZAPX_ARG"} \
     || ZRC=$?
+  if [ "$ZFCOV_TRIM" -eq 1 ]; then
+    export FUNCTION_COVERAGE=1
+    printf '%s\t%s\n' "$ZID" "$ZNAME" >> "$DISC/.fcov-trimmed.tsv"
+  fi
   if [ "$ZRC" -eq 0 ]; then
     # The terminal status (hunted / hunted_empty / hunted_degraded) is DERIVED in the helper from this zone's
     # own totals — the derivation exists in exactly one place, so no consumer re-implements the policy.
@@ -1093,6 +1136,36 @@ out = {"repo": repo, "backend": backend, "jobs": jobs, "cells": cells,
 if tier2:
     out["tier2"] = tier2
     out["totals"]["tier2"] = len(tier2)
+# #2256: the per-line function-coverage records of the CURRENT zone dirs (never an `.attempt-<n>` archive: a record
+# describes one hunt of one line, so a union across attempts would describe no hunt at all), in zone order, each
+# prefixed with its zone id — plus a `skipped:trimmed` stub for a zone whose cell budget had no headroom for the
+# coverage cell (run-zone-hunt.sh hunted it with the gate off, so it wrote no record of its own). ABSENT, never
+# `[]`, when no zone emitted one — which is every run with FUNCTION_COVERAGE unset.
+fcov_by_zone = {}
+for name in sorted(os.listdir(disc_dir)):
+    if ".attempt-" in name:
+        continue
+    p = os.path.join(disc_dir, name, "discovery-results.json")
+    if not os.path.isfile(p):
+        continue
+    try:
+        d = json.load(open(p, encoding="utf-8"))
+    except Exception:
+        continue
+    for r in (d.get("function_coverage") or []):
+        if isinstance(r, dict):
+            rr = {"zone": name}
+            rr.update(r)
+            fcov_by_zone.setdefault(name, []).append(rr)
+fcov_trimmed = os.path.join(disc_dir, ".fcov-trimmed.tsv")
+if os.path.isfile(fcov_trimmed):
+    for line in open(fcov_trimmed, encoding="utf-8"):
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) >= 2 and parts[0] and parts[0] not in fcov_by_zone:
+            fcov_by_zone[parts[0]] = [{"zone": parts[0], "subsystem": parts[1], "coverage_cell": "skipped:trimmed"}]
+function_coverage = [r for z in sorted(fcov_by_zone) for r in fcov_by_zone[z]]
+if function_coverage:
+    out["function_coverage"] = function_coverage
 json.dump(out, open(merged_path, "w", encoding="utf-8"), indent=2)
 open(merged_path, "a", encoding="utf-8").write("\n")
 print("run-zone-hunt.sh: [M3] merged %d cell(s), %d candidate(s)%s" % (

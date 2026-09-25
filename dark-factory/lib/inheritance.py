@@ -60,6 +60,12 @@
 #   promise-sources --repo <dir> --target <rel[:Name]> --out <file>
 #       #2245 iteration 7 (deep-hunt PROMISES): the line-numbered source listing the invariant prover reads to
 #       extract the target's user-facing promises. Documented at its block below.
+#   zone-functions --repo <dir> --files <FILES_CSV>
+#       #2256 (breadth function-coverage gate): the GATED function set of ONE scope-manifest line — every
+#       state-changing external/public function with a body declared in a `contract` of the line's own payload
+#       tokens (the zone_entry_points predicate), ranked value-before-state / open-before-guarded, plus the
+#       own-source functions the line inherits from bases OUTSIDE its files (recorded, never gated).
+#       Documented at its block below.
 #
 # Exit: 0 on success (including "nothing triggered"); 2 usage error; 3 unreadable input.
 import json
@@ -681,6 +687,9 @@ def parse_entry_points(text):
                         "body": term != ";",
                         "is_initializer": is_init,
                         "state_changing": vis in ("external", "public") and mut not in ("view", "pure"),
+                        # #2256: the 0-based physical line the declaration starts on, so zone-functions can
+                        # brace-match the body. Additive: no existing subcommand serialises this dict.
+                        "line": i,
                     }
                     current["functions"].append(fn)
                     if is_init:
@@ -1410,18 +1419,270 @@ def cmd_promise_sources(argv):
     return 0
 
 
+# ================================================================================================
+# #2256 — BREADTH FUNCTION-COVERAGE GATE. One ADDITIVE subcommand; every subcommand above is byte-for-byte
+# UNCHANGED (demo-map-zones.sh, demo-verify-findings.sh and demo-deep-hunt-reach.sh pin them, and
+# demo-function-coverage.sh re-checks their output on its own fixtures).
+#
+#   zone-functions --repo <dir> --files <FILES_CSV>
+#       The GATED function set of ONE scope-manifest line, for run-discovery.sh's coverage gate. The predicate
+#       is the one reach-inventory and handler-coverage.py are built on (zone_entry_points: `state_changing and
+#       not is_initializer`), plus `body` and `kind == "contract"` (abstract included; interface/library never),
+#       so there is ONE Solidity function model in this pipeline, not two. Per FILES_CSV token, in order:
+#         `rel`            every such function declared in the file (no line cap: a function past the 2000-line
+#                          whole-file payload cap is gated ON PURPOSE — breadth never saw it);
+#         `rel@fnA+fnB`    the same predicate restricted to the listed names (slices and the #1861 appendix
+#                          token alike);
+#         anything else    (a non-.sol token, an absolute path, a `..` segment, a missing file) contributes
+#                          nothing — EVM only, and never an error.
+#       Overloads dedupe by (rel, fn). Two RANK flags per row, never an exclusion (#2256 STOP-1 decision 1):
+#         value|state   VALUE_RE over the body plus its one-hop same-file callees (transfer family, mint/burn,
+#                       low-level call, compound assignment, `delete`), so a thin external wrapper whose value
+#                       flow sits in one internal helper still ranks `value`;
+#         open|guarded  GUARD_RE over the modifier names (`only*` / auth-style).
+#       Stdout, FN rows in RANK ORDER (value before state, open before guarded, then manifest/declaration order):
+#         FN \t <rel> \t <fn> \t <value|state> \t <open|guarded> \t <space-separated body identifiers, <=200, or ->
+#       The identifiers are what a `READ|` line must name at least one of (#2256 STOP-1 decision 2): taken from
+#       the body and its one-hop same-file callees, keywords/elementary types/globals/the function's own name
+#       excluded, shorter-than-3 dropped. `-` means an empty body — nothing to name.
+#       Then one INH row per own-source function the line INHERITS from a base declared OUTSIDE its files and
+#       does not override (recorded as `inherited_outside`, NEVER gated — decision 1; vendored bases are not
+#       own-source and never appear):
+#         INH \t <declarer-rel> \t <fn> \t <value|state> \t <open|guarded> \t -
+#       Same line-based best-effort caveat as slice-fns.sh: comments and string literals are stripped before the
+#       brace match, and an exotic header can only mis-size a body — a mis-ranked row, never a missing one.
+#       Exit: 0 on valid usage (including "nothing gated"); 2 usage error; 3 unreadable --repo.
+FCOV_BODY_MAX_LINES = 1500
+FCOV_IDENT_CAP = 200
+FCOV_IDENT_MIN = 3
+# Value movement or accounting-state change, matched on the COMMENT-STRIPPED body (+ one-hop callees).
+VALUE_RE = re.compile(
+    r"\b(?:safeTransferFrom|safeTransferETH|safeTransfer|transferFrom|transfer|sendValue|send|_mint|_burn|mint|burn)"
+    r"\s*\(|\.\s*(?:call|delegatecall)\s*[({]|[+\-*/%]=|\bdelete\b")
+# A modifier that restricts WHO may call (the `only*` / auth family). Rank only: a guarded function is gated too.
+GUARD_RE = re.compile(r"^(?:only[A-Z_][A-Za-z0-9_$]*|auth|requiresAuth|restricted|authorized|isAuthorized)$")
+_FCOV_ELEMENTARY_RE = re.compile(r"^(?:u?int|bytes|u?fixed)[0-9x]*$")
+_FCOV_STOP = frozenset((
+    "if else for while do break continue return returns emit revert require assert new delete try catch "
+    "true false this super msg block tx abi type unchecked assembly function modifier event error using "
+    "memory storage calldata public private internal external view pure payable virtual override constant "
+    "immutable address bool string bytes byte uint int mapping struct enum sender value data sig origin "
+    "gasprice timestamp number chainid coinbase basefee gaslimit prevrandao difficulty encode encodePacked "
+    "encodeWithSelector encodeWithSignature encodeCall decode length push pop keccak256 sha256 ecrecover "
+    "wei gwei ether seconds minutes hours days weeks max min"
+).split())
+_FCOV_COMMENT_RE = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
+_FCOV_STRING_RE = re.compile(r'"(?:\\.|[^"\\\n])*"' + r"|'(?:\\.|[^'\\\n])*'")
+_FCOV_CALL_RE = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\(")
+
+
+def _fcov_body(lines, start):
+    """The brace-matched body of the function whose declaration starts at physical line `start` (0-based), with
+    comments and string literals stripped, bounded to FCOV_BODY_MAX_LINES. "" for a declaration that ends in `;`
+    before any `{` at parenthesis depth 0 (no body here)."""
+    chunk = "\n".join(lines[start:start + FCOV_BODY_MAX_LINES])
+    chunk = _FCOV_COMMENT_RE.sub(" ", chunk)
+    chunk = _FCOV_STRING_RE.sub('""', chunk)
+    n = len(chunk)
+    i = 0
+    pd = 0
+    while i < n:
+        c = chunk[i]
+        if c == "(":
+            pd += 1
+        elif c == ")":
+            pd -= 1
+        elif pd <= 0 and c == ";":
+            return ""
+        elif pd <= 0 and c == "{":
+            break
+        i += 1
+    if i >= n:
+        return ""
+    depth = 0
+    j = i
+    while j < n:
+        if chunk[j] == "{":
+            depth += 1
+        elif chunk[j] == "}":
+            depth -= 1
+            if depth == 0:
+                return chunk[i + 1:j]
+        j += 1
+    return chunk[i + 1:]
+
+
+def _fcov_file_model(text):
+    """(contracts, bodies) for one source: parse_entry_points' contract list, and name -> [body, ...] over EVERY
+    function declared in the file (any contract, any visibility) — the one-hop callee universe."""
+    lines = text.splitlines()
+    contracts = parse_entry_points(text)
+    bodies = {}
+    for d in contracts:
+        for fn in d["functions"]:
+            fn["_body"] = _fcov_body(lines, fn["line"])
+            bodies.setdefault(fn["name"], []).append(fn["_body"])
+    return contracts, bodies
+
+
+def _fcov_flags(fn, bodies):
+    """(value_moving, guarded, identifiers) for one parsed function against its file's body universe."""
+    own = fn.get("_body", "")
+    texts = [own]
+    for callee in _FCOV_CALL_RE.findall(own):
+        if callee == fn["name"]:
+            continue
+        for b in bodies.get(callee, []):
+            texts.append(b)
+    joined = "\n".join(texts)
+    value = bool(VALUE_RE.search(joined))
+    guarded = any(GUARD_RE.match(m) for m in fn["modifiers"])
+    idents = []
+    seen = set()
+    for tok in _IDENT_RE.findall(joined):
+        if tok in seen or tok == fn["name"] or len(tok) < FCOV_IDENT_MIN:
+            continue
+        if tok in _FCOV_STOP or _FCOV_ELEMENTARY_RE.match(tok):
+            continue
+        seen.add(tok)
+        idents.append(tok)
+        if len(idents) >= FCOV_IDENT_CAP:
+            break
+    return value, guarded, idents
+
+
+def _fcov_gated(fn):
+    """THE gate predicate: zone_entry_points' `state_changing and not is_initializer`, plus a body."""
+    return fn["state_changing"] and not fn["is_initializer"] and fn["body"]
+
+
+def _fcov_tokens(files_csv):
+    """FILES_CSV -> [(rel, wanted-names-or-None)], keeping only safe repo-relative `.sol` tokens, in order."""
+    out = []
+    for tok in files_csv.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        rel, _sep, fns = tok.partition("@")
+        rel = rel.strip()
+        if rel.startswith("./"):
+            rel = rel[2:]
+        if not rel.endswith(".sol") or rel.startswith("/") or ".." in rel.split("/"):
+            continue
+        wanted = None
+        if _sep:
+            wanted = set(f.strip() for f in fns.split("+") if f.strip())
+        out.append((rel, wanted))
+    return out
+
+
+def cmd_zone_functions(argv):
+    flags = parse_flags(argv, ("--repo", "--files"), ())
+    repo = flags.get("--repo")
+    files_csv = flags.get("--files")
+    if not repo or files_csv is None:
+        die(2, "zone-functions requires --repo <dir> --files <FILES_CSV>")
+    if not os.path.isdir(repo):
+        die(3, "--repo is not a directory: " + repo)
+    rows = {}          # (rel, fn) -> row dict
+    order = []
+    token_rels = []
+    declared_in_line = set()
+    zone_contracts = []
+    models = {}
+    for tidx, (rel, wanted) in enumerate(_fcov_tokens(files_csv)):
+        path = os.path.join(repo, rel)
+        if not os.path.isfile(path):
+            continue
+        if rel not in models:
+            try:
+                with open(path, encoding="utf-8", errors="ignore") as fh:
+                    models[rel] = _fcov_file_model(fh.read())
+            except OSError:
+                continue
+        if rel not in token_rels:
+            token_rels.append(rel)
+        contracts, bodies = models[rel]
+        for d in contracts:
+            if d["kind"] != "contract":
+                continue
+            if d["name"] not in zone_contracts:
+                zone_contracts.append(d["name"])
+            for fn in d["functions"]:
+                declared_in_line.add(fn["name"])
+                if not _fcov_gated(fn):
+                    continue
+                if wanted is not None and fn["name"] not in wanted:
+                    continue
+                value, guarded, idents = _fcov_flags(fn, bodies)
+                key = (rel, fn["name"])
+                prev = rows.get(key)
+                if prev is None:
+                    rows[key] = {"value": value, "guarded": guarded, "idents": list(idents),
+                                 "order": (tidx, fn["line"])}
+                    order.append(key)
+                else:                       # overload / repeated token: one row, flags OR-ed, ids unioned
+                    prev["value"] = prev["value"] or value
+                    prev["guarded"] = prev["guarded"] and guarded
+                    for t in idents:
+                        if t not in prev["idents"] and len(prev["idents"]) < FCOV_IDENT_CAP:
+                            prev["idents"].append(t)
+    ranked = sorted(order, key=lambda k: (0 if rows[k]["value"] else 1, 1 if rows[k]["guarded"] else 0,
+                                          rows[k]["order"]))
+    for key in ranked:
+        r = rows[key]
+        sys.stdout.write("FN\t%s\t%s\t%s\t%s\t%s\n" % (
+            key[0], key[1], "value" if r["value"] else "state", "guarded" if r["guarded"] else "open",
+            " ".join(r["idents"]) if r["idents"] else "-"))
+    # Own-source functions inherited from bases declared OUTSIDE this line's files: RECORDED, never gated.
+    if zone_contracts:
+        inv = OwnInventory(repo, discover_inventory_sources(repo))
+        inh_seen = set()
+        anc_models = {}
+        for cname in zone_contracts:
+            for anc in sorted(_own_ancestors(inv, cname)):
+                got = inv.get(anc)
+                if got is None:
+                    continue
+                arel, adecl = got
+                if arel in token_rels or adecl["kind"] != "contract":
+                    continue
+                if arel not in anc_models:
+                    try:
+                        with open(os.path.join(repo, arel), encoding="utf-8", errors="ignore") as fh:
+                            anc_models[arel] = _fcov_file_model(fh.read())
+                    except OSError:
+                        continue
+                acontracts, abodies = anc_models[arel]
+                for d in acontracts:
+                    if d["name"] != anc:
+                        continue
+                    for fn in d["functions"]:
+                        if not _fcov_gated(fn) or fn["name"] in declared_in_line:
+                            continue
+                        key = (arel, fn["name"])
+                        if key in inh_seen:
+                            continue
+                        inh_seen.add(key)
+                        value, guarded, _ids = _fcov_flags(fn, abodies)
+                        sys.stdout.write("INH\t%s\t%s\t%s\t%s\t-\n" % (
+                            arel, fn["name"], "value" if value else "state", "guarded" if guarded else "open"))
+    return 0
+
+
 COMMANDS = {
     "appendix": cmd_appendix,
     "implementor": cmd_implementor,
     "reach-targets": cmd_reach_targets,
     "reach-inventory": cmd_reach_inventory,
     "promise-sources": cmd_promise_sources,
+    "zone-functions": cmd_zone_functions,
 }
 
 
 def main(argv):
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
-        sys.stdout.write("usage: inheritance.py <appendix|implementor|reach-targets|reach-inventory|promise-sources> [flags]\n")
+        sys.stdout.write("usage: inheritance.py <appendix|implementor|reach-targets|reach-inventory|promise-sources|zone-functions> [flags]\n")
         return 0 if len(argv) >= 2 else 2
     cmd = COMMANDS.get(argv[1])
     if cmd is None:
