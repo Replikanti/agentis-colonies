@@ -45,6 +45,9 @@
 #                       With 0 or 1 root in effect nothing changes. A --rehunt-gaps / --deep-hunt-only pass over a
 #                       multi-root map asserts every zone `root` is a dir under --repo (exit 3 otherwise: that map
 #                       was made against the clone root).
+#                       With >= 2 roots in effect, STAGE 4.5 (--deep-hunt), STAGE 4.6 (--vector-hunt) and the M5 PoC
+#                       stage run each row / finding in its zone's OWN Foundry root (`--repo <clone>/<root>`, target
+#                       rebased into it); a rootless or non-Foundry (Hardhat-only) root is skipped per row, logged.
 #   --since <ref>       Audit-covered ref (feeds map-zones.sh's advisory hardening_score).
 #   --audit-residuals <f>  audit-scout.ag output folded into gen-briefs.sh's per-zone briefs (optional).
 #   --in-scope <t>      The in-scope program facts handed to run-audit-pass.sh's scope gate.
@@ -1223,6 +1226,21 @@ else
   mr_assert_roots_under_repo "$MAP/zones.json"
 fi
 
+# #2255: the PROJECT ROOTS of a multi-root map (the distinct zone `root` keys, space-joined). EMPTY for a single-root
+# map (no `root` key anywhere), and then every #2255 block below — STAGE 4.5, STAGE 4.6 and the M5 PoC root — is
+# inert, so a single-root run is byte-identical. Non-empty => each deep-hunt / vector-hunt row and each M5 finding
+# is staged in its zone's OWN Foundry root (`--repo <clone>/<root>`), and $OUT/.deep-hunt-roots.tsv (zid \t root)
+# records the per-zone lookup the row loops read.
+MR_ROOTS="$(python3 "$HERE/lib/project_roots.py" zone-roots --zones "$MAP/zones.json" 2>/dev/null | cut -f2 | sort -u | paste -sd' ' - || true)"
+if [ -n "$MR_ROOTS" ]; then
+  python3 "$HERE/lib/project_roots.py" zone-roots --zones "$MAP/zones.json" > "$OUT/.deep-hunt-roots.tsv"
+  echo "run-zone-hunt.sh: multi-root target (#2255): project roots [$MR_ROOTS] — deep-hunt, vector-hunt and PoC rows run in their zone's root" >&2
+fi
+# mr_root_of <zid>: the project root of zone <zid> from $OUT/.deep-hunt-roots.tsv (empty = a rootless zone).
+mr_root_of() {
+  awk -F'\t' -v z="$1" '$1 == z { print $2; exit }' "$OUT/.deep-hunt-roots.tsv" 2>/dev/null || true
+}
+
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 4.5 (#1713): SEVERITY-FIRST DEEP-HUNT — a SECOND lens on the VALUE-CUSTODY zones. Default OFF (no
 # --deep-hunt => this whole block is skipped and the run is byte-identical to before). It runs the shipped
@@ -1230,10 +1248,12 @@ fi
 # and MERGES every fuzzer-reproduced FINDING into verified_findings.json — tagged source=invariant-hunt —
 # so M5 below and corpus-bench score the deep finding alongside the breadth findings. Gated on a Foundry
 # target ($REPO/foundry.toml): EVM invariant-fuzzing is Foundry-specific; a non-Foundry target logs + skips.
+# #2255: on a MULTI-ROOT map ($MR_ROOTS non-empty) that stage-level gate becomes per ROW: a row runs when its zone's
+# root holds a foundry.toml, and is skipped with a log line when it does not (a Hardhat-only root) or has no root.
 # ZERO new egress — run-invariant-hunt.sh never submits and the merge is a local file read/write.
 # ----------------------------------------------------------------------------------------------------------
 if [ "$DEEP_HUNT" -eq 1 ]; then
-  if [ ! -f "$REPO/foundry.toml" ]; then
+  if [ -z "$MR_ROOTS" ] && [ ! -f "$REPO/foundry.toml" ]; then
     echo "run-zone-hunt.sh: [deep-hunt] --deep-hunt set but $REPO has no foundry.toml (EVM invariant-fuzzing is Foundry-specific) — skipping deep-hunt" >&2
   else
     INVHUNT="$HERE/run-invariant-hunt.sh"
@@ -1515,6 +1535,40 @@ PY
       if [ "$DEEP_HUNT_PROMISES" = 1 ]; then
         set -- "$@" --promises
       fi
+      # #2255 MULTI-ROOT: stage this row in its zone's OWN Foundry root. run-invariant-hunt.sh parses --repo/--target
+      # last-wins, so APPENDING `--repo <clone>/<root> --target <path within root>` to "$@" rebases BOTH $INVHUNT
+      # invocations below without editing them, and only that root is copied into the run dir (its foundry.toml,
+      # remappings and lib/). Each `--aux` (clone-relative) is rebased into the same root; an aux outside it is
+      # dropped with a log line. deep-hunt-gate.sh keeps the CLONE-relative --repo/--relfile, so a merged finding's
+      # `file`/`location` stay consistent with the breadth findings. Single-root map ($MR_ROOTS empty) => skipped.
+      if [ -n "$MR_ROOTS" ]; then
+        MR_ROOT="$(mr_root_of "$ZID")"
+        if [ -z "$MR_ROOT" ]; then
+          echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' lies outside every project root of this multi-root target — row skipped (#2255)" >&2
+          continue
+        fi
+        if [ ! -f "$REPO/$MR_ROOT/foundry.toml" ]; then
+          echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' root '$MR_ROOT' is not a Foundry project — row skipped (#2255)" >&2
+          continue
+        fi
+        if [ "$MR_ROOT" != "." ]; then
+          _mr_n=$#; _mr_prev=""
+          for _mr_a in "$@"; do
+            if [ "$_mr_prev" = "--aux" ]; then
+              case "$_mr_a" in
+                "$MR_ROOT"/*) set -- "$@" --aux "${_mr_a#"$MR_ROOT"/}" ;;
+                *) echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID': aux '$_mr_a' is outside root '$MR_ROOT' — dropped (#2255)" >&2 ;;
+              esac
+            elif [ "$_mr_a" != "--aux" ]; then
+              set -- "$@" "$_mr_a"
+            fi
+            _mr_prev="$_mr_a"
+          done
+          shift "$_mr_n"
+          set -- "$@" --repo "$REPO/$MR_ROOT" --target "${RELFILE#"$MR_ROOT"/}"
+          echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' runs in project root '$MR_ROOT' (#2255)" >&2
+        fi
+      fi
       echo "run-zone-hunt.sh: [deep-hunt] stateful-invariant lens on zone '$ZID' target '$RELFILE' ($DCLASS) ..." >&2
       # #1795: the out-dir is keyed per (ZONE, CLASS), not per zone — with the multi-lens fan-out two rows of
       # one zone would otherwise SHARE a run dir and their per-target `invariant_<t>.log` would collide, so the
@@ -1735,7 +1789,8 @@ fi
 # shared `fi`/`continue`/python-heredoc line) must NOT mask a real OFF-path regression. Do not remove or move
 # these markers without updating demo-vector-hunt.sh's assertion 11 in the same change.
 if [ "$VECTOR_HUNT" -eq 1 ]; then
-  if [ ! -f "$REPO/foundry.toml" ]; then
+  # #2255: on a multi-root map the Foundry gate is per ROW (the zone's root), exactly as in STAGE 4.5.
+  if [ -z "$MR_ROOTS" ] && [ ! -f "$REPO/foundry.toml" ]; then
     echo "run-zone-hunt.sh: [vector-hunt] --vector-hunt set but $REPO has no foundry.toml (concrete-PoC verification is Foundry-specific) — skipping vector-hunt" >&2
   else
     VECHUNT="$HERE/run-vector-hunt.sh"
@@ -1797,6 +1852,24 @@ PY
     VECTOR_FINDINGS=0
     while IFS='	' read -r ZID RELFILE DCLASS || [ -n "${ZID:-}" ]; do
       [ -n "$ZID" ] || continue
+      # #2255 MULTI-ROOT: the engine (and its per-vector PoC runner) gets the zone's OWN Foundry root as --repo and
+      # the target path within that root. A rootless zone or a non-Foundry root is skipped with a log line. Single-
+      # root map ($MR_ROOTS empty) => VH_REPO/VH_TARGET are exactly $REPO/$RELFILE, as before.
+      VH_REPO="$REPO"; VH_TARGET="$RELFILE"
+      if [ -n "$MR_ROOTS" ]; then
+        VH_ROOT="$(mr_root_of "$ZID")"
+        if [ -z "$VH_ROOT" ]; then
+          echo "run-zone-hunt.sh: [vector-hunt] zone '$ZID' lies outside every project root of this multi-root target — row skipped (#2255)" >&2
+          continue
+        fi
+        if [ ! -f "$REPO/$VH_ROOT/foundry.toml" ]; then
+          echo "run-zone-hunt.sh: [vector-hunt] zone '$ZID' root '$VH_ROOT' is not a Foundry project — row skipped (#2255)" >&2
+          continue
+        fi
+        if [ "$VH_ROOT" != "." ]; then
+          VH_REPO="$REPO/$VH_ROOT"; VH_TARGET="${RELFILE#"$VH_ROOT"/}"
+        fi
+      fi
       VH_ZONE_OUT="$VH_OUT/$ZID"; mkdir -p "$VH_ZONE_OUT"
       # Harvest this zone's D1 CALLEE-VECTOR candidates from BOTH the breadth cell logs (hunt_*.log) and the
       # depth/refute cell logs (depth_*.log, written by run-discovery.sh's depth pass into the same $RUN dir
@@ -1820,7 +1893,7 @@ PY
       # Invoke the engine (stdout -> per-zone log so the VECTOR-HUNT| summary is parseable; stderr flows to the
       # operator). A failed invocation logs + continues (never aborts the loop under set -e, matching STAGE 4.5).
       # shellcheck disable=SC2086  # $VH_POC_RUNNER is threaded via the ${VAR:+...} idiom (empty => no --poc-runner)
-      if "$VECHUNT" --repo "$REPO" --target "$RELFILE" --class "$DCLASS" \
+      if "$VECHUNT" --repo "$VH_REPO" --target "$VH_TARGET" --class "$DCLASS" \
           --callee-vectors "$VH_CV" --max-vectors "$VECTOR_HUNT_MAX_VECTORS" \
           --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"} \
           --out "$VH_ZONE_OUT" --verified-json "$VERIFIED_JSON" --resume \
@@ -1916,6 +1989,17 @@ process_finding() {
   pf_slug="$1"; pf_loc="$2"; pf_file="$3"; pf_class="$4"; pf_sev="$5"; pf_expl="$6"
   pf_out="$APOUT/$pf_slug"; rm -rf "$pf_out"; mkdir -p "$pf_out"
   pf_target="$(basename "$pf_file")"
+  # #2255 MULTI-ROOT: the PoC stage builds in the finding's OWN Foundry root. `local` rebinds REPO for this call
+  # only (restored on every return path), so --poc-repo and --target-dir below get <clone>/<root> untouched. The
+  # clone-relative `file` (or a root-relative one that exactly ONE root holds) resolves via project_roots.py `of`;
+  # an unresolvable file keeps the clone root. Single-root map ($MR_ROOTS empty) => skipped.
+  if [ -n "$MR_ROOTS" ] && [ -n "$pf_file" ]; then
+    pf_root="$(python3 "$HERE/lib/project_roots.py" of --zones "$MAP/zones.json" --repo "$REPO" --path "$pf_file" 2>/dev/null | cut -f1 || true)"
+    if [ -n "$pf_root" ] && [ "$pf_root" != "." ] && [ -d "$REPO/$pf_root" ]; then
+      local REPO="$REPO/$pf_root"
+      echo "run-zone-hunt.sh:   finding '$pf_slug' -> PoC in project root '$pf_root' (#2255)" >&2
+    fi
+  fi
   if [ -n "$PASS_FIXTURE" ]; then
     "$AUDITPASS" --finding-location "$pf_loc" --finding-impact "$pf_expl" \
       --poc-repo "$REPO" --poc-target "$pf_target" --poc-hypothesis "$pf_expl" --poc-class "$pf_class" \

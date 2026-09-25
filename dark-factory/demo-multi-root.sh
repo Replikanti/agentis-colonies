@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# demo-multi-root.sh — OFFLINE, DETERMINISTIC proof of the #2255 map layer: a multi-project code repo (several
-# nested Foundry/Hardhat project roots) gets EVERY root mapped, briefed and hunt-ready, with every path relative to
-# the clone root and one additive `root` key per zone — while a single-root target stays byte-identical.
+# demo-multi-root.sh — OFFLINE, DETERMINISTIC proof of #2255: a multi-project code repo (several nested
+# Foundry/Hardhat project roots) gets EVERY root mapped, briefed and hunt-ready, with every path relative to the clone
+# root and one additive `root` key per zone, and the deep hunt / vector hunt / PoC stages run each row in its zone's
+# OWN Foundry root — while a single-root target stays byte-identical.
 #
-# Parts (CI floor: bash + git + python3; never needs agentis or forge):
+# Parts (CI floor: bash + git + python3; never needs agentis or forge — part 7 fakes both):
 #   1) DETECT       lib/project_roots.py detect/resolve/root_of/zone-roots/of over fixtures/multi-root/: exactly
 #                   core, legacy, market (configs under lib/, test/, mocks/, node_modules/ are never roots).
 #   2) MAP auto     map-zones.sh over the clone root: zones from all 3 roots, `root` == path prefix, a rootless
@@ -24,6 +25,14 @@
 #                   (b) differential: origin/main's map-zones.sh / gen-briefs.sh / lib/zone-coverage.py over the
 #                       same trees (and over the multi-root clone vs `--project-roots .`) == this tree's, byte for
 #                       byte. SKIP (not fail) when origin/main is absent or already carries this code (post-merge).
+#                       Includes lib/inheritance.py reach-targets (the deep-hunt REACH selection) over the same maps.
+#   7) OFFLINE E2E  (#2255 PR 2) run-zone-hunt.sh --deep-hunt --vector-hunt (DEEP_HUNT_REACH=1) over the clone with a
+#                   stub --agentis, a fake `forge` on PATH and the VECTOR_HUNT_POC_RUNNER seam: STAGE 4.5 target
+#                   selection picks market/src/Pair.sol:Pair per root; the prover sees market's staged foundry.toml,
+#                   a root-relative target and market's entry points; forge-invariant.sh runs forge inside the staged
+#                   market root; the Hardhat-only legacy row and the rootless docs row are skipped per row; a merged
+#                   finding keeps a clone-relative file; STAGE 4.6's PoC runner and M5's POC_REPO get <clone>/<root>;
+#                   --deep-hunt-only with --repo <clone>/core exits 3.
 #
 # Usage:  dark-factory/demo-multi-root.sh
 # Exit: 0 = all assertions held; non-zero = a regression.
@@ -355,6 +364,14 @@ else
       else
         bad "$T: differs from origin/main at $D"
       fi
+      # #2255 PR 2: the deep-hunt REACH selection over a single-root map (no `root` key) is origin/main's, byte for byte.
+      python3 "$MAIN/lib/inheritance.py" reach-targets --zones "$WORK/$T-def/map/zones.json" --repo "$WORK/$T" --max 3 > "$WORK/$T-reach-main.tsv" 2>&1
+      python3 "$INH" reach-targets --zones "$WORK/$T-def/map/zones.json" --repo "$WORK/$T" --max 3 > "$WORK/$T-reach-new.tsv" 2>&1
+      if cmp -s "$WORK/$T-reach-main.tsv" "$WORK/$T-reach-new.tsv"; then
+        ok "$T: inheritance.py reach-targets == origin/main's ($(grep -c . "$WORK/$T-reach-new.tsv") row(s))"
+      else
+        bad "$T: reach-targets differs from origin/main"
+      fi
     done
     # The multi-root clone: origin/main's view is exactly this tree's '.' opt-out view — but only while origin/main
     # PREDATES the multi-root layer. Once it carries lib/project_roots.py its default view of the clone is itself
@@ -389,8 +406,168 @@ else
 fi
 
 # ----------------------------------------------------------------------------------------------------------
+note "7) OFFLINE E2E — STAGE 4.5 / 4.6 / M5 stage each row in its zone's OWN Foundry root ..."
+# One run-zone-hunt.sh pass over a fresh clone of the fixture: --map-fixture / --brief-fixture / --pass-fixture, a
+# stub --agentis for every substrate call (hunter, refuter, invariant prover, coordinator), a fake `forge` first on
+# PATH (so the REAL evm-harness/forge-invariant.sh runs and its forge invocation is observable without Foundry), and
+# the VECTOR_HUNT_POC_RUNNER seam. DEEP_HUNT_REACH=1 so the per-root reach selection and entry-point enumeration
+# are exercised. The map fixture adds custody to market/src/base, legacy and docs, so a Hardhat-only root and a
+# rootless zone each reach the deep-hunt / vector-hunt row loops and are skipped there.
+E2E="$WORK/e2e-clone"; git_tree "$FIX" "$E2E"
+E2E_OUT="$WORK/e2e-out"
+PROBE="$WORK/e2e-probe.log"; : > "$PROBE"
+E2E_FIX="$WORK/e2e-zones.fixture.txt"
+cat "$FIX/zones.fixture.txt" > "$E2E_FIX"
+printf 'CUSTODY|market_src_base|true\nCUSTODY|legacy_contracts|true\nCUSTODY|docs|true\n' >> "$E2E_FIX"
+FAKEBIN="$WORK/fakebin"; mkdir -p "$FAKEBIN"
+cat > "$FAKEBIN/forge" <<'FORGEEOF'
+#!/bin/sh
+# fake forge: record WHERE forge-invariant.sh ran it (cwd = the staged project root) and WHICH foundry.toml it saw.
+echo "FORGE|cwd=$PWD|root=$(sed -n 's/^# fixture-root: //p' foundry.toml 2>/dev/null)" >> "$MR_PROBE_LOG"
+exit 0
+FORGEEOF
+chmod +x "$FAKEBIN/forge"
+STUB="$WORK/agentis-stub"
+cat > "$STUB" <<'STUBEOF'
+#!/bin/sh
+set -u
+cmd="${1:-}"; sub="${2:-}"
+case "$cmd" in
+  init) mkdir -p .agentis; exit 0 ;;
+  memo)
+    if [ "$sub" = "get" ] && [ "${3:-}" = "coordinator:pass_result" ] && [ -f .agentis/pass_result ]; then
+      cat .agentis/pass_result
+    fi
+    exit 0 ;;
+  go)
+    case "$sub" in
+      hunter.ag)
+        if [ -z "${DEPTH_TARGET:-}" ] && [ "${SUBSYSTEM:-}" = "market/src" ] && [ "${HUNT_CLASS:-}" = "C1" ]; then
+          echo "CANDIDATE|market/src/Pair.sol:_settle:8|C1|High|settle pays out without a balance check|call settle with more than the balance"
+        else
+          echo "SAFE"
+        fi
+        exit 0 ;;
+      refuter.ag)
+        echo "VERDICT|REAL|${CAND_FILE_FN:-}|${CAND_CLASS:-}|survived a hostile read"
+        exit 0 ;;
+      invariant-prover.ag)
+        # cwd == the run dir; repo/ is the staged copy of the project root run-invariant-hunt.sh was given.
+        tf="${TARGET_FN:-}"
+        eps="$(grep '^EP|' entry-points.tsv 2>/dev/null | cut -d'|' -f2 | paste -sd, -)"
+        rt="$(sed -n 's/^# fixture-root: //p' repo/foundry.toml 2>/dev/null)"
+        echo "PROVER|target=$tf|root=$rt|eps=$eps" >> "$MR_PROBE_LOG"
+        printf 'contract InvProbe {\n    function invariant_probe() public pure returns (bool) { return true; }\n}\n' > "${INV_OUT:-repo/test/Inv.t.sol}"
+        bash "${FORGE_INVARIANT:-}" --repo "${INV_REPO:-}" --target "${INV_OUT:-}" --match invariant >/dev/null 2>&1 || true
+        # Only market's Pair breaks (core also has a src/Pair.sol: the root, not the path, decides).
+        case "$rt:$tf" in
+          market:src/Pair.sol*) echo "INVARIANT|$tf|FINDING"; echo "STEP|settle(1)" ;;
+          *) echo "INVARIANT|$tf|CLEAN" ;;
+        esac
+        exit 0 ;;
+      coordinator.ag)
+        echo "COORD|loc=${FINDING_LOCATION:-}|poc_repo=${POC_REPO:-}|poc_target=${POC_TARGET:-}" >> "$MR_PROBE_LOG"
+        printf '%s' "HALTED-TEST" > .agentis/pass_result
+        echo "PASS|HALTED-TEST"
+        exit 0 ;;
+      *) echo "SAFE"; exit 0 ;;
+    esac ;;
+  *) exit 0 ;;
+esac
+STUBEOF
+chmod +x "$STUB"
+POCSTUB="$WORK/poc-runner-stub"
+cat > "$POCSTUB" <<'POCEOF'
+#!/bin/sh
+# VECTOR_HUNT_POC_RUNNER seam: record the --repo / --target the vector-hunt engine handed the PoC stage.
+r=""; t=""
+while [ $# -gt 0 ]; do
+  case "$1" in --repo) r="$2"; shift 2 ;; --target) t="$2"; shift 2 ;; *) shift ;; esac
+done
+echo "VHPOC|repo=$r|target=$t" >> "$MR_PROBE_LOG"
+echo "POC|$t|CLEAN"
+exit 0
+POCEOF
+chmod +x "$POCSTUB"
+PATH="$FAKEBIN:$PATH" MR_PROBE_LOG="$PROBE" DEEP_HUNT_REACH=1 VECTOR_HUNT_POC_RUNNER="$POCSTUB" \
+  DARK_FACTORY_DIR="$WORK/df-registry" \
+  "$ZONEHUNT" --repo "$E2E" --out "$E2E_OUT" --backend mock --agentis "$STUB" \
+    --map-fixture "$E2E_FIX" --brief-fixture "$FIX/briefs.fixture.txt" \
+    --pass-fixture "scope=payable;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+    --in-scope "the whole in-scope program" --deep-hunt --vector-hunt >"$WORK/e2e.out" 2>"$WORK/e2e.err"; RC=$?
+if [ "$RC" -eq 0 ]; then
+  ok "run-zone-hunt.sh --deep-hunt --vector-hunt over the multi-root clone exits 0"
+else
+  bad "run-zone-hunt.sh exited $RC"; tail -30 "$WORK/e2e.err" | sed 's/^/      /'
+fi
+if [ "$(grep -c . "$E2E_OUT/.deep-hunt-roots.tsv" 2>/dev/null)" = "6" ] && grep -q 'multi-root target (#2255): project roots \[core legacy market\]' "$WORK/e2e.err"; then
+  ok "STAGE 4.5: .deep-hunt-roots.tsv lists the 6 rooted zones; the multi-root mode is announced"
+else
+  bad ".deep-hunt-roots.tsv / multi-root line missing"
+fi
+# TARGET SELECTION: the per-root reach pick for the market base is market's concrete Pair, clone-relative.
+if grep -q '^market_src_base	market/src/Pair.sol:Pair	C6$' "$E2E_OUT/.deep-hunt-targets.tsv" 2>/dev/null \
+   && grep -q '^core_src	core/src/Vault.sol:Vault	C6$' "$E2E_OUT/.deep-hunt-targets.tsv"; then
+  ok "STAGE 4.5 target selection: market/src/base -> market/src/Pair.sol:Pair (per-root reach; core also declares Pair), core -> core/src/Vault.sol:Vault — clone-relative rows"
+else
+  bad "STAGE 4.5 target rows:"; sed 's/^/      /' "$E2E_OUT/.deep-hunt-targets.tsv" 2>/dev/null
+fi
+# ENTRY POINTS: the prover ran over market's OWN staged root, with a root-relative target and market's settle.
+if grep -q '^PROVER|target=src/Pair.sol:Pair|root=market|eps=.*settle' "$PROBE"; then
+  ok "STAGE 4.5 entry points: the prover saw repo/foundry.toml of root 'market', target src/Pair.sol:Pair and the settle entry point"
+else
+  bad "market prover probe missing:"; grep '^PROVER' "$PROBE" | sed 's/^/      /'
+fi
+grep -q '^PROVER|target=src/Vault.sol:Vault|root=core|' "$PROBE" \
+  && ok "a core row stages core (target src/Vault.sol:Vault)" || bad "core prover probe missing"
+# FORGE: forge-invariant.sh ran forge INSIDE the staged market root, against market's foundry.toml.
+if grep -q '^FORGE|cwd=.*/deep-hunt/market_src_base-C6-Pair/run/repo|root=market$' "$PROBE"; then
+  ok "STAGE 4.5 forge invocation: cwd = the staged copy of market/, foundry.toml = market's"
+else
+  bad "no forge invocation in the market root:"; grep '^FORGE' "$PROBE" | sed 's/^/      /'
+fi
+[ ! -e "$E2E_OUT/deep-hunt/market_src_base-C6-Pair/run/repo/core" ] && [ ! -e "$E2E_OUT/deep-hunt/market_src_base-C6-Pair/run/repo/market" ] \
+  && ok "only the market root was staged (no sibling root in the run dir)" || bad "the run dir staged more than the market root"
+if grep -q "zone 'legacy_contracts' root 'legacy' is not a Foundry project — row skipped (#2255)" "$WORK/e2e.err" \
+   && grep -q "\[deep-hunt\] zone 'docs' lies outside every project root" "$WORK/e2e.err" \
+   && [ -z "$(find "$E2E_OUT/deep-hunt" -maxdepth 1 \( -name 'legacy_contracts-*' -o -name 'docs-*' \) 2>/dev/null)" ]; then
+  ok "the Hardhat-only legacy row and the rootless docs row are skipped per row, with a log line"
+else
+  bad "legacy/docs per-row skips missing"
+fi
+MSG="$(zjs "$E2E_OUT/verify/verified_findings.json" <<'PY'
+import json, sys
+v = json.load(open(sys.argv[1])).get("verified", [])
+inv = [f for f in v if f.get("source") == "invariant-hunt"]
+ok = inv and all(f.get("file") == "market/src/Pair.sol" and str(f.get("location", "")).startswith("market/src/Pair.sol:") for f in inv)
+print("OK" if ok else "BAD %r" % [(f.get("source"), f.get("file"), f.get("location")) for f in v])
+PY
+)"
+[ "$MSG" = "OK" ] && ok "the merged deep-hunt finding keeps a CLONE-relative file/location (market/src/Pair.sol)" || bad "merged deep-hunt entry: $MSG"
+# STAGE 4.6: the vector-hunt engine and its PoC runner get the zone's root + a root-relative target.
+if grep -q "^VHPOC|repo=$E2E/market|target=src/" "$PROBE" && grep -q "^VHPOC|repo=$E2E/core|target=src/" "$PROBE" \
+   && ! grep -q "^VHPOC|repo=$E2E|" "$PROBE" \
+   && grep -q "\[vector-hunt\] zone 'legacy_contracts' root 'legacy' is not a Foundry project" "$WORK/e2e.err"; then
+  ok "STAGE 4.6: the PoC runner receives --repo <clone>/market and <clone>/core with root-relative targets; legacy skipped"
+else
+  bad "STAGE 4.6 routing:"; grep '^VHPOC' "$PROBE" | sort -u | sed 's/^/      /'
+fi
+# M5: the PoC stage of a market finding builds in <clone>/market.
+if grep -q "^COORD|loc=market/src/Pair.sol:[^|]*|poc_repo=$E2E/market|poc_target=Pair.sol$" "$PROBE" \
+   && ! grep -q "^COORD|.*|poc_repo=$E2E|" "$PROBE"; then
+  ok "M5: every market finding reaches the PoC stage with POC_REPO=<clone>/market"
+else
+  bad "M5 POC_REPO:"; grep '^COORD' "$PROBE" | sed 's/^/      /'
+fi
+DARK_FACTORY_DIR="$WORK/df-registry" "$ZONEHUNT" --repo "$E2E/core" --out "$E2E_OUT" --deep-hunt --deep-hunt-only \
+  --backend mock --agentis "$STUB" >/dev/null 2>"$WORK/dho.err"; RC=$?
+[ "$RC" -eq 3 ] && grep -q 'a multi-root map needs the clone root' "$WORK/dho.err" \
+  && ok "--deep-hunt-only --repo <clone>/core over the multi-root out exits 3 (the map needs the clone root)" \
+  || bad "--deep-hunt-only guard: rc=$RC (want 3)"
+
+# ----------------------------------------------------------------------------------------------------------
 if [ "$FAILS" -eq 0 ]; then
-  note "PASS — every project root of a multi-project repo is mapped; single-root output is byte-identical (#2255)"
+  note "PASS — every project root of a multi-project repo is mapped and deep-hunted in its own root; single-root output is byte-identical (#2255)"
   exit 0
 fi
 note "FAIL — $FAILS assertion(s) regressed" >&2
