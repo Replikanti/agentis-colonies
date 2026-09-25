@@ -1,0 +1,35 @@
+{
+  "repo": "triage-fixture",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "Core pool and vault",
+      "location": "src/core/Pool.sol:withdraw:40",
+      "file": "src/core/Pool.sol",
+      "class": "class=C2",
+      "severity": "High",
+      "exploit": "withdraw transfers assets before the share burn, so a re-entrant receiver withdraws twice",
+      "poc_sketch": "re-enter from the receiver hook and assert a double payout"
+    },
+    {
+      "subsystem": "Core pool and vault",
+      "location": "src/core/Vault.sol:settle",
+      "file": "src/core/Vault.sol",
+      "class": "invariant",
+      "severity": "Medium",
+      "exploit": "invariant_settle_index_monotone broken: settle compounds the index twice",
+      "poc_sketch": "",
+      "source": "invariant-hunt"
+    }
+  ],
+  "errors": [
+    {
+      "location": "src/core/Pool.sol:skim:61",
+      "file": "src/core/Pool.sol",
+      "reason": "LLM transport error after 5 attempts (not assessed)"
+    }
+  ],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {"candidates": 3, "verified": 1, "errored": 1, "dropped_subfloor": 0}
+}

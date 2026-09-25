@@ -2413,6 +2413,23 @@ if [ -x "$REPO_ROOT/dark-factory/demo-generation-recall.sh" ]; then
     fi
 fi
 
+# --- dark-factory held-out exam: per-row triage scorer (#2262) ---
+# Every rare row of a held-out exam used to be scored by hand (candidates / verified findings at the row's
+# function, cell-log mentions, DISMISS lines, refute verdicts -> HIT / MISS and the MISS cause).
+# bench/corpus-bench/triage.py mechanises the READING and PROPOSES a class per truth row with its evidence; the
+# operator confirms. demo-holdout-exam.sh source-guards that it reads only real output logs (never the
+# hunter.ag / refuter.ag source copies a RUN dir holds) and imports the frozen score-match.py pair rule, then
+# runs triage.py --self-test, which reproduces a fixed triage table from fixtures/triage/ (CI-safe, no LLM).
+if [ -x "$REPO_ROOT/dark-factory/demo-holdout-exam.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-holdout-exam.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: held-out exam triage + runner self-test (#2262)"
+    else
+        fail "dark-factory: held-out exam triage + runner self-test regressed (#2262)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory semantic mechanism judge scoring mode (#1829) ---
 # score-match.py's location-first token matcher decides "same bug?" by file+function name co-occurrence, which
 # undercounts BOTH ways: it MISSES a candidate that describes the GT row's root cause from a factory/getter the

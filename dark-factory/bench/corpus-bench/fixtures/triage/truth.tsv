@@ -1,0 +1,14 @@
+TX-1	High	1	Withdraw pays out before the share burn	Withdraw pays out before the share burn -- ### Summary Pool.withdraw sends assets before burning shares.	Pool.sol:withdraw
+TX-2	Medium	2	Settlement index drifts under repeated settle	Settlement index drifts under repeated settle -- ### Summary Vault settle compounds the index twice.	Vault.sol:settle
+TX-3	Medium	5	Skim sends the reserve surplus to any caller	Skim sends the reserve surplus to any caller -- ### Summary Pool skim has no recipient check.	Pool.sol:skim
+TX-4	High	1	Sweep drains idle balance	Sweep drains idle balance -- ### Summary Vault sweep moves idle funds to the caller.	Vault.sol:sweep
+TX-5	Medium	3	Deposit rounds shares toward the depositor	Deposit rounds shares toward the depositor -- ### Summary Pool deposit rounds up.	Pool.sol:deposit
+TX-6	Medium	9	Stale oracle answer is accepted	Stale oracle answer is accepted -- ### Summary Oracle peek has no staleness bound.	Oracle.sol:peek
+TX-7	High	2	Router forwards an unchecked path	Router forwards an unchecked path -- ### Summary Router route trusts the caller path.	Router.sol:route
+TX-8	Medium	4	Accrual skips the first block	Accrual skips the first block -- ### Summary Vault accrue starts one block late.	Vault.sol:accrue
+TX-9	High	1	Rebase lets supply exceed the backing	Rebase lets supply exceed the backing -- ### Summary Vault rebase mints unbacked supply.	Vault.sol:rebase
+TX-10	Medium	12	Sync reads a stale reserve	Sync reads a stale reserve -- ### Summary Pool sync caches the reserve.	Pool.sol:sync
+TX-11	Medium	2	Pause does not stop withdrawals	Pause does not stop withdrawals -- ### Summary Vault pause leaves the exit path open.	Vault.sol:pause
+TX-12	Medium	6	Harvest fee rounds against the vault	Harvest fee rounds against the vault -- ### Summary `Vault::harvest()` floors the fee share on every harvest.	
+TX-13	Medium	7	Rescue can move user deposits	Rescue can move user deposits -- ### Summary the admin `rescue(token, amount)` path does not exclude the deposit asset.
+TX-14	High	1	Rounding compounds across epochs	Rounding compounds across epochs -- ### Summary the per-epoch rounding error is never reconciled, so it compounds.	

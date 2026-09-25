@@ -1,0 +1,43 @@
+{
+  "repo": "triage-fixture",
+  "backend": "mock",
+  "jobs": 1,
+  "cells": [
+    {
+      "subsystem": "Core pool and vault",
+      "class": "C6",
+      "files": "src/core/Pool.sol@deposit+withdraw+skim,src/core/Vault.sol",
+      "status": "ok",
+      "candidates": [
+        "src/core/Vault.sol:sweep:88|class=C6|High|sweep forwards the idle balance to msg.sender without an owner check|call sweep as a stranger and assert the idle balance moved",
+        "src/core/Pool.sol:skim:61|class=C6|Medium|skim pays the reserve surplus to an arbitrary recipient|donate, skim to self, assert the surplus left the pool"
+      ],
+      "coordination": []
+    },
+    {
+      "subsystem": "Core pool and vault",
+      "class": "C2",
+      "files": "src/core/Pool.sol@deposit+withdraw+skim,src/core/Vault.sol",
+      "status": "ok",
+      "candidates": [
+        "src/core/Pool.sol:withdraw:40|class=C2|High|withdraw transfers assets before the share burn, so a re-entrant receiver withdraws twice|re-enter from the receiver hook and assert a double payout"
+      ],
+      "coordination": []
+    }
+  ],
+  "tier2": [
+    {
+      "subsystem": "Core pool and vault",
+      "class": "C2",
+      "id": 3,
+      "kind": "unresolved",
+      "location": "src/core/Vault.sol:harvest",
+      "loc_source": "opcheck",
+      "loc_rule": "contract-fn",
+      "severity": "",
+      "check": "Vault.harvest must round the fee share toward the vault",
+      "why": "the fee rate is set outside this zone slice, so the trace could not settle the check"
+    }
+  ],
+  "totals": {"cells": 3, "candidates": 3, "steers": 0, "tier2": 1, "tier2_dropped": 0}
+}

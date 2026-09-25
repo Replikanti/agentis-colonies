@@ -30,6 +30,8 @@ corpus-bench/
   bench-to-knowledge.sh           # LEARN half (#1711): scored contests -> per-class real-bug precision ->
                                   #   agentis `hunt-fitness` knowledge (feeds zone-mapper.ag's reorder)
   run-corpus-bench.sh             # orchestrator + scorer (this is the entrypoint)
+  triage.py                       # held-out per-row TRIAGE (#2262): per truth row, the evidence at its
+                                  #   location + a PROPOSED class (operator confirms; never claims a HIT)
   fixtures/
     sample-judging-readme.md      # tiny synthetic judging report (2 findings, rarity 2 and 9), carrying one
                                   #   of each #2215 anchor form: a `File:` block, a `#L23-L25` blob link and
@@ -54,6 +56,12 @@ corpus-bench/
                                   #   defect, expected-scorecard.judge.txt = the corrected answer) +
                                   #   judge-decisions.jsonl (the recorded cache) + judge-stub.sh (offline
                                   #   judge backend; MECH_JUDGE_STUB_MODE=malformed for the fail-closed case)
+    triage/                       # synthetic fixture for triage.py (#2262): truth.tsv (one row per class,
+                                  #   incl. an empty-column-6 keyword row and an unanchored row), the full
+                                  #   two-zone map/, one run tree run-core/ (verified breadth + invariant-hunt,
+                                  #   REFUTED + ERROR gates, DISMISS/TRACE/INVARIANT lines, a .timeout cell),
+                                  #   DECOYS (hunter.ag / refuter.ag source copies, a superseded
+                                  #   discovery/core.attempt-1/) and the pinned expected-triage.{tsv,md}
     gt-dupes/                     # synthetic fixture for GT equivalence (#1840), deliberately SEPARATE from
                                   #   mech-judge/ (adding a row there would change every request payload and
                                   #   silently re-baseline the frozen #1829 cache keys): truth.tsv with a
@@ -453,6 +461,68 @@ dark-factory/bench/corpus-bench/generation-recall.sh --from-work <dir> --id yiel
 **unchanged** — this harness only consumes their artifacts, and the adapter absorbs every projection detail so
 the #1698/#1699 re-measurement scorer stays byte-identical. This GT-anchored before/after is the **standard
 evidence for money-tier levers**: a single one-target A/B is no longer the sole signal.
+
+## Held-out exam: runner + per-row triage (#2262)
+
+A held-out exam is scored per RARE row, and until now every row was scored by hand: read the truth row, find
+candidates and verified findings at the same function, grep the cell logs for it, read the DISMISS lines and the
+refute verdicts, decide HIT / MISS and the MISS cause. `triage.py` (M1) mechanises the **reading**, never the
+decision: for every truth row it collects the evidence at the row's location and **proposes** a class with the
+evidence lines next to it. The operator confirms in the `operator_class` column. (The reusable exam runner is
+M2/M3 of #2262 and not shipped yet.)
+
+**Inputs.** `--truth <truth.tsv>` (the 5/6-column `extract-gt.sh` shape; the 4-column CodeHawks shape is refused)
+and one or more run trees — `--run [LABEL=]<zone-hunt-out>` or `--run-root <dir>`, which collects every dir
+holding `discovery/` below it (e.g. an exam root's `arms/<contest>/<zone>/<arm>-r<N>/<contest>/zone-hunt-out`
+trees, labelled by their relative path). `--map <zones.json>` (alias `--zones-json`) should be the FULL frozen
+map: without it the union of the run trees' own `map/` is used, and a staged single-zone map under-reports
+`scope-out-of-map` and `unmeasured` (the header says so). `--scope` defaults to the `scope.tsv` next to `--map`.
+`--unmeasured <zone>:<reason>` forces a zone (a VOID run) to unmeasured. `--rows rare` / `--rare-only` keeps the
+rare tier (`--rare-max`, default 2). `--out <dir>` writes `triage.tsv` + `triage.md`.
+
+**Where "at the location" comes from.** Anchors are truth.tsv column 6, read with score-match.py's own
+`parse_row_locations()`, and every location is matched with its `lead_location()` / `lead_matches_locations()`
+(+ `hypotheses-to-leads.py`'s `bare_codefile()`) — imported read-only, so triage's "at the location" is exactly the
+scoreboard's #2215 pair-exact rule. When column 6 is empty, a deterministic keyword fallback reads title +
+signature: `Contract::fn` / `Contract.sol::fn` / `Contract.fn(` become `keyword-pair` anchors, otherwise backticked
+`fn(` tokens become function-only `keyword-fn` anchors (stoplisted: require/revert/emit/abi/keccak256, ERC20 verbs).
+
+**What is read.** Only real output: `discovery/discovery-results.merged.json` (candidates + `tier2[]`),
+`verify/verified_findings.json` (`verified[]` of any `source`, `refuted[]`, `out_of_scope[]`, `errors[]`),
+`verify/gates*/<n>_*/` (`candidate.manifest`, `verdict.txt`, `REFUTE-GROUND|` only from
+`refute-out/run/refute_*.log`), the cell logs `discovery/<zone>/run/hunt_*.log` + their `.untraced-attempt-<n>` /
+`.rubric-attempt-<n>` companions (`DISMISS|` lines and word-boundary mentions of the function; `.timeout` /
+`.novalid` markers give the cell status), and `deep-hunt/*/run/invariant_*.log` (`INVARIANT|` lines). The
+`hunter.ag` / `refuter.ag` source copies every RUN dir holds carry the same sentinel literals and are never read;
+a superseded `discovery/<zone>.attempt-<n>/` is excluded unless `--include-superseded`. The fixture's decoys fail
+the self-test if either rule regresses.
+
+**Class vocabulary, first match wins** (over all anchors of the row):
+
+| # | class | when |
+|---|---|---|
+| 0 | `unanchored` | no column-6 anchor and no keyword anchor — never guessed |
+| 1 | `HIT-candidate` | `level=verified`: a `verified[]` entry at an anchor; else `level=unassessed`: a candidate whose gate did not refute it (REAL-not-kept / ERROR / skipped / no gate); else `level=tier2`: an unrefuted tier-2 record |
+| 2 | `refuted` | candidates at an anchor, every one refuted (non-confirm gate verdict, `refuted[]`, `out_of_scope[]`) |
+| 3 | `found-dismissed` | a `DISMISS\|` line at an anchor and no candidate |
+| 4 | `scope-out-of-map` | `sub=file`: no anchor file in any zone's `files[]`; `sub=slice`: every scope line for the file is sliced and none lists the function, an owning zone ran, and no log / `INVARIANT\|` target mentions it (the slicer's same-file callee closure can pull unlisted helpers in, and a zone that never answered cannot show a function was unseen) |
+| 5 | `unmeasured` | no owning zone was measured: no run tree, `--unmeasured`, or every cell `.timeout` / `.novalid` |
+| 6 | `generation` | an owning zone ran; `sub=examined` when a cell log or an `INVARIANT\|` target (ANY verdict — a CLEAN invariant at the location is an examination, not a HIT) mentions the function, else `sub=unseen` |
+
+**Reading rule.** Every class is a PROPOSAL. Like the #2215 anchors, triage is **mechanism-blind**: a
+name-coincident candidate at an anchored location proposes `HIT-candidate` all the same, and a mention is a name,
+not an examination of the bug. `HIT-candidate` is never a HIT until the operator column says so, and the markdown
+prints no recall number. A HIT claim is read off the evidence lines (the candidate text, the cell log), never off
+the proposed class.
+
+```bash
+# deterministic self-test (what colony-lint runs via demo-holdout-exam.sh; no network/LLM/forge):
+dark-factory/bench/corpus-bench/triage.py --self-test
+
+# triage every zone tree of an exam arm against the frozen base's full map (rare rows only):
+dark-factory/bench/corpus-bench/triage.py --truth <base>/<id>/truth.tsv --run-root <exam>/arms/<id> \
+    --zones-json <base>/<id>/map/zones.json --rare-only --out <dir> [--contest <id> --corpus corpus.tsv]
+```
 
 ## Generalization measurement bench (#1763 G4)
 

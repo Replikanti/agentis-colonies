@@ -1,0 +1,3 @@
+[
+  {"id": "core", "name": "Core pool and vault", "files": ["src/core/Pool.sol", "src/core/Vault.sol"]}
+]

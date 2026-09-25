@@ -1,0 +1,3 @@
+# synthetic scope.tsv: <subsystem> | <class-csv> | <file[,file...]>
+Core pool and vault | C2,C6 | src/core/Pool.sol@deposit+withdraw+skim,src/core/Vault.sol
+Peripheral router | C5 | src/periph/Router.sol

@@ -1,0 +1,5 @@
+[genesis] 000000000001
+[prompt] "You are an adversarial refuter..." -> string
+The candidate claims an unprivileged caller can sweep the idle balance.
+REFUTE-GROUND|guard|onlyOwner on the sweep declaration reverts for every non-owner caller
+VERDICT|REFUTED

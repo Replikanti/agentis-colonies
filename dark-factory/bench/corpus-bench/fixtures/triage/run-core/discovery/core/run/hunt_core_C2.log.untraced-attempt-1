@@ -1,0 +1,3 @@
+[genesis] 000000000005
+[prompt] "You are an elite adversarial smart-contract auditor..." -> string
+READ|src/core/Vault.sol:rescue|the admin rescue(token, amount) path excludes nothing, the deposit asset included

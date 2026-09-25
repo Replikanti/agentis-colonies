@@ -1,0 +1,1 @@
+src/core/Vault.sol:sweep:88|class=C6|High|sweep forwards the idle balance to msg.sender without an owner check|src/core/Vault.sol
