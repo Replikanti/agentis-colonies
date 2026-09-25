@@ -1,0 +1,14 @@
+# briefs.fixture.txt — canned brief-writer bodies for the #2262 exam runner self-test (gen-briefs.sh --fixture).
+# Generic protocol mechanics only. The self-test derives its CONTAMINATED variant from this file at run time (it
+# appends a delimited finding-id token), so no such token is committed here.
+DARK-FACTORY:BRIEF-BEGIN|src_pool
+Attack the share accounting as an external depositor holding no privileged role:
+- C1: does withdraw move value before the share balance is reduced, and can the ratio be skewed first?
+- C6: is every division rounded against the caller on deposit and on withdraw?
+Break invariant: "totalAssets covers every outstanding share at the current ratio".
+DARK-FACTORY:BRIEF-END
+DARK-FACTORY:BRIEF-BEGIN|src_feed
+Attack the price feed as an external actor:
+- C2: can a consumer read a price that is arbitrarily old, and is the push path restricted to the keeper?
+Break invariant: "read() never returns a price older than the freshness bound".
+DARK-FACTORY:BRIEF-END

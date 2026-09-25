@@ -1,0 +1,3 @@
+EX-1	High	1	Withdraw moves value before the share burn	Withdraw moves value before the share burn -- ### Summary Pool.withdraw pays before burning shares.	Pool.sol:withdraw
+EX-2	Medium	2	Stale price is served to consumers	Stale price is served to consumers -- ### Summary Feed.read has no freshness check.	Feed.sol:read
+EX-3	Medium	6	Deposit rounds shares toward the depositor	Deposit rounds shares toward the depositor -- ### Summary Pool.deposit rounds in the caller favour.	Pool.sol:deposit

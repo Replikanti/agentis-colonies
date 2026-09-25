@@ -1,0 +1,20 @@
+# KNOBS — pipeline knob names the exam runner CLEARS before it applies a profile, in addition to every env./
+# deep./pass. name of the shipped profiles (exam-helper.py knob-registry). A knob that exists in the pipeline
+# but is set by no shipped profile belongs here, so an operator's exported value cannot reach an arm that does
+# not ask for it. Add a name when a new default-OFF knob lands. `#` starts a comment; names are whitespace-
+# separated.
+
+# breadth (run-discovery.sh / hunter.ag / refuter.ag)
+OPERATIONALIZE_LENS CALLEE_TRUST PARAM_AUDIT FUNCTION_COVERAGE BREADTH_PROMISES
+SEVERITY_RUBRIC GROUND_EVIDENCE REFUTE_CONSTRAINTS_JSON
+DF_TIER2 DF_TIER2_MAX_PER_ZONE DF_TIER2_RARE_CLASSES
+DF_TRACE_MAX_REASKS DF_RUBRIC_MAX_REASKS DF_PARAM_MAX_REASKS DF_PROMISE_MAX_REASKS
+DF_EXTERNAL_RESOLVE DF_EXTERNAL_BUDGET DF_ONCHAIN_BUDGET
+DF_HUNT_TIMEOUT_FLOOR_MS DF_HUNT_TIMEOUT_CAP_MS DF_GEN_TIMEOUT_BASE_MS DF_GEN_TIMEOUT_CAP_MS
+
+# STAGE 4.5 (run-zone-hunt.sh --deep-hunt)
+DEEP_HUNT_REACH DEEP_HUNT_PROMISES DEEP_HUNT_JOBS DEEP_HUNT_CELL_TIMEOUT_S DEEP_HUNT_ZONE_BUDGET_S
+DEEP_HUNT_SKIP_BROKEN_TARGET
+
+# map layer (the runner passes the frozen roots itself, from freeze.meta)
+DF_PROJECT_ROOTS ZONE_SPLIT_LOC

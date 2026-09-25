@@ -1,0 +1,7 @@
+# zones.fixture.txt — canned zone-mapper classification for the #2262 exam runner self-test (map-zones.sh
+# --fixture). Two zones, both NOT value-custody, so the STAGE 4.5 pass the mock profile enables selects no row
+# and needs no forge: the self-test measures the runner (routing, markers, knobs), not the deep hunt.
+ZONE|src_pool|share pool|C1,C6|Share pool: deposit/withdraw share accounting and rounding direction
+ZONE|src_feed|price feed|C2|Keeper-pushed price: staleness and access control on the push path
+CUSTODY|src_pool|false
+CUSTODY|src_feed|false

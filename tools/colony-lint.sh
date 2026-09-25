@@ -2455,13 +2455,17 @@ if [ -x "$REPO_ROOT/dark-factory/demo-generation-recall.sh" ]; then
     fi
 fi
 
-# --- dark-factory held-out exam: per-row triage scorer (#2262) ---
+# --- dark-factory held-out exam: per-row triage scorer + exam runner (#2262) ---
 # Every rare row of a held-out exam used to be scored by hand (candidates / verified findings at the row's
 # function, cell-log mentions, DISMISS lines, refute verdicts -> HIT / MISS and the MISS cause).
 # bench/corpus-bench/triage.py mechanises the READING and PROPOSES a class per truth row with its evidence; the
 # operator confirms. demo-holdout-exam.sh source-guards that it reads only real output logs (never the
 # hunter.ag / refuter.ag source copies a RUN dir holds) and imports the frozen score-match.py pair rule, then
 # runs triage.py --self-test, which reproduces a fixed triage table from fixtures/triage/ (CI-safe, no LLM).
+# M2 adds the contest-agnostic exam runner (bench/corpus-bench/exam/exam.sh: freeze, profiles, stage/run,
+# STAGE 4.5, markers, drive, kill-by-path, triage hand-off): the demo source-guards it (no pgrep/pkill, no home
+# path, no corpus contest id, no path in a profile) and runs `exam.sh self-test`, a mock two-zone exam end to
+# end with a stub agentis (--backend mock; no LLM, no network, ~45 s).
 if [ -x "$REPO_ROOT/dark-factory/demo-holdout-exam.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-holdout-exam.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then

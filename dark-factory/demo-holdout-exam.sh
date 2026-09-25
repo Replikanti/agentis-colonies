@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# demo-holdout-exam.sh — proof of the #2262 held-out exam tooling (M1: the per-row triage scorer).
+# demo-holdout-exam.sh — proof of the #2262 held-out exam tooling (M1: the per-row triage scorer; M2: the exam
+# runner core, bench/corpus-bench/exam/exam.sh).
 #
 # Every rare row of a held-out exam used to be scored by hand: read the truth row, look for candidates and
 # verified findings at the same function, grep the cell logs, read the DISMISS lines and the refute verdicts,
@@ -8,6 +9,12 @@
 # found-dismissed / scope-out-of-map / unmeasured / generation / unanchored) with the evidence lines next to
 # it. The operator confirms; the tool never claims a HIT.
 #
+# M2 moves the rest of the host-only harness into the repo, contest-agnostic: exam.sh freezes a contest's map +
+# briefs from a pinned checkout (contamination-checked on both sides), stages one zone or the whole contest into
+# an arm dir, runs the breadth pass with a knob PROFILE (profiles/*.env) and optionally STAGE 4.5 over the same
+# output, writes run.meta / .done / MANIFEST.tsv even after a crash, drives a plan sequentially under a PID lock
+# from a snapshot of itself, kills by path, and hands every finished arm to triage.py.
+#
 # This demo has TWO parts (both CI-safe: no network, no LLM, no forge):
 #   1) SOURCE-GUARD (always): triage.py reads ONLY real output logs (`hunt_*.log*` cell logs and
 #      `refute_*.log` refute logs — never the `hunter.ag` / `refuter.ag` source copies every RUN dir holds,
@@ -15,9 +22,17 @@
 #      re-implementing it; the fixture tree carries no absolute home path and its decoy `.ag` files carry no
 #      GT-id token or `corpus-bench` literal (the #2231 guard scans every `.ag` under dark-factory/). The
 #      behavioural part below SKIPs cleanly (exit 0) without python3.
+#      Runner (M2): no pgrep/pkill anywhere in exam/ (a pattern-matching killer matches its own command line —
+#      kill-by-path reads ps + /proc instead); no absolute home path and no corpus.tsv contest id (as a word) in
+#      exam/ or fixtures/exam/; no profile value carries a path; exam.sh embeds no heredoc python and exports
+#      the three Claude Code killswitches.
 #   2) BEHAVIOURAL (when python3 is present): `triage.py --self-test` reproduces the fixed triage table in
 #      bench/corpus-bench/fixtures/triage/ byte-for-byte and holds the decoy / superseded / unmeasured /
-#      rare-subset / determinism assertions.
+#      rare-subset / determinism assertions. `exam.sh self-test` then drives a mock two-zone exam end to end
+#      over fixtures/exam/ with a stub agentis (--backend mock): profile grammar, freeze (+ both contamination
+#      gates, the dirty-checkout refusal, multi-root clone), plan, stage (filter, class injection, drift
+#      refusal), run (breadth + STAGE 4.5 knob routing, knob hygiene, hard stop), drive (lock, snapshot re-exec,
+#      --resume, HEAD pin, triage hand-off) and kill-by-path.
 #
 # Usage:  dark-factory/demo-holdout-exam.sh
 # Exit: 0 = all assertions hold (SKIPs cleanly when python3 is absent) ; non-zero = a regression.
@@ -27,6 +42,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 CB="$HERE/bench/corpus-bench"
 TRIAGE="$CB/triage.py"
 FIX="$CB/fixtures/triage"
+EXAM="$CB/exam"
+EXFIX="$CB/fixtures/exam"
 
 FAILS=0
 note() { echo "demo-holdout-exam.sh: $*"; }
@@ -37,6 +54,9 @@ skip() { echo "  [SKIP] $*"; }
 [ -f "$TRIAGE" ] || { note "triage.py not found: $TRIAGE" >&2; exit 3; }
 for f in truth.tsv map/zones.json map/scope.tsv expected-triage.tsv expected-triage.md; do
   [ -f "$FIX/$f" ] || { note "fixture missing: $FIX/$f" >&2; exit 3; }
+done
+for f in "$EXAM/exam.sh" "$EXAM/exam-helper.py" "$EXAM/profiles/KNOBS" "$EXFIX/agentis-stub.sh" "$EXFIX/truth.tsv"; do
+  [ -f "$f" ] || { note "exam runner file missing: $f" >&2; exit 3; }
 done
 
 # ----------------------------------------------------------------------------------------------------------
@@ -79,6 +99,50 @@ else
   bad "no decoy .ag source copy under fixtures/triage/ — the negative control is gone"
 fi
 
+note "source-guarding the #2262 exam runner ..."
+
+killers="$(grep -rnIE '(^|[^[:alnum:]_-])(pgrep|pkill)([^[:alnum:]_-]|$)' "$EXAM" 2>/dev/null | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
+if [ -z "$killers" ]; then
+  ok "exam/ calls no pgrep/pkill (kill-by-path reads ps + /proc; a pattern killer matches its own command line)"
+else
+  bad "exam/ calls pgrep/pkill:"; printf '%s\n' "$killers" | sed "s|^$HERE/||" | head -5
+fi
+
+ex_home="$(grep -rnIE '/home/|/Users/|/root/' "$EXAM" "$EXFIX" 2>/dev/null || true)"
+if [ -z "$ex_home" ]; then
+  ok "exam/ + fixtures/exam/ carry no absolute home path"
+else
+  bad "absolute home path under exam/ or fixtures/exam/:"; printf '%s\n' "$ex_home" | sed "s|^$HERE/||" | head -5
+fi
+
+ids="$(grep -v '^#' "$CB/corpus.tsv" | cut -f1 | grep . | paste -sd'|' -)"
+if [ -n "$ids" ]; then
+  ex_ids="$(grep -rnwiIE "$ids" "$EXAM" "$EXFIX" 2>/dev/null || true)"
+  if [ -z "$ex_ids" ]; then
+    ok "exam/ + fixtures/exam/ name no corpus.tsv contest ($(printf '%s\n' "$ids" | tr '|' '\n' | grep -c .) ids checked as words)"
+  else
+    bad "a corpus.tsv contest id appears under exam/ or fixtures/exam/:"; printf '%s\n' "$ex_ids" | sed "s|^$HERE/||" | head -5
+  fi
+else
+  bad "corpus.tsv yields no contest id — the contest-name guard checks nothing"
+fi
+
+prof_paths="$(grep -nE '^[^#]*=.*/' "$EXAM"/profiles/*.env 2>/dev/null || true)"
+if [ -z "$prof_paths" ]; then
+  ok "no shipped profile value carries a path (contest / host facts live in freeze.meta + the plan TSV)"
+else
+  bad "a shipped profile carries a path:"; printf '%s\n' "$prof_paths" | sed "s|^$HERE/||" | head -5
+fi
+
+if ! grep -qE "<<-?[[:space:]]*'?PY'?|python3 -[[:space:]]" "$EXAM/exam.sh" \
+   && grep -q '^export CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1$' "$EXAM/exam.sh" \
+   && grep -q '^export CLAUDE_CODE_NO_MODEL_FALLBACK=1$' "$EXAM/exam.sh" \
+   && grep -q '^export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1$' "$EXAM/exam.sh"; then
+  ok "exam.sh embeds no heredoc python and exports the three Claude Code killswitches"
+else
+  bad "exam.sh embeds heredoc python or lost a killswitch export"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # 2) BEHAVIOURAL — the fixed triage table (SKIP cleanly without python3).
 # ----------------------------------------------------------------------------------------------------------
@@ -93,13 +157,26 @@ else
     bad "triage.py --self-test FAILED (exit $st_rc)"
     printf '%s\n' "$st_out" | sed 's/^/         | /' | tail -25
   fi
+  if ! command -v git >/dev/null 2>&1 || ! timeout --version 2>/dev/null | grep -q 'GNU coreutils' || [ ! -d /proc/self ]; then
+    skip "exam.sh self-test needs git, GNU timeout and /proc — skipped on this host"
+  else
+    note "running exam.sh self-test (mock two-zone exam end to end) ..."
+    ex_out="$(bash "$EXAM/exam.sh" self-test 2>&1)"; ex_rc=$?
+    if [ "$ex_rc" -eq 0 ]; then
+      ok "exam.sh self-test PASSED ($(printf '%s\n' "$ex_out" | grep -c '\[OK\]') assertions: freeze, plan, stage, run, drive, triage hand-off, kill)"
+    else
+      bad "exam.sh self-test FAILED (exit $ex_rc)"
+      printf '%s\n' "$ex_out" | grep -E -A6 '\[FAIL\]' | sed 's/^/         | /' | head -40
+    fi
+  fi
 fi
 
 echo
 if [ "$FAILS" -eq 0 ]; then
   note "PASS: the #2262 triage scorer reads only real output logs, imports the frozen pair rule, and reproduces"
-  note "      the fixed per-row triage table (every class a PROPOSAL; the operator confirms)."
+  note "      the fixed per-row triage table (every class a PROPOSAL; the operator confirms); the exam runner"
+  note "      freezes, stages, runs, drives and hands off to triage with no contest fact in the repo."
   exit 0
 fi
-note "DEMO FAILED — a #2262 triage assertion did not hold" >&2
+note "DEMO FAILED — a #2262 triage / exam-runner assertion did not hold" >&2
 exit 1
