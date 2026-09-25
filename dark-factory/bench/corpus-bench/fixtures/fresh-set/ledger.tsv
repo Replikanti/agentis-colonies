@@ -1,0 +1,3 @@
+# Synthetic hunted-targets ledger for fresh-set.sh --self-test (#2263): 8 columns, one row naming the alpha code repo.
+# target	commit	date	engine	verdict	findings	run	note
+fixture-org/2099-01-alpha	0000000	2099-02-01	zone-hunt	clean	0	run-1	synthetic

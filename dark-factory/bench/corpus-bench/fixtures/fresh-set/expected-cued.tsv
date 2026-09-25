@@ -1,0 +1,5 @@
+sev_id	severity	rarity	rare	label	location	answer	cued_recall	mech_overlap
+DECOY	-	-	-	C2	Vault:pause	NONE	-	-
+H-1	High	1	yes	C1	Vault:claimRewards	YES	yes	5
+M-1	Medium	2	yes	-	-	-	-	-
+M-2	Medium	7	no	-	-	-	-	-

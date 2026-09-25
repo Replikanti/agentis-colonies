@@ -33,6 +33,31 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   colony-lint via the new `demo-holdout-exam.sh`) reproduces a fixed triage table from the synthetic
   `fixtures/triage/`, whose decoy source copies and superseded attempt fail it if either read rule regresses.
 
+- **Fresh held-out set builder + training-memorization probe — `bench/corpus-bench/fresh-set.sh` (#2263).**
+  Building a never-touched held-out set was manual. (1) **Build** (`fresh-set.py`, stdlib only, one process):
+  discover `<slug>` + `<slug>-judging` pairs through the GitHub org listing (optional token, page cache, a rate
+  limit / HTTP / network / JSON failure degrades to `discovery=partial` and keeps the pages already read; a
+  `--candidates-from` hand list for other platforms) -> exclude everything in `--corpus` / `--exclude` files ->
+  shallow-clone the judging repo, `extract-gt.sh` offline (`gt`, `rare`, `gt_shape`) -> clone the code only
+  above `--min-rare` (`empty-submodule` / `readme-only` / `no-solidity`, source counts, `lib/project_roots.py`
+  roots, `rare_loc` via `--code`) -> contamination against the repo text (strong / weak / prompt-visible, the
+  #2231 list mirrored with cross-reference comments) and a REQUIRED `--ledger <file>` / `--no-ledger` choice.
+  Statuses `EXCLUDED > NO-GT > LOW-RARE > NO-CODE > CONTAMINATED > MEMORIZED > REVIEW > CLEAN`; a counts-only
+  report; the work dir is refused inside the repo. (2) **Reserve** writes a sealed `<work>/RESERVED.tsv`
+  (corpus.tsv row format + `# lock` SHAs/counts) that runs as-is with `run-corpus-bench.sh --corpus`; exit 4 on
+  anything not `CLEAN` unless `--allow-review` / `--allow-memorized`. (3) **Memorization probe**
+  (`fresh-set.sh probe <contest-dir>`, or `--probe` on a build): asks the hunter model, through the hunt's
+  backend and `--model` pin (flat-cyborg, `lib/claude-sandboxed.sh`, every tool off) and with NO code and NO
+  ground truth in the prompt (leak guard, exit 4), which accepted findings it remembers; scores the reply offline
+  with a conservative name + mechanism matcher -> `recalled_from_memory yes|partial|no` per row and a
+  memorization rate per contest; prompt and reply recorded verbatim; runs standalone on any already-frozen contest
+  dir; a contest whose rare rows are recalled is `MEMORIZED`. A **cued** mode (`probe --cued`, `build --probe
+  --cued`) addresses free recall's bias toward NONE: per GT location it shows only `<contract>:<function>` (never
+  a title or mechanism), batched (`--batch`, default 20) with one decoy function per batch. It scores the answers
+  with the same matcher into `cued_recall` / `cued_rate` / `decoy_fp_rate`, and a contest is `MEMORIZED` when
+  `rare_cued_rate > --memorized-rare-rate` (default 0.25). `--self-test` (colony-lint) is fully offline:
+  synthetic fixtures, `FRESH_SET_OFFLINE=1` network trip-wire, stub probe backend.
+
 - **Scope-aware refute — declared trust/token assumptions + the `out-of-scope-premise` ground, `--scope-docs
   <auto|file>`, nested under `SEVERITY_RUBRIC=1`, default OFF (#2257).** Verified findings whose exploit rests on
   an asset or environment the target's own docs exclude had nothing to stop them: the refute gate never saw the

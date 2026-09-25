@@ -1,0 +1,6 @@
+[submodule "contracts-core"]
+	path = contracts-core
+	url = https://github.com/fixture-org/contracts-core.git
+[submodule "lib/forge-std"]
+	path = lib/forge-std
+	url = https://github.com/fixture-org/forge-std.git

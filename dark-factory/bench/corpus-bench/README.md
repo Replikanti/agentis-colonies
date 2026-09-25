@@ -32,6 +32,9 @@ corpus-bench/
   run-corpus-bench.sh             # orchestrator + scorer (this is the entrypoint)
   triage.py                       # held-out per-row TRIAGE (#2262): per truth row, the evidence at its
                                   #   location + a PROPOSED class (operator confirms; never claims a HIT)
+  fresh-set.sh                    # fresh held-out set builder + training-memorization probe (#2263): discover
+                                  #   concluded contests, GT/rare/code/contamination checks, sealed RESERVED.tsv
+  fresh-set.py                    # its engine (stdlib python: listing client, pipeline, reserve, probe matcher)
   fixtures/
     sample-judging-readme.md      # tiny synthetic judging report (2 findings, rarity 2 and 9), carrying one
                                   #   of each #2215 anchor form: a `File:` block, a `#L23-L25` blob link and
@@ -62,6 +65,12 @@ corpus-bench/
                                   #   REFUTED + ERROR gates, DISMISS/TRACE/INVARIANT lines, a .timeout cell),
                                   #   DECOYS (hunter.ag / refuter.ag source copies, a superseded
                                   #   discovery/core.attempt-1/) and the pinned expected-triage.{tsv,md}
+    fresh-set/                    # synthetic fixture for fresh-set.sh --self-test (#2263): listing.json (seven
+                                  #   future-dated contest pairs + one unpaired repo under `fixture-org`),
+                                  #   repos/ (plain trees standing in for the clones), scan-root/ (a tiny fake
+                                  #   repo text tree), corpus.tsv + ledger.tsv, probe-stub.sh (offline model),
+                                  #   and the pinned expected-report{,.ledger,.probe}.tsv / expected-reserved.tsv /
+                                  #   expected-probe.tsv / expected-cued.tsv
     gt-dupes/                     # synthetic fixture for GT equivalence (#1840), deliberately SEPARATE from
                                   #   mech-judge/ (adding a row there would change every request payload and
                                   #   silently re-baseline the frozen #1829 cache keys): truth.tsv with a
@@ -1007,11 +1016,115 @@ external-fact resolution) moves a single held-out rare row (all NO-GO at n=2; th
 mechanics separately PASS). Read every number in that archive, and in any future `holdout`-role measurement,
 as the honest floor the `dev`-contest numbers above are NOT comparable to.
 
+## Fresh held-out set builder (#2263)
+
+Every capability change needs a never-touched held-out set to be measured on, and the held-out rows above are
+spent once a result has been read off them. `fresh-set.sh` builds the next set without the manual routine:
+
+```bash
+# build + report (the work dir MUST be outside this repo; exactly one of --ledger / --no-ledger)
+bash fresh-set.sh --work <dir> --ledger <hunted-targets ledger> \
+     --exclude <prior RESERVED.tsv or spent-exam list> [--since YYYY-MM] [--max-candidates N] [--probe]
+# freeze the chosen contests into a sealed manifest (no network)
+bash fresh-set.sh --work <dir> --reserve <id,id,...>
+# run the set exactly like the corpus
+bash run-corpus-bench.sh --work <dir> --corpus <dir>/RESERVED.tsv ...
+# probe ANY contest dir holding truth.tsv for training memorization (also retroactively, on a spent set)
+bash fresh-set.sh probe <work>/<id> --model <the hunt's model id>
+# offline contract check (what colony-lint runs)
+bash fresh-set.sh --self-test
+```
+
+**Pipeline** (`fresh-set.py`, one process; each contest carries the FIRST gate it fails):
+
+1. **Discover** (`--source sherlock-gh`): page the org's public repos through the GitHub REST API and keep
+   `<slug>` + `<slug>-judging` pairs only. `date` is the slug's month, `ended` the judging repo's creation date
+   (the closest public proxy for the contest end). `--candidates-from` takes a hand list instead, so another
+   platform that publishes GitHub judging repos needs no code change.
+2. **Exclude** (`EXCLUDED`, nothing cloned): the code or judging repo is in `--corpus`, or any whitespace field of
+   an `--exclude` file equals the slug, id or either repo. Pass every prior `RESERVED.tsv` and spent exam list
+   here: the spent held-out contests are named nowhere in repo text, so this is the only thing that catches them.
+3. **GT** (`NO-GT`, `LOW-RARE`): shallow-clone the judging repo, run `extract-gt.sh` offline; `rare` = rows with
+   found-by 1-2, `gt_shape=drift` when the `# Issue` header count differs from the extracted rows. A contest
+   below `--min-rare` (default 1) never gets its code cloned.
+4. **Code** (`NO-CODE`): shallow, non-recursive clone plus the wrapper's own non-vendored submodule;
+   `empty-submodule` > `readme-only` > `no-solidity`. Then source counts, project roots
+   (`lib/project_roots.py`, same rule as the hunt) and `rare_loc` (rare rows with a `--code` location anchor).
+5. **Contamination** (`CONTAMINATED`, `REVIEW`): every name of the contest is searched in the repo text
+   (`git ls-files`, loaded once) and in the `--ledger` file. Strong needles are the slug, the slug without its
+   date, both repo names and the code README H1; weak needles are the name tokens of at least 4 characters that
+   are not on the `WEAK_STOP` list in `fresh-set.py` (generic words such as `lending`, `vault`, `protocol`, which
+   say nothing about one contest; extend the list when a real run shows a new false positive). A strong hit, any
+   hit in a prompt-visible file (the #2231 set, mirrored from `tools/colony-lint.sh`) or a strong ledger hit is
+   `CONTAMINATED`. Weak hits only give `REVIEW`, which is reservable only with `--allow-review`, after a human has
+   read `<work>/<id>/contamination.tsv`.
+6. **Memorization** (`MEMORIZED`, see below), then `CLEAN`.
+
+The report (`<work>/fresh-set-report.tsv`) carries counts only, never a title or a signature; GT text stays in
+`<work>/<id>/truth.tsv`. **The work dir and `RESERVED.tsv` stay OUTSIDE the repo** (a `--work` inside it is
+refused): a reserved set is sealed until its exam is consumed, and only then promoted into `corpus.tsv` as
+`holdout`. `--reserve` refuses (exit 4, nothing written) any contest that is not `CLEAN` (`REVIEW` and `MEMORIZED`
+need their `--allow-*` flag), has no detected project root, or is already in the corpus.
+
+**Rate limit and cache.** The listing needs about 5 pages; without `GH_TOKEN` / `GITHUB_TOKEN` it runs
+unauthenticated, well under the anonymous limit, and the token is never printed or written. Raw pages are cached
+in `<work>/.listing/`, so a re-run costs 0 API calls (`--refresh-listing` to re-fetch). A rate limit, HTTP error,
+network error or bad JSON stops pagination but keeps the pages already read: the report header then says
+`discovery=partial (<reason>; resets <time>)`. Clones use no API quota.
+
+**Training memorization — the residual the hold-out cannot remove.** Every concluded judging repo available today
+predates the hunter model's knowledge cutoff, so the model may have read the public report, and any recall number
+on such a set (earlier held-out exams included) is confounded by memorization until it is measured. `fresh-set.sh
+probe <contest-dir>` measures it:
+
+- The prompt carries **no code and no ground truth**, only the contest slug, month and protocol name. A leak guard
+  refuses (exit 4; `memo=refused` inside a build) a prompt that would carry a GT title, a GT id, a location function
+  or a `.sol` name.
+- The call goes through **the hunt's backend and model pin**: flat-cyborg, the argv agentis builds for
+  `llm.backend = flat-cyborg`, the sandboxed target `lib/claude-sandboxed.sh`, `--model` (default `opus`, the
+  hunt's `llm.model` default). The session runs in an empty, pre-trusted scratch dir with every tool and MCP server
+  switched off (`--tools "" --strict-mcp-config`), so it can only answer from memory.
+- `prompt.txt` and `reply.txt` are recorded verbatim in `<contest-dir>/probe/`, and the reply is scored **offline**.
+  `recalled_from_memory` per GT row is `yes` when a non-generic contract/function name (or two names) AND at least
+  2 mechanism keywords of the title match one `FINDING|` line. It is `partial` for one keyword, or for a generic
+  name alone (`deposit`, `withdraw`, ...). A mechanism-only resemblance is `no`, and each reply line credits at most
+  one row. `summary.tsv` gives the memorization rate over all rows and over the rare rows. A backend that fails
+  (non-zero exit or an empty reply) is never scored, because an empty reply would read as `not-memorized`: the
+  reply is kept as `reply.failed.txt`, `probe` exits 3 and a build marks the contest `memo=failed`.
+- A contest with at least one rare row recalled `yes` is `MEMORIZED` in the report and is not reservable without
+  `--allow-memorized`. `build --probe` probes every `CLEAN` / `REVIEW` contest that has no recorded reply yet, and a
+  recorded reply is always re-scored. `probe --rescore` re-scores without calling the model.
+- The probe also runs standalone on any already-frozen `<work>/<id>/` of `fetch-corpus.sh` (the name comes from
+  the judging clone's origin remote and the code README H1), so spent sets can be probed retroactively.
+
+**Cued probe (`probe <contest-dir> --cued`, or `build --probe --cued`).** Free recall ("list what you remember")
+is biased toward `FINDING|NONE` by its own do-not-guess rule, and it misses recognition memory. The cued probe
+gives the model, for each GT row with a column-6 location, ONLY `<contract>:<function>` plus the contest name. It
+never gives a title, a description or a mechanism. It asks whether an accepted High/Medium finding was reported at
+that function and, if so, what its root cause was.
+
+- Locations are batched, `--batch` per prompt (default 20). The isolation and the backend are the same as the free
+  probe, and every prompt and reply is recorded verbatim (`cued-prompt-<n>.txt`, `cued-reply-<n>.txt`).
+- Every batch carries one **decoy**: a real function of `<contest-dir>/code` that no GT row names anywhere. Its
+  position in the batch is hash-ordered, so it carries no signal.
+- A `YES` is scored offline by the same conservative matcher. Because the cue supplies the names, the credit rests
+  on the mechanism keywords the model adds itself. The result is `cued_recall` per row (`cued.tsv`) plus
+  `cued_rate`, `rare_cued_rate` and `decoy_fp_rate` (`cued-summary.tsv`).
+- A model that answers `YES` to everything shows up as a high `decoy_fp_rate`, with content-free answers scoring
+  `no`, instead of looking like memorization.
+- A contest is `MEMORIZED` when `rare_cued_rate` exceeds `--memorized-rare-rate` (default 0.25). The report shows
+  the result as `memo_cued` (rare rows recalled / rare rows asked). `--rescore` re-scores recorded replies offline.
+
+The probe measures what the model can **state**. A model that recognises the code on sight without being able to
+name the finding is not caught, so a `not-memorized` contest is a lower bound on contamination, not proof of
+absence.
+
 ## Adding a contest
 
 Append a row to `corpus.tsv` (`id  code_repo  judging_repo  project_subdir  role  [scope_hint]`) for any
 CONCLUDED Sherlock contest whose judging repo is public — `role` is REQUIRED, and a new contest is a
-`holdout` unless a lens was knowingly designed on it. `extract-gt.sh` only needs the judging repo's
+`holdout` unless a lens was knowingly designed on it. To FIND such a contest (and check it for missing code,
+contamination and model memorization) use `fresh-set.sh`, see "Fresh held-out set builder (#2263)" above. `extract-gt.sh` only needs the judging repo's
 `README.md` to follow the `# Issue <H|M>-<N>: <title>` / `## Found by` shape used above — verify that shape holds (`grep -c '^# Issue
 [HM]-' README.md` should equal the contest's published finding count) before trusting the extracted count.
 

@@ -2044,6 +2044,22 @@ if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/extract-gt-codehawks.sh" ]; 
     fi
 fi
 
+# --- dark-factory: fresh held-out set builder + training-memorization probe (#2263) ---
+# fresh-set.sh builds a never-touched held-out contest set (discover concluded judging repos, extract GT, count
+# rare rows, code-presence + contamination + ledger checks, project roots, sealed RESERVED manifest) and probes the
+# hunter model for findings it recalls from training. Its --self-test runs ENTIRELY OFFLINE over synthetic
+# fixtures (FRESH_SET_OFFLINE=1 turns any HTTP / git clone / LLM call into a hard failure, no token, stub probe
+# backend), so CI never reaches GitHub or a model.
+if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/fresh-set.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/bench/corpus-bench/fresh-set.sh" --self-test 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: fresh held-out set builder self-test (#2263)"
+    else
+        fail "dark-factory: fresh held-out set builder self-test regressed (#2263)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory: corpus ground truth must NEVER be prompt-visible (#2231) ---
 # bug-taxonomy.md is the hunter's lens AND the brief-writer's source, so anything written into it is handed to
 # the model on a target it is later SCORED on. Until 2026-09-16 its `seen:` lines carried the corpus contests'
@@ -2058,6 +2074,8 @@ if [ -d "$df_gt_root/auditor" ]; then
     # Prompt-visible = everything the hunter / brief-writer can end up reading: the whole auditor colony
     # (taxonomy, methods, knowledge feeds, agent prompt strings), the brief scaffold, any lib/ prompt helper,
     # and every `.ag` under the federation (an agent comment is one copy-paste away from a prompt string).
+    # MIRRORED in dark-factory/bench/corpus-bench/fresh-set.py `prompt_visible()` (#2263, the contamination scan):
+    # two copies can drift, so when you touch this list update that one too.
     df_gt_files() {
         {
             find "$df_gt_root/auditor" -type f 2>/dev/null || true
