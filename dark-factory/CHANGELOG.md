@@ -16,6 +16,25 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **C27 — variant coverage gap class + deterministic single-zone zone-mapper route (#2265).** A new taxonomy
+  class for a protocol that ADMITS several variants of one configurable thing (an asset representation, a pool or
+  market kind, an external interface version, a price-feed kind, a staking/reward target, a route kind, an
+  implementation behind a registry) while a consuming path handles only some of them — a **missing branch** (a
+  default/zero return, a revert, a skipped step) or **basic-variant handling applied** to every variant. The lens is
+  the taxonomy section (placed directly after C26; hunter.ag is untouched) with a repository-wide four-step hunt
+  (admitted sets, every consumer, a consumers x variants coverage grid with the counterpart-pair asymmetry check,
+  who pays), a four-part required-evidence rule and a NOT-this-class list naming C21/C22/C23/C26/C9/C15/C16.
+  `zone-mapper.ag` gains a flat `index_of` net (`contains_variant_coverage_signal`: a variant discriminator — enum
+  member, type flag or ERC-165 probe — AND a value path), a `force_include(…, "C27")` backstop chained after the
+  C26 net and before the fitness reorder, a `VARIANT-COVERAGE|` diagnostic printed only when the net fires, and an
+  ONLY-WHEN detection rule in the prompt. Every net token carries a (G)/(T)/(D) provenance tag and the frozen token
+  list is pinned by digest. Measured dev fan-out 4 of 12 zones (at the <= 1/3 ceiling). Guarded offline by the new
+  `demo-variant-coverage-lens.sh` (wired into colony-lint); the "no class minted for this change" pins in
+  `demo-callee-trust-lens.sh` / `demo-operationalize-lens.sh` move to C28. Recall is unmeasured: the pre-registered
+  measurement on the sealed reserve set is an operator step after merge. **Side effect shared by every arm:**
+  `hunter.ag`'s slice for the last class runs to EOF, so C26 cells no longer carry the trailing usage-notes block
+  (C27 cells inherit it); C26's own text is byte-unchanged.
+
 - **Held-out exam: per-row triage scorer `bench/corpus-bench/triage.py` (#2262 M1).** Every rare row of a
   held-out exam was scored by hand (candidates / verified findings at the row's function, cell-log mentions,
   DISMISS lines, refute verdicts -> HIT / MISS and the MISS cause). The new stdlib-only, offline scorer reads one or

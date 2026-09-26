@@ -167,6 +167,7 @@ arm).
 | C24 stale state assumption | 3 | 1 | IN-FLIGHT (#2218) | 3 Mediums, all generation misses in #2213: yieldoor M-2, notional M-8, notional M-16 — class + zone-mapper route landed, recall unmeasured until M2 |
 | C25 empty distribution / zero participation | 2 | 1 | IN-FLIGHT (#2245) | design twin dev notional M-8 (in-distribution), test twin held-out superfluid-locker M-2 — class + zone-mapper route landed, recall unmeasured until the held-out run |
 | C26 admitted parameter / unenforced bound | 3 | 1 | IN-FLIGHT (#2245) | design twins dev notional M-3/M-5/M-22 (in-distribution), test twin held-out malda M-5/M-10/M-12 — class + zone-mapper route landed, recall unmeasured until the held-out run; the second held-out cluster (superfluid-locker M-3/M-5) is a recorded routing MISS |
+| C27 variant coverage gap | — | — | IN-FLIGHT (#2265) | designed from two dev targets by role only (no contest text in the lens or in this row) — class + single-zone zone-mapper route landed, recall unmeasured until the sealed reserve-set run |
 | C16 liveness / stuck-state | 4 | 3 | OPEN (#1784 overlaps) | DoS class |
 | C17 index/slot-overwrite | 1 | 5 | OPEN (#1784) | notional H-5 (H-3 retagged to C19 #2111) |
 | C19 narrow-int overflow / downcast | 1 | 1 | IN-FLIGHT (#2111) | yieldoor H-3 (fb=1 rare) — liveness lens + zone-mapper C19 net wired |
@@ -603,6 +604,76 @@ promise, nor one whose promise the extraction does not list.
 the promotion and the offline guards only (`../../demo-breadth-promises.sh`, wired into `tools/colony-lint.sh`). Any
 recall claim belongs to a new fresh set, measured by the operator.
 
+### Variant-coverage lens (#2265)
+
+**C27** (`auditor/bug-taxonomy.md`) is the class for a protocol that ADMITS several variants of one configurable
+thing — an asset/token representation, a pool or market kind, an external interface version, a price-feed kind, a
+staking/reward target, a route kind, an implementation behind a registry — while a consuming path handles only some
+of them. Two named directions: a **missing branch** (a consumer falls through for the unhandled variants to a
+default or zero, a revert or a skipped step) and **basic-variant handling applied** (a consumer never reads the
+discriminator and treats every variant like the basic one). The admission and the consumer usually sit in different
+contracts, so the class TEXT carries a repository-wide hunt (admitted sets from the constructor/setter/registry and
+the repository's own deploy scripts, tests and docs; every consumer; a consumers x variants coverage grid with the
+counterpart-pair asymmetry check). A deterministic **single-zone** `zone-mapper.ag` route force-includes C27 on a
+zone that reads a variant DISCRIMINATOR (an enum member of a kind/type/variant/interface-version family, a type
+flag, an ERC-165 probe) AND owns a VALUE PATH (pricing, swap, deposit/mint, withdraw/redeem, repay, close,
+liquidation, reward claim). Cross-zone pairing through `lib/composition-surfaces.py` was rejected: that helper
+only feeds deep-hunt target selection and never reaches `scope.tsv` classes. C26 (a PAIR of axes never validated
+together) is left byte-unchanged; C27 is ONE axis whose admitted set is wider than what a consumer handles.
+
+**Provenance.** The class text, the prompt rule and the net are written from generic vocabulary, this repo's own
+class text and the two frozen DEV maps only; no contest identifier, example or wording is prompt-visible, and the
+final-exam motivation is referenced only as #2265. Every net token carries an in-line tag:
+
+| tag | meaning | tokens |
+|---|---|---|
+| (G) | generic Solidity / token-standard / issue-shape vocabulary | `Type.` `Kind.` `Variant.` `tokenType` `assetType` `isWrapped` `isRebasing` `supportsInterface(` `ERC165Checker`; consumer verbs `getPrice(` `convertTo` `swap` `deposit(` `mint(` `redeem(` `withdraw(` `repay(` `closePosition(` `liquidat` `claimReward` `getReward(` |
+| (T) | already in this repo's class text | — (none needed) |
+| (D) | attested in a dev design zone | `Interface.V` `feedType`; consumer verbs `_executeTrade(` `exitPosition(` |
+
+The token list is FROZEN: `../../demo-variant-coverage-lens.sh` pins its digest, so any later widening is a
+deliberate re-baseline in the same commit, never a silent edit after seeing a measurement set.
+
+**Measured dev fan-out**, driving the SHIPPED token lists (extracted from `zone-mapper.ag`, no LLM) over each zone's
+WHOLE file set after the map-zones test / interface / mock / script exclusion:
+
+| role | zones | C27 fires on | carrying surface |
+|---|---|---|---|
+| dev target A | 9 | 3 — the core strategy zone and the staking zone (a trade-kind enum member), the pool-integration zone (an interface-version enum member) | enum ref (G) / (D) |
+| dev target B | 3 | 1 — the main zone (a feed-kind discriminator) | enum ref (D) |
+| **total** | **12** | **4 (33 %)** — exactly at the <= 1/3 ceiling | |
+
+Apart from `Type.`, no (G) discriminator token fires on any dev zone; their rate on unseen code is unmeasured. The
+consumer surface alone excludes only the proxy, utility and type-only zones — the discriminator is what makes the
+net selective. **Known limits of a single-zone route**, recorded rather than repaired: dev target A's reward zone
+holds a row of this shape whose admission lives in the pool-integration zone (the C27 cell there reaches it through
+hunt steps 1-2), and dev target A's withdraw zone has implementation variants behind a registry with no
+discriminator token. A measured routing MISS is followed up with a map-level cross-zone pairing, not a wider list.
+
+**Status: IN-FLIGHT — recall UNMEASURED.** This change ships the class, the route and the offline guards only
+(`../../demo-variant-coverage-lens.sh`, wired into `tools/colony-lint.sh`). The pre-registered measurement is an
+operator step after merge, on the sealed reserve set from the fresh-set builder (#2263), untouched until the token
+digest is frozen by the merge (re-run the builder's contamination scan against the merged tree first; expected
+CLEAN):
+
+- **Blind labels before any run** — the operator marks which rare rows (found-by <= 2) have the variant shape under
+  the merged C27 text (either direction), from the GT titles only, sealed next to the reserve manifest outside the
+  repo. **Zero labelled rows = VOID** (the set cannot test the lens), not NO-GO.
+- **One shared map** with the merged mapper at the default configuration; the C27 fan-out (zones firing / zones
+  mapped) is reported against the <= 1/3 ceiling as an observation, never tuned.
+- **Arms (n=1 each)**, identical in commit, briefs, knob profile (current defaults), model and backend: control =
+  that `scope.tsv` with `C27` removed from every row; treatment = the `scope.tsv` as mapped.
+- **GO iff** at least one labelled variant-shape rare row reaches `verify/verified_findings.json` in the treatment
+  and NOT in the control, marked `HIT-candidate` by `triage.py` (#2262) and confirmed by an operator read;
+  otherwise **NO-GO**. An arm voided by the weekly limit, a transport failure or a hard stop is re-run once.
+- **Report** (one comment on #2265): per rare row x arm the triage class, operator class and MISS cause with the
+  labelled rows marked; rows verified only in control listed as regressions (observation, not part of GO); cost per
+  arm (cells, C27 cells, wall clock); the reserve-set fan-out.
+- Side effect shared by both arms: `hunter.ag`'s class slice for the LAST class runs to EOF, so before C27 the C26
+  cells also carried the trailing usage-notes block; with C27 appended the C26 cells stop at `## C27` and C27 cells
+  inherit that tail. Both arms share the taxonomy text, so the effect is identical in control and treatment, but
+  it matters when comparing C26 cells with runs from before this change.
+
 ## Operationalize-before-you-hunt: measured NO-GO (#2213 M2, 2026-09-15)
 
 The #2211 `OPERATIONALIZE_LENS` directive — a cross-class METHOD (derive code-grounded checks, write them
@@ -657,6 +728,7 @@ provenance of each class — and this file is documentation the pipeline never r
 | C24 — stale state assumption between touchpoints | yieldoor, notional | M-2 / M-8, M-16 | corpus-bench yieldoor GT M-2, notional GT M-8, notional GT M-16. |
 | C25 — empty distribution / zero participation edge | notional (dev, design source), superfluid-locker (held-out, test) | M-8 / M-2 | corpus-bench notional GT M-8 (`AbstractRewardManager` emissions accrue per unit of an `effectiveSupply` floored by a virtual-shares constant, so the no-participants branch never fires) and superfluid-locker GT M-2 (`unlock` reverts while `STAKER_DISTRIBUTION_POOL.getTotalUnits() == 0` although `stakerAllocationBP == 0`, so the pool is owed nothing). Never written into the lens: C25's `seen:` line carries only the generic code shape. |
 | C26 — admitted parameter / unenforced bound | notional (dev, design source), malda (held-out, test), superfluid-locker (held-out, recorded routing MISS) | M-3, M-5, M-22 / M-5, M-10, M-12 / M-3, M-5 | corpus-bench notional GT M-3 (a single-sided Curve LP strategy cannot trade when the configured pool is an ETH pool), M-5 (minting yield tokens single sided is impossible when the `CURVE_V2` `dexId` is configured for redemptions) and M-22 (`asset = WETH` paired with a Curve pool holding native ETH loses user funds); corpus-bench malda GT M-5 (a rebalancer sends to unallowed destination chains), M-10 (unenforced fee-cap and time-to-live parameters) and M-12 (a rebalancer drains market funds via excessive bridge fees); corpus-bench superfluid-locker GT M-3 and M-5 (initial-deposit / buffer arithmetic). Never written into the lens: C26's `seen:` line carries only the generic code shape, and the malda-only token vocabulary was deliberately kept OUT of the mapper net. |
+| C27 — variant coverage gap | dev target A, dev target B (design source only; roles, never a recall number) | not recorded here — identified by role in the #2265 thread | no `seen:` text was ever contest-keyed: C27's `seen:` line carries only generic code shapes. Dev target A's design rows are a reward-claim path that handles one of two admitted staking targets, a pool holding the native asset that is admitted but unsupported, a route variant accepted on one leg but unsupported on the reverse leg, and a rebasing-token variant admitted without the opt-in it needs; dev target B contributes a feed-kind price getter (a code shape, not a GT row). The final-exam motivation is referenced only as #2265, the test set only as the sealed reserve set. |
 | — (iterations 6-7 deep-hunt REACH + PROMISES; no class) | mellow (held-out, diagnosis zone A), lend-v2 (held-out, diagnosis zone B), malda (held-out, reserved recall zone) | not recorded here — the implementer reads no ground-truth file; the rows are identified by role in the #2245 thread | no `seen:` text exists: REACH and PROMISES are depth-engine mechanics, not classes. Zone A's row is a per-account lockup of newly issued shares that a transfer path bypasses; zone B's row is a repay after a cross-chain liquidation that still takes the borrower's funds; the recall zone's row is a redeem rounding direction. None of these words appears in any prompt-visible file. |
 | — (iteration 5 parameter audit; no class) | superfluid-locker (held-out, registered test), notional (dev sanity) | M-3, M-5 / M-3, M-5, M-22 | no `seen:` text exists: the audit is a pure-meta method, not a class. Its registered test is superfluid-locker GT M-3 and M-5 (program-lifecycle initial-deposit / buffer arithmetic that makes the cancel path and the start path revert, never examined in any earlier arm); the dev sanity zone carries notional GT M-3, M-5 and M-22 (the configuration-combination design rows of C26). Neither contest nor row is named anywhere prompt-visible. |
 
