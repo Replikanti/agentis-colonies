@@ -10,13 +10,24 @@
 #                                      value). Exit 2 on any grammar error (message on stderr).
 #   profile-summary <file>             the same parse, human-readable `R|E|D|P NAME=VALUE` lines (self-test,
 #                                      `exam.sh plan` validation).
-#   knob-registry <profiles-dir> [<profile>...]
-#                                      every knob NAME the runner clears before it applies a profile: the
-#                                      env./deep./pass. names of every shipped `<dir>/*.env`, plus
-#                                      `<dir>/KNOBS`, plus those of each extra profile given. One per line,
-#                                      sorted. exam.sh `unset`s them all (except the running profile's own
-#                                      pass.<NAME>s), so a knob exported in the operator's shell never leaks
-#                                      into an arm that does not set it ("pass nothing when off").
+#   env-reads <dark-factory-dir>       every env NAME the pipeline under <dark-factory-dir> reads: `${NAME:-}`
+#                                      style shell expansions, python os.environ / os.getenv, `.ag` getenv()
+#                                      (fixtures, demos and this runner excluded). A superset — shell locals
+#                                      with a default expansion are in it too, which is harmless to clear.
+#   clear-list <dark-factory-dir> <profiles-dir> [<profile>]
+#                                      the names the runner CLEARS (`env -u`) from every pipeline call it
+#                                      starts: env-reads(<dark-factory-dir>) + every env./deep./pass. name of
+#                                      the shipped profiles + the NAME lines of `<profiles-dir>/KNOBS` + every
+#                                      variable of THIS process's environment matching a `PREFIX*` line of
+#                                      KNOBS; minus the `!NAME` lines of KNOBS (host plumbing / auth), the three
+#                                      Claude Code killswitches, and the running profile's own pass.<NAME>s.
+#                                      So a knob exported in the operator's shell never reaches an arm that
+#                                      does not set it, whether or not anyone remembered to list it.
+#   effective-env <clear-list-file> <mask-name>...
+#                                      reads `env -0` output on stdin; prints `NAME=VALUE` (sorted) for every
+#                                      variable that is a knob candidate (on the clear list, a KNOBS name or
+#                                      prefix match, a killswitch) — i.e. exactly the knob state a call ran
+#                                      with. A <mask-name> (a pass.<NAME>) is printed as `NAME=<inherited>`.
 #   zone-ids <zones.json>              the zone ids of a frozen map, one per line, in file order.
 #   zone-filter <zones.json> <id>      rewrite <zones.json> in place to exactly the zone <id>; print its name.
 #                                      Exit 3 unless exactly one zone carries that id.
@@ -60,6 +71,7 @@ RUNNER_DEFAULTS = (
 RUNNER_KEYS = tuple(k for k, _ in RUNNER_DEFAULTS)
 NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 BAD_VALUE_CHARS = ("$", "`", "'", '"', "\\")
+NEVER_KNOBS = ("DF_NO_SANDBOX",)
 GT_ID_RE = re.compile(r"(^|[^A-Za-z0-9_])[HM]-[0-9]{1,2}([^A-Za-z0-9_]|$)")
 
 
@@ -172,6 +184,9 @@ def parse_profile(path):
         full[k] = runner.get(k, default)
     if full["BACKEND"] != "mock" and not full["MODEL"]:
         die(2, "%s: MODEL is required for a live backend (the pinned model is part of the ruler)" % where)
+    for _, n, _ in knobs:
+        if n in NEVER_KNOBS:
+            die(2, "%s: %s is never allowed in a held-out run (it disables the hunt sandbox)" % (where, n))
     pass_names = set(n for k, n, _ in knobs if k == "P")
     for k, n, _ in knobs:
         if k in ("E", "D") and n in pass_names:
@@ -203,30 +218,112 @@ def cmd_profile_summary(argv):
     return 0
 
 
-def cmd_knob_registry(argv):
-    if not argv:
-        die(2, "usage: knob-registry <profiles-dir> [<profile>...]")
-    pdir, extra = argv[0], argv[1:]
-    if not os.path.isdir(pdir):
-        die(3, "profiles dir not found: " + pdir)
+KILLSWITCHES = ("CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK", "CLAUDE_CODE_NO_MODEL_FALLBACK",
+                "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE")
+READ_RES = (
+    re.compile(r"\$\{([A-Z][A-Z0-9_]*):?[-=+?]"),
+    re.compile(r"os\.environ(?:\.get)?\s*[\(\[]\s*['\"]([A-Z][A-Z0-9_]*)['\"]"),
+    re.compile(r"os\.getenv\(\s*['\"]([A-Z][A-Z0-9_]*)['\"]"),
+    re.compile(r"getenv\(\"([A-Z][A-Z0-9_]*)\"\)"),
+)
+
+
+def env_reads(df):
+    if not os.path.isdir(df):
+        die(3, "not a dark-factory dir: " + df)
     names = set()
-    files = sorted(os.path.join(pdir, f) for f in os.listdir(pdir) if f.endswith(".env"))
-    for path in files + list(extra):
-        _, knobs = parse_profile(path)
-        names.update(n for _, n, _ in knobs)
+    for dirpath, dirnames, filenames in os.walk(df):
+        rel = os.path.relpath(dirpath, df).replace(os.sep, "/")
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in ("fixtures", "node_modules")
+                             and not (rel == "bench/corpus-bench" and d == "exam"))
+        for f in sorted(filenames):
+            if not f.endswith((".sh", ".py", ".ag")) or f.startswith(("demo-", "test-")):
+                continue
+            try:
+                with open(os.path.join(dirpath, f), encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            for rx in READ_RES:
+                names.update(rx.findall(text))
+    return names
+
+
+def read_knobs(pdir):
+    """-> (names, prefixes, allow) from <pdir>/KNOBS."""
+    names, prefixes, allow = set(), set(), set()
     kpath = os.path.join(pdir, "KNOBS")
-    if os.path.isfile(kpath):
-        with open(kpath, encoding="utf-8") as fh:
-            for n, raw in enumerate(fh, 1):
-                line = raw.split("#", 1)[0].strip()
-                if not line:
-                    continue
-                for tok in line.split():
-                    if not NAME_RE.match(tok):
-                        die(2, "KNOBS:%d: bad knob name %r" % (n, tok))
+    if not os.path.isfile(kpath):
+        die(3, "knob registry not found: " + kpath)
+    with open(kpath, encoding="utf-8") as fh:
+        for n, raw in enumerate(fh, 1):
+            for tok in raw.split("#", 1)[0].split():
+                if tok.startswith("!") and NAME_RE.match(tok[1:]):
+                    allow.add(tok[1:])
+                elif tok.endswith("*") and re.match(r"^[A-Z][A-Z0-9_]*$", tok[:-1]):
+                    prefixes.add(tok[:-1])
+                elif NAME_RE.match(tok):
                     names.add(tok)
-    for n in sorted(names):
+                else:
+                    die(2, "KNOBS:%d: bad entry %r (NAME, PREFIX* or !NAME)" % (n, tok))
+    return names, prefixes, allow
+
+
+def clear_list(df, pdir, profile):
+    names, prefixes, allow = read_knobs(pdir)
+    cand = set(names) | env_reads(df)
+    for f in sorted(os.listdir(pdir)):
+        if f.endswith(".env"):
+            _, knobs = parse_profile(os.path.join(pdir, f))
+            cand.update(n for _, n, _ in knobs)
+    keep = set(allow) | set(KILLSWITCHES)
+    if profile:
+        _, knobs = parse_profile(profile)
+        cand.update(n for k, n, _ in knobs if k != "P")
+        keep.update(n for k, n, _ in knobs if k == "P")
+    cand.update(n for n in os.environ if any(n.startswith(p) for p in prefixes))
+    return sorted(n for n in cand if n not in keep and NAME_RE.match(n)), prefixes
+
+
+def cmd_env_reads(argv):
+    if len(argv) != 1:
+        die(2, "usage: env-reads <dark-factory-dir>")
+    for n in sorted(env_reads(argv[0])):
         sys.stdout.write(n + "\n")
+    return 0
+
+
+def cmd_clear_list(argv):
+    if len(argv) not in (2, 3):
+        die(2, "usage: clear-list <dark-factory-dir> <profiles-dir> [<profile>]")
+    names, _ = clear_list(argv[0], argv[1], argv[2] if len(argv) == 3 else "")
+    for n in names:
+        sys.stdout.write(n + "\n")
+    return 0
+
+
+def cmd_effective_env(argv):
+    if not argv:
+        die(2, "usage: effective-env <clear-list-file> [<mask-name>...]")
+    try:
+        with open(argv[0], encoding="utf-8") as fh:
+            cleared = set(l.strip() for l in fh if l.strip())
+    except OSError as exc:
+        die(3, "cannot read clear list: %s" % exc)
+    mask = set(argv[1:])
+    pdir = os.path.join(HERE, "profiles")
+    names, prefixes, _ = read_knobs(pdir)
+    knobish = cleared | names | set(KILLSWITCHES) | mask
+    out = []
+    for rec in sys.stdin.buffer.read().split(b"\0"):
+        if b"=" not in rec:
+            continue
+        k, v = rec.split(b"=", 1)
+        k = k.decode("utf-8", "replace")
+        if k in knobish or any(k.startswith(p) for p in prefixes):
+            out.append("%s=%s" % (k, "<inherited>" if k in mask else v.decode("utf-8", "replace").replace("\n", " ")))
+    for line in sorted(out):
+        sys.stdout.write(line + "\n")
     return 0
 
 
@@ -372,7 +469,9 @@ def cmd_contam_scan(argv):
 COMMANDS = {
     "profile": cmd_profile,
     "profile-summary": cmd_profile_summary,
-    "knob-registry": cmd_knob_registry,
+    "env-reads": cmd_env_reads,
+    "clear-list": cmd_clear_list,
+    "effective-env": cmd_effective_env,
     "zone-ids": cmd_zone_ids,
     "zone-roots": cmd_zone_roots,
     "zone-filter": cmd_zone_filter,

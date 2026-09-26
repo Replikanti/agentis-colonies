@@ -28,31 +28,39 @@
 #            repeat INDEX; concatenate plans for more repeats. Review it before anything is spent.
 #   stage    --root <root> --base <dir> --contest <id> --zone <id|_all> --arm <label> --repeat <n>
 #            --profile <p> --checkout <dir>
-#            Verifies freeze.sha256 (exit 3 on drift), COPIES map/ + briefs/ + truth.tsv into the arm dir,
-#            SYMLINKS code/ + judging/, filters zones.json to that zone (`_all` keeps every zone), appends the
+#            Verifies freeze.sha256 (exit 3 on drift), refuses an arm whose run is still alive, COPIES map/ +
+#            briefs/ into the arm dir, SYMLINKS code/, keeps truth.tsv + judging/ ONLY in the sibling _gt/<contest>/
+#            scoring view, filters zones.json to that zone (`_all` keeps every zone), appends the
 #            profile's INJECT_CLASSES to the zone's scope.tsv class field once each (no classes = byte-identical),
 #            runs lib/zone-coverage.py init and checks `gaps` yields exactly the staged zone(s).
 #   run      (the stage args) [--agentis <bin>]
 #            Breadth: `timeout HARD_STOP_S run-zone-hunt.sh --rehunt-gaps` with the profile's env.* knobs.
-#            STAGE 4.5 (DEEP_PASS=1, verify/verified_findings.json present, breadth not hard-stopped): a second
-#            `timeout` call with --deep-hunt --deep-hunt-only over the SAME --out and the deep.* knobs. A hard stop
-#            (rc 124) kills everything left under the arm dir. An EXIT trap ALWAYS writes run.meta, the arm's .done
-#            marker and one MANIFEST.tsv row, even after a crash.
+#            STAGE 4.5 (DEEP_PASS=1, verify/verified_findings.json present, breadth neither hard-stopped nor
+#            killed): a second `timeout` call with --deep-hunt --deep-hunt-only over the SAME --out and the deep.*
+#            knobs. Every call gets `env -u` for every pipeline knob (see clear_knobs); DF_NO_SANDBOX is refused,
+#            and a live backend needs bwrap. Refuses a repo root / --out that holds a truth.tsv or judging/. Writes
+#            run.pid while alive. A hard stop (rc 124), a killed call (rc >= 128) or a TERM/INT to run itself kills
+#            everything left under the arm dir. An EXIT trap ALWAYS writes run.meta (incl. the effective breadth
+#            + deep knob env), the arm's .done marker and one MANIFEST.tsv row, even after a crash.
 #   drive    --root <root> --plan <plan.tsv> [--resume] [--agentis <bin>]
 #            stage + run per row, sequentially (one live arm at a time), under a PID lock; START/END lines in
 #            logs/<plan>.progress, logs/<plan>.done at the end. Re-execs from a snapshot of exam/ under logs/
 #            (bash reads a script incrementally, so a pull mid-plan would otherwise corrupt the run). Pins each
-#            checkout's HEAD at first use and refuses a row whose checkout has moved. --resume skips rows with a
-#            .done marker. Ends with the triage hand-off below for every (contest, arm, repeat) of the plan.
+#            checkout's HEAD at first use and refuses a row whose checkout has moved, or whose run is still alive.
+#            --resume skips rows with a .done marker. Each run is its own process group (setsid); a TERM/INT to
+#            the driver stops that group and waits for its cleanup. Ends with the triage hand-off below for every
+#            (contest, arm, repeat) of the plan.
 #   triage   --root <root> --contest <id> --arm <label> --repeat <n>
 #            triage.py over every finished zone tree of that arm, against the frozen base's FULL map (located via
-#            run.meta); a hard-stopped tree is passed as --unmeasured, a zone with no tree is unmeasured by
+#            run.meta); a hard-stopped or killed tree is passed as --unmeasured, a zone with no tree is unmeasured by
 #            triage itself. Writes <root>/triage/<contest>-<arm>-r<n>.{tsv,md}.
 #   kill     --path <dir> [--dry-run] [--grace <s>]
-#            Kill-by-path: every process whose args name <dir> (or a path under it) or whose cwd is under it —
-#            never this process or its ancestors. SIGTERM, grace (default 10 s), SIGKILL, then a check that
-#            nothing is left. Refuses a path with fewer than three components (/, /tmp/x, a home dir). Reads `ps -eo pid=,ppid=,args=` + /proc/<pid>/cwd; never a pattern-matching
-#            process killer, which would match its own command line.
+#            Kill-by-path: every process whose args name <dir> (or a path under it), whose cwd is under it, or
+#            that is the live run controller of an arm under it (its run.pid) — never this process or its
+#            ancestors. <dir> is resolved physically (pwd -P), as /proc/<pid>/cwd is. SIGTERM, grace (default
+#            10 s), SIGKILL, then a check that nothing is left. Refuses a path with fewer than three components
+#            (/, /tmp/x, a home dir). Reads `ps -ww -eo pid=,ppid=,args=` + /proc/<pid>/cwd; never a
+#            pattern-matching process killer, which would match its own command line.
 #   self-test
 #            Offline end-to-end check over fixtures/exam/ (stub agentis, --backend mock; no LLM, no network).
 #
@@ -65,11 +73,13 @@
 #   <root>/logs/<plan>.{lock,progress,done,log,heads}   driver lock, START/END lines, final marker, driver log,
 #                                                       checkout HEAD pins
 #   <root>/arms/<contest>/<zone>/<arm>-r<N>/            run.meta run.log deep.log stage.log stage.meta .done
-#       <contest>/{truth.tsv, code -> base, judging -> base, zone-hunt-out/}
+#                                                       run.pid (while alive) breadth.env deep.env env.cleared
+#       <contest>/{code -> base, zone-hunt-out/}        what the hunt is pointed at
+#       _gt/<contest>/{truth.tsv, judging -> base, zone-hunt-out -> ../../<contest>/zone-hunt-out}
 #   <root>/triage/<contest>-<arm>-r<N>.{tsv,md}
-# The inner <contest>/ level keeps `generation-recall.sh --from-work <arm-dir> --id <contest>` working.
+# Score one arm with `generation-recall.sh --from-work <arm-dir>/_gt --id <contest>`.
 #
-# Needs bash, python3, git, GNU `timeout` and /proc (Linux). Exit: 0 ok; 1 a self-test / kill check failed;
+# Needs bash, python3, git, GNU `timeout`, setsid and /proc (Linux); bwrap for a live backend. Exit: 0 ok; 1 a self-test / kill check failed;
 # 2 usage or profile error; 3 missing prerequisite, dirty / contaminated checkout, drift, refused overwrite or a
 # live lock; 4 contaminated freeze output; 5 fallback briefs (freeze). `run` exits with the breadth rc (else a
 # non-zero deep rc).
@@ -103,7 +113,7 @@ need_platform() {
   [ -d /proc/self ] || die 3 "/proc is required (Linux)"
 }
 
-abs_dir()  { (cd "$1" 2>/dev/null && pwd); }
+abs_dir()  { (cd "$1" 2>/dev/null && pwd -P); }   # PHYSICAL: /proc/<pid>/cwd is physical too
 abs_file() { local d; d="$(abs_dir "$(dirname "$1")")" || return 1; printf '%s/%s\n' "$d" "$(basename "$1")"; }
 safe_id()  { [[ "$1" =~ $SAFE_ID_RE ]]; }
 pos_int()  { [[ "$1" =~ ^[1-9][0-9]*$ ]]; }
@@ -142,19 +152,46 @@ load_profile() {
   [ -n "$P_DEEP_JOBS" ] || P_DEEP_JOBS="$P_JOBS"
 }
 
-# Knob hygiene (#2262 STOP-1 decision 2): the caller's environment is inherited, but every knob of the registry
-# is UNSET before the profile is applied — except the profile's own pass.<NAME>s, which must be present.
+# Knob hygiene (#2262 STOP-1 decision 2): the caller's environment is inherited, but every pipeline call the
+# runner starts gets `env -u` for every knob candidate (exam-helper.py clear-list: every env name the checkout's
+# pipeline reads, derived by grep at run time, + the shipped profiles' knob names + KNOBS names + every exported
+# variable matching a KNOBS prefix, minus the !NAME host plumbing, the killswitches and the profile's own
+# pass.<NAME>s, which must be present). The runner's own shell is never modified. DF_NO_SANDBOX is REFUSED, never
+# cleared silently: a held-out run must never disable the hunt sandbox.
+CLEAR_ARGS=()
 clear_knobs() {
-  local f="$1" reg n p keep
-  reg="$(python3 "$HELPER" knob-registry "$PROFILES_DIR" "$f")" || die 2 "cannot build the knob registry"
-  for n in $reg; do
-    keep=0
-    for p in ${PASS_NAMES[@]+"${PASS_NAMES[@]}"}; do [ "$p" = "$n" ] && keep=1; done
-    [ "$keep" -eq 1 ] || unset "$n"
-  done
+  local f="$1" df="$2" out="$3" n p
+  [ -z "${DF_NO_SANDBOX:-}" ] \
+    || die 3 "DF_NO_SANDBOX is set in the caller's environment — a held-out run never disables the hunt sandbox (unset it)"
+  python3 "$HELPER" clear-list "$df" "$PROFILES_DIR" "$f" > "$out" || die 2 "cannot build the env clear list"
+  CLEAR_ARGS=()
+  while IFS= read -r n; do [ -n "$n" ] && CLEAR_ARGS+=(-u "$n"); done < "$out"
   for p in ${PASS_NAMES[@]+"${PASS_NAMES[@]}"}; do
     [ -n "${!p+x}" ] || die 3 "the profile inherits $p (pass.$p) but it is not set in the environment"
   done
+}
+
+# A live backend drives real Claude Code sessions: without bubblewrap lib/claude-sandboxed.sh falls through to an
+# UNSANDBOXED session that can read the host (ground truth included). Refuse instead.
+need_sandbox() {
+  [ "$P_BACKEND" = mock ] || command -v bwrap >/dev/null 2>&1 \
+    || die 3 "bwrap (bubblewrap) is required for a live backend — the hunt sessions must run sandboxed"
+}
+
+# The knob state a call actually ran with (NAME=VALUE, pass.<NAME> values masked), one line per knob.
+effective_env() {
+  local clearfile="$1"; shift
+  env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} "$@" env -0 \
+    | python3 "$HELPER" effective-env "$clearfile" ${PASS_NAMES[@]+"${PASS_NAMES[@]}"}
+}
+
+# 0 when <armdir>/run.pid names a live `exam.sh run` process (a second writer must never start).
+arm_live() {
+  local pf="$1/run.pid" pid
+  [ -f "$pf" ] || return 1
+  pid="$(head -1 "$pf" 2>/dev/null)"
+  [[ "$pid" =~ ^[0-9]+$ ]] && [ -d "/proc/$pid" ] || return 1
+  ps -ww -o stat=,args= -p "$pid" 2>/dev/null | awk '$1 !~ /^Z/ && /exam\.sh/ { f = 1 } END { exit f ? 0 : 1 }'
 }
 
 file_sha() { sha256sum "$1" | cut -d' ' -f1; }
@@ -167,10 +204,18 @@ freeze_manifest() {
 # ----------------------------------------------------------------------------------------------------------
 # kill-by-path
 # ----------------------------------------------------------------------------------------------------------
-# Every process (pid<TAB>why<TAB>args) that names PATH in its args or runs with its cwd under PATH, minus this
-# process, its ancestors and its own descendants (the command substitutions of this very scan).
+# Every process (pid<TAB>why<TAB>args) that names PATH in its args, runs with its cwd under PATH, or is the live
+# `exam.sh run` controller of an arm under PATH (its run.pid — the controller's own args name the root, not the
+# arm, and its cwd is elsewhere), minus this process, its ancestors, its own descendants (the command
+# substitutions of this very scan) and any other `exam.sh kill` (an operator's kill racing a run's cleanup).
 kill_scan() {
-  local path="$1" snap line pid why cwd
+  local path="$1" snap line pid why cwd pf pidfiles=""
+  if [ -d "$path" ]; then
+    while IFS= read -r pf; do
+      pid="$(head -1 "$pf" 2>/dev/null)"
+      [[ "$pid" =~ ^[0-9]+$ ]] && pidfiles="$pidfiles $pid"
+    done < <(find "$path" -maxdepth 6 -name run.pid -type f 2>/dev/null)
+  fi
   snap="$(ps -ww -eo pid=,ppid=,args=)"
   while IFS=$'\t' read -r pid why line; do
     [ -n "$pid" ] || continue
@@ -183,7 +228,7 @@ kill_scan() {
       esac
     fi
     printf '%s\t%s\t%s\n' "$pid" "$why" "$line"
-  done < <(printf '%s\n' "$snap" | awk -v self="$$" -v p="$path" '
+  done < <(printf '%s\n' "$snap" | awk -v self="$$" -v p="$path" -v pf="$pidfiles" '
     { pid = $1; ppid = $2; a = $0; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]?/, "", a)
       par[pid] = ppid; args[pid] = a; order[++n] = pid }
     function names(s,   i, rest, b, c) {
@@ -202,9 +247,15 @@ kill_scan() {
       desc[self] = 1; changed = 1
       while (changed) { changed = 0
         for (k = 1; k <= n; k++) { q = order[k]; if (!(q in desc) && (par[q] in desc)) { desc[q] = 1; changed = 1 } } }
+      np = split(pf, pfl, " "); for (k = 1; k <= np; k++) isrun[pfl[k]] = 1
       for (k = 1; k <= n; k++) { q = order[k]
-        if ((q in ex) || (q in desc)) continue
+        if (q in ex) continue
+        # own descendants are skipped only when they are helpers of this scan (a command-substitution subshell
+        # carries our argv, or the ps itself) — the real children of a run (timeout, the hunt) must still be matched.
+        if ((q in desc) && (args[q] == args[self] || args[q] ~ /^ps( |$)/)) continue
         if (args[q] ~ /^\[.*\]$/) continue
+        if (args[q] ~ /exam\.sh kill( |$)/) continue
+        if ((q in isrun) && args[q] ~ /exam\.sh run( |$)/) { printf "%s\tpidfile\t%s\n", q, args[q]; continue }
         printf "%s\t%s\t%s\n", q, (names(args[q]) ? "args" : "cwd?"), args[q] }
     }')
 }
@@ -255,7 +306,11 @@ cmd_kill() {
   [[ "$grace" =~ ^[0-9]+$ ]] || die 2 "kill: --grace must be a whole number of seconds"
   [ -d /proc/self ] || die 3 "kill: /proc is required (Linux) — without it no cwd can be read"
   case "$path" in /*) ;; *) path="$(pwd)/$path" ;; esac
-  if [ -d "$path" ]; then path="$(abs_dir "$path")"; fi
+  if [ -d "$path" ]; then
+    path="$(abs_dir "$path")"
+  elif [ -d "$(dirname "$path")" ]; then
+    path="$(abs_dir "$(dirname "$path")")/$(basename "$path")"
+  fi
   path="${path%/}"
   # A path this short (/, /tmp/x, a home dir) would match half the machine; an exam root is always deeper.
   [ "$(printf '%s\n' "$path" | tr -cd '/' | wc -c)" -ge 3 ] || die 2 "kill: refusing a path this close to / ($path)"
@@ -324,7 +379,9 @@ cmd_freeze() {
   [ "$scan_rc" -eq 0 ] || die 3 "freeze: the prompt-visibility pre-flight failed (exit $scan_rc)"
 
   load_profile "$profile"
-  clear_knobs "$profile"
+  need_sandbox
+  local clearf; clearf="$(mktemp)"
+  clear_knobs "$profile" "$df" "$clearf"
 
   local code code_rel roots_meta
   if [ -n "$subdir" ]; then
@@ -346,13 +403,13 @@ cmd_freeze() {
   if [ -n "$roots" ] && [ "$roots" != auto ]; then margs+=(--project-roots "$roots"); fi
   [ -z "$mapfx" ] || margs+=(--fixture "$mapfx")
   echo "[freeze $(utc)] contest=$contest checkout=$commit backend=$P_BACKEND model=${P_MODEL:--}" >> "$log"
-  (cd "$df" && bash map-zones.sh "${margs[@]}" "${common[@]}") >> "$log" 2>&1 \
+  (cd "$df" && env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} bash map-zones.sh "${margs[@]}" "${common[@]}") >> "$log" 2>&1 \
     || die 3 "freeze: map-zones.sh failed (see $log)"
   [ -f "$cdir/map/zones.json" ] && grep -qv '^#' "$cdir/map/scope.tsv" 2>/dev/null \
     || die 3 "freeze: map-zones.sh produced no zones.json / scope.tsv lines (see $log)"
   local -a bargs=(--zones "$cdir/map/zones.json" --scope "$cdir/map/scope.tsv" --out "$cdir/briefs" --repo "$code")
   [ -z "$brieffx" ] || bargs+=(--fixture "$brieffx")
-  local bout; bout="$(cd "$df" && bash gen-briefs.sh "${bargs[@]}" "${common[@]}" 2>&1)"
+  local bout; bout="$(cd "$df" && env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} bash gen-briefs.sh "${bargs[@]}" "${common[@]}" 2>&1)"
   local brc=$?
   printf '%s\n' "$bout" >> "$log"
   [ "$brc" -eq 0 ] && [ -d "$cdir/briefs/briefs" ] || die 3 "freeze: gen-briefs.sh failed (see $log)"
@@ -381,6 +438,8 @@ cmd_freeze() {
   fi
 
   freeze_manifest "$cdir" > "$cdir/freeze.sha256"
+  effective_env "$clearf" > "$cdir/freeze.env"
+  rm -f "$clearf"
   local map_roots; map_roots="$(python3 "$HELPER" zone-roots "$cdir/map/zones.json")" || map_roots="-"
   {
     echo "checkout_commit=$commit"
@@ -496,6 +555,9 @@ cmd_stage() {
   fi
   load_profile "$A_PROFILE"
   local armdir; armdir="$(arm_dir "$A_ROOT" "$A_CONTEST" "$A_ZONE" "$A_ARM" "$A_REPEAT")"
+  if arm_live "$armdir"; then
+    die 3 "stage: $armdir has a LIVE run (pid $(head -1 "$armdir/run.pid")) — refusing to start a second writer"
+  fi
   [ ! -e "$armdir/.done" ] || die 3 "stage: $armdir already ran (.done) — refusing to overwrite a finished arm"
   if [ -e "$armdir" ]; then
     local k=1; while [ -e "$armdir.partial-$k" ]; do k=$((k + 1)); done
@@ -506,11 +568,17 @@ cmd_stage() {
   mkdir -p "$out/coverage" || die 3 "stage: cannot create $out"
   local slog="$armdir/stage.log"
   slogf() { printf '[stage %s] %s\n' "$(utc)" "$*" >> "$slog"; }
-  cp -a "$cdir/map" "$out/map" && cp -a "$cdir/briefs" "$out/briefs" && cp "$cdir/truth.tsv" "$armdir/$A_CONTEST/truth.tsv" \
+  # Ground truth never sits next to anything the hunt is pointed at: truth.tsv + judging/ live in the sibling
+  # _gt/<contest>/ scoring view (with a zone-hunt-out link, so `generation-recall.sh --from-work <arm>/_gt` works).
+  local gt="$armdir/_gt/$A_CONTEST"
+  mkdir -p "$gt" || die 3 "stage: cannot create $gt"
+  cp -a "$cdir/map" "$out/map" && cp -a "$cdir/briefs" "$out/briefs" && cp "$cdir/truth.tsv" "$gt/truth.tsv" \
     || die 3 "stage: copying the frozen base failed"
   ln -s "$cdir/code" "$armdir/$A_CONTEST/code"
-  [ ! -e "$cdir/judging" ] || ln -s "$cdir/judging" "$armdir/$A_CONTEST/judging"
-  slogf "copied map/ briefs/ truth.tsv from $cdir; code/ (+ judging/) symlinked read-only"
+  [ ! -e "$cdir/judging" ] || ln -s "$cdir/judging" "$gt/judging"
+  ln -s "../../$A_CONTEST/zone-hunt-out" "$gt/zone-hunt-out"
+  slogf "copied map/ briefs/ from $cdir, truth.tsv into _gt/$A_CONTEST/; code/ (+ _gt judging/) symlinked read-only"
+  clear_knobs "$A_PROFILE" "$df" "$armdir/stage.env-cleared"
   local zones_json="$out/map/zones.json" scope="$out/map/scope.tsv" name
   if [ "$A_ZONE" != _all ]; then
     name="$(python3 "$HELPER" zone-filter "$zones_json" "$A_ZONE")" || die 3 "stage: zone filter failed"
@@ -526,11 +594,11 @@ cmd_stage() {
     slogf "scope.tsv left byte-identical to the frozen base (no INJECT_CLASSES)"
   fi
   local commit; commit="$(git -C "$A_CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
-  (cd "$df" && python3 lib/zone-coverage.py init --zones "$zones_json" --out "$out/coverage/zone-coverage.json" \
+  (cd "$df" && env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} python3 lib/zone-coverage.py init --zones "$zones_json" --out "$out/coverage/zone-coverage.json" \
       --zone-list "$out/.zone-list.tsv" --repo "$A_CONTEST" --commit "$commit" \
       --zone-cell-budget 0 --run-cell-budget 0) >> "$slog" 2>&1 || die 3 "stage: zone-coverage.py init failed"
   local gaps want got
-  gaps="$(cd "$df" && python3 lib/zone-coverage.py gaps --file "$out/coverage/zone-coverage.json" --max-attempts 2)" \
+  gaps="$(cd "$df" && env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} python3 lib/zone-coverage.py gaps --file "$out/coverage/zone-coverage.json" --max-attempts 2)" \
     || die 3 "stage: zone-coverage.py gaps failed"
   want="$(python3 "$HELPER" zone-ids "$zones_json" | LC_ALL=C sort)"
   got="$(printf '%s\n' "$gaps" | awk -F'\t' 'NF {print $1}' | LC_ALL=C sort)"
@@ -551,7 +619,22 @@ MANIFEST_HEADER=$'contest\tzone\tarm\trepeat\tprofile\tprofile_sha256\tcheckout_
 
 # run state, read by the EXIT trap
 R_ARMDIR=""; R_START=""; R_RC=""; R_DEEP_START="-"; R_DEEP_END="-"; R_DEEP_RC="skip"; R_COMMIT=""; R_DIRTY=""
-R_CODE=""; R_ROOTS=""
+R_CODE=""; R_ROOTS=""; R_CHILD=""
+
+# A signal to `run` (a drive's TERM, `exam.sh kill`, Ctrl-C): stop whatever runs under the arm, never start or
+# continue STAGE 4.5, and let the EXIT trap record the interrupted attempt.
+run_on_signal() {
+  trap '' INT TERM
+  local code="$1"
+  if [ -z "$R_RC" ]; then
+    R_RC="$code"; [ "$P_DEEP_PASS" != 1 ] || R_DEEP_RC="skip-killed"
+  elif [ "$R_DEEP_START" != "-" ] && [ "$R_DEEP_END" = "-" ]; then
+    R_DEEP_RC="$code"; R_DEEP_END="$(utc)"
+  fi
+  echo "[run $(utc)] signalled ($code) — killing everything left under the arm dir" >> "$R_ARMDIR/run.log"
+  kill_by_path "$R_ARMDIR" 0 5 >> "$R_ARMDIR/run.log" 2>&1 || true
+  exit "$code"
+}
 
 run_finish() {
   local rc=$? end meta
@@ -570,6 +653,9 @@ run_finish() {
     echo "deep_knobs=$(printf '%s\n' ${DEEP_KV[@]+"${DEEP_KV[@]}"} | paste -sd' ' -)"
     echo "pass_knobs=$(printf '%s\n' ${PASS_NAMES[@]+"${PASS_NAMES[@]}"} | paste -sd' ' -)"
     echo "profile=$(basename "$A_PROFILE")"; echo "profile_sha256=$(file_sha "$A_PROFILE")"
+    echo "breadth_env=$(paste -sd';' "$R_ARMDIR/breadth.env" 2>/dev/null)"
+    echo "deep_env=$(paste -sd';' "$R_ARMDIR/deep.env" 2>/dev/null)"
+    echo "env_cleared=$(grep -c . "$R_ARMDIR/env.cleared" 2>/dev/null || echo 0)"
   } > "$meta.tmp" && mv "$meta.tmp" "$meta"
   local mf="$A_ROOT/MANIFEST.tsv"
   [ -s "$mf" ] || printf '%s\n' "$MANIFEST_HEADER" > "$mf"
@@ -578,6 +664,7 @@ run_finish() {
     "${P_MODEL:--}" "$P_BACKEND" "$R_START" "$end" "$R_RC" "$R_DEEP_START" "$R_DEEP_END" "$R_DEEP_RC" \
     "arms/$A_CONTEST/$A_ZONE/$A_ARM-r$A_REPEAT" >> "$mf"
   printf 'rc=%s\tdeep=%s\tend=%s\n' "$R_RC" "$R_DEEP_RC" "$end" > "$R_ARMDIR/.done"
+  if [ "$(head -1 "$R_ARMDIR/run.pid" 2>/dev/null)" = "$$" ]; then rm -f "$R_ARMDIR/run.pid"; fi
   note "run: [$A_CONTEST $A_ZONE $A_ARM r$A_REPEAT] END rc=$R_RC deep=$R_DEEP_RC -> $R_ARMDIR"
 }
 
@@ -588,6 +675,9 @@ cmd_run() {
   local out="$R_ARMDIR/$A_CONTEST/zone-hunt-out"
   [ -f "$out/map/zones.json" ] && [ -f "$out/coverage/zone-coverage.json" ] && [ -d "$out/briefs/briefs" ] \
     || die 3 "run: $R_ARMDIR is not staged (exam.sh stage first)"
+  if arm_live "$R_ARMDIR"; then
+    die 3 "run: $R_ARMDIR has a LIVE run (pid $(head -1 "$R_ARMDIR/run.pid")) — refusing a second writer"
+  fi
   [ ! -e "$R_ARMDIR/.done" ] || die 3 "run: $R_ARMDIR already ran (.done)"
   [ -f "$cdir/freeze.meta" ] || die 3 "run: $cdir is not frozen"
   local code_rel; code_rel="$(meta_get "$cdir/freeze.meta" code_dir_rel)"
@@ -595,7 +685,12 @@ cmd_run() {
   R_CODE="$cdir/code"; [ -z "$code_rel" ] || [ "$code_rel" = . ] || R_CODE="$cdir/code/$code_rel"
   [ -d "$R_CODE" ] || die 3 "run: code dir $R_CODE missing"
   load_profile "$A_PROFILE"
-  clear_knobs "$A_PROFILE"
+  need_sandbox
+  clear_knobs "$A_PROFILE" "$df" "$R_ARMDIR/env.cleared"
+  # Ground truth must be invisible to the hunt: neither the repo root it is pointed at nor its --out may hold a
+  # truth.tsv or a judging/ (stage keeps them in the sibling _gt/ view).
+  local gt_leak; gt_leak="$(find "$R_CODE" "$out" \( -name truth.tsv -o -name judging \) -print 2>/dev/null | head -3)"
+  [ -z "$gt_leak" ] || die 3 "run: ground truth is visible to the hunt: $(printf '%s' "$gt_leak" | paste -sd' ' -)"
   local scope_docs=""
   case "$P_SCOPE_DOCS" in
     "") ;;
@@ -615,32 +710,40 @@ cmd_run() {
   local -a breadth=(--rehunt-gaps --jobs "$P_JOBS")
   [ -z "$scope_docs" ] || breadth+=(--scope-docs "$scope_docs")
 
+  echo "$$" > "$R_ARMDIR/run.pid"
   trap run_finish EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+  trap 'run_on_signal 130' INT
+  trap 'run_on_signal 143' TERM
   R_START="$(utc)"
-  echo "[run $R_START] breadth: env ${ENV_KV[*]+${ENV_KV[*]}} timeout $P_HARD_STOP_S run-zone-hunt.sh ${common[*]} ${breadth[*]}" >> "$R_ARMDIR/run.log"
-  (cd "$df" && env ${ENV_KV[@]+"${ENV_KV[@]}"} timeout "$P_HARD_STOP_S" bash run-zone-hunt.sh "${common[@]}" "${breadth[@]}") \
-    >> "$R_ARMDIR/run.log" 2>&1
-  R_RC=$?
-  if [ "$R_RC" -eq 124 ]; then
-    echo "[run $(utc)] HARD STOP after ${P_HARD_STOP_S}s — killing what is left under the arm dir" >> "$R_ARMDIR/run.log"
+  effective_env "$R_ARMDIR/env.cleared" ${ENV_KV[@]+"${ENV_KV[@]}"} > "$R_ARMDIR/breadth.env"
+  echo "[run $R_START] breadth: env -u <$((${#CLEAR_ARGS[@]} / 2)) cleared> ${ENV_KV[*]+${ENV_KV[*]}} timeout $P_HARD_STOP_S run-zone-hunt.sh ${common[*]} ${breadth[*]}" >> "$R_ARMDIR/run.log"
+  # Background + wait: a TERM / INT reaches run_on_signal at once instead of after the whole breadth pass.
+  (cd "$df" && exec env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} ${ENV_KV[@]+"${ENV_KV[@]}"} timeout "$P_HARD_STOP_S" \
+      bash run-zone-hunt.sh "${common[@]}" "${breadth[@]}") >> "$R_ARMDIR/run.log" 2>&1 &
+  R_CHILD=$!
+  wait "$R_CHILD"; R_RC=$?; R_CHILD=""
+  if [ "$R_RC" -eq 124 ] || [ "$R_RC" -ge 128 ]; then
+    echo "[run $(utc)] breadth $( [ "$R_RC" -eq 124 ] && echo "HARD STOP after ${P_HARD_STOP_S}s" || echo "KILLED (rc $R_RC)") — killing what is left under the arm dir" >> "$R_ARMDIR/run.log"
     kill_by_path "$R_ARMDIR" 0 10 >> "$R_ARMDIR/run.log" 2>&1 || true
   fi
   if [ "$P_DEEP_PASS" = 1 ]; then
     if [ "$R_RC" -eq 124 ]; then
       R_DEEP_RC="skip-hard-stop"
+    elif [ "$R_RC" -ge 128 ]; then
+      R_DEEP_RC="skip-killed"
     elif [ ! -f "$out/verify/verified_findings.json" ]; then
       R_DEEP_RC="skip-no-verify"
     else
       R_DEEP_START="$(utc)"
-      echo "[deep $R_DEEP_START] env ${DEEP_KV[*]+${DEEP_KV[*]}} timeout $P_HARD_STOP_S run-zone-hunt.sh ${common[*]} --deep-hunt --deep-hunt-only --jobs $P_DEEP_JOBS" >> "$R_ARMDIR/deep.log"
-      (cd "$df" && env ${DEEP_KV[@]+"${DEEP_KV[@]}"} timeout "$P_HARD_STOP_S" bash run-zone-hunt.sh "${common[@]}" \
-          --deep-hunt --deep-hunt-only --jobs "$P_DEEP_JOBS") >> "$R_ARMDIR/deep.log" 2>&1
-      R_DEEP_RC=$?
+      effective_env "$R_ARMDIR/env.cleared" ${DEEP_KV[@]+"${DEEP_KV[@]}"} > "$R_ARMDIR/deep.env"
+      echo "[deep $R_DEEP_START] env -u <cleared> ${DEEP_KV[*]+${DEEP_KV[*]}} timeout $P_HARD_STOP_S run-zone-hunt.sh ${common[*]} --deep-hunt --deep-hunt-only --jobs $P_DEEP_JOBS" >> "$R_ARMDIR/deep.log"
+      (cd "$df" && exec env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} ${DEEP_KV[@]+"${DEEP_KV[@]}"} timeout "$P_HARD_STOP_S" \
+          bash run-zone-hunt.sh "${common[@]}" --deep-hunt --deep-hunt-only --jobs "$P_DEEP_JOBS") >> "$R_ARMDIR/deep.log" 2>&1 &
+      R_CHILD=$!
+      wait "$R_CHILD"; R_DEEP_RC=$?; R_CHILD=""
       R_DEEP_END="$(utc)"
-      if [ "$R_DEEP_RC" -eq 124 ]; then
-        echo "[deep $(utc)] HARD STOP after ${P_HARD_STOP_S}s — killing what is left under the arm dir" >> "$R_ARMDIR/deep.log"
+      if [ "$R_DEEP_RC" -eq 124 ] || [ "$R_DEEP_RC" -ge 128 ]; then
+        echo "[deep $(utc)] STAGE 4.5 stopped (rc $R_DEEP_RC) — killing what is left under the arm dir" >> "$R_ARMDIR/deep.log"
         kill_by_path "$R_ARMDIR" 0 10 >> "$R_ARMDIR/deep.log" 2>&1 || true
       fi
     fi
@@ -652,12 +755,15 @@ cmd_run() {
 # ----------------------------------------------------------------------------------------------------------
 # triage hand-off
 # ----------------------------------------------------------------------------------------------------------
-# The M2 arm verdict: VALID unless a call was hard-stopped. (#2262 M3 replaces this with the attribution +
-# void-pattern check and a void.txt per arm.)
+# The M2 arm verdict: VALID unless a call was hard-stopped or killed. (#2262 M3 replaces this with the
+# attribution + void-pattern check and a void.txt per arm.)
 arm_verdict() {
   local meta="$1/run.meta" rc drc
   rc="$(meta_get "$meta" rc)"; drc="$(meta_get "$meta" deep_rc)"
-  if [ "$rc" = 124 ] || [ "$drc" = 124 ]; then echo "hard-stop"; else echo "VALID"; fi
+  if [ "$rc" = 124 ] || [ "$drc" = 124 ]; then echo "hard-stop"
+  elif [[ "$rc" =~ ^[0-9]+$ && "$rc" -ge 128 ]] || [[ "$drc" =~ ^[0-9]+$ && "$drc" -ge 128 ]] || [ "$drc" = skip-killed ]; then
+    echo "killed"
+  else echo "VALID"; fi
 }
 
 cmd_triage() {
@@ -711,6 +817,22 @@ lock_live() {
   ps -ww -eo pid=,stat=,args= | awk -v p="$pid" '$1 == p && $2 !~ /^Z/ && /exam\.sh/ { f = 1 } END { exit f ? 0 : 1 }'
 }
 
+# A TERM / INT to the driver stops the row it is running: the `run` child is its own process group (setsid),
+# so the whole group gets TERM, and the driver waits for run's own cleanup (run_on_signal) before it exits.
+D_CHILD=""; D_ROW=""; D_PROG=""
+drive_on_signal() {
+  trap '' INT TERM
+  local code="$1"
+  if [ -n "$D_CHILD" ]; then
+    kill -TERM -- "-$D_CHILD" 2>/dev/null || true
+    kill -TERM "$D_CHILD" 2>/dev/null || true
+    wait "$D_CHILD" 2>/dev/null || true
+    printf '%s\tEND\t%s\trc=drive-signalled-%s\tdeep=skip\n' "$(utc)" "$D_ROW" "$code" >> "$D_PROG"
+  fi
+  note "drive: signalled ($code) — stopped the running row, exiting"
+  exit "$code"
+}
+
 cmd_drive() {
   local root="" plan="" resume=0 agentis="agentis" orig=("$@")
   while [ $# -gt 0 ]; do
@@ -725,6 +847,7 @@ cmd_drive() {
   [ -n "$root" ] && [ -n "$plan" ] || die 2 "drive: --root and --plan are required"
   [ -f "$plan" ] || die 2 "drive: plan not found: $plan"
   need_platform
+  command -v setsid >/dev/null 2>&1 || die 3 "drive: setsid (util-linux) is required"
   mkdir -p "$root/logs" || die 3 "drive: cannot create $root/logs"
   root="$(abs_dir "$root")"
   local pname; pname="$(basename "$plan")"; pname="${pname%.tsv}"
@@ -759,6 +882,7 @@ cmd_drive() {
     safe_id "$c" && safe_id "$a" && pos_int "$n" && { [ "$z" = _all ] || safe_id "$z"; } \
       || die 2 "drive: $plan:$line_no: bad contest / zone / arm / repeat"
     [ -d "$k" ] && [ -f "$b/$c/freeze.meta" ] || die 2 "drive: $plan:$line_no: checkout or frozen base missing"
+    k="$(abs_dir "$k")"; b="$(abs_dir "$b")"
     resolve_profile "$p" > /dev/null || exit 2
     if [ "$resume" -eq 0 ] && [ -e "$(arm_dir "$root" "$c" "$z" "$a" "$n")" ]; then
       die 2 "drive: $plan:$line_no: $(arm_dir "$root" "$c" "$z" "$a" "$n") exists — use --resume"
@@ -769,10 +893,18 @@ cmd_drive() {
 
   local prog="$logs/$pname.progress" dlog="$logs/$pname.log" heads="$logs/$pname.heads"
   touch "$heads"
+  D_PROG="$prog"
+  trap 'drive_on_signal 143' TERM
+  trap 'drive_on_signal 130' INT
   local i armdir head pinned src rrc rc drc ran=0 skipped=0 refused=0
   for i in "${!R_C[@]}"; do
     c="${R_C[$i]}"; z="${R_Z[$i]}"; a="${R_A[$i]}"; n="${R_N[$i]}"; p="${R_P[$i]}"; k="${R_K[$i]}"; b="${R_B[$i]}"
     armdir="$(arm_dir "$root" "$c" "$z" "$a" "$n")"
+    if arm_live "$armdir"; then
+      printf '%s\tEND\t%s\t%s\t%s\tr%s\trc=refused-live-run\tdeep=skip\n' "$(utc)" "$c" "$z" "$a" "$n" >> "$prog"
+      note "drive: REFUSED $c $z $a r$n — its run (pid $(head -1 "$armdir/run.pid")) is still alive; stop it first (exam.sh kill --path $armdir)"
+      refused=$((refused + 1)); continue
+    fi
     if [ "$resume" -eq 1 ] && [ -f "$armdir/.done" ]; then
       printf '%s\tSKIP\t%s\t%s\t%s\tr%s\tdone\n' "$(utc)" "$c" "$z" "$a" "$n" >> "$prog"
       skipped=$((skipped + 1)); continue
@@ -793,9 +925,11 @@ cmd_drive() {
       printf '%s\tEND\t%s\t%s\t%s\tr%s\trc=stage-%s\tdeep=skip\n' "$(utc)" "$c" "$z" "$a" "$n" "$src" >> "$prog"
       continue
     fi
-    bash "$SELF" run --root "$root" --base "$b" --contest "$c" --zone "$z" --arm "$a" --repeat "$n" \
-      --profile "$p" --checkout "$k" --agentis "$agentis" >> "$dlog" 2>&1
-    rrc=$?
+    D_ROW="$(printf '%s\t%s\t%s\tr%s' "$c" "$z" "$a" "$n")"
+    setsid bash "$SELF" run --root "$root" --base "$b" --contest "$c" --zone "$z" --arm "$a" --repeat "$n" \
+      --profile "$p" --checkout "$k" --agentis "$agentis" >> "$dlog" 2>&1 &
+    D_CHILD=$!
+    wait "$D_CHILD"; rrc=$?; D_CHILD=""
     rc="$(meta_get "$armdir/run.meta" rc)"; drc="$(meta_get "$armdir/run.meta" deep_rc)"
     printf '%s\tEND\t%s\t%s\t%s\tr%s\trc=%s\tdeep=%s\n' "$(utc)" "$c" "$z" "$a" "$n" "${rc:-$rrc}" "${drc:-skip}" >> "$prog"
     ran=$((ran + 1))
@@ -825,6 +959,7 @@ cmd_self_test() {
     [ -e "$fix/$f" ] || die 3 "self-test: fixture missing: $fix/$f"
   done
   work="$(mktemp -d "${TMPDIR:-/tmp}/exam-self-test.XXXXXX")"
+  work="$(cd "$work" && pwd -P)"
   ST_SLEEPER=""
   # shellcheck disable=SC2064  # expand now: the work dir is fixed
   trap "[ -z \"\${ST_SLEEPER:-}\" ] || kill -KILL \"\$ST_SLEEPER\" 2>/dev/null; rm -rf '$work'" EXIT
@@ -859,12 +994,33 @@ cmd_self_test() {
   for pr in unknown dollar name nomodel; do
     python3 "$HELPER" profile "$work/p-$pr.env" > /dev/null 2>&1; expect_rc 2 $? "profile with a bad line ($pr) is refused"
   done
-  local reg; reg="$(python3 "$HELPER" knob-registry "$PROFILES_DIR")"
-  if printf '%s\n' "$reg" | grep -qx SEVERITY_RUBRIC && printf '%s\n' "$reg" | grep -qx OPERATIONALIZE_LENS \
-     && printf '%s\n' "$reg" | grep -qx DEEP_HUNT_JOBS; then
-    ok "the knob registry holds the shipped profile knobs + KNOBS"
+  printf 'BACKEND=mock\nenv.DF_NO_SANDBOX=1\n' > "$work/p-nosandbox.env"
+  python3 "$HELPER" profile "$work/p-nosandbox.env" > /dev/null 2>&1; expect_rc 2 $? "a profile naming DF_NO_SANDBOX is refused"
+  echo "exam.sh self-test: env clearing covers every knob the pipeline reads"
+  local reads clr allow uncovered
+  reads="$(python3 "$HELPER" env-reads "$df_real")"
+  clr="$(python3 "$HELPER" clear-list "$df_real" "$PROFILES_DIR" "$PROFILES_DIR/mock.env")"
+  allow="$(tr -s ' \t' '\n\n' < "$PROFILES_DIR/KNOBS" | sed -n 's/^!\([A-Z][A-Z0-9_]*\)$/\1/p')"
+  uncovered="$(printf '%s\n' "$reads" | grep . | while IFS= read -r n; do
+      printf '%s\n' "$clr" | grep -qxF "$n" && continue
+      printf '%s\n' "$allow" | grep -qxF "$n" && continue
+      case "$n" in CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK|CLAUDE_CODE_NO_MODEL_FALLBACK|CLAUDE_CODE_FORCE_SESSION_PERSISTENCE) continue ;; esac
+      printf '%s\n' "$n"
+    done)"
+  if [ "$(printf '%s\n' "$reads" | grep -c .)" -ge 100 ] && [ -z "$uncovered" ]; then
+    ok "every env name the pipeline reads ($(printf '%s\n' "$reads" | grep -c .)) is cleared or explicitly allowlisted (!NAME in KNOBS)"
   else
-    bad "the knob registry lost a shipped knob"
+    bad "env names read by the pipeline but neither cleared nor allowlisted: $(printf '%s' "$uncovered" | paste -sd' ' - | cut -c1-300)"
+  fi
+  local missing="" n
+  for n in DF_NO_SANDBOX FORK_URL FORK_BLOCK LLM_MAX_DISCOVERY_CELLS LLM_MAX_CONCURRENT DEEP_CELL_STALE_S FORGE_MAX_SLOTS \
+           FLAT_CYBORG_IDLE_MS DF_EXTERNAL_RPC HUNT_SANDBOX_EXTERNAL SLICE_MAX_DEPTH VECTOR_HUNT_POC_RUNNER; do
+    printf '%s\n' "$reads" | grep -qxF "$n" || missing="$missing $n"
+  done
+  if [ -z "$missing" ]; then
+    ok "the derived read set holds the known leak names (DF_NO_SANDBOX, FORK_URL, LLM_MAX_DISCOVERY_CELLS, ...)"
+  else
+    bad "the derived env-read set misses:$missing"
   fi
 
   echo "exam.sh self-test: freeze"
@@ -933,8 +1089,10 @@ cmd_self_test() {
   else
     bad "stage: scope.tsv changed without INJECT_CLASSES"
   fi
-  if [ -L "$a1/fx/code" ] && [ -L "$a1/fx/judging" ] && [ ! -L "$a1/fx/zone-hunt-out/map" ] && grep -q 'SELF-CHECK PASS' "$a1/stage.log"; then
-    ok "stage: code/ + judging/ symlinked, map/ copied, coverage self-check passed"
+  if [ -L "$a1/fx/code" ] && [ ! -L "$a1/fx/zone-hunt-out/map" ] && grep -q 'SELF-CHECK PASS' "$a1/stage.log" \
+     && [ -f "$a1/_gt/fx/truth.tsv" ] && [ -L "$a1/_gt/fx/judging" ] && [ -d "$a1/_gt/fx/zone-hunt-out/map" ] \
+     && [ ! -e "$a1/fx/truth.tsv" ] && [ ! -e "$a1/fx/judging" ]; then
+    ok "stage: code/ symlinked, map/ copied, truth.tsv + judging/ only in the sibling _gt/ view, self-check passed"
   else
     bad "stage: copy/symlink discipline or the coverage self-check is wrong"
   fi
@@ -990,8 +1148,51 @@ cmd_self_test() {
     bad "knob hygiene: the hunter saw SEVERITY_RUBRIC under mock.env (or the stub never ran):" \
       "$(wc -c < "$work/env-mock.txt" 2>/dev/null) bytes, $(grep -E '^(SEVERITY_RUBRIC|CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK)=' "$work/env-mock.txt" 2>/dev/null | sort -u | paste -sd' ' -)"
   fi
+  if [ -z "$(find "$(meta_get "$a1/run.meta" code)" "$a1/fx/zone-hunt-out" \( -name truth.tsv -o -name judging \) -print 2>/dev/null)" ] \
+     && grep -q '^breadth_env=.*CLAUDE_CODE_NO_MODEL_FALLBACK=1' "$a1/run.meta" && grep -q '^deep_env=.*DEEP_HUNT_REACH=1' "$a1/run.meta"; then
+    ok "run: the hunt's repo root and --out hold no truth.tsv / judging; run.meta records the effective breadth + deep env"
+  else
+    bad "run: ground truth visible to the hunt, or run.meta lacks the effective env"
+  fi
   bash "$SELF" run --root "$root" --base "$base" --contest fx --zone src_pool --arm mock --repeat 1 --profile mock \
     --checkout "$co" --agentis "$stub" > /dev/null 2>&1; expect_rc 3 $? "run refuses an arm that already ran"
+
+  # Leak probe: every env name the pipeline reads (+ prefix-only names nobody listed) exported with a sentinel in the
+  # caller's shell; none may reach the hunter.
+  bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_pool --arm probe --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1
+  (
+    for n in $reads DF_FUTURE_KNOB FLAT_CYBORG_FUTURE LLM_FUTURE_CAP FORK_FUTURE; do
+      case "$n" in DF_NO_SANDBOX|CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK|CLAUDE_CODE_NO_MODEL_FALLBACK|CLAUDE_CODE_FORCE_SESSION_PERSISTENCE) continue ;; esac
+      printf '%s\n' "$allow" | grep -qxF "$n" && continue
+      export "$n=exam-leak-probe"
+    done
+    export STUB_ENV_DUMP="$work/env-probe.txt"
+    bash "$SELF" run --root "$root" --base "$base" --contest fx --zone src_pool --arm probe --repeat 1 --profile mock \
+      --checkout "$co" --agentis "$stub" > "$work/probe.out" 2>&1
+  ); rc=$?
+  local leaked; leaked="$(grep '=exam-leak-probe$' "$work/env-probe.txt" 2>/dev/null | cut -d= -f1 | sort -u | paste -sd' ' -)"
+  if [ "$rc" -eq 0 ] && [ -s "$work/env-probe.txt" ] && [ -z "$leaked" ] \
+     && ! grep -q 'exam-leak-probe' "$root/arms/fx/src_pool/probe-r1/breadth.env"; then
+    ok "leak probe: $(printf '%s\n' $reads | grep -c .) pipeline env names + unlisted prefix names exported as a sentinel never reach the hunter"
+  else
+    bad "leak probe: exit $rc; sentinel reached the hunter for: ${leaked:-<none, but the run failed>}"
+    tail -5 "$work/probe.out" | sed 's/^/         | /'
+  fi
+  bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_feed --arm nosb --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1
+  DF_NO_SANDBOX=1 bash "$SELF" run --root "$root" --base "$base" --contest fx --zone src_feed --arm nosb --repeat 1 \
+    --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 3 ] && [ ! -e "$root/arms/fx/src_feed/nosb-r1/run.meta" ]; then
+    ok "run refuses outright when DF_NO_SANDBOX is set in the caller's shell (exit 3, nothing started)"
+  else
+    bad "run did not refuse DF_NO_SANDBOX (exit $rc)"
+  fi
+  touch "$cdir/code/truth.tsv"
+  bash "$SELF" run --root "$root" --base "$base" --contest fx --zone src_feed --arm nosb --repeat 1 \
+    --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1; rc=$?
+  rm -f "$cdir/code/truth.tsv"
+  expect_rc 3 "$rc" "run refuses a repo root that holds a truth.tsv (ground truth visible to the hunt)"
   printf 'BACKEND=mock\nenv.SEVERITY_RUBRIC=1\nDEEP_PASS=1\ndeep.DEEP_HUNT_PROMISES=1\n' > "$work/p-rubric.env"
   bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_feed --arm rubric --repeat 1 \
     --profile "$work/p-rubric.env" --checkout "$co" > /dev/null 2>&1
@@ -1107,6 +1308,81 @@ cmd_self_test() {
     bad "drive --resume / HEAD pin wrong"; sed 's/^/         | /' "$prog"
   fi
 
+  echo "exam.sh self-test: a running arm — live-arm refusals, kill-by-path of its controller, drive TERM"
+  wait_for() { local i=0; while [ "$i" -lt 100 ]; do eval "$1" && return 0; sleep 0.2; i=$((i + 1)); done; return 1; }
+  local la="$root/arms/fx/src_feed/live-r1" lpid
+  bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_feed --arm live --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1
+  STUB_SLEEP=40 bash "$SELF" run --root "$root" --base "$base" --contest fx --zone src_feed --arm live --repeat 1 \
+    --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1 &
+  local runbg=$!
+  wait_for '[ -s "$la/run.pid" ] && [ -n "$(find "$la" -name "hunt_*" 2>/dev/null)" ]'; sleep 1
+  lpid="$(head -1 "$la/run.pid" 2>/dev/null)"
+  bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_feed --arm live --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1; expect_rc 3 $? "stage refuses an arm whose run is still alive (run.pid + /proc)"
+  printf 'fx\tsrc_feed\tlive\t1\tmock\t%s\t%s\n' "$co" "$base" > "$work/live.tsv"
+  bash "$SELF" drive --root "$root" --plan "$work/live.tsv" --resume --agentis "$stub" > /dev/null 2>&1
+  if grep -q $'\tlive\tr1\trc=refused-live-run' "$root/logs/live.progress" 2>/dev/null && [ ! -e "$la.partial-1" ] \
+     && [ "$(head -1 "$la/run.pid" 2>/dev/null)" = "$lpid" ]; then
+    ok "drive --resume refuses the live arm (never moves it aside, never starts a second writer)"
+  else
+    bad "drive --resume touched a live arm"; sed 's/^/         | /' "$root/logs/live.progress" 2>/dev/null
+  fi
+  if bash "$SELF" kill --path "$la" --dry-run 2>/dev/null | awk -F'\t' -v p="$lpid" '$1 == p && $2 == "pidfile" { f = 1 } END { exit f ? 0 : 1 }'; then
+    ok "kill --dry-run lists the arm's run controller by its run.pid (its args name the root, its cwd is elsewhere)"
+  else
+    bad "kill --dry-run does not list the run controller $lpid of $la"
+  fi
+  bash "$SELF" kill --path "$la" --grace 8 > "$work/kill-live.out" 2>&1; rc=$?
+  wait "$runbg" 2>/dev/null
+  if [ "$rc" -eq 0 ] && [ -n "$lpid" ] && [ ! -d "/proc/$lpid" ] && [ -f "$la/.done" ] && [ ! -e "$la/run.pid" ] \
+     && [ "$(meta_get "$la/run.meta" rc)" = 143 ] && [ "$(meta_get "$la/run.meta" deep_rc)" = skip-killed ] \
+     && [ -z "$(bash "$SELF" kill --path "$la" --dry-run 2>/dev/null)" ]; then
+    ok "kill --path <arm> stops the arm's run controller too (pidfile); run records rc 143 and never starts STAGE 4.5"
+  else
+    bad "kill --path <arm>: exit $rc, controller $lpid $([ -d "/proc/$lpid" ] && echo ALIVE || echo gone), rc=$(meta_get "$la/run.meta" rc) deep=$(meta_get "$la/run.meta" deep_rc)"
+    sed 's/^/         | /' "$work/kill-live.out"; [ -z "$lpid" ] || kill -KILL "$lpid" 2>/dev/null
+    bash "$SELF" kill --path "$la" --grace 1 > /dev/null 2>&1
+  fi
+  # breadth killed from outside (the run controller itself NOT signalled) with a verify file already present:
+  # rc 143 must never lead into STAGE 4.5.
+  local xa="$root/arms/fx/src_feed/ext-r1" xpid tmo
+  bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_feed --arm ext --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1
+  mkdir -p "$xa/fx/zone-hunt-out/verify" && printf '{"verified": []}\n' > "$xa/fx/zone-hunt-out/verify/verified_findings.json"
+  STUB_SLEEP=40 bash "$SELF" run --root "$root" --base "$base" --contest fx --zone src_feed --arm ext --repeat 1 \
+    --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1 &
+  xpid=$!
+  wait_for '[ -s "$xa/run.pid" ] && [ -n "$(find "$xa" -name "hunt_*" 2>/dev/null)" ]'; sleep 1
+  tmo="$(bash "$SELF" kill --path "$xa" --dry-run 2>/dev/null | awk -F'\t' '$3 ~ /^timeout / { print $1; exit }')"
+  [ -z "$tmo" ] || kill -TERM "$tmo" 2>/dev/null
+  wait "$xpid" 2>/dev/null
+  if [ -n "$tmo" ] && [ "$(meta_get "$xa/run.meta" rc)" = 143 ] && [ "$(meta_get "$xa/run.meta" deep_rc)" = skip-killed ] \
+     && [ ! -e "$xa/deep.log" ] && [ -z "$(bash "$SELF" kill --path "$xa" --dry-run 2>/dev/null)" ]; then
+    ok "a breadth call killed from outside (rc 143) skips STAGE 4.5 even with verified_findings.json present"
+  else
+    bad "breadth killed from outside: timeout=$tmo rc=$(meta_get "$xa/run.meta" rc) deep=$(meta_get "$xa/run.meta" deep_rc)"
+    bash "$SELF" kill --path "$xa" --grace 1 > /dev/null 2>&1
+  fi
+  local troot="$work/troot" ta dpid tpid
+  ta="$troot/arms/fx/src_feed/term-r1"
+  printf 'fx\tsrc_feed\tterm\t1\tmock\t%s\t%s\n' "$co" "$base" > "$work/tplan.tsv"
+  STUB_SLEEP=40 bash "$SELF" drive --root "$troot" --plan "$work/tplan.tsv" --agentis "$stub" > /dev/null 2>&1 &
+  dpid=$!
+  wait_for '[ -s "$ta/run.pid" ] && [ -n "$(find "$ta" -name "hunt_*" 2>/dev/null)" ]'; sleep 1
+  tpid="$(head -1 "$ta/run.pid" 2>/dev/null)"
+  kill -TERM "$dpid" 2>/dev/null; wait "$dpid" 2>/dev/null; rc=$?
+  if [ "$rc" -eq 143 ] && [ -n "$tpid" ] && [ ! -d "/proc/$tpid" ] && [ -f "$ta/.done" ] \
+     && [ "$(meta_get "$ta/run.meta" rc)" = 143 ] && [ -z "$(bash "$SELF" kill --path "$ta" --dry-run 2>/dev/null)" ] \
+     && grep -q 'rc=drive-signalled-143' "$troot/logs/tplan.progress"; then
+    ok "TERM to drive terminates its run child (process group + run's own cleanup); nothing survives under the arm"
+  else
+    bad "TERM to drive: exit $rc, run $tpid $([ -d "/proc/$tpid" ] && echo ALIVE || echo gone), rc=$(meta_get "$ta/run.meta" rc) .done=$([ -f "$ta/.done" ] && echo yes || echo no)"
+    bash "$SELF" kill --path "$ta" --dry-run 2>/dev/null | sed 's/^/         | left: /'
+    tail -3 "$troot/logs/tplan.progress" 2>/dev/null | sed 's/^/         | /'
+    bash "$SELF" kill --path "$troot" --grace 1 > /dev/null 2>&1
+  fi
+
   echo "exam.sh self-test: kill-by-path"
   local kroot="$work/kill-root"
   mkdir -p "$kroot/sub"
@@ -1124,6 +1400,12 @@ cmd_self_test() {
   else
     bad "kill --dry-run listed more (or less) than the sleeper $sleeper:"; printf '%s\n' "$listing" | sed 's/^/         | /'
     ps -o pid=,ppid=,args= -p "$(printf '%s\n' "$listed" | paste -sd, -)" 2>/dev/null | sed 's/^/         | ps: /'
+  fi
+  ln -s "$kroot" "$work/kill-link"
+  if [ "$(bash "$SELF" kill --path "$work/kill-link" --dry-run 2>/dev/null | cut -f1)" = "$sleeper" ]; then
+    ok "kill --path through a symlink resolves physically and still finds the sleeper (cwd match)"
+  else
+    bad "kill --path through a symlink found nothing (logical path vs physical /proc cwd)"
   fi
   (cd "$kroot" && bash "$SELF" kill --path "$kroot" --grace 2 > /dev/null 2>&1); rc=$?
   wait "$sleeper" 2>/dev/null

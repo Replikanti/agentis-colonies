@@ -37,7 +37,7 @@ corpus-bench/
     exam-helper.py                #   its python half (profile grammar, knob registry, zone filter, class
                                   #   injection, the #2231 checkout pre-flight) — exam.sh has no heredoc python
     profiles/                     #   knob profiles: control.env, exam.env, exam-plus.env, mock.env (self-test)
-                                  #   + KNOBS (extra knob names the runner clears before applying a profile)
+                                  #   + KNOBS (the env-clearing policy: extra names, PREFIX*es, !allowed)
   fresh-set.sh                    # fresh held-out set builder + training-memorization probe (#2263): discover
                                   #   concluded contests, GT/rare/code/contamination checks, sealed RESERVED.tsv
   fresh-set.py                    # its engine (stdlib python: listing client, pipeline, reserve, probe matcher)
@@ -549,7 +549,8 @@ The runner replaces the host-only harness scripts. It holds **no contest fact**:
 host-specific is data — the frozen base's `freeze.meta`, a profile file, and a plan TSV that lives outside the
 repo. All roots are arguments. It only invokes the pipeline (`map-zones.sh`, `gen-briefs.sh`,
 `lib/zone-coverage.py`, `run-zone-hunt.sh`) from the tool checkout it is given, and `triage.py` from this tree.
-Needs bash, python3, git, GNU `timeout` and `/proc` (Linux); exits 3 when one is missing.
+Needs bash, python3, git, GNU `timeout`, `setsid` and `/proc` (Linux), plus `bwrap` for a live backend (the hunt
+sessions must run sandboxed); exits 3 when one is missing.
 
 End to end (every `<...>` is the operator's):
 
@@ -581,24 +582,30 @@ and writes `freeze.sha256` (every map/brief file) + `freeze.meta` (`checkout_com
 project_roots map_roots profile frozen_utc`). A frozen base is never written again: a second freeze needs
 `--force`, and `stage` refuses a base whose files drifted from `freeze.sha256`.
 
-**Exam root layout** (the inner `<contest>/` keeps `generation-recall.sh --from-work <arm-dir> --id <contest>`
-working):
+**Exam root layout** (ground truth lives only in the sibling `_gt/` view, never next to anything the hunt is
+pointed at; score one arm with `generation-recall.sh --from-work <arm-dir>/_gt --id <contest>`):
 
 ```
 <root>/MANIFEST.tsv                               one row per ATTEMPT, append-only, header line
 <root>/logs/<plan>.{lock,progress,done,log,heads} driver PID lock, START/END lines, final marker, driver log,
                                                   checkout HEAD pins; <plan>.snapshot-*/ = the re-exec copy
 <root>/arms/<contest>/<zone>/<arm>-r<N>/          stage.meta stage.log run.meta run.log deep.log .done
-    <contest>/{truth.tsv, code -> base, judging -> base, zone-hunt-out/}
+                                                  run.pid (while alive) breadth.env deep.env env.cleared
+    <contest>/{code -> base, zone-hunt-out/}      what the hunt is pointed at
+    _gt/<contest>/{truth.tsv, judging -> base, zone-hunt-out -> ../../<contest>/zone-hunt-out}
 <root>/triage/<contest>-<arm>-r<N>.{tsv,md}
 ```
 
 **run** = breadth `timeout HARD_STOP_S run-zone-hunt.sh --rehunt-gaps` over the staged zone with the profile's
 `env.*` knobs, then — when `DEEP_PASS=1`, `verify/verified_findings.json` exists and the breadth call was not
-hard-stopped — STAGE 4.5 as a second `timeout` call with `--deep-hunt --deep-hunt-only` over the SAME `--out`
-and the `deep.*` knobs. A hard stop (rc 124) kills everything left under the arm dir. An EXIT trap always writes
-`run.meta` (UTC `start`/`end`/`rc`, `deep_start`/`deep_end`/`deep_rc`, checkout commit + dirty flag, model,
-knobs, profile name + sha256), the arm's `.done` and one `MANIFEST.tsv` row — also after a crash. A multi-root
+hard-stopped nor killed — STAGE 4.5 as a second `timeout` call with `--deep-hunt --deep-hunt-only` over the SAME
+`--out` and the `deep.*` knobs. `run` refuses a repo root or `--out` that holds a `truth.tsv` / `judging/`, and
+writes `run.pid` while alive (a second writer is refused by `run`, `stage` and `drive`). A hard stop (rc 124), a
+call killed from outside (rc >= 128, STAGE 4.5 is then never started) or a TERM/INT to `run` itself kills
+everything left under the arm dir. An EXIT trap always writes `run.meta` (UTC `start`/`end`/`rc`,
+`deep_start`/`deep_end`/`deep_rc`, checkout commit + dirty flag, model, knobs, the EFFECTIVE knob env of both
+calls as `breadth_env` / `deep_env` — pass.<NAME> values masked —, profile name + sha256), the arm's `.done`
+and one `MANIFEST.tsv` row — also after a crash. A multi-root
 freeze hunts from the clone root with the frozen `--project-roots`. The three Claude Code killswitches
 (refusal-fallback off, model-fallback off, session persistence on) are exported for every call.
 
@@ -608,8 +615,13 @@ pull mid-plan would otherwise corrupt the run; shipped profiles resolve inside t
 checkout's HEAD at first use and refuses (`rc=refused-head-moved`) a row whose checkout moved. Without `--resume`
 it refuses a plan whose arm dirs exist; with it, rows with a `.done` are skipped (an unfinished arm dir is moved
 aside as `<arm>-r<N>.partial-<k>`, never deleted). A failed row is recorded and the plan continues; nothing is
-re-run automatically. At the end it hands every (contest, arm, repeat) of the plan to `triage` (finished zone
-trees as `--run <zone>=<out>`, a hard-stopped one as `--unmeasured <zone>:hard-stop`, the frozen FULL map).
+re-run automatically. A row whose `run` is still alive (e.g. after the driver was SIGKILLed) is refused
+(`rc=refused-live-run`), never moved aside. Each `run` is its own process group (`setsid`): a TERM/INT to the
+driver stops that group, waits for run's cleanup and exits. At the end it hands every (contest, arm, repeat) of
+the plan to `triage` (finished zone trees as `--run <zone>=<out>`, a hard-stopped or killed one as
+`--unmeasured <zone>:<hard-stop|killed>`, the frozen FULL map). `kill --path` also stops the run controller of
+every arm under the path (found by its `run.pid`: its args name the root and its cwd is elsewhere) and resolves
+the path physically (`pwd -P`), as `/proc/<pid>/cwd` is.
 
 **Profiles** (`exam/profiles/*.env`; pass a shipped name or a path):
 
@@ -622,10 +634,15 @@ trees as `--run <zone>=<out>`, a hard-stopped one as `--unmeasured <zone>:hard-s
 | `pass.<NAME>` | inherit `<NAME>` from the caller's environment (must be set; the value is never in the file) |
 
 Values reject `$`, backticks, quotes and backslashes; an empty `env.`/`deep.` value is refused (an empty knob is
-still SET for `getenv()`). **Knob hygiene:** the operator's environment is inherited, but before a profile is
-applied the runner unsets every knob of the registry — every `env.`/`deep.`/`pass.` name of the shipped
-profiles plus `profiles/KNOBS` — so an exported `SEVERITY_RUBRIC=1` never reaches a control arm ("pass nothing
-when off"). Add a new default-OFF pipeline knob to `KNOBS`. Shipped: `control` (defaults, no knob), `exam` (the
+still SET for `getenv()`). **Knob hygiene:** the operator's environment is inherited, but every pipeline call
+gets `env -u` for every knob candidate — every env name the checkout's pipeline READS (derived at run time by
+grepping its `.sh`/`.py`/`.ag` for `${NAME:-}`-style expansions, `os.environ`/`os.getenv` and `getenv()`), every
+`env.`/`deep.`/`pass.` name of the shipped profiles, the NAME lines of `profiles/KNOBS` and every exported
+variable matching one of its `PREFIX*` lines (`DF_*`, `LLM_*`, `FORK_*`, `FLAT_CYBORG_*`, `CLAUDE_CODE_*`, ...) —
+minus its `!NAME` host plumbing / auth lines, the killswitches and the profile's own `pass.<NAME>`s. So neither
+an exported `SEVERITY_RUBRIC=1` nor an `LLM_MAX_DISCOVERY_CELLS` / `FORK_URL` nobody listed reaches an arm
+("pass nothing when off"); a new knob is covered automatically. `DF_NO_SANDBOX` is refused outright (in the
+caller's shell: exit 3; in a profile: exit 2) — a held-out run never disables the hunt sandbox. Shipped: `control` (defaults, no knob), `exam` (the
 final-exam set: `SEVERITY_RUBRIC` + `GROUND_EVIDENCE`, STAGE 4.5 with `DEEP_HUNT_REACH` + `DEEP_HUNT_PROMISES`,
 `JOBS=2`), `exam-plus` (exam + `FUNCTION_COVERAGE`, `BREADTH_PROMISES`, `SCOPE_DOCS=code:README.md`, and the
 deep-hunt budget knobs; sized for a whole-contest arm), `mock` (the self-test). No profile names a contest or a
@@ -635,8 +652,12 @@ path.
 over `fixtures/exam/` with the stub agentis and `--backend mock`: profile grammar, freeze (both contamination
 gates, the dirty-checkout refusal, the no-overwrite rule, a multi-root clone), plan, stage (filter, injection
 idempotence, drift refusal), run (breadth vs STAGE 4.5 knob routing — a leaked `DEEP_HUNT_REACH` would make the
-breadth call exit 2 —, knob hygiene against an exported `SEVERITY_RUBRIC=1`, a hard stop), drive (live and stale
-lock, snapshot re-exec, `--resume`, HEAD pin, the triage hand-off) and kill-by-path.
+breadth call exit 2 —, knob hygiene against an exported `SEVERITY_RUBRIC=1`, a leak probe exporting every
+pipeline-read env name plus unlisted prefix names as a sentinel, the `DF_NO_SANDBOX` refusal, ground truth
+invisible to the hunt, a hard stop), a running arm (stage / `drive --resume` refuse it, `kill --path` stops its
+controller, a breadth killed from outside never starts STAGE 4.5, TERM to `drive` stops its run), drive (live and
+stale lock, snapshot re-exec, `--resume`, HEAD pin, the triage hand-off) and kill-by-path (exact match, through a
+symlink).
 
 ## Generalization measurement bench (#1763 G4)
 

@@ -50,9 +50,13 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   under a PID lock, START/END progress lines, a final `.done`, re-exec from a snapshot of `exam/`, a per-plan
   checkout HEAD pin, `--resume`, and a hand-off to `triage.py` per (contest, arm, repeat)), `triage`, and `kill`
   (kill-by-path over `ps` + `/proc/<pid>/cwd`, never itself or its ancestors, TERM -> grace -> KILL -> check).
-  Profiles (`profiles/*.env`: `control`, `exam`, `exam-plus`, `mock`) use a strict grammar; before one is applied
-  the runner clears every known pipeline knob (the shipped profiles' names + `profiles/KNOBS`), so a knob
-  exported in the operator's shell never leaks into an arm that does not set it. `exam.sh self-test` drives a
+  Profiles (`profiles/*.env`: `control`, `exam`, `exam-plus`, `mock`) use a strict grammar; every pipeline call
+  gets `env -u` for every env name the checkout's pipeline reads (derived by grep at run time) plus the
+  `profiles/KNOBS` names and prefixes, minus explicit host/auth allowlist lines, so a knob exported in the
+  operator's shell never leaks into an arm that does not set it; the effective knob env is recorded in
+  `run.meta`. `DF_NO_SANDBOX` is refused and a live backend needs bwrap. Ground truth lives only in a sibling
+  `_gt/` view of each arm. `run.pid` + process-group handling: a live arm is never re-staged, `kill --path` stops
+  its controller, TERM to `drive` stops its run, and a killed breadth (rc >= 128) never starts STAGE 4.5. `exam.sh self-test` drives a
   mock two-zone exam end to end over the new `fixtures/exam/` with a dash-safe stub agentis (no LLM, no
   network); `demo-holdout-exam.sh` runs it and source-guards the runner. Run-window attribution and VOID
   handling are #2262 M3.

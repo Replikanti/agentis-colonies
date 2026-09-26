@@ -1,20 +1,26 @@
-# KNOBS — pipeline knob names the exam runner CLEARS before it applies a profile, in addition to every env./
-# deep./pass. name of the shipped profiles (exam-helper.py knob-registry). A knob that exists in the pipeline
-# but is set by no shipped profile belongs here, so an operator's exported value cannot reach an arm that does
-# not ask for it. Add a name when a new default-OFF knob lands. `#` starts a comment; names are whitespace-
-# separated.
+# KNOBS — the exam runner's env-clearing policy (exam-helper.py clear-list). Every pipeline call the runner
+# starts (map-zones / gen-briefs at freeze, both run-zone-hunt.sh calls at run) gets `env -u` for:
+#   * every env NAME the tool checkout's pipeline READS (derived at run time by grepping its .sh / .py / .ag for
+#     `${NAME:-}`-style expansions, os.environ / os.getenv and getenv() — nothing to maintain by hand);
+#   * every env./deep./pass. name of the shipped profiles;
+#   * every NAME line below;
+#   * every variable of the caller's environment matching a PREFIX* line below (catches a knob read in a form
+#     the grep cannot see, e.g. a bare `$NAME` test);
+# EXCEPT the !NAME lines below (host plumbing and auth the calls need), the three Claude Code killswitches (the
+# runner sets them), and the running profile's own pass.<NAME>s. Then the profile's env./deep. knobs are applied.
+# So a knob exported in the operator's shell never reaches an arm that does not set it ("pass nothing when off").
+# DF_NO_SANDBOX is never cleared silently: set in the caller's shell or named by a profile, it is REFUSED.
+# `#` starts a comment; entries are whitespace-separated.
 
-# breadth (run-discovery.sh / hunter.ag / refuter.ag)
-OPERATIONALIZE_LENS CALLEE_TRUST PARAM_AUDIT FUNCTION_COVERAGE BREADTH_PROMISES
-SEVERITY_RUBRIC GROUND_EVIDENCE REFUTE_CONSTRAINTS_JSON
-DF_TIER2 DF_TIER2_MAX_PER_ZONE DF_TIER2_RARE_CLASSES
-DF_TRACE_MAX_REASKS DF_RUBRIC_MAX_REASKS DF_PARAM_MAX_REASKS DF_PROMISE_MAX_REASKS
-DF_EXTERNAL_RESOLVE DF_EXTERNAL_BUDGET DF_ONCHAIN_BUDGET
-DF_HUNT_TIMEOUT_FLOOR_MS DF_HUNT_TIMEOUT_CAP_MS DF_GEN_TIMEOUT_BASE_MS DF_GEN_TIMEOUT_CAP_MS
+# names (in addition to the derived reads)
+CLAUDECODE ETH_RPC_URL RPC_URL GH_TOKEN GITHUB_TOKEN
 
-# STAGE 4.5 (run-zone-hunt.sh --deep-hunt)
-DEEP_HUNT_REACH DEEP_HUNT_PROMISES DEEP_HUNT_JOBS DEEP_HUNT_CELL_TIMEOUT_S DEEP_HUNT_ZONE_BUDGET_S
-DEEP_HUNT_SKIP_BROKEN_TARGET
+# prefixes — every exported variable starting with one of these is cleared
+DF_* DEEP_HUNT_* DEEP_CELL_* DH_* LLM_* FORK_* FORGE_* FLAT_CYBORG_* CLAUDE_CODE_* VECTOR_HUNT_* SLICE_*
+HUNT_* INV_* SYM_* POC_* HALMOS_* MONITOR_* DARK_FACTORY_* EXTERNAL_* ONCHAIN_* BOUNTY_*
+SEVERITY_* GROUND_* PARAM_* FUNCTION_* BREADTH_* OPERATIONALIZE_* CALLEE_* REFUTE_* ZONE_*
 
-# map layer (the runner passes the frozen roots itself, from freeze.meta)
-DF_PROJECT_ROOTS ZONE_SPLIT_LOC
+# never cleared: host plumbing + auth (a pipeline call needs them to run at all)
+!HOME !TMPDIR !PATH !PWD !OLDPWD !SHELL !USER !LOGNAME !LANG !TERM !IFS !BASH_SOURCE
+!XDG_STATE_HOME !XDG_CONFIG_HOME !XDG_DATA_HOME !XDG_CACHE_HOME !XDG_RUNTIME_DIR
+!DARK_FACTORY_DIR !CLAUDE_CODE_OAUTH_TOKEN
