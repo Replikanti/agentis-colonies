@@ -1596,6 +1596,30 @@ if [ -x "$REPO_ROOT/dark-factory/demo-admitted-param-lens.sh" ]; then
     fi
 fi
 
+# --- dark-factory variant-coverage lens: the C27 bug class + single-zone zone-mapper route (#2265) ---
+# One taxonomy class for "the protocol admits several VARIANTS of one configurable thing and a consuming path
+# handles only some of them" — a missing branch (a default/zero return, a revert, a skipped step) or
+# basic-variant handling applied to every variant. The lens IS the taxonomy section plus a deterministic
+# single-zone backstop (a variant discriminator AND a value path), so hunter.ag is untouched; the class text
+# carries the repository-wide hunt across admission and consumers. demo-variant-coverage-lens.sh guards the
+# anti-catch-all contract (NOT-this-class naming C21/C22/C23/C26/C9/C15/C16, the FOUR-part required-evidence
+# rule, both directions, the four-step hunt), replays hunter.ag's `## <cls> ` awk anchor so C26 stops before
+# C27, pins the deliberate non-changes (no C27 token in hunter.ag or lib/composition-surfaces.py, no
+# class_to_keyword() entry, the DF_TIER2_RARE_CLASSES default untouched, C26's section byte-unchanged), pins
+# the TOKEN-PROVENANCE contract ((G)/(T)/(D) tags + a frozen token-list digest) and — when agentis is present —
+# drives the REAL apply_backstop() over three TRUE, two FALSE and one already-C27 Solidity fixture with no LLM
+# (append-once, no duplicate, byte-identical verdict when silent, diagnostic only when it fires). No network,
+# no forge.
+if [ -x "$REPO_ROOT/dark-factory/demo-variant-coverage-lens.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-variant-coverage-lens.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: variant-coverage lens (C27 guarded class text + deterministic zone-mapper route + TRUE/TRUE/TRUE/FALSE/FALSE/DUP apply_backstop fixtures) (#2265)"
+    else
+        fail "dark-factory: variant-coverage lens regressed (#2265)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory output-gated parameter audit (#2245, iteration 5 of the miss-shape lens program) ---
 # Opt-in (PARAM_AUDIT=1, default OFF, independent of every other knob): hunter.ag asks for one
 # `PARAM|#k|<file:function>|<parameter>|<source>` line per admitted value, answered by one

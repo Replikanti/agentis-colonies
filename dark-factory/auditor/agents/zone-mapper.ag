@@ -717,6 +717,93 @@ fn contains_admitted_param_signal(code: string) -> bool {
     return false;
 }
 
+// --- #2265 deterministic C27 (variant coverage gap) backstop ---------------------------------------------
+// C27 is the domain class for "the protocol admits several VARIANTS of one configurable thing (an asset
+// representation, a pool/market kind, an external interface version, a price-feed kind, a staking/reward
+// target, a route kind, an implementation behind a registry) and a consuming path handles only some of
+// them": either a MISSING branch (falls through to a default/zero, reverts, skips) or BASIC-VARIANT
+// handling applied to every variant. The admission and the consumer usually sit in different contracts;
+// the class TEXT carries the repository-wide hunt, this net is only the SINGLE-ZONE route: it force-includes
+// C27 when a zone reads a variant DISCRIMINATOR and owns a VALUE PATH whose behaviour depends on it. Like
+// every other class it only reaches a cell if it reaches that zone's `scope.tsv` row, so it needs the same
+// deterministic backstop C5/C8/C19/C22/C24/C25/C26 have. Sibling of the #2245 nets: flat `index_of` over the
+// pre-built whole-zone `code` blob — no per-element recursion, no regex, no `exec sh`.
+//
+// TOKEN PROVENANCE (binding). Every token below carries one of three provenances, tagged in-line:
+//   (G) generic Solidity / token-standard / issue-shape vocabulary (enum-member access, type flags, the
+//       ERC-165 probe, the ERC-4626/DeFi verb forms of the consumer list);
+//   (T) already written in this repo's OWN shipped class text;
+//   (D) attested in a DEV design zone — the in-distribution twin the class text was written from.
+// The token lists are FROZEN (their digest is pinned by demo-variant-coverage-lens.sh). Widening them after
+// seeing a measurement set is tuning on the test set; a zone this net is silent on is a recorded routing
+// MISS for C27, and the follow-up for a routing MISS is a map-level cross-zone pairing, not a wider list.
+//
+// Measured offline fan-out over the two frozen DEV maps, each zone's WHOLE file set after the map-zones
+// test/interface/mock/script exclusion: 4 of 12 zones (3 of 9 on dev target A, 1 of 3 on dev target B) —
+// exactly at the <= 1/3 ceiling. Apart from `Type.`, no (G) discriminator token fires on any dev zone (their
+// rate on unseen code is unmeasured); the consumer surface on its own excludes only the proxy/utility/
+// type-only zones, so the discriminator is what makes the net selective.
+// Known limit of a single-zone route: a zone that only CONSUMES the configured thing (it arrives through an
+// interface, the discriminator is read elsewhere) is silent here and is reached through the class text's
+// repository-wide hunt instead. Cost is +1 cell per firing zone.
+
+// (a) ENUM-MEMBER discriminator: a kind/type/variant/interface-version enum member read in this zone.
+fn has_variant_enum_ref(code: string) -> bool {
+    if index_of(code, "Type.") >= 0 { return true; }         // (G) enum-member access of a *Type family
+    if index_of(code, "Kind.") >= 0 { return true; }         // (G) enum-member access of a *Kind family
+    if index_of(code, "Variant.") >= 0 { return true; }      // (G) enum-member access of a *Variant family
+    if index_of(code, "Interface.V") >= 0 { return true; }   // (D) interface-version enum member
+    if index_of(code, "feedType") >= 0 { return true; }      // (D) price-feed kind discriminator
+    return false;
+}
+
+// (b) TYPE-FLAG discriminator: a per-thing flag recording which representation it is.
+fn has_variant_type_flag(code: string) -> bool {
+    if index_of(code, "tokenType") >= 0 { return true; }     // (G)
+    if index_of(code, "assetType") >= 0 { return true; }     // (G)
+    if index_of(code, "isWrapped") >= 0 { return true; }     // (G)
+    if index_of(code, "isRebasing") >= 0 { return true; }    // (G)
+    return false;
+}
+
+// (c) INTERFACE-PROBE discriminator: the variant is selected by asking the external contract what it is.
+fn has_interface_probe(code: string) -> bool {
+    if index_of(code, "supportsInterface(") >= 0 { return true; }   // (G) ERC-165
+    if index_of(code, "ERC165Checker") >= 0 { return true; }        // (G) ERC-165
+    return false;
+}
+
+// (d) CONSUMER surface: a value path whose correctness can depend on the variant — pricing/valuation, swap
+// routing, deposit/mint, withdraw/redeem, repay, leverage close and liquidation, reward claim.
+fn has_variant_consumer_path(code: string) -> bool {
+    if index_of(code, "getPrice(") >= 0 { return true; }       // (G) pricing
+    if index_of(code, "convertTo") >= 0 { return true; }       // (G) ERC-4626 valuation
+    if index_of(code, "swap") >= 0 { return true; }            // (G) swap routing
+    if index_of(code, "deposit(") >= 0 { return true; }        // (G) ERC-4626 entry
+    if index_of(code, "mint(") >= 0 { return true; }           // (G) ERC-4626 entry
+    if index_of(code, "redeem(") >= 0 { return true; }         // (G) ERC-4626 exit
+    if index_of(code, "withdraw(") >= 0 { return true; }       // (G) ERC-4626 exit
+    if index_of(code, "repay(") >= 0 { return true; }          // (G) debt close
+    if index_of(code, "closePosition(") >= 0 { return true; }  // (G) leverage close
+    if index_of(code, "liquidat") >= 0 { return true; }        // (G) liquidation
+    if index_of(code, "claimReward") >= 0 { return true; }     // (G) reward claim
+    if index_of(code, "getReward(") >= 0 { return true; }      // (G) reward claim
+    if index_of(code, "_executeTrade(") >= 0 { return true; }  // (D) trade execution
+    if index_of(code, "exitPosition(") >= 0 { return true; }   // (D) position exit
+    return false;
+}
+
+// The AND: this zone must own a VALUE PATH (mandatory) AND read a variant discriminator through any one of
+// the three surfaces. A discriminator alone is carried by registries and type declarations that move no
+// value; a consumer alone is half of DeFi.
+fn contains_variant_coverage_signal(code: string) -> bool {
+    if !has_variant_consumer_path(code) { return false; }
+    if has_variant_enum_ref(code) { return true; }
+    if has_variant_type_flag(code) { return true; }
+    if has_interface_probe(code) { return true; }
+    return false;
+}
+
 
 // --- #1717 path-level test/interface exclusion (applied BEFORE the content signals below) -----------
 // A zone/file path can deterministically say "this is a test unit" or "this is a pure interface" in a
@@ -1024,6 +1111,10 @@ fn apply_admitted_param_backstop(classesCsv: string, code: string) -> string {
     if !contains_admitted_param_signal(code) { return classesCsv; }
     return force_include(classesCsv, "C26");
 }
+fn apply_variant_coverage_backstop(classesCsv: string, code: string) -> string {
+    if !contains_variant_coverage_signal(code) { return classesCsv; }
+    return force_include(classesCsv, "C27");
+}
 
 // The deterministic net: when the zone's code signals a lending/CDP/stability-pool system (direct or
 // ERC4626-wrapped), force C10 ("first-depositor/inflation") + C11 ("stability-pool offset"); when it signals
@@ -1179,9 +1270,14 @@ fn apply_backstop(verdict: string, code: string) -> string {
     // AFTER the C25 net and BEFORE apply_fitness_reorder, so a forced C26 is still fitness-ranked like a
     // forced C5/C8/C19/C22/C24/C25.
     let withAdmittedParam = apply_admitted_param_backstop(withZeroTotal, code);
-    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C8/C10/C11/C17/C19/C22/C24/C25/C26)
+    // #2265: force C27 (variant coverage gap) when the zone owns a value path AND reads a variant
+    // discriminator — a kind/type/interface-version enum member, a type flag or an ERC-165 probe. Chained
+    // AFTER the C26 net and BEFORE apply_fitness_reorder, so a forced C27 is still fitness-ranked like a
+    // forced C5/C8/C19/C22/C24/C25/C26.
+    let withVariantCoverage = apply_variant_coverage_backstop(withAdmittedParam, code);
+    // #1711: rank the FULL post-backstop class set (LLM classes + any forced C5/C6/C8/C10/C11/C17/C19/C22/C24/C25/C26/C27)
     // by learned real-bug precision, so the highest-precision class leads the CSV that run-discovery.sh fans out.
-    let reordered = apply_fitness_reorder(withAdmittedParam);
+    let reordered = apply_fitness_reorder(withVariantCoverage);
     let rebuilt = "ZONE|" + pipe_field(line, 1) + "|" + pipe_field(line, 2) + "|" + reordered + "|" + pipe_field(line, 4);
     if rebuilt == line { return verdict; }
     return verdict + "\n" + rebuilt;
@@ -1339,6 +1435,21 @@ let instruction = priorBlock
   + "validates every admitted value against a mapping or allowlist in the same function, or a pure "
   + "interface or struct/type declaration with no function bodies — do NOT add C26. If this zone does none "
   + "of these, do NOT add C26.\n\n"
+  + "=== VARIANT COVERAGE GAP DETECTION RULE (C27) ===\n"
+  + "INCLUDE `C27` (variant coverage gap) ONLY WHEN this zone reads a VARIANT DISCRIMINATOR of a configurable "
+  + "thing — a member of a kind/type/variant enum, an external interface-version enum, a per-asset type flag "
+  + "(which token representation it is: plain, share/receipt, wrapped, rebasing, native), or an interface "
+  + "probe such as an ERC-165 `supportsInterface` check — AND owns a VALUE PATH whose behaviour depends on "
+  + "which variant it is handling: pricing/valuation, swap routing, deposit/mint, withdraw/redeem, repay, a "
+  + "leveraged close or a liquidation, a reward claim or conversion. The bug is in one of two directions: a "
+  + "consumer handles some of the variants the configuration surface admits and falls through for the rest "
+  + "(a default or zero return, a revert, a skipped step), or a consumer never reads the discriminator and "
+  + "applies the basic variant's handling to every variant. The admitted set is often defined in another "
+  + "contract, so the class is about the coverage of one axis across the repository, not about this file "
+  + "alone. A zone whose only enum is a LIFECYCLE STATE (open/closed, pending/settled, active/paused), a zone "
+  + "that only declares or stores the discriminator and moves no value on it, or a pure interface or "
+  + "struct/type declaration (no function bodies) — do NOT add C27. If this zone does none of these, do NOT "
+  + "add C27.\n\n"
   + "=== ZONE ID (echo it back UNCHANGED as the first field) ===\n" + zoneId + "\n\n"
   + "=== HOW TO ANSWER ===\n"
   + "FIRST reason step by step: read the zone's contracts, name the subsystem, and for EACH candidate class "
@@ -1400,6 +1511,11 @@ if contains_zero_total_signal(code) { print("ZERO-TOTAL|" + zoneId + "|true"); }
 // backend, whose reply carries no ZONE| line and therefore leaves the apply_backstop append unreachable
 // there. Never perturbs the `^ZONE\|` scrape.
 if contains_admitted_param_signal(code) { print("ADMITTED-PARAM|" + zoneId + "|true"); }
+// #2265: the C27 variant-coverage signal follows the same discipline as ADMITTED-PARAM| above — emitted ONLY
+// WHEN THE NET FIRES, so a zone the net is silent on produces byte-identical output to the pre-C27 mapper. It
+// makes contains_variant_coverage_signal() observable + offline-testable under the mock backend, whose reply
+// carries no ZONE| line. Never perturbs the `^ZONE\|` scrape.
+if contains_variant_coverage_signal(code) { print("VARIANT-COVERAGE|" + zoneId + "|true"); }
 let outcome = outcome_of(finalVerdict);
 emit("dark-factory:zone_mapped", "{\"zone\":\"" + zoneId + "\",\"outcome\":\"" + outcome + "\"}");
 learn("zone-map", zoneId, "attack-surface classification of zone " + zoneId, outcome, ["zone-map", zoneId, outcome]);
