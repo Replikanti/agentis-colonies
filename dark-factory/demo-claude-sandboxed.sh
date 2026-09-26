@@ -16,7 +16,13 @@
 # cwd -> project-dir encoding to known answers; section 1d asserts, on a temp-HOME fixture, that inside the
 # sandbox ONLY the session's own project dir is visible (and writable, landing on the host), while other
 # sessions' transcripts, file-history, shell snapshots, paste cache, todos and the prompt history are not.
-# The WHOLE demo runs with HOME pointed at that fixture, so it never reads or writes the real ~/.claude.
+# #2262 M3 scopes ~/.claude.json the same way (section 1e): its `projects` map carries every cwd's
+# `lastSessionFirstPrompt`, so the sandbox binds a filtered temp copy holding only the session's own cwd entry;
+# a detached watcher merges that entry back into the real file after the session ends — also when the session's
+# whole process group is SIGKILLed, which is how flat-cyborg ends every session — and a copy that cannot be built
+# binds nothing (fail-closed).
+# The WHOLE demo runs with HOME pointed at that fixture, so it never reads or writes the real ~/.claude or
+# ~/.claude.json.
 #
 # CI-safe: uses a stub `claude` (DF_CLAUDE_BIN), no real claude / network / LLM.
 # The live filesystem-isolation asserts run only when bwrap is available; without
@@ -108,7 +114,21 @@ cat > "$STUB" <<'STUBEOF'
     if cat "$D_CL/.credentials.json" >/dev/null 2>&1; then echo "CREDS_READABLE"; else echo "CREDS_BLOCKED"; fi
     if cat "$D_CL/settings.json" >/dev/null 2>&1; then echo "SETTINGS_READABLE"; else echo "SETTINGS_BLOCKED"; fi
   fi
+  # #2262 M3 probes (section 1e only): what a cell sees in ~/.claude.json, then (optionally) a session write.
+  if [ -n "${D_CJ:-}" ]; then
+    if [ ! -e "$HOME/.claude.json" ]; then echo "CJ_ABSENT"
+    else
+      if grep -q OTHER-PROMPT-SECRET "$HOME/.claude.json"; then echo "CJ_OTHER_LEAK"; else echo "CJ_OTHER_BLOCKED"; fi
+      if grep -q OWN-EARLIER-PROMPT "$HOME/.claude.json"; then echo "CJ_OWN_VISIBLE"; else echo "CJ_OWN_MISSING"; fi
+      if grep -q numStartups "$HOME/.claude.json"; then echo "CJ_TOPLEVEL_KEPT"; else echo "CJ_TOPLEVEL_LOST"; fi
+    fi
+    if [ -n "${D_CJ_WRITE:-}" ]; then
+      printf '{"numStartups": 99, "projects": {"%s": {"hasTrustDialogAccepted": true, "lastSessionFirstPrompt": "%s"}}}\n' \
+        "$D_CJ_OWN" "$D_CJ_WRITE" > "$HOME/.claude.json" && echo "CJ_WROTE"
+    fi
+  fi
 } > "$D_RESULT" 2>&1
+if [ -n "${D_CJ_SLEEP:-}" ]; then sleep "$D_CJ_SLEEP"; fi
 STUBEOF
 chmod +x "$STUB"
 
@@ -260,6 +280,81 @@ else
 fi
 
 echo
+echo "demo-claude-sandboxed.sh: 1e) #2262 M3 scoped ~/.claude.json (bwrap-gated, temp-HOME fixture) ..."
+if command -v bwrap >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  CJ="$HOME/.claude.json"; CJTMP="$TMP/cjtmp"; mkdir -p "$CJTMP"
+  cj_fixture() {
+    printf '{\n  "numStartups": 7,\n  "oauthAccount": {"emailAddress": "fixture@example.invalid"},\n  "projects": {\n    "%s": {"hasTrustDialogAccepted": true, "lastSessionFirstPrompt": "OWN-EARLIER-PROMPT"},\n    "/srv/operator/other-session": {"hasTrustDialogAccepted": true, "lastSessionFirstPrompt": "OTHER-PROMPT-SECRET"}\n  }\n}\n' "$RUN" > "$CJ"
+    chmod 600 "$CJ"
+  }
+  # cj_get <python expr over d> -> the value read from the host's real (fixture) file
+  cj_get() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$CJ" "$1" 2>/dev/null; }
+  cj_settled() { local i=0; while [ "$i" -lt 60 ]; do [ -z "$(ls -A "$CJTMP")" ] && return 0; sleep 0.25; i=$((i + 1)); done; return 1; }
+  cj_env=(D_CJ=1 D_CJ_OWN="$RUN" TMPDIR="$CJTMP" HUNT_SANDBOX_RUN="$RUN" HUNT_SANDBOX_REPO="$REPO" DF_CLAUDE_BIN="$STUB")
+
+  cj_fixture; rm -f "$RESULT"
+  ( cd "$RUN" && env "${stub_env[@]}" "${cj_env[@]}" D_CJ_WRITE=SANDBOX-SESSION-PROMPT "$WRAP" -p 'probe' >/dev/null 2>&1 ) || true
+  R="$(cat "$RESULT" 2>/dev/null || true)"
+  case "$R" in *CJ_OTHER_BLOCKED*) ok "another cwd's projects entry (its lastSessionFirstPrompt) is INVISIBLE in the sandbox's ~/.claude.json" ;;
+               *) bad "another cwd's entry is readable inside the sandbox: $R" ;; esac
+  case "$R" in *CJ_OWN_VISIBLE*CJ_TOPLEVEL_KEPT*) ok "the session's own cwd entry (its trust flag) and every top-level key stay visible" ;;
+               *) bad "the own entry / top-level keys are missing inside the sandbox: $R" ;; esac
+  # cj_own -> the host file's lastSessionFirstPrompt for the session's own cwd
+  cj_own() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["projects"][sys.argv[2]]["lastSessionFirstPrompt"])' "$CJ" "$RUN" 2>/dev/null; }
+  if cj_settled && [ "$(cj_own)" = SANDBOX-SESSION-PROMPT ]; then
+    ok "after the session exits, its own entry is merged back into the host file and the temp copy is removed"
+  else
+    bad "the session's own entry was not merged back (or the temp copy was left): $(ls -A "$CJTMP" | tr '\n' ' ')"
+  fi
+  if [ "$(cj_get 'd["projects"]["/srv/operator/other-session"]["lastSessionFirstPrompt"]')" = OTHER-PROMPT-SECRET ] \
+     && [ "$(cj_get 'd["numStartups"]')" = 7 ] && [ "$(stat -c %a "$CJ" 2>/dev/null || stat -f %Lp "$CJ")" = 600 ]; then
+    ok "the merge touches ONLY the session's own entry: other cwds and top-level keys are untouched, mode 0600 kept"
+  else
+    bad "the merge changed more than the own entry: $(cat "$CJ")"
+  fi
+
+  cj_fixture; cj_before="$(cksum < "$CJ")"
+  ( cd "$RUN" && env "${stub_env[@]}" "${cj_env[@]}" "$WRAP" -p 'probe' >/dev/null 2>&1 ) || true
+  if cj_settled && [ "$(cksum < "$CJ")" = "$cj_before" ]; then
+    ok "a session that changes nothing leaves the host file byte-identical (no write at all)"
+  else
+    bad "an unchanged session rewrote the host file (or left its temp copy)"
+  fi
+
+  # flat-cyborg ends every session by SIGKILLing its process group: the merge must survive that.
+  if command -v setsid >/dev/null 2>&1; then
+    cj_fixture; rm -f "$RESULT"
+    ( cd "$RUN" && exec env "${stub_env[@]}" "${cj_env[@]}" D_CJ_WRITE=SANDBOX-KILL-PROMPT D_CJ_SLEEP=30 \
+        setsid "$WRAP" -p 'probe' >/dev/null 2>&1 ) &
+    cj_pid=$!
+    i=0; while [ "$i" -lt 60 ] && ! grep -qs CJ_WROTE "$RESULT"; do sleep 0.25; i=$((i + 1)); done
+    kill -KILL -- "-$cj_pid" 2>/dev/null || kill -KILL "$cj_pid" 2>/dev/null
+    wait "$cj_pid" 2>/dev/null
+    if cj_settled && [ "$(cj_own)" = SANDBOX-KILL-PROMPT ]; then
+      ok "the merge-back survives a SIGKILL of the session's whole process group (the detached watcher)"
+    else
+      bad "a SIGKILLed session's own entry was not merged back: $(ls -A "$CJTMP" | tr '\n' ' ')"
+    fi
+  else
+    skip "setsid not available — skipping the process-group SIGKILL merge case"
+  fi
+
+  printf '{"projects": {"/srv/operator/other-session": {"lastSessionFirstPrompt": "OTHER-PROMPT-SECRET"}' > "$CJ"
+  rm -f "$RESULT"
+  _err="$( ( cd "$RUN" && env "${stub_env[@]}" "${cj_env[@]}" "$WRAP" -p 'probe' 2>&1 >/dev/null ) || true)"
+  R="$(cat "$RESULT" 2>/dev/null || true)"
+  if case "$R" in *CJ_ABSENT*) true ;; *) false ;; esac && case "$_err" in *"binding none"*) true ;; *) false ;; esac \
+     && [ -z "$(ls -A "$CJTMP")" ]; then
+    ok "fail-closed: an unreadable host file binds NO ~/.claude.json (loud warning), never the raw file"
+  else
+    bad "an unreadable host file was not handled fail-closed: $R / $_err"
+  fi
+  rm -f "$CJ"
+else
+  skip "bwrap or python3 not available — skipping the #2262 M3 scoped ~/.claude.json asserts"
+fi
+
+echo
 echo "demo-claude-sandboxed.sh: 2) fail-closed on a missing bind var ..."
 # HUNT_SANDBOX_RUN unset MUST abort (never silently run unsandboxed). DF_CLAUDE_BIN
 # is set so the abort is on the bind var, not on a missing claude.
@@ -361,6 +456,7 @@ if [ "$FAILS" -eq 0 ]; then
   echo "demo-claude-sandboxed.sh: PASS — sandbox hides everything outside the repo + run dir (plus, only when"
   echo "                         #2235 asks for it, the external-protocol cache), exposes only its own"
   echo "                         ~/.claude project dir and none of the other sessions' history (#2262),"
+  echo "                         binds a ~/.claude.json scoped to its own cwd and merges only that entry back (#2262 M3),"
   echo "                         denies the web tools, is fail-closed, falls through safely, and all six emitters are wired."
   exit 0
 fi

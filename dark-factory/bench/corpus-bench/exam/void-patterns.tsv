@@ -1,0 +1,24 @@
+# void-patterns.tsv — the #2262 M3 VOID signatures (exam-helper.py void-check / rehunt-check). DATA: add a row to
+# teach the runner a new signature, no code change. Columns (TAB-separated): class<TAB>regex<TAB>where.
+#   class  the VOID class written to void.txt. `weekly-limit` is special: it HALTS the whole plan (every later row
+#          would void too) and blocks the one-shot re-hunt; `transport` matches also trigger that re-hunt.
+#   regex  a Python regex, matched per line. Match the WORDS of a notice, never its glyphs (the separators and
+#          apostrophes of a CLI notice change between versions and between terminals).
+#   where  failed        every model-call log (discovery cell logs incl. superseded attempts + re-ask companions,
+#                        refute logs, deep-hunt logs) that carries a .novalid / .timeout marker. A usage-limit
+#                        notice always ends the call without an answer, and restricting it to failed calls keeps
+#                        a quoted revert string in a normal reply from matching.
+#          final-failed  the final-attempt discovery cell logs that carry a failure marker.
+#          cells         every final-attempt discovery cell log.
+# Rows are checked in file order (after the hard-stop / killed checks); the first match wins.
+#
+# Claude Code usage-limit notices ("You have hit your weekly limit - resets <when>", "<kind> limit reached"). The
+# class is weekly-limit for every usage-limit kind: each one voids every row behind it until the reset.
+weekly-limit	(?i)\bhit your (weekly |usage |session |5-hour )?limit\b	failed
+weekly-limit	(?i)\b(weekly|usage|session|5-hour) limit reached\b	failed
+# The TERMINAL agentis transport error (a non-terminal `[LLM retry N/M: LLM transport error: ...]` line is a blip
+# agentis recovered from; lib/run-agent-validated.sh df_transport_error_in_log applies the same rule).
+transport	^(?!.*\[LLM retry).*LLM transport error:	cells
+# flat-cyborg completed without the reply contract: a failed cell whose screen never showed the closing sentinel
+# or a fenced reply (the backend signature of a session that stopped answering, e.g. at a usage limit).
+backend-no-reply	(?i)\bno closing sentinel\b|\bno fenced reply\b	final-failed

@@ -62,6 +62,27 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   mock two-zone exam end to end over the new `fixtures/exam/` with a dash-safe stub agentis (no LLM, no
   network); `demo-holdout-exam.sh` runs it and source-guards the runner. Run-window attribution and VOID
   handling are #2262 M3.
+- **Held-out exam run integrity — run-window attribution, VOID detection + retry, usage-limit halt (#2262 M3).**
+  Every exam arm now proves it is measurable before triage counts it. `model-attribution.py` gains optional
+  `--since/--until` (records outside the window are dropped, undated records KEPT, a `WINDOW` trailer; output
+  byte-identical without a window) — Claude Code keys its transcript store by the cwd string, so a re-run in the
+  same dir shares the store with a voided attempt. `exam.sh attrib` enumerates the arm's RUN dirs actually on disk,
+  maps each to its store dir by exact name (the same encoding the sandbox binds), confirms it against the records'
+  `cwd`, and gates every stage on `PURE-<family of MODEL>` (or the new `ATTRIB_FAMILY` profile key) over that
+  stage's own window; a stage with RUN dirs but no transcript is `attribution-missing`. `freeze` records its
+  map/brief-stage verdict in `freeze.meta` (warning only). VOID signatures are data (`exam/void-patterns.tsv`:
+  usage-limit notices matched on words not glyphs, the terminal transport error, the "no closing sentinel / no
+  fenced reply" backend signature); `exam-helper.py void-check` writes `void.txt` per arm (hard-stop, killed, the
+  patterns, all-cells-failed, a cell still failed after the re-hunt, no-cells, attribution, operator). `run` makes
+  exactly ONE in-arm `--rehunt-gaps --rehunt-include-partial --rehunt-max-attempts 2` pass when a final cell failed
+  or hit a transport error (new `REHUNT_TRANSPORT` key, default 1; never after a usage-limit match, which also
+  skips STAGE 4.5). `drive` records `void=` on every END line and in `MANIFEST.tsv` (two new trailing columns; an
+  M2-headed manifest keeps M2-shaped rows), HALTS the plan on a `weekly-limit` VOID (`logs/<plan>.halted`, exit 6),
+  treats a row as complete under `--resume` only when VALID, and re-runs VOID rows only through `--retry-void`
+  (the void attempt kept as `<arm>-r<N>.void-<k>`). `exam.sh void-mark` records an operator VOID; `exam.sh triage`
+  passes every VOID zone as `--unmeasured <zone>:<class>`. New fixtures `fixtures/exam-void/` (one arm per
+  verdict, the usage-limit notice with its literal glyphs) and `fixtures/model-attribution-window/`; the stub
+  agentis gains a failing-call seam; `exam.sh self-test` covers all of it.
 
 - **Held-out exam: per-row triage scorer `bench/corpus-bench/triage.py` (#2262 M1).** Every rare row of a
   held-out exam was scored by hand (candidates / verified findings at the row's function, cell-log mentions,
@@ -650,6 +671,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **A hunt sandbox sees only its own `~/.claude.json` project entry (#2262 M3).** The sandbox still bound the real
+  `~/.claude.json` read-write for workspace trust, and its `projects` map carries every cwd's entry — the
+  operator's sessions' and every other cell's `lastSessionFirstPrompt` included. `lib/claude-sandboxed.sh` now binds
+  a filtered temp copy (`lib/claude-json-scope.py filter`: every top-level key, `projects` reduced to the session's
+  own logical + physical cwd). A detached watcher (`watch-merge`; detached because flat-cyborg ends a session by
+  SIGKILLing its whole process group) waits for the session to end and merges ONLY the session's own entry back,
+  and only when the session changed it — under a lock between mergers, on a freshly re-read file, atomically,
+  never over a concurrent replace. A copy that cannot be built binds nothing (fail-closed). `demo-claude-sandboxed.sh`
+  section 1e proves it on a temp HOME, including the process-group SIGKILL.
 - **A hunt sandbox sees only its own session transcripts, not every `~/.claude` project (#2262).**
   `lib/claude-sandboxed.sh` bound the whole `~/.claude` read-write into every hunt / refute / prover session so
   auth and workspace trust keep working, but `~/.claude/projects/` holds every Claude Code transcript on the

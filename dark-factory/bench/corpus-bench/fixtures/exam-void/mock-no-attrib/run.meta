@@ -1,0 +1,13 @@
+contest=fx
+zone=src_pool
+arm=fixture
+repeat=1
+start=2026-01-01T10:00:00Z
+end=2026-01-01T11:00:00Z
+rc=0
+rehunt_rc=none
+deep_start=-
+deep_end=-
+deep_rc=skip
+backend=mock
+model=claude-opus-4-8

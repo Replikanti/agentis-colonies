@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # demo-holdout-exam.sh — proof of the #2262 held-out exam tooling (M1: the per-row triage scorer; M2: the exam
-# runner core, bench/corpus-bench/exam/exam.sh).
+# runner core, bench/corpus-bench/exam/exam.sh; M3: run integrity — run-window attribution, VOID detection, the
+# one-shot re-hunt, the usage-limit HALT and drive --retry-void).
 #
 # Every rare row of a held-out exam used to be scored by hand: read the truth row, look for candidates and
 # verified findings at the same function, grep the cell logs, read the DISMISS lines and the refute verdicts,
@@ -26,13 +27,18 @@
 #      kill-by-path reads ps + /proc instead); no absolute home path and no corpus.tsv contest id (as a word) in
 #      exam/ or fixtures/exam/; no profile value carries a path; exam.sh embeds no heredoc python and exports
 #      the three Claude Code killswitches.
+#      Integrity (M3): the VOID signatures are DATA (exam/void-patterns.tsv) and match words, never glyphs (every
+#      regex is plain ASCII); the usage-limit fixture carries the notice's literal glyphs (no \xHH escape, dash-safe
+#      CI); fixtures/exam-void/ + fixtures/model-attribution-window/ carry no home path and no corpus contest id.
 #   2) BEHAVIOURAL (when python3 is present): `triage.py --self-test` reproduces the fixed triage table in
 #      bench/corpus-bench/fixtures/triage/ byte-for-byte and holds the decoy / superseded / unmeasured /
 #      rare-subset / determinism assertions. `exam.sh self-test` then drives a mock two-zone exam end to end
 #      over fixtures/exam/ with a stub agentis (--backend mock): profile grammar, freeze (+ both contamination
 #      gates, the dirty-checkout refusal, multi-root clone), plan, stage (filter, class injection, drift
 #      refusal), run (breadth + STAGE 4.5 knob routing, knob hygiene, hard stop), drive (lock, snapshot re-exec,
-#      --resume, HEAD pin, triage hand-off) and kill-by-path.
+#      --resume, HEAD pin, triage hand-off) and kill-by-path; M3: void-check over one fixture arm per verdict,
+#      run-window attribution against a synthetic transcript store, the one-shot re-hunt (recovered, still
+#      failed, turned off), the weekly-limit HALT + --resume + --retry-void, and a VOID zone triaged unmeasured.
 #
 # Usage:  dark-factory/demo-holdout-exam.sh
 # Exit: 0 = all assertions hold (SKIPs cleanly when python3 is absent) ; non-zero = a regression.
@@ -108,18 +114,20 @@ else
   bad "exam/ calls pgrep/pkill:"; printf '%s\n' "$killers" | sed "s|^$HERE/||" | head -5
 fi
 
-ex_home="$(grep -rnIE '/home/|/Users/|/root/' "$EXAM" "$EXFIX" 2>/dev/null || true)"
+VOIDFIX="$CB/fixtures/exam-void"
+WINFIX="$CB/fixtures/model-attribution-window"
+ex_home="$(grep -rnIE '/home/|/Users/|/root/' "$EXAM" "$EXFIX" "$VOIDFIX" "$WINFIX" 2>/dev/null || true)"
 if [ -z "$ex_home" ]; then
-  ok "exam/ + fixtures/exam/ carry no absolute home path"
+  ok "exam/ + fixtures/exam/ + fixtures/exam-void/ + fixtures/model-attribution-window/ carry no absolute home path"
 else
   bad "absolute home path under exam/ or fixtures/exam/:"; printf '%s\n' "$ex_home" | sed "s|^$HERE/||" | head -5
 fi
 
 ids="$(grep -v '^#' "$CB/corpus.tsv" | cut -f1 | grep . | paste -sd'|' -)"
 if [ -n "$ids" ]; then
-  ex_ids="$(grep -rnwiIE "$ids" "$EXAM" "$EXFIX" 2>/dev/null || true)"
+  ex_ids="$(grep -rnwiIE "$ids" "$EXAM" "$EXFIX" "$VOIDFIX" "$WINFIX" 2>/dev/null || true)"
   if [ -z "$ex_ids" ]; then
-    ok "exam/ + fixtures/exam/ name no corpus.tsv contest ($(printf '%s\n' "$ids" | tr '|' '\n' | grep -c .) ids checked as words)"
+    ok "exam/ + the exam fixtures name no corpus.tsv contest ($(printf '%s\n' "$ids" | tr '|' '\n' | grep -c .) ids checked as words)"
   else
     bad "a corpus.tsv contest id appears under exam/ or fixtures/exam/:"; printf '%s\n' "$ex_ids" | sed "s|^$HERE/||" | head -5
   fi
@@ -143,6 +151,26 @@ else
   bad "exam.sh embeds heredoc python or lost a killswitch export"
 fi
 
+note "source-guarding the #2262 M3 run-integrity data ..."
+if [ -f "$EXAM/void-patterns.tsv" ] && [ -f "$VOIDFIX/expected.tsv" ] && [ -f "$VOIDFIX/weekly-limit-notice.txt" ]; then
+  vp_rows="$(grep -v '^#' "$EXAM/void-patterns.tsv" | grep -c .)"
+  vp_nonascii="$(grep -v '^#' "$EXAM/void-patterns.tsv" | LC_ALL=C grep -n '[^ -~	]' || true)"
+  if [ "$vp_rows" -ge 3 ] && [ -z "$vp_nonascii" ] && grep -q '^weekly-limit	' "$EXAM/void-patterns.tsv" \
+     && grep -q '^transport	' "$EXAM/void-patterns.tsv"; then
+    ok "exam/void-patterns.tsv: $vp_rows signature rows (weekly-limit + transport + ...), every regex plain ASCII (words, not glyphs)"
+  else
+    bad "exam/void-patterns.tsv lost a class or carries a non-ASCII (glyph-bound) regex: $vp_nonascii"
+  fi
+  if LC_ALL=C grep -q '[^ -~]' "$VOIDFIX/weekly-limit-notice.txt" \
+     && ! grep -rnE '\\x[0-9A-Fa-f]{2}' "$VOIDFIX" "$EXFIX" > /dev/null 2>&1; then
+    ok "the usage-limit fixture carries the notice's literal glyphs; no \\xHH escape under the exam fixtures (dash-safe CI)"
+  else
+    bad "the usage-limit notice fixture is not literal, or a \\xHH escape crept into the exam fixtures"
+  fi
+else
+  bad "M3 data missing: exam/void-patterns.tsv / fixtures/exam-void/{expected.tsv,weekly-limit-notice.txt}"
+fi
+
 # ----------------------------------------------------------------------------------------------------------
 # 2) BEHAVIOURAL — the fixed triage table (SKIP cleanly without python3).
 # ----------------------------------------------------------------------------------------------------------
@@ -163,7 +191,7 @@ else
     note "running exam.sh self-test (mock two-zone exam end to end) ..."
     ex_out="$(bash "$EXAM/exam.sh" self-test 2>&1)"; ex_rc=$?
     if [ "$ex_rc" -eq 0 ]; then
-      ok "exam.sh self-test PASSED ($(printf '%s\n' "$ex_out" | grep -c '\[OK\]') assertions: freeze, plan, stage, run, drive, triage hand-off, kill)"
+      ok "exam.sh self-test PASSED ($(printf '%s\n' "$ex_out" | grep -c '\[OK\]') assertions: freeze, plan, stage, run, drive, triage hand-off, kill, VOID, attribution, re-hunt, halt)"
     else
       bad "exam.sh self-test FAILED (exit $ex_rc)"
       printf '%s\n' "$ex_out" | grep -E -A6 '\[FAIL\]' | sed 's/^/         | /' | head -40
@@ -175,7 +203,8 @@ echo
 if [ "$FAILS" -eq 0 ]; then
   note "PASS: the #2262 triage scorer reads only real output logs, imports the frozen pair rule, and reproduces"
   note "      the fixed per-row triage table (every class a PROPOSAL; the operator confirms); the exam runner"
-  note "      freezes, stages, runs, drives and hands off to triage with no contest fact in the repo."
+  note "      freezes, stages, runs, drives and hands off to triage with no contest fact in the repo, and"
+  note "      every arm proves it is measurable (run-window attribution, VOID signatures, re-hunt, HALT)."
   exit 0
 fi
 note "DEMO FAILED — a #2262 triage / exam-runner assertion did not hold" >&2

@@ -1,0 +1,7 @@
+{"type":"user","timestamp":"2025-12-31T09:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"hunt the share pool (earlier, voided attempt)"}]}}
+{"type":"assistant","timestamp":"2025-12-31T09:00:05.000Z","message":{"role":"assistant","model":"claude-fable-5-1","stop_reason":"end_turn","content":[{"type":"text","text":"tracing withdraw"}]}}
+{"type":"assistant","timestamp":"2025-12-31T09:00:09.000Z","message":{"role":"assistant","model":"claude-opus-4-8","stop_reason":"end_turn","content":[{"type":"fallback","reason":"upstream model declined"},{"type":"text","text":"answered after fallback"}]}}
+{"type":"user","timestamp":"2026-01-01T10:00:02.000Z","message":{"role":"user","content":[{"type":"text","text":"hunt the share pool (re-run)"}]}}
+{"type":"assistant","timestamp":"2026-01-01T10:00:07.000Z","message":{"role":"assistant","model":"claude-opus-4-8","stop_reason":"end_turn","content":[{"type":"text","text":"tracing withdraw"}]}}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-8","stop_reason":"end_turn","content":[{"type":"text","text":"an undated record is kept"}]}}
+{"type":"assistant","timestamp":"2026-01-01T10:59:59.500Z","message":{"role":"assistant","model":"claude-opus-4-8","stop_reason":"end_turn","content":[{"type":"text","text":"SAFE"}]}}

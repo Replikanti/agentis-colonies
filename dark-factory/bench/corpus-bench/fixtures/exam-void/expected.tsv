@@ -1,0 +1,14 @@
+# expected.tsv — exam-helper.py void-check over each fixtures/exam-void/<dir> arm (exam.sh self-test): <dir> TAB void.txt
+all-cells-failed	VOID	all-cells-failed	fx/zone-hunt-out/discovery/src_pool/run (2 cells)
+attribution	VOID	attribution	attrib.tsv:deep-hunt=MIXED(fail)
+backend-no-reply	VOID	backend-no-reply	fx/zone-hunt-out/discovery/src_pool/run/hunt_share_pool_C1.log:1
+hard-stop	VOID	hard-stop	run.meta:rc=124
+killed	VOID	killed	run.meta:deep_rc=skip-killed
+live-no-attrib	VOID	attribution	attrib.tsv:missing
+mock-no-attrib	VALID
+no-cells	VOID	no-cells	fx/zone-hunt-out/discovery/src_pool/run
+operator	VOID	operator	void.operator:the operator edited hunter.ag while this arm ran
+transport	VOID	transport	fx/zone-hunt-out/discovery/src_pool/run/hunt_share_pool_C1.log:1
+transport-timeout	VOID	transport	fx/zone-hunt-out/discovery/src_pool/run/hunt_share_pool_C1.log.timeout
+valid	VALID
+weekly-limit	VOID	weekly-limit	fx/zone-hunt-out/discovery/src_pool/run/hunt_share_pool_C1.log:1

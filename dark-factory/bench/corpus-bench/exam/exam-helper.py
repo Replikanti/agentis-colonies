@@ -42,6 +42,34 @@
 #                                      when anything hit, 0 when clean.
 #   zone-roots <zones.json>            the distinct `root` keys of a (#2255 multi-root) map, comma-joined, or
 #                                      `-` for a single-root map.
+#   project-slug <abs-path>            Claude Code's per-cwd transcript store dir name for <abs-path> (M3; the
+#                                      same encoding lib/claude-sandboxed.sh binds).
+#   attrib --root <dir> --transcripts-root <dir> --model <id> [--family <fam>] --tsv <out>
+#          (--stage <name>=<since>,<until>)... [--other <since>,<until>] [--exclude <name>]...
+#                                      M3 run-window model attribution. Enumerates the RUN dirs actually on disk
+#                                      under <dir> (every dir named `run` + its `cell-*` children, grouped by the
+#                                      top-level dir = the stage), maps each to its transcript store dir by exact
+#                                      name, keeps a transcript only when its records' `cwd` confirms it (or it
+#                                      carries none), and runs model-attribution.py --json --stage --since --until
+#                                      per stage. A `--stage` is REQUIRED: RUN dirs with no in-window transcript =
+#                                      attribution-missing. `--other` covers every other top-level dir (a stage
+#                                      that made no model call there is not-run); `--exclude` skips one. Gate per
+#                                      stage: PURE-<family of --model, or --family> -> ok. `--model -` (the mock
+#                                      backend) writes one skipped-mock row. Writes <out> (TSV); exit 0.
+#   rehunt-check <zone-hunt-out> <void-patterns.tsv>
+#                                      M3 one-shot re-hunt trigger: exit 0 (and a reason line) when a final-attempt
+#                                      discovery cell carries .timeout / .novalid or a `transport` pattern match;
+#                                      exit 4 when a `weekly-limit` pattern matched anywhere (a re-hunt would void
+#                                      too); exit 1 when nothing needs a re-hunt. An .untraced cell is a METRIC.
+#   void-check <arm-dir> <void-patterns.tsv>
+#                                      M3 arm verdict: writes <arm-dir>/void.txt = `VALID` or
+#                                      `VOID<TAB><class><TAB><evidence ref>` and prints it. First match wins:
+#                                      hard-stop (rc / rehunt_rc / deep_rc 124), killed (a call or run itself
+#                                      signalled), the pattern rows in file order, all-cells-failed (a staged
+#                                      zone whose final cells ALL failed), transport (a final cell still failed
+#                                      after the re-hunt), no-cells (a staged zone with no cell log at all),
+#                                      attribution (attrib.tsv: MIXED / CONTAMINATED / wrong family / missing),
+#                                      operator (void.operator, written by `exam.sh void-mark`).
 #
 # Exit: 0 ok ; 1 contam-scan found a violation ; 2 usage / profile grammar error ; 3 unreadable or
 #       wrong-shape input.
@@ -49,6 +77,7 @@ import importlib.util
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 
@@ -57,7 +86,6 @@ sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # Runner keys: the fixed set a profile may set with a bare KEY=VALUE. Every other bare key is exit 2.
-# M3 of #2262 adds REHUNT_TRANSPORT / ATTRIB_FAMILY here.
 RUNNER_DEFAULTS = (
     ("BACKEND", "flat-cyborg"),
     ("MODEL", ""),
@@ -67,7 +95,10 @@ RUNNER_DEFAULTS = (
     ("DEEP_PASS", "0"),
     ("INJECT_CLASSES", ""),
     ("SCOPE_DOCS", ""),         # empty = off ; `auto` ; `code:<path relative to the contest's code/ dir>`
+    ("REHUNT_TRANSPORT", "1"),  # M3: 1 = one in-arm re-hunt pass over failed / transport-failed cells ; 0 = off
+    ("ATTRIB_FAMILY", ""),      # M3: the family the attribution gate wants; empty = the family of MODEL
 )
+FAMILIES = ("opus", "fable", "sonnet", "haiku")
 RUNNER_KEYS = tuple(k for k, _ in RUNNER_DEFAULTS)
 NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 BAD_VALUE_CHARS = ("$", "`", "'", '"', "\\")
@@ -115,6 +146,12 @@ def _check_runner(key, val, where):
     elif key == "INJECT_CLASSES":
         if val and not re.match(r"^C[0-9]+(,C[0-9]+)*$", val):
             bad("must be a comma list of class tokens (C<n>)")
+    elif key == "REHUNT_TRANSPORT":
+        if val not in ("0", "1"):
+            bad("must be 0 or 1")
+    elif key == "ATTRIB_FAMILY":
+        if val and val not in FAMILIES:
+            bad("must be empty or one of " + "/".join(FAMILIES))
     elif key == "SCOPE_DOCS":
         if val and val != "auto":
             if not val.startswith("code:"):
@@ -475,6 +512,446 @@ def cmd_contam_scan(argv):
     return 1 if hits else 0
 
 
+# ----------------------------------------------------------------------------------------------------------
+# M3: run-window model attribution
+# ----------------------------------------------------------------------------------------------------------
+def claude_project_slug(path):
+    """Claude Code's transcript store dir name for a cwd: every char outside [A-Za-z0-9] becomes '-'; past 200
+    chars the name is cut to 200 and suffixed '-' + base36(|h|), h = the 32-bit signed djb2 `(h << 5) - h + c`
+    over the path. Mirrors lib/claude-sandboxed.sh's claude_project_slug (the demo pins both to known answers)."""
+    s = re.sub(r"[^A-Za-z0-9]", "-", path)
+    if len(s) <= 200:
+        return s
+    h = 0
+    for ch in path:
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    if h >= 0x80000000:
+        h = 0x100000000 - h
+    digits = "0123456789abcdefghijklmnopqrstuvwxyz"
+    out = ""
+    while h > 0:
+        out = digits[h % 36] + out
+        h //= 36
+    return "%s-%s" % (s[:200], out or "0")
+
+
+def cmd_project_slug(argv):
+    if len(argv) != 1:
+        die(2, "usage: project-slug <abs-path>")
+    sys.stdout.write(claude_project_slug(argv[0]) + "\n")
+    return 0
+
+
+def _attribution_module():
+    path = os.path.join(os.path.dirname(HERE), "model-attribution.py")
+    spec = importlib.util.spec_from_file_location("_exam_model_attribution", path)
+    if spec is None or spec.loader is None or not os.path.isfile(path):
+        die(3, "cannot import model-attribution.py next to exam/")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod, path
+
+
+def run_dirs(root):
+    """{stage: [RUN dir, ...]} — every dir named `run` under <root> (plus its `cell-*` children, where the
+    parallel cells run), grouped by its top-level dir under <root>. Never descends into a RUN dir any further (an
+    invariant RUN dir holds a copy of the target repo) and never follows a symlink."""
+    out = {}
+    try:
+        tops = sorted(os.listdir(root))
+    except OSError:
+        return out
+    for top in tops:
+        base = os.path.join(root, top)
+        if top == ".git" or os.path.islink(base) or not os.path.isdir(base):
+            continue
+        for dirpath, dirnames, _ in os.walk(base):
+            keep = []
+            for d in sorted(dirnames):
+                full = os.path.join(dirpath, d)
+                if d == ".git" or os.path.islink(full):
+                    continue
+                if d == "run":
+                    out.setdefault(top, []).append(full)
+                    try:
+                        cells = sorted(c for c in os.listdir(full) if c.startswith("cell-"))
+                    except OSError:
+                        cells = []
+                    for c in cells:
+                        cp = os.path.join(full, c)
+                        if os.path.isdir(cp) and not os.path.islink(cp):
+                            out[top].append(cp)
+                    continue
+                keep.append(d)
+            dirnames[:] = keep
+    return out
+
+
+def _transcript_cwds(path):
+    cwds = set()
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if '"cwd"' not in line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(ev, dict) and isinstance(ev.get("cwd"), str):
+                    cwds.add(ev["cwd"])
+    except OSError:
+        pass
+    return cwds
+
+
+def stage_transcripts(dirs, troot):
+    """The transcripts of a stage: for each RUN dir (as given and physical), the store dir of exactly that name;
+    a *.jsonl in it counts only when its records' cwd names one of the stage's RUN dirs, or it carries no cwd at
+    all (conservative). The name encoding is lossy (`a_b` and `a-b` share a store dir), the cwd is not."""
+    want = set()
+    for d in dirs:
+        want.add(d)
+        want.add(os.path.realpath(d))
+    found, dropped = [], 0
+    seen = set()
+    for cwd in sorted(want):
+        sd = os.path.join(troot, claude_project_slug(cwd))
+        if sd in seen or not os.path.isdir(sd):
+            continue
+        seen.add(sd)
+        for dirpath, dirnames, filenames in os.walk(sd):
+            dirnames.sort()
+            for f in sorted(filenames):
+                if not f.endswith(".jsonl"):
+                    continue
+                p = os.path.join(dirpath, f)
+                cw = _transcript_cwds(p)
+                if cw and not (cw & want):
+                    dropped += 1
+                    continue
+                found.append(p)
+    return sorted(set(found)), dropped
+
+
+def _parse_window(spec, what):
+    if "," not in spec:
+        die(2, "%s: expected <since>,<until>, got %r" % (what, spec))
+    since, until = spec.split(",", 1)
+    return (since if since not in ("", "-") else ""), (until if until not in ("", "-") else "")
+
+
+ATTRIB_HEADER = "stage\trun_dirs\ttranscripts\tdropped\trequests\tfallback\tverdict\twant\tgate\tsince\tuntil"
+
+
+def cmd_attrib(argv):
+    root = troot = model = family = tsv = ""
+    stages, excludes, other = {}, set(), None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("--root", "--transcripts-root", "--model", "--family", "--tsv", "--stage", "--other", "--exclude"):
+            if i + 1 >= len(argv):
+                die(2, "attrib: %s needs a value" % a)
+            v = argv[i + 1]
+            if a == "--root":
+                root = v
+            elif a == "--transcripts-root":
+                troot = v
+            elif a == "--model":
+                model = v
+            elif a == "--family":
+                family = v
+            elif a == "--tsv":
+                tsv = v
+            elif a == "--stage":
+                if "=" not in v:
+                    die(2, "attrib: --stage takes <name>=<since>,<until>")
+                name, win = v.split("=", 1)
+                stages[name] = _parse_window(win, "--stage " + name)
+            elif a == "--other":
+                other = _parse_window(v, "--other")
+            else:
+                excludes.add(v)
+            i += 2
+            continue
+        die(2, "attrib: unknown flag " + a)
+    if not root or not tsv or not model:
+        die(2, "usage: attrib --root <dir> --transcripts-root <dir> --model <id|-> --tsv <out> --stage <n>=<s>,<u>...")
+    rows = [ATTRIB_HEADER]
+    if model == "-":
+        rows.append("*\t-\t-\t-\t-\t-\t-\t-\tskipped-mock\t-\t-")
+        write_atomic(tsv, "\n".join(rows) + "\n")
+        return 0
+    mod, mpath = _attribution_module()
+    fam = family or mod.model_family(model)
+    want = "PURE-" + fam.upper()
+    found = run_dirs(root)
+    names = sorted(set(stages) | set(n for n in found if other is not None and n not in excludes))
+    for name in names:
+        if name in excludes:
+            continue
+        required = name in stages
+        since, until = stages[name] if required else other
+        dirs = found.get(name, [])
+        if not dirs:
+            if required:
+                rows.append("%s\t0\t0\t0\t0\t0\t-\t%s\tnot-run\t%s\t%s" % (name, want, since or "-", until or "-"))
+            continue
+        paths, dropped = stage_transcripts(dirs, troot)
+        req = fb = 0
+        verdict = "-"
+        if paths:
+            cmd = [sys.executable, mpath, "--json", "--stage", name]
+            if since:
+                cmd += ["--since", since]
+            if until:
+                cmd += ["--until", until]
+            res = subprocess.run(cmd + paths, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 universal_newlines=True)
+            if res.returncode != 0:
+                die(3, "attrib: model-attribution.py failed for stage %s: %s" % (name, res.stderr.strip()))
+            agg = json.loads(res.stdout).get(name, {})
+            req, fb, verdict = agg.get("requests", 0), agg.get("fallback", 0), agg.get("verdict", "-")
+        if req == 0:
+            gate = "attribution-missing" if required else "not-run"
+        elif verdict == want:
+            gate = "ok"
+        else:
+            gate = "fail"
+        rows.append("%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s" % (
+            name, len(dirs), len(paths), dropped, req, fb, verdict, want, gate, since or "-", until or "-"))
+    write_atomic(tsv, "\n".join(rows) + "\n")
+    return 0
+
+
+# ----------------------------------------------------------------------------------------------------------
+# M3: VOID detection
+# ----------------------------------------------------------------------------------------------------------
+PATTERN_WHERE = ("failed", "final-failed", "cells")
+HALT_CLASS = "weekly-limit"
+FAIL_MARKERS = (".timeout", ".novalid")
+_ATTEMPT_DIR_RE = re.compile(r"\.attempt-[0-9]+$")
+
+
+def load_patterns(path):
+    """void-patterns.tsv -> [(class, compiled regex, where, line no)] in file order."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().split("\n")
+    except OSError as exc:
+        die(3, "cannot read void patterns %s: %s" % (path, exc))
+    out = []
+    for n, raw in enumerate(lines, 1):
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        parts = raw.split("\t")
+        if len(parts) != 3:
+            die(2, "%s:%d: expected class<TAB>regex<TAB>where" % (os.path.basename(path), n))
+        cls, rx, where = parts
+        if not re.match(r"^[a-z][a-z0-9-]*$", cls):
+            die(2, "%s:%d: bad class %r" % (os.path.basename(path), n, cls))
+        if where not in PATTERN_WHERE:
+            die(2, "%s:%d: where must be one of %s" % (os.path.basename(path), n, "/".join(PATTERN_WHERE)))
+        try:
+            out.append((cls, re.compile(rx), where, n))
+        except re.error as exc:
+            die(2, "%s:%d: bad regex: %s" % (os.path.basename(path), n, exc))
+    return out
+
+
+def _failed(log):
+    return any(os.path.exists(log + m) for m in FAIL_MARKERS)
+
+
+class ArmLogs(object):
+    """The model-call logs of one zone-hunt-out tree, by scope. Only real output logs are read (hunt_*.log*,
+    refute_*.log*, deep-hunt RUN dir *.log) — never the .ag source copies every RUN dir holds."""
+
+    def __init__(self, out):
+        self.out = out
+        self.final_cells = {}      # zone -> [final-attempt hunt_*.log]
+        self.all_logs = []         # every model-call log (final + superseded + companions + refute + deep)
+        disc = os.path.join(out, "discovery")
+        try:
+            names = sorted(os.listdir(disc))
+        except OSError:
+            names = []
+        for name in names:
+            rd = os.path.join(disc, name, "run")
+            if not os.path.isdir(rd) or os.path.islink(os.path.join(disc, name)):
+                continue
+            superseded = bool(_ATTEMPT_DIR_RE.search(name))
+            try:
+                files = sorted(os.listdir(rd))
+            except OSError:
+                files = []
+            for f in files:
+                if not f.startswith("hunt_"):
+                    continue
+                p = os.path.join(rd, f)
+                if f.endswith(".log"):
+                    self.all_logs.append(p)
+                    if not superseded:
+                        self.final_cells.setdefault(name, []).append(p)
+                elif ".log." in f and "-attempt-" in f:
+                    self.all_logs.append(p)     # a re-asked attempt kept aside (.untraced-attempt-<n>, ...)
+        vdir = os.path.join(out, "verify")
+        for gates in (sorted(os.listdir(vdir)) if os.path.isdir(vdir) else []):
+            gd = os.path.join(vdir, gates)
+            if not gates.startswith("gates") or not os.path.isdir(gd):
+                continue
+            for g in sorted(os.listdir(gd)):
+                rd = os.path.join(gd, g, "refute-out", "run")
+                if os.path.isdir(rd):
+                    self.all_logs.extend(os.path.join(rd, f) for f in sorted(os.listdir(rd))
+                                         if f.startswith("refute_") and f.endswith(".log"))
+        dh = os.path.join(out, "deep-hunt")
+        if os.path.isdir(dh):
+            for c in sorted(os.listdir(dh)):
+                rd = os.path.join(dh, c, "run")
+                if os.path.isdir(rd):
+                    self.all_logs.extend(os.path.join(rd, f) for f in sorted(os.listdir(rd)) if f.endswith(".log"))
+
+    def scope(self, where):
+        cells = [p for z in sorted(self.final_cells) for p in self.final_cells[z]]
+        if where == "cells":
+            return cells
+        if where == "final-failed":
+            return [p for p in cells if _failed(p)]
+        return [p for p in self.all_logs if _failed(p)]
+
+    def failed_cells(self):
+        return [p for z in sorted(self.final_cells) for p in self.final_cells[z] if _failed(p)]
+
+
+def match_pattern(logs, rx):
+    """-> (path, line no) of the first line matching rx over logs, else None."""
+    for p in logs:
+        try:
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                for n, line in enumerate(fh, 1):
+                    if rx.search(line.rstrip("\n")):
+                        return p, n
+        except OSError:
+            continue
+    return None
+
+
+def _zone_hunt_out(arm, meta):
+    c = meta.get("contest", "")
+    out = os.path.join(arm, c, "zone-hunt-out") if c else ""
+    if out and os.path.isdir(out):
+        return out
+    for d in sorted(os.listdir(arm)) if os.path.isdir(arm) else []:
+        cand = os.path.join(arm, d, "zone-hunt-out")
+        if d != "_gt" and os.path.isdir(cand):
+            return cand
+    return ""
+
+
+def read_meta(path):
+    meta = {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if "=" in line:
+                    k, v = line.rstrip("\n").split("=", 1)
+                    meta.setdefault(k, v)
+    except OSError:
+        return None
+    return meta
+
+
+def cmd_rehunt_check(argv):
+    if len(argv) != 2:
+        die(2, "usage: rehunt-check <zone-hunt-out> <void-patterns.tsv>")
+    out, pfile = argv
+    pats = load_patterns(pfile)
+    logs = ArmLogs(out)
+    for cls, rx, where, _ in pats:
+        if cls == HALT_CLASS:
+            hit = match_pattern(logs.scope(where), rx)
+            if hit:
+                sys.stdout.write("blocked: %s at %s:%d\n" % (cls, os.path.relpath(hit[0], out), hit[1]))
+                return 4
+    failed = logs.failed_cells()
+    transport = [p for cls, rx, where, _ in pats if cls == "transport"
+                 for p in logs.scope(where) if match_pattern([p], rx)]
+    need = sorted(set(failed) | set(transport))
+    if not need:
+        return 1
+    sys.stdout.write("failed=%d transport=%d first=%s\n" % (
+        len(failed), len(set(transport)), os.path.relpath(need[0], out)))
+    return 0
+
+
+def _is_int(v):
+    return bool(re.match(r"^[0-9]+$", v or ""))
+
+
+def void_verdict(arm, pfile):
+    meta = read_meta(os.path.join(arm, "run.meta"))
+    if meta is None:
+        return ("VOID", "incomplete", "run.meta")
+    rel = lambda p: os.path.relpath(p, arm)  # noqa: E731
+    for k in ("rc", "rehunt_rc", "deep_rc"):
+        if meta.get(k) == "124":
+            return ("VOID", "hard-stop", "run.meta:%s=124" % k)
+    for k in ("rc", "rehunt_rc", "deep_rc"):
+        v = meta.get(k, "")
+        if (_is_int(v) and int(v) >= 128) or v == "skip-killed":
+            return ("VOID", "killed", "run.meta:%s=%s" % (k, v))
+    out = _zone_hunt_out(arm, meta)
+    logs = ArmLogs(out) if out else None
+    if logs is not None:
+        for cls, rx, where, _ in load_patterns(pfile):
+            hit = match_pattern(logs.scope(where), rx)
+            if hit:
+                return ("VOID", cls, "%s:%d" % (rel(hit[0]), hit[1]))
+        for z in sorted(logs.final_cells):
+            cells = logs.final_cells[z]
+            if cells and all(_failed(p) for p in cells):
+                return ("VOID", "all-cells-failed", "%s (%d cells)" % (rel(os.path.dirname(cells[0])), len(cells)))
+        failed = logs.failed_cells()
+        if failed:
+            m = [x for x in FAIL_MARKERS if os.path.exists(failed[0] + x)][0]
+            return ("VOID", "transport", rel(failed[0] + m))
+        zj = os.path.join(out, "map", "zones.json")
+        staged = [str(z.get("id")) for z in load_zones(zj) if z.get("id")] if os.path.isfile(zj) else []
+        for z in staged:
+            if not logs.final_cells.get(z):
+                return ("VOID", "no-cells", "%s/discovery/%s/run" % (rel(out), z))
+    at = os.path.join(arm, "attrib.tsv")
+    if os.path.isfile(at):
+        with open(at, encoding="utf-8") as fh:
+            for line in fh.read().split("\n")[1:]:
+                f = line.split("\t")
+                if len(f) >= 9 and f[8] not in ("ok", "not-run", "skipped-mock"):
+                    return ("VOID", "attribution", "attrib.tsv:%s=%s(%s)" % (f[0], f[6], f[8]))
+    elif meta.get("backend", "") != "mock":
+        return ("VOID", "attribution", "attrib.tsv:missing")
+    op = os.path.join(arm, "void.operator")
+    if os.path.isfile(op):
+        with open(op, encoding="utf-8", errors="replace") as fh:
+            reason = (fh.readline().strip() or "operator").replace("\t", " ")
+        return ("VOID", "operator", "void.operator:" + reason)
+    return ("VALID", "", "")
+
+
+def cmd_void_check(argv):
+    if len(argv) != 2:
+        die(2, "usage: void-check <arm-dir> <void-patterns.tsv>")
+    arm, pfile = argv
+    if not os.path.isdir(arm):
+        die(3, "not an arm dir: " + arm)
+    v = void_verdict(arm, pfile)
+    line = "VALID" if v[0] == "VALID" else "VOID\t%s\t%s" % (v[1], v[2])
+    write_atomic(os.path.join(arm, "void.txt"), line + "\n")
+    sys.stdout.write(line + "\n")
+    return 0
+
+
 COMMANDS = {
     "profile": cmd_profile,
     "profile-summary": cmd_profile_summary,
@@ -486,6 +963,10 @@ COMMANDS = {
     "zone-filter": cmd_zone_filter,
     "inject-classes": cmd_inject_classes,
     "contam-scan": cmd_contam_scan,
+    "project-slug": cmd_project_slug,
+    "attrib": cmd_attrib,
+    "rehunt-check": cmd_rehunt_check,
+    "void-check": cmd_void_check,
 }
 
 
