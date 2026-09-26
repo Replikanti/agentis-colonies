@@ -199,11 +199,15 @@ arm_live() {
   ps -ww -o stat=,args= -p "$pid" 2>/dev/null | awk '$1 !~ /^Z/ && /exam\.sh/ { f = 1 } END { exit f ? 0 : 1 }'
 }
 
-file_sha() { sha256sum "$1" | cut -d' ' -f1; }
+# sha256 of files. posix-portability: deferred (guarded pair — sha256sum on GNU, shasum -a 256 on BSD/macOS).
+SHA256_CMD="sha256sum"; command -v sha256sum >/dev/null 2>&1 || SHA256_CMD="shasum -a 256"
+# shellcheck disable=SC2086  # SHA256_CMD is a command + its flags, split on purpose
+file_sha() { $SHA256_CMD "$1" | cut -d' ' -f1; }
 
 # The frozen artifact manifest: sha256 of every file under map/ + briefs/, sorted relative paths.
 freeze_manifest() {
-  (cd "$1" && find map briefs -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum)
+  # shellcheck disable=SC2086  # SHA256_CMD is a command + its flags, split on purpose
+  (cd "$1" && find map briefs -type f -print0 | LC_ALL=C sort -z | xargs -0 -r $SHA256_CMD)
 }
 
 # ----------------------------------------------------------------------------------------------------------
@@ -1192,7 +1196,17 @@ cmd_self_test() {
     bad "leak probe: exit $rc; sentinel reached the hunter for: ${leaked:-<none, but the run failed>}"
     tail -5 "$work/probe.out" | sed 's/^/         | /'
   fi
-  local pm="$root/arms/fx/src_pool/probe-r1/run.meta"
+  local pm="$root/arms/fx/src_pool/probe-r1/run.meta" qa_miss=""
+  for n in FORGE_MAX_SLOTS LLM_MAX_DISCOVERY_CELLS LLM_MAX_VERIFY_GATES VECTOR_HUNT_POC_RUNNER DF_EXTERNAL_CACHE; do
+    if grep -q "^$n=exam-leak-probe$" "$work/env-probe.txt" 2>/dev/null || ! grep -q "^env_cleared_set=.*\b$n\b" "$pm"; then
+      qa_miss="$qa_miss $n"
+    fi
+  done
+  if [ -z "$qa_miss" ]; then
+    ok "leak probe: FORGE_MAX_SLOTS, LLM_MAX_DISCOVERY_CELLS, LLM_MAX_VERIFY_GATES, VECTOR_HUNT_POC_RUNNER, DF_EXTERNAL_CACHE exported by the caller are dropped (never reach the hunter; listed in env_cleared_set)"
+  else
+    bad "leak probe: not cleared or not recorded:$qa_miss"
+  fi
   if grep -q '^env_cleared_set=.*MAX_THINKING_TOKENS' "$pm" && grep -q '^env_cleared_set=.*ANTHROPIC_BASE_URL' "$pm" \
      && grep -q '^env_cleared_set=.*CLAUDE_CONFIG_DIR' "$pm" && grep -q 'CLAUDE_CODE_OAUTH_TOKEN=<set>' "$pm" \
      && ! grep -rq 'exam-secret-probe' "$root/arms/fx/src_pool/probe-r1" "$root/MANIFEST.tsv"; then
