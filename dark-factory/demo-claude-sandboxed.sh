@@ -11,6 +11,13 @@
 # unset (the default), section 1b that it is readable AND writable when it is set — the cache is useless
 # read-only, because the resolver writes it from inside the cell.
 #
+# #2262 masks the history-bearing parts of ~/.claude (bound rw for auth/trust): a real held-out hunter cell
+# grepped ~/.claude/projects/* and read another zone's refuter transcripts. Section 1c pins the wrapper's
+# cwd -> project-dir encoding to known answers; section 1d asserts, on a temp-HOME fixture, that inside the
+# sandbox ONLY the session's own project dir is visible (and writable, landing on the host), while other
+# sessions' transcripts, file-history, shell snapshots, paste cache, todos and the prompt history are not.
+# The WHOLE demo runs with HOME pointed at that fixture, so it never reads or writes the real ~/.claude.
+#
 # CI-safe: uses a stub `claude` (DF_CLAUDE_BIN), no real claude / network / LLM.
 # The live filesystem-isolation asserts run only when bwrap is available; without
 # it they SKIP, but the fail-closed + fallthrough + static wiring asserts always
@@ -29,10 +36,15 @@ ok()  { echo "  [OK]   $*"; }
 bad() { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 skip(){ echo "  [SKIP] $*"; }
 
-TMP="$(mktemp -d)"
-HOME_DECOY="$(mktemp "$HOME/.df-sandbox-decoy.XXXXXX")"
-cleanup() { rm -rf "$TMP"; rm -f "$HOME_DECOY"; }
+# Physical path (pwd -P), so the cwd the wrapper encodes is the same with and without symlink resolution.
+TMP="$(cd "$(mktemp -d)" && pwd -P)"
+cleanup() { rm -rf "$TMP"; }
 trap cleanup EXIT
+# #2262: a fixture HOME for the whole demo — the wrapper creates the session's own project dir under
+# $HOME/.claude/projects, and the demo must never touch the operator's real ~/.claude.
+export HOME="$TMP/home"
+mkdir -p "$HOME"
+HOME_DECOY="$(mktemp "$HOME/.df-sandbox-decoy.XXXXXX")"
 
 # Layout: RUN (bound rw) under an OUT parent (NOT bound); a REPO (bound rw); two
 # decoys the sandboxed session must NOT be able to read.
@@ -45,6 +57,27 @@ PARENT_DECOY="$OUT/AB-NOTE-decoy.txt"          # in RUN's PARENT (held-out GT li
 echo "SECRET-GROUND-TRUTH" > "$PARENT_DECOY"
 echo "SECRET-HOME-FILE"    > "$HOME_DECOY"     # under $HOME, outside the binds
 echo "target-source"       > "$REPO/probe.sol" # inside the bound repo (readable)
+
+# #2262 fixture ~/.claude: the session's own project dir (named for RUN, the cwd every run below uses; RUN is a
+# short mktemp path, well under the 200-char cap, so its name is the plain substitution), a SECOND project dir
+# standing in for another cell's refuter transcripts, and one secret-bearing file in every other history
+# location. Credentials + settings must stay readable.
+CL="$HOME/.claude"
+OWN_SLUG="${RUN//[^A-Za-z0-9]/-}"
+OTHER_SLUG="-other-run-zone-hunt-out-verify-gates-refute-out-run"
+mkdir -p "$CL/projects/$OWN_SLUG" "$CL/projects/$OTHER_SLUG" "$CL/file-history/other-session" \
+         "$CL/shell-snapshots" "$CL/paste-cache" "$CL/sessions" "$CL/todos"
+echo '{"t":"OTHER-TRANSCRIPT-SECRET"}' > "$CL/projects/$OTHER_SLUG/other-session.jsonl"
+echo '{"t":"OWN-PRIOR-TRANSCRIPT"}'    > "$CL/projects/$OWN_SLUG/prior-session.jsonl"
+echo '{"display":"OPERATOR-PROMPT-SECRET"}' > "$CL/history.jsonl"
+echo "OTHER-FILE-HISTORY"  > "$CL/file-history/other-session/Vault.sol@v1"
+echo "OTHER-SNAPSHOT"      > "$CL/shell-snapshots/snapshot-bash-1-abc.sh"
+echo "OTHER-PASTE"         > "$CL/paste-cache/0123abcd.txt"
+echo '{"cwd":"OTHER-SESSION-META"}' > "$CL/sessions/4242.json"
+echo "OTHER-TODO"          > "$CL/todos/other-session.json"
+echo "CREDS-FIXTURE"       > "$CL/.credentials.json"
+echo '{"fixture":"settings"}' > "$CL/settings.json"
+HIST_BEFORE="$(cat "$CL/history.jsonl")"
 
 # A stub standing in for the real `claude`: it reports what it can see from
 # inside the sandbox and echoes the argv it received (to prove --disallowedTools).
@@ -60,6 +93,21 @@ cat > "$STUB" <<'STUBEOF'
   if echo w > "$EXT_WRITE"  2>/dev/null; then echo "EXT_WRITABLE"; else echo "EXT_NOTWRITABLE"; fi
   if echo w > "$RUN_WRITE"  2>/dev/null; then echo "RUN_WRITABLE";  else echo "RUN_NOTWRITABLE";  fi
   if echo w > "$REPO_WRITE" 2>/dev/null; then echo "REPO_WRITABLE"; else echo "REPO_NOTWRITABLE"; fi
+  # #2262 probes (section 1d only): what a cell sees when it goes looking through ~/.claude.
+  if [ -n "${D_CL:-}" ]; then
+    echo "PROJ_LS=[$(ls -A "$D_CL/projects" 2>/dev/null | tr '\n' ' ')]"
+    if cat "$D_CL/projects/$D_OTHER/other-session.jsonl" >/dev/null 2>&1; then echo "OTHER_PROJ_READABLE"; else echo "OTHER_PROJ_BLOCKED"; fi
+    if [ -n "${D_OWN_PRIOR:-}" ]; then
+      if cat "$D_CL/projects/$D_OWN/prior-session.jsonl" >/dev/null 2>&1; then echo "OWN_PRIOR_READABLE"; else echo "OWN_PRIOR_BLOCKED"; fi
+    fi
+    if echo '{"t":"own"}' > "$D_CL/projects/$D_OWN/session-new.jsonl" 2>/dev/null; then echo "OWN_WRITABLE"; else echo "OWN_NOTWRITABLE"; fi
+    echo '{"display":"sandboxed-prompt"}' >> "$D_CL/history.jsonl" 2>/dev/null
+    # The exact move the leaking cell made: a recursive grep over everything under ~/.claude.
+    _leak="$(grep -rlE 'OTHER-TRANSCRIPT-SECRET|OPERATOR-PROMPT-SECRET|OTHER-FILE-HISTORY|OTHER-SNAPSHOT|OTHER-PASTE|OTHER-SESSION-META|OTHER-TODO' "$D_CL" 2>/dev/null | tr '\n' ' ')"
+    if [ -z "$_leak" ]; then echo "NO_HISTORY_LEAK"; else echo "HISTORY_LEAK=[$_leak]"; fi
+    if cat "$D_CL/.credentials.json" >/dev/null 2>&1; then echo "CREDS_READABLE"; else echo "CREDS_BLOCKED"; fi
+    if cat "$D_CL/settings.json" >/dev/null 2>&1; then echo "SETTINGS_READABLE"; else echo "SETTINGS_BLOCKED"; fi
+  fi
 } > "$D_RESULT" 2>&1
 STUBEOF
 chmod +x "$STUB"
@@ -129,6 +177,86 @@ if command -v bwrap >/dev/null 2>&1; then
   fi
 else
   skip "bwrap not available — skipping the #2235 external-cache bind asserts"
+fi
+
+echo
+echo "demo-claude-sandboxed.sh: 1c) #2262 cwd -> project-dir encoding matches Claude Code (known answers) ..."
+# The wrapper's claude_project_slug, lifted verbatim. The expected values follow Claude Code's own sanitizer
+# (non-[A-Za-z0-9] -> '-'; past 200 chars: cut + '-' + base36 |djb2|), cross-checked against real hashed
+# project dirs Claude Code created; one long vector has a negative djb2, the other a positive one.
+eval "$(sed -n '/^claude_project_slug() {$/,/^}$/p' "$WRAP")"
+if ! command -v claude_project_slug >/dev/null 2>&1; then
+  bad "could not lift claude_project_slug out of the wrapper"
+else
+  KAT_LONG1="/srv/op/.dark-factory/runs/example-contest/zone-hunt-out/verify/gates/src_Vault.sol_withdraw_142/refute-out/run/cells/cell-07/nested/path/that/keeps/going/past/the/two/hundred/char/cap/for/claude/code/project/dirs"
+  KAT_LONG2="/tmp/x/refute-out/run/$(printf '%0230d' 0 | tr 0 a)"
+  _k1="${KAT_LONG1//[^A-Za-z0-9]/-}"; _k2="${KAT_LONG2//[^A-Za-z0-9]/-}"
+  for _kat in "/srv/op/.dark-factory/zone_hunt.out/run|-srv-op--dark-factory-zone-hunt-out-run" \
+              "$KAT_LONG1|${_k1:0:200}-fn819k" \
+              "$KAT_LONG2|${_k2:0:200}-e4uy0x"; do
+    _in="${_kat%%|*}"; _want="${_kat#*|}"; _got="$(claude_project_slug "$_in")"
+    if [ "$_got" = "$_want" ]; then ok "slug(${#_in}-char path) = ...${_want: -24}"
+    else bad "slug(${#_in}-char path): got ...${_got: -24}, want ...${_want: -24}"; fi
+  done
+fi
+
+echo
+echo "demo-claude-sandboxed.sh: 1d) #2262 ~/.claude history isolation (bwrap-gated, temp-HOME fixture) ..."
+if command -v bwrap >/dev/null 2>&1; then
+  rm -f "$RESULT"
+  ( cd "$RUN" && env "${stub_env[@]}" D_CL="$CL" D_OWN="$OWN_SLUG" D_OTHER="$OTHER_SLUG" D_OWN_PRIOR=1 \
+      HUNT_SANDBOX_RUN="$RUN" HUNT_SANDBOX_REPO="$REPO" DF_CLAUDE_BIN="$STUB" \
+      "$WRAP" -p 'probe' >/dev/null 2>&1 ) || true
+  if [ -f "$RESULT" ]; then
+    R="$(cat "$RESULT")"
+    case "$R" in *"PROJ_LS=[$OWN_SLUG ]"*) ok "\$HOME/.claude/projects shows ONLY the session's own cwd dir inside the sandbox" ;;
+                 *) bad "\$HOME/.claude/projects inside the sandbox is not exactly the own-cwd dir: $R" ;; esac
+    case "$R" in *OTHER_PROJ_BLOCKED*)   ok "another session's transcript (other project dir) is INVISIBLE" ;;
+                 *) bad "another session's transcript was readable inside the sandbox: $R" ;; esac
+    case "$R" in *OWN_PRIOR_READABLE*)   ok "the session's own earlier transcripts stay readable (own dir is a real bind, not an empty tmpfs)" ;;
+                 *) bad "the own project dir's existing transcript was not readable: $R" ;; esac
+    case "$R" in *OWN_WRITABLE*)         ok "the own project dir is WRITABLE inside the sandbox" ;;
+                 *) bad "the own project dir was not writable: $R" ;; esac
+    case "$R" in *NO_HISTORY_LEAK*)      ok "a recursive grep over ~/.claude finds no other session's content (transcripts, history, file-history, snapshots, paste cache, sessions, todos)" ;;
+                 *) bad "other sessions' content is reachable from inside the sandbox: $R" ;; esac
+    case "$R" in *CREDS_READABLE*)       ok "credentials stay readable (auth keeps working)" ;;
+                 *) bad "credentials were not readable inside the sandbox: $R" ;; esac
+    case "$R" in *SETTINGS_READABLE*)    ok "settings stay readable" ;;
+                 *) bad "settings were not readable inside the sandbox: $R" ;; esac
+  else
+    bad "the sandboxed stub produced no result file in the #2262 run"
+  fi
+  # Host side: the transcript written inside landed in the host's own-cwd dir (attribution reads it there), the
+  # other session is untouched, the prompt history was neither leaked nor modified, and no stray dir appeared.
+  if [ -f "$CL/projects/$OWN_SLUG/session-new.jsonl" ]; then ok "the transcript written inside the sandbox landed in the HOST's own-cwd project dir"
+  else bad "the sandbox transcript did not reach the host's own-cwd project dir"; fi
+  if grep -q OTHER-TRANSCRIPT-SECRET "$CL/projects/$OTHER_SLUG/other-session.jsonl" 2>/dev/null; then ok "the other session's host transcript is untouched"
+  else bad "the other session's host transcript was modified or removed"; fi
+  if [ "$(cat "$CL/history.jsonl")" = "$HIST_BEFORE" ]; then ok "the host prompt history is unchanged (read as empty, append discarded)"
+  else bad "the host prompt history changed: $(cat "$CL/history.jsonl")"; fi
+  _hostls="$(find "$CL/projects" -mindepth 1 -maxdepth 1 -exec basename {} \; | sort | tr '\n' ' ')"
+  _wantls="$(printf '%s\n%s\n' "$OWN_SLUG" "$OTHER_SLUG" | sort | tr '\n' ' ')"
+  if [ "$_hostls" = "$_wantls" ]; then ok "no stray project dir was created on the host"
+  else bad "unexpected host project dirs: [$_hostls] want [$_wantls]"; fi
+
+  # A cwd past the 200-char cap: the wrapper must bind the HASHED name (the one Claude Code will use), creating
+  # it on the host first, and still show nothing else.
+  LONG_CWD="$RUN/$(printf '%0200d' 0 | tr 0 c)"
+  mkdir -p "$LONG_CWD"
+  LONG_SLUG="$(claude_project_slug "$LONG_CWD" 2>/dev/null || true)"
+  rm -f "$RESULT"
+  ( cd "$LONG_CWD" && env "${stub_env[@]}" D_CL="$CL" D_OWN="$LONG_SLUG" D_OTHER="$OTHER_SLUG" \
+      HUNT_SANDBOX_RUN="$RUN" HUNT_SANDBOX_REPO="$REPO" DF_CLAUDE_BIN="$STUB" \
+      "$WRAP" -p 'probe' >/dev/null 2>&1 ) || true
+  R="$(cat "$RESULT" 2>/dev/null || true)"
+  if [ "${#LONG_SLUG}" -gt 200 ] && case "$R" in *"PROJ_LS=[$LONG_SLUG ]"*OWN_WRITABLE*NO_HISTORY_LEAK*) true ;; *) false ;; esac \
+     && [ -f "$CL/projects/$LONG_SLUG/session-new.jsonl" ]; then
+    ok "a >200-char cwd gets exactly its hashed project dir (…${LONG_SLUG: -7}), writable and landing on the host"
+  else
+    bad "the long-cwd run did not bind exactly the hashed own dir (slug …${LONG_SLUG: -7}): $R"
+  fi
+else
+  skip "bwrap not available — skipping the #2262 ~/.claude history isolation asserts"
 fi
 
 echo
@@ -231,7 +359,8 @@ fi
 echo
 if [ "$FAILS" -eq 0 ]; then
   echo "demo-claude-sandboxed.sh: PASS — sandbox hides everything outside the repo + run dir (plus, only when"
-  echo "                         #2235 asks for it, the external-protocol cache),"
+  echo "                         #2235 asks for it, the external-protocol cache), exposes only its own"
+  echo "                         ~/.claude project dir and none of the other sessions' history (#2262),"
   echo "                         denies the web tools, is fail-closed, falls through safely, and all six emitters are wired."
   exit 0
 fi
