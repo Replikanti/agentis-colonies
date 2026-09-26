@@ -526,7 +526,7 @@ the self-test if either rule regresses.
 | 2 | `refuted` | candidates at an anchor, every one refuted (non-confirm gate verdict, `refuted[]`, `out_of_scope[]`) |
 | 3 | `found-dismissed` | a `DISMISS\|` line at an anchor and no candidate |
 | 4 | `scope-out-of-map` | `sub=file`: no anchor file in any zone's `files[]`; `sub=slice`: every scope line for the file is sliced and none lists the function, an owning zone ran, and no log / `INVARIANT\|` target mentions it (the slicer's same-file callee closure can pull unlisted helpers in, and a zone that never answered cannot show a function was unseen) |
-| 5 | `unmeasured` | no owning zone was measured: no run tree, `--unmeasured`, or every cell `.timeout` / `.novalid` |
+| 5 | `unmeasured` | no owning zone was measured: no run tree, `--unmeasured <zone>:<reason>` (the sub-reason is that reason — an exam VOID class such as `zone-incomplete` / `attribution` / `weekly-limit`), a `failed` / `in_flight` coverage record, or every cell `.timeout` / `.novalid` |
 | 6 | `generation` | an owning zone ran; `sub=examined` when a cell log or an `INVARIANT\|` target (ANY verdict — a CLEAN invariant at the location is an examination, not a HIT) mentions the function, else `sub=unseen` |
 
 **Reading rule.** Every class is a PROPOSAL. Like the #2215 anchors, triage is **mechanism-blind**: a

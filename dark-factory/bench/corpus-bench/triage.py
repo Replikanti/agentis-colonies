@@ -673,7 +673,9 @@ def classify(row, runs, zones_map, scope, forced, rare_max):
             if s == "ran" or (s and best == "not-run") or (s == "failed" and best == "no-cells"):
                 best = s
         if z in forced:
-            best = "operator:" + forced[z]
+            # the forced reason IS the sub-reason (an exam VOID class such as zone-incomplete / attribution /
+            # weekly-limit, or the operator's own label) — never a blanket "operator"
+            best = forced[z] + ":forced"
         status[z] = best
     out["zones"] = ",".join("%s=%s" % (z, status[z]) for z in sorted(status)) or "-"
 
@@ -1187,11 +1189,19 @@ def self_test():
             bad("a not-judged deep verdict still reads as an examination: %s" % rows10.get("TX-9", ["?"] * 16)[6:8])
         rc7, tsv7, _, _ = go("forced", full + ["--unmeasured", "core:operator-void"])
         rows7 = rows_of(tsv7)
-        if rc7 == 0 and gen and all(rows7[k][6] == "unmeasured" and "operator" in rows7[k][7] for k in gen) \
-                and "core=operator:operator-void" in rows7[gen[0]][14]:
-            ok("--unmeasured core:<reason> forces the zone's generation rows to unmeasured")
+        if rc7 == 0 and gen and all(rows7[k][6] == "unmeasured" and "operator-void" in rows7[k][7].split("+") for k in gen) \
+                and "core=operator-void:forced" in rows7[gen[0]][14]:
+            ok("--unmeasured core:<reason> forces the zone's generation rows to unmeasured, sub = the reason")
         else:
-            bad("--unmeasured did not force the zone")
+            bad("--unmeasured did not force the zone (or the sub is not the reason)")
+        rc11, tsv11, _, _ = go("forced-class", full + ["--unmeasured", "core:zone-incomplete"])
+        rows11 = rows_of(tsv11)
+        if rc11 == 0 and gen and all(rows11[k][6] == "unmeasured" and "zone-incomplete" in rows11[k][7].split("+")
+                                    and "operator" not in rows11[k][7] for k in gen):
+            ok("a forced VOID class shows as the row's sub-reason (unmeasured/zone-incomplete, never a blanket "
+               "operator)")
+        else:
+            bad("a forced VOID class is not the sub-reason: %s" % [rows11.get(k, ["?"] * 8)[6:8] for k in gen])
 
         # the staged single-zone map under-reports: without --map the never-run zone is invisible
         unm = [k for k, f in rows.items() if f[6] == "unmeasured"]
