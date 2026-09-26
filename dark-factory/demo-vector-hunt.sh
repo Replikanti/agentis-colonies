@@ -380,10 +380,26 @@ if git -C "$HERE" cat-file -e origin/main:dark-factory/run-zone-hunt.sh 2>/dev/n
     EXPECT_DH_GATE='  if [ ! -f "$REPO/foundry.toml" ]; then'
     # ALLOWLIST: each removed line must be one of the verbatim OFF-equivalent replacements, each at most once.
     printf '%s\n%s\n' "$EXPECT_GUARD" "$EXPECT_DH_GATE" > "$WORK/rz-allowlist.txt"
+    # #2277: the lines the Foundry-shim wiring replaces outside the STAGE 4.6 block, verbatim from origin/main. Each is
+    # either --deep-hunt / --vector-hunt help text or a line inside `if [ "$DEEP_HUNT" -eq 1 ]` (the STAGE 4.5 stage
+    # gate + its skip line, the #2255 per-row Foundry gate + its skip line, the per-row `--repo` rebase, now the
+    # resolved root dir), so the OFF path never reaches them.
+    cat >> "$WORK/rz-allowlist.txt" <<'ALLOW2277'
+#                       rebased into it); a rootless or non-Foundry (Hardhat-only) root is skipped per row, logged.
+#                       DEFAULT OFF — without it every run is byte-identical to before. Requires the target
+#                       to be a Foundry project ($REPO/foundry.toml); a non-Foundry target logs + skips it.
+#                       skipped and the run is byte-identical to before. Requires a Foundry target ($REPO/
+#                       foundry.toml); a non-Foundry target logs + skips it. Runs over a fresh breadth pass or,
+  if [ -z "$MR_ROOTS" ] && [ ! -f "$REPO/foundry.toml" ]; then
+    echo "run-zone-hunt.sh: [deep-hunt] --deep-hunt set but $REPO has no foundry.toml (EVM invariant-fuzzing is Foundry-specific) — skipping deep-hunt" >&2
+        if [ ! -f "$REPO/$MR_ROOT/foundry.toml" ]; then
+          echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' root '$MR_ROOT' is not a Foundry project — row skipped (#2255)" >&2
+          set -- "$@" --repo "$REPO/$MR_ROOT" --target "${RELFILE#"$MR_ROOT"/}"
+ALLOW2277
     ALLOW_BAD="$(grep -vxF -f "$WORK/rz-allowlist.txt" "$WORK/rz-removed-outside.txt" || true)"
     ALLOW_DUP="$(sort "$WORK/rz-removed-outside.txt" | uniq -d)"
     if [ "$OUTSIDE_N" -eq 0 ] || { [ -z "$ALLOW_BAD" ] && [ -z "$ALLOW_DUP" ]; }; then
-      ok "every run-zone-hunt.sh line OUTSIDE the sentinel-delimited STAGE 4.6 block is byte-preserved (at most the allowlisted OFF-equivalent replacements: the --deep-hunt-only guard, the STAGE 4.5 Foundry gate) — the OFF path is byte-identical to origin/main"
+      ok "every run-zone-hunt.sh line OUTSIDE the sentinel-delimited STAGE 4.6 block is byte-preserved (at most the allowlisted OFF-equivalent replacements: the --deep-hunt-only guard, the STAGE 4.5 Foundry gate, the #2277 shim wiring) — the OFF path is byte-identical to origin/main"
     else
       bad "run-zone-hunt.sh changed $OUTSIDE_N original line(s) OUTSIDE the STAGE 4.6 block beyond the guard (OFF path may have drifted):"
       sed 's/^/      /' "$WORK/rz-removed-outside.txt" >&2

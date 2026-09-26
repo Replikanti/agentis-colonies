@@ -573,7 +573,8 @@ def _attribution_module():
 def run_dirs(root):
     """{stage: [RUN dir, ...]} — every dir named `run` under <root> (plus its `cell-*` children, where the
     parallel cells run), grouped by its top-level dir under <root>. Never descends into a RUN dir any further (an
-    invariant RUN dir holds a copy of the target repo) and never follows a symlink."""
+    invariant RUN dir holds a copy of the target repo), never into a `.foundry-shim` dir (#2277: a generated copy of
+    a Hardhat target, whose own `run` dirs are target code, not stage RUN dirs) and never follows a symlink."""
     out = {}
     try:
         tops = sorted(os.listdir(root))
@@ -581,13 +582,13 @@ def run_dirs(root):
         return out
     for top in tops:
         base = os.path.join(root, top)
-        if top == ".git" or os.path.islink(base) or not os.path.isdir(base):
+        if top in (".git", ".foundry-shim") or os.path.islink(base) or not os.path.isdir(base):
             continue
         for dirpath, dirnames, _ in os.walk(base):
             keep = []
             for d in sorted(dirnames):
                 full = os.path.join(dirpath, d)
-                if d == ".git" or os.path.islink(full):
+                if d in (".git", ".foundry-shim") or os.path.islink(full):
                     continue
                 if d == "run":
                     out.setdefault(top, []).append(full)

@@ -47,7 +47,8 @@
 #                       was made against the clone root).
 #                       With >= 2 roots in effect, STAGE 4.5 (--deep-hunt), STAGE 4.6 (--vector-hunt) and the M5 PoC
 #                       stage run each row / finding in its zone's OWN Foundry root (`--repo <clone>/<root>`, target
-#                       rebased into it); a rootless or non-Foundry (Hardhat-only) root is skipped per row, logged.
+#                       rebased into it). A Hardhat-only root runs in its generated Foundry shim (#2277, see
+#                       DF_FOUNDRY_SHIM below); a rootless zone is skipped per row. Both land in deep-hunt-status.tsv.
 #   --since <ref>       Audit-covered ref (feeds map-zones.sh's advisory hardening_score).
 #   --audit-residuals <f>  audit-scout.ag output folded into gen-briefs.sh's per-zone briefs (optional).
 #   --in-scope <t>      The in-scope program facts handed to run-audit-pass.sh's scope gate.
@@ -60,8 +61,10 @@
 #                       invariant engine (run-invariant-hunt.sh) on the VALUE-CUSTODY zones (zones.json's
 #                       value_custody flag) and merges each fuzzer-reproduced FINDING into
 #                       verified_findings.json (tagged source=invariant-hunt) so M5 + corpus-bench see it.
-#                       DEFAULT OFF — without it every run is byte-identical to before. Requires the target
-#                       to be a Foundry project ($REPO/foundry.toml); a non-Foundry target logs + skips it.
+#                       DEFAULT OFF — without it every run is byte-identical to before. A Foundry target
+#                       ($REPO/foundry.toml) runs natively; a Hardhat-only target runs in a generated Foundry shim
+#                       (#2277, see DF_FOUNDRY_SHIM below); a target with neither config is skipped. Every outcome is
+#                       recorded in <out>/deep-hunt-status.tsv + a stderr `deep_hunt_status=` line (never silent).
 #   --deep-hunt-only    #1774: skip M1..M4 (breadth) AND M5 (delivery) and apply ONLY the UNCHANGED STAGE 4.5
 #                       lens over an EXISTING breadth --out (its map/zones.json + verify/verified_findings.json
 #                       must already exist, else exit 3). Requires --deep-hunt. This is the seam deep-hunt-ab.sh
@@ -127,6 +130,23 @@
 #                       Any of the four knobs set => STAGE 4.5 runs through lib/deep-hunt-sched.sh (enqueue pass, cell
 #                       scheduler, collect pass in queue order) and writes deep-hunt/cell-status.tsv. All four unset/0
 #                       (the default) => STAGE 4.5 is byte-identical to before. Bad values exit 2.
+#   DF_FOUNDRY_SHIM=0|1  #2277 (ENV KNOB, default 1; read only with --deep-hunt / --vector-hunt). A Hardhat-only project
+#                       root (hardhat.config.*, no foundry.toml) gets a generated Foundry SHIM WORKING COPY under
+#                       <out>/.foundry-shim/<slug>/ (lib/foundry_shim.py: the root's .sol/.md sources, a .sol-only
+#                       node_modules, a generated foundry.toml + remappings; the Hardhat config is parsed statically,
+#                       never executed, and nothing is written into --repo), probed by ONE `forge build`; STAGE 4.5 /
+#                       4.6 rows of that root then run in the shim. =0 restores the old skip, now as a loud ledger row.
+#   DF_FOUNDRY_SHIM_INSTALL=0|1  #2277 (default 1). When the shim's imports need packages no node_modules provides,
+#                       install them from the root's lockfile (npm ci / frozen yarn / frozen pnpm, always
+#                       --ignore-scripts) into a scratch dir holding only package.json + the lockfile (never .npmrc /
+#                       .yarnrc*), then rebuild. =0 => missing deps are recorded as shim-failed deps-missing.
+#   DF_FOUNDRY_SHIM_INSTALL_TIMEOUT_S=<N>  #2277: install wall cap (default 600). DF_FOUNDRY_SHIM_BUILD_TIMEOUT_S=<N>:
+#                       the probe `forge build` wall cap (default 1800). Bad values of any DF_FOUNDRY_SHIM* knob exit 2.
+#   <out>/deep-hunt-status.tsv  #2277 (written only with --deep-hunt / --vector-hunt): one row per project root /
+#                       zone each stage consulted — stage, root, zone (`*` = the whole root), status (ran |
+#                       skipped-no-foundry | skipped-no-root | shim-failed), detail — plus a stderr
+#                       `deep_hunt_status=<ran|partial|status>` line per stage. A shim failure never fails the run
+#                       (exit 0); the ledger makes an unmeasured deep hunt visible instead of silent.
 #   --deep-hunt-aux-max <N>  #1726 (M2): max SECONDARY co-custody contracts fed to the deep-hunt as
 #                       run-invariant-hunt.sh --aux (the shipped composable-fresh multi-contract engine —
 #                       INV_AUX -> compose_fresh_seed -> multi-register targetContracts() -> #1077 both-real
@@ -170,8 +190,9 @@
 #                       (PoC-PASS) vectors into verified_findings.json tagged source=vector-hunt. FORGE-SLOT
 #                       ownership lives inside the engine (lib/forge-slot.sh per vector), so FORGE_MAX_SLOTS is
 #                       respected without double-acquiring here. DEFAULT OFF => this whole STAGE 4.6 block is
-#                       skipped and the run is byte-identical to before. Requires a Foundry target ($REPO/
-#                       foundry.toml); a non-Foundry target logs + skips it. Runs over a fresh breadth pass or,
+#                       skipped and the run is byte-identical to before. Resolves the target's toolchain exactly
+#                       like --deep-hunt (Foundry natively, Hardhat-only via the #2277 shim, recorded in
+#                       deep-hunt-status.tsv, stage `vector-hunt`). Runs over a fresh breadth pass or,
 #                       with --deep-hunt-only (which --vector-hunt now also satisfies), over an existing --out.
 #   --vector-hunt-max-vectors <N>  #2156: the per-zone cap forwarded verbatim to run-vector-hunt.sh --max-vectors
 #                       (default 6). Bounds the enumerated vector set (content-hash dedup + --resume ride inside
@@ -552,6 +573,11 @@ case "$DEEP_HUNT_JOBS" in ''|[0-8]) ;; *) echo "run-zone-hunt.sh: DEEP_HUNT_JOBS
 [ "${DEEP_HUNT_ZONE_BUDGET_S:-0}" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_ZONE_BUDGET_S requires --deep-hunt" >&2; exit 2; }
 [ "$DEEP_HUNT_SKIP_BROKEN_TARGET" != 1 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_SKIP_BROKEN_TARGET=1 requires --deep-hunt" >&2; exit 2; }
 [ "${DEEP_HUNT_JOBS:-0}" -le 1 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_JOBS > 1 requires --deep-hunt" >&2; exit 2; }
+# #2277: the per-root toolchain resolver of STAGE 4.5 / 4.6 (Foundry natively, Hardhat-only via a generated Foundry
+# shim) + its DF_FOUNDRY_SHIM* knob guard, read only when one of those stages is on (the OFF path never consults it).
+# shellcheck source=lib/foundry-shim.sh
+. "$HERE/lib/foundry-shim.sh"
+if [ "$DEEP_HUNT" -eq 1 ] || [ "$VECTOR_HUNT" -eq 1 ]; then fs_validate_knobs; fi
 # #1830: the budget/re-hunt knobs use the same integer validation + exit-2 shape as every flag above.
 case "$ZONE_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --zone-cell-budget must be a non-negative integer (got '$ZONE_CELL_BUDGET')" >&2; exit 2 ;; esac
 case "$RUN_CELL_BUDGET" in ''|*[!0-9]*) echo "run-zone-hunt.sh: --run-cell-budget must be a non-negative integer (got '$RUN_CELL_BUDGET')" >&2; exit 2 ;; esac
@@ -1319,11 +1345,24 @@ mr_root_of() {
 # target ($REPO/foundry.toml): EVM invariant-fuzzing is Foundry-specific; a non-Foundry target logs + skips.
 # #2255: on a MULTI-ROOT map ($MR_ROOTS non-empty) that stage-level gate becomes per ROW: a row runs when its zone's
 # root holds a foundry.toml, and is skipped with a log line when it does not (a Hardhat-only root) or has no root.
+# #2277: both gates now go through lib/foundry-shim.sh's fs_resolve: a Hardhat-only root (single- or multi-root) runs
+# in a generated Foundry shim under $OUT/.foundry-shim/ (a Foundry root resolves to itself, argv unchanged), and every
+# consult — ran, skipped or shim-failed — is recorded in $OUT/deep-hunt-status.tsv + a `deep_hunt_status=` line.
 # ZERO new egress — run-invariant-hunt.sh never submits and the merge is a local file read/write.
 # ----------------------------------------------------------------------------------------------------------
 if [ "$DEEP_HUNT" -eq 1 ]; then
-  if [ -z "$MR_ROOTS" ] && [ ! -f "$REPO/foundry.toml" ]; then
-    echo "run-zone-hunt.sh: [deep-hunt] --deep-hunt set but $REPO has no foundry.toml (EVM invariant-fuzzing is Foundry-specific) — skipping deep-hunt" >&2
+  # #2277: resolve the single root once (a multi-root map resolves per row below). DH_SINGLE_REPO is the directory
+  # the engine gets as --repo: $REPO itself for a Foundry target, the shim for a Hardhat-only one.
+  fs_init
+  DH_SINGLE_REPO="$REPO"
+  if [ -z "$MR_ROOTS" ]; then
+    fs_resolve .
+    fs_record deep-hunt . '*'
+    DH_SINGLE_REPO="$FS_REPO_DIR"
+  fi
+  if [ -z "$MR_ROOTS" ] && [ "$FS_STATUS" != ran ]; then
+    echo "run-zone-hunt.sh: [deep-hunt] --deep-hunt set but $REPO has no runnable Foundry root: $FS_STATUS ($FS_DETAIL) — skipping deep-hunt; the deep hunt is UNMEASURED (#2277)" >&2
+    fs_summary deep-hunt
   else
     INVHUNT="$HERE/run-invariant-hunt.sh"
     CELLWD="$HERE/lib/cell-watchdog.sh"   # #1982 per-cell staleness watchdog wrapper
@@ -1624,11 +1663,15 @@ PY
       if [ -n "$MR_ROOTS" ]; then
         MR_ROOT="$(mr_root_of "$ZID")"
         if [ -z "$MR_ROOT" ]; then
+          fs_record deep-hunt - "$ZID" skipped-no-root outside-every-root
           echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' lies outside every project root of this multi-root target — row skipped (#2255)" >&2
           continue
         fi
-        if [ ! -f "$REPO/$MR_ROOT/foundry.toml" ]; then
-          echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' root '$MR_ROOT' is not a Foundry project — row skipped (#2255)" >&2
+        # #2277: the root's toolchain (Foundry natively, Hardhat-only via its shim; cached per invocation).
+        fs_resolve "$MR_ROOT"
+        fs_record deep-hunt "$MR_ROOT" '*'
+        if [ "$FS_STATUS" != ran ]; then
+          echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' root '$MR_ROOT' has no runnable Foundry root: $FS_STATUS ($FS_DETAIL) — row skipped (#2277)" >&2
           continue
         fi
         if [ "$MR_ROOT" != "." ]; then
@@ -1645,9 +1688,17 @@ PY
             _mr_prev="$_mr_a"
           done
           shift "$_mr_n"
-          set -- "$@" --repo "$REPO/$MR_ROOT" --target "${RELFILE#"$MR_ROOT"/}"
+          set -- "$@" --repo "$FS_REPO_DIR" --target "${RELFILE#"$MR_ROOT"/}"
           echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' runs in project root '$MR_ROOT' (#2255)" >&2
+        elif [ "$FS_REPO_DIR" != "$REPO" ]; then
+          # #2277: a shimmed clone root — the target is already root-relative, only the directory moves.
+          set -- "$@" --repo "$FS_REPO_DIR"
         fi
+      fi
+      # #2277: a single-root Hardhat-only target runs in its shim (last-wins --repo, RELFILE is root-relative). A
+      # Foundry target keeps DH_SINGLE_REPO == $REPO, so its argv is unchanged.
+      if [ -z "$MR_ROOTS" ] && [ "$DH_SINGLE_REPO" != "$REPO" ]; then
+        set -- "$@" --repo "$DH_SINGLE_REPO"
       fi
       echo "run-zone-hunt.sh: [deep-hunt] stateful-invariant lens on zone '$ZID' target '$RELFILE' ($DCLASS) ..." >&2
       # #1795: the out-dir is keyed per (ZONE, CLASS), not per zone — with the multi-lens fan-out two rows of
@@ -1853,6 +1904,7 @@ PY
     done < "$DEEP_TARGETS"
     dh_pass_end
     done
+    fs_summary deep-hunt
     echo "run-zone-hunt.sh: [deep-hunt] merged $DEEP_FINDINGS invariant-hunt finding(s) into verified_findings.json" >&2
   fi
 fi
@@ -1877,8 +1929,17 @@ fi
 # these markers without updating demo-vector-hunt.sh's assertion 11 in the same change.
 if [ "$VECTOR_HUNT" -eq 1 ]; then
   # #2255: on a multi-root map the Foundry gate is per ROW (the zone's root), exactly as in STAGE 4.5.
-  if [ -z "$MR_ROOTS" ] && [ ! -f "$REPO/foundry.toml" ]; then
-    echo "run-zone-hunt.sh: [vector-hunt] --vector-hunt set but $REPO has no foundry.toml (concrete-PoC verification is Foundry-specific) — skipping vector-hunt" >&2
+  # #2277: the same toolchain resolver as STAGE 4.5 (shared per-invocation cache: a root is shimmed + probed once).
+  fs_init
+  VH_SINGLE_REPO="$REPO"
+  if [ -z "$MR_ROOTS" ]; then
+    fs_resolve .
+    fs_record vector-hunt . '*'
+    VH_SINGLE_REPO="$FS_REPO_DIR"
+  fi
+  if [ -z "$MR_ROOTS" ] && [ "$FS_STATUS" != ran ]; then
+    echo "run-zone-hunt.sh: [vector-hunt] --vector-hunt set but $REPO has no runnable Foundry root: $FS_STATUS ($FS_DETAIL) — skipping vector-hunt (#2277)" >&2
+    fs_summary vector-hunt
   else
     VECHUNT="$HERE/run-vector-hunt.sh"
     [ -x "$VECHUNT" ] || { echo "run-zone-hunt.sh: [vector-hunt] required entrypoint not found/executable: $VECHUNT" >&2; exit 3; }
@@ -1942,19 +2003,25 @@ PY
       # #2255 MULTI-ROOT: the engine (and its per-vector PoC runner) gets the zone's OWN Foundry root as --repo and
       # the target path within that root. A rootless zone or a non-Foundry root is skipped with a log line. Single-
       # root map ($MR_ROOTS empty) => VH_REPO/VH_TARGET are exactly $REPO/$RELFILE, as before.
-      VH_REPO="$REPO"; VH_TARGET="$RELFILE"
+      # #2277: VH_SINGLE_REPO is $REPO for a Foundry target and the shim for a Hardhat-only one; a multi-root row
+      # resolves its own root (the shim of a Hardhat-only root), recorded in deep-hunt-status.tsv.
+      VH_REPO="$VH_SINGLE_REPO"; VH_TARGET="$RELFILE"
       if [ -n "$MR_ROOTS" ]; then
         VH_ROOT="$(mr_root_of "$ZID")"
         if [ -z "$VH_ROOT" ]; then
+          fs_record vector-hunt - "$ZID" skipped-no-root outside-every-root
           echo "run-zone-hunt.sh: [vector-hunt] zone '$ZID' lies outside every project root of this multi-root target — row skipped (#2255)" >&2
           continue
         fi
-        if [ ! -f "$REPO/$VH_ROOT/foundry.toml" ]; then
-          echo "run-zone-hunt.sh: [vector-hunt] zone '$ZID' root '$VH_ROOT' is not a Foundry project — row skipped (#2255)" >&2
+        fs_resolve "$VH_ROOT"
+        fs_record vector-hunt "$VH_ROOT" '*'
+        if [ "$FS_STATUS" != ran ]; then
+          echo "run-zone-hunt.sh: [vector-hunt] zone '$ZID' root '$VH_ROOT' has no runnable Foundry root: $FS_STATUS ($FS_DETAIL) — row skipped (#2277)" >&2
           continue
         fi
+        VH_REPO="$FS_REPO_DIR"
         if [ "$VH_ROOT" != "." ]; then
-          VH_REPO="$REPO/$VH_ROOT"; VH_TARGET="${RELFILE#"$VH_ROOT"/}"
+          VH_TARGET="${RELFILE#"$VH_ROOT"/}"
         fi
       fi
       VH_ZONE_OUT="$VH_OUT/$ZID"; mkdir -p "$VH_ZONE_OUT"
@@ -1996,6 +2063,7 @@ PY
       VECTOR_FINDINGS=$((VECTOR_FINDINGS + VH_MERGED))
       echo "run-zone-hunt.sh: [vector-hunt] zone '$ZID' ($DCLASS) -> $VH_MERGED vector(s) reproduced as PoC-PASS and merged (source=vector-hunt)" >&2
     done < "$VEC_TARGETS"
+    fs_summary vector-hunt
     echo "run-zone-hunt.sh: [vector-hunt] merged $VECTOR_FINDINGS vector-hunt PoC-PASS finding(s) into verified_findings.json (source=vector-hunt)" >&2
   fi
 fi

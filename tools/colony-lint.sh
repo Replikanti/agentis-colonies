@@ -2965,6 +2965,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-multi-root.sh" ]; then
     fi
 fi
 
+# --- dark-factory Foundry shim for Hardhat-only targets (#2277) ---
+# STAGE 4.5 (--deep-hunt) and STAGE 4.6 (--vector-hunt) resolve every project root through lib/foundry-shim.sh: a
+# Foundry root runs natively (argv unchanged), a Hardhat-only root runs in a generated Foundry shim working copy under
+# <out>/.foundry-shim/ (lib/foundry_shim.py: static config read, .sol-only node_modules, generated foundry.toml, one
+# probe `forge build`, lockfile-only --ignore-scripts install on missing deps), and every consult lands in
+# <out>/deep-hunt-status.tsv + a stderr deep_hunt_status= line. demo-foundry-shim.sh proves the helper, the frozen
+# target (sha256 manifest), ran / shim-failed / skipped end to end through stubs, and Foundry byte-identity against
+# origin/main. bash + git + python3 only (CI-safe; the real-forge part SKIPs without forge).
+if [ -x "$REPO_ROOT/dark-factory/demo-foundry-shim.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-foundry-shim.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: Foundry shim — Hardhat-only roots deep-hunted via a generated shim, ledgered, target frozen, Foundry byte-identical (#2277)"
+    else
+        fail "dark-factory: Foundry shim for Hardhat-only targets regressed (#2277)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory breadth function-coverage gate (#2256) ---
 # Opt-in (FUNCTION_COVERAGE=1, default OFF, independent of every other knob): hunter.ag asks for one
 # `READ|<file:function>|<evidence>` line per traced function, lib/inheritance.py zone-functions enumerates each scope
