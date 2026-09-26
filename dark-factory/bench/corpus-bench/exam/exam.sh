@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
-# exam.sh — the #2262 held-out EXAM RUNNER (M2: runner core). A reusable, contest-agnostic replacement for the
-# host-only harness scripts every held-out measurement used to run on: freeze a contest's map + briefs from a
-# pinned tool checkout, stage one zone (or the whole contest) into an arm dir, run the breadth pass with a KNOB
-# PROFILE and optionally STAGE 4.5 over the same output, leave per-run metadata + done markers, drive a plan of
-# rows sequentially, kill everything under a path, and hand the finished arms to triage.py.
+# exam.sh — the #2262 held-out EXAM RUNNER (M2: runner core; M3: run integrity). A reusable, contest-agnostic
+# replacement for the host-only harness scripts every held-out measurement used to run on: freeze a contest's
+# map + briefs from a pinned tool checkout, stage one zone (or the whole contest) into an arm dir, run the breadth
+# pass with a KNOB PROFILE and optionally STAGE 4.5 over the same output, leave per-run metadata + done markers,
+# drive a plan of rows sequentially, kill everything under a path, and hand the finished arms to triage.py.
+# M3 makes every arm prove it is measurable: run-window model attribution (the PURE-<family> gate), VOID
+# detection from known signatures (void-patterns.tsv), one in-arm re-hunt of failed cells, a plan HALT on a
+# usage-limit VOID, and an explicit `drive --retry-void`.
 #
 # NOTHING contest-specific lives here. Every contest / arm / path fact is DATA: the frozen base's freeze.meta,
 # a profile file (profiles/*.env), and a plan TSV the operator keeps outside the repo. All roots are arguments.
@@ -35,25 +38,47 @@
 #            runs lib/zone-coverage.py init and checks `gaps` yields exactly the staged zone(s).
 #   run      (the stage args) [--agentis <bin>]
 #            Breadth: `timeout HARD_STOP_S run-zone-hunt.sh --rehunt-gaps` with the profile's env.* knobs.
-#            STAGE 4.5 (DEEP_PASS=1, verify/verified_findings.json present, breadth neither hard-stopped nor
-#            killed): a second `timeout` call with --deep-hunt --deep-hunt-only over the SAME --out and the deep.*
-#            knobs. Every call gets `env -u` for every pipeline + Claude Code knob (see clear_knobs); DF_NO_SANDBOX
+#            One-shot RE-HUNT (M3, REHUNT_TRANSPORT=1, the default): when a final-attempt cell carries .timeout /
+#            .novalid or a `transport` void pattern and no `weekly-limit` pattern matched, exactly ONE more
+#            breadth call with --rehunt-gaps --rehunt-include-partial --rehunt-max-attempts 2 (the README's
+#            symmetry rule; an .untraced cell is a METRIC and never triggers it). A usage-limit match also skips
+#            STAGE 4.5 (deep_rc=skip-weekly-limit): it would void too.
+#            STAGE 4.5 (DEEP_PASS=1, verify/verified_findings.json present, no breadth / re-hunt call
+#            hard-stopped or killed): a second `timeout` call with --deep-hunt --deep-hunt-only over the SAME --out
+#            and the deep.* knobs. Every call gets `env -u` for every pipeline + Claude Code knob (see clear_knobs); DF_NO_SANDBOX
 #            is refused; the only live backend is flat-cyborg (sandboxed), and it needs bwrap. Refuses a repo root / --out that holds a truth.tsv or judging/. Writes
 #            run.pid while alive. A hard stop (rc 124), a killed call (rc >= 128) or a TERM/INT to run itself kills
 #            everything left under the arm dir. An EXIT trap ALWAYS writes run.meta (incl. the effective breadth
-#            + deep knob env), the arm's .done marker and one MANIFEST.tsv row, even after a crash.
-#   drive    --root <root> --plan <plan.tsv> [--resume] [--agentis <bin>]
+#            + deep knob env and the re-hunt), attrib.tsv (see attrib), void.txt (see void-check), one
+#            MANIFEST.tsv row (with the verdict) and the arm's .done marker, even after a crash.
+#   drive    --root <root> --plan <plan.tsv> [--resume | --retry-void] [--agentis <bin>]
 #            stage + run per row, sequentially (one live arm at a time), under a PID lock; START/END lines in
-#            logs/<plan>.progress, logs/<plan>.done at the end. Re-execs from a snapshot of exam/ under logs/
-#            (bash reads a script incrementally, so a pull mid-plan would otherwise corrupt the run). Pins each
-#            checkout's HEAD at first use and refuses a row whose checkout has moved, or whose run is still alive.
-#            --resume skips rows with a .done marker. Each run is its own process group (setsid); a TERM/INT to
-#            the driver stops that group and waits for its cleanup. Ends with the triage hand-off below for every
-#            (contest, arm, repeat) of the plan.
+#            logs/<plan>.progress (END carries rc=, deep= and void=), logs/<plan>.done at the end. Re-execs from a
+#            snapshot of exam/ under logs/ (bash reads a script incrementally, so a pull mid-plan would otherwise
+#            corrupt the run). Pins each checkout's HEAD at first use and refuses a row whose checkout has moved,
+#            or whose run is still alive. A `weekly-limit` VOID HALTS the plan (logs/<plan>.halted names the row +
+#            the evidence; later rows stay unstarted, exit 6): every row behind it would void too. Any other VOID
+#            is recorded and the plan continues; nothing is re-run automatically. --resume skips a row only when
+#            it is VALID + .done (a VOID row is reported and left alone); --retry-void (implies --resume) moves
+#            every VOID arm dir aside as <arm>-r<N>.void-<k> (kept as evidence, never deleted) and re-stages it
+#            fresh. Each run is its own process group (setsid); a TERM/INT to the driver stops that group and
+#            waits for its cleanup. Ends with the triage hand-off below for every (contest, arm, repeat).
 #   triage   --root <root> --contest <id> --arm <label> --repeat <n>
-#            triage.py over every finished zone tree of that arm, against the frozen base's FULL map (located via
-#            run.meta); a hard-stopped or killed tree is passed as --unmeasured, a zone with no tree is unmeasured by
+#            triage.py over every VALID zone tree of that arm, against the frozen base's FULL map (located via
+#            run.meta); a VOID tree is passed as --unmeasured <zone>:<class>, a zone with no tree is unmeasured by
 #            triage itself. Writes <root>/triage/<contest>-<arm>-r<n>.{tsv,md}.
+#   attrib   --arm-dir <dir> [--transcripts-root <dir>]      (default: $HOME/.claude/projects)
+#            Run-window model attribution of one arm: every RUN dir on disk (discovery/<zone>/run + cell-*,
+#            verify/gates*/*/refute-out/run, deep-hunt/*/run, any other stage's run) mapped to Claude Code's per-cwd
+#            transcript store by exact name, confirmed by the records' cwd, and model-attribution.py --since/--until
+#            over that stage's window from run.meta (discovery + verify: start..breadth/re-hunt end; deep-hunt:
+#            deep_start..deep_end). Gate: every stage that ran is PURE-<family of MODEL> (or ATTRIB_FAMILY); a
+#            required stage with RUN dirs but no transcript is attribution-missing. Writes <arm>/attrib.tsv and, on
+#            a finished arm, refreshes void.txt. `run` does this itself; `freeze` records its own map/brief-stage
+#            verdict in freeze.meta (a warning only).
+#   void-mark --arm-dir <dir> --reason <text>
+#            Operator VOID: writes <arm>/void.operator and refreshes void.txt (exam-helper.py void-check; classes
+#            and precedence in void-patterns.tsv + exam-helper.py).
 #   kill     --path <dir> [--dry-run] [--grace <s>]
 #            Kill-by-path: every process whose args name <dir> (or a path under it), whose cwd is under it, or
 #            that is the live run controller of an arm under it (its run.pid) — never this process or its
@@ -71,9 +96,11 @@
 # Exam root layout:
 #   <root>/MANIFEST.tsv                                 one row per ATTEMPT (append-only, header line)
 #   <root>/logs/<plan>.{lock,progress,done,log,heads}   driver lock, START/END lines, final marker, driver log,
-#                                                       checkout HEAD pins
-#   <root>/arms/<contest>/<zone>/<arm>-r<N>/            run.meta run.log deep.log stage.log stage.meta .done
+#                                                       checkout HEAD pins; <plan>.halted after a usage-limit VOID
+#   <root>/arms/<contest>/<zone>/<arm>-r<N>/            run.meta run.log rehunt.log deep.log stage.log stage.meta
+#                                                       attrib.tsv void.txt [void.operator] .done
 #                                                       run.pid (while alive) breadth.env deep.env env.cleared
+#   <root>/arms/<contest>/<zone>/<arm>-r<N>.void-<k>/   a VOID attempt moved aside by drive --retry-void
 #       <contest>/{code -> base, zone-hunt-out/}        what the hunt is pointed at
 #       _gt/<contest>/{truth.tsv, judging -> base, zone-hunt-out -> ../../<contest>/zone-hunt-out}
 #   <root>/triage/<contest>-<arm>-r<N>.{tsv,md}
@@ -81,8 +108,8 @@
 #
 # Needs bash, python3, git, GNU `timeout`, setsid and /proc (Linux); bwrap for a live backend. Exit: 0 ok; 1 a self-test / kill check failed;
 # 2 usage or profile error; 3 missing prerequisite, dirty / contaminated checkout, drift, refused overwrite or a
-# live lock; 4 contaminated freeze output; 5 fallback briefs (freeze). `run` exits with the breadth rc (else a
-# non-zero deep rc).
+# live lock; 4 contaminated freeze output; 5 fallback briefs (freeze); 6 the plan HALTED on a usage-limit VOID
+# (drive). `run` exits with the breadth rc (else a non-zero re-hunt rc, else a non-zero deep rc).
 set -uo pipefail
 
 ME="exam.sh"
@@ -92,6 +119,8 @@ HELPER="$EXAM_DIR/exam-helper.py"
 PROFILES_DIR="$EXAM_DIR/profiles"
 CB_DIR="$(cd "$EXAM_DIR/.." && pwd)"
 TRIAGE="$CB_DIR/triage.py"
+ATTRIB_PY="$CB_DIR/model-attribution.py"
+PATTERNS="$EXAM_DIR/void-patterns.tsv"
 SAFE_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 
 # Measurement integrity for every model call this runner starts: a refusal or a model fallback is an ERROR,
@@ -134,7 +163,7 @@ resolve_profile() {
 
 # Parse + validate a profile into P_* runner values and the ENV_KV / DEEP_KV / PASS_NAMES arrays.
 P_BACKEND=""; P_MODEL=""; P_JOBS=""; P_DEEP_JOBS=""; P_HARD_STOP_S=""; P_DEEP_PASS=""; P_INJECT_CLASSES=""
-P_SCOPE_DOCS=""; ENV_KV=(); DEEP_KV=(); PASS_NAMES=()
+P_SCOPE_DOCS=""; P_REHUNT_TRANSPORT=""; P_ATTRIB_FAMILY=""; ENV_KV=(); DEEP_KV=(); PASS_NAMES=()
 load_profile() {
   local f="$1" tmp kind name val
   tmp="$(mktemp)"
@@ -411,7 +440,8 @@ cmd_freeze() {
   local -a margs=(--repo "$code" --out "$cdir/map")
   if [ -n "$roots" ] && [ "$roots" != auto ]; then margs+=(--project-roots "$roots"); fi
   [ -z "$mapfx" ] || margs+=(--fixture "$mapfx")
-  echo "[freeze $(utc)] contest=$contest checkout=$commit backend=$P_BACKEND model=${P_MODEL:--}" >> "$log"
+  local fstart; fstart="$(utc)"
+  echo "[freeze $fstart] contest=$contest checkout=$commit backend=$P_BACKEND model=${P_MODEL:--}" >> "$log"
   (cd "$df" && env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} bash map-zones.sh "${margs[@]}" "${common[@]}") >> "$log" 2>&1 \
     || die 3 "freeze: map-zones.sh failed (see $log)"
   [ -f "$cdir/map/zones.json" ] && grep -qv '^#' "$cdir/map/scope.tsv" 2>/dev/null \
@@ -449,6 +479,18 @@ cmd_freeze() {
   freeze_manifest "$cdir" > "$cdir/freeze.sha256"
   effective_env "$clearf" > "$cdir/freeze.env"
   rm -f "$clearf"
+  # M3: the map + brief stages' own run-window attribution — recorded, a WARNING only (a freeze is re-done by hand).
+  local fattrib="skipped-mock" fgate="ok"
+  if [ "$P_BACKEND" != mock ]; then
+    local -a ffam=(); [ -z "$P_ATTRIB_FAMILY" ] || ffam=(--family "$P_ATTRIB_FAMILY")
+    if python3 "$HELPER" attrib --root "$cdir" --transcripts-root "$HOME/.claude/projects" --model "$P_MODEL"          ${ffam[@]+"${ffam[@]}"} --tsv "$cdir/freeze.attrib.tsv" --stage "map=$fstart,$(utc)" --stage "briefs=$fstart,$(utc)"; then
+      fattrib="$(awk -F'\t' 'NR > 1 { printf "%s%s:%s(%s)", (n++ ? "," : ""), $1, $7, $9 }' "$cdir/freeze.attrib.tsv")"
+      awk -F'\t' 'NR > 1 && $9 != "ok" && $9 != "not-run" { f = 1 } END { exit f ? 0 : 1 }' "$cdir/freeze.attrib.tsv" && fgate="WARN"
+    else
+      fattrib="error"; fgate="WARN"
+    fi
+    [ "$fgate" = ok ] || note "freeze: WARNING the map/brief stages are not PURE-${P_ATTRIB_FAMILY:-<family of $P_MODEL>} in the freeze window: $fattrib (see freeze.attrib.tsv)"
+  fi
   local map_roots; map_roots="$(python3 "$HELPER" zone-roots "$cdir/map/zones.json")" || map_roots="-"
   {
     echo "checkout_commit=$commit"
@@ -460,6 +502,8 @@ cmd_freeze() {
     echo "profile=$(basename "$profile")"
     echo "profile_sha256=$(file_sha "$profile")"
     echo "fallback_briefs_allowed=$allow_fb"
+    echo "attrib=$fattrib"
+    echo "attrib_gate=$fgate"
     echo "frozen_utc=$(utc)"
   } > "$cdir/freeze.meta"
   note "freeze: $contest frozen ($(wc -l < "$cdir/freeze.sha256") files, commit $commit, roots $map_roots)"
@@ -624,11 +668,15 @@ cmd_stage() {
   note "stage: [$A_CONTEST $A_ZONE $A_ARM r$A_REPEAT] staged -> $armdir"
 }
 
-MANIFEST_HEADER=$'contest\tzone\tarm\trepeat\tprofile\tprofile_sha256\tcheckout_commit\tmodel\tbackend\tstart\tend\trc\tdeep_start\tdeep_end\tdeep_rc\tarm_dir'
+# M2 wrote the first 16 columns; M3 appends rehunt_rc + verdict. A MANIFEST.tsv that still carries the M2 header
+# keeps getting M2-shaped rows (never a column shift under an existing header); void.txt holds the verdict there.
+MANIFEST_HEADER_M2=$'contest\tzone\tarm\trepeat\tprofile\tprofile_sha256\tcheckout_commit\tmodel\tbackend\tstart\tend\trc\tdeep_start\tdeep_end\tdeep_rc\tarm_dir'
+MANIFEST_HEADER="$MANIFEST_HEADER_M2"$'\trehunt_rc\tverdict'
 
 # run state, read by the EXIT trap
 R_ARMDIR=""; R_START=""; R_RC=""; R_DEEP_START="-"; R_DEEP_END="-"; R_DEEP_RC="skip"; R_COMMIT=""; R_DIRTY=""
-R_CODE=""; R_ROOTS=""; R_CHILD=""
+R_CODE=""; R_ROOTS=""; R_CHILD=""; R_BREADTH_END="-"
+R_REHUNT_START="-"; R_REHUNT_END="-"; R_REHUNT_RC="none"; R_REHUNT_REASON="-"
 
 # A signal to `run` (a drive's TERM, `exam.sh kill`, Ctrl-C): stop whatever runs under the arm, never start or
 # continue STAGE 4.5, and let the EXIT trap record the interrupted attempt.
@@ -636,7 +684,9 @@ run_on_signal() {
   trap '' INT TERM
   local code="$1"
   if [ -z "$R_RC" ]; then
-    R_RC="$code"; [ "$P_DEEP_PASS" != 1 ] || R_DEEP_RC="skip-killed"
+    R_RC="$code"; R_BREADTH_END="$(utc)"; [ "$P_DEEP_PASS" != 1 ] || R_DEEP_RC="skip-killed"
+  elif [ "$R_REHUNT_START" != "-" ] && [ "$R_REHUNT_END" = "-" ]; then
+    R_REHUNT_RC="$code"; R_REHUNT_END="$(utc)"; [ "$P_DEEP_PASS" != 1 ] || R_DEEP_RC="skip-killed"
   elif [ "$R_DEEP_START" != "-" ] && [ "$R_DEEP_END" = "-" ]; then
     R_DEEP_RC="$code"; R_DEEP_END="$(utc)"
   fi
@@ -652,12 +702,15 @@ run_finish() {
   meta="$R_ARMDIR/run.meta"
   {
     echo "contest=$A_CONTEST"; echo "zone=$A_ZONE"; echo "arm=$A_ARM"; echo "repeat=$A_REPEAT"
-    echo "start=$R_START"; echo "end=$end"; echo "rc=$R_RC"
+    echo "start=$R_START"; echo "end=$end"; echo "rc=$R_RC"; echo "breadth_end=$R_BREADTH_END"
+    echo "rehunt_start=$R_REHUNT_START"; echo "rehunt_end=$R_REHUNT_END"; echo "rehunt_rc=$R_REHUNT_RC"
+    echo "rehunt_reason=$R_REHUNT_REASON"
     echo "deep_start=$R_DEEP_START"; echo "deep_end=$R_DEEP_END"; echo "deep_rc=$R_DEEP_RC"
     echo "base=$A_BASE"; echo "code=$R_CODE"; echo "project_roots=$R_ROOTS"
     echo "checkout=$A_CHECKOUT"; echo "checkout_commit=$R_COMMIT"; echo "checkout_dirty=$R_DIRTY"
     echo "backend=$P_BACKEND"; echo "model=${P_MODEL:--}"; echo "jobs=$P_JOBS"; echo "deep_jobs=$P_DEEP_JOBS"
     echo "hard_stop_s=$P_HARD_STOP_S"; echo "deep_pass=$P_DEEP_PASS"; echo "scope_docs=${P_SCOPE_DOCS:--}"
+    echo "rehunt_transport=$P_REHUNT_TRANSPORT"; echo "attrib_family=${P_ATTRIB_FAMILY:--}"
     echo "env_knobs=$(printf '%s\n' ${ENV_KV[@]+"${ENV_KV[@]}"} | paste -sd' ' -)"
     echo "deep_knobs=$(printf '%s\n' ${DEEP_KV[@]+"${DEEP_KV[@]}"} | paste -sd' ' -)"
     echo "pass_knobs=$(printf '%s\n' ${PASS_NAMES[@]+"${PASS_NAMES[@]}"} | paste -sd' ' -)"
@@ -667,15 +720,25 @@ run_finish() {
     echo "env_cleared=$(grep -c . "$R_ARMDIR/env.cleared" 2>/dev/null || echo 0)"
     echo "env_cleared_set=$(paste -sd' ' "$R_ARMDIR/env.cleared-set" 2>/dev/null)"
   } > "$meta.tmp" && mv "$meta.tmp" "$meta"
-  local mf="$A_ROOT/MANIFEST.tsv"
+  # M3: attribution over the run window, then the VOID verdict — both before the MANIFEST row and .done, so a
+  # finished arm always carries them.
+  arm_attrib "$R_ARMDIR" "$HOME/.claude/projects" >> "$R_ARMDIR/run.log" 2>&1 \
+    || echo "[run $(utc)] attribution failed (void-check reads a missing attrib.tsv as VOID attribution)" >> "$R_ARMDIR/run.log"
+  local verdict; verdict="$(arm_void_refresh "$R_ARMDIR")"
+  local mf="$A_ROOT/MANIFEST.tsv" row
   [ -s "$mf" ] || printf '%s\n' "$MANIFEST_HEADER" > "$mf"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+  row="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
     "$A_CONTEST" "$A_ZONE" "$A_ARM" "$A_REPEAT" "$(basename "$A_PROFILE")" "$(file_sha "$A_PROFILE")" "$R_COMMIT" \
     "${P_MODEL:--}" "$P_BACKEND" "$R_START" "$end" "$R_RC" "$R_DEEP_START" "$R_DEEP_END" "$R_DEEP_RC" \
-    "arms/$A_CONTEST/$A_ZONE/$A_ARM-r$A_REPEAT" >> "$mf"
-  printf 'rc=%s\tdeep=%s\tend=%s\n' "$R_RC" "$R_DEEP_RC" "$end" > "$R_ARMDIR/.done"
+    "arms/$A_CONTEST/$A_ZONE/$A_ARM-r$A_REPEAT")"
+  if [ "$(head -1 "$mf")" = "$MANIFEST_HEADER_M2" ]; then
+    printf '%s\n' "$row" >> "$mf"
+  else
+    printf '%s\t%s\t%s\n' "$row" "$R_REHUNT_RC" "$(verdict_word "$verdict")" >> "$mf"
+  fi
+  printf 'rc=%s\tdeep=%s\tend=%s\tvoid=%s\n' "$R_RC" "$R_DEEP_RC" "$end" "$(verdict_word "$verdict")" > "$R_ARMDIR/.done"
   if [ "$(head -1 "$R_ARMDIR/run.pid" 2>/dev/null)" = "$$" ]; then rm -f "$R_ARMDIR/run.pid"; fi
-  note "run: [$A_CONTEST $A_ZONE $A_ARM r$A_REPEAT] END rc=$R_RC deep=$R_DEEP_RC -> $R_ARMDIR"
+  note "run: [$A_CONTEST $A_ZONE $A_ARM r$A_REPEAT] END rc=$R_RC rehunt=$R_REHUNT_RC deep=$R_DEEP_RC $(verdict_word "$verdict") -> $R_ARMDIR"
 }
 
 cmd_run() {
@@ -734,15 +797,45 @@ cmd_run() {
   (cd "$df" && exec env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} ${ENV_KV[@]+"${ENV_KV[@]}"} timeout "$P_HARD_STOP_S" \
       bash run-zone-hunt.sh "${common[@]}" "${breadth[@]}") >> "$R_ARMDIR/run.log" 2>&1 &
   R_CHILD=$!
-  wait "$R_CHILD"; R_RC=$?; R_CHILD=""
+  wait "$R_CHILD"; R_RC=$?; R_CHILD=""; R_BREADTH_END="$(utc)"
   if [ "$R_RC" -eq 124 ] || [ "$R_RC" -ge 128 ]; then
     echo "[run $(utc)] breadth $( [ "$R_RC" -eq 124 ] && echo "HARD STOP after ${P_HARD_STOP_S}s" || echo "KILLED (rc $R_RC)") — killing what is left under the arm dir" >> "$R_ARMDIR/run.log"
     kill_by_path "$R_ARMDIR" 0 10 >> "$R_ARMDIR/run.log" 2>&1 || true
   fi
+  # M3 one-shot RE-HUNT (the README's symmetry rule): a final-attempt cell still failed (.timeout / .novalid) or
+  # carrying a terminal transport error gets exactly ONE more breadth pass IN THIS ARM — never when a usage-limit
+  # notice matched (that pass would void too), never after a hard stop / kill, never twice.
+  local rstop=""
+  if [ "$R_RC" -eq 124 ]; then R_REHUNT_RC="skip-hard-stop"
+  elif [ "$R_RC" -ge 128 ]; then R_REHUNT_RC="skip-killed"
+  else
+    local rchk rcrc
+    rchk="$(python3 "$HELPER" rehunt-check "$out" "$PATTERNS" 2>&1)"; rcrc=$?
+    R_REHUNT_REASON="$(printf '%s' "$rchk" | head -1 | tr '\t' ' ')"; [ -n "$R_REHUNT_REASON" ] || R_REHUNT_REASON="-"
+    if [ "$rcrc" -eq 1 ]; then R_REHUNT_RC="none"
+    elif [ "$rcrc" -eq 4 ]; then R_REHUNT_RC="skip-weekly-limit"; rstop="weekly-limit"
+    elif [ "$rcrc" -ne 0 ]; then R_REHUNT_RC="skip-check-error"
+    elif [ "$P_REHUNT_TRANSPORT" != 1 ]; then R_REHUNT_RC="skip-off"
+    else
+      R_REHUNT_START="$(utc)"
+      echo "[rehunt $R_REHUNT_START] ($R_REHUNT_REASON) env -u <cleared> ${ENV_KV[*]+${ENV_KV[*]}} timeout $P_HARD_STOP_S run-zone-hunt.sh ${common[*]} ${breadth[*]} --rehunt-include-partial --rehunt-max-attempts 2" >> "$R_ARMDIR/rehunt.log"
+      (cd "$df" && exec env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} ${ENV_KV[@]+"${ENV_KV[@]}"} timeout "$P_HARD_STOP_S" \
+          bash run-zone-hunt.sh "${common[@]}" "${breadth[@]}" --rehunt-include-partial --rehunt-max-attempts 2) >> "$R_ARMDIR/rehunt.log" 2>&1 &
+      R_CHILD=$!
+      wait "$R_CHILD"; R_REHUNT_RC=$?; R_CHILD=""; R_REHUNT_END="$(utc)"
+      if [ "$R_REHUNT_RC" -eq 124 ] || [ "$R_REHUNT_RC" -ge 128 ]; then
+        echo "[rehunt $(utc)] re-hunt stopped (rc $R_REHUNT_RC) — killing what is left under the arm dir" >> "$R_ARMDIR/rehunt.log"
+        kill_by_path "$R_ARMDIR" 0 10 >> "$R_ARMDIR/rehunt.log" 2>&1 || true
+        rstop="$R_REHUNT_RC"
+      fi
+    fi
+  fi
   if [ "$P_DEEP_PASS" = 1 ]; then
-    if [ "$R_RC" -eq 124 ]; then
+    if [ "$R_RC" -eq 124 ] || [ "$rstop" = 124 ]; then
       R_DEEP_RC="skip-hard-stop"
-    elif [ "$R_RC" -ge 128 ]; then
+    elif [ "$rstop" = weekly-limit ]; then
+      R_DEEP_RC="skip-weekly-limit"   # the usage limit would void STAGE 4.5 too
+    elif [ "$R_RC" -ge 128 ] || [ -n "$rstop" ]; then
       R_DEEP_RC="skip-killed"
     elif [ ! -f "$out/verify/verified_findings.json" ]; then
       R_DEEP_RC="skip-no-verify"
@@ -762,23 +855,88 @@ cmd_run() {
     fi
   fi
   [ "$R_RC" -eq 0 ] || exit "$R_RC"
+  case "$R_REHUNT_RC" in ''|*[!0-9]*|0) ;; *) exit "$R_REHUNT_RC" ;; esac
   case "$R_DEEP_RC" in ''|*[!0-9]*|0) exit 0 ;; *) exit "$R_DEEP_RC" ;; esac
+}
+
+# ----------------------------------------------------------------------------------------------------------
+# M3: run-window attribution + VOID verdict
+# ----------------------------------------------------------------------------------------------------------
+# arm_attrib <arm-dir> <transcripts-root> — attrib.tsv for one arm, every stage over its own window from run.meta.
+arm_attrib() {
+  local arm="$1" troot="$2" meta="$1/run.meta" backend model fam out s e be ds de
+  [ -f "$meta" ] || { echo "attrib: $arm has no run.meta" >&2; return 3; }
+  backend="$(meta_get "$meta" backend)"; model="$(meta_get "$meta" model)"; fam="$(meta_get "$meta" attrib_family)"
+  out="$arm/$(meta_get "$meta" contest)/zone-hunt-out"
+  [ "$backend" != mock ] || model="-"
+  [ -n "$model" ] || model="-"
+  s="$(meta_get "$meta" start)"; e="$(meta_get "$meta" end)"
+  be="$(meta_get "$meta" rehunt_end)"
+  case "$be" in ''|-) be="$(meta_get "$meta" breadth_end)" ;; esac
+  case "$be" in ''|-) be="$e" ;; esac
+  ds="$(meta_get "$meta" deep_start)"; de="$(meta_get "$meta" deep_end)"
+  case "$ds" in ''|-) ds="$s"; de="$e" ;; esac
+  case "$de" in ''|-) de="$e" ;; esac
+  local -a famarg=(); case "$fam" in ''|-) ;; *) famarg=(--family "$fam") ;; esac
+  python3 "$HELPER" attrib --root "$out" --transcripts-root "$troot" --model "$model" ${famarg[@]+"${famarg[@]}"} \
+    --tsv "$arm/attrib.tsv" --stage "discovery=$s,$be" --stage "verify=$s,$be" --stage "deep-hunt=$ds,$de" \
+    --other "$s,$e" --exclude map --exclude briefs --exclude coverage
+}
+
+# arm_void_refresh <arm-dir> — (re)compute void.txt; prints its line (`VALID` or `VOID<TAB>class<TAB>ref`).
+arm_void_refresh() {
+  python3 "$HELPER" void-check "$1" "$PATTERNS" 2>/dev/null || printf 'VOID\tincomplete\tvoid-check failed\n'
+}
+
+# arm_void <arm-dir> — void.txt's line, computed first when an arm (e.g. an M2-era one) has none.
+arm_void() {
+  if [ -s "$1/void.txt" ]; then head -1 "$1/void.txt"; else arm_void_refresh "$1"; fi
+}
+
+# verdict_word <void line> -> `VALID` / `VOID:<class>`; void_class <void line> -> `<class>` (empty when VALID).
+verdict_word() { case "$1" in VALID*) echo VALID ;; *) printf 'VOID:%s\n' "$(printf '%s' "$1" | cut -f2)" ;; esac; }
+void_class()   { case "$1" in VALID*) echo "" ;; *) printf '%s\n' "$1" | cut -f2 ;; esac; }
+
+cmd_attrib() {
+  local arm="" troot="$HOME/.claude/projects"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --arm-dir) need_val "$#" "$1"; arm="$2"; shift 2 ;;
+      --transcripts-root) need_val "$#" "$1"; troot="$2"; shift 2 ;;
+      *) die 2 "attrib: unknown flag $1" ;;
+    esac
+  done
+  [ -n "$arm" ] || die 2 "attrib: --arm-dir <dir> required"
+  command -v python3 >/dev/null 2>&1 || die 3 "python3 is required"
+  arm="$(abs_dir "$arm")" || die 3 "attrib: --arm-dir not found"
+  [ -f "$arm/run.meta" ] || die 3 "attrib: $arm has no run.meta (not a run arm)"
+  arm_attrib "$arm" "$troot" || die 3 "attrib: attribution failed"
+  cat "$arm/attrib.tsv"
+  if [ -f "$arm/.done" ]; then note "attrib: void.txt -> $(arm_void_refresh "$arm" | tr '\t' ' ')"; fi
+}
+
+cmd_void_mark() {
+  local arm="" reason=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --arm-dir) need_val "$#" "$1"; arm="$2"; shift 2 ;;
+      --reason) need_val "$#" "$1"; reason="$2"; shift 2 ;;
+      *) die 2 "void-mark: unknown flag $1" ;;
+    esac
+  done
+  [ -n "$arm" ] && [ -n "$reason" ] || die 2 "void-mark: --arm-dir <dir> --reason <text> are required"
+  case "$reason" in *$'\t'*|*$'\n'*) die 2 "void-mark: --reason must be one line without tabs" ;; esac
+  command -v python3 >/dev/null 2>&1 || die 3 "python3 is required"
+  arm="$(abs_dir "$arm")" || die 3 "void-mark: --arm-dir not found"
+  [ -f "$arm/run.meta" ] || die 3 "void-mark: $arm has no run.meta (not a run arm)"
+  if arm_live "$arm"; then die 3 "void-mark: $arm has a LIVE run — stop it first (exam.sh kill --path $arm)"; fi
+  printf '%s (marked %s)\n' "$reason" "$(utc)" > "$arm/void.operator"
+  arm_void_refresh "$arm"
 }
 
 # ----------------------------------------------------------------------------------------------------------
 # triage hand-off
 # ----------------------------------------------------------------------------------------------------------
-# The M2 arm verdict: VALID unless a call was hard-stopped or killed. (#2262 M3 replaces this with the
-# attribution + void-pattern check and a void.txt per arm.)
-arm_verdict() {
-  local meta="$1/run.meta" rc drc
-  rc="$(meta_get "$meta" rc)"; drc="$(meta_get "$meta" deep_rc)"
-  if [ "$rc" = 124 ] || [ "$drc" = 124 ]; then echo "hard-stop"
-  elif [[ "$rc" =~ ^[0-9]+$ && "$rc" -ge 128 ]] || [[ "$drc" =~ ^[0-9]+$ && "$drc" -ge 128 ]] || [ "$drc" = skip-killed ]; then
-    echo "killed"
-  else echo "VALID"; fi
-}
-
 cmd_triage() {
   local root="" contest="" arm="" repeat=""
   while [ $# -gt 0 ]; do
@@ -794,19 +952,48 @@ cmd_triage() {
   safe_id "$contest" && safe_id "$arm" && pos_int "$repeat" || die 2 "triage: bad contest / arm / repeat"
   root="$(abs_dir "$root")" || die 3 "triage: --root not found"
   [ -f "$TRIAGE" ] || die 3 "triage: triage.py not found next to exam/"
-  local d base="" zone v
+  local d base="" zone v allvoid=""
   local -a runs=() unmeasured=()
   for d in "$root/arms/$contest"/*/"$arm-r$repeat"; do
     [ -f "$d/.done" ] && [ -f "$d/run.meta" ] || continue
     zone="$(basename "$(dirname "$d")")"
     [ -n "$base" ] || base="$(meta_get "$d/run.meta" base)"
-    v="$(arm_verdict "$d")"
+    v="$(arm_void "$d")"
     if [ "$v" = VALID ]; then
       [ -d "$d/$contest/zone-hunt-out/discovery" ] && runs+=(--run "$zone=$d/$contest/zone-hunt-out")
     elif [ "$zone" != _all ]; then
-      unmeasured+=(--unmeasured "$zone:$v")
+      unmeasured+=(--unmeasured "$zone:$(void_class "$v")")
+    else
+      # A whole-contest arm whose VOID is ZONE-scoped (void.zones lists every such zone) still measures the rest:
+      # its tree is triaged with exactly those zones forced unmeasured. An arm-wide VOID (hard stop, kill, usage
+      # limit, attribution, operator) measures nothing.
+      case "$(void_class "$v")" in
+        transport|promise-lister|zone-incomplete|deep-incomplete|no-cells|all-cells-failed|backend-no-reply)
+          if [ -s "$d/void.zones" ] && [ -d "$d/$contest/zone-hunt-out/discovery" ]; then
+            runs+=(--run "$zone=$d/$contest/zone-hunt-out")
+            local vz vc _vr
+            while IFS=$'\t' read -r vz vc _vr; do
+              [ -z "$vz" ] || [ "$vz" = - ] || unmeasured+=(--unmeasured "$vz:$vc")
+            done < "$d/void.zones"
+          fi ;;
+        *) allvoid="$(void_class "$v")" ;;   # arm-wide: the whole arm measures nothing
+      esac
     fi
   done
+  if [ -n "$allvoid" ] && [ -n "$base" ] && [ -f "$base/$contest/map/zones.json" ]; then
+    # An arm-wide VOID of a whole-contest arm (operator, attribution / refusal, usage limit, hard stop, kill)
+    # leaves EVERY zone unmeasured — whatever zone-scoped VOID it also carries (void.txt ALSO lines).
+    local az
+    while IFS= read -r az; do
+      [ -z "$az" ] || unmeasured+=(--unmeasured "$az:$allvoid")
+    done < <(python3 "$HELPER" zone-ids "$base/$contest/map/zones.json")
+  fi
+  if [ "${#runs[@]}" -eq 0 ] && [ "${#unmeasured[@]}" -gt 0 ]; then
+    # Every finished arm is VOID: still write the table, so each row reads `unmeasured` with its VOID class (an
+    # empty stand-in tree — no evidence of a voided run ever reaches the table).
+    mkdir -p "$root/triage/.no-valid-arm/discovery"
+    runs=(--run "no-valid-arm=$root/triage/.no-valid-arm")
+  fi
   if [ "${#runs[@]}" -eq 0 ]; then note "triage: no finished, measurable arm for $contest $arm r$repeat"; return 0; fi
   local cdir="$base/$contest"
   [ -f "$cdir/map/zones.json" ] && [ -f "$cdir/truth.tsv" ] || die 3 "triage: the frozen base $cdir is gone"
@@ -847,12 +1034,13 @@ drive_on_signal() {
 }
 
 cmd_drive() {
-  local root="" plan="" resume=0 agentis="agentis" orig=("$@")
+  local root="" plan="" resume=0 retry_void=0 agentis="agentis" orig=("$@")
   while [ $# -gt 0 ]; do
     case "$1" in
       --root) need_val "$#" "$1"; root="$2"; shift 2 ;;
       --plan) need_val "$#" "$1"; plan="$2"; shift 2 ;;
       --resume) resume=1; shift ;;
+      --retry-void) retry_void=1; resume=1; shift ;;
       --agentis) need_val "$#" "$1"; agentis="$2"; shift 2 ;;
       *) die 2 "drive: unknown flag $1" ;;
     esac
@@ -870,8 +1058,8 @@ cmd_drive() {
     if lock_live "$lock"; then die 3 "drive: plan '$pname' is already driven by pid $(head -1 "$lock")"; fi
     local snap; snap="$logs/$pname.snapshot-$(date -u +%Y%m%dT%H%M%SZ)-$$"
     mkdir -p "$snap/exam" || die 3 "drive: cannot create the snapshot"
-    cp "$SELF" "$HELPER" "$snap/exam/" && cp -R "$PROFILES_DIR" "$snap/exam/profiles" \
-      && cp "$TRIAGE" "$CB_DIR/score-match.py" "$CB_DIR/hypotheses-to-leads.py" "$snap/" \
+    cp "$SELF" "$HELPER" "$PATTERNS" "$snap/exam/" && cp -R "$PROFILES_DIR" "$snap/exam/profiles" \
+      && cp "$TRIAGE" "$ATTRIB_PY" "$CB_DIR/score-match.py" "$CB_DIR/hypotheses-to-leads.py" "$snap/" \
       || die 3 "drive: snapshot copy failed"
     note "drive: re-exec from the snapshot $snap"
     EXAM_FROM_SNAPSHOT=1 exec bash "$snap/exam/exam.sh" drive "${orig[@]}"
@@ -904,12 +1092,16 @@ cmd_drive() {
   done < "$plan"
   [ "${#R_C[@]}" -gt 0 ] || die 2 "drive: the plan has no rows"
 
-  local prog="$logs/$pname.progress" dlog="$logs/$pname.log" heads="$logs/$pname.heads"
+  local prog="$logs/$pname.progress" dlog="$logs/$pname.log" heads="$logs/$pname.heads" halted="$logs/$pname.halted"
   touch "$heads"
   D_PROG="$prog"
+  if [ -f "$halted" ]; then
+    printf '%s\tUNHALT\tprevious halt: %s\n' "$(utc)" "$(head -1 "$halted" | tr '\t' ' ')" >> "$prog"
+    rm -f "$halted"
+  fi
   trap 'drive_on_signal 143' TERM
   trap 'drive_on_signal 130' INT
-  local i armdir head pinned src rrc rc drc ran=0 skipped=0 refused=0
+  local i armdir head pinned src rrc rc drc v vc vk ran=0 skipped=0 refused=0 voided=0 halt=""
   for i in "${!R_C[@]}"; do
     c="${R_C[$i]}"; z="${R_Z[$i]}"; a="${R_A[$i]}"; n="${R_N[$i]}"; p="${R_P[$i]}"; k="${R_K[$i]}"; b="${R_B[$i]}"
     armdir="$(arm_dir "$root" "$c" "$z" "$a" "$n")"
@@ -919,8 +1111,20 @@ cmd_drive() {
       refused=$((refused + 1)); continue
     fi
     if [ "$resume" -eq 1 ] && [ -f "$armdir/.done" ]; then
-      printf '%s\tSKIP\t%s\t%s\t%s\tr%s\tdone\n' "$(utc)" "$c" "$z" "$a" "$n" >> "$prog"
-      skipped=$((skipped + 1)); continue
+      # M3: a row is COMPLETE only when it is VALID + .done. A VOID row is re-run only through --retry-void,
+      # which keeps the void attempt as <arm>-r<N>.void-<k> (evidence, never deleted).
+      v="$(arm_void "$armdir")"; vc="$(void_class "$v")"
+      if [ -z "$vc" ]; then
+        printf '%s\tSKIP\t%s\t%s\t%s\tr%s\tdone\n' "$(utc)" "$c" "$z" "$a" "$n" >> "$prog"
+        skipped=$((skipped + 1)); continue
+      fi
+      if [ "$retry_void" -ne 1 ]; then
+        printf '%s\tSKIP\t%s\t%s\t%s\tr%s\tvoid=%s (drive --retry-void re-runs it)\n' "$(utc)" "$c" "$z" "$a" "$n" "$vc" >> "$prog"
+        skipped=$((skipped + 1)); continue
+      fi
+      vk=1; while [ -e "$armdir.void-$vk" ]; do vk=$((vk + 1)); done
+      mv "$armdir" "$armdir.void-$vk" || die 3 "drive: cannot move the VOID arm $armdir aside"
+      printf '%s\tRETRY\t%s\t%s\t%s\tr%s\tvoid=%s kept as %s\n' "$(utc)" "$c" "$z" "$a" "$n" "$vc" "$(basename "$armdir").void-$vk" >> "$prog"
     fi
     head="$(git -C "$k" rev-parse HEAD 2>/dev/null || echo unknown)"
     pinned="$(awk -F'\t' -v k="$k" '$1 == k { print $2; exit }' "$heads")"
@@ -944,8 +1148,20 @@ cmd_drive() {
     D_CHILD=$!
     wait "$D_CHILD"; rrc=$?; D_CHILD=""
     rc="$(meta_get "$armdir/run.meta" rc)"; drc="$(meta_get "$armdir/run.meta" deep_rc)"
-    printf '%s\tEND\t%s\t%s\t%s\tr%s\trc=%s\tdeep=%s\n' "$(utc)" "$c" "$z" "$a" "$n" "${rc:-$rrc}" "${drc:-skip}" >> "$prog"
+    # run's EXIT trap wrote void.txt; a run killed too hard for its trap gets one here.
+    v="$(arm_void "$armdir")"; vc="$(void_class "$v")"
+    printf '%s\tEND\t%s\t%s\t%s\tr%s\trc=%s\tdeep=%s\tvoid=%s\n' "$(utc)" "$c" "$z" "$a" "$n" "${rc:-$rrc}" "${drc:-skip}" "${vc:-VALID}" >> "$prog"
     ran=$((ran + 1))
+    [ -z "$vc" ] || voided=$((voided + 1))
+    if [ "$vc" = weekly-limit ]; then
+      # Every row behind this one would void too: HALT the plan, leave the rest unstarted.
+      halt="$(printf '%s\t%s\t%s\tr%s\t%s' "$c" "$z" "$a" "$n" "$(printf '%s' "$v" | cut -f3)")"
+      printf '%s\t%s\n' "$(utc)" "$halt" > "$halted"
+      rm -f "$logs/$pname.done"
+      printf '%s\tHALT\t%s\n' "$(utc)" "$halt" >> "$prog"
+      note "drive: HALTED on a usage-limit VOID ($c $z $a r$n) — the rows behind it are left unstarted; after the reset: drive --retry-void"
+      break
+    fi
   done
 
   # The triage hand-off: one table per (contest, arm, repeat) of the plan.
@@ -957,8 +1173,12 @@ cmd_drive() {
     bash "$SELF" triage --root "$root" --contest "${R_C[$i]}" --arm "${R_A[$i]}" --repeat "${R_N[$i]}" >> "$dlog" 2>&1 \
       || note "drive: triage hand-off failed for ${R_C[$i]} ${R_A[$i]} r${R_N[$i]} (see $dlog)"
   done
-  printf '%s\tDONE\tran=%s\tskipped=%s\trefused=%s\n' "$(utc)" "$ran" "$skipped" "$refused" > "$logs/$pname.done"
-  note "drive: plan '$pname' done (ran=$ran skipped=$skipped refused=$refused) -> $prog"
+  if [ -n "$halt" ]; then
+    note "drive: plan '$pname' HALTED (ran=$ran voided=$voided skipped=$skipped refused=$refused) -> $halted"
+    exit 6
+  fi
+  printf '%s\tDONE\tran=%s\tskipped=%s\trefused=%s\tvoid=%s\n' "$(utc)" "$ran" "$skipped" "$refused" "$voided" > "$logs/$pname.done"
+  note "drive: plan '$pname' done (ran=$ran voided=$voided skipped=$skipped refused=$refused) -> $prog"
 }
 
 # ----------------------------------------------------------------------------------------------------------
@@ -1005,7 +1225,9 @@ cmd_self_test() {
   printf 'BACKEND=mock\nenv.severity=1\n' > "$work/p-name.env"
   printf 'BACKEND=flat-cyborg\n' > "$work/p-nomodel.env"
   printf 'BACKEND=claude\nMODEL=claude-opus-4-8\n' > "$work/p-claude.env"
-  for pr in unknown dollar name nomodel claude; do
+  printf 'BACKEND=mock\nREHUNT_TRANSPORT=2\n' > "$work/p-rehunt.env"
+  printf 'BACKEND=mock\nATTRIB_FAMILY=gpt\n' > "$work/p-family.env"
+  for pr in unknown dollar name nomodel claude rehunt family; do
     python3 "$HELPER" profile "$work/p-$pr.env" > /dev/null 2>&1; expect_rc 2 $? "profile with a bad line ($pr) is refused"
   done
   printf 'BACKEND=mock\nenv.DF_NO_SANDBOX=1\n' > "$work/p-nosandbox.env"
@@ -1170,6 +1392,16 @@ cmd_self_test() {
   fi
   bash "$SELF" run --root "$root" --base "$base" --contest fx --zone src_pool --arm mock --repeat 1 --profile mock \
     --checkout "$co" --agentis "$stub" > /dev/null 2>&1; expect_rc 3 $? "run refuses an arm that already ran"
+  if [ "$(meta_get "$a1/run.meta" rehunt_rc)" = none ] && [ -n "$(meta_get "$a1/run.meta" breadth_end)" ] \
+     && [ "$(head -1 "$a1/void.txt" 2>/dev/null)" = VALID ] && grep -q $'^\\*\t.*\tskipped-mock\t' "$a1/attrib.tsv" 2>/dev/null \
+     && [ "$(head -1 "$root/MANIFEST.tsv")" = "$MANIFEST_HEADER" ] \
+     && [ "$(awk -F'\t' 'NR == 2 { print $(NF - 1) "|" $NF }' "$root/MANIFEST.tsv")" = "none|VALID" ] \
+     && grep -q $'\tvoid=VALID$' "$a1/.done"; then
+    ok "run (M3): no failed cell -> no re-hunt; attrib.tsv (skipped-mock), void.txt VALID, MANIFEST rehunt_rc + verdict, .done void="
+  else
+    bad "run (M3): rehunt_rc / attrib.tsv / void.txt / MANIFEST verdict wrong"
+    sed 's/^/         | /' "$a1/void.txt" "$a1/attrib.tsv" 2>/dev/null; tail -2 "$root/MANIFEST.tsv" | sed 's/^/         | /'
+  fi
 
   # Leak probe: every env name the pipeline reads (+ prefix-only names nobody listed) exported with a sentinel in the
   # caller's shell; none may reach the hunter.
@@ -1271,6 +1503,214 @@ cmd_self_test() {
     bash "$SELF" kill --path "$sa" --grace 1 > /dev/null 2>&1
   fi
 
+  echo "exam.sh self-test: M3 void-check over fixtures/exam-void/ (one arm per verdict)"
+  local vfx="$CB_DIR/fixtures/exam-void" vw="$work/void-fx" vd vwant vgot vmiss=""
+  mkdir -p "$vw" && cp -R "$vfx/." "$vw/"
+  while IFS=$'\t' read -r vd vwant; do
+    case "$vd" in ''|'#'*) continue ;; esac
+    vgot="$(python3 "$HELPER" void-check "$vw/$vd" "$PATTERNS" 2>&1)"
+    if [ "$vgot" = "$vwant" ] && [ "$(head -1 "$vw/$vd/void.txt")" = "$vwant" ]; then
+      ok "void-check $vd -> $(printf '%s' "$vwant" | cut -f1-2 | tr '\t' ' ')"
+    else
+      bad "void-check $vd: got '$vgot', expected '$vwant'"; vmiss="$vmiss $vd"
+    fi
+  done < "$vfx/expected.tsv"
+  if [ "$(grep -vc '^#' "$vfx/expected.tsv")" -ge 13 ] && grep -q $'^valid\tVALID$' "$vfx/expected.tsv" \
+     && [ -f "$vfx/valid/fx/zone-hunt-out/discovery/src_pool/run/hunt_share_pool_C6.log.untraced" ] \
+     && grep -q 'LLM transport error' "$vfx/valid/fx/zone-hunt-out/discovery/src_pool.attempt-1/run/hunt_share_pool_C1.log" \
+     && grep -q 'hit your weekly limit' "$vfx/valid/fx/zone-hunt-out/discovery/src_pool/run/hunter.ag"; then
+    ok "the VALID fixture keeps its negative controls: an .untraced METRIC cell, a recovered [LLM retry] line, a superseded failed attempt and a hunter.ag carrying every signature"
+  else
+    bad "fixtures/exam-void lost a negative control (or an expected row)"
+  fi
+
+  # re-review: one explicit precedence (usage limit > the run > operator / attribution > never-finished > signatures);
+  # every further class is kept as an ALSO line; STAGE 4.5 cells that finished without a judgement are listed per row.
+  if [ "$(sed -n 2p "$vw/usage-limit-over-backend/void.txt" | cut -f1-2)" = "$(printf 'ALSO\tbackend-no-reply')" ] \
+     && [ "$(sed -n 2p "$vw/operator-plus-transport/void.txt" | cut -f1-2)" = "$(printf 'ALSO\ttransport')" ] \
+     && [ "$(sed -n 2p "$vw/attrib-plus-transport/void.txt" | cut -f1-2)" = "$(printf 'ALSO\ttransport')" ]; then
+    ok "precedence: a <synthetic> usage limit beats the backend signature (the plan halts); operator / attribution beat a zone-scoped VOID, which stays on record as ALSO"
+  else
+    bad "precedence / ALSO lines wrong: $(tr '\n\t' '| ' < "$vw/usage-limit-over-backend/void.txt")"
+  fi
+  if [ "$(cut -f3 "$vw/deep-not-judged/deep-not-judged.tsv" | paste -sd, -)" = HARNESS_ERROR ] \
+     && [ "$(cut -f3 "$vw/deep-budget-ok/deep-not-judged.tsv" | paste -sd, -)" = TIMEOUT,SKIPPED_BUDGET ] \
+     && [ ! -s "$vw/valid/deep-not-judged.tsv" ]; then
+    ok "STAGE 4.5 cells that finished without a judgement (HARNESS_ERROR, TIMEOUT, SKIPPED_BUDGET) are recorded per row in deep-not-judged.tsv (not a void)"
+  else
+    bad "deep-not-judged.tsv rows wrong"
+  fi
+
+  echo "exam.sh self-test: M3 run-window attribution (attrib)"
+  local aa="$work/attrib-arm" ao troot="$work/transcripts" adisc averi adeep amap adrop acell
+  ao="$aa/fx/zone-hunt-out"
+  adisc="$ao/discovery/src_pool/run"; acell="$adisc/cell-share_pool_C1"; averi="$ao/verify/gates/1_Pool.sol_withdraw/refute-out/run"
+  adeep="$ao/deep-hunt/src_pool-C1/run"; amap="$ao/map/run"; adrop="$ao/drop/run"
+  mkdir -p "$acell" "$averi" "$adeep/repo/run" "$amap" "$adrop" "$troot"
+  printf '%s\n' contest=fx backend=flat-cyborg model=claude-opus-4-8 start=2026-01-01T10:00:00Z \
+    breadth_end=2026-01-01T10:30:00Z rehunt_end=- deep_start=2026-01-01T10:31:00Z deep_end=2026-01-01T10:50:00Z \
+    end=2026-01-01T10:51:00Z rc=0 deep_rc=0 > "$aa/run.meta"
+  # rec <cwd> <iso> <model> [fallback] -> one assistant record
+  # rec <cwd> <iso> <model> [fb|refusal|<text>] -> one assistant record
+  rec() { local fbb="" sr="end_turn" tx="x"
+          case "${4:-}" in fb) fbb='{"type":"fallback"},' ;; refusal) sr="refusal" ;; '') ;; *) tx="$4" ;; esac
+          printf '{"type":"assistant","cwd":"%s","timestamp":"%s","message":{"role":"assistant","model":"%s","stop_reason":"%s","content":[%s{"type":"text","text":"%s"}]}}\n' \
+            "$1" "$2" "$3" "$sr" "$fbb" "$tx"; }
+  store() { local d; d="$troot/$(python3 "$HELPER" project-slug "$1")"; mkdir -p "$d"; printf '%s\n' "$d"; }
+  { rec "$acell" 2025-12-31T09:00:00.000Z claude-fable-5-1 fb; rec "$acell" 2026-01-01T10:05:00.000Z claude-opus-4-8
+    rec "$acell" 2026-01-01T10:06:00.000Z claude-opus-4-8; } > "$(store "$acell")/s1.jsonl"
+  rec /elsewhere/src_pool/run/cell-share_pool_C1 2026-01-01T10:07:00.000Z claude-fable-5-1 > "$(store "$acell")/collision.jsonl"
+  rec "$averi" 2026-01-01T10:20:00.000Z claude-opus-4-8 > "$(store "$averi")/s2.jsonl"
+  rec "$adeep" 2026-01-01T10:40:00.000Z claude-opus-4-8 > "$(store "$adeep")/s3.jsonl"
+  rec "$amap" 2026-01-01T10:10:00.000Z claude-fable-5-1 > "$(store "$amap")/s4.jsonl"
+  mkdir -p "$(store "$adeep")/sub/subagents" && rec "$adeep" 2026-01-01T10:41:00.000Z claude-opus-4-8 > "$(store "$adeep")/sub/subagents/a.jsonl"
+  bash "$SELF" attrib --arm-dir "$aa" --transcripts-root "$troot" > "$work/attrib.out" 2>&1; rc=$?
+  arow() { awk -F'\t' -v s="$1" '$1 == s { print $2 "|" $3 "|" $4 "|" $5 "|" $7 "|" $9 }' "$aa/attrib.tsv"; }
+  if [ "$rc" -eq 0 ] && [ "$(arow discovery)" = "2|1|1|2|PURE-OPUS|ok" ] && [ "$(arow verify)" = "1|1|0|1|PURE-OPUS|ok" ] \
+     && [ "$(arow deep-hunt)" = "1|2|0|2|PURE-OPUS|ok" ] && [ -z "$(arow map)" ] && [ "$(arow drop)" = "1|0|0|0|-|not-run" ] \
+     && [ "$(python3 "$HELPER" void-check "$aa" "$PATTERNS")" = VALID ]; then
+    ok "attrib: RUN dirs on disk -> exact store names (cell-* included, subagents too), cwd-confirmed (a colliding store file dropped), windowed PURE-OPUS per stage; map/ excluded, a model-free stage is not-run"
+  else
+    bad "attrib: wrong attribution table (exit $rc)"; sed 's/^/         | /' "$aa/attrib.tsv" "$work/attrib.out" 2>/dev/null | head -12
+  fi
+  rm -f "$(store "$adeep")/s3.jsonl" "$(store "$adeep")/sub/subagents/a.jsonl"
+  rec "$adeep" 2026-01-01T10:20:00.000Z claude-opus-4-8 > "$(store "$adeep")/early.jsonl"
+  bash "$SELF" attrib --arm-dir "$aa" --transcripts-root "$troot" > /dev/null 2>&1
+  if [ "$(arow deep-hunt)" = "1|1|0|0|EMPTY|attribution-missing" ] \
+     && [ "$(python3 "$HELPER" void-check "$aa" "$PATTERNS")" = "$(printf 'VOID\tattribution\tattrib.tsv:deep-hunt=EMPTY(attribution-missing)')" ]; then
+    ok "attrib: a stage whose RUN dirs have no record inside its own window is attribution-missing -> VOID attribution"
+  else
+    bad "attrib: deep-hunt outside its window not flagged: $(arow deep-hunt)"
+  fi
+  # review defects 2 + 3: a refusal inside the window fails the gate even when a retry then answered; Claude Code's
+  # own <synthetic> API-error record is counted apart (transient) and keeps PURE-OPUS; a <synthetic> usage-limit
+  # notice voids the arm as weekly-limit.
+  rm -f "$(store "$adeep")/early.jsonl"
+  rec "$adeep" 2026-01-01T10:40:00.000Z claude-opus-4-8 > "$(store "$adeep")/s3.jsonl"
+  { rec "$averi" 2026-01-01T10:21:00.000Z claude-opus-4-8 refusal; rec "$averi" 2026-01-01T10:22:00.000Z claude-opus-4-8; } \
+    > "$(store "$averi")/refusal.jsonl"
+  bash "$SELF" attrib --arm-dir "$aa" --transcripts-root "$troot" > /dev/null 2>&1
+  if [ "$(arow verify)" = "1|2|0|3|PURE-OPUS|refusal" ] \
+     && [ "$(python3 "$HELPER" void-check "$aa" "$PATTERNS")" = "$(printf 'VOID\tattribution\tattrib.tsv:verify=PURE-OPUS(refusal)')" ]; then
+    ok "attrib: a refusal inside the window fails the PURE-OPUS gate (gate=refusal -> VOID attribution), even with a retried answer"
+  else
+    bad "attrib: an in-window refusal passed the gate: $(arow verify)"
+  fi
+  rm -f "$(store "$averi")/refusal.jsonl"
+  rec "$averi" 2026-01-01T10:21:00.000Z '<synthetic>' 'API Error: 529 overloaded' > "$(store "$averi")/synthetic.jsonl"
+  bash "$SELF" attrib --arm-dir "$aa" --transcripts-root "$troot" > /dev/null 2>&1
+  if [ "$(arow verify)" = "1|2|0|1|PURE-OPUS|ok" ] && [ "$(awk -F'\t' '$1 == "verify" { print $13 "|" $14 }' "$aa/attrib.tsv")" = "1|0" ] \
+     && [ "$(python3 "$HELPER" void-check "$aa" "$PATTERNS")" = VALID ]; then
+    ok "attrib: a <synthetic> API-error record the cell recovered from is counted apart (transient_synthetic=1), the stage stays PURE-OPUS"
+  else
+    bad "attrib: a transient <synthetic> record broke the gate: $(arow verify) / $(awk -F'\t' '$1 == "verify"' "$aa/attrib.tsv")"
+  fi
+  rec "$averi" 2026-01-01T10:23:00.000Z '<synthetic>' 'You have hit your weekly limit - resets 6pm' > "$(store "$averi")/limit.jsonl"
+  bash "$SELF" attrib --arm-dir "$aa" --transcripts-root "$troot" > /dev/null 2>&1
+  if [ "$(awk -F'\t' '$1 == "verify" { print $9 "|" $14 }' "$aa/attrib.tsv")" = "usage-limit|1" ] \
+     && [ "$(python3 "$HELPER" void-check "$aa" "$PATTERNS" | cut -f1-2)" = "$(printf 'VOID\tweekly-limit')" ]; then
+    ok "attrib: a <synthetic> usage-limit record in the window still VOIDs the arm (weekly-limit: the plan halts)"
+  else
+    bad "attrib: a <synthetic> usage-limit record did not void: $(awk -F'\t' '$1 == "verify"' "$aa/attrib.tsv")"
+  fi
+  rm -f "$(store "$averi")/synthetic.jsonl" "$(store "$averi")/limit.jsonl"
+  eval "$(sed -n '/^claude_project_slug() {$/,/^}$/p' "$df_real/lib/claude-sandboxed.sh")"
+  local longp; longp="$work/$(printf '%0230d' 0 | tr 0 r)/zone-hunt-out/verify/gates/1_x/refute-out/run"
+  if command -v claude_project_slug > /dev/null 2>&1 && [ "$(claude_project_slug "$longp")" = "$(python3 "$HELPER" project-slug "$longp")" ] \
+     && [ "$(claude_project_slug "$acell")" = "$(python3 "$HELPER" project-slug "$acell")" ]; then
+    ok "attrib looks transcripts up under the SAME store names the hunt sandbox binds (lib/claude-sandboxed.sh; >200-char hashed name too)"
+  else
+    bad "exam-helper.py project-slug disagrees with lib/claude-sandboxed.sh claude_project_slug"
+  fi
+
+  echo "exam.sh self-test: M3 one-shot re-hunt of failed cells"
+  local rh="$root/arms/fx/src_pool/rh-r1"
+  bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_pool --arm rh --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1
+  STUB_FAIL_CALLS=3 STUB_FAIL_STATE="$work/fail-rh" bash "$SELF" run --root "$root" --base "$base" --contest fx \
+    --zone src_pool --arm rh --repeat 1 --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(meta_get "$rh/run.meta" rehunt_rc)" = 0 ] \
+     && [ -f "$rh/fx/zone-hunt-out/discovery/src_pool.attempt-1/run/hunt_share_pool_C1.log.novalid" ] \
+     && grep -q '^CANDIDATE|' "$rh/fx/zone-hunt-out/discovery/src_pool/run/hunt_share_pool_C1.log" \
+     && [ "$(head -1 "$rh/void.txt")" = VALID ] && [ -s "$rh/rehunt.log" ]; then
+    ok "a transport-failed cell gets ONE in-arm re-hunt (--rehunt-include-partial --rehunt-max-attempts 2); the recovered arm is VALID, the failed attempt kept aside"
+  else
+    bad "one-shot re-hunt: exit $rc, rehunt_rc=$(meta_get "$rh/run.meta" rehunt_rc), void=$(head -1 "$rh/void.txt" 2>/dev/null)"
+    tail -4 "$rh/rehunt.log" 2>/dev/null | sed 's/^/         | /'
+  fi
+  local rv="$root/arms/fx/src_pool/rhv-r1"
+  bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_pool --arm rhv --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1
+  STUB_FAIL_CALLS=99 STUB_FAIL_STATE="$work/fail-rhv" bash "$SELF" run --root "$root" --base "$base" --contest fx \
+    --zone src_pool --arm rhv --repeat 1 --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1
+  if [[ "$(meta_get "$rv/run.meta" rehunt_rc)" =~ ^[0-9]+$ ]] && [ -d "$rv/fx/zone-hunt-out/discovery/src_pool.attempt-1" ] \
+     && [ "$(head -1 "$rv/void.txt" | cut -f1-2)" = "$(printf 'VOID\ttransport')" ] \
+     && [ "$(awk -F'\t' 'END { print $NF }' "$root/MANIFEST.tsv")" = VOID:transport ]; then
+    ok "a cell still failed after the one re-hunt is VOID transport (void.txt + the MANIFEST verdict column)"
+  else
+    bad "still-failed re-hunt: rehunt_rc=$(meta_get "$rv/run.meta" rehunt_rc) void=$(head -1 "$rv/void.txt" 2>/dev/null)"
+  fi
+  # review defect 1: run-discovery.sh DIES mid-zone (SIGKILL): run-zone-hunt.sh records `failed` and exits 0, the
+  # cut-off cell has no marker. Once -> the coverage record triggers the re-hunt, which recovers (VALID); every
+  # time -> VOID zone-incomplete, and the exam's triage reads that zone's rows unmeasured, never generation.
+  local kr="$root/arms/fx/src_pool/kill1-r1"
+  bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_pool --arm kill1 --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1
+  STUB_KILL_CALLS=1 STUB_KILL_STATE="$work/kill1" bash "$SELF" run --root "$root" --base "$base" --contest fx \
+    --zone src_pool --arm kill1 --repeat 1 --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1
+  if grep -q "discovery failed for zone 'share pool'" "$kr/run.log" && [ "$(meta_get "$kr/run.meta" rehunt_rc)" = 0 ] \
+     && grep -q '^CANDIDATE|' "$kr/fx/zone-hunt-out/discovery/src_pool/run/hunt_share_pool_C1.log" \
+     && [ "$(head -1 "$kr/void.txt")" = VALID ]; then
+    ok "a zone whose run-discovery.sh was SIGKILLed mid-zone (coverage: failed, exit 0 overall) gets the one re-hunt; recovered -> VALID"
+  else
+    bad "killed discovery + re-hunt: rehunt_rc=$(meta_get "$kr/run.meta" rehunt_rc) void=$(head -1 "$kr/void.txt" 2>/dev/null)"
+  fi
+  local kroot2="$work/kroot2" kv="$work/kroot2/arms/fx/src_pool/kill-r1"
+  bash "$SELF" stage --root "$kroot2" --base "$base" --contest fx --zone src_pool --arm kill --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1
+  STUB_KILL_CALLS=99 STUB_KILL_STATE="$work/kill99" bash "$SELF" run --root "$kroot2" --base "$base" --contest fx \
+    --zone src_pool --arm kill --repeat 1 --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1; rc=$?
+  bash "$SELF" triage --root "$kroot2" --contest fx --arm kill --repeat 1 > /dev/null 2>&1
+  local ktsv="$kroot2/triage/fx-kill-r1.tsv"
+  if [ "$rc" -eq 0 ] && [ "$(head -1 "$kv/void.txt" | cut -f1-2)" = "$(printf 'VOID\tzone-incomplete')" ] \
+     && grep -q 'zone-coverage.json:src_pool=failed' "$kv/void.txt" \
+     && awk -F'\t' '$1 == "EX-1" || $1 == "EX-3" { n++; if ($7 != "unmeasured") bad = 1 } END { exit (n == 2 && !bad) ? 0 : 1 }' "$ktsv"; then
+    ok "a zone still dead after the re-hunt is VOID zone-incomplete (run exit 0!), and triage reads its rows EX-1/EX-3 unmeasured, never a generation MISS"
+  else
+    bad "killed discovery: exit $rc void=$(head -1 "$kv/void.txt" 2>/dev/null)"; awk -F'\t' '{ print $1, $7, $8 }' "$ktsv" 2>/dev/null | sed 's/^/         | /'
+  fi
+  # a WHOLE-CONTEST arm: a zone-scoped VOID leaves only that zone's rows unmeasured; an arm-wide VOID on top of it
+  # (void-mark) makes every row unmeasured, with both classes on record (re-review 2).
+  local wall="$kroot2/arms/fx/_all/wall-r1" wtsv="$kroot2/triage/fx-wall-r1.tsv"
+  bash "$SELF" stage --root "$kroot2" --base "$base" --contest fx --zone _all --arm wall --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1
+  STUB_KILL_CALLS=99 STUB_KILL_STATE="$work/killall" bash "$SELF" run --root "$kroot2" --base "$base" --contest fx \
+    --zone _all --arm wall --repeat 1 --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1
+  bash "$SELF" triage --root "$kroot2" --contest fx --arm wall --repeat 1 > /dev/null 2>&1
+  local wz; wz="$(awk -F'\t' '$1 ~ /^EX-[123]$/ { printf "%s=%s ", $1, $7 }' "$wtsv" 2>/dev/null)"
+  bash "$SELF" void-mark --arm-dir "$wall" --reason "arm-wide self-test void" > /dev/null 2>&1
+  bash "$SELF" triage --root "$kroot2" --contest fx --arm wall --repeat 1 > /dev/null 2>&1
+  if [ "$wz" = "EX-1=unmeasured EX-2=generation EX-3=unmeasured " ] \
+     && [ "$(head -1 "$wall/void.txt" | cut -f1-2)" = "$(printf 'VOID\toperator')" ] && grep -q $'^ALSO\tzone-incomplete\t' "$wall/void.txt" \
+     && [ "$(awk -F'\t' '$1 ~ /^EX-[123]$/ && $7 == "unmeasured" { n++ } END { print n + 0 }' "$wtsv")" = 3 ]; then
+    ok "whole-contest arm: a dead zone leaves only its rows unmeasured ($wz); an arm-wide VOID on top voids EVERY row, both classes on record"
+  else
+    bad "whole-contest arm scoping wrong: before=[$wz] void=$(tr '\n\t' '| ' < "$wall/void.txt" 2>/dev/null)"
+    awk -F'\t' '{ print $1, $7, $8 }' "$wtsv" 2>/dev/null | sed 's/^/         | /'
+  fi
+  printf 'BACKEND=mock\nMODEL=claude-opus-4-8\nREHUNT_TRANSPORT=0\n' > "$work/p-norehunt.env"
+  local ro="$root/arms/fx/src_pool/rhoff-r1"
+  bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_pool --arm rhoff --repeat 1 \
+    --profile "$work/p-norehunt.env" --checkout "$co" > /dev/null 2>&1
+  STUB_FAIL_CALLS=3 STUB_FAIL_STATE="$work/fail-rhoff" bash "$SELF" run --root "$root" --base "$base" --contest fx \
+    --zone src_pool --arm rhoff --repeat 1 --profile "$work/p-norehunt.env" --checkout "$co" --agentis "$stub" > /dev/null 2>&1
+  if [ "$(meta_get "$ro/run.meta" rehunt_rc)" = skip-off ] && [ ! -e "$ro/fx/zone-hunt-out/discovery/src_pool.attempt-1" ] \
+     && [ "$(head -1 "$ro/void.txt" | cut -f1-2)" = "$(printf 'VOID\ttransport')" ]; then
+    ok "REHUNT_TRANSPORT=0 turns the re-hunt off (rehunt_rc=skip-off) and the failed cell VOIDs the arm"
+  else
+    bad "REHUNT_TRANSPORT=0: rehunt_rc=$(meta_get "$ro/run.meta" rehunt_rc) void=$(head -1 "$ro/void.txt" 2>/dev/null)"
+  fi
+
   echo "exam.sh self-test: multi-root freeze + stage + run (#2255)"
   local mbase="$work/mbase"
   mkdir -p "$mbase/mr" && cp -R "$df_real/fixtures/multi-root" "$mbase/mr/code" && cp "$fix/truth.tsv" "$mbase/mr/truth.tsv"
@@ -1313,7 +1753,7 @@ cmd_self_test() {
   bash "$SELF" drive --root "$droot" --plan "$dplan" --agentis "$stub" > "$work/drive.out" 2>&1
   rc=$?; expect_rc 0 "$rc" "drive a 2-row plan over a stale lock"
   local prog="$droot/logs/dplan.progress"
-  if [ "$(grep -c $'\tSTART\t' "$prog" 2>/dev/null)" -eq 2 ] && [ "$(grep -c $'\tEND\t.*rc=0\tdeep=0$' "$prog" 2>/dev/null)" -eq 2 ] \
+  if [ "$(grep -c $'\tSTART\t' "$prog" 2>/dev/null)" -eq 2 ] && [ "$(grep -c $'\tEND\t.*rc=0\tdeep=0\tvoid=VALID$' "$prog" 2>/dev/null)" -eq 2 ] \
      && [ -f "$droot/logs/dplan.done" ] && [ ! -e "$droot/logs/dplan.lock" ] \
      && [ -f "$droot/arms/fx/src_pool/mock-r1/.done" ] && [ -f "$droot/arms/fx/src_feed/mock-r1/.done" ]; then
     ok "drive: START/END per row, both arms .done, plan .done, lock released"
@@ -1342,6 +1782,46 @@ cmd_self_test() {
     ok "drive --resume: done rows skipped; a row whose checkout HEAD moved is refused (nothing staged)"
   else
     bad "drive --resume / HEAD pin wrong"; sed 's/^/         | /' "$prog"
+  fi
+  bash "$SELF" void-mark --arm-dir "$droot/arms/fx/src_feed/mock-r1" --reason "self-test operator void" > /dev/null 2>&1
+  bash "$SELF" triage --root "$droot" --contest fx --arm mock --repeat 1 > /dev/null 2>&1
+  if [ "$(head -1 "$droot/arms/fx/src_feed/mock-r1/void.txt" | cut -f1-2)" = "$(printf 'VOID\toperator')" ] \
+     && awk -F'\t' '$1 == "EX-2" { f = ($7 == "unmeasured") } END { exit f ? 0 : 1 }' "$tsv" \
+     && awk -F'\t' '$1 == "EX-1" { f = ($7 == "refuted") } END { exit f ? 0 : 1 }' "$tsv"; then
+    ok "void-mark -> VOID operator; the exam root's triage then reads that zone's rows as unmeasured (EX-2), the VALID zone's as before (EX-1)"
+  else
+    bad "a VOID zone is not triaged unmeasured"; awk -F'\t' '{ print $1, $7 }' "$tsv" 2>/dev/null | sed 's/^/         | /'
+  fi
+
+  echo "exam.sh self-test: M3 weekly-limit HALT, --resume over a VOID row, --retry-void"
+  local wroot="$work/wroot" wplan="$work/wplan.tsv" wprog wa="$work/wroot/arms/fx/src_pool/wk-r1"
+  printf 'fx\tsrc_pool\twk\t1\tmock\t%s\t%s\nfx\tsrc_feed\twk\t1\tmock\t%s\t%s\n' "$co" "$base" "$co" "$base" > "$wplan"
+  STUB_FAIL_CALLS=99 STUB_FAIL_STATE="$work/fail-wk" STUB_FAIL_TEXT="$CB_DIR/fixtures/exam-void/weekly-limit-notice.txt" \
+    bash "$SELF" drive --root "$wroot" --plan "$wplan" --agentis "$stub" > "$work/wdrive.out" 2>&1; rc=$?
+  wprog="$wroot/logs/wplan.progress"
+  if [ "$rc" -eq 6 ] && [ -f "$wroot/logs/wplan.halted" ] && grep -q $'\tsrc_pool\twk\tr1\trc=0\tdeep=skip-weekly-limit\tvoid=weekly-limit$' "$wprog" \
+     && grep -q $'\tHALT\tfx\tsrc_pool\twk\tr1\t' "$wprog" && [ ! -e "$wroot/arms/fx/src_feed/wk-r1" ] \
+     && [ ! -e "$wroot/logs/wplan.done" ] && [ "$(meta_get "$wa/run.meta" rehunt_rc)" = skip-weekly-limit ] \
+     && [ ! -e "$wa/fx/zone-hunt-out/discovery/src_pool.attempt-1" ]; then
+    ok "a usage-limit VOID HALTS the plan (exit 6, logs/<plan>.halted, no re-hunt and no STAGE 4.5 spent on it); row 2 is left unstarted"
+  else
+    bad "weekly-limit halt: exit $rc"; sed 's/^/         | /' "$wprog" 2>/dev/null; head -1 "$wa/void.txt" 2>/dev/null | sed 's/^/         | /'
+  fi
+  bash "$SELF" drive --root "$wroot" --plan "$wplan" --resume --agentis "$stub" > /dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 0 ] && grep -q $'\tSKIP\tfx\tsrc_pool\twk\tr1\tvoid=weekly-limit' "$wprog" \
+     && [ "$(head -1 "$wroot/arms/fx/src_feed/wk-r1/void.txt" 2>/dev/null)" = VALID ] && [ ! -e "$wroot/logs/wplan.halted" ] \
+     && [ "$(head -1 "$wa/void.txt" | cut -f1-2)" = "$(printf 'VOID\tweekly-limit')" ]; then
+    ok "--resume never re-runs a VOID row (reported, left alone) and runs the unstarted row"
+  else
+    bad "--resume over a VOID row: exit $rc"; tail -4 "$wprog" 2>/dev/null | sed 's/^/         | /'
+  fi
+  bash "$SELF" drive --root "$wroot" --plan "$wplan" --retry-void --agentis "$stub" > /dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(head -1 "$wa.void-1/void.txt" 2>/dev/null | cut -f1-2)" = "$(printf 'VOID\tweekly-limit')" ] \
+     && [ "$(head -1 "$wa/void.txt" 2>/dev/null)" = VALID ] && grep -q $'\tRETRY\tfx\tsrc_pool\twk\tr1\tvoid=weekly-limit kept as wk-r1.void-1' "$wprog" \
+     && grep -q $'\tSKIP\tfx\tsrc_feed\twk\tr1\tdone' "$wprog" && [ -f "$wroot/logs/wplan.done" ]; then
+    ok "--retry-void keeps the VOID attempt as wk-r1.void-1 and re-runs that row fresh (VALID); the VALID row is skipped"
+  else
+    bad "--retry-void: exit $rc"; tail -4 "$wprog" 2>/dev/null | sed 's/^/         | /'
   fi
 
   echo "exam.sh self-test: a running arm — live-arm refusals, kill-by-path of its controller, drive TERM"
@@ -1470,6 +1950,8 @@ case "$sub" in
   drive) cmd_drive "$@" ;;
   triage) cmd_triage "$@" ;;
   kill) cmd_kill "$@" ;;
+  attrib) cmd_attrib "$@" ;;
+  void-mark) cmd_void_mark "$@" ;;
   self-test) cmd_self_test ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;

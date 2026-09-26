@@ -119,7 +119,29 @@ if [ -d "$H/.claude" ]; then
       && binds+=(--bind "$H/.claude/projects/$_s" "$H/.claude/projects/$_s")   # own transcripts only (rw)
   done
 fi
-[ -e "$H/.claude.json" ] && binds+=(--bind "$H/.claude.json" "$H/.claude.json") # workspace-trust store (rw)
+# #2262 M3: ~/.claude.json is Claude Code's workspace store (the per-cwd trust flag lives in it, so the session
+# needs it rw), but its `projects` map carries EVERY cwd's entry — the operator's sessions' and every other cell's
+# `lastSessionFirstPrompt` included. The sandbox gets a filtered temp COPY instead: `projects` reduced to this
+# session's own cwd entries (logical + physical, as for the transcript dir above), host-path maps such as
+# `githubRepoPaths` dropped, every other top-level key as is. A
+# detached watcher (lib/claude-json-scope.py watch-merge; detached because flat-cyborg ends a session by SIGKILLing
+# its whole process group, which no exit hook of this wrapper survives) waits for this pid — bwrap after the exec
+# below — to go away, merges ONLY the session's own, changed entry back into the real file, and removes the copy.
+# Fail-closed: when the copy cannot be built, nothing is bound (the session sees no workspace store at all, so it
+# stops at the trust dialog instead of reading other sessions' prompts).
+if [ -e "$H/.claude.json" ]; then
+  _cj_helper="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)/claude-json-scope.py"
+  _cj_keys=("$PWD"); [ "$(pwd -P)" = "$PWD" ] || _cj_keys+=("$(pwd -P)")
+  _cj_dir="$(mktemp -d "${TMPDIR:-/tmp}/df-claude-json.XXXXXX" 2>/dev/null)" || _cj_dir=""
+  if [ -n "$_cj_dir" ] && [ -f "$_cj_helper" ] && command -v python3 >/dev/null 2>&1 \
+     && python3 "$_cj_helper" filter "$H/.claude.json" "$_cj_dir" "${_cj_keys[@]}"; then
+    binds+=(--bind "$_cj_dir/claude.json" "$H/.claude.json")                    # scoped workspace store (rw)
+    python3 "$_cj_helper" watch-merge "$$" "$_cj_dir" "$H/.claude.json" "${_cj_keys[@]}" </dev/null >/dev/null 2>&1 &
+  else
+    echo "claude-sandboxed.sh: WARNING could not build the scoped ~/.claude.json copy — binding none (fail-closed)" >&2
+    [ -z "$_cj_dir" ] || rm -rf "$_cj_dir"
+  fi
+fi
 [ -e "$H/.foundry" ]     && binds+=(--ro-bind "$H/.foundry" "$H/.foundry")      # forge/cast/anvil toolchain
 [ -e "$H/.svm" ]         && binds+=(--ro-bind "$H/.svm" "$H/.svm")              # solc version manager cache
 [ -n "$REPO" ] && [ -e "$REPO" ] && binds+=(--bind "$REPO" "$REPO")            # target clone (rw: PoC/forge out)

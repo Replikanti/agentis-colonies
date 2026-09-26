@@ -1,0 +1,3 @@
+[LLM retry 1/2: LLM transport error: flat-cyborg exited]
+TRACE|src/pool/Pool.sol:withdraw|shares burned after the transfer
+CANDIDATE|src/pool/Pool.sol:withdraw:17|C1|High|withdraw pays before the share burn|skew then withdraw

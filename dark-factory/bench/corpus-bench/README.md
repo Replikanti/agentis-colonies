@@ -488,7 +488,8 @@ candidates and verified findings at the same function, grep the cell logs for it
 refute verdicts, decide HIT / MISS and the MISS cause. `triage.py` (M1) mechanises the **reading**, never the
 decision: for every truth row it collects the evidence at the row's location and **proposes** a class with the
 evidence lines next to it. The operator confirms in the `operator_class` column. `exam/exam.sh` (M2) is the
-reusable runner that produces the run trees; run-window attribution and VOID handling follow in M3.
+reusable runner that produces the run trees; M3 makes every arm prove it is measurable (run-window attribution,
+VOID detection, the one-shot re-hunt, the usage-limit halt — "Run integrity" below).
 
 **Inputs.** `--truth <truth.tsv>` (the 5/6-column `extract-gt.sh` shape; the 4-column CodeHawks shape is refused)
 and one or more run trees — `--run [LABEL=]<zone-hunt-out>` or `--run-root <dir>`, which collects every dir
@@ -525,7 +526,7 @@ the self-test if either rule regresses.
 | 2 | `refuted` | candidates at an anchor, every one refuted (non-confirm gate verdict, `refuted[]`, `out_of_scope[]`) |
 | 3 | `found-dismissed` | a `DISMISS\|` line at an anchor and no candidate |
 | 4 | `scope-out-of-map` | `sub=file`: no anchor file in any zone's `files[]`; `sub=slice`: every scope line for the file is sliced and none lists the function, an owning zone ran, and no log / `INVARIANT\|` target mentions it (the slicer's same-file callee closure can pull unlisted helpers in, and a zone that never answered cannot show a function was unseen) |
-| 5 | `unmeasured` | no owning zone was measured: no run tree, `--unmeasured`, or every cell `.timeout` / `.novalid` |
+| 5 | `unmeasured` | no owning zone was measured: no run tree, `--unmeasured <zone>:<reason>` (the sub-reason is that reason — an exam VOID class such as `zone-incomplete` / `attribution` / `weekly-limit`), a `failed` / `in_flight` coverage record, or every cell `.timeout` / `.novalid` |
 | 6 | `generation` | an owning zone ran; `sub=examined` when a cell log or an `INVARIANT\|` target (ANY verdict — a CLEAN invariant at the location is an examination, not a HIT) mentions the function, else `sub=unseen` |
 
 **Reading rule.** Every class is a PROPOSAL. Like the #2215 anchors, triage is **mechanism-blind**: a
@@ -566,8 +567,13 @@ $X/exam/exam.sh plan --base <base> --contest <id> --arm exam --repeat 1 --profil
     --checkout <tool-checkout> > <plans>/exam-r1.tsv
 # 4. drive it (sequential, locked, resumable); logs/<plan>.progress has START/END per row
 setsid $X/exam/exam.sh drive --root <exam-root> --plan <plans>/exam-r1.tsv [--resume] &
+#    a usage-limit VOID HALTS it (exit 6, logs/<plan>.halted); after the reset re-run the VOID rows explicitly:
+setsid $X/exam/exam.sh drive --root <exam-root> --plan <plans>/exam-r1.tsv --retry-void &
 # 5. the drive ends with the triage hand-off; re-run it any time for one arm:
 $X/exam/exam.sh triage --root <exam-root> --contest <id> --arm exam --repeat 1   # -> <exam-root>/triage/
+# integrity by hand: re-attribute one arm (e.g. another transcript store), or VOID it as the operator
+$X/exam/exam.sh attrib --arm-dir <exam-root>/arms/<id>/<zone>/exam-r1 [--transcripts-root <dir>]
+$X/exam/exam.sh void-mark --arm-dir <exam-root>/arms/<id>/<zone>/exam-r1 --reason "<why>"
 # abort: kill everything that runs under the exam root (or one arm dir; never this process or its ancestors,
 # never a path with fewer than three components); --dry-run lists it first
 $X/exam/exam.sh kill --path <exam-root> --dry-run
@@ -588,9 +594,12 @@ pointed at; score one arm with `generation-recall.sh --from-work <arm-dir>/_gt -
 ```
 <root>/MANIFEST.tsv                               one row per ATTEMPT, append-only, header line
 <root>/logs/<plan>.{lock,progress,done,log,heads} driver PID lock, START/END lines, final marker, driver log,
-                                                  checkout HEAD pins; <plan>.snapshot-*/ = the re-exec copy
-<root>/arms/<contest>/<zone>/<arm>-r<N>/          stage.meta stage.log run.meta run.log deep.log .done
+                                                  checkout HEAD pins; <plan>.snapshot-*/ = the re-exec copy;
+                                                  <plan>.halted after a usage-limit VOID
+<root>/arms/<contest>/<zone>/<arm>-r<N>/          stage.meta stage.log run.meta run.log rehunt.log deep.log
+                                                  attrib.tsv void.txt [void.operator] .done
                                                   run.pid (while alive) breadth.env deep.env env.cleared
+<root>/arms/<contest>/<zone>/<arm>-r<N>.void-<k>/ a VOID attempt kept by drive --retry-void
     <contest>/{code -> base, zone-hunt-out/}      what the hunt is pointed at
     _gt/<contest>/{truth.tsv, judging -> base, zone-hunt-out -> ../../<contest>/zone-hunt-out}
 <root>/triage/<contest>-<arm>-r<N>.{tsv,md}
@@ -624,12 +633,75 @@ the plan to `triage` (finished zone trees as `--run <zone>=<out>`, a hard-stoppe
 every arm under the path (found by its `run.pid`: its args name the root and its cwd is elsewhere) and resolves
 the path physically (`pwd -P`), as `/proc/<pid>/cwd` is.
 
+**Run integrity (M3).** An arm is scored only when it is **VALID**; everything else is **VOID** with a class and
+an evidence reference in `<arm>/void.txt` (`VALID` or `VOID<TAB><class><TAB><ref>`), also on the drive's END line
+(`void=`) and in the two trailing `MANIFEST.tsv` columns (`rehunt_rc`, `verdict`; a MANIFEST that still carries
+the M2 header keeps M2-shaped rows). `exam-helper.py void-check` collects EVERY finding and ranks them by ONE
+precedence — line 1 of `void.txt` is the winner, each further class is kept as an `ALSO<TAB>class<TAB>ref` line.
+An arm-wide class always outranks a zone-scoped one, and a usage-limit signal always wins, so `drive` HALTS:
+
+| rank | class | when |
+|---|---|---|
+| 0 | `weekly-limit` | a usage-limit notice: a `weekly-limit` row of `exam/void-patterns.tsv` (any Claude Code usage-limit notice, in a FAILED call's log) or a `<synthetic>` usage-limit transcript record (`attrib.tsv` gate `usage-limit`) — HALTS the plan |
+| 1 | `hard-stop`, `killed` | `rc` / `rehunt_rc` / `deep_rc` is 124; a call or `run` itself was signalled (rc >= 128, `skip-killed`) — arm-wide |
+| 2 | `operator`, `attribution` | `exam.sh void-mark`; `attrib.tsv` has a stage that is MIXED / CONTAMINATED / another family / `refusal` (a refusal in the window, even when a retry then answered) / `attribution-missing` (or no `attrib.tsv` on a live backend) — arm-wide |
+| 3 | `zone-incomplete`, `deep-incomplete`, `promise-lister` | never finished: the zone's `run-discovery.sh` died (`coverage/zone-coverage.json` `failed` / `in_flight` / any status but `hunted` / `hunted_empty` / `hunted_degraded` — `run-zone-hunt.sh` records it and exits 0), fewer cells than planned, an empty unmarked cell log; a STAGE 4.5 cell `ENGINE_FAILED` / `TRANSIENT_ERROR` (ledger, the legacy "failed ...; continuing" line, or an aggregate log with no verdict and a terminal transport error); a failed `run/promises/*.lister` call |
+| 4 | the other pattern rows (`backend-no-reply`, `transport`, ... in file order), `all-cells-failed`, `transport` (a cell still failed after the one re-hunt), `no-cells` | zone-scoped signatures |
+
+A STAGE 4.5 cell that finished WITHOUT a judgement (`HARNESS_ERROR`, `TIMEOUT`, `SKIPPED_BUDGET`,
+`SKIPPED_TARGET_BROKEN`, `LOW_COVERAGE`, `LOW_PROMISE_COVERAGE`) is not a void — the breadth scores stand — but it is
+listed per row in `<arm>/deep-not-judged.tsv`, and `triage.py` never credits it: its `INVARIANT|` line is shown as
+`invariant(not-judged)` evidence and never counts as an examination (only FINDING / CLEAN do).
+
+Every zone-scoped defect is also listed in `<arm>/void.zones`; `triage` forces those zones `unmeasured`, and for a
+whole-contest arm it triages the rest of the tree — unless an arm-wide class is on record, which leaves every row
+`unmeasured`. When every arm is VOID the table is still written, all rows
+`unmeasured` (an empty stand-in tree — no evidence of a voided run reaches it). `triage.py` itself reads a run
+tree's `coverage/zone-coverage.json` too: a `failed` / `in_flight` zone is `unmeasured`, never a generation MISS.
+
+The signatures are DATA: a new row in `void-patterns.tsv` (`class<TAB>regex<TAB>where`, `where` = `failed` /
+`final-failed` / `cells`) teaches the runner a new one without a code change; match the notice's words, never
+its glyphs. Only real output logs are read (`hunt_*.log*`, `refute_*.log`, the deep-hunt RUN dirs' `*.log`), never
+the `.ag` source copies. An `.untraced` cell is a METRIC: it never voids an arm and never triggers a re-hunt.
+
+**One-shot re-hunt** (the symmetry rule above, automated): after the breadth call, when a final-attempt cell
+carries `.timeout` / `.novalid` or a `transport` pattern, a promise-lister call failed, or a zone is
+`zone-incomplete`, and no `weekly-limit` pattern matched, `run` makes exactly
+ONE more breadth call in that arm with `--rehunt-gaps --rehunt-include-partial --rehunt-max-attempts 2`
+(`rehunt.log`; `rehunt_start/end/rc/reason` in `run.meta`). A cell still failed after it voids the arm. A
+usage-limit match skips the re-hunt AND STAGE 4.5 — both would void too. `REHUNT_TRANSPORT=0` turns it off.
+
+**Attribution** (`exam.sh attrib --arm-dir <d> [--transcripts-root <dir>]`, also run by `run` itself): every RUN dir
+actually on disk (`discovery/<zone>/run` + its `cell-*`, `verify/gates*/*/refute-out/run`, `deep-hunt/*/run`, any
+other stage's `run`; never the copied `map/` / `briefs/`) is mapped to Claude Code's per-cwd transcript store dir
+by exact name — the encoding `lib/claude-sandboxed.sh` binds, pinned to the same known answers — and a transcript
+counts only when its records' `cwd` confirms it (the name encoding is lossy). `model-attribution.py --since/--until`
+then reads each stage over its OWN window from `run.meta` (discovery + verify: `start` .. re-hunt or breadth end;
+deep-hunt: `deep_start` .. `deep_end`; records without a timestamp are kept — conservative). Every stage that ran
+must be `PURE-<family of MODEL>` (or `ATTRIB_FAMILY`) with no refusal in the window; discovery / verify /
+deep-hunt with RUN dirs but no in-window record are `attribution-missing`. Claude Code's own `<synthetic>`
+API-error records are counted apart (`--split-synthetic`: `transient_synthetic`, never a MIXED by themselves —
+the cell's retry answered); a `<synthetic>` usage-limit record is `synthetic_limit` and voids the arm as
+`weekly-limit`. The window matters: a `--retry-void` re-run reuses the same dir
+names, so it shares the store with the voided attempt. `freeze` records its own map/brief-stage verdict in
+`freeze.meta` (`attrib=`, `attrib_gate=`) and `freeze.attrib.tsv` — a warning only. The mock backend is
+`skipped-mock`. An arm run before M3 has no `attrib.tsv` and reads VOID attribution until `exam.sh attrib` is run
+on it (its windows fall back to `start` .. `end`, and the finished arm's `void.txt` is refreshed).
+
+**VOID policy.** Nothing is re-run automatically beyond the one in-arm re-hunt. A `weekly-limit` VOID HALTS the
+plan — every row behind it would void too — with `logs/<plan>.halted` (row + evidence), a `HALT` progress line and
+exit 6; the rows behind it stay unstarted. Any other VOID is recorded and the plan continues. `--resume` counts a
+row as complete only when it is VALID + `.done` (a VOID row is reported as `SKIP ... void=<class>` and left
+alone); `--retry-void` (implies `--resume`) moves each VOID arm aside as `<arm>-r<N>.void-<k>` — kept as evidence,
+never deleted — and re-stages it fresh. `triage` passes every VOID zone as `--unmeasured <zone>:<class>`, so a
+voided zone reads `unmeasured`, never as a one-sided MISS.
+
 **Profiles** (`exam/profiles/*.env`; pass a shipped name or a path):
 
 | line | meaning |
 |---|---|
 | `# ...` | comment |
-| `KEY=VALUE` | runner key: `BACKEND` (`flat-cyborg` or `mock`; `claude` is refused — it runs `claude -p` unsandboxed), `MODEL` (required unless mock), `JOBS`, `DEEP_JOBS` (default JOBS), `HARD_STOP_S` (per call), `DEEP_PASS` (0/1), `INJECT_CLASSES` (`C24,C6`: appended once each to the staged zone's scope.tsv class field), `SCOPE_DOCS` (`auto` or `code:<path under the contest's code/>`, → `--scope-docs`). Any other bare key is exit 2. |
+| `KEY=VALUE` | runner key: `BACKEND` (`flat-cyborg` or `mock`; `claude` is refused — it runs `claude -p` unsandboxed), `MODEL` (required unless mock), `JOBS`, `DEEP_JOBS` (default JOBS), `HARD_STOP_S` (per call), `DEEP_PASS` (0/1), `INJECT_CLASSES` (`C24,C6`: appended once each to the staged zone's scope.tsv class field), `SCOPE_DOCS` (`auto` or `code:<path under the contest's code/>`, → `--scope-docs`), `REHUNT_TRANSPORT` (0/1, default 1: the one-shot re-hunt), `ATTRIB_FAMILY` (`opus`/`fable`/`sonnet`/`haiku`; default = the family of MODEL). Any other bare key is exit 2. |
 | `env.<NAME>=<v>` | exported into the breadth call only |
 | `deep.<NAME>=<v>` | exported into the STAGE 4.5 call only |
 | `pass.<NAME>` | inherit `<NAME>` from the caller's environment (must be set; the value is never in the file) |
@@ -659,7 +731,15 @@ pipeline-read env name plus unlisted prefix names as a sentinel, the `DF_NO_SAND
 invisible to the hunt, a hard stop), a running arm (stage / `drive --resume` refuse it, `kill --path` stops its
 controller, a breadth killed from outside never starts STAGE 4.5, TERM to `drive` stops its run), drive (live and
 stale lock, snapshot re-exec, `--resume`, HEAD pin, the triage hand-off) and kill-by-path (exact match, through a
-symlink).
+symlink). M3 adds: `void-check` over `fixtures/exam-void/` (one minimal arm per verdict, and a VALID arm whose
+negative controls — an `.untraced` cell, a recovered `[LLM retry]` line, a superseded failed attempt, a `hunter.ag`
+carrying every signature — must not void it), `attrib` against a synthetic transcript store (exact names incl.
+`cell-*` and subagent files, a colliding store file dropped by its `cwd`, per-stage windows, `attribution-missing`),
+the one-shot re-hunt (recovered → VALID, still failed → VOID transport, `REHUNT_TRANSPORT=0`), the weekly-limit
+HALT (row 2 unstarted, no re-hunt / STAGE 4.5 spent), `--resume` over a VOID row, `--retry-void` keeping
+`.void-1`, and `void-mark` → that zone's rows triaged `unmeasured`. The stub agentis's failing-call seam
+(`STUB_FAIL_CALLS` / `STUB_FAIL_STATE` / `STUB_FAIL_TEXT`) drives the failures; the usage-limit notice fixture
+carries its literal glyphs (dash-safe, no `\xHH`).
 
 ## Generalization measurement bench (#1763 G4)
 

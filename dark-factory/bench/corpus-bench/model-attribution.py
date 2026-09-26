@@ -23,10 +23,27 @@
 #                                                                        # stage; its *.jsonl are that stage's
 #                                                                        # transcripts (recursively)
 #   model-attribution.py --self-test                                    # deterministic fixture assertions
+#   ... [--split-synthetic]            #2262 M3: a `"model": "<synthetic>"` record is Claude Code's OWN API-error
+#                                      notice (an overloaded / 529 storm it gave up on), not a model answer. With
+#                                      this flag it is counted apart — `transient_synthetic` (the cell's retry may
+#                                      have recovered; it no longer makes the stage MIXED) or `synthetic_limit`
+#                                      (its text is a usage-limit notice: the run hit the limit) — and the family
+#                                      verdict is over the real answers only. Without the flag nothing changes.
+#   ... [--since ISO] [--until ISO]    #2262 M3: count only assistant records whose `timestamp` falls in the run
+#                                      window (either bound may be omitted). A record WITHOUT a timestamp is KEPT:
+#                                      conservative, a window can only turn PURE into MIXED/CONTAMINATED, never
+#                                      hide a fallback. A bound without fractional seconds covers its whole second
+#                                      (run.meta writes second-resolution UTC). Claude Code keys its transcript
+#                                      store by the cwd string, so a re-run in the same dir shares the store with
+#                                      a voided earlier attempt: the window separates the two.
 #
 # Output (stdout, table): one row per stage
 #   STAGE \t REQUESTS \t FABLE \t OPUS \t OTHER \t FALLBACK \t REFUSAL \t VERDICT
 # then a TOTAL row. With --json, a JSON object keyed by stage instead.
+# Only when a window is given, a trailer line `WINDOW \t since \t until \t in \t out \t undated` follows (in =
+# dated records inside the window, out = dated records dropped, undated = records kept without a timestamp; an
+# open bound prints `-`); with --json the same counts sit under a top-level "_window" key. Without a window the
+# output is byte-identical to the pre-window tool.
 #
 # Exit: 0 = ran (or --self-test held) ; 1 = --self-test regressed ; 2 = bad args ; 3 = no transcripts found.
 # Deterministic, offline: reads local files only. No network, no LLM, no forge.
@@ -34,6 +51,13 @@ import sys
 import os
 import json
 import glob
+import datetime
+import re
+
+# The Claude Code usage-limit notice, matched on its WORDS (mirrors the weekly-limit rows of
+# exam/void-patterns.tsv; a glyph between the words never matters).
+SYNTHETIC_LIMIT_RE = re.compile(
+    r"(?i)\b(hit your (weekly |usage |session |5-hour )?limit|(weekly|usage|session|5-hour) limit reached)\b")
 
 
 def model_family(model):
@@ -45,8 +69,70 @@ def model_family(model):
     return "other"
 
 
-def scan_transcript(path):
-    """Yield (family, is_fallback, is_refusal) per assistant request in one JSONL transcript."""
+def parse_ts(text):
+    """ISO-8601 UTC -> (aware datetime, has_fraction), or None when unparseable. Accepts `Z` / `+00:00`."""
+    if not isinstance(text, str) or not text:
+        return None
+    t = text.strip()
+    if t.endswith("Z") or t.endswith("z"):
+        t = t[:-1] + "+00:00"
+    frac = "." in t.split("T", 1)[-1]
+    try:
+        dt = datetime.datetime.fromisoformat(t)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt, frac
+
+
+class Window(object):
+    """The --since/--until run window. `since` is inclusive; a second-resolution `until` covers its whole second."""
+
+    def __init__(self, since, until):
+        self.since_raw, self.until_raw = since, until
+        self.lo = self.hi = None
+        self.hi_inclusive = True
+        if since:
+            p = parse_ts(since)
+            if p is None:
+                raise ValueError("bad --since timestamp: %r" % since)
+            self.lo = p[0]
+        if until:
+            p = parse_ts(until)
+            if p is None:
+                raise ValueError("bad --until timestamp: %r" % until)
+            self.hi = p[0] if p[1] else p[0] + datetime.timedelta(seconds=1)
+            self.hi_inclusive = p[1]
+        self.n_in = self.n_out = self.n_undated = 0
+
+    def keep(self, ev):
+        """True when an assistant record counts. Records without a (parseable) timestamp are KEPT."""
+        p = parse_ts(ev.get("timestamp"))
+        if p is None:
+            self.n_undated += 1
+            return True
+        ts = p[0]
+        inside = (self.lo is None or ts >= self.lo) and (
+            self.hi is None or (ts <= self.hi if self.hi_inclusive else ts < self.hi))
+        if inside:
+            self.n_in += 1
+        else:
+            self.n_out += 1
+        return inside
+
+    def trailer(self):
+        return "WINDOW\t%s\t%s\t%d\t%d\t%d" % (self.since_raw or "-", self.until_raw or "-",
+                                                self.n_in, self.n_out, self.n_undated)
+
+    def as_json(self):
+        return {"since": self.since_raw or "-", "until": self.until_raw or "-",
+                "in": self.n_in, "out": self.n_out, "undated": self.n_undated}
+
+
+def scan_transcript(path, window=None, split_synthetic=False):
+    """Yield (family, is_fallback, is_refusal) per assistant request in one JSONL transcript (inside `window`).
+    With split_synthetic a `<synthetic>` record yields family `synthetic` / `synthetic-limit` instead."""
     try:
         fh = open(path, encoding="utf-8", errors="ignore")
     except OSError:
@@ -75,6 +161,13 @@ def scan_transcript(path):
                 stop_reason = msg.get("stop_reason", "")
             else:
                 continue
+            if window is not None and not window.keep(ev):
+                continue
+            if split_synthetic and model == "<synthetic>":
+                text = " ".join(b.get("text", "") for b in content if isinstance(b, dict)
+                                and isinstance(b.get("text"), str)) if isinstance(content, list) else str(content)
+                yield ("synthetic-limit" if SYNTHETIC_LIMIT_RE.search(text) else "synthetic", False, False)
+                continue
             is_fallback = False
             if isinstance(content, list):
                 for block in content:
@@ -85,7 +178,7 @@ def scan_transcript(path):
             yield (model_family(model), is_fallback, is_refusal)
 
 
-def aggregate(stage_to_paths):
+def aggregate(stage_to_paths, window=None, split_synthetic=False):
     """stage_to_paths: dict stage -> list of transcript paths. Returns dict stage -> counts."""
     out = {}
     for stage in sorted(stage_to_paths):
@@ -94,8 +187,15 @@ def aggregate(stage_to_paths):
         fam_counts = {"opus": 0, "fable": 0, "sonnet": 0, "haiku": 0, "other": 0}
         fallback = 0
         refusal = 0
+        synth = synth_limit = 0
         for path in stage_to_paths[stage]:
-            for fam, is_fb, is_ref in scan_transcript(path):
+            for fam, is_fb, is_ref in scan_transcript(path, window, split_synthetic):
+                if fam == "synthetic":
+                    synth += 1
+                    continue
+                if fam == "synthetic-limit":
+                    synth_limit += 1
+                    continue
                 req += 1
                 fam_counts[fam] = fam_counts.get(fam, 0) + 1
                 if is_fb:
@@ -122,6 +222,9 @@ def aggregate(stage_to_paths):
             "refusal": refusal,
             "verdict": verdict,
         }
+        if split_synthetic:
+            out[stage]["transient_synthetic"] = synth
+            out[stage]["synthetic_limit"] = synth_limit
     return out
 
 
@@ -210,6 +313,61 @@ def run_self_test():
     else:
         bad("a fallback content block was NOT flagged — the D1 purity claim would be unprovable")
 
+    # #2262 M3 run-window filter, over its own SIBLING fixture (fixtures/model-attribution-window/) so the table
+    # above stays byte-identical. The one stage holds, in one transcript store dir reused by two attempts:
+    #   2 Opus records inside the window, 1 undated Opus record (kept), and 1 Fable->Opus FALLBACK record plus 1
+    #   Fable record from an EARLIER (voided) attempt, dated before the window.
+    wfx = os.path.join(here, "fixtures", "model-attribution-window")
+    if not os.path.isdir(wfx):
+        bad("window fixture dir missing: %s" % wfx)
+    else:
+        wpaths = collect_dir(wfx)
+        raw = aggregate(wpaths)
+        win = Window("2026-01-01T10:00:00Z", "2026-01-01T11:00:00Z")
+        windowed = aggregate(wpaths, win)
+        st = "rerun-same-cwd"
+        rv, wv = raw.get(st, {}).get("verdict"), windowed.get(st, {}).get("verdict")
+        if rv == "CONTAMINATED":
+            ok("window: the unwindowed read of the shared store is CONTAMINATED by the voided attempt's fallback")
+        else:
+            bad("window: the unwindowed read should be CONTAMINATED, got %r" % rv)
+        if wv == "PURE-OPUS" and windowed[st]["requests"] == 3 and windowed[st]["fallback"] == 0:
+            ok("window: --since/--until keeps the 2 in-window + 1 undated records and reads PURE-OPUS")
+        else:
+            bad("window: the windowed read should be PURE-OPUS over 3 requests, got %r" % windowed.get(st))
+        if (win.n_in, win.n_out, win.n_undated) == (2, 2, 1):
+            ok("window: trailer counts in=2 out=2 undated=1 (%s)" % win.trailer().replace("\t", " "))
+        else:
+            bad("window: trailer counts wrong: %s" % win.trailer().replace("\t", " "))
+        # --split-synthetic: Claude Code's own `<synthetic>` API-error record is not a model answer.
+        syn = [{"type": "assistant", "message": {"role": "assistant", "model": "<synthetic>", "content": [
+                   {"type": "text", "text": "API Error: 529 overloaded"}]}},
+               {"type": "assistant", "message": {"role": "assistant", "model": "claude-opus-4-8", "content": [
+                   {"type": "text", "text": "SAFE"}]}}]
+        lim = [{"type": "assistant", "message": {"role": "assistant", "model": "<synthetic>", "content": [
+                   {"type": "text", "text": "You\u2019ve hit your weekly limit \u00b7 resets 6pm"}]}}]
+        import tempfile as _tf
+        with _tf.TemporaryDirectory() as td:
+            for name, recs in (("syn", syn), ("lim", lim + syn)):
+                with open(os.path.join(td, name + ".jsonl"), "w", encoding="utf-8") as fh:
+                    fh.write("".join(json.dumps(r) + "\n" for r in recs))
+            plain = aggregate({"s": [os.path.join(td, "syn.jsonl")]})["s"]
+            split = aggregate({"s": [os.path.join(td, "syn.jsonl")]}, None, True)["s"]
+            limit = aggregate({"s": [os.path.join(td, "lim.jsonl")]}, None, True)["s"]
+        if plain["verdict"] == "MIXED" and split["verdict"] == "PURE-OPUS" and split["transient_synthetic"] == 1 \
+                and split["requests"] == 1 and limit["synthetic_limit"] == 1 and limit["transient_synthetic"] == 1:
+            ok("--split-synthetic: a <synthetic> API-error record is counted apart (PURE-OPUS, transient_synthetic=1; "
+               "MIXED without the flag), a <synthetic> usage-limit notice is counted as synthetic_limit")
+        else:
+            bad("--split-synthetic wrong: plain=%r split=%r limit=%r" % (plain, split, limit))
+        edge = Window("2026-01-01T10:00:00Z", "2026-01-01T10:59:59Z")
+        edge_in = edge.keep({"timestamp": "2026-01-01T10:59:59.900Z"})
+        edge_out = edge.keep({"timestamp": "2026-01-01T11:00:00.000Z"})
+        if edge_in and not edge_out:
+            ok("window: a second-resolution --until covers its whole second (10:59:59.900 in, 11:00:00.000 out)")
+        else:
+            bad("window: second-resolution --until edge wrong (in=%r out=%r)" % (edge_in, edge_out))
+
     print()
     if fails == 0:
         print("model-attribution.py: PASS — per-stage attribution counts models, flags fallbacks/refusals, and CONTAMINATES a stage that fell back")
@@ -224,6 +382,8 @@ def main(argv):
     as_json = False
     stage = None
     root = None
+    since = until = None
+    split = False
     paths = []
     i = 1
     while i < len(argv):
@@ -242,6 +402,18 @@ def main(argv):
                 print("model-attribution.py: --dir requires a value", file=sys.stderr)
                 return 2
             root = argv[i + 1]
+            i += 2
+        elif a == "--split-synthetic":
+            split = True
+            i += 1
+        elif a in ("--since", "--until"):
+            if i + 1 >= len(argv):
+                print("model-attribution.py: %s requires a value" % a, file=sys.stderr)
+                return 2
+            if a == "--since":
+                since = argv[i + 1]
+            else:
+                until = argv[i + 1]
             i += 2
         elif a in ("-h", "--help"):
             print(__doc__ if __doc__ else "see header comment")
@@ -268,11 +440,25 @@ def main(argv):
         print("model-attribution.py: no transcripts found", file=sys.stderr)
         return 3
 
-    agg = aggregate(stage_to_paths)
+    window = None
+    if since or until:
+        try:
+            window = Window(since, until)
+        except ValueError as exc:
+            print("model-attribution.py: %s" % exc, file=sys.stderr)
+            return 2
+    agg = aggregate(stage_to_paths, window, split)
     if as_json:
+        if window is not None:
+            agg["_window"] = window.as_json()
         print(json.dumps(agg, indent=2, sort_keys=True))
     else:
         print(render_table(agg))
+        if window is not None:
+            print(window.trailer())
+        if split:
+            print("SYNTHETIC\t%d\t%d" % (sum(a["transient_synthetic"] for a in agg.values()),
+                                          sum(a["synthetic_limit"] for a in agg.values())))
     return 0
 
 

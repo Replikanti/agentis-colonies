@@ -1,0 +1,3 @@
+stage	run_dirs	transcripts	dropped	requests	fallback	verdict	want	gate	since	until
+discovery	1	2	0	14	0	PURE-OPUS	PURE-OPUS	ok	2026-01-01T10:00:00Z	2026-01-01T11:00:00Z
+deep-hunt	1	1	0	3	0	MIXED	PURE-OPUS	fail	-	-

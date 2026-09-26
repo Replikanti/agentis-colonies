@@ -2465,7 +2465,11 @@ fi
 # M2 adds the contest-agnostic exam runner (bench/corpus-bench/exam/exam.sh: freeze, profiles, stage/run,
 # STAGE 4.5, markers, drive, kill-by-path, triage hand-off): the demo source-guards it (no pgrep/pkill, no home
 # path, no corpus contest id, no path in a profile) and runs `exam.sh self-test`, a mock two-zone exam end to
-# end with a stub agentis (--backend mock; no LLM, no network, ~45 s).
+# end with a stub agentis (--backend mock; no LLM, no network, ~2 min). M3 (run integrity) extends that
+# self-test: void-check over one fixture arm per VOID class, run-window attribution against a synthetic
+# transcript store, the one-shot re-hunt, the weekly-limit plan HALT, --resume / --retry-void, and a VOID zone
+# triaged unmeasured; the demo source-guards the void-patterns.tsv data (plain-ASCII regexes, literal-glyph
+# usage-limit fixture, no \xHH).
 if [ -x "$REPO_ROOT/dark-factory/demo-holdout-exam.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-holdout-exam.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then

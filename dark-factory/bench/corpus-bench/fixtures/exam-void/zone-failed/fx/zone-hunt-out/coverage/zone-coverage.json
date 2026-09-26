@@ -1,0 +1,5 @@
+{
+  "zones": [
+    {"id": "src_pool", "name": "share pool", "status": "failed", "cells_planned": 2, "cells": 0, "failed_cells": 0, "exit_code": 137, "detail": "run-discovery.sh exited 137"}
+  ]
+}
