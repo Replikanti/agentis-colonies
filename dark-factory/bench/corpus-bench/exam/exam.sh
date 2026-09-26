@@ -452,7 +452,7 @@ cmd_freeze() {
   local brc=$?
   printf '%s\n' "$bout" >> "$log"
   [ "$brc" -eq 0 ] && [ -d "$cdir/briefs/briefs" ] || die 3 "freeze: gen-briefs.sh failed (see $log)"
-  if printf '%s\n' "$bout" | grep -qE 'FAILED validation|mechanical briefs only'; then
+  if grep -qE 'FAILED validation|mechanical briefs only' <<< "$bout"; then
     if [ "$allow_fb" -eq 1 ]; then
       note "freeze: WARNING mechanical-fallback briefs accepted (--allow-fallback-briefs)"
     else
@@ -548,7 +548,7 @@ cmd_plan() {
     local -a listed=()
     IFS=, read -r -a listed <<< "$zones"
     for z in "${listed[@]}"; do
-      printf '%s\n' "$all" | grep -qxF -- "$z" || die 2 "plan: zone '$z' is not in the frozen map"
+      grep -qxF -- "$z" <<< "$all" || die 2 "plan: zone '$z' is not in the frozen map"
       rows+=("$z")
     done
   else
@@ -1238,8 +1238,8 @@ cmd_self_test() {
   clr="$(python3 "$HELPER" clear-list "$df_real" "$PROFILES_DIR" "$PROFILES_DIR/mock.env")"
   allow="$(tr -s ' \t' '\n\n' < "$PROFILES_DIR/KNOBS" | sed -n 's/^!\([A-Z][A-Z0-9_]*\)$/\1/p')"
   uncovered="$(printf '%s\n' "$reads" | grep . | while IFS= read -r n; do
-      printf '%s\n' "$clr" | grep -qxF "$n" && continue
-      printf '%s\n' "$allow" | grep -qxF "$n" && continue
+      grep -qxF "$n" <<< "$clr" && continue
+      grep -qxF "$n" <<< "$allow" && continue
       case "$n" in CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK|CLAUDE_CODE_NO_MODEL_FALLBACK|CLAUDE_CODE_FORCE_SESSION_PERSISTENCE) continue ;; esac
       printf '%s\n' "$n"
     done)"
@@ -1251,7 +1251,7 @@ cmd_self_test() {
   local missing="" n
   for n in DF_NO_SANDBOX FORK_URL FORK_BLOCK LLM_MAX_DISCOVERY_CELLS LLM_MAX_CONCURRENT DEEP_CELL_STALE_S FORGE_MAX_SLOTS \
            FLAT_CYBORG_IDLE_MS DF_EXTERNAL_RPC HUNT_SANDBOX_EXTERNAL SLICE_MAX_DEPTH VECTOR_HUNT_POC_RUNNER; do
-    printf '%s\n' "$reads" | grep -qxF "$n" || missing="$missing $n"
+    grep -qxF "$n" <<< "$reads" || missing="$missing $n"
   done
   if [ -z "$missing" ]; then
     ok "the derived read set holds the known leak names (DF_NO_SANDBOX, FORK_URL, LLM_MAX_DISCOVERY_CELLS, ...)"
@@ -1412,7 +1412,7 @@ cmd_self_test() {
              ANTHROPIC_API_KEY ANTHROPIC_MODEL CLAUDE_CONFIG_DIR DISABLE_PROMPT_CACHING BASH_DEFAULT_TIMEOUT_MS \
              BASH_MAX_TIMEOUT_MS MCP_TIMEOUT; do
       case "$n" in DF_NO_SANDBOX|CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK|CLAUDE_CODE_NO_MODEL_FALLBACK|CLAUDE_CODE_FORCE_SESSION_PERSISTENCE) continue ;; esac
-      printf '%s\n' "$allow" | grep -qxF "$n" && continue
+      grep -qxF "$n" <<< "$allow" && continue
       export "$n=exam-leak-probe"
     done
     export CLAUDE_CODE_OAUTH_TOKEN=exam-secret-probe   # allowlisted auth: passes, but is never recorded by value
