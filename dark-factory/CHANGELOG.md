@@ -89,7 +89,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `promise-lister`; every zone-scoped defect is listed in `void.zones` and triaged `unmeasured` (`triage.py` also
   reads the coverage record itself); a refusal in the window fails the attribution gate; Claude Code's
   `<synthetic>` API-error records are counted apart (`model-attribution.py --split-synthetic`) while a
-  `<synthetic>` usage-limit record voids as `weekly-limit`.
+  `<synthetic>` usage-limit record voids as `weekly-limit`. VOID classes follow ONE precedence (usage limit > hard
+  stop / kill > operator / attribution > never-finished zone / deep cell / lister > zone signatures); every further
+  class is kept in `void.txt` as an `ALSO` line, and an arm-wide VOID of a whole-contest arm leaves every row
+  unmeasured. A STAGE 4.5 `TRANSIENT_ERROR` is `deep-incomplete`; a cell that finished without a judgement
+  (HARNESS_ERROR, TIMEOUT, SKIPPED_*, LOW_*) is listed in `deep-not-judged.tsv` and `triage.py` no longer credits
+  its `INVARIANT|` line as an examination.
 
 - **Held-out exam: per-row triage scorer `bench/corpus-bench/triage.py` (#2262 M1).** Every rare row of a
   held-out exam was scored by hand (candidates / verified findings at the row's function, cell-log mentions,

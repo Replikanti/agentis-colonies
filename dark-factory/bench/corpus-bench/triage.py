@@ -60,8 +60,11 @@
 #                        one of its cells failed (.timeout / .novalid). A zone that did not run must never read
 #                        as a generation miss.
 #   6. generation        an owning zone ran and nothing above matched. sub=examined when a cell log or an
-#                        INVARIANT| target (ANY verdict — a CLEAN invariant at the location is a generation
-#                        examination, not a HIT) mentions the function; sub=unseen otherwise.
+#                        INVARIANT| target with a JUDGED verdict (FINDING / CLEAN — a CLEAN invariant at the
+#                        location is a generation examination, not a HIT) mentions the function; sub=unseen
+#                        otherwise. A NOT-JUDGED verdict (HARNESS_ERROR, TRANSIENT_ERROR, TIMEOUT, LOW_COVERAGE,
+#                        LOW_PROMISE_COVERAGE, ...: the deep cell finished without a judgement) is shown as
+#                        `invariant(not-judged)` evidence but never counts as an examination (#2262 M3).
 # Every class is a PROPOSAL and, like the #2215 anchors, MECHANISM-BLIND: a name-coincident candidate at an
 # anchored location proposes HIT-candidate all the same. The markdown never prints a recall number.
 #
@@ -343,7 +346,8 @@ class Run:
         self.candidates = []      # dicts: key, tier (1|2), outcome, ev (list of evidence tuples)
         self.verified = []        # (key, evidence)
         self.dismiss = []         # (key, zone, lineno, relpath, evidence)
-        self.invariants = []      # (key, evidence)
+        self.invariants = []      # (key, evidence) — judged verdicts only (FINDING / CLEAN)
+        self.invariants_nj = []   # (key, evidence) — not-judged verdicts: shown, never an examination
         self.logs = []            # (zone, superseded, relpath, lines)
         self.map_zones = None
         self.scope = None
@@ -458,8 +462,13 @@ class Run:
                             continue
                         parts = line[idx:].strip().split("|")
                         if len(parts) >= 3:
-                            self.invariants.append((loc_key(parts[1]), self.ev(
-                                "invariant", relpath, i, i, line[idx:].strip())))
+                            verdict = parts[2].split()[0] if parts[2].split() else ""
+                            if verdict in ("FINDING", "CLEAN"):
+                                self.invariants.append((loc_key(parts[1]), self.ev(
+                                    "invariant", relpath, i, i, line[idx:].strip())))
+                            else:
+                                self.invariants_nj.append((loc_key(parts[1]), self.ev(
+                                    "invariant", relpath, i, i, line[idx:].strip(), "not-judged")))
 
     def _gates(self, subdir):
         """[(location_string, verdict, reason, relpath, [ground evidence])] in gate-number order."""
@@ -679,6 +688,7 @@ def classify(row, runs, zones_map, scope, forced, rare_max):
     cands = [c for r in runs for c in r.candidates if hits_any(c["key"], anchors)]
     dismiss = [(rel, ln, e) for r in runs for (k, z, ln, rel, e) in r.dismiss if hits_any(k, anchors)]
     invs = [e for r in runs for (k, e) in r.invariants if hits_any(k, anchors)]
+    invs_nj = [e for r in runs for (k, e) in r.invariants_nj if hits_any(k, anchors)]
     dismiss_ids = {(rel, ln) for (rel, ln, _) in dismiss}
     mentions = []
     fn_res = [re.compile(r"(?<![A-Za-z0-9_])" + re.escape(f) + r"(?![A-Za-z0-9_])", re.IGNORECASE) for f in fn_names]
@@ -702,6 +712,7 @@ def classify(row, runs, zones_map, scope, forced, rare_max):
         ev.extend(c["ev"])
     ev.extend(e for (_, _, e) in dismiss)
     ev.extend(invs)
+    ev.extend(invs_nj)
     ev.extend(mentions)
     out["verified"] = len(verified)
     out["candidates"] = len(cands)
@@ -1157,6 +1168,23 @@ def self_test():
                "generation rows %s into unmeasured/failed" % ",".join(gen))
         else:
             bad("a coverage-failed zone still reads as generation: %s" % [rows9.get(k, ["?"] * 8)[6:8] for k in gen])
+        # a deep cell that finished WITHOUT a judgement (HARNESS_ERROR) is never credited as an examination: TX-9's
+        # only evidence is the rebase invariant, so it must fall back to generation/unseen (#2262 M3 re-review 3)
+        nj = os.path.join(tmp, "nj-tree")
+        shutil.copytree(os.path.join(fx, "run-core"), os.path.join(nj, "run-core"), symlinks=True)
+        njlog = os.path.join(nj, "run-core", "deep-hunt", "core-C2", "run", "invariant_src_core_Vault_sol_rebase.log")
+        with open(njlog, encoding="utf-8") as fh:
+            njtext = fh.read()
+        with open(njlog, "w", encoding="utf-8") as fh:
+            fh.write(njtext.replace(":rebase|CLEAN", ":rebase|HARNESS_ERROR"))
+        rc10, tsv10, _, _ = go("notjudged", ["--run-root", nj, "--map", os.path.join(fx, "map", "zones.json")])
+        rows10 = rows_of(tsv10)
+        if rc10 == 0 and ":rebase|HARNESS_ERROR" in open(njlog, encoding="utf-8").read() \
+                and rows.get("TX-9", [""] * 8)[7] == "examined" and rows10.get("TX-9", [""] * 8)[6:8] == ["generation", "unseen"] \
+                and "not-judged" in rows10["TX-9"][15]:
+            ok("a not-judged deep verdict (HARNESS_ERROR) is shown tagged but never credited: TX-9 examined -> unseen")
+        else:
+            bad("a not-judged deep verdict still reads as an examination: %s" % rows10.get("TX-9", ["?"] * 16)[6:8])
         rc7, tsv7, _, _ = go("forced", full + ["--unmeasured", "core:operator-void"])
         rows7 = rows_of(tsv7)
         if rc7 == 0 and gen and all(rows7[k][6] == "unmeasured" and "operator" in rows7[k][7] for k in gen) \

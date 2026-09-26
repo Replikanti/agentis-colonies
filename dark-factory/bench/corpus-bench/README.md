@@ -636,25 +636,26 @@ the path physically (`pwd -P`), as `/proc/<pid>/cwd` is.
 **Run integrity (M3).** An arm is scored only when it is **VALID**; everything else is **VOID** with a class and
 an evidence reference in `<arm>/void.txt` (`VALID` or `VOID<TAB><class><TAB><ref>`), also on the drive's END line
 (`void=`) and in the two trailing `MANIFEST.tsv` columns (`rehunt_rc`, `verdict`; a MANIFEST that still carries
-the M2 header keeps M2-shaped rows). `exam-helper.py void-check` decides, first match wins:
+the M2 header keeps M2-shaped rows). `exam-helper.py void-check` collects EVERY finding and ranks them by ONE
+precedence — line 1 of `void.txt` is the winner, each further class is kept as an `ALSO<TAB>class<TAB>ref` line.
+An arm-wide class always outranks a zone-scoped one, and a usage-limit signal always wins, so `drive` HALTS:
 
-| # | class | when |
+| rank | class | when |
 |---|---|---|
-| 1 | `hard-stop` | `rc`, `rehunt_rc` or `deep_rc` is 124 |
-| 2 | `killed` | a call or `run` itself was signalled (rc >= 128, `skip-killed`) |
-| 3 | the `exam/void-patterns.tsv` rows, in file order | `weekly-limit` (any Claude Code usage-limit notice, in a FAILED call's log), `transport` (the terminal `LLM transport error:` line of a final cell — never a recovered `[LLM retry ...]` line), `backend-no-reply` ("no closing sentinel" / "no fenced reply" in a failed final cell) |
-| 4 | `all-cells-failed` | a staged zone whose final cells ALL carry `.timeout` / `.novalid` |
-| 5 | `transport` | any final cell still failed after the one re-hunt |
-| 6 | `promise-lister` | a failed `run/promises/*.lister` call (the line hunted without the promises its profile set) |
-| 7 | `zone-incomplete` | the zone's `run-discovery.sh` died or never finished — `run-zone-hunt.sh` records it in `coverage/zone-coverage.json` (`failed`, `in_flight`, any status but `hunted` / `hunted_empty` / `hunted_degraded`) and carries on with exit 0 —, it recorded fewer cells than planned, or a final cell log is empty with no marker |
-| 8 | `deep-incomplete` | a STAGE 4.5 engine died mid-way (`run-invariant-hunt.sh failed ...; continuing`, or `ENGINE_FAILED` in `deep-hunt/cell-status.tsv`); a budget outcome the profile asked for (`TIMEOUT`, `SKIPPED_*`) is a result, not a void |
-| 9 | `no-cells` | a staged zone with no cell log at all |
-| 10 | `weekly-limit` (from `attrib.tsv`) | a `<synthetic>` usage-limit record inside the window (gate `usage-limit`) |
-| 11 | `attribution` | `attrib.tsv` has a stage that is MIXED / CONTAMINATED / another family / `refusal` (a refusal in the window, even when a retry then answered) / `attribution-missing` (or no `attrib.tsv` on a live backend) |
-| 12 | `operator` | `exam.sh void-mark --arm-dir <d> --reason <text>` |
+| 0 | `weekly-limit` | a usage-limit notice: a `weekly-limit` row of `exam/void-patterns.tsv` (any Claude Code usage-limit notice, in a FAILED call's log) or a `<synthetic>` usage-limit transcript record (`attrib.tsv` gate `usage-limit`) — HALTS the plan |
+| 1 | `hard-stop`, `killed` | `rc` / `rehunt_rc` / `deep_rc` is 124; a call or `run` itself was signalled (rc >= 128, `skip-killed`) — arm-wide |
+| 2 | `operator`, `attribution` | `exam.sh void-mark`; `attrib.tsv` has a stage that is MIXED / CONTAMINATED / another family / `refusal` (a refusal in the window, even when a retry then answered) / `attribution-missing` (or no `attrib.tsv` on a live backend) — arm-wide |
+| 3 | `zone-incomplete`, `deep-incomplete`, `promise-lister` | never finished: the zone's `run-discovery.sh` died (`coverage/zone-coverage.json` `failed` / `in_flight` / any status but `hunted` / `hunted_empty` / `hunted_degraded` — `run-zone-hunt.sh` records it and exits 0), fewer cells than planned, an empty unmarked cell log; a STAGE 4.5 cell `ENGINE_FAILED` / `TRANSIENT_ERROR` (ledger, the legacy "failed ...; continuing" line, or an aggregate log with no verdict and a terminal transport error); a failed `run/promises/*.lister` call |
+| 4 | the other pattern rows (`backend-no-reply`, `transport`, ... in file order), `all-cells-failed`, `transport` (a cell still failed after the one re-hunt), `no-cells` | zone-scoped signatures |
+
+A STAGE 4.5 cell that finished WITHOUT a judgement (`HARNESS_ERROR`, `TIMEOUT`, `SKIPPED_BUDGET`,
+`SKIPPED_TARGET_BROKEN`, `LOW_COVERAGE`, `LOW_PROMISE_COVERAGE`) is not a void — the breadth scores stand — but it is
+listed per row in `<arm>/deep-not-judged.tsv`, and `triage.py` never credits it: its `INVARIANT|` line is shown as
+`invariant(not-judged)` evidence and never counts as an examination (only FINDING / CLEAN do).
 
 Every zone-scoped defect is also listed in `<arm>/void.zones`; `triage` forces those zones `unmeasured`, and for a
-whole-contest arm it triages the rest of the tree. When every arm is VOID the table is still written, all rows
+whole-contest arm it triages the rest of the tree — unless an arm-wide class is on record, which leaves every row
+`unmeasured`. When every arm is VOID the table is still written, all rows
 `unmeasured` (an empty stand-in tree — no evidence of a voided run reaches it). `triage.py` itself reads a run
 tree's `coverage/zone-coverage.json` too: a `failed` / `in_flight` zone is `unmeasured`, never a generation MISS.
 

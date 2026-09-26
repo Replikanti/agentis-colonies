@@ -952,7 +952,7 @@ cmd_triage() {
   safe_id "$contest" && safe_id "$arm" && pos_int "$repeat" || die 2 "triage: bad contest / arm / repeat"
   root="$(abs_dir "$root")" || die 3 "triage: --root not found"
   [ -f "$TRIAGE" ] || die 3 "triage: triage.py not found next to exam/"
-  local d base="" zone v
+  local d base="" zone v allvoid=""
   local -a runs=() unmeasured=()
   for d in "$root/arms/$contest"/*/"$arm-r$repeat"; do
     [ -f "$d/.done" ] && [ -f "$d/run.meta" ] || continue
@@ -976,9 +976,18 @@ cmd_triage() {
               [ -z "$vz" ] || [ "$vz" = - ] || unmeasured+=(--unmeasured "$vz:$vc")
             done < "$d/void.zones"
           fi ;;
+        *) allvoid="$(void_class "$v")" ;;   # arm-wide: the whole arm measures nothing
       esac
     fi
   done
+  if [ -n "$allvoid" ] && [ -n "$base" ] && [ -f "$base/$contest/map/zones.json" ]; then
+    # An arm-wide VOID of a whole-contest arm (operator, attribution / refusal, usage limit, hard stop, kill)
+    # leaves EVERY zone unmeasured — whatever zone-scoped VOID it also carries (void.txt ALSO lines).
+    local az
+    while IFS= read -r az; do
+      [ -z "$az" ] || unmeasured+=(--unmeasured "$az:$allvoid")
+    done < <(python3 "$HELPER" zone-ids "$base/$contest/map/zones.json")
+  fi
   if [ "${#runs[@]}" -eq 0 ] && [ "${#unmeasured[@]}" -gt 0 ]; then
     # Every finished arm is VOID: still write the table, so each row reads `unmeasured` with its VOID class (an
     # empty stand-in tree — no evidence of a voided run ever reaches the table).
@@ -1500,7 +1509,7 @@ cmd_self_test() {
   while IFS=$'\t' read -r vd vwant; do
     case "$vd" in ''|'#'*) continue ;; esac
     vgot="$(python3 "$HELPER" void-check "$vw/$vd" "$PATTERNS" 2>&1)"
-    if [ "$vgot" = "$vwant" ] && [ "$(cat "$vw/$vd/void.txt")" = "$vwant" ]; then
+    if [ "$vgot" = "$vwant" ] && [ "$(head -1 "$vw/$vd/void.txt")" = "$vwant" ]; then
       ok "void-check $vd -> $(printf '%s' "$vwant" | cut -f1-2 | tr '\t' ' ')"
     else
       bad "void-check $vd: got '$vgot', expected '$vwant'"; vmiss="$vmiss $vd"
@@ -1513,6 +1522,23 @@ cmd_self_test() {
     ok "the VALID fixture keeps its negative controls: an .untraced METRIC cell, a recovered [LLM retry] line, a superseded failed attempt and a hunter.ag carrying every signature"
   else
     bad "fixtures/exam-void lost a negative control (or an expected row)"
+  fi
+
+  # re-review: one explicit precedence (usage limit > the run > operator / attribution > never-finished > signatures);
+  # every further class is kept as an ALSO line; STAGE 4.5 cells that finished without a judgement are listed per row.
+  if [ "$(sed -n 2p "$vw/usage-limit-over-backend/void.txt" | cut -f1-2)" = "$(printf 'ALSO\tbackend-no-reply')" ] \
+     && [ "$(sed -n 2p "$vw/operator-plus-transport/void.txt" | cut -f1-2)" = "$(printf 'ALSO\ttransport')" ] \
+     && [ "$(sed -n 2p "$vw/attrib-plus-transport/void.txt" | cut -f1-2)" = "$(printf 'ALSO\ttransport')" ]; then
+    ok "precedence: a <synthetic> usage limit beats the backend signature (the plan halts); operator / attribution beat a zone-scoped VOID, which stays on record as ALSO"
+  else
+    bad "precedence / ALSO lines wrong: $(tr '\n\t' '| ' < "$vw/usage-limit-over-backend/void.txt")"
+  fi
+  if [ "$(cut -f3 "$vw/deep-not-judged/deep-not-judged.tsv" | paste -sd, -)" = HARNESS_ERROR ] \
+     && [ "$(cut -f3 "$vw/deep-budget-ok/deep-not-judged.tsv" | paste -sd, -)" = TIMEOUT,SKIPPED_BUDGET ] \
+     && [ ! -s "$vw/valid/deep-not-judged.tsv" ]; then
+    ok "STAGE 4.5 cells that finished without a judgement (HARNESS_ERROR, TIMEOUT, SKIPPED_BUDGET) are recorded per row in deep-not-judged.tsv (not a void)"
+  else
+    bad "deep-not-judged.tsv rows wrong"
   fi
 
   echo "exam.sh self-test: M3 run-window attribution (attrib)"
@@ -1618,7 +1644,7 @@ cmd_self_test() {
   STUB_FAIL_CALLS=99 STUB_FAIL_STATE="$work/fail-rhv" bash "$SELF" run --root "$root" --base "$base" --contest fx \
     --zone src_pool --arm rhv --repeat 1 --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1
   if [[ "$(meta_get "$rv/run.meta" rehunt_rc)" =~ ^[0-9]+$ ]] && [ -d "$rv/fx/zone-hunt-out/discovery/src_pool.attempt-1" ] \
-     && [ "$(cut -f1-2 "$rv/void.txt")" = "$(printf 'VOID\ttransport')" ] \
+     && [ "$(head -1 "$rv/void.txt" | cut -f1-2)" = "$(printf 'VOID\ttransport')" ] \
      && [ "$(awk -F'\t' 'END { print $NF }' "$root/MANIFEST.tsv")" = VOID:transport ]; then
     ok "a cell still failed after the one re-hunt is VOID transport (void.txt + the MANIFEST verdict column)"
   else
@@ -1646,12 +1672,31 @@ cmd_self_test() {
     --zone src_pool --arm kill --repeat 1 --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1; rc=$?
   bash "$SELF" triage --root "$kroot2" --contest fx --arm kill --repeat 1 > /dev/null 2>&1
   local ktsv="$kroot2/triage/fx-kill-r1.tsv"
-  if [ "$rc" -eq 0 ] && [ "$(cut -f1-2 "$kv/void.txt")" = "$(printf 'VOID\tzone-incomplete')" ] \
+  if [ "$rc" -eq 0 ] && [ "$(head -1 "$kv/void.txt" | cut -f1-2)" = "$(printf 'VOID\tzone-incomplete')" ] \
      && grep -q 'zone-coverage.json:src_pool=failed' "$kv/void.txt" \
      && awk -F'\t' '$1 == "EX-1" || $1 == "EX-3" { n++; if ($7 != "unmeasured") bad = 1 } END { exit (n == 2 && !bad) ? 0 : 1 }' "$ktsv"; then
     ok "a zone still dead after the re-hunt is VOID zone-incomplete (run exit 0!), and triage reads its rows EX-1/EX-3 unmeasured, never a generation MISS"
   else
     bad "killed discovery: exit $rc void=$(head -1 "$kv/void.txt" 2>/dev/null)"; awk -F'\t' '{ print $1, $7, $8 }' "$ktsv" 2>/dev/null | sed 's/^/         | /'
+  fi
+  # a WHOLE-CONTEST arm: a zone-scoped VOID leaves only that zone's rows unmeasured; an arm-wide VOID on top of it
+  # (void-mark) makes every row unmeasured, with both classes on record (re-review 2).
+  local wall="$kroot2/arms/fx/_all/wall-r1" wtsv="$kroot2/triage/fx-wall-r1.tsv"
+  bash "$SELF" stage --root "$kroot2" --base "$base" --contest fx --zone _all --arm wall --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1
+  STUB_KILL_CALLS=99 STUB_KILL_STATE="$work/killall" bash "$SELF" run --root "$kroot2" --base "$base" --contest fx \
+    --zone _all --arm wall --repeat 1 --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1
+  bash "$SELF" triage --root "$kroot2" --contest fx --arm wall --repeat 1 > /dev/null 2>&1
+  local wz; wz="$(awk -F'\t' '$1 ~ /^EX-[123]$/ { printf "%s=%s ", $1, $7 }' "$wtsv" 2>/dev/null)"
+  bash "$SELF" void-mark --arm-dir "$wall" --reason "arm-wide self-test void" > /dev/null 2>&1
+  bash "$SELF" triage --root "$kroot2" --contest fx --arm wall --repeat 1 > /dev/null 2>&1
+  if [ "$wz" = "EX-1=unmeasured EX-2=generation EX-3=unmeasured " ] \
+     && [ "$(head -1 "$wall/void.txt" | cut -f1-2)" = "$(printf 'VOID\toperator')" ] && grep -q $'^ALSO\tzone-incomplete\t' "$wall/void.txt" \
+     && [ "$(awk -F'\t' '$1 ~ /^EX-[123]$/ && $7 == "unmeasured" { n++ } END { print n + 0 }' "$wtsv")" = 3 ]; then
+    ok "whole-contest arm: a dead zone leaves only its rows unmeasured ($wz); an arm-wide VOID on top voids EVERY row, both classes on record"
+  else
+    bad "whole-contest arm scoping wrong: before=[$wz] void=$(tr '\n\t' '| ' < "$wall/void.txt" 2>/dev/null)"
+    awk -F'\t' '{ print $1, $7, $8 }' "$wtsv" 2>/dev/null | sed 's/^/         | /'
   fi
   printf 'BACKEND=mock\nMODEL=claude-opus-4-8\nREHUNT_TRANSPORT=0\n' > "$work/p-norehunt.env"
   local ro="$root/arms/fx/src_pool/rhoff-r1"
@@ -1660,7 +1705,7 @@ cmd_self_test() {
   STUB_FAIL_CALLS=3 STUB_FAIL_STATE="$work/fail-rhoff" bash "$SELF" run --root "$root" --base "$base" --contest fx \
     --zone src_pool --arm rhoff --repeat 1 --profile "$work/p-norehunt.env" --checkout "$co" --agentis "$stub" > /dev/null 2>&1
   if [ "$(meta_get "$ro/run.meta" rehunt_rc)" = skip-off ] && [ ! -e "$ro/fx/zone-hunt-out/discovery/src_pool.attempt-1" ] \
-     && [ "$(cut -f1-2 "$ro/void.txt")" = "$(printf 'VOID\ttransport')" ]; then
+     && [ "$(head -1 "$ro/void.txt" | cut -f1-2)" = "$(printf 'VOID\ttransport')" ]; then
     ok "REHUNT_TRANSPORT=0 turns the re-hunt off (rehunt_rc=skip-off) and the failed cell VOIDs the arm"
   else
     bad "REHUNT_TRANSPORT=0: rehunt_rc=$(meta_get "$ro/run.meta" rehunt_rc) void=$(head -1 "$ro/void.txt" 2>/dev/null)"
@@ -1740,7 +1785,7 @@ cmd_self_test() {
   fi
   bash "$SELF" void-mark --arm-dir "$droot/arms/fx/src_feed/mock-r1" --reason "self-test operator void" > /dev/null 2>&1
   bash "$SELF" triage --root "$droot" --contest fx --arm mock --repeat 1 > /dev/null 2>&1
-  if [ "$(cut -f1-2 "$droot/arms/fx/src_feed/mock-r1/void.txt")" = "$(printf 'VOID\toperator')" ] \
+  if [ "$(head -1 "$droot/arms/fx/src_feed/mock-r1/void.txt" | cut -f1-2)" = "$(printf 'VOID\toperator')" ] \
      && awk -F'\t' '$1 == "EX-2" { f = ($7 == "unmeasured") } END { exit f ? 0 : 1 }' "$tsv" \
      && awk -F'\t' '$1 == "EX-1" { f = ($7 == "refuted") } END { exit f ? 0 : 1 }' "$tsv"; then
     ok "void-mark -> VOID operator; the exam root's triage then reads that zone's rows as unmeasured (EX-2), the VALID zone's as before (EX-1)"
@@ -1765,13 +1810,13 @@ cmd_self_test() {
   bash "$SELF" drive --root "$wroot" --plan "$wplan" --resume --agentis "$stub" > /dev/null 2>&1; rc=$?
   if [ "$rc" -eq 0 ] && grep -q $'\tSKIP\tfx\tsrc_pool\twk\tr1\tvoid=weekly-limit' "$wprog" \
      && [ "$(head -1 "$wroot/arms/fx/src_feed/wk-r1/void.txt" 2>/dev/null)" = VALID ] && [ ! -e "$wroot/logs/wplan.halted" ] \
-     && [ "$(cut -f1-2 "$wa/void.txt")" = "$(printf 'VOID\tweekly-limit')" ]; then
+     && [ "$(head -1 "$wa/void.txt" | cut -f1-2)" = "$(printf 'VOID\tweekly-limit')" ]; then
     ok "--resume never re-runs a VOID row (reported, left alone) and runs the unstarted row"
   else
     bad "--resume over a VOID row: exit $rc"; tail -4 "$wprog" 2>/dev/null | sed 's/^/         | /'
   fi
   bash "$SELF" drive --root "$wroot" --plan "$wplan" --retry-void --agentis "$stub" > /dev/null 2>&1; rc=$?
-  if [ "$rc" -eq 0 ] && [ "$(cut -f1-2 "$wa.void-1/void.txt" 2>/dev/null)" = "$(printf 'VOID\tweekly-limit')" ] \
+  if [ "$rc" -eq 0 ] && [ "$(head -1 "$wa.void-1/void.txt" 2>/dev/null | cut -f1-2)" = "$(printf 'VOID\tweekly-limit')" ] \
      && [ "$(head -1 "$wa/void.txt" 2>/dev/null)" = VALID ] && grep -q $'\tRETRY\tfx\tsrc_pool\twk\tr1\tvoid=weekly-limit kept as wk-r1.void-1' "$wprog" \
      && grep -q $'\tSKIP\tfx\tsrc_feed\twk\tr1\tdone' "$wprog" && [ -f "$wroot/logs/wplan.done" ]; then
     ok "--retry-void keeps the VOID attempt as wk-r1.void-1 and re-runs that row fresh (VALID); the VALID row is skipped"

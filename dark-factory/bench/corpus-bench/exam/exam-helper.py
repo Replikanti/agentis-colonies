@@ -68,7 +68,11 @@
 #                                      `failed` / `in_flight`, ...). An .untraced cell is a METRIC.
 #   void-check <arm-dir> <void-patterns.tsv>
 #                                      M3 arm verdict: writes <arm-dir>/void.txt = `VALID` or
-#                                      `VOID<TAB><class><TAB><evidence ref>` and prints it. First match wins:
+#                                      `VOID<TAB><class><TAB><evidence ref>` (+ one `ALSO` line per further class)
+#                                      and prints line 1; also deep-not-judged.tsv (STAGE 4.5 cells that finished
+#                                      without a judgement). Classes are RANKED — see ARM_WIDE / void_findings
+#                                      below for the one precedence (usage limit > the run > operator /
+#                                      attribution > never-finished > signatures). The classes:
 #                                      hard-stop (rc / rehunt_rc / deep_rc 124), killed (a call or run itself
 #                                      signalled), the pattern rows in file order, all-cells-failed (a staged
 #                                      zone whose final cells ALL failed), transport (a final cell still failed
@@ -910,14 +914,62 @@ class ArmLogs(object):
         return out
 
 
-# STAGE 4.5 rows whose engine died mid-way: run-zone-hunt.sh prints this and CONTINUES (exit 0) on the legacy
-# path; the #2258 scheduler records ENGINE_FAILED in deep-hunt/cell-status.tsv. A budget outcome the profile asked
-# for (TIMEOUT, SKIPPED_BUDGET, SKIPPED_TARGET_BROKEN) is a measured result, not a void.
+# STAGE 4.5 cell statuses (lib/deep-hunt-cell.sh vocabulary). A cell the engine never finished — ENGINE_FAILED
+# (crash / watchdog kill), TRANSIENT_ERROR (a flat-cyborg transport crash that persisted) — is `deep-incomplete`
+# (VOID, re-run via --retry-void). A cell that finished WITHOUT a judgement — HARNESS_ERROR, TIMEOUT, SKIPPED_*,
+# LOW_COVERAGE, LOW_PROMISE_COVERAGE — is recorded per row in deep-not-judged.tsv: not a void (breadth scores
+# stand), but triage never credits a deep-hunt examination there. On the legacy (no-scheduler) path the status is
+# the aggregate log's last INVARIANT| verdict; no verdict + a terminal transport error = TRANSIENT_ERROR, no verdict
+# at all = HARNESS_ERROR (the engine's own mapping); run-zone-hunt.sh's "failed ...; continuing" line = ENGINE_FAILED.
 _DEEP_FAIL_RE = re.compile(r"\[deep-hunt\] run-invariant-hunt\.sh failed.* for zone '([^']*)'")
+DEEP_INCOMPLETE = ("ENGINE_FAILED", "TRANSIENT_ERROR")
+DEEP_NOT_JUDGED = ("HARNESS_ERROR", "TIMEOUT", "SKIPPED_BUDGET", "SKIPPED_TARGET_BROKEN", "LOW_COVERAGE",
+                   "LOW_PROMISE_COVERAGE")
+_AGG_CANDIDATE_RE = re.compile(r"_c[0-9]+\.log$")
+_TRANSPORT_TERMINAL_RE = re.compile(r"^(?!.*\[LLM retry).*LLM transport error:")
+
+
+def deep_cells(arm, out):
+    """[(zone, cell, status, ref)] — one row per STAGE 4.5 cell: the scheduler ledger when present, else each
+    deep-hunt/<zone>-<class>/run aggregate log."""
+    rows = []
+    if not out:
+        return rows
+    dh = os.path.join(out, "deep-hunt")
+    cs = os.path.join(dh, "cell-status.tsv")
+    if os.path.isfile(cs):
+        with open(cs, encoding="utf-8", errors="replace") as fh:
+            for n, line in enumerate(fh, 1):
+                f = line.rstrip("\n").split("\t")
+                if len(f) >= 4 and f[0] and not f[0].startswith("#"):
+                    rows.append((f[0], "%s:%s:%s" % (f[0], f[1], f[2]), f[3], "%s:%d" % (os.path.relpath(cs, arm), n)))
+        return rows
+    for c in (sorted(os.listdir(dh)) if os.path.isdir(dh) else []):
+        rd = os.path.join(dh, c, "run")
+        if not os.path.isdir(rd):
+            continue
+        for f in sorted(os.listdir(rd)):
+            if not (f.startswith("invariant_") and f.endswith(".log")) or _AGG_CANDIDATE_RE.search(f):
+                continue
+            p = os.path.join(rd, f)
+            verdict, transport = "", False
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    i = line.find("INVARIANT|")
+                    if i >= 0:
+                        parts = line[i:].strip().split("|")
+                        if len(parts) >= 3:
+                            verdict = parts[2].split()[0] if parts[2].split() else ""
+                    elif _TRANSPORT_TERMINAL_RE.search(line):
+                        transport = True
+            if not verdict:
+                verdict = "TRANSIENT_ERROR" if transport else "HARNESS_ERROR"
+            rows.append((c.rsplit("-", 1)[0], c, verdict, os.path.relpath(p, arm)))
+    return rows
 
 
 def deep_failures(arm, out):
-    """[(zone, evidence ref)] of STAGE 4.5 rows that failed mid-way."""
+    """[(zone, evidence ref)] of STAGE 4.5 rows the engine never finished."""
     res = []
     for log in ("deep.log", "run.log", "rehunt.log"):
         p = os.path.join(arm, log)
@@ -928,14 +980,13 @@ def deep_failures(arm, out):
                 m = _DEEP_FAIL_RE.search(line)
                 if m:
                     res.append((m.group(1), "%s:%d" % (log, n)))
-    cs = os.path.join(out, "deep-hunt", "cell-status.tsv") if out else ""
-    if cs and os.path.isfile(cs):
-        with open(cs, encoding="utf-8", errors="replace") as fh:
-            for n, line in enumerate(fh, 1):
-                f = line.rstrip("\n").split("\t")
-                if len(f) >= 4 and f[3] == "ENGINE_FAILED":
-                    res.append((f[0], "%s:%d" % (os.path.relpath(cs, arm), n)))
+    res.extend((z, "%s=%s" % (ref, st)) for z, _, st, ref in deep_cells(arm, out) if st in DEEP_INCOMPLETE)
     return res
+
+
+def deep_not_judged(arm, out):
+    """[(zone, cell, status, ref)] of STAGE 4.5 cells that finished without a judgement."""
+    return [r for r in deep_cells(arm, out) if r[2] in DEEP_NOT_JUDGED]
 
 
 def match_pattern(logs, rx):
@@ -1036,65 +1087,115 @@ def void_zones(arm, pfile):
     return res
 
 
-def void_verdict(arm, pfile):
+# The ONE precedence of VOID classes (lowest rank wins void.txt line 1; every other class found is kept as an
+# `ALSO` line). An arm-wide class always outranks a zone-scoped one, so a whole-contest arm is never partly scored
+# off an arm that is void as a whole, and a usage-limit signal always surfaces so `drive` HALTS:
+#   0  weekly-limit                a usage-limit notice (a `weekly-limit` pattern row, or a <synthetic> usage-limit
+#                                  record: attrib.tsv gate=usage-limit) — HALTS the plan
+#   1  incomplete, hard-stop, killed          the run itself (arm-wide)
+#   2  operator, attribution      a human VOID; MIXED / CONTAMINATED / wrong family / refusal / missing (arm-wide)
+#   3  zone-incomplete, deep-incomplete, promise-lister     a zone / STAGE 4.5 row / line that never finished
+#   4  the other pattern rows (backend-no-reply, transport, ... in file order), all-cells-failed, transport (a
+#      cell still failed after the re-hunt), no-cells                                    (zone-scoped signatures)
+ARM_WIDE = ("weekly-limit", "incomplete", "hard-stop", "killed", "operator", "attribution")
+
+
+def void_findings(arm, pfile):
+    """-> [(rank, class, ref)] — every VOID finding of an arm, in precedence order."""
     meta = read_meta(os.path.join(arm, "run.meta"))
     if meta is None:
-        return ("VOID", "incomplete", "run.meta")
+        return [(1, "incomplete", "run.meta")]
     rel = lambda p: os.path.relpath(p, arm)  # noqa: E731
-    for k in ("rc", "rehunt_rc", "deep_rc"):
-        if meta.get(k) == "124":
-            return ("VOID", "hard-stop", "run.meta:%s=124" % k)
-    for k in ("rc", "rehunt_rc", "deep_rc"):
-        v = meta.get(k, "")
-        if (_is_int(v) and int(v) >= 128) or v == "skip-killed":
-            return ("VOID", "killed", "run.meta:%s=%s" % (k, v))
+    res = []
     out = _zone_hunt_out(arm, meta)
     logs = ArmLogs(out) if out else None
+    pats = load_patterns(pfile)
+    # rank 0: usage limit, from the logs or from attribution
     if logs is not None:
-        for cls, rx, where, _ in load_patterns(pfile):
-            hit = match_pattern(logs.scope(where), rx)
-            if hit:
-                return ("VOID", cls, "%s:%d" % (rel(hit[0]), hit[1]))
-        for z in sorted(logs.final_cells):
-            cells = logs.final_cells[z]
-            if cells and all(_failed(p) for p in cells):
-                return ("VOID", "all-cells-failed", "%s (%d cells)" % (rel(os.path.dirname(cells[0])), len(cells)))
-        failed = logs.failed_cells()
-        if failed:
-            m = [x for x in FAIL_MARKERS if os.path.exists(failed[0] + x)][0]
-            return ("VOID", "transport", rel(failed[0] + m))
-        flist = logs.failed_listers()
-        if flist:
-            m = [x for x in FAIL_MARKERS if os.path.exists(flist[0] + x)][0]
-            return ("VOID", "promise-lister", rel(flist[0] + m))
-        zj = os.path.join(out, "map", "zones.json")
-        staged = [str(z.get("id")) for z in load_zones(zj) if z.get("id")] if os.path.isfile(zj) else []
-        inc = logs.incomplete_zones(staged)
-        if inc:
-            return ("VOID", "zone-incomplete", "%s/%s" % (rel(out), inc[0][1]))
-        dfail = deep_failures(arm, out)
-        if dfail:
-            return ("VOID", "deep-incomplete", "%s (zone %s)" % (dfail[0][1], dfail[0][0]))
-        for z in staged:
-            if not logs.final_cells.get(z):
-                return ("VOID", "no-cells", "%s/discovery/%s/run" % (rel(out), z))
+        for cls, rx, where, _ in pats:
+            if cls == HALT_CLASS:
+                hit = match_pattern(logs.scope(where), rx)
+                if hit:
+                    res.append((0, cls, "%s:%d" % (rel(hit[0]), hit[1])))
+                    break
+    attrib_rows = []
     at = os.path.join(arm, "attrib.tsv")
     if os.path.isfile(at):
         with open(at, encoding="utf-8") as fh:
-            for line in fh.read().split("\n")[1:]:
-                f = line.split("\t")
-                if len(f) >= 9 and f[8] == "usage-limit":
-                    return ("VOID", HALT_CLASS, "attrib.tsv:%s=synthetic-usage-limit" % f[0])
-                if len(f) >= 9 and f[8] not in ("ok", "not-run", "skipped-mock"):
-                    return ("VOID", "attribution", "attrib.tsv:%s=%s(%s)" % (f[0], f[6], f[8]))
-    elif meta.get("backend", "") != "mock":
-        return ("VOID", "attribution", "attrib.tsv:missing")
+            attrib_rows = [ln.split("\t") for ln in fh.read().split("\n")[1:] if ln.strip()]
+    for f in attrib_rows:
+        if len(f) >= 9 and f[8] == "usage-limit":
+            res.append((0, HALT_CLASS, "attrib.tsv:%s=synthetic-usage-limit" % f[0]))
+            break
+    # rank 1: the run itself
+    for k in ("rc", "rehunt_rc", "deep_rc"):
+        if meta.get(k) == "124":
+            res.append((1, "hard-stop", "run.meta:%s=124" % k))
+            break
+    for k in ("rc", "rehunt_rc", "deep_rc"):
+        v = meta.get(k, "")
+        if (_is_int(v) and int(v) >= 128) or v == "skip-killed":
+            res.append((1, "killed", "run.meta:%s=%s" % (k, v)))
+            break
+    # rank 2: operator, attribution
     op = os.path.join(arm, "void.operator")
     if os.path.isfile(op):
         with open(op, encoding="utf-8", errors="replace") as fh:
             reason = (fh.readline().strip() or "operator").replace("\t", " ")
-        return ("VOID", "operator", "void.operator:" + reason)
-    return ("VALID", "", "")
+        res.append((2, "operator", "void.operator:" + reason))
+    if attrib_rows:
+        for f in attrib_rows:
+            if len(f) >= 9 and f[8] not in ("ok", "not-run", "skipped-mock", "usage-limit"):
+                res.append((2, "attribution", "attrib.tsv:%s=%s(%s)" % (f[0], f[6], f[8])))
+                break
+    elif not os.path.isfile(at) and meta.get("backend", "") != "mock":
+        res.append((2, "attribution", "attrib.tsv:missing"))
+    if logs is not None:
+        zj = os.path.join(out, "map", "zones.json")
+        staged = [str(z.get("id")) for z in load_zones(zj) if z.get("id")] if os.path.isfile(zj) else []
+        # rank 3: never finished
+        inc = logs.incomplete_zones(staged)
+        if inc:
+            res.append((3, "zone-incomplete", "%s/%s" % (rel(out), inc[0][1])))
+        dfail = deep_failures(arm, out)
+        if dfail:
+            res.append((3, "deep-incomplete", "%s (zone %s)" % (dfail[0][1], dfail[0][0])))
+        flist = logs.failed_listers()
+        if flist:
+            m = [x for x in FAIL_MARKERS if os.path.exists(flist[0] + x)][0]
+            res.append((3, "promise-lister", rel(flist[0] + m)))
+        # rank 4: zone-scoped signatures
+        for cls, rx, where, _ in pats:
+            if cls == HALT_CLASS:
+                continue
+            hit = match_pattern(logs.scope(where), rx)
+            if hit:
+                res.append((4, cls, "%s:%d" % (rel(hit[0]), hit[1])))
+        for z in sorted(logs.final_cells):
+            cells = logs.final_cells[z]
+            if cells and all(_failed(p) for p in cells):
+                res.append((4, "all-cells-failed", "%s (%d cells)" % (rel(os.path.dirname(cells[0])), len(cells))))
+                break
+        failed = logs.failed_cells()
+        if failed:
+            m = [x for x in FAIL_MARKERS if os.path.exists(failed[0] + x)][0]
+            res.append((4, "transport", rel(failed[0] + m)))
+        for z in staged:
+            if not logs.final_cells.get(z):
+                res.append((4, "no-cells", "%s/discovery/%s/run" % (rel(out), z)))
+                break
+    # stable: by rank, then discovery order within a rank; one line per class
+    seen, ordered = set(), []
+    for r in sorted(enumerate(res), key=lambda t: (t[1][0], t[0])):
+        if r[1][1] not in seen:
+            seen.add(r[1][1])
+            ordered.append(r[1])
+    return ordered
+
+
+def void_verdict(arm, pfile):
+    f = void_findings(arm, pfile)
+    return ("VOID", f[0][1], f[0][2]) if f else ("VALID", "", "")
 
 
 def cmd_void_check(argv):
@@ -1103,11 +1204,16 @@ def cmd_void_check(argv):
     arm, pfile = argv
     if not os.path.isdir(arm):
         die(3, "not an arm dir: " + arm)
-    v = void_verdict(arm, pfile)
-    line = "VALID" if v[0] == "VALID" else "VOID\t%s\t%s" % (v[1], v[2])
-    write_atomic(os.path.join(arm, "void.txt"), line + "\n")
-    zones = void_zones(arm, pfile) if v[0] != "VALID" else []
+    finds = void_findings(arm, pfile)
+    line = "VOID\t%s\t%s" % (finds[0][1], finds[0][2]) if finds else "VALID"
+    # line 1 = the verdict; one `ALSO<TAB>class<TAB>ref` line per further class (so an arm-wide and a zone-scoped
+    # VOID are both on record).
+    write_atomic(os.path.join(arm, "void.txt"), line + "\n" + "".join(
+        "ALSO\t%s\t%s\n" % (c, r) for _, c, r in finds[1:]))
+    zones = void_zones(arm, pfile) if finds else []
     write_atomic(os.path.join(arm, "void.zones"), "".join("%s\t%s\t%s\n" % z for z in zones))
+    write_atomic(os.path.join(arm, "deep-not-judged.tsv"), "".join(
+        "%s\t%s\t%s\t%s\n" % r for r in deep_not_judged(arm, _zone_hunt_out(arm, read_meta(os.path.join(arm, "run.meta")) or {}))))
     sys.stdout.write(line + "\n")
     return 0
 
