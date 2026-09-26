@@ -34,6 +34,34 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   measurement on the sealed reserve set is an operator step after merge. **Side effect shared by every arm:**
   `hunter.ag`'s slice for the last class runs to EOF, so C26 cells no longer carry the trailing usage-notes block
   (C27 cells inherit it); C26's own text is byte-unchanged.
+- **Held-out exam runner core — `bench/corpus-bench/exam/exam.sh` (#2262 M2).** The held-out measurements ran on
+  host-only harness scripts with per-contest `case` tables and pinned host paths. The runner replaces them with a
+  contest-agnostic tool whose every contest / arm / path fact is data (the frozen base's `freeze.meta`, a profile
+  file, a plan TSV kept outside the repo): `freeze` (map + briefs from a pinned, clean checkout, run from that
+  checkout; the #2231 prompt-visibility pre-flight on the checkout, a post-freeze grep of `map/` + `briefs/` for
+  the bench, finding ids, the judging repo and audit platforms plus `--deny-pattern`s, a refusal of
+  mechanical-fallback briefs, `freeze.sha256` + `freeze.meta`; `--code-subdir` or a #2255 multi-root clone via
+  `--project-roots`), `plan` (one row per frozen zone, a zone list, or one whole-contest `_all` row), `stage`
+  (drift check against `freeze.sha256`, copies map/briefs/truth, symlinks code/judging, zone filter, the
+  profile's `INJECT_CLASSES` once each, a coverage `gaps` self-check), `run` (breadth `timeout
+  run-zone-hunt.sh --rehunt-gaps` with the profile's `env.*` knobs, then optionally STAGE 4.5 `--deep-hunt
+  --deep-hunt-only` over the same output with its `deep.*` knobs; a hard stop kills what is left under the arm;
+  an EXIT trap always writes `run.meta`, the `.done` marker and a `MANIFEST.tsv` row), `drive` (sequential rows
+  under a PID lock, START/END progress lines, a final `.done`, re-exec from a snapshot of `exam/`, a per-plan
+  checkout HEAD pin, `--resume`, and a hand-off to `triage.py` per (contest, arm, repeat)), `triage`, and `kill`
+  (kill-by-path over `ps` + `/proc/<pid>/cwd`, never itself or its ancestors, TERM -> grace -> KILL -> check).
+  Profiles (`profiles/*.env`: `control`, `exam`, `exam-plus`, `mock`) use a strict grammar; every pipeline call
+  gets `env -u` for every env name the checkout's pipeline reads (derived by grep at run time) plus the
+  `profiles/KNOBS` names and prefixes, minus explicit host/auth allowlist lines, so a knob exported in the
+  operator's shell never leaks into an arm that does not set it; the effective knob env is recorded in
+  `run.meta`. Claude Code's own knobs (`CLAUDE_*`, `ANTHROPIC_*`, `MAX_THINKING_TOKENS`, `DISABLE_*`, `MCP_*`,
+  `BASH_*_TIMEOUT_MS`) are cleared too (only the OAuth token passes, recorded masked). `DF_NO_SANDBOX` is refused;
+  the only live backend is `flat-cyborg` (the `claude` backend runs unsandboxed), and it needs bwrap. Ground truth lives only in a sibling
+  `_gt/` view of each arm. `run.pid` + process-group handling: a live arm is never re-staged, `kill --path` stops
+  its controller, TERM to `drive` stops its run, and a killed breadth (rc >= 128) never starts STAGE 4.5. `exam.sh self-test` drives a
+  mock two-zone exam end to end over the new `fixtures/exam/` with a dash-safe stub agentis (no LLM, no
+  network); `demo-holdout-exam.sh` runs it and source-guards the runner. Run-window attribution and VOID
+  handling are #2262 M3.
 
 - **Held-out exam: per-row triage scorer `bench/corpus-bench/triage.py` (#2262 M1).** Every rare row of a
   held-out exam was scored by hand (candidates / verified findings at the row's function, cell-log mentions,

@@ -1,0 +1,33 @@
+# KNOBS — the exam runner's env-clearing policy (exam-helper.py clear-list). Every pipeline call the runner
+# starts (map-zones / gen-briefs at freeze, both run-zone-hunt.sh calls at run) gets `env -u` for:
+#   * every env NAME the tool checkout's pipeline READS (derived at run time by grepping its .sh / .py / .ag for
+#     `${NAME:-}`-style expansions, os.environ / os.getenv and getenv() — nothing to maintain by hand);
+#   * every env./deep./pass. name of the shipped profiles;
+#   * every NAME line below;
+#   * every variable of the caller's environment matching a PREFIX* line below (catches a knob read in a form
+#     the grep cannot see, e.g. a bare `$NAME` test);
+# EXCEPT the !NAME lines below (host plumbing and auth the calls need), the three Claude Code killswitches (the
+# runner sets them), and the running profile's own pass.<NAME>s. Then the profile's env./deep. knobs are applied.
+# So a knob exported in the operator's shell never reaches an arm that does not set it ("pass nothing when off").
+# DF_NO_SANDBOX is never cleared silently: set in the caller's shell or named by a profile, it is REFUSED.
+# `#` starts a comment; entries are whitespace-separated.
+
+# names (in addition to the derived reads)
+CLAUDECODE ETH_RPC_URL RPC_URL GH_TOKEN GITHUB_TOKEN
+# Claude Code's own env knobs (reasoning budget, API endpoint, config/transcript dir, tool timeouts)
+MAX_THINKING_TOKENS MAX_MCP_OUTPUT_TOKENS BASH_DEFAULT_TIMEOUT_MS BASH_MAX_TIMEOUT_MS BASH_MAX_OUTPUT_LENGTH
+API_TIMEOUT_MS USE_BUILTIN_RIPGREP CLAUDE_CONFIG_DIR
+
+# prefixes — every exported variable starting with one of these is cleared
+DF_* DEEP_HUNT_* DEEP_CELL_* DH_* LLM_* FORK_* FORGE_* FLAT_CYBORG_* CLAUDE_CODE_* VECTOR_HUNT_* SLICE_*
+HUNT_* INV_* SYM_* POC_* HALMOS_* MONITOR_* DARK_FACTORY_* EXTERNAL_* ONCHAIN_* BOUNTY_*
+SEVERITY_* GROUND_* PARAM_* FUNCTION_* BREADTH_* OPERATIONALIZE_* CALLEE_* REFUTE_* ZONE_*
+# Claude Code / Anthropic client knobs (the backend's auth token below is the only one let through)
+ANTHROPIC_* CLAUDE_* DISABLE_* MCP_* VERTEX_* AWS_BEARER_TOKEN_*
+
+# never cleared: host plumbing + auth (a pipeline call needs them to run at all)
+!HOME !TMPDIR !PATH !PWD !OLDPWD !SHELL !USER !LOGNAME !LANG !TERM !IFS !BASH_SOURCE
+!XDG_STATE_HOME !XDG_CONFIG_HOME !XDG_DATA_HOME !XDG_CACHE_HOME !XDG_RUNTIME_DIR
+!DARK_FACTORY_DIR
+# auth the flat-cyborg backend may need (recorded masked in run.meta, never by value)
+!CLAUDE_CODE_OAUTH_TOKEN
