@@ -51,8 +51,11 @@
 #                                      top-level dir = the stage), maps each to its transcript store dir by exact
 #                                      name, keeps a transcript only when its records' `cwd` confirms it (or it
 #                                      carries none), and runs model-attribution.py --json --stage --since --until
-#                                      per stage. A `--stage` is REQUIRED: RUN dirs with no in-window transcript =
-#                                      attribution-missing. `--other` covers every other top-level dir (a stage
+#                                      per stage (--split-synthetic). A `--stage` is REQUIRED: RUN dirs with no
+#                                      in-window transcript = attribution-missing. A refusal in the window = gate
+#                                      `refusal`; a <synthetic> usage-limit record = gate `usage-limit`; a
+#                                      <synthetic> API-error record alone is counted (transient_synthetic) and
+#                                      never fails the gate. `--other` covers every other top-level dir (a stage
 #                                      that made no model call there is not-run); `--exclude` skips one. Gate per
 #                                      stage: PURE-<family of --model, or --family> -> ok. `--model -` (the mock
 #                                      backend) writes one skipped-mock row. Writes <out> (TSV); exit 0.
@@ -60,16 +63,27 @@
 #                                      M3 one-shot re-hunt trigger: exit 0 (and a reason line) when a final-attempt
 #                                      discovery cell carries .timeout / .novalid or a `transport` pattern match;
 #                                      exit 4 when a `weekly-limit` pattern matched anywhere (a re-hunt would void
-#                                      too); exit 1 when nothing needs a re-hunt. An .untraced cell is a METRIC.
+#                                      too); exit 1 when nothing needs a re-hunt. Also triggered by a failed
+#                                      promise-lister call and a zone-incomplete zone (the coverage record's
+#                                      `failed` / `in_flight`, ...). An .untraced cell is a METRIC.
 #   void-check <arm-dir> <void-patterns.tsv>
 #                                      M3 arm verdict: writes <arm-dir>/void.txt = `VALID` or
 #                                      `VOID<TAB><class><TAB><evidence ref>` and prints it. First match wins:
 #                                      hard-stop (rc / rehunt_rc / deep_rc 124), killed (a call or run itself
 #                                      signalled), the pattern rows in file order, all-cells-failed (a staged
 #                                      zone whose final cells ALL failed), transport (a final cell still failed
-#                                      after the re-hunt), no-cells (a staged zone with no cell log at all),
-#                                      attribution (attrib.tsv: MIXED / CONTAMINATED / wrong family / missing),
-#                                      operator (void.operator, written by `exam.sh void-mark`).
+#                                      after the re-hunt), promise-lister (a failed run/promises/*.lister call),
+#                                      zone-incomplete (the coverage record says a staged zone's run-discovery.sh
+#                                      died / never finished — `failed`, `in_flight`, ... —, fewer cells than
+#                                      planned, or an empty final cell log with no marker), deep-incomplete (a
+#                                      STAGE 4.5 engine that died mid-way: the `run-invariant-hunt.sh failed`
+#                                      line, or ENGINE_FAILED in deep-hunt/cell-status.tsv), no-cells (a staged
+#                                      zone with no cell log at all), weekly-limit from attrib.tsv (a <synthetic>
+#                                      usage-limit record), attribution (MIXED / CONTAMINATED / wrong family /
+#                                      refusal / missing), operator (void.operator, `exam.sh void-mark`).
+#                                      Also writes <arm-dir>/void.zones: EVERY zone-scoped defect
+#                                      (`zone<TAB>class<TAB>ref`), so a whole-contest arm's triage can mark
+#                                      exactly those zones unmeasured.
 #
 # Exit: 0 ok ; 1 contam-scan found a violation ; 2 usage / profile grammar error ; 3 unreadable or
 #       wrong-shape input.
@@ -641,7 +655,8 @@ def _parse_window(spec, what):
     return (since if since not in ("", "-") else ""), (until if until not in ("", "-") else "")
 
 
-ATTRIB_HEADER = "stage\trun_dirs\ttranscripts\tdropped\trequests\tfallback\tverdict\twant\tgate\tsince\tuntil"
+ATTRIB_HEADER = ("stage\trun_dirs\ttranscripts\tdropped\trequests\tfallback\tverdict\twant\tgate\tsince\tuntil"
+                 "\trefusal\ttransient_synthetic\tsynthetic_limit")
 
 
 def cmd_attrib(argv):
@@ -680,7 +695,7 @@ def cmd_attrib(argv):
         die(2, "usage: attrib --root <dir> --transcripts-root <dir> --model <id|-> --tsv <out> --stage <n>=<s>,<u>...")
     rows = [ATTRIB_HEADER]
     if model == "-":
-        rows.append("*\t-\t-\t-\t-\t-\t-\t-\tskipped-mock\t-\t-")
+        rows.append("*\t-\t-\t-\t-\t-\t-\t-\tskipped-mock\t-\t-\t-\t-\t-")
         write_atomic(tsv, "\n".join(rows) + "\n")
         return 0
     mod, mpath = _attribution_module()
@@ -696,13 +711,13 @@ def cmd_attrib(argv):
         dirs = found.get(name, [])
         if not dirs:
             if required:
-                rows.append("%s\t0\t0\t0\t0\t0\t-\t%s\tnot-run\t%s\t%s" % (name, want, since or "-", until or "-"))
+                rows.append("%s\t0\t0\t0\t0\t0\t-\t%s\tnot-run\t%s\t%s\t0\t0\t0" % (name, want, since or "-", until or "-"))
             continue
         paths, dropped = stage_transcripts(dirs, troot)
-        req = fb = 0
+        req = fb = refusal = synth = synth_limit = 0
         verdict = "-"
         if paths:
-            cmd = [sys.executable, mpath, "--json", "--stage", name]
+            cmd = [sys.executable, mpath, "--json", "--split-synthetic", "--stage", name]
             if since:
                 cmd += ["--since", since]
             if until:
@@ -713,14 +728,24 @@ def cmd_attrib(argv):
                 die(3, "attrib: model-attribution.py failed for stage %s: %s" % (name, res.stderr.strip()))
             agg = json.loads(res.stdout).get(name, {})
             req, fb, verdict = agg.get("requests", 0), agg.get("fallback", 0), agg.get("verdict", "-")
-        if req == 0:
+            refusal = agg.get("refusal", 0)
+            synth, synth_limit = agg.get("transient_synthetic", 0), agg.get("synthetic_limit", 0)
+        # A <synthetic> usage-limit notice in the window: the run hit the limit (void-check -> weekly-limit). A
+        # refusal is an ERROR, never a pass (the killswitches make it one), even when a retry then answered.
+        # A <synthetic> API-error record alone is transient (the cell's own retry answered): counted, not failed.
+        if synth_limit > 0:
+            gate = "usage-limit"
+        elif req == 0:
             gate = "attribution-missing" if required else "not-run"
+        elif refusal > 0:
+            gate = "refusal"
         elif verdict == want:
             gate = "ok"
         else:
             gate = "fail"
-        rows.append("%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s" % (
-            name, len(dirs), len(paths), dropped, req, fb, verdict, want, gate, since or "-", until or "-"))
+        rows.append("%s\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%d\t%d\t%d" % (
+            name, len(dirs), len(paths), dropped, req, fb, verdict, want, gate, since or "-", until or "-",
+            refusal, synth, synth_limit))
     write_atomic(tsv, "\n".join(rows) + "\n")
     return 0
 
@@ -771,7 +796,8 @@ class ArmLogs(object):
     def __init__(self, out):
         self.out = out
         self.final_cells = {}      # zone -> [final-attempt hunt_*.log]
-        self.all_logs = []         # every model-call log (final + superseded + companions + refute + deep)
+        self.listers = {}          # zone -> [final-attempt promises/*.lister] (#2264 BREADTH_PROMISES lister calls)
+        self.all_logs = []         # every model-call log (final + superseded + companions + listers + refute + deep)
         disc = os.path.join(out, "discovery")
         try:
             names = sorted(os.listdir(disc))
@@ -796,6 +822,15 @@ class ArmLogs(object):
                         self.final_cells.setdefault(name, []).append(p)
                 elif ".log." in f and "-attempt-" in f:
                     self.all_logs.append(p)     # a re-asked attempt kept aside (.untraced-attempt-<n>, ...)
+            # The once-per-line promise lister (run/promises/<slug>.lister, validated like a cell: .novalid /
+            # .timeout on failure). A failed lister call means the line hunted WITHOUT the promises its profile set.
+            pd = os.path.join(rd, "promises")
+            for f in (sorted(os.listdir(pd)) if os.path.isdir(pd) else []):
+                if f.endswith(".lister"):
+                    lp = os.path.join(pd, f)
+                    self.all_logs.append(lp)
+                    if not superseded:
+                        self.listers.setdefault(name, []).append(lp)
         vdir = os.path.join(out, "verify")
         for gates in (sorted(os.listdir(vdir)) if os.path.isdir(vdir) else []):
             gd = os.path.join(vdir, gates)
@@ -823,6 +858,84 @@ class ArmLogs(object):
 
     def failed_cells(self):
         return [p for z in sorted(self.final_cells) for p in self.final_cells[z] if _failed(p)]
+
+    def failed_listers(self):
+        return [p for z in sorted(self.listers) for p in self.listers[z] if _failed(p)]
+
+    def empty_unmarked(self):
+        """Final cell logs that are EMPTY and carry no failure marker: the cell was cut off mid-call (its
+        run-discovery.sh died), so it neither answered nor was recorded as failed."""
+        out = []
+        for z in sorted(self.final_cells):
+            for p in self.final_cells[z]:
+                try:
+                    empty = os.path.getsize(p) == 0
+                except OSError:
+                    empty = False
+                if empty and not _failed(p):
+                    out.append((z, p))
+        return out
+
+    def incomplete_zones(self, staged):
+        """[(zone, reason)] for staged zones whose discovery did not COMPLETE: the coverage record says the zone's
+        run-discovery.sh died or never finished (`failed` — run-zone-hunt.sh records it and carries on with exit 0
+        —, `in_flight`, or any status that is not hunted / hunted_empty / hunted_degraded), it recorded fewer cells
+        than it planned, or a final cell log is empty without a failure marker."""
+        out = []
+        cov = os.path.join(self.out, "coverage", "zone-coverage.json")
+        rec = None
+        if os.path.isfile(cov):
+            try:
+                with open(cov, encoding="utf-8") as fh:
+                    rec = json.load(fh)
+            except (OSError, ValueError):
+                out.append(("-", "coverage/zone-coverage.json unreadable"))
+        zones = dict((str(z.get("id")), z) for z in (rec or {}).get("zones", []) if isinstance(z, dict))
+        for zid in staged:
+            z = zones.get(zid)
+            if z is None:
+                continue
+            st = z.get("status")
+            planned, cells = z.get("cells_planned"), z.get("cells")
+            if st not in ("hunted", "hunted_empty", "hunted_degraded"):
+                out.append((zid, "coverage/zone-coverage.json:%s=%s%s" % (
+                    zid, st, (" exit=%s" % z.get("exit_code")) if z.get("exit_code") not in (None, 0) else "")))
+            elif isinstance(planned, int) and isinstance(cells, int) and 0 < cells < planned:
+                out.append((zid, "coverage/zone-coverage.json:%s cells=%d<planned=%d" % (zid, cells, planned)))
+        seen = set(z for z, _ in out)
+        for z, p in self.empty_unmarked():
+            if z not in seen:
+                seen.add(z)
+                out.append((z, os.path.relpath(p, self.out) + " (empty, no marker)"))
+        return out
+
+
+# STAGE 4.5 rows whose engine died mid-way: run-zone-hunt.sh prints this and CONTINUES (exit 0) on the legacy
+# path; the #2258 scheduler records ENGINE_FAILED in deep-hunt/cell-status.tsv. A budget outcome the profile asked
+# for (TIMEOUT, SKIPPED_BUDGET, SKIPPED_TARGET_BROKEN) is a measured result, not a void.
+_DEEP_FAIL_RE = re.compile(r"\[deep-hunt\] run-invariant-hunt\.sh failed.* for zone '([^']*)'")
+
+
+def deep_failures(arm, out):
+    """[(zone, evidence ref)] of STAGE 4.5 rows that failed mid-way."""
+    res = []
+    for log in ("deep.log", "run.log", "rehunt.log"):
+        p = os.path.join(arm, log)
+        if not os.path.isfile(p):
+            continue
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            for n, line in enumerate(fh, 1):
+                m = _DEEP_FAIL_RE.search(line)
+                if m:
+                    res.append((m.group(1), "%s:%d" % (log, n)))
+    cs = os.path.join(out, "deep-hunt", "cell-status.tsv") if out else ""
+    if cs and os.path.isfile(cs):
+        with open(cs, encoding="utf-8", errors="replace") as fh:
+            for n, line in enumerate(fh, 1):
+                f = line.rstrip("\n").split("\t")
+                if len(f) >= 4 and f[3] == "ENGINE_FAILED":
+                    res.append((f[0], "%s:%d" % (os.path.relpath(cs, arm), n)))
+    return res
 
 
 def match_pattern(logs, rx):
@@ -875,19 +988,52 @@ def cmd_rehunt_check(argv):
             if hit:
                 sys.stdout.write("blocked: %s at %s:%d\n" % (cls, os.path.relpath(hit[0], out), hit[1]))
                 return 4
-    failed = logs.failed_cells()
+    failed = logs.failed_cells() + logs.failed_listers()
     transport = [p for cls, rx, where, _ in pats if cls == "transport"
                  for p in logs.scope(where) if match_pattern([p], rx)]
+    zj = os.path.join(out, "map", "zones.json")
+    staged = [str(z.get("id")) for z in load_zones(zj) if z.get("id")] if os.path.isfile(zj) else []
+    incomplete = logs.incomplete_zones(staged)
     need = sorted(set(failed) | set(transport))
-    if not need:
+    if not need and not incomplete:
         return 1
-    sys.stdout.write("failed=%d transport=%d first=%s\n" % (
-        len(failed), len(set(transport)), os.path.relpath(need[0], out)))
+    first = os.path.relpath(need[0], out) if need else incomplete[0][1]
+    sys.stdout.write("failed=%d transport=%d incomplete=%d first=%s\n" % (
+        len(failed), len(set(transport)), len(incomplete), first))
     return 0
 
 
 def _is_int(v):
     return bool(re.match(r"^[0-9]+$", v or ""))
+
+
+def void_zones(arm, pfile):
+    """[(zone, class, ref)] — EVERY zone-scoped defect of an arm (not first-match), so a whole-contest arm's
+    triage can mark exactly those zones unmeasured."""
+    meta = read_meta(os.path.join(arm, "run.meta")) or {}
+    out = _zone_hunt_out(arm, meta)
+    if not out:
+        return []
+    logs = ArmLogs(out)
+    res = []
+    for z in sorted(logs.final_cells):
+        rel = lambda p: os.path.relpath(p, arm)  # noqa: E731
+        failed = [p for p in logs.final_cells[z] if _failed(p)]
+        if failed:
+            res.append((z, "transport", rel(failed[0])))
+    for p in logs.failed_listers():
+        z = os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(p))))
+        res.append((z, "promise-lister", os.path.relpath(p, arm)))
+    zj = os.path.join(out, "map", "zones.json")
+    staged = [str(z.get("id")) for z in load_zones(zj) if z.get("id")] if os.path.isfile(zj) else []
+    for z, ref in logs.incomplete_zones(staged):
+        res.append((z, "zone-incomplete", "%s/%s" % (os.path.relpath(out, arm), ref)))
+    for z, ref in deep_failures(arm, out):
+        res.append((z, "deep-incomplete", ref))
+    for z in staged:
+        if not logs.final_cells.get(z):
+            res.append((z, "no-cells", "discovery/%s/run" % z))
+    return res
 
 
 def void_verdict(arm, pfile):
@@ -917,8 +1063,18 @@ def void_verdict(arm, pfile):
         if failed:
             m = [x for x in FAIL_MARKERS if os.path.exists(failed[0] + x)][0]
             return ("VOID", "transport", rel(failed[0] + m))
+        flist = logs.failed_listers()
+        if flist:
+            m = [x for x in FAIL_MARKERS if os.path.exists(flist[0] + x)][0]
+            return ("VOID", "promise-lister", rel(flist[0] + m))
         zj = os.path.join(out, "map", "zones.json")
         staged = [str(z.get("id")) for z in load_zones(zj) if z.get("id")] if os.path.isfile(zj) else []
+        inc = logs.incomplete_zones(staged)
+        if inc:
+            return ("VOID", "zone-incomplete", "%s/%s" % (rel(out), inc[0][1]))
+        dfail = deep_failures(arm, out)
+        if dfail:
+            return ("VOID", "deep-incomplete", "%s (zone %s)" % (dfail[0][1], dfail[0][0]))
         for z in staged:
             if not logs.final_cells.get(z):
                 return ("VOID", "no-cells", "%s/discovery/%s/run" % (rel(out), z))
@@ -927,6 +1083,8 @@ def void_verdict(arm, pfile):
         with open(at, encoding="utf-8") as fh:
             for line in fh.read().split("\n")[1:]:
                 f = line.split("\t")
+                if len(f) >= 9 and f[8] == "usage-limit":
+                    return ("VOID", HALT_CLASS, "attrib.tsv:%s=synthetic-usage-limit" % f[0])
                 if len(f) >= 9 and f[8] not in ("ok", "not-run", "skipped-mock"):
                     return ("VOID", "attribution", "attrib.tsv:%s=%s(%s)" % (f[0], f[6], f[8]))
     elif meta.get("backend", "") != "mock":
@@ -948,6 +1106,8 @@ def cmd_void_check(argv):
     v = void_verdict(arm, pfile)
     line = "VALID" if v[0] == "VALID" else "VOID\t%s\t%s" % (v[1], v[2])
     write_atomic(os.path.join(arm, "void.txt"), line + "\n")
+    zones = void_zones(arm, pfile) if v[0] != "VALID" else []
+    write_atomic(os.path.join(arm, "void.zones"), "".join("%s\t%s\t%s\n" % z for z in zones))
     sys.stdout.write(line + "\n")
     return 0
 

@@ -1,0 +1,2 @@
+src_pool	src/pool/Pool.sol	C1	TIMEOUT	cell-cap
+src_pool	src/pool/Pool.sol	C6	SKIPPED_BUDGET	zone-budget=60s

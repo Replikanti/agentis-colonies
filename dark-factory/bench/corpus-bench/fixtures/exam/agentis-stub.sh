@@ -14,6 +14,10 @@
 #                         that is how the self-test drives the one-shot re-hunt (and, with a large <n>, a cell
 #                         still failed after it).
 #   STUB_FAIL_TEXT=<file> what a failing call prints (e.g. the usage-limit notice fixture, glyphs and all).
+#   STUB_KILL_CALLS=<n> + STUB_KILL_STATE=<file>
+#                         (#2262 M3 review) the share-pool C1 cell's first <n> hunter calls SIGKILL the top-level
+#                         run-discovery.sh above them (an OOM kill / a `set -eu` abort mid-zone): the cell log stays
+#                         empty with no failure marker and run-zone-hunt.sh records the zone `failed` and CONTINUES.
 case "${1:-}" in
   init) mkdir -p .agentis; exit 0 ;;
   memo) exit 0 ;;
@@ -25,6 +29,22 @@ case "${1:-}" in
           echo "--" >> "$STUB_ENV_DUMP"
         fi
         if [ -n "${STUB_SLEEP:-}" ]; then sleep "$STUB_SLEEP"; fi
+        if [ -n "${STUB_KILL_CALLS:-}" ] && [ -n "${STUB_KILL_STATE:-}" ] \
+           && [ "${SUBSYSTEM:-}" = "share pool" ] && [ "${HUNT_CLASS:-}" = "C1" ]; then
+          kills="$(cat "$STUB_KILL_STATE" 2>/dev/null || echo 0)"
+          kills=$((kills + 1))
+          echo "$kills" > "$STUB_KILL_STATE"
+          if [ "$kills" -le "$STUB_KILL_CALLS" ]; then
+            # walk up to the OUTERMOST run-discovery.sh (its subshells carry the same command line)
+            pid=$$; top=""
+            while [ -n "$pid" ] && [ "$pid" -gt 1 ]; do
+              case "$(tr '\000' ' ' < "/proc/$pid/cmdline" 2>/dev/null)" in *run-discovery.sh*) top="$pid" ;; esac
+              pid="$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f2)"
+            done
+            [ -z "$top" ] || kill -KILL "$top"
+            exit 137
+          fi
+        fi
         if [ -n "${STUB_FAIL_CALLS:-}" ] && [ -n "${STUB_FAIL_STATE:-}" ] \
            && [ "${SUBSYSTEM:-}" = "share pool" ] && [ "${HUNT_CLASS:-}" = "C1" ]; then
           calls="$(cat "$STUB_FAIL_STATE" 2>/dev/null || echo 0)"

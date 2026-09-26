@@ -963,8 +963,28 @@ cmd_triage() {
       [ -d "$d/$contest/zone-hunt-out/discovery" ] && runs+=(--run "$zone=$d/$contest/zone-hunt-out")
     elif [ "$zone" != _all ]; then
       unmeasured+=(--unmeasured "$zone:$(void_class "$v")")
+    else
+      # A whole-contest arm whose VOID is ZONE-scoped (void.zones lists every such zone) still measures the rest:
+      # its tree is triaged with exactly those zones forced unmeasured. An arm-wide VOID (hard stop, kill, usage
+      # limit, attribution, operator) measures nothing.
+      case "$(void_class "$v")" in
+        transport|promise-lister|zone-incomplete|deep-incomplete|no-cells|all-cells-failed|backend-no-reply)
+          if [ -s "$d/void.zones" ] && [ -d "$d/$contest/zone-hunt-out/discovery" ]; then
+            runs+=(--run "$zone=$d/$contest/zone-hunt-out")
+            local vz vc _vr
+            while IFS=$'\t' read -r vz vc _vr; do
+              [ -z "$vz" ] || [ "$vz" = - ] || unmeasured+=(--unmeasured "$vz:$vc")
+            done < "$d/void.zones"
+          fi ;;
+      esac
     fi
   done
+  if [ "${#runs[@]}" -eq 0 ] && [ "${#unmeasured[@]}" -gt 0 ]; then
+    # Every finished arm is VOID: still write the table, so each row reads `unmeasured` with its VOID class (an
+    # empty stand-in tree — no evidence of a voided run ever reaches the table).
+    mkdir -p "$root/triage/.no-valid-arm/discovery"
+    runs=(--run "no-valid-arm=$root/triage/.no-valid-arm")
+  fi
   if [ "${#runs[@]}" -eq 0 ]; then note "triage: no finished, measurable arm for $contest $arm r$repeat"; return 0; fi
   local cdir="$base/$contest"
   [ -f "$cdir/map/zones.json" ] && [ -f "$cdir/truth.tsv" ] || die 3 "triage: the frozen base $cdir is gone"
@@ -1505,9 +1525,11 @@ cmd_self_test() {
     breadth_end=2026-01-01T10:30:00Z rehunt_end=- deep_start=2026-01-01T10:31:00Z deep_end=2026-01-01T10:50:00Z \
     end=2026-01-01T10:51:00Z rc=0 deep_rc=0 > "$aa/run.meta"
   # rec <cwd> <iso> <model> [fallback] -> one assistant record
-  rec() { local fbb=""; [ -z "${4:-}" ] || fbb='{"type":"fallback"},'
-          printf '{"type":"assistant","cwd":"%s","timestamp":"%s","message":{"role":"assistant","model":"%s","content":[%s{"type":"text","text":"x"}]}}\n' \
-            "$1" "$2" "$3" "$fbb"; }
+  # rec <cwd> <iso> <model> [fb|refusal|<text>] -> one assistant record
+  rec() { local fbb="" sr="end_turn" tx="x"
+          case "${4:-}" in fb) fbb='{"type":"fallback"},' ;; refusal) sr="refusal" ;; '') ;; *) tx="$4" ;; esac
+          printf '{"type":"assistant","cwd":"%s","timestamp":"%s","message":{"role":"assistant","model":"%s","stop_reason":"%s","content":[%s{"type":"text","text":"%s"}]}}\n' \
+            "$1" "$2" "$3" "$sr" "$fbb" "$tx"; }
   store() { local d; d="$troot/$(python3 "$HELPER" project-slug "$1")"; mkdir -p "$d"; printf '%s\n' "$d"; }
   { rec "$acell" 2025-12-31T09:00:00.000Z claude-fable-5-1 fb; rec "$acell" 2026-01-01T10:05:00.000Z claude-opus-4-8
     rec "$acell" 2026-01-01T10:06:00.000Z claude-opus-4-8; } > "$(store "$acell")/s1.jsonl"
@@ -1534,6 +1556,38 @@ cmd_self_test() {
   else
     bad "attrib: deep-hunt outside its window not flagged: $(arow deep-hunt)"
   fi
+  # review defects 2 + 3: a refusal inside the window fails the gate even when a retry then answered; Claude Code's
+  # own <synthetic> API-error record is counted apart (transient) and keeps PURE-OPUS; a <synthetic> usage-limit
+  # notice voids the arm as weekly-limit.
+  rm -f "$(store "$adeep")/early.jsonl"
+  rec "$adeep" 2026-01-01T10:40:00.000Z claude-opus-4-8 > "$(store "$adeep")/s3.jsonl"
+  { rec "$averi" 2026-01-01T10:21:00.000Z claude-opus-4-8 refusal; rec "$averi" 2026-01-01T10:22:00.000Z claude-opus-4-8; } \
+    > "$(store "$averi")/refusal.jsonl"
+  bash "$SELF" attrib --arm-dir "$aa" --transcripts-root "$troot" > /dev/null 2>&1
+  if [ "$(arow verify)" = "1|2|0|3|PURE-OPUS|refusal" ] \
+     && [ "$(python3 "$HELPER" void-check "$aa" "$PATTERNS")" = "$(printf 'VOID\tattribution\tattrib.tsv:verify=PURE-OPUS(refusal)')" ]; then
+    ok "attrib: a refusal inside the window fails the PURE-OPUS gate (gate=refusal -> VOID attribution), even with a retried answer"
+  else
+    bad "attrib: an in-window refusal passed the gate: $(arow verify)"
+  fi
+  rm -f "$(store "$averi")/refusal.jsonl"
+  rec "$averi" 2026-01-01T10:21:00.000Z '<synthetic>' 'API Error: 529 overloaded' > "$(store "$averi")/synthetic.jsonl"
+  bash "$SELF" attrib --arm-dir "$aa" --transcripts-root "$troot" > /dev/null 2>&1
+  if [ "$(arow verify)" = "1|2|0|1|PURE-OPUS|ok" ] && [ "$(awk -F'\t' '$1 == "verify" { print $13 "|" $14 }' "$aa/attrib.tsv")" = "1|0" ] \
+     && [ "$(python3 "$HELPER" void-check "$aa" "$PATTERNS")" = VALID ]; then
+    ok "attrib: a <synthetic> API-error record the cell recovered from is counted apart (transient_synthetic=1), the stage stays PURE-OPUS"
+  else
+    bad "attrib: a transient <synthetic> record broke the gate: $(arow verify) / $(awk -F'\t' '$1 == "verify"' "$aa/attrib.tsv")"
+  fi
+  rec "$averi" 2026-01-01T10:23:00.000Z '<synthetic>' 'You have hit your weekly limit - resets 6pm' > "$(store "$averi")/limit.jsonl"
+  bash "$SELF" attrib --arm-dir "$aa" --transcripts-root "$troot" > /dev/null 2>&1
+  if [ "$(awk -F'\t' '$1 == "verify" { print $9 "|" $14 }' "$aa/attrib.tsv")" = "usage-limit|1" ] \
+     && [ "$(python3 "$HELPER" void-check "$aa" "$PATTERNS" | cut -f1-2)" = "$(printf 'VOID\tweekly-limit')" ]; then
+    ok "attrib: a <synthetic> usage-limit record in the window still VOIDs the arm (weekly-limit: the plan halts)"
+  else
+    bad "attrib: a <synthetic> usage-limit record did not void: $(awk -F'\t' '$1 == "verify"' "$aa/attrib.tsv")"
+  fi
+  rm -f "$(store "$averi")/synthetic.jsonl" "$(store "$averi")/limit.jsonl"
   eval "$(sed -n '/^claude_project_slug() {$/,/^}$/p' "$df_real/lib/claude-sandboxed.sh")"
   local longp; longp="$work/$(printf '%0230d' 0 | tr 0 r)/zone-hunt-out/verify/gates/1_x/refute-out/run"
   if command -v claude_project_slug > /dev/null 2>&1 && [ "$(claude_project_slug "$longp")" = "$(python3 "$HELPER" project-slug "$longp")" ] \
@@ -1569,6 +1623,35 @@ cmd_self_test() {
     ok "a cell still failed after the one re-hunt is VOID transport (void.txt + the MANIFEST verdict column)"
   else
     bad "still-failed re-hunt: rehunt_rc=$(meta_get "$rv/run.meta" rehunt_rc) void=$(head -1 "$rv/void.txt" 2>/dev/null)"
+  fi
+  # review defect 1: run-discovery.sh DIES mid-zone (SIGKILL): run-zone-hunt.sh records `failed` and exits 0, the
+  # cut-off cell has no marker. Once -> the coverage record triggers the re-hunt, which recovers (VALID); every
+  # time -> VOID zone-incomplete, and the exam's triage reads that zone's rows unmeasured, never generation.
+  local kr="$root/arms/fx/src_pool/kill1-r1"
+  bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_pool --arm kill1 --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1
+  STUB_KILL_CALLS=1 STUB_KILL_STATE="$work/kill1" bash "$SELF" run --root "$root" --base "$base" --contest fx \
+    --zone src_pool --arm kill1 --repeat 1 --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1
+  if grep -q "discovery failed for zone 'share pool'" "$kr/run.log" && [ "$(meta_get "$kr/run.meta" rehunt_rc)" = 0 ] \
+     && grep -q '^CANDIDATE|' "$kr/fx/zone-hunt-out/discovery/src_pool/run/hunt_share_pool_C1.log" \
+     && [ "$(head -1 "$kr/void.txt")" = VALID ]; then
+    ok "a zone whose run-discovery.sh was SIGKILLed mid-zone (coverage: failed, exit 0 overall) gets the one re-hunt; recovered -> VALID"
+  else
+    bad "killed discovery + re-hunt: rehunt_rc=$(meta_get "$kr/run.meta" rehunt_rc) void=$(head -1 "$kr/void.txt" 2>/dev/null)"
+  fi
+  local kroot2="$work/kroot2" kv="$work/kroot2/arms/fx/src_pool/kill-r1"
+  bash "$SELF" stage --root "$kroot2" --base "$base" --contest fx --zone src_pool --arm kill --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1
+  STUB_KILL_CALLS=99 STUB_KILL_STATE="$work/kill99" bash "$SELF" run --root "$kroot2" --base "$base" --contest fx \
+    --zone src_pool --arm kill --repeat 1 --profile mock --checkout "$co" --agentis "$stub" > /dev/null 2>&1; rc=$?
+  bash "$SELF" triage --root "$kroot2" --contest fx --arm kill --repeat 1 > /dev/null 2>&1
+  local ktsv="$kroot2/triage/fx-kill-r1.tsv"
+  if [ "$rc" -eq 0 ] && [ "$(cut -f1-2 "$kv/void.txt")" = "$(printf 'VOID\tzone-incomplete')" ] \
+     && grep -q 'zone-coverage.json:src_pool=failed' "$kv/void.txt" \
+     && awk -F'\t' '$1 == "EX-1" || $1 == "EX-3" { n++; if ($7 != "unmeasured") bad = 1 } END { exit (n == 2 && !bad) ? 0 : 1 }' "$ktsv"; then
+    ok "a zone still dead after the re-hunt is VOID zone-incomplete (run exit 0!), and triage reads its rows EX-1/EX-3 unmeasured, never a generation MISS"
+  else
+    bad "killed discovery: exit $rc void=$(head -1 "$kv/void.txt" 2>/dev/null)"; awk -F'\t' '{ print $1, $7, $8 }' "$ktsv" 2>/dev/null | sed 's/^/         | /'
   fi
   printf 'BACKEND=mock\nMODEL=claude-opus-4-8\nREHUNT_TRANSPORT=0\n' > "$work/p-norehunt.env"
   local ro="$root/arms/fx/src_pool/rhoff-r1"

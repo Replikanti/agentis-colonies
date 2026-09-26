@@ -82,7 +82,14 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   (the void attempt kept as `<arm>-r<N>.void-<k>`). `exam.sh void-mark` records an operator VOID; `exam.sh triage`
   passes every VOID zone as `--unmeasured <zone>:<class>`. New fixtures `fixtures/exam-void/` (one arm per
   verdict, the usage-limit notice with its literal glyphs) and `fixtures/model-attribution-window/`; the stub
-  agentis gains a failing-call seam; `exam.sh self-test` covers all of it.
+  agentis gains a failing-call seam; `exam.sh self-test` covers all of it. Review hardening: a zone whose
+  `run-discovery.sh` died mid-zone (recorded `failed` / `in_flight` in `coverage/zone-coverage.json` while
+  `run-zone-hunt.sh` exits 0), fewer cells than planned, or an empty unmarked cell log is `zone-incomplete` (and
+  triggers the re-hunt); a STAGE 4.5 engine that died is `deep-incomplete`; a failed promise-lister call is
+  `promise-lister`; every zone-scoped defect is listed in `void.zones` and triaged `unmeasured` (`triage.py` also
+  reads the coverage record itself); a refusal in the window fails the attribution gate; Claude Code's
+  `<synthetic>` API-error records are counted apart (`model-attribution.py --split-synthetic`) while a
+  `<synthetic>` usage-limit record voids as `weekly-limit`.
 
 - **Held-out exam: per-row triage scorer `bench/corpus-bench/triage.py` (#2262 M1).** Every rare row of a
   held-out exam was scored by hand (candidates / verified findings at the row's function, cell-log mentions,
@@ -674,8 +681,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 - **A hunt sandbox sees only its own `~/.claude.json` project entry (#2262 M3).** The sandbox still bound the real
   `~/.claude.json` read-write for workspace trust, and its `projects` map carries every cwd's entry — the
   operator's sessions' and every other cell's `lastSessionFirstPrompt` included. `lib/claude-sandboxed.sh` now binds
-  a filtered temp copy (`lib/claude-json-scope.py filter`: every top-level key, `projects` reduced to the session's
-  own logical + physical cwd). A detached watcher (`watch-merge`; detached because flat-cyborg ends a session by
+  a filtered temp copy (`lib/claude-json-scope.py filter`: `projects` reduced to the session's own logical +
+  physical cwd, host-path maps such as `githubRepoPaths` dropped, every other top-level key kept). A detached watcher (`watch-merge`; detached because flat-cyborg ends a session by
   SIGKILLing its whole process group) waits for the session to end and merges ONLY the session's own entry back,
   and only when the session changed it — under a lock between mergers, on a freshly re-read file, atomically,
   never over a concurrent replace. A copy that cannot be built binds nothing (fail-closed). `demo-claude-sandboxed.sh`

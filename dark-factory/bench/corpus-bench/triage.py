@@ -349,6 +349,7 @@ class Run:
         self.scope = None
         self._read_map()
         self._read_discovery_dirs(include_superseded)
+        self._read_coverage()
         self._read_candidates()
 
     def rel(self, path):
@@ -358,6 +359,28 @@ class Run:
         k = kind + ("(" + tag + ")" if tag else "")
         return (KIND_PRIO.get(kind, 99), self.label, relpath, sortnum, "[%s] %s:%s:%s %s" % (
             k, self.label, relpath, ref, clean(text)))
+
+    def _read_coverage(self):
+        """#2262 M3: a zone whose run-discovery.sh DIED mid-zone (SIGKILL / OOM / a `set -eu` abort) is recorded
+        `failed` (or left `in_flight`) in coverage/zone-coverage.json while run-zone-hunt.sh carries on with exit 0;
+        its surviving cell logs carry no failure marker. Such a zone never answered: read it as failed, so its rows
+        are unmeasured, never a generation MISS."""
+        cov = os.path.join(self.root, "coverage", "zone-coverage.json")
+        if not os.path.isfile(cov):
+            return
+        try:
+            with open(cov, encoding="utf-8") as fh:
+                rec = json.load(fh)
+        except (OSError, ValueError):
+            self.notes.append("%s: coverage/zone-coverage.json unreadable" % self.label)
+            return
+        for z in rec.get("zones", []) if isinstance(rec, dict) else []:
+            if isinstance(z, dict) and z.get("status") in ("failed", "in_flight") and z.get("id"):
+                zid = str(z["id"])
+                self.zone_status[zid] = "failed"
+                self.notes.append("%s: zone %s: coverage status %s%s — its rows are unmeasured" % (
+                    self.label, zid, z.get("status"),
+                    (" (exit %s)" % z.get("exit_code")) if z.get("exit_code") not in (None, 0) else ""))
 
     def _read_map(self):
         zp = os.path.join(self.root, "map", "zones.json")
@@ -1119,6 +1142,21 @@ def self_test():
         else:
             bad("all-cells-failed zone still reads as generation / slice: %s"
                 % [rows6.get(k, ["?"] * 8)[6:8] for k in gen + sliced])
+        # a zone whose run-discovery.sh DIED mid-zone: no failure marker on any cell, but the coverage record says
+        # `failed` — its generation rows must read unmeasured too (#2262 M3 review defect 1)
+        died = os.path.join(tmp, "died-tree")
+        shutil.copytree(os.path.join(fx, "run-core"), os.path.join(died, "run-core"), symlinks=True)
+        os.makedirs(os.path.join(died, "run-core", "coverage"), exist_ok=True)
+        with open(os.path.join(died, "run-core", "coverage", "zone-coverage.json"), "w", encoding="utf-8") as fh:
+            json.dump({"zones": [{"id": "core", "status": "failed", "exit_code": 137,
+                                  "detail": "run-discovery.sh exited 137"}]}, fh)
+        rc9, tsv9, _, _ = go("died", ["--run-root", died, "--map", os.path.join(fx, "map", "zones.json")])
+        rows9 = rows_of(tsv9)
+        if rc9 == 0 and gen and all(rows9[k][6] == "unmeasured" and "failed" in rows9[k][7] for k in gen):
+            ok("a zone the coverage record marks `failed` (run-discovery.sh died, no cell marker) turns its "
+               "generation rows %s into unmeasured/failed" % ",".join(gen))
+        else:
+            bad("a coverage-failed zone still reads as generation: %s" % [rows9.get(k, ["?"] * 8)[6:8] for k in gen])
         rc7, tsv7, _, _ = go("forced", full + ["--unmeasured", "core:operator-void"])
         rows7 = rows_of(tsv7)
         if rc7 == 0 and gen and all(rows7[k][6] == "unmeasured" and "operator" in rows7[k][7] for k in gen) \

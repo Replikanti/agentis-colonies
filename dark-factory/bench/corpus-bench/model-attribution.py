@@ -23,6 +23,12 @@
 #                                                                        # stage; its *.jsonl are that stage's
 #                                                                        # transcripts (recursively)
 #   model-attribution.py --self-test                                    # deterministic fixture assertions
+#   ... [--split-synthetic]            #2262 M3: a `"model": "<synthetic>"` record is Claude Code's OWN API-error
+#                                      notice (an overloaded / 529 storm it gave up on), not a model answer. With
+#                                      this flag it is counted apart — `transient_synthetic` (the cell's retry may
+#                                      have recovered; it no longer makes the stage MIXED) or `synthetic_limit`
+#                                      (its text is a usage-limit notice: the run hit the limit) — and the family
+#                                      verdict is over the real answers only. Without the flag nothing changes.
 #   ... [--since ISO] [--until ISO]    #2262 M3: count only assistant records whose `timestamp` falls in the run
 #                                      window (either bound may be omitted). A record WITHOUT a timestamp is KEPT:
 #                                      conservative, a window can only turn PURE into MIXED/CONTAMINATED, never
@@ -46,6 +52,12 @@ import os
 import json
 import glob
 import datetime
+import re
+
+# The Claude Code usage-limit notice, matched on its WORDS (mirrors the weekly-limit rows of
+# exam/void-patterns.tsv; a glyph between the words never matters).
+SYNTHETIC_LIMIT_RE = re.compile(
+    r"(?i)\b(hit your (weekly |usage |session |5-hour )?limit|(weekly|usage|session|5-hour) limit reached)\b")
 
 
 def model_family(model):
@@ -118,8 +130,9 @@ class Window(object):
                 "in": self.n_in, "out": self.n_out, "undated": self.n_undated}
 
 
-def scan_transcript(path, window=None):
-    """Yield (family, is_fallback, is_refusal) per assistant request in one JSONL transcript (inside `window`)."""
+def scan_transcript(path, window=None, split_synthetic=False):
+    """Yield (family, is_fallback, is_refusal) per assistant request in one JSONL transcript (inside `window`).
+    With split_synthetic a `<synthetic>` record yields family `synthetic` / `synthetic-limit` instead."""
     try:
         fh = open(path, encoding="utf-8", errors="ignore")
     except OSError:
@@ -150,6 +163,11 @@ def scan_transcript(path, window=None):
                 continue
             if window is not None and not window.keep(ev):
                 continue
+            if split_synthetic and model == "<synthetic>":
+                text = " ".join(b.get("text", "") for b in content if isinstance(b, dict)
+                                and isinstance(b.get("text"), str)) if isinstance(content, list) else str(content)
+                yield ("synthetic-limit" if SYNTHETIC_LIMIT_RE.search(text) else "synthetic", False, False)
+                continue
             is_fallback = False
             if isinstance(content, list):
                 for block in content:
@@ -160,7 +178,7 @@ def scan_transcript(path, window=None):
             yield (model_family(model), is_fallback, is_refusal)
 
 
-def aggregate(stage_to_paths, window=None):
+def aggregate(stage_to_paths, window=None, split_synthetic=False):
     """stage_to_paths: dict stage -> list of transcript paths. Returns dict stage -> counts."""
     out = {}
     for stage in sorted(stage_to_paths):
@@ -169,8 +187,15 @@ def aggregate(stage_to_paths, window=None):
         fam_counts = {"opus": 0, "fable": 0, "sonnet": 0, "haiku": 0, "other": 0}
         fallback = 0
         refusal = 0
+        synth = synth_limit = 0
         for path in stage_to_paths[stage]:
-            for fam, is_fb, is_ref in scan_transcript(path, window):
+            for fam, is_fb, is_ref in scan_transcript(path, window, split_synthetic):
+                if fam == "synthetic":
+                    synth += 1
+                    continue
+                if fam == "synthetic-limit":
+                    synth_limit += 1
+                    continue
                 req += 1
                 fam_counts[fam] = fam_counts.get(fam, 0) + 1
                 if is_fb:
@@ -197,6 +222,9 @@ def aggregate(stage_to_paths, window=None):
             "refusal": refusal,
             "verdict": verdict,
         }
+        if split_synthetic:
+            out[stage]["transient_synthetic"] = synth
+            out[stage]["synthetic_limit"] = synth_limit
     return out
 
 
@@ -311,6 +339,27 @@ def run_self_test():
             ok("window: trailer counts in=2 out=2 undated=1 (%s)" % win.trailer().replace("\t", " "))
         else:
             bad("window: trailer counts wrong: %s" % win.trailer().replace("\t", " "))
+        # --split-synthetic: Claude Code's own `<synthetic>` API-error record is not a model answer.
+        syn = [{"type": "assistant", "message": {"role": "assistant", "model": "<synthetic>", "content": [
+                   {"type": "text", "text": "API Error: 529 overloaded"}]}},
+               {"type": "assistant", "message": {"role": "assistant", "model": "claude-opus-4-8", "content": [
+                   {"type": "text", "text": "SAFE"}]}}]
+        lim = [{"type": "assistant", "message": {"role": "assistant", "model": "<synthetic>", "content": [
+                   {"type": "text", "text": "You\u2019ve hit your weekly limit \u00b7 resets 6pm"}]}}]
+        import tempfile as _tf
+        with _tf.TemporaryDirectory() as td:
+            for name, recs in (("syn", syn), ("lim", lim + syn)):
+                with open(os.path.join(td, name + ".jsonl"), "w", encoding="utf-8") as fh:
+                    fh.write("".join(json.dumps(r) + "\n" for r in recs))
+            plain = aggregate({"s": [os.path.join(td, "syn.jsonl")]})["s"]
+            split = aggregate({"s": [os.path.join(td, "syn.jsonl")]}, None, True)["s"]
+            limit = aggregate({"s": [os.path.join(td, "lim.jsonl")]}, None, True)["s"]
+        if plain["verdict"] == "MIXED" and split["verdict"] == "PURE-OPUS" and split["transient_synthetic"] == 1 \
+                and split["requests"] == 1 and limit["synthetic_limit"] == 1 and limit["transient_synthetic"] == 1:
+            ok("--split-synthetic: a <synthetic> API-error record is counted apart (PURE-OPUS, transient_synthetic=1; "
+               "MIXED without the flag), a <synthetic> usage-limit notice is counted as synthetic_limit")
+        else:
+            bad("--split-synthetic wrong: plain=%r split=%r limit=%r" % (plain, split, limit))
         edge = Window("2026-01-01T10:00:00Z", "2026-01-01T10:59:59Z")
         edge_in = edge.keep({"timestamp": "2026-01-01T10:59:59.900Z"})
         edge_out = edge.keep({"timestamp": "2026-01-01T11:00:00.000Z"})
@@ -334,6 +383,7 @@ def main(argv):
     stage = None
     root = None
     since = until = None
+    split = False
     paths = []
     i = 1
     while i < len(argv):
@@ -353,6 +403,9 @@ def main(argv):
                 return 2
             root = argv[i + 1]
             i += 2
+        elif a == "--split-synthetic":
+            split = True
+            i += 1
         elif a in ("--since", "--until"):
             if i + 1 >= len(argv):
                 print("model-attribution.py: %s requires a value" % a, file=sys.stderr)
@@ -394,7 +447,7 @@ def main(argv):
         except ValueError as exc:
             print("model-attribution.py: %s" % exc, file=sys.stderr)
             return 2
-    agg = aggregate(stage_to_paths, window)
+    agg = aggregate(stage_to_paths, window, split)
     if as_json:
         if window is not None:
             agg["_window"] = window.as_json()
@@ -403,6 +456,9 @@ def main(argv):
         print(render_table(agg))
         if window is not None:
             print(window.trailer())
+        if split:
+            print("SYNTHETIC\t%d\t%d" % (sum(a["transient_synthetic"] for a in agg.values()),
+                                          sum(a["synthetic_limit"] for a in agg.values())))
     return 0
 
 

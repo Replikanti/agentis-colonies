@@ -1,0 +1,2 @@
+TRACE|src/pool/Pool.sol:deposit|rounding checked
+SAFE

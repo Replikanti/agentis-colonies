@@ -645,9 +645,18 @@ the M2 header keeps M2-shaped rows). `exam-helper.py void-check` decides, first 
 | 3 | the `exam/void-patterns.tsv` rows, in file order | `weekly-limit` (any Claude Code usage-limit notice, in a FAILED call's log), `transport` (the terminal `LLM transport error:` line of a final cell — never a recovered `[LLM retry ...]` line), `backend-no-reply` ("no closing sentinel" / "no fenced reply" in a failed final cell) |
 | 4 | `all-cells-failed` | a staged zone whose final cells ALL carry `.timeout` / `.novalid` |
 | 5 | `transport` | any final cell still failed after the one re-hunt |
-| 6 | `no-cells` | a staged zone with no cell log at all |
-| 7 | `attribution` | `attrib.tsv` has a stage that is MIXED / CONTAMINATED / another family / `attribution-missing` (or no `attrib.tsv` on a live backend) |
-| 8 | `operator` | `exam.sh void-mark --arm-dir <d> --reason <text>` |
+| 6 | `promise-lister` | a failed `run/promises/*.lister` call (the line hunted without the promises its profile set) |
+| 7 | `zone-incomplete` | the zone's `run-discovery.sh` died or never finished — `run-zone-hunt.sh` records it in `coverage/zone-coverage.json` (`failed`, `in_flight`, any status but `hunted` / `hunted_empty` / `hunted_degraded`) and carries on with exit 0 —, it recorded fewer cells than planned, or a final cell log is empty with no marker |
+| 8 | `deep-incomplete` | a STAGE 4.5 engine died mid-way (`run-invariant-hunt.sh failed ...; continuing`, or `ENGINE_FAILED` in `deep-hunt/cell-status.tsv`); a budget outcome the profile asked for (`TIMEOUT`, `SKIPPED_*`) is a result, not a void |
+| 9 | `no-cells` | a staged zone with no cell log at all |
+| 10 | `weekly-limit` (from `attrib.tsv`) | a `<synthetic>` usage-limit record inside the window (gate `usage-limit`) |
+| 11 | `attribution` | `attrib.tsv` has a stage that is MIXED / CONTAMINATED / another family / `refusal` (a refusal in the window, even when a retry then answered) / `attribution-missing` (or no `attrib.tsv` on a live backend) |
+| 12 | `operator` | `exam.sh void-mark --arm-dir <d> --reason <text>` |
+
+Every zone-scoped defect is also listed in `<arm>/void.zones`; `triage` forces those zones `unmeasured`, and for a
+whole-contest arm it triages the rest of the tree. When every arm is VOID the table is still written, all rows
+`unmeasured` (an empty stand-in tree — no evidence of a voided run reaches it). `triage.py` itself reads a run
+tree's `coverage/zone-coverage.json` too: a `failed` / `in_flight` zone is `unmeasured`, never a generation MISS.
 
 The signatures are DATA: a new row in `void-patterns.tsv` (`class<TAB>regex<TAB>where`, `where` = `failed` /
 `final-failed` / `cells`) teaches the runner a new one without a code change; match the notice's words, never
@@ -655,7 +664,8 @@ its glyphs. Only real output logs are read (`hunt_*.log*`, `refute_*.log`, the d
 the `.ag` source copies. An `.untraced` cell is a METRIC: it never voids an arm and never triggers a re-hunt.
 
 **One-shot re-hunt** (the symmetry rule above, automated): after the breadth call, when a final-attempt cell
-carries `.timeout` / `.novalid` or a `transport` pattern and no `weekly-limit` pattern matched, `run` makes exactly
+carries `.timeout` / `.novalid` or a `transport` pattern, a promise-lister call failed, or a zone is
+`zone-incomplete`, and no `weekly-limit` pattern matched, `run` makes exactly
 ONE more breadth call in that arm with `--rehunt-gaps --rehunt-include-partial --rehunt-max-attempts 2`
 (`rehunt.log`; `rehunt_start/end/rc/reason` in `run.meta`). A cell still failed after it voids the arm. A
 usage-limit match skips the re-hunt AND STAGE 4.5 — both would void too. `REHUNT_TRANSPORT=0` turns it off.
@@ -667,8 +677,11 @@ by exact name — the encoding `lib/claude-sandboxed.sh` binds, pinned to the sa
 counts only when its records' `cwd` confirms it (the name encoding is lossy). `model-attribution.py --since/--until`
 then reads each stage over its OWN window from `run.meta` (discovery + verify: `start` .. re-hunt or breadth end;
 deep-hunt: `deep_start` .. `deep_end`; records without a timestamp are kept — conservative). Every stage that ran
-must be `PURE-<family of MODEL>` (or `ATTRIB_FAMILY`); discovery / verify / deep-hunt with RUN dirs but no
-in-window record are `attribution-missing`. The window matters: a `--retry-void` re-run reuses the same dir
+must be `PURE-<family of MODEL>` (or `ATTRIB_FAMILY`) with no refusal in the window; discovery / verify /
+deep-hunt with RUN dirs but no in-window record are `attribution-missing`. Claude Code's own `<synthetic>`
+API-error records are counted apart (`--split-synthetic`: `transient_synthetic`, never a MIXED by themselves —
+the cell's retry answered); a `<synthetic>` usage-limit record is `synthetic_limit` and voids the arm as
+`weekly-limit`. The window matters: a `--retry-void` re-run reuses the same dir
 names, so it shares the store with the voided attempt. `freeze` records its own map/brief-stage verdict in
 `freeze.meta` (`attrib=`, `attrib_gate=`) and `freeze.attrib.tsv` — a warning only. The mock backend is
 `skipped-mock`. An arm run before M3 has no `attrib.tsv` and reads VOID attribution until `exam.sh attrib` is run

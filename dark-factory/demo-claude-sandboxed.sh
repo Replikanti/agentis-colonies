@@ -121,6 +121,7 @@ cat > "$STUB" <<'STUBEOF'
       if grep -q OTHER-PROMPT-SECRET "$HOME/.claude.json"; then echo "CJ_OTHER_LEAK"; else echo "CJ_OTHER_BLOCKED"; fi
       if grep -q OWN-EARLIER-PROMPT "$HOME/.claude.json"; then echo "CJ_OWN_VISIBLE"; else echo "CJ_OWN_MISSING"; fi
       if grep -q numStartups "$HOME/.claude.json"; then echo "CJ_TOPLEVEL_KEPT"; else echo "CJ_TOPLEVEL_LOST"; fi
+      if grep -q 'HOLDOUT-CHECKOUT-PATH' "$HOME/.claude.json"; then echo "CJ_HOSTPATHS_LEAK"; else echo "CJ_HOSTPATHS_BLOCKED"; fi
     fi
     if [ -n "${D_CJ_WRITE:-}" ]; then
       printf '{"numStartups": 99, "projects": {"%s": {"hasTrustDialogAccepted": true, "lastSessionFirstPrompt": "%s"}}}\n' \
@@ -284,7 +285,7 @@ echo "demo-claude-sandboxed.sh: 1e) #2262 M3 scoped ~/.claude.json (bwrap-gated,
 if command -v bwrap >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   CJ="$HOME/.claude.json"; CJTMP="$TMP/cjtmp"; mkdir -p "$CJTMP"
   cj_fixture() {
-    printf '{\n  "numStartups": 7,\n  "oauthAccount": {"emailAddress": "fixture@example.invalid"},\n  "projects": {\n    "%s": {"hasTrustDialogAccepted": true, "lastSessionFirstPrompt": "OWN-EARLIER-PROMPT"},\n    "/srv/operator/other-session": {"hasTrustDialogAccepted": true, "lastSessionFirstPrompt": "OTHER-PROMPT-SECRET"}\n  }\n}\n' "$RUN" > "$CJ"
+    printf '{\n  "numStartups": 7,\n  "oauthAccount": {"emailAddress": "fixture@example.invalid"},\n  "githubRepoPaths": {"owner/repo": ["/srv/HOLDOUT-CHECKOUT-PATH/code"]},\n  "someFuturePathMap": {"/srv/HOLDOUT-CHECKOUT-PATH/judging": {"seen": true}},\n  "projects": {\n    "%s": {"hasTrustDialogAccepted": true, "lastSessionFirstPrompt": "OWN-EARLIER-PROMPT"},\n    "/srv/operator/other-session": {"hasTrustDialogAccepted": true, "lastSessionFirstPrompt": "OTHER-PROMPT-SECRET"}\n  }\n}\n' "$RUN" > "$CJ"
     chmod 600 "$CJ"
   }
   # cj_get <python expr over d> -> the value read from the host's real (fixture) file
@@ -297,8 +298,10 @@ if command -v bwrap >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   R="$(cat "$RESULT" 2>/dev/null || true)"
   case "$R" in *CJ_OTHER_BLOCKED*) ok "another cwd's projects entry (its lastSessionFirstPrompt) is INVISIBLE in the sandbox's ~/.claude.json" ;;
                *) bad "another cwd's entry is readable inside the sandbox: $R" ;; esac
-  case "$R" in *CJ_OWN_VISIBLE*CJ_TOPLEVEL_KEPT*) ok "the session's own cwd entry (its trust flag) and every top-level key stay visible" ;;
+  case "$R" in *CJ_OWN_VISIBLE*CJ_TOPLEVEL_KEPT*) ok "the session's own cwd entry (its trust flag) and the non-path top-level keys stay visible" ;;
                *) bad "the own entry / top-level keys are missing inside the sandbox: $R" ;; esac
+  case "$R" in *CJ_HOSTPATHS_BLOCKED*) ok "host-path maps (githubRepoPaths, any object keyed by absolute paths) are dropped from the sandbox copy" ;;
+               *) bad "a host-path map (other checkouts' paths) is readable inside the sandbox: $R" ;; esac
   # cj_own -> the host file's lastSessionFirstPrompt for the session's own cwd
   cj_own() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["projects"][sys.argv[2]]["lastSessionFirstPrompt"])' "$CJ" "$RUN" 2>/dev/null; }
   if cj_settled && [ "$(cj_own)" = SANDBOX-SESSION-PROMPT ]; then
@@ -307,7 +310,8 @@ if command -v bwrap >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     bad "the session's own entry was not merged back (or the temp copy was left): $(ls -A "$CJTMP" | tr '\n' ' ')"
   fi
   if [ "$(cj_get 'd["projects"]["/srv/operator/other-session"]["lastSessionFirstPrompt"]')" = OTHER-PROMPT-SECRET ] \
-     && [ "$(cj_get 'd["numStartups"]')" = 7 ] && [ "$(stat -c %a "$CJ" 2>/dev/null || stat -f %Lp "$CJ")" = 600 ]; then
+     && [ "$(cj_get 'd["numStartups"]')" = 7 ] && [ "$(stat -c %a "$CJ" 2>/dev/null || stat -f %Lp "$CJ")" = 600 ] \
+     && [ "$(cj_get 'd["githubRepoPaths"]["owner/repo"][0]')" = /srv/HOLDOUT-CHECKOUT-PATH/code ]; then
     ok "the merge touches ONLY the session's own entry: other cwds and top-level keys are untouched, mode 0600 kept"
   else
     bad "the merge changed more than the own entry: $(cat "$CJ")"

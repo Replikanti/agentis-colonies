@@ -121,8 +121,9 @@ if [ -d "$H/.claude" ]; then
 fi
 # #2262 M3: ~/.claude.json is Claude Code's workspace store (the per-cwd trust flag lives in it, so the session
 # needs it rw), but its `projects` map carries EVERY cwd's entry — the operator's sessions' and every other cell's
-# `lastSessionFirstPrompt` included. The sandbox gets a filtered temp COPY instead: every top-level key as is,
-# `projects` reduced to this session's own cwd entries (logical + physical, as for the transcript dir above). A
+# `lastSessionFirstPrompt` included. The sandbox gets a filtered temp COPY instead: `projects` reduced to this
+# session's own cwd entries (logical + physical, as for the transcript dir above), host-path maps such as
+# `githubRepoPaths` dropped, every other top-level key as is. A
 # detached watcher (lib/claude-json-scope.py watch-merge; detached because flat-cyborg ends a session by SIGKILLing
 # its whole process group, which no exit hook of this wrapper survives) waits for this pid — bwrap after the exec
 # below — to go away, merges ONLY the session's own, changed entry back into the real file, and removes the copy.

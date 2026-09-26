@@ -6,13 +6,16 @@
 # expose it (the per-cwd workspace-trust flag lives there — without it an interactive session blocks on the trust
 # dialog, see lib/ensure-claude-trust.sh), but every OTHER cwd's entry carries that session's
 # `lastSessionFirstPrompt` and friends: the operator's own sessions and every other hunt cell, readable by a hunter
-# cell that goes looking. So the sandbox gets a filtered COPY instead of the real file: every top-level key as is,
-# `projects` reduced to the session's own cwd entries. What the session writes into its own entry is merged back
+# cell that goes looking. So the sandbox gets a filtered COPY instead of the real file: `projects` reduced to the
+# session's own cwd entries, and every other HOST-PATH MAP dropped — `githubRepoPaths` (repo -> local checkout
+# paths) and any other top-level object keyed by absolute paths — since they name other checkouts on the host
+# (held-out bases included). Every other top-level key (account, settings, feature flags) is kept as is. What the session writes into its own entry is merged back
 # into the real file after the session ends; nothing else it writes there is.
 #
 # Subcommands:
 #   filter <real> <dir> <cwd>...
-#       Write <dir>/claude.json (mode 0600) = <real> with `projects` reduced to the <cwd> keys it holds, and
+#       Write <dir>/claude.json (mode 0600) = <real> with `projects` reduced to the <cwd> keys it holds and the
+#       host-path maps dropped (HOST_PATH_KEYS + any top-level object whose keys are all absolute paths), and
 #       <dir>/own.json = those entries as they were (the merge compares against it). Exit 0; 3 when <real> is not
 #       a readable JSON object (retried briefly: a writer may be mid-replace) — the wrapper then binds NOTHING.
 #   merge <dir> <real> <cwd>...
@@ -62,6 +65,16 @@ def write_private(path, data):
         fh.write("\n")
 
 
+# Top-level keys that map to host paths regardless of their key shape (githubRepoPaths: "owner/repo" -> [paths]).
+HOST_PATH_KEYS = ("githubRepoPaths",)
+
+
+def _host_path_map(key, val):
+    if key in HOST_PATH_KEYS:
+        return True
+    return isinstance(val, dict) and bool(val) and all(isinstance(k, str) and k.startswith("/") for k in val)
+
+
 def cmd_filter(argv):
     if len(argv) < 3:
         die(2, "usage: filter <real> <dir> <cwd>...")
@@ -73,7 +86,7 @@ def cmd_filter(argv):
     projects = data.get("projects")
     projects = projects if isinstance(projects, dict) else {}
     own = dict((k, projects[k]) for k in cwds if k in projects)
-    scoped = dict(data)
+    scoped = dict((k, v) for k, v in data.items() if k == "projects" or not _host_path_map(k, v))
     scoped["projects"] = dict(own)
     write_private(os.path.join(d, "own.json"), own)
     write_private(os.path.join(d, "claude.json"), scoped)
