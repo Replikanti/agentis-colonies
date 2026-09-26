@@ -54,7 +54,9 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   gets `env -u` for every env name the checkout's pipeline reads (derived by grep at run time) plus the
   `profiles/KNOBS` names and prefixes, minus explicit host/auth allowlist lines, so a knob exported in the
   operator's shell never leaks into an arm that does not set it; the effective knob env is recorded in
-  `run.meta`. `DF_NO_SANDBOX` is refused and a live backend needs bwrap. Ground truth lives only in a sibling
+  `run.meta`. Claude Code's own knobs (`CLAUDE_*`, `ANTHROPIC_*`, `MAX_THINKING_TOKENS`, `DISABLE_*`, `MCP_*`,
+  `BASH_*_TIMEOUT_MS`) are cleared too (only the OAuth token passes, recorded masked). `DF_NO_SANDBOX` is refused;
+  the only live backend is `flat-cyborg` (the `claude` backend runs unsandboxed), and it needs bwrap. Ground truth lives only in a sibling
   `_gt/` view of each arm. `run.pid` + process-group handling: a live arm is never re-staged, `kill --path` stops
   its controller, TERM to `drive` stops its run, and a killed breadth (rc >= 128) never starts STAGE 4.5. `exam.sh self-test` drives a
   mock two-zone exam end to end over the new `fixtures/exam/` with a dash-safe stub agentis (no LLM, no

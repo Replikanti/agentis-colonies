@@ -72,6 +72,7 @@ RUNNER_KEYS = tuple(k for k, _ in RUNNER_DEFAULTS)
 NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 BAD_VALUE_CHARS = ("$", "`", "'", '"', "\\")
 NEVER_KNOBS = ("DF_NO_SANDBOX",)
+SECRET_RE = re.compile(r"TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL")
 GT_ID_RE = re.compile(r"(^|[^A-Za-z0-9_])[HM]-[0-9]{1,2}([^A-Za-z0-9_]|$)")
 
 
@@ -95,8 +96,10 @@ def _check_runner(key, val, where):
     def bad(why):
         die(2, "%s: %s=%r %s" % (where, key, val, why))
     if key == "BACKEND":
-        if val not in ("mock", "flat-cyborg", "claude"):
-            bad("must be mock, flat-cyborg or claude")
+        # `claude` is refused: that backend runs `claude -p` UNSANDBOXED (no llm.flat_cyborg.target), with the
+        # whole host readable — ground truth included.
+        if val not in ("mock", "flat-cyborg"):
+            bad("must be flat-cyborg (the sandboxed live backend) or mock")
     elif key == "MODEL":
         if val and not re.match(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$", val):
             bad("is not a model id")
@@ -321,7 +324,13 @@ def cmd_effective_env(argv):
         k, v = rec.split(b"=", 1)
         k = k.decode("utf-8", "replace")
         if k in knobish or any(k.startswith(p) for p in prefixes):
-            out.append("%s=%s" % (k, "<inherited>" if k in mask else v.decode("utf-8", "replace").replace("\n", " ")))
+            if k in mask:
+                val = "<inherited>"
+            elif SECRET_RE.search(k):
+                val = "<set>"
+            else:
+                val = v.decode("utf-8", "replace").replace("\n", " ")
+            out.append("%s=%s" % (k, val))
     for line in sorted(out):
         sys.stdout.write(line + "\n")
     return 0

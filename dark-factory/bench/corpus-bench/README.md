@@ -604,7 +604,8 @@ writes `run.pid` while alive (a second writer is refused by `run`, `stage` and `
 call killed from outside (rc >= 128, STAGE 4.5 is then never started) or a TERM/INT to `run` itself kills
 everything left under the arm dir. An EXIT trap always writes `run.meta` (UTC `start`/`end`/`rc`,
 `deep_start`/`deep_end`/`deep_rc`, checkout commit + dirty flag, model, knobs, the EFFECTIVE knob env of both
-calls as `breadth_env` / `deep_env` — pass.<NAME> values masked —, profile name + sha256), the arm's `.done`
+calls as `breadth_env` / `deep_env` — pass.<NAME> and token/key values masked —, `env_cleared_set` = the knob
+names the caller's shell carried and the run dropped, profile name + sha256), the arm's `.done`
 and one `MANIFEST.tsv` row — also after a crash. A multi-root
 freeze hunts from the clone root with the frozen `--project-roots`. The three Claude Code killswitches
 (refusal-fallback off, model-fallback off, session persistence on) are exported for every call.
@@ -628,7 +629,7 @@ the path physically (`pwd -P`), as `/proc/<pid>/cwd` is.
 | line | meaning |
 |---|---|
 | `# ...` | comment |
-| `KEY=VALUE` | runner key: `BACKEND` (mock/flat-cyborg/claude), `MODEL` (required unless mock), `JOBS`, `DEEP_JOBS` (default JOBS), `HARD_STOP_S` (per call), `DEEP_PASS` (0/1), `INJECT_CLASSES` (`C24,C6`: appended once each to the staged zone's scope.tsv class field), `SCOPE_DOCS` (`auto` or `code:<path under the contest's code/>`, → `--scope-docs`). Any other bare key is exit 2. |
+| `KEY=VALUE` | runner key: `BACKEND` (`flat-cyborg` or `mock`; `claude` is refused — it runs `claude -p` unsandboxed), `MODEL` (required unless mock), `JOBS`, `DEEP_JOBS` (default JOBS), `HARD_STOP_S` (per call), `DEEP_PASS` (0/1), `INJECT_CLASSES` (`C24,C6`: appended once each to the staged zone's scope.tsv class field), `SCOPE_DOCS` (`auto` or `code:<path under the contest's code/>`, → `--scope-docs`). Any other bare key is exit 2. |
 | `env.<NAME>=<v>` | exported into the breadth call only |
 | `deep.<NAME>=<v>` | exported into the STAGE 4.5 call only |
 | `pass.<NAME>` | inherit `<NAME>` from the caller's environment (must be set; the value is never in the file) |
@@ -638,8 +639,9 @@ still SET for `getenv()`). **Knob hygiene:** the operator's environment is inher
 gets `env -u` for every knob candidate — every env name the checkout's pipeline READS (derived at run time by
 grepping its `.sh`/`.py`/`.ag` for `${NAME:-}`-style expansions, `os.environ`/`os.getenv` and `getenv()`), every
 `env.`/`deep.`/`pass.` name of the shipped profiles, the NAME lines of `profiles/KNOBS` and every exported
-variable matching one of its `PREFIX*` lines (`DF_*`, `LLM_*`, `FORK_*`, `FLAT_CYBORG_*`, `CLAUDE_CODE_*`, ...) —
-minus its `!NAME` host plumbing / auth lines, the killswitches and the profile's own `pass.<NAME>`s. So neither
+variable matching one of its `PREFIX*` lines (`DF_*`, `LLM_*`, `FORK_*`, `FLAT_CYBORG_*`, and Claude Code's own
+`CLAUDE_*` / `ANTHROPIC_*` / `DISABLE_*` / `MCP_*`, plus names such as `MAX_THINKING_TOKENS`, `BASH_*_TIMEOUT_MS`) —
+minus its `!NAME` host plumbing / auth lines (only `CLAUDE_CODE_OAUTH_TOKEN`, recorded masked), the killswitches and the profile's own `pass.<NAME>`s. So neither
 an exported `SEVERITY_RUBRIC=1` nor an `LLM_MAX_DISCOVERY_CELLS` / `FORK_URL` nobody listed reaches an arm
 ("pass nothing when off"); a new knob is covered automatically. `DF_NO_SANDBOX` is refused outright (in the
 caller's shell: exit 3; in a profile: exit 2) — a held-out run never disables the hunt sandbox. Shipped: `control` (defaults, no knob), `exam` (the

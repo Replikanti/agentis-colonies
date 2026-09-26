@@ -14,13 +14,20 @@
 
 # names (in addition to the derived reads)
 CLAUDECODE ETH_RPC_URL RPC_URL GH_TOKEN GITHUB_TOKEN
+# Claude Code's own env knobs (reasoning budget, API endpoint, config/transcript dir, tool timeouts)
+MAX_THINKING_TOKENS MAX_MCP_OUTPUT_TOKENS BASH_DEFAULT_TIMEOUT_MS BASH_MAX_TIMEOUT_MS BASH_MAX_OUTPUT_LENGTH
+API_TIMEOUT_MS USE_BUILTIN_RIPGREP CLAUDE_CONFIG_DIR
 
 # prefixes — every exported variable starting with one of these is cleared
 DF_* DEEP_HUNT_* DEEP_CELL_* DH_* LLM_* FORK_* FORGE_* FLAT_CYBORG_* CLAUDE_CODE_* VECTOR_HUNT_* SLICE_*
 HUNT_* INV_* SYM_* POC_* HALMOS_* MONITOR_* DARK_FACTORY_* EXTERNAL_* ONCHAIN_* BOUNTY_*
 SEVERITY_* GROUND_* PARAM_* FUNCTION_* BREADTH_* OPERATIONALIZE_* CALLEE_* REFUTE_* ZONE_*
+# Claude Code / Anthropic client knobs (the backend's auth token below is the only one let through)
+ANTHROPIC_* CLAUDE_* DISABLE_* MCP_* VERTEX_* AWS_BEARER_TOKEN_*
 
 # never cleared: host plumbing + auth (a pipeline call needs them to run at all)
 !HOME !TMPDIR !PATH !PWD !OLDPWD !SHELL !USER !LOGNAME !LANG !TERM !IFS !BASH_SOURCE
 !XDG_STATE_HOME !XDG_CONFIG_HOME !XDG_DATA_HOME !XDG_CACHE_HOME !XDG_RUNTIME_DIR
-!DARK_FACTORY_DIR !CLAUDE_CODE_OAUTH_TOKEN
+!DARK_FACTORY_DIR
+# auth the flat-cyborg backend may need (recorded masked in run.meta, never by value)
+!CLAUDE_CODE_OAUTH_TOKEN

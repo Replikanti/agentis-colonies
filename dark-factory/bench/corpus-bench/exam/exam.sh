@@ -37,8 +37,8 @@
 #            Breadth: `timeout HARD_STOP_S run-zone-hunt.sh --rehunt-gaps` with the profile's env.* knobs.
 #            STAGE 4.5 (DEEP_PASS=1, verify/verified_findings.json present, breadth neither hard-stopped nor
 #            killed): a second `timeout` call with --deep-hunt --deep-hunt-only over the SAME --out and the deep.*
-#            knobs. Every call gets `env -u` for every pipeline knob (see clear_knobs); DF_NO_SANDBOX is refused,
-#            and a live backend needs bwrap. Refuses a repo root / --out that holds a truth.tsv or judging/. Writes
+#            knobs. Every call gets `env -u` for every pipeline + Claude Code knob (see clear_knobs); DF_NO_SANDBOX
+#            is refused; the only live backend is flat-cyborg (sandboxed), and it needs bwrap. Refuses a repo root / --out that holds a truth.tsv or judging/. Writes
 #            run.pid while alive. A hard stop (rc 124), a killed call (rc >= 128) or a TERM/INT to run itself kills
 #            everything left under the arm dir. An EXIT trap ALWAYS writes run.meta (incl. the effective breadth
 #            + deep knob env), the arm's .done marker and one MANIFEST.tsv row, even after a crash.
@@ -174,7 +174,12 @@ clear_knobs() {
 # A live backend drives real Claude Code sessions: without bubblewrap lib/claude-sandboxed.sh falls through to an
 # UNSANDBOXED session that can read the host (ground truth included). Refuse instead.
 need_sandbox() {
-  [ "$P_BACKEND" = mock ] || command -v bwrap >/dev/null 2>&1 \
+  case "$P_BACKEND" in
+    mock) return 0 ;;
+    flat-cyborg) ;;
+    *) die 3 "backend '$P_BACKEND' is refused — only flat-cyborg runs the hunt sessions sandboxed" ;;
+  esac
+  command -v bwrap >/dev/null 2>&1 \
     || die 3 "bwrap (bubblewrap) is required for a live backend — the hunt sessions must run sandboxed"
 }
 
@@ -656,6 +661,7 @@ run_finish() {
     echo "breadth_env=$(paste -sd';' "$R_ARMDIR/breadth.env" 2>/dev/null)"
     echo "deep_env=$(paste -sd';' "$R_ARMDIR/deep.env" 2>/dev/null)"
     echo "env_cleared=$(grep -c . "$R_ARMDIR/env.cleared" 2>/dev/null || echo 0)"
+    echo "env_cleared_set=$(paste -sd' ' "$R_ARMDIR/env.cleared-set" 2>/dev/null)"
   } > "$meta.tmp" && mv "$meta.tmp" "$meta"
   local mf="$A_ROOT/MANIFEST.tsv"
   [ -s "$mf" ] || printf '%s\n' "$MANIFEST_HEADER" > "$mf"
@@ -687,6 +693,9 @@ cmd_run() {
   load_profile "$A_PROFILE"
   need_sandbox
   clear_knobs "$A_PROFILE" "$df" "$R_ARMDIR/env.cleared"
+  # the names the caller's shell actually carried and this run dropped (names only, never values)
+  local _n; while IFS= read -r _n; do [ -z "${!_n+x}" ] || printf '%s\n' "$_n"; done < "$R_ARMDIR/env.cleared" \
+    > "$R_ARMDIR/env.cleared-set"
   # Ground truth must be invisible to the hunt: neither the repo root it is pointed at nor its --out may hold a
   # truth.tsv or a judging/ (stage keeps them in the sibling _gt/ view).
   local gt_leak; gt_leak="$(find "$R_CODE" "$out" \( -name truth.tsv -o -name judging \) -print 2>/dev/null | head -3)"
@@ -991,7 +1000,8 @@ cmd_self_test() {
   printf 'BACKEND=mock\nenv.SEVERITY_RUBRIC=$(id)\n' > "$work/p-dollar.env"
   printf 'BACKEND=mock\nenv.severity=1\n' > "$work/p-name.env"
   printf 'BACKEND=flat-cyborg\n' > "$work/p-nomodel.env"
-  for pr in unknown dollar name nomodel; do
+  printf 'BACKEND=claude\nMODEL=claude-opus-4-8\n' > "$work/p-claude.env"
+  for pr in unknown dollar name nomodel claude; do
     python3 "$HELPER" profile "$work/p-$pr.env" > /dev/null 2>&1; expect_rc 2 $? "profile with a bad line ($pr) is refused"
   done
   printf 'BACKEND=mock\nenv.DF_NO_SANDBOX=1\n' > "$work/p-nosandbox.env"
@@ -1162,11 +1172,14 @@ cmd_self_test() {
   bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_pool --arm probe --repeat 1 --profile mock \
     --checkout "$co" > /dev/null 2>&1
   (
-    for n in $reads DF_FUTURE_KNOB FLAT_CYBORG_FUTURE LLM_FUTURE_CAP FORK_FUTURE; do
+    for n in $reads DF_FUTURE_KNOB FLAT_CYBORG_FUTURE LLM_FUTURE_CAP FORK_FUTURE MAX_THINKING_TOKENS ANTHROPIC_BASE_URL \
+             ANTHROPIC_API_KEY ANTHROPIC_MODEL CLAUDE_CONFIG_DIR DISABLE_PROMPT_CACHING BASH_DEFAULT_TIMEOUT_MS \
+             BASH_MAX_TIMEOUT_MS MCP_TIMEOUT; do
       case "$n" in DF_NO_SANDBOX|CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK|CLAUDE_CODE_NO_MODEL_FALLBACK|CLAUDE_CODE_FORCE_SESSION_PERSISTENCE) continue ;; esac
       printf '%s\n' "$allow" | grep -qxF "$n" && continue
       export "$n=exam-leak-probe"
     done
+    export CLAUDE_CODE_OAUTH_TOKEN=exam-secret-probe   # allowlisted auth: passes, but is never recorded by value
     export STUB_ENV_DUMP="$work/env-probe.txt"
     bash "$SELF" run --root "$root" --base "$base" --contest fx --zone src_pool --arm probe --repeat 1 --profile mock \
       --checkout "$co" --agentis "$stub" > "$work/probe.out" 2>&1
@@ -1174,10 +1187,19 @@ cmd_self_test() {
   local leaked; leaked="$(grep '=exam-leak-probe$' "$work/env-probe.txt" 2>/dev/null | cut -d= -f1 | sort -u | paste -sd' ' -)"
   if [ "$rc" -eq 0 ] && [ -s "$work/env-probe.txt" ] && [ -z "$leaked" ] \
      && ! grep -q 'exam-leak-probe' "$root/arms/fx/src_pool/probe-r1/breadth.env"; then
-    ok "leak probe: $(printf '%s\n' $reads | grep -c .) pipeline env names + unlisted prefix names exported as a sentinel never reach the hunter"
+    ok "leak probe: $(printf '%s\n' $reads | grep -c .) pipeline env names + unlisted prefix names + Claude Code knobs exported as a sentinel never reach the hunter"
   else
     bad "leak probe: exit $rc; sentinel reached the hunter for: ${leaked:-<none, but the run failed>}"
     tail -5 "$work/probe.out" | sed 's/^/         | /'
+  fi
+  local pm="$root/arms/fx/src_pool/probe-r1/run.meta"
+  if grep -q '^env_cleared_set=.*MAX_THINKING_TOKENS' "$pm" && grep -q '^env_cleared_set=.*ANTHROPIC_BASE_URL' "$pm" \
+     && grep -q '^env_cleared_set=.*CLAUDE_CONFIG_DIR' "$pm" && grep -q 'CLAUDE_CODE_OAUTH_TOKEN=<set>' "$pm" \
+     && ! grep -rq 'exam-secret-probe' "$root/arms/fx/src_pool/probe-r1" "$root/MANIFEST.tsv"; then
+    ok "run.meta records the Claude Code knobs the caller carried and dropped, and the allowlisted auth token only masked"
+  else
+    bad "run.meta misses the dropped Claude Code knobs or records the auth token by value"
+    grep -E '^(env_cleared_set|breadth_env)=' "$pm" 2>/dev/null | cut -c1-300 | sed 's/^/         | /'
   fi
   bash "$SELF" stage --root "$root" --base "$base" --contest fx --zone src_feed --arm nosb --repeat 1 --profile mock \
     --checkout "$co" > /dev/null 2>&1
