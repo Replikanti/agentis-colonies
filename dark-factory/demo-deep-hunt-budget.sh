@@ -448,11 +448,36 @@ note "6) BUDGET: hard zone budget ..."
 spec 'VaultA|C10|0.2|normal|CLEAN' '*|*|30|normal|CLEAN'
 : > "$WORK/t6.stub"; STUB_LOG="$WORK/t6.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_ZONE_BUDGET_S=6 lens_only "$RZH" "$WORK/t6"
 t6="$(awk -F'\t' '{printf "%s/%s:%s:%s;", $2, $3, $4, $5}' "$WORK/t6/deep-hunt/cell-status.tsv" 2>/dev/null)"
-t6_exp="VaultA/C10:CLEAN:-;VaultA/C2:TIMEOUT:zone-budget;VaultB/C10:SKIPPED_BUDGET:zone-budget=6s;VaultB/C2:SKIPPED_BUDGET:zone-budget=6s;VaultC/C10:SKIPPED_BUDGET:zone-budget=6s;VaultC/C2:SKIPPED_BUDGET:zone-budget=6s;"
-if [ "$t6" = "$t6_exp" ] && [ "$(grep -c . "$WORK/t6.stub")" = 2 ] && [ -z "$(procs_under "$STUB_SLEEP")" ]; then
-  ok "in-flight cell capped at the zone's remaining budget (TIMEOUT, zone-budget); the 4 unlaunched pairs SKIPPED_BUDGET"
+t6_calls="$(grep -c . "$WORK/t6.stub")"
+# The in-flight cell (VaultA/C2) is capped to exactly the zone's *remaining* budget, so by construction its
+# TIMEOUT lands within ~1 whole second of the budget boundary — both dh_now() (dark-factory/lib/deep-hunt-sched.sh)
+# and cell-watchdog.sh's wall-cap poll work in whole seconds (`date +%s`, `sleep 1`), so which side of the
+# boundary the very NEXT dispatch decision falls on is a genuine +/-1s race, sharper under CI load (seen live:
+# run 36206053478, VaultB/C10 TIMEOUT:zone-budget instead of SKIPPED_BUDGET). That race can only ever consume
+# ONE extra cell (once it launches, real elapsed time strictly clears the boundary for every check after it), so
+# tolerate exactly one boundary hit — never a full re-run past it — without weakening the invariant: the budget
+# must still cap the in-flight cell and must still stop everything else from running to completion.
+t6_ok=1
+[ "$(status_of "$WORK/t6" VaultA C10)" = CLEAN ] || t6_ok=0
+[ "$(status_of "$WORK/t6" VaultA C2)" = TIMEOUT ] && [ "$(reason_of "$WORK/t6" VaultA C2)" = zone-budget ] || t6_ok=0
+t6_boundary_hits=0
+for t6_tc in "VaultB C10" "VaultB C2" "VaultC C10" "VaultC C2"; do
+  set -- $t6_tc
+  t6_st="$(status_of "$WORK/t6" "$1" "$2")"; t6_rs="$(reason_of "$WORK/t6" "$1" "$2")"
+  if [ "$t6_st" = SKIPPED_BUDGET ] && [ "$t6_rs" = "zone-budget=6s" ]; then
+    continue
+  elif [ "$t6_boundary_hits" -eq 0 ] && [ "$t6_st" = TIMEOUT ] && [ "$t6_rs" = zone-budget ]; then
+    t6_boundary_hits=1
+  else
+    t6_ok=0
+  fi
+done
+[ "$t6_calls" -ge 2 ] && [ "$t6_calls" -le $((2 + t6_boundary_hits)) ] || t6_ok=0
+[ -z "$(procs_under "$STUB_SLEEP")" ] || t6_ok=0
+if [ "$t6_ok" = 1 ]; then
+  ok "in-flight cell capped at the zone's remaining budget (TIMEOUT, zone-budget); the unlaunched pairs SKIPPED_BUDGET (1s boundary race tolerated on at most one: hit=$t6_boundary_hits)"
 else
-  bad "budget ledger: $t6 (stub calls: $(grep -c . "$WORK/t6.stub"))"
+  bad "budget ledger: $t6 (stub calls: $t6_calls)"
 fi
 
 # ================================================================================================
