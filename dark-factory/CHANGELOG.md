@@ -650,6 +650,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **A hunt sandbox sees only its own session transcripts, not every `~/.claude` project (#2262).**
+  `lib/claude-sandboxed.sh` bound the whole `~/.claude` read-write into every hunt / refute / prover session so
+  auth and workspace trust keep working, but `~/.claude/projects/` holds every Claude Code transcript on the
+  host: other cells' and other runs' hunts and the operator's own sessions. On a real held-out run a hunter cell
+  listed and grepped `~/.claude/projects/*` and read another zone's refuter transcripts, which is cross-run
+  leakage and a possible ground-truth channel. After the `~/.claude` bind, the wrapper now mounts an empty tmpfs
+  over every history-bearing dir (`projects`, `file-history`, `shell-snapshots`, `session-env`, `sessions`,
+  `todos`, `debug`, `paste-cache`, `plans`, `backups`, when present) and overmounts `history.jsonl` with
+  `/dev/null` (reads empty; appends are discarded). It then re-binds read-write ONLY the project dir named for the
+  session's own cwd, so the transcript still lands on the host where model attribution reads it. The name follows
+  Claude Code's own sanitizer: non-alphanumerics become `-`, and a name over 200 chars is cut and suffixed with
+  the base-36 djb2 hash. This was checked against real hashed project dirs. Credentials and settings stay
+  visible. `demo-claude-sandboxed.sh` runs entirely on a temp-HOME fixture and adds known-answer vectors for the
+  encoding plus the live isolation asserts: only the own dir is visible, and it is writable and lands on the
+  host, including for a hashed cwd over 200 chars. A recursive grep over `~/.claude` finds no other session's
+  content, and the host history is unchanged. Dropping any one of the masks fails the demo.
+
 - **The second tier reaches the refute gate, and a check that names only its contract is located there
   (#2217, the two harness bugs the M5 mechanics run surfaced).** Both were invisible to the PR-C/PR-A
   fixtures and both cost the whole second tier its point.

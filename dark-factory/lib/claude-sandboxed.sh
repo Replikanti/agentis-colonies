@@ -50,6 +50,28 @@ REPO="${HUNT_SANDBOX_REPO:-}"
 EXTERNAL="${HUNT_SANDBOX_EXTERNAL:-}"
 H="$HOME"
 
+# claude_project_slug <abs-cwd>: the directory name Claude Code keeps a cwd's transcripts under, in
+# ~/.claude/projects/. Mirrors Claude Code's own path sanitizer exactly: every char outside [A-Za-z0-9] becomes
+# '-'; a name longer than 200 chars is cut to 200 and suffixed with '-' + base36(|h|), where h is the 32-bit
+# signed djb2 `h = ((h << 5) - h + code) | 0` over the path. Verified against real hashed project dirs.
+# ASCII paths only (every emitter's cwd is a generated run dir): a non-ASCII path returns 1 and the caller binds
+# nothing, so the transcript lands in the sandbox tmpfs (fail-closed: lost, never leaked).
+claude_project_slug() {
+  local LC_ALL=C
+  local p="$1" s i c h=0 out="" digits=0123456789abcdefghijklmnopqrstuvwxyz
+  [[ $p == *[![:ascii:]]* ]] && return 1
+  s="${p//[^A-Za-z0-9]/-}"
+  if [ "${#s}" -le 200 ]; then printf '%s\n' "$s"; return 0; fi
+  for (( i = 0; i < ${#p}; i++ )); do
+    printf -v c '%d' "'${p:i:1}"
+    h=$(( (h * 31 + c) & 0xFFFFFFFF ))
+  done
+  [ "$h" -ge 2147483648 ] && h=$(( 4294967296 - h ))
+  [ "$h" -eq 0 ] && out=0
+  while [ "$h" -gt 0 ]; do out="${digits:h % 36:1}$out"; h=$(( h / 36 )); done
+  printf '%s-%s\n' "${s:0:200}" "$out"
+}
+
 # Fallthrough: no bwrap, or explicit opt-out -> real claude, web tools still
 # denied, but NO filesystem isolation. Warn loudly so it is never mistaken for a
 # sandboxed run.
@@ -73,6 +95,30 @@ binds=(
   --ro-bind "$REAL" "$REAL"
 )
 [ -e "$H/.claude" ]      && binds+=(--bind "$H/.claude" "$H/.claude")            # session/trust persistence (rw)
+# #2262: ~/.claude also holds EVERY Claude Code session on the host — other cells' and other runs' transcripts
+# and the operator's own sessions (which can quote ground truth). A real held-out hunter cell grepped
+# ~/.claude/projects/* and read another zone's refuter transcripts. So, AFTER the ~/.claude bind (bwrap applies
+# mounts in order), every history-bearing entry is masked: the per-session dirs become empty tmpfs, and the
+# prompt history reads as empty with appends discarded (/dev/null needs --dev-bind: plain binds are nodev).
+# Credentials, settings, agents, skills and plugins stay visible exactly as before.
+if [ -d "$H/.claude" ]; then
+  mkdir -p "$H/.claude/projects" 2>/dev/null
+  for _d in projects file-history shell-snapshots session-env sessions todos debug paste-cache plans backups; do
+    [ -d "$H/.claude/$_d" ] && binds+=(--tmpfs "$H/.claude/$_d")
+  done
+  [ -f "$H/.claude/history.jsonl" ] && binds+=(--dev-bind /dev/null "$H/.claude/history.jsonl")
+  # ...then re-expose ONLY this session's own project dir, rw, so its transcript still lands on the host where
+  # model attribution reads it. Both the logical and the physical cwd are bound when they differ (a symlinked
+  # path component); both name THIS session's cwd, never another's. The source of a bwrap bind resolves on the
+  # host, so it is the real host dir even though the destination now sits under the tmpfs.
+  _own=()
+  _s="$(claude_project_slug "$PWD")" && _own+=("$_s")
+  _s="$(claude_project_slug "$(pwd -P)")" && [ "$_s" != "${_own[0]:-}" ] && _own+=("$_s")
+  for _s in "${_own[@]}"; do
+    mkdir -p "$H/.claude/projects/$_s" 2>/dev/null \
+      && binds+=(--bind "$H/.claude/projects/$_s" "$H/.claude/projects/$_s")   # own transcripts only (rw)
+  done
+fi
 [ -e "$H/.claude.json" ] && binds+=(--bind "$H/.claude.json" "$H/.claude.json") # workspace-trust store (rw)
 [ -e "$H/.foundry" ]     && binds+=(--ro-bind "$H/.foundry" "$H/.foundry")      # forge/cast/anvil toolchain
 [ -e "$H/.svm" ]         && binds+=(--ro-bind "$H/.svm" "$H/.svm")              # solc version manager cache
