@@ -14,6 +14,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+
+- **Batched refute first read, default OFF (#2284 M1).** `verify-findings.sh --refute-batch <0|1>` (env
+  `DF_REFUTE_BATCH`, default 0) groups the candidates that would reach the refute gate by `(file, function)` + code
+  file — the `block_key` of `lib/cluster-findings.py`, imported by the new `lib/refute-batch.py` planner — and gives
+  each group of two or more ONE `run-refute.sh --batch-first-read` session (`DF_REFUTE_BATCH_MAX`, default 6,
+  larger groups split into balanced chunks; timeout `min(600 s + 240 s per extra candidate, 1800 s)`). `refuter.ag`
+  gains a batch mode behind `CAND_BATCH_PATH` (on the passthrough) with an independence rule, one
+  `REFUTE-ITEM|<k>` block per candidate and an honesty-gated `REFUTE-BATCH|` sentinel; the single-candidate prompt
+  is byte-identical. The reply is split into per-candidate logs (`split/<k>.log`, `batch-status.tsv`), and every
+  member then runs the unchanged single-candidate gate with `--first-read-log`, so verdicts, the rubric re-ask, the
+  C6 fallback, the constraint harvest and `verified_findings.json` stay per candidate; a member without a clean
+  block falls back to its own first read. New `DF_REFUTE_SESSION_LOG` session telemetry and
+  `lib/refute-batch.py summary` session predictor. OFF writes nothing new. Proven by the new
+  `demo-refute-batch.sh` (colony-lint).
+
 ## [0.12.0] - 2026-09-27
 
 **Requires:** agentis >= `1.22.7`

@@ -1292,6 +1292,25 @@ if [ -x "$REPO_ROOT/dark-factory/demo-cluster-findings.sh" ]; then
     fi
 fi
 
+# --- dark-factory batched refute first read (#2284) ---
+# demo-refute-batch.sh is pure bash/python3 (offline refute stub through the existing --agentis seam that mirrors
+# refuter.ag's REFUTE-BATCH|/REFUTE-ITEM| batch output): asserts the lib/refute-batch.py plan (same-function key,
+# case-distinct files kept apart, balanced chunks), per-candidate verdict independence inside a mixed group, ON ==
+# OFF byte-identity on the same answers (verified_findings.json, constraints, every gate dir), OFF inert, the four
+# fallbacks (dropped block, class mismatch, chrome, no sentinel) losing no candidate, the exclusions (adjudicated,
+# preflight, sub-floor, tier-2) and the counting invariant, rubric re-ask interplay, --jobs invariance + the pool
+# cap, session counts, the argument guards, and (with agentis installed) a byte-identity probe of the
+# single-candidate refuter prompt.
+if [ -x "$REPO_ROOT/dark-factory/demo-refute-batch.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-refute-batch.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: batched refute first read (per-candidate verdicts, ON == OFF, fallbacks lose nothing, default OFF) (#2284)"
+    else
+        fail "dark-factory: batched refute first read regressed (#2284)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory zone-hunt capstone: map -> brief -> discovery -> verify -> audit-pass -> deliver (#1630, epic #1611 M5) ---
 # run-zone-hunt.sh chains the shipped M1..M4 + delivery entrypoints into ONE autonomous zone-hunt and EDITS none
 # of them; it HALTS every finding at PENDING-HUMAN-REVIEW (enforced by run-audit-pass's terminal + deliver-

@@ -57,6 +57,24 @@
 #                        helper that wrote the block. An empty file is treated as unset. Needs python3 (exit 3
 #                        without it); rejected together with --invariant-mode (exit 2, v1 reach = discovery leads).
 #                        Absent => the prompt, the report and every output file are byte-identical.
+#   --batch-first-read   #2284: ONE batched FIRST READ for several candidates of ONE function. The manifest must
+#                        hold at least 2 candidates sharing one <code-file> and one <aux-code-file> (else exit 2);
+#                        rejected together with --invariant-mode, --only and --first-read-log (exit 2). The code is
+#                        staged once, refuter.ag judges every candidate in one session (CAND_BATCH_PATH) and the
+#                        reply is SPLIT into `<out>/split/<k>.log` (the reply's header sentinels + candidate k's
+#                        block) — written only when the log carries refuter.ag's `REFUTE-BATCH|` sentinel, the
+#                        block yields a REAL/REFUTED verdict, and its `C<n>` class (when both sides carry one)
+#                        matches the candidate's. `<out>/batch-status.tsv` records every member
+#                        (`k \t file:fn \t class \t ok|missing|class-mismatch|no-batch-reply`). NO refute-report.md
+#                        is written: every member then goes through a normal single-candidate run with
+#                        --first-read-log, so every later step (rubric re-ask, C6 fallback, constraint harvest,
+#                        report row) stays per candidate. The session timeout scales with the batch size:
+#                        min(600 s + 240 s per extra candidate, 1800 s). Exit 0 once the split is reached (even
+#                        with zero usable blocks).
+#   --first-read-log <file>  #2284: a ONE-candidate manifest only (else exit 2). When <file> is non-empty and
+#                        carries a REAL/REFUTED verdict it REPLACES this candidate's first refuter session (it is
+#                        copied to the candidate's cell log); otherwise the run logs `first-read log unusable` and
+#                        does the first read itself. Nothing after the first read changes.
 #
 # Env:
 #   SEVERITY_RUBRIC  #2245 iteration 2 OPT-IN, default UNSET = OFF. `1` injects refuter.ag's contest-severity
@@ -81,6 +99,9 @@
 #   DF_RUBRIC_MAX_REASKS  #2245 iteration 2: how many extra hostile reads a REFUTED verdict standing on an
 #                    INSUFFICIENT ground gets. Default 1 (the bounded one-extra-call-per-candidate budget the
 #                    #1699 C6 fallback established); 0 = gate-only (record it, never re-ask); garbage => 1.
+#   DF_REFUTE_SESSION_LOG  #2284 telemetry, default UNSET = no file. When set, every `agentis go refuter.ag` attempt
+#                    appends `<epoch>\t<kind>\t<n>\t<file:fn>` to it — kind `batch` (n = batch size), `first`,
+#                    `reask` (the #2245 rubric re-ask) or `c6` (the #1699 fallback), n = 1 for the last three.
 #
 # Outputs: `<out>/refute-report.md` (the verdict table, an unchanged downstream contract) and — #1887 —
 # `<out>/refute-constraints.tsv`, one `<class>\t<file:fn>\t<constraint>` row per REFUTED candidate whose
@@ -133,6 +154,12 @@ DF_AGENT_MAX_ATTEMPTS="$(df_max_attempts)"
 # (0 = gate-only, no re-ask); garbage => 1. Irrelevant on a default run — the gate needs the agent's sentinel.
 DF_RUBRIC_MAX_REASKS="${DF_RUBRIC_MAX_REASKS:-1}"
 case "$DF_RUBRIC_MAX_REASKS" in ''|*[!0-9]*) DF_RUBRIC_MAX_REASKS=1 ;; esac
+# _rf_session_note <kind> <n> <file:fn> — #2284 session telemetry (see DF_REFUTE_SESSION_LOG in the Env block). One
+# appended line per `agentis go refuter.ag` attempt; a no-op (no file at all) when the knob is unset.
+_rf_session_note() {
+  [ -n "${DF_REFUTE_SESSION_LOG:-}" ] || return 0
+  printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$1" "$2" "$3" >> "$DF_REFUTE_SESSION_LOG" 2>/dev/null || true
+}
 # agentis-core#993: pre-accept Claude Code's workspace-trust dialog for the RUN dir
 # (below), so the flat-cyborg/claude backend session does not block + exit 75.
 # shellcheck source=lib/ensure-claude-trust.sh
@@ -147,6 +174,8 @@ INVARIANT_MODE=0 ; INV_HARNESS=""
 # #2257: the declared-scope block. EMPTY (default) => SCOPE_ASSUMPTIONS_PATH is exported empty, refuter.ag's scope
 # directive is "" and the scope contract below is never armed.
 SCOPE_ASSUMPTIONS="" ; SCOPE_LIB="$HERE/lib/scope-assumptions.py"
+# #2284: the batched first read. Both OFF (default) => every statement below runs exactly as before.
+BATCH_FIRST_READ=0 ; FIRST_READ_LOG=""
 
 need() { [ "$1" -ge 2 ] || { echo "run-refute.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -162,6 +191,8 @@ while [ $# -gt 0 ]; do
     --invariant-mode) INVARIANT_MODE=1; shift ;;
     --invariant-harness) need "$#"; INV_HARNESS="$2"; shift 2 ;;
     --scope-assumptions) need "$#"; SCOPE_ASSUMPTIONS="$2"; shift 2 ;;
+    --batch-first-read) BATCH_FIRST_READ=1; shift ;;
+    --first-read-log) need "$#"; FIRST_READ_LOG="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-refute.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -199,6 +230,44 @@ if [ -n "$SCOPE_ASSUMPTIONS" ]; then
   fi
 fi
 
+# _rf_manifest_rows — the manifest's candidate lines, parsed and trimmed EXACTLY like the manifest loop below
+# (`#` and blank lines skipped), one `file:fn|class|sev|exploit|code-file|aux-code-file` line each. Used by the
+# #2284 guards and the batched first read; the manifest loop itself keeps its own read.
+_rf_manifest_rows() {
+  while IFS='|' read -r mr_cfn mr_cls mr_sev mr_expl mr_codef mr_auxf || [ -n "${mr_cfn:-}" ]; do
+    mr_cfn="$(printf '%s' "$mr_cfn" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    case "$mr_cfn" in ''|\#*) continue ;; esac
+    printf '%s|%s|%s|%s|%s|%s\n' "$mr_cfn" \
+      "$(printf '%s' "$mr_cls" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" \
+      "$(printf '%s' "$mr_sev" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" \
+      "$(printf '%s' "$mr_expl" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" \
+      "$(printf '%s' "$mr_codef" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" \
+      "$(printf '%s' "${mr_auxf:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+  done < "$CANDS"
+}
+# #2284: the batched-first-read guards, before any side effect. A batch is ONE function's candidates judged against
+# ONE staged code file (+ ONE appendix), so a manifest that mixes code files is a caller bug, never a batch.
+RF_TIMEOUT_MS=600000
+BATCH_N=0
+if [ "$BATCH_FIRST_READ" = 1 ]; then
+  [ "$INVARIANT_MODE" = 0 ] || { echo "run-refute.sh: --batch-first-read cannot be combined with --invariant-mode" >&2; exit 2; }
+  [ -z "$ONLY" ] || { echo "run-refute.sh: --batch-first-read cannot be combined with --only" >&2; exit 2; }
+  [ -z "$FIRST_READ_LOG" ] || { echo "run-refute.sh: --batch-first-read cannot be combined with --first-read-log" >&2; exit 2; }
+  BATCH_N="$(_rf_manifest_rows | grep -c . || true)"
+  [ "$BATCH_N" -ge 2 ] || { echo "run-refute.sh: --batch-first-read needs at least 2 candidates (got $BATCH_N)" >&2; exit 2; }
+  [ "$(_rf_manifest_rows | cut -d'|' -f5 | sort -u | wc -l | tr -d ' ')" = "1" ] \
+    || { echo "run-refute.sh: --batch-first-read needs every candidate to share one <code-file>" >&2; exit 2; }
+  [ "$(_rf_manifest_rows | cut -d'|' -f6 | sort -u | wc -l | tr -d ' ')" = "1" ] \
+    || { echo "run-refute.sh: --batch-first-read needs every candidate to share one <aux-code-file>" >&2; exit 2; }
+  # One session judges n candidates: 600 s for the first, 240 s per extra one, capped at 30 min.
+  RF_TIMEOUT_MS=$((600000 + 240000 * (BATCH_N - 1)))
+  [ "$RF_TIMEOUT_MS" -le 1800000 ] || RF_TIMEOUT_MS=1800000
+fi
+if [ -n "$FIRST_READ_LOG" ]; then
+  [ "$(_rf_manifest_rows | grep -c . || true)" = "1" ] \
+    || { echo "run-refute.sh: --first-read-log needs a one-candidate manifest" >&2; exit 2; }
+fi
+
 REFUTER="$HERE/auditor/agents/refuter.ag"
 [ -f "$REFUTER" ] || { echo "run-refute.sh: refuter agent not found at $REFUTER" >&2; exit 3; }
 
@@ -233,13 +302,14 @@ fi
 ( cd "$RUN" && "$AGENTIS" init >/dev/null 2>&1 )
 {
   echo "llm.backend = $BACKEND"
-  # 600s: a hostile cross-function trace of a candidate is the same order of cost as a discovery read.
-  [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = 600000"; }
+  # 600s: a hostile cross-function trace of a candidate is the same order of cost as a discovery read (#2284: a
+  # batched first read scales it, see RF_TIMEOUT_MS above).
+  [ "$BACKEND" = "claude" ] && { echo "llm.command = claude"; echo "llm.args = -p${MODEL:+ --model $MODEL}"; echo "llm.cli_timeout_ms = $RF_TIMEOUT_MS"; }
   # idle_ms 12000 (> native 4000 default): kept as a latency knob only (#1925) -- do NOT ratchet it further.
   # Completion is gated on the wrapper's closing sentinel from flat-cyborg >= 0.13.0 (idle_gate_open()); idle_ms
   # only bounds how fast a marker-less (sentinel-less) reply is accepted once the screen goes quiet. If a stage
   # looks flaky, file it against the completion path, not this value.
-  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = 600000"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.flat_cyborg.result_file_dir = $RUN"; echo "llm.model = ${MODEL:-opus}"; }
+  [ "$BACKEND" = "flat-cyborg" ] && { echo "llm.cli_timeout_ms = $RF_TIMEOUT_MS"; echo "llm.flat_cyborg.idle_ms = 12000"; echo "llm.flat_cyborg.result_file_dir = $RUN"; echo "llm.model = ${MODEL:-opus}"; }
   # #2125: sandbox the driven Claude Code session (bubblewrap view = toolchain + run dir only, web tools denied).
   [ "$BACKEND" = "flat-cyborg" ] && [ -z "${DF_NO_SANDBOX:-}" ] && command -v bwrap >/dev/null 2>&1 && echo "llm.flat_cyborg.target = $HERE/lib/claude-sandboxed.sh"
   echo "trace.level = normal"
@@ -259,7 +329,9 @@ fi
   # directive.
   # #2257: SCOPE_ASSUMPTIONS_PATH rides it for the same reason; it is exported EMPTY without --scope-assumptions,
   # so its presence on the line changes the config file only, never the prompt or an output.
-  echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH,CAND_INVARIANT,INV_HARNESS_PATH,SEVERITY_RUBRIC,RUBRIC_REASK_GROUNDS,GROUND_EVIDENCE,SCOPE_ASSUMPTIONS_PATH"
+  # #2284: CAND_BATCH_PATH rides it for the same reason — unregistered, getenv() never sees the staged batch, the
+  # agent prints no REFUTE-BATCH| sentinel, and every member silently falls back to its own first read.
+  echo "exec.env_passthrough = CAND_FILE_FN,CAND_CLASS,CAND_SEVERITY,CAND_EXPLOIT,CODE_PATH,BRIEF_PATH,AUX_CODE_PATH,CAND_INVARIANT,INV_HARNESS_PATH,SEVERITY_RUBRIC,RUBRIC_REASK_GROUNDS,GROUND_EVIDENCE,SCOPE_ASSUMPTIONS_PATH,CAND_BATCH_PATH"
   echo "exec.default_timeout_ms = 30000"
   # Learning/experience are ENABLED: refuter.ag ends its tick with `learn("refute", ...)`, and it is that
   # WRITE the flag gates (#1878, agentis v1.28.0: learn() raises `runtime error: experience not enabled`, and
@@ -277,6 +349,8 @@ fi
 case "$BACKEND" in flat-cyborg|claude) df_ensure_claude_trust "$RUN" ;; esac
 
 REPORT="$OUT/refute-report.md"
+# #2284: a batched first read writes NO report — its members each get a normal single-candidate run afterwards.
+if [ "$BATCH_FIRST_READ" = 0 ]; then
 {
   echo "# Dark Factory — adversarial refutation verdicts"
   echo
@@ -288,6 +362,7 @@ REPORT="$OUT/refute-report.md"
   echo "| Candidate (file:fn) | Class | Verdict | Reason |"
   echo "|---|---|---|---|"
 } > "$REPORT"
+fi
 
 # #1887: the harvested generalisable constraints, one `<class>\t<file:fn>\t<constraint>` row per REFUTED
 # candidate whose reply carried a CONSTRAINT| line. A SEPARATE artifact on purpose: refute-report.md's row
@@ -295,7 +370,7 @@ REPORT="$OUT/refute-report.md"
 # so the channel adds a file rather than a column. Always created — an empty file is the honest record of
 # "no candidate was refuted with a constraint", and refute-to-knowledge.sh turns it into a valid empty corpus.
 CONSTRAINTS="$OUT/refute-constraints.tsv"
-: > "$CONSTRAINTS"
+[ "$BATCH_FIRST_READ" = 1 ] || : > "$CONSTRAINTS"
 # #2245 iteration 2: the insufficient-ground sidecar, `<class>\t<file:fn>\t<ground-id>\t<reason>`. An additive
 # FILE, never a new column or key (refute-report.md's row shape is a downstream contract), and — unlike
 # refute-constraints.tsv — created LAZILY, on the first row: with the knob off no row is ever written, so a
@@ -633,6 +708,131 @@ _clean_reason() {
   printf '%s' "$1" | tr '|' '/' | sed 's/[[:space:]][[:space:]]*/ /g; s/^ *//; s/ *$//'
 }
 
+# --- #2284: the BATCHED FIRST READ ---------------------------------------------------------------------------
+# One session judges every candidate of one function; the reply is split into one log per candidate, and each of
+# those logs becomes that candidate's first read in a normal single-candidate run (--first-read-log). This block
+# decides NOTHING about a verdict: it only decides which members got a clean block. A member without one — a
+# dropped block, a contradicting class, a chrome reply, a reply without the REFUTE-BATCH| sentinel — simply gets
+# its own first read later, so a bad batch can cost sessions but never a candidate.
+if [ "$BATCH_FIRST_READ" = 1 ]; then
+  BATCH_FILE="$RUN/batch-candidates.txt"; : > "$BATCH_FILE"
+  BATCH_MEMBERS="$RUN/batch-members.tsv"; : > "$BATCH_MEMBERS"
+  BATCH_STATUS="$OUT/batch-status.tsv"; : > "$BATCH_STATUS"
+  SPLIT_DIR="$OUT/split"; rm -rf "$SPLIT_DIR"; mkdir -p "$SPLIT_DIR"
+  BK=0 ; BATCH_CFN="" ; BATCH_CODEF="" ; BATCH_AUXF=""
+  _rf_manifest_rows > "$RUN/batch-manifest.rows"
+  while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
+    [ -n "$CFN" ] || continue
+    BK=$((BK + 1))
+    if [ "$BK" -eq 1 ]; then BATCH_CFN="$CFN"; BATCH_CODEF="$CODEF"; BATCH_AUXF="$AUXF"; fi
+    printf '%s|%s|%s|%s|%s\n' "$BK" "$CFN" "$CLS" "$SEV" "$EXPL" >> "$BATCH_FILE"
+    printf '%s\t%s\t%s\n' "$BK" "$CFN" "$CLS" >> "$BATCH_MEMBERS"
+  done < "$RUN/batch-manifest.rows"
+  # Stage the shared code (and appendix) ONCE, resolved exactly like the manifest loop does per candidate.
+  case "$BATCH_CODEF" in /*) BATCH_SRC="$BATCH_CODEF" ;; *) BATCH_SRC="$CODE_DIR/$BATCH_CODEF" ;; esac
+  [ -n "$BATCH_CODEF" ] && [ -f "$BATCH_SRC" ] || { echo "run-refute.sh: batch code file not found: $BATCH_SRC" >&2; exit 3; }
+  BATCH_STAGED="$RUN/code_batch.txt"
+  cp "$BATCH_SRC" "$BATCH_STAGED"
+  BATCH_AUX_STAGED=""
+  if [ -n "$BATCH_AUXF" ]; then
+    case "$BATCH_AUXF" in /*) BATCH_AUX_SRC="$BATCH_AUXF" ;; *) BATCH_AUX_SRC="$CODE_DIR/$BATCH_AUXF" ;; esac
+    if [ -f "$BATCH_AUX_SRC" ]; then
+      BATCH_AUX_STAGED="$RUN/aux_batch.txt"
+      cp "$BATCH_AUX_SRC" "$BATCH_AUX_STAGED"
+    else
+      echo "run-refute.sh: aux code file not found for the batch: $BATCH_AUX_SRC; continuing WITHOUT the implementation appendix" >&2
+    fi
+  fi
+  # The shared file:fn label (the per-run store this agent learns into is thrown away, #1866).
+  BATCH_FN="$(printf '%s' "$BATCH_CFN" | cut -d':' -f1-2)"
+  BATCH_LOG="$RUN/refute_batch.log"
+  echo "run-refute.sh: batched first read of $BK candidate(s) in $BATCH_FN ..." >&2
+  # Same env contract as _rf_attempt (one knob added), with the re-ask and the invariant mode forced off: a batch
+  # is only ever a FIRST read.
+  # shellcheck disable=SC2317,SC2329  # invoked by name through df_run_agent_validated
+  _rf_batch_attempt() {
+    _rf_session_note batch "$BK" "$BATCH_FN"
+    ( cd "$RUN" && env \
+        CAND_FILE_FN="$BATCH_FN" \
+        CAND_CLASS="batch" \
+        CAND_SEVERITY="" \
+        CAND_EXPLOIT="" \
+        CAND_INVARIANT="" \
+        INV_HARNESS_PATH="" \
+        CODE_PATH="$BATCH_STAGED" \
+        AUX_CODE_PATH="$BATCH_AUX_STAGED" \
+        BRIEF_PATH="$BRIEF_IN_RUN" \
+        SEVERITY_RUBRIC="${SEVERITY_RUBRIC:-}" \
+        RUBRIC_REASK_GROUNDS="" \
+        GROUND_EVIDENCE="${GROUND_EVIDENCE:-}" \
+        SCOPE_ASSUMPTIONS_PATH="$SCOPE_IN_RUN" \
+        CAND_BATCH_PATH="$BATCH_FILE" \
+        "$AGENTIS" go refuter.ag --enable-exec --enable-messaging --grant-pii ) >"$1" 2>&1 || \
+        echo "run-refute.sh: batched refuter run failed for '$BATCH_FN' (see $1)" >&2
+  }
+  BATCH_REPLY=0
+  if df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-refute.sh: batch '$BATCH_FN'" "$BATCH_LOG" refuter "" _rf_batch_attempt; then
+    BATCH_REPLY=1
+  fi
+  # The sentinel proves the batch prompt was really SENT (a knob lost on the passthrough would have produced a
+  # single-candidate prompt about the shared label instead).
+  BATCH_ARMED=0
+  if [ "$BATCH_REPLY" -eq 1 ] && grep -qE '^[[:space:]]*REFUTE-BATCH\|' "$BATCH_LOG"; then BATCH_ARMED=1; fi
+  # The header every split log carries: the agent's honesty-gated sentinels, so the per-candidate gates that read
+  # them (the rubric gate, the evidence contract, the scope contract) arm exactly as they would on its own read.
+  awk '/^[[:space:]]*REFUTE-ITEM\|/ { exit }
+       /^[[:space:]]*(SEVERITY-RUBRIC|GROUND-EVIDENCE|SCOPE-ASSUMPTIONS|AUX-CONTEXT|REFUTE-BATCH)\|/ { print }' \
+    "$BATCH_LOG" > "$RUN/batch-header.txt" 2>/dev/null || : > "$RUN/batch-header.txt"
+  BATCH_REASONS="$RUN/batch-reasons.tsv"; : > "$BATCH_REASONS"
+  BATCH_OK=0
+  while IFS="$(printf '\t')" read -r MK MCFN MCLS || [ -n "${MK:-}" ]; do
+    [ -n "$MK" ] || continue
+    MSTATUS="no-batch-reply"
+    if [ "$BATCH_ARMED" -eq 1 ]; then
+      # Candidate k's block: the lines after the LAST `REFUTE-ITEM|k` line, up to the next REFUTE-ITEM| or EOF.
+      MSEG="$RUN/batch-segment-$MK.txt"
+      awk -v k="$MK" '
+        /^[[:space:]]*REFUTE-ITEM\|/ {
+          id = $0; sub(/^[[:space:]]*REFUTE-ITEM\|/, "", id); sub(/[[:space:]]+$/, "", id)
+          if (id == k) { seg = ""; inseg = 1 } else { inseg = 0 }
+          next
+        }
+        inseg { seg = seg $0 "\n" }
+        END { printf "%s", seg }
+      ' "$BATCH_LOG" > "$MSEG"
+      MVLINE="$(_join_wrapped_verdict "$MSEG" || true)"
+      MV="$(printf '%s' "$MVLINE" | sed 's/^.*\(VERDICT|\)/\1/')"
+      MVERD="$(printf '%s' "$MV" | cut -d'|' -f2)"
+      if [ "$MVERD" != "REAL" ] && [ "$MVERD" != "REFUTED" ]; then
+        MSTATUS="missing"
+      else
+        # A block answering under a DIFFERENT C<n> than the candidate's own is a misattributed answer.
+        MVTOK="$(printf '%s' "$MV" | cut -d'|' -f4 | grep -oE 'C[0-9]+' | head -1 || true)"
+        MCTOK="$(printf '%s' "$MCLS" | grep -oE 'C[0-9]+' | head -1 || true)"
+        if [ -n "$MVTOK" ] && [ -n "$MCTOK" ] && [ "$MVTOK" != "$MCTOK" ]; then
+          MSTATUS="class-mismatch"
+        else
+          MSTATUS="ok"
+          BATCH_OK=$((BATCH_OK + 1))
+          cat "$RUN/batch-header.txt" "$MSEG" > "$SPLIT_DIR/$MK.log"
+          printf '%s\t%s\n' "$MK" "$(_clean_reason "$(printf '%s' "$MV" | cut -d'|' -f5-)")" >> "$BATCH_REASONS"
+        fi
+      fi
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$MK" "$MCFN" "$MCLS" "$MSTATUS" >> "$BATCH_STATUS"
+    [ "$MSTATUS" = "ok" ] || echo "run-refute.sh: batch member $MK ($MCFN, $MCLS): $MSTATUS — it will get its own first read" >&2
+  done < "$BATCH_MEMBERS"
+  # Report-only contagion telemetry: two members with byte-identical reasons suggest one verdict was copied.
+  BATCH_DUP="$(cut -f2- "$BATCH_REASONS" | sort | uniq -d | head -1)"
+  if [ -n "$BATCH_DUP" ]; then
+    echo "run-refute.sh: WARNING: two or more batch members carry a byte-identical reason (possible cross-candidate contagion; report-only): $BATCH_DUP" >&2
+  fi
+  echo >&2
+  echo "================ REFUTE BATCH: $BK candidate(s), $BATCH_OK split cleanly, $((BK - BATCH_OK)) fall back to their own first read ================" >&2
+  echo "run-refute.sh: per-member status at $BATCH_STATUS" >&2
+  exit 0
+fi
+
 CHECKED=0 ; REAL=0 ; REFUTED=0 ; ERRORED=0
 SCOPE_OOS=0  # #2257: REFUTED candidates routed to out-of-scope.tsv (a subset of REFUTED, never a fifth bucket).
 # Manifest loop: one candidate per line, `file:fn | class | sev | exploit | code-file [| aux-code-file]`.
@@ -701,6 +901,7 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
   # _rf_attempt reads CFN/CLS/SEV/EXPL/STAGED/AUX_STAGED/BRIEF_IN_RUN from the loop.
   # shellcheck disable=SC2317  # invoked by name through df_run_agent_validated
   _rf_attempt() {
+    if [ -n "$RUBRIC_GROUNDS" ]; then _rf_session_note reask 1 "$CFN"; else _rf_session_note first 1 "$CFN"; fi
     ( cd "$RUN" && env \
         CAND_FILE_FN="$CFN" \
         CAND_CLASS="$CLS" \
@@ -715,15 +916,32 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
         RUBRIC_REASK_GROUNDS="$RUBRIC_GROUNDS" \
         GROUND_EVIDENCE="${GROUND_EVIDENCE:-}" \
         SCOPE_ASSUMPTIONS_PATH="$SCOPE_IN_RUN" \
+        CAND_BATCH_PATH="" \
         "$AGENTIS" go refuter.ag --enable-exec --enable-messaging --grant-pii ) >"$1" 2>&1 || \
         echo "run-refute.sh: refuter run failed for '$CFN' (see $1)" >&2
   }
+  # #2284: a batched first read already answered this candidate — reuse its block instead of a new session, but
+  # ONLY when it carries a real verdict; anything else falls back to today's own first read below.
+  FR_USED=0
+  if [ -n "$FIRST_READ_LOG" ]; then
+    FR_VERD=""
+    if [ -s "$FIRST_READ_LOG" ]; then
+      FR_VERD="$(_join_wrapped_verdict "$FIRST_READ_LOG" 2>/dev/null | sed 's/^.*\(VERDICT|\)/\1/' | cut -d'|' -f2 || true)"
+    fi
+    if [ "$FR_VERD" = "REAL" ] || [ "$FR_VERD" = "REFUTED" ]; then
+      cp "$FIRST_READ_LOG" "$CELL_LOG"
+      FR_USED=1
+      echo "run-refute.sh: $CFN first read taken from the batched session ($FR_VERD)" >&2
+    else
+      echo "run-refute.sh: $CFN first-read log unusable — refuting individually" >&2
+    fi
+  fi
   # #1707: validate the refuter reply carries a VERDICT| line and RETRY on TUI chrome / no answer. This
   # REPLACES the old silent "no VERDICT| ⇒ REFUTED" default, which killed a possibly-real candidate on a
   # render/timing flake. Only if N attempts STILL yield no VERDICT| is the candidate marked as a
   # DISTINGUISHABLE failure — reuse the ERRORED category (UNASSESSED, not refuted) — so a chrome reply can
   # never silently kill a candidate. The genuine `VERDICT|REFUTED` path (a real hostile-read kill) is below.
-  if df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-refute.sh: '$CFN'" "$CELL_LOG" refuter "" _rf_attempt; then
+  if [ "$FR_USED" -eq 1 ] || df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-refute.sh: '$CFN'" "$CELL_LOG" refuter "" _rf_attempt; then
     # The refuter's contract: exactly one `VERDICT|REAL|...` or `VERDICT|REFUTED|...` line. Take the LAST
     # match (the agent prints its verdict after free-form reasoning); validation guarantees one is present.
     VLINE="$(_join_wrapped_verdict "$CELL_LOG" || true)"
@@ -869,6 +1087,7 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
     if [ -n "$FB" ]; then
       FB_LOG="$RUN/refute_${SLUG}_c6.log"
       echo "run-refute.sh: $CFN refuted under $CLS; accounting signal fired, retrying under $FB ..." >&2
+      _rf_session_note c6 1 "$CFN"
       # #1861: the fallback re-run carries the SAME implementation appendix. Forgetting it here is the easy
       # miss — the candidate would be judged with the derived contract in view on attempt 1 and without it on
       # the C6 retry, i.e. two different questions answered under one verdict.
@@ -882,6 +1101,7 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
           CODE_PATH="$STAGED" \
           AUX_CODE_PATH="$AUX_STAGED" \
           BRIEF_PATH="$BRIEF_IN_RUN" \
+          CAND_BATCH_PATH="" \
           "$AGENTIS" go refuter.ag --enable-exec --enable-messaging --grant-pii ) >"$FB_LOG" 2>&1 || \
           echo "run-refute.sh: fallback refuter run failed for '$CFN' (see $FB_LOG)" >&2
       FB_VLINE="$(_join_wrapped_verdict "$FB_LOG" || true)"
