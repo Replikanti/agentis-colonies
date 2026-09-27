@@ -1,0 +1,13 @@
+# #2278 dev-data pin for run-corpus-bench.sh --self-test: <findings dir, relative to bench/corpus-bench/>\t<raw verified>\t<clustered verified>\t<truth files, comma-separated>\t<gt-dupes file or ->
+fixtures/score	2	2	fixtures/score/truth.tsv	-
+fixtures/score-locations	3	3	fixtures/score-locations/truth.tsv	-
+fixtures/hunt-fitness	7	7	fixtures/hunt-fitness/truth.tsv	-
+fixtures/generation-recall	1	1	fixtures/generation-recall/truth.tsv,fixtures/generation-recall/truth.tier2.tsv	-
+runs/1886-notional-refute-fn	2	2	runs/1886-notional-refute-fn/truth.tsv	-
+runs/1887-yieldoor-refute-transfer/on	12	3	runs/1887-yieldoor-refute-transfer/truth.tsv	-
+runs/1887-yieldoor-refute-transfer/off	9	6	runs/1887-yieldoor-refute-transfer/truth.tsv	-
+runs/2213-operationalize-ab/notional/control	8	4	runs/2213-operationalize-ab/notional/truth.tsv,runs/2213-operationalize-ab/notional/truth-locations.tsv	runs/2213-operationalize-ab/notional/gt-dupes.tsv
+runs/2213-operationalize-ab/notional/treatment	7	5	runs/2213-operationalize-ab/notional/truth.tsv,runs/2213-operationalize-ab/notional/truth-locations.tsv	runs/2213-operationalize-ab/notional/gt-dupes.tsv
+runs/2213-operationalize-ab/yieldoor/control	7	4	runs/2213-operationalize-ab/yieldoor/truth.tsv,runs/2213-operationalize-ab/yieldoor/truth-locations.tsv	-
+runs/2213-operationalize-ab/yieldoor/treatment	7	3	runs/2213-operationalize-ab/yieldoor/truth.tsv,runs/2213-operationalize-ab/yieldoor/truth-locations.tsv	-
+runs/2213-operationalize-ab/yieldoor/treatment-superseded	7	3	runs/2213-operationalize-ab/yieldoor/truth.tsv,runs/2213-operationalize-ab/yieldoor/truth-locations.tsv	-

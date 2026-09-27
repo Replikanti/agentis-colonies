@@ -227,6 +227,35 @@ the LEAD SET rather than in the scorer. Reading rule: a tier-2 hit says the pipe
 check it could not settle — it is mechanism-blind at a higher rate than a tier-1 hit, so "we found it" is
 still an operator read of the cell log, never a scoreboard read.
 
+## Root-cause clustering and `--findings-view` (#2278)
+
+Since #2278 the verify stage collapses duplicate root causes (`verify-findings.sh --cluster-findings`, default
+ON): `verify/verified_findings.json` holds one representative per root cause and the full pre-cluster list sits
+next to it in `verify/verified_findings.raw.json`. `--score` reads either list:
+
+- `--findings-view raw` (**default**, historical comparability) rebuilds the pre-cluster list with
+  `lib/cluster-findings.py raw-view` (sha256-checked against the `clustering` block, so a stale sibling is a
+  skipped contest, never a silent score; later deep-hunt / vector-hunt appends are carried over) into
+  `<work>/<id>/verified_findings.raw-view.json`. An unclustered file is scored unchanged.
+- `--findings-view clustered` scores the delivered artifact as written.
+
+The view is printed on every contest `SCORE:` line and lands in `--json` as `findings_view` (per contest and
+in the aggregate), so every number states which list produced it.
+
+**Why token-mode recall cannot change.** Clusters never cross the `(file, function)` pair that
+`score-match.py:lead_location()` parses, so every member of a cluster matches exactly the truth rows its
+representative matches. `--self-test` asserts it on all 12 in-repo findings files with ground truth
+(`../../fixtures/cluster-findings/expected-dev-counts.tsv`, which also pins the per-file clustered counts): the
+per-row HIT/MISS lines and the `LOC`/`LOCHIT`/`DUP`/`DUPHIT` trailers are identical on the raw and the
+clustered file (a `LOCHIT` is compared on its sev_id and the lead's `(file, function)` — the representative can
+cite a different line of the same function). Only `LEADS`, the matched/unmatched lead counts and the
+`confirm-cost.py` confirmed count move, which is why `raw` stays the default.
+
+**Judge-mode caveat.** The judge cache keys on the lead index `L<i>` and the exploit text, so a cache recorded
+on one view does not replay on the other. Judged numbers use the view they were recorded in (normally `raw`)
+or are re-judged. `bench-to-knowledge.sh` always reads the raw view, so per-class fitness keeps crediting every
+class cell that confirmed a bug.
+
 ## Semantic mechanism judge (#1829)
 
 `--judge cache|cmd` swaps the name-matching rule for a **root-cause + mechanism** decision made by a model.

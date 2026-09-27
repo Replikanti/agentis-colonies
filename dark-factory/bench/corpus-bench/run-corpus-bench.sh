@@ -26,6 +26,7 @@
 #                            [--judge <off|cache|cmd>] [--judge-cmd <path>] [--judge-cache <file.jsonl>]
 #                            [--judge-log <file.jsonl>] [--judge-batch <N>] [--judge-min-confidence <N>]
 #                            [--gt-dupes <file>] [--gt-dupes-min-confidence <N>] [--no-gt-dupes]
+#                            [--findings-view <raw|clustered>]
 #   (no action flag)  same as --self-test.
 #   --self-test       Deterministic, CI-safe, no network/LLM: extract-gt.sh --code over
 #                     fixtures/sample-judging-readme.md must byte-match fixtures/expected-truth.tsv (6 columns
@@ -97,6 +98,15 @@
 #   --gt-dupes-min-confidence <N>  merge bar applied at SCORING time (default 85, see score-match.py). Raising
 #                     it re-derives the unexpanded number from the SAME archived artifact.
 #   --no-gt-dupes     ignore any gt-dupes.tsv and score one row per accepted GT row only (the pre-#1840 ruler).
+#   --findings-view <raw|clustered>  #2278: WHICH findings list --score reads. `raw` (DEFAULT, historical
+#                     comparability) scores the PRE-CLUSTER list — lib/cluster-findings.py raw-view rebuilds it from
+#                     the verify stage's verified_findings.raw.json sibling (sha256-checked) into
+#                     <work>/<id>/verified_findings.raw-view.json; an unclustered file is scored as-is. `clustered`
+#                     scores verify/verified_findings.json as written (one lead per distinct root cause). Location-
+#                     first recall is identical in both views (clusters never cross a (file, function) pair — the
+#                     self-test pins it); LEADS, matched/unmatched leads and the cost confirm counts differ. Judge
+#                     caches key on the lead index, so a judged number replays only in the view it was recorded
+#                     in. The view is printed on every contest SCORE line and lands in --json as `findings_view`.
 # Exit: 0 = requested stage(s) completed (a low/zero recall is DATA, not a failure — same posture as the
 #       capability bench's live stage) ; 1 = --self-test regressed ; 2 = bad args ; 3 = missing prerequisite.
 set -u
@@ -109,6 +119,7 @@ SCOREMATCH="$HERE/score-match.py"
 CONFIRMCOST="$HERE/confirm-cost.py"
 FETCHCORPUS="$HERE/fetch-corpus.sh"
 GTDUPES="$HERE/gt-dupes.sh"
+CLUSTERLIB="$DF/lib/cluster-findings.py"
 CORPUS="$HERE/corpus.tsv"
 
 WORK="$PWD/corpus-bench-work"
@@ -137,6 +148,7 @@ VECTOR_HUNT="0" ; VECTOR_HUNT_MAX_VECTORS=""
 CALLEE_TRUST_ARG=""
 JUDGE="off" ; JUDGE_CMD="" ; JUDGE_CACHE="" ; JUDGE_LOG="" ; JUDGE_BATCH="" ; JUDGE_MINCONF=""
 GT_DUPES="" ; GT_DUPES_MINCONF="" ; NO_GT_DUPES=0
+FINDINGS_VIEW="raw"  # #2278: raw (default, historical comparability) | clustered.
 DO_SELFTEST=0 ; DO_FETCH=0 ; DO_GT=0 ; DO_DUPES=0 ; DO_HUNT=0 ; DO_SCORE=0 ; ANY_ACTION=0
 declare -a ID_ARGS=()
 
@@ -174,6 +186,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --gt-dupes)                nv "$#" "$1"; GT_DUPES="$2"; shift 2;;
   --gt-dupes-min-confidence) nv "$#" "$1"; GT_DUPES_MINCONF="$2"; shift 2;;
   --no-gt-dupes) NO_GT_DUPES=1; shift;;
+  --findings-view) nv "$#" "$1"; FINDINGS_VIEW="$2"; shift 2;;
   -h|--help)     awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0;;
   *) echo "run-corpus-bench.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
@@ -214,6 +227,10 @@ if [ -n "$CALLEE_TRUST_ARG" ]; then
     *) echo "run-corpus-bench.sh: --callee-trust must be 0 (control) or 1 (treatment) (got '$CALLEE_TRUST_ARG')" >&2; exit 2 ;;
   esac
 fi
+case "$FINDINGS_VIEW" in
+  raw|clustered) ;;
+  *) echo "run-corpus-bench.sh: --findings-view must be raw or clustered (got '$FINDINGS_VIEW')" >&2; exit 2 ;;
+esac
 [ "$ANY_ACTION" -eq 1 ] || DO_SELFTEST=1
 
 say() { echo "run-corpus-bench.sh: $*" >&2; }
@@ -405,6 +422,71 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
     say "SELF-TEST: project_subdir resolution (single / multi-root list) regressed (#2255) -> FAIL"; exit 1
   fi
 
+  # Seventh assertion (#2278): root-cause clustering cannot move location-first recall. Every in-repo findings file
+  # with ground truth (fixtures/cluster-findings/expected-dev-counts.tsv) is clustered, and score-match.py in token
+  # mode must print the SAME per-row HIT/MISS lines and the same LOC/LOCHIT/DUP/DUPHIT trailers on the raw and the
+  # clustered file, against every truth file of that run, with and without its gt-dupes artifact. Only LEADS may
+  # change (it must equal the pinned clustered count), and a LOCHIT line is compared on its sev_id + the lead's
+  # (file, function) — the representative can cite another line of the same function. The per-file counts are
+  # pinned, so a clusterer change that merges more or less on dev data fails here, not silently.
+  CL_PIN="$DF/fixtures/cluster-findings/expected-dev-counts.tsv"
+  CL_T="$(mktemp -d)"
+  cl_ok=1 ; cl_files=0 ; cl_scored=0
+  cl_norm() { awk -F'\t' '$1=="LEADS"{next} $1=="LOCHIT"{n=split($3,p,":"); print $1 "\t" $2 "\t" tolower(p[1] ":" p[2]); next} {print}'; }
+  while IFS=$'\t' read -r cl_dir cl_raw cl_n cl_truths cl_dupes; do
+    case "$cl_dir" in ""|\#*) continue;; esac
+    cl_files=$((cl_files+1))
+    cl_src="$HERE/$cl_dir/verified_findings.json"
+    rm -f "$CL_T/c.json"
+    cl_line="$(python3 "$CLUSTERLIB" cluster --in "$cl_src" --out "$CL_T/c.json" 2>&1)" || { say "  [2278] cluster failed on $cl_dir: $cl_line"; cl_ok=0; continue; }
+    [ -f "$CL_T/c.json" ] || cp "$cl_src" "$CL_T/c.json"
+    if [ "$cl_line" != "CLUSTER|$cl_raw|$cl_n|$((cl_raw - cl_n))" ]; then
+      say "  [2278] $cl_dir: expected CLUSTER|$cl_raw|$cl_n|$((cl_raw - cl_n)), got $cl_line"; cl_ok=0
+    fi
+    for cl_truth in $(printf '%s' "$cl_truths" | tr ',' ' '); do
+      for cl_d in "" "$cl_dupes"; do
+        [ "$cl_d" = "-" ] && continue
+        cl_a="$(python3 "$SCOREMATCH" "$HERE/$cl_truth" "$cl_src" ${cl_d:+--gt-dupes "$HERE/$cl_d"} 2>/dev/null)" || { cl_ok=0; continue; }
+        cl_b="$(python3 "$SCOREMATCH" "$HERE/$cl_truth" "$CL_T/c.json" ${cl_d:+--gt-dupes "$HERE/$cl_d"} 2>/dev/null)" || { cl_ok=0; continue; }
+        cl_scored=$((cl_scored+1))
+        if [ "$(printf '%s\n' "$cl_a" | cl_norm)" != "$(printf '%s\n' "$cl_b" | cl_norm)" ]; then
+          say "  [2278] $cl_dir vs $cl_truth${cl_d:+ + $cl_d}: token-mode scorecard CHANGED under clustering"
+          diff <(printf '%s\n' "$cl_a" | cl_norm) <(printf '%s\n' "$cl_b" | cl_norm) >&2 || true
+          cl_ok=0
+        fi
+        if [ "$(printf '%s\n' "$cl_b" | awk -F'\t' '$1=="LEADS"{print $2}')" != "$cl_n" ]; then
+          say "  [2278] $cl_dir: clustered LEADS is not the pinned $cl_n"; cl_ok=0
+        fi
+      done
+    done
+  done < "$CL_PIN"
+  # --findings-view over a hand-placed CLUSTERED work dir: `raw` must score the pre-cluster lead count, `clustered`
+  # the clustered one, the view must land in --json, and a bad value must fail fast (exit 2).
+  FV_W="$CL_T/work"
+  FV_SRC="$HERE/runs/1887-yieldoor-refute-transfer"
+  mkdir -p "$FV_W/fv/zone-hunt-out/verify"
+  cp "$FV_SRC/truth.tsv" "$FV_W/fv/truth.tsv"
+  cp "$FV_SRC/on/verified_findings.json" "$FV_W/fv/zone-hunt-out/verify/verified_findings.raw.json"
+  python3 "$CLUSTERLIB" cluster --in "$FV_W/fv/zone-hunt-out/verify/verified_findings.raw.json" \
+    --out "$FV_W/fv/zone-hunt-out/verify/verified_findings.json" >/dev/null 2>&1 || cl_ok=0
+  printf 'fv\tcode\tjudging\t.\tdev\n' > "$FV_W/corpus.tsv"
+  # Re-invoked through its absolute path: $0 is relative when the script is run as `bash run-corpus-bench.sh`.
+  CL_SELF="$HERE/$(basename "$0")"
+  fv_leads() { bash "$CL_SELF" --score --work "$FV_W" --corpus "$FV_W/corpus.tsv" --json "$@" 2>/dev/null \
+    | python3 -c 'import sys, json; c = json.load(sys.stdin)["contests"][0]; print("%s %s" % (c["findings_view"], c["verified_leads"]))'; }
+  fv_raw="$(fv_leads)" ; fv_cl="$(fv_leads --findings-view clustered)"
+  bash "$CL_SELF" --findings-view bogus --self-test >/dev/null 2>&1 ; fv_bad=$?
+  rm -rf "$CL_T"
+  if [ "$fv_raw" != "raw 12" ] || [ "$fv_cl" != "clustered 3" ] || [ "$fv_bad" -ne 2 ]; then
+    say "  [2278] --findings-view: default got '$fv_raw' (want 'raw 12'), clustered got '$fv_cl' (want 'clustered 3'), bad value exit $fv_bad (want 2)"
+    cl_ok=0
+  fi
+  if [ "$cl_ok" -eq 1 ] && [ "$cl_files" -eq 12 ]; then
+    say "SELF-TEST: root-cause clustering leaves every token-mode HIT/MISS + LOC/DUP trailer unchanged on $cl_files dev findings files ($cl_scored scorecards), dev counts pinned; --findings-view raw (default) / clustered score the right list (#2278) -> PASS"
+  else
+    say "SELF-TEST: root-cause clustering moved a token-mode scorecard, a pinned dev count, or the --findings-view contract (#2278; $cl_files/12 files) -> FAIL"; exit 1
+  fi
+
   [ "$ANY_ACTION" -eq 1 ] && [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
 fi
 [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
@@ -548,7 +630,17 @@ if [ "$DO_SCORE" -eq 1 ]; then
     verified_json="$WORK/$id/zone-hunt-out/verify/verified_findings.json"
     if [ ! -f "$truth" ]; then say "SCORE: [$id] no truth.tsv (run --gt first); skipping"; continue; fi
     if [ ! -f "$verified_json" ]; then say "SCORE: [$id] no verified_findings.json (run --hunt first); skipping"; continue; fi
-    say "SCORE: [$id] scoring verified findings against truth.tsv ..."
+    # #2278: pick the findings VIEW. `raw` (default) rebuilds the pre-cluster list from the verify stage's sibling
+    # (an unclustered file comes back byte-identical); a stale or missing sibling is a skip, never a silent score.
+    score_json="$verified_json"
+    if [ "$FINDINGS_VIEW" = "raw" ]; then
+      score_json="$WORK/$id/verified_findings.raw-view.json"
+      if ! python3 "$CLUSTERLIB" raw-view --verified "$verified_json" > "$score_json" 2>"$score_json.err"; then
+        say "SCORE: [$id] cannot build the raw findings view ($(head -1 "$score_json.err")); skipping"; continue
+      fi
+      rm -f "$score_json.err"
+    fi
+    say "SCORE: [$id] scoring verified findings (findings-view $FINDINGS_VIEW) against truth.tsv ..."
 
     # #1840: the GT-equivalence artifact for THIS contest — the explicit --gt-dupes override, else the
     # per-contest gt-dupes.tsv when one has been built. A number is never silently expanded: the artifact path
@@ -580,7 +672,7 @@ if [ "$DO_SCORE" -eq 1 ]; then
     # Under --judge (#1829) the same call instead applies the semantic mechanism judge and adds ONE extra
     # `JUDGE\t<calls>\t<errors>` trailer; exit 4 there means the judge degraded (cache miss / too many
     # JUDGE-ERRORs) and the contest is deliberately left unscored rather than reported as a low recall.
-    SCORE_OUT="$(python3 "$SCOREMATCH" "$truth" "$verified_json" --min-overlap "$MINOV" "${JUDGE_ARGS[@]}" \
+    SCORE_OUT="$(python3 "$SCOREMATCH" "$truth" "$score_json" --min-overlap "$MINOV" "${JUDGE_ARGS[@]}" \
                    ${DUPE_ARGS[@]+"${DUPE_ARGS[@]}"})" \
       && score_rc=0 || score_rc=$?
     if [ "$score_rc" -ne 0 ]; then
@@ -654,7 +746,7 @@ SCORE_EOF
     c_cost_cells=0 ; c_cost_candidates=0 ; c_cost_confirmed=0
     c_cost_rate_json="null" ; c_cost_cpc_json="null"
     if [ -f "$coverage_json" ]; then
-      COST_OUT="$(python3 "$CONFIRMCOST" "$coverage_json" "$verified_json")" && cost_rc=0 || cost_rc=$?
+      COST_OUT="$(python3 "$CONFIRMCOST" "$coverage_json" "$score_json")" && cost_rc=0 || cost_rc=$?
       if [ "$cost_rc" -eq 0 ]; then
         # Same trailer-reading idiom as the LEADS/JUDGE/GATE readers above — ZONE carries 6 fields after the
         # tag, RUN carries 5; the extra read slot is simply empty on a RUN line.
@@ -686,7 +778,7 @@ COST_EOF
       c_gate_conf_json="$gate_conf" ; c_gate_dropped_json="$gate_dropped" ; c_gate_rows_json="$gate_rows"
       G_GATE_DROPPED=$((G_GATE_DROPPED+gate_dropped)); G_GATE_ROWS=$((G_GATE_ROWS+gate_rows))
     fi
-    CONTEST_JSON+=("{\"id\":\"$id\",\"role\":\"$role\",\"gt_total\":$c_total,\"hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"verified_leads\":$verified_n,\"matched_leads\":$matched_leads,\"unmatched_leads\":$unmatched_leads,\"judge\":{\"mode\":\"$JUDGE\",\"calls\":$judge_calls,\"errors\":$judge_errors,\"min_confidence\":$c_gate_conf_json,\"gated_matches\":$c_gate_dropped_json,\"gated_rows\":$c_gate_rows_json},\"dup\":{\"classes\":$dup_classes,\"expanded\":$dup_expanded,\"rare_expanded\":$c_rare_expanded},\"cost\":{\"cells\":$c_cost_cells,\"candidates\":$c_cost_candidates,\"confirmed\":$c_cost_confirmed,\"confirm_rate_pct\":$c_cost_rate_json,\"cells_per_confirmed\":$c_cost_cpc_json}}")
+    CONTEST_JSON+=("{\"id\":\"$id\",\"role\":\"$role\",\"findings_view\":\"$FINDINGS_VIEW\",\"gt_total\":$c_total,\"hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"verified_leads\":$verified_n,\"matched_leads\":$matched_leads,\"unmatched_leads\":$unmatched_leads,\"judge\":{\"mode\":\"$JUDGE\",\"calls\":$judge_calls,\"errors\":$judge_errors,\"min_confidence\":$c_gate_conf_json,\"gated_matches\":$c_gate_dropped_json,\"gated_rows\":$c_gate_rows_json},\"dup\":{\"classes\":$dup_classes,\"expanded\":$dup_expanded,\"rare_expanded\":$c_rare_expanded},\"cost\":{\"cells\":$c_cost_cells,\"candidates\":$c_cost_candidates,\"confirmed\":$c_cost_confirmed,\"confirm_rate_pct\":$c_cost_rate_json,\"cells_per_confirmed\":$c_cost_cpc_json}}")
     G_JUDGE_CALLS=$((G_JUDGE_CALLS+judge_calls)); G_JUDGE_ERRORS=$((G_JUDGE_ERRORS+judge_errors))
     G_DUP_CLASSES=$((G_DUP_CLASSES+dup_classes)); G_DUP_EXPANDED=$((G_DUP_EXPANDED+dup_expanded)); G_DUP_RARE_EXPANDED=$((G_DUP_RARE_EXPANDED+c_rare_expanded))
 
@@ -731,8 +823,8 @@ COST_EOF
 
   if [ "$JSON" -eq 1 ]; then
     joined="$(IFS=,; echo "${CONTEST_JSON[*]:-}")"
-    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"verified_leads":%d,"matched_leads":%d,"unmatched_leads":%d,"judge":{"mode":"%s","calls":%d,"errors":%d,"min_confidence":%s,"gated_matches":%d,"gated_rows":%d},"dup":{"classes":%d,"expanded":%d,"rare_expanded":%d},"cost":{"cells":%d,"candidates":%d,"confirmed":%d,"confirm_rate_pct":%s,"cells_per_confirmed":%s}}}\n' \
-      "$joined" "$G_TOTAL" "$G_HITS" "$G_H_TOTAL" "$G_H_HITS" "$G_M_TOTAL" "$G_M_HITS" \
+    printf '{"contests":[%s],"aggregate":{"findings_view":"%s","gt_total":%d,"hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"verified_leads":%d,"matched_leads":%d,"unmatched_leads":%d,"judge":{"mode":"%s","calls":%d,"errors":%d,"min_confidence":%s,"gated_matches":%d,"gated_rows":%d},"dup":{"classes":%d,"expanded":%d,"rare_expanded":%d},"cost":{"cells":%d,"candidates":%d,"confirmed":%d,"confirm_rate_pct":%s,"cells_per_confirmed":%s}}}\n' \
+      "$joined" "$FINDINGS_VIEW" "$G_TOTAL" "$G_HITS" "$G_H_TOTAL" "$G_H_HITS" "$G_M_TOTAL" "$G_M_HITS" \
       "$G_RARE_TOTAL" "$G_RARE_HITS" "$G_MID_TOTAL" "$G_MID_HITS" "$G_CONS_TOTAL" "$G_CONS_HITS" \
       "$G_VERIFIED" "$G_MATCHED_LEADS" "$G_UNMATCHED_LEADS" "$JUDGE" "$G_JUDGE_CALLS" "$G_JUDGE_ERRORS" \
       "$G_GATE_CONF" "$G_GATE_DROPPED" "$G_GATE_ROWS" \

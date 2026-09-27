@@ -1276,6 +1276,22 @@ if [ -x "$REPO_ROOT/dark-factory/demo-verify-parallel.sh" ]; then
     fi
 fi
 
+# --- dark-factory root-cause clustering of verified findings (#2278) ---
+# demo-cluster-findings.sh is pure bash/python3 (offline refute stub through the existing --agentis seam): asserts
+# cross-class duplicates in ONE function collapse to one representative while a different function, a
+# function-less location and a post-STAGE-4 `source` entry pass through; distinct same-function bugs stay apart
+# (the fixture binds the threshold); representative + schema + raw-view round-trip + stale-sibling refusal; and
+# the verify-findings.sh wiring (default ON, OFF byte-identical, no stale sibling, fail-open, --jobs invariant).
+if [ -x "$REPO_ROOT/dark-factory/demo-cluster-findings.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-cluster-findings.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: root-cause clustering of verified_findings.json (same-function key, distinct bugs kept apart, raw sibling, fail-open) (#2278)"
+    else
+        fail "dark-factory: root-cause clustering regressed (#2278)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory zone-hunt capstone: map -> brief -> discovery -> verify -> audit-pass -> deliver (#1630, epic #1611 M5) ---
 # run-zone-hunt.sh chains the shipped M1..M4 + delivery entrypoints into ONE autonomous zone-hunt and EDITS none
 # of them; it HALTS every finding at PENDING-HUMAN-REVIEW (enforced by run-audit-pass's terminal + deliver-
