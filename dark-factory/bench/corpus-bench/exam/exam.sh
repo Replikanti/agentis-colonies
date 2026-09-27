@@ -1368,7 +1368,10 @@ cmd_self_test() {
   bash "$SELF" run --root "$root" --base "$base" --contest fx --zone src_pool --arm mock --repeat 1 --profile mock \
     --checkout "$co" --agentis "$stub" > "$work/run1.out" 2>&1
   rc=$?; expect_rc 0 "$rc" "run with the mock profile"
-  [ "$rc" -eq 0 ] || tail -15 "$a1/run.log" "$a1/deep.log" 2>/dev/null | sed 's/^/         | /'
+  # -n 15 (not old-style -15): GNU tail rejects -15 with more than one file
+  # operand ("option used in invalid context"), which would silently swallow
+  # this diagnostic under the 2>/dev/null below.
+  [ "$rc" -eq 0 ] || tail -n 15 "$a1/run.log" "$a1/deep.log" 2>/dev/null | sed 's/^/         | /'
   local a1_rc a1_deep_rc a1_start a1_deep_end a1_commit a1_head a1_deep_status
   a1_rc="$(meta_get "$a1/run.meta" rc)"
   a1_deep_rc="$(meta_get "$a1/run.meta" deep_rc)"
