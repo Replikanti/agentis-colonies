@@ -1368,14 +1368,39 @@ cmd_self_test() {
   bash "$SELF" run --root "$root" --base "$base" --contest fx --zone src_pool --arm mock --repeat 1 --profile mock \
     --checkout "$co" --agentis "$stub" > "$work/run1.out" 2>&1
   rc=$?; expect_rc 0 "$rc" "run with the mock profile"
-  [ "$rc" -eq 0 ] || tail -15 "$a1/run.log" "$a1/deep.log" 2>/dev/null | sed 's/^/         | /'
-  if [ "$(meta_get "$a1/run.meta" rc)" = 0 ] && [ "$(meta_get "$a1/run.meta" deep_rc)" = 0 ] && [ -f "$a1/.done" ] \
-     && [ -n "$(meta_get "$a1/run.meta" start)" ] && [ -n "$(meta_get "$a1/run.meta" deep_end)" ] \
-     && [ "$(meta_get "$a1/run.meta" checkout_commit)" = "$(git -C "$co" rev-parse HEAD)" ] \
-     && [ "$(meta_get "$a1/run.meta" deep_status)" = ran ] && grep -q $'\tdeep=0\t' "$a1/.done"; then
+  # -n 15 (not old-style -15): GNU tail rejects -15 with more than one file
+  # operand ("option used in invalid context"), which would silently swallow
+  # this diagnostic under the 2>/dev/null below.
+  [ "$rc" -eq 0 ] || tail -n 15 "$a1/run.log" "$a1/deep.log" 2>/dev/null | sed 's/^/         | /'
+  local a1_rc a1_deep_rc a1_start a1_deep_end a1_commit a1_head a1_deep_status
+  a1_rc="$(meta_get "$a1/run.meta" rc)"
+  a1_deep_rc="$(meta_get "$a1/run.meta" deep_rc)"
+  a1_start="$(meta_get "$a1/run.meta" start)"
+  a1_deep_end="$(meta_get "$a1/run.meta" deep_end)"
+  a1_commit="$(meta_get "$a1/run.meta" checkout_commit)"
+  a1_head="$(git -C "$co" rev-parse HEAD)"
+  a1_deep_status="$(meta_get "$a1/run.meta" deep_status)"
+  if [ "$a1_rc" = 0 ] && [ "$a1_deep_rc" = 0 ] && [ -f "$a1/.done" ] \
+     && [ -n "$a1_start" ] && [ -n "$a1_deep_end" ] \
+     && [ "$a1_commit" = "$a1_head" ] \
+     && [ "$a1_deep_status" = ran ] && grep -q $'\tdeep=0\t' "$a1/.done"; then
     ok "run: run.meta (start/end/rc, deep_start/deep_end/deep_rc=0, deep_status=ran from the zone hunt's deep-hunt-status.tsv, checkout commit) + .done written"
   else
-    bad "run: run.meta / .done incomplete"; sed 's/^/         | /' "$a1/run.meta" 2>/dev/null
+    local a1_why=""
+    [ "$a1_rc" = 0 ] || a1_why="$a1_why rc=$a1_rc want=0"
+    [ "$a1_deep_rc" = 0 ] || a1_why="$a1_why deep_rc=$a1_deep_rc want=0"
+    [ -f "$a1/.done" ] || a1_why="$a1_why .done=missing"
+    [ -n "$a1_start" ] || a1_why="$a1_why start=empty"
+    [ -n "$a1_deep_end" ] || a1_why="$a1_why deep_end=empty"
+    [ "$a1_commit" = "$a1_head" ] || a1_why="$a1_why checkout_commit=$a1_commit want=$a1_head"
+    [ "$a1_deep_status" = ran ] || a1_why="$a1_why deep_status=$a1_deep_status want=ran"
+    grep -q $'\tdeep=0\t' "$a1/.done" 2>/dev/null || a1_why="$a1_why .done-deep-field=missing-or-not-0"
+    bad "run: run.meta / .done incomplete:$a1_why"
+    sed 's/^/         | /' "$a1/run.meta" 2>/dev/null
+    # -n 15 (not old-style -15): GNU tail rejects -15 with more than one file operand
+    # ("option used in invalid context") on some coreutils versions, which would
+    # silently swallow this diagnostic under the 2>/dev/null below.
+    tail -n 15 "$a1/run.log" "$a1/deep.log" 2>/dev/null | sed 's/^/         | /'
   fi
   if grep -q 'DEEP_HUNT_REACH=1 requires --deep-hunt' "$a1/run.log"; then
     bad "run: a deep.* knob leaked into the BREADTH call"
