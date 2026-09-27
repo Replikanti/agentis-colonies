@@ -33,6 +33,10 @@ cb 300000;
 //   SCOPE_ASSUMPTIONS_PATH  #2257 OPT-IN: path to the staged declared-scope block (lib/scope-assumptions.py).
 //                  Read ONLY inside a rubric-ON prompt; there it adds the block + the extra SUFFICIENT ground
 //                  `out-of-scope-premise`. Unset / empty file = OFF = the prompt is byte-identical.
+//   CAND_BATCH_PATH  #2284: path to a staged batch (one `k|file:fn|class|severity|exploit` line per candidate of
+//                  ONE function), set ONLY by run-refute.sh --batch-first-read. Then the reply carries one
+//                  `REFUTE-ITEM|<k>` block per candidate (each ending in its own VERDICT| line) after a
+//                  `REFUTE-BATCH|refute|<n>` sentinel. Unset / empty = the single-candidate prompt, byte-identical.
 // Stdout: exactly one verdict line —
 //   VERDICT|REAL|<file:fn>|<class>|<one-sentence why the refutation FAILED: the exploit holds>
 //   VERDICT|REFUTED|<file:fn>|<class>|<one-sentence the specific guard / control-flow fact that kills it>
@@ -446,6 +450,148 @@ fn harness_payload(payload: string, harness: string, harnessPath: string) -> str
       + harness;
 }
 
+// --- #2284 batched FIRST READ (opt-in, driver-gated) --------------------------------------------------------
+// Several candidates filed against ONE function used to cost one session each, every session re-reading the same
+// code. run-refute.sh --batch-first-read stages them into ONE file (one `k|file:fn|class|severity|exploit` line
+// per candidate) and points CAND_BATCH_PATH at it; this agent then judges every candidate in one session and
+// answers with ONE indexed block per candidate, which the driver splits back into per-candidate logs. Everything
+// after that first read (the rubric re-ask, the #1699 C6 fallback, the #1887 constraint harvest) still runs per
+// candidate through the unchanged single-candidate path.
+//
+// VERDICTS STAY PER CANDIDATE. The independence rule below is the whole safety argument: candidates share code,
+// never a verdict. The driver also refuses a block whose VERDICT class contradicts the candidate's own class.
+//
+// CAND_BATCH_PATH empty (every single-candidate run) => batch is "" => refute_instruction() returns
+// single_instruction(), today's exact concatenation, so the single-candidate prompt is BYTE-IDENTICAL. The knob
+// must ride run-refute.sh's exec.env_passthrough, else getenv() reads the SANITIZED env and batching is silently
+// inert (the driver then sees no REFUTE-BATCH| sentinel and refutes every member individually).
+//
+// The Nth `|`-field (0-based) of one staged batch line — coordinator.ag::payload_field's reduce idiom.
+fn batch_field(line: string, n: int) -> string {
+    let segs = regex_split("\\|", line);
+    let acc = reduce(segs, |a: string, seg: string| -> string {
+        let bar = index_of(a, "\t");
+        let idx = parse_int(substring(a, 0, bar));
+        let cap = substring(a, bar + 1, len(a));
+        if idx == n { return to_string(idx + 1) + "\t" + seg; }
+        return to_string(idx + 1) + "\t" + cap;
+    }, "0\t");
+    return substring(acc, index_of(acc, "\t") + 1, len(acc));
+}
+
+// How many candidates the staged batch holds (non-empty lines).
+fn batch_count(batch: string) -> int {
+    return reduce(regex_split("\n", batch), |acc: int, l: string| -> int {
+        if len(l) == 0 { return acc; }
+        return acc + 1;
+    }, 0);
+}
+
+// One header per candidate, with the SAME four lines finding_header() renders for a single candidate, so a
+// candidate reads the same whether it is judged alone or in a batch.
+fn batch_items(batch: string) -> string {
+    let total = to_string(batch_count(batch));
+    return reduce(regex_split("\n", batch), |acc: string, l: string| -> string {
+        if len(l) == 0 { return acc; }
+        return acc
+          + "--- CANDIDATE " + batch_field(l, 0) + " of " + total + " ---\n"
+          + "Location: " + batch_field(l, 1) + "\n"
+          + "Bug class: " + batch_field(l, 2) + "\n"
+          + "Claimed severity: " + batch_field(l, 3) + "\n"
+          + "Claimed external exploit path: " + batch_field(l, 4) + "\n\n";
+    }, "");
+}
+
+// The one string the batch block is RECOGNISED by: its literal FIRST LINE. The REFUTE-BATCH| sentinel greps the
+// ASSEMBLED instruction for it, so a log can never claim a batch prompt that was not sent.
+fn batch_marker() -> string {
+    return "=== THE CANDIDATE FINDINGS UNDER REVIEW (several candidates, ONE shared piece of code) ===";
+}
+
+// The INDEPENDENCE rule: shared code, separate claims, separate verdicts.
+fn batch_rule() -> string {
+    return "Each candidate below is a SEPARATE claim. The candidates only share code: they are NOT one finding, "
+      + "and their verdicts may differ even inside one function. Judge every candidate on its own claimed path:\n"
+      + "  - a guard kills a candidate ONLY if it stops THAT candidate's claimed exploit path — a guard that "
+      + "stops one candidate's path says nothing about another candidate's different path;\n"
+      + "  - apply the TIE-BREAK below to each candidate separately;\n"
+      + "  - never copy a verdict or a reason from one candidate's block into another's.\n\n";
+}
+
+// The batch OUTPUT contract: all reasoning first, then one indexed block per candidate in order.
+fn batch_answer(batch: string) -> string {
+    let total = to_string(batch_count(batch));
+    return "=== HOW TO ANSWER ===\n"
+      + "FIRST reason step by step through the actual control flow for EVERY candidate. THEN, after ALL of your "
+      + "reasoning, write one answer block per candidate, in order 1.." + total + ". A block is:\n"
+      + "REFUTE-ITEM|<k>\n"
+      + "<the REFUTE-GROUND| and CONSTRAINT| lines the rules require for candidate k, if any>\n"
+      + "VERDICT|REAL|<candidate k's Location>|<candidate k's Bug class>|<one sentence: why your refutation "
+      + "FAILED — the precise control-flow fact that lets the unprivileged exploit hold>\n"
+      + "or\n"
+      + "VERDICT|REFUTED|<candidate k's Location>|<candidate k's Bug class>|<one sentence: the specific guard / "
+      + "control-flow fact / scope rule that kills the claim>\n"
+      + "Copy the Location and the Bug class VERBATIM from that candidate's header. Every candidate gets EXACTLY "
+      + "ONE block, and each block ends with its own VERDICT| line. Wherever the rules say \"the verdict\" or "
+      + "\"the VERDICT| line\", they mean that candidate's own VERDICT| line inside its block: its REFUTE-GROUND| "
+      + "and CONSTRAINT| lines go inside the block, BEFORE its VERDICT| line, and the next REFUTE-ITEM| line may "
+      + "follow it.\n"
+      + constraint_rule("<its Bug class>")
+      + "Reason for as long as you need first; ONLY the blocks are parsed, so your analysis above them is free. "
+      + "If you are unsure about a candidate, its line MUST be VERDICT|REFUTED|...";
+}
+
+// The batch instruction. Same role, same brief, and the SAME judge_body("", aux) the single-candidate prompt reads
+// (so the rubric/scope directives are spliced in exactly once, where the demos count them).
+fn batch_instruction(batch: string, brief: string, aux: string) -> string {
+    return "You are an INDEPENDENT, skeptical smart-contract auditor. Other auditors have filed the "
+      + to_string(batch_count(batch)) + " candidate findings below against ONE shared piece of code. You have NO "
+      + "stake in any of them being real — your job is to REFUTE each one: prove, against the ACTUAL control and "
+      + "data flow in the code, that its claimed exploit does NOT work. Trace the real code yourself; do not take "
+      + "a claim on faith and do not invent guards that are not in the code.\n\n"
+      + batch_marker() + "\n"
+      + batch_rule()
+      + batch_items(batch)
+      + "=== PROTOCOL BRIEF — invariants + KNOWN ISSUES (a finding that restates a listed known issue is NOT real) ===\n"
+      + brief + "\n\n"
+      + "=== HOW TO JUDGE ===\n"
+      + "Apply the rules below to EACH candidate separately.\n"
+      + judge_body("", aux)
+      + batch_answer(batch);
+}
+
+// The single-candidate instruction — the pre-#2284 top-level concatenation, moved VERBATIM into a function. It
+// carries the skeptic role + the conservative tie-break (default REFUTED) + the strict output contract; the code
+// under review is the prompt payload (matches auditor.ag::classify_evm_llm and hunter.ag shape: instruction =
+// lens + contract, payload = the code).
+fn single_instruction(candInvariant: string, candFn: string, candClass: string, candSev: string, candExploit: string, brief: string, aux: string) -> string {
+    return "You are an INDEPENDENT, skeptical smart-contract auditor. Another auditor has filed the finding below. "
+      + "You have NO stake in it being real — your job is to REFUTE it: prove, against the ACTUAL control and data "
+      + "flow in the code, that the claimed exploit does NOT work. Trace the real code yourself; do not take the "
+      + "claim on faith and do not invent guards that are not in the code.\n\n"
+      + finding_header(candInvariant, candFn, candClass, candSev, candExploit)
+      + "=== PROTOCOL BRIEF — invariants + KNOWN ISSUES (a finding that restates a listed known issue is NOT real) ===\n"
+      + brief + "\n\n"
+      + "=== HOW TO JUDGE ===\n"
+      + judge_body(candInvariant, aux)
+      + "=== HOW TO ANSWER ===\n"
+      + "FIRST reason step by step through the actual control flow. THEN write EXACTLY ONE final line:\n"
+      + "VERDICT|REAL|" + candFn + "|" + candClass + "|<one sentence: why your refutation FAILED — the precise "
+      + "control-flow fact that lets the unprivileged exploit hold>\n"
+      + "or\n"
+      + "VERDICT|REFUTED|" + candFn + "|" + candClass + "|<one sentence: the specific guard / control-flow fact / "
+      + "scope rule that kills the claim>\n"
+      + constraint_rule(candClass)
+      + "Reason for as long as you need first; ONLY the final VERDICT| line is parsed, so your analysis above it "
+      + "is free. If you are unsure, the line MUST be VERDICT|REFUTED|...";
+}
+
+// Empty batch => today's single-candidate prompt, byte for byte.
+fn refute_instruction(batch: string, candInvariant: string, candFn: string, candClass: string, candSev: string, candExploit: string, brief: string, aux: string) -> string {
+    if len(batch) == 0 { return single_instruction(candInvariant, candFn, candClass, candSev, candExploit, brief, aux); }
+    return batch_instruction(batch, brief, aux);
+}
+
 let candFn = getenv("CAND_FILE_FN");
 let candClass = getenv("CAND_CLASS");
 let candSev = getenv("CAND_SEVERITY");
@@ -460,30 +606,11 @@ let brief = cat_file(getenv("BRIEF_PATH"));
 let candInvariant = getenv("CAND_INVARIANT");
 let harnessPath = getenv("INV_HARNESS_PATH");
 let harness = cat_file(harnessPath);
+// #2284: the staged batch (empty on every single-candidate run; the driver never combines it with the invariant
+// mode or a harness).
+let batch = cat_file(getenv("CAND_BATCH_PATH"));
 
-// The instruction carries the skeptic role + the conservative tie-break (default REFUTED) + the strict
-// output contract; the code under review is the prompt payload (matches auditor.ag::classify_evm_llm and
-// hunter.ag shape: instruction = lens + contract, payload = the code).
-let instruction =
-    "You are an INDEPENDENT, skeptical smart-contract auditor. Another auditor has filed the finding below. "
-  + "You have NO stake in it being real — your job is to REFUTE it: prove, against the ACTUAL control and data "
-  + "flow in the code, that the claimed exploit does NOT work. Trace the real code yourself; do not take the "
-  + "claim on faith and do not invent guards that are not in the code.\n\n"
-  + finding_header(candInvariant, candFn, candClass, candSev, candExploit)
-  + "=== PROTOCOL BRIEF — invariants + KNOWN ISSUES (a finding that restates a listed known issue is NOT real) ===\n"
-  + brief + "\n\n"
-  + "=== HOW TO JUDGE ===\n"
-  + judge_body(candInvariant, aux)
-  + "=== HOW TO ANSWER ===\n"
-  + "FIRST reason step by step through the actual control flow. THEN write EXACTLY ONE final line:\n"
-  + "VERDICT|REAL|" + candFn + "|" + candClass + "|<one sentence: why your refutation FAILED — the precise "
-  + "control-flow fact that lets the unprivileged exploit hold>\n"
-  + "or\n"
-  + "VERDICT|REFUTED|" + candFn + "|" + candClass + "|<one sentence: the specific guard / control-flow fact / "
-  + "scope rule that kills the claim>\n"
-  + constraint_rule(candClass)
-  + "Reason for as long as you need first; ONLY the final VERDICT| line is parsed, so your analysis above it "
-  + "is free. If you are unsure, the line MUST be VERDICT|REFUTED|...";
+let instruction = refute_instruction(batch, candInvariant, candFn, candClass, candSev, candExploit, brief, aux);
 
 // #1861: make the attachment OBSERVABLE in the cell log before the (expensive) call, so an operator reading
 // a verdict can tell which of the two payload shapes produced it. run-refute.sh's verdict scraper closes a
@@ -509,6 +636,11 @@ if index_of(instruction, ground_evidence_marker()) >= 0 { print("GROUND-EVIDENCE
 // rubric off or no block staged that layer decides nothing. Carries no `VERDICT|` substring and closes a wrapped
 // record in all three refute scrapers, like its siblings.
 if index_of(instruction, scope_assumptions_marker()) >= 0 { print("SCOPE-ASSUMPTIONS|refute|on"); }
+// #2284: the REFUTE-BATCH sentinel, on the same honesty contract — gated on the batch block's own marker being IN
+// the prompt, never on the env. run-refute.sh splits a batch reply ONLY when this line is in the log, so a batch
+// whose knob never reached getenv() costs sessions (every member is refuted individually), never a verdict.
+// Carries no `VERDICT|` substring, and is printed BEFORE prompt() like its siblings.
+if index_of(instruction, batch_marker()) >= 0 { print("REFUTE-BATCH|refute|" + to_string(batch_count(batch))); }
 
 let verdict = prompt(instruction, harness_payload(appendix_payload(code, aux, auxPath), harness, harnessPath)) -> string;
 

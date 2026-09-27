@@ -340,9 +340,12 @@ case "$SENT_TOK" in
   *'VERDICT|'*|*'CANDIDATE|'*) bad "the sentinel token carries a reply-validation substring" ;;
   *) ok "SCOPE-ASSUMPTIONS| contains neither VERDICT| nor CANDIDATE| — the reply validator cannot false-accept on it" ;;
 esac
+# #2284: verify-findings.sh builds the shared refute argv ONCE (REFUTE_ARGS, which carries the block) and hands it
+# to BOTH of its refute invocations (the single-candidate gate and the batched first read).
 # shellcheck disable=SC2016  # literal source text
-if grep -q '${SCOPE_BLOCK:+--scope-assumptions "$SCOPE_BLOCK"}' "$VERIFY" \
-   && [ "$(grep -c '${SCOPE_BLOCK:+--scope-assumptions "$SCOPE_BLOCK"}' "$VERIFY")" = "2" ] \
+if grep -qF '[ -z "$SCOPE_BLOCK" ] || REFUTE_ARGS+=(--scope-assumptions "$SCOPE_BLOCK")' "$VERIFY" \
+   && [ "$(grep -F '"$REFUTE" --' "$VERIFY" | grep -cF '"${REFUTE_ARGS[@]}"')" = "2" ] \
+   && [ "$(grep -cF '"$REFUTE" --' "$VERIFY")" = "2" ] \
    && grep -q '${SCOPE_DOCS:+--scope-docs "$SCOPE_DOCS"}' "$ZONEHUNT"; then
   ok "verify-findings.sh passes the block on BOTH refute invocations, and run-zone-hunt.sh forwards --scope-docs to STAGE 4 only when set"
 else

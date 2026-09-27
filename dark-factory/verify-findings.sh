@@ -118,6 +118,28 @@
 #                       clusterer's pinned similarity threshold; DF_CLUSTER_CMD replaces the clusterer
 #                       command (a test seam). The block key is the same (file, function) pair corpus-bench's
 #                       score-match.py matches on, so location-first bench recall cannot change.
+#   --refute-batch <0|1>  BATCHED FIRST READ (#2284). Default: env DF_REFUTE_BATCH, else 0 (OFF). Discovery files
+#                       one candidate per (subsystem x class) cell, so one function can reach the refute gate up to
+#                       six times, each time in a fresh session that re-reads the same code. When ON, the candidates
+#                       that would reach the gate are grouped by the SAME (file, function) key --cluster-findings
+#                       uses (plus the code file), and each group of two or more gets ONE run-refute.sh
+#                       --batch-first-read session in which the refuter answers one indexed block per candidate.
+#                       Every member then runs the normal single-candidate gate with its own block as the first
+#                       read (--first-read-log), so the rubric re-ask, the #1699 C6 fallback, the #1887 constraint
+#                       harvest, the report row and the gates/<n>_<slug>/ dir are exactly the single-candidate
+#                       ones and verdicts stay per candidate. A member without a clean block (dropped, class
+#                       mismatch, chrome, no batch sentinel) simply gets its own first read — a bad batch costs
+#                       sessions, never a candidate. Never batched: operator-adjudicated (#2023) and preflight-
+#                       errored (#1691) candidates, a location with no function part, a group of one, tier-2
+#                       records, and the poc/symbolic gates (ON with those gates warns and stays inert).
+#                       Groups larger than env DF_REFUTE_BATCH_MAX (default 6, an integer >= 2) are split into
+#                       balanced chunks (8 -> 4+4). verified_findings.json gains NO key; ON adds only
+#                       <out>/gates-batch/<b>_<slug>/ (the batch manifest, members.tsv, the batch session under
+#                       refute-out/run) and, in each batched member's gates/<n>_<slug>/, batch.txt
+#                       (`<batch>\t<k>\t<size>`) and gate.rc; the VERIFY banner names the batched sessions. A
+#                       batch is ONE job under --jobs, so it takes one slot of effective_jobs. `0` = OFF = every
+#                       artifact byte-identical to a pre-#2284 run. Telemetry: env DF_REFUTE_SESSION_LOG (see
+#                       run-refute.sh) records every refuter session, batched or not.
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the gate (default: flat-cyborg).
 #   --model <id>        LLM model id for the gate's `llm.model` (default: unset, so the emitted config stays
 #                       `llm.model = opus` — byte-identical to before this flag existed).
@@ -161,6 +183,8 @@ ADJUDICATED=""  # #2023: unset/absent = inert; operator adjudication overlay tha
 TIER2=0  # #2217: 0 = OFF = inert (see --tier2 in the header). N > 0 = examine N tier-2 records per zone.
 SCOPE_DOCS=""  # #2257: unset = inert. `auto` or an operator file (see --scope-docs in the header).
 CLUSTER_FINDINGS="${DF_CLUSTER_FINDINGS:-1}"  # #2278: 1 = ON (default), 0 = OFF (see --cluster-findings in the header).
+REFUTE_BATCH="${DF_REFUTE_BATCH:-0}"  # #2284: 0 = OFF (default), 1 = batched first read (see --refute-batch in the header).
+REFUTE_BATCH_MAX="${DF_REFUTE_BATCH_MAX:-6}"  # #2284: the largest batch; a bigger group is split into balanced chunks.
 
 nv() { [ "$1" -ge 2 ] || { echo "verify-findings.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -179,6 +203,7 @@ while [ $# -gt 0 ]; do
     --tier2)   nv "$#"; TIER2="$2"; shift 2 ;;
     --scope-docs) nv "$#"; SCOPE_DOCS="$2"; shift 2 ;;
     --cluster-findings) nv "$#"; CLUSTER_FINDINGS="$2"; shift 2 ;;
+    --refute-batch) nv "$#"; REFUTE_BATCH="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "verify-findings.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -215,6 +240,19 @@ if [ -n "${DF_CLUSTER_THRESHOLD:-}" ]; then
      || ! awk -v t="$DF_CLUSTER_THRESHOLD" 'BEGIN { exit !(t + 0 > 0 && t + 0 <= 1) }'; then
     echo "verify-findings.sh: DF_CLUSTER_THRESHOLD must be a decimal in (0,1] (got '$DF_CLUSTER_THRESHOLD')" >&2; exit 2
   fi
+fi
+# #2284: the batching knobs, validated before any side effect like every other flag.
+case "$REFUTE_BATCH" in
+  0|1) : ;;
+  *) echo "verify-findings.sh: --refute-batch (or DF_REFUTE_BATCH) must be 0 or 1 (got '$REFUTE_BATCH')" >&2; exit 2 ;;
+esac
+case "$REFUTE_BATCH_MAX" in
+  ''|*[!0-9]*) echo "verify-findings.sh: DF_REFUTE_BATCH_MAX must be an integer >= 2 (got '$REFUTE_BATCH_MAX')" >&2; exit 2 ;;
+esac
+[ "$REFUTE_BATCH_MAX" -ge 2 ] || { echo "verify-findings.sh: DF_REFUTE_BATCH_MAX must be an integer >= 2 (got '$REFUTE_BATCH_MAX')" >&2; exit 2; }
+if [ "$REFUTE_BATCH" = "1" ] && [ "$GATE" != "refute" ]; then
+  echo "verify-findings.sh: WARNING: --refute-batch batches the refute gate only (--gate $GATE) — batching inert" >&2
+  REFUTE_BATCH=0
 fi
 command -v python3 >/dev/null 2>&1 || { echo "verify-findings.sh: python3 not installed" >&2; exit 3; }
 
@@ -266,6 +304,9 @@ INHERITANCE="$HERE/lib/inheritance.py"
 SLICER="$HERE/auditor/slice-fns.sh"
 WORK="$OUT/.verify-work"; rm -rf "$WORK"; mkdir -p "$WORK"
 CELLS="$OUT/gates"; rm -rf "$CELLS"; mkdir -p "$CELLS"
+# #2284: batch dirs from an EARLIER run in this --out never survive into this one (a no-op on a fresh --out; an OFF
+# run leaves none behind, by contract).
+BATCHES="$OUT/gates-batch"; rm -rf "$BATCHES"
 CONFIRMED_TSV="$WORK/confirmed.tsv"; : > "$CONFIRMED_TSV"
 # #2257: candidates the refute gate routed to a DECLARED out-of-scope premise. Created LAZILY (first row), and the
 # JSON pass reads it only if it exists, so a default run gains no key.
@@ -468,12 +509,61 @@ resolve_aux_code() {
   printf '%s' "$ra_out/aux.sol"
 }
 
-# run_gate_refute <out> <location> <class> <severity> <exploit> <relfile> -> writes <out>/verdict.txt as
-# "<VERDICT>\t<reason>"; returns 0 when the gate RAN (any verdict, incl. no-verdict -> REFUTED), non-zero only
-# when the gate itself errored (so the caller SKIPS that candidate). The refuter report row is `| <location> |
-# <class> | <VERDICT> | <reason> |`; we read field 4/5 of the single data row.
+# cand_slug <location> -> the cell-dir slug of a candidate location (#2284: one copy for the candidate loop and
+# the batch planning pass, so a planned member always lands in the gates/<n>_<slug>/ dir the loop derives).
+cand_slug() {
+  printf '%s' "$1" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//'
+}
+
+# cand_preflight <malformed> <codefile> -> the #1691 preflight reason (a malformed record, or a code file that does
+# not resolve), or nothing when the candidate may reach its gate. Shared by the candidate loop and the #2284
+# planning pass so both agree on which candidates are gate-bound.
+cand_preflight() {
+  if [ "${1:-0}" = "1" ]; then
+    printf '%s' "malformed candidate (blank class/severity — truncated record)"
+  elif [ ! -f "$REPO/$2" ]; then
+    printf '%s' "code file not found: $2"
+  fi
+}
+
+# scrape_refute_report <out> -> <out>/verdict.txt ("<VERDICT>\t<reason>") and <out>/eff-class.txt from the single
+# data row of <out>/refute-out/refute-report.md (`| <location> | <class> | <VERDICT> | <reason> |`; fields 4/5).
+scrape_refute_report() {
+  sr_out="$1"
+  sr_report="$sr_out/refute-out/refute-report.md"
+  [ -f "$sr_report" ] || { printf 'REFUTED\tno refute report produced (dropped as unverified)\n' > "$sr_out/verdict.txt"; return 0; }
+  awk -F'|' '
+    NF>=5 { v=$4; gsub(/[[:space:]]/,"",v);
+      if (v=="REAL"||v=="REFUTED"||v=="ERROR") { r=$5; sub(/^[[:space:]]+/,"",r); sub(/[[:space:]]+$/,"",r);
+        print v "\t" r; found=1; exit } }
+    END { if (!found) print "REFUTED\tno verdict row (dropped as unverified)" }
+  ' "$sr_report" > "$sr_out/verdict.txt"
+  # #1699: also scrape the WINNING class from the same (first) data row. run-refute.sh's #1699 C6 fallback can
+  # convert a candidate REFUTED under its assigned class into REAL under C6 and emits the report row with the
+  # class it SURVIVED under — read that back so verified_findings.json records C6, not the mislabelled input.
+  awk -F'|' '
+    NF>=5 { v=$4; gsub(/[[:space:]]/,"",v);
+      if (v=="REAL"||v=="REFUTED"||v=="ERROR") { c=$3; gsub(/[[:space:]]/,"",c); print c; exit } }
+  ' "$sr_report" > "$sr_out/eff-class.txt"
+  return 0
+}
+
+# The refute argv every refute call shares (#2284: built ONCE, so the batched first read and the single-candidate
+# gate can never be handed a different brief, backend, model or scope block).
+REFUTE_ARGS=(--code-dir "$REPO")
+[ -z "$BRIEF" ] || REFUTE_ARGS+=(--brief "$BRIEF")
+REFUTE_ARGS+=(--backend "$BACKEND" --agentis "$AGENTIS")
+[ -z "$MODEL" ] || REFUTE_ARGS+=(--model "$MODEL")
+[ -z "$SCOPE_BLOCK" ] || REFUTE_ARGS+=(--scope-assumptions "$SCOPE_BLOCK")
+
+# run_gate_refute <out> <location> <class> <severity> <exploit> <relfile> [<first-read-log>] -> writes
+# <out>/verdict.txt as "<VERDICT>\t<reason>"; returns 0 when the gate RAN (any verdict, incl. no-verdict ->
+# REFUTED), non-zero only when the gate itself errored (so the caller SKIPS that candidate). The refuter report row
+# is `| <location> | <class> | <VERDICT> | <reason> |`; we read field 4/5 of the single data row. The optional 7th
+# argument (#2284) is this candidate's block from a batched first read, forwarded as --first-read-log; empty =
+# today's call.
 run_gate_refute() {
-  rg_out="$1"; rg_loc="$2"; rg_cls="$3"; rg_sev="$4"; rg_expl="$5"; rg_relfile="$6"
+  rg_out="$1"; rg_loc="$2"; rg_cls="$3"; rg_sev="$4"; rg_expl="$5"; rg_relfile="$6"; rg_frl="${7:-}"
   mkdir -p "$rg_out"
   # #1861: the OPTIONAL 6th manifest column. No hit -> the line has five fields, byte-identical to today.
   rg_aux="$(resolve_aux_code "$rg_out" "$rg_relfile")"
@@ -483,31 +573,9 @@ run_gate_refute() {
   else
     printf '%s|%s|%s|%s|%s\n' "$rg_loc" "$rg_cls" "$rg_sev" "$rg_expl" "$rg_relfile" > "$rg_out/candidate.manifest"
   fi
-  if [ -n "$BRIEF" ]; then
-    "$REFUTE" --candidates "$rg_out/candidate.manifest" --code-dir "$REPO" --brief "$BRIEF" \
-      --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"} ${SCOPE_BLOCK:+--scope-assumptions "$SCOPE_BLOCK"} \
-      --out "$rg_out/refute-out" >"$rg_out/gate.log" 2>&1 || return 1
-  else
-    "$REFUTE" --candidates "$rg_out/candidate.manifest" --code-dir "$REPO" \
-      --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"} ${SCOPE_BLOCK:+--scope-assumptions "$SCOPE_BLOCK"} \
-      --out "$rg_out/refute-out" >"$rg_out/gate.log" 2>&1 || return 1
-  fi
-  rg_report="$rg_out/refute-out/refute-report.md"
-  [ -f "$rg_report" ] || { printf 'REFUTED\tno refute report produced (dropped as unverified)\n' > "$rg_out/verdict.txt"; return 0; }
-  awk -F'|' '
-    NF>=5 { v=$4; gsub(/[[:space:]]/,"",v);
-      if (v=="REAL"||v=="REFUTED"||v=="ERROR") { r=$5; sub(/^[[:space:]]+/,"",r); sub(/[[:space:]]+$/,"",r);
-        print v "\t" r; found=1; exit } }
-    END { if (!found) print "REFUTED\tno verdict row (dropped as unverified)" }
-  ' "$rg_report" > "$rg_out/verdict.txt"
-  # #1699: also scrape the WINNING class from the same (first) data row. run-refute.sh's #1699 C6 fallback can
-  # convert a candidate REFUTED under its assigned class into REAL under C6 and emits the report row with the
-  # class it SURVIVED under — read that back so verified_findings.json records C6, not the mislabelled input.
-  awk -F'|' '
-    NF>=5 { v=$4; gsub(/[[:space:]]/,"",v);
-      if (v=="REAL"||v=="REFUTED"||v=="ERROR") { c=$3; gsub(/[[:space:]]/,"",c); print c; exit } }
-  ' "$rg_report" > "$rg_out/eff-class.txt"
-  return 0
+  "$REFUTE" --candidates "$rg_out/candidate.manifest" "${REFUTE_ARGS[@]}" ${rg_frl:+--first-read-log "$rg_frl"} \
+    --out "$rg_out/refute-out" >"$rg_out/gate.log" 2>&1 || return 1
+  scrape_refute_report "$rg_out"
 }
 
 # run_gate_poc <out> <class> <exploit> <relfile> -> the concrete-PoC gate. CONFIRMED = FINDING.
@@ -619,6 +687,102 @@ classify_candidate() {
   return 0
 }
 
+# --- #2284: BATCH PLANNING (refute gate + --refute-batch 1 only). A pre-pass over the FINAL candidates.tsv (after
+#     --pay-floor) with the candidate loop's own counter, slug, adjudication and preflight helpers, so only the rows
+#     that would really reach the gate are planned and every planned n is the n the loop will assign.
+#     lib/refute-batch.py groups them by (file, function) + code file and writes one `batch \t k \t size \t n \t
+#     slug` row per batched member. A planner failure is a WARNING and no batching (fail-open to today); OFF leaves
+#     the plan empty, so every lookup below prints nothing and the loop is untouched.
+BATCH_PLAN="$WORK/batch-plan.tsv"; : > "$BATCH_PLAN"
+BATCH_FIELDS="$WORK/batch-fields.tsv"; : > "$BATCH_FIELDS"
+BATCHED_N=0 ; BATCH_COUNT=0
+if [ "$REFUTE_BATCH" = "1" ]; then
+  BATCH_ELIGIBLE="$WORK/batch-eligible.tsv"; : > "$BATCH_ELIGIBLE"
+  bp_n=0
+  while IFS= read -r BPROW || [ -n "${BPROW:-}" ]; do
+    [ -n "$BPROW" ] || continue
+    bp_loc="$(printf '%s\n' "$BPROW" | cut -f2)"
+    [ -n "$bp_loc" ] || continue
+    bp_n=$((bp_n + 1))
+    bp_slug="$(cand_slug "$bp_loc")"
+    [ -z "$(adj_lookup "$bp_slug")" ] || continue
+    bp_file="$(printf '%s\n' "$BPROW" | cut -f3)"
+    [ -z "$(cand_preflight "$(printf '%s\n' "$BPROW" | cut -f8)" "$bp_file")" ] || continue
+    printf '%s\t%s\t%s\t%s\n' "$bp_n" "$bp_slug" "$bp_loc" "$bp_file" >> "$BATCH_ELIGIBLE"
+    # n, location, class, severity, exploit, code file — the six values run_gate_refute takes, in its order.
+    printf '%s\t%s\t%s\t%s\n' "$bp_n" "$bp_loc" "$(printf '%s\n' "$BPROW" | cut -f4-6)" "$bp_file" >> "$BATCH_FIELDS"
+  done < "$WORK/candidates.tsv"
+  if python3 "$HERE/lib/refute-batch.py" plan --in "$BATCH_ELIGIBLE" --max "$REFUTE_BATCH_MAX" \
+       > "$BATCH_PLAN" 2> "$WORK/batch-plan.err"; then
+    BATCHED_N="$(grep -c . "$BATCH_PLAN" || true)"
+    BATCH_COUNT="$(cut -f1 "$BATCH_PLAN" | sort -u | grep -c . || true)"
+    echo "verify-findings.sh: refute batching: $BATCHED_N candidate(s) in $BATCH_COUNT batched first-read session(s) ($(grep '^BATCHPLAN|' "$WORK/batch-plan.err" | tail -1))" >&2
+  else
+    echo "verify-findings.sh: WARNING: the refute batch planner failed ($(head -1 "$WORK/batch-plan.err")) — refuting every candidate individually (fail-open, #2284)" >&2
+    : > "$BATCH_PLAN"
+  fi
+fi
+
+# batch_of <n> -> `<batch>\t<k>\t<size>` when candidate n is a planned batch member, else nothing.
+batch_of() {
+  [ -s "$BATCH_PLAN" ] || return 0
+  awk -F'\t' -v n="$1" '$4==n { print $1 "\t" $2 "\t" $3; exit }' "$BATCH_PLAN"
+}
+
+# batch_dir <batch> -> <out>/gates-batch/<batch>_<slug of its first member>.
+batch_dir() {
+  printf '%s/%s_%s' "$BATCHES" "$1" "$(awk -F'\t' -v b="$1" '$1==b { print $5; exit }' "$BATCH_PLAN")"
+}
+
+# run_refute_batch <batch> — ONE batched first read, then every member's normal single-candidate gate, IN ORDER,
+# inside the caller's slot (one job under --jobs). Each member's gate gets its own block from the split when there
+# is one (--first-read-log) and nothing otherwise, so a failed batch degrades to today's per-candidate gates. Writes
+# each member's gates/<n>_<slug>/gate.rc + batch.txt, then <dir>/done. Every refute call reads /dev/null, so no
+# child can consume the caller's candidates.tsv read.
+run_refute_batch() {
+  rb_b="$1"
+  rb_dir="$(batch_dir "$rb_b")"
+  mkdir -p "$rb_dir"
+  : > "$rb_dir/batch.manifest"; : > "$rb_dir/members.tsv"
+  awk -F'\t' -v b="$rb_b" '$1==b' "$BATCH_PLAN" > "$rb_dir/plan.tsv"
+  rb_aux="" ; rb_first=1
+  while IFS="$(printf '\t')" read -r _rb_b rb_k rb_size rb_n rb_slug || [ -n "${rb_k:-}" ]; do
+    [ -n "$rb_k" ] || continue
+    rb_row="$(awk -F'\t' -v n="$rb_n" '$1==n { print; exit }' "$BATCH_FIELDS")"
+    rb_loc="$(printf '%s\n' "$rb_row" | cut -f2)"; rb_cls="$(printf '%s\n' "$rb_row" | cut -f3)"
+    rb_sev="$(printf '%s\n' "$rb_row" | cut -f4)"; rb_expl="$(printf '%s\n' "$rb_row" | cut -f5)"
+    rb_file="$(printf '%s\n' "$rb_row" | cut -f6)"
+    if [ "$rb_first" -eq 1 ]; then
+      # The appendix is a property of the shared code file: resolve it once, exactly as run_gate_refute does.
+      rb_aux="$(resolve_aux_code "$rb_dir" "$rb_file")"
+      rb_first=0
+    fi
+    if [ -n "$rb_aux" ]; then
+      printf '%s|%s|%s|%s|%s|%s\n' "$rb_loc" "$rb_cls" "$rb_sev" "$rb_expl" "$rb_file" "$rb_aux" >> "$rb_dir/batch.manifest"
+    else
+      printf '%s|%s|%s|%s|%s\n' "$rb_loc" "$rb_cls" "$rb_sev" "$rb_expl" "$rb_file" >> "$rb_dir/batch.manifest"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$rb_k" "$rb_n" "$rb_slug" "$rb_loc" >> "$rb_dir/members.tsv"
+  done < "$rb_dir/plan.tsv"
+  "$REFUTE" --batch-first-read --candidates "$rb_dir/batch.manifest" "${REFUTE_ARGS[@]}" \
+    --out "$rb_dir/refute-out" </dev/null >"$rb_dir/gate.log" 2>&1 \
+    || echo "verify-findings.sh: WARNING: batched first read $rb_b failed (see $rb_dir/gate.log) — its members are refuted individually" >&2
+  while IFS="$(printf '\t')" read -r _rb_b rb_k rb_size rb_n rb_slug || [ -n "${rb_k:-}" ]; do
+    [ -n "$rb_k" ] || continue
+    rb_row="$(awk -F'\t' -v n="$rb_n" '$1==n { print; exit }' "$BATCH_FIELDS")"
+    rb_cell="$CELLS/${rb_n}_${rb_slug}"
+    rb_split="$rb_dir/refute-out/split/$rb_k.log"
+    [ -f "$rb_split" ] || rb_split=""
+    rb_rc=0
+    run_gate_refute "$rb_cell" "$(printf '%s\n' "$rb_row" | cut -f2)" "$(printf '%s\n' "$rb_row" | cut -f3)" \
+      "$(printf '%s\n' "$rb_row" | cut -f4)" "$(printf '%s\n' "$rb_row" | cut -f5)" "$(printf '%s\n' "$rb_row" | cut -f6)" \
+      "$rb_split" </dev/null || rb_rc=1
+    printf '%s' "$rb_rc" > "$rb_cell/gate.rc"
+    printf '%s\t%s\t%s\n' "$rb_b" "$rb_k" "$rb_size" > "$rb_cell/batch.txt"
+  done < "$rb_dir/plan.tsv"
+  : > "$rb_dir/done"
+}
+
 # #1863 parallel bookkeeping: ONE row per candidate, pushed in MANIFEST order by the launch loop and replayed
 # by the deferred pass below. Untouched (and unread) on the serial path. PJ_PREFLIGHT carries the #1691
 # preflight reason when the candidate never reached a gate — the row is NOT emitted inline, because emitting
@@ -649,7 +813,7 @@ while IFS= read -r CANDROW || [ -n "${CANDROW:-}" ]; do
   MALFORMED="$(printf '%s\n' "$CANDROW" | cut -f8)"
   [ -n "$LOCATION" ] || continue
   CANDIDATES=$((CANDIDATES + 1))
-  SLUG="$(printf '%s' "$LOCATION" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
+  SLUG="$(cand_slug "$LOCATION")"
   CELL_OUT="$CELLS/${CANDIDATES}_${SLUG}"
   # #2023: operator adjudication PRE-EMPTS the gate. If a human has already ruled this location, do NOT
   # re-refute it (waste + risk of overriding the human) — write a PRESERVED verdict.txt and route it through
@@ -680,13 +844,40 @@ while IFS= read -r CANDROW || [ -n "${CANDROW:-}" ]; do
     printf 0 > "$CELL_OUT/gate.rc"
     continue
   fi
-  EREASON=""
-  if [ "${MALFORMED:-0}" = "1" ] || [ ! -f "$REPO/$CODEFILE" ]; then
-    if [ "${MALFORMED:-0}" = "1" ]; then
-      EREASON="malformed candidate (blank class/severity — truncated record)"
-    else
-      EREASON="code file not found: $CODEFILE"
+  EREASON="$(cand_preflight "${MALFORMED:-0}" "$CODEFILE")"
+  # #2284: a planned batch member. Never an adjudicated or preflight-errored candidate (the plan excludes both).
+  # SERIAL: its batch runs (once, at its first member) and it is classified from the gate dir the batch wrote —
+  # the #2023 pre-write shape. PARALLEL: the whole batch is ONE job, launched at its first member; the others only
+  # record their row, and the drain pass classifies every member in manifest order from its gate.rc.
+  BINFO=""
+  [ "$BATCHED_N" -eq 0 ] || BINFO="$(batch_of "$CANDIDATES")"
+  if [ -n "$BINFO" ]; then
+    B_ID="$(printf '%s
+' "$BINFO" | cut -f1)"; B_K="$(printf '%s
+' "$BINFO" | cut -f2)"; B_SIZE="$(printf '%s
+' "$BINFO" | cut -f3)"
+    if [ "$JOBS" -le 1 ]; then
+      echo "verify-findings.sh: [$GATE] verifying $LOCATION ($CLASS) — batched first read $B_ID ($B_K/$B_SIZE) ..." >&2
+      [ -e "$(batch_dir "$B_ID")/done" ] || run_refute_batch "$B_ID"
+      GATE_RC=1
+      if [ -s "$CELL_OUT/gate.rc" ]; then GATE_RC="$(cat "$CELL_OUT/gate.rc")"; fi
+      case "$GATE_RC" in ''|*[!0-9]*) GATE_RC=1 ;; esac
+      classify_candidate "$GATE_RC" "$CELL_OUT" "$SUBSYS" "$LOCATION" "$CODEFILE" "$CLASS" "$SEVERITY" "$EXPLOIT" "$SKETCH"
+      continue
     fi
+    PJ_OUT+=("$CELL_OUT") ; PJ_SUBSYS+=("$SUBSYS") ; PJ_LOC+=("$LOCATION") ; PJ_FILE+=("$CODEFILE")
+    PJ_CLS+=("$CLASS") ; PJ_SEV+=("$SEVERITY") ; PJ_EXPL+=("$EXPLOIT") ; PJ_SKETCH+=("$SKETCH")
+    PJ_PREFLIGHT+=("")
+    if [ "$B_K" = "1" ]; then
+      while [ "$live" -ge "$effective_jobs" ]; do
+        wait -n 2>/dev/null || true
+        live=$((live - 1))
+      done
+      echo "verify-findings.sh: [$GATE] verifying batch $B_ID ($B_SIZE candidates, first: $LOCATION) ..." >&2
+      ( run_refute_batch "$B_ID" ) </dev/null >/dev/null &
+      live=$((live + 1))
+    fi
+    continue
   fi
   if [ "$JOBS" -le 1 ]; then
     # SERIAL path (default): today's exact statement sequence — preflight ERROR + continue, else the
@@ -1049,7 +1240,12 @@ OOS_SUFFIX=""
 if [ "$OUT_OF_SCOPE" -gt 0 ]; then
   OOS_SUFFIX=", $OUT_OF_SCOPE out-of-scope (declared premise)"
 fi
-echo "================ VERIFY [$GATE]: $CANDIDATES candidate(s), $VERIFIED confirmed, $ERRORED errored (malformed/unresolvable), $SKIPPED skipped$SUBFLOOR_SUFFIX$OOS_SUFFIX ================" >&2
+# #2284: named only when a batch was planned, so an OFF run's banner is unchanged.
+BATCH_SUFFIX=""
+if [ "$BATCH_COUNT" -gt 0 ]; then
+  BATCH_SUFFIX=", $BATCHED_N candidate(s) in $BATCH_COUNT batched first-read session(s)"
+fi
+echo "================ VERIFY [$GATE]: $CANDIDATES candidate(s), $VERIFIED confirmed, $ERRORED errored (malformed/unresolvable), $SKIPPED skipped$SUBFLOOR_SUFFIX$OOS_SUFFIX$BATCH_SUFFIX ================" >&2
 echo "verify-findings.sh: verified findings at $VERIFIED_JSON" >&2
 [ -z "$CLUSTER_NOTE" ] || echo "$CLUSTER_NOTE" >&2
 if [ "$TIER2_EXAMINED" -gt 0 ]; then

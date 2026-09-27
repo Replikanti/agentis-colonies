@@ -383,6 +383,26 @@ with a WARNING. `--cluster-findings 0` / `DF_CLUSTER_FINDINGS=0` switch it off (
 inherits the env); `DF_CLUSTER_THRESHOLD` overrides the threshold. The VERIFY banner still reports the
 gate-confirmed count; one extra stderr line reports the distinct count. Pinned by `demo-cluster-findings.sh`.
 
+**Batched first read (`--refute-batch <0|1>`, #2284, default OFF).** One function often reaches the refute gate
+several times (one candidate per class cell), and every candidate used to cost its own session re-reading the same
+code. With `--refute-batch 1` (or `DF_REFUTE_BATCH=1`) the candidates that would reach the gate are grouped by the
+same `(file, function)` key clustering uses, plus the code file, and each group of two or more gets ONE
+`run-refute.sh --batch-first-read` session: [`refuter.ag`](./auditor/agents/refuter.ag) judges every candidate
+under an explicit independence rule and answers one indexed `REFUTE-ITEM|<k>` block per candidate, which the driver
+splits into per-candidate logs. Each member then runs the normal single-candidate gate with its own block as its
+first read (`--first-read-log`), so the rubric re-ask, the C6 fallback, the constraint harvest, the report row and
+the `gates/<n>_<slug>/` dir are exactly the single-candidate ones — verdicts stay per candidate, and
+`verified_findings.json` gains no key. A member without a clean block (dropped, class mismatch, chrome, no
+`REFUTE-BATCH|` sentinel) gets its own first read: a bad batch costs sessions, never a candidate. Never batched:
+adjudicated and preflight-errored candidates, a location with no function part, a group of one, tier-2 records,
+and the poc/symbolic gates. `DF_REFUTE_BATCH_MAX` (default 6) caps a batch — larger groups split into balanced
+chunks — and the batch session's timeout scales as `min(600 s + 240 s per extra candidate, 1800 s)`. ON adds only
+`verify-out/gates-batch/` plus `batch.txt` (and `gate.rc`) in each batched member's gate dir; a batch is one job
+under `--jobs`. `DF_REFUTE_SESSION_LOG=<file>` records every refuter session (`batch`/`first`/`reask`/`c6`) in
+either mode, and `lib/refute-batch.py summary --results <discovery-results.json>` predicts the first-read session
+count of a finished hunt without running anything. `run-zone-hunt.sh` STAGE 4 inherits the env. Default OFF until
+a live dev-twin A/B shows identical per-row recall; pinned offline by `demo-refute-batch.sh`.
+
 **Scope-aware refute (`--scope-docs <auto|file>`, #2257, default OFF).** A refute gate that never sees what a
 target *declares* out of scope cannot reject a finding whose exploit only works with an excluded asset or
 environment (a transfer-fee or rebasing token where the docs say standard tokens only). `verify-findings.sh
