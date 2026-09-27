@@ -29,6 +29,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   block falls back to its own first read. New `DF_REFUTE_SESSION_LOG` session telemetry and
   `lib/refute-batch.py summary` session predictor. OFF writes nothing new. Proven by the new
   `demo-refute-batch.sh` (colony-lint).
+- **Batched refute first-read replay + A/B driver (#2284 M2).** New `bench/corpus-bench/refute-batch-ab.sh`:
+  `--reconstruct` rebuilds a candidate set + recorded verdicts from the 1886/1887 notional archives; `--self-test`
+  (colony-lint) replays the recorded verdicts through an `--agentis` stub and pins OFF / ON / ON `--jobs 3`
+  byte-identity, identical per-row token-mode HIT/MISS, first-read sessions 29 -> 18 on both archives, and the mixed
+  `unstakeAndExitPool` group's per-candidate fan-out; `--live` drives the dev-only control/treatment A/B
+  (`DF_REFUTE_BATCH=0` then `=1`, labels fixed up front, held-out and fresh-set ids refused) into `ab-report.md`.
 
 ## [0.12.0] - 2026-09-27
 

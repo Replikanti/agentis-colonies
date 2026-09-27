@@ -401,7 +401,9 @@ chunks — and the batch session's timeout scales as `min(600 s + 240 s per extr
 under `--jobs`. `DF_REFUTE_SESSION_LOG=<file>` records every refuter session (`batch`/`first`/`reask`/`c6`) in
 either mode, and `lib/refute-batch.py summary --results <discovery-results.json>` predicts the first-read session
 count of a finished hunt without running anything. `run-zone-hunt.sh` STAGE 4 inherits the env. Default OFF until
-a live dev-twin A/B shows identical per-row recall; pinned offline by `demo-refute-batch.sh`.
+a live dev-twin A/B shows identical per-row recall; pinned offline by `demo-refute-batch.sh`. The real-data replay
+(29 -> 18 first reads on the notional archives, verdict-neutral) and the dev-only A/B driver live in
+`bench/corpus-bench/refute-batch-ab.sh`.
 
 **Scope-aware refute (`--scope-docs <auto|file>`, #2257, default OFF).** A refute gate that never sees what a
 target *declares* out of scope cannot reject a finding whose exploit only works with an excluded asset or

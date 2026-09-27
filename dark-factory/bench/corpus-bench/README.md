@@ -1236,6 +1236,33 @@ for the specific rare row(s) under test — never the location-first scoreboard,
 a row through an unrelated candidate at the same function (see the #2213 archive's disclosure). Grep only the
 `hunt_*.log` glob, never `hunter.ag` (a copy of the directive SOURCE, containing the same literal sentinels).
 
+## Batched refute first-read A/B (#2284)
+
+`verify-findings.sh --refute-batch 1` (default OFF) gives every group of candidates that share one `(file, function)`
+ONE refuter session for their first read, then runs each member's normal single-candidate gate on its own block
+(see the dark-factory README). `refute-batch-ab.sh` measures it on real candidate sets:
+
+- `--self-test` (colony-lint) rebuilds the two frozen notional archives (`runs/1886-notional-refute-fn`,
+  `runs/1887-notional-constraints`, both `dev`), replays each candidate's **recorded** verdict and reason through an
+  `--agentis` stub in single and batch mode, and runs `verify-findings.sh` with `DF_REFUTE_BATCH=0`, `=1` and
+  `=1 --jobs 3`. It asserts byte-identical `verified_findings.json` + `refute-constraints.tsv`, identical per-row
+  token-mode HIT/MISS against the notional `truth.tsv` (and, on 1886, the archived scorecard: M-2 and M-10 HIT),
+  first-read sessions pinned at **29 -> 18 (-38 %)** on both archives, and the mixed
+  `CurveConvex2Token.sol:unstakeAndExitPool` group (REFUTED / REAL / REFUTED) fanning out to exactly those verdicts
+  inside one batch. A replay proves the mechanism is verdict-neutral; it cannot see batched LLM judgement.
+- `--reconstruct <archive> --out <results.json> --verdicts <tsv>` rebuilds a discovery-results.json-shaped candidate
+  set (gate order) and the recorded verdicts from either archive shape.
+- `--live --id <contest> --results <frozen results.json> --repo <code dir> --truth <truth.tsv> --work <dir>
+  [--jobs N]` is the pre-registered dev-twin A/B: it refuses any id whose `corpus.tsv` role is not `dev` (held-out
+  ids and ids outside the manifest, i.e. fresh-set rows, exit 2), writes the arm labels to `<work>/arms.txt` before
+  running, runs CONTROL (`DF_REFUTE_BATCH=0`) then TREATMENT (`=1`) sequentially on `--backend flat-cyborg`, each
+  with its own `DF_REFUTE_SESSION_LOG`, never overwrites an existing arm, and writes `<work>/ab-report.md`
+  (per-row HIT/MISS for both arms, per-candidate verdict diff, first-read and total sessions, STAGE 4 wall-clock).
+  Pass rule: identical per-row HIT/MISS and >= 30 % fewer first-read sessions; a differing row is judged only
+  after one extra control replicate, and a HIT lost only under the treatment that both control runs keep is a FAIL
+  (the default stays OFF). No live batching runs on a fresh-set or held-out row;
+  `lib/refute-batch.py summary --results <discovery-results.json>` gives the predicted session count there instead.
+
 ## Hold-out policy: `dev` vs `holdout` (#2231)
 
 `corpus.tsv` column 5 is `role`, and it decides what a number measured on that contest is allowed to claim:
