@@ -16,6 +16,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Foundry shim for Hardhat-only targets + a deep-hunt status ledger (#2277).** `run-zone-hunt.sh --deep-hunt` /
+  `--vector-hunt` resolve every project root through the new `lib/foundry-shim.sh`: a Foundry root runs natively
+  (argv unchanged), a Hardhat-only root runs in a generated Foundry shim working copy under `<out>/.foundry-shim/`
+  built by the new `lib/foundry_shim.py` (the root's `.sol`/`.md` sources, a `.sol`-only `node_modules`, a generated
+  `foundry.toml` + remappings; the Hardhat config is parsed statically and never executed; nothing is written into the
+  target) and probed by one `forge build` under a forge slot. Missing packages are installed from the root's
+  lockfile (`npm ci` / frozen yarn / frozen pnpm, always `--ignore-scripts`) into a scratch dir holding only
+  `package.json` + the lockfile. Every consult is a row of `<out>/deep-hunt-status.tsv` (`ran` /
+  `skipped-no-foundry` / `skipped-no-root` / `shim-failed` + detail) plus a stderr `deep_hunt_status=` line; the run
+  still exits 0 on `shim-failed`. Knobs `DF_FOUNDRY_SHIM`, `DF_FOUNDRY_SHIM_INSTALL`,
+  `DF_FOUNDRY_SHIM_INSTALL_TIMEOUT_S`, `DF_FOUNDRY_SHIM_BUILD_TIMEOUT_S`. The corpus-bench exam's run-window
+  attribution never reads a `run` dir inside `.foundry-shim/`. Proven by the new `demo-foundry-shim.sh`
+  (colony-lint): helper rules, the frozen target (sha256 manifest), ran / shim-failed / skipped end to end, and
+  Foundry byte-identity against origin/main; `demo-multi-root.sh` part 7 now asserts the Hardhat-only `legacy` root
+  runs through its shim.
+
 - **C27 — variant coverage gap class + deterministic single-zone zone-mapper route (#2265).** A new taxonomy
   class for a protocol that ADMITS several variants of one configurable thing (an asset representation, a pool or
   market kind, an external interface version, a price-feed kind, a staking/reward target, a route kind, an
@@ -734,6 +750,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 
 ### Changed
+
+- **Hardhat-only roots are no longer silently skipped by the deep hunt / vector hunt (#2277).** They run through
+  their Foundry shim; a root that cannot run (no toolchain config, `DF_FOUNDRY_SHIM=0`, a failed shim) is a loud
+  ledger row in `<out>/deep-hunt-status.tsv` instead of one stderr line. `DF_FOUNDRY_SHIM=0` restores the old skip.
+  Deep-hunt measurements across this change are not comparable on Hardhat targets.
 
 - **The hunter's lens no longer carries the corpus's ground truth, and the corpus has a hold-out policy
   (#2231).** `auditor/bug-taxonomy.md` is read by `hunter.ag` AND folded verbatim into the frozen briefs by

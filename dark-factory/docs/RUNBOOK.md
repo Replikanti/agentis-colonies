@@ -155,9 +155,13 @@ funds, and folds any fuzzer-reproduced FINDING back into the same verified-findi
   HARNESS_ERROR) and a test file is not the custody logic under audit. `map-zones.sh` scrapes the flag
   off the agent's `CUSTODY|<id>|<true|false>` line
   (additive to `zones.json` only — `scope.tsv`'s schema is untouched).
-- **The stage.** With `--deep-hunt`, a new stage runs BETWEEN verify (M4) and deliver (M5), active only when
-  the target is a Foundry project (`foundry.toml` present — EVM invariant-fuzzing is Foundry-specific; a
-  non-Foundry target is logged and skipped). For each value-custody zone it picks ONE primary target (the
+- **The stage.** With `--deep-hunt`, a new stage runs BETWEEN verify (M4) and deliver (M5). EVM invariant-fuzzing
+  is Foundry-specific: a Foundry target (`foundry.toml` present) runs natively, a Hardhat-only target
+  (`hardhat.config.*`, no `foundry.toml`) runs in a generated Foundry shim working copy under
+  `<out>/.foundry-shim/` (#2277; `DF_FOUNDRY_SHIM=0` restores the old skip), and a target with neither config is
+  skipped. Every outcome lands in `<out>/deep-hunt-status.tsv` plus a stderr `deep_hunt_status=` line, so an
+  unmeasured deep hunt is never silent — see [invariant-hunt.md](./invariant-hunt.md#hardhat-targets--the-foundry-shim-2277).
+  For each value-custody zone it picks ONE primary target (the
   largest `.sol` in the zone, `--deep-hunt-max-targets` default 1) and runs `run-invariant-hunt.sh`
   (`--deep-hunt-repair-rounds` compile-repair attempts, default 4 — #1717, deeper than the prover's own
   default of 2 so a real custody contract's harness reliably compiles instead of degrading to

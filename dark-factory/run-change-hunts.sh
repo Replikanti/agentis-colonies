@@ -63,7 +63,8 @@
 #                        default: head/tag -> fetch-target.sh (dep-aware clone, ref-pinned); impl -> keyless
 #                        Sourcify-v2 source pull (flat `.sol`). LIMITATION (M3): an impl upgrade materializes
 #                        as FLAT `.sol`, not a buildable Foundry project — breadth (map/discovery) reads it
-#                        fine, but run-zone-hunt.sh's --deep-hunt self-skips a non-Foundry target. A real
+#                        fine, but run-zone-hunt.sh's --deep-hunt skips a target with no toolchain config (a
+#                        Hardhat project gets a Foundry shim since #2277; flat sources have neither). A real
 #                        buildable-impl reconstruction is deferred (M4+).
 #   -h/--help          : this header.
 #

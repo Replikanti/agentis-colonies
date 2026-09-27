@@ -1,0 +1,9 @@
+{
+  "name": "hardhat-shim-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": {
+    "@openzeppelin/contracts": "5.0.0",
+    "js-only-pkg": "1.0.0"
+  }
+}

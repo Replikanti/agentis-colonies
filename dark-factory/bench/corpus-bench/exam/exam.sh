@@ -1547,6 +1547,8 @@ cmd_self_test() {
   adisc="$ao/discovery/src_pool/run"; acell="$adisc/cell-share_pool_C1"; averi="$ao/verify/gates/1_Pool.sol_withdraw/refute-out/run"
   adeep="$ao/deep-hunt/src_pool-C1/run"; amap="$ao/map/run"; adrop="$ao/drop/run"
   mkdir -p "$acell" "$averi" "$adeep/repo/run" "$amap" "$adrop" "$troot"
+  # #2277: a `run` dir inside a generated Foundry shim of a Hardhat target is target code, never a stage RUN dir.
+  mkdir -p "$ao/.foundry-shim/_root/contracts/run" "$ao/.foundry-shim/_root/node_modules/pkg/run"
   printf '%s\n' contest=fx backend=flat-cyborg model=claude-opus-4-8 start=2026-01-01T10:00:00Z \
     breadth_end=2026-01-01T10:30:00Z rehunt_end=- deep_start=2026-01-01T10:31:00Z deep_end=2026-01-01T10:50:00Z \
     end=2026-01-01T10:51:00Z rc=0 deep_rc=0 > "$aa/run.meta"
@@ -1568,8 +1570,9 @@ cmd_self_test() {
   arow() { awk -F'\t' -v s="$1" '$1 == s { print $2 "|" $3 "|" $4 "|" $5 "|" $7 "|" $9 }' "$aa/attrib.tsv"; }
   if [ "$rc" -eq 0 ] && [ "$(arow discovery)" = "2|1|1|2|PURE-OPUS|ok" ] && [ "$(arow verify)" = "1|1|0|1|PURE-OPUS|ok" ] \
      && [ "$(arow deep-hunt)" = "1|2|0|2|PURE-OPUS|ok" ] && [ -z "$(arow map)" ] && [ "$(arow drop)" = "1|0|0|0|-|not-run" ] \
+     && [ -z "$(arow .foundry-shim)" ] && ! grep -q 'foundry-shim' "$aa/attrib.tsv" \
      && [ "$(python3 "$HELPER" void-check "$aa" "$PATTERNS")" = VALID ]; then
-    ok "attrib: RUN dirs on disk -> exact store names (cell-* included, subagents too), cwd-confirmed (a colliding store file dropped), windowed PURE-OPUS per stage; map/ excluded, a model-free stage is not-run"
+    ok "attrib: RUN dirs on disk -> exact store names (cell-* included, subagents too), cwd-confirmed (a colliding store file dropped), windowed PURE-OPUS per stage; map/ excluded, a model-free stage is not-run, a .foundry-shim/ run dir is ignored (#2277)"
   else
     bad "attrib: wrong attribution table (exit $rc)"; sed 's/^/         | /' "$aa/attrib.tsv" "$work/attrib.out" 2>/dev/null | head -12
   fi

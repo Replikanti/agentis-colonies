@@ -183,8 +183,11 @@ tagged `source=vector-hunt`. It complements STAGE 4.5's stateful-invariant fuzze
 where the fuzzer judges a property over sequences, this reproduces a concrete
 attacker-controlled-callee exploit.
 
-- Requires a Foundry target (`$REPO/foundry.toml`); a non-Foundry target logs +
-  skips it.
+- Runs natively on a Foundry target (`$REPO/foundry.toml`); a Hardhat-only target
+  runs in its generated Foundry shim (#2277, shared with STAGE 4.5 — built and
+  probed once per run); a target with neither config is skipped. Every outcome is
+  a row of `<out>/deep-hunt-status.tsv` (stage `vector-hunt`) plus a stderr
+  `deep_hunt_status=` line.
 - Forge-slot ownership lives INSIDE the engine (`lib/forge-slot.sh` per vector),
   so `FORGE_MAX_SLOTS` is respected without double-acquiring in STAGE 4.6.
 - `--vector-hunt-max-vectors <N>` (default 6) is the per-zone cap forwarded to the
