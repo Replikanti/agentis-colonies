@@ -1,0 +1,5 @@
+src/Pool.sol:swap:120	<C19>	severity=High	2	C2,C15	src/Pool.sol:swap:121
+src/Pool.sol:flash:200	C2	High	-	-	-
+src/Pool.sol:123	C2	High	-	-	-
+src/Pool.sol:swap:120	C2	High	-	-	-
+src/Pool.sol:setFee:40	C9	High	1	C5	

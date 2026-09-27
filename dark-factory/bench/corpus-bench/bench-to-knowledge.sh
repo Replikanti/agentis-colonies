@@ -12,6 +12,10 @@
 #   misses  = that class's unmatched leads (noise)                    (`LEAD ... MISS`)
 #   precision = hits / (hits + misses)   -> the entry's confidence AND success_rate
 # The class field is normalized inside score-match.py (`class=C3` and `C3` collapse to `C3`; empty -> `unknown`).
+# #2278: leads are read from the PRE-CLUSTER view (lib/cluster-findings.py raw-view). A clustered
+# verified_findings.json keeps ONE representative per root cause under the representative's class, so scoring it
+# would credit only that class; the raw view keeps crediting every class cell that confirmed the bug. An unclustered
+# file is read unchanged; a clustered one whose sibling is missing or stale (sha256 mismatch) is skipped.
 #
 # NOT an `.ag` agent (a plain operator feeder), so #1587 substrate-purity does not apply; python3 is used only
 # for the JSON emit + integer/precision arithmetic, exactly like the sibling bench scripts.
@@ -31,6 +35,7 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCOREMATCH="$HERE/score-match.py"
+CLUSTERLIB="$HERE/../../lib/cluster-findings.py"
 
 WORK="$PWD/corpus-bench-work"
 OUT="$PWD/hunt-fitness.json"
@@ -54,6 +59,7 @@ esac; done
 
 command -v python3 >/dev/null 2>&1 || { echo "bench-to-knowledge.sh: python3 not installed" >&2; exit 3; }
 [ -f "$SCOREMATCH" ] || { echo "bench-to-knowledge.sh: score-match.py not found at $SCOREMATCH" >&2; exit 3; }
+[ -f "$CLUSTERLIB" ] || { echo "bench-to-knowledge.sh: cluster-findings.py not found at $CLUSTERLIB" >&2; exit 3; }
 [ -d "$WORK" ] || die "work dir not found: $WORK"
 
 # Discover contest ids: explicit --id list, else every immediate sub-dir of $WORK.
@@ -70,7 +76,8 @@ fi
 # Accumulate every scored lead across the selected contests as `<class>\t<HIT|MISS>` lines, and count the
 # contests that actually contributed data (for the recommendation string's "across N contests").
 LEADS_TMP="$(mktemp "${TMPDIR:-/tmp}/b2k-leads.XXXXXX")"
-trap 'rm -f "$LEADS_TMP"' EXIT
+VIEW_TMP="$(mktemp "${TMPDIR:-/tmp}/b2k-view.XXXXXX")"
+trap 'rm -f "$LEADS_TMP" "$VIEW_TMP"' EXIT
 CONTESTS=0
 for id in $CANDIDATES; do
   [ -n "$id" ] || continue
@@ -80,7 +87,10 @@ for id in $CANDIDATES; do
     say "[$id] skipping (missing truth.tsv or verified_findings.json)"
     continue
   fi
-  SCORE_OUT="$(python3 "$SCOREMATCH" "$truth" "$verified" --per-lead)" \
+  # #2278: the pre-cluster view (see the header).
+  python3 "$CLUSTERLIB" raw-view --verified "$verified" > "$VIEW_TMP" \
+    || { say "[$id] cannot build the pre-cluster findings view; skipping"; continue; }
+  SCORE_OUT="$(python3 "$SCOREMATCH" "$truth" "$VIEW_TMP" --per-lead)" \
     || { say "[$id] score-match.py failed; skipping"; continue; }
   # Keep only the per-lead lines (drop the per-row HIT/MISS + LEADS trailer): `LEAD\t<class>\t<HIT|MISS>`.
   n_before="$(wc -l < "$LEADS_TMP")"

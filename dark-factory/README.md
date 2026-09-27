@@ -366,6 +366,23 @@ the `--agentis` seam — no live agentis/forge/network), whose serial golden was
 script. Model + the learning-store decision:
 [`docs/zone-split-orchestration.md`](./docs/zone-split-orchestration.md).
 
+**Root-cause clustering (`--cluster-findings <0|1>`, #2278, default ON).** Discovery runs one cell per bug
+class, so one bug that several classes reach passes the gate once per cell and `verified[]` repeats it (an
+inverted staleness check six times, once per class). When more than one finding survives,
+[`lib/cluster-findings.py`](./lib/cluster-findings.py) collapses duplicates into one representative per root
+cause: findings are compared only inside the exact `(file, function)` pair of their `location` — the pair the
+corpus-bench scorer matches on, so location-first bench recall cannot change — and merge by average-linkage
+Jaccard over the code identifiers their `exploit` text cites (threshold pinned at 0.30 on dev data). The
+representative is the highest-severity member (then an operator-adjudicated one, then the most concrete
+`poc_sketch`) and carries `duplicates`, `also_classes` and `also_locations`. Nothing is lost: the full
+pre-cluster list moves to `verify-out/verified_findings.raw.json`, and `verified_findings.json` gains a
+`clustering` block (method, threshold, `raw_sha256`, counts) plus `totals.verified_precluster`. Entries with no
+parseable function and later `source=invariant-hunt|vector-hunt` appends are never clustered. With no duplicate
+the file is byte-identical to an OFF run and no sibling is written; a clusterer failure restores the raw file
+with a WARNING. `--cluster-findings 0` / `DF_CLUSTER_FINDINGS=0` switch it off (`run-zone-hunt.sh` STAGE 4
+inherits the env); `DF_CLUSTER_THRESHOLD` overrides the threshold. The VERIFY banner still reports the
+gate-confirmed count; one extra stderr line reports the distinct count. Pinned by `demo-cluster-findings.sh`.
+
 **Scope-aware refute (`--scope-docs <auto|file>`, #2257, default OFF).** A refute gate that never sees what a
 target *declares* out of scope cannot reject a finding whose exploit only works with an excluded asset or
 environment (a transfer-fee or rebasing token where the docs say standard tokens only). `verify-findings.sh

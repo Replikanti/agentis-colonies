@@ -100,6 +100,24 @@
 #                       also carries `scope_layer: {state: on|off|inert-extractor-error, reason}` (an extractor
 #                       crash fails OPEN and is recorded there). Default: unset = inert = every artifact
 #                       byte-identical (no scope_layer key).
+#   --cluster-findings <0|1>  ROOT-CAUSE CLUSTERING (#2278). Default: env DF_CLUSTER_FINDINGS, else 1 (ON).
+#                       One bug reached by several class cells passes the gate once per cell, so verified[]
+#                       carries the same root cause several times. When ON and more than one finding survived,
+#                       lib/cluster-findings.py collapses duplicates that share the exact (file, function) of
+#                       their `location` AND cite overlapping code identifiers in `exploit` into ONE
+#                       representative (highest severity; carries `duplicates`, `also_classes`,
+#                       `also_locations`). The full pre-cluster list moves to the sibling
+#                       <out>/verified_findings.raw.json, and verified_findings.json gains a top-level
+#                       `clustering` block (method, threshold, raw_sha256, counts) plus
+#                       totals.verified_precluster, so candidates == verified_precluster + errored + refuted +
+#                       dropped_subfloor. Nothing is ever lost: when no duplicate merged, the file stays
+#                       byte-identical to an OFF run and no sibling is written; when the clusterer fails, the
+#                       raw file is restored and a WARNING is printed (fail-open). A stale sibling from an
+#                       earlier run in the same --out is always removed first. `0` = OFF = byte-identical to a
+#                       pre-#2278 run. Optional env DF_CLUSTER_THRESHOLD (a decimal in (0,1]) overrides the
+#                       clusterer's pinned similarity threshold; DF_CLUSTER_CMD replaces the clusterer
+#                       command (a test seam). The block key is the same (file, function) pair corpus-bench's
+#                       score-match.py matches on, so location-first bench recall cannot change.
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the gate (default: flat-cyborg).
 #   --model <id>        LLM model id for the gate's `llm.model` (default: unset, so the emitted config stays
 #                       `llm.model = opus` — byte-identical to before this flag existed).
@@ -142,6 +160,7 @@ PAY_FLOOR=""  # #1962: unset = inert (see the header). Validated below with the 
 ADJUDICATED=""  # #2023: unset/absent = inert; operator adjudication overlay that pre-empts the refute gate.
 TIER2=0  # #2217: 0 = OFF = inert (see --tier2 in the header). N > 0 = examine N tier-2 records per zone.
 SCOPE_DOCS=""  # #2257: unset = inert. `auto` or an operator file (see --scope-docs in the header).
+CLUSTER_FINDINGS="${DF_CLUSTER_FINDINGS:-1}"  # #2278: 1 = ON (default), 0 = OFF (see --cluster-findings in the header).
 
 nv() { [ "$1" -ge 2 ] || { echo "verify-findings.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -159,6 +178,7 @@ while [ $# -gt 0 ]; do
     --adjudicated) nv "$#"; ADJUDICATED="$2"; shift 2 ;;
     --tier2)   nv "$#"; TIER2="$2"; shift 2 ;;
     --scope-docs) nv "$#"; SCOPE_DOCS="$2"; shift 2 ;;
+    --cluster-findings) nv "$#"; CLUSTER_FINDINGS="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "verify-findings.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -185,6 +205,17 @@ case "$TIER2" in ''|*[!0-9]*) echo "verify-findings.sh: --tier2 must be a non-ne
 [ -z "$BRIEF" ] || [ -f "$BRIEF" ] || { echo "verify-findings.sh: --brief not found: $BRIEF" >&2; exit 2; }
 # #2257: `auto` or an existing operator file; anything else is a usage error before any side effect.
 [ -z "$SCOPE_DOCS" ] || [ "$SCOPE_DOCS" = "auto" ] || [ -f "$SCOPE_DOCS" ] || { echo "verify-findings.sh: --scope-docs must be 'auto' or an existing file (got '$SCOPE_DOCS')" >&2; exit 2; }
+# #2278: the clustering knobs, validated before any side effect like every other flag.
+case "$CLUSTER_FINDINGS" in
+  0|1) : ;;
+  *) echo "verify-findings.sh: --cluster-findings (or DF_CLUSTER_FINDINGS) must be 0 or 1 (got '$CLUSTER_FINDINGS')" >&2; exit 2 ;;
+esac
+if [ -n "${DF_CLUSTER_THRESHOLD:-}" ]; then
+  if ! printf '%s\n' "$DF_CLUSTER_THRESHOLD" | grep -Eq '^([0-9]+\.?[0-9]*|\.[0-9]+)$' \
+     || ! awk -v t="$DF_CLUSTER_THRESHOLD" 'BEGIN { exit !(t + 0 > 0 && t + 0 <= 1) }'; then
+    echo "verify-findings.sh: DF_CLUSTER_THRESHOLD must be a decimal in (0,1] (got '$DF_CLUSTER_THRESHOLD')" >&2; exit 2
+  fi
+fi
 command -v python3 >/dev/null 2>&1 || { echo "verify-findings.sh: python3 not installed" >&2; exit 3; }
 
 # Resolve every operator path to ABSOLUTE (the gate scripts run from throwaway cwds).
@@ -859,6 +890,10 @@ fi
 #     dropped_subfloor[] (the well-formed, sub-floor candidates the --pay-floor partition removed before the
 #     gate loop), top-level pay_floor ("" when unset), and totals.dropped_subfloor (0 when unset).
 VERIFIED_JSON="$OUT/verified_findings.json"
+# #2278: a pre-cluster sibling left by an EARLIER run in this --out must never survive into this one (an OFF run,
+# or a run where nothing merged, has no sibling by contract).
+RAW_JSON="$OUT/verified_findings.raw.json"
+rm -f "$RAW_JSON"
 REPO_NAME="$REPO_NAME" GATE="$GATE" CANDIDATES="$CANDIDATES" VERIFIED="$VERIFIED" ERRORED="$ERRORED" \
 PAY_FLOOR="$PAY_FLOOR" SUBFLOOR="$SUBFLOOR" SCOPE_STATE="$SCOPE_STATE" SCOPE_REASON="$SCOPE_REASON" \
 python3 - "$CONFIRMED_TSV" "$ERRORS_TSV" "$DROPPED_SUBFLOOR_TSV" "$TIER2_OUT_TSV" "$OOS_TSV" > "$VERIFIED_JSON" <<'PY'
@@ -972,6 +1007,39 @@ if os.environ.get("SCOPE_STATE", ""):
 print(json.dumps(out, indent=2))
 PY
 
+# --- #2278: ROOT-CAUSE CLUSTERING. Runs on the finished aggregate, so the gate loop, the counters and the VERIFY
+#     banner below are untouched. The raw aggregate moves to the sibling and the clusterer writes the clustered
+#     file in its place; `merged == 0` or ANY clusterer failure moves the raw file back (fail-open: a finding is
+#     never lost to this step). DF_CLUSTER_CMD is the demo's seam for a failing clusterer.
+cluster_cmd() {
+  if [ -n "${DF_CLUSTER_CMD:-}" ]; then
+    sh -c "$DF_CLUSTER_CMD \"\$@\"" cluster-cmd "$@"
+  else
+    python3 "$HERE/lib/cluster-findings.py" "$@"
+  fi
+}
+CLUSTER_NOTE=""
+if [ "$CLUSTER_FINDINGS" = "1" ] && [ "$VERIFIED" -gt 1 ]; then
+  mv "$VERIFIED_JSON" "$RAW_JSON"
+  CL_RC=0
+  CL_OUT="$(cluster_cmd cluster --in "$RAW_JSON" --out "$VERIFIED_JSON" \
+    ${DF_CLUSTER_THRESHOLD:+--threshold "$DF_CLUSTER_THRESHOLD"} 2>"$WORK/cluster.err")" || CL_RC=$?
+  CL_LINE="$(printf '%s\n' "$CL_OUT" | grep '^CLUSTER|' | tail -1 || true)"
+  CL_RAW="$(printf '%s' "$CL_LINE" | cut -d'|' -f2)"
+  CL_N="$(printf '%s' "$CL_LINE" | cut -d'|' -f3)"
+  CL_MERGED="$(printf '%s' "$CL_LINE" | cut -d'|' -f4)"
+  case "$CL_RAW$CL_N$CL_MERGED" in ''|*[!0-9]*) [ "$CL_RC" -ne 0 ] || CL_RC=3 ;; esac
+  if [ "$CL_RC" -eq 0 ] && [ "$CL_MERGED" -gt 0 ] && [ ! -s "$VERIFIED_JSON" ]; then CL_RC=3; fi
+  if [ "$CL_RC" -ne 0 ]; then
+    rm -f "$VERIFIED_JSON"; mv "$RAW_JSON" "$VERIFIED_JSON"
+    echo "verify-findings.sh: WARNING: root-cause clustering failed (exit $CL_RC: $(head -1 "$WORK/cluster.err")) — keeping the unclustered verified_findings.json (fail-open, #2278)" >&2
+  elif [ "$CL_MERGED" -eq 0 ]; then
+    mv "$RAW_JSON" "$VERIFIED_JSON"
+  else
+    CLUSTER_NOTE="verify-findings.sh: clustering: $CL_RAW confirmed -> $CL_N distinct root cause(s) ($CL_MERGED merged); pre-cluster list at $RAW_JSON"
+  fi
+fi
+
 echo >&2
 SUBFLOOR_SUFFIX=""
 if [ -n "$PAY_FLOOR" ] && [ "$SUBFLOOR" -gt 0 ]; then
@@ -983,6 +1051,7 @@ if [ "$OUT_OF_SCOPE" -gt 0 ]; then
 fi
 echo "================ VERIFY [$GATE]: $CANDIDATES candidate(s), $VERIFIED confirmed, $ERRORED errored (malformed/unresolvable), $SKIPPED skipped$SUBFLOOR_SUFFIX$OOS_SUFFIX ================" >&2
 echo "verify-findings.sh: verified findings at $VERIFIED_JSON" >&2
+[ -z "$CLUSTER_NOTE" ] || echo "$CLUSTER_NOTE" >&2
 if [ "$TIER2_EXAMINED" -gt 0 ]; then
   echo "verify-findings.sh: tier 2 — $TIER2_EXAMINED unsettled check(s) examined; verdicts in tier2[] of $VERIFIED_JSON (NOT findings, never in verified[])" >&2
 fi

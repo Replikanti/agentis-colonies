@@ -25,6 +25,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `fixtures/exam-void/` arms `deep-shim-failed`, `deep-skipped-legacy`, `deep-multiroot-partial` (all VALID); the
   exam self-test asserts their rows, `deep-status` and `deep_word`.
 
+- **Root-cause clustering of `verified_findings.json` (#2278).** One bug reached by several class cells passed
+  the refute gate once per cell, so `verified[]` repeated the same root cause. `verify-findings.sh` now runs the
+  new `lib/cluster-findings.py` on the finished aggregate (`--cluster-findings <0|1>`, default ON via
+  `DF_CLUSTER_FINDINGS`; `DF_CLUSTER_THRESHOLD` overrides the pinned 0.30): findings sharing the exact
+  `(file, function)` of their `location` merge by average-linkage Jaccard over the code identifiers their
+  `exploit` cites, into one highest-severity representative carrying `duplicates`, `also_classes` and
+  `also_locations`. The pre-cluster list moves to the sibling `verified_findings.raw.json`; the clustered file
+  gains a `clustering` block (incl. `raw_sha256`) and `totals.verified_precluster`. No duplicate = byte-identical
+  output and no sibling; a clusterer failure restores the raw file with a WARNING. `run-corpus-bench.sh` gains
+  `--findings-view <raw|clustered>` (default `raw`, reported per contest and in `--json`) and a self-test that
+  pins unchanged token-mode HIT/MISS on all 12 in-repo findings files with ground truth;
+  `bench-to-knowledge.sh` reads the raw view. Proven by the new `demo-cluster-findings.sh` (colony-lint).
+
 - **Foundry shim for Hardhat-only targets + a deep-hunt status ledger (#2277).** `run-zone-hunt.sh --deep-hunt` /
   `--vector-hunt` resolve every project root through the new `lib/foundry-shim.sh`: a Foundry root runs natively
   (argv unchanged), a Hardhat-only root runs in a generated Foundry shim working copy under `<out>/.foundry-shim/`
