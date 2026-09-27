@@ -14,6 +14,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-27
+
+**Requires:** agentis >= `1.22.7`
+
 ### Added
 
 - **Batched refute first read, default OFF (#2284 M1).** `verify-findings.sh --refute-batch <0|1>` (env
