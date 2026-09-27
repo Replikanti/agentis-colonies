@@ -2420,6 +2420,23 @@ if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/deep-hunt-ab.sh" ]; then
     fi
 fi
 
+# --- dark-factory batched refute first-read replay + A/B driver (#2284 M2) ---
+# refute-batch-ab.sh --self-test rebuilds the two frozen notional candidate archives (runs/1886-notional-refute-fn,
+# runs/1887-notional-constraints), replays each candidate's RECORDED verdict through an --agentis stub in single
+# and batch mode, and runs verify-findings.sh with DF_REFUTE_BATCH=0 / =1 / =1 --jobs 3 (no network / LLM / forge):
+# asserts byte-identical verified_findings.json + refute-constraints.tsv, identical per-row token-mode HIT/MISS,
+# first-read sessions pinned 29 -> 18 on both archives, the mixed unstakeAndExitPool group fanning out to its
+# recorded verdicts, and the --live driver's report + its dev-only refusals. The real --live A/B is operator-run.
+if [ -x "$REPO_ROOT/dark-factory/bench/corpus-bench/refute-batch-ab.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/bench/corpus-bench/refute-batch-ab.sh" --self-test 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: batched refute first-read replay on the notional archives (verdict-neutral, 29 -> 18 first reads) + A/B driver (#2284)"
+    else
+        fail "dark-factory: batched refute first-read replay / A/B driver regressed (#2284)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory CALLEE-TRUST / vector-hunt rare-recall A/B (#2157, milestone D3, epic #2130) ---
 # callee-trust-ab.sh --self-test drives run-zone-hunt.sh over fixtures/callee-trust-ab/ TWICE through one
 # --agentis stub (no network / LLM / forge): a CONTROL arm (CALLEE_TRUST=0, no --vector-hunt = the pre-D1/D2
