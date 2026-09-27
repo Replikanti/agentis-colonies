@@ -70,7 +70,9 @@
 #                                      M3 arm verdict: writes <arm-dir>/void.txt = `VALID` or
 #                                      `VOID<TAB><class><TAB><evidence ref>` (+ one `ALSO` line per further class)
 #                                      and prints line 1; also deep-not-judged.tsv (STAGE 4.5 cells that finished
-#                                      without a judgement). Classes are RANKED — see ARM_WIDE / void_findings
+#                                      without a judgement, plus — #2277 — every zone whose deep hunt never ran:
+#                                      SHIM_FAILED / SKIPPED_NO_FOUNDRY / SKIPPED_NO_ROOT, from the zone hunt's
+#                                      deep-hunt-status.tsv or, on a pre-#2277 run, its skip lines). Classes are RANKED — see ARM_WIDE / void_findings
 #                                      below for the one precedence (usage limit > the run > operator /
 #                                      attribution > never-finished > signatures). The classes:
 #                                      hard-stop (rc / rehunt_rc / deep_rc 124), killed (a call or run itself
@@ -88,6 +90,13 @@
 #                                      Also writes <arm-dir>/void.zones: EVERY zone-scoped defect
 #                                      (`zone<TAB>class<TAB>ref`), so a whole-contest arm's triage can mark
 #                                      exactly those zones unmeasured.
+#   deep-status <arm-dir> <deep_rc>    #2277: the arm's one-word STAGE 4.5 measurement status: `-` (deep_rc is
+#                                      not an integer: no deep call), `ran`, `unmeasured:<agg>` (some zone's deep
+#                                      hunt never ran: agg = `partial` when other roots ran, else the most severe
+#                                      of shim-failed > skipped-no-foundry > skipped-no-root — from the zone
+#                                      hunt's deep-hunt-status.tsv, or a pre-#2277 run's skip lines) or `unknown`
+#                                      (the call ran, but neither a ledger, a skip line nor a deep-hunt cell
+#                                      tells). Never a VOID: breadth scores stand.
 #
 # Exit: 0 ok ; 1 contam-scan found a violation ; 2 usage / profile grammar error ; 3 unreadable or
 #       wrong-shape input.
@@ -924,8 +933,11 @@ class ArmLogs(object):
 # at all = HARNESS_ERROR (the engine's own mapping); run-zone-hunt.sh's "failed ...; continuing" line = ENGINE_FAILED.
 _DEEP_FAIL_RE = re.compile(r"\[deep-hunt\] run-invariant-hunt\.sh failed.* for zone '([^']*)'")
 DEEP_INCOMPLETE = ("ENGINE_FAILED", "TRANSIENT_ERROR")
+# #2277: a zone whose deep hunt never RAN (its project root had no runnable Foundry root: the Foundry shim failed, no
+# toolchain config / the shim disabled, or the zone lies outside every root of a multi-root map) is recorded the same
+# way — "deep unmeasured", never a VOID: breadth scores stand, and triage has no INVARIANT| verdict to credit.
 DEEP_NOT_JUDGED = ("HARNESS_ERROR", "TIMEOUT", "SKIPPED_BUDGET", "SKIPPED_TARGET_BROKEN", "LOW_COVERAGE",
-                   "LOW_PROMISE_COVERAGE")
+                   "LOW_PROMISE_COVERAGE", "SHIM_FAILED", "SKIPPED_NO_FOUNDRY", "SKIPPED_NO_ROOT")
 _AGG_CANDIDATE_RE = re.compile(r"_c[0-9]+\.log$")
 _TRANSPORT_TERMINAL_RE = re.compile(r"^(?!.*\[LLM retry).*LLM transport error:")
 
@@ -985,9 +997,125 @@ def deep_failures(arm, out):
     return res
 
 
+# #2277: the zone hunt's <out>/deep-hunt-status.tsv statuses, and the aggregate precedence run-zone-hunt.sh's
+# `deep_hunt_status=` line uses (most severe first).
+_LEDGER_STATUS = {"shim-failed": "SHIM_FAILED", "skipped-no-foundry": "SKIPPED_NO_FOUNDRY",
+                  "skipped-no-root": "SKIPPED_NO_ROOT"}
+_STATUS_SEVERITY = ("shim-failed", "skipped-no-foundry", "skipped-no-root")
+# The verbatim pre-#2277 skip lines (a run without the ledger): the whole stage skipped on a non-Foundry target, one
+# multi-root row skipped on a non-Foundry (Hardhat-only) root, one row outside every root.
+_LEGACY_NO_FOUNDRY_RE = re.compile(r"\[deep-hunt\] --deep-hunt set but .* has no foundry\.toml")
+_LEGACY_ROOT_RE = re.compile(r"\[deep-hunt\] zone '([^']*)' root '([^']*)' is not a Foundry project")
+_LEGACY_NO_ROOT_RE = re.compile(r"\[deep-hunt\] zone '([^']*)' lies outside every project root")
+
+
+def _zone_root_map(out):
+    """[(zone id, root or '')] of <out>/map/zones.json, in map order."""
+    zj = os.path.join(out, "map", "zones.json")
+    if not os.path.isfile(zj):
+        return []
+    return [(str(z.get("id")), str(z.get("root") or "")) for z in load_zones(zj) if z.get("id")]
+
+
+def _ledger_rows(out):
+    """[(line no, stage, root, zone, status, detail)] of <out>/deep-hunt-status.tsv, or None when it is absent."""
+    p = os.path.join(out, "deep-hunt-status.tsv") if out else ""
+    if not p or not os.path.isfile(p):
+        return None
+    rows = []
+    with open(p, encoding="utf-8", errors="replace") as fh:
+        for n, line in enumerate(fh, 1):
+            f = line.rstrip("\n").split("\t")
+            if len(f) >= 4 and f[0] and not f[0].startswith("#"):
+                rows.append((n, f[0], f[1], f[2], f[3], f[4] if len(f) > 4 else ""))
+    return rows
+
+
+def _legacy_skips(arm):
+    """[(zone or '*', root, ledger-style status, ref)] from a pre-#2277 run's deep.log / run.log / rehunt.log."""
+    res = []
+    for log in ("deep.log", "run.log", "rehunt.log"):
+        p = os.path.join(arm, log)
+        if not os.path.isfile(p):
+            continue
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            for n, line in enumerate(fh, 1):
+                ref = "%s:%d" % (log, n)
+                m = _LEGACY_ROOT_RE.search(line)
+                if m:
+                    res.append((m.group(1), m.group(2), "skipped-no-foundry", ref))
+                    continue
+                m = _LEGACY_NO_ROOT_RE.search(line)
+                if m:
+                    res.append((m.group(1), "-", "skipped-no-root", ref))
+                    continue
+                if _LEGACY_NO_FOUNDRY_RE.search(line):
+                    res.append(("*", ".", "skipped-no-foundry", ref))
+    return res
+
+
+def deep_status_rows(arm, out):
+    """[(zone, "root:<root>", STATUS, ref)] (#2277) — every zone whose STAGE 4.5 deep hunt never ran. From the zone
+    hunt's deep-hunt-status.tsv (stage `deep-hunt`, status other than `ran`): a zone row names its zone; a root row
+    expands to every zone of map/zones.json whose `root` matches (`.` = the zones without a `root` key, i.e. a
+    single-root map). A pre-#2277 run without the ledger falls back to its verbatim skip lines."""
+    if not out:
+        return []
+    zones = _zone_root_map(out)
+
+    def expand(zone, root):
+        if zone != "*":
+            return [zone]
+        if root == ".":
+            return [z for z, r in zones if r in ("", ".")]
+        return [z for z, r in zones if r == root]
+
+    rows = []
+    ledger = _ledger_rows(out)
+    if ledger is not None:
+        rel = os.path.relpath(os.path.join(out, "deep-hunt-status.tsv"), arm)
+        for n, stage, root, zone, status, _detail in ledger:
+            if stage != "deep-hunt" or status == "ran":
+                continue
+            st = _LEDGER_STATUS.get(status, status.upper().replace("-", "_"))
+            rows.extend((z, "root:%s" % root, st, "%s:%d" % (rel, n)) for z in expand(zone, root))
+        return rows
+    for zone, root, status, ref in _legacy_skips(arm):
+        rows.extend((z, "root:%s" % root, _LEDGER_STATUS[status], ref) for z in expand(zone, root))
+    return rows
+
+
+def deep_status(arm, out, deep_rc):
+    """The one-word STAGE 4.5 measurement status of an arm (#2277): `-` (no deep call), `ran`,
+    `unmeasured:<agg>` (agg = `partial` when some roots ran, else the most severe status) or `unknown` (the call
+    ran, but there is neither a ledger nor a pre-#2277 skip line nor a deep-hunt cell to tell)."""
+    if not re.match(r"^[0-9]+$", str(deep_rc)):
+        return "-"
+    ledger = _ledger_rows(out)
+    if ledger is not None:
+        sts = [r[4] for r in ledger if r[1] == "deep-hunt"]
+        ran = any(s == "ran" for s in sts)
+        bad = [s for s in sts if s != "ran"]
+    else:
+        legacy = _legacy_skips(arm)
+        if not legacy:
+            return "ran" if deep_cells(arm, out) else "unknown"
+        bad = [r[2] for r in legacy]
+        ran = bool(deep_cells(arm, out))
+    if not bad:
+        return "ran"
+    if ran:
+        return "unmeasured:partial"
+    for s in _STATUS_SEVERITY:
+        if s in bad:
+            return "unmeasured:" + s
+    return "unmeasured:" + bad[0]
+
+
 def deep_not_judged(arm, out):
-    """[(zone, cell, status, ref)] of STAGE 4.5 cells that finished without a judgement."""
-    return [r for r in deep_cells(arm, out) if r[2] in DEEP_NOT_JUDGED]
+    """[(zone, cell, status, ref)] of STAGE 4.5 cells that finished without a judgement, then (#2277) every zone
+    whose deep hunt never ran."""
+    return [r for r in deep_cells(arm, out) if r[2] in DEEP_NOT_JUDGED] + deep_status_rows(arm, out)
 
 
 def match_pattern(logs, rx):
@@ -1219,6 +1347,17 @@ def cmd_void_check(argv):
     return 0
 
 
+def cmd_deep_status(argv):
+    if len(argv) != 2:
+        die(2, "usage: deep-status <arm-dir> <deep_rc>")
+    arm, deep_rc = argv
+    if not os.path.isdir(arm):
+        die(3, "not an arm dir: " + arm)
+    out = _zone_hunt_out(arm, read_meta(os.path.join(arm, "run.meta")) or {})
+    sys.stdout.write(deep_status(arm, out, deep_rc) + "\n")
+    return 0
+
+
 COMMANDS = {
     "profile": cmd_profile,
     "profile-summary": cmd_profile_summary,
@@ -1234,6 +1373,7 @@ COMMANDS = {
     "attrib": cmd_attrib,
     "rehunt-check": cmd_rehunt_check,
     "void-check": cmd_void_check,
+    "deep-status": cmd_deep_status,
 }
 
 

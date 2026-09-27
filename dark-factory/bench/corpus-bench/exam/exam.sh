@@ -51,9 +51,14 @@
 #            everything left under the arm dir. An EXIT trap ALWAYS writes run.meta (incl. the effective breadth
 #            + deep knob env and the re-hunt), attrib.tsv (see attrib), void.txt (see void-check), one
 #            MANIFEST.tsv row (with the verdict) and the arm's .done marker, even after a crash.
+#            #2277: run.meta also records deep_status= (exam-helper.py deep-status: `-`, `ran`,
+#            `unmeasured:<agg>` or `unknown`) — a deep hunt that never ran on some root (a failed Foundry shim, no
+#            toolchain config, a zone outside every root) is UNMEASURED, never a VOID; the .done line, the run's
+#            END note and the drive's END line render it as deep=<rc>:<agg> (e.g. deep=0:shim-failed).
 #   drive    --root <root> --plan <plan.tsv> [--resume | --retry-void] [--agentis <bin>]
 #            stage + run per row, sequentially (one live arm at a time), under a PID lock; START/END lines in
-#            logs/<plan>.progress (END carries rc=, deep= and void=), logs/<plan>.done at the end. Re-execs from a
+#            logs/<plan>.progress (END carries rc=, deep= and void=; deep=<rc>:<agg> when the arm's deep hunt was
+#            unmeasured, #2277), logs/<plan>.done at the end. Re-execs from a
 #            snapshot of exam/ under logs/ (bash reads a script incrementally, so a pull mid-plan would otherwise
 #            corrupt the run). Pins each checkout's HEAD at first use and refuses a row whose checkout has moved,
 #            or whose run is still alive. A `weekly-limit` VOID HALTS the plan (logs/<plan>.halted names the row +
@@ -675,7 +680,7 @@ MANIFEST_HEADER="$MANIFEST_HEADER_M2"$'\trehunt_rc\tverdict'
 
 # run state, read by the EXIT trap
 R_ARMDIR=""; R_START=""; R_RC=""; R_DEEP_START="-"; R_DEEP_END="-"; R_DEEP_RC="skip"; R_COMMIT=""; R_DIRTY=""
-R_CODE=""; R_ROOTS=""; R_CHILD=""; R_BREADTH_END="-"
+R_CODE=""; R_ROOTS=""; R_CHILD=""; R_BREADTH_END="-"; R_DEEP_STATUS="-"
 R_REHUNT_START="-"; R_REHUNT_END="-"; R_REHUNT_RC="none"; R_REHUNT_REASON="-"
 
 # A signal to `run` (a drive's TERM, `exam.sh kill`, Ctrl-C): stop whatever runs under the arm, never start or
@@ -700,12 +705,15 @@ run_finish() {
   [ -n "$R_RC" ] || R_RC="$rc"
   end="$(utc)"
   meta="$R_ARMDIR/run.meta"
+  # #2277: did STAGE 4.5 measure every root? (read from the zone hunt's deep-hunt-status.tsv; never a VOID)
+  R_DEEP_STATUS="$(python3 "$HELPER" deep-status "$R_ARMDIR" "$R_DEEP_RC" 2>/dev/null || echo unknown)"
   {
     echo "contest=$A_CONTEST"; echo "zone=$A_ZONE"; echo "arm=$A_ARM"; echo "repeat=$A_REPEAT"
     echo "start=$R_START"; echo "end=$end"; echo "rc=$R_RC"; echo "breadth_end=$R_BREADTH_END"
     echo "rehunt_start=$R_REHUNT_START"; echo "rehunt_end=$R_REHUNT_END"; echo "rehunt_rc=$R_REHUNT_RC"
     echo "rehunt_reason=$R_REHUNT_REASON"
     echo "deep_start=$R_DEEP_START"; echo "deep_end=$R_DEEP_END"; echo "deep_rc=$R_DEEP_RC"
+    echo "deep_status=$R_DEEP_STATUS"
     echo "base=$A_BASE"; echo "code=$R_CODE"; echo "project_roots=$R_ROOTS"
     echo "checkout=$A_CHECKOUT"; echo "checkout_commit=$R_COMMIT"; echo "checkout_dirty=$R_DIRTY"
     echo "backend=$P_BACKEND"; echo "model=${P_MODEL:--}"; echo "jobs=$P_JOBS"; echo "deep_jobs=$P_DEEP_JOBS"
@@ -736,9 +744,9 @@ run_finish() {
   else
     printf '%s\t%s\t%s\n' "$row" "$R_REHUNT_RC" "$(verdict_word "$verdict")" >> "$mf"
   fi
-  printf 'rc=%s\tdeep=%s\tend=%s\tvoid=%s\n' "$R_RC" "$R_DEEP_RC" "$end" "$(verdict_word "$verdict")" > "$R_ARMDIR/.done"
+  printf 'rc=%s\tdeep=%s\tend=%s\tvoid=%s\n' "$R_RC" "$(deep_word "$R_DEEP_RC" "$R_DEEP_STATUS")" "$end" "$(verdict_word "$verdict")" > "$R_ARMDIR/.done"
   if [ "$(head -1 "$R_ARMDIR/run.pid" 2>/dev/null)" = "$$" ]; then rm -f "$R_ARMDIR/run.pid"; fi
-  note "run: [$A_CONTEST $A_ZONE $A_ARM r$A_REPEAT] END rc=$R_RC rehunt=$R_REHUNT_RC deep=$R_DEEP_RC $(verdict_word "$verdict") -> $R_ARMDIR"
+  note "run: [$A_CONTEST $A_ZONE $A_ARM r$A_REPEAT] END rc=$R_RC rehunt=$R_REHUNT_RC deep=$(deep_word "$R_DEEP_RC" "$R_DEEP_STATUS") $(verdict_word "$verdict") -> $R_ARMDIR"
 }
 
 cmd_run() {
@@ -895,6 +903,8 @@ arm_void() {
 
 # verdict_word <void line> -> `VALID` / `VOID:<class>`; void_class <void line> -> `<class>` (empty when VALID).
 verdict_word() { case "$1" in VALID*) echo VALID ;; *) printf 'VOID:%s\n' "$(printf '%s' "$1" | cut -f2)" ;; esac; }
+# deep_word <deep_rc> <deep_status> (#2277): the rc, or `<rc>:<agg>` when the deep hunt was unmeasured on some root.
+deep_word() { case "${2:-}" in unmeasured:*) printf '%s:%s\n' "$1" "${2#unmeasured:}" ;; *) printf '%s\n' "$1" ;; esac; }
 void_class()   { case "$1" in VALID*) echo "" ;; *) printf '%s\n' "$1" | cut -f2 ;; esac; }
 
 cmd_attrib() {
@@ -1101,7 +1111,7 @@ cmd_drive() {
   fi
   trap 'drive_on_signal 143' TERM
   trap 'drive_on_signal 130' INT
-  local i armdir head pinned src rrc rc drc v vc vk ran=0 skipped=0 refused=0 voided=0 halt=""
+  local i armdir head pinned src rrc rc drc dst v vc vk ran=0 skipped=0 refused=0 voided=0 halt=""
   for i in "${!R_C[@]}"; do
     c="${R_C[$i]}"; z="${R_Z[$i]}"; a="${R_A[$i]}"; n="${R_N[$i]}"; p="${R_P[$i]}"; k="${R_K[$i]}"; b="${R_B[$i]}"
     armdir="$(arm_dir "$root" "$c" "$z" "$a" "$n")"
@@ -1148,9 +1158,10 @@ cmd_drive() {
     D_CHILD=$!
     wait "$D_CHILD"; rrc=$?; D_CHILD=""
     rc="$(meta_get "$armdir/run.meta" rc)"; drc="$(meta_get "$armdir/run.meta" deep_rc)"
+    dst="$(meta_get "$armdir/run.meta" deep_status)"   # #2277; `-` for an arm written before the field existed
     # run's EXIT trap wrote void.txt; a run killed too hard for its trap gets one here.
     v="$(arm_void "$armdir")"; vc="$(void_class "$v")"
-    printf '%s\tEND\t%s\t%s\t%s\tr%s\trc=%s\tdeep=%s\tvoid=%s\n' "$(utc)" "$c" "$z" "$a" "$n" "${rc:-$rrc}" "${drc:-skip}" "${vc:-VALID}" >> "$prog"
+    printf '%s\tEND\t%s\t%s\t%s\tr%s\trc=%s\tdeep=%s\tvoid=%s\n' "$(utc)" "$c" "$z" "$a" "$n" "${rc:-$rrc}" "$(deep_word "${drc:-skip}" "${dst:--}")" "${vc:-VALID}" >> "$prog"
     ran=$((ran + 1))
     [ -z "$vc" ] || voided=$((voided + 1))
     if [ "$vc" = weekly-limit ]; then
@@ -1360,8 +1371,9 @@ cmd_self_test() {
   [ "$rc" -eq 0 ] || tail -15 "$a1/run.log" "$a1/deep.log" 2>/dev/null | sed 's/^/         | /'
   if [ "$(meta_get "$a1/run.meta" rc)" = 0 ] && [ "$(meta_get "$a1/run.meta" deep_rc)" = 0 ] && [ -f "$a1/.done" ] \
      && [ -n "$(meta_get "$a1/run.meta" start)" ] && [ -n "$(meta_get "$a1/run.meta" deep_end)" ] \
-     && [ "$(meta_get "$a1/run.meta" checkout_commit)" = "$(git -C "$co" rev-parse HEAD)" ]; then
-    ok "run: run.meta (start/end/rc, deep_start/deep_end/deep_rc=0, checkout commit) + .done written"
+     && [ "$(meta_get "$a1/run.meta" checkout_commit)" = "$(git -C "$co" rev-parse HEAD)" ] \
+     && [ "$(meta_get "$a1/run.meta" deep_status)" = ran ] && grep -q $'\tdeep=0\t' "$a1/.done"; then
+    ok "run: run.meta (start/end/rc, deep_start/deep_end/deep_rc=0, deep_status=ran from the zone hunt's deep-hunt-status.tsv, checkout commit) + .done written"
   else
     bad "run: run.meta / .done incomplete"; sed 's/^/         | /' "$a1/run.meta" 2>/dev/null
   fi
@@ -1539,6 +1551,28 @@ cmd_self_test() {
     ok "STAGE 4.5 cells that finished without a judgement (HARNESS_ERROR, TIMEOUT, SKIPPED_BUDGET) are recorded per row in deep-not-judged.tsv (not a void)"
   else
     bad "deep-not-judged.tsv rows wrong"
+  fi
+  # #2277: a deep hunt that never ran on a root (a failed Foundry shim, no toolchain config, a zone outside every
+  # root) is UNMEASURED: the arm stays VALID, every affected zone is listed in deep-not-judged.tsv (from the zone
+  # hunt's deep-hunt-status.tsv, or a pre-#2277 run's verbatim skip line), and deep-status names the aggregate.
+  if [ "$(cat "$vw/deep-shim-failed/deep-not-judged.tsv")" = "$(printf 'src_pool\troot:.\tSHIM_FAILED\tfx/zone-hunt-out/deep-hunt-status.tsv:2')" ] \
+     && [ "$(cat "$vw/deep-skipped-legacy/deep-not-judged.tsv")" = "$(printf 'src_pool\troot:.\tSKIPPED_NO_FOUNDRY\tdeep.log:2')" ] \
+     && [ "$(cut -f1-3 "$vw/deep-multiroot-partial/deep-not-judged.tsv" | tr '\t\n' ':;')" = "legacy_contracts:root:legacy:SHIM_FAILED;docs:root:-:SKIPPED_NO_ROOT;" ] \
+     && [ "$(python3 "$HELPER" deep-status "$vw/deep-shim-failed" 0)" = unmeasured:shim-failed ] \
+     && [ "$(python3 "$HELPER" deep-status "$vw/deep-skipped-legacy" 0)" = unmeasured:skipped-no-foundry ] \
+     && [ "$(python3 "$HELPER" deep-status "$vw/deep-multiroot-partial" 0)" = unmeasured:partial ] \
+     && [ "$(python3 "$HELPER" deep-status "$vw/deep-not-judged" 0)" = ran ] \
+     && [ "$(python3 "$HELPER" deep-status "$vw/valid" 0)" = unknown ] \
+     && [ "$(python3 "$HELPER" deep-status "$vw/deep-shim-failed" skip-weekly-limit)" = - ]; then
+    ok "#2277: an unmeasured deep hunt (shim-failed ledger root row, pre-#2277 skip line, a multi-root partial run listing only the failed root's + the rootless zone) is VALID, listed in deep-not-judged.tsv, and deep-status names it (ran / unknown / - otherwise)"
+  else
+    bad "#2277 deep-status / deep-not-judged rows wrong:"; sed 's/^/         | /' "$vw"/deep-shim-failed/deep-not-judged.tsv "$vw"/deep-skipped-legacy/deep-not-judged.tsv "$vw"/deep-multiroot-partial/deep-not-judged.tsv 2>/dev/null
+  fi
+  if [ "$(deep_word 0 ran)" = 0 ] && [ "$(deep_word 0 unmeasured:shim-failed)" = 0:shim-failed ] \
+     && [ "$(deep_word 0 unknown)" = 0 ] && [ "$(deep_word skip-weekly-limit -)" = skip-weekly-limit ]; then
+    ok "#2277: deep_word renders deep=<rc> unchanged unless the deep hunt was unmeasured (deep=0:shim-failed)"
+  else
+    bad "#2277: deep_word rendering wrong: '$(deep_word 0 unmeasured:shim-failed)'"
   fi
 
   echo "exam.sh self-test: M3 run-window attribution (attrib)"

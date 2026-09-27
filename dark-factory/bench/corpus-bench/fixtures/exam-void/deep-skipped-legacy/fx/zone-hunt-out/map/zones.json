@@ -1,0 +1,3 @@
+[
+  {"id": "src_pool", "name": "share pool", "files": ["src/pool/Pool.sol"]}
+]
