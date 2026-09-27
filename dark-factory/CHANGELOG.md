@@ -14,6 +14,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-27
+
+**Requires:** agentis >= `1.22.7`
+
 ### Added
 
 - **The corpus-bench exam classifies an unmeasured deep hunt (#2277).** `exam-helper.py` reads the zone hunt's
@@ -5631,7 +5635,9 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   with a `pending_human_review` marker. The colony NEVER auto-posts to a
   bounty platform — submission is always an explicit human action.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.10.1...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.12.0...HEAD
+[0.12.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.11.0...dark-factory-v0.12.0
+[0.11.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.10.1...dark-factory-v0.11.0
 [0.10.1]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.10.0...dark-factory-v0.10.1
 [0.10.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.9.0...dark-factory-v0.10.0
 [0.9.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.8.0...dark-factory-v0.9.0
