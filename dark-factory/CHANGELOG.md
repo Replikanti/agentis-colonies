@@ -36,6 +36,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `unstakeAndExitPool` group's per-candidate fan-out; `--live` drives the dev-only control/treatment A/B
   (`DF_REFUTE_BATCH=0` then `=1`, labels fixed up front, held-out and fresh-set ids refused) into `ab-report.md`.
 
+## [0.12.1] - 2026-09-27
+
+**Requires:** agentis >= `1.22.7`
+
+### Fixed
+
+- **exam.sh self-test diagnosability (#2286).** The run-step guard in exam.sh's self-test
+  (rc / deep_rc / .done / start / deep_end / checkout_commit / deep_status / .done deep-field)
+  now names every sub-condition that fails and reports actual vs. expected values, then tails
+  run.log/deep.log for context. Resolves #2282 (AC3).
+
 ## [0.12.0] - 2026-09-27
 
 **Requires:** agentis >= `1.22.7`
