@@ -194,7 +194,8 @@ else
       ok "exam.sh self-test PASSED ($(printf '%s\n' "$ex_out" | grep -c '\[OK\]') assertions: freeze, plan, stage, run, drive, triage hand-off, kill, VOID, attribution, re-hunt, halt)"
     else
       bad "exam.sh self-test FAILED (exit $ex_rc)"
-      printf '%s\n' "$ex_out" | grep -E -A6 '\[FAIL\]' | sed 's/^/         | /' | head -40
+      printf '%s\n' "$ex_out" | awk '/^\[FAIL\]/ { print; f=1; next } f && /^[[:space:]]+[|~]/ { print; next } { f=0 }' \
+        | sed 's/^/         | /' | head -60
     fi
   fi
 fi
