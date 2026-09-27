@@ -8,7 +8,10 @@ backend-no-reply	VOID	backend-no-reply	fx/zone-hunt-out/discovery/src_pool/run/h
 deep-budget-ok	VALID
 deep-engine-failed	VOID	deep-incomplete	fx/zone-hunt-out/deep-hunt/cell-status.tsv:1=ENGINE_FAILED (zone src_pool)
 deep-incomplete	VOID	deep-incomplete	deep.log:2 (zone src_pool)
+deep-multiroot-partial	VALID
 deep-not-judged	VALID
+deep-shim-failed	VALID
+deep-skipped-legacy	VALID
 deep-transient	VOID	deep-incomplete	fx/zone-hunt-out/deep-hunt/cell-status.tsv:1=TRANSIENT_ERROR (zone src_pool)
 deep-transient-legacy	VOID	deep-incomplete	fx/zone-hunt-out/deep-hunt/src_pool-C1/run/invariant_src_pool_Pool_sol.log=TRANSIENT_ERROR (zone src_pool)
 empty-log	VOID	zone-incomplete	fx/zone-hunt-out/discovery/src_pool/run/hunt_share_pool_C6.log (empty, no marker)

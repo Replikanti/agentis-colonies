@@ -653,6 +653,20 @@ A STAGE 4.5 cell that finished WITHOUT a judgement (`HARNESS_ERROR`, `TIMEOUT`, 
 listed per row in `<arm>/deep-not-judged.tsv`, and `triage.py` never credits it: its `INVARIANT|` line is shown as
 `invariant(not-judged)` evidence and never counts as an examination (only FINDING / CLEAN do).
 
+**Deep unmeasured (#2277).** A zone whose deep hunt never RAN is handled the same way, as three more not-judged
+statuses: `SHIM_FAILED` (the Hardhat-only root's Foundry shim failed: missing deps, a failed install, no forge, a
+failed probe build), `SKIPPED_NO_FOUNDRY` (no toolchain config, or `DF_FOUNDRY_SHIM=0`) and `SKIPPED_NO_ROOT` (a
+zone of a multi-root map outside every project root). They come from the zone hunt's `deep-hunt-status.tsv`
+(stage `deep-hunt`, one row per root or zone; a root row expands to every zone of `map/zones.json` whose `root`
+matches, `.` = the zones without a `root` key), and for a pre-#2277 run without that ledger from its verbatim skip
+lines in `deep.log` / `run.log` / `rehunt.log`. The row's cell column is `root:<root>`. It is not a VOID: breadth
+scores stand. `run.meta` records the arm's aggregate as `deep_status` (`exam-helper.py deep-status`): `-` when there
+was no deep call, `ran`, `unmeasured:<agg>` (`partial` when other roots ran, else the most severe status, in the
+order `shim-failed`, `skipped-no-foundry`, `skipped-no-root`), or `unknown` (the call ran but nothing on disk tells). The `.done` line,
+the run's END note and the drive's END progress line render an unmeasured deep hunt as `deep=<rc>:<agg>` (e.g.
+`deep=0:shim-failed`); every other arm keeps `deep=<rc>`, and an arm written before the field existed reads
+`deep_status` as `-`. The MANIFEST schema is unchanged.
+
 Every zone-scoped defect is also listed in `<arm>/void.zones`; `triage` forces those zones `unmeasured`, and for a
 whole-contest arm it triages the rest of the tree — unless an arm-wide class is on record, which leaves every row
 `unmeasured`. When every arm is VOID the table is still written, all rows

@@ -1,0 +1,5 @@
+[
+  {"id": "src_pool", "name": "core/share pool", "files": ["core/src/pool/Pool.sol"], "root": "core"},
+  {"id": "legacy_contracts", "name": "legacy/contracts", "files": ["legacy/contracts/Legacy.sol"], "root": "legacy"},
+  {"id": "docs", "name": "docs", "files": ["docs/Example.sol"]}
+]

@@ -1,0 +1,2 @@
+[deep 2026-01-01T10:40:00Z] env -u <cleared> timeout 14400 run-zone-hunt.sh --deep-hunt --deep-hunt-only --jobs 1
+run-zone-hunt.sh: [deep-hunt] --deep-hunt set but /arms/fx/code has no foundry.toml (EVM invariant-fuzzing is Foundry-specific) — skipping deep-hunt

@@ -1,0 +1,2 @@
+#stage	root	zone	status	detail
+deep-hunt	.	*	shim-failed	forge-build rc=1: Error (7576): Undeclared identifier.

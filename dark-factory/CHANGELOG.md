@@ -16,6 +16,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **The corpus-bench exam classifies an unmeasured deep hunt (#2277).** `exam-helper.py` reads the zone hunt's
+  `deep-hunt-status.tsv` (or, for a pre-#2277 run, its verbatim skip lines): every zone whose STAGE 4.5 deep hunt
+  never ran is listed in `<arm>/deep-not-judged.tsv` as `SHIM_FAILED` / `SKIPPED_NO_FOUNDRY` / `SKIPPED_NO_ROOT` —
+  not a VOID, breadth scores stand. A new `deep-status <arm-dir> <deep_rc>` subcommand gives the arm's aggregate
+  (`-` / `ran` / `unmeasured:<agg>` / `unknown`), recorded by `exam.sh` as `deep_status=` in `run.meta` and rendered
+  as `deep=<rc>:<agg>` in the `.done` line, the run's END note and the drive's END progress line. New
+  `fixtures/exam-void/` arms `deep-shim-failed`, `deep-skipped-legacy`, `deep-multiroot-partial` (all VALID); the
+  exam self-test asserts their rows, `deep-status` and `deep_word`.
+
 - **Foundry shim for Hardhat-only targets + a deep-hunt status ledger (#2277).** `run-zone-hunt.sh --deep-hunt` /
   `--vector-hunt` resolve every project root through the new `lib/foundry-shim.sh`: a Foundry root runs natively
   (argv unchanged), a Hardhat-only root runs in a generated Foundry shim working copy under `<out>/.foundry-shim/`

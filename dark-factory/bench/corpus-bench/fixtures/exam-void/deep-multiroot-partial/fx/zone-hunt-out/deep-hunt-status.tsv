@@ -1,0 +1,5 @@
+#stage	root	zone	status	detail
+deep-hunt	core	*	ran	foundry
+deep-hunt	legacy	*	shim-failed	deps-missing:@openzeppelin/contracts
+deep-hunt	-	docs	skipped-no-root	outside-every-root
+vector-hunt	legacy	*	shim-failed	deps-missing:@openzeppelin/contracts
