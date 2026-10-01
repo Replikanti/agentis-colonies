@@ -1,0 +1,4 @@
+A1|chain|../README.md:11-12|Q: On what chains are the smart contracts going to be deployed? — A: Only the settlement layer; no rollups or side chains.
+A2|token|../README.md:14-16|Q: Which tokens are expected to interact with the smart contracts? — A: Standard ERC20 only. No fee-on-transfer or rebasing assets are supported.
+A3|trust|../README.md:22-23|Q: Are there any limitations on values set by admins? — A: The admin is a trusted multisig and keeps the fee within the bounds its setter enforces.
+A4|exclusion|../README.md:35|Findings that need the deployment scripts or the test harness.

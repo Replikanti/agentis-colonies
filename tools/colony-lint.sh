@@ -1594,14 +1594,17 @@ fi
 # (goldens over four doc shapes + an operator file, determinism, citation ranges, caps, exclusions), the decider
 # (one fixture per contract id, wrap-split quotes), the agent + driver wiring and every untouched byte-pair, both
 # drivers end-to-end through an offline --agentis stub (acceptance, negative control, knob-OFF byte identity,
-# --jobs 2 parity), five mutants that must each flip a fixture and — with agentis — the live sentinel + a 0-byte
+# --jobs 2 parity), nine mutants that must each flip a fixture and — with agentis — the live sentinel + a 0-byte
 # probe under every knob-OFF combination. No forge, no network, no LLM.
+# #2292: no row ever names a source file — the operator parser skips such a bullet before classifying it and has
+# no `exclusion` fallback, the decider refuses an exclusion row naming a file of the zone map (--scope-map,
+# `scope-cite-in-scope-file`), and `auto` reads a parent-directory scope doc bound to the repo (contest layout).
 if [ -x "$REPO_ROOT/dark-factory/demo-scope-assumptions.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-scope-assumptions.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
-        pass "dark-factory: scope-aware refute (declared-scope block + out-of-scope-premise citation contract + out_of_scope[] routing, trust context-only, default OFF) (#2257)"
+        pass "dark-factory: scope-aware refute (declared-scope block + out-of-scope-premise citation contract + out_of_scope[] routing, trust context-only, no row names a source file, default OFF) (#2257, #2292)"
     else
-        fail "dark-factory: scope-aware refute regressed (#2257)"
+        fail "dark-factory: scope-aware refute regressed (#2257, #2292)"
         printf '%s\n' "$check_out"
     fi
 fi

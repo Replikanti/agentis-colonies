@@ -1,0 +1,5 @@
+A1|exclusion|README.md:28|target/src/Vault.sol
+A2|exclusion|README.md:35|Findings that need the deployment scripts or the test harness.
+A3|token|README.md:16|Vault.sol accepts standard ERC20 only; fee-on-transfer assets are not supported.
+A4|exclusion|README.md:29|Router.sol and Wrapper.sol
+A5|exclusion|README.md:36|lib/vendor/Math.sol is a vendored dependency and is not under review.

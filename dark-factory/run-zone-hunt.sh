@@ -326,6 +326,11 @@
 #                       contract checked by the driver) and lands in verified_findings.json's `out_of_scope[]`, never
 #                       in verified[]. Trust rows are context only. STAGE 4 first-pass findings only: STAGE 4.5
 #                       (deep-hunt-gate.sh) is not wired.
+#                       #2292: `auto` also reads, first, the same two docs ONE level above --repo when they list a
+#                       source file under `<basename of --repo>/` (the contest layout). A <file> is an operator-CURATED
+#                       file, never a raw README — its file-list and uncategorised bullets are dropped, so use `auto`
+#                       for a contest README. With the flag, STAGE 4 also gets `--scope-map <out>/map/scope.tsv`,
+#                       which arms the decider against an `exclusion` row naming a mapped file.
 #   FUNCTION_COVERAGE=1 (env)  #2256 BREADTH FUNCTION-COVERAGE GATE — run-discovery.sh's own opt-in (every zone
 #                       inherits the export; the STAGE 3 argv is unchanged). What THIS script adds is the BUDGET half
 #                       (#2256 STOP-1 decision 4): a measured zone is charged ONE extra cell per distinct (subsystem,
@@ -1309,6 +1314,7 @@ ADJ_ARG=""; _ADJ="$(dirname "$OUT")/adjudicated.tsv"; [ -f "$_ADJ" ] && ADJ_ARG=
   --jobs "$JOBS" ${PAY_FLOOR:+--pay-floor "$PAY_FLOOR"} ${ADJ_ARG:+--adjudicated "$ADJ_ARG"} \
   ${TIER2:+--tier2 "$TIER2"} \
   ${SCOPE_DOCS:+--scope-docs "$SCOPE_DOCS"} \
+  ${SCOPE_DOCS:+--scope-map "$MAP/scope.tsv"} \
   ${MODEL:+--model "$MODEL"} --out "$VER"
 VERIFIED_JSON="$VER/verified_findings.json"
 [ -f "$VERIFIED_JSON" ] || { echo "run-zone-hunt.sh: verify-findings.sh did not emit verified_findings.json" >&2; exit 3; }

@@ -1,0 +1,18 @@
+{
+  "repo": "target",
+  "cells": [
+    {"subsystem": "wrapped assets", "class": "C15",
+     "files": "src/tokens/Wrapper.sol",
+     "candidates": [
+       "src/tokens/Wrapper.sol:wrap|C15|Medium|wrap credits the amount requested rather than the amount received, so a short transfer leaves the last unwrapper unpaid|wrap with an asset that delivers less than requested then unwrap the credited amount"
+     ],
+     "coordination": []},
+    {"subsystem": "vault accounting", "class": "C5",
+     "files": "src/Vault.sol",
+     "candidates": [
+       "src/Vault.sol:withdraw|C5|High|withdraw has no ownership check, so any caller can reduce another depositor's balance|call withdraw on behalf of a victim"
+     ],
+     "coordination": []}
+  ],
+  "totals": {"cells": 2, "candidates": 2, "steers": 0}
+}

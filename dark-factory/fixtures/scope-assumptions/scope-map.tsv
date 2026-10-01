@@ -1,0 +1,5 @@
+# synthetic zone map: <subsystem> | <class-csv> | <file[,file...]>
+vault accounting | C15,C5 | src/Vault.sol@deposit+withdraw,src/Router.sol
+
+keeper automation | C23 | src/keeper/Bot.sol
+wrapped assets | C15 | src/tokens/Wrapper.sol

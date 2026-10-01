@@ -57,6 +57,12 @@
 #                        helper that wrote the block. An empty file is treated as unset. Needs python3 (exit 3
 #                        without it); rejected together with --invariant-mode (exit 2, v1 reach = discovery leads).
 #                        Absent => the prompt, the report and every output file are byte-identical.
+#   --scope-map <file>   #2292: the zone map (map/scope.tsv: `<subsystem> | <class-csv> | <file[,file...]>`), handed
+#                        to the SAME decider as `check --scope-map`. It arms one more contract on the
+#                        `out-of-scope-premise` ground: an `exclusion` row that names a file of the mapped scope is
+#                        never a ground (`scope-cite-in-scope-file`) — a file under review cannot be an excluded
+#                        premise. Read by the driver only: it is not staged, not exported and never reaches the
+#                        prompt. Ignored without a staged --scope-assumptions block. Missing file => exit 2.
 #   --batch-first-read   #2284: ONE batched FIRST READ for several candidates of ONE function. The manifest must
 #                        hold at least 2 candidates sharing one <code-file> and one <aux-code-file> (else exit 2);
 #                        rejected together with --invariant-mode, --only and --first-read-log (exit 2). The code is
@@ -136,7 +142,7 @@
 # A contract FAILURE takes the existing insufficient path: one bounded re-ask naming what is missing, then
 # `rubric-insufficient: ` + a rubric-dismissals.tsv row whose fifth column is the scope contract id
 # (`scope-cite-missing`, `scope-cite-unresolved`, `scope-not-citable`, `scope-premise-missing`,
-# `scope-premise-unresolved`).
+# `scope-premise-unresolved`, and with --scope-map `scope-cite-in-scope-file`, #2292).
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -174,6 +180,8 @@ INVARIANT_MODE=0 ; INV_HARNESS=""
 # #2257: the declared-scope block. EMPTY (default) => SCOPE_ASSUMPTIONS_PATH is exported empty, refuter.ag's scope
 # directive is "" and the scope contract below is never armed.
 SCOPE_ASSUMPTIONS="" ; SCOPE_LIB="$HERE/lib/scope-assumptions.py"
+# #2292: the zone map for the decider's in-scope-file contract. EMPTY (default) => `check` runs exactly as before.
+SCOPE_MAP=""
 # #2284: the batched first read. Both OFF (default) => every statement below runs exactly as before.
 BATCH_FIRST_READ=0 ; FIRST_READ_LOG=""
 
@@ -191,6 +199,7 @@ while [ $# -gt 0 ]; do
     --invariant-mode) INVARIANT_MODE=1; shift ;;
     --invariant-harness) need "$#"; INV_HARNESS="$2"; shift 2 ;;
     --scope-assumptions) need "$#"; SCOPE_ASSUMPTIONS="$2"; shift 2 ;;
+    --scope-map) need "$#"; SCOPE_MAP="$2"; shift 2 ;;
     --batch-first-read) BATCH_FIRST_READ=1; shift ;;
     --first-read-log) need "$#"; FIRST_READ_LOG="$2"; shift 2 ;;
     --help|-h) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
@@ -227,6 +236,16 @@ if [ -n "$SCOPE_ASSUMPTIONS" ]; then
     command -v python3 >/dev/null 2>&1 || { echo "run-refute.sh: --scope-assumptions needs python3" >&2; exit 3; }
     [ -f "$SCOPE_LIB" ] || { echo "run-refute.sh: scope helper not found at $SCOPE_LIB" >&2; exit 3; }
     SCOPE_ASSUMPTIONS="$(cd "$(dirname "$SCOPE_ASSUMPTIONS")" && pwd)/$(basename "$SCOPE_ASSUMPTIONS")"
+  fi
+fi
+# #2292: the zone map is read by the driver-side decider only (never staged, never exported). A typo is a usage
+# error; without a staged block there is no decider call, so the map is dropped rather than carried around.
+if [ -n "$SCOPE_MAP" ]; then
+  [ -f "$SCOPE_MAP" ] || { echo "run-refute.sh: --scope-map not found: $SCOPE_MAP" >&2; exit 2; }
+  if [ -z "$SCOPE_ASSUMPTIONS" ]; then
+    SCOPE_MAP=""
+  else
+    SCOPE_MAP="$(cd "$(dirname "$SCOPE_MAP")" && pwd)/$(basename "$SCOPE_MAP")"
   fi
 fi
 
@@ -682,7 +701,9 @@ _scope_ground_state() {
   [ "$(_scraped_ground "$sgs_log")" = "out-of-scope-premise" ] || return 0
   sgs_rec="$(_join_wrapped_ground "$sgs_log" 2>/dev/null || true)"
   sgs_ev="$(printf '%s' "$sgs_rec" | sed 's/^.*\(REFUTE-GROUND|\)/\1/' | cut -d'|' -f3-)"
-  python3 "$SCOPE_LIB" check --block "$SCOPE_IN_RUN" --claim "$sgs_claim" --evidence "$sgs_ev" 2>/dev/null \
+  # shellcheck disable=SC2086  # ${VAR:+...}: no map => no argument at all, the pre-#2292 decider call
+  python3 "$SCOPE_LIB" check --block "$SCOPE_IN_RUN" --claim "$sgs_claim" --evidence "$sgs_ev" \
+    ${SCOPE_MAP:+--scope-map "$SCOPE_MAP"} 2>/dev/null \
     || printf 'fail\tscope-cite-missing\n'
 }
 
@@ -694,6 +715,7 @@ _scope_contract_requirement() {
     scope-cite-missing)       printf '%s\n' 'quote the assumption as A<n>:"<at least a dozen characters copied verbatim from that row>"' ;;
     scope-cite-unresolved)    printf '%s\n' 'the quoted text is not in the assumption row you cited — copy it verbatim from that row' ;;
     scope-not-citable)        printf '%s\n' 'a trust row is context only and never a ground — trace the claim under the rubric above' ;;
+    scope-cite-in-scope-file) printf '%s\n' 'the cited row names a file that is under review — a file in the audited scope is never an excluded premise; trace the claim under the rubric above' ;;
     scope-premise-missing)    printf '%s\n' 'quote the premise as premise:"<at least eight characters copied verbatim from the claimed exploit>"' ;;
     scope-premise-unresolved) printf '%s\n' 'the premise quote is not in the claimed exploit — copy it verbatim from the claim' ;;
     *)                        printf '%s\n' 'name a sufficient ground with the evidence that ground requires' ;;

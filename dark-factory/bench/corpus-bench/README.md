@@ -744,7 +744,7 @@ voided zone reads `unmeasured`, never as a one-sided MISS.
 | line | meaning |
 |---|---|
 | `# ...` | comment |
-| `KEY=VALUE` | runner key: `BACKEND` (`flat-cyborg` or `mock`; `claude` is refused — it runs `claude -p` unsandboxed), `MODEL` (required unless mock), `JOBS`, `DEEP_JOBS` (default JOBS), `HARD_STOP_S` (per call), `DEEP_PASS` (0/1), `INJECT_CLASSES` (`C24,C6`: appended once each to the staged zone's scope.tsv class field), `SCOPE_DOCS` (`auto` or `code:<path under the contest's code/>`, → `--scope-docs`), `REHUNT_TRANSPORT` (0/1, default 1: the one-shot re-hunt), `ATTRIB_FAMILY` (`opus`/`fable`/`sonnet`/`haiku`; default = the family of MODEL). Any other bare key is exit 2. |
+| `KEY=VALUE` | runner key: `BACKEND` (`flat-cyborg` or `mock`; `claude` is refused — it runs `claude -p` unsandboxed), `MODEL` (required unless mock), `JOBS`, `DEEP_JOBS` (default JOBS), `HARD_STOP_S` (per call), `DEEP_PASS` (0/1), `INJECT_CLASSES` (`C24,C6`: appended once each to the staged zone's scope.tsv class field), `SCOPE_DOCS` (`auto` or `code:<path under the contest's code/>`, → `--scope-docs`; `code:` selects the OPERATOR parser, so point it at a curated scope-assumptions file, never at a README — use `auto` for those, #2292), `REHUNT_TRANSPORT` (0/1, default 1: the one-shot re-hunt), `ATTRIB_FAMILY` (`opus`/`fable`/`sonnet`/`haiku`; default = the family of MODEL). Any other bare key is exit 2. |
 | `env.<NAME>=<v>` | exported into the breadth call only |
 | `deep.<NAME>=<v>` | exported into the STAGE 4.5 call only |
 | `pass.<NAME>` | inherit `<NAME>` from the caller's environment (must be set; the value is never in the file) |
@@ -761,7 +761,7 @@ an exported `SEVERITY_RUBRIC=1` nor an `LLM_MAX_DISCOVERY_CELLS` / `FORK_URL` no
 ("pass nothing when off"); a new knob is covered automatically. `DF_NO_SANDBOX` is refused outright (in the
 caller's shell: exit 3; in a profile: exit 2) — a held-out run never disables the hunt sandbox. Shipped: `control` (defaults, no knob), `exam` (the
 final-exam set: `SEVERITY_RUBRIC` + `GROUND_EVIDENCE`, STAGE 4.5 with `DEEP_HUNT_REACH` + `DEEP_HUNT_PROMISES`,
-`JOBS=2`), `exam-plus` (exam + `FUNCTION_COVERAGE`, `BREADTH_PROMISES`, `SCOPE_DOCS=code:README.md`, and the
+`JOBS=2`), `exam-plus` (exam + `FUNCTION_COVERAGE`, `BREADTH_PROMISES`, `SCOPE_DOCS=auto` — `code:README.md` until #2292 —, and the
 deep-hunt budget knobs; sized for a whole-contest arm), `mock` (the self-test). No profile names a contest or a
 path.
 

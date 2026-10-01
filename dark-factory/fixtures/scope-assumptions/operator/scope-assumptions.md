@@ -12,3 +12,7 @@
 
 - Findings on the test harness and the deployment scripts are out of scope.
 - A single bullet with no keyword in it at all, kept on purpose.
+
+## exclusion
+
+- Behaviour during the first epoch after launch.

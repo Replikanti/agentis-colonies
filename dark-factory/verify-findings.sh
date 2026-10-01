@@ -100,6 +100,16 @@
 #                       also carries `scope_layer: {state: on|off|inert-extractor-error, reason}` (an extractor
 #                       crash fails OPEN and is recorded there). Default: unset = inert = every artifact
 #                       byte-identical (no scope_layer key).
+#                       `auto` also reads the PARENT directory's SCOPE.md / README.md when that doc lists a source
+#                       file under `<basename of --repo>/` (the contest layout: scope README one level above the
+#                       code dir), cited `../<name>`. A <file> is an operator-CURATED file, never a raw README:
+#                       bullets naming a source file and bullets with no category are dropped (#2292), and the
+#                       extractor's one-line count of them is relayed to stderr.
+#   --scope-map <file>  OPTIONAL (#2292). The zone map (map/scope.tsv) of the run that produced --results, forwarded
+#                       to run-refute.sh --scope-map whenever a scope block is: it arms the decider's
+#                       `scope-cite-in-scope-file` contract (an `exclusion` row naming a mapped file is never a
+#                       ground). `scope_layer.reason` says whether that guard is armed. Missing file => exit 2;
+#                       without --scope-docs it is ignored.
 #   --cluster-findings <0|1>  ROOT-CAUSE CLUSTERING (#2278). Default: env DF_CLUSTER_FINDINGS, else 1 (ON).
 #                       One bug reached by several class cells passes the gate once per cell, so verified[]
 #                       carries the same root cause several times. When ON and more than one finding survived,
@@ -182,6 +192,7 @@ PAY_FLOOR=""  # #1962: unset = inert (see the header). Validated below with the 
 ADJUDICATED=""  # #2023: unset/absent = inert; operator adjudication overlay that pre-empts the refute gate.
 TIER2=0  # #2217: 0 = OFF = inert (see --tier2 in the header). N > 0 = examine N tier-2 records per zone.
 SCOPE_DOCS=""  # #2257: unset = inert. `auto` or an operator file (see --scope-docs in the header).
+SCOPE_MAP=""  # #2292: unset = the in-scope-file guard is not armed (see --scope-map in the header).
 CLUSTER_FINDINGS="${DF_CLUSTER_FINDINGS:-1}"  # #2278: 1 = ON (default), 0 = OFF (see --cluster-findings in the header).
 REFUTE_BATCH="${DF_REFUTE_BATCH:-0}"  # #2284: 0 = OFF (default), 1 = batched first read (see --refute-batch in the header).
 REFUTE_BATCH_MAX="${DF_REFUTE_BATCH_MAX:-6}"  # #2284: the largest batch; a bigger group is split into balanced chunks.
@@ -202,6 +213,7 @@ while [ $# -gt 0 ]; do
     --adjudicated) nv "$#"; ADJUDICATED="$2"; shift 2 ;;
     --tier2)   nv "$#"; TIER2="$2"; shift 2 ;;
     --scope-docs) nv "$#"; SCOPE_DOCS="$2"; shift 2 ;;
+    --scope-map) nv "$#"; SCOPE_MAP="$2"; shift 2 ;;
     --cluster-findings) nv "$#"; CLUSTER_FINDINGS="$2"; shift 2 ;;
     --refute-batch) nv "$#"; REFUTE_BATCH="$2"; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
@@ -230,6 +242,7 @@ case "$TIER2" in ''|*[!0-9]*) echo "verify-findings.sh: --tier2 must be a non-ne
 [ -z "$BRIEF" ] || [ -f "$BRIEF" ] || { echo "verify-findings.sh: --brief not found: $BRIEF" >&2; exit 2; }
 # #2257: `auto` or an existing operator file; anything else is a usage error before any side effect.
 [ -z "$SCOPE_DOCS" ] || [ "$SCOPE_DOCS" = "auto" ] || [ -f "$SCOPE_DOCS" ] || { echo "verify-findings.sh: --scope-docs must be 'auto' or an existing file (got '$SCOPE_DOCS')" >&2; exit 2; }
+[ -z "$SCOPE_MAP" ] || [ -f "$SCOPE_MAP" ] || { echo "verify-findings.sh: --scope-map not found: $SCOPE_MAP" >&2; exit 2; }
 # #2278: the clustering knobs, validated before any side effect like every other flag.
 case "$CLUSTER_FINDINGS" in
   0|1) : ;;
@@ -263,6 +276,7 @@ RESULTS="$(cd "$(dirname "$RESULTS")" && pwd)/$(basename "$RESULTS")"
 if [ -n "$SCOPE_DOCS" ] && [ "$SCOPE_DOCS" != "auto" ]; then
   SCOPE_DOCS="$(cd "$(dirname "$SCOPE_DOCS")" && pwd)/$(basename "$SCOPE_DOCS")"
 fi
+[ -z "$SCOPE_MAP" ] || SCOPE_MAP="$(cd "$(dirname "$SCOPE_MAP")" && pwd)/$(basename "$SCOPE_MAP")"
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 
 REFUTE="$HERE/run-refute.sh"
@@ -332,6 +346,11 @@ if [ -n "$SCOPE_DOCS" ]; then
     python3 "$SCOPE_LIB" extract --repo "$REPO" --operator "$SCOPE_DOCS" > "$SCOPE_OUT" 2>"$WORK/scope-extract.err" \
       || { echo "verify-findings.sh: WARNING: scope extraction failed ($(head -1 "$WORK/scope-extract.err")) — scope layer inert" >&2; : > "$SCOPE_OUT"; SCOPE_EXTRACT_FAILED=1; }
   fi
+  # #2292: on a successful extraction the helper's stderr is its count of DROPPED operator bullets (source-file
+  # and unclassified). It must reach the run log: a curated file that silently lost rows is the #1426 trap.
+  if [ "$SCOPE_EXTRACT_FAILED" -eq 0 ] && [ -s "$WORK/scope-extract.err" ]; then
+    sed 's/^/verify-findings.sh: /' "$WORK/scope-extract.err" >&2
+  fi
   if [ "$SCOPE_EXTRACT_FAILED" -eq 1 ]; then
     SCOPE_STATE="inert-extractor-error"
     SCOPE_REASON="scope extraction failed: $(head -1 "$WORK/scope-extract.err" | tr '\t' ' ')"
@@ -348,6 +367,13 @@ if [ -n "$SCOPE_DOCS" ]; then
     SCOPE_BLOCK="$SCOPE_OUT"
     SCOPE_STATE="on"; SCOPE_REASON="$(wc -l < "$SCOPE_OUT" | tr -d ' ') declared assumption(s) handed to every refute gate"
     echo "verify-findings.sh: scope layer: $(wc -l < "$SCOPE_OUT" | tr -d ' ') declared assumption(s) -> every refute gate ($SCOPE_OUT)" >&2
+    # #2292: say whether the in-scope-file guard is armed — a silently inert guard is the #1426 trap.
+    if [ -n "$SCOPE_MAP" ]; then
+      SCOPE_REASON="$SCOPE_REASON; in-scope-file guard armed (--scope-map)"
+    else
+      SCOPE_REASON="$SCOPE_REASON; in-scope-file guard NOT armed (no --scope-map)"
+      echo "verify-findings.sh: scope layer: no --scope-map — an exclusion row naming an in-scope file is NOT rejected by the decider" >&2
+    fi
   fi
 fi
 
@@ -555,6 +581,7 @@ REFUTE_ARGS=(--code-dir "$REPO")
 REFUTE_ARGS+=(--backend "$BACKEND" --agentis "$AGENTIS")
 [ -z "$MODEL" ] || REFUTE_ARGS+=(--model "$MODEL")
 [ -z "$SCOPE_BLOCK" ] || REFUTE_ARGS+=(--scope-assumptions "$SCOPE_BLOCK")
+[ -z "$SCOPE_BLOCK" ] || [ -z "$SCOPE_MAP" ] || REFUTE_ARGS+=(--scope-map "$SCOPE_MAP")
 
 # run_gate_refute <out> <location> <class> <severity> <exploit> <relfile> [<first-read-log>] -> writes
 # <out>/verdict.txt as "<VERDICT>\t<reason>"; returns 0 when the gate RAN (any verdict, incl. no-verdict ->
