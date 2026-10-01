@@ -16,12 +16,23 @@
 #     `out_of_scope[]` array of verified_findings.json, never in verified[]; run-zone-hunt.sh forwards the flag.
 # Trust rows are CONTEXT ONLY (never citable); v1 covers STAGE 4 first-pass findings only. Unset = byte-identical.
 #
+# #2292 — A ROW NEVER NAMES A SOURCE FILE. A contest README handed to the operator parser used to mint one row per
+# line of its in-scope FILE LIST (mostly `exclusion`, `trust` / `token` when a path held `keeper/` or `tokens/`),
+# and the refuter then dismissed real findings in exactly the files under review. Three independent layers, each
+# pinned below with its own mutant: (1) the operator parser skips a bullet naming a source file BEFORE it picks a
+# category and has no `exclusion` fallback (an unclassified bullet is dropped and counted on stderr); (2) the
+# decider's sixth contract, `scope-cite-in-scope-file`, refuses an `exclusion` row naming a file of the zone map
+# (`--scope-map`); (3) `auto` reads a parent-directory scope doc that is BOUND to the repo (lists a source file
+# under the repo's own directory name) — the contest layout — so nobody needs the operator parser for a README.
+#
 # Seven parts. Parts a-f are the CI floor (no agentis, no forge, no network, no LLM):
 #   a) EXTRACTOR — byte-exact goldens for four doc shapes + the operator file, run twice (determinism); every
 #      emitted citation range contains its row's text; nothing-declared = 0 bytes; the operator file REPLACES
-#      auto; the 40-row / 300-character caps; `|` sanitising; the file-table / code-fence exclusions.
+#      auto; the 40-row / 300-character caps; `|` sanitising; the file-table / code-fence exclusions; and the
+#      #2292 contest layout in BOTH modes (no source-file row, nothing from the file list, the stderr count line,
+#      the bound / unbound parent doc).
 #   b) DECIDER — one pass case and one fixture per contract id; a PTY-wrap-split quote still resolves; a quote
-#      taken from one row but cited under another id fails.
+#      taken from one row but cited under another id fails; an exclusion row naming a mapped file (--scope-map).
 #   c) SOURCE GUARDS — the marker is the directive's first line; "" with the rubric off or no block; exactly one
 #      splice, in the discovery-lead branch, before its TIE-BREAK; the honesty-gated sentinel; the passthrough +
 #      cell env + three scraper boundaries; the byte-paired functions and the closed ground list untouched; no
@@ -31,8 +42,10 @@
 #      a trust citation, a PTY-wrapped ground line, the no-block and knob-OFF controls.
 #   e) verify-findings.sh END TO END — out_of_scope[] vs verified[], the NEGATIVE CONTROL (no declaration => the
 #      same candidate stays verified), knob-OFF byte-identity, --jobs 2 parity, scope-without-rubric inertness.
-#   f) MUTATION RESISTANCE — five mutated copies (premise check dropped, id resolution dropped, trust citable,
-#      out-of-scope routed into verified[], C6 skip removed); each must flip its fixture.
+#   f) MUTATION RESISTANCE — nine mutated copies (premise check dropped, id resolution dropped, trust citable,
+#      out-of-scope routed into verified[], C6 skip removed; #2292: the `exclusion` fallback restored, the
+#      operator source-file skip dropped, the scope-map contract dropped, the parent binding dropped); each must
+#      flip its fixture.
 #   g) LIVE UNDER MOCK ([SKIP] without an `agentis` binary) — the real refuter prints the sentinel only with the
 #      rubric on AND a non-empty block, and a byte-length probe over the EXTRACTED helpers gives a 0-byte
 #      directive under every other combination.
@@ -58,7 +71,8 @@ ok()   { echo "  [PASS] $*"; }
 bad()  { echo "  [FAIL] $*"; FAILS=$((FAILS + 1)); }
 skip() { echo "  [SKIP] $*"; }
 
-for f in "$LIB" "$REFUTER" "$HUNTER" "$REFUTE" "$DISCOVERY" "$VERIFY" "$ZONEHUNT" "$FIX/discovery-results.json"; do
+for f in "$LIB" "$REFUTER" "$HUNTER" "$REFUTE" "$DISCOVERY" "$VERIFY" "$ZONEHUNT" "$FIX/discovery-results.json" \
+         "$FIX/contest/README.md" "$FIX/contest-results.json" "$FIX/scope-map.tsv" "$FIX/legacy-block.txt"; do
   [ -f "$f" ] || { note "required file not found: $f" >&2; exit 3; }
 done
 command -v python3 >/dev/null 2>&1 || { note "python3 not installed" >&2; exit 3; }
@@ -105,7 +119,7 @@ for shape in repo-tokens repo-table repo-scopemd repo-absent; do
     diff "$FIX/$shape.golden" "$WORK/$shape.1" | head -6 | sed 's/^/      /' >&2
   fi
 done
-python3 "$LIB" extract --repo "$FIX/repo-tokens" --operator "$FIX/operator/scope-assumptions.md" > "$WORK/op.1" 2>/dev/null
+python3 "$LIB" extract --repo "$FIX/repo-tokens" --operator "$FIX/operator/scope-assumptions.md" > "$WORK/op.1" 2>"$WORK/op.err"
 python3 "$LIB" extract --repo "$FIX/repo-tokens" --operator "$FIX/operator/scope-assumptions.md" > "$WORK/op.2" 2>/dev/null
 if cmp -s "$WORK/op.1" "$WORK/op.2" && cmp -s "$WORK/op.1" "$FIX/operator.golden"; then
   ok "operator file: byte-identical to operator.golden on both runs"
@@ -124,11 +138,18 @@ if ! grep -q 'README.md' "$WORK/op.1" && grep -q '^A1|token|scope-assumptions.md
 else
   bad "the operator file did not replace auto-extraction, or was cited by a path"
 fi
-if grep -q '|exclusion|scope-assumptions.md:[0-9]*|A single bullet with no keyword' "$WORK/op.1" \
-   && grep -q '^A2|trust|' "$WORK/op.1"; then
-  ok "a '## trust' heading sets its bullets' category, and an unclassifiable operator bullet falls back to exclusion (never silently dropped)"
+# #2292: the `exclusion` fallback is GONE (this assertion used to pin it). An exclusion must be explicit.
+OP_ERR_WANT='scope-assumptions.py: operator file scope-assumptions.md: skipped 0 bullet(s) naming a source file, 1 unclassified bullet(s) (an exclusion must be explicit: put it under a "## exclusion" heading)'
+if grep -q '^A2|trust|' "$WORK/op.1" && ! grep -q 'A single bullet with no keyword' "$WORK/op.1" \
+   && grep -q '|exclusion|scope-assumptions.md:[0-9]*|Behaviour during the first epoch after launch' "$WORK/op.1"; then
+  ok "a '## trust' heading sets its bullets' category; a heading-less, keyword-less bullet is DROPPED; the same kind of bullet under '## exclusion' is kept"
 else
-  bad "operator heading categories or the exclusion fallback are wrong"
+  bad "operator heading categories are wrong, or an unclassified bullet still falls back to exclusion (#2292)"
+fi
+if [ "$(cat "$WORK/op.err")" = "$OP_ERR_WANT" ]; then
+  ok "the drop is counted in exactly ONE stderr line that names the '## exclusion' escape hatch (stdout is the block only)"
+else
+  bad "the operator skip-count line is missing or drifted: '$(cat "$WORK/op.err")'"
 fi
 if grep -q '^A1|token|SCOPE.md:' "$WORK/repo-scopemd.1" && grep -q '|chain|README.md:' "$WORK/repo-scopemd.1" \
    && [ "$(grep -n 'SCOPE.md' "$WORK/repo-scopemd.1" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'README.md' "$WORK/repo-scopemd.1" | head -1 | cut -d: -f1)" ]; then
@@ -166,7 +187,9 @@ fix = sys.argv[2]
 cases = [("repo-tokens.golden", os.path.join(fix, "repo-tokens")),
          ("repo-table.golden", os.path.join(fix, "repo-table")),
          ("repo-scopemd.golden", os.path.join(fix, "repo-scopemd")),
-         ("operator.golden", os.path.join(fix, "operator"))]
+         ("operator.golden", os.path.join(fix, "operator")),
+         ("contest-auto.golden", os.path.join(fix, "contest", "target")),
+         ("contest-operator.golden", os.path.join(fix, "contest"))]
 bad = checked = 0
 for golden, base in cases:
     for line in open(os.path.join(fix, golden), encoding="utf-8"):
@@ -189,7 +212,7 @@ for golden, base in cases:
 print("CHECKED=%d BAD=%d" % (checked, bad))
 PY
 if grep -q '^CHECKED=[1-9][0-9]* BAD=0$' "$WORK/cite-check.txt"; then
-  ok "every row's text is inside its cited line range ($(sed -n 's/^CHECKED=\([0-9]*\).*/\1/p' "$WORK/cite-check.txt") segments over four goldens)"
+  ok "every row's text is inside its cited line range ($(sed -n 's/^CHECKED=\([0-9]*\).*/\1/p' "$WORK/cite-check.txt") segments over six goldens, incl. the '../README.md' parent citations)"
 else
   bad "a citation range does not contain its row text"
   head -5 "$WORK/cite-check.txt" | sed 's/^/      /' >&2
@@ -224,6 +247,88 @@ if [ "$RC_NODIR" = "2" ] && [ "$RC_BOGUS" = "2" ]; then
   ok "a missing --repo and an unknown subcommand are usage errors (exit 2), never an empty block"
 else
   bad "usage errors exit $RC_NODIR/$RC_BOGUS, want 2/2"
+fi
+
+note "a6) #2292 CONTEST LAYOUT: no row names a source file, in either mode; nothing comes from the file list ..."
+CT="$FIX/contest"
+python3 "$LIB" extract --repo "$CT/target" > "$WORK/ct-auto.1" 2>"$WORK/ct-auto.err"
+python3 "$LIB" extract --repo "$CT/target" > "$WORK/ct-auto.2" 2>/dev/null
+python3 "$LIB" extract --repo "$CT/target" --operator "$CT/README.md" > "$WORK/ct-op.1" 2>"$WORK/ct-op.err"
+python3 "$LIB" extract --repo "$CT/target" --operator "$CT/README.md" > "$WORK/ct-op.2" 2>/dev/null
+for m in auto op; do
+  g="$FIX/contest-auto.golden"; [ "$m" = "op" ] && g="$FIX/contest-operator.golden"
+  if [ -s "$WORK/ct-$m.1" ] && cmp -s "$WORK/ct-$m.1" "$WORK/ct-$m.2" && cmp -s "$WORK/ct-$m.1" "$g"; then
+    ok "contest/$m: $(wc -l < "$WORK/ct-$m.1" | tr -d ' ') row(s), byte-identical to ${g##*/} on both runs"
+  else
+    bad "contest/$m: the block drifted from ${g##*/} or is not deterministic"
+    diff "$g" "$WORK/ct-$m.1" | head -6 | sed 's/^/      /' >&2
+  fi
+done
+# The audit-scope section of the wrapper README, as a line range: no row may be cited from inside it.
+CT_S="$(grep -n '^# Audit scope$' "$CT/README.md" | cut -d: -f1)"
+CT_E="$(grep -n '^# Out of scope$' "$CT/README.md" | cut -d: -f1)"
+CT_BAD=""
+for m in auto op; do
+  grep -qiE '\.(sol|vy|rs|move|cairo|ts|js)([^[:alnum:]_]|$)' "$WORK/ct-$m.1" && CT_BAD="$CT_BAD $m:source-file-row"
+  CT_IN="$(awk -F'|' -v s="$CT_S" -v e="$CT_E" '{ n = $3; sub(/^.*:/, "", n); sub(/-.*$/, "", n); if (n + 0 > s + 0 && n + 0 < e + 0) c++ } END { print c + 0 }' "$WORK/ct-$m.1")"
+  [ "$CT_IN" = "0" ] || CT_BAD="$CT_BAD $m:$CT_IN-row(s)-from-the-file-list"
+done
+if [ -n "$CT_S" ] && [ -n "$CT_E" ] && [ "$CT_S" -lt "$CT_E" ] && [ -z "$CT_BAD" ]; then
+  ok "auto AND operator: zero rows naming a source file, zero rows cited from the audit-scope section (lines $CT_S-$CT_E)"
+else
+  bad "the in-scope file list reached the block:$CT_BAD"
+fi
+if ! grep -q '|trust|' "$WORK/ct-op.1" \
+   && [ "$(grep '|token|' "$WORK/ct-op.1" | cut -d'|' -f3 | tr '\n' ' ')" = "README.md:15 README.md:16 " ] \
+   && [ "$(grep -c '|exclusion|' "$WORK/ct-op.1")" = "1" ] && grep -q '|exclusion|README.md:35|Findings that need' "$WORK/ct-op.1"; then
+  ok "operator: no trust/token row minted from a 'keeper/' or 'tokens/' PATH (the skip runs before classification), and the one exclusion is the explicit one"
+else
+  bad "operator: a path was classified by a directory keyword, or boilerplate bullets became exclusions"
+fi
+CT_ERR_WANT='scope-assumptions.py: operator file README.md: skipped 4 bullet(s) naming a source file, 5 unclassified bullet(s) (an exclusion must be explicit: put it under a "## exclusion" heading)'
+if [ "$(cat "$WORK/ct-op.err")" = "$CT_ERR_WANT" ] && [ ! -s "$WORK/ct-auto.err" ]; then
+  ok "operator stderr: exactly one line with the exact counts (4 source-file, 5 unclassified); auto stderr is empty"
+else
+  bad "the skip-count line is wrong ('$(cat "$WORK/ct-op.err")') or auto wrote to stderr"
+fi
+
+note "a7) #2292 PARENT DOC: read only when BOUND to the repo, first, cited '../<name>' ..."
+if [ "$(cut -d'|' -f3 "$WORK/ct-auto.1" | grep -c '^\.\./README\.md:')" = "$(wc -l < "$WORK/ct-auto.1" | tr -d ' ')" ] \
+   && ! grep -qF "$FIX" "$WORK/ct-auto.1" && ! cut -d'|' -f3 "$WORK/ct-auto.1" | grep -q '^/'; then
+  ok "a wrapper README one level above the code dir is read although the code dir ships its own README, cited '../README.md' (relative, no host path)"
+else
+  bad "the bound parent doc was not read, or it is cited by a host path"
+fi
+# The same wrapper over a code dir with NO doc of its own, and over one whose own README declares things too.
+mkdir -p "$WORK/ct-bare/target/src" "$WORK/ct-both"
+cp "$CT/README.md" "$WORK/ct-bare/README.md"; cp "$CT/target/src/Vault.sol" "$WORK/ct-bare/target/src/Vault.sol"
+cp "$CT/README.md" "$WORK/ct-both/README.md"; cp -R "$FIX/repo-tokens" "$WORK/ct-both/target"
+python3 "$LIB" extract --repo "$WORK/ct-bare/target" > "$WORK/ct-bare.out" 2>/dev/null
+python3 "$LIB" extract --repo "$WORK/ct-both/target" > "$WORK/ct-both.out" 2>/dev/null
+if cmp -s "$WORK/ct-bare.out" "$FIX/contest-auto.golden"; then
+  ok "a code dir with no README/SCOPE of its own gets the same block from the bound parent"
+else
+  bad "the parent doc is not read when the code dir has no doc of its own"
+fi
+if [ "$(wc -l < "$WORK/ct-both.out" | tr -d ' ')" = "9" ] \
+   && [ "$(cut -d'|' -f3 "$WORK/ct-both.out" | sed 's/:.*//' | uniq | tr '\n' ' ')" = "../README.md README.md " ]; then
+  ok "source order: every parent row first, then the repo's own (4 + 5 rows, ids renumbered in one sequence)"
+else
+  bad "the parent -> repo source order is not pinned ($(cut -d'|' -f3 "$WORK/ct-both.out" | sed 's/:.*//' | uniq | tr '\n' ' '))"
+fi
+# An UNBOUND parent: it declares an exclusion and even lists a source file — but under ANOTHER directory name.
+mkdir -p "$WORK/ct-unbound/target"
+{
+  printf '# Unrelated notes\n\n## Out of scope\n\n'
+  printf -- '- Findings in the legacy migration tooling are out of scope.\n\n## Scope\n\n'
+  printf -- '- elsewhere/src/Vault.sol\n'
+} > "$WORK/ct-unbound/README.md"
+cp "$FIX/repo-absent/README.md" "$WORK/ct-unbound/target/README.md"
+python3 "$LIB" extract --repo "$WORK/ct-unbound/target" > "$WORK/ct-unbound.out" 2>"$WORK/ct-unbound.err"; RC_UNB=$?
+if [ "$RC_UNB" = "0" ] && [ ! -s "$WORK/ct-unbound.out" ] && [ ! -s "$WORK/ct-unbound.err" ]; then
+  ok "an unbound parent README (no source file listed under the repo's directory name) contributes 0 rows"
+else
+  bad "an unrelated parent README leaked $(wc -l < "$WORK/ct-unbound.out" | tr -d ' ') row(s) into the block (rc=$RC_UNB)"
 fi
 
 # ==========================================================================================================
@@ -273,6 +378,44 @@ if [ "$RC_USAGE" = "2" ]; then
   ok "a check without --evidence is a usage error (exit 2)"
 else
   bad "a check without --evidence exited $RC_USAGE, want 2"
+fi
+
+note "b4) #2292: an EXCLUSION row naming a file of the mapped scope is never a ground (--scope-map) ..."
+LEG="$FIX/legacy-block.txt"; SMAP="$FIX/scope-map.tsv"
+# _decm <evidence> [map] — the decider over the pre-#2292-shaped block, with or without the zone map.
+_decm() {
+  python3 "$LIB" check --block "$LEG" --claim "$CLAIM_DEP" --evidence "$1" ${2:+--scope-map "$2"} 2>/dev/null
+}
+PREM='premise:"a fee-on-transfer token credits"'
+if [ "$(_decm "A1:\"target/src/Vault.sol\" $PREM" "$SMAP")" = "fail	scope-cite-in-scope-file" ]; then
+  ok "a file row (repo-prefixed path vs the mapped 'src/Vault.sol@deposit+withdraw' token) -> scope-cite-in-scope-file"
+else
+  bad "a file-list exclusion row passed with the map: '$(_decm "A1:\"target/src/Vault.sol\" $PREM" "$SMAP")'"
+fi
+if [ "$(_decm "A4:\"Router.sol and Wrapper.sol\" $PREM" "$SMAP")" = "fail	scope-cite-in-scope-file" ]; then
+  ok "bare file names (a '/'-boundary suffix of a mapped path) -> scope-cite-in-scope-file"
+else
+  bad "a bare-basename exclusion row passed with the map: '$(_decm "A4:\"Router.sol and Wrapper.sol\" $PREM" "$SMAP")'"
+fi
+B4_BAD=""
+case "$(_decm "A2:\"Findings that need the deployment scripts\" $PREM" "$SMAP")" in ok"	A2	exclusion	"*) ;; *) B4_BAD="$B4_BAD prose-exclusion" ;; esac
+case "$(_decm "A3:\"Vault.sol accepts standard ERC20 only\" $PREM" "$SMAP")" in ok"	A3	token	"*) ;; *) B4_BAD="$B4_BAD token-row-naming-a-mapped-file" ;; esac
+case "$(_decm "A5:\"lib/vendor/Math.sol is a vendored dependency\" $PREM" "$SMAP")" in ok"	A5	exclusion	"*) ;; *) B4_BAD="$B4_BAD unmapped-file-exclusion" ;; esac
+if [ -z "$B4_BAD" ]; then
+  ok "still citable with the map: a prose exclusion, a TOKEN row naming a mapped file, an exclusion naming a file OUTSIDE the map"
+else
+  bad "the in-scope-file contract over-reaches:$B4_BAD"
+fi
+case "$(_decm "A1:\"target/src/Vault.sol\" $PREM")" in
+  ok"	A1	exclusion	"*) ok "without --scope-map the same file row passes — the contract is inert when the flag is absent (byte-identical decider)" ;;
+  *) bad "the in-scope-file contract ran without --scope-map" ;;
+esac
+RC_MAP=0; python3 "$LIB" check --block "$LEG" --claim "$CLAIM_DEP" --evidence "A1:\"target/src/Vault.sol\" $PREM" \
+  --scope-map "$WORK/no-such-map.tsv" > /dev/null 2>&1 || RC_MAP=$?
+if [ "$RC_MAP" = "3" ]; then
+  ok "a --scope-map that cannot be read is exit 3 (unreadable input), never a silent pass"
+else
+  bad "an unreadable --scope-map exited $RC_MAP, want 3"
 fi
 
 # ==========================================================================================================
@@ -352,6 +495,26 @@ else
   bad "the verify-findings.sh / run-zone-hunt.sh forwarding is incomplete"
 fi
 
+# #2292: the zone map rides the SAME guards — a new line each, so the two pins above still match byte for byte.
+C3B=""
+# shellcheck disable=SC2016  # literal source text
+grep -qF '[ -z "$SCOPE_BLOCK" ] || [ -z "$SCOPE_MAP" ] || REFUTE_ARGS+=(--scope-map "$SCOPE_MAP")' "$VERIFY" || C3B="$C3B verify-forward"
+# shellcheck disable=SC2016  # literal source text
+L_ZD="$(grep -n '^  \${SCOPE_DOCS:+--scope-docs "\$SCOPE_DOCS"} \\$' "$ZONEHUNT" | cut -d: -f1)"
+# shellcheck disable=SC2016  # literal source text
+L_ZM="$(grep -n '^  \${SCOPE_DOCS:+--scope-map "\$MAP/scope.tsv"} \\$' "$ZONEHUNT" | cut -d: -f1)"
+{ [ -n "$L_ZD" ] && [ -n "$L_ZM" ] && [ "$L_ZM" = "$((L_ZD + 1))" ]; } || C3B="$C3B zone-hunt-argv"
+# shellcheck disable=SC2016  # literal source text
+_shfn "$REFUTE" _scope_ground_state | grep -qF '${SCOPE_MAP:+--scope-map "$SCOPE_MAP"}' || C3B="$C3B decider-call"
+# The map is read by the driver-side decider only: never allowlisted, never exported into a cell.
+case "$R_PASS" in *SCOPE_MAP*) C3B="$C3B passthrough-leak" ;; esac
+grep -qE '^ +SCOPE_MAP="[^"]*" \\$' "$REFUTE" && C3B="$C3B cell-env-leak"
+if [ -z "$C3B" ]; then
+  ok "--scope-map: verify-findings.sh forwards it only WITH a block, run-zone-hunt.sh only WITH --scope-docs (the next argv line), and it reaches the decider call but never the cell env"
+else
+  bad "the --scope-map forwarding is wrong:$C3B"
+fi
+
 note "c4) the byte-paired functions and the closed ground list are UNTOUCHED ..."
 PAIR_BAD=""
 for fn in severity_rubric_marker severity_rubric_block ground_evidence_marker ground_evidence_block; do
@@ -397,8 +560,9 @@ while IFS= read -r cid; do
   _shfn "$REFUTE" _scope_contract_requirement | grep -q "^    $cid)" || REQ_BAD="$REQ_BAD $cid"
 done < "$WORK/scope-ids.txt"
 N_IDS="$(grep -oE 'fail\("scope-[a-z-]+"\)' "$LIB" | sort -u | wc -l | tr -d ' ')"
-if [ -z "$REQ_BAD" ] && [ "$N_IDS" = "5" ]; then
-  ok "all five scope contract ids have their own re-ask phrase (a NEW table; _contract_requirement stays byte-paired)"
+# #2292: five -> six (scope-cite-in-scope-file).
+if [ -z "$REQ_BAD" ] && [ "$N_IDS" = "6" ] && grep -q '^scope-cite-in-scope-file$' "$WORK/scope-ids.txt"; then
+  ok "all six scope contract ids have their own re-ask phrase (a NEW table; _contract_requirement stays byte-paired)"
 else
   bad "a scope contract id has no re-ask phrase:$REQ_BAD (ids found: $N_IDS)"
 fi
@@ -466,6 +630,23 @@ case "${1:-}" in
       if [ -n "${SCOPE_ASSUMPTIONS_PATH:-}" ] && [ -s "$SCOPE_ASSUMPTIONS_PATH" ]; then
         printf 'SCOPE-ASSUMPTIONS|refute|on\n'; armed=1
       fi
+    fi
+    if [ "${STUB_SCOPE:-}" = "filerow" ]; then
+      # #2292: a model that dismisses a finding BECAUSE the staged block has a row naming the candidate's own
+      # source file — and judges the claim on its merits (REAL) when no such row exists.
+      row=""
+      [ "$armed" -eq 1 ] && row="$(grep -F -- "${fn%%:*}" "$SCOPE_ASSUMPTIONS_PATH" | head -1)"
+      if [ -z "$row" ] && [ "${STUB_UNARMED:-real}" = "same" ]; then
+        # The block-less #1699 C6 re-read of a held case: keep the verdict, so the held row is what gets asserted.
+        printf 'VERDICT|REFUTED|%s|%s|the claimed path does not hold\n' "$fn" "$cls"; exit 0
+      fi
+      if [ -z "$row" ]; then
+        printf 'VERDICT|REAL|%s|%s|no declaration names this file, so the claim stands on its merits\n' "$fn" "$cls"; exit 0
+      fi
+      printf 'REFUTE-GROUND|out-of-scope-premise|%s:"%s" premise:"%s"\n' "${row%%|*}" \
+        "$(printf '%s' "$row" | cut -d'|' -f4-)" "$(printf '%s' "${CAND_EXPLOIT:-}" | cut -c1-24)"
+      printf 'VERDICT|REFUTED|%s|%s|the declared scope lists the file this claim lives in\n' "$fn" "$cls"
+      exit 0
     fi
     case "$fn" in
       *:withdraw)
@@ -645,6 +826,42 @@ else
   bad "--scope-assumptions + --invariant-mode exited $RC_INV, want 2"
 fi
 
+note "d7) #2292: a cited FILE ROW of the mapped scope is held (scope-cite-in-scope-file), never routed ..."
+SEVERITY_RUBRIC=1 STUB_UNARMED=same STUB_SCOPE=filerow _rr d-file "$WORK/c-dep.tsv" --scope-assumptions "$FIX/legacy-block.txt" --scope-map "$FIX/scope-map.tsv"
+RFI="$WORK/d-file"
+if grep -q '|out-of-scope-premise: the cited row names a file that is under review' "$WORK/d-file.calls"; then
+  ok "the re-ask NAMES the new contract: 'out-of-scope-premise: the cited row names a file that is under review …'"
+else
+  bad "the re-ask did not name the in-scope-file contract ($(tail -1 "$WORK/d-file.calls"))"
+fi
+case "$(_vrow "$RFI")|$(_rrow "$RFI")" in
+  'REFUTED|rubric-insufficient: '*) ok "the held case stays REFUTED with the 'rubric-insufficient: ' prefix (the existing bounded path, no new loop)" ;;
+  *) bad "held file-row citation: row is '$(_vrow "$RFI")|$(_rrow "$RFI")'" ;;
+esac
+if [ "$(awk -F'\t' 'NR==1{print $3"|"$5}' "$RFI/rubric-dismissals.tsv" 2>/dev/null)" = "out-of-scope-premise|scope-cite-in-scope-file" ] \
+   && [ ! -e "$RFI/out-of-scope.tsv" ] && [ "$(_c6calls "$WORK/d-file.calls")" = "1" ]; then
+  ok "rubric-dismissals.tsv records scope-cite-in-scope-file; nothing routed to out-of-scope.tsv; the #1699 C6 re-read is NOT skipped"
+else
+  bad "the in-scope-file failure was routed, not recorded, or skipped C6 (sidecar '$(awk -F'\t' 'NR==1{print $3"|"$5}' "$RFI/rubric-dismissals.tsv" 2>/dev/null)', c6=$(_c6calls "$WORK/d-file.calls"))"
+fi
+SEVERITY_RUBRIC=1 STUB_SCOPE=filerow _rr d-filenomap "$WORK/c-dep.tsv" --scope-assumptions "$FIX/legacy-block.txt"
+if [ "$(cut -f3-4 "$WORK/d-filenomap/out-of-scope.tsv" 2>/dev/null)" = "A1	exclusion" ] && [ ! -e "$WORK/d-filenomap/rubric-dismissals.tsv" ]; then
+  ok "CONTROL: without --scope-map the same citation is routed exactly as before (the flag is what arms the contract)"
+else
+  bad "the no-map control did not behave like a pre-#2292 run"
+fi
+STUB_UNARMED=same SEVERITY_RUBRIC=1 _rr d-maponly "$WORK/c-dep.tsv" --scope-map "$FIX/scope-map.tsv"
+RC_NOMAP=0
+"$REFUTE" --candidates "$WORK/c-dep.tsv" --code-dir "$FIX/repo-tokens" --backend mock --agentis "$STUB" \
+  --out "$WORK/d-badmap" --scope-map "$WORK/no-such-map.tsv" > /dev/null 2>&1 || RC_NOMAP=$?
+if cmp -s "$WORK/d-maponly/refute-report.md" "$WORK/d-off4/refute-report.md" \
+   && [ "$(cd "$WORK/d-maponly" && find . -type f | sort)" = "$(cd "$WORK/d-off4" && find . -type f | sort)" ] \
+   && [ "$RC_NOMAP" = "2" ]; then
+  ok "--scope-map without a staged block is ignored (identical report and file list); a missing map file is exit 2"
+else
+  bad "--scope-map alone changed an output, or a missing map exited $RC_NOMAP (want 2)"
+fi
+
 # ==========================================================================================================
 # PART e — verify-findings.sh END TO END
 # ==========================================================================================================
@@ -794,6 +1011,51 @@ else
   bad "run-zone-hunt.sh --scope-docs validation exited $RC_ZH"
 fi
 
+note "e6) #2292 ACCEPTANCE (gated on OUTPUT): on the contest layout the in-scope findings stay in verified[] ..."
+# The stub (STUB_SCOPE=filerow) refutes a candidate IFF the staged block has a row naming its source file. So this
+# reads verified_findings.json — what a hunt reports — not the block: a file row anywhere flips it.
+CRES="$FIX/contest-results.json"
+# _vfc <label> <verify-findings.sh> [flag...] — one offline contest-layout run.
+_vfc() {
+  _vfc_label="$1"; _vfc_bin="$2"; shift 2
+  STUB_CALLS="$WORK/$_vfc_label.calls"; export STUB_CALLS; : > "$STUB_CALLS"
+  SEVERITY_RUBRIC=1 STUB_SCOPE=filerow "$_vfc_bin" --results "$CRES" --repo "$CT/target" --out "$WORK/$_vfc_label" \
+    --gate refute --backend mock --agentis "$STUB" "$@" > "$WORK/$_vfc_label.vout" 2>&1 || true
+}
+_vfc e-cauto "$VERIFY" --scope-docs auto
+_vfc e-cop "$VERIFY" --scope-docs "$CT/README.md"
+_vfc e-cmap "$VERIFY" --scope-docs auto --scope-map "$FIX/scope-map.tsv"
+CWANT="src/Vault.sol:withdraw,src/tokens/Wrapper.sol:wrap"
+for lbl in e-cauto e-cop e-cmap; do
+  CJ="$WORK/$lbl/verified_findings.json"
+  if [ "$(_jq "$CJ" '",".join(sorted(v["location"] for v in d["verified"]))')" = "$CWANT" ] \
+     && [ "$(_jq "$CJ" '"out_of_scope" in d')" = "False" ] && [ "$(_jq "$CJ" 'd["scope_layer"]["state"]')" = "on" ]; then
+    ok "$lbl: both in-scope findings are in verified[], out_of_scope is absent, and the scope layer was ON (a real block was staged)"
+  else
+    bad "$lbl: an in-scope finding was lost (verified=$(_jq "$CJ" '[v["location"] for v in d["verified"]]') out_of_scope=$(_jq "$CJ" 'd.get("out_of_scope")') scope_layer=$(_jq "$CJ" 'd.get("scope_layer")'))"
+    tail -4 "$WORK/$lbl.vout" | sed 's/^/      /' >&2
+  fi
+done
+if grep -qF "verify-findings.sh: $CT_ERR_WANT" "$WORK/e-cop.vout" && ! grep -q 'operator file' "$WORK/e-cauto.vout"; then
+  ok "the extractor's skip-count line is relayed into the run log (operator mode only)"
+else
+  bad "the dropped-bullet count never reached the verify-findings.sh log"
+fi
+if _jq "$WORK/e-cauto/verified_findings.json" 'd["scope_layer"]["reason"]' | grep -q 'in-scope-file guard NOT armed (no --scope-map)' \
+   && _jq "$WORK/e-cmap/verified_findings.json" 'd["scope_layer"]["reason"]' | grep -q 'in-scope-file guard armed (--scope-map)' \
+   && grep -q 'no --scope-map' "$WORK/e-cauto.vout"; then
+  ok "scope_layer.reason says whether the in-scope-file guard is armed (a silently inert guard is the #1426 trap)"
+else
+  bad "scope_layer.reason does not record the --scope-map state"
+fi
+RC_VMAP=0
+"$VERIFY" --results "$CRES" --repo "$CT/target" --out "$WORK/e-badmap" --scope-docs auto --scope-map "$WORK/no-such-map.tsv" > /dev/null 2>&1 || RC_VMAP=$?
+if [ "$RC_VMAP" = "2" ]; then
+  ok "a --scope-map that does not exist is a usage error (exit 2) before any side effect"
+else
+  bad "a bad --scope-map exited $RC_VMAP, want 2"
+fi
+
 # ==========================================================================================================
 # PART f — MUTATION RESISTANCE (mutated COPIES; the shipped files are never touched)
 # ==========================================================================================================
@@ -889,6 +1151,65 @@ else
   bad "mutation 5 did not apply"
 fi
 
+note "f6) #2292: restore the 'exclusion' fallback -> the a2 fixture must flip ..."
+M6="$(_mut_lib m6)"
+if [ "$(_mutate "$M6/lib/scope-assumptions.py" '        cat = section or classify(text)
+        if not cat:' '        cat = section or classify(text) or "exclusion"
+        if not cat:')" = "CHANGED" ]; then
+  python3 "$M6/lib/scope-assumptions.py" extract --repo "$FIX/repo-tokens" --operator "$FIX/operator/scope-assumptions.md" > "$WORK/m6.out" 2>/dev/null
+  if grep -q '|exclusion|scope-assumptions.md:[0-9]*|A single bullet with no keyword' "$WORK/m6.out"; then
+    ok "mutant with the fallback turns a heading-less, keyword-less bullet back into a citable exclusion (the fixture flips)"
+  else
+    bad "the fallback mutant did not flip"
+  fi
+else
+  bad "mutation 6 did not apply (operator parser reshaped?)"
+fi
+
+note "f7) #2292: drop the operator source-file skip -> the e6 OUTPUT must flip ..."
+M7="$(_mut_lib m7)"
+if [ "$(_mutate "$M7/lib/scope-assumptions.py" '        if SOURCE_FILE_RE.search(text):
+            n_file += 1
+            continue
+        cat = section or classify(text)' '        cat = section or classify(text)')" = "CHANGED" ]; then
+  _vfc m7-out "$M7/verify-findings.sh" --scope-docs "$CT/README.md"
+  M7J="$WORK/m7-out/verified_findings.json"
+  if [ "$(_jq "$M7J" '",".join(sorted(v["location"] for v in d["verified"]))')" = "src/Vault.sol:withdraw" ] \
+     && [ "$(_jq "$M7J" '",".join(v["location"]+"/"+v["assumption"]["category"] for v in d.get("out_of_scope", []))')" = "src/tokens/Wrapper.sol:wrap/token" ]; then
+    ok "mutant without the skip mints a 'token' row from the tokens/ PATH and the in-scope finding leaves verified[] (verified_findings.json flips)"
+  else
+    bad "the source-file-skip mutant did not flip the output (verified=$(_jq "$M7J" '[v["location"] for v in d["verified"]]'))"
+  fi
+else
+  bad "mutation 7 did not apply"
+fi
+
+note "f8) #2292: drop the scope-map contract -> the b4 fixture must flip ..."
+M8="$(_mut_lib m8)"
+if [ "$(_mutate "$M8/lib/scope-assumptions.py" '    if cat == "exclusion" and names_scope_file(text, scope_files):
+        return fail("scope-cite-in-scope-file")
+' '')" = "CHANGED" ]; then
+  G8="$(python3 "$M8/lib/scope-assumptions.py" check --block "$LEG" --claim "$CLAIM_DEP" --evidence "A1:\"target/src/Vault.sol\" $PREM" --scope-map "$SMAP" | cut -f1)"
+  if [ "$G8" = "ok" ]; then ok "mutant without the contract lets a file-list row dismiss a finding in that file (the fixture flips)"; else bad "the scope-map mutant did not flip ($G8)"; fi
+else
+  bad "mutation 8 did not apply"
+fi
+
+note "f9) #2292: drop the parent binding -> the unbound-parent fixture must flip ..."
+M9="$(_mut_lib m9)"
+if [ "$(_mutate "$M9/lib/scope-assumptions.py" '        if not any(binding.search(line) for line in lines):
+            continue
+' '')" = "CHANGED" ]; then
+  python3 "$M9/lib/scope-assumptions.py" extract --repo "$WORK/ct-unbound/target" > "$WORK/m9.out" 2>/dev/null
+  if grep -q '|exclusion|\.\./README\.md:[0-9]*|Findings in the legacy migration tooling' "$WORK/m9.out"; then
+    ok "mutant without the binding reads an UNRELATED parent README and stages its exclusion (the fixture flips)"
+  else
+    bad "the parent-binding mutant did not flip"
+  fi
+else
+  bad "mutation 9 did not apply"
+fi
+
 # ==========================================================================================================
 # PART g — LIVE UNDER MOCK (the AGENT half; needs the agentis binary)
 # ==========================================================================================================
@@ -978,7 +1299,8 @@ echo
 if [ "$FAILS" -eq 0 ]; then
   note "ALL ASSERTIONS HELD — scope-aware refute (#2257): a deterministic line-cited block, one extra ground with its"
   note "own citation contract, trust rows context-only, nested under SEVERITY_RUBRIC=1, final routing into"
-  note "out_of_scope[] (never verified[]), default OFF and byte-identical when unset."
+  note "out_of_scope[] (never verified[]), default OFF and byte-identical when unset. #2292: no row names a source"
+  note "file (operator skip before classification, no exclusion fallback, the scope-map contract, the bound parent doc)."
   note "NOTE: nothing above is a precision claim — that needs a new fresh set in a separate run."
   exit 0
 fi

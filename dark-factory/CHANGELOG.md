@@ -14,6 +14,29 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Scope-aware refute no longer turns the in-scope file list into exclusions (#2292).** A contest README handed to
+  `--scope-docs <file>` went through the *operator* parser, which minted one row per bullet of the README's
+  audit-scope file list — `exclusion` by fallback, `trust` / `token` when a path held `keeper/` or `tokens/` — and
+  the refuter then dismissed findings in exactly the files under review as `out-of-scope-premise`. Three
+  independent layers in `lib/scope-assumptions.py` (no `.ag` change, the refuter prompt is byte-identical):
+  (1) **operator parser** — a bullet naming a source file is skipped before any category is chosen (also under a
+  `## <category>` heading), and the `exclusion` fallback is gone. **Behaviour change:** a heading-less,
+  keyword-less operator bullet is now DROPPED instead of becoming an `exclusion`; put it under a `## exclusion`
+  heading. Both kinds of dropped bullets are counted in one stderr line, relayed into the `verify-findings.sh` log.
+  (2) **decider** — `check --scope-map <map/scope.tsv>` adds a sixth contract, `scope-cite-in-scope-file`: an
+  `exclusion` row naming a mapped file (equal path or a `/`-boundary suffix either way) is never a ground. New
+  `run-refute.sh --scope-map` / `verify-findings.sh --scope-map`, forwarded by `run-zone-hunt.sh` whenever
+  `--scope-docs` is set; absent = the previous decider call; `scope_layer.reason` records whether the guard is
+  armed. A held failure stays `REFUTED` (`rubric-insufficient`), so this layer is a backstop for hand-built or older
+  blocks — the recall fix is layer 1. (3) **`auto`** — also reads `SCOPE.md` / `README.md` one level above `--repo`
+  when that doc lists a source file under the repo's directory name (the contest layout), first, cited
+  `../<name>`; an unbound parent contributes nothing. The shipped `exam-plus` profile switches from
+  `SCOPE_DOCS=code:README.md` to `SCOPE_DOCS=auto`. Earlier runs that passed a README as `--scope-docs <file>`
+  should be treated as suspect. Pinned by `demo-scope-assumptions.sh` (synthetic contest fixture, four new mutants,
+  an end-to-end assertion on `verified_findings.json`); held-out revalidation is a separate, later run.
+
 ## [0.13.0] - 2026-09-27
 
 **Requires:** agentis >= `1.22.7`

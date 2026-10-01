@@ -15,31 +15,49 @@
 # BLOCK GRAMMAR (one row per line, source order, at most 40 rows, text at most 300 characters):
 #   A<n>|<category>|<source>:<first>[-<last>]|<text>
 # <category> is one of token, chain, trust, exclusion, known-issue. <source> is repo-relative (an operator file is
-# cited by its BASENAME only, so no host path ever reaches an artifact). An EMPTY stdout means nothing was
-# declared, and every caller treats that as OFF.
+# cited by its BASENAME only and a bound parent doc as `../<name>`, so no host path ever reaches an artifact). An
+# EMPTY stdout means nothing was declared, and every caller treats that as OFF.
+#
+# A ROW NEVER NAMES A SOURCE FILE (#2292). Which files are under review is the zone mapper's job, not this block's:
+# a file list read as declarations turns "these files are in scope" into citable `exclusion` rows, and the refuter
+# then dismisses real findings in exactly those files. Three independent layers keep it out — both extractor modes
+# skip a line naming a source file BEFORE they classify it, the operator mode has no `exclusion` fallback, and the
+# decider refuses an `exclusion` row that names a file of the mapped scope (`--scope-map`).
 #
 # Subcommands:
 #   extract --repo <dir> [--operator <file>]
-#       Sources: --operator REPLACES auto-extraction (explicit curation wins). Otherwise the repo-root SCOPE.md is
-#       read first, then README.md (file names matched case-insensitively).
+#       Sources: --operator REPLACES auto-extraction (explicit curation wins). Otherwise, in this order: the PARENT
+#       directory's SCOPE.md and README.md, then the repo-root SCOPE.md and README.md (file names matched
+#       case-insensitively). A parent doc is read ONLY when it is BOUND to the repo: it lists at least one source
+#       file under `<basename of --repo>/` — the contest layout, where the scope README sits one level above the
+#       code directory. An unbound, missing or unreadable parent contributes nothing and is never an error.
 #       Auto mode reads only lines under a heading matching SECTION_GATE_RE (a heading stack: a sub-heading
 #       inherits its parent's gate), plus `Q:`-style question lines anywhere. A question line and its answer
 #       paragraph become ONE row `Q: … — A: …` cited first-last and categorised by the QUESTION text; a
 #       markdown table row becomes `cell1: cell2` (header and separator rows skipped); every other qualifying
 #       line becomes one row. Skipped: fenced code, lines naming a source file (SOURCE_FILE_RE — this keeps the
 #       in-scope file list out), and fragments shorter than 12 characters.
-#       Operator mode reads bullets only; a `## <category>` heading sets the category of the bullets under it,
-#       any other bullet is classified by keyword and falls back to `exclusion` (the operator wrote it down on
-#       purpose, so it is never silently dropped).
-#   check --block <file> --claim <text> --evidence <text>
+#       Operator mode is for an operator-CURATED file, never a raw README (use auto for those). It reads bullets
+#       only; a `## <category>` heading sets the category of the bullets under it, any other bullet is classified
+#       by keyword. Dropped, and counted in ONE stderr line: a bullet naming a source file (even under a category
+#       heading) and a bullet with neither a category heading nor a keyword — an exclusion must be explicit, so
+#       put it under a `## exclusion` heading. Stdout and the exit code are unaffected by the count line.
+#   check --block <file> --claim <text> --evidence <text> [--scope-map <scope.tsv>]
 #       The contract decider for refuter.ag's `out-of-scope-premise` ground. <evidence> is fields 3..N of the
 #       scraped `REFUTE-GROUND|` record. Normalisation: lowercase, ALL whitespace dropped (a PTY wrap can split a
 #       quote anywhere), `|` -> `/`. Checks, in order:
 #         1. `A<n>:"<quote>"` present, normalised quote >= 12 chars       else scope-cite-missing
 #         2. A<n> exists in the block and the quote is inside THAT row     else scope-cite-unresolved
 #         3. the row's category is not `trust` (context only)              else scope-not-citable
-#         4. `premise:"<quote>"` present, normalised quote >= 8 chars      else scope-premise-missing
-#         5. the premise is inside the candidate's claim                   else scope-premise-unresolved
+#         4. with --scope-map: an `exclusion` row does not name a file of
+#            the mapped scope (see below)                                  else scope-cite-in-scope-file
+#         5. `premise:"<quote>"` present, normalised quote >= 8 chars      else scope-premise-missing
+#         6. the premise is inside the candidate's claim                   else scope-premise-unresolved
+#       --scope-map is the zone map (`<subsystem> | <class-csv> | <file[,file...]>`, `#` and blank lines skipped,
+#       a `@fn1+fn2` suffix on a file ignored). Check 4 compares every source-file token of the row with every
+#       mapped path, case-insensitively: equal, or one a `/`-boundary suffix of the other (so `Vault.sol`,
+#       `src/Vault.sol` and `target/src/Vault.sol` all name the same file). Only `exclusion` rows are tested — a
+#       known-issue or token row legitimately names in-scope code. Without the flag check 4 does not run.
 #       Prints `ok\t<id>\t<category>\t<source>\t<text>\t<premise>` or `fail\t<contract-id>`.
 #
 # Exit: 0 ok (for `check`, both `ok` and `fail` are exit 0 — a failed contract is an answer, not an error);
@@ -75,7 +93,10 @@ CATEGORY_KEYWORDS = (
         r"|\bignored?\b|\blimitations?\b|not (?:a )?valid", re.I)),
 )
 CATEGORIES = ("token", "chain", "trust", "exclusion", "known-issue")
-SOURCE_FILE_RE = re.compile(r"\.(sol|vy|rs|move|cairo|ts|js)\b", re.I)
+SOURCE_EXT = r"(?:sol|vy|rs|move|cairo|ts|js)"
+SOURCE_FILE_RE = re.compile(r"\." + SOURCE_EXT + r"\b", re.I)
+# A source-file TOKEN (path or bare file name), as the decider compares it with the mapped scope.
+SOURCE_PATH_RE = re.compile(r"[A-Za-z0-9_./-]+\." + SOURCE_EXT + r"\b", re.I)
 HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$")
 QUESTION_RE = re.compile(r"^\s*(?:[-*+]\s+)?(?:#{1,6}\s+)?(?:\*\*|__)?Q(?:\*\*|__)?\s*[:.]\s*(?:\*\*|__)?\s*")
 ANSWER_PREFIX_RE = re.compile(r"^\s*(?:[-*+]\s+)?(?:\*\*|__)?A(?:\*\*|__)?\s*[:.]\s*(?:\*\*|__)?\s*")
@@ -233,7 +254,10 @@ def extract_auto(lines, source):
 
 
 def extract_operator(lines, source):
+    """Rows of an operator-curated file, plus how many bullets were dropped for naming a source file and for
+    having no category: (rows, n_source_file, n_unclassified)."""
     rows = []
+    n_file = n_unclassified = 0
     section = None
     in_fence = False
     for idx, raw in enumerate(lines):
@@ -257,20 +281,57 @@ def extract_operator(lines, source):
         text = clean(raw)
         if len(text) < MIN_FRAGMENT:
             continue
-        cat = section or classify(text) or "exclusion"
+        # Before any category is chosen, heading or keyword: a path such as `keeper/Bot.sol` would otherwise
+        # classify as `trust`, and a file list under a `## exclusion` heading would become citable exclusions.
+        if SOURCE_FILE_RE.search(text):
+            n_file += 1
+            continue
+        cat = section or classify(text)
+        if not cat:
+            n_unclassified += 1
+            continue
         rows.append((cat, source, idx + 1, idx + 1, text[:MAX_TEXT]))
-    return rows
+    return rows, n_file, n_unclassified
 
 
-def find_doc(repo, name):
+def find_doc(repo, name, fatal=True):
     try:
         entries = sorted(os.listdir(repo))
     except OSError as exc:
+        if not fatal:
+            return None
         die("cannot list --repo %s: %s" % (repo, exc), 3)
     for e in entries:
         if e.lower() == name.lower() and os.path.isfile(os.path.join(repo, e)):
             return e
     return None
+
+
+def parent_docs(repo):
+    """[(citation name, lines)] for the docs ONE level above the repo that are bound to it, SCOPE.md first.
+    Bound = the doc lists at least one source file under `<repo basename>/`; that is what tells a contest wrapper
+    README from an unrelated file that happens to sit one level up. Never fatal: no parent, an unreadable parent
+    or an unbound doc is simply no source."""
+    base = os.path.abspath(repo)
+    name, parent = os.path.basename(base), os.path.dirname(base)
+    if not name or parent == base:
+        return []
+    binding = re.compile(r"(?<![A-Za-z0-9_.-])" + re.escape(name) + r"/[A-Za-z0-9_./-]*\." + SOURCE_EXT + r"\b",
+                         re.I)
+    docs = []
+    for doc in ("SCOPE.md", "README.md"):
+        found = find_doc(parent, doc, fatal=False)
+        if not found:
+            continue
+        try:
+            with open(os.path.join(parent, found), encoding="utf-8", errors="replace") as fh:
+                lines = fh.read().split("\n")
+        except OSError:
+            continue
+        if not any(binding.search(line) for line in lines):
+            continue
+        docs.append(("../" + found, lines))
+    return docs
 
 
 def cmd_extract(args):
@@ -289,8 +350,15 @@ def cmd_extract(args):
     if operator:
         if not os.path.isfile(operator):
             die("extract: --operator not found: %s" % operator, 2)
-        rows = extract_operator(read_lines(operator), os.path.basename(operator))
+        rows, n_file, n_unclassified = extract_operator(read_lines(operator), os.path.basename(operator))
+        if n_file or n_unclassified:
+            sys.stderr.write(
+                "scope-assumptions.py: operator file %s: skipped %d bullet(s) naming a source file, %d unclassified "
+                "bullet(s) (an exclusion must be explicit: put it under a \"## exclusion\" heading)\n"
+                % (os.path.basename(operator), n_file, n_unclassified))
     else:
+        for cited, lines in parent_docs(repo):
+            rows.extend(extract_auto(lines, cited))
         for name in ("SCOPE.md", "README.md"):
             found = find_doc(repo, name)
             if found:
@@ -312,8 +380,43 @@ def load_block(path):
     return rows
 
 
+def load_scope_files(path):
+    """The mapped source paths of a zone map, lowercased: field 3 of every `<subsystem> | <class-csv> | <files>`
+    line, split on `,`, a `@fn1+fn2` suffix dropped."""
+    files = set()
+    for line in read_lines(path):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        fields = line.split("|")
+        if len(fields) < 3:
+            continue
+        for tok in fields[2].split(","):
+            tok = _path_key(tok.split("@", 1)[0])
+            if tok:
+                files.add(tok)
+    return files
+
+
+def _path_key(path):
+    path = path.strip().lower()
+    while path.startswith("./"):
+        path = path[2:]
+    return path.strip("/")
+
+
+def names_scope_file(text, scope_files):
+    """True when <text> carries a source-file token that is a mapped path, or a `/`-boundary suffix of one, or has
+    one as its `/`-boundary suffix."""
+    for tok in SOURCE_PATH_RE.findall(text):
+        tok = _path_key(tok)
+        for f in scope_files:
+            if tok == f or f.endswith("/" + tok) or tok.endswith("/" + f):
+                return True
+    return False
+
+
 def cmd_check(args):
-    block, claim, evidence = None, None, None
+    block, claim, evidence, scope_map = None, None, None, None
     it = iter(args)
     for a in it:
         if a == "--block":
@@ -322,12 +425,21 @@ def cmd_check(args):
             claim = next(it, None)
         elif a == "--evidence":
             evidence = next(it, None)
+        elif a == "--scope-map":
+            scope_map = next(it, None)
+            if scope_map is None:
+                die("check: --scope-map needs a file", 2)
         else:
             die("check: unknown argument %s" % a, 2)
     if block is None or claim is None or evidence is None:
         die("check: --block <file> --claim <text> --evidence <text> required", 2)
     if not os.path.isfile(block):
         die("check: --block not found: %s" % block, 3)
+    scope_files = set()
+    if scope_map is not None:
+        if not os.path.isfile(scope_map):
+            die("check: --scope-map not found: %s" % scope_map, 3)
+        scope_files = load_scope_files(scope_map)
     rows = load_block(block)
 
     def fail(cid):
@@ -343,6 +455,9 @@ def cmd_check(args):
     cat, source, text = rows[rid]
     if cat == "trust":
         return fail("scope-not-citable")
+    # A file under review is never an excluded premise, whatever a hand-built or pre-#2292 block says.
+    if cat == "exclusion" and names_scope_file(text, scope_files):
+        return fail("scope-cite-in-scope-file")
     p = PREMISE_RE.search(evidence)
     if not p or len(norm(p.group(1))) < MIN_PREMISE_QUOTE:
         return fail("scope-premise-missing")
@@ -356,7 +471,8 @@ def cmd_check(args):
 def main(argv):
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
         sys.stdout.write("usage: scope-assumptions.py extract --repo <dir> [--operator <file>]\n"
-                         "       scope-assumptions.py check --block <file> --claim <text> --evidence <text>\n")
+                         "       scope-assumptions.py check --block <file> --claim <text> --evidence <text>"
+                         " [--scope-map <scope.tsv>]\n")
         return 0 if len(argv) >= 2 else 2
     if argv[1] == "extract":
         return cmd_extract(argv[2:])

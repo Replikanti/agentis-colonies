@@ -1,0 +1,3 @@
+A1|token|README.md:15|Standard ERC20 only.
+A2|token|README.md:16|No fee-on-transfer or rebasing assets are supported.
+A3|exclusion|README.md:35|Findings that need the deployment scripts or the test harness.
