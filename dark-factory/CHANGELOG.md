@@ -14,6 +14,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-10-06
+
+**Requires:** agentis >= `1.22.7`
+
 ### Fixed
 
 - **Scope-aware refute no longer turns the in-scope file list into exclusions (#2292).** A contest README handed to
