@@ -37,6 +37,10 @@
 #   7) ARG GUARD:          `--jobs 0` and `--jobs abc` both fail fast with exit 2 + the flag and the value.
 #   8) READ-ONLY / NEVER-SUBMIT: discovery-results.json is byte-unchanged after the parallel run, and
 #      verify-findings.sh has no network / submission verb on any executable line.
+#   9) RETRY PASS (#2288): the golden carries a gate-ERROR candidate (Chrome), so every run above pins
+#      DF_REFUTE_RETRY_ERRORED=0 — which doubles as the proof that `0` is byte-identical to the pre-#2288 output.
+#      With the knob at its default (ON), `--jobs 1` == `--jobs 3` byte for byte, and both equal the golden plus
+#      `"retried": 2` on the Chrome row and the two retry totals — nothing else moves. The golden is never re-minted.
 #
 # The parallel-only assertions [SKIP] cleanly when the bash that runs verify-findings.sh lacks `wait -n`
 # (needs bash >= 4.3) — verify-findings.sh then degrades to serial, which the demo does not misreport.
@@ -209,6 +213,9 @@ cp "$RES" "$WORK/results.orig"   # byte-exact snapshot for the read-only asserti
 
 # DF_AGENT_MAX_ATTEMPTS=2 keeps the chrome candidate's retries fast without changing any verdict.
 export DF_AGENT_MAX_ATTEMPTS=2
+# #2288: the golden predates the retry pass and carries a gate ERROR (Chrome), so every golden-comparison run pins
+# the pass OFF. Section 9 runs it at its default (ON) and pins the exact delta.
+export DF_REFUTE_RETRY_ERRORED=0
 
 # ----------------------------------------------------------------------------------------------------------
 # (d) GOLDEN MINT — the maintainer path. Runs the DEFAULT (flag-free) invocation only, so it works against the
@@ -534,6 +541,52 @@ if grep -vE '^[[:space:]]*#' "$VERIFY" | grep -Eiq '(^|[^a-z])(curl|wget|submit)
   bad "8) verify-findings.sh invokes a network/submission verb on an executable line"
 else
   ok "8) verify-findings.sh has no network / no submission verb on any executable line (read-only, never submits)"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# (9) RETRY PASS (#2288): default ON; --jobs 1 == --jobs 3; the delta to the golden is exactly the retry keys.
+# ----------------------------------------------------------------------------------------------------------
+note "9) retry pass at its default: --jobs 1 == --jobs 3 == the golden + the retry keys ..."
+R1_OUT="$WORK/out-retry-j1"
+( unset DF_REFUTE_RETRY_ERRORED
+  "$VERIFY" --results "$RES" --repo "$REPO" --out "$R1_OUT" --gate refute --backend mock --agentis "$STUB" \
+    --jobs 1 >"$WORK/retry-j1.out" 2>"$WORK/retry-j1.err" )
+RC=$?
+[ "$RC" -eq 0 ] && ok "9) verify-findings.sh with the retry pass ON (default) exits 0" \
+  || { bad "9) the retry-ON --jobs 1 run exited $RC"; sed 's/^/      /' "$WORK/retry-j1.err" >&2; }
+EXP_RETRY="$WORK/expected-retry.json"
+python3 - "$GOLDEN" > "$EXP_RETRY" <<'PY'
+import sys, json
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+for e in d["errors"]:
+    if e["location"] == "contracts/Chrome.sol:stall:7":
+        e["retried"] = 2
+d["totals"]["retried_candidates"] = 1
+d["totals"]["errored_after_retry"] = 1
+print(json.dumps(d, indent=2))
+PY
+if cmp -s "$R1_OUT/verified_findings.json" "$EXP_RETRY"; then
+  ok "9) retry ON == the golden + \"retried\": 2 on the Chrome row + totals.retried_candidates/errored_after_retry (nothing else moved)"
+else
+  bad "9) the retry-ON result is not the golden plus the retry keys:"
+  diff "$EXP_RETRY" "$R1_OUT/verified_findings.json" | sed 's/^/      /' >&2
+fi
+grep -q '1 retried (0 recovered, 1 still errored)' "$WORK/retry-j1.err" \
+  && ok "9) the VERIFY banner names the retry pass (1 retried, 0 recovered, 1 still errored)" \
+  || bad "9) the VERIFY banner does not name the retry pass"
+if [ "$PAR_OK" -ne 1 ]; then
+  skip "9) retry ON under --jobs 3: the bash running verify-findings.sh lacks 'wait -n'"
+else
+  R3_OUT="$WORK/out-retry-j3"
+  ( unset DF_REFUTE_RETRY_ERRORED
+    "$VERIFY" --results "$RES" --repo "$REPO" --out "$R3_OUT" --gate refute --backend mock --agentis "$STUB" \
+      --jobs 3 >"$WORK/retry-j3.out" 2>"$WORK/retry-j3.err" )
+  RC=$?
+  [ "$RC" -eq 0 ] && ok "9) the retry-ON --jobs 3 run exits 0" \
+    || { bad "9) the retry-ON --jobs 3 run exited $RC"; sed 's/^/      /' "$WORK/retry-j3.err" >&2; }
+  cmp -s "$R1_OUT/verified_findings.json" "$R3_OUT/verified_findings.json" \
+    && ok "9) retry ON: verified_findings.json is byte-identical between --jobs 1 and --jobs 3" \
+    || { bad "9) retry ON: --jobs 3 diverged from --jobs 1"; diff "$R1_OUT/verified_findings.json" "$R3_OUT/verified_findings.json" | sed 's/^/      /' >&2; }
 fi
 
 # ----------------------------------------------------------------------------------------------------------

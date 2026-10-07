@@ -405,6 +405,22 @@ a live dev-twin A/B shows identical per-row recall; pinned offline by `demo-refu
 (29 -> 18 first reads on the notional archives, verdict-neutral) and the dev-only A/B driver live in
 `bench/corpus-bench/refute-batch-ab.sh`.
 
+**Retry pass for errored gates (`--retry-errored <n>`, #2288, default 2 = ON).** A refute gate that ran but
+answered `ERROR` — a flat-cyborg transport crash, or no `VERDICT|` reply after the in-call attempts — leaves its
+candidate unassessed, and those failures cluster under concurrent load. After the whole tier-1 walk has drained
+(and before the constraint aggregation and the tier-2 block), `verify-findings.sh` re-runs every such candidate
+serially, in manifest order, with exactly one gate in flight, up to `n` times, through the unchanged
+single-candidate gate (a batched member is re-read on its own). A recovered verdict is classified like any other
+(`verified[]` after the main-walk confirmations, `out_of_scope[]`, or dropped with its constraint harvested); a
+residual one stays in `errors[]` with the last attempt's reason and `"retried": <k>`. Earlier attempts are kept as
+flat files in `gates/<n>_<slug>/errored-attempt-<k>/` (k=0 = the main walk) and `retry.txt` records
+`<retries>\t<final verdict>`; when anything was retried, `totals` gains `retried_candidates` and
+`errored_after_retry` and the VERIFY banner names them. Never retried: preflight errors (malformed / unresolvable,
+deterministic), gate-process failures (skipped), tier-2 records, and the poc/symbolic gates. Retry sessions are
+logged as kind `retry` in `DF_REFUTE_SESSION_LOG`, so first-read counts stay comparable. `--retry-errored 0` or
+`DF_REFUTE_RETRY_ERRORED=0` switches it off and is byte-identical to the earlier output (pre-registered A/Bs on a
+new checkout should pin it); `run-zone-hunt.sh` STAGE 4 inherits the env. Pinned by `demo-refute-retry-errored.sh`.
+
 **Scope-aware refute (`--scope-docs <auto|file>`, #2257, default OFF).** A refute gate that never sees what a
 target *declares* out of scope cannot reject a finding whose exploit only works with an excluded asset or
 environment (a transfer-fee or rebasing token where the docs say standard tokens only). `verify-findings.sh

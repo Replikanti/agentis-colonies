@@ -14,6 +14,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Changed
+
+- **Errored refute gates get a serial retry pass (#2288, part 1).** About 4 % of held-out candidates reached the
+  refute gate, got an `ERROR` verdict (a flat-cyborg transport crash or no `VERDICT|` reply) and were never
+  assessed. `verify-findings.sh` now re-runs every gate-`ERROR` candidate after the tier-1 walk has drained, one at
+  a time, up to `--retry-errored <n>` / `DF_REFUTE_RETRY_ERRORED` times (default **2 = ON**). A recovered verdict is
+  classified like a main-walk one; a residual row stays in `errors[]` with `"retried": <k>`. When anything was
+  retried, `totals` gains `retried_candidates` and `errored_after_retry` and the VERIFY banner gains a suffix;
+  earlier attempts are archived in `gates/<n>_<slug>/errored-attempt-<k>/` next to a `retry.txt`. `run-refute.sh`
+  logs retry sessions as kind `retry` in `DF_REFUTE_SESSION_LOG`. **Behaviour change:** default-ON alters the
+  output of any run with a gate `ERROR` (more verified/refuted, fewer errored, extra sessions). Pre-registered A/Bs
+  on a new checkout should set `DF_REFUTE_RETRY_ERRORED=0`, which is byte-identical to the previous output; a run
+  without a gate `ERROR` is byte-identical either way. Pinned by `demo-refute-retry-errored.sh`.
+
 ## [0.13.1] - 2026-10-06
 
 **Requires:** agentis >= `1.22.7`

@@ -107,7 +107,11 @@
 #                    #1699 C6 fallback established); 0 = gate-only (record it, never re-ask); garbage => 1.
 #   DF_REFUTE_SESSION_LOG  #2284 telemetry, default UNSET = no file. When set, every `agentis go refuter.ag` attempt
 #                    appends `<epoch>\t<kind>\t<n>\t<file:fn>` to it — kind `batch` (n = batch size), `first`,
-#                    `reask` (the #2245 rubric re-ask) or `c6` (the #1699 fallback), n = 1 for the last three.
+#                    `reask` (the #2245 rubric re-ask), `c6` (the #1699 fallback) or `retry` (see below), n = 1 for
+#                    the last four.
+#   DF_REFUTE_RETRY_PASS  #2288 telemetry, set by verify-findings.sh's retry pass only (the attempt number). When
+#                    non-empty, the session note of a FIRST read says `retry` instead of `first`. Telemetry only: it
+#                    is on no exec.env_passthrough allowlist, so refuter.ag never reads it and the prompt is unchanged.
 #
 # Outputs: `<out>/refute-report.md` (the verdict table, an unchanged downstream contract) and — #1887 —
 # `<out>/refute-constraints.tsv`, one `<class>\t<file:fn>\t<constraint>` row per REFUTED candidate whose
@@ -923,7 +927,11 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
   # _rf_attempt reads CFN/CLS/SEV/EXPL/STAGED/AUX_STAGED/BRIEF_IN_RUN from the loop.
   # shellcheck disable=SC2317  # invoked by name through df_run_agent_validated
   _rf_attempt() {
-    if [ -n "$RUBRIC_GROUNDS" ]; then _rf_session_note reask 1 "$CFN"; else _rf_session_note first 1 "$CFN"; fi
+    # #2288: a first read made by verify-findings.sh's retry pass is logged as `retry`, so first-read counts stay
+    # comparable across runs; the re-ask and C6 kinds are unchanged.
+    if [ -n "$RUBRIC_GROUNDS" ]; then _rf_session_note reask 1 "$CFN"
+    elif [ -n "${DF_REFUTE_RETRY_PASS:-}" ]; then _rf_session_note retry 1 "$CFN"
+    else _rf_session_note first 1 "$CFN"; fi
     ( cd "$RUN" && env \
         CAND_FILE_FN="$CFN" \
         CAND_CLASS="$CLS" \
