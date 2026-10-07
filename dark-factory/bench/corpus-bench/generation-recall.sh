@@ -25,6 +25,20 @@
 # verify/verified_findings.json, the GENERATION-minus-VERIFIED DELTA (GT rows a hypothesis NAMED but the
 # fuzzer/refuter then failed to confirm — the #1716 expressiveness gap, made measurable) is printed too.
 #
+# UNMEASURED: ERRORED (#2288 M2) — CLASSIFIED, NEVER SUBTRACTED. A candidate whose refute gate RAN but answered
+# ERROR (a transport crash, no VERDICT| reply — even after verify-findings.sh's retry pass) lands in
+# verify/verified_findings.json errors[]: nobody ever assessed it. A GT row that ONLY such a candidate names is
+# therefore not a confirmation miss, it is UNMEASURED. When errors[] is non-empty (and --judge is off) the
+# adapter splits the discovery leads with --errored-select only|exclude (a location string is errored-only when
+# every candidate at it ended in errors[]) and both halves are scored with the SAME score-match.py arguments as
+# the headline. A row is `UNMEASURED (errored)` = HIT by the errored-only leads AND MISS by every other
+# generation lead AND MISS by verified_findings.json. It is annotated on its per-row line, listed on an
+# `errored candidates:` line, and the DELTA says `(of which K unmeasured: errored)`. NO numerator or denominator
+# moves: generation-recall, verified-recall and the DELTA are exactly the numbers they were. --json gains
+# `errored_candidates` and `unmeasured_errored_rows` per contest and in the aggregate (`null` per contest when
+# the split was not computed). Under --judge the split is SKIPPED with a note — it would cost two extra judged
+# scorings per contest, and a cache miss on them would abort the run (exit 4).
+#
 # MODES:
 #
 # TIER 2 (#2217 PR B) — SCORED SEPARATELY, NEVER FOLDED IN. A tier-2 record is a check a cell DERIVED and did
@@ -44,7 +58,13 @@
 #     (d) #2215 — the LOC/LOCHIT trailers are skipped by the recall reader, never counted as truth rows;
 #     (e) #2231 — corpus_role resolves dev / holdout / unknown from corpus.tsv; (f) #2217 — a tier2[] record
 #     at a GT location is projected ONLY under --include-tier2, is counted in tier2_hits, leaves the primary
-#     number untouched, and does so identically at --min-overlap 2 and 5.
+#     number untouched, and does so identically at --min-overlap 2 and 5; (h) #2288 M2 — over
+#     fixtures/generation-recall-errored/ the adapter's --errored-select only|exclude split is exact (only the
+#     errored-only locations; the two halves partition the default lead set), --from-work names EXACTLY the
+#     row only an errored-only candidate matches as UNMEASURED (not the row a second, assessed candidate at the
+#     same function also names, not the row whose location still has an assessed candidate, not the row the
+#     verified side HITs), every recall number equals the same run with errors[] emptied, and --judge skips
+#     the split with a note.
 #   --from-work <dir> [--id <id>]... [--min-overlap N] [--json]: read an already-fetched/hunted corpus-bench
 #     work dir and, per contest, project <id>/zone-hunt-out/discovery/discovery-results.merged.json +
 #     <id>/zone-hunt-out/deep-hunt/*/run/invariant_*.log through the adapter, score the union against
@@ -167,6 +187,31 @@ recall_hits() {
 $_sc
 RECALL_EOF
   printf '%s %s' "$_hits" "$_total"
+}
+
+# hit_ids <truth.tsv> <leads.json> — #2288 M2: print the HIT sev_ids, one per line, scored with exactly the
+# arguments recall_hits uses (same --min-overlap / --judge / --gt-dupes). Same trailer skip list. Fails when
+# score-match.py fails.
+hit_ids() {
+  _sc="$(python3 "$SCOREMATCH" "$1" "$2" --min-overlap "$MINOV" "${JUDGE_ARGS[@]}" \
+           ${DUPE_ARGS[@]+"${DUPE_ARGS[@]}"} 2>/dev/null)" || return 1
+  printf '%s\n' "$_sc" | awk -F'\t' '$1 ~ /^(LEADS|JUDGE|GATE|DUP|DUPHIT|LOC|LOCHIT)$/ {next} $1 != "" && $2 == "HIT" {print $1}'
+}
+
+# errored_info <verified_findings.json> — #2288 M2: print `<errors[] length> <retried_candidates|-> <errored_after_retry|->`
+# (the two totals keys exist only when verify-findings.sh's retry pass retried something). `0 - -` when unreadable.
+errored_info() {
+  python3 -c 'import sys, json
+try:
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as fh:
+        vf = json.load(fh)
+except (OSError, ValueError):
+    vf = {}
+vf = vf if isinstance(vf, dict) else {}
+errs = vf.get("errors") or []
+t = vf.get("totals") if isinstance(vf.get("totals"), dict) else {}
+r, e = t.get("retried_candidates"), t.get("errored_after_retry")
+print("%d %s %s" % (len(errs) if isinstance(errs, list) else 0, "-" if r is None else int(r), "-" if e is None else int(e)))' "$1" 2>/dev/null || printf '0 - -\n'
 }
 
 # ==========================================================================================================
@@ -294,6 +339,89 @@ if [ "$MODE" = "self-test" ]; then
     bad "(f) fixture missing: $FIX/{discovery-results.tier2.json,truth.tier2.tsv,expected-leads.tier2.json}"
   fi
 
+  # (h) #2288 M2: UNMEASURED (errored). The fixture has 7 candidates, 4 of them in errors[]: skim:61 (E-1, the
+  #     only name of its row), sweep:88 (E-2, whose row an ASSESSED sweep:90 candidate also names), one of the two
+  #     settle:120 candidates (E-3, so that location is NOT errored-only), and rebase:30 (E-4, whose row the
+  #     verified side HITs through an invariant-hunt finding). Exactly E-1 may come out UNMEASURED, and no
+  #     recall number may differ from the same work dir with errors[] emptied.
+  E_FIX="$HERE/fixtures/generation-recall-errored"
+  if [ -f "$E_FIX/truth.tsv" ] && [ -f "$E_FIX/discovery-results.merged.json" ] && [ -f "$E_FIX/verified_findings.json" ]; then
+    e_locs() { python3 "$ADAPTER" --from-discovery "$E_FIX/discovery-results.merged.json" "$@" 2>/dev/null \
+                 | awk -F'"' '/"location":/ {print $4}' | sort | tr '\n' ' '; }
+    E_ONLY="$(e_locs --errored-from "$E_FIX/verified_findings.json" --errored-select only)"
+    E_EXCL="$(e_locs --errored-from "$E_FIX/verified_findings.json" --errored-select exclude)"
+    E_ALL="$(e_locs)"
+    E_UNION="$(printf '%s%s' "$E_ONLY" "$E_EXCL" | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ')"
+    python3 "$ADAPTER" --from-discovery "$E_FIX/discovery-results.merged.json" --errored-select only >/dev/null 2>&1; e_rc_half=$?
+    python3 "$ADAPTER" --from-invariants "$FIX/invariant-targets.txt" --errored-from "$E_FIX/verified_findings.json" \
+      --errored-select only >/dev/null 2>&1; e_rc_nodisc=$?
+    if [ "$E_ONLY" = "src/Pool.sol:skim:61 src/Pool.sol:sweep:88 src/Vault.sol:rebase:30 " ] && [ "$E_UNION" = "$E_ALL" ] \
+       && [ "$e_rc_half" -eq 2 ] && [ "$e_rc_nodisc" -eq 2 ]; then
+      ok "(h1) --errored-select only = the 3 errored-only locations (settle:120 keeps an assessed twin), only+exclude = the default lead set, half / discovery-less flag use exits 2"
+    else
+      bad "(h1) errored-only split wrong: only='$E_ONLY' exclude='$E_EXCL' all='$E_ALL' (bad-usage rc $e_rc_half/$e_rc_nodisc, want 2/2)"
+    fi
+
+    E_W="$(mktemp -d)"
+    for _v in err clean; do
+      mkdir -p "$E_W/$_v/efx/zone-hunt-out/discovery" "$E_W/$_v/efx/zone-hunt-out/verify"
+      cp "$E_FIX/truth.tsv" "$E_W/$_v/efx/truth.tsv"
+      cp "$E_FIX/discovery-results.merged.json" "$E_W/$_v/efx/zone-hunt-out/discovery/"
+    done
+    cp "$E_FIX/verified_findings.json" "$E_W/err/efx/zone-hunt-out/verify/verified_findings.json"
+    python3 -c 'import sys, json
+vf = json.load(open(sys.argv[1], encoding="utf-8"))
+vf["errors"] = []
+vf["totals"] = {"candidates": 7, "verified": 1, "errored": 0, "dropped_subfloor": 0}
+json.dump(vf, open(sys.argv[2], "w", encoding="utf-8"), indent=2)' "$E_FIX/verified_findings.json" "$E_W/clean/efx/zone-hunt-out/verify/verified_findings.json"
+    : > "$E_W/corpus.tsv"
+    E_SELF="$HERE/$(basename "$0")"
+    E_ERR_LOG="$(bash "$E_SELF" --from-work "$E_W/err" --corpus "$E_W/corpus.tsv" --json 2>&1 >"$E_W/err.json")"
+    E_CLEAN_LOG="$(bash "$E_SELF" --from-work "$E_W/clean" --corpus "$E_W/corpus.tsv" --json 2>&1 >"$E_W/clean.json")"
+    e_num() { python3 -c 'import sys, json
+c = json.load(open(sys.argv[1]))["contests"][0]
+f = lambda v: "%s/%s" % (v["hits"], v["total"]) if isinstance(v, dict) else str(v)
+print(" ".join("%s=%s" % (k, f(c[k])) for k in ("gt_total", "generation_hits", "verified_hits", "high", "medium", "rare", "mid", "consensus", "rare_reachable", "location_credited")))' "$1" 2>/dev/null; }
+    e_key() { python3 -c 'import sys, json
+d = json.load(open(sys.argv[1]))
+print(d["contests"][0][sys.argv[2]], d["aggregate"][sys.argv[2]])' "$1" "$2" 2>/dev/null; }
+    if printf '%s\n' "$E_ERR_LOG" | grep -Fq "[efx] errored candidates: 4 (retried 5, errored after retry 4); 1 GT row(s) matched ONLY by an errored candidate — UNMEASURED: E-1" \
+       && [ "$(printf '%s\n' "$E_ERR_LOG" | grep -c 'UNMEASURED (errored): only a candidate')" -eq 1 ] \
+       && printf '%s\n' "$E_ERR_LOG" | grep -q 'HIT E-1 .*UNMEASURED (errored)' \
+       && printf '%s\n' "$E_ERR_LOG" | grep -Fq 'DELTA 3 (of which 1 unmeasured: errored)' \
+       && [ "$(e_key "$E_W/err.json" errored_candidates)" = "4 4" ] && [ "$(e_key "$E_W/err.json" unmeasured_errored_rows)" = "1 1" ]; then
+      ok "(h2) --from-work names exactly E-1 UNMEASURED (errored) — not E-2 (assessed sweep:90 twin), E-3 (settle:120 not errored-only), E-4 (verified HIT); DELTA annotated, --json carries errored_candidates 4 / unmeasured_errored_rows 1"
+    else
+      bad "(h2) the UNMEASURED (errored) classification over the fixture is wrong"; printf '%s\n' "$E_ERR_LOG" | grep -E 'errfx|efx|UNMEASURED|errored' >&2
+    fi
+    E_N_ERR="$(e_num "$E_W/err.json")"; E_N_CLEAN="$(e_num "$E_W/clean.json")"
+    if [ -n "$E_N_ERR" ] && [ "$E_N_ERR" = "$E_N_CLEAN" ] && [ "$(e_key "$E_W/clean.json" unmeasured_errored_rows)" = "0 0" ] \
+       && ! printf '%s\n' "$E_CLEAN_LOG" | grep -q 'errored candidates' \
+       && ! printf '%s\n' "$E_CLEAN_LOG" | grep -q 'unmeasured: errored'; then
+      ok "(h3) no numerator or denominator moves: every recall number equals the errors[]-emptied run ($E_N_ERR), which prints no errored line"
+    else
+      bad "(h3) the errored classification moved a number or leaked into a clean run: err='$E_N_ERR' clean='$E_N_CLEAN'"
+    fi
+    # --judge: a stub judge that answers NO-MATCH for every lead. The split must be skipped with a note and
+    # unmeasured_errored_rows must read null — never a classification computed with a different ruler.
+    printf '%s\n' '#!/bin/sh' \
+      'lid="$(python3 -c '"'"'import sys, json; print(json.load(sys.stdin)["lead"]["id"])'"'"')"' \
+      'echo "VERDICT|$lid|NONE|NO-MATCH|90|stub"' > "$E_W/judge-stub.sh"
+    chmod +x "$E_W/judge-stub.sh"
+    E_J_LOG="$(bash "$E_SELF" --from-work "$E_W/err" --corpus "$E_W/corpus.tsv" --json --judge cmd \
+                 --judge-cmd "$E_W/judge-stub.sh" 2>&1 >"$E_W/judge.json")"
+    if printf '%s\n' "$E_J_LOG" | grep -Fq 'per-row UNMEASURED classification SKIPPED under --judge cmd' \
+       && [ "$(e_key "$E_W/judge.json" unmeasured_errored_rows)" = "None 0" ] \
+       && ! printf '%s\n' "$E_J_LOG" | grep -q 'UNMEASURED (errored): only'; then
+      ok "(h4) under --judge the errored split is skipped with a note (unmeasured_errored_rows null, no row annotated)"
+    else
+      bad "(h4) --judge did not skip the errored split cleanly"; printf '%s\n' "$E_J_LOG" | grep -E 'errored|UNMEASURED' >&2
+    fi
+    rm -rf "$E_W"
+  else
+    bad "(h) fixture missing: $E_FIX/{truth.tsv,discovery-results.merged.json,verified_findings.json}"
+  fi
+
   echo
   if [ "$FAILS" -eq 0 ]; then
     say "PASS — the generation-recall adapter projects breadth candidates + verdict-ignored invariant targets"
@@ -335,6 +463,8 @@ if [ "$MODE" = "from-work" ]; then
   # #2217 PR B: the SECONDARY tier-2 totals. Kept in their own accumulators (never added to G_HITS) so the
   # aggregate below cannot print a headline that quietly includes them. The caveat is printed ONCE per run.
   G_T2_HITS=0 ; G_T2_LEADS=0 ; T2_CAVEAT_DONE=0
+  # #2288 M2: errored candidates and the GT rows ONLY they name (UNMEASURED: errored) — reported, never subtracted.
+  G_ERR_CANDS=0 ; G_UNM_ROWS=0
 
   for id in $SEL_IDS; do
     truth="$WORK/$id/truth.tsv"
@@ -391,6 +521,51 @@ SCORE_EOF
     c_rare_total=0 ; c_rare_hits=0 ; c_mid_total=0 ; c_mid_hits=0 ; c_cons_total=0 ; c_cons_hits=0
     c_rare_reachable=0
 
+    # #2288 M2 — UNMEASURED (errored). Classified HERE, before the per-row lines, so each affected row is
+    # annotated where it is printed; nothing below this block reads it except those annotations, the count line
+    # and the DELTA note. Requires --judge off: in judge mode the two extra scorings would cost judge calls.
+    verified_json="$WORK/$id/zone-hunt-out/verify/verified_findings.json"
+    declare -A UNMEASURED=()
+    e_cands=0 ; e_note="" ; unm_rows=0 ; unm_ids="" ; unm_json=0 ; unm_line=""
+    if [ -f "$verified_json" ]; then
+      read -r e_cands e_retried e_after <<ERR_EOF
+$(errored_info "$verified_json")
+ERR_EOF
+      case "$e_cands" in ''|*[!0-9]*) e_cands=0 ;; esac
+      if [ "${e_retried:--}" != "-" ]; then e_note="retried $e_retried, errored after retry ${e_after:-?}"
+      else e_note="no retry pass recorded"; fi
+    fi
+    if [ "$e_cands" -gt 0 ]; then
+      unm_json="null"
+      if [ "$JUDGE" != "off" ]; then
+        unm_line="errored candidates: $e_cands ($e_note); per-row UNMEASURED classification SKIPPED under --judge $JUDGE (it would add two judged scorings per contest) — re-run with --judge off to name the rows"
+      elif [ ! -f "$disc" ]; then
+        unm_line="errored candidates: $e_cands ($e_note); no discovery-results.merged.json, so no row can be classified UNMEASURED"
+      else
+        e_only="$WORK/$id/generation-leads.errored-only.json"
+        e_excl="$WORK/$id/generation-leads.errored-exclude.json"
+        if python3 "$ADAPTER" "${ADP[@]}" --errored-from "$verified_json" --errored-select only > "$e_only" 2>/dev/null \
+           && python3 "$ADAPTER" "${ADP[@]}" --errored-from "$verified_json" --errored-select exclude > "$e_excl" 2>/dev/null \
+           && ids_only="$(hit_ids "$truth" "$e_only")" && ids_excl="$(hit_ids "$truth" "$e_excl")" \
+           && ids_ver="$(hit_ids "$truth" "$verified_json")"; then
+          for _sid in $ids_only; do
+            case "
+$ids_excl
+$ids_ver
+" in *"
+$_sid
+"*) continue ;; esac
+            UNMEASURED["$_sid"]=1
+            unm_rows=$((unm_rows + 1)); unm_ids="$unm_ids${unm_ids:+ }$_sid"
+          done
+          unm_json="$unm_rows"
+          unm_line="errored candidates: $e_cands ($e_note); $unm_rows GT row(s) matched ONLY by an errored candidate — UNMEASURED: ${unm_ids:-none}"
+        else
+          unm_line="errored candidates: $e_cands ($e_note); the errored-only split failed (adapter / score-match.py), rows NOT classified"
+        fi
+      fi
+    fi
+
     # #2215 REACHABLE RARE. A rare row the matcher can never resolve is a denominator the pipeline cannot move,
     # so a headline that does not state it invites reading a matcher bound as a capability bound. With a
     # 6-column truth.tsv (extract-gt.sh --code) "reachable" = the row carries a resolved `<file>:<function>`
@@ -420,7 +595,8 @@ SCORE_EOF
       elif [ "$rarity" -le 8 ] 2>/dev/null; then c_mid_total=$((c_mid_total + 1));  [ "$hit" = 1 ] && c_mid_hits=$((c_mid_hits + 1))
       else                                       c_cons_total=$((c_cons_total + 1)); [ "$hit" = 1 ] && c_cons_hits=$((c_cons_hits + 1))
       fi
-      say "  [$id] $([ "$hit" = 1 ] && echo HIT || echo MISS) $sev_id (rarity $rarity): $title"
+      unm_tag=""; [ "${UNMEASURED[$sev_id]:-0}" = "1" ] && unm_tag=" — UNMEASURED (errored): only a candidate the refute gate never assessed names it"
+      say "  [$id] $([ "$hit" = 1 ] && echo HIT || echo MISS) $sev_id (rarity $rarity): $title$unm_tag"
     done < "$truth"
 
     role="$(corpus_role "$id")"
@@ -465,20 +641,21 @@ SCORE_EOF
     fi
 
     # GENERATION-minus-VERIFIED DELTA — GT rows a hypothesis NAMED but the fuzzer/refuter never confirmed.
-    verified_json="$WORK/$id/zone-hunt-out/verify/verified_findings.json"
     v_hits="" ; v_total=""
+    [ -n "$unm_line" ] && say "  [$id] $unm_line"
+    unm_delta=""; [ "$unm_rows" -gt 0 ] && unm_delta=" (of which $unm_rows unmeasured: errored)"
     if [ -f "$verified_json" ]; then
       VR="$(recall_hits "$truth" "$verified_json")" || VR=""
       if [ -n "$VR" ]; then
         v_hits="${VR%% *}"; v_total="${VR##* }"
-        say "  [$id] verified-recall $v_hits/$v_total; generation-minus-verified DELTA $((c_hits - v_hits)) (GT rows NAMED by a hypothesis but not confirmed by the fuzzer/refuter)"
+        say "  [$id] verified-recall $v_hits/$v_total; generation-minus-verified DELTA $((c_hits - v_hits))$unm_delta (GT rows NAMED by a hypothesis but not confirmed by the fuzzer/refuter)"
         G_VER_TOTAL=$((G_VER_TOTAL + v_total)); G_VER_HITS=$((G_VER_HITS + v_hits)); ANY_VERIFIED=1
       fi
     else
       say "  [$id] no verify/verified_findings.json — generation-only (no DELTA)"
     fi
 
-    CONTEST_JSON+=("{\"id\":\"$id\",\"role\":\"$role\",\"gt_total\":$c_total,\"generation_hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"rare_reachable\":$c_rare_reachable,\"location_credited\":$loc_credited,\"tier2_hits\":$t2_hits,\"tier2_leads\":$t2_leads,\"verified_hits\":${v_hits:-null}}")
+    CONTEST_JSON+=("{\"id\":\"$id\",\"role\":\"$role\",\"gt_total\":$c_total,\"generation_hits\":$c_hits,\"high\":{\"total\":$c_h_total,\"hits\":$c_h_hits},\"medium\":{\"total\":$c_m_total,\"hits\":$c_m_hits},\"rare\":{\"total\":$c_rare_total,\"hits\":$c_rare_hits},\"mid\":{\"total\":$c_mid_total,\"hits\":$c_mid_hits},\"consensus\":{\"total\":$c_cons_total,\"hits\":$c_cons_hits},\"rare_reachable\":$c_rare_reachable,\"location_credited\":$loc_credited,\"tier2_hits\":$t2_hits,\"tier2_leads\":$t2_leads,\"verified_hits\":${v_hits:-null},\"errored_candidates\":$e_cands,\"unmeasured_errored_rows\":$unm_json}")
 
     G_TOTAL=$((G_TOTAL + c_total)); G_HITS=$((G_HITS + c_hits))
     G_H_TOTAL=$((G_H_TOTAL + c_h_total)); G_H_HITS=$((G_H_HITS + c_h_hits))
@@ -488,6 +665,7 @@ SCORE_EOF
     G_CONS_TOTAL=$((G_CONS_TOTAL + c_cons_total)); G_CONS_HITS=$((G_CONS_HITS + c_cons_hits))
     G_RARE_REACHABLE=$((G_RARE_REACHABLE + c_rare_reachable)); G_LOC_CREDITED=$((G_LOC_CREDITED + loc_credited))
     G_T2_HITS=$((G_T2_HITS + t2_hits)); G_T2_LEADS=$((G_T2_LEADS + t2_leads))
+    G_ERR_CANDS=$((G_ERR_CANDS + e_cands)); G_UNM_ROWS=$((G_UNM_ROWS + unm_rows))
   done
 
   say ""
@@ -500,15 +678,18 @@ SCORE_EOF
   say "location-credited rows   : $G_LOC_CREDITED (credited ONLY by a GT location pair; the same replay without them reads $((G_HITS - G_LOC_CREDITED))/$G_TOTAL)"
   say "tier-2 (SECONDARY, #2217): +$G_T2_HITS GT row(s) credited only when tier-2 leads are added ($G_T2_LEADS projected) — NEVER folded into the overall/severity/rarity numbers above, which are scored from lead sets containing no tier-2 lead"
   if [ "$ANY_VERIFIED" -eq 1 ]; then
-    say "generation-minus-verified: generation $G_HITS/$G_TOTAL vs verified $G_VER_HITS/$G_VER_TOTAL, DELTA $((G_HITS - G_VER_HITS)) (NAMED but unconfirmed — the #1716 expressiveness gap)"
+    g_unm_delta=""; [ "$G_UNM_ROWS" -gt 0 ] && g_unm_delta=" (of which $G_UNM_ROWS unmeasured: errored)"
+    say "generation-minus-verified: generation $G_HITS/$G_TOTAL vs verified $G_VER_HITS/$G_VER_TOTAL, DELTA $((G_HITS - G_VER_HITS))$g_unm_delta (NAMED but unconfirmed — the #1716 expressiveness gap)"
   fi
+  [ "$G_ERR_CANDS" -gt 0 ] && say "errored candidates (#2288): $G_ERR_CANDS never assessed by the refute gate; $G_UNM_ROWS GT row(s) named ONLY by one are UNMEASURED (errored) — counted in the numbers above, not removed from them"
 
   if [ "$JSON" -eq 1 ]; then
     joined="$(IFS=,; echo "${CONTEST_JSON[*]:-}")"
-    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"generation_hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"rare_reachable":%d,"location_credited":%d,"tier2_hits":%d,"tier2_leads":%d,"verified_hits":%d,"verified_total":%d}}\n' \
+    printf '{"contests":[%s],"aggregate":{"gt_total":%d,"generation_hits":%d,"high":{"total":%d,"hits":%d},"medium":{"total":%d,"hits":%d},"rare":{"total":%d,"hits":%d},"mid":{"total":%d,"hits":%d},"consensus":{"total":%d,"hits":%d},"rare_reachable":%d,"location_credited":%d,"tier2_hits":%d,"tier2_leads":%d,"verified_hits":%d,"verified_total":%d,"errored_candidates":%d,"unmeasured_errored_rows":%d}}\n' \
       "$joined" "$G_TOTAL" "$G_HITS" "$G_H_TOTAL" "$G_H_HITS" "$G_M_TOTAL" "$G_M_HITS" \
       "$G_RARE_TOTAL" "$G_RARE_HITS" "$G_MID_TOTAL" "$G_MID_HITS" "$G_CONS_TOTAL" "$G_CONS_HITS" \
-      "$G_RARE_REACHABLE" "$G_LOC_CREDITED" "$G_T2_HITS" "$G_T2_LEADS" "$G_VER_HITS" "$G_VER_TOTAL"
+      "$G_RARE_REACHABLE" "$G_LOC_CREDITED" "$G_T2_HITS" "$G_T2_LEADS" "$G_VER_HITS" "$G_VER_TOTAL" \
+      "$G_ERR_CANDS" "$G_UNM_ROWS"
   fi
   exit 0
 fi

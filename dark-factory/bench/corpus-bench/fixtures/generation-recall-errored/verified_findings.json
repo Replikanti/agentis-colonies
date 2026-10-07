@@ -1,0 +1,32 @@
+{
+  "repo": "generation-recall-errored-fixture",
+  "gate": "refute",
+  "verified": [
+    {
+      "location": "src/Vault.sol:deposit:44",
+      "file": "src/Vault.sol",
+      "class": "C2",
+      "severity": "Medium",
+      "exploit": "deposit rounds minted shares up",
+      "poc_sketch": "deposit 1 wei repeatedly and compare shares"
+    },
+    {
+      "location": "src/Vault.sol:rebase",
+      "file": "src/Vault.sol",
+      "class": "invariant",
+      "severity": "High",
+      "exploit": "invariant_supply_backed broken: rebase mints supply the assets do not back",
+      "poc_sketch": "",
+      "source": "invariant-hunt"
+    }
+  ],
+  "errors": [
+    {"location": "src/Pool.sol:skim:61", "file": "src/Pool.sol", "reason": "LLM transport error after 5 attempts (not assessed)", "retried": 2},
+    {"location": "src/Pool.sol:sweep:88", "file": "src/Pool.sol", "reason": "no VERDICT| line in the refuter reply (not assessed)", "retried": 2},
+    {"location": "src/Vault.sol:settle:120", "file": "src/Vault.sol", "reason": "LLM transport error after 5 attempts (not assessed)", "retried": 2},
+    {"location": "src/Vault.sol:rebase:30", "file": "src/Vault.sol", "reason": "LLM transport error after 5 attempts (not assessed)", "retried": 2}
+  ],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {"candidates": 7, "verified": 1, "errored": 4, "dropped_subfloor": 0, "retried_candidates": 5, "errored_after_retry": 4}
+}

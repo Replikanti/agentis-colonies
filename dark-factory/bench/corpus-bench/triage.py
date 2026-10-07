@@ -28,8 +28,11 @@
 #   a. discovery/discovery-results.merged.json   cells[].candidates[] + top-level tier2[] (tier 2)
 #   b. verify/verified_findings.json             verified[] (any source: breadth, invariant-hunt, vector-hunt),
 #                                                refuted[], out_of_scope[], errors[], tier2[] verdicts
-#   c. verify/gates*/<n>_*/                      candidate.manifest (field 1 = location), verdict.txt, and
-#                                                `REFUTE-GROUND|` lines ONLY from refute-out/run/refute_*.log
+#   c. verify/gates*/<n>_*/                      candidate.manifest (field 1 = location), verdict.txt, retry.txt
+#                                                (#2288: `<retries>\t<final verdict>`, shown as `[retried <k>]`
+#                                                on the gate evidence), and `REFUTE-GROUND|` lines ONLY from
+#                                                refute-out/run/refute_*.log (an errored-attempt-<k>/ archive of an
+#                                                earlier retry attempt is never read)
 #   d. discovery/<zone>/run/hunt_*.log*          the cell logs and their text companions
 #                                                (`.untraced-attempt-<n>`, `.rubric-attempt-<n>`): DISMISS| lines
 #                                                at an anchor + word-boundary mentions of the anchor function
@@ -41,11 +44,12 @@
 # A superseded `discovery/<zone>.attempt-<n>/` dir (moved aside by a `--rehunt-gaps` pass) is EXCLUDED unless
 # `--include-superseded` is given, and is then labelled `superseded` in every evidence line it contributes.
 #
-# PROPOSED CLASS — the first match wins, over the strongest evidence across all anchors of the row:
+# PROPOSED CLASS — the first match wins, over the strongest evidence across all anchors of the row (class 5's
+# `errored` sub is checked right after class 1, before class 2):
 #   0. unanchored        no column-6 anchor and no keyword anchor (checked first: nothing can match it).
 #   1. HIT-candidate     level=verified   a verified[] entry at an anchor;
-#                        level=unassessed failing that, a tier-1 candidate at an anchor whose gate did NOT
-#                                         refute it (REAL but not kept, ERROR, skipped, or no gate at all);
+#                        level=unassessed failing that, a tier-1 candidate at an anchor whose gate neither
+#                                         refuted it nor errored (REAL but not kept, skipped, or no gate at all);
 #                        level=tier2      failing that, an unrefuted tier-2 record at an anchor.
 #   2. refuted           candidates exist at an anchor and EVERY one was refuted (a non-confirm gate verdict,
 #                        refuted[] or out_of_scope[]); evidence = the verdict reason + that gate's REFUTE-GROUND|.
@@ -56,9 +60,15 @@
 #                        mentions it (the slicer's same-file callee closure, #2150, pulls unlisted internal
 #                        helpers into the payload, so a mentioned function was visibly in scope — and a zone
 #                        that never answered cannot show that it was not).
-#   5. unmeasured        no owning zone was measured: it has no run tree, it is named by --unmeasured, or every
-#                        one of its cells failed (.timeout / .novalid). A zone that did not run must never read
-#                        as a generation miss.
+#   5. unmeasured        sub=errored (#2288, checked before class 2): no class-1 evidence, and a tier-1 candidate
+#                        at an anchor ended in errors[] — its refute gate RAN and answered ERROR (a transport
+#                        crash, no VERDICT| reply), also after verify-findings.sh's retry pass. Nobody assessed
+#                        it, so the row is not a refute verdict even when the anchor's other candidates were
+#                        refuted (`refuted` needs EVERY candidate refuted). A per-run note prints the run's
+#                        `errored candidates: N (retried R, errored after retry E)` from its totals.
+#                        Otherwise: no owning zone was measured — it has no run tree, it is named by
+#                        --unmeasured, or every one of its cells failed (.timeout / .novalid). A zone that did
+#                        not run must never read as a generation miss.
 #   6. generation        an owning zone ran and nothing above matched. sub=examined when a cell log or an
 #                        INVARIANT| target with a JUDGED verdict (FINDING / CLEAN — a CLEAN invariant at the
 #                        location is a generation examination, not a HIT) mentions the function; sub=unseen
@@ -471,7 +481,8 @@ class Run:
                                     "invariant", relpath, i, i, line[idx:].strip(), "not-judged")))
 
     def _gates(self, subdir):
-        """[(location_string, verdict, reason, relpath, [ground evidence])] in gate-number order."""
+        """[(location_string, verdict, reason, relpath, [ground evidence], retries)] in gate-number order;
+        retries is retry.txt's field 1 (#2288), "" when the candidate was never retried."""
         out = []
         gdir = os.path.join(self.root, "verify", subdir)
         if not os.path.isdir(gdir):
@@ -487,6 +498,10 @@ class Run:
             if vlines:
                 v = vlines[0].split("\t", 1)
                 verdict, reason = v[0].strip(), (v[1] if len(v) > 1 else "")
+            retries = ""
+            rlines = read_lines(os.path.join(cell, "retry.txt"))
+            if rlines:
+                retries = rlines[0].split("\t", 1)[0].strip()
             grounds = []
             rrun = os.path.join(cell, "refute-out", "run")
             if os.path.isdir(rrun):
@@ -499,7 +514,7 @@ class Run:
                         idx = line.find("REFUTE-GROUND|")
                         if idx >= 0:
                             grounds.append(self.ev("refute-ground", relpath, i, i, line[idx:].strip()))
-            out.append((loc, verdict, reason, self.rel(cell), grounds))
+            out.append((loc, verdict, reason, self.rel(cell), grounds, retries))
         return out
 
     def _read_candidates(self):
@@ -512,6 +527,16 @@ class Run:
             vf = {}
         if not isinstance(vf, dict):
             vf = {}
+        # #2288: how many candidates the refute gate never assessed, and what the retry pass did about them
+        totals = vf.get("totals") if isinstance(vf.get("totals"), dict) else {}
+        n_err = totals.get("errored", len(vf.get("errors", []) or []))
+        if isinstance(n_err, int) and n_err > 0:
+            if "retried_candidates" in totals:
+                retry = "retried %s, errored after retry %s" % (totals.get("retried_candidates"),
+                                                                 totals.get("errored_after_retry", "?"))
+            else:
+                retry = "no retry pass recorded"
+            self.notes.append("%s: errored candidates: %d (%s)" % (self.label, n_err, retry))
         # b. verified[] (any source), refuted[], out_of_scope[], errors[]
         json_outcome = {}   # location string -> (outcome, evidence)
         for arr, kind, outcome in (("refuted", "refuted", "refuted"), ("out_of_scope", "out-of-scope", "refuted"),
@@ -592,10 +617,11 @@ class Run:
     def _resolve(self, c, gates, json_outcome):
         queue = gates.get(c["loc"], [])
         if queue:
-            loc, verdict, reason, relcell, grounds = queue.pop(0)
+            loc, verdict, reason, relcell, grounds, retries = queue.pop(0)
             c["outcome"] = self._outcome_of(verdict)
             c["ev"].append(self.ev("gate", relcell + "/verdict.txt", 1, 0,
-                                   "%s %s" % (verdict or "(no verdict.txt: skipped)", reason)))
+                                   "%s %s%s" % (verdict or "(no verdict.txt: skipped)", reason,
+                                                " [retried %s]" % retries if retries else "")))
             c["ev"].extend(grounds)
             return
         for outcome, e in json_outcome.get(c["loc"], []):
@@ -730,7 +756,8 @@ def classify(row, runs, zones_map, scope, forced, rare_max):
         uniq.append(e[-1])
     out["evidence"] = uniq
 
-    t1_open = [c for c in cands if c["tier"] == 1 and c["outcome"] != "refuted"]
+    t1_open = [c for c in cands if c["tier"] == 1 and c["outcome"] not in ("refuted", "error")]
+    t1_err = [c for c in cands if c["tier"] == 1 and c["outcome"] == "error"]
     t2_open = [c for c in cands if c["tier"] == 2 and c["outcome"] != "refuted"]
     if verified:
         out["proposed"], out["level"] = "HIT-candidate", "verified"
@@ -738,6 +765,10 @@ def classify(row, runs, zones_map, scope, forced, rare_max):
         out["proposed"], out["level"] = "HIT-candidate", "unassessed"
     elif t2_open:
         out["proposed"], out["level"] = "HIT-candidate", "tier2"
+    elif t1_err:
+        # #2288: a gate that RAN and answered ERROR assessed nothing — the row is unmeasured, never `refuted`,
+        # even when the anchor's other candidates were refuted
+        out["proposed"], out["sub"] = "unmeasured", "errored"
     elif cands:
         out["proposed"] = "refuted"
     elif dismiss:
@@ -1092,6 +1123,49 @@ def self_test():
         else:
             bad("levels %s / anchor sources %s incomplete" % (sorted(levels), sorted(srcs)))
 
+        # #2288: a candidate whose gate RAN and answered ERROR (also after the retry pass) assessed nothing, so its
+        # row is unmeasured/errored; the gate evidence carries the retry count and the run note its totals
+        tx3 = rows.get("TX-3", [""] * 17)
+        if tx3[6:9] == ["unmeasured", "errored", "-"] and "[retried 2]" in md \
+                and "run-core: errored candidates: 1 (retried 1, errored after retry 1)" in md \
+                and rows.get("TX-15", [""] * 17)[6:9] == ["HIT-candidate", "-", "unassessed"]:
+            ok("an errored-only row (TX-3) is unmeasured/errored with `[retried 2]` gate evidence and the run's "
+               "errored-candidates note; a gate-less candidate (TX-15) still proposes HIT-candidate/unassessed")
+        else:
+            bad("errored / gate-less classification wrong: TX-3 %s, TX-15 %s" % (
+                tx3[6:9], rows.get("TX-15", ["?"] * 17)[6:9]))
+
+        def with_skim_twin(tag, verdict):
+            """run-core plus a second tier-1 candidate at Pool.sol:skim, gated `verdict` (None = no gate)."""
+            root = os.path.join(tmp, tag + "-tree")
+            shutil.copytree(os.path.join(fx, "run-core"), os.path.join(root, "run-core"), symlinks=True)
+            mp = os.path.join(root, "run-core", "discovery", "discovery-results.merged.json")
+            with open(mp, encoding="utf-8") as fh:
+                merged = json.load(fh)
+            merged["cells"][0]["candidates"].append(
+                "src/core/Pool.sol:skim:70|class=C6|Medium|skim skips the reserve sync|skim twice in one block")
+            with open(mp, "w", encoding="utf-8") as fh:
+                json.dump(merged, fh, indent=2)
+            if verdict:
+                cell = os.path.join(root, "run-core", "verify", "gates", "4_src_core_Pool_sol_skim")
+                os.makedirs(cell)
+                with open(os.path.join(cell, "candidate.manifest"), "w", encoding="utf-8") as fh:
+                    fh.write("src/core/Pool.sol:skim:70|class=C6|Medium|skim skips the reserve sync|src/core/Pool.sol\n")
+                with open(os.path.join(cell, "verdict.txt"), "w", encoding="utf-8") as fh:
+                    fh.write(verdict + "\tthe reserve is synced before the surplus is read\n")
+            return go(tag, ["--run-root", root, "--map", os.path.join(fx, "map", "zones.json")])
+
+        rc12, tsv12, _, _ = with_skim_twin("err-refuted", "REFUTED")
+        rc13, tsv13, _, _ = with_skim_twin("err-open", None)
+        r12 = rows_of(tsv12).get("TX-3", ["?"] * 17)
+        r13 = rows_of(tsv13).get("TX-3", ["?"] * 17)
+        if rc12 == 0 and rc13 == 0 and r12[6:8] == ["unmeasured", "errored"] and r12[10:12] == ["2", "1"] \
+                and r13[6:9] == ["HIT-candidate", "-", "unassessed"]:
+            ok("errored + refuted at one anchor stays unmeasured/errored (refuted needs EVERY candidate refuted); "
+               "errored + an open candidate stays HIT-candidate/unassessed")
+        else:
+            bad("errored+refuted -> %s (c/r %s), errored+open -> %s" % (r12[6:8], r12[10:12], r13[6:9]))
+
         rc2, tsv2, md2, _ = go("again", full)
         if rc2 == 0 and tsv2 == tsv and md2 == md:
             ok("byte-identical output on a second run (deterministic)")
@@ -1204,7 +1278,7 @@ def self_test():
             bad("a forced VOID class is not the sub-reason: %s" % [rows11.get(k, ["?"] * 8)[6:8] for k in gen])
 
         # the staged single-zone map under-reports: without --map the never-run zone is invisible
-        unm = [k for k, f in rows.items() if f[6] == "unmeasured"]
+        unm = [k for k, f in rows.items() if f[6] == "unmeasured" and f[7] != "errored"]  # errored is map-free
         rc8, tsv8, md8, _ = go("nomap", ["--run-root", fx])
         rows8 = rows_of(tsv8)
         if rc8 == 0 and unm and all(rows8[k][6] == "scope-out-of-map" for k in unm) and "UNDER-REPORTS" in md8:

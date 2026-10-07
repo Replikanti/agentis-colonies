@@ -27,6 +27,15 @@
 #       GENERATION hit — the fuzzer's failure to confirm is the generation-vs-confirmation delta, not a miss
 #       of the generation step. A glob argument matching nothing is an empty (not an error) result; a plain
 #       path that is unreadable is exit 3.
+#   --errored-from <verified_findings.json> --errored-select only|exclude   (#2288 M2; both or neither, and only
+#       with --from-discovery) split the discovery leads by whether the refute gate ever ASSESSED them. A
+#       location string (stripped) is ERRORED-ONLY when its errors[] count in <verified_findings.json> is at
+#       least its tier-1 candidate count in the merged file (and that count is > 0): every candidate there ended
+#       in errors[], so no verdict exists for it. `only` emits just the tier-1 discovery leads at errored-only
+#       locations (no invariant, no tier-2 lead); `exclude` emits every OTHER lead the same flags would emit
+#       (the remaining discovery leads, tier-2 leads under --include-tier2, and the invariant leads).
+#       generation-recall.sh scores both sets to name the GT rows that ONLY an unassessed candidate matched.
+#       Without these flags the output is byte-identical to the pre-#2288 adapter.
 #
 # Output (stdout): `{"verified":[ ... ]}` as pretty JSON (indent=2, sort_keys) + trailing newline.
 # Exit: 0 on a well-formed run ; 2 bad args ; 3 unreadable/malformed input.
@@ -117,6 +126,36 @@ def leads_from_tier2(data):
     return leads
 
 
+def errored_only_locations(discovery_path, errored_path):
+    """#2288 M2: the set of stripped location strings whose EVERY tier-1 candidate ended in the verify stage's
+    errors[] (errors count >= candidate count > 0). Keyed on the location string verbatim, the same key
+    verify-findings.sh writes into errors[] (manifest field 1 = the candidate string's first field)."""
+    try:
+        with open(discovery_path, encoding="utf-8", errors="ignore") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as e:
+        die(3, "cannot read --from-discovery input: " + str(e))
+    try:
+        with open(errored_path, encoding="utf-8", errors="ignore") as fh:
+            vf = json.load(fh)
+    except (OSError, ValueError) as e:
+        die(3, "cannot read --errored-from input: " + str(e))
+    cand_n = {}
+    for cell in (data.get("cells", []) if isinstance(data, dict) else []):
+        if not isinstance(cell, dict):
+            continue
+        for cand in cell.get("candidates", []):
+            if isinstance(cand, str):
+                loc = cand.split("|", 1)[0].strip()
+                cand_n[loc] = cand_n.get(loc, 0) + 1
+    err_n = {}
+    for rec in (vf.get("errors", []) if isinstance(vf, dict) else []) or []:
+        if isinstance(rec, dict):
+            loc = str(rec.get("location", "") or "").strip()
+            err_n[loc] = err_n.get(loc, 0) + 1
+    return {loc for loc, n in cand_n.items() if n > 0 and err_n.get(loc, 0) >= n}
+
+
 def leads_from_invariants(pattern):
     """`INVARIANT|<file:fn>|<verdict>` lines -> leads (verdict DISCARDED). Accepts a plain file OR a glob; a
     glob matching nothing yields no leads, a named-but-unreadable plain path is exit 3."""
@@ -154,6 +193,8 @@ def main(argv):
     discovery = None
     invariants = None
     include_tier2 = False
+    errored_from = None
+    errored_select = None
     i = 1
     while i < len(argv):
         a = argv[i]
@@ -170,6 +211,18 @@ def main(argv):
         elif a == "--include-tier2":
             include_tier2 = True
             i += 1
+        elif a == "--errored-from":
+            if i + 1 >= len(argv):
+                die(2, "--errored-from requires a value")
+            errored_from = argv[i + 1]
+            i += 2
+        elif a == "--errored-select":
+            if i + 1 >= len(argv):
+                die(2, "--errored-select requires a value")
+            errored_select = argv[i + 1]
+            if errored_select not in ("only", "exclude"):
+                die(2, "--errored-select must be only or exclude")
+            i += 2
         elif a in ("-h", "--help"):
             sys.stdout.write(__doc__ or "")
             return 0
@@ -177,12 +230,23 @@ def main(argv):
             die(2, "unknown arg: " + a)
     if discovery is None and invariants is None:
         die(2, "usage: hypotheses-to-leads.py [--from-discovery <merged.json>]"
-               " [--from-invariants <file|glob>] [--include-tier2]")
+               " [--from-invariants <file|glob>] [--include-tier2]"
+               " [--errored-from <verified_findings.json> --errored-select only|exclude]")
+    if (errored_from is None) != (errored_select is None):
+        die(2, "--errored-from and --errored-select go together")
+    if errored_from is not None and discovery is None:
+        die(2, "--errored-from/--errored-select need --from-discovery")
 
     leads = []
     if discovery is not None:
-        leads.extend(leads_from_discovery(discovery, include_tier2))
-    if invariants is not None:
+        disc_leads = leads_from_discovery(discovery, include_tier2)
+        if errored_from is not None:
+            # #2288 M2: only tier-1 leads can be errored-only (a tier-2 record never reaches the refute gate)
+            errored = errored_only_locations(discovery, errored_from)
+            hit = [("tier" not in l and l["location"] in errored) for l in disc_leads]
+            disc_leads = [l for l, h in zip(disc_leads, hit) if h == (errored_select == "only")]
+        leads.extend(disc_leads)
+    if invariants is not None and errored_select != "only":
         leads.extend(leads_from_invariants(invariants))
 
     sys.stdout.write(json.dumps({"verified": leads}, indent=2, sort_keys=True) + "\n")

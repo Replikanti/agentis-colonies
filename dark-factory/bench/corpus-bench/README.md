@@ -70,7 +70,11 @@ corpus-bench/
                                   #   two-zone map/, one run tree run-core/ (verified breadth + invariant-hunt,
                                   #   REFUTED + ERROR gates, DISMISS/TRACE/INVARIANT lines, a .timeout cell),
                                   #   DECOYS (hunter.ag / refuter.ag source copies, a superseded
-                                  #   discovery/core.attempt-1/) and the pinned expected-triage.{tsv,md}
+                                  #   discovery/core.attempt-1/) and the pinned expected-triage.{tsv,md};
+                                  #   the ERROR gate carries a retry.txt (#2288)
+    generation-recall-errored/    # synthetic fixture for generation-recall.sh self-test (h) (#2288 M2):
+                                  #   truth.tsv, discovery-results.merged.json (7 candidates) and a
+                                  #   verified_findings.json whose errors[] makes exactly one row UNMEASURED
     exam/                         # synthetic fixture for exam.sh self-test (#2262 M2): a two-contract Foundry-
                                   #   shaped project/, zones.fixture.txt + briefs.fixture.txt (two non-custody
                                   #   zones), truth.tsv, and agentis-stub.sh (dash-safe offline agentis: one
@@ -497,6 +501,20 @@ rare tier is the headline capability number. When a contest also carries `verify
 **generation−verified DELTA** (GT rows a hypothesis NAMED but the fuzzer/refuter never confirmed) is printed
 too — the #1716 expressiveness gap, made measurable.
 
+**Unmeasured: errored (#2288).** A candidate whose refute gate *ran* and answered `ERROR` (a transport crash, no
+`VERDICT|` reply — also after `verify-findings.sh`'s retry pass) sits in `verified_findings.json` `errors[]`: it
+was never assessed. When `errors[]` is non-empty and `--judge` is off, the adapter splits the discovery leads with
+`--errored-from <verified_findings.json> --errored-select only|exclude` (a location string is *errored-only* when
+every candidate at it ended in `errors[]`), and both halves are scored with the headline's own `score-match.py`
+arguments. A GT row HIT by the errored-only leads, MISS by every other generation lead and MISS by the verified
+side is **UNMEASURED (errored)**: its per-row line says so, the contest prints
+`errored candidates: N (retried R, errored after retry E); K GT row(s) matched ONLY by an errored candidate —
+UNMEASURED: <ids>`, and the DELTA reads `(of which K unmeasured: errored)`. No numerator or denominator moves;
+`--json` gains `errored_candidates` and `unmeasured_errored_rows` (per contest — `null` when not computed — and
+in the aggregate). Under `--judge` the split is skipped with a note (no extra judge calls, no cache-miss exit 4).
+`run-corpus-bench.sh --score` only prints the count line (`[<id>] errored candidates: N (...)`) after the
+headline, and only when `totals.errored > 0`.
+
 ```bash
 # deterministic self-test (what colony-lint runs via demo-generation-recall.sh; no network/LLM/forge):
 dark-factory/bench/corpus-bench/generation-recall.sh --self-test
@@ -538,24 +556,26 @@ signature: `Contract::fn` / `Contract.sol::fn` / `Contract.fn(` become `keyword-
 
 **What is read.** Only real output: `discovery/discovery-results.merged.json` (candidates + `tier2[]`),
 `verify/verified_findings.json` (`verified[]` of any `source`, `refuted[]`, `out_of_scope[]`, `errors[]`),
-`verify/gates*/<n>_*/` (`candidate.manifest`, `verdict.txt`, `REFUTE-GROUND|` only from
-`refute-out/run/refute_*.log`), the cell logs `discovery/<zone>/run/hunt_*.log` + their `.untraced-attempt-<n>` /
+`verify/gates*/<n>_*/` (`candidate.manifest`, `verdict.txt`, `retry.txt` — shown as `[retried <k>]` on the gate
+evidence — and `REFUTE-GROUND|` only from `refute-out/run/refute_*.log`; an `errored-attempt-<k>/` archive is never
+read), the cell logs `discovery/<zone>/run/hunt_*.log` + their `.untraced-attempt-<n>` /
 `.rubric-attempt-<n>` companions (`DISMISS|` lines and word-boundary mentions of the function; `.timeout` /
 `.novalid` markers give the cell status), and `deep-hunt/*/run/invariant_*.log` (`INVARIANT|` lines). The
 `hunter.ag` / `refuter.ag` source copies every RUN dir holds carry the same sentinel literals and are never read;
 a superseded `discovery/<zone>.attempt-<n>/` is excluded unless `--include-superseded`. The fixture's decoys fail
 the self-test if either rule regresses.
 
-**Class vocabulary, first match wins** (over all anchors of the row):
+**Class vocabulary, first match wins** (over all anchors of the row; `unmeasured/errored` is checked right after
+class 1, before `refuted`):
 
 | # | class | when |
 |---|---|---|
 | 0 | `unanchored` | no column-6 anchor and no keyword anchor — never guessed |
-| 1 | `HIT-candidate` | `level=verified`: a `verified[]` entry at an anchor; else `level=unassessed`: a candidate whose gate did not refute it (REAL-not-kept / ERROR / skipped / no gate); else `level=tier2`: an unrefuted tier-2 record |
+| 1 | `HIT-candidate` | `level=verified`: a `verified[]` entry at an anchor; else `level=unassessed`: a candidate whose gate neither refuted it nor errored (REAL-not-kept / skipped / no gate); else `level=tier2`: an unrefuted tier-2 record |
 | 2 | `refuted` | candidates at an anchor, every one refuted (non-confirm gate verdict, `refuted[]`, `out_of_scope[]`) |
 | 3 | `found-dismissed` | a `DISMISS\|` line at an anchor and no candidate |
 | 4 | `scope-out-of-map` | `sub=file`: no anchor file in any zone's `files[]`; `sub=slice`: every scope line for the file is sliced and none lists the function, an owning zone ran, and no log / `INVARIANT\|` target mentions it (the slicer's same-file callee closure can pull unlisted helpers in, and a zone that never answered cannot show a function was unseen) |
-| 5 | `unmeasured` | no owning zone was measured: no run tree, `--unmeasured <zone>:<reason>` (the sub-reason is that reason — an exam VOID class such as `zone-incomplete` / `attribution` / `weekly-limit`), a `failed` / `in_flight` coverage record, or every cell `.timeout` / `.novalid` |
+| 5 | `unmeasured` | `sub=errored` (#2288): no class-1 evidence and a tier-1 candidate at an anchor ended in `errors[]` (its gate ran and answered `ERROR`, also after the retry pass) — never assessed, so not `refuted` even when other candidates there were; the markdown notes each run's `errored candidates: N (retried R, errored after retry E)`. Otherwise no owning zone was measured: no run tree, `--unmeasured <zone>:<reason>` (the sub-reason is that reason — an exam VOID class such as `zone-incomplete` / `attribution` / `weekly-limit`), a `failed` / `in_flight` coverage record, or every cell `.timeout` / `.novalid` |
 | 6 | `generation` | an owning zone ran; `sub=examined` when a cell log or an `INVARIANT\|` target (ANY verdict — a CLEAN invariant at the location is an examination, not a HIT) mentions the function, else `sub=unseen` |
 
 **Reading rule.** Every class is a PROPOSAL. Like the #2215 anchors, triage is **mechanism-blind**: a
