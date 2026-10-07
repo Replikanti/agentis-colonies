@@ -1311,6 +1311,23 @@ if [ -x "$REPO_ROOT/dark-factory/demo-refute-batch.sh" ]; then
     fi
 fi
 
+# --- dark-factory retry pass for gate-ERROR candidates (#2288) ---
+# demo-refute-retry-errored.sh is pure bash/python3 (offline refute stub through the existing --agentis seam, keyed
+# per function with call counters): asserts a chrome-then-REAL candidate is recovered into verified[] and a
+# transport-crash-then-REFUTED one becomes an implicit refuted whose constraint reaches refute-constraints.tsv, an
+# always-chrome candidate stays in errors[] with `retried`, preflight errors are never retried, the counting
+# invariant, the pass runs serially after the main walk drained (one gate in flight, `retry` session kind), --jobs
+# invariance, =0 inert, default == =0 on an error-free run, the argument guards and an errored batch member.
+if [ -x "$REPO_ROOT/dark-factory/demo-refute-retry-errored.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-refute-retry-errored.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: serial retry pass for gate-ERROR candidates (recovered verdicts classified, residual kept, =0 inert) (#2288)"
+    else
+        fail "dark-factory: retry pass for gate-ERROR candidates regressed (#2288)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory zone-hunt capstone: map -> brief -> discovery -> verify -> audit-pass -> deliver (#1630, epic #1611 M5) ---
 # run-zone-hunt.sh chains the shipped M1..M4 + delivery entrypoints into ONE autonomous zone-hunt and EDITS none
 # of them; it HALTS every finding at PENDING-HUMAN-REVIEW (enforced by run-audit-pass's terminal + deliver-

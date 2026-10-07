@@ -150,6 +150,25 @@
 #                       batch is ONE job under --jobs, so it takes one slot of effective_jobs. `0` = OFF = every
 #                       artifact byte-identical to a pre-#2284 run. Telemetry: env DF_REFUTE_SESSION_LOG (see
 #                       run-refute.sh) records every refuter session, batched or not.
+#   --retry-errored <n>  RETRY PASS FOR ERRORED GATES (#2288). Default: env DF_REFUTE_RETRY_ERRORED, else 2 (ON).
+#                       A refute gate that RAN but answered `ERROR` (a flat-cyborg transport crash, or no VERDICT|
+#                       reply after the in-call attempts) leaves its candidate unassessed. Those failures cluster
+#                       under concurrent load, so after the whole tier-1 walk has drained (and before the #1887
+#                       constraint aggregation and the #2217 tier 2) every such candidate is re-run SERIALLY, in
+#                       manifest order, one gate in flight, up to <n> times, through the unchanged single-candidate
+#                       gate (a batched #2284 member is re-read individually). Each earlier attempt is archived as
+#                       flat files in gates/<n>_<slug>/errored-attempt-<k>/ (k=0 = the main walk), so the cell's
+#                       canonical files always hold the final attempt; gates/<n>_<slug>/retry.txt records
+#                       `<retries>\t<final verdict>`. A RECOVERED candidate is classified exactly like a main-walk
+#                       verdict (verified[] after the main-walk confirmations, out_of_scope[], or dropped, its
+#                       constraint reaching refute-constraints.tsv) and leaves errors[]; a RESIDUAL one stays in
+#                       errors[] with the last attempt's reason and `"retried": <k>`. When anything was retried,
+#                       totals gains `retried_candidates` and `errored_after_retry` and the VERIFY banner names
+#                       them. Never retried: #1691 preflight errors (deterministic), gate-process failures
+#                       (SKIPPED), tier-2 records, and the poc/symbolic gates (an explicit setting there warns and
+#                       stays inert). Each retry session is logged as kind `retry` in DF_REFUTE_SESSION_LOG. `0` =
+#                       OFF = every artifact byte-identical to a pre-#2288 run; a run with no gate ERROR is
+#                       byte-identical either way.
 #   --backend <mock|flat-cyborg|claude>  LLM backend for the gate (default: flat-cyborg).
 #   --model <id>        LLM model id for the gate's `llm.model` (default: unset, so the emitted config stays
 #                       `llm.model = opus` — byte-identical to before this flag existed).
@@ -196,6 +215,9 @@ SCOPE_MAP=""  # #2292: unset = the in-scope-file guard is not armed (see --scope
 CLUSTER_FINDINGS="${DF_CLUSTER_FINDINGS:-1}"  # #2278: 1 = ON (default), 0 = OFF (see --cluster-findings in the header).
 REFUTE_BATCH="${DF_REFUTE_BATCH:-0}"  # #2284: 0 = OFF (default), 1 = batched first read (see --refute-batch in the header).
 REFUTE_BATCH_MAX="${DF_REFUTE_BATCH_MAX:-6}"  # #2284: the largest batch; a bigger group is split into balanced chunks.
+RETRY_ERRORED="${DF_REFUTE_RETRY_ERRORED:-2}"  # #2288: serial retries per gate-ERROR candidate; 0 = OFF (see --retry-errored).
+RETRY_ERRORED_SET=0  # #2288: 1 when the operator set the knob explicitly (flag or env) — only then is an inert gate noted.
+[ -z "${DF_REFUTE_RETRY_ERRORED:-}" ] || RETRY_ERRORED_SET=1
 
 nv() { [ "$1" -ge 2 ] || { echo "verify-findings.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -216,6 +238,7 @@ while [ $# -gt 0 ]; do
     --scope-map) nv "$#"; SCOPE_MAP="$2"; shift 2 ;;
     --cluster-findings) nv "$#"; CLUSTER_FINDINGS="$2"; shift 2 ;;
     --refute-batch) nv "$#"; REFUTE_BATCH="$2"; shift 2 ;;
+    --retry-errored) nv "$#"; RETRY_ERRORED="$2"; RETRY_ERRORED_SET=1; shift 2 ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "verify-findings.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -266,6 +289,17 @@ esac
 if [ "$REFUTE_BATCH" = "1" ] && [ "$GATE" != "refute" ]; then
   echo "verify-findings.sh: WARNING: --refute-batch batches the refute gate only (--gate $GATE) — batching inert" >&2
   REFUTE_BATCH=0
+fi
+# #2288: the retry knob is a NON-NEGATIVE integer (0 = OFF), validated before any side effect. Only the refute gate
+# has the ERROR verdict this pass re-runs, so any other gate makes it inert (noted only when explicitly set).
+case "$RETRY_ERRORED" in
+  ''|*[!0-9]*) echo "verify-findings.sh: --retry-errored (or DF_REFUTE_RETRY_ERRORED) must be a non-negative integer (got '$RETRY_ERRORED')" >&2; exit 2 ;;
+esac
+if [ "$GATE" != "refute" ]; then
+  if [ "$RETRY_ERRORED_SET" -eq 1 ] && [ "$RETRY_ERRORED" -gt 0 ]; then
+    echo "verify-findings.sh: NOTE: --retry-errored retries the refute gate only (--gate $GATE) — retry pass inert" >&2
+  fi
+  RETRY_ERRORED=0
 fi
 command -v python3 >/dev/null 2>&1 || { echo "verify-findings.sh: python3 not installed" >&2; exit 3; }
 
@@ -639,6 +673,10 @@ run_gate_symbolic() {
 
 CANDIDATES=0 ; VERIFIED=0 ; SKIPPED=0 ; ERRORED=0
 ERRORS_TSV="$WORK/errored.tsv"; : > "$ERRORS_TSV"
+# #2288: gate-ERROR candidates queued for the serial retry pass (one row each, appended in manifest order by
+# classify_candidate in the parent shell, so the queue is the same under any --jobs). Stays empty when OFF.
+RETRY_QUEUE="$WORK/retry-queue.tsv"; : > "$RETRY_QUEUE"
+RETRIED=0 ; RETRY_RECOVERED=0 ; RETRY_RESIDUAL=0
 
 # --- factored per-candidate primitives (#1863). The serial loop and the deferred parallel pass call these
 # IDENTICALLY; only the DISPATCH differs between the two paths, so the block that decides verified[] /
@@ -688,6 +726,12 @@ classify_candidate() {
     # A gate that PROPAGATED an ERROR token (e.g. run-refute.sh's loud unresolvable-code row) — errored, not
     # refuted (change 2 pre-validates, so this belt-and-suspenders path is rarely reached inside the pipeline).
     record_errored "$cc_loc" "$cc_file" "$cc_reason" "$cc_verd"
+    # #2288: queue it for the serial retry pass, keyed by its errors[] row (ERRORED is that row's 1-based index —
+    # errored.tsv is append-only until the pass rewrites it). The #1691 preflight rows never come through here.
+    if [ "$RETRY_ERRORED" -gt 0 ]; then
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ERRORED" "$cc_out" "$cc_subsys" "$cc_loc" "$cc_file" \
+        "$cc_cls" "$cc_sev" "$cc_expl" "$cc_sketch" >> "$RETRY_QUEUE"
+    fi
   elif [ "$cc_verd" = "$CONFIRM_TOKEN" ]; then
     # #1699: for the refute gate, record the class the candidate actually SURVIVED under (run-refute.sh's C6
     # fallback may differ from the originally-assigned class), so verified_findings.json is not mislabelled.
@@ -968,6 +1012,92 @@ if [ "$JOBS" -gt 1 ]; then
   done
 fi
 
+# --- #2288: THE RETRY PASS. A refute gate that RAN but answered ERROR (a flat-cyborg transport crash, or no VERDICT|
+#     reply after the in-call attempts) left its candidate unassessed. Those failures cluster under concurrent load,
+#     so they are re-run HERE: after every tier-1 gate has finished (the pool above is drained) and before the #1887
+#     aggregation below reads gates/ — one candidate at a time, in the foreground, so exactly ONE gate is in flight.
+#     Each attempt goes through the unchanged run_gate_refute with no --first-read-log (a batched #2284 member is
+#     re-read individually). A recovered verdict is routed through classify_candidate like any main-walk verdict;
+#     a residual one stays in errors[] with the last attempt's reason. RETRY_ERRORED = 0, or a run with no gate
+#     ERROR, leaves the queue empty and this whole block inert.
+
+# retry_archive_attempt <cell_out> <k> — move attempt <k>'s canonical files (k=0 = the main walk) into
+# <cell_out>/errored-attempt-<k>/ as FLAT files, then drop the cell's refute-out, so exam attribution and VOID
+# scanning only ever see the final attempt's run/ dir.
+retry_archive_attempt() {
+  ra_cell="$1"; ra_dir="$1/errored-attempt-$2"
+  mkdir -p "$ra_dir"
+  for ra_f in gate.log verdict.txt eff-class.txt; do
+    if [ -f "$ra_cell/$ra_f" ]; then mv "$ra_cell/$ra_f" "$ra_dir/$ra_f"; fi
+  done
+  if [ -f "$ra_cell/refute-out/refute-report.md" ]; then cp "$ra_cell/refute-out/refute-report.md" "$ra_dir/"; fi
+  for ra_f in "$ra_cell"/refute-out/run/refute_*.log*; do
+    if [ -f "$ra_f" ]; then cp "$ra_f" "$ra_dir/"; fi
+  done
+  rm -rf "$ra_cell/refute-out"
+}
+
+RETRY_RESULTS="$WORK/retry-results.tsv"; : > "$RETRY_RESULTS"
+if [ "$GATE" = "refute" ] && [ "$RETRY_ERRORED" -gt 0 ] && [ -s "$RETRY_QUEUE" ]; then
+  # Iterate a SNAPSHOT: classify_candidate appends to the live queue only on an ERROR verdict, which a recovered
+  # candidate by definition does not carry — the snapshot makes that independence structural.
+  cp "$RETRY_QUEUE" "$WORK/retry-queue.snapshot.tsv"
+  echo "verify-findings.sh: retry pass: $(grep -c . "$RETRY_QUEUE") errored candidate(s), up to $RETRY_ERRORED serial retries each (#2288)" >&2
+  while IFS= read -r RQROW || [ -n "${RQROW:-}" ]; do
+    [ -n "$RQROW" ] || continue
+    RQ_IDX="$(printf '%s\n' "$RQROW" | cut -f1)"
+    RQ_OUT="$(printf '%s\n' "$RQROW" | cut -f2)"
+    RQ_SUBSYS="$(printf '%s\n' "$RQROW" | cut -f3)"
+    RQ_LOC="$(printf '%s\n' "$RQROW" | cut -f4)"
+    RQ_FILE="$(printf '%s\n' "$RQROW" | cut -f5)"
+    RQ_CLS="$(printf '%s\n' "$RQROW" | cut -f6)"
+    RQ_SEV="$(printf '%s\n' "$RQROW" | cut -f7)"
+    RQ_EXPL="$(printf '%s\n' "$RQROW" | cut -f8)"
+    RQ_SKETCH="$(printf '%s\n' "$RQROW" | cut -f9)"
+    RETRIED=$((RETRIED + 1))
+    rq_k=0 ; rq_rc=0 ; rq_verd="ERROR"
+    while [ "$rq_k" -lt "$RETRY_ERRORED" ]; do
+      retry_archive_attempt "$RQ_OUT" "$rq_k"
+      rq_k=$((rq_k + 1))
+      echo "verify-findings.sh: [refute] RETRY $rq_k/$RETRY_ERRORED $RQ_LOC ($RQ_CLS) ..." >&2
+      rq_rc=0
+      # DF_REFUTE_RETRY_PASS only relabels run-refute.sh's session telemetry (`first` -> `retry`); it is not on any
+      # env_passthrough allowlist, so the refuter prompt is the single-candidate one.
+      ( export DF_REFUTE_RETRY_PASS="$rq_k"
+        run_gate_refute "$RQ_OUT" "$RQ_LOC" "$RQ_CLS" "$RQ_SEV" "$RQ_EXPL" "$RQ_FILE" ) </dev/null || rq_rc=1
+      rq_verd="ERROR"
+      if [ "$rq_rc" -eq 0 ] && [ -s "$RQ_OUT/verdict.txt" ]; then rq_verd="$(cut -f1 "$RQ_OUT/verdict.txt")"; fi
+      if [ "$rq_rc" -eq 0 ] && [ "$rq_verd" != "ERROR" ]; then break; fi
+    done
+    printf '%s\t%s\n' "$rq_k" "$rq_verd" > "$RQ_OUT/retry.txt"
+    if [ "$rq_rc" -eq 0 ] && [ "$rq_verd" != "ERROR" ]; then
+      RETRY_RECOVERED=$((RETRY_RECOVERED + 1))
+      ERRORED=$((ERRORED - 1))
+      printf '%s\trecovered\t%s\t\n' "$RQ_IDX" "$rq_k" >> "$RETRY_RESULTS"
+      echo "verify-findings.sh:   -> recovered ($rq_verd)" >&2
+      classify_candidate 0 "$RQ_OUT" "$RQ_SUBSYS" "$RQ_LOC" "$RQ_FILE" "$RQ_CLS" "$RQ_SEV" "$RQ_EXPL" "$RQ_SKETCH"
+    else
+      RETRY_RESIDUAL=$((RETRY_RESIDUAL + 1))
+      if [ "$rq_rc" -ne 0 ]; then
+        rq_reason="gate errored on retry $rq_k (see gate.log)"
+      else
+        rq_reason="$(cut -f2- "$RQ_OUT/verdict.txt" | tr '\t' ' ')"
+      fi
+      printf '%s\tresidual\t%s\t%s\n' "$RQ_IDX" "$rq_k" "$rq_reason" >> "$RETRY_RESULTS"
+      echo "verify-findings.sh:   -> still ERRORED after $rq_k retries" >&2
+    fi
+  done < "$WORK/retry-queue.snapshot.tsv"
+  # Rewrite errors[]: a recovered row leaves, a residual row carries the final reason + a 4th `<retries>` column,
+  # every other row (the #1691 preflight ones included) stays byte-identical and in place.
+  awk -F'\t' -v OFS='\t' '
+    NR == FNR { act[$1] = $2; k[$1] = $3; r[$1] = $4; next }
+    act[FNR] == "recovered" { next }
+    act[FNR] == "residual"  { print $1, $2, r[FNR], k[FNR]; next }
+    { print }
+  ' "$RETRY_RESULTS" "$ERRORS_TSV" > "$ERRORS_TSV.retried"
+  mv "$ERRORS_TSV.retried" "$ERRORS_TSV"
+fi
+
 # #1962: fold the sub-floor drops back into the total candidate count. CANDIDATES above only counted the rows
 # the loop actually walked (candidates.tsv was rewritten to KEPT-only rows before the loop ran), so the
 # counting invariant candidates == verified + errored + refuted + dropped_subfloor holds; SUBFLOOR is 0 (a
@@ -1114,6 +1244,7 @@ RAW_JSON="$OUT/verified_findings.raw.json"
 rm -f "$RAW_JSON"
 REPO_NAME="$REPO_NAME" GATE="$GATE" CANDIDATES="$CANDIDATES" VERIFIED="$VERIFIED" ERRORED="$ERRORED" \
 PAY_FLOOR="$PAY_FLOOR" SUBFLOOR="$SUBFLOOR" SCOPE_STATE="$SCOPE_STATE" SCOPE_REASON="$SCOPE_REASON" \
+RETRIED="$RETRIED" RETRY_RESIDUAL="$RETRY_RESIDUAL" \
 python3 - "$CONFIRMED_TSV" "$ERRORS_TSV" "$DROPPED_SUBFLOOR_TSV" "$TIER2_OUT_TSV" "$OOS_TSV" > "$VERIFIED_JSON" <<'PY'
 import sys, os, json
 verified = []
@@ -1139,7 +1270,11 @@ with open(sys.argv[2], encoding="utf-8") as fh:
         f = line.split("\t")
         while len(f) < 3:
             f.append("")
-        errors.append({"location": f[0], "file": f[1], "reason": f[2]})
+        row = {"location": f[0], "file": f[1], "reason": f[2]}
+        # #2288: a residual row of the retry pass carries a 4th `<retries>` column; every other row has three.
+        if len(f) >= 4 and f[3].isdigit():
+            row["retried"] = int(f[3])
+        errors.append(row)
 pay_floor = os.environ.get("PAY_FLOOR", "")
 dropped_subfloor = []
 with open(sys.argv[3], encoding="utf-8") as fh:
@@ -1169,6 +1304,12 @@ out = {
         "dropped_subfloor": int(os.environ.get("SUBFLOOR", "0")),
     },
 }
+# #2288: the retry pass's own counts, emitted ONLY when at least one candidate was retried (the tier2 / out_of_scope
+# discipline), so a run with the pass OFF or with no gate ERROR gains no key. totals.errored above is already the
+# final residual, so `candidates == verified + errored + refuted + dropped_subfloor` is unchanged.
+if int(os.environ.get("RETRIED", "0")) > 0:
+    out["totals"]["retried_candidates"] = int(os.environ["RETRIED"])
+    out["totals"]["errored_after_retry"] = int(os.environ.get("RETRY_RESIDUAL", "0"))
 # #2217: the SECOND TIER, strictly additive and strictly separate. Emitted ONLY when at least one tier-2
 # record was examined, so an OFF run (an empty accumulator) gains NO key and stays byte-identical to a
 # pre-#2217 run — the same emit-only-when-non-empty discipline run-discovery.sh's own tier2[] rides.
@@ -1272,7 +1413,12 @@ BATCH_SUFFIX=""
 if [ "$BATCH_COUNT" -gt 0 ]; then
   BATCH_SUFFIX=", $BATCHED_N candidate(s) in $BATCH_COUNT batched first-read session(s)"
 fi
-echo "================ VERIFY [$GATE]: $CANDIDATES candidate(s), $VERIFIED confirmed, $ERRORED errored (malformed/unresolvable), $SKIPPED skipped$SUBFLOOR_SUFFIX$OOS_SUFFIX$BATCH_SUFFIX ================" >&2
+# #2288: named only when the retry pass ran, so a run without a gate ERROR (or with the pass OFF) is unchanged.
+RETRY_SUFFIX=""
+if [ "$RETRIED" -gt 0 ]; then
+  RETRY_SUFFIX=", $RETRIED retried ($RETRY_RECOVERED recovered, $RETRY_RESIDUAL still errored)"
+fi
+echo "================ VERIFY [$GATE]: $CANDIDATES candidate(s), $VERIFIED confirmed, $ERRORED errored (malformed/unresolvable), $SKIPPED skipped$SUBFLOOR_SUFFIX$OOS_SUFFIX$BATCH_SUFFIX$RETRY_SUFFIX ================" >&2
 echo "verify-findings.sh: verified findings at $VERIFIED_JSON" >&2
 [ -z "$CLUSTER_NOTE" ] || echo "$CLUSTER_NOTE" >&2
 if [ "$TIER2_EXAMINED" -gt 0 ]; then
