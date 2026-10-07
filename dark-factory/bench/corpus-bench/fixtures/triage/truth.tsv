@@ -12,3 +12,4 @@ TX-11	Medium	2	Pause does not stop withdrawals	Pause does not stop withdrawals -
 TX-12	Medium	6	Harvest fee rounds against the vault	Harvest fee rounds against the vault -- ### Summary `Vault::harvest()` floors the fee share on every harvest.	
 TX-13	Medium	7	Rescue can move user deposits	Rescue can move user deposits -- ### Summary the admin `rescue(token, amount)` path does not exclude the deposit asset.
 TX-14	High	1	Rounding compounds across epochs	Rounding compounds across epochs -- ### Summary the per-epoch rounding error is never reconciled, so it compounds.	
+TX-15	Medium	3	Redeem pays out before the share burn	Redeem pays out before the share burn -- ### Summary Vault redeem transfers assets before burning the shares.	Vault.sol:redeem

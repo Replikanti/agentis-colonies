@@ -26,10 +26,11 @@
     {
       "location": "src/core/Pool.sol:skim:61",
       "file": "src/core/Pool.sol",
-      "reason": "LLM transport error after 5 attempts (not assessed)"
+      "reason": "LLM transport error after 5 attempts (not assessed)",
+      "retried": 2
     }
   ],
   "dropped_subfloor": [],
   "pay_floor": "",
-  "totals": {"candidates": 3, "verified": 1, "errored": 1, "dropped_subfloor": 0}
+  "totals": {"candidates": 3, "verified": 1, "errored": 1, "dropped_subfloor": 0, "retried_candidates": 1, "errored_after_retry": 1}
 }

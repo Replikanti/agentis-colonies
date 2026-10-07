@@ -1,0 +1,33 @@
+{
+  "repo": "generation-recall-errored-fixture",
+  "backend": "mock",
+  "jobs": 1,
+  "cells": [
+    {
+      "subsystem": "pool",
+      "class": "C6",
+      "files": "src/Pool.sol",
+      "status": "ok",
+      "candidates": [
+        "src/Pool.sol:skim:61|C6|High|skim pays the reserve surplus to an arbitrary recipient|donate, skim to self, assert the surplus left the pool",
+        "src/Pool.sol:sweep:88|C6|Medium|sweep forwards the idle balance to msg.sender|call sweep as a stranger and assert the idle balance moved",
+        "src/Pool.sol:sweep:90|C6|Medium|sweep skips the owner check on the second branch|take the second branch as a stranger"
+      ],
+      "coordination": []
+    },
+    {
+      "subsystem": "vault",
+      "class": "C2",
+      "files": "src/Vault.sol",
+      "status": "ok",
+      "candidates": [
+        "src/Vault.sol:settle:120|C2|Medium|settle compounds the index twice|settle twice in one epoch and compare the index",
+        "src/Vault.sol:settle:120|C2|Medium|settle double-applies the epoch accrual|accrue across one epoch and assert the double step",
+        "src/Vault.sol:rebase:30|C2|High|rebase mints supply the assets do not back|rebase after a loss and compare supply to assets",
+        "src/Vault.sol:deposit:44|C2|Medium|deposit rounds minted shares up|deposit 1 wei repeatedly and compare shares"
+      ],
+      "coordination": []
+    }
+  ],
+  "totals": {"cells": 2, "candidates": 7, "steers": 0}
+}

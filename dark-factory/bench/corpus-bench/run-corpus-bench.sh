@@ -487,6 +487,34 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
     say "SELF-TEST: root-cause clustering moved a token-mode scorecard, a pinned dev count, or the --findings-view contract (#2278; $cl_files/12 files) -> FAIL"; exit 1
   fi
 
+  # Eighth assertion (#2288 M2): --score prints the errored-candidate COUNT line after the headline exactly when
+  # totals.errored > 0, and the recall headline is the same with or without errors[].
+  ER_W="$(mktemp -d)"
+  ER_FIX="$HERE/fixtures/generation-recall-errored"
+  for er_v in err clean; do
+    mkdir -p "$ER_W/$er_v/efx/zone-hunt-out/verify"
+    cp "$ER_FIX/truth.tsv" "$ER_W/$er_v/efx/truth.tsv"
+    printf 'efx\tcode\tjudging\t.\tdev\n' > "$ER_W/$er_v/corpus.tsv"
+  done
+  cp "$ER_FIX/verified_findings.json" "$ER_W/err/efx/zone-hunt-out/verify/verified_findings.json"
+  python3 -c 'import sys, json
+vf = json.load(open(sys.argv[1], encoding="utf-8"))
+vf["errors"] = []
+vf["totals"] = {"candidates": 7, "verified": 1, "errored": 0, "dropped_subfloor": 0}
+json.dump(vf, open(sys.argv[2], "w", encoding="utf-8"), indent=2)' "$ER_FIX/verified_findings.json" "$ER_W/clean/efx/zone-hunt-out/verify/verified_findings.json"
+  ER_SELF="$HERE/$(basename "$0")"
+  er_log() { { bash "$ER_SELF" --score --work "$ER_W/$1" --corpus "$ER_W/$1/corpus.tsv" >/dev/null; } 2>&1; }
+  er_err="$(er_log err)" ; er_clean="$(er_log clean)"
+  rm -rf "$ER_W"
+  er_head() { printf '%s\n' "$1" | grep -F '[efx] [role=dev' ; }
+  if printf '%s\n' "$er_err" | grep -Fq '[efx] errored candidates: 4 (retried 5, errored after retry 4) -- never assessed by the refute gate' \
+     && ! printf '%s\n' "$er_clean" | grep -q 'errored candidates' \
+     && [ -n "$(er_head "$er_err")" ] && [ "$(er_head "$er_err")" = "$(er_head "$er_clean")" ]; then
+    say "SELF-TEST: --score prints the errored-candidate count line only when totals.errored > 0, headline unchanged (#2288) -> PASS"
+  else
+    say "SELF-TEST: the --score errored-candidate count line is missing, leaks into a clean run, or moved the headline (#2288) -> FAIL"; exit 1
+  fi
+
   [ "$ANY_ACTION" -eq 1 ] && [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
 fi
 [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
@@ -732,6 +760,23 @@ SCORE_EOF
     rare_note=""; [ -n "$dupes_file" ] && rare_note=" ($c_rare_expanded via GT-equivalence)"
 
     say "  [$id] [$role_note] recall $c_hits/$c_total, High $c_h_hits/$c_h_total, Medium $c_m_hits/$c_m_total, rare $c_rare_hits/$c_rare_total$rare_note, mid $c_mid_hits/$c_mid_total, consensus $c_cons_hits/$c_cons_total, verified-leads $verified_n (matched $matched_leads, unmatched $unmatched_leads — needs manual triage, NOT auto-claimed novel)"
+    # #2288 M2: candidates the refute gate never assessed (it RAN and answered ERROR, also after verify-findings.sh's
+    # retry pass). A COUNT only, printed only when totals.errored > 0: the per-row UNMEASURED (errored)
+    # classification belongs to generation-recall.sh --from-work (and triage.py), and no number above moves.
+    err_line="$(python3 -c 'import sys, json
+try:
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as fh:
+        vf = json.load(fh)
+except (OSError, ValueError):
+    vf = {}
+t = vf.get("totals") if isinstance(vf, dict) and isinstance(vf.get("totals"), dict) else {}
+n = t.get("errored", 0)
+if isinstance(n, int) and n > 0:
+    r = ("retried %s, errored after retry %s" % (t["retried_candidates"], t.get("errored_after_retry", "?"))
+         if "retried_candidates" in t else "no retry pass recorded")
+    print("errored candidates: %d (%s) -- never assessed by the refute gate; generation-recall.sh --from-work names "
+          "the GT rows only they match (UNMEASURED: errored)" % (n, r))' "$verified_json" 2>/dev/null)" || err_line=""
+    [ -n "$err_line" ] && say "  [$id] $err_line"
     [ "$JUDGE" != "off" ] && say "  [$id] scored by the SEMANTIC MECHANISM JUDGE (--judge $JUDGE, min-confidence $gate_conf): $judge_calls judging calls, $judge_errors JUDGE-ERROR(s); gate dropped $gate_dropped MATCH decision(s), costing $gate_rows row(s)"
     [ -n "$dupes_file" ] && say "  [$id] GT-equivalence (#1840): $dup_classes class(es), $dup_expanded row(s) credited through a class; the same replay without expansion reads $((c_hits - dup_expanded))/$c_total"
     # #2215: same disclosure discipline as the #1840 line above — a ruler that moved the headline must say so

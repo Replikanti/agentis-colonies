@@ -27,6 +27,17 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   output of any run with a gate `ERROR` (more verified/refuted, fewer errored, extra sessions). Pre-registered A/Bs
   on a new checkout should set `DF_REFUTE_RETRY_ERRORED=0`, which is byte-identical to the previous output; a run
   without a gate `ERROR` is byte-identical either way. Pinned by `demo-refute-retry-errored.sh`.
+- **A GT row only an unassessed candidate names is now `unmeasured`, not a hit or a miss (#2288, part 2).**
+  `triage.py` proposes `unmeasured/errored` for a row whose only non-refuted tier-1 evidence is a candidate in
+  `errors[]` (also when the anchor's other candidates were refuted), shows `[retried <k>]` from the gate's
+  `retry.txt`, and notes each run's `errored candidates: N (retried R, errored after retry E)`. **Triage tables are
+  not directly comparable across this change:** rows such as the fixture's TX-3 move from
+  `HIT-candidate/unassessed` to `unmeasured/errored`. `generation-recall.sh --from-work` (judge off) names the GT
+  rows matched ONLY by an errored-only candidate as `UNMEASURED (errored)`, annotates the DELTA, and adds
+  `errored_candidates` / `unmeasured_errored_rows` to `--json`; `run-corpus-bench.sh --score` prints the count
+  line when `totals.errored > 0`. New `hypotheses-to-leads.py --errored-from <verified_findings.json>
+  --errored-select only|exclude` (output without the flags is byte-identical). No recall numerator or
+  denominator moves, and `score-match.py` is unchanged.
 
 ## [0.13.1] - 2026-10-06
 

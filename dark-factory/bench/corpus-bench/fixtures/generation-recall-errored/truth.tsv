@@ -1,0 +1,6 @@
+E-1	High	1	Skim pays the reserve surplus to any caller	Skim pays the reserve surplus to any caller -- ### Summary `Pool.sol:skim()` forwards the surplus with no recipient check.	Pool.sol:skim
+E-2	Medium	2	Sweep moves idle funds to the caller	Sweep moves idle funds to the caller -- ### Summary `Pool.sol:sweep()` has no owner check on the idle balance.	Pool.sol:sweep
+E-3	Medium	4	Settlement compounds the index twice	Settlement compounds the index twice -- ### Summary `Vault.sol:settle()` applies the index update twice per epoch.	Vault.sol:settle
+E-4	High	1	Rebase mints unbacked supply	Rebase mints unbacked supply -- ### Summary `Vault.sol:rebase()` lets supply exceed the backing assets.	Vault.sol:rebase
+E-5	Medium	9	Deposit rounds shares toward the depositor	Deposit rounds shares toward the depositor -- ### Summary `Vault.sol:deposit()` rounds minted shares up.	Vault.sol:deposit
+E-6	Medium	3	Stale oracle answer is accepted	Stale oracle answer is accepted -- ### Summary `Oracle.sol:peek()` has no staleness bound.	Oracle.sol:peek
