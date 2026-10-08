@@ -1,0 +1,37 @@
+{
+  "schema": "deep-hunt-plan/v1",
+  "status": "planned",
+  "reason": "",
+  "deep_hunt_only": false,
+  "resume": false,
+  "max_lenses": 3,
+  "max_targets": 1,
+  "composable_lens": 1,
+  "reach": 0,
+  "rows": [
+    {
+      "slot": "pkg_vault_contracts-C6",
+      "zone": "pkg_vault_contracts",
+      "class": "C6",
+      "target": "pkg/vault/contracts/Vault.sol",
+      "state": "selected",
+      "custody": true
+    },
+    {
+      "slot": "pkg_vault_contracts-C10",
+      "zone": "pkg_vault_contracts",
+      "class": "C10",
+      "target": "pkg/vault/contracts/Vault.sol",
+      "state": "selected",
+      "custody": true
+    },
+    {
+      "slot": "pkg_vault_contracts-SYS-solvency",
+      "zone": "pkg_vault_contracts",
+      "class": "SYS-solvency",
+      "target": "pkg/vault/contracts/Vault.sol",
+      "state": "selected",
+      "custody": true
+    }
+  ]
+}

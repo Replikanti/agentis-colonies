@@ -160,6 +160,10 @@ run-zone-hunt.sh --repo <clone> --out <dir> \
   class order from `scope.tsv` (`bug_classes_likely`, ranked by the zone
   mapper), keeping at most one custody-primary lens per zone; the payable-impact
   partition still runs last and still only changes which rows survive the cap.
+  The cap defaults to 3. Every lens it cuts is written to
+  `<out>/deep-hunt/plan.json` as a `capped` row, and the hunt-dashboard shows it
+  as `⏸️ capped`. A capped row keeps the hunt below 100 % (never `DONE`) until a
+  re-run with a higher cap + `--deep-hunt-resume` (#2298).
 - **before STAGE 5** — [`finding-payability-gate.sh`](./finding-payability-gate.sh)
   writes `verify/verified_findings.payable.json`; sub-floor findings move into
   `unpayable[]` and are **not** delivered (`--pay-mode flag` annotates instead of

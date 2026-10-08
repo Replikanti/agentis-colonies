@@ -1,0 +1,42 @@
+{
+  "schema": "zone-coverage/v1",
+  "repo": "repo",
+  "commit": "0000000",
+  "started_at": "2026-01-01T10:50:32Z",
+  "updated_at": "2026-01-01T11:47:24Z",
+  "budget": { "unit": "cells", "per_zone": 0, "run": 0 },
+  "zones": [
+    {
+      "id": "pkg_vault_contracts",
+      "name": "Vault core and routers",
+      "value_custody": true,
+      "order": 1,
+      "status": "hunted",
+      "cells_planned": 4,
+      "cells_charged": 4,
+      "classes_hunted": ["C6", "C8", "C15", "C5"],
+      "budget_truncated": false,
+      "cells": 4,
+      "candidates": 3,
+      "failed_cells": 0,
+      "exit_code": 0,
+      "results": "discovery/pkg_vault_contracts/discovery-results.json",
+      "detail": "",
+      "attempts": []
+    }
+  ],
+  "totals": {
+    "zones": 1,
+    "cells_planned": 4,
+    "cells_charged": 4,
+    "candidates": 3,
+    "failed_cells": 0,
+    "by_status": {
+      "hunted": 1, "hunted_empty": 0, "hunted_degraded": 0, "failed": 0,
+      "budget_exhausted": 0, "budget_unenforceable": 0, "in_flight": 0,
+      "no_brief": 0, "unscoped": 0, "not_reached": 0
+    }
+  },
+  "complete": true,
+  "gap_zones": []
+}

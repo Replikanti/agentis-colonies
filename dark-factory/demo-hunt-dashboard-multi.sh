@@ -41,6 +41,7 @@ command -v python3 >/dev/null 2>&1 || { echo "[SKIP] python3 not installed" >&2;
 command -v git >/dev/null 2>&1     || { echo "[SKIP] git not installed" >&2; exit 0; }
 [ -f "$DASH" ] || { note "dashboard not found: $DASH" >&2; exit 3; }
 [ -d "$FIX/balancer" ] || { note "fixture not found: $FIX/balancer" >&2; exit 3; }
+[ -d "$FIX/balancer-complete" ] || { note "fixture not found: $FIX/balancer-complete" >&2; exit 3; }
 [ -x "$ZONEHUNT" ] || { note "run-zone-hunt.sh not found / not executable: $ZONEHUNT" >&2; exit 3; }
 [ -f "$ZM/zones.fixture.txt" ] || { note "zone-map fixture not found: $ZM/zones.fixture.txt" >&2; exit 3; }
 
@@ -49,14 +50,16 @@ trap 'rm -rf "$WORK"' EXIT
 
 # ----------------------------------------------------------------------------------------------------------
 # Build a fixture registry with two hunts over scrubbed snapshots:
-#   vault-finished — the complete balancer snapshot (carries __EXIT__), faked proc-DEAD  -> FINISHED static.
+#   vault-finished — the genuinely all-checked balancer-complete snapshot (carries __EXIT__), faked proc-DEAD
+#                    -> FINISHED static. #2298: a finished card needs EVERY row checked, so the open-row balancer
+#                    snapshot (which reads STOPPED) cannot stand in for it.
 #   vault-live     — the same snapshot with __EXIT__ stripped + a fresh hidden-dir heartbeat, faked proc-ALIVE -> LIVE pulse.
 # The per-hunt fake seam (HUNT_DASHBOARD_FAKE_PROC_ALIVE_<ID>) lets ONE overview render carry both states.
 # ----------------------------------------------------------------------------------------------------------
 REG="$WORK/df/hunts"
 mkdir -p "$REG"
 
-FIN="$WORK/finished"; mkdir -p "$FIN"; cp -R "$FIX/balancer/." "$FIN/"
+FIN="$WORK/finished"; mkdir -p "$FIN"; cp -R "$FIX/balancer-complete/." "$FIN/"
 cat > "$REG/finished.json" <<EOF
 { "id": "vault-finished", "label": "Vault (finished)",
   "root": "$FIN", "out": "$FIN/zone-hunt-out", "log": "$FIN/hunt.log",

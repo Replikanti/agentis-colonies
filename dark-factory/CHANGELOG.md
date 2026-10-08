@@ -16,6 +16,16 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **STAGE 4.5 runs up to 3 lens classes per zone by default, and writes its row matrix to a plan file (#2298).**
+  `--deep-hunt-max-lenses` now defaults to **3** (was 2): with 2, a zone's third fitness-ranked routable class was
+  silently dropped. **Behaviour change:** one extra deep-hunt cell (~35–60 min) per zone with ≥ 3 routable lens
+  classes, and more `SYS-solvency` headroom under `--composable-lens`. Pre-registered A/Bs pin
+  `--deep-hunt-max-lenses 2`, which restores the old selection byte-for-byte. New artifacts:
+  `<out>/deep-hunt/plan.json` (schema `deep-hunt-plan/v1`; every `selected` row with its exact cell dir plus every
+  `capped` lens the cap cut, or `status: skipped` with a reason when no Foundry root runs — written before the first
+  cell, see [docs/invariant-hunt.md](./docs/invariant-hunt.md#deep-hunt-plan-file-2298)) and
+  `<out>/audit-pass/deliver-status.tsv` (one `staged|halted|failed` row per M5 finding). `.deep-hunt-targets.tsv`
+  is byte-identical for the same cap. Pinned by `tools/test-deep-hunt-plan.sh`.
 - **Errored refute gates get a serial retry pass (#2288, part 1).** About 4 % of held-out candidates reached the
   refute gate, got an `ERROR` verdict (a flat-cyborg transport crash or no `VERDICT|` reply) and were never
   assessed. `verify-findings.sh` now re-runs every gate-`ERROR` candidate after the tier-1 walk has drained, one at
@@ -38,6 +48,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   line when `totals.errored > 0`. New `hypotheses-to-leads.py --errored-from <verified_findings.json>
   --errored-select only|exclude` (output without the flags is byte-identical). No recall numerator or
   denominator moves, and `score-match.py` is unchanged.
+
+### Fixed
+
+- **The hunt-dashboard can no longer show 100 % or DONE while any row is unchecked (#2298).** A live hunt read
+  "✅ DONE — 100%" with every phase ✅ while five DEPTH rows were still queued: completion came from the runner's
+  exit marker, and the DEPTH rows from `planned_deep_rows()`, a client-side copy of the lens selection that had
+  drifted from the runner (the copy #1953, #2108 and #2113 had already patched). `planned_deep_rows()` is gone: the DEPTH rows
+  are the runner's `deep-hunt/plan.json` rows plus any observed cell dir. One model (`hunt_model()`) now builds a row
+  set per phase and drives every %, ✅, DONE, FINISHED, "finished — verdict in chat" and overview card. A phase is
+  done only when every row is checked, the header only when the runner exited and every phase is done or skipped;
+  anything else is clamped to ≤ 99 % (rendered with `int()`). New row states: `⏸️ capped`, `not run`,
+  `plan unknown`, `deep-hunt not run`; `TRANSIENT_ERROR` / `LOW_COVERAGE` keep their own label. A deep FINDING that
+  survived the automated 4.6 gate (`REAL`) stays open until the operator records `CONFIRMED` / `DUPLICATE` / `FP`
+  (`FP` = new alias of `REFUTED`) in `deep-hunt-adjudicated.tsv`. Out dirs from before this change have no plan or
+  deliver ledger and render `STOPPED INCOMPLETE ≤ 99 %` (intended — their completeness cannot be proven). Pinned by
+  the new `demo-hunt-dashboard-completeness.sh` (positive control, 16 single-row mutations, a 299/300 rounding
+  guard); see [hunt-dashboard/README.md](./hunt-dashboard/README.md#completeness-2298).
 
 ## [0.13.1] - 2026-10-06
 

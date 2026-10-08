@@ -1,0 +1,11 @@
+{
+  "id": "vault-v3-complete",
+  "label": "Vault V3 (pkg/vault) \u2014 complete",
+  "root": ".",
+  "out": "zone-hunt-out",
+  "log": "hunt.log",
+  "bounty_url": "https://example.invalid/bug-bounty/vault/information/",
+  "repo_url": "https://example.invalid/vault/vault-v3-monorepo",
+  "project_url": "https://example.invalid",
+  "reward_line": "Bounty \u00b7 $1M Crit / $75K High \u00b7 no-KYC \u00b7 Vault-custody + buffer + hooks seam"
+}

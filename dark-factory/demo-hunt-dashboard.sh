@@ -5,15 +5,20 @@
 # copied into a mktemp $WORK, and pins the load-bearing model. The reference is the contract — these
 # assertions are the machine-checkable half of the reference-fidelity checklist.
 #
-# Assertions (over fixtures/balancer = a COMPLETE run, unless noted):
-#   (1) PHASE TRACKS + honest progress — 7 phases all done, prog 100, covered/failed/total = 1/0/1.
+# Assertions (over fixtures/balancer = an EXITED run with open rows, unless noted; #2298 made it NOT complete —
+# fixtures/balancer-complete is the genuinely all-checked run, and demo-hunt-dashboard-completeness.sh owns the
+# "nothing reads 100 % / DONE while any row is unchecked" invariant):
+#   (1) PHASE TRACKS + honest progress — STOPPED_INCOMPLETE, prog <= 99, M1-M3 done, M4 / 4.5 / 4.6 / deliver
+#       NOT done (a pending lead, a gap + a capped DEPTH row, a finding awaiting an operator verdict, no M5 ledger),
+#       covered/failed/total = 1/0/1.
 #   (2) UNIFIED LEADS — breadth REFUTED(struck) / CONFIRMED / PENDING with the right summary.
-#   (3) DEEP-HUNT MATRIX — planned lens rows listed (done/queued): C6 open FINDING, SYS-solvency triaged-FP
-#       (struck, via the (file,class) deep-hunt-adjudicated.tsv REFUTED overlay), C10 CLEAN (struck), C8
-#       HARNESS_ERROR (amber, NOT struck), C5 queued; severity joined from verified_findings.json onto EVERY
-#       row incl. CLEAN/HARNESS_ERROR.
+#   (3) DEEP-HUNT MATRIX — the DEPTH rows are the runner's plan.json rows (#2298): C6 open FINDING, SYS-solvency
+#       triaged-FP (struck, via the (file,class) deep-hunt-adjudicated.tsv REFUTED overlay), C10 CLEAN (struck), C8
+#       HARNESS_ERROR (amber, NOT struck), C5 capped (cut by --deep-hunt-max-lenses); severity joined from
+#       verified_findings.json onto EVERY row incl. CLEAN/HARNESS_ERROR.
 #   (4) ZONE RESULT agrees with the LEADS table (deep finding > survived > refuted > pending).
-#   (5) LIVENESS — the four classes via HUNT_DASHBOARD_FAKE_* (finished static-slate; __EXIT__+fake-alive =>
+#   (5) LIVENESS — the four classes via HUNT_DASHBOARD_FAKE_* (finished static-slate over balancer-complete;
+#       a finished slate needs a COMPLETE run since #2298; __EXIT__+fake-alive =>
 #       running LIVE pulse; no-exit+proc-gone => PROCESS_GONE; fresh HIDDEN-dir heartbeat+fake-alive => LIVE,
 #       not QUIET — the .gen-briefs traversal fix).
 #   (6) HONEST COMPLETION — over fixtures/balancer-incomplete: STOPPED_INCOMPLETE, failed zone excluded from
@@ -38,6 +43,7 @@ command -v python3 >/dev/null 2>&1 || { echo "[SKIP] python3 not installed" >&2;
 [ -f "$DASH" ] || { note "dashboard not found: $DASH" >&2; exit 3; }
 [ -d "$FIX/balancer" ] || { note "fixture not found: $FIX/balancer" >&2; exit 3; }
 [ -d "$FIX/balancer-incomplete" ] || { note "fixture not found: $FIX/balancer-incomplete" >&2; exit 3; }
+[ -d "$FIX/balancer-complete" ] || { note "fixture not found: $FIX/balancer-complete" >&2; exit 3; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/demo-hunt-dashboard.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -62,20 +68,27 @@ emit_model() {
 # Convention: the caller pipes the assertion body via a heredoc to python3 with the model path as argv[1].
 
 MAIN_DESC="$(stage balancer)"
+COMPLETE_DESC="$(stage balancer-complete)"
 
 # ----------------------------------------------------------------------------------------------------------
-# (1)-(4) the COMPLETE run: phases, unified leads, deep matrix, zone-result agreement.
+# (1)-(4) the exited balancer run: phases, unified leads, deep matrix, zone-result agreement. #2298: it carries a
+# pending lead, a HARNESS_ERROR + a capped DEPTH row and an un-adjudicated FINDING, so it is NOT complete.
 # ----------------------------------------------------------------------------------------------------------
-note "1) complete run: phase tracks + unified LEADS + deep-hunt matrix + zone agreement ..."
+note "1) exited run with open rows: phase tracks + unified LEADS + deep-hunt matrix + zone agreement ..."
 if emit_model "$MAIN_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0; then
   if python3 - "$WORK/model.json" <<'PY'
 import sys, json
 m = json.load(open(sys.argv[1]))
 e = []
-# (1) honest progress on a genuinely complete run
-if not (m["complete"] and m["prog"] == 100.0): e.append("not complete@100: %s/%s" % (m["complete"], m["prog"]))
+# (1) honest progress: an exited run with open rows is NOT complete and never reaches 100 (#2298)
+if m["complete"] or m["banner"] != "STOPPED_INCOMPLETE": e.append("complete/banner=%s/%s (want False/STOPPED_INCOMPLETE)" % (m["complete"], m["banner"]))
+if not (0 < m["prog"] <= 99): e.append("prog=%s (want 0 < prog <= 99)" % m["prog"])
 if (m["covered"], m["failed"], m["total"]) != (1, 0, 1): e.append("covered/failed/total=%s" % ((m["covered"], m["failed"], m["total"]),))
-if any(v != "done" for v in m["phases"].values()): e.append("a phase is not done: %s" % m["phases"])
+ph = m["phases"]
+for k in ("M1 · map zones", "M2 · briefs", "M3 · discovery"):
+    if ph.get(k) != "done": e.append("%s should be done: %s" % (k, ph.get(k)))
+for k in ("M4 · refute gate", "4.5 · deep-hunt", "4.6 · refute deep-hunt", "deliver · stage"):
+    if ph.get(k) == "done": e.append("%s must NOT be done (it has unchecked rows): %s" % (k, m["phase_rows"].get(k)))
 # (2) unified LEADS — breadth verdicts + struck + summary
 byloc = {l["loc"]: l for l in m["leads"]}
 ref = byloc.get("pkg/vault/contracts/BatchRouterHooks.sol:_erc4626BufferWrapOrUnwrapExactOut")
@@ -101,24 +114,26 @@ for slot, state, struck, sev in [
     ("pkg_vault_contracts-SYS-solvency", "triaged_fp", True, "High"),
     ("pkg_vault_contracts-C10", "clean", True, "High"),           # CLEAN struck, Sev still shown (intrinsic)
     ("pkg_vault_contracts-C8", "harness_error", False, "High"),   # GAP, NOT struck, amber; Sev shown
-    ("pkg_vault_contracts-C5", "queued", False, "High"),           # planned lens, not run — intrinsic
-                                                                    # High from the zone's value_custody:true
+    ("pkg_vault_contracts-C5", "capped", False, "High"),           # plan row cut by the cap — intrinsic
+                                                                    # High from the plan's custody:true
 ]:
     r = chk(slot, state, struck, sev)
     if r: e.append(r)
-# a planned row carrying an intrinsic severity must still read as "queued" (not "finding"/"running") in the
-# machine-readable state field — the JSON model keeps a planned row distinct from a real verdict (#1953).
+# a capped plan row carrying an intrinsic severity must still read as "capped" (not "finding"/"running") in the
+# machine-readable state field — the JSON model keeps a not-run row distinct from a real verdict (#1953, #2298).
 c5 = ds.get("pkg_vault_contracts-C5")
-if not (c5 and c5["state"] == "queued"): e.append("C5 state should stay queued (distinct from finding/running): %s" % c5)
-if m["deep_summary"] != {"planned": 5, "completed": 4, "findings": 1}: e.append("deep_summary=%s" % m["deep_summary"])
+if not (c5 and c5["state"] == "capped" and c5["checked"] is False): e.append("C5 must be an unchecked capped row: %s" % c5)
+if sorted(ds) != sorted(["pkg_vault_contracts-" + c for c in ("C6", "C8", "C10", "SYS-solvency", "C5")]):
+    e.append("DEPTH rows must be exactly the plan rows: %s" % sorted(ds))
+if m["deep_summary"] != {"planned": 5, "checked": 2, "capped": 1, "findings": 1}: e.append("deep_summary=%s" % m["deep_summary"])
 # (4) zone RESULT agrees with the panels (deep finding wins the precedence)
 z = m["zones"][0]
 if not (z["custody"] and z["result"].startswith("◆ 1 deep finding")): e.append("zone result disagrees: %s" % z)
 if e:
     print("\n".join(e)); sys.exit(1)
 PY
-  then ok "phases all done@100, unified breadth+depth verdicts, deep matrix (finding/triaged-FP/clean/gap/queued), zone agreement"
-  else bad "the complete-run model assertion failed"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
+  then ok "open rows => STOPPED_INCOMPLETE <= 99, M4/4.5/4.6/deliver not done; unified verdicts; DEPTH rows == plan rows (finding/triaged-FP/clean/gap/capped); zone agreement"
+  else bad "the exited-run model assertion failed"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
   fi
 else
   bad "emit-model failed on the complete fixture"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
@@ -136,8 +151,9 @@ grep -v '__EXIT__' "$LIVE_DIR/hunt.log" > "$LIVE_DIR/hunt.log.tmp" && mv "$LIVE_
 HB="$LIVE_DIR/zone-hunt-out/briefs/.gen-briefs/run/brief_pkg_vault_contracts.log"
 touch "$HB"
 
-# (5a) exited + no live process -> FINISHED, static slate (is_live false)
-emit_model "$MAIN_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0
+# (5a) exited + no live process + every row checked -> FINISHED, static slate (is_live false). #2298: FINISHED
+# ("finished — verdict in chat") needs a COMPLETE run, so this arm reads balancer-complete.
+emit_model "$COMPLETE_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0
 if python3 - "$WORK/model.json" <<'PY'
 import sys, json
 m = json.load(open(sys.argv[1]))
@@ -214,38 +230,40 @@ if python3 "$DASH" --descriptor "$MAIN_DESC" --render > "$WORK/page.html" 2>"$WO
   else
     bad "rendered HTML is missing a load-bearing element (label / unified header / refresh / noopener)"
   fi
-  # (#1972) the queued C5 row's Sev cell must show the intrinsic-severity fallback (High, from the zone's
-  # value_custody:true) styled UNIFORMLY with a confirmed FINDING's Sev cell (color:{SEVCOL}, font-weight:600,
-  # no span-level opacity) — the "this row is not a live result" cue now lives entirely at the row level
-  # (the enclosing <tr>'s opacity:.5), not on the Sev span itself.
+  # (#1972, #2298) the CAPPED C5 row's Sev cell must show the intrinsic-severity fallback (High, from the plan
+  # row's custody:true) styled UNIFORMLY with a confirmed FINDING's Sev cell (color:{SEVCOL}, font-weight:600,
+  # no span-level opacity) — the "this row did not run" cue lives at the row level (<tr opacity:.5>) and in the
+  # ⏸️ capped verdict, not on the Sev span itself.
   if python3 - "$WORK/page.html" <<'PY'
 import sys
 html = open(sys.argv[1]).read()
-marker = "planned lens row — not yet run"
+marker = "lens cut by --deep-hunt-max-lenses"
 i = html.find(marker)
 if i < 0:
     print("marker not found: %r" % marker); sys.exit(1)
 row_start = html.rfind("<tr", 0, i)
 row_end = html.find("</tr>", i)
 if row_start < 0 or row_end < 0:
-    print("could not locate the enclosing <tr> for the queued row"); sys.exit(1)
+    print("could not locate the enclosing <tr> for the capped row"); sys.exit(1)
 row = html[row_start:row_end]
 tr_tag_end = row.find(">")
 tr_tag = row[:tr_tag_end]
 if "opacity:.5" not in tr_tag:
-    print("queued row's <tr> must still carry opacity:.5 (row-level dimming cue): %r" % tr_tag); sys.exit(1)
+    print("capped row's <tr> must carry opacity:.5 (row-level dimming cue): %r" % tr_tag); sys.exit(1)
+if 'data-dstate="capped"' not in tr_tag or "⏸️ capped" not in row:
+    print("capped row must be tagged data-dstate=capped and render the ⏸️ capped verdict: %r" % row); sys.exit(1)
 sev_end = row.find(">High<")
 if sev_end < 0:
-    print("queued row missing intrinsic High severity: %r" % row); sys.exit(1)
+    print("capped row missing intrinsic High severity: %r" % row); sys.exit(1)
 sev_span_start = row.rfind("<span", 0, sev_end)  # the Sev cell's own span, not the DEPTH type-badge span
 sev_span = row[sev_span_start:sev_end]
 if "font-weight:600" not in sev_span:
-    print("queued row's Sev cell must be bold like a confirmed FINDING: %r" % sev_span); sys.exit(1)
+    print("capped row's Sev cell must be bold like a confirmed FINDING: %r" % sev_span); sys.exit(1)
 if "opacity:" in sev_span:
-    print("queued row's Sev cell must not carry span-level opacity (row-level only): %r" % sev_span); sys.exit(1)
+    print("capped row's Sev cell must not carry span-level opacity (row-level only): %r" % sev_span); sys.exit(1)
 PY
-  then ok "queued row shows intrinsic High severity, styled uniformly (font-weight:600, no span opacity); row-level opacity:.5 preserved"
-  else bad "queued-row intrinsic-severity styling regressed"
+  then ok "capped row renders ⏸️ capped with intrinsic High severity, styled uniformly (font-weight:600, no span opacity); row-level opacity:.5"
+  else bad "capped-row severity/styling regressed"
   fi
   # (#1972) companion: the C8 HARNESS_ERROR row's Sev cell must ALSO read uniformly bold (no span-level
   # opacity); the "this is a coverage gap, not a live result" cue lives at the row level (<tr opacity:.6>).
@@ -523,14 +541,14 @@ else
   bad "8d-render: --render failed on the floor-less descriptor"; sed 's/^/      /' "$WORK/render.err" | head -5 >&2
 fi
 
-# (8e) #depth-sev boundary — a NON-CUSTODY, not-yet-run (queued) DEPTH row is the exact pair this PR turns on:
+# (8e) #depth-sev boundary — a NON-CUSTODY, not-yet-run DEPTH row is the exact pair this PR turns on:
 #   - over a pay-floor program it has no join and no intrinsic custody severity, so it falls back to the
 #     program floor (previously it was BLANK — the behaviour this PR ADDS); at the floor it stays PAYABLE.
 #   - over a FLOOR-LESS program there is nothing to fall back to, so it stays BLANK (em-dash) — the pre-#depth-sev
 #     boundary this PR preserves. Both halves get explicit coverage since the PR reverses the earlier gating.
 # stage_noncustody <dst-name> <floor-or-empty> — stage balancer, optionally patch pay_floor, and APPEND a
-# value_custody:false zone whose dominant class (C2, in the NONCUST lens set) yields one queued `oracle_pricing-C2`
-# row; echo the staged descriptor path.
+# value_custody:false zone plus its `oracle_pricing-C2` plan row (#2298: DEPTH rows come from the runner's plan, never
+# from zones.json). The run exited, so the selected row that never got a dir reads `not_run`; echo the descriptor.
 stage_noncustody() {
   snc_desc="$(stage_as balancer "$1")"
   python3 - "$snc_desc" "$2" <<'PY'
@@ -549,6 +567,11 @@ zs.append({
     "value_custody": False,
 })
 json.dump(zs, open(zp, "w"), indent=2)
+pp = os.path.join(os.path.dirname(desc), "zone-hunt-out", "deep-hunt", "plan.json")
+plan = json.load(open(pp))
+plan["rows"].append({"slot": "oracle_pricing-C2", "zone": "oracle_pricing", "class": "C2",
+                     "target": "contracts/oracle/PriceAdapter.sol", "state": "selected", "custody": False})
+json.dump(plan, open(pp, "w"), indent=2)
 PY
   echo "$snc_desc"
 }
@@ -561,9 +584,9 @@ m = json.load(open(sys.argv[1]))
 e = []
 q = next((d for d in m["deep_rows"] if d["slot"] == "oracle_pricing-C2"), None)
 # NEW #depth-sev path: no join + no custody + a program floor -> falls back to the floor ("High"), still a
-# queued (not-yet-run) row, and being AT the floor it is payable.
-if not (q and q["state"] == "queued"):
-    e.append("expected a queued oracle_pricing-C2 row over floor=high: %s" % q)
+# not-yet-run (not_run: the run exited without it) row, and being AT the floor it is payable.
+if not (q and q["state"] == "not_run"):
+    e.append("expected a not_run oracle_pricing-C2 row over floor=high: %s" % q)
 elif not (q["severity"] == "High" and q["unpayable"] is False):
     e.append("non-custody queued row over floor=high must resolve the pay-floor 'High' and stay payable: %s" % q)
 if e:
@@ -583,9 +606,9 @@ import sys, json
 m = json.load(open(sys.argv[1]))
 e = []
 q = next((d for d in m["deep_rows"] if d["slot"] == "oracle_pricing-C2"), None)
-# BOUNDARY the PR preserves: no floor + no custody -> nothing to fall back to -> the queued row stays blank.
-if not (q and q["state"] == "queued"):
-    e.append("expected a queued oracle_pricing-C2 row over a floor-less program: %s" % q)
+# BOUNDARY the PR preserves: no floor + no custody -> nothing to fall back to -> the not-run row stays blank.
+if not (q and q["state"] == "not_run"):
+    e.append("expected a not_run oracle_pricing-C2 row over a floor-less program: %s" % q)
 elif not (q["severity"] == "" and q["unpayable"] is False):
     e.append("non-custody queued row over a FLOOR-LESS program must stay blank and payable: %s" % q)
 if e:
@@ -931,8 +954,19 @@ fi
 #      "Survived" label once the bucket stopped auto-including survived-a-gate leads).
 # Fake BOTH liveness sources (proc scan AND llm-inflight) so the assertion is host-independent — otherwise a
 # real hunt's claude/flat-cyborg children on the same host leak into llm_child() and perturb hunt_live.
+# #2298: the live arm is the actual #1999 scenario — a re-hunt over the stale marker with the failed zone back
+# in_flight. (A live run whose failed zone is NOT being re-hunted is an honest M3 gap: discovery moved on, #2020.)
 emit_model "$INC_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0 && cp "$WORK/model.json" "$WORK/m-dead.json"
-emit_model "$INC_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=1 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0 && cp "$WORK/model.json" "$WORK/m-live.json"
+REHUNT_DESC="$(stage_as balancer-incomplete balancer-incomplete-rehunt)"
+python3 - "$(dirname "$REHUNT_DESC")/zone-hunt-out/coverage/zone-coverage.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+c = json.load(open(p))
+for z in c["zones"]:
+    if z["status"] == "failed": z["status"] = "in_flight"
+json.dump(c, open(p, "w"))
+PY
+emit_model "$REHUNT_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=1 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0 && cp "$WORK/model.json" "$WORK/m-live.json"
 if python3 - "$WORK/m-dead.json" "$WORK/m-live.json" <<'PY'
 import sys, json
 dead = json.load(open(sys.argv[1])); live = json.load(open(sys.argv[2]))
@@ -984,11 +1018,12 @@ e = []
 # a genuinely live deep cell => deep-hunt reads "run"
 if live["phases"].get("4.5 · deep-hunt") != "run":
     e.append('fresh deep cell: 4.5 deep-hunt should be "run", got %r' % live["phases"].get("4.5 · deep-hunt"))
-# an idle (stale) deep cell, markers still in the log => must NOT read "run" (that is the #2001 bug); "done"
+# an idle (stale) deep cell, markers still in the log => must NOT read "run" (that is the #2001 bug). #2298: the
+# idle phase still has unchecked rows (C8 HARNESS_ERROR, the abandoned C5 cell), so it is a "gap", never "done".
 if idle["phases"].get("4.5 · deep-hunt") == "run":
     e.append('idle deep-hunt still reads "run" — log-presence is forcing a false running state (#2001)')
-if idle["phases"].get("4.5 · deep-hunt") != "done":
-    e.append('idle-but-ran deep-hunt should be "done", got %r' % idle["phases"].get("4.5 · deep-hunt"))
+if idle["phases"].get("4.5 · deep-hunt") != "gap":
+    e.append('idle-but-ran deep-hunt with open rows should be "gap", got %r' % idle["phases"].get("4.5 · deep-hunt"))
 # refute-deep must not claim active triage while deep-hunt is idle
 if idle["phases"].get("4.6 · refute deep-hunt") == "run":
     e.append('idle refute-deep still reads "run" — an un-triaged backlog is not active triage (#2001)')
@@ -1394,8 +1429,9 @@ chmod +x "$WORK/decoy-bin/agentis"
 ( cd "$WORK" && exec "$WORK/decoy-bin/agentis" go decoy-sibling-hunt ) &
 DECOY_PID=$!
 sleep 1
+# #2298: FINISHED needs a complete run, so 25a reads balancer-complete (the decoy CWD is outside its --out too).
 if env -u HUNT_DASHBOARD_FAKE_PROC_ALIVE -u HUNT_DASHBOARD_FAKE_LLM_INFLIGHT \
-    python3 "$DASH" --descriptor "$MAIN_DESC" --emit-model > "$WORK/model.json" 2>"$WORK/model.err"; then
+    python3 "$DASH" --descriptor "$COMPLETE_DESC" --emit-model > "$WORK/model.json" 2>"$WORK/model.err"; then
   if python3 - "$WORK/model.json" <<'PY'
 import sys, json
 m = json.load(open(sys.argv[1]))
@@ -1444,13 +1480,13 @@ kill "$DECOY_PID" 2>/dev/null
 wait "$DECOY_PID" 2>/dev/null
 
 # ----------------------------------------------------------------------------------------------------------
-# (26) #2108(a): the planned DEPTH matrix must NOT emit a phantom queued row for a zone with no deployable
-# implementation (all interface/events/abstract signatures — nothing a stateful-invariant fuzzer can deploy
-# or call), while a HUNTABLE zone that was never run (a real, still-open coverage gap) MUST keep its queued
-# row. Stage a private copy (so the count-exact assertions over MAIN_DESC are untouched) and append two zones:
-# one has_implementation:false (interface-only) and one has_implementation:true (huntable, no run dir).
+# (26) #2108(a) / #2298: the DEPTH rows are EXACTLY the runner's plan rows — a zone absent from the plan yields no
+# row whatever its zones.json flags (the interface-only zone the old client-side predictor had to filter), while a
+# planned huntable zone that never ran (a real, still-open coverage gap) keeps its row. Stage a private copy (so the
+# count-exact assertions over MAIN_DESC are untouched), append two zones to zones.json — one has_implementation:false
+# (interface-only), one has_implementation:true — and a plan row for the huntable one only.
 # ----------------------------------------------------------------------------------------------------------
-note "26) #2108(a): interface-only zone -> no phantom queued DEPTH row; capped-out huntable zone -> real queued row ..."
+note "26) #2108(a)/#2298: DEPTH rows == plan rows; an unplanned zone yields no row, a planned unrun one stays open ..."
 IMPL_DESC="$(stage_as balancer balancer-has-impl)"
 python3 - "$IMPL_DESC" <<'PY'
 import json, os, sys
@@ -1472,9 +1508,14 @@ zs.append({
     "value_custody": False, "has_implementation": True,
 })
 json.dump(zs, open(zp, "w"), indent=2)
+pp = os.path.join(os.path.dirname(desc), "zone-hunt-out", "deep-hunt", "plan.json")
+plan = json.load(open(pp))
+plan["rows"].append({"slot": "capped_vault-C2", "zone": "capped_vault", "class": "C2",
+                     "target": "contracts/capped/Capped.sol", "state": "selected", "custody": False})
+json.dump(plan, open(pp, "w"), indent=2)
 PY
 if emit_model "$IMPL_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM_INFLIGHT=0; then
-  if python3 - "$WORK/model.json" <<'PY'
+  if python3 - "$WORK/model.json" "$IMPL_DESC" <<'PY'
 import sys, json
 m = json.load(open(sys.argv[1]))
 e = []
@@ -1482,15 +1523,19 @@ slots = {d["slot"] for d in m["deep_rows"]}
 if any(s.startswith("protocol_iface-") for s in slots):
     e.append("an interface-only zone (has_implementation:false) still produced a phantom DEPTH row: %s" % sorted(slots))
 cap = next((d for d in m["deep_rows"] if d["slot"] == "capped_vault-C2"), None)
-if not (cap and cap["state"] == "queued"):
-    e.append("a huntable capped-out zone (has_implementation:true) lost its real queued coverage-gap row: %s" % cap)
+if not (cap and cap["state"] == "not_run" and cap["checked"] is False):
+    e.append("a planned huntable zone that never ran lost its open coverage-gap row: %s" % cap)
+import os
+plan = json.load(open(os.path.join(os.path.dirname(sys.argv[2]), "zone-hunt-out", "deep-hunt", "plan.json")))
+if slots != {r["slot"] for r in plan["rows"]}:
+    e.append("DEPTH rows must equal the plan rows: %s vs %s" % (sorted(slots), sorted(r["slot"] for r in plan["rows"])))
 # the original balancer depth matrix is unperturbed by the two appended zones (no has_implementation key on it)
 if not any(s.startswith("pkg_vault_contracts-") for s in slots):
     e.append("the original huntable zone's DEPTH rows vanished: %s" % sorted(slots))
 if e:
     print("\n".join(e)); sys.exit(1)
 PY
-  then ok "26: interface-only zone emits NO queued DEPTH row; the capped-out huntable zone keeps its real queued row (#2108(a))"
+  then ok "26: DEPTH rows == plan rows — the unplanned interface-only zone has no row; the planned unrun zone keeps an open not_run row (#2108(a), #2298)"
   else bad "26: has_implementation gate mis-classified a DEPTH row"; sed 's/^/      /' "$WORK/model.err" | head -3 >&2
   fi
 else
@@ -1796,8 +1841,9 @@ PY
 else bad "30b: emit-model failed (briefs-live)"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
 fi
 
-# (30c) DEEP-HUNT started (marker-less): a deep-hunt/<slot> dir on disk -> M4 'done' (deep-hunt began) even
-# with NO [deep-hunt]/STAGE-4.5 marker in the log. Coverage is fully hunted so discovery is done.
+# (30c) DEEP-HUNT started (marker-less): a deep-hunt/<slot> dir on disk -> the M4 and 4.5 phases have STARTED (not
+# 'wait') even with NO [deep-hunt]/STAGE-4.5 marker in the log. #2298: started is no longer "done" — balancer's M4
+# still holds a pending lead, so M4 may not read done; the artifact-based start signal is what this pins.
 C_DESC="$(stage_as balancer sys-deepdir)"; C_DIR="$(dirname "$C_DESC")"
 strip_markers "$C_DIR/hunt.log"
 mkdir -p "$C_DIR/zone-hunt-out/deep-hunt/pkg_vault_contracts_C6/run"
@@ -1805,10 +1851,13 @@ if emit_model "$C_DESC" HUNT_DASHBOARD_FAKE_PROC_ALIVE=0 HUNT_DASHBOARD_FAKE_LLM
   if python3 - "$WORK/model.json" <<'PY'
 import sys, json
 ph = json.load(open(sys.argv[1]))["phases"]
-if ph.get("M4 · refute gate") != "done":
-    print("M4 must be 'done' once a deep-hunt/<slot> dir exists (deep began), marker-less: %s" % ph.get("M4 · refute gate")); sys.exit(1)
+if ph.get("M4 · refute gate") == "wait" or ph.get("4.5 · deep-hunt") == "wait":
+    print("M4/4.5 must have STARTED once a deep-hunt/<slot> dir exists (deep began), marker-less: %s / %s"
+          % (ph.get("M4 · refute gate"), ph.get("4.5 · deep-hunt"))); sys.exit(1)
+if ph.get("M4 · refute gate") == "done":
+    print("M4 must not read done while a breadth lead is still pending refute (#2298)"); sys.exit(1)
 PY
-  then ok "30c: marker-less + on-disk deep-hunt/<slot> dir -> M4 'done' (deep-hunt-started is artifact-based, not marker-based)"
+  then ok "30c: marker-less + on-disk deep-hunt/<slot> dir -> M4 + 4.5 started (artifact-based, not marker-based), M4 not done with a pending lead"
   else bad "30c: deep-hunt-started (marker-less) failed"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2
   fi
 else bad "30c: emit-model failed (deep-dir)"; sed 's/^/      /' "$WORK/model.err" | head -5 >&2

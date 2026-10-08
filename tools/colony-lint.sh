@@ -1424,8 +1424,9 @@ fi
 # ROOT/OUT/LOG + one target's chrome). demo-hunt-dashboard.sh is pure bash/python3 over a checked-in, scrubbed
 # zone-hunt-out/ snapshot copied into a mktemp $WORK (no agentis / LLM / forge / network / server): drives
 # `--emit-model` (the JSON assertion surface) + `--render` (an HTML smoke parse) and pins the load-bearing
-# model — phase tracks + honest progress, the unified breadth+depth LEADS verdicts (REFUTED-struck /
-# CONFIRMED / pending; deep FINDING / triaged-FP / CLEAN-struck / HARNESS_ERROR-gap / queued; severity join),
+# model — phase tracks + honest progress (#2298: an exited run with open rows is STOPPED <= 99 %, never DONE), the
+# unified breadth+depth LEADS verdicts (REFUTED-struck / CONFIRMED / pending; deep FINDING / triaged-FP /
+# CLEAN-struck / HARNESS_ERROR-gap / capped, DEPTH rows == the runner's deep-hunt/plan.json rows; severity join),
 # the (file,class) adjudication overlay, zone-result agreement, the four liveness classes via
 # HUNT_DASHBOARD_FAKE_* (incl. the hidden .gen-briefs heartbeat fix), and honest completion (STOPPED
 # INCOMPLETE, failed excluded from covered). Multi-hunt tabs / registry / overview are M2 (a follow-on).
@@ -1456,6 +1457,25 @@ if [ -x "$REPO_ROOT/dark-factory/demo-hunt-dashboard-multi.sh" ]; then
         pass "dark-factory: hunt-dashboard M2 (multi-hunt overview->detail registry + opt-in atomic registration, byte-identical when off) (#1913)"
     else
         fail "dark-factory: hunt-dashboard M2 regressed (#1913)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- dark-factory hunt-dashboard COMPLETENESS invariant (#2298) ---
+# The operator reads 100 % / DONE as "the hunt is finished". demo-hunt-dashboard-completeness.sh (pure bash/python3
+# over the scrubbed fixtures/balancer-complete snapshot) proves the dashboard can no longer claim it while ANY row is
+# unchecked: a positive control (the all-checked run IS complete at 100 %, so the invariant is not vacuous), then
+# single-row mutations — capped / not-run / running / HARNESS_ERROR / TRANSIENT_ERROR / LOW_COVERAGE / unplanned
+# DEPTH rows, a missing or skipped deep-hunt plan, a FINDING without an operator verdict (even one that SURVIVED the
+# 4.6 gate), a pending lead, a failed / degraded zone, a failed or missing deliver row — each x fake-proc-alive 0/1,
+# asserting the model, the rendered page (bar, banner, sub-line, phase + zone icons) and the overview card, plus a
+# 299/300 rounding guard (99 %, never a rounded 100 %).
+if [ -x "$REPO_ROOT/dark-factory/demo-hunt-dashboard-completeness.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-hunt-dashboard-completeness.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: hunt-dashboard completeness (no 100 % / DONE / FINISHED / phase ✅ while any row is unchecked; positive control + 16 single-row mutations + rounding guard) (#2298)"
+    else
+        fail "dark-factory: hunt-dashboard completeness invariant regressed (#2298)"
         printf '%s\n' "$check_out"
     fi
 fi
