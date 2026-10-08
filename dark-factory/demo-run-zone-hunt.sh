@@ -340,6 +340,22 @@ else
 fi
 [ "$RC" -eq 0 ] && ok "the capstone exited 0 despite the per-finding hard failure" \
   || bad "the capstone did not exit 0 after a per-finding failure"
+# #2298: the deliver ledger (audit-pass/deliver-status.tsv) holds exactly ONE staged|halted|failed row per
+# .verified-findings.tsv finding, in order — the hunt-dashboard checks a deliver row only on staged/halted.
+if python3 - "$OUT/.verified-findings.tsv" "$OUT/audit-pass/deliver-status.tsv" <<'PY'
+import re, sys
+vf = [l.split("\t")[0] for l in open(sys.argv[1]).read().splitlines() if l.split("\t")[0]]
+ds = [l.split("\t") for l in open(sys.argv[2]).read().splitlines() if l.strip()]
+assert len(ds) == len(vf) and vf, (len(ds), len(vf))
+for loc, row in zip(vf, ds):
+    assert len(row) == 2 and row[1] in ("staged", "halted", "failed"), row
+    assert row[0] == re.sub(r"[^A-Za-z0-9]+", "-", loc).strip("-"), (row[0], loc)
+st = [r[1] for r in ds]
+assert st.count("staged") == 1 and st.count("failed") == 1, st
+PY
+then ok "audit-pass/deliver-status.tsv: one staged|halted|failed row per .verified-findings.tsv finding (1 staged, 1 failed) (#2298)"
+else bad "audit-pass/deliver-status.tsv does not mirror .verified-findings.tsv (#2298)"
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 # (e) #1826: STAGE 3 hunts value-custody zones first. The fixture's four real zones are a mix that is NOT

@@ -624,6 +624,22 @@ else
   else
     bad "(b) the per-target run dir is missing:"; ls "$ONF/deep-hunt" 2>/dev/null | sed 's/^/      /' >&2
   fi
+  # #2298: the plan file names each REACH cell by the SAME dh_row_cell slot (…-<slug>) the loop ran it in, so the
+  # plan's selected slots are exactly the created cell dirs.
+  if python3 - "$ONF/deep-hunt" <<'PY'
+import json, os, sys
+d = sys.argv[1]
+p = json.load(open(os.path.join(d, "plan.json")))
+sel = sorted(r["slot"] for r in p["rows"] if r["state"] == "selected")
+dirs = sorted(x for x in os.listdir(d) if os.path.isdir(os.path.join(d, x)) and not x.startswith("."))
+assert p["reach"] == 1 and sel and sel == dirs, (p["reach"], sel, dirs)
+assert all(s.count("-") >= 2 for s in sel), sel   # <zone>-<class>-<slug>
+PY
+  then
+    ok "(b) plan.json's selected REACH slots (with their -<slug> suffix) == the created cell dirs (#2298)"
+  else
+    bad "(b) plan.json REACH slots disagree with the created cell dirs (#2298)"
+  fi
   if [ -f "$ONF/deep-hunt/reach-coverage.tsv" ] && grep -q 'LOW_COVERAGE' "$ONF/deep-hunt/reach-coverage.tsv"; then
     ok "(b) reach-coverage.tsv recorded the cell and LOW_COVERAGE was KEPT (not coerced)"
   else

@@ -596,11 +596,11 @@ else
   bad "lens_classes() no longer walks the zone's ranked class order (the #2113 precedence bug is back)"
 fi
 
-if grep -q 'DEEP_HUNT_MAX_LENSES=2' "$ZONEHUNT" \
+if grep -q 'DEEP_HUNT_MAX_LENSES=3' "$ZONEHUNT" \
    && grep -q -- '--deep-hunt-max-lenses) nv "$#"; DEEP_HUNT_MAX_LENSES="$2"; shift 2 ;;' "$ZONEHUNT"; then
-  ok "run-zone-hunt.sh declares --deep-hunt-max-lenses with default 2 and parses it"
+  ok "run-zone-hunt.sh declares --deep-hunt-max-lenses with default 3 (#2298) and parses it"
 else
-  bad "run-zone-hunt.sh does not declare/parse --deep-hunt-max-lenses (default 2)"
+  bad "run-zone-hunt.sh does not declare/parse --deep-hunt-max-lenses (default 3, #2298)"
 fi
 
 if grep -q 'DZOUT="\$DEEP/\$ZID-\$DCLASS"' "$ZONEHUNT"; then
@@ -730,10 +730,10 @@ else
   bad "(ix) the dominant-class fallback regressed (unranked '$_unranked', generic '$_generic')"
 fi
 
-# (x) NO CUSTODY-ROW LOSS — at the default cap of 2 the ranked lens is ADDITIVE: the custody row is demoted to
+# (x) NO CUSTODY-ROW LOSS — at a cap of 2 (the pre-#2298 default) the ranked lens is ADDITIVE: the custody row is demoted to
 #     row 2, never dropped, so everything that ran before #2113 still runs.
 if printf '%s\n' "$_rows_n2" | grep -qx "$(printf 'src_ranked\tsrc/Strategy.sol\tC6')"; then
-  ok "(x) the ranked custody zone KEEPS its custody-primary C6 row at the default cap (demoted, not dropped)"
+  ok "(x) the ranked custody zone KEEPS its custody-primary C6 row at a cap of 2 (demoted, not dropped)"
 else
   bad "(x) the ranked custody zone LOST its custody-primary C6 row — the ranked lens swapped it out"
 fi
@@ -781,7 +781,7 @@ if [ "$FAILS" -eq 0 ]; then
   note "      walks the ZONE'S OWN fitness-ranked scope.tsv class order (so the mapper's leading pick leads the"
   note "      fan-out and survives the cap) with at most ONE custody-primary lens per zone and the dominant class"
   note "      as fallback, routes C19 via the shipped liveness lens, bounds the fan-out via --deep-hunt-max-lenses"
-  note "      (default 2; truncation drops the LOWEST-ranked class), keeps interface-only zones skipped, and keys"
+  note "      (default 3 since #2298; truncation drops the LOWEST-ranked class), keeps interface-only zones skipped, and keys"
   note "      each run dir per (zone, class) so the merge adapter reads the right verdict."
   exit 0
 fi

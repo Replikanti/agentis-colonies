@@ -396,6 +396,13 @@ if git -C "$HERE" cat-file -e origin/main:dark-factory/run-zone-hunt.sh 2>/dev/n
           echo "run-zone-hunt.sh: [deep-hunt] zone '$ZID' root '$MR_ROOT' is not a Foundry project — row skipped (#2255)" >&2
           set -- "$@" --repo "$REPO/$MR_ROOT" --target "${RELFILE#"$MR_ROOT"/}"
 ALLOW2277
+    # #2298: the STAGE 4.5 default cap 2 -> 3 (the declaration, its help line and one CAP RULE comment line, all on
+    # the --deep-hunt path only). Its other moves (dh_row_cell, the cap check after the seam) keep each line verbatim.
+    cat >> "$WORK/rz-allowlist.txt" <<'ALLOW2298'
+#   --deep-hunt-max-lenses <N>  #1795: max lens classes run per deep-hunt zone (default 2). The STAGE 4.5
+DEEP_HUNT_MAX_LENSES=2  # #1795/#2113: max lens classes per deep-hunt zone, walked in the zone's own
+    # the zone's per-class rows leave headroom under it (len(lenses) < max_lenses). At the default max_lenses=2 a
+ALLOW2298
     ALLOW_BAD="$(grep -vxF -f "$WORK/rz-allowlist.txt" "$WORK/rz-removed-outside.txt" || true)"
     ALLOW_DUP="$(sort "$WORK/rz-removed-outside.txt" | uniq -d)"
     if [ "$OUTSIDE_N" -eq 0 ] || { [ -z "$ALLOW_BAD" ] && [ -z "$ALLOW_DUP" ]; }; then
