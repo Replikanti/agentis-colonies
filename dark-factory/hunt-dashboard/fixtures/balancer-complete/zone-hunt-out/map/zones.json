@@ -1,0 +1,21 @@
+[
+  {
+    "id": "pkg_vault_contracts",
+    "name": "Vault core and routers",
+    "files": [
+      "pkg/vault/contracts/BaseHooks.sol",
+      "pkg/vault/contracts/BatchRouterHooks.sol",
+      "pkg/vault/contracts/BufferRouter.sol",
+      "pkg/vault/contracts/RouterHooks.sol",
+      "pkg/vault/contracts/Vault.sol",
+      "pkg/vault/contracts/VaultAdmin.sol",
+      "pkg/vault/contracts/VaultCommon.sol",
+      "pkg/vault/contracts/VaultExtension.sol"
+    ],
+    "loc": 5394,
+    "hardening_score": 77,
+    "bug_classes_likely": ["C6", "C8", "C15", "C5"],
+    "description": "The Vault owns all swap/add/remove-liquidity accounting.",
+    "value_custody": true
+  }
+]

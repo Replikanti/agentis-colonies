@@ -57,14 +57,17 @@ given, `out` defaults to `<root>/zone-hunt-out` and `log` to `<root>/hunt.log`.
 ## What it renders
 
 - **Phases** — the seven pipeline stages grouped into four tracks (`MAP`, `BREADTH · discovery`,
-  `DEPTH · deep-hunt`, `DELIVER`); each of the breadth and depth tracks ends in its own refute gate. A
-  phase-weighted progress bar.
+  `DEPTH · deep-hunt`, `DELIVER`); each of the breadth and depth tracks ends in its own refute gate. Each
+  phase shows `checked/total` over its row set (see [Completeness](#completeness-2298)) and a phase-weighted
+  progress bar.
 - **Zones** — execution state + a Result column (💰 marks value-custody zones); the Result agrees with the
   LEADS table (refuted leads, deep findings, triaged FPs).
 - **LEADS** — one unified table `Type | Sev | Class | Location | Refute gate | Detail`. Breadth (discovery)
   rows carry a blue `BREADTH` pill and their per-lead refute-gate verdict (survived / refuted / pending);
   depth (STAGE 4.5 deep-hunt) rows carry a purple `DEPTH` pill and the fuzzer's verdict (FINDING / clean /
-  harness-error), plus every planned lens row (done / running / queued). Severity is intrinsic to the target
+  harness-error, keeping the raw token — `TRANSIENT_ERROR`, `LOW_COVERAGE`, ...), plus every row of the
+  runner's plan (`<out>/deep-hunt/plan.json`): running / queued / not run / `⏸️ capped`. The DEPTH rows come
+  from that plan only — the dashboard never re-derives the lens selection. Severity is intrinsic to the target
   and shown on every row: for a not-yet-run row this is the zone's value-custody classification (High) where
   known; a row with no resolvable custody signal still shows an em-dash. A refuted lead, a triaged-FP deep
   finding, and a CLEAN deep row are struck through; an open FINDING and a HARNESS_ERROR (a coverage gap) are
@@ -72,8 +75,56 @@ given, `out` defaults to `<root>/zone-hunt-out` and `log` to `<root>/hunt.log`.
 - **Liveness** — a pulse that is green only while the hunt is genuinely live (a running hunt process / LLM
   child, detected from `/proc`), amber when quiet, red when the process is gone without an exit marker, and a
   static slate when finished. "Finished" requires BOTH the `__EXIT__` marker AND no live process.
-- **Honest completion** — the process-exit marker alone never renders 100%; `HARNESS_ERROR` / `failed` zones
-  are excluded from the hunted count, and an incomplete exit renders distinctly from full coverage.
+
+## Completeness (#2298)
+
+The operator reads `100%` / `DONE` as "the hunt is finished". So nothing on the page, in `--emit-model` or on
+an overview card claims it while any row is open. One model (`hunt_model()`) feeds every indicator: the bar and
+its `%`, the banner, the `DONE` sub-line, the phase ✅, the zone ✅, `FINISHED` / "finished — verdict in chat",
+and the overview card.
+
+- **Checked row** — a row is *checked* only when its rendered state is terminal. Everything else is
+  *unchecked*: queued, running, re-running, not run, capped, harness / transient error, low coverage,
+  abandoned, plan unknown, deep-hunt skipped, pending refute, awaiting an operator verdict, a failed or
+  degraded zone, a failed deliver row.
+- **Phase `done`** — only when the phase has started, all its rows are checked and its upstream phase is
+  `done` (or `skip`).
+- **Header complete** — `DONE`, `100%` and "finished — verdict in chat" only when the runner exited AND every
+  phase is `done` or `skip`. Otherwise progress is clamped to `<= 99` and rendered with `int()`, so `99.6`
+  can never print as `100%`.
+
+| Phase | Rows | Checked when |
+|---|---|---|
+| M1 map | `map/zones.json` | it parses as a non-empty list (or a zone already left `not_reached`) |
+| M2 briefs | one per mapped zone | `briefs/briefs/brief_<id>.md` exists (or discovery already reached the zone) |
+| M3 discovery | the Zones table rows | status `hunted` / `hunted_empty` |
+| M4 refute | every grouped breadth lead (sub-floor rows included) | the lead is no longer pending |
+| 4.5 deep-hunt | plan rows ∪ observed `deep-hunt/*/` dirs ∪ one synthetic row for a skipped / legacy run | the report verdict is FINDING or CLEAN |
+| 4.6 refute deep | DEPTH rows with a FINDING | an **operator** verdict, or the automated 4.6 gate `REFUTED` |
+| deliver | rows of `.verified-findings.tsv` | a `staged` / `halted` row in `audit-pass/deliver-status.tsv` |
+
+Upstream: M2 ← M1, M3 ← M2, M4 ← M3, 4.5 ← M1, 4.6 ← 4.5, deliver ← M4 + 4.6. A phase renders `➖ skip` only
+on runner evidence: 4.5 / 4.6 when the run reached M5 with no deep-hunt plan, dir or log marker (run without
+`--deep-hunt`); deliver when the plan says `deep_hunt_only` (M5 never runs in that mode).
+
+- **Capped rows** — a lens `--deep-hunt-max-lenses` cut is a `⏸️ capped` row. It blocks `DONE` / `100%` of 4.5
+  and of the header; re-run with a higher cap + `--deep-hunt-resume` to clear it. A `--deep-hunt-max-targets`
+  cut is not a row of its own.
+- **Operator verdict for deep findings** — a FINDING that **survived** the automated 4.6 gate (`REAL`) is not a
+  verdict; it renders "survived refute gate (4.6) · needs forge PoC" and stays unchecked until the operator adds
+  a row to `<root>/deep-hunt-adjudicated.tsv`:
+  `<target-file>\t<class>\t<CONFIRMED|DUPLICATE|REFUTED>\t<reason>` (`FP` is accepted as an alias of
+  `REFUTED`; class `*` applies to any lens class on that file). The automated gate's `REFUTED` checks the row
+  too; its `ERROR` does not.
+- **Legacy out dirs** — an out dir written before `deep-hunt/plan.json` existed cannot prove its DEPTH row set:
+  it renders a "plan unknown" row and stays `STOPPED INCOMPLETE <= 99%`, and an out dir without
+  `audit-pass/deliver-status.tsv` keeps its deliver rows open. This is intended.
+- **Zones** — a zone reads ✅ only when its M3 row, its leads and its DEPTH rows are all checked; otherwise it
+  shows `hunted · N open` (🔄 while the hunt is live, ⚠️ once it exited).
+- `--emit-model` adds `phase_rows` (`{total, checked, unchecked: [labels]}` per phase), `open_rows`,
+  `deep_mode` (`planned | skipped | legacy | off | pending`), a `checked` flag on every `deep_rows` entry and
+  `deep_summary = {planned, checked, capped, findings}`. `dark-factory/demo-hunt-dashboard-completeness.sh`
+  pins the invariant.
 
 ## Multi-hunt (overview → detail) [M2]
 
@@ -89,8 +140,9 @@ setsid dark-factory/hunt-dashboard/hunt-dashboard.sh >/tmp/hunt-dashboard.log 2>
 
 - **Landing = an overview grid** — one clickable card per registered hunt: label, an optional bounty link, a
   mini progress bar + %, the live status dot (working / quiet / stalled / process-gone / done, re-derived
-  live), and a compact `zones X/Y · N leads · K deep FINDING` summary. A finished hunt's card is a static
-  slate; a live one pulses.
+  live), and a compact `zones X/Y · N leads · K deep FINDING` summary (plus `· N open rows` while incomplete).
+  A finished hunt's card is a static slate; a live one pulses. The card's `%` and `FINISHED` follow the same
+  [completeness](#completeness-2298) model as the detail page.
 - **Click a card → that hunt's full detail dashboard** (the single-hunt view above), routed via `?hunt=<id>`
   (bookmarkable). The detail view carries a `← overview` control and a compact hunt-switcher pill row.
 - **Registry** — `${DARK_FACTORY_DIR:-$HOME/.dark-factory}/hunts/<id>.json`, each descriptor using the schema
@@ -106,7 +158,7 @@ setsid dark-factory/hunt-dashboard/hunt-dashboard.sh >/tmp/hunt-dashboard.log 2>
 - `--render` emits the HTML once to stdout and exits (no server) — a smoke check. In registry mode it emits
   the overview page; add `--hunt <id>` for one hunt's detail page.
 - `--emit-model` emits the computed facts as JSON (the deterministic assertion surface used by
-  `dark-factory/demo-hunt-dashboard.sh` and `demo-hunt-dashboard-multi.sh`). In registry mode it emits the
+  `dark-factory/demo-hunt-dashboard.sh`, `demo-hunt-dashboard-multi.sh` and `demo-hunt-dashboard-completeness.sh`). In registry mode it emits the
   overview model; add `--hunt <id>` for one hunt's detail model.
 - `HUNT_DASHBOARD_FAKE_PROC_ALIVE` / `HUNT_DASHBOARD_FAKE_LLM_INFLIGHT` override the `/proc` liveness scan for
   fixtures only (unset in production → the real scan runs). A per-hunt suffix

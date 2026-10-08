@@ -405,6 +405,39 @@ Out of scope: dashboard rendering of the new statuses, salvaging a killed ensemb
 short-circuiting the prover's repair rounds on a target-level compile error, STAGE 3/4/4.6 concurrency, and any
 default flip. Proven end-to-end by [`demo-deep-hunt-budget.sh`](../demo-deep-hunt-budget.sh).
 
+## Deep-hunt plan file (#2298)
+
+With `--deep-hunt`, `run-zone-hunt.sh` writes `<out>/deep-hunt/plan.json` once, after the STAGE 4.5 selection and
+before the first cell runs. It is the full (zone, lens) row matrix, and the hunt-dashboard reads it as the **only**
+source of its DEPTH rows. The dashboard no longer re-derives the lens selection, so a runner change can never make
+the two disagree again (the drift behind #1953, #2108 and #2113).
+
+```json
+{"schema": "deep-hunt-plan/v1", "status": "planned", "reason": "", "deep_hunt_only": false, "resume": false,
+ "max_lenses": 3, "max_targets": 1, "composable_lens": 0, "reach": 0,
+ "rows": [{"slot": "<dir under deep-hunt/>", "zone": "<zone id>", "class": "C6", "target": "<rel .sol>",
+           "state": "selected", "custody": true},
+          {"slot": "<zone id>-C5", "zone": "<zone id>", "class": "C5", "target": "", "state": "capped",
+           "cap": "max-lenses", "custody": true}]}
+```
+
+- **`selected`** — the row will run. `slot` is the exact cell dir: the runner names it with the same
+  `dh_row_cell` function the cell loop uses, including the `-<slug>` suffix under REACH. Legacy
+  `--deep-hunt-max-targets > 1` rows that share one dir appear once.
+- **`capped`** — a routable lens that `--deep-hunt-max-lenses` (default **3**, was 2) cut. It has no dir. On the
+  dashboard it is a `⏸️ capped` row that blocks `DONE` / `100%` until a re-run with a higher cap +
+  `--deep-hunt-resume`. A `--composable-lens` `SYS-solvency` row the cap cuts is recorded only when it would really
+  have been emitted (the zone has a co-system contract). A `--deep-hunt-max-targets` cut is not a row.
+- **`status: skipped`** — no runnable Foundry root (`reason` = the foundry-shim status); `rows` is `[]`. The
+  dashboard renders one open "deep-hunt not run" row.
+- **Stability** — keys are additive only; a breaking change bumps `schema`. A plan that does not parse (or an out
+  dir from before this file existed) is treated as "plan unknown": the run never reads 100 %.
+- **Write path** — `plan.json.tmp` then `mv -f` (atomic). A failed write is logged and never fails the run; it can
+  only make the dashboard more conservative.
+
+M5 adds a matching ledger, `<out>/audit-pass/deliver-status.tsv`: one `<slug>\t<staged|halted|failed>` row per
+`.verified-findings.tsv` finding. The dashboard checks a deliver row only on `staged` / `halted`.
+
 ## Hardhat targets — the Foundry shim (#2277)
 
 STAGE 4.5 (`--deep-hunt`) and STAGE 4.6 (`--vector-hunt`) drive Foundry-only engines. Before #2277 a Hardhat-only

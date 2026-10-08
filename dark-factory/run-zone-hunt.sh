@@ -147,6 +147,14 @@
 #                       skipped-no-foundry | skipped-no-root | shim-failed), detail — plus a stderr
 #                       `deep_hunt_status=<ran|partial|status>` line per stage. A shim failure never fails the run
 #                       (exit 0); the ledger makes an unmeasured deep hunt visible instead of silent.
+#   <out>/deep-hunt/plan.json  #2298 (written only with --deep-hunt): the STAGE 4.5 row matrix, written ONCE before
+#                       the first cell runs — schema `deep-hunt-plan/v1`, status planned|skipped, and one row per
+#                       (zone, lens) cell: state `selected` (will run; `slot` = its exact dir under deep-hunt/) or
+#                       `capped` (a routable lens cut by --deep-hunt-max-lenses; no dir). hunt-dashboard.py reads it
+#                       as the ONLY source of the DEPTH rows (it never re-derives the selection). Keys are additive
+#                       only; a breaking change bumps `schema`. A failed write is logged and never fails the run.
+#   <out>/audit-pass/deliver-status.tsv  #2298: one `<slug>\t<staged|halted|failed>` row per M5 finding, in
+#                       .verified-findings.tsv order — the deliver phase's completion ledger for the dashboard.
 #   --deep-hunt-aux-max <N>  #1726 (M2): max SECONDARY co-custody contracts fed to the deep-hunt as
 #                       run-invariant-hunt.sh --aux (the shipped composable-fresh multi-contract engine —
 #                       INV_AUX -> compose_fresh_seed -> multi-register targetContracts() -> #1077 both-real
@@ -156,7 +164,7 @@
 #                       behaviour (STAGE 4.5 emits an empty aux column and neither $INVHUNT invocation gains a
 #                       --aux arg). The #1471 linkage gate still fires on the PRIMARY target; aux contracts are
 #                       protected by the existing #1077 both-real HARNESS_ERROR safety.
-#   --deep-hunt-max-lenses <N>  #1795: max lens classes run per deep-hunt zone (default 2). The STAGE 4.5
+#   --deep-hunt-max-lenses <N>  #1795: max lens classes run per deep-hunt zone (default 3; 2 before #2298). The STAGE 4.5
 #                       selection emits one row per (zone x APPLICABLE implemented lens class) instead of the
 #                       single dominant class, so a non-custody lens (oracle C2, liveness C16, access C5,
 #                       overflow/precision-DoS C19) is no longer shadowed by the custody-first routing on a
@@ -164,6 +172,8 @@
 #                       (`bug_classes_likely` / scope.tsv, ranked by zone-mapper.ag #1711), keeping AT MOST ONE
 #                       custody-primary lens per zone, and are truncated to N — so N=1 runs the zone's ranked
 #                       leading routable class (its dominant class only when it ranks none).
+#                       #2298: a lens the cap cuts is recorded as a `capped` row in <out>/deep-hunt/plan.json, which
+#                       the dashboard renders as an unchecked row (the hunt never shows 100 % while one exists).
 #   --composable-lens   #1914 (M1): emit ONE ADDITIONAL class-agnostic GENERAL-SOLVENCY row (stable class token
 #                       `SYS-solvency`) per custody/composition surface, in ADDITION to the per-class rows —
 #                       target = the zone's primary .sol, aux = its next-largest co-system .sol — so the
@@ -394,8 +404,10 @@ DEEP_HUNT=0 ; INV_FIXTURE="" ; DEEP_HUNT_MAX_TARGETS=1 ; DEEP_HUNT_REPAIR_ROUNDS
 # working cell is never false-killed) the engine's process group is killed and the loop fail-forwards to
 # HARNESS_ERROR instead of wedging. env-overridable; 0 disables the watchdog (pass-through).
 DEEP_CELL_STALE_S="${DEEP_CELL_STALE_S:-900}" ; DEEP_CELL_POLL_S="${DEEP_CELL_POLL_S:-45}"
-DEEP_HUNT_MAX_LENSES=2  # #1795/#2113: max lens classes per deep-hunt zone, walked in the zone's own
+DEEP_HUNT_MAX_LENSES=3  # #1795/#2113: max lens classes per deep-hunt zone, walked in the zone's own
 # fitness-ranked bug_classes_likely order (scope.tsv), with at most ONE custody-primary lens per zone.
+# #2298: default 3 (was 2 — a third ranked class was silently dropped); `--deep-hunt-max-lenses 2` restores the old
+# selection byte-for-byte.
 # #1914 (M1): the class-agnostic GENERAL-SOLVENCY lens (`SYS-solvency`). 0 (default) = OFF = STAGE 4.5 emits
 # exactly the per-class rows it emitted before, so `.deep-hunt-targets.tsv` is byte-identical. The default-on
 # flip is deferred to M4 (gated on the transfer validation); the disable path stays byte-identical forever.
@@ -1342,6 +1354,102 @@ mr_root_of() {
   awk -F'\t' -v z="$1" '$1 == z { print $2; exit }' "$OUT/.deep-hunt-roots.tsv" 2>/dev/null || true
 }
 
+# dh_row_cell (#2298): the ONE STAGE 4.5 slot-naming implementation. The deep-hunt row loop and the plan writer
+# (dh_write_plan) both call it, so the `slot` a plan.json row names is exactly the cell dir that row runs in — the
+# dashboard reads the plan instead of re-deriving the selection (the #1953/#2108/#2113 drift). Operates on the loop
+# globals ZID RELFILE DCLASS and sets REACH_NAME, RELFILE (REACH split) and DZOUT. Moved verbatim from the loop.
+dh_row_cell() {
+      # (the body keeps the cell loop's indentation, so each moved line stays byte-identical to its origin line —
+      # the exact-line source guards and demo-vector-hunt.sh's OFF-path byte-identity check compare whole lines)
+      # #2245 REACH: the RELFILE column carries `rel:Name` under REACH. Split off the concrete contract name
+      # (threaded to run-invariant-hunt.sh --target-contract) and restore RELFILE to the plain path deep-hunt-
+      # gate.sh consumes. With the knob off there is no `:Name`, so REACH_NAME stays empty and RELFILE unchanged.
+      REACH_NAME=""
+      if [ "$DEEP_HUNT_REACH" = 1 ]; then
+        case "$RELFILE" in
+          *:*) REACH_NAME="${RELFILE##*:}"; RELFILE="${RELFILE%:*}" ;;
+        esac
+      fi
+      # #1795: the out-dir is keyed per (ZONE, CLASS), not per zone — with the multi-lens fan-out two rows of
+      # one zone would otherwise SHARE a run dir and their per-target `invariant_<t>.log` would collide, so the
+      # #1780 merge adapter below (globs `invariant_*.log` under $DZOUT/run, filters the per-candidate
+      # `_c<N>.log`) would read the wrong lens's verdict. The `deep-hunt/*/run/invariant_*.log` consumers
+      # (generation-recall.sh, generalization-bench.sh) glob the zone level, so the suffix is transparent to them.
+      DZOUT="$DEEP/$ZID-$DCLASS"
+      # #2245 REACH: per-target run dirs so the up-to-3 targets of one (zone, class) never collide. Slug from the
+      # concrete contract name (else the file basename), sanitized to a dir-safe token. Knob off => DZOUT unchanged.
+      if [ "$DEEP_HUNT_REACH" = 1 ]; then
+        _reach_slug="$REACH_NAME"
+        [ -n "$_reach_slug" ] || _reach_slug="$(basename "$RELFILE" .sol)"
+        _reach_slug="$(printf '%s' "$_reach_slug" | tr -c 'A-Za-z0-9._-' '_')"
+        DZOUT="$DEEP/$ZID-$DCLASS-$_reach_slug"
+      fi
+}
+
+# dh_write_plan <status> <reason> (#2298): write <out>/deep-hunt/plan.json, the STAGE 4.5 row matrix (schema
+# deep-hunt-plan/v1). status `planned`: one `selected` row per distinct cell dir of $DEEP_TARGETS (slot named by
+# dh_row_cell, so legacy --deep-hunt-max-targets > 1 rows that share a dir collapse to one) plus one `capped` row per
+# lens the --deep-hunt-max-lenses cap cut ($DEEP/.plan-capped.tsv). --deep-hunt-max-targets truncation is a property
+# of a (zone, lens) row, NOT a capped row. status `skipped`: no runnable Foundry root, rows []. Written to a temp
+# file then mv -f (atomic replace); the caller logs a failure and continues — a missing plan only ever makes the
+# dashboard MORE conservative (legacy, never 100 %).
+dh_write_plan() {
+  _dhp_dir="$OUT/deep-hunt"
+  if [ "$1" = planned ]; then
+    : > "$_dhp_dir/.plan-selected.tsv" || return 1
+    while IFS='	' read -r ZID RELFILE DCLASS _dhp_aux || [ -n "${ZID:-}" ]; do
+      [ -n "$ZID" ] || continue
+      dh_row_cell
+      printf '%s\t%s\t%s\t%s\n' "${DZOUT##*/}" "$ZID" "$DCLASS" "$RELFILE" >> "$_dhp_dir/.plan-selected.tsv" || return 1
+    done < "$DEEP_TARGETS"
+  fi
+  _dhp_counts="$(python3 - "$_dhp_dir" "$MAP/zones.json" "$1" "$2" "$DEEP_HUNT_ONLY" "$DEEP_HUNT_RESUME" \
+    "$DEEP_HUNT_MAX_LENSES" "$DEEP_HUNT_MAX_TARGETS" "$DEEP_HUNT_COMPOSABLE_LENS" "$DEEP_HUNT_REACH" <<'PY'
+import sys, os, json
+d, zones_p, status, reason = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+only, resume, max_lenses, max_targets, composable, reach = (int(a or 0) for a in sys.argv[5:11])
+try:
+    zones = json.load(open(zones_p, encoding="utf-8"))
+except Exception:
+    zones = []
+custody = {z.get("id", ""): bool(z.get("value_custody")) for z in (zones if isinstance(zones, list) else [])
+           if isinstance(z, dict)}
+def tsv(name):
+    try:
+        with open(os.path.join(d, name), encoding="utf-8") as fh:
+            return [ln.rstrip("\n").split("\t") for ln in fh if ln.strip()]
+    except OSError:
+        return []
+rows, seen = [], set()
+if status == "planned":
+    for c in tsv(".plan-selected.tsv"):
+        if len(c) < 4 or c[0] in seen:
+            continue
+        seen.add(c[0])
+        rows.append({"slot": c[0], "zone": c[1], "class": c[2], "target": c[3], "state": "selected",
+                     "custody": custody.get(c[1], False)})
+    for c in tsv(".plan-capped.tsv"):
+        slot = "%s-%s" % (c[0], c[1]) if len(c) >= 2 else ""
+        if not slot or slot in seen:
+            continue
+        seen.add(slot)
+        rows.append({"slot": slot, "zone": c[0], "class": c[1], "target": "", "state": "capped",
+                     "cap": c[2] if len(c) > 2 else "max-lenses", "custody": custody.get(c[0], False)})
+plan = {"schema": "deep-hunt-plan/v1", "status": status, "reason": reason, "deep_hunt_only": bool(only),
+        "resume": bool(resume), "max_lenses": max_lenses, "max_targets": max_targets,
+        "composable_lens": composable, "reach": reach, "rows": rows}
+with open(os.path.join(d, "plan.json.tmp"), "w", encoding="utf-8") as fh:
+    json.dump(plan, fh, indent=2)
+    fh.write("\n")
+print("%d selected + %d capped" % (sum(1 for r in rows if r["state"] == "selected"),
+                                   sum(1 for r in rows if r["state"] == "capped")))
+PY
+)" || return 1
+  mv -f "$_dhp_dir/plan.json.tmp" "$_dhp_dir/plan.json" || return 1
+  rm -f "$_dhp_dir/.plan-selected.tsv" "$_dhp_dir/.plan-capped.tsv"
+  echo "run-zone-hunt.sh: [deep-hunt] plan: $_dhp_counts row(s) -> $_dhp_dir/plan.json (#2298)" >&2
+}
+
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 4.5 (#1713): SEVERITY-FIRST DEEP-HUNT — a SECOND lens on the VALUE-CUSTODY zones. Default OFF (no
 # --deep-hunt => this whole block is skipped and the run is byte-identical to before). It runs the shipped
@@ -1369,6 +1477,11 @@ if [ "$DEEP_HUNT" -eq 1 ]; then
   if [ -z "$MR_ROOTS" ] && [ "$FS_STATUS" != ran ]; then
     echo "run-zone-hunt.sh: [deep-hunt] --deep-hunt set but $REPO has no runnable Foundry root: $FS_STATUS ($FS_DETAIL) — skipping deep-hunt; the deep hunt is UNMEASURED (#2277)" >&2
     fs_summary deep-hunt
+    # #2298: record the skip in the plan file so the dashboard shows an unchecked "deep-hunt not run" row (never
+    # 100 %, never mistaken for a run without --deep-hunt).
+    mkdir -p "$OUT/deep-hunt"
+    dh_write_plan skipped "$FS_STATUS ($FS_DETAIL)" \
+      || echo "run-zone-hunt.sh: [deep-hunt] plan write failed — the dashboard treats this run as legacy (never 100 %) (#2298)" >&2
   else
     INVHUNT="$HERE/run-invariant-hunt.sh"
     CELLWD="$HERE/lib/cell-watchdog.sh"   # #1982 per-cell staleness watchdog wrapper
@@ -1426,6 +1539,10 @@ if [ "$DEEP_HUNT" -eq 1 ]; then
       fi
     fi
     export DEEP_HUNT_REACH_TSV
+    # #2298: the lens rows the --deep-hunt-max-lenses cap cuts go to this env-gated SIDE file (zid \t class \t
+    # max-lenses), never to stdout, so `.deep-hunt-targets.tsv` stays byte-identical; dh_write_plan turns them
+    # into the plan's `capped` rows.
+    export DEEP_HUNT_CAPPED_TSV="$DEEP/.plan-capped.tsv"
     python3 - "$MAP/zones.json" "$REPO" "$DEEP_HUNT_MAX_TARGETS" "$DEEP_HUNT_AUX_MAX" "$DEEP_HUNT_MAX_LENSES" \
              "$DEEP_HUNT_COMPOSABLE_LENS" "$PREFERRED_LENSES" > "$DEEP_TARGETS" <<'PY'
 import sys, os, json
@@ -1481,6 +1598,11 @@ def dominant_class(classes):
         if c in classes:
             return c
     return "C-invariant"
+# #2298: per zone id, the lens classes the --deep-hunt-max-lenses truncation in lens_classes() cut, and the
+# (zid, class) rows that become `capped` plan rows once the zone passes every selection gate below. Only ever
+# written to the env-gated $DEEP_HUNT_CAPPED_TSV side file — never to stdout.
+capped_overflow = {}
+capped_rows = []
 def lens_classes(z):
     # #1795: EVERY applicable implemented lens for the zone, capped at max_lenses. Before #1795 a zone got
     # exactly ONE lens — its dominant_class — so on a value-custody zone the custody-first precedence SHADOWED
@@ -1519,6 +1641,7 @@ def lens_classes(z):
     # absent `preferred` is empty and the partition is provably the identity. It stays the LAST step.
     if preferred:
         out = [c for c in out if c in preferred] + [c for c in out if c not in preferred]
+    capped_overflow[z.get("id", "")] = out[max_lenses:]   # #2298: the cut lenses (side channel only)
     return out[:max_lenses]
 def has_impl_sol(z):
     # a fuzzable IMPLEMENTATION contract exists in the zone — not an interface-only zone. Interface .sol
@@ -1556,6 +1679,9 @@ for z in zones:
     sols = [f for f in z.get("files", []) if isinstance(f, str) and f.endswith(".sol")]
     if not sols:
         continue
+    # #2298: the zone passed every gate, so each lens the cap cut is a real (zone, lens) row that did not run.
+    for _cut in capped_overflow.get(zid, []):
+        capped_rows.append((zid, _cut))
     # largest by line count; lexicographic tie-break (smallest name wins on equal loc)
     ranked = sorted(sols, key=lambda f: (-loc(f), f))
     # #2245 REACH: replace the largest-file ranking with this zone's concrete reach targets (rel:Name rows);
@@ -1580,12 +1706,6 @@ for z in zones:
     # emitted AFTER (and in ADDITION to) the per-class rows above. Its aux column carries a co-system .sol,
     # which is what puts run-invariant-hunt.sh into composable-fresh mode.
     if not composable or not z.get("value_custody"):
-        continue
-    # CAP RULE (--deep-hunt-max-lenses): the SYS-solvency row COUNTS against the cap, so it is emitted only when
-    # the zone's per-class rows leave headroom under it (len(lenses) < max_lenses). At the default max_lenses=2 a
-    # single-lens custody zone gains the general lens; a zone already fanned out to the cap keeps its per-class
-    # rows and is NOT pushed over it. N=1 therefore stays exactly one lens row per zone, as before.
-    if len(lenses) >= max_lenses:
         continue
     # AUX BREADTH: bounded by --deep-hunt-aux-max like the per-class rows — EXCEPT that aux-max 0 (the default)
     # means "per-class rows stay single-target", not "the general lens has no co-system". An empty aux column
@@ -1615,24 +1735,40 @@ for z in zones:
         sys_aux = [f for f in ranked if f != primary][:sys_aux_max]
     if not sys_aux:
         continue  # single-.sol zone / unresolvable seam: no co-system contract, so the row would be vacuous.
+    # CAP RULE (--deep-hunt-max-lenses): the SYS-solvency row COUNTS against the cap, so it is emitted only when
+    # the zone's per-class rows leave headroom under it (len(lenses) < max_lenses). At max_lenses=2 a
+    # single-lens custody zone gains the general lens; a zone already fanned out to the cap keeps its per-class
+    # rows and is NOT pushed over it. N=1 therefore stays exactly one lens row per zone, as before.
+    # #2298: checked AFTER the seam/aux computation above (output-identical — nothing above prints), so a row the
+    # cap cuts is recorded as `capped` only when it would really have been emitted.
+    if len(lenses) >= max_lenses:
+        capped_rows.append((zid, SYS_SOLVENCY_CLASS))
+        continue
     sys_auxcol = ",".join(a.replace("\t", " ") for a in sys_aux)
     print("%s\t%s\t%s\t%s" % (zid.replace("\t", " "), primary.replace("\t", " "), SYS_SOLVENCY_CLASS, sys_auxcol))
+# #2298: the capped side file (env-gated, so an extracted run of this selection without the var writes nothing).
+_capped_path = os.environ.get("DEEP_HUNT_CAPPED_TSV", "")
+if _capped_path:
+    try:
+        with open(_capped_path, "w", encoding="utf-8") as fh:
+            for _zid, _cls in capped_rows:
+                fh.write("%s\t%s\tmax-lenses\n" % (_zid.replace("\t", " "), _cls))
+    except OSError as exc:
+        sys.stderr.write("run-zone-hunt.sh: [deep-hunt] capped-row side file not written (%s) (#2298)\n" % exc)
 PY
+    # #2298: the plan file — the full row matrix (selected + capped), written BEFORE the first cell runs so the
+    # dashboard's DEPTH rows come from the runner, never from a client-side re-derivation of the selection.
+    dh_write_plan planned "" \
+      || echo "run-zone-hunt.sh: [deep-hunt] plan write failed — the dashboard treats this run as legacy (never 100 %) (#2298)" >&2
     DEEP_FINDINGS=0
     # #2258: one pass when every time-budget knob is unset (dh_pass_begin succeeds exactly once: byte-identical);
     # otherwise the enqueue pass, then one collect pass per batch. DEEP_FINDINGS accumulates across the passes.
     while dh_pass_begin; do
     while IFS='	' read -r ZID RELFILE DCLASS AUXFILES || [ -n "${ZID:-}" ]; do
       [ -n "$ZID" ] || continue
-      # #2245 REACH: the RELFILE column carries `rel:Name` under REACH. Split off the concrete contract name
-      # (threaded to run-invariant-hunt.sh --target-contract) and restore RELFILE to the plain path deep-hunt-
-      # gate.sh consumes. With the knob off there is no `:Name`, so REACH_NAME stays empty and RELFILE unchanged.
-      REACH_NAME=""
-      if [ "$DEEP_HUNT_REACH" = 1 ]; then
-        case "$RELFILE" in
-          *:*) REACH_NAME="${RELFILE##*:}"; RELFILE="${RELFILE%:*}" ;;
-        esac
-      fi
+      # #2298: the REACH `rel:Name` split + this row's cell dir ($DZOUT) come from dh_row_cell — the ONE slot-naming
+      # implementation the plan writer (dh_write_plan) shares, so a planned row always names the dir it runs in.
+      dh_row_cell
       # #1726 (M2): split the comma-joined AUXFILES column (present only when --deep-hunt-aux-max > 0) into
       # distinct `--aux <rel>` argv elements — one per SECONDARY co-custody contract — reusing the shipped
       # composable-fresh multi-contract engine (run-invariant-hunt.sh --aux -> INV_AUX -> compose_fresh_seed
@@ -1707,20 +1843,6 @@ PY
         set -- "$@" --repo "$DH_SINGLE_REPO"
       fi
       echo "run-zone-hunt.sh: [deep-hunt] stateful-invariant lens on zone '$ZID' target '$RELFILE' ($DCLASS) ..." >&2
-      # #1795: the out-dir is keyed per (ZONE, CLASS), not per zone — with the multi-lens fan-out two rows of
-      # one zone would otherwise SHARE a run dir and their per-target `invariant_<t>.log` would collide, so the
-      # #1780 merge adapter below (globs `invariant_*.log` under $DZOUT/run, filters the per-candidate
-      # `_c<N>.log`) would read the wrong lens's verdict. The `deep-hunt/*/run/invariant_*.log` consumers
-      # (generation-recall.sh, generalization-bench.sh) glob the zone level, so the suffix is transparent to them.
-      DZOUT="$DEEP/$ZID-$DCLASS"
-      # #2245 REACH: per-target run dirs so the up-to-3 targets of one (zone, class) never collide. Slug from the
-      # concrete contract name (else the file basename), sanitized to a dir-safe token. Knob off => DZOUT unchanged.
-      if [ "$DEEP_HUNT_REACH" = 1 ]; then
-        _reach_slug="$REACH_NAME"
-        [ -n "$_reach_slug" ] || _reach_slug="$(basename "$RELFILE" .sol)"
-        _reach_slug="$(printf '%s' "$_reach_slug" | tr -c 'A-Za-z0-9._-' '_')"
-        DZOUT="$DEEP/$ZID-$DCLASS-$_reach_slug"
-      fi
       # #2258: a cell a STOPPED time-budget run finished but never merged is queued collect-only (merged, not re-run)
       # instead of being skipped as terminal by the resume check below. A no-op unless the scheduler is active.
       if dh_uncollected "$DZOUT"; then dh_note_row "$ZID" "$RELFILE" "$DCLASS" "${AUXFILES:-}" "$REACH_NAME" "$DZOUT" collect-only; continue; fi
@@ -2142,6 +2264,10 @@ PY
 
 APOUT="$OUT/audit-pass"; mkdir -p "$APOUT"
 FINDINGS=0 ; DELIVERED=0 ; HALTED_NODRAFT=0 ; FAILED=0
+# #2298: the deliver phase's completion ledger — one `<slug>\t<staged|halted|failed>` row per finding, appended in
+# .verified-findings.tsv order. hunt-dashboard.py checks a deliver row only on staged/halted; additive only.
+DELIVER_STATUS="$APOUT/deliver-status.tsv"
+: > "$DELIVER_STATUS"
 
 # process_finding <slug> <location> <file> <class> <severity> <exploit> — run-audit-pass then, on a marked draft,
 # deliver-submission. Every external call is explicitly guarded with `|| return 1` so a failure propagates to the
@@ -2214,10 +2340,13 @@ while IFS='	' read -r LOCATION CODEFILE CLASS SEVERITY EXPLOIT || [ -n "${LOCATI
   PF_STAGED=0
   if process_finding "$SLUG" "$LOCATION" "$CODEFILE" "$CLASS" "$SEVERITY" "$EXPLOIT"; then
     if [ "$PF_STAGED" -eq 1 ]; then DELIVERED=$((DELIVERED + 1)); else HALTED_NODRAFT=$((HALTED_NODRAFT + 1)); fi
+    if [ "$PF_STAGED" -eq 1 ]; then DELIVER_ROW_STATUS=staged; else DELIVER_ROW_STATUS=halted; fi
   else
     echo "run-zone-hunt.sh: finding '$SLUG' failed (see $APOUT/$SLUG); continuing" >&2
     FAILED=$((FAILED + 1))
+    DELIVER_ROW_STATUS=failed
   fi
+  printf '%s\t%s\n' "$SLUG" "$DELIVER_ROW_STATUS" >> "$DELIVER_STATUS"
 done < "$FINDING_TSV"
 
 echo >&2

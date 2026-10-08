@@ -1,0 +1,1 @@
+REFUTED	The buffer add-liquidity hook settles the delta before any external call; no reentrant window remains.

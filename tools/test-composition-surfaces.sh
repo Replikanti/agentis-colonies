@@ -143,7 +143,7 @@ git -C "$SEAM" add -A
 git -C "$SEAM" commit -qm "composition seam fixture target"
 
 # The map fixture: ONE value-custody zone `src` classified C6 (so run-zone-hunt selects it AND leaves lens
-# headroom under the default max-lenses=2). Subsystem name is deliberately NOT "value vault", so the deep-hunt
+# headroom under the default max-lenses cap -- 3 since #2298, 2 before; one per-class row fits either). Subsystem name is deliberately NOT "value vault", so the deep-hunt
 # fixture's hunter stub emits SAFE (a clean breadth -- this test asserts selection, not breadth findings).
 SEAM_MAP="$WORK/seam-zones.fixture.txt"
 {

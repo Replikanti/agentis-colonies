@@ -242,7 +242,9 @@ done
 [ -z "$v_fail" ] && ok "malformed values and an active knob without --deep-hunt exit 2" || bad "knob validation:$v_fail"
 
 if git -C "$HERE" cat-file -e origin/main:dark-factory/run-zone-hunt.sh 2>/dev/null; then
-  if git -C "$HERE" show origin/main:dark-factory/run-zone-hunt.sh | grep -q 'dh_pass_begin'; then
+  # grep -c (reads ALL input), not grep -q: under `set -o pipefail` an early-exiting grep -q can SIGPIPE `git show`
+  # on the large file, failing the pipeline and wrongly falling through to the pre-merge check below (#2298).
+  if git -C "$HERE" show origin/main:dark-factory/run-zone-hunt.sh | grep -c 'dh_pass_begin' >/dev/null; then
     skip "origin/main already carries the scheduler wiring (post-merge steady state) — the additions-only check is pre-merge only"
   else
     removed="$(git -C "$REPO_ROOT" diff origin/main -- dark-factory/run-zone-hunt.sh | grep -c '^-[^-]')"

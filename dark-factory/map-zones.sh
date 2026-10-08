@@ -278,10 +278,11 @@ def fn_names(f):
         pass
     return names
 
-# #2108(a): a mechanical "is there deployable logic in this zone?" signal, written per-zone into zones.json
-# so the dashboard's planned deep-hunt matrix (hunt-dashboard.py::planned_deep_rows) can DROP a zone that is
-# all interface/events/abstract-signature -- nothing a stateful-invariant fuzzer can deploy or call -- instead
-# of rendering it as a permanent  queued DEPTH row that never clears. STOP-1 decision: scan .sol files ONLY
+# #2108(a): a mechanical "is there deployable logic in this zone?" signal, written per-zone into zones.json.
+# It was added so the dashboard's client-side deep-hunt matrix could DROP a zone that is all
+# interface/events/abstract-signature -- nothing a stateful-invariant fuzzer can deploy or call -- instead of
+# rendering it as a permanent queued DEPTH row. Since #2298 the dashboard reads the runner's deep-hunt/plan.json
+# instead (no client-side matrix); the key stays as a zone fact. STOP-1 decision: scan .sol files ONLY
 # (a zone with no .sol file stays UNKNOWN -> huntable), strip comments first, and treat a file as having an
 # implementation iff a function/constructor/receive/fallback/modifier declaration TERMINATES in a body `{`
 # (not a `;`-terminated interface/abstract signature). Conservative by construction: any body => huntable, so a
@@ -788,8 +789,8 @@ for z in mech:
         # keys each sub-zone) so a value-custody parent's sub-zones stay deep-hunt-eligible.
         "value_custody": custodymap.get(z["id"], custodymap.get(z.get("split_of"), False)),
         # #2108(a): mechanical huntability, computed per-zone in build_zone over the zone's OWN .sol files
-        # (incl. #1957 split sub-zones). hunt-dashboard.py excludes a zone from the planned deep-hunt matrix
-        # ONLY on an explicit False, so a legacy zones.json that predates this key renders exactly as today.
+        # (incl. #1957 split sub-zones). A legacy zones.json that predates this key stays valid. (#2298: the
+        # dashboard's DEPTH rows now come from deep-hunt/plan.json, not from this key.)
         "has_implementation": bool(z.get("has_implementation")),
     }
     # #1861: the inheritance-appendix record, copied through ONLY when lib/inheritance.py actually set it —

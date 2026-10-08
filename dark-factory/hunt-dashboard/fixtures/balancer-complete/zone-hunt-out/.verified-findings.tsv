@@ -1,0 +1,2 @@
+pkg/vault/contracts/Vault.sol:honestPushIn	pkg/vault/contracts/Vault.sol	C6	High	stateful invariant broken on pkg/vault/contracts/Vault.sol
+pkg/vault/contracts/Vault.sol:setHookFee	pkg/vault/contracts/Vault.sol	SYS-solvency	High	stateful invariant broken on pkg/vault/contracts/Vault.sol
