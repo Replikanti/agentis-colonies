@@ -226,6 +226,10 @@
 #   --deep-hunt-depth <N>  Sets the Forge invariant DEPTH budget (calls per sequence, --depth) for EVERY
 #                       deep-hunt target. Forwarded verbatim to both --deep-hunt $INVHUNT invocations.
 #                       Absent => DEEP_FWD unchanged => both argv byte-identical to today.
+#   --deep-hunt-audit-context <f>  Thread run-invariant-hunt.sh --audit-context <f> (#1722) into EVERY deep-hunt
+#                       target: the prover formalizes protocol-SPECIFIC invariants from the doc (operator-authored
+#                       audit leads, spec, prior-audit fix list) instead of only the per-lens defaults. Resolved
+#                       to an absolute path; a missing file is a usage error (exit 2). Absent => byte-identical.
 #   --deep-hunt-ground-symbols  FM-B (#1939 M2): thread run-invariant-hunt.sh --ground-symbols into EVERY
 #                       deep-hunt target so the generated (and every repaired) harness is grounded against the
 #                       target + aux REAL symbol inventory — no hallucinated identifier (the Error 7920 the
@@ -515,6 +519,9 @@ while [ $# -gt 0 ]; do
     --deep-hunt-runs)  nv "$#"; DEEP_FWD+=(--runs "$2"); shift 2 ;;
     --deep-hunt-depth) nv "$#"; DEEP_FWD+=(--depth "$2"); shift 2 ;;
     --deep-hunt-ground-symbols) DEEP_FWD+=(--ground-symbols); shift ;;
+    --deep-hunt-audit-context) nv "$#"
+      [ -f "$2" ] || { echo "run-zone-hunt.sh: --deep-hunt-audit-context not found: $2" >&2; exit 2; }
+      DEEP_FWD+=(--audit-context "$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
     --zone-cell-budget) nv "$#"; ZONE_CELL_BUDGET="$2"; shift 2 ;;
     --run-cell-budget)  nv "$#"; RUN_CELL_BUDGET="$2"; shift 2 ;;
     --zone-depth-cells) nv "$#"; ZONE_DEPTH_CELLS="$2"; shift 2 ;;

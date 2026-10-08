@@ -14,6 +14,14 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+
+- **`run-zone-hunt.sh --deep-hunt-audit-context <file>`** threads `run-invariant-hunt.sh --audit-context` (#1722)
+  into every STAGE 4.5 cell, so an operator can steer the deep prover with target-specific leads (prior-audit fix
+  list, design invariants) instead of only the per-lens defaults. The path is resolved to absolute; a missing file
+  is a usage error (exit 2); absent the flag every cell argv is byte-identical. Offline proof:
+  `demo-deep-hunt-audit-context.sh` (colony-lint).
+
 ### Changed
 
 - **STAGE 4.5 runs up to 3 lens classes per zone by default, and writes its row matrix to a plan file (#2298).**

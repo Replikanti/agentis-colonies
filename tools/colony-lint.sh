@@ -1102,6 +1102,17 @@ if [ -x "$REPO_ROOT/dark-factory/demo-payable-impact-steering.sh" ]; then
     fi
 fi
 
+# --- dark-factory deep-hunt operator audit context (--deep-hunt-audit-context) ---
+if [ -x "$REPO_ROOT/dark-factory/demo-deep-hunt-audit-context.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-deep-hunt-audit-context.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: --deep-hunt-audit-context reaches every deep-hunt cell"
+    else
+        fail "dark-factory: --deep-hunt-audit-context forwarding regressed"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory batch-runner default path (no --pre-hunt-gate) pinned byte-identical (#1055, pinned by #1900) ---
 if [ -x "$REPO_ROOT/dark-factory/demo-batch.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-batch.sh" 2>&1)" && check_rc=0 || check_rc=$?
