@@ -77,15 +77,6 @@ PHASE_META = {
     "deliver · stage":  ("Deliver · human-gate",  "DELIVER"),
 }
 
-def _dh_refute_state(started):
-    # Refute over the deep-hunt FINDINGs (human-triaged today via deep-hunt-adjudicated.tsv; #1938 automates
-    # it). done = every deep-hunt finding is adjudicated-refuted (or there were none); run = an un-triaged
-    # finding is still open; wait = the deep-hunt phase hasn't produced anything yet.
-    dhall = deep_hunt()
-    if not dhall: return "wait" if not started else "done"
-    opens = [d for d in dhall if "FINDING" in d["verdict"] and (d.get("adj") or {}).get("verdict") != "REFUTED"]
-    return "run" if opens else "done"
-
 def read(p):
     try:
         with open(p) as f: return f.read()
@@ -117,15 +108,12 @@ def coverage():
                  "classes_hunted": z.get("bug_classes_likely", [])} for z in mz]
     except Exception: return []
 
-def _gate_refute(slot):
-    # #2108(b): the AUTOMATED 4.6 refute-gate verdict for a deep-hunt slot (deep-hunt-gate.sh #1938,
-    # default-ON), read as a FALLBACK behind the manual deep-hunt-adjudicated.tsv overlay. The gate writes ONE
+def _gate_verdict(slot):
+    # #2108(b) / #2298: the RAW automated 4.6 refute-gate verdict for a deep-hunt slot (deep-hunt-gate.sh #1938,
+    # default-ON): (REAL|REFUTED|ERROR, reason), or (None, "") when the slot has no gate report. The gate writes ONE
     # verdict row to deep-hunt/<slot>/refute-gate/refute-out/refute-report.md in the format
     # `| <loc> | <class> | REFUTED|REAL|ERROR | <reason> |` — the same row deep-hunt-gate.sh:228-235 scrapes
-    # (verdict at cell index 2, reason at 3 after stripping the outer `|`). Return a manual-TSV-shaped adj dict
-    # ONLY on a REFUTED row, so an auto-refuted finding reclassifies to a triaged FP exactly as a hand-written
-    # REFUTED row would; a REAL (survived) or ERROR verdict returns None so the finding stays needs-PoC (NEVER
-    # auto-refute a survivor). `source:"gate"` lets the renderer mark machine triage apart from a human one.
+    # (verdict at cell index 2, reason at 3 after stripping the outer `|`).
     rp = os.path.join(OUT, "deep-hunt", slot, "refute-gate", "refute-out", "refute-report.md")
     for ln in read(rp).splitlines():
         s = ln.strip()
@@ -134,9 +122,18 @@ def _gate_refute(slot):
         if len(cells) < 4: continue
         v = cells[2].upper()
         if v not in ("REAL", "REFUTED", "ERROR"): continue   # header/separator/prose row — skip like the gate's awk
-        if v == "REFUTED":
-            return {"verdict": "REFUTED", "reason": cells[3], "source": "gate"}
-        return None   # REAL (survived) / ERROR: never auto-refute -> stays needs-PoC
+        return v, cells[3]
+    return None, ""
+
+def _gate_refute(slot):
+    # #2108(b): the automated gate verdict as a FALLBACK behind the manual deep-hunt-adjudicated.tsv overlay. Return a
+    # manual-TSV-shaped adj dict ONLY on a REFUTED row, so an auto-refuted finding reclassifies to a triaged FP exactly
+    # as a hand-written REFUTED row would; a REAL (survived) or ERROR verdict returns None so the finding stays
+    # needs-PoC (NEVER auto-refute a survivor). `source:"gate"` lets the renderer mark machine triage apart from a
+    # human one. #2298: a survivor (REAL) also does NOT check phase 4.6 — only an operator verdict does.
+    v, reason = _gate_verdict(slot)
+    if v == "REFUTED":
+        return {"verdict": "REFUTED", "reason": reason, "source": "gate"}
     return None
 
 def deep_hunt():
@@ -158,14 +155,20 @@ def deep_hunt():
     # REFUTED row reclassifies a FINDING as a triaged false positive. Keyed by (file, class) so two
     # different findings on the SAME file (e.g. C6 settle vs SYS-solvency hook) get distinct triage;
     # a 3-column row (file, verdict, reason) applies to ANY class on that file (class "*").
+    # #2298: this TSV is ALSO the operator-verdict mechanism phase 4.6 waits on — CONFIRMED / DUPLICATE / REFUTED
+    # (`FP` is accepted as an alias of REFUTED). A finding with no such row stays an unchecked 4.6 row, even when the
+    # automated gate let it survive (REAL).
     adj = {}
+    def _v(raw):
+        v = raw.strip().upper()
+        return "REFUTED" if v == "FP" else v
     for line in read(os.path.join(ROOT, "deep-hunt-adjudicated.tsv")).splitlines():
         if not line.strip() or line.lstrip().startswith("#"): continue
         c = line.split("\t")
         if len(c) >= 4:
-            adj[(c[0].strip(), c[1].strip())] = {"verdict": c[2].strip().upper(), "reason": c[3].strip()}
+            adj[(c[0].strip(), c[1].strip())] = {"verdict": _v(c[2]), "reason": c[3].strip()}
         elif len(c) >= 2:
-            adj[(c[0].strip(), "*")] = {"verdict": c[1].strip().upper(), "reason": c[2].strip() if len(c) > 2 else ""}
+            adj[(c[0].strip(), "*")] = {"verdict": _v(c[1]), "reason": c[2].strip() if len(c) > 2 else ""}
     out = []
     for rp in sorted(glob.glob(os.path.join(OUT, "deep-hunt", "*", "invariant-report.md"))):
         slot = os.path.basename(os.path.dirname(rp))
@@ -193,22 +196,6 @@ def deep_hunt():
                     "verdict": verdict, "steps": steps, "severity": vf.get(target, ""),
                     "adj": manual or _gate_refute(slot)})
     return out
-
-def deep_hunt_state():
-    # STAGE 4.5 has THREE distinct states the panel must not conflate (issue comment 5308547720): a DONE hunt on
-    # a non-custody target with no composition seam REACHES 4.5 but routes 0 lenses (empty .deep-hunt-targets.tsv),
-    # producing no invariant logs — which must NOT read as "not reached yet".
-    #   not_reached       -> no deep-hunt/ dir (still in breadth).
-    #   reached_no_lenses -> deep-hunt/ dir exists but no lens was routed (no slot dir, no non-empty targets tsv).
-    #   ran               -> at least one lens slot exists (running/queued/verdict).
-    dh = os.path.join(OUT, "deep-hunt")
-    if not os.path.isdir(dh): return "not_reached"
-    slot_dirs = [d for d in glob.glob(os.path.join(dh, "*")) if os.path.isdir(d)]
-    tgt = os.path.join(OUT, ".deep-hunt-targets.tsv")
-    targets_routed = any(l.strip() and not l.lstrip().startswith("#")
-                         for l in read(tgt).splitlines()) if os.path.isfile(tgt) else False
-    if not slot_dirs and not targets_routed: return "reached_no_lenses"
-    return "ran"
 
 def _finding_id(loc, cls=""):
     # #1994: a short, STABLE, human-referenceable id for a lead/finding, derived deterministically from its
@@ -354,43 +341,6 @@ def _group_leads(L, RV, confirmed_set, dup_map):
         g["cls"] = "+".join(g["clss"]) if len(g["clss"]) > 1 else g["clss"][0]
         out.append(g)
     return out
-
-def planned_deep_rows():
-    # Client-side reconstruction of the STAGE 4.5 lens matrix (mirrors run-zone-hunt.sh lens_classes
-    # gating) so the deep-hunt table can list PENDING/queued rows, not only completed slots. Best-effort:
-    # the real gate owns the truth; this predicts the (zone, class) rows from map/zones.json.
-    CUSTODY=("C6","C10","C11"); NONCUST=("C2","C16","C5","C19"); IMPL=CUSTODY+NONCUST; MAXL=3
-    try: zs=json.load(open(os.path.join(OUT,"map","zones.json")))
-    except Exception: return []
-    rows=[]
-    for z in zs:
-        # #2108(a): a zone with no deployable implementation (all interface/events/abstract signatures — a
-        # stateful-invariant fuzzer has nothing to deploy or call) never runs a deep-hunt lens, so it must NOT
-        # produce a phantom  queued DEPTH row. map-zones.sh writes a mechanical `has_implementation` per zone;
-        # exclude ONLY on an explicit False (Python `is False`), so a zone that is absent/true stays huntable —
-        # a legacy zones.json without the key, or a huntable zone merely capped out by
-        # --deep-hunt-max-targets/--deep-hunt-max-lenses, still renders its real queued coverage-gap row.
-        if z.get("has_implementation") is False:
-            continue
-        # #2113: mirror the runner's RANKED walk — the zone's own fitness-ranked bug_classes_likely order
-        # (scope.tsv / #1711), at most ONE custody-primary lens per zone, dominant class only as the fallback
-        # when a custody zone ranks nothing routable. Kept in lockstep with run-zone-hunt.sh lens_classes(),
-        # otherwise the queued DEPTH rows stop matching what STAGE 4.5 actually runs.
-        classes=z.get("bug_classes_likely") or []
-        dom=next((c for c in IMPL if c in classes),"C-invariant")
-        custody=bool(z.get("value_custody"))
-        lenses=[]; took_custody=False
-        for c in classes:
-            if c in NONCUST:
-                if c not in lenses: lenses.append(c)
-            elif custody and c in CUSTODY and not took_custody:
-                lenses.append(c); took_custody=True
-        if custody and not took_custody and dom not in lenses: lenses.append(dom)
-        lenses=lenses[:MAXL]
-        for c in lenses: rows.append((z.get("id"), c, z.get("value_custody", False)))
-        if z.get("value_custody") and len(lenses)<MAXL and len([f for f in z.get("files",[]) if str(f).endswith(".sol")])>1:
-            rows.append((z.get("id"), "SYS-solvency", True))
-    return rows
 
 # #2003: subdirs that hold a CLONED TARGET REPO or build artifacts — never a liveness heartbeat. A deep-hunt
 # cell clones the whole target repo (+ forge lib/out/cache) under run/repo/, so a single cell's run/ tree can
@@ -602,143 +552,307 @@ def sublog_activity():
         kind="mapping"
     return {"kind":kind,"zone":zone,"waited":waited,"stalled":stalled}
 
-def phase_status():
-    log = read(LOG); zs = coverage()
+# ---- #2298: ONE completeness model -------------------------------------------------------------------------
+# Every %, ✅, DONE, "finished" and "verdict in chat" on the page, in --emit-model and on the overview card is derived
+# from hunt_model(): one ROW SET per phase, built from the SAME row objects the Phases / Zones / LEADS tables render.
+# A row is CHECKED only when its rendered state is terminal; a phase is `done` only when it has started, every row is
+# checked and its upstream phase is done; the header claims DONE / 100 % / "finished — verdict in chat" only when the
+# runner exited AND every phase is `done` or `skip`. Anything else is clamped to <= 99 % (rendered with int(), so a
+# 99.6 can never print as 100). The STAGE 4.5 row matrix comes from the runner's <out>/deep-hunt/plan.json — the
+# dashboard never re-derives the selection (planned_deep_rows(), the drifting client-side copy, is gone).
+DEEP_PLAN_SCHEMA = "deep-hunt-plan/v1"
+# phase -> upstream phases that must be `done` (or `skip`) before it may be `done`
+PHASE_UPSTREAM = {
+    "M1 · map zones": (),
+    "M2 · briefs": ("M1 · map zones",),
+    "M3 · discovery": ("M2 · briefs",),
+    "M4 · refute gate": ("M3 · discovery",),
+    "4.5 · deep-hunt": ("M1 · map zones",),        # the plan is complete at stage start
+    "4.6 · refute deep-hunt": ("4.5 · deep-hunt",),
+    "deliver · stage": ("M4 · refute gate", "4.6 · refute deep-hunt"),
+}
+# 4.6 is checked only on an OPERATOR verdict (or an automated gate REFUTED). A finding that SURVIVED the automated gate
+# (REAL) stays unchecked until the operator records CONFIRMED / DUPLICATE / FP (= REFUTED) in deep-hunt-adjudicated.tsv.
+DEEP_VERDICTS_CHECKED = ("REFUTED", "CONFIRMED", "DUPLICATE")
+DEEP_CHECKED_STATES = ("finding", "triaged_fp", "clean")   # a terminal fuzzer verdict (4.5)
+
+def deep_plan():
+    # The runner's STAGE 4.5 plan (<out>/deep-hunt/plan.json), schema-checked. Anything else (absent, torn, unknown
+    # schema) is None, which the callers treat as "plan unknown" — never as complete.
+    try:
+        with open(os.path.join(OUT, "deep-hunt", "plan.json")) as f: d = json.load(f)
+    except Exception:
+        return None
+    if not isinstance(d, dict) or d.get("schema") != DEEP_PLAN_SCHEMA or not isinstance(d.get("rows"), list):
+        return None
+    if d.get("status") not in ("planned", "skipped"):
+        return None
+    return d
+
+def _deep_mode(log, plan):
+    # planned | skipped -> the runner wrote a plan (rows known); legacy -> deep-hunt evidence (a plan.json that does not
+    # parse, a deep-hunt/ dir or a [deep-hunt]/STAGE 4.5 marker) but no valid plan: the row set cannot be proven;
+    # off -> the runner reached M5 (.verified-findings.tsv) with no deep-hunt evidence at all (run without
+    # --deep-hunt); pending -> none of the above yet (still in breadth).
+    if plan is not None:
+        return "skipped" if plan.get("status") == "skipped" else "planned"
+    dh = os.path.join(OUT, "deep-hunt")
+    if os.path.isdir(dh) or re.search(r"STAGE 4\.5|\[deep-hunt\]", log):
+        return "legacy"
+    if os.path.isfile(os.path.join(OUT, ".verified-findings.tsv")):
+        return "off"
+    return "pending"
+
+def deep_hunt_state():
+    # STAGE 4.5 state for the panel + overview card, derived from _deep_mode() (issue comment 5308547720 states kept):
+    #   not_reached -> still in breadth; reached_no_lenses -> a plan with 0 rows (no lens routed); ran -> a plan with
+    #   rows; skipped -> no runnable Foundry root; off -> run without --deep-hunt; legacy -> no plan, rows unprovable.
+    plan = deep_plan()
+    mode = _deep_mode(read(LOG), plan)
+    if mode == "pending": return "not_reached"
+    if mode == "planned": return "ran" if plan.get("rows") else "reached_no_lenses"
+    return mode
+
+def _zones_json():
+    try:
+        zs = json.load(open(os.path.join(OUT, "map", "zones.json")))
+        return zs if isinstance(zs, list) else None
+    except Exception:
+        return None
+
+def _deep_stage_over(exited, log, plan_mtime):
+    # STAGE 4.5 is over (a selected row with no dir is `not_run`, not `queued`) once the runner exited, or the log has
+    # a `[deep-hunt] merged ` line AFTER the latest plan line, or M5's .verified-findings.tsv is newer than the plan.
+    if exited: return True
+    i = log.rfind("[deep-hunt] merged ")
+    if i >= 0 and i > log.rfind("[deep-hunt] plan: "): return True
+    try:
+        return plan_mtime is not None and os.path.getmtime(os.path.join(OUT, ".verified-findings.tsv")) > plan_mtime
+    except OSError:
+        return False
+
+def _deep_row_state(r, completed, active, stage_over):
+    # The ONE DEPTH-row classifier: (state, raw verdict token). Precedence: re-running slot > report verdict > on-disk
+    # cell (running / abandoned) > plan state (capped / queued while STAGE 4.5 runs / not_run after it).
+    p = r["plan"]
+    if p == "deep_skipped": return "deep_skipped", "SKIPPED"
+    if p == "plan_unknown": return "plan_unknown", ""
+    slot = r["slot"]
+    if active and slot == active: return "rerunning", ""
+    d = completed.get(slot)
+    if d:
+        v = d["verdict"]; adj = d.get("adj") or {}
+        if "FINDING" in v or "VIOLAT" in v:
+            return ("triaged_fp" if adj.get("verdict") == "REFUTED" else "finding"), v
+        if "CLEAN" in v: return "clean", v
+        return "harness_error", v   # HARNESS_ERROR / TRANSIENT_ERROR / LOW_COVERAGE / LOW_PROMISE_COVERAGE: raw token kept
+    if os.path.isdir(os.path.join(OUT, "deep-hunt", slot)):
+        return ("running", "") if deep_cell_status(slot) == "running" else ("harness_error", "ABANDONED")
+    if p == "capped": return "capped", ""
+    return ("not_run" if stage_over else "queued"), ""
+
+def deep_rows(mode, plan, DH, active, stage_over):
+    # The DEPTH row set, in order: (1) plan rows (deduped by slot); (2) observed deep-hunt/*/ dirs the plan does not
+    # name (a stale or foreign cell — shown, never hidden); (3) ONE synthetic row for a skipped deep-hunt or a legacy
+    # out dir without a plan. Custody comes from the plan row; for an unplanned dir from the longest zones.json id that
+    # prefixes the slot (display only).
+    completed = {d["slot"]: d for d in DH}
+    zj = _zones_json() or []
+    zcust = {z.get("id", ""): bool(z.get("value_custody")) for z in zj if isinstance(z, dict)}
+    zids = sorted((i for i in zcust if i), key=len, reverse=True)
+    rows = []; seen = set()
+    for pr in ((plan or {}).get("rows") or []):
+        if not isinstance(pr, dict): continue
+        slot = str(pr.get("slot") or "")
+        if not slot or slot in seen: continue
+        seen.add(slot)
+        rows.append({"slot": slot, "zone": str(pr.get("zone") or ""), "cls": str(pr.get("class") or "?"),
+                     "target": str(pr.get("target") or ""), "custody": bool(pr.get("custody")),
+                     "plan": "capped" if pr.get("state") == "capped" else "selected",
+                     "cap": str(pr.get("cap") or "")})
+    dirs = sorted(os.path.basename(x) for x in glob.glob(os.path.join(OUT, "deep-hunt", "*")) if os.path.isdir(x))
+    for slot in dirs + sorted(completed):
+        if slot in seen: continue
+        seen.add(slot)
+        zone = next((z for z in zids if slot.startswith(z + "-")), "")
+        d = completed.get(slot)
+        rows.append({"slot": slot, "zone": zone, "cls": (d["cls"] if d else (slot[len(zone) + 1:] if zone else "?")),
+                     "target": (d["target"] if d else ""), "custody": zcust.get(zone, False), "plan": "unplanned",
+                     "cap": ""})
+    if mode == "skipped":
+        rows.append({"slot": "deep-hunt", "zone": "", "cls": "—", "target": "", "custody": False,
+                     "plan": "deep_skipped", "cap": "", "reason": str((plan or {}).get("reason") or "")})
+    elif mode == "legacy":
+        rows.append({"slot": "deep-hunt plan", "zone": "", "cls": "—", "target": "", "custody": False,
+                     "plan": "plan_unknown", "cap": ""})
+    for r in rows:
+        r["state"], r["verdict"] = _deep_row_state(r, completed, active, stage_over)
+        d = completed.get(r["slot"])
+        r["adj"] = (d.get("adj") if d else None) or {}
+        r["steps"] = d["steps"] if d else 0
+        r["sev_join"] = d.get("severity", "") if d else ""
+        if d: r["cls"] = d["cls"] or r["cls"]; r["target"] = d["target"] or r["target"]
+        r["gate"] = _gate_verdict(r["slot"])[0] if r["state"] == "finding" else None
+        r["checked_45"] = r["state"] in DEEP_CHECKED_STATES
+        r["needs_46"] = r["state"] in ("finding", "triaged_fp")
+        r["checked_46"] = r["needs_46"] and (r["adj"].get("verdict") in DEEP_VERDICTS_CHECKED)
+        r["checked"] = r["checked_45"] and (r["checked_46"] if r["needs_46"] else True)
+    return rows
+
+def _slug(loc):
+    # run-zone-hunt.sh's M5 finding slug: `tr -cs 'A-Za-z0-9' '-' | sed 's/-*$//; s/^-*//'`.
+    return re.sub(r"[^A-Za-z0-9]+", "-", loc or "").strip("-")
+
+def deliver_rows():
+    # One row per .verified-findings.tsv finding; checked only on a `staged` / `halted` row of the runner's
+    # audit-pass/deliver-status.tsv (matched by slug, in order). No .verified-findings.tsv yet -> one synthetic open row.
+    vf = os.path.join(OUT, ".verified-findings.tsv")
+    if not os.path.isfile(vf):
+        return [{"label": "deliver ledger (.verified-findings.tsv) not written yet", "checked": False}]
+    status = {}
+    for ln in read(os.path.join(OUT, "audit-pass", "deliver-status.tsv")).splitlines():
+        c = ln.split("\t")
+        if len(c) >= 2 and c[0].strip(): status.setdefault(c[0].strip(), []).append(c[1].strip())
+    rows = []; n = 0
+    for ln in read(vf).splitlines():
+        loc = ln.split("\t")[0]
+        if not loc: continue
+        n += 1
+        slug = _slug(loc) or ("finding-%d" % n)
+        q = status.get(slug) or []
+        st = q.pop(0) if q else ""
+        rows.append({"label": "deliver %s (%s)" % (slug, st or "no deliver status"), "checked": st in ("staged", "halted")})
+    return rows
+
+def _phase_state(rows, upstream_done, started, live, skip, exited):
+    # precedence: skip > wait > done > run > gap. A live hunt still waiting on an unfinished upstream phase reads
+    # `wait`, not `gap` (it has nothing to do yet); after exit every started-but-open phase is a `gap`.
+    if skip: return "skip"
+    if not started: return "wait"
+    if upstream_done and all(r["checked"] for r in rows): return "done"
+    if live: return "run"
+    if not upstream_done and not exited: return "wait"
+    return "gap"
+
+def hunt_model():
+    # Computed ONCE per render; page(), emit_model() and hunt_card() all read it.
+    log = read(LOG); zs = coverage(); L = leads(); vs = verify_state(); A = adjudicated()
     total_z = len(zs) or 4
-    # #1999: "exited" must mean the SAME thing here as in page() — the __EXIT__ marker AND no live hunt
-    # process. A re-hunt appends fresh [M3] lines AFTER an earlier run's stale __EXIT__ marker, so keying
-    # off the marker's mere presence would wrongly show the discovery phase as a "gap" while Zones (which
-    # go through proc_alive) correctly show a zone in_flight. Gate both exit branches on liveness.
+    # #1999: "exited" = the __EXIT__ marker AND no live hunt process (a --deep-hunt-resume re-run appends after a
+    # stale marker).
     hunt_live = proc_alive() or llm_child()[0]
-    # covered = a zone that actually produced a verdict (clean or with leads).
-    # failed  = HARNESS_ERROR: no verdict at all — a GAP, not a result. Never counts as hunted.
-    covered = sum(1 for z in zs if z.get("status") in ("hunted","hunted_empty"))
-    failed  = sum(1 for z in zs if z.get("status") == "failed")
-    reached = covered + failed
-    # DEEP-HUNT-ONLY mode (#1774): this run's log carries only [deep-hunt] lines — M1..M4 ran in the
-    # PRIOR breadth run whose out we are layered on. Mark the breadth phases done from the prereq
-    # artifacts (they must exist for --deep-hunt-only to start), and drive progress off the 4.5 slots.
-    if ("[deep-hunt]" in log) and ("[M1]" not in log) and ("[M3]" not in log):
-        exited = ("__EXIT__=" in log) and not hunt_live
-        st = {"M1 · map zones":"done","M2 · briefs":"done","M3 · discovery":"done",
-              "M4 · refute gate":"done",
-              "4.5 · deep-hunt": "done" if exited else "run",
-              "4.6 · refute deep-hunt": _dh_refute_state(True),
-              "deliver · stage": "done" if exited else "wait"}
-        dh_dirs = len([d for d in glob.glob(os.path.join(OUT,"deep-hunt","*")) if os.path.isdir(d)])
-        dh_done = len(deep_hunt())
-        prog = 100.0 if exited else round(100.0 * dh_done / max(1, dh_dirs), 1)
-        return st, prog, covered, failed, total_z
-    st = {}
-    # A stage is "done" only once the NEXT stage's marker appears; while it is the latest marker
-    # it is the one actually running (M2 briefs take minutes of LLM per zone, so this is the window
-    # where nothing else has a marker yet — show 🔄 on it instead of a premature ✅ + no running row).
-    # #2193: the [M1]/[M2]/[M3] markers live in the REGISTERED `log` field, but a caller can redirect
-    # run-zone-hunt's stdout to a different sink (the corpus-bench A/B harness does) — the registered
-    # log then has no markers at all, so a marker-only test wrongly stays "wait" even once mapping and
-    # briefing have plainly finished (discovery cannot start without them). Corroborate with on-disk
-    # truth: M1 is done once map/zones.json exists, M2 once the briefs dir has actual brief files, and
-    # either is trivially implied once ANY zone has left "not_reached" (discovery has begun reading them).
-    zones_mapped     = os.path.isfile(os.path.join(OUT, "map", "zones.json"))
-    briefs_populated = bool(glob.glob(os.path.join(OUT, "briefs", "briefs", "*.md")))
-    discovery_touched = any(z.get("status") != "not_reached" for z in zs)
-    # #2205: the MAP phase (M1 map, M2 briefs) must read "run" while it is genuinely live even on a
-    # marker-less registered log (the corpus-bench A/B + sweep harness registers a log carrying no
-    # [M1]/[M2]/[M3] markers). Mirror the #2200 M3 fix: key "run" on live sub-log activity (a mapping
-    # or briefing cell), not the marker alone, so a run mid-map / mid-briefing shows the running marker
-    # instead of a false "wait" while the top LIVE banner correctly reads active.
+    exited = ("__EXIT__=" in log) and not hunt_live
+    covered = sum(1 for z in zs if z.get("status") in ("hunted", "hunted_empty"))
+    failed = sum(1 for z in zs if z.get("status") == "failed")
+    RV = refute_verdicts()
+    _confirmed_breadth, _dup_breadth = _breadth_adjudication(A)
+    G = _group_leads(L, RV, _confirmed_breadth, _dup_breadth)
+    plan = deep_plan()
+    mode = _deep_mode(log, plan)
+    try: plan_mtime = os.path.getmtime(os.path.join(OUT, "deep-hunt", "plan.json")) if plan is not None else None
+    except OSError: plan_mtime = None
+    DH = deep_hunt()
+    active = active_deep_slot()
+    DR = deep_rows(mode, plan, DH, active, _deep_stage_over(exited, log, plan_mtime))
     _act = sublog_activity()
-    _mapping_live  = (_act is not None and _act.get("kind") == "mapping")
+    zj = _zones_json()
+    cov_status = {z.get("id", "?"): z.get("status", "") for z in zs}
+    discovery_touched = any(z.get("status") != "not_reached" for z in zs)
+    rows = {}
+    # M1 — one row: map/zones.json parses as a non-empty list (or, #2193, discovery has already moved a zone on).
+    rows["M1 · map zones"] = [{"label": "map/zones.json", "checked": bool(zj) or discovery_touched}]
+    # M2 — one row per mapped zone: its brief exists, or (#2193 relocated sink) discovery already reached the zone.
+    bdir = os.path.join(OUT, "briefs", "briefs")
+    zone_ids = [z.get("id", "?") for z in zj if isinstance(z, dict)] if zj else [z.get("id", "?") for z in zs]
+    rows["M2 · briefs"] = [{"label": "brief %s" % i,
+                            "checked": os.path.isfile(os.path.join(bdir, "brief_%s.md" % i))
+                                       or cov_status.get(i, "") not in ("", "not_reached", "no_brief", "unscoped")}
+                           for i in zone_ids]
+    # M3 — the Zones table rows: only hunted / hunted_empty is a verdict (failed / degraded / in_flight are open).
+    rows["M3 · discovery"] = [{"label": "zone %s (%s)" % (z.get("id", "?"), z.get("status", "?")),
+                               "checked": z.get("status") in ("hunted", "hunted_empty"), "zone": z.get("id", "?")}
+                              for z in zs]
+    # M4 — every grouped breadth lead (hidden sub-floor rows included): checked once it is no longer pending.
+    rows["M4 · refute gate"] = [{"label": "lead %s %s (pending refute)" % (_finding_id(g["loc"], g["cls"]), g["loc"]),
+                                 "checked": g["state"] != "pending", "zone": g["zone"]} for g in G]
+    # 4.5 / 4.6 — the DEPTH rows (plan ∪ observed ∪ synthetic) and the subset carrying a FINDING.
+    rows["4.5 · deep-hunt"] = [{"label": "%s (%s)" % (r["slot"], r["state"] if r["state"] != "harness_error"
+                                                       else (r["verdict"] or "harness error").lower()),
+                                "checked": r["checked_45"], "zone": r["zone"]} for r in DR]
+    rows["4.6 · refute deep-hunt"] = [{"label": "%s (awaiting operator verdict)" % r["slot"],
+                                       "checked": r["checked_46"], "zone": r["zone"]} for r in DR if r["needs_46"]]
+    skip_deliver = bool(plan and plan.get("deep_hunt_only"))
+    rows["deliver · stage"] = [] if skip_deliver else deliver_rows()
+    # started / live / skip per phase (the #2001/#2020/#2025/#2193/#2200/#2205 liveness signals choose run vs gap only)
+    briefs_populated = bool(glob.glob(os.path.join(bdir, "*.md")))
+    _mapping_live = (_act is not None and _act.get("kind") == "mapping")
     _briefing_live = (_act is not None and _act.get("kind") == "briefing")
-    st["M1 · map zones"] = "done" if (zones_mapped or discovery_touched or "[M2]" in log) else ("run" if ("[M1]" in log or _mapping_live) else "wait")
-    st["M2 · briefs"]    = "done" if (briefs_populated or discovery_touched or "[M3]" in log) else ("run" if ("[M2]" in log or _briefing_live) else "wait")
-    if ("__EXIT__=" in log) and not hunt_live:
-        # The process exited — but "exited" is NOT "fully hunted". Only call the run
-        # complete when every zone produced a verdict and none errored out. Otherwise
-        # the coverage has holes and the bar must reflect them, not a green 100 %.
-        complete = total_z > 0 and covered == total_z and failed == 0
-        for name,_ in PHASES: st[name] = "done"
-        if not complete:
-            st["M3 · discovery"]  = "gap"
-            st["4.5 · deep-hunt"] = "gap"
-            st["deliver · stage"] = "gap"
-        prog = 100.0 if complete else round(100.0 * covered / max(1, total_z), 1)
-        return st, prog, covered, failed, total_z
-    # #2020: M3 discovery is "run" only while it is genuinely LIVE — a zone actively hunting (in_flight) or
-    # the newest active sub-log is a discovery cell. Once every zone has reached a TERMINAL status, discovery
-    # is over even if the sweep is incomplete: a hunted_degraded / failed zone leaves covered < total_z, and
-    # that is a GAP (⚠️), NOT "running" — the run has already moved on to the refute gate / deep-hunt. Mirrors
-    # the deep-hunt active_deep_slot() liveness gate (#2001): a re-hunt's stale [M4]/[deep-hunt] markers and a
-    # not-yet-cleared coverage hole must never be read as discovery still churning.
-    # #2200: M3 is keyed on whether discovery has GENUINELY started, not on the "[M3]" marker alone.
-    # A run registered with a marker-less log field (the A/B harness registers the wrapper's stdout, which
-    # carries no "[M3]" line even while a zone is live) short-circuited to "wait" and hid the live discovery
-    # that the top LIVE header correctly reported. Discovery has started when ANY of: the marker is present,
-    # a zone has left "not_reached" (in_flight / covered / failed / hunted_degraded), or the discovery sublog
-    # is active. Only genuine not-yet-started (no marker, every zone not_reached, no discovery sublog) is "wait".
-    # (_act computed once above, at the M1/M2 map-phase liveness check — reused here.)
-    _disc_started = (
-        ("[M3]" in log)
-        or any(z.get("status") != "not_reached" for z in zs)
-        or (_act is not None and _act.get("kind") == "discovery")
-    )
-    if not _disc_started:
-        st["M3 · discovery"] = "wait"
-    else:
-        _disc_live = any(z.get("status") == "in_flight" for z in zs) or (_act is not None and _act.get("kind") == "discovery")
-        # done vs gap uses `reached` (covered + failed), matching the exited-branch + the #1999 live-over-stale-
-        # marker test: a run whose every zone reached a terminal status is not "running", and a still-open
-        # coverage hole (a hunted_degraded zone leaves reached < total_z) is the gap. `covered` alone would mis-
-        # flag a live re-hunt over a failed-zone exit as a gap.
-        st["M3 · discovery"] = "run" if _disc_live else ("done" if reached >= total_z else "gap")
-    # #2193: once discovery has genuinely started (run/done/gap, never "wait"), M1+M2 are necessarily
-    # complete — discovery cannot begin without a zone map and a brief. Belt-and-braces over the
-    # artifact checks above for the rarer case where the map/briefs sink itself was also relocated.
-    if st["M3 · discovery"] != "wait":
-        st["M1 · map zones"] = "done"
-        st["M2 · briefs"]    = "done"
-    vs = verify_state()
-    # #2205 systemic: "deep-hunt started" is keyed on the on-disk artifact (a deep-hunt/<slot> dir) or a
-    # live deep slot, not the [deep-hunt]/STAGE-4.5 log marker alone — so M4 "done" and the 4.5 row render
-    # correctly on a marker-less registered log (the corpus-bench harness), same class as #2200/#2205 M1-M3.
-    deep = bool(re.search(r"STAGE 4\.5|\[deep-hunt\]", log)) or bool(glob.glob(os.path.join(OUT,"deep-hunt","*"))) or (active_deep_slot() is not None)
-    # #2001: a phase shows "run" only when its work is LIVE right now — not merely because its marker appeared
-    # once in the append-only log. A re-hunt re-enters discovery after a prior full pass, so the deep-hunt +
-    # refute-deep markers persist while the actual deep-hunt cells sit idle (hours-stale) and only discovery is
-    # working. Key the deep-hunt "run" state on active_deep_slot() (a deep cell writing within 90s AND a live
-    # process), NOT on the mere presence of `deep`. Idle-but-ran => "done" (findings are listed below); the
-    # normal live deep-hunt keeps active_deep_slot() truthy (cells heartbeat every ~4s) so it still reads "run".
-    deep_live = active_deep_slot() is not None
-    st["M4 · refute gate"] = ("done" if deep else ("run" if vs is not None else "wait"))
-    st["4.5 · deep-hunt"]  = "run" if deep_live else ("done" if deep else "wait")
-    _rf = _dh_refute_state(deep)
-    # #2025: an idle backlog of un-triaged deep findings is NOT "running triage" — only call refute-deep "run"
-    # while the refute-gate pass itself is genuinely live (active_deep_refute_slot()), NOT merely because the
-    # fuzzer (deep_live) is mid-cell on some other slot — deep_live was the wrong liveness signal for this row
-    # (the automated gate writes to a sibling refute-gate/ subtree active_deep_slot() never walks); otherwise
-    # its "run" (open findings) reads as "wait" (awaiting triage).
-    refute_live = active_deep_refute_slot() is not None
-    st["4.6 · refute deep-hunt"] = _rf if refute_live else ("wait" if _rf == "run" else _rf)
-    st["deliver · stage"]  = "run" if re.search(r"deliver-submission|PENDING-HUMAN-REVIEW", log) else "wait"
-    prog = 0.0
-    for name,w in PHASES:
-        s = st.get(name,"wait")
-        if s=="done": prog += w
-        elif s=="run":
-            if name=="M3 · discovery": prog += w*(reached/total_z)
-            elif name=="M4 · refute gate" and vs is not None:
-                prog += w*min(1.0, sum(vs.values())/max(1,len(leads())))
-            else: prog += w*0.4
-        elif s=="gap" and name=="M3 · discovery":
-            # a terminated-but-incomplete discovery still contributes the coverage it DID reach (#2020) —
-            # `reached` is unchanged across the run->gap transition, so the bar never jumps backward.
-            prog += w*(reached/total_z)
-    return st, round(prog,1), covered, failed, total_z
+    _disc_started = ("[M3]" in log) or discovery_touched or (_act is not None and _act.get("kind") == "discovery")
+    _disc_live = any(z.get("status") == "in_flight" for z in zs) or (_act is not None and _act.get("kind") == "discovery")
+    deep_started = mode in ("planned", "skipped", "legacy") or (active is not None)
+    deliver_started = os.path.isfile(os.path.join(OUT, ".verified-findings.tsv")) \
+        or bool(re.search(r"deliver-submission|PENDING-HUMAN-REVIEW", log))
+    m4_started = ("[M4]" in log) or vs is not None or deep_started or deliver_started \
+        or os.path.isfile(os.path.join(OUT, "verify", "verified_findings.json"))
+    started = {
+        "M1 · map zones": ("[M1]" in log) or _mapping_live or zj is not None or discovery_touched or _disc_started,
+        "M2 · briefs": ("[M2]" in log) or _briefing_live or briefs_populated or discovery_touched or _disc_started,
+        "M3 · discovery": _disc_started,
+        "M4 · refute gate": m4_started,
+        "4.5 · deep-hunt": deep_started,
+        "4.6 · refute deep-hunt": deep_started,
+        "deliver · stage": deliver_started,
+    }
+    live = {
+        "M1 · map zones": _mapping_live and not exited,
+        "M2 · briefs": _briefing_live and not exited,
+        "M3 · discovery": _disc_live and not exited,
+        "M4 · refute gate": (not exited) and hunt_live and (("[M4]" in log) or vs is not None)
+                            and not _disc_live and not deep_started and not deliver_started,
+        "4.5 · deep-hunt": active is not None,
+        "4.6 · refute deep-hunt": active_deep_refute_slot() is not None,
+        "deliver · stage": (not exited) and hunt_live and deliver_started,
+    }
+    skip = {name: False for name, _ in PHASES}
+    if mode == "off":
+        skip["4.5 · deep-hunt"] = skip["4.6 · refute deep-hunt"] = True
+    skip["deliver · stage"] = skip_deliver
+    st = {}
+    for name, _w in PHASES:
+        up_done = all(st.get(u) in ("done", "skip") for u in PHASE_UPSTREAM[name])
+        st[name] = _phase_state(rows[name], up_done, started[name], live[name], skip[name], exited)
+    complete = exited and all(s in ("done", "skip") for s in st.values())
+    # progress: phase-weighted checked fraction over the non-skip phases; clamped to <= 99 unless complete.
+    num = den = 0.0
+    for name, w in PHASES:
+        if st[name] == "skip": continue
+        den += w
+        rs = rows[name]
+        if st[name] == "done": num += w
+        elif rs and started[name]: num += w * (sum(1 for r in rs if r["checked"]) / float(len(rs)))
+    raw = 100.0 * num / den if den else 0.0
+    prog = 100.0 if complete else min(99.0, round(raw, 1))
+    phase_rows = {name: {"total": len(rows[name]), "checked": sum(1 for r in rows[name] if r["checked"]),
+                         "unchecked": [r["label"] for r in rows[name] if not r["checked"]]} for name, _ in PHASES}
+    n_open = sum(len(v["unchecked"]) for k, v in phase_rows.items() if st[k] != "skip")
+    return {"st": st, "prog": prog, "covered": covered, "failed": failed, "total_z": total_z, "exited": exited,
+            "complete": complete, "hunt_live": hunt_live, "phase_rows": phase_rows, "rows": rows, "deep_rows": DR,
+            "deep_mode": mode, "plan": plan, "G": G, "L": L, "A": A, "RV": RV, "vs": vs, "zs": zs, "log": log,
+            "DH": DH, "active": active, "n_open": n_open, "act": _act,
+            "dup_breadth": _dup_breadth}
+
+def zone_open_rows(M, zid):
+    # the zone's unchecked rows across M3, M4, 4.5 and 4.6 — a zone reads ✅ only when this is 0.
+    n = 0
+    for name in ("M3 · discovery", "M4 · refute gate", "4.5 · deep-hunt", "4.6 · refute deep-hunt"):
+        if M["st"].get(name) == "skip": continue
+        n += sum(1 for r in M["rows"][name] if r.get("zone") == zid and not r["checked"])
+    return n
 
 def hms(td):
     s=int(td.total_seconds()); return f"{s//3600}h {s%3600//60:02d}m"
 
-ICON={"done":"✅","run":"🔄","wait":"⬜","gap":"⚠️"}
+ICON={"done":"✅","run":"🔄","wait":"⬜","gap":"⚠️","skip":"➖"}
 SEVCOL={"High":"#ff5c5c","Critical":"#ff2d2d","Medium":"#ffb020","Low":"#8fb8ff"}
 def _norm_sev(raw):
     # Normalize an LLM-emitted severity value (#1974/#1976): remove ALL whitespace FIRST so a corruption
@@ -893,13 +1007,13 @@ def page(nav=""):
     # `nav` is the M2 detail-view chrome (a `← overview` link + hunt switcher pills) injected at the top of the
     # page. It defaults to "" so the M1 single-hunt render is byte-for-byte unchanged.
     now=datetime.datetime.now(); start=start_dt(); elapsed=now-start
-    st,prog,covered,failed,total_z = phase_status()
-    zs=coverage(); L=leads(); vs=verify_state(); log=read(LOG); A=adjudicated()
-    # "finished" requires BOTH the log's __EXIT__ marker AND no live hunt process — otherwise a --deep-hunt-resume
-    # RE-RUN (its own log, but a real live process) would show a calm "finished" banner while the green dot pulses.
-    hunt_live = proc_alive() or llm_child()[0]
-    exited   = ("__EXIT__=" in log) and not hunt_live
-    complete = exited and failed==0 and covered==total_z
+    # #2298: every indicator below reads the ONE completeness model. "finished" requires BOTH the log's __EXIT__ marker
+    # AND no live hunt process (a --deep-hunt-resume RE-RUN must not show a calm "finished" banner while the dot
+    # pulses) AND every phase done/skip — computed once in hunt_model().
+    M = hunt_model()
+    st=M["st"]; prog=M["prog"]; covered=M["covered"]; failed=M["failed"]; total_z=M["total_z"]
+    zs=M["zs"]; L=M["L"]; vs=M["vs"]; log=M["log"]; A=M["A"]
+    exited=M["exited"]; complete=M["complete"]; PR=M["phase_rows"]; DR=M["deep_rows"]
     prows=""; _cur_group=None
     for name,w in PHASES:
         label,group = PHASE_META.get(name, (name, ""))
@@ -907,39 +1021,44 @@ def page(nav=""):
             _cur_group = group
             prows+=(f'<tr><td></td><td colspan="2" style="color:#7d8590;font-size:11px;font-weight:600;'
                     f'letter-spacing:.06em;padding-top:8px;border-top:1px solid #21262d">{html.escape(group)}</td></tr>')
-        s=st.get(name,"wait"); est=EST_MIN.get(name,0)
-        if name=="M3 · discovery" and s in ("run","gap"):
-            # #2020: show the real coverage (incl. degraded/errored zones) — a degraded zone is NOT a
-            # "{failed} zone(s) errored" gap (failed counts only HARNESS_ERROR), it is an incomplete sweep.
-            _deg = sum(1 for z in zs if z.get("status")=="hunted_degraded")
-            _fl  = sum(1 for z in zs if z.get("status")=="failed")
-            extra=f"zone {covered}/{total_z}"
-            if _deg: extra+=f" · {_deg} degraded"
-            if _fl:  extra+=f" · {_fl} errored"
-        elif s=="gap": extra=f"{failed} zone(s) errored — not hunted"
-        elif name=="M4 · refute gate" and vs is not None: extra=f"{sum(vs.values())}/{len(L)} gate"
-        elif name=="4.6 · refute deep-hunt":
-            _dhf=[d for d in deep_hunt() if "FINDING" in d["verdict"]]
-            _ref=sum(1 for d in _dhf if (d.get("adj") or {}).get("verdict")=="REFUTED")
-            extra=(f"{_ref}/{len(_dhf)} triaged" if _dhf else ("∅ none" if s=="done" else f"~{est} min"))
-        elif s=="done": extra="done"
-        elif s=="run": extra="running"
-        else: extra=f"~{est} min"
-        col="#f0a800" if s=="gap" else ("#e8e8e8" if s!="wait" else "#888")
-        prows+=f'<tr><td>{ICON[s]}</td><td style="color:{col};padding-left:10px">{html.escape(label)}</td><td style="color:#888;text-align:right">{extra}</td></tr>'
+        s=st.get(name,"wait"); est=EST_MIN.get(name,0); pr=PR[name]
+        # #2298: the extra text is the phase's checked/total row count — the SAME rows its ✅ is computed from.
+        if s=="skip":
+            extra=("skipped — --deep-hunt-only (no M5)" if name=="deliver · stage" else "off — run without --deep-hunt")
+        elif s=="wait" and not pr["checked"]:
+            extra=f"~{est} min"
+        elif name=="4.6 · refute deep-hunt" and not pr["total"]:
+            extra="∅ none"
+        else:
+            extra=f"{pr['checked']}/{pr['total']}"
+            if name=="M3 · discovery":
+                # #2020: name the open coverage (a degraded zone is an incomplete sweep, failed = HARNESS_ERROR)
+                _deg = sum(1 for z in zs if z.get("status")=="hunted_degraded")
+                _fl  = sum(1 for z in zs if z.get("status")=="failed")
+                if _deg: extra+=f" · {_deg} degraded"
+                if _fl:  extra+=f" · {_fl} errored"
+            elif name=="4.5 · deep-hunt":
+                _cap=sum(1 for r in DR if r["state"]=="capped")
+                if _cap: extra+=f" · {_cap} capped"
+            elif name=="4.6 · refute deep-hunt" and pr["unchecked"]:
+                extra+=f" · {len(pr['unchecked'])} awaiting operator verdict"
+        col="#f0a800" if s=="gap" else ("#e8e8e8" if s not in ("wait","skip") else "#888")
+        prows+=(f'<tr data-phase="{html.escape(name, quote=True)}" data-state="{s}"><td>{ICON[s]}</td>'
+                f'<td style="color:{col};padding-left:10px">{html.escape(label)}</td>'
+                f'<td style="color:#888;text-align:right">{extra}</td></tr>')
     zrows=""
     import collections as _cl
     # AXIS 2 inputs — the zone RESULT must agree with the panels below it:
     #  (a) discovery leads classified by their refute-gate verdict (not raw counts — a refuted lead is
     #      NOT an open lead), keyed by the zone id leads() tags (matches the coverage zid);
     #  (b) deep-hunt (4.5) FINDINGs per zone, carrying the finding's severity.
-    RV=refute_verdicts()
+    RV=M["RV"]
     # #2023: operator adjudication wins over the gate at the zone-result site too, so an op-CONFIRMED/DUPLICATE
     # lead counts as z_surv (survived), never z_ref — keeping AXIS-2 "zone result agrees with the panels below".
-    _confirmed_breadth, _dup_breadth = _breadth_adjudication(A)
+    _dup_breadth = M["dup_breadth"]
     # #2024: fold same-location raw candidates into one row BEFORE every tally below — page() and emit_model()
-    # both group off this single G, so the collapse can never drift between the two surfaces.
-    G=_group_leads(L, RV, _confirmed_breadth, _dup_breadth)
+    # both group off this single G (built once in hunt_model()), so the collapse can never drift.
+    G=M["G"]
     z_surv=_cl.Counter(); z_ref=_cl.Counter(); z_pend=_cl.Counter()
     for g in G:
         s=g["state"]
@@ -947,13 +1066,9 @@ def page(nav=""):
         elif s=="pending": z_pend[g["zone"]]+=1
         else:              z_surv[g["zone"]]+=1   # op_confirmed / op_duplicate / survived
     z_dh=_cl.Counter(); z_dhsev={}; z_dhref=_cl.Counter()
-    for d in deep_hunt():
-        if "FINDING" in d["verdict"]:
-            zn=re.sub(r'-(C\d+|SYS-solvency)$','',d["slot"])
-            if (d.get("adj") or {}).get("verdict")=="REFUTED":
-                z_dhref[zn]+=1   # triaged false positive — not an open finding
-            else:
-                z_dh[zn]+=1; z_dhsev[zn]=d.get("severity","")
+    for r in DR:   # #2298: the zone comes from the DEPTH row (plan), not a slot-suffix regex
+        if r["state"]=="triaged_fp": z_dhref[r["zone"]]+=1   # triaged false positive — not an open finding
+        elif r["state"]=="finding": z_dh[r["zone"]]+=1; z_dhsev[r["zone"]]=r.get("sev_join","")
     # AXIS 1 — execution STATE (square icons, like the PHASES section)
     ZSTATE={"hunted":("✅","#39d353","done"),"hunted_empty":("✅","#39d353","done"),
             "in_flight":("🔄","#f0a800","running"),"not_reached":("⬜","#5a6270","queued"),
@@ -966,6 +1081,11 @@ def page(nav=""):
         if exited and s=="in_flight": s="abandoned"   # #1991: no zone renders "running" after the hunt exited
         ic,scol,slbl=ZSTATE.get(s,("⬜","#888",s))
         zid=z.get("id","?")
+        # #2298: ✅ only when the zone's M3 row, its leads and its DEPTH rows are ALL checked; a hunted zone with open
+        # rows says how many, 🔄 while the hunt is live / ⚠️ once it exited.
+        _zopen=zone_open_rows(M, zid)
+        if s in ("hunted","hunted_empty") and _zopen:
+            ic,scol,slbl=(("⚠️","#f0a800") if exited else ("🔄","#f0a800"))+(f"hunted · {_zopen} open",)
         # AXIS 2 — RESULT: deep-hunt finding > surviving lead > refuted > pending > empty
         if s in ("hunted","hunted_empty","hunted_degraded"):
             if z_dh.get(zid,0):
@@ -981,11 +1101,10 @@ def page(nav=""):
         else:             rlbl,rcol="— pending","#5a6270"
         cust=' <span title="value-custody: funds live here — deep-hunt aims its value-conservation lens here">💰</span>' if z.get("value_custody") else ""
         w="700" if s=="failed" else "400"
-        zrows+=(f'<tr><td style="text-align:center">{ic}</td>'
+        zrows+=(f'<tr data-zone="{html.escape(zid, quote=True)}" data-open="{_zopen}" data-state="{html.escape(s, quote=True)}"><td style="text-align:center">{ic}</td>'
                 f'<td>{html.escape(zid)}{cust}</td>'
                 f'<td style="color:{scol};font-weight:{w}">{slbl}</td>'
                 f'<td style="color:{rcol};font-size:12px">{rlbl}</td></tr>')
-    RV=refute_verdicts()
     def _rv(x): return RV.get(_normloc(x["loc"]))
     # #2023/#2024: header tally uses the shared classifier over the GROUPED (distinct-location) list, so it
     # matches the rows below AND emit_model()'s leads_summary — an operator CONFIRMED/DUPLICATE counts as
@@ -1077,8 +1196,13 @@ def page(nav=""):
         bar_col="#39d353"; banner="✅ DONE — full coverage, verdict in chat"
     elif exited:
         bar_col="#e5737b"
-        banner=(f"⚠️ STOPPED INCOMPLETE — {failed} zone(s) errored (HARNESS_ERROR, no verdict); "
-                f"only {covered}/{total_z} zones actually hunted. NOT fully covered.")
+        # #2298: name the open rows per phase, not only errored zones — any unchecked row blocks DONE.
+        _open=" · ".join(f"{k.split(' · ')[0]} {len(v['unchecked'])}" for k,v in PR.items()
+                          if v["unchecked"] and M["st"].get(k)!="skip")
+        banner=(f"⚠️ STOPPED INCOMPLETE — {M['n_open']} unchecked row(s)"
+                + (f" ({html.escape(_open)})" if _open else "")
+                + (f"; {failed} zone(s) errored (HARNESS_ERROR, no verdict)" if failed else "")
+                + f"; {covered}/{total_z} zones hunted. NOT fully covered.")
     else:
         bar_col="#f0a800"; banner=f"🔄 running · {html.escape(stage[:120])}"
     # ---- liveness: is it actually DOING something, or frozen? ----
@@ -1110,130 +1234,124 @@ def page(nav=""):
     # (a deep-hunt FINDING is a fresh lead, ranked first like a High); a FINDING has NOT been through
     # the refute gate yet (it is merged into verified_findings straight from the fuzzer), so its gate
     # cell reads "pending" exactly like an un-refuted discovery lead.
-    DH = deep_hunt(); dh_dir = os.path.join(OUT, "deep-hunt")
-    completed = {d["slot"]: d for d in DH}
-    # full planned lens matrix (reconstructed) so pending/queued rows show too, not only completed slots
-    order = []; seen = set(); slot_custody = {}
-    for zone, cls, cust in planned_deep_rows():
-        slot = f"{zone}-{cls}"
-        slot_custody[slot] = cust
-        if slot not in seen: order.append(slot); seen.add(slot)
-    for slot in completed:            # safety: any completed slot the reconstruction didn't predict
-        if slot not in seen: order.append(slot); seen.add(slot)
-    def _rank(slot):                  # open FINDING > triaged-FP > clean/other > running > queued
-        d = completed.get(slot)
-        if d:
-            if "FINDING" in d["verdict"] and (d.get("adj") or {}).get("verdict") != "REFUTED": return 0
-            if "FINDING" in d["verdict"]: return 1
-            return 2
-        cs = deep_cell_status(slot)                # an abandoned cell ranks with the harness-error gaps (2),
-        return {"running": 3, "abandoned": 2}.get(cs, 4)   # a live cell above queued (3), queued last (4)
-    active = active_deep_slot()
+    # #2298: the DEPTH rows come from hunt_model() (the runner's plan ∪ observed dirs ∪ a synthetic skipped/legacy
+    # row), each with exactly ONE state from _deep_row_state() — never from a client-side re-derivation.
+    _RANK = {"rerunning": 3, "running": 3, "harness_error": 2, "clean": 2, "not_run": 2, "capped": 4, "queued": 4,
+             "plan_unknown": 5, "deep_skipped": 5}
+    def _rank(r):                     # open FINDING > triaged-FP > clean/gap > running > queued/capped > synthetic
+        if r["state"] == "finding": return 0
+        if r["state"] == "triaged_fp": return 1
+        return _RANK.get(r["state"], 2)
+    _n_capped = sum(1 for r in DR if r["state"] == "capped")
     n_dh_find = 0; dhrows = ""
-    for slot in sorted(order, key=_rank):
-        d = completed.get(slot)
-        m = re.match(r'^(.*)-(C\d+|SYS-solvency)$', slot)
-        zid = m.group(1) if m else slot; clsname = m.group(2) if m else "?"
-        strike = ""   # set on a triaged-FP row, applied to Sev/Class/Location — same look as a refuted LEAD
-        # #depth-sev: a deep-hunt result row (FINDING/CLEAN/HARNESS/refuted) must ALWAYS show a severity.
-        # Resolve it: (1) the normalized joined severity from verified_findings.json (drops any "severity="
-        # prefix/whitespace); else (2) the zone's intrinsic custody severity; else (3) the program pay-floor
-        # (a confirmed finding is at least payable-floor severity). A not-yet-run row (no d) keeps the queued
-        # behaviour below (intrinsic custody or the em-dash) — never coerced to the floor.
-        # Operator directive: EVERY DEPTH row shows a clearly-defined severity — the normalized joined
-        # severity, else the zone's intrinsic custody severity, else the program pay-floor. Only a floor-less
-        # program (no pay_floor in the descriptor) can leave a non-custody row without one (em-dash).
-        sevtxt = (_norm_sev(d.get("severity", "") if d else "") or _intrinsic_sev(slot_custody.get(slot, False))
-                  or (PAY_FLOOR.title() if PAY_FLOOR else ""))
-        if slot == active:
-            # this slot is re-executing RIGHT NOW — override only the VERDICT with in-progress. Sev is the
-            # TARGET's severity class (intrinsic, known regardless of the re-run) — always show it, coloured.
-            cls = d["cls"] if d else clsname
-            loc = d["target"] if d else zid
-            scol = SEVCOL.get(sevtxt.split()[0] if sevtxt else "", "#58a6ff")
-            sev = (f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt)}</span>' if sevtxt
-                   else '<span style="color:#58a6ff">…</span>')
+    for r in sorted(DR, key=_rank):
+        state = r["state"]; adj = r["adj"]; v = r["verdict"]
+        cls = r["cls"]; loc = r["target"] or r["zone"] or r["slot"]
+        strike = ""   # set on a triaged-FP / clean row, applied to Class/Location — same look as a refuted LEAD
+        # #depth-sev: EVERY DEPTH row shows a clearly-defined severity — the normalized joined severity from
+        # verified_findings.json, else the zone's intrinsic custody severity, else the program pay-floor. Only a
+        # floor-less program can leave a non-custody row without one (em-dash). Synthetic rows carry none.
+        if state in ("plan_unknown", "deep_skipped"):
+            sevtxt = ""
+        else:
+            sevtxt = (_norm_sev(r["sev_join"]) or _intrinsic_sev(r["custody"]) or (PAY_FLOOR.title() if PAY_FLOOR else ""))
+        scol = SEVCOL.get(sevtxt.split()[0] if sevtxt else "", "#ccc")
+        sev = (f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt)}</span>' if sevtxt
+               else '<span style="color:#5a6270">—</span>')
+        if state == "rerunning":
+            # this slot is re-executing RIGHT NOW — override only the VERDICT with in-progress. Sev is the TARGET's
+            # severity class (intrinsic, known regardless of the re-run) — always show it, coloured.
             gate = '<span style="color:#58a6ff;font-weight:600">🔄 re-running (in progress)</span>'
             detail = '<span style="color:#8b949e;font-size:12px">re-hunting with fitted fuzz budget — verdict pending</span>'
-            rowop = ""; st = "pending"   # #1996: verdict undecided → pending bucket
-        elif d:
-            v = d["verdict"]; adj = d.get("adj") or {}
-            cls = d["cls"]; loc = d["target"]
-            scol = SEVCOL.get(sevtxt.split()[0] if sevtxt else "", "#ccc")
-            if ("FINDING" in v or "VIOLAT" in v) and adj.get("verdict") == "REFUTED":
-                # triaged false positive — IDENTICAL look to a refuted LEAD: severity in its OWN colour,
-                # struck through (Sev/Class/Location), dimmed; the refuted status sits in the gate column.
-                sev = f'<span style="color:{scol};font-weight:600;text-decoration:line-through">{html.escape(sevtxt or "?")}</span>'
-                # #2108(b): a gate-sourced REFUTED carries a compact provenance marker so an operator can tell
-                # automated triage from a hand-written one; a manual-TSV REFUTED renders exactly as before.
-                _auto = ' · auto (4.6 gate)' if adj.get("source") == "gate" else ''
-                gate = f'<span style="color:#e5737b;font-weight:600">✗ REFUTED (triaged FP){_auto}</span>'
-                detail = f'<span style="color:#e5737b;font-size:12px">verified → not a bug: {html.escape(adj.get("reason", "")[:280])}</span>'
-                rowop = "opacity:.6"; strike = "text-decoration:line-through;"; st = "refuted"   # #1996
-            elif ("FINDING" in v or "VIOLAT" in v) and adj.get("verdict") == "CONFIRMED":
-                # #2005: operator-CONFIRMED — real bug, non-duplicate (forge PoC + dedup done) → Survived
-                n_dh_find += 1
-                sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt or "?")}</span>'
-                gate = '<span style="color:#39d353;font-weight:700">◆ CONFIRMED — real, non-dup</span>'
-                detail = f'<span style="color:#bbb;font-size:12px">{html.escape(adj.get("reason", "")[:280])}</span>'
-                rowop = ""; st = "confirmed"
-            elif ("FINDING" in v or "VIOLAT" in v) and adj.get("verdict") == "DUPLICATE":
-                # #2007: real + PoC-verified, but already reported → $0 (its own state, not needs-PoC/refuted)
-                sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt or "?")}</span>'
-                gate = '<span style="color:#ff5c5c;font-weight:700">◆ real · DUPLICATE ($0)</span>'
-                detail = f'<span style="color:#ff5c5c;font-size:12px">confirmed real bug, already reported: {html.escape(adj.get("reason", "")[:260])}</span>'
-                rowop = "opacity:.8"; st = "duplicate"
-            elif "FINDING" in v or "VIOLAT" in v:
-                n_dh_find += 1
-                sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt or "?")}</span>'
+            rowop = ""; st_ = "pending"   # #1996: verdict undecided → pending bucket
+        elif state == "triaged_fp":
+            # triaged false positive — IDENTICAL look to a refuted LEAD: severity in its OWN colour, struck through
+            # (Sev/Class/Location), dimmed; the refuted status sits in the gate column.
+            sev = f'<span style="color:{scol};font-weight:600;text-decoration:line-through">{html.escape(sevtxt or "?")}</span>'
+            # #2108(b): a gate-sourced REFUTED carries a compact provenance marker.
+            _auto = ' · auto (4.6 gate)' if adj.get("source") == "gate" else ''
+            gate = f'<span style="color:#e5737b;font-weight:600">✗ REFUTED (triaged FP){_auto}</span>'
+            detail = f'<span style="color:#e5737b;font-size:12px">verified → not a bug: {html.escape(adj.get("reason", "")[:280])}</span>'
+            rowop = "opacity:.6"; strike = "text-decoration:line-through;"; st_ = "refuted"   # #1996
+        elif state == "finding" and adj.get("verdict") == "CONFIRMED":
+            # #2005: operator-CONFIRMED — real bug, non-duplicate (forge PoC + dedup done) → Survived
+            n_dh_find += 1
+            gate = '<span style="color:#39d353;font-weight:700">◆ CONFIRMED — real, non-dup</span>'
+            detail = f'<span style="color:#bbb;font-size:12px">{html.escape(adj.get("reason", "")[:280])}</span>'
+            rowop = ""; st_ = "confirmed"
+        elif state == "finding" and adj.get("verdict") == "DUPLICATE":
+            # #2007: real + PoC-verified, but already reported → $0 (its own state, not needs-PoC/refuted)
+            gate = '<span style="color:#ff5c5c;font-weight:700">◆ real · DUPLICATE ($0)</span>'
+            detail = f'<span style="color:#ff5c5c;font-size:12px">confirmed real bug, already reported: {html.escape(adj.get("reason", "")[:260])}</span>'
+            rowop = "opacity:.8"; st_ = "duplicate"
+        elif state == "finding":
+            n_dh_find += 1
+            # #2298: a survivor of the automated 4.6 gate (REAL) is NOT a verdict — it stays open until the operator
+            # records CONFIRMED / DUPLICATE / FP, mirroring the breadth "survived refute · needs PoC" label.
+            if r.get("gate") == "REAL":
+                gate = '<span style="color:#f0a800">◆ survived refute gate (4.6) · needs forge PoC</span>'
+            else:
                 gate = '<span style="color:#f0a800">◆ FINDING · needs forge PoC + triage</span>'
-                detail = (f'<span style="color:#bbb;font-size:12px">multi-step invariant broken — shrunk witness '
-                          f'({d["steps"]} steps); LLM-hypothesized invariant, verify before any submit</span>')
-                rowop = ""; st = "pending"   # #2005: survived the fuzz gate but NOT confirmed → Pending (needs PoC)
-            elif "CLEAN" in v:
-                # no bug confirmed on this High-value surface — struck through, like a refuted lead. The Sev
-                # is the TARGET's severity class (intrinsic, same as a LEAD keeps its Sev when refuted).
-                sev = f'<span style="color:{scol};font-weight:600;text-decoration:line-through">{html.escape(sevtxt or "?")}</span>'
-                gate = '<span style="color:#8a94a0;font-size:12px">∅ clean (held in budget)</span>'
-                detail = ('<span style="color:#8a94a0;font-size:12px">every deep invariant held across the fuzzed '
-                          'search (not a proof of safety)</span>')
-                rowop = "opacity:.6"; strike = "text-decoration:line-through;"; st = "other"   # #1996: clean, no open lead
-            else:
-                # HARNESS_ERROR — a coverage GAP (not "no bug", so NOT struck), but the target still carries
-                # its severity class; the gap is flagged amber in the gate column.
-                sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt or "?")}</span>'
-                gate = '<span style="color:#f0a800;font-size:12px">⚠ harness error — no verdict</span>'
-                detail = '<span style="color:#f0a800;font-size:12px">harness error is not a verdict — a coverage gap</span>'
-                rowop = "opacity:.6"; st = "other"   # #1996: coverage gap, not an open lead
-        else:
-            cls = clsname; loc = zid   # exact target file is only known once the row runs
-            sevtxt = _intrinsic_sev(slot_custody.get(slot, False)) or (PAY_FLOOR.title() if PAY_FLOOR else "")
-            if sevtxt:
-                scol = SEVCOL.get(sevtxt, "#5a6270")
-                sev = f'<span style="color:{scol};font-weight:600">{html.escape(sevtxt)}</span>'
-            else:
-                sev = '<span style="color:#5a6270">—</span>'
-            _cs = deep_cell_status(slot)
-            if _cs == "running":
-                gate = '<span style="color:#58a6ff">🔄 fuzzing…</span>'
-                detail = '<span style="color:#8b949e;font-size:12px">opus generating handler + stateful fuzzing</span>'
-                rowop = ""; st = "pending"   # #1996: in progress → pending
-            elif _cs == "abandoned":
-                # dir exists but silent — the cell was force-advanced or its session died: a coverage GAP,
-                # rendered like a harness_error (amber, dimmed), NOT a perpetual "fuzzing…".
+            detail = (f'<span style="color:#bbb;font-size:12px">multi-step invariant broken — shrunk witness '
+                      f'({r["steps"]} steps); LLM-hypothesized invariant, verify before any submit · awaiting an '
+                      f'operator verdict (CONFIRMED / DUPLICATE / FP in deep-hunt-adjudicated.tsv)</span>')
+            rowop = ""; st_ = "pending"   # #2005: survived the fuzz gate but NOT confirmed → Pending (needs PoC)
+        elif state == "clean":
+            # no bug confirmed on this High-value surface — struck through, like a refuted lead. The Sev is the
+            # TARGET's severity class (intrinsic, same as a LEAD keeps its Sev when refuted).
+            sev = f'<span style="color:{scol};font-weight:600;text-decoration:line-through">{html.escape(sevtxt or "?")}</span>'
+            gate = '<span style="color:#8a94a0;font-size:12px">∅ clean (held in budget)</span>'
+            detail = ('<span style="color:#8a94a0;font-size:12px">every deep invariant held across the fuzzed '
+                      'search (not a proof of safety)</span>')
+            rowop = "opacity:.6"; strike = "text-decoration:line-through;"; st_ = "other"   # #1996: clean, no open lead
+        elif state == "harness_error":
+            # a coverage GAP (not "no bug", so NOT struck); the target still carries its severity class. #2298: the raw
+            # verdict token is kept, so TRANSIENT_ERROR / LOW_COVERAGE no longer read as "harness error".
+            if v == "ABANDONED":
+                # dir exists but silent — the cell was force-advanced or its session died: NOT a perpetual "fuzzing…".
                 gate = '<span style="color:#f0a800;font-size:12px">⚠ harness error — no verdict</span>'
                 detail = '<span style="color:#f0a800;font-size:12px">deep-hunt cell ended without a verdict — a coverage gap</span>'
-                rowop = "opacity:.6"; st = "other"   # #1996: coverage gap
+            elif v in ("", "HARNESS_ERROR"):
+                gate = '<span style="color:#f0a800;font-size:12px">⚠ harness error — no verdict</span>'
+                detail = '<span style="color:#f0a800;font-size:12px">harness error is not a verdict — a coverage gap</span>'
             else:
-                gate = '<span style="color:#6e7681">⬜ queued</span>'
-                detail = '<span style="color:#6e7681;font-size:12px">planned lens row — not yet run</span>'
-                rowop = "opacity:.5"; st = "pending"   # #1996: not yet run → pending
-        dh_unpay = _is_unpayable(sevtxt, pf_rank)   # #1960: sevtxt is defined in every branch above
-        if dh_unpay:   # #1966: hide sub-floor rows, tally instead of rendering
+                gate = f'<span style="color:#f0a800;font-size:12px">⚠ {html.escape(v)} — no trusted verdict</span>'
+                detail = (f'<span style="color:#f0a800;font-size:12px">{html.escape(v)} is not a verdict — a coverage gap '
+                          f'(re-hunt the row)</span>')
+            rowop = "opacity:.6"; st_ = "other"   # #1996: coverage gap, not an open lead
+        elif state == "running":
+            gate = '<span style="color:#58a6ff">🔄 fuzzing…</span>'
+            detail = '<span style="color:#8b949e;font-size:12px">opus generating handler + stateful fuzzing</span>'
+            rowop = ""; st_ = "pending"   # #1996: in progress → pending
+        elif state == "capped":
+            gate = '<span style="color:#f0a800;font-weight:600">⏸️ capped</span>'
+            detail = ('<span style="color:#8b949e;font-size:12px">lens cut by --deep-hunt-max-lenses; re-run with a '
+                      'higher cap + --deep-hunt-resume</span>')
+            rowop = "opacity:.5"; st_ = "other"
+        elif state == "not_run":
+            gate = '<span style="color:#f0a800;font-size:12px">⚠ not run</span>'
+            detail = ('<span style="color:#f0a800;font-size:12px">planned lens row — STAGE 4.5 ended without running '
+                      'it (a coverage gap)</span>')
+            rowop = "opacity:.6"; st_ = "other"
+        elif state == "plan_unknown":
+            gate = '<span style="color:#f0a800;font-size:12px">❔ plan unknown</span>'
+            detail = ('<span style="color:#f0a800;font-size:12px">plan unknown — out dir predates deep-hunt/plan.json; '
+                      'completeness cannot be proven</span>')
+            rowop = "opacity:.6"; st_ = "other"
+        elif state == "deep_skipped":
+            gate = '<span style="color:#f0a800;font-size:12px">⚠ deep-hunt not run</span>'
+            detail = (f'<span style="color:#f0a800;font-size:12px">deep-hunt not run: '
+                      f'{html.escape(r.get("reason", "") or "skipped")}</span>')
+            rowop = "opacity:.6"; st_ = "other"
+        else:   # queued
+            gate = '<span style="color:#6e7681">⬜ queued</span>'
+            detail = '<span style="color:#6e7681;font-size:12px">planned lens row — not yet run</span>'
+            rowop = "opacity:.5"; st_ = "pending"   # #1996: not yet run → pending
+        if _is_unpayable(sevtxt, pf_rank):   # #1960/#1966: hide sub-floor rows, tally instead of rendering
             n_hidden += 1
             continue
-        _stc[st]+=1   # #1996: count the RENDERED deep row into its filter bucket
-        dhrows += (f'<tr data-st="{st}" style="{rowop}"><td style="white-space:nowrap">{_type_badge("DEPTH")}</td>'
+        _stc[st_]+=1   # #1996: count the RENDERED deep row into its filter bucket
+        dhrows += (f'<tr data-st="{st_}" data-slot="{html.escape(r["slot"], quote=True)}" data-dstate="{state}" style="{rowop}"><td style="white-space:nowrap">{_type_badge("DEPTH")}</td>'
                    f'<td title="{_title_attr(_sev_title(sevtxt))}" style="white-space:nowrap;cursor:help">{sev}</td>'
                    f'<td title="{_title_attr(_cls_title(cls))}" style="color:#9fd;cursor:help;{strike}">{html.escape(cls)}</td>'
                    f'<td style="font-family:monospace;font-size:12px;{strike}"><span title="stable finding id — cite this" style="color:#8a94a0;font-weight:600">{_finding_id(loc, cls)}</span>&nbsp;{html.escape(loc)}</td>'
@@ -1242,13 +1360,18 @@ def page(nav=""):
     # STAGE 4.5 three-state annotation (issue comment 5308547720): distinguish "not reached yet" from "reached
     # but 0 lenses routed" so a DONE non-custody hunt never contradicts the finished banner with a false
     # "not reached". Only annotate when the depth track has NO rows to show (else the rows themselves are the state).
-    _dh_state = deep_hunt_state()
-    if not order and _dh_state == "not_reached":
+    _dh_mode = M["deep_mode"]
+    if _dh_mode == "pending":
         _dh_note = ' &nbsp;·&nbsp; <span style="color:#8b949e">STAGE 4.5 not reached yet (still in breadth)</span>'
-    elif not order and _dh_state == "reached_no_lenses":
+    elif _dh_mode == "planned" and not DR:
         _dh_note = (' &nbsp;·&nbsp; <span style="color:#f0a800" title="STAGE 4.5 ran but the zone is not '
                     'value-custody and no composition seam was detected, so no deep-hunt/composable-solvency lens '
                     'applied">STAGE 4.5 reached — 0 lenses routed (not value-custody, no composition seam)</span>')
+    elif _dh_mode == "off":
+        _dh_note = ' &nbsp;·&nbsp; <span style="color:#8b949e">deep-hunt off (run without --deep-hunt)</span>'
+    elif _dh_mode == "legacy":
+        _dh_note = (' &nbsp;·&nbsp; <span style="color:#f0a800">plan unknown — out dir predates deep-hunt/plan.json; '
+                    'completeness cannot be proven</span>')
     else:
         _dh_note = ""
     # NOTE: the reference built a stand-alone `dhblock` here (a separate DEPTH LEADS card) that it NEVER
@@ -1321,13 +1444,13 @@ a{{color:#58a6ff;text-decoration:none}} a:hover{{text-decoration:underline}}
 {_links_row()}
 <div class="banner">{banner}{verline}</div>
 {livebar}
-<div class="barwrap"><div class="bar"></div><div class="barlabel">{prog:.0f}%</div></div>
-<div class="sub">running {hms(elapsed)} · start {start.strftime('%H:%M')} · {('DONE' if complete else f'STOPPED — {failed} gap(s), needs re-hunt') if exited else 'ETA to verdict ~2–3h (deep-hunt is the wildcard)'}</div>
+<div class="barwrap"><div class="bar"></div><div class="barlabel">{int(prog)}%</div></div>
+<div class="sub">running {hms(elapsed)} · start {start.strftime('%H:%M')} · {('DONE' if complete else f'STOPPED — {M["n_open"]} unchecked row(s), needs re-hunt or a verdict') if exited else 'ETA to verdict ~2–3h (deep-hunt is the wildcard)'}</div>
 <div class="grid">
 <div class="card"><h2>Phases</h2><table>{prows}</table></div>
 <div class="card"><h2>Zones ({covered}/{total_z} hunted{f' · {failed} errored' if failed else ''})</h2><table><tr style="color:#7d8590;font-size:11px"><td></td><td>Zone</td><td>State</td><td>Result</td></tr>{zrows}</table></div>
 </div>
-<div class="card" style="margin-top:20px"><h2>LEADS &nbsp;<span style="font-weight:400;font-size:12px;color:#7d8590">breadth {len(G)} ({n_surv} survived · {n_ref} refuted · {n_pend} pending) &nbsp;·&nbsp; depth {len(completed)}/{len(order)} lens rows{f' · {n_dh_find} FINDING' if n_dh_find else ''}{_dh_note}</span></h2>{chipbar}<table id="leadtbl">
+<div class="card" style="margin-top:20px"><h2>LEADS &nbsp;<span style="font-weight:400;font-size:12px;color:#7d8590">breadth {len(G)} ({n_surv} survived · {n_ref} refuted · {n_pend} pending) &nbsp;·&nbsp; depth {PR["4.5 · deep-hunt"]["checked"]}/{PR["4.5 · deep-hunt"]["total"]} lens rows{f' · {_n_capped} capped' if _n_capped else ''}{f' · {n_dh_find} FINDING' if n_dh_find else ''}{_dh_note}</span></h2>{chipbar}<table id="leadtbl">
 <tr style="color:#7d8590"><td>Type</td><td>Sev</td><td>Class</td><td>Location</td><td>Refute gate</td><td>Detail</td></tr>{lrows}{dhrows}{hidden_row}</table></div>
 {('<div class="card" style="margin-top:16px"><h2>Adjudicated — verified, NOT a bug (' + str(n_arows) + ') · removed from refute queue</h2><table><tr style="color:#7d8590"><td>Sev</td><td>Class</td><td>Location</td><td>Verdict</td></tr>' + arows + '</table></div>') if A else ''}
 <div class="meta">auto-refresh 10s · {now.strftime('%H:%M:%S')} · localhost:{PORT}</div>
@@ -1335,25 +1458,18 @@ a{{color:#58a6ff;text-decoration:none}} a:hover{{text-decoration:underline}}
 
 def emit_model():
     # Deterministic assertion surface (NOT rendered by the browser): the computed facts as JSON, so the
-    # offline demo can pin the load-bearing model without a /proc scan or HTML scraping. Uses the SAME helper
-    # functions + the SAME pure liveness classifier as page(), so the two never disagree.
+    # offline demo can pin the load-bearing model without a /proc scan or HTML scraping. #2298: it reads the SAME
+    # hunt_model() as page() and hunt_card() (progress, completeness, phases, DEPTH rows), so they never disagree.
     now=datetime.datetime.now()
-    st,prog,covered,failed,total_z = phase_status()
-    zs=coverage(); L=leads(); vs=verify_state(); log=read(LOG); A=adjudicated()
-    hunt_live = proc_alive() or llm_child()[0]
-    exited   = ("__EXIT__=" in log) and not hunt_live
-    complete = exited and failed==0 and covered==total_z
-    RV=refute_verdicts()
-    def _rv(x): return RV.get(_normloc(x["loc"]))
+    M=hunt_model()
+    st=M["st"]; prog=M["prog"]; covered=M["covered"]; failed=M["failed"]; total_z=M["total_z"]
+    zs=M["zs"]; vs=M["vs"]; A=M["A"]; exited=M["exited"]; complete=M["complete"]; DR=M["deep_rows"]
     pf_rank=_pay_floor_rank()   # #1960: resolved once; None ⇒ every `unpayable` is False
     # breadth leads
     # #2023: dispatch on the SAME shared _lead_state() the renderer uses, so an operator CONFIRMED/DUPLICATE
-    # adjudication wins over the automated refute-gate verdict here too (this model path had NO operator
-    # awareness before — it only knew REFUTED/CONFIRMED/PENDING, which is the exact bug #2023 reports).
-    _confirmed_breadth, _dup_breadth = _breadth_adjudication(A)
-    # #2024: fold same-location raw candidates BEFORE building leads_out/leads_summary/zones_out below — the
-    # IDENTICAL G that page() computes, so the two surfaces can never disagree on what got folded.
-    G=_group_leads(L, RV, _confirmed_breadth, _dup_breadth)
+    # adjudication wins over the automated refute-gate verdict here too.
+    # #2024: G is folded ONCE in hunt_model() — the IDENTICAL G page() renders.
+    G=M["G"]
     leads_out=[]; n_ref=n_surv=n_pend=0
     for x in G:
         s=x["state"]
@@ -1367,50 +1483,26 @@ def emit_model():
                           "verdict":state,
                           "struck":struck,"unpayable":_is_unpayable(x["sev"], pf_rank),
                           "n_folded":x["n_folded"],"classes":x["clss"]})
-    # deep rows — the reconstructed matrix + verdict per slot (mirrors the render branches)
-    DH=deep_hunt(); dh_dir=os.path.join(OUT,"deep-hunt")
-    completed={d["slot"]:d for d in DH}
-    order=[]; seen=set(); slot_custody={}
-    for zone,cls,cust in planned_deep_rows():
-        slot=f"{zone}-{cls}"
-        slot_custody[slot]=cust
-        if slot not in seen: order.append(slot); seen.add(slot)
-    for slot in completed:
-        if slot not in seen: order.append(slot); seen.add(slot)
-    active=active_deep_slot()
+    # deep rows — the runner's plan ∪ observed dirs ∪ synthetic row, one state each (mirrors the render branches)
     deep_out=[]; n_dh_find=0
-    for slot in order:
-        d=completed.get(slot); adj=(d.get("adj") if d else None) or {}
-        # #depth-sev: same resolution as page() — a result row (has d) resolves normalized-join / intrinsic
-        # custody / pay-floor so it never emits an empty severity; a not-yet-run row keeps intrinsic-or-empty.
-        _sv = (_norm_sev(d.get("severity","") if d else "") or _intrinsic_sev(slot_custody.get(slot, False))
-               or (PAY_FLOOR.title() if PAY_FLOOR else ""))
-        if slot==active:
-            state="rerunning"; struck=False; sev=_sv
-        elif d:
-            v=d["verdict"]; sev=_sv
-            if ("FINDING" in v or "VIOLAT" in v) and adj.get("verdict")=="REFUTED":
-                state="triaged_fp"; struck=True
-            elif "FINDING" in v or "VIOLAT" in v:
-                state="finding"; struck=False; n_dh_find+=1
-            elif "CLEAN" in v:
-                state="clean"; struck=True
-            else:
-                state="harness_error"; struck=False
+    for r in DR:
+        state=r["state"]
+        if state in ("plan_unknown","deep_skipped"):
+            sev=""
         else:
-            sev=_sv
-            # #deep-cell-stale: a dir alone is not "running" — a killed/hung cell leaves a silent dir behind.
-            _cs = deep_cell_status(slot)
-            if _cs == "running": state="running"; struck=False
-            elif _cs == "abandoned": state="harness_error"; struck=False   # coverage gap, not perpetual running
-            else: state="queued"; struck=False
-        m=re.match(r'^(.*)-(C\d+|SYS-solvency)$', slot)
-        cls=(d["cls"] if d else (m.group(2) if m else "?"))
-        loc=(d["target"] if d else (m.group(1) if m else slot))
-        deep_out.append({"id":_finding_id(loc, cls),"slot":slot,"cls":cls,"loc":loc,"severity":sev,"state":state,"struck":struck,
+            # #depth-sev: same resolution as page() — normalized join / intrinsic custody / pay-floor.
+            sev=(_norm_sev(r["sev_join"]) or _intrinsic_sev(r["custody"]) or (PAY_FLOOR.title() if PAY_FLOOR else ""))
+        if state=="finding": n_dh_find+=1
+        loc=r["target"] or r["zone"] or r["slot"]
+        deep_out.append({"id":_finding_id(loc, r["cls"]),"slot":r["slot"],"zone":r["zone"],"cls":r["cls"],"loc":loc,
+                         "severity":sev,"state":state,"verdict":r["verdict"],"plan_state":r["plan"],
+                         "struck":state in ("triaged_fp","clean"),
                          # #2108(b): provenance of a triaged_fp — "gate" = automated 4.6 refute gate, None = a
                          # manual deep-hunt-adjudicated.tsv row (manual wins, so a manual override reads None here).
-                         "adj_source":adj.get("source"),
+                         "adj_source":r["adj"].get("source"),
+                         "adj_verdict":(r["adj"].get("verdict") or None),"gate_verdict":r.get("gate"),
+                         # #2298: checked = a terminal 4.5 verdict AND (for a FINDING) an operator 4.6 verdict.
+                         "checked":r["checked"],
                          "unpayable":_is_unpayable(sev, pf_rank)})
     # zones — the Result label that must agree with the LEADS table
     import collections as _cl
@@ -1421,11 +1513,9 @@ def emit_model():
         elif s=="pending": z_pend[x["zone"]]+=1
         else:              z_surv[x["zone"]]+=1   # op_confirmed / op_duplicate / survived
     z_dh=_cl.Counter(); z_dhsev={}; z_dhref=_cl.Counter()
-    for d in DH:
-        if "FINDING" in d["verdict"]:
-            zn=re.sub(r'-(C\d+|SYS-solvency)$','',d["slot"])
-            if (d.get("adj") or {}).get("verdict")=="REFUTED": z_dhref[zn]+=1
-            else: z_dh[zn]+=1; z_dhsev[zn]=d.get("severity","")
+    for r in DR:
+        if r["state"]=="triaged_fp": z_dhref[r["zone"]]+=1
+        elif r["state"]=="finding": z_dh[r["zone"]]+=1; z_dhsev[r["zone"]]=r.get("sev_join","")
     zones_out=[]
     for z in zs:
         s=z.get("status","?"); zid=z.get("id","?")
@@ -1440,7 +1530,9 @@ def emit_model():
         elif s=="failed": result="✗ no result (gap)"
         elif s=="abandoned": result="⚫ stopped mid-hunt (gap)"   # #1991
         else: result="— pending"
-        zones_out.append({"id":zid,"status":s,"custody":bool(z.get("value_custody")),"result":result})
+        _zopen=zone_open_rows(M, zid)
+        zones_out.append({"id":zid,"status":s,"custody":bool(z.get("value_custody")),"result":result,
+                          "open":_zopen,"checked":(s in ("hunted","hunted_empty") and _zopen==0)})
     # liveness — same pure classifier as page()
     fm,fp=freshest()
     age=(now-datetime.datetime.fromtimestamp(fm)).total_seconds() if fm else 9e9
@@ -1451,10 +1543,16 @@ def emit_model():
         "complete":complete, "exited":exited, "pay_floor":(PAY_FLOOR or None),
         "banner":("DONE" if complete else ("STOPPED_INCOMPLETE" if exited else "RUNNING")),
         "phases":st,
+        "phase_rows":M["phase_rows"],
+        "open_rows":M["n_open"],
         "leads":leads_out,
         "leads_summary":{"total":len(G),"survived":n_surv,"refuted":n_ref,"pending":n_pend},
         "deep_rows":deep_out,
-        "deep_summary":{"planned":len(order),"completed":len(completed),"findings":n_dh_find},
+        "deep_mode":M["deep_mode"],
+        "deep_summary":{"planned":sum(1 for r in DR if r["plan"] in ("selected","capped","unplanned")),
+                        "checked":sum(1 for r in DR if r["checked"]),
+                        "capped":sum(1 for r in DR if r["state"]=="capped"),
+                        "findings":n_dh_find},
         "deep_state":deep_hunt_state(),
         "zones":zones_out,
         "verify_state":(dict(vs) if vs is not None else None),
@@ -1507,19 +1605,18 @@ def hunt_card(desc, base):
     # The compact overview-card model for one hunt — computed live from artifacts + process, reusing the SAME
     # phase/leads/deep/liveness helpers as the detail view so a card can never disagree with its own detail page.
     apply_hunt(desc, base)
-    st, prog, covered, failed, total_z = phase_status()
-    L = leads(); DH = deep_hunt(); log = read(LOG)
-    n_find = sum(1 for d in DH if "FINDING" in d["verdict"] and (d.get("adj") or {}).get("verdict") != "REFUTED")
-    hunt_live = proc_alive() or llm_child()[0]
-    exited = ("__EXIT__=" in log) and not hunt_live
-    complete = exited and failed == 0 and covered == total_z
+    # #2298: the card's prog / FINISHED / green bar follow the SAME hunt_model() as the detail page.
+    M = hunt_model()
+    prog = M["prog"]; covered = M["covered"]; failed = M["failed"]; total_z = M["total_z"]
+    L = M["L"]; exited = M["exited"]; complete = M["complete"]
+    n_find = sum(1 for r in M["deep_rows"] if r["state"] == "finding")
     fm, _fp = freshest()
     age = (datetime.datetime.now() - datetime.datetime.fromtimestamp(fm)).total_seconds() if fm else 9e9
     alive = proc_alive(); inflight, think = llm_child()
     dot, txt, col, is_live, lcls = classify_liveness(exited, complete, alive, inflight, think, age)
     return {"id": desc.get("id", ""), "label": LABEL, "prog": prog,
             "covered": covered, "failed": failed, "total": total_z,
-            "leads": len(L), "deep_findings": n_find,
+            "leads": len(L), "deep_findings": n_find, "complete": complete, "open_rows": M["n_open"],
             "bounty_url": BOUNTY_URL, "repo_url": REPO_URL,
             "liveness_class": lcls, "is_live": is_live, "dot": dot, "dot_col": col,
             "status_text": txt, "deep_state": deep_hunt_state()}
@@ -1609,12 +1706,14 @@ def overview_page():
                     if h["bounty_url"] else "")
             summary = (f'zones {h["covered"]}/{h["total"]} &nbsp;·&nbsp; {h["leads"]} leads'
                        + (f' &nbsp;·&nbsp; {h["deep_findings"]} deep FINDING' if h["deep_findings"] else "")
-                       + (f' &nbsp;·&nbsp; <span style="color:#f0a800">{h["failed"]} errored</span>' if h["failed"] else ""))
+                       + (f' &nbsp;·&nbsp; <span style="color:#f0a800">{h["failed"]} errored</span>' if h["failed"] else "")
+                       + (f' &nbsp;·&nbsp; <span style="color:#f0a800">{h["open_rows"]} open rows</span>'
+                          if not h["complete"] and h["open_rows"] else ""))
             barcol = _card_bar_col(h["liveness_class"])
             cardhtml += (f'<a class="hc" href="?hunt={html.escape(h["id"], quote=True)}">'
                          f'<div class="hch">{dot}<span class="hcl">{html.escape(h["label"])}</span>{link}</div>'
                          f'<div class="hcbar"><div class="hcbf" style="width:{h["prog"]}%;background:{barcol}"></div>'
-                         f'<div class="hcbl">{h["prog"]:.0f}%</div></div>'
+                         f'<div class="hcbl">{int(h["prog"])}%</div></div>'
                          f'<div class="hcs" style="color:{h["dot_col"]}">{html.escape(h["status_text"][:90])}</div>'
                          f'<div class="hcm">{summary}</div></a>')
         grid = f'<div class="hgrid">{cardhtml}</div>'
