@@ -60,7 +60,7 @@ daemon). Bus events use the `dark-factory:<event>` namespace.
 
 | Agent | Role | Output |
 |-------|------|--------|
-| [`scope-gate.ag`](./agents/scope-gate.ag) | Scope + eligibility gate — the highest-leverage check. PAYABLE only if the finding's LOCATION is an in-scope asset AND its IMPACT is an eligible, non-excluded, non-audit-noted class. Runs BEFORE any DEVISE/PoC spend. | `dark-factory:scope_verdict`; `SCOPE-GATE\|…` |
+| [`scope-gate.ag`](./agents/scope-gate.ag) | Scope + eligibility gate — the highest-leverage check. PAYABLE only if the finding's LOCATION is an in-scope asset AND its IMPACT is an eligible, non-excluded, non-audit-noted class. Runs BEFORE any DEVISE/PoC spend. Scope text comes from `SCOPE_FILE`, else the inline `IN_SCOPE` (#2301); with neither it answers `INCOMPLETE` without an LLM call. | `dark-factory:scope_verdict`; `SCOPE-GATE\|…` (incl. `SCOPE-GATE\|INCOMPLETE`); a deterministic `SCOPE-GATE-EVIDENCE\|…` line (source, normalized asset, 0/1 matches) before it |
 | [`impact-gate.ag`](./agents/impact-gate.ag) | Impact-substantiation / validity gate (after scope, before submit): SUBSTANTIATED only if the PoC drives the impact through the protocol's OWN mechanism (no hand-fed/simulated state, no privileged trigger, victim has an on-chain-provable claim). | `dark-factory:impact_verdict`; `IMPACT-GATE\|…` |
 | [`dup-scout.ag`](./agents/dup-scout.ag) | Dup-risk estimator: a heuristic "already-reported" probability from observable repo/audit evidence (git freshness, patch status, fix velocity, audit coverage, hot-zone). Advisory — never halts the pass. | `dark-factory:dup_risk`; `DUP-RISK\|…` |
 

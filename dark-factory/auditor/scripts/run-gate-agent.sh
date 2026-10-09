@@ -17,6 +17,10 @@
 # --negative-token / VERDICT_NEGATIVE and the extraction greps for EITHER the productive prefix OR that token,
 # so the bare line is surfaced instead of dropped (#1535). Empty => the extraction is byte-identical to before.
 #
+# Any gate may also print a deterministic `<PREFIX>-EVIDENCE|...` line (today only scope-gate.ag does, #2301).
+# The runner forwards the last one to STDERR — never stdout, whose contract stays the verdict line alone — so a
+# caller that appends this runner's stderr to a log (run-audit-pass.sh -> gates.log) records why the gate decided.
+#
 # Usage:
 #   run-gate-agent.sh [<agent.ag>] [--verdict-prefix <PREFIX>] [--negative-token <TOK>] [--backend <mock|flat-cyborg|claude>]
 #   run-gate-agent.sh --classify-log <file> --verdict-prefix <PREFIX> [--negative-token <TOK>]
@@ -79,6 +83,12 @@ extract_verdict() {
   fi
 }
 
+# #2301: forward the gate's deterministic evidence line (if any) to stderr. `<PREFIX>-EVIDENCE|` never contains
+# `<PREFIX>|`, so extract_verdict above can never mistake it for the verdict.
+forward_evidence() {
+  grep -F "${PREFIX}-EVIDENCE|" "$1" | tail -1 >&2 || true
+}
+
 # #1580: persist the report-writer's verbatim draft body (the marker line up to but EXCLUDING the
 # DARK-FACTORY:DRAFT-BODY-END sentinel) before the throwaway store is torn down by the EXIT trap. No-op unless
 # SUBMISSION_DRAFT_OUT is set AND this is the report gate AND BOTH the marker and the closing sentinel are
@@ -102,6 +112,7 @@ if [ -n "$CLASSIFY_LOG" ]; then
   [ -n "$PREFIX" ] || { echo "run-gate-agent.sh: --classify-log requires --verdict-prefix <PREFIX>" >&2; exit 2; }
   [ -f "$CLASSIFY_LOG" ] || { echo "run-gate-agent.sh: --classify-log file not found: $CLASSIFY_LOG" >&2; exit 3; }
   extract_verdict "$CLASSIFY_LOG"
+  forward_evidence "$CLASSIFY_LOG"
   persist_draft "$CLASSIFY_LOG"
   exit 0
 fi
@@ -161,5 +172,6 @@ LOG="$RUN/gate.log"
 # Echo ONLY the gate's verdict line (the LAST productive-prefix line, or the negative token when configured).
 # Nothing else reaches stdout.
 extract_verdict "$LOG"
+forward_evidence "$LOG"
 # #1580: persist the verbatim draft while still in-process, BEFORE the EXIT trap deletes $RUN.
 persist_draft "$LOG"

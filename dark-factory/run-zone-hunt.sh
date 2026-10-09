@@ -2304,7 +2304,7 @@ process_finding() {
     "$AUDITPASS" --finding-location "$pf_loc" --finding-impact "$pf_expl" \
       --poc-repo "$REPO" --poc-target "$pf_target" --poc-hypothesis "$pf_expl" --poc-class "$pf_class" \
       --finding-verified \
-      --severity-band "$pf_sev" --in-scope "$IN_SCOPE" \
+      --severity-band "$pf_sev" --in-scope "$SCOPE_CONTEXT" \
       --live --backend "$BACKEND" --agentis "$AGENTIS" --out "$pf_out" || return 1
   fi
   pf_result=""
