@@ -59,6 +59,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **The live scope gate now sees the program scope a hunt passes with `--in-scope` (#2301).** `scope-gate.ag` read
+  its scope text only from `SCOPE_FILE`, but `run-zone-hunt.sh` hands the scope to `run-audit-pass.sh --in-scope`
+  and never sets a scope file. Every live finding was therefore judged against an empty scope (asset match 0/0)
+  and halted `BLOCKED-SCOPE`, even when its asset was listed. The gate now uses `SCOPE_FILE` content when non-empty,
+  else `IN_SCOPE`. It matches the finding location natively (no shell interpolation of the location any more),
+  after normalizing `path:function:line` / `path:line` to the asset path. With no scope text at all it answers
+  `SCOPE-GATE|INCOMPLETE` without an LLM call, so the pass halts `INCOMPLETE` instead of `BLOCKED-SCOPE`. The gate
+  prints a deterministic `SCOPE-GATE-EVIDENCE|source=..|asset=..|exact=0/1|basename=0/1|scope_chars=N` line;
+  `run-gate-agent.sh` forwards it to stderr (stdout stays the verdict line). `run-audit-pass.sh --live` appends
+  every gate verdict to `run/gates.log` and prints the scope verdict to stderr. **Behaviour changes:** a set but
+  unreadable `--scope-file` now exits 3 (it used to give a silent out-of-scope verdict); `run-zone-hunt.sh`'s live
+  pass now passes the same scope context as the fixture path, including `--asset-contracts` and
+  `--impact-threshold`. Pinned by `demo-scope-gate.sh` and `demo-audit-pass.sh` (live arms need agentis locally).
+
 - **The hunt-dashboard can no longer show 100 % or DONE while any row is unchecked (#2298).** A live hunt read
   "✅ DONE — 100%" with every phase ✅ while five DEPTH rows were still queued: completion came from the runner's
   exit marker, and the DEPTH rows from `planned_deep_rows()`, a client-side copy of the lens selection that had

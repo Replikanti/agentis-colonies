@@ -37,6 +37,13 @@
 # re-surfacing the rejected finding. --reviewer-feedback-file loads the same text from a file (the inline flag
 # wins). Empty feedback = byte-identical behavior: the var resolves to "" and the downstream prompt is unchanged.
 #
+# PROGRAM SCOPE (#2301). The scope gate reads the program's scope text from --scope-file or, when that is absent,
+# from --in-scope (run-zone-hunt.sh passes its --in-scope/--asset-contracts/--impact-threshold facts there). The
+# --scope-file content wins when non-empty. A set-but-unreadable --scope-file exits 3. With neither on --live, the
+# scope gate answers SCOPE-GATE|INCOMPLETE (no scope text to judge the asset barrier) and the pass halts INCOMPLETE
+# — never a silent BLOCKED-SCOPE. Every live gate verdict, plus the scope gate's deterministic
+# SCOPE-GATE-EVIDENCE| line, is appended to <out>/run/gates.log.
+#
 # Exit: 0 on a clean pass that reached its HALT; 2 usage error; 3 missing prerequisite.
 set -uo pipefail
 
@@ -113,6 +120,13 @@ if [ -z "$REVIEWER_FEEDBACK" ] && [ -n "$REVIEWER_FEEDBACK_FILE" ]; then
   REVIEWER_FEEDBACK="$(cat "$REVIEWER_FEEDBACK_FILE")"
 fi
 
+# #2301: a --scope-file that is set but not a readable file is a missing prerequisite (exit 3, the
+# --reviewer-feedback-file pattern above) — previously it silently became an empty scope -> OUT-OF-SCOPE-ASSET.
+if [ -n "$SCOPE_FILE" ] && { [ ! -f "$SCOPE_FILE" ] || [ ! -r "$SCOPE_FILE" ]; }; then
+  echo "run-audit-pass.sh: --scope-file not readable: $SCOPE_FILE" >&2
+  exit 3
+fi
+
 # A fixture is the OFFLINE path; without one AND without --live, refuse (a mock backend with no fixture would
 # have every gate come back non-productive -> a meaningless INCOMPLETE). --live opts into the runner path.
 if [ -z "$PASS_FIXTURE" ] && [ "$LIVE" -eq 0 ]; then
@@ -146,6 +160,10 @@ STAGES="$(printf 'scope\ndevise\npoc\nimpact\ndup\nreport')"
 # .ag gates run reliably as top-level flat-cyborg sessions (exactly how the sibling drivers run them); the
 # coordinator then applies its EXACT gating logic over the collected verdicts as a PASS_FIXTURE (below).
 if [ "$LIVE" -eq 1 ]; then
+  # #2301: no scope text at all -> warn up front; the scope gate itself stays the single decider (INCOMPLETE).
+  if [ -z "$SCOPE_FILE" ] && [ -z "$IN_SCOPE" ]; then
+    echo "run-audit-pass.sh: WARNING: neither --scope-file nor --in-scope given — the scope gate will answer SCOPE-GATE|INCOMPLETE" >&2
+  fi
   [ -f "$GATE_RUN" ] || { echo "run-audit-pass.sh: run-gate-agent.sh not found at $GATE_RUN" >&2; exit 3; }
   [ -f "$POC_RUN_SH" ] || { echo "run-audit-pass.sh: run-poc.sh not found at $POC_RUN_SH" >&2; exit 3; }
 fi
@@ -191,14 +209,18 @@ if [ "$LIVE" -eq 1 ]; then
   _gate() {  # $1 verdict-prefix, $2 negative-token ("" if none), $3 POC_FILE (report only) -> echoes verdict line
     _nt=""; [ -n "$2" ] && _nt="--negative-token $2"
     # shellcheck disable=SC2086
-    env VERDICT_PREFIX="$1" VERDICT_NEGATIVE="$2" GATE_BACKEND="$BACKEND" \
+    _gv="$(env VERDICT_PREFIX="$1" VERDICT_NEGATIVE="$2" GATE_BACKEND="$BACKEND" \
         FINDING_LOCATION="$FINDING_LOCATION" FINDING_IMPACT="$FINDING_IMPACT" SCOPE_FILE="$SCOPE_FILE" \
         TARGET_DIR="$TARGET_DIR" IN_SCOPE="$IN_SCOPE" AUDIT_DIR="$AUDIT_DIR" MECHANISM_NOTES="$MECHANISM_NOTES" \
         FINDING_FILE="$FINDING_FILE" FINDING_ANCHOR="$FINDING_ANCHOR" FINDING_TITLE="$FINDING_TITLE" \
         SEVERITY_BAND="$SEVERITY_BAND" REVIEWER_FEEDBACK="$REVIEWER_FEEDBACK" \
         SCOPE_VERDICT="$_scopeV" IMPACT_VERDICT="$_impactV" DUP_RISK="$_dupV" \
         POC_FILE="$3" SUBMISSION_DRAFT_OUT="$DRAFT_OUT" \
-        bash "$GATE_RUN" --verdict-prefix "$1" --backend "$BACKEND" $_nt 2>>"$RUN/gates.log" || true
+        bash "$GATE_RUN" --verdict-prefix "$1" --backend "$BACKEND" $_nt 2>>"$RUN/gates.log" || true)"
+    # #2301: log every live gate verdict next to the evidence line the runner already forwarded on stderr, so a
+    # halted pass shows WHY it halted. stdout stays the verdict line alone (the case statements below parse it).
+    if [ -n "$_gv" ]; then echo "[$1] $_gv" >> "$RUN/gates.log"; else echo "[$1] (no verdict line -> incomplete)" >> "$RUN/gates.log"; fi
+    printf '%s\n' "$_gv"
   }
   _sl="$(_gate SCOPE-GATE '' '')"
   case "$_sl" in
@@ -206,8 +228,10 @@ if [ "$LIVE" -eq 1 ]; then
     *"SCOPE-GATE|OUT-OF-SCOPE-ASSET"*) _scopeV=out-of-scope-asset ;;
     *"SCOPE-GATE|EXCLUDED-CARVEOUT"*)  _scopeV=excluded-carveout ;;
     *"SCOPE-GATE|INELIGIBLE-IMPACT"*)  _scopeV=ineligible-impact ;;
+    *"SCOPE-GATE|INCOMPLETE"*)         _scopeV=incomplete ;;
     *) _scopeV=incomplete ;;
   esac
+  echo "run-audit-pass.sh: scope gate -> ${_sl:-(none)} (evidence: $RUN/gates.log)" >&2
   FIX="scope=$_scopeV"
   if [ "$_scopeV" = payable ]; then
     _dl="$(_gate RESIDUAL NO-RESIDUAL '')"

@@ -403,6 +403,11 @@ ALLOW2277
 DEEP_HUNT_MAX_LENSES=2  # #1795/#2113: max lens classes per deep-hunt zone, walked in the zone's own
     # the zone's per-class rows leave headroom under it (len(lenses) < max_lenses). At the default max_lenses=2 a
 ALLOW2298
+    # #2301: the M5 live audit pass now hands run-audit-pass.sh the full $SCOPE_CONTEXT (as the fixture branch
+    # already did) instead of the bare $IN_SCOPE. Only that one --in-scope argument changes; the OFF path is the same.
+    cat >> "$WORK/rz-allowlist.txt" <<'ALLOW2301'
+      --severity-band "$pf_sev" --in-scope "$IN_SCOPE" \
+ALLOW2301
     ALLOW_BAD="$(grep -vxF -f "$WORK/rz-allowlist.txt" "$WORK/rz-removed-outside.txt" || true)"
     ALLOW_DUP="$(sort "$WORK/rz-removed-outside.txt" | uniq -d)"
     if [ "$OUTSIDE_N" -eq 0 ] || { [ -z "$ALLOW_BAD" ] && [ -z "$ALLOW_DUP" ]; }; then

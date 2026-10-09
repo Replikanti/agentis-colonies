@@ -8,63 +8,117 @@ cb 300000;
 //
 // "In the repo" != "in scope"; "has audits" != "in scope"; a real bug in an excluded impact class pays nothing.
 // The authoritative scope is the program's OWN scope page (per-file asset list + out-of-scope/known-issues
-// section + eligible-impact set), passed in as SCOPE_FILE. The asset-path check is DETERMINISTIC (grep — the
-// muscle); the impact/carve-out judgement is the LLM's, over that same scope text.
+// section + eligible-impact set), passed in as SCOPE_FILE or, when no file is given, as IN_SCOPE text. The
+// asset-path check is DETERMINISTIC (a native substring match — the muscle); the impact/carve-out judgement is
+// the LLM's, over that same scope text.
 //
 // Env:
 //   SCOPE_FILE       path to the program's scope text: the in-scope ASSET list (per-file paths / on-chain
 //                    addresses) + the OUT-OF-SCOPE / KNOWN-ISSUES section + the ELIGIBLE-IMPACT set. One file.
+//   IN_SCOPE         #2301: the same scope text passed inline (run-audit-pass.sh --in-scope, which run-zone-hunt.sh
+//                    fills from --in-scope/--asset-contracts/--impact-threshold). Precedence: SCOPE_FILE content
+//                    wins when it is non-empty after trim; otherwise IN_SCOPE; otherwise there is NO scope text.
 //   FINDING_LOCATION the candidate finding's location — a repo-relative source path (e.g.
-//                    src/components/issuance/deposit-handlers/SyncDepositHandler.sol) or an on-chain address.
+//                    src/components/issuance/deposit-handlers/SyncDepositHandler.sol), optionally suffixed with
+//                    `:function[:line]` / `:line` the way hunt findings carry it, or an on-chain address.
+//                    The asset match uses the location NORMALIZED to its asset path: everything after a
+//                    `<file>.<ext>:` segment whose tail holds no `/` is cut (Vault.sol:withdraw:908 ->
+//                    Vault.sol); addresses and `chain:0x..` forms are left untouched.
 //   FINDING_IMPACT   a one-line description of the finding's impact + class (e.g. "unprivileged front-run of a
 //                    NAV update steals pre-update holders' unclaimed yield").
-// Stdout: exactly one line
-//   SCOPE-GATE|<PAYABLE|OUT-OF-SCOPE-ASSET|EXCLUDED-CARVEOUT|INELIGIBLE-IMPACT>|<one-line rationale>
-//   Only PAYABLE should proceed to DEVISE/PoC/submit; the other three are wasted-effort verdicts.
+// Stdout: a deterministic evidence line, then exactly one verdict line
+//   SCOPE-GATE-EVIDENCE|source=<scope-file|in-scope|none>|asset=<normalized>|exact=<0|1>|basename=<0|1>|scope_chars=<n>
+//   SCOPE-GATE|<PAYABLE|OUT-OF-SCOPE-ASSET|EXCLUDED-CARVEOUT|INELIGIBLE-IMPACT|INCOMPLETE>|<one-line rationale>
+//   Only PAYABLE should proceed to DEVISE/PoC/submit. INCOMPLETE is deterministic (no prompt is spent): it means
+//   there was no scope text at all, so the asset barrier cannot be judged — never a silent OUT-OF-SCOPE-ASSET.
+//   The evidence line never contains `SCOPE-GATE|`, so run-gate-agent.sh's verdict extraction cannot pick it up.
 
-// --- scope evidence (the muscle; dynamic paths -> safe-exec-concat, per audit-scout.ag / dup-scout.ag) ------
+// --- scope evidence (the muscle; the dynamic path is shell_escape()d, per audit-scout.ag / dup-scout.ag) ----
 fn scope_text(scopeFile: string) -> string {
     if len(scopeFile) == 0 { return ""; }
     // colony-lint: safe-exec-concat
-    return exec sh "sed -n '1,4000p' ${scopeFile} 2>/dev/null || true";
+    return exec sh "sed -n '1,4000p' " + shell_escape(scopeFile) + " 2>/dev/null || true";
 }
 
-// Deterministic asset match: is FINDING_LOCATION present in the scope text (the asset URLs/paths contain the
-// repo-relative path)? grep -c prints "0" AND exits 1 on no match, so capture-then-fallback (dup-scout lesson).
-fn asset_listed(scopeFile: string, loc: string) -> string {
-    if len(loc) == 0 { return "0"; }
-    // colony-lint: safe-exec-concat
-    return exec sh "c=$(grep -c -F '${loc}' ${scopeFile} 2>/dev/null); [ -n \"$c\" ] && echo \"$c\" || echo 0";
+// #2301: SCOPE_FILE content wins when non-empty; otherwise the inline IN_SCOPE text; otherwise "".
+fn resolve_scope(fileText: string, inScope: string) -> string {
+    if len(trim(fileText)) > 0 { return fileText; }
+    return inScope;
+}
+
+fn scope_source(fileText: string, inScope: string) -> string {
+    if len(trim(fileText)) > 0 { return "scope-file"; }
+    if len(trim(inScope)) > 0 { return "in-scope"; }
+    return "none";
+}
+
+// Hunt findings carry `path:function:line` / `path:line`; a scope page lists the bare asset path. Cut only after a
+// `<file>.<ext>:` segment whose tail has no `/` — `0xAbC` and `eth:0xAbC` do not match and stay as they are.
+fn normalize_location(loc: string) -> string {
+    let t = trim(loc);
+    let asset = regex_capture("^(.+?\\.[A-Za-z0-9]{1,8}):[^/]*$", t, 1);
+    if len(asset) == 0 { return t; }
+    return asset;
+}
+
+fn basename_of(p: string) -> string {
+    return regex_capture("([^/]+)$", p, 1);
+}
+
+// Deterministic asset match: is the normalized location present in the scope text (the asset URLs/paths contain
+// the repo-relative path)? Native substring match, 1 = listed / 0 = not listed — no shell, so the LLM-originated
+// location never reaches an exec string. Case-sensitive, like the grep -F it replaces.
+fn asset_listed(scope: string, asset: string) -> string {
+    if len(asset) == 0 { return "0"; }
+    if index_of(scope, asset) >= 0 { return "1"; }
+    return "0";
 }
 
 // Also try the BASENAME (a per-file asset list may cite the file without the full path a finding uses).
-fn basename_listed(scopeFile: string, loc: string) -> string {
-    if len(loc) == 0 { return "0"; }
-    // colony-lint: safe-exec-concat
-    return exec sh "b=$(basename '${loc}'); c=$(grep -c -F \"$b\" ${scopeFile} 2>/dev/null); [ -n \"$c\" ] && echo \"$c\" || echo 0";
+fn basename_listed(scope: string, asset: string) -> string {
+    let b = basename_of(asset);
+    if len(b) == 0 { return "0"; }
+    if index_of(scope, b) >= 0 { return "1"; }
+    return "0";
+}
+
+// The single LLM call, wrapped so the no-scope branch below provably never spends a prompt.
+fn judge(instruction: string, evidence: string) -> string {
+    return prompt(instruction, evidence) -> string;
 }
 
 let scopeFile = getenv("SCOPE_FILE");
+let inScope = getenv("IN_SCOPE");
 let loc = getenv("FINDING_LOCATION");
 let impact = getenv("FINDING_IMPACT");
 
-let scope = scope_text(scopeFile);
-let inList = asset_listed(scopeFile, loc);
-let baseInList = basename_listed(scopeFile, loc);
+let fileText = scope_text(scopeFile);
+let scope = resolve_scope(fileText, inScope);
+let source = scope_source(fileText, inScope);
+let asset = normalize_location(loc);
+let inList = asset_listed(scope, asset);
+let baseInList = basename_listed(scope, asset);
+
+// Deterministic evidence, printed BEFORE the verdict so run-gate-agent.sh can forward it to the caller's log.
+let evidenceLine = "SCOPE-GATE-EVIDENCE|source=" + source + "|asset=" + asset + "|exact=" + inList
+  + "|basename=" + baseInList + "|scope_chars=" + to_string(len(scope));
+print(evidenceLine);
 
 let evidence =
-    "FINDING_LOCATION: " + loc + "\n"
+    evidenceLine + "\n"
+  + "FINDING_LOCATION: " + loc + "\n"
+  + "ASSET (normalized location): " + asset + "\n"
   + "FINDING_IMPACT: " + impact + "\n"
-  + "ASSET-MATCH (grep count of the exact location in the scope): " + inList + "\n"
-  + "ASSET-MATCH (grep count of the location's basename in the scope): " + baseInList + "\n"
+  + "ASSET-MATCH (exact normalized location in the scope: 1 = listed, 0 = not listed): " + inList + "\n"
+  + "ASSET-MATCH (the location's basename in the scope: 1 = listed, 0 = not listed): " + baseInList + "\n"
   + "=== PROGRAM SCOPE (in-scope asset list + out-of-scope/known-issues + eligible-impact set) ===\n" + scope;
 
 // The gate: classify against the three barriers, hardest first. This is a heuristic over the scope text the
 // operator supplied — an unreliable/partial scope dump can misgate, so the rationale must cite what it matched.
 let instruction =
     "You are the SCOPE + ELIGIBILITY gate for a bug-bounty submission. A finding is only PAYABLE if ALL hold:\n"
-  + "1) ASSET: its location is an IN-SCOPE asset. The ASSET-MATCH grep counts above are the strongest signal — a "
-  + "count of 0 for BOTH the full path AND the basename means the location is almost certainly NOT a listed asset "
+  + "1) ASSET: its location is an IN-SCOPE asset. The ASSET-MATCH values above are the strongest signal — "
+  + "0 (not listed) for BOTH the full path AND the basename means the location is almost certainly NOT a listed asset "
   + "(out of scope), UNLESS a Primacy-of-Impact clause in the scope lets an out-of-scope location reach an in-scope "
   + "IMPACT (only then can an unlisted location still pay). 'In the repo' or 'has audits' does NOT mean in scope.\n"
   + "2) NOT EXCLUDED: the impact must not match any OUT-OF-SCOPE / KNOWN-ISSUES carve-out in the scope, INCLUDING a "
@@ -81,13 +135,18 @@ let instruction =
   + "answer OUT-OF-SCOPE-ASSET. Prefer a wasted-effort verdict over a false PAYABLE — a bad submit costs fee + "
   + "reputation. Only the final SCOPE-GATE| line is parsed.";
 
-let verdict = prompt(instruction, evidence) -> string;
+let noScopeReason = if len(scopeFile) == 0 { "SCOPE_FILE unset" } else { "SCOPE_FILE empty or unreadable" };
+let verdict = if len(trim(scope)) == 0 {
+    "SCOPE-GATE|INCOMPLETE|no scope text: " + noScopeReason + " and IN_SCOPE empty - asset scope cannot be judged"
+} else { judge(instruction, evidence) };
 
 print(verdict);
 let gate = if index_of(verdict, "SCOPE-GATE|PAYABLE") >= 0 { "payable" }
-           else { if index_of(verdict, "OUT-OF-SCOPE-ASSET") >= 0 { "out-of-scope-asset" }
-           else { if index_of(verdict, "EXCLUDED-CARVEOUT") >= 0 { "excluded-carveout" }
-           else { "ineligible-impact" } } };
+           else { if index_of(verdict, "SCOPE-GATE|OUT-OF-SCOPE-ASSET") >= 0 { "out-of-scope-asset" }
+           else { if index_of(verdict, "SCOPE-GATE|EXCLUDED-CARVEOUT") >= 0 { "excluded-carveout" }
+           else { if index_of(verdict, "SCOPE-GATE|INELIGIBLE-IMPACT") >= 0 { "ineligible-impact" }
+           else { if index_of(verdict, "SCOPE-GATE|INCOMPLETE") >= 0 { "incomplete" }
+           else { "incomplete" } } } } };
 // A PAYABLE gate is the productive outcome (proceed to DEVISE/PoC) -> success; any block -> failure (effort saved).
 let outcome = if gate == "payable" { "success" } else { "failure" };
 emit("dark-factory:scope_verdict", "{\"location\":\"" + loc + "\",\"gate\":\"" + gate + "\"}");

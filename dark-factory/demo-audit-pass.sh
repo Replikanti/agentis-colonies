@@ -17,6 +17,11 @@
 #      fixture runs all six stages in order -> PENDING-HUMAN-REVIEW; (b) an out-of-scope asset halts after
 #      scope (downstream rows ABSENT) -> BLOCKED-SCOPE; (c) a simulated-state impact halts after impact
 #      (dup/report ABSENT) -> BLOCKED-IMPACT; (d) no path prints/emits a submit.
+#   #2301 (--in-scope reaches the live scope gate): CI-safe — run-gate-agent.sh forwards a SCOPE-GATE-EVIDENCE|
+#      line to stderr while stdout stays the verdict line, plus source-guards on run-audit-pass.sh/run-zone-hunt.sh;
+#      LIVE — the real run-audit-pass.sh --live --backend claude with a deterministic fake `claude` on PATH:
+#      (f1/f2) --in-scope alone makes a listed `path:fn:line` / `path:line` location PAYABLE, (f3) an unlisted one
+#      stays OUT-OF-SCOPE-ASSET (the fake discriminates), (f4) no scope text -> INCOMPLETE, not BLOCKED-SCOPE.
 #
 # Usage:  dark-factory/demo-audit-pass.sh
 # Exit: 0 = all assertions hold (live part SKIPs cleanly when agentis absent) ; non-zero = a regression.
@@ -147,6 +152,35 @@ else
     bad "coordinator.ag devise_class missing the NO-RESIDUAL -> no-residual mapping"
   fi
   rm -rf "$RT"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+# 1c) #2301 — the gate evidence line + the pipeline wiring that carries --in-scope to the live scope gate.
+#     Pure shell, ALWAYS on (no agentis, no LLM).
+# ----------------------------------------------------------------------------------------------------------
+AUDIT_PASS="$HERE/run-audit-pass.sh"
+ZONE_HUNT="$HERE/run-zone-hunt.sh"
+note "#2301: gate evidence forwarding + --in-scope wiring (offline, no agentis) ..."
+if [ -f "$GATE_RUNNER" ]; then
+  EV="$(mktemp -d)"
+  printf 'chatter\nSCOPE-GATE-EVIDENCE|source=in-scope|asset=src/vault/Vault.sol|exact=1|basename=1|scope_chars=40\nSCOPE-GATE|PAYABLE|x\ntail\n' > "$EV/scope.log"
+  _v="$(bash "$GATE_RUNNER" --classify-log "$EV/scope.log" --verdict-prefix SCOPE-GATE 2>"$EV/stderr.txt")"
+  [ "$_v" = "SCOPE-GATE|PAYABLE|x" ] && ok "scope extraction: stdout is exactly the verdict line (the evidence line is not a verdict)" \
+    || bad "expected stdout 'SCOPE-GATE|PAYABLE|x', got '$_v'"
+  grep -qF 'SCOPE-GATE-EVIDENCE|source=in-scope|asset=src/vault/Vault.sol|exact=1' "$EV/stderr.txt" \
+    && ok "run-gate-agent.sh forwards the SCOPE-GATE-EVIDENCE| line on stderr (#2301)" \
+    || bad "run-gate-agent.sh did not forward the evidence line on stderr: '$(cat "$EV/stderr.txt")'"
+  rm -rf "$EV"
+fi
+if grep -qF 'echo "[$1] $_gv" >> "$RUN/gates.log"' "$AUDIT_PASS" && grep -qF '*"SCOPE-GATE|INCOMPLETE"*)' "$AUDIT_PASS"; then
+  ok "run-audit-pass.sh logs every live gate verdict to gates.log and maps SCOPE-GATE|INCOMPLETE (#2301)"
+else
+  bad "run-audit-pass.sh missing the [prefix] gates.log append / the SCOPE-GATE|INCOMPLETE case (#2301)"
+fi
+if grep -qF -- '--in-scope "$IN_SCOPE"' "$ZONE_HUNT"; then
+  bad "run-zone-hunt.sh still hands the live pass --in-scope \"\$IN_SCOPE\" instead of \$SCOPE_CONTEXT (#2301)"
+else
+  ok "run-zone-hunt.sh hands both pass branches the full \$SCOPE_CONTEXT (#2301)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -345,6 +379,86 @@ _rv1="$(ver_pass 1)"
 [ "$_rv1" = "PENDING-HUMAN-REVIEW" ] && ok "devise ADVISORY for a verified finding: proceeds past NO-RESIDUAL to the human-gate (#1806)" || bad "verified finding did NOT proceed past devise (#1806): got '$_rv1'"
 _rv0="$(ver_pass '')"
 [ "$_rv0" = "NO-RESIDUAL" ] && ok "devise HARD gate for an UNverified finding: still halts at NO-RESIDUAL (pre-#1806 byte-identical)" || bad "unverified finding devise gate regressed (#1806): got '$_rv0'"
+
+# --- (f) #2301: --in-scope reaches the LIVE scope gate (the real run-audit-pass.sh --live pipeline). ----------
+#     A deterministic fake `claude` on PATH stands in for the LLM. --backend claude is REQUIRED: that backend
+#     honours PATH, while flat-cyborg would drive the real claude TUI. HOME is sandboxed so the workspace-trust
+#     helper writes $WORK/home/.claude.json, never the operator's. The fake answers PAYABLE only when the gate's
+#     deterministic SCOPE-GATE-EVIDENCE| line shows a match (mirroring the gate's own instruction), so the arms
+#     prove the scope text + normalized location reached the gate. No --poc-repo -> run-poc.sh exits at once;
+#     only the scope stage is asserted.
+note "#2301: --in-scope reaching the live scope gate (run-audit-pass.sh --live, fake claude) ..."
+FB="$WORK/fake-bin"; FM="$WORK/fake-marks"; mkdir -p "$FB" "$WORK/home"
+cat > "$FB/claude" <<EOF
+#!/usr/bin/env bash
+PROMPT="\$(cat)"
+if printf '%s' "\$PROMPT" | grep -q 'SCOPE + ELIGIBILITY gate'; then
+  : > "$FM/SCOPE_PROMPT_SEEN"
+  printf '%s' "\$PROMPT" | grep -qF 'IN-SCOPE ASSETS: src/vault/Vault.sol, src/oracle/Oracle.sol' && : > "$FM/SCOPE_TEXT_SEEN"
+  ev="\$(printf '%s' "\$PROMPT" | grep -F 'SCOPE-GATE-EVIDENCE|' | head -1)"
+  case "\$ev" in
+    *'|exact=1|'*|*'|basename=1|'*) echo "SCOPE-GATE|PAYABLE|fake: asset listed" ;;
+    *) echo "SCOPE-GATE|OUT-OF-SCOPE-ASSET|fake: asset match 0/0" ;;
+  esac
+  exit 0
+fi
+echo "NO-RESIDUAL"
+EOF
+chmod +x "$FB/claude"
+F_SCOPE="IN-SCOPE ASSETS: src/vault/Vault.sol, src/oracle/Oracle.sol | ELIGIBLE: theft of user funds"
+# live_arm <name> <finding-location> [extra run-audit-pass args...] -> output under $WORK/<name>
+live_arm() {
+  _an="$1"; _al="$2"; shift 2
+  rm -rf "$FM"; mkdir -p "$FM"
+  HOME="$WORK/home" PATH="$FB:$PATH" bash "$AUDIT_PASS" --live --backend claude \
+    --finding-location "$_al" --finding-impact "theft of user funds" "$@" --out "$WORK/$_an" \
+    >"$WORK/$_an.out" 2>"$WORK/$_an.err" || true
+}
+arm_trace_row() { [ -f "$WORK/$1/pass.tsv" ] && grep -q "$2" "$WORK/$1/pass.tsv"; }
+
+# (f1) --in-scope only, `path:function:line` location -> payable.
+live_arm f1 "src/vault/Vault.sol:withdraw:908" --in-scope "$F_SCOPE"
+grep -qF 'live top-level gate verdicts -> scope=payable' "$WORK/f1.err" \
+  && ok "(f1) --in-scope alone: listed path:fn:line location -> scope=payable (#2301)" \
+  || { bad "(f1) expected scope=payable:"; sed 's/^/        | /' "$WORK/f1.err" | tail -6 >&2; }
+arm_trace_row f1 'stage=scope	verdict=payable' && ok "(f1) pass.tsv row stage=scope verdict=payable" || bad "(f1) pass.tsv has no stage=scope verdict=payable row"
+grep -qF 'SCOPE-GATE-EVIDENCE|source=in-scope|asset=src/vault/Vault.sol|exact=1' "$WORK/f1/run/gates.log" 2>/dev/null \
+  && ok "(f1) gates.log carries the evidence line source=in-scope asset=src/vault/Vault.sol exact=1" \
+  || bad "(f1) gates.log missing the SCOPE-GATE-EVIDENCE line"
+grep -qF '[SCOPE-GATE] SCOPE-GATE|PAYABLE|' "$WORK/f1/run/gates.log" 2>/dev/null \
+  && ok "(f1) gates.log logs the scope verdict line ([SCOPE-GATE] SCOPE-GATE|PAYABLE|...)" \
+  || bad "(f1) gates.log missing the [SCOPE-GATE] verdict line"
+[ -f "$FM/SCOPE_TEXT_SEEN" ] && ok "(f1) the scope-gate prompt carried the --in-scope text" || bad "(f1) the scope-gate prompt did NOT carry the --in-scope text"
+
+# (f2) same scope, `path:line` location -> payable.
+live_arm f2 "src/oracle/Oracle.sol:42" --in-scope "$F_SCOPE"
+grep -qF 'live top-level gate verdicts -> scope=payable' "$WORK/f2.err" \
+  && ok "(f2) --in-scope alone: listed path:line location -> scope=payable" \
+  || { bad "(f2) expected scope=payable:"; sed 's/^/        | /' "$WORK/f2.err" | tail -6 >&2; }
+
+# (f3) control: an unlisted asset stays out of scope -> the fake discriminates, the arms are not vacuous.
+live_arm f3 "src/other/Evil.sol:drain:7" --in-scope "$F_SCOPE"
+grep -qF 'live top-level gate verdicts -> scope=out-of-scope-asset' "$WORK/f3.err" \
+  && ok "(f3) control: unlisted asset -> scope=out-of-scope-asset (the match discriminates)" \
+  || { bad "(f3) expected scope=out-of-scope-asset:"; sed 's/^/        | /' "$WORK/f3.err" | tail -6 >&2; }
+
+# (f4) no scope text at all -> INCOMPLETE (never BLOCKED-SCOPE), with no scope-gate prompt spent.
+live_arm f4 "src/vault/Vault.sol:withdraw:908"
+grep -qF 'live top-level gate verdicts -> scope=incomplete' "$WORK/f4.err" \
+  && ok "(f4) no --in-scope/--scope-file -> scope=incomplete" \
+  || { bad "(f4) expected scope=incomplete:"; sed 's/^/        | /' "$WORK/f4.err" | tail -6 >&2; }
+_r4="$(cat "$WORK/f4/pass-result.txt" 2>/dev/null)"
+[ "$_r4" = "INCOMPLETE" ] && ok "(f4) pass-result.txt = INCOMPLETE (not BLOCKED-SCOPE)" || bad "(f4) expected pass-result INCOMPLETE, got '$_r4'"
+grep -qF '[SCOPE-GATE] SCOPE-GATE|INCOMPLETE|no scope text' "$WORK/f4/run/gates.log" 2>/dev/null \
+  && ok "(f4) gates.log logs [SCOPE-GATE] SCOPE-GATE|INCOMPLETE|no scope text" \
+  || bad "(f4) gates.log missing the [SCOPE-GATE] INCOMPLETE line"
+[ -f "$FM/SCOPE_PROMPT_SEEN" ] && bad "(f4) the fake LLM received a scope-gate prompt despite no scope text" \
+  || ok "(f4) no scope-gate prompt was spent"
+
+# #2301: a set-but-unreadable --scope-file is a missing prerequisite (exit 3).
+_rc3=0
+bash "$AUDIT_PASS" --live --backend mock --scope-file "$WORK/no-such-scope.txt" --out "$WORK/f5" >/dev/null 2>&1 || _rc3=$?
+[ "$_rc3" -eq 3 ] && ok "unreadable --scope-file -> exit 3" || bad "unreadable --scope-file: expected exit 3, got $_rc3"
 
 # --- (d) the never-submit invariant across ALL three runs. ------------------------------------------------
 if grep -RiqE 'SUBMIT|submitting|posted to (immunefi|the platform|bounty)' "$WORK"/*/pass.log; then
