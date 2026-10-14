@@ -15,6 +15,10 @@
 #   2) helper level: the marker / halt-file / call-count semantics of df_run_agent_validated.
 #   3) end to end: a 3-zone sweep halts on the 2nd zone (serial and --jobs 2), resumes with --rehunt-gaps, and a
 #      STAGE 1 halt exits 6 before any coverage record exists.
+#   4) M2, STAGE 4.5: a prover cell that prints the notice is TRANSIENT_ERROR (not HARNESS_ERROR) and writes the halt;
+#      the scheduler settles every later cell SKIPPED_LIMIT, the legacy serial loop launches no further row, the run
+#      exits 6, and `--deep-hunt-only --deep-hunt-resume` re-runs exactly the halted + unlaunched cells. The offline
+#      STAGE 4.5 harness is a reduced copy of demo-deep-hunt-budget.sh's (fixture repo, prover stub, breadth base).
 #
 # Usage:  dark-factory/demo-usage-limit.sh
 # Exit: 0 = all assertions hold ; 1 = a regression ; 3 = a script / fixture is missing.
@@ -255,9 +259,130 @@ else
   bad "STAGE 1 halt: rc=$HRC"; tail -10 "$WORK/zh4.log" | sed 's/^/      /'
 fi
 
+# ----------------------------------------------------------------------------------------------------------
+note "4) M2: a usage-limit notice inside STAGE 4.5 (deep-hunt) ..."
+# Scratch state only — never the operator's ~/.dark-factory; no deep-hunt knob leaks in from the caller's environment.
+export DARK_FACTORY_DIR="$WORK/dfdir" FORGE_SLOTS_DIR="$WORK/forge-slots" DEEP_CELL_POLL_S=1 FORGE_MAX_SLOTS=4
+unset DEEP_HUNT_CELL_TIMEOUT_S DEEP_HUNT_ZONE_BUDGET_S DEEP_HUNT_SKIP_BROKEN_TARGET DEEP_HUNT_JOBS \
+      DEEP_HUNT_REACH DEEP_HUNT_PROMISES AGENTIS_LLM_SLOTS_DIR LLM_MAX_CONCURRENT LLM_SLOT_WAIT_S DF_USAGE_LIMIT_HALT
+# The fixture repo of demo-deep-hunt-budget.sh: one value-custody zone, 3 concrete contracts (REACH picks all 3),
+# 2 lenses (C10 + C2) -> 6 cells in queue order VaultA C10, VaultA C2, VaultB C10, VaultB C2, VaultC C10, VaultC C2.
+DREPO="$WORK/deep-repo"
+mkdir -p "$DREPO/src/vault"
+printf '[profile.default]\nsrc = "src"\ntest = "test"\n' > "$DREPO/foundry.toml"
+for n in A B C; do
+  {
+    echo "// SPDX-License-Identifier: MIT"; echo "pragma solidity ^0.8.20;"
+    [ "$n" = A ] && for i in 1 2 3 4 5 6 7 8 9 10; do echo "// padding line $i (VaultA is the largest file)"; done
+    echo "contract Vault$n {"
+    echo "    uint256 public held;"
+    echo "    function deposit$n(uint256 a) external { held += a; }"
+    echo "}"
+  } > "$DREPO/src/vault/Vault$n.sol"
+done
+# The prover stub: every invariant-prover call appends `<Contract>|<class>` to $STUB_LOG; the cell named by
+# $STUB_LIMIT_ON (`<Contract>|<class>`) prints the usage-limit notice (read from the fixture file) and no verdict,
+# every other cell answers CLEAN.
+DSTUB="$WORK/deep-stub.sh"
+cat > "$DSTUB" <<'STUBEOF'
+#!/bin/sh
+case "${1:-}" in
+  init) mkdir -p .agentis; exit 0 ;;
+  go)
+    case "${2:-}" in
+      zone-mapper.ag) echo "ZONE-CLASS|C10"; exit 0 ;;
+      invariant-prover.ag)
+        tf="${TARGET_FN:-}"; name="${tf##*:}"; name="${name##*/}"; name="${name%.sol}"
+        [ -n "${STUB_LOG:-}" ] && echo "$name|${TARGET_CLASS:-}" >> "$STUB_LOG"
+        if [ "$name|${TARGET_CLASS:-}" = "${STUB_LIMIT_ON:-}" ]; then cat "$STUB_NOTICE"; exit 1; fi
+        echo "INVARIANT|$tf|CLEAN"; exit 0 ;;
+      refuter.ag) echo "VERDICT|REAL|${CAND_FILE_FN:-}|${CAND_CLASS:-}|survived"; exit 0 ;;
+      *) echo "SAFE"; exit 0 ;;
+    esac ;;
+esac
+exit 0
+STUBEOF
+chmod +x "$DSTUB"
+export STUB_NOTICE="$NOTICE"
+DMAP="$WORK/deep-map.txt"
+printf 'ZONE|src_vault|vault|C10,C2|value-custody vault family\nCUSTODY|src_vault|true\n' > "$DMAP"
+DBASE="$WORK/deep-base"
+"$ZONEHUNT" --repo "$DREPO" --out "$DBASE" --drop-dir "$DBASE/drop" --scope-hint src/vault --backend mock \
+  --agentis "$DSTUB" --map-fixture "$DMAP" \
+  --pass-fixture "scope=in;devise=residual;poc=finding;impact=substantiated;dup=low;report=drafted" \
+  --in-scope "the whole in-scope program" > "$WORK/deep-base.log" 2>&1
+if [ ! -f "$DBASE/map/zones.json" ] || [ ! -f "$DBASE/verify/verified_findings.json" ]; then
+  bad "the offline breadth base did not build:"; sed -n '1,20p' "$WORK/deep-base.log" | sed 's/^/      /'
+else
+  ledger_of() { awk -F'\t' '{ printf "%s|%s=%s(%s) ", $2, $3, $4, $5 }' "$1/deep-hunt/cell-status.tsv" 2>/dev/null; }
+  # deep_pass <out> <stub-log> [KNOB=V...] [-- extra flags...] — a lens-only pass over a fresh copy of the base; sets DRC.
+  deep_pass() {
+    _d_out="$1"; _d_slog="$2"; shift 2
+    rm -rf "$_d_out"; cp -R "$DBASE" "$_d_out"; : > "$_d_slog"
+    ( while [ "$#" -gt 0 ] && [ "$1" != -- ]; do export "${1?}"; shift; done
+      [ "${1:-}" = -- ] && shift
+      STUB_LOG="$_d_slog" "$ZONEHUNT" --repo "$DREPO" --out "$_d_out" --deep-hunt --deep-hunt-only \
+        --backend mock --agentis "$DSTUB" "$@" ) > "$_d_out.log" 2>&1
+    DRC=$?
+  }
+  # deep_resume <out> <stub-log> [KNOB=V...] — --deep-hunt-only --deep-hunt-resume over <out> (no fresh copy); sets DRC.
+  deep_resume() {
+    _d_out="$1"; _d_slog="$2"; shift 2
+    : > "$_d_slog"
+    ( for _d_kv in "$@"; do export "${_d_kv?}"; done
+      STUB_LOG="$_d_slog" "$ZONEHUNT" --repo "$DREPO" --out "$_d_out" --deep-hunt --deep-hunt-only --deep-hunt-resume \
+        --backend mock --agentis "$DSTUB" ) > "$_d_out.resume.log" 2>&1
+    DRC=$?
+  }
+  RESUMED='VaultB|C10 VaultB|C2 VaultC|C10 VaultC|C2'
+
+  # 4a) the scheduler (1 job, a cell cap so it is ON): VaultB C10 hits the limit.
+  STUB_LIMIT_ON='VaultB|C10' deep_pass "$WORK/d1" "$WORK/d1.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S=3600
+  D1_LEDGER="$(ledger_of "$WORK/d1")"
+  if [ "$DRC" -eq 6 ] \
+     && [ "$D1_LEDGER" = "VaultA|C10=CLEAN(-) VaultA|C2=CLEAN(-) VaultB|C10=TRANSIENT_ERROR(usage-limit) VaultB|C2=SKIPPED_LIMIT(usage-limit halt) VaultC|C10=SKIPPED_LIMIT(usage-limit halt) VaultC|C2=SKIPPED_LIMIT(usage-limit halt) " ] \
+     && [ "$(tr '\n' ' ' < "$WORK/d1.stub")" = "VaultA|C10 VaultA|C2 VaultB|C10 " ] \
+     && [ "$(cut -f2 "$WORK/d1/.usage-limit-halt" 2>/dev/null)" = "run-invariant-hunt.sh:src/vault/VaultB.sol:VaultB:C10" ] \
+     && [ "$(cut -f5 "$WORK/d1/.usage-limit-halt" 2>/dev/null)" = "$(head -1 "$NOTICE")" ] \
+     && grep -q '\[M4.5\] USAGE LIMIT HALT: deep-hunt/src_vault-C10-VaultB/run/invariant_.*--deep-hunt-only --deep-hunt-resume' "$WORK/d1.log" \
+     && ! grep -q 'HARNESS_ERROR' "$WORK/d1/deep-hunt/cell-status.tsv"; then
+    ok "scheduler: the notice cell is TRANSIENT_ERROR (usage-limit), the 3 later cells SKIPPED_LIMIT and never launched; the halt holds the evidence; rc 6 at the M4.5 boundary with the resume hint"
+  else
+    bad "scheduler halt: rc=$DRC ledger=[$D1_LEDGER] ran=[$(tr '\n' ' ' < "$WORK/d1.stub")] halt=[$(cat "$WORK/d1/.usage-limit-halt" 2>/dev/null)]"
+    tail -8 "$WORK/d1.log" | sed 's/^/      /'
+  fi
+  deep_resume "$WORK/d1" "$WORK/d1r.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S=3600
+  if [ "$DRC" -eq 0 ] && [ "$(tr '\n' ' ' < "$WORK/d1r.stub")" = "$RESUMED " ] && [ ! -f "$WORK/d1/.usage-limit-halt" ] \
+     && grep -q 'previous invocation halted on a usage limit' "$WORK/d1.resume.log"; then
+    ok "scheduler: --deep-hunt-only --deep-hunt-resume re-runs exactly the halted + skipped cells ($RESUMED), rc 0"
+  else
+    bad "scheduler resume: rc=$DRC ran=[$(tr '\n' ' ' < "$WORK/d1r.stub")]"; tail -8 "$WORK/d1.resume.log" | sed 's/^/      /'
+  fi
+
+  # 4b) the legacy serial loop (no time-budget knob): the same cell hits the limit, no later row is launched.
+  STUB_LIMIT_ON='VaultB|C10' deep_pass "$WORK/d2" "$WORK/d2.stub" DEEP_HUNT_REACH=1
+  if [ "$DRC" -eq 6 ] && [ "$(tr '\n' ' ' < "$WORK/d2.stub")" = "VaultA|C10 VaultA|C2 VaultB|C10 " ] \
+     && [ ! -e "$WORK/d2/deep-hunt/cell-status.tsv" ] \
+     && grep -q '\[usage-limit\] Claude usage limit reached — NOT assessed, classifying as TRANSIENT_ERROR' "$WORK/d2.log" \
+     && grep -q 'INVARIANT-HUNT: src/vault/VaultB.sol:VaultB -> TRANSIENT_ERROR' "$WORK/d2.log" \
+     && grep -q 'usage limit reached — no further row is launched' "$WORK/d2.log" \
+     && ! grep -q 'INVARIANT-HUNT: .* -> HARNESS_ERROR' "$WORK/d2.log" \
+     && grep -q '\[M4.5\] USAGE LIMIT HALT' "$WORK/d2.log"; then
+    ok "serial loop: the notice cell is TRANSIENT_ERROR (never HARNESS_ERROR), no later row is launched, rc 6 at M4.5"
+  else
+    bad "serial halt: rc=$DRC ran=[$(tr '\n' ' ' < "$WORK/d2.stub")]"; tail -8 "$WORK/d2.log" | sed 's/^/      /'
+  fi
+  deep_resume "$WORK/d2" "$WORK/d2r.stub" DEEP_HUNT_REACH=1
+  if [ "$DRC" -eq 0 ] && [ "$(tr '\n' ' ' < "$WORK/d2r.stub")" = "$RESUMED " ]; then
+    ok "serial loop: --deep-hunt-only --deep-hunt-resume re-runs exactly the halted + unlaunched rows, rc 0"
+  else
+    bad "serial resume: rc=$DRC ran=[$(tr '\n' ' ' < "$WORK/d2r.stub")]"; tail -8 "$WORK/d2.resume.log" | sed 's/^/      /'
+  fi
+fi
+
 echo
 if [ "$FAILS" -eq 0 ]; then
-  note "PASS — a usage-limit notice halts the hunt (exit 6, limit_halted) instead of becoming failed cells, and --rehunt-gaps resumes it"
+  note "PASS — a usage-limit notice halts the hunt (exit 6, limit_halted / a TRANSIENT_ERROR deep cell) instead of becoming failed cells, and --rehunt-gaps / --deep-hunt-resume resume it"
   exit 0
 fi
 note "FAIL — $FAILS assertion(s) regressed"

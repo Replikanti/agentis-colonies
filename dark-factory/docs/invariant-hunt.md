@@ -374,9 +374,12 @@ malformed value, exits 2. All four unset (the default) ⇒ STAGE 4.5 is byte-ide
   target's PROBE (its first queued lens) decides: the target's remaining lenses (same zone + `rel[:Name]`) are
   recorded `SKIPPED_TARGET_BROKEN` (reason `probe=<class> loc=<first_non_harness_loc>`) and never launched. A mis-skip
   costs one resume, never a false CLEAN.
+- **SKIPPED_LIMIT** (#2291) — the run-level usage-limit halt file (`<out>/.usage-limit-halt`) existed when the cell was
+  due to launch: an earlier cell's prover printed the Claude usage-limit notice, or an earlier stage did. Ledger only:
+  never launched, never merged, not terminal on `--deep-hunt-resume`. See "Usage limit" below.
 - **Ledger** `deep-hunt/cell-status.tsv` — scheduler mode only, one row per queued cell, in queue order:
   `zone \t target \t class \t status \t reason` (`target` is the `reach-coverage.tsv` token). Status vocabulary:
-  `FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR|LOW_COVERAGE|LOW_PROMISE_COVERAGE|TIMEOUT|ENGINE_FAILED|SKIPPED_TARGET_BROKEN|SKIPPED_BUDGET`.
+  `FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR|LOW_COVERAGE|LOW_PROMISE_COVERAGE|TIMEOUT|ENGINE_FAILED|SKIPPED_TARGET_BROKEN|SKIPPED_BUDGET|SKIPPED_LIMIT`.
   Timings (non-deterministic) go to `deep-hunt/.sched/timing.tsv` only.
 
 **Slots.** Each worker holds one slot of a DEDICATED dark-factory LLM-session pool,
@@ -400,6 +403,18 @@ like the sequential loop. A probe whose prover died on a flat-cyborg transport c
 marks its target broken; only a `HARNESS_ERROR` probe can. A worker clears the cell's old invariant logs before
 launching, so a cap can never record the previous run's verdict. The pass-2 refute gate is not parallelised
 and its time does not count against a zone budget.
+
+**Usage limit (#2291).** When the driven Claude session hits its usage quota, the prover prints a notice
+("You've hit your weekly limit · resets …") instead of a verdict. `run-invariant-hunt.sh` checks a verdict-less cell
+log against the shared regex (`lib/usage_limit.py`, through `df_usage_limit_in_log`) BEFORE the transport and timeout
+checks, so the cell is `TRANSIENT_ERROR` (re-runnable, never merged, not terminal on `--deep-hunt-resume`), never
+`HARNESS_ERROR`, and writes the run-level halt file. The scheduler worker reads the same signal (ledger
+`TRANSIENT_ERROR`, reason `usage-limit`, never a broken target). From then on the scheduler settles every cell still
+due to launch `SKIPPED_LIMIT` (collect passes still merge every cell that already settled), and the legacy serial
+loop (no time-budget knob) launches no further row. After the stage, `run-zone-hunt.sh` prints
+`[M4.5] USAGE LIMIT HALT: <evidence> — <resume command>` and exits 6, before STAGE 4.6 and M5. After the reset,
+`run-zone-hunt.sh … --deep-hunt --deep-hunt-only --deep-hunt-resume` (plus the run's other deep-hunt flags) re-runs
+exactly the halted cell and the cells that never launched; settled CLEAN / FINDING cells are skipped as usual.
 
 Out of scope: dashboard rendering of the new statuses, salvaging a killed ensemble cell's per-candidate FINDINGs,
 short-circuiting the prover's repair rounds on a target-level compile error, STAGE 3/4/4.6 concurrency, and any
