@@ -110,7 +110,8 @@
 #                       `scope-cite-in-scope-file` contract (an `exclusion` row naming a mapped file is never a
 #                       ground). `scope_layer.reason` says whether that guard is armed. Missing file => exit 2;
 #                       without --scope-docs it is ignored.
-#   --cluster-findings <0|1>  ROOT-CAUSE CLUSTERING (#2278). Default: env DF_CLUSTER_FINDINGS, else 1 (ON).
+#   --cluster-findings <0|1>  ROOT-CAUSE CLUSTERING (#2278). Default: env DF_CLUSTER_FINDINGS, else 0 (OFF): the M2
+#                       held-out check (bench/corpus-bench/fixtures/cluster/oku/) merged a labelled-distinct pair.
 #                       One bug reached by several class cells passes the gate once per cell, so verified[]
 #                       carries the same root cause several times. When ON and more than one finding survived,
 #                       lib/cluster-findings.py collapses duplicates that share the exact (file, function) of
@@ -212,7 +213,7 @@ ADJUDICATED=""  # #2023: unset/absent = inert; operator adjudication overlay tha
 TIER2=0  # #2217: 0 = OFF = inert (see --tier2 in the header). N > 0 = examine N tier-2 records per zone.
 SCOPE_DOCS=""  # #2257: unset = inert. `auto` or an operator file (see --scope-docs in the header).
 SCOPE_MAP=""  # #2292: unset = the in-scope-file guard is not armed (see --scope-map in the header).
-CLUSTER_FINDINGS="${DF_CLUSTER_FINDINGS:-1}"  # #2278: 1 = ON (default), 0 = OFF (see --cluster-findings in the header).
+CLUSTER_FINDINGS="${DF_CLUSTER_FINDINGS:-0}"  # #2278: 0 = OFF (default since M2), 1 = ON (see --cluster-findings in the header).
 REFUTE_BATCH="${DF_REFUTE_BATCH:-0}"  # #2284: 0 = OFF (default), 1 = batched first read (see --refute-batch in the header).
 REFUTE_BATCH_MAX="${DF_REFUTE_BATCH_MAX:-6}"  # #2284: the largest batch; a bigger group is split into balanced chunks.
 RETRY_ERRORED="${DF_REFUTE_RETRY_ERRORED:-2}"  # #2288: serial retries per gate-ERROR candidate; 0 = OFF (see --retry-errored).

@@ -32,6 +32,14 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **Root-cause clustering is OFF by default (#2278 M2).** `verify-findings.sh --cluster-findings` /
+  `DF_CLUSTER_FINDINGS` now default to **0**. **Behaviour change:** a run without the knob writes the raw
+  `verified_findings.json` again (no `clustering` block, no `verified_findings.raw.json` sibling), as before #2278.
+  Why: the M2 held-out check merged one labelled-distinct pair on the oku arm A (A 35 → 22 vs bound 18, B 44 → 23 vs
+  bound 16; token-mode GT and the 6 recorded-judge rows unchanged on both arms), which is the issue's failure
+  branch. The threshold was not re-tuned. `--cluster-findings 1` / `DF_CLUSTER_FINDINGS=1` keeps the M1 behaviour;
+  `demo-cluster-findings.sh` now runs its ON assertions explicitly and asserts the unset default writes no sibling.
+
 - **STAGE 4.5 runs up to 3 lens classes per zone by default, and writes its row matrix to a plan file (#2298).**
   `--deep-hunt-max-lenses` now defaults to **3** (was 2): with 2, a zone's third fitness-ranked routable class was
   silently dropped. **Behaviour change:** one extra deep-hunt cell (~35–60 min) per zone with ≥ 3 routable lens

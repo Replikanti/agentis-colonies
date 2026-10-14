@@ -233,9 +233,9 @@ still an operator read of the cell log, never a scoreboard read.
 
 ## Root-cause clustering and `--findings-view` (#2278)
 
-Since #2278 the verify stage collapses duplicate root causes (`verify-findings.sh --cluster-findings`, default
-ON): `verify/verified_findings.json` holds one representative per root cause and the full pre-cluster list sits
-next to it in `verify/verified_findings.raw.json`. `--score` reads either list:
+Since #2278 the verify stage can collapse duplicate root causes (`verify-findings.sh --cluster-findings 1`; the
+default is OFF since the M2 held-out FAIL below): `verify/verified_findings.json` then holds one representative per
+root cause and the full pre-cluster list sits next to it in `verify/verified_findings.raw.json`. `--score` reads either list:
 
 - `--findings-view raw` (**default**, historical comparability) rebuilds the pre-cluster list with
   `lib/cluster-findings.py raw-view` (sha256-checked against the `clustering` block, so a stale sibling is a
