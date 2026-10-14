@@ -383,6 +383,8 @@
 #       4 --require-coverage was set and STAGE 3 covered less than that fraction of the zones (#1830).
 #       6 the Claude usage limit was reached (#2291): the run stops at the next stage boundary, prints the evidence
 #       line and the resume command; exit 6 wins over 4. Nothing after the halted stage runs.
+#       In STAGE 4.5 the halted prover cell is TRANSIENT_ERROR, later cells are SKIPPED_LIMIT (scheduler) or not
+#       launched (serial loop), and the resume is --deep-hunt-only --deep-hunt-resume.
 set -eu
 
 # #1981: emit an `__EXIT__=<code>` marker on ANY exit (clean, error, or signal) so the dashboard can tell a
@@ -1840,6 +1842,13 @@ PY
     while dh_pass_begin; do
     while IFS='	' read -r ZID RELFILE DCLASS AUXFILES || [ -n "${ZID:-}" ]; do
       [ -n "$ZID" ] || continue
+      # #2291: the legacy serial loop launches no further row once the run hit the Claude usage limit (a previous
+      # row's prover printed the notice). Only with the scheduler OFF: a scheduler pass must walk its whole queue
+      # (a collect pass merges the cells that already settled), so it skips launches in dh_try_launch instead.
+      if [ "${DH_ACTIVE:-0}" = 0 ] && [ -f "$DF_USAGE_LIMIT_HALT" ]; then
+        echo "run-zone-hunt.sh: [deep-hunt] usage limit reached — no further row is launched (resume after the reset with --deep-hunt-resume) (#2291)" >&2
+        break
+      fi
       # #2298: the REACH `rel:Name` split + this row's cell dir ($DZOUT) come from dh_row_cell — the ONE slot-naming
       # implementation the plan writer (dh_write_plan) shares, so a planned row always names the dir it runs in.
       dh_row_cell
@@ -2111,6 +2120,12 @@ PY
   fi
 fi
 
+# #2291: a usage-limit halt inside STAGE 4.5 (a prover cell's TRANSIENT_ERROR wrote the halt file; the scheduler then
+# settled the remaining cells SKIPPED_LIMIT, or the serial loop stopped launching rows) ends the run here, after every
+# settled cell was collected. The resume re-runs exactly the non-terminal rows (the halted cell + the unlaunched ones).
+if [ "$DEEP_HUNT" -eq 1 ]; then
+  _limit_halt_exit M4.5 "after the reset: run-zone-hunt.sh --repo $REPO --out $OUT --deep-hunt --deep-hunt-only --deep-hunt-resume (plus this run's other deep-hunt flags)"
+fi
 # #2291: no later lens runs after a usage-limit halt.
 _limit_halt_exit M4.6 "after the reset: re-run the lens over this --out"
 # ----------------------------------------------------------------------------------------------------------

@@ -42,6 +42,10 @@
 #             the rows of <run>/forge-diag/compile.tsv minus the CorpusReplay.t.sol rows are non-empty AND every one
 #             of them has scope `target`. Only a target's PROBE (its first queued lens) decides; its remaining lenses
 #             are then SKIPPED_TARGET_BROKEN and never launched.
+#   SKIPPED_LIMIT  #2291: the run-level usage-limit halt file ($DF_USAGE_LIMIT_HALT) existed when the cell was due to
+#             launch — a cell (its prover printed the Claude usage-limit notice -> TRANSIENT_ERROR, reason
+#             `usage-limit`) or an earlier stage hit the quota. Ledger only: never launched, never merged, not
+#             terminal on --deep-hunt-resume. run-zone-hunt.sh exits 6 after the stage's collect passes.
 #   LEDGER    $DEEP/cell-status.tsv, scheduler mode only, one row per queued cell in QUEUE order:
 #             zone \t target \t class \t status \t reason. Timings go to .sched/timing.tsv only.
 #
@@ -428,6 +432,7 @@ dh_pretrust() {
 #   shared run dir under --deep-hunt-resume                          -> the legacy loop checks such a row AFTER the
 #       previous row in that dir ran, so the check happens here (the previous row is already collected): terminal ->
 #       skipped exactly like the legacy loop (its `already hunted` line, no ledger row)
+#   usage-limit halt (#2291: $DF_USAGE_LIMIT_HALT exists)             -> SKIPPED_LIMIT, never launched
 #   probe-first (DEEP_HUNT_SKIP_BROKEN_TARGET)                       -> wait for the probe / SKIPPED_TARGET_BROKEN
 #   job window full                                                  -> stays pending
 #   zone budget                                                      -> SKIPPED_BUDGET / cap = remaining budget
@@ -443,6 +448,12 @@ dh_try_launch() {
   if [ "${DH_SHARED[$_dh_t]}" = 1 ] && [ "${DEEP_HUNT_RESUME:-0}" = 1 ] && dh_terminal "${DH_DZ[$_dh_t]}"; then
     echo "run-zone-hunt.sh: [deep-hunt] zone '${DH_Z[$_dh_t]}' (${DH_C[$_dh_t]}) -> already hunted (terminal verdict), skipping [--deep-hunt-resume]" >&2
     DH_STATUS[_dh_t]=RESUME_SKIPPED
+    return 0
+  fi
+  # #2291: the run hit the Claude usage limit (an earlier cell, or any stage, wrote the halt file): launch nothing
+  # more. Every call would hit the same quota until the reset; the cell is non-terminal, so --deep-hunt-resume re-runs it.
+  if [ -n "${DF_USAGE_LIMIT_HALT:-}" ] && [ -f "$DF_USAGE_LIMIT_HALT" ]; then
+    dh_settle "$_dh_t" SKIPPED_LIMIT "usage-limit halt"
     return 0
   fi
   _dh_p="${DH_PROBE[$_dh_t]}"

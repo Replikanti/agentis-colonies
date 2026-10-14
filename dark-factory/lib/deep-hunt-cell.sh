@@ -39,7 +39,8 @@ case "$CAP" in ''|*[!0-9]*) CAP=0 ;; esac
 
 # shellcheck source=deep-hunt-sched.sh
 . "$DH_HERE/deep-hunt-sched.sh"
-# df_transport_error_in_log / df_llm_timeout_in_log (#2045): the engine's own TRANSIENT_ERROR discriminator.
+# df_transport_error_in_log / df_llm_timeout_in_log (#2045) and df_usage_limit_in_log / df_usage_limit_record_halt
+# (#2291): the engine's own TRANSIENT_ERROR discriminators.
 # shellcheck source=run-agent-validated.sh
 . "$DH_HERE/run-agent-validated.sh"
 
@@ -117,7 +118,7 @@ wait "$_w_child" || RC=$?
 _w_child=""
 printf '%s\t%s\t%s\t%s\n' "$SEQ" "$_w_t0" "$(date +%s)" "$RC" >> "$DH_STATE/timing.tsv" 2>/dev/null || true
 
-VERDICT=""; LOGGED_VERDICT=""
+VERDICT=""; LOGGED_VERDICT=""; LIMIT_HIT=0
 AGG="$(dh_agg_log "$DZOUT")"
 if [ -n "$AGG" ] && [ ! "$AGG" -ot "$DH_STATE/start/$SEQ" ]; then
   VERDICT="$(dh_agg_verdict "$DZOUT")"
@@ -125,6 +126,12 @@ if [ -n "$AGG" ] && [ ! "$AGG" -ot "$DH_STATE/start/$SEQ" ]; then
   # #2045: a single-candidate cell whose prover died on a flat-cyborg TRANSPORT crash leaves no INVARIANT| line in
   # its aggregate log (the engine prints TRANSIENT_ERROR only to its report/stdout). Read it the engine's way, so
   # the ledger says TRANSIENT_ERROR and the broken-target rule below never counts it. A terminal timeout stays out.
+  # #2291: a Claude usage-limit notice ranks first — the same re-runnable TRANSIENT_ERROR (the cell was NOT assessed),
+  # reason `usage-limit`, and the run-level halt file (first writer wins), so the scheduler launches no further cell.
+  if [ -z "$VERDICT" ] && df_usage_limit_in_log "$AGG"; then
+    VERDICT=TRANSIENT_ERROR; LIMIT_HIT=1
+    df_usage_limit_record_halt "deep-hunt-cell.sh:$SEQ" "$AGG"
+  fi
   if [ -z "$VERDICT" ] && df_transport_error_in_log "$AGG" && ! df_llm_timeout_in_log "$AGG"; then
     VERDICT=TRANSIENT_ERROR
   fi
@@ -152,6 +159,7 @@ elif [ "$RC" -eq 0 ]; then
     FINDING|CLEAN|HARNESS_ERROR|TRANSIENT_ERROR|LOW_COVERAGE|LOW_PROMISE_COVERAGE) STATUS="$VERDICT" ;;
     *) STATUS=HARNESS_ERROR ;;
   esac
+  if [ "$LIMIT_HIT" = 1 ]; then REASON=usage-limit; fi
 elif [ "$RC" -eq 143 ] || [ "$RC" -eq 137 ]; then
   STATUS=ENGINE_FAILED; REASON=stale-watchdog
 else

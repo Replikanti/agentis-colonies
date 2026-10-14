@@ -185,7 +185,8 @@ AGENTIS="agentis"
 . "$HERE/lib/forge-slot.sh"
 # #2045: the shared transport/timeout discriminators (df_transport_error_in_log, df_llm_timeout_in_log) so a
 # flat-cyborg TRANSPORT crash in a prover cell is classified as the re-runnable TRANSIENT_ERROR (#2033), not a
-# terminal HARNESS_ERROR. Sourcing is side-effect-free: the lib defines only df_* functions.
+# terminal HARNESS_ERROR. #2291: also the usage-limit helpers (df_usage_limit_in_log, df_usage_limit_record_halt).
+# Sourcing is side-effect-free: the lib defines only df_* functions.
 # shellcheck source=lib/run-agent-validated.sh
 # shellcheck disable=SC1091
 . "$HERE/lib/run-agent-validated.sh"
@@ -999,7 +1000,14 @@ run_one_candidate() {  # $1 = variant ("" = OFF/single), $2 = INV_OUT path, $3 =
     # (already allowlisted, aggregated, and non-terminal on --deep-hunt-resume) so the cell re-hunts rather than
     # finalizing as an untestable zone. Checked with the timeout discriminator FIRST: a terminal `[llm.timeout]`
     # (a heavy prompt that will time out identically) stays HARNESS_ERROR with the #1915 diagnostic below.
-    if df_transport_error_in_log "$_celllog" && ! df_llm_timeout_in_log "$_celllog"; then
+    # #2291: a Claude usage-limit notice ranks FIRST (above transport and timeout, the #2262 M3 order): the cell was
+    # NOT assessed, so it is the same re-runnable TRANSIENT_ERROR, and the run-level halt file is written so the
+    # STAGE 4.5 scheduler stops launching cells and run-zone-hunt.sh exits 6 after the stage.
+    if df_usage_limit_in_log "$_celllog"; then
+      _cverd="TRANSIENT_ERROR"
+      df_usage_limit_record_halt "run-invariant-hunt.sh:$TARGET:$CLASS" "$_celllog"
+      echo "run-invariant-hunt.sh: [usage-limit] Claude usage limit reached — NOT assessed, classifying as TRANSIENT_ERROR (re-run after the reset with --deep-hunt-resume) (see $_celllog)" >&2
+    elif df_transport_error_in_log "$_celllog" && ! df_llm_timeout_in_log "$_celllog"; then
       _cverd="TRANSIENT_ERROR"
       echo "run-invariant-hunt.sh: [transient] LLM transport error (flat-cyborg exited mid-call) — RE-RUNNABLE, classifying as TRANSIENT_ERROR (re-hunt) (see $_celllog)" >&2
     else

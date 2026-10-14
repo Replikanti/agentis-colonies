@@ -73,6 +73,15 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `run-zone-sweep.sh` reports terminal reason `usage_limit_halted`, `exam.sh` treats exit 6 as the weekly-limit HALT,
   and `run-corpus-bench.sh --hunt` stops, skips `--score` and exits 6. STAGE 4.5 detection is M2. Offline proof:
   `demo-usage-limit.sh` (colony-lint).
+- **A usage-limit notice inside STAGE 4.5 is a re-runnable TRANSIENT_ERROR, not a HARNESS_ERROR (#2291, M2).** The
+  deep-hunt prover calls bypass the shared validator, so a quota notice there was recorded as a permanent
+  `HARNESS_ERROR` that `--deep-hunt-resume` never re-ran. `run-invariant-hunt.sh` and the scheduler worker
+  (`lib/deep-hunt-cell.sh`) now check a verdict-less cell log with the shared helper first (ranked above transport
+  and timeout): the cell is `TRANSIENT_ERROR` (ledger reason `usage-limit`) and writes the run-level halt file. The
+  scheduler then settles every cell still due to launch with the new ledger status `SKIPPED_LIMIT` (settled cells
+  are still collected), the legacy serial loop launches no further row, and `run-zone-hunt.sh` exits 6 after the
+  stage with the `--deep-hunt-only --deep-hunt-resume` resume command, which re-runs exactly the halted and
+  unlaunched cells. Offline proof: `demo-usage-limit.sh` part 4 (colony-lint).
 - **The live scope gate now sees the program scope a hunt passes with `--in-scope` (#2301).** `scope-gate.ag` read
   its scope text only from `SCOPE_FILE`, but `run-zone-hunt.sh` hands the scope to `run-audit-pass.sh --in-scope`
   and never sets a scope file. Every live finding was therefore judged against an empty scope (asset match 0/0)
