@@ -299,6 +299,9 @@
 #                       it naturally produces the UNION) and run STAGE 4/5 over that union. Requires an existing
 #                       --out with map/zones.json, map/scope.tsv, briefs/briefs/ and the coverage record, else
 #                       exit 3. Mutually exclusive with --deep-hunt-only (exit 2). DEFAULT OFF.
+#                       #2291: a `limit_halted` zone (its hunt stopped on the Claude usage limit) is a gap too: it
+#                       is retried (no --rehunt-include-partial needed) and its attempt does NOT count toward
+#                       --rehunt-max-attempts. Run it after the quota resets.
 #   --rehunt-include-partial  #1830: also re-hunt PARTIAL zones (hunted_degraded, or budget_truncated) — off by
 #                       default because a re-hunt would redo cells that already produced results. Requires
 #                       --rehunt-gaps (exit 2).
@@ -372,10 +375,14 @@
 # truncated run cannot look like a clean sweep. When the record is incomplete STAGE 3 prints a COVERAGE GAP
 # banner to stderr and discovery-results.merged.json carries an additive `coverage` object. Schema + the
 # eight-state vocabulary: lib/zone-coverage.py and docs/zone-split-orchestration.md.
+# #2291: `limit_halted` = the zone's hunt stopped on the Claude usage limit (NOT a negative, NOT a tool failure);
+# the zones after it stay `not_reached` and the run exits 6. Resume after the reset with --rehunt-gaps.
 #
 # Exit: 0 after the batch (a clean halt on every finding, incl. per-finding failures that were skipped); 2 usage
 #       error; 3 missing prerequisite (an upstream stage — map/brief/discovery/verify — failed to produce output);
 #       4 --require-coverage was set and STAGE 3 covered less than that fraction of the zones (#1830).
+#       6 the Claude usage limit was reached (#2291): the run stops at the next stage boundary, prints the evidence
+#       line and the resume command; exit 6 wins over 4. Nothing after the halted stage runs.
 set -eu
 
 # #1981: emit an `__EXIT__=<code>` marker on ANY exit (clean, error, or signal) so the dashboard can tell a
@@ -683,6 +690,27 @@ LENSMATRIX="$HERE/lib/lens-surface-matrix.py"
 REPO="$(cd "$REPO" && pwd)"
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 [ -n "$DROP_DIR" ] || DROP_DIR="$OUT/drop"
+# #2291: the run-level usage-limit halt file. lib/run-agent-validated.sh writes it on the first Claude usage-limit
+# notice of ANY stage's model call (the export reaches map-zones.sh, gen-briefs.sh, run-discovery.sh and the refute
+# gate); every later validated call then fails fast without calling the model. A previous invocation's halt is
+# reported and cleared here, so a resume starts clean.
+export DF_USAGE_LIMIT_HALT="$OUT/.usage-limit-halt"
+if [ -f "$DF_USAGE_LIMIT_HALT" ]; then
+  echo "run-zone-hunt.sh: previous invocation halted on a usage limit: $(head -1 "$DF_USAGE_LIMIT_HALT" | tr '\t' ' ') — cleared" >&2
+  rm -f "$DF_USAGE_LIMIT_HALT"
+fi
+# _limit_halt_evidence — the halt line as `<log relative to <out>>:<lineno>: <matched notice>` (one line).
+_limit_halt_evidence() {
+  awk -F'\t' -v out="$OUT/" 'NR == 1 { l = $3; if (index(l, out) == 1) l = substr(l, length(out) + 1); print l ":" $4 ": " $5 }' \
+    "$DF_USAGE_LIMIT_HALT" 2>/dev/null || true
+}
+# _limit_halt_exit <stage> <resume-hint> — #2291: when the halt file exists, print the evidence + the resume hint
+# and exit 6 (the stage boundary is the only place the run stops, so every artifact of the halted stage is on disk).
+_limit_halt_exit() {
+  [ -f "$DF_USAGE_LIMIT_HALT" ] || return 0
+  echo "run-zone-hunt.sh: [$1] USAGE LIMIT HALT: $(_limit_halt_evidence) — $2" >&2
+  exit 6
+}
 [ -z "$MAP_FIXTURE" ]   || MAP_FIXTURE="$(cd "$(dirname "$MAP_FIXTURE")" && pwd)/$(basename "$MAP_FIXTURE")"
 [ -z "$BRIEF_FIXTURE" ] || BRIEF_FIXTURE="$(cd "$(dirname "$BRIEF_FIXTURE")" && pwd)/$(basename "$BRIEF_FIXTURE")"
 [ -z "$RESIDUALS" ]     || RESIDUALS="$(cd "$(dirname "$RESIDUALS")" && pwd)/$(basename "$RESIDUALS")"
@@ -792,6 +820,7 @@ else
     --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"}
 fi
 [ -f "$MAP/zones.json" ] && [ -f "$MAP/scope.tsv" ] || { echo "run-zone-hunt.sh: map-zones.sh did not emit zones.json + scope.tsv" >&2; exit 3; }
+_limit_halt_exit M1 "re-run the same command after the reset (no coverage record yet)"
 
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 2 (M2): gen-briefs.sh -> <out>/briefs/briefs/brief_<id>.md per zone. --brief-fixture => offline.
@@ -811,6 +840,7 @@ else
     --backend "$BACKEND" --agentis "$AGENTIS" ${MODEL:+--model "$MODEL"}
 fi
 [ -f "$BRIEFS/briefs/zone_briefs.json" ] || { echo "run-zone-hunt.sh: gen-briefs.sh did not emit zone_briefs.json" >&2; exit 3; }
+_limit_halt_exit M2 "re-run the same command after the reset (no coverage record yet)"
 fi
 
 # ----------------------------------------------------------------------------------------------------------
@@ -878,6 +908,9 @@ fi
 RUN_SPENT=0 ; BUDGET_STOP=0
 while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
   [ -n "$ZID" ] || continue
+  # #2291: the run hit the usage limit — hunt no further zone (each keeps its status: `not_reached` on a sweep, its
+  # prior gap status on a re-hunt).
+  if [ -f "$DF_USAGE_LIMIT_HALT" ]; then break; fi
   [ -n "${ZACTION:-}" ] || ZACTION="hunt"
   # `no_brief` and `unscoped` are UPSTREAM defects, never collapsed into a retryable failure; a capped zone is
   # left alone so one --rehunt-gaps pass is exactly one pass over the gap set, never a loop. All stay in
@@ -1121,6 +1154,14 @@ while IFS='	' read -r ZID ZNAME ZACTION || [ -n "${ZID:-}" ]; do
     export FUNCTION_COVERAGE=1
     printf '%s\t%s\n' "$ZID" "$ZNAME" >> "$DISC/.fcov-trimmed.tsv"
   fi
+  # #2291: the zone's hunt stopped on the usage limit (exit 6, or the halt file a cell wrote). Record `limit_halted`
+  # — not `failed`, not a derived hunted_* status — and stop the zone loop.
+  if [ "$ZRC" -eq 6 ] || [ -f "$DF_USAGE_LIMIT_HALT" ]; then
+    echo "run-zone-hunt.sh: [M3] zone '$ZNAME' ($ZID) stopped on the usage limit; no further zone is hunted" >&2
+    "$ZONECOV" set --file "$COVERAGE_JSON" --zone "$ZID" --status limit_halted --exit-code "$ZRC" \
+      --detail "usage limit reached: $(_limit_halt_evidence); resume after the reset with --rehunt-gaps"
+    break
+  fi
   if [ "$ZRC" -eq 0 ]; then
     # The terminal status (hunted / hunted_empty / hunted_degraded) is DERIVED in the helper from this zone's
     # own totals — the derivation exists in exactly one place, so no consumer re-implements the policy.
@@ -1180,6 +1221,22 @@ def candidates_of(c):
     return [x for x in (c.get("candidates") or []) if isinstance(x, str)]
 best, order, carried = {}, [], 0
 tier2, tier2_seen = [], set()
+# #2291 (decision 1b): a `discovery/<zid>.attempt-<n>` archive whose attempt stopped on the usage limit
+# (`limit_halted`) is SUPERSEDED once a later attempt finished the zone (current status hunted / hunted_empty /
+# hunted_degraded): it is dropped from the merge, so the resumed zone is measured ONCE (A/B arms stay symmetric).
+# A limit_halted archive of a zone that is still unfinished stays in the union. The record path is derived from
+# disc_dir (<out>/discovery -> <out>/coverage/zone-coverage.json), so the argv above is unchanged.
+limit_superseded = set()
+try:
+    _cov = json.load(open(os.path.join(os.path.dirname(disc_dir), "coverage", "zone-coverage.json"), encoding="utf-8"))
+except Exception:
+    _cov = {}
+for _z in (_cov.get("zones") or []) if isinstance(_cov, dict) else []:
+    if not isinstance(_z, dict) or _z.get("status") not in ("hunted", "hunted_empty", "hunted_degraded"):
+        continue
+    for _a in (_z.get("attempts") or []):
+        if isinstance(_a, dict) and _a.get("status") == "limit_halted" and _a.get("artifacts"):
+            limit_superseded.add(os.path.basename(str(_a["artifacts"]).rstrip("/")))
 for name in sorted(os.listdir(disc_dir)):
     p = os.path.join(disc_dir, name, "discovery-results.json")
     if not os.path.isfile(p):
@@ -1189,6 +1246,10 @@ for name in sorted(os.listdir(disc_dir)):
     except Exception:
         continue
     archived = ".attempt-" in name
+    if archived and name in limit_superseded:
+        print("run-zone-hunt.sh: [M3] merge: skipping discovery/%s — a usage-limit-halted attempt superseded by a "
+              "later complete attempt (#2291)" % name, file=sys.stderr)
+        continue
     for r in (d.get("tier2") or []):
         if not isinstance(r, dict):
             continue
@@ -1307,6 +1368,9 @@ PY
 COVERAGE_COUNTS="$("$ZONECOV" summary --file "$COVERAGE_JSON" --counts)"
 ZONES_COVERED="${COVERAGE_COUNTS%% *}" ; ZONES_TOTAL="${COVERAGE_COUNTS##* }"
 echo "run-zone-hunt.sh: [M3] coverage: $ZONES_COVERED/$ZONES_TOTAL zone(s) covered — record: $COVERAGE_JSON" >&2
+# #2291: a sweep that stopped on the usage limit halts HERE, after the merge + COVERAGE banner and BEFORE the
+# --require-coverage exit 4 (exit 6 wins), so STAGE 4/5 never see a halted sweep.
+_limit_halt_exit M3 "after the reset: run-zone-hunt.sh --repo $REPO --out $OUT --rehunt-gaps"
 
 # Opt-in gate (default OFF): halt BEFORE verify/deliver when the run covered too little, so a degraded run
 # cannot produce a plausible-looking result set. The record is already on disk when this aborts.
@@ -1337,6 +1401,9 @@ ADJ_ARG=""; _ADJ="$(dirname "$OUT")/adjudicated.tsv"; [ -f "$_ADJ" ] && ADJ_ARG=
   ${MODEL:+--model "$MODEL"} --out "$VER"
 VERIFIED_JSON="$VER/verified_findings.json"
 [ -f "$VERIFIED_JSON" ] || { echo "run-zone-hunt.sh: verify-findings.sh did not emit verified_findings.json" >&2; exit 3; }
+# #2291: the refute gate hit the usage limit. --rehunt-gaps over an empty gap set re-runs the merge + STAGE 4 over
+# the union, so it is also the resume path here.
+_limit_halt_exit M4 "after the reset: run-zone-hunt.sh --repo $REPO --out $OUT --rehunt-gaps (an empty gap set re-runs merge + STAGE 4)"
 else
   # #1774 --deep-hunt-only: M1..M4 were skipped — REUSE the existing breadth --out. Derive the exact paths the
   # UNCHANGED STAGE 4.5 lens reads ($MAP/zones.json) and appends to ($VERIFIED_JSON), and assert they exist.
@@ -2044,6 +2111,8 @@ PY
   fi
 fi
 
+# #2291: no later lens runs after a usage-limit halt.
+_limit_halt_exit M4.6 "after the reset: re-run the lens over this --out"
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 4.6 (#2156, milestone D2 of epic #2130): OPT-IN INVARIANT-DRIVEN VECTOR HUNT — a THIRD lens on the
 # VALUE-CUSTODY zones, applied AFTER STAGE 4.5's #2113 fitness-ranked-class routing. Default OFF (no
@@ -2254,6 +2323,8 @@ PY
   fi
 fi
 
+# #2291: nothing is packaged after a usage-limit halt.
+_limit_halt_exit M5 "after the reset: re-run over this --out"
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 5 (M5): per verified finding -> run-audit-pass.sh (HALTS at PENDING-HUMAN-REVIEW) -> deliver-submission.sh
 # (stages the marked draft into the drop-dir). Per-finding body is wrapped so one bad finding is skipped, not fatal.

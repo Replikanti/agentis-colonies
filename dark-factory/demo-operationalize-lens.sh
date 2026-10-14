@@ -1734,8 +1734,9 @@ grep -q '^TIER2_TOTALS_JSON=""$' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [TIER
 # #2256 interleaves its own two ""-when-off fragments (totals.coverage_cells, top-level function_coverage[]) — they
 # are pinned 0 bytes with the knob off by demo-function-coverage.sh; the tier-2 pair is still consumed in order.
 # #2264 adds a third pair the same way (totals.promise_extractions, top-level breadth_promises[]), pinned 0 bytes with
-# the knob off by demo-breadth-promises.sh.
-grep -q '"$DEPTH_TOTAL_JSON" "$TIER2_TOTALS_JSON" "$FCOV_TOTALS_JSON" "$BP_TOTALS_JSON" "$TIER2_JSON" "$FCOV_JSON" "$BP_JSON" > "$RESULTS_JSON"' "$DISCOVERY" \
+# the knob off by demo-breadth-promises.sh. #2291 appends one more top-level fragment (`limit_halted`), 0 bytes unless
+# the run hit the usage limit (demo-usage-limit.sh).
+grep -q '"$DEPTH_TOTAL_JSON" "$TIER2_TOTALS_JSON" "$FCOV_TOTALS_JSON" "$BP_TOTALS_JSON" "$TIER2_JSON" "$FCOV_JSON" "$BP_JSON" "$LIMIT_JSON" > "$RESULTS_JSON"' "$DISCOVERY" \
   || T2_SRC_MISS="$T2_SRC_MISS [assembly-consumes-both-fragments]"
 # The schema is DOCUMENTED in the script header, not left to be reverse-engineered from the printf.
 grep -q 'SCHEMA — top-level `tier2\[\]` of discovery-results.json' "$DISCOVERY" || T2_SRC_MISS="$T2_SRC_MISS [schema-in-header]"

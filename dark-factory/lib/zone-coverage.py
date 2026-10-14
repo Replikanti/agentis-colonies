@@ -25,6 +25,11 @@
 #   in_flight         set immediately before `run-discovery.sh` is invoked; survives only if the process died
 #                     mid-zone. Attempt started, outcome unknown (external kill / OOM). Retry as-is.
 #   failed            `run-discovery.sh` exited non-zero. Attempt made, the TOOL failed — not a negative.
+#   limit_halted      #2291: the zone's `run-discovery.sh` stopped on the Claude usage limit (exit 6 / the run-level
+#                     halt file). NOT a negative and NOT a tool failure: cells that hit the limit or never started
+#                     were not assessed. Every zone after it stays `not_reached` (the sweep stops). Remedy: wait for
+#                     the quota reset, then `run-zone-hunt.sh --rehunt-gaps` (a plain `retry`, no
+#                     --include-partial). A `limit_halted` attempt never counts toward `--max-attempts`.
 #   budget_exhausted  admission denied: the remaining RUN cell budget was 0 when the zone came up. The zone is
 #                     hunt-able; the run declined to pay. Every zone AFTER it was denied too (the pool is
 #                     spent, so the loop stops). Remedy: raise --run-cell-budget, or --rehunt-gaps.
@@ -71,9 +76,10 @@
 #   gaps --file <coverage.json> [--include-partial] [--max-attempts N]
 #       The re-hunt work list in priority order, TSV `<zid>\t<name>\t<action>` where action is
 #         hunt      a plain first attempt (not_reached / budget_exhausted) — nothing to preserve
-#         retry     prior artifacts exist (failed / in_flight, or a partial under --include-partial): the
+#         retry     prior artifacts exist (failed / in_flight / limit_halted, or a partial under --include-partial): the
 #                   caller MUST move `discovery/<zid>` aside and call `retry` before re-entering
-#         capped    `attempts` already has >= --max-attempts entries; leave it alone
+#         capped    `attempts` already has >= --max-attempts entries; leave it alone (#2291: attempts whose
+#                   status is `limit_halted` are not counted — a quota halt says nothing about the zone)
 #         no-brief  never selected — the missing prerequisite is NOT collapsed into a retryable failure
 #         unscoped  never selected — the zone is absent from scope.tsv, which a re-hunt cannot change
 #   retry --file <coverage.json> --zone <zid> --artifacts <relpath>
@@ -95,6 +101,7 @@ STATUSES = (
     "hunted_empty",
     "hunted_degraded",
     "failed",
+    "limit_halted",
     "budget_exhausted",
     "budget_unenforceable",
     "in_flight",
@@ -108,9 +115,10 @@ COVERED_STATUSES = ("hunted", "hunted_empty")
 # Statuses whose remedy is "run the zone again" — the default re-hunt work set. `budget_unenforceable` is here
 # because a re-hunt with no cap (or a cap >= the zone's planned cells) hunts it in full; it never ran, so it
 # has nothing to preserve and is a plain first attempt.
-RETRYABLE_STATUSES = ("not_reached", "budget_exhausted", "budget_unenforceable", "in_flight", "failed")
+RETRYABLE_STATUSES = ("not_reached", "budget_exhausted", "budget_unenforceable", "in_flight", "failed",
+                      "limit_halted")
 # Statuses that already produced artifacts, so a re-entry would destroy evidence unless it is moved aside.
-HAS_ARTIFACTS = ("in_flight", "failed", "hunted", "hunted_empty", "hunted_degraded")
+HAS_ARTIFACTS = ("in_flight", "failed", "limit_halted", "hunted", "hunted_empty", "hunted_degraded")
 
 SCHEMA = "zone-coverage/v1"
 
@@ -187,6 +195,10 @@ def recompute(rec):
         failed_cells += int(z.get("failed_cells") or 0)
         if st not in COVERED_STATUSES or z.get("budget_truncated"):
             gaps.append(z.get("id", ""))
+    # #2291: `limit_halted` is reported only when some zone carries it, so a record of a run that never hit the usage
+    # limit keeps its pre-#2291 bytes (the `totals.depth_cells` precedent: a key exists only where it means something).
+    if not by_status.get("limit_halted"):
+        by_status.pop("limit_halted", None)
     rec["totals"] = {
         "zones": len(rec["zones"]),
         "cells_planned": planned,
@@ -438,7 +450,10 @@ def cmd_gaps(argv):
             action = "retry"
         else:
             continue
-        if action in ("hunt", "retry") and max_attempts > 0 and len(attempts) >= max_attempts:
+        # #2291: a `limit_halted` attempt is exempt from the give-up cap — the cap stops a repeating ZONE-LOCAL
+        # failure, and a usage-limit halt says nothing about the zone (two quota windows must not cap it for good).
+        counted = [a for a in attempts if not (isinstance(a, dict) and a.get("status") == "limit_halted")]
+        if action in ("hunt", "retry") and max_attempts > 0 and len(counted) >= max_attempts:
             action = "capped"
         sys.stdout.write("%s\t%s\t%s\n" % (z.get("id", ""), z.get("name", ""), action))
     return 0

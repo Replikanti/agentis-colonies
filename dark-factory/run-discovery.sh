@@ -488,6 +488,18 @@
 #   `promise_held_demoted`, `promises_unanswered`, `ptrace_orphans`, `promise_promoted` (appended LAST, non-zero only);
 #   per line `run/promises_<slug>.tsv`; top-level `breadth_promises[]`, `totals.promise_extractions`, one report footer
 #   line per line and a `, K promise extraction(s)` banner suffix.
+#
+# #2291 — USAGE-LIMIT HALT (exit 6). When the driven Claude session hits its usage quota, lib/run-agent-validated.sh
+# drops a `.limit` marker on the cell log and records the run-level halt file DF_USAGE_LIMIT_HALT (default
+# `<out>/.usage-limit-halt`; under run-zone-hunt.sh the parent's file is inherited). From then on no further cell is
+# started. A `.limit` cell is a `LIMIT-HALTED` report row — NOT a FAILED cell (it never reaches the cell accumulator,
+# so the cell vocabulary stays ok/failed) and NOT a negative. With any limit-halted or not-started cell the run
+# suppresses both "rigorous NEGATIVE" lines, adds a top-level `"limit_halted":{"cells":N,"not_started":M,
+# "evidence":"<halt-file line>"}` to discovery-results.json and `, N limit-halted` to the banner, writes both
+# artifacts and then exits 6. A run that never hits the limit is byte-identical. Resume after the quota resets
+# (run-zone-hunt.sh --rehunt-gaps re-hunts the zone).
+#
+# Exit: 0 ok ; 2 usage ; 3 missing tool / provenance mismatch ; 6 usage limit reached (see #2291 above).
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -753,6 +765,13 @@ EOF
 fi
 
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
+# #2291: the run-level usage-limit halt file. A direct run owns its own (cleared here, so a previous run's halt never
+# blocks this one); a run under run-zone-hunt.sh inherits the parent's exported path and leaves it alone.
+if [ -z "${DF_USAGE_LIMIT_HALT:-}" ]; then
+  DF_USAGE_LIMIT_HALT="$OUT/.usage-limit-halt"
+  rm -f "$DF_USAGE_LIMIT_HALT"
+fi
+export DF_USAGE_LIMIT_HALT
 RUN="$OUT/run"
 rm -rf "$RUN"; mkdir -p "$RUN"
 # #2125: thread the sandbox bind vars into the agentis invocation (run_flat_cyborg does not env_clear, so they
@@ -1013,6 +1032,9 @@ REPORT="$OUT/discovery-report.md"
 } > "$REPORT"
 
 CELLS=0 ; CANDIDATES=0 ; STEERS=0 ; FAILED_CELLS=0
+# #2291: LIMIT_CELLS = cells that ran into the usage limit (`.limit` marker, a LIMIT-HALTED row); LIMIT_NOT_STARTED =
+# cells (breadth, depth or coverage) never started because the run was already halted. Neither is a FAILED cell.
+LIMIT_CELLS=0 ; LIMIT_NOT_STARTED=0
 # #1707: FAILED_CELLS counts cells whose hunter reply never carried a CANDIDATE|/SAFE sentinel after
 # DF_AGENT_MAX_ATTEMPTS retries (TUI chrome / no answer). Such a cell is NOT a rigorous negative — it is
 # surfaced as a distinct FAILED row + a "status":"failed" JSON record, never silently folded into "0 candidates".
@@ -3875,6 +3897,8 @@ run_cell() {
   # code — a backgrounded `run_cell &` loses its return across `wait -n`, but the marker survives for the
   # deferred manifest-order aggregation in scrape_cell_log. Never trips set -e (|| true).
   df_run_agent_validated "$DF_AGENT_MAX_ATTEMPTS" "run-discovery.sh: $rc_cls/'$rc_subsys'" "$rc_log" hunter "" _rc_attempt || true
+  # #2291: a usage-limit reply ends the cell here — no gate re-asks, no promotion; scrape_cell_log reads `.limit`.
+  [ -f "$rc_log.limit" ] && return 0
   # #2214 Lever 1 — GATE ON OUTPUT. A reply that carries the #2211 sentinel, no candidate, and fewer distinct
   # TRACE| than OPCHECK| lines is a cell that derived its checks and then abandoned them: NOT a rigorous
   # negative, and never silently trusted. Re-ask the SAME validated attempt up to DF_TRACE_MAX_REASKS times
@@ -3886,6 +3910,7 @@ run_cell() {
   rm -f "$rc_log.untraced"
   rc_reask=1
   while [ "$rc_reask" -le "$DF_TRACE_MAX_REASKS" ] && _untraced_safe "$rc_log" "$REPO" "$EXTERNAL_CACHE"; do
+    [ ! -f "$rc_log.limit" ] || break   # #2291: a re-ask hit the usage limit — stop re-asking
     # #2223: name the checks. The re-ask carries the ids into the prompt (TRACE_REASK_IDS -> hunter.ag's
     # trace_reask_block), so the model is told WHICH checks it left open instead of being handed the same
     # prompt again — the count rule could not name one, which is why the pre-#2223 re-ask was a verbatim
@@ -3916,6 +3941,7 @@ run_cell() {
   rm -f "$rc_log.param-promoted"
   rc_param=1
   while [ "$rc_param" -le "$DF_PARAM_MAX_REASKS" ] && _param_reask_needed "$rc_log" "$REPO"; do
+    [ ! -f "$rc_log.limit" ] || break   # #2291: a re-ask hit the usage limit — stop re-asking
     rc_param_items="$(_param_open_items "$rc_log" "$REPO" "$rc_in_scope")"
     echo "run-discovery.sh:   ↳ param-audit: $rc_cls/'$rc_subsys' left $(_param_audit_gap "$rc_log" "$REPO") audit item(s) open${rc_param_items:+ ($rc_param_items)} — re-asking ($rc_param/$DF_PARAM_MAX_REASKS)" >&2
     mv -f "$rc_log" "$rc_log.param-attempt-$rc_param" 2>/dev/null || true
@@ -3933,6 +3959,7 @@ run_cell() {
   rm -f "$rc_log.promise-promoted"
   rc_promise=1
   while [ "$rc_promise" -le "$DF_PROMISE_MAX_REASKS" ] && _promise_reask_needed "$rc_log" "$REPO"; do
+    [ ! -f "$rc_log.limit" ] || break   # #2291: a re-ask hit the usage limit — stop re-asking
     rc_ptrace_ids="$(_promise_open_items "$rc_log" "$REPO")"
     echo "run-discovery.sh:   ↳ breadth-promises: $rc_cls/'$rc_subsys' left $(_promise_gap "$rc_log" "$REPO") promise item(s) open${rc_ptrace_ids:+ ($rc_ptrace_ids)} — re-asking ($rc_promise/$DF_PROMISE_MAX_REASKS)" >&2
     mv -f "$rc_log" "$rc_log.promise-attempt-$rc_promise" 2>/dev/null || true
@@ -3955,6 +3982,7 @@ run_cell() {
   rm -f "$rc_log.rubric-promoted"
   rc_rubric=1
   while [ "$rc_rubric" -le "$DF_RUBRIC_MAX_REASKS" ] && _rubric_reask_needed "$rc_log" "$REPO" "$BRIEF"; do
+    [ ! -f "$rc_log.limit" ] || break   # #2291: a re-ask hit the usage limit — stop re-asking
     rc_dismiss_grounds="$(_rubric_open_grounds "$rc_log" "$REPO" "$BRIEF")"
     echo "run-discovery.sh:   ↳ insufficient-dismissal: $rc_cls/'$rc_subsys' dismissed $(_rubric_dismissal_gap "$rc_log" "$REPO" "$BRIEF") lead(s) on an insufficient ground${rc_dismiss_grounds:+ ($rc_dismiss_grounds)} — re-asking ($rc_rubric/$DF_RUBRIC_MAX_REASKS)" >&2
     mv -f "$rc_log" "$rc_log.rubric-attempt-$rc_rubric" 2>/dev/null || true
@@ -4000,6 +4028,15 @@ scrape_cell_log() {
   # .novalid (a timeout IS a no-valid-sentinel failure), so this ordering is what makes it distinguishable
   # from TUI chrome. The JSON "status":"failed" is UNCHANGED (byte-compatible with zone-coverage derivation);
   # the discriminator lives only in the row text + stderr line, and --rehunt-gaps is the recovery path.
+  # #2291: a usage-limit cell ranks ABOVE the timeout (the #2262 M3 precedence). It is NOT a FAILED cell and never
+  # reaches _accumulate_cell, so the cell vocabulary stays ok/failed; LIMIT_CELLS drives the exit-6 tail instead.
+  if [ -f "$sc_log.limit" ]; then
+    echo "run-discovery.sh:   ↳ LIMIT-HALTED: $sc_cls/'$sc_subsys' usage limit reached — NOT assessed (resume after the reset)" >&2
+    printf '| %s | %s | LIMIT-HALTED — usage limit reached; NOT assessed (resume after the reset) |\n' \
+      "$sc_subsys" "$sc_cls" >> "$REPORT"
+    LIMIT_CELLS=$((LIMIT_CELLS + 1))
+    return 0
+  fi
   if [ -f "$sc_log.timeout" ]; then
     echo "run-discovery.sh:   ↳ FAILED: $sc_cls/'$sc_subsys' LLM call timed out (per-cell prompt exceeded the timeout budget; re-hunt with --rehunt-gaps)" >&2
     printf '| %s | %s | FAILED — LLM call timed out (per-cell prompt exceeded the timeout budget; re-hunt with --rehunt-gaps) |\n' \
@@ -4404,6 +4441,8 @@ elif [ "$JOBS" -le 1 ]; then
       IFS="$OLDIFS"
       CLS="$(printf '%s' "$CLS" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
       [ -n "$CLS" ] || { IFS=','; continue; }
+      # #2291: the run hit the usage limit — do not start this cell.
+      if df_usage_limit_halted; then LIMIT_NOT_STARTED=$((LIMIT_NOT_STARTED + 1)); IFS=','; continue; fi
       CELLS=$((CELLS + 1))
       CELL_LOG="$RUN/hunt_${SLUG}_${CLS}.log"
       run_cell "$RUN" "$SUBSYS" "$CLS" "$IN_SCOPE" "$CELL_LOG" "" "" "$APXF" "$APXB" "" "$BP_STEM"
@@ -4467,11 +4506,23 @@ else
 
   # Launch under a hard job-slot: keep at most effective_jobs run_cell processes live at any instant.
   live=0 ; idx=0 ; ncells=${#CELL_SUBSYS[@]}
+  # #2291: CELL_LAUNCHED[idx]=1 for every cell actually started; once the run hits the usage limit no further cell
+  # is launched (each one is counted in LIMIT_NOT_STARTED and taken back out of CELLS) and only launched cells are
+  # scraped.
+  CELL_LAUNCHED=()
   while [ "$idx" -lt "$ncells" ]; do
     while [ "$live" -ge "$effective_jobs" ]; do
       wait -n 2>/dev/null || true
       live=$((live - 1))
     done
+    if df_usage_limit_halted; then
+      CELL_LAUNCHED[idx]=0
+      LIMIT_NOT_STARTED=$((LIMIT_NOT_STARTED + 1))
+      CELLS=$((CELLS - 1))
+      idx=$((idx + 1))
+      continue
+    fi
+    CELL_LAUNCHED[idx]=1
     cdir="${CELL_DIR[$idx]}"
     rm -rf "$cdir"; mkdir -p "$cdir"
     cp -r "$RUN/.agentis" "$cdir/.agentis"        # isolated store: an empty blackboard, no cross-cell race
@@ -4497,7 +4548,9 @@ else
   # Deferred aggregation: scrape every cell's log in MANIFEST order (order-independent of finish order).
   idx=0
   while [ "$idx" -lt "$ncells" ]; do
-    scrape_cell_log "${CELL_SUBSYS[$idx]}" "${CELL_CLS[$idx]}" "${CELL_LOGP[$idx]}" "${CELL_FILES[$idx]}"
+    if [ "${CELL_LAUNCHED[idx]:-1}" -eq 1 ]; then
+      scrape_cell_log "${CELL_SUBSYS[$idx]}" "${CELL_CLS[$idx]}" "${CELL_LOGP[$idx]}" "${CELL_FILES[$idx]}"
+    fi
     idx=$((idx + 1))
   done
 fi
@@ -4527,6 +4580,8 @@ if [ "$DEPTH_MAX_CELLS" -gt 0 ]; then
   echo "run-discovery.sh: depth pass — ${DEPTH_PLANNED:-0} extra cell(s) over the flagged functions (cap $DEPTH_MAX_CELLS, lens quota $DEPTH_LENS_QUOTA per location per round)" >&2
   while IFS='	' read -r D_SUBSYS D_CLS D_TARGET D_KNOWNF || [ -n "${D_SUBSYS:-}" ]; do
     [ -n "$D_SUBSYS" ] || continue
+    # #2291: the run hit the usage limit — do not start this depth cell.
+    if df_usage_limit_halted; then LIMIT_NOT_STARTED=$((LIMIT_NOT_STARTED + 1)); continue; fi
     CELLS=$((CELLS + 1))
     DEPTH_CELLS=$((DEPTH_CELLS + 1))
     D_SLUG="$(printf '%s' "$D_SUBSYS" | tr -cs 'A-Za-z0-9' '_' | sed 's/_*$//')"
@@ -4592,6 +4647,11 @@ if _fcov_enabled; then
         else
           FC_STATE="ran"
         fi
+      fi
+      # #2291: the run hit the usage limit — the coverage cell is not started (its state says so in the record).
+      if [ "$FC_STATE" = "ran" ] && df_usage_limit_halted; then
+        FC_STATE="skipped:usage-limit"
+        LIMIT_NOT_STARTED=$((LIMIT_NOT_STARTED + 1))
       fi
       if [ "$FC_STATE" = "ran" ]; then
         FC_LISTED="$(_fcov_listed "$FC_TABLE")"
@@ -4662,10 +4722,15 @@ if _bp_enabled; then
   fi
 fi
 
+# #2291: did this run hit the usage limit? Every output difference below is gated on LIMIT_HIT, so a run that
+# never hits the limit is byte-identical.
+LIMIT_HIT=0
+if [ $((LIMIT_CELLS + LIMIT_NOT_STARTED)) -gt 0 ] || df_usage_limit_halted; then LIMIT_HIT=1; fi
 # #1707: only a run with ZERO candidates AND ZERO failed cells is a rigorous NEGATIVE. A cell that FAILED
 # validation (chrome / no answer) is NOT evidence of cleanliness, so its presence suppresses this line —
-# the FAILED rows above already make those cells visible as unassessed, not clean.
-if [ "$CANDIDATES" -eq 0 ] && [ "$FAILED_CELLS" -eq 0 ]; then
+# the FAILED rows above already make those cells visible as unassessed, not clean. #2291: neither is a run that
+# stopped at the usage limit.
+if [ "$CANDIDATES" -eq 0 ] && [ "$FAILED_CELLS" -eq 0 ] && [ "$LIMIT_HIT" -eq 0 ]; then
   echo "| _(none)_ | — | rigorous NEGATIVE — no candidate of any hunted class survived. A clean result on audited code is a valid outcome; nothing is submitted. |" >> "$REPORT"
 fi
 {
@@ -4739,9 +4804,17 @@ if [ "$BP_ACTIVE" -eq 1 ]; then
   BP_TOTALS_JSON=",\"promise_extractions\":$BP_EXTRACTIONS"
   BP_JSON=",\"breadth_promises\":[$BP_RECORDS]"
 fi
-printf '{"repo":%s,"commit":%s,"backend":%s,"jobs":%s%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s%s%s%s%s}%s%s%s}\n' \
+# #2291: the top-level `limit_halted` object — EXACTLY 0 bytes unless this run hit the usage limit. `evidence` is the
+# halt file's line (utc, call label, log, line number, the matched notice), its TABs turned into spaces (_json_str
+# escapes only backslash and quote, and a raw TAB is not valid inside a JSON string).
+LIMIT_JSON="" ; LIMIT_EVIDENCE=""
+if [ "$LIMIT_HIT" -eq 1 ]; then
+  if [ -f "$DF_USAGE_LIMIT_HALT" ]; then LIMIT_EVIDENCE="$(head -1 "$DF_USAGE_LIMIT_HALT" 2>/dev/null | tr '\t' ' ' || true)"; fi
+  LIMIT_JSON=",\"limit_halted\":{\"cells\":$LIMIT_CELLS,\"not_started\":$LIMIT_NOT_STARTED,\"evidence\":$(_json_str "$LIMIT_EVIDENCE")}"
+fi
+printf '{"repo":%s,"commit":%s,"backend":%s,"jobs":%s%s,"cells":[%s],"totals":{"cells":%s,"candidates":%s,"steers":%s,"failed":%s%s%s%s%s}%s%s%s%s}\n' \
   "$(_json_str "$(basename "$REPO")")" "$(_json_str "$COMMIT")" "$(_json_str "$BACKEND")" "$JOBS" "$DEPTH_FROM_JSON" "$CELLS_ARR" \
-  "$CELLS" "$CANDIDATES" "$STEERS" "$FAILED_CELLS" "$DEPTH_TOTAL_JSON" "$TIER2_TOTALS_JSON" "$FCOV_TOTALS_JSON" "$BP_TOTALS_JSON" "$TIER2_JSON" "$FCOV_JSON" "$BP_JSON" > "$RESULTS_JSON"
+  "$CELLS" "$CANDIDATES" "$STEERS" "$FAILED_CELLS" "$DEPTH_TOTAL_JSON" "$TIER2_TOTALS_JSON" "$FCOV_TOTALS_JSON" "$BP_TOTALS_JSON" "$TIER2_JSON" "$FCOV_JSON" "$BP_JSON" "$LIMIT_JSON" > "$RESULTS_JSON"
 
 echo >&2
 DEPTH_BANNER=""
@@ -4752,7 +4825,10 @@ if [ "$FCOV_ACTIVE" -eq 1 ]; then FCOV_BANNER=", $COVERAGE_CELLS coverage"; fi
 # #2264: `, K promise extraction(s)` only with the knob on (0 bytes otherwise, so the OFF banner is byte-identical).
 BP_BANNER=""
 if [ "$BP_ACTIVE" -eq 1 ]; then BP_BANNER=", $BP_EXTRACTIONS promise extraction(s)"; fi
-echo "================ DISCOVERY: $CELLS cells$DEPTH_BANNER$FCOV_BANNER$BP_BANNER, $CANDIDATES candidate(s), $STEERS blackboard-steered, $FAILED_CELLS failed ================" >&2
+# #2291: `, N limit-halted` only on a run that hit the usage limit (0 bytes otherwise).
+LIMIT_BANNER=""
+if [ "$LIMIT_HIT" -eq 1 ]; then LIMIT_BANNER=", $((LIMIT_CELLS + LIMIT_NOT_STARTED)) limit-halted"; fi
+echo "================ DISCOVERY: $CELLS cells$DEPTH_BANNER$FCOV_BANNER$BP_BANNER, $CANDIDATES candidate(s), $STEERS blackboard-steered, $FAILED_CELLS failed$LIMIT_BANNER ================" >&2
 echo "run-discovery.sh: leads at $REPORT" >&2
 # #2217: say what the second tier carried, and say what it is NOT. A tier-2 record is an UNSETTLED check, not
 # a lead: it never enters the candidate count above and nothing here verifies or submits one.
@@ -4764,6 +4840,11 @@ if [ -n "$TIER2_JSON" ]; then
 fi
 if [ "$CANDIDATES" -gt 0 ]; then
   echo "run-discovery.sh: NEXT = verify each lead with evm-harness/forge-verify.sh; only a PASSING PoC is a finding. Submission stays human-gated." >&2
-else
+elif [ "$LIMIT_HIT" -eq 0 ]; then
   echo "run-discovery.sh: no candidates — rigorous negative. Nothing to verify, nothing submitted." >&2
+fi
+# #2291: both artifacts are written; a run that hit the usage limit now stops with exit 6.
+if [ "$LIMIT_HIT" -eq 1 ]; then
+  echo "run-discovery.sh: USAGE LIMIT HALT — $LIMIT_CELLS cell(s) hit the limit, $LIMIT_NOT_STARTED not started (${LIMIT_EVIDENCE:-no evidence line}); NOT a negative — resume after the reset" >&2
+  exit 6
 fi

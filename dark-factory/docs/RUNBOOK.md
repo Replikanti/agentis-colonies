@@ -217,6 +217,7 @@ Per-zone `status` tells you what to do next:
 | `budget_exhausted` | the RUN cell budget was spent before this zone came up — **not** a negative. Every zone after it was denied too | raise `--run-cell-budget`, or `--rehunt-gaps` |
 | `budget_unenforceable` | a **partial** hunt of this zone cannot be expressed: its subsystem name matches several `scope.tsv` lines, so no `--classes` prefix lands exactly on the cap. Nothing was charged and the zones after it were unaffected | give it its full planned budget (raise `--zone-cell-budget` above the `cells_planned` in its record, or drop the cap), or re-map so the subsystem name is unique; `--rehunt-gaps` with no cap also closes it |
 | `failed` | `run-discovery.sh` exited non-zero (see `exit_code`, `detail`) | `--rehunt-gaps`; a second failure is a defect to escalate |
+| `limit_halted` | the zone's hunt stopped on the **Claude usage limit** (#2291): `run-discovery.sh` exited 6, `detail` quotes the notice and the log it came from. NOT a negative and NOT a tool failure. Every zone after it stays `not_reached` and the run exited 6 before STAGE 4 | wait for the quota reset, then `--rehunt-gaps` (no `--rehunt-include-partial` needed). Its attempt never counts toward `--rehunt-max-attempts` |
 | `in_flight` | the process died mid-zone (external kill / OOM) | `--rehunt-gaps` |
 | `not_reached` | never attempted — zero evidence | `--rehunt-gaps` |
 | `no_brief` | STAGE 2 produced no brief — an upstream defect | re-run the FULL pass; `--rehunt-gaps` deliberately never selects it |
@@ -238,6 +239,28 @@ Per-zone `status` tells you what to do next:
 # run-zone-hunt.sh stays the SINGLE-PASS entrypoint; run-zone-sweep.sh is the self-tuning-breadth one.
 ./run-zone-sweep.sh --repo <repo> --out zone-hunt-out --budget-ceiling 60 -- --run-cell-budget 40
 ```
+
+### Resuming after a usage-limit halt (#2291)
+
+When the driven Claude session prints its usage-limit notice ("You've hit your weekly limit · resets <when>",
+"<kind> limit reached"), the hunt stops instead of turning the outage into failed cells. The first notice of any
+model call (zone-mapper, brief-writer, hunter, refuter) is never retried; it writes `<out>/.usage-limit-halt`
+(one line: utc, call, log, line number, the notice), every later call fails fast without calling the model, and
+`run-zone-hunt.sh` exits **6** at the next stage boundary with a `USAGE LIMIT HALT:` line naming the evidence and
+the resume command. Exit 6 wins over the `--require-coverage` exit 4.
+
+| Halted in | What is on disk | Resume after the reset |
+|---|---|---|
+| STAGE 1 / 2 (mapping, briefs) | no coverage record yet | re-run the same command |
+| STAGE 3 (a zone hunt) | the record: finished zones `hunted*`, the halted zone `limit_halted` (its cells that hit the limit are `LIMIT-HALTED` report rows; cells never started are counted in `discovery-results.json` `limit_halted.not_started`), later zones `not_reached` | `./run-zone-hunt.sh --repo <repo> --out <out> --rehunt-gaps` |
+| STAGE 4 (the refute gate) | the merged breadth file; refute rows `ERROR — usage limit reached — RE-RUNNABLE` | `--rehunt-gaps` again: an empty gap set re-runs the merge + STAGE 4 over the union |
+
+On the resume, the halted zone's dir moves to `discovery/<zid>.attempt-<n>` as usual, and once a later attempt
+finishes the zone the merge DROPS that `limit_halted` archive (the zone is measured once, so two A/B arms stay
+symmetric). `run-zone-sweep.sh` propagates exit 6 with terminal reason `usage_limit_halted`;
+`bench/corpus-bench/run-corpus-bench.sh --hunt` stops its contest loop, writes `<work>/.usage-limit-halted`,
+skips `--score` and exits 6. A session that stops at the limit WITHOUT the notice text reaching the log is not
+detected and keeps the old path (retry, then a failed cell).
 
 ### Closing the gaps automatically (`run-zone-sweep.sh`, #1828)
 

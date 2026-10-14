@@ -52,12 +52,14 @@ import os
 import json
 import glob
 import datetime
-import re
 
-# The Claude Code usage-limit notice, matched on its WORDS (mirrors the weekly-limit rows of
-# exam/void-patterns.tsv; a glyph between the words never matters).
-SYNTHETIC_LIMIT_RE = re.compile(
-    r"(?i)\b(hit your (weekly |usage |session |5-hour )?limit|(weekly|usage|session|5-hour) limit reached)\b")
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "lib"))
+import usage_limit  # noqa: E402  (#2291: the ONE definition of the usage-limit notice regex)
+
+# The Claude Code usage-limit notice, matched on its WORDS (a glyph between the words never matters). #2291: the
+# regex lives in lib/usage_limit.py only; exam/void-patterns.tsv resolves its `@usage-limit` cell to the same one.
+SYNTHETIC_LIMIT_RE = usage_limit.USAGE_LIMIT_RE
 
 
 def model_family(model):

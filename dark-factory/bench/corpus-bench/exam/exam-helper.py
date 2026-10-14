@@ -109,6 +109,8 @@ import sys
 import tempfile
 
 sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "lib"))
+import usage_limit  # noqa: E402  (#2291: the ONE definition of the usage-limit notice regex)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -769,6 +771,8 @@ def cmd_attrib(argv):
 # ----------------------------------------------------------------------------------------------------------
 PATTERN_WHERE = ("failed", "final-failed", "cells")
 HALT_CLASS = "weekly-limit"
+# #2291: a void-patterns.tsv regex cell that starts with `@` names a SHARED regex instead of spelling one out.
+SHARED_REGEXES = {"@usage-limit": usage_limit.USAGE_LIMIT_PATTERN}
 FAIL_MARKERS = (".timeout", ".novalid")
 _ATTEMPT_DIR_RE = re.compile(r"\.attempt-[0-9]+$")
 
@@ -792,6 +796,11 @@ def load_patterns(path):
             die(2, "%s:%d: bad class %r" % (os.path.basename(path), n, cls))
         if where not in PATTERN_WHERE:
             die(2, "%s:%d: where must be one of %s" % (os.path.basename(path), n, "/".join(PATTERN_WHERE)))
+        if rx.startswith("@"):
+            if rx not in SHARED_REGEXES:
+                die(2, "%s:%d: unknown shared regex %r (known: %s)" % (
+                    os.path.basename(path), n, rx, ", ".join(sorted(SHARED_REGEXES))))
+            rx = SHARED_REGEXES[rx]
         try:
             out.append((cls, re.compile(rx), where, n))
         except re.error as exc:
@@ -1255,6 +1264,11 @@ def void_findings(arm, pfile):
     for f in attrib_rows:
         if len(f) >= 9 and f[8] == "usage-limit":
             res.append((0, HALT_CLASS, "attrib.tsv:%s=synthetic-usage-limit" % f[0]))
+            break
+    # #2291: the zone hunt itself detected the usage limit and exited 6 (breadth, re-hunt or deep call).
+    for k in ("rc", "rehunt_rc", "deep_rc"):
+        if meta.get(k) == "6":
+            res.append((0, HALT_CLASS, "run.meta:%s=6" % k))
             break
     # rank 1: the run itself
     for k in ("rc", "rehunt_rc", "deep_rc"):

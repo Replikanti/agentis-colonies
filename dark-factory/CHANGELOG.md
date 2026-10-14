@@ -59,6 +59,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **A Claude usage-limit notice halts the hunt instead of becoming failed cells (#2291, M1: STAGES 1-4).** When the
+  driven session hit its quota ("You've hit your weekly limit"), the hunt read the notice as TUI chrome: it retried
+  it, recorded a FAILED cell and a `hunted_degraded` zone, and kept spending the same quota. Now
+  `lib/usage_limit.py` is the ONE definition of the notice regex (`model-attribution.py` imports it; the exam's
+  `void-patterns.tsv` resolves `@usage-limit` to it), and `lib/run-agent-validated.sh` checks every sentinel-less
+  reply against it first (ranked above timeout and transport): no retry, a `.limit` marker, and a run-level halt file
+  after which every later call fails fast. `run-discovery.sh` starts no further cell, writes a `LIMIT-HALTED` row and
+  a `limit_halted` object, and exits 6; `run-zone-hunt.sh` records the zone with the new retryable coverage status
+  `limit_halted`, leaves later zones `not_reached` and exits 6 at the next stage boundary (also after STAGE 1, 2 and
+  4; 6 wins over 4). `--rehunt-gaps` resumes it, its attempt never counts toward `--rehunt-max-attempts`, and the
+  merge drops a superseded `limit_halted` archive. `run-refute.sh` records a RE-RUNNABLE ERROR row,
+  `run-zone-sweep.sh` reports terminal reason `usage_limit_halted`, `exam.sh` treats exit 6 as the weekly-limit HALT,
+  and `run-corpus-bench.sh --hunt` stops, skips `--score` and exits 6. STAGE 4.5 detection is M2. Offline proof:
+  `demo-usage-limit.sh` (colony-lint).
 - **The live scope gate now sees the program scope a hunt passes with `--in-scope` (#2301).** `scope-gate.ag` read
   its scope text only from `SCOPE_FILE`, but `run-zone-hunt.sh` hands the scope to `run-audit-pass.sh --in-scope`
   and never sets a scope file. Every live finding was therefore judged against an empty scope (asset match 0/0)

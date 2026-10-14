@@ -986,6 +986,15 @@ while IFS='|' read -r CFN CLS SEV EXPL CODEF AUXF || [ -n "${CFN:-}" ]; do
       C="$(printf '%s' "$CLINE" | sed 's/^.*\(CONSTRAINT|\)/\1/')"
       CONSTRAINT="$(_clean_reason "$(printf '%s' "$C" | cut -d'|' -f3-)")"
     fi
+  elif [ -f "$CELL_LOG.limit" ]; then
+    # #2291: the refuter hit the Claude usage limit (or the run was already halted on it) — NOT an assessment and
+    # not retried. Ranked above the #2045 transient branch (the #2262 M3 precedence). The verdict cell stays ERROR
+    # (UNASSESSED, non-settled) so verify-findings.sh's field-4 contract is untouched.
+    echo "run-refute.sh: '$CFN' hit the usage limit — recording as ERROR (RE-RUNNABLE after the reset — not assessed)" >&2
+    printf '| %s | %s | ERROR | usage limit reached — RE-RUNNABLE after the reset (not assessed) |\n' \
+      "$CFN" "$CLS" >> "$REPORT"
+    ERRORED=$((ERRORED + 1))
+    continue
   elif [ -f "$CELL_LOG.transient" ]; then
     # #2045: the refuter never produced a VERDICT| because flat-cyborg TRANSPORT-crashed on every attempt and the
     # bounded fresh-session retries (df_run_agent_validated, DF_AGENT_TRANSPORT_RETRIES) were exhausted — this is

@@ -691,7 +691,7 @@ An arm-wide class always outranks a zone-scoped one, and a usage-limit signal al
 
 | rank | class | when |
 |---|---|---|
-| 0 | `weekly-limit` | a usage-limit notice: a `weekly-limit` row of `exam/void-patterns.tsv` (any Claude Code usage-limit notice, in a FAILED call's log) or a `<synthetic>` usage-limit transcript record (`attrib.tsv` gate `usage-limit`) — HALTS the plan |
+| 0 | `weekly-limit` | a usage-limit notice: the `weekly-limit` row of `exam/void-patterns.tsv` (any Claude Code usage-limit notice, in a FAILED call's log), a `<synthetic>` usage-limit transcript record (`attrib.tsv` gate `usage-limit`), or — #2291 — `run.meta` `rc` / `rehunt_rc` / `deep_rc` = `6` (the zone hunt detected the limit itself and halted) — HALTS the plan |
 | 1 | `hard-stop`, `killed` | `rc` / `rehunt_rc` / `deep_rc` is 124; a call or `run` itself was signalled (rc >= 128, `skip-killed`) — arm-wide |
 | 2 | `operator`, `attribution` | `exam.sh void-mark`; `attrib.tsv` has a stage that is MIXED / CONTAMINATED / another family / `refusal` (a refusal in the window, even when a retry then answered) / `attribution-missing` (or no `attrib.tsv` on a live backend) — arm-wide |
 | 3 | `zone-incomplete`, `deep-incomplete`, `promise-lister` | never finished: the zone's `run-discovery.sh` died (`coverage/zone-coverage.json` `failed` / `in_flight` / any status but `hunted` / `hunted_empty` / `hunted_degraded` — `run-zone-hunt.sh` records it and exits 0), fewer cells than planned, an empty unmarked cell log; a STAGE 4.5 cell `ENGINE_FAILED` / `TRANSIENT_ERROR` (ledger, the legacy "failed ...; continuing" line, or an aggregate log with no verdict and a terminal transport error); a failed `run/promises/*.lister` call |
@@ -720,11 +720,13 @@ Every zone-scoped defect is also listed in `<arm>/void.zones`; `triage` forces t
 whole-contest arm it triages the rest of the tree — unless an arm-wide class is on record, which leaves every row
 `unmeasured`. When every arm is VOID the table is still written, all rows
 `unmeasured` (an empty stand-in tree — no evidence of a voided run reaches it). `triage.py` itself reads a run
-tree's `coverage/zone-coverage.json` too: a `failed` / `in_flight` zone is `unmeasured`, never a generation MISS.
+tree's `coverage/zone-coverage.json` too: a `failed` / `in_flight` / `limit_halted` (#2291) zone is `unmeasured`, never a generation MISS.
 
 The signatures are DATA: a new row in `void-patterns.tsv` (`class<TAB>regex<TAB>where`, `where` = `failed` /
 `final-failed` / `cells`) teaches the runner a new one without a code change; match the notice's words, never
-its glyphs. Only real output logs are read (`hunt_*.log*`, `refute_*.log`, the deep-hunt RUN dirs' `*.log`), never
+its glyphs. A regex cell that starts with `@` names a SHARED regex: `@usage-limit` is the Claude Code usage-limit
+notice defined once in `dark-factory/lib/usage_limit.py` (#2291) — the same regex the live hunt path and
+`model-attribution.py` use; any other `@` name is an error (exit 2). Only real output logs are read (`hunt_*.log*`, `refute_*.log`, the deep-hunt RUN dirs' `*.log`), never
 the `.ag` source copies. An `.untraced` cell is a METRIC: it never voids an arm and never triggers a re-hunt.
 
 **One-shot re-hunt** (the symmetry rule above, automated): after the breadth call, when a final-attempt cell
@@ -732,7 +734,9 @@ carries `.timeout` / `.novalid` or a `transport` pattern, a promise-lister call 
 `zone-incomplete`, and no `weekly-limit` pattern matched, `run` makes exactly
 ONE more breadth call in that arm with `--rehunt-gaps --rehunt-include-partial --rehunt-max-attempts 2`
 (`rehunt.log`; `rehunt_start/end/rc/reason` in `run.meta`). A cell still failed after it voids the arm. A
-usage-limit match skips the re-hunt AND STAGE 4.5 — both would void too. `REHUNT_TRANSPORT=0` turns it off.
+usage-limit match skips the re-hunt AND STAGE 4.5 — both would void too; so does a breadth call that exits 6 (#2291:
+the zone hunt halted on the limit itself — `rehunt_rc=skip-weekly-limit`, no `rehunt-check`) or a re-hunt that exits
+6. `REHUNT_TRANSPORT=0` turns it off.
 
 **Attribution** (`exam.sh attrib --arm-dir <d> [--transcripts-root <dir>]`, also run by `run` itself): every RUN dir
 actually on disk (`discovery/<zone>/run` + its `cell-*`, `verify/gates*/*/refute-out/run`, `deep-hunt/*/run`, any

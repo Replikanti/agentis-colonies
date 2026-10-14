@@ -288,19 +288,116 @@
       "results": "",
       "detail": "no matching line in map/scope.tsv",
       "attempts": []
+    },
+    {
+      "id": "z13_limit_halted",
+      "name": "usage-limit-halted zone",
+      "value_custody": false,
+      "order": 13,
+      "status": "limit_halted",
+      "cells_planned": 2,
+      "cells_charged": 2,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": 6,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "usage limit reached: discovery/z13_limit_halted/run/hunt_x_C1.log:1: weekly limit reached; resume after the reset with --rehunt-gaps",
+      "attempts": []
+    },
+    {
+      "id": "z14_limit_halted_twice",
+      "name": "twice-limit-halted zone",
+      "value_custody": false,
+      "order": 14,
+      "status": "limit_halted",
+      "cells_planned": 2,
+      "cells_charged": 2,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": 6,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "usage limit reached (second quota window)",
+      "attempts": [
+        {
+          "n": 1,
+          "status": "limit_halted",
+          "exit_code": 6,
+          "ended_at": "2026-07-29T00:00:00Z",
+          "artifacts": "discovery/z14_limit_halted_twice.attempt-1"
+        },
+        {
+          "n": 2,
+          "status": "limit_halted",
+          "exit_code": 6,
+          "ended_at": "2026-07-29T00:00:00Z",
+          "artifacts": "discovery/z14_limit_halted_twice.attempt-2"
+        }
+      ]
+    },
+    {
+      "id": "z15_failed_after_limit",
+      "name": "failed-after-a-limit-halt zone",
+      "value_custody": false,
+      "order": 15,
+      "status": "failed",
+      "cells_planned": 2,
+      "cells_charged": 2,
+      "classes_hunted": [
+        "C1"
+      ],
+      "budget_truncated": false,
+      "cells": 0,
+      "candidates": 0,
+      "failed_cells": 0,
+      "exit_code": 1,
+      "started_at": "2026-07-29T00:00:00Z",
+      "ended_at": "2026-07-29T00:00:00Z",
+      "results": "",
+      "detail": "run-discovery.sh exited 1",
+      "attempts": [
+        {
+          "n": 1,
+          "status": "limit_halted",
+          "exit_code": 6,
+          "ended_at": "2026-07-29T00:00:00Z",
+          "artifacts": "discovery/z15_failed_after_limit.attempt-1"
+        },
+        {
+          "n": 2,
+          "status": "failed",
+          "exit_code": 1,
+          "ended_at": "2026-07-29T00:00:00Z",
+          "artifacts": "discovery/z15_failed_after_limit.attempt-2"
+        }
+      ]
     }
   ],
   "totals": {
-    "zones": 12,
-    "cells_planned": 20,
-    "cells_charged": 14,
+    "zones": 15,
+    "cells_planned": 26,
+    "cells_charged": 20,
     "candidates": 2,
     "failed_cells": 1,
     "by_status": {
       "hunted": 2,
       "hunted_empty": 1,
       "hunted_degraded": 1,
-      "failed": 2,
+      "failed": 3,
+      "limit_halted": 2,
       "budget_exhausted": 1,
       "budget_unenforceable": 1,
       "in_flight": 1,
@@ -320,6 +417,9 @@
     "z09_failed",
     "z10_failed_capped",
     "z11_no_brief",
-    "z12_unscoped"
+    "z12_unscoped",
+    "z13_limit_halted",
+    "z14_limit_halted_twice",
+    "z15_failed_after_limit"
   ]
 }

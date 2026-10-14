@@ -53,6 +53,8 @@
 # Exit: 0 the final coverage record is `complete` ; 2 usage ; 3 missing prerequisite ; 5 gaps remain after the
 #       policy exhausted its options (the report is written and named on stderr) ; otherwise the inner
 #       run-zone-hunt.sh exit code (an aborted pass is propagated, never masked).
+#       #2291: a pass that exits 6 (the Claude usage limit was reached) is propagated as 6 with terminal reason
+#       `usage_limit_halted` in the report; re-run the sweep after the quota resets.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -181,6 +183,8 @@ PASS_RC=0
 "$ZONEHUNT" --repo "$REPO" --out "$OUT" ${PASSTHRU+"${PASSTHRU[@]}"} || PASS_RC=$?
 if [ "$PASS_RC" -ne 0 ] && [ "$PASS_RC" -ne 4 ]; then
   TERMINAL_REASON="breadth_pass_failed"
+  # #2291: a usage-limit halt is not a pass failure — name it in the report; the rc is still propagated verbatim.
+  if [ "$PASS_RC" -eq 6 ]; then TERMINAL_REASON="usage_limit_halted"; fi
   echo "run-zone-sweep.sh: [pass 1] run-zone-hunt.sh exited $PASS_RC — aborting the sweep" >&2
   exit "$PASS_RC"
 fi
@@ -289,6 +293,7 @@ while : ; do
     --detail "$DWHY"
   if [ "$PASS_RC" -ne 0 ] && [ "$PASS_RC" -ne 4 ]; then
     TERMINAL_REASON="rehunt_pass_failed"
+    if [ "$PASS_RC" -eq 6 ]; then TERMINAL_REASON="usage_limit_halted"; fi   # #2291 (see pass 1)
     echo "run-zone-sweep.sh: [pass $((PASSES_DONE + 1))] run-zone-hunt.sh --rehunt-gaps exited $PASS_RC — aborting the sweep" >&2
     exit "$PASS_RC"
   fi

@@ -35,6 +35,16 @@
 # the CUSTODY| scrape (operator/agent diagnostic, same file) and the other three scrapers' sentinels
 # (gen-briefs.sh, run-discovery.sh, run-refute.sh) are explicit follow-ups, not covered here.
 #
+# #2291 USAGE LIMIT. When the driven Claude session hits its usage quota it prints a notice ("You've hit your
+# weekly limit", "<kind> limit reached") INSTEAD of an answer. Such a reply has no sentinel, so before #2291 it
+# was retried as chrome and then recorded as a FAILED cell. Now a sentinel-less reply is checked against the ONE
+# shared regex (lib/usage_limit.py) FIRST: a match is never retried (every further call hits the same quota until
+# the reset and only adds notices). It drops `.novalid` + a `.limit` reason marker and, when the caller exported
+# DF_USAGE_LIMIT_HALT (run-discovery.sh / run-zone-hunt.sh do), records the run-level halt file; from then on
+# every validated call fails fast WITHOUT calling the model. Only sentinel-less replies are scanned, so a valid
+# reply that quotes the phrase never matches. Reason-marker precedence (the #2262 M3 rank order): `.limit` beats
+# `.timeout`, which beats `.transient`, which beats a plain `.novalid` chrome miss.
+#
 # RETRY SAFETY. A missing-sentinel reply is side-effect-free on the shared state: hunter.ag posts to the
 # blackboard + emit()s a lead ONLY inside its `CANDIDATE|` branch, so a chrome reply posts nothing and a
 # retry cannot double-post; zone-mapper/brief-writer/refuter write only an idempotent memo into the
@@ -49,6 +59,10 @@
 #   else
 #       … "$LOG.novalid" exists; record a FAILED, do NOT treat the empty log as a real negative …
 #   fi
+
+# #2291: the lib dir, resolved ONCE at source time (BASH_SOURCE[0] is this file even when sourced via a relative
+# path), so df_usage_limit_in_log finds usage_limit.py whatever the caller's cwd is at call time.
+DF_RAV_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # df_max_attempts — the validated retry ceiling: DF_AGENT_MAX_ATTEMPTS env knob, default 5, floor 1. A
 # garbage submit is a render/timing flake (not rate-limiting), so there is no backoff; the cost is bounded
@@ -179,12 +193,40 @@ df_transport_error_in_log() {
   grep -F 'LLM transport error:' "$1" | grep -qvF '[LLM retry'
 }
 
+# df_usage_limit_in_log <log> — #2291: does <log> carry the Claude Code usage-limit notice? Delegates to the ONE
+# shared regex (lib/usage_limit.py match). Without python3 it returns 1, i.e. the pre-#2291 behaviour.
+df_usage_limit_in_log() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  python3 "$DF_RAV_LIB_DIR/usage_limit.py" match "$1" >/dev/null 2>&1
+}
+
+# df_usage_limit_halted — #2291: true iff the run-level halt file (DF_USAGE_LIMIT_HALT) is set AND exists, i.e. an
+# earlier call of this run already hit the usage limit.
+df_usage_limit_halted() {
+  [ -n "${DF_USAGE_LIMIT_HALT:-}" ] && [ -f "$DF_USAGE_LIMIT_HALT" ]
+}
+
+# df_usage_limit_record_halt <label> <log> [<evidence>] — #2291: write the run-level halt file, ONE TSV line
+# `utc<TAB>label<TAB>log<TAB>lineno<TAB>matched line`. A no-op when DF_USAGE_LIMIT_HALT is unset (a standalone run
+# keeps only the per-log `.limit` marker). FIRST WRITER WINS: parallel cells can hit the limit together, so the
+# file is created under `set -C` (noclobber) in a subshell and a losing writer leaves the first evidence intact.
+df_usage_limit_record_halt() {
+  [ -n "${DF_USAGE_LIMIT_HALT:-}" ] || return 0
+  dulr_label="$1"; dulr_log="$2"; dulr_ev="${3:-}"
+  # <evidence> is `<lineno><TAB><matched line>` (usage_limit.py match's output); re-derived from <log> when omitted.
+  [ -n "$dulr_ev" ] || dulr_ev="$(python3 "$DF_RAV_LIB_DIR/usage_limit.py" match "$dulr_log" 2>/dev/null | head -1)"
+  [ -n "$dulr_ev" ] || dulr_ev="$(printf '?\t(notice not re-readable)')"
+  dulr_line="$(printf '%s\t%s\t%s\t%s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$dulr_label" "$dulr_log" "$dulr_ev")"
+  ( set -C; printf '%s\n' "$dulr_line" > "$DF_USAGE_LIMIT_HALT" ) 2>/dev/null || true
+}
+
 # df_run_agent_validated <max_attempts> <label> <log> <stage> <zone_id> <attempt_fn> — run <attempt_fn>
 # (which writes ONE `agentis go` invocation's output to its "$1" log arg) up to <max_attempts> times,
 # validating each reply with df_sentinel_present. On the FIRST valid reply: clear any stale "$log.novalid"
 # marker and return 0 (logging a one-line "valid on attempt K/N" when K > 1). After N failed attempts: log
 # the loud FAILED line, drop an empty "$log.novalid" marker (so a backgrounded parallel run_cell can signal
-# failure via a file, not a lost subshell exit code), and return 1.
+# failure via a file, not a lost subshell exit code), and return 1. #2291: a usage-limit reply (or a run that is
+# already halted on one) ends the call at once with `.novalid` + `.limit` and return 1 — see the header.
 df_run_agent_validated() {
   drav_max="$1"; drav_label="$2"; drav_log="$3"; drav_stage="$4"; drav_zone="$5"; drav_fn="$6"
   drav_tmax="$(df_transport_max_retries)"   # #2045: budget-exempt transport-retry ceiling
@@ -194,16 +236,33 @@ df_run_agent_validated() {
   # terminal path below writes only the marker it owns, so a re-run whose failure mode CHANGED (e.g. a previous
   # transient run left `.transient`, this run is a plain chrome miss) would otherwise let run-refute.sh /
   # run-invariant-hunt.sh misread the new failure off the stale marker. The success path clears all three too.
-  rm -f "$drav_log.novalid" "$drav_log.timeout" "$drav_log.transient"
+  rm -f "$drav_log.novalid" "$drav_log.timeout" "$drav_log.transient" "$drav_log.limit"
+  # #2291: the run already hit the usage limit — never call the model again; this call is a not-assessed miss.
+  if df_usage_limit_halted; then
+    : > "$drav_log"
+    : > "$drav_log.novalid"
+    : > "$drav_log.limit"
+    echo "$drav_label: $drav_stage skipped: usage limit already reached in this run ($DF_USAGE_LIMIT_HALT) — not assessed" >&2
+    return 1
+  fi
   while [ "$drav_k" -lt "$drav_max" ]; do
     drav_k=$((drav_k + 1))
     "$drav_fn" "$drav_log"
     if df_sentinel_present "$drav_stage" "$drav_log" "$drav_zone"; then
       # A valid reply resolves every prior failure mode — clear ALL stale markers (.novalid, plus the #1955
       # .timeout and #2045 .transient reason discriminators) so a re-run over the same log path reads clean.
-      rm -f "$drav_log.novalid" "$drav_log.timeout" "$drav_log.transient"
+      rm -f "$drav_log.novalid" "$drav_log.timeout" "$drav_log.transient" "$drav_log.limit"
       [ "$drav_k" -gt 1 ] && echo "$drav_label: valid $drav_stage sentinel on attempt $drav_k/$drav_max" >&2
       return 0
+    fi
+    # #2291: a usage-limit notice ranks FIRST (above the timeout and transport branches): no semantic retry and no
+    # #2045 fresh-session retry, because until the reset every further call hits the same quota.
+    if df_usage_limit_in_log "$drav_log"; then
+      : > "$drav_log.novalid"
+      : > "$drav_log.limit"
+      df_usage_limit_record_halt "$drav_label" "$drav_log"
+      echo "$drav_label: $drav_stage USAGE LIMIT reached (Claude usage-limit notice in the reply) — not retrying; NOT assessed, resume after the reset" >&2
+      return 1
     fi
     # #1955 Lever 1b: a GENUINE [llm.timeout] (as opposed to TUI chrome) will time out identically on retry —
     # burning the remaining outer attempts buys nothing but a multiplied worst case. Stop after this one:

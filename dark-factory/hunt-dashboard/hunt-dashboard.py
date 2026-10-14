@@ -1075,7 +1075,9 @@ def page(nav=""):
             "failed":("🟥","#ff4d4d","failed"),"hunted_degraded":("⚠️","#f0a800","degraded"),
             # #1991: a zone the hunt was mid-flight on when the run EXITED is abandoned (a coverage gap), NOT
             # running — a calm slate, like the abandoned deep-hunt cell in #1980.
-            "abandoned":("⚫","#8a94a0","stopped mid-hunt")}
+            "abandoned":("⚫","#8a94a0","stopped mid-hunt"),
+            # #2291: the zone's hunt stopped on the Claude usage limit — a resumable pause, not a failure.
+            "limit_halted":("⏸️","#c08aff","usage limit")}
     for z in zs:
         s=z.get("status","?")
         if exited and s=="in_flight": s="abandoned"   # #1991: no zone renders "running" after the hunt exited
