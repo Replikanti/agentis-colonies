@@ -1,0 +1,26 @@
+# expected-distinct.tsv — #2278 M2. DERIVED from root-causes.tsv by `cluster-holdout.py derive`; never
+# hand-edit (`check` fails when this file differs from the derivation). One row per same-block pair of raw
+# entries whose pre-registered root causes differ; idx = 0-based position in the arm's `verified` list.
+# bound(arm) = sum over (file, function) blocks of the distinct rc in the block + entries with no block key.
+# M2|bound|A|18
+# M2|distinct_pairs|A|13
+# M2|bound|B|16
+# M2|distinct_pairs|B|4
+arm	idx_i	idx_j	block	rc_i	rc_j
+A	2	7	contracts/automatedtrigger/oracleless.sol:fillorder	R03	R01
+A	4	5	contracts/automatedtrigger/oracleless.sol:createorder	R04	R05
+A	4	6	contracts/automatedtrigger/oracleless.sol:createorder	R04	R05
+A	9	13	contracts/automatedtrigger/stoplimit.sol:modifyorder	R06	R07
+A	10	13	contracts/automatedtrigger/stoplimit.sol:modifyorder	R06	R07
+A	11	13	contracts/automatedtrigger/stoplimit.sol:modifyorder	R06	R07
+A	14	17	contracts/oracle/external/pythoracle.sol:currentvalue	R08	R10
+A	16	17	contracts/oracle/external/pythoracle.sol:currentvalue	R08	R10
+A	17	21	contracts/oracle/external/pythoracle.sol:currentvalue	R10	R08
+A	17	23	contracts/oracle/external/pythoracle.sol:currentvalue	R10	R08
+A	17	29	contracts/oracle/external/pythoracle.sol:currentvalue	R10	R08
+A	31	32	contracts/oracle/external/univ3ticktwaporacle.sol:getlastseconds	R13	R14
+A	31	34	contracts/oracle/external/univ3ticktwaporacle.sol:getlastseconds	R13	R14
+B	24	29	contracts/automatedtrigger/stoplimit.sol:modifyorder	R06	R07
+B	26	29	contracts/automatedtrigger/stoplimit.sol:modifyorder	R06	R07
+B	27	29	contracts/automatedtrigger/stoplimit.sol:modifyorder	R06	R07
+B	28	29	contracts/automatedtrigger/stoplimit.sol:modifyorder	R06	R07

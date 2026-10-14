@@ -43,3 +43,25 @@ before this fixture existed).
   top-level `errors` / `out_of_scope` / `scope_layer`) and of `truth.tsv` was scanned for absolute host paths
   (`/home/`, `/Users/`, `/root/`, `/tmp/`, `worktrees/`) and client names before commit: 0 hits. The truth
   text comes from the public judging repo.
+
+## Pre-registration (labels committed before the clusterer ran on this data)
+
+- `root-causes.tsv` (79 rows: 35 A + 44 B) is the per-finding root-cause label set. It was written by a separate
+  labeller (STOP 1 decision 2) whose only inputs were the two raw arm files, `truth.tsv`, the contest source at
+  `ee3f781a` and each entry's mechanical block key (`block_key()` applied per entry, not a clustering run). The
+  labeller had no repo access, no clusterer, and no identifier-set or Jaccard output. The file is committed
+  verbatim; its `block` column already matched `block_key()` on every row, so it needed no normalisation.
+- **Same-root-cause rule:** two findings share an `rc` if and only if one minimal code fix at one site removes
+  both exploit paths. `rc` ids are contest-global; only distinctness within a block feeds an assertion.
+  `evidence` cites the code construct (file:line relative to `oku-custom-order-types/` at `ee3f781a`); a row
+  whose one-fix call is genuinely ambiguous starts its evidence with `borderline:` (9 rows).
+- `expected-distinct.tsv` is derived mechanically (`cluster-holdout.py derive --labels root-causes.tsv`) and is
+  never hand-edited; `check` fails if it ever differs from the derivation.
+- **Derived bounds** (Σ over `(file, function)` blocks of the distinct `rc` in the block; no entry lacks a block
+  key): **A = 18** (13 labelled-distinct same-block pairs), **B = 16** (4 pairs). These bounds govern; the
+  STOP 1 estimates are not used as pins.
+- sha256 `root-causes.tsv` = `7cbb750cc3587d5e9752c2f7ba30d415cef962993b5302cdd30d2bad399d62f2`
+- sha256 `expected-distinct.tsv` = `3207f328a0ac8c6176cd5211f0db8df5b0a23f8e24cd896289340da8b3a1e31f`
+- From this commit on the labels are final. A label error found later is reported, never edited; the verdict
+  is computed on these labels. The anchor that survives the squash merge is the "M2 pre-registration" comment on
+  #2278, carrying this commit's SHA and both sha256 values.
