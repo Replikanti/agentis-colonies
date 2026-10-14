@@ -21,6 +21,14 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   list, design invariants) instead of only the per-lens defaults. The path is resolved to absolute; a missing file
   is a usage error (exit 2); absent the flag every cell argv is byte-identical. Offline proof:
   `demo-deep-hunt-audit-context.sh` (colony-lint).
+- **Held-out validation of root-cause clustering (#2278 M2).** The two #2245 `oku` arm outputs (35 and 44 verified)
+  are now a held-out fixture (`bench/corpus-bench/fixtures/cluster/oku/`) with per-finding root-cause labels
+  pre-registered before the clusterer ran on them. The new `bench/corpus-bench/cluster-holdout.py` derives the
+  per-arm bound and the labelled-distinct pairs from the labels, projects the recorded #2245 judge decisions per
+  raw lead, and checks the unchanged clusterer (T = 0.30): A 35 → 22 clusters vs bound 18 with **1 labelled-distinct
+  merge**, B 44 → 23 vs bound 16 with 0; token-mode GT unchanged and all 6 recorded-judge rows kept on both arms.
+  The verdict is **FAIL**; the record is pinned as `expected-check.txt` and asserted by
+  `run-corpus-bench.sh --self-test` (colony-lint) together with the default it implies (see Changed).
 
 ### Changed
 

@@ -490,6 +490,40 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
     say "SELF-TEST: root-cause clustering moved a token-mode scorecard, a pinned dev count, or the --findings-view contract (#2278; $cl_files/12 files) -> FAIL"; exit 1
   fi
 
+  # Seventh assertion, held-out half (#2278 M2): the oku clustering record. cluster-holdout.py check clusters both
+  # #2245 oku arms with the UNCHANGED lib/cluster-findings.py (its own DEFAULT_THRESHOLD) and scores the partition
+  # against labels pre-registered before the clusterer ever ran on this data (fixtures/cluster/oku/README.md). Its
+  # stdout must byte-match the one recorded run (expected-check.txt), and the shipped verify-findings.sh default
+  # must agree with the recorded verdict: a FAIL (a labelled-distinct merge, a token-mode GT change) requires
+  # DF_CLUSTER_FINDINGS to default to 0. Under-merge (clusters > bound) and recorded-judge losses are reported only.
+  HO_FIX="$HERE/fixtures/cluster/oku"
+  ho_out="$(python3 "$HERE/cluster-holdout.py" check --fixture "$HO_FIX" 2>&1)"; ho_rc=$?
+  ho_verdict="$(printf '%s\n' "$ho_out" | awk -F'|' '$2=="verdict"{print $3}')"
+  ho_fails="$(printf '%s\n' "$ho_out" | awk -F'|' '$2=="verdict"{print $4}')"
+  ho_reported="$(printf '%s\n' "$ho_out" | awk -F'|' '$2=="verdict"{sub(/^reported:/, "", $5); print $5}')"
+  # "A 35->22 vs bound 18, judge 6/6; B ..." from the per-arm records.
+  ho_arms="$(printf '%s\n' "$ho_out" | awk -F'|' '$3 ~ /^raw=/ {
+      for (i = 3; i <= NF; i++) { split($i, kv, "="); v[kv[1]] = kv[2] }
+      printf "%s%s %s->%s vs bound %s, judge-recorded rows kept %s/%s", sep, $2, v["raw"], v["clusters"], v["bound"],
+        v["judge_kept"], v["judge_rows"]; sep = "; " }')"
+  if grep -Fq 'CLUSTER_FINDINGS="${DF_CLUSTER_FINDINGS:-0}"' "$DF/verify-findings.sh"; then ho_default=0
+  elif grep -Fq 'CLUSTER_FINDINGS="${DF_CLUSTER_FINDINGS:-1}"' "$DF/verify-findings.sh"; then ho_default=1
+  else ho_default="?"; fi
+  if [ "$ho_rc" -eq 0 ] && [ "$ho_out" = "$(cat "$HO_FIX/expected-check.txt")" ] && [ "$ho_verdict" = "PASS" ] \
+     && [ "$ho_reported" = "-" ]; then
+    say "SELF-TEST: held-out oku clustering matches its pre-registered labels ($ho_arms; 0 labelled-distinct merges, token-mode GT rows unchanged) (#2278 M2) -> PASS"
+  elif [ "$ho_rc" -eq 0 ] && [ "$ho_out" = "$(cat "$HO_FIX/expected-check.txt")" ] && [ "$ho_verdict" = "PASS" ]; then
+    say "SELF-TEST: held-out oku clustering passes its gating assertions (0 labelled-distinct merges, token-mode GT rows unchanged) with non-gating findings reported: $ho_reported ($ho_arms) (#2278 M2) -> PASS (under-merge reported)"
+  elif [ "$ho_rc" -eq 0 ] && [ "$ho_out" = "$(cat "$HO_FIX/expected-check.txt")" ] && [ "$ho_verdict" = "FAIL" ] \
+     && [ "$ho_default" = "0" ]; then
+    say "SELF-TEST: held-out oku clustering reproduces its recorded M2 FAIL ($ho_fails; reported: $ho_reported; $ho_arms) and DF_CLUSTER_FINDINGS defaults to 0 (#2278 M2) -> PASS"
+  else
+    say "SELF-TEST: held-out oku clustering drifted from expected-check.txt, or the shipped default contradicts the M2 verdict (#2278 M2) -> FAIL"
+    say "  [2278 M2] check exit $ho_rc, verdict '$ho_verdict' ($ho_fails), verify-findings.sh default '$ho_default'"
+    diff <(cat "$HO_FIX/expected-check.txt") <(printf '%s\n' "$ho_out") | sed 's/^/  [2278 M2] /' >&2 || true
+    exit 1
+  fi
+
   # Eighth assertion (#2288 M2): --score prints the errored-candidate COUNT line after the headline exactly when
   # totals.errored > 0, and the recall headline is the same with or without errors[].
   ER_W="$(mktemp -d)"

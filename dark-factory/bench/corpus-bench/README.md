@@ -260,6 +260,29 @@ on one view does not replay on the other. Judged numbers use the view they were 
 or are re-judged. `bench-to-knowledge.sh` always reads the raw view, so per-class fitness keeps crediting every
 class cell that confirmed a bug.
 
+**Held-out validation (M2): FAIL.** The clusterer was calibrated on dev data only, so M2 measured it, unchanged
+(T = 0.30), on the data that motivated it: the two #2245 `oku` arm outputs, committed verbatim with their truth
+under [`fixtures/cluster/oku/`](./fixtures/cluster/oku/README.md). The ruler is `root-causes.tsv`, one root-cause
+label per raw finding from a separate labeller, committed and anchored by sha256 in an issue comment before the
+clusterer first ran on this data; `expected-distinct.tsv` and the per-arm bound (Σ over `(file, function)`
+blocks of the distinct root causes in the block) are derived from it by `cluster-holdout.py derive`.
+`cluster-holdout.py check` ran once and its output is pinned as `expected-check.txt`:
+
+| arm | raw → clusters | bound | labelled-distinct pairs merged | token-mode GT | recorded-judge rows kept |
+|---|---|---|---|---|---|
+| A | 35 → 22 | 18 | **1 of 13** | unchanged | 6/6 |
+| B | 44 → 23 | 16 | 0 of 4 | unchanged | 6/6 |
+
+Gating (STOP 1 decisions 1 and 3) is a labelled-distinct merge or a token-mode GT change; under-merge and the
+recorded-judge check are reported only. Arm A merges two labelled-distinct root causes inside
+`UniV3TickTwapOracle.getLastSeconds` (idx 31, the inverted-sign TWAP numerator, with idx 34, the unvalidated
+`observe` that reverts on a low-cardinality pool); neither row is a `borderline:` label. Both arms also
+under-merge: A ends 4 clusters above its bound despite the wrong merge, B 7. By the issue's failure branch
+the verify-stage default flips to OFF (`DF_CLUSTER_FINDINGS=0`); T was not re-tuned. `--self-test` re-runs
+`check`, diffs it against the pin, and fails if the shipped default ever contradicts the recorded verdict.
+`judge-matches.tsv` (the recorded #2245 judge decisions projected per raw lead by `cluster-holdout.py
+judge-project`) is what makes the judge check offline.
+
 ## Semantic mechanism judge (#1829)
 
 `--judge cache|cmd` swaps the name-matching rule for a **root-cause + mechanism** decision made by a model.
