@@ -1,0 +1,607 @@
+{
+  "repo": "oku-custom-order-types",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/AutomationMaster.sol:generateOrderId:89",
+      "file": "contracts/automatedTrigger/AutomationMaster.sol",
+      "class": "class=C2",
+      "severity": "High",
+      "exploit": "generateOrderId=uint96(keccak256(sender,block.timestamp)) collides for two orders by one sender in one block, so orders[id] is clobbered while id is pushed twice to pendingOrderIds, and cancelling twice refunds the surviving record's amountIn twice \u2014 stealing (b-a) from other users' pooled tokenIn",
+      "poc_sketch": "Deploy OracleLess (or Bracket); seed a victim order; attacker createOrder(amountIn=1) then createOrder(amountIn=1e21) in one block; assert pendingOrderIds==[id,id]; cancelOrder(id) twice; assert attacker received 2*1e21 vs deposited 1+1e21 and pool balance < sum of remaining live orders' amountIn",
+      "verdict": "REAL",
+      "reason": "generateOrderId returns uint96(keccak256(sender, block.timestamp)) with no salt/nonce/uniqueness check, so any unprivileged sender deterministically obtains a duplicate order id within one block, and no guard in the shown code prevents the resulting clobber/double-push/double-refund of pooled tokenIn. FCB_31a54918d8e2955d8dae010_END"
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:_modifyOrder:171",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C2",
+      "severity": "High",
+      "exploit": "orders[id] is never deleted on cancel/fill and _modifyOrder has no is-pending check, so a recipient createsOrder(amountIn=A), cancelOrder(id) (refund #1), then modifyOrder(increasePosition=false,amountInDelta=A-1) reads the stale record and safeTransfers A-1 again from the shared pool (same defect in Bracket.modifyOrder)",
+      "poc_sketch": "Deploy OracleLess; seed a victim order; attacker createOrder(amountIn=A); cancelOrder(id); modifyOrder(id,_tokenOut,amountInDelta=A-1,_minAmountOut,recipient,increasePosition=false,false,\"0x\"); assert attacker received A+(A-1) while depositing A and pool fell by A-1",
+      "verdict": "REAL",
+      "reason": "orders[orderId] is never deleted on cancel or fill and _modifyOrder guards only msg.sender==order.recipient with no pending/active check, so after createOrder then cancelOrder the recipient calls modifyOrder(increasePosition=false, amountInDelta=amountIn-1) and the stale amountIn passes require(amountInDelta<order.amountIn), causing a second safeTransfer of the funds from the shared pool. FCB_31d56518d8e2b243b7047a0_END"
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:fillOrder:103",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C2",
+      "severity": "High",
+      "exploit": "fillOrder is not nonReentrant and calls the attacker-supplied target before removeFromArray, so a hostile target reenters fillOrder(sameIdx,sameId) while the order is still in orders+pendingOrderIds, double-processing one deposit (two amountIn pulls from the pool) and mis-removing a different order on the outer removeFromArray",
+      "poc_sketch": "Deploy OracleLess with an attacker order X plus a victim order; attacker target, invoked during fillOrder(idxX,X), reenters fillOrder(idxX,X); assert X is paid/pulled twice and pool tokenIn < sum of live orders (Bracket blocks this via nonReentrant; OracleLess does not) FCB_3e971f18d8d593a82c6a3e0_END",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'guard: the cited line is not a check \u2014 cite the conditional or the require/revert that stops the path'): fillOrder has no nonReentrant modifier and never re-checks that pendingOrderIds[pendingOrderIdx] still equals orderId after execute()'s external target.call, and the \"over spend\"/\"Too Little Received\" requires only bound token flow within one call (not the array position), so a hostile target reenters fillOrder at the same index, the inner call removes the order and shifts the array, and the unguarded outer removeFromArray then deletes a different still-funded order and bricks its cancelOrder refund path."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/Bracket.sol:modifyOrder",
+      "file": "contracts/automatedTrigger/Bracket.sol",
+      "class": "class=C2",
+      "severity": "Medium",
+      "exploit": "promise #6 (takeProfitSlippage: An order's takeProfitSlippage and stopSlippage never exceed 10000 bips, enforced at creation, but modifyOrder rewrites these values with no bound check so a later modifyOrder can set slippage above 10000 and make the order unfillable) is broken at modifyOrder: modifyOrder writes _takeProfitSlippage/_stopSlippage with no <=10000 require (unlike _createOrder), so >10000 makes getMinAmountReceived (10000-slippageBips) underflow-revert and blocks fills",
+      "poc_sketch": "PoC sketch: drive the call sequence above from one or more accounts and assert the promised property fails",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'no-loss: write the literal token delta=0:<the quantity that is unchanged> beside the path'): modifyOrder rewrites takeProfitSlippage/stopSlippage into storage with no <=10000 require (unlike _createOrder's explicit BIPS>10k guard), so an admitted uint16 slippage above 10000 set by the order owner via a documented path drives getMinAmountReceived (10000 - bips) to underflow-revert, making the automated-fill path unavailable \u2014 an attacker-free valid-input liveness loss with no guard in the code to stop it. FCB_32990f18d8e32977ec3b960_END"
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/Bracket.sol:_createOrder:497",
+      "file": "contracts/automatedTrigger/Bracket.sol",
+      "class": "class=C12",
+      "severity": "High",
+      "exploit": "Same sender calls createOrder twice in one block: generateOrderId=uint96(keccak(sender,block.timestamp)) collides, orders[X] is clobbered to order B (amountIn=b) while pendingOrderIds=[X,X] and the pool holds a+b; cancelOrder(X) twice reads the persisted orders[X]=B and refunds b each time (mapping never deleted), netting 2b out of a+b -> steals b-a of other users' pooled tokenIn",
+      "poc_sketch": "Deploy AutomationMaster+Bracket+two mock ERC20+mock oracles; seed a victim order (amountIn=V). As one EOA in one block call createOrder(amountIn=1) then createOrder(amountIn=1e21); assert both OrderCreated ids equal, getPendingOrders()==[X,X], orders(X).amountIn==1e21; call cancelOrder(X) twice; assert attacker tokenIn received==2e21 vs 1e21+1 deposited and Bracket tokenIn balance < remaining live orders' amountIn (pool drained)",
+      "verdict": "REAL",
+      "reason": "generateOrderId(sender) over (sender, block.timestamp) collides for two same-block calls, and _createOrder overwrites orders[X] while pushing a duplicate X into pendingOrderIds with no dedup/existence guard, so cancelOrder(X) twice reads the never-deleted orders[X]=B and refunds b each time, netting the attacker b-a of other users' pooled tokenIn."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:fillOrder:103",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C12",
+      "severity": "High",
+      "exploit": "fillOrder is not nonReentrant and runs execute()->target.call(txData) before removeFromArray while the order is still in orders[] and pendingOrderIds; a hostile swap target reenters fillOrder(same idx, same orderId) for a second payout/refund, or the outer removeFromArray(pendingOrderIdx) then runs on an array the inner call already mutated, removing/orphaning the wrong order -> pool drain",
+      "poc_sketch": "Deploy OracleLess+MaliciousTarget+mocks; seed pool with other users' tokenIn; create an attacker order; call fillOrder(idx,id,MaliciousTarget,data) where MaliciousTarget.fallback reenters fillOrder(idx,id,Target2,data2) before returning; assert order paid out/refunded twice OR removeFromArray removed a different id, and OracleLess tokenIn balance < sum of remaining live orders' amountIn",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'guard: cite the path:line this ground requires, in code you were given'): fillOrder lacks nonReentrant and removes from pendingOrderIds by positional index AFTER the attacker-controlled external call, so a reentrant cancelOrder/fillOrder shifts the array and the outer removeFromArray(pendingOrderIdx) deletes a different victim order, permanently stranding its tokenIn while execute()'s balance checks only conserve tokens, not array/index integrity."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:_modifyOrder:171",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C12",
+      "severity": "High",
+      "exploit": "orders[id] is never deleted on cancel and _modifyOrder never checks the order is still pending: attacker createOrder(deposit Q) -> cancelOrder (refunds Q, orders[id] persists with amountIn=Q, recipient=attacker) -> modifyOrder(id, increasePosition=false, amountInDelta=Q-1) which passes require(msg.sender==order.recipient) and safeTransfer(recipient, amountInDelta) a SECOND time from the pool; net theft ~Q per cycle",
+      "poc_sketch": "Deploy OracleLess+mocks; seed pool with victim orders; attacker createOrder(amountIn=Q); cancelOrder(id) (receives Q); modifyOrder(id, tokenOut, amountInDelta=Q-1, minOut, recipient, false, false, \"0x\"); assert attacker received an extra Q-1 though the order was already cancelled and OracleLess tokenIn balance fell below the sum of remaining live orders' amountIn",
+      "verdict": "REAL",
+      "reason": "_cancelOrder removes the id from pendingOrderIds and refunds amountIn but never deletes orders[orderId], while _modifyOrder gates only on msg.sender==order.recipient (never on pending status), so the attacker's still-populated orders[id] (amountIn=Q, recipient=attacker) lets the refund branch execute order.tokenIn.safeTransfer(recipient, Q-1) a second time, draining the pool."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:execute",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "execute() does order.tokenIn.safeApprove(target, order.amountIn) to the fully caller-chosen fill target and never resets it; a hostile target spends 0 tokenIn (only adds 1 wei tokenOut so finalTokenOut-initialTokenOut > minAmountOut, with attacker-set minAmountOut=0), leaving allowance==amountIn standing against the POOLED tokenIn balance, then transferFroms other users' pooled deposits in a later tx.",
+      "poc_sketch": "Deploy AutomationMaster+OracleLess+Permit2; seed pool with a victim order (e.g. 1000 USDC). Attacker createOrder(tokenIn=USDC, amountIn=a, minAmountOut=0, recipient=attacker); deploy EvilTarget whose fallback sends 1 wei tokenOut to OracleLess and spends 0 USDC; attacker.fillOrder(idx,id,EvilTarget,data); assert USDC.allowance(OracleLess,EvilTarget)==a; EvilTarget calls USDC.transferFrom(OracleLess,attacker,a); assert OracleLess USDC balance < sum of remaining orders' amountIn (pool drained).",
+      "verdict": "REAL",
+      "reason": "execute() grants order.amountIn allowance to a fully caller-chosen target and never resets it, so an unprivileged attacker whose target spends 0 tokenIn (passing the over-spend and minAmountOut=0 checks) leaves a standing allowance against the pooled tokenIn balance and drains other users' deposits via transferFrom in a later transaction."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/Bracket.sol:execute",
+      "file": "contracts/automatedTrigger/Bracket.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "Same residual-approval seam in Bracket: execute() does tokenIn.safeApprove(target, amountIn) to the caller-supplied swap target (data.target in performUpkeep, swapParams.swapTarget in _createOrderWithSwap) and never resets it; an unspent allowance to an attacker target persists against Bracket's pooled tokenIn and is transferFrom'd later.",
+      "poc_sketch": "Deploy Bracket with other pending orders funding the pool; attacker createOrder with swapPayload.swapTarget=EvilTarget that spends 0 swapTokenIn and returns 1 wei tokenIn; assert leftover allowance==swapAmountIn; EvilTarget.transferFrom(Bracket,attacker,swapAmountIn); assert pool balance < sum of live orders' amountIn.",
+      "verdict": "REAL",
+      "reason": "execute() grants tokenIn.safeApprove(target, amountIn) to a fully caller-controlled, non-whitelisted target and never resets it, so a swap that consumes less than amountIn leaves a standing allowance an attacker target can later transferFrom against Bracket's pooled tokenIn."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:fillOrder",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C15",
+      "severity": "Medium",
+      "exploit": "fillOrder has no nonReentrant and runs execute()->target.call(txData) BEFORE removeFromArray and payout; a hostile target reenters fillOrder for a still-present index, and the outer removeFromArray then runs on the array already mutated by the inner call, dropping a DIFFERENT user's id from pendingOrderIds while orders[id] persists -> that victim order is unfillable by keepers and uncancellable (_cancelOrder returns false), stranding its deposit.",
+      "poc_sketch": "Set pendingOrderIds=[attackerOrder(idx0), victimOrder(idx1)]; EvilTarget reenters fillOrder(0,attackerId,...) during the swap (inner removeFromArray(0) swaps victim into slot0/pops), then outer removeFromArray(0) removes victim; assert victimId absent from pendingOrderIds, orders[victimId].amountIn!=0, and victim cancelOrder(victimId) reverts \"Order not active\".",
+      "verdict": "REAL",
+      "reason": "fillOrder lacks nonReentrant and validates pendingOrderIds[pendingOrderIdx] only before the attacker-controlled target.call in execute, so a reentrant inner fill shifts the order-preserving array and the outer removeFromArray then drops a different user's order id at the stale index while orders[id] and its deposit persist, leaving that order unfillable and uncancellable. FCB_34928318d8e45d920b52db0_END"
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:createOrder",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "createOrder pulls funds from the arbitrary `recipient` (procureTokens(tokenIn,amountIn,recipient)) with msg.sender unrestricted and never equated to recipient, and minAmountOut has no floor; an attacker names any address with a live approval to OracleLess as recipient, then permissionlessly fillOrder's it through a hostile target (arbitrary-target seam) routing the victim's tokenIn to the attacker and returning 1 wei tokenOut to the victim.",
+      "poc_sketch": "Victim approves OracleLess for X USDC; attacker createOrder(tokenIn=USDC, amountIn=X, minAmountOut=0, recipient=victim, feeBips=0); attacker.fillOrder(idx,id,EvilTarget,data) where EvilTarget takes X USDC via the approve and returns 1 wei tokenOut; assert victim lost X USDC and attacker gained ~X.",
+      "verdict": "REAL",
+      "reason": "createOrder never requires msg.sender==recipient so it pulls a victim's standing allowance while permitting minAmountOut=0, and permissionless fillOrder with an attacker-controlled target/txData drains that tokenIn to the attacker, passing the only quality check (finalTokenOut-initialTokenOut > 0) with 1 wei."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:_modifyOrder",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "orders[] is never deleted on cancel/fill and _modifyOrder never checks the order is still pending; a recipient createOrder(a)->cancelOrder (refund #1 of a; _cancelOrder mutates only a memory copy so orders[id].amountIn stays a) then modifyOrder(amountInDelta=a-1, increasePosition=false) reads the still-populated orders[id] and refunds a-1 a second time from the pool.",
+      "poc_sketch": "Attacker createOrder(amountIn=a); cancelOrder(id) (receives a); modifyOrder(id, a-1, false) (receives a-1); assert attacker net received 2a-1 for a deposit of a and pool balance < sum of remaining orders' amountIn.",
+      "verdict": "REAL",
+      "reason": "_cancelOrder refunds and removes the id from pendingOrderIds but never deletes orders[id], and _modifyOrder reads the still-populated storage entry with no pending/active check, so an unprivileged recipient can cancel (refund #1 of amountIn) then modifyOrder(decrease, amountIn-1) to trigger a second refund from other users' pooled tokenIn."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/AutomationMaster.sol:generateOrderId",
+      "file": "contracts/automatedTrigger/AutomationMaster.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "generateOrderId=uint96(keccak256(sender,block.timestamp)) is not unique/monotonic and never collision-checked; two createOrder calls by one sender in one block collide -> orders[id] overwritten (first deposit orphaned) while pendingOrderIds gets id twice, so cancelOrder(id) is callable twice, each refunding the surviving order's amountIn from the pool.",
+      "poc_sketch": "In one block attacker createOrder(a) then createOrder(b>a) same sender on OracleLess (or Bracket); assert pendingOrderIds contains id twice; cancelOrder(id) twice; assert total refunds (2b) exceed total deposits (a+b), draining b-a from other users' pooled tokenIn. FCB_43ba218d8d63f04a4ef620_END",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'no-loss: a \"that state never occurs\" argument is the unreachable ground, not no-loss \u2014 cite the line that validates the state away'): generateOrderId deterministically returns identical uint96 ids for the same sender within one block via uint96(keccak256(sender, block.timestamp)) with no collision check, nonce, or uniqueness guard anywhere in the shown code, so an unprivileged attacker can force two orders onto one id and nothing in the given code prevents the overwrite of the stored order or a second refund."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/Bracket.sol:_createOrder:444",
+      "file": "contracts/automatedTrigger/Bracket.sol",
+      "class": "class=C17",
+      "severity": "High",
+      "exploit": "generateOrderId(sender)=uint96(keccak256(sender,block.timestamp)) returns the SAME id for two same-block creates by one sender, and _createOrder writes orders[id] and pushes the id with no fresh-slot/collision guard, so orders[X]=B while pendingOrderIds=[X,X] and a+b tokenIn is pooled; cancelOrder(X) twice each reads orders[X]=B and refunds b (orders[X] is never deleted), draining b-a of other users' pooled tokenIn (OracleLess.createOrder is identical and has no min-size/oracle gate).",
+      "poc_sketch": "Forge: deploy AutomationMaster+Bracket+mock IPythRelay oracles+mock ERC20, setMaxPendingOrders>=3; seed a victim order with amountIn=4e18; as attacker in ONE block call createOrder(amountIn=1e18) then createOrder(amountIn=5e18) (same tokenIn/tokenOut, recipient=attacker); assert Bracket.getPendingOrders() contains the id twice; call cancelOrder(X) twice; assert attacker received 10e18 vs 6e18 deposited and Bracket's tokenIn balance dropped below the victim's live amountIn.",
+      "verdict": "REAL",
+      "reason": "generateOrderId(msg.sender) is deterministic on (sender, block.timestamp) so two same-block creates collide on one id; _createOrder overwrites orders[id] and pushes a duplicate into pendingOrderIds with no fresh-slot guard, and _cancelOrder never deletes orders[id], so an unprivileged attacker double-cancels to refund the larger amountIn twice and drains other users' pooled tokenIn. FCB_354d1818d8e4d06347086d0_END"
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:_modifyOrder:171",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C17",
+      "severity": "High",
+      "exploit": "orders[] is never deleted on cancel/fill and _modifyOrder never verifies the slot is still pending, so after cancelOrder(X) refunds amountIn (array emptied, orders[X] left intact) the recipient calls modifyOrder(X, amountInDelta=amountIn-1, increasePosition=false) and is refunded a second time from the shared pool (Bracket.modifyOrder has the same never-cleared-slot re-refund).",
+      "poc_sketch": "Forge: deploy OracleLess+AutomationMaster+mock ERC20; seed a victim order; as attacker createOrder(amountIn=a=3e18); cancelOrder(X) (refund a); modifyOrder(X, amountInDelta=a-1, increasePosition=false, tokenOut/recipient unchanged); assert attacker net received 2a-1 vs a deposited and OracleLess tokenIn balance fell below the victim's amountIn.",
+      "verdict": "REAL",
+      "reason": "Neither _cancelOrder nor fillOrder deletes orders[orderId] and _modifyOrder reads only the surviving mapping entry (amountIn and recipient intact) with no pendingOrderIds-membership check, so a cancelled order's owner passes require(msg.sender==order.recipient) and require(amountInDelta<order.amountIn) and receives a second order.tokenIn.safeTransfer refund drained from the commingled deposits of other users."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:fillOrder:103",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C17",
+      "severity": "High",
+      "exploit": "fillOrder is not nonReentrant and execute()'s attacker-supplied target.call(txData) runs while orderId is still in orders[] and pendingOrderIds; a malicious target reenters fillOrder(sameIdx,sameOrderId) to settle/pay the same slot twice, or the outer removeFromArray(pendingOrderIdx) then runs on an array the inner call already shifted, removing a DIFFERENT order's slot and orphaning it \u2014 corrupting the id->index mapping against the pooled balance.",
+      "poc_sketch": "Forge: deploy OracleLess+mocks; create attacker order and a second victim order; fillOrder with target=malicious contract whose txData callback reenters fillOrder for the same (idx,orderId); assert the order's tokenOut is paid twice (or that after the outer removeFromArray the wrong id was dropped from pendingOrderIds) and the pool balance fell below the sum of remaining live orders' amountIn.",
+      "verdict": "REAL",
+      "reason": "fillOrder lacks nonReentrant and calls execute()'s attacker-controlled target.call before removeFromArray while orders[orderId] is never marked consumed, so a reentrant fill of a distinct-token order shifts pendingOrderIds and makes the outer removeFromArray delete a different (victim) order's slot, orphaning its pooled tokenIn and breaking the id->index mapping."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:createOrder:43",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C5",
+      "severity": "High",
+      "exploit": "createOrder pulls tokenIn from the caller-supplied `recipient` via procureTokens->safeTransferFrom(recipient,address(this),amount) with no msg.sender==recipient check (Bracket funds from msg.sender), so any unprivileged caller can spend a third party's live OracleLess/permit2 allowance by creating an order funded by the victim then calling the permissionless fillOrder with an attacker-controlled target/txData that sweeps the pooled tokenIn to the attacker while returning 1 wei of tokenOut (minAmountOut has no floor, set to 0), fully draining the victim's approval.",
+      "poc_sketch": "Foundry: deploy AutomationMaster (register oracles for T,X), OracleLess(master,permit2), EvilRouter; victim.approve(oracleLess, A); vm.prank(attacker) oracleLess.createOrder(T,X,A,0,victim,0,false,\"0x\") and assert T.balanceOf(oracleLess)==A; craft txData = {T.transferFrom(oracleLess,attacker,A); X.transfer(oracleLess,1)}; vm.prank(attacker) oracleLess.fillOrder(0,id,evil,txData); assert T.balanceOf(attacker)==A && X.balanceOf(victim)<=1 (victim's approval drained by a non-owner). FCB_ab10018d8d7078c1c37d70_END",
+      "verdict": "REAL",
+      "reason": "createOrder pulls tokenIn from the caller-supplied recipient with no msg.sender==recipient check, and the permissionless fillOrder/execute path approves an attacker-chosen target for the victim-funded amountIn while its only floor (minAmountOut) is set to 0 by the same attacker, letting the target sweep the victim's approved tokens for 1 wei of tokenOut."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:_modifyOrder",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C5",
+      "severity": "Medium",
+      "exploit": "promise #1 (_modifyOrder: A recipient can only withdraw the tokenIn still deposited for a live order, but because the orders mapping is never cleared after a fill or cancel and _modifyOrder never checks the order is still pending, a recipient can create then cancel an order and afterward call modifyOrder to be refunded its amountIn a second time) is broken at _modifyOrder: recipient createOrder->cancelOrder (refund #1, orders[id] never deleted) -> modifyOrder(id, amountInDelta<amountIn, increasePosition=false): _modifyOrder re-reads stale orders[id] and safeTransfer(recipient, amountInDelta) refunds a 2nd time from the pool (class C17/accounting, not C5; reported by that cell)",
+      "poc_sketch": "PoC sketch: drive the call sequence above from one or more accounts and assert the promised property fails",
+      "verdict": "REAL",
+      "reason": "orders[orderId] is never deleted on cancel/fill and _modifyOrder only checks msg.sender==order.recipient before re-reading the stale struct and executing safeTransfer(recipient, amountInDelta) against the still-full amountIn, so the recipient gets a second refund out of other users' pooled tokenIn."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/AutomationMaster.sol:generateOrderId",
+      "file": "contracts/automatedTrigger/AutomationMaster.sol",
+      "class": "class=C5",
+      "severity": "Medium",
+      "exploit": "promise #3 (generateOrderId: Every order gets a unique order id, but generateOrderId derives the id only from the sender and block.timestamp, so two orders created by one sender in the same block collide and one silently overwrites the other's stored parameters in the orders mapping) is broken at generateOrderId: two same-sender same-block creates -> keccak(sender,timestamp) identical -> orders[X] clobbered, pendingOrderIds=[X,X]; cancel/fill twice against the never-deleted slot (class C17/id-collision; same-sender only, so NOT a cross-user access-control break; reported by C17 cell)",
+      "poc_sketch": "PoC sketch: drive the call sequence above from one or more accounts and assert the promised property fails",
+      "verdict": "REAL",
+      "reason": "generateOrderId derives the id solely from sender and block.timestamp with no nonce, counter, or collision guard, so two same-sender creates in one block return an identical uint96 and nothing in the shown code prevents the resulting order overwrite \u2014 no guard, validation, zero-delta, brief listing, or scope exclusion is available to refute it."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:createOrder:49",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C26",
+      "severity": "High",
+      "exploit": "createOrder pulls tokenIn from the caller-supplied recipient (procureTokens(...,recipient,...) -> safeTransferFrom(recipient,this,amount)) with no msg.sender==recipient check and no minAmountOut floor, so any external attacker drains a victim's standing OracleLess allowance by creating an order funded from the victim with minAmountOut=0 then filling it through an attacker-chosen target that routes the tokenIn to itself and returns 1 wei tokenOut",
+      "poc_sketch": "Deploy AutomationMaster+OracleLess+2 MockERC20+MaliciousTarget; victim approves OracleLess for allowance; attacker calls createOrder(tokenIn=victimToken,amountIn=allowance,minAmountOut=0,recipient=victim,feeBips=0,false,\"0x\"); assert pool holds the victim's funds and victim balance==0; attacker fillOrder(0,id,maliciousTarget,txData) where target transferFrom(pool->attacker,allowance)+transfer(pool,1 wei tokenOut); assert attacker balance==allowance and victim tokenOut==1 (PoC test_arbitraryRecipient_drainsVictimApproval PASSES)",
+      "verdict": "REAL",
+      "reason": "procureTokens pulls tokenIn via safeTransferFrom(recipient,...) with no msg.sender==recipient check, and the unrestricted fillOrder/execute path approves an attacker-chosen target for amountIn while only requiring tokenOut > attacker-set minAmountOut(=0), so an attacker funds an order from a victim's standing allowance and drains the pulled tokenIn to their own target for 1 wei of tokenOut."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:execute:237",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C26",
+      "severity": "High",
+      "exploit": "the swap target forwarded from permissionless fillOrder is consumed with no allowlist and execute() does safeApprove(target,order.amountIn) that it never resets, so an attacker-chosen target that under-spends leaves a residual allowance to itself against the pooled balance and later transferFroms another honest order's tokenIn out of the contract",
+      "poc_sketch": "Deploy OracleLess; attacker createOrder(amountIn=A) and honest victim2 createOrder(amountIn=B) with A>B (pool==A+B); attacker fillOrder its own order via ResidualTarget.skim that spends 1 wei tokenIn and returns 1 wei tokenOut; assert pool==B and residual allowance A-1 stands to the target; call target.drainResidual(pool,attacker,B); assert attacker==A+B-1 and pool==0 (PoC test_uncheckedTarget_residualApproval_drainsPool PASSES)",
+      "verdict": "REAL",
+      "reason": "execute() grants safeApprove(target,order.amountIn) on an attacker-chosen, unallowlisted target from permissionless fillOrder and never resets it, so a target that under-spends leaves a residual ERC20 allowance the attacker later uses to transferFrom other honest orders' pooled tokenIn out of the contract."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/Bracket.sol:execute:539",
+      "file": "contracts/automatedTrigger/Bracket.sol",
+      "class": "class=C26",
+      "severity": "High",
+      "exploit": "Bracket.execute forwards the caller-supplied performUpkeep target with no allowlist and safeApprove(target,amountIn) that it never resets, so the identical under-spend leaves a residual allowance draining the Bracket pool; the nonReentrant guard does not cover a post-fill residual allowance",
+      "poc_sketch": "Deploy AutomationMaster+Bracket+2 MockERC20+2 MockOracle(1e8); registerOracle both tokens, setMaxPendingOrders(100), setMinOrderSize(0); attacker createOrder(swapPayload=\"\",takeProfit=0,stopPrice=0,amountIn=A,stopSlippage=10000) (immediately in-range, min-out=0) and honest victim2 createOrder(amountIn=B) with A>B; attacker performUpkeep(abi.encode(MasterUpkeepData{orderType:BRACKET,target:ResidualTarget,pendingOrderIdx:0,orderId:attId,amountIn:A,...,txData:skim})); assert pool==B; call target.drainResidual(pool,attacker,B); assert attacker==A+B-1 and pool==0 (PoC test_bracket_uncheckedTarget_residualApproval_drainsPool PASSES) FCB_dd62318d8d78d220e568e0_END",
+      "verdict": "REAL",
+      "reason": "execute() safeApproves the permissionless-caller-controlled target for amountIn and never resets it, and with no minimum-spend check (only an over-spend bound), a target that spends zero leaves a full residual allowance the attacker drains from other orders' pooled tokenIn in a separate later transferFrom that nonReentrant cannot cover."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/OracleLess.sol:_modifyOrder",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "class": "class=C26",
+      "severity": "Medium",
+      "exploit": "promise #1 (_modifyOrder: A recipient can only withdraw the tokenIn still deposited for a live order, but because the orders mapping is never cleared after a fill or cancel and _modifyOrder never checks the order is still pending, a recipient can create then cancel an order and afterward call modifyOrder to be refunded its amountIn a second time) is broken at _modifyOrder: createOrder -> cancelOrder (removeFromArray+refund, orders[id] NOT deleted) -> modifyOrder(id, increasePosition=false, amountInDelta=amountIn-1): _modifyOrder reads stale orders[id], require msg.sender==recipient passes, refunds amountInDelta a SECOND time from the pooled balance (real bug, class C24/C17-slot, outside C26 lens \u2014 sibling cell's deliverable)",
+      "poc_sketch": "PoC sketch: drive the call sequence above from one or more accounts and assert the promised property fails",
+      "verdict": "REAL",
+      "reason": "_cancelOrder removes the order from pendingOrderIds and refunds order.amountIn but never deletes orders[orderId], and _modifyOrder reads that stale slot with no pending-status check, so the recipient passes require(msg.sender==order.recipient) and triggers a second safeTransfer of amountInDelta from the pooled balance."
+    },
+    {
+      "subsystem": "automatedTrigger (part 1/2)",
+      "location": "contracts/automatedTrigger/AutomationMaster.sol:generateOrderId",
+      "file": "contracts/automatedTrigger/AutomationMaster.sol",
+      "class": "class=C26",
+      "severity": "Medium",
+      "exploit": "promise #3 (generateOrderId: Every order gets a unique order id, but generateOrderId derives the id only from the sender and block.timestamp, so two orders created by one sender in the same block collide and one silently overwrites the other's stored parameters in the orders mapping) is broken at generateOrderId: two createOrder by same sender in one block: uint96(keccak256(sender,block.timestamp)) collides; second orders[id] clobbers first while BOTH ids push -> duplicate in pendingOrderIds, orphaned funds (real bug, class C17, outside C26 lens)",
+      "poc_sketch": "PoC sketch: drive the call sequence above from one or more accounts and assert the promised property fails",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'no-loss: cite the path:line this ground requires, in code you were given'): generateOrderId returns uint96(keccak256(sender, block.timestamp)) with no nonce/counter and no uniqueness guard, so a single sender's two same-block orders deterministically collide, letting the second clobber the first's stored parameters while both ids are pushed \u2014 stranding the first order's funds with no guard in the provided in-scope code to stop it."
+    },
+    {
+      "subsystem": "automatedTrigger (part 2/2)",
+      "location": "contracts/automatedTrigger/StopLimit.sol:modifyOrder",
+      "file": "contracts/automatedTrigger/StopLimit.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "Attacker createOrder(N) then permissionless cancelOrder(X) refunds N and removes X from pendingOrderIds but never delete orders[X]; attacker then modifyOrder(X,_amountInDelta=N-min,increasePosition=false) reads stale orders[X].amountIn=N, passes require(_amountInDelta<order.amountIn) and checkMinOrderSize, and safeTransfers a SECOND N-min from other depositors' commingled tokenIn \u2014 a create\u2192exit round-trip netting ~2N-min for a 1N deposit, draining the pool.",
+      "poc_sketch": "Deploy StopLimit with mock MASTER (oracles(tokenIn/tokenOut)!=0, maxPendingOrders large, checkMinOrderSize passing at floor `min`, getExchangeRate constant) and mock Bracket + Permit2 stub. Seed victim deposit: victim createOrder(amountIn=V); assert token.balanceOf(stopLimit)==V. As attacker: token.approve(stopLimit,N); createOrder(amountIn=N,permit=false)->orderId X; assert balanceOf(stopLimit)==V+N. cancelOrder(X); assert attacker received N and balanceOf(stopLimit)==V. modifyOrder(X,_amountInDelta=N-min,_tokenOut=tokenOut,_recipient=attacker,increasePosition=false,slippages<=10000,permit=false); assert attacker received an ADDITIONAL N-min (attacker net = N-min above deposit) and balanceOf(stopLimit)==V-(N-min) < V (victim shortfall). Loop over many self-orders to drain to floor.",
+      "verdict": "REAL",
+      "reason": "_cancelOrder refunds the full amountIn but never deletes or zeroes orders[orderId], and modifyOrder gates only on order.recipient with no pending-membership check, so a cancelled order's stale amountIn passes require(_amountInDelta<order.amountIn) and drives a second safeTransfer out of other depositors' commingled tokenIn. FCB_38f46a18d8e70a47f57ec40_END"
+    },
+    {
+      "subsystem": "automatedTrigger (part 2/2)",
+      "location": "contracts/automatedTrigger/StopLimit.sol:createOrder:163",
+      "file": "contracts/automatedTrigger/StopLimit.sol",
+      "class": "class=C7",
+      "severity": "High",
+      "exploit": "createOrder passes caller-controlled `recipient` as the Permit2 signer to handlePermit with no require(msg.sender==recipient), and the signed PermitSingle binds only {token,amount,spender} \u2014 not the order params; an attacker copies a victim's permit from the victim's pending createOrder tx and front-runs createOrder(recipient=victim, tokenIn/amountIn matching the sig, swapOnFill=true, swapSlippage=10000, stopLimitPrice=current rate) then permissionless performUpkeep(target=attacker swap contract), and Bracket.execute's floor getMinAmountReceived(...,10000)=0 (require >0=1 wei) lets the attacker's target pull the victim's full amountIn and return 1 wei, stealing the victim's entire deposit",
+      "poc_sketch": "Foundry: deploy AutomationMaster+mock oracles for T,U (rate r), StopLimit, Bracket, MockPermit2, malicious SwapTarget; victim signs PermitSingle{token:T,amount:N,spender:StopLimit}; attacker calls StopLimit.createOrder(stopLimitPrice=r,takeProfit=..,stopPrice=..,amountIn=N,tokenIn=T,tokenOut=U,recipient=victim,feeBips=0,slippages,swapSlippage=10000,swapOnFill=true,permit=true,permitPayload=victimSig); then StopLimit.performUpkeep(abi.encode(MasterUpkeepData{pendingOrderIdx:0,target:SwapTarget,txData:(T.transferFrom(Bracket->attacker,N) + U.transfer(Bracket,1)),...})); assert T.balanceOf(attacker)==N, victim T balance dropped by N, and victim's Bracket order amountIn==1 wei",
+      "verdict": "REAL",
+      "reason": "createOrder has no require(msg.sender==recipient) and its permit branch uses the caller-supplied recipient as the Permit2 owner, so a replayed mempool permit lets an unprivileged attacker fund a victim-owned order with attacker-chosen swapOnFill/swapSlippage=10000 and then permissionlessly fill it via an attacker-controlled swap target, with no guard in StopLimit stopping any step."
+    },
+    {
+      "subsystem": "automatedTrigger (part 2/2)",
+      "location": "contracts/automatedTrigger/StopLimit.sol:modifyOrder",
+      "file": "contracts/automatedTrigger/StopLimit.sol",
+      "class": "class=C24",
+      "severity": "High",
+      "exploit": "An external attacker createOrder(N) then cancelOrder (refund #1, id removed from pendingOrderIds but orders[id] never deleted) then modifyOrder(id, _amountInDelta=N-min, increasePosition=false) passes the stale require(_amountInDelta<order.amountIn) and safeTransfers a second refund of N-min out of other depositors' commingled tokenIn, netting ~2N-min for an N deposit.",
+      "poc_sketch": "Deploy a MockERC20, a MockMaster (oracles!=0, maxPendingOrders large, checkMinOrderSize>=min, monotonic generateOrderId, getExchangeRate=1e18) and StopLimit; have a victim createOrder(100e18) so funds are commingled; mint attacker 100e18; attacker createOrder(100e18); attacker cancelOrder(X) and assert orders[X].amountIn still==100e18; attacker modifyOrder(X, _amountInDelta=99e18, increasePosition=false); assert attacker balance increased by 99e18 above their own deposit and contract balance dropped by exactly 99e18 below the victim's deposit (victim no longer fully backed). (Reproduced: forge test [PASS] test_double_refund_drain, surplus==N-MIN==99e18, contract short by 99e18.)",
+      "verdict": "REAL",
+      "reason": "_cancelOrder refunds and removes the id from pendingOrderIds but never deletes orders[id], and modifyOrder gates only on msg.sender==order.recipient (never on the order being active), so the else-branch require(_amountInDelta<order.amountIn) reads the stale amountIn=N and safeTransfers a second refund of N-min from commingled depositor funds."
+    },
+    {
+      "subsystem": "automatedTrigger (part 2/2)",
+      "location": "contracts/automatedTrigger/StopLimit.sol:modifyOrder:243",
+      "file": "contracts/automatedTrigger/StopLimit.sol",
+      "class": "class=C17",
+      "severity": "High",
+      "exploit": "orders[orderId] is never deleted on cancel/fill, so after an unprivileged attacker does createOrder(N) then cancelOrder(X) (refund #1 of N, X removed from pendingOrderIds, orders[X].amountIn still N), a call modifyOrder(X,_amountInDelta=N-min,increasePosition=false) reads the stale struct, passes require(_amountInDelta<order.amountIn) and checkMinOrderSize, and executes a SECOND safeTransfer(attacker,N-min) drawn from other depositors' commingled tokenIn \u2014 net ~2N-min out for N in, recyclable to drain the pot.",
+      "poc_sketch": "Foundry: deploy StopLimit with a mock IAutomationMaster (generateOrderId = monotonic counter, checkMinOrderSize accepting any amount>=min, maxPendingOrders large, oracles(t)!=0, getExchangeRate stub), a mock IPermit2, a mock IBracket, and an ERC20 tokenIn minted to victim+attacker. victim.createOrder(amountIn=100) so StopLimit holds 100 backing victim. attacker.createOrder(amountIn=100) (StopLimit holds 200; capture attackerId via OrderCreated). attacker.cancelOrder(attackerId); assert token.balanceOf(attacker) back to its pre-deposit value, token.balanceOf(StopLimit)==100, and orders(attackerId).amountIn==100 (struct NOT cleared). attacker.modifyOrder(attackerId,_amountInDelta=100-min,increasePosition=false,other args valid); assert token.balanceOf(attacker) rose by 100-min, token.balanceOf(StopLimit) < 100 (victim's deposit now under-backed), and attacker net balance > its total deposits (value conservation broken). FCB_176ec218d8d97c8bb46ae40_END",
+      "verdict": "REAL",
+      "reason": "_cancelOrder removes the id from pendingOrderIds and refunds but never deletes orders[orderId], and modifyOrder reads that stale struct with no active/pending check, so require(_amountInDelta<order.amountIn) and checkMinOrderSize pass on the pre-cancel amountIn and a second safeTransfer(attacker, N-min) drains other depositors' commingled tokenIn."
+    },
+    {
+      "subsystem": "automatedTrigger (part 2/2)",
+      "location": "contracts/automatedTrigger/StopLimit.sol:modifyOrder:240",
+      "file": "contracts/automatedTrigger/StopLimit.sol",
+      "class": "class=C5",
+      "severity": "High",
+      "exploit": "External attacker (no role): createOrder(recipient=self, amountIn=N) \u2192 contract holds N, orders[X].amountIn=N; cancelOrder(X) \u2192 _cancelOrder L360 refunds N to attacker and removeFromArray drops X from pendingOrderIds but orders[X] is NEVER deleted so orders[X].amountIn stays N; then modifyOrder(X, _amountInDelta=N-min, increasePosition=false): L207 owner-check passes on the stale struct, L231 (_amountInDelta < order.amountIn) passes, checkMinOrderSize(newAmountIn=min) passes, and L240 safeTransfer pays a SECOND N-min out of OTHER users' commingled tokenIn \u2014 modifyOrder never verifies orderId \u2208 pendingOrderIds; repeat across many self-created orders to drain the pot (worse fill-variant: let permissionless performUpkeep fill X \u2014 attacker keeps the ~N Bracket position \u2014 then modify-decrease the zombie to skim ~N more with zero self-loss)",
+      "poc_sketch": "Foundry: deploy StopLimit with a mock IAutomationMaster (oracles(token)!=0, checkMinOrderSize passes for >=min, generateOrderId monotonic, maxPendingOrders high) + mock IBracket + mock IPermit2; seed the contract with a second (victim) user's order of N tokens so commingled balance = 2N; as attacker EOA: createOrder(amountIn=N, recipient=attacker, tokenIn, tokenOut, permit=false) with prior approval; cancelOrder(X); modifyOrder(orderId=X, _amountInDelta=N-min, increasePosition=false, other fields valid); assert attacker tokenIn balance == 2N-min (> N deposited) AND contract tokenIn balance == min (< the victim's still-pending N), i.e. contractBalance < sum(orders[id].amountIn for id in pendingOrderIds) \u2014 the victim can no longer be refunded in full. FCB_1a865018d8da4c9a936af50_END",
+      "verdict": "REAL",
+      "reason": "_cancelOrder removes X from pendingOrderIds but never deletes orders[X], and modifyOrder loads that stale struct (amountIn=N, recipient=attacker) with no pending-membership check, so after the cancel already refunded N the decrease branch at L240 safeTransfers a second N-min out of other users' commingled tokenIn to the unprivileged recipient."
+    },
+    {
+      "subsystem": "automatedTrigger (part 2/2)",
+      "location": "contracts/automatedTrigger/StopLimit.sol:modifyOrder:283",
+      "file": "contracts/automatedTrigger/StopLimit.sol",
+      "class": "class=C26",
+      "severity": "Medium",
+      "exploit": "Any order owner (unprivileged) calls modifyOrder with _amountInDelta==0 (or increasePosition==true), which skips the only `slippage<=10000` bound (it is nested inside the decrease `else` branch), writing swapSlippage/stopSlippage/takeProfitSlippage=65535 into orders[orderId]; the order then permanently reverts in performUpkeep because Bracket re-checks the bound (Bracket.sol:466-471/413), bricking that order's fill, and since checkUpkeep returns the FIRST in-range order (removeFromArray is order-preserving shift), an early in-range poisoned order stalls the standard checkUpkeep->performUpkeep automation for every legitimate pending order behind it (griefing DoS on shared automation).",
+      "poc_sketch": "Foundry (VERIFIED, 4/4 pass, poc-C26/C26.t.sol): deploy real StopLimit + real Bracket + mock MASTER (view stubs: oracles!=0, getExchangeRate=1e18, generateOrderId from caller pending-count, checkMinOrderSize no-op) + mock ERC20. (1) attacker createOrder(amountIn=100e18, tp/stop/swapSlippage=100, stopLimitPrice=rate so in-range); (2) attacker modifyOrder(id,_amountInDelta=0,_takeProfitSlippage=_stopSlippage=_swapSlippage=65535) \u2014 assert NO revert and orders[id] slippage fields==65535; (3) checkUpkeep()->performUpkeep(pd) \u2014 assert revert(\"BIPS > 10k\"); (4) create a second in-range legit order, assert checkUpkeep still returns pendingOrderIdx==0 (poisoned) and performUpkeep reverts, so the legit order is never filled by the standard flow. FCB_1df2cb18d8dac104e5a8730_END",
+      "verdict": "REAL",
+      "reason": "The slippage<=10000 require is nested only in the decrease (_amountInDelta!=0 && !increasePosition) branch, so any order owner can call modifyOrder with _amountInDelta==0 or increasePosition==true to store slippage=65535 into their own pending order, which then permanently reverts on fill (the same \"BIPS > 10k\" idiom at StopLimit.sol:246/324 that Bracket re-applies to the slippage it receives) while checkUpkeep keeps re-selecting that first in-range, never-removed order and stalls the shared automation queue for legitimate orders behind it."
+    },
+    {
+      "subsystem": "Price oracle relay interfaces",
+      "location": "contracts/oracle/External/PythOracle.sol:currentValue:27",
+      "file": "contracts/oracle/External/PythOracle.sol",
+      "class": "class=C2",
+      "severity": "High",
+      "exploit": "Inverted staleness require (publishTime < now - noOlderThan) plus getPriceUnsafe means currentValue() serves arbitrarily-stale frozen Pyth prices on every read path (getExchangeRate/getMinAmountReceived) and reverts on fresh ones; an unprivileged caller invokes the permissionless Bracket/StopLimit.performUpkeep on an in-range victim order, swaps at the real market price via attacker-supplied target/txData, delivers only the stale-rate getMinAmountReceived floor, and keeps the delta.",
+      "poc_sketch": "Foundry: deploy MockPyth returning a Price with publishTime=now-100000, price=P_stale; deploy PythOracle(mockPyth,id,noOlderThan=50000,token); assert currentValue()==P_stale (stale served) and that with publishTime=now it reverts \"Stale Price\"; then in AutomationMaster+Bracket, register two PythOracles, create a victim Bracket order, call performUpkeep from a non-owner EOA with target=mockRouter that returns exactly getMinAmountReceived, and assert attacker nets tokenOut_market - minReceived > 0 while victim receives less than fair value.",
+      "verdict": "REAL",
+      "reason": "The inverted staleness require (`publishTime < block.timestamp - noOlderThan`) over an unchecked getPriceUnsafe read reverts on fresh prices and passes only stale ones, so currentValue feeds a frozen stale rate into getExchangeRate/getMinAmountReceived, letting an unprivileged performUpkeep caller fill an in-range order against a stale floor while swapping at real market price and keeping the delta, with no guard in the shown code stopping it."
+    },
+    {
+      "subsystem": "Price oracle relay interfaces",
+      "location": "contracts/oracle/External/OracleRelay.sol:currentValue:19",
+      "file": "contracts/oracle/External/OracleRelay.sol",
+      "class": "class=C2",
+      "severity": "High",
+      "exploit": "Chainlink relay uses latestAnswer() with only require(latest>0) \u2014 no staleness/roundId/answeredInRound and no Base-L2 sequencer-uptime+grace check (startedAt==0 unhandled), so a frozen feed or post-sequencer-downtime window serves a stale price on mint/withdraw/liquidation-equivalent order paths, enabling the same permissionless stale-rate fill drain; relay is deployed and registered by the repo (deployTriggerV2.ts:230-238,:201) with registerOracle performing no validation.",
+      "poc_sketch": "Foundry: deploy MockAggregator whose latestAnswer() returns a frozen answer while latestTimestamp() is far in the past; deploy OracleRelay(token,agg); assert currentValue() returns the frozen answer with no revert; register it in AutomationMaster and show performUpkeep fills a victim order at the frozen rate, extracting value versus the live market price.",
+      "verdict": "REAL",
+      "reason": "currentValue() returns aggregator.latestAnswer() guarded only by require(latest>0) with no updatedAt staleness, roundId/answeredInRound, or L2 sequencer-uptime/grace check, so a frozen or post-downtime feed serves a stale price unguarded into permissionless order-fill exchange-rate logic, letting an unprivileged filler extract value, with no validating setter, in-scope status, and an empty known-issue brief leaving nothing to stop it."
+    },
+    {
+      "subsystem": "External price oracle relays (Chainlink Pyth UniV3-TWAP)",
+      "location": "contracts/oracle/External/PythOracle.sol:currentValue:29",
+      "file": "contracts/oracle/External/PythOracle.sol",
+      "class": "class=C2",
+      "severity": "High",
+      "exploit": "Inverted staleness require reverts on fresh Pyth prices and returns ONLY prices >= noOlderThan (50000s) stale; a permissionless caller of Bracket.performUpkeep fills user orders at the stale exchange rate and drains value through the oracle-derived getMinAmountReceived slippage floor (and DoSes order creation/fill when Pyth is fresh)",
+      "poc_sketch": "Fork L2; deploy PythOracle(pyth,wethId,50000,weth); assert currentValue() reverts \"Stale Price\" right after updatePriceFeeds (fresh), then warp >50000s and assert it returns the now-stale price; register it in AutomationMaster, create a Bracket order, warp so on-chain Pyth price diverges from real, call performUpkeep with a self-controlled target/txData delivering only getMinAmountReceived and assert attacker captures the surplus.",
+      "verdict": "REAL",
+      "reason": "The comparison operator is reversed (publishTime < block.timestamp - noOlderThan), so currentValue() provably reverts on every fresh Pyth price and returns only >= noOlderThan-stale prices to in-scope permissionless consumers, with no guard, no validating check, and no scope exclusion covering it. FCB_3bd0c318d8e8c98cce145c0_END"
+    },
+    {
+      "subsystem": "External price oracle relays (Chainlink Pyth UniV3-TWAP)",
+      "location": "contracts/oracle/External/TokenEthRelay.sol:currentValue:29",
+      "file": "contracts/oracle/External/TokenEthRelay.sol",
+      "class": "class=C2",
+      "severity": "High",
+      "exploit": "token/ETH feed divided by (not multiplied by) ETH/USD plus a hand-tuned 1e5 makes wstETH's reported USD price = truth * 1e7/ethPrice\u00b2, exact only at ETH=$3162 (2.5x over at $2000, 0.4x at $5000); attacker waits for ETH off $3162 and creates/fills wstETH Bracket orders, extracting the delta via the skewed getMinAmountReceived floor and mis-fired checkInRange trigger \u2014 no privilege needed",
+      "poc_sketch": "Fork L2; deploy OracleRelay(weth,ethUsdFeed) as ethOracle and TokenEthRelay(wsteth,wstethEthFeed,ethOracle); assert currentValue()==truth only near ETH=$3162 and diverges by 1e7/P2\u00b2 otherwise; register in AutomationMaster, place a wstETH/USDC bracket order, then permissionless performUpkeep with a route paying exactly getMinAmountReceived and assert user receives 2.5x-too-few tokens.",
+      "verdict": "REAL",
+      "reason": "currentValue() unconditionally returns uint256(latest)/ethPrice*1e5, dividing by the ETH/USD price instead of multiplying with no guard or setter validating the scale, so the USD price is permanently skewed by 1e7/ethPrice^2 (up to 2.5x at $2000) - a mispricing far larger than any consumer slippage bound - letting unprivileged users who create or fill orders reading this relay capture the delta."
+    },
+    {
+      "subsystem": "External price oracle relays (Chainlink Pyth UniV3-TWAP)",
+      "location": "contracts/oracle/External/OracleRelay.sol:currentValue:19",
+      "file": "contracts/oracle/External/OracleRelay.sol",
+      "class": "class=C2",
+      "severity": "Medium",
+      "exploit": "Uses deprecated latestAnswer() with only require(latest>0) \u2014 no updatedAt staleness, no roundId/answeredInRound completeness, and no Chainlink L2 sequencer-uptime/grace check on a Base/Arbitrum/Optimism deployment; after sequencer downtime+recovery or against a frozen feed the relay reports the last (wrong) value as live, letting a permissionless performUpkeep caller fill orders at the stale price via the oracle-derived slippage floor",
+      "poc_sketch": "Fork Base at a block during/just after a sequencer-uptime-feed downtime window (or mock an aggregator whose latestAnswer is frozen); deploy OracleRelay, assert currentValue() returns the stale answer with no revert; register it, create an order, and assert performUpkeep executes at the stale exchange rate.",
+      "verdict": "REAL",
+      "reason": "currentValue() reads deprecated aggregator.latestAnswer() and gates only on require(latest > 0), with no updatedAt staleness check, no roundId/answeredInRound completeness check, and no L2 sequencer-uptime/grace guard, so a frozen or post-downtime feed's last value is returned as live and no guard in the code stops it."
+    },
+    {
+      "subsystem": "External price oracle relays (Chainlink Pyth UniV3-TWAP)",
+      "location": "contracts/oracle/External/UniV3TickTwapOracle.sol:currentValue:26",
+      "file": "contracts/oracle/External/UniV3TickTwapOracle.sol",
+      "class": "class=C19",
+      "severity": "High",
+      "exploit": "The wired UniV3 pool's TWAP tick is routinely negative (token0/token1 ordering); getLastSeconds returns a correct negative int24 but currentValue does uint256(uint24(tick)), a same-width reinterpret cast that silently wraps a negative tick into a ~16.58e6 positive value unrelated to the true tick, corrupting the price every consumer reads for this asset with no privileged role and no guard.",
+      "poc_sketch": "Deploy a MockPool whose observe() returns tickCumulatives with (tc[0]-tc[1]) = -200000*lookback; construct UniV3TickTwapOracle(1800, pool); assert currentValue() == 16577216 (= 2^24-200000) and != any sane tick/price \u2014 PoC PASSES (test_A_negativeTickWraps).",
+      "verdict": "REAL",
+      "reason": "getLastSeconds explicitly reconstructs and returns a signed negative int24 for any wired pool whose TWAP tick is negative (a state the validation-free constructor admits), and line 26's uint256(uint24(tick)) reinterprets that negative value bit-for-bit into a ~2^24 positive number with no require, sign-check, or role gate anywhere in the path, so every unprivileged currentValue() read returns a corrupted price."
+    },
+    {
+      "subsystem": "External price oracle relays (Chainlink Pyth UniV3-TWAP)",
+      "location": "contracts/oracle/External/PythOracle.sol:currentValue:29",
+      "file": "contracts/oracle/External/PythOracle.sol",
+      "class": "class=C19",
+      "severity": "High",
+      "exploit": "The staleness require is inverted (price.publishTime < block.timestamp - noOlderThan): a FRESH Pyth price (publishTime ~ now) fails it so currentValue() reverts, permanently freezing every mint/borrow/withdraw/liquidate that prices this asset (revert-DoS on the shared read path); when it does return it serves only prices >= noOlderThan old.",
+      "poc_sketch": "Deploy a MockPyth returning publishTime == block.timestamp; construct PythOracle(mock, id, 3600, underlying); vm.expectRevert(\"Stale Price\") on currentValue() (PoC test_B_revertsOnFreshPrice PASSES), and assert a stale price (publishTime < now-3600) is instead returned (test_B_servesOnlyStalePrice PASSES). FCB_2990f618d8de0795e7c2f20_END",
+      "verdict": "REAL",
+      "reason": "The require at line 29 is logically inverted (publishTime < block.timestamp - noOlderThan), so any fresh Pyth price fails it and currentValue() reverts under normal operation, permanently DoSing the shared oracle read path for every unprivileged caller with no guard preventing it."
+    },
+    {
+      "subsystem": "External price oracle relays (Chainlink Pyth UniV3-TWAP)",
+      "location": "contracts/oracle/External/TokenEthRelay.sol:currentValue:29",
+      "file": "contracts/oracle/External/TokenEthRelay.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "Across the composed seam (ETH-denominated tokenFeed / USD ethOracle) currentValue does divide-instead-of-multiply, so wstETH's reported USD price scales as ~1e23/ethPrice^2 (10x high at ETH=$1000, 0.28x at ETH=$6000) and, since AutomationMaster/Bracket apply no deviation or two-source check, an unprivileged caller of the permissionless Bracket.performUpkeep supplies a self-serving swap target/txData and drains the order owner's escrowed tokenIn because the getMinAmountReceived floor is computed from the mispriced value.",
+      "poc_sketch": "Fork Base; deploy TokenEthRelay(wstETH, wstETH_CL_FEED, OracleRelay(WETH,wethFeed)) exactly as deployTriggerV2.ts:159; assert currentValue() != wstETHusd_1e8 at the current ETH level (~10x off when ETH<<$3162); registerOracle it, createOrder for wstETH, then call Bracket.performUpkeep with an attacker-controlled target that consumes amountIn and returns just above the too-low getMinAmountReceived floor, and assert the attacker keeps the spread while the recipient gets dust.",
+      "verdict": "REAL",
+      "reason": "The constructor imposes no validation and the only require checks latest>0, so currentValue deterministically returns the inverted price (~1e7/ethPrice^2 of fair), and no citable guard prevents the in-scope permissionless Bracket.performUpkeep from using that underpriced value as the swap-output floor, so an unprivileged caller's crafted swap drains the order owner's escrowed tokenIn."
+    },
+    {
+      "subsystem": "External price oracle relays (Chainlink Pyth UniV3-TWAP)",
+      "location": "contracts/oracle/External/PythOracle.sol:currentValue:29",
+      "file": "contracts/oracle/External/PythOracle.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "The read-path staleness require is inverted (price.publishTime < block.timestamp - noOlderThan), so currentValue() reverts on every FRESH Pyth price \u2014 permanently DoSing createOrder/checkMinOrderSize and performUpkeep/checkInRange for any Pyth-priced token \u2014 and only returns when the price is already >= noOlderThan seconds stale, contradicting updatePrice()'s correct getPriceNoOlderThan and serving a stale mispriced value with no consumer backstop.",
+      "poc_sketch": "Fork Base; deploy PythOracle(pyth, wethId, 50000, WETH) as scripts/msc.ts:42; call updatePrice to push a fresh price then assert currentValue() reverts \"Stale Price\"; registerOracle it in AutomationMaster and assert createOrder/checkMinOrderSize revert (liveness freeze); then vm.warp past noOlderThan and assert it now returns the stale value used unchanged as fair price.",
+      "verdict": "REAL",
+      "reason": "The require passes only when age > noOlderThan (stale) and reverts \"Stale Price\" for every fresh price where age <= noOlderThan, so currentValue() reverts under normal operation for any Pyth-priced token, DoSing every consumer that reads it and otherwise returning a stale value \u2014 an inversion confirmed against updatePrice()'s correct getPriceNoOlderThan."
+    },
+    {
+      "subsystem": "External price oracle relays (Chainlink Pyth UniV3-TWAP)",
+      "location": "contracts/oracle/External/OracleRelay.sol:currentValue:19",
+      "file": "contracts/oracle/External/OracleRelay.sol",
+      "class": "class=C15",
+      "severity": "Medium",
+      "exploit": "OracleRelay reads deprecated latestAnswer() with only a >0 check \u2014 no updatedAt/round/answeredInRound staleness and no Base L2 sequencer-uptime/grace check \u2014 so during sequencer recovery grace or a frozen feed it reports the last stale value as live to AutomationMaster (no backstop) and to TokenEthRelay's composed ethOracle leg, letting an attacker transacting in that window fill orders against a stale exchangeRate.",
+      "poc_sketch": "Fork Base at a block where the ETH/USD feed has gone stale (or mock latestAnswer to a frozen value); deploy OracleRelay(WETH, wethFeed) as deployTriggerV2.ts:230; assert currentValue() returns the stale answer with no revert; register it and show an order fills at the stale exchangeRate via the permissionless Bracket.performUpkeep. FCB_2a79c018d8de9444975af60_END",
+      "verdict": "REAL",
+      "reason": "currentValue() returns uint256(aggregator.latestAnswer()) guarded only by require(latest > 0)\u2014no updatedAt/answeredInRound staleness check and no L2 sequencer-uptime/grace check, with a constructor that validates nothing\u2014so on a frozen/deprecated feed or during sequencer-recovery grace it hands the last stale value to the in-scope consumers as live, and no in-code guard stops an unprivileged actor from filling orders against that stale exchange rate. FCB_3e1c7118d8ea32567023830_END"
+    },
+    {
+      "subsystem": "External price oracle relays (Chainlink Pyth UniV3-TWAP)",
+      "location": "contracts/oracle/External/TokenEthRelay.sol:currentValue:28",
+      "file": "contracts/oracle/External/TokenEthRelay.sol",
+      "class": "class=C22",
+      "severity": "High",
+      "exploit": "TokenEthRelay divides an ETH-denominated wstETH/ETH feed (18-dec) by an ETH/USD price (1e8) and *1e5, so the reported \"USD price\" = wsteth_usd/eth_usd\u00b2 (exact only at ETH\u2248$3162); AutomationMaster consumes it as a 1e8 USD price with no deviation check, so an unprivileged keeper waits for permissionless ETH movement past the tuning point and fills a wstETH order via the accessless performUpkeep, delivering only the understated min-amount-out (10 wstETH at ETH=$5000: ~$24k delivered vs $50k fair, ~$26k stolen)",
+      "poc_sketch": "Foundry: deploy AutomationMaster+Bracket; register TokenEthRelay(wstETH, mock wstETH/ETH feed=1.2e18, OracleRelay(mock ETH/USD)) for wstETH per deployTriggerV2.ts:159 and a 1e8 OracleRelay for USDC; assert currentValue()==6000e8 at ETH=2000e8 and ==2400e8 at ETH=5000e8 for the same 1.2 ratio (fair=2400/6000); create a 10-wstETH->USDC bracket order in range; from an unprivileged EOA call Bracket.performUpkeep with a target that returns exactly getMinAmountReceived+1 USDC; assert owner receives ~$24k while a fair swap yields ~$50k -> keeper extracted ~$26k",
+      "verdict": "REAL",
+      "reason": "Line 28 divides an 18-dec token/ETH feed by a 1e8 ETH/USD price and multiplies by 1e5 instead of multiplying the feeds, so currentValue() returns true_price*(1e7/E^2) \u2014 correct only at ETH~$3162 and drifting for every other ETH price \u2014 with no clamp or deviation guard, and the permissionless keeper fill recomputes the order's minimum-out from this live understated price, so no in-code guard stops the skim. FCB_3e6db818d8ea5196b6a83b0_END"
+    },
+    {
+      "subsystem": "External price oracle relays (Chainlink Pyth UniV3-TWAP)",
+      "location": "contracts/oracle/External/UniV3TickTwapOracle.sol:currentValue:26",
+      "file": "contracts/oracle/External/UniV3TickTwapOracle.sol",
+      "class": "class=C22",
+      "severity": "High",
+      "exploit": "currentValue returns a Uniswap tick (uint24(int24 tick), a base-1.0001 logarithm, negatives wrapping to ~16.7e6) but AutomationMaster._getExchangeRate/getMinAmountReceived/checkMinOrderSize consume every relay's currentValue() uniformly as a 1e8 USD price (AutomationMaster.sol:40,82-86), and registerOracle (AutomationMaster.sol:41-49) admits this shipped relay with no unit validation, so a token wired to it yields an exchangeRate off by orders of magnitude, collapsing the min-amount-out floor and letting the accessless keeper drain the order",
+      "poc_sketch": "Foundry: register UniV3TickTwapOracle(mock pool observe -> tick\u2248200000) as oracle for tokenIn and a 1e8 OracleRelay for tokenOut; assert currentValue()\u2248200000 (tick) not \u22483000e8; create an in-range bracket order; call permissionless Bracket.performUpkeep with a target returning dust tokenOut; assert getMinAmountReceived()\u22480 so the guard passes while the order owner receives ~nothing",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'guard: the cited path:line is not in the code you were given'): currentValue() verifiably returns a raw Uniswap tick (a base-1.0001 log, negatives wrapping via uint24 to ~16.7e6) rather than a 1e8-scaled price, so once this IOracleRelay is registered a permissionless keeper fills orders against an exchange rate off by orders of magnitude with no guard in the provided code correcting the unit mismatch, and the only available refutations reduce to trusted-config (an explicitly insufficient ground) or an out-of-scope-by-omission claim no citable exclusion row supports."
+    },
+    {
+      "subsystem": "Uniswap V3 TWAP oracle tick math",
+      "location": "contracts/oracle/External/UniV3TickTwapOracle.sol:currentValue:26",
+      "file": "contracts/oracle/External/UniV3TickTwapOracle.sol",
+      "class": "class=C19",
+      "severity": "High",
+      "exploit": "currentValue returns uint256(uint24(meanTick)); whenever the pool's TWAP mean tick is negative (a routine state) the uint24 sign-reinterpret yields ~15.9M-16.8M instead of a 1e8 USD price, so once this oracle is registered in AutomationMaster for a token's tokenOut, exchangeRate=priceIn*1e8/priceOut collapses, getMinAmountReceived becomes ~0, and a permissionless Bracket.performUpkeep filler passes the slippage require while returning near-zero output, stealing the order maker's tokenIn.",
+      "poc_sketch": "Foundry: fork mainnet, deploy UniV3TickTwapOracle(lookback=1800, pool) on a real pool sitting at a negative tick (e.g. a WETH/USDC ordering giving tick<0); assert oracle.currentValue() > 15_000_000 (garbage, not a 1e8 price). Deploy AutomationMaster+Bracket, owner registerOracle for tokenOut=that token; a maker creates a bracket order (amountIn, tokenIn, tokenOut, stopSlippage=500). As an unprivileged filler call performUpkeep with target=a mock router that pays out 1 wei of tokenOut; assert execute's require(finalTokenOut-initialTokenOut > getMinAmountReceived(...)) passes because getMinAmountReceived ~= 0, and assert the filler netted ~all of amountIn.",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'no-loss: cite the path:line this ground requires, in code you were given'): Line 26's uint256(uint24(tick)) sign-reinterprets any negative TWAP mean tick (a routine, admitted UniV3 state) into a ~15.9M-16.8M value with no sign guard, corrupting the 1e8-scaled price AutomationMaster consumes; for a tokenOut whose true price is below the corrupted value this under-sets getMinAmountReceived, letting an unprivileged performUpkeep filler pass the slippage require while returning near-zero output."
+    },
+    {
+      "subsystem": "Uniswap V3 TWAP oracle tick math",
+      "location": "contracts/oracle/External/UniV3TickTwapOracle.sol:getLastSeconds:48",
+      "file": "contracts/oracle/External/UniV3TickTwapOracle.sol",
+      "class": "class=C19",
+      "severity": "Medium",
+      "exploit": "The constructor never validates _lookback!=0, so a lookback==0 deployment (an admitted uint32 input) makes getLastSeconds compute observe([0,0]) with equal cumulatives, tickTimeDifference==0, and bigTick=tickAbs/tickTimeDifference triggers a Panic(0x12) division-by-zero revert on every currentValue() call, permanently bricking the price read and every AutomationMaster path (getExchangeRate/getMinAmountReceived/checkMinOrderSize) that routes through it.",
+      "poc_sketch": "Foundry: deploy UniV3TickTwapOracle(0, pool) (constructor at lines 19-23 accepts it with no revert), then expect currentValue() to revert with Panic 0x12; register it in AutomationMaster and assert getMinAmountReceived / checkMinOrderSize also revert, confirming the shared read path is frozen for a config the code admits. FCB_3072af18d8e1f6d03371ca0_END",
+      "verdict": "REAL",
+      "reason": "The constructor applies no zero-check to the immutable uint32 lookback, so the admitted value lookback==0 makes tickTimeDifference==0 and the unguarded bigTick=tickAbs/tickTimeDifference at line 48 reverts with Panic(0x12) on every currentValue() call, a valid-input liveness loss with no validating line to reach it."
+    }
+  ],
+  "errors": [
+    {
+      "location": "contracts/automatedTrigger/OracleLess.sol:createOrder:48",
+      "file": "contracts/automatedTrigger/OracleLess.sol",
+      "reason": "LLM transport error (flat-cyborg exited) after 5 attempts \u2014 TRANSIENT, RE-RUNNABLE (not assessed)"
+    }
+  ],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 65,
+    "verified": 44,
+    "errored": 1,
+    "dropped_subfloor": 0,
+    "out_of_scope": 5
+  },
+  "out_of_scope": [
+    {
+      "subsystem": "Price oracle relay interfaces",
+      "location": "contracts/oracle/External/TokenEthRelay.sol:currentValue:23",
+      "file": "contracts/oracle/External/TokenEthRelay.sol",
+      "class": "class=C2",
+      "severity": "Medium",
+      "exploit": "Same latestAnswer() with no staleness/roundId/sequencer check (frozen-price read on all paths) and a division-before-multiplication (uint256(latest)/ethPrice*1e5) that truncates precision, systematically mispricing the token and feeding a wrong slippage floor into permissionless order fills; relay is a shipped, registerable relay (deployTriggerV2.ts:157-162).",
+      "poc_sketch": "Foundry: deploy MockAggregator (token/ETH) with a stale timestamp and MockOracle for ETH; deploy TokenEthRelay(token,tokenFeed,ethOracle); assert currentValue() ignores staleness and that (latest/ethPrice*1e5) differs from the full-precision (latest*1e5/ethPrice) by the truncation error; register and show the wrong price alters getMinAmountReceived on a fill. FCB_28a45c18d8dd75e33911fc0_END",
+      "verdict": "REFUTED",
+      "label": "out_of_scope_premise",
+      "assumption": {
+        "id": "A4",
+        "category": "exclusion",
+        "source": "README.md:71",
+        "text": "oku-custom-order-types/contracts/automatedTrigger/AutomationMaster.sol"
+      },
+      "premise": "slippage floor into permissionless order fills",
+      "reason": "out-of-scope-premise (A4, exclusion): currentValue() is a pure view that moves no value, and the claimed loss (\"wrong slippage floor into permissionless order fills\") is realized only by the excluded automated-trigger order-fill contracts, so no in-scope unprivileged path turns the mispriced/frozen read into a loss."
+    },
+    {
+      "subsystem": "External price oracle relays (Chainlink Pyth UniV3-TWAP)",
+      "location": "contracts/oracle/External/UniV3TickTwapOracle.sol:currentValue:26",
+      "file": "contracts/oracle/External/UniV3TickTwapOracle.sol",
+      "class": "class=C2",
+      "severity": "Medium",
+      "exploit": "Returns a raw UniV3 tick (price=1.0001^tick, a logarithm) through the same currentValue() interface whose siblings return 1e8 USD prices, and uint24(negative tick) wraps two's-complement (e.g. -200000 -> ~16.58e6); registerOracle validates nothing, so once wired the consumer treats this garbage as a USD price and every order it gates is mispriced/drainable",
+      "poc_sketch": "Fork L2; deploy UniV3TickTwapOracle(lookback,pool) on a pool whose TWAP tick is negative; assert currentValue() returns ~16.7e6 (not a 1e8 price); register it in AutomationMaster and assert getExchangeRate/getMinAmountReceived produce nonsense enabling a performUpkeep drain. FCB_2990ca18d8de0788fddbfd0_END",
+      "verdict": "REFUTED",
+      "label": "out_of_scope_premise",
+      "assumption": {
+        "id": "A4",
+        "category": "exclusion",
+        "source": "README.md:71",
+        "text": "oku-custom-order-types/contracts/automatedTrigger/AutomationMaster.sol"
+      },
+      "premise": "registerOracle validates nothing",
+      "reason": "out-of-scope-premise (A4, exclusion): The reviewed function faithfully returns its documented TWAP tick, and every harmful step (registerOracle wiring, a consumer reading it as a USD price, the orders it gates) lives in separately-declared AutomationMaster/Bracket/StopLimit code that is not shown and is reached only via privileged registration, so no unprivileged invariant break is demonstrable here. FCB_3c95e018d8e942ed9f4ecd0_END"
+    },
+    {
+      "subsystem": "External price oracle relays (Chainlink Pyth UniV3-TWAP)",
+      "location": "contracts/oracle/External/TokenEthRelay.sol:currentValue:29",
+      "file": "contracts/oracle/External/TokenEthRelay.sol",
+      "class": "class=C9",
+      "severity": "High",
+      "exploit": "token/ETH feed value is DIVIDED by ETH/USD (should be multiplied) with div-before-mul and a magic 1e5, so reported price = fair * 1e7/eth_usd^2 \u2014 correct only at ETH\u2248$3162; an external user deposits the token and, when ETH is below that point (e.g. $1581 \u2192 4x over-value), over-borrows/over-mints against inflated collateral, or liquidates honest positions cheaply when ETH is above it ($6324 \u2192 0.25x), and cheap tokens truncate to 0.",
+      "poc_sketch": "Foundry: deploy TokenEthRelay with a mock IAggregator tokenFeed returning latestAnswer=(token_usd/eth_usd)*1e18 (18-dec token/ETH) and a mock ethOracle whose currentValue()=eth_usd*1e8; assert currentValue()==fair (token_usd*1e8) fails for every eth_usd!=~3162e0 \u2014 e.g. tokenFeed=1.2649e18 (token=$2000,ETH=$1581), ethOracle=1581e8 => currentValue()\u22488.001e11 while fair=2.0e11 (assertEq 4x over-value); set tokenFeed=3.333e18/ethOracle=6324e8 => \u22485.0e10 (0.25x under-value); set a cheap token so latest<ethPrice and assert currentValue()==0. FCB_2a6b1318d8de8cde7906ab0_END",
+      "verdict": "REFUTED",
+      "label": "out_of_scope_premise",
+      "assumption": {
+        "id": "A5",
+        "category": "exclusion",
+        "source": "README.md:72",
+        "text": "oku-custom-order-types/contracts/automatedTrigger/Bracket.sol"
+      },
+      "premise": "deposits the token",
+      "reason": "out-of-scope-premise (A5, exclusion): currentValue() is a fund-less view; the mispriced value only becomes a loss inside the excluded order-execution contracts that consume it to fill deposited-token orders, so no unprivileged loss is demonstrable in in-scope shown code."
+    },
+    {
+      "subsystem": "External price oracle relays (Chainlink Pyth UniV3-TWAP)",
+      "location": "contracts/oracle/External/UniV3TickTwapOracle.sol:currentValue:26",
+      "file": "contracts/oracle/External/UniV3TickTwapOracle.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "currentValue returns a raw signed tick via uint256(uint24(tick)) under the shared IOracleRelay interface that AutomationMaster consumes as a 1e8 USD price, so a positive tick (e.g. 200000 -> \"0.002\" in 1e8 terms) or a negative tick (uint24 two's-complement wrap -> ~16.7e6) becomes a nonsensical price, and because registerOracle validates neither relay type nor decimals the exchangeRate/getMinAmountReceived floor is arbitrarily wrong and the permissionless performUpkeep filler extracts the order owner's funds.",
+      "poc_sketch": "Fork Base; deploy UniV3TickTwapOracle(lookback, a wstETH/WETH 500 pool from addresser) whose TWAP tick is negative; assert currentValue() ~= 16.7e6 (not a USD price); registerOracle it and assert AutomationMaster.getExchangeRate/getMinAmountReceived yield a wildly wrong floor, then drain a matching order via Bracket.performUpkeep with a self-serving swap.",
+      "verdict": "REFUTED",
+      "label": "out_of_scope_premise",
+      "assumption": {
+        "id": "A4",
+        "category": "exclusion",
+        "source": "README.md:71",
+        "text": "oku-custom-order-types/contracts/automatedTrigger/AutomationMaster.sol"
+      },
+      "premise": "AutomationMaster consumes",
+      "reason": "out-of-scope-premise (A4, exclusion): currentValue faithfully returns the TWAP tick exactly as its own NatSpec declares and moves no funds; every harmful step (unvalidated registration, the exchangeRate/getMinAmountReceived floor, and the permissionless performUpkeep extraction) lives entirely in AutomationMaster, whose code is neither shown nor part of the reviewed contract, so the exploit cannot be confirmed here."
+    },
+    {
+      "subsystem": "Uniswap V3 TWAP oracle tick math",
+      "location": "contracts/oracle/External/UniV3TickTwapOracle.sol:getLastSeconds:35",
+      "file": "contracts/oracle/External/UniV3TickTwapOracle.sol",
+      "class": "class=C15",
+      "severity": "Medium",
+      "exploit": "The oracle trusts whatever (pool,lookback) it is constructed with \u2014 no minimum observation-cardinality/age check, no min-liquidity check, no lower bound on lookback, and no TWAP-vs-spot deviation cap \u2014 and AutomationMaster consumes the returned price with no clamp/second-source backstop, so an attacker who gets this oracle registered for a token (registerOracle admits any address without validation) on a thin or short-window pool can push that pool's tick across the lookback window and drive getExchangeRate/getMinAmountReceived to a manipulated value, causing a victim Bracket/StopLimit order to fill at an attacker-favorable minimum and extracting the difference.",
+      "poc_sketch": "Foundry: fork mainnet; deploy UniV3TickTwapOracle(short lookback, a low-liquidity fee-tier pool); AutomationMaster.registerOracle([token],[oracle]); record getExchangeRate(token,USDC); from an attacker account swap into the thin pool to move its tick and mine blocks spanning `lookback`; assert getExchangeRate() and getMinAmountReceived() shift materially (e.g. >50%) with NO revert and NO backstop; then create/execute a Bracket order and assert it fills at the manipulated minAmountReceived, netting the attacker a profit exceeding the manipulation swap cost. FCB_2dbdf118d8e0606c6fefba0_END",
+      "verdict": "REFUTED",
+      "label": "out_of_scope_premise",
+      "assumption": {
+        "id": "A4",
+        "category": "exclusion",
+        "source": "README.md:71",
+        "text": "oku-custom-order-types/contracts/automatedTrigger/AutomationMaster.sol"
+      },
+      "premise": "AutomationMaster consumes the returned price",
+      "reason": "out-of-scope-premise (A4, exclusion): The contract only computes a correct range-checked TWAP from immutable, privileged-installed parameters; the alleged loss is realized solely in the price-consuming automatedTrigger contracts the claim depends on, and no unprivileged path in this module installs or alters the manipulable configuration."
+    }
+  ],
+  "scope_layer": {
+    "state": "on",
+    "reason": "11 declared assumption(s) handed to every refute gate"
+  }
+}
