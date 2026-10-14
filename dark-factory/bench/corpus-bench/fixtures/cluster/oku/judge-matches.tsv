@@ -1,0 +1,61 @@
+# judge-matches.tsv — #2278 M2. The RECORDED #2245 mechanism-judge decisions, projected per raw lead:
+#   cluster-holdout.py judge-project --arm <A|B> --truth truth.tsv --verified <A|B>/verified_findings.json \
+#     --judge-cache <the #2245 oku judge cache> --batch 12 --min-confidence 60
+# One line per MATCH at or above the gate: arm, raw idx (0-based position in `verified`), sev_id, confidence.
+# The cache itself is not committed (6 MB, keyed by lead index). Recorded with batch 12 and gate 60: another
+# batch changes every request key, another gate changes which MATCHes credit a row. Replay over both raw files:
+# 0 cache misses, 0 JUDGE-ERRORs, 0 gated MATCHes (A: 70 calls, 18 matched leads; B: 88 calls, 32 matched leads).
+# cache_sha256	55b063c8ef7635b8de910cb7b2d7d2266722808f5d9894731140c407ee49d8bf
+# Each arm's row union must equal its '# readout' rows, the rows the #2245 readout credits (check enforces it).
+# readout	A	H-3,H-4,H-6,H-7,H-8,M-2
+# readout	B	H-3,H-4,H-6,H-7,H-8,M-2
+A	0	H-6	95
+A	1	H-6	85
+A	2	H-3	80
+A	3	H-7	80
+A	4	H-7	70
+A	5	H-8	90
+A	6	H-8	88
+A	7	H-6	90
+A	8	H-6	80
+A	9	H-4	95
+A	10	H-4	95
+A	11	H-4	95
+A	12	H-7	75
+A	14	M-2	88
+A	16	M-2	88
+A	21	M-2	95
+A	23	M-2	95
+A	29	M-2	90
+B	0	H-7	80
+B	1	H-4	95
+B	2	H-3	78
+B	4	H-7	78
+B	5	H-3	85
+B	6	H-4	96
+B	7	H-6	92
+B	8	H-6	80
+B	9	H-3	80
+B	10	H-8	90
+B	11	H-4	95
+B	12	H-7	78
+B	13	H-7	85
+B	14	H-4	96
+B	15	H-3	82
+B	16	H-8	90
+B	17	H-4	95
+B	18	H-7	80
+B	19	H-8	92
+B	20	H-6	93
+B	21	H-6	85
+B	22	H-4	95
+B	23	H-7	78
+B	24	H-4	95
+B	25	H-8	72
+B	26	H-4	95
+B	27	H-4	95
+B	28	H-4	95
+B	30	M-2	80
+B	32	M-2	85
+B	36	M-2	95
+B	38	M-2	95
