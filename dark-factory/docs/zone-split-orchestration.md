@@ -575,6 +575,7 @@ conclusion:
 | `unscoped` | the zone ran **zero cells** — it has no matching line in `scope.tsv` | **Zero evidence, never a negative.** `map-zones.sh` emits a scope line only `if not skeleton and classes and z["id"] not in failed_zones`, so an unclassified zone and a `classification_failed` zone are both in `zones.json` and absent from the manifest — yet `gen-briefs.sh` walks `zones.json`, so they DO get a brief and reach STAGE 3. An **upstream mapping defect**: re-map the target; a re-hunt against the same map cannot fix it. |
 | `in_flight` | immediately before `run-discovery.sh` is invoked | **Attempt started, outcome unknown** — the process died mid-zone (external kill, OOM). Artifacts partial. Retry as-is. |
 | `failed` | `run-discovery.sh` exited non-zero | **Attempt made, the tool failed.** NOT a negative. Distinct from `in_flight`: a second failure is a defect to escalate, not an environment problem. |
+| `limit_halted` | `run-discovery.sh` exited 6, or the run-level usage-limit halt file exists after it (#2291) | **The hunt stopped on the Claude usage limit.** NOT a negative and NOT a tool failure: the cells that hit the limit, and those never started, were not assessed. Every zone after it stays `not_reached` (the loop stops and the run exits 6). Remedy: wait for the quota reset, then re-hunt. An attempt with this status never counts toward the give-up cap. |
 | `budget_exhausted` | admission denied — 0 cells of the RUN budget remained | **The zone is hunt-able; the run declined to pay.** NOT a negative. Every zone AFTER it was denied too (the pool is spent, so the loop stops). Remedy: raise `--run-cell-budget`, or re-hunt. |
 | `budget_unenforceable` | admission denied for a reason LOCAL to this zone: no class prefix lands exactly on the cap | **The zone is hunt-able; a PARTIAL hunt of it cannot be expressed.** NOT a negative, and deliberately not `budget_exhausted`: no pool was spent, the zones after it are unaffected (the sweep continues), and the remedy differs — give this zone its full planned budget, or re-map so its subsystem name is unique. |
 | `hunted_degraded` | exit 0 **and** `totals.failed > 0` | **Partial coverage** — at least one cell produced no sentinel after retries (#1707). NOT a rigorous negative. |
@@ -642,7 +643,7 @@ honestly instead of pretending to prevent it.
 **Re-entrance (`--rehunt-gaps`, default OFF).** STAGE 1/2 are skipped; `map/zones.json`, `map/scope.tsv`,
 `briefs/briefs/` and the coverage record must already exist under `--out`, else exit 3 naming the missing
 artifact. The work list comes from the **record**, not the filesystem: every zone whose status is
-`not_reached` / `budget_exhausted` / `in_flight` / `failed`, in priority order. Partial zones
+`not_reached` / `budget_exhausted` / `in_flight` / `failed` / `limit_halted` (#2291), in priority order. Partial zones
 (`hunted_degraded`, or `budget_truncated`) are excluded by default — a re-hunt would redo cells that already
 produced results — and included only under `--rehunt-include-partial`. `no_brief` is **never** selected: the
 missing prerequisite is not collapsed into a retryable failure. Because `failed` / `in_flight` (and an
@@ -704,6 +705,7 @@ already exists in `zone-coverage.py gaps`; this section states it as a contract 
 | `budget_unenforceable` | `hunt` | yes | never ran; remedy is its full planned budget, or a re-map |
 | `in_flight` | `retry` | yes | prior artifacts exist — move them aside first |
 | `failed` | `retry` | yes | prior artifacts exist — move them aside first |
+| `limit_halted` | `retry` | yes | prior artifacts exist — move them aside first; its attempt is NOT counted toward `--max-attempts` (#2291) |
 | *any of the above with `attempts >= --max-attempts`* | `capped` | no | leave it alone; one pass is one pass |
 | `no_brief` | `no-brief` | **never** | an upstream defect; a re-hunt against the same briefs cannot fix it |
 | `unscoped` | `unscoped` | **never** | an upstream MAPPING defect; a re-hunt against the same map cannot fix it |

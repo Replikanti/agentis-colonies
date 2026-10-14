@@ -378,7 +378,8 @@ class Run:
         """#2262 M3: a zone whose run-discovery.sh DIED mid-zone (SIGKILL / OOM / a `set -eu` abort) is recorded
         `failed` (or left `in_flight`) in coverage/zone-coverage.json while run-zone-hunt.sh carries on with exit 0;
         its surviving cell logs carry no failure marker. Such a zone never answered: read it as failed, so its rows
-        are unmeasured, never a generation MISS."""
+        are unmeasured, never a generation MISS. #2291: a `limit_halted` zone (its hunt stopped on the Claude usage
+        limit) is read the same way — nothing in it was assessed."""
         cov = os.path.join(self.root, "coverage", "zone-coverage.json")
         if not os.path.isfile(cov):
             return
@@ -389,7 +390,7 @@ class Run:
             self.notes.append("%s: coverage/zone-coverage.json unreadable" % self.label)
             return
         for z in rec.get("zones", []) if isinstance(rec, dict) else []:
-            if isinstance(z, dict) and z.get("status") in ("failed", "in_flight") and z.get("id"):
+            if isinstance(z, dict) and z.get("status") in ("failed", "in_flight", "limit_halted") and z.get("id"):
                 zid = str(z["id"])
                 self.zone_status[zid] = "failed"
                 self.notes.append("%s: zone %s: coverage status %s%s — its rows are unmeasured" % (

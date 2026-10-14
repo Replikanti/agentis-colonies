@@ -1997,6 +1997,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-transport-resilience.sh" ]; then
     fi
 fi
 
+# --- dark-factory usage-limit halt (#2291) ---
+# A Claude usage-limit notice ("You've hit your weekly limit") used to be read as TUI chrome: retried, then a FAILED
+# cell and a hunted_degraded zone. lib/usage_limit.py is now the ONE definition of the notice regex (model-attribution.py
+# and the exam's void-patterns.tsv resolve to it); lib/run-agent-validated.sh checks every sentinel-less reply against
+# it FIRST, never retries it, drops a .limit marker and records a run-level halt file; run-discovery.sh /
+# run-zone-hunt.sh stop, record the zone `limit_halted` and exit 6; --rehunt-gaps resumes. demo-usage-limit.sh is
+# offline (mock backend + the exam fixture's agentis stub): the module + drift guard, the helper semantics, and a
+# 3-zone sweep that halts (serial and --jobs 2), resumes, and halts at STAGE 1.
+if [ -x "$REPO_ROOT/dark-factory/demo-usage-limit.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-usage-limit.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: usage-limit halt — a Claude usage-limit notice halts the hunt (exit 6, limit_halted) and --rehunt-gaps resumes it (#2291)"
+    else
+        fail "dark-factory: usage-limit halt regressed — a usage-limit notice is retried / recorded as a failed cell again (#2291)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory code-change watcher (#2128, epic #2120 M1) ---
 # watch-code-changes.sh is a standalone READ-ONLY watcher over the freshness-watch bounties.json: it surfaces a
 # program whose CODE moved since the last run on two axes — github repo HEAD/tags (`git ls-remote`) and the

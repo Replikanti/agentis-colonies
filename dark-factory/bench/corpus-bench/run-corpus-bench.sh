@@ -108,7 +108,10 @@
 #                     caches key on the lead index, so a judged number replays only in the view it was recorded
 #                     in. The view is printed on every contest SCORE line and lands in --json as `findings_view`.
 # Exit: 0 = requested stage(s) completed (a low/zero recall is DATA, not a failure — same posture as the
-#       capability bench's live stage) ; 1 = --self-test regressed ; 2 = bad args ; 3 = missing prerequisite.
+#       capability bench's live stage) ; 1 = --self-test regressed ; 2 = bad args ; 3 = missing prerequisite ;
+#       6 = #2291: a --hunt contest stopped on the Claude usage limit (run-zone-hunt.sh exited 6). The contest loop
+#       stops, <work>/.usage-limit-halted records utc / the halted contest / the not-started ids, the resume
+#       commands are printed, and --score is SKIPPED (scoring a half-run would make the arms asymmetric).
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -515,6 +518,17 @@ json.dump(vf, open(sys.argv[2], "w", encoding="utf-8"), indent=2)' "$ER_FIX/veri
     say "SELF-TEST: the --score errored-candidate count line is missing, leaks into a clean run, or moved the headline (#2288) -> FAIL"; exit 1
   fi
 
+  # Ninth assertion (#2291): a --hunt contest that exits 6 (the usage limit) stops the contest loop, writes the
+  # halt record, skips --score and exits 6. Source-asserted (a live halt needs the real pipeline; its offline
+  # end-to-end proof is demo-usage-limit.sh).
+  if grep -Fq '|| HUNT_RC=$?' "$0" && grep -Fq 'if [ "$HUNT_RC" -eq 6 ]; then' "$0" \
+     && grep -Fq '"$WORK/.usage-limit-halted"' "$0" && grep -Eq '^  exit 6$' "$0" \
+     && [ "$(grep -n '^  exit 6$' "$0" | head -1 | cut -d: -f1)" -lt "$(grep -n '^if \[ "\$DO_SCORE" -eq 1 \]; then$' "$0" | head -1 | cut -d: -f1)" ]; then
+    say "SELF-TEST: a usage-limit halt (run-zone-hunt.sh exit 6) stops the contest loop, records <work>/.usage-limit-halted, skips --score and exits 6 (#2291) -> PASS"
+  else
+    say "SELF-TEST: the --hunt usage-limit halt branch (#2291) is missing or no longer precedes --score -> FAIL"; exit 1
+  fi
+
   [ "$ANY_ACTION" -eq 1 ] && [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
 fi
 [ "$DO_FETCH$DO_GT$DO_DUPES$DO_HUNT$DO_SCORE" = "00000" ] && exit 0
@@ -571,7 +585,9 @@ if [ "$DO_DUPES" -eq 1 ]; then
 fi
 
 # ---- --hunt (REAL federation) --------------------------------------------------------------------------------
+HALTED_ID=""   # #2291: the contest whose hunt stopped on the usage limit (empty = none)
 if [ "$DO_HUNT" -eq 1 ]; then
+  rm -f "$WORK/.usage-limit-halted"
   [ -x "$ZONEHUNT" ] || { echo "run-corpus-bench.sh: run-zone-hunt.sh not found/executable at $ZONEHUNT" >&2; exit 3; }
   # #1827: 0 (the default) leaves DEPTH_ARG empty, so the run-zone-hunt.sh invocation below gains NO argument
   # and the measured pipeline is byte-identical to a pre-depth run. Only a positive value turns depth on.
@@ -611,6 +627,7 @@ if [ "$DO_HUNT" -eq 1 ]; then
     code_dir="$CODE_DIR"
     [ -d "$code_dir" ] || { echo "run-corpus-bench.sh: [$id] no cloned code at $code_dir (run --fetch first)" >&2; continue; }
     say "HUNT: [$id] running the real federation (run-zone-hunt.sh --backend $BACKEND) ..."
+    HUNT_RC=0
     # #2157: CALLEE_TRUST rides an `env` prefix so an unset arm produces a byte-identical argv+env to before.
     ${CALLEE_TRUST_ARG:+env CALLEE_TRUST="$CALLEE_TRUST_ARG"} \
     "$ZONEHUNT" --repo "$code_dir" --out "$WORK/$id/zone-hunt-out" --backend "$BACKEND" --jobs "$JOBS" \
@@ -623,8 +640,30 @@ if [ "$DO_HUNT" -eq 1 ]; then
       ${RUN_BUDGET_ARG:+--run-cell-budget "$RUN_BUDGET_ARG"} \
       ${VECTOR_HUNT_ARG:+--vector-hunt} \
       ${VEC_MAX_ARG:+--vector-hunt-max-vectors "$VEC_MAX_ARG"} \
-      || say "  [$id] run-zone-hunt.sh exited non-zero; scoring whatever it produced"
+      || HUNT_RC=$?
+    # #2291: exit 6 = the usage limit was reached — every later contest would hit it too, so stop the loop here.
+    if [ "$HUNT_RC" -eq 6 ]; then
+      HALTED_ID="$id" ; HALTED_CODE="$code_dir"
+      break
+    fi
+    [ "$HUNT_RC" -eq 0 ] || say "  [$id] run-zone-hunt.sh exited non-zero; scoring whatever it produced"
   done < "$CORPUS"
+fi
+# #2291: a usage-limit halt. Record it, print the resume commands, and exit 6 WITHOUT scoring: a score over the
+# contests that finished would compare a half-run with a full one.
+if [ -n "$HALTED_ID" ]; then
+  NOT_STARTED="$(awk -F'\t' -v h="$HALTED_ID" 'seen && $1 != "" && $1 !~ /^#/ { print $1 } $1 == h { seen = 1 }' "$CORPUS" \
+    | while IFS= read -r ns_id; do
+        if [ -z "$IDS" ]; then printf '%s\n' "$ns_id"; else case " $IDS " in *" $ns_id "*) printf '%s\n' "$ns_id" ;; esac; fi
+      done | paste -sd' ' -)"
+  printf 'utc\t%s\ncontest\t%s\nnot_started\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$HALTED_ID" "$NOT_STARTED" \
+    > "$WORK/.usage-limit-halted"
+  say "HUNT: USAGE LIMIT HALT on [$HALTED_ID] — the contest loop stopped; --score is SKIPPED (record: $WORK/.usage-limit-halted)"
+  say "  after the reset, resume the halted contest: $ZONEHUNT --repo $HALTED_CODE --out $WORK/$HALTED_ID/zone-hunt-out --backend $BACKEND --jobs $JOBS --agentis $AGENTIS --rehunt-gaps"
+  if [ -n "$NOT_STARTED" ]; then
+    say "  then hunt the rest: $0 --hunt --work $WORK --corpus $CORPUS$(for ns_id in $NOT_STARTED; do printf ' --id %s' "$ns_id"; done)"
+  fi
+  exit 6
 fi
 
 # ---- --score --------------------------------------------------------------------------------------------------

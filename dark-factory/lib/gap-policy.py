@@ -442,6 +442,7 @@ WHY_BY_STATUS = {
     "not_reached": "never attempted at the bound this sweep ran under",
     "in_flight": "the process died mid-zone (external kill / OOM)",
     "failed": "run-discovery.sh exited non-zero",
+    "limit_halted": "the hunt stopped on the Claude usage limit (not assessed) — re-hunt after the quota resets",
 }
 
 

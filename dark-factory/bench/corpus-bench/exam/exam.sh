@@ -42,7 +42,9 @@
 #            .novalid or a `transport` void pattern and no `weekly-limit` pattern matched, exactly ONE more
 #            breadth call with --rehunt-gaps --rehunt-include-partial --rehunt-max-attempts 2 (the README's
 #            symmetry rule; an .untraced cell is a METRIC and never triggers it). A usage-limit match also skips
-#            STAGE 4.5 (deep_rc=skip-weekly-limit): it would void too.
+#            STAGE 4.5 (deep_rc=skip-weekly-limit): it would void too. #2291: so does a breadth call that exits 6 (the
+#            zone hunt detected the usage limit itself; rehunt_rc=skip-weekly-limit, no rehunt-check) or a re-hunt
+#            that exits 6.
 #            STAGE 4.5 (DEEP_PASS=1, verify/verified_findings.json present, no breadth / re-hunt call
 #            hard-stopped or killed): a second `timeout` call with --deep-hunt --deep-hunt-only over the SAME --out
 #            and the deep.* knobs. Every call gets `env -u` for every pipeline + Claude Code knob (see clear_knobs); DF_NO_SANDBOX
@@ -816,6 +818,9 @@ cmd_run() {
   local rstop=""
   if [ "$R_RC" -eq 124 ]; then R_REHUNT_RC="skip-hard-stop"
   elif [ "$R_RC" -ge 128 ]; then R_REHUNT_RC="skip-killed"
+  # #2291: the zone hunt itself detected the usage limit (exit 6) — no re-hunt-check, no re-hunt, no STAGE 4.5.
+  elif [ "$R_RC" -eq 6 ]; then R_REHUNT_RC="skip-weekly-limit"; rstop="weekly-limit"
+    R_REHUNT_REASON="run-zone-hunt.sh exited 6 (usage limit)"
   else
     local rchk rcrc
     rchk="$(python3 "$HELPER" rehunt-check "$out" "$PATTERNS" 2>&1)"; rcrc=$?
@@ -836,6 +841,8 @@ cmd_run() {
         kill_by_path "$R_ARMDIR" 0 10 >> "$R_ARMDIR/rehunt.log" 2>&1 || true
         rstop="$R_REHUNT_RC"
       fi
+      # #2291: the re-hunt stopped on the usage limit — STAGE 4.5 would void too.
+      if [ "$R_REHUNT_RC" -eq 6 ]; then rstop="weekly-limit"; fi
     fi
   fi
   if [ "$P_DEEP_PASS" = 1 ]; then
@@ -1068,8 +1075,11 @@ cmd_drive() {
     if lock_live "$lock"; then die 3 "drive: plan '$pname' is already driven by pid $(head -1 "$lock")"; fi
     local snap; snap="$logs/$pname.snapshot-$(date -u +%Y%m%dT%H%M%SZ)-$$"
     mkdir -p "$snap/exam" || die 3 "drive: cannot create the snapshot"
-    cp "$SELF" "$HELPER" "$PATTERNS" "$snap/exam/" && cp -R "$PROFILES_DIR" "$snap/exam/profiles" \
-      && cp "$TRIAGE" "$ATTRIB_PY" "$CB_DIR/score-match.py" "$CB_DIR/hypotheses-to-leads.py" "$snap/" \
+    # #2291: exam-helper.py and model-attribution.py import the ONE usage-limit regex (dark-factory/lib/usage_limit.py);
+    # the snapshot carries a copy next to each of them (a script's own dir is on its import path), so the regex is
+    # frozen with the rest of the runner.
+    cp "$SELF" "$HELPER" "$PATTERNS" "$CB_DIR/../../lib/usage_limit.py" "$snap/exam/" && cp -R "$PROFILES_DIR" "$snap/exam/profiles" \
+      && cp "$TRIAGE" "$ATTRIB_PY" "$CB_DIR/score-match.py" "$CB_DIR/hypotheses-to-leads.py" "$CB_DIR/../../lib/usage_limit.py" "$snap/" \
       || die 3 "drive: snapshot copy failed"
     note "drive: re-exec from the snapshot $snap"
     EXAM_FROM_SNAPSHOT=1 exec bash "$snap/exam/exam.sh" drive "${orig[@]}"
@@ -1861,7 +1871,7 @@ cmd_self_test() {
   STUB_FAIL_CALLS=99 STUB_FAIL_STATE="$work/fail-wk" STUB_FAIL_TEXT="$CB_DIR/fixtures/exam-void/weekly-limit-notice.txt" \
     bash "$SELF" drive --root "$wroot" --plan "$wplan" --agentis "$stub" > "$work/wdrive.out" 2>&1; rc=$?
   wprog="$wroot/logs/wplan.progress"
-  if [ "$rc" -eq 6 ] && [ -f "$wroot/logs/wplan.halted" ] && grep -q $'\tsrc_pool\twk\tr1\trc=0\tdeep=skip-weekly-limit\tvoid=weekly-limit$' "$wprog" \
+  if [ "$rc" -eq 6 ] && [ -f "$wroot/logs/wplan.halted" ] && grep -q $'\tsrc_pool\twk\tr1\trc=6\tdeep=skip-weekly-limit\tvoid=weekly-limit$' "$wprog" \
      && grep -q $'\tHALT\tfx\tsrc_pool\twk\tr1\t' "$wprog" && [ ! -e "$wroot/arms/fx/src_feed/wk-r1" ] \
      && [ ! -e "$wroot/logs/wplan.done" ] && [ "$(meta_get "$wa/run.meta" rehunt_rc)" = skip-weekly-limit ] \
      && [ ! -e "$wa/fx/zone-hunt-out/discovery/src_pool.attempt-1" ]; then

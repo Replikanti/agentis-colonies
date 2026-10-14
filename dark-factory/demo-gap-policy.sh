@@ -18,6 +18,9 @@
 #       1.8  THE BOUND FINDING: a `budget_exhausted` zone with `attempts: []` stays `hunt` at ANY
 #            --max-attempts — the record's attempt ceiling bounds only the artifact-bearing statuses, which is
 #            exactly why run-zone-sweep.sh must carry its own pass bound.
+#       1.9  #2291: a `limit_halted` zone (its hunt stopped on the Claude usage limit) is `retry` by default, and
+#            a `limit_halted` ATTEMPT never counts toward --max-attempts (two quota windows stay `retry` at 2; a
+#            `failed` zone whose attempts are [limit_halted, failed] is not capped at 2 — but is at 1).
 #   (2) POLICY — one expected verb (+ args) per decision fixture, including both sides of the budget branch
 #       and the no-progress guard. The rule is deterministic: same inputs, same verb, every time.
 #
@@ -127,6 +130,12 @@ if [ "$BOUND_OK" -eq 1 ]; then
 else
   bad "1.8: a budget_exhausted zone became capped — the sweep's own pass bound is no longer the load-bearing one"
 fi
+
+# 1.9 (#2291): a usage-limit halt says nothing about the zone, so it is retried and never spends the attempt cap.
+expect_action "1.9: limit_halted carries artifacts (retry, no --include-partial)"             z13_limit_halted       retry
+expect_action "1.9: two limit_halted attempts stay retry at --max-attempts 2"                  z14_limit_halted_twice retry
+expect_action "1.9: a failed zone with attempts [limit_halted, failed] is not capped at 2"    z15_failed_after_limit retry
+expect_action "1.9: ... but its one counted failed attempt caps it at --max-attempts 1"       z15_failed_after_limit capped "$WORK/gaps-max1.tsv"
 
 # ----------------------------------------------------------------------------------------------------------
 # (2) POLICY — one verb per decision case. gap-policy.py never re-derives classification; it shells out to the

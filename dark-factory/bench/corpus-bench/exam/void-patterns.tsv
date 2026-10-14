@@ -4,6 +4,9 @@
 #          would void too) and blocks the one-shot re-hunt; `transport` matches also trigger that re-hunt.
 #   regex  a Python regex, matched per line. Match the WORDS of a notice, never its glyphs (the separators and
 #          apostrophes of a CLI notice change between versions and between terminals).
+#          A cell starting with `@` names a SHARED regex instead: `@usage-limit` is the Claude Code usage-limit
+#          notice defined ONCE in dark-factory/lib/usage_limit.py (#2291), the same regex the live hunt path
+#          (lib/run-agent-validated.sh) and model-attribution.py use. Any other `@` name is an error (exit 2).
 #   where  failed        every model-call log (discovery cell logs incl. superseded attempts + re-ask companions,
 #                        refute logs, deep-hunt logs) that carries a .novalid / .timeout marker. A usage-limit
 #                        notice always ends the call without an answer, and restricting it to failed calls keeps
@@ -14,8 +17,7 @@
 #
 # Claude Code usage-limit notices ("You have hit your weekly limit - resets <when>", "<kind> limit reached"). The
 # class is weekly-limit for every usage-limit kind: each one voids every row behind it until the reset.
-weekly-limit	(?i)\bhit your (weekly |usage |session |5-hour )?limit\b	failed
-weekly-limit	(?i)\b(weekly|usage|session|5-hour) limit reached\b	failed
+weekly-limit	@usage-limit	failed
 # The TERMINAL agentis transport error (a non-terminal `[LLM retry N/M: LLM transport error: ...]` line is a blip
 # agentis recovered from; lib/run-agent-validated.sh df_transport_error_in_log applies the same rule).
 transport	^(?!.*\[LLM retry).*LLM transport error:	cells
