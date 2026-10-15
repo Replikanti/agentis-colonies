@@ -366,7 +366,7 @@ the `--agentis` seam — no live agentis/forge/network), whose serial golden was
 script. Model + the learning-store decision:
 [`docs/zone-split-orchestration.md`](./docs/zone-split-orchestration.md).
 
-**Root-cause clustering (`--cluster-findings <0|1>`, #2278, default ON).** Discovery runs one cell per bug
+**Root-cause clustering (`--cluster-findings <0|1>`, #2278, default OFF since M2).** Discovery runs one cell per bug
 class, so one bug that several classes reach passes the gate once per cell and `verified[]` repeats it (an
 inverted staleness check six times, once per class). When more than one finding survives,
 [`lib/cluster-findings.py`](./lib/cluster-findings.py) collapses duplicates into one representative per root
@@ -379,8 +379,10 @@ pre-cluster list moves to `verify-out/verified_findings.raw.json`, and `verified
 `clustering` block (method, threshold, `raw_sha256`, counts) plus `totals.verified_precluster`. Entries with no
 parseable function and later `source=invariant-hunt|vector-hunt` appends are never clustered. With no duplicate
 the file is byte-identical to an OFF run and no sibling is written; a clusterer failure restores the raw file
-with a WARNING. `--cluster-findings 0` / `DF_CLUSTER_FINDINGS=0` switch it off (`run-zone-hunt.sh` STAGE 4
-inherits the env); `DF_CLUSTER_THRESHOLD` overrides the threshold. The VERIFY banner still reports the
+with a WARNING. It is opt-in: `--cluster-findings 1` / `DF_CLUSTER_FINDINGS=1` switch it on (`run-zone-hunt.sh`
+STAGE 4 inherits the env), because the M2 held-out check on the #2245 `oku` outputs merged one labelled-distinct
+pair of root causes (see [`bench/corpus-bench/README.md`](./bench/corpus-bench/README.md#root-cause-clustering-and---findings-view-2278));
+`DF_CLUSTER_THRESHOLD` overrides the threshold. The VERIFY banner still reports the
 gate-confirmed count; one extra stderr line reports the distinct count. Pinned by `demo-cluster-findings.sh`.
 
 **Batched first read (`--refute-batch <0|1>`, #2284, default OFF).** One function often reaches the refute gate

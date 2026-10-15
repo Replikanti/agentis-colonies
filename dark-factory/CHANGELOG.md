@@ -21,8 +21,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   list, design invariants) instead of only the per-lens defaults. The path is resolved to absolute; a missing file
   is a usage error (exit 2); absent the flag every cell argv is byte-identical. Offline proof:
   `demo-deep-hunt-audit-context.sh` (colony-lint).
+- **Held-out validation of root-cause clustering (#2278 M2).** The two #2245 `oku` arm outputs (35 and 44 verified)
+  are now a held-out fixture (`bench/corpus-bench/fixtures/cluster/oku/`) with per-finding root-cause labels
+  pre-registered before the clusterer ran on them. The new `bench/corpus-bench/cluster-holdout.py` derives the
+  per-arm bound and the labelled-distinct pairs from the labels, projects the recorded #2245 judge decisions per
+  raw lead, and checks the unchanged clusterer (T = 0.30): A 35 → 22 clusters vs bound 18 with **1 labelled-distinct
+  merge**, B 44 → 23 vs bound 16 with 0; token-mode GT unchanged and all 6 recorded-judge rows kept on both arms.
+  The verdict is **FAIL**; the record is pinned as `expected-check.txt` and asserted by
+  `run-corpus-bench.sh --self-test` (colony-lint) together with the default it implies (see Changed).
 
 ### Changed
+
+- **Root-cause clustering is OFF by default (#2278 M2).** `verify-findings.sh --cluster-findings` /
+  `DF_CLUSTER_FINDINGS` now default to **0**. **Behaviour change:** a run without the knob writes the raw
+  `verified_findings.json` again (no `clustering` block, no `verified_findings.raw.json` sibling), as before #2278.
+  Why: the M2 held-out check merged one labelled-distinct pair on the oku arm A (A 35 → 22 vs bound 18, B 44 → 23 vs
+  bound 16; token-mode GT and the 6 recorded-judge rows unchanged on both arms), which is the issue's failure
+  branch. The threshold was not re-tuned. `--cluster-findings 1` / `DF_CLUSTER_FINDINGS=1` keeps the M1 behaviour;
+  `demo-cluster-findings.sh` now runs its ON assertions explicitly and asserts the unset default writes no sibling.
 
 - **STAGE 4.5 runs up to 3 lens classes per zone by default, and writes its row matrix to a plan file (#2298).**
   `--deep-hunt-max-lenses` now defaults to **3** (was 2): with 2, a zone's third fitness-ranked routable class was

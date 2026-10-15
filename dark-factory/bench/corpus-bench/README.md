@@ -233,9 +233,9 @@ still an operator read of the cell log, never a scoreboard read.
 
 ## Root-cause clustering and `--findings-view` (#2278)
 
-Since #2278 the verify stage collapses duplicate root causes (`verify-findings.sh --cluster-findings`, default
-ON): `verify/verified_findings.json` holds one representative per root cause and the full pre-cluster list sits
-next to it in `verify/verified_findings.raw.json`. `--score` reads either list:
+Since #2278 the verify stage can collapse duplicate root causes (`verify-findings.sh --cluster-findings 1`; the
+default is OFF since the M2 held-out FAIL below): `verify/verified_findings.json` then holds one representative per
+root cause and the full pre-cluster list sits next to it in `verify/verified_findings.raw.json`. `--score` reads either list:
 
 - `--findings-view raw` (**default**, historical comparability) rebuilds the pre-cluster list with
   `lib/cluster-findings.py raw-view` (sha256-checked against the `clustering` block, so a stale sibling is a
@@ -259,6 +259,29 @@ cite a different line of the same function). Only `LEADS`, the matched/unmatched
 on one view does not replay on the other. Judged numbers use the view they were recorded in (normally `raw`)
 or are re-judged. `bench-to-knowledge.sh` always reads the raw view, so per-class fitness keeps crediting every
 class cell that confirmed a bug.
+
+**Held-out validation (M2): FAIL.** The clusterer was calibrated on dev data only, so M2 measured it, unchanged
+(T = 0.30), on the data that motivated it: the two #2245 `oku` arm outputs, committed verbatim with their truth
+under [`fixtures/cluster/oku/`](./fixtures/cluster/oku/README.md). The ruler is `root-causes.tsv`, one root-cause
+label per raw finding from a separate labeller, committed and anchored by sha256 in an issue comment before the
+clusterer first ran on this data; `expected-distinct.tsv` and the per-arm bound (Σ over `(file, function)`
+blocks of the distinct root causes in the block) are derived from it by `cluster-holdout.py derive`.
+`cluster-holdout.py check` ran once and its output is pinned as `expected-check.txt`:
+
+| arm | raw → clusters | bound | labelled-distinct pairs merged | token-mode GT | recorded-judge rows kept |
+|---|---|---|---|---|---|
+| A | 35 → 22 | 18 | **1 of 13** | unchanged | 6/6 |
+| B | 44 → 23 | 16 | 0 of 4 | unchanged | 6/6 |
+
+Gating (STOP 1 decisions 1 and 3) is a labelled-distinct merge or a token-mode GT change; under-merge and the
+recorded-judge check are reported only. Arm A merges two labelled-distinct root causes inside
+`UniV3TickTwapOracle.getLastSeconds` (idx 31, the inverted-sign TWAP numerator, with idx 34, the unvalidated
+`observe` that reverts on a low-cardinality pool); neither row is a `borderline:` label. Both arms also
+under-merge: A ends 4 clusters above its bound despite the wrong merge, B 7. By the issue's failure branch
+the verify-stage default flips to OFF (`DF_CLUSTER_FINDINGS=0`); T was not re-tuned. `--self-test` re-runs
+`check`, diffs it against the pin, and fails if the shipped default ever contradicts the recorded verdict.
+`judge-matches.tsv` (the recorded #2245 judge decisions projected per raw lead by `cluster-holdout.py
+judge-project`) is what makes the judge check offline.
 
 ## Semantic mechanism judge (#1829)
 

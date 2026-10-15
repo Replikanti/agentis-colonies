@@ -21,9 +21,10 @@
 #      recounts totals.verified), refuses a stale sibling (exit 3) and echoes an unclustered file unchanged;
 #      `cluster` refuses an already-clustered file (exit 2), a bad threshold (exit 2) and malformed input
 #      (exit 3), and two runs are byte-identical.
-#   5) verify-findings.sh INTEGRATION: default ON over two confirmed same-function duplicates -> 1 clustered entry
-#      + a 2-entry sibling; DF_CLUSTER_FINDINGS=0 and --cluster-findings 0 -> no sibling and a file byte-identical
-#      to the ON run's sibling; a duplicate-free input under ON is byte-identical to OFF with no sibling; an OFF
+#   5) verify-findings.sh INTEGRATION: DF_CLUSTER_FINDINGS=1 over two confirmed same-function duplicates -> 1
+#      clustered entry + a 2-entry sibling; DF_CLUSTER_FINDINGS=0, --cluster-findings 0 and the DEFAULT (unset env,
+#      OFF since the #2278 M2 held-out FAIL) -> no sibling and a file byte-identical to the ON run's sibling; a
+#      duplicate-free input under ON is byte-identical to OFF with no sibling; an OFF
 #      re-run removes a stale sibling; bad knob values exit 2; a failing clusterer (DF_CLUSTER_CMD=false) restores
 #      the raw file, prints a WARNING and exits 0; --jobs 3 is byte-identical to --jobs 1.
 #
@@ -236,10 +237,10 @@ run_verify() {  # run_verify <out> <results> [extra args...]; stderr -> <out>.lo
 }
 count() { python3 -c 'import sys, json; print(len(json.load(open(sys.argv[1]))["verified"]))' "$1"; }
 
-( unset DF_CLUSTER_FINDINGS; run_verify "$WORK/on" "$DUP_RES" ); rc=$?
-check "$rc" "0" "default run exits 0"
+DF_CLUSTER_FINDINGS=1 run_verify "$WORK/on" "$DUP_RES"; rc=$?
+check "$rc" "0" "ON run exits 0"
 check "$(count "$WORK/on/verified_findings.json") $(count "$WORK/on/verified_findings.raw.json")" "1 2" \
-  "default ON: two confirmed same-function duplicates -> 1 clustered entry, 2 in verified_findings.raw.json"
+  "DF_CLUSTER_FINDINGS=1: two confirmed same-function duplicates -> 1 clustered entry, 2 in verified_findings.raw.json"
 if grep -q 'clustering: 2 confirmed -> 1 distinct root cause(s) (1 merged)' "$WORK/on.log" \
    && grep -q 'VERIFY \[refute\]: 2 candidate(s), 2 confirmed, 0 errored' "$WORK/on.log"; then
   ok "stderr carries the clustering line; the VERIFY banner still reports the gate-confirmed count"
@@ -256,8 +257,16 @@ if [ ! -e "$WORK/off-env/verified_findings.raw.json" ] && [ ! -e "$WORK/off-flag
 else
   bad "OFF output is not the pre-cluster list, or a sibling was written"
 fi
+# #2278 M2: the held-out oku check merged a labelled-distinct pair, so the shipped default is OFF.
+( unset DF_CLUSTER_FINDINGS; run_verify "$WORK/default" "$DUP_RES" )
+if [ ! -e "$WORK/default/verified_findings.raw.json" ] \
+   && cmp -s "$WORK/default/verified_findings.json" "$WORK/off-env/verified_findings.json"; then
+  ok "unset DF_CLUSTER_FINDINGS (the default) clusters nothing: no sibling, output byte-identical to OFF"
+else
+  bad "the default run clustered or wrote a sibling (the default must be OFF since #2278 M2)"
+fi
 
-run_verify "$WORK/uniq-on" "$UNIQ_RES"
+run_verify "$WORK/uniq-on" "$UNIQ_RES" --cluster-findings 1
 run_verify "$WORK/uniq-off" "$UNIQ_RES" --cluster-findings 0
 if cmp -s "$WORK/uniq-on/verified_findings.json" "$WORK/uniq-off/verified_findings.json" \
    && [ ! -e "$WORK/uniq-on/verified_findings.raw.json" ] && ! grep -q 'clustering:' "$WORK/uniq-on.log"; then
@@ -278,7 +287,7 @@ DF_CLUSTER_FINDINGS=yes run_verify "$WORK/bad2" "$DUP_RES"; check "$?" "2" "DF_C
 DF_CLUSTER_THRESHOLD=1.5 run_verify "$WORK/bad3" "$DUP_RES"; check "$?" "2" "DF_CLUSTER_THRESHOLD=1.5 is a usage error (exit 2)"
 if [ ! -e "$WORK/bad1/gates" ] && [ ! -e "$WORK/bad3/gates" ]; then ok "bad knob values fail before any side effect"; else bad "a bad knob value ran the gate"; fi
 
-DF_CLUSTER_CMD=false run_verify "$WORK/failcl" "$DUP_RES"; rc=$?
+DF_CLUSTER_FINDINGS=1 DF_CLUSTER_CMD=false run_verify "$WORK/failcl" "$DUP_RES"; rc=$?
 if [ "$rc" -eq 0 ] && grep -q 'WARNING: root-cause clustering failed' "$WORK/failcl.log" \
    && cmp -s "$WORK/failcl/verified_findings.json" "$WORK/off-env/verified_findings.json" \
    && [ ! -e "$WORK/failcl/verified_findings.raw.json" ]; then
@@ -287,8 +296,8 @@ else
   bad "a failing clusterer lost the raw file, stayed silent or failed the run (rc=$rc)"
 fi
 
-run_verify "$WORK/j1" "$DUP_RES" --jobs 1
-run_verify "$WORK/j3" "$DUP_RES" --jobs 3
+run_verify "$WORK/j1" "$DUP_RES" --jobs 1 --cluster-findings 1
+run_verify "$WORK/j3" "$DUP_RES" --jobs 3 --cluster-findings 1
 if cmp -s "$WORK/j1/verified_findings.json" "$WORK/j3/verified_findings.json" \
    && cmp -s "$WORK/j1/verified_findings.raw.json" "$WORK/j3/verified_findings.raw.json"; then
   ok "--jobs 3 clustered output + sibling are byte-identical to --jobs 1"
