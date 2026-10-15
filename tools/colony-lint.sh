@@ -1292,7 +1292,7 @@ fi
 # cross-class duplicates in ONE function collapse to one representative while a different function, a
 # function-less location and a post-STAGE-4 `source` entry pass through; distinct same-function bugs stay apart
 # (the fixture binds the threshold); representative + schema + raw-view round-trip + stale-sibling refusal; and
-# the verify-findings.sh wiring (default ON, OFF byte-identical, no stale sibling, fail-open, --jobs invariant).
+# the verify-findings.sh wiring (default OFF since the #2278 M2 held-out FAIL: unset writes no sibling; explicit ON clusters; OFF byte-identical, no stale sibling, fail-open, --jobs invariant).
 if [ -x "$REPO_ROOT/dark-factory/demo-cluster-findings.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-cluster-findings.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
