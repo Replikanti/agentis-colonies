@@ -1,0 +1,7 @@
+# gate-mini (#2306): SYNTHETIC judge decisions (no judge ever ran); same schema as fixtures/cluster/<contest>/.
+# readout	A	G-1,G-2,G-3
+# readout	B	-
+A	0	G-1	90
+A	1	G-1	88
+A	4	G-2	85
+A	8	G-3	91

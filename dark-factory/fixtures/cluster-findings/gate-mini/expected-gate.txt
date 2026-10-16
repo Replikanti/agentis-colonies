@@ -1,0 +1,16 @@
+GATE|method|v2|threshold=0.30|line_window=2|defect_tau=0.00
+GATE|spotcheck|337233f4a1a994b38b51d5e549af23ef7456c7ead4ff33d984bfea664d74b706
+GATE|distinct|labels|d6df1f2c0bd7847beb3cb7da29e3b0004469964c59db5f0082a6c28aa296503d|3b3b4d44ed0f13c28a44dad882241027985ac16d3b5aac4d9699721da029ec1c
+GATE|distinct|A|raw=12|clusters=6|bound=6|distinct_pairs=12|distinct_merged=0|v1_distinct_merged=0|token_changed=0|judge_rows=3|judge_kept=3|vetoed_distinct=12|vetoed_same=0
+GATE|distinct|A|judge|G-1|reps=0|spot=yes
+GATE|distinct|A|judge|G-2|reps=4|spot=yes
+GATE|distinct|A|judge|G-3|reps=8|spot=yes
+GATE|distinct|B|raw=12|clusters=6|bound=6|distinct_pairs=12|distinct_merged=0|v1_distinct_merged=12|token_changed=0|judge_rows=0|judge_kept=0|vetoed_distinct=12|vetoed_same=0
+GATE|synth|labels|1d2ce07634a66d304d41ff59f4e81f53f9590963caf7abe3f72e07f0dac50bca|1857fa34259ecbd213161e0fe4e09d86b3b10f0479ba129b67d07bf151d3d369
+GATE|synth|A|raw=8|clusters=5|bound=5|distinct_pairs=0|distinct_merged=0|v1_distinct_merged=0|token_changed=0|judge_rows=2|judge_kept=2|vetoed_distinct=0|vetoed_same=0
+GATE|synth|A|judge|G-1|reps=2|spot=yes
+GATE|synth|A|judge|G-2|reps=3|spot=exempt
+GATE|POWER|distinct|distinct_pairs=24|same_pairs=12
+GATE|POWER|synth|distinct_pairs=0|same_pairs=4
+GATE|POWER|total|D=24|D_unique=6|floor=12|MET
+GATE|verdict|PASS|-|reported:v1-control-distinct-merges=12,vetoed_distinct=24,vetoed_same=0,rate-upper=3/24=0.125

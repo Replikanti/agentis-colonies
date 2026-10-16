@@ -1,0 +1,104 @@
+{
+  "repo": "fixture",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "pool",
+      "location": "src/Pool.sol:swap:120",
+      "file": "src/Pool.sol",
+      "class": "class=C2",
+      "severity": "Medium",
+      "exploit": "swap reads sqrtPriceX96 from slot0 after the external uniswapV3SwapCallback, so the callback re-enters donate() and moves sqrtPriceX96; the post-callback feeGrowthGlobal0X128 update then credits the whole swap fee to liquidity added inside the callback.",
+      "poc_sketch": "reenter donate() from uniswapV3SwapCallback",
+      "verdict": "REAL",
+      "reason": "survived a hostile read"
+    },
+    {
+      "subsystem": "pool",
+      "location": "src/Pool.sol:swap:121",
+      "file": "src/Pool.sol",
+      "class": "C15",
+      "severity": "<High>",
+      "exploit": "The uniswapV3SwapCallback runs before swap re-reads slot0, letting the callee call donate() to move sqrtPriceX96 so feeGrowthGlobal0X128 accrues the swap fee to liquidity minted inside the callback.",
+      "poc_sketch": "callback -> donate(); assert feeGrowthGlobal0X128 delta",
+      "verdict": "REAL",
+      "reason": "survived a hostile read"
+    },
+    {
+      "subsystem": "pool",
+      "location": "src/Pool.sol:swap:120",
+      "file": "src/Pool.sol",
+      "class": "<C19>",
+      "severity": "severity=High",
+      "exploit": "Stale sqrtPriceX96 across the uniswapV3SwapCallback: donate() inside the callback shifts slot0 and feeGrowthGlobal0X128 is credited to callback-minted liquidity.",
+      "poc_sketch": "x",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (confirmed): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "pool",
+      "location": "src/Pool.sol:flash:200",
+      "file": "src/Pool.sol",
+      "class": "C2",
+      "severity": "High",
+      "exploit": "swap reads sqrtPriceX96 from slot0 after the external uniswapV3SwapCallback, so the callback re-enters donate() and moves sqrtPriceX96; the post-callback feeGrowthGlobal0X128 update then credits the whole swap fee to liquidity added inside the callback.",
+      "poc_sketch": "flash then donate",
+      "verdict": "REAL",
+      "reason": "survived a hostile read"
+    },
+    {
+      "subsystem": "pool",
+      "location": "src/Pool.sol:123",
+      "file": "src/Pool.sol",
+      "class": "C2",
+      "severity": "High",
+      "exploit": "swap reads sqrtPriceX96 from slot0 after the external uniswapV3SwapCallback, so the callback re-enters donate() and moves sqrtPriceX96; the post-callback feeGrowthGlobal0X128 update then credits the whole swap fee to liquidity added inside the callback.",
+      "poc_sketch": "n/a",
+      "verdict": "REAL",
+      "reason": "survived a hostile read"
+    },
+    {
+      "subsystem": "pool",
+      "location": "src/Pool.sol:swap:120",
+      "file": "src/Pool.sol",
+      "class": "C2",
+      "severity": "High",
+      "exploit": "swap reads sqrtPriceX96 from slot0 after the external uniswapV3SwapCallback, so the callback re-enters donate() and moves sqrtPriceX96; the post-callback feeGrowthGlobal0X128 update then credits the whole swap fee to liquidity added inside the callback.",
+      "poc_sketch": "n/a",
+      "verdict": "REAL",
+      "reason": "survived a hostile read",
+      "source": "invariant-hunt"
+    },
+    {
+      "subsystem": "pool",
+      "location": "src/Pool.sol:setFee:40",
+      "file": "src/Pool.sol",
+      "class": "C5",
+      "severity": "High",
+      "exploit": "setFee has no onlyOwner modifier, so any caller sets protocolFee to type(uint24).max and takes the fee.",
+      "poc_sketch": "call setFee",
+      "verdict": "REAL",
+      "reason": "survived a hostile read"
+    },
+    {
+      "subsystem": "pool",
+      "location": "src/Pool.sol:setFee:40",
+      "file": "src/Pool.sol",
+      "class": "C9",
+      "severity": "High",
+      "exploit": "Missing onlyOwner on setFee: an attacker sets protocolFee to type(uint24).max and collects every swap fee.",
+      "poc_sketch": "vm.prank(attacker); pool.setFee(type(uint24).max); pool.swap(1e18); assertEq(pool.protocolFee(), type(uint24).max)",
+      "verdict": "REAL",
+      "reason": "survived a hostile read"
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 9,
+    "verified": 8,
+    "errored": 1,
+    "dropped_subfloor": 0
+  }
+}

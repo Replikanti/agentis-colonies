@@ -1,0 +1,11 @@
+# gate-mini (#2306): synthetic labels copied from fixtures/cluster-findings/ (dev-root-causes.tsv,
+# expected-clusters-v2.tsv). Not held-out data.
+arm	idx	block	rc	mechanism	evidence
+A	0	src/pool.sol:swap	stale-sqrtprice-callback	swap reuses sqrtPriceX96 read before the swap callback; donate() in the callback skews fee growth	synthetic
+A	1	src/pool.sol:swap	stale-sqrtprice-callback	swap reuses sqrtPriceX96 read before the swap callback; donate() in the callback skews fee growth	synthetic
+A	2	src/pool.sol:swap	stale-sqrtprice-callback	swap reuses sqrtPriceX96 read before the swap callback; donate() in the callback skews fee growth	synthetic
+A	3	src/pool.sol:flash	u3	singleton block	synthetic
+A	4	-	u4	no block key	synthetic
+A	5	-	u5	no block key	synthetic
+A	6	src/pool.sol:setfee	setfee-no-onlyowner	setFee lacks onlyOwner	synthetic
+A	7	src/pool.sol:setfee	setfee-no-onlyowner	setFee lacks onlyOwner	synthetic

@@ -1,0 +1,27 @@
+# gate-mini (#2306): synthetic labels copied from fixtures/cluster-findings/ (dev-root-causes.tsv,
+# expected-clusters-v2.tsv). Not held-out data.
+arm	idx	block	rc	mechanism	evidence
+A	0	contracts/oracleless.sol:fillorder	reentrancy-before-delete	target.call before the order is deleted; no nonReentrant	synthetic
+A	1	contracts/oracleless.sol:fillorder	reentrancy-before-delete	target.call before the order is deleted; no nonReentrant	synthetic
+A	2	contracts/oracleless.sol:fillorder	unallowlisted-target	caller-chosen target/txData spends standing approvals	synthetic
+A	3	contracts/oracleless.sol:fillorder	unallowlisted-target	caller-chosen target/txData spends standing approvals	synthetic
+A	4	src/vault.sol:withdraw	preview-round-down	previewWithdraw rounds shares down; withdraw(1) burns 0 shares	synthetic
+A	5	src/vault.sol:withdraw	preview-round-down	previewWithdraw rounds shares down; withdraw(1) burns 0 shares	synthetic
+A	6	src/vault.sol:withdraw	missing-spend-allowance	owner != msg.sender path never calls _spendAllowance	synthetic
+A	7	src/vault.sol:withdraw	missing-spend-allowance	owner != msg.sender path never calls _spendAllowance	synthetic
+A	8	src/priceoracle.sol:getprice	no-staleness-check	latestRoundData answer used without an updatedAt check	synthetic
+A	9	src/priceoracle.sol:getprice	no-staleness-check	latestRoundData answer used without an updatedAt check	synthetic
+A	10	src/priceoracle.sol:getprice	hardcoded-decimals	fixed 1e10 scaling assumes 8-decimals feeds	synthetic
+A	11	src/priceoracle.sol:getprice	hardcoded-decimals	fixed 1e10 scaling assumes 8-decimals feeds	synthetic
+B	0	contracts/auctionhouse.sol:settleauction	auction-reserve-strict	auction-reserve-strict	synthetic
+B	1	contracts/auctionhouse.sol:settleauction	auction-no-endtime	auction-no-endtime	synthetic
+B	2	contracts/auctionhouse.sol:settleauction	auction-reserve-strict	auction-reserve-strict	synthetic
+B	3	contracts/auctionhouse.sol:settleauction	auction-no-endtime	auction-no-endtime	synthetic
+B	4	contracts/governor.sol:castvote	vote-weight-current-block	vote-weight-current-block	synthetic
+B	5	contracts/governor.sol:castvote	vote-no-hasvoted	vote-no-hasvoted	synthetic
+B	6	contracts/governor.sol:castvote	vote-weight-current-block	vote-weight-current-block	synthetic
+B	7	contracts/governor.sol:castvote	vote-no-hasvoted	vote-no-hasvoted	synthetic
+B	8	contracts/raffle.sol:drawwinner	raffle-prevrandao-seed	raffle-prevrandao-seed	synthetic
+B	9	contracts/raffle.sol:drawwinner	raffle-no-round-reset	raffle-no-round-reset	synthetic
+B	10	contracts/raffle.sol:drawwinner	raffle-prevrandao-seed	raffle-prevrandao-seed	synthetic
+B	11	contracts/raffle.sol:drawwinner	raffle-no-round-reset	raffle-no-round-reset	synthetic

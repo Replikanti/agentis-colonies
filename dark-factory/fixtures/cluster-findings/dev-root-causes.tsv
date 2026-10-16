@@ -1,0 +1,100 @@
+# dev-root-causes.tsv — #2306. Per-finding root-cause labels for the DEV clustering data only: the 12 in-repo
+# findings files of expected-dev-counts.tsv plus the two #2278 M1 synthetic fixtures. Labelled by hand by the
+# #2306 implementer, consistent with the M1 hand counts (every same-block pair of the 12 run files is one root
+# cause). file = path relative to dark-factory/; idx = 0-based position in its `verified` list; block = the
+# clusterer's block key `file:function` (`-` when the entry has none); rc = root-cause id, compared only WITHIN
+# one (file, block). Entries alone in their block get a mechanical unique rc (u<idx>). The held-out oku fixture
+# and every held-out candidate contest are NOT in this file. Consumer: bench/corpus-bench/cluster-calibrate.py.
+file	idx	block	rc	note
+bench/corpus-bench/fixtures/score/verified_findings.json	0	contracts/vaultmanager.sol:claimreward	u0	singleton block
+bench/corpus-bench/fixtures/score/verified_findings.json	1	contracts/vaultmanager.sol:rebalancepool	u1	singleton block
+bench/corpus-bench/fixtures/score-locations/verified_findings.json	0	src/vault.sol:withdraw	u0	singleton block
+bench/corpus-bench/fixtures/score-locations/verified_findings.json	1	src/oracle.sol:peek	u1	singleton block
+bench/corpus-bench/fixtures/score-locations/verified_findings.json	2	src/registry.sol:sync	u2	singleton block
+bench/corpus-bench/fixtures/hunt-fitness/verified_findings.json	0	contracts/vault.sol:deposit	u0	singleton block
+bench/corpus-bench/fixtures/hunt-fitness/verified_findings.json	1	contracts/vault.sol:mint	u1	singleton block
+bench/corpus-bench/fixtures/hunt-fitness/verified_findings.json	2	contracts/vault.sol:accrue	u2	singleton block
+bench/corpus-bench/fixtures/hunt-fitness/verified_findings.json	3	contracts/router.sol:swap	u3	singleton block
+bench/corpus-bench/fixtures/hunt-fitness/verified_findings.json	4	contracts/lib.sol:helper	u4	singleton block
+bench/corpus-bench/fixtures/hunt-fitness/verified_findings.json	5	contracts/lib.sol:util	u5	singleton block
+bench/corpus-bench/fixtures/hunt-fitness/verified_findings.json	6	contracts/lib.sol:noop	u6	singleton block
+bench/corpus-bench/fixtures/generation-recall/verified_findings.json	0	src/vault.sol:settleepoch	u0	singleton block
+bench/corpus-bench/runs/1886-notional-refute-fn/verified_findings.json	0	src/single-sided-lp/curveconvex2token.sol:unstakeandexitpool	u0	singleton block
+bench/corpus-bench/runs/1886-notional-refute-fn/verified_findings.json	1	src/withdraws/ethena.sol:_finalizecooldown	u1	singleton block
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/on/verified_findings.json	0	src/strategy.sol:checkpoolactivity	obs-index-wrap	observation index arithmetic wraps once cardinality + index pass the uint16 range
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/on/verified_findings.json	1	src/leverager.sol:withdraw	token1-branch-ternary	token1 branch repays with amountOut0 instead of amountOut1 (copy-paste ternary)
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/on/verified_findings.json	2	src/leverager.sol:withdraw	token1-branch-ternary	token1 branch repays with amountOut0 instead of amountOut1 (copy-paste ternary)
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/on/verified_findings.json	3	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/on/verified_findings.json	4	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/on/verified_findings.json	5	src/leverager.sol:withdraw	token1-branch-ternary	token1 branch repays with amountOut0 instead of amountOut1 (copy-paste ternary)
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/on/verified_findings.json	6	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/on/verified_findings.json	7	src/leverager.sol:withdraw	token1-branch-ternary	token1 branch repays with amountOut0 instead of amountOut1 (copy-paste ternary)
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/on/verified_findings.json	8	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/on/verified_findings.json	9	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/on/verified_findings.json	10	src/strategy.sol:checkpoolactivity	obs-index-wrap	observation index arithmetic wraps once cardinality + index pass the uint16 range
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/on/verified_findings.json	11	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/off/verified_findings.json	0	src/strategy.sol:checkpoolactivity	obs-index-wrap	observation index arithmetic wraps once cardinality + index pass the uint16 range
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/off/verified_findings.json	1	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/off/verified_findings.json	2	src/leverager.sol:withdraw	token1-branch-ternary	token1 branch repays with amountOut0 instead of amountOut1 (copy-paste ternary)
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/off/verified_findings.json	3	src/leverager.sol:withdraw	token1-branch-ternary	token1 branch repays with amountOut0 instead of amountOut1 (copy-paste ternary)
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/off/verified_findings.json	4	src/strategy.sol:collectfees	u4	singleton block
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/off/verified_findings.json	5	src/leverager.sol:_checkwithinlimits	u5	singleton block
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/off/verified_findings.json	6	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/off/verified_findings.json	7	src/strategy.sol:_setsecondarypositionsticks	u7	singleton block
+bench/corpus-bench/runs/1887-yieldoor-refute-transfer/off/verified_findings.json	8	src/strategy.sol:checkpoolactivity	obs-index-wrap	observation index arithmetic wraps once cardinality + index pass the uint16 range
+bench/corpus-bench/runs/2213-operationalize-ab/notional/control/verified_findings.json	0	src/rewards/abstractrewardmanager.sol:_claimvaultrewards	u0	singleton block
+bench/corpus-bench/runs/2213-operationalize-ab/notional/control/verified_findings.json	1	src/single-sided-lp/curveconvex2token.sol:_exitpool	use-eth-hardcoded	exit hardcodes Curve use_eth=true while entry derives it
+bench/corpus-bench/runs/2213-operationalize-ab/notional/control/verified_findings.json	2	src/single-sided-lp/curveconvex2token.sol:_exitpool	use-eth-hardcoded	exit hardcodes Curve use_eth=true while entry derives it
+bench/corpus-bench/runs/2213-operationalize-ab/notional/control/verified_findings.json	3	src/withdraws/dinero.sol:_finalizewithdrawimpl	shared-batch-finalize	a request sharing one upxETH batchId is finalized first and takes the batch
+bench/corpus-bench/runs/2213-operationalize-ab/notional/control/verified_findings.json	4	src/withdraws/ethena.sol:_finalizecooldown	zero-cooldown-redeem	cooldownDuration == 0 redeems sUSDe to the holder at initiate time
+bench/corpus-bench/runs/2213-operationalize-ab/notional/control/verified_findings.json	5	src/withdraws/dinero.sol:_finalizewithdrawimpl	shared-batch-finalize	a request sharing one upxETH batchId is finalized first and takes the batch
+bench/corpus-bench/runs/2213-operationalize-ab/notional/control/verified_findings.json	6	src/withdraws/ethena.sol:_finalizecooldown	zero-cooldown-redeem	cooldownDuration == 0 redeems sUSDe to the holder at initiate time
+bench/corpus-bench/runs/2213-operationalize-ab/notional/control/verified_findings.json	7	src/withdraws/dinero.sol:_finalizewithdrawimpl	shared-batch-finalize	a request sharing one upxETH batchId is finalized first and takes the batch
+bench/corpus-bench/runs/2213-operationalize-ab/notional/treatment/verified_findings.json	0	src/oracles/curve2tokenoracle.sol:_lptokenvalue	u0	singleton block
+bench/corpus-bench/runs/2213-operationalize-ab/notional/treatment/verified_findings.json	1	src/rewards/abstractrewardmanager.sol:_claimvaultrewards	throttled-reward-lump	forceClaimAfter throttle books a whole window of rewards as one lump over current shares
+bench/corpus-bench/runs/2213-operationalize-ab/notional/treatment/verified_findings.json	2	src/rewards/abstractrewardmanager.sol:_claimvaultrewards	throttled-reward-lump	forceClaimAfter throttle books a whole window of rewards as one lump over current shares
+bench/corpus-bench/runs/2213-operationalize-ab/notional/treatment/verified_findings.json	3	src/single-sided-lp/curveconvex2token.sol:_exitpool	use-eth-hardcoded	exit hardcodes Curve use_eth=true while entry derives it
+bench/corpus-bench/runs/2213-operationalize-ab/notional/treatment/verified_findings.json	4	src/single-sided-lp/curveconvex2token.sol:_exitpool	use-eth-hardcoded	exit hardcodes Curve use_eth=true while entry derives it
+bench/corpus-bench/runs/2213-operationalize-ab/notional/treatment/verified_findings.json	5	src/withdraws/dinero.sol:_finalizewithdrawimpl	shared-batch-finalize	a request sharing one upxETH batchId is finalized first and takes the batch
+bench/corpus-bench/runs/2213-operationalize-ab/notional/treatment/verified_findings.json	6	src/withdraws/dinero.sol:_finalizewithdrawimpl	shared-batch-finalize	a request sharing one upxETH batchId is finalized first and takes the batch
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/control/verified_findings.json	0	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/control/verified_findings.json	1	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/control/verified_findings.json	2	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/control/verified_findings.json	3	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/control/verified_findings.json	4	src/leverager.sol:withdraw	u4	singleton block
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/control/verified_findings.json	5	src/strategy.sol:checkpoolactivity	u5	singleton block
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/control/verified_findings.json	6	src/strategy.sol:collectfees	u6	singleton block
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment/verified_findings.json	0	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment/verified_findings.json	1	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment/verified_findings.json	2	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment/verified_findings.json	3	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment/verified_findings.json	4	src/leverager.sol:withdraw	u4	singleton block
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment/verified_findings.json	5	src/strategy.sol:checkpoolactivity	obs-index-wrap	observation index arithmetic wraps once cardinality + index pass the uint16 range
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment/verified_findings.json	6	src/strategy.sol:checkpoolactivity	obs-index-wrap	observation index arithmetic wraps once cardinality + index pass the uint16 range
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment-superseded/verified_findings.json	0	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment-superseded/verified_findings.json	1	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment-superseded/verified_findings.json	2	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment-superseded/verified_findings.json	3	src/leverager.sol:liquidateposition	decimals-not-pow10	borrowedValue divides by decimals() instead of 10 ** decimals()
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment-superseded/verified_findings.json	4	src/leverager.sol:withdraw	u4	singleton block
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment-superseded/verified_findings.json	5	src/strategy.sol:checkpoolactivity	obs-index-wrap	observation index arithmetic wraps once cardinality + index pass the uint16 range
+bench/corpus-bench/runs/2213-operationalize-ab/yieldoor/treatment-superseded/verified_findings.json	6	src/strategy.sol:checkpoolactivity	obs-index-wrap	observation index arithmetic wraps once cardinality + index pass the uint16 range
+fixtures/cluster-findings/synthetic.json	0	src/pool.sol:swap	stale-sqrtprice-callback	swap reuses sqrtPriceX96 read before the swap callback; donate() in the callback skews fee growth
+fixtures/cluster-findings/synthetic.json	1	src/pool.sol:swap	stale-sqrtprice-callback	swap reuses sqrtPriceX96 read before the swap callback; donate() in the callback skews fee growth
+fixtures/cluster-findings/synthetic.json	2	src/pool.sol:swap	stale-sqrtprice-callback	swap reuses sqrtPriceX96 read before the swap callback; donate() in the callback skews fee growth
+fixtures/cluster-findings/synthetic.json	3	src/pool.sol:flash	u3	singleton block
+fixtures/cluster-findings/synthetic.json	4	-	u4	no block key
+fixtures/cluster-findings/synthetic.json	5	-	u5	no block key
+fixtures/cluster-findings/synthetic.json	6	src/pool.sol:setfee	setfee-no-onlyowner	setFee lacks onlyOwner
+fixtures/cluster-findings/synthetic.json	7	src/pool.sol:setfee	setfee-no-onlyowner	setFee lacks onlyOwner
+fixtures/cluster-findings/same-function-distinct.json	0	contracts/oracleless.sol:fillorder	reentrancy-before-delete	target.call before the order is deleted; no nonReentrant
+fixtures/cluster-findings/same-function-distinct.json	1	contracts/oracleless.sol:fillorder	reentrancy-before-delete	target.call before the order is deleted; no nonReentrant
+fixtures/cluster-findings/same-function-distinct.json	2	contracts/oracleless.sol:fillorder	unallowlisted-target	caller-chosen target/txData spends standing approvals
+fixtures/cluster-findings/same-function-distinct.json	3	contracts/oracleless.sol:fillorder	unallowlisted-target	caller-chosen target/txData spends standing approvals
+fixtures/cluster-findings/same-function-distinct.json	4	src/vault.sol:withdraw	preview-round-down	previewWithdraw rounds shares down; withdraw(1) burns 0 shares
+fixtures/cluster-findings/same-function-distinct.json	5	src/vault.sol:withdraw	preview-round-down	previewWithdraw rounds shares down; withdraw(1) burns 0 shares
+fixtures/cluster-findings/same-function-distinct.json	6	src/vault.sol:withdraw	missing-spend-allowance	owner != msg.sender path never calls _spendAllowance
+fixtures/cluster-findings/same-function-distinct.json	7	src/vault.sol:withdraw	missing-spend-allowance	owner != msg.sender path never calls _spendAllowance
+fixtures/cluster-findings/same-function-distinct.json	8	src/priceoracle.sol:getprice	no-staleness-check	latestRoundData answer used without an updatedAt check
+fixtures/cluster-findings/same-function-distinct.json	9	src/priceoracle.sol:getprice	no-staleness-check	latestRoundData answer used without an updatedAt check
+fixtures/cluster-findings/same-function-distinct.json	10	src/priceoracle.sol:getprice	hardcoded-decimals	fixed 1e10 scaling assumes 8-decimals feeds
+fixtures/cluster-findings/same-function-distinct.json	11	src/priceoracle.sol:getprice	hardcoded-decimals	fixed 1e10 scaling assumes 8-decimals feeds

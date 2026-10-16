@@ -1,0 +1,3 @@
+G-1	High	1	Reentrant fillOrder pays an order twice	Reentrant fillOrder pays an order twice -- `OracleLess.sol:fillOrder()` makes the external target call before the order is deleted.
+G-2	Medium	1	withdraw rounds shares down	withdraw rounds shares down -- `Vault.sol:withdraw()` burns zero shares for a dust withdrawal.
+G-3	High	1	getPrice ignores staleness	getPrice ignores staleness -- `PriceOracle.sol:getPrice()` uses a stale latestRoundData answer.

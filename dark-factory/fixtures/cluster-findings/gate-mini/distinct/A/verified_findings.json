@@ -1,0 +1,147 @@
+{
+  "repo": "fixture",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "orders",
+      "location": "contracts/OracleLess.sol:fillOrder:141",
+      "file": "contracts/OracleLess.sol",
+      "class": "C3",
+      "severity": "High",
+      "exploit": "fillOrder pulls tokenIn and runs target.call(txData) BEFORE it deletes orders[orderId] and before removeFromArray(pendingOrderIds); a malicious target re-enters fillOrder with the same orderId while the order is still live, so the recipient is paid twice and tokenOut belonging to other orders is drained. No nonReentrant guard on fillOrder.",
+      "poc_sketch": "deploy ReenteringTarget whose fallback calls oracleLess.fillOrder(orderId, target, txData) once more; assert tokenOut balance of other orders dropped",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "orders",
+      "location": "contracts/OracleLess.sol:fillOrder:141",
+      "file": "contracts/OracleLess.sol",
+      "class": "C4",
+      "severity": "High",
+      "exploit": "fillOrder performs the external target.call(txData) while orders[orderId] is still stored and pendingOrderIds still lists it; checks-effects-interactions is violated and no nonReentrant modifier exists, so the callee re-enters fillOrder(orderId) and settles the same order a second time out of other users' tokenOut.",
+      "poc_sketch": "ReenteringTarget.fallback -> fillOrder(orderId) again; compare tokenOut balances before/after",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "orders",
+      "location": "contracts/OracleLess.sol:fillOrder:137",
+      "file": "contracts/OracleLess.sol",
+      "class": "C12",
+      "severity": "High",
+      "exploit": "fillOrder accepts an arbitrary target and txData from any caller and never checks the target against an allowlist of routers; an attacker passes target = tokenIn with txData = transferFrom(victim, attacker, amount), so the contract spends the standing approvals users granted to OracleLess and drains any approving wallet.",
+      "poc_sketch": "call fillOrder(orderId, address(tokenIn), abi.encodeWithSelector(IERC20.transferFrom.selector, victim, attacker, bal))",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "orders",
+      "location": "contracts/OracleLess.sol:fillOrder:137",
+      "file": "contracts/OracleLess.sol",
+      "class": "C2",
+      "severity": "Medium",
+      "exploit": "The target parameter of fillOrder is fully caller-controlled and is not validated against any router allowlist, so txData can encode transferFrom(victim, attacker, amount) on a token and execute it with OracleLess as msg.sender, draining every wallet that approved the contract.",
+      "poc_sketch": "fillOrder with target = token, txData = transferFrom(victim, attacker, allowance)",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "vault",
+      "location": "src/Vault.sol:withdraw:88",
+      "file": "src/Vault.sol",
+      "class": "C1",
+      "severity": "Medium",
+      "exploit": "withdraw computes shares = previewWithdraw(assets) with mulDiv rounding DOWN, so a caller withdrawing a dust amount of assets burns zero shares; looping withdraw(1) extracts assets from the vault while totalSupply never decreases, diluting every other depositor.",
+      "poc_sketch": "loop vault.withdraw(1, attacker, attacker) 1e6 times; assert shares burned == 0 and convertToAssets(share) decreased",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "vault",
+      "location": "src/Vault.sol:withdraw:90",
+      "file": "src/Vault.sol",
+      "class": "C19",
+      "severity": "Medium",
+      "exploit": "previewWithdraw rounds in the caller's favour (mulDiv Rounding.Down instead of Up) inside withdraw, so withdraw(1) burns 0 shares; repeating it drains assets without reducing totalSupply.",
+      "poc_sketch": "withdraw(1, a, a) repeatedly, shares burned stays 0",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "vault",
+      "location": "src/Vault.sol:withdraw:84",
+      "file": "src/Vault.sol",
+      "class": "C5",
+      "severity": "High",
+      "exploit": "withdraw(assets, receiver, owner) burns the owner's shares when owner != msg.sender without calling _spendAllowance(owner, msg.sender, shares); any account can withdraw another depositor's position to itself.",
+      "poc_sketch": "attacker calls vault.withdraw(victimAssets, attacker, victim) with zero allowance; assert it succeeds",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "vault",
+      "location": "src/Vault.sol:withdraw:84",
+      "file": "src/Vault.sol",
+      "class": "C7",
+      "severity": "High",
+      "exploit": "Missing allowance check: when the owner argument differs from msg.sender, withdraw never calls _spendAllowance, so a third party redeems the victim's shares to an arbitrary receiver.",
+      "poc_sketch": "withdraw(victimAssets, attacker, victim) from an address with no allowance",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "oracle",
+      "location": "src/PriceOracle.sol:getPrice:52",
+      "file": "src/PriceOracle.sol",
+      "class": "C2",
+      "severity": "High",
+      "exploit": "getPrice reads latestRoundData() and uses answer without checking updatedAt against maxStaleness (or answeredInRound), so after a feed stops updating the protocol keeps pricing collateral at the last stale answer and borrowers borrow against an outdated value.",
+      "poc_sketch": "mock feed with updatedAt = block.timestamp - 3 days; assert getPrice still returns the old answer",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "oracle",
+      "location": "src/PriceOracle.sol:getPrice:52",
+      "file": "src/PriceOracle.sol",
+      "class": "C8",
+      "severity": "High",
+      "exploit": "No staleness check: getPrice consumes latestRoundData's answer while ignoring updatedAt, so a frozen feed keeps returning a stale price that the lending logic trusts.",
+      "poc_sketch": "set updatedAt far in the past on the mock feed; getPrice does not revert",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "oracle",
+      "location": "src/PriceOracle.sol:getPrice:57",
+      "file": "src/PriceOracle.sol",
+      "class": "C6",
+      "severity": "Medium",
+      "exploit": "getPrice scales answer by 1e10 assuming every feed has 8 decimals, but never reads feed.decimals(); for an 18-decimals feed the returned price is 1e10 times too large, so collateral valued through that feed lets a borrower take out almost the whole pool.",
+      "poc_sketch": "register an 18-decimals mock feed; assert getPrice returns answer * 1e10 instead of answer",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "oracle",
+      "location": "src/PriceOracle.sol:getPrice:57",
+      "file": "src/PriceOracle.sol",
+      "class": "C15",
+      "severity": "Medium",
+      "exploit": "Hardcoded 1e10 scaling in getPrice assumes 8-decimals feeds; feed.decimals() is never consulted, so an 18-decimals feed inflates the price by 1e10.",
+      "poc_sketch": "18-decimals feed -> getPrice == answer * 1e10",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 14,
+    "verified": 12,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

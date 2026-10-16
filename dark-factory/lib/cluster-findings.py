@@ -22,11 +22,28 @@
 # lower-to-upper transition, an underscore or a digit, or is directly followed by `(`; lowercased. Removed from
 # the set: the block's own function name, the file's contract basename, and the pinned generic STOPLIST below
 # (Solidity primitive types and ubiquitous calls). An empty union scores 0, so two texts citing no identifier
-# never merge. Line numbers are NOT used: duplicates cite adjacent lines and distinct bugs can cite the same one.
+# never merge. Line numbers never PROPOSE a merge: duplicates cite lines up to dozens apart and distinct bugs can
+# cite the same one, so they are only a split signal (CANNOT-LINK below).
 #
 # LINKAGE. Agglomerative AVERAGE linkage inside each block: merge the cluster pair with the highest mean pairwise
 # similarity while that mean is >= the threshold; ties go to the lowest member indices. Average linkage is the
 # conservative choice — one bridging text cannot chain two different bugs together the way single linkage would.
+#
+# CANNOT-LINK REFINEMENT (#2306, method v2, the default). Two distinct defects in ONE function share their callers
+# and consumers, so their exploit texts describe the same downstream consequence chain and the identifier Jaccard
+# above merges them (the #2278 M2 held-out FAIL: J = 0.33 >= T on two different defects of one function). v2 keeps
+# v1 as the only thing that PROPOSES merges and adds a deterministic veto: every v1 cluster is re-agglomerated with
+# the same linkage and threshold, and two sub-clusters may merge only if no pair across them is cannot-linked. A pair
+# is cannot-linked when
+#   (a) both `location`s cite a line (the first leading integer of a `:`-part after the function) and the lines
+#       are more than LINE_WINDOW apart, or
+#   (b) both exploit texts cite identifiers in their DEFECT CLAUSE — the text before the first DEFECT_BOUNDARY_RE
+#       match (a consequence connective: `so`, `which`, `allowing`, `;`, `->`, a sentence end, ...), filtered like
+#       the similarity identifiers — and those two sets have Jaccard <= DEFECT_TAU.
+# Each signal covers the other's blind spot: a location without a line still has its clause, a clause without
+# identifiers still has its line. Every v2 cluster is a subset of a v1 cluster, so v2 can never merge a pair v1
+# keeps apart; it can only split. With both vetoes disabled (LINE_WINDOW = infinity, DEFECT_TAU < 0) v2 equals v1.
+# `--method v1` reproduces the #2278 clusterer byte for byte (output, `clustering.method`, no `cannot_link` key).
 #
 # REPRESENTATIVE. The member with, in order: the highest severity (critical > high > medium > low > unknown,
 # after normalising `severity=` / `<...>` wrappers — the SEV_RANK vocabulary verify-findings.sh uses); an
@@ -39,13 +56,15 @@
 # A singleton entry is byte-identical to its raw copy.
 #
 # Subcommands:
-#   cluster --in <raw.json> --out <clustered.json> [--threshold T]
-#       Prints `CLUSTER|<raw_n>|<clusters>|<merged>` on stdout. When merged == 0, --out is NOT written (the
-#       caller keeps the raw file, byte-identical to a run without clustering). The clustered file keeps every
-#       other top-level key verbatim, sets totals.verified = len(verified), adds totals.verified_precluster
+#   cluster --in <raw.json> --out <clustered.json> [--threshold T] [--method v1|v2]
+#       --method defaults to DEFAULT_METHOD (v2). Prints `CLUSTER|<raw_n>|<clusters>|<merged>` on stdout. When
+#       merged == 0, --out is NOT written (the caller keeps the raw file, byte-identical to a run without
+#       clustering). The clustered file keeps every other top-level key verbatim, sets totals.verified =
+#       len(verified), adds totals.verified_precluster
 #       (the finding-payability-gate.sh `verified_pregate` precedent, so candidates == verified_precluster +
 #       errored + refuted + dropped_subfloor still holds) and a top-level `clustering` block:
-#       {method, threshold, raw_file, raw_sha256, raw_verified, clusters, merged}.
+#       {method, threshold, raw_file, raw_sha256, raw_verified, clusters, merged}; a v2 run adds
+#       cannot_link = {line_window, defect_tau} after threshold.
 #   raw-view --verified <verified_findings.json>
 #       Prints the PRE-CLUSTER view on stdout. A file without a `clustering` key is echoed byte-for-byte. Else the
 #       sibling raw file is read and its sha256 must equal clustering.raw_sha256 (a stale sibling never scores
@@ -53,8 +72,8 @@
 #       is appended to the raw list and totals.verified = len(verified).
 #
 # python3 stdlib only. Deterministic: the same input always yields byte-identical output.
-# Exit: 0 ok; 2 usage error / bad threshold / input already clustered; 3 unreadable or malformed input, or a
-#       raw sibling whose sha256 does not match.
+# Exit: 0 ok; 2 usage error / bad threshold / bad method / input already clustered; 3 unreadable or malformed
+#       input, or a raw sibling whose sha256 does not match.
 import sys
 import os
 import re
@@ -69,6 +88,27 @@ METHOD = "same-function identifier-jaccard average-linkage v1"
 # which is the accepted under-merge direction. Pinned counts: fixtures/cluster-findings/expected-dev-counts.tsv.
 DEFAULT_THRESHOLD = 0.30
 RAW_FILE = "verified_findings.raw.json"
+
+METHOD_V2 = "same-function identifier-jaccard average-linkage + cannot-link refinement v2"
+METHODS = ("v1", "v2")
+DEFAULT_METHOD = "v2"
+# Both cannot-link constants come from dev labels only, by the fixed #2306 rule that
+# bench/corpus-bench/cluster-calibrate.py applies and pins (fixtures/cluster-findings/calibration-v2.txt; the
+# held-out oku fixture is not read). LINE_WINDOW = the largest line spread among dev labelled-same pairs that both
+# cite a line: the real dev duplicates cite identical lines, the M1 synthetic `withdraw` pair cites :88/:90. A
+# smaller window would split that labelled duplicate; a larger one gives up line evidence the dev data never needs.
+LINE_WINDOW = 2
+# DEFECT_TAU = the largest value of {0.0, 0.34, 0.5} whose clause veto fires on no dev labelled-same pair; when even
+# 0.0 fires (it does: two paraphrases of the 1887 yieldoor `withdraw` copy-paste bug name token1 vs token0 in their
+# clauses), the rule takes 0.0 and lists the vetoed dev pairs — distinctness ranks above compression. At 0.0 the
+# clause veto fires only on DISJOINT defect clauses; any higher value would veto more labelled dev duplicates.
+DEFECT_TAU = 0.0
+# Pinned generic consequence syntax (not tuned): the defect clause ends at the first consequence connective.
+DEFECT_BOUNDARY_RE = re.compile(
+    r"\b(?:so|which|thereby|allowing|letting|enabling|causing|making|resulting|leading)\b"
+    "|;| -- | \u2014 |->|\u2192|\\.\\s",
+    re.IGNORECASE)
+_LINE_RE = re.compile(r"\s*(\d+)")
 
 SEV_RANK = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 
@@ -127,12 +167,44 @@ def raw_identifiers(text):
     return out
 
 
-def exploit_identifiers(entry, key):
+def block_identifiers(ids, key):
+    """Drop the block's own function name, the file's contract basename and the pinned STOPLIST from `ids`."""
     file_part, fn = key
     contract = os.path.splitext(os.path.basename(file_part))[0]
-    ids = raw_identifiers(entry.get("exploit"))
     return {t for t in ids
             if t != fn and t != contract and t not in STOPLIST and not t.startswith(STOP_PREFIXES)}
+
+
+def exploit_identifiers(entry, key):
+    return block_identifiers(raw_identifiers(entry.get("exploit")), key)
+
+
+def location_line(entry):
+    """The first leading integer of a `location` part after the function (`F.sol:fn:120` -> 120), else None."""
+    for part in str(entry.get("location") or "").split(":")[2:]:
+        m = _LINE_RE.match(part)
+        if m:
+            return int(m.group(1))
+    return None
+
+
+def defect_clause(text):
+    """The exploit text before its first consequence connective (the whole text when there is none)."""
+    text = str(text or "")
+    m = DEFECT_BOUNDARY_RE.search(text)
+    return text[:m.start()] if m else text
+
+
+def defect_identifiers(entry, key):
+    return block_identifiers(raw_identifiers(defect_clause(entry.get("exploit"))), key)
+
+
+def cannot_link(la, lb, da, db, line_window, defect_tau):
+    """(a) both cite a line and the lines are more than line_window apart, or (b) both defect clauses cite
+    identifiers and those sets have Jaccard <= defect_tau."""
+    if la is not None and lb is not None and abs(la - lb) > line_window:
+        return True
+    return bool(da) and bool(db) and jaccard(da, db) <= defect_tau
 
 
 def jaccard(a, b):
@@ -172,8 +244,9 @@ def pick_representative(members, entries):
     return min(members, key=score)
 
 
-def cluster_block(indices, idsets, threshold):
-    """Average-linkage agglomeration over one block. Returns a list of sorted member-index lists."""
+def cluster_block(indices, idsets, threshold, forbid=None):
+    """Average-linkage agglomeration over one block. Returns a list of sorted member-index lists. `forbid` (v2) is a
+    set of cannot-linked (a, b) index pairs, both orders: a cluster pair holding one across it is never merged."""
     clusters = [[i] for i in indices]
     sim = {}
     for x in range(len(indices)):
@@ -184,6 +257,8 @@ def cluster_block(indices, idsets, threshold):
         best, best_pair = None, None
         for x in range(len(clusters)):
             for y in range(x + 1, len(clusters)):
+                if forbid and any((a, b) in forbid for a in clusters[x] for b in clusters[y]):
+                    continue
                 total = sum(sim[(a, b)] for a in clusters[x] for b in clusters[y])
                 mean = total / float(len(clusters[x]) * len(clusters[y]))
                 # Strictly greater keeps the FIRST pair in (lowest-member) order on a tie.
@@ -198,8 +273,30 @@ def cluster_block(indices, idsets, threshold):
     return clusters
 
 
-def cluster_entries(entries, threshold):
-    """-> list of (representative index, sorted member indices), ordered by first member's raw index."""
+def cannot_link_pairs(members, entries, line_window=None, defect_tau=None):
+    """The set of cannot-linked (a, b) pairs (both orders) among `members`, all of one block. None -> the module
+    constants (an in-process caller may pass line_window = float('inf'), defect_tau = -1 to disable both vetoes)."""
+    window = LINE_WINDOW if line_window is None else line_window
+    tau = DEFECT_TAU if defect_tau is None else defect_tau
+    lines, clauses = {}, {}
+    for i in members:
+        lines[i] = location_line(entries[i])
+        clauses[i] = defect_identifiers(entries[i], block_key(entries[i]))
+    out = set()
+    for x in range(len(members)):
+        for y in range(x + 1, len(members)):
+            a, b = members[x], members[y]
+            if cannot_link(lines[a], lines[b], clauses[a], clauses[b], window, tau):
+                out.add((a, b))
+                out.add((b, a))
+    return out
+
+
+def cluster_entries(entries, threshold, method=DEFAULT_METHOD, line_window=None, defect_tau=None):
+    """-> list of (representative index, sorted member indices), ordered by first member's raw index. v2 re-runs
+    the same linkage over every multi-member v1 cluster with its cannot-linked pairs forbidden."""
+    if method not in METHODS:
+        raise ValueError("unknown clustering method: " + str(method))
     blocks = {}
     groups = []
     idsets = {}
@@ -211,7 +308,12 @@ def cluster_entries(entries, threshold):
         idsets[i] = exploit_identifiers(e, key)
         blocks.setdefault(key, []).append(i)
     for key in blocks:
-        groups.extend(cluster_block(blocks[key], idsets, threshold))
+        for g in cluster_block(blocks[key], idsets, threshold):
+            if method == "v1" or len(g) == 1:
+                groups.append(g)
+                continue
+            forbid = cannot_link_pairs(g, entries, line_window, defect_tau)
+            groups.extend(cluster_block(g, idsets, threshold, forbid) if forbid else [g])
     groups.sort(key=lambda g: g[0])
     return [(pick_representative(g, entries), g) for g in groups]
 
@@ -261,10 +363,11 @@ def parse_threshold(raw):
 def cmd_cluster(args):
     src = dst = None
     threshold = DEFAULT_THRESHOLD
+    method = DEFAULT_METHOD
     i = 0
     while i < len(args):
         a = args[i]
-        if a in ("--in", "--out", "--threshold"):
+        if a in ("--in", "--out", "--threshold", "--method"):
             if i + 1 >= len(args):
                 die(2, a + " requires a value")
             v = args[i + 1]
@@ -272,18 +375,23 @@ def cmd_cluster(args):
                 src = v
             elif a == "--out":
                 dst = v
+            elif a == "--method":
+                if v not in METHODS:
+                    die(2, "--method must be one of " + "|".join(METHODS) + " (got '" + v + "')")
+                method = v
             else:
                 threshold = parse_threshold(v)
             i += 2
         else:
             die(2, "unknown argument to cluster: " + a)
     if not src or not dst:
-        die(2, "usage: cluster-findings.py cluster --in <raw.json> --out <clustered.json> [--threshold T]")
+        die(2, "usage: cluster-findings.py cluster --in <raw.json> --out <clustered.json> [--threshold T] "
+               "[--method v1|v2]")
     raw_bytes, data = load(src)
     if "clustering" in data:
         die(2, src + " is already clustered (top-level 'clustering' key); refusing to cluster it twice")
     entries = data.get("verified", [])
-    groups = cluster_entries(entries, threshold)
+    groups = cluster_entries(entries, threshold, method)
     raw_n, n_clusters = len(entries), len(groups)
     merged = raw_n - n_clusters
     sys.stdout.write("CLUSTER|%d|%d|%d\n" % (raw_n, n_clusters, merged))
@@ -296,15 +404,17 @@ def cmd_cluster(args):
     totals["verified"] = n_clusters
     totals["verified_precluster"] = raw_n
     out["totals"] = totals
-    out["clustering"] = {
-        "method": METHOD,
-        "threshold": threshold,
+    info = {"method": METHOD if method == "v1" else METHOD_V2, "threshold": threshold}
+    if method == "v2":
+        info["cannot_link"] = {"line_window": LINE_WINDOW, "defect_tau": DEFECT_TAU}
+    info.update({
         "raw_file": RAW_FILE,
         "raw_sha256": hashlib.sha256(raw_bytes).hexdigest(),
         "raw_verified": raw_n,
         "clusters": n_clusters,
         "merged": merged,
-    }
+    })
+    out["clustering"] = info
     try:
         with open(dst, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(out, indent=2) + "\n")
@@ -345,7 +455,8 @@ def cmd_raw_view(args):
 
 def main(argv):
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
-        sys.stderr.write("usage: cluster-findings.py cluster --in <raw.json> --out <clustered.json> [--threshold T]\n"
+        sys.stderr.write("usage: cluster-findings.py cluster --in <raw.json> --out <clustered.json> [--threshold T] "
+                         "[--method v1|v2]\n"
                          "       cluster-findings.py raw-view --verified <verified_findings.json>\n")
         return 2 if len(argv) < 2 else 0
     if argv[1] == "cluster":

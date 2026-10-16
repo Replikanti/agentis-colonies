@@ -1,0 +1,2 @@
+G-1	High	1	swap credits fees to callback liquidity	swap credits fees to callback liquidity -- `Pool.sol:swap()` reads a stale price across the swap callback.
+G-2	Medium	1	flash fee accounting	flash fee accounting -- `Pool.sol:flash()` credits the flash fee to the wrong liquidity.

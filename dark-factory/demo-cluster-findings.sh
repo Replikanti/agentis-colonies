@@ -27,6 +27,17 @@
 #      duplicate-free input under ON is byte-identical to OFF with no sibling; an OFF
 #      re-run removes a stale sibling; bad knob values exit 2; a failing clusterer (DF_CLUSTER_CMD=false) restores
 #      the raw file, prints a WARNING and exits 0; --jobs 3 is byte-identical to --jobs 1.
+#   6) SHARED CONSEQUENCE (#2306, fixtures/cluster-findings/same-function-shared-consequence.json, pinned
+#      expected-clusters-v2.tsv): three functions, each with two distinct defects whose exploit texts describe the
+#      same downstream consequence chain. v1 merges every labelled-distinct pair (the fixture FAILS under v1); the
+#      default v2 separates all of them and its partition equals the pin. Variants: lines within the window (only
+#      the defect-clause veto splits), a member citing no line, and defect clauses sharing one identifier (only the
+#      line window splits).
+#   7) REFINEMENT: on every file of dev-root-causes.tsv and the three synthetic fixtures each v2 cluster is a subset
+#      of a v1 cluster, and with both vetoes disabled in-process (W = infinity, tau = -1) v2 equals v1.
+#   8) METHOD SELECTION: --method v1 reproduces expected-clusters.tsv and the assertion 1-2 counts byte for byte;
+#      --method bogus exits 2; `clustering.cannot_link` appears only in a v2 output.
+# Assertions 1-5 run under the default method (v2).
 #
 # Usage:  dark-factory/demo-cluster-findings.sh
 # Requires: python3 (the floor). Exit: 0 = all assertions held; non-zero = a regression.
@@ -92,39 +103,41 @@ check "$SINGLE" "same" "singleton entries are byte-identical to their raw copies
 note "2) same function, different bugs: distinct pairs stay separate, duplicates still merge"
 D_ALL="$(python3 "$CL" cluster --in "$FIX/same-function-distinct.json" --out "$WORK/distinct.json")"
 check "$D_ALL" "CLUSTER|12|6|6" "12 findings (3 functions x 2 bugs x 2 duplicates) -> 6 distinct root causes"
-# subset <out> <threshold|-> <indices...> -> the CLUSTER line of that subset of same-function-distinct.json
+# subset <out> <method|-> <threshold|-> <indices...> -> the CLUSTER line of that subset of
+# same-function-distinct.json ('-' = the CLI default for that knob)
 subset() {
-  sb_out="$1"; sb_t="$2"; shift 2
+  sb_out="$1"; sb_m="$2"; sb_t="$3"; shift 3
   python3 - "$FIX/same-function-distinct.json" "$sb_out" "$@" <<'PY'
 import sys, json
 d = json.load(open(sys.argv[1], encoding="utf-8"))
 d["verified"] = [d["verified"][int(i)] for i in sys.argv[3:]]
 open(sys.argv[2], "w", encoding="utf-8").write(json.dumps(d, indent=2) + "\n")
 PY
-  if [ "$sb_t" = "-" ]; then
-    python3 "$CL" cluster --in "$sb_out" --out "$sb_out.c"
-  else
-    python3 "$CL" cluster --in "$sb_out" --out "$sb_out.c" --threshold "$sb_t"
-  fi
+  set -- cluster --in "$sb_out" --out "$sb_out.c"
+  [ "$sb_m" = "-" ] || set -- "$@" --method "$sb_m"
+  [ "$sb_t" = "-" ] || set -- "$@" --threshold "$sb_t"
+  python3 "$CL" "$@"
 }
 # Blocks: 0-1 = fillOrder reentrancy (dup pair), 2-3 = fillOrder unallowlisted target; 4-5 / 6-7 = withdraw
 # rounding / missing allowance; 8-9 / 10-11 = getPrice staleness / decimals.
 DISTINCT_OK=1
 for pair in "0 2" "0 3" "1 2" "1 3" "4 6" "4 7" "5 6" "5 7" "8 10" "8 11" "9 10" "9 11"; do
   # shellcheck disable=SC2086
-  got="$(subset "$WORK/pair.json" - $pair)"
+  got="$(subset "$WORK/pair.json" - - $pair)"
   [ "$got" = "CLUSTER|2|2|0" ] || { DISTINCT_OK=0; echo "    distinct pair ($pair) merged: $got"; }
 done
 if [ "$DISTINCT_OK" -eq 1 ]; then ok "every one of the 12 cross-bug pairs stays separate on its own"; else bad "a distinct same-function pair merged"; fi
 DUP_OK=1
 for pair in "0 1" "2 3" "4 5" "6 7" "8 9" "10 11"; do
   # shellcheck disable=SC2086
-  got="$(subset "$WORK/pair.json" - $pair)"
+  got="$(subset "$WORK/pair.json" - - $pair)"
   [ "$got" = "CLUSTER|2|1|1" ] || { DUP_OK=0; echo "    duplicate pair ($pair) did not merge: $got"; }
 done
 if [ "$DUP_OK" -eq 1 ]; then ok "each finding still merges with its own cross-class duplicate"; else bad "a duplicate pair did not merge"; fi
-check "$(subset "$WORK/pair.json" 0.25 0 2)" "CLUSTER|2|1|1" \
-  "the fixture binds the threshold: at 0.25 the fillOrder reentrancy / unallowlisted-target pair would merge"
+check "$(subset "$WORK/pair.json" v1 0.25 0 2)" "CLUSTER|2|1|1" \
+  "the fixture binds the v1 threshold: at 0.25 the fillOrder reentrancy / unallowlisted-target pair would merge"
+check "$(subset "$WORK/pair.json" - 0.25 0 2)" "CLUSTER|2|2|0" \
+  "under the default v2 the same pair stays apart even at 0.25 (its cited lines :141 / :137 are cannot-linked)"
 
 # ---------------------------------------------------------------------------------------------------------------
 note "3) representative choice + schema"
@@ -304,6 +317,104 @@ if cmp -s "$WORK/j1/verified_findings.json" "$WORK/j3/verified_findings.json" \
 else
   bad "clustering output depends on --jobs"
 fi
+
+# ---------------------------------------------------------------------------------------------------------------
+note "6) shared consequence chain: v1 merges every labelled-distinct pair, v2 separates them (#2306)"
+SC="$FIX/same-function-shared-consequence.json"
+check "$(python3 "$CL" cluster --in "$SC" --out "$WORK/sc.v1.json" --method v1)" "CLUSTER|12|3|9" \
+  "v1: 12 findings (3 functions x 2 defects x 2 paraphrases) -> 3 clusters, one per function (the #2278 failure mode)"
+check "$(python3 "$CL" cluster --in "$SC" --out "$WORK/sc.v2.json")" "CLUSTER|12|6|6" \
+  "default v2: 12 findings -> 6 clusters, one per labelled root cause"
+SC_RES="$(python3 - "$CL" "$SC" "$FIX/expected-clusters-v2.tsv" "$WORK/sc.v2.json" <<'PY'
+import sys, json, importlib.util
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("cl", sys.argv[1]); cl = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cl)
+v = json.load(open(sys.argv[2], encoding="utf-8"))["verified"]
+rc, pin = {}, {}
+for line in open(sys.argv[3], encoding="utf-8"):
+    c = line.rstrip("\n").split("\t")
+    if line.startswith("#") or c[0] == "idx":
+        continue
+    rc[int(c[0])], pin[int(c[0])] = c[2], int(c[3])
+dist = [(a, b) for a in range(len(v)) for b in range(a + 1, len(v))
+        if cl.block_key(v[a]) == cl.block_key(v[b]) and rc[a] != rc[b]]
+def part(method):
+    return {m: gi for gi, (_r, ms) in enumerate(cl.cluster_entries(v, cl.DEFAULT_THRESHOLD, method)) for m in ms}
+p1, p2 = part("v1"), part("v2")
+res = ["v1-merges-all" if dist and all(p1[a] == p1[b] for a, b in dist) else "v1-not-failing",
+       "v2-separates-all" if all(p2[a] != p2[b] for a, b in dist) else "v2-merged-distinct",
+       "partition-pinned" if p2 == pin else "partition-differs"]
+out = json.load(open(sys.argv[4], encoding="utf-8"))["verified"]
+groups = cl.cluster_entries(v, cl.DEFAULT_THRESHOLD)
+res.append("cli-agrees" if [o["location"] for o in out] == [v[r]["location"] for r, _m in groups] else "cli-differs")
+lines = {i: cl.location_line(v[i]) for i in range(len(v))}
+res.append("variants" if lines[5] is None and abs(lines[4] - lines[7]) <= cl.LINE_WINDOW
+           and abs(lines[0] - lines[1]) <= cl.LINE_WINDOW and abs(lines[8] - lines[9]) > cl.LINE_WINDOW
+           and len(cl.defect_identifiers(v[8], cl.block_key(v[8])) & cl.defect_identifiers(v[9], cl.block_key(v[9]))) == 1
+           else "variants-missing")
+print(" ".join(res))
+PY
+)"
+check "$SC_RES" "v1-merges-all v2-separates-all partition-pinned cli-agrees variants" \
+  "v1 merges all 12 labelled-distinct pairs, v2 separates all 12, partition == expected-clusters-v2.tsv, CLI agrees, all three variants present"
+
+# ---------------------------------------------------------------------------------------------------------------
+note "7) refinement: every v2 cluster is a subset of a v1 cluster; vetoes disabled -> v2 == v1"
+REF="$(python3 - "$CL" "$HERE" "$FIX/dev-root-causes.tsv" <<'PY'
+import sys, os, json, importlib.util
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("cl", sys.argv[1]); cl = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(cl)
+files = []
+for line in open(sys.argv[3], encoding="utf-8"):
+    c = line.split("\t")
+    if line.startswith("#") or c[0] == "file" or c[0] in files:
+        continue
+    files.append(c[0])
+for extra in ("fixtures/cluster-findings/same-function-shared-consequence.json",):
+    if extra not in files:
+        files.append(extra)
+bad = []
+for rel in files:
+    v = json.load(open(os.path.join(sys.argv[2], rel), encoding="utf-8"))["verified"]
+    g1 = [set(m) for _r, m in cl.cluster_entries(v, cl.DEFAULT_THRESHOLD, "v1")]
+    g2 = cl.cluster_entries(v, cl.DEFAULT_THRESHOLD, "v2")
+    if not all(any(set(m) <= g for g in g1) for _r, m in g2):
+        bad.append("subset:" + rel)
+    off = cl.cluster_entries(v, cl.DEFAULT_THRESHOLD, "v2", line_window=float("inf"), defect_tau=-1)
+    if off != cl.cluster_entries(v, cl.DEFAULT_THRESHOLD, "v1"):
+        bad.append("off:" + rel)
+print("%d %s" % (len(files), ",".join(bad) or "ok"))
+PY
+)"
+check "$REF" "15 ok" "15 files (12 dev runs + 3 synthetic fixtures): v2 refines v1, and v2 with both vetoes disabled equals v1"
+
+# ---------------------------------------------------------------------------------------------------------------
+note "8) method selection: --method v1 is the #2278 clusterer byte for byte; bad method exits 2; cannot_link only in v2"
+M1_LINE="$(python3 "$CL" cluster --in "$FIX/synthetic.json" --out "$WORK/m1.json" --method v1)"
+summarize "$WORK/m1.json" > "$WORK/m1.tsv"
+if [ "$M1_LINE" = "CLUSTER|8|5|3" ] && cmp -s "$WORK/m1.tsv" "$FIX/expected-clusters.tsv"; then
+  ok "--method v1 on synthetic.json: CLUSTER|8|5|3 and expected-clusters.tsv byte for byte"
+else
+  bad "--method v1 drifted on synthetic.json ($M1_LINE)"
+fi
+check "$(python3 "$CL" cluster --in "$FIX/same-function-distinct.json" --out "$WORK/m1d.json" --method v1)" "CLUSTER|12|6|6" \
+  "--method v1 on same-function-distinct.json: CLUSTER|12|6|6"
+python3 "$CL" cluster --in "$FIX/synthetic.json" --out "$WORK/mb.json" --method bogus >/dev/null 2>&1; check "$?" "2" "--method bogus is a usage error (exit 2)"
+python3 "$CL" cluster --in "$FIX/synthetic.json" --out "$WORK/mb.json" --method >/dev/null 2>&1; check "$?" "2" "--method without a value is a usage error (exit 2)"
+METHOD_KEYS="$(python3 - "$WORK/m1.json" "$S_OUT" <<'PY'
+import sys, json
+c1 = json.load(open(sys.argv[1], encoding="utf-8"))["clustering"]
+c2 = json.load(open(sys.argv[2], encoding="utf-8"))["clustering"]
+print(" ".join([
+    "v1-plain" if "cannot_link" not in c1 and c1["method"] == "same-function identifier-jaccard average-linkage v1" else "v1-bad",
+    "v2-veto" if c2.get("cannot_link") == {"line_window": 2, "defect_tau": 0.0}
+    and c2["method"] == "same-function identifier-jaccard average-linkage + cannot-link refinement v2"
+    and list(c2)[:3] == ["method", "threshold", "cannot_link"] else "v2-bad"]))
+PY
+)"
+check "$METHOD_KEYS" "v1-plain v2-veto" "v1 output carries the #2278 method string and no cannot_link; v2 carries method v2 + cannot_link {2, 0.0}"
 
 echo
 if [ "$FAILS" -eq 0 ]; then
