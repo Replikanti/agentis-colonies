@@ -1,0 +1,48 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "Locker owner calls stake(N) (staker units=N/1e18 backed by N FLUID) then provideLiquidity(N) which spends that same N FLUID into a Uniswap V3 position without any getAvailableBalance() check and never decrements _stakedBalance, leaving unbacked staker units live while the same capital also earns LP units, double-claiming from two shared tax pools and stealing rewards from all other stakers/LPs.",
+      "poc_sketch": "Deploy StakingRewardController+factory+locker (fork or mocks with the ETH/SUP pool); lock(N) into attacker locker; from a second locker instant-unlock to seed STAKER_DISTRIBUTION_POOL; call stake(N) and assert taxDistributionPool.getUnits(attacker)==N/1e18; call provideLiquidity{value:eth}(N) and assert FLUID.balanceOf(attacker)~0 yet getStakedBalance()==N and taxDistributionPool.getUnits(attacker) is still N/1e18 AND lpDistributionPool.getUnits(attacker)>0; drive tax through both pools and assert attacker claims from both while holding only N of real value in the LP position.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity mints a Uniswap position that pulls the locker's FLUID out with no getAvailableBalance() check and never decrements _stakedBalance, so a user who stakes N then provides liquidity with the same N keeps live, unbacked staker units in STAKER_DISTRIBUTION_POOL while the identical capital simultaneously earns LP_DISTRIBUTION_POOL units, double-drawing from two separately-funded shared tax pools at other members' expense."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "Owner does lock(N) then stake(N) (staker units=N/1e18 gated only at stake time) then provideLiquidity(N), which spends that same N FLUID into a Uniswap V3 position with no getAvailableBalance() check and never decrements _stakedBalance, leaving unbacked staker units live while the same capital also earns LP units, double-claiming from both shared tax pools.",
+      "poc_sketch": "Deploy StakingRewardController+LP/staker GDA pools+factory+locker (fork or mocks with ETH/SUP pool); lock(N); stake(N) and assert STAKER_DISTRIBUTION_POOL units==N/1e18; provideLiquidity{value:ethForN}(N); assert staker units still N/1e18 AND LP units>0 AND locker FLUID balance ~0; fund both pools via an unlock penalty from another locker and assert this locker's claimable tax exceeds its real N backing.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity has no getAvailableBalance()/reserve check and never decrements _stakedBalance, so it spends the FLUID that stake() reserved into a Uniswap position, leaving N staker units live and unbacked while the same capital also earns LP units, double-claiming from both shared GDA tax pools. FCB_1bd3f18d76d5ccd85f95f0_END"
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:withdrawLiquidity",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "provideLiquidity moves locked FLUID into an LP position with no locked/available check and withdrawLiquidity returns the SUP leg to the owner with zero penalty and zero tax once past taxFreeExitTimestamps[tokenId], letting a locker owner exit the full locked FLUID stack at cost far below the instant-unlock penalty / vest tax.",
+      "poc_sketch": "lock(N); provideLiquidity{value:ethForN}(N) capturing tokenId; warp past TAX_FREE_WITHDRAW_DELAY; withdrawLiquidity(tokenId, fullLiquidity, 0, 0); assert lockerOwner receives ~N FLUID with no distribution to STAKER/LP pools, versus the penalty/tax an equivalent unlock() would have charged. FCB_38cb9b18d76bd39aeae1290_END",
+      "verdict": "REAL",
+      "reason": "provideLiquidity has no available/locked-balance guard and withdrawLiquidity's `if (block.timestamp >= taxFreeExitTimestamps[tokenId])` branch transfers the recovered FLUID directly to the unprivileged lockerOwner with zero penalty/tax, so an owner can round-trip locked FLUID through a full-range LP and reclaim it penalty-free after 180 days, bypassing the 80% instant-unlock penalty and all vest taxes."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 5,
+    "verified": 3,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

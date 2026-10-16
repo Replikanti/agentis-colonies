@@ -1,0 +1,37 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "provideLiquidity has no getAvailableBalance()/staked-balance gate, so a locker owner can stake(N) (soft stake -> staker units on N) and then provideLiquidity(N) moving the SAME physical N FLUID into a Uniswap LP position that grants LP units, holding units in both shared tax pools on one pile of tokens (and later withdrawing it tax-free after TAX_FREE_WITHDRAW_DELAY), diluting/stealing tax rewards from every other locker.",
+      "poc_sketch": "PoC: deploy factory+StakingRewardController+beacon locker, set tax allocation, lock(N) FLUID into attacker locker; call stake(N) and assert taxDistributionPool.getUnits(locker)==N/1e18; then provideLiquidity{value: eth}(N) and assert lpDistributionPool.getUnits(locker)>0 while taxDistributionPool.getUnits(locker) still ==N/1e18 and FLUID.balanceOf(locker)~=0; from a second honest locker perform an instantUnlock to push tax into both pools, then assert the attacker's combined claimable (staker+LP) strictly exceeds a single-role staker who committed the same N, proving unbacked double-counted units drain shared tax.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity spends the locker's FLUID through the Uniswap mint with no getAvailableBalance()/staked-balance gate, so after a soft stake(N) (tokens remain in the ERC20 balance) the owner can provideLiquidity(N) to move those same tokens into an LP position, leaving unbacked staker units in STAKER_DISTRIBUTION_POOL while gaining LP units in LP_DISTRIBUTION_POOL and thereby diluting both shared tax pools that fund every other locker."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "A locker owner locks N FLUID, stake(N) mints N/1e18 unbacked staker-pool units, then provideLiquidity(N) \u2014 which has no getAvailableBalance()/staked-balance gate \u2014 pushes that same physical N FLUID into a Uniswap position and mints LP-pool units, so one pile of tokens holds units in both shared tax pools (staker units now fully unbacked) and drains tax rewards from every other locker.",
+      "poc_sketch": "Foundry (Base fork used by existing suite): fund attacker locker with N SUP; stake(N); assert taxDistributionPool.getUnits(locker)==N/1e18. provideLiquidity{value: matching eth}(N); assert FLUID.balanceOf(locker)~=0 while taxDistributionPool.getUnits(locker) STILL ==N/1e18 AND lpDistributionPool.getUnits(locker)>0. From a second honest locker do instantUnlock to push penalty tax into both pools; assert the attacker's combined claimable (staker+LP) strictly exceeds a single-role staker who committed the same N, and that after the 3-day cooldown unstake(N) succeeds despite balanceOf~=0 \u2014 proving unbacked, double-counted units stealing shared tax. FCB_1561c018d6352dadd105de0_END",
+      "verdict": "REAL",
+      "reason": "provideLiquidity carries only nonReentrant/onlyLockerOwner and no getAvailableBalance()/_stakedBalance gate (unlike stake and unlock), and since staking never moves tokens (staked FLUID physically stays in the locker), an ordinary locker owner who locks N, stakes N, then calls provideLiquidity(N) with matching ETH has the Uniswap mint pull that same physical N out into an LP position while _stakedBalance and the staker-pool units remain, so one pile earns from both the STAKER and LP tax pools with the staker units now unbacked. FCB_1a1ea818d636d79d929cfd0_END"
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 2,
+    "verified": 2,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

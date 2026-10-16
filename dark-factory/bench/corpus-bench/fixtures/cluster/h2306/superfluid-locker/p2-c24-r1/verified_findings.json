@@ -1,0 +1,37 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "An ordinary locker owner calls stake(N) (soft-stake: bumps STAKER_DISTRIBUTION_POOL units by N/1e18 while moving no tokens) then provideLiquidity(N), which has NO getAvailableBalance() gate and pulls that SAME N FLUID out of the locker into a Uniswap V3 position while crediting LP_DISTRIBUTION_POOL units \u2014 so one pile of FLUID simultaneously backs unbacked staker-pool units AND LP-pool units in the two globally-shared reward pools, letting the attacker draw tax rewards from both pools on 1x capital and dilute/steal from every honest staker.",
+      "poc_sketch": "On a Base fork (SFTest): fund aliceLocker and bobLocker each with pile=20_000e18; vm.prank both and stake(pile); assert stakerPool.getUnits(alice)==stakerPool.getUnits(bob)>0 and aliceLocker.getAvailableBalance()==0; then vm.prank(ALICE) provideLiquidity{value:1 ether}(pile); assert _fluid.balanceOf(alice)<pile (staked FLUID physically left into Uniswap), stakerPool.getUnits(alice) UNCHANGED (now unbacked), lpPool.getUnits(alice)>0 while lpPool.getUnits(bob)==0, and getAvailableBalance() reverts (balanceOf<_stakedBalance underflow); finally trigger a tax distribution (another locker instant-unlocks, 80% penalty distributed to both pools) and assert alice's combined staker+LP claim exceeds an honest single-pile staker's \u2014 reproduces test/PoCDoubleDip.t.sol. FCB_2a277f18d626831a0a87930_END",
+      "verdict": "REAL",
+      "reason": "provideLiquidity omits the getAvailableBalance()/_stakedBalance reservation check that stake() and unlock() both enforce, so after a token-less soft-stake of N (crediting N staker units) the owner spends those very same N FLUID into an LP position that credits LP units, leaving _stakedBalance greater than the locker's real balance and the locker drawing from both globally-shared tax pools on 1x capital."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "Ordinary locker owner calls stake(N) (soft-stake sets staker units=N/1e18, no token move) then provideLiquidity(N) which has no getAvailableBalance()/staked gate and pulls the SAME N FLUID out into a Uniswap V3 position while crediting LP units, so one pile of FLUID backs unbacked staker-pool units AND LP-pool units in the two shared pools \u2014 attacker draws tax from both pools on 1x capital and dilutes every honest staker.",
+      "poc_sketch": "Base fork (SFTest): fund aliceLocker with pile=20_000e18; prank ALICE stake(pile); assert stakerPool.getUnits(alice)>0 and getAvailableBalance()==0; prank ALICE provideLiquidity{value:1 ether}(pile); assert FLUID.balanceOf(aliceLocker)<pile (staked FLUID physically left), stakerPool.getUnits(alice) UNCHANGED (now unbacked), lpPool.getUnits(alice)>0; trigger a tax distribution from another locker's instant unlock and assert alice's combined staker+LP claim exceeds an honest single-pile staker's claim.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity has only nonReentrant/onlyLockerOwner and spends supAmount FLUID via mint without checking it against getAvailableBalance()/_stakedBalance, so FLUID already counted in _stakedBalance (live STAKER_DISTRIBUTION_POOL units) is physically pulled into the LP position (live LP_DISTRIBUTION_POOL units), letting an ordinary owner back both pools with one pile of capital."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 3,
+    "verified": 2,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

@@ -1,0 +1,368 @@
+{
+  "repo": "Numa",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "Numa upgradeable fee-on-transfer ERC20 token",
+      "location": "contracts/Numa.sol:initialize:30",
+      "file": "contracts/Numa.sol",
+      "class": "C6",
+      "severity": "High",
+      "exploit": "initialize() is a public, single-shot setter that grants DEFAULT_ADMIN+PAUSER+MINTER+UPGRADER to msg.sender with no deployer binding and no atomic-init enforcement in code (the `initializer` modifier only blocks re-init; `_disableInitializers` protects the implementation, not the proxy; and no deploy artifact in the in-scope repo makes deployment atomic), so a role-less attacker who front-runs the deployer's initialize() call on the freshly deployed proxy becomes admin+minter+upgrader and then mints unlimited NUMA and upgrades to a malicious implementation.",
+      "poc_sketch": "Foundry (verified, 3/3 PASS): deploy NUMA impl (ctor _disableInitializers hits impl storage only); deploy ERC1967-style proxy with EMPTY init data to model the non-atomic deploy; from a non-deployer EOA `attacker` call NUMA(address(proxy)).initialize(); assert hasRole(DEFAULT_ADMIN_ROLE,attacker)==true && hasRole(MINTER_ROLE,attacker)==true && hasRole(UPGRADER_ROLE,attacker)==true && hasRole(DEFAULT_ADMIN_ROLE,deployer)==false; then prove impact with numa.mint(attacker,1e30) succeeding and the deployer's later initialize() reverting; a control test embedding initialize() in the proxy ctor _data shows the attacker's initialize() reverts, confirming the exposure is exactly the non-atomic-deploy window the contract leaves unguarded.",
+      "verdict": "REAL",
+      "reason": "recovered under C6 fallback (assigned class=C5 refuted): The proxy's initialize() carries only the `initializer` modifier (which blocks re-init, not the first call), grants all four admin/minter/upgrader roles to an unbounded msg.sender with no deployer binding, and `_disableInitializers()` protects only the implementation's storage, leaving the proxy's initialize() callable by any unprivileged front-runner with no guard or validating check in the code to stop it."
+    },
+    {
+      "subsystem": "Numa upgradeable fee-on-transfer ERC20 token",
+      "location": "contracts/Numa.sol:transferFrom:95",
+      "file": "contracts/Numa.sol",
+      "class": "class=C6",
+      "severity": "Medium",
+      "exploit": "With the repo's own shipped config (scripts/NumaToken/updateFee.js: SetFee(1000)+SetFeeTriggerer(pair,true)+SetWlSpender(uniswapV2Router,true)), any unprivileged seller bypasses the entire 10% sell fee: UniswapV2/Sushi swapExactTokensForTokens runs transferFrom(seller,pair,amount) with the whitelisted router as spender, so the `!ns.wlSpenders[spender]` guard at line 95 skips _transferWithFee and the pair receives the full amount with zero burn, silently zeroing the sell fee on the only path sellers use.",
+      "poc_sketch": "Deploy NUMA behind ERC1967Proxy and initialize; as admin call SetFee(1000), SetFeeTriggerer(pair,true), SetWlSpender(router,true), mint(seller,1_000_000e18). Test A: seller.approve(honestSpender); prank(honestSpender) transferFrom(seller,pair,1000e18) \u2014 assert totalSupply drops by 100e18 and pair gets 900e18. Test B: seller.approve(router); prank(router) transferFrom(seller,pair,1000e18) \u2014 assert totalSupply UNCHANGED and pair gets full 1000e18. Ran with forge (solc 0.8.20): Test A burned 100e18, Test B burned 0 \u2014 fee fully bypassed. FCB_b520518d9cc250a2493e20_END",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "NumaProtocol (part 1/3)",
+      "location": "contracts/NumaProtocol/NumaOracle.sol:getV3SqrtLowestPrice:294",
+      "file": "contracts/NumaProtocol/NumaOracle.sol",
+      "class": "class=C19",
+      "severity": "Medium",
+      "exploit": "An unprivileged attacker drives the NUMA/USDC pool slot0 sqrtPriceX96 above ~2^146.7 (thin LP at an extreme tick + swap through the empty region); the unwidened uint160 `sqrtPriceX96Spot * 10000` / `sqrtPriceX96Spot * maxSpotOffsetPlus1SqrtBps` then overflows and reverts, bricking every ethToNuma-routed mint path (mintAssetFromNumaInput/mintAssetOutputFromNuma) while spot is held high",
+      "poc_sketch": "foundry: fork Arbitrum at NUMA_USDC_POOL_ADDRESS (or deploy a mock IUniswapV3Pool returning a crafted slot0), wire NumaOracle with the real intervals; mint a thin LP so the pool can be swapped to a tick where sqrtPriceX96 > 1.45e44, then assert oracle.getV3SqrtLowestPrice(pool,short,long) and NumaPrinter.mintAssetFromNumaInput revert with Panic(0x11) arithmetic overflow, while the same calls succeed at normal spot",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "NumaProtocol (part 1/3)",
+      "location": "contracts/NumaProtocol/NumaOracle.sol:getV3SqrtHighestPrice:364",
+      "file": "contracts/NumaProtocol/NumaOracle.sol",
+      "class": "class=C19",
+      "severity": "Medium",
+      "exploit": "Same unwidened uint160 spot multiplication (`sqrtPriceX96Spot * 10000` / `* maxSpotOffsetMinus1SqrtBps`) on the burn price path \u2014 a manipulated slot0 above ~2^146.7 reverts getV3SqrtHighestPrice, bricking burnAssetInputToNuma/burnAssetToNumaOutput (which have no notInWarningCF backstop) for as long as spot is held high",
+      "poc_sketch": "foundry: same harness as above but assert NumaPrinter.burnAssetToNumaOutput / oracle.getV3SqrtHighestPrice revert with Panic(0x11) when the mock/forked pool's slot0 sqrtPriceX96 exceeds (2^160-1)/maxSpotOffsetMinus1SqrtBps, and succeed at market spot",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "Synthetix-style staking rewards distributor",
+      "location": "contracts/Staking/StakingRewards.sol:notifyRewardAmount:114",
+      "file": "contracts/Staking/StakingRewards.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "The reward-solvency require `rewardRate * duration <= rewardsToken.balanceOf(this)` counts tokens it never reserves for rewards \u2014 staked principal when stakingToken==rewardsToken (the constructor accepts that pairing with no validation) and already-earned-but-unclaimed rewards from a prior period \u2014 so a period passes the \"backed\" check while the contract is under-funded for its total obligations, letting early getReward/withdraw callers drain principal/other users' rewards and forcing the last stakers' getReward/withdraw transfers to revert, stranding unprivileged stakers' funds.",
+      "poc_sketch": "Foundry: deploy MockERC20 T; StakingRewards(T,T); Alice+Bob approve+stake 500 each (pool=1000 all principal); owner setRewardsDuration(100)+notifyRewardAmount(100) \u2014 assert it succeeds because 100<=balanceOf(1000); warp 100s; Alice getReward()+withdraw(500); Bob getReward(); assert Bob withdraw(500) reverts and sr.balanceOf(Bob)==500 with pool<500 (100 principal stranded). Distinct-token variant: fund 100 rwd, notify(100), end period leaving earned(alice)==100 unclaimed, notify(100) again with no new deposit \u2014 assert it passes (100<=balanceOf(100)) though obligation is now 200, then assert Alice getReward() reverts (pool 100 < owed 200).",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "Synthetix-style staking rewards distributor",
+      "location": "contracts/Staking/StakingRewards.sol:rewardPerToken:60",
+      "file": "contracts/Staking/StakingRewards.sol",
+      "class": "class=C24",
+      "severity": "Medium",
+      "exploit": "An unprivileged staker withdraws all stake (floorless `withdraw`) so totalSupply hits 0 during a funded period; while totalSupply==0 the emission clock keeps ticking against the fixed finishAt, but every touch advances updatedAt=lastTimeRewardApplicable() over the gap while rewardPerToken()'s `if (totalSupply==0) return rewardPerTokenStored;` skips the accrual term, so rewardRate*(gap) tokens are never added to rewardPerTokenStored and finishAt is never extended \u2014 the emissions scheduled for the zero-supply window are silently dropped, stranding a slice of the shared pot and under-paying the staker cohort.",
+      "poc_sketch": "Deploy StakingRewards with mock ERC20s; fund the contract with the full reward pot; setRewardsDuration(1000); notifyRewardAmount(1000e18) => rewardRate=1e18/s. Alice (only staker) stake(100e18) at t0, warp to t0+100, withdraw(100e18) => assert totalSupply()==0. Warp to t0+600, assert updatedAt()==t0+100, Bob stake(100e18), assert updatedAt()==t0+600 (jumped over gap). Warp to t0+1000, both getReward(). Assert alice reward==100e18, bob reward==400e18, sum==500e18, rewardsToken.balanceOf(staking)==500e18 stranded, and finishAt()==t0+1000 (not rescheduled). FCB_1967e018d9d3401ccbc8cc0_END",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "Synthetix-style staking rewards distributor",
+      "location": "contracts/Staking/StakingRewards.sol:rewardPerToken:60",
+      "file": "contracts/Staking/StakingRewards.sol",
+      "class": "class=C25",
+      "severity": "Medium",
+      "exploit": "When all stakers withdraw so totalSupply reaches 0 (or no one stakes yet) during an active reward period, rewardPerToken() returns rewardPerTokenStored unchanged for the zero-supply window while updateReward still advances updatedAt to lastTimeRewardApplicable() on the next touch and rewardRate/finishAt stay fixed, so rewardRate*(gap) reward tokens scheduled for that window are credited to nobody, stranded in the contract, and never re-scheduled, under-paying the staker cohort vs the announced schedule.",
+      "poc_sketch": "Foundry: deploy StakingRewards(mockStaking, mockRewards) with distinct tokens; owner funds contract with rewardRate*D and notifyRewardAmount at t0 (duration D); Alice stake(1000) at t0; warp t0+D/4 then Alice withdraw(1000) -> totalSupply==0; warp t0+3D/4 then Bob stake(500); warp past finishAt; call getReward for both; assert Alice.received+Bob.received == rewardRate*(D/2) (only the [t0,D/4] and [3D/4,D] slices paid), and assert rewardsToken.balanceOf(stakingRewards) still holds rewardRate*(D/2) stranded == notified amount minus distributed, with finishAt unchanged so it is never rescheduled.",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "lending (part 1/6)",
+      "location": "contracts/lending/CErc20.sol:mint:60",
+      "file": "contracts/lending/CErc20.sol",
+      "class": "class=C10",
+      "severity": "High",
+      "exploit": "Both markets are listed empty with no seed (DeployLending.sol:223-224 _supportMarket after new CNumaToken/CNumaLst with initialExchangeRateMantissa=2e26, no dead-shares/min-mint anywhere), so an unprivileged attacker front-runs the first depositor: mint 2e8 wei to hold 1 cToken-wei, donate underlying directly (getCashPrior=balanceOf) to inflate exchangeRate, the victim's mint then rounds to 0 cTokens (mintFresh div_ floor, no guard), and the attacker redeems its 1 wei to steal the victim's entire deposit.",
+      "poc_sketch": "Deploy CNumaToken(underlying18, permissive comptroller, zero-rate IRM, 2e26, 8 decimals, vault=any, no seed); prank attacker: mint(2e8) and assert totalSupply()==1; underlying.transfer(cToken, 1000e18); prank victim: mint(1000e18) and assert balanceOf(victim)==0; prank attacker: redeem(1) and assert (received - (2e8+1000e18)) == 1000e18. VERIFIED: forge test PASS, attacker profit = 1000000000000000000000 (== victim deposit), victim wiped to 0 shares. FCB_3870718d9f10d6b1c57010_END",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "lending (part 1/6)",
+      "location": "contracts/lending/CNumaLst.sol:exchangeRateStoredInternal:405",
+      "file": "contracts/lending/CNumaLst.sol",
+      "class": "class=C11",
+      "severity": "High",
+      "exploit": "DeployLending.sol lists cReth/cNuma empty with initialExchangeRateMantissa=2e26 and never seeds them, and the exchange rate has no virtual-offset/dead-shares guard; an external attacker mints 1 cToken-wei for 2e8 wei underlying, donates underlying (counted in getCashPrior) to inflate the rate, so the next depositor's shares floor to 0 (mintFresh has no require mintTokens>0) and the attacker redeems the single share to drain the pool including the victim's deposit",
+      "poc_sketch": "Foundry: deploy CNumaLst and CNumaToken exactly as DeployLending (rate 2e26), comptroller._supportMarket with NO seed; prank attacker cToken.mint(2e8) and assert totalSupply()==1; attacker ERC20.transfer(200e18) directly to the cToken; prank victim cToken.mint(100e18) and assert balanceOf(victim)==0 and totalSupply()==1; attacker cToken.redeem(1) and assert received-spent==100e18 (victim's full deposit stolen).",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "lending (part 1/6)",
+      "location": "contracts/lending/CNumaToken.sol:closeLeverageStrategy:305",
+      "file": "contracts/lending/CNumaToken.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "closeLeverageStrategy is also not nonReentrant and calls _collateral.redeemUnderlying/_collateral.accrueInterest on the unvalidated caller-supplied _collateral between vault.borrowLeverage(285) and vault.repayLeverage(322), so the identical reentrant nested-borrowLeverage overwrites leverageDebt and the outer repayLeverage(322) strands the outer _borrowtorepay flashloan in/against the vault.",
+      "poc_sketch": "Foundry: same rig, drive the reentry from FakeCollateral.redeemUnderlying (invoked at 305 after borrowLeverage at 285); attacker must hold a borrow to close (borrowBalanceStored(msg.sender)>=_borrowtorepay); assert the vault is short the outer _borrowtorepay after repayLeverage(true) pulls leverageDebt=0.",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "lending (part 2/6)",
+      "location": "contracts/lending/CToken.sol:exchangeRateStoredInternal:379",
+      "file": "contracts/lending/CToken.sol",
+      "class": "class=C10",
+      "severity": "High",
+      "exploit": "cNuma/cLstToken markets are deployed unseeded (DeployLending.sol:192-224, no seed mint / no dead shares) and mintAllowed has no min or cap, so an external attacker becomes first minter, mints 2e8 to hold exactly 1 cToken-wei (totalSupply==1), transfers underlying directly to the cToken (getCashPrior=balanceOf) to inflate exchangeRate, then mintFresh's div_(amount,exchangeRate) truncates the next honest depositor's shares to 0 and the attacker redeems the single wei to drain the victim's deposit",
+      "poc_sketch": "Foundry: deploy CNumaToken(underlying,comptroller,rate,2e26,\"cNuma\",8,...); assert totalSupply()==0; attacker mint(2e8) -> assert totalSupply()==1 && balanceOf(attacker)==1; attacker transfers 1e18 underlying directly to address(cToken); victim mint(1e18) -> assert balanceOf(victim)==0; attacker redeem(1) -> assert underlying received == 2e18+2e8 so profit==1e18==victim deposit. Confirmed on anvil with the exact CToken/CErc20 integer math (victimTokens=0, attacker redeem returned 2000000000200000000, profit 1e18).",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "lending (part 2/6)",
+      "location": "contracts/lending/CToken.sol:exchangeRateStoredInternal:379",
+      "file": "contracts/lending/CToken.sol",
+      "class": "class=C11",
+      "severity": "High",
+      "exploit": "Freshly-listed market (DeployLending.sol:191-224 lists cNuma/cReth at 2e26 initial rate with no seed) has no dead-shares/virtual-offset; attacker mints 1 wei (2e8 underlying), donates underlying directly to the cToken to inflate exchangeRate (getCashPrior=balanceOf), then a later honest mintFresh div_(mintAmount,exchangeRate) rounds shares to 0 and the attacker redeems the victim's whole deposit",
+      "poc_sketch": "Deploy real CErc20Immutable/CNumaToken with initialExchangeRateMantissa=2e26, decimals 8, list via comptroller with no seed; prank attacker: mint(2e8) -> totalSupply==1; underlying.transfer(cToken, 200e18); prank victim: mint(100e18); assert cToken.balanceOf(victim)==0; prank attacker: redeem(1); assert attacker underlying net gain >= ~100e18 (PASSED: net gain = 100 ether).",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "lending (part 3/6)",
+      "location": "contracts/lending/CToken.sol:accrueInterest:460",
+      "file": "contracts/lending/CToken.sol",
+      "class": "class=C9",
+      "severity": "High",
+      "exploit": "The Fraxlend-style rate model is driven in SECONDS (getBorrowRate is fed deltaTime = block.timestamp - accrualBlockTimestamp, as are the borrowRatePerBlock/supplyRatePerBlock views) so borrowRateMantissa is a per-second rate, but accrueInterest forms simpleInterestFactor = mul_(borrowRateMantissa, blockDelta) with blockDelta = currentBlockNumber - accrualBlockNumberPrior (number of BLOCKS); since deltaTime_seconds = blockDelta * secondsPerBlock, every accrual charges intended_interest / secondsPerBlock (~1/2 on Base, ~1/12 on mainnet), so every borrower systematically under-pays interest and every supplier is under-paid yield, and any unprivileged borrower profits by repaying far less than the model intends",
+      "poc_sketch": "Foundry: deploy a concrete CErc20 wired to a mock InterestRateModel whose getBorrowRate returns a fixed per-second rate R (and echoes _OldfullUtilizationRate) and getSupplyRate proportionally; mint supply S, have an attacker borrow B; then vm.roll(block.number + N) and vm.warp(block.timestamp + N*12) so blockDelta=N and deltaTime=12N; call accrueInterest(); assert totalBorrows grew by ~ (R*N/1e18)*B (the BLOCK path) rather than ~ (R*12N/1e18)*B (the correct SECONDS path), i.e. accrued interest == intended/12, proving a 12x systematic under-accrual; repay and assert the attacker's repayment is ~1/12 of the intended interest. FCB_6686718d9fc580d62767c0_END",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "lending (part 5/6)",
+      "location": "contracts/lending/NumaComptroller.sol:getHypotheticalAccountLiquidityIsolateInternal",
+      "file": "contracts/lending/NumaComptroller.sol",
+      "class": "class=C10",
+      "severity": "High",
+      "exploit": "The isolate liquidity walk's `for` loop takes only the FIRST non-modified entered market as the \"other\" leg and `break`s, so an account that is a member of >=3 markets hides its extra leg from every borrow/redeem/transfer check: enter collateral C and borrow B1 to the max, then borrow a second market B2 (or redeem C1 while a debt B is not the first non-modified asset) \u2014 the pre-existing debt is never valued, hypothetical shortfall reads 0, and borrowAllowed/redeemAllowedInternal approve it, leaving aggregate debt far above collateral = unbacked debt the attacker keeps; nothing in this slice caps accountAssets to the {collateral,borrow} pair (the only isolate check, `cTokenBorrowed != cTokenCollateral`, constrains the liquidator's args, not membership).",
+      "poc_sketch": "Foundry: deploy NumaComptroller behind Unitroller + 3 CNumaToken markets (collateral C, borrows B1,B2) with a mock PriceOracleCollateralBorrow returning equal AsCollateral/AsBorrowed 1e18 prices; _supportMarket all three, _setCollateralFactor(C,0.8e18), _setCloseFactor, _setLiquidationIncentive. As attacker EOA: supply 1000 to C and enterMarkets([C]); CBorrowB1.borrow(800) -> succeeds (maxed). Then CBorrowB2.borrow(800) and assert it does NOT revert (bug); assert getHypotheticalAccountLiquidityIsolateInternal / getAccountLiquidityIsolate for the (C,B1) pair still reports shortfall==0 while total debt (1600) > collateral (1000). Expected-correct behavior: the second borrow must revert INSUFFICIENT_LIQUIDITY. Also assert the redeem variant: memberships [C1,C2,B], borrow B against C1+C2, then redeem C1 succeeds though B is outstanding. FCB_914fe18da033a514899490_END",
+      "verdict": "REAL",
+      "reason": "The liquidity walk breaks after the first non-modified market, so with an attacker-ordered membership of >=3 markets the pre-existing debt leg is never priced into sumBorrowPlusEffects, letting borrowAllowed/redeemAllowedInternal approve a second borrow (or a collateral redeem) that leaves aggregate debt above collateral with shortfall = 0, and nothing caps accountAssets or performs an aggregate check."
+    },
+    {
+      "subsystem": "lending (part 5/6)",
+      "location": "contracts/lending/NumaComptroller.sol:borrowAllowed",
+      "file": "contracts/lending/NumaComptroller.sol",
+      "class": "class=C10",
+      "severity": "Medium",
+      "exploit": "promise #2 (borrowAllowed: An individual account cannot borrow an amount that would leave its own position in shortfall, since borrowAllowed returns INSUFFICIENT_LIQUIDITY when the hypothetical shortfall is nonzero.) is broken at borrowAllowed: Enter market C; borrow B1 to max; borrow B2 \u2014 getHypotheticalAccountLiquidityIsolateInternal picks C as the only \"other\" leg and never reads the existing B1 debt, so the hypothetical shortfall is 0 and borrowAllowed returns NO_ERROR, letting the account borrow B2 into aggregate shortfall (B1+B2 > collateral).",
+      "poc_sketch": "PoC sketch: drive the call sequence above from one or more accounts and assert the promised property fails",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "lending (part 5/6)",
+      "location": "contracts/lending/NumaComptroller.sol:redeemAllowedInternal",
+      "file": "contracts/lending/NumaComptroller.sol",
+      "class": "class=C10",
+      "severity": "Medium",
+      "exploit": "promise #3 (redeemAllowedInternal: An account that is a member of a market cannot redeem or transfer collateral tokens that would leave its position in shortfall, since redeemAllowedInternal returns INSUFFICIENT_LIQUIDITY on nonzero hypothetical shortfall.) is broken at redeemAllowedInternal: With memberships [C1,C2,B], redeem C1: the walk sets otherToken=C2 (first non-modified), so the real debt B is never valued, hypothetical shortfall=0 and redeemAllowedInternal returns NO_ERROR, releasing collateral while debt B is outstanding.",
+      "poc_sketch": "PoC sketch: drive the call sequence above from one or more accounts and assert the promised property fails",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "lending (part 5/6)",
+      "location": "contracts/lending/NumaComptroller.sol:getHypotheticalAccountLiquidityIsolateInternal",
+      "file": "contracts/lending/NumaComptroller.sol",
+      "class": "class=C2",
+      "severity": "Medium",
+      "exploit": "the \">=3 markets hides a leg\" break needs a third priceable market, but NumaPriceOracleNew.sol:24-25/41-42 `revert(\"unsupported token\")` rejects every cToken except cNuma/cLst, so at most 2 legs exist and the first-non-modified walk sees both",
+      "poc_sketch": "PoC sketch: reproduce the admitted state, call the documented path, and assert the revert or the value delta",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'guard: cite the path:line this ground requires, in code you were given'): The loop `break`s on the first market other than cTokenModify, so for an account in >=3 listed markets (a state _supportMarket/_setPriceOracle/enterMarkets all admit with no cap) every extra collateral/borrow leg is dropped from the liquidity math and no NumaComptroller check rejects that state, letting hidden debt escape the shortfall test. FCB_16392e18da3a19b15c83690_END"
+    },
+    {
+      "subsystem": "Chainlink ETH/token pricing oracle",
+      "location": "contracts/libraries/OracleUtils.sol:checkSequencerActive:39",
+      "file": "contracts/libraries/OracleUtils.sol",
+      "class": "class=C2",
+      "severity": "Medium",
+      "exploit": "A Chainlink L2 sequencer-uptime round that is invalid/uninitialized (answer==0, startedAt==0), as can occur transiently right after a sequencer restart, makes timeSinceUp=block.timestamp-0=block.timestamp which exceeds GRACE_PERIOD_TIME, so the grace check at line 40 passes and all four conversion functions (mint/redeem/collateral/liquidation valuations) serve prices as if the sequencer were healthy during the window the grace period is meant to block, letting an attacker act on stale prices; canonical fix is `if (startedAt == 0) revert`",
+      "poc_sketch": "Deploy OracleUtils with a MockUptimeFeed returning (roundId=1, answer=0, startedAt=0, updatedAt=now, 1) and a MockPriceFeed (fresh timeStamp, price within min/max, aggregator()=self); call ethToToken(1e18, feed, 86400, 18) and assert it returns a nonzero price (no revert); deploy a second MockUptimeFeed with startedAt=block.timestamp-100 and assert the same call reverts GracePeriodNotOver \u2014 the delta proves startedAt==0 bypasses the grace guard (see test/C2_startedAt_zero_poc.t.sol). FCB_b54e918da0b8460e55eb20_END",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "Chainlink ETH/token pricing oracle",
+      "location": "contracts/libraries/OracleUtils.sol:ethToToken:96",
+      "file": "contracts/libraries/OracleUtils.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "ethToToken applies `* 10**(18 - _decimals)` to a raw result that is ALREADY 18-scaled (ETH input is 18-dec), over-crediting the returned token amount by 10^(18-_decimals) for any sub-18-dec asset (e.g. 8-dec WBTC: returns 1e28 for a true 1e8), so any value-bearing mint/credit path pricing a non-18-dec token from an ETH input systematically over-mints and breaks mint\u2194redeem value conservation.",
+      "poc_sketch": "Foundry: deploy OracleUtils(address(0)); MockFeed(\"BTC / ETH\", 18, 15e18) exposing latestRoundData/decimals/description/aggregator/minAnswer/maxAnswer; warp time past heartbeat; assert ethToToken(15e18, feed, HB, 8) == 1e28 (== 1e8 * 1e20) while the fair value is 1e8, and assert tokenToEth(1e8, feed, HB, 8) == 15e18 to show the same audit-fix line is correct in the inverse direction (all verified passing).",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "Chainlink ETH/token pricing oracle",
+      "location": "contracts/libraries/OracleUtils.sol:ethToTokenRoundUp:149",
+      "file": "contracts/libraries/OracleUtils.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "ethToTokenRoundUp carries the identical inverted `* 10**(18 - _decimals)` correction, over-scaling the rounded-up token amount by 10^(18-_decimals) for sub-18-dec assets on the debt/redeem-charge (round-up) leg.",
+      "poc_sketch": "Foundry: same setup as above but call ethToTokenRoundUp(15e18, feed, HB, 8) and assert it returns the 10^20-inflated 1e28 rather than ~1e8, then contrast with tokenToEthRoundUp(1e8,...) returning the correct 15e18.",
+      "verdict": "REAL",
+      "reason": "operator-adjudicated (CONFIRMED): refute skipped (#2023)"
+    },
+    {
+      "subsystem": "Chainlink ETH/token pricing oracle",
+      "location": "contracts/libraries/OracleUtils.sol:checkSequencerActive:42",
+      "file": "contracts/libraries/OracleUtils.sol",
+      "class": "class=C15",
+      "severity": "Medium",
+      "exploit": "checkSequencerActive omits the canonical `if (startedAt == 0) revert`: on an uninitialized sequencer-uptime round (answer==0, startedAt==0) timeSinceUp = block.timestamp - 0 > GRACE_PERIOD_TIME, so the grace check passes and all four conversions serve prices as if the sequencer were healthy and past its grace window, letting a position be valued during that window.",
+      "poc_sketch": "Foundry: deploy OracleUtils(mockUptime) where mockUptime.latestRoundData() returns (roundId, 0 /*answer=up*/, 0 /*startedAt*/, 0, 0); assert ethToToken(...) does NOT revert (proving the grace bypass), then contrast with startedAt=block.timestamp which correctly reverts GracePeriodNotOver.",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'no-loss: write the literal token delta=0:<the quantity that is unchanged> beside the path'): The modifier contains no startedAt==0 guard and no constructor/setter validation rejecting an uninitialized round, so when the uptime feed returns answer==0 with startedAt==0 the check computes timeSinceUp = block.timestamp - 0 >> GRACE_PERIOD_TIME and passes, serving prices for this admitted, unvalidated state with nothing in the code stopping it. FCB_1667d618da3ab00b5a63160_END"
+    },
+    {
+      "subsystem": "Numa V1 vault mint-burn & oracle-priced valuation manager",
+      "location": "contracts/oldV1/nuAssetManagerOld.sol:addNuAsset",
+      "file": "contracts/oldV1/nuAssetManagerOld.sol",
+      "class": "class=C1",
+      "severity": "Medium",
+      "exploit": "`external onlyOwner` at nuAssetManagerOld.sol:58 stops any unprivileged caller; the heartbeat=0 / feed-decimal-mismatch concerns require an owner action, and the owner already holds pause() (NumaVaultOld.sol:109) as the documented liveness control, so onboarding a bad feed grants no capability beyond documented owner powers",
+      "poc_sketch": "PoC sketch: reproduce the admitted state, call the documented path, and assert the revert or the value delta",
+      "verdict": "REAL",
+      "reason": "addNuAsset applies no check rejecting _heartbeat=0 (or a mismatched feed), so this setter-admitted valid input is stored and later passed to tokenToEth inside getTotalSynthValueEth, making the whole synth-value computation revert \u2014 a valid-input liveness loss that onlyOwner/pause() (trusted-config + alt-path + no-attacker, all insufficient) do not cancel."
+    },
+    {
+      "subsystem": "Numa V1 vault mint-burn & oracle-priced valuation manager",
+      "location": "contracts/oldV1/NumaVaultOldSepoliaVer.sol:rewardsValue",
+      "file": "contracts/oldV1/NumaVaultOldSepoliaVer.sol",
+      "class": "class=C1",
+      "severity": "Medium",
+      "exploit": "brief states this Sepolia sibling \"drops the ... guard ... so diff = current \u2212 last underflow-reverts whenever the LST price ticks down\" \u2014 named as the prior-pattern hint; it is the testnet version and the effect is a DoS-only revert on a non-attacker-triggered downtick, while the mainnet NumaVaultOld.rewardsValue retains the guard (217) and I found no OTHER unguarded raw-oracle subtraction in scope",
+      "poc_sketch": "PoC sketch: reproduce the admitted state, call the documented path, and assert the revert or the value delta",
+      "verdict": "REAL",
+      "reason": "rewardsValue() subtracts last_lsttokenvalueWei from the raw oracle price with no guard, and because buy()/sell() unconditionally route through extractRewardsNoRequire()->rewardsValue() once RWD_ADDRESS is set and 24h have elapsed, any oracle price dip below the monotonically-ratcheted last_lsttokenvalueWei underflow-reverts and DoSes the core buy/sell paths."
+    },
+    {
+      "subsystem": "Numa V1 vault mint-burn & oracle-priced valuation manager",
+      "location": "contracts/oldV1/VaultManagerOld.sol:getNumaSupply",
+      "file": "contracts/oldV1/VaultManagerOld.sol",
+      "class": "class=C1",
+      "severity": "Medium",
+      "exploit": "path: attacker burns own NUMA to shrink numa.totalSupply toward the subtraction at 197-200; delta=0:value-extracted \u2014 the attacker can only burn NUMA they hold, at most driving circulating to 0 (getNumaSupply returns 0, no underflow) at a cost of the entire circulating market cap and with zero extraction; a true underflow needs burning owner-set removed-address NUMA the attacker cannot touch, and setting removed>supply is an onlyOwner setter with pause() already available",
+      "poc_sketch": "PoC sketch: reproduce the admitted state, call the documented path, and assert the revert or the value delta",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'no-loss: a \"that state never occurs\" argument is the unreachable ground, not no-loss \u2014 cite the line that validates the state away'): setConstantRemovedSupply and setDecayValues accept any uint with no upper-bound check, so the state currentRemovedSupply + constantRemovedSupply > numa.totalSupply() is an admitted valid input under which getNumaSupply's checked subtraction reverts, making tokenToNuma/numaToToken/GetPriceFromVaultWithoutFees unavailable \u2014 a shape-(a) valid-input liveness loss with no validating line anywhere to cite. FCB_16e21018da3c3f00394adf0_END"
+    },
+    {
+      "subsystem": "Numa V1 vault mint-burn & oracle-priced valuation manager",
+      "location": "contracts/oldV1/VaultManagerOld.sol:getNumaSupply",
+      "file": "contracts/oldV1/VaultManagerOld.sol",
+      "class": "class=C6",
+      "severity": "Medium",
+      "exploit": "The checked subtraction `circulatingNuma - currentRemovedSupply - constantRemovedSupply` underflow-reverts only if numa.totalSupply() is pushed below the owner-set removed amounts. The sole unprivileged lever on totalSupply is sell's `numa.burnFrom(msg.sender, _numaAmount)` (NumaVaultOld sell, snippet #7) which burns ONLY the caller's own balance, so an attacker cannot drive totalSupply below the balances held by other addresses (which include the owner-designated removed supply). The setConstantRemovedSupply/setDecayValues path is `onlyOwner` and reversible (trusted-config), not an external-attacker vector.",
+      "poc_sketch": "PoC sketch: reproduce the admitted state, call the documented path, and assert the revert or the value delta",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'guard: cite the path:line this ground requires, in code you were given'): The setters setConstantRemovedSupply/setDecayValues apply no bound, so they admit removed-supply values exceeding numa.totalSupply(); the checked subtraction in getNumaSupply then underflow-reverts and disables every pricing path (tokenToNuma/numaToToken/GetPriceFromVaultWithoutFees), a valid-input liveness loss with no validating check in the code."
+    },
+    {
+      "subsystem": "Numa V1 vault mint-burn & oracle-priced valuation manager",
+      "location": "contracts/oldV1/VaultManagerOld.sol:setConstantRemovedSupply",
+      "file": "contracts/oldV1/VaultManagerOld.sol",
+      "class": "class=C5",
+      "severity": "Medium",
+      "exploit": "onlyOwner modifier \u2014 the only writer of constantRemovedSupply; the unvalidated bricking value is reachable only by the owner, who already holds the strictly greater onlyOwner withdrawToken drain power over the same backing invariant",
+      "poc_sketch": "PoC sketch: reproduce the admitted state, call the documented path, and assert the revert or the value delta",
+      "verdict": "REAL",
+      "reason": "The setter applies no bound, so an admitted constantRemovedSupply above (totalSupply - currentRemovedSupply) makes getNumaSupply()'s checked subtraction underflow and revert, rendering tokenToNuma/numaToToken/GetPriceFromVaultWithoutFees unavailable \u2014 a valid-input liveness loss (shape a) that trusted-config, alt-path and no-attacker cannot dismiss."
+    },
+    {
+      "subsystem": "Deployment & migration scripts",
+      "location": "scripts/DeployLending.sol:run:223",
+      "file": "scripts/DeployLending.sol",
+      "class": "class=C10",
+      "severity": "High",
+      "exploit": "DeployLending.run() supports cNuma & cReth via comptroller._supportMarket with a 0.95 collateral factor but never seeds either market (no mint/dead-shares/burn), so both cToken markets are live and empty at block 0; an external first depositor mints 1 wei of cToken (deposit ~2e8 underlying at the 2e26 initial rate), transfers underlying directly to the cToken to inflate exchangeRate=(cash+borrows-reserves)/totalSupply, the next honest depositor's mintTokens=amount/exchangeRate rounds to 0 (their underlying is absorbed as cash), and the attacker redeems the single share to steal it (and can borrow ~95% against the donated cash).",
+      "poc_sketch": "Foundry: deploy NumaComptroller + JumpRateModelV4 + CNumaToken(initialExchangeRateMantissa=200000000000000000000000000, decimals=8, vault) and comptroller._supportMarket(cToken) to mirror DeployLending; attacker cToken.mint(2e8) then assert totalSupply()==1; attacker ERC20.transfer(address(cToken), 200e18); victim cToken.mint(100e18) then assert balanceOf(victim)==0 && totalSupply()==1; attacker cToken.redeem(1) and assert received-spent==100e18. VERIFIED via test/C11_audit_verify.t.sol -> [PASS], profit=100000000000000000000 (== victim's stolen deposit), victim minted 0 shares. FCB_de48618da1233e27d62960_END",
+      "verdict": "REAL",
+      "reason": "run() creates, _supportMarket-s and sets a 0.95 collateral factor on both cNuma and cReth at the 2e26 initial exchange rate yet performs no seeding mint/dead-shares/burn, so both standard-Compound-fork cToken markets are live and empty and an unprivileged first depositor can mint 1 wei of cToken, donate underlying to inflate the cash-based exchangeRate, and make the next depositor's mintTokens round to zero with nothing in the provided deploy flow guarding against it."
+    },
+    {
+      "subsystem": "Deployment & migration scripts",
+      "location": "scripts/DeployLending.sol:run:223",
+      "file": "scripts/DeployLending.sol",
+      "class": "class=C11",
+      "severity": "High",
+      "exploit": "DeployLending.run() lists cNuma and cReth via _supportMarket and never seeds them (no mint, no dead-shares, no virtual offset), leaving both cToken markets live/unpaused/empty; a role-less attacker mints 2e8 wei underlying for 1 wei cToken, donates underlying directly to the cToken address (getCashPrior=balanceOf) to inflate exchangeRate, so the next honest depositor's mintTokens=div_(amount,rate) rounds to 0 and their deposit is captured when the attacker redeems the single wei share (0.95 CF further lets the attacker borrow ~95% of the donated cash)",
+      "poc_sketch": "Foundry: deploy the real CErc20Immutable(underlying, mockComptroller-allow-all, 0%-rate, 200000000000000000000000000, \"c\",\"c\",8,1e18, admin) with NO seed mint (mirrors DeployLending); prank attacker: cToken.mint(2e8) and assert totalSupply()==1; underlying.transfer(address(cToken), 200e18); prank victim: cToken.mint(100e18) and assertEq(cToken.balanceOf(victim), 0); prank attacker: cToken.redeem(1) and assert attacker underlying net gain == 100e18 (reproduced: PASS, net gain 100000000000000000000)",
+      "verdict": "REAL",
+      "reason": "run() calls _supportMarket on cNuma and cReth without ever minting or seeding dead-shares/virtual-offset, leaving listed, unpaused, empty markets where the standard 2e26 initial exchangeRate plus inherited CErc20 getCashPrior=balanceOf and div_ round-to-zero mint let an unprivileged first minter donate underlying to inflate the rate and capture the next honest depositor's deposit (amplified by the 0.95 collateral factor), with no guard in the provided code."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 264,
+    "verified": 28,
+    "errored": 0,
+    "dropped_subfloor": 0,
+    "out_of_scope": 2
+  },
+  "out_of_scope": [
+    {
+      "subsystem": "nuAsset synthetic tokens and oracle value manager",
+      "location": "contracts/nuAssets/nuAssetManager.sol:ethToNuAsset:202",
+      "file": "contracts/nuAssets/nuAssetManager.sol",
+      "class": "class=C9",
+      "severity": "Medium",
+      "exploit": "ethToNuAsset/ethToNuAssetRoundUp hardcode token decimals=18 into OracleUtils.ethToToken while the reverse path (nuAssetToEth) reads decimals() dynamically, and addNuAsset imposes NO decimals check; for any registered nuAsset with decimals()!=18 the ETH->nuAsset conversion returns 10^(18-decimals) too many native token units, so getNbOfNuAssetFromNuma->mintAssetFromNumaInput over-mints the synthetic by that factor (e.g. 1e12x for a 6-dec asset) for the same numa burned, and the round-trip vs nuAssetToEth is inconsistent.",
+      "poc_sketch": "Foundry: deploy nuAssetManager with a healthy sequencer mock; deploy a 6-decimal mock ERC20 nuFake and a mock Chainlink feed (8-dec, description \"nuFake / ETH\"); owner addNuAsset(nuFake,feed,heartbeat). Assert ethToNuAsset(nuFake, E) returns 1e12x the value implied by nuAssetToEth's inverse: compute a=ethToNuAsset(nuFake,E) and back=nuAssetToEth(nuFake,a), assert back == E*1e12 (round-trip inflated). Then wire a NumaPrinter with nuFake granting the printer MINTER_ROLE, call mintAssetFromNumaInput and assert the minted nuFake balance == 1e12x the decimals-correct amount, demonstrating systematic over-mint.",
+      "verdict": "REFUTED",
+      "label": "out_of_scope_premise",
+      "assumption": {
+        "id": "A40",
+        "category": "exclusion",
+        "source": "README.md:399",
+        "text": "Numa/contracts/libraries/OracleUtils.sol"
+      },
+      "premise": "OracleUtils.ethToToken",
+      "reason": "out-of-scope-premise (A40, exclusion): The claimed inflation and over-mint live entirely inside the out-of-scope OracleUtils.ethToToken scaling and NumaPrinter mint path, so the in-scope caller passing the literal 18 cannot be shown to cause any divergence."
+    },
+    {
+      "subsystem": "Numa V1 vault mint-burn & oracle-priced valuation manager",
+      "location": "contracts/oldV1/nuAssetManagerOld.sol:addNuAsset:59",
+      "file": "contracts/oldV1/nuAssetManagerOld.sol",
+      "class": "class=C2",
+      "severity": "Medium",
+      "exploit": "addNuAsset validates asset/pricefeed/contains/length (lines 59-62) but never validates _heartbeat, so a nuAsset can be registered with heartbeat=0; thereafter getTotalSynthValueEth->OracleUtils.tokenToEth runs require(timeStamp >= block.timestamp - 0), which reverts every block (feed.updatedAt<block.timestamp), reverting getTotalSynthValueEth and hence every VaultManagerOld pricing call (tokenToNuma/numaToToken/GetPriceFromVaultWithoutFees) so all NumaVaultOld.buy()/sell() revert protocol-wide until removeNuAsset; a >18-decimal nuAsset triggers the same freeze via the 10**(18-_decimals) underflow",
+      "poc_sketch": "Foundry: deploy nuAssetManagerOld(uptimeFeed=0), a mock ERC20 nuAsset, and a MockAggregator whose latestRoundData returns updatedAt=block.timestamp-1 with valid price/min/max; call addNuAsset(asset,feed,0); assert getTotalSynthValueEth() reverts with \"Stale pricefeed\"; wire VaultManagerOld with this manager + a NumaVaultOld and assert tokenToNuma(), numaToToken(), buy() and sell() all revert; then removeNuAsset(asset) and assert they succeed again \u2014 proving an admitted config value freezes all trading.",
+      "verdict": "REFUTED",
+      "label": "out_of_scope_premise",
+      "assumption": {
+        "id": "A40",
+        "category": "exclusion",
+        "source": "README.md:399",
+        "text": "Numa/contracts/libraries/OracleUtils.sol"
+      },
+      "premise": "OracleUtils.tokenToEth",
+      "reason": "out-of-scope-premise (A40, exclusion): The claimed protocol freeze is produced only inside OracleUtils.tokenToEth, an out-of-scope (A40) library whose body is not shown, so the reverting behaviour on heartbeat=0 cannot be confirmed and is unverifiable against the in-scope setter."
+    }
+  ],
+  "scope_layer": {
+    "state": "on",
+    "reason": "40 declared assumption(s) handed to every refute gate"
+  }
+}

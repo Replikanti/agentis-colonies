@@ -1,0 +1,54 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "vlPEAS voting-power staking pool + LP conversion-factor pricing",
+      "location": "contracts/voting/ConversionFactorSPTKN.sol:getConversionFactor:44",
+      "file": "contracts/voting/ConversionFactorSPTKN.sol",
+      "class": "class=C2",
+      "severity": "Medium",
+      "exploit": "At the real PEAS price (priceX96 ~ 33*Q96) the un-normalized product `_pricePPeasNumX96 * _k` overflows uint256 once a curated spTKN's LP holds more than ~$33k/side, so getConversionFactor reverts and stake()/update() are permanently DoS'd for that asset (canonical spTKNMinimalOracle avoids this by dividing k by _kDec ~ 10^36; this adapter omits it).",
+      "poc_sketch": "Deploy ConversionFactorSPTKN with a TWAP mock whose priceX96FromSqrtPriceX96 returns 33*Q96 (PEAS ~ $0.03, token1==PEAS), a pod mock with convertToAssets(1e18)=1e18, an spTKN mock (INDEX_FUND->pod, stakingToken->LP mock with totalSupply 1e23), and V2Reserves mock set to a balanced $100k/side pool (stable 100000e18, PEAS 3333333e18); assert getConversionFactor reverts with stdError.arithmeticError; then set reserves to a $10k pool and assert it returns factor>0 and denom==2**96, proving a normal-sized pool bricks staking while a tiny one works. FCB_16c90518d8b623945286fa0_END",
+      "verdict": "REAL",
+      "reason": "Line 44 multiplies a Q96-scaled PEAS price (~33*Q96 ~= 2.6e30) by the raw uint112*uint112 reserve product with no _kDec normalization, so under the admitted config of 18-decimal stables in both pools the product exceeds 2^256 once the pod LP holds ~$33k+/side, reverting this view and DoS'ing every stake()/update() that reads it. FCB_b60b18d8b98732ffdd970_END"
+    },
+    {
+      "subsystem": "vlPEAS voting-power staking pool + LP conversion-factor pricing",
+      "location": "contracts/voting/ConversionFactorSPTKN.sol:getConversionFactor:44",
+      "file": "contracts/voting/ConversionFactorSPTKN.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "The adapter forms `_pricePPeasNumX96 * _k` (X96-scaled PEAS price times the raw external-pair reserve product r0*r1) before the sqrt with no down-scaling, so for any normal-sized LP (k>~1.46e35, e.g. \u2265~1.21M pTKN reserve at $0.10) the multiply overflows uint256 and getConversionFactor reverts, permanently bricking VotingPool.stake/update/_updateUserState for that spTKN (attacker can also add pair liquidity to force it), a core-feature DoS at the integration seam with no VotingPool backstop",
+      "poc_sketch": "Deploy ConversionFactorSPTKN(peas, clPool[token1==PEAS], twap, v2Reserves) with a TWAP mock returning priceX96=1e13*Q96, an spTKN mock whose INDEX_FUND pod has CBR=1e18 and stakingToken=an LP mock (totalSupply 1e23); v2Reserves.setReserves(lp, 2_000_000e18, 200_000e6); assert getConversionFactor(spTKN) reverts with arithmetic overflow (Panic 0x11), and assert it succeeds at (1_000_000e18, 100_000e6) \u2014 verified: 3/3 tests pass in Foundry.",
+      "verdict": "REAL",
+      "reason": "The raw checked multiply `_pricePPeasNumX96 * _k` on line 44 has no down-scaling before `_sqrt`, so it overflows uint256 once the 18-decimal pod-token LP reserve reaches ~1.21M (product \u2248 2^96\u00b7r_pTKN\u00b2 \u2248 2^256), an ordinary permissionlessly-reachable pool size, reverting getConversionFactor and every VotingPool path that calls it with no guard or backstop. FCB_751c118d8ba0a1f650ddb0_END"
+    },
+    {
+      "subsystem": "vlPEAS voting-power staking pool + LP conversion-factor pricing",
+      "location": "contracts/voting/VotingPool.sol:_updateUserState",
+      "file": "contracts/voting/VotingPool.sol",
+      "class": "class=C24",
+      "severity": "High",
+      "exploit": "A staker calls permissionless update(asset) at a natural upward excursion of the live conversion factor (spot/TWAP PEAS price + cached V2 reserves + pod CBR that the adapters re-read each call) to snapshot the peak into _stake.stakedToOutputFactor and mint extra vlPEAS/reward-shares with no new deposit, then never updates again after the factor falls back; since update/stake only re-sync the caller's own stake and no third-party or protocol path can force a downward re-sync of a specific account, the inflated shares persist indefinitely, permanently diluting honest stakers' TokenRewards pot and inflating governance weight.",
+      "poc_sketch": "Deploy VotingPool with a mock IStakingConversionFactor (getConversionFactor returns a settable (factor,denom)) and addOrUpdateAsset(mockAsset,mockCF,true); as attacker stake(mockAsset,100e18) at factor=1e18 and assert balanceOf==100e18 and TokenRewards(REWARDS).shares(attacker)==100e18; set mockCF factor=2e18 (models a market/CBR rise), call update(mockAsset), assert balanceOf==200e18 (minted +100e18 for zero new deposit); set mockCF factor back to 1e18 but do NOT call update, assert balanceOf still==200e18 and shares==200e18 while the true current value is only 100e18; show no external actor can reduce it (owner has no per-user resync; another user's update(mockAsset) only mutates their own Stake) so the attacker's shares remain 200e18; add an honest staker with 100e18 at factor 1e18 and assert the attacker now earns 2/3 of a distributed reward while backing only 1/2 the current value, quantifying the pot theft. FCB_2a4c9018d8b7c858d697540_END",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'no-loss: write the literal token delta=0:<the quantity that is unchanged> beside the path'): update() re-syncs only _msgSender()'s snapshot to the live factor and the up-excursion mint branch is permanent, while no third-party or protocol path can force a downward re-sync of a given account, so an unprivileged staker snapshots a peak factor, mints extra vlPEAS/reward-shares with no new deposit, and permanently dilutes honest stakers."
+    }
+  ],
+  "errors": [
+    {
+      "location": "contracts/voting/ConversionFactorPTKN.sol:getConversionFactor",
+      "file": "contracts/voting/ConversionFactorPTKN.sol",
+      "reason": "LLM transport error (flat-cyborg exited) after 5 attempts \u2014 TRANSIENT, RE-RUNNABLE (not assessed)"
+    }
+  ],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 14,
+    "verified": 3,
+    "errored": 1,
+    "dropped_subfloor": 0
+  }
+}

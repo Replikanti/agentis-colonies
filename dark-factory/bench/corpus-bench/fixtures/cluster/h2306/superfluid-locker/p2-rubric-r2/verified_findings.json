@@ -1,0 +1,59 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "Locker owner locks N FLUID, stake(N) (soft stake reserves N via _stakedBalance and mints staker units) then provideLiquidity{value:E}(N) which has NO getAvailableBalance() check and spends the SAME N SUP into a Uniswap V3 position minting LP units \u2014 one pile now backs both shared reward pools, so the attacker draws unbacked staker-pool tax rewards from every other user while simultaneously earning LP rewards.",
+      "poc_sketch": "Foundry (test/PoCDoubleDip.t.sol): deploy aliceLocker+bobLocker via FluidLockerFactory; _helperFundLocker(alice, 20_000e18) and same for bob; vm.prank(ALICE) aliceLocker.stake(pile); vm.prank(BOB) bobLocker.stake(pile); record stakerPool.getUnits(alice)>0; vm.prank(ALICE) aliceLocker.provideLiquidity{value:1 ether}(pile); assert _fluid.balanceOf(alice)<pile (staked tokens left into Uniswap), assert stakerPool.getUnits(alice)==pre (unbacked staker units retained), assert lpPool.getUnits(alice)>0 while lpPool.getUnits(bob)==0 \u2014 same capital, alice weights TWO shared pools; assert getAvailableBalance() reverts (balanceOf<_stakedBalance).",
+      "verdict": "REAL",
+      "reason": "provideLiquidity omits the getAvailableBalance() guard that stake/unlock enforce, so after stake(N) sets _stakedBalance=N it transfers the same N FLUID out into a Uniswap position while retaining full staker units, letting one FLUID pile back both the staker and LP shared reward pools and double-earn at other participants' expense."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "Since provideLiquidity() consults neither getAvailableBalance() nor _stakedBalance, an owner calls stake(N) (soft stake: mints N/1e18 staker units, moves no tokens) then provideLiquidity(N) spending the SAME N FLUID into an LP position (mints liquidity/1e16 LP units), so one pile of FLUID simultaneously weights both shared reward pools \u2014 the staker units become unbacked yet keep drawing staker-pool tax while the LP position draws LP-pool tax, stealing rewards from every other user.",
+      "poc_sketch": "Foundry: deploy aliceLocker+bobLocker via FluidLockerFactory; fund each with N=20_000e18 FLUID; prank(BOB) bobLocker.stake(N) (honest staker units); prank(ALICE) aliceLocker.stake(N); assert stakerPool.getUnits(aliceLocker)==N/1e18; prank(ALICE) aliceLocker.provideLiquidity{value:1 ether}(N); assert FLUID.balanceOf(aliceLocker) dropped by the deposited SUP (staked tokens left into Uniswap) AND stakerPool.getUnits(aliceLocker) unchanged (now unbacked) AND lpPool.getUnits(aliceLocker)>0 while lpPool.getUnits(bobLocker)==0; fund StakingRewardController and call distributeTaxAdjustment(); assert alice accrues from BOTH pools on one pile whereas bob accrues only from the staker pool; then unstake(N)+withdrawLiquidity recover the full principal. FCB_19200a18d78234a9b35a2e0_END",
+      "verdict": "REAL",
+      "reason": "provideLiquidity() spends FLUID from the locker balance without checking getAvailableBalance()/_stakedBalance, and stake() is a soft stake that never moves tokens, so an unprivileged locker owner runs stake(N) then provideLiquidity(N) to make one pile of FLUID simultaneously hold staker-pool units and an LP position, double-drawing from both shared reward pools at every other user's expense."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:unlock:335",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C12",
+      "severity": "Medium",
+      "exploit": "When both STAKER_DISTRIBUTION_POOL and LP_DISTRIBUTION_POOL have zero total units \u2014 a state the code admits and never seeds against (genesis before the first stake/provideLiquidity, or after all stakers unstake and all LPs withdraw) \u2014 every taxed unlock (instant unlockPeriod==0 and any vested period < _MAX_UNLOCK_PERIOD) reverts with STAKER_/LP_DISTRIBUTION_POOL_HAS_NO_UNITS, denying all lockers the documented instant/short-vest exit and forcing the far-slower max-period vest (not equivalent in time), a valid-input liveness loss requiring no attacker.",
+      "poc_sketch": "Foundry: deploy StakingRewardController+factory fresh, call setupLPDistributionPool (lpDistributionPool exists with 0 units) and do NOT stake or provideLiquidity from any locker; createLockerContract(ALICE); _helperFundLocker(ALICE, X); vm.prank(ALICE) expect revert STAKER_DISTRIBUTION_POOL_HAS_NO_UNITS on aliceLocker.unlock(X, 0, ALICE); also expect revert on unlock(X, 7 days, ALICE); then from a second locker stake(dust)+provideLiquidity{value:dust}(dust) so both pools gain units, warp past cooldown, and assert alice's identical unlock(X, 0, ALICE) now succeeds \u2014 proving the revert was driven solely by the admitted empty-pool state, not by alice's inputs.",
+      "verdict": "REAL",
+      "reason": "The inline if (unlockPeriod < _MAX_UNLOCK_PERIOD) block reverts every instant and sub-max vested unlock whenever either shared distribution pool has zero total units \u2014 a state the code admits at genesis (before any stake/provideLiquidity) and after full unwind, with no seeding in the constructor and no setter validating it away \u2014 so any locker owner with a valid balance is denied the documented instant/short-vest exit and forced into the non-time-equivalent 365-day max vest, an attacker-free valid-input liveness loss."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:unlock:335",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C25",
+      "severity": "Medium",
+      "exploit": "At genesis (and again after all stakers unstake and all LPs withdraw) both STAKER_DISTRIBUTION_POOL and LP_DISTRIBUTION_POOL read getTotalUnits()==0 \u2014 a state the code creates (pools built empty, never seeded) and never validates away \u2014 so every locker owner's instant unlock (unlockPeriod==0) and every short/mid-vest unlock (unlockPeriod < _MAX_UNLOCK_PERIOD) reverts with STAKER_/LP_DISTRIBUTION_POOL_HAS_NO_UNITS, denying the whole user base the documented fast-exit and forcing the strictly-slower, differently-taxed max-period vest; no attacker or privileged role is required.",
+      "poc_sketch": "Foundry: deploy StakingRewardController fresh, call initialize + setupLPDistributionPool (both pools now exist with 0 units) and do NOT stake or provideLiquidity from any locker; deploy FluidLockerFactory, createLockerContract(ALICE); fund aliceLocker with X>MIN_UNLOCK_AMOUNT FLUID; vm.prank(ALICE) and vm.expectRevert(STAKER_DISTRIBUTION_POOL_HAS_NO_UNITS.selector) on aliceLocker.unlock(X, 0, ALICE); also expectRevert on aliceLocker.unlock(X, 7 days, ALICE); then from a second locker call stake(dust) and provideLiquidity{value:dust}(dust) so STAKER_ and LP_ pools each gain >0 units, warp past staking cooldown, and assert alice's identical aliceLocker.unlock(X, 0, ALICE) now SUCCEEDS \u2014 proving the revert was driven solely by the reachable zero-unit pool state, not by alice's inputs.",
+      "verdict": "REAL",
+      "reason": "The body reverts with STAKER_/LP_DISTRIBUTION_POOL_HAS_NO_UNITS for every unlockPeriod < _MAX_UNLOCK_PERIOD whenever either GDA pool reads getTotalUnits()==0 \u2014 a state the constructor merely reads from the controller and no setter ever seeds or validates away (reachable at genesis and whenever no locker has yet staked or provided liquidity) \u2014 so any locker owner's instant and short/mid vest exits are unavailable while only the strictly-slower, zero-tax 365-day vest remains, an inequivalent path that does not cancel the liveness loss."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 6,
+    "verified": 4,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

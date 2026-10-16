@@ -1,0 +1,37 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "The same FLUID simultaneously backs staker units and LP units: stake(N) soft-credits updateStakerUnits(_stakedBalance) without moving tokens, then provideLiquidity(N) (no getAvailableBalance() check, never subtracts _stakedBalance) moves that same N into an LP position and credits updateLiquidityProviderUnits(_liquidityBalance), so one pile of FLUID earns tax streams from BOTH the shared STAKER_DISTRIBUTION_POOL and LP_DISTRIBUTION_POOL, diluting every other user's share (theft from the shared pools).",
+      "poc_sketch": "Foundry: lock(N); stake(N); assert stakerUnits==N/1e18; provideLiquidity{value:eth}(N); assert lpUnits>0 while stakerUnits still==N/1e18 though total FLUID committed ~N; trigger a tax distribution (e.g. another locker's _instantUnlock) and assert this locker collects from both pools on a single backing N.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity has no getAvailableBalance() check and never subtracts _stakedBalance, so FLUID already soft-credited as staked units is moved into an LP position and also credited LP units, letting one pile earn from both shared distribution pools."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "An unprivileged locker owner calls lock(N) then stake(N) (soft stake grants staker-pool units for N and moves no tokens) then provideLiquidity(N) which lacks the getAvailableBalance() guard that stake/unstake/unlock enforce, so it spends the SAME staked N FLUID into a Uniswap position and additionally grants LP-pool units \u2014 one pile of capital simultaneously backs both shared reward pools, and the staker units become wholly unbacked, diluting/stealing tax rewards from every other user.",
+      "poc_sketch": "Deploy full harness (SFTest): fund aliceLocker with N=20000e18 FLUID; vm.prank(ALICE) aliceLocker.stake(N); assert taxDistributionPool.getUnits(aliceLocker) == N/1e18 and getAvailableBalance()==0; vm.prank(ALICE) aliceLocker.provideLiquidity{value:1 ether}(N); assert FLUID.balanceOf(aliceLocker) < _stakedBalance (staked FLUID physically left into Uniswap) AND lpDistributionPool.getUnits(aliceLocker) > 0 AND taxDistributionPool.getUnits(aliceLocker) still == N/1e18 (now unbacked); compare to honest bobLocker with identical N capital who can obtain units in only one pool \u2014 proving alice earns double reward-share per unit of capital (see test/PoCDoubleDip.t.sol).",
+      "verdict": "REAL",
+      "reason": "provideLiquidity has only nonReentrant/onlyLockerOwner and no getAvailableBalance() check, so mint's transferFrom pulls the same fungible FLUID that _stakedBalance still counts, leaving staker units for N unbacked while granting LP units for the same N \u2014 one pile of capital drains both shared reward pools."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 4,
+    "verified": 2,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

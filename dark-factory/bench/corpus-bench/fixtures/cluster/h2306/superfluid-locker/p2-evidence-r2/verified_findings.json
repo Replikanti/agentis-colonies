@@ -1,0 +1,59 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "stake() gates on getAvailableBalance but is a soft stake that leaves tokens in the locker, while provideLiquidity has no available check, so the same N FLUID simultaneously backs STAKER_DISTRIBUTION_POOL units (via updateStakerUnits) and LP_DISTRIBUTION_POOL units (via updateLiquidityProviderUnits), inflating the attacker's share of both shared tax pools and stealing every other user's rewards.",
+      "poc_sketch": "Foundry: lock(N); stake(N) -> assert taxDistributionPool.getUnits(locker)==N/1e18 and _stakedBalance==N; provideLiquidity{value: eth}(N) spending the SAME N -> assert lpDistributionPool.getUnits(locker)>0 while _stakedBalance still==N; have a second locker perform a taxed unlock to fund both pools; assert the attacker locker accrues BOTH staker and LP tax flow on one pile of N, i.e. total distributed units exceed real backing.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity spends locker FLUID into an LP position without any getAvailableBalance check and without decrementing the soft-stake _stakedBalance, so the same tokens keep their staker units while also earning LP units, letting an unprivileged locker owner draw from both shared tax pools on a single balance."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "provideLiquidity carries no getAvailableBalance gate (unlike stake/unstake/unlock) and getAvailableBalance only subtracts _stakedBalance (L566), so stake(N) then provideLiquidity(N) commits the same N FLUID twice: unbacked staker units plus LP units, collecting tax from both shared pools on one pile and stealing from honest stakers.",
+      "poc_sketch": "Foundry fork: two lockers A,B; B stakes and provides so both pools have units; A: lock(N); stake(N); provideLiquidity(N) with same N; have another user do a taxed unlock so tax flows to both pools; assert A accrues from BOTH STAKER_DISTRIBUTION_POOL and LP_DISTRIBUTION_POOL on the single N, i.e. A's total claimable > a locker that only staked N or only LP'd N; then withdrawLiquidity + warp cooldown + unstake unwinds fully.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity mints an LP position drawing supAmount FLUID from the raw balance with no supAmount<=getAvailableBalance() bound, so an unprivileged locker owner can stake(N) then provideLiquidity(N) to draw the still-reserved staked pile into Uniswap, holding both unbacked staker units and LP units on one pile of N and collecting tax from both shared pools."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C5",
+      "severity": "High",
+      "exploit": "A locker owner lock(N)->stake(N) (soft, no token move) then provideLiquidity(N) spends the SAME N FLUID into an LP position because provideLiquidity has no getAvailableBalance() gate, leaving unbacked staker units (_stakedBalance=N with ~0 FLUID held) that keep earning STAKER-pool tax while the LP position earns LP-pool tax - double-dipping both shared pools from one pile.",
+      "poc_sketch": "Foundry fork ETH_SUP_POOL: createLockerContract; FLUID.transfer(locker,N); lock(N); stake(N); assert getStakedBalance()==N; provideLiquidity{value:ethPair}(N); assert FLUID.balanceOf(locker)~0 while getStakedBalance()==N and STAKER_DISTRIBUTION_POOL.getUnits(locker)==N/1e18 AND LP_DISTRIBUTION_POOL.getUnits(locker)>0; stream tax into both pools and assert this locker collects from both on one funded N.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity carries only nonReentrant/onlyLockerOwner and no getAvailableBalance() gate, so an unprivileged locker owner who first stakes N (soft, tokens stay) can then mint an LP position that pulls the same N FLUID out, leaving _stakedBalance=N staker units unbacked and earning the STAKER pool while the LP position earns the LP pool from one pile."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:unlock",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C25",
+      "severity": "Medium",
+      "exploit": "With a valid tax split that zeroes one leg (setTaxAllocation accepts (10000,0)/(0,10000) with only a sum==10000 check) \u2014 or simply at bootstrap/after everyone exits \u2014 the disabled/empty pool has 0 units, so unlock()'s `getTotalUnits()==0` reverts every taxed unlock (unlockPeriod < _MAX_UNLOCK_PERIOD, incl. instant) protocol-wide even though 100% of the tax would distribute successfully to the other, populated pool.",
+      "poc_sketch": "Foundry: deploy StakingRewardController (init + setupLPDistributionPool), factory, and lockers; owner calls setTaxAllocation(10000,0); lockerA.lock(2e18)+stake(2e18) so STAKER pool units>0 while LP pool units==0 (no provideLiquidity); lockerB.lock(1000e18); expect vm.expectRevert(LP_DISTRIBUTION_POOL_HAS_NO_UNITS.selector); lockerB.unlock(1000e18, 0, ownerB); assert instant unlock is blocked though the full penalty could route to stakers. Also assert the symmetric (0,10000)+empty-staker case reverts with STAKER_DISTRIBUTION_POOL_HAS_NO_UNITS, and the bootstrap case (both pools 0 units, no config) reverts identically.",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'guard: cite the path:line this ground requires, in code you were given'): unlock()'s unconditional dual `getTotalUnits()==0` guard reverts every instant/short-vest unlock whenever either pool is empty \u2014 a naturally reachable, unprivileged state such as stakers-present-but-no-LPs \u2014 even though _instantUnlock's `penaltyAmount - actualProviderDistributionAmount` remainder logic would route the whole penalty losslessly to the populated pool, and no guard, unreachability, or no-loss fact stops that liveness loss. FCB_2c651e18d7abf8fd0653210_END"
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 21,
+    "verified": 4,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

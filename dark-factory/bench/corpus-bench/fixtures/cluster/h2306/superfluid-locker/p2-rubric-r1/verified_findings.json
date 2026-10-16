@@ -1,0 +1,48 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "A locker owner stakes N FLUID (soft stake -> staker-pool units) then calls provideLiquidity(N), which has no getAvailableBalance() gate, moving that same staked FLUID into a Uniswap position and gaining LP-pool units too, so one pile of FLUID earns both shared GDA tax pools (unbacked staker units) and steals rewards from every other locker; it also lets locked FLUID exit tax-free after TAX_FREE_WITHDRAW_DELAY at ~1% cost versus the 24-80% unlock tax.",
+      "poc_sketch": "Foundry: deploy FLUID SuperToken + StakingRewardController (staker+LP pools seeded by a victim locker's stake and LP), create attacker locker via factory; lock(N); stake(N) and assert getStakedBalance()==N and staker units==N/1e18; provideLiquidity{value:e}(N) and assert _stakedBalance still==N while FLUID.balanceOf(locker)~0 (units unbacked), lpDistributionPool units>0, and getAvailableBalance() reverts (underflow); trigger a tax distribution and assert the attacker claims from BOTH staker and LP pools on the same N; then withdrawLiquidity returns FLUID and unstake(N) succeeds, netting more than a taxed unlock.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity approves and spends the locker's PHYSICAL FLUID balance with no supAmount <= getAvailableBalance() gate (unlike stake/unlock), so soft-staked FLUID that remains in the locker can be pushed into a Uniswap position, minting LP-pool units while the now-unbacked staker units persist, letting an unprivileged locker owner double-earn from both shared GDA pools and dilute every other locker."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "Locker owner stake(N) (soft stake -> N/1e18 staker units) then provideLiquidity(N) with tiny ETH; provideLiquidity has no getAvailableBalance()/staked gate, so the same N FLUID moves into a Uniswap position and mints LP units too \u2014 one pile earns BOTH shared GDA tax pools (unbacked staker units), stealing tax rewards from every other locker.",
+      "poc_sketch": "Foundry (base test harness): fund one locker with N=20000e18; stake(N) and assert stakerPool.getUnits(locker)==N/1e18 and getAvailableBalance()==0; provideLiquidity{value:1e18}(N); assert FLUID.balanceOf(locker) < N (FLUID left into Uniswap), stakerPool.getUnits(locker) UNCHANGED (now unbacked), lpPool.getUnits(locker) > 0, and getAvailableBalance() reverts (underflow); vs honest control locker with equal capital that holds only staker units.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity spends supAmount FLUID with no getAvailableBalance()/_stakedBalance gate (unlike stake/unlock), so an owner can move already-staked FLUID into a Uniswap position while _stakedBalance and its staker units stay intact, double-earning from both the staker and LP GDA pools and diluting other lockers."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C19",
+      "severity": "High",
+      "exploit": "An unprivileged locker owner stake(N) (soft, mints N/1e18 staker units, no tokens move) then provideLiquidity(N) which has NO getAvailableBalance() gate (lines 420-444) and pulls the SAME N FLUID into a Uniswap position minting LP units, so one pile backs BOTH shared GDA tax pools (staker units now unbacked) and steals tax from every other locker; the LP leg also exits tax-free via withdrawLiquidity after the 180-day delay (~1% cost vs 80% instant penalty).",
+      "poc_sketch": "Foundry (FluidLockerBaseTest, cf. test/PoCDoubleDip.t.sol): fund aliceLocker with pile=20000e18; stake(pile) and assert stakerPool.getUnits(alice)==pile/1e18 and getAvailableBalance()==0; provideLiquidity{value:1 ether}(pile); assert FLUID.balanceOf(alice)<pile (FLUID left into Uniswap), stakerPool.getUnits(alice) UNCHANGED (unbacked), lpPool.getUnits(alice)>0, and getAvailableBalance() reverts (underflow); compare honest bobLocker with equal capital holding only staker units; then vm.warp 180 days and assert withdrawLiquidity returns FLUID to alice tax-free.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity mints an LP position by transferring the locker's raw FLUID balance with no getAvailableBalance()/_stakedBalance gate, so an unprivileged owner can stake N (units minted, no tokens moved) then spend that same reserved N as LP, leaving the persistent staker units unbacked while both GDA tax pools pay out on one pile of capital."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 7,
+    "verified": 3,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

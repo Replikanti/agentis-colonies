@@ -1,0 +1,48 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 1/2)",
+      "location": "src/EPProgramManager.sol:_verifySignature:296",
+      "file": "src/EPProgramManager.sol",
+      "class": "class=C7",
+      "severity": "Medium",
+      "exploit": "The Stack digest keccak256(abi.encodePacked(user,newUnits,programId,nonce)) omits block.chainid and address(this), so one signer authorization is valid on every deployment/chain that shares (programId,stackSigner); README ships two live Base-mainnet FluidEPProgramManager proxies (RC + Preliminary) and per-(program,user) nonces are independent per contract, so an external role-less attacker replays a signature valid on one instance (units earned on the deprecated deployment / a mempool-observed sig / any future v2 or other-chain deployment) verbatim onto another treasury-funded deployment's pool, minting the same units and capturing an unearned FLUID distribution stream.",
+      "poc_sketch": "Isolated forge project (real Solady ECDSA + verbatim _verifySignature): deploy two EPProgramManager instances, createProgram(programId=1, same signer) on both, sign ONE digest over (user,units,programId,nonce=1); assert updateUserUnits succeeds on A, then the byte-identical sig succeeds on B (poolB.getUnits(user)==units) with B's nonce untouched, and still verifies after vm.chainId(999999) \u2014 test_CrossDeploymentAndCrossChainReplay PASS.",
+      "verdict": "REAL",
+      "reason": "The signed digest omits block.chainid and address(this) and nonces are tracked per-contract, so a stackSigner authorization replays verbatim onto any other deployment/chain sharing (programId,stackSigner), letting an unprivileged party re-mint the same units into a separately treasury-funded pool with no guard stopping it."
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "location": "src/FluidEPProgramManager.sol:startFunding",
+      "file": "src/FluidEPProgramManager.sol",
+      "class": "class=C6",
+      "severity": "Medium",
+      "exploit": "startFunding writes _fluidProgramDetails[programId] with no not-already-funded guard while treasury->this flow is set by DELTA (_updateFundingFlowRateFromTreasury) but this->pool flow is set ABSOLUTELY (distributeFlow); a second startFunding on a still-funded program (owner top-up \u2014 an input the code admits, no separate top-up fn exists) leaves treasury->this = F1+S1+F2+S2 while this->pool = F2 and this->taxpool = S1+S2, so `this` net-drains the treasury at F1/sec that no stopFunding/cancelProgram can unwind (they read the overwritten F2/S2 then delete the slot, and fundingStartDate==0 blocks re-entry), permanently orphaning the F1 treasury stream + its locked CFA buffer and underfunding the program pool by F1 \u2014 attacker-free misaccounting (rubric shape b) under an admitted state",
+      "poc_sketch": "Foundry (full SF stack): initialize manager, setSubsidyRate(r), fluidTreasury.approve(manager), createProgram(id) and seed pool units; startFunding(id,A1,D) -> record F1=getFlowDistributionFlowRate(this,pool) and getFlowRate(treasury,this)==F1+S1; WITHOUT stopFunding call startFunding(id,A2,D); assert getFlowRate(treasury,this)==F1+S1+F2+S2 AND getFlowDistributionFlowRate(this,pool)==F2 (not F1+F2); call stopFunding(id) after the window; assert getFlowRate(treasury,this)==F1+S1 (>0, orphaned) and getProgramDetails(id).fundingStartDate==0 so no path reduces it; assert token.balanceOf(this) accrues ~F1/sec and the orphaned-flow CFA buffer stays locked (emergencyWithdraw sweeps streamed tokens but cannot close the stream). FCB_355d3b18d7f34e8741480e0_END",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'guard: cite the path:line this ground requires, in code you were given'): startFunding has no fundingStartDate!=0 guard, so a second owner funding leaves the DELTA-updated treasury->this and this->taxpool flows carrying F1+S1+F2+S2 and S1+S2 while the ABSOLUTE distributeFlow resets this->pool to only F2, desynchronizing the pass-through by F1/sec and stranding an F1+S1 treasury stream plus buffer that the overwritten details make cancel/stopFunding unable to unwind."
+    },
+    {
+      "subsystem": "src (part 1/2)",
+      "location": "src/FluidEPProgramManager.sol:startFunding",
+      "file": "src/FluidEPProgramManager.sol",
+      "class": "class=C17",
+      "severity": "Medium",
+      "exploit": "startFunding assigns _fluidProgramDetails[programId] with no fundingStartDate==0 / not-already-funded guard, so a second startFunding on a still-funded program (the only mid-program top-up path \u2014 no separate top-up fn, and stopFunding is locked until the final EARLY_PROGRAM_END window) silently overwrites the prior {F1,S1} record while treasury->this is accumulated by DELTA (F1+S1+F2+S2) and this->pool is overwritten ABSOLUTELY (F2), leaving `this` net-drained at F1/sec; the orphaned F1+S1 treasury stream can never be unwound because stopFunding/cancelProgram read the overwritten {F2,S2} then set fundingStartDate=0, and emergencyWithdraw cannot close the CFA flow \u2014 permanently stranding treasury value plus a locked CFA buffer and underfunding the pool by F1.",
+      "poc_sketch": "Foundry with the full Superfluid stack: initialize the manager, setSubsidyRate(r), fluidTreasury.approve(manager), createProgram(id) and seed the pool with units; startFunding(id,A1,D), record F1=getFlowDistributionFlowRate(this,pool) and assert getFlowRate(treasury,this)==F1+S1; WITHOUT calling stopFunding, call startFunding(id,A2,D); assert getFlowRate(treasury,this)==F1+S1+F2+S2 AND getFlowDistributionFlowRate(this,pool)==F2 (not F1+F2); warp into the stop window and call stopFunding(id); assert getFlowRate(treasury,this)==F1+S1 (>0, orphaned) and getProgramDetails(id).fundingStartDate==0 so no lifecycle path can reduce it; assert token.balanceOf(this) accrues ~F1/sec and that emergencyWithdraw sweeps the balance but leaves the treasury->this CFA stream open with its buffer locked. FCB_35e1e918d7f3ec3e06b3cf0_END",
+      "verdict": "REAL",
+      "reason": "startFunding has no already-funded guard and accumulates treasury-inflow and tax-outflow by read-modify-write while overwriting pool-outflow absolutely, so a second (code-admitted) funding permanently orphans an F1+S1 treasury/subsidy stream and buffer that stopFunding/cancelProgram (which read the overwritten record then zero fundingStartDate) and emergencyWithdraw can never unwind."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 20,
+    "verified": 3,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

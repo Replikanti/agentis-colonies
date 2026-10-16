@@ -1,0 +1,76 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "CCIP cross-chain token bridge",
+      "location": "contracts/ccip/TokenBridge.sol:_processInboundTokens:104",
+      "file": "contracts/ccip/TokenBridge.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "Owner enables any rebase-up/inflationary-on-transfer token (setConfig validates nothing); an unprivileged attacker calls bridgeTokens so the source burns the nominal _amount while balanceOf-diff _amountAfter>_amount is bridged, causing the destination to mint/release more than was destroyed -> unbacked cross-chain inflation the attacker pockets.",
+      "poc_sketch": "Foundry: deploy TokenRouter, MockCCIPRouter, two TokenBridge instances sharing them; deploy a bridgeable token whose transferFrom credits recipient +10% (fresh mint); setConfig[srcToken][chainB]={targetBridge=bridgeB,mintBurn=true,targetToken=dstToken,enabled} and setConfig[dstToken][SEPOLIA_selector]={targetBridge=bridgeA,mintBurn=true,targetToken=dstToken,enabled}; attacker approves+calls bridgeA.bridgeTokens(chainB,attacker,srcToken,100e18) with msg.value=0; MockRouter routes locally to bridgeB._ccipReceive; assert dstToken.balanceOf(attacker)==110e18 while source burn was 100e18 (assertGt(dstMinted,100e18)); control with a plain ERC20 asserts exact 100e18 conservation. FCB_c87db18d873cf13df2c2f0_END",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'no-loss: write the literal token delta=0:<the quantity that is unchanged> beside the path'): Line 104 returns the uncapped balanceOf-diff _amountAfter which is minted/released on the destination while only the nominal _amount is burned on the source, so an unprivileged bridgeTokens caller using an admitted inflationary-on-transfer token makes the destination create more than was destroyed, and no guard or citable validation stops it. FCB_e507c18d875241968fd530_END"
+    },
+    {
+      "subsystem": "CCIP cross-chain token bridge",
+      "location": "contracts/ccip/TokenBridge.sol:_processInboundTokens:101",
+      "file": "contracts/ccip/TokenBridge.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "Unprivileged attacker bridging a legitimately-configured callback token (ERC777 tokensToSend / hook-on-transfer) in lock/release mode reenters bridgeTokens inside safeTransferFrom before the outer transfer settles, so the outer balanceOf(after)-balanceOf(before) double-counts the reentrant deposit and emits release messages summing to more than was deposited, draining the destination reserve.",
+      "poc_sketch": "Deploy a mock ERC777 (or ERC20 whose transferFrom calls a `tokensToSend`-style hook on the sender) + stub IRouterClient (getFee=0, ccipSend records the decoded TokenTransfer) + real TokenRouter; owner setConfig(token, chainSel, sourceTokenMintBurn=false, enabled=true); attacker's hook reenters bridgeTokens(...,100) exactly once during the outer bridgeTokens(...,100); assert the two recorded messages carry amount 100 and 200 (sum 300) while token.balanceOf(bridge)==200; then feed both messages into _ccipReceive on a destination bridge pre-funded with 200 reserve and assert the attacker-controlled receiver nets 300, reserve underflows/short by 100.",
+      "verdict": "REAL",
+      "reason": "The balanceOf-delta snapshot straddles an unguarded safeTransferFrom, so a callback token's tokensToSend hook lets an unprivileged sender reenter bridgeTokens, land an inner deposit that emits its own release message, and then be re-counted by the outer balanceOf(after)-_bal delta, emitting a second release message for the sum and over-releasing on the destination reserve."
+    },
+    {
+      "subsystem": "CCIP cross-chain token bridge",
+      "location": "contracts/ccip/TokenBridge.sol:_processInboundTokens:104",
+      "file": "contracts/ccip/TokenBridge.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "For a configured reflection/rebase-up token whose transferFrom raises the bridge balance by more than the nominal amount, mint/burn mode burns only nominal `_amount` on source but bridges the larger `_amountAfter`, so the destination mints more than was burned \u2014 net cross-chain inflation an unprivileged attacker withdraws.",
+      "poc_sketch": "Deploy a rebase-up mock where transferFrom(user,bridge,amount) increases bridge balance by amount+delta; real TokenRouter setConfig(sourceTokenMintBurn=true, enabled=true); stub router capturing the message; call bridgeTokens(amount); assert emitted _amountActual==amount+delta while burn destroyed only amount; simulate destination _ccipReceive minting amount+delta; assert minted - burned == delta > 0 (conservation broken in attacker's favour).",
+      "verdict": "REAL",
+      "reason": "The balance-diff measurement and dual _amount/_amountActual emit show the protocol admits non-standard tokens, yet the mint/burn path burns only nominal _amount (line 108) while bridging the larger measured _amountAfter (line 109), so for an enabled positive-rebase/transfer-reward token the destination mints more than the source burns with no guard reconciling them, letting an unprivileged bridger pocket the net cross-chain inflation."
+    },
+    {
+      "subsystem": "CCIP cross-chain token bridge",
+      "location": "contracts/ccip/TokenBridge.sol:_processInboundTokens:104",
+      "file": "contracts/ccip/TokenBridge.sol",
+      "class": "class=C15",
+      "severity": "Medium",
+      "exploit": "A configured fee-on-transfer token makes `_amountAfter < _amount`, so `burn(_amount)` destroys more than was received: with no bridge reserve it reverts (liveness loss for that admitted token config), and when the same token is also configured lock/release to another chain it silently burns reserve backing other users' locks (attacker grinds it down with dust bridges).",
+      "poc_sketch": "Deploy a fee-on-transfer mock (2% fee); real TokenRouter; case A: setConfig mint/burn only, call bridgeTokens(amount) and assert revert at burn (bridge holds 0); case B: also lock/release-config the same token to a second chain, seed a reserve via a lock bridge, then repeatedly bridgeTokens(dust) in mint/burn mode and assert bridge reserve balance decreases below the sum of outstanding lock obligations.",
+      "verdict": "REAL",
+      "reason": "The function computes _amountAfter by balance-diff (proving fee-on-transfer tokens are admitted and using it for the cross-chain message) yet line 104 burns _amount instead of _amountAfter, so for an admitted fee-on-transfer mint/burn token the bridge burns more than it received \u2014 reverting when it holds no surplus (liveness loss) or destroying lock/release reserve backing other users when it does \u2014 with no guard or setter validation shown to exclude such tokens."
+    },
+    {
+      "subsystem": "CCIP cross-chain token bridge",
+      "location": "contracts/ccip/TokenBridge.sol:_processInboundTokens:101",
+      "file": "contracts/ccip/TokenBridge.sol",
+      "class": "class=C8",
+      "severity": "High",
+      "exploit": "In lock/release mode an unprivileged holder of an owner-configured ERC777/callback token reenters bridgeTokens during safeTransferFrom's tokensToSend hook (fired before balances move); the outer snapshots _bal before the nested deposit, so the nested call bridges 100 and the outer double-counts to bridge 200, instructing the destination to release 300 for only 200 deposited \u2014 draining the destination reserve, with no nonReentrant guard and no conservation backstop.",
+      "poc_sketch": "Deploy a mock ERC777-style token whose transferFrom fires a tokensToSend hook on the sender before moving balances; deploy TokenRouter and setConfig for the token with sourceTokenMintBurn=false (lock mode), enabled=true, globalEnabled=true; deploy TokenBridge with a mock ccipRouter (records/returns messageId, getFee=0); fund an attacker contract with 200 tokens and approve the bridge; from the attacker call bridgeTokens(chain, recv, token, 100) whose hook reenters bridgeTokens(chain, recv, token, 100) exactly once; capture TokensSent events (or the mock router's recorded EVM2AnyMessage amounts) and assert the two bridged amounts are 100 then 200 (sum 300) while the attacker's total token balance decrease is only 200 \u2014 i.e. _amountActual over-counts the nested deposit by 100, an unbacked over-release on the destination. FCB_d775818d87496e42fe4700_END",
+      "verdict": "REAL",
+      "reason": "bridgeTokens has no reentrancy guard and the outer _bal is snapshotted before safeTransferFrom, so an ERC777/callback token's tokensToSend hook (fired before _move) lets an unprivileged holder reenter and deposit once while it is counted twice, instructing the destination to release 300 for 200 locked."
+    }
+  ],
+  "errors": [
+    {
+      "location": "contracts/ccip/TokenBridge.sol:_processInboundTokens:101",
+      "file": "contracts/ccip/TokenBridge.sol",
+      "reason": "LLM transport error (flat-cyborg exited) after 5 attempts \u2014 TRANSIENT, RE-RUNNABLE (not assessed)"
+    }
+  ],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 12,
+    "verified": 5,
+    "errored": 1,
+    "dropped_subfloor": 0
+  }
+}
