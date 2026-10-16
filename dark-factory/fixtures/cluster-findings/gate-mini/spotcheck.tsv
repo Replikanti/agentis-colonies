@@ -1,0 +1,6 @@
+# gate-mini (#2306): synthetic operator spot-check (one row per non-exempt judge-HIT row).
+contest	arm	sev_id	spot
+distinct	A	G-1	yes
+distinct	A	G-2	yes
+distinct	A	G-3	yes
+synth	A	G-1	yes

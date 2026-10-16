@@ -431,7 +431,8 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
   # clustered file, against every truth file of that run, with and without its gt-dupes artifact. Only LEADS may
   # change (it must equal the pinned clustered count), and a LOCHIT line is compared on its sev_id + the lead's
   # (file, function) — the representative can cite another line of the same function. The per-file counts are
-  # pinned, so a clusterer change that merges more or less on dev data fails here, not silently.
+  # pinned, so a clusterer change that merges more or less on dev data fails here, not silently. The CLI runs its
+  # DEFAULT method (v2 since #2306), so these are the v2 counts.
   CL_PIN="$DF/fixtures/cluster-findings/expected-dev-counts.tsv"
   CL_T="$(mktemp -d)"
   cl_ok=1 ; cl_files=0 ; cl_scored=0
@@ -480,8 +481,9 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
   fv_raw="$(fv_leads)" ; fv_cl="$(fv_leads --findings-view clustered)"
   bash "$CL_SELF" --findings-view bogus --self-test >/dev/null 2>&1 ; fv_bad=$?
   rm -rf "$CL_T"
-  if [ "$fv_raw" != "raw 12" ] || [ "$fv_cl" != "clustered 3" ] || [ "$fv_bad" -ne 2 ]; then
-    say "  [2278] --findings-view: default got '$fv_raw' (want 'raw 12'), clustered got '$fv_cl' (want 'clustered 3'), bad value exit $fv_bad (want 2)"
+  # 4 = the v2 count (#2306: the clause veto splits two paraphrases of one 1887 `withdraw` bug; v1 gives 3).
+  if [ "$fv_raw" != "raw 12" ] || [ "$fv_cl" != "clustered 4" ] || [ "$fv_bad" -ne 2 ]; then
+    say "  [2278] --findings-view: default got '$fv_raw' (want 'raw 12'), clustered got '$fv_cl' (want 'clustered 4'), bad value exit $fv_bad (want 2)"
     cl_ok=0
   fi
   if [ "$cl_ok" -eq 1 ] && [ "$cl_files" -eq 12 ]; then
@@ -490,14 +492,18 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
     say "SELF-TEST: root-cause clustering moved a token-mode scorecard, a pinned dev count, or the --findings-view contract (#2278; $cl_files/12 files) -> FAIL"; exit 1
   fi
 
-  # Seventh assertion, held-out half (#2278 M2): the oku clustering record. cluster-holdout.py check clusters both
-  # #2245 oku arms with the UNCHANGED lib/cluster-findings.py (its own DEFAULT_THRESHOLD) and scores the partition
+  # Seventh assertion, held-out half (#2278 M2): the oku clustering record. cluster-holdout.py check --method v1
+  # clusters both #2245 oku arms with the #2278 v1 clusterer (its own DEFAULT_THRESHOLD) and scores the partition
   # against labels pre-registered before the clusterer ever ran on this data (fixtures/cluster/oku/README.md). Its
   # stdout must byte-match the one recorded run (expected-check.txt), and the shipped verify-findings.sh default
   # must agree with the recorded verdict: a FAIL (a labelled-distinct merge, a token-mode GT change) requires
-  # DF_CLUSTER_FINDINGS to default to 0. Under-merge (clusters > bound) and recorded-judge losses are reported only.
+  # DF_CLUSTER_FINDINGS to default to 0 — unless the module's DEFAULT_METHOD is no longer v1 (#2306), in which case
+  # the v1 record no longer describes what ships. Under-merge and recorded-judge losses are reported only.
   HO_FIX="$HERE/fixtures/cluster/oku"
-  ho_out="$(python3 "$HERE/cluster-holdout.py" check --fixture "$HO_FIX" 2>&1)"; ho_rc=$?
+  ho_out="$(python3 "$HERE/cluster-holdout.py" check --fixture "$HO_FIX" --method v1 2>&1)"; ho_rc=$?
+  ho_method="$(python3 -B -c 'import sys, importlib.util
+spec = importlib.util.spec_from_file_location("cl", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m); print(m.DEFAULT_METHOD)' "$CLUSTERLIB" 2>/dev/null)"
   ho_verdict="$(printf '%s\n' "$ho_out" | awk -F'|' '$2=="verdict"{print $3}')"
   ho_fails="$(printf '%s\n' "$ho_out" | awk -F'|' '$2=="verdict"{print $4}')"
   ho_reported="$(printf '%s\n' "$ho_out" | awk -F'|' '$2=="verdict"{sub(/^reported:/, "", $5); print $5}')"
@@ -517,11 +523,94 @@ if [ "$DO_SELFTEST" -eq 1 ]; then
   elif [ "$ho_rc" -eq 0 ] && [ "$ho_out" = "$(cat "$HO_FIX/expected-check.txt")" ] && [ "$ho_verdict" = "FAIL" ] \
      && [ "$ho_default" = "0" ]; then
     say "SELF-TEST: held-out oku clustering reproduces its recorded M2 FAIL ($ho_fails; reported: $ho_reported; $ho_arms) and DF_CLUSTER_FINDINGS defaults to 0 (#2278 M2) -> PASS"
+  elif [ "$ho_rc" -eq 0 ] && [ "$ho_out" = "$(cat "$HO_FIX/expected-check.txt")" ] && [ "$ho_verdict" = "FAIL" ] \
+     && [ -n "$ho_method" ] && [ "$ho_method" != "v1" ]; then
+    say "SELF-TEST: held-out oku clustering reproduces its recorded M2 v1 FAIL ($ho_fails; $ho_arms); the shipped method is $ho_method, so the v1 record no longer constrains the default (#2278 M2, #2306) -> PASS"
   else
     say "SELF-TEST: held-out oku clustering drifted from expected-check.txt, or the shipped default contradicts the M2 verdict (#2278 M2) -> FAIL"
     say "  [2278 M2] check exit $ho_rc, verdict '$ho_verdict' ($ho_fails), verify-findings.sh default '$ho_default'"
     diff <(cat "$HO_FIX/expected-check.txt") <(printf '%s\n' "$ho_out") | sed 's/^/  [2278 M2] /' >&2 || true
     exit 1
+  fi
+
+  # Seventh assertion, #2306 calibration: lib/cluster-findings.py's cannot-link constants come from dev labels by
+  # the fixed rule in cluster-calibrate.py. Its stdout must byte-match the pinned record (which names every source
+  # file with its sha256 and states that oku was not consulted), and the chosen W / tau must equal the module's
+  # LINE_WINDOW / DEFECT_TAU, so neither the labels, the dev data nor a constant can drift alone.
+  CAL_PIN="$DF/fixtures/cluster-findings/calibration-v2.txt"
+  cal_out="$(python3 "$HERE/cluster-calibrate.py" 2>&1)"; cal_rc=$?
+  cal_chosen="$(printf '%s\n' "$cal_out" | awk -F'|' '$2=="chosen"{print $3 "|" $4}')"
+  cal_module="$(python3 -B -c 'import sys, importlib.util
+spec = importlib.util.spec_from_file_location("cl", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m); print("W=%d|tau=%.2f" % (m.LINE_WINDOW, m.DEFECT_TAU))' "$CLUSTERLIB" 2>/dev/null)"
+  if [ "$cal_rc" -eq 0 ] && [ "$cal_out" = "$(cat "$CAL_PIN")" ] && [ -n "$cal_chosen" ] && [ "$cal_chosen" = "$cal_module" ]; then
+    say "SELF-TEST: cannot-link calibration on dev labels reproduces calibration-v2.txt ($cal_chosen = the module constants; oku not consulted) (#2306) -> PASS"
+  else
+    say "SELF-TEST: cannot-link calibration drifted from calibration-v2.txt or from the module constants (calibrate exit $cal_rc, chosen '$cal_chosen', module '$cal_module') (#2306) -> FAIL"
+    diff <(cat "$CAL_PIN") <(printf '%s\n' "$cal_out") | sed 's/^/  [2306] /' >&2 || true
+    exit 1
+  fi
+
+  # Seventh assertion, #2306 gate engine: cluster-holdout.py gate / power / --method over the synthetic gate-mini
+  # fixture (dev synthetic files only). The clean fixture must byte-match its pin and PASS under v2 (and FAIL under
+  # v1, whose shared-consequence merges are exactly the #2278 failure mode); a planted distinct merge, a `no` spot
+  # row, a missing spot row and a D below the power floor must each FAIL with the right gating token.
+  GM="$DF/fixtures/cluster-findings/gate-mini"
+  GM_T="$(mktemp -d)"
+  gm_ok=1
+  gm_verdict() { python3 "$HERE/cluster-holdout.py" gate --root "$1" --method "$2" 2>&1 | awk -F'|' '$2=="verdict"{print $3 "|" $4}'; }
+  gm_out="$(python3 "$HERE/cluster-holdout.py" gate --root "$GM" --method v2 2>&1)" || gm_ok=0
+  [ "$gm_out" = "$(cat "$GM/expected-gate.txt")" ] || { say "  [2306] gate-mini output drifted from expected-gate.txt"; gm_ok=0; }
+  [ "$(gm_verdict "$GM" v2)" = "PASS|-" ] || { say "  [2306] clean gate-mini is not PASS under v2"; gm_ok=0; }
+  [ "$(gm_verdict "$GM" v1)" = "FAIL|distinct-merge:distinct/B" ] || { say "  [2306] gate-mini under v1 is not the shared-consequence distinct merge"; gm_ok=0; }
+  # (1) planted distinct merge: relabel synth swap idx 1 (one bug, merged by v2) with a fresh rc.
+  cp -R "$GM" "$GM_T/merge"
+  awk -F'\t' 'BEGIN{OFS="\t"} $1=="A" && $2=="1" {$4="planted-distinct"} {print}' "$GM/synth/root-causes.tsv" > "$GM_T/merge/synth/root-causes.tsv"
+  python3 "$HERE/cluster-holdout.py" derive --labels "$GM_T/merge/synth/root-causes.tsv" > "$GM_T/merge/synth/expected-distinct.tsv"
+  [ "$(gm_verdict "$GM_T/merge" v2)" = "FAIL|distinct-merge:synth/A" ] || { say "  [2306] a planted distinct merge did not FAIL the gate"; gm_ok=0; }
+  # (2) a `no` spot row, (3) a missing spot row.
+  cp -R "$GM" "$GM_T/spot-no"
+  awk -F'\t' 'BEGIN{OFS="\t"} $1=="distinct" && $2=="A" && $3=="G-2" {$4="no"} {print}' "$GM/spotcheck.tsv" > "$GM_T/spot-no/spotcheck.tsv"
+  [ "$(gm_verdict "$GM_T/spot-no" v2)" = "FAIL|spot-no:distinct/A/G-2" ] || { say "  [2306] a 'no' spot row did not FAIL the gate"; gm_ok=0; }
+  cp -R "$GM" "$GM_T/spot-missing"
+  grep -v '^synth' "$GM/spotcheck.tsv" > "$GM_T/spot-missing/spotcheck.tsv"
+  [ "$(gm_verdict "$GM_T/spot-missing" v2)" = "FAIL|spot-missing:synth/A/G-1" ] || { say "  [2306] a missing spot row did not FAIL the gate"; gm_ok=0; }
+  # (4) D below the floor: only the synth contest (0 labelled-distinct pairs) remains.
+  cp -R "$GM" "$GM_T/power"
+  rm -rf "$GM_T/power/distinct"
+  grep -v '^distinct' "$GM/spotcheck.tsv" > "$GM_T/power/spotcheck.tsv"
+  [ "$(gm_verdict "$GM_T/power" v2)" = "FAIL|power:D=0<12" ] || { say "  [2306] D below the power floor did not FAIL the gate"; gm_ok=0; }
+  [ "$(python3 "$HERE/cluster-holdout.py" power --fixture "$GM_T/power" | tail -1)" = "POWER|total|D=0|D_unique=0|floor=12|UNMET" ] \
+    || { say "  [2306] power did not report UNMET below the floor"; gm_ok=0; }
+  python3 "$HERE/cluster-holdout.py" gate --root "$GM" --method bogus >/dev/null 2>&1; [ "$?" -eq 2 ] || { say "  [2306] gate --method bogus did not exit 2"; gm_ok=0; }
+  rm -rf "$GM_T"
+  if [ "$gm_ok" -eq 1 ]; then
+    say "SELF-TEST: cluster-holdout.py gate/power/--method on gate-mini: clean PASS (v2) pinned, v1 FAIL, planted distinct merge / spot no / spot missing / D < 12 each FAIL (#2306) -> PASS"
+  else
+    say "SELF-TEST: the #2306 gate engine regressed on gate-mini -> FAIL"; exit 1
+  fi
+
+  # Seventh assertion, #2306 held-out half: the h2306 record. Until the phase B record PR lands
+  # fixtures/cluster/h2306/, the verify-stage default must stay OFF. Once it exists, `gate --method <DEFAULT_METHOD>`
+  # must byte-match h2306/expected-gate.txt, and DF_CLUSTER_FINDINGS may default to 1 only on GATE|verdict|PASS.
+  H2_FIX="$HERE/fixtures/cluster/h2306"
+  if [ ! -d "$H2_FIX" ]; then
+    if [ "$ho_default" = "0" ]; then
+      say "SELF-TEST: no #2306 held-out record yet (fixtures/cluster/h2306/ absent) and DF_CLUSTER_FINDINGS defaults to 0 (#2306) -> PASS"
+    else
+      say "SELF-TEST: DF_CLUSTER_FINDINGS defaults to '$ho_default' without a #2306 held-out record (fixtures/cluster/h2306/ absent) -> FAIL"; exit 1
+    fi
+  else
+    h2_out="$(python3 "$HERE/cluster-holdout.py" gate --root "$H2_FIX" --method "$ho_method" 2>&1)"; h2_rc=$?
+    h2_verdict="$(printf '%s\n' "$h2_out" | awk -F'|' '$2=="verdict"{print $3}')"
+    if [ "$h2_rc" -eq 0 ] && [ "$h2_out" = "$(cat "$H2_FIX/expected-gate.txt")" ] \
+       && { [ "$ho_default" = "0" ] || [ "$h2_verdict" = "PASS" ]; }; then
+      say "SELF-TEST: #2306 held-out gate reproduces h2306/expected-gate.txt (verdict $h2_verdict) and DF_CLUSTER_FINDINGS defaults to $ho_default (#2306) -> PASS"
+    else
+      say "SELF-TEST: #2306 held-out gate drifted from h2306/expected-gate.txt, or the default is ON without GATE|verdict|PASS (gate exit $h2_rc, verdict '$h2_verdict', default '$ho_default') -> FAIL"
+      diff <(cat "$H2_FIX/expected-gate.txt") <(printf '%s\n' "$h2_out") | sed 's/^/  [2306] /' >&2 || true
+      exit 1
+    fi
   fi
 
   # Eighth assertion (#2288 M2): --score prints the errored-candidate COUNT line after the headline exactly when

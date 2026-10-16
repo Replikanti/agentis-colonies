@@ -372,7 +372,12 @@ inverted staleness check six times, once per class). When more than one finding 
 [`lib/cluster-findings.py`](./lib/cluster-findings.py) collapses duplicates into one representative per root
 cause: findings are compared only inside the exact `(file, function)` pair of their `location` — the pair the
 corpus-bench scorer matches on, so location-first bench recall cannot change — and merge by average-linkage
-Jaccard over the code identifiers their `exploit` text cites (threshold pinned at 0.30 on dev data). The
+Jaccard over the code identifiers their `exploit` text cites (threshold pinned at 0.30 on dev data). Since #2306
+the default method (`v2`) adds a split-only cannot-link refinement on top: two findings of one function stay apart
+when their cited lines are more than 2 apart, or when the identifiers of their defect clauses (the text before the
+first consequence connective) are disjoint, because two different bugs in one function share their callers and
+the old similarity merged them on that shared consequence chain. Every v2 cluster is a subset of a v1 cluster;
+`--method v1` keeps the #2278 clusterer byte for byte. The
 representative is the highest-severity member (then an operator-adjudicated one, then the most concrete
 `poc_sketch`) and carries `duplicates`, `also_classes` and `also_locations`. Nothing is lost: the full
 pre-cluster list moves to `verify-out/verified_findings.raw.json`, and `verified_findings.json` gains a
@@ -382,6 +387,7 @@ the file is byte-identical to an OFF run and no sibling is written; a clusterer 
 with a WARNING. It is opt-in: `--cluster-findings 1` / `DF_CLUSTER_FINDINGS=1` switch it on (`run-zone-hunt.sh`
 STAGE 4 inherits the env), because the M2 held-out check on the #2245 `oku` outputs merged one labelled-distinct
 pair of root causes (see [`bench/corpus-bench/README.md`](./bench/corpus-bench/README.md#root-cause-clustering-and---findings-view-2278));
+v2 stays opt-in until it passes a new pre-registered held-out gate (#2306);
 `DF_CLUSTER_THRESHOLD` overrides the threshold. The VERIFY banner still reports the
 gate-confirmed count; one extra stderr line reports the distinct count. Pinned by `demo-cluster-findings.sh`.
 

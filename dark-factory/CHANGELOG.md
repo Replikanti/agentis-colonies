@@ -32,6 +32,18 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Changed
 
+- **Root-cause clustering method v2: a split-only cannot-link refinement (#2306).** `lib/cluster-findings.py`
+  gains `--method v1|v2` (default `v2`): every v1 cluster is re-agglomerated with the same linkage and threshold,
+  and two findings of one function are never merged when their cited lines are more than 2 apart or their defect
+  clauses (the exploit text before the first consequence connective) cite disjoint identifier sets — the #2278 M2
+  failure merged two different defects of one function on their shared consequence chain. Every v2 cluster is a
+  subset of a v1 cluster; `--method v1` is byte-identical to #2278. W = 2 and τ = 0.0 come from dev labels only
+  (`bench/corpus-bench/cluster-calibrate.py`, pinned as `fixtures/cluster-findings/calibration-v2.txt`). Dev
+  counts: the 1887 yieldoor `on` file now clusters 12 → 4 (was 3), every other dev file is unchanged. New
+  constraint fixture `same-function-shared-consequence.json` (v1 merges all 12 labelled-distinct pairs, v2 none),
+  and `cluster-holdout.py` gains `check --method`, `power` and `gate` for the #2306 held-out gate (pinned on the
+  synthetic `gate-mini` fixture). `DF_CLUSTER_FINDINGS` stays **0**: no behaviour change for a run without the knob.
+
 - **Root-cause clustering is OFF by default (#2278 M2).** `verify-findings.sh --cluster-findings` /
   `DF_CLUSTER_FINDINGS` now default to **0**. **Behaviour change:** a run without the knob writes the raw
   `verified_findings.json` again (no `clustering` block, no `verified_findings.raw.json` sibling), as before #2278.

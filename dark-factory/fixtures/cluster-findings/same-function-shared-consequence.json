@@ -1,0 +1,147 @@
+{
+  "repo": "fixture",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "auction",
+      "location": "contracts/AuctionHouse.sol:settleAuction:212",
+      "file": "contracts/AuctionHouse.sol",
+      "class": "C3",
+      "severity": "Medium",
+      "exploit": "settleAuction compares highestBid against reservePrice with a strict > instead of >=, so a bid exactly at the reserve is treated as a failed auction: settleAuction() then routes the lot through _returnToSeller() and transferNft() while _refundBidder() pays back highestBidder from auctionEscrow, and the protocolFeeBps cut stays in auctionEscrow, so the rightful winner ends with neither the NFT nor the refunded fee.",
+      "poc_sketch": "bid reservePrice exactly, warp past auctionEndTime, settleAuction(); assert the NFT went back to the seller",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "auction",
+      "location": "contracts/AuctionHouse.sol:settleAuction:213",
+      "file": "contracts/AuctionHouse.sol",
+      "class": "C7",
+      "severity": "High",
+      "exploit": "settleAuction never requires block.timestamp >= auctionEndTime, letting anyone settle a running auction early: settleAuction() then routes the lot through _returnToSeller() and transferNft() while _refundBidder() pays back highestBidder from auctionEscrow, and the protocolFeeBps cut stays in auctionEscrow, so the rightful winner ends with neither the NFT nor the refunded fee.",
+      "poc_sketch": "place a bid, call settleAuction() before auctionEndTime; assert a later higher bid can no longer win",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "auction",
+      "location": "contracts/AuctionHouse.sol:settleAuction:212",
+      "file": "contracts/AuctionHouse.sol",
+      "class": "C19",
+      "severity": "Medium",
+      "exploit": "The reserve check in settleAuction uses highestBid > reservePrice, not highestBid >= reservePrice; at a bid equal to the reserve settleAuction() then routes the lot through _returnToSeller() and transferNft() while _refundBidder() pays back highestBidder from auctionEscrow, and the protocolFeeBps cut stays in auctionEscrow, so the rightful winner ends with neither the NFT nor the refunded fee.",
+      "poc_sketch": "highestBid == reservePrice -> settleAuction() returns the lot",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "auction",
+      "location": "contracts/AuctionHouse.sol:settleAuction:213",
+      "file": "contracts/AuctionHouse.sol",
+      "class": "C2",
+      "severity": "High",
+      "exploit": "Missing end-time guard: settleAuction does not check auctionEndTime against block.timestamp, so the auction is closed mid-bidding and settleAuction() then routes the lot through _returnToSeller() and transferNft() while _refundBidder() pays back highestBidder from auctionEscrow, and the protocolFeeBps cut stays in auctionEscrow, so the rightful winner ends with neither the NFT nor the refunded fee.",
+      "poc_sketch": "settleAuction() at auctionEndTime - 1 succeeds",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "governance",
+      "location": "contracts/Governor.sol:castVote:88",
+      "file": "contracts/Governor.sol",
+      "class": "C6",
+      "severity": "High",
+      "exploit": "castVote reads votingPower through getVotes(voter, block.number) at the current block rather than at proposalSnapshot, so votes bought or borrowed after the snapshot count and the inflated forVotes tally makes _quorumReached() and _voteSucceeded() return true, queueProposal() schedules it on the timelockController and execute() runs calldata the honest majority voted against.",
+      "poc_sketch": "flash-borrow governance tokens, delegate, castVote(); assert forVotes grew by the borrowed amount",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "governance",
+      "location": "contracts/Governor.sol:castVote",
+      "file": "contracts/Governor.sol",
+      "class": "C4",
+      "severity": "High",
+      "exploit": "castVote never records hasVoted[proposalId][voter] before adding the weight, so the same voter calls it again and again and the inflated forVotes tally makes _quorumReached() and _voteSucceeded() return true, queueProposal() schedules it on the timelockController and execute() runs calldata the honest majority voted against.",
+      "poc_sketch": "call castVote(proposalId, 1) five times from one account; assert forVotes == 5 * weight",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "governance",
+      "location": "contracts/Governor.sol:castVote:88",
+      "file": "contracts/Governor.sol",
+      "class": "C15",
+      "severity": "Medium",
+      "exploit": "Voting weight is taken from getVotes() at block.number instead of the proposalSnapshot checkpoint; tokens acquired after the snapshot vote, and the inflated forVotes tally makes _quorumReached() and _voteSucceeded() return true, queueProposal() schedules it on the timelockController and execute() runs calldata the honest majority voted against.",
+      "poc_sketch": "transfer tokens in after proposalSnapshot, castVote(); weight includes them",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "governance",
+      "location": "contracts/Governor.sol:castVote:89",
+      "file": "contracts/Governor.sol",
+      "class": "C5",
+      "severity": "High",
+      "exploit": "No double-vote guard: hasVoted is never written for proposalId in castVote; one holder repeats the call and the inflated forVotes tally makes _quorumReached() and _voteSucceeded() return true, queueProposal() schedules it on the timelockController and execute() runs calldata the honest majority voted against.",
+      "poc_sketch": "loop castVote(proposalId, 1); forVotes keeps growing",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "raffle",
+      "location": "contracts/Raffle.sol:drawWinner:140",
+      "file": "contracts/Raffle.sol",
+      "class": "C9",
+      "severity": "Medium",
+      "exploit": "drawWinner sets winnerIndex = randomSeed % ticketCount with randomSeed taken from block.prevrandao, so the proposer of the draw block picks the winner and _payPrize() transfers the whole prizePool to ticketOwner[winnerIndex], emits WinnerDrawn and calls rolloverRound(), while claimRefund() reverts for every other entrant because refundableBalance is zero.",
+      "poc_sketch": "simulate prevrandao values until winnerIndex hits an attacker ticket, then drawWinner()",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "raffle",
+      "location": "contracts/Raffle.sol:drawWinner:151",
+      "file": "contracts/Raffle.sol",
+      "class": "C12",
+      "severity": "High",
+      "exploit": "drawWinner never resets ticketCount or clears ticketOwner after paying out, so the next round reuses stale entries and _payPrize() transfers the whole prizePool to ticketOwner[winnerIndex], emits WinnerDrawn and calls rolloverRound(), while claimRefund() reverts for every other entrant because refundableBalance is zero.",
+      "poc_sketch": "drawWinner(); buy one ticket; drawWinner() again; assert an old ticketOwner can win the new round",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "raffle",
+      "location": "contracts/Raffle.sol:drawWinner:141",
+      "file": "contracts/Raffle.sol",
+      "class": "C2",
+      "severity": "Medium",
+      "exploit": "The winner is chosen as randomSeed % ticketCount from block.prevrandao inside drawWinner; a validator biases winnerIndex and _payPrize() transfers the whole prizePool to ticketOwner[winnerIndex], emits WinnerDrawn and calls rolloverRound(), while claimRefund() reverts for every other entrant because refundableBalance is zero.",
+      "poc_sketch": "bias prevrandao -> winnerIndex",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    },
+    {
+      "subsystem": "raffle",
+      "location": "contracts/Raffle.sol:drawWinner:151",
+      "file": "contracts/Raffle.sol",
+      "class": "C5",
+      "severity": "High",
+      "exploit": "Round state is not cleared: drawWinner leaves ticketCount and every ticketOwner slot in place; _payPrize() transfers the whole prizePool to ticketOwner[winnerIndex], emits WinnerDrawn and calls rolloverRound(), while claimRefund() reverts for every other entrant because refundableBalance is zero and the next round pays a ticket bought for the previous one.",
+      "poc_sketch": "second drawWinner() pays a previous-round ticketOwner",
+      "verdict": "REAL",
+      "reason": "refute gate: the claimed path holds on the real control flow"
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 12,
+    "verified": 12,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

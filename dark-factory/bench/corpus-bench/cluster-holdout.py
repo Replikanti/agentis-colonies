@@ -20,8 +20,25 @@
 #   derive --labels <root-causes.tsv>
 #       Prints expected-distinct.tsv: every same-block pair of raw entries whose labelled root causes differ,
 #       plus the derived per-arm bound as `# M2|bound|<arm>|<n>` lines. Mechanical; never hand-edit its output.
-#   check --fixture <dir>
-#       The self-test engine (run-corpus-bench.sh --self-test diffs its stdout against expected-check.txt).
+#   check --fixture <dir> [--method v1|v2]
+#       The self-test engine (run-corpus-bench.sh --self-test diffs its stdout against expected-check.txt). --method
+#       defaults to v1 (#2306), so the documented M2 invocation still reproduces the M2 record byte for byte; the
+#       method is passed explicitly to both the in-process partition and the CLI.
+#   power --fixture <root>
+#       #2306. Reads LABELS ONLY (never clusters) of every `<root>/<contest>/root-causes.tsv` and prints one
+#       `POWER|<contest>|distinct_pairs=<n>|same_pairs=<n>` line per contest, then
+#       `POWER|total|D=<n>|D_unique=<n>|floor=<POWER_FLOOR>|<MET|UNMET>`. D_unique counts distinct
+#       (contest, block, {rc_i, rc_j}) tuples, so correlated repeats of one zone are visible next to D.
+#   gate --root <dir> --method <v1|v2>
+#       #2306. Runs `check` (the method, plus a v1 control) on every `<root>/<contest>/` fixture, runs `power`, and
+#       reads the operator's `<root>/spotcheck.tsv` (header `contest arm sev_id spot`, spot = yes|no; absent = every
+#       row missing). Prints per-arm summaries, one `GATE|<contest>|<arm>|judge|<sev_id>|reps=<...>|spot=<yes|no|
+#       missing|exempt>` line per judge-HIT row (exempt = every matching member is a singleton cluster, so the
+#       delivered representative IS the judged lead), and ends with `GATE|verdict|<PASS|FAIL>|<gating or ->|
+#       reported:<...>`. GATING: G1 a labelled-distinct merge, G2 a token-mode GT change (plus the check's own
+#       cli-partition / scrub failures), G3 a non-exempt judge-HIT row whose spot is not `yes`, G4 D < POWER_FLOOR.
+#       REPORTED only: under-merge, judge-loss, the v1 control's distinct merges, vetoed_* and the rule-of-three
+#       upper bound 3/D on the method's distinct-merge rate.
 #
 # LABEL FILE (root-causes.tsv): a header line `arm idx block rc mechanism evidence`, then one TAB-separated row per
 # raw verified entry of every arm. idx = 0-based position in the arm's `verified` list; block = the clusterer's
@@ -34,8 +51,11 @@
 #
 # check, per arm (stable one-line records; the verdict is DATA, not the exit code):
 #   M2|threshold|<T>                     the module's DEFAULT_THRESHOLD (a change fails the pin visibly)
+#   M2|method|v2|line_window=<W>|defect_tau=<tau>   v2 only (#2306): the module's cannot-link constants
 #   M2|labels|<sha256 root-causes>|<sha256 expected-distinct>
 #   M2|<arm>|raw=|clusters=|bound=|distinct_pairs=|distinct_merged=|token_changed=|judge_rows=|judge_kept=
+#                                        v2 appends |vetoed_distinct=|vetoed_same= (labelled same-block pairs with
+#                                        an active cannot-link; reported only)
 #   M2|<arm>|judge|<sev_id>|rep_match=<0|1>|reps=<idx,...>   one per raw judge-HIT row: the representative of
 #                                        every cluster holding a matching member, and whether any of them is
 #                                        itself a recorded MATCH for the row
@@ -48,8 +68,8 @@
 # none of whose representatives is a recorded MATCH (`judge-loss:<arm>`, routed to the operator spot-check).
 #
 # python3 stdlib only. Deterministic and offline (no judge, no network).
-# Exit: 0 the command ran (any verdict); 2 usage; 3 malformed fixture / labels / judge-matches, or a mutation
-#       self-check that did not fire; 4 judge-project cache miss or JUDGE-ERROR.
+# Exit: 0 the command ran (any verdict); 2 usage / bad method; 3 malformed fixture / labels / judge-matches /
+#       spotcheck, or a mutation self-check that did not fire; 4 judge-project cache miss or JUDGE-ERROR.
 import sys
 import os
 import json
@@ -66,6 +86,11 @@ DISTINCT_HEADER = "arm\tidx_i\tidx_j\tblock\trc_i\trc_j"
 # Absolute host-path shapes that must never ride a public fixture. Client names are deliberately NOT encoded in
 # the repo; they stay in the commit-time staged-diff grep.
 SCRUB_PATTERNS = ("/home/", "/Users/", "/root/", "/tmp/", "worktrees/")
+# G4 power floor (#2306). v1 merged 1 of the 17 labelled-distinct oku pairs, so p = 1/17; a method no better than v1
+# shows 0 merges on D pairs with probability (16/17)^D: 0.51 at D = 11, 0.48 at D = 12. Below 12 a v1-quality method
+# passes the zero-merge gate more often than not, so a PASS would carry no evidence.
+POWER_FLOOR = 12
+SPOT_HEADER = ["contest", "arm", "sev_id", "spot"]
 
 
 def die(rc, msg):
@@ -282,7 +307,8 @@ def read_judge_matches(path, arms, truth_ids):
         cols = line.split("\t")
         if line.startswith("#"):
             if cols[0] == "# readout" and len(cols) == 3:
-                readout[cols[1]] = set(cols[2].split(","))
+                # `-` = an arm with no judge HIT (#2306).
+                readout[cols[1]] = set() if cols[2] == "-" else set(cols[2].split(","))
             continue
         if len(cols) != 4 or cols[0] not in matches or cols[2] not in truth_ids:
             die(3, "%s:%d: malformed judge-match line" % (path, n))
@@ -352,9 +378,50 @@ def assess(results):
     return fails, reported
 
 
+def parse_method(raw):
+    if raw not in CL.METHODS:
+        die(2, "--method must be one of " + "|".join(CL.METHODS) + " (got '" + raw + "')")
+    return raw
+
+
+def same_pairs(labels):
+    """Sorted (arm, i, j) for same-block entries whose labelled root causes are EQUAL."""
+    by_block = {}
+    for lab in labels:
+        if lab["block"] != "-":
+            by_block.setdefault((lab["arm"], lab["block"]), []).append(lab)
+    out = []
+    for (arm, _block), members in by_block.items():
+        members = sorted(members, key=lambda m: m["idx"])
+        for x in range(len(members)):
+            for y in range(x + 1, len(members)):
+                if members[x]["rc"] == members[y]["rc"]:
+                    out.append((arm, members[x]["idx"], members[y]["idx"]))
+    out.sort()
+    return out
+
+
+def vetoed(pair_list, arm, entries):
+    """How many labelled pairs of `arm` carry an active cannot-link under the module constants."""
+    n = 0
+    for p in pair_list:
+        if p[0] != arm:
+            continue
+        if CL.cannot_link_pairs([p[1], p[2]], entries):
+            n += 1
+    return n
+
+
 def cmd_check(args):
-    a = parse_args(args, {"--fixture": None})
-    fx = a["--fixture"]
+    a = parse_args(args, {"--fixture": None, "--method": "v1"})
+    r = run_check(a["--fixture"], parse_method(a["--method"]))
+    sys.stdout.write("".join(line + "\n" for line in r["out"]))
+    return 3 if r["mut_fail"] else 0
+
+
+def run_check(fx, method):
+    """One `check` over fixture `fx` with clustering `method`. -> dict with the printed lines (`out`) and the
+    structured per-arm results the `gate` reads."""
     truth = os.path.join(fx, "truth.tsv")
     labels_path = os.path.join(fx, "root-causes.tsv")
     distinct_path = os.path.join(fx, "expected-distinct.tsv")
@@ -391,8 +458,11 @@ def cmd_check(args):
         die(3, distinct_path + " differs from `derive --labels root-causes.tsv`")
     matches, _readout = read_judge_matches(os.path.join(fx, "judge-matches.tsv"), arms, truth_ids)
 
-    out = ["M2|threshold|%.2f" % CL.DEFAULT_THRESHOLD,
-           "M2|labels|%s|%s" % (sha256_file(labels_path), sha256_file(distinct_path))]
+    s_pairs = same_pairs(labels)
+    out = ["M2|threshold|%.2f" % CL.DEFAULT_THRESHOLD]
+    if method == "v2":
+        out.append("M2|method|v2|line_window=%d|defect_tau=%.2f" % (CL.LINE_WINDOW, CL.DEFECT_TAU))
+    out.append("M2|labels|%s|%s" % (sha256_file(labels_path), sha256_file(distinct_path)))
     results = []
     partitions = {}
     tmp = tempfile.mkdtemp(prefix="cluster-holdout.")
@@ -400,7 +470,7 @@ def cmd_check(args):
         for arm in arms:
             src = os.path.join(fx, arm, "verified_findings.json")
             entries = data[arm]["verified"]
-            groups = CL.cluster_entries(entries, CL.DEFAULT_THRESHOLD)
+            groups = CL.cluster_entries(entries, CL.DEFAULT_THRESHOLD, method)
             cluster_of = {}
             for gi, (_rep, members) in enumerate(groups):
                 for m in members:
@@ -409,14 +479,16 @@ def cmd_check(args):
             # The shipped CLI path must agree with the in-process partition; its output is the clustered file
             # the token-mode scorer reads (merged == 0 writes no file: the raw file IS the clustered view).
             dst = os.path.join(tmp, arm + ".json")
-            proc = subprocess.run([sys.executable, CLUSTER_PY, "cluster", "--in", src, "--out", dst],
-                                  capture_output=True, text=True)
+            proc = subprocess.run([sys.executable, CLUSTER_PY, "cluster", "--in", src, "--out", dst,
+                                   "--method", method], capture_output=True, text=True)
             want = "CLUSTER|%d|%d|%d" % (len(entries), len(groups), len(entries) - len(groups))
             cli_mismatch = proc.returncode != 0 or proc.stdout.strip() != want
             clustered = dst if os.path.isfile(dst) else src
             token_changed = token_norm(score_token(truth, src)) != token_norm(score_token(truth, clustered))
             reps = {gi: rep for gi, (rep, _m) in enumerate(groups)}
+            sizes = {gi: len(m) for gi, (_rep, m) in enumerate(groups)}
             judge_lines = []
+            judge_rows = []
             kept = 0
             for sev_id, _sig in rows:
                 hit_idx = matches[arm].get(sev_id)
@@ -425,18 +497,24 @@ def cmd_check(args):
                 row_reps = sorted({reps[cluster_of[i]] for i in hit_idx})
                 rep_match = 1 if any(r in hit_idx for r in row_reps) else 0
                 kept += rep_match
+                judge_rows.append({"sev_id": sev_id, "reps": row_reps,
+                                   "exempt": all(sizes[cluster_of[i]] == 1 for i in hit_idx)})
                 judge_lines.append("M2|%s|judge|%s|rep_match=%d|reps=%s"
                                    % (arm, sev_id, rep_match, ",".join(str(r) for r in row_reps)))
             r = {"arm": arm, "raw": len(entries), "clusters": len(groups), "bound": bounds.get(arm, 0),
                  "distinct_pairs": sum(1 for p in pairs if p[0] == arm),
                  "distinct_merged": distinct_merged(pairs, arm, cluster_of),
                  "token_changed": 1 if token_changed else 0, "cli_mismatch": cli_mismatch,
-                 "judge_rows": len(matches[arm]), "judge_kept": kept}
+                 "judge_rows": len(matches[arm]), "judge_kept": kept, "judge": judge_rows,
+                 "vetoed_distinct": vetoed(pairs, arm, entries), "vetoed_same": vetoed(s_pairs, arm, entries)}
             results.append(r)
-            out.append("M2|%s|raw=%d|clusters=%d|bound=%d|distinct_pairs=%d|distinct_merged=%d|token_changed=%d"
-                       "|judge_rows=%d|judge_kept=%d"
-                       % (arm, r["raw"], r["clusters"], r["bound"], r["distinct_pairs"], r["distinct_merged"],
-                          r["token_changed"], r["judge_rows"], r["judge_kept"]))
+            line = ("M2|%s|raw=%d|clusters=%d|bound=%d|distinct_pairs=%d|distinct_merged=%d|token_changed=%d"
+                    "|judge_rows=%d|judge_kept=%d"
+                    % (arm, r["raw"], r["clusters"], r["bound"], r["distinct_pairs"], r["distinct_merged"],
+                       r["token_changed"], r["judge_rows"], r["judge_kept"]))
+            if method == "v2":
+                line += "|vetoed_distinct=%d|vetoed_same=%d" % (r["vetoed_distinct"], r["vetoed_same"])
+            out.append(line)
             out.extend(judge_lines)
     finally:
         for name in os.listdir(tmp):
@@ -488,8 +566,147 @@ def cmd_check(args):
     out.append("M2|mutations|" + ("ok" if not mut_fail else "FAIL:" + ",".join(mut_fail)))
     out.append("M2|verdict|%s|%s|reported:%s" % ("FAIL" if fails else "PASS", ",".join(fails) or "-",
                                                 ",".join(reported) or "-"))
+    return {"out": out, "results": results, "fails": fails, "reported": reported, "mut_fail": mut_fail,
+            "labels_sha": (sha256_file(labels_path), sha256_file(distinct_path))}
+
+
+# ---- power + gate (#2306) ------------------------------------------------------------------------------------
+def contests_of(root):
+    try:
+        names = sorted(os.listdir(root))
+    except OSError as e:
+        die(3, "cannot list " + root + ": " + str(e))
+    out = [n for n in names if os.path.isfile(os.path.join(root, n, "root-causes.tsv"))]
+    if not out:
+        die(3, root + ": no <contest>/root-causes.tsv")
+    return out
+
+
+def power(root):
+    """-> (lines, D, D_unique). Labels only; nothing is clustered."""
+    lines = []
+    d_total = 0
+    unique = set()
+    for contest in contests_of(root):
+        labels = read_labels(os.path.join(root, contest, "root-causes.tsv"))
+        pairs, _bounds = derive(labels)
+        rc_of = {(lab["arm"], lab["idx"]): lab["rc"] for lab in labels}
+        for p in pairs:
+            unique.add((contest, p[3], tuple(sorted((rc_of[(p[0], p[1])], rc_of[(p[0], p[2])])))))
+        d_total += len(pairs)
+        lines.append("POWER|%s|distinct_pairs=%d|same_pairs=%d" % (contest, len(pairs), len(same_pairs(labels))))
+    lines.append("POWER|total|D=%d|D_unique=%d|floor=%d|%s"
+                 % (d_total, len(unique), POWER_FLOOR, "MET" if d_total >= POWER_FLOOR else "UNMET"))
+    return lines, d_total, len(unique)
+
+
+def cmd_power(args):
+    a = parse_args(args, {"--fixture": None})
+    lines, _d, _du = power(a["--fixture"])
+    sys.stdout.write("".join(line + "\n" for line in lines))
+    return 0
+
+
+def scoped(finding, contest):
+    """`<kind>:<arm>` -> `<kind>:<contest>/<arm>`; an arm-less kind (`scrub`) -> `<kind>:<contest>`."""
+    if ":" in finding:
+        kind, arm = finding.split(":", 1)
+        return "%s:%s/%s" % (kind, contest, arm)
+    return finding + ":" + contest
+
+
+def read_spotcheck(path):
+    """-> {(contest, arm, sev_id): yes|no}; an absent file is an empty map (every row `missing`)."""
+    spot = {}
+    if not os.path.exists(path):
+        return spot
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().split("\n")
+    except OSError as e:
+        die(3, "cannot read " + path + ": " + str(e))
+    header_seen = False
+    for n, line in enumerate(lines, 1):
+        if not line or line.startswith("#"):
+            continue
+        cols = line.split("\t")
+        if not header_seen:
+            if cols != SPOT_HEADER:
+                die(3, path + ": first non-comment line must be the header " + "\\t".join(SPOT_HEADER))
+            header_seen = True
+            continue
+        if len(cols) != len(SPOT_HEADER) or cols[3] not in ("yes", "no"):
+            die(3, "%s:%d: expected contest/arm/sev_id/spot with spot = yes|no" % (path, n))
+        key = (cols[0], cols[1], cols[2])
+        if key in spot:
+            die(3, "%s:%d: %s/%s/%s is spot-checked twice" % (path, n, key[0], key[1], key[2]))
+        spot[key] = cols[3]
+    return spot
+
+
+def cmd_gate(args):
+    a = parse_args(args, {"--root": None, "--method": None})
+    root, method = a["--root"], parse_method(a["--method"])
+    spot_path = os.path.join(root, "spotcheck.tsv")
+    spot = read_spotcheck(spot_path)
+    out = ["GATE|method|%s|threshold=%.2f" % (method, CL.DEFAULT_THRESHOLD)
+           + ("|line_window=%d|defect_tau=%.2f" % (CL.LINE_WINDOW, CL.DEFECT_TAU) if method == "v2" else ""),
+           "GATE|spotcheck|" + (sha256_file(spot_path) if os.path.exists(spot_path) else "absent")]
+    fails, reported = [], []
+    k_control = merged_total = vet_d = vet_s = 0
+    used_spot = set()
+    for contest in contests_of(root):
+        fx = os.path.join(root, contest)
+        r = run_check(fx, method)
+        control = r if method == "v1" else run_check(fx, "v1")
+        if r["mut_fail"] or control["mut_fail"]:
+            die(3, fx + ": a check mutation self-check did not fire")
+        out.append("GATE|%s|labels|%s|%s" % (contest, r["labels_sha"][0], r["labels_sha"][1]))
+        ctrl = {c["arm"]: c for c in control["results"]}
+        for res in r["results"]:
+            arm = res["arm"]
+            k_control += ctrl[arm]["distinct_merged"]
+            merged_total += res["distinct_merged"]
+            line = ("GATE|%s|%s|raw=%d|clusters=%d|bound=%d|distinct_pairs=%d|distinct_merged=%d"
+                    "|v1_distinct_merged=%d|token_changed=%d|judge_rows=%d|judge_kept=%d"
+                    % (contest, arm, res["raw"], res["clusters"], res["bound"], res["distinct_pairs"],
+                       res["distinct_merged"], ctrl[arm]["distinct_merged"], res["token_changed"],
+                       res["judge_rows"], res["judge_kept"]))
+            if method == "v2":
+                vet_d += res["vetoed_distinct"]
+                vet_s += res["vetoed_same"]
+                line += "|vetoed_distinct=%d|vetoed_same=%d" % (res["vetoed_distinct"], res["vetoed_same"])
+            out.append(line)
+            for j in res["judge"]:
+                key = (contest, arm, j["sev_id"])
+                if j["exempt"]:
+                    verdict = "exempt"
+                else:
+                    verdict = spot.get(key, "missing")
+                    if verdict != "yes":
+                        fails.append("spot-%s:%s/%s/%s" % (verdict, contest, arm, j["sev_id"]))
+                used_spot.add(key)
+                out.append("GATE|%s|%s|judge|%s|reps=%s|spot=%s"
+                           % (contest, arm, j["sev_id"], ",".join(str(x) for x in j["reps"]), verdict))
+        # The check's own gating kinds (distinct-merge = G1, token-gt = G2, cli-partition, scrub) and reported kinds.
+        fails.extend(scoped(f, contest) for f in r["fails"])
+        reported.extend(scoped(x, contest) for x in r["reported"])
+    stray = sorted(set(spot) - used_spot)
+    if stray:
+        die(3, spot_path + ": spot rows for no judge-HIT row: " + ",".join("/".join(k) for k in stray))
+    p_lines, d_total, _d_unique = power(root)
+    out.extend("GATE|" + line for line in p_lines)
+    if d_total < POWER_FLOOR:
+        fails.append("power:D=%d<%d" % (d_total, POWER_FLOOR))
+    reported.append("v1-control-distinct-merges=%d" % k_control)
+    if method == "v2":
+        reported.append("vetoed_distinct=%d" % vet_d)
+        reported.append("vetoed_same=%d" % vet_s)
+    reported.append("rate-upper=" + ("3/%d=%.3f" % (d_total, 3.0 / d_total) if d_total else "-"))
+    out.append("GATE|verdict|%s|%s|reported:%s" % ("FAIL" if fails else "PASS", ",".join(fails) or "-",
+                                                  ",".join(reported)))
     sys.stdout.write("".join(line + "\n" for line in out))
-    return 3 if mut_fail else 0
+    return 0
 
 
 def main(argv):
@@ -497,7 +714,9 @@ def main(argv):
         sys.stderr.write("usage: cluster-holdout.py judge-project --arm <name> --truth <tsv> --verified <json> "
                          "--judge-cache <jsonl> [--batch 12] [--min-confidence 60]\n"
                          "       cluster-holdout.py derive --labels <root-causes.tsv>\n"
-                         "       cluster-holdout.py check --fixture <dir>\n")
+                         "       cluster-holdout.py check --fixture <dir> [--method v1|v2]\n"
+                         "       cluster-holdout.py power --fixture <root>\n"
+                         "       cluster-holdout.py gate --root <dir> --method <v1|v2>\n")
         return 2 if len(argv) < 2 else 0
     if argv[1] == "judge-project":
         return cmd_judge_project(argv[2:])
@@ -505,6 +724,10 @@ def main(argv):
         return cmd_derive(argv[2:])
     if argv[1] == "check":
         return cmd_check(argv[2:])
+    if argv[1] == "power":
+        return cmd_power(argv[2:])
+    if argv[1] == "gate":
+        return cmd_gate(argv[2:])
     die(2, "unknown subcommand: " + argv[1])
 
 

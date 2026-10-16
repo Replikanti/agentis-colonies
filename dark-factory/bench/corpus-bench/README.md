@@ -283,6 +283,42 @@ the verify-stage default flips to OFF (`DF_CLUSTER_FINDINGS=0`); T was not re-tu
 `judge-matches.tsv` (the recorded #2245 judge decisions projected per raw lead by `cluster-holdout.py
 judge-project`) is what makes the judge check offline.
 
+**#2306 cannot-link refinement (method v2, the module default; the verify stage stays OFF).** In the M2 failure
+the two labelled-distinct findings shared their identifiers through the downstream consequence chain both texts
+describe (the same callers and consumers), not through the defect site — and two defects in one function always
+share callers, so no global threshold separates them (the merged pair scored above labelled duplicates that score
+as low as 0). v2 keeps v1 as the only thing that proposes merges and re-agglomerates every v1 cluster with the same
+linkage and T, forbidding any merge across a cannot-linked pair: both locations cite lines more than `W` apart, or
+both defect clauses (the exploit text before its first pinned consequence connective — `so`, `which`, `allowing`,
+`;`, `->`, a sentence end, ...) cite identifiers whose sets have Jaccard ≤ `τ`. Each v2 cluster is a subset of a v1
+cluster, so v2 can only split, and with both vetoes disabled it equals v1 (`demo-cluster-findings.sh` assertion 7).
+
+- **Calibration (dev labels only).** `cluster-calibrate.py` applies the pre-registered rule to
+  `../../fixtures/cluster-findings/dev-root-causes.tsv` (hand labels for the 12 dev findings files and the two M1
+  synthetic fixtures): `W` = the largest line spread of a dev labelled-same pair citing two lines (2: the M1
+  synthetic `withdraw` duplicate cites :88/:90, the real dev duplicates cite identical lines); `τ` = the largest of
+  {0.0, 0.34, 0.5} that vetoes no dev labelled-same pair, else 0.0 with the vetoed pairs listed. Even 0.0 vetoes two
+  paraphrase pairs of the 1887 yieldoor `withdraw` bug (their clauses name `token1` vs `token0`), so `τ` = 0.0 and
+  that file's pinned count moves from 3 to 4; distinctness ranks above compression. Its stdout, with the sha256 of
+  every source and `CAL|oku|not-consulted`, is pinned as `calibration-v2.txt`, and `--self-test` checks the chosen
+  values equal the module's `LINE_WINDOW` / `DEFECT_TAU`.
+- **Constraint fixture.** `same-function-shared-consequence.json` (written fresh for #2306, never a calibration
+  source): three functions, each with two distinct defects that describe the same consequence chain, plus one
+  paraphrase each. v1 merges all 12 labelled-distinct pairs; v2 separates all of them (`expected-clusters-v2.tsv`).
+  It covers lines inside the window (only the clause veto splits), a member citing no line, and clauses sharing one
+  identifier (only the line window splits).
+- **Gate engine.** `cluster-holdout.py check --method v1|v2` (default v1, so the M2 invocation still reproduces
+  `expected-check.txt`), `power --fixture <root>` (labels only: labelled-distinct pairs D, D_unique, floor 12) and
+  `gate --root <dir> --method <m>` (check plus a v1 control on every contest, power, and the operator's
+  `spotcheck.tsv`). Gating: G1 zero labelled-distinct merges, G2 zero token-mode GT changes, G3 every judge-HIT row
+  with a matching member inside a multi-member cluster spot-checked `yes`, G4 D ≥ 12 — below 12 a method no better
+  than v1 (1 distinct merge in 17 oku pairs) shows zero merges more often than not ((16/17)^12 = 0.48). Reported
+  only: under-merge, judge-loss, the v1 control's merges, the vetoed pair counts and the rule-of-three bound 3/D.
+  The synthetic `fixtures/cluster-findings/gate-mini/` pins the engine (clean PASS, planted merge / `no` / missing
+  spot row / D < 12 each FAIL).
+- **Default.** `verify-findings.sh` keeps `DF_CLUSTER_FINDINGS` at 0. `--self-test` requires that while no
+  `fixtures/cluster/h2306/` record exists, and once it does, that ON is only shipped with `GATE|verdict|PASS`.
+
 ## Semantic mechanism judge (#1829)
 
 `--judge cache|cmd` swaps the name-matching rule for a **root-cause + mechanism** decision made by a model.

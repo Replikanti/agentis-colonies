@@ -1,0 +1,18 @@
+# expected-clusters-v2.tsv — #2306. Root-cause labels and the pinned v2 partition of
+# same-function-shared-consequence.json (a synthetic constraint fixture written fresh for #2306; it is never a
+# calibration source). idx = 0-based raw position; rc = the author's root-cause label; v2_cluster = 0-based
+# position of the entry's cluster in the default (v2) clustered output. Under v1 every function's four
+# entries form ONE cluster (the shared consequence chain carries the identifier Jaccard over T).
+idx	location	rc	v2_cluster
+0	contracts/AuctionHouse.sol:settleAuction:212	auction-reserve-strict	0
+1	contracts/AuctionHouse.sol:settleAuction:213	auction-no-endtime	1
+2	contracts/AuctionHouse.sol:settleAuction:212	auction-reserve-strict	0
+3	contracts/AuctionHouse.sol:settleAuction:213	auction-no-endtime	1
+4	contracts/Governor.sol:castVote:88	vote-weight-current-block	2
+5	contracts/Governor.sol:castVote	vote-no-hasvoted	3
+6	contracts/Governor.sol:castVote:88	vote-weight-current-block	2
+7	contracts/Governor.sol:castVote:89	vote-no-hasvoted	3
+8	contracts/Raffle.sol:drawWinner:140	raffle-prevrandao-seed	4
+9	contracts/Raffle.sol:drawWinner:151	raffle-no-round-reset	5
+10	contracts/Raffle.sol:drawWinner:141	raffle-prevrandao-seed	4
+11	contracts/Raffle.sol:drawWinner:151	raffle-no-round-reset	5
