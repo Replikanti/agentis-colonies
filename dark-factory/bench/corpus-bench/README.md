@@ -316,6 +316,12 @@ cluster, so v2 can only split, and with both vetoes disabled it equals v1 (`demo
   only: under-merge, judge-loss, the v1 control's merges, the vetoed pair counts and the rule-of-three bound 3/D.
   The synthetic `fixtures/cluster-findings/gate-mini/` pins the engine (clean PASS, planted merge / `no` / missing
   spot row / D < 12 each FAIL).
+- **G5 regression record (oku, not evidence).** After the algorithm commit froze `lib/cluster-findings.py`,
+  `check --method v2` ran once on the oku fixture; its stdout is pinned as `fixtures/cluster/oku/expected-check.v2.txt`
+  and `--self-test` fails on any `distinct-merge:`. Result: A 35 → 25 clusters (bound 18), B 44 → 26 (bound 16),
+  **0 labelled-distinct merges** on both arms (v1: 1 of 13 on A), token-mode GT and all 6 + 6 recorded-judge rows
+  kept; under-merge grows (v1: 22 / 23), which is reported only. Planning diagnosed this pair, so the record only
+  shows the known failure no longer happens; the flip waits for the new held-out gate.
 - **Default.** `verify-findings.sh` keeps `DF_CLUSTER_FINDINGS` at 0. `--self-test` requires that while no
   `fixtures/cluster/h2306/` record exists, and once it does, that ON is only shipped with `GATE|verdict|PASS`.
 

@@ -42,7 +42,9 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   counts: the 1887 yieldoor `on` file now clusters 12 → 4 (was 3), every other dev file is unchanged. New
   constraint fixture `same-function-shared-consequence.json` (v1 merges all 12 labelled-distinct pairs, v2 none),
   and `cluster-holdout.py` gains `check --method`, `power` and `gate` for the #2306 held-out gate (pinned on the
-  synthetic `gate-mini` fixture). `DF_CLUSTER_FINDINGS` stays **0**: no behaviour change for a run without the knob.
+  synthetic `gate-mini` fixture). The one v2 regression run on the oku fixture (G5, pinned as
+  `expected-check.v2.txt`) merges 0 labelled-distinct pairs (A 35 → 25, B 44 → 26). `DF_CLUSTER_FINDINGS` stays
+  **0**: no behaviour change for a run without the knob.
 
 - **Root-cause clustering is OFF by default (#2278 M2).** `verify-findings.sh --cluster-findings` /
   `DF_CLUSTER_FINDINGS` now default to **0**. **Behaviour change:** a run without the knob writes the raw

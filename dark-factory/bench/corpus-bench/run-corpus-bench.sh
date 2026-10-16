@@ -533,6 +533,25 @@ spec.loader.exec_module(m); print(m.DEFAULT_METHOD)' "$CLUSTERLIB" 2>/dev/null)"
     exit 1
   fi
 
+  # Seventh assertion, #2306 G5 regression record: v2 on oku. `check --method v2` ran ONCE, after the algorithm
+  # commit froze lib/cluster-findings.py, and its stdout is pinned as expected-check.v2.txt. Planning diagnosed the
+  # oku R13/R14 pair, so this is a regression check ("the known #2278 M2 merge no longer happens"), not held-out
+  # evidence. It must byte-match its record and list no `distinct-merge:` among its gating failures.
+  ho2_out="$(python3 "$HERE/cluster-holdout.py" check --fixture "$HO_FIX" --method v2 2>&1)"; ho2_rc=$?
+  ho2_fails="$(printf '%s\n' "$ho2_out" | awk -F'|' '$2=="verdict"{print $4}')"
+  ho2_arms="$(printf '%s\n' "$ho2_out" | awk -F'|' '$3 ~ /^raw=/ {
+      for (i = 3; i <= NF; i++) { split($i, kv, "="); v[kv[1]] = kv[2] }
+      printf "%s%s %s->%s vs bound %s, distinct merged %s/%s", sep, $2, v["raw"], v["clusters"], v["bound"],
+        v["distinct_merged"], v["distinct_pairs"]; sep = "; " }')"
+  if [ "$ho2_rc" -eq 0 ] && [ "$ho2_out" = "$(cat "$HO_FIX/expected-check.v2.txt")" ] \
+     && ! printf '%s\n' "$ho2_fails" | grep -q 'distinct-merge:'; then
+    say "SELF-TEST: oku v2 regression record reproduces expected-check.v2.txt with 0 labelled-distinct merges ($ho2_arms) (#2306 G5) -> PASS"
+  else
+    say "SELF-TEST: oku v2 regression record drifted from expected-check.v2.txt or lists a labelled-distinct merge (check exit $ho2_rc, gating '$ho2_fails'; $ho2_arms) (#2306 G5) -> FAIL"
+    diff <(cat "$HO_FIX/expected-check.v2.txt") <(printf '%s\n' "$ho2_out") | sed 's/^/  [2306 G5] /' >&2 || true
+    exit 1
+  fi
+
   # Seventh assertion, #2306 calibration: lib/cluster-findings.py's cannot-link constants come from dev labels by
   # the fixed rule in cluster-calibrate.py. Its stdout must byte-match the pinned record (which names every source
   # file with its sha256 and states that oku was not consulted), and the chosen W / tau must equal the module's
