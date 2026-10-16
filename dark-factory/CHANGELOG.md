@@ -75,6 +75,12 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Fixed
 
+- **The sandbox's merge-back watcher is confirmed detached before bwrap starts (#2294).** A session SIGKILLed right
+  after it wrote `~/.claude.json` could lose that entry on a loaded host: the watcher only leaves the session's
+  process group at its `setsid`, after the interpreter has started, and a group kill landing earlier took it down
+  with the session (nobody merged, the temp copy was left behind). `lib/claude-sandboxed.sh` now waits (at most
+  10 s, fail-open with a stderr warning) for the watcher's `watching` marker before the `exec`; a slow-python
+  SIGKILL case in `demo-claude-sandboxed.sh` pins it.
 - **A Claude usage-limit notice halts the hunt instead of becoming failed cells (#2291, M1: STAGES 1-4).** When the
   driven session hit its quota ("You've hit your weekly limit"), the hunt read the notice as TUI chrome: it retried
   it, recorded a FAILED cell and a `hunted_degraded` zone, and kept spending the same quota. Now

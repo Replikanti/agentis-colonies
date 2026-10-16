@@ -339,6 +339,28 @@ if command -v bwrap >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
     else
       bad "a SIGKILLed session's own entry was not merged back: $(ls -A "$CJTMP" | tr '\n' ' ')"
     fi
+    # #2294: same SIGKILL, but the watcher's interpreter starts slowly (a loaded host): the wrapper must not let the
+    # session run until the watcher has left the process group, or the group kill takes the watcher with it.
+    SHIM_DIR="$TMP/slow-py"; mkdir -p "$SHIM_DIR"
+    REAL_PY="$(command -v python3)"
+    cat > "$SHIM_DIR/python3" <<SHIM
+#!/bin/sh
+case "\$2" in watch-merge) sleep 1 ;; esac
+exec "$REAL_PY" "\$@"
+SHIM
+    chmod +x "$SHIM_DIR/python3"
+    cj_fixture; rm -f "$RESULT"
+    ( cd "$RUN" && exec env "${stub_env[@]}" "${cj_env[@]}" PATH="$SHIM_DIR:$PATH" D_CJ_WRITE=SANDBOX-KILL2-PROMPT D_CJ_SLEEP=30 \
+        setsid "$WRAP" -p 'probe' >/dev/null 2>&1 ) &
+    cj_pid=$!
+    i=0; while [ "$i" -lt 60 ] && ! grep -qs CJ_WROTE "$RESULT"; do sleep 0.25; i=$((i + 1)); done
+    kill -KILL -- "-$cj_pid" 2>/dev/null || kill -KILL "$cj_pid" 2>/dev/null
+    wait "$cj_pid" 2>/dev/null
+    if cj_settled && [ "$(cj_own)" = SANDBOX-KILL2-PROMPT ]; then
+      ok "the merge-back survives a SIGKILL even when the watcher's interpreter starts slowly (detach handshake)"
+    else
+      bad "a SIGKILLed session with a slow-starting watcher was not merged back: $(ls -A "$CJTMP" | tr '\n' ' ')"
+    fi
   else
     skip "setsid not available — skipping the process-group SIGKILL merge case"
   fi
