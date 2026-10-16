@@ -1,0 +1,11 @@
+# Root-cause labels for perennial-v2-4-update, source commit 2381b47e69b17fe892b1d1d0f467c358cf950143
+arm	idx	block	rc	mechanism	evidence
+A	0	packages/core/contracts/libs/checkpointlib.sol:_accumulatefee	U-A-0	singleton block	-
+A	1	packages/oracle/contracts/keeper/types/keeperoracleparameter.sol:store	U-A-1	singleton block	-
+A	2	packages/periphery/contracts/collateralaccounts/controller_incentivized.sol:relaytake	U-A-2	singleton block	-
+A	3	packages/periphery/contracts/multiinvoker/types/triggerorder.sol:fillable	U-A-3	singleton block	-
+A	4	packages/vault/contracts/vault.sol:_settle	R02	Vault._settle credits coordinator profit shares to storage via _credit while _saveContext later overwrites the same account with the stale in-memory local, so anyone calling settle(coordinator) erases the coordinator profit shares and desyncs total shares.	packages/vault/contracts/Vault.sol:390 _credit(coordinator) then :531 store(context.local) overwrite
+A	5	packages/vault/contracts/libs/makerstrategylib.sol:_allocatemarket	R01	MakerStrategyLib._allocateMarket divides by the unchecked oracle latestPrice, so a registered market with zero latest price makes every allocate-routed deposit, redeem and rebalance revert, freezing the vault.	packages/vault/contracts/libs/MakerStrategyLib.sol:142 muldiv by latestPrice.abs() with no zero guard
+A	6	packages/vault/contracts/libs/solverstrategylib.sol:_allocatemarket	R03	SolverStrategyLib._allocateMarket divides by the unchecked oracle latestPrice, so a registered market with zero latest price makes every allocate-routed solver vault operation revert, freezing the vault.	packages/vault/contracts/libs/SolverStrategyLib.sol:115 muldiv by latestPrice.abs() with no zero guard
+A	7	packages/vault/contracts/libs/makerstrategylib.sol:_allocatemarket	R01	MakerStrategyLib._allocateMarket divides by the unchecked oracle latestPrice, so a registered market with zero latest price makes every allocate-routed deposit, redeem and rebalance revert, freezing the vault.	packages/vault/contracts/libs/MakerStrategyLib.sol:142 muldiv by latestPrice.abs() with no zero guard
+A	8	packages/vault/contracts/types/checkpoint.sol:_withspread	U-A-8	singleton block	-

@@ -1,0 +1,29 @@
+# expected-distinct.tsv — #2278 M2. DERIVED from root-causes.tsv by `cluster-holdout.py derive`; never
+# hand-edit (`check` fails when this file differs from the derivation). One row per same-block pair of raw
+# entries whose pre-registered root causes differ; idx = 0-based position in the arm's `verified` list.
+# bound(arm) = sum over (file, function) blocks of the distinct rc in the block + entries with no block key.
+# M2|bound|p1-audit-r1|2
+# M2|distinct_pairs|p1-audit-r1|0
+# M2|bound|p2-c24-r1|1
+# M2|distinct_pairs|p2-c24-r1|0
+# M2|bound|p2-c24-r2|1
+# M2|distinct_pairs|p2-c24-r2|0
+# M2|bound|p2-c25-r1|2
+# M2|distinct_pairs|p2-c25-r1|0
+# M2|bound|p2-c25-r2|1
+# M2|distinct_pairs|p2-c25-r2|0
+# M2|bound|p2-control-r1|1
+# M2|distinct_pairs|p2-control-r1|0
+# M2|bound|p2-control-r2|1
+# M2|distinct_pairs|p2-control-r2|0
+# M2|bound|p2-evidence-r1|2
+# M2|distinct_pairs|p2-evidence-r1|0
+# M2|bound|p2-evidence-r2|2
+# M2|distinct_pairs|p2-evidence-r2|0
+# M2|bound|p2-rubric-r1|1
+# M2|distinct_pairs|p2-rubric-r1|0
+# M2|bound|p2-rubric-r2|2
+# M2|distinct_pairs|p2-rubric-r2|0
+# M2|bound|p2-rubric-r3|2
+# M2|distinct_pairs|p2-rubric-r3|0
+arm	idx_i	idx_j	block	rc_i	rc_j

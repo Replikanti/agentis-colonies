@@ -1,0 +1,27 @@
+# expected-distinct.tsv — #2278 M2. DERIVED from root-causes.tsv by `cluster-holdout.py derive`; never
+# hand-edit (`check` fails when this file differs from the derivation). One row per same-block pair of raw
+# entries whose pre-registered root causes differ; idx = 0-based position in the arm's `verified` list.
+# bound(arm) = sum over (file, function) blocks of the distinct rc in the block + entries with no block key.
+# M2|bound|ccip|2
+# M2|distinct_pairs|ccip|6
+# M2|bound|dex|3
+# M2|distinct_pairs|dex|2
+# M2|bound|p1|4
+# M2|distinct_pairs|p1|3
+# M2|bound|p3|3
+# M2|distinct_pairs|p3|1
+# M2|bound|voting|2
+# M2|distinct_pairs|voting|0
+arm	idx_i	idx_j	block	rc_i	rc_j
+ccip	0	1	contracts/ccip/tokenbridge.sol:_processinboundtokens	R01	R02
+ccip	0	4	contracts/ccip/tokenbridge.sol:_processinboundtokens	R01	R02
+ccip	1	2	contracts/ccip/tokenbridge.sol:_processinboundtokens	R02	R01
+ccip	1	3	contracts/ccip/tokenbridge.sol:_processinboundtokens	R02	R01
+ccip	2	4	contracts/ccip/tokenbridge.sol:_processinboundtokens	R01	R02
+ccip	3	4	contracts/ccip/tokenbridge.sol:_processinboundtokens	R01	R02
+dex	0	3	contracts/dex/aerodromedexadapter.sol:swapv3single	R03	R04
+dex	2	3	contracts/dex/aerodromedexadapter.sol:swapv3single	R03	R04
+p1	0	7	contracts/autocompoundingpodlp.sol:_tokentopairedlptoken	R05	R08
+p1	1	7	contracts/autocompoundingpodlp.sol:_tokentopairedlptoken	R05	R08
+p1	3	7	contracts/autocompoundingpodlp.sol:_tokentopairedlptoken	R05	R08
+p3	0	2	contracts/zapper.sol:_swapv3single	R09	R10

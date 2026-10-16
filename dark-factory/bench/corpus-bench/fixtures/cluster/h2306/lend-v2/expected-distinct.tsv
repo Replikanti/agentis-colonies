@@ -1,0 +1,18 @@
+# expected-distinct.tsv — #2278 M2. DERIVED from root-causes.tsv by `cluster-holdout.py derive`; never
+# hand-edit (`check` fails when this file differs from the derivation). One row per same-block pair of raw
+# entries whose pre-registered root causes differ; idx = 0-based position in the arm's `verified` list.
+# bound(arm) = sum over (file, function) blocks of the distinct rc in the block + entries with no block key.
+# M2|bound|control-r1|6
+# M2|distinct_pairs|control-r1|2
+# M2|bound|control-r2|8
+# M2|distinct_pairs|control-r2|2
+# M2|bound|resolver-r1|8
+# M2|distinct_pairs|resolver-r1|1
+# M2|bound|resolver-r2|5
+# M2|distinct_pairs|resolver-r2|0
+arm	idx_i	idx_j	block	rc_i	rc_j
+control-r1	0	4	src/layerzero/corerouter.sol:borrow	R01	R02
+control-r1	3	4	src/layerzero/corerouter.sol:borrow	R01	R02
+control-r2	0	6	src/layerzero/corerouter.sol:borrow	R01	R02
+control-r2	3	6	src/layerzero/corerouter.sol:borrow	R01	R02
+resolver-r1	2	5	src/layerzero/corerouter.sol:borrow	R01	R02
