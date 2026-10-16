@@ -127,6 +127,9 @@ fi
 # detached watcher (lib/claude-json-scope.py watch-merge; detached because flat-cyborg ends a session by SIGKILLing
 # its whole process group, which no exit hook of this wrapper survives) waits for this pid — bwrap after the exec
 # below — to go away, merges ONLY the session's own, changed entry back into the real file, and removes the copy.
+# The wrapper waits (bounded) for the watcher's <dir>/watching marker before exec'ing bwrap: until the watcher's
+# setsid it still shares the group, and a SIGKILL landing in that window (a fast session on a loaded host, #2294)
+# would kill it and lose the entry.
 # Fail-closed: when the copy cannot be built, nothing is bound (the session sees no workspace store at all, so it
 # stops at the trust dialog instead of reading other sessions' prompts).
 if [ -e "$H/.claude.json" ]; then
@@ -137,6 +140,9 @@ if [ -e "$H/.claude.json" ]; then
      && python3 "$_cj_helper" filter "$H/.claude.json" "$_cj_dir" "${_cj_keys[@]}"; then
     binds+=(--bind "$_cj_dir/claude.json" "$H/.claude.json")                    # scoped workspace store (rw)
     python3 "$_cj_helper" watch-merge "$$" "$_cj_dir" "$H/.claude.json" "${_cj_keys[@]}" </dev/null >/dev/null 2>&1 &
+    _cj_w=$!; _i=0
+    while [ ! -e "$_cj_dir/watching" ] && kill -0 "$_cj_w" 2>/dev/null && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+    [ -e "$_cj_dir/watching" ] || echo "claude-sandboxed.sh: WARNING merge-back watcher not detached after 10 s - a SIGKILL of this session may lose its ~/.claude.json entry" >&2
   else
     echo "claude-sandboxed.sh: WARNING could not build the scoped ~/.claude.json copy — binding none (fail-closed)" >&2
     [ -z "$_cj_dir" ] || rm -rf "$_cj_dir"

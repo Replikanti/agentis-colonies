@@ -26,7 +26,8 @@
 #   watch-merge <pid> <dir> <real> <cwd>...
 #       Detach (setsid: flat-cyborg ends a session by SIGKILLing its whole process group, so no exit hook of the
 #       wrapper itself would ever run), wait until <pid> (the wrapper, which exec's bwrap under the same pid) is
-#       gone or a zombie, then `merge`.
+#       gone or a zombie, then `merge`. Once detached it creates <dir>/watching (the wrapper waits for that marker
+#       before exec'ing bwrap: a SIGKILL of the group before the setsid would take the watcher with it, #2294).
 import fcntl
 import json
 import os
@@ -172,6 +173,10 @@ def cmd_watch_merge(argv):
     pid, d, real, cwds = int(argv[0]), argv[1], argv[2], argv[3:]
     try:
         os.setsid()
+    except OSError:
+        pass
+    try:
+        open(os.path.join(d, "watching"), "w").close()  # "I have left the session's process group"
     except OSError:
         pass
     first = _proc_state(pid)
