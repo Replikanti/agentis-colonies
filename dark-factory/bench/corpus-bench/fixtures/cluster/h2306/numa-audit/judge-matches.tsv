@@ -1,0 +1,28 @@
+# judge-matches.tsv — #2306 phase B (h2306/numa-audit). Mechanism-judge decisions projected per raw lead:
+#   cluster-holdout.py judge-project --arm <arm> --truth truth.tsv --verified <arm>/verified_findings.json \
+#     --judge-cache <cache> --batch 12 --min-confidence 60
+# One line per MATCH at or above the gate: arm, raw idx (0-based position in `verified`), sev_id, confidence.
+# Cache: the recorded #2245 numa-audit judge cache (the same recording run as the oku cache used by #2278 M2). Not committed. Replay over both raw files: 0 cache misses, 0 JUDGE-ERRORs; hit rows equal the #2245 readout (A 4/16, B-orig 3/16).
+# cache_sha256	4e2ce069cfd4ca76f620617c6c88d8e76c6bab2ee7d88770607694815a20995a
+# Each arm's row union must equal its '# readout' row set ('-' = no judge HIT); check enforces it.
+# readout	A	H-1,H-2,M-12,M-2
+# readout	B	H-1,H-2,M-12
+A	0	M-12	97
+A	9	H-1	72
+A	10	H-1	92
+A	11	H-2	90
+A	13	H-2	92
+A	14	H-2	92
+A	15	H-2	95
+A	25	M-2	95
+A	27	M-2	95
+A	32	H-2	88
+A	33	H-2	90
+B	1	M-12	97
+B	7	H-2	95
+B	8	H-2	92
+B	9	H-1	72
+B	10	H-2	93
+B	11	H-2	92
+B	26	H-2	90
+B	27	H-2	90

@@ -1,0 +1,44 @@
+# judge-matches.tsv — #2306 phase B (h2306/lend-v2). Mechanism-judge decisions projected per raw lead:
+#   cluster-holdout.py judge-project --arm <arm> --truth truth.tsv --verified <arm>/verified_findings.json \
+#     --judge-cache <cache> --batch 12 --min-confidence 60
+# One line per MATCH at or above the gate: arm, raw idx (0-based position in `verified`), sev_id, confidence.
+# Cache: recorded live for #2306 B4 (score-match.py --judge cmd via mech-judge.sh, batch 12, gate 60). Not committed. Live: 148 judging calls, 0 JUDGE-ERRORs; replay 0 cache misses.
+# cache_sha256	7dba20c01d0412219202d5f8a7ed9a177e722d72e0c2f6a5002fce36d7bc8d63
+# Each arm's row union must equal its '# readout' row set ('-' = no judge HIT); check enforces it.
+# readout	control-r1	H-1,H-27,H-5,H-9,M-10
+# readout	control-r2	H-1,H-21,H-27,H-5,H-9,M-10
+# readout	resolver-r1	H-1,H-20,H-27,H-5,H-6,H-9,M-10
+# readout	resolver-r2	H-20,H-27,H-5,H-9,M-10
+control-r1	0	H-27	95
+control-r1	1	M-10	95
+control-r1	2	H-9	92
+control-r1	3	H-27	95
+control-r1	5	H-5	85
+control-r1	6	H-1	97
+control-r1	7	H-9	92
+control-r2	0	H-27	95
+control-r2	1	H-21	92
+control-r2	2	M-10	95
+control-r2	3	H-27	95
+control-r2	4	H-9	95
+control-r2	7	H-5	85
+control-r2	8	H-1	97
+control-r2	9	H-9	95
+control-r2	10	H-21	93
+resolver-r1	0	H-6	95
+resolver-r1	0	H-20	65
+resolver-r1	1	M-10	95
+resolver-r1	2	H-27	95
+resolver-r1	3	H-1	97
+resolver-r1	4	H-9	95
+resolver-r1	7	H-5	82
+resolver-r1	8	H-1	97
+resolver-r1	9	H-9	95
+resolver-r2	0	H-27	95
+resolver-r2	1	H-9	95
+resolver-r2	2	M-10	95
+resolver-r2	3	H-27	92
+resolver-r2	4	H-9	95
+resolver-r2	5	H-5	85
+resolver-r2	6	H-9	95
+resolver-r2	7	H-20	92

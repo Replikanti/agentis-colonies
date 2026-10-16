@@ -1,0 +1,9 @@
+# judge-matches.tsv — #2306 phase B (h2306/perennial-v2-4-update). Mechanism-judge decisions projected per raw lead:
+#   cluster-holdout.py judge-project --arm <arm> --truth truth.tsv --verified <arm>/verified_findings.json \
+#     --judge-cache <cache> --batch 12 --min-confidence 60
+# One line per MATCH at or above the gate: arm, raw idx (0-based position in `verified`), sev_id, confidence.
+# Cache: recorded live for #2306 B4 (score-match.py --judge cmd via mech-judge.sh, batch 12, gate 60). Not committed. Live: 9 judging calls, 0 JUDGE-ERRORs; replay 0 cache misses.
+# cache_sha256	b94b50ffb2e55496d317def0591544bb374b165df79515764bbf6034aae9ac47
+# Each arm's row union must equal its '# readout' row set ('-' = no judge HIT); check enforces it.
+# readout	A	M-1
+A	4	M-1	96

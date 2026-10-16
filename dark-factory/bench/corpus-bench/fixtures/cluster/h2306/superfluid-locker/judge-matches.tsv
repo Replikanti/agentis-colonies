@@ -1,0 +1,50 @@
+# judge-matches.tsv — #2306 phase B (h2306/superfluid-locker). Mechanism-judge decisions projected per raw lead:
+#   cluster-holdout.py judge-project --arm <arm> --truth truth.tsv --verified <arm>/verified_findings.json \
+#     --judge-cache <cache> --batch 12 --min-confidence 60
+# One line per MATCH at or above the gate: arm, raw idx (0-based position in `verified`), sev_id, confidence.
+# Cache: recorded live for #2306 B4 (score-match.py --judge cmd via mech-judge.sh, batch 12, gate 60). Not committed. Live: 35 judging calls, 0 JUDGE-ERRORs; replay 0 cache misses.
+# cache_sha256	28617559281c403db0f03c027d2597c008614c4c6b0a23d3a0cedf48b6ec3bc1
+# Each arm's row union must equal its '# readout' row set ('-' = no judge HIT); check enforces it.
+# readout	p1-audit-r1	-
+# readout	p2-c24-r1	H-1
+# readout	p2-c24-r2	H-1
+# readout	p2-c25-r1	H-1
+# readout	p2-c25-r2	H-1
+# readout	p2-control-r1	H-1
+# readout	p2-control-r2	H-1
+# readout	p2-evidence-r1	H-1,M-2
+# readout	p2-evidence-r2	H-1,M-2
+# readout	p2-rubric-r1	H-1
+# readout	p2-rubric-r2	H-1,M-2
+# readout	p2-rubric-r3	H-1,M-2
+p2-c24-r1	0	H-1	92
+p2-c24-r1	1	H-1	92
+p2-c24-r2	0	H-1	92
+p2-c24-r2	1	H-1	90
+p2-c25-r1	0	H-1	92
+p2-c25-r1	1	H-1	92
+p2-c25-r2	0	H-1	90
+p2-c25-r2	1	H-1	92
+p2-control-r1	0	H-1	88
+p2-control-r1	1	H-1	90
+p2-control-r1	2	H-1	90
+p2-control-r2	0	H-1	90
+p2-control-r2	1	H-1	92
+p2-evidence-r1	0	H-1	90
+p2-evidence-r1	1	H-1	92
+p2-evidence-r1	2	M-2	92
+p2-evidence-r2	0	H-1	85
+p2-evidence-r2	1	H-1	92
+p2-evidence-r2	2	H-1	92
+p2-evidence-r2	3	M-2	92
+p2-rubric-r1	0	H-1	95
+p2-rubric-r1	1	H-1	90
+p2-rubric-r1	2	H-1	95
+p2-rubric-r2	0	H-1	92
+p2-rubric-r2	1	H-1	92
+p2-rubric-r2	2	M-2	65
+p2-rubric-r2	3	M-2	72
+p2-rubric-r3	0	H-1	90
+p2-rubric-r3	1	M-2	78
+p2-rubric-r3	2	H-1	92
+p2-rubric-r3	3	M-2	66
