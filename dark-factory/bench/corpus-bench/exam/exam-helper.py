@@ -97,9 +97,40 @@
 #                                      hunt's deep-hunt-status.tsv, or a pre-#2277 run's skip lines) or `unknown`
 #                                      (the call ran, but neither a ledger, a skip line nor a deep-hunt cell
 #                                      tells). Never a VOID: breadth scores stand.
+#   legacy-verify <contest-dir> <contest> <legacy.sha256>
+#                                      #2311 (exam.sh adopt): the legacy freeze's sha256sum list (paths optionally
+#                                      prefixed `<contest>/`; entries outside map/ + briefs/ ignored) must equal the
+#                                      regular files under map/ + briefs/ byte for byte. One `missing` /
+#                                      `unlisted` / `sha-mismatch` line per difference; exit 3 on any.
+#   ladder-check <ladder.tsv> --allow-contests <csv> --base <dir> [--base <dir>]... [--deny-pattern <ERE>]...
+#                                      #2311: validate a pointed-ladder TSV (schema: see the ladder block below).
+#                                      Refuses (one `<line><TAB><ptr_id><TAB><rule><TAB><detail>` line each, exit
+#                                      4): a contest outside the allowlist, a non-opaque ptr_id, a duplicate id or
+#                                      row, an L2 without an L1 (non-cumulative), a phrase over its word cap (L1 12,
+#                                      L2 25), a phrase naming an allowlisted contest, a rendered block carrying a
+#                                      finding id, ` GT `, `corpus-bench`, `judging` or an audit platform (the
+#                                      freeze contamination rules), a row id absent from truth.tsv, and an anchor
+#                                      that resolves in no given base (file in the frozen map + function declared).
+#   ladder-zones <ladder.tsv> <base> <contest> <rung> <allow-csv> [<rows-csv>]
+#                                      #2311 (exam.sh plan --ladder): `ptr_id<TAB>zone` per ladder row of
+#                                      <contest> (or of the listed ptr ids / row ids); the zone OWNS the anchors
+#                                      (the most anchors; ties -> zones.json order). Exit 3 on a contest outside
+#                                      the allowlist, a refused row, a missing rung text or an out-of-map anchor.
+#   pointer-render <ladder.tsv> <ptr_id> <L0|L1|L2>
+#                                      #2311: print the fixed pointer block of one rung.
+#   pointer-stage --ladder <f> --id <ptr_id> --rung <r> --base <dir> --contest <id> --zone <zid> --zones <f>
+#                 --scope <f> --brief <f> --pointer-out <f> --narrowed-out <f>
+#                                      #2311 (exam.sh stage --pointer): prepend the rung's block + one blank line
+#                                      to the staged brief (frozen bytes unchanged after it), append the anchors
+#                                      owned by OTHER zones to the staged zone's scope.tsv line as
+#                                      `<file>@<fn>[+<fn>]` tokens (no such anchor = byte-identical), write the
+#                                      L0 block to --pointer-out (STAGE 4.5's --deep-hunt-audit-context) and the
+#                                      staged zone with files[] narrowed to the anchor files to --narrowed-out
+#                                      (exam.sh decides whether it replaces zones.json). Prints the stage.meta
+#                                      pointer_* lines; never the GT row id.
 #
 # Exit: 0 ok ; 1 contam-scan found a violation ; 2 usage / profile grammar error ; 3 unreadable or
-#       wrong-shape input.
+#       wrong-shape input ; 4 ladder-check refused a row.
 import importlib.util
 import json
 import os
@@ -1372,6 +1403,548 @@ def cmd_deep_status(argv):
     return 0
 
 
+# ----------------------------------------------------------------------------------------------------------
+# #2311: the pointed ladder (ladder-check / ladder-plan / pointer-render / pointer-stage)
+# ----------------------------------------------------------------------------------------------------------
+# A ladder TSV (kept by the operator OUTSIDE the repo) holds one row per inventory row:
+#   ptr_id <TAB> contest <TAB> row <TAB> anchors <TAB> l1 <TAB> l2
+# ptr_id   an OPAQUE label (3-12 of [a-z0-9]); the arm label is `ptr-<ptr_id>-<rung>`, so the GT row id never
+#          reaches a path the hunt's sessions can see. It must not spell the row id (`m5` for M-5).
+# row      the truth.tsv id the row is scored against. Never rendered, never written to stage.meta / run.meta.
+# anchors  `<file>:<function>[,<file>:<function>]...`; <file> is a frozen-map path or a unique suffix of one
+#          (`Pool.sol`, `pool/Pool.sol`).
+# l1       the L1 bug-class phrase (<= 12 words) or `-` (not authored).
+# l2       the L2 attacker capability / precondition phrase (<= 25 words), `=L1` (no non-leaking L2 exists: the
+#          L2 arm renders the L1 block, recorded as pointer_l2_eq_l1=1), or `-`. An L2 without an L1 is refused.
+LADDER_COLS = ("ptr_id", "contest", "row", "anchors", "l1", "l2")
+RUNGS = ("L0", "L1", "L2")
+PTR_ID_RE = re.compile(r"^[a-z0-9]{3,12}$")
+ANCHOR_FILE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]+$")
+ANCHOR_FN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+L1_MAX_WORDS = 12
+L2_MAX_WORDS = 25
+# The freeze contamination rules (exam.sh freeze's post-freeze grep), applied to the RENDERED block.
+PLATFORM_RE = re.compile(r"judging|sherlock|code4rena|code-423n4|cantina|codehawks", re.I)
+POINTER_HEAD = "=== FOCUS FOR THIS REVIEW (operator pointer; not a known issue, not an exclusion) ==="
+SPECIAL_FNS = ("constructor", "fallback", "receive")
+
+
+def _sha256_text(text):
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _sha256_file(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def read_ladder(path):
+    """-> (rows, schema problems). A row: dict of LADDER_COLS + `line`. A problem: (line, ptr_id, rule, detail)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().split("\n")
+    except OSError as exc:
+        die(3, "cannot read ladder %s: %s" % (path, exc))
+    rows, probs = [], []
+    for n, raw in enumerate(lines, 1):
+        if not raw.strip() or raw.startswith("#"):
+            continue
+        cells = raw.split("\t")
+        if len(cells) != len(LADDER_COLS):
+            probs.append((n, cells[0] if cells else "-", "schema",
+                          "expected %d TAB columns (%s), got %d" % (len(LADDER_COLS), " ".join(LADDER_COLS),
+                                                                    len(cells))))
+            continue
+        row = dict(zip(LADDER_COLS, (c.strip() for c in cells)))
+        row["line"] = n
+        rows.append(row)
+    return rows, probs
+
+
+def parse_anchors(spec):
+    """`file:fn,file:fn` -> [(file, fn)], or None when malformed."""
+    out = []
+    for tok in spec.split(","):
+        tok = tok.strip()
+        if tok.count(":") != 1:
+            return None
+        f, fn = tok.split(":")
+        if (not ANCHOR_FILE_RE.match(f) or ".." in f.split("/") or not ANCHOR_FN_RE.match(fn)):
+            return None
+        out.append((f, fn))
+    return out or None
+
+
+def _words(phrase):
+    return len(phrase.split())
+
+
+def _phrase(text):
+    text = text.strip()
+    return text if text[-1:] in (".", "!", "?") else text + "."
+
+
+def render_block(row, rung):
+    """The fixed pointer template (the #2311 pre-registration) for one rung; ends with a newline."""
+    anchors = ", ".join("%s:%s" % a for a in parse_anchors(row["anchors"]))
+    lines = [POINTER_HEAD,
+             "Concentrate on %s: trace it line by line, the state it reads and the calls it makes," % anchors,
+             "and report every qualifying High/Medium bug in it. A rigorous SAFE remains a valid answer."]
+    if rung in ("L1", "L2"):
+        lines.append("Bug class to consider first: %s" % _phrase(row["l1"]))
+    if rung == "L2" and row["l2"] != "=L1":
+        lines.append("Attacker capability / precondition to consider: %s" % _phrase(row["l2"]))
+    return "\n".join(lines) + "\n"
+
+
+def rung_available(row, rung):
+    if rung == "L0":
+        return True
+    if rung == "L1":
+        return row["l1"] != "-"
+    return row["l1"] != "-" and row["l2"] != "-"
+
+
+def _contest_words(contests):
+    words = set()
+    for c in contests:
+        if not c:
+            continue
+        words.add(c.lower())
+        head = c.split("-", 1)[0].lower()
+        if len(head) >= 2:
+            words.add(head)
+    return sorted(words)
+
+
+def _word_hit(word, text):
+    return re.search(r"(?<![A-Za-z0-9])" + re.escape(word) + r"(?![A-Za-z0-9])", text, re.I) is not None
+
+
+class BaseView(object):
+    """One frozen contest dir: its map files (zone order), zone of each file, code dir and truth ids."""
+
+    def __init__(self, base, contest):
+        self.cdir = os.path.join(base, contest)
+        self.ok = os.path.isfile(os.path.join(self.cdir, "freeze.meta"))
+        self.zones, self.file_zone, self.files, self.truth = [], {}, [], set()
+        self.code = os.path.join(self.cdir, "code")
+        if not self.ok:
+            return
+        meta = read_meta(os.path.join(self.cdir, "freeze.meta")) or {}
+        rel = meta.get("code_dir_rel", ".")
+        if rel and rel not in (".", "-"):
+            self.code = os.path.join(self.cdir, "code", rel)
+        self.zones = load_zones(os.path.join(self.cdir, "map", "zones.json"))
+        for z in self.zones:
+            for f in z.get("files", []) or []:
+                if isinstance(f, str) and f not in self.file_zone:
+                    self.file_zone[f] = z.get("id", "")
+                    self.files.append(f)
+        try:
+            with open(os.path.join(self.cdir, "truth.tsv"), encoding="utf-8") as fh:
+                self.truth = set(l.split("\t", 1)[0].strip() for l in fh if l.strip() and not l.startswith("#"))
+        except OSError:
+            self.truth = set()
+
+    def resolve(self, afile):
+        """-> (rel, None) or (None, rule): the map file an anchor file names (exact path or a unique suffix)."""
+        hits = [f for f in self.files if f == afile or f.endswith("/" + afile)]
+        if len(hits) == 1:
+            return hits[0], None
+        return None, ("anchor-file" if not hits else "anchor-ambiguous")
+
+    def declares(self, rel, fn):
+        try:
+            with open(os.path.join(self.code, rel), encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            return False
+        if fn in SPECIAL_FNS:
+            return re.search(r"(?<![A-Za-z0-9_])" + fn + r"\s*\(", text) is not None
+        return re.search(r"\b(function|modifier|fn|def)\s+" + re.escape(fn) + r"\s*[(<]", text) is not None
+
+
+def row_problems(row, allow, views, deny):
+    """Every refusal for one ladder row (rules named in the self-test). `views` maps contest -> [BaseView]."""
+    probs = []
+
+    def p(rule, detail):
+        probs.append((row["line"], row["ptr_id"] or "-", rule, detail))
+    pid, contest, gt = row["ptr_id"], row["contest"], row["row"]
+    if not PTR_ID_RE.match(pid):
+        p("id", "ptr_id must be 3-12 of [a-z0-9]")
+    elif gt and gt.replace("-", "").lower() in pid:
+        p("id", "ptr_id spells the row id")
+    if contest not in allow:
+        p("contest-not-allowed", "contest '%s' is outside the --allow-contests list" % contest)
+        return probs
+    anchors = parse_anchors(row["anchors"])
+    if anchors is None:
+        p("anchor-syntax", "anchors must be <file>:<function>[,<file>:<function>]...")
+    l1, l2 = row["l1"], row["l2"]
+    if not l1:
+        p("schema", "empty l1 (use `-` for not authored)")
+    if not l2:
+        p("schema", "empty l2 (use `-` for not authored, `=L1` for L2 = L1)")
+    if l1 == "-" and l2 not in ("-", ""):
+        p("non-cumulative", "an L2 without an L1 (rungs are cumulative)")
+    if l1 not in ("-", "") and _words(l1) > L1_MAX_WORDS:
+        p("l1-cap", "l1 has %d words (max %d)" % (_words(l1), L1_MAX_WORDS))
+    if l2 not in ("-", "=L1", "") and _words(l2) > L2_MAX_WORDS:
+        p("l2-cap", "l2 has %d words (max %d)" % (_words(l2), L2_MAX_WORDS))
+    # contest names: the free-text phrases only (an anchor is a code identifier the hunter reads anyway)
+    for phrase in (l1, l2):
+        if phrase in ("-", "=L1", ""):
+            continue
+        for w in _contest_words(list(allow) + [contest]):
+            if _word_hit(w, phrase):
+                p("contest-name", "a phrase names the contest word '%s'" % w)
+    if anchors is not None and l1 and l2:
+        text = render_block(row, "L2" if rung_available(row, "L2") else ("L1" if rung_available(row, "L1") else "L0"))
+        if "corpus-bench" in text:
+            p("corpus-bench", "the rendered block names the bench")
+        if GT_ID_RE.search(text):
+            p("gt-id", "the rendered block carries a delimited finding-id token")
+        if " GT " in text:
+            p("gt-marker", "the rendered block carries ' GT '")
+        m = PLATFORM_RE.search(text)
+        if m:
+            p("platform", "the rendered block names '%s'" % m.group(0))
+        for pat in deny:
+            if re.search(pat, text, re.I):
+                p("deny", "the rendered block matches --deny-pattern %s" % pat)
+    cviews = [v for v in views.get(contest, []) if v.ok]
+    if not cviews:
+        p("no-base", "no frozen base for contest '%s' among --base" % contest)
+        return probs
+    if gt not in set().union(*(v.truth for v in cviews)):
+        p("row-unknown", "row '%s' is not in the base's truth.tsv" % gt)
+    for afile, fn in anchors or []:
+        found = None
+        rules = []
+        for v in cviews:
+            rel, why = v.resolve(afile)
+            if rel is None:
+                rules.append(why)
+            elif not v.declares(rel, fn):
+                rules.append("anchor-fn")
+            else:
+                found = rel
+                break
+        if found is None:
+            p(sorted(rules)[0] if rules else "anchor-file", "anchor %s:%s does not resolve in any base" % (afile, fn))
+    return probs
+
+
+def _ladder_flags(argv, multi, single, bools=()):
+    flags, pos, i = {}, [], 0
+    for k in multi:
+        flags[k] = []
+    while i < len(argv):
+        a = argv[i]
+        if a in bools:
+            flags[a] = True
+            i += 1
+        elif a in multi or a in single:
+            if i + 1 >= len(argv):
+                die(2, "missing value for " + a)
+            if a in multi:
+                flags[a].append(argv[i + 1])
+            else:
+                flags[a] = argv[i + 1]
+            i += 2
+        elif a.startswith("--"):
+            die(2, "unknown flag " + a)
+        else:
+            pos.append(a)
+            i += 1
+    return flags, pos
+
+
+def _allow_list(csv):
+    allow = [c for c in (csv or "").split(",") if c]
+    if not allow or any(not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", c) for c in allow):
+        die(2, "--allow-contests takes a comma list of contest ids")
+    return allow
+
+
+def cmd_legacy_verify(argv):
+    """legacy-verify <contest-dir> <contest> <legacy.sha256>: every regular file under map/ + briefs/ must carry
+    the listed sha256, and every listed map/ + briefs/ entry must exist. Prints one line per mismatch; exit 3 on
+    any (exam.sh adopt), 0 when the two sets are equal."""
+    if len(argv) != 3:
+        die(2, "usage: legacy-verify <contest-dir> <contest> <legacy.sha256>")
+    cdir, contest, lpath = argv
+    want, other = {}, 0
+    try:
+        with open(lpath, encoding="utf-8") as fh:
+            for n, raw in enumerate(fh, 1):
+                line = raw.rstrip("\n")
+                if not line.strip():
+                    continue
+                m = re.match(r"^([0-9a-f]{64}) [ *](.+)$", line)
+                if not m:
+                    die(3, "%s:%d: not a sha256sum line" % (lpath, n))
+                rel = m.group(2)
+                if rel.startswith("./"):
+                    rel = rel[2:]
+                if rel.startswith(contest + "/"):
+                    rel = rel[len(contest) + 1:]
+                if not (rel.startswith("map/") or rel.startswith("briefs/")):
+                    other += 1
+                    continue
+                if rel in want and want[rel] != m.group(1):
+                    die(3, "%s:%d: %s listed twice with different hashes" % (lpath, n, rel))
+                want[rel] = m.group(1)
+    except OSError as exc:
+        die(3, "cannot read the legacy sha list: %s" % exc)
+    have = {}
+    for top in ("map", "briefs"):
+        for dirpath, dirnames, filenames in os.walk(os.path.join(cdir, top)):
+            dirnames.sort()
+            for f in sorted(filenames):
+                full = os.path.join(dirpath, f)
+                if os.path.islink(full) or not os.path.isfile(full):
+                    continue
+                have[os.path.relpath(full, cdir).replace(os.sep, "/")] = _sha256_file(full)
+    bad = []
+    for rel in sorted(set(want) | set(have)):
+        if rel not in have:
+            bad.append("missing\t%s" % rel)
+        elif rel not in want:
+            bad.append("unlisted\t%s" % rel)
+        elif want[rel] != have[rel]:
+            bad.append("sha-mismatch\t%s" % rel)
+    for b in bad:
+        sys.stdout.write(b + "\n")
+    if not want:
+        sys.stdout.write("empty\tthe list names no map/ or briefs/ file\n")
+        return 3
+    if bad:
+        return 3
+    sys.stderr.write("exam-helper.py: legacy-verify: %d map/ + briefs/ files match (%d other list line(s) "
+                     "ignored)\n" % (len(have), other))
+    return 0
+
+
+def cmd_ladder_check(argv):
+    flags, pos = _ladder_flags(argv, ("--base", "--deny-pattern"), ("--allow-contests",))
+    if len(pos) != 1 or not flags.get("--allow-contests") or not flags["--base"]:
+        die(2, "usage: ladder-check <ladder.tsv> --allow-contests <csv> --base <dir> [--base <dir>]... "
+               "[--deny-pattern <ERE>]...")
+    allow = _allow_list(flags["--allow-contests"])
+    rows, probs = read_ladder(pos[0])
+    views = {}
+    for c in allow:
+        views[c] = [BaseView(b, c) for b in flags["--base"]]
+    seen_id, seen_row = {}, {}
+    for r in rows:
+        if r["ptr_id"] in seen_id:
+            probs.append((r["line"], r["ptr_id"], "dup-id", "ptr_id also on line %d" % seen_id[r["ptr_id"]]))
+        seen_id.setdefault(r["ptr_id"], r["line"])
+        key = (r["contest"], r["row"])
+        if key in seen_row:
+            probs.append((r["line"], r["ptr_id"], "dup-row", "row also on line %d" % seen_row[key]))
+        seen_row.setdefault(key, r["line"])
+        probs.extend(row_problems(r, allow, views, flags["--deny-pattern"]))
+    for line, pid, rule, detail in sorted(probs):
+        sys.stdout.write("%d\t%s\t%s\t%s\n" % (line, pid, rule, detail))
+    if probs:
+        return 4
+    sys.stderr.write("exam-helper.py: ladder-check: %d row(s) clean\n" % len(rows))
+    return 0
+
+
+def _ladder_row(path, pid):
+    rows, _ = read_ladder(path)
+    hit = [r for r in rows if r["ptr_id"] == pid]
+    if len(hit) != 1:
+        die(3, "expected exactly 1 ladder row with ptr_id=%r in %s, found %d" % (pid, path, len(hit)))
+    if parse_anchors(hit[0]["anchors"]) is None:
+        die(3, "ladder row %r: malformed anchors" % pid)
+    return hit[0]
+
+
+def cmd_pointer_render(argv):
+    if len(argv) != 3 or argv[2] not in RUNGS:
+        die(2, "usage: pointer-render <ladder.tsv> <ptr_id> <L0|L1|L2>")
+    row = _ladder_row(argv[0], argv[1])
+    if not rung_available(row, argv[2]):
+        die(3, "ladder row %r has no %s text" % (argv[1], argv[2]))
+    sys.stdout.write(render_block(row, argv[2]))
+    return 0
+
+
+def _owning(view, anchors):
+    """-> ([(rel, fn, zone)], zone holding the most anchors; ties -> zones.json order) or die 3."""
+    out = []
+    for afile, fn in anchors:
+        rel, why = view.resolve(afile)
+        if rel is None:
+            die(3, "anchor %s:%s is outside the frozen map (%s) — an out-of-map row is pointed inside an extra "
+                   "base frozen for its root" % (afile, fn, why))
+        out.append((rel, fn, view.file_zone[rel]))
+    order = [z.get("id", "") for z in view.zones]
+    counts = dict((z, 0) for z in order)
+    for _, _, z in out:
+        counts[z] = counts.get(z, 0) + 1
+    zone = sorted(order, key=lambda z: (-counts.get(z, 0), order.index(z)))[0]
+    return out, zone
+
+
+def cmd_ladder_zones(argv):
+    """ladder-zones <ladder.tsv> <base> <contest> <rung> <allow-csv> [<rows-csv>] -> `ptr_id<TAB>zone` lines."""
+    if len(argv) not in (5, 6) or argv[3] not in RUNGS:
+        die(2, "usage: ladder-zones <ladder.tsv> <base> <contest> <L0|L1|L2> <allow-csv> [<rows-csv>]")
+    path, base, contest, rung, allow_csv = argv[:5]
+    allow = _allow_list(allow_csv)
+    if contest not in allow:
+        die(3, "contest '%s' is outside the --allow-contests list (%s)" % (contest, ",".join(allow)))
+    want = set(x for x in (argv[5] if len(argv) == 6 else "").split(",") if x)
+    view = BaseView(base, contest)
+    if not view.ok:
+        die(3, "%s is not frozen" % view.cdir)
+    rows, probs = read_ladder(path)
+    if probs:
+        for line, pid, rule, detail in probs:
+            sys.stderr.write("exam-helper.py: %s:%d: %s: %s\n" % (path, line, rule, detail))
+        die(3, "the ladder is malformed (run ladder-check)")
+    picked = [r for r in rows if r["contest"] == contest
+              and (not want or r["ptr_id"] in want or r["row"] in want)]
+    if want:
+        got = set(r["ptr_id"] for r in picked) | set(r["row"] for r in picked)
+        missing = sorted(want - got)
+        if missing:
+            die(3, "--rows names no ladder row of %s: %s" % (contest, ",".join(missing)))
+    if not picked:
+        die(3, "the ladder has no row for contest %s" % contest)
+    for r in picked:
+        bad = row_problems(r, allow, {contest: [view]}, [])
+        if bad:
+            for line, pid, rule, detail in bad:
+                sys.stderr.write("exam-helper.py: %s:%d: %s %s: %s\n" % (path, line, pid, rule, detail))
+            die(3, "ladder row %s is refused (run ladder-check)" % r["ptr_id"])
+        if not rung_available(r, rung):
+            die(3, "ladder row %s has no %s text" % (r["ptr_id"], rung))
+        _, zone = _owning(view, parse_anchors(r["anchors"]))
+        sys.stdout.write("%s\t%s\n" % (r["ptr_id"], zone))
+    return 0
+
+
+def cmd_pointer_stage(argv):
+    """pointer-stage: the brief / zones.json / scope.tsv edits of one pointed arm (exam.sh stage --pointer)."""
+    keys = ("--ladder", "--id", "--rung", "--base", "--contest", "--zone", "--zones", "--scope", "--brief",
+            "--pointer-out", "--narrowed-out")
+    flags, pos = _ladder_flags(argv, (), keys)
+    if pos or any(not flags.get(k) for k in keys) or flags["--rung"] not in RUNGS:
+        die(2, "usage: pointer-stage " + " ".join("%s <v>" % k for k in keys))
+    row = _ladder_row(flags["--ladder"], flags["--id"])
+    rung = flags["--rung"]
+    if row["contest"] != flags["--contest"]:
+        die(3, "ladder row %s is for contest %s, not %s" % (row["ptr_id"], row["contest"], flags["--contest"]))
+    if not rung_available(row, rung):
+        die(3, "ladder row %s has no %s text" % (row["ptr_id"], rung))
+    view = BaseView(flags["--base"], flags["--contest"])
+    if not view.ok:
+        die(3, "%s is not frozen" % view.cdir)
+    bad = row_problems(row, [flags["--contest"]], {flags["--contest"]: [view]}, [])
+    if bad:
+        for line, pid, rule, detail in bad:
+            sys.stderr.write("exam-helper.py: ladder line %d %s %s: %s\n" % (line, pid, rule, detail))
+        die(3, "ladder row %s is refused" % row["ptr_id"])
+    owned, owner = _owning(view, parse_anchors(row["anchors"]))
+    zid = flags["--zone"]
+    if owner != zid:
+        die(3, "the anchors' owning zone is %s, not the staged zone %s" % (owner, zid))
+    staged = load_zones(flags["--zones"])
+    if len(staged) != 1 or staged[0].get("id") != zid:
+        die(3, "the staged zones.json must hold exactly the zone %s" % zid)
+    zname = staged[0].get("name", "")
+    block = render_block(row, rung)
+    l0 = render_block(row, "L0")
+    # brief: the block, one blank line, then the frozen bytes unchanged
+    try:
+        with open(flags["--brief"], encoding="utf-8") as fh:
+            brief = fh.read()
+    except OSError as exc:
+        die(3, "cannot read the staged brief: %s" % exc)
+    if brief.startswith(POINTER_HEAD):
+        die(3, "the staged brief already carries a pointer block")
+    # scope.tsv: anchors owned by OTHER zones are appended to the staged zone's line as `<file>@<fn>[+<fn>]`
+    other = []
+    for rel, fn, z in owned:
+        if z != zid:
+            for i, (orel, fns) in enumerate(other):
+                if orel == rel:
+                    if fn not in fns:
+                        fns.append(fn)
+                    break
+            else:
+                other.append((rel, [fn]))
+    try:
+        with open(flags["--scope"], encoding="utf-8") as fh:
+            scope_lines = fh.read().split("\n")
+    except OSError as exc:
+        die(3, "cannot read the staged scope.tsv: %s" % exc)
+    hit, appended, unsliced = 0, [], []
+    for i, line in enumerate(scope_lines):
+        if line.startswith("#") or " | " not in line:
+            continue
+        fields = line.split(" | ")
+        if fields[0] != zname or len(fields) < 3:
+            continue
+        hit += 1
+        toks = [t for t in fields[2].split(",") if t]
+        for rel, fn, z in owned:
+            if z != zid:
+                continue
+            sliced = [t for t in toks if t.startswith(rel + "@")]
+            if sliced and not any(fn in t.split("@", 1)[1].split("+") for t in sliced):
+                unsliced.append("%s@%s" % (rel, fn))
+        for rel, fns in other:
+            tok = "%s@%s" % (rel, "+".join(fns))
+            if tok not in toks:
+                toks.append(tok)
+                appended.append(tok)
+        fields[2] = ",".join(toks)
+        scope_lines[i] = " | ".join(fields)
+    if hit != 1:
+        die(3, "expected exactly 1 scope.tsv line for zone name %r, found %d" % (zname, hit))
+    # zones.json files[]: the anchor files (the deep-hunt target set), anchor order, each once
+    files = []
+    for rel, _, _ in owned:
+        if rel not in files:
+            files.append(rel)
+    narrowed = [dict(staged[0])]
+    narrowed[0]["files"] = files
+    write_atomic(flags["--brief"], block + "\n" + brief)
+    if appended:
+        write_atomic(flags["--scope"], "\n".join(scope_lines))
+    write_atomic(flags["--narrowed-out"], json.dumps(narrowed, indent=2) + "\n")
+    write_atomic(flags["--pointer-out"], l0)
+    meta = [
+        ("pointer_id", row["ptr_id"]),
+        ("pointer_rung", rung),
+        ("pointer_ladder", os.path.abspath(flags["--ladder"])),
+        ("ladder_sha256", _sha256_file(flags["--ladder"])),
+        ("rung_sha256", _sha256_text(block)),
+        ("pointer_l0_sha256", _sha256_text(l0)),
+        ("pointer_l2_eq_l1", "1" if rung == "L2" and row["l2"] == "=L1" else "0"),
+        ("pointer_anchors", ",".join("%s:%s" % (rel, fn) for rel, fn, _ in owned)),
+        ("pointer_scope_append", ",".join(appended) or "-"),
+        ("pointer_unsliced", ",".join(unsliced) or "-"),
+    ]
+    for k, v in meta:
+        sys.stdout.write("%s=%s\n" % (k, v))
+    return 0
+
+
 COMMANDS = {
     "profile": cmd_profile,
     "profile-summary": cmd_profile_summary,
@@ -1388,6 +1961,11 @@ COMMANDS = {
     "rehunt-check": cmd_rehunt_check,
     "void-check": cmd_void_check,
     "deep-status": cmd_deep_status,
+    "legacy-verify": cmd_legacy_verify,
+    "ladder-check": cmd_ladder_check,
+    "ladder-zones": cmd_ladder_zones,
+    "pointer-render": cmd_pointer_render,
+    "pointer-stage": cmd_pointer_stage,
 }
 
 

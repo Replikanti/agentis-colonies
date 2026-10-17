@@ -24,18 +24,39 @@
 #            contamination, then writes <base>/<id>/freeze.sha256 + freeze.meta. --project-roots (#2255) maps a
 #            MULTI-PROJECT clone from its root (`auto` = map-zones.sh's own detection); --code-subdir maps one
 #            project dir. The frozen base is never written again by any other subcommand.
+#   adopt    --base <dir> --contest <id> --legacy-sha <file> --checkout-commit <sha> --model <id>
+#            (--code-subdir <rel> | --project-roots <csv|auto>) [--force] [--deny-pattern <ERE>]...
+#            #2311: adopt a base frozen by the legacy host-only harness. Verifies every file under map/ + briefs/
+#            against the legacy sha256 list (`<sha>  [<contest>/]map|briefs/...`, sha256sum format; both sets must
+#            be equal — exit 3 on any mismatch), runs the freeze contamination grep (exit 4), then writes
+#            freeze.sha256 + freeze.meta (adopted=1, the recorded checkout commit + model). Never touches map/ or
+#            briefs/; a second adopt (or one over a freeze) is refused without --force, which rewrites only those two.
 #   plan     --base <dir> --contest <id> --arm <label> --repeat <n> --profile <p> --checkout <dir>
 #            [--zones <id,...> | --whole]
 #            Prints a plan TSV (`contest zone arm repeat profile checkout base`): one row per zone of the frozen
 #            zones.json (the every-zone exam), per listed zone, or ONE whole-contest row (zone `_all`). <n> is the
 #            repeat INDEX; concatenate plans for more repeats. Review it before anything is spent.
+#   plan     --base <dir> --contest <id> --ladder <ladder.tsv> --rung <L0|L1|L2> --allow-contests <csv>
+#            --repeat <n> --profile <p> --checkout <dir> [--rows <id,...>]
+#            #2311 POINTED rows: one 8-column row per ladder row of <contest> (or per listed ptr id / row id), arm
+#            `ptr-<ptr_id>-<rung>` (opaque: no GT id in any path), zone = the frozen zone OWNING the anchors (the
+#            most anchors; ties -> zones.json order), 8th column `pointer` = `<rung>:<ptr_id>:<abs ladder path>`.
+#            Refuses (exit 3) a contest outside --allow-contests, a row ladder-check would refuse, a missing rung
+#            text and an anchor outside the frozen map. Ladder schema + rules: exam-helper.py ladder-check.
 #   stage    --root <root> --base <dir> --contest <id> --zone <id|_all> --arm <label> --repeat <n>
-#            --profile <p> --checkout <dir>
+#            --profile <p> --checkout <dir> [--pointer <rung>:<ptr_id>:<ladder>]
 #            Verifies freeze.sha256 (exit 3 on drift), refuses an arm whose run is still alive, COPIES map/ +
 #            briefs/ into the arm dir, SYMLINKS code/, keeps truth.tsv + judging/ ONLY in the sibling _gt/<contest>/
 #            scoring view, filters zones.json to that zone (`_all` keeps every zone), appends the
 #            profile's INJECT_CLASSES to the zone's scope.tsv class field once each (no classes = byte-identical),
 #            runs lib/zone-coverage.py init and checks `gaps` yields exactly the staged zone(s).
+#            #2311 --pointer (one zone; arm label `ptr-<ptr_id>-<rung>`): prepends the rung's pointer block to the
+#            staged zone brief (the frozen bytes follow unchanged), appends anchors owned by other zones to the
+#            zone's scope.tsv line as `<file>@<fn>` tokens (none = byte-identical), narrows the staged zones.json
+#            files[] to the anchor files (the STAGE 4.5 target set) — unless lib/inheritance.py reach-targets finds
+#            no concrete contract in them (a library-only anchor): then the full zone stays, deep_target=zone-fallback
+#            — writes <arm>/pointer.txt (the L0 block) and records the ladder + rung sha256 in stage.meta. Without
+#            --pointer every staged file is byte-identical to before #2311.
 #   run      (the stage args) [--agentis <bin>]
 #            Breadth: `timeout HARD_STOP_S run-zone-hunt.sh --rehunt-gaps` with the profile's env.* knobs.
 #            One-shot RE-HUNT (M3, REHUNT_TRANSPORT=1, the default): when a final-attempt cell carries .timeout /
@@ -47,7 +68,8 @@
 #            that exits 6.
 #            STAGE 4.5 (DEEP_PASS=1, verify/verified_findings.json present, no breadth / re-hunt call
 #            hard-stopped or killed): a second `timeout` call with --deep-hunt --deep-hunt-only over the SAME --out
-#            and the deep.* knobs. Every call gets `env -u` for every pipeline + Claude Code knob (see clear_knobs); DF_NO_SANDBOX
+#            and the deep.* knobs (#2311: a pointed arm adds --deep-hunt-audit-context <arm>/pointer.txt to this call
+#            only, never to breadth, and records pointer_id / pointer_rung / pointer_sha256 in run.meta). Every call gets `env -u` for every pipeline + Claude Code knob (see clear_knobs); DF_NO_SANDBOX
 #            is refused; the only live backend is flat-cyborg (sandboxed), and it needs bwrap. Refuses a repo root / --out that holds a truth.tsv or judging/. Writes
 #            run.pid while alive. A hard stop (rc 124), a killed call (rc >= 128) or a TERM/INT to run itself kills
 #            everything left under the arm dir. An EXIT trap ALWAYS writes run.meta (incl. the effective breadth
@@ -58,7 +80,8 @@
 #            toolchain config, a zone outside every root) is UNMEASURED, never a VOID; the .done line, the run's
 #            END note and the drive's END line render it as deep=<rc>:<agg> (e.g. deep=0:shim-failed).
 #   drive    --root <root> --plan <plan.tsv> [--resume | --retry-void] [--agentis <bin>]
-#            stage + run per row, sequentially (one live arm at a time), under a PID lock; START/END lines in
+#            stage + run per row, sequentially (one live arm at a time), under a PID lock (a plan row may carry the
+#            #2311 8th `pointer` column, handed to stage --pointer; 7-column rows are unchanged); START/END lines in
 #            logs/<plan>.progress (END carries rc=, deep= and void=; deep=<rc>:<agg> when the arm's deep hunt was
 #            unmeasured, #2277), logs/<plan>.done at the end. Re-execs from a
 #            snapshot of exam/ under logs/ (bash reads a script incrementally, so a pull mid-plan would otherwise
@@ -105,6 +128,7 @@
 #   <root>/logs/<plan>.{lock,progress,done,log,heads}   driver lock, START/END lines, final marker, driver log,
 #                                                       checkout HEAD pins; <plan>.halted after a usage-limit VOID
 #   <root>/arms/<contest>/<zone>/<arm>-r<N>/            run.meta run.log rehunt.log deep.log stage.log stage.meta
+#                                                       [pointer.txt] (#2311: a pointed arm's L0 block)
 #                                                       attrib.tsv void.txt [void.operator] .done
 #                                                       run.pid (while alive) breadth.env deep.env env.cleared
 #   <root>/arms/<contest>/<zone>/<arm>-r<N>.void-<k>/   a VOID attempt moved aside by drive --retry-void
@@ -365,6 +389,19 @@ cmd_kill() {
 # ----------------------------------------------------------------------------------------------------------
 # freeze
 # ----------------------------------------------------------------------------------------------------------
+# The post-freeze contamination grep over <cdir>/map + <cdir>/briefs (freeze, and #2311 adopt): every line that
+# names the bench, a delimited finding id, ` GT `, the judging repo or an audit platform, or matches a
+# --deny-pattern. Prints the hits (empty = clean).
+contam_grep() {
+  local cdir="$1" pat; shift
+  grep -rnF 'corpus-bench' "$cdir/map" "$cdir/briefs" 2>/dev/null
+  grep -rnE '(^|[^[:alnum:]_])[HM]-[0-9]{1,2}([^[:alnum:]_]|$)' "$cdir/map" "$cdir/briefs" 2>/dev/null
+  grep -rnF ' GT ' "$cdir/map" "$cdir/briefs" 2>/dev/null
+  grep -rniE 'judging|sherlock|code4rena|code-423n4|cantina|codehawks' "$cdir/map" "$cdir/briefs" 2>/dev/null
+  for pat in "$@"; do grep -rniE -- "$pat" "$cdir/map" "$cdir/briefs" 2>/dev/null; done
+  true
+}
+
 cmd_freeze() {
   local base="" contest="" checkout="" profile="" subdir="" roots="" mapfx="" brieffx="" force=0 allow_fb=0
   local agentis="agentis"
@@ -471,13 +508,8 @@ cmd_freeze() {
 
   # POST-freeze: the model's own output must not name the bench, a finding id, the judging repo or an audit
   # platform (the free-association leak the prompt-side guard cannot see).
-  local leak="" pat
-  leak="$(grep -rnF 'corpus-bench' "$cdir/map" "$cdir/briefs" 2>/dev/null
-          grep -rnE '(^|[^[:alnum:]_])[HM]-[0-9]{1,2}([^[:alnum:]_]|$)' "$cdir/map" "$cdir/briefs" 2>/dev/null
-          grep -rnF ' GT ' "$cdir/map" "$cdir/briefs" 2>/dev/null
-          grep -rniE 'judging|sherlock|code4rena|code-423n4|cantina|codehawks' "$cdir/map" "$cdir/briefs" 2>/dev/null
-          for pat in ${deny[@]+"${deny[@]}"}; do grep -rniE -- "$pat" "$cdir/map" "$cdir/briefs" 2>/dev/null; done
-          true)"
+  local leak=""
+  leak="$(contam_grep "$cdir" ${deny[@]+"${deny[@]}"})"
   if [ -n "$leak" ]; then
     note "freeze: CONTAMINATED output (map/ + briefs/):"; printf '%s\n' "$leak" | sed "s|^$cdir/||" | head -20 >&2
     exit 4
@@ -517,10 +549,90 @@ cmd_freeze() {
 }
 
 # ----------------------------------------------------------------------------------------------------------
+# adopt (#2311): take over a base the legacy host-only harness froze, without re-freezing it
+# ----------------------------------------------------------------------------------------------------------
+cmd_adopt() {
+  local base="" contest="" legacy="" commit="" model="" subdir="" roots="" force=0
+  local -a deny=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --base) need_val "$#" "$1"; base="$2"; shift 2 ;;
+      --contest) need_val "$#" "$1"; contest="$2"; shift 2 ;;
+      --legacy-sha) need_val "$#" "$1"; legacy="$2"; shift 2 ;;
+      --checkout-commit) need_val "$#" "$1"; commit="$2"; shift 2 ;;
+      --model) need_val "$#" "$1"; model="$2"; shift 2 ;;
+      --code-subdir) need_val "$#" "$1"; subdir="$2"; shift 2 ;;
+      --project-roots) need_val "$#" "$1"; roots="$2"; shift 2 ;;
+      --deny-pattern) need_val "$#" "$1"; deny+=("$2"); shift 2 ;;
+      --force) force=1; shift ;;
+      *) die 2 "adopt: unknown flag $1" ;;
+    esac
+  done
+  [ -n "$base" ] && [ -n "$contest" ] && [ -n "$legacy" ] && [ -n "$commit" ] && [ -n "$model" ] \
+    || die 2 "adopt: --base --contest --legacy-sha --checkout-commit --model are required"
+  safe_id "$contest" || die 2 "adopt: bad contest id '$contest'"
+  [[ "$commit" =~ ^[0-9a-f]{7,40}$ ]] || die 2 "adopt: --checkout-commit must be a git commit sha"
+  [[ "$model" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]] || die 2 "adopt: --model is not a model id"
+  if [ -n "$subdir" ] && [ -n "$roots" ]; then die 2 "adopt: --code-subdir and --project-roots are exclusive"; fi
+  if [ -z "$subdir" ] && [ -z "$roots" ]; then die 2 "adopt: one of --code-subdir / --project-roots is required"; fi
+  if [ -n "$subdir" ]; then
+    case "/$subdir/" in /[/]*|*/../*) die 2 "adopt: --code-subdir must be relative, without '..'" ;; esac
+  fi
+  if [ -n "$roots" ] && [ "$roots" != auto ] && ! [[ "$roots" =~ ^[A-Za-z0-9._/-]+(,[A-Za-z0-9._/-]+)+$ ]]; then
+    die 2 "adopt: --project-roots takes 'auto' or a comma list of at least two root dirs"
+  fi
+  [ -f "$legacy" ] || die 2 "adopt: --legacy-sha file not found: $legacy"
+  command -v python3 >/dev/null 2>&1 || die 3 "python3 is required"
+  base="$(abs_dir "$base")" || die 3 "adopt: --base not found"
+  local cdir="$base/$contest" code_rel roots_meta
+  [ -d "$cdir/code" ] && [ -f "$cdir/truth.tsv" ] || die 3 "adopt: $cdir lacks code/ or truth.tsv"
+  [ -f "$cdir/map/zones.json" ] && [ -f "$cdir/map/scope.tsv" ] && [ -d "$cdir/briefs/briefs" ] \
+    || die 3 "adopt: $cdir lacks the legacy map/ (zones.json + scope.tsv) or briefs/briefs/"
+  if [ -n "$subdir" ]; then code_rel="${subdir%/}"; roots_meta="-"; else code_rel="."; roots_meta="$roots"; fi
+  [ -d "$cdir/code/$code_rel" ] || die 3 "adopt: code dir $cdir/code/$code_rel missing"
+  if [ -e "$cdir/freeze.meta" ] || [ -e "$cdir/freeze.sha256" ]; then
+    [ "$force" -eq 1 ] || die 3 "adopt: $cdir already carries freeze.meta / freeze.sha256 — --force rewrites them"
+    rm -f "$cdir/freeze.meta" "$cdir/freeze.sha256"
+  fi
+  local vout vrc
+  vout="$(python3 "$HELPER" legacy-verify "$cdir" "$contest" "$legacy")"; vrc=$?
+  if [ "$vrc" -ne 0 ]; then
+    note "adopt: map/ + briefs/ do NOT match the legacy sha256 list $legacy:"; printf '%s\n' "$vout" | head -20 >&2
+    exit 3
+  fi
+  local leak; leak="$(contam_grep "$cdir" ${deny[@]+"${deny[@]}"})"
+  if [ -n "$leak" ]; then
+    note "adopt: CONTAMINATED legacy output (map/ + briefs/):"; printf '%s\n' "$leak" | sed "s|^$cdir/||" | head -20 >&2
+    exit 4
+  fi
+  freeze_manifest "$cdir" > "$cdir/freeze.sha256"
+  local map_roots; map_roots="$(python3 "$HELPER" zone-roots "$cdir/map/zones.json")" || map_roots="-"
+  {
+    echo "checkout_commit=$commit"
+    echo "model=$model"
+    echo "backend=legacy"
+    echo "code_dir_rel=$code_rel"
+    echo "project_roots=$roots_meta"
+    echo "map_roots=$map_roots"
+    echo "profile=-"
+    echo "profile_sha256=-"
+    echo "fallback_briefs_allowed=-"
+    echo "attrib=not-recorded"
+    echo "attrib_gate=-"
+    echo "adopted=1"
+    echo "legacy_sha256_file=$(basename "$legacy")"
+    echo "legacy_sha256=$(file_sha "$legacy")"
+    echo "adopted_utc=$(utc)"
+  } > "$cdir/freeze.meta"
+  note "adopt: $contest adopted ($(wc -l < "$cdir/freeze.sha256") files verified against $(basename "$legacy"), commit $commit, roots $map_roots)"
+}
+
+# ----------------------------------------------------------------------------------------------------------
 # plan
 # ----------------------------------------------------------------------------------------------------------
 cmd_plan() {
   local base="" contest="" arm="" repeat="" profile="" checkout="" zones="" whole=0
+  local ladder="" rung="" rows="" allow=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --base) need_val "$#" "$1"; base="$2"; shift 2 ;;
@@ -531,9 +643,25 @@ cmd_plan() {
       --checkout) need_val "$#" "$1"; checkout="$2"; shift 2 ;;
       --zones) need_val "$#" "$1"; zones="$2"; shift 2 ;;
       --whole) whole=1; shift ;;
+      --ladder) need_val "$#" "$1"; ladder="$2"; shift 2 ;;
+      --rung) need_val "$#" "$1"; rung="$2"; shift 2 ;;
+      --rows) need_val "$#" "$1"; rows="$2"; shift 2 ;;
+      --allow-contests) need_val "$#" "$1"; allow="$2"; shift 2 ;;
       *) die 2 "plan: unknown flag $1" ;;
     esac
   done
+  if [ -n "$ladder" ]; then
+    # #2311 pointed rows: the arm label is derived (ptr-<ptr_id>-<rung>), the zone owns the anchors.
+    [ -z "$arm" ] && [ -z "$zones" ] && [ "$whole" -eq 0 ] \
+      || die 2 "plan: --ladder derives the arm label and the zone (no --arm / --zones / --whole)"
+    case "$rung" in L0|L1|L2) ;; *) die 2 "plan: --ladder needs --rung L0|L1|L2" ;; esac
+    [ -n "$allow" ] || die 2 "plan: --ladder needs --allow-contests <csv> (the contests a pointed run may touch)"
+    [ -f "$ladder" ] || die 2 "plan: ladder not found: $ladder"
+    ladder="$(abs_file "$ladder")"
+    arm="ptr"
+  elif [ -n "$rung" ] || [ -n "$rows" ] || [ -n "$allow" ]; then
+    die 2 "plan: --rung / --rows / --allow-contests only go with --ladder"
+  fi
   [ -n "$base" ] && [ -n "$contest" ] && [ -n "$arm" ] && [ -n "$repeat" ] && [ -n "$profile" ] && [ -n "$checkout" ] \
     || die 2 "plan: --base --contest --arm --repeat --profile --checkout are required"
   safe_id "$contest" && safe_id "$arm" || die 2 "plan: bad contest / arm label"
@@ -547,6 +675,18 @@ cmd_plan() {
   case "$profile" in */*|*.env) pcol="$pfile" ;; *) pcol="$profile" ;; esac
   local cdir="$base/$contest"
   [ -f "$cdir/freeze.meta" ] || die 3 "plan: $cdir is not frozen (exam.sh freeze first)"
+  if [ -n "$ladder" ]; then
+    local owned pid pz
+    owned="$(python3 "$HELPER" ladder-zones "$ladder" "$base" "$contest" "$rung" "$allow" "$rows")" \
+      || die 3 "plan: the ladder refused (see above)"
+    printf '# contest\tzone\tarm\trepeat\tprofile\tcheckout\tbase\tpointer\n'
+    while IFS=$'\t' read -r pid pz; do
+      [ -n "$pid" ] || continue
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$contest" "$pz" "ptr-$pid-$rung" "$repeat" "$pcol" "$checkout" "$base" \
+        "$rung:$pid:$ladder"
+    done <<< "$owned"
+    return 0
+  fi
   local all z; all="$(python3 "$HELPER" zone-ids "$cdir/map/zones.json")" || die 3 "plan: unreadable frozen map"
   local -a rows=()
   if [ "$whole" -eq 1 ]; then
@@ -571,6 +711,7 @@ cmd_plan() {
 # stage / run (shared argument parsing)
 # ----------------------------------------------------------------------------------------------------------
 A_ROOT=""; A_BASE=""; A_CONTEST=""; A_ZONE=""; A_ARM=""; A_REPEAT=""; A_PROFILE=""; A_CHECKOUT=""; A_AGENTIS="agentis"
+A_POINTER=""
 parse_arm_args() {
   local who="$1"; shift
   while [ $# -gt 0 ]; do
@@ -584,6 +725,7 @@ parse_arm_args() {
       --profile) need_val "$#" "$1"; A_PROFILE="$2"; shift 2 ;;
       --checkout) need_val "$#" "$1"; A_CHECKOUT="$2"; shift 2 ;;
       --agentis) [ "$who" = run ] || die 2 "$who: unknown flag $1"; need_val "$#" "$1"; A_AGENTIS="$2"; shift 2 ;;
+      --pointer) [ "$who" = stage ] || die 2 "$who: unknown flag $1"; need_val "$#" "$1"; A_POINTER="$2"; shift 2 ;;
       *) die 2 "$who: unknown flag $1" ;;
     esac
   done
@@ -604,6 +746,55 @@ parse_arm_args() {
 }
 
 arm_dir() { printf '%s/arms/%s/%s/%s-r%s\n' "$1" "$2" "$3" "$4" "$5"; }
+
+# The contest's code dir as the hunt sees it (freeze.meta code_dir_rel under <cdir>/code).
+code_dir_of() {
+  local rel; rel="$(meta_get "$1/freeze.meta" code_dir_rel)"
+  if [ -z "$rel" ] || [ "$rel" = . ]; then printf '%s/code\n' "$1"; else printf '%s/code/%s\n' "$1" "$rel"; fi
+}
+
+# #2311: a POINTED stage (stage --pointer <rung>:<ptr_id>:<ladder>) — the brief / scope.tsv / zones.json edits of
+# exam-helper.py pointer-stage, then the STAGE 4.5 target decision: the narrowed files[] (the anchor files) replace
+# the zone's only when lib/inheritance.py reach-targets finds a concrete contract in them, else the whole zone stays
+# (deep_target=zone-fallback: a library-only anchor has nothing to deploy). Leaves the stage.meta pointer_* lines in
+# <arm>/.stage.pointer (cmd_stage appends them after its own lines).
+stage_pointer() {
+  local cdir="$1" out="$2" armdir="$3" df="$4" slog="$5" spec="$A_POINTER" rung pid ladder rest
+  rung="${spec%%:*}"; rest="${spec#*:}"; pid="${rest%%:*}"; ladder="${rest#*:}"
+  case "$rung" in L0|L1|L2) ;; *) die 2 "stage: --pointer must be <L0|L1|L2>:<ptr_id>:<ladder> (got '$spec')" ;; esac
+  [[ "$pid" =~ ^[a-z0-9]{3,12}$ ]] || die 2 "stage: --pointer carries a bad ptr_id '$pid'"
+  [ -f "$ladder" ] || die 2 "stage: --pointer ladder not found: $ladder"
+  [ "$A_ZONE" != _all ] || die 2 "stage: a pointed arm stages ONE zone (not _all)"
+  [ "$A_ARM" = "ptr-$pid-$rung" ] || die 2 "stage: a pointed arm is labelled ptr-$pid-$rung (opaque), not '$A_ARM'"
+  local brief="$out/briefs/briefs/brief_$A_ZONE.md" narrowed="$armdir/.zones.narrowed.json" pmeta="$armdir/.pointer.meta"
+  [ -f "$brief" ] || die 3 "stage: the frozen zone $A_ZONE has no brief to point ($brief)"
+  python3 "$HELPER" pointer-stage --ladder "$ladder" --id "$pid" --rung "$rung" --base "$A_BASE" --contest "$A_CONTEST" \
+      --zone "$A_ZONE" --zones "$out/map/zones.json" --scope "$out/map/scope.tsv" --brief "$brief" \
+      --pointer-out "$armdir/pointer.txt" --narrowed-out "$narrowed" > "$pmeta" 2>> "$slog" \
+    || die 3 "stage: pointer-stage refused the pointer (see $slog)"
+  # reach-targets' --max is irrelevant to the question asked (does ANY concrete target exist?); 3 mirrors REACH_N.
+  local reach deep_target
+  reach="$(cd "$df" && env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} python3 lib/inheritance.py reach-targets --zones "$narrowed" \
+             --repo "$(code_dir_of "$cdir")" --max 3 2>> "$slog")" || die 3 "stage: reach-targets failed on the anchor files (see $slog)"
+  if printf '%s\n' "$reach" | awk -F'\t' -v z="$A_ZONE" '$1 == z { f = 1 } END { exit f ? 0 : 1 }'; then
+    mv "$narrowed" "$out/map/zones.json" || die 3 "stage: cannot narrow zones.json"
+    deep_target=anchor
+    printf '[stage %s] pointer %s %s: zones.json files[] narrowed to the anchor files (reach: %s)\n' "$(utc)" "$pid" "$rung" \
+      "$(printf '%s\n' "$reach" | cut -f2 | paste -sd, -)" >> "$slog"
+  else
+    rm -f "$narrowed"
+    deep_target="zone-fallback"
+    printf '[stage %s] pointer %s %s: no concrete contract in the anchor files — the whole zone stays the STAGE 4.5 target set\n' \
+      "$(utc)" "$pid" "$rung" >> "$slog"
+  fi
+  printf '[stage %s] pointer %s %s: block prepended to %s, pointer.txt (L0) written; scope append: %s\n' "$(utc)" "$pid" "$rung" \
+    "briefs/briefs/brief_$A_ZONE.md" "$(meta_get "$pmeta" pointer_scope_append)" >> "$slog"
+  [ "$(meta_get "$pmeta" pointer_unsliced)" = - ] \
+    || printf '[stage %s] WARNING an own-zone anchor lies outside its function-sliced scope token: %s\n' "$(utc)" \
+         "$(meta_get "$pmeta" pointer_unsliced)" >> "$slog"
+  { cat "$pmeta"; echo "deep_target=$deep_target"; } > "$armdir/.stage.pointer"   # appended to stage.meta below
+  rm -f "$pmeta"
+}
 
 cmd_stage() {
   parse_arm_args stage "$@"
@@ -653,6 +844,9 @@ cmd_stage() {
   else
     slogf "scope.tsv left byte-identical to the frozen base (no INJECT_CLASSES)"
   fi
+  if [ -n "$A_POINTER" ]; then
+    stage_pointer "$cdir" "$out" "$armdir" "$df" "$slog"
+  fi
   local commit; commit="$(git -C "$A_CHECKOUT" rev-parse HEAD 2>/dev/null || echo unknown)"
   (cd "$df" && env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} python3 lib/zone-coverage.py init --zones "$zones_json" --out "$out/coverage/zone-coverage.json" \
       --zone-list "$out/.zone-list.tsv" --repo "$A_CONTEST" --commit "$commit" \
@@ -672,6 +866,9 @@ cmd_stage() {
     echo "base=$A_BASE"; echo "checkout=$A_CHECKOUT"; echo "checkout_commit=$commit"
     echo "profile=$A_PROFILE"; echo "profile_sha256=$(file_sha "$A_PROFILE")"; echo "staged_utc=$(utc)"
   } > "$armdir/stage.meta"
+  if [ -f "$armdir/.stage.pointer" ]; then
+    cat "$armdir/.stage.pointer" >> "$armdir/stage.meta" && rm -f "$armdir/.stage.pointer"
+  fi
   note "stage: [$A_CONTEST $A_ZONE $A_ARM r$A_REPEAT] staged -> $armdir"
 }
 
@@ -684,6 +881,7 @@ MANIFEST_HEADER="$MANIFEST_HEADER_M2"$'\trehunt_rc\tverdict'
 R_ARMDIR=""; R_START=""; R_RC=""; R_DEEP_START="-"; R_DEEP_END="-"; R_DEEP_RC="skip"; R_COMMIT=""; R_DIRTY=""
 R_CODE=""; R_ROOTS=""; R_CHILD=""; R_BREADTH_END="-"; R_DEEP_STATUS="-"
 R_REHUNT_START="-"; R_REHUNT_END="-"; R_REHUNT_RC="none"; R_REHUNT_REASON="-"
+R_PTR_ID=""; R_PTR_RUNG=""; R_PTR_SHA=""; R_DEEP_CTX="-"   # #2311: set only for a pointed arm
 
 # A signal to `run` (a drive's TERM, `exam.sh kill`, Ctrl-C): stop whatever runs under the arm, never start or
 # continue STAGE 4.5, and let the EXIT trap record the interrupted attempt.
@@ -729,6 +927,10 @@ run_finish() {
     echo "deep_env=$(paste -sd';' "$R_ARMDIR/deep.env" 2>/dev/null)"
     echo "env_cleared=$(grep -c . "$R_ARMDIR/env.cleared" 2>/dev/null || echo 0)"
     echo "env_cleared_set=$(paste -sd' ' "$R_ARMDIR/env.cleared-set" 2>/dev/null)"
+    if [ -n "$R_PTR_ID" ]; then
+      echo "pointer_id=$R_PTR_ID"; echo "pointer_rung=$R_PTR_RUNG"; echo "pointer_sha256=$R_PTR_SHA"
+      echo "deep_audit_context=$R_DEEP_CTX"
+    fi
   } > "$meta.tmp" && mv "$meta.tmp" "$meta"
   # M3: attribution over the run window, then the VOID verdict — both before the MANIFEST row and .done, so a
   # finished arm always carries them.
@@ -769,6 +971,15 @@ cmd_run() {
   [ -d "$R_CODE" ] || die 3 "run: code dir $R_CODE missing"
   load_profile "$A_PROFILE"
   need_sandbox
+  # #2311: a pointed arm hands its L0 pointer (pointer.txt, checked against stage.meta) to STAGE 4.5 only.
+  local -a deepctx=()
+  R_PTR_ID="$(meta_get "$R_ARMDIR/stage.meta" pointer_id)"
+  if [ -n "$R_PTR_ID" ]; then
+    R_PTR_RUNG="$(meta_get "$R_ARMDIR/stage.meta" pointer_rung)"; R_PTR_SHA="$(meta_get "$R_ARMDIR/stage.meta" rung_sha256)"
+    [ -f "$R_ARMDIR/pointer.txt" ] && [ "$(file_sha "$R_ARMDIR/pointer.txt")" = "$(meta_get "$R_ARMDIR/stage.meta" pointer_l0_sha256)" ] \
+      || die 3 "run: the pointed arm's pointer.txt is missing or drifted from stage.meta"
+    deepctx=(--deep-hunt-audit-context "$R_ARMDIR/pointer.txt")
+  fi
   clear_knobs "$A_PROFILE" "$df" "$R_ARMDIR/env.cleared"
   # the names the caller's shell actually carried and this run dropped (names only, never values)
   local _n; while IFS= read -r _n; do [ -z "${!_n+x}" ] || printf '%s\n' "$_n"; done < "$R_ARMDIR/env.cleared" \
@@ -856,10 +1067,11 @@ cmd_run() {
       R_DEEP_RC="skip-no-verify"
     else
       R_DEEP_START="$(utc)"
+      [ "${#deepctx[@]}" -eq 0 ] || R_DEEP_CTX="$R_ARMDIR/pointer.txt"
       effective_env "$R_ARMDIR/env.cleared" ${DEEP_KV[@]+"${DEEP_KV[@]}"} > "$R_ARMDIR/deep.env"
-      echo "[deep $R_DEEP_START] env -u <cleared> ${DEEP_KV[*]+${DEEP_KV[*]}} timeout $P_HARD_STOP_S run-zone-hunt.sh ${common[*]} --deep-hunt --deep-hunt-only --jobs $P_DEEP_JOBS" >> "$R_ARMDIR/deep.log"
+      echo "[deep $R_DEEP_START] env -u <cleared> ${DEEP_KV[*]+${DEEP_KV[*]}} timeout $P_HARD_STOP_S run-zone-hunt.sh ${common[*]} --deep-hunt --deep-hunt-only --jobs $P_DEEP_JOBS${deepctx[*]+ ${deepctx[*]}}" >> "$R_ARMDIR/deep.log"
       (cd "$df" && exec env ${CLEAR_ARGS[@]+"${CLEAR_ARGS[@]}"} ${DEEP_KV[@]+"${DEEP_KV[@]}"} timeout "$P_HARD_STOP_S" \
-          bash run-zone-hunt.sh "${common[@]}" --deep-hunt --deep-hunt-only --jobs "$P_DEEP_JOBS") >> "$R_ARMDIR/deep.log" 2>&1 &
+          bash run-zone-hunt.sh "${common[@]}" --deep-hunt --deep-hunt-only --jobs "$P_DEEP_JOBS" ${deepctx[@]+"${deepctx[@]}"}) >> "$R_ARMDIR/deep.log" 2>&1 &
       R_CHILD=$!
       wait "$R_CHILD"; R_DEEP_RC=$?; R_CHILD=""
       R_DEEP_END="$(utc)"
@@ -1094,12 +1306,17 @@ cmd_drive() {
   trap "[ \"\$(head -1 '$lock' 2>/dev/null)\" = '$$' ] && rm -f '$lock'" EXIT
 
   # Validate the whole plan before anything is spent.
-  local -a R_C=() R_Z=() R_A=() R_N=() R_P=() R_K=() R_B=()
-  local c z a n p k b extra line_no=0
-  while IFS=$'\t' read -r c z a n p k b extra; do
+  local -a R_C=() R_Z=() R_A=() R_N=() R_P=() R_K=() R_B=() R_X=()
+  local c z a n p k b x extra line_no=0
+  while IFS=$'\t' read -r c z a n p k b x extra; do
     line_no=$((line_no + 1))
     case "$c" in ''|'#'*) continue ;; esac
-    [ -n "$b" ] && [ -z "$extra" ] || die 2 "drive: $plan:$line_no: expected 7 TAB columns (contest zone arm repeat profile checkout base)"
+    [ -n "$b" ] && [ -z "$extra" ] \
+      || die 2 "drive: $plan:$line_no: expected 7 or 8 TAB columns (contest zone arm repeat profile checkout base [pointer])"
+    # #2311: the optional 8th column is a pointer `<rung>:<ptr_id>:<ladder>` (exam.sh plan --ladder writes it).
+    if [ -n "$x" ] && ! { [[ "$x" =~ ^L[012]:[a-z0-9]{3,12}:/ ]] && [ -f "${x#*:*:}" ]; }; then
+      die 2 "drive: $plan:$line_no: bad pointer column (want <L0|L1|L2>:<ptr_id>:<absolute ladder path>)"
+    fi
     safe_id "$c" && safe_id "$a" && pos_int "$n" && { [ "$z" = _all ] || safe_id "$z"; } \
       || die 2 "drive: $plan:$line_no: bad contest / zone / arm / repeat"
     [ -d "$k" ] && [ -f "$b/$c/freeze.meta" ] || die 2 "drive: $plan:$line_no: checkout or frozen base missing"
@@ -1108,7 +1325,7 @@ cmd_drive() {
     if [ "$resume" -eq 0 ] && [ -e "$(arm_dir "$root" "$c" "$z" "$a" "$n")" ]; then
       die 2 "drive: $plan:$line_no: $(arm_dir "$root" "$c" "$z" "$a" "$n") exists — use --resume"
     fi
-    R_C+=("$c"); R_Z+=("$z"); R_A+=("$a"); R_N+=("$n"); R_P+=("$p"); R_K+=("$k"); R_B+=("$b")
+    R_C+=("$c"); R_Z+=("$z"); R_A+=("$a"); R_N+=("$n"); R_P+=("$p"); R_K+=("$k"); R_B+=("$b"); R_X+=("$x")
   done < "$plan"
   [ "${#R_C[@]}" -gt 0 ] || die 2 "drive: the plan has no rows"
 
@@ -1124,6 +1341,7 @@ cmd_drive() {
   local i armdir head pinned src rrc rc drc dst v vc vk ran=0 skipped=0 refused=0 voided=0 halt=""
   for i in "${!R_C[@]}"; do
     c="${R_C[$i]}"; z="${R_Z[$i]}"; a="${R_A[$i]}"; n="${R_N[$i]}"; p="${R_P[$i]}"; k="${R_K[$i]}"; b="${R_B[$i]}"
+    x="${R_X[$i]}"
     armdir="$(arm_dir "$root" "$c" "$z" "$a" "$n")"
     if arm_live "$armdir"; then
       printf '%s\tEND\t%s\t%s\t%s\tr%s\trc=refused-live-run\tdeep=skip\n' "$(utc)" "$c" "$z" "$a" "$n" >> "$prog"
@@ -1155,8 +1373,9 @@ cmd_drive() {
     fi
     [ -n "$pinned" ] || printf '%s\t%s\n' "$k" "$head" >> "$heads"
     printf '%s\tSTART\t%s\t%s\t%s\tr%s\n' "$(utc)" "$c" "$z" "$a" "$n" >> "$prog"
+    local -a ptr=(); [ -z "$x" ] || ptr=(--pointer "$x")
     bash "$SELF" stage --root "$root" --base "$b" --contest "$c" --zone "$z" --arm "$a" --repeat "$n" \
-      --profile "$p" --checkout "$k" >> "$dlog" 2>&1
+      --profile "$p" --checkout "$k" ${ptr[@]+"${ptr[@]}"} >> "$dlog" 2>&1
     src=$?
     if [ "$src" -ne 0 ]; then
       printf '%s\tEND\t%s\t%s\t%s\tr%s\trc=stage-%s\tdeep=skip\n' "$(utc)" "$c" "$z" "$a" "$n" "$src" >> "$prog"
@@ -1238,7 +1457,7 @@ cmd_self_test() {
 
   echo "exam.sh self-test: profile grammar"
   local pr
-  for pr in control exam exam-plus mock; do
+  for pr in control exam exam-plus mock pointed pointed-l0; do
     python3 "$HELPER" profile-summary "$PROFILES_DIR/$pr.env" > /dev/null 2>&1; expect_rc 0 $? "shipped profile $pr parses"
   done
   printf 'BACKEND=mock\nNOPE=1\n' > "$work/p-unknown.env"
@@ -1810,6 +2029,197 @@ cmd_self_test() {
     bad "run: the multi-root arm failed (exit $rc)"; tail -5 "$ma/run.log" 2>/dev/null | sed 's/^/         | /'
   fi
 
+  echo "exam.sh self-test: #2311 adopt a legacy frozen base"
+  local lfx="$fix/legacy" lbase="$work/lbase" lc="$work/lbase/fx"
+  mkdir -p "$lc" && cp -R "$fix/project" "$lc/code" && cp "$lfx/FeeMath.sol" "$lc/code/src/pool/" \
+    && cp "$lfx/truth.tsv" "$lc/truth.tsv" && cp -R "$lfx/fx/map" "$lfx/fx/briefs" "$lc/" \
+    || die 3 "self-test: cannot build the legacy base"
+  local -a adopt_args=(--base "$lbase" --contest fx --checkout-commit 0123abc --model claude-opus-4-8 --code-subdir .)
+  local flip=0; [ "$(head -c1 "$lfx/legacy.sha256")" != 0 ] || flip=1
+  sed "1s/^./$flip/" "$lfx/legacy.sha256" > "$work/legacy-bad.sha256"
+  bash "$SELF" adopt "${adopt_args[@]}" --legacy-sha "$work/legacy-bad.sha256" > "$work/adopt-bad.out" 2>&1; rc=$?
+  if [ "$rc" -eq 3 ] && [ ! -e "$lc/freeze.meta" ] && [ ! -e "$lc/freeze.sha256" ] && grep -q 'sha-mismatch' "$work/adopt-bad.out"; then
+    ok "adopt refuses a base whose map/ + briefs/ differ from the legacy sha256 list (exit 3, nothing written)"
+  else
+    bad "adopt over a sha mismatch: exit $rc"; sed 's/^/         | /' "$work/adopt-bad.out" | head -5
+  fi
+  bash "$SELF" adopt "${adopt_args[@]}" --legacy-sha "$lfx/legacy.sha256" > "$work/adopt.out" 2>&1; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(meta_get "$lc/freeze.meta" adopted)" = 1 ] \
+     && [ "$(meta_get "$lc/freeze.meta" checkout_commit)" = 0123abc ] && [ "$(meta_get "$lc/freeze.meta" model)" = claude-opus-4-8 ] \
+     && freeze_manifest "$lc" | cmp -s - "$lc/freeze.sha256" && diff -r "$lfx/fx/map" "$lc/map" > /dev/null \
+     && diff -r "$lfx/fx/briefs" "$lc/briefs" > /dev/null; then
+    ok "adopt: verified against the legacy list -> freeze.sha256 + freeze.meta (adopted=1, recorded commit + model); map/ + briefs/ untouched"
+  else
+    bad "adopt of the legacy fixture: exit $rc"; sed 's/^/         | /' "$work/adopt.out" | head -5
+  fi
+  bash "$SELF" adopt "${adopt_args[@]}" --legacy-sha "$lfx/legacy.sha256" > /dev/null 2>&1
+  expect_rc 3 $? "a second adopt without --force is refused"
+  local cl="$work/cbase-legacy"
+  mkdir -p "$cl/fx" && cp -R "$lc/code" "$lc/truth.tsv" "$lc/map" "$lc/briefs" "$cl/fx/" \
+    && printf 'Compare the judging notes.\n' >> "$cl/fx/briefs/briefs/brief_src_pool.md"
+  # shellcheck disable=SC2086  # SHA256_CMD is a command + its flags, split on purpose
+  (cd "$cl" && find fx/map fx/briefs -type f -print0 | LC_ALL=C sort -z | xargs -0 $SHA256_CMD) > "$work/legacy-contam.sha256"
+  bash "$SELF" adopt --base "$cl" --contest fx --checkout-commit 0123abc --model claude-opus-4-8 --code-subdir . \
+    --legacy-sha "$work/legacy-contam.sha256" > /dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 4 ] && [ ! -e "$cl/fx/freeze.meta" ]; then
+    ok "adopt runs the freeze contamination grep: a legacy brief naming the judging repo is refused (exit 4) even with a matching sha list"
+  else
+    bad "adopt accepted a contaminated legacy base (exit $rc)"
+  fi
+
+  echo "exam.sh self-test: #2311 ladder-check"
+  local ladder="$work/ladder.tsv" lrule lrow lout lgot lmiss=""
+  cp "$fix/ladder.fixture.tsv" "$ladder"
+  python3 "$HELPER" ladder-check "$ladder" --allow-contests fx,yy --base "$lbase" > "$work/lcheck.out" 2>&1; rc=$?
+  expect_rc 0 "$rc" "ladder-check passes the clean fixture ladder (4 rows: single anchor, L2=L1, multi-zone, library-only)"
+  [ "$rc" -eq 0 ] || sed 's/^/         | /' "$work/lcheck.out" | head -5
+  { cat "$fix/ladder-leaks.fixture.tsv"
+    printf 'gt-id\tab4\tfx\tEX-1\tPool.sol:withdraw\tthe same ordering as %s-%s\t-\n' H 7; } > "$work/leaks.tsv"
+  while IFS=$'\t' read -r lrule lrow; do
+    case "$lrule" in ''|'#'*) continue ;; esac
+    printf '%s\n' "$lrow" > "$work/leak1.tsv"
+    lout="$(python3 "$HELPER" ladder-check "$work/leak1.tsv" --allow-contests fx,yy --base "$lbase" 2>/dev/null)"; rc=$?
+    lgot="$(printf '%s\n' "$lout" | cut -f3 | grep . | sort -u | paste -sd, -)"
+    if [ "$rc" -ne 4 ] || [ "$lgot" != "$lrule" ]; then lmiss="$lmiss ${lrow%%$'\t'*}:want=$lrule,got=${lgot:-none}(exit $rc)"; fi
+  done < "$work/leaks.tsv"
+  if [ -z "$lmiss" ] && [ "$(grep -vc '^#' "$work/leaks.tsv")" -ge 15 ]; then
+    ok "ladder-check refuses each leak case with exactly its rule (exit 4): finding id, contest name, ' GT ', judging, platform, corpus-bench, over-cap L1/L2, non-cumulative rung, unknown anchor file/fn, bad anchor, non-opaque id, contest outside the allowlist, unknown row"
+  else
+    bad "ladder-check leak cases:$lmiss"
+  fi
+
+  echo "exam.sh self-test: #2311 plan --ladder"
+  local lplan="$work/lplan.tsv"
+  bash "$SELF" plan --base "$lbase" --contest fx --ladder "$ladder" --rung L0 --allow-contests fx --repeat 1 --profile mock \
+    --checkout "$co" > "$lplan" 2>"$work/lplan.err"; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(awk -F'\t' '!/^#/ { print NF }' "$lplan" | sort -u)" = 8 ] \
+     && [ "$(awk -F'\t' '!/^#/ { printf "%s=%s ", $3, $2 }' "$lplan")" = "ptr-k7q-L0=src_pool ptr-w2z-L0=src_feed ptr-d4n-L0=src_pool ptr-f8b-L0=src_pool " ] \
+     && [ "$(awk -F'\t' '!/^#/ && $3 == "ptr-k7q-L0" { print $8 }' "$lplan")" = "L0:k7q:$ladder" ] \
+     && ! grep -q 'EX-' "$lplan"; then
+    ok "plan --ladder: one 8-column row per ladder row, opaque arm ptr-<id>-<rung>, the zone owning the anchors (d4n: 2 of 3 anchors), pointer column; no GT row id anywhere"
+  else
+    bad "plan --ladder: exit $rc"; sed 's/^/         | /' "$lplan" "$work/lplan.err" | head -8
+  fi
+  bash "$SELF" plan --base "$lbase" --contest fx --ladder "$ladder" --rung L0 --allow-contests yy --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1; expect_rc 3 $? "plan --ladder refuses a contest outside --allow-contests"
+  bash "$SELF" plan --base "$lbase" --contest fx --ladder "$ladder" --rung L2 --allow-contests fx --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1; expect_rc 3 $? "plan --ladder refuses a rung a selected row has no text for (d4n has no L2)"
+  if [ "$(bash "$SELF" plan --base "$lbase" --contest fx --ladder "$ladder" --rung L2 --rows k7q,EX-2 --allow-contests fx \
+          --repeat 2 --profile mock --checkout "$co" 2>/dev/null | awk -F'\t' '!/^#/ { printf "%s/%s ", $3, $4 }')" = "ptr-k7q-L2/2 ptr-w2z-L2/2 " ]; then
+    ok "plan --ladder --rows selects by ptr id or row id (the replicate index rides --repeat)"
+  else
+    bad "plan --ladder --rows did not select k7q + w2z"
+  fi
+  bash "$SELF" plan --base "$lbase" --contest fx --ladder "$ladder" --rung L0 --allow-contests fx --arm x --repeat 1 \
+    --profile mock --checkout "$co" > /dev/null 2>&1; expect_rc 2 $? "plan --ladder refuses an explicit --arm (the label is derived)"
+
+  echo "exam.sh self-test: #2311 pointed stage"
+  local proot="$work/proot" pa fb fz
+  bash "$SELF" stage --root "$proot" --base "$lbase" --contest fx --zone src_pool --arm plain --repeat 1 --profile mock \
+    --checkout "$co" > /dev/null 2>&1; rc=$?
+  pa="$proot/arms/fx/src_pool/plain-r1/fx/zone-hunt-out"
+  if [ "$rc" -eq 0 ] && cmp -s "$pa/briefs/briefs/brief_src_pool.md" "$lc/briefs/briefs/brief_src_pool.md" \
+     && cmp -s "$pa/map/scope.tsv" "$lc/map/scope.tsv" && [ ! -e "$proot/arms/fx/src_pool/plain-r1/pointer.txt" ] \
+     && ! grep -q '^pointer_\|^deep_target=' "$proot/arms/fx/src_pool/plain-r1/stage.meta" \
+     && [ "$(python3 -c 'import json, sys; print(",".join(json.load(open(sys.argv[1]))[0]["files"]))' "$pa/map/zones.json")" = "src/pool/FeeMath.sol,src/pool/Pool.sol" ]; then
+    ok "an UNPOINTED stage of the adopted base is byte-identical to before #2311 (brief, scope.tsv, zone files, stage.meta)"
+  else
+    bad "an unpointed stage changed a staged file (exit $rc)"
+  fi
+  zfiles() { python3 -c 'import json, sys; print(",".join(json.load(open(sys.argv[1]))[0]["files"]))' "$1"; }
+  local pk="$proot/arms/fx/src_pool/ptr-k7q-L0-r1"
+  bash "$SELF" stage --root "$proot" --base "$lbase" --contest fx --zone src_pool --arm ptr-k7q-L0 --repeat 1 --profile mock \
+    --checkout "$co" --pointer "L0:k7q:$ladder" > /dev/null 2>&1; rc=$?
+  { python3 "$HELPER" pointer-render "$ladder" k7q L0; echo; cat "$lc/briefs/briefs/brief_src_pool.md"; } > "$work/brief-k7q.want"
+  if [ "$rc" -eq 0 ] && cmp -s "$work/brief-k7q.want" "$pk/fx/zone-hunt-out/briefs/briefs/brief_src_pool.md" \
+     && cmp -s "$pk/fx/zone-hunt-out/map/scope.tsv" "$lc/map/scope.tsv" \
+     && [ "$(zfiles "$pk/fx/zone-hunt-out/map/zones.json")" = src/pool/Pool.sol ] \
+     && [ "$(python3 "$HELPER" pointer-render "$ladder" k7q L0)" = "$(cat "$pk/pointer.txt")" ] \
+     && [ "$(meta_get "$pk/stage.meta" deep_target)" = anchor ] && [ "$(meta_get "$pk/stage.meta" pointer_rung)" = L0 ] \
+     && [ "$(meta_get "$pk/stage.meta" ladder_sha256)" = "$(file_sha "$ladder")" ] \
+     && [ "$(meta_get "$pk/stage.meta" rung_sha256)" = "$(file_sha "$pk/pointer.txt")" ] \
+     && ! grep -q 'EX-' "$pk/stage.meta" "$pk/pointer.txt" "$pk/fx/zone-hunt-out/briefs/briefs/brief_src_pool.md"; then
+    ok "pointed L0 stage: brief = block + blank line + the frozen bytes unchanged; scope.tsv byte-identical; files[] narrowed to the anchor; pointer.txt + ladder/rung sha256 in stage.meta; no GT id"
+  else
+    bad "pointed L0 stage (exit $rc): $(grep -E '^(pointer_|deep_target|rung_)' "$pk/stage.meta" 2>/dev/null | paste -sd' ' -)"
+  fi
+  local pd="$proot/arms/fx/src_pool/ptr-d4n-L1-r1"
+  bash "$SELF" stage --root "$proot" --base "$lbase" --contest fx --zone src_pool --arm ptr-d4n-L1 --repeat 1 --profile mock \
+    --checkout "$co" --pointer "L1:d4n:$ladder" > /dev/null 2>&1; rc=$?
+  sed 's#^share pool | C1,C6 | src/pool/FeeMath.sol,src/pool/Pool.sol$#&,src/feed/Feed.sol@read#' "$lc/map/scope.tsv" > "$work/scope-d4n.want"
+  if [ "$rc" -eq 0 ] && cmp -s "$work/scope-d4n.want" "$pd/fx/zone-hunt-out/map/scope.tsv" \
+     && ! cmp -s "$lc/map/scope.tsv" "$pd/fx/zone-hunt-out/map/scope.tsv" \
+     && [ "$(zfiles "$pd/fx/zone-hunt-out/map/zones.json")" = src/pool/Pool.sol,src/feed/Feed.sol ] \
+     && sed -n 4p "$pd/fx/zone-hunt-out/briefs/briefs/brief_src_pool.md" | grep -q '^Bug class to consider first: rounding' \
+     && [ "$(meta_get "$pd/stage.meta" pointer_scope_append)" = src/feed/Feed.sol@read ] \
+     && [ "$(python3 "$HELPER" pointer-render "$ladder" d4n L0)" = "$(cat "$pd/pointer.txt")" ]; then
+    ok "pointed L1 multi-zone stage: the other zone's anchor is appended to the staged line as file@fn (the only scope.tsv change), L1 line in the block, pointer.txt stays L0"
+  else
+    bad "pointed multi-zone stage (exit $rc)"; diff "$work/scope-d4n.want" "$pd/fx/zone-hunt-out/map/scope.tsv" 2>&1 | sed 's/^/         | /' | head -4
+  fi
+  fb="$proot/arms/fx/src_pool/ptr-f8b-L0-r1"
+  bash "$SELF" stage --root "$proot" --base "$lbase" --contest fx --zone src_pool --arm ptr-f8b-L0 --repeat 1 --profile mock \
+    --checkout "$co" --pointer "L0:f8b:$ladder" > /dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(meta_get "$fb/stage.meta" deep_target)" = zone-fallback ] \
+     && [ "$(zfiles "$fb/fx/zone-hunt-out/map/zones.json")" = "src/pool/FeeMath.sol,src/pool/Pool.sol" ]; then
+    ok "a library-only anchor (no concrete deploy target) keeps the whole zone as the STAGE 4.5 target set: deep_target=zone-fallback"
+  else
+    bad "library-only anchor: exit $rc deep_target=$(meta_get "$fb/stage.meta" deep_target)"
+  fi
+  fz="$proot/arms/fx/src_feed/ptr-w2z-L2-r1"
+  bash "$SELF" stage --root "$proot" --base "$lbase" --contest fx --zone src_feed --arm ptr-w2z-L2 --repeat 1 --profile mock \
+    --checkout "$co" --pointer "L2:w2z:$ladder" > /dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(meta_get "$fz/stage.meta" pointer_l2_eq_l1)" = 1 ] \
+     && [ "$(python3 "$HELPER" pointer-render "$ladder" w2z L2)" = "$(python3 "$HELPER" pointer-render "$ladder" w2z L1)" ] \
+     && [ "$(meta_get "$fz/stage.meta" rung_sha256)" = "$(python3 "$HELPER" pointer-render "$ladder" w2z L1 | $SHA256_CMD | cut -d' ' -f1)" ]; then
+    ok "an L2=L1 row (no non-leaking L2) stages the L1 block as its L2 arm, recorded pointer_l2_eq_l1=1"
+  else
+    bad "L2=L1 row: exit $rc"
+  fi
+  bash "$SELF" stage --root "$proot" --base "$lbase" --contest fx --zone src_pool --arm other --repeat 1 --profile mock \
+    --checkout "$co" --pointer "L0:k7q:$ladder" > /dev/null 2>&1; expect_rc 2 $? "a pointed stage refuses an arm label other than ptr-<id>-<rung>"
+  bash "$SELF" stage --root "$proot" --base "$lbase" --contest fx --zone src_feed --arm ptr-k7q-L1 --repeat 1 --profile mock \
+    --checkout "$co" --pointer "L1:k7q:$ladder" > /dev/null 2>&1; expect_rc 3 $? "a pointed stage refuses a zone that does not own the anchors"
+
+  echo "exam.sh self-test: #2311 pointed run (STAGE 4.5 gets the pointer, breadth never)"
+  printf 'BACKEND=mock\nMODEL=claude-opus-4-8\nHARD_STOP_S=600\nDEEP_PASS=1\ndeep.DEEP_HUNT_REACH=1\n' > "$work/p-pl0.env"
+  printf 'BACKEND=mock\nMODEL=claude-opus-4-8\nHARD_STOP_S=600\nDEEP_PASS=0\n' > "$work/p-pl.env"
+  local rroot="$work/rroot" rk="$work/rroot/arms/fx/src_pool/ptr-k7q-L0-r1" rd="$work/rroot/arms/fx/src_pool/ptr-d4n-L1-r1"
+  bash "$SELF" stage --root "$rroot" --base "$lbase" --contest fx --zone src_pool --arm ptr-k7q-L0 --repeat 1 \
+    --profile "$work/p-pl0.env" --checkout "$co" --pointer "L0:k7q:$ladder" > /dev/null 2>&1
+  bash "$SELF" run --root "$rroot" --base "$lbase" --contest fx --zone src_pool --arm ptr-k7q-L0 --repeat 1 \
+    --profile "$work/p-pl0.env" --checkout "$co" --agentis "$stub" > /dev/null 2>&1; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(meta_get "$rk/run.meta" deep_rc)" = 0 ] \
+     && grep -q -- "--deep-hunt-only --jobs 1 --deep-hunt-audit-context $rk/pointer.txt\$" "$rk/deep.log" \
+     && ! grep -q -- '--deep-hunt-audit-context' "$rk/run.log" \
+     && [ "$(meta_get "$rk/run.meta" pointer_id)" = k7q ] && [ "$(meta_get "$rk/run.meta" pointer_rung)" = L0 ] \
+     && [ "$(meta_get "$rk/run.meta" pointer_sha256)" = "$(meta_get "$rk/stage.meta" rung_sha256)" ] \
+     && [ "$(meta_get "$rk/run.meta" deep_audit_context)" = "$rk/pointer.txt" ]; then
+    ok "pointed L0 run: --deep-hunt-audit-context <arm>/pointer.txt on the STAGE 4.5 call only (never breadth); run.meta pointer_id / pointer_rung / pointer_sha256"
+  else
+    bad "pointed L0 run: exit $rc deep_rc=$(meta_get "$rk/run.meta" deep_rc)"; grep -h 'run-zone-hunt.sh' "$rk/run.log" "$rk/deep.log" 2>/dev/null | cut -c1-200 | sed 's/^/         | /'
+  fi
+  if ! grep -q '^pointer_' "$a1/run.meta"; then
+    ok "an unpointed run.meta carries no pointer_* line (byte-compatible with before #2311)"
+  else
+    bad "an unpointed run.meta gained pointer_* lines"
+  fi
+  printf 'fx\tsrc_pool\tptr-d4n-L1\t1\t%s\t%s\t%s\tL1:d4n:%s\n' "$work/p-pl.env" "$co" "$lbase" "$ladder" > "$work/pplan.tsv"
+  bash "$SELF" drive --root "$rroot" --plan "$work/pplan.tsv" --agentis "$stub" > "$work/pdrive.out" 2>&1; rc=$?
+  if [ "$rc" -eq 0 ] && [ "$(meta_get "$rd/stage.meta" pointer_id)" = d4n ] && [ "$(meta_get "$rd/run.meta" deep_rc)" = skip ] \
+     && [ ! -e "$rd/deep.log" ] && [ "$(meta_get "$rd/run.meta" deep_audit_context)" = - ] \
+     && grep -q $'\tEND\tfx\tsrc_pool\tptr-d4n-L1\tr1\trc=0\tdeep=skip\tvoid=VALID$' "$rroot/logs/pplan.progress"; then
+    ok "drive takes an 8-column plan row (the pointer reaches stage); a DEEP_PASS=0 pointed arm makes no STAGE 4.5 call"
+  else
+    bad "8-column drive: exit $rc"; tail -3 "$rroot/logs/pplan.progress" 2>/dev/null | sed 's/^/         | /'
+  fi
+  printf 'fx\tsrc_pool\tptr-d4n-L1\t2\tmock\t%s\t%s\tL1:d4n:%s\textra\n' "$co" "$lbase" "$ladder" > "$work/pplan9.tsv"
+  bash "$SELF" drive --root "$rroot" --plan "$work/pplan9.tsv" --agentis "$stub" > /dev/null 2>&1
+  expect_rc 2 $? "drive refuses a plan row with a 9th column"
+  printf 'fx\tsrc_pool\tptr-d4n-L1\t2\tmock\t%s\t%s\tL1:d4n:relative.tsv\n' "$co" "$lbase" > "$work/pplanbad.tsv"
+  bash "$SELF" drive --root "$rroot" --plan "$work/pplanbad.tsv" --agentis "$stub" > /dev/null 2>&1
+  expect_rc 2 $? "drive refuses a malformed pointer column"
+
   echo "exam.sh self-test: drive + triage hand-off"
   local droot="$work/droot" dplan="$work/dplan.tsv"
   bash "$SELF" plan --base "$base" --contest fx --arm mock --repeat 1 --profile mock --checkout "$co" > "$dplan" 2>/dev/null
@@ -2016,6 +2426,7 @@ sub="${1:-}"
 [ $# -gt 0 ] && shift
 case "$sub" in
   freeze) cmd_freeze "$@" ;;
+  adopt) cmd_adopt "$@" ;;
   plan) cmd_plan "$@" ;;
   stage) cmd_stage "$@" ;;
   run) cmd_run "$@" ;;

@@ -1,0 +1,15 @@
+{
+  "src_feed": {
+    "brief": "brief_src_feed.md",
+    "classes": [
+      "C2"
+    ]
+  },
+  "src_pool": {
+    "brief": "brief_src_pool.md",
+    "classes": [
+      "C1",
+      "C6"
+    ]
+  }
+}
