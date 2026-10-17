@@ -25,9 +25,10 @@
 #       tier 2, any location: hypotheses-to-leads.py --include-tier2) is judged against a ONE-ROW truth file; every
 #       DISMISS| line of the arm's live cell logs is judged the same way (a MATCH there sets dismissed=1, never a
 #       HIT); a DISMISS line citing the pointer block sets pointer_cited=1. STAGE 4.5: the INVARIANT| lines at the
-#       anchor files — FINDING lines are judged (property + log as the lead), CLEAN is a MISS, any not-judged
-#       status (TIMEOUT, HARNESS_ERROR, SKIPPED_*) or a deep hunt that never ran is UNMEASURED. Refute verdicts are
-#       recorded (refute_verified) and never used for the cause: the refuter may read the brief, so the pointer.
+#       anchor files — FINDING lines are judged (property + log as the lead), CLEAN is a MISS, a not-judged status
+#       (TIMEOUT, HARNESS_ERROR, SKIPPED_*) anywhere makes a non-match UNMEASURED (beside a judged FINDING as much
+#       as beside a CLEAN), and so does a deep hunt that never ran. Refute verdicts are recorded (refute_verified)
+#       and never used for the cause: the refuter may read the brief, so the pointer.
 #       The file leaves `breadth_confirmed=-` and `deep_confirmed=-` for the OPERATOR, who sets `yes` / `no` after
 #       reading every judge MATCH against the GT text — `classify` refuses an unconfirmed MATCH.
 #   classify --inventory <inventory.tsv> --scores <dir> [--table <f>] [--verdict <f>]
@@ -55,8 +56,8 @@
 #   6 excluded but listed:
 #     MECHANISM-or-EXECUTION  every breadth rung MISS, the deep hunt UNMEASURED;
 #     UNMEASURED              no HIT anywhere and a breadth rung VOID — or (an implementation edge the plan's list
-#                             does not name) a HINT / EXECUTION hit with BOTH L0 arms unmeasured, which a LOCATION
-#                             cannot be excluded for.
+#                             does not name) a HINT / EXECUTION hit with BOTH L0 arms unmeasured or with the L0 r2
+#                             replicate VOID (after its one --retry-void), which a LOCATION cannot be excluded for.
 #   The replicate rule is enforced: a HINT / EXECUTION row without its L0 r2 score is refused (exit 3).
 #
 # DECISION RULE (pre-registered). LOCATION -> coverage/selection, EXECUTION -> execution, HINT + MECHANISM ->
@@ -100,7 +101,6 @@ SELECT_LEAD = 3          # one flipped row moves the lead by 2, so 3 survives on
 JUDGE_BATCH = 12         # score-match.py's defaults; a one-row truth file is one batch either way
 JUDGE_MIN_CONF = 60
 DEEP_LOG_CAP = 4000      # bytes of an invariant log handed to the judge as the FINDING's property + witness
-NOT_JUDGED_PREFIX = ("TIMEOUT", "HARNESS_ERROR", "SKIPPED_", "LOW_COVERAGE", "ENGINE_FAILED", "TRANSIENT_ERROR")
 
 
 def die(rc, msg):
@@ -371,7 +371,9 @@ def score_arm(arm, sev_id, judge, cache, exam_root, sm):
         errors_total += errs
         if fhit:
             deep = "MATCH"
-        elif findings or (clean and not notj):
+        elif (findings or clean) and not notj:
+            # a not-judged sibling could have held the match: any of them leaves a non-match UNMEASURED, whether
+            # the judged siblings were FINDING or CLEAN
             deep = "NO-MATCH"
         else:
             deep = "UNMEASURED"
@@ -504,9 +506,11 @@ def classify_row(inv, scores_dir):
         if "L0r2" not in sc:
             die(3, "row %s %s: a %s row needs its L0 r2 replicate (%s.L0r2.score)"
                 % (inv["contest"], inv["row"], hit_class, pid))
-        if not l0_measured:
+        if not l0_measured or sc["L0r2"][0] == "UNMEASURED":
+            # a VOID r2 (after the protocol's one --retry-void) is no replicate: LOCATION cannot be excluded
             res["cause"], res["consistent"] = "UNMEASURED", {"LOCATION", hit_class}
-            res["notes"].append("%s hit, both L0 arms unmeasured" % hit_class)
+            res["notes"].append("%s hit, %s" % (hit_class, "both L0 arms unmeasured" if not l0_measured
+                                                 else "L0 r2 replicate VOID"))
             return res
         res["cause"], res["sub"] = hit_class, sub
         return res
@@ -747,6 +751,34 @@ def self_test():
               and kv["evidence"] == "arms/fx/src_pool/ptr-k7q-L0-r1",
               "score: only INVARIANT lines at the anchor file count (FINDING judged, CLEAN counted); evidence is "
               "exam-root-relative")
+        dh = os.path.join(arm, "fx", "zone-hunt-out", "deep-hunt")
+        with open(os.path.join(dh, "src_pool-C1", "run", "invariant_src_pool_Pool_sol_withdraw.log"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("INVARIANT-PROPERTY totalSupplyNonZero violated after deposit\n"
+                     "INVARIANT|src/pool/Pool.sol:withdraw|FINDING\n")
+        with open(os.path.join(dh, "src_pool-C6", "run", "invariant_src_pool_Pool_sol_deposit.log"), "w",
+                  encoding="utf-8") as fh:
+            fh.write("INVARIANT|src/pool/Pool.sol:deposit|TIMEOUT\n")
+        kv = dict(score_arm(arm, "FX-1", stub, "", "", sm))
+        check(kv["deep"] == "UNMEASURED" and kv["deep_cells"] == "finding=1 clean=0 not_judged=1",
+              "score: a non-matching FINDING beside a TIMEOUT sibling is deep UNMEASURED (as CLEAN + TIMEOUT is), "
+              "never a deep MISS")
+
+        print("ladder-classify.py self-test: a VOID L0 r2 replicate")
+        sdir = os.path.join(work, "scores-r2void")
+        os.makedirs(sdir)
+        for c in CELLS:
+            shutil.copy(os.path.join(FIX, "scores", "a06.%s.score" % c), sdir)
+        r2 = os.path.join(sdir, "a06.L0r2.score")
+        with open(r2, encoding="utf-8") as fh:
+            body = fh.read().replace("\nvoid=VALID\n", "\nvoid=VOID:transport\n")
+        with open(r2, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        inv6 = [i for i in inv if i["row"] == "FX-6"][0]
+        r = classify_row(inv6, sdir)
+        check(r["cells"]["L0r1"] == "MISS" and r["cells"]["L0r2"] == "UNMEASURED" and r["cells"]["L1"] == "HIT"
+              and r["cause"] == "UNMEASURED" and r["consistent"] == {"LOCATION", "HINT"},
+              "classify: L0 r1 MISS + r2 VOID + L1 HIT -> UNMEASURED (a VOID r2 is no replicate), not HINT")
         with open(os.path.join(arm, "void.txt"), "w", encoding="utf-8") as fh:
             fh.write("VOID\ttransport\tcell\n")
         kv = dict(score_arm(arm, "FX-1", stub, "", "", sm))
