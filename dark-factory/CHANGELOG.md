@@ -14,6 +14,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-17
+
+**Requires:** agentis >= `1.22.7`
+
 ### Added
 
 - **Held-out clustering record h2306 (#2306 phase B): INCONCLUSIVE, `DF_CLUSTER_FINDINGS` stays OFF.**
@@ -5840,7 +5844,8 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   with a `pending_human_review` marker. The colony NEVER auto-posts to a
   bounty platform — submission is always an explicit human action.
 
-[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.12.0...HEAD
+[Unreleased]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.14.0...HEAD
+[0.14.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.13.1...dark-factory-v0.14.0
 [0.12.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.11.0...dark-factory-v0.12.0
 [0.11.0]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.10.1...dark-factory-v0.11.0
 [0.10.1]: https://github.com/Replikanti/agentis-colonies/compare/dark-factory-v0.10.0...dark-factory-v0.10.1
