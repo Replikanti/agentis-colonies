@@ -20,8 +20,7 @@ h2306/
     root-causes.tsv            blind root-cause labels (same schema as ../oku/root-causes.tsv)
     expected-distinct.tsv      DERIVED: `cluster-holdout.py derive --labels root-causes.tsv`; never hand-edited
     judge-matches.tsv          recorded mechanism-judge MATCHes per raw lead (`cluster-holdout.py judge-project`)
-  expected-gate.txt            `cluster-holdout.py gate --root h2306 --method v2` stdout
-  spotcheck.tsv                the operator's spot-check of every non-exempt judge-HIT row
+  expected-gate.txt            `cluster-holdout.py gate --root h2306 --method v2` stdout (spot rows `missing`, see Result)
 ```
 
 ## Contests and arms
@@ -95,6 +94,27 @@ The ground-truth text comes from the public judging repos.
 - **`numa-audit`:** the matches replay the recorded #2245 judge cache, the same recording run as oku's. The hit rows equal the #2245 readout.
 - **The other four contests:** the cache was recorded live for this set with `score-match.py --judge cmd`, batch 12 and gate 60. That was 284 judging calls with 0 JUDGE-ERRORs. The matches were then projected per raw lead with `cluster-holdout.py judge-project`.
 - The caches are not committed. Each file records its cache's sha256.
+
+## Result (gate run once, `--method v2`): INCONCLUSIVE, `DF_CLUSTER_FINDINGS` stays OFF
+
+| check | result |
+|---|---|
+| G1: v2 merges of labelled-distinct pairs | **0 of 17** |
+| G2: token-mode GT changes | 0 |
+| G4: D | 17, which meets the floor of 12 (D_unique 5) |
+| v1 control: distinct merges `k` | **0** |
+| G3: operator spot-check | not run (18 non-exempt judge-HIT rows stay `missing`) |
+
+- **Verdict.** Under the anchored amendment, `k = 0` means v1 never failed on this set, so the set gives no paired
+  evidence that v2 beats v1. The flip verdict is **INCONCLUSIVE**, and the verify-stage default stays OFF.
+- **Spot-check skipped.** The spot-check was skipped by operator decision, because no answer could change the
+  verdict. That is why `expected-gate.txt` prints `GATE|verdict|FAIL` with only `spot-missing:` gating entries.
+  There is no `spotcheck.tsv`.
+- **Reported only:**
+  - v2 under-merges in 14 of 24 arms;
+  - `vetoed_same` = 13: same-root-cause pairs that v2's cannot-link split;
+  - `vetoed_distinct` = 13: distinct pairs that v2 kept apart but v1 had not merged either;
+  - rule-of-three upper bound on v2's distinct-merge rate: 3/17 = 0.18.
 
 ## Replay
 
