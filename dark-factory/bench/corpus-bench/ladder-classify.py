@@ -56,8 +56,8 @@
 #   6 excluded but listed:
 #     MECHANISM-or-EXECUTION  every breadth rung MISS, the deep hunt UNMEASURED;
 #     UNMEASURED              no HIT anywhere and a breadth rung VOID — or (an implementation edge the plan's list
-#                             does not name) a HINT / EXECUTION hit with BOTH L0 arms unmeasured or with the L0 r2
-#                             replicate VOID (after its one --retry-void), which a LOCATION cannot be excluded for.
+#                             does not name) a HINT / EXECUTION hit with EITHER L0 replicate VOID (after its one
+#                             --retry-void; both must be measured MISS), which a LOCATION cannot be excluded for.
 #   The replicate rule is enforced: a HINT / EXECUTION row without its L0 r2 score is refused (exit 3).
 #
 # DECISION RULE (pre-registered). LOCATION -> coverage/selection, EXECUTION -> execution, HINT + MECHANISM ->
@@ -506,11 +506,13 @@ def classify_row(inv, scores_dir):
         if "L0r2" not in sc:
             die(3, "row %s %s: a %s row needs its L0 r2 replicate (%s.L0r2.score)"
                 % (inv["contest"], inv["row"], hit_class, pid))
-        if not l0_measured or sc["L0r2"][0] == "UNMEASURED":
-            # a VOID r2 (after the protocol's one --retry-void) is no replicate: LOCATION cannot be excluded
+        void_l0 = [c for c in ("L0r1", "L0r2") if sc[c][0] == "UNMEASURED"]
+        if void_l0:
+            # ruling out LOCATION needs BOTH L0 replicates measured MISS; a VOID one (after the protocol's one
+            # --retry-void) is no replicate
             res["cause"], res["consistent"] = "UNMEASURED", {"LOCATION", hit_class}
-            res["notes"].append("%s hit, %s" % (hit_class, "both L0 arms unmeasured" if not l0_measured
-                                                 else "L0 r2 replicate VOID"))
+            res["notes"].append("%s hit, %s" % (hit_class, "both L0 arms unmeasured" if len(void_l0) == 2
+                                                 else "L0 %s replicate VOID" % void_l0[0][2:]))
             return res
         res["cause"], res["sub"] = hit_class, sub
         return res
@@ -764,21 +766,23 @@ def self_test():
               "score: a non-matching FINDING beside a TIMEOUT sibling is deep UNMEASURED (as CLEAN + TIMEOUT is), "
               "never a deep MISS")
 
-        print("ladder-classify.py self-test: a VOID L0 r2 replicate")
-        sdir = os.path.join(work, "scores-r2void")
-        os.makedirs(sdir)
-        for c in CELLS:
-            shutil.copy(os.path.join(FIX, "scores", "a06.%s.score" % c), sdir)
-        r2 = os.path.join(sdir, "a06.L0r2.score")
-        with open(r2, encoding="utf-8") as fh:
-            body = fh.read().replace("\nvoid=VALID\n", "\nvoid=VOID:transport\n")
-        with open(r2, "w", encoding="utf-8") as fh:
-            fh.write(body)
+        print("ladder-classify.py self-test: a VOID L0 replicate (either one)")
         inv6 = [i for i in inv if i["row"] == "FX-6"][0]
-        r = classify_row(inv6, sdir)
-        check(r["cells"]["L0r1"] == "MISS" and r["cells"]["L0r2"] == "UNMEASURED" and r["cells"]["L1"] == "HIT"
-              and r["cause"] == "UNMEASURED" and r["consistent"] == {"LOCATION", "HINT"},
-              "classify: L0 r1 MISS + r2 VOID + L1 HIT -> UNMEASURED (a VOID r2 is no replicate), not HINT")
+        for void_cell, other in (("L0r2", "L0r1"), ("L0r1", "L0r2")):
+            sdir = os.path.join(work, "scores-%svoid" % void_cell)
+            os.makedirs(sdir)
+            for c in CELLS:
+                shutil.copy(os.path.join(FIX, "scores", "a06.%s.score" % c), sdir)
+            vpath = os.path.join(sdir, "a06.%s.score" % void_cell)
+            with open(vpath, encoding="utf-8") as fh:
+                body = fh.read().replace("\nvoid=VALID\n", "\nvoid=VOID:transport\n")
+            with open(vpath, "w", encoding="utf-8") as fh:
+                fh.write(body)
+            r = classify_row(inv6, sdir)
+            check(r["cells"][other] == "MISS" and r["cells"][void_cell] == "UNMEASURED" and r["cells"]["L1"] == "HIT"
+                  and r["cause"] == "UNMEASURED" and r["consistent"] == {"LOCATION", "HINT"},
+                  "classify: L0 %s MISS + %s VOID + L1 HIT -> UNMEASURED (a VOID replicate is no replicate), not HINT"
+                  % (other[2:], void_cell[2:]))
         with open(os.path.join(arm, "void.txt"), "w", encoding="utf-8") as fh:
             fh.write("VOID\ttransport\tcell\n")
         kv = dict(score_arm(arm, "FX-1", stub, "", "", sm))

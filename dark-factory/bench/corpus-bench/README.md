@@ -953,7 +953,7 @@ examined / out-of-map) > EXECUTION (the pointed deep hunt HITs, L0 does not) > H
 MECHANISM (everything measured and MISS; `dismissed` when the mechanism appeared only in a DISMISS line).
 Excluded but listed: MECHANISM-or-EXECUTION (breadth all MISS, deep unmeasured) and UNMEASURED (no HIT and a
 breadth rung VOID, or a HINT / EXECUTION hit with both L0 arms unmeasured, where LOCATION cannot be excluded).
-A VOID L0 r2 (after its one `--retry-void`) is no replicate: r1 MISS + r2 VOID + an L1 / L2 / deep HIT is UNMEASURED.
+Either L0 replicate VOID (after its one `--retry-void`) is no replicate: with an L1 / L2 / deep HIT it is UNMEASURED.
 
 **Decision rule.** LOCATION -> coverage/selection, EXECUTION -> execution, HINT + MECHANISM -> generation (at L0 the
 function was in front of the hunter and the mechanism was still not named). N = the rows in those four classes.
