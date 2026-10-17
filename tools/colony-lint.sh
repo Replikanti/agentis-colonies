@@ -2602,6 +2602,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-holdout-exam.sh" ]; then
     fi
 fi
 
+# --- dark-factory pointed-ladder diagnostic classifier (#2311) ---
+# #2311 re-runs the rare rows the held-out sets missed with the hunter POINTED at the GT function (an L0/L1/L2
+# hint ladder, plus the pointed STAGE 4.5 deep hunt) and classifies each row LOCATION / EXECUTION / HINT /
+# MECHANISM to pick the next lever. bench/corpus-bench/ladder-classify.py is the mechanical part: the hint-leak
+# gate (fail closed), the per-arm scorer and the pre-registered precedence + decision rule. demo-pointed-ladder.sh
+# source-guards that it judges through score-match.py's own judge (imported, never re-implemented) and that its
+# outputs carry the DIAGNOSTIC header and no recall percentage, then runs `ladder-classify.py --self-test` over
+# fixtures/ladder/ with an offline judge stub (CI-safe: no LLM, no network).
+if [ -x "$REPO_ROOT/dark-factory/demo-pointed-ladder.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-pointed-ladder.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: pointed-ladder diagnostic classifier self-test (#2311)"
+    else
+        fail "dark-factory: pointed-ladder diagnostic classifier self-test regressed (#2311)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory semantic mechanism judge scoring mode (#1829) ---
 # score-match.py's location-first token matcher decides "same bug?" by file+function name co-occurrence, which
 # undercounts BOTH ways: it MISSES a candidate that describes the GT row's root cause from a factory/getter the

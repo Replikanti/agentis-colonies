@@ -1,0 +1,14 @@
+# inventory.tsv — the #2311 classifier fixture: one row per cause class and sub-label (scores/ holds each row's
+# per-cell score files). Columns: contest row found_by ptr_id unpointed exposure.
+fx	FX-1	1	a01	MISS	unseen
+fx	FX-2	2	-	MISS	unseen
+fx	FX-3	1	a03	MISS	examined
+fx	FX-4	2	a04	MISS	out-of-map
+fx	FX-5	1	a05	MISS	unseen
+fx	FX-6	1	a06	MISS	examined
+fx	FX-7	2	a07	MISS	unseen
+fx	FX-8	1	a08	MISS	unseen
+fx	FX-9	1	a09	MISS	examined
+fx	FX-10	1	a10	MISS	examined
+fx	FX-11	2	a11	MISS	unseen
+fx	FX-12	1	a12	MISS	unseen

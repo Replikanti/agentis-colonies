@@ -14,6 +14,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Added
+
+- **Pointed-ladder diagnostic (#2311), bench-only.** It classifies the rare rows the spent held-out sets missed as
+  LOCATION, EXECUTION, HINT or MECHANISM, and picks the next lever from the counts. The results are DIAGNOSTIC:
+  they bound reach, they are not recall.
+  - `exam/exam.sh` gains `adopt` (takes over a legacy frozen base after a sha256 check), `plan --ladder` and
+    `stage --pointer` (opaque `ptr-<id>-<rung>` arms and the fixed L0/L1/L2 pointer block in the zone brief), and
+    STAGE 4.5 receives the L0 pointer through `--deep-hunt-audit-context`. New profiles: `pointed-l0` and
+    `pointed`. Any contest outside `--allow-contests` is refused.
+  - `bench/corpus-bench/ladder-classify.py` adds the hint-leak gate (fail closed), the per-arm scorer and the
+    pre-registered precedence and decision rule (DOMINANT / SELECTED / SPLIT). `demo-pointed-ladder.sh` runs it
+    under colony-lint.
+  - Nothing under `auditor/`, `lib/` or any `run-*.sh` changes.
+
 ## [0.14.0] - 2026-10-17
 
 **Requires:** agentis >= `1.22.7`
