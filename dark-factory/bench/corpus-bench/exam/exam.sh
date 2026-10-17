@@ -2176,6 +2176,29 @@ cmd_self_test() {
   else
     bad "L2=L1 row: exit $rc"
   fi
+  # An own-zone anchor outside its function-sliced scope token (Pool.sol@deposit vs the k7q anchor Pool.sol:withdraw):
+  # stage.meta pointer_unsliced + a stage.log WARNING, the scope.tsv payload unchanged (only other zones' anchors append).
+  local ub="$work/ubase" uk="$proot/arms/fx/src_pool/ptr-k7q-L0-r2"
+  mkdir -p "$ub/fx" && cp -R "$lfx/fx/map" "$lfx/fx/briefs" "$lc/code" "$lc/truth.tsv" "$ub/fx/" \
+    && sed -i.bak 's#^\(share pool | C1,C6 | src/pool/FeeMath.sol,src/pool/Pool.sol\)$#\1@deposit#' "$ub/fx/map/scope.tsv" \
+    && rm -f "$ub/fx/map/scope.tsv.bak" || die 3 "self-test: cannot build the sliced-scope base"
+  # shellcheck disable=SC2086  # SHA256_CMD is a command + its flags, split on purpose
+  (cd "$ub" && find fx/map fx/briefs -type f -print0 | LC_ALL=C sort -z | xargs -0 $SHA256_CMD) > "$work/legacy-sliced.sha256"
+  bash "$SELF" adopt --base "$ub" --contest fx --checkout-commit 0123abc --model claude-opus-4-8 --code-subdir . \
+    --legacy-sha "$work/legacy-sliced.sha256" > /dev/null 2>&1 \
+    && bash "$SELF" stage --root "$proot" --base "$ub" --contest fx --zone src_pool --arm ptr-k7q-L0 --repeat 2 \
+         --profile mock --checkout "$co" --pointer "L0:k7q:$ladder" > /dev/null 2>&1; rc=$?
+  { python3 "$HELPER" pointer-render "$ladder" k7q L0; echo; cat "$ub/fx/briefs/briefs/brief_src_pool.md"; } > "$work/brief-uk.want"
+  if [ "$rc" -eq 0 ] && grep -q 'src/pool/Pool.sol@deposit$' "$ub/fx/map/scope.tsv" \
+     && [ "$(meta_get "$uk/stage.meta" pointer_unsliced)" = src/pool/Pool.sol@withdraw ] \
+     && grep -q 'WARNING an own-zone anchor lies outside its function-sliced scope token: src/pool/Pool.sol@withdraw$' "$uk/stage.log" \
+     && [ "$(meta_get "$uk/stage.meta" pointer_scope_append)" = - ] \
+     && cmp -s "$ub/fx/map/scope.tsv" "$uk/fx/zone-hunt-out/map/scope.tsv" \
+     && cmp -s "$work/brief-uk.want" "$uk/fx/zone-hunt-out/briefs/briefs/brief_src_pool.md"; then
+    ok "an own-zone anchor outside its function-sliced scope token: stage.meta pointer_unsliced + stage.log WARNING, scope.tsv and brief payload unchanged"
+  else
+    bad "unsliced own-zone anchor (exit $rc): pointer_unsliced=$(meta_get "$uk/stage.meta" pointer_unsliced 2>/dev/null)"
+  fi
   bash "$SELF" stage --root "$proot" --base "$lbase" --contest fx --zone src_pool --arm other --repeat 1 --profile mock \
     --checkout "$co" --pointer "L0:k7q:$ladder" > /dev/null 2>&1; expect_rc 2 $? "a pointed stage refuses an arm label other than ptr-<id>-<rung>"
   bash "$SELF" stage --root "$proot" --base "$lbase" --contest fx --zone src_feed --arm ptr-k7q-L1 --repeat 1 --profile mock \
@@ -2185,19 +2208,39 @@ cmd_self_test() {
   printf 'BACKEND=mock\nMODEL=claude-opus-4-8\nHARD_STOP_S=600\nDEEP_PASS=1\ndeep.DEEP_HUNT_REACH=1\n' > "$work/p-pl0.env"
   printf 'BACKEND=mock\nMODEL=claude-opus-4-8\nHARD_STOP_S=600\nDEEP_PASS=0\n' > "$work/p-pl.env"
   local rroot="$work/rroot" rk="$work/rroot/arms/fx/src_pool/ptr-k7q-L0-r1" rd="$work/rroot/arms/fx/src_pool/ptr-d4n-L1-r1"
+  # The routing is asserted on the argv run-zone-hunt.sh RECEIVED, not on the line exam.sh echoes into its logs: a
+  # recording checkout whose dark-factory/ links every entry of this tree except run-zone-hunt.sh, a shim that appends
+  # its argv (one call per line, each argument in <>) to a file outside the checkout and execs the real script.
+  local rco="$work/rec-checkout" argvlog="$work/rzh-argv.log" ent
+  mkdir -p "$rco/dark-factory" || die 3 "self-test: cannot build the recording checkout"
+  for ent in "$df_real"/* "$df_real"/.[!.]*; do
+    { [ -e "$ent" ] || [ -L "$ent" ]; } && [ "${ent##*/}" != run-zone-hunt.sh ] || continue
+    ln -s "$ent" "$rco/dark-factory/${ent##*/}"
+  done
+  # shellcheck disable=SC2016  # the shim's "$@" expands when the shim runs, not here
+  { echo '#!/usr/bin/env bash'
+    printf '{ printf "<%%s>" "$@"; echo; } >> %q\n' "$argvlog"
+    printf 'exec bash %q "$@"\n' "$df_real/run-zone-hunt.sh"; } > "$rco/dark-factory/run-zone-hunt.sh"
+  git -C "$rco" init -q && git -C "$rco" config user.email t@example.invalid && git -C "$rco" config user.name t \
+    && git -C "$rco" add -A && git -C "$rco" commit -qm pinned || die 3 "self-test: cannot build the recording checkout"
   bash "$SELF" stage --root "$rroot" --base "$lbase" --contest fx --zone src_pool --arm ptr-k7q-L0 --repeat 1 \
-    --profile "$work/p-pl0.env" --checkout "$co" --pointer "L0:k7q:$ladder" > /dev/null 2>&1
+    --profile "$work/p-pl0.env" --checkout "$rco" --pointer "L0:k7q:$ladder" > /dev/null 2>&1
   bash "$SELF" run --root "$rroot" --base "$lbase" --contest fx --zone src_pool --arm ptr-k7q-L0 --repeat 1 \
-    --profile "$work/p-pl0.env" --checkout "$co" --agentis "$stub" > /dev/null 2>&1; rc=$?
+    --profile "$work/p-pl0.env" --checkout "$rco" --agentis "$stub" > /dev/null 2>&1; rc=$?
+  local argv_deep argv_breadth
+  argv_deep="$(grep -F -- '<--deep-hunt-only>' "$argvlog" 2>/dev/null)"
+  argv_breadth="$(grep -vF -- '<--deep-hunt-only>' "$argvlog" 2>/dev/null)"
   if [ "$rc" -eq 0 ] && [ "$(meta_get "$rk/run.meta" deep_rc)" = 0 ] \
-     && grep -q -- "--deep-hunt-only --jobs 1 --deep-hunt-audit-context $rk/pointer.txt\$" "$rk/deep.log" \
-     && ! grep -q -- '--deep-hunt-audit-context' "$rk/run.log" \
+     && [ "$(printf '%s\n' "$argv_deep" | grep -c .)" -eq 1 ] \
+     && [[ "$argv_deep" == *"<--jobs><1><--deep-hunt-audit-context><$rk/pointer.txt>" ]] \
+     && printf '%s\n' "$argv_breadth" | grep -qF -- '<--rehunt-gaps>' \
+     && ! printf '%s\n' "$argv_breadth" | grep -qF -- '<--deep-hunt-audit-context>' \
      && [ "$(meta_get "$rk/run.meta" pointer_id)" = k7q ] && [ "$(meta_get "$rk/run.meta" pointer_rung)" = L0 ] \
      && [ "$(meta_get "$rk/run.meta" pointer_sha256)" = "$(meta_get "$rk/stage.meta" rung_sha256)" ] \
      && [ "$(meta_get "$rk/run.meta" deep_audit_context)" = "$rk/pointer.txt" ]; then
-    ok "pointed L0 run: --deep-hunt-audit-context <arm>/pointer.txt on the STAGE 4.5 call only (never breadth); run.meta pointer_id / pointer_rung / pointer_sha256"
+    ok "pointed L0 run: run-zone-hunt.sh received --deep-hunt-audit-context <arm>/pointer.txt on the STAGE 4.5 call only (never breadth, recorded argv); run.meta pointer_id / pointer_rung / pointer_sha256"
   else
-    bad "pointed L0 run: exit $rc deep_rc=$(meta_get "$rk/run.meta" deep_rc)"; grep -h 'run-zone-hunt.sh' "$rk/run.log" "$rk/deep.log" 2>/dev/null | cut -c1-200 | sed 's/^/         | /'
+    bad "pointed L0 run: exit $rc deep_rc=$(meta_get "$rk/run.meta" deep_rc)"; cut -c1-200 "$argvlog" 2>/dev/null | sed 's/^/         | /'
   fi
   if ! grep -q '^pointer_' "$a1/run.meta"; then
     ok "an unpointed run.meta carries no pointer_* line (byte-compatible with before #2311)"
