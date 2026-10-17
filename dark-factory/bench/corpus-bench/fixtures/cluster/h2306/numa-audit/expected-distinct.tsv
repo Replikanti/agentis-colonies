@@ -1,0 +1,9 @@
+# expected-distinct.tsv — #2278 M2. DERIVED from root-causes.tsv by `cluster-holdout.py derive`; never
+# hand-edit (`check` fails when this file differs from the derivation). One row per same-block pair of raw
+# entries whose pre-registered root causes differ; idx = 0-based position in the arm's `verified` list.
+# bound(arm) = sum over (file, function) blocks of the distinct rc in the block + entries with no block key.
+# M2|bound|A|26
+# M2|distinct_pairs|A|0
+# M2|bound|B|22
+# M2|distinct_pairs|B|0
+arm	idx_i	idx_j	block	rc_i	rc_j

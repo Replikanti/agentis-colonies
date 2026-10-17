@@ -1,0 +1,67 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "contracts (part 3/3)",
+      "location": "contracts/Zapper.sol:_swapV3Single",
+      "file": "contracts/Zapper.sol",
+      "class": "class=C12",
+      "severity": "Medium",
+      "exploit": "Router passes (_amountOutMin*(1000-_finalSlip))/1000 to the DEX even for a nonzero caller-supplied min, so it enforces only ~97% (default) of the user's stated minimum; a sandwich attacker pushes output into the [97%,100%) band, making the swap succeed and deliver below the user's floor (would otherwise revert), pocketing up to _finalSlip of the trade \u2014 undocumented and inconsistent with the V2/V3-multi/Curve legs.",
+      "poc_sketch": "Deploy Zapper with a mock DEX_ADAPTER whose swapV3Single fills exactly the forwarded minOut and a registered V3-single route (_defaultSlippage=30); call the zap entrypoint with _amountOutMin=100e6 while the mock delivers 97e6, assert the tx does NOT revert and caller balance increases by 97e6 (< 100e6 stated min); then run identical 99.99e6-fill cases through _swapV2/_swapV3Multi/_swapCurve and assert they revert, proving V3-single uniquely honors only 97% of the user's floor.",
+      "verdict": "REAL",
+      "reason": "_zap forwards the caller's nonzero _amountOutMin unchanged and _swapV3Single hands the DEX only (_amountOutMin*(1000-_finalSlip))/1000 (97% at the shipped default) with no post-swap check against the original min, so a sandwich attacker can force execution in the [97%,100%) band below the user's stated floor and extract up to _finalSlip of the trade. FCB_83dc918d86e65f9a3de8a0_END"
+    },
+    {
+      "subsystem": "contracts (part 3/3)",
+      "location": "contracts/Zapper.sol:_swapV3Multi:194",
+      "file": "contracts/Zapper.sol",
+      "class": "class=C23",
+      "severity": "Medium",
+      "exploit": "On the Base (chainid 8453) deployment `_swapV3Multi` calls exactInput on the hardcoded MAINNET router 0xE592427A0AEce92De3Edee1F18E0157C05861564 (a non-router forwarding contract on Base; real Base router is SwapRouter02 0x2626664c2603336E57B271c5C0b26F421741e481), so every owner-configured two-hop V3 route (reachable via unprivileged IndexUtils.addLPAndStake \u2192 _zap, using a setZapMap entry with pool2!=0 that the setter accepts unvalidated) reverts \u2014 permanently bricking the multi-hop V3 zap path while single-hop V3 correctly uses the chain-aware DEX_ADAPTER.",
+      "poc_sketch": "Fork Base (vm.createSelectFork chainid 8453); deploy a Zapper/IndexUtils harness with a MockDexAdapter whose V3_ROUTER() returns 0x2626... and a MockTwap; mint ERC20 _in to the harness; call _swapV3Multi(_in,3000,_mid,3000,_out,1e18,5e17) exactly as _zap routes a 2-hop V3 entry; assert (a) 0xE592....code has no exactInput / is not the router, (b) the call reverts and delivers 0 _out, (c) the adapter's real Base router (0x2626) is never invoked (vm.expectCall on 0xE592 fires), and as control that on chainid 1 the identical call routes/succeeds \u2014 proving the constant is correct for mainnet only.",
+      "verdict": "REAL",
+      "reason": "_swapV3Multi unconditionally calls exactInput on the hardcoded mainnet constant V3_ROUTER with no chainid guard or adapter fallback, so on the Base deployment (where that address has no code) every owner-admitted two-hop V3 route in zapMap reverts, bricking the multi-hop V3 zap while single-hop stays chain-correct via DEX_ADAPTER."
+    },
+    {
+      "subsystem": "contracts (part 3/3)",
+      "location": "contracts/Zapper.sol:_swapV3Single",
+      "file": "contracts/Zapper.sol",
+      "class": "class=C2",
+      "severity": "High",
+      "exploit": "On a 0-min zap the fallback slippage floor is derived from the price of a fixed-tier pool (getV3Pool(_in,_out,10000) or tick-spacing 200) selected independently of the deeper pool the swap actually executes on, with no source-pool-liquidity/deviation bound and no L2 sequencer guard; an attacker manipulates that thin/decoupled price-source pool to collapse _amountOutMin toward zero and then sandwiches the victim's swap on the real execution pool, extracting the difference.",
+      "poc_sketch": "Foundry: fork Base (or mainnet), deploy Zapper with a DexAdapter+V3TwapUtilities, register a pair whose liquid execution pool (pool1) is a different fee tier than the 10000/200 tier and seed the 10000/200-tier pool with thin liquidity; as an unprivileged attacker skew the thin tier pool's price down, then call the public zap entrypoint with _amountOutMin==0 as the victim; assert the _out received is far below fair value and that the attacker's post-swap position (thin-pool LP unwind + deep-pool sandwich) nets positive. FCB_70abc18d86d03d55af1eb0_END",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'guard: cite the path:line this ground requires, in code you were given'): On the _amountOutMin==0 branch (lines 164-171) the min-out floor is taken from a price-source pool chosen by a hardcoded fee tier getV3Pool(_in,_out,10000)/tick-spacing 200 (lines 159-162), selected independently of the execution pool's fee at line 131, with no source-pool liquidity/deviation bound, no sequencer check, and no require/conditional in the provided code guarding it; the only manipulation-resistance would live in the unshown V3TwapUtilities implementation, which the gate forbids me from assuming, so nothing in the code given stops an unprivileged attacker from depressing that floor and sandwiching the executed swap."
+    }
+  ],
+  "errors": [
+    {
+      "location": "contracts/Zapper.sol:_swapV3Single:177",
+      "file": "contracts/Zapper.sol",
+      "reason": "LLM transport error (flat-cyborg exited) after 5 attempts \u2014 TRANSIENT, RE-RUNNABLE (not assessed)"
+    }
+  ],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 19,
+    "verified": 3,
+    "errored": 1,
+    "dropped_subfloor": 0,
+    "refuted": 1
+  },
+  "refuted": [
+    {
+      "location": "contracts/Zapper.sol:act_setZapMap",
+      "file": "contracts/Zapper.sol",
+      "class": "C5",
+      "severity": "High",
+      "exploit": "stateful invariant broken on contracts/Zapper.sol:Zapper | act_setZapMap(978630202078385574 [9.786e17], 115792089237316195423570985008687907853269984665640564039457584007913129639935 [1.157e77], 47767459922325629997246419484701486935914234862446885889900 [4.776e58], 59345 [5.934e4], 53923233604516537970438023 [5.392e25])  [sender=0x02b7d3d5438037d49a25ed15ae34f2d0099494b5] ; act_setDefaultSlippage(1000)  [sender=0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640] ; act_setZapMap(7966, 2944, 4205999328 [4.205e9], 4369, 5547)  [sender=0x583019ff0f430721ada9cfb4fac8f06ca104d0b4] ; act_setPoolSlippage(6178733648854261173511978961383 [6.178e30], 433375711954933421973571554056315540 [4.333e35])  [sender=0x000000000000000000000000000000000000140d] ; act_setZapMap(978630202078385574 [9.786e17], 115792089237316195423570985008687907853269984665640564039457584007913129639935 [1.157e77], 47767459922325629997246419484701486935914234862446885889900 [4.776e58], 59345 [5.934e4], 53923233604516537970438023 [5.392e25])  [sender=0x02b7d3d5438037d49a25ed15ae34f2d0099494b5] ; act_setOHM(178947526908914669 [1.789e17], 7677101769618902635832981271 [7.677e27])  [sender=0x893f503fac2ee1e5b78665db23f9c94017aae97c] ; act_fundERC20(91513851006304680561828191614312075927161769763187530475346 [9.151e58])  [sender=0xba12222222228d8ba445958a75a0704d566bf2c8] ; act_rescueERC20()  [sender=0x0000000000000000000000000000000000000eab] ; act_fundETH(1196124166691904730518785 [1.196e24])  [sender=0xe592427a0aece92de3edee1f18e0157c05861564] ; act_rescueETH()  [sender=0x69accb968b19a53790f43e57558f5e443a91af22]",
+      "source": "invariant-hunt",
+      "refute_verdict": "REFUTED",
+      "refute_reason": "Every mutating call in the witness (setZapMap, setDefaultSlippage, setPoolSlippage, setOHM, rescueERC20, rescueETH) is external onlyOwner and the contract exposes no unprivileged state-changing entrypoint, so only the trusted owner can drive the sequence and no unprivileged attacker can reach the broken state. FCB_c712118d873b40de2f5790_END"
+    }
+  ]
+}

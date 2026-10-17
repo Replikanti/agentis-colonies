@@ -1,0 +1,59 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "A locker owner soft-stakes their entire FLUID pile (stake() sets staker-pool units but moves no tokens), then calls provideLiquidity() which has NO getAvailableBalance()/_stakedBalance guard and spends the SAME staked FLUID into a Uniswap position while reporting LP-pool units, so one pile simultaneously backs units in BOTH shared GDA tax pools and steals tax rewards from every other staker/LP.",
+      "poc_sketch": "Deploy the real FluidLocker + StakingRewardController behind ERC1967 proxies with mock GDA pools (per-member unit ledger) and a mock Uniswap NPM/router that pulls the approved FLUID; fund a locker with N FLUID, stake(N) and assert stakerPool.getUnits(locker)=N/1e18 and getAvailableBalance()=0; then provideLiquidity{value:1e18}(N) and assert stakerPool.getUnits(locker) is UNCHANGED while lpPool.getUnits(locker)>0 and FLUID.balanceOf(locker) < _stakedBalance (getAvailableBalance() now underflows); an identical-capital honest locker that only stakes has 0 LP units. (Executed: PASS \u2014 alice 20000 staker units + 2000099 LP units on one 20000e18 pile vs honest bob 20000 staker / 0 LP.)",
+      "verdict": "REAL",
+      "reason": "provideLiquidity() lacks the getAvailableBalance()/_stakedBalance reservation guard that unlock() and stake() enforce, so soft-staked FLUID (left physically in the locker by stake()) is spent into a Uniswap position, leaving one pile backing units in BOTH the shared staker and LP GDA pools and diluting every other participant's tax rewards."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:unlock:335",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C12",
+      "severity": "Medium",
+      "exploit": "Every taxed unlock (unlockPeriod<_MAX_UNLOCK_PERIOD) AND every instant unlock (unlockPeriod=0) reverts whenever either shared pool has getTotalUnits()==0 \u2014 an admitted state at genesis or after all stakers unstake / all LPs withdraw \u2014 DoSing the taxed/instant exit path for all users, who are then left only the non-equivalent 365d 0-tax vest.",
+      "poc_sketch": "In a forge test with the real unlock() path, deploy locker with UNLOCK_AVAILABLE=true and both distribution pools at 0 total units; lock(>=10e18) then call unlock(amount,7 days,recipient) and expectRevert STAKER_DISTRIBUTION_POOL_HAS_NO_UNITS, and unlock(amount,0,recipient) also reverts; then have another locker stake+provideLiquidity to seed both pools and assert the same unlock now succeeds.",
+      "verdict": "REAL",
+      "reason": "When unlockPeriod < _MAX_UNLOCK_PERIOD, unlock() unconditionally reverts if either shared STAKER/LP distribution pool has zero total units - a state reachable at genesis and after global unstake/withdraw - blocking every instant and taxed exit for all locker owners and leaving only the time-and-tax-non-equivalent 365-day vest."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "Locker owner soft-`stake(N)` (no token move, staker units=N/1e18) then `provideLiquidity(N)` which has no getAvailableBalance()/_stakedBalance gate and spends the SAME N FLUID into a V3 position (LP units=liquidity/1e16), earning tax from BOTH shared GDA pools on one pile and leaving _stakedBalance fully unbacked, stealing reward share from every other staker/LP.",
+      "poc_sketch": "Deploy FluidLocker+StakingRewardController behind proxies with mock GDA pools (per-member unit ledger) and a mock NPM/router that pulls the approved FLUID; fund locker N=20000e18, stake(N) assert stakerPool.getUnits(locker)==N/1e18 and getAvailableBalance()==0; provideLiquidity{value:1e18}(N) assert stakerPool.getUnits UNCHANGED while lpPool.getUnits(locker)>0 and FLUID.balanceOf(locker)<_stakedBalance; identical-capital honest locker that only stakes has 0 LP units.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity/_createPosition spend the locker's raw FLUID balance via NPM.mint with no getAvailableBalance()/_stakedBalance gate, so soft-staked-but-unmoved FLUID can be pushed into a V3 LP position while _stakedBalance stays registered, letting one pile of N FLUID double-count units and earn tax from both the staker and LP GDA pools at honest participants' expense. FCB_16aad618d7941494eb8f4d0_END"
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:unlock:341",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C25",
+      "severity": "Medium",
+      "exploit": "An external locker owner cannot instant-unlock (period=0) or fast-vest-unlock while the shared LP_DISTRIBUTION_POOL has zero units \u2014 the natural default state, since providing liquidity is optional/costly while staking is a free soft-stake \u2014 because unlock() reverts LP_DISTRIBUTION_POOL_HAS_NO_UNITS at line 341 even though _instantUnlock would fully collect the 80% penalty by re-routing the LP leg to the existing staker pool (GDA distribute to a 0-unit pool no-ops per SemanticMoney.sol:352), so this raw-count gate blocks a lossless, penalty-paying exit for the whole class of locker owners.",
+      "poc_sketch": "Reuse test/FluidLocker.t.sol testInstantUnlock harness: _helperFundLocker(aliceLocker,N); _helperLockerStake(bobLocker) so STAKER_DISTRIBUTION_POOL.getTotalUnits()>0 while LP_DISTRIBUTION_POOL.getTotalUnits()==0; assert vm.expectRevert(LP_DISTRIBUTION_POOL_HAS_NO_UNITS) on aliceLocker.unlock(unlockAmount,0,ALICE) (already reproduced at line 335). To prove over-broadness, deploy a FluidLocker impl with line 341 removed (or call _instantUnlock via a test subclass) in the identical state and assert the call now succeeds: amountToStaker==penaltyAmount (=unlockAmount*8000/1e4), amountToLP==0, ALICE receives unlockAmount-penaltyAmount, and no FLUID is stranded in the locker \u2014 demonstrating the gate blocks a fully-collectible exit rather than stopping a recipient-less flow.",
+      "verdict": "REAL",
+      "reason": "The line-341 LP-units check unconditionally reverts every sub-max-period unlock whenever the global LP_DISTRIBUTION_POOL has zero units (an admitted state, since liquidity provision is optional) even though _instantUnlock's staker leg requests penaltyAmount - actualProviderDistributionAmount and thus fully absorbs the no-op'd LP leg (GDA distribute to a 0-unit pool returns 0), blocking a lossless penalty-paying exit with no equivalent-time alternative. FCB_1c5df518d794eff4553fa60_END"
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 6,
+    "verified": 4,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

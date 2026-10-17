@@ -1,0 +1,127 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "contracts (part 1/3)",
+      "location": "contracts/AutoCompoundingPodLp.sol:_tokenToPairedLpToken",
+      "file": "contracts/AutoCompoundingPodLp.sol",
+      "class": "class=C1",
+      "severity": "Medium",
+      "exploit": "Reward->paired compound swaps pass amountOutMin=0 and the enclosing _processRewardsToPodLp uses _amountLpOutMin=0, so any unprivileged caller who triggers the compound via deposit/mint/withdraw can sandwich the reward-token/paired V3 (1% tier) pool and siphon the vault's accrued yield out of _totalAssets, repeatably.",
+      "poc_sketch": "Foundry: deploy pod + aspTKN with a mock IDexAdapter whose swapV3Single/_swap route through a manipulable V2/V3 pair; accrue reward tokens on the aspTKN; from an unprivileged EOA in one tx: (a) swap to skew the reward/paired pool, (b) call aspTKN.deposit(1,attacker) forcing _processRewardsToPodLp to swap the rewards at 0 min-out, (c) swap back; assert attacker net token gain > 0 and that _totalAssets increased by less than the fair (un-sandwiched) compound output.",
+      "verdict": "REAL",
+      "reason": "The rewards->paired swapV3Single is hardcoded amountOutMin=0 (and REWARDS_SWAP_SLIPPAGE is never wired in), while the only downstream oracle/lpSlippage bounds are computed off the already-reduced paired output and the entry paths pass _amountLpOutMin=0, so any unprivileged caller can trigger the compound and sandwich the 1% pool to siphon accrued yield from _totalAssets."
+    },
+    {
+      "subsystem": "contracts (part 1/3)",
+      "location": "contracts/AutoCompoundingPodLp.sol:_tokenToPairedLpToken",
+      "file": "contracts/AutoCompoundingPodLp.sol",
+      "class": "class=C15",
+      "severity": "Medium",
+      "exploit": "Reward->paired compound swap forwards amountOutMin=0 (swapV3Single(...,0,...) and _swap(...,0)) and is NOT covered by podOracle, so any address triggering _processRewardsToPodLp via deposit/mint/withdraw can atomically sandwich the reward compound and siphon the vault's accrued yield.",
+      "poc_sketch": "Foundry: fork a chain with a pod+aspTKN whose staking pool has accrued rewardsToken; attacker contract in ONE tx: (1) swapV3 to skew the rewardsToken/paired 1% pool, (2) aspTKN.deposit(smallNonzero, attacker), which runs the reward compound at the skewed rate, (3) swapV3 back; assert attacker net token balance increased and vault _lpAmtOut/_totalAssets grew by far less than a no-manipulation baseline compound.",
+      "verdict": "REAL",
+      "reason": "The reward->paired compound swaps hardcode amountOutMin=0 with no oracle or slippage bound on that leg, and any unprivileged address fires them via deposit/mint/withdraw's _processRewardsToPodLp(0, block.timestamp), so the leg is atomically sandwichable while podOracle/lpSlippage guard only the later paired->pod and LP-add steps and never recover the value lost on the first swap."
+    },
+    {
+      "subsystem": "contracts (part 1/3)",
+      "location": "contracts/AutoCompoundingPodLp.sol:_pairedLpTokenToPodLp",
+      "file": "contracts/AutoCompoundingPodLp.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "On a permissionlessly-created vault podOracle==address(0) (default), so _minPtknOut=0 and the paired->pod V2 swap has no slippage floor; attacker uses pod.flashMint (which sets _shortCircuitRewards=1) to skew the pod/paired V2 pool, triggers the aspTKN compound priced off that pool with zero min-out, extracts, then repays.",
+      "poc_sketch": "Foundry: create aspTKN via factory without calling setPodOracle; accrue paired-token rewards on the vault; attacker flashMint pod -> in callback swapV2 to skew pod/paired pool -> aspTKN.deposit(smallNonzero) compounds paired->pod at manipulated price with _minPtknOut==0 -> swap back -> repay flashMint+fee; assert attacker profit>0 and vault received fewer pod tokens / less LP than an unmanipulated compound.",
+      "verdict": "REAL",
+      "reason": "With podOracle==address(0) (the constructor default, never rejected by any setter), _minPtknOut is 0 so the permissionlessly-triggerable (deposit->_processRewardsToPodLp(0,...)) paired->pod V2 swap has no slippage floor and its bad fill is not reverted by the surrounding try/catch, letting an unprivileged attacker atomically skew the pool, force the zero-min-out compound, and unwind for profit."
+    },
+    {
+      "subsystem": "contracts (part 1/3)",
+      "location": "contracts/AutoCompoundingPodLp.sol:_tokenToPairedLpToken:266",
+      "file": "contracts/AutoCompoundingPodLp.sol",
+      "class": "class=C12",
+      "severity": "Medium",
+      "exploit": "Any external caller triggers the auto-compound via deposit/mint/withdraw; the reward->paired swap (line 266 _swap(...,0) and line 279-286 swapV3Single(...,0,...)) executes with amountOutMin=0 on a public pool, so an attacker flash-loan-skews that pool, forces the vault to sell its accrued rewards at a manipulated rate, and unwinds \u2014 draining vault yield via sandwich.",
+      "poc_sketch": "Foundry fork: deploy pod+spTKN+rewards+aspTKN (or reuse test/AutoCompoundingPodLp_LivePOCSetup.sol), seed a reward-token balance on the aspTKN so _processRewardsToPodLp has something to swap, do NOT set podOracle-irrelevant here; in one tx as attacker: (1) swap in the reward->paired V2/V3 pool to move price against the reward token, (2) call aspTKN.deposit(x, attacker) to trigger _processRewardsToPodLp -> _tokenToPairedLpToken swap at the skewed price, (3) reverse the pool trade; assert attacker net token balance increased and the vault's _totalAssets increment (and paired tokens received) is materially below the fair no-slippage amount.",
+      "verdict": "REAL",
+      "reason": "The reward->paired swaps at line 266 and lines 279-286 execute with amountOutMin=0 on a permissionlessly-triggered path where every reachable enclosing min-out is also 0, and the only downstream slippage checks guard the later paired->pod and LP-add legs rather than the reward->paired leg, so nothing bounds a sandwich on that leg for an unprivileged caller."
+    },
+    {
+      "subsystem": "contracts (part 1/3)",
+      "location": "contracts/AutoCompoundingPodLp.sol:_pairedLpTokenToPodLp:323",
+      "file": "contracts/AutoCompoundingPodLp.sol",
+      "class": "class=C12",
+      "severity": "Medium",
+      "exploit": "On a freshly factory-created aspTKN (podOracle unset by default, never initialized in the constructor or factory), _minPtknOut stays 0, so the paired->pod V2 swap at line 323 has no slippage floor; any external caller triggering the compound lets an attacker sandwich that swap and drain compound value.",
+      "poc_sketch": "Foundry fork: factory.create() an aspTKN and leave podOracle == address(0) (default); accrue paired-token rewards on it; as attacker in one tx: (1) skew the pod/paired V2 pool, (2) call deposit()/withdraw() to run _pairedLpTokenToPodLp with _minPtknOut==0, (3) unwind; assert the pod amount the vault received is far below the oracle-fair value and attacker profits, then repeat with setPodOracle set to show the swap now reverts on the same skew, proving the missing floor is the defect.",
+      "verdict": "REAL",
+      "reason": "The unauthenticated deposit/mint/withdraw/redeem entrypoints all invoke _processRewardsToPodLp -> _pairedLpTokenToPodLp, and because podOracle is never set in the constructor its default address(0) skips the `if (address(podOracle) != address(0))` block, leaving _minPtknOut == 0 on the same-pool paired->pod swapV2Single with no other floor (lpSlippage protects only the LP add into the same manipulable pool), so any unprivileged caller can sandwich the compound and drain value."
+    },
+    {
+      "subsystem": "contracts (part 1/3)",
+      "location": "contracts/AutoCompoundingPodLp.sol:_processRewardsToPodLp:229",
+      "file": "contracts/AutoCompoundingPodLp.sol",
+      "class": "class=C11",
+      "severity": "High",
+      "exploit": "Unprivileged attacker reaches empty aspTKN (create + redeem the recoverable factory seed), deposits 1 wei for 1 share, donates pod.lpRewardsToken()/PAIRED_LP_TOKEN; the compound run at the start of the next deposit does `_totalAssets += _lpAmtOut` with no share mint (line 229) and no dead-shares/virtual-offset in _cbr (line 204), so the victim's shares round down (to 0 \u2192 revert, or to fewer, losing value the attacker redeems).",
+      "poc_sketch": "Deploy aspTKN via factory with mock pod/dex/indexUtils where a compound credits spTKN==donated-token to _totalAssets; assert redeem(seed)\u2192supply 0, deposit(1)\u21921 share, transfer donation to vault, then victim deposit(50e18) reverts \"MS\" and victim deposit(180e18)\u21921 share with previewRedeem==137.5e18 (loss 42.5e18) while attacker's 1-wei share is worth 137.5e18 (PoC: 2 passing forge tests).",
+      "verdict": "REAL",
+      "reason": "_totalAssets += _lpAmtOut (line 229) folds compounded attacker-donated reward tokens into total assets with no share mint while _cbr (line 204) carries no virtual-offset/dead-shares, so a first depositor of a freshly-deployed empty vault can inflate the share price through the reward-compounding donation vector (bypassing the internal-accounting defense) and capture later depositors' floored rounding remainder."
+    },
+    {
+      "subsystem": "contracts (part 1/3)",
+      "location": "contracts/AutoCompoundingPodLp.sol:_processRewardsToPodLp:229",
+      "file": "contracts/AutoCompoundingPodLp.sol",
+      "class": "class=C25",
+      "severity": "High",
+      "exploit": "On an unseeded/emptied aspTKN (totalSupply()==0, reachable via recoverable factory seed, minimumDepositAtCreation==0, null-pod-then-setPod, or full withdrawal) an attacker donates any reward/paired token; `_processRewardsToPodLp` compounds it via `_totalAssets += _lpAmtOut` with no supply==0 guard while `_cbr()` short-circuits to FACTOR, so the pot accrues to nobody and the first depositor mints 1:1 yet immediately owns pot+deposit \u2014 and the same inflated cbr floors a later victim's deposit to 0 shares, reverting on `require(_shares!=0,\"MS\")` (DoS/dilution).",
+      "poc_sketch": "Foundry (isolated project reusing repo mocks, PASSES): construct aspTKN{isSelfLending=false} over MockPod/MockDex/MockIndexUtils/MockStakingPoolToken/MockTokenRewards with supply==0; set getAllRewardsTokens=[R1], dex.setSwapV3SingleReturn(50e18), deal PAIRED to asp, iu.setAddLPAndStakeReturn(50e18), mint R1 to asp; call processAllRewardsTokensToPodLp(0,ts) and assert totalAssets()==50e18 while totalSupply()==0; deposit 1e18 as attacker, assert shares==1e18 and convertToAssets(shares)==51e18 (free profit 50e18); separately, attacker takes 1-wei share then compounds a 1000e18 pot and assert previewDeposit(100e18)==0 and vm.expectRevert(\"MS\") on victim deposit.",
+      "verdict": "REAL",
+      "reason": "`_processRewardsToPodLp` credits compounded donations into `_totalAssets` while `_cbr()` short-circuits to FACTOR whenever `totalSupply()==0` (reachable by front-running the first deposit or after any full withdrawal), and with no virtual-offset/dead-shares/minimum-deposit guard the first depositor mints 1:1 and captures the donated pot while `_convertToShares`'s floor rounding drives a later victim's deposit to 0 shares (revert \"MS\") or dilutes it into the attacker's minimal share."
+    },
+    {
+      "subsystem": "contracts (part 1/3)",
+      "location": "contracts/AutoCompoundingPodLp.sol:_tokenToPairedLpToken:261",
+      "file": "contracts/AutoCompoundingPodLp.sol",
+      "class": "class=C26",
+      "severity": "Medium",
+      "exploit": "Unvalidated combination: _isSelfLendingPod (immutable IS_PAIRED_LENDING_PAIR, set from a creator arg via the permissionless AutoCompoundingPodLpFactory.create) and the pod's PAIRED_LP_TOKEN type are configured separately and never validated as a pair; creating an aspTKN with IS_PAIRED_LENDING_PAIR=true while the pod's paired token is a plain ERC20 (or =false while it is a Fraxlend fToken) makes _processRewardsToPodLp->_tokenToPairedLpToken call IFraxlendPair(_pairedLpToken).asset() (L261) / _depositIntoLendingPair (L268/L308) on a non-matching token; the vault seeds and looks healthy, then permanently reverts every deposit/mint/withdraw/redeem (all front-run _processRewardsToPodLp with no try/catch above L261) the moment any non-paired reward token accrues, freezing all depositor funds in that vault",
+      "poc_sketch": "Foundry: deploy a normal pod whose PAIRED_LP_TOKEN is a plain ERC20 (e.g. mock DAI) with a staking pool that pays a reward token != the paired token; call factory.create(name,sym,true,pod,dexAdapter,indexUtils,salt) so IS_PAIRED_LENDING_PAIR=true; assert the create-time seed deposit succeeds; have a victim deposit(assets) (succeeds while reward balance==0); transfer a reward token to the aspTKN to simulate accrued staking rewards; assert aspTKN.withdraw(victimAssets,victim,victim) and aspTKN.deposit(x,victim) both REVERT (compound bricked at IFraxlendPair(rawToken).asset()), proving depositor funds are frozen; also assert the mirror cell (create(...,false,...) with a Fraxlend-fToken paired token) mis-routes/reverts because the lending-pair deposit step at L268/L308 is skipped.",
+      "verdict": "REAL",
+      "reason": "The constructor stores IS_PAIRED_LENDING_PAIR from an unvalidated arg with no check against the pod's PAIRED_LP_TOKEN type, and _tokenToPairedLpToken then executes IFraxlendPair(_pairedLpToken).asset() at L261 outside any try/catch for every non-paired reward token, so a true/plain-ERC20 mismatch reverts every _processRewardsToPodLp-fronted deposit/mint/withdraw/redeem once any reward accrues \u2014 an admitted-config liveness loss with no guard, no validating line, and no sufficient refutation ground."
+    }
+  ],
+  "errors": [
+    {
+      "location": "contracts/AutoCompoundingPodLp.sol:_processRewardsToPodLp",
+      "file": "contracts/AutoCompoundingPodLp.sol",
+      "reason": "LLM transport error (flat-cyborg exited) after 5 attempts \u2014 TRANSIENT, RE-RUNNABLE (not assessed)"
+    },
+    {
+      "location": "contracts/AutoCompoundingPodLp.sol:_processRewardsToPodLp",
+      "file": "contracts/AutoCompoundingPodLp.sol",
+      "reason": "no VERDICT"
+    }
+  ],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 25,
+    "verified": 8,
+    "errored": 2,
+    "dropped_subfloor": 0,
+    "refuted": 1
+  },
+  "refuted": [
+    {
+      "location": "contracts/IndexManager.sol:deployNewIndex",
+      "file": "contracts/IndexManager.sol",
+      "class": "C11",
+      "severity": "High",
+      "exploit": "stateful invariant broken on contracts/IndexManager.sol:IndexManager | deployNewIndex(2827)  [sender=0x2db4e646eb147947b091ece0ab6f2106679ea062] ; addIndex(74351989885542447726006575528091184109646408419130481327175648172 [7.435e64], 115792089237316195423570985008687907853269984665640564039457584007913129639934 [1.157e77], 13521294219983101660156956954273950888600593557455837048 [1.352e55])  [sender=0x272bd09801d6020693738aadbf0028038330982a] ; addIndex(364523546699519307695259552 [3.645e26], 48016922847079102669342966347471 [4.801e31], 105313069101070202880419515303105866332 [1.053e38])  [sender=0x0576bb15fa6d190ed062089019629a1d4d649244] ; deployNewIndex(5946775527352 [5.946e12])  [sender=0xb57b0ee6c952bf78674a1c9b31842c19d8f38e0b] ; removeIndex(936404311289065432 [9.364e17], 2)  [sender=0x91ca48ee159fabe4673564108a78bcb1bc15685c] ; pokeRemovedSelfLending(897)  [sender=0xc989824eaee79c747124df6a6f1a6383c8ee3a60] ; deployNewIndex(635796606040252 [6.357e14])  [sender=0x7a25db54445b5bdb5249457e979a94e0d087a522] ; removeIndex(0, 2161191949179054813042001164735326366719236421 [2.161e45])  [sender=0x917305f2c010c03e7ab0acc22853375f40e59721] ; deployNewIndex(1380)  [sender=0x000000000000000000000000000000000000283e] ; pokeRemovedMakePublic(3)  [sender=0x03eb72bdd2faa23898330fd7e5aa1d6b5f4cdc93] ; deployNewIndex(48878 [4.887e4])  [sender=0x72ff47a591f33ba80c7e04ee147560f4fef21bf1] ; addIndex(74351989885542447726006575528091184109646408419130481327175648172 [7.435e64], 115792089237316195423570985008687907853269984665640564039457584007913129639934 [1.157e77], 13521294219983101660156956954273950888600593557455837048 [1.352e55])  [sender=0x3a644b6bd27b7aa531e5bd333dee91a7c1092ee9] ; addIndex(364523546699519307695259552 [3.645e26], 48016922847079102669342966347471 [4.801e31], 105313069101070202880419515303105866332 [1.053e38])  [sender=0x37cc94fc816396cfddfbb543e860172278d5db45] ; deployNewIndex(5946775527352 [5.946e12])  [sender=0x8d58c356fdf9074a45e171ea815ad906763f4046] ; removeIndex(936404311289065432 [9.364e17], 2)  [sender=0x066b792a47f1273412ea8ed3d63983a9da093e28] ; pokeRemovedSelfLending(892)  [sender=0x042f45e5eba98a929e02b16e146912f416e16a7d]",
+      "source": "invariant-hunt",
+      "refute_verdict": "REFUTED",
+      "refute_reason": "The array/mapping corruption is produced only by addIndex/removeIndex, both gated by onlyAuthorized (owner or owner-whitelisted via onlyOwner setAuthorized), so an unprivileged attacker cannot drive the witness, while the sole unprivileged entrypoint deployNewIndex only appends a fresh factory-deployed address with a self-consistent _indexIdx entry."
+    }
+  ]
+}

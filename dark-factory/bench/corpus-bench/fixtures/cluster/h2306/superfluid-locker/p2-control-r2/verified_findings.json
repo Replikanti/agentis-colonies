@@ -1,0 +1,37 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "Locker owner stakes a FLUID pile (earning STAKER_DISTRIBUTION_POOL units) then calls provideLiquidity with the SAME pile \u2014 provideLiquidity has no getAvailableBalance/staked check and never updates staker units, so one pile backs units in BOTH shared tax pools, stealing tax from all other lockers.",
+      "poc_sketch": "Fork Base; create locker via factory; _helperFundLocker(locker, 20000e18); stake(20000e18) and record taxDistributionPool.getUnits(locker); then provideLiquidity{value:1 ether}(20000e18) with NO extra funding; assert taxDistributionPool.getUnits(locker) unchanged AND lpDistributionPool.getUnits(locker) > 0 AND FLUID.balanceOf(locker) < getStakedBalance() (so getAvailableBalance() reverts) \u2014 one pile double-counted across both shared pools.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity pulls the locker's own FLUID (including the portion counted as _stakedBalance) into the Uniswap position and bumps LP_DISTRIBUTION_POOL units with no getAvailableBalance/staked check and no decrement of _stakedBalance or staker units, so one pile keeps earning STAKER_DISTRIBUTION_POOL tax while simultaneously earning LP-pool tax, diluting every other locker."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "A locker owner stakes N FLUID (staker units = N/1e18 in the shared STAKER_DISTRIBUTION_POOL) then calls provideLiquidity(N) with the SAME pile; provideLiquidity does no getAvailableBalance()/staked reconciliation and never decrements _stakedBalance or staker units, so the identical FLUID backs staker-pool units AND LP-pool units at once (and once spent into Uniswap the staker units are wholly unbacked), stealing tax from every other locker in both shared pools.",
+      "poc_sketch": "Fork Base; upgrade+create locker via factory; _helperFundLocker(locker, 20000e18); prank owner stake(20000e18) and record taxDistributionPool.getUnits(locker) > 0; then provideLiquidity{value:1 ether}(19800e18) with NO extra funding; assert taxDistributionPool.getUnits(locker) unchanged AND lpDistributionPool.getUnits(locker) > 0 AND FLUID.balanceOf(locker) < getStakedBalance() (getAvailableBalance() now reverts) \u2014 one pile double-counted across both shared tax pools.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity spends the locker's FLUID via the Uniswap mint with no getAvailableBalance()/_stakedBalance reconciliation, so an unprivileged locker owner can stake N then LP the same N, leaving balanceOf below _stakedBalance and drawing shared staker-pool tax on phantom, unbacked staker units."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 4,
+    "verified": 2,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

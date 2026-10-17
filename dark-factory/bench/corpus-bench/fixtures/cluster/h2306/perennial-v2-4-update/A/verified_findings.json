@@ -1,0 +1,130 @@
+{
+  "repo": "perennial-v2",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "packages/core/Market settlement accounting & invariant math",
+      "location": "packages/core/contracts/libs/CheckpointLib.sol:_accumulateFee",
+      "file": "packages/core/contracts/libs/CheckpointLib.sol",
+      "class": "class=C6",
+      "severity": "Medium",
+      "exploit": "Market.sol:148 `if (intent.fee.gt(UFixed6Lib.ONE)) revert MarketInvalidIntentFeeError();` (also Market.sol:181) bounds guaranteeReferralFee<=1, so guarantee.solverReferral=order.takerReferral.mul(fee)<=order.takerReferral (Guarantee.sol:77) => solverFee<=takerSubtractiveFee, so .sub(solverFee) cannot underflow and subtractiveFee+solverFee=makerSub+takerSub<=makerFee+takerFee=tradeFee.",
+      "poc_sketch": "PoC sketch: reproduce the admitted state, call the documented path, and assert the revert or the value delta",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'unreachable: the cited path:line is not in the code you were given'): The final `makerSubtractiveFee.add(takerSubtractiveFee).sub(solverFee)` is an unchecked UFixed6 subtraction whose non-underflow requires guarantee.solverReferral <= order.takerReferral, yet no guard, require, or validating setter in the provided CheckpointLib.sol enforces that relationship (only a code comment asserts it), so any admitted state with solverReferral > takerReferral underflows and reverts the whole settlement."
+    },
+    {
+      "subsystem": "packages/oracle/Keeper oracle param and price-response storage types",
+      "location": "packages/oracle/contracts/keeper/types/KeeperOracleParameter.sol:store",
+      "file": "packages/oracle/contracts/keeper/types/KeeperOracleParameter.sol",
+      "class": "class=C6",
+      "severity": "Medium",
+      "exploit": "oracleFee>1e6 (the state that underflow-reverts core Global.update at packages/core/contracts/types/Global.sol:85 `marketFee.sub(oracleFee)`) is never admitted: the sole non-zero writer KeeperFactory.updateParameter rejects it at packages/oracle/contracts/keeper/KeeperFactory.sol:196 `if (newOraclefee.gt(oracleParameter.maxOracleFee)) revert`, and maxOracleFee is validated <=1e6 at packages/oracle/contracts/types/OracleParameter.sol:41 `if (newValue.maxOracleFee.gt(UFixed6Lib.ONE)) revert` (initialize stores 0 at KeeperFactory.sol:77).",
+      "poc_sketch": "PoC sketch: reproduce the admitted state, call the documented path, and assert the revert or the value delta",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'unreachable: the cited path:line is not in the code you were given'): Within the provided code, store bounds oracleFee only by type(uint24).max (about 1677%) and never by 1e6, so the storage validation admits oracleFee > 1e6, and the sole upstream cap that would make that state unreachable lives in files (KeeperFactory/OracleParameter) not present in the reviewed code and thus cannot be cited as a guard."
+    },
+    {
+      "subsystem": "packages/periphery/Collateral-account EIP-712 action message types",
+      "location": "packages/periphery/contracts/CollateralAccounts/Controller_Incentivized.sol:relayTake:177",
+      "file": "packages/periphery/contracts/CollateralAccounts/Controller_Incentivized.sol",
+      "class": "class=C7",
+      "severity": "Medium",
+      "exploit": "relayTake charges the keeper fee to the INNER take.common.account while the maxFee cap and outer nonce come from an unbound outer Action, so any relayer can wrap a victim's broadcast/harvested inner Take signature in their own outer Action (arbitrary maxFee) and drain a keeper fee from the victim's collateral account that the victim never fee-capped.",
+      "poc_sketch": "Foundry/Hardhat: deploy Controller_Incentivized + AccountVerifier + a mock IMarket + a funded Account for victim V; V signs an inner Take (account=V, domain=market) and separately would sign a low-maxFee outer Action; as attacker, build outer Action{maxFee=V_balance, common.account=attacker, signer=attacker, fresh nonce, domain=Controller, expiry=future} and sign it; call controller.relayTake({take:Vtake, action:attackerAction}, attackerOuterSig, VinnerSig) from attacker; assert tx does NOT revert, market.update was called with V's take, and DSU.pull pulled min(computedFee, V_balance) from getAccountAddress(V) despite V never signing that maxFee (mirrors existing passing test Controller_Incentivized.test.ts:168-202 whose comment says \"relayer is paid from userA's collateral account\"). FCB_3fa21018d904547d9fd6250_END",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'guard: the cited line is not a check \u2014 cite the conditional or the require/revert that stops the path'): relayTake charges the keeper fee to getAccountAddress(message.take.common.account) while the cap comes from the independently-signed outer message.action.maxFee, and no check (here or in the verified-only outer signature) requires action.common.account == take.common.account, so an unprivileged relayer can pair a harvested victim inner-Take signature with their own arbitrary-maxFee outer Action and draw an uncapped, unauthorized keeper fee from the victim's collateral account."
+    },
+    {
+      "subsystem": "packages/periphery/MultiInvoker trigger-order types & packed storage",
+      "location": "packages/periphery/contracts/MultiInvoker/types/TriggerOrder.sol:fillable",
+      "file": "packages/periphery/contracts/MultiInvoker/types/TriggerOrder.sol",
+      "class": "class=C19",
+      "severity": "Medium",
+      "exploit": "MultiInvoker.sol:_placeOrder:497 `if (order.comparison != -1 && order.comparison != 1) revert` \u2014 every stored order has comparison\u2208{-1,1}, so fillable's -1/1 branches are the live path and no stored order is permanently unfillable-yet-paid",
+      "poc_sketch": "PoC sketch: reproduce the admitted state, call the documented path, and assert the revert or the value delta",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'unreachable: cite the path:line this ground requires, in code you were given'): store() constrains comparison only to the int8 range (its >int8.max / <int8.min checks are no-ops on an int8 field) and never restricts it to {-1,1}, so an order stored with comparison\u2208{-2,0,2} passes persistence validation yet fillable() falls through to `return false` and is permanently unfillable, and no guard exists in the provided code to prevent it \u2014 the only claimed guard lives in MultiInvoker._placeOrder, which was not given and cannot be cited."
+    },
+    {
+      "subsystem": "packages/vault/Perennial maker/solver share vaults",
+      "location": "packages/vault/contracts/Vault.sol:_settle:390",
+      "file": "packages/vault/contracts/Vault.sol",
+      "class": "class=C1",
+      "severity": "Medium",
+      "exploit": "An unprivileged attacker calls the public, unauthenticated settle(coordinator) (or rebalance(coordinator)) as the first settler after a checkpoint completes above the high-water mark; _credit(coordinator, profitShares) writes _accounts[coordinator] in storage but _saveContext then overwrites it with the stale ctx.local snapshotted before _settle, stranding the coordinator's profit-share fee and permanently desyncing global.shares (totalShares) from the sum of account shares (phantom, asset-frozen shares), repeatably.",
+      "poc_sketch": "Foundry: replicate Vault's _loadContext(account)->_settle(credit coordinator P)->_saveContext(store ctx.local) ordering; deploy with coordinator set; (control) settle(honestUser,P) asserts sharesOf(coordinator)==P && globalShares()==P; (exploit) settle(coordinator,P) asserts sharesOf(coordinator)==0 && globalShares()==P (global != sum accounts); repeat to show global==k*P while coordinator stays 0. (Verified: $TMPDIR/poc-vault, 3/3 tests pass.)",
+      "verdict": "REAL",
+      "reason": "settle(coordinator) is permissionless and _credit(coordinator, profitShares) writes _accounts[coordinator] directly inside _settle, but _saveContext then unconditionally runs _accounts[account].store(context.local) for account==coordinator using the pre-_settle snapshot that never received the profit shares, so global.shares retains +P while the coordinator account is reverted \u2014 a permanent, repeatable share desync with no guard on the account argument."
+    },
+    {
+      "subsystem": "packages/vault/Perennial vault maker/solver allocation strategy libs",
+      "location": "packages/vault/contracts/libs/MakerStrategyLib.sol:_allocateMarket:150",
+      "file": "packages/vault/contracts/libs/MakerStrategyLib.sol",
+      "class": "class=C2",
+      "severity": "Medium",
+      "exploit": "newMaker = marketAssets.muldiv(leverage, latestPrice.abs()) divides by an unvalidated oracle price, and since register/initialize admit a market whose oracle has not committed (latest().price==0, verified via KeeperOracle.at(0)) with no validation and no way to deregister, every deposit/redeem/rebalance (all route through allocate) reverts Panic(0x12), freezing the whole vault for all users until/unless a keeper commits that market's price.",
+      "poc_sketch": "Foundry: deploy vault with a market whose KeeperOracle has never committed (or register() such a market into a funded vault), assert oracle.latest().price==0 and valid==false, then call deposit/redeem/rebalance and assert each reverts with Panic(0x12); replica test (run, passing) shows marketAssetsleverage/|0| reverts even for the weight-0/leverage-0 fresh-market case (00/0).",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'unreachable: cite the path:line this ground requires, in code you were given'): The newMaker muldiv divides unconditionally by latestPrice.abs() with no guard in the given code, and forcing marketAssets to zero does not skip it because 0/0 still reverts Panic(0x12), so any registered market whose oracle has not committed (latestPrice==0) reverts every allocate-routed deposit/redeem/rebalance with no guard or validating line in the provided code to stop it."
+    },
+    {
+      "subsystem": "packages/vault/Perennial vault maker/solver allocation strategy libs",
+      "location": "packages/vault/contracts/libs/SolverStrategyLib.sol:_allocateMarket:120",
+      "file": "packages/vault/contracts/libs/SolverStrategyLib.sol",
+      "class": "class=C2",
+      "severity": "Medium",
+      "exploit": "maxMagnitude = newMarketAssets.muldiv(leverage, latestPrice.abs()) divides by an unvalidated oracle price with no .valid/non-zero guard, so a registered solver-vault market whose oracle returns price 0 (admitted by register/initialize with no validation, unremovable) makes every allocate() call \u2014 hence every deposit/redeem/rebalance \u2014 revert Panic(0x12), freezing the entire solver vault.",
+      "poc_sketch": "Foundry: register into a funded SolverVault a market whose KeeperOracle has price 0 (latest().price==0), then call update()/rebalance() and assert revert Panic(0x12); the passing replica test confirms newMarketAssetsleverage/|0| reverts including the newMarketAssets==0 case.",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'unreachable: cite the path:line this ground requires, in code you were given'): Line 120 divides newMarketAssets by marketContext.latestPrice.abs(), a value taken verbatim from oracle().latest().price in _loadContext with no validity or non-zero check anywhere in the shown code, and zeroing newMarketAssets does not help because Solidity reverts Panic(0x12) on any divide-by-zero, so an admitted price-0 oracle permanently freezes every allocate()-dependent path (deposit/redeem/rebalance)."
+    },
+    {
+      "subsystem": "packages/vault/Perennial vault maker/solver allocation strategy libs",
+      "location": "packages/vault/contracts/libs/MakerStrategyLib.sol:_allocateMarket",
+      "file": "packages/vault/contracts/libs/MakerStrategyLib.sol",
+      "class": "class=C15",
+      "severity": "Medium",
+      "exploit": "MakerStrategyLib.sol:142 `newMaker = marketAssets.muldiv(leverage, latestPrice.abs())` divides by zero only when latestPrice==0; delta=0:vault token balances (it reverts, moving no funds). Zero price exists only pre-first-commit, reachable solely via onlyOwner `register` (Vault.sol:164, no price validation) and self-resolving at first commit; a live market's latest() never returns 0, so there is no external-attacker path.",
+      "poc_sketch": "PoC sketch: reproduce the admitted state, call the documented path, and assert the revert or the value delta",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'no-loss: cite the path:line this ground requires, in code you were given'): Line 142 divides by marketContext.latestPrice.abs() with no guard, and register admits a market whose oracle has not yet committed (latestPrice==0), so any deposit/redeem invoking allocate reverts with a division-by-zero panic -- a valid-input liveness loss with no validating line or guard to cite."
+    },
+    {
+      "subsystem": "packages/vault/Perennial vault share/checkpoint accounting types",
+      "location": "packages/vault/contracts/types/Checkpoint.sol:_withSpread:218",
+      "file": "packages/vault/contracts/types/Checkpoint.sol",
+      "class": "class=C1",
+      "severity": "High",
+      "exploit": "`self.tradeFee` is a signed Fixed6 copied verbatim from the market and can be negative (taker adiabatic price-impact rebate summed across markets for a SolverVault taker position); when negative, `_withSpread` computes ratio = (totalAmount + ",
+      "poc_sketch": "tradeFee|)/totalAmount > 1, so an unprivileged depositor/redeemer settling in that checkpoint mints excess shares (toSharesGlobal/Local) or draws excess assets (toAssetsGlobal/Local) beyond the fair par conversion, capturing the rebate and diluting/draining standing holders.|Foundry: port Checkpoint's _withSpread/_toShares/_toAssets/_toSharesExact/_toAssetsExact with real UFixed6/Fixed6 muldiv (round-down) and UFixed6Lib.unsafeFrom (negative->0) semantics; build a solvent checkpoint (shares=assets=1_000_000e6); assert toSharesGlobal(1000e6) == 1000e6 when tradeFee=0 but == 1500e6 when tradeFee=-500e6, and toAssetsGlobal(1000e6 shares) == 1500e6 at tradeFee=-500e6 (both > fair par 1000e6); show a 1e6 deposit at tradeFee=-10000e6 mints 10001e6 shares (ratio unbounded) \u2014 proving spread acts as a bonus, minting value from nothing.",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'no-loss: write the literal token delta=0:<the quantity that is unchanged> beside the path'): self.tradeFee is a signed Fixed6 that complete() copies verbatim from the market and that store() validates only against int64 magnitude bounds (never rejecting negatives), so an admitted negative tradeFee makes totalAmountIncludingFee = totalAmount - tradeFee exceed totalAmount and the unguarded muldiv yields a spread multiplier > 1 that inflates shares minted on deposits and assets paid on redemptions, misattributing shared collateral to the transient flow with no guard, no validating line, and no quantified bound available to refute it."
+    }
+  ],
+  "errors": [
+    {
+      "location": "packages/core/contracts/Market.sol:claimFee:360",
+      "file": "packages/core/contracts/Market.sol",
+      "reason": "LLM transport error (flat-cyborg exited) after 5 attempts \u2014 TRANSIENT, RE-RUNNABLE (not assessed)"
+    },
+    {
+      "location": "packages/periphery/contracts/CollateralAccounts/Controller.sol:_marketTransferWithSignature:214",
+      "file": "packages/periphery/contracts/CollateralAccounts/Controller.sol",
+      "reason": "no VERDICT"
+    },
+    {
+      "location": "packages/periphery/contracts/CollateralAccounts/Controller_Incentivized.sol:relayTake:177",
+      "file": "packages/periphery/contracts/CollateralAccounts/Controller_Incentivized.sol",
+      "reason": "no VERDICT"
+    }
+  ],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 208,
+    "verified": 9,
+    "errored": 3,
+    "dropped_subfloor": 0
+  }
+}

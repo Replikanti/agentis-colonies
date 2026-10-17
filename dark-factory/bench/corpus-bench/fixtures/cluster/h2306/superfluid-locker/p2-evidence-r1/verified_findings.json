@@ -1,0 +1,48 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "Locker owner soft-stakes N FLUID (stake() moves no tokens, credits N/1e18 staker units) then calls provideLiquidity(N), which has NO getAvailableBalance() check and spends the SAME N FLUID into a Uniswap position and also credits LP-pool units, so one pile earns from BOTH shared reward pools and steals tax rewards from every other user",
+      "poc_sketch": "Foundry Base fork (see test/PoCDoubleDip.t.sol): _helperFundLocker(aliceLocker, 20_000e18); vm.prank(ALICE) aliceLocker.stake(20_000e18) -> assert stakerPool.getUnits(alice)=20_000e18/1e18 and getAvailableBalance()==0; vm.prank(ALICE) aliceLocker.provideLiquidity{value:1 ether}(20_000e18) -> assert FLUID.balanceOf(alice)<20_000e18 (FLUID left into Uniswap), stakerPool.getUnits(alice) UNCHANGED, and lpPool.getUnits(alice)>0; control bobLocker with identical pile can obtain only ONE pool's units",
+      "verdict": "REAL",
+      "reason": "provideLiquidity spends the locker's FLUID via mint() with no getAvailableBalance()/_stakedBalance check (unlike stake() and unlock() which both gate on it), so a locker owner can stake N \u2014 crediting N staker units in STAKER_DISTRIBUTION_POOL without moving tokens \u2014 then provide that same N FLUID as liquidity, which moves the FLUID into the Uniswap position and credits LP units in LP_DISTRIBUTION_POOL while the staker units stay credited, letting one pile of capital earn from both shared reward pools and dilute every other participant's share."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity:420",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "Locker owner soft-stakes N FLUID (stake() moves no tokens, credits N/1e18 staker units, avail->0) then calls provideLiquidity(N), which has NO getAvailableBalance() gate and spends the SAME N FLUID into a Uniswap position while crediting LP-pool units, so one pile earns from BOTH shared reward pools and steals tax from every other user",
+      "poc_sketch": "Base fork (test/PoCDoubleDip.t.sol): _helperFundLocker(aliceLocker,20_000e18); prank(ALICE) aliceLocker.stake(20_000e18) -> assert stakerPool.getUnits(alice)>0 && aliceLocker.getAvailableBalance()==0; prank(ALICE) aliceLocker.provideLiquidity{value:1 ether}(20_000e18) -> assert FLUID.balanceOf(alice)<20_000e18, stakerPool.getUnits(alice) UNCHANGED, lpPool.getUnits(alice)>0; honest bob with an identical pile can obtain only ONE pool's units",
+      "verdict": "REAL",
+      "reason": "provideLiquidity has no getAvailableBalance/_stakedBalance gate, so it transfers FLUID that stake() already counted in _stakedBalance into a Uniswap position while leaving staker units intact and adding LP units, letting the same FLUID draw rewards from both shared GDA pools."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:unlock",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C25",
+      "severity": "High",
+      "exploit": "setTaxAllocation admits a zero allocation leg (only the sum==10000 check), and unlock's `getTotalUnits()==0` gate still requires BOTH distribution pools non-empty whenever unlockPeriod < _MAX_UNLOCK_PERIOD, so with liquidityProviderAllocationBP==0 (or any bootstrap/mass-exit state) an empty LP pool reverts every user's instant/short-vest unlock even though the zero-allocation LP leg receives nothing, permanently bricking the taxed-exit path for the whole locker class while only a max-period no-tax vest survives",
+      "poc_sketch": "Foundry: deploy StakingRewardController (initialize creates STAKER pool, setupLPDistributionPool creates LP pool), FluidLockerFactory, create aliceLocker via createLockerContract; owner calls setTaxAllocation(10_000, 0) -> succeeds; _helperFundLocker(aliceLocker, X) then vm.prank(ALICE) aliceLocker.stake(s) so STAKER_DISTRIBUTION_POOL.getTotalUnits()>0 while LP_DISTRIBUTION_POOL.getTotalUnits()==0; vm.prank(ALICE) vm.expectRevert(LP_DISTRIBUTION_POOL_HAS_NO_UNITS.selector); aliceLocker.unlock(amt, 0, ALICE); assert the instant unlock is blocked for every locker despite the LP leg being allocated 0; control: setTaxAllocation(9_000,1_000) + seed one LP position so LP units>0, then assert the identical unlock(amt,0,ALICE) succeeds \u2014 proving the gate, not economics, caused the revert",
+      "verdict": "REAL",
+      "reason": "The `if (unlockPeriod < _MAX_UNLOCK_PERIOD)` block unconditionally reverts with LP_DISTRIBUTION_POOL_HAS_NO_UNITS whenever the shared, class-wide LP_DISTRIBUTION_POOL has zero units, and nothing in the constructor/initializer seeds or requires those units, so at genesis or after a mass LP exit every locker owner's instant and short-vest unlock reverts while only the untaxed 365-day vest survives \u2014 a liveness loss under a state the code admits."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 10,
+    "verified": 3,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

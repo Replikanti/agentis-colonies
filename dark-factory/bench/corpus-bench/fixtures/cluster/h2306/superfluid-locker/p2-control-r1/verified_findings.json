@@ -1,0 +1,48 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "A locker owner calls stake(N) (soft-stake sets staker units=N/1e18 and moves no tokens) then provideLiquidity(N), which spends the SAME N FLUID into a Uniswap V3 position and sets LP units with NO getAvailableBalance()/staked-balance check, so one pile of N FLUID simultaneously earns both STAKER_DISTRIBUTION_POOL and LP_DISTRIBUTION_POOL tax, diluting/stealing rewards from every other locker.",
+      "poc_sketch": "Deploy locker via factory, lock(N); stake(N) and assert staker-pool units==N/1e18; provideLiquidity{value:eth}(N) and assert LP-pool units>0 while staker units unchanged and locker FLUID balance==0; drive tax into both pools (another locker's _instantUnlock / distributeTaxAdjustment) and assert the attacker locker accrues a flow from BOTH pools backed by the same N.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity pulls supAmount FLUID out of the locker via mint with no supAmount <= getAvailableBalance() check, so FLUID already counted in _stakedBalance (whose staker units were permanently set by updateStakerUnits) is simultaneously deployed as LP and counted in _liquidityBalance, earning both STAKER_DISTRIBUTION_POOL and LP_DISTRIBUTION_POOL from a single capital pile."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "Owner stakes(N) (soft: sets staker units=N/1e18, moves no tokens) then provideLiquidity(N) which has no getAvailableBalance()/staked-balance check and spends the SAME N FLUID into a Uniswap position setting LP units, so one pile of N simultaneously backs staker-pool and LP-pool units, draining tax rewards from all other lockers.",
+      "poc_sketch": "Deploy locker via factory, FLUID.approve+lock(N); stake(N) and assert STAKER_DISTRIBUTION_POOL units==N/1e18 and locker FLUID balance still ==N; provideLiquidity{value:eth}(N) and assert LP_DISTRIBUTION_POOL units>0 while staker units unchanged and locker FLUID balance==0; from a second locker drive tax into both pools (its _instantUnlock or distributeTaxAdjustment) and assert the attacker locker accrues a positive flow from BOTH pools backed by the single N.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity approves and mints supAmount FLUID into the Uniswap position with no getAvailableBalance()/staked-balance guard, so after stake(N) (which only increments _stakedBalance and leaves the FLUID in the locker) the owner moves that same N out into an LP position, leaving staker-pool units unbacked while also holding LP-pool units \u2014 one pile of capital earning from both pools and diluting all other stakers."
+    },
+    {
+      "subsystem": "src (part 2/2)",
+      "location": "src/FluidLocker.sol:provideLiquidity",
+      "file": "src/FluidLocker.sol",
+      "class": "class=C5",
+      "severity": "High",
+      "exploit": "A permissionless locker owner (anyone via FluidLockerFactory.createLockerContract) calls stake(N) (soft stake: sets STAKER_DISTRIBUTION_POOL units=N/1e18, moves no tokens) then provideLiquidity(N), which has NO getAvailableBalance()/staked-balance guard and spends the SAME N FLUID into a Uniswap V3 position while setting LP_DISTRIBUTION_POOL units, so one approved (semi-trusted) locker reports units backed by the same N in BOTH shared tax pools and drains tax rewards from every other locker.",
+      "poc_sketch": "Deploy locker via factory; FLUID.approve+lock(N); call stake(N) and assert taxDistributionPool.getUnits(locker)==N/1e18 while locker FLUID balance still==N; call provideLiquidity{value:eth}(N) and assert lpDistributionPool.getUnits(locker)>0 while staker units unchanged and locker FLUID balance ~=0; from a second locker drive tax into both pools (its _instantUnlock, or StakingRewardController.distributeTaxAdjustment) and assert the attacker locker accrues a positive flow from BOTH pools backed by the single N.",
+      "verdict": "REAL",
+      "reason": "provideLiquidity spends real FLUID via NPM.mint with no getAvailableBalance()/_stakedBalance guard, so a permissionless locker owner who first soft-stakes N (units set, tokens untouched) then provideLiquidity(N) converts the same N into an LP position, keeping phantom STAKER-pool units alongside new LP-pool units and double-drawing from both shared tax pools."
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 6,
+    "verified": 3,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

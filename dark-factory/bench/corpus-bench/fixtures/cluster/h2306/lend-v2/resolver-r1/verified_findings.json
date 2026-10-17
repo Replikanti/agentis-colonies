@@ -1,0 +1,125 @@
+{
+  "repo": "Lend-V2",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "LayerZero (part 1/2)",
+      "location": "src/LayerZero/CrossChainRouter.sol:borrowCrossChain:138",
+      "file": "src/LayerZero/CrossChainRouter.sol",
+      "class": "class=C3",
+      "severity": "High",
+      "exploit": "borrowCrossChain snapshots sumCollateral (GROSS) and performs no source-side collateral>=borrowed check, so a user whose collateral is already encumbered by an existing same-chain (or other-chain) borrow can cross-chain-borrow the full gross collateral again on the destination chain, which only compares against its own local debt \u2014 yielding total debt far above collateral and an unbacked drain of the destination pool.",
+      "poc_sketch": "Foundry (reuses test/mocks/CrossChainRouterMock two-chain harness, LayerZeroTest): deploy protocol on chain A and B, map underlying/destlToken; honest LP supplies cash on A and B; attacker supplies 100e18 collateral on A (CF 0.75 => 75 power), does a legit same-chain coreRouterA.borrow(70e18) (solvent: borrowed 70 <= collateral 75), then routerA.borrowCrossChain(70e18, tokenA, CHAIN_B_ID); assert attacker's tokenB balance increased by 70e18 and getHypotheticalAccountLiquidityCollateral(attacker) on A now returns borrowed=140e18 > collateral=75e18 (VERIFIED PASSING).",
+      "verdict": "REAL",
+      "reason": "borrowCrossChain keeps only the gross collateral (discarding the borrowed element) and the destination's require(payload.collateral >= totalBorrowed) counts only destination-local debt, so existing same-chain or other-destination borrows are never netted, letting an unprivileged user borrow against the same collateral repeatedly. FCB_1669e18d62e4437a305ac0_END"
+    },
+    {
+      "subsystem": "LayerZero (part 1/2)",
+      "location": "src/LayerZero/CoreRouter.sol:liquidateBorrowAllowedInternal:347",
+      "file": "src/LayerZero/CoreRouter.sol",
+      "class": "class=C10",
+      "severity": "High",
+      "exploit": "liquidateBorrowAllowedInternal computes shortfall as borrowedAmount = (already interest-accrued account-wide `borrowed`) * borrowIndex()/borrowBalance.borrowIndex, double-applying the market interest factor r>=1, so a borrower who is solvent by the protocol's own redeem/borrow check (borrowed <= collateral) satisfies borrowedAmount = borrowed*r > collateral whenever interest has accrued (r>1) and is liquidated, letting any unprivileged liquidator seize a healthy borrower's collateral at the liquidation incentive.",
+      "poc_sketch": "Foundry (reuse the LayerZeroTest/CoreRouter harness with mock LToken/Lendtroller/oracle): honest LP seeds cash; borrower supplies collateral C, borrows B just under the CF limit (e.g. B=0.95*C) so redeem's `collateral>=borrowed` still passes; advance blocks and call LToken.accrueInterest so currentBorrowIndex/borrowBalance.borrowIndex = r ~1.1 while the borrower's stored index stays put; assert getHypotheticalAccountLiquidityCollateral(borrower) returns borrowed<=collateral (solvent) yet CoreRouter.liquidateBorrow(borrower, closeFactor*amount, lCollateral, borrowedAsset) succeeds (passes the `borrowedAmount>collateral` require) and increases the liquidator's totalInvestment(lCollateral) by seizeTokens-protocolShare while decreasing the borrower's \u2014 a solvent position was liquidated.",
+      "verdict": "REAL",
+      "reason": "`borrowed` returned by getHypotheticalAccountLiquidityCollateral is already accrued to the current index via borrowWithInterestSame (amount*currentIndex/storedIndex), yet the gate multiplies it again by borrowIndex()/borrowBalance.borrowIndex, so any solvent borrower whose collateral/debt ratio is below the accrued interest multiplier r>1 passes the sole, buggy shortfall check and is liquidated by an unprivileged caller of the external liquidateBorrow."
+    },
+    {
+      "subsystem": "LayerZero (part 1/2)",
+      "location": "src/LayerZero/CoreRouter.sol:borrow:161",
+      "file": "src/LayerZero/CoreRouter.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "On the first borrow in any market getBorrowBalance().borrowIndex==0, so borrowAmount collapses to 0 and require(collateral>=borrowAmount) becomes require(collateral>=0); a fresh attacker with ZERO collateral borrows the pool's aggregate liquidity (Compound's own check passes because CoreRouter is the pooled borrower backed by all suppliers) and walks away with unbacked underlying.",
+      "poc_sketch": "Deploy protocol (script/Deploy), honest supplier supply(1000e18,token); attacker (no supply) calls coreRouter.borrow(500e18,token); assert IERC20(token).balanceOf(attacker) increased by 500e18 and totalInvestment(attacker,lToken)==0. (Verified PASS: test/PoCUncollateralizedBorrow.t.sol.)",
+      "verdict": "REAL",
+      "reason": "On a first borrow currentBorrow.borrowIndex==0 forces borrowAmount to 0 while the nonzero requested value sits in the ignored `borrowed`, so require(collateral>=borrowAmount) collapses to require(0>=0) and a zero-collateral attacker clears CoreRouter's sole solvency gate while the pooled CoreRouter account satisfies the underlying borrowAllowed. FCB_2892218d62ea9f6567ffa0_END"
+    },
+    {
+      "subsystem": "LayerZero (part 1/2)",
+      "location": "src/LayerZero/CoreRouter.sol:claimLend:400",
+      "file": "src/LayerZero/CoreRouter.sol",
+      "class": "class=C6",
+      "severity": "High",
+      "exploit": "claimLend grants lendAccrued via grantLendInternal but discards its return and LendStorage.lendAccrued is only ever accumulated, never decremented on grant, so an attacker who accrues any LEND once can call claimLend([self],lTokens,false,true) repeatedly, re-transferring the same accrued balance each call until the router's LEND (backing every user's rewards) is drained.",
+      "poc_sketch": "Attacker supplies to accrue LEND, snapshots lendAccrued=X; call claimLend twice; assert lendAccrued still X after first grant and attacker LEND balance increases by ~X on each call; assert an honest user can no longer claim their accrual (pool drained). (Verified PASS: test/PoCLendDoubleClaim.t.sol.)",
+      "verdict": "REAL",
+      "reason": "claimLend discards grantLendInternal's return and neither it nor the fully-shown grantLendInternal ever zeroes lendStorage.lendAccrued, so an unprivileged caller can re-invoke claimLend([self],...) to re-transfer the same accrued LEND until the router's balance is drained. FCB_2de2918d62ec7c075b4200_END"
+    },
+    {
+      "subsystem": "LayerZero (part 1/2)",
+      "location": "src/LayerZero/CoreRouter.sol:supply:80",
+      "file": "src/LayerZero/CoreRouter.sol",
+      "class": "class=C6",
+      "severity": "Medium",
+      "exploit": "supply reads exchangeRateStored() BEFORE LErc20.mint() accrues interest, then credits mintTokens=_amount*1e18/staleRate; because mint mints at the higher post-accrual rate, totalInvestment is over-credited, and a supply->redeem round-trip (redeem paying at the now-bumped stored rate) nets the attacker more underlying than deposited, extracting pending-accrual value from the shared pool.",
+      "poc_sketch": "Honest supplier seeds pool; advance blocks so a stored-rate/accrual gap exists; attacker supply(deposit); assert sharesCredited==deposit*1e18/staleRate; redeem(sharesCredited); assert received > deposit. (Verified PASS: test/PoCStaleSupplyRate.t.sol.) FCB_39f3a118d62bb78d6ef81d0_END",
+      "verdict": "REAL",
+      "reason": "supply credits mintTokens = _amount*1e18/exchangeRateStored() read BEFORE mint's internal accrueInterest, so it over-credits totalInvestment relative to the fewer lTokens actually minted at the higher post-accrual rate, and with no reconciliation against the pooled balance a same-block redeem pays out A*R1/R0 > A, draining pending-accrual value from other suppliers. FCB_32b6118d62ee2b63861af0_END"
+    },
+    {
+      "subsystem": "LayerZero (part 1/2)",
+      "location": "src/LayerZero/CoreRouter.sol:borrow:170",
+      "file": "src/LayerZero/CoreRouter.sol",
+      "class": "class=C8",
+      "severity": "High",
+      "exploit": "On an ERC777/callback borrowed underlying, `IERC20(_token).transfer(msg.sender,_amount)` (line 170) reenters borrow before updateBorrowBalance; the inner call sees the not-yet-written borrow record and passes its own collateral check independently, and on unwind the outer call overwrites the borrow balance from its STALE `currentBorrow` snapshot (line 155), discarding the inner borrow's principal \u2014 attacker receives 2x underlying while only one borrow is recorded, draining the pooled market.",
+      "poc_sketch": "Foundry: deploy CoreRouter/LendStorage over a mock Compound market whose underlying is an ERC777 (or a mock ERC20 with a transfer hook) with the attacker registered as recipient hook; honest LP supplies liquidity; attacker supplies collateral C (power P) and does one borrow to set borrowIndex!=0; attacker calls borrow(P) from a hook-contract that, on tokensReceived, reenters borrow(P) once; assert attacker underlying balance == 2*P, assert lendStorage.getBorrowBalance(attacker,lToken).amount ~= P (only one recorded), i.e. recorded debt < underlying received.",
+      "verdict": "REAL",
+      "reason": "The underlying `transfer` at line 170 runs before `updateBorrowBalance` with no reentrancy guard, so a callback-capable underlying lets the attacker reenter borrow; the inner call records principal A, then the outer call's stale `currentBorrow` snapshot (borrowIndex==0) overwrites that record with A, disbursing 2A while recording only A."
+    },
+    {
+      "subsystem": "LayerZero (part 1/2)",
+      "location": "src/LayerZero/CoreRouter.sol:redeem:124",
+      "file": "src/LayerZero/CoreRouter.sol",
+      "class": "class=C8",
+      "severity": "High",
+      "exploit": "`IERC20(_token).transfer(msg.sender,expectedUnderlying)` (line 124) fires before `updateTotalInvestment(-_amount)` (line 128); with a callback-capable collateral underlying the attacker reenters `borrow` during the transfer, where getHypotheticalAccountLiquidityCollateral still reads the full pre-decrement totalInvestment and authorises a borrow against collateral that redeem is simultaneously returning \u2014 after unwind totalInvestment is zeroed yet an unbacked borrow stands.",
+      "poc_sketch": "Foundry: attacker supplies collateral in an ERC777 market (totalInvestment=C, no prior borrow); attacker calls redeem(C) from a hook contract that on tokensReceived reenters coreRouter.borrow(maxAgainstC, otherToken); assert the borrow succeeds and transfers underlying, then redeem completes zeroing totalInvestment(attacker); assert getHypotheticalAccountLiquidityCollateral(attacker) shows borrowed>0 with collateral==0 (unbacked debt), attacker holds both redeemed collateral and borrowed funds. FCB_3b4d6318d62c2fd6f918100_END",
+      "verdict": "REAL",
+      "reason": "The underlying transfer at line 124 executes before updateTotalInvestment at line 128 with no reentrancy guard, so a callback-capable underlying lets an unprivileged supplier reenter borrow while getHypotheticalAccountLiquidityCollateral still reads the full, undecremented totalInvestment, authorizing an unbacked borrow against collateral redeem has already paid out."
+    },
+    {
+      "subsystem": "LayerZero (part 1/2)",
+      "location": "src/LayerZero/CrossChainRouter.sol:_executeLiquidationCore",
+      "file": "src/LayerZero/CrossChainRouter.sol",
+      "class": "class=C22",
+      "severity": "High",
+      "exploit": "Cross-chain liquidation derives seizeTokens from the borrow-chain collateral lToken's exchangeRateStored()+oracle (Lendtroller.sol:873) and ships the raw count to the collateral chain, where _handleLiquidationExecute subtracts it from totalInvestment measured in the collateral chain's independent lToken shares; when the collateral chain's exchange rate/price exceeds the borrow chain's (permissionless interest-accrual drift), an unprivileged liquidator over-seizes collateral beyond repay\u00d7incentive, draining the borrower and the shared pool.",
+      "poc_sketch": "Two-chain Foundry harness (reuse CrossChainRouterMock/LayerZeroTest): list collateral market lETH on both chains and map via crossChainLTokenMap/underlyingToDestlToken; drive chain-A lETH.exchangeRateStored() above chain-B lETH.exchangeRateStored() (accrue extra interest on A / raise A utilisation); borrower opens borrowCrossChain (collateral lETH on A, debt lUSDC on B); attacker calls liquidateCrossChain(borrower, repayAmount, srcEid=A, lTokenToSeize=lETH_B, borrowedAsset=USDC); record seizeTokens = liquidateCalculateSeizeTokens(lUSDC_B, lETH_B, repayAmount); after the LiquidationExecute message lands on chain A, assert totalInvestment[borrower][lETH_A] fell by exactly seizeTokens and that seizeTokens * lETH_A.exchangeRateStored() (underlying value seized) strictly exceeds repayAmount * liquidationIncentiveMantissa * priceUSDC_A/priceETH_A (fair value) \u2014 i.e. over-seize beyond the intended incentive.",
+      "verdict": "REAL",
+      "reason": "seizeTokens is computed from the borrow-chain collateral lToken's exchangeRateStored (only Chain B data is reachable) and then subtracted verbatim from totalInvestment held in the collateral chain's independently-accruing lToken shares, with _checkLiquidationValid only testing solvency and no re-normalization, so whenever rate_A > rate_B an unprivileged liquidator seizes collateral worth repay*incentive*(rate_A/rate_B), draining excess borrower collateral."
+    },
+    {
+      "subsystem": "LayerZero (part 1/2)",
+      "location": "src/LayerZero/CoreRouter.sol:claimLend:400",
+      "file": "src/LayerZero/CoreRouter.sol",
+      "class": "class=C24",
+      "severity": "High",
+      "exploit": "claimLend reads lendStorage.lendAccrued(holder) and pays it out via grantLendInternal but discards the return value, and LendStorage.distributeSupplierLend/distributeBorrowerLend only add_ to lendAccrued (LendStorage.sol:333-334,373-374) with no code anywhere zeroing it (vs the correct write-back at Lendtroller.sol:1456), so any holder can call the permissionless claimLend repeatedly and re-grant the same accrued LEND each time, draining the router's LEND balance that backs every user's rewards.",
+      "poc_sketch": "Foundry: deploy CoreRouter+LendStorage+Lendtroller with a LEND token; honest users supply/borrow so the router accrues and holds a LEND balance; attacker supplies to accrue a small lendAccrued; from a wrapper call coreRouter.claimLend([attacker],[lToken],true,true) N times in a loop; assert LEND.balanceOf(attacker) rose ~N*accrued, lendStorage.lendAccrued(attacker) stayed constant, and the router LEND balance was drained toward zero.",
+      "verdict": "REAL",
+      "reason": "claimLend reads lendAccrued(holder) and pays it via grantLendInternal but discards the return and never writes lendAccrued back to zero (missing the Compound-style lendAccrued=grantInternal(...) write-back), while distribute only adds to it, so any unprivileged caller can repeatedly invoke the permissionless claimLend and re-grant the same accrued LEND until the router's LEND balance is drained. FCB_58a6718d62fb8899de4a00_END"
+    },
+    {
+      "subsystem": "LayerZero (part 1/2)",
+      "location": "src/LayerZero/CoreRouter.sol:supply:74",
+      "file": "src/LayerZero/CoreRouter.sol",
+      "class": "class=C24",
+      "severity": "High",
+      "exploit": "supply snapshots exchangeRateStored() (LToken.sol:281 is view and per its doc comment does NOT accrue) before mint, but LErc20.mint accrues first (LToken.sol:384-385) and mints at the higher post-accrual rate, so mintTokens=_amount*1e18/staleRate credits more shares than lTokens minted; after an accrual gap the attacker supplies then redeems the inflated shares for more underlying than deposited, taken from other suppliers' pooled lTokens.",
+      "poc_sketch": "Foundry: set up a market with outstanding borrows, advance blocks WITHOUT triggering accrueInterest so exchangeRateStored < post-accrual rate; attacker supply(A,token) then redeem(totalInvestment(attacker,lToken), lToken); assert underlying returned > A and the router's lToken balance fell by more than the lTokens minted for the attacker (phantom shares redeemed against other users).",
+      "verdict": "REAL",
+      "reason": "supply() reads the non-accruing exchangeRateStored() into exchangeRateBefore before mint() accrues and mints at the higher post-accrual rate, then credits mintTokens=_amount*1e18/exchangeRateBefore (more lTokens than were actually minted) with no reconciliation to the real balance delta, and redeem() lets the unprivileged attacker withdraw those over-credited shares from the shared pool at the accrued rate for _amount*R_current/R_stale > _amount, stealing the difference from other suppliers. FCB_5d96418d62fd40226b5030_END"
+    }
+  ],
+  "errors": [],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 10,
+    "verified": 10,
+    "errored": 0,
+    "dropped_subfloor": 0
+  }
+}

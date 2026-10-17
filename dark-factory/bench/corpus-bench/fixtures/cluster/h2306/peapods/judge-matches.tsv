@@ -1,0 +1,18 @@
+# judge-matches.tsv — #2306 phase B (h2306/peapods). Mechanism-judge decisions projected per raw lead:
+#   cluster-holdout.py judge-project --arm <arm> --truth truth.tsv --verified <arm>/verified_findings.json \
+#     --judge-cache <cache> --batch 12 --min-confidence 60
+# One line per MATCH at or above the gate: arm, raw idx (0-based position in `verified`), sev_id, confidence.
+# Cache: recorded live for #2306 B4 (score-match.py --judge cmd via mech-judge.sh, batch 12, gate 60). Not committed. Live: 92 judging calls, 0 JUDGE-ERRORs; replay 0 cache misses.
+# cache_sha256	4fd2c18b85813604c2ee05049eeee101147a034f7bd486b2e4259c7e4de4921e
+# Each arm's row union must equal its '# readout' row set ('-' = no judge HIT); check enforces it.
+# readout	ccip	-
+# readout	dex	-
+# readout	p1	H-2
+# readout	p3	M-1,M-30
+# readout	voting	M-31
+p1	5	H-2	92
+p1	6	H-2	75
+p3	0	M-1	95
+p3	2	M-30	65
+voting	0	M-31	85
+voting	1	M-31	85

@@ -1,0 +1,65 @@
+{
+  "repo": "contracts",
+  "gate": "refute",
+  "verified": [
+    {
+      "subsystem": "Multi-DEX swap and liquidity router adapters",
+      "location": "contracts/dex/AerodromeDexAdapter.sol:swapV3Single:100",
+      "file": "contracts/dex/AerodromeDexAdapter.sol",
+      "class": "class=C15",
+      "severity": "High",
+      "exploit": "Aerodrome CL swaps encode payerIsUser=true so the universal router pulls the input token via Permit2 from the adapter, but the adapter only granted a plain ERC20 allowance (and never sets up Permit2), so every Slipstream/CL swap reverts unconditionally \u2014 Zapper CL zaps revert outright and ACP/TokenRewards reward tokens routed through CL can never be compounded (stranded value).",
+      "poc_sketch": "Fork Base; deploy AerodromeDexAdapter with the real Aerodrome universal router + a Slipstream CL pool for (tokenA,tokenB); approve+call swapV3Single(tokenA,tokenB,0,amountIn,0,recipient) and assert it reverts (Permit2 transfer fails); then assert that adding a Permit2 approval + Permit2 allowance to the router makes the identical call succeed, proving the funding-mechanism mismatch is the cause.",
+      "verdict": "REAL",
+      "reason": "The V3_SWAP_EXACT_IN input is encoded with payerIsUser=true, so the Aerodrome/Uniswap Universal Router sets payer=adapter (\u2260 router) and pays the CL pool via PERMIT2.transferFrom in the swap callback, but the adapter only grants a plain ERC20 allowance to the router and never approves Permit2 nor sets a Permit2 allowance, so every Slipstream/CL swap reverts unconditionally on a documented, unprivileged path with no guard."
+    },
+    {
+      "subsystem": "Multi-DEX swap and liquidity router adapters",
+      "location": "contracts/dex/CamelotDexAdapter.sol:swapV2SingleExactOut:72",
+      "file": "contracts/dex/CamelotDexAdapter.sol",
+      "class": "class=C23",
+      "severity": "High",
+      "exploit": "Exact-out is hardcoded to the foreign UniV2 router V2_ROUTER_UNI (different factory) while the pod's pair lives only on the configured Camelot router, so LeverageManager._swapPodForBorrowToken's pod->borrowToken exact-out swap hits a non-existent pool and reverts, bricking deleverage/repay and stranding leveraged funds.",
+      "poc_sketch": "Foundry: vm.etch a MockUniV2Router at 0x02b7D3D5438037D49A25ed15ae34F2d0099494B5 whose factory returns address(0) for (pod,borrowToken); deploy CamelotDexAdapter(v2Router=MockCamelotRouter with a working pod/borrowToken pair); assert swapV2Single (exact-in) succeeds through the Camelot router but swapV2SingleExactOut(pod,borrowToken,amtInMax,amtOut,recipient) reverts, proving exact-out is routed to a router with no pod liquidity.",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'no-loss: a \"that state never occurs\" argument is the unreachable ground, not no-loss \u2014 cite the line that validates the state away'): swapV2SingleExactOut unconditionally sends the exact-out swap to the hardcoded foreign V2_ROUTER_UNI (a different factory than the Camelot V2_ROUTER that exact-in uses and that pods are created on) with no factory/pair-existence guard and no setter validating pods to that Uni factory, so for the code-admitted, Camelot-adapter-expected Camelot-only pod pair the exact-out getAmountsIn hits a codeless pair and reverts, bricking the deleverage/repay liveness path. FCB_13f1e818d87bb075accf520_END"
+    },
+    {
+      "subsystem": "Multi-DEX swap and liquidity router adapters",
+      "location": "contracts/dex/AerodromeDexAdapter.sol:swapV3Single:100",
+      "file": "contracts/dex/AerodromeDexAdapter.sol",
+      "class": "class=C23",
+      "severity": "Medium",
+      "exploit": "Hardcoded payerIsUser=true makes the Velodrome/Aerodrome Universal Router pull tokenIn via Permit2, but the adapter grants only a direct ERC20 allowance (safeIncreaseAllowance to V3_ROUTER) and never arms Permit2, so every Aerodrome CL swap reverts and the pod's V3 route (reward compounding, Zapper) is permanently frozen.",
+      "poc_sketch": "Foundry (Base fork): deploy AerodromeDexAdapter with the real universal router and a CL pool, fund the adapter with tokenIn, call swapV3Single(amountIn>0); assert revert (Permit2 allowance error); then repeat after adapter does token.approve(PERMIT2) + PERMIT2.approve(router) and show it succeeds, isolating the missing Permit2 setup.",
+      "verdict": "REAL",
+      "reason": "With payerIsUser hardcoded true the Universal Router pulls tokenIn from the adapter via Permit2, but the adapter only grants a direct ERC20 allowance and never arms Permit2, so PERMIT2.transferFrom reverts and every CL/V3 swap (reward compounding, Zapper) is permanently frozen."
+    },
+    {
+      "subsystem": "Multi-DEX swap and liquidity router adapters",
+      "location": "contracts/dex/AerodromeDexAdapter.sol:swapV3Single:99",
+      "file": "contracts/dex/AerodromeDexAdapter.sol",
+      "class": "class=C23",
+      "severity": "Medium",
+      "exploit": "The swap path hardcodes TICK_SPACING=200 while getV3Pool takes tickSpacing as a parameter and spTKNMinimalOracle prices against an arbitrary unvalidated CL pool address, so for any pod whose real CL pool is not tickSpacing-200 (e.g. Slipstream 100) swaps are forced to the wrong/absent 200 pool -> revert (reward-swap DoS) or execution against a thin/attacker-seeded 200 pool while pricing used the deep non-200 pool.",
+      "poc_sketch": "Foundry (Base fork): create a Slipstream CL pool for (tokenIn,tokenOut) only at tickSpacing=100 (deep) and none at 200 (or a thin attacker-seeded 200 pool); confirm getV3Pool(t0,t1,int24(100)) returns the deep pool; call swapV3Single and assert it reverts (no 200 pool) or executes at the thin-pool price far from the 100-pool oracle price, proving swap-pool != priced-pool. FCB_11cb7c18d879319649de4a0_END",
+      "verdict": "REAL",
+      "reason": "recovered under the severity rubric (first read refuted on 'guard: the cited line is not a check \u2014 cite the conditional or the require/revert that stops the path'): swapV3Single hardcodes TICK_SPACING=200 into the swap path and discards the passed tick-spacing argument, while the sibling int24 getV3Pool used for pricing accepts an arbitrary, unvalidated tick spacing with no line tying the two together, so any admitted pod whose priced CL pool is not spacing-200 forces reward swaps into an absent/thin 200 pool (revert DoS or mispriced fill) and no require/guard in this code stops it."
+    }
+  ],
+  "errors": [
+    {
+      "location": "contracts/dex/CamelotDexAdapter.sol:swapV2SingleExactOut:72",
+      "file": "contracts/dex/CamelotDexAdapter.sol",
+      "reason": "LLM transport error (flat-cyborg exited) after 5 attempts \u2014 TRANSIENT, RE-RUNNABLE (not assessed)"
+    }
+  ],
+  "dropped_subfloor": [],
+  "pay_floor": "",
+  "totals": {
+    "candidates": 10,
+    "verified": 4,
+    "errored": 1,
+    "dropped_subfloor": 0
+  }
+}

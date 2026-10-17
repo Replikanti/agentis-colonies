@@ -16,6 +16,14 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Held-out clustering record h2306 (#2306 phase B): INCONCLUSIVE, `DF_CLUSTER_FINDINGS` stays OFF.**
+  `bench/corpus-bench/fixtures/cluster/h2306/` holds 24 raw STAGE 4 outputs from five contests, with blind
+  root-cause labels and recorded judge matches. All of them were anchored before any clusterer run.
+  - Gated once with method v2: 0 of 17 labelled-distinct pairs merged, token-mode GT unchanged, D = 17 (D_unique 5).
+  - The v1 control also merged 0, so `k = 0`. Under the anchored amendment the set never presented the failure
+    mode, and the flip is not justified.
+  - `expected-gate.txt` is pinned and replayed by `run-corpus-bench.sh --self-test`, which asserts the OFF default.
+
 - **`run-zone-hunt.sh --deep-hunt-audit-context <file>`** threads `run-invariant-hunt.sh --audit-context` (#1722)
   into every STAGE 4.5 cell, so an operator can steer the deep prover with target-specific leads (prior-audit fix
   list, design invariants) instead of only the per-lens defaults. The path is resolved to absolute; a missing file

@@ -322,8 +322,28 @@ cluster, so v2 can only split, and with both vetoes disabled it equals v1 (`demo
   **0 labelled-distinct merges** on both arms (v1: 1 of 13 on A), token-mode GT and all 6 + 6 recorded-judge rows
   kept; under-merge grows (v1: 22 / 23), which is reported only. Planning diagnosed this pair, so the record only
   shows the known failure no longer happens; the flip waits for the new held-out gate.
+- **Held-out record h2306: INCONCLUSIVE, default stays OFF.** The `fixtures/cluster/h2306/` set (24 raw STAGE 4
+  outputs from five contests, blind labels and judge matches anchored before any clusterer run, see its README)
+  was gated once with `gate --method v2`. Results:
+
+  | Gate | Result |
+  |---|---|
+  | G1, v2 merges of labelled-distinct pairs | 0 of 17 (G1 holds) |
+  | G2, token-mode GT changes | 0 |
+  | G4, D | 17 (D_unique 5) |
+  | v1 control, distinct merges `k` | **0** |
+
+  Under the anchored amendment (the flip also needs `k >= 1`, because D_unique = 5 leaves the zero-merge gate
+  without discriminating power on its own), `k = 0` means the set never presented the failure mode. The verdict is
+  INCONCLUSIVE, so the operator spot-check (G3) was not run: it cannot change the outcome. The pinned
+  `expected-gate.txt` therefore lists the spot rows as `missing`.
+
+  Reported only: v2 under-merges in 14 of 24 arms, with `vetoed_same` = 13 same-root-cause pairs split. Its
+  cannot-link fired on 13 distinct pairs that v1 already kept apart.
 - **Default.** `verify-findings.sh` keeps `DF_CLUSTER_FINDINGS` at 0. `--self-test` requires that while no
   `fixtures/cluster/h2306/` record exists, and once it does, that ON is only shipped with `GATE|verdict|PASS`.
+  The h2306 record asserts the OFF default. Re-opening the flip needs a new held-out set on which v1 actually
+  merges a labelled-distinct pair.
 
 ## Semantic mechanism judge (#1829)
 
