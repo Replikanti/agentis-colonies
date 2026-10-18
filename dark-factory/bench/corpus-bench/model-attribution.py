@@ -151,6 +151,13 @@ def scan_transcript(path, window=None, split_synthetic=False):
             if not isinstance(ev, dict):
                 continue
             msg = ev.get("message")
+            # A record that declares a `type` counts only when it is a real answer (`type == "assistant"`).
+            # Claude Code persists `type: api-request-blob` copies of the request sent to the API; their embedded
+            # prior turns carry role=assistant but no `model`, so counting them lands them in family `other`.
+            # A record with no `type` field at all stays accepted (exporter-agnostic path).
+            rtype = ev.get("type")
+            if rtype is not None and rtype != "assistant":
+                continue
             # Only assistant requests carry an answering model. A transcript may nest the model at the top level
             # or under `message` depending on the exporter; accept either.
             if isinstance(msg, dict) and msg.get("role") == "assistant":
@@ -369,6 +376,37 @@ def run_self_test():
             ok("window: a second-resolution --until covers its whole second (10:59:59.900 in, 11:00:00.000 out)")
         else:
             bad("window: second-resolution --until edge wrong (in=%r out=%r)" % (edge_in, edge_out))
+
+    # Claude Code 2.1.302 persists `type: api-request-blob` records: a copy of the request sent to the API, whose
+    # embedded prior turns carry `message.role == "assistant"` but NO `model`. They are not answers and must not
+    # be counted (they used to land in family `other` and turn a PURE-OPUS stage MIXED). A typeless record is
+    # still accepted when its role is assistant (exporter-agnostic path).
+    import tempfile as _tf2
+    blob_recs = [
+        {"type": "assistant", "message": {"role": "assistant", "model": "claude-opus-4-8",
+                                          "content": [{"type": "text", "text": "A1"}]}},
+        {"type": "api-request-blob", "message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "earlier turn"}]}},
+        {"type": "future-non-answer", "message": {"role": "assistant", "content": []}},
+        {"type": "assistant", "message": {"role": "assistant", "model": "claude-opus-4-8",
+                                          "content": [{"type": "text", "text": "A2"}]}},
+        {"type": "api-request-blob", "message": {"role": "assistant", "content": []}},
+    ]
+    typeless_rec = {"message": {"role": "assistant", "model": "claude-opus-4-8", "content": []}}
+    with _tf2.TemporaryDirectory() as td:
+        for name, recs in (("blob", blob_recs), ("typeless", [typeless_rec])):
+            with open(os.path.join(td, name + ".jsonl"), "w", encoding="utf-8") as fh:
+                fh.write("".join(json.dumps(r) + "\n" for r in recs))
+        blob = aggregate({"s": [os.path.join(td, "blob.jsonl")]})["s"]
+        typeless = aggregate({"s": [os.path.join(td, "typeless.jsonl")]})["s"]
+    if blob["verdict"] == "PURE-OPUS" and blob["requests"] == 2 and blob["other"] == 0:
+        ok("api-request-blob / non-answer typed records are skipped (2 real Opus answers -> PURE-OPUS, other=0)")
+    else:
+        bad("non-answer typed records were counted: %r" % blob)
+    if typeless["verdict"] == "PURE-OPUS" and typeless["requests"] == 1:
+        ok("a record with no `type` field and role=assistant is still counted (exporter-agnostic path)")
+    else:
+        bad("typeless assistant record no longer counted: %r" % typeless)
 
     print()
     if fails == 0:
