@@ -1,0 +1,17 @@
+# ladder-leaks.fixture.tsv — one refused ladder row per line for the #2311 ladder-check self-test. Column 1 is the
+# rule ladder-check must report (alone) when the row is checked on its own; columns 2-7 are the ladder row.
+# The finding-id case is built by the self-test at run time, so no such token is committed here.
+contest-name	aa1	fx	EX-1	Pool.sol:withdraw	check the fx pool ordering	-
+gt-marker	aa2	fx	EX-1	Pool.sol:withdraw	the GT ordering of the burn	-
+platform	aa3	fx	EX-1	Pool.sol:withdraw	what the judging report calls ordering	-
+platform	aa4	fx	EX-1	Pool.sol:withdraw	a sherlock style ordering issue	-
+l1-cap	aa5	fx	EX-1	Pool.sol:withdraw	one two three four five six seven eight nine ten eleven twelve thirteen	-
+l2-cap	aa6	fx	EX-1	Pool.sol:withdraw	ordering	a b c d e f g h i j k l m n o p q r s t u v w x y z
+non-cumulative	aa7	fx	EX-1	Pool.sol:withdraw	-	any depositor
+anchor-fn	aa8	fx	EX-1	Pool.sol:nosuchfn	ordering	-
+anchor-file	aa9	fx	EX-1	Nope.sol:read	ordering	-
+contest-not-allowed	ab1	zz	EX-1	Pool.sol:withdraw	ordering	-
+id	ex1	fx	EX-1	Pool.sol:withdraw	ordering	-
+corpus-bench	ab3	fx	EX-1	Pool.sol:withdraw	see the corpus-bench notes	-
+row-unknown	ab5	fx	EX-9	Pool.sol:withdraw	ordering	-
+anchor-syntax	ab6	fx	EX-1	Pool.sol withdraw	ordering	-

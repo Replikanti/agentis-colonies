@@ -1,0 +1,34 @@
+[
+  {
+    "id": "src_feed",
+    "name": "price feed",
+    "files": [
+      "src/feed/Feed.sol"
+    ],
+    "loc": 23,
+    "hardening_score": 60,
+    "bug_classes_likely": [
+      "C2"
+    ],
+    "description": "Keeper-pushed price: staleness and access control on the push path",
+    "value_custody": false,
+    "has_implementation": true
+  },
+  {
+    "id": "src_pool",
+    "name": "share pool",
+    "files": [
+      "src/pool/FeeMath.sol",
+      "src/pool/Pool.sol"
+    ],
+    "loc": 33,
+    "hardening_score": 60,
+    "bug_classes_likely": [
+      "C1",
+      "C6"
+    ],
+    "description": "Share pool: deposit/withdraw share accounting and rounding direction",
+    "value_custody": false,
+    "has_implementation": true
+  }
+]

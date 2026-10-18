@@ -1,0 +1,7 @@
+# ladder.fixture.tsv — the #2311 pointed-ladder self-test ladder over the synthetic contest of fixtures/exam/legacy/
+# (exam.sh self-test: ladder-check, plan --ladder, the pointed stage + run). Columns:
+# ptr_id	contest	row	anchors	l1	l2
+k7q	fx	EX-1	Pool.sol:withdraw	value leaves before the share balance is reduced	any depositor, once another account holds shares in the pool
+w2z	fx	EX-2	Feed.sol:read	a consumer accepts a price with no freshness bound	=L1
+d4n	fx	EX-3	Pool.sol:deposit,src/pool/Pool.sol:withdraw,Feed.sol:read	rounding direction when shares are minted	-
+f8b	fx	EX-4	FeeMath.sol:mulDown	-	-
