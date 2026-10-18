@@ -893,6 +893,80 @@ HALT (row 2 unstarted, no re-hunt / STAGE 4.5 spent), `--resume` over a VOID row
 (`STUB_FAIL_CALLS` / `STUB_FAIL_STATE` / `STUB_FAIL_TEXT`) drives the failures; the usage-limit notice fixture
 carries its literal glyphs (dash-safe, no `\xHH`).
 
+## Pointed-ladder diagnostic (#2311)
+
+**DIAGNOSTIC, not recall.** Every rare row of the spent held-out sets that the #2245 arms missed is re-run with the
+hunter POINTED at the row's GT function, to name the cause of the miss and pick the next lever. A pointed HIT says
+the function was reachable once someone pointed at it, not that the hunter would have selected it, so no number
+from these runs is a recall figure. The last unused held-out reserve stays untouched: the runner refuses any
+contest outside an explicit `--allow-contests` list.
+
+**The ladder.** A ladder TSV, kept by the operator outside the repo, holds one row per inventory row:
+`ptr_id  contest  row  anchors  l1  l2`. `ptr_id` is opaque (3-12 of `[a-z0-9]`, never spelling the row id); the
+arm label is `ptr-<ptr_id>-<rung>`, so no GT id reaches a path a hunt session can see. Each rung renders one fixed
+block, prepended to the pointed zone's brief:
+
+```
+=== FOCUS FOR THIS REVIEW (operator pointer; not a known issue, not an exclusion) ===
+Concentrate on <File.sol>:<function>[, ...]: trace it line by line, the state it reads and the calls it makes,
+and report every qualifying High/Medium bug in it. A rigorous SAFE remains a valid answer.
+[L1+] Bug class to consider first: <class phrase, <= 12 words>.
+[L2]  Attacker capability / precondition to consider: <phrase, <= 25 words>.
+```
+
+L0 asserts no bug: it only directs attention, which is what the coverage / selection lever would do. The word caps
+are the length of a taxonomy-title class name and of one actor plus one state condition; longer text drifts into
+a mechanism description. An `l2` of `=L1` marks a row with no non-leaking L2: its L2 arm renders the L1 block and
+is labelled `L2=L1`.
+
+**Runner (`exam/exam.sh`, PR A of #2311).**
+- `adopt` takes over a base frozen by the legacy host-only harness: every map/ + briefs/ file must match the legacy
+  sha256 list (exit 3 otherwise), the freeze contamination grep runs (exit 4), and `freeze.sha256` + `freeze.meta`
+  (`adopted=1`) are written without touching map/ or briefs/.
+- `plan --ladder <ladder.tsv> --rung L0|L1|L2 --allow-contests <csv> [--rows <ids>]` emits one 8-column row per
+  ladder row: the zone is the frozen zone owning the most anchors, the 8th column the pointer
+  (`<rung>:<ptr_id>:<ladder>`). `exam-helper.py ladder-check` refuses a GT id, a contest name, ` GT `, `judging`,
+  an audit platform, an over-cap phrase, a non-cumulative rung and an anchor that resolves in no base.
+- `stage --pointer` prepends the block (the frozen brief bytes follow unchanged), appends anchors owned by other
+  zones to the staged scope line as `file@fn` tokens, narrows `zones.json` `files[]` to the anchor files (the
+  STAGE 4.5 target set; a library-only anchor keeps the whole zone, `deep_target=zone-fallback`) and writes
+  `pointer.txt` (the L0 block). `run` hands `pointer.txt` to STAGE 4.5 only (`--deep-hunt-audit-context`), never to
+  breadth. Profiles: `pointed-l0` (breadth + the pointed deep hunt) and `pointed` (breadth only).
+
+**Classifier (`ladder-classify.py`).**
+- `hint-gate --ladder <f> --truth-dir <base> --judge <cmd>` judges every L1 and L2 text ALONE, at the row's
+  anchor, against the row's own GT text, with the same judge score-match.py uses. A MATCH (exit 4) means the hint
+  states the mechanism and must be rewritten; a judge error is exit 3 (fail closed).
+- `score --arm <dir> (--row <id> | --ladder <f>) --judge <cmd> --out <file>` judges every pre-refute candidate of
+  the arm (tier 1 and tier 2, any location) against a one-row truth file. A DISMISS line that names the mechanism
+  sets `dismissed`, never a HIT, and one that cites the pointer block sets `pointer_cited`. STAGE 4.5 contributes
+  only INVARIANT lines at the anchor files: FINDING is judged, CLEAN is a MISS, and a TIMEOUT / HARNESS_ERROR /
+  SKIPPED_* sibling (beside a non-matching FINDING as much as beside a CLEAN) or a deep hunt that never ran is
+  UNMEASURED. Refute verdicts are recorded and never used, because the refuter may read the brief. The operator sets `breadth_confirmed` / `deep_confirmed` to `yes` or `no` after
+  reading each MATCH against the GT text: a location match alone never counts (#2245 point 4).
+- `classify --inventory <tsv> --scores <dir>` applies the precedence and the decision rule and writes the per-row
+  table, the cause and lever counts and the verdict. It refuses an unconfirmed MATCH, a judge error and a HINT /
+  EXECUTION row without its L0 r2 replicate.
+
+**Precedence (first match wins).** UNPOINTABLE (no anchor) > LOCATION (L0 r1 or r2 HIT; sub-label unseen /
+examined / out-of-map) > EXECUTION (the pointed deep hunt HITs, L0 does not) > HINT (L1 or L2 HIT; lowest rung) >
+MECHANISM (everything measured and MISS; `dismissed` when the mechanism appeared only in a DISMISS line).
+Excluded but listed: MECHANISM-or-EXECUTION (breadth all MISS, deep unmeasured) and UNMEASURED (no HIT and a
+breadth rung VOID, or a HINT / EXECUTION hit with both L0 arms unmeasured, where LOCATION cannot be excluded).
+Either L0 replicate VOID (after its one `--retry-void`) is no replicate: with an L1 / L2 / deep HIT it is UNMEASURED.
+
+**Decision rule.** LOCATION -> coverage/selection, EXECUTION -> execution, HINT + MECHANISM -> generation (at L0 the
+function was in front of the hunter and the mechanism was still not named). N = the rows in those four classes.
+DOMINANT = a strict majority of N that survives the worst case (every excluded row joins the denominator and counts
+for the lever only when every class consistent with its measured cells maps to it). Else SELECTED = a plurality
+lead of at least 3 rows (one flipped row moves the lead by 2). Else SPLIT: the levers are ranked and the human
+decides. The sub-split inside the lever and the verdict on the found-by = 1 subset are reported alongside.
+
+`demo-pointed-ladder.sh` (colony-lint) source-guards the classifier and runs `ladder-classify.py --self-test`
+over `fixtures/ladder/`: the pinned table and verdict (one row per class and sub-label), the three precedence
+conflicts, all four verdict kinds, the hint-gate exit codes 0 / 3 / 4 and the scorer over a synthetic arm, all
+through an offline judge stub. The runner side is covered by `exam.sh self-test`.
+
 ## Generalization measurement bench (#1763 G4)
 
 The [#1763](https://github.com/Replikanti/agentis-colonies/issues/1763) epic generalized three yearn-hardcoded

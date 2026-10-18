@@ -1,0 +1,24 @@
+ptr_id=a06
+cell=L0r1
+rung=L0
+repeat=1
+row=FX-6
+contest=fx
+void=VALID
+breadth_leads=4
+breadth_judge=NO-MATCH
+breadth_matched=-
+breadth_confirmed=-
+dismiss_lines=0
+dismissed=0
+pointer_cited=0
+deep=NO-MATCH
+deep_cells=finding=0 clean=3 not_judged=0
+deep_confirmed=-
+judge_errors=0
+refute_verified=0
+model=claude-opus-4-8
+checkout_commit=0123456789abcdef0123456789abcdef01234567
+ladder_sha256=5e1f0c0ffee0ddba11ad5e1f0c0ffee0ddba11ad5e1f0c0ffee0ddba11ad5e1f
+l2_eq_l1=0
+evidence=arms/fx/z_a06/ptr-a06-L0-r1

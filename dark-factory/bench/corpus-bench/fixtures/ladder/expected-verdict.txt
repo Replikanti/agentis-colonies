@@ -1,0 +1,8 @@
+DIAGNOSTIC: pointed upper bound, not recall
+VERDICT: DOMINANT generation (5 of N=9; worst case 6 of 11)
+RULE: DOMINANT = a strict majority of N that survives the worst case; else SELECTED = a plurality lead >= 3 rows; else SPLIT
+WORST-CASE: generation 6 of 11 (every excluded row in the denominator)
+SUB-SPLIT generation: HINT:L1 1, HINT:L2 1, HINT:L2=L1 1, MECHANISM:dismissed 1, MECHANISM:none 1
+EXCLUDED: MECHANISM-or-EXECUTION fx FX-11 (consistent: EXECUTION,MECHANISM); UNMEASURED fx FX-12 (consistent: HINT,MECHANISM)
+FOUND-BY=1 SUBSET: DOMINANT generation (4 of N=7; worst case 5 of 8)
+No recall figure: a pointed HIT is reachability, not selection.

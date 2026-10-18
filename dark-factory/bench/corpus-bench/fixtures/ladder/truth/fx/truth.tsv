@@ -1,0 +1,12 @@
+FX-1	Medium	1	Synthetic row 1	Synthetic row 1 -- ### Summary Pool.withdraw transfers assets ahead of reducing the share balance (row 1).	Pool.sol:withdraw
+FX-2	Medium	1	Synthetic row 2	Synthetic row 2 -- ### Summary Pool.withdraw transfers assets ahead of reducing the share balance (row 2).	Pool.sol:withdraw
+FX-3	Medium	1	Synthetic row 3	Synthetic row 3 -- ### Summary Pool.withdraw transfers assets ahead of reducing the share balance (row 3).	Pool.sol:withdraw
+FX-4	Medium	1	Synthetic row 4	Synthetic row 4 -- ### Summary Pool.withdraw transfers assets ahead of reducing the share balance (row 4).	Pool.sol:withdraw
+FX-5	Medium	1	Synthetic row 5	Synthetic row 5 -- ### Summary Pool.withdraw transfers assets ahead of reducing the share balance (row 5).	Pool.sol:withdraw
+FX-6	Medium	1	Synthetic row 6	Synthetic row 6 -- ### Summary Pool.withdraw transfers assets ahead of reducing the share balance (row 6).	Pool.sol:withdraw
+FX-7	Medium	1	Synthetic row 7	Synthetic row 7 -- ### Summary Pool.withdraw transfers assets ahead of reducing the share balance (row 7).	Pool.sol:withdraw
+FX-8	Medium	1	Synthetic row 8	Synthetic row 8 -- ### Summary Pool.withdraw transfers assets ahead of reducing the share balance (row 8).	Pool.sol:withdraw
+FX-9	Medium	1	Synthetic row 9	Synthetic row 9 -- ### Summary Pool.withdraw transfers assets ahead of reducing the share balance (row 9).	Pool.sol:withdraw
+FX-10	Medium	1	Synthetic row 10	Synthetic row 10 -- ### Summary Pool.withdraw transfers assets ahead of reducing the share balance (row 10).	Pool.sol:withdraw
+FX-11	Medium	1	Synthetic row 11	Synthetic row 11 -- ### Summary Pool.withdraw transfers assets ahead of reducing the share balance (row 11).	Pool.sol:withdraw
+FX-12	Medium	1	Synthetic row 12	Synthetic row 12 -- ### Summary Pool.withdraw transfers assets ahead of reducing the share balance (row 12).	Pool.sol:withdraw

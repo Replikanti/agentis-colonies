@@ -1,0 +1,4 @@
+# hint-ladder.tsv — the #2311 hint-gate self-test ladder (ptr_id contest row anchors l1 l2). h1a is clean; h2b's
+# L1 states the mechanism (the judge stub MATCHes it) and its L2 is =L1, which the gate does not judge.
+h1a	fx	FX-1	Pool.sol:withdraw	accounting order inside a payout path	any depositor once shares exist
+h2b	fx	FX-2	Pool.sol:withdraw	withdraw pays out before burning shares	=L1
