@@ -6,7 +6,8 @@
 #      fullmatch task_id guard, no command-line token option, and the canary literal below equals the
 #      receiver's SELFTEST_CANARY (drift fails);
 #   2. `agentarena-webhook.py --self-test` exits 0 and never prints the canary;
-#   3. startup refusals before binding: token unset -> 2, secret://env/<unset> -> 3, --bind 0.0.0.0 -> 2;
+#   3. startup refusals before binding: token unset -> 2, secret://env/<unset> -> 3, --bind 0.0.0.0 -> 2
+#      (also with an unresolvable secret: the bind is checked first);
 #   4. a live loopback receiver driven by curl: 401 without / with a wrong token, 413 on a declared
 #      65537-byte body, 202 + a byte-exact canonical inbox file on the happy path, nothing written by the
 #      rejects, exit 0 on SIGTERM, no canary in the receiver log.
@@ -87,6 +88,9 @@ refuse 3 "secret://env/<unset>" \
     DARK_FACTORY_DIR="$WORK/df-refuse" python3 "$RECV" --port 0
 refuse 2 "--bind 0.0.0.0 without --allow-non-loopback" \
     env WEBHOOK_AUTH_TOKEN=secret://env/DEMO_AGENTARENA_TOKEN DEMO_AGENTARENA_TOKEN="$CANARY" \
+    DARK_FACTORY_DIR="$WORK/df-refuse" python3 "$RECV" --bind 0.0.0.0 --port 0
+refuse 2 "--bind 0.0.0.0 + unresolvable secret (bind refused before any secret lookup)" \
+    env -u DEMO_AGENTARENA_UNSET WEBHOOK_AUTH_TOKEN=secret://env/DEMO_AGENTARENA_UNSET \
     DARK_FACTORY_DIR="$WORK/df-refuse" python3 "$RECV" --bind 0.0.0.0 --port 0
 if [ -e "$WORK/df-refuse" ]; then bad "a refused startup created state"; else ok "refused startups wrote no state"; fi
 

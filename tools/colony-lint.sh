@@ -3166,9 +3166,9 @@ fi
 
 # --- dark-factory AgentArena webhook receiver (#2325, epic #2317 M1) ---
 # agentarena-webhook.py is the shadow intake's front door: it authenticates (Authorization: token, constant-time,
-# before any body byte), bounds (64 KiB declared Content-Length, 16 in flight, 5 s socket timeout), guards task_id
-# (fullmatch, no traversal) and drops the notification atomically into $DARK_FACTORY_DIR/agentarena/inbox/; it makes
-# no outbound connection. demo-agentarena-intake.sh source-guards the receiver (no HTTP-client/subprocess import,
+# before any body byte), bounds (64 KiB declared Content-Length, 16 in flight, 10 s whole-request deadline), accepts
+# only strict JSON, guards task_id (fullmatch, no traversal) and drops the notification atomically into
+# $DARK_FACTORY_DIR/agentarena/inbox/; it makes no outbound connection. demo-agentarena-intake.sh source-guards the receiver (no HTTP-client/subprocess import,
 # no command-line token option), runs its --self-test, the startup refusals and a live loopback round trip via curl
 # (SKIPped without curl), asserting the token canary never reaches any output. No network beyond 127.0.0.1.
 if [ -x "$REPO_ROOT/dark-factory/demo-agentarena-intake.sh" ]; then

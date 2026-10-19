@@ -57,7 +57,8 @@ request logs one stderr line with the status, a fixed outcome token and, once va
 |--------|---------|------|
 | 202 | `accepted` | New notification written to the inbox. |
 | 202 | `duplicate` | `<task_id>.json` already exists; the first file wins and is left untouched. |
-| 400 | `bad-request` | Bad `Content-Length`, short body, invalid JSON, not an object, missing or non-string `*_url`. |
+| 400 | `bad-request` | Bad or duplicate `Content-Length`, short body, invalid JSON, not an object, missing or non-string `*_url`, or JSON a strict parser would reject: `NaN`/`Infinity`, a number that overflows to infinity (`1e999`), a lone surrogate escape (`"\ud800"`), nesting deeper than 32. |
+| 400 | `timeout` | The body did not arrive before the request deadline (below). |
 | 400 | `bad-task-id` | `task_id` fails the pattern above. The log line records only its length and character classes. |
 | 401 | `unauthorized` | Missing, wrong or repeated `Authorization` header. |
 | 404 | `not-found` | Any path other than exactly `/webhook` (query strings included). |
@@ -67,14 +68,19 @@ request logs one stderr line with the status, a fixed outcome token and, once va
 | 500 | `write-failed` | The inbox write failed. |
 | 503 | `busy` | More than 16 requests in flight (legitimate concurrency is about 1). |
 
-A client that stalls for more than 5 s is dropped.
+Each connection must deliver its whole request (request line, headers and body) within 10 s of being
+accepted, however slowly it sends, and no single read may stall for more than 5 s. A client that misses the
+deadline while still sending headers is disconnected without a response (logged as `status=0
+outcome=timeout`), so slow-drip clients cannot hold the 16 in-flight slots. Keeping the receiver busy then
+needs a sustained connection flood, which the TLS-terminating front is expected to rate-limit.
 
 ### Inbox contract
 
 The consumer (#2326) reads `$DARK_FACTORY_DIR/agentarena/inbox/`:
 
 - one file per task, `<task_id>.json`, mode `0600`, in directories of mode `0700`;
-- the content is the notification as canonical JSON (sorted keys, no whitespace, ASCII escapes) plus one
+- the content is the notification as canonical, strict RFC 8259 JSON (sorted keys, no whitespace, ASCII
+  escapes, finite numbers only, no lone surrogates, nesting depth at most 32) plus one
   trailing newline;
 - a file appears complete or not at all (written to a temp file, fsynced, then hard-linked into place);
 - the first notification for a task_id wins; a re-delivery while the file exists is acknowledged and dropped;

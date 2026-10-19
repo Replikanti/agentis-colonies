@@ -36,7 +36,10 @@ an echo of request data):
 
     202 accepted         new notification written to the inbox
     202 duplicate        <task_id>.json already exists; the first file wins
-    400 bad-request      bad Content-Length, short body, invalid JSON, missing/non-string *_url
+    400 bad-request      bad/duplicate Content-Length, short body, invalid or non-strict JSON (NaN/Infinity,
+                         a number that overflows to inf, a lone surrogate, nesting deeper than 32),
+                         missing/non-string *_url
+    400 timeout          the body did not arrive before the 10 s whole-request deadline
     400 bad-task-id      task_id is not 1-128 chars of [A-Za-z0-9_-] with an alphanumeric first char
     401 unauthorized     missing, wrong or repeated Authorization header (checked before the body is read)
     404 not-found        any path other than exactly /webhook
@@ -45,6 +48,8 @@ an echo of request data):
     413 too-large        declared Content-Length above 65536 (the body is never read)
     500 write-failed     the inbox write failed
     503 busy             more than 16 requests in flight
+    (no response)        the request line + headers did not arrive before the 10 s deadline
+                         (logged as status=0 outcome=timeout)
 
 R1/R3: the receiver only ever handles notification metadata, never task code,
 and writes nothing outside $DARK_FACTORY_DIR/agentarena/inbox/. It touches no
@@ -57,6 +62,7 @@ import importlib.util
 import io
 import ipaddress
 import json
+import math
 import os
 import re
 import signal
@@ -74,10 +80,21 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # request. ~4 KiB would risk rejecting a grown payload; more only enlarges what
 # a token holder can write.
 MAX_BODY = 65536
-# 5 s: a legitimate sender pushes < 1 KB in one segment; this bounds how long a
-# stalled or slow-drip client pins a handler thread. Below ~1 s it can cut a
-# slow tunnel leg; much higher lets idle connections pin the in-flight cap.
+# 5 s: the longest a single socket read may stall. A legitimate sender pushes
+# < 1 KB in one segment, so any read that waits this long is a stalled client.
+# Below ~1 s it can cut a slow tunnel leg; much higher lets idle connections pin
+# the in-flight cap. It resets on every byte, so on its own it does not stop a
+# slow-drip client: REQUEST_DEADLINE_S does.
 SOCKET_TIMEOUT_S = 5
+# 10 s: whole-request deadline (request line + headers + body), counted from the
+# accept and enforced on every read whatever the drip rate. A legitimate
+# notification arrives in milliseconds; 10 s is 2x the per-read stall limit, so
+# a sender may stall once and still finish. Without it, 16 clients dripping one
+# header byte every few seconds hold every in-flight slot indefinitely and the
+# real notification gets 503 (slowloris). Much lower risks cutting a slow tunnel
+# leg; higher lengthens how long each such client holds a slot. With it, holding
+# the receiver busy needs a sustained connection flood, which is the front's job.
+REQUEST_DEADLINE_S = 10
 # 16: legitimate concurrency is ~1 (one notification per task); 16 bounds
 # threads x 64 KiB buffers (~1 MiB) on a host that also runs hunts. At 1-2 one
 # stalled client could 503 a real notification; unbounded, a flood spawns
@@ -88,6 +105,12 @@ DEFAULT_PORT = 8421
 DEFAULT_BIND = "127.0.0.1"
 WEBHOOK_PATH = "/webhook"
 URL_FIELDS = ("task_repository_url", "task_details_url", "post_findings_url")
+# 32: maximum container nesting (the top-level object is depth 1). The
+# notification is a flat object, so 32 leaves room for nested metadata the
+# platform may add, while staying far below what strict consumers accept
+# (serde_json's default recursion limit is 128, jq's depth limit 10000). An
+# uncapped depth would let a token holder write a file a strict parser rejects.
+MAX_DEPTH = 32
 # 1-128 chars, alphanumeric first: covers UUIDs (36), 24-hex ObjectIds,
 # cuid/nanoid ids and integers; excludes '.', '/', '\\', NUL and whitespace
 # (traversal), a leading '-' (option injection once #2326 hands the id to
@@ -175,7 +198,46 @@ def default_df_dir():
 
 
 def canonical(obj):
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
+    # allow_nan=False: a non-finite float that slipped past the parser is an
+    # internal invariant failure (500), never a non-JSON token in the inbox.
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+                      allow_nan=False) + "\n"
+
+
+def _strict_float(text):
+    """json.loads parse_float hook: an overflowing literal (1e999) is rejected, not inf."""
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError("non-finite number")
+    return value
+
+
+def _has_surrogate(text):
+    return any(0xD800 <= ord(c) <= 0xDFFF for c in text)
+
+
+def strict_json_ok(obj):
+    """True when obj re-serializes to strict RFC 8259 JSON: nesting <= MAX_DEPTH and
+    no lone surrogate in any key or string (a paired surrogate escape decodes to one
+    astral character, so any surrogate code point left is unpaired). Iterative, so a
+    deep document cannot exhaust the stack here."""
+    stack = [(obj, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, str):
+            if _has_surrogate(node):
+                return False
+        elif isinstance(node, (dict, list)):
+            if depth > MAX_DEPTH:
+                return False
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if _has_surrogate(k):
+                        return False
+                    stack.append((v, depth + 1))
+            else:
+                stack.extend((v, depth + 1) for v in node)
+    return True
 
 
 def write_inbox(df_dir, task_id, obj):
@@ -266,8 +328,10 @@ def _emit(server, status, outcome, task_id=None, nbytes=0, detail=None):
 class WebhookServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, addr, token, df_dir, log_stream=None, max_inflight=MAX_INFLIGHT):
+    def __init__(self, addr, token, df_dir, log_stream=None, max_inflight=MAX_INFLIGHT,
+                 request_deadline=REQUEST_DEADLINE_S):
         self.token_header = b"token " + token.encode("utf-8")
+        self.request_deadline = request_deadline
         self.df_dir = df_dir
         self.log_stream = sys.stderr if log_stream is None else log_stream
         self.log_lock = threading.Lock()
@@ -300,11 +364,40 @@ class WebhookServer6(WebhookServer):
     address_family = socket.AF_INET6
 
 
+class _DeadlineReader(io.RawIOBase):
+    """Socket reader that enforces one absolute deadline across all reads.
+
+    Every recv waits at most min(SOCKET_TIMEOUT_S, time left); once the deadline
+    has passed the next read raises socket.timeout, however slowly bytes drip in.
+    """
+
+    def __init__(self, sock, deadline):
+        super().__init__()
+        self._sock = sock
+        self._deadline = deadline
+
+    def readable(self):
+        return True
+
+    def readinto(self, buf):
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise socket.timeout("request deadline")
+        self._sock.settimeout(min(SOCKET_TIMEOUT_S, remaining))
+        return self._sock.recv_into(buf)
+
+
 class WebhookHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
     timeout = SOCKET_TIMEOUT_S
     server_version = PROG
     sys_version = ""
+
+    def setup(self):
+        super().setup()
+        deadline = time.monotonic() + self.server.request_deadline
+        self.rfile.close()
+        self.rfile = io.BufferedReader(_DeadlineReader(self.connection, deadline))
 
     def version_string(self):
         return self.server_version
@@ -313,15 +406,28 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # No default access log: it would echo the request line verbatim.
         pass
 
+    def log_error(self, format, *args):  # noqa: A002 - base-class signature
+        # The base class reports a header-phase timeout here; the connection is
+        # closed without a response. Never format args (request data).
+        if format.startswith("Request timed out"):
+            _emit(self.server, 0, "timeout")
+
     def send_error(self, code, message=None, explain=None):
         # The base class calls this for malformed request lines/headers and
-        # unknown methods; its default HTML body echoes request data.
+        # unknown methods; its default HTML body echoes request data. Older
+        # Pythons leave request_version at HTTP/0.9 here, which suppresses the
+        # status line; always answer with one.
+        if self.request_version == "HTTP/0.9":
+            self.request_version = "HTTP/1.0"
         self._respond(code, {"error": "malformed"})
         _emit(self.server, code, "malformed")
 
     def _respond(self, status, obj, extra=()):
         body = json.dumps(obj, separators=(",", ":")).encode("ascii")
         try:
+            # The read deadline may have shrunk the socket timeout; give the
+            # (tiny, fixed) response the normal per-operation budget.
+            self.connection.settimeout(SOCKET_TIMEOUT_S)
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -370,14 +476,20 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # 4. exactly Content-Length bytes
         try:
             body = self.rfile.read(length)
+        except socket.timeout:
+            return self._reject(400, "timeout", nbytes=length)
         except OSError:
             return self._reject(400, "bad-request")
         if len(body) != length:
             return self._reject(400, "bad-request", nbytes=len(body))
-        # 5. a JSON object with string *_url fields (URL policy belongs to #2326)
+        # 5. strict JSON (finite numbers, no lone surrogates, depth <= MAX_DEPTH),
+        #    an object with string *_url fields (URL policy belongs to #2326)
         try:
-            obj = json.loads(body.decode("utf-8"), parse_constant=_reject_constant)
+            obj = json.loads(body.decode("utf-8"), parse_constant=_reject_constant,
+                             parse_float=_strict_float)
         except (ValueError, RecursionError):
+            return self._reject(400, "bad-request", nbytes=length)
+        if not strict_json_ok(obj):
             return self._reject(400, "bad-request", nbytes=length)
         if not isinstance(obj, dict) or not all(isinstance(obj.get(k), str) for k in URL_FIELDS):
             return self._reject(400, "bad-request", nbytes=length)
@@ -398,9 +510,11 @@ def _reject_constant(name):
     raise ValueError("non-standard JSON constant")
 
 
-def make_server(ip, port, token, df_dir, log_stream=None, max_inflight=MAX_INFLIGHT):
+def make_server(ip, port, token, df_dir, log_stream=None, max_inflight=MAX_INFLIGHT,
+                request_deadline=REQUEST_DEADLINE_S):
     cls = WebhookServer6 if ip.version == 6 else WebhookServer
-    return cls((str(ip), port), token, df_dir, log_stream=log_stream, max_inflight=max_inflight)
+    return cls((str(ip), port), token, df_dir, log_stream=log_stream, max_inflight=max_inflight,
+               request_deadline=request_deadline)
 
 
 def write_port_file(path, port):
@@ -503,6 +617,10 @@ def self_test():
     resolver_err = io.StringIO()
     servers = []
     root = tempfile.mkdtemp(prefix="agentarena-webhook-selftest.")
+    # Anything the handlers write to stderr (e.g. a default access log) lands in
+    # resolver_err and is checked below.
+    real_stderr = sys.stderr
+    sys.stderr = resolver_err
     try:
         df = os.path.join(root, "df")
         srv = make_server(ipaddress.ip_address("127.0.0.1"), 0, token, df, log_stream=log)
@@ -539,12 +657,52 @@ def self_test():
         missing = _payload("task-x")
         del missing["post_findings_url"]
         check(post(json.dumps(missing).encode())[0] == 400, "body: missing post_findings_url -> 400")
-        check(post(b'{"task_id":"a","task_repository_url":NaN}')[0] == 400, "body: NaN constant -> 400")
+        # strict JSON: every inbox file must parse under a strict RFC 8259 parser
+        urls = ('"task_repository_url":"https://example.invalid/r","task_details_url":"https://example.invalid/d",'
+                '"post_findings_url":"https://example.invalid/f"')
+
+        def strict_case(label, tid, extra):
+            st = post(('{"task_id":"%s",%s,%s}' % (tid, urls, extra)).encode())[0]
+            check(st == 400 and not os.path.exists(os.path.join(inbox_dir(df), tid + ".json")),
+                  "body: %s -> 400, no inbox file" % label)
+
+        try:
+            canonical({"x": float("inf")})
+            raised = False
+        except ValueError:
+            raised = True
+        check(raised, "canonical() refuses a non-finite float (last line of defence, allow_nan=False)")
+        strict_case("NaN in an extra field", "task-nan", '"x":NaN')
+        strict_case("1e999 (overflows to inf)", "task-inf", '"x":1e999')
+        strict_case("-1e999", "task-ninf", '"x":-1e999')
+        strict_case("lone surrogate \\ud800 in a value", "task-sur", '"x":"\\ud800"')
+        strict_case("lone surrogate \\udc00 in a key", "task-surk", '"\\udc00":1')
+        strict_case("nesting depth %d" % (MAX_DEPTH + 1), "task-deep", '"x":' + "[" * MAX_DEPTH + "]" * MAX_DEPTH)
+        strict_case("32000-deep nesting", "task-deep2", '"x":' + "[" * 32000 + "]" * 32000)
+        # framing
+        dup_body = json.dumps(_payload("task-dupcl")).encode()
+        st = post(dup_body, headers=["Content-Length: %d" % len(dup_body)])[0]
+        check(st == 400, "size: two Content-Length headers -> 400")
+        te_body = json.dumps(_payload("task-te")).encode()
+        st = post(te_body, headers=["Transfer-Encoding: chunked"])[0]
+        check(st == 411, "size: Transfer-Encoding alongside a valid Content-Length -> 411")
+        # the base class's own error paths answer with the fixed body, never an echo
+        st, _, body = h.send(b"ECHOMARK-ZQ\r\n\r\n")
+        check(st == 400 and body == b'{"error":"malformed"}', "malformed request line -> 400, fixed JSON body")
+        st, _, body = h.send(b"FROBECHO /webhook HTTP/1.0\r\n\r\n")
+        check(st == 501 and body == b'{"error":"malformed"}', "unknown method -> 501, fixed JSON body")
+        check(all(m not in out for m in ("ECHOMARK", "FROBECHO", "POST /webhook")
+                  for out in (log.getvalue(), resolver_err.getvalue())),
+              "no request line is echoed into the log or stderr (no default access log)")
         # task_id traversal / shape
         for bad in ("..", "../escape", "a/b", "a\\b", ".hidden", "-rf", "x\x00y", "abc\n", "", "a" * 129, 7):
             st, _, body = post(json.dumps(_payload(bad)).encode())
             check(st == 400 and b"bad-task-id" in body, "task_id: %r -> 400 bad-task-id" % (bad,))
         check(_files_under(root) == [], "no regular file anywhere under the temp root after every reject")
+        # strict boundary: depth == MAX_DEPTH and a paired surrogate escape are fine
+        ok_deep = ('{"task_id":"task-depth-ok",%s,"x":%s,"y":"\\ud83d\\ude00"}'
+                   % (urls, "[" * (MAX_DEPTH - 1) + "]" * (MAX_DEPTH - 1)))
+        check(post(ok_deep.encode())[0] == 202, "body: depth %d + a paired surrogate escape -> 202" % MAX_DEPTH)
         check("escape" not in log.getvalue() and "hidden" not in log.getvalue()
               and "len=2 classes=dot" in log.getvalue() and "len=9 classes=alnum,dot,slash" in log.getvalue(),
               "rejected task_id values never reach the log (only length + char classes)")
@@ -591,6 +749,43 @@ def self_test():
         finally:
             idle.close()
 
+        # deadline: a slow-drip client is cut at the whole-request deadline, freeing its slot
+        drip = make_server(ipaddress.ip_address("127.0.0.1"), 0, token, os.path.join(root, "df-drip"),
+                           log_stream=log, max_inflight=1, request_deadline=1.0)
+        servers.append(drip)
+        threading.Thread(target=drip.serve_forever, daemon=True).start()
+        dport = drip.server_address[1]
+        d = socket.create_connection(("127.0.0.1", dport), timeout=10)
+        try:
+            d.sendall(b"POST /webhook HTTP/1.0\r\nX-Pad: ")
+            d.settimeout(0.2)
+            t0 = time.monotonic()
+            cut = None
+            while time.monotonic() - t0 < 4.0:
+                try:
+                    d.sendall(b"a")
+                    if d.recv(1) == b"":
+                        cut = time.monotonic() - t0
+                        break
+                except socket.timeout:
+                    continue
+                except OSError:
+                    cut = time.monotonic() - t0
+                    break
+            check(cut is not None and cut < 3.0,
+                  "deadline: client dripping a header byte every 0.2 s is cut at the 1 s request deadline")
+            st = 0
+            for _ in range(10):  # the slot is released just after the FIN the dripper saw
+                st = _Http(dport).request("POST", WEBHOOK_PATH, body=json.dumps(_payload("task-after-drip")).encode(),
+                                          auth=good)[0]
+                if st != 503:
+                    break
+                time.sleep(0.05)
+            check(st == 202, "deadline: authenticated request on the cap-1 server after the cut -> 202")
+        finally:
+            d.close()
+        check("status=0 outcome=timeout" in log.getvalue(), "deadline: the cut is logged as outcome=timeout")
+
         # startup refusals
         with redirect_stderr(resolver_err):
             for env, want, label in (({}, 2, "token unset -> 2"),
@@ -611,7 +806,20 @@ def self_test():
                 got = e.code
             check(got == want, "startup: check_bind(%s) -> %d" % (addr, want))
         check(check_bind("0.0.0.0", True).version == 4, "startup: 0.0.0.0 accepted with --allow-non-loopback")
+        # the bind is refused before the token is resolved (no keyring lookup for a bad config)
+        saved = os.environ.get(TOKEN_ENV)
+        os.environ[TOKEN_ENV] = "secret://env/AGENTARENA_WEBHOOK_SELFTEST_UNSET"
+        try:
+            with redirect_stderr(resolver_err):
+                rc = main(["--bind", "0.0.0.0", "--port", "0"])
+        finally:
+            if saved is None:
+                os.environ.pop(TOKEN_ENV, None)
+            else:
+                os.environ[TOKEN_ENV] = saved
+        check(rc == 2, "startup: bad --bind + unresolvable secret -> 2 (bind checked before any secret lookup)")
     finally:
+        sys.stderr = real_stderr
         for s in servers:
             s.shutdown()
             s.server_close()
