@@ -2211,7 +2211,7 @@ cmd_self_test() {
   # The routing is asserted on the argv run-zone-hunt.sh RECEIVED, not on the line exam.sh echoes into its logs: a
   # recording checkout whose dark-factory/ links every entry of this tree except run-zone-hunt.sh, a shim that appends
   # its argv (one call per line, each argument in <>) to a file outside the checkout and execs the real script.
-  local rco="$work/rec-checkout" argvlog="$work/rzh-argv.log" ent
+  local rco="$work/rec-checkout" argvlog="$work/rzh-argv.log" stalelog="$work/rzh-stale.log" ent
   mkdir -p "$rco/dark-factory" || die 3 "self-test: cannot build the recording checkout"
   for ent in "$df_real"/* "$df_real"/.[!.]*; do
     { [ -e "$ent" ] || [ -L "$ent" ]; } && [ "${ent##*/}" != run-zone-hunt.sh ] || continue
@@ -2220,6 +2220,7 @@ cmd_self_test() {
   # shellcheck disable=SC2016  # the shim's "$@" expands when the shim runs, not here
   { echo '#!/usr/bin/env bash'
     printf '{ printf "<%%s>" "$@"; echo; } >> %q\n' "$argvlog"
+    printf 'case " $* " in *" --deep-hunt-only "*) echo "deep ${DEEP_CELL_STALE_S-unset}" ;; *) echo "breadth ${DEEP_CELL_STALE_S-unset}" ;; esac >> %q\n' "$stalelog"
     printf 'exec bash %q "$@"\n' "$df_real/run-zone-hunt.sh"; } > "$rco/dark-factory/run-zone-hunt.sh"
   git -C "$rco" init -q && git -C "$rco" config user.email t@example.invalid && git -C "$rco" config user.name t \
     && git -C "$rco" add -A && git -C "$rco" commit -qm pinned || die 3 "self-test: cannot build the recording checkout"
@@ -2241,6 +2242,23 @@ cmd_self_test() {
     ok "pointed L0 run: run-zone-hunt.sh received --deep-hunt-audit-context <arm>/pointer.txt on the STAGE 4.5 call only (never breadth, recorded argv); run.meta pointer_id / pointer_rung / pointer_sha256"
   else
     bad "pointed L0 run: exit $rc deep_rc=$(meta_get "$rk/run.meta" deep_rc)"; cut -c1-200 "$argvlog" 2>/dev/null | sed 's/^/         | /'
+  fi
+  # The shipped pointed-l0 profile, run on the mock backend: DEEP_CELL_STALE_S (the #1982 per-cell staleness watchdog) is
+  # a deep.* knob there, so run-zone-hunt.sh must see 3600 on the STAGE 4.5 call and its unset default on breadth. A
+  # numa deep cell compiles ~30 min with nothing written into its dir, so the 900 s default kills it (#2311 R2).
+  sed -e 's/^BACKEND=.*/BACKEND=mock/' -e 's/^HARD_STOP_S=.*/HARD_STOP_S=600/' "$PROFILES_DIR/pointed-l0.env" > "$work/p-shipped-l0.env"
+  : > "$stalelog"
+  bash "$SELF" stage --root "$rroot" --base "$lbase" --contest fx --zone src_pool --arm ptr-k7q-L0 --repeat 2 \
+    --profile "$work/p-shipped-l0.env" --checkout "$rco" --pointer "L0:k7q:$ladder" > /dev/null 2>&1
+  bash "$SELF" run --root "$rroot" --base "$lbase" --contest fx --zone src_pool --arm ptr-k7q-L0 --repeat 2 \
+    --profile "$work/p-shipped-l0.env" --checkout "$rco" --agentis "$stub" > /dev/null 2>&1; rc=$?
+  local rs="$rroot/arms/fx/src_pool/ptr-k7q-L0-r2"
+  if [ "$rc" -eq 0 ] && [ "$(grep -c '^deep ' "$stalelog")" -eq 1 ] && grep -qx 'deep 3600' "$stalelog" \
+     && [ "$(grep -c '^breadth ' "$stalelog")" -ge 1 ] && ! grep '^breadth ' "$stalelog" | grep -qv '^breadth unset$' \
+     && meta_get "$rs/run.meta" deep_knobs | grep -qw 'DEEP_CELL_STALE_S=3600'; then
+    ok "the shipped pointed-l0 profile gives run-zone-hunt.sh DEEP_CELL_STALE_S=3600 on the STAGE 4.5 call only (recorded env; breadth keeps the cleared default); run.meta deep_knobs"
+  else
+    bad "pointed-l0 DEEP_CELL_STALE_S (exit $rc): $(paste -sd'|' "$stalelog" 2>/dev/null) deep_knobs=$(meta_get "$rs/run.meta" deep_knobs 2>/dev/null)"
   fi
   if ! grep -q '^pointer_' "$a1/run.meta"; then
     ok "an unpointed run.meta carries no pointer_* line (byte-compatible with before #2311)"

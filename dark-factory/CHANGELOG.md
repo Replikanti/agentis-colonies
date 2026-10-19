@@ -27,6 +27,10 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
     pre-registered precedence and decision rule (DOMINANT / SELECTED / SPLIT). `demo-pointed-ladder.sh` runs it
     under colony-lint.
   - Nothing under `auditor/`, `lib/` or any `run-*.sh` changes.
+  - `pointed-l0` sets `deep.DEEP_CELL_STALE_S=3600` (STAGE 4.5 call only, `exam.sh self-test` asserts it on the
+    recorded env): a viaIR deep cell writes nothing into its dir for the ~30 min cold `forge` compile, so the 900 s
+    staleness-watchdog default killed it (`ENGINE_FAILED stale-watchdog`) and VOIDed the arm. 3600 = 2 x the measured
+    1803 s compile; the zone budget and `HARD_STOP_S` still bound the arm.
 
 ## [0.14.0] - 2026-10-17
 
