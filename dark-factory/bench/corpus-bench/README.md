@@ -932,6 +932,8 @@ is labelled `L2=L1`.
   STAGE 4.5 target set; a library-only anchor keeps the whole zone, `deep_target=zone-fallback`) and writes
   `pointer.txt` (the L0 block). `run` hands `pointer.txt` to STAGE 4.5 only (`--deep-hunt-audit-context`), never to
   breadth. Profiles: `pointed-l0` (breadth + the pointed deep hunt) and `pointed` (breadth only).
+  `pointed-l0` sets `deep.DEEP_CELL_STALE_S=3600` (STAGE 4.5 only): a viaIR deep cell writes nothing for ~30 min while
+  `forge` compiles, so the 900 s staleness-watchdog default kills it and VOIDs the arm (2 x the measured 1803 s compile).
 
 **Classifier (`ladder-classify.py`).**
 - `hint-gate --ladder <f> --truth-dir <base> --judge <cmd>` judges every L1 and L2 text ALONE, at the row's
