@@ -16,6 +16,20 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **AgentArena webhook receiver (#2325, epic #2317 M1), the shadow intake's front door.**
+  `agentarena-webhook.py` is a stdlib-only receiver for `POST /webhook`: it checks
+  `Authorization: token <WEBHOOK_AUTH_TOKEN>` (constant time, before the body is read), caps the declared body
+  at 64 KiB, guards `task_id` against traversal and drops the notification atomically into
+  `$DARK_FACTORY_DIR/agentarena/inbox/<task_id>.json` (mode 0600, first write wins), answering
+  `202 {"status":"accepted"}`.
+  - No egress: no fetch, no subprocess, no outbound connection. The token comes from the env (a `secret://` URI
+    resolved in-process, or raw) and never reaches argv, logs or responses.
+  - Loopback-only by default; a non-loopback bind needs `--allow-non-loopback` (TLS must terminate in front).
+  - A 10 s whole-request deadline, enforced on every read, stops slow-drip clients from holding the 16
+    in-flight slots. Every inbox file is strict RFC 8259 JSON: non-finite numbers (including overflow such as
+    `1e999`), lone surrogates and nesting deeper than 32 get 400 before anything is written.
+  - `demo-agentarena-intake.sh` runs under colony-lint: source guards, `--self-test`, startup refusals and a live
+    loopback curl round trip. Operator docs and the exposure options: `docs/agentarena.md`.
 - **Pointed-ladder diagnostic (#2311), bench-only.** It classifies the rare rows the spent held-out sets missed as
   LOCATION, EXECUTION, HINT or MECHANISM, and picks the next lever from the counts. The results are DIAGNOSTIC:
   they bound reach, they are not recall.
