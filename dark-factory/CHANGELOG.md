@@ -16,6 +16,24 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **AgentArena intake fetch and unpack (#2326, epic #2317 M1).** `run-agentarena-intake.sh` (a thin shim over
+  the stdlib-only `lib/agentarena-intake.py`) consumes `inbox/<task_id>.json` (`--task <id>` or one `--all`
+  sweep), fetches the TaskResponse and the repo zip with the platform's `X-API-Key`, and unpacks the code into
+  `$DARK_FACTORY_DIR/agentarena/<task_id>/repo/` next to `details.json` and `manifest.json`, the handoff
+  contract the hunt, staging, purge and submit stages extend.
+  - URL policy before any request: https only, no userinfo, port 443, no IP literal, host on
+    `AGENTARENA_API_HOSTS` (default `agentarena.nethermind.io`); otherwise the task is deferred.
+  - The key goes to curl on stdin (`-H @-`), never argv, and is stripped from curl's env. curl never follows
+    redirects itself (`--max-redirs 0`, no `-L`): the intake follows up to 3 by hand and attaches the key only
+    to allowlisted hosts, so presigned storage never sees it.
+  - Caps: 50,000 archive members, 1 GiB uncompressed (also the download cap), 2 MiB TaskResponse. The
+    archive is pre-scanned before any byte is written; zip-slip names, escaping symlinks, special files,
+    duplicates, encrypted or corrupt members refuse it, and streamed byte counting stops lying headers. In-repo
+    symlinks are skipped and counted; files land 0600, dirs 0700.
+  - Non-EVM tasks (no `.sol`/`.vy`/`.yul`) are skipped, before the zip download when `selectedFiles` says so.
+  - Offline hatch `--details-file/--zip-file`; `--self-test` drives a stub curl; `demo-agentarena-intake.sh`
+    gains section 5 (source guards, the self-test, a zip-slip archive and the happy path through the shell
+    entry).
 - **AgentArena webhook receiver (#2325, epic #2317 M1), the shadow intake's front door.**
   `agentarena-webhook.py` is a stdlib-only receiver for `POST /webhook`: it checks
   `Authorization: token <WEBHOOK_AUTH_TOKEN>` (constant time, before the body is read), caps the declared body

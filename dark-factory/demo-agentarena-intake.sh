@@ -11,10 +11,20 @@
 #   4. a live loopback receiver driven by curl: 401 without / with a wrong token, 413 on a declared
 #      65537-byte body, 202 + a byte-exact canonical inbox file on the happy path, nothing written by the
 #      rejects, exit 0 on SIGTERM, no canary in the receiver log.
-# #2326, #2328 and #2329 extend this demo with the fetch, zip-slip, deadline and staging cases.
+# M1 (#2326) adds the fetch/unpack step, run-agentarena-intake.sh + lib/agentarena-intake.py:
+#   5. (a) source guards on the helper — no outbound-HTTP module import, no zipfile extract()/extractall(),
+#          its TASK_ID_RE literal equals the receiver's, INTAKE_CANARY below equals its SELFTEST_CANARY;
+#      (b) `run-agentarena-intake.sh --self-test` exits 0 and never prints the canary;
+#      (c) zip-slip through the shell entry: a fixture inbox file + an archive with ../../outside/pwned.txt and
+#          /abs/pwned.txt members, run through the offline hatch with AGENTARENA_API_KEY unset -> exit 4,
+#          manifest intake.status=refused reason=zip-slip, no pwned.txt anywhere, no repo/, and the temp root
+#          differs only by agentarena/demo-slip-1/{manifest.json,.lock,details.json};
+#      (d) the offline happy path -> unpacked, top dir stripped, dirs 0700 / files 0600.
+# #2328 and #2329 extend this demo with the deadline and staging cases.
 #
 # No network beyond 127.0.0.1, no agentis, no LLM. The token reaches curl through a header FILE (-H @file),
 # never argv; the receiver is tracked by its $! PID and reaped by the EXIT trap (never matched by name).
+# Section 5 never calls curl: the offline hatch reads local fixture files.
 #
 # Usage:  dark-factory/demo-agentarena-intake.sh
 # Requires: python3 (curl for section 4, SKIPped without it). Exit: 0 = all assertions held; non-zero = failure.
@@ -22,8 +32,12 @@ set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 RECV="$HERE/agentarena-webhook.py"
+INTAKE="$HERE/run-agentarena-intake.sh"
+INTAKE_PY="$HERE/lib/agentarena-intake.py"
 # Must equal SELFTEST_CANARY in agentarena-webhook.py (asserted below).
 CANARY="agentarena-selftest-canary-5f1d8c27e04b"
+# Must equal SELFTEST_CANARY in lib/agentarena-intake.py (asserted below).
+INTAKE_CANARY="agentarena-intake-selftest-canary-9b3e61d07a2c"
 
 FAILS=0
 note() { echo "demo-agentarena-intake.sh: $*"; }
@@ -33,6 +47,7 @@ is()   { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (got $1, want $2)"; fi; 
 
 command -v python3 >/dev/null 2>&1 || { echo "[SKIP] python3 not installed" >&2; exit 0; }
 [ -f "$RECV" ] || { note "agentarena-webhook.py not found: $RECV" >&2; exit 3; }
+[ -f "$INTAKE_PY" ] || { note "lib/agentarena-intake.py not found: $INTAKE_PY" >&2; exit 3; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/demo-agentarena.XXXXXX")"
 RPID=""
@@ -157,6 +172,101 @@ else
     fi
     if grep -q 'outcome=accepted task_id=demo-task-1' "$WORK/recv.log"; then ok "accept logged"; else bad "accept not logged"; fi
 fi
+
+# --- 5. intake fetch/unpack (#2326) --------------------------------------------------------------------
+note "5. intake fetch/unpack (#2326)"
+# (a) source guards
+if grep -Eq '^[[:space:]]*(import|from)[[:space:]]+(urllib\.request|http\.client|requests|urllib3|httpx|aiohttp)([[:space:]]|$|,)' "$INTAKE_PY" \
+   || grep -Eq '^[[:space:]]*from[[:space:]]+(urllib|http)[[:space:]]+import[[:space:]].*(request|client)' "$INTAKE_PY" \
+   || grep -Eq '^[[:space:]]*import[[:space:]].*(urllib\.request|http\.client|requests|httpx|aiohttp)' "$INTAKE_PY"; then
+    bad "intake helper imports an outbound-HTTP module"
+else
+    ok "intake: no urllib.request/http.client/requests/urllib3/httpx/aiohttp import"
+fi
+if grep -Eq '\.extract(all)?\(' "$INTAKE_PY"; then
+    bad "intake helper calls zipfile extract()/extractall()"
+else
+    ok "intake: no extract()/extractall() call (own validating extraction loop)"
+fi
+recv_re="$(grep -E '^TASK_ID_RE = ' "$RECV")"
+intake_re="$(grep -E '^TASK_ID_RE = ' "$INTAKE_PY")"
+if [ -n "$recv_re" ] && [ "$recv_re" = "$intake_re" ]; then
+    ok "intake: TASK_ID_RE literal == the receiver's"
+else
+    bad "intake TASK_ID_RE drifted from the receiver's"
+fi
+if grep -qF "SELFTEST_CANARY = \"$INTAKE_CANARY\"" "$INTAKE_PY"; then
+    ok "demo INTAKE_CANARY == intake SELFTEST_CANARY"
+else
+    bad "demo INTAKE_CANARY drifted from the intake's SELFTEST_CANARY"
+fi
+# (b) self-test through the shell entry
+ist_out="$(bash "$INTAKE" --self-test 2>&1)"; ist_rc=$?
+if [ "$ist_rc" -eq 0 ]; then ok "run-agentarena-intake.sh --self-test exits 0"; else bad "intake --self-test exit $ist_rc"; printf '%s\n' "$ist_out"; fi
+case "$ist_out" in
+    *"$INTAKE_CANARY"*) bad "intake --self-test output contains the canary" ;;
+    *) ok "intake --self-test output has no canary" ;;
+esac
+# (c) zip-slip through the shell entry, offline hatch, key unset
+IR="$WORK/intake-root"
+IDF="$IR/df"
+mkdir -p "$IDF/agentarena/inbox" "$IR/outside" "$WORK/fx"
+chmod 700 "$IDF/agentarena" "$IDF/agentarena/inbox"
+printf '%s\n' 'sentinel' >"$IR/outside/sentinel.txt"
+for t in demo-slip-1 demo-ok-1; do
+    printf '{"post_findings_url":"https://agentarena.nethermind.io/f","task_details_url":"https://agentarena.nethermind.io/d","task_id":"%s","task_repository_url":"https://agentarena.nethermind.io/r"}\n' "$t" \
+        >"$IDF/agentarena/inbox/$t.json"
+    printf '{"id":"%s","selectedFiles":["src/A.sol"]}\n' "$t" >"$WORK/fx/$t.details.json"
+done
+python3 -I - "$WORK/fx" <<'EOF'
+import os, sys, zipfile
+fx = sys.argv[1]
+with zipfile.ZipFile(os.path.join(fx, "demo-slip-1.zip"), "w") as z:
+    z.writestr("proj/src/A.sol", "contract A {}\n")
+    z.writestr("../../outside/pwned.txt", "pwned\n")
+    z.writestr("/abs/pwned.txt", "pwned\n")
+with zipfile.ZipFile(os.path.join(fx, "demo-ok-1.zip"), "w") as z:
+    z.writestr("proj/", "")
+    z.writestr("proj/src/A.sol", "contract A {}\n")
+    z.writestr("proj/README.md", "fixture\n")
+EOF
+snap() { (cd "$IR" && find . | LC_ALL=C sort); }
+snap >"$WORK/snap.before"
+env -u AGENTARENA_API_KEY DARK_FACTORY_DIR="$IDF" bash "$INTAKE" --task demo-slip-1 \
+    --details-file "$WORK/fx/demo-slip-1.details.json" --zip-file "$WORK/fx/demo-slip-1.zip" \
+    >"$WORK/slip.out" 2>"$WORK/slip.err"; rc=$?
+snap >"$WORK/snap.after"
+is "$rc" 4 "zip-slip: shell entry -> exit 4"
+TD="$IDF/agentarena/demo-slip-1"
+mstat="$(python3 -I -c 'import json,sys; i=json.load(open(sys.argv[1]))["intake"]; print(i["status"], i["reason"])' "$TD/manifest.json" 2>/dev/null)"
+is "$mstat" "refused zip-slip" "zip-slip: manifest intake.status=refused reason=zip-slip"
+if [ -z "$(find "$WORK" -name pwned.txt)" ] && [ ! -e /abs/pwned.txt ]; then ok "zip-slip: no pwned.txt anywhere"; else bad "zip-slip: a pwned.txt was written"; fi
+if [ ! -e "$TD/repo" ]; then ok "zip-slip: no repo/"; else bad "zip-slip: repo/ exists"; fi
+printf '%s\n' ./df/agentarena/demo-slip-1 ./df/agentarena/demo-slip-1/.lock \
+    ./df/agentarena/demo-slip-1/details.json ./df/agentarena/demo-slip-1/manifest.json | LC_ALL=C sort >"$WORK/snap.want"
+LC_ALL=C comm -13 "$WORK/snap.before" "$WORK/snap.after" >"$WORK/snap.added"
+if cmp -s "$WORK/snap.added" "$WORK/snap.want" && [ -z "$(LC_ALL=C comm -23 "$WORK/snap.before" "$WORK/snap.after")" ]; then
+    ok "zip-slip: the temp root differs only by agentarena/demo-slip-1/{manifest.json,.lock,details.json}"
+else
+    bad "zip-slip: unexpected change under the temp root"
+    cat "$WORK/snap.added"
+fi
+if grep -q 'task_id=demo-slip-1 status=refused reason=zip-slip' "$WORK/slip.err"; then ok "zip-slip: refusal logged"; else bad "zip-slip: refusal not logged"; fi
+if grep -q 'pwned\|outside\|nethermind' "$WORK/slip.err" "$TD/manifest.json"; then bad "zip-slip: a member name or URL reached the log/manifest"; else ok "zip-slip: no member name or URL in the log or manifest"; fi
+# (d) offline happy path
+env -u AGENTARENA_API_KEY DARK_FACTORY_DIR="$IDF" bash "$INTAKE" --task demo-ok-1 \
+    --details-file "$WORK/fx/demo-ok-1.details.json" --zip-file "$WORK/fx/demo-ok-1.zip" >/dev/null 2>"$WORK/ok.err"; rc=$?
+is "$rc" 0 "happy: shell entry -> exit 0"
+OR="$IDF/agentarena/demo-ok-1/repo"
+mstat="$(python3 -I -c 'import json,sys; i=json.load(open(sys.argv[1]))["intake"]; print(i["status"], i["top_dir_stripped"], i["files"])' "$IDF/agentarena/demo-ok-1/manifest.json" 2>/dev/null)"
+is "$mstat" "unpacked True 2" "happy: manifest unpacked, top_dir_stripped, 2 files"
+if [ "$(cat "$OR/src/A.sol" 2>/dev/null)" = "contract A {}" ] && [ -f "$OR/README.md" ]; then
+    ok "happy: repo/src/A.sol + repo/README.md (top dir stripped)"
+else
+    bad "happy: unpacked tree missing or not stripped"
+fi
+modes="$(python3 -I -c 'import os,stat,sys; print(" ".join(oct(stat.S_IMODE(os.stat(p).st_mode)) for p in sys.argv[1:]))' "$OR" "$OR/src" "$OR/src/A.sol" "$OR/README.md")"
+is "$modes" "0o700 0o700 0o600 0o600" "happy: dirs 0700, files 0600"
 
 if [ "$FAILS" -eq 0 ]; then
     note "PASS"
