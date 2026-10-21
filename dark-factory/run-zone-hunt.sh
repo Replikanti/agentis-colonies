@@ -367,6 +367,24 @@
 #                       makes the extra calls visible. The merged file gains a zone-prefixed `breadth_promises[]` array
 #                       only when some zone emitted one — absent (never `[]`) with the knob unset.
 #   --drop-dir <dir>    deliver-submission.sh drop-dir (default: <out>/drop).
+#   --confidential      #2327 CONFIDENTIAL MODE: task code and its derivatives never reach a learning, export or
+#                       host-state sink outside the task and run dirs. Writes the DF-CONFIDENTIAL marker into --out,
+#                       which makes everything below it confidential for good (there is no off switch). The mode is
+#                       also on with DF_CONFIDENTIAL=1, or when --repo or --out already lies in a marked tree (the
+#                       AgentArena intake marks every task dir), so the flag is only needed for an unmarked --out.
+#                       When on: --backend claude exits 2; --pattern-store / --replay-corpus / --corpus-max exit 2;
+#                       --backend flat-cyborg without the sandbox (DF_NO_SANDBOX set, or no bwrap) exits 3; a
+#                       --drop-dir or DF_EXTERNAL_CACHE outside a marked tree exits 2; DF_EXTERNAL_CACHE defaults to
+#                       <out>/external-cache and TMPDIR to <out>/.tmp; DF_CONFIDENTIAL=1 and
+#                       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 are exported; the hunt is not registered on the
+#                       dashboard; <out>/verify carries its own marker; a live STAGE 5 is skipped
+#                       (stage5=skipped-confidential; the offline --pass-fixture path still runs) and
+#                       deliver-submission.sh sends only the reduced Slack alert. One stderr line announces it:
+#                       `[confidential] on (marker <root>/DF-CONFIDENTIAL)`. Off (the default) => nothing printed,
+#                       nothing exported, every artifact byte-identical. Sink inventory:
+#                       docs/confidential-sinks.tsv; reference: docs/agentarena.md#confidential-mode.
+#   DF_CONFIDENTIAL=0|1 #2327 (ENV KNOB): =1 turns confidential mode on, like --confidential. Accepts ''/0/1;
+#                       anything else exits 2.
 #   -h, --help          This help.
 #
 # COVERAGE (#1830, ALWAYS ON — the deliberate exception to every other knob's default-inertness). STAGE 3 writes
@@ -380,6 +398,7 @@
 #
 # Exit: 0 after the batch (a clean halt on every finding, incl. per-finding failures that were skipped); 2 usage
 #       error; 3 missing prerequisite (an upstream stage — map/brief/discovery/verify — failed to produce output);
+#       under --confidential, 3 also means --backend flat-cyborg without the bwrap sandbox, or the marker not written;
 #       4 --require-coverage was set and STAGE 3 covered less than that fraction of the zones (#1830).
 #       6 the Claude usage limit was reached (#2291): the run stops at the next stage boundary, prints the evidence
 #       line and the resume command; exit 6 wins over 4. Nothing after the halted stage runs.
@@ -484,6 +503,10 @@ SCOPE_DOCS=""
 # #1731: cross-run ensemble/union flags — a THIN pass-through: collected verbatim into DEEP_FWD and appended to
 # both --deep-hunt run-invariant-hunt.sh invocations. Empty (the default) => the arg lists are byte-identical.
 DEEP_FWD=()
+# #2327 confidential mode: the explicit switch, and whether a cross-run pattern-store flag (--pattern-store /
+# --replay-corpus / --corpus-max) was given — confidential mode refuses those. The env switch is validated below.
+CONFIDENTIAL_FLAG=0 ; PS_FWD=0
+DF_CONFIDENTIAL="${DF_CONFIDENTIAL:-}"
 
 nv() { [ "$1" -ge 2 ] || { echo "run-zone-hunt.sh: missing value for the preceding flag" >&2; exit 2; }; }
 while [ $# -gt 0 ]; do
@@ -546,6 +569,7 @@ while [ $# -gt 0 ]; do
     --pay-mode)         nv "$#"; PAY_MODE="$2"; PAY_MODE_SET=1; shift 2 ;;
     --payable-impacts)  nv "$#"; PAYABLE_IMPACTS="$2"; shift 2 ;;
     --drop-dir)         nv "$#"; DROP_DIR="$2"; shift 2 ;;
+    --confidential)     CONFIDENTIAL_FLAG=1; shift ;;
     -h|--help) awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
     *) echo "run-zone-hunt.sh: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -606,6 +630,19 @@ case "$DEEP_HUNT_JOBS" in ''|[0-8]) ;; *) echo "run-zone-hunt.sh: DEEP_HUNT_JOBS
 [ "${DEEP_HUNT_ZONE_BUDGET_S:-0}" -eq 0 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_ZONE_BUDGET_S requires --deep-hunt" >&2; exit 2; }
 [ "$DEEP_HUNT_SKIP_BROKEN_TARGET" != 1 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_SKIP_BROKEN_TARGET=1 requires --deep-hunt" >&2; exit 2; }
 [ "${DEEP_HUNT_JOBS:-0}" -le 1 ] || [ "$DEEP_HUNT" -eq 1 ] || { echo "run-zone-hunt.sh: DEEP_HUNT_JOBS > 1 requires --deep-hunt" >&2; exit 2; }
+# #2327: a cross-run pattern-store flag in the forwarded deep-hunt argv (confidential mode refuses those).
+_ps_i=0
+while [ "$_ps_i" -lt "${#DEEP_FWD[@]}" ]; do
+  case "${DEEP_FWD[$_ps_i]}" in --pattern-store|--replay-corpus|--corpus-max) PS_FWD=1 ;; esac
+  _ps_i=$((_ps_i + 1))
+done
+# #2327: the confidential-mode env switch accepts only ''/0/1 (the DEEP_HUNT_REACH shape); a typo must not silently
+# leave a task hunt unprotected, nor turn an ordinary hunt confidential.
+case "$DF_CONFIDENTIAL" in ''|0|1) ;; *) echo "run-zone-hunt.sh: DF_CONFIDENTIAL must be unset, 0 or 1 (got '$DF_CONFIDENTIAL')" >&2; exit 2 ;; esac
+# #2327: df_is_confidential / df_confidential_mark (fail closed: any helper failure reads as confidential).
+# shellcheck source=lib/confidential.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/confidential.sh"
 # #2277: the per-root toolchain resolver of STAGE 4.5 / 4.6 (Foundry natively, Hardhat-only via a generated Foundry
 # shim) + its DF_FOUNDRY_SHIM* knob guard, read only when one of those stages is on (the OFF path never consults it).
 # shellcheck source=lib/foundry-shim.sh
@@ -692,6 +729,71 @@ LENSMATRIX="$HERE/lib/lens-surface-matrix.py"
 REPO="$(cd "$REPO" && pwd)"
 mkdir -p "$OUT"; OUT="$(cd "$OUT" && pwd)"
 [ -n "$DROP_DIR" ] || DROP_DIR="$OUT/drop"
+# ----------------------------------------------------------------------------------------------------------
+# CONFIDENTIAL MODE (#2327). On when --confidential is given, when DF_CONFIDENTIAL=1, or when --repo / --out already
+# lies in a tree marked DF-CONFIDENTIAL (the AgentArena intake marks every task dir). When on, every sink in
+# docs/confidential-sinks.tsv that this hunt can reach is switched off or kept inside --out, BEFORE any stage runs;
+# the refusals come first so a refused run writes nothing but --out itself. Off => this block prints and exports
+# nothing (one python3 spawn for the marker walk).
+# ----------------------------------------------------------------------------------------------------------
+DF_CONF=0
+if [ "$CONFIDENTIAL_FLAG" -eq 1 ] || [ "$DF_CONFIDENTIAL" = 1 ] || df_is_confidential "$REPO" "$OUT"; then DF_CONF=1; fi
+if [ "$DF_CONF" -eq 1 ]; then
+  # A plain `claude -p` session writes its transcript and workspace state into the host ~/.claude, unmasked.
+  if [ "$BACKEND" = "claude" ]; then
+    echo "run-zone-hunt.sh: [confidential] --backend claude is refused: it runs Claude Code outside the sandbox and writes task code into the host ~/.claude (use flat-cyborg)" >&2
+    exit 2
+  fi
+  # The pattern store is a cross-run learning sink by design (invariants and harnesses derived from the target).
+  if [ "$PS_FWD" -eq 1 ]; then
+    echo "run-zone-hunt.sh: [confidential] --pattern-store / --replay-corpus / --corpus-max are refused: the cross-run pattern store is a learning sink" >&2
+    exit 2
+  fi
+  if [ "$BACKEND" = "flat-cyborg" ]; then
+    if [ -n "${DF_NO_SANDBOX:-}" ] || ! command -v bwrap >/dev/null 2>&1; then
+      echo "run-zone-hunt.sh: [confidential] --backend flat-cyborg needs the bwrap sandbox (lib/claude-sandboxed.sh): DF_NO_SANDBOX is set or bwrap is not on PATH" >&2
+      exit 3
+    fi
+  fi
+  # The marker that put this run in confidential mode (the nearest one above --out, else above --repo), named in
+  # the announce line below so a stray marker over an ordinary workspace is visible; --out itself when only the
+  # flag / env switch did it.
+  _CONF_ROOT="$(python3 -I -c 'import os, sys
+for p in sys.argv[1:]:
+    d = os.path.realpath(p)
+    while True:
+        if os.path.lexists(os.path.join(d, "DF-CONFIDENTIAL")):
+            print(d)
+            sys.exit(0)
+        if os.path.dirname(d) == d:
+            break
+        d = os.path.dirname(d)
+print(os.path.realpath(sys.argv[1]))' "$OUT" "$REPO" 2>/dev/null || printf '%s' "$OUT")"
+  df_confidential_mark "$OUT" || { echo "run-zone-hunt.sh: [confidential] cannot write $OUT/DF-CONFIDENTIAL" >&2; exit 3; }
+  # The marker alone (DF_CONFIDENTIAL cleared for the check): a staged draft must land inside a marked tree.
+  if ! DF_CONFIDENTIAL='' df_is_confidential "$DROP_DIR"; then
+    echo "run-zone-hunt.sh: [confidential] --drop-dir $DROP_DIR is outside a confidential tree; use a dir under $OUT (the default)" >&2
+    exit 2
+  fi
+  if [ -n "${DF_EXTERNAL_CACHE:-}" ]; then
+    if ! DF_CONFIDENTIAL='' df_is_confidential "$DF_EXTERNAL_CACHE"; then
+      echo "run-zone-hunt.sh: [confidential] DF_EXTERNAL_CACHE=$DF_EXTERNAL_CACHE is outside a confidential tree; unset it (default <out>/external-cache)" >&2
+      exit 2
+    fi
+  else
+    # run-discovery.sh hands this to resolve-external.sh / onchain-fact.sh as --cache-dir.
+    export DF_EXTERNAL_CACHE="$OUT/external-cache"
+  fi
+  mkdir -p "$OUT/.tmp" && chmod 700 "$OUT/.tmp"
+  export TMPDIR="$OUT/.tmp"
+  export DF_CONFIDENTIAL=1
+  export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+  # A pass over an existing --out: a copy of verify/ alone (refute-to-knowledge.sh --from-verify) keeps the mark.
+  if { [ "$DEEP_HUNT_ONLY" -eq 1 ] || [ "$REHUNT_GAPS" -eq 1 ]; } && [ -d "$OUT/verify" ]; then
+    df_confidential_mark "$OUT/verify" || { echo "run-zone-hunt.sh: [confidential] cannot write $OUT/verify/DF-CONFIDENTIAL" >&2; exit 3; }
+  fi
+  echo "run-zone-hunt.sh: [confidential] on (marker $_CONF_ROOT/DF-CONFIDENTIAL)" >&2
+fi
 # #2291: the run-level usage-limit halt file. lib/run-agent-validated.sh writes it on the first Claude usage-limit
 # notice of ANY stage's model call (the export reaches map-zones.sh, gen-briefs.sh, run-discovery.sh and the refute
 # gate); every later validated call then fails fast without calling the model. A previous invocation's halt is
@@ -730,6 +832,12 @@ COMMIT="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 # only (id/label/root/out/log + repo URL); the dashboard ALWAYS re-derives liveness + every artifact live and
 # never trusts anything stored here. Best-effort: a registration failure NEVER aborts the hunt.
 _HUNT_REGISTRY_DIR="${DARK_FACTORY_DIR:-$HOME/.dark-factory}/hunts"
+# #2327: a confidential hunt is never registered (the descriptor would name the task outside the task dir): an empty
+# registry dir makes the block below a no-op.
+if [ "$DF_CONF" -eq 1 ]; then
+  echo "run-zone-hunt.sh: [registry] confidential hunt — not registered on the dashboard" >&2
+  _HUNT_REGISTRY_DIR=""
+fi
 if [ -d "$_HUNT_REGISTRY_DIR" ]; then
   # id = a stable slug of the target repo, so a re-run of the same target overwrites its own card (never piles up).
   _HUNT_ID="$(printf '%s' "$REPO_NAME" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^-*//;s/-*$//')"
@@ -1403,6 +1511,10 @@ ADJ_ARG=""; _ADJ="$(dirname "$OUT")/adjudicated.tsv"; [ -f "$_ADJ" ] && ADJ_ARG=
   ${MODEL:+--model "$MODEL"} --out "$VER"
 VERIFIED_JSON="$VER/verified_findings.json"
 [ -f "$VERIFIED_JSON" ] || { echo "run-zone-hunt.sh: verify-findings.sh did not emit verified_findings.json" >&2; exit 3; }
+# #2327: verify/ carries its own marker, so a copy of verify/ alone (refute-to-knowledge.sh --from-verify) keeps it.
+if [ "$DF_CONF" -eq 1 ]; then
+  df_confidential_mark "$VER" || { echo "run-zone-hunt.sh: [confidential] cannot write $VER/DF-CONFIDENTIAL" >&2; exit 3; }
+fi
 # #2291: the refute gate hit the usage limit. --rehunt-gaps over an empty gap set re-runs the merge + STAGE 4 over
 # the union, so it is also the resume path here.
 _limit_halt_exit M4 "after the reset: run-zone-hunt.sh --repo $REPO --out $OUT --rehunt-gaps (an empty gap set re-runs merge + STAGE 4)"
@@ -2340,6 +2452,14 @@ fi
 
 # #2291: nothing is packaged after a usage-limit halt.
 _limit_halt_exit M5 "after the reset: re-run over this --out"
+# #2327: a live STAGE 5 runs the run-audit-pass.sh coordinator and the auditor gates as Claude sessions that are not
+# wired to lib/claude-sandboxed.sh, so confidential mode skips it (the verified findings stay in verify/). The offline
+# --pass-fixture path has no LLM session and still runs, reaching deliver-submission.sh's reduced Slack alert.
+if [ "$DF_CONF" -eq 1 ] && [ -z "$PASS_FIXTURE" ]; then
+  echo "run-zone-hunt.sh: [M5] stage5=skipped-confidential — a live submission pass runs unsandboxed Claude sessions; the verified findings stay in $VER" >&2
+  echo "================ ZONE-HUNT: $ZONES_COVERED/$ZONES_TOTAL zone(s) covered, STAGE 5 skipped (confidential) ================" >&2
+  exit 0
+fi
 # ----------------------------------------------------------------------------------------------------------
 # STAGE 5 (M5): per verified finding -> run-audit-pass.sh (HALTS at PENDING-HUMAN-REVIEW) -> deliver-submission.sh
 # (stages the marked draft into the drop-dir). Per-finding body is wrapped so one bad finding is skipped, not fatal.

@@ -18,7 +18,8 @@
 #      (c) zip-slip through the shell entry: a fixture inbox file + an archive with ../../outside/pwned.txt and
 #          /abs/pwned.txt members, run through the offline hatch with AGENTARENA_API_KEY unset -> exit 4,
 #          manifest intake.status=refused reason=zip-slip, no pwned.txt anywhere, no repo/, and the temp root
-#          differs only by agentarena/demo-slip-1/{manifest.json,.lock,details.json};
+#          differs only by agentarena/demo-slip-1/{manifest.json,.lock,details.json,DF-CONFIDENTIAL} (the
+#          #2327 confidential-mode marker);
 #      (d) the offline happy path -> unpacked, top dir stripped, dirs 0700 / files 0600.
 # #2328 and #2329 extend this demo with the deadline and staging cases.
 #
@@ -243,10 +244,11 @@ is "$mstat" "refused zip-slip" "zip-slip: manifest intake.status=refused reason=
 if [ -z "$(find "$WORK" -name pwned.txt)" ] && [ ! -e /abs/pwned.txt ]; then ok "zip-slip: no pwned.txt anywhere"; else bad "zip-slip: a pwned.txt was written"; fi
 if [ ! -e "$TD/repo" ]; then ok "zip-slip: no repo/"; else bad "zip-slip: repo/ exists"; fi
 printf '%s\n' ./df/agentarena/demo-slip-1 ./df/agentarena/demo-slip-1/.lock \
+    ./df/agentarena/demo-slip-1/DF-CONFIDENTIAL \
     ./df/agentarena/demo-slip-1/details.json ./df/agentarena/demo-slip-1/manifest.json | LC_ALL=C sort >"$WORK/snap.want"
 LC_ALL=C comm -13 "$WORK/snap.before" "$WORK/snap.after" >"$WORK/snap.added"
 if cmp -s "$WORK/snap.added" "$WORK/snap.want" && [ -z "$(LC_ALL=C comm -23 "$WORK/snap.before" "$WORK/snap.after")" ]; then
-    ok "zip-slip: the temp root differs only by agentarena/demo-slip-1/{manifest.json,.lock,details.json}"
+    ok "zip-slip: the temp root differs only by agentarena/demo-slip-1/{manifest.json,.lock,details.json,DF-CONFIDENTIAL}"
 else
     bad "zip-slip: unexpected change under the temp root"
     cat "$WORK/snap.added"

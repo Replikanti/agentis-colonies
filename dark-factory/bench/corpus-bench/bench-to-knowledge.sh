@@ -30,10 +30,15 @@
 #                     full JSON is regenerated from all selected contests each run, so --replace is idempotent.
 #   -h                Help.
 # Exit: 0 = JSON written (empty-but-valid `[]` when no contest had scorable leads — that is DATA, not an error);
-#       2 = bad args; 3 = missing prerequisite (python3, score-match.py, or --import store/agentis).
+#       2 = bad args; 3 = missing prerequisite (python3, score-match.py, or --import store/agentis); 4 = --work or
+#       a selected contest's verify/ dir lies in a confidential tree (#2327: DF-CONFIDENTIAL marker, or
+#       DF_CONFIDENTIAL set) — refused before --out is written (docs/agentarena.md#confidential-mode).
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=../../lib/confidential.sh
+# shellcheck disable=SC1091
+. "$HERE/../../lib/confidential.sh"
 SCOREMATCH="$HERE/score-match.py"
 CLUSTERLIB="$HERE/../../lib/cluster-findings.py"
 
@@ -61,6 +66,11 @@ command -v python3 >/dev/null 2>&1 || { echo "bench-to-knowledge.sh: python3 not
 [ -f "$SCOREMATCH" ] || { echo "bench-to-knowledge.sh: score-match.py not found at $SCOREMATCH" >&2; exit 3; }
 [ -f "$CLUSTERLIB" ] || { echo "bench-to-knowledge.sh: cluster-findings.py not found at $CLUSTERLIB" >&2; exit 3; }
 [ -d "$WORK" ] || die "work dir not found: $WORK"
+# #2327: a confidential work dir never feeds the fitness corpus.
+if df_is_confidential "$WORK"; then
+  echo "bench-to-knowledge.sh: refusing a confidential --work (#2327): $WORK" >&2
+  exit 4
+fi
 
 # Discover contest ids: explicit --id list, else every immediate sub-dir of $WORK.
 CANDIDATES=""
@@ -72,6 +82,16 @@ else
     CANDIDATES="$CANDIDATES $(basename "$d")"
   done
 fi
+
+# #2327: nor does a selected contest whose verify/ carries the mark (a copied hunt --out keeps it). Checked for every
+# candidate before anything is written.
+for id in $CANDIDATES; do
+  [ -n "$id" ] || continue
+  if df_is_confidential "$WORK/$id/zone-hunt-out/verify"; then
+    echo "bench-to-knowledge.sh: refusing a confidential contest (#2327): $WORK/$id/zone-hunt-out/verify" >&2
+    exit 4
+  fi
+done
 
 # Accumulate every scored lead across the selected contests as `<class>\t<HIT|MISS>` lines, and count the
 # contests that actually contributed data (for the recommendation string's "across N contests").

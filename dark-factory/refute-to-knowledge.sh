@@ -33,8 +33,15 @@
 #   --agentis <bin>     agentis binary for --import (default: `agentis` on PATH).
 #   -h                  Help.
 # Exit: 0 = JSON written (empty-but-valid `[]` when no input carried a constraint — that is DATA, not an
-#       error); 2 = bad args; 3 = missing prerequisite (python3, or --import store/agentis).
+#       error); 2 = bad args; 3 = missing prerequisite (python3, or --import store/agentis); 4 = an input lies in a
+#       confidential tree (#2327: DF-CONFIDENTIAL marker, or DF_CONFIDENTIAL set) — refused before anything is read
+#       or written, because a task's refutations are derivatives of its code (docs/agentarena.md#confidential-mode).
 set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/confidential.sh
+# shellcheck disable=SC1091
+. "$HERE/lib/confidential.sh"
 
 OUT="$PWD/refute-constraints.json"
 IMPORT_DIR=""
@@ -60,6 +67,17 @@ $2/refute-constraints.tsv"; shift 2;;
 esac; done
 
 command -v python3 >/dev/null 2>&1 || { echo "refute-to-knowledge.sh: python3 not installed" >&2; exit 3; }
+
+# #2327: refuse a confidential input before any temp file, read or write. Newline-delimited, like the loop below.
+while IFS= read -r src; do
+  [ -n "$src" ] || continue
+  if df_is_confidential "$src"; then
+    echo "refute-to-knowledge.sh: refusing a confidential input (#2327): $src — task-derived refutations never become shared knowledge" >&2
+    exit 4
+  fi
+done <<CONF_EOF
+$INPUTS
+CONF_EOF
 
 # Collect every readable input into ONE row file. A named-but-missing input is a logged skip, not a failure:
 # a gate run that refuted nothing legitimately leaves no file, and the honest answer to that is an empty

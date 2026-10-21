@@ -1,0 +1,28 @@
+id	kind	location	writer	guard	probe
+cross-fed-memo	learn	<checkout>/cross-fed-memo/ (cross-fed:* memo keys)	tools/cross-fed-bridge.sh mirrors cross-fed:* keys; no dark-factory .ag writes one today	nothing to switch off; ratchet: demo-confidential-mode.sh fails if a dark-factory .ag gains a cross-fed: key	static
+refute-constraints	learn	refute-to-knowledge.sh --out / --store / --import	refute-to-knowledge.sh (operator feeder over <out>/verify/refute-constraints.tsv)	exit 4 on any confidential --in / --from-verify, before any read or write	feeder
+hunt-fitness	learn	bench-to-knowledge.sh --out / --import; read back by map-zones.sh via HUNT_FITNESS_JSON	bench/corpus-bench/bench-to-knowledge.sh (operator feeder over <work>/<id>/zone-hunt-out/verify/)	exit 4 when --work or a selected contest's verify/ is confidential, before --out is written	feeder
+state-export	export	state-export.sh export <rundir> <out.tar.gz> (memo + audited-pattern DAG)	state-export.sh (operator)	exit 4 when <rundir> is confidential, before tar runs	feeder
+pattern-dag	learn	--pattern-store dir (invpat:* memos, DAG objects, corpus/)	run-invariant-hunt.sh, reached through run-zone-hunt.sh --pattern-store / --replay-corpus / --corpus-max	exit 2 in run-zone-hunt.sh and in run-invariant-hunt.sh	refuse
+hunted-targets	registry	the operator's hunted-targets ledger (bench/corpus-bench/fresh-set.sh --ledger)	no code writer (operator)	nothing to switch off; operator rule: never record a task	snapshot
+hunt-registry	registry	$DARK_FACTORY_DIR/hunts/<id>.json	run-zone-hunt.sh (#1913)	not written; one log line	snapshot
+slack-bot	egress	Slack chat.postMessage + file uploads (description, PoC)	deliver-submission.sh -> notify-submission.sh	not called	stub
+slack-webhook	egress	Slack webhook alert	deliver-submission.sh -> monitor/scripts/notify.sh	reduced to lib/confidential.py alert: severity, routing and a ref to the confidential root; no title	stub
+gist	egress	gh gist create (PoC source, REPRODUCE.md)	deliver-submission.sh (#1540)	not called; no GIST_README.md / GIST_COMMAND.txt; manifest gist_url disabled:confidential	stub
+shared-drop	host-state	$DARK_FACTORY_DIR/drop/ (read by ingest-slack-outcome.sh and submission-outcomes.sh)	deliver-submission.sh via run-zone-hunt.sh --drop-dir	a --drop-dir outside a confidential tree exits 2	snapshot
+outcome-learning	learn	OUTCOME.md, dead-targets.txt, gate-tuning notes, the feedback-intake.ag learn path	ingest-slack-outcome.sh	exit 4 for a confidential --stage / --all drop dir; --all skips a confidential stage	refuse
+stage5-unsandboxed	host-state	host ~/.claude (transcripts, workspace store)	run-audit-pass.sh coordinator + auditor/scripts/run-gate-agent.sh gates (not wired to lib/claude-sandboxed.sh)	a live STAGE 5 is skipped (stage5=skipped-confidential); the offline --pass-fixture path still runs	env
+external-cache	cache	$DARK_FACTORY_DIR/external/	run-discovery.sh -> resolve-external.sh / onchain-fact.sh (DF_EXTERNAL_RESOLVE=1)	DF_EXTERNAL_CACHE pinned to <out>/external-cache; an explicit value outside a confidential tree exits 2	env
+tmp	transient	$TMPDIR: gate-agent run dirs, the forge-poc.sh temp dir, feeder temp files	several (run-zone-hunt.sh children)	TMPDIR pinned to <out>/.tmp	env
+unsandboxed-claude	host-state	host ~/.claude/**, unmasked	--backend claude (claude -p), DF_NO_SANDBOX=1, no bwrap	--backend claude exits 2; flat-cyborg without the sandbox exits 3	refuse
+claude-nonessential	egress	Claude Code telemetry and error reports	Claude Code	CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 exported	env
+claude-transcripts	host-state	~/.claude/projects/<slug>/ (#2262 binds a session's own dir read-write onto the host)	lib/claude-sandboxed.sh (every sandboxed cell)	PR 2: bound from <run>/.claude-state/projects/<slug>/ instead	live
+claude-json	host-state	~/.claude.json projects map: the trust entry and the merged-back lastSessionFirstPrompt	lib/ensure-claude-trust.sh, lib/claude-json-scope.py watch-merge	PR 2: no trust write, no merge-back; trust set in the scoped copy under <run>/.claude-state/	live
+claude-session-dirs	host-state	~/.claude/{file-history,shell-snapshots,session-env,sessions,todos,debug,paste-cache,plans,backups}, history.jsonl	Claude Code inside lib/claude-sandboxed.sh	PR 2: always masked, created before masking so every mask applies	live
+lock-dirs	transient	forge-slots, deep-hunt-llm-slots, the LLM slot pools	lib/forge-slot.sh, lib/deep-hunt-cell.sh, lib/deep-hunt-sched.sh	not a sink: PIDs only	none
+toolchain-caches	cache	~/.foundry, ~/.svm, the npm cache	forge / solc / npm	not a sink: public artifacts	none
+notify-dedup	host-state	notify.sh dedup state (MONITOR_NOTIFY_STATE_DIR)	monitor/scripts/notify.sh	not a sink: a hash of severity|kind|verdict, off by default	none
+submission-outcomes	transient	stdout only	submission-outcomes.sh	not a sink: read-only	none
+agentarena-inbox-ledger	registry	$DARK_FACTORY_DIR/agentarena/inbox/ and the M2 agentarena/ledger.tsv	agentarena-webhook.py, the M2 ledger writer	not a sink: outside task dirs on purpose; ids and numbers only, the ledger is the allowed learning channel	none
+model-provider	egress	the LLM provider receiving the prompt	every LLM session	not a sink: inherent to any LLM hunt	none
+share-patterns	export	run-audit.sh --share-patterns (knowledge market)	run-audit.sh	not a sink: publishes --seed-manifest patterns from curated sources, not the audited target; not a run-zone-hunt.sh child	none

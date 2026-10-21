@@ -16,6 +16,23 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **AgentArena confidential mode, part 1 (#2327, epic #2317 M1).** A task's code and its derivatives never reach a
+  learning, export or host-state sink outside the task and run dirs.
+  - The switch is a visible marker file, `DF-CONFIDENTIAL`: the intake writes it into every task dir before any code
+    lands, and `run-zone-hunt.sh --confidential` (or `DF_CONFIDENTIAL=1`) writes it into an ad-hoc `--out`. A hunt
+    whose `--repo` or `--out` lies in a marked tree is confidential without the flag. There is no off switch.
+  - `lib/confidential.py` (stdlib only) answers the question by walking up from the realpath and fails closed;
+    `lib/confidential.sh` wraps it for bash and treats every helper exit except 1 as confidential.
+  - In a confidential hunt: `--backend claude` and the cross-run pattern store exit 2, flat-cyborg without the
+    sandbox exits 3, the drop dir and `DF_EXTERNAL_CACHE` must lie in a marked tree, `TMPDIR` and the external
+    cache move under `--out`, Claude Code's nonessential traffic is off, the hunt is not registered on the dashboard,
+    `verify/` carries its own marker, and a live STAGE 5 is skipped (`stage5=skipped-confidential`).
+  - `deliver-submission.sh` creates no gist, skips bot mode and sends only a reduced webhook alert (severity and a
+    ref to the confidential root, no title). `refute-to-knowledge.sh`, `bench-to-knowledge.sh`,
+    `state-export.sh export` and `ingest-slack-outcome.sh` refuse a confidential input with exit 4.
+  - `docs/confidential-sinks.tsv` is the sink inventory; `demo-confidential-mode.sh` (colony-lint) proves every
+    row it can offline against a fake HOME and stub `curl`/`gh`. Claude Code session state follows in part 2.
+  - Without a marker nothing changes: no output, no new env, byte-identical artifacts.
 - **AgentArena intake fetch and unpack (#2326, epic #2317 M1).** `run-agentarena-intake.sh` (a thin shim over
   the stdlib-only `lib/agentarena-intake.py`) consumes `inbox/<task_id>.json` (`--task <id>` or one `--all`
   sweep), fetches the TaskResponse and the repo zip with the platform's `X-API-Key`, and unpacks the code into

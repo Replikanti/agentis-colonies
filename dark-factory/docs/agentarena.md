@@ -210,6 +210,7 @@ and `bytes` so the first real tasks can recalibrate them.
 $DARK_FACTORY_DIR/agentarena/<task_id>/
   manifest.json   the handoff contract below
   .lock           flock(2) target for every stage that touches the task dir
+  DF-CONFIDENTIAL the confidential-mode marker, written before anything else (see Confidential mode)
   details.json    the TaskResponse, bytes as received (0600)
   repo/           the repo root (0700 dirs, 0600 files)
 ```
@@ -229,6 +230,116 @@ $DARK_FACTORY_DIR/agentarena/<task_id>/
   read-modify-write under `<id>/.lock` plus an atomic replace, and never rewrite `intake`. The intake itself
   preserves other top-level keys when it rewrites `intake` on a retry.
 - `attempts` counts runs that reached the task dir; a deferred task is retried by the next run.
+
+## Confidential mode
+
+A task's code, and everything derived from it, must never leave the task dir for a learning, export or
+host-state sink (#2327). Confidential mode enforces that.
+
+### The marker
+
+A confidential tree is a directory that holds an entry named `DF-CONFIDENTIAL`, plus everything below it. Any
+entry type and any content counts.
+
+- The intake writes the marker into every task dir right after creating it, before the lock, `details.json` or
+  `repo/`. A task dir created before the marker existed is marked on its next intake run. If the marker cannot be
+  written, the task is deferred with `reason=io-error` and nothing else is written.
+- `run-zone-hunt.sh --confidential` (or `DF_CONFIDENTIAL=1`) writes the marker into a hunt `--out` that is not under
+  a task dir (ad-hoc runs, the demo). A hunt whose `--repo` or `--out` already lies in a marked tree is confidential
+  without the flag.
+- There is no off switch. A marked tree is always confidential; the only way out is deleting the marker by hand.
+- The marker is a visible file, not a dotfile, so a `cp -R dir/*` glob still copies it. `<out>/verify/` carries its
+  own copy, so a copy of `verify/` alone stays marked.
+
+`lib/confidential.py` (stdlib only) answers "is this path confidential": it walks up from the realpath of the
+nearest existing ancestor and looks for the marker in every directory up to `/`. It fails closed: a directory it
+cannot inspect counts as marked, and any internal error is reported as confidential. Bash scripts use
+`lib/confidential.sh` (`df_is_confidential`, `df_confidential_mark`), which treats every helper exit code except 1
+("not confidential") as confidential, so a missing or crashing python also fails closed.
+
+### What changes in a hunt
+
+When `run-zone-hunt.sh` runs in confidential mode it announces it with one stderr line,
+`[confidential] on (marker <root>/DF-CONFIDENTIAL)`, naming the marker that switched it on. Before any stage runs:
+
+| Effect | Why |
+|---|---|
+| `--backend claude` exits 2 | `claude -p` runs outside the sandbox and writes the session into the host `~/.claude` |
+| `--pattern-store`, `--replay-corpus`, `--corpus-max` exit 2 (also in a direct `run-invariant-hunt.sh` over a confidential `--repo`/`--out`) | the pattern store is a cross-run learning sink by design |
+| `--backend flat-cyborg` with `DF_NO_SANDBOX` set or no `bwrap` on PATH exits 3 | without the sandbox every session writes into the host `~/.claude` |
+| a `--drop-dir` outside a marked tree exits 2 | staged drafts and PoCs must stay in the task tree |
+| `DF_EXTERNAL_CACHE` outside a marked tree exits 2; unset, it becomes `<out>/external-cache` | the external-source cache would otherwise be shared host state |
+| `TMPDIR` becomes `<out>/.tmp` (0700) | gate run dirs and PoC temp files stay with the run |
+| `DF_CONFIDENTIAL=1` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` are exported | children see the mode; Claude Code sends no telemetry or error reports |
+| the hunt is not registered on the hunt dashboard (`$DARK_FACTORY_DIR/hunts/`) | the descriptor would name the task outside its dir |
+| a live STAGE 5 is skipped and logged as `stage5=skipped-confidential` (exit code unchanged) | the submission pass and its gates run Claude sessions that are not wired to the sandbox; the verified findings stay in `<out>/verify/`. The offline `--pass-fixture` path has no LLM session and still runs |
+
+`DF_CONFIDENTIAL` accepts only an empty value, `0` or `1`; anything else exits 2. With the mode off nothing is
+printed or exported and every artifact is byte-identical to a run without this feature.
+
+`deliver-submission.sh` checks its drop dir the same way. In confidential mode it creates no secret gist (no `gh`
+call, no `GIST_README.md` or `GIST_COMMAND.txt`; the manifest's `gist_url` is `disabled:confidential`), does not
+call the Slack bot, and sends the webhook only the reduced alert below. The staged files are unchanged.
+
+### The feeders refuse
+
+The operator feeders turn a hunt's output into learning or an export later, in another process, so they check the
+mark on their input and refuse the whole run with exit 4 before reading or writing anything:
+
+- `refute-to-knowledge.sh`: any confidential `--in` / `--from-verify`;
+- `bench/corpus-bench/bench-to-knowledge.sh`: a confidential `--work`, or a selected contest whose
+  `zone-hunt-out/verify/` is confidential;
+- `state-export.sh export`: a confidential `<rundir>` (`verify` and `import` are unchanged);
+- `ingest-slack-outcome.sh`: a confidential `--stage`, or the drop dir of a `--all` sweep. Inside a `--all` sweep
+  over an unmarked drop dir, a single confidential stage is skipped with a log line.
+
+`DF_CONFIDENTIAL` set in the feeder's own environment makes every input confidential.
+
+### The Slack alert
+
+The only Slack payload confidential mode allows is built by `lib/confidential.py alert --band <severity> --routing
+<high|warn|low> --ref <path> [--count N]`:
+
+```json
+{"kind":"finding-ready","verdict":"pending-human-review","severity":"high","severity_band":"High",
+ "ref":"<realpath of the marked root that holds <path>>","confidential":true,"count":1,
+ "message":"dark-factory confidential finding(s) ready for human review | severity High | count 1 | open <ref> on the host"}
+```
+
+There is no title key and no free-text argument. A finding title names the task's contracts and functions, so it
+is a derivative of task code and stays on the host; the operator opens `ref` to read the finding. The severity band
+is mapped onto a closed vocabulary (`Critical`, `High`, `Medium`, `Low`, `Informational`, `None`, `unspecified`,
+`unknown`), so it cannot carry text either. A `--ref` outside a marked tree exits 2 and nothing is sent.
+
+### The sink inventory
+
+[`confidential-sinks.tsv`](confidential-sinks.tsv) lists every sink a `run-zone-hunt.sh` child writes outside
+`--out`, every feeder that turns hunt output into learning or an export, and the non-sinks that were checked. Its
+columns:
+
+| Column | Meaning |
+|---|---|
+| `id` | stable row id |
+| `kind` | `learn`, `export`, `egress`, `registry`, `host-state`, `cache` or `transient` |
+| `location` | where the data would land |
+| `writer` | the script that writes it |
+| `guard` | what confidential mode does about it |
+| `probe` | how `demo-confidential-mode.sh` proves the guard: `snapshot` (a fake-HOME snapshot compare), `stub` (stub `curl`/`gh` egress log), `feeder` (exit 4), `refuse` (a refusal exit code), `env` (the environment the substrate sees), `static` (a source ratchet), `live` (needs a live sandboxed session; covered by the Claude Code session-state change and the live acceptance run, #2331), `none` (not a sink) |
+
+The demo fails when a row's probe is not exercised, and a drift guard fails when a `run-zone-hunt.sh` child that
+touches `DARK_FACTORY_DIR` or `$HOME` is missing from every `writer` cell. `confidential.py snapshot` and `compare`
+are the same tools the live acceptance run uses on the real host.
+
+Claude Code session state written by sandboxed sessions (transcripts under `~/.claude/projects/`, the
+`~/.claude.json` trust entry and merge-back) is contained by a follow-up change; its inventory rows are already
+listed with `probe=live`.
+
+### Operator rules
+
+- Never record a task in the hunted-targets ledger.
+- Never run an emitter or `feedback-intake.ag` by hand over a task dir without `bwrap`.
+- Copy task outputs only as whole directories. Copying a single file out of a task dir loses the mark.
+- Never delete a `DF-CONFIDENTIAL` marker to make a feeder accept an input.
 
 ## Exposure
 

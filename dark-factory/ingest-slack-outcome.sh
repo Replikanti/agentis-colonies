@@ -59,10 +59,16 @@
 #
 # Usage:  ingest-slack-outcome.sh (--stage <staged-drop-dir> | --all) [--drop-dir DIR] [--target-dir DIR]
 #         ingest-slack-outcome.sh --route-preview <disposition> <root_cause>   # pure: print the action list, exit 0
-# Requires: bash + python3 + curl (+ agentis to fold into learning). Exit: 0 always (best-effort); 2 = bad args.
+# Requires: bash + python3 + curl (+ agentis to fold into learning). Exit: 0 always (best-effort); 2 = bad args;
+# 4 = the --stage, or the drop dir of a --all sweep, lies in a confidential tree (#2327: DF-CONFIDENTIAL marker, or
+# DF_CONFIDENTIAL set) — refused before the token check, so no outcome of a task is ever learned or posted. In a
+# --all sweep a single confidential stage is skipped with a log line (docs/agentarena.md#confidential-mode).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/confidential.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/confidential.sh"
 DIR="${DARK_FACTORY_DIR:-$HOME/.dark-factory}"
 DROP_DIR="${DROP_DIR:-$DIR/drop}"
 
@@ -121,6 +127,13 @@ if [ -z "$STAGE" ] && [ "$ALL" -eq 0 ]; then
 fi
 if [ -n "$STAGE" ] && [ "$ALL" -eq 1 ]; then
   echo "ingest-slack-outcome.sh: --stage and --all are mutually exclusive" >&2; exit 2
+fi
+# #2327: confidential mode — a task's outcome never reaches OUTCOME learning, dead-targets, gate notes or Slack.
+if [ -n "$STAGE" ] && df_is_confidential "$STAGE"; then
+  echo "ingest-slack-outcome.sh: refusing a confidential --stage (#2327): $STAGE" >&2; exit 4
+fi
+if [ "$ALL" -eq 1 ] && df_is_confidential "$DROP_DIR"; then
+  echo "ingest-slack-outcome.sh: refusing a confidential drop dir (#2327): $DROP_DIR" >&2; exit 4
 fi
 
 # Resolve the bot token (secret:// -> plaintext; a raw `xoxb-…` is returned verbatim, the deliver-submission.sh
@@ -929,6 +942,10 @@ if [ "$ALL" -eq 1 ]; then
   for d in "$DROP_DIR"/*/; do
     [ -d "$d" ] || continue
     found=1
+    if df_is_confidential "${d%/}"; then
+      echo "ingest-slack-outcome.sh: skipping a confidential stage (#2327): ${d%/}" >&2
+      continue
+    fi
     process_stage "${d%/}" || true
   done
   [ "$found" -eq 1 ] || echo "ingest-slack-outcome.sh: no staged dirs under $DROP_DIR (nothing to ingest)" >&2
