@@ -3164,19 +3164,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-breadth-promises.sh" ]; then
     fi
 fi
 
-# --- dark-factory AgentArena webhook receiver (#2325, epic #2317 M1) ---
+# --- dark-factory AgentArena intake: webhook receiver (#2325) + fetch/unpack (#2326), epic #2317 M1 ---
 # agentarena-webhook.py is the shadow intake's front door: it authenticates (Authorization: token, constant-time,
 # before any body byte), bounds (64 KiB declared Content-Length, 16 in flight, 10 s whole-request deadline), accepts
 # only strict JSON, guards task_id (fullmatch, no traversal) and drops the notification atomically into
 # $DARK_FACTORY_DIR/agentarena/inbox/; it makes no outbound connection. demo-agentarena-intake.sh source-guards the receiver (no HTTP-client/subprocess import,
 # no command-line token option), runs its --self-test, the startup refusals and a live loopback round trip via curl
 # (SKIPped without curl), asserting the token canary never reaches any output. No network beyond 127.0.0.1.
+# Section 5 covers run-agentarena-intake.sh + lib/agentarena-intake.py (#2326): source guards (no HTTP-client import,
+# no zipfile extract()/extractall(), TASK_ID_RE equal to the receiver's), the helper's --self-test (stub curl: key on
+# stdin to allowlisted hosts only, hand-followed redirects, caps, zip-slip/symlink/special-file/duplicate refusals,
+# non-EVM skip, URL policy, idempotency), and a zip-slip archive plus a happy path through the shell entry's offline
+# hatch. Section 5 never calls curl.
 if [ -x "$REPO_ROOT/dark-factory/demo-agentarena-intake.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-agentarena-intake.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
-        pass "dark-factory: AgentArena webhook receiver (auth, 64 KB cap, task_id guard, atomic inbox, no egress) (#2325)"
+        pass "dark-factory: AgentArena intake: webhook receiver (#2325) + fetch/unpack, zip-slip guard, caps, key only to allowlisted hosts (#2326)"
     else
-        fail "dark-factory: AgentArena webhook receiver regressed (#2325)"
+        fail "dark-factory: AgentArena intake regressed (webhook receiver #2325 / fetch-unpack #2326)"
         printf '%s\n' "$check_out"
     fi
 fi

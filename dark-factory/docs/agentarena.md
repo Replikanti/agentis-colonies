@@ -21,7 +21,7 @@ server that:
   `202 {"status":"accepted"}`.
 
 It does **not** fetch the task, check URL policy, start any subprocess or open any outbound connection; that
-is the intake's job (#2326). It writes nothing outside the inbox and touches no Slack, memo or export sink.
+is the intake's job ([Intake: fetch and unpack](#intake-fetch-and-unpack)). It writes nothing outside the inbox and touches no Slack, memo or export sink.
 The token never appears in argv, in a log line or in a response.
 
 ### Running it
@@ -76,7 +76,7 @@ needs a sustained connection flood, which the TLS-terminating front is expected 
 
 ### Inbox contract
 
-The consumer (#2326) reads `$DARK_FACTORY_DIR/agentarena/inbox/`:
+The consumer ([Intake: fetch and unpack](#intake-fetch-and-unpack)) reads `$DARK_FACTORY_DIR/agentarena/inbox/`:
 
 - one file per task, `<task_id>.json`, mode `0600`, in directories of mode `0700`;
 - the content is the notification as canonical, strict RFC 8259 JSON (sorted keys, no whitespace, ASCII
@@ -85,6 +85,150 @@ The consumer (#2326) reads `$DARK_FACTORY_DIR/agentarena/inbox/`:
 - a file appears complete or not at all (written to a temp file, fsynced, then hard-linked into place);
 - the first notification for a task_id wins; a re-delivery while the file exists is acknowledged and dropped;
 - dot-prefixed `.incoming-*` files are in-progress temp files and must be ignored.
+
+## Intake: fetch and unpack
+
+`dark-factory/run-agentarena-intake.sh` (#2326) consumes the inbox. Per task it fetches the TaskResponse
+(`task_details_url`) and the repo zip (`task_repository_url`) with the platform's `X-API-Key`, validates both
+and unpacks the code into `$DARK_FACTORY_DIR/agentarena/<task_id>/`. The script is a thin shim; all logic is
+in `dark-factory/lib/agentarena-intake.py` (stdlib only, Python >= 3.8). HTTP goes through `curl` (>= 7.63).
+The intake is read-only toward the platform: it never reads or requests `post_findings_url`.
+
+### Running it
+
+```bash
+AGENTARENA_API_KEY='secret://libsecret/agentarena/api-key' dark-factory/run-agentarena-intake.sh --task <id>
+AGENTARENA_API_KEY='secret://libsecret/agentarena/api-key' dark-factory/run-agentarena-intake.sh --all
+dark-factory/run-agentarena-intake.sh --task <id> --details-file details.json --zip-file repo.zip   # offline
+dark-factory/run-agentarena-intake.sh --self-test     # offline, exit 0/1
+```
+
+| Env | Meaning |
+|-----|---------|
+| `AGENTARENA_API_KEY` | Live path only. A `secret://` URI resolved in-process by `tools/parse-toml-secret.py`, or the raw key. It reaches curl as one header line on stdin (`-H @-`), never in argv, and is removed from curl's environment together with `WEBHOOK_AUTH_TOKEN` and any variable holding the same value. |
+| `AGENTARENA_API_HOSTS` | Comma-separated host suffixes the key may be sent to. Default `agentarena.nethermind.io`. |
+| `DARK_FACTORY_DIR` | State root, default `~/.dark-factory`. |
+
+| Flag | Meaning |
+|------|---------|
+| `--task <id>` | Process `inbox/<id>.json`. |
+| `--all` | One sweep of `inbox/*.json`, sorted by name, dot-files ignored. No daemon or watch loop. |
+| `--details-file F --zip-file F` | Offline hatch: both or neither, `--task` only. Reads local files instead of fetching; no network, no key resolved, no URL policy. |
+| `--max-files N` | Archive member cap (default 50000). |
+| `--max-bytes N` | Cap on the uncompressed total, also the download cap (default 1 GiB). |
+| `--curl PATH` | curl binary (default `curl` on PATH). |
+| `--self-test` | Offline self-test with a stub curl and a temp state root. |
+
+Exit codes: `0` unpacked, skipped or no-op (for `--all` always, unless a usage or secret error stops the
+sweep), `1` self-test failed, `2` usage/config error (bad task id, key unset on the live path, bad flag
+combination), `3` `secret://` resolution failed, `4` refused (terminal policy violation), `5` deferred
+(retryable).
+
+### Pipeline
+
+For each task, in this order:
+
+1. **Inbox.** `inbox/<id>.json` must be a JSON object whose `task_id` equals the file stem, with string
+   `task_details_url` and `task_repository_url`. Otherwise the task is refused and nothing is written.
+2. **URL policy** (live path), on both URLs before any request: scheme `https`, no userinfo, port absent or
+   443, the host is not an IP literal, and it equals an `AGENTARENA_API_HOSTS` suffix or is a subdomain of one.
+   A violation defers the task (`reason=url-policy`, the log line names `AGENTARENA_API_HOSTS`) with nothing
+   written. The platform's API host is not documented yet, so a first real task on another host lands here:
+   that is fail-closed by design. Then the key is resolved, still before anything is written.
+3. **Task dir and lock.** `agentarena/<id>/` (mode 0700) and an exclusive non-blocking `flock` on
+   `<id>/.lock`; a busy lock defers. A task whose manifest already has a terminal status (`unpacked`, `skip`,
+   `refused`) is a logged no-op. Leftovers of a crashed run (`.staging-*`, `*.part`, an unrecorded `repo/`) are
+   removed.
+4. **Fetch details.** One curl call per hop with `-q --proto =https --max-redirs 0 -s -H @-`, never `-L`:
+   curl re-sends custom `-H` headers on every followed redirect, including to other hosts. Redirects (301, 302,
+   303, 307, 308) are followed by hand, at most 3, each target must be https without userinfo, and the key is
+   attached only to hops that pass the full URL policy (so a presigned storage host never sees it). The body is
+   streamed into `.details.part` and curl is killed at the cap. URLs are never logged.
+5. **Validate details.** At most 2 MiB, a strict JSON object (`NaN`/`Infinity` rejected), `selectedFiles`
+   absent or a list of strings. Stored as `details.json` (0600, bytes as received). If neither `id` nor
+   `taskId` equals the task_id, the manifest records `details_id_match: false` and the log line carries
+   `warn=details-id-mismatch`; this is not a refusal, because the docs do not say which field carries the
+   notification id (#2331 settles it).
+6. **Chain gate** (OOS3). Only EVM tasks are hunted. If `selectedFiles` is non-empty and no entry ends in
+   `.sol`, `.vy` or `.yul` (case-insensitive), the task is skipped `non-evm` and the zip is never fetched. If
+   `selectedFiles` is empty, the same test runs on the archive's member names after the pre-scan, before
+   anything is extracted. There is no Solana switch while #2335 is open.
+7. **Fetch the zip** the same way into `.repo.zip.part`, capped at `--max-bytes`. Its sha256 is recorded.
+8. **Central-directory pre-scan**, before any byte is written; the first violation refuses the whole archive.
+   Python's `extract()`/`extractall()` are never used: they rewrite hostile names instead of refusing them and
+   enforce no caps.
+9. **Extract** into `.staging-<pid>/`, then `rename` to `repo/`. A single shared top-level directory is
+   stripped (the agent template resolves `selectedFiles` against it, and it keeps the repo's name out of the
+   manifest). Directories are created 0700 and files 0600 with `O_EXCL|O_NOFOLLOW` (no exec bits). Copies are
+   streamed with a running byte count, so a lying size header or an overlapping-entry bomb stops at the cap.
+   In-repo symlinks are never materialized: they are skipped and counted in `symlinks_skipped`.
+
+Every exit path deletes the zip part and the staging dir. A refusal leaves only `manifest.json`, `.lock` and
+possibly `details.json`.
+
+### Statuses
+
+`intake.status` in the manifest, with the `reason` token:
+
+| Status | Reason | When |
+|--------|--------|------|
+| `unpacked` | (empty) | `repo/` is in place. |
+| `skip` | `non-evm` | No `.sol`/`.vy`/`.yul` in `selectedFiles`, or in the archive when `selectedFiles` is empty. |
+| `refused` | `details-too-large`, `details-invalid` | TaskResponse over 2 MiB, not a strict JSON object, or a bad `selectedFiles`. |
+| `refused` | `zip-too-large` | The download exceeded `--max-bytes`. |
+| `refused` | `zip-invalid` | Not a zip, an encrypted member, unsupported compression, or a corrupt stream. |
+| `refused` | `too-many-files`, `too-many-bytes` | Over `--max-files`; declared or actually streamed bytes over `--max-bytes`, or a member larger than its header says. |
+| `refused` | `zip-slip` | A member name (after mapping `\` to `/`) that is absolute (`/...`, `C:`) or has a `..` component. |
+| `refused` | `zip-bad-name` | A control character, a component over 255 bytes, or a path over 4096 bytes. |
+| `refused` | `zip-duplicate` | Two members that normalize to the same path, or one path used as both a file and a directory. |
+| `refused` | `zip-special-file` | A FIFO, device or socket member. |
+| `refused` | `zip-symlink-escape` | A symlink whose target is absolute or resolves outside the repo root. |
+| `deferred` | `fetch-http-<code>`, `fetch-curl-<n>`, `fetch-redirect-policy`, `fetch-too-many-redirects` | A fetch failed; the next run retries. |
+| `deferred` | `extract-io-error`, `io-error` | A local I/O failure (for example a full disk). |
+
+Refusals before the task dir exists (inbox problems: `inbox-missing`, `inbox-invalid`, `inbox-id-mismatch`)
+and deferrals before it (`url-policy`, `lock-busy`) are logged but write no manifest. Each task logs one
+stderr line: `agentarena-intake: <UTC> task_id=<id> status=<s> reason=<token> entries=N bytes=N`, with ids,
+numbers and enum tokens only.
+
+### Caps
+
+| Cap | Default | Why |
+|-----|---------|-----|
+| Archive members (`--max-files`) | 50,000 | On 29 local audit-target checkouts (several are one repo at different commits), `git ls-files --recurse-submodules` peaks at 12,419 files, median about 1,200: 4x headroom. Below about 12.5k a real repo of the measured kind is refused; above, the only gain is more inodes a hostile archive can cost. |
+| Uncompressed total and download (`--max-bytes`) | 1 GiB | The measured peak is 315 MiB of tracked bytes including submodules: about 3x headroom. Below about 320 MiB the largest measured repo is refused; above, a bomb can take more of the disk the hunts share. One knob covers both because a zip holds at most its members' bytes plus per-entry headers. |
+| TaskResponse | 2 MiB | Metadata plus free-text `additionalDocs`/`qaResponses`; 2 MiB is about 1,000 pages of plain text. Smaller risks refusing a pasted spec; larger only grows what a hostile endpoint can make us store. |
+| Redirect hops | 3 | One hop covers a redirect to presigned storage, 3 tolerates one more canonicalizing hop; beyond that is a loop. |
+| curl `--max-time` | 120 s details, 1800 s zip | 2 MiB at >= 17 KB/s and 1 GiB at >= 0.6 MB/s. A slower intake would eat into a deadline-bounded hunt, whose default margin is 45 min (#2328). |
+
+The caps were calibrated on our own audit targets, not on AgentArena tasks; the manifest records `entries`
+and `bytes` so the first real tasks can recalibrate them.
+
+### Task dir and manifest contract
+
+```
+$DARK_FACTORY_DIR/agentarena/<task_id>/
+  manifest.json   the handoff contract below
+  .lock           flock(2) target for every stage that touches the task dir
+  details.json    the TaskResponse, bytes as received (0600)
+  repo/           the repo root (0700 dirs, 0600 files)
+```
+
+```json
+{"schema":"agentarena-task/1","task_id":"<id>",
+ "intake":{"status":"unpacked|skip|refused|deferred","reason":"<token or empty>","chain":"evm|non-evm|unknown",
+   "details_sha256":"...","details_bytes":0,"details_id_match":true,
+   "zip_sha256":"...","zip_bytes":0,"entries":0,"files":0,"bytes":0,"symlinks_skipped":0,"top_dir_stripped":true,
+   "max_files":0,"max_bytes":0,"offline":false,"attempts":1,"started_at":"<UTC ISO>","finished_at":"<UTC ISO>"}}
+```
+
+- The manifest holds only numbers, ids, hashes and enum tokens: no file names, URLs or text. The retention
+  purge (#2330) keeps it when it removes the code.
+- It is written atomically (temp file, fsync, `os.replace`) under `<id>/.lock`.
+- Later stages add their own top-level key (`hunt` for #2328, `staging` for #2329, `submit` for #2332) by
+  read-modify-write under `<id>/.lock` plus an atomic replace, and never rewrite `intake`. The intake itself
+  preserves other top-level keys when it rewrites `intake` on a retry.
+- `attempts` counts runs that reached the task dir; a deferred task is retried by the next run.
 
 ## Exposure
 
