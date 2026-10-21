@@ -1207,6 +1207,31 @@ def self_test():
         check(rc == 5 and manifest("t-http").get("reason") == "fetch-redirect-policy",
               "live: a redirect to http:// -> deferred fetch-redirect-policy")
         check(all("/findings" not in c["url"] for c in calls()), "live: post_findings_url is never requested")
+        # redirect-hop boundary: exactly MAX_HOPS redirects are followed, one more defers
+        mp = json.load(open(os.path.join(stub_dir, "map.json")))
+        for t, n in (("t-hop3", MAX_HOPS), ("t-hop4", MAX_HOPS + 1)):
+            mp[api + t] = {"status": 200, "body_file": fixture(t + ".details", details(t, ["c/T.sol"]))}
+            hops = [api + t + "/repo"] + ["https://cdn%d.cdn-example.test/%s" % (i, t) for i in range(n)]
+            for a, b in zip(hops, hops[1:]):
+                mp[a] = {"status": 302, "location": b}
+            mp[hops[-1]] = {"status": 200, "body_file": live_zip}
+            put_inbox(t)
+        set_map(mp)
+        rc = run("--task", "t-hop3", env=dict(live_env))
+        check(rc == 0 and manifest("t-hop3").get("status") == "unpacked",
+              "live: exactly %d redirects are followed -> unpacked" % MAX_HOPS)
+        rc = run("--task", "t-hop4", env=dict(live_env))
+        check(rc == 5 and manifest("t-hop4").get("reason") == "fetch-too-many-redirects",
+              "live: redirect %d -> deferred fetch-too-many-redirects" % (MAX_HOPS + 1))
+        # a key with a control character would smuggle a second header line onto curl's stdin
+        put_inbox("t-ctlkey")
+        env_ctl = dict(live_env)
+        env_ctl[KEY_ENV] = "abc\r\nX-Injected: 1"
+        reset_calls()
+        before = _snapshot(world)
+        rc = run("--task", "t-ctlkey", env=env_ctl)
+        check(rc == 2 and calls() == [] and _snapshot(world) == before,
+              "config: a key with a control character -> exit 2, curl never called, nothing written")
 
         # 9. URL policy
         for i, url in enumerate(("http://agentarena.nethermind.io/d", "https://u:p@agentarena.nethermind.io/d",
