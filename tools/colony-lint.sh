@@ -3186,6 +3186,24 @@ if [ -x "$REPO_ROOT/dark-factory/demo-agentarena-intake.sh" ]; then
     fi
 fi
 
+# --- dark-factory confidential mode (#2327, epic #2317 M1) ---
+# A tree holding a DF-CONFIDENTIAL marker (every AgentArena task dir; a run-zone-hunt.sh --confidential --out) never
+# feeds a learning, export or host-state sink outside the task and run dirs. demo-confidential-mode.sh runs the
+# helper self-tests (lib/confidential.py + lib/confidential.sh, fail closed), the intake marking a task dir, an offline
+# hunt over it with a fake HOME and stub curl/gh (pinned TMPDIR / DF_EXTERNAL_CACHE / DF_CONFIDENTIAL, no registry,
+# one reduced Slack alert without a title, the four feeders exit 4, the HOME snapshot unchanged), an unmarked control
+# whose compare lists every sink, the gist/bot gate, the refusals (pattern store, --backend claude, no sandbox, drop
+# dir, external cache, live STAGE 5) and the docs/confidential-sinks.tsv inventory ratchets. No network, no LLM.
+if [ -x "$REPO_ROOT/dark-factory/demo-confidential-mode.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-confidential-mode.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: confidential mode — marked task trees never reach a learning/export/host-state sink; fail-closed helper, feeders exit 4, sink inventory ratchets (#2327)"
+    else
+        fail "dark-factory: confidential mode regressed (#2327)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory --grant-pii guard on live/exec .ag invocations (#1690) ---
 # The PII heuristic that blocked hunter.ag (#1675/#1676) and then zone-mapper.ag (#1690) can trip on
 # ANY invocation that transmits target source / scope / findings / PoCs / persisted patterns (all benign

@@ -273,6 +273,19 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# #2327: the cross-run pattern store (invpat:* memos, DAG objects, corpus/) is a learning sink, so a direct run over a
+# confidential --repo / --out refuses it (run-zone-hunt.sh refuses it up front). --corpus-max alone is inert: it
+# only bounds a corpus that lives under --pattern-store.
+if [ -n "$PATTERN_STORE" ] || [ -n "$REPLAY_CORPUS" ]; then
+  # shellcheck source=lib/confidential.sh
+  # shellcheck disable=SC1091
+  . "$HERE/lib/confidential.sh"
+  if df_is_confidential ${REPO:+"$REPO"} "$OUT"; then
+    echo "run-invariant-hunt.sh: [confidential] --pattern-store / --replay-corpus are refused over a confidential --repo/--out (#2327)" >&2
+    exit 2
+  fi
+fi
+
 [ -n "$REPO" ] && [ -d "$REPO" ] || { echo "run-invariant-hunt.sh: --repo <foundry project root> required" >&2; exit 2; }
 [ -f "$REPO/foundry.toml" ] || { echo "run-invariant-hunt.sh: --repo is not a foundry project (no foundry.toml): $REPO" >&2; exit 2; }
 [ -n "$TARGET" ] || { echo "run-invariant-hunt.sh: --target <Contract.sol[:Name]> required" >&2; exit 2; }

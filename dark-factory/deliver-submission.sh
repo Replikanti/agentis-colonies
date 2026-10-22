@@ -40,6 +40,14 @@
 # is an operator page on the operator's OWN workspace — NOT a bounty-platform submission; it adds no
 # bounty-platform egress and the never-submit invariant is unchanged.
 #
+# CONFIDENTIAL MODE (#2327): when the drop dir lies in a tree marked DF-CONFIDENTIAL (an AgentArena task dir, or a
+# run-zone-hunt.sh --confidential --out), or DF_CONFIDENTIAL is set, nothing about the finding leaves the host. The
+# secret gist is not created (no `gh` call, no GIST_README.md / GIST_COMMAND.txt; manifest gist_url =
+# `disabled:confidential`), bot mode is not called, and the webhook gets only `lib/confidential.py alert` — severity,
+# routing and a ref to the confidential root, never a title, submission_id, target, verdict or draft path (a title
+# names the task's contracts and functions). The staged files themselves are unchanged: they already live in the
+# confidential tree. See docs/agentarena.md#confidential-mode.
+#
 # Correlation (load-bearing): the stable submission id is `<target>@<in-scope-commit>:<finding-slug>` (e.g.
 # `enzyme-onyx@a1b2c3d:sync-deposit-nav-frontrun`). It is written VERBATIM into manifest.json (the authoritative
 # correlation record) and echoed as a comment header in OUTCOME.md. The on-disk subdir name is a filesystem-safe
@@ -104,11 +112,18 @@ while [ $# -gt 0 ]; do case "$1" in
   --poc-match)      nv "$#" "$1"; POC_MATCH="$2"; shift 2;;
   --bounty-url)     nv "$#" "$1"; BOUNTY_URL="$2"; shift 2;;
   --target-dir)     nv "$#" "$1"; TARGET_DIR="$2"; shift 2;;
-  -h|--help)        sed -n '2,54p' "$0"; exit 0;;
+  -h|--help)        sed -n '2,62p' "$0"; exit 0;;
   *) echo "deliver-submission.sh: unknown arg: $1" >&2; exit 2;;
 esac; done
 
 [ -n "$ID" ] || { echo "deliver-submission.sh: --id <submission_id> is required" >&2; exit 2; }
+
+# #2327: confidential mode (see the header). The helper also honours DF_CONFIDENTIAL and fails closed.
+# shellcheck source=lib/confidential.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/lib/confidential.sh"
+CONF=0
+if df_is_confidential "$DROP_DIR"; then CONF=1; fi
 
 # Read the draft (from --draft-file, else stdin). A missing --draft-file that resolves to an empty stdin is a
 # bad-args condition (nothing to stage).
@@ -274,8 +289,13 @@ gist_ready() {
 }
 
 GIST_URL=""
+if [ "$CONF" -eq 1 ] && [ "${#POC_STAGED[@]}" -gt 0 ]; then
+  # #2327: no gist in confidential mode — the PoC source is task code.
+  GIST_URL="disabled:confidential"
+  echo "deliver-submission.sh: [confidential] secret gist disabled — the PoC stays in $STAGE" >&2
+fi
 GIST_PLACEHOLDER="<gist URL: PENDING — create the secret gist for the Immunefi PoC form (see poc/GIST_COMMAND.txt)>"
-if [ "${#POC_STAGED[@]}" -gt 0 ]; then
+if [ "$CONF" -eq 0 ] && [ "${#POC_STAGED[@]}" -gt 0 ]; then
   GIST_DESC="dark-factory PoC${FIELD_TITLE:+ for $FIELD_TITLE} (human-gated; NOT a bounty-platform submission)"
   # A README the operator can read inside the gist (title + repro summary + the human-gated / not-a-submission note).
   {
@@ -409,7 +429,7 @@ if [ -n "${DARK_FACTORY_SLACK_BOT_TOKEN:-}" ]; then
   fi
 fi
 
-if [ -n "$RESOLVED_BOT_TOKEN" ] && [ -n "${DARK_FACTORY_SLACK_CHANNEL:-}" ] && [ -f "$SCRIPT_DIR/notify-submission.sh" ]; then
+if [ "$CONF" -eq 0 ] && [ -n "$RESOLVED_BOT_TOKEN" ] && [ -n "${DARK_FACTORY_SLACK_CHANNEL:-}" ] && [ -f "$SCRIPT_DIR/notify-submission.sh" ]; then
   # BOT MODE — the rich full package. Token/channel via env (never argv); `>&2 || true` keeps the one-line stdout
   # contract and best-effort non-fatality (a Slack outage never fails a stage that already succeeded).
   DARK_FACTORY_SLACK_BOT_TOKEN="$RESOLVED_BOT_TOKEN" \
@@ -441,6 +461,13 @@ esac
 
 # Build the finding-ready alert as a JSON OBJECT (python3, args passed via env — no untrusted interpolation),
 # mirroring the monitor/scripts/check-drift.sh convention. `severity` is the field notify.sh's own routing reads.
+# #2327: in confidential mode the ONLY payload is lib/confidential.py's reduced alert (no title, id, target,
+# verdicts or draft path). If it cannot be built (e.g. DF_CONFIDENTIAL is set but the drop dir is unmarked), no
+# page is sent at all.
+if [ "$CONF" -eq 1 ]; then
+ALERT="$(python3 -I "$SCRIPT_DIR/lib/confidential.py" alert --band "$SEVERITY" --routing "$NOTIFY_SEVERITY" --ref "$DROP_DIR" 2>/dev/null || true)"
+[ -n "$ALERT" ] || echo "deliver-submission.sh: [confidential] no reduced alert could be built for $DROP_DIR — no page sent" >&2
+else
 ALERT="$(SUBMISSION_ID="$ID" TARGET="$TARGET" NOTIFY_SEVERITY="$NOTIFY_SEVERITY" SEVERITY_BAND="$SEVERITY" \
   SCOPE_VERDICT="$SCOPE_VERDICT" IMPACT_VERDICT="$IMPACT_VERDICT" DUP_RISK="$DUP_RISK" \
   DRAFT_PATH="$STAGE/submission-draft.md" \
@@ -470,12 +497,15 @@ print(json.dumps({
     "message": message,
 }))
 ')"
+fi
 
 # Invoke via `bash` (never `sh`/dot-source — the #1507/#1534 dash-safety lesson). Notify's stdout is redirected
 # to stderr (>&2) so its no-webhook fallback (`[monitor:alert] ...` on stdout) never leaks into THIS script's
 # stdout contract. `|| true`: a broken/bogus webhook (notify.sh exit 3/4) must never fail a stage that already
 # succeeded — delivery is pure best-effort muscle.
+if [ -n "$ALERT" ]; then
 MONITOR_WEBHOOK_URL="$RESOLVED_WEBHOOK" bash "$SCRIPT_DIR/monitor/scripts/notify.sh" "$ALERT" >&2 || true
+fi
 fi
 
 printf '%s\n' "$STAGE"

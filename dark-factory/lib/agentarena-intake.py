@@ -11,6 +11,7 @@ into $DARK_FACTORY_DIR/agentarena/<task_id>/:
 
     manifest.json   the handoff contract (ids, numbers, hashes and enum tokens only; see docs/agentarena.md)
     .lock           flock(2) target; every stage that touches the task dir holds it
+    DF-CONFIDENTIAL the confidential-mode marker (#2327), written before anything else lands
     details.json    the TaskResponse, bytes as received (0600)
     repo/           the repo root (a single shared top-level dir is stripped); dirs 0700, files 0600
 
@@ -168,6 +169,21 @@ def _load_resolver():
         spec.loader.exec_module(mod)
     except OSError:
         raise ConfigError(EXIT_SECRET, "%s: secret resolver not loadable (tools/parse-toml-secret.py)" % KEY_ENV)
+    return mod
+
+
+def _load_confidential():
+    """lib/confidential.py (#2327), loaded by path: -I drops the script dir from sys.path. Raises OSError."""
+    here = os.path.dirname(os.path.realpath(__file__))
+    spec = importlib.util.spec_from_file_location("df_confidential", os.path.join(here, "confidential.py"))
+    if spec is None or spec.loader is None:
+        raise OSError("confidential.py not found")
+    sys.dont_write_bytecode = True  # never leave a __pycache__/ next to the shipped helpers
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except (ImportError, SyntaxError) as e:
+        raise OSError("confidential.py not loadable: %s" % type(e).__name__)
     return mod
 
 
@@ -716,6 +732,13 @@ def process_task(ctx, task_id, details_file=None, zip_file=None):
     for d in (base, tdir):
         os.makedirs(d, mode=0o700, exist_ok=True)
         os.chmod(d, 0o700)
+    # #2327: the task dir is a confidential tree before any code lands; a task dir from before this change is
+    # marked on its next run. No mark, nothing else written.
+    try:
+        _load_confidential().mark(tdir)
+    except OSError:
+        log_line(task_id, "deferred", "io-error")
+        return EXIT_DEFERRED
     lock_fd = os.open(os.path.join(tdir, ".lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     try:
         try:
@@ -1022,7 +1045,7 @@ def self_test():
 
         def refused_clean(task_id):
             left = set(os.listdir(tdir(task_id)))
-            return left <= {"manifest.json", ".lock", "details.json"}
+            return left <= {"manifest.json", ".lock", "details.json", "DF-CONFIDENTIAL"}
 
         set_map({})
         sol = b"// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\ncontract A {}\n"
@@ -1193,6 +1216,8 @@ def self_test():
         m = manifest("t-500")
         check(rc == 5 and m.get("status") == "deferred" and m.get("reason") == "fetch-http-500" and m.get("attempts") == 1,
               "live: HTTP 500 -> exit 5 deferred fetch-http-500")
+        check(os.path.isfile(os.path.join(tdir("t-500"), "DF-CONFIDENTIAL")),
+              "confidential: a deferred task dir carries the DF-CONFIDENTIAL marker (#2327)")
         mp = json.load(open(os.path.join(stub_dir, "map.json")))
         mp[api + "t-500"] = {"status": 200, "body_file": fixture("ok500.details", details("t-500", ["T.sol"]))}
         set_map(mp)
@@ -1317,6 +1342,31 @@ def self_test():
         check(rc == 4 and m.get("reason") == "details-invalid", "details: non-string selectedFiles -> details-invalid")
         rc, m, _ = offline("t-dbig", b'{"id":"t-dbig","x":"' + b"a" * MAX_DETAILS_BYTES + b'"}', good_zip)
         check(rc == 4 and m.get("reason") == "details-too-large", "details: over 2 MiB -> refused details-too-large")
+
+        # 11b. confidential marker (#2327): written into the task dir before any code lands
+        hd = tdir("t-happy")
+        mk = os.path.join(hd, "DF-CONFIDENTIAL")
+        check(os.path.isfile(mk) and stat.S_IMODE(os.stat(mk).st_mode) == 0o600
+              and os.stat(mk).st_mtime_ns <= os.stat(os.path.join(hd, "details.json")).st_mtime_ns,
+              "confidential: the happy task dir carries DF-CONFIDENTIAL (0600), written before details.json")
+        nd = tdir("t-nan")
+        check(os.path.isfile(os.path.join(nd, "DF-CONFIDENTIAL")) and not os.path.exists(os.path.join(nd, "details.json")),
+              "confidential: a refused task dir carries the marker although details.json was never written")
+        saved_loader = globals()["_load_confidential"]
+
+        def _no_mark():
+            raise OSError("selftest: marker write fails")
+        globals()["_load_confidential"] = _no_mark
+        try:
+            rc, m, oc = offline("t-nomark", details("t-nomark", ["src/A.sol"]), good_zip)
+        finally:
+            globals()["_load_confidential"] = saved_loader
+        check(rc == 5 and m == {} and oc == [] and os.listdir(tdir("t-nomark")) == []
+              and "task_id=t-nomark status=deferred reason=io-error" in err_buf.getvalue(),
+              "confidential: a marker write failure -> exit 5 deferred io-error, nothing else written")
+        rc, m, _ = offline("t-nomark", details("t-nomark", ["src/A.sol"]), good_zip)
+        check(rc == 0 and m.get("status") == "unpacked" and os.path.isfile(os.path.join(tdir("t-nomark"), "DF-CONFIDENTIAL")),
+              "confidential: the next run marks the existing task dir and unpacks it")
 
         # 12. pinned defaults
         check(MAX_FILES == 50000 and MAX_BYTES == 1 << 30 and MAX_DETAILS_BYTES == 2 << 20 and MAX_HOPS == 3,

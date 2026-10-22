@@ -20,7 +20,14 @@
 #   state-export.sh export <rundir> <out.tar.gz>
 #   state-export.sh verify <artifact.tar.gz>
 #   state-export.sh import <artifact.tar.gz> <dest-rundir>
+# Exit: 0 ok; 1 any failure; 4 `export` of a <rundir> in a confidential tree (#2327: DF-CONFIDENTIAL marker, or
+#       DF_CONFIDENTIAL set) — refused before tar runs: a task's evolved state is a derivative of its code
+#       (docs/agentarena.md#confidential-mode). `verify` and `import` are unchanged.
 set -uo pipefail
+
+# shellcheck source=lib/confidential.sh
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "$0")" && pwd)/lib/confidential.sh"
 
 # Evolved state = learned memo + the content-addressed DAG. NOT identity/config/sandbox.
 STATE_PATHS="memo objects refs HEAD"
@@ -37,6 +44,10 @@ case "$cmd" in
     rd="${1:-}"; out="${2:-}"
     [ -d "$rd/.agentis" ] || die "no .agentis store in '$rd'"
     [ -n "$out" ] || die "usage: export <rundir> <out.tar.gz>"
+    if df_is_confidential "$rd"; then
+      echo "state-export: refusing to export a confidential rundir (#2327): $rd" >&2
+      exit 4
+    fi
     inc=""; for p in $STATE_PATHS; do [ -e "$rd/.agentis/$p" ] && inc="$inc .agentis/$p"; done
     [ -n "$inc" ] || die "no evolved-state paths present in $rd/.agentis"
     tmp="$(mktemp -d)"
