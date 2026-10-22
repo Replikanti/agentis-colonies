@@ -68,7 +68,9 @@ def env_on(env=None):
 
 
 def _nearest_existing(path):
-    p = os.path.abspath(path)
+    # Not abspath: it folds `symlink/..` lexically before the symlink is resolved, which can step out of a
+    # marked tree. Join with the cwd and let lexists/realpath resolve `..` physically.
+    p = path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
     while not os.path.lexists(p):
         parent = os.path.dirname(p)
         if parent == p:
@@ -391,6 +393,10 @@ def self_test():
         check(rc == 0, "walk-up: a leaf that does not exist yet -> 0 (nearest existing ancestor)")
         rc, _, _ = run("is-confidential", os.path.join(root, "plain", "link-to-repo", "src"))
         check(rc == 0, "walk-up: a symlinked component resolves to the marked tree -> 0")
+        rc, _, _ = run("is-confidential", os.path.join(root, "plain", "link-to-repo", ".."))
+        check(rc == 0, "walk-up: `symlink/..` resolves physically to the marked root -> 0")
+        rc, _, _ = run("is-confidential", os.path.join(root, "plain", "link-to-repo", "..", "hunt", "not", "yet"))
+        check(rc == 0, "walk-up: a missing leaf under `symlink/..` -> 0")
         rc, out, _ = run("is-confidential", plain)
         check(rc == 1 and out == "", "walk-up: no marker anywhere -> 1")
         rc, _, _ = run("is-confidential", plain, os.path.join(task, "repo"))
