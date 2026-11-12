@@ -22,9 +22,10 @@
 # auto-promote uses a Python fcntl helper). Every exclusive step (the stamp, a
 # reap token) is that one shell create (_lss_create); no external binary's exit
 # status decides ownership. A slot whose holder is dead (kill -0 fails, or the
-# stamp is not a PID) is reclaimed, and so is a stamp left EMPTY for 10 s (its
-# creator died between create and write), so a crashed session never leaks a
-# slot forever (mirrors the daemon-registry PID-liveness idiom). The reclaim is
+# stamp is not a PID) is reclaimed, and so is an EMPTY stamp that no live
+# process claims (its creator died between create and write; see _lss_create),
+# so a crashed session never leaks a slot forever (mirrors the daemon-registry
+# PID-liveness idiom). The reclaim is
 # serialized by generation-numbered reap tokens, so a reclaimer killed mid-reclaim
 # is taken over too (see _lss_reclaim). A stamp whose write fails is removed by
 # its own creator. All-slots-busy blocks with a bounded poll, then FAILS OPEN
@@ -94,9 +95,7 @@ acquire_llm_slot() {
     mkdir -p "$_lss_dir" 2>/dev/null || { LLM_SLOT_HELD=""; return 0; }
 
     _lss_waited=0
-    _lss_seen=""
     while :; do
-        _lss_seen_next=""
         _lss_i=1
         while [ "$_lss_i" -le "$_lss_k" ]; do
             _lss_slot="$_lss_dir/slot-$_lss_i"
@@ -106,34 +105,31 @@ acquire_llm_slot() {
             _lss_create "$_lss_slot/pid"
             if [ "$_lss_rc" = won ]; then
                 # Won the slot; the PID stamp lets a future acquirer reclaim
-                # it if we die without releasing. Reap tokens left in it by
-                # killed reclaimers are garbage now: the stamp names us, so no
-                # reclaim of an earlier holder can act any more.
+                # it if we die without releasing. Reap tokens and claims left
+                # in it by killed processes are garbage now: the stamp names
+                # us, so no reclaim of an earlier holder can act any more.
                 LLM_SLOT_HELD="$_lss_slot"
                 _lss_sweep "$_lss_slot" ""
+                _lss_sweep_claims "$_lss_slot/pid"
                 return 0
             fi
-            if [ "$_lss_rc" = wfail ]; then
-                # We created the stamp but the pool filesystem refused the
-                # write (ENOSPC, EDQUOT): hand the slot back and fail open now.
-                # A gate that cannot write a PID cannot hold, and leaving the
-                # empty stamp would cost every later acquirer the staleness
-                # wait below.
-                rm -f "$_lss_slot/pid" 2>/dev/null || :
+            if [ "$_lss_rc" != lost ]; then
+                # The pool filesystem refused our claim or our stamp write
+                # (ENOSPC, EDQUOT); _lss_create already undid both. A gate
+                # that cannot write a PID cannot hold: fail open now.
                 return 0
             fi
             # Occupied — reclaim if the holder is dead (crash-safety). An
-            # empty stamp is a holder between its create and its write, so it
-            # is reclaimed only once it stayed empty for 10 s (_lss_aged).
+            # empty stamp is dead only when no live process claims it (its
+            # creator died between create and write).
             _lss_holder="$(cat "$_lss_slot/pid" 2>/dev/null)" || _lss_holder=""
             if [ -n "$_lss_holder" ]; then
-                _lss_reclaim "$_lss_slot" "$_lss_holder" "$_lss_i"
-            elif [ -f "$_lss_slot/pid" ] && _lss_aged "s$_lss_i"; then
-                _lss_reclaim "$_lss_slot" "" "$_lss_i"
+                _lss_reclaim "$_lss_slot" "$_lss_holder"
+            elif [ -f "$_lss_slot/pid" ] && _lss_unclaimed "$_lss_slot/pid"; then
+                _lss_reclaim "$_lss_slot" ""
             fi
             _lss_i=$((_lss_i + 1))
         done
-        _lss_seen="$_lss_seen_next"
         # All K slots held by live holders. Wait, then fail open.
         if [ "$_lss_waited" -ge "$_lss_wait" ]; then
             LLM_SLOT_HELD=""
@@ -144,46 +140,79 @@ acquire_llm_slot() {
     done
 }
 
-# _lss_create FILE: the one exclusivity primitive. Creates FILE only if it does
-# not exist yet (`set -C`: O_CREAT|O_EXCL in bash and dash) and writes our PID
-# through that same descriptor, so the stamp lands in the inode we created.
-# Sets _lss_rc to won (created and stamped), wfail (created, but the write
-# failed: the caller owns an empty FILE and removes it) or lost (FILE existed).
-# A failed redirection exits 1 (bash) or 2 (dash), never 3.
+# _lss_create FILE: the one exclusivity primitive, used for stamps and reap
+# tokens. First a claim FILE.c.<our PID> (a plain create of our own name, no
+# data), then FILE itself only if it does not exist yet (`set -C`:
+# O_CREAT|O_EXCL in bash and dash), with our PID written through that same
+# descriptor. The claim covers the moment FILE exists but is still empty: an
+# empty FILE is dead only when no claim names a live PID (_lss_unclaimed), so a
+# live creator is never declared dead, however long it stalls. Sets _lss_rc:
+#   won    FILE created and stamped (claim removed)
+#   lost   FILE existed (claim removed)
+#   wfail  FILE created but the write failed: FILE removed, then the claim
+#   cfail  the claim could not be created; nothing was attempted
+# `true` (a regular builtin) carries the claim redirection, because a failed
+# redirection on the special builtin `:` would exit the subshell before
+# `exit 4`. A failed redirection exits 1 (bash) or 2 (dash), never 3 or 4.
 _lss_create() {
-    if ( set -C; { printf '%s' "$$" >&3 || exit 3; } 3> "$1" ) 2>/dev/null; then
+    if ( true > "$1.c.$$" || exit 4; set -C; { printf '%s' "$$" >&3 || exit 3; } 3> "$1" ) 2>/dev/null; then
         _lss_rc=won
     else
         case $? in
             3) _lss_rc=wfail ;;
+            4) _lss_rc=cfail ;;
             *) _lss_rc=lost ;;
         esac
     fi
+    # A claim that failed because a concurrent release removed the slot dir is
+    # an ordinary lost race (retry), not a refusing filesystem.
+    if [ "$_lss_rc" = cfail ] && [ ! -d "${1%/*}" ]; then
+        _lss_rc=lost
+    fi
+    if [ "$_lss_rc" = wfail ]; then
+        rm -f "$1" 2>/dev/null || :
+    fi
+    if [ "$_lss_rc" != cfail ]; then
+        rm -f "$1.c.$$" 2>/dev/null || :
+    fi
 }
 
-# _lss_aged KEY: KEY names a file seen EMPTY in this pass (s<i>: slot i's
-# stamp, t<i>.<g>: its reap token of generation g). Remembers the pass it was
-# first seen empty, carried over only while it is seen empty in every pass, and
-# succeeds once that is at least 10 passes ago (>= 10 s, each pass ends in
-# `sleep 1`). Why 10 s: a live creator's file is empty only between its
-# open(O_EXCL) and its write of at most 10 bytes, inside one subshell with no
-# fork or exec in between, so only a stalled CPU can stretch that window: CFS
-# bandwidth throttling freezes a group for at most the rest of a 100 ms period,
-# so 10 s is 100 periods. A shorter bound risks reclaiming a stalled live
-# creator; a longer one only delays healing a leaked slot, and the bound must
-# stay well below LLM_SLOT_WAIT_S (120 s) for a waiter to reach it.
-_lss_aged() {
-    _lss_t0="${_lss_waited:-0}"
-    case " ${_lss_seen:-} " in
-        *" $1="*) _lss_t0="${_lss_seen#*" $1="}"; _lss_t0="${_lss_t0%% *}" ;;
-    esac
-    _lss_seen_next="${_lss_seen_next:-} $1=$_lss_t0"
-    [ "$(( ${_lss_waited:-0} - _lss_t0 ))" -ge 10 ]
+# _lss_unclaimed FILE: succeed when no live process claims FILE, i.e. every
+# FILE.c.<pid> names a dead or invalid PID. Under `set -f` the claims cannot be
+# listed, so FILE counts as claimed (never wrongly dead).
+_lss_unclaimed() {
+    case $- in *f*) return 1 ;; esac
+    for _lss_c in "$1".c.*; do
+        if [ -e "$_lss_c" ]; then
+            _lss_cp="${_lss_c##*.c.}"
+            case "$_lss_cp" in
+                '' | *[!0123456789]* | 0* | ??????????*) ;;
+                *) if kill -0 "$_lss_cp" 2>/dev/null; then return 1; fi ;;
+            esac
+        fi
+    done
+    return 0
 }
 
-# _lss_sweep SLOT PREFIX: remove SLOT's reap tokens named reap.PREFIX*. Only
-# called once SLOT's stamp no longer names the holder those tokens are for, so
-# any reclaim they could still serialize is a no-op.
+# _lss_sweep_claims FILE: remove FILE's claims whose PID is dead or invalid
+# (left by a creator killed between its claim and its cleanup).
+_lss_sweep_claims() {
+    case $- in *f*) return 0 ;; esac
+    for _lss_c in "$1".c.*; do
+        if [ -e "$_lss_c" ]; then
+            _lss_cp="${_lss_c##*.c.}"
+            case "$_lss_cp" in
+                '' | *[!0123456789]* | 0* | ??????????*) rm -f "$_lss_c" 2>/dev/null || : ;;
+                *) if ! kill -0 "$_lss_cp" 2>/dev/null; then rm -f "$_lss_c" 2>/dev/null || :; fi ;;
+            esac
+        fi
+    done
+    return 0
+}
+
+# _lss_sweep SLOT PREFIX: remove SLOT's reap tokens (and their claims) named
+# reap.PREFIX*. Only called once SLOT's stamp no longer names the holder those
+# tokens are for, so any reclaim they could still serialize is a no-op.
 _lss_sweep() {
     for _lss_tok in "$1"/reap."$2"*; do
         if [ -e "$_lss_tok" ]; then
@@ -193,23 +222,26 @@ _lss_sweep() {
     return 0
 }
 
-# _lss_reclaim SLOT HOLDER [I]: free SLOT when its stamped HOLDER is dead
-# (I is the slot index, for _lss_aged). The order of the steps is load-bearing:
+# _lss_reclaim SLOT HOLDER: free SLOT when its stamped HOLDER is dead. The
+# order of the steps is load-bearing:
 #   1. Liveness first. A live holder is left alone; a dead PID stays dead.
 #   2. Win a reap token: the lowest generation g of SLOT/reap.TAG.g that we
-#      create exclusively, where every lower generation exists and belongs to a
-#      dead owner (or stayed empty for 10 s). Two reclaimers never both pass:
-#      for the same g only one create succeeds, and a reclaimer only climbs
-#      past g after seeing g's owner dead, so it can never pass a live one.
-#      This also takes over a token whose owner was killed mid-reclaim. Tokens
-#      of TAG are never removed while the stamp still names HOLDER, so the set
-#      a climber walks only grows. 16 generations means 16 reclaimers of one
-#      slot killed back to back; past that we give up and the wait fails open.
-#   3. Re-read the stamp and remove it only if it is still HOLDER. Only the
-#      token owner may remove it, and no acquirer can replace an existing file,
-#      so a reclaimer that read a holder which has since released (and whose
-#      slot a new holder took) never removes the new holder's stamp.
-#   4. The stamp no longer names HOLDER: sweep every token of TAG.
+#      create ourselves (_lss_create), where every lower generation exists and
+#      belongs to a dead owner (its PID, or for an empty token its claims).
+#      Two reclaimers never both pass: for one g only one create succeeds, and
+#      a climber passes g only after seeing its owner dead. This also takes
+#      over a token whose owner was killed mid-reclaim. Tokens of TAG are only
+#      removed once the stamp no longer names HOLDER, so the set a climber
+#      walks only grows while a reclaim can still act; it is finite, so the
+#      climb always ends.
+#   3. Re-check under the token, then act: remove the stamp only if it still
+#      names HOLDER (for an empty stamp: is still empty and still unclaimed).
+#      Only the token owner may remove it, and no acquirer can replace an
+#      existing file, so the stamp cannot change between the re-check and the
+#      removal, and a reclaimer that read a holder which has since released
+#      never removes the new holder's stamp.
+#   4. The stamp no longer names HOLDER: sweep every token of TAG and the
+#      stamp's dead claims.
 # TAG is HOLDER only when it is a positive decimal with no leading zero and at
 # most 9 digits (Linux caps PIDs at 2^22, macOS at 99999); an empty HOLDER is
 # reaped as TAG `empty`, any other content as `invalid`, so garbage never
@@ -230,24 +262,19 @@ _lss_reclaim() {
     fi
     _lss_g=1
     while :; do
-        if [ "$_lss_g" -gt 16 ]; then
-            return 0
-        fi
         _LSS_REAP="$1/reap.$_lss_tag.$_lss_g"
         _lss_create "$_LSS_REAP"
         if [ "$_lss_rc" = won ]; then
             break
         fi
-        if [ "$_lss_rc" = wfail ]; then
-            rm -f "$_LSS_REAP" 2>/dev/null || :
-            _LSS_REAP=""
+        _LSS_REAP=""
+        if [ "$_lss_rc" != lost ]; then
             return 0
         fi
-        _LSS_REAP=""
         _lss_owner="$(cat "$1/reap.$_lss_tag.$_lss_g" 2>/dev/null)" || _lss_owner=""
         case "$_lss_owner" in
             '')
-                if [ -f "$1/reap.$_lss_tag.$_lss_g" ] && _lss_aged "t${3:-0}.$_lss_g"; then
+                if [ -f "$1/reap.$_lss_tag.$_lss_g" ] && _lss_unclaimed "$1/reap.$_lss_tag.$_lss_g"; then
                     :
                 else
                     return 0
@@ -264,9 +291,12 @@ _lss_reclaim() {
     done
     _lss_now="$(cat "$1/pid" 2>/dev/null)" || _lss_now=""
     if [ "$_lss_now" = "$2" ]; then
-        rm -f "$1/pid" 2>/dev/null || :
+        if [ -n "$2" ] || { [ -f "$1/pid" ] && _lss_unclaimed "$1/pid"; }; then
+            rm -f "$1/pid" 2>/dev/null || :
+        fi
     fi
     _lss_sweep "$1" "$_lss_tag."
+    _lss_sweep_claims "$1/pid"
     _LSS_REAP=""
     return 0
 }
@@ -287,8 +317,8 @@ release_llm_slot() {
         if [ "$(cat "$LLM_SLOT_HELD/pid" 2>/dev/null)" = "$$" ]; then
             rm -f "$LLM_SLOT_HELD/pid" 2>/dev/null || :
         fi
-        # Best effort: a slot dir that still holds a reap token stays, which
-        # is harmless (the next acquirer reuses it).
+        # Best effort: a slot dir that still holds a reap token or a claim
+        # stays, which is harmless (the next acquirer reuses it).
         rmdir "$LLM_SLOT_HELD" 2>/dev/null || :
         LLM_SLOT_HELD=""
     fi

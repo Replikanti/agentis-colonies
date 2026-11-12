@@ -25,7 +25,7 @@ is asserted until multi-version CI is in place.
   sessions could hold one slot and `LLM_MAX_CONCURRENT` was exceeded. A slot now belongs to whoever wins the shell's
   own exclusive create of `slot-N/pid` (`set -C` noclobber, `O_CREAT|O_EXCL` in bash and dash); `mkdir` only makes
   the container. A stamp whose write fails (ENOSPC, EDQUOT) is removed by its own creator, which fails open at once,
-  and a stamp left empty for 10 s (its creator died between create and write) is reclaimed. The dead-holder reclaim
+  and an empty stamp is reclaimed only when no live process claims it (every creator first makes a claim file named with its PID, so a creator killed between create and write is detected by liveness, never by elapsed time). The dead-holder reclaim
   is serialized by generation-numbered reap tokens created the same exclusive way: a reclaimer killed mid-reclaim is
   taken over instead of leaking the slot, and a stamp is removed only while it still names the dead holder, so a
   newer holder's stamp is never deleted. A stamp that is not a PID counts as dead and is never passed to `kill -0`;

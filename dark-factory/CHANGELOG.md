@@ -22,7 +22,7 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   when a concurrent creator wins the race, so `demo-deep-hunt-budget.sh` saw 2 cells at once under
   `LLM_MAX_CONCURRENT=1`. Ownership is now the shell's own exclusive create of `slot-N/pid` (`set -C` noclobber),
   the dead-holder reclaim is serialized by generation-numbered reap tokens (a reclaimer killed mid-reclaim is taken
-  over), a failed stamp write is undone by its creator, a stamp left empty for 10 s is reclaimed, and a non-PID stamp
+  over), a failed stamp write is undone by its creator, an empty stamp or token is dead only when no live creator claims it (a claim file named with the creator's PID), and a non-PID stamp
   is reaped without ever reaching `kill -0`. colony-lint checks that the two copies run the same code.
   **Deploy: restart running hunts and federations after updating;** a pre-#2362 process can overwrite a new
   holder's stamp. `demo-deep-hunt-budget.sh` reports each section-8 clause on its own line, adds the `s1L` arm

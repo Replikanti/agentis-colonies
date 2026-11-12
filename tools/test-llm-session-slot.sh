@@ -168,13 +168,13 @@ else
     bad "empty slot dir with no pid: got '$_r'"
 fi
 
-# 13. An existing EMPTY pid (a holder between its create and its stamp) is not reclaimed before it stayed empty for
-#     10 s: with WAIT=1 the acquire fails open and the file is kept (case 21 covers the reclaim after 10 s).
-fresh; mkdir "$SLOTS/slot-1"; : > "$SLOTS/slot-1/pid"
+# 13. An EMPTY pid whose creator is alive (its claim pid.c.<pid> names a live process: a holder between its create
+#     and its write) is never reclaimed: with WAIT=1 the acquire fails open and both files are kept.
+fresh; mkdir "$SLOTS/slot-1"; : > "$SLOTS/slot-1/pid"; : > "$SLOTS/slot-1/pid.c.$$"
 # shellcheck disable=SC2016
 _r="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=1 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
 if [ -z "$_r" ] && [ -f "$SLOTS/slot-1/pid" ] && [ ! -s "$SLOTS/slot-1/pid" ]; then
-    ok "an empty pid stamp is not reclaimed inside the 10 s staleness bound (fail open, file kept)"
+    ok "an empty stamp claimed by a live creator is never reclaimed (fail open, file kept)"
 else
     bad "empty pid stamp: got '$_r', pid file $( [ -f "$SLOTS/slot-1/pid" ] && echo kept || echo removed)"
 fi
@@ -304,39 +304,53 @@ _t0=$(date +%s)
 # shellcheck disable=SC2016
 _r="$(child 'trap "" XFSZ; ulimit -f 0; LLM_MAX_CONCURRENT=3 LLM_SLOT_WAIT_S=5 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
 _t1=$(date +%s)
-_left=""; for _i in 1 2 3; do [ -e "$SLOTS/slot-$_i/pid" ] && _left="$_left slot-$_i"; done
+_left=""; for _i in 1 2 3; do [ -n "$(entries "$SLOTS/slot-$_i" ' ')" ] && _left="$_left slot-$_i:$(entries "$SLOTS/slot-$_i" ',')"; done
 # shellcheck disable=SC2016
 _r2="$(child 'LLM_MAX_CONCURRENT=3 LLM_SLOT_WAIT_S=1 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
 if [ -z "$_r" ] && [ "$((_t1 - _t0))" -lt 5 ] && [ -z "$_left" ] && [ "$_r2" = "$SLOTS/slot-1" ]; then
-    ok "a failed stamp write gives the slot back and fails open at once ($((_t1 - _t0))s); healthy writes get slot-1"
+    ok "a failed stamp write gives the slot back (no stamp, no claim left) and fails open at once ($((_t1 - _t0))s); healthy writes get slot-1"
 else
-    bad "write failure: held='$_r' after $((_t1 - _t0))s, stamps left:[$_left], next acquire='$_r2'"
+    bad "write failure: held='$_r' after $((_t1 - _t0))s, files left:[$_left], next acquire='$_r2'"
 fi
 
-# 21. An EMPTY stamp that stays empty for 10 s (its creator died between create and write, or could not remove it)
-#     is reclaimed: the acquire gets slot-1 after >= 10 s instead of never.
-fresh; mkdir "$SLOTS/slot-1"; : > "$SLOTS/slot-1/pid"
+# 21. A stalled but LIVE creator (claim names a live process) keeps its empty stamp for longer than any time bound
+#     (12 s here, past the 10 s bound of an earlier revision): the waiter fails open, stamp and claim stay.
+sleep 60 & _live=$!
+fresh; mkdir "$SLOTS/slot-1"; : > "$SLOTS/slot-1/pid"; : > "$SLOTS/slot-1/pid.c.$_live"
 _t0=$(date +%s)
 # shellcheck disable=SC2016
-_r="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=14 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+_r="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=12 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
 _t1=$(date +%s)
-if [ "$_r" = "$SLOTS/slot-1" ] && [ "$((_t1 - _t0))" -ge 10 ] && [ "$(entries "$SLOTS/slot-1" ' ')" = "pid " ]; then
-    ok "an empty stamp is reclaimed once it stayed empty for 10 s (took $((_t1 - _t0))s)"
+kill "$_live" 2>/dev/null || true; wait "$_live" 2>/dev/null || true
+if [ -z "$_r" ] && [ "$((_t1 - _t0))" -ge 12 ] && [ "$(entries "$SLOTS/slot-1" ' ')" = "pid pid.c.$_live " ]; then
+    ok "a stalled live creator's empty stamp survives $((_t1 - _t0))s of waiting (fail open, stamp and claim kept)"
 else
-    bad "stale empty stamp: held='$_r' after $((_t1 - _t0))s, entries=[$(entries "$SLOTS/slot-1" ' ')]"
+    bad "stalled live creator: held='$_r' after $((_t1 - _t0))s, entries=[$(entries "$SLOTS/slot-1" ' ')]"
 fi
 
-# 22. A reclaimer killed between creating its reap token and stamping it leaves an EMPTY token: it is taken over
-#     (next generation) once it stayed empty for 10 s, and every token of that holder is swept.
+# 22. A reclaimer killed between creating its reap token and stamping it leaves an EMPTY token with no live claim:
+#     it is taken over at once (next generation), and every token of that holder is swept. While the empty token's
+#     claim names a live process, a climber stops there instead.
 fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/pid"; : > "$SLOTS/slot-1/reap.$_dead2.1"
 _t0=$(date +%s)
 # shellcheck disable=SC2016
-_r="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=14 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+_r="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=4 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
 _t1=$(date +%s)
-if [ "$_r" = "$SLOTS/slot-1" ] && [ "$((_t1 - _t0))" -ge 10 ] && [ "$(entries "$SLOTS/slot-1" ' ')" = "pid " ]; then
-    ok "an empty reap token is taken over once it stayed empty for 10 s (took $((_t1 - _t0))s), no token left"
+_t22_live=no
+sleep 60 & _live=$!
+fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/pid"
+: > "$SLOTS/slot-1/reap.$_dead2.1"; : > "$SLOTS/slot-1/reap.$_dead2.1.c.$_live"
+if have_reclaim; then
+    _lss_reclaim "$SLOTS/slot-1" "$_dead2"
+    if [ "$(cat "$SLOTS/slot-1/pid" 2>/dev/null)" = "$_dead2" ] && [ ! -e "$SLOTS/slot-1/reap.$_dead2.2" ]; then
+        _t22_live=yes
+    fi
+fi
+kill "$_live" 2>/dev/null || true; wait "$_live" 2>/dev/null || true
+if [ "$_r" = "$SLOTS/slot-1" ] && [ "$((_t1 - _t0))" -lt 4 ] && [ "$_t22_live" = yes ]; then
+    ok "an unclaimed empty reap token is taken over at once ($((_t1 - _t0))s); a live-claimed one stops the climb"
 else
-    bad "stale empty reap token: held='$_r' after $((_t1 - _t0))s, entries=[$(entries "$SLOTS/slot-1" ' ')]"
+    bad "empty reap token: held='$_r' after $((_t1 - _t0))s, live-claimed token respected=$_t22_live"
 fi
 
 # 23. A reap token whose owner is dead (a reclaimer killed mid-reclaim) is taken over at once through the next
@@ -422,6 +436,81 @@ if [ -z "$_t25_fail" ]; then
     ok "a reclaimer SIGKILLed while re-reading, after removing the stamp, or while sweeping never leaks the slot"
 else
     bad "SIGKILLed reclaimer leaked the slot:$_t25_fail"
+fi
+
+# 26. An EMPTY stamp whose only claim names a DEAD process (its creator was killed between create and write) is
+#     reclaimed at once, and the dead claim is swept.
+fresh; mkdir "$SLOTS/slot-1"; : > "$SLOTS/slot-1/pid"; : > "$SLOTS/slot-1/pid.c.$_dead2"
+_t0=$(date +%s)
+# shellcheck disable=SC2016
+_r="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=4 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+_t1=$(date +%s)
+if [ "$_r" = "$SLOTS/slot-1" ] && [ "$((_t1 - _t0))" -lt 4 ] && [ "$(entries "$SLOTS/slot-1" ' ')" = "pid " ]; then
+    ok "an empty stamp with only a dead creator's claim is reclaimed at once ($((_t1 - _t0))s), the claim swept"
+else
+    bad "dead creator's claim: held='$_r' after $((_t1 - _t0))s, entries=[$(entries "$SLOTS/slot-1" ' ')]"
+fi
+
+# 27. Carry-over: two waiters both judge the same dead empty stamp; right after one of them removes it, a new
+#     creator's stamp appears, still empty and claimed by a live process (an rm shim recreates it the moment the
+#     reclaim's rm returns). Neither waiter may take that slot from the live creator, however long they had been
+#     watching the old stamp: both fail open and the new stamp and its claim stay. (WAIT=13 outlasts the 10 s
+#     marker of an earlier revision, which carried over to the new stamp and double-admitted here.)
+sleep 60 & _live=$!
+CSHIM="$TMP/cshim"; mkdir -p "$CSHIM"; rm -f "$TMP/crecreated"
+export CREAL_RM="$KREAL_RM" CLIVE="$_live" CMARK="$TMP/crecreated"
+cat > "$CSHIM/rm" <<'CSHIM_EOF'
+#!/bin/sh
+last=""
+for a in "$@"; do last="$a"; done
+"$CREAL_RM" "$@"; rc=$?
+case "$last" in
+    */pid)
+        if ( set -C; true > "$CMARK" ) 2>/dev/null; then
+            true > "$last.c.$CLIVE"; true > "$last"
+        fi ;;
+esac
+exit "$rc"
+CSHIM_EOF
+chmod +x "$CSHIM/rm"
+fresh; mkdir "$SLOTS/slot-1"; : > "$SLOTS/slot-1/pid"
+_t0=$(date +%s)
+# shellcheck disable=SC2016
+env PATH="$CSHIM:$PATH" sh -c '. "$1"; LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=13 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD" > "$2"' \
+    sh "$LIB" "$TMP/w1.out" 2>/dev/null &
+_w1=$!
+# shellcheck disable=SC2016
+env PATH="$CSHIM:$PATH" sh -c '. "$1"; LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=13 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD" > "$2"' \
+    sh "$LIB" "$TMP/w2.out" 2>/dev/null &
+_w2=$!
+wait "$_w1" 2>/dev/null || true; wait "$_w2" 2>/dev/null || true
+_t1=$(date +%s)
+_h1="$(cat "$TMP/w1.out" 2>/dev/null)"; _h2="$(cat "$TMP/w2.out" 2>/dev/null)"
+_e27="$(entries "$SLOTS/slot-1" ' ')"
+kill "$_live" 2>/dev/null || true; wait "$_live" 2>/dev/null || true
+if [ -f "$TMP/crecreated" ] && [ -z "$_h1" ] && [ -z "$_h2" ] && [ "$_e27" = "pid pid.c.$_live " ] \
+   && [ ! -s "$SLOTS/slot-1/pid" ]; then
+    ok "after a reclaim, a live creator's fresh empty stamp is never taken by either waiter ($((_t1 - _t0))s, both failed open)"
+else
+    bad "carry-over: recreated=$( [ -f "$TMP/crecreated" ] && echo yes || echo no) w1='$_h1' w2='$_h2' entries=[$_e27]"
+fi
+
+# 28. No generation bound: 20 reap tokens of one dead holder, each owned by a dead reclaimer (20 reclaimers killed
+#     back to back, past the 16-generation cap of an earlier revision that then leaked the slot), are climbed; the
+#     acquire reclaims the slot and sweeps every token.
+fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/pid"
+_g=1
+while [ "$_g" -le 20 ]; do
+    sleep 0 & _dg=$!; wait "$_dg" 2>/dev/null || true
+    printf '%s' "$_dg" > "$SLOTS/slot-1/reap.$_dead2.$_g"
+    _g=$((_g + 1))
+done
+# shellcheck disable=SC2016
+_r="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=4 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+if [ "$_r" = "$SLOTS/slot-1" ] && [ "$(entries "$SLOTS/slot-1" ' ')" = "pid " ]; then
+    ok "20 dead-reclaimer token generations are climbed: the slot is reclaimed and every token swept"
+else
+    bad "20 dead token generations: held='$_r', entries=[$(entries "$SLOTS/slot-1" ' ')]"
 fi
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
