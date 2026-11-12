@@ -17,6 +17,18 @@ is asserted until multi-version CI is in place.
 
 **Requires:** agentis >= 1.29.0
 
+### Fixed
+
+- **LLM-session slot gate over-admitted on Ubuntu 26.04** ([#2362](https://github.com/Replikanti/agentis-colonies/issues/2362)).
+  `tools/lib/llm-session-slot.sh` decided slot ownership from the exit status of the external `mkdir`; uutils
+  `mkdir` 0.8.0-0.10.0 (Ubuntu 26.04's `/usr/bin/mkdir`) exits 0 when a concurrent creator wins the race, so two
+  sessions could hold one slot and `LLM_MAX_CONCURRENT` was exceeded. A slot now belongs to whoever wins the shell's
+  own exclusive create of `slot-N/pid` (`set -C` noclobber, `O_CREAT|O_EXCL` in bash and dash); `mkdir` only makes
+  the container. The dead-holder reclaim is serialized by an exclusive per-holder reap token and removes a stamp
+  only while it still names the dead holder, so it can no longer delete a newer holder's stamp; a stamp that is not
+  a PID counts as dead and is never passed to `kill -0`. An empty slot dir left by a crash between `mkdir` and the
+  stamp is now acquirable instead of leaking. Same pool layout and file names; restart the daemons after updating.
+
 ## [2.13.0] - 2026-09-02
 
 **Requires:** agentis >= 1.29.0

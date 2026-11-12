@@ -50,6 +50,12 @@ pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
 skip() { echo "[SKIP] $1"; SKIP=$((SKIP + 1)); }
 
+# Informational only (never passes or fails anything): which mkdir and which sh
+# this host runs. #2362: Ubuntu 26.04 runners switched /usr/bin/mkdir to uutils,
+# whose exit status under a create race broke the mkdir-as-lock slot gates, and
+# the runner log did not show it.
+echo "host: $(mkdir --version 2>/dev/null | head -1 || true); sh -> $(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' /bin/sh 2>/dev/null || echo unknown)"
+
 # --- Dark Factory registry isolation ---
 # dark-factory demo/test/bench scripts invoked below (directly or via the
 # tools/test-*.sh auto-discovery loop) call run-zone-hunt.sh, which
@@ -3083,6 +3089,21 @@ if [ -x "$REPO_ROOT/dark-factory/demo-deep-hunt-budget.sh" ]; then
         pass "dark-factory: deep-hunt time budget — per-cell cap, zone budget, broken-target skip, parallel cells, default OFF (#2258)"
     else
         fail "dark-factory: deep-hunt time budget regressed (#2258)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- dark-factory forge slot gate (#2038, #2362) ---
+# The host-wide forge-subprocess semaphore (dark-factory/lib/forge-slot.sh): acquire/release/fail-open, a K-holder
+# concurrent load, the run-invariant-hunt.sh wiring, and #2362's ownership rule — a slot is owned by the exclusive
+# create of slot-N/pid, never by mkdir's exit status (a lying mkdir still yields one holder), and the dead-holder
+# reclaim never removes a newer holder's stamp. bash only, no forge, no network (~10 s).
+if [ -x "$REPO_ROOT/dark-factory/demo-forge-slot.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-forge-slot.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: forge slot gate — bounded concurrency, fail open, ownership never by mkdir exit status (#2038, #2362)"
+    else
+        fail "dark-factory: forge slot gate regressed (#2038, #2362)"
         printf '%s\n' "$check_out"
     fi
 fi

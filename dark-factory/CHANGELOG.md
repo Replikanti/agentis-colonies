@@ -14,6 +14,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Slot gates over-admitted on Ubuntu 26.04; red `colony-lint` (#2362).** `lib/forge-slot.sh` and the deep-hunt
+  cell's LLM pool (`tools/lib/llm-session-slot.sh`) decided slot ownership from the exit status of the external
+  `mkdir`. uutils `mkdir` 0.8.0-0.10.0, `/usr/bin/mkdir` on the Ubuntu 26.04 CI runners since early November, exits 0
+  when a concurrent creator wins the race, so `demo-deep-hunt-budget.sh` saw 2 cells at once under
+  `LLM_MAX_CONCURRENT=1`. Ownership is now the shell's own exclusive create of `slot-N/pid` (`set -C` noclobber),
+  the dead-holder reclaim is serialized by a per-holder reap token, and a non-PID stamp is reaped without ever
+  reaching `kill -0`. `demo-deep-hunt-budget.sh` reports each section-8 clause on its own line, adds the `s1L` arm
+  (the same run under a lying `mkdir` that always exits 0) and a mutation that restores the old ownership test;
+  `demo-forge-slot.sh` gains the forge versions of those cases and now runs in `colony-lint`, which also prints the
+  host's `mkdir` version and `/bin/sh` target.
+
 ### Added
 
 - **AgentArena intake fetch and unpack (#2326, epic #2317 M1).** `run-agentarena-intake.sh` (a thin shim over

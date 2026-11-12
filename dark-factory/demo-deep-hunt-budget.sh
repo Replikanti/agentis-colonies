@@ -23,9 +23,10 @@
 #   6  BUDGET: in-flight cell TIMEOUT (zone-budget), later pairs SKIPPED_BUDGET.
 #   7  EQUIVALENCE: legacy == JOBS=1 == JOBS=3 on every artifact (PROMISES on); ledger b == c; concurrency 1 vs >= 2;
 #      skip under JOBS=3 == under JOBS=1.
-#   8  SLOT + FORCED SERIAL: LLM_MAX_CONCURRENT=1 -> concurrency 1 (pool never exported to the engine);
-#      --pattern-store -> warning + concurrency 1; legacy --deep-hunt-max-targets 2 (shared run dir) == legacy.
-#   9  MUTATIONS on a copied tree: each rule is load-bearing.
+#   8  SLOT + FORCED SERIAL: LLM_MAX_CONCURRENT=1 -> concurrency 1 (pool never exported to the engine), one line per
+#      clause; s1L: the same under a lying mkdir that always exits 0 (#2362); --pattern-store -> warning +
+#      concurrency 1; legacy --deep-hunt-max-targets 2 (shared run dir) == legacy.
+#   9  MUTATIONS on a copied tree: each rule is load-bearing (incl. slot ownership by mkdir exit status vs s1L).
 #  10  HARD STOP + RESUME: a settled FINDING is merged before a stop (1 job) or merged collect-only by the next resume
 #      (3 jobs); a transport-crashed probe is TRANSIENT_ERROR, never a broken target; shared run dirs under
 #      --deep-hunt-resume run the sequential loop's cells; a cap never reads a previous run's verdict; a cell TERMed
@@ -547,11 +548,49 @@ spec '*|*|0.6|normal|CLEAN'
 rm -rf "$WORK/s1.probe"; mkdir -p "$WORK/s1.probe"; : > "$WORK/s1.env"
 STUB_PROBE="$WORK/s1.probe" STUB_ENVLOG="$WORK/s1.env" LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=600 DEEP_HUNT_REACH=1 DEEP_HUNT_JOBS=3 \
   lens_only "$RZH" "$WORK/s1"
-if [ "$(maxconc "$WORK/s1.probe")" = 1 ] && [ "$(grep -c . "$WORK/s1/deep-hunt/cell-status.tsv")" = 6 ] \
-   && [ -d "$DARK_FACTORY_DIR/deep-hunt-llm-slots" ] && ! grep -qxF "$DARK_FACTORY_DIR/deep-hunt-llm-slots" "$WORK/s1.env"; then
-  ok "LLM_MAX_CONCURRENT=1 + JOBS=3: max concurrency 1 on the dedicated pool, which never reaches the engine's env"
+# One line per clause (#2362). The probe counts stubs running at once: exactly 1, because 0 would mean it never ran.
+# The engine env column is the stub's AGENTIS_LLM_SLOTS_DIR, which is "unset" by design: the worker sets the pool
+# path on its acquire/release calls only, so "unset" is the expected value there, never the failing clause.
+s1_fail=0
+if [ "$(maxconc "$WORK/s1.probe")" = 1 ]; then
+  ok "LLM_MAX_CONCURRENT=1 + JOBS=3: max concurrency 1"
 else
-  bad "LLM slot pool: concurrency $(maxconc "$WORK/s1.probe"), engine saw [$(sort -u "$WORK/s1.env" | tr '\n' ' ')]"
+  bad "LLM slot pool: max concurrency $(maxconc "$WORK/s1.probe") under LLM_MAX_CONCURRENT=1 (want exactly 1)"; s1_fail=1
+fi
+if [ "$(grep -c . "$WORK/s1/deep-hunt/cell-status.tsv")" = 6 ]; then
+  ok "LLM slot pool: 6 cells -> 6 ledger rows"
+else
+  bad "LLM slot pool: $(grep -c . "$WORK/s1/deep-hunt/cell-status.tsv") ledger rows (want 6)"; s1_fail=1
+fi
+if [ -d "$DARK_FACTORY_DIR/deep-hunt-llm-slots" ]; then
+  ok "LLM slot pool: the dedicated pool dir exists"
+else
+  bad "LLM slot pool: the dedicated pool dir is missing"; s1_fail=1
+fi
+if ! grep -qxF "$DARK_FACTORY_DIR/deep-hunt-llm-slots" "$WORK/s1.env"; then
+  ok "LLM slot pool: the pool path never reaches the engine env (engine saw [$(sort -u "$WORK/s1.env" | tr '\n' ' ')], expected: unset)"
+else
+  bad "LLM slot pool: the pool path reached the engine env (engine saw [$(sort -u "$WORK/s1.env" | tr '\n' ' ')], expected: unset)"; s1_fail=1
+fi
+[ "$s1_fail" = 0 ] || echo "      host: $(mkdir --version 2>/dev/null | head -1)"
+# s1L: the same run with a LYING mkdir first on PATH (the real one, same arguments and stderr, always exit 0), the
+# shape of uutils mkdir 0.8.0-0.10.0 under a race (#2362). The slot gate must not trust mkdir's exit status, so the
+# check is deterministic on every host, GNU mkdir included.
+REAL_MKDIR="$(command -v mkdir)"
+mkdir -p "$WORK/liarbin"
+printf '#!/bin/sh\n"%s" "$@"\nexit 0\n' "$REAL_MKDIR" > "$WORK/liarbin/mkdir"
+chmod +x "$WORK/liarbin/mkdir"
+s1l_run() {  # RZH -> 0 when max concurrency is 1 and all 6 cells are ledgered under the lying mkdir
+  spec '*|*|0.6|normal|CLEAN'
+  rm -rf "$WORK/s1l.probe"; mkdir -p "$WORK/s1l.probe"
+  PATH="$WORK/liarbin:$PATH" STUB_PROBE="$WORK/s1l.probe" LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=600 DEEP_HUNT_REACH=1 \
+    DEEP_HUNT_JOBS=3 lens_only "$1" "$WORK/s1l"
+  [ "$(maxconc "$WORK/s1l.probe")" = 1 ] && [ "$(grep -c . "$WORK/s1l/deep-hunt/cell-status.tsv" 2>/dev/null)" = 6 ]
+}
+if s1l_run "$RZH"; then
+  ok "s1L: a lying mkdir (always exit 0) still gives max concurrency 1 and 6 ledger rows"
+else
+  bad "s1L: under a lying mkdir: max concurrency $(maxconc "$WORK/s1l.probe"), $(grep -c . "$WORK/s1l/deep-hunt/cell-status.tsv" 2>/dev/null) ledger rows (want 1 and 6)"
 fi
 if grep -q 'DEEP_HUNT_JOBS=3 > LLM_MAX_CONCURRENT=1: .*may overrun its zone budget by up to that wait' "$WORK/s1.log" \
    && ! grep -q 'LLM_MAX_CONCURRENT' "$WORK/eqc.log"; then
@@ -772,6 +811,11 @@ mut "post-process in completion order" lib/deep-hunt-sched.sh \
 mut "drop DEEP_HUNT_RESUME=0 in the collect pass" lib/deep-hunt-sched.sh \
   '      DEEP_HUNT_RESUME=0
 ' '' t4_timeout "$MRZH"
+# The pre-#2362 ownership test: whoever's mkdir exits 0 owns the slot and overwrites the stamp.
+mut "slot ownership by mkdir exit status" ../tools/lib/llm-session-slot.sh \
+  "mkdir \"\$_lss_slot\" 2>/dev/null || :
+            if ( set -C; printf '%s' \"\$\$\" > \"\$_lss_slot/pid\" ) 2>/dev/null; then" \
+  "if mkdir \"\$_lss_slot\" 2>/dev/null && printf '%s' \"\$\$\" > \"\$_lss_slot/pid\"; then" s1l_run "$MRZH"
 
 # ================================================================================================
 if [ "$FAILS" -eq 0 ]; then
