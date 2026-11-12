@@ -24,10 +24,14 @@ is asserted until multi-version CI is in place.
   `mkdir` 0.8.0-0.10.0 (Ubuntu 26.04's `/usr/bin/mkdir`) exits 0 when a concurrent creator wins the race, so two
   sessions could hold one slot and `LLM_MAX_CONCURRENT` was exceeded. A slot now belongs to whoever wins the shell's
   own exclusive create of `slot-N/pid` (`set -C` noclobber, `O_CREAT|O_EXCL` in bash and dash); `mkdir` only makes
-  the container. The dead-holder reclaim is serialized by an exclusive per-holder reap token and removes a stamp
-  only while it still names the dead holder, so it can no longer delete a newer holder's stamp; a stamp that is not
-  a PID counts as dead and is never passed to `kill -0`. An empty slot dir left by a crash between `mkdir` and the
-  stamp is now acquirable instead of leaking. Same pool layout and file names; restart the daemons after updating.
+  the container. A stamp whose write fails (ENOSPC, EDQUOT) is removed by its own creator, which fails open at once,
+  and a stamp left empty for 10 s (its creator died between create and write) is reclaimed. The dead-holder reclaim
+  is serialized by generation-numbered reap tokens created the same exclusive way: a reclaimer killed mid-reclaim is
+  taken over instead of leaking the slot, and a stamp is removed only while it still names the dead holder, so a
+  newer holder's stamp is never deleted. A stamp that is not a PID counts as dead and is never passed to `kill -0`;
+  an empty slot dir left by a crash between `mkdir` and the stamp is now acquirable instead of leaking.
+  **Deploy: restart the federation after updating.** A pre-#2362 process still running writes its stamp without
+  noclobber, so it can overwrite a new holder's stamp, and it treats a slot dir without a stamp as busy.
 
 ## [2.13.0] - 2026-09-02
 

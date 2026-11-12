@@ -21,8 +21,11 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
   `mkdir`. uutils `mkdir` 0.8.0-0.10.0, `/usr/bin/mkdir` on the Ubuntu 26.04 CI runners since early November, exits 0
   when a concurrent creator wins the race, so `demo-deep-hunt-budget.sh` saw 2 cells at once under
   `LLM_MAX_CONCURRENT=1`. Ownership is now the shell's own exclusive create of `slot-N/pid` (`set -C` noclobber),
-  the dead-holder reclaim is serialized by a per-holder reap token, and a non-PID stamp is reaped without ever
-  reaching `kill -0`. `demo-deep-hunt-budget.sh` reports each section-8 clause on its own line, adds the `s1L` arm
+  the dead-holder reclaim is serialized by generation-numbered reap tokens (a reclaimer killed mid-reclaim is taken
+  over), a failed stamp write is undone by its creator, a stamp left empty for 10 s is reclaimed, and a non-PID stamp
+  is reaped without ever reaching `kill -0`. colony-lint checks that the two copies run the same code.
+  **Deploy: restart running hunts and federations after updating;** a pre-#2362 process can overwrite a new
+  holder's stamp. `demo-deep-hunt-budget.sh` reports each section-8 clause on its own line, adds the `s1L` arm
   (the same run under a lying `mkdir` that always exits 0) and a mutation that restores the old ownership test;
   `demo-forge-slot.sh` gains the forge versions of those cases and now runs in `colony-lint`, which also prints the
   host's `mkdir` version and `/bin/sh` target.

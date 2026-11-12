@@ -17,6 +17,8 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 export AGENTIS_LLM_SLOTS_DIR="$TMP/slots"
 
+LIB="$HERE/lib/llm-session-slot.sh"
+
 # 1. acquire claims a slot; LLM_SLOT_HELD points at an existing dir.
 LLM_MAX_CONCURRENT=2 acquire_llm_slot
 if [ -n "${LLM_SLOT_HELD:-}" ] && [ -d "$LLM_SLOT_HELD" ]; then
@@ -111,7 +113,6 @@ fi
 # uutils mkdir 0.8.0-0.10.0 (the /usr/bin/mkdir of Ubuntu 26.04) exits 0 when a concurrent creator wins the race,
 # so two contenders could both "win" one slot. LIAR/mkdir reproduces that deterministically on any host: it runs
 # the real mkdir (same arguments, same stderr) and always exits 0.
-LIB="$HERE/lib/llm-session-slot.sh"
 SLOTS="$AGENTIS_LLM_SLOTS_DIR"
 REAL_MKDIR="$(command -v mkdir)"
 export SLOT_LIAR="$TMP/liar"
@@ -167,12 +168,13 @@ else
     bad "empty slot dir with no pid: got '$_r'"
 fi
 
-# 13. An existing EMPTY pid (a holder between its create and its stamp) is never reclaimed: fail open, file kept.
+# 13. An existing EMPTY pid (a holder between its create and its stamp) is not reclaimed before it stayed empty for
+#     10 s: with WAIT=1 the acquire fails open and the file is kept (case 21 covers the reclaim after 10 s).
 fresh; mkdir "$SLOTS/slot-1"; : > "$SLOTS/slot-1/pid"
 # shellcheck disable=SC2016
 _r="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=1 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
 if [ -z "$_r" ] && [ -f "$SLOTS/slot-1/pid" ] && [ ! -s "$SLOTS/slot-1/pid" ]; then
-    ok "an empty pid stamp is never reclaimed (fail open, file kept)"
+    ok "an empty pid stamp is not reclaimed inside the 10 s staleness bound (fail open, file kept)"
 else
     bad "empty pid stamp: got '$_r', pid file $( [ -f "$SLOTS/slot-1/pid" ] && echo kept || echo removed)"
 fi
@@ -191,12 +193,13 @@ else
     bad "stale reclaim: _lss_reclaim is not defined"
 fi
 
-# 15. Two reclaimers for one dead holder: only the owner of reap.<pid> acts; a second one changes nothing.
-fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/pid"; : > "$SLOTS/slot-1/reap.$_dead2"
+# 15. Two reclaimers for one dead holder: only the owner of reap.<pid>.1 acts; while that owner lives, a second one
+#     changes nothing.
+fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/pid"; printf '%s' "$$" > "$SLOTS/slot-1/reap.$_dead2.1"
 if have_reclaim; then
     _lss_reclaim "$SLOTS/slot-1" "$_dead2"
-    if [ "$(cat "$SLOTS/slot-1/pid" 2>/dev/null)" = "$_dead2" ] && [ -f "$SLOTS/slot-1/reap.$_dead2" ]; then
-        ok "a reclaim whose reap token is already owned changes nothing"
+    if [ "$(cat "$SLOTS/slot-1/pid" 2>/dev/null)" = "$_dead2" ] && [ -f "$SLOTS/slot-1/reap.$_dead2.1" ]; then
+        ok "a reclaim whose reap token has a live owner changes nothing"
     else
         bad "second reclaimer acted: entries=[$(entries "$SLOTS/slot-1" ' ')]"
     fi
@@ -235,12 +238,12 @@ else
     bad "garbage holder content:$_t17_fail"
 fi
 
-# 17b. ... and a garbage holder is reclaimed through the single reap.invalid token: while that token is owned, a
-#      garbage holder is left alone (so no garbage ever becomes part of a path).
+# 17b. ... and a garbage holder is reclaimed through the reap.invalid.<g> tokens: while reap.invalid.1 has a live
+#      owner, a garbage holder is left alone (so no garbage ever becomes part of a path).
 _t17b_fail=""
 if have_reclaim; then
     for _g in abc 0 007 ../x '１２３' -1 99999999999; do
-        fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_g" > "$SLOTS/slot-1/pid"; : > "$SLOTS/slot-1/reap.invalid"
+        fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_g" > "$SLOTS/slot-1/pid"; printf '%s' "$$" > "$SLOTS/slot-1/reap.invalid.1"
         _lss_reclaim "$SLOTS/slot-1" "$_g"
         [ "$(cat "$SLOTS/slot-1/pid" 2>/dev/null)" = "$_g" ] || _t17b_fail="$_t17b_fail [$_g]"
     done
@@ -255,21 +258,21 @@ fi
 
 # 18. TERM during a reclaim: the trap's release removes the reap token this shell owns (named in _LSS_REAP and
 #     stamped with this shell's pid) and clears the variable.
-fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$$" > "$SLOTS/slot-1/reap.$_dead2"
-_LSS_REAP="$SLOTS/slot-1/reap.$_dead2"; LLM_SLOT_HELD=""
+fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$$" > "$SLOTS/slot-1/reap.$_dead2.1"
+_LSS_REAP="$SLOTS/slot-1/reap.$_dead2.1"; LLM_SLOT_HELD=""
 release_llm_slot
-if [ ! -e "$SLOTS/slot-1/reap.$_dead2" ] && [ -z "${_LSS_REAP:-}" ]; then
+if [ ! -e "$SLOTS/slot-1/reap.$_dead2.1" ] && [ -z "${_LSS_REAP:-}" ]; then
     ok "release removes the reap token this shell owns and clears _LSS_REAP"
 else
-    bad "release left the reap token (exists=$( [ -e "$SLOTS/slot-1/reap.$_dead2" ] && echo yes || echo no), _LSS_REAP='${_LSS_REAP:-}')"
+    bad "release left the reap token (exists=$( [ -e "$SLOTS/slot-1/reap.$_dead2.1" ] && echo yes || echo no), _LSS_REAP='${_LSS_REAP:-}')"
 fi
 
 # 18b. A TERM that lands after _LSS_REAP is named but before this shell created the token never removes another
 #      reclaimer's token (stamped with that reclaimer's pid).
-fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/reap.$_dead2"
-_LSS_REAP="$SLOTS/slot-1/reap.$_dead2"; LLM_SLOT_HELD=""
+fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/reap.$_dead2.1"
+_LSS_REAP="$SLOTS/slot-1/reap.$_dead2.1"; LLM_SLOT_HELD=""
 release_llm_slot
-if [ -e "$SLOTS/slot-1/reap.$_dead2" ] && [ -z "${_LSS_REAP:-}" ]; then
+if [ -e "$SLOTS/slot-1/reap.$_dead2.1" ] && [ -z "${_LSS_REAP:-}" ]; then
     ok "release never removes a reap token another reclaimer owns"
 else
     bad "release removed a foreign reap token or kept _LSS_REAP='${_LSS_REAP:-}'"
@@ -292,6 +295,134 @@ else
 fi
 export AGENTIS_LLM_SLOTS_DIR="$SLOTS_SAVE"
 SLOTS="$SLOTS_SAVE"
+
+# 20. The pool filesystem accepts the create but refuses the write (EFBIG under `ulimit -f 0` stands in for ENOSPC /
+#     EDQUOT): the acquirer removes its own empty stamp and fails open at once instead of poisoning every free slot;
+#     once writes work again the next acquire gets slot-1.
+fresh
+_t0=$(date +%s)
+# shellcheck disable=SC2016
+_r="$(child 'trap "" XFSZ; ulimit -f 0; LLM_MAX_CONCURRENT=3 LLM_SLOT_WAIT_S=5 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+_t1=$(date +%s)
+_left=""; for _i in 1 2 3; do [ -e "$SLOTS/slot-$_i/pid" ] && _left="$_left slot-$_i"; done
+# shellcheck disable=SC2016
+_r2="$(child 'LLM_MAX_CONCURRENT=3 LLM_SLOT_WAIT_S=1 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+if [ -z "$_r" ] && [ "$((_t1 - _t0))" -lt 5 ] && [ -z "$_left" ] && [ "$_r2" = "$SLOTS/slot-1" ]; then
+    ok "a failed stamp write gives the slot back and fails open at once ($((_t1 - _t0))s); healthy writes get slot-1"
+else
+    bad "write failure: held='$_r' after $((_t1 - _t0))s, stamps left:[$_left], next acquire='$_r2'"
+fi
+
+# 21. An EMPTY stamp that stays empty for 10 s (its creator died between create and write, or could not remove it)
+#     is reclaimed: the acquire gets slot-1 after >= 10 s instead of never.
+fresh; mkdir "$SLOTS/slot-1"; : > "$SLOTS/slot-1/pid"
+_t0=$(date +%s)
+# shellcheck disable=SC2016
+_r="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=14 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+_t1=$(date +%s)
+if [ "$_r" = "$SLOTS/slot-1" ] && [ "$((_t1 - _t0))" -ge 10 ] && [ "$(entries "$SLOTS/slot-1" ' ')" = "pid " ]; then
+    ok "an empty stamp is reclaimed once it stayed empty for 10 s (took $((_t1 - _t0))s)"
+else
+    bad "stale empty stamp: held='$_r' after $((_t1 - _t0))s, entries=[$(entries "$SLOTS/slot-1" ' ')]"
+fi
+
+# 22. A reclaimer killed between creating its reap token and stamping it leaves an EMPTY token: it is taken over
+#     (next generation) once it stayed empty for 10 s, and every token of that holder is swept.
+fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/pid"; : > "$SLOTS/slot-1/reap.$_dead2.1"
+_t0=$(date +%s)
+# shellcheck disable=SC2016
+_r="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=14 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+_t1=$(date +%s)
+if [ "$_r" = "$SLOTS/slot-1" ] && [ "$((_t1 - _t0))" -ge 10 ] && [ "$(entries "$SLOTS/slot-1" ' ')" = "pid " ]; then
+    ok "an empty reap token is taken over once it stayed empty for 10 s (took $((_t1 - _t0))s), no token left"
+else
+    bad "stale empty reap token: held='$_r' after $((_t1 - _t0))s, entries=[$(entries "$SLOTS/slot-1" ' ')]"
+fi
+
+# 23. A reap token whose owner is dead (a reclaimer killed mid-reclaim) is taken over at once through the next
+#     generation, and no token is left.
+sleep 0 & _dead3=$!; wait "$_dead3" 2>/dev/null || true
+fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/pid"; printf '%s' "$_dead3" > "$SLOTS/slot-1/reap.$_dead2.1"
+_t0=$(date +%s)
+# shellcheck disable=SC2016
+_r="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=4 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+_t1=$(date +%s)
+if [ "$_r" = "$SLOTS/slot-1" ] && [ "$((_t1 - _t0))" -lt 10 ] && [ "$(entries "$SLOTS/slot-1" ' ')" = "pid " ]; then
+    ok "a reap token with a dead owner is taken over at once (took $((_t1 - _t0))s), no token left"
+else
+    bad "dead-owner reap token: held='$_r' after $((_t1 - _t0))s, entries=[$(entries "$SLOTS/slot-1" ' ')]"
+fi
+
+# 24. Two takers never both proceed: a climber that finds generation 1 dead but generation 2 owned by a live
+#     reclaimer stops; the stamp and both tokens stay.
+fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/pid"
+printf '%s' "$_dead3" > "$SLOTS/slot-1/reap.$_dead2.1"; printf '%s' "$$" > "$SLOTS/slot-1/reap.$_dead2.2"
+if have_reclaim; then
+    _lss_reclaim "$SLOTS/slot-1" "$_dead2"
+    if [ "$(cat "$SLOTS/slot-1/pid" 2>/dev/null)" = "$_dead2" ] && [ -f "$SLOTS/slot-1/reap.$_dead2.1" ] \
+       && [ -f "$SLOTS/slot-1/reap.$_dead2.2" ] && [ ! -e "$SLOTS/slot-1/reap.$_dead2.3" ]; then
+        ok "a token takeover stops at a live owner's generation (no second reclaimer proceeds)"
+    else
+        bad "takeover passed a live owner: entries=[$(entries "$SLOTS/slot-1" ' ')]"
+    fi
+else
+    bad "takeover: _lss_reclaim is not defined"
+fi
+
+# 25. A reclaimer SIGKILLed at each external step of a reclaim (re-reading the stamp, right after removing it, while
+#     sweeping its tokens) never leaks the slot: the next acquirer gets slot-1 and no token is left. Stop-shims for
+#     cat and rm on the reclaimer's PATH record their PID and hang at the named step. (A kill between a token's
+#     create and its stamp, inside one builtin redirection, leaves the empty token of case 22.)
+KSHIM="$TMP/kshim"; mkdir -p "$KSHIM"
+KREAL_CAT="$(command -v cat)"; KREAL_RM="$(command -v rm)"; KSTOP_READY="$TMP/kready"
+export KREAL_CAT KREAL_RM KSTOP_READY
+for _b in cat rm; do
+    cat > "$KSHIM/$_b" <<'KSHIM_EOF'
+#!/bin/sh
+me="${0##*/}"
+if [ "$me" = cat ]; then real="$KREAL_CAT"; else real="$KREAL_RM"; fi
+last=""
+for a in "$@"; do last="$a"; done
+case "$me:$KSTOP_AT:$last" in
+    cat:reread:*/pid)
+        for t in "${last%/pid}"/reap.*; do
+            if [ -e "$t" ]; then echo "$$" > "$KSTOP_READY"; exec sleep 60; fi
+        done ;;
+    rm:rmstamp:*/pid)
+        "$real" "$@"; echo "$$" > "$KSTOP_READY"; exec sleep 60 ;;
+    rm:sweep:*/reap.*)
+        echo "$$" > "$KSTOP_READY"; exec sleep 60 ;;
+esac
+exec "$real" "$@"
+KSHIM_EOF
+    chmod +x "$KSHIM/$_b"
+done
+_t25_fail=""
+for _step in reread rmstamp sweep; do
+    fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/pid"; rm -f "$KSTOP_READY"
+    # shellcheck disable=SC2016
+    env PATH="$KSHIM:$PATH" KSTOP_AT="$_step" sh -c '. "$1"; LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=30 acquire_llm_slot' \
+        sh "$LIB" >/dev/null 2>&1 &
+    _rpid=$!
+    _n=0
+    while [ ! -s "$KSTOP_READY" ] && [ "$_n" -lt 100 ]; do sleep 0.1; _n=$((_n + 1)); done
+    kill -KILL "$_rpid" 2>/dev/null || true
+    [ -s "$KSTOP_READY" ] && { kill -KILL "$(cat "$KSTOP_READY")" 2>/dev/null || true; }
+    wait "$_rpid" 2>/dev/null || true
+    _state="$(entries "$SLOTS/slot-1" ',')"
+    # shellcheck disable=SC2016
+    _r="$(child 'LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=4 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"')"
+    if [ ! -s "$KSTOP_READY" ]; then
+        _t25_fail="$_t25_fail [$_step: never reached]"
+    elif [ "$_r" != "$SLOTS/slot-1" ] || [ "$(entries "$SLOTS/slot-1" ' ')" != "pid " ]; then
+        _t25_fail="$_t25_fail [$_step: killed with {$_state}, next held='$_r', left=$(entries "$SLOTS/slot-1" ',')]"
+    fi
+done
+if [ -z "$_t25_fail" ]; then
+    ok "a reclaimer SIGKILLed while re-reading, after removing the stamp, or while sweeping never leaks the slot"
+else
+    bad "SIGKILLed reclaimer leaked the slot:$_t25_fail"
+fi
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

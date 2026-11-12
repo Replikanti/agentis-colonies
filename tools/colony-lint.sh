@@ -3095,9 +3095,10 @@ fi
 
 # --- dark-factory forge slot gate (#2038, #2362) ---
 # The host-wide forge-subprocess semaphore (dark-factory/lib/forge-slot.sh): acquire/release/fail-open, a K-holder
-# concurrent load, the run-invariant-hunt.sh wiring, and #2362's ownership rule — a slot is owned by the exclusive
-# create of slot-N/pid, never by mkdir's exit status (a lying mkdir still yields one holder), and the dead-holder
-# reclaim never removes a newer holder's stamp. bash only, no forge, no network (~10 s).
+# concurrent load, the run-invariant-hunt.sh wiring, and #2362's cases (the same as tools/test-llm-session-slot.sh
+# 10-25): ownership by the exclusive create of slot-N/pid, never by mkdir's exit status; reclaim never removes a newer
+# holder's stamp; a failed stamp write, a stale empty stamp or token, and a SIGKILLed reclaimer never leak a slot.
+# bash only, no forge, no network (~45 s, two cases wait out the 10 s staleness bound).
 if [ -x "$REPO_ROOT/dark-factory/demo-forge-slot.sh" ]; then
     check_out="$(bash "$REPO_ROOT/dark-factory/demo-forge-slot.sh" 2>&1)" && check_rc=0 || check_rc=$?
     if [ "$check_rc" -eq 0 ]; then
@@ -3105,6 +3106,29 @@ if [ -x "$REPO_ROOT/dark-factory/demo-forge-slot.sh" ]; then
     else
         fail "dark-factory: forge slot gate regressed (#2038, #2362)"
         printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- slot gate copies stay in sync (#2362) ---
+# dark-factory/lib/forge-slot.sh carries the same acquire/create/aged/sweep/reclaim/release code as
+# tools/lib/llm-session-slot.sh under other names and defaults. Map the forge names and defaults onto the LLM ones,
+# drop comment and blank lines, and require byte-identical code from `acquire_` to the end of both files, so a fix
+# to one copy cannot silently miss the other.
+slot_lss="$REPO_ROOT/tools/lib/llm-session-slot.sh"
+slot_fss="$REPO_ROOT/dark-factory/lib/forge-slot.sh"
+if [ -f "$slot_lss" ] && [ -f "$slot_fss" ]; then
+    slot_code() { sed -n '/^acquire_/,$p' "$1" | sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d'; }
+    slot_a="$(slot_code "$slot_lss")"
+    slot_b="$(slot_code "$slot_fss" | sed -e 's/_fss_/_lss_/g' -e 's/_FSS_/_LSS_/g' \
+        -e 's/acquire_forge_slot/acquire_llm_slot/g' -e 's/release_forge_slot/release_llm_slot/g' \
+        -e 's/FORGE_SLOT_HELD/LLM_SLOT_HELD/g' -e 's/_forge_slots_dir/_llm_slots_dir/g' \
+        -e 's/FORGE_MAX_SLOTS:-2/LLM_MAX_CONCURRENT:-3/g' -e 's/_lss_k=2/_lss_k=3/g' \
+        -e 's/FORGE_SLOT_WAIT_S:-300/LLM_SLOT_WAIT_S:-120/g' -e 's/_lss_wait=300/_lss_wait=120/g')"
+    if [ -n "$slot_a" ] && [ "$slot_a" = "$slot_b" ]; then
+        pass "slot gates: forge-slot.sh and llm-session-slot.sh run the same code under their own names (#2362)"
+    else
+        fail "slot gates: forge-slot.sh drifted from llm-session-slot.sh (#2362)"
+        diff <(printf '%s\n' "$slot_a") <(printf '%s\n' "$slot_b") | head -20 || true
     fi
 fi
 
