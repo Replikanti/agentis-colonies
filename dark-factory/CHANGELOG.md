@@ -16,6 +16,19 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ### Added
 
+- **Live contest finder covers five platforms and reports every fetch (#2312).** `find-live-contests.sh`
+  launches the new one-shot agent `auditor/agents/contest-finder.ag`, the scheduled discovery entry point.
+  - Platforms: Immunefi boosted competitions and CodeHawks with the earlier host finder's rules, Sherlock with
+    a full page walk (`has_next`, page size 100), Cantina, and Code4rena through the keyless
+    `api/v1/audits` listing (public audits only).
+  - Every run prints exactly one `STATUS` line per platform (`ok`, `fetch-failed`, `parse-failed` or
+    `unsupported`, with `live`, `items`, `pages`, `statuses` and `reason`) and a final `RUN` line with
+    `cb_spent`, so a broken endpoint cannot look like a dry market. A run that cannot finish prints one
+    `STATUS ALL agent-failed` line.
+  - Needs agentis >= 1.29.0 (`exec argv`). An older runtime fails visibly through the `agent-failed` line;
+    the federation's declared floor is unchanged.
+  - `watch-competitions.sh` and `contest-watch.sh` are unchanged and are not the scheduled path.
+
 - **AgentArena intake fetch and unpack (#2326, epic #2317 M1).** `run-agentarena-intake.sh` (a thin shim over
   the stdlib-only `lib/agentarena-intake.py`) consumes `inbox/<task_id>.json` (`--task <id>` or one `--all`
   sweep), fetches the TaskResponse and the repo zip with the platform's `X-API-Key`, and unpacks the code into

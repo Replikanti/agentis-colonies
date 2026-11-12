@@ -50,3 +50,8 @@ dark-factory/auditor/scripts/
 # run-invariant-hunt.sh stages into every generated invariant harness. A
 # RUNTIME dependency of the deep-hunt path, not contributor-only tooling.
 dark-factory/auditor/harness-mocks/
+
+# ----- Contest discovery (#2312) -----
+# The scheduled live-contest finder launcher; its agent (auditor/agents/contest-finder.ag) and fixtures
+# (fixtures/contest-finder/) ship through the entries above.
+dark-factory/find-live-contests.sh

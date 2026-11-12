@@ -2297,6 +2297,19 @@ if [ -x "$REPO_ROOT/dark-factory/demo-watch-competitions.sh" ]; then
     fi
 fi
 
+# --- dark-factory live contest finder: five platforms, per-platform STATUS on every run (#2312) ---
+# Part A (source asserts) runs in CI; Part B runs the real launcher + contest-finder.ag through agentis go when
+# the binary is on PATH and SKIPs otherwise.
+if [ -x "$REPO_ROOT/dark-factory/demo-contest-finder.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-contest-finder.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: live contest finder (five platforms, full page walks, one STATUS line per platform on every run) (#2312)"
+    else
+        fail "dark-factory: live contest finder regressed (#2312)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
 # --- dark-factory snapshot owner-rebind hard assert (#1457) ---
 # The snapshot-replay harness reads the account's real on-chain owner and emits an explicit
 # OWNER REBIND / MATCH / MISMATCH marker; with EXPECT_PROGRAM_OWNER (run-audit --expect-owner) it

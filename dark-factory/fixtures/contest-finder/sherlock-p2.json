@@ -1,0 +1,109 @@
+{
+ "page": 2,
+ "next_page": null,
+ "items": [
+  {
+   "id": 101,
+   "title": "Tokemak",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1689606000,
+   "ends_at": 1693321200,
+   "prize_pool": 144000,
+   "token": "USDC"
+  },
+  {
+   "id": 832,
+   "title": "Usual Labs",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1740499200,
+   "ends_at": 1741705200,
+   "prize_pool": 180000,
+   "token": "USDC"
+  },
+  {
+   "id": 1225,
+   "title": "Fluid DEX v2",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1768834800,
+   "ends_at": 1771426800,
+   "prize_pool": 150000,
+   "token": "USDC"
+  },
+  {
+   "id": 857,
+   "title": "ZetaChain Cross-Chain",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1744642800,
+   "ends_at": 1747062000,
+   "prize_pool": 113600,
+   "token": "USDC"
+  },
+  {
+   "id": 747,
+   "title": "Aave v3.3",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1736780400,
+   "ends_at": 1737558000,
+   "prize_pool": 160000,
+   "token": "USDC"
+  },
+  {
+   "id": 74,
+   "title": "GMX Update",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1682434800,
+   "ends_at": 1685890800,
+   "prize_pool": 134000,
+   "token": "USDC"
+  },
+  {
+   "id": 207,
+   "title": "MorphL2",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1725289200,
+   "ends_at": 1727103600,
+   "prize_pool": 139000,
+   "token": "USDC"
+  },
+  {
+   "id": 63,
+   "title": "Optimism Update",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1679673600,
+   "ends_at": 1680883200,
+   "prize_pool": 120000,
+   "token": "USDC"
+  },
+  {
+   "id": 395,
+   "title": "Aleo",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1718031600,
+   "ends_at": 1719241200,
+   "prize_pool": 125000,
+   "token": "USDC"
+  },
+  {
+   "id": 219,
+   "title": "Perpetual",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1708959600,
+   "ends_at": 1710774000,
+   "prize_pool": 105715,
+   "token": "USDC"
+  }
+ ],
+ "total": 20,
+ "has_next": false,
+ "pages": 2
+}

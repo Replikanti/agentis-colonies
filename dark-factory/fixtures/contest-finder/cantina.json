@@ -1,0 +1,44 @@
+[
+ {
+  "id": "e275368c-547d-4d91-a418-053ad31082a8",
+  "name": "Revert v4lend Competition",
+  "url": "https://cantina.xyz/competitions/e275368c-547d-4d91-a418-053ad31082a8",
+  "timeframe": {
+   "start": "2026-10-06T18:30:00Z",
+   "end": "2026-11-03T18:30:00Z"
+  },
+  "status": "judging",
+  "currencyCode": "USDC",
+  "totalRewardPot": "50000",
+  "kycRequired": true,
+  "kind": "public_contest"
+ },
+ {
+  "id": "e7af4986-183d-4764-8bd2-1d6b47f87d99",
+  "name": "eigenlayer-contracts",
+  "url": "https://cantina.xyz/competitions/e7af4986-183d-4764-8bd2-1d6b47f87d99",
+  "timeframe": {
+   "start": "2025-03-07T18:00:00Z",
+   "end": "2025-03-28T20:00:00Z"
+  },
+  "status": "complete",
+  "currencyCode": "USDC",
+  "totalRewardPot": "2500000",
+  "kycRequired": false,
+  "kind": "public_contest"
+ },
+ {
+  "id": "19c5a5a6-f68d-4da8-b185-3f28c7f97bc1",
+  "name": "PumpSwap",
+  "url": "https://cantina.xyz/competitions/19c5a5a6-f68d-4da8-b185-3f28c7f97bc1",
+  "timeframe": {
+   "start": "2025-03-21T20:00:00Z",
+   "end": "2025-04-04T20:00:00Z"
+  },
+  "status": "complete",
+  "currencyCode": "USDC",
+  "totalRewardPot": "2010000",
+  "kycRequired": false,
+  "kind": "private_contest"
+ }
+]

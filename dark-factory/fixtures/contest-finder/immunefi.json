@@ -1,0 +1,118 @@
+[
+ {
+  "project": "Audit Competition | Plether",
+  "slug": "plether",
+  "endDate": "2026-11-16T10:00:00.000Z",
+  "kyc": false,
+  "maxBounty": 80000,
+  "boostedIntroLive": "| Milestone | Date |\n| :---- | :---- |\n| Announcement | Oct 27, 2026 |\n| Launch (competition goes live) | Nov 2, 2026 |\n| Competition ends | Nov 16, 2026 |\n| Project deadline to resolve all reports | Nov 20, 2026 |\n| Results frozen and calculated | Nov 27, 2026 |\n| Final 48-hour dispute deadline | Nov 30, 2026 |\n| Results published | Dec 17, 2026 |\n| Payment complete | Dec 18, 2026 |\n*The dates in this calendar may be adjusted by Immunefi as needed for the execution of the competition.*",
+  "boostedIntroStartingIn": "| Milestone | Date |\n| :---- | :---- |\n| Announcement | Oct 27, 2026 |\n| Launch (competition goes live) | Nov 2, 2026 |\n| Competition ends | Nov 16, 2026 |\n| Project deadline to resolve all reports | Nov 20, 2026 |\n| Results frozen and calculated | Nov 27, 2026 |\n| Final 48-hour dispute deadline | Nov 30, 2026 |\n| Results published | Dec 17, 2026 |\n| Payment complete | Dec 18, 2026 |\n*The dates in this calendar may be adjusted by Immunefi as needed for the execution of the competition.*",
+  "boostedLeaderboard": [],
+  "rewards": [
+   {
+    "assetType": "smart_contract"
+   },
+   {
+    "assetType": "smart_contract"
+   },
+   {
+    "assetType": "smart_contract"
+   },
+   {
+    "assetType": "smart_contract"
+   }
+  ]
+ },
+ {
+  "project": "Audit Comp | Firelight",
+  "slug": "audit-comp-firelight-1",
+  "endDate": "2026-08-25T10:00:00.000Z",
+  "kyc": false,
+  "maxBounty": 20000,
+  "boostedIntroLive": "Competition timeline  \nThis timeline may change depending on the competition progress and Immunefi needs\n\n| Milestone | Date |\n| :---- | :---- |\n| Announcement | Aug 10, 2026 |\n| Launch (competition goes live) | Aug 12, 2026 |\n| Competition ends | Aug 25, 2026 |\n| Project deadline to resolve all reports | Aug 31, 2026 |\n| Results frozen and calculated | Aug 31, 2026 |\n| Final 48-hour dispute deadline | Sep 03, 2026 |\n| Payment complete | Sep 30, 2026 |\n| Results published | Sep 30, 2026 |",
+  "boostedIntroStartingIn": "Competition timeline  \nThis timeline may change depending on the competition progress and Immunefi needs\n\n| Milestone | Date |\n| :---- | :---- |\n| Announcement | Aug 10, 2026 |\n| Launch (competition goes live) | Aug 12, 2026 |\n| Competition ends | Aug 25, 2026 |\n| Project deadline to resolve all reports | Aug 31, 2026 |\n| Results frozen and calculated | Aug 31, 2026 |\n| Final 48-hour dispute deadline | Sep 03, 2026 |\n| Payment complete | Sep 30, 2026 |\n| Results published | Sep 30, 2026 |",
+  "boostedLeaderboard": [
+   {
+    "placeholder": "leaderboard entry removed"
+   }
+  ],
+  "rewards": [
+   {
+    "assetType": "smart_contract"
+   },
+   {
+    "assetType": "smart_contract"
+   },
+   {
+    "assetType": "smart_contract"
+   },
+   {
+    "assetType": "smart_contract"
+   }
+  ]
+ },
+ {
+  "project": "Audit Competition | ENS",
+  "slug": "audit-competition-ens",
+  "endDate": "2026-09-14T11:00:00.000Z",
+  "kyc": true,
+  "maxBounty": 70000,
+  "boostedIntroLive": "| Milestone | Date |\n|---|---|\n| Announcement | Aug 10, 2026 |\n| Launch (competition goes live) | Aug 18, 2026 |\n| Competition ends | Sep 14, 2026 |\n| Project deadline to resolve all reports | Sep 20, 2026 |\n| Results frozen and calculated | Sep 28, 2026 |\n| Final 48-hour dispute deadline | Sep 29, 2026 |\n| Payment complete | Oct 26, 2026 |\n| Results published | Oct 26, 2026 |",
+  "boostedIntroStartingIn": "",
+  "boostedLeaderboard": [
+   {
+    "placeholder": "leaderboard entry removed"
+   }
+  ],
+  "rewards": [
+   {
+    "assetType": "websites_and_applications"
+   },
+   {
+    "assetType": "websites_and_applications"
+   },
+   {
+    "assetType": "websites_and_applications"
+   },
+   {
+    "assetType": "websites_and_applications"
+   }
+  ]
+ },
+ {
+  "project": "Axelar Network",
+  "slug": "axelarnetwork",
+  "endDate": null,
+  "kyc": true,
+  "maxBounty": 500000,
+  "boostedIntroLive": "",
+  "boostedIntroStartingIn": "",
+  "boostedLeaderboard": [],
+  "rewards": [
+   {
+    "assetType": "blockchain_dlt"
+   },
+   {
+    "assetType": "blockchain_dlt"
+   },
+   {
+    "assetType": "blockchain_dlt"
+   },
+   {
+    "assetType": "blockchain_dlt"
+   },
+   {
+    "assetType": "smart_contract"
+   },
+   {
+    "assetType": "smart_contract"
+   },
+   {
+    "assetType": "smart_contract"
+   },
+   {
+    "assetType": "smart_contract"
+   }
+  ]
+ }
+]
