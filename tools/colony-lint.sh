@@ -3096,7 +3096,7 @@ fi
 # --- dark-factory forge slot gate (#2038, #2362) ---
 # The host-wide forge-subprocess semaphore (dark-factory/lib/forge-slot.sh): acquire/release/fail-open, a K-holder
 # concurrent load, the run-invariant-hunt.sh wiring, and #2362's cases (the same as tools/test-llm-session-slot.sh
-# 10-28): ownership by the exclusive create of slot-N/pid, never by mkdir's exit status; reclaim never removes a newer
+# 10-31): ownership by the exclusive create of slot-N/pid, never by mkdir's exit status; reclaim never removes a newer
 # holder's stamp; an empty stamp or token is dead only when no live creator claims it; a failed stamp write and a
 # SIGKILLed reclaimer never leak a slot. bash only, no forge, no network (~50 s: two cases wait out a 12-13 s budget).
 if [ -x "$REPO_ROOT/dark-factory/demo-forge-slot.sh" ]; then
@@ -3110,7 +3110,7 @@ if [ -x "$REPO_ROOT/dark-factory/demo-forge-slot.sh" ]; then
 fi
 
 # --- slot gate copies stay in sync (#2362) ---
-# dark-factory/lib/forge-slot.sh carries the same acquire/create/aged/sweep/reclaim/release code as
+# dark-factory/lib/forge-slot.sh carries the same acquire/create/claim/sweep/reclaim/release code as
 # tools/lib/llm-session-slot.sh under other names and defaults. Map the forge names and defaults onto the LLM ones,
 # drop comment and blank lines, and require byte-identical code from `acquire_` to the end of both files, so a fix
 # to one copy cannot silently miss the other.

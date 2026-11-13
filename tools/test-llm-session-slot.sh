@@ -27,11 +27,11 @@ else
     bad "acquire claims a slot"
 fi
 
-# 2. release frees it (slot dir gone, LLM_SLOT_HELD cleared).
+# 2. release frees it (stamp gone, LLM_SLOT_HELD cleared; the slot dir stays, it is only a container).
 _held="$LLM_SLOT_HELD"
 release_llm_slot
-if [ ! -d "$_held" ] && [ -z "${LLM_SLOT_HELD:-}" ]; then
-    ok "release frees the slot"
+if [ ! -e "$_held/pid" ] && [ -d "$_held" ] && [ -z "${LLM_SLOT_HELD:-}" ]; then
+    ok "release frees the slot (stamp removed, slot dir kept)"
 else
     bad "release frees the slot"
 fi
@@ -288,7 +288,7 @@ release_llm_slot
 mkdir -p "$SLOTS/slot-1"; printf '%s' "$_dead2" > "$SLOTS/slot-1/pid"
 LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=2 acquire_llm_slot; _s2="${LLM_SLOT_HELD:-}"
 release_llm_slot
-if [ "$_s1" = "$SLOTS/slot-1" ] && [ "$_s2" = "$SLOTS/slot-1" ] && [ ! -e "$SLOTS/slot-1" ]; then
+if [ "$_s1" = "$SLOTS/slot-1" ] && [ "$_s2" = "$SLOTS/slot-1" ] && [ "$(entries "$SLOTS/slot-1" ' ')" = "" ]; then
     ok "a pool path with a space: acquire, release and dead-holder reclaim work"
 else
     bad "pool path with a space: first='$_s1' reclaimed='$_s2'"
@@ -452,25 +452,27 @@ else
 fi
 
 # 27. Carry-over: two waiters both judge the same dead empty stamp; right after one of them removes it, a new
-#     creator's stamp appears, still empty and claimed by a live process (an rm shim recreates it the moment the
-#     reclaim's rm returns). Neither waiter may take that slot from the live creator, however long they had been
+#     creator's stamp appears, still empty and claimed by a live process (an rm shim swaps it in instead of the
+#     reclaim's removal). Neither waiter may take that slot from the live creator, however long they had been
 #     watching the old stamp: both fail open and the new stamp and its claim stay. (WAIT=13 outlasts the 10 s
 #     marker of an earlier revision, which carried over to the new stamp and double-admitted here.)
 sleep 60 & _live=$!
 CSHIM="$TMP/cshim"; mkdir -p "$CSHIM"; rm -f "$TMP/crecreated"
 export CREAL_RM="$KREAL_RM" CLIVE="$_live" CMARK="$TMP/crecreated"
+# Gap-free: the first removal of the stamp is replaced by an atomic rename of a fresh empty stamp over it (claim
+# first), so the stamp never disappears and no waiter can legitimately win the slot in between.
 cat > "$CSHIM/rm" <<'CSHIM_EOF'
 #!/bin/sh
 last=""
 for a in "$@"; do last="$a"; done
-"$CREAL_RM" "$@"; rc=$?
 case "$last" in
     */pid)
         if ( set -C; true > "$CMARK" ) 2>/dev/null; then
-            true > "$last.c.$CLIVE"; true > "$last"
+            true > "$last.c.$CLIVE"; true > "$last.new"; mv -f "$last.new" "$last"
+            exit 0
         fi ;;
 esac
-exit "$rc"
+exec "$CREAL_RM" "$@"
 CSHIM_EOF
 chmod +x "$CSHIM/rm"
 fresh; mkdir "$SLOTS/slot-1"; : > "$SLOTS/slot-1/pid"
@@ -511,6 +513,108 @@ if [ "$_r" = "$SLOTS/slot-1" ] && [ "$(entries "$SLOTS/slot-1" ' ')" = "pid " ];
     ok "20 dead-reclaimer token generations are climbed: the slot is reclaimed and every token swept"
 else
     bad "20 dead token generations: held='$_r', entries=[$(entries "$SLOTS/slot-1" ' ')]"
+fi
+
+# 29. A holder that releases between an acquirer's `mkdir slot-1` and its claim neither makes that acquirer fail open
+#     nor costs it the slot: release keeps the slot dir (it is only a container), so the claim and the create find
+#     it. A `mkdir` shim on the acquirer's PATH hands control to the live holder right after the acquirer's mkdir of
+#     the slot and records whether the dir survived the release. (An earlier revision removed the dir there; a waiter
+#     re-creating it before the acquirer looked made the acquirer fail open at once while the waiter took the slot.)
+MSHIM="$TMP/mshim"; mkdir -p "$MSHIM"; rm -f "$TMP/m.go" "$TMP/m.released" "$TMP/m.dir" "$TMP/m.mark"
+export MREAL_MKDIR="$REAL_MKDIR" MGO="$TMP/m.go" MREL="$TMP/m.released" MDIR="$TMP/m.dir" MMARK="$TMP/m.mark"
+cat > "$MSHIM/mkdir" <<'MSHIM_EOF'
+#!/bin/sh
+last=""
+for a in "$@"; do last="$a"; done
+"$MREAL_MKDIR" "$@"; rc=$?
+case "$last" in
+    */slot-1)
+        if ( set -C; true > "$MMARK" ) 2>/dev/null; then
+            true > "$MGO"
+            n=0
+            while [ ! -e "$MREL" ] && [ "$n" -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+            if [ -d "$last" ]; then echo kept > "$MDIR"; else echo removed > "$MDIR"; fi
+        fi ;;
+esac
+exit "$rc"
+MSHIM_EOF
+chmod +x "$MSHIM/mkdir"
+fresh
+# shellcheck disable=SC2016
+sh -c '. "$1"; LLM_MAX_CONCURRENT=1 acquire_llm_slot; n=0
+       while [ ! -e "$2" ] && [ "$n" -lt 200 ]; do sleep 0.05; n=$((n + 1)); done
+       release_llm_slot; true > "$3"' sh "$LIB" "$MGO" "$MREL" >/dev/null 2>&1 &
+_hpid=$!
+_n=0
+while [ ! -s "$SLOTS/slot-1/pid" ] && [ "$_n" -lt 100 ]; do sleep 0.05; _n=$((_n + 1)); done
+# shellcheck disable=SC2016
+_r="$(env PATH="$MSHIM:$PATH" sh -c 'set -eu; . "$1"; LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=4 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"' \
+    sh "$LIB" 2>/dev/null || printf 'ABORTED')"
+wait "$_hpid" 2>/dev/null || true
+_d29="$(cat "$MDIR" 2>/dev/null)"
+if [ "$_r" = "$SLOTS/slot-1" ] && [ "$_d29" = kept ]; then
+    ok "a release between an acquirer's mkdir and its claim keeps the slot dir; the acquirer takes the slot"
+else
+    bad "release during an acquirer's mkdir->claim gap: held='$_r', slot dir after the release: '${_d29:-never reached}'"
+fi
+
+# 30. PID reuse inside a reclaim: the reclaimer saw holder H dead, but at its re-check under the token the stamp names H
+#     again and H is alive (a new holder reused the PID). It must not remove that stamp. A shell function `kill` that
+#     reports H dead on its first call only stands in for the reuse (a function shadows the regular builtin in bash and
+#     dash).
+sleep 60 & _live=$!
+fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_live" > "$SLOTS/slot-1/pid"
+_t30=no
+if have_reclaim; then
+    (
+        _kn=0
+        # shellcheck disable=SC2329  # invoked by the library's `kill -0`, which this function shadows
+        kill() { _kn=$((_kn + 1)); if [ "$_kn" = 1 ]; then return 1; fi; command kill "$@"; }
+        _lss_reclaim "$SLOTS/slot-1" "$_live"
+    )
+    if [ "$(cat "$SLOTS/slot-1/pid" 2>/dev/null)" = "$_live" ] && [ "$(entries "$SLOTS/slot-1" ' ')" = "pid " ]; then
+        _t30=yes
+    fi
+fi
+kill "$_live" 2>/dev/null || true; wait "$_live" 2>/dev/null || true
+if [ "$_t30" = yes ]; then
+    ok "a stamp whose PID came back to life (reuse) is never removed by the re-check under the token"
+else
+    bad "PID reuse at the re-check: stamp='$(cat "$SLOTS/slot-1/pid" 2>/dev/null)' (want $_live), entries=[$(entries "$SLOTS/slot-1" ' ')]"
+fi
+
+# 31. The slot dir vanishes between an acquirer's `mkdir slot-1` and its claim (a pre-#2362 holder still running during
+#     an upgrade removes it on release, or the pool is deleted): the acquirer re-creates the dir and decides by one
+#     more attempt, so it takes the freed slot instead of failing open at once. A `mkdir` shim does that old-style
+#     release (stamp, then dir) right after the acquirer's mkdir of the slot.
+VSHIM="$TMP/vshim"; mkdir -p "$VSHIM"; rm -f "$TMP/v.mark"
+export VREAL_MKDIR="$REAL_MKDIR" VMARK="$TMP/v.mark"
+cat > "$VSHIM/mkdir" <<'VSHIM_EOF'
+#!/bin/sh
+last=""
+for a in "$@"; do last="$a"; done
+"$VREAL_MKDIR" "$@"; rc=$?
+case "$last" in
+    */slot-1)
+        if ( set -C; true > "$VMARK" ) 2>/dev/null; then
+            rm -f "$last/pid"; rmdir "$last"
+        fi ;;
+esac
+exit "$rc"
+VSHIM_EOF
+chmod +x "$VSHIM/mkdir"
+sleep 60 & _live=$!
+fresh; mkdir "$SLOTS/slot-1"; printf '%s' "$_live" > "$SLOTS/slot-1/pid"
+_t0=$(date +%s)
+# shellcheck disable=SC2016
+_r="$(env PATH="$VSHIM:$PATH" sh -c 'set -eu; . "$1"; LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=4 acquire_llm_slot; printf "%s" "$LLM_SLOT_HELD"' \
+    sh "$LIB" 2>/dev/null || printf 'ABORTED')"
+_t1=$(date +%s)
+kill "$_live" 2>/dev/null || true; wait "$_live" 2>/dev/null || true
+if [ -f "$TMP/v.mark" ] && [ "$_r" = "$SLOTS/slot-1" ] && [ "$((_t1 - _t0))" -lt 4 ]; then
+    ok "a slot dir removed between an acquirer's mkdir and its claim is re-created; the acquirer takes the slot ($((_t1 - _t0))s)"
+else
+    bad "slot dir removed under an acquirer: shim fired=$( [ -f "$TMP/v.mark" ] && echo yes || echo no), held='$_r' after $((_t1 - _t0))s"
 fi
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"

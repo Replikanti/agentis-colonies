@@ -29,9 +29,9 @@ is asserted until multi-version CI is in place.
   is serialized by generation-numbered reap tokens created the same exclusive way: a reclaimer killed mid-reclaim is
   taken over instead of leaking the slot, and a stamp is removed only while it still names the dead holder, so a
   newer holder's stamp is never deleted. A stamp that is not a PID counts as dead and is never passed to `kill -0`;
-  an empty slot dir left by a crash between `mkdir` and the stamp is now acquirable instead of leaking.
+  an empty slot dir left by a crash between `mkdir` and the stamp is now acquirable instead of leaking. Release keeps the slot dir (it is only a container), so a concurrent release can no longer make an acquirer fail open, and the reclaim re-checks the holder's liveness under its token, so a reused PID is never removed.
   **Deploy: restart the federation after updating.** A pre-#2362 process still running writes its stamp without
-  noclobber, so it can overwrite a new holder's stamp, and it treats a slot dir without a stamp as busy.
+  noclobber, so it can overwrite a new holder's stamp, and it treats a slot dir without a stamp (now every free slot) as busy.
 
 ## [2.13.0] - 2026-09-02
 

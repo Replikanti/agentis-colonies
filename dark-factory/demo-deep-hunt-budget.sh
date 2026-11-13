@@ -349,12 +349,21 @@ fi
 
 # ================================================================================================
 note "4) TIMEOUT: ledger-only, never merged, resume re-runs it; tail-kill keeps the verdict ..."
+# Cell cap for this section (#2362 review): a fast cell (0.2 s stub) still runs the whole engine, whose helper work
+# alone measured 4.1 s median / 8.2 s max on 1 CPU next to 2 busy loops and 9.2 s / 9.8 s next to 6 busy loops
+# (fast-cell engine wall, cap lifted). At the former 2 s cap the fast cells crossed it under load on main as often as
+# on this branch (6 of 10 runs each, interleaved at 1 CPU + 2 busy loops), so the check failed on host load, not on a
+# regression. T4_CAP=20 s is about twice the worst measured fast cell plus the watchdog's 1 s poll; T4_SLOW=60 s keeps
+# the slow cell at three times the cap, so it always times out. A smaller cap brings the load flake back; every extra
+# second of cap adds about 3 s to this demo (the slow cell, the tail-kill cell and the mutation re-run all wait it out).
+T4_CAP=20
+T4_SLOW=60
 t4_timeout() {  # RZH -> 0 when every TIMEOUT assertion holds (prints the failures otherwise)
   _t_rzh="$1"; _t_ok=0
-  spec 'VaultB|C10|30|normal|FINDING' '*|*|0.2|normal|CLEAN'
-  STUB_LOG="$WORK/t4.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S=2 lens_only "$_t_rzh" "$WORK/t4"
+  spec "VaultB|C10|$T4_SLOW|normal|FINDING" '*|*|0.2|normal|CLEAN'
+  STUB_LOG="$WORK/t4.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S="$T4_CAP" lens_only "$_t_rzh" "$WORK/t4"
   sleep 0.5
-  [ "$(status_of "$WORK/t4" VaultB C10)" = TIMEOUT ] && [ "$(reason_of "$WORK/t4" VaultB C10)" = "cell-timeout=2s" ] \
+  [ "$(status_of "$WORK/t4" VaultB C10)" = TIMEOUT ] && [ "$(reason_of "$WORK/t4" VaultB C10)" = "cell-timeout=${T4_CAP}s" ] \
     || { echo "    ledger: $(status_of "$WORK/t4" VaultB C10)/$(reason_of "$WORK/t4" VaultB C10)"; _t_ok=1; }
   cmp -s "$DBASE/verify/verified_findings.json" "$WORK/t4/verify/verified_findings.json" || { echo "    verified_findings.json changed"; _t_ok=1; }
   awk -F'\t' '$2 == "VaultB" && $3 == "C10"' "$WORK/t4/deep-hunt/reach-coverage.tsv" 2>/dev/null | grep -q . && { echo "    reach row written"; _t_ok=1; }
@@ -370,7 +379,7 @@ t4_timeout() {  # RZH -> 0 when every TIMEOUT assertion holds (prints the failur
   spec '*|*|0.2|normal|FINDING'
   : > "$WORK/t4r.stub"
   rm -rf "$WORK/t4r"; cp -R "$WORK/t4" "$WORK/t4r"
-  PATH="$WORK/fbin:$PATH" STUB_LOG="$WORK/t4r.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S=2 "$_t_rzh" --repo "$REPO" \
+  PATH="$WORK/fbin:$PATH" STUB_LOG="$WORK/t4r.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S="$T4_CAP" "$_t_rzh" --repo "$REPO" \
     --out "$WORK/t4r" --deep-hunt --deep-hunt-only --deep-hunt-resume --backend mock --agentis "$STUB" >"$WORK/t4r.log" 2>&1
   [ "$(cat "$WORK/t4r.stub")" = "VaultB|C10" ] || { echo "    resume re-ran: $(tr '\n' ' ' < "$WORK/t4r.stub")"; _t_ok=1; }
   [ "$(status_of "$WORK/t4r" VaultB C10)" = FINDING ] && [ "$(findings_of "$WORK/t4r")" = 1 ] \
@@ -384,12 +393,12 @@ if t4_timeout "$RZH"; then
   else
     bad "enqueue-pass stderr: resume skip lines missing or shim failure lines leaked"
   fi
-  ok "a timed-out cell: ledger TIMEOUT (cell-timeout=2s), verified_findings.json byte-unchanged, no reach row, never CLEAN, no orphan; --deep-hunt-resume re-runs exactly it and merges its FINDING"
+  ok "a timed-out cell: ledger TIMEOUT (cell-timeout=${T4_CAP}s), verified_findings.json byte-unchanged, no reach row, never CLEAN, no orphan; --deep-hunt-resume re-runs exactly it and merges its FINDING"
 else
   bad "TIMEOUT contract regressed (see above)"
 fi
-spec 'VaultC|C2|30|tail|FINDING' '*|*|0.2|normal|CLEAN'
-DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S=2 lens_only "$RZH" "$WORK/t4t"
+spec "VaultC|C2|$T4_SLOW|tail|FINDING" '*|*|0.2|normal|CLEAN'
+DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S="$T4_CAP" lens_only "$RZH" "$WORK/t4t"
 if [ "$(status_of "$WORK/t4t" VaultC C2)" = FINDING ] && [ "$(reason_of "$WORK/t4t" VaultC C2)" = tail-killed ] \
    && [ "$(findings_of "$WORK/t4t")" = 1 ]; then
   ok "tail-kill: a verdict written before the cap fired is kept (FINDING, reason tail-killed) and merged"

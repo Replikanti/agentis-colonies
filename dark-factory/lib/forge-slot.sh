@@ -35,8 +35,9 @@
 #
 # DEPLOY: restart every running hunt after updating this file. A pre-#2362
 # acquirer still running writes its stamp without noclobber and can overwrite a
-# new holder's stamp, and it treats a slot dir without a stamp as busy; neither
-# happens once every process runs this version.
+# new holder's stamp, and it treats a slot dir without a stamp (every free slot,
+# since release keeps the dir) as busy; neither happens once every process runs
+# this version.
 #
 # TRUST BOUNDARY: the pool dir must be owned by the user running the hunts.
 # noclobber only refuses an existing REGULAR file, so a `pid` replaced by a
@@ -147,25 +148,33 @@ acquire_forge_slot() {
 #   won    FILE created and stamped (claim removed)
 #   lost   FILE existed (claim removed)
 #   wfail  FILE created but the write failed: FILE removed, then the claim
-#   cfail  the claim could not be created; nothing was attempted
+#   cfail  the claim could not be created, twice (the dir is re-created in
+#          between); nothing was attempted. Slot dirs are never removed by this
+#          library (see release_forge_slot), so that means a refusing filesystem.
 # `true` (a regular builtin) carries the claim redirection, because a failed
 # redirection on the special builtin `:` would exit the subshell before
 # `exit 4`. A failed redirection exits 1 (bash) or 2 (dash), never 3 or 4.
 _fss_create() {
-    if ( true > "$1.c.$$" || exit 4; set -C; { printf '%s' "$$" >&3 || exit 3; } 3> "$1" ) 2>/dev/null; then
-        _fss_rc=won
-    else
-        case $? in
-            3) _fss_rc=wfail ;;
-            4) _fss_rc=cfail ;;
-            *) _fss_rc=lost ;;
-        esac
-    fi
-    # A claim that failed because a concurrent release removed the slot dir is
-    # an ordinary lost race (retry), not a refusing filesystem.
-    if [ "$_fss_rc" = cfail ] && [ ! -d "${1%/*}" ]; then
-        _fss_rc=lost
-    fi
+    _fss_try=1
+    while :; do
+        if ( true > "$1.c.$$" || exit 4; set -C; { printf '%s' "$$" >&3 || exit 3; } 3> "$1" ) 2>/dev/null; then
+            _fss_rc=won
+        else
+            case $? in
+                3) _fss_rc=wfail ;;
+                4) _fss_rc=cfail ;;
+                *) _fss_rc=lost ;;
+            esac
+        fi
+        if [ "$_fss_rc" != cfail ] || [ "$_fss_try" -ge 2 ]; then
+            break
+        fi
+        # The claim's dir can vanish under us only from outside this version
+        # (a pre-#2362 holder's release removes it, or the pool was deleted):
+        # re-create it and decide by one more attempt, never by a re-check.
+        mkdir -p "${1%/*}" 2>/dev/null || :
+        _fss_try=2
+    done
     if [ "$_fss_rc" = wfail ]; then
         rm -f "$1" 2>/dev/null || :
     fi
@@ -232,7 +241,8 @@ _fss_sweep() {
 #      walks only grows while a reclaim can still act; it is finite, so the
 #      climb always ends.
 #   3. Re-check under the token, then act: remove the stamp only if it still
-#      names HOLDER (for an empty stamp: is still empty and still unclaimed).
+#      names HOLDER and HOLDER is still dead (a new holder may reuse the PID),
+#      or, for an empty stamp, only if it is still empty and still unclaimed.
 #      Only the token owner may remove it, and no acquirer can replace an
 #      existing file, so the stamp cannot change between the re-check and the
 #      removal, and a reclaimer that read a holder which has since released
@@ -287,10 +297,20 @@ _fss_reclaim() {
         _fss_g=$((_fss_g + 1))
     done
     _fss_now="$(cat "$1/pid" 2>/dev/null)" || _fss_now=""
+    _fss_dead=no
     if [ "$_fss_now" = "$2" ]; then
-        if [ -n "$2" ] || { [ -f "$1/pid" ] && _fss_unclaimed "$1/pid"; }; then
-            rm -f "$1/pid" 2>/dev/null || :
+        if [ -z "$2" ]; then
+            if [ -f "$1/pid" ] && _fss_unclaimed "$1/pid"; then
+                _fss_dead=yes
+            fi
+        elif [ "$_fss_tag" != "$2" ] || ! kill -0 "$2" 2>/dev/null; then
+            # Liveness again under the token: the stamp may now be a new
+            # holder whose PID reuses the dead one's.
+            _fss_dead=yes
         fi
+    fi
+    if [ "$_fss_dead" = yes ]; then
+        rm -f "$1/pid" 2>/dev/null || :
     fi
     _fss_sweep "$1" "$_fss_tag."
     _fss_sweep_claims "$1/pid"
@@ -302,7 +322,10 @@ _fss_reclaim() {
 # safe to call when no slot was held (fail-open path). Designed to run from a
 # cleanup/EXIT trap, so it also drops a reap token this shell owns when the trap
 # fires mid-reclaim (_fss_reclaim). It removes the stamp only while the stamp
-# still names us, so it can never free a slot someone else holds.
+# still names us, so it can never free a slot someone else holds. It keeps the
+# slot dir: the dir is only a container, and removing it let a concurrent
+# acquirer's claim fail between its `mkdir` and its create (#2362 review).
+# Dirs above a lowered FORGE_MAX_SLOTS stay as empty, unscanned dirs.
 release_forge_slot() {
     if [ -n "${_FSS_REAP:-}" ]; then
         if [ "$(cat "$_FSS_REAP" 2>/dev/null)" = "$$" ]; then
@@ -314,9 +337,6 @@ release_forge_slot() {
         if [ "$(cat "$FORGE_SLOT_HELD/pid" 2>/dev/null)" = "$$" ]; then
             rm -f "$FORGE_SLOT_HELD/pid" 2>/dev/null || :
         fi
-        # Best effort: a slot dir that still holds a reap token or a claim
-        # stays, which is harmless (the next acquirer reuses it).
-        rmdir "$FORGE_SLOT_HELD" 2>/dev/null || :
         FORGE_SLOT_HELD=""
     fi
 }
