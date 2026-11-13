@@ -1,0 +1,16 @@
+[
+ {
+  "id": "e275368c-547d-4d91-a418-053ad31082a8",
+  "name": "Revert v4lend Competition",
+  "url": "https://cantina.xyz/competitions/e275368c-547d-4d91-a418-053ad31082a8",
+  "timeframe": {
+   "start": "2026-10-06T18:30:00Z",
+   "end": "2026-11-03T18:30:00Z"
+  },
+  "status": "live",
+  "currencyCode": "USDC",
+  "totalRewardPot": "50000",
+  "kycRequired": true,
+  "kind": "public_contest"
+ }
+]

@@ -1,0 +1,702 @@
+cb 540000;
+// #2312 — LIVE AUDIT-CONTEST FINDER, the scheduled discovery entry point. A one-shot agent (no tick, no prompt,
+// no emit/learn/memo; the launcher throws the workspace away after every run) that walks five keyless contest
+// listings, decides which contests are open for submissions right now, and reports per platform whether the
+// listing could be read at all, so a broken endpoint can never look like a dry market.
+//
+// Launcher: dark-factory/find-live-contests.sh (workspace init, capability flags, flag-to-env, global timeout,
+// prints out.tsv verbatim). The operator schedules the launcher; the schedule is not part of the repo.
+//
+// ---- Platforms (probed 2026-11-12 with keyless GETs; no endpoint needs credentials) ------------------------------
+// IMMUNEFI
+//   endpoint: https://immunefi.com/public-api/bounties.json   auth: none
+//   shape:    bare array of programs (218 on 2026-11-12, 6.2 MB). Boosted competitions are the programs with a
+//             non-empty `boostedIntroLive` or `boostedLeaderboard`; only those carry `endDate` (63 of 218).
+//   vocab:    no status field. Live = boosted AND competition end > now AND at least one
+//             `rewards[].assetType == "smart_contract"`. The end is the first `Competition ends | Mon D, YYYY`
+//             in `boostedIntroLive`, then in `boostedIntroStartingIn` (that date counts from 00:00 UTC), else
+//             `endDate`. Same rule as the operator's earlier host finder.
+// CODEHAWKS
+//   endpoint: https://codehawks.cyfrin.io/trpc/competitions.getCompetitions?batch=1&input=%7B%220%22%3A%7B%22json%22%3Anull%7D%7D
+//             auth: none, sent with `Accept: application/json`
+//   shape:    `[{"result":{"data":[...contests]}}]` (45 contests on 2026-11-12, 54 KB).
+//   vocab:    no status field. Live = `endDate` > now AND (no parseable `startDate` OR `startDate` <= now) AND
+//             not `finalised` AND not `inviteOnly` AND `githubUrl` non-empty. Same rule as the host finder.
+// SHERLOCK
+//   endpoint: https://mainnet-contest.sherlock.xyz/contests?page=N&per_page=100   auth: none
+//   shape:    `{"items":[...],"total":N,"pages":N,"has_next":bool,"next_page":N|null,"page":N}`; pages are NOT
+//             ordered by recency, so the walk reads every page while `has_next` is true. Past the last page the
+//             API answers HTTP 200 with `{"error":"unable to load contests"}`, which ends the walk.
+//   vocab:    observed FINISHED 301/301. Sherlock's frontend uses CREATED, RUNNING, JUDGING, SHERLOCK_JUDGING,
+//             ESCALATING, FINISHED; its active view filters `status=RUNNING`. LIVE = {RUNNING}; NOT_LIVE = the
+//             other five. Permissionless = `private` is not true. Window: `starts_at`/`ends_at`, epoch seconds.
+// CANTINA
+//   endpoint: https://cantina.xyz/api/v0/competitions   auth: none
+//   shape:    bare array (145 on 2026-11-12). Window in `timeframe.start`/`timeframe.end`.
+//   vocab:    observed complete 144, judging 1 (a 2026-10-17 probe saw `live`). LIVE = {live}; NOT_LIVE =
+//             {complete, escalations_ended, closed, judging, ended, completed}. Permissionless =
+//             `kind == public_contest` (126 public_contest, 19 private_contest).
+// CODE4RENA
+//   endpoint: https://code4rena.com/api/v1/audits?perPage=100&page=N   auth: none
+//   probe:    no listing endpoint was known before 2026-11-12. The site's own audits page script calls this URL;
+//             a keyless GET returns `{"data":{"audits":[...]},"pagination":{"total":475,"lastPage":5,
+//             "nextPage":2,...}}`. `perPage` above 100 answers HTTP 400; an invalid `statuses` filter answers
+//             HTTP 400 with the full enum (below). So this channel emits rows; it is not `unsupported`.
+//   shape:    `{"data":{"audits":[...]},"pagination":{"total":N,"nextPage":N|null,...}}`; the walk follows
+//             `pagination.nextPage` until it is null (475 audits in 5 pages on 2026-11-12).
+//   vocab:    API enum Booking, Pre-Audit, Active, LiveJudging, Triage, Restricted, Review, Judging,
+//             Post-Judging QA, Judging Complete, Awarding, Reporting, Completed, Lost Deal; legacy values in the
+//             data: Pre-Contest, Pre-sort, Sponsor Review, Needs Judging; 87 null. The site's countdown treats
+//             Active and LiveJudging as "submissions open until endTime". LIVE = {Active, LiveJudging};
+//             NOT_LIVE = every other named value. Permissionless = `codeAccess == public` (certified and
+//             top_secret audits need a C4 role and are never emitted). Window: `startTime`/`endTime`.
+//
+// ---- Status rule (SHERLOCK, CANTINA, CODE4RENA) -----------------------------------------------------------------
+//   LIVE status:     live unless the end parses and end <= now.
+//   NOT_LIVE status: never live.
+//   anything else (unknown, null, a look-alike): live only if both bounds parse and start <= now < end, and the
+//                    row carries the raw status (fail toward surfacing).
+//   Matching is exact and case-sensitive. ISO bounds must match `YYYY-MM-DDTHH:MM:SS[.fraction]Z`; anything else
+//   (an offset such as +02:00 included) is unparseable. Comparison is at one-second resolution.
+//   Every run counts each status value (`statuses=`): values outside [A-Za-z0-9 _-] count as `?other`, null or
+//   missing as `-`, so vocabulary drift shows in the log.
+//
+// ---- Output (written to out.tsv in the sandbox; the launcher prints it verbatim) -------------------------------
+//   rows:   PLATFORM<TAB>title<TAB>ends=YYYY-MM-DD|-<TAB>prize=<raw label>|-<TAB>kyc=yes|no|-<TAB>status=<raw or
+//           derived><TAB>url=<url>|-   (cells keep the projection escapes, so a row is always one line)
+//   STATUS: exactly one per platform, in PLATFORMS order, after that platform's rows:
+//           STATUS<TAB>PLATFORM<TAB>ok|fetch-failed|parse-failed|unsupported<TAB>live=N<TAB>items=N
+//           [<TAB>pages=N][<TAB>statuses=S:n,...][<TAB>reason=...]
+//   RUN:    last line, RUN<TAB><utc-iso><TAB>platforms=N<TAB>ok=N<TAB>cb_spent=N
+//   fetch-failed reasons: transport-<curl exit> (transport-spawn when curl could not start), http-<code>,
+//     page-cap, short-walk seen=X total=Y, missing-fixture-page. Rows from pages read before the failure are
+//     still emitted.
+//   parse-failed reasons: empty-body, read (unreadable or invalid UTF-8), json, shape, empty-list (every listing
+//     returns its full history, so an empty list means a broken endpoint, not a dry market),
+//     too-many-candidates n=N, agent-error (a runtime error inside the channel, caught by dispatch).
+//
+// ---- Cost shape -------------------------------------------------------------------------------------------------
+//   Budget: `cb 540000` is 2x the worst case measured (268,496 CB, rounded up): 2000 items and 60 live
+//   candidates on each of the five platforms, with every non-live row carrying its own status value. The real
+//   listings of 2026-11-12 cost 12,097 CB, the same listings at 4x their size 25,174, the trimmed recordings
+//   about 9,100. Every RUN line logs `cb_spent`, so growth shows in the log long before the budget is reached.
+//   Whole listings are parsed only by flat-cost builtins (json_array_project, regex_find_all, regex_split,
+//   sort_strings, string_list_freq_csv). Per-row .ag logic runs only on candidates: rows whose end sorts after
+//   now (a binary search over the sorted rows), rows with a LIVE status, and Immunefi rows whose text end date
+//   falls in the current month or later. More than CANDIDATE_CAP candidates on one platform reports
+//   too-many-candidates instead of spending budget per row.
+//
+// Env (all set by the launcher and listed on its exec.env_passthrough line):
+//   CF_NOW_EPOCH            pinned clock in epoch seconds (tests); empty = the real clock.
+//   CF_<PLATFORM>_FROM      offline hatch: number of recorded pages copied into the sandbox as
+//                           <platform>-<k>.json; empty = live fetch.
+//   CF_<PLATFORM>_URL       endpoint override; empty = the default below. Walked platforms append their query.
+
+// ---- Constants --------------------------------------------------------------------------------------------------
+let PLATFORMS = ["IMMUNEFI", "CODEHAWKS", "SHERLOCK", "CANTINA", "CODE4RENA"];
+// Code4rena's API maximum; Sherlock needs 4 requests instead of 31 at its default page size of 10.
+let PAGE_SIZE = "100";
+// 2000 items per platform: Sherlock had 301 contests and Code4rena 475 on 2026-11-12 (about 77 and 92 a year),
+// so at least 16 years of headroom. Reaching it reports page-cap, never a silent truncation.
+let PAGE_CAP = 20;
+// 3x the highest historical overlap of open contest windows (Cantina, 20).
+let CANDIDATE_CAP = 60;
+// Distinct status values listed per STATUS line. The largest vocabulary observed is Code4rena's 9 (8 values plus
+// null); 20 leaves room for drift while the line stays short.
+let STATUS_TOP = 20;
+// Every response measured under 1 s; 30 s is the existing watcher's MAX_TIME. The exec timeout (45 s, the
+// literal in fetch()) is longer, so curl's own timeout fires first and reports exit 28.
+let CURL_MAX_TIME_S = "30";
+let UA = "Mozilla/5.0";
+let DEFAULT_URL_IMMUNEFI = "https://immunefi.com/public-api/bounties.json";
+let DEFAULT_URL_CODEHAWKS = "https://codehawks.cyfrin.io/trpc/competitions.getCompetitions?batch=1&input=%7B%220%22%3A%7B%22json%22%3Anull%7D%7D";
+let DEFAULT_URL_SHERLOCK = "https://mainnet-contest.sherlock.xyz/contests";
+let DEFAULT_URL_CANTINA = "https://cantina.xyz/api/v0/competitions";
+let DEFAULT_URL_CODE4RENA = "https://code4rena.com/api/v1/audits";
+// Status sets as regex alternations of literal values (matched against the escaped status cell, anchored).
+let SHERLOCK_LIVE = "RUNNING";
+let SHERLOCK_NOT_LIVE = "CREATED|JUDGING|SHERLOCK_JUDGING|ESCALATING|FINISHED";
+let CANTINA_LIVE = "live";
+let CANTINA_NOT_LIVE = "complete|escalations_ended|closed|judging|ended|completed";
+let CODE4RENA_LIVE = "Active|LiveJudging";
+let CODE4RENA_NOT_LIVE = "Booking|Pre-Audit|Triage|Restricted|Review|Judging|Post-Judging QA|Judging Complete|Awarding|Reporting|Completed|Lost Deal|Pre-Contest|Pre-sort|Sponsor Review|Needs Judging";
+// Row projections share one layout: 0 end, 1 status, 2 start, 3 id, 4 title, then platform-specific cells.
+// `no_status` / `no_start` name no field, so those cells are always empty.
+let FIELDS_IMMUNEFI = "endDate,no_status,no_start,slug,project,boostedIntroLive,boostedIntroStartingIn,maxBounty,kyc";
+let FIELDS_CODEHAWKS = "endDate,no_status,startDate,id,name,urlSlug,finalised,inviteOnly,githubUrl,reward,currency,requiresKyc";
+let FIELDS_SHERLOCK = "ends_at,status,starts_at,id,title,private,prize_pool,token";
+let FIELDS_CANTINA = "timeframe.end,status,timeframe.start,id,name,kind,totalRewardPot,currencyCode,kycRequired,url";
+let FIELDS_CODE4RENA = "endTime,status,startTime,uid,title,codeAccess,formattedAmount,slug";
+let ISO_RX = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?Z$";
+let TEXT_END_RX = "Competition ends\\s*\\|\\s*([A-Za-z]{3}) ([0-9]{1,2}), ([0-9]{4})";
+let MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+// ---- Calendar helpers (civil-from-days / days-from-civil, proleptic Gregorian, UTC) ----------------------------
+fn pad2(n: int) -> string {
+    if n < 10 { return "0" + to_string(n); };
+    return to_string(n);
+}
+
+fn pad12(n: int) -> string {
+    let s = to_string(n);
+    return substring("000000000000", 0, 12 - len(s)) + s;
+}
+
+// epoch seconds (>= 0) -> "YYYY-MM-DD"
+fn epoch_to_date(epoch: int) -> string {
+    let z0 = epoch / 86400 + 719468;
+    let era = z0 / 146097;
+    let doe = z0 - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + (if m <= 2 { 1 } else { 0 });
+    let yy = to_string(y);
+    let y4 = substring("0000", 0, 4 - len(yy)) + yy;
+    return y4 + "-" + pad2(m) + "-" + pad2(d);
+}
+
+// epoch seconds (>= 0) -> "YYYY-MM-DDTHH:MM:SS"
+fn epoch_to_iso19(epoch: int) -> string {
+    let sod = epoch - (epoch / 86400) * 86400;
+    return epoch_to_date(epoch) + "T" + pad2(sod / 3600) + ":" + pad2((sod - (sod / 3600) * 3600) / 60) + ":" + pad2(sod - (sod / 60) * 60);
+}
+
+fn is_leap(y: int) -> bool {
+    if y - (y / 400) * 400 == 0 { return true; };
+    if y - (y / 100) * 100 == 0 { return false; };
+    return y - (y / 4) * 4 == 0;
+}
+
+fn days_in_month(y: int, m: int) -> int {
+    if m == 2 { if is_leap(y) { return 29; }; return 28; };
+    if m == 4 { return 30; };
+    if m == 6 { return 30; };
+    if m == 9 { return 30; };
+    if m == 11 { return 30; };
+    return 31;
+}
+
+// Strict ISO bound -> its 19-char prefix, or "" when the value is not `YYYY-MM-DDTHH:MM:SS[.fraction]Z`.
+fn iso19(s: string) -> string {
+    if regex_match(ISO_RX, s) { return substring(s, 0, 19); };
+    return "";
+}
+
+// String `<` is a type error in the runtime, so order two strings through sort_strings (byte order, which is
+// chronological for equal-width ISO and epoch strings).
+fn ts_lt(a: string, b: string) -> bool {
+    if a == b { return false; };
+    return get(sort_strings([a, b]), 0) == a;
+}
+
+// ---- Clock --------------------------------------------------------------------------------------------------------
+fn clock() -> int {
+    let pinned = getenv("CF_NOW_EPOCH");
+    if regex_match("^[0-9]{1,12}$", pinned) { return parse_int(pinned); };
+    return now_ms() / 1000;
+}
+let NOW = clock();
+let NOW19 = epoch_to_iso19(NOW);
+
+// ---- Per-platform configuration -------------------------------------------------------------------------------
+fn from_count(p: string) -> string {
+    if p == "IMMUNEFI" { return getenv("CF_IMMUNEFI_FROM"); };
+    if p == "CODEHAWKS" { return getenv("CF_CODEHAWKS_FROM"); };
+    if p == "SHERLOCK" { return getenv("CF_SHERLOCK_FROM"); };
+    if p == "CANTINA" { return getenv("CF_CANTINA_FROM"); };
+    if p == "CODE4RENA" { return getenv("CF_CODE4RENA_FROM"); };
+    return "";
+}
+
+fn base_url(p: string) -> string {
+    let o = if p == "IMMUNEFI" { getenv("CF_IMMUNEFI_URL") } else { if p == "CODEHAWKS" { getenv("CF_CODEHAWKS_URL") } else { if p == "SHERLOCK" { getenv("CF_SHERLOCK_URL") } else { if p == "CANTINA" { getenv("CF_CANTINA_URL") } else { getenv("CF_CODE4RENA_URL") } } } };
+    if len(o) > 0 { return o; };
+    if p == "IMMUNEFI" { return DEFAULT_URL_IMMUNEFI; };
+    if p == "CODEHAWKS" { return DEFAULT_URL_CODEHAWKS; };
+    if p == "SHERLOCK" { return DEFAULT_URL_SHERLOCK; };
+    if p == "CANTINA" { return DEFAULT_URL_CANTINA; };
+    return DEFAULT_URL_CODE4RENA;
+}
+
+fn is_walked(p: string) -> bool {
+    if p == "SHERLOCK" { return true; };
+    return p == "CODE4RENA";
+}
+
+fn page_url(p: string, k: int) -> string {
+    let base = base_url(p);
+    if !is_walked(p) { return base; };
+    let sep = if index_of(base, "?") >= 0 { "&" } else { "?" };
+    if p == "SHERLOCK" { return base + sep + "page=" + to_string(k) + "&per_page=" + PAGE_SIZE; };
+    return base + sep + "perPage=" + PAGE_SIZE + "&page=" + to_string(k);
+}
+
+fn items_path(p: string) -> string {
+    if p == "CODEHAWKS" { return "[0].result.data"; };
+    if p == "SHERLOCK" { return "items"; };
+    if p == "CODE4RENA" { return "data.audits"; };
+    return "";
+}
+
+fn fields(p: string) -> string {
+    if p == "IMMUNEFI" { return FIELDS_IMMUNEFI; };
+    if p == "CODEHAWKS" { return FIELDS_CODEHAWKS; };
+    if p == "SHERLOCK" { return FIELDS_SHERLOCK; };
+    if p == "CANTINA" { return FIELDS_CANTINA; };
+    return FIELDS_CODE4RENA;
+}
+
+fn id_field(p: string) -> string {
+    if p == "IMMUNEFI" { return "slug"; };
+    if p == "CODE4RENA" { return "uid"; };
+    return "id";
+}
+
+fn has_status(p: string) -> bool {
+    if p == "IMMUNEFI" { return false; };
+    return p != "CODEHAWKS";
+}
+
+fn live_set(p: string) -> string {
+    if p == "SHERLOCK" { return SHERLOCK_LIVE; };
+    if p == "CANTINA" { return CANTINA_LIVE; };
+    return CODE4RENA_LIVE;
+}
+
+fn not_live_set(p: string) -> string {
+    if p == "SHERLOCK" { return SHERLOCK_NOT_LIVE; };
+    if p == "CANTINA" { return CANTINA_NOT_LIVE; };
+    return CODE4RENA_NOT_LIVE;
+}
+
+// Sherlock bounds are epoch seconds; every other platform uses ISO strings.
+fn epoch_bounds(p: string) -> bool {
+    return p == "SHERLOCK";
+}
+
+// ---- Fetch ----------------------------------------------------------------------------------------------------------
+// -> ["ok", <sandbox file>] or ["fetch-failed", <reason>]
+fn fetch(p: string, k: int) -> list {
+    let lp = to_lower(p);
+    let nfrom = from_count(p);
+    if len(nfrom) > 0 {
+        if k > parse_int(nfrom) { return ["fetch-failed", "missing-fixture-page"]; };
+        return ["ok", lp + "-" + to_string(k) + ".json"];
+    };
+    let file = lp + "-" + to_string(k) + ".body";
+    // -q first: never read a ~/.curlrc. The body goes to a sandbox file (-o) so a 6 MB listing stays out of the
+    // exec stdout cap; stdout carries only the HTTP code.
+    let argv = ["curl", "-q", "-sS", "-A", UA, "-H", "Accept: application/json", "--max-time", CURL_MAX_TIME_S, "-o", file, "-w", "%{http_code}", page_url(p, k)];
+    let code = try { exec argv timeout 45000 argv; } catch e { "ERR\t" + to_string(e); };
+    if index_of(code, "ERR\t") == 0 {
+        let rc = regex_capture("\\(exit ([0-9]+)\\)", code, 1);
+        if len(rc) == 0 { return ["fetch-failed", "transport-spawn"]; };
+        return ["fetch-failed", "transport-" + rc];
+    };
+    let http = trim(code);
+    if http != "200" { return ["fetch-failed", "http-" + http]; };
+    return ["ok", file];
+}
+
+// -> ["ok", <body>] or ["parse-failed", "read"]. A missing body file (curl wrote nothing) reads as "".
+fn read_body(file: string) -> list {
+    if !file_exists(file) { return ["ok", ""]; };
+    return try { ["ok", file_read(file)]; } catch e { ["parse-failed", "read"]; };
+}
+
+// Why a body projected to no rows: "empty-body", "json", "shape" or "empty-list".
+fn no_rows_reason(body: string, path: string) -> string {
+    if len(trim(body)) == 0 { return "empty-body"; };
+    let at = json_get_raw(body, path);
+    if len(at) == 0 {
+        if len(json_get_raw(body, "")) == 0 { return "json"; };
+        return "shape";
+    };
+    if substring(at, 0, 1) != "[" { return "shape"; };
+    return "empty-list";
+}
+
+// One page -> ["ok", "", body, tsv, status_tsv, id_tsv]; ["end", reason] when the page parsed as JSON but holds
+// no rows (or no array at all); ["fetch-failed"|"parse-failed", reason] otherwise.
+fn load_page(p: string, k: int) -> list {
+    let f = fetch(p, k);
+    if get(f, 0) != "ok" { return f; };
+    let r = read_body(get(f, 1));
+    if get(r, 0) != "ok" { return r; };
+    let body = get(r, 1);
+    let path = items_path(p);
+    let tsv = json_array_project(body, path, fields(p));
+    if len(tsv) == 0 {
+        let why = no_rows_reason(body, path);
+        if why == "shape" { return ["end", why]; };
+        if why == "empty-list" { return ["end", why]; };
+        return ["parse-failed", why];
+    };
+    let stsv = if has_status(p) { json_array_project(body, path, "status") } else { "" };
+    return ["ok", "", body, tsv, stsv, json_array_project(body, path, id_field(p))];
+}
+
+fn page_has_next(p: string, body: string) -> bool {
+    if p == "SHERLOCK" { return to_string(json_get(body, "has_next")) == "true"; };
+    return regex_match("^[0-9]+$", to_string(json_get(body, "pagination.nextPage")));
+}
+
+fn page_total(p: string, body: string) -> int {
+    let t = if p == "SHERLOCK" { to_string(json_get(body, "total")) } else { to_string(json_get(body, "pagination.total")) };
+    if regex_match("^[0-9]+$", t) { return parse_int(t); };
+    return -1;
+}
+
+fn join_nl(acc: string, x: string, k: int) -> string {
+    if k == 1 { return x; };
+    return acc + "\n" + x;
+}
+
+// Collected listing: [state, reason, pages, tsv, status_tsv, id_tsv, total, body]
+//   state "ok" | "fetch-failed" | "parse-failed"; pages = pages that contributed rows; total = page 1's declared
+//   total (-1 when absent); body = the single page (unwalked platforms only, "" otherwise).
+fn walk(p: string, k: int, tsv: string, stsv: string, ids: string, total: int) -> list {
+    let pg = load_page(p, k);
+    let kind = get(pg, 0);
+    if kind != "ok" {
+        if k == 1 {
+            let st = if kind == "end" { "parse-failed" } else { kind };
+            return [st, get(pg, 1), 0, "", "", "", -1, ""];
+        };
+        // Past page 1, a JSON page without rows (an empty items list, the past-end error body) ends the walk;
+        // the integrity check in channel() then decides.
+        if kind == "end" { return ["ok", "", k - 1, tsv, stsv, ids, total, ""]; };
+        return [kind, get(pg, 1), k - 1, tsv, stsv, ids, total, ""];
+    };
+    let body = get(pg, 2);
+    let t2 = join_nl(tsv, get(pg, 3), k);
+    let s2 = join_nl(stsv, get(pg, 4), k);
+    let i2 = join_nl(ids, get(pg, 5), k);
+    let tot = if k == 1 { page_total(p, body) } else { total };
+    if !is_walked(p) { return ["ok", "", 1, t2, s2, i2, tot, body]; };
+    if !page_has_next(p, body) { return ["ok", "", k, t2, s2, i2, tot, ""]; };
+    if k >= PAGE_CAP { return ["fetch-failed", "page-cap", k, t2, s2, i2, tot, ""]; };
+    return walk(p, k + 1, t2, s2, i2, tot);
+}
+
+// ---- Counting -------------------------------------------------------------------------------------------------------
+// Unique ids, plus every element without an id counted on its own (an id seen on two pages counts once).
+fn count_items(ids: string, n: int) -> int {
+    let named = regex_find_all("(?m)^.+$", ids);
+    return len(sort_unique_strings(named)) + (n - len(named));
+}
+
+fn join_list(xs: list, sep: string) -> string {
+    return reduce(xs, |acc: string, x: string| -> string { if len(acc) == 0 { x; } else { acc + sep + x; }; }, "");
+}
+
+// `statuses=` value: the STATUS_TOP most frequent valid values by count (desc), `+more:K` when K further distinct
+// values were cut, then ?other and - (null/missing). The cut keeps a drifted vocabulary (every row its own
+// status) from turning the histogram into a quadratic string build: 2000 distinct values exhausted the
+// runtime's 16 MiB string heap in the cap sweep.
+fn status_hist(stsv: string, n: int) -> string {
+    let valid = regex_find_all("(?m)^[A-Za-z0-9 _-]+$", stsv);
+    let empty = len(regex_find_all("(?m)^$", stsv));
+    let other = n - len(valid) - empty;
+    let distinct = len(sort_unique_strings(valid));
+    let top = join_list(regex_split(", ", string_list_freq_csv(valid, STATUS_TOP)), ",");
+    let tail = (if distinct > STATUS_TOP { ",+more:" + to_string(distinct - STATUS_TOP) } else { "" })
+        + (if other > 0 { ",?other:" + to_string(other) } else { "" })
+        + (if empty > 0 { ",-:" + to_string(empty) } else { "" });
+    if len(top) == 0 { return substring(tail, 1, len(tail)); };
+    return top + tail;
+}
+
+// ---- Candidates -----------------------------------------------------------------------------------------------------
+// First index in `sorted` whose line sorts after `key` (binary search; lines start with the end bound).
+fn first_after(sorted: list, key: string, lo: int, hi: int) -> int {
+    if lo >= hi { return lo; };
+    let mid = (lo + hi) / 2;
+    if ts_lt(key, get(sorted, mid)) { return first_after(sorted, key, lo, mid); };
+    return first_after(sorted, key, mid + 1, hi);
+}
+
+fn take_from(xs: list, i: int, acc: list) -> list {
+    if i >= len(xs) { return acc; };
+    return take_from(xs, i + 1, push(acc, get(xs, i)));
+}
+
+// Immunefi: rows whose text end date names the current month of the current year or any month of the next ten
+// years. The exact decision happens per row; this only bounds which rows get one.
+fn text_month_rx() -> string {
+    let y = parse_int(substring(NOW19, 0, 4));
+    let m = parse_int(substring(NOW19, 5, 7));
+    let names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let this_year = join_list(take_from(names, m - 1, []), "|");
+    let later = join_list(map([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], |d: int| -> string { to_string(y + d); }), "|");
+    return "(?mi)^[^\n]*Competition ends\\s*\\|\\s*(?:(?:" + this_year + ") [0-9]{1,2}, " + to_string(y) + "|[a-z]{3} [0-9]{1,2}, (?:" + later + "))[^\n]*$";
+}
+
+fn extra_candidates(p: string, tsv: string) -> list {
+    if p == "CODEHAWKS" { return []; };
+    if p == "IMMUNEFI" { return regex_find_all(text_month_rx(), tsv); };
+    return regex_find_all("(?m)^[^\t\n]*\t(?:" + live_set(p) + ")\t[^\n]*$", tsv);
+}
+
+fn keyed(wtsv: string, xs: list, i: int, acc: list) -> list {
+    if i >= len(xs) { return acc; };
+    let line = get(xs, i);
+    return keyed(wtsv, xs, i + 1, push(acc, pad12(index_of(wtsv, "\n" + line + "\n")) + "\t" + line));
+}
+
+// -> [n, keys]: n = candidate count (n > CANDIDATE_CAP means too many; then keys is empty and n is a lower
+// bound when one source alone was over the cap). keys = "<offset>\t<line>", sorted = source order, deduplicated.
+fn candidates(p: string, tsv: string, wtsv: string) -> list {
+    let sorted = sort_strings(regex_split("\n", tsv));
+    let now_key = if epoch_bounds(p) { to_string(NOW) } else { NOW19 };
+    let idx = first_after(sorted, now_key, 0, len(sorted));
+    let n_end = len(sorted) - idx;
+    let extra = extra_candidates(p, tsv);
+    if n_end > CANDIDATE_CAP { return [n_end, []]; };
+    if len(extra) > CANDIDATE_CAP { return [len(extra), []]; };
+    let all = take_from(extra, 0, take_from(sorted, idx, []));
+    let keys = sort_unique_strings(keyed(wtsv, all, 0, []));
+    return [len(keys), keys];
+}
+
+// ---- Per-row decisions ------------------------------------------------------------------------------------------
+fn or_dash(s: string) -> string {
+    if len(s) == 0 { return "-"; };
+    return s;
+}
+
+fn kyc_word(s: string) -> string {
+    if s == "true" { return "yes"; };
+    if s == "false" { return "no"; };
+    return "-";
+}
+
+// Python-style truthiness of a projected scalar cell.
+fn truthy(s: string) -> bool {
+    if len(s) == 0 { return false; };
+    if s == "false" { return false; };
+    if s == "0" { return false; };
+    return s != "0.0";
+}
+
+fn row(p: string, title: string, ends: string, prize: string, kyc: string, status: string, url: string) -> string {
+    return p + "\t" + title + "\tends=" + ends + "\tprize=" + prize + "\tkyc=" + kyc + "\tstatus=" + status + "\turl=" + url + "\n";
+}
+
+// End bound vs now: 1 = parses and end > now, 0 = parses and end <= now, -1 = unparseable.
+fn end_cmp(p: string, raw: string) -> int {
+    if epoch_bounds(p) {
+        if !regex_match("^[0-9]{1,12}$", raw) { return -1; };
+        if parse_int(raw) > NOW { return 1; };
+        return 0;
+    };
+    let e = iso19(raw);
+    if len(e) == 0 { return -1; };
+    if ts_lt(NOW19, e) { return 1; };
+    return 0;
+}
+
+// Start bound vs now: 1 = parses and start <= now, 0 = parses and start > now, -1 = unparseable.
+fn start_cmp(p: string, raw: string) -> int {
+    if epoch_bounds(p) {
+        if !regex_match("^[0-9]{1,12}$", raw) { return -1; };
+        if parse_int(raw) <= NOW { return 1; };
+        return 0;
+    };
+    let s = iso19(raw);
+    if len(s) == 0 { return -1; };
+    if ts_lt(NOW19, s) { return 0; };
+    return 1;
+}
+
+fn end_date(p: string, raw: string) -> string {
+    if epoch_bounds(p) {
+        if regex_match("^[0-9]{1,12}$", raw) { return epoch_to_date(parse_int(raw)); };
+        return "-";
+    };
+    let e = iso19(raw);
+    if len(e) == 0 { return "-"; };
+    return substring(e, 0, 10);
+}
+
+fn status_live(p: string, cells: list) -> bool {
+    let st = get(cells, 1);
+    if regex_match("^(?:" + live_set(p) + ")$", st) { return end_cmp(p, get(cells, 0)) != 0; };
+    if regex_match("^(?:" + not_live_set(p) + ")$", st) { return false; };
+    if start_cmp(p, get(cells, 2)) != 1 { return false; };
+    return end_cmp(p, get(cells, 0)) == 1;
+}
+
+fn permissionless(p: string, cells: list) -> bool {
+    if p == "SHERLOCK" { return get(cells, 5) != "true"; };
+    if p == "CANTINA" { return get(cells, 5) == "public_contest"; };
+    return get(cells, 5) == "public";
+}
+
+fn status_row(p: string, cells: list) -> string {
+    if !status_live(p, cells) { return ""; };
+    if !permissionless(p, cells) { return ""; };
+    let id = get(cells, 3);
+    let title = if len(get(cells, 4)) > 0 { get(cells, 4) } else { or_dash(id) };
+    let ends = end_date(p, get(cells, 0));
+    if p == "SHERLOCK" {
+        let prize = if len(get(cells, 6)) == 0 { "-" } else { if len(get(cells, 7)) > 0 { get(cells, 6) + " " + get(cells, 7) } else { get(cells, 6) } };
+        let url = if len(id) > 0 { "https://audits.sherlock.xyz/contests/" + id } else { "-" };
+        return row(p, title, ends, prize, "-", or_dash(get(cells, 1)), url);
+    };
+    if p == "CANTINA" {
+        let prize = if len(get(cells, 6)) == 0 { "-" } else { if len(get(cells, 7)) > 0 { get(cells, 6) + " " + get(cells, 7) } else { get(cells, 6) } };
+        let url = if len(get(cells, 9)) > 0 { get(cells, 9) } else { if len(id) > 0 { "https://cantina.xyz/competitions/" + id } else { "-" } };
+        return row(p, title, ends, prize, kyc_word(get(cells, 8)), or_dash(get(cells, 1)), url);
+    };
+    let slug = get(cells, 7);
+    let url = if len(slug) > 0 { "https://code4rena.com/audits/" + slug } else { "-" };
+    return row(p, title, ends, or_dash(get(cells, 6)), "-", or_dash(get(cells, 1)), url);
+}
+
+fn codehawks_row(cells: list) -> string {
+    if end_cmp("CODEHAWKS", get(cells, 0)) != 1 { return ""; };
+    if start_cmp("CODEHAWKS", get(cells, 2)) == 0 { return ""; };
+    if truthy(get(cells, 6)) { return ""; };
+    if truthy(get(cells, 7)) { return ""; };
+    if len(get(cells, 8)) == 0 { return ""; };
+    let slug = get(cells, 5);
+    let title = if len(get(cells, 4)) > 0 { get(cells, 4) } else { or_dash(slug) };
+    let prize = if len(get(cells, 9)) > 0 { get(cells, 9) + get(cells, 10) } else { "-" };
+    let url = if len(slug) > 0 { "https://codehawks.cyfrin.io/c/" + slug } else { "-" };
+    return row("CODEHAWKS", title, end_date("CODEHAWKS", get(cells, 0)), prize, kyc_word(get(cells, 11)), "open", url);
+}
+
+// Immunefi text end date -> "YYYY-MM-DDT00:00:00", or "" when the text holds no valid `Competition ends` date
+// (first match only, like the host finder's re.search + strptime).
+fn text_end19(text: string) -> string {
+    let mon = to_lower(regex_capture(TEXT_END_RX, text, 1));
+    if len(mon) == 0 { return ""; };
+    let mi = month_index(mon, 0);
+    if mi < 1 { return ""; };
+    let d = parse_int(regex_capture(TEXT_END_RX, text, 2));
+    let y = parse_int(regex_capture(TEXT_END_RX, text, 3));
+    if d < 1 { return ""; };
+    if d > days_in_month(y, mi) { return ""; };
+    if y < 1 { return ""; };
+    return substring("0000", 0, 4 - len(to_string(y))) + to_string(y) + "-" + pad2(mi) + "-" + pad2(d) + "T00:00:00";
+}
+
+fn month_index(mon: string, i: int) -> int {
+    if i >= 12 { return 0; };
+    if get(MONTHS, i) == mon { return i + 1; };
+    return month_index(mon, i + 1);
+}
+
+fn immunefi_end19(cells: list) -> string {
+    let a = text_end19(get(cells, 5));
+    if len(a) > 0 { return a; };
+    let b = text_end19(get(cells, 6));
+    if len(b) > 0 { return b; };
+    return iso19(get(cells, 0));
+}
+
+// aux = [leaderboards, rewards]: per-element JSON of those two fields, aligned with the projected rows.
+fn immunefi_row(cells: list, idx: int, aux: list) -> string {
+    let boosted = if len(get(cells, 5)) > 0 { true } else { lb_truthy(get(get(aux, 0), idx)) };
+    if !boosted { return ""; };
+    let e = immunefi_end19(cells);
+    if len(e) == 0 { return ""; };
+    if !ts_lt(NOW19, e) { return ""; };
+    let assets = json_array_project(get(get(aux, 1), idx), "", "assetType");
+    if !regex_match("(?m)^smart_contract$", assets) { return ""; };
+    let slug = get(cells, 3);
+    let title = if len(get(cells, 4)) > 0 { get(cells, 4) } else { or_dash(slug) };
+    let url = if len(slug) > 0 { "https://immunefi.com/audit-competition/" + slug + "/information/" } else { "-" };
+    return row("IMMUNEFI", title, substring(e, 0, 10), or_dash(get(cells, 7)), kyc_word(get(cells, 8)), "boosted", url);
+}
+
+fn lb_truthy(s: string) -> bool {
+    if s == "[]" { return false; };
+    if s == "{}" { return false; };
+    return truthy(s);
+}
+
+// Walk the candidate keys in source order -> [rows, live]. Ids already emitted are skipped.
+fn emit_rows(p: string, keys: list, i: int, wtsv: string, aux: list, seen: string, rows: string, live: int) -> list {
+    if i >= len(keys) { return [rows, live]; };
+    let key = get(keys, i);
+    let line = substring(key, 13, len(key));
+    // A projected line always carries every projected field (embedded tabs arrive escaped), so get() is in range.
+    let cells = regex_split("\t", line);
+    let id = get(cells, 3);
+    if len(id) > 0 {
+        if index_of(seen, "\n" + id + "\n") >= 0 { return emit_rows(p, keys, i + 1, wtsv, aux, seen, rows, live); };
+    };
+    let r = if p == "IMMUNEFI" {
+        let off = parse_int(substring(key, 0, 12));
+        immunefi_row(cells, len(regex_find_all("\n", substring(wtsv, 0, off + 1))) - 1, aux)
+    } else { if p == "CODEHAWKS" { codehawks_row(cells) } else { status_row(p, cells) } };
+    if len(r) == 0 { return emit_rows(p, keys, i + 1, wtsv, aux, seen, rows, live); };
+    let seen2 = if len(id) > 0 { seen + id + "\n" } else { seen };
+    return emit_rows(p, keys, i + 1, wtsv, aux, seen2, rows + r, live + 1);
+}
+
+// ---- Channel --------------------------------------------------------------------------------------------------------
+fn status_line(p: string, st: string, live: int, items: int, pages: int, statuses: string, reason: string) -> string {
+    let a = "STATUS\t" + p + "\t" + st + "\tlive=" + to_string(live) + "\titems=" + to_string(items);
+    let b = if pages >= 0 { a + "\tpages=" + to_string(pages) } else { a };
+    let c = if len(statuses) > 0 { b + "\tstatuses=" + statuses } else { b };
+    if len(reason) > 0 { return c + "\treason=" + reason + "\n"; };
+    return c + "\n";
+}
+
+fn channel(p: string) -> string {
+    let c = walk(p, 1, "", "", "", -1);
+    let state = get(c, 0);
+    let pages = if is_walked(p) { get(c, 2) } else { -1 };
+    let tsv = get(c, 3);
+    if len(tsv) == 0 { return status_line(p, state, 0, 0, pages, "", get(c, 1)); };
+    let n = len(regex_split("\n", tsv));
+    let items = count_items(get(c, 5), n);
+    let statuses = if has_status(p) { status_hist(get(c, 4), n) } else { "" };
+    let total = get(c, 6);
+    // Integrity: a walk that ended normally must have seen page 1's declared total.
+    let short = if state == "ok" { if is_walked(p) { if total > items { true } else { false } } else { false } } else { false };
+    let st = if short { "fetch-failed" } else { state };
+    let reason = if short { "short-walk seen=" + to_string(items) + " total=" + to_string(total) } else { get(c, 1) };
+    let wtsv = "\n" + tsv + "\n";
+    let cand = candidates(p, tsv, wtsv);
+    if get(cand, 0) > CANDIDATE_CAP {
+        return status_line(p, "parse-failed", 0, items, pages, statuses, "too-many-candidates n=" + to_string(get(cand, 0)));
+    };
+    let keys = get(cand, 1);
+    let aux = if p == "IMMUNEFI" { if len(keys) > 0 { [json_array_object_field_values(get(c, 7), "boostedLeaderboard"), json_array_object_field_values(get(c, 7), "rewards")] } else { [[], []] } } else { [] };
+    if p == "IMMUNEFI" {
+        if len(keys) > 0 {
+            if len(get(aux, 0)) != n { return status_line(p, "parse-failed", 0, items, pages, statuses, "shape"); };
+            if len(get(aux, 1)) != n { return status_line(p, "parse-failed", 0, items, pages, statuses, "shape"); };
+        };
+    };
+    let out = emit_rows(p, keys, 0, wtsv, aux, "\n", "", 0);
+    return get(out, 0) + status_line(p, st, get(out, 1), items, pages, statuses, reason);
+}
+
+// A runtime error inside one channel never costs the other platforms their lines; an unknown platform name
+// (a listed platform with no channel) reports unsupported.
+fn dispatch(p: string) -> string {
+    let known = if p == "IMMUNEFI" { true } else { if p == "CODEHAWKS" { true } else { if p == "SHERLOCK" { true } else { if p == "CANTINA" { true } else { p == "CODE4RENA" } } } };
+    if !known { return status_line(p, "unsupported", 0, 0, -1, "", ""); };
+    return try { channel(p); } catch e {
+        // The run log (kept by the launcher only on failure) carries the runtime message.
+        print("contest-finder: " + p + " agent-error: " + to_string(e));
+        status_line(p, "parse-failed", 0, 0, -1, "", "agent-error");
+    };
+}
+
+fn run_all(i: int, acc: string) -> string {
+    if i >= len(PLATFORMS) { return acc; };
+    return run_all(i + 1, acc + dispatch(get(PLATFORMS, i)));
+}
+
+let block = run_all(0, "");
+let n_ok = len(regex_find_all("(?m)^STATUS\t[^\t\n]*\tok\t", block));
+file_write("out.tsv", block + "RUN\t" + NOW19 + "Z\tplatforms=" + to_string(len(PLATFORMS)) + "\tok=" + to_string(n_ok) + "\tcb_spent=" + to_string(introspect.cb_spent) + "\n");

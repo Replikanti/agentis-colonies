@@ -1,0 +1,109 @@
+{
+ "page": 1,
+ "next_page": 2,
+ "items": [
+  {
+   "id": 1140,
+   "title": "Ethereum Fusaka Upgrade",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1757948400,
+   "ends_at": 1760367600,
+   "prize_pool": 1984400,
+   "token": "USDC"
+  },
+  {
+   "id": 333,
+   "title": "MakerDAO Endgame",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1720450800,
+   "ends_at": 1722870000,
+   "prize_pool": 415000,
+   "token": "DAI"
+  },
+  {
+   "id": 38,
+   "title": "Optimism",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1674486000,
+   "ends_at": 1675695600,
+   "prize_pool": 700000,
+   "token": "USDC"
+  },
+  {
+   "id": 1260,
+   "title": "XRP Ledger - April 2026",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1776092400,
+   "ends_at": 1777307400,
+   "prize_pool": 519000,
+   "token": "RLUSD"
+  },
+  {
+   "id": 205,
+   "title": "Optimism Fault Proofs",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1711551600,
+   "ends_at": 1712242800,
+   "prize_pool": 200000,
+   "token": "USDC"
+  },
+  {
+   "id": 677,
+   "title": "Babylon Chain Launch (Phase-2)",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1738681200,
+   "ends_at": 1741100400,
+   "prize_pool": 300000,
+   "token": "USDC"
+  },
+  {
+   "id": 1209,
+   "title": "Aave V4",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1764601200,
+   "ends_at": 1768230000,
+   "prize_pool": 310000,
+   "token": "USDC"
+  },
+  {
+   "id": 1028,
+   "title": "Centrifuge Protocol V3.1",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1760972400,
+   "ends_at": 1763391600,
+   "prize_pool": 234400,
+   "token": "USDC"
+  },
+  {
+   "id": 59,
+   "title": "Notional V3",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1679929200,
+   "ends_at": 1684162800,
+   "prize_pool": 164000,
+   "token": "USDC"
+  },
+  {
+   "id": 6,
+   "title": "GMX",
+   "status": "FINISHED",
+   "private": false,
+   "starts_at": 1676041200,
+   "ends_at": 1679670000,
+   "prize_pool": 150000,
+   "token": "USDC"
+  }
+ ],
+ "total": 20,
+ "has_next": true,
+ "pages": 2
+}

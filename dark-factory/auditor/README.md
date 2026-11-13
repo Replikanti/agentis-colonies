@@ -81,6 +81,12 @@ daemon). Bus events use the `dark-factory:<event>` namespace.
 | [`report-writer.ag`](./agents/report-writer.ag) | Renders a CONFIRMED, in-scope, impact-substantiated, low-dup finding into an Immunefi-shaped 4-section submission report (Brief/Intro, Vulnerability Details, Impact Details, References) as a DRAFT ARTIFACT. Leads with the machine-checkable `SUBMISSION-DRAFT\|PENDING-HUMAN-REVIEW` human-gate marker. | `dark-factory:report_draft`; `SUBMISSION-DRAFT\|PENDING-HUMAN-REVIEW` |
 | [`feedback-intake.ag`](./agents/feedback-intake.ag) | The human→federation half of the loop: reads the operator's filled-in `OUTCOME.md` from the drop-dir and folds the platform's response back into learning, ATTRIBUTED to the gate that should own the lesson (scope-gate / impact-gate / dup-scout / report-writer). Never submits, never egresses. | `dark-factory:feedback_outcome`; `FEEDBACK\|…` |
 
+### Contest discovery
+
+| Agent | Role | Output |
+|-------|------|--------|
+| [`contest-finder.ag`](./agents/contest-finder.ag) | The scheduled live audit-contest finder (#2312), launched by `find-live-contests.sh`: walks the keyless Immunefi, CodeHawks, Sherlock, Cantina and Code4rena listings (full page walks), applies each platform's live rule, and reports per platform whether the listing could be read, so a broken endpoint never looks like a dry market. No `prompt()`, no bus events, no memo. | `out.tsv`: live contest rows, one `STATUS` line per platform (`ok` / `fetch-failed` / `parse-failed` / `unsupported`), a final `RUN` line with `cb_spent` |
+
 ### Pattern + method evolution
 
 | Agent | Role | Output |
