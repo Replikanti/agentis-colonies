@@ -77,7 +77,7 @@ for lib in "$@"; do
     fi
     read_line="    { IFS= read -r ${pre}_val < \"\$1\" && ${pre}_rs=0; } 2>/dev/null || :"
     # shellcheck disable=SC2016  # the literal source line, nothing to expand
-    pin_line='    } 4< "$1" 2>/dev/null || :'
+    pin_line='    } 2>/dev/null 4< "$1" || :'
 
     # 4. the helper body, pinned
     want="$(printf '%s() {\n    %s_val=""\n    %s_rs=1\n%s\n}' "${pre}_read" "$pre" "$pre" "$read_line")"

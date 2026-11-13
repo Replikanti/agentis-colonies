@@ -238,7 +238,7 @@ _fss_dead_empty() {
         if [ -f /dev/fd/4 ] && _fss_unclaimed "$1" && [ ! -s /dev/fd/4 ] && [ /dev/fd/4 -ef "$1" ]; then
             _fss_de=yes
         fi
-    } 4< "$1" 2>/dev/null || :
+    } 2>/dev/null 4< "$1" || :
     [ "$_fss_de" = yes ]
 }
 
@@ -340,10 +340,13 @@ _fss_claim() {
     done
 }
 
-# _fss_odd PATH: succeed when PATH is a symlink, or exists and is not a
-# regular file: never an entry the gate creates at a stamp, token or claim.
+# _fss_odd PATH: succeed when PATH is a symlink, dir, FIFO, socket or device:
+# never an entry the gate creates at a stamp, token or claim. Each test is one
+# positive stat, so a path that vanishes meanwhile, or a regular file, is never
+# odd (an exists-then-not-regular pair would call a stamp released between its
+# two stats odd, and _fss_unodd would then remove whatever was created there).
 _fss_odd() {
-    [ -h "$1" ] || { [ -e "$1" ] && [ ! -f "$1" ]; }
+    [ -h "$1" ] || [ -d "$1" ] || [ -p "$1" ] || [ -S "$1" ] || [ -b "$1" ] || [ -c "$1" ]
 }
 
 # _fss_unodd PATH: remove PATH once if it is odd (rm -f; an empty dir by

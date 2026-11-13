@@ -867,5 +867,32 @@ else
     bad "shared \$\$: S1 held='$_h43' (want slot-1), R held='$_r43' (want nothing)"
 fi
 
+# 44. An entry is judged odd (a symlink, dir, FIFO, socket or device) only by positive one-stat tests, so a stamp
+#     released between two stats of the check is never odd, and nothing then removes the stamp a new acquirer wins
+#     there. A bash function `[` deletes the stamp right after a true `-e` test (the release landing between two
+#     stats); `_lss_odd` must still answer "not odd" and `_lss_unodd` must leave the new stamp alone.
+fresh; mkdir "$SLOTS/slot-1"; : > "$SLOTS/slot-1/pid"
+# shellcheck disable=SC2016
+_r44="$(bash -c '. "$1"
+    [() { if builtin [ "$1" = -e ] && builtin [ -e "$2" ]; then command rm -f "$2"; return 0; fi; builtin [ "$@"; }
+    if _lss_odd "$2"; then printf odd; else printf regular; fi
+    printf "%s" "$$" > "$2"; _lss_unodd "$2"; if [ -f "$2" ]; then printf /kept; else printf /removed; fi' \
+    bash "$LIB" "$SLOTS/slot-1/pid" 2>/dev/null || printf 'ABORTED')"
+if [ "$_r44" = "regular/kept" ]; then
+    ok "a stamp that vanishes between two stats is never odd, and a stamp created there is never removed"
+else
+    bad "odd check across a release: '$_r44' (want regular/kept)"
+fi
+
+# 45. A stamp that vanished before the empty-stamp verdict pins it prints nothing to the caller's stderr (the
+#     redirection of stderr comes before the open of fd 4).
+fresh; mkdir "$SLOTS/slot-1"
+_e45="$( { _lss_dead_empty "$SLOTS/slot-1/pid" || :; } 2>&1 )"
+if [ -z "$_e45" ]; then
+    ok "a vanished stamp is judged without any output on stderr"
+else
+    bad "a vanished stamp printed to stderr: '$_e45'"
+fi
+
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

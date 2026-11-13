@@ -3096,7 +3096,7 @@ fi
 # --- dark-factory forge slot gate (#2038, #2362) ---
 # The host-wide forge-subprocess semaphore (dark-factory/lib/forge-slot.sh): acquire/release/fail-open, a K-holder
 # concurrent load, the run-invariant-hunt.sh wiring, and #2362's cases (the same as tools/test-llm-session-slot.sh
-# 10-43): ownership by the exclusive create of slot-N/pid, never by mkdir's exit status; reclaim never removes a newer
+# 10-45): ownership by the exclusive create of slot-N/pid, never by mkdir's exit status; reclaim never removes a newer
 # holder's stamp; an empty stamp or token is dead only when no live creator claims it; a failed stamp write and a
 # SIGKILLed reclaimer never leak a slot. bash only, no forge, no network (~50 s: two cases wait out a 12-13 s budget).
 if [ -x "$REPO_ROOT/dark-factory/demo-forge-slot.sh" ]; then

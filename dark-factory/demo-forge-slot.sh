@@ -8,7 +8,7 @@
 # load check spawning K+1 background holders (this repo's demo-* naming
 # convention for a "run it, watch it prove the thing" script — see
 # demo-invariant-transient.sh, PR #2037). Part 4 runs #2362's cases, the same
-# as tools/test-llm-session-slot.sh 10-43 under the forge names: a slot is owned
+# as tools/test-llm-session-slot.sh 10-45 under the forge names: a slot is owned
 # by the exclusive create of slot-N/pid, never by mkdir's exit status; the
 # reclaim never removes a newer holder's stamp; an empty stamp or reap token is
 # dead only when no live creator claims it; a failed stamp write and a reclaimer
@@ -155,7 +155,7 @@ fi
 echo
 echo "demo-forge-slot.sh: 4) #2362: ownership by exclusive create, never mkdir's exit status; reclaim, write"
 echo "                    failure, empty stamps and tokens judged by their creator's claim, SIGKILLed"
-echo "                    reclaimers (same cases as tools/test-llm-session-slot.sh 10-43, forge names) ..."
+echo "                    reclaimers (same cases as tools/test-llm-session-slot.sh 10-45, forge names) ..."
 
 # uutils mkdir 0.8.0-0.10.0 (the /usr/bin/mkdir of Ubuntu 26.04) exits 0 when a concurrent creator wins the race,
 # so two contenders could both "win" one slot. LIAR/mkdir reproduces that deterministically on any host: it runs
@@ -912,6 +912,33 @@ if [ "$_h43" = "$SLOTS/slot-1" ] && [ -z "$_r43" ]; then
     ok "sibling subshells (one \$\$) keep separate claims: a sibling's cleanup never exposes the other's empty stamp"
 else
     bad "shared \$\$: S1 held='$_h43' (want slot-1), R held='$_r43' (want nothing)"
+fi
+
+# 44. An entry is judged odd (a symlink, dir, FIFO, socket or device) only by positive one-stat tests, so a stamp
+#     released between two stats of the check is never odd, and nothing then removes the stamp a new acquirer wins
+#     there. A bash function `[` deletes the stamp right after a true `-e` test (the release landing between two
+#     stats); `_fss_odd` must still answer "not odd" and `_fss_unodd` must leave the new stamp alone.
+fresh; mkdir "$SLOTS/slot-1"; : > "$SLOTS/slot-1/pid"
+# shellcheck disable=SC2016
+_r44="$(bash -c '. "$1"
+    [() { if builtin [ "$1" = -e ] && builtin [ -e "$2" ]; then command rm -f "$2"; return 0; fi; builtin [ "$@"; }
+    if _fss_odd "$2"; then printf odd; else printf regular; fi
+    printf "%s" "$$" > "$2"; _fss_unodd "$2"; if [ -f "$2" ]; then printf /kept; else printf /removed; fi' \
+    bash "$LIB" "$SLOTS/slot-1/pid" 2>/dev/null || printf 'ABORTED')"
+if [ "$_r44" = "regular/kept" ]; then
+    ok "a stamp that vanishes between two stats is never odd, and a stamp created there is never removed"
+else
+    bad "odd check across a release: '$_r44' (want regular/kept)"
+fi
+
+# 45. A stamp that vanished before the empty-stamp verdict pins it prints nothing to the caller's stderr (the
+#     redirection of stderr comes before the open of fd 4).
+fresh; mkdir "$SLOTS/slot-1"
+_e45="$( { _fss_dead_empty "$SLOTS/slot-1/pid" || :; } 2>&1 )"
+if [ -z "$_e45" ]; then
+    ok "a vanished stamp is judged without any output on stderr"
+else
+    bad "a vanished stamp printed to stderr: '$_e45'"
 fi
 
 
