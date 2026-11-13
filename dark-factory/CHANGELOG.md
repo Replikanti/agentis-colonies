@@ -14,6 +14,22 @@ Every release declares its runtime floor as `**Requires:** agentis >= X.Y.Z`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Slot gates over-admitted on Ubuntu 26.04; red `colony-lint` (#2362).** `lib/forge-slot.sh` and the deep-hunt
+  cell's LLM pool (`tools/lib/llm-session-slot.sh`) decided slot ownership from the exit status of the external
+  `mkdir`. uutils `mkdir` 0.8.0-0.10.0, `/usr/bin/mkdir` on the Ubuntu 26.04 CI runners since early November, exits 0
+  when a concurrent creator wins the race, so `demo-deep-hunt-budget.sh` saw 2 cells at once under
+  `LLM_MAX_CONCURRENT=1`. Ownership is now the shell's own exclusive create of `slot-N/pid` (`set -C` noclobber),
+  the dead-holder reclaim is serialized by generation-numbered reap tokens (a reclaimer killed mid-reclaim is taken
+  over), a failed stamp write is undone by its creator, an empty stamp or token is dead only when no live creator claims it (a claim file named with the creator's PID), and a non-PID stamp
+  is reaped without ever reaching `kill -0`. Release keeps the slot dir, and the reclaim re-checks liveness under its token. Stamps and tokens are read with the builtin `read` only (a failed `cat` read as empty could evict a live holder), and a refused slot entry costs one slot rather than failing the gate open. Empty stamps are judged on one pinned file instance, dirs and files are created 0700/0600 regardless of umask, and entries the gate never creates (symlinks, FIFOs, stray files, blank-line stamps, owner-locked modes) are repaired or reaped once. `tools/check-slot-reads.sh` (colony-lint) allowlists every command in both gates and pins the read helper. colony-lint checks that the two copies run the same code.
+  **Deploy: restart running hunts and federations after updating;** a pre-#2362 process can overwrite a new
+  holder's stamp. `demo-deep-hunt-budget.sh` reports each section-8 clause on its own line, adds the `s1L` arm
+  (the same run under a lying `mkdir` that always exits 0) and a mutation that restores the old ownership test;
+  `demo-forge-slot.sh` gains the forge versions of those cases and now runs in `colony-lint`, which also prints the
+  host's `mkdir` version and `/bin/sh` target.
+
 ### Added
 
 - **AgentArena intake fetch and unpack (#2326, epic #2317 M1).** `run-agentarena-intake.sh` (a thin shim over

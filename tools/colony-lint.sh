@@ -50,6 +50,12 @@ pass() { echo "[PASS] $1"; PASS=$((PASS + 1)); }
 fail() { echo "[FAIL] $1"; FAIL=$((FAIL + 1)); }
 skip() { echo "[SKIP] $1"; SKIP=$((SKIP + 1)); }
 
+# Informational only (never passes or fails anything): which mkdir and which sh
+# this host runs. #2362: Ubuntu 26.04 runners switched /usr/bin/mkdir to uutils,
+# whose exit status under a create race broke the mkdir-as-lock slot gates, and
+# the runner log did not show it.
+echo "host: $(mkdir --version 2>/dev/null | head -1 || true); sh -> $(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' /bin/sh 2>/dev/null || echo unknown)"
+
 # --- Dark Factory registry isolation ---
 # dark-factory demo/test/bench scripts invoked below (directly or via the
 # tools/test-*.sh auto-discovery loop) call run-zone-hunt.sh, which
@@ -3084,6 +3090,60 @@ if [ -x "$REPO_ROOT/dark-factory/demo-deep-hunt-budget.sh" ]; then
     else
         fail "dark-factory: deep-hunt time budget regressed (#2258)"
         printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- dark-factory forge slot gate (#2038, #2362) ---
+# The host-wide forge-subprocess semaphore (dark-factory/lib/forge-slot.sh): acquire/release/fail-open, a K-holder
+# concurrent load, the run-invariant-hunt.sh wiring, and #2362's cases (the same as tools/test-llm-session-slot.sh
+# 10-45): ownership by the exclusive create of slot-N/pid, never by mkdir's exit status; reclaim never removes a newer
+# holder's stamp; an empty stamp or token is dead only when no live creator claims it; a failed stamp write and a
+# SIGKILLed reclaimer never leak a slot. bash only, no forge, no network (~50 s: two cases wait out a 12-13 s budget).
+if [ -x "$REPO_ROOT/dark-factory/demo-forge-slot.sh" ]; then
+    check_out="$(bash "$REPO_ROOT/dark-factory/demo-forge-slot.sh" 2>&1)" && check_rc=0 || check_rc=$?
+    if [ "$check_rc" -eq 0 ]; then
+        pass "dark-factory: forge slot gate — bounded concurrency, fail open, ownership never by mkdir exit status (#2038, #2362)"
+    else
+        fail "dark-factory: forge slot gate regressed (#2038, #2362)"
+        printf '%s\n' "$check_out"
+    fi
+fi
+
+# --- slot gate copies stay in sync (#2362) ---
+# dark-factory/lib/forge-slot.sh carries the same acquire/create/claim/sweep/reclaim/release code as
+# tools/lib/llm-session-slot.sh under other names and defaults. Map the forge names and defaults onto the LLM ones,
+# drop comment and blank lines, and require byte-identical code from `acquire_` to the end of both files, so a fix
+# to one copy cannot silently miss the other.
+slot_lss="$REPO_ROOT/tools/lib/llm-session-slot.sh"
+slot_fss="$REPO_ROOT/dark-factory/lib/forge-slot.sh"
+if [ -f "$slot_lss" ] && [ -f "$slot_fss" ]; then
+    slot_code() { sed -n '/^acquire_/,$p' "$1" | sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d'; }
+    slot_a="$(slot_code "$slot_lss")"
+    slot_b="$(slot_code "$slot_fss" | sed -e 's/_fss_/_lss_/g' -e 's/_FSS_/_LSS_/g' \
+        -e 's/acquire_forge_slot/acquire_llm_slot/g' -e 's/release_forge_slot/release_llm_slot/g' \
+        -e 's/FORGE_SLOT_HELD/LLM_SLOT_HELD/g' -e 's/_forge_slots_dir/_llm_slots_dir/g' \
+        -e 's/FORGE_MAX_SLOTS:-2/LLM_MAX_CONCURRENT:-3/g' -e 's/_lss_k=2/_lss_k=3/g' \
+        -e 's/FORGE_SLOT_WAIT_S:-300/LLM_SLOT_WAIT_S:-120/g' -e 's/_lss_wait=300/_lss_wait=120/g')"
+    if [ -n "$slot_a" ] && [ "$slot_a" = "$slot_b" ]; then
+        pass "slot gates: forge-slot.sh and llm-session-slot.sh run the same code under their own names (#2362)"
+    else
+        fail "slot gates: forge-slot.sh drifted from llm-session-slot.sh (#2362)"
+        diff <(printf '%s\n' "$slot_a") <(printf '%s\n' "$slot_b") | head -20 || true
+    fi
+fi
+
+# --- slot gate reads are builtin (#2362) ---
+# A stamp, claim or reap token is read only by the libraries' builtin `_lss_read` / `_fss_read`, and no decision rests
+# on an external binary's output or exit status. tools/check-slot-reads.sh is an allowlist: every command word must be
+# a shell keyword/builtin, a function of the library, or mkdir/rm/rmdir/sleep/chmod; `read` and input redirections appear only
+# on the pinned helper lines; no pipelines, backticks, process substitution or command substitution beyond the two
+# pool-path lines; the read helper's body is pinned. tools/test-check-slot-reads.sh proves each bypass is caught.
+if [ -f "$slot_lss" ] && [ -f "$slot_fss" ]; then
+    if slot_reads_out="$(bash "$REPO_ROOT/tools/check-slot-reads.sh" "$slot_lss" "$slot_fss" 2>&1)"; then
+        pass "slot gates: stamps, claims and reap tokens are read only by the builtin read (#2362)"
+    else
+        fail "slot gates: a read or decision bypasses the builtin read helper (#2362)"
+        printf '%s\n' "$slot_reads_out" | head -20
     fi
 fi
 

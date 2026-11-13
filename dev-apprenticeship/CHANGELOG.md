@@ -17,6 +17,22 @@ is asserted until multi-version CI is in place.
 
 **Requires:** agentis >= 1.29.0
 
+### Fixed
+
+- **LLM-session slot gate over-admitted on Ubuntu 26.04** ([#2362](https://github.com/Replikanti/agentis-colonies/issues/2362)).
+  `tools/lib/llm-session-slot.sh` decided slot ownership from the exit status of the external `mkdir`; uutils
+  `mkdir` 0.8.0-0.10.0 (Ubuntu 26.04's `/usr/bin/mkdir`) exits 0 when a concurrent creator wins the race, so two
+  sessions could hold one slot and `LLM_MAX_CONCURRENT` was exceeded. A slot now belongs to whoever wins the shell's
+  own exclusive create of `slot-N/pid` (`set -C` noclobber, `O_CREAT|O_EXCL` in bash and dash); `mkdir` only makes
+  the container. A stamp whose write fails (ENOSPC, EDQUOT) is removed by its own creator, which fails open at once,
+  and an empty stamp is reclaimed only when no live process claims it (every creator first makes a claim file named with its PID, so a creator killed between create and write is detected by liveness, never by elapsed time). The dead-holder reclaim
+  is serialized by generation-numbered reap tokens created the same exclusive way: a reclaimer killed mid-reclaim is
+  taken over instead of leaking the slot, and a stamp is removed only while it still names the dead holder, so a
+  newer holder's stamp is never deleted. A stamp that is not a PID counts as dead and is never passed to `kill -0`;
+  an empty slot dir left by a crash between `mkdir` and the stamp is now acquirable instead of leaking. Release keeps the slot dir (it is only a container), so a concurrent release can no longer make an acquirer fail open, and the reclaim re-checks the holder's liveness under its token, so a reused PID is never removed. Stamps, claims and reap tokens are read only with the shell's builtin `read` (never `$(cat …)`), and only the size test decides that a file is empty, so a failed read can never evict a live holder. A slot entry the user cannot write costs one slot instead of disabling the cap; only a pass in which every slot refuses fails open at once. An empty stamp is judged dead on one pinned file instance (claims scanned before its size, the size read through the descriptor, the path checked to still name it), so a reclaimer can no longer remove a stamp that a live creator has just written. The pool and slot dirs are created 0700 and stamps 0600 whatever the caller's umask, and an entry the gate does not create (a mode that locks the owner out, a symlink, FIFO or stray file at a slot or stamp path, a stamp whose first line is blank) is repaired or reaped once instead of disabling or leaking a slot.
+  **Deploy: restart the federation after updating.** A pre-#2362 process still running writes its stamp without
+  noclobber, so it can overwrite a new holder's stamp, and it treats a slot dir without a stamp (now every free slot) as busy.
+
 ## [2.13.0] - 2026-09-02
 
 **Requires:** agentis >= 1.29.0

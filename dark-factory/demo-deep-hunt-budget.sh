@@ -23,9 +23,10 @@
 #   6  BUDGET: in-flight cell TIMEOUT (zone-budget), later pairs SKIPPED_BUDGET.
 #   7  EQUIVALENCE: legacy == JOBS=1 == JOBS=3 on every artifact (PROMISES on); ledger b == c; concurrency 1 vs >= 2;
 #      skip under JOBS=3 == under JOBS=1.
-#   8  SLOT + FORCED SERIAL: LLM_MAX_CONCURRENT=1 -> concurrency 1 (pool never exported to the engine);
-#      --pattern-store -> warning + concurrency 1; legacy --deep-hunt-max-targets 2 (shared run dir) == legacy.
-#   9  MUTATIONS on a copied tree: each rule is load-bearing.
+#   8  SLOT + FORCED SERIAL: LLM_MAX_CONCURRENT=1 -> concurrency 1 (pool never exported to the engine), one line per
+#      clause; s1L: the same under a lying mkdir that always exits 0 (#2362); --pattern-store -> warning +
+#      concurrency 1; legacy --deep-hunt-max-targets 2 (shared run dir) == legacy.
+#   9  MUTATIONS on a copied tree: each rule is load-bearing (incl. slot ownership by mkdir exit status vs s1L).
 #  10  HARD STOP + RESUME: a settled FINDING is merged before a stop (1 job) or merged collect-only by the next resume
 #      (3 jobs); a transport-crashed probe is TRANSIENT_ERROR, never a broken target; shared run dirs under
 #      --deep-hunt-resume run the sequential loop's cells; a cap never reads a previous run's verdict; a cell TERMed
@@ -348,12 +349,21 @@ fi
 
 # ================================================================================================
 note "4) TIMEOUT: ledger-only, never merged, resume re-runs it; tail-kill keeps the verdict ..."
+# Cell cap for this section (#2362 review): a fast cell (0.2 s stub) still runs the whole engine, whose helper work
+# alone measured 4.1 s median / 8.2 s max on 1 CPU next to 2 busy loops and 9.2 s / 9.8 s next to 6 busy loops
+# (fast-cell engine wall, cap lifted). At the former 2 s cap the fast cells crossed it under load on main as often as
+# on this branch (6 of 10 runs each, interleaved at 1 CPU + 2 busy loops), so the check failed on host load, not on a
+# regression. T4_CAP=20 s is about twice the worst measured fast cell plus the watchdog's 1 s poll; T4_SLOW=60 s keeps
+# the slow cell at three times the cap, so it always times out. A smaller cap brings the load flake back; every extra
+# second of cap adds about 3 s to this demo (the slow cell, the tail-kill cell and the mutation re-run all wait it out).
+T4_CAP=20
+T4_SLOW=60
 t4_timeout() {  # RZH -> 0 when every TIMEOUT assertion holds (prints the failures otherwise)
   _t_rzh="$1"; _t_ok=0
-  spec 'VaultB|C10|30|normal|FINDING' '*|*|0.2|normal|CLEAN'
-  STUB_LOG="$WORK/t4.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S=2 lens_only "$_t_rzh" "$WORK/t4"
+  spec "VaultB|C10|$T4_SLOW|normal|FINDING" '*|*|0.2|normal|CLEAN'
+  STUB_LOG="$WORK/t4.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S="$T4_CAP" lens_only "$_t_rzh" "$WORK/t4"
   sleep 0.5
-  [ "$(status_of "$WORK/t4" VaultB C10)" = TIMEOUT ] && [ "$(reason_of "$WORK/t4" VaultB C10)" = "cell-timeout=2s" ] \
+  [ "$(status_of "$WORK/t4" VaultB C10)" = TIMEOUT ] && [ "$(reason_of "$WORK/t4" VaultB C10)" = "cell-timeout=${T4_CAP}s" ] \
     || { echo "    ledger: $(status_of "$WORK/t4" VaultB C10)/$(reason_of "$WORK/t4" VaultB C10)"; _t_ok=1; }
   cmp -s "$DBASE/verify/verified_findings.json" "$WORK/t4/verify/verified_findings.json" || { echo "    verified_findings.json changed"; _t_ok=1; }
   awk -F'\t' '$2 == "VaultB" && $3 == "C10"' "$WORK/t4/deep-hunt/reach-coverage.tsv" 2>/dev/null | grep -q . && { echo "    reach row written"; _t_ok=1; }
@@ -369,7 +379,7 @@ t4_timeout() {  # RZH -> 0 when every TIMEOUT assertion holds (prints the failur
   spec '*|*|0.2|normal|FINDING'
   : > "$WORK/t4r.stub"
   rm -rf "$WORK/t4r"; cp -R "$WORK/t4" "$WORK/t4r"
-  PATH="$WORK/fbin:$PATH" STUB_LOG="$WORK/t4r.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S=2 "$_t_rzh" --repo "$REPO" \
+  PATH="$WORK/fbin:$PATH" STUB_LOG="$WORK/t4r.stub" DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S="$T4_CAP" "$_t_rzh" --repo "$REPO" \
     --out "$WORK/t4r" --deep-hunt --deep-hunt-only --deep-hunt-resume --backend mock --agentis "$STUB" >"$WORK/t4r.log" 2>&1
   [ "$(cat "$WORK/t4r.stub")" = "VaultB|C10" ] || { echo "    resume re-ran: $(tr '\n' ' ' < "$WORK/t4r.stub")"; _t_ok=1; }
   [ "$(status_of "$WORK/t4r" VaultB C10)" = FINDING ] && [ "$(findings_of "$WORK/t4r")" = 1 ] \
@@ -383,12 +393,12 @@ if t4_timeout "$RZH"; then
   else
     bad "enqueue-pass stderr: resume skip lines missing or shim failure lines leaked"
   fi
-  ok "a timed-out cell: ledger TIMEOUT (cell-timeout=2s), verified_findings.json byte-unchanged, no reach row, never CLEAN, no orphan; --deep-hunt-resume re-runs exactly it and merges its FINDING"
+  ok "a timed-out cell: ledger TIMEOUT (cell-timeout=${T4_CAP}s), verified_findings.json byte-unchanged, no reach row, never CLEAN, no orphan; --deep-hunt-resume re-runs exactly it and merges its FINDING"
 else
   bad "TIMEOUT contract regressed (see above)"
 fi
-spec 'VaultC|C2|30|tail|FINDING' '*|*|0.2|normal|CLEAN'
-DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S=2 lens_only "$RZH" "$WORK/t4t"
+spec "VaultC|C2|$T4_SLOW|tail|FINDING" '*|*|0.2|normal|CLEAN'
+DEEP_HUNT_REACH=1 DEEP_HUNT_CELL_TIMEOUT_S="$T4_CAP" lens_only "$RZH" "$WORK/t4t"
 if [ "$(status_of "$WORK/t4t" VaultC C2)" = FINDING ] && [ "$(reason_of "$WORK/t4t" VaultC C2)" = tail-killed ] \
    && [ "$(findings_of "$WORK/t4t")" = 1 ]; then
   ok "tail-kill: a verdict written before the cap fired is kept (FINDING, reason tail-killed) and merged"
@@ -547,11 +557,49 @@ spec '*|*|0.6|normal|CLEAN'
 rm -rf "$WORK/s1.probe"; mkdir -p "$WORK/s1.probe"; : > "$WORK/s1.env"
 STUB_PROBE="$WORK/s1.probe" STUB_ENVLOG="$WORK/s1.env" LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=600 DEEP_HUNT_REACH=1 DEEP_HUNT_JOBS=3 \
   lens_only "$RZH" "$WORK/s1"
-if [ "$(maxconc "$WORK/s1.probe")" = 1 ] && [ "$(grep -c . "$WORK/s1/deep-hunt/cell-status.tsv")" = 6 ] \
-   && [ -d "$DARK_FACTORY_DIR/deep-hunt-llm-slots" ] && ! grep -qxF "$DARK_FACTORY_DIR/deep-hunt-llm-slots" "$WORK/s1.env"; then
-  ok "LLM_MAX_CONCURRENT=1 + JOBS=3: max concurrency 1 on the dedicated pool, which never reaches the engine's env"
+# One line per clause (#2362). The probe counts stubs running at once: exactly 1, because 0 would mean it never ran.
+# The engine env column is the stub's AGENTIS_LLM_SLOTS_DIR, which is "unset" by design: the worker sets the pool
+# path on its acquire/release calls only, so "unset" is the expected value there, never the failing clause.
+s1_fail=0
+if [ "$(maxconc "$WORK/s1.probe")" = 1 ]; then
+  ok "LLM_MAX_CONCURRENT=1 + JOBS=3: max concurrency 1"
 else
-  bad "LLM slot pool: concurrency $(maxconc "$WORK/s1.probe"), engine saw [$(sort -u "$WORK/s1.env" | tr '\n' ' ')]"
+  bad "LLM slot pool: max concurrency $(maxconc "$WORK/s1.probe") under LLM_MAX_CONCURRENT=1 (want exactly 1)"; s1_fail=1
+fi
+if [ "$(grep -c . "$WORK/s1/deep-hunt/cell-status.tsv")" = 6 ]; then
+  ok "LLM slot pool: 6 cells -> 6 ledger rows"
+else
+  bad "LLM slot pool: $(grep -c . "$WORK/s1/deep-hunt/cell-status.tsv") ledger rows (want 6)"; s1_fail=1
+fi
+if [ -d "$DARK_FACTORY_DIR/deep-hunt-llm-slots" ]; then
+  ok "LLM slot pool: the dedicated pool dir exists"
+else
+  bad "LLM slot pool: the dedicated pool dir is missing"; s1_fail=1
+fi
+if ! grep -qxF "$DARK_FACTORY_DIR/deep-hunt-llm-slots" "$WORK/s1.env"; then
+  ok "LLM slot pool: the pool path never reaches the engine env (engine saw [$(sort -u "$WORK/s1.env" | tr '\n' ' ')], expected: unset)"
+else
+  bad "LLM slot pool: the pool path reached the engine env (engine saw [$(sort -u "$WORK/s1.env" | tr '\n' ' ')], expected: unset)"; s1_fail=1
+fi
+[ "$s1_fail" = 0 ] || echo "      host: $(mkdir --version 2>/dev/null | head -1)"
+# s1L: the same run with a LYING mkdir first on PATH (the real one, same arguments and stderr, always exit 0), the
+# shape of uutils mkdir 0.8.0-0.10.0 under a race (#2362). The slot gate must not trust mkdir's exit status, so the
+# check is deterministic on every host, GNU mkdir included.
+REAL_MKDIR="$(command -v mkdir)"
+mkdir -p "$WORK/liarbin"
+printf '#!/bin/sh\n"%s" "$@"\nexit 0\n' "$REAL_MKDIR" > "$WORK/liarbin/mkdir"
+chmod +x "$WORK/liarbin/mkdir"
+s1l_run() {  # RZH -> 0 when max concurrency is 1 and all 6 cells are ledgered under the lying mkdir
+  spec '*|*|0.6|normal|CLEAN'
+  rm -rf "$WORK/s1l.probe"; mkdir -p "$WORK/s1l.probe"
+  PATH="$WORK/liarbin:$PATH" STUB_PROBE="$WORK/s1l.probe" LLM_MAX_CONCURRENT=1 LLM_SLOT_WAIT_S=600 DEEP_HUNT_REACH=1 \
+    DEEP_HUNT_JOBS=3 lens_only "$1" "$WORK/s1l"
+  [ "$(maxconc "$WORK/s1l.probe")" = 1 ] && [ "$(grep -c . "$WORK/s1l/deep-hunt/cell-status.tsv" 2>/dev/null)" = 6 ]
+}
+if s1l_run "$RZH"; then
+  ok "s1L: a lying mkdir (always exit 0) still gives max concurrency 1 and 6 ledger rows"
+else
+  bad "s1L: under a lying mkdir: max concurrency $(maxconc "$WORK/s1l.probe"), $(grep -c . "$WORK/s1l/deep-hunt/cell-status.tsv" 2>/dev/null) ledger rows (want 1 and 6)"
 fi
 if grep -q 'DEEP_HUNT_JOBS=3 > LLM_MAX_CONCURRENT=1: .*may overrun its zone budget by up to that wait' "$WORK/s1.log" \
    && ! grep -q 'LLM_MAX_CONCURRENT' "$WORK/eqc.log"; then
@@ -772,6 +820,12 @@ mut "post-process in completion order" lib/deep-hunt-sched.sh \
 mut "drop DEEP_HUNT_RESUME=0 in the collect pass" lib/deep-hunt-sched.sh \
   '      DEEP_HUNT_RESUME=0
 ' '' t4_timeout "$MRZH"
+# The pre-#2362 ownership test: whoever's mkdir exits 0 owns the slot and overwrites the stamp.
+mut "slot ownership by mkdir exit status" ../tools/lib/llm-session-slot.sh \
+  "mkdir -m 0700 \"\$_lss_slot\" 2>/dev/null || :
+            _lss_create \"\$_lss_slot/pid\"" \
+  "if mkdir \"\$_lss_slot\" 2>/dev/null; then printf '%s' \"\$\$\" > \"\$_lss_slot/pid\"; _lss_rc=won; else _lss_rc=lost; fi" \
+  s1l_run "$MRZH"
 
 # ================================================================================================
 if [ "$FAILS" -eq 0 ]; then
